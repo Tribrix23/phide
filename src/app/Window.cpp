@@ -163,6 +163,7 @@ HRESULT Window::CreateDeviceResources() {
 }
 
 void Window::DiscardDeviceResources() {
+    m_editor.DiscardDeviceResources();
     m_theme.DiscardDeviceResources();
     m_pRenderTarget.Reset();
 }

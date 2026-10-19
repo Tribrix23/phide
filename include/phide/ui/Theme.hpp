@@ -23,9 +23,9 @@ using Microsoft::WRL::ComPtr;
  */
 struct ThemeColors {
     // Window & Canvas Backgrounds
-    D2D1_COLOR_F windowBg        = D2D1::ColorF(0.118f, 0.118f, 0.118f, 1.0f); // #1E1E1E (Main Editor / Workspace)
-    D2D1_COLOR_F headerBg        = D2D1::ColorF(0.094f, 0.094f, 0.094f, 1.0f); // #181818 (Title Bar)
-    D2D1_COLOR_F railBg          = D2D1::ColorF(0.078f, 0.078f, 0.078f, 1.0f); // #141414 (Activity Rail)
+    D2D1_COLOR_F windowBg        = D2D1::ColorF(0.078f, 0.078f, 0.078f, 1.0f); // #141414 (Dark Shell Base)
+    D2D1_COLOR_F headerBg        = D2D1::ColorF(0.078f, 0.078f, 0.078f, 1.0f); // #141414 (Seamless Dark Title Bar)
+    D2D1_COLOR_F railBg          = D2D1::ColorF(0.078f, 0.078f, 0.078f, 1.0f); // #141414 (Seamless Dark Activity Rail)
     D2D1_COLOR_F drawerBg        = D2D1::ColorF(0.094f, 0.094f, 0.094f, 1.0f); // #181818 (Sidebar Drawer)
 
     // Borders & Dividers

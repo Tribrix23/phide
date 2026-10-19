@@ -68,21 +68,7 @@ void TitleHeader::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCon
         curX += textWidth + config.ScaleF(2.0f);
     }
 
-    // 3. Render Centered Application & Project Title
-    const wchar_t* titleStr = L"phide \u2014 C++ & PHP IDE";
-    const float titleW = config.ScaleF(260.0f);
-    const float titleX = (clientWidth - titleW) / 2.0f;
-    D2D1_RECT_F rcTitle = D2D1::RectF(titleX, 0.0f, titleX + titleW, h);
-
-    pRT->DrawText(
-        titleStr,
-        static_cast<UINT32>(wcslen(titleStr)),
-        theme.fontTitle.Get(),
-        rcTitle,
-        theme.brushTextSecondary.Get()
-    );
-
-    // 4. Render Vector Window Caption Controls (Minimize, Maximize, Close) in Top-Right
+    // 3. Render Vector Window Caption Controls (Minimize, Maximize, Close) in Top-Right
     const float btnW = config.ScaleF(static_cast<float>(config.captionBtnWidth)); // 46px
     float rightEdge = clientWidth;
 
