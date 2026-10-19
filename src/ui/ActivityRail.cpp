@@ -1,6 +1,6 @@
 /**
  * @file ActivityRail.cpp
- * @brief Implementation of the Dark IDE activity rail with Lucide Home, Search, Git, and customized tooltips.
+ * @brief Implementation of the Dark IDE activity rail with Lucide Files, Search, Git, and customized tooltips.
  */
 
 #include "phide/ui/ActivityRail.hpp"
@@ -8,10 +8,10 @@
 namespace phide::ui {
 
 ActivityRail::ActivityRail() {
-    // 1. Home icon (top)
-    m_items.push_back({ RailTabId::Home,   L"Home",                        {} });
+    // 1. Files / Explorer icon (top)
+    m_items.push_back({ RailTabId::Files,  L"Explorer (Files)",            {} });
 
-    // 2. Search icon (directly under Home)
+    // 2. Search icon (directly under Files)
     m_items.push_back({ RailTabId::Search, L"Search Workspace (Ctrl+F)",   {} });
 
     // 3. Git icon (directly under Search)
@@ -46,7 +46,7 @@ void ActivityRail::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
         1.0f
     );
 
-    // 2. Render Lucide Vector Icons: Home -> Search -> Git
+    // 2. Render Lucide Vector Icons: Files -> Search -> Git
     float curY = headerH + config.ScaleF(12.0f);
     const RailItem* hoveredItemPtr = nullptr;
 
@@ -60,20 +60,27 @@ void ActivityRail::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
             hoveredItemPtr = &item;
         }
 
-        if (item.id == RailTabId::Home) {
-            // Home icon: styled as a modern rounded square badge (8px radius)
-            D2D1_ROUNDED_RECT rrcHome = D2D1::RoundedRect(item.bounds, 8.0f, 8.0f);
+        if (item.id == RailTabId::Files) {
+            // Files / Explorer icon directly at top
+            D2D1_ROUNDED_RECT rrc = D2D1::RoundedRect(item.bounds, 6.0f, 6.0f);
 
-            if (isHovered) {
-                pRT->FillRoundedRectangle(rrcHome, theme.brushItemHover.Get());
-                pRT->DrawRoundedRectangle(rrcHome, theme.brushBorderHover.Get(), 1.0f);
-                m_lucide.DrawHome(pRT, item.bounds, theme.brushTextWhite.Get(), 1.8f);
+            if (isActive) {
+                pRT->FillRoundedRectangle(rrc, theme.brushItemActive.Get());
+                pRT->DrawLine(
+                    D2D1::Point2F(1.0f, item.bounds.top + 4.0f),
+                    D2D1::Point2F(1.0f, item.bounds.bottom - 4.0f),
+                    theme.brushBrandAccent.Get(),
+                    2.5f
+                );
+                m_lucide.DrawFile(pRT, item.bounds, theme.brushTextWhite.Get(), 1.8f);
+            } else if (isHovered) {
+                pRT->FillRoundedRectangle(rrc, theme.brushItemHover.Get());
+                m_lucide.DrawFile(pRT, item.bounds, theme.brushTextWhite.Get(), 1.8f);
             } else {
-                pRT->FillRoundedRectangle(rrcHome, theme.brushHomeBadgeBg.Get());
-                m_lucide.DrawHome(pRT, item.bounds, theme.brushTextPrimary.Get(), 1.8f);
+                m_lucide.DrawFile(pRT, item.bounds, theme.brushTextSecondary.Get(), 1.8f);
             }
         } else if (item.id == RailTabId::Search) {
-            // Search icon directly under Home
+            // Search icon directly under Files
             if (isActive) {
                 D2D1_ROUNDED_RECT rrc = D2D1::RoundedRect(item.bounds, 6.0f, 6.0f);
                 pRT->FillRoundedRectangle(rrc, theme.brushItemActive.Get());

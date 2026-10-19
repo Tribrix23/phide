@@ -40,6 +40,11 @@ public:
     void DrawHome(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, ID2D1Brush* pBrush, float strokeWidth = 1.8f) const;
 
     /**
+     * @brief Draws the Lucide File icon (document with folded top-right corner) inside the specified bounding box.
+     */
+    void DrawFile(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, ID2D1Brush* pBrush, float strokeWidth = 1.8f) const;
+
+    /**
      * @brief Draws the Lucide Search (magnifying glass) icon inside the specified bounding box.
      */
     void DrawSearch(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, ID2D1Brush* pBrush, float strokeWidth = 1.8f) const;

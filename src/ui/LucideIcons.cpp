@@ -126,6 +126,35 @@ void LucideIcons::DrawGitBranch(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bound
     }
 }
 
+void LucideIcons::DrawFile(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, ID2D1Brush* pBrush, float strokeWidth) const {
+    if (!pRT || !pBrush) return;
+
+    const float bw = bounds.right - bounds.left;
+    const float bh = bounds.bottom - bounds.top;
+    const float iconSize = (std::min)(bw, bh) * 0.52f;
+    const float s = iconSize / 24.0f;
+    const float ox = bounds.left + (bw - 24.0f * s) / 2.0f;
+    const float oy = bounds.top + (bh - 24.0f * s) / 2.0f;
+
+    // Lucide File: Document outline with folded top-right corner
+    pRT->DrawLine(MapPoint(14.0f, 2.0f, ox, oy, s), MapPoint(6.0f, 2.0f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+    pRT->DrawLine(MapPoint(6.0f, 2.0f, ox, oy, s), MapPoint(4.0f, 4.0f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+    pRT->DrawLine(MapPoint(4.0f, 4.0f, ox, oy, s), MapPoint(4.0f, 20.0f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+    pRT->DrawLine(MapPoint(4.0f, 20.0f, ox, oy, s), MapPoint(6.0f, 22.0f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+    pRT->DrawLine(MapPoint(6.0f, 22.0f, ox, oy, s), MapPoint(18.0f, 22.0f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+    pRT->DrawLine(MapPoint(18.0f, 22.0f, ox, oy, s), MapPoint(20.0f, 20.0f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+    pRT->DrawLine(MapPoint(20.0f, 20.0f, ox, oy, s), MapPoint(20.0f, 8.0f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+    pRT->DrawLine(MapPoint(20.0f, 8.0f, ox, oy, s), MapPoint(14.0f, 2.0f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+
+    // Corner fold: (14, 2) down to (14, 8) and right to (20, 8)
+    pRT->DrawLine(MapPoint(14.0f, 2.0f, ox, oy, s), MapPoint(14.0f, 8.0f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+    pRT->DrawLine(MapPoint(14.0f, 8.0f, ox, oy, s), MapPoint(20.0f, 8.0f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+
+    // Subtle internal code line: (8, 14) to (16, 14) and (8, 17.5) to (13, 17.5)
+    pRT->DrawLine(MapPoint(8.0f, 14.0f, ox, oy, s), MapPoint(16.0f, 14.0f, ox, oy, s), pBrush, strokeWidth * 0.9f, m_pStrokeStyle.Get());
+    pRT->DrawLine(MapPoint(8.0f, 17.5f, ox, oy, s), MapPoint(13.0f, 17.5f, ox, oy, s), pBrush, strokeWidth * 0.9f, m_pStrokeStyle.Get());
+}
+
 void LucideIcons::DrawMinimize(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, ID2D1Brush* pBrush, float strokeWidth) const {
     if (!pRT || !pBrush) return;
     const float cx = bounds.left + (bounds.right - bounds.left) / 2.0f;
@@ -139,14 +168,24 @@ void LucideIcons::DrawMaximize(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds
     const float cy = bounds.top + (bounds.bottom - bounds.top) / 2.0f;
 
     if (!isZoomed) {
+        // Single clean square when window is restored
         D2D1_RECT_F rc = D2D1::RectF(cx - 5.0f, cy - 5.0f, cx + 5.0f, cy + 5.0f);
         pRT->DrawRectangle(rc, pBrush, strokeWidth);
     } else {
-        // Overlapping restore rectangles
-        D2D1_RECT_F back = D2D1::RectF(cx - 3.0f, cy - 6.0f, cx + 6.0f, cy + 3.0f);
-        D2D1_RECT_F front = D2D1::RectF(cx - 6.0f, cy - 3.0f, cx + 3.0f, cy + 6.0f);
-        pRT->DrawRectangle(back, pBrush, strokeWidth);
+        // Pixel-perfect restore icon matching Image 3:
+        // Front rectangle (lower-left)
+        D2D1_RECT_F front = D2D1::RectF(cx - 5.0f, cy - 3.0f, cx + 3.0f, cy + 5.0f);
         pRT->DrawRectangle(front, pBrush, strokeWidth);
+
+        // Back square (upper-right) - drawn behind front rectangle without intersecting lines
+        // 1. Top horizontal segment
+        pRT->DrawLine(D2D1::Point2F(cx - 2.5f, cy - 5.5f), D2D1::Point2F(cx + 5.5f, cy - 5.5f), pBrush, strokeWidth);
+        // 2. Right vertical segment
+        pRT->DrawLine(D2D1::Point2F(cx + 5.5f, cy - 5.5f), D2D1::Point2F(cx + 5.5f, cy + 2.5f), pBrush, strokeWidth);
+        // 3. Left vertical stub (stops precisely at top edge of the front rectangle)
+        pRT->DrawLine(D2D1::Point2F(cx - 2.5f, cy - 5.5f), D2D1::Point2F(cx - 2.5f, cy - 3.0f), pBrush, strokeWidth);
+        // 4. Bottom horizontal stub (stops precisely at right edge of the front rectangle)
+        pRT->DrawLine(D2D1::Point2F(cx + 3.0f, cy + 2.5f), D2D1::Point2F(cx + 5.5f, cy + 2.5f), pBrush, strokeWidth);
     }
 }
 

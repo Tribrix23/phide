@@ -1,10 +1,10 @@
 /**
  * @file ActivityRail.hpp
- * @brief Dark IDE collapsed left sidebar containing Lucide Home, Search, and GitBranch icons with customized tooltips.
+ * @brief Dark IDE collapsed left sidebar containing Lucide Files, Search, and GitBranch icons with customized tooltips.
  * 
  * Implements GPU-accelerated Lucide vector rendering for:
- * 1. Lucide Home icon in a rounded square badge
- * 2. Lucide Search icon directly under Home
+ * 1. Lucide File icon for Project Explorer
+ * 2. Lucide Search icon directly under File
  * 3. Lucide Git Branch icon directly under Search
  * 
  * Features customized floating tooltip cards rendered on hover with rich styling.
@@ -29,7 +29,7 @@ namespace phide::ui {
  */
 enum class RailTabId {
     None = -1,
-    Home = 0,       ///< Home perspective / welcome dashboard
+    Files = 0,      ///< Files / Project Explorer perspective
     Search = 1,     ///< Search & Replace across workspace
     Git = 2         ///< Source Control (Git)
 };

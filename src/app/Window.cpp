@@ -308,22 +308,17 @@ void Window::HandleLButtonDown(POINT clientPt) {
         return;
     }
 
-    // 3. Activity Rail Clicks (Home -> Search -> Git)
+    // 3. Activity Rail Clicks (Files -> Search -> Git)
     auto railHit = m_rail.HitTest(clientPt);
     if (railHit != ui::RailTabId::None) {
         int clickedTab = static_cast<int>(railHit);
-        if (railHit == ui::RailTabId::Home) {
-            // Home / Dashboard perspective
+        if (m_config.isDrawerOpen && m_config.activeRailTab == clickedTab) {
+            // Clicking active tab collapses drawer back into rail
             m_config.isDrawerOpen = false;
         } else {
-            if (m_config.isDrawerOpen && m_config.activeRailTab == clickedTab) {
-                // Clicking active tab collapses drawer back into rail
-                m_config.isDrawerOpen = false;
-            } else {
-                // Expand drawer and show perspective
-                m_config.activeRailTab = clickedTab;
-                m_config.isDrawerOpen = true;
-            }
+            // Expand drawer and switch to clicked perspective (Files/Explorer, Search, Git)
+            m_config.activeRailTab = clickedTab;
+            m_config.isDrawerOpen = true;
         }
         InvalidateRect(m_hwnd, nullptr, FALSE);
         return;
@@ -361,6 +356,32 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
         case WM_NCHITTEST: {
             POINT pt = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
             return HandleNCHitTest(pt);
+        }
+
+        case WM_SETCURSOR: {
+            if (LOWORD(lParam) == HTCLIENT) {
+                POINT pt;
+                GetCursorPos(&pt);
+                ScreenToClient(m_hwnd, &pt);
+
+                // Set pointer (hand) cursor when hovering over sidebar icons
+                if (m_rail.HitTest(pt) != ui::RailTabId::None) {
+                    SetCursor(LoadCursor(nullptr, IDC_HAND));
+                    return TRUE;
+                }
+
+                // Also provide pointer hand cursor over caption buttons, menus, and drawer close button
+                if (m_header.HitTestCaptionButton(pt) != ui::CaptionButtonType::None ||
+                    m_header.HitTestMenu(pt) != ui::HeaderMenuId::None ||
+                    (m_config.isDrawerOpen && m_drawer.HitTestCloseButton(pt))) {
+                    SetCursor(LoadCursor(nullptr, IDC_HAND));
+                    return TRUE;
+                }
+
+                SetCursor(LoadCursor(nullptr, IDC_ARROW));
+                return TRUE;
+            }
+            return DefWindowProc(m_hwnd, uMsg, wParam, lParam);
         }
 
         case WM_MOUSEMOVE: {
