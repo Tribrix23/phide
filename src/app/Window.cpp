@@ -302,10 +302,14 @@ void Window::HandleLButtonDown(POINT clientPt) {
         }
     }
 
-    // 2. Header Menu Clicks
+    // 2. Header Menu / Icon Button Clicks
     auto menuHit = m_header.HitTestMenu(clientPt);
     if (menuHit != ui::HeaderMenuId::None) {
-        // Menu item clicked (File, Edit, View, Project, Help)
+        if (menuHit == ui::HeaderMenuId::Sidebar) {
+            // Toggle sidebar drawer panel
+            m_config.isDrawerOpen = !m_config.isDrawerOpen;
+            InvalidateRect(m_hwnd, nullptr, FALSE);
+        }
         return;
     }
 

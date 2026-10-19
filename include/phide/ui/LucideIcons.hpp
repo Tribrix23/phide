@@ -70,6 +70,41 @@ public:
     void DrawExtensions(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, ID2D1Brush* pBrush, float strokeWidth = 1.6f) const;
 
     /**
+     * @brief Draws the Lucide Sidebar toggle icon (panel-left).
+     */
+    void DrawSidebar(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, ID2D1Brush* pBrush, float strokeWidth = 1.4f) const;
+
+    /**
+     * @brief Draws the Lucide Edit icon (pen / pencil).
+     */
+    void DrawEdit(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, ID2D1Brush* pBrush, float strokeWidth = 1.4f) const;
+
+    /**
+     * @brief Draws the Lucide View icon (layout / eye).
+     */
+    void DrawView(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, ID2D1Brush* pBrush, float strokeWidth = 1.4f) const;
+
+    /**
+     * @brief Draws the Lucide Code icon (< / >).
+     */
+    void DrawCode(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, ID2D1Brush* pBrush, float strokeWidth = 1.4f) const;
+
+    /**
+     * @brief Draws the Lucide Tools icon (sliders-horizontal).
+     */
+    void DrawTools(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, ID2D1Brush* pBrush, float strokeWidth = 1.4f) const;
+
+    /**
+     * @brief Draws the Lucide Window icon (app-window).
+     */
+    void DrawWindow(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, ID2D1Brush* pBrush, float strokeWidth = 1.4f) const;
+
+    /**
+     * @brief Draws the Lucide Help icon (circle-help).
+     */
+    void DrawHelp(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, ID2D1Brush* pBrush, float strokeWidth = 1.4f) const;
+
+    /**
      * @brief Draws the vector Minimize caption icon.
      */
     void DrawMinimize(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, ID2D1Brush* pBrush, float strokeWidth = 1.2f) const;

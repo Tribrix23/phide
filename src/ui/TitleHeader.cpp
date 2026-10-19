@@ -12,7 +12,16 @@ static bool PtInRectF(POINT pt, const D2D1_RECT_F& rc) {
 }
 
 TitleHeader::TitleHeader() {
-    // Menu bar items removed as requested (clean modern glass header)
+    // Header icon buttons with custom tooltips (Sidebar, File, Edit, View, Debug, Code, Tools, Window, Help)
+    m_menus.push_back({ HeaderMenuId::Sidebar, L"Toggle Sidebar (Ctrl+B)", {} });
+    m_menus.push_back({ HeaderMenuId::File,    L"File",                    {} });
+    m_menus.push_back({ HeaderMenuId::Edit,    L"Edit",                    {} });
+    m_menus.push_back({ HeaderMenuId::View,    L"View",                    {} });
+    m_menus.push_back({ HeaderMenuId::Debug,   L"Debug",                   {} });
+    m_menus.push_back({ HeaderMenuId::Code,    L"Code",                    {} });
+    m_menus.push_back({ HeaderMenuId::Tools,   L"Tools",                   {} });
+    m_menus.push_back({ HeaderMenuId::Window,  L"Window",                  {} });
+    m_menus.push_back({ HeaderMenuId::Help,    L"Help",                    {} });
 }
 
 void TitleHeader::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
@@ -69,7 +78,88 @@ void TitleHeader::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCon
         0.8f
     );
 
-    // 2. Left Menu Bar (File, Edit, View, Project, Help) removed as requested (clean minimal glass header)
+    // 2. Render Header Icon Bar (Sidebar, File, Edit, View, Debug, Code, Tools, Window, Help)
+    const float btnSize = config.ScaleF(28.0f);
+    const float btnY    = (h - btnSize) / 2.0f;
+    float curX          = railW + config.ScaleF(10.0f);
+    const MenuItem* hoveredItemPtr = nullptr;
+
+    for (auto& item : m_menus) {
+        item.bounds = D2D1::RectF(curX, btnY, curX + btnSize, btnY + btnSize);
+
+        bool isHovered = (m_hoveredMenu == item.id);
+        if (isHovered) {
+            hoveredItemPtr = &item;
+            D2D1_ROUNDED_RECT rrc = D2D1::RoundedRect(item.bounds, 4.0f, 4.0f);
+            pRT->FillRoundedRectangle(rrc, theme.brushItemHover.Get());
+        }
+
+        ID2D1Brush* brush = isHovered ? theme.brushTextWhite.Get() : theme.brushTextSecondary.Get();
+
+        switch (item.id) {
+            case HeaderMenuId::Sidebar:
+                m_icons.DrawSidebar(pRT, item.bounds, brush, 1.4f);
+                break;
+            case HeaderMenuId::File:
+                m_icons.DrawFile(pRT, item.bounds, brush, 1.4f);
+                break;
+            case HeaderMenuId::Edit:
+                m_icons.DrawEdit(pRT, item.bounds, brush, 1.4f);
+                break;
+            case HeaderMenuId::View:
+                m_icons.DrawView(pRT, item.bounds, brush, 1.4f);
+                break;
+            case HeaderMenuId::Debug:
+                m_icons.DrawDebug(pRT, item.bounds, brush, 1.4f);
+                break;
+            case HeaderMenuId::Code:
+                m_icons.DrawCode(pRT, item.bounds, brush, 1.4f);
+                break;
+            case HeaderMenuId::Tools:
+                m_icons.DrawTools(pRT, item.bounds, brush, 1.4f);
+                break;
+            case HeaderMenuId::Window:
+                m_icons.DrawWindow(pRT, item.bounds, brush, 1.4f);
+                break;
+            case HeaderMenuId::Help:
+                m_icons.DrawHelp(pRT, item.bounds, brush, 1.4f);
+                break;
+            default:
+                break;
+        }
+
+        curX += btnSize + config.ScaleF(4.0f);
+    }
+
+    // Floating Tooltip for Hovered Header Button
+    if (hoveredItemPtr) {
+        const float tipH    = config.ScaleF(24.0f);
+        const float tipPadX = config.ScaleF(10.0f);
+
+        size_t textLen = wcslen(hoveredItemPtr->label);
+        float textW    = config.ScaleF(static_cast<float>(textLen * 7.0f + 14.0f));
+        float tipW     = textW + tipPadX * 2.0f;
+
+        float tipX     = hoveredItemPtr->bounds.left + (btnSize - tipW) / 2.0f;
+        float tipY     = hoveredItemPtr->bounds.bottom + config.ScaleF(6.0f);
+
+        if (tipX < 10.0f) tipX = 10.0f;
+        if (tipX + tipW > clientWidth - 10.0f) tipX = clientWidth - tipW - 10.0f;
+
+        D2D1_RECT_F rcTip = D2D1::RectF(tipX, tipY, tipX + tipW, tipY + tipH);
+        D2D1_ROUNDED_RECT rrcTip = D2D1::RoundedRect(rcTip, 4.0f, 4.0f);
+
+        pRT->FillRoundedRectangle(rrcTip, theme.brushTooltipBg.Get());
+        pRT->DrawRoundedRectangle(rrcTip, theme.brushTooltipBorder.Get(), 1.0f);
+
+        pRT->DrawText(
+            hoveredItemPtr->label,
+            static_cast<UINT32>(textLen),
+            theme.fontHint.Get(),
+            rcTip,
+            theme.brushTextPrimary.Get()
+        );
+    }
 
     // 3. Render Vector Window Caption Controls (Minimize, Maximize, Close) in Top-Right
     const float btnW = config.ScaleF(static_cast<float>(config.captionBtnWidth)); // 46px

@@ -9,6 +9,36 @@
 
 namespace phide::ui {
 
+static void DrawKeycap(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
+                       const wchar_t* text, float& curRightX, float centerY, float capH) {
+    const size_t len = wcslen(text);
+    const float capW = config.ScaleF(static_cast<float>(len * 7.5f + 14.0f));
+    const float x = curRightX - capW;
+    const float y = centerY - capH / 2.0f;
+
+    D2D1_RECT_F rc = D2D1::RectF(x, y, curRightX, y + capH);
+    D2D1_ROUNDED_RECT rrc = D2D1::RoundedRect(rc, 4.0f, 4.0f);
+
+    pRT->FillRoundedRectangle(rrc, theme.brushCaptionHover.Get());
+    pRT->DrawRoundedRectangle(rrc, theme.brushBorderSubtle.Get(), 1.0f);
+
+    pRT->DrawText(text, static_cast<UINT32>(len), theme.fontMenu.Get(), rc, theme.brushTextPrimary.Get());
+
+    curRightX = x - config.ScaleF(4.0f);
+}
+
+static void DrawPlus(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
+                     float& curRightX, float centerY, float capH) {
+    const float plusW = config.ScaleF(12.0f);
+    const float x = curRightX - plusW;
+    const float y = centerY - capH / 2.0f;
+
+    D2D1_RECT_F rc = D2D1::RectF(x, y, curRightX, y + capH);
+    pRT->DrawText(L"+", 1, theme.fontMenu.Get(), rc, theme.brushTextMuted.Get());
+
+    curRightX = x - config.ScaleF(4.0f);
+}
+
 EditorCanvas::EditorCanvas() = default;
 
 void EditorCanvas::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
@@ -86,10 +116,8 @@ void EditorCanvas::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
         pRT->FillRectangle(rcFallback, theme.brushCanvasBg.Get());
     }
 
-    // 2. Render Centered Metallic White Brand Logo & Quick Keybindings (word "phide" removed as requested)
+    // 2. Render Centered Metallic White Brand Logo & Modern Keybinding Card (Appealing developer aesthetic, no emojis)
     const float centerY = headerH + (clientHeight - headerH) / 2.0f;
-    const float hintW   = config.ScaleF(400.0f);
-    const float hintX   = canvasLeft + (canvasWidth - hintW) / 2.0f;
 
     // Initialize metallic white watermark bitmap if needed
     if (!m_pWatermarkBitmap) {
@@ -101,19 +129,61 @@ void EditorCanvas::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
     }
 
     // Render Metallic White / Platinum Inverted Logo Watermark in center of canvas
-    const float logoSize = config.ScaleF(88.0f);
+    const float logoSize = config.ScaleF(84.0f);
     const float logoX = canvasLeft + (canvasWidth - logoSize) / 2.0f;
-    const float logoY = centerY - logoSize / 2.0f - config.ScaleF(28.0f);
+    const float logoY = centerY - logoSize / 2.0f - config.ScaleF(40.0f);
     D2D1_RECT_F rcLogo = D2D1::RectF(logoX, logoY, logoX + logoSize, logoY + logoSize);
 
     if (m_pWatermarkBitmap) {
         pRT->DrawBitmap(m_pWatermarkBitmap.Get(), rcLogo);
     }
 
-    // Shortcut Hints centered below the logo
-    const wchar_t* hints = L"Show Explorer \u2014 Click sidebar icon\nOpen Workspace \u2014 Ctrl+O\nCommand Palette \u2014 Ctrl+Shift+P";
-    D2D1_RECT_F rcHints = D2D1::RectF(hintX, logoY + logoSize + config.ScaleF(20.0f), hintX + hintW, logoY + logoSize + config.ScaleF(100.0f));
-    pRT->DrawText(hints, static_cast<UINT32>(wcslen(hints)), theme.fontHint.Get(), rcHints, theme.brushTextMuted.Get());
+    // 3. Render Visually Appealing Keybinding Cheat-sheet Card (No emojis, sleek tactile keycaps)
+    const float cardW = config.ScaleF(360.0f);
+    const float cardH = config.ScaleF(118.0f);
+    const float cardX = canvasLeft + (canvasWidth - cardW) / 2.0f;
+    const float cardY = logoY + logoSize + config.ScaleF(24.0f);
+
+    D2D1_RECT_F rcCard = D2D1::RectF(cardX, cardY, cardX + cardW, cardY + cardH);
+    D2D1_ROUNDED_RECT rrcCard = D2D1::RoundedRect(rcCard, 8.0f, 8.0f);
+
+    // Subtle dark glass card surface
+    pRT->FillRoundedRectangle(rrcCard, theme.brushDrawerBg.Get());
+    pRT->DrawRoundedRectangle(rrcCard, theme.brushBorderSubtle.Get(), 1.0f);
+
+    // Card Row Metrics
+    const float padX = config.ScaleF(16.0f);
+    const float rowH = cardH / 3.0f;
+    const float capH = config.ScaleF(20.0f);
+
+    // Row 1: Show Explorer  -->  Ctrl + B
+    float row1CenterY = cardY + rowH * 0.5f;
+    D2D1_RECT_F rcLabel1 = D2D1::RectF(cardX + padX, row1CenterY - config.ScaleF(10.0f), cardX + cardW / 2.0f, row1CenterY + config.ScaleF(10.0f));
+    pRT->DrawText(L"Show Explorer", 13, theme.fontHint.Get(), rcLabel1, theme.brushTextSecondary.Get());
+    float rx1 = cardX + cardW - padX;
+    DrawKeycap(pRT, theme, config, L"B", rx1, row1CenterY, capH);
+    DrawPlus(pRT, theme, config, rx1, row1CenterY, capH);
+    DrawKeycap(pRT, theme, config, L"Ctrl", rx1, row1CenterY, capH);
+
+    // Row 2: Open Workspace -->  Ctrl + O
+    float row2CenterY = cardY + rowH * 1.5f;
+    D2D1_RECT_F rcLabel2 = D2D1::RectF(cardX + padX, row2CenterY - config.ScaleF(10.0f), cardX + cardW / 2.0f, row2CenterY + config.ScaleF(10.0f));
+    pRT->DrawText(L"Open Workspace", 14, theme.fontHint.Get(), rcLabel2, theme.brushTextSecondary.Get());
+    float rx2 = cardX + cardW - padX;
+    DrawKeycap(pRT, theme, config, L"O", rx2, row2CenterY, capH);
+    DrawPlus(pRT, theme, config, rx2, row2CenterY, capH);
+    DrawKeycap(pRT, theme, config, L"Ctrl", rx2, row2CenterY, capH);
+
+    // Row 3: Command Palette --> Ctrl + Shift + P
+    float row3CenterY = cardY + rowH * 2.5f;
+    D2D1_RECT_F rcLabel3 = D2D1::RectF(cardX + padX, row3CenterY - config.ScaleF(10.0f), cardX + cardW / 2.0f, row3CenterY + config.ScaleF(10.0f));
+    pRT->DrawText(L"Command Palette", 15, theme.fontHint.Get(), rcLabel3, theme.brushTextSecondary.Get());
+    float rx3 = cardX + cardW - padX;
+    DrawKeycap(pRT, theme, config, L"P", rx3, row3CenterY, capH);
+    DrawPlus(pRT, theme, config, rx3, row3CenterY, capH);
+    DrawKeycap(pRT, theme, config, L"Shift", rx3, row3CenterY, capH);
+    DrawPlus(pRT, theme, config, rx3, row3CenterY, capH);
+    DrawKeycap(pRT, theme, config, L"Ctrl", rx3, row3CenterY, capH);
 }
 
 } // namespace phide::ui

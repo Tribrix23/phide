@@ -25,11 +25,15 @@ namespace phide::ui {
  */
 enum class HeaderMenuId {
     None = -1,
-    File = 0,
-    Edit = 1,
-    View = 2,
-    Project = 3,
-    Help = 4
+    Sidebar = 0,
+    File = 1,
+    Edit = 2,
+    View = 3,
+    Debug = 4,
+    Code = 5,
+    Tools = 6,
+    Window = 7,
+    Help = 8
 };
 
 /**
