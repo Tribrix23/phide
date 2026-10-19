@@ -155,6 +155,95 @@ void LucideIcons::DrawFile(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, ID
     pRT->DrawLine(MapPoint(8.0f, 17.5f, ox, oy, s), MapPoint(13.0f, 17.5f, ox, oy, s), pBrush, strokeWidth * 0.9f, m_pStrokeStyle.Get());
 }
 
+void LucideIcons::DrawFiles(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, ID2D1Brush* pBrush, float strokeWidth) const {
+    if (!pRT || !pBrush) return;
+
+    const float bw = bounds.right - bounds.left;
+    const float bh = bounds.bottom - bounds.top;
+    const float iconSize = (std::min)(bw, bh) * 0.54f;
+    const float s = iconSize / 24.0f;
+    const float ox = bounds.left + (bw - 24.0f * s) / 2.0f;
+    const float oy = bounds.top + (bh - 24.0f * s) / 2.0f;
+
+    // 1. Front sheet (upper-right foreground document with folded top-right corner, matching Image 2)
+    // Top horizontal edge
+    pRT->DrawLine(MapPoint(8.0f, 3.0f, ox, oy, s), MapPoint(15.0f, 3.0f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+    // Slanted dog-ear fold edge
+    pRT->DrawLine(MapPoint(15.0f, 3.0f, ox, oy, s), MapPoint(19.5f, 7.5f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+    // Right vertical edge
+    pRT->DrawLine(MapPoint(19.5f, 7.5f, ox, oy, s), MapPoint(19.5f, 18.5f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+    // Bottom horizontal edge
+    pRT->DrawLine(MapPoint(19.5f, 18.5f, ox, oy, s), MapPoint(8.0f, 18.5f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+    // Left vertical edge
+    pRT->DrawLine(MapPoint(8.0f, 18.5f, ox, oy, s), MapPoint(8.0f, 3.0f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+
+    // Front dog-ear fold interior lines: (15, 3) -> (15, 7.5) -> (19.5, 7.5)
+    pRT->DrawLine(MapPoint(15.0f, 3.0f, ox, oy, s), MapPoint(15.0f, 7.5f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+    pRT->DrawLine(MapPoint(15.0f, 7.5f, ox, oy, s), MapPoint(19.5f, 7.5f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+
+    // 2. Back sheet (background document offset down & left, cleanly visible without crossing inside front sheet)
+    // Top horizontal segment (stops at front sheet's left edge at x=8.0)
+    pRT->DrawLine(MapPoint(4.5f, 6.5f, ox, oy, s), MapPoint(8.0f, 6.5f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+    // Left vertical segment
+    pRT->DrawLine(MapPoint(4.5f, 6.5f, ox, oy, s), MapPoint(4.5f, 21.0f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+    // Bottom horizontal segment
+    pRT->DrawLine(MapPoint(4.5f, 21.0f, ox, oy, s), MapPoint(16.0f, 21.0f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+    // Right vertical stub (stops at front sheet's bottom edge at y=18.5)
+    pRT->DrawLine(MapPoint(16.0f, 21.0f, ox, oy, s), MapPoint(16.0f, 18.5f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+}
+
+void LucideIcons::DrawDebug(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, ID2D1Brush* pBrush, float strokeWidth) const {
+    if (!pRT || !pBrush) return;
+
+    const float bw = bounds.right - bounds.left;
+    const float bh = bounds.bottom - bounds.top;
+    const float iconSize = (std::min)(bw, bh) * 0.52f;
+    const float s = iconSize / 24.0f;
+    const float ox = bounds.left + (bw - 24.0f * s) / 2.0f;
+    const float oy = bounds.top + (bh - 24.0f * s) / 2.0f;
+
+    // 1. Play Triangle (pointing right)
+    pRT->DrawLine(MapPoint(9.0f, 4.5f, ox, oy, s), MapPoint(19.0f, 11.5f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+    pRT->DrawLine(MapPoint(19.0f, 11.5f, ox, oy, s), MapPoint(9.0f, 18.5f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+    pRT->DrawLine(MapPoint(9.0f, 18.5f, ox, oy, s), MapPoint(9.0f, 4.5f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+
+    // 2. Bug Glyph on lower left:
+    D2D1_ELLIPSE bugBody = D2D1::Ellipse(MapPoint(6.5f, 16.5f, ox, oy, s), 2.5f * s, 3.0f * s);
+    pRT->DrawEllipse(bugBody, pBrush, strokeWidth, m_pStrokeStyle.Get());
+    // Bug Legs / Whiskers
+    pRT->DrawLine(MapPoint(4.0f, 15.0f, ox, oy, s), MapPoint(2.5f, 14.0f, ox, oy, s), pBrush, strokeWidth * 0.9f, m_pStrokeStyle.Get());
+    pRT->DrawLine(MapPoint(4.0f, 18.0f, ox, oy, s), MapPoint(2.5f, 19.0f, ox, oy, s), pBrush, strokeWidth * 0.9f, m_pStrokeStyle.Get());
+}
+
+void LucideIcons::DrawExtensions(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, ID2D1Brush* pBrush, float strokeWidth) const {
+    if (!pRT || !pBrush) return;
+
+    const float bw = bounds.right - bounds.left;
+    const float bh = bounds.bottom - bounds.top;
+    const float iconSize = (std::min)(bw, bh) * 0.52f;
+    const float s = iconSize / 24.0f;
+    const float ox = bounds.left + (bw - 24.0f * s) / 2.0f;
+    const float oy = bounds.top + (bh - 24.0f * s) / 2.0f;
+
+    // 1. Top-Left Square (Block 1)
+    D2D1_RECT_F b1 = D2D1::RectF(ox + 4.0f * s, oy + 4.0f * s, ox + 10.5f * s, oy + 10.5f * s);
+    pRT->DrawRectangle(b1, pBrush, strokeWidth, m_pStrokeStyle.Get());
+
+    // 2. Bottom-Left Square (Block 2)
+    D2D1_RECT_F b2 = D2D1::RectF(ox + 4.0f * s, oy + 13.5f * s, ox + 10.5f * s, oy + 20.0f * s);
+    pRT->DrawRectangle(b2, pBrush, strokeWidth, m_pStrokeStyle.Get());
+
+    // 3. Bottom-Right Square (Block 3)
+    D2D1_RECT_F b3 = D2D1::RectF(ox + 13.5f * s, oy + 13.5f * s, ox + 20.0f * s, oy + 20.0f * s);
+    pRT->DrawRectangle(b3, pBrush, strokeWidth, m_pStrokeStyle.Get());
+
+    // 4. Top-Right Rotated Diamond (Block 4 - detached plug-in module matching Image 2)
+    pRT->DrawLine(MapPoint(16.5f, 3.5f, ox, oy, s), MapPoint(20.0f, 7.0f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+    pRT->DrawLine(MapPoint(20.0f, 7.0f, ox, oy, s), MapPoint(16.5f, 10.5f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+    pRT->DrawLine(MapPoint(16.5f, 10.5f, ox, oy, s), MapPoint(13.0f, 7.0f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+    pRT->DrawLine(MapPoint(13.0f, 7.0f, ox, oy, s), MapPoint(16.5f, 3.5f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+}
+
 void LucideIcons::DrawMinimize(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, ID2D1Brush* pBrush, float strokeWidth) const {
     if (!pRT || !pBrush) return;
     const float cx = bounds.left + (bounds.right - bounds.left) / 2.0f;

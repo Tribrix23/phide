@@ -40,9 +40,14 @@ public:
     void DrawHome(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, ID2D1Brush* pBrush, float strokeWidth = 1.8f) const;
 
     /**
-     * @brief Draws the Lucide File icon (document with folded top-right corner) inside the specified bounding box.
+     * @brief Draws the Lucide File icon (single document) inside the specified bounding box.
      */
     void DrawFile(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, ID2D1Brush* pBrush, float strokeWidth = 1.8f) const;
+
+    /**
+     * @brief Draws the Explorer Files icon (two overlapping sheets with dog-ear fold, matching Image 2).
+     */
+    void DrawFiles(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, ID2D1Brush* pBrush, float strokeWidth = 1.6f) const;
 
     /**
      * @brief Draws the Lucide Search (magnifying glass) icon inside the specified bounding box.
@@ -53,6 +58,16 @@ public:
      * @brief Draws the Lucide Git Branch icon inside the specified bounding box.
      */
     void DrawGitBranch(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, ID2D1Brush* pBrush, float strokeWidth = 1.8f) const;
+
+    /**
+     * @brief Draws the Run & Debug icon (play triangle with overlapping bug glyph, matching Image 2).
+     */
+    void DrawDebug(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, ID2D1Brush* pBrush, float strokeWidth = 1.6f) const;
+
+    /**
+     * @brief Draws the Extensions icon (three blocks + one detached rotated diamond, matching Image 2).
+     */
+    void DrawExtensions(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, ID2D1Brush* pBrush, float strokeWidth = 1.6f) const;
 
     /**
      * @brief Draws the vector Minimize caption icon.

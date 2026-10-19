@@ -37,7 +37,7 @@ struct AppConfig {
     // --- Drawer Panel Metrics ---
     int drawerWidth   = 280;    ///< Width of the slide-out drawer panel when expanded.
     bool isDrawerOpen = false;  ///< True if the contextual sidebar drawer is expanded; false if collapsed.
-    int activeRailTab = 3;      ///< Current active rail tab (Default: 3 = File Explorer).
+    int activeRailTab = 0;      ///< Current active rail tab (Default: 0 = Files / Explorer matching Image 2).
 
     // --- Floating Prompt Bar Metrics ---
     int promptBarWidth  = 540;  ///< Width of the bottom floating AI prompt pill.

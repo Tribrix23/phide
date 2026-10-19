@@ -8,14 +8,20 @@
 namespace phide::ui {
 
 ActivityRail::ActivityRail() {
-    // 1. Files / Explorer icon (top)
-    m_items.push_back({ RailTabId::Files,  L"Explorer (Files)",            {} });
+    // 1. Files / Explorer icon (two overlapping sheets, matching Image 2)
+    m_items.push_back({ RailTabId::Files,      L"Explorer",                         {} });
 
     // 2. Search icon (directly under Files)
-    m_items.push_back({ RailTabId::Search, L"Search Workspace (Ctrl+F)",   {} });
+    m_items.push_back({ RailTabId::Search,     L"Search (Ctrl+Shift+F)",            {} });
 
     // 3. Git icon (directly under Search)
-    m_items.push_back({ RailTabId::Git,    L"Source Control (Git)",        {} });
+    m_items.push_back({ RailTabId::Git,        L"Source Control (Ctrl+Shift+G)",    {} });
+
+    // 4. Run & Debug (directly under Git, matching Image 2)
+    m_items.push_back({ RailTabId::Debug,      L"Run and Debug (Ctrl+Shift+D)",     {} });
+
+    // 5. Extensions (directly under Debug, matching Image 2)
+    m_items.push_back({ RailTabId::Extensions, L"Extensions (Ctrl+Shift+X)",        {} });
 }
 
 void ActivityRail::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config, float clientHeight) {
@@ -46,7 +52,7 @@ void ActivityRail::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
         1.0f
     );
 
-    // 2. Render Lucide Vector Icons: Files -> Search -> Git
+    // 2. Render Lucide Vector Icons matching Image 2
     float curY = headerH + config.ScaleF(12.0f);
     const RailItem* hoveredItemPtr = nullptr;
 
@@ -54,71 +60,44 @@ void ActivityRail::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
         item.bounds = D2D1::RectF(startX, curY, startX + btnSize, curY + btnSize);
 
         bool isHovered = (m_hoveredTab == item.id);
-        bool isActive  = (config.isDrawerOpen && config.activeRailTab == static_cast<int>(item.id));
+        bool isActive  = (config.activeRailTab == static_cast<int>(item.id));
 
         if (isHovered) {
             hoveredItemPtr = &item;
         }
 
-        if (item.id == RailTabId::Files) {
-            // Files / Explorer icon directly at top
-            D2D1_ROUNDED_RECT rrc = D2D1::RoundedRect(item.bounds, 6.0f, 6.0f);
+        D2D1_ROUNDED_RECT rrc = D2D1::RoundedRect(item.bounds, 6.0f, 6.0f);
+        ID2D1Brush* iconBrush = theme.brushTextSecondary.Get();
 
-            if (isActive) {
-                pRT->FillRoundedRectangle(rrc, theme.brushItemActive.Get());
-                pRT->DrawLine(
-                    D2D1::Point2F(1.0f, item.bounds.top + 4.0f),
-                    D2D1::Point2F(1.0f, item.bounds.bottom - 4.0f),
-                    theme.brushBrandAccent.Get(),
-                    2.5f
-                );
-                m_lucide.DrawFile(pRT, item.bounds, theme.brushTextWhite.Get(), 1.8f);
-            } else if (isHovered) {
-                pRT->FillRoundedRectangle(rrc, theme.brushItemHover.Get());
-                m_lucide.DrawFile(pRT, item.bounds, theme.brushTextWhite.Get(), 1.8f);
-            } else {
-                m_lucide.DrawFile(pRT, item.bounds, theme.brushTextSecondary.Get(), 1.8f);
-            }
-        } else if (item.id == RailTabId::Search) {
-            // Search icon directly under Files
-            if (isActive) {
-                D2D1_ROUNDED_RECT rrc = D2D1::RoundedRect(item.bounds, 6.0f, 6.0f);
-                pRT->FillRoundedRectangle(rrc, theme.brushItemActive.Get());
+        if (isActive) {
+            // Dark grey rounded badge background (#2A2D2E, matching Image 2)
+            pRT->FillRoundedRectangle(rrc, theme.brushHomeBadgeBg.Get());
+            iconBrush = theme.brushTextWhite.Get();
+        } else if (isHovered) {
+            // Subtle hover background
+            pRT->FillRoundedRectangle(rrc, theme.brushItemHover.Get());
+            iconBrush = theme.brushTextWhite.Get();
+        }
 
-                pRT->DrawLine(
-                    D2D1::Point2F(1.0f, item.bounds.top + 4.0f),
-                    D2D1::Point2F(1.0f, item.bounds.bottom - 4.0f),
-                    theme.brushBrandAccent.Get(),
-                    2.5f
-                );
-                m_lucide.DrawSearch(pRT, item.bounds, theme.brushTextWhite.Get(), 1.8f);
-            } else if (isHovered) {
-                D2D1_ROUNDED_RECT rrc = D2D1::RoundedRect(item.bounds, 6.0f, 6.0f);
-                pRT->FillRoundedRectangle(rrc, theme.brushItemHover.Get());
-                m_lucide.DrawSearch(pRT, item.bounds, theme.brushTextWhite.Get(), 1.8f);
-            } else {
-                m_lucide.DrawSearch(pRT, item.bounds, theme.brushTextSecondary.Get(), 1.8f);
-            }
-        } else if (item.id == RailTabId::Git) {
-            // Git Branch icon directly under Search
-            if (isActive) {
-                D2D1_ROUNDED_RECT rrc = D2D1::RoundedRect(item.bounds, 6.0f, 6.0f);
-                pRT->FillRoundedRectangle(rrc, theme.brushItemActive.Get());
-
-                pRT->DrawLine(
-                    D2D1::Point2F(1.0f, item.bounds.top + 4.0f),
-                    D2D1::Point2F(1.0f, item.bounds.bottom - 4.0f),
-                    theme.brushBrandAccent.Get(),
-                    2.5f
-                );
-                m_lucide.DrawGitBranch(pRT, item.bounds, theme.brushTextWhite.Get(), 1.8f);
-            } else if (isHovered) {
-                D2D1_ROUNDED_RECT rrc = D2D1::RoundedRect(item.bounds, 6.0f, 6.0f);
-                pRT->FillRoundedRectangle(rrc, theme.brushItemHover.Get());
-                m_lucide.DrawGitBranch(pRT, item.bounds, theme.brushTextWhite.Get(), 1.8f);
-            } else {
-                m_lucide.DrawGitBranch(pRT, item.bounds, theme.brushTextSecondary.Get(), 1.8f);
-            }
+        // Render vector icon matching official VS Code / Lucide specifications
+        switch (item.id) {
+            case RailTabId::Files:
+                m_lucide.DrawFiles(pRT, item.bounds, iconBrush, 1.6f);
+                break;
+            case RailTabId::Search:
+                m_lucide.DrawSearch(pRT, item.bounds, iconBrush, 1.6f);
+                break;
+            case RailTabId::Git:
+                m_lucide.DrawGitBranch(pRT, item.bounds, iconBrush, 1.6f);
+                break;
+            case RailTabId::Debug:
+                m_lucide.DrawDebug(pRT, item.bounds, iconBrush, 1.6f);
+                break;
+            case RailTabId::Extensions:
+                m_lucide.DrawExtensions(pRT, item.bounds, iconBrush, 1.6f);
+                break;
+            default:
+                break;
         }
 
         curY += btnSize + spacing;

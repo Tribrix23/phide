@@ -308,18 +308,14 @@ void Window::HandleLButtonDown(POINT clientPt) {
         return;
     }
 
-    // 3. Activity Rail Clicks (Files -> Search -> Git)
+    // 3. Activity Rail Clicks (Files, Search, Git, Debug, Extensions)
     auto railHit = m_rail.HitTest(clientPt);
     if (railHit != ui::RailTabId::None) {
         int clickedTab = static_cast<int>(railHit);
-        if (m_config.isDrawerOpen && m_config.activeRailTab == clickedTab) {
-            // Clicking active tab collapses drawer back into rail
-            m_config.isDrawerOpen = false;
-        } else {
-            // Expand drawer and switch to clicked perspective (Files/Explorer, Search, Git)
-            m_config.activeRailTab = clickedTab;
-            m_config.isDrawerOpen = true;
-        }
+        // Switch the active rail tab highlight badge
+        m_config.activeRailTab = clickedTab;
+        // Do NOT open the sidebar drawer when clicking (remains cleanly collapsed as requested)
+        m_config.isDrawerOpen = false;
         InvalidateRect(m_hwnd, nullptr, FALSE);
         return;
     }
