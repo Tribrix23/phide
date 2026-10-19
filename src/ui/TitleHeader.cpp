@@ -1,11 +1,15 @@
 /**
  * @file TitleHeader.cpp
- * @brief Implementation of the Dark IDE frameless header.
+ * @brief Implementation of the Dark IDE frameless header with custom caption buttons.
  */
 
 #include "phide/ui/TitleHeader.hpp"
 
 namespace phide::ui {
+
+static bool PtInRectF(POINT pt, const D2D1_RECT_F& rc) {
+    return (pt.x >= rc.left && pt.x < rc.right && pt.y >= rc.top && pt.y < rc.bottom);
+}
 
 TitleHeader::TitleHeader() {
     m_menus.push_back({ HeaderMenuId::File,    L"File",    {} });
@@ -15,22 +19,18 @@ TitleHeader::TitleHeader() {
     m_menus.push_back({ HeaderMenuId::Help,    L"Help",    {} });
 }
 
-void TitleHeader::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config, float clientWidth) {
+void TitleHeader::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
+                         float clientWidth, bool isZoomed) {
     if (!pRT) return;
 
     const float h = config.ScaleF(static_cast<float>(config.headerHeight));
 
-    // 1. Draw Header Background
+    // 1. Draw Header Background (#181818)
     D2D1_RECT_F rcHeader = D2D1::RectF(0.0f, 0.0f, clientWidth, h);
     pRT->FillRectangle(rcHeader, theme.brushHeaderBg.Get());
 
-    // Bottom subtle border divider
-    pRT->DrawLine(
-        D2D1::Point2F(0.0f, h - 0.5f),
-        D2D1::Point2F(clientWidth, h - 0.5f),
-        theme.brushBorderSubtle.Get(),
-        1.0f
-    );
+    // NOTE: The horizontal dividing line under the header has been REMOVED as requested (marked with X).
+    // The header now blends seamlessly into the workspace.
 
     // 2. Render Left Menu Bar (File, Edit, View, Project, Help)
     float curX = config.ScaleF(12.0f);
@@ -75,46 +75,82 @@ void TitleHeader::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCon
         theme.brushTextSecondary.Get()
     );
 
-    // Note: The rightmost ~138px is reserved exclusively for native Windows 11 DWM caption buttons.
-    // Custom duplicate buttons are completely omitted to prevent the overlapping button glitch.
+    // 4. Render Custom Window Caption Buttons (Minimize, Maximize, Close) in Top-Right
+    const float btnW = config.ScaleF(static_cast<float>(config.captionBtnWidth)); // 46px
+    float rightEdge = clientWidth;
+
+    // --- Close Button (✕) ---
+    m_rcClose = D2D1::RectF(rightEdge - btnW, 0.0f, rightEdge, h);
+    if (m_hoveredCaption == CaptionButtonType::Close) {
+        // Red background when hovered as requested!
+        pRT->FillRectangle(m_rcClose, theme.brushCloseHoverBg.Get());
+        pRT->DrawText(L"\u2715", 1, theme.fontCaption.Get(), m_rcClose, theme.brushTextWhite.Get());
+    } else {
+        pRT->DrawText(L"\u2715", 1, theme.fontCaption.Get(), m_rcClose, theme.brushTextSecondary.Get());
+    }
+    rightEdge -= btnW;
+
+    // --- Maximize / Restore Button (□) ---
+    m_rcMaximize = D2D1::RectF(rightEdge - btnW, 0.0f, rightEdge, h);
+    if (m_hoveredCaption == CaptionButtonType::Maximize) {
+        pRT->FillRectangle(m_rcMaximize, theme.brushCaptionHover.Get());
+        const wchar_t* maxGlyph = isZoomed ? L"\u29C9" : L"\u25A2";
+        pRT->DrawText(maxGlyph, 1, theme.fontCaption.Get(), m_rcMaximize, theme.brushTextWhite.Get());
+    } else {
+        const wchar_t* maxGlyph = isZoomed ? L"\u29C9" : L"\u25A2";
+        pRT->DrawText(maxGlyph, 1, theme.fontCaption.Get(), m_rcMaximize, theme.brushTextSecondary.Get());
+    }
+    rightEdge -= btnW;
+
+    // --- Minimize Button (—) ---
+    m_rcMinimize = D2D1::RectF(rightEdge - btnW, 0.0f, rightEdge, h);
+    if (m_hoveredCaption == CaptionButtonType::Minimize) {
+        pRT->FillRectangle(m_rcMinimize, theme.brushCaptionHover.Get());
+        pRT->DrawText(L"\u2014", 1, theme.fontCaption.Get(), m_rcMinimize, theme.brushTextWhite.Get());
+    } else {
+        pRT->DrawText(L"\u2014", 1, theme.fontCaption.Get(), m_rcMinimize, theme.brushTextSecondary.Get());
+    }
 }
 
-HeaderMenuId TitleHeader::HitTest(POINT pt) const {
+HeaderMenuId TitleHeader::HitTestMenu(POINT pt) const {
     for (const auto& item : m_menus) {
-        if (pt.x >= item.bounds.left && pt.x < item.bounds.right &&
-            pt.y >= item.bounds.top && pt.y < item.bounds.bottom) {
+        if (PtInRectF(pt, item.bounds)) {
             return item.id;
         }
     }
     return HeaderMenuId::None;
 }
 
-LRESULT TitleHeader::HitTestNCHitTest(POINT pt, const app::AppConfig& config, float clientWidth) {
+CaptionButtonType TitleHeader::HitTestCaptionButton(POINT pt) const {
+    if (PtInRectF(pt, m_rcClose)) return CaptionButtonType::Close;
+    if (PtInRectF(pt, m_rcMaximize)) return CaptionButtonType::Maximize;
+    if (PtInRectF(pt, m_rcMinimize)) return CaptionButtonType::Minimize;
+    return CaptionButtonType::None;
+}
+
+LRESULT TitleHeader::HitTestNCHitTest(POINT pt, const app::AppConfig& config) {
     const float h = config.ScaleF(static_cast<float>(config.headerHeight));
     if (pt.y >= h) return HTCLIENT;
 
-    // Check if cursor is over the native Windows 11 caption button area (top right ~138px)
-    const float captionAreaW = config.ScaleF(138.0f);
-    if (static_cast<float>(pt.x) >= clientWidth - captionAreaW) {
-        // Return -1 to signal WindowProc to delegate directly to DefWindowProc / DWM!
-        return -1;
-    }
+    // If mouse is over any interactive element (menus or caption buttons), return HTCLIENT
+    if (HitTestMenu(pt) != HeaderMenuId::None) return HTCLIENT;
+    if (HitTestCaptionButton(pt) != CaptionButtonType::None) return HTCLIENT;
 
-    // If over any clickable menu item, return HTCLIENT so clicks are dispatched to our app
-    if (HitTest(pt) != HeaderMenuId::None) {
-        return HTCLIENT;
-    }
-
-    // The remaining empty title bar space allows dragging the window
+    // The remaining empty header area allows dragging the window
     return HTCAPTION;
 }
 
-bool TitleHeader::SetHoveredMenu(HeaderMenuId hoveredId) {
-    if (m_hoveredMenu != hoveredId) {
-        m_hoveredMenu = hoveredId;
-        return true;
+bool TitleHeader::UpdateHoverState(HeaderMenuId hoveredMenu, CaptionButtonType hoveredCaption) {
+    bool changed = false;
+    if (m_hoveredMenu != hoveredMenu) {
+        m_hoveredMenu = hoveredMenu;
+        changed = true;
     }
-    return false;
+    if (m_hoveredCaption != hoveredCaption) {
+        m_hoveredCaption = hoveredCaption;
+        changed = true;
+    }
+    return changed;
 }
 
 } // namespace phide::ui

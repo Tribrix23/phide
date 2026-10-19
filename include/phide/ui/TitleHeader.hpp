@@ -1,9 +1,9 @@
 /**
  * @file TitleHeader.hpp
- * @brief Clean Dark IDE frameless header containing menu bar and project title.
+ * @brief Dark IDE frameless header containing menu bar, title, and custom caption buttons (min, max, close).
  * 
- * Removes browser-style navigation and web action buttons as requested.
- * Integrates natively with Windows 11 DWM dark caption buttons without duplication.
+ * Features custom Direct2D window controls in the top-right corner with a red hover
+ * background on the Close button, seamless title dragging, and no horizontal divider line.
  */
 
 #pragma once
@@ -32,6 +32,17 @@ enum class HeaderMenuId {
 };
 
 /**
+ * @enum CaptionButtonType
+ * @brief Identifies top-right window control buttons.
+ */
+enum class CaptionButtonType {
+    None,
+    Minimize,   ///< Minimize window to taskbar
+    Maximize,   ///< Maximize / Restore window
+    Close       ///< Close / Exit application
+};
+
+/**
  * @struct MenuItem
  * @brief Visual descriptor for a top menu item.
  */
@@ -43,7 +54,7 @@ struct MenuItem {
 
 /**
  * @class TitleHeader
- * @brief Renders the dark IDE title bar and routes menu clicks.
+ * @brief Renders the dark IDE title bar, menus, and top-right caption controls.
  */
 class TitleHeader {
 public:
@@ -51,42 +62,59 @@ public:
     ~TitleHeader() = default;
 
     /**
-     * @brief Paints the header bar background, menu bar, and centered title.
+     * @brief Paints the header background, menus, centered title, and caption controls.
      * @param pRT Active Direct2D render target.
      * @param theme Visual theme containing dark brushes and text formats.
      * @param config Application configuration and DPI metrics.
      * @param clientWidth Width of the client window in physical pixels.
+     * @param isZoomed True if window is currently maximized.
      */
-    void Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config, float clientWidth);
+    void Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
+                float clientWidth, bool isZoomed);
 
     /**
-     * @brief Determines which menu item is located at the given coordinates.
-     * @param pt Mouse cursor position in client coordinates.
-     * @return HeaderMenuId under the cursor, or HeaderMenuId::None.
+     * @brief Tests if mouse is over a menu item.
+     * @param pt Mouse point in client coordinates.
+     * @return HeaderMenuId or HeaderMenuId::None.
      */
-    HeaderMenuId HitTest(POINT pt) const;
+    HeaderMenuId HitTestMenu(POINT pt) const;
 
     /**
-     * @brief Determines whether the cursor is in a draggable title bar zone or over menus.
-     * @param pt Mouse cursor position in client coordinates.
+     * @brief Tests if mouse is over a caption button (min, max, close).
+     * @param pt Mouse point in client coordinates.
+     * @return CaptionButtonType under the cursor.
+     */
+    CaptionButtonType HitTestCaptionButton(POINT pt) const;
+
+    /**
+     * @brief Determines whether the cursor is in a draggable title bar zone or over interactive buttons.
+     * @param pt Mouse point in client coordinates.
      * @param config Application configuration.
-     * @param clientWidth Width of the client window.
-     * @return LRESULT HTCAPTION, HTCLIENT, or -1 for native caption button pass-through.
+     * @return LRESULT HTCAPTION if draggable, HTCLIENT if over a button.
      */
-    LRESULT HitTestNCHitTest(POINT pt, const app::AppConfig& config, float clientWidth);
+    LRESULT HitTestNCHitTest(POINT pt, const app::AppConfig& config);
 
     /**
-     * @brief Updates hover state when the mouse cursor moves across menu items.
-     * @param hoveredId Currently hovered menu.
-     * @return True if state changed and a repaint is required.
+     * @brief Updates hover state for menus and caption buttons.
+     * @param hoveredMenu Currently hovered menu.
+     * @param hoveredCaption Currently hovered caption button.
+     * @return True if state changed and repaint is needed.
      */
-    bool SetHoveredMenu(HeaderMenuId hoveredId);
+    bool UpdateHoverState(HeaderMenuId hoveredMenu, CaptionButtonType hoveredCaption);
 
     [[nodiscard]] HeaderMenuId GetHoveredMenu() const noexcept { return m_hoveredMenu; }
+    [[nodiscard]] CaptionButtonType GetHoveredCaption() const noexcept { return m_hoveredCaption; }
 
 private:
     HeaderMenuId m_hoveredMenu = HeaderMenuId::None;
+    CaptionButtonType m_hoveredCaption = CaptionButtonType::None;
+
     std::vector<MenuItem> m_menus;
+
+    // Bounding rectangles for caption buttons
+    D2D1_RECT_F m_rcMinimize{};
+    D2D1_RECT_F m_rcMaximize{};
+    D2D1_RECT_F m_rcClose{};
 };
 
 } // namespace phide::ui

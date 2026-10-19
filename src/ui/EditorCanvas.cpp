@@ -1,6 +1,6 @@
 /**
  * @file EditorCanvas.cpp
- * @brief Implementation of clean dark workspace surface.
+ * @brief Implementation of clean dark workspace surface with modern rounded container aesthetics.
  */
 
 #include "phide/ui/EditorCanvas.hpp"
@@ -16,9 +16,11 @@ void EditorCanvas::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
 
     const float headerH = config.ScaleF(static_cast<float>(config.headerHeight));
 
-    // 1. Draw Clean Dark Canvas Background (#1E1E1E)
+    // 1. Draw Clean Dark Canvas Background (#1E1E1E) with rounded corner styling (as indicated by user arc)
     D2D1_RECT_F rcCanvas = D2D1::RectF(canvasLeft, headerH, canvasLeft + canvasWidth, clientHeight);
-    pRT->FillRectangle(rcCanvas, theme.brushWindowBg.Get());
+    D2D1_ROUNDED_RECT rrcCanvas = D2D1::RoundedRect(rcCanvas, 10.0f, 10.0f);
+    pRT->FillRoundedRectangle(rrcCanvas, theme.brushWindowBg.Get());
+    pRT->DrawRoundedRectangle(rrcCanvas, theme.brushBorderSubtle.Get(), 1.0f);
 
     // 2. Render Centered Clean Dark IDE Watermark & Quick Keybindings
     const float centerY = headerH + (clientHeight - headerH) / 2.0f;

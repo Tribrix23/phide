@@ -1,6 +1,10 @@
 /**
  * @file Window.cpp
  * @brief Implementation of Dark IDE native Win32 window, message router, and Direct2D rendering pipeline.
+ * 
+ * Implements custom Direct2D minimize, maximize, and close buttons (with red hover on close),
+ * removes the header horizontal divider line, adds rounded container styling, and coordinates
+ * the Home, Search, and Git activity rail with customized tooltips.
  */
 
 #include "phide/app/Window.hpp"
@@ -62,7 +66,7 @@ bool Window::Create(HINSTANCE hInstance, int nCmdShow) {
 
     RegisterClassEx(&wc);
 
-    // Initial system DPI detection
+    // Initial system DPI detection for dynamic scaling
     HDC hdc = GetDC(nullptr);
     int dpi = GetDeviceCaps(hdc, LOGPIXELSY);
     ReleaseDC(nullptr, hdc);
@@ -71,7 +75,7 @@ bool Window::Create(HINSTANCE hInstance, int nCmdShow) {
     const int width  = m_config.Scale(m_config.initialWidth);
     const int height = m_config.Scale(m_config.initialHeight);
 
-    // Calculate center of primary screen
+    // Center window on primary monitor
     const int screenW = GetSystemMetrics(SM_CXSCREEN);
     const int screenH = GetSystemMetrics(SM_CYSCREEN);
     const int x = (screenW - width) / 2;
@@ -88,11 +92,11 @@ bool Window::Create(HINSTANCE hInstance, int nCmdShow) {
 
     if (!m_hwnd) return false;
 
-    // Enable Immersive Dark Mode for Windows 11 title bar & native caption controls
+    // Enable Windows 11 Immersive Dark Mode for window frame and menus
     BOOL darkMode = TRUE;
     DwmSetWindowAttribute(m_hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &darkMode, sizeof(darkMode));
 
-    // Extend DWM client frame into the client area
+    // Extend DWM client frame into the client area to enable custom frameless rendering
     MARGINS margins = { 0, 0, 1, 0 };
     DwmExtendFrameIntoClientArea(m_hwnd, &margins);
 
@@ -154,7 +158,7 @@ HRESULT Window::CreateDeviceResources() {
     HRESULT hr = m_pD2DFactory->CreateHwndRenderTarget(rtProps, hwndProps, &m_pRenderTarget);
     if (FAILED(hr)) return hr;
 
-    // Create theme brushes and text formats
+    // Allocate theme GPU brushes and typography formats
     return m_theme.CreateDeviceResources(m_pRenderTarget.Get(), m_pDWriteFactory.Get());
 }
 
@@ -192,7 +196,7 @@ void Window::OnPaint() {
     const float canvasLeft  = railW + drawerW;
     const float canvasWidth = (std::max)(100.0f, clientW - canvasLeft);
 
-    // 1. Render Clean Dark Workspace Canvas
+    // 1. Render Clean Dark Workspace Canvas (with rounded container corners)
     m_editor.Render(m_pRenderTarget.Get(), m_theme, m_config, m_buffer, canvasLeft, canvasWidth, clientH);
 
     // 2. Render Slide-out Drawer Panel (when expanded)
@@ -200,11 +204,11 @@ void Window::OnPaint() {
         m_drawer.Render(m_pRenderTarget.Get(), m_theme, m_config, clientH);
     }
 
-    // 3. Render Collapsed Activity Rail (48px Left Sidebar)
+    // 3. Render Collapsed Activity Rail (Home -> Search -> Git with customized tooltips)
     m_rail.Render(m_pRenderTarget.Get(), m_theme, m_config, clientH);
 
-    // 4. Render Dark Frameless Title Header at Top
-    m_header.Render(m_pRenderTarget.Get(), m_theme, m_config, clientW);
+    // 4. Render Dark Frameless Title Header at Top (with Minimize, Maximize, and Red-hover Close button)
+    m_header.Render(m_pRenderTarget.Get(), m_theme, m_config, clientW, IsZoomed(m_hwnd));
 
     HRESULT hr = m_pRenderTarget->EndDraw();
     if (hr == D2DERR_RECREATE_TARGET) {
@@ -225,7 +229,7 @@ LRESULT Window::HandleNCHitTest(POINT screenPt) {
 
     const int border = m_config.Scale(6);
 
-    // Window Resize Borders
+    // Window Resize Borders (6px perimeter)
     if (clientPt.y < border) {
         if (clientPt.x < border) return HTTOPLEFT;
         if (clientPt.x >= w - border) return HTTOPRIGHT;
@@ -242,12 +246,8 @@ LRESULT Window::HandleNCHitTest(POINT screenPt) {
     // Header region hit testing
     const int headerH = m_config.Scale(m_config.headerHeight);
     if (clientPt.y < headerH) {
-        LRESULT hit = m_header.HitTestNCHitTest(clientPt, m_config, static_cast<float>(w));
-        if (hit == -1) {
-            // Over native Windows 11 caption button zone: Let DefWindowProc handle it!
-            return DefWindowProc(m_hwnd, WM_NCHITTEST, 0, MAKELPARAM(screenPt.x, screenPt.y));
-        }
-        return hit;
+        // Returns HTCLIENT for menus & caption buttons, and HTCAPTION for draggable empty header area
+        return m_header.HitTestNCHitTest(clientPt, m_config);
     }
 
     return HTCLIENT;
@@ -262,11 +262,12 @@ void Window::HandleMouseMove(POINT clientPt) {
 
     bool needRepaint = false;
 
-    // Check Header menu hover
-    auto hoveredMenu = m_header.HitTest(clientPt);
-    if (m_header.SetHoveredMenu(hoveredMenu)) needRepaint = true;
+    // Check Header menu and caption button hover
+    auto hoveredMenu = m_header.HitTestMenu(clientPt);
+    auto hoveredCaption = m_header.HitTestCaptionButton(clientPt);
+    if (m_header.UpdateHoverState(hoveredMenu, hoveredCaption)) needRepaint = true;
 
-    // Check Rail hover
+    // Check Rail icon hover (triggers customized tooltip)
     auto hoveredRail = m_rail.HitTest(clientPt);
     if (m_rail.SetHoveredTab(hoveredRail)) needRepaint = true;
 
@@ -282,30 +283,53 @@ void Window::HandleMouseMove(POINT clientPt) {
 }
 
 void Window::HandleLButtonDown(POINT clientPt) {
-    // 1. Header Menu Clicks
-    auto menuHit = m_header.HitTest(clientPt);
+    // 1. Caption Button Clicks (Minimize, Maximize, Close)
+    auto captionHit = m_header.HitTestCaptionButton(clientPt);
+    if (captionHit != ui::CaptionButtonType::None) {
+        if (captionHit == ui::CaptionButtonType::Close) {
+            DestroyWindow(m_hwnd);
+            return;
+        }
+        if (captionHit == ui::CaptionButtonType::Maximize) {
+            if (IsZoomed(m_hwnd)) ShowWindow(m_hwnd, SW_RESTORE);
+            else ShowWindow(m_hwnd, SW_MAXIMIZE);
+            return;
+        }
+        if (captionHit == ui::CaptionButtonType::Minimize) {
+            ShowWindow(m_hwnd, SW_MINIMIZE);
+            return;
+        }
+    }
+
+    // 2. Header Menu Clicks
+    auto menuHit = m_header.HitTestMenu(clientPt);
     if (menuHit != ui::HeaderMenuId::None) {
         // Menu item clicked (File, Edit, View, Project, Help)
         return;
     }
 
-    // 2. Activity Rail Clicks
+    // 3. Activity Rail Clicks (Home -> Search -> Git)
     auto railHit = m_rail.HitTest(clientPt);
     if (railHit != ui::RailTabId::None) {
         int clickedTab = static_cast<int>(railHit);
-        if (m_config.isDrawerOpen && m_config.activeRailTab == clickedTab) {
-            // Clicking currently open tab collapses the drawer back into rail
+        if (railHit == ui::RailTabId::Home) {
+            // Home / Dashboard perspective
             m_config.isDrawerOpen = false;
         } else {
-            // Expand drawer and select tab
-            m_config.activeRailTab = clickedTab;
-            m_config.isDrawerOpen = true;
+            if (m_config.isDrawerOpen && m_config.activeRailTab == clickedTab) {
+                // Clicking active tab collapses drawer back into rail
+                m_config.isDrawerOpen = false;
+            } else {
+                // Expand drawer and show perspective
+                m_config.activeRailTab = clickedTab;
+                m_config.isDrawerOpen = true;
+            }
         }
         InvalidateRect(m_hwnd, nullptr, FALSE);
         return;
     }
 
-    // 3. Drawer Close Button Click
+    // 4. Drawer Close Button Click
     if (m_config.isDrawerOpen && m_drawer.HitTestCloseButton(clientPt)) {
         m_config.isDrawerOpen = false;
         InvalidateRect(m_hwnd, nullptr, FALSE);
@@ -347,7 +371,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
 
         case WM_MOUSELEAVE: {
             m_trackingMouse = false;
-            m_header.SetHoveredMenu(ui::HeaderMenuId::None);
+            m_header.UpdateHoverState(ui::HeaderMenuId::None, ui::CaptionButtonType::None);
             m_rail.SetHoveredTab(ui::RailTabId::None);
             m_drawer.SetHoveredIndex(-1);
             InvalidateRect(m_hwnd, nullptr, FALSE);
@@ -413,7 +437,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
         }
 
         case WM_ERASEBKGND:
-            return 1; // Prevent flicker; Direct2D performs all fills
+            return 1; // Prevent flicker; Direct2D handles all surface rendering
 
         case WM_SIZE: {
             UINT width = LOWORD(lParam);

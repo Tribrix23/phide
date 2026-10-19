@@ -1,6 +1,6 @@
 /**
  * @file Theme.cpp
- * @brief Implementation of Dark Theme GPU brush allocation and text format setup.
+ * @brief Implementation of Dark Theme GPU brush allocation, typography, and tooltip formats.
  */
 
 #include "phide/ui/Theme.hpp"
@@ -19,16 +19,20 @@ HRESULT Theme::CreateDeviceResources(ID2D1RenderTarget* pRT, IDWriteFactory* pDW
     pRT->CreateSolidColorBrush(colors.headerBg, &brushHeaderBg);
     pRT->CreateSolidColorBrush(colors.railBg, &brushRailBg);
     pRT->CreateSolidColorBrush(colors.drawerBg, &brushDrawerBg);
-    pRT->CreateSolidColorBrush(colors.gutterBg, &brushGutterBg);
     pRT->CreateSolidColorBrush(colors.borderSubtle, &brushBorderSubtle);
     pRT->CreateSolidColorBrush(colors.borderHover, &brushBorderHover);
     pRT->CreateSolidColorBrush(colors.textPrimary, &brushTextPrimary);
     pRT->CreateSolidColorBrush(colors.textSecondary, &brushTextSecondary);
     pRT->CreateSolidColorBrush(colors.textMuted, &brushTextMuted);
+    pRT->CreateSolidColorBrush(colors.textWhite, &brushTextWhite);
     pRT->CreateSolidColorBrush(colors.itemHover, &brushItemHover);
     pRT->CreateSolidColorBrush(colors.itemActive, &brushItemActive);
+    pRT->CreateSolidColorBrush(colors.captionHover, &brushCaptionHover);
+    pRT->CreateSolidColorBrush(colors.closeHoverBg, &brushCloseHoverBg);
     pRT->CreateSolidColorBrush(colors.brandAccent, &brushBrandAccent);
     pRT->CreateSolidColorBrush(colors.homeBadgeBg, &brushHomeBadgeBg);
+    pRT->CreateSolidColorBrush(colors.tooltipBg, &brushTooltipBg);
+    pRT->CreateSolidColorBrush(colors.tooltipBorder, &brushTooltipBorder);
 
     // Create DirectWrite Text Formats
     // 1. Title Font
@@ -94,7 +98,23 @@ HRESULT Theme::CreateDeviceResources(ID2D1RenderTarget* pRT, IDWriteFactory* pDW
         fontIcon->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
     }
 
-    // 5. Workspace Hint Font
+    // 5. Caption Button Font (Segoe MDL2 Assets / Segoe UI Symbol)
+    pDWriteFactory->CreateTextFormat(
+        L"Segoe UI Symbol",
+        nullptr,
+        DWRITE_FONT_WEIGHT_REGULAR,
+        DWRITE_FONT_STYLE_NORMAL,
+        DWRITE_FONT_STRETCH_NORMAL,
+        10.5f,
+        L"en-US",
+        &fontCaption
+    );
+    if (fontCaption) {
+        fontCaption->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+        fontCaption->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+    }
+
+    // 6. Workspace Hint Font
     pDWriteFactory->CreateTextFormat(
         L"Segoe UI",
         nullptr,
@@ -110,6 +130,22 @@ HRESULT Theme::CreateDeviceResources(ID2D1RenderTarget* pRT, IDWriteFactory* pDW
         fontHint->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
     }
 
+    // 7. Customized Tooltip Font
+    pDWriteFactory->CreateTextFormat(
+        L"Segoe UI",
+        nullptr,
+        DWRITE_FONT_WEIGHT_MEDIUM,
+        DWRITE_FONT_STYLE_NORMAL,
+        DWRITE_FONT_STRETCH_NORMAL,
+        11.5f,
+        L"en-US",
+        &fontTooltip
+    );
+    if (fontTooltip) {
+        fontTooltip->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+        fontTooltip->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+    }
+
     return S_OK;
 }
 
@@ -118,16 +154,20 @@ void Theme::DiscardDeviceResources() {
     brushHeaderBg.Reset();
     brushRailBg.Reset();
     brushDrawerBg.Reset();
-    brushGutterBg.Reset();
     brushBorderSubtle.Reset();
     brushBorderHover.Reset();
     brushTextPrimary.Reset();
     brushTextSecondary.Reset();
     brushTextMuted.Reset();
+    brushTextWhite.Reset();
     brushItemHover.Reset();
     brushItemActive.Reset();
+    brushCaptionHover.Reset();
+    brushCloseHoverBg.Reset();
     brushBrandAccent.Reset();
     brushHomeBadgeBg.Reset();
+    brushTooltipBg.Reset();
+    brushTooltipBorder.Reset();
 }
 
 } // namespace phide::ui

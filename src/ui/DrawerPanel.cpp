@@ -45,8 +45,7 @@ void DrawerPanel::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCon
 
     const wchar_t* title = L"EXPLORER";
     if (config.activeRailTab == static_cast<int>(RailTabId::Search)) title = L"SEARCH WORKSPACE";
-    else if (config.activeRailTab == static_cast<int>(RailTabId::SourceControl)) title = L"SOURCE CONTROL";
-    else if (config.activeRailTab == static_cast<int>(RailTabId::RunDebug)) title = L"RUN & DEBUG";
+    else if (config.activeRailTab == static_cast<int>(RailTabId::Git)) title = L"SOURCE CONTROL (GIT)";
 
     D2D1_RECT_F rcTitle = D2D1::RectF(
         railW + paddingX,

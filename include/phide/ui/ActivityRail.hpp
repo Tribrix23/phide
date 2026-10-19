@@ -1,9 +1,13 @@
 /**
  * @file ActivityRail.hpp
- * @brief Dark IDE collapsed 48px left sidebar rail containing essential tool perspectives.
+ * @brief Dark IDE collapsed left sidebar containing Home, Search, and Git with customized tooltips.
  * 
- * Removes the bottom extensions and avatar buttons marked with X by the user.
- * Displays clean IDE perspective buttons: Explorer, Search, Source Control, and Run/Debug.
+ * Implements the requested icon hierarchy:
+ * 1. Home icon in a rounded square badge
+ * 2. Search icon directly under Home
+ * 3. Git icon directly under Search
+ * 
+ * Features customized floating tooltip cards rendered on hover with rich styling.
  */
 
 #pragma once
@@ -12,6 +16,7 @@
 #include <d2d1.h>
 #include <dwrite.h>
 #include <vector>
+#include <string>
 #include "phide/app/AppConfig.hpp"
 #include "phide/ui/Theme.hpp"
 
@@ -23,26 +28,25 @@ namespace phide::ui {
  */
 enum class RailTabId {
     None = -1,
-    Explorer = 0,       ///< Project File Tree
-    Search = 1,         ///< Global Search & Replace
-    SourceControl = 2,  ///< Git status and commits
-    RunDebug = 3        ///< Build, Run, and Debugger
+    Home = 0,       ///< Home perspective / welcome dashboard
+    Search = 1,     ///< Search & Replace across workspace
+    Git = 2         ///< Source Control (Git)
 };
 
 /**
  * @struct RailItem
- * @brief Represents a single tool button on the activity rail.
+ * @brief Represents a single tool button on the activity rail with custom tooltip information.
  */
 struct RailItem {
     RailTabId id;
     const wchar_t* glyph;
-    const wchar_t* tooltip;
+    const wchar_t* tooltipText;
     D2D1_RECT_F bounds{};
 };
 
 /**
  * @class ActivityRail
- * @brief Handles rendering and mouse interaction for the vertical icon strip.
+ * @brief Handles rendering, rounded button geometry, hit-testing, and floating tooltips.
  */
 class ActivityRail {
 public:
@@ -50,9 +54,9 @@ public:
     ~ActivityRail() = default;
 
     /**
-     * @brief Paints the activity rail background, divider, and all button items.
+     * @brief Paints the activity rail background, divider, button items, and customized tooltip.
      * @param pRT Active Direct2D render target.
-     * @param theme Visual theme containing dark brushes and fonts.
+     * @param theme Visual theme containing dark brushes and typography.
      * @param config Application configuration.
      * @param clientHeight Height of the window client area.
      */
@@ -66,7 +70,7 @@ public:
     RailTabId HitTest(POINT pt) const;
 
     /**
-     * @brief Updates the hover state.
+     * @brief Updates the hover state when mouse moves over the rail.
      * @param hoveredId Currently hovered item.
      * @return True if state changed and a repaint is needed.
      */
@@ -77,6 +81,12 @@ public:
 private:
     RailTabId m_hoveredTab = RailTabId::None;
     std::vector<RailItem> m_items;
+
+    /**
+     * @brief Renders the customized floating tooltip card for the currently hovered item.
+     */
+    void RenderCustomTooltip(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
+                             const RailItem& item);
 };
 
 } // namespace phide::ui
