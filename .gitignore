@@ -1,0 +1,21 @@
+# Build Artifacts
+bin/
+build/
+*.obj
+*.exe
+*.pdb
+*.ilk
+*.manifest
+
+# Visual Studio & IDE Cache
+.vs/
+*.sln.docstates
+*.suo
+*.user
+x64/
+x86/
+
+# Operating System Files
+Thumbs.db
+Desktop.ini
+.DS_Store

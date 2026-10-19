@@ -1,0 +1,133 @@
+/**
+ * @file Theme.cpp
+ * @brief Implementation of Dark Theme GPU brush allocation and text format setup.
+ */
+
+#include "phide/ui/Theme.hpp"
+
+namespace phide::ui {
+
+Theme::Theme() = default;
+
+HRESULT Theme::CreateDeviceResources(ID2D1RenderTarget* pRT, IDWriteFactory* pDWriteFactory) {
+    if (!pRT || !pDWriteFactory) return E_POINTER;
+
+    // Allocate Solid Brushes
+    HRESULT hr = pRT->CreateSolidColorBrush(colors.windowBg, &brushWindowBg);
+    if (FAILED(hr)) return hr;
+
+    pRT->CreateSolidColorBrush(colors.headerBg, &brushHeaderBg);
+    pRT->CreateSolidColorBrush(colors.railBg, &brushRailBg);
+    pRT->CreateSolidColorBrush(colors.drawerBg, &brushDrawerBg);
+    pRT->CreateSolidColorBrush(colors.gutterBg, &brushGutterBg);
+    pRT->CreateSolidColorBrush(colors.borderSubtle, &brushBorderSubtle);
+    pRT->CreateSolidColorBrush(colors.borderHover, &brushBorderHover);
+    pRT->CreateSolidColorBrush(colors.textPrimary, &brushTextPrimary);
+    pRT->CreateSolidColorBrush(colors.textSecondary, &brushTextSecondary);
+    pRT->CreateSolidColorBrush(colors.textMuted, &brushTextMuted);
+    pRT->CreateSolidColorBrush(colors.itemHover, &brushItemHover);
+    pRT->CreateSolidColorBrush(colors.itemActive, &brushItemActive);
+    pRT->CreateSolidColorBrush(colors.brandAccent, &brushBrandAccent);
+    pRT->CreateSolidColorBrush(colors.homeBadgeBg, &brushHomeBadgeBg);
+
+    // Create DirectWrite Text Formats
+    // 1. Title Font
+    hr = pDWriteFactory->CreateTextFormat(
+        L"Segoe UI",
+        nullptr,
+        DWRITE_FONT_WEIGHT_SEMI_BOLD,
+        DWRITE_FONT_STYLE_NORMAL,
+        DWRITE_FONT_STRETCH_NORMAL,
+        12.0f,
+        L"en-US",
+        &fontTitle
+    );
+    if (FAILED(hr)) return hr;
+    fontTitle->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+    fontTitle->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+
+    // 2. Menu Font
+    pDWriteFactory->CreateTextFormat(
+        L"Segoe UI",
+        nullptr,
+        DWRITE_FONT_WEIGHT_REGULAR,
+        DWRITE_FONT_STYLE_NORMAL,
+        DWRITE_FONT_STRETCH_NORMAL,
+        12.0f,
+        L"en-US",
+        &fontMenu
+    );
+    if (fontMenu) {
+        fontMenu->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+        fontMenu->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+    }
+
+    // 3. Body Font
+    pDWriteFactory->CreateTextFormat(
+        L"Segoe UI",
+        nullptr,
+        DWRITE_FONT_WEIGHT_REGULAR,
+        DWRITE_FONT_STYLE_NORMAL,
+        DWRITE_FONT_STRETCH_NORMAL,
+        13.0f,
+        L"en-US",
+        &fontBody
+    );
+    if (fontBody) {
+        fontBody->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
+        fontBody->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+    }
+
+    // 4. Icon Glyph Font (Segoe UI Symbol)
+    pDWriteFactory->CreateTextFormat(
+        L"Segoe UI Symbol",
+        nullptr,
+        DWRITE_FONT_WEIGHT_REGULAR,
+        DWRITE_FONT_STYLE_NORMAL,
+        DWRITE_FONT_STRETCH_NORMAL,
+        15.0f,
+        L"en-US",
+        &fontIcon
+    );
+    if (fontIcon) {
+        fontIcon->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+        fontIcon->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+    }
+
+    // 5. Workspace Hint Font
+    pDWriteFactory->CreateTextFormat(
+        L"Segoe UI",
+        nullptr,
+        DWRITE_FONT_WEIGHT_REGULAR,
+        DWRITE_FONT_STYLE_NORMAL,
+        DWRITE_FONT_STRETCH_NORMAL,
+        13.0f,
+        L"en-US",
+        &fontHint
+    );
+    if (fontHint) {
+        fontHint->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+        fontHint->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+    }
+
+    return S_OK;
+}
+
+void Theme::DiscardDeviceResources() {
+    brushWindowBg.Reset();
+    brushHeaderBg.Reset();
+    brushRailBg.Reset();
+    brushDrawerBg.Reset();
+    brushGutterBg.Reset();
+    brushBorderSubtle.Reset();
+    brushBorderHover.Reset();
+    brushTextPrimary.Reset();
+    brushTextSecondary.Reset();
+    brushTextMuted.Reset();
+    brushItemHover.Reset();
+    brushItemActive.Reset();
+    brushBrandAccent.Reset();
+    brushHomeBadgeBg.Reset();
+}
+
+} // namespace phide::ui

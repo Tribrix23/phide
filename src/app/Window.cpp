@@ -1,0 +1,447 @@
+/**
+ * @file Window.cpp
+ * @brief Implementation of Dark IDE native Win32 window, message router, and Direct2D rendering pipeline.
+ */
+
+#include "phide/app/Window.hpp"
+#include <windowsx.h>
+#include <algorithm>
+
+#pragma comment(lib, "user32.lib")
+#pragma comment(lib, "gdi32.lib")
+#pragma comment(lib, "dwmapi.lib")
+#pragma comment(lib, "d2d1.lib")
+#pragma comment(lib, "dwrite.lib")
+
+#ifndef DWMWA_USE_IMMERSIVE_DARK_MODE
+#define DWMWA_USE_IMMERSIVE_DARK_MODE 20
+#endif
+
+namespace phide::app {
+
+Window::Window() = default;
+
+Window::~Window() {
+    DiscardDeviceResources();
+    if (m_hwnd) {
+        KillTimer(m_hwnd, m_caretTimerId);
+    }
+}
+
+LRESULT CALLBACK Window::WndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
+    Window* pThis = nullptr;
+
+    if (uMsg == WM_NCCREATE) {
+        auto* pCreate = reinterpret_cast<CREATESTRUCT*>(lParam);
+        pThis = reinterpret_cast<Window*>(pCreate->lpCreateParams);
+        SetWindowLongPtr(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(pThis));
+        pThis->m_hwnd = hwnd;
+    } else {
+        pThis = reinterpret_cast<Window*>(GetWindowLongPtr(hwnd, GWLP_USERDATA));
+    }
+
+    if (pThis) {
+        return pThis->HandleMessage(uMsg, wParam, lParam);
+    }
+    return DefWindowProc(hwnd, uMsg, wParam, lParam);
+}
+
+bool Window::Create(HINSTANCE hInstance, int nCmdShow) {
+    if (FAILED(CreateDeviceIndependentResources())) {
+        return false;
+    }
+
+    WNDCLASSEX wc{};
+    wc.cbSize = sizeof(WNDCLASSEX);
+    wc.style = CS_HREDRAW | CS_VREDRAW;
+    wc.lpfnWndProc = Window::WndProc;
+    wc.hInstance = hInstance;
+    wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
+    wc.hbrBackground = nullptr; // Direct2D handles full background rendering
+    wc.lpszClassName = L"phide_WindowClass";
+
+    RegisterClassEx(&wc);
+
+    // Initial system DPI detection
+    HDC hdc = GetDC(nullptr);
+    int dpi = GetDeviceCaps(hdc, LOGPIXELSY);
+    ReleaseDC(nullptr, hdc);
+    m_config.dpiScale = static_cast<float>(dpi) / 96.0f;
+
+    const int width  = m_config.Scale(m_config.initialWidth);
+    const int height = m_config.Scale(m_config.initialHeight);
+
+    // Calculate center of primary screen
+    const int screenW = GetSystemMetrics(SM_CXSCREEN);
+    const int screenH = GetSystemMetrics(SM_CYSCREEN);
+    const int x = (screenW - width) / 2;
+    const int y = (screenH - height) / 2;
+
+    m_hwnd = CreateWindowEx(
+        WS_EX_APPWINDOW,
+        wc.lpszClassName,
+        L"phide - Modern C++ & PHP IDE",
+        WS_OVERLAPPEDWINDOW | WS_VISIBLE,
+        x, y, width, height,
+        nullptr, nullptr, hInstance, this
+    );
+
+    if (!m_hwnd) return false;
+
+    // Enable Immersive Dark Mode for Windows 11 title bar & native caption controls
+    BOOL darkMode = TRUE;
+    DwmSetWindowAttribute(m_hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &darkMode, sizeof(darkMode));
+
+    // Extend DWM client frame into the client area
+    MARGINS margins = { 0, 0, 1, 0 };
+    DwmExtendFrameIntoClientArea(m_hwnd, &margins);
+
+    // Force frame refresh
+    SetWindowPos(m_hwnd, nullptr, 0, 0, 0, 0,
+                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED);
+
+    // Start 500ms Caret blink timer
+    SetTimer(m_hwnd, m_caretTimerId, 500, nullptr);
+
+    ShowWindow(m_hwnd, nCmdShow);
+    UpdateWindow(m_hwnd);
+
+    return true;
+}
+
+int Window::Run() {
+    MSG msg{};
+    while (GetMessage(&msg, nullptr, 0, 0)) {
+        TranslateMessage(&msg);
+        DispatchMessage(&msg);
+    }
+    return static_cast<int>(msg.wParam);
+}
+
+HRESULT Window::CreateDeviceIndependentResources() {
+    HRESULT hr = D2D1CreateFactory(
+        D2D1_FACTORY_TYPE_SINGLE_THREADED,
+        __uuidof(ID2D1Factory),
+        nullptr,
+        reinterpret_cast<void**>(m_pD2DFactory.GetAddressOf())
+    );
+    if (FAILED(hr)) return hr;
+
+    hr = DWriteCreateFactory(
+        DWRITE_FACTORY_TYPE_SHARED,
+        __uuidof(IDWriteFactory),
+        reinterpret_cast<IUnknown**>(m_pDWriteFactory.GetAddressOf())
+    );
+    return hr;
+}
+
+HRESULT Window::CreateDeviceResources() {
+    if (m_pRenderTarget) return S_OK;
+
+    RECT rc;
+    GetClientRect(m_hwnd, &rc);
+    D2D1_SIZE_U size = D2D1::SizeU(rc.right - rc.left, rc.bottom - rc.top);
+
+    D2D1_RENDER_TARGET_PROPERTIES rtProps = D2D1::RenderTargetProperties(
+        D2D1_RENDER_TARGET_TYPE_DEFAULT,
+        D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED)
+    );
+
+    D2D1_HWND_RENDER_TARGET_PROPERTIES hwndProps = D2D1::HwndRenderTargetProperties(
+        m_hwnd, size, D2D1_PRESENT_OPTIONS_RETAIN_CONTENTS
+    );
+
+    HRESULT hr = m_pD2DFactory->CreateHwndRenderTarget(rtProps, hwndProps, &m_pRenderTarget);
+    if (FAILED(hr)) return hr;
+
+    // Create theme brushes and text formats
+    return m_theme.CreateDeviceResources(m_pRenderTarget.Get(), m_pDWriteFactory.Get());
+}
+
+void Window::DiscardDeviceResources() {
+    m_theme.DiscardDeviceResources();
+    m_pRenderTarget.Reset();
+}
+
+void Window::OnResize(UINT width, UINT height) {
+    if (m_pRenderTarget) {
+        m_pRenderTarget->Resize(D2D1::SizeU(width, height));
+    }
+}
+
+void Window::OnPaint() {
+    if (FAILED(CreateDeviceResources())) return;
+
+    PAINTSTRUCT ps;
+    BeginPaint(m_hwnd, &ps);
+
+    m_pRenderTarget->BeginDraw();
+    m_pRenderTarget->Clear(m_theme.colors.windowBg);
+
+    RECT rc;
+    GetClientRect(m_hwnd, &rc);
+    const float clientW = static_cast<float>(rc.right - rc.left);
+    const float clientH = static_cast<float>(rc.bottom - rc.top);
+
+    // Layout Subsystem Dimensions
+    const float railW   = m_config.ScaleF(static_cast<float>(m_config.railWidth));
+    const float drawerW = m_config.isDrawerOpen
+        ? m_config.ScaleF(static_cast<float>(m_config.drawerWidth))
+        : 0.0f;
+
+    const float canvasLeft  = railW + drawerW;
+    const float canvasWidth = (std::max)(100.0f, clientW - canvasLeft);
+
+    // 1. Render Clean Dark Workspace Canvas
+    m_editor.Render(m_pRenderTarget.Get(), m_theme, m_config, m_buffer, canvasLeft, canvasWidth, clientH);
+
+    // 2. Render Slide-out Drawer Panel (when expanded)
+    if (m_config.isDrawerOpen) {
+        m_drawer.Render(m_pRenderTarget.Get(), m_theme, m_config, clientH);
+    }
+
+    // 3. Render Collapsed Activity Rail (48px Left Sidebar)
+    m_rail.Render(m_pRenderTarget.Get(), m_theme, m_config, clientH);
+
+    // 4. Render Dark Frameless Title Header at Top
+    m_header.Render(m_pRenderTarget.Get(), m_theme, m_config, clientW);
+
+    HRESULT hr = m_pRenderTarget->EndDraw();
+    if (hr == D2DERR_RECREATE_TARGET) {
+        DiscardDeviceResources();
+    }
+
+    EndPaint(m_hwnd, &ps);
+}
+
+LRESULT Window::HandleNCHitTest(POINT screenPt) {
+    POINT clientPt = screenPt;
+    ScreenToClient(m_hwnd, &clientPt);
+
+    RECT rc;
+    GetClientRect(m_hwnd, &rc);
+    const int w = rc.right - rc.left;
+    const int h = rc.bottom - rc.top;
+
+    const int border = m_config.Scale(6);
+
+    // Window Resize Borders
+    if (clientPt.y < border) {
+        if (clientPt.x < border) return HTTOPLEFT;
+        if (clientPt.x >= w - border) return HTTOPRIGHT;
+        return HTTOP;
+    }
+    if (clientPt.y >= h - border) {
+        if (clientPt.x < border) return HTBOTTOMLEFT;
+        if (clientPt.x >= w - border) return HTBOTTOMRIGHT;
+        return HTBOTTOM;
+    }
+    if (clientPt.x < border) return HTLEFT;
+    if (clientPt.x >= w - border) return HTRIGHT;
+
+    // Header region hit testing
+    const int headerH = m_config.Scale(m_config.headerHeight);
+    if (clientPt.y < headerH) {
+        LRESULT hit = m_header.HitTestNCHitTest(clientPt, m_config, static_cast<float>(w));
+        if (hit == -1) {
+            // Over native Windows 11 caption button zone: Let DefWindowProc handle it!
+            return DefWindowProc(m_hwnd, WM_NCHITTEST, 0, MAKELPARAM(screenPt.x, screenPt.y));
+        }
+        return hit;
+    }
+
+    return HTCLIENT;
+}
+
+void Window::HandleMouseMove(POINT clientPt) {
+    if (!m_trackingMouse) {
+        TRACKMOUSEEVENT tme{ sizeof(TRACKMOUSEEVENT), TME_LEAVE, m_hwnd, 0 };
+        TrackMouseEvent(&tme);
+        m_trackingMouse = true;
+    }
+
+    bool needRepaint = false;
+
+    // Check Header menu hover
+    auto hoveredMenu = m_header.HitTest(clientPt);
+    if (m_header.SetHoveredMenu(hoveredMenu)) needRepaint = true;
+
+    // Check Rail hover
+    auto hoveredRail = m_rail.HitTest(clientPt);
+    if (m_rail.SetHoveredTab(hoveredRail)) needRepaint = true;
+
+    // Check Drawer hover
+    if (m_config.isDrawerOpen) {
+        int hoveredTree = m_drawer.HitTest(clientPt, m_config);
+        if (m_drawer.SetHoveredIndex(hoveredTree)) needRepaint = true;
+    }
+
+    if (needRepaint) {
+        InvalidateRect(m_hwnd, nullptr, FALSE);
+    }
+}
+
+void Window::HandleLButtonDown(POINT clientPt) {
+    // 1. Header Menu Clicks
+    auto menuHit = m_header.HitTest(clientPt);
+    if (menuHit != ui::HeaderMenuId::None) {
+        // Menu item clicked (File, Edit, View, Project, Help)
+        return;
+    }
+
+    // 2. Activity Rail Clicks
+    auto railHit = m_rail.HitTest(clientPt);
+    if (railHit != ui::RailTabId::None) {
+        int clickedTab = static_cast<int>(railHit);
+        if (m_config.isDrawerOpen && m_config.activeRailTab == clickedTab) {
+            // Clicking currently open tab collapses the drawer back into rail
+            m_config.isDrawerOpen = false;
+        } else {
+            // Expand drawer and select tab
+            m_config.activeRailTab = clickedTab;
+            m_config.isDrawerOpen = true;
+        }
+        InvalidateRect(m_hwnd, nullptr, FALSE);
+        return;
+    }
+
+    // 3. Drawer Close Button Click
+    if (m_config.isDrawerOpen && m_drawer.HitTestCloseButton(clientPt)) {
+        m_config.isDrawerOpen = false;
+        InvalidateRect(m_hwnd, nullptr, FALSE);
+        return;
+    }
+}
+
+void Window::HandleLButtonUp(POINT clientPt) {
+    (void)clientPt;
+}
+
+LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
+    switch (uMsg) {
+        case WM_NCCALCSIZE: {
+            if (wParam == TRUE) {
+                // When maximized, compensate for window borders extending off-screen
+                if (IsZoomed(m_hwnd)) {
+                    auto* pParams = reinterpret_cast<NCCALCSIZE_PARAMS*>(lParam);
+                    HMONITOR hMon = MonitorFromWindow(m_hwnd, MONITOR_DEFAULTTONEAREST);
+                    MONITORINFO mi{ sizeof(MONITORINFO) };
+                    GetMonitorInfo(hMon, &mi);
+                    pParams->rgrc[0] = mi.rcWork;
+                }
+                return 0; // Eliminates default OS non-client frame
+            }
+            return 0;
+        }
+
+        case WM_NCHITTEST: {
+            POINT pt = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+            return HandleNCHitTest(pt);
+        }
+
+        case WM_MOUSEMOVE: {
+            POINT pt = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+            HandleMouseMove(pt);
+            return 0;
+        }
+
+        case WM_MOUSELEAVE: {
+            m_trackingMouse = false;
+            m_header.SetHoveredMenu(ui::HeaderMenuId::None);
+            m_rail.SetHoveredTab(ui::RailTabId::None);
+            m_drawer.SetHoveredIndex(-1);
+            InvalidateRect(m_hwnd, nullptr, FALSE);
+            return 0;
+        }
+
+        case WM_LBUTTONDOWN: {
+            POINT pt = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+            HandleLButtonDown(pt);
+            return 0;
+        }
+
+        case WM_LBUTTONUP: {
+            POINT pt = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+            HandleLButtonUp(pt);
+            return 0;
+        }
+
+        case WM_CHAR: {
+            wchar_t ch = static_cast<wchar_t>(wParam);
+            if (ch >= 32 || ch == L'\t' || ch == L'\r' || ch == L'\n') {
+                m_buffer.InsertChar(ch);
+                InvalidateRect(m_hwnd, nullptr, FALSE);
+            }
+            return 0;
+        }
+
+        case WM_KEYDOWN: {
+            if (wParam == VK_BACK) {
+                m_buffer.Backspace();
+                InvalidateRect(m_hwnd, nullptr, FALSE);
+            } else if (wParam == VK_LEFT) {
+                auto cur = m_buffer.GetCursor();
+                if (cur.col > 0) m_buffer.SetCursor(cur.line, cur.col - 1);
+                InvalidateRect(m_hwnd, nullptr, FALSE);
+            } else if (wParam == VK_RIGHT) {
+                auto cur = m_buffer.GetCursor();
+                m_buffer.SetCursor(cur.line, cur.col + 1);
+                InvalidateRect(m_hwnd, nullptr, FALSE);
+            } else if (wParam == VK_UP) {
+                auto cur = m_buffer.GetCursor();
+                if (cur.line > 0) m_buffer.SetCursor(cur.line - 1, cur.col);
+                InvalidateRect(m_hwnd, nullptr, FALSE);
+            } else if (wParam == VK_DOWN) {
+                auto cur = m_buffer.GetCursor();
+                m_buffer.SetCursor(cur.line + 1, cur.col);
+                InvalidateRect(m_hwnd, nullptr, FALSE);
+            }
+            return 0;
+        }
+
+        case WM_TIMER: {
+            if (wParam == m_caretTimerId) {
+                m_editor.ToggleCaretBlink();
+                InvalidateRect(m_hwnd, nullptr, FALSE);
+            }
+            return 0;
+        }
+
+        case WM_PAINT: {
+            OnPaint();
+            return 0;
+        }
+
+        case WM_ERASEBKGND:
+            return 1; // Prevent flicker; Direct2D performs all fills
+
+        case WM_SIZE: {
+            UINT width = LOWORD(lParam);
+            UINT height = HIWORD(lParam);
+            OnResize(width, height);
+            InvalidateRect(m_hwnd, nullptr, FALSE);
+            return 0;
+        }
+
+        case WM_DPICHANGED: {
+            int newDpi = HIWORD(wParam);
+            auto* pNewRect = reinterpret_cast<RECT*>(lParam);
+            m_config.dpiScale = static_cast<float>(newDpi) / 96.0f;
+            DiscardDeviceResources();
+            SetWindowPos(m_hwnd, nullptr, pNewRect->left, pNewRect->top,
+                         pNewRect->right - pNewRect->left, pNewRect->bottom - pNewRect->top,
+                         SWP_NOZORDER | SWP_NOACTIVATE);
+            return 0;
+        }
+
+        case WM_DESTROY: {
+            PostQuitMessage(0);
+            return 0;
+        }
+
+        default:
+            return DefWindowProc(m_hwnd, uMsg, wParam, lParam);
+    }
+}
+
+} // namespace phide::app
