@@ -88,6 +88,10 @@ private:
      */
     void RenderCustomTooltip(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
                              const RailItem& item);
+
+    // Direct2D Purple Glass Vertical Gradient Brush
+    Microsoft::WRL::ComPtr<ID2D1LinearGradientBrush> m_pRailGradientBrush;
+    float m_lastRailH = -1.0f;
 };
 
 } // namespace phide::ui

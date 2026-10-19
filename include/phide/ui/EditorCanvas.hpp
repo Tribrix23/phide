@@ -54,25 +54,9 @@ public:
      */
     void ToggleCaretBlink() noexcept { m_caretVisible = !m_caretVisible; }
 
-    /**
-     * @brief Releases GPU gradient brushes when Direct2D render target is recreated.
-     */
-    void DiscardDeviceResources();
-
 private:
     std::vector<EditorTab> m_tabs;
     bool m_caretVisible = true;
-
-    // Direct2D Glass Effect Gradient Brushes
-    Microsoft::WRL::ComPtr<ID2D1LinearGradientBrush> m_pBgGradientBrush;
-    Microsoft::WRL::ComPtr<ID2D1LinearGradientBrush> m_pGlassSheenBrush;
-    Microsoft::WRL::ComPtr<ID2D1LinearGradientBrush> m_pGlassBorderBrush;
-    Microsoft::WRL::ComPtr<ID2D1RadialGradientBrush> m_pPurpleGlowBrush;
-    float m_lastLeft   = -1.0f;
-    float m_lastWidth  = -1.0f;
-    float m_lastHeight = -1.0f;
-
-    void EnsureGlassBrushes(ID2D1RenderTarget* pRT, float canvasLeft, float canvasWidth, float headerH, float clientHeight);
 
     void RenderTabs(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
                     float canvasLeft, float canvasWidth, float headerH);

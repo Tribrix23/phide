@@ -113,10 +113,14 @@ private:
     std::vector<MenuItem> m_menus;
     LucideIcons m_icons;
 
-    // Bounding rectangles for caption buttons
+    // Bounding rectangles for caption controls
     D2D1_RECT_F m_rcMinimize{};
     D2D1_RECT_F m_rcMaximize{};
     D2D1_RECT_F m_rcClose{};
+
+    // Direct2D Purple-to-Black Glass Gradient Brush
+    Microsoft::WRL::ComPtr<ID2D1LinearGradientBrush> m_pHeaderGradientBrush;
+    float m_lastWidth = -1.0f;
 };
 
 } // namespace phide::ui

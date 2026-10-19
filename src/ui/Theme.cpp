@@ -16,6 +16,7 @@ HRESULT Theme::CreateDeviceResources(ID2D1RenderTarget* pRT, IDWriteFactory* pDW
     HRESULT hr = pRT->CreateSolidColorBrush(colors.windowBg, &brushWindowBg);
     if (FAILED(hr)) return hr;
 
+    pRT->CreateSolidColorBrush(colors.canvasBg, &brushCanvasBg);
     pRT->CreateSolidColorBrush(colors.headerBg, &brushHeaderBg);
     pRT->CreateSolidColorBrush(colors.railBg, &brushRailBg);
     pRT->CreateSolidColorBrush(colors.drawerBg, &brushDrawerBg);
@@ -151,6 +152,7 @@ HRESULT Theme::CreateDeviceResources(ID2D1RenderTarget* pRT, IDWriteFactory* pDW
 
 void Theme::DiscardDeviceResources() {
     brushWindowBg.Reset();
+    brushCanvasBg.Reset();
     brushHeaderBg.Reset();
     brushRailBg.Reset();
     brushDrawerBg.Reset();

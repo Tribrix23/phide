@@ -32,12 +32,44 @@ void TitleHeader::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCon
 
     const float h = config.ScaleF(static_cast<float>(config.headerHeight));
 
-    // 1. Draw Header Background (#181818)
-    D2D1_RECT_F rcHeader = D2D1::RectF(0.0f, 0.0f, clientWidth, h);
-    pRT->FillRectangle(rcHeader, theme.brushHeaderBg.Get());
+    // Ensure horizontal purple-to-black glass gradient brush is initialized/updated
+    if (!m_pHeaderGradientBrush || std::abs(m_lastWidth - clientWidth) >= 1.0f) {
+        m_lastWidth = clientWidth;
+        m_pHeaderGradientBrush.Reset();
 
-    // NOTE: The horizontal dividing line under the header has been REMOVED as requested (marked with X).
-    // The header now blends seamlessly into the workspace.
+        D2D1_GRADIENT_STOP stops[6];
+        stops[0] = { 0.00f, D2D1::ColorF(0.24f, 0.08f, 0.38f, 1.0f) }; // #3D1461 - Rich Glass Purple on the left
+        stops[1] = { 0.20f, D2D1::ColorF(0.18f, 0.06f, 0.30f, 1.0f) }; // #2E0F4D - Deep Royal Violet
+        stops[2] = { 0.42f, D2D1::ColorF(0.12f, 0.04f, 0.21f, 1.0f) }; // #1F0B36 - Dark Twilight Purple
+        stops[3] = { 0.65f, D2D1::ColorF(0.07f, 0.03f, 0.13f, 1.0f) }; // #120721 - Midnight Shadow
+        stops[4] = { 0.85f, D2D1::ColorF(0.04f, 0.04f, 0.05f, 1.0f) }; // #0A0A0D - Transition to Black
+        stops[5] = { 1.00f, D2D1::ColorF(0.03f, 0.03f, 0.04f, 1.0f) }; // #08080A - Pure Obsidian Black on right side
+
+        ComPtr<ID2D1GradientStopCollection> pStopColl;
+        if (SUCCEEDED(pRT->CreateGradientStopCollection(stops, 6, &pStopColl))) {
+            D2D1_LINEAR_GRADIENT_BRUSH_PROPERTIES props = D2D1::LinearGradientBrushProperties(
+                D2D1::Point2F(0.0f, 0.0f),
+                D2D1::Point2F(clientWidth, 0.0f)
+            );
+            pRT->CreateLinearGradientBrush(props, pStopColl.Get(), &m_pHeaderGradientBrush);
+        }
+    }
+
+    // 1. Draw Glass Purple-to-Black Header Background
+    D2D1_RECT_F rcHeader = D2D1::RectF(0.0f, 0.0f, clientWidth, h);
+    if (m_pHeaderGradientBrush) {
+        pRT->FillRectangle(rcHeader, m_pHeaderGradientBrush.Get());
+    } else {
+        pRT->FillRectangle(rcHeader, theme.brushHeaderBg.Get());
+    }
+
+    // Top subtle 1px glass specular reflection sheen
+    pRT->DrawLine(
+        D2D1::Point2F(0.0f, 0.5f),
+        D2D1::Point2F(clientWidth, 0.5f),
+        theme.brushBorderHover.Get(),
+        0.8f
+    );
 
     // 2. Render Left Menu Bar (File, Edit, View, Project, Help)
     float curX = config.ScaleF(12.0f);

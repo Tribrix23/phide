@@ -23,9 +23,10 @@ using Microsoft::WRL::ComPtr;
  */
 struct ThemeColors {
     // Window & Canvas Backgrounds
-    D2D1_COLOR_F windowBg        = D2D1::ColorF(0.078f, 0.078f, 0.078f, 1.0f); // #141414 (Dark Shell Base)
-    D2D1_COLOR_F headerBg        = D2D1::ColorF(0.078f, 0.078f, 0.078f, 1.0f); // #141414 (Seamless Dark Title Bar)
-    D2D1_COLOR_F railBg          = D2D1::ColorF(0.078f, 0.078f, 0.078f, 1.0f); // #141414 (Seamless Dark Activity Rail)
+    D2D1_COLOR_F windowBg        = D2D1::ColorF(0.24f, 0.08f, 0.38f, 1.0f);   // #3D1461 (Shell Glass Purple Base)
+    D2D1_COLOR_F canvasBg        = D2D1::ColorF(0.118f, 0.118f, 0.118f, 1.0f); // #1E1E1E (Dark IDE Workspace)
+    D2D1_COLOR_F headerBg        = D2D1::ColorF(0.24f, 0.08f, 0.38f, 1.0f);   // #3D1461 (Glass Purple)
+    D2D1_COLOR_F railBg          = D2D1::ColorF(0.24f, 0.08f, 0.38f, 1.0f);   // #3D1461 (Glass Purple)
     D2D1_COLOR_F drawerBg        = D2D1::ColorF(0.094f, 0.094f, 0.094f, 1.0f); // #181818 (Sidebar Drawer)
 
     // Borders & Dividers
@@ -80,6 +81,7 @@ public:
 
     // Solid Brushes
     ComPtr<ID2D1SolidColorBrush> brushWindowBg;
+    ComPtr<ID2D1SolidColorBrush> brushCanvasBg;
     ComPtr<ID2D1SolidColorBrush> brushHeaderBg;
     ComPtr<ID2D1SolidColorBrush> brushRailBg;
     ComPtr<ID2D1SolidColorBrush> brushDrawerBg;

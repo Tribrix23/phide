@@ -34,9 +34,34 @@ void ActivityRail::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
     const float spacing = config.ScaleF(10.0f);
     const float startX  = (railW - btnSize) / 2.0f;
 
-    // 1. Draw Rail Background (#141414)
+    // Ensure vertical purple glass gradient brush is initialized/updated
+    if (!m_pRailGradientBrush || std::abs(m_lastRailH - clientHeight) >= 1.0f) {
+        m_lastRailH = clientHeight;
+        m_pRailGradientBrush.Reset();
+
+        D2D1_GRADIENT_STOP stops[4];
+        stops[0] = { 0.00f, D2D1::ColorF(0.24f, 0.08f, 0.38f, 1.0f) }; // #3D1461 - Seamlessly matches header's left edge
+        stops[1] = { 0.35f, D2D1::ColorF(0.18f, 0.06f, 0.30f, 1.0f) }; // #2E0F4D - Deep Royal Violet
+        stops[2] = { 0.70f, D2D1::ColorF(0.14f, 0.05f, 0.24f, 1.0f) }; // #240D3D - Twilight Purple
+        stops[3] = { 1.00f, D2D1::ColorF(0.10f, 0.04f, 0.18f, 1.0f) }; // #1A0A2E - Deep Atmospheric Base
+
+        ComPtr<ID2D1GradientStopCollection> pStopColl;
+        if (SUCCEEDED(pRT->CreateGradientStopCollection(stops, 4, &pStopColl))) {
+            D2D1_LINEAR_GRADIENT_BRUSH_PROPERTIES props = D2D1::LinearGradientBrushProperties(
+                D2D1::Point2F(0.0f, headerH),
+                D2D1::Point2F(0.0f, clientHeight)
+            );
+            pRT->CreateLinearGradientBrush(props, pStopColl.Get(), &m_pRailGradientBrush);
+        }
+    }
+
+    // 1. Draw Rail Background with Vertical Purple Glass Gradient
     D2D1_RECT_F rcRail = D2D1::RectF(0.0f, headerH, railW, clientHeight);
-    pRT->FillRectangle(rcRail, theme.brushRailBg.Get());
+    if (m_pRailGradientBrush) {
+        pRT->FillRectangle(rcRail, m_pRailGradientBrush.Get());
+    } else {
+        pRT->FillRectangle(rcRail, theme.brushRailBg.Get());
+    }
 
     // Right border divider (#2C2C2C)
     pRT->DrawLine(
