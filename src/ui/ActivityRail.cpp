@@ -66,9 +66,10 @@ void ActivityRail::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
         pRT->FillRectangle(rcRail, theme.brushRailBg.Get());
     }
 
-    // Right border divider: starts below the header (header has no vertical line next to icon, as requested)
+    // Right border divider: starts below the upper-left rounded corner (no line in header or clashing with curve)
+    const float dividerStartY = headerH + config.ScaleF(14.0f);
     pRT->DrawLine(
-        D2D1::Point2F(railW - 0.5f, headerH),
+        D2D1::Point2F(railW - 0.5f, dividerStartY),
         D2D1::Point2F(railW - 0.5f, clientHeight),
         theme.brushBorderSubtle.Get(),
         0.8f

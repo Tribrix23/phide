@@ -58,6 +58,16 @@ private:
     std::vector<EditorTab> m_tabs;
     bool m_caretVisible = true;
 
+    // Cached path geometry for workspace container (curved ONLY at upper-left corner)
+    Microsoft::WRL::ComPtr<ID2D1PathGeometry> m_pCanvasGeometry;
+    float m_cachedLeft   = -1.0f;
+    float m_cachedTop    = -1.0f;
+    float m_cachedRight  = -1.0f;
+    float m_cachedBottom = -1.0f;
+
+    // Metallic white watermark logo in center of canvas
+    Microsoft::WRL::ComPtr<ID2D1Bitmap> m_pWatermarkBitmap;
+
     void RenderTabs(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
                     float canvasLeft, float canvasWidth, float headerH);
 
