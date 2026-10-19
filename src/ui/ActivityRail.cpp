@@ -8,20 +8,14 @@
 namespace phide::ui {
 
 ActivityRail::ActivityRail() {
-    // 1. Files / Explorer icon (two overlapping sheets, matching Image 2)
-    m_items.push_back({ RailTabId::Files,      L"Explorer",                         {} });
+    // 1. Files / Explorer icon (two overlapping sheets, matching VS Code)
+    m_items.push_back({ RailTabId::Files,  L"Explorer",                      {} });
 
     // 2. Search icon (directly under Files)
-    m_items.push_back({ RailTabId::Search,     L"Search (Ctrl+Shift+F)",            {} });
+    m_items.push_back({ RailTabId::Search, L"Search (Ctrl+Shift+F)",         {} });
 
     // 3. Git icon (directly under Search)
-    m_items.push_back({ RailTabId::Git,        L"Source Control (Ctrl+Shift+G)",    {} });
-
-    // 4. Run & Debug (directly under Git, matching Image 2)
-    m_items.push_back({ RailTabId::Debug,      L"Run and Debug (Ctrl+Shift+D)",     {} });
-
-    // 5. Extensions (directly under Debug, matching Image 2)
-    m_items.push_back({ RailTabId::Extensions, L"Extensions (Ctrl+Shift+X)",        {} });
+    m_items.push_back({ RailTabId::Git,    L"Source Control (Ctrl+Shift+G)", {} });
 }
 
 void ActivityRail::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config, float clientHeight) {
@@ -89,12 +83,6 @@ void ActivityRail::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
                 break;
             case RailTabId::Git:
                 m_lucide.DrawGitBranch(pRT, item.bounds, iconBrush, 1.6f);
-                break;
-            case RailTabId::Debug:
-                m_lucide.DrawDebug(pRT, item.bounds, iconBrush, 1.6f);
-                break;
-            case RailTabId::Extensions:
-                m_lucide.DrawExtensions(pRT, item.bounds, iconBrush, 1.6f);
                 break;
             default:
                 break;

@@ -29,11 +29,9 @@ namespace phide::ui {
  */
 enum class RailTabId {
     None = -1,
-    Files = 0,          ///< Files / Explorer perspective (two overlapping sheets matching Image 2)
+    Files = 0,          ///< Files / Explorer perspective (two overlapping sheets)
     Search = 1,         ///< Search across workspace
-    Git = 2,            ///< Source Control (Git)
-    Debug = 3,          ///< Run and Debug (matching Image 2)
-    Extensions = 4      ///< Extensions (matching Image 2)
+    Git = 2             ///< Source Control (Git)
 };
 
 /**
