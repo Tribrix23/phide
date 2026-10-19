@@ -1,11 +1,11 @@
 /**
  * @file ActivityRail.hpp
- * @brief Dark IDE collapsed left sidebar containing Home, Search, and Git with customized tooltips.
+ * @brief Dark IDE collapsed left sidebar containing Lucide Home, Search, and GitBranch icons with customized tooltips.
  * 
- * Implements the requested icon hierarchy:
- * 1. Home icon in a rounded square badge
- * 2. Search icon directly under Home
- * 3. Git icon directly under Search
+ * Implements GPU-accelerated Lucide vector rendering for:
+ * 1. Lucide Home icon in a rounded square badge
+ * 2. Lucide Search icon directly under Home
+ * 3. Lucide Git Branch icon directly under Search
  * 
  * Features customized floating tooltip cards rendered on hover with rich styling.
  */
@@ -19,6 +19,7 @@
 #include <string>
 #include "phide/app/AppConfig.hpp"
 #include "phide/ui/Theme.hpp"
+#include "phide/ui/LucideIcons.hpp"
 
 namespace phide::ui {
 
@@ -39,14 +40,13 @@ enum class RailTabId {
  */
 struct RailItem {
     RailTabId id;
-    const wchar_t* glyph;
     const wchar_t* tooltipText;
     D2D1_RECT_F bounds{};
 };
 
 /**
  * @class ActivityRail
- * @brief Handles rendering, rounded button geometry, hit-testing, and floating tooltips.
+ * @brief Handles rendering, Lucide vector icons, hit-testing, and floating tooltips.
  */
 class ActivityRail {
 public:
@@ -54,7 +54,7 @@ public:
     ~ActivityRail() = default;
 
     /**
-     * @brief Paints the activity rail background, divider, button items, and customized tooltip.
+     * @brief Paints the activity rail background, divider, Lucide icons, and customized tooltip.
      * @param pRT Active Direct2D render target.
      * @param theme Visual theme containing dark brushes and typography.
      * @param config Application configuration.
@@ -81,6 +81,7 @@ public:
 private:
     RailTabId m_hoveredTab = RailTabId::None;
     std::vector<RailItem> m_items;
+    LucideIcons m_lucide;
 
     /**
      * @brief Renders the customized floating tooltip card for the currently hovered item.

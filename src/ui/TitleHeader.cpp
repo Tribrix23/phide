@@ -1,6 +1,6 @@
 /**
  * @file TitleHeader.cpp
- * @brief Implementation of the Dark IDE frameless header with custom caption buttons.
+ * @brief Implementation of the Dark IDE frameless header with Lucide vector caption buttons.
  */
 
 #include "phide/ui/TitleHeader.hpp"
@@ -22,6 +22,13 @@ TitleHeader::TitleHeader() {
 void TitleHeader::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
                          float clientWidth, bool isZoomed) {
     if (!pRT) return;
+
+    // Initialize vector icon stroke styles if not yet created
+    ComPtr<ID2D1Factory> pFactory;
+    pRT->GetFactory(&pFactory);
+    if (pFactory) {
+        m_icons.Initialize(pFactory.Get());
+    }
 
     const float h = config.ScaleF(static_cast<float>(config.headerHeight));
 
@@ -75,7 +82,7 @@ void TitleHeader::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCon
         theme.brushTextSecondary.Get()
     );
 
-    // 4. Render Custom Window Caption Buttons (Minimize, Maximize, Close) in Top-Right
+    // 4. Render Vector Window Caption Controls (Minimize, Maximize, Close) in Top-Right
     const float btnW = config.ScaleF(static_cast<float>(config.captionBtnWidth)); // 46px
     float rightEdge = clientWidth;
 
@@ -84,9 +91,9 @@ void TitleHeader::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCon
     if (m_hoveredCaption == CaptionButtonType::Close) {
         // Red background when hovered as requested!
         pRT->FillRectangle(m_rcClose, theme.brushCloseHoverBg.Get());
-        pRT->DrawText(L"\u2715", 1, theme.fontCaption.Get(), m_rcClose, theme.brushTextWhite.Get());
+        m_icons.DrawClose(pRT, m_rcClose, theme.brushTextWhite.Get(), 1.25f);
     } else {
-        pRT->DrawText(L"\u2715", 1, theme.fontCaption.Get(), m_rcClose, theme.brushTextSecondary.Get());
+        m_icons.DrawClose(pRT, m_rcClose, theme.brushTextSecondary.Get(), 1.25f);
     }
     rightEdge -= btnW;
 
@@ -94,11 +101,9 @@ void TitleHeader::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCon
     m_rcMaximize = D2D1::RectF(rightEdge - btnW, 0.0f, rightEdge, h);
     if (m_hoveredCaption == CaptionButtonType::Maximize) {
         pRT->FillRectangle(m_rcMaximize, theme.brushCaptionHover.Get());
-        const wchar_t* maxGlyph = isZoomed ? L"\u29C9" : L"\u25A2";
-        pRT->DrawText(maxGlyph, 1, theme.fontCaption.Get(), m_rcMaximize, theme.brushTextWhite.Get());
+        m_icons.DrawMaximize(pRT, m_rcMaximize, theme.brushTextWhite.Get(), isZoomed, 1.25f);
     } else {
-        const wchar_t* maxGlyph = isZoomed ? L"\u29C9" : L"\u25A2";
-        pRT->DrawText(maxGlyph, 1, theme.fontCaption.Get(), m_rcMaximize, theme.brushTextSecondary.Get());
+        m_icons.DrawMaximize(pRT, m_rcMaximize, theme.brushTextSecondary.Get(), isZoomed, 1.25f);
     }
     rightEdge -= btnW;
 
@@ -106,9 +111,9 @@ void TitleHeader::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCon
     m_rcMinimize = D2D1::RectF(rightEdge - btnW, 0.0f, rightEdge, h);
     if (m_hoveredCaption == CaptionButtonType::Minimize) {
         pRT->FillRectangle(m_rcMinimize, theme.brushCaptionHover.Get());
-        pRT->DrawText(L"\u2014", 1, theme.fontCaption.Get(), m_rcMinimize, theme.brushTextWhite.Get());
+        m_icons.DrawMinimize(pRT, m_rcMinimize, theme.brushTextWhite.Get(), 1.25f);
     } else {
-        pRT->DrawText(L"\u2014", 1, theme.fontCaption.Get(), m_rcMinimize, theme.brushTextSecondary.Get());
+        m_icons.DrawMinimize(pRT, m_rcMinimize, theme.brushTextSecondary.Get(), 1.25f);
     }
 }
 

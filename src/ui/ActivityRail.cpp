@@ -1,6 +1,6 @@
 /**
  * @file ActivityRail.cpp
- * @brief Implementation of the Dark IDE activity rail with Home, Search, Git, and customized tooltips.
+ * @brief Implementation of the Dark IDE activity rail with Lucide Home, Search, Git, and customized tooltips.
  */
 
 #include "phide/ui/ActivityRail.hpp"
@@ -9,17 +9,24 @@ namespace phide::ui {
 
 ActivityRail::ActivityRail() {
     // 1. Home icon (top)
-    m_items.push_back({ RailTabId::Home,   L"\u2302", L"Home",                        {} });
+    m_items.push_back({ RailTabId::Home,   L"Home",                        {} });
 
     // 2. Search icon (directly under Home)
-    m_items.push_back({ RailTabId::Search, L"\u26B2", L"Search Workspace (Ctrl+F)",   {} });
+    m_items.push_back({ RailTabId::Search, L"Search Workspace (Ctrl+F)",   {} });
 
     // 3. Git icon (directly under Search)
-    m_items.push_back({ RailTabId::Git,    L"\u23F1", L"Source Control (Git)",        {} });
+    m_items.push_back({ RailTabId::Git,    L"Source Control (Git)",        {} });
 }
 
 void ActivityRail::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config, float clientHeight) {
     if (!pRT) return;
+
+    // Initialize vector icon stroke styles if not yet created
+    ComPtr<ID2D1Factory> pFactory;
+    pRT->GetFactory(&pFactory);
+    if (pFactory) {
+        m_lucide.Initialize(pFactory.Get());
+    }
 
     const float headerH = config.ScaleF(static_cast<float>(config.headerHeight));
     const float railW   = config.ScaleF(static_cast<float>(config.railWidth));
@@ -39,9 +46,8 @@ void ActivityRail::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
         1.0f
     );
 
-    // 2. Render Activity Rail Icons: Home -> Search -> Git
+    // 2. Render Lucide Vector Icons: Home -> Search -> Git
     float curY = headerH + config.ScaleF(12.0f);
-
     const RailItem* hoveredItemPtr = nullptr;
 
     for (auto& item : m_items) {
@@ -55,21 +61,20 @@ void ActivityRail::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
         }
 
         if (item.id == RailTabId::Home) {
-            // Home icon is styled as a distinctive rounded square badge (8px radius)
+            // Home icon: styled as a modern rounded square badge (8px radius)
             D2D1_ROUNDED_RECT rrcHome = D2D1::RoundedRect(item.bounds, 8.0f, 8.0f);
 
             if (isHovered) {
                 pRT->FillRoundedRectangle(rrcHome, theme.brushItemHover.Get());
                 pRT->DrawRoundedRectangle(rrcHome, theme.brushBorderHover.Get(), 1.0f);
-                pRT->DrawText(item.glyph, 1, theme.fontIcon.Get(), item.bounds, theme.brushTextWhite.Get());
+                m_lucide.DrawHome(pRT, item.bounds, theme.brushTextWhite.Get(), 1.8f);
             } else {
                 pRT->FillRoundedRectangle(rrcHome, theme.brushHomeBadgeBg.Get());
-                pRT->DrawText(item.glyph, 1, theme.fontIcon.Get(), item.bounds, theme.brushTextPrimary.Get());
+                m_lucide.DrawHome(pRT, item.bounds, theme.brushTextPrimary.Get(), 1.8f);
             }
-        } else {
-            // Standard tool button (Search & Git)
+        } else if (item.id == RailTabId::Search) {
+            // Search icon directly under Home
             if (isActive) {
-                // Active state with rounded rectangle and left blue accent indicator
                 D2D1_ROUNDED_RECT rrc = D2D1::RoundedRect(item.bounds, 6.0f, 6.0f);
                 pRT->FillRoundedRectangle(rrc, theme.brushItemActive.Get());
 
@@ -79,23 +84,40 @@ void ActivityRail::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
                     theme.brushBrandAccent.Get(),
                     2.5f
                 );
+                m_lucide.DrawSearch(pRT, item.bounds, theme.brushTextWhite.Get(), 1.8f);
             } else if (isHovered) {
-                // Hovered rounded rectangle
                 D2D1_ROUNDED_RECT rrc = D2D1::RoundedRect(item.bounds, 6.0f, 6.0f);
                 pRT->FillRoundedRectangle(rrc, theme.brushItemHover.Get());
+                m_lucide.DrawSearch(pRT, item.bounds, theme.brushTextWhite.Get(), 1.8f);
+            } else {
+                m_lucide.DrawSearch(pRT, item.bounds, theme.brushTextSecondary.Get(), 1.8f);
             }
+        } else if (item.id == RailTabId::Git) {
+            // Git Branch icon directly under Search
+            if (isActive) {
+                D2D1_ROUNDED_RECT rrc = D2D1::RoundedRect(item.bounds, 6.0f, 6.0f);
+                pRT->FillRoundedRectangle(rrc, theme.brushItemActive.Get());
 
-            ID2D1SolidColorBrush* textBrush = (isActive || isHovered)
-                ? theme.brushTextWhite.Get()
-                : theme.brushTextSecondary.Get();
-
-            pRT->DrawText(item.glyph, 1, theme.fontIcon.Get(), item.bounds, textBrush);
+                pRT->DrawLine(
+                    D2D1::Point2F(1.0f, item.bounds.top + 4.0f),
+                    D2D1::Point2F(1.0f, item.bounds.bottom - 4.0f),
+                    theme.brushBrandAccent.Get(),
+                    2.5f
+                );
+                m_lucide.DrawGitBranch(pRT, item.bounds, theme.brushTextWhite.Get(), 1.8f);
+            } else if (isHovered) {
+                D2D1_ROUNDED_RECT rrc = D2D1::RoundedRect(item.bounds, 6.0f, 6.0f);
+                pRT->FillRoundedRectangle(rrc, theme.brushItemHover.Get());
+                m_lucide.DrawGitBranch(pRT, item.bounds, theme.brushTextWhite.Get(), 1.8f);
+            } else {
+                m_lucide.DrawGitBranch(pRT, item.bounds, theme.brushTextSecondary.Get(), 1.8f);
+            }
         }
 
         curY += btnSize + spacing;
     }
 
-    // 3. Render Customized Floating Tooltip for Hovered Icon
+    // 3. Render Customized Floating Tooltip Card for Hovered Icon
     if (hoveredItemPtr) {
         RenderCustomTooltip(pRT, theme, config, *hoveredItemPtr);
     }
@@ -113,7 +135,7 @@ void ActivityRail::RenderCustomTooltip(ID2D1RenderTarget* pRT, Theme& theme, con
     float textW = config.ScaleF(static_cast<float>(textLen * 7 + 16));
     float tipW = textW + tipPadX * 2.0f;
 
-    // Position tooltip to the right of the rail, vertically centered on the icon
+    // Position tooltip to the right of the rail, vertically centered on the active icon
     float tipX = railW + config.ScaleF(10.0f);
     float tipY = item.bounds.top + (btnSize - tipH) / 2.0f;
 

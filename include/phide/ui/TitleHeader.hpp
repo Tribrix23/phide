@@ -1,8 +1,8 @@
 /**
  * @file TitleHeader.hpp
- * @brief Dark IDE frameless header containing menu bar, title, and custom caption buttons (min, max, close).
+ * @brief Dark IDE frameless header containing menu bar, title, and Lucide vector caption buttons.
  * 
- * Features custom Direct2D window controls in the top-right corner with a red hover
+ * Features crisp vector-drawn window controls (minimize, maximize, close) with red hover
  * background on the Close button, seamless title dragging, and no horizontal divider line.
  */
 
@@ -15,6 +15,7 @@
 #include <vector>
 #include "phide/app/AppConfig.hpp"
 #include "phide/ui/Theme.hpp"
+#include "phide/ui/LucideIcons.hpp"
 
 namespace phide::ui {
 
@@ -110,6 +111,7 @@ private:
     CaptionButtonType m_hoveredCaption = CaptionButtonType::None;
 
     std::vector<MenuItem> m_menus;
+    LucideIcons m_icons;
 
     // Bounding rectangles for caption buttons
     D2D1_RECT_F m_rcMinimize{};
