@@ -66,9 +66,9 @@ void ActivityRail::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
         pRT->FillRectangle(rcRail, theme.brushRailBg.Get());
     }
 
-    // Right border divider: continuous line along the entire height of the rail for seamless connectivity
+    // Right border divider: starts below the header (header has no vertical line next to icon, as requested)
     pRT->DrawLine(
-        D2D1::Point2F(railW - 0.5f, 0.0f),
+        D2D1::Point2F(railW - 0.5f, headerH),
         D2D1::Point2F(railW - 0.5f, clientHeight),
         theme.brushBorderSubtle.Get(),
         0.8f
