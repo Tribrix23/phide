@@ -39,36 +39,39 @@ void ActivityRail::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
         m_lastRailH = clientHeight;
         m_pRailGradientBrush.Reset();
 
-        D2D1_GRADIENT_STOP stops[4];
+        // Getting darker downwards, fading to pure black at the bottom (matching user request)
+        D2D1_GRADIENT_STOP stops[5];
         stops[0] = { 0.00f, D2D1::ColorF(0.24f, 0.08f, 0.38f, 1.0f) }; // #3D1461 - Seamlessly matches header's left edge
-        stops[1] = { 0.35f, D2D1::ColorF(0.18f, 0.06f, 0.30f, 1.0f) }; // #2E0F4D - Deep Royal Violet
-        stops[2] = { 0.70f, D2D1::ColorF(0.14f, 0.05f, 0.24f, 1.0f) }; // #240D3D - Twilight Purple
-        stops[3] = { 1.00f, D2D1::ColorF(0.10f, 0.04f, 0.18f, 1.0f) }; // #1A0A2E - Deep Atmospheric Base
+        stops[1] = { 0.20f, D2D1::ColorF(0.16f, 0.05f, 0.26f, 1.0f) }; // #290D42 - Deep Violet
+        stops[2] = { 0.45f, D2D1::ColorF(0.09f, 0.03f, 0.15f, 1.0f) }; // #170826 - Darkening Twilight
+        stops[3] = { 0.70f, D2D1::ColorF(0.05f, 0.02f, 0.07f, 1.0f) }; // #0D0512 - Very Dark
+        stops[4] = { 1.00f, D2D1::ColorF(0.03f, 0.03f, 0.04f, 1.0f) }; // #08080A - Pure Obsidian Black at bottom
 
         ComPtr<ID2D1GradientStopCollection> pStopColl;
-        if (SUCCEEDED(pRT->CreateGradientStopCollection(stops, 4, &pStopColl))) {
+        if (SUCCEEDED(pRT->CreateGradientStopCollection(stops, 5, &pStopColl))) {
             D2D1_LINEAR_GRADIENT_BRUSH_PROPERTIES props = D2D1::LinearGradientBrushProperties(
-                D2D1::Point2F(0.0f, headerH),
+                D2D1::Point2F(0.0f, 0.0f),
                 D2D1::Point2F(0.0f, clientHeight)
             );
             pRT->CreateLinearGradientBrush(props, pStopColl.Get(), &m_pRailGradientBrush);
         }
     }
 
-    // 1. Draw Rail Background with Vertical Purple Glass Gradient
-    D2D1_RECT_F rcRail = D2D1::RectF(0.0f, headerH, railW, clientHeight);
+    // 1. Draw Rail Background with Vertical Purple Glass Gradient (seamless fusion with header)
+    D2D1_RECT_F rcRail = D2D1::RectF(0.0f, 0.0f, railW, clientHeight);
     if (m_pRailGradientBrush) {
         pRT->FillRectangle(rcRail, m_pRailGradientBrush.Get());
     } else {
         pRT->FillRectangle(rcRail, theme.brushRailBg.Get());
     }
 
-    // Right border divider (#2C2C2C)
+    // Right border divider: starts below the rounded corner to avoid any line clashing at the junction
+    const float dividerStartY = headerH + config.ScaleF(14.0f);
     pRT->DrawLine(
-        D2D1::Point2F(railW - 0.5f, headerH),
+        D2D1::Point2F(railW - 0.5f, dividerStartY),
         D2D1::Point2F(railW - 0.5f, clientHeight),
         theme.brushBorderSubtle.Get(),
-        1.0f
+        0.8f
     );
 
     // 2. Render Lucide Vector Icons matching Image 2

@@ -20,11 +20,8 @@ void EditorCanvas::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
     D2D1_RECT_F rcCanvas = D2D1::RectF(canvasLeft, headerH, canvasLeft + canvasWidth, clientHeight);
     D2D1_ROUNDED_RECT rrcCanvas = D2D1::RoundedRect(rcCanvas, 12.0f, 12.0f);
 
-    // Fill dark workspace surface (#1E1E1E)
+    // Fill dark workspace surface (#1E1E1E) with seamless rounded corner (no clashing border line)
     pRT->FillRoundedRectangle(rrcCanvas, theme.brushCanvasBg.Get());
-
-    // 1px subtle container border
-    pRT->DrawRoundedRectangle(rrcCanvas, theme.brushBorderSubtle.Get(), 1.0f);
 
     // 2. Render Centered Clean Dark IDE Watermark & Quick Keybindings
     const float centerY = headerH + (clientHeight - headerH) / 2.0f;

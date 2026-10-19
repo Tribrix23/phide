@@ -107,7 +107,8 @@ bool Window::Create(HINSTANCE hInstance, int nCmdShow) {
     // Start 500ms Caret blink timer
     SetTimer(m_hwnd, m_caretTimerId, 500, nullptr);
 
-    ShowWindow(m_hwnd, nCmdShow);
+    // Launch application whole screen (maximized) as requested
+    ShowWindow(m_hwnd, SW_MAXIMIZE);
     UpdateWindow(m_hwnd);
 
     return true;
