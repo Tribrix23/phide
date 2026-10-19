@@ -4,6 +4,7 @@
  */
 
 #include "phide/ui/ActivityRail.hpp"
+#include "phide/ui/PhideLogo.hpp"
 
 namespace phide::ui {
 
@@ -65,16 +66,34 @@ void ActivityRail::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
         pRT->FillRectangle(rcRail, theme.brushRailBg.Get());
     }
 
-    // Right border divider: starts below the rounded corner to avoid any line clashing at the junction
-    const float dividerStartY = headerH + config.ScaleF(14.0f);
+    // Right border divider: continuous line along the entire height of the rail for seamless connectivity
     pRT->DrawLine(
-        D2D1::Point2F(railW - 0.5f, dividerStartY),
+        D2D1::Point2F(railW - 0.5f, 0.0f),
         D2D1::Point2F(railW - 0.5f, clientHeight),
         theme.brushBorderSubtle.Get(),
         0.8f
     );
 
-    // 2. Render Lucide Vector Icons matching Image 2
+    // 2. Render Square Phide Brand Logo in Upper-Left Box ([0..railW] x [0..headerH])
+    if (!m_pLogoBitmap) {
+        D2D1_SIZE_U size = D2D1::SizeU(kPhideLogoWidth, kPhideLogoHeight);
+        D2D1_BITMAP_PROPERTIES props = D2D1::BitmapProperties(
+            D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED)
+        );
+        pRT->CreateBitmap(size, g_phideLogoBgra, kPhideLogoWidth * 4, props, &m_pLogoBitmap);
+    }
+
+    const float logoSize = config.ScaleF(28.0f);
+    const float logoX = (railW - logoSize) / 2.0f;
+    const float logoY = (headerH - logoSize) / 2.0f;
+    m_rcLogo = D2D1::RectF(logoX, logoY, logoX + logoSize, logoY + logoSize);
+
+    if (m_pLogoBitmap) {
+        // Render the user's Phide icon strictly as a crisp square ("it should stay as quare")
+        pRT->DrawBitmap(m_pLogoBitmap.Get(), m_rcLogo);
+    }
+
+    // 3. Render Lucide Vector Icons matching Image 2
     float curY = headerH + config.ScaleF(12.0f);
     const RailItem* hoveredItemPtr = nullptr;
 

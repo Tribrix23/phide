@@ -28,13 +28,15 @@ void TitleHeader::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCon
 
     const float h = config.ScaleF(static_cast<float>(config.headerHeight));
 
+    const float railW = config.ScaleF(static_cast<float>(config.railWidth));
+
     // Ensure horizontal purple-to-black glass gradient brush is initialized/updated
     if (!m_pHeaderGradientBrush || std::abs(m_lastWidth - clientWidth) >= 1.0f) {
         m_lastWidth = clientWidth;
         m_pHeaderGradientBrush.Reset();
 
         D2D1_GRADIENT_STOP stops[6];
-        stops[0] = { 0.00f, D2D1::ColorF(0.24f, 0.08f, 0.38f, 1.0f) }; // #3D1461 - Rich Glass Purple on the left
+        stops[0] = { 0.00f, D2D1::ColorF(0.24f, 0.08f, 0.38f, 1.0f) }; // #3D1461 - Seamlessly matches rail's purple
         stops[1] = { 0.20f, D2D1::ColorF(0.18f, 0.06f, 0.30f, 1.0f) }; // #2E0F4D - Deep Royal Violet
         stops[2] = { 0.42f, D2D1::ColorF(0.12f, 0.04f, 0.21f, 1.0f) }; // #1F0B36 - Dark Twilight Purple
         stops[3] = { 0.65f, D2D1::ColorF(0.07f, 0.03f, 0.13f, 1.0f) }; // #120721 - Midnight Shadow
@@ -44,15 +46,15 @@ void TitleHeader::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCon
         ComPtr<ID2D1GradientStopCollection> pStopColl;
         if (SUCCEEDED(pRT->CreateGradientStopCollection(stops, 6, &pStopColl))) {
             D2D1_LINEAR_GRADIENT_BRUSH_PROPERTIES props = D2D1::LinearGradientBrushProperties(
-                D2D1::Point2F(0.0f, 0.0f),
+                D2D1::Point2F(railW, 0.0f),
                 D2D1::Point2F(clientWidth, 0.0f)
             );
             pRT->CreateLinearGradientBrush(props, pStopColl.Get(), &m_pHeaderGradientBrush);
         }
     }
 
-    // 1. Draw Glass Purple-to-Black Header Background
-    D2D1_RECT_F rcHeader = D2D1::RectF(0.0f, 0.0f, clientWidth, h);
+    // 1. Draw Glass Purple-to-Black Header Background (starting at railW for seamless fusion with rail)
+    D2D1_RECT_F rcHeader = D2D1::RectF(railW, 0.0f, clientWidth, h);
     if (m_pHeaderGradientBrush) {
         pRT->FillRectangle(rcHeader, m_pHeaderGradientBrush.Get());
     } else {

@@ -92,6 +92,10 @@ private:
     // Direct2D Purple Glass Vertical Gradient Brush
     Microsoft::WRL::ComPtr<ID2D1LinearGradientBrush> m_pRailGradientBrush;
     float m_lastRailH = -1.0f;
+
+    // Phide Square Brand Logo (embedded from user image)
+    Microsoft::WRL::ComPtr<ID2D1Bitmap> m_pLogoBitmap;
+    D2D1_RECT_F m_rcLogo{};
 };
 
 } // namespace phide::ui

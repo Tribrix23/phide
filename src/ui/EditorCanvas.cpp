@@ -16,73 +16,11 @@ void EditorCanvas::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
 
     const float headerH = config.ScaleF(static_cast<float>(config.headerHeight));
     const float canvasRight = canvasLeft + canvasWidth;
-    const float cornerRadius = 12.0f;
 
-    // Check if cached geometry needs rebuilding (e.g. on resize or layout changes)
-    if (!m_pCanvasGeometry ||
-        m_cachedLeft != canvasLeft ||
-        m_cachedTop != headerH ||
-        m_cachedRight != canvasRight ||
-        m_cachedBottom != clientHeight)
-    {
-        m_cachedLeft   = canvasLeft;
-        m_cachedTop    = headerH;
-        m_cachedRight  = canvasRight;
-        m_cachedBottom = clientHeight;
-        m_pCanvasGeometry.Reset();
-
-        Microsoft::WRL::ComPtr<ID2D1Factory> pFactory;
-        pRT->GetFactory(&pFactory);
-        if (pFactory) {
-            Microsoft::WRL::ComPtr<ID2D1PathGeometry> pPath;
-            if (SUCCEEDED(pFactory->CreatePathGeometry(&pPath))) {
-                Microsoft::WRL::ComPtr<ID2D1GeometrySink> sink;
-                if (SUCCEEDED(pPath->Open(&sink))) {
-                    const float maxR = (std::min)(canvasWidth / 2.0f, (clientHeight - headerH) / 2.0f);
-                    const float r = (maxR > 0.0f) ? (std::min)(cornerRadius, maxR) : 0.0f;
-
-                    // 1. Begin at the top edge right after the upper-left rounded corner
-                    sink->BeginFigure(D2D1::Point2F(canvasLeft + r, headerH), D2D1_FIGURE_BEGIN_FILLED);
-
-                    // 2. Top edge straight to top-right corner (SHARP - not curved)
-                    sink->AddLine(D2D1::Point2F(canvasRight, headerH));
-
-                    // 3. Right edge straight down to bottom-right corner (SHARP - not curved)
-                    sink->AddLine(D2D1::Point2F(canvasRight, clientHeight));
-
-                    // 4. Bottom edge straight to bottom-left corner (SHARP - not curved)
-                    sink->AddLine(D2D1::Point2F(canvasLeft, clientHeight));
-
-                    // 5. Left edge straight up to start of the upper-left curve
-                    sink->AddLine(D2D1::Point2F(canvasLeft, headerH + r));
-
-                    // 6. Arc around ONLY the upper-left corner
-                    if (r > 0.0f) {
-                        D2D1_ARC_SEGMENT arc = {};
-                        arc.point = D2D1::Point2F(canvasLeft + r, headerH);
-                        arc.size = D2D1::SizeF(r, r);
-                        arc.rotationAngle = 0.0f;
-                        arc.sweepDirection = D2D1_SWEEP_DIRECTION_CLOCKWISE;
-                        arc.arcSize = D2D1_ARC_SIZE_SMALL;
-                        sink->AddArc(arc);
-                    }
-
-                    sink->EndFigure(D2D1_FIGURE_END_CLOSED);
-                    sink->Close();
-
-                    m_pCanvasGeometry = pPath;
-                }
-            }
-        }
-    }
-
-    // 1. Fill dark workspace surface (#1E1E1E) with geometry curved ONLY at upper-left
-    if (m_pCanvasGeometry) {
-        pRT->FillGeometry(m_pCanvasGeometry.Get(), theme.brushCanvasBg.Get());
-    } else {
-        D2D1_RECT_F rcFallback = D2D1::RectF(canvasLeft, headerH, canvasRight, clientHeight);
-        pRT->FillRectangle(rcFallback, theme.brushCanvasBg.Get());
-    }
+    // 1. Draw Clean Dark Canvas Background (#1E1E1E) with Sharp Square Corners ("it should stay as quare")
+    // Flush against the activity rail on the left and frameless header on the top (no gaps, no disconnected color)
+    D2D1_RECT_F rcCanvas = D2D1::RectF(canvasLeft, headerH, canvasRight, clientHeight);
+    pRT->FillRectangle(rcCanvas, theme.brushCanvasBg.Get());
 
     // 2. Render Centered Clean Dark IDE Watermark & Quick Keybindings
     const float centerY = headerH + (clientHeight - headerH) / 2.0f;
