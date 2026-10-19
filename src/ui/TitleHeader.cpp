@@ -12,11 +12,7 @@ static bool PtInRectF(POINT pt, const D2D1_RECT_F& rc) {
 }
 
 TitleHeader::TitleHeader() {
-    m_menus.push_back({ HeaderMenuId::File,    L"File",    {} });
-    m_menus.push_back({ HeaderMenuId::Edit,    L"Edit",    {} });
-    m_menus.push_back({ HeaderMenuId::View,    L"View",    {} });
-    m_menus.push_back({ HeaderMenuId::Project, L"Project", {} });
-    m_menus.push_back({ HeaderMenuId::Help,    L"Help",    {} });
+    // Menu bar items removed as requested (clean modern glass header)
 }
 
 void TitleHeader::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
@@ -71,34 +67,7 @@ void TitleHeader::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCon
         0.8f
     );
 
-    // 2. Render Left Menu Bar (File, Edit, View, Project, Help)
-    float curX = config.ScaleF(12.0f);
-    const float menuH = config.ScaleF(24.0f);
-    const float menuY = (h - menuH) / 2.0f;
-
-    for (auto& item : m_menus) {
-        float textWidth = config.ScaleF(static_cast<float>(wcslen(item.label) * 9 + 16));
-        item.bounds = D2D1::RectF(curX, menuY, curX + textWidth, menuY + menuH);
-
-        if (m_hoveredMenu == item.id) {
-            D2D1_ROUNDED_RECT rrc = D2D1::RoundedRect(item.bounds, 4.0f, 4.0f);
-            pRT->FillRoundedRectangle(rrc, theme.brushItemHover.Get());
-        }
-
-        ID2D1SolidColorBrush* brush = (m_hoveredMenu == item.id)
-            ? theme.brushTextPrimary.Get()
-            : theme.brushTextSecondary.Get();
-
-        pRT->DrawText(
-            item.label,
-            static_cast<UINT32>(wcslen(item.label)),
-            theme.fontMenu.Get(),
-            item.bounds,
-            brush
-        );
-
-        curX += textWidth + config.ScaleF(2.0f);
-    }
+    // 2. Left Menu Bar (File, Edit, View, Project, Help) removed as requested (clean minimal glass header)
 
     // 3. Render Vector Window Caption Controls (Minimize, Maximize, Close) in Top-Right
     const float btnW = config.ScaleF(static_cast<float>(config.captionBtnWidth)); // 46px
