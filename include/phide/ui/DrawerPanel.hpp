@@ -65,6 +65,28 @@ public:
      */
     bool SetHoveredIndex(int index);
 
+    /**
+     * @brief Gets a pointer to the tree item at the specified index.
+     */
+    [[nodiscard]] const DrawerTreeItem* GetItem(int index) const {
+        if (index >= 0 && index < static_cast<int>(m_mockFileTree.size())) {
+            return &m_mockFileTree[index];
+        }
+        return nullptr;
+    }
+
+    /**
+     * @brief Toggles folder open/closed state.
+     */
+    void ToggleFolder(int index) {
+        if (index >= 0 && index < static_cast<int>(m_mockFileTree.size())) {
+            if (m_mockFileTree[index].isFolder) {
+                m_mockFileTree[index].isExpanded = !m_mockFileTree[index].isExpanded;
+                m_mockFileTree[index].iconGlyph = m_mockFileTree[index].isExpanded ? L"\u25BE \u25A4" : L"\u25B8 \u25A4";
+            }
+        }
+    }
+
 private:
     int m_hoveredIndex = -1;
     std::vector<DrawerTreeItem> m_mockFileTree;

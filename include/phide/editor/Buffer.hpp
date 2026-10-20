@@ -69,10 +69,52 @@ public:
      */
     void Backspace();
 
+    /**
+     * @brief Navigates cursor up, down, left, right.
+     */
+    void MoveCursorLeft();
+    void MoveCursorRight();
+    void MoveCursorUp();
+    void MoveCursorDown();
+
+    /**
+     * @brief Clears the buffer to empty state.
+     */
+    void Clear();
+
+    /**
+     * @brief Sets text content from lines or string.
+     */
+    void SetLines(const std::vector<std::wstring>& lines);
+    void SetText(const std::wstring& text);
+
+    /**
+     * @brief Loads text file from disk into buffer lines.
+     */
+    bool LoadFromFile(const std::wstring& path);
+
+    /**
+     * @brief Saves buffer lines to file on disk.
+     */
+    bool SaveToFile(const std::wstring& path);
+
+    [[nodiscard]] const std::wstring& GetFilePath() const noexcept { return m_filePath; }
+    void SetFilePath(const std::wstring& path) { m_filePath = path; }
+
+    [[nodiscard]] const std::wstring& GetFileName() const noexcept { return m_fileName; }
+    void SetFileName(const std::wstring& name) { m_fileName = name; }
+
+    [[nodiscard]] bool IsModified() const noexcept { return m_isModified; }
+    void SetModified(bool mod) noexcept { m_isModified = mod; }
+
 private:
     std::vector<std::wstring> m_lines;
-    CursorPosition m_cursor{ 8, 4 };
+    CursorPosition m_cursor{ 0, 0 };
     SyntaxLexer m_lexer;
+
+    std::wstring m_filePath;
+    std::wstring m_fileName;
+    bool m_isModified = false;
 
     void LoadDefaultSample();
 };

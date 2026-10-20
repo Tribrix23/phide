@@ -4,8 +4,12 @@
  */
 
 #include "phide/editor/Buffer.hpp"
+#include <windows.h>
 #include <cwctype>
 #include <algorithm>
+#include <fstream>
+#include <sstream>
+#include <filesystem>
 
 namespace phide::editor {
 
@@ -183,6 +187,7 @@ void Buffer::InsertChar(wchar_t ch) {
         line.insert(line.begin() + m_cursor.col, ch);
         m_cursor.col++;
     }
+    m_isModified = true;
 }
 
 void Buffer::Backspace() {
@@ -193,6 +198,7 @@ void Buffer::Backspace() {
     if (m_cursor.col > 0) {
         line.erase(m_cursor.col - 1, 1);
         m_cursor.col--;
+        m_isModified = true;
     } else if (m_cursor.line > 0) {
         // Join with previous line
         size_t prevLen = m_lines[m_cursor.line - 1].length();
@@ -200,7 +206,139 @@ void Buffer::Backspace() {
         m_lines.erase(m_lines.begin() + m_cursor.line);
         m_cursor.line--;
         m_cursor.col = prevLen;
+        m_isModified = true;
     }
+}
+
+void Buffer::MoveCursorLeft() {
+    if (m_cursor.col > 0) {
+        m_cursor.col--;
+    } else if (m_cursor.line > 0) {
+        m_cursor.line--;
+        m_cursor.col = m_lines[m_cursor.line].length();
+    }
+}
+
+void Buffer::MoveCursorRight() {
+    if (m_cursor.line < m_lines.size()) {
+        if (m_cursor.col < m_lines[m_cursor.line].length()) {
+            m_cursor.col++;
+        } else if (m_cursor.line + 1 < m_lines.size()) {
+            m_cursor.line++;
+            m_cursor.col = 0;
+        }
+    }
+}
+
+void Buffer::MoveCursorUp() {
+    if (m_cursor.line > 0) {
+        m_cursor.line--;
+        if (m_cursor.col > m_lines[m_cursor.line].length()) {
+            m_cursor.col = m_lines[m_cursor.line].length();
+        }
+    }
+}
+
+void Buffer::MoveCursorDown() {
+    if (m_cursor.line + 1 < m_lines.size()) {
+        m_cursor.line++;
+        if (m_cursor.col > m_lines[m_cursor.line].length()) {
+            m_cursor.col = m_lines[m_cursor.line].length();
+        }
+    }
+}
+
+void Buffer::Clear() {
+    m_lines.clear();
+    m_lines.push_back(L"");
+    m_cursor = { 0, 0 };
+    m_isModified = false;
+}
+
+void Buffer::SetLines(const std::vector<std::wstring>& lines) {
+    m_lines = lines;
+    if (m_lines.empty()) m_lines.push_back(L"");
+    m_cursor = { 0, 0 };
+    m_isModified = false;
+}
+
+void Buffer::SetText(const std::wstring& text) {
+    m_lines.clear();
+    std::wistringstream ss(text);
+    std::wstring line;
+    while (std::getline(ss, line)) {
+        if (!line.empty() && line.back() == L'\r') line.pop_back();
+        m_lines.push_back(line);
+    }
+    if (m_lines.empty()) m_lines.push_back(L"");
+    m_cursor = { 0, 0 };
+    m_isModified = false;
+}
+
+bool Buffer::LoadFromFile(const std::wstring& path) {
+    std::ifstream file(std::filesystem::path(path), std::ios::binary);
+    if (!file.is_open()) return false;
+
+    std::stringstream buffer;
+    buffer << file.rdbuf();
+    std::string bytes = buffer.str();
+
+    // Convert UTF-8 to wstring
+    std::wstring wide;
+    if (!bytes.empty()) {
+        int wlen = MultiByteToWideChar(CP_UTF8, 0, bytes.data(), static_cast<int>(bytes.size()), nullptr, 0);
+        if (wlen > 0) {
+            wide.resize(wlen);
+            MultiByteToWideChar(CP_UTF8, 0, bytes.data(), static_cast<int>(bytes.size()), &wide[0], wlen);
+        }
+    }
+
+    SetText(wide);
+    m_filePath = path;
+
+    // Extract filename from path
+    auto pos = path.find_last_of(L"\\/");
+    if (pos != std::wstring::npos) {
+        m_fileName = path.substr(pos + 1);
+    } else {
+        m_fileName = path;
+    }
+
+    m_isModified = false;
+    return true;
+}
+
+bool Buffer::SaveToFile(const std::wstring& path) {
+    std::ofstream file(std::filesystem::path(path), std::ios::binary | std::ios::trunc);
+    if (!file.is_open()) return false;
+
+    // Concatenate lines with \r\n
+    std::wstring combined;
+    for (size_t i = 0; i < m_lines.size(); ++i) {
+        combined += m_lines[i];
+        if (i + 1 < m_lines.size()) combined += L"\r\n";
+    }
+
+    // Convert wstring to UTF-8
+    if (!combined.empty()) {
+        int ulen = WideCharToMultiByte(CP_UTF8, 0, combined.data(), static_cast<int>(combined.size()), nullptr, 0, nullptr, nullptr);
+        if (ulen > 0) {
+            std::string u8(ulen, 0);
+            WideCharToMultiByte(CP_UTF8, 0, combined.data(), static_cast<int>(combined.size()), &u8[0], ulen, nullptr, nullptr);
+            file.write(u8.data(), u8.size());
+        }
+    }
+
+    m_filePath = path;
+    auto pos = path.find_last_of(L"\\/");
+    if (pos != std::wstring::npos) {
+        m_fileName = path.substr(pos + 1);
+    } else {
+        m_fileName = path;
+    }
+
+    m_isModified = false;
+    return true;
 }
 
 } // namespace phide::editor

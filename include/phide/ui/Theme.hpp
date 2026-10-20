@@ -62,6 +62,19 @@ struct ThemeColors {
     D2D1_COLOR_F menuHover       = D2D1::ColorF(0.0f, 0.471f, 0.831f, 1.0f);   // #0078D4 (VS Code Selection Blue)
     D2D1_COLOR_F menuText        = D2D1::ColorF(0.800f, 0.800f, 0.800f, 1.0f);  // #CCCCCC
     D2D1_COLOR_F menuShortcut    = D2D1::ColorF(0.550f, 0.550f, 0.550f, 1.0f);  // #8C8C8C
+
+    // Syntax Highlighting & Code Surface Colors
+    D2D1_COLOR_F syntaxKeyword   = D2D1::ColorF(0.773f, 0.525f, 0.753f, 1.0f);  // #C586C0 (VS Code Keyword Purple)
+    D2D1_COLOR_F syntaxType      = D2D1::ColorF(0.306f, 0.788f, 0.690f, 1.0f);  // #4EC9B0 (Turquoise)
+    D2D1_COLOR_F syntaxString    = D2D1::ColorF(0.808f, 0.569f, 0.471f, 1.0f);  // #CE9178 (Orange-Brown)
+    D2D1_COLOR_F syntaxComment   = D2D1::ColorF(0.416f, 0.600f, 0.333f, 1.0f);  // #6A9955 (Green)
+    D2D1_COLOR_F syntaxNumber    = D2D1::ColorF(0.710f, 0.808f, 0.659f, 1.0f);  // #B5CEA8 (Light Mint)
+    D2D1_COLOR_F syntaxOperator  = D2D1::ColorF(0.831f, 0.831f, 0.831f, 1.0f);  // #D4D4D4 (Light Neutral)
+    D2D1_COLOR_F lineNumber      = D2D1::ColorF(0.522f, 0.522f, 0.522f, 1.0f);  // #858585 (Gutter Line Numbers)
+    D2D1_COLOR_F currentLineBg   = D2D1::ColorF(0.145f, 0.145f, 0.145f, 1.0f);  // #252525 (Current Line Highlight)
+    D2D1_COLOR_F tabBarBg        = D2D1::ColorF(0.094f, 0.094f, 0.094f, 1.0f);  // #181818 (Tab Bar Surface)
+    D2D1_COLOR_F tabActiveBg     = D2D1::ColorF(0.118f, 0.118f, 0.118f, 1.0f);  // #1E1E1E (Active Tab Surface)
+    D2D1_COLOR_F tabBorder       = D2D1::ColorF(0.173f, 0.173f, 0.173f, 1.0f);  // #2C2C2C
 };
 
 /**
@@ -117,6 +130,17 @@ public:
     ComPtr<ID2D1SolidColorBrush> brushMenuHover;
     ComPtr<ID2D1SolidColorBrush> brushMenuText;
     ComPtr<ID2D1SolidColorBrush> brushMenuShortcut;
+    ComPtr<ID2D1SolidColorBrush> brushSyntaxKeyword;
+    ComPtr<ID2D1SolidColorBrush> brushSyntaxType;
+    ComPtr<ID2D1SolidColorBrush> brushSyntaxString;
+    ComPtr<ID2D1SolidColorBrush> brushSyntaxComment;
+    ComPtr<ID2D1SolidColorBrush> brushSyntaxNumber;
+    ComPtr<ID2D1SolidColorBrush> brushSyntaxOperator;
+    ComPtr<ID2D1SolidColorBrush> brushLineNumber;
+    ComPtr<ID2D1SolidColorBrush> brushCurrentLineBg;
+    ComPtr<ID2D1SolidColorBrush> brushTabBarBg;
+    ComPtr<ID2D1SolidColorBrush> brushTabActiveBg;
+    ComPtr<ID2D1SolidColorBrush> brushTabBorder;
 
     // DirectWrite Text Formats
     ComPtr<IDWriteTextFormat> fontTitle;         ///< 12px Semi-bold for title
@@ -124,6 +148,7 @@ public:
     ComPtr<IDWriteTextFormat> fontMenuItem;      ///< 12px Regular Left-aligned for dropdown items
     ComPtr<IDWriteTextFormat> fontMenuShortcut;  ///< 11.5px Regular Right-aligned for shortcuts
     ComPtr<IDWriteTextFormat> fontBody;          ///< 13px Regular for UI elements
+    ComPtr<IDWriteTextFormat> fontCode;          ///< 13px Consolas Monospace for code lines
     ComPtr<IDWriteTextFormat> fontSectionHeader; ///< 11px Semi-bold Leading for section titles (EXPLORER)
     ComPtr<IDWriteTextFormat> fontIcon;          ///< 14px Symbol font for glyphs
     ComPtr<IDWriteTextFormat> fontCaption;       ///< 12px Caption button font

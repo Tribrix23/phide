@@ -81,6 +81,17 @@ private:
      */
     void ToggleSidebar();
 
+    // File Action Handlers
+    void DoNewTextFile();
+    void DoOpenFile();
+    void DoOpenFolder();
+    void DoSaveFile();
+    void DoSaveFileAs();
+    void DoCloseEditor();
+    void OpenFileByName(const std::wstring& name);
+    void LoadFileFromPath(const std::wstring& path);
+    void SaveFileToPath(const std::wstring& path);
+
     // Win32 & D2D handles
     HWND m_hwnd = nullptr;
     ComPtr<ID2D1Factory> m_pD2DFactory;
@@ -101,6 +112,13 @@ private:
 
     bool m_trackingMouse = false;
     bool m_wordWrap = false;
+    bool m_hasOpenFile = false;
+    std::wstring m_currentFilePath;
+    std::wstring m_currentFileName;
+    bool m_isDirty = false;
+    bool m_autoSave = true;
+    bool m_chordCtrlK = false;
+
     UINT_PTR m_caretTimerId = 1001;
     UINT_PTR m_animTimerId  = 1002;
 

@@ -43,8 +43,8 @@ EditorCanvas::EditorCanvas() = default;
 
 void EditorCanvas::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
                           const editor::Buffer& buffer, float canvasLeft, float canvasWidth, float clientHeight,
-                          bool hasLeftDrawer) {
-    (void)buffer;
+                          bool hasLeftDrawer, bool hasOpenFile,
+                          const std::wstring& currentFileName, bool isDirty) {
     if (!pRT) return;
 
     const float headerH = config.ScaleF(static_cast<float>(config.headerHeight));
@@ -119,7 +119,20 @@ void EditorCanvas::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
         pRT->FillRectangle(rcFallback, theme.brushCanvasBg.Get());
     }
 
-    // 2. Render Centered Metallic White Brand Logo & Modern Keybinding Card (Appealing developer aesthetic, no emojis)
+    if (!hasOpenFile) {
+        // When no file is open: render metallic watermark logo & keybinding cheat-sheet
+        m_tabCloseBounds = {};
+        RenderPlaceholder(pRT, theme, config, canvasLeft, canvasWidth, headerH, clientHeight);
+    } else {
+        // When a file is open: REMOVE placeholder! Put actual tabs and code editor surface there!
+        const float tabH = config.ScaleF(34.0f);
+        RenderTabs(pRT, theme, config, canvasLeft, canvasWidth, headerH, currentFileName, isDirty);
+        RenderCode(pRT, theme, config, buffer, canvasLeft, canvasWidth, headerH + tabH, clientHeight);
+    }
+}
+
+void EditorCanvas::RenderPlaceholder(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
+                                     float canvasLeft, float canvasWidth, float headerH, float clientHeight) {
     const float centerY = headerH + (clientHeight - headerH) / 2.0f;
 
     // Initialize metallic white watermark bitmap if needed
@@ -141,7 +154,7 @@ void EditorCanvas::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
         pRT->DrawBitmap(m_pWatermarkBitmap.Get(), rcLogo);
     }
 
-    // 3. Render Visually Appealing Keybinding Cheat-sheet Card (No emojis, sleek tactile keycaps)
+    // Render Visually Appealing Keybinding Cheat-sheet Card (No emojis, sleek tactile keycaps)
     const float cardW = config.ScaleF(360.0f);
     const float cardH = config.ScaleF(118.0f);
     const float cardX = canvasLeft + (canvasWidth - cardW) / 2.0f;
@@ -187,6 +200,250 @@ void EditorCanvas::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
     DrawKeycap(pRT, theme, config, L"Shift", rx3, row3CenterY, capH);
     DrawPlus(pRT, theme, config, rx3, row3CenterY, capH);
     DrawKeycap(pRT, theme, config, L"Ctrl", rx3, row3CenterY, capH);
+}
+
+void EditorCanvas::RenderTabs(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
+                              float canvasLeft, float canvasWidth, float headerH,
+                              const std::wstring& currentFileName, bool isDirty) {
+    const float tabH = config.ScaleF(34.0f);
+
+    // 1. Tab Bar Background (#181818)
+    D2D1_RECT_F rcTabBar = D2D1::RectF(canvasLeft, headerH, canvasLeft + canvasWidth, headerH + tabH);
+    pRT->FillRectangle(rcTabBar, theme.brushTabBarBg.Get());
+
+    // Bottom border of tab bar
+    pRT->DrawLine(
+        D2D1::Point2F(canvasLeft, headerH + tabH - 0.5f),
+        D2D1::Point2F(canvasLeft + canvasWidth, headerH + tabH - 0.5f),
+        theme.brushTabBorder.Get(),
+        1.0f
+    );
+
+    // 2. Active Tab
+    const float tabW = config.ScaleF(160.0f);
+    D2D1_RECT_F rcTab = D2D1::RectF(canvasLeft, headerH, canvasLeft + tabW, headerH + tabH);
+    pRT->FillRectangle(rcTab, theme.brushTabActiveBg.Get());
+
+    // Top active tab highlight border (2px Accent Blue)
+    pRT->DrawLine(
+        D2D1::Point2F(rcTab.left, headerH + 1.0f),
+        D2D1::Point2F(rcTab.right, headerH + 1.0f),
+        theme.brushBrandAccent.Get(),
+        2.0f
+    );
+
+    // Right tab divider line
+    pRT->DrawLine(
+        D2D1::Point2F(rcTab.right - 0.5f, headerH),
+        D2D1::Point2F(rcTab.right - 0.5f, headerH + tabH),
+        theme.brushTabBorder.Get(),
+        1.0f
+    );
+
+    // File Glyph Icon
+    const wchar_t* glyph = L"\u2261"; // Document/code
+    if (currentFileName.ends_with(L".cpp") || currentFileName.ends_with(L".h") || currentFileName.ends_with(L".hpp")) {
+        glyph = L"\u2699"; // Gear for C++
+    } else if (currentFileName.ends_with(L".php")) {
+        glyph = L"\u272A"; // Star for PHP
+    }
+    D2D1_RECT_F rcGlyph = D2D1::RectF(rcTab.left + config.ScaleF(10.0f), headerH, rcTab.left + config.ScaleF(26.0f), headerH + tabH);
+    pRT->DrawText(glyph, static_cast<UINT32>(wcslen(glyph)), theme.fontMenu.Get(), rcGlyph, theme.brushBrandAccent.Get());
+
+    // File Title
+    std::wstring title = currentFileName.empty() ? L"Untitled-1" : currentFileName;
+    if (isDirty) title += L" \u2022";
+    D2D1_RECT_F rcTitle = D2D1::RectF(
+        rcTab.left + config.ScaleF(28.0f),
+        headerH,
+        rcTab.right - config.ScaleF(24.0f),
+        headerH + tabH
+    );
+    pRT->DrawText(title.c_str(), static_cast<UINT32>(title.length()), theme.fontMenuItem.Get(), rcTitle, theme.brushTextWhite.Get());
+
+    // Close Tab Button (×)
+    const float closeSize = config.ScaleF(16.0f);
+    const float closeX = rcTab.right - config.ScaleF(20.0f);
+    const float closeY = headerH + (tabH - closeSize) / 2.0f;
+    m_tabCloseBounds = D2D1::RectF(closeX, closeY, closeX + closeSize, closeY + closeSize);
+
+    // Vector '×' mark
+    const float cx = closeX + closeSize / 2.0f;
+    const float cy = closeY + closeSize / 2.0f;
+    const float r = config.ScaleF(3.5f);
+    pRT->DrawLine(D2D1::Point2F(cx - r, cy - r), D2D1::Point2F(cx + r, cy + r), theme.brushTextSecondary.Get(), 1.2f);
+    pRT->DrawLine(D2D1::Point2F(cx + r, cy - r), D2D1::Point2F(cx - r, cy + r), theme.brushTextSecondary.Get(), 1.2f);
+}
+
+void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
+                              const editor::Buffer& buffer, float canvasLeft, float canvasWidth,
+                              float topY, float clientHeight) {
+    const float gutterW = config.ScaleF(50.0f);
+    const float lineH   = config.ScaleF(20.0f);
+    const float charW   = config.ScaleF(7.8f);
+    const float canvasRight = canvasLeft + canvasWidth;
+
+    // 1. Gutter Background & Divider
+    D2D1_RECT_F rcGutter = D2D1::RectF(canvasLeft, topY, canvasLeft + gutterW, clientHeight);
+    pRT->FillRectangle(rcGutter, theme.brushCanvasBg.Get());
+
+    pRT->DrawLine(
+        D2D1::Point2F(canvasLeft + gutterW - 0.5f, topY),
+        D2D1::Point2F(canvasLeft + gutterW - 0.5f, clientHeight),
+        theme.brushBorderSubtle.Get(),
+        1.0f
+    );
+
+    // 2. Current Line Highlight
+    auto cursor = buffer.GetCursor();
+    float activeLineY = topY + config.ScaleF(6.0f) + cursor.line * lineH;
+    if (activeLineY >= topY && activeLineY + lineH <= clientHeight) {
+        D2D1_RECT_F rcActiveLine = D2D1::RectF(canvasLeft + gutterW, activeLineY, canvasRight, activeLineY + lineH);
+        pRT->FillRectangle(rcActiveLine, theme.brushCurrentLineBg.Get());
+    }
+
+    // 3. Line Numbers & Code Lines
+    const size_t totalLines = buffer.GetLineCount();
+    const float codeLeft = canvasLeft + gutterW + config.ScaleF(12.0f);
+
+    // Clip code to editor boundaries
+    D2D1_RECT_F clipCode = D2D1::RectF(canvasLeft, topY, canvasRight, clientHeight);
+    pRT->PushAxisAlignedClip(clipCode, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+
+    for (size_t i = 0; i < totalLines; ++i) {
+        float lineY = topY + config.ScaleF(6.0f) + i * lineH;
+        if (lineY + lineH < topY || lineY > clientHeight) continue;
+
+        // Line Number in Gutter (Right-aligned)
+        std::wstring lineNumStr = std::to_wstring(i + 1);
+        D2D1_RECT_F rcNum = D2D1::RectF(
+            canvasLeft + config.ScaleF(4.0f),
+            lineY,
+            canvasLeft + gutterW - config.ScaleF(8.0f),
+            lineY + lineH
+        );
+        ID2D1Brush* numBrush = (i == cursor.line) ? theme.brushTextPrimary.Get() : theme.brushLineNumber.Get();
+        pRT->DrawText(
+            lineNumStr.c_str(),
+            static_cast<UINT32>(lineNumStr.length()),
+            theme.fontMenuShortcut.Get(),
+            rcNum,
+            numBrush
+        );
+
+        // Code Content
+        const auto& lineStr = buffer.GetLine(i);
+        if (lineStr.empty()) continue;
+
+        auto tokens = buffer.GetTokensForLine(i);
+        if (tokens.empty()) {
+            D2D1_RECT_F rcLine = D2D1::RectF(codeLeft, lineY, canvasRight, lineY + lineH);
+            pRT->DrawText(
+                lineStr.c_str(),
+                static_cast<UINT32>(lineStr.length()),
+                theme.fontCode ? theme.fontCode.Get() : theme.fontBody.Get(),
+                rcLine,
+                theme.brushTextPrimary.Get()
+            );
+        } else {
+            // Draw syntax tokens
+            for (const auto& tok : tokens) {
+                if (tok.startCol + tok.length > lineStr.length()) continue;
+
+                float tokenX = codeLeft + tok.startCol * charW;
+                float tokenW = tok.length * charW;
+                D2D1_RECT_F rcTok = D2D1::RectF(tokenX, lineY, tokenX + tokenW, lineY + lineH);
+
+                ID2D1Brush* brush = theme.brushTextPrimary.Get();
+                switch (tok.type) {
+                    case editor::TokenType::Keyword:
+                        brush = theme.brushSyntaxKeyword.Get();
+                        break;
+                    case editor::TokenType::Type:
+                        brush = theme.brushSyntaxType.Get();
+                        break;
+                    case editor::TokenType::String:
+                        brush = theme.brushSyntaxString.Get();
+                        break;
+                    case editor::TokenType::Comment:
+                        brush = theme.brushSyntaxComment.Get();
+                        break;
+                    case editor::TokenType::Number:
+                        brush = theme.brushSyntaxNumber.Get();
+                        break;
+                    case editor::TokenType::Operator:
+                        brush = theme.brushSyntaxOperator.Get();
+                        break;
+                    default:
+                        brush = theme.brushTextPrimary.Get();
+                        break;
+                }
+
+                pRT->DrawText(
+                    lineStr.c_str() + tok.startCol,
+                    static_cast<UINT32>(tok.length),
+                    theme.fontCode ? theme.fontCode.Get() : theme.fontBody.Get(),
+                    rcTok,
+                    brush
+                );
+            }
+        }
+    }
+
+    // 4. Blinking Caret
+    if (m_caretVisible) {
+        float caretX = codeLeft + cursor.col * charW;
+        float caretY = topY + config.ScaleF(6.0f) + cursor.line * lineH;
+        if (caretY >= topY && caretY + lineH <= clientHeight) {
+            pRT->DrawLine(
+                D2D1::Point2F(caretX, caretY + config.ScaleF(2.0f)),
+                D2D1::Point2F(caretX, caretY + lineH - config.ScaleF(2.0f)),
+                theme.brushTextWhite.Get(),
+                1.5f
+            );
+        }
+    }
+
+    pRT->PopAxisAlignedClip();
+}
+
+bool EditorCanvas::HitTestTabClose(POINT pt) const {
+    return (pt.x >= m_tabCloseBounds.left && pt.x <= m_tabCloseBounds.right &&
+            pt.y >= m_tabCloseBounds.top && pt.y <= m_tabCloseBounds.bottom);
+}
+
+bool EditorCanvas::HitTestCodeArea(POINT pt, const app::AppConfig& config, const editor::Buffer& buffer,
+                                   float canvasLeft, float clientHeight, size_t& outLine, size_t& outCol) const {
+    const float headerH = config.ScaleF(static_cast<float>(config.headerHeight));
+    const float tabH    = config.ScaleF(34.0f);
+    const float topY    = headerH + tabH;
+    const float gutterW = config.ScaleF(50.0f);
+    const float lineH   = config.ScaleF(20.0f);
+    const float charW   = config.ScaleF(7.8f);
+
+    if (pt.x < canvasLeft + gutterW || pt.y < topY || pt.y > clientHeight) {
+        return false;
+    }
+
+    float relY = pt.y - (topY + config.ScaleF(6.0f));
+    if (relY < 0.0f) relY = 0.0f;
+    size_t line = static_cast<size_t>(relY / lineH);
+
+    float relX = pt.x - (canvasLeft + gutterW + config.ScaleF(12.0f));
+    if (relX < 0.0f) relX = 0.0f;
+    size_t col = static_cast<size_t>((relX + charW * 0.5f) / charW);
+
+    if (line >= buffer.GetLineCount()) {
+        line = buffer.GetLineCount() > 0 ? buffer.GetLineCount() - 1 : 0;
+    }
+    const auto& lineStr = buffer.GetLine(line);
+    if (col > lineStr.length()) {
+        col = lineStr.length();
+    }
+
+    outLine = line;
+    outCol  = col;
+    return true;
 }
 
 } // namespace phide::ui

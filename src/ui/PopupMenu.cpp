@@ -27,6 +27,18 @@ void PopupMenu::OpenViewMenu(float x, float y, const app::AppConfig& config,
     LayoutMenu(m_items, x, y, menuW, config, m_mainMenuBounds);
 }
 
+void PopupMenu::OpenFileMenu(float x, float y, const app::AppConfig& config, bool autoSave) {
+    m_isOpen = true;
+    m_hoveredMainIdx = -1;
+    m_activeSubmenuIdx = -1;
+    m_hoveredSubmenuIdx = -1;
+
+    BuildFileMenuItems(autoSave);
+
+    const float menuW = config.ScaleF(245.0f);
+    LayoutMenu(m_items, x, y, menuW, config, m_mainMenuBounds);
+}
+
 void PopupMenu::Close() {
     m_isOpen = false;
     m_hoveredMainIdx = -1;
@@ -110,6 +122,115 @@ void PopupMenu::BuildViewMenuItems(bool isSidebarOpen, bool isZoomed, bool wordW
 
     // 7. Word Wrap (Alt+Z)
     m_items.push_back({ MenuActionId::WordWrap,       L"Word Wrap",          L"Alt+Z",        false, wordWrap, false, {} });
+}
+
+void PopupMenu::BuildFileMenuItems(bool autoSave) {
+    m_items.clear();
+
+    // 1. New Text File (Ctrl+N)
+    m_items.push_back({ MenuActionId::NewTextFile, L"New Text File", L"Ctrl+N", false, false, false, {} });
+    // 2. New File... (Ctrl+Alt+Windows+N)
+    m_items.push_back({ MenuActionId::NewFile, L"New File...", L"Ctrl+Alt+Windows+N", false, false, false, {} });
+    // 3. New Window (Ctrl+Shift+N)
+    m_items.push_back({ MenuActionId::NewWindow, L"New Window", L"Ctrl+Shift+N", false, false, false, {} });
+
+    // 4. New Window with Profile ▸
+    PopupMenuItem winProfile;
+    winProfile.actionId = MenuActionId::NewWindowWithProfile;
+    winProfile.label = L"New Window with Profile";
+    winProfile.hasSubmenu = true;
+    winProfile.submenuItems.push_back({ MenuActionId::None, L"Default", L"", false, true, false, {} });
+    winProfile.submenuItems.push_back({ MenuActionId::None, L"Empty Profile", L"", false, false, false, {} });
+    m_items.push_back(std::move(winProfile));
+
+    // --- Separator ---
+    m_items.push_back({ MenuActionId::None, L"", L"", true, false, false, {} });
+
+    // 5. Open File... (Ctrl+O)
+    m_items.push_back({ MenuActionId::OpenFile, L"Open File...", L"Ctrl+O", false, false, false, {} });
+    // 6. Open Folder... (Ctrl+K Ctrl+O)
+    m_items.push_back({ MenuActionId::OpenFolder, L"Open Folder...", L"Ctrl+K Ctrl+O", false, false, false, {} });
+    // 7. Open Workspace from File...
+    m_items.push_back({ MenuActionId::OpenWorkspaceFromFile, L"Open Workspace from File...", L"", false, false, false, {} });
+
+    // 8. Open Recent ▸
+    PopupMenuItem openRecent;
+    openRecent.actionId = MenuActionId::OpenRecent;
+    openRecent.label = L"Open Recent";
+    openRecent.hasSubmenu = true;
+    openRecent.submenuItems.push_back({ MenuActionId::None, L"phide", L"", false, false, false, {} });
+    openRecent.submenuItems.push_back({ MenuActionId::None, L"Reopen Closed Editor", L"Ctrl+Shift+T", false, false, false, {} });
+    openRecent.submenuItems.push_back({ MenuActionId::None, L"", L"", true, false, false, {} });
+    openRecent.submenuItems.push_back({ MenuActionId::None, L"Clear Recently Opened", L"", false, false, false, {} });
+    m_items.push_back(std::move(openRecent));
+
+    // --- Separator ---
+    m_items.push_back({ MenuActionId::None, L"", L"", true, false, false, {} });
+
+    // 9. Add Folder to Workspace...
+    m_items.push_back({ MenuActionId::AddFolderToWorkspace, L"Add Folder to Workspace...", L"", false, false, false, {} });
+    // 10. Save Workspace As...
+    m_items.push_back({ MenuActionId::SaveWorkspaceAs, L"Save Workspace As...", L"", false, false, false, {} });
+    // 11. Duplicate Workspace
+    m_items.push_back({ MenuActionId::DuplicateWorkspace, L"Duplicate Workspace", L"", false, false, false, {} });
+
+    // --- Separator ---
+    m_items.push_back({ MenuActionId::None, L"", L"", true, false, false, {} });
+
+    // 12. Save (Ctrl+S)
+    m_items.push_back({ MenuActionId::Save, L"Save", L"Ctrl+S", false, false, false, {} });
+    // 13. Save As... (Ctrl+Shift+S)
+    m_items.push_back({ MenuActionId::SaveAs, L"Save As...", L"Ctrl+Shift+S", false, false, false, {} });
+    // 14. Save All (Ctrl+K S)
+    m_items.push_back({ MenuActionId::SaveAll, L"Save All", L"Ctrl+K S", false, false, false, {} });
+
+    // --- Separator ---
+    m_items.push_back({ MenuActionId::None, L"", L"", true, false, false, {} });
+
+    // 15. Share ▸
+    PopupMenuItem shareItem;
+    shareItem.actionId = MenuActionId::Share;
+    shareItem.label = L"Share";
+    shareItem.hasSubmenu = true;
+    shareItem.submenuItems.push_back({ MenuActionId::None, L"Export Profile...", L"", false, false, false, {} });
+    shareItem.submenuItems.push_back({ MenuActionId::None, L"Import Profile...", L"", false, false, false, {} });
+    m_items.push_back(std::move(shareItem));
+
+    // --- Separator ---
+    m_items.push_back({ MenuActionId::None, L"", L"", true, false, false, {} });
+
+    // 16. Auto Save (✓)
+    m_items.push_back({ MenuActionId::ToggleAutoSave, L"Auto Save", L"", false, autoSave, false, {} });
+
+    // 17. Preferences ▸
+    PopupMenuItem prefItem;
+    prefItem.actionId = MenuActionId::Preferences;
+    prefItem.label = L"Preferences";
+    prefItem.hasSubmenu = true;
+    prefItem.submenuItems.push_back({ MenuActionId::None, L"Settings", L"Ctrl+,", false, false, false, {} });
+    prefItem.submenuItems.push_back({ MenuActionId::None, L"Keyboard Shortcuts", L"Ctrl+K Ctrl+S", false, false, false, {} });
+    prefItem.submenuItems.push_back({ MenuActionId::None, L"User Snippets", L"", false, false, false, {} });
+    prefItem.submenuItems.push_back({ MenuActionId::None, L"", L"", true, false, false, {} });
+    prefItem.submenuItems.push_back({ MenuActionId::None, L"Theme", L"Ctrl+K Ctrl+T", false, false, false, {} });
+    m_items.push_back(std::move(prefItem));
+
+    // --- Separator ---
+    m_items.push_back({ MenuActionId::None, L"", L"", true, false, false, {} });
+
+    // 18. Revert File
+    m_items.push_back({ MenuActionId::RevertFile, L"Revert File", L"", false, false, false, {} });
+    // 19. Close Editor (Ctrl+F4)
+    m_items.push_back({ MenuActionId::CloseEditor, L"Close Editor", L"Ctrl+F4", false, false, false, {} });
+    // 20. Close Folder (Ctrl+K F)
+    m_items.push_back({ MenuActionId::CloseFolder, L"Close Folder", L"Ctrl+K F", false, false, false, {} });
+    // 21. Close Window (Alt+F4)
+    m_items.push_back({ MenuActionId::CloseWindow, L"Close Window", L"Alt+F4", false, false, false, {} });
+
+    // --- Separator ---
+    m_items.push_back({ MenuActionId::None, L"", L"", true, false, false, {} });
+
+    // 22. Exit
+    m_items.push_back({ MenuActionId::Exit, L"Exit", L"", false, false, false, {} });
 }
 
 void PopupMenu::LayoutMenu(std::vector<PopupMenuItem>& items, float startX, float startY, float width,

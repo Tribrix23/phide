@@ -28,6 +28,30 @@ namespace phide::ui {
 enum class MenuActionId {
     None = 0,
 
+    // File Menu Actions
+    NewTextFile,
+    NewFile,
+    NewWindow,
+    NewWindowWithProfile,
+    OpenFile,
+    OpenFolder,
+    OpenWorkspaceFromFile,
+    OpenRecent,
+    AddFolderToWorkspace,
+    SaveWorkspaceAs,
+    DuplicateWorkspace,
+    Save,
+    SaveAs,
+    SaveAll,
+    Share,
+    ToggleAutoSave,
+    Preferences,
+    RevertFile,
+    CloseEditor,
+    CloseFolder,
+    CloseWindow,
+    Exit,
+
     // Main View Menu Actions
     CommandPalette,
     OpenView,
@@ -107,6 +131,15 @@ public:
                       bool isSidebarOpen, bool isZoomed, bool wordWrap = false);
 
     /**
+     * @brief Opens the File dropdown menu at the specified anchor point.
+     * @param x Left coordinate of the anchor.
+     * @param y Top coordinate of the anchor.
+     * @param config Application metrics.
+     * @param autoSave Whether auto save is currently toggled on.
+     */
+    void OpenFileMenu(float x, float y, const app::AppConfig& config, bool autoSave = true);
+
+    /**
      * @brief Closes the popup menu and any open submenus.
      */
     void Close();
@@ -145,6 +178,7 @@ public:
 
 private:
     void BuildViewMenuItems(bool isSidebarOpen, bool isZoomed, bool wordWrap);
+    void BuildFileMenuItems(bool autoSave);
     void LayoutMenu(std::vector<PopupMenuItem>& items, float startX, float startY, float width,
                     const app::AppConfig& config, D2D1_RECT_F& outBounds);
     void LayoutSubmenu(int parentItemIdx, const app::AppConfig& config, float clientW, float clientH);

@@ -41,7 +41,7 @@ set "SOURCES=src\main.cpp src\app\Window.cpp src\ui\Theme.cpp src\ui\LucideIcons
 
 :: 4. Compile with MSVC (C++20, Optimizations, Unicode, Native Subsystem)
 echo [INFO] Compiling C++20 sources with MSVC cl.exe...
-cl /nologo /EHsc /std:c++20 /O2 /W3 /utf-8 /DUNICODE /D_UNICODE /I include !SOURCES! /Fe:bin\phide.exe /Fo:bin\ /link /SUBSYSTEM:WINDOWS user32.lib gdi32.lib dwmapi.lib d2d1.lib dwrite.lib ole32.lib shell32.lib
+cl /nologo /EHsc /std:c++20 /O2 /W3 /utf-8 /DUNICODE /D_UNICODE /I include !SOURCES! /Fe:bin\phide.exe /Fo:bin\ /link /SUBSYSTEM:WINDOWS user32.lib gdi32.lib dwmapi.lib d2d1.lib dwrite.lib ole32.lib shell32.lib comdlg32.lib
 
 if %errorlevel% equ 0 (
     echo ======================================================================

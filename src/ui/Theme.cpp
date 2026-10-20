@@ -43,6 +43,19 @@ HRESULT Theme::CreateDeviceResources(ID2D1RenderTarget* pRT, IDWriteFactory* pDW
     pRT->CreateSolidColorBrush(colors.menuText, &brushMenuText);
     pRT->CreateSolidColorBrush(colors.menuShortcut, &brushMenuShortcut);
 
+    // Allocate Syntax & Editor Surface Brushes
+    pRT->CreateSolidColorBrush(colors.syntaxKeyword, &brushSyntaxKeyword);
+    pRT->CreateSolidColorBrush(colors.syntaxType, &brushSyntaxType);
+    pRT->CreateSolidColorBrush(colors.syntaxString, &brushSyntaxString);
+    pRT->CreateSolidColorBrush(colors.syntaxComment, &brushSyntaxComment);
+    pRT->CreateSolidColorBrush(colors.syntaxNumber, &brushSyntaxNumber);
+    pRT->CreateSolidColorBrush(colors.syntaxOperator, &brushSyntaxOperator);
+    pRT->CreateSolidColorBrush(colors.lineNumber, &brushLineNumber);
+    pRT->CreateSolidColorBrush(colors.currentLineBg, &brushCurrentLineBg);
+    pRT->CreateSolidColorBrush(colors.tabBarBg, &brushTabBarBg);
+    pRT->CreateSolidColorBrush(colors.tabActiveBg, &brushTabActiveBg);
+    pRT->CreateSolidColorBrush(colors.tabBorder, &brushTabBorder);
+
     // Create DirectWrite Text Formats
     // 1. Title Font
     hr = pDWriteFactory->CreateTextFormat(
@@ -126,6 +139,23 @@ HRESULT Theme::CreateDeviceResources(ID2D1RenderTarget* pRT, IDWriteFactory* pDW
         fontBody->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
         fontBody->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
         fontBody->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+    }
+
+    // 3a. Monospace Code Font (13px Consolas)
+    pDWriteFactory->CreateTextFormat(
+        L"Consolas",
+        nullptr,
+        DWRITE_FONT_WEIGHT_REGULAR,
+        DWRITE_FONT_STYLE_NORMAL,
+        DWRITE_FONT_STRETCH_NORMAL,
+        13.0f,
+        L"en-US",
+        &fontCode
+    );
+    if (fontCode) {
+        fontCode->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
+        fontCode->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+        fontCode->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
     }
 
     // 3b. Section Header Font (EXPLORER)
@@ -220,6 +250,7 @@ void Theme::DiscardDeviceResources() {
     fontSectionHeader.Reset();
     fontMenuItem.Reset();
     fontMenuShortcut.Reset();
+    fontCode.Reset();
     brushWindowBg.Reset();
     brushCanvasBg.Reset();
     brushHeaderBg.Reset();
@@ -247,6 +278,17 @@ void Theme::DiscardDeviceResources() {
     brushMenuHover.Reset();
     brushMenuText.Reset();
     brushMenuShortcut.Reset();
+    brushSyntaxKeyword.Reset();
+    brushSyntaxType.Reset();
+    brushSyntaxString.Reset();
+    brushSyntaxComment.Reset();
+    brushSyntaxNumber.Reset();
+    brushSyntaxOperator.Reset();
+    brushLineNumber.Reset();
+    brushCurrentLineBg.Reset();
+    brushTabBarBg.Reset();
+    brushTabActiveBg.Reset();
+    brushTabBorder.Reset();
 }
 
 } // namespace phide::ui
