@@ -93,13 +93,27 @@ void TitleHeader::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCon
         item.bounds = D2D1::RectF(curX, btnY, curX + btnSize, btnY + btnSize);
 
         bool isHovered = (m_hoveredMenu == item.id);
-        if (isHovered) {
-            hoveredItemPtr = &item;
+        bool isActiveSidebar = (item.id == HeaderMenuId::Sidebar && config.isDrawerOpen);
+
+        if (isActiveSidebar) {
+            D2D1_ROUNDED_RECT rrc = D2D1::RoundedRect(item.bounds, 4.0f, 4.0f);
+            if (isHovered) {
+                pRT->FillRoundedRectangle(rrc, theme.brushCaptionHover.Get());
+            } else {
+                pRT->FillRoundedRectangle(rrc, theme.brushItemActive.Get());
+            }
+            // Crisp border highlight indicating active state
+            pRT->DrawRoundedRectangle(rrc, theme.brushBorderHover.Get(), 1.0f);
+        } else if (isHovered) {
             D2D1_ROUNDED_RECT rrc = D2D1::RoundedRect(item.bounds, 4.0f, 4.0f);
             pRT->FillRoundedRectangle(rrc, theme.brushItemHover.Get());
         }
 
-        ID2D1Brush* brush = isHovered ? theme.brushTextWhite.Get() : theme.brushTextSecondary.Get();
+        if (isHovered) {
+            hoveredItemPtr = &item;
+        }
+
+        ID2D1Brush* brush = (isActiveSidebar || isHovered) ? theme.brushTextWhite.Get() : theme.brushTextSecondary.Get();
 
         switch (item.id) {
             case HeaderMenuId::Sidebar:

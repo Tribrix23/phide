@@ -29,7 +29,15 @@ Window::~Window() {
     DiscardDeviceResources();
     if (m_hwnd) {
         KillTimer(m_hwnd, m_caretTimerId);
+        KillTimer(m_hwnd, m_animTimerId);
     }
+}
+
+void Window::ToggleSidebar() {
+    m_config.isDrawerOpen = !m_config.isDrawerOpen;
+    m_targetDrawerProgress = m_config.isDrawerOpen ? 1.0f : 0.0f;
+    m_isDrawerAnimating = true;
+    SetTimer(m_hwnd, m_animTimerId, 16, nullptr);
 }
 
 LRESULT CALLBACK Window::WndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
@@ -106,6 +114,11 @@ bool Window::Create(HINSTANCE hInstance, int nCmdShow) {
 
     // Start 500ms Caret blink timer
     SetTimer(m_hwnd, m_caretTimerId, 500, nullptr);
+
+    // Initialize sidebar sliding animation state
+    m_drawerAnimProgress   = m_config.isDrawerOpen ? 1.0f : 0.0f;
+    m_targetDrawerProgress = m_drawerAnimProgress;
+    m_isDrawerAnimating    = false;
 
     // Launch application whole screen (maximized) as requested
     ShowWindow(m_hwnd, SW_MAXIMIZE);
@@ -188,27 +201,27 @@ void Window::OnPaint() {
     const float clientW = static_cast<float>(rc.right - rc.left);
     const float clientH = static_cast<float>(rc.bottom - rc.top);
 
-    // Layout Subsystem Dimensions
+    // Layout Subsystem Dimensions with Smooth Sliding Animation
     const float railW   = m_config.ScaleF(static_cast<float>(m_config.railWidth));
-    const float drawerW = m_config.isDrawerOpen
-        ? m_config.ScaleF(static_cast<float>(m_config.drawerWidth))
-        : 0.0f;
+    const float fullDrawerW = m_config.ScaleF(static_cast<float>(m_config.drawerWidth));
+    const float currentDrawerW = fullDrawerW * m_drawerAnimProgress;
+    const bool hasLeftDrawer = (m_drawerAnimProgress > 0.001f);
 
-    const float canvasLeft  = railW + drawerW;
+    const float canvasLeft  = railW + currentDrawerW;
     const float canvasWidth = (std::max)(100.0f, clientW - canvasLeft);
 
-    // 1. Render Clean Dark Workspace Canvas (with rounded container corners)
-    m_editor.Render(m_pRenderTarget.Get(), m_theme, m_config, m_buffer, canvasLeft, canvasWidth, clientH);
+    // 1. Render Clean Dark Workspace Canvas (sharp top-left when drawer is open, 14px rounded curve when drawer is closed)
+    m_editor.Render(m_pRenderTarget.Get(), m_theme, m_config, m_buffer, canvasLeft, canvasWidth, clientH, hasLeftDrawer);
 
-    // 2. Render Slide-out Drawer Panel (when expanded)
-    if (m_config.isDrawerOpen) {
-        m_drawer.Render(m_pRenderTarget.Get(), m_theme, m_config, clientH);
+    // 2. Render Slide-out Drawer Panel (when visible or animating, with 14px rounded curve at top-left)
+    if (hasLeftDrawer) {
+        m_drawer.Render(m_pRenderTarget.Get(), m_theme, m_config, clientH, currentDrawerW);
     }
 
     // 3. Render Collapsed Activity Rail (Home -> Search -> Git with customized tooltips)
     m_rail.Render(m_pRenderTarget.Get(), m_theme, m_config, clientH);
 
-    // 4. Render Dark Frameless Title Header at Top (with Minimize, Maximize, and Red-hover Close button)
+    // 4. Render Dark Frameless Title Header at Top (with active highlight on Sidebar button when open)
     m_header.Render(m_pRenderTarget.Get(), m_theme, m_config, clientW, IsZoomed(m_hwnd));
 
     HRESULT hr = m_pRenderTarget->EndDraw();
@@ -274,7 +287,7 @@ void Window::HandleMouseMove(POINT clientPt) {
     if (m_rail.SetHoveredTab(hoveredRail)) needRepaint = true;
 
     // Check Drawer hover
-    if (m_config.isDrawerOpen) {
+    if (m_drawerAnimProgress > 0.001f) {
         int hoveredTree = m_drawer.HitTest(clientPt, m_config);
         if (m_drawer.SetHoveredIndex(hoveredTree)) needRepaint = true;
     }
@@ -307,8 +320,8 @@ void Window::HandleLButtonDown(POINT clientPt) {
     auto execHit = m_header.HitTestExecButton(clientPt);
     if (execHit != ui::HeaderExecId::None) {
         if (execHit == ui::HeaderExecId::Terminal) {
-            // Toggle sidebar drawer or active view
-            m_config.isDrawerOpen = !m_config.isDrawerOpen;
+            // Toggle sidebar drawer with smooth sliding animation
+            ToggleSidebar();
         }
         InvalidateRect(m_hwnd, nullptr, FALSE);
         return;
@@ -318,9 +331,8 @@ void Window::HandleLButtonDown(POINT clientPt) {
     auto menuHit = m_header.HitTestMenu(clientPt);
     if (menuHit != ui::HeaderMenuId::None) {
         if (menuHit == ui::HeaderMenuId::Sidebar) {
-            // Toggle sidebar drawer panel
-            m_config.isDrawerOpen = !m_config.isDrawerOpen;
-            InvalidateRect(m_hwnd, nullptr, FALSE);
+            // Toggle sidebar drawer panel with smooth sliding animation
+            ToggleSidebar();
         }
         return;
     }
@@ -331,15 +343,6 @@ void Window::HandleLButtonDown(POINT clientPt) {
         int clickedTab = static_cast<int>(railHit);
         // Switch the active rail tab highlight badge
         m_config.activeRailTab = clickedTab;
-        // Do NOT open the sidebar drawer when clicking (remains cleanly collapsed as requested)
-        m_config.isDrawerOpen = false;
-        InvalidateRect(m_hwnd, nullptr, FALSE);
-        return;
-    }
-
-    // 5. Drawer Close Button Click
-    if (m_config.isDrawerOpen && m_drawer.HitTestCloseButton(clientPt)) {
-        m_config.isDrawerOpen = false;
         InvalidateRect(m_hwnd, nullptr, FALSE);
         return;
     }
@@ -383,11 +386,10 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     return TRUE;
                 }
 
-                // Also provide pointer hand cursor over caption buttons, menus, execution buttons, and drawer close button
+                // Also provide pointer hand cursor over caption buttons, menus, and execution buttons
                 if (m_header.HitTestCaptionButton(pt) != ui::CaptionButtonType::None ||
                     m_header.HitTestMenu(pt) != ui::HeaderMenuId::None ||
-                    m_header.HitTestExecButton(pt) != ui::HeaderExecId::None ||
-                    (m_config.isDrawerOpen && m_drawer.HitTestCloseButton(pt))) {
+                    m_header.HitTestExecButton(pt) != ui::HeaderExecId::None) {
                     SetCursor(LoadCursor(nullptr, IDC_HAND));
                     return TRUE;
                 }
@@ -435,6 +437,10 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
         }
 
         case WM_KEYDOWN: {
+            if (wParam == 'B' && (GetKeyState(VK_CONTROL) & 0x8000)) {
+                ToggleSidebar();
+                return 0;
+            }
             if (wParam == VK_BACK) {
                 m_buffer.Backspace();
                 InvalidateRect(m_hwnd, nullptr, FALSE);
@@ -461,6 +467,17 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
         case WM_TIMER: {
             if (wParam == m_caretTimerId) {
                 m_editor.ToggleCaretBlink();
+                InvalidateRect(m_hwnd, nullptr, FALSE);
+            } else if (wParam == m_animTimerId) {
+                const float speed = 0.22f; // Smooth, quick sliding animation
+                float diff = m_targetDrawerProgress - m_drawerAnimProgress;
+                if (std::abs(diff) < 0.005f) {
+                    m_drawerAnimProgress = m_targetDrawerProgress;
+                    m_isDrawerAnimating = false;
+                    KillTimer(m_hwnd, m_animTimerId);
+                } else {
+                    m_drawerAnimProgress += diff * speed;
+                }
                 InvalidateRect(m_hwnd, nullptr, FALSE);
             }
             return 0;

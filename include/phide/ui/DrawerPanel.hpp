@@ -41,28 +41,22 @@ public:
     ~DrawerPanel() = default;
 
     /**
-     * @brief Paints the drawer background, header, and contents.
+     * @brief Paints the drawer background, header, and contents with animated width and upper-left curve.
      * @param pRT Active Direct2D render target.
      * @param theme Visual theme.
      * @param config Application configuration.
      * @param clientHeight Height of the client window.
+     * @param currentDrawerW Current animated drawer width.
      */
-    void Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config, float clientHeight);
+    void Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config, float clientHeight, float currentDrawerW);
 
     /**
-     * @brief Performs hit-testing on drawer items or close button.
+     * @brief Performs hit-testing on drawer items.
      * @param pt Mouse point in client coordinates.
      * @param config Application configuration.
      * @return Index of clicked tree item, or -1.
      */
     int HitTest(POINT pt, const app::AppConfig& config) const;
-
-    /**
-     * @brief Tests if the mouse is over the drawer close button.
-     * @param pt Mouse point.
-     * @return True if clicking close button.
-     */
-    bool HitTestCloseButton(POINT pt) const;
 
     /**
      * @brief Sets the hovered tree item.
@@ -73,8 +67,12 @@ public:
 
 private:
     int m_hoveredIndex = -1;
-    D2D1_RECT_F m_rcCloseBtn{};
     std::vector<DrawerTreeItem> m_mockFileTree;
+    Microsoft::WRL::ComPtr<ID2D1PathGeometry> m_pDrawerBgGeometry;
+    float m_cachedRailW = -1.0f;
+    float m_cachedHeaderH = -1.0f;
+    float m_cachedDrawerW = -1.0f;
+    float m_cachedClientH = -1.0f;
 };
 
 } // namespace phide::ui

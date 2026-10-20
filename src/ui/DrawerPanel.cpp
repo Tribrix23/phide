@@ -20,26 +20,92 @@ DrawerPanel::DrawerPanel() {
     m_mockFileTree.push_back({ L"CMakeLists.txt",L"\u2261",       1, false, false, {} });
 }
 
-void DrawerPanel::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config, float clientHeight) {
-    if (!pRT || !config.isDrawerOpen) return;
+void DrawerPanel::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config, float clientHeight, float currentDrawerW) {
+    if (!pRT || currentDrawerW <= 0.0f) return;
 
     const float headerH = config.ScaleF(static_cast<float>(config.headerHeight));
     const float railW   = config.ScaleF(static_cast<float>(config.railWidth));
-    const float drawerW = config.ScaleF(static_cast<float>(config.drawerWidth));
+    const float cornerRadius = 14.0f;
 
-    // 1. Draw Drawer Background
-    D2D1_RECT_F rcDrawer = D2D1::RectF(railW, headerH, railW + drawerW, clientHeight);
-    pRT->FillRectangle(rcDrawer, theme.brushDrawerBg.Get());
+    // Check if cached geometry needs rebuilding
+    if (!m_pDrawerBgGeometry ||
+        m_cachedRailW != railW ||
+        m_cachedHeaderH != headerH ||
+        m_cachedDrawerW != currentDrawerW ||
+        m_cachedClientH != clientHeight)
+    {
+        m_cachedRailW   = railW;
+        m_cachedHeaderH = headerH;
+        m_cachedDrawerW = currentDrawerW;
+        m_cachedClientH = clientHeight;
+        m_pDrawerBgGeometry.Reset();
+
+        Microsoft::WRL::ComPtr<ID2D1Factory> pFactory;
+        pRT->GetFactory(&pFactory);
+        if (pFactory) {
+            Microsoft::WRL::ComPtr<ID2D1PathGeometry> pPath;
+            if (SUCCEEDED(pFactory->CreatePathGeometry(&pPath))) {
+                Microsoft::WRL::ComPtr<ID2D1GeometrySink> sink;
+                if (SUCCEEDED(pPath->Open(&sink))) {
+                    const float maxR = (std::min)(currentDrawerW, (clientHeight - headerH) / 2.0f);
+                    const float r = (maxR > 0.0f) ? (std::min)(cornerRadius, maxR) : 0.0f;
+
+                    // 1. Begin at the top edge right after the upper-left rounded corner
+                    sink->BeginFigure(D2D1::Point2F(railW + r, headerH), D2D1_FIGURE_BEGIN_FILLED);
+
+                    // 2. Top edge straight to top-right corner (SHARP)
+                    sink->AddLine(D2D1::Point2F(railW + currentDrawerW, headerH));
+
+                    // 3. Right edge straight down to bottom-right corner (SHARP)
+                    sink->AddLine(D2D1::Point2F(railW + currentDrawerW, clientHeight));
+
+                    // 4. Bottom edge straight to bottom-left corner (SHARP)
+                    sink->AddLine(D2D1::Point2F(railW, clientHeight));
+
+                    // 5. Left edge straight up to start of the upper-left curve
+                    sink->AddLine(D2D1::Point2F(railW, headerH + r));
+
+                    // 6. Arc around ONLY the upper-left corner connecting into purple header
+                    if (r > 0.0f) {
+                        D2D1_ARC_SEGMENT arc = {};
+                        arc.point = D2D1::Point2F(railW + r, headerH);
+                        arc.size = D2D1::SizeF(r, r);
+                        arc.rotationAngle = 0.0f;
+                        arc.sweepDirection = D2D1_SWEEP_DIRECTION_CLOCKWISE;
+                        arc.arcSize = D2D1_ARC_SIZE_SMALL;
+                        sink->AddArc(arc);
+                    }
+
+                    sink->EndFigure(D2D1_FIGURE_END_CLOSED);
+                    sink->Close();
+
+                    m_pDrawerBgGeometry = pPath;
+                }
+            }
+        }
+    }
+
+    // 1. Fill Drawer Background with upper-left curve
+    if (m_pDrawerBgGeometry) {
+        pRT->FillGeometry(m_pDrawerBgGeometry.Get(), theme.brushDrawerBg.Get());
+    } else {
+        D2D1_RECT_F rcDrawer = D2D1::RectF(railW, headerH, railW + currentDrawerW, clientHeight);
+        pRT->FillRectangle(rcDrawer, theme.brushDrawerBg.Get());
+    }
 
     // Right border divider
     pRT->DrawLine(
-        D2D1::Point2F(railW + drawerW - 0.5f, headerH),
-        D2D1::Point2F(railW + drawerW - 0.5f, clientHeight),
+        D2D1::Point2F(railW + currentDrawerW - 0.5f, headerH),
+        D2D1::Point2F(railW + currentDrawerW - 0.5f, clientHeight),
         theme.brushBorderSubtle.Get(),
         1.0f
     );
 
-    // 2. Draw Drawer Header
+    // Push clip so content stays inside current drawer bounds during animation
+    D2D1_RECT_F clipRect = D2D1::RectF(railW, headerH, railW + currentDrawerW, clientHeight);
+    pRT->PushAxisAlignedClip(clipRect, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+
+    // 2. Draw Drawer Header (Title only, NO X close button as requested!)
     float curY = headerH + config.ScaleF(14.0f);
     const float paddingX = config.ScaleF(16.0f);
 
@@ -50,19 +116,10 @@ void DrawerPanel::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCon
     D2D1_RECT_F rcTitle = D2D1::RectF(
         railW + paddingX,
         curY,
-        railW + drawerW - config.ScaleF(36.0f),
+        railW + currentDrawerW - paddingX,
         curY + config.ScaleF(20.0f)
     );
     pRT->DrawText(title, static_cast<UINT32>(wcslen(title)), theme.fontTitle.Get(), rcTitle, theme.brushTextPrimary.Get());
-
-    // Close button (X) at top right of drawer
-    m_rcCloseBtn = D2D1::RectF(
-        railW + drawerW - config.ScaleF(30.0f),
-        curY,
-        railW + drawerW - config.ScaleF(10.0f),
-        curY + config.ScaleF(20.0f)
-    );
-    pRT->DrawText(L"\u2715", 1, theme.fontIcon.Get(), m_rcCloseBtn, theme.brushTextMuted.Get());
 
     curY += config.ScaleF(32.0f);
 
@@ -71,7 +128,7 @@ void DrawerPanel::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCon
     for (size_t i = 0; i < m_mockFileTree.size(); ++i) {
         auto& item = m_mockFileTree[i];
         float indent = config.ScaleF(static_cast<float>(item.depth * 14));
-        item.bounds = D2D1::RectF(railW + config.ScaleF(8.0f), curY, railW + drawerW - config.ScaleF(8.0f), curY + itemH);
+        item.bounds = D2D1::RectF(railW + config.ScaleF(8.0f), curY, railW + currentDrawerW - config.ScaleF(8.0f), curY + itemH);
 
         if (m_hoveredIndex == static_cast<int>(i)) {
             D2D1_ROUNDED_RECT rrc = D2D1::RoundedRect(item.bounds, 4.0f, 4.0f);
@@ -97,7 +154,7 @@ void DrawerPanel::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCon
         D2D1_RECT_F rcLabel = D2D1::RectF(
             railW + config.ScaleF(36.0f) + indent,
             curY,
-            railW + drawerW - config.ScaleF(12.0f),
+            railW + currentDrawerW - config.ScaleF(12.0f),
             curY + itemH
         );
         pRT->DrawText(
@@ -110,10 +167,12 @@ void DrawerPanel::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCon
 
         curY += itemH;
     }
+
+    pRT->PopAxisAlignedClip();
 }
 
 int DrawerPanel::HitTest(POINT pt, const app::AppConfig& config) const {
-    if (!config.isDrawerOpen) return -1;
+    (void)config;
     for (size_t i = 0; i < m_mockFileTree.size(); ++i) {
         const auto& item = m_mockFileTree[i];
         if (pt.x >= item.bounds.left && pt.x < item.bounds.right &&
@@ -122,11 +181,6 @@ int DrawerPanel::HitTest(POINT pt, const app::AppConfig& config) const {
         }
     }
     return -1;
-}
-
-bool DrawerPanel::HitTestCloseButton(POINT pt) const {
-    return (pt.x >= m_rcCloseBtn.left && pt.x < m_rcCloseBtn.right &&
-            pt.y >= m_rcCloseBtn.top && pt.y < m_rcCloseBtn.bottom);
 }
 
 bool DrawerPanel::SetHoveredIndex(int index) {

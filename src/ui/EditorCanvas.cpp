@@ -42,25 +42,28 @@ static void DrawPlus(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig&
 EditorCanvas::EditorCanvas() = default;
 
 void EditorCanvas::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
-                          const editor::Buffer& buffer, float canvasLeft, float canvasWidth, float clientHeight) {
+                          const editor::Buffer& buffer, float canvasLeft, float canvasWidth, float clientHeight,
+                          bool hasLeftDrawer) {
     (void)buffer;
     if (!pRT) return;
 
     const float headerH = config.ScaleF(static_cast<float>(config.headerHeight));
     const float canvasRight = canvasLeft + canvasWidth;
-    const float cornerRadius = 14.0f;
+    const float cornerRadius = hasLeftDrawer ? 0.0f : 14.0f;
 
-    // Check if cached geometry needs rebuilding (e.g. on resize or layout changes)
+    // Check if cached geometry needs rebuilding (e.g. on resize, layout changes, or drawer open/close)
     if (!m_pCanvasGeometry ||
         m_cachedLeft != canvasLeft ||
         m_cachedTop != headerH ||
         m_cachedRight != canvasRight ||
-        m_cachedBottom != clientHeight)
+        m_cachedBottom != clientHeight ||
+        m_cachedHasLeftDrawer != hasLeftDrawer)
     {
-        m_cachedLeft   = canvasLeft;
-        m_cachedTop    = headerH;
-        m_cachedRight  = canvasRight;
-        m_cachedBottom = clientHeight;
+        m_cachedLeft          = canvasLeft;
+        m_cachedTop           = headerH;
+        m_cachedRight         = canvasRight;
+        m_cachedBottom        = clientHeight;
+        m_cachedHasLeftDrawer = hasLeftDrawer;
         m_pCanvasGeometry.Reset();
 
         Microsoft::WRL::ComPtr<ID2D1Factory> pFactory;
@@ -73,7 +76,7 @@ void EditorCanvas::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
                     const float maxR = (std::min)(canvasWidth / 2.0f, (clientHeight - headerH) / 2.0f);
                     const float r = (maxR > 0.0f) ? (std::min)(cornerRadius, maxR) : 0.0f;
 
-                    // 1. Begin at the top edge right after the upper-left rounded corner
+                    // 1. Begin at the top edge right after the upper-left rounded corner (or top-left if sharp)
                     sink->BeginFigure(D2D1::Point2F(canvasLeft + r, headerH), D2D1_FIGURE_BEGIN_FILLED);
 
                     // 2. Top edge straight to top-right corner (SHARP - not curved)
@@ -88,7 +91,7 @@ void EditorCanvas::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
                     // 5. Left edge straight up to start of the upper-left curve
                     sink->AddLine(D2D1::Point2F(canvasLeft, headerH + r));
 
-                    // 6. Arc around ONLY the upper-left corner as requested ("this should be rounded right upper left only")
+                    // 6. Arc around ONLY the upper-left corner when drawer is closed
                     if (r > 0.0f) {
                         D2D1_ARC_SEGMENT arc = {};
                         arc.point = D2D1::Point2F(canvasLeft + r, headerH);

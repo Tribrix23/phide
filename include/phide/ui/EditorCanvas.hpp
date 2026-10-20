@@ -45,9 +45,11 @@ public:
      * @param canvasLeft Left coordinate of the visible editor surface.
      * @param canvasWidth Available width.
      * @param clientHeight Window client height.
+     * @param hasLeftDrawer True if sidebar drawer is open or opening (makes top-left sharp).
      */
     void Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
-                const editor::Buffer& buffer, float canvasLeft, float canvasWidth, float clientHeight);
+                const editor::Buffer& buffer, float canvasLeft, float canvasWidth, float clientHeight,
+                bool hasLeftDrawer = false);
 
     /**
      * @brief Toggles caret blink phase.
@@ -58,12 +60,13 @@ private:
     std::vector<EditorTab> m_tabs;
     bool m_caretVisible = true;
 
-    // Cached path geometry for workspace container (curved ONLY at upper-left corner)
+    // Cached path geometry for workspace container (curved ONLY at upper-left corner when drawer is closed)
     Microsoft::WRL::ComPtr<ID2D1PathGeometry> m_pCanvasGeometry;
-    float m_cachedLeft   = -1.0f;
-    float m_cachedTop    = -1.0f;
-    float m_cachedRight  = -1.0f;
-    float m_cachedBottom = -1.0f;
+    float m_cachedLeft          = -1.0f;
+    float m_cachedTop           = -1.0f;
+    float m_cachedRight         = -1.0f;
+    float m_cachedBottom        = -1.0f;
+    bool  m_cachedHasLeftDrawer = false;
 
     // Metallic white watermark logo in center of canvas
     Microsoft::WRL::ComPtr<ID2D1Bitmap> m_pWatermarkBitmap;

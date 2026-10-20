@@ -75,6 +75,11 @@ private:
     void HandleLButtonDown(POINT clientPt);
     void HandleLButtonUp(POINT clientPt);
 
+    /**
+     * @brief Toggles the sidebar drawer panel with smooth sliding animation.
+     */
+    void ToggleSidebar();
+
     // Win32 & D2D handles
     HWND m_hwnd = nullptr;
     ComPtr<ID2D1Factory> m_pD2DFactory;
@@ -94,6 +99,11 @@ private:
 
     bool m_trackingMouse = false;
     UINT_PTR m_caretTimerId = 1001;
+    UINT_PTR m_animTimerId  = 1002;
+
+    float m_drawerAnimProgress   = 0.0f;
+    float m_targetDrawerProgress = 0.0f;
+    bool  m_isDrawerAnimating    = false;
 };
 
 } // namespace phide::app
