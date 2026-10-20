@@ -54,6 +54,14 @@ struct ThemeColors {
     // Customized Tooltip Colors
     D2D1_COLOR_F tooltipBg       = D2D1::ColorF(0.145f, 0.145f, 0.149f, 0.98f); // #252526
     D2D1_COLOR_F tooltipBorder   = D2D1::ColorF(0.243f, 0.243f, 0.243f, 1.0f);  // #3E3E3E
+
+    // Dropdown / Popup Menu Colors
+    D2D1_COLOR_F menuBg          = D2D1::ColorF(0.122f, 0.122f, 0.122f, 0.98f); // #1F1F1F
+    D2D1_COLOR_F menuBorder      = D2D1::ColorF(0.271f, 0.271f, 0.271f, 1.0f);  // #454545
+    D2D1_COLOR_F menuSeparator   = D2D1::ColorF(0.235f, 0.235f, 0.235f, 1.0f);  // #3C3C3C
+    D2D1_COLOR_F menuHover       = D2D1::ColorF(0.0f, 0.471f, 0.831f, 1.0f);   // #0078D4 (VS Code Selection Blue)
+    D2D1_COLOR_F menuText        = D2D1::ColorF(0.800f, 0.800f, 0.800f, 1.0f);  // #CCCCCC
+    D2D1_COLOR_F menuShortcut    = D2D1::ColorF(0.550f, 0.550f, 0.550f, 1.0f);  // #8C8C8C
 };
 
 /**
@@ -103,10 +111,18 @@ public:
     ComPtr<ID2D1SolidColorBrush> brushRunGreenHover;
     ComPtr<ID2D1SolidColorBrush> brushTooltipBg;
     ComPtr<ID2D1SolidColorBrush> brushTooltipBorder;
+    ComPtr<ID2D1SolidColorBrush> brushMenuBg;
+    ComPtr<ID2D1SolidColorBrush> brushMenuBorder;
+    ComPtr<ID2D1SolidColorBrush> brushMenuSeparator;
+    ComPtr<ID2D1SolidColorBrush> brushMenuHover;
+    ComPtr<ID2D1SolidColorBrush> brushMenuText;
+    ComPtr<ID2D1SolidColorBrush> brushMenuShortcut;
 
     // DirectWrite Text Formats
     ComPtr<IDWriteTextFormat> fontTitle;         ///< 12px Semi-bold for title
     ComPtr<IDWriteTextFormat> fontMenu;          ///< 12px Regular for top menus
+    ComPtr<IDWriteTextFormat> fontMenuItem;      ///< 12px Regular Left-aligned for dropdown items
+    ComPtr<IDWriteTextFormat> fontMenuShortcut;  ///< 11.5px Regular Right-aligned for shortcuts
     ComPtr<IDWriteTextFormat> fontBody;          ///< 13px Regular for UI elements
     ComPtr<IDWriteTextFormat> fontSectionHeader; ///< 11px Semi-bold Leading for section titles (EXPLORER)
     ComPtr<IDWriteTextFormat> fontIcon;          ///< 14px Symbol font for glyphs

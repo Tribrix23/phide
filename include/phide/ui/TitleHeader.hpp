@@ -140,8 +140,22 @@ public:
     [[nodiscard]] CaptionButtonType GetHoveredCaption() const noexcept { return m_hoveredCaption; }
     [[nodiscard]] HeaderExecId GetHoveredExec() const noexcept { return m_hoveredExec; }
 
+    /**
+     * @brief Gets the bounding rectangle of a menu button.
+     * @param id HeaderMenuId to query.
+     * @return D2D1_RECT_F bounds of the button.
+     */
+    D2D1_RECT_F GetMenuItemBounds(HeaderMenuId id) const;
+
+    /**
+     * @brief Sets which menu is currently open with an active dropdown.
+     */
+    void SetActiveMenu(HeaderMenuId id) { m_activeMenu = id; }
+    [[nodiscard]] HeaderMenuId GetActiveMenu() const noexcept { return m_activeMenu; }
+
 private:
     HeaderMenuId m_hoveredMenu = HeaderMenuId::None;
+    HeaderMenuId m_activeMenu = HeaderMenuId::None;
     CaptionButtonType m_hoveredCaption = CaptionButtonType::None;
     HeaderExecId m_hoveredExec = HeaderExecId::None;
 

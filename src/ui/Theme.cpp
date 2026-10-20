@@ -36,6 +36,12 @@ HRESULT Theme::CreateDeviceResources(ID2D1RenderTarget* pRT, IDWriteFactory* pDW
     pRT->CreateSolidColorBrush(colors.runGreenHover, &brushRunGreenHover);
     pRT->CreateSolidColorBrush(colors.tooltipBg, &brushTooltipBg);
     pRT->CreateSolidColorBrush(colors.tooltipBorder, &brushTooltipBorder);
+    pRT->CreateSolidColorBrush(colors.menuBg, &brushMenuBg);
+    pRT->CreateSolidColorBrush(colors.menuBorder, &brushMenuBorder);
+    pRT->CreateSolidColorBrush(colors.menuSeparator, &brushMenuSeparator);
+    pRT->CreateSolidColorBrush(colors.menuHover, &brushMenuHover);
+    pRT->CreateSolidColorBrush(colors.menuText, &brushMenuText);
+    pRT->CreateSolidColorBrush(colors.menuShortcut, &brushMenuShortcut);
 
     // Create DirectWrite Text Formats
     // 1. Title Font
@@ -69,6 +75,40 @@ HRESULT Theme::CreateDeviceResources(ID2D1RenderTarget* pRT, IDWriteFactory* pDW
         fontMenu->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
         fontMenu->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
         fontMenu->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+    }
+
+    // 2b. Dropdown Menu Item Font (12px, Left-aligned, Vertically centered)
+    pDWriteFactory->CreateTextFormat(
+        L"Segoe UI",
+        nullptr,
+        DWRITE_FONT_WEIGHT_REGULAR,
+        DWRITE_FONT_STYLE_NORMAL,
+        DWRITE_FONT_STRETCH_NORMAL,
+        12.0f,
+        L"en-US",
+        &fontMenuItem
+    );
+    if (fontMenuItem) {
+        fontMenuItem->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
+        fontMenuItem->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+        fontMenuItem->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+    }
+
+    // 2c. Dropdown Menu Shortcut Font (11.5px, Right-aligned, Vertically centered)
+    pDWriteFactory->CreateTextFormat(
+        L"Segoe UI",
+        nullptr,
+        DWRITE_FONT_WEIGHT_REGULAR,
+        DWRITE_FONT_STYLE_NORMAL,
+        DWRITE_FONT_STRETCH_NORMAL,
+        11.5f,
+        L"en-US",
+        &fontMenuShortcut
+    );
+    if (fontMenuShortcut) {
+        fontMenuShortcut->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_TRAILING);
+        fontMenuShortcut->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+        fontMenuShortcut->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
     }
 
     // 3. Body Font
@@ -178,6 +218,8 @@ HRESULT Theme::CreateDeviceResources(ID2D1RenderTarget* pRT, IDWriteFactory* pDW
 
 void Theme::DiscardDeviceResources() {
     fontSectionHeader.Reset();
+    fontMenuItem.Reset();
+    fontMenuShortcut.Reset();
     brushWindowBg.Reset();
     brushCanvasBg.Reset();
     brushHeaderBg.Reset();
@@ -199,6 +241,12 @@ void Theme::DiscardDeviceResources() {
     brushRunGreenHover.Reset();
     brushTooltipBg.Reset();
     brushTooltipBorder.Reset();
+    brushMenuBg.Reset();
+    brushMenuBorder.Reset();
+    brushMenuSeparator.Reset();
+    brushMenuHover.Reset();
+    brushMenuText.Reset();
+    brushMenuShortcut.Reset();
 }
 
 } // namespace phide::ui

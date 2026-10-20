@@ -94,8 +94,9 @@ void TitleHeader::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCon
 
         bool isHovered = (m_hoveredMenu == item.id);
         bool isActiveSidebar = (item.id == HeaderMenuId::Sidebar && config.isDrawerOpen);
+        bool isActiveMenu = (m_activeMenu == item.id);
 
-        if (isActiveSidebar) {
+        if (isActiveSidebar || isActiveMenu) {
             D2D1_ROUNDED_RECT rrc = D2D1::RoundedRect(item.bounds, 4.0f, 4.0f);
             if (isHovered) {
                 pRT->FillRoundedRectangle(rrc, theme.brushCaptionHover.Get());
@@ -109,11 +110,11 @@ void TitleHeader::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCon
             pRT->FillRoundedRectangle(rrc, theme.brushItemHover.Get());
         }
 
-        if (isHovered) {
+        if (isHovered && m_activeMenu == HeaderMenuId::None) {
             hoveredItemPtr = &item;
         }
 
-        ID2D1Brush* brush = (isActiveSidebar || isHovered) ? theme.brushTextWhite.Get() : theme.brushTextSecondary.Get();
+        ID2D1Brush* brush = (isActiveSidebar || isActiveMenu || isHovered) ? theme.brushTextWhite.Get() : theme.brushTextSecondary.Get();
 
         switch (item.id) {
             case HeaderMenuId::Sidebar:
@@ -318,6 +319,15 @@ HeaderMenuId TitleHeader::HitTestMenu(POINT pt) const {
         }
     }
     return HeaderMenuId::None;
+}
+
+D2D1_RECT_F TitleHeader::GetMenuItemBounds(HeaderMenuId id) const {
+    for (const auto& item : m_menus) {
+        if (item.id == id) {
+            return item.bounds;
+        }
+    }
+    return D2D1::RectF(0.0f, 0.0f, 0.0f, 0.0f);
 }
 
 HeaderExecId TitleHeader::HitTestExecButton(POINT pt) const {

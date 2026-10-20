@@ -179,6 +179,10 @@ HRESULT Window::CreateDeviceResources() {
 void Window::DiscardDeviceResources() {
     m_theme.DiscardDeviceResources();
     m_pRenderTarget.Reset();
+    if (m_popupMenu.IsOpen()) {
+        m_popupMenu.Close();
+        m_header.SetActiveMenu(ui::HeaderMenuId::None);
+    }
 }
 
 void Window::OnResize(UINT width, UINT height) {
@@ -223,6 +227,11 @@ void Window::OnPaint() {
 
     // 4. Render Dark Frameless Title Header at Top (with active highlight on Sidebar button when open)
     m_header.Render(m_pRenderTarget.Get(), m_theme, m_config, clientW, IsZoomed(m_hwnd));
+
+    // 5. Render Active Popup Dropdown Menu Overlay
+    if (m_popupMenu.IsOpen()) {
+        m_popupMenu.Render(m_pRenderTarget.Get(), m_theme, m_config);
+    }
 
     HRESULT hr = m_pRenderTarget->EndDraw();
     if (hr == D2DERR_RECREATE_TARGET) {
@@ -276,6 +285,17 @@ void Window::HandleMouseMove(POINT clientPt) {
 
     bool needRepaint = false;
 
+    // Check Popup Menu hover first if open
+    if (m_popupMenu.IsOpen()) {
+        RECT rc;
+        GetClientRect(m_hwnd, &rc);
+        float clientW = static_cast<float>(rc.right - rc.left);
+        float clientH = static_cast<float>(rc.bottom - rc.top);
+        if (m_popupMenu.HandleMouseMove(clientPt, m_config, clientW, clientH)) {
+            needRepaint = true;
+        }
+    }
+
     // Check Header menu, execution buttons, and caption button hover
     auto hoveredMenu = m_header.HitTestMenu(clientPt);
     auto hoveredCaption = m_header.HitTestCaptionButton(clientPt);
@@ -298,6 +318,48 @@ void Window::HandleMouseMove(POINT clientPt) {
 }
 
 void Window::HandleLButtonDown(POINT clientPt) {
+    // 0. Popup Dropdown Menu Clicks (if menu is active)
+    if (m_popupMenu.IsOpen()) {
+        if (m_popupMenu.HitTestMenuArea(clientPt)) {
+            auto action = m_popupMenu.HandleLButtonDown(clientPt);
+            if (action != ui::MenuActionId::None) {
+                switch (action) {
+                    case ui::MenuActionId::TogglePrimarySideBar:
+                        ToggleSidebar();
+                        break;
+                    case ui::MenuActionId::FullScreen:
+                        if (IsZoomed(m_hwnd)) ShowWindow(m_hwnd, SW_RESTORE);
+                        else ShowWindow(m_hwnd, SW_MAXIMIZE);
+                        break;
+                    case ui::MenuActionId::WordWrap:
+                        m_wordWrap = !m_wordWrap;
+                        break;
+                    case ui::MenuActionId::Terminal:
+                        ToggleSidebar();
+                        break;
+                    default:
+                        break;
+                }
+                m_popupMenu.Close();
+                m_header.SetActiveMenu(ui::HeaderMenuId::None);
+                InvalidateRect(m_hwnd, nullptr, FALSE);
+                return;
+            }
+            InvalidateRect(m_hwnd, nullptr, FALSE);
+            return;
+        } else {
+            // Click was outside the popup menu area: dismiss the menu
+            m_popupMenu.Close();
+            m_header.SetActiveMenu(ui::HeaderMenuId::None);
+            InvalidateRect(m_hwnd, nullptr, FALSE);
+
+            // If the user clicked directly on the View button that opened it, we're done (toggled off)
+            if (m_header.HitTestMenu(clientPt) == ui::HeaderMenuId::View) {
+                return;
+            }
+        }
+    }
+
     // 1. Caption Button Clicks (Minimize, Maximize, Close)
     auto captionHit = m_header.HitTestCaptionButton(clientPt);
     if (captionHit != ui::CaptionButtonType::None) {
@@ -333,6 +395,13 @@ void Window::HandleLButtonDown(POINT clientPt) {
         if (menuHit == ui::HeaderMenuId::Sidebar) {
             // Toggle sidebar drawer panel with smooth sliding animation
             ToggleSidebar();
+        } else if (menuHit == ui::HeaderMenuId::View) {
+            // Open View Dropdown Menu directly beneath the View header button
+            D2D1_RECT_F rcView = m_header.GetMenuItemBounds(ui::HeaderMenuId::View);
+            m_popupMenu.OpenViewMenu(rcView.left, rcView.bottom + 2.0f, m_config,
+                                     m_config.isDrawerOpen, IsZoomed(m_hwnd), m_wordWrap);
+            m_header.SetActiveMenu(ui::HeaderMenuId::View);
+            InvalidateRect(m_hwnd, nullptr, FALSE);
         }
         return;
     }
@@ -436,7 +505,27 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
             return 0;
         }
 
+        case WM_KILLFOCUS: {
+            if (m_popupMenu.IsOpen()) {
+                m_popupMenu.Close();
+                m_header.SetActiveMenu(ui::HeaderMenuId::None);
+                InvalidateRect(m_hwnd, nullptr, FALSE);
+            }
+            return 0;
+        }
+
         case WM_KEYDOWN: {
+            if (wParam == VK_ESCAPE && m_popupMenu.IsOpen()) {
+                m_popupMenu.Close();
+                m_header.SetActiveMenu(ui::HeaderMenuId::None);
+                InvalidateRect(m_hwnd, nullptr, FALSE);
+                return 0;
+            }
+            if (wParam == VK_F11) {
+                if (IsZoomed(m_hwnd)) ShowWindow(m_hwnd, SW_RESTORE);
+                else ShowWindow(m_hwnd, SW_MAXIMIZE);
+                return 0;
+            }
             if (wParam == 'B' && (GetKeyState(VK_CONTROL) & 0x8000)) {
                 ToggleSidebar();
                 return 0;

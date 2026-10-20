@@ -19,6 +19,7 @@
 #include "phide/app/AppConfig.hpp"
 #include "phide/ui/Theme.hpp"
 #include "phide/ui/TitleHeader.hpp"
+#include "phide/ui/PopupMenu.hpp"
 #include "phide/ui/ActivityRail.hpp"
 #include "phide/ui/DrawerPanel.hpp"
 #include "phide/ui/EditorCanvas.hpp"
@@ -90,6 +91,7 @@ private:
     AppConfig m_config;
     ui::Theme m_theme;
     ui::TitleHeader m_header;
+    ui::PopupMenu m_popupMenu;
     ui::ActivityRail m_rail;
     ui::DrawerPanel m_drawer;
     ui::EditorCanvas m_editor;
@@ -98,6 +100,7 @@ private:
     lsp::LspClient m_lsp;
 
     bool m_trackingMouse = false;
+    bool m_wordWrap = false;
     UINT_PTR m_caretTimerId = 1001;
     UINT_PTR m_animTimerId  = 1002;
 
