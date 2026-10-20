@@ -52,6 +52,7 @@ HRESULT Theme::CreateDeviceResources(ID2D1RenderTarget* pRT, IDWriteFactory* pDW
     if (FAILED(hr)) return hr;
     fontTitle->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
     fontTitle->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+    fontTitle->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
 
     // 2. Menu Font
     pDWriteFactory->CreateTextFormat(
@@ -67,6 +68,7 @@ HRESULT Theme::CreateDeviceResources(ID2D1RenderTarget* pRT, IDWriteFactory* pDW
     if (fontMenu) {
         fontMenu->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
         fontMenu->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+        fontMenu->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
     }
 
     // 3. Body Font
@@ -83,6 +85,24 @@ HRESULT Theme::CreateDeviceResources(ID2D1RenderTarget* pRT, IDWriteFactory* pDW
     if (fontBody) {
         fontBody->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
         fontBody->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+        fontBody->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+    }
+
+    // 3b. Section Header Font (EXPLORER)
+    pDWriteFactory->CreateTextFormat(
+        L"Segoe UI",
+        nullptr,
+        DWRITE_FONT_WEIGHT_SEMI_BOLD,
+        DWRITE_FONT_STYLE_NORMAL,
+        DWRITE_FONT_STRETCH_NORMAL,
+        11.0f,
+        L"en-US",
+        &fontSectionHeader
+    );
+    if (fontSectionHeader) {
+        fontSectionHeader->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
+        fontSectionHeader->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+        fontSectionHeader->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
     }
 
     // 4. Icon Glyph Font (Segoe UI Symbol)
@@ -99,6 +119,7 @@ HRESULT Theme::CreateDeviceResources(ID2D1RenderTarget* pRT, IDWriteFactory* pDW
     if (fontIcon) {
         fontIcon->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
         fontIcon->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+        fontIcon->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
     }
 
     // 5. Caption Button Font (Segoe MDL2 Assets / Segoe UI Symbol)
@@ -115,6 +136,7 @@ HRESULT Theme::CreateDeviceResources(ID2D1RenderTarget* pRT, IDWriteFactory* pDW
     if (fontCaption) {
         fontCaption->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
         fontCaption->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+        fontCaption->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
     }
 
     // 6. Workspace Hint Font
@@ -131,6 +153,7 @@ HRESULT Theme::CreateDeviceResources(ID2D1RenderTarget* pRT, IDWriteFactory* pDW
     if (fontHint) {
         fontHint->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
         fontHint->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+        fontHint->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
     }
 
     // 7. Customized Tooltip Font
@@ -147,12 +170,14 @@ HRESULT Theme::CreateDeviceResources(ID2D1RenderTarget* pRT, IDWriteFactory* pDW
     if (fontTooltip) {
         fontTooltip->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
         fontTooltip->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+        fontTooltip->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
     }
 
     return S_OK;
 }
 
 void Theme::DiscardDeviceResources() {
+    fontSectionHeader.Reset();
     brushWindowBg.Reset();
     brushCanvasBg.Reset();
     brushHeaderBg.Reset();

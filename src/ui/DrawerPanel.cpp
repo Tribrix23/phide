@@ -101,74 +101,83 @@ void DrawerPanel::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCon
         1.0f
     );
 
-    // Push clip so content stays inside current drawer bounds during animation
-    D2D1_RECT_F clipRect = D2D1::RectF(railW, headerH, railW + currentDrawerW, clientHeight);
-    pRT->PushAxisAlignedClip(clipRect, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+    // 2. Render Drawer Contents (Header & Tree Items)
+    // Only render when drawer is wide enough, preventing any squishing during open/close
+    const float fullDrawerW = config.ScaleF(static_cast<float>(config.drawerWidth));
+    const float minContentW = config.ScaleF(40.0f);
 
-    // 2. Draw Drawer Header (Title only, NO X close button as requested!)
-    float curY = headerH + config.ScaleF(14.0f);
-    const float paddingX = config.ScaleF(16.0f);
+    if (currentDrawerW >= minContentW) {
+        // Push clip so content stays cleanly inside current drawer bounds during animation
+        D2D1_RECT_F clipRect = D2D1::RectF(railW, headerH, railW + currentDrawerW, clientHeight);
+        pRT->PushAxisAlignedClip(clipRect, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
 
-    const wchar_t* title = L"EXPLORER";
-    if (config.activeRailTab == static_cast<int>(RailTabId::Search)) title = L"SEARCH WORKSPACE";
-    else if (config.activeRailTab == static_cast<int>(RailTabId::Git)) title = L"SOURCE CONTROL (GIT)";
+        float curY = headerH + config.ScaleF(14.0f);
+        const float paddingX = config.ScaleF(16.0f);
 
-    D2D1_RECT_F rcTitle = D2D1::RectF(
-        railW + paddingX,
-        curY,
-        railW + currentDrawerW - paddingX,
-        curY + config.ScaleF(20.0f)
-    );
-    pRT->DrawText(title, static_cast<UINT32>(wcslen(title)), theme.fontTitle.Get(), rcTitle, theme.brushTextPrimary.Get());
+        const wchar_t* title = L"EXPLORER";
+        if (config.activeRailTab == static_cast<int>(RailTabId::Search)) title = L"SEARCH WORKSPACE";
+        else if (config.activeRailTab == static_cast<int>(RailTabId::Git)) title = L"SOURCE CONTROL (GIT)";
 
-    curY += config.ScaleF(32.0f);
+        // Full width fixed rectangle so text never squishes or breaks into vertical lines
+        D2D1_RECT_F rcTitle = D2D1::RectF(
+            railW + paddingX,
+            curY,
+            railW + fullDrawerW - paddingX,
+            curY + config.ScaleF(20.0f)
+        );
+        pRT->DrawText(title, static_cast<UINT32>(wcslen(title)),
+                      theme.fontSectionHeader ? theme.fontSectionHeader.Get() : theme.fontBody.Get(),
+                      rcTitle, theme.brushTextPrimary.Get());
 
-    // 3. Render Tree Items (for Explorer or perspective list)
-    const float itemH = config.ScaleF(26.0f);
-    for (size_t i = 0; i < m_mockFileTree.size(); ++i) {
-        auto& item = m_mockFileTree[i];
-        float indent = config.ScaleF(static_cast<float>(item.depth * 14));
-        item.bounds = D2D1::RectF(railW + config.ScaleF(8.0f), curY, railW + currentDrawerW - config.ScaleF(8.0f), curY + itemH);
+        curY += config.ScaleF(32.0f);
 
-        if (m_hoveredIndex == static_cast<int>(i)) {
-            D2D1_ROUNDED_RECT rrc = D2D1::RoundedRect(item.bounds, 4.0f, 4.0f);
-            pRT->FillRoundedRectangle(rrc, theme.brushItemHover.Get());
+        // 3. Render Tree Items (for Explorer or perspective list)
+        const float itemH = config.ScaleF(26.0f);
+        for (size_t i = 0; i < m_mockFileTree.size(); ++i) {
+            auto& item = m_mockFileTree[i];
+            float indent = config.ScaleF(static_cast<float>(item.depth * 14));
+            item.bounds = D2D1::RectF(railW + config.ScaleF(8.0f), curY, railW + fullDrawerW - config.ScaleF(8.0f), curY + itemH);
+
+            if (m_hoveredIndex == static_cast<int>(i)) {
+                D2D1_ROUNDED_RECT rrc = D2D1::RoundedRect(item.bounds, 4.0f, 4.0f);
+                pRT->FillRoundedRectangle(rrc, theme.brushItemHover.Get());
+            }
+
+            // Draw Icon
+            D2D1_RECT_F rcIcon = D2D1::RectF(
+                railW + config.ScaleF(12.0f) + indent,
+                curY,
+                railW + config.ScaleF(32.0f) + indent,
+                curY + itemH
+            );
+            pRT->DrawText(
+                item.iconGlyph.c_str(),
+                static_cast<UINT32>(item.iconGlyph.length()),
+                theme.fontMenu.Get(),
+                rcIcon,
+                theme.brushTextSecondary.Get()
+            );
+
+            // Draw Label (full width, never wraps!)
+            D2D1_RECT_F rcLabel = D2D1::RectF(
+                railW + config.ScaleF(36.0f) + indent,
+                curY,
+                railW + fullDrawerW - config.ScaleF(12.0f),
+                curY + itemH
+            );
+            pRT->DrawText(
+                item.label.c_str(),
+                static_cast<UINT32>(item.label.length()),
+                theme.fontBody.Get(),
+                rcLabel,
+                theme.brushTextPrimary.Get()
+            );
+
+            curY += itemH;
         }
 
-        // Draw Icon
-        D2D1_RECT_F rcIcon = D2D1::RectF(
-            railW + config.ScaleF(12.0f) + indent,
-            curY,
-            railW + config.ScaleF(32.0f) + indent,
-            curY + itemH
-        );
-        pRT->DrawText(
-            item.iconGlyph.c_str(),
-            static_cast<UINT32>(item.iconGlyph.length()),
-            theme.fontMenu.Get(),
-            rcIcon,
-            theme.brushTextSecondary.Get()
-        );
-
-        // Draw Label
-        D2D1_RECT_F rcLabel = D2D1::RectF(
-            railW + config.ScaleF(36.0f) + indent,
-            curY,
-            railW + currentDrawerW - config.ScaleF(12.0f),
-            curY + itemH
-        );
-        pRT->DrawText(
-            item.label.c_str(),
-            static_cast<UINT32>(item.label.length()),
-            theme.fontBody.Get(),
-            rcLabel,
-            theme.brushTextPrimary.Get()
-        );
-
-        curY += itemH;
+        pRT->PopAxisAlignedClip();
     }
-
-    pRT->PopAxisAlignedClip();
 }
 
 int DrawerPanel::HitTest(POINT pt, const app::AppConfig& config) const {

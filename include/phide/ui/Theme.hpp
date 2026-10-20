@@ -105,13 +105,14 @@ public:
     ComPtr<ID2D1SolidColorBrush> brushTooltipBorder;
 
     // DirectWrite Text Formats
-    ComPtr<IDWriteTextFormat> fontTitle;    ///< 12px Semi-bold for title
-    ComPtr<IDWriteTextFormat> fontMenu;     ///< 12px Regular for top menus
-    ComPtr<IDWriteTextFormat> fontBody;     ///< 13px Regular for UI elements
-    ComPtr<IDWriteTextFormat> fontIcon;     ///< 14px Symbol font for glyphs
-    ComPtr<IDWriteTextFormat> fontCaption;  ///< 12px Caption button font
-    ComPtr<IDWriteTextFormat> fontHint;     ///< 13px Italic/Muted for workspace hints
-    ComPtr<IDWriteTextFormat> fontTooltip;  ///< 11.5px Crisp font for customized sidebar tooltips
+    ComPtr<IDWriteTextFormat> fontTitle;         ///< 12px Semi-bold for title
+    ComPtr<IDWriteTextFormat> fontMenu;          ///< 12px Regular for top menus
+    ComPtr<IDWriteTextFormat> fontBody;          ///< 13px Regular for UI elements
+    ComPtr<IDWriteTextFormat> fontSectionHeader; ///< 11px Semi-bold Leading for section titles (EXPLORER)
+    ComPtr<IDWriteTextFormat> fontIcon;          ///< 14px Symbol font for glyphs
+    ComPtr<IDWriteTextFormat> fontCaption;       ///< 12px Caption button font
+    ComPtr<IDWriteTextFormat> fontHint;          ///< 13px Italic/Muted for workspace hints
+    ComPtr<IDWriteTextFormat> fontTooltip;       ///< 11.5px Crisp font for customized sidebar tooltips
 };
 
 } // namespace phide::ui
