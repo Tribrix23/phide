@@ -83,11 +83,28 @@ private:
 
     // File Action Handlers
     void DoNewTextFile();
+    void DoNewFile();
+    void DoNewWindow();
     void DoOpenFile();
     void DoOpenFolder();
+    void DoOpenFolderFromPath(const std::wstring& path);
+    void DoOpenWorkspaceFromFile();
+    void DoAddFolderToWorkspace();
+    void DoSaveWorkspaceAs();
+    void DoDuplicateWorkspace();
     void DoSaveFile();
     void DoSaveFileAs();
+    void DoSaveAll();
+    void DoExportProfile();
+    void DoImportProfile();
+    void DoOpenSettings();
+    void DoOpenKeyboardShortcuts();
+    void DoOpenUserSnippets();
+    void DoToggleTheme();
+    void DoRevertFile();
     void DoCloseEditor();
+    void DoCloseFolder();
+    void DoReopenClosedEditor();
     void OpenFileByName(const std::wstring& name);
     void LoadFileFromPath(const std::wstring& path);
     void SaveFileToPath(const std::wstring& path);
@@ -118,6 +135,8 @@ private:
     bool m_isDirty = false;
     bool m_autoSave = true;
     bool m_chordCtrlK = false;
+    std::vector<std::wstring> m_recentPaths;
+    std::wstring m_lastClosedFilePath;
 
     UINT_PTR m_caretTimerId = 1001;
     UINT_PTR m_animTimerId  = 1002;

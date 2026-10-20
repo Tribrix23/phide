@@ -12,6 +12,7 @@
 #include <commdlg.h>
 #include <shobjidl.h>
 #include <filesystem>
+#include <fstream>
 #include <algorithm>
 
 #pragma comment(lib, "user32.lib")
@@ -50,8 +51,37 @@ void Window::DoNewTextFile() {
     m_currentFilePath.clear();
     m_currentFileName = L"Untitled-1";
     m_hasOpenFile = true;
-    m_isDirty = false;
+    m_isDirty = true;
     InvalidateRect(m_hwnd, nullptr, FALSE);
+}
+
+void Window::DoNewFile() {
+    wchar_t szFile[MAX_PATH] = { 0 };
+    OPENFILENAMEW ofn = { sizeof(OPENFILENAMEW) };
+    ofn.hwndOwner = m_hwnd;
+    ofn.lpstrFilter = L"All Files (*.*)\0*.*\0C/C++ Files (*.cpp;*.h;*.hpp)\0*.cpp;*.h;*.hpp\0PHP Files (*.php)\0*.php\0JSON Files (*.json)\0*.json\0Text Files (*.txt)\0*.txt\0";
+    ofn.lpstrFile = szFile;
+    ofn.nMaxFile = MAX_PATH;
+    std::wstring initDir;
+    if (m_drawer.HasOpenFolder()) {
+        initDir = m_drawer.GetOpenFolderPath();
+        ofn.lpstrInitialDir = initDir.c_str();
+    }
+    ofn.Flags = OFN_PATHMUSTEXIST | OFN_OVERWRITEPROMPT | OFN_ENABLESIZING;
+
+    if (GetSaveFileNameW(&ofn)) {
+        m_buffer.Clear();
+        SaveFileToPath(szFile);
+        if (m_drawer.HasOpenFolder()) {
+            m_drawer.RefreshTree();
+        }
+    }
+}
+
+void Window::DoNewWindow() {
+    wchar_t szExe[MAX_PATH] = { 0 };
+    GetModuleFileNameW(nullptr, szExe, MAX_PATH);
+    ShellExecuteW(nullptr, L"open", szExe, nullptr, nullptr, SW_SHOWNORMAL);
 }
 
 void Window::DoOpenFile() {
@@ -80,16 +110,82 @@ void Window::DoOpenFolder() {
             if (SUCCEEDED(pFolderDlg->GetResult(&pItem))) {
                 PWSTR pszPath = nullptr;
                 if (SUCCEEDED(pItem->GetDisplayName(SIGDN_FILESYSPATH, &pszPath))) {
-                    m_workspace.OpenWorkspace(pszPath);
+                    DoOpenFolderFromPath(pszPath);
                     CoTaskMemFree(pszPath);
-                    if (!m_config.isDrawerOpen) {
-                        ToggleSidebar();
-                    }
-                    InvalidateRect(m_hwnd, nullptr, FALSE);
                 }
             }
         }
     }
+}
+
+void Window::DoOpenFolderFromPath(const std::wstring& path) {
+    if (path.empty()) return;
+    m_drawer.OpenFolder(path);
+    m_workspace.OpenWorkspace(path);
+
+    // Track in recent paths
+    auto it = std::find(m_recentPaths.begin(), m_recentPaths.end(), path);
+    if (it != m_recentPaths.end()) m_recentPaths.erase(it);
+    m_recentPaths.insert(m_recentPaths.begin(), path);
+    if (m_recentPaths.size() > 10) m_recentPaths.resize(10);
+
+    if (!m_config.isDrawerOpen) {
+        ToggleSidebar();
+    }
+    InvalidateRect(m_hwnd, nullptr, FALSE);
+}
+
+void Window::DoOpenWorkspaceFromFile() {
+    wchar_t szFile[MAX_PATH] = { 0 };
+    OPENFILENAMEW ofn = { sizeof(OPENFILENAMEW) };
+    ofn.hwndOwner = m_hwnd;
+    ofn.lpstrFilter = L"Workspace Files (*.code-workspace;*.phide;*.json)\0*.code-workspace;*.phide;*.json\0All Files (*.*)\0*.*\0";
+    ofn.lpstrFile = szFile;
+    ofn.nMaxFile = MAX_PATH;
+    ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_ENABLESIZING;
+
+    if (GetOpenFileNameW(&ofn)) {
+        std::filesystem::path p(szFile);
+        if (std::filesystem::exists(p)) {
+            DoOpenFolderFromPath(p.parent_path().wstring());
+            LoadFileFromPath(szFile);
+        }
+    }
+}
+
+void Window::DoAddFolderToWorkspace() {
+    DoOpenFolder();
+}
+
+void Window::DoSaveWorkspaceAs() {
+    wchar_t szFile[MAX_PATH] = { 0 };
+    wcscpy_s(szFile, L"workspace.phide");
+    OPENFILENAMEW ofn = { sizeof(OPENFILENAMEW) };
+    ofn.hwndOwner = m_hwnd;
+    ofn.lpstrFilter = L"Phide Workspace (*.phide)\0*.phide\0Code Workspace (*.code-workspace)\0*.code-workspace\0All Files (*.*)\0*.*\0";
+    ofn.lpstrFile = szFile;
+    ofn.nMaxFile = MAX_PATH;
+    ofn.Flags = OFN_PATHMUSTEXIST | OFN_OVERWRITEPROMPT | OFN_ENABLESIZING;
+
+    if (GetSaveFileNameW(&ofn)) {
+        std::ofstream ws(std::filesystem::path{ szFile });
+        if (ws.is_open()) {
+            std::string rootU8;
+            if (m_drawer.HasOpenFolder()) {
+                const auto& w = m_drawer.GetOpenFolderPath();
+                int ulen = WideCharToMultiByte(CP_UTF8, 0, w.c_str(), -1, nullptr, 0, nullptr, nullptr);
+                if (ulen > 0) {
+                    rootU8.resize(ulen - 1);
+                    WideCharToMultiByte(CP_UTF8, 0, w.c_str(), -1, &rootU8[0], ulen, nullptr, nullptr);
+                }
+            }
+            ws << "{\n  \"folders\": [\n    { \"path\": \"" << rootU8 << "\" }\n  ],\n  \"settings\": {}\n}\n";
+        }
+    }
+}
+
+void Window::DoDuplicateWorkspace() {
+    DoNewWindow();
 }
 
 void Window::DoSaveFile() {
@@ -116,15 +212,152 @@ void Window::DoSaveFileAs() {
 
     if (GetSaveFileNameW(&ofn)) {
         SaveFileToPath(szFile);
+        if (m_drawer.HasOpenFolder()) {
+            m_drawer.RefreshTree();
+        }
+    }
+}
+
+void Window::DoSaveAll() {
+    if (m_hasOpenFile && !m_currentFilePath.empty()) {
+        SaveFileToPath(m_currentFilePath);
+    }
+}
+
+void Window::DoExportProfile() {
+    wchar_t szFile[MAX_PATH] = { 0 };
+    wcscpy_s(szFile, L"phide-profile.code-profile");
+    OPENFILENAMEW ofn = { sizeof(OPENFILENAMEW) };
+    ofn.hwndOwner = m_hwnd;
+    ofn.lpstrFilter = L"Code Profile (*.code-profile)\0*.code-profile\0All Files (*.*)\0*.*\0";
+    ofn.lpstrFile = szFile;
+    ofn.nMaxFile = MAX_PATH;
+    ofn.Flags = OFN_PATHMUSTEXIST | OFN_OVERWRITEPROMPT | OFN_ENABLESIZING;
+
+    if (GetSaveFileNameW(&ofn)) {
+        std::ofstream pf(std::filesystem::path{ szFile });
+        if (pf.is_open()) {
+            pf << "{\n  \"name\": \"Default Profile\",\n  \"userData\": {}\n}\n";
+        }
+    }
+}
+
+void Window::DoImportProfile() {
+    wchar_t szFile[MAX_PATH] = { 0 };
+    OPENFILENAMEW ofn = { sizeof(OPENFILENAMEW) };
+    ofn.hwndOwner = m_hwnd;
+    ofn.lpstrFilter = L"Code Profile (*.code-profile)\0*.code-profile\0All Files (*.*)\0*.*\0";
+    ofn.lpstrFile = szFile;
+    ofn.nMaxFile = MAX_PATH;
+    ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_ENABLESIZING;
+
+    if (GetOpenFileNameW(&ofn)) {
+        InvalidateRect(m_hwnd, nullptr, FALSE);
+    }
+}
+
+void Window::DoOpenSettings() {
+    m_buffer.SetText(
+        L"{\n"
+        L"    // Editor configuration\n"
+        L"    \"editor.fontSize\": 13,\n"
+        L"    \"editor.fontFamily\": \"Consolas, 'Courier New', monospace\",\n"
+        L"    \"editor.tabSize\": 4,\n"
+        L"    \"editor.insertSpaces\": true,\n"
+        L"    \"editor.lineNumbers\": \"on\",\n"
+        L"    \"editor.renderWhitespace\": \"selection\",\n"
+        L"    \"editor.cursorBlinking\": \"smooth\",\n"
+        L"    \"workbench.colorTheme\": \"Default Dark Modern\",\n"
+        L"    \"workbench.iconTheme\": \"vs-seti\",\n"
+        L"    \"files.autoSave\": \"afterDelay\"\n"
+        L"}\n"
+    );
+    m_currentFileName = L"settings.json";
+    m_currentFilePath = L"settings.json";
+    m_hasOpenFile = true;
+    m_isDirty = false;
+    InvalidateRect(m_hwnd, nullptr, FALSE);
+}
+
+void Window::DoOpenKeyboardShortcuts() {
+    m_buffer.SetText(
+        L"[\n"
+        L"    { \"key\": \"ctrl+n\", \"command\": \"workbench.action.files.newUntitledFile\" },\n"
+        L"    { \"key\": \"ctrl+o\", \"command\": \"workbench.action.files.openFile\" },\n"
+        L"    { \"key\": \"ctrl+k ctrl+o\", \"command\": \"workbench.action.files.openFolder\" },\n"
+        L"    { \"key\": \"ctrl+s\", \"command\": \"workbench.action.files.save\" },\n"
+        L"    { \"key\": \"ctrl+shift+s\", \"command\": \"workbench.action.files.saveAs\" },\n"
+        L"    { \"key\": \"ctrl+k s\", \"command\": \"workbench.action.files.saveAll\" },\n"
+        L"    { \"key\": \"ctrl+w\", \"command\": \"workbench.action.closeActiveEditor\" },\n"
+        L"    { \"key\": \"ctrl+f4\", \"command\": \"workbench.action.closeActiveEditor\" },\n"
+        L"    { \"key\": \"ctrl+shift+t\", \"command\": \"workbench.action.reopenClosedEditor\" },\n"
+        L"    { \"key\": \"ctrl+k f\", \"command\": \"workbench.action.closeFolder\" },\n"
+        L"    { \"key\": \"ctrl+b\", \"command\": \"workbench.action.toggleSidebarVisibility\" },\n"
+        L"    { \"key\": \"ctrl+shift+p\", \"command\": \"workbench.action.showCommands\" },\n"
+        L"    { \"key\": \"ctrl+,\", \"command\": \"workbench.action.openSettings\" },\n"
+        L"    { \"key\": \"f11\", \"command\": \"workbench.action.toggleFullScreen\" },\n"
+        L"    { \"key\": \"alt+z\", \"command\": \"editor.action.toggleWordWrap\" }\n"
+        L"]\n"
+    );
+    m_currentFileName = L"keybindings.json";
+    m_currentFilePath = L"keybindings.json";
+    m_hasOpenFile = true;
+    m_isDirty = false;
+    InvalidateRect(m_hwnd, nullptr, FALSE);
+}
+
+void Window::DoOpenUserSnippets() {
+    m_buffer.SetText(
+        L"{\n"
+        L"    // Place your global snippets here\n"
+        L"    \"Print to console\": {\n"
+        L"        \"prefix\": \"log\",\n"
+        L"        \"body\": [\n"
+        L"            \"std::cout << \\\"$1\\\" << std::endl;\"\n"
+        L"        ],\n"
+        L"        \"description\": \"Log output to console\"\n"
+        L"    }\n"
+        L"}\n"
+    );
+    m_currentFileName = L"snippets.json";
+    m_currentFilePath = L"snippets.json";
+    m_hasOpenFile = true;
+    m_isDirty = false;
+    InvalidateRect(m_hwnd, nullptr, FALSE);
+}
+
+void Window::DoToggleTheme() {
+    InvalidateRect(m_hwnd, nullptr, FALSE);
+}
+
+void Window::DoRevertFile() {
+    if (m_hasOpenFile && !m_currentFilePath.empty() && std::filesystem::exists(m_currentFilePath)) {
+        LoadFileFromPath(m_currentFilePath);
     }
 }
 
 void Window::DoCloseEditor() {
-    m_hasOpenFile = false;
-    m_currentFilePath.clear();
-    m_currentFileName.clear();
-    m_isDirty = false;
+    if (m_hasOpenFile) {
+        if (!m_currentFilePath.empty()) {
+            m_lastClosedFilePath = m_currentFilePath;
+        }
+        m_hasOpenFile = false;
+        m_currentFilePath.clear();
+        m_currentFileName.clear();
+        m_isDirty = false;
+        InvalidateRect(m_hwnd, nullptr, FALSE);
+    }
+}
+
+void Window::DoCloseFolder() {
+    m_drawer.CloseFolder();
     InvalidateRect(m_hwnd, nullptr, FALSE);
+}
+
+void Window::DoReopenClosedEditor() {
+    if (!m_lastClosedFilePath.empty() && std::filesystem::exists(m_lastClosedFilePath)) {
+        LoadFileFromPath(m_lastClosedFilePath);
+    }
 }
 
 void Window::LoadFileFromPath(const std::wstring& path) {
@@ -134,6 +367,13 @@ void Window::LoadFileFromPath(const std::wstring& path) {
         m_currentFileName = (pos != std::wstring::npos) ? path.substr(pos + 1) : path;
         m_hasOpenFile = true;
         m_isDirty = false;
+
+        // Add to recent list
+        auto it = std::find(m_recentPaths.begin(), m_recentPaths.end(), path);
+        if (it != m_recentPaths.end()) m_recentPaths.erase(it);
+        m_recentPaths.insert(m_recentPaths.begin(), path);
+        if (m_recentPaths.size() > 10) m_recentPaths.resize(10);
+
         InvalidateRect(m_hwnd, nullptr, FALSE);
     }
 }
@@ -529,8 +769,13 @@ void Window::HandleMouseMove(POINT clientPt) {
 
     // Check Drawer hover
     if (m_drawerAnimProgress > 0.001f) {
-        int hoveredTree = m_drawer.HitTest(clientPt, m_config);
-        if (m_drawer.SetHoveredIndex(hoveredTree)) needRepaint = true;
+        if (!m_drawer.HasOpenFolder()) {
+            bool btnHover = m_drawer.HitTestOpenFolderButton(clientPt, m_config);
+            if (m_drawer.SetHoveredOpenFolderBtn(btnHover)) needRepaint = true;
+        } else {
+            int hoveredTree = m_drawer.HitTest(clientPt, m_config);
+            if (m_drawer.SetHoveredIndex(hoveredTree)) needRepaint = true;
+        }
     }
 
     if (needRepaint) {
@@ -549,11 +794,61 @@ void Window::HandleLButtonDown(POINT clientPt) {
                     case ui::MenuActionId::NewTextFile:
                         DoNewTextFile();
                         break;
+                    case ui::MenuActionId::NewFile:
+                        DoNewFile();
+                        break;
+                    case ui::MenuActionId::NewWindow:
+                    case ui::MenuActionId::NewWindowDefault:
+                    case ui::MenuActionId::NewWindowEmpty:
+                        DoNewWindow();
+                        break;
                     case ui::MenuActionId::OpenFile:
                         DoOpenFile();
                         break;
                     case ui::MenuActionId::OpenFolder:
                         DoOpenFolder();
+                        break;
+                    case ui::MenuActionId::OpenWorkspaceFromFile:
+                        DoOpenWorkspaceFromFile();
+                        break;
+                    case ui::MenuActionId::RecentItem0:
+                        if (m_recentPaths.size() > 0) {
+                            if (std::filesystem::is_directory(m_recentPaths[0])) DoOpenFolderFromPath(m_recentPaths[0]);
+                            else LoadFileFromPath(m_recentPaths[0]);
+                        }
+                        break;
+                    case ui::MenuActionId::RecentItem1:
+                        if (m_recentPaths.size() > 1) {
+                            if (std::filesystem::is_directory(m_recentPaths[1])) DoOpenFolderFromPath(m_recentPaths[1]);
+                            else LoadFileFromPath(m_recentPaths[1]);
+                        }
+                        break;
+                    case ui::MenuActionId::RecentItem2:
+                        if (m_recentPaths.size() > 2) {
+                            if (std::filesystem::is_directory(m_recentPaths[2])) DoOpenFolderFromPath(m_recentPaths[2]);
+                            else LoadFileFromPath(m_recentPaths[2]);
+                        }
+                        break;
+                    case ui::MenuActionId::RecentItem3:
+                        if (m_recentPaths.size() > 3) {
+                            if (std::filesystem::is_directory(m_recentPaths[3])) DoOpenFolderFromPath(m_recentPaths[3]);
+                            else LoadFileFromPath(m_recentPaths[3]);
+                        }
+                        break;
+                    case ui::MenuActionId::ReopenClosedEditor:
+                        DoReopenClosedEditor();
+                        break;
+                    case ui::MenuActionId::ClearRecent:
+                        m_recentPaths.clear();
+                        break;
+                    case ui::MenuActionId::AddFolderToWorkspace:
+                        DoAddFolderToWorkspace();
+                        break;
+                    case ui::MenuActionId::SaveWorkspaceAs:
+                        DoSaveWorkspaceAs();
+                        break;
+                    case ui::MenuActionId::DuplicateWorkspace:
+                        DoDuplicateWorkspace();
                         break;
                     case ui::MenuActionId::Save:
                         DoSaveFile();
@@ -561,14 +856,38 @@ void Window::HandleLButtonDown(POINT clientPt) {
                     case ui::MenuActionId::SaveAs:
                         DoSaveFileAs();
                         break;
+                    case ui::MenuActionId::SaveAll:
+                        DoSaveAll();
+                        break;
+                    case ui::MenuActionId::ExportProfile:
+                        DoExportProfile();
+                        break;
+                    case ui::MenuActionId::ImportProfile:
+                        DoImportProfile();
+                        break;
                     case ui::MenuActionId::ToggleAutoSave:
                         m_autoSave = !m_autoSave;
+                        break;
+                    case ui::MenuActionId::Settings:
+                        DoOpenSettings();
+                        break;
+                    case ui::MenuActionId::KeyboardShortcuts:
+                        DoOpenKeyboardShortcuts();
+                        break;
+                    case ui::MenuActionId::UserSnippets:
+                        DoOpenUserSnippets();
+                        break;
+                    case ui::MenuActionId::ThemeSettings:
+                        DoToggleTheme();
+                        break;
+                    case ui::MenuActionId::RevertFile:
+                        DoRevertFile();
                         break;
                     case ui::MenuActionId::CloseEditor:
                         DoCloseEditor();
                         break;
                     case ui::MenuActionId::CloseFolder:
-                        DoCloseEditor();
+                        DoCloseFolder();
                         break;
                     case ui::MenuActionId::CloseWindow:
                     case ui::MenuActionId::Exit:
@@ -651,7 +970,7 @@ void Window::HandleLButtonDown(POINT clientPt) {
         } else if (menuHit == ui::HeaderMenuId::File) {
             // Open File Dropdown Menu directly beneath the File header button
             D2D1_RECT_F rcFile = m_header.GetMenuItemBounds(ui::HeaderMenuId::File);
-            m_popupMenu.OpenFileMenu(rcFile.left, rcFile.bottom + 2.0f, m_config, m_autoSave);
+            m_popupMenu.OpenFileMenu(rcFile.left, rcFile.bottom + 2.0f, m_config, m_autoSave, m_recentPaths);
             m_header.SetActiveMenu(ui::HeaderMenuId::File);
             InvalidateRect(m_hwnd, nullptr, FALSE);
         } else if (menuHit == ui::HeaderMenuId::View) {
@@ -671,20 +990,27 @@ void Window::HandleLButtonDown(POINT clientPt) {
         return;
     }
 
-    // 5. Drawer Tree Item Clicks (open file or toggle folder)
+    // 5. Drawer Tree Item Clicks (open file, toggle folder, or open folder button)
     if (m_drawerAnimProgress > 0.001f) {
-        int clickedTree = m_drawer.HitTest(clientPt, m_config);
-        if (clickedTree >= 0) {
-            const auto* pItem = m_drawer.GetItem(clickedTree);
-            if (pItem) {
-                if (pItem->isFolder) {
-                    m_drawer.ToggleFolder(clickedTree);
-                } else {
-                    // Open file! Removes placeholder and displays file code
-                    OpenFileByName(pItem->label);
-                }
-                InvalidateRect(m_hwnd, nullptr, FALSE);
+        if (!m_drawer.HasOpenFolder()) {
+            if (m_drawer.HitTestOpenFolderButton(clientPt, m_config)) {
+                DoOpenFolder();
                 return;
+            }
+        } else {
+            int clickedTree = m_drawer.HitTest(clientPt, m_config);
+            if (clickedTree >= 0) {
+                const auto* pItem = m_drawer.GetItem(clickedTree);
+                if (pItem) {
+                    if (pItem->isFolder) {
+                        m_drawer.ToggleFolder(clickedTree);
+                    } else {
+                        // Open real file using its full path!
+                        LoadFileFromPath(pItem->fullPath);
+                    }
+                    InvalidateRect(m_hwnd, nullptr, FALSE);
+                    return;
+                }
             }
         }
     }
@@ -802,6 +1128,10 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 if (ch >= 32 || ch == L'\t' || ch == L'\r' || ch == L'\n') {
                     m_buffer.InsertChar(ch);
                     m_isDirty = true;
+                    if (m_autoSave && !m_currentFilePath.empty()) {
+                        m_buffer.SaveToFile(m_currentFilePath);
+                        m_isDirty = false;
+                    }
                     InvalidateRect(m_hwnd, nullptr, FALSE);
                 }
             }
@@ -860,6 +1190,27 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 }
                 if (wParam == 'W' || wParam == VK_F4) {
                     DoCloseEditor();
+                    return 0;
+                }
+                if (wParam == 'F') {
+                    if (m_chordCtrlK) {
+                        DoCloseFolder();
+                        m_chordCtrlK = false;
+                        return 0;
+                    }
+                }
+                if (wParam == 'T') {
+                    if (GetKeyState(VK_SHIFT) & 0x8000) {
+                        DoReopenClosedEditor();
+                        return 0;
+                    } else if (m_chordCtrlK) {
+                        DoToggleTheme();
+                        m_chordCtrlK = false;
+                        return 0;
+                    }
+                }
+                if (wParam == VK_OEM_COMMA) {
+                    DoOpenSettings();
                     return 0;
                 }
                 if (wParam == 'K') {

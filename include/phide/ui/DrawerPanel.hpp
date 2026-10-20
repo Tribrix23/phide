@@ -13,6 +13,8 @@
 #include <dwrite.h>
 #include <vector>
 #include <string>
+#include <set>
+#include <filesystem>
 #include "phide/app/AppConfig.hpp"
 #include "phide/ui/Theme.hpp"
 
@@ -25,6 +27,7 @@ namespace phide::ui {
 struct DrawerTreeItem {
     std::wstring label;
     std::wstring iconGlyph;
+    std::wstring fullPath;
     int depth = 0;
     bool isFolder = false;
     bool isExpanded = true;
@@ -59,6 +62,11 @@ public:
     int HitTest(POINT pt, const app::AppConfig& config) const;
 
     /**
+     * @brief Performs hit-testing on the "Open Folder" button shown when no folder is open.
+     */
+    bool HitTestOpenFolderButton(POINT pt, const app::AppConfig& config) const;
+
+    /**
      * @brief Sets the hovered tree item.
      * @param index Hovered item index.
      * @return True if state changed.
@@ -66,11 +74,17 @@ public:
     bool SetHoveredIndex(int index);
 
     /**
+     * @brief Sets the hovered state of the "Open Folder" button.
+     * @return True if state changed.
+     */
+    bool SetHoveredOpenFolderBtn(bool hovered);
+
+    /**
      * @brief Gets a pointer to the tree item at the specified index.
      */
     [[nodiscard]] const DrawerTreeItem* GetItem(int index) const {
-        if (index >= 0 && index < static_cast<int>(m_mockFileTree.size())) {
-            return &m_mockFileTree[index];
+        if (index >= 0 && index < static_cast<int>(m_visibleItems.size())) {
+            return &m_visibleItems[index];
         }
         return nullptr;
     }
@@ -78,18 +92,43 @@ public:
     /**
      * @brief Toggles folder open/closed state.
      */
-    void ToggleFolder(int index) {
-        if (index >= 0 && index < static_cast<int>(m_mockFileTree.size())) {
-            if (m_mockFileTree[index].isFolder) {
-                m_mockFileTree[index].isExpanded = !m_mockFileTree[index].isExpanded;
-                m_mockFileTree[index].iconGlyph = m_mockFileTree[index].isExpanded ? L"\u25BE \u25A4" : L"\u25B8 \u25A4";
-            }
-        }
-    }
+    void ToggleFolder(int index);
+
+    /**
+     * @brief Opens a folder and populates the explorer tree with real filesystem contents.
+     */
+    void OpenFolder(const std::wstring& folderPath);
+
+    /**
+     * @brief Closes the currently opened folder, returning the explorer to the "NO FOLDER OPENED" state.
+     */
+    void CloseFolder();
+
+    /**
+     * @brief Refreshes the tree contents from disk.
+     */
+    void RefreshTree();
+
+    [[nodiscard]] bool HasOpenFolder() const noexcept { return m_hasOpenFolder; }
+    [[nodiscard]] const std::wstring& GetOpenFolderPath() const noexcept { return m_openFolderPath; }
+    [[nodiscard]] const std::wstring& GetRootName() const noexcept { return m_rootName; }
 
 private:
+    void RebuildVisibleItems();
+    void AddDirectoryChildren(const std::wstring& dirPath, int depth);
+    std::wstring GetIconForFile(const std::wstring& filename, bool isDir, bool isExpanded) const;
+
+    bool m_hasOpenFolder = false;
+    std::wstring m_openFolderPath;
+    std::wstring m_rootName;
+
+    std::set<std::wstring> m_expandedDirs;
+    std::vector<DrawerTreeItem> m_visibleItems;
+
     int m_hoveredIndex = -1;
-    std::vector<DrawerTreeItem> m_mockFileTree;
+    bool m_hoveredOpenFolderBtn = false;
+    D2D1_RECT_F m_rcOpenFolderBtn{};
+
     Microsoft::WRL::ComPtr<ID2D1PathGeometry> m_pDrawerBgGeometry;
     float m_cachedRailW = -1.0f;
     float m_cachedHeaderH = -1.0f;

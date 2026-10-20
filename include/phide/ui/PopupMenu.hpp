@@ -52,6 +52,22 @@ enum class MenuActionId {
     CloseWindow,
     Exit,
 
+    // Submenu Actions for File Menu
+    NewWindowDefault,
+    NewWindowEmpty,
+    RecentItem0,
+    RecentItem1,
+    RecentItem2,
+    RecentItem3,
+    ReopenClosedEditor,
+    ClearRecent,
+    ExportProfile,
+    ImportProfile,
+    Settings,
+    KeyboardShortcuts,
+    UserSnippets,
+    ThemeSettings,
+
     // Main View Menu Actions
     CommandPalette,
     OpenView,
@@ -136,8 +152,10 @@ public:
      * @param y Top coordinate of the anchor.
      * @param config Application metrics.
      * @param autoSave Whether auto save is currently toggled on.
+     * @param recentItems Optional list of recently opened files or folders.
      */
-    void OpenFileMenu(float x, float y, const app::AppConfig& config, bool autoSave = true);
+    void OpenFileMenu(float x, float y, const app::AppConfig& config, bool autoSave = true,
+                      const std::vector<std::wstring>& recentItems = {});
 
     /**
      * @brief Closes the popup menu and any open submenus.
@@ -178,7 +196,7 @@ public:
 
 private:
     void BuildViewMenuItems(bool isSidebarOpen, bool isZoomed, bool wordWrap);
-    void BuildFileMenuItems(bool autoSave);
+    void BuildFileMenuItems(bool autoSave, const std::vector<std::wstring>& recentItems = {});
     void LayoutMenu(std::vector<PopupMenuItem>& items, float startX, float startY, float width,
                     const app::AppConfig& config, D2D1_RECT_F& outBounds);
     void LayoutSubmenu(int parentItemIdx, const app::AppConfig& config, float clientW, float clientH);

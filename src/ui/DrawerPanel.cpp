@@ -1,23 +1,188 @@
 /**
  * @file DrawerPanel.cpp
- * @brief Implementation of the slide-out sidebar drawer view.
+ * @brief Implementation of the slide-out sidebar drawer view with real filesystem browsing.
  */
 
 #include "phide/ui/DrawerPanel.hpp"
 #include "phide/ui/ActivityRail.hpp"
+#include <algorithm>
 
 namespace phide::ui {
 
 DrawerPanel::DrawerPanel() {
-    // Populate mock project tree representing phide & PHP IDE structure
-    m_mockFileTree.push_back({ L"phide",        L"\u25BE \u25A4", 0, true,  true,  {} });
-    m_mockFileTree.push_back({ L"src",          L"\u25BE \u25A4", 1, true,  true,  {} });
-    m_mockFileTree.push_back({ L"main.cpp",     L"\u2699",        2, false, false, {} });
-    m_mockFileTree.push_back({ L"index.php",    L"\u272A",        2, false, false, {} });
-    m_mockFileTree.push_back({ L"Kernel.php",   L"\u272A",        2, false, false, {} });
-    m_mockFileTree.push_back({ L"include",      L"\u25B8 \u25A4", 1, true,  false, {} });
-    m_mockFileTree.push_back({ L"composer.json",L"\u2261",        1, false, false, {} });
-    m_mockFileTree.push_back({ L"CMakeLists.txt",L"\u2261",       1, false, false, {} });
+    // Starts with no folder opened - mock tree is completely removed
+    m_hasOpenFolder = false;
+    m_visibleItems.clear();
+}
+
+void DrawerPanel::OpenFolder(const std::wstring& folderPath) {
+    if (folderPath.empty()) return;
+
+    std::error_code ec;
+    std::filesystem::path fsPath(folderPath);
+    if (!std::filesystem::exists(fsPath, ec) || !std::filesystem::is_directory(fsPath, ec)) {
+        return;
+    }
+
+    m_openFolderPath = std::filesystem::canonical(fsPath, ec).wstring();
+    if (m_openFolderPath.empty()) m_openFolderPath = folderPath;
+
+    // Extract folder name
+    std::filesystem::path canon(m_openFolderPath);
+    m_rootName = canon.filename().wstring();
+    if (m_rootName.empty()) {
+        m_rootName = canon.parent_path().filename().wstring();
+    }
+    if (m_rootName.empty()) {
+        m_rootName = m_openFolderPath;
+    }
+
+    m_hasOpenFolder = true;
+    m_expandedDirs.clear();
+    m_expandedDirs.insert(m_openFolderPath);
+
+    RebuildVisibleItems();
+}
+
+void DrawerPanel::CloseFolder() {
+    m_hasOpenFolder = false;
+    m_openFolderPath.clear();
+    m_rootName.clear();
+    m_expandedDirs.clear();
+    m_visibleItems.clear();
+    m_hoveredIndex = -1;
+}
+
+void DrawerPanel::RefreshTree() {
+    if (m_hasOpenFolder) {
+        RebuildVisibleItems();
+    }
+}
+
+void DrawerPanel::ToggleFolder(int index) {
+    if (index >= 0 && index < static_cast<int>(m_visibleItems.size())) {
+        auto& item = m_visibleItems[index];
+        if (item.isFolder) {
+            if (m_expandedDirs.count(item.fullPath) > 0) {
+                m_expandedDirs.erase(item.fullPath);
+            } else {
+                m_expandedDirs.insert(item.fullPath);
+            }
+            RebuildVisibleItems();
+        }
+    }
+}
+
+std::wstring DrawerPanel::GetIconForFile(const std::wstring& filename, bool isDir, bool isExpanded) const {
+    if (isDir) {
+        return isExpanded ? L"\u25BE \u25A4" : L"\u25B8 \u25A4";
+    }
+
+    // Extract extension in lowercase
+    auto dot = filename.find_last_of(L'.');
+    if (dot != std::wstring::npos) {
+        std::wstring ext = filename.substr(dot);
+        std::transform(ext.begin(), ext.end(), ext.begin(), ::towlower);
+
+        if (ext == L".cpp" || ext == L".cxx" || ext == L".cc" || ext == L".c") return L"\u2699";
+        if (ext == L".hpp" || ext == L".hxx" || ext == L".hh" || ext == L".h") return L"\u25A1";
+        if (ext == L".php" || ext == L".phtml") return L"\u272A";
+        if (ext == L".json" || ext == L".yaml" || ext == L".yml" || ext == L".xml" || ext == L".toml" || ext == L".ini") return L"\u2261";
+        if (ext == L".md" || ext == L".txt" || ext == L".rst" || ext == L".log") return L"\u2261";
+        if (ext == L".bat" || ext == L".cmd" || ext == L".sh" || ext == L".ps1") return L"\u26A1";
+        if (ext == L".png" || ext == L".jpg" || ext == L".jpeg" || ext == L".gif" || ext == L".ico" || ext == L".svg") return L"\u25A3";
+        if (ext == L".py") return L"\u26A1";
+        if (ext == L".js" || ext == L".ts" || ext == L".html" || ext == L".css") return L"\u25CE";
+    }
+
+    if (filename == L"CMakeLists.txt" || filename == L"Makefile") return L"\u2699";
+    if (filename == L"composer.json" || filename == L"package.json") return L"\u2261";
+
+    return L"\u25AB";
+}
+
+void DrawerPanel::RebuildVisibleItems() {
+    m_visibleItems.clear();
+    if (!m_hasOpenFolder || m_openFolderPath.empty()) return;
+
+    // Root folder item
+    DrawerTreeItem rootItem;
+    rootItem.label = m_rootName;
+    rootItem.fullPath = m_openFolderPath;
+    rootItem.depth = 0;
+    rootItem.isFolder = true;
+    rootItem.isExpanded = (m_expandedDirs.count(m_openFolderPath) > 0);
+    rootItem.iconGlyph = GetIconForFile(m_rootName, true, rootItem.isExpanded);
+    m_visibleItems.push_back(rootItem);
+
+    if (rootItem.isExpanded) {
+        AddDirectoryChildren(m_openFolderPath, 1);
+    }
+}
+
+void DrawerPanel::AddDirectoryChildren(const std::wstring& dirPath, int depth) {
+    std::error_code ec;
+    std::filesystem::path fsPath(dirPath);
+    if (!std::filesystem::exists(fsPath, ec) || !std::filesystem::is_directory(fsPath, ec)) {
+        return;
+    }
+
+    struct EntryInfo {
+        std::wstring name;
+        std::wstring fullPath;
+        bool isDir;
+    };
+    std::vector<EntryInfo> folders;
+    std::vector<EntryInfo> files;
+
+    for (const auto& entry : std::filesystem::directory_iterator(fsPath, std::filesystem::directory_options::skip_permission_denied, ec)) {
+        std::wstring name = entry.path().filename().wstring();
+        if (name.empty() || name[0] == L'.') continue; // Skip hidden
+        if (name == L"bin" || name == L"obj" || name == L"build" || name == L"node_modules" || name == L".git" || name == L".vs") {
+            continue;
+        }
+
+        bool isDir = entry.is_directory(ec);
+        if (isDir) {
+            folders.push_back({ name, entry.path().wstring(), true });
+        } else {
+            files.push_back({ name, entry.path().wstring(), false });
+        }
+    }
+
+    auto cmp = [](const EntryInfo& a, const EntryInfo& b) {
+        return _wcsicmp(a.name.c_str(), b.name.c_str()) < 0;
+    };
+    std::sort(folders.begin(), folders.end(), cmp);
+    std::sort(files.begin(), files.end(), cmp);
+
+    // Add folders first
+    for (const auto& f : folders) {
+        DrawerTreeItem item;
+        item.label = f.name;
+        item.fullPath = f.fullPath;
+        item.depth = depth;
+        item.isFolder = true;
+        item.isExpanded = (m_expandedDirs.count(f.fullPath) > 0);
+        item.iconGlyph = GetIconForFile(f.name, true, item.isExpanded);
+        m_visibleItems.push_back(item);
+
+        if (item.isExpanded) {
+            AddDirectoryChildren(f.fullPath, depth + 1);
+        }
+    }
+
+    // Add files next
+    for (const auto& f : files) {
+        DrawerTreeItem item;
+        item.label = f.name;
+        item.fullPath = f.fullPath;
+        item.depth = depth;
+        item.isFolder = false;
+        item.isExpanded = false;
+        item.iconGlyph = GetIconForFile(f.name, false, false);
+        m_visibleItems.push_back(item);
+    }
 }
 
 void DrawerPanel::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config, float clientHeight, float currentDrawerW) {
@@ -50,22 +215,12 @@ void DrawerPanel::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCon
                     const float maxR = (std::min)(currentDrawerW, (clientHeight - headerH) / 2.0f);
                     const float r = (maxR > 0.0f) ? (std::min)(cornerRadius, maxR) : 0.0f;
 
-                    // 1. Begin at the top edge right after the upper-left rounded corner
                     sink->BeginFigure(D2D1::Point2F(railW + r, headerH), D2D1_FIGURE_BEGIN_FILLED);
-
-                    // 2. Top edge straight to top-right corner (SHARP)
                     sink->AddLine(D2D1::Point2F(railW + currentDrawerW, headerH));
-
-                    // 3. Right edge straight down to bottom-right corner (SHARP)
                     sink->AddLine(D2D1::Point2F(railW + currentDrawerW, clientHeight));
-
-                    // 4. Bottom edge straight to bottom-left corner (SHARP)
                     sink->AddLine(D2D1::Point2F(railW, clientHeight));
-
-                    // 5. Left edge straight up to start of the upper-left curve
                     sink->AddLine(D2D1::Point2F(railW, headerH + r));
 
-                    // 6. Arc around ONLY the upper-left corner connecting into purple header
                     if (r > 0.0f) {
                         D2D1_ARC_SEGMENT arc = {};
                         arc.point = D2D1::Point2F(railW + r, headerH);
@@ -101,79 +256,135 @@ void DrawerPanel::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCon
         1.0f
     );
 
-    // 2. Render Drawer Contents (Header & Tree Items)
-    // Only render when drawer is wide enough, preventing any squishing during open/close
+    // 2. Render Drawer Contents
     const float fullDrawerW = config.ScaleF(static_cast<float>(config.drawerWidth));
     const float minContentW = config.ScaleF(40.0f);
 
     if (currentDrawerW >= minContentW) {
-        // Push clip so content stays cleanly inside current drawer bounds during animation
         D2D1_RECT_F clipRect = D2D1::RectF(railW, headerH, railW + currentDrawerW, clientHeight);
         pRT->PushAxisAlignedClip(clipRect, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
 
         float curY = headerH + config.ScaleF(14.0f);
         const float paddingX = config.ScaleF(16.0f);
 
-        const wchar_t* title = L"EXPLORER";
-        if (config.activeRailTab == static_cast<int>(RailTabId::Search)) title = L"SEARCH WORKSPACE";
-        else if (config.activeRailTab == static_cast<int>(RailTabId::Git)) title = L"SOURCE CONTROL (GIT)";
+        if (!m_hasOpenFolder) {
+            // === NO FOLDER OPENED STATE ===
+            D2D1_RECT_F rcTitle = D2D1::RectF(
+                railW + paddingX,
+                curY,
+                railW + fullDrawerW - paddingX,
+                curY + config.ScaleF(20.0f)
+            );
+            const wchar_t* title = L"EXPLORER";
+            pRT->DrawText(title, static_cast<UINT32>(wcslen(title)),
+                          theme.fontSectionHeader ? theme.fontSectionHeader.Get() : theme.fontBody.Get(),
+                          rcTitle, theme.brushTextPrimary.Get());
 
-        // Full width fixed rectangle so text never squishes or breaks into vertical lines
-        D2D1_RECT_F rcTitle = D2D1::RectF(
-            railW + paddingX,
-            curY,
-            railW + fullDrawerW - paddingX,
-            curY + config.ScaleF(20.0f)
-        );
-        pRT->DrawText(title, static_cast<UINT32>(wcslen(title)),
-                      theme.fontSectionHeader ? theme.fontSectionHeader.Get() : theme.fontBody.Get(),
-                      rcTitle, theme.brushTextPrimary.Get());
+            curY += config.ScaleF(32.0f);
 
-        curY += config.ScaleF(32.0f);
+            // Subtitle
+            D2D1_RECT_F rcSubtitle = D2D1::RectF(
+                railW + paddingX,
+                curY,
+                railW + fullDrawerW - paddingX,
+                curY + config.ScaleF(36.0f)
+            );
+            const wchar_t* subText = L"You have not yet opened a folder.";
+            pRT->DrawText(subText, static_cast<UINT32>(wcslen(subText)),
+                          theme.fontBody.Get(),
+                          rcSubtitle, theme.brushTextSecondary.Get());
 
-        // 3. Render Tree Items (for Explorer or perspective list)
-        const float itemH = config.ScaleF(26.0f);
-        for (size_t i = 0; i < m_mockFileTree.size(); ++i) {
-            auto& item = m_mockFileTree[i];
-            float indent = config.ScaleF(static_cast<float>(item.depth * 14));
-            item.bounds = D2D1::RectF(railW + config.ScaleF(8.0f), curY, railW + fullDrawerW - config.ScaleF(8.0f), curY + itemH);
+            curY += config.ScaleF(46.0f);
 
-            if (m_hoveredIndex == static_cast<int>(i)) {
-                D2D1_ROUNDED_RECT rrc = D2D1::RoundedRect(item.bounds, 4.0f, 4.0f);
-                pRT->FillRoundedRectangle(rrc, theme.brushItemHover.Get());
+            // "Open Folder" Action Button
+            const float btnW = fullDrawerW - paddingX * 2.0f;
+            const float btnH = config.ScaleF(32.0f);
+            m_rcOpenFolderBtn = D2D1::RectF(
+                railW + paddingX,
+                curY,
+                railW + paddingX + btnW,
+                curY + btnH
+            );
+
+            D2D1_ROUNDED_RECT rrc = D2D1::RoundedRect(m_rcOpenFolderBtn, 4.0f, 4.0f);
+            pRT->FillRoundedRectangle(rrc, m_hoveredOpenFolderBtn ? theme.brushItemHover.Get() : theme.brushMenuHover.Get());
+            pRT->DrawRoundedRectangle(rrc, theme.brushMenuHover.Get(), 1.0f);
+
+            // Center text inside button
+            D2D1_RECT_F rcBtnText = D2D1::RectF(
+                m_rcOpenFolderBtn.left,
+                m_rcOpenFolderBtn.top + config.ScaleF(6.0f),
+                m_rcOpenFolderBtn.right,
+                m_rcOpenFolderBtn.bottom
+            );
+            const wchar_t* btnLabel = L"Open Folder";
+            pRT->DrawText(btnLabel, static_cast<UINT32>(wcslen(btnLabel)),
+                          theme.fontBody.Get(),
+                          rcBtnText, theme.brushTextWhite.Get());
+
+        } else {
+            // === FOLDER OPENED STATE ===
+            std::wstring title = L"EXPLORER";
+            if (!m_rootName.empty()) {
+                title += L": " + m_rootName;
             }
 
-            // Draw Icon
-            D2D1_RECT_F rcIcon = D2D1::RectF(
-                railW + config.ScaleF(12.0f) + indent,
+            D2D1_RECT_F rcTitle = D2D1::RectF(
+                railW + paddingX,
                 curY,
-                railW + config.ScaleF(32.0f) + indent,
-                curY + itemH
+                railW + fullDrawerW - paddingX,
+                curY + config.ScaleF(20.0f)
             );
-            pRT->DrawText(
-                item.iconGlyph.c_str(),
-                static_cast<UINT32>(item.iconGlyph.length()),
-                theme.fontMenu.Get(),
-                rcIcon,
-                theme.brushTextSecondary.Get()
-            );
+            pRT->DrawText(title.c_str(), static_cast<UINT32>(title.length()),
+                          theme.fontSectionHeader ? theme.fontSectionHeader.Get() : theme.fontBody.Get(),
+                          rcTitle, theme.brushTextPrimary.Get());
 
-            // Draw Label (full width, never wraps!)
-            D2D1_RECT_F rcLabel = D2D1::RectF(
-                railW + config.ScaleF(36.0f) + indent,
-                curY,
-                railW + fullDrawerW - config.ScaleF(12.0f),
-                curY + itemH
-            );
-            pRT->DrawText(
-                item.label.c_str(),
-                static_cast<UINT32>(item.label.length()),
-                theme.fontBody.Get(),
-                rcLabel,
-                theme.brushTextPrimary.Get()
-            );
+            curY += config.ScaleF(30.0f);
 
-            curY += itemH;
+            // Tree Items
+            const float itemH = config.ScaleF(26.0f);
+            for (size_t i = 0; i < m_visibleItems.size(); ++i) {
+                auto& item = m_visibleItems[i];
+                float indent = config.ScaleF(static_cast<float>(item.depth * 14));
+                item.bounds = D2D1::RectF(railW + config.ScaleF(8.0f), curY, railW + fullDrawerW - config.ScaleF(8.0f), curY + itemH);
+
+                if (m_hoveredIndex == static_cast<int>(i)) {
+                    D2D1_ROUNDED_RECT rrc = D2D1::RoundedRect(item.bounds, 4.0f, 4.0f);
+                    pRT->FillRoundedRectangle(rrc, theme.brushItemHover.Get());
+                }
+
+                // Draw Icon Glyph
+                D2D1_RECT_F rcIcon = D2D1::RectF(
+                    railW + config.ScaleF(12.0f) + indent,
+                    curY,
+                    railW + config.ScaleF(32.0f) + indent,
+                    curY + itemH
+                );
+                pRT->DrawText(
+                    item.iconGlyph.c_str(),
+                    static_cast<UINT32>(item.iconGlyph.length()),
+                    theme.fontMenu.Get(),
+                    rcIcon,
+                    theme.brushTextSecondary.Get()
+                );
+
+                // Draw Item Label
+                D2D1_RECT_F rcLabel = D2D1::RectF(
+                    railW + config.ScaleF(36.0f) + indent,
+                    curY,
+                    railW + fullDrawerW - config.ScaleF(12.0f),
+                    curY + itemH
+                );
+                pRT->DrawText(
+                    item.label.c_str(),
+                    static_cast<UINT32>(item.label.length()),
+                    theme.fontBody.Get(),
+                    rcLabel,
+                    theme.brushTextPrimary.Get()
+                );
+
+                curY += itemH;
+            }
         }
 
         pRT->PopAxisAlignedClip();
@@ -182,8 +393,10 @@ void DrawerPanel::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCon
 
 int DrawerPanel::HitTest(POINT pt, const app::AppConfig& config) const {
     (void)config;
-    for (size_t i = 0; i < m_mockFileTree.size(); ++i) {
-        const auto& item = m_mockFileTree[i];
+    if (!m_hasOpenFolder) return -1;
+
+    for (size_t i = 0; i < m_visibleItems.size(); ++i) {
+        const auto& item = m_visibleItems[i];
         if (pt.x >= item.bounds.left && pt.x < item.bounds.right &&
             pt.y >= item.bounds.top && pt.y < item.bounds.bottom) {
             return static_cast<int>(i);
@@ -192,9 +405,26 @@ int DrawerPanel::HitTest(POINT pt, const app::AppConfig& config) const {
     return -1;
 }
 
+bool DrawerPanel::HitTestOpenFolderButton(POINT pt, const app::AppConfig& config) const {
+    (void)config;
+    if (!m_hasOpenFolder) {
+        return (pt.x >= m_rcOpenFolderBtn.left && pt.x <= m_rcOpenFolderBtn.right &&
+                pt.y >= m_rcOpenFolderBtn.top && pt.y <= m_rcOpenFolderBtn.bottom);
+    }
+    return false;
+}
+
 bool DrawerPanel::SetHoveredIndex(int index) {
     if (m_hoveredIndex != index) {
         m_hoveredIndex = index;
+        return true;
+    }
+    return false;
+}
+
+bool DrawerPanel::SetHoveredOpenFolderBtn(bool hovered) {
+    if (m_hoveredOpenFolderBtn != hovered) {
+        m_hoveredOpenFolderBtn = hovered;
         return true;
     }
     return false;

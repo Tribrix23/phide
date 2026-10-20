@@ -27,13 +27,14 @@ void PopupMenu::OpenViewMenu(float x, float y, const app::AppConfig& config,
     LayoutMenu(m_items, x, y, menuW, config, m_mainMenuBounds);
 }
 
-void PopupMenu::OpenFileMenu(float x, float y, const app::AppConfig& config, bool autoSave) {
+void PopupMenu::OpenFileMenu(float x, float y, const app::AppConfig& config, bool autoSave,
+                             const std::vector<std::wstring>& recentItems) {
     m_isOpen = true;
     m_hoveredMainIdx = -1;
     m_activeSubmenuIdx = -1;
     m_hoveredSubmenuIdx = -1;
 
-    BuildFileMenuItems(autoSave);
+    BuildFileMenuItems(autoSave, recentItems);
 
     const float menuW = config.ScaleF(245.0f);
     LayoutMenu(m_items, x, y, menuW, config, m_mainMenuBounds);
@@ -124,7 +125,7 @@ void PopupMenu::BuildViewMenuItems(bool isSidebarOpen, bool isZoomed, bool wordW
     m_items.push_back({ MenuActionId::WordWrap,       L"Word Wrap",          L"Alt+Z",        false, wordWrap, false, {} });
 }
 
-void PopupMenu::BuildFileMenuItems(bool autoSave) {
+void PopupMenu::BuildFileMenuItems(bool autoSave, const std::vector<std::wstring>& recentItems) {
     m_items.clear();
 
     // 1. New Text File (Ctrl+N)
@@ -139,8 +140,8 @@ void PopupMenu::BuildFileMenuItems(bool autoSave) {
     winProfile.actionId = MenuActionId::NewWindowWithProfile;
     winProfile.label = L"New Window with Profile";
     winProfile.hasSubmenu = true;
-    winProfile.submenuItems.push_back({ MenuActionId::None, L"Default", L"", false, true, false, {} });
-    winProfile.submenuItems.push_back({ MenuActionId::None, L"Empty Profile", L"", false, false, false, {} });
+    winProfile.submenuItems.push_back({ MenuActionId::NewWindowDefault, L"Default", L"", false, true, false, {} });
+    winProfile.submenuItems.push_back({ MenuActionId::NewWindowEmpty, L"Empty Profile", L"", false, false, false, {} });
     m_items.push_back(std::move(winProfile));
 
     // --- Separator ---
@@ -158,10 +159,20 @@ void PopupMenu::BuildFileMenuItems(bool autoSave) {
     openRecent.actionId = MenuActionId::OpenRecent;
     openRecent.label = L"Open Recent";
     openRecent.hasSubmenu = true;
-    openRecent.submenuItems.push_back({ MenuActionId::None, L"phide", L"", false, false, false, {} });
-    openRecent.submenuItems.push_back({ MenuActionId::None, L"Reopen Closed Editor", L"Ctrl+Shift+T", false, false, false, {} });
+    if (recentItems.empty()) {
+        openRecent.submenuItems.push_back({ MenuActionId::RecentItem0, L"phide", L"", false, false, false, {} });
+    } else {
+        const MenuActionId recentIds[] = { MenuActionId::RecentItem0, MenuActionId::RecentItem1, MenuActionId::RecentItem2, MenuActionId::RecentItem3 };
+        for (size_t r = 0; r < recentItems.size() && r < 4; ++r) {
+            auto pos = recentItems[r].find_last_of(L"\\/");
+            std::wstring disp = (pos != std::wstring::npos) ? recentItems[r].substr(pos + 1) : recentItems[r];
+            openRecent.submenuItems.push_back({ recentIds[r], disp, L"", false, false, false, {} });
+        }
+    }
     openRecent.submenuItems.push_back({ MenuActionId::None, L"", L"", true, false, false, {} });
-    openRecent.submenuItems.push_back({ MenuActionId::None, L"Clear Recently Opened", L"", false, false, false, {} });
+    openRecent.submenuItems.push_back({ MenuActionId::ReopenClosedEditor, L"Reopen Closed Editor", L"Ctrl+Shift+T", false, false, false, {} });
+    openRecent.submenuItems.push_back({ MenuActionId::None, L"", L"", true, false, false, {} });
+    openRecent.submenuItems.push_back({ MenuActionId::ClearRecent, L"Clear Recently Opened", L"", false, false, false, {} });
     m_items.push_back(std::move(openRecent));
 
     // --- Separator ---
@@ -192,8 +203,8 @@ void PopupMenu::BuildFileMenuItems(bool autoSave) {
     shareItem.actionId = MenuActionId::Share;
     shareItem.label = L"Share";
     shareItem.hasSubmenu = true;
-    shareItem.submenuItems.push_back({ MenuActionId::None, L"Export Profile...", L"", false, false, false, {} });
-    shareItem.submenuItems.push_back({ MenuActionId::None, L"Import Profile...", L"", false, false, false, {} });
+    shareItem.submenuItems.push_back({ MenuActionId::ExportProfile, L"Export Profile...", L"", false, false, false, {} });
+    shareItem.submenuItems.push_back({ MenuActionId::ImportProfile, L"Import Profile...", L"", false, false, false, {} });
     m_items.push_back(std::move(shareItem));
 
     // --- Separator ---
@@ -207,11 +218,11 @@ void PopupMenu::BuildFileMenuItems(bool autoSave) {
     prefItem.actionId = MenuActionId::Preferences;
     prefItem.label = L"Preferences";
     prefItem.hasSubmenu = true;
-    prefItem.submenuItems.push_back({ MenuActionId::None, L"Settings", L"Ctrl+,", false, false, false, {} });
-    prefItem.submenuItems.push_back({ MenuActionId::None, L"Keyboard Shortcuts", L"Ctrl+K Ctrl+S", false, false, false, {} });
-    prefItem.submenuItems.push_back({ MenuActionId::None, L"User Snippets", L"", false, false, false, {} });
+    prefItem.submenuItems.push_back({ MenuActionId::Settings, L"Settings", L"Ctrl+,", false, false, false, {} });
+    prefItem.submenuItems.push_back({ MenuActionId::KeyboardShortcuts, L"Keyboard Shortcuts", L"Ctrl+K Ctrl+S", false, false, false, {} });
+    prefItem.submenuItems.push_back({ MenuActionId::UserSnippets, L"User Snippets", L"", false, false, false, {} });
     prefItem.submenuItems.push_back({ MenuActionId::None, L"", L"", true, false, false, {} });
-    prefItem.submenuItems.push_back({ MenuActionId::None, L"Theme", L"Ctrl+K Ctrl+T", false, false, false, {} });
+    prefItem.submenuItems.push_back({ MenuActionId::ThemeSettings, L"Theme", L"Ctrl+K Ctrl+T", false, false, false, {} });
     m_items.push_back(std::move(prefItem));
 
     // --- Separator ---
