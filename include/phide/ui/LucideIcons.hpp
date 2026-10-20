@@ -90,9 +90,24 @@ public:
     void DrawCode(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, ID2D1Brush* pBrush, float strokeWidth = 1.4f) const;
 
     /**
-     * @brief Draws the Lucide Tools icon (sliders-horizontal).
+     * @brief Draws the Lucide Tools icon (Lucide 45-degree angled wrench).
      */
     void DrawTools(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, ID2D1Brush* pBrush, float strokeWidth = 1.4f) const;
+
+    /**
+     * @brief Draws the Lucide Run icon (vibrant play triangle ▶).
+     */
+    void DrawRun(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, ID2D1Brush* pBrush, float strokeWidth = 1.5f) const;
+
+    /**
+     * @brief Draws the Lucide Bug / Debugger icon (beetle glyph).
+     */
+    void DrawBug(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, ID2D1Brush* pBrush, float strokeWidth = 1.5f) const;
+
+    /**
+     * @brief Draws the Lucide Terminal icon (>_ prompt).
+     */
+    void DrawTerminal(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, ID2D1Brush* pBrush, float strokeWidth = 1.5f) const;
 
     /**
      * @brief Draws the Lucide Window icon (app-window).
@@ -121,6 +136,8 @@ public:
 
 private:
     ComPtr<ID2D1StrokeStyle> m_pStrokeStyle;
+    ComPtr<ID2D1PathGeometry> m_pWrenchGeometry;
+    ComPtr<ID2D1PathGeometry> m_pRunGeometry;
 };
 
 } // namespace phide::ui

@@ -48,6 +48,8 @@ struct ThemeColors {
     // Brand & Accent
     D2D1_COLOR_F brandAccent     = D2D1::ColorF(0.0f, 0.471f, 0.831f, 1.0f);   // #0078D4 (Accent Blue)
     D2D1_COLOR_F homeBadgeBg     = D2D1::ColorF(0.165f, 0.176f, 0.180f, 1.0f); // #2A2D2E
+    D2D1_COLOR_F runGreen        = D2D1::ColorF(0.24f, 0.84f, 0.52f, 1.0f);   // #3DD684 (Vibrant Emerald / IDE Run Green)
+    D2D1_COLOR_F runGreenHover   = D2D1::ColorF(0.24f, 0.84f, 0.52f, 0.16f);  // Soft green hover glow
 
     // Customized Tooltip Colors
     D2D1_COLOR_F tooltipBg       = D2D1::ColorF(0.145f, 0.145f, 0.149f, 0.98f); // #252526
@@ -97,6 +99,8 @@ public:
     ComPtr<ID2D1SolidColorBrush> brushCloseHoverBg;
     ComPtr<ID2D1SolidColorBrush> brushBrandAccent;
     ComPtr<ID2D1SolidColorBrush> brushHomeBadgeBg;
+    ComPtr<ID2D1SolidColorBrush> brushRunGreen;
+    ComPtr<ID2D1SolidColorBrush> brushRunGreenHover;
     ComPtr<ID2D1SolidColorBrush> brushTooltipBg;
     ComPtr<ID2D1SolidColorBrush> brushTooltipBorder;
 

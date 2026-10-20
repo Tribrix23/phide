@@ -22,6 +22,11 @@ TitleHeader::TitleHeader() {
     m_menus.push_back({ HeaderMenuId::Tools,   L"Tools",                   {} });
     m_menus.push_back({ HeaderMenuId::Window,  L"Window",                  {} });
     m_menus.push_back({ HeaderMenuId::Help,    L"Help",                    {} });
+
+    // Top-right execution widget buttons (Run, Debug, Terminal)
+    m_execButtons.push_back({ HeaderExecId::Run,      L"Run (Ctrl+F5)",     {} });
+    m_execButtons.push_back({ HeaderExecId::Debug,    L"Debug (F5)",        {} });
+    m_execButtons.push_back({ HeaderExecId::Terminal, L"Terminal (Ctrl+`)", {} });
 }
 
 void TitleHeader::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
@@ -161,8 +166,104 @@ void TitleHeader::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCon
         );
     }
 
-    // 3. Render Vector Window Caption Controls (Minimize, Maximize, Close) in Top-Right
-    const float btnW = config.ScaleF(static_cast<float>(config.captionBtnWidth)); // 46px
+    // 3. Render Top-Right Execution Control Widget (Run ▶, Debug 🐞, Terminal >_)
+    // Positioned cleanly to the left of the window caption controls (Minimize, Maximize, Close)
+    const float btnW          = config.ScaleF(static_cast<float>(config.captionBtnWidth)); // 46px
+    const float captionTotalW = 3.0f * btnW;
+    const float execGap       = config.ScaleF(4.0f);
+    const float execBtnW      = config.ScaleF(28.0f);
+    const float execBtnH      = config.ScaleF(26.0f);
+    const float execY         = (h - execBtnH) / 2.0f;
+    const float execRight     = clientWidth - captionTotalW - config.ScaleF(14.0f);
+    const float execStartX    = execRight - (3.0f * execBtnW + 2.0f * execGap);
+
+    // Grouped pill container backdrop for the execution controls
+    D2D1_RECT_F rcExecContainer = D2D1::RectF(
+        execStartX - config.ScaleF(4.0f),
+        execY - config.ScaleF(2.0f),
+        execRight + config.ScaleF(4.0f),
+        execY + execBtnH + config.ScaleF(2.0f)
+    );
+    D2D1_ROUNDED_RECT rrcContainer = D2D1::RoundedRect(rcExecContainer, 5.0f, 5.0f);
+    pRT->FillRoundedRectangle(rrcContainer, theme.brushTooltipBg.Get());
+    pRT->DrawRoundedRectangle(rrcContainer, theme.brushBorderSubtle.Get(), 0.8f);
+
+    const ExecButton* hoveredExecPtr = nullptr;
+    float curExecX = execStartX;
+
+    for (auto& btn : m_execButtons) {
+        btn.bounds = D2D1::RectF(curExecX, execY, curExecX + execBtnW, execY + execBtnH);
+        bool isHovered = (m_hoveredExec == btn.id);
+        if (isHovered) {
+            hoveredExecPtr = &btn;
+        }
+
+        D2D1_ROUNDED_RECT rrcBtn = D2D1::RoundedRect(btn.bounds, 4.0f, 4.0f);
+
+        switch (btn.id) {
+            case HeaderExecId::Run: {
+                if (isHovered) {
+                    pRT->FillRoundedRectangle(rrcBtn, theme.brushRunGreenHover.Get());
+                }
+                // Vibrant green Run icon (▶)
+                m_icons.DrawRun(pRT, btn.bounds, theme.brushRunGreen.Get(), 1.4f);
+                break;
+            }
+            case HeaderExecId::Debug: {
+                if (isHovered) {
+                    pRT->FillRoundedRectangle(rrcBtn, theme.brushRunGreenHover.Get());
+                }
+                // Vibrant green Debug icon (beetle 🐞)
+                m_icons.DrawBug(pRT, btn.bounds, theme.brushRunGreen.Get(), 1.4f);
+                break;
+            }
+            case HeaderExecId::Terminal: {
+                // Explicitly NOT colored green! Clean neutral text color (white on hover)
+                if (isHovered) {
+                    pRT->FillRoundedRectangle(rrcBtn, theme.brushItemHover.Get());
+                }
+                ID2D1Brush* termBrush = isHovered ? theme.brushTextWhite.Get() : theme.brushTextSecondary.Get();
+                m_icons.DrawTerminal(pRT, btn.bounds, termBrush, 1.4f);
+                break;
+            }
+            default:
+                break;
+        }
+
+        curExecX += execBtnW + execGap;
+    }
+
+    // Floating Tooltip for Hovered Execution Button
+    if (hoveredExecPtr) {
+        const float tipH    = config.ScaleF(24.0f);
+        const float tipPadX = config.ScaleF(10.0f);
+
+        size_t textLen = wcslen(hoveredExecPtr->label);
+        float textW    = config.ScaleF(static_cast<float>(textLen * 7.0f + 14.0f));
+        float tipW     = textW + tipPadX * 2.0f;
+
+        float tipX     = hoveredExecPtr->bounds.left + (execBtnW - tipW) / 2.0f;
+        float tipY     = hoveredExecPtr->bounds.bottom + config.ScaleF(6.0f);
+
+        if (tipX < 10.0f) tipX = 10.0f;
+        if (tipX + tipW > clientWidth - 10.0f) tipX = clientWidth - tipW - 10.0f;
+
+        D2D1_RECT_F rcTip = D2D1::RectF(tipX, tipY, tipX + tipW, tipY + tipH);
+        D2D1_ROUNDED_RECT rrcTip = D2D1::RoundedRect(rcTip, 4.0f, 4.0f);
+
+        pRT->FillRoundedRectangle(rrcTip, theme.brushTooltipBg.Get());
+        pRT->DrawRoundedRectangle(rrcTip, theme.brushTooltipBorder.Get(), 1.0f);
+
+        pRT->DrawText(
+            hoveredExecPtr->label,
+            static_cast<UINT32>(textLen),
+            theme.fontHint.Get(),
+            rcTip,
+            theme.brushTextPrimary.Get()
+        );
+    }
+
+    // 4. Render Vector Window Caption Controls (Minimize, Maximize, Close) in Top-Right
     float rightEdge = clientWidth;
 
     // --- Close Button (✕) ---
@@ -205,6 +306,15 @@ HeaderMenuId TitleHeader::HitTestMenu(POINT pt) const {
     return HeaderMenuId::None;
 }
 
+HeaderExecId TitleHeader::HitTestExecButton(POINT pt) const {
+    for (const auto& item : m_execButtons) {
+        if (PtInRectF(pt, item.bounds)) {
+            return item.id;
+        }
+    }
+    return HeaderExecId::None;
+}
+
 CaptionButtonType TitleHeader::HitTestCaptionButton(POINT pt) const {
     if (PtInRectF(pt, m_rcClose)) return CaptionButtonType::Close;
     if (PtInRectF(pt, m_rcMaximize)) return CaptionButtonType::Maximize;
@@ -216,15 +326,16 @@ LRESULT TitleHeader::HitTestNCHitTest(POINT pt, const app::AppConfig& config) {
     const float h = config.ScaleF(static_cast<float>(config.headerHeight));
     if (pt.y >= h) return HTCLIENT;
 
-    // If mouse is over any interactive element (menus or caption buttons), return HTCLIENT
+    // If mouse is over any interactive element (menus, exec buttons, or caption buttons), return HTCLIENT
     if (HitTestMenu(pt) != HeaderMenuId::None) return HTCLIENT;
+    if (HitTestExecButton(pt) != HeaderExecId::None) return HTCLIENT;
     if (HitTestCaptionButton(pt) != CaptionButtonType::None) return HTCLIENT;
 
     // The remaining empty header area allows dragging the window
     return HTCAPTION;
 }
 
-bool TitleHeader::UpdateHoverState(HeaderMenuId hoveredMenu, CaptionButtonType hoveredCaption) {
+bool TitleHeader::UpdateHoverState(HeaderMenuId hoveredMenu, CaptionButtonType hoveredCaption, HeaderExecId hoveredExec) {
     bool changed = false;
     if (m_hoveredMenu != hoveredMenu) {
         m_hoveredMenu = hoveredMenu;
@@ -232,6 +343,10 @@ bool TitleHeader::UpdateHoverState(HeaderMenuId hoveredMenu, CaptionButtonType h
     }
     if (m_hoveredCaption != hoveredCaption) {
         m_hoveredCaption = hoveredCaption;
+        changed = true;
+    }
+    if (m_hoveredExec != hoveredExec) {
+        m_hoveredExec = hoveredExec;
         changed = true;
     }
     return changed;

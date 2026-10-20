@@ -13,18 +13,75 @@ LucideIcons::LucideIcons() = default;
 HRESULT LucideIcons::Initialize(ID2D1Factory* pFactory) {
     if (!pFactory) return E_POINTER;
 
-    // Create stroke style with rounded line caps and rounded joins matching Lucide icon specs
-    D2D1_STROKE_STYLE_PROPERTIES props = D2D1::StrokeStyleProperties(
-        D2D1_CAP_STYLE_ROUND,      // startCap
-        D2D1_CAP_STYLE_ROUND,      // endCap
-        D2D1_CAP_STYLE_ROUND,      // dashCap
-        D2D1_LINE_JOIN_ROUND,      // lineJoin
-        10.0f,                     // miterLimit
-        D2D1_DASH_STYLE_SOLID,     // dashStyle
-        0.0f                       // dashOffset
-    );
+    if (!m_pStrokeStyle) {
+        // Create stroke style with rounded line caps and rounded joins matching Lucide icon specs
+        D2D1_STROKE_STYLE_PROPERTIES props = D2D1::StrokeStyleProperties(
+            D2D1_CAP_STYLE_ROUND,      // startCap
+            D2D1_CAP_STYLE_ROUND,      // endCap
+            D2D1_CAP_STYLE_ROUND,      // dashCap
+            D2D1_LINE_JOIN_ROUND,      // lineJoin
+            10.0f,                     // miterLimit
+            D2D1_DASH_STYLE_SOLID,     // dashStyle
+            0.0f                       // dashOffset
+        );
 
-    return pFactory->CreateStrokeStyle(props, nullptr, 0, &m_pStrokeStyle);
+        HRESULT hr = pFactory->CreateStrokeStyle(props, nullptr, 0, &m_pStrokeStyle);
+        if (FAILED(hr)) return hr;
+    }
+
+    if (!m_pWrenchGeometry) {
+        if (SUCCEEDED(pFactory->CreatePathGeometry(&m_pWrenchGeometry))) {
+            ComPtr<ID2D1GeometrySink> sink;
+            if (SUCCEEDED(m_pWrenchGeometry->Open(&sink))) {
+                // Official Lucide Wrench path:
+                // M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z
+                sink->BeginFigure(D2D1::Point2F(14.7f, 6.3f), D2D1_FIGURE_BEGIN_HOLLOW);
+
+                D2D1_ARC_SEGMENT a1{ D2D1::Point2F(14.7f, 7.7f), D2D1::SizeF(1.0f, 1.0f), 0.0f, D2D1_SWEEP_DIRECTION_COUNTER_CLOCKWISE, D2D1_ARC_SIZE_SMALL };
+                sink->AddArc(&a1);
+
+                sink->AddLine(D2D1::Point2F(16.3f, 9.3f));
+
+                D2D1_ARC_SEGMENT a2{ D2D1::Point2F(17.7f, 9.3f), D2D1::SizeF(1.0f, 1.0f), 0.0f, D2D1_SWEEP_DIRECTION_COUNTER_CLOCKWISE, D2D1_ARC_SIZE_SMALL };
+                sink->AddArc(&a2);
+
+                sink->AddLine(D2D1::Point2F(21.47f, 5.53f));
+
+                D2D1_ARC_SEGMENT a3{ D2D1::Point2F(13.53f, 13.47f), D2D1::SizeF(6.0f, 6.0f), 0.0f, D2D1_SWEEP_DIRECTION_CLOCKWISE, D2D1_ARC_SIZE_SMALL };
+                sink->AddArc(&a3);
+
+                sink->AddLine(D2D1::Point2F(6.62f, 20.38f));
+
+                D2D1_ARC_SEGMENT a4{ D2D1::Point2F(3.62f, 17.38f), D2D1::SizeF(2.12f, 2.12f), 0.0f, D2D1_SWEEP_DIRECTION_CLOCKWISE, D2D1_ARC_SIZE_SMALL };
+                sink->AddArc(&a4);
+
+                sink->AddLine(D2D1::Point2F(10.53f, 10.47f));
+
+                D2D1_ARC_SEGMENT a5{ D2D1::Point2F(18.47f, 2.53f), D2D1::SizeF(6.0f, 6.0f), 0.0f, D2D1_SWEEP_DIRECTION_CLOCKWISE, D2D1_ARC_SIZE_SMALL };
+                sink->AddArc(&a5);
+
+                sink->AddLine(D2D1::Point2F(14.7f, 6.3f));
+
+                sink->EndFigure(D2D1_FIGURE_END_CLOSED);
+                sink->Close();
+            }
+        }
+    }
+
+    if (!m_pRunGeometry) {
+        if (SUCCEEDED(pFactory->CreatePathGeometry(&m_pRunGeometry))) {
+            ComPtr<ID2D1GeometrySink> sink;
+            if (SUCCEEDED(m_pRunGeometry->Open(&sink))) {
+                sink->BeginFigure(D2D1::Point2F(8.5f, 5.5f), D2D1_FIGURE_BEGIN_FILLED);
+                sink->AddLine(D2D1::Point2F(18.5f, 12.0f));
+                sink->AddLine(D2D1::Point2F(8.5f, 18.5f));
+                sink->EndFigure(D2D1_FIGURE_END_CLOSED);
+                sink->Close();
+            }
+        }
+    }
+
+    return S_OK;
 }
 
 // Coordinate mapping helper from standard Lucide 24x24 viewBox to arbitrary target bounds
@@ -327,14 +384,99 @@ void LucideIcons::DrawTools(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, I
     const float ox = bounds.left + (bw - 24.0f * s) / 2.0f;
     const float oy = bounds.top + (bh - 24.0f * s) / 2.0f;
 
-    pRT->DrawLine(MapPoint(3.0f, 6.0f, ox, oy, s), MapPoint(21.0f, 6.0f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
-    pRT->DrawLine(MapPoint(8.0f, 3.5f, ox, oy, s), MapPoint(8.0f, 8.5f, ox, oy, s), pBrush, strokeWidth * 1.3f, m_pStrokeStyle.Get());
+    if (m_pWrenchGeometry) {
+        D2D1_MATRIX_3X2_F oldTransform;
+        pRT->GetTransform(&oldTransform);
+        D2D1_MATRIX_3X2_F iconTransform = D2D1::Matrix3x2F::Scale(s, s) *
+                                           D2D1::Matrix3x2F::Translation(ox, oy) *
+                                           oldTransform;
+        pRT->SetTransform(iconTransform);
+        pRT->DrawGeometry(m_pWrenchGeometry.Get(), pBrush, strokeWidth / s, m_pStrokeStyle.Get());
+        pRT->SetTransform(oldTransform);
+    }
+}
 
-    pRT->DrawLine(MapPoint(3.0f, 12.0f, ox, oy, s), MapPoint(21.0f, 12.0f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
-    pRT->DrawLine(MapPoint(16.0f, 9.5f, ox, oy, s), MapPoint(16.0f, 14.5f, ox, oy, s), pBrush, strokeWidth * 1.3f, m_pStrokeStyle.Get());
+void LucideIcons::DrawRun(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, ID2D1Brush* pBrush, float strokeWidth) const {
+    if (!pRT || !pBrush) return;
+    const float bw = bounds.right - bounds.left;
+    const float bh = bounds.bottom - bounds.top;
+    const float iconSize = (std::min)(bw, bh) * 0.52f;
+    const float s = iconSize / 24.0f;
+    const float ox = bounds.left + (bw - 24.0f * s) / 2.0f;
+    const float oy = bounds.top + (bh - 24.0f * s) / 2.0f;
 
-    pRT->DrawLine(MapPoint(3.0f, 18.0f, ox, oy, s), MapPoint(21.0f, 18.0f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
-    pRT->DrawLine(MapPoint(10.0f, 15.5f, ox, oy, s), MapPoint(10.0f, 20.5f, ox, oy, s), pBrush, strokeWidth * 1.3f, m_pStrokeStyle.Get());
+    if (m_pRunGeometry) {
+        D2D1_MATRIX_3X2_F oldTransform;
+        pRT->GetTransform(&oldTransform);
+        D2D1_MATRIX_3X2_F iconTransform = D2D1::Matrix3x2F::Scale(s, s) *
+                                           D2D1::Matrix3x2F::Translation(ox, oy) *
+                                           oldTransform;
+        pRT->SetTransform(iconTransform);
+        pRT->FillGeometry(m_pRunGeometry.Get(), pBrush);
+        pRT->DrawGeometry(m_pRunGeometry.Get(), pBrush, strokeWidth / s, m_pStrokeStyle.Get());
+        pRT->SetTransform(oldTransform);
+    } else {
+        D2D1_POINT_2F p1 = MapPoint(8.5f, 5.5f, ox, oy, s);
+        D2D1_POINT_2F p2 = MapPoint(18.5f, 12.0f, ox, oy, s);
+        D2D1_POINT_2F p3 = MapPoint(8.5f, 18.5f, ox, oy, s);
+        pRT->DrawLine(p1, p2, pBrush, strokeWidth, m_pStrokeStyle.Get());
+        pRT->DrawLine(p2, p3, pBrush, strokeWidth, m_pStrokeStyle.Get());
+        pRT->DrawLine(p3, p1, pBrush, strokeWidth, m_pStrokeStyle.Get());
+    }
+}
+
+void LucideIcons::DrawBug(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, ID2D1Brush* pBrush, float strokeWidth) const {
+    if (!pRT || !pBrush) return;
+    const float bw = bounds.right - bounds.left;
+    const float bh = bounds.bottom - bounds.top;
+    const float iconSize = (std::min)(bw, bh) * 0.52f;
+    const float s = iconSize / 24.0f;
+    const float ox = bounds.left + (bw - 24.0f * s) / 2.0f;
+    const float oy = bounds.top + (bh - 24.0f * s) / 2.0f;
+
+    // Beetle body capsule
+    D2D1_ROUNDED_RECT body = D2D1::RoundedRect(
+        D2D1::RectF(ox + 8.5f * s, oy + 7.5f * s, ox + 15.5f * s, oy + 18.5f * s),
+        3.5f * s, 3.5f * s
+    );
+    pRT->DrawRoundedRectangle(body, pBrush, strokeWidth, m_pStrokeStyle.Get());
+
+    // Head line
+    pRT->DrawLine(MapPoint(8.5f, 11.0f, ox, oy, s), MapPoint(15.5f, 11.0f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+
+    // Antennae
+    pRT->DrawLine(MapPoint(10.0f, 7.5f, ox, oy, s), MapPoint(7.5f, 4.5f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+    pRT->DrawLine(MapPoint(14.0f, 7.5f, ox, oy, s), MapPoint(16.5f, 4.5f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+
+    // 3 Pairs of Legs:
+    // Top pair
+    pRT->DrawLine(MapPoint(8.5f, 11.0f, ox, oy, s), MapPoint(4.5f, 9.0f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+    pRT->DrawLine(MapPoint(15.5f, 11.0f, ox, oy, s), MapPoint(19.5f, 9.0f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+
+    // Middle pair
+    pRT->DrawLine(MapPoint(8.5f, 14.5f, ox, oy, s), MapPoint(4.0f, 14.5f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+    pRT->DrawLine(MapPoint(15.5f, 14.5f, ox, oy, s), MapPoint(20.0f, 14.5f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+
+    // Bottom pair
+    pRT->DrawLine(MapPoint(8.5f, 17.0f, ox, oy, s), MapPoint(4.5f, 19.5f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+    pRT->DrawLine(MapPoint(15.5f, 17.0f, ox, oy, s), MapPoint(19.5f, 19.5f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+}
+
+void LucideIcons::DrawTerminal(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, ID2D1Brush* pBrush, float strokeWidth) const {
+    if (!pRT || !pBrush) return;
+    const float bw = bounds.right - bounds.left;
+    const float bh = bounds.bottom - bounds.top;
+    const float iconSize = (std::min)(bw, bh) * 0.52f;
+    const float s = iconSize / 24.0f;
+    const float ox = bounds.left + (bw - 24.0f * s) / 2.0f;
+    const float oy = bounds.top + (bh - 24.0f * s) / 2.0f;
+
+    // Prompt >
+    pRT->DrawLine(MapPoint(5.0f, 7.5f, ox, oy, s), MapPoint(10.5f, 12.0f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+    pRT->DrawLine(MapPoint(10.5f, 12.0f, ox, oy, s), MapPoint(5.0f, 16.5f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+
+    // Cursor _
+    pRT->DrawLine(MapPoint(12.5f, 16.5f, ox, oy, s), MapPoint(19.0f, 16.5f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
 }
 
 void LucideIcons::DrawWindow(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, ID2D1Brush* pBrush, float strokeWidth) const {

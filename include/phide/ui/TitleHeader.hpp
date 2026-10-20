@@ -37,6 +37,17 @@ enum class HeaderMenuId {
 };
 
 /**
+ * @enum HeaderExecId
+ * @brief Identifies top-right execution widget buttons (Run, Debug, Terminal).
+ */
+enum class HeaderExecId {
+    None = -1,
+    Run = 0,        ///< Run / Execute application (vibrant green)
+    Debug = 1,      ///< Debug application (vibrant green)
+    Terminal = 2    ///< Terminal toggle (neutral/white text, explicitly not green)
+};
+
+/**
  * @enum CaptionButtonType
  * @brief Identifies top-right window control buttons.
  */
@@ -53,6 +64,16 @@ enum class CaptionButtonType {
  */
 struct MenuItem {
     HeaderMenuId id;
+    const wchar_t* label;
+    D2D1_RECT_F bounds{};
+};
+
+/**
+ * @struct ExecButton
+ * @brief Visual descriptor for a top-right execution action button.
+ */
+struct ExecButton {
+    HeaderExecId id;
     const wchar_t* label;
     D2D1_RECT_F bounds{};
 };
@@ -85,6 +106,13 @@ public:
     HeaderMenuId HitTestMenu(POINT pt) const;
 
     /**
+     * @brief Tests if mouse is over an execution button (Run, Debug, Terminal).
+     * @param pt Mouse point in client coordinates.
+     * @return HeaderExecId or HeaderExecId::None.
+     */
+    HeaderExecId HitTestExecButton(POINT pt) const;
+
+    /**
      * @brief Tests if mouse is over a caption button (min, max, close).
      * @param pt Mouse point in client coordinates.
      * @return CaptionButtonType under the cursor.
@@ -100,21 +128,25 @@ public:
     LRESULT HitTestNCHitTest(POINT pt, const app::AppConfig& config);
 
     /**
-     * @brief Updates hover state for menus and caption buttons.
+     * @brief Updates hover state for menus, caption buttons, and execution buttons.
      * @param hoveredMenu Currently hovered menu.
      * @param hoveredCaption Currently hovered caption button.
+     * @param hoveredExec Currently hovered execution button.
      * @return True if state changed and repaint is needed.
      */
-    bool UpdateHoverState(HeaderMenuId hoveredMenu, CaptionButtonType hoveredCaption);
+    bool UpdateHoverState(HeaderMenuId hoveredMenu, CaptionButtonType hoveredCaption, HeaderExecId hoveredExec = HeaderExecId::None);
 
     [[nodiscard]] HeaderMenuId GetHoveredMenu() const noexcept { return m_hoveredMenu; }
     [[nodiscard]] CaptionButtonType GetHoveredCaption() const noexcept { return m_hoveredCaption; }
+    [[nodiscard]] HeaderExecId GetHoveredExec() const noexcept { return m_hoveredExec; }
 
 private:
     HeaderMenuId m_hoveredMenu = HeaderMenuId::None;
     CaptionButtonType m_hoveredCaption = CaptionButtonType::None;
+    HeaderExecId m_hoveredExec = HeaderExecId::None;
 
     std::vector<MenuItem> m_menus;
+    std::vector<ExecButton> m_execButtons;
     LucideIcons m_icons;
 
     // Bounding rectangles for caption controls

@@ -32,6 +32,8 @@ HRESULT Theme::CreateDeviceResources(ID2D1RenderTarget* pRT, IDWriteFactory* pDW
     pRT->CreateSolidColorBrush(colors.closeHoverBg, &brushCloseHoverBg);
     pRT->CreateSolidColorBrush(colors.brandAccent, &brushBrandAccent);
     pRT->CreateSolidColorBrush(colors.homeBadgeBg, &brushHomeBadgeBg);
+    pRT->CreateSolidColorBrush(colors.runGreen, &brushRunGreen);
+    pRT->CreateSolidColorBrush(colors.runGreenHover, &brushRunGreenHover);
     pRT->CreateSolidColorBrush(colors.tooltipBg, &brushTooltipBg);
     pRT->CreateSolidColorBrush(colors.tooltipBorder, &brushTooltipBorder);
 
@@ -168,6 +170,8 @@ void Theme::DiscardDeviceResources() {
     brushCloseHoverBg.Reset();
     brushBrandAccent.Reset();
     brushHomeBadgeBg.Reset();
+    brushRunGreen.Reset();
+    brushRunGreenHover.Reset();
     brushTooltipBg.Reset();
     brushTooltipBorder.Reset();
 }

@@ -263,10 +263,11 @@ void Window::HandleMouseMove(POINT clientPt) {
 
     bool needRepaint = false;
 
-    // Check Header menu and caption button hover
+    // Check Header menu, execution buttons, and caption button hover
     auto hoveredMenu = m_header.HitTestMenu(clientPt);
     auto hoveredCaption = m_header.HitTestCaptionButton(clientPt);
-    if (m_header.UpdateHoverState(hoveredMenu, hoveredCaption)) needRepaint = true;
+    auto hoveredExec = m_header.HitTestExecButton(clientPt);
+    if (m_header.UpdateHoverState(hoveredMenu, hoveredCaption, hoveredExec)) needRepaint = true;
 
     // Check Rail icon hover (triggers customized tooltip)
     auto hoveredRail = m_rail.HitTest(clientPt);
@@ -302,7 +303,18 @@ void Window::HandleLButtonDown(POINT clientPt) {
         }
     }
 
-    // 2. Header Menu / Icon Button Clicks
+    // 2. Execution Widget Button Clicks (Run, Debug, Terminal)
+    auto execHit = m_header.HitTestExecButton(clientPt);
+    if (execHit != ui::HeaderExecId::None) {
+        if (execHit == ui::HeaderExecId::Terminal) {
+            // Toggle sidebar drawer or active view
+            m_config.isDrawerOpen = !m_config.isDrawerOpen;
+        }
+        InvalidateRect(m_hwnd, nullptr, FALSE);
+        return;
+    }
+
+    // 3. Header Menu / Icon Button Clicks
     auto menuHit = m_header.HitTestMenu(clientPt);
     if (menuHit != ui::HeaderMenuId::None) {
         if (menuHit == ui::HeaderMenuId::Sidebar) {
@@ -313,7 +325,7 @@ void Window::HandleLButtonDown(POINT clientPt) {
         return;
     }
 
-    // 3. Activity Rail Clicks (Files, Search, Git, Debug, Extensions)
+    // 4. Activity Rail Clicks (Files, Search, Git, Debug, Extensions)
     auto railHit = m_rail.HitTest(clientPt);
     if (railHit != ui::RailTabId::None) {
         int clickedTab = static_cast<int>(railHit);
@@ -325,7 +337,7 @@ void Window::HandleLButtonDown(POINT clientPt) {
         return;
     }
 
-    // 4. Drawer Close Button Click
+    // 5. Drawer Close Button Click
     if (m_config.isDrawerOpen && m_drawer.HitTestCloseButton(clientPt)) {
         m_config.isDrawerOpen = false;
         InvalidateRect(m_hwnd, nullptr, FALSE);
@@ -371,9 +383,10 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     return TRUE;
                 }
 
-                // Also provide pointer hand cursor over caption buttons, menus, and drawer close button
+                // Also provide pointer hand cursor over caption buttons, menus, execution buttons, and drawer close button
                 if (m_header.HitTestCaptionButton(pt) != ui::CaptionButtonType::None ||
                     m_header.HitTestMenu(pt) != ui::HeaderMenuId::None ||
+                    m_header.HitTestExecButton(pt) != ui::HeaderExecId::None ||
                     (m_config.isDrawerOpen && m_drawer.HitTestCloseButton(pt))) {
                     SetCursor(LoadCursor(nullptr, IDC_HAND));
                     return TRUE;
@@ -393,7 +406,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
 
         case WM_MOUSELEAVE: {
             m_trackingMouse = false;
-            m_header.UpdateHoverState(ui::HeaderMenuId::None, ui::CaptionButtonType::None);
+            m_header.UpdateHoverState(ui::HeaderMenuId::None, ui::CaptionButtonType::None, ui::HeaderExecId::None);
             m_rail.SetHoveredTab(ui::RailTabId::None);
             m_drawer.SetHoveredIndex(-1);
             InvalidateRect(m_hwnd, nullptr, FALSE);
