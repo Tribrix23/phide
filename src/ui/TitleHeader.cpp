@@ -167,14 +167,14 @@ void TitleHeader::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCon
     }
 
     // 3. Render Top-Right Execution Control Widget (Run ▶, Debug 🐞, Terminal >_)
-    // Positioned cleanly to the left of the window caption controls (Minimize, Maximize, Close)
+    // Positioned with a generous 100px buffer to the left of the window caption controls (Minimize, Maximize, Close)
     const float btnW          = config.ScaleF(static_cast<float>(config.captionBtnWidth)); // 46px
     const float captionTotalW = 3.0f * btnW;
     const float execGap       = config.ScaleF(4.0f);
     const float execBtnW      = config.ScaleF(28.0f);
     const float execBtnH      = config.ScaleF(26.0f);
     const float execY         = (h - execBtnH) / 2.0f;
-    const float execRight     = clientWidth - captionTotalW - config.ScaleF(14.0f);
+    const float execRight     = clientWidth - captionTotalW - config.ScaleF(100.0f);
     const float execStartX    = execRight - (3.0f * execBtnW + 2.0f * execGap);
 
     // Grouped pill container backdrop for the execution controls
