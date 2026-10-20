@@ -240,26 +240,106 @@ void EditorCanvas::RenderTabs(ID2D1RenderTarget* pRT, Theme& theme, const app::A
         1.0f
     );
 
-    // File Glyph Icon
-    const wchar_t* glyph = L"\u2261"; // Document/code
-    if (currentFileName.ends_with(L".cpp") || currentFileName.ends_with(L".h") || currentFileName.ends_with(L".hpp")) {
-        glyph = L"\u2699"; // Gear for C++
-    } else if (currentFileName.ends_with(L".php")) {
-        glyph = L"\u272A"; // Star for PHP
-    }
-    D2D1_RECT_F rcGlyph = D2D1::RectF(rcTab.left + config.ScaleF(10.0f), headerH, rcTab.left + config.ScaleF(26.0f), headerH + tabH);
-    pRT->DrawText(glyph, static_cast<UINT32>(wcslen(glyph)), theme.fontMenu.Get(), rcGlyph, theme.brushBrandAccent.Get());
+    // 3. File Type Icon (Proper badge matching Seti/Material style)
+    float iconX = rcTab.left + config.ScaleF(10.0f);
+    float iconCenterY = headerH + tabH / 2.0f;
+    std::wstring lowerName = currentFileName;
+    std::transform(lowerName.begin(), lowerName.end(), lowerName.begin(), ::towlower);
 
-    // File Title
+    if (lowerName.ends_with(L".php") || lowerName.ends_with(L".phtml")) {
+        D2D1_ROUNDED_RECT rrc = D2D1::RoundedRect(
+            D2D1::RectF(iconX, iconCenterY - config.ScaleF(6.0f), iconX + config.ScaleF(17.0f), iconCenterY + config.ScaleF(6.0f)),
+            2.5f, 2.5f
+        );
+        pRT->FillRoundedRectangle(rrc, theme.brushIconPurple.Get());
+        const wchar_t* tag = L"php";
+        pRT->DrawText(tag, static_cast<UINT32>(wcslen(tag)), theme.fontBadge.Get(), rrc.rect, theme.brushTextWhite.Get());
+    } else if (lowerName.ends_with(L".cpp") || lowerName.ends_with(L".cxx") || lowerName.ends_with(L".cc")) {
+        D2D1_ROUNDED_RECT rrc = D2D1::RoundedRect(
+            D2D1::RectF(iconX, iconCenterY - config.ScaleF(6.0f), iconX + config.ScaleF(17.0f), iconCenterY + config.ScaleF(6.0f)),
+            2.5f, 2.5f
+        );
+        pRT->FillRoundedRectangle(rrc, theme.brushIconBlue.Get());
+        const wchar_t* tag = L"C++";
+        pRT->DrawText(tag, static_cast<UINT32>(wcslen(tag)), theme.fontBadge.Get(), rrc.rect, theme.brushTextWhite.Get());
+    } else if (lowerName.ends_with(L".hpp") || lowerName.ends_with(L".h")) {
+        D2D1_ROUNDED_RECT rrc = D2D1::RoundedRect(
+            D2D1::RectF(iconX, iconCenterY - config.ScaleF(6.0f), iconX + config.ScaleF(15.0f), iconCenterY + config.ScaleF(6.0f)),
+            2.5f, 2.5f
+        );
+        pRT->FillRoundedRectangle(rrc, theme.brushIconBlue.Get());
+        const wchar_t* tag = L"H";
+        pRT->DrawText(tag, static_cast<UINT32>(wcslen(tag)), theme.fontBadge.Get(), rrc.rect, theme.brushTextWhite.Get());
+    } else if (lowerName.ends_with(L".js") || lowerName.ends_with(L".mjs")) {
+        D2D1_ROUNDED_RECT rrc = D2D1::RoundedRect(
+            D2D1::RectF(iconX, iconCenterY - config.ScaleF(6.0f), iconX + config.ScaleF(15.0f), iconCenterY + config.ScaleF(6.0f)),
+            2.5f, 2.5f
+        );
+        pRT->FillRoundedRectangle(rrc, theme.brushIconYellow.Get());
+        const wchar_t* tag = L"JS";
+        pRT->DrawText(tag, static_cast<UINT32>(wcslen(tag)), theme.fontBadge.Get(), rrc.rect, theme.brushWindowBg.Get());
+    } else if (lowerName.ends_with(L".ts") || lowerName.ends_with(L".tsx")) {
+        D2D1_ROUNDED_RECT rrc = D2D1::RoundedRect(
+            D2D1::RectF(iconX, iconCenterY - config.ScaleF(6.0f), iconX + config.ScaleF(15.0f), iconCenterY + config.ScaleF(6.0f)),
+            2.5f, 2.5f
+        );
+        pRT->FillRoundedRectangle(rrc, theme.brushIconBlue.Get());
+        const wchar_t* tag = L"TS";
+        pRT->DrawText(tag, static_cast<UINT32>(wcslen(tag)), theme.fontBadge.Get(), rrc.rect, theme.brushTextWhite.Get());
+    } else if (lowerName.ends_with(L".json")) {
+        D2D1_ROUNDED_RECT rrc = D2D1::RoundedRect(
+            D2D1::RectF(iconX, iconCenterY - config.ScaleF(6.0f), iconX + config.ScaleF(15.0f), iconCenterY + config.ScaleF(6.0f)),
+            2.5f, 2.5f
+        );
+        pRT->FillRoundedRectangle(rrc, theme.brushIconYellow.Get());
+        const wchar_t* tag = L"{}";
+        pRT->DrawText(tag, static_cast<UINT32>(wcslen(tag)), theme.fontBadge.Get(), rrc.rect, theme.brushWindowBg.Get());
+    } else if (lowerName.ends_with(L".md")) {
+        D2D1_ROUNDED_RECT rrc = D2D1::RoundedRect(
+            D2D1::RectF(iconX, iconCenterY - config.ScaleF(6.0f), iconX + config.ScaleF(17.0f), iconCenterY + config.ScaleF(6.0f)),
+            2.5f, 2.5f
+        );
+        pRT->FillRoundedRectangle(rrc, theme.brushIconBlue.Get());
+        const wchar_t* tag = L"MD";
+        pRT->DrawText(tag, static_cast<UINT32>(wcslen(tag)), theme.fontBadge.Get(), rrc.rect, theme.brushTextWhite.Get());
+    } else {
+        // Document outline
+        D2D1_RECT_F docRc = D2D1::RectF(iconX + 1.0f, iconCenterY - config.ScaleF(6.5f), iconX + config.ScaleF(13.0f), iconCenterY + config.ScaleF(6.5f));
+        pRT->DrawRectangle(docRc, theme.brushIconGray.Get(), 1.2f);
+    }
+
+    // 4. File Title
     std::wstring title = currentFileName.empty() ? L"Untitled-1" : currentFileName;
-    if (isDirty) title += L" \u2022";
+    float textStartX = rcTab.left + config.ScaleF(32.0f);
+    float textMaxW   = rcTab.right - config.ScaleF(40.0f) - textStartX;
     D2D1_RECT_F rcTitle = D2D1::RectF(
-        rcTab.left + config.ScaleF(28.0f),
+        textStartX,
         headerH,
-        rcTab.right - config.ScaleF(24.0f),
+        textStartX + textMaxW,
         headerH + tabH
     );
     pRT->DrawText(title.c_str(), static_cast<UINT32>(title.length()), theme.fontMenuItem.Get(), rcTitle, theme.brushTextWhite.Get());
+
+    // 5. Large Blue Dirty Indicator Circle (8px diameter)
+    if (isDirty) {
+        float dotX = textStartX + config.ScaleF(60.0f);
+        if (theme.dwriteFactory) {
+            Microsoft::WRL::ComPtr<IDWriteTextLayout> pLayout;
+            if (SUCCEEDED(theme.dwriteFactory->CreateTextLayout(
+                    title.c_str(), static_cast<UINT32>(title.length()),
+                    theme.fontMenuItem.Get(), 1000.0f, tabH, &pLayout))) {
+                DWRITE_TEXT_METRICS m{};
+                if (SUCCEEDED(pLayout->GetMetrics(&m))) {
+                    dotX = textStartX + m.widthIncludingTrailingWhitespace + config.ScaleF(8.0f);
+                }
+            }
+        }
+        dotX = (std::min)(dotX, rcTab.right - config.ScaleF(28.0f));
+        float dotY = headerH + tabH / 2.0f;
+        float dotRadius = config.ScaleF(4.0f); // 8px diameter circle!
+        D2D1_ELLIPSE dot = D2D1::Ellipse(D2D1::Point2F(dotX, dotY), dotRadius, dotRadius);
+        pRT->FillEllipse(dot, theme.brushIconBlue ? theme.brushIconBlue.Get() : theme.brushBrandAccent.Get());
+    }
 
     // Close Tab Button (×)
     const float closeSize = config.ScaleF(16.0f);

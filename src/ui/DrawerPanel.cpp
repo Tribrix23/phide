@@ -310,17 +310,11 @@ void DrawerPanel::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCon
             pRT->FillRoundedRectangle(rrc, m_hoveredOpenFolderBtn ? theme.brushItemHover.Get() : theme.brushMenuHover.Get());
             pRT->DrawRoundedRectangle(rrc, theme.brushMenuHover.Get(), 1.0f);
 
-            // Center text inside button
-            D2D1_RECT_F rcBtnText = D2D1::RectF(
-                m_rcOpenFolderBtn.left,
-                m_rcOpenFolderBtn.top + config.ScaleF(6.0f),
-                m_rcOpenFolderBtn.right,
-                m_rcOpenFolderBtn.bottom
-            );
+            // Perfectly centered text inside button
             const wchar_t* btnLabel = L"Open Folder";
             pRT->DrawText(btnLabel, static_cast<UINT32>(wcslen(btnLabel)),
-                          theme.fontBody.Get(),
-                          rcBtnText, theme.brushTextWhite.Get());
+                          theme.fontButtonCenter ? theme.fontButtonCenter.Get() : theme.fontBody.Get(),
+                          m_rcOpenFolderBtn, theme.brushTextWhite.Get());
 
         } else {
             // === FOLDER OPENED STATE ===
@@ -341,38 +335,218 @@ void DrawerPanel::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCon
 
             curY += config.ScaleF(30.0f);
 
-            // Tree Items
-            const float itemH = config.ScaleF(26.0f);
+            // Tree Items with Seti/Material Icons & Indentation Guidelines
+            const float itemH = config.ScaleF(24.0f);
             for (size_t i = 0; i < m_visibleItems.size(); ++i) {
                 auto& item = m_visibleItems[i];
-                float indent = config.ScaleF(static_cast<float>(item.depth * 14));
-                item.bounds = D2D1::RectF(railW + config.ScaleF(8.0f), curY, railW + fullDrawerW - config.ScaleF(8.0f), curY + itemH);
+                item.bounds = D2D1::RectF(railW + config.ScaleF(4.0f), curY, railW + fullDrawerW - config.ScaleF(4.0f), curY + itemH);
 
-                if (m_hoveredIndex == static_cast<int>(i)) {
-                    D2D1_ROUNDED_RECT rrc = D2D1::RoundedRect(item.bounds, 4.0f, 4.0f);
+                bool isHovered = (m_hoveredIndex == static_cast<int>(i));
+                if (isHovered) {
+                    D2D1_ROUNDED_RECT rrc = D2D1::RoundedRect(item.bounds, 3.5f, 3.5f);
                     pRT->FillRoundedRectangle(rrc, theme.brushItemHover.Get());
                 }
 
-                // Draw Icon Glyph
-                D2D1_RECT_F rcIcon = D2D1::RectF(
-                    railW + config.ScaleF(12.0f) + indent,
-                    curY,
-                    railW + config.ScaleF(32.0f) + indent,
-                    curY + itemH
-                );
-                pRT->DrawText(
-                    item.iconGlyph.c_str(),
-                    static_cast<UINT32>(item.iconGlyph.length()),
-                    theme.fontMenu.Get(),
-                    rcIcon,
-                    theme.brushTextSecondary.Get()
-                );
+                float indent = config.ScaleF(static_cast<float>(item.depth * 14));
 
-                // Draw Item Label
+                // 1. Draw vertical tree indent guidelines for depth > 0
+                for (int d = 1; d <= item.depth; ++d) {
+                    float guideX = railW + paddingX + config.ScaleF(static_cast<float>((d - 1) * 14)) + config.ScaleF(2.0f);
+                    pRT->DrawLine(
+                        D2D1::Point2F(guideX, curY),
+                        D2D1::Point2F(guideX, curY + itemH),
+                        theme.brushBorderSubtle.Get(),
+                        1.0f
+                    );
+                }
+
+                float cy = curY + itemH / 2.0f;
+                float chevronX = railW + config.ScaleF(14.0f) + indent;
+
+                // 2. Folder expand/collapse chevron
+                if (item.isFolder) {
+                    if (item.isExpanded) {
+                        // Down chevron (v)
+                        pRT->DrawLine(
+                            D2D1::Point2F(chevronX - config.ScaleF(3.5f), cy - config.ScaleF(1.5f)),
+                            D2D1::Point2F(chevronX, cy + config.ScaleF(2.0f)),
+                            theme.brushTextSecondary.Get(), 1.3f
+                        );
+                        pRT->DrawLine(
+                            D2D1::Point2F(chevronX, cy + config.ScaleF(2.0f)),
+                            D2D1::Point2F(chevronX + config.ScaleF(3.5f), cy - config.ScaleF(1.5f)),
+                            theme.brushTextSecondary.Get(), 1.3f
+                        );
+                    } else {
+                        // Right chevron (>)
+                        pRT->DrawLine(
+                            D2D1::Point2F(chevronX - config.ScaleF(2.0f), cy - config.ScaleF(3.5f)),
+                            D2D1::Point2F(chevronX + config.ScaleF(2.0f), cy),
+                            theme.brushTextSecondary.Get(), 1.3f
+                        );
+                        pRT->DrawLine(
+                            D2D1::Point2F(chevronX + config.ScaleF(2.0f), cy),
+                            D2D1::Point2F(chevronX - config.ScaleF(2.0f), cy + config.ScaleF(3.5f)),
+                            theme.brushTextSecondary.Get(), 1.3f
+                        );
+                    }
+                }
+
+                // 3. Icon (Vector Folder shape or Seti/Material File Badge)
+                float iconX = chevronX + config.ScaleF(10.0f);
+                if (item.isFolder) {
+                    // Folder vector icon: tab + body
+                    float fx = iconX;
+                    float fy = cy - config.ScaleF(6.0f);
+                    float fw = config.ScaleF(15.0f);
+                    float fh = config.ScaleF(12.0f);
+
+                    // Tab
+                    D2D1_ROUNDED_RECT rcTab = D2D1::RoundedRect(
+                        D2D1::RectF(fx, fy, fx + config.ScaleF(6.0f), fy + config.ScaleF(4.0f)),
+                        1.0f, 1.0f
+                    );
+                    pRT->FillRoundedRectangle(rcTab, item.isExpanded ? theme.brushIconFolderOpen.Get() : theme.brushIconFolder.Get());
+
+                    // Body
+                    D2D1_ROUNDED_RECT rcBody = D2D1::RoundedRect(
+                        D2D1::RectF(fx, fy + config.ScaleF(2.0f), fx + fw, fy + fh),
+                        2.0f, 2.0f
+                    );
+                    pRT->FillRoundedRectangle(rcBody, item.isExpanded ? theme.brushIconFolderOpen.Get() : theme.brushIconFolder.Get());
+                    if (item.isExpanded) {
+                        // Draw folded flap highlight
+                        pRT->DrawLine(
+                            D2D1::Point2F(fx, fy + config.ScaleF(4.5f)),
+                            D2D1::Point2F(fx + fw, fy + config.ScaleF(4.5f)),
+                            theme.brushBorderSubtle.Get(),
+                            1.0f
+                        );
+                    }
+                } else {
+                    // File type icon badges
+                    float fx = iconX;
+                    float fy = cy - config.ScaleF(6.0f);
+                    std::wstring lower = item.label;
+                    std::transform(lower.begin(), lower.end(), lower.begin(), ::towlower);
+
+                    if (lower.ends_with(L".php") || lower.ends_with(L".phtml")) {
+                        D2D1_ROUNDED_RECT rrc = D2D1::RoundedRect(
+                            D2D1::RectF(fx, fy, fx + config.ScaleF(17.0f), fy + config.ScaleF(12.0f)),
+                            2.5f, 2.5f
+                        );
+                        pRT->FillRoundedRectangle(rrc, theme.brushIconPurple.Get());
+                        const wchar_t* tag = L"php";
+                        pRT->DrawText(tag, static_cast<UINT32>(wcslen(tag)), theme.fontBadge.Get(), rrc.rect, theme.brushTextWhite.Get());
+                    } else if (lower.ends_with(L".cpp") || lower.ends_with(L".cxx") || lower.ends_with(L".cc")) {
+                        D2D1_ROUNDED_RECT rrc = D2D1::RoundedRect(
+                            D2D1::RectF(fx, fy, fx + config.ScaleF(17.0f), fy + config.ScaleF(12.0f)),
+                            2.5f, 2.5f
+                        );
+                        pRT->FillRoundedRectangle(rrc, theme.brushIconBlue.Get());
+                        const wchar_t* tag = L"C++";
+                        pRT->DrawText(tag, static_cast<UINT32>(wcslen(tag)), theme.fontBadge.Get(), rrc.rect, theme.brushTextWhite.Get());
+                    } else if (lower.ends_with(L".c")) {
+                        D2D1_ROUNDED_RECT rrc = D2D1::RoundedRect(
+                            D2D1::RectF(fx, fy, fx + config.ScaleF(14.0f), fy + config.ScaleF(12.0f)),
+                            2.5f, 2.5f
+                        );
+                        pRT->FillRoundedRectangle(rrc, theme.brushIconBlue.Get());
+                        const wchar_t* tag = L"C";
+                        pRT->DrawText(tag, static_cast<UINT32>(wcslen(tag)), theme.fontBadge.Get(), rrc.rect, theme.brushTextWhite.Get());
+                    } else if (lower.ends_with(L".hpp") || lower.ends_with(L".h")) {
+                        D2D1_ROUNDED_RECT rrc = D2D1::RoundedRect(
+                            D2D1::RectF(fx, fy, fx + config.ScaleF(15.0f), fy + config.ScaleF(12.0f)),
+                            2.5f, 2.5f
+                        );
+                        pRT->FillRoundedRectangle(rrc, theme.brushIconBlue.Get());
+                        const wchar_t* tag = L"H";
+                        pRT->DrawText(tag, static_cast<UINT32>(wcslen(tag)), theme.fontBadge.Get(), rrc.rect, theme.brushTextWhite.Get());
+                    } else if (lower.ends_with(L".js") || lower.ends_with(L".mjs") || lower.ends_with(L".cjs")) {
+                        D2D1_ROUNDED_RECT rrc = D2D1::RoundedRect(
+                            D2D1::RectF(fx, fy, fx + config.ScaleF(15.0f), fy + config.ScaleF(12.0f)),
+                            2.5f, 2.5f
+                        );
+                        pRT->FillRoundedRectangle(rrc, theme.brushIconYellow.Get());
+                        const wchar_t* tag = L"JS";
+                        pRT->DrawText(tag, static_cast<UINT32>(wcslen(tag)), theme.fontBadge.Get(), rrc.rect, theme.brushWindowBg.Get());
+                    } else if (lower.ends_with(L".ts") || lower.ends_with(L".tsx")) {
+                        D2D1_ROUNDED_RECT rrc = D2D1::RoundedRect(
+                            D2D1::RectF(fx, fy, fx + config.ScaleF(15.0f), fy + config.ScaleF(12.0f)),
+                            2.5f, 2.5f
+                        );
+                        pRT->FillRoundedRectangle(rrc, theme.brushIconBlue.Get());
+                        const wchar_t* tag = L"TS";
+                        pRT->DrawText(tag, static_cast<UINT32>(wcslen(tag)), theme.fontBadge.Get(), rrc.rect, theme.brushTextWhite.Get());
+                    } else if (lower.ends_with(L".json")) {
+                        D2D1_ROUNDED_RECT rrc = D2D1::RoundedRect(
+                            D2D1::RectF(fx, fy, fx + config.ScaleF(15.0f), fy + config.ScaleF(12.0f)),
+                            2.5f, 2.5f
+                        );
+                        pRT->FillRoundedRectangle(rrc, theme.brushIconYellow.Get());
+                        const wchar_t* tag = L"{}";
+                        pRT->DrawText(tag, static_cast<UINT32>(wcslen(tag)), theme.fontBadge.Get(), rrc.rect, theme.brushWindowBg.Get());
+                    } else if (lower.ends_with(L".md") || lower.ends_with(L".markdown")) {
+                        D2D1_ROUNDED_RECT rrc = D2D1::RoundedRect(
+                            D2D1::RectF(fx, fy, fx + config.ScaleF(17.0f), fy + config.ScaleF(12.0f)),
+                            2.5f, 2.5f
+                        );
+                        pRT->FillRoundedRectangle(rrc, theme.brushIconBlue.Get());
+                        const wchar_t* tag = L"MD";
+                        pRT->DrawText(tag, static_cast<UINT32>(wcslen(tag)), theme.fontBadge.Get(), rrc.rect, theme.brushTextWhite.Get());
+                    } else if (lower.ends_with(L".html") || lower.ends_with(L".htm")) {
+                        D2D1_ROUNDED_RECT rrc = D2D1::RoundedRect(
+                            D2D1::RectF(fx, fy, fx + config.ScaleF(16.0f), fy + config.ScaleF(12.0f)),
+                            2.5f, 2.5f
+                        );
+                        pRT->FillRoundedRectangle(rrc, theme.brushIconOrange.Get());
+                        const wchar_t* tag = L"<>";
+                        pRT->DrawText(tag, static_cast<UINT32>(wcslen(tag)), theme.fontBadge.Get(), rrc.rect, theme.brushTextWhite.Get());
+                    } else if (lower.ends_with(L".css") || lower.ends_with(L".scss") || lower.ends_with(L".less")) {
+                        D2D1_ROUNDED_RECT rrc = D2D1::RoundedRect(
+                            D2D1::RectF(fx, fy, fx + config.ScaleF(14.0f), fy + config.ScaleF(12.0f)),
+                            2.5f, 2.5f
+                        );
+                        pRT->FillRoundedRectangle(rrc, theme.brushIconBlue.Get());
+                        const wchar_t* tag = L"#";
+                        pRT->DrawText(tag, static_cast<UINT32>(wcslen(tag)), theme.fontBadge.Get(), rrc.rect, theme.brushTextWhite.Get());
+                    } else if (lower.ends_with(L".bat") || lower.ends_with(L".cmd") || lower.ends_with(L".sh") || lower.ends_with(L".ps1")) {
+                        D2D1_ROUNDED_RECT rrc = D2D1::RoundedRect(
+                            D2D1::RectF(fx, fy, fx + config.ScaleF(15.0f), fy + config.ScaleF(12.0f)),
+                            2.5f, 2.5f
+                        );
+                        pRT->FillRoundedRectangle(rrc, theme.brushIconGreen.Get());
+                        const wchar_t* tag = L">_";
+                        pRT->DrawText(tag, static_cast<UINT32>(wcslen(tag)), theme.fontBadge.Get(), rrc.rect, theme.brushTextWhite.Get());
+                    } else if (lower.ends_with(L".yml") || lower.ends_with(L".yaml")) {
+                        D2D1_ROUNDED_RECT rrc = D2D1::RoundedRect(
+                            D2D1::RectF(fx, fy, fx + config.ScaleF(14.0f), fy + config.ScaleF(12.0f)),
+                            2.5f, 2.5f
+                        );
+                        pRT->FillRoundedRectangle(rrc, theme.brushIconRed.Get());
+                        const wchar_t* tag = L"Y!";
+                        pRT->DrawText(tag, static_cast<UINT32>(wcslen(tag)), theme.fontBadge.Get(), rrc.rect, theme.brushTextWhite.Get());
+                    } else if (lower.ends_with(L".png") || lower.ends_with(L".jpg") || lower.ends_with(L".jpeg") || lower.ends_with(L".svg") || lower.ends_with(L".gif") || lower.ends_with(L".ico")) {
+                        D2D1_ROUNDED_RECT rrc = D2D1::RoundedRect(
+                            D2D1::RectF(fx, fy, fx + config.ScaleF(16.0f), fy + config.ScaleF(12.0f)),
+                            2.5f, 2.5f
+                        );
+                        pRT->FillRoundedRectangle(rrc, theme.brushIconPurple.Get());
+                        const wchar_t* tag = L"IMG";
+                        pRT->DrawText(tag, static_cast<UINT32>(wcslen(tag)), theme.fontBadge.Get(), rrc.rect, theme.brushTextWhite.Get());
+                    } else {
+                        // Default clean document outline
+                        D2D1_RECT_F docRc = D2D1::RectF(fx + 1.0f, fy, fx + config.ScaleF(12.0f), fy + config.ScaleF(12.5f));
+                        pRT->DrawRectangle(docRc, theme.brushIconGray.Get(), 1.2f);
+                    }
+                }
+
+                // 4. Draw Item Text Label
+                float labelX = iconX + config.ScaleF(22.0f);
                 D2D1_RECT_F rcLabel = D2D1::RectF(
-                    railW + config.ScaleF(36.0f) + indent,
+                    labelX,
                     curY,
-                    railW + fullDrawerW - config.ScaleF(12.0f),
+                    railW + fullDrawerW - config.ScaleF(10.0f),
                     curY + itemH
                 );
                 pRT->DrawText(
@@ -380,7 +554,7 @@ void DrawerPanel::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCon
                     static_cast<UINT32>(item.label.length()),
                     theme.fontBody.Get(),
                     rcLabel,
-                    theme.brushTextPrimary.Get()
+                    isHovered ? theme.brushTextWhite.Get() : (item.isFolder ? theme.brushTextWhite.Get() : theme.brushTextPrimary.Get())
                 );
 
                 curY += itemH;

@@ -28,13 +28,14 @@ void PopupMenu::OpenViewMenu(float x, float y, const app::AppConfig& config,
 }
 
 void PopupMenu::OpenFileMenu(float x, float y, const app::AppConfig& config, bool autoSave,
+                             bool hasOpenFile, bool isDirty, bool hasOpenFolder,
                              const std::vector<std::wstring>& recentItems) {
     m_isOpen = true;
     m_hoveredMainIdx = -1;
     m_activeSubmenuIdx = -1;
     m_hoveredSubmenuIdx = -1;
 
-    BuildFileMenuItems(autoSave, recentItems);
+    BuildFileMenuItems(autoSave, hasOpenFile, isDirty, hasOpenFolder, recentItems);
 
     const float menuW = config.ScaleF(245.0f);
     LayoutMenu(m_items, x, y, menuW, config, m_mainMenuBounds);
@@ -125,123 +126,128 @@ void PopupMenu::BuildViewMenuItems(bool isSidebarOpen, bool isZoomed, bool wordW
     m_items.push_back({ MenuActionId::WordWrap,       L"Word Wrap",          L"Alt+Z",        false, wordWrap, false, {} });
 }
 
-void PopupMenu::BuildFileMenuItems(bool autoSave, const std::vector<std::wstring>& recentItems) {
+void PopupMenu::BuildFileMenuItems(bool autoSave, bool hasOpenFile, bool isDirty, bool hasOpenFolder,
+                                  const std::vector<std::wstring>& recentItems) {
     m_items.clear();
 
     // 1. New Text File (Ctrl+N)
-    m_items.push_back({ MenuActionId::NewTextFile, L"New Text File", L"Ctrl+N", false, false, false, {} });
+    m_items.push_back({ MenuActionId::NewTextFile, L"New Text File", L"Ctrl+N", false, false, false, true, {}, {} });
     // 2. New File... (Ctrl+Alt+Windows+N)
-    m_items.push_back({ MenuActionId::NewFile, L"New File...", L"Ctrl+Alt+Windows+N", false, false, false, {} });
+    m_items.push_back({ MenuActionId::NewFile, L"New File...", L"Ctrl+Alt+Windows+N", false, false, false, true, {}, {} });
     // 3. New Window (Ctrl+Shift+N)
-    m_items.push_back({ MenuActionId::NewWindow, L"New Window", L"Ctrl+Shift+N", false, false, false, {} });
+    m_items.push_back({ MenuActionId::NewWindow, L"New Window", L"Ctrl+Shift+N", false, false, false, true, {}, {} });
 
     // 4. New Window with Profile ▸
     PopupMenuItem winProfile;
     winProfile.actionId = MenuActionId::NewWindowWithProfile;
     winProfile.label = L"New Window with Profile";
     winProfile.hasSubmenu = true;
-    winProfile.submenuItems.push_back({ MenuActionId::NewWindowDefault, L"Default", L"", false, true, false, {} });
-    winProfile.submenuItems.push_back({ MenuActionId::NewWindowEmpty, L"Empty Profile", L"", false, false, false, {} });
+    winProfile.isEnabled = true;
+    winProfile.submenuItems.push_back({ MenuActionId::NewWindowDefault, L"Default", L"", false, true, false, true, {}, {} });
+    winProfile.submenuItems.push_back({ MenuActionId::NewWindowEmpty, L"Empty Profile", L"", false, false, false, true, {}, {} });
     m_items.push_back(std::move(winProfile));
 
     // --- Separator ---
-    m_items.push_back({ MenuActionId::None, L"", L"", true, false, false, {} });
+    m_items.push_back({ MenuActionId::None, L"", L"", true, false, false, false, {}, {} });
 
     // 5. Open File... (Ctrl+O)
-    m_items.push_back({ MenuActionId::OpenFile, L"Open File...", L"Ctrl+O", false, false, false, {} });
+    m_items.push_back({ MenuActionId::OpenFile, L"Open File...", L"Ctrl+O", false, false, false, true, {}, {} });
     // 6. Open Folder... (Ctrl+K Ctrl+O)
-    m_items.push_back({ MenuActionId::OpenFolder, L"Open Folder...", L"Ctrl+K Ctrl+O", false, false, false, {} });
+    m_items.push_back({ MenuActionId::OpenFolder, L"Open Folder...", L"Ctrl+K Ctrl+O", false, false, false, true, {}, {} });
     // 7. Open Workspace from File...
-    m_items.push_back({ MenuActionId::OpenWorkspaceFromFile, L"Open Workspace from File...", L"", false, false, false, {} });
+    m_items.push_back({ MenuActionId::OpenWorkspaceFromFile, L"Open Workspace from File...", L"", false, false, false, true, {}, {} });
 
     // 8. Open Recent ▸
     PopupMenuItem openRecent;
     openRecent.actionId = MenuActionId::OpenRecent;
     openRecent.label = L"Open Recent";
     openRecent.hasSubmenu = true;
+    openRecent.isEnabled = true;
     if (recentItems.empty()) {
-        openRecent.submenuItems.push_back({ MenuActionId::RecentItem0, L"phide", L"", false, false, false, {} });
+        openRecent.submenuItems.push_back({ MenuActionId::RecentItem0, L"phide", L"", false, false, false, true, {}, {} });
     } else {
         const MenuActionId recentIds[] = { MenuActionId::RecentItem0, MenuActionId::RecentItem1, MenuActionId::RecentItem2, MenuActionId::RecentItem3 };
         for (size_t r = 0; r < recentItems.size() && r < 4; ++r) {
             auto pos = recentItems[r].find_last_of(L"\\/");
             std::wstring disp = (pos != std::wstring::npos) ? recentItems[r].substr(pos + 1) : recentItems[r];
-            openRecent.submenuItems.push_back({ recentIds[r], disp, L"", false, false, false, {} });
+            openRecent.submenuItems.push_back({ recentIds[r], disp, L"", false, false, false, true, {}, {} });
         }
     }
-    openRecent.submenuItems.push_back({ MenuActionId::None, L"", L"", true, false, false, {} });
-    openRecent.submenuItems.push_back({ MenuActionId::ReopenClosedEditor, L"Reopen Closed Editor", L"Ctrl+Shift+T", false, false, false, {} });
-    openRecent.submenuItems.push_back({ MenuActionId::None, L"", L"", true, false, false, {} });
-    openRecent.submenuItems.push_back({ MenuActionId::ClearRecent, L"Clear Recently Opened", L"", false, false, false, {} });
+    openRecent.submenuItems.push_back({ MenuActionId::None, L"", L"", true, false, false, false, {}, {} });
+    openRecent.submenuItems.push_back({ MenuActionId::ReopenClosedEditor, L"Reopen Closed Editor", L"Ctrl+Shift+T", false, false, false, true, {}, {} });
+    openRecent.submenuItems.push_back({ MenuActionId::None, L"", L"", true, false, false, false, {}, {} });
+    openRecent.submenuItems.push_back({ MenuActionId::ClearRecent, L"Clear Recently Opened", L"", false, false, false, true, {}, {} });
     m_items.push_back(std::move(openRecent));
 
     // --- Separator ---
-    m_items.push_back({ MenuActionId::None, L"", L"", true, false, false, {} });
+    m_items.push_back({ MenuActionId::None, L"", L"", true, false, false, false, {}, {} });
 
     // 9. Add Folder to Workspace...
-    m_items.push_back({ MenuActionId::AddFolderToWorkspace, L"Add Folder to Workspace...", L"", false, false, false, {} });
-    // 10. Save Workspace As...
-    m_items.push_back({ MenuActionId::SaveWorkspaceAs, L"Save Workspace As...", L"", false, false, false, {} });
-    // 11. Duplicate Workspace
-    m_items.push_back({ MenuActionId::DuplicateWorkspace, L"Duplicate Workspace", L"", false, false, false, {} });
+    m_items.push_back({ MenuActionId::AddFolderToWorkspace, L"Add Folder to Workspace...", L"", false, false, false, true, {}, {} });
+    // 10. Save Workspace As... (disabled if no folder open)
+    m_items.push_back({ MenuActionId::SaveWorkspaceAs, L"Save Workspace As...", L"", false, false, false, hasOpenFolder, {}, {} });
+    // 11. Duplicate Workspace (disabled if no folder open)
+    m_items.push_back({ MenuActionId::DuplicateWorkspace, L"Duplicate Workspace", L"", false, false, false, hasOpenFolder, {}, {} });
 
     // --- Separator ---
-    m_items.push_back({ MenuActionId::None, L"", L"", true, false, false, {} });
+    m_items.push_back({ MenuActionId::None, L"", L"", true, false, false, false, {}, {} });
 
-    // 12. Save (Ctrl+S)
-    m_items.push_back({ MenuActionId::Save, L"Save", L"Ctrl+S", false, false, false, {} });
-    // 13. Save As... (Ctrl+Shift+S)
-    m_items.push_back({ MenuActionId::SaveAs, L"Save As...", L"Ctrl+Shift+S", false, false, false, {} });
-    // 14. Save All (Ctrl+K S)
-    m_items.push_back({ MenuActionId::SaveAll, L"Save All", L"Ctrl+K S", false, false, false, {} });
+    // 12. Save (Ctrl+S) - DISABLED if no file open, or if not dirty!
+    m_items.push_back({ MenuActionId::Save, L"Save", L"Ctrl+S", false, false, false, hasOpenFile && isDirty, {}, {} });
+    // 13. Save As... (Ctrl+Shift+S) - DISABLED if no file open!
+    m_items.push_back({ MenuActionId::SaveAs, L"Save As...", L"Ctrl+Shift+S", false, false, false, hasOpenFile, {}, {} });
+    // 14. Save All (Ctrl+K S) - DISABLED if no file open, or if not dirty!
+    m_items.push_back({ MenuActionId::SaveAll, L"Save All", L"Ctrl+K S", false, false, false, hasOpenFile && isDirty, {}, {} });
 
     // --- Separator ---
-    m_items.push_back({ MenuActionId::None, L"", L"", true, false, false, {} });
+    m_items.push_back({ MenuActionId::None, L"", L"", true, false, false, false, {}, {} });
 
     // 15. Share ▸
     PopupMenuItem shareItem;
     shareItem.actionId = MenuActionId::Share;
     shareItem.label = L"Share";
     shareItem.hasSubmenu = true;
-    shareItem.submenuItems.push_back({ MenuActionId::ExportProfile, L"Export Profile...", L"", false, false, false, {} });
-    shareItem.submenuItems.push_back({ MenuActionId::ImportProfile, L"Import Profile...", L"", false, false, false, {} });
+    shareItem.isEnabled = true;
+    shareItem.submenuItems.push_back({ MenuActionId::ExportProfile, L"Export Profile...", L"", false, false, false, true, {}, {} });
+    shareItem.submenuItems.push_back({ MenuActionId::ImportProfile, L"Import Profile...", L"", false, false, false, true, {}, {} });
     m_items.push_back(std::move(shareItem));
 
     // --- Separator ---
-    m_items.push_back({ MenuActionId::None, L"", L"", true, false, false, {} });
+    m_items.push_back({ MenuActionId::None, L"", L"", true, false, false, false, {}, {} });
 
     // 16. Auto Save (✓)
-    m_items.push_back({ MenuActionId::ToggleAutoSave, L"Auto Save", L"", false, autoSave, false, {} });
+    m_items.push_back({ MenuActionId::ToggleAutoSave, L"Auto Save", L"", false, autoSave, false, true, {}, {} });
 
     // 17. Preferences ▸
     PopupMenuItem prefItem;
     prefItem.actionId = MenuActionId::Preferences;
     prefItem.label = L"Preferences";
     prefItem.hasSubmenu = true;
-    prefItem.submenuItems.push_back({ MenuActionId::Settings, L"Settings", L"Ctrl+,", false, false, false, {} });
-    prefItem.submenuItems.push_back({ MenuActionId::KeyboardShortcuts, L"Keyboard Shortcuts", L"Ctrl+K Ctrl+S", false, false, false, {} });
-    prefItem.submenuItems.push_back({ MenuActionId::UserSnippets, L"User Snippets", L"", false, false, false, {} });
-    prefItem.submenuItems.push_back({ MenuActionId::None, L"", L"", true, false, false, {} });
-    prefItem.submenuItems.push_back({ MenuActionId::ThemeSettings, L"Theme", L"Ctrl+K Ctrl+T", false, false, false, {} });
+    prefItem.isEnabled = true;
+    prefItem.submenuItems.push_back({ MenuActionId::Settings, L"Settings", L"Ctrl+,", false, false, false, true, {}, {} });
+    prefItem.submenuItems.push_back({ MenuActionId::KeyboardShortcuts, L"Keyboard Shortcuts", L"Ctrl+K Ctrl+S", false, false, false, true, {}, {} });
+    prefItem.submenuItems.push_back({ MenuActionId::UserSnippets, L"User Snippets", L"", false, false, false, true, {}, {} });
+    prefItem.submenuItems.push_back({ MenuActionId::None, L"", L"", true, false, false, false, {}, {} });
+    prefItem.submenuItems.push_back({ MenuActionId::ThemeSettings, L"Theme", L"Ctrl+K Ctrl+T", false, false, false, true, {}, {} });
     m_items.push_back(std::move(prefItem));
 
     // --- Separator ---
-    m_items.push_back({ MenuActionId::None, L"", L"", true, false, false, {} });
+    m_items.push_back({ MenuActionId::None, L"", L"", true, false, false, false, {}, {} });
 
-    // 18. Revert File
-    m_items.push_back({ MenuActionId::RevertFile, L"Revert File", L"", false, false, false, {} });
-    // 19. Close Editor (Ctrl+F4)
-    m_items.push_back({ MenuActionId::CloseEditor, L"Close Editor", L"Ctrl+F4", false, false, false, {} });
-    // 20. Close Folder (Ctrl+K F)
-    m_items.push_back({ MenuActionId::CloseFolder, L"Close Folder", L"Ctrl+K F", false, false, false, {} });
+    // 18. Revert File - DISABLED if no file open, or if not dirty!
+    m_items.push_back({ MenuActionId::RevertFile, L"Revert File", L"", false, false, false, hasOpenFile && isDirty, {}, {} });
+    // 19. Close Editor (Ctrl+F4) - DISABLED if no file open!
+    m_items.push_back({ MenuActionId::CloseEditor, L"Close Editor", L"Ctrl+F4", false, false, false, hasOpenFile, {}, {} });
+    // 20. Close Folder (Ctrl+K F) - DISABLED if no folder open!
+    m_items.push_back({ MenuActionId::CloseFolder, L"Close Folder", L"Ctrl+K F", false, false, false, hasOpenFolder, {}, {} });
     // 21. Close Window (Alt+F4)
-    m_items.push_back({ MenuActionId::CloseWindow, L"Close Window", L"Alt+F4", false, false, false, {} });
+    m_items.push_back({ MenuActionId::CloseWindow, L"Close Window", L"Alt+F4", false, false, false, true, {}, {} });
 
     // --- Separator ---
-    m_items.push_back({ MenuActionId::None, L"", L"", true, false, false, {} });
+    m_items.push_back({ MenuActionId::None, L"", L"", true, false, false, false, {}, {} });
 
     // 22. Exit
-    m_items.push_back({ MenuActionId::Exit, L"Exit", L"", false, false, false, {} });
+    m_items.push_back({ MenuActionId::Exit, L"Exit", L"", false, false, false, true, {}, {} });
 }
 
 void PopupMenu::LayoutMenu(std::vector<PopupMenuItem>& items, float startX, float startY, float width,
@@ -348,7 +354,7 @@ void PopupMenu::RenderMenuPanel(ID2D1RenderTarget* pRT, Theme& theme, const app:
 
         bool isHovered = (static_cast<int>(i) == hoveredIdx || static_cast<int>(i) == activeSubmenuParentIdx);
 
-        if (isHovered) {
+        if (isHovered && item.isEnabled) {
             // Hover background pill with 3.5px rounded corners matching VS Code
             D2D1_RECT_F rcHover = D2D1::RectF(
                 item.bounds.left + config.ScaleF(4.0f),
@@ -360,9 +366,9 @@ void PopupMenu::RenderMenuPanel(ID2D1RenderTarget* pRT, Theme& theme, const app:
             pRT->FillRoundedRectangle(rrcHover, theme.brushMenuHover.Get());
         }
 
-        ID2D1Brush* textBrush = isHovered ? theme.brushTextWhite.Get() : theme.brushMenuText.Get();
-        ID2D1Brush* shortcutBrush = isHovered ? theme.brushTextWhite.Get() : theme.brushMenuShortcut.Get();
-        ID2D1Brush* glyphBrush = isHovered ? theme.brushTextWhite.Get() : theme.brushMenuText.Get();
+        ID2D1Brush* textBrush = !item.isEnabled ? theme.brushTextMuted.Get() : (isHovered ? theme.brushTextWhite.Get() : theme.brushMenuText.Get());
+        ID2D1Brush* shortcutBrush = !item.isEnabled ? theme.brushTextMuted.Get() : (isHovered ? theme.brushTextWhite.Get() : theme.brushMenuShortcut.Get());
+        ID2D1Brush* glyphBrush = !item.isEnabled ? theme.brushTextMuted.Get() : (isHovered ? theme.brushTextWhite.Get() : theme.brushMenuText.Get());
 
         // 1. Checkmark (✓)
         if (item.isChecked) {
@@ -456,7 +462,7 @@ bool PopupMenu::HandleMouseMove(POINT clientPt, const app::AppConfig& config, fl
         const auto& parent = m_items[m_activeSubmenuIdx];
         int newHover = -1;
         for (size_t i = 0; i < parent.submenuItems.size(); ++i) {
-            if (!parent.submenuItems[i].isSeparator && PtInRectF(clientPt, parent.submenuItems[i].bounds)) {
+            if (!parent.submenuItems[i].isSeparator && parent.submenuItems[i].isEnabled && PtInRectF(clientPt, parent.submenuItems[i].bounds)) {
                 newHover = static_cast<int>(i);
                 break;
             }
@@ -473,7 +479,9 @@ bool PopupMenu::HandleMouseMove(POINT clientPt, const app::AppConfig& config, fl
         int newMainHover = -1;
         for (size_t i = 0; i < m_items.size(); ++i) {
             if (!m_items[i].isSeparator && PtInRectF(clientPt, m_items[i].bounds)) {
-                newMainHover = static_cast<int>(i);
+                if (m_items[i].isEnabled || m_items[i].hasSubmenu) {
+                    newMainHover = static_cast<int>(i);
+                }
                 break;
             }
         }
@@ -521,6 +529,7 @@ MenuActionId PopupMenu::HandleLButtonDown(POINT clientPt) {
         const auto& parent = m_items[m_activeSubmenuIdx];
         for (const auto& item : parent.submenuItems) {
             if (!item.isSeparator && PtInRectF(clientPt, item.bounds)) {
+                if (!item.isEnabled) return MenuActionId::None;
                 return item.actionId;
             }
         }
@@ -535,6 +544,7 @@ MenuActionId PopupMenu::HandleLButtonDown(POINT clientPt) {
                     // Clicking parent with submenu keeps/toggles submenu
                     return MenuActionId::None;
                 }
+                if (!item.isEnabled) return MenuActionId::None;
                 return item.actionId;
             }
         }

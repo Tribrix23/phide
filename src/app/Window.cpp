@@ -81,7 +81,7 @@ void Window::DoNewFile() {
 void Window::DoNewWindow() {
     wchar_t szExe[MAX_PATH] = { 0 };
     GetModuleFileNameW(nullptr, szExe, MAX_PATH);
-    ShellExecuteW(nullptr, L"open", szExe, nullptr, nullptr, SW_SHOWNORMAL);
+    ShellExecuteW(nullptr, L"open", szExe, L"--windowed", nullptr, SW_SHOWNORMAL);
 }
 
 void Window::DoOpenFile() {
@@ -580,9 +580,45 @@ bool Window::Create(HINSTANCE hInstance, int nCmdShow) {
     m_targetDrawerProgress = m_drawerAnimProgress;
     m_isDrawerAnimating    = false;
 
-    // Launch application whole screen (maximized) as requested
-    ShowWindow(m_hwnd, SW_MAXIMIZE);
+    // Launch application windowed or maximized based on invocation parameters
+    bool startWindowed = false;
+    LPCWSTR cmdLine = GetCommandLineW();
+    if (cmdLine && (wcsstr(cmdLine, L"--windowed") != nullptr || wcsstr(cmdLine, L"--not-maximized") != nullptr)) {
+        startWindowed = true;
+    }
+
+    if (startWindowed) {
+        const int screenW = GetSystemMetrics(SM_CXSCREEN);
+        const int screenH = GetSystemMetrics(SM_CYSCREEN);
+        const int winW = 1200;
+        const int winH = 750;
+        const int winX = (screenW - winW) / 2;
+        const int winY = (screenH - winH) / 2;
+        SetWindowPos(m_hwnd, nullptr, winX, winY, winW, winH, SWP_NOZORDER | SWP_FRAMECHANGED | SWP_SHOWWINDOW);
+        ShowWindow(m_hwnd, SW_SHOWNORMAL);
+    } else {
+        ShowWindow(m_hwnd, SW_MAXIMIZE);
+    }
     UpdateWindow(m_hwnd);
+
+    // Parse command line arguments for initial folder or file
+    int nArgs = 0;
+    LPWSTR* szArglist = CommandLineToArgvW(GetCommandLineW(), &nArgs);
+    if (szArglist) {
+        for (int i = 1; i < nArgs; ++i) {
+            std::wstring arg = szArglist[i];
+            if (arg == L"--windowed" || arg == L"--not-maximized") continue;
+            std::error_code ec;
+            std::filesystem::path p(arg);
+            if (std::filesystem::is_directory(p, ec)) {
+                DoOpenFolderFromPath(arg);
+            } else if (std::filesystem::is_regular_file(p, ec)) {
+                DoOpenFolderFromPath(p.parent_path().wstring());
+                LoadFileFromPath(arg);
+            }
+        }
+        LocalFree(szArglist);
+    }
 
     return true;
 }
@@ -970,7 +1006,8 @@ void Window::HandleLButtonDown(POINT clientPt) {
         } else if (menuHit == ui::HeaderMenuId::File) {
             // Open File Dropdown Menu directly beneath the File header button
             D2D1_RECT_F rcFile = m_header.GetMenuItemBounds(ui::HeaderMenuId::File);
-            m_popupMenu.OpenFileMenu(rcFile.left, rcFile.bottom + 2.0f, m_config, m_autoSave, m_recentPaths);
+            m_popupMenu.OpenFileMenu(rcFile.left, rcFile.bottom + 2.0f, m_config, m_autoSave,
+                                     m_hasOpenFile, m_isDirty, m_drawer.HasOpenFolder(), m_recentPaths);
             m_header.SetActiveMenu(ui::HeaderMenuId::File);
             InvalidateRect(m_hwnd, nullptr, FALSE);
         } else if (menuHit == ui::HeaderMenuId::View) {

@@ -11,6 +11,7 @@ Theme::Theme() = default;
 
 HRESULT Theme::CreateDeviceResources(ID2D1RenderTarget* pRT, IDWriteFactory* pDWriteFactory) {
     if (!pRT || !pDWriteFactory) return E_POINTER;
+    dwriteFactory = pDWriteFactory;
 
     // Allocate Solid Brushes
     HRESULT hr = pRT->CreateSolidColorBrush(colors.windowBg, &brushWindowBg);
@@ -55,6 +56,17 @@ HRESULT Theme::CreateDeviceResources(ID2D1RenderTarget* pRT, IDWriteFactory* pDW
     pRT->CreateSolidColorBrush(colors.tabBarBg, &brushTabBarBg);
     pRT->CreateSolidColorBrush(colors.tabActiveBg, &brushTabActiveBg);
     pRT->CreateSolidColorBrush(colors.tabBorder, &brushTabBorder);
+
+    // Tree & File Type Icon Brushes (Seti/Material palette matching Image 5)
+    pRT->CreateSolidColorBrush(D2D1::ColorF(0.0f, 0.596f, 1.0f, 1.0f), &brushIconBlue);
+    pRT->CreateSolidColorBrush(D2D1::ColorF(0.533f, 0.572f, 0.749f, 1.0f), &brushIconPurple);
+    pRT->CreateSolidColorBrush(D2D1::ColorF(0.968f, 0.874f, 0.117f, 1.0f), &brushIconYellow);
+    pRT->CreateSolidColorBrush(D2D1::ColorF(0.149f, 0.651f, 0.603f, 1.0f), &brushIconGreen);
+    pRT->CreateSolidColorBrush(D2D1::ColorF(0.898f, 0.223f, 0.207f, 1.0f), &brushIconRed);
+    pRT->CreateSolidColorBrush(D2D1::ColorF(0.894f, 0.301f, 0.149f, 1.0f), &brushIconOrange);
+    pRT->CreateSolidColorBrush(D2D1::ColorF(0.474f, 0.592f, 0.709f, 1.0f), &brushIconFolder);
+    pRT->CreateSolidColorBrush(D2D1::ColorF(0.600f, 0.721f, 0.835f, 1.0f), &brushIconFolderOpen);
+    pRT->CreateSolidColorBrush(D2D1::ColorF(0.620f, 0.620f, 0.620f, 1.0f), &brushIconGray);
 
     // Create DirectWrite Text Formats
     // 1. Title Font
@@ -156,6 +168,40 @@ HRESULT Theme::CreateDeviceResources(ID2D1RenderTarget* pRT, IDWriteFactory* pDW
         fontCode->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
         fontCode->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
         fontCode->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+    }
+
+    // 3b. Centered Button Font (13px, Centered horizontally and vertically)
+    pDWriteFactory->CreateTextFormat(
+        L"Segoe UI",
+        nullptr,
+        DWRITE_FONT_WEIGHT_SEMI_BOLD,
+        DWRITE_FONT_STYLE_NORMAL,
+        DWRITE_FONT_STRETCH_NORMAL,
+        13.0f,
+        L"en-US",
+        &fontButtonCenter
+    );
+    if (fontButtonCenter) {
+        fontButtonCenter->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+        fontButtonCenter->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+        fontButtonCenter->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+    }
+
+    // 3c. File Type Badge Font (8.5px, Bold, Centered horizontally and vertically)
+    pDWriteFactory->CreateTextFormat(
+        L"Segoe UI",
+        nullptr,
+        DWRITE_FONT_WEIGHT_BOLD,
+        DWRITE_FONT_STYLE_NORMAL,
+        DWRITE_FONT_STRETCH_NORMAL,
+        8.5f,
+        L"en-US",
+        &fontBadge
+    );
+    if (fontBadge) {
+        fontBadge->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+        fontBadge->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+        fontBadge->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
     }
 
     // 3b. Section Header Font (EXPLORER)
@@ -289,6 +335,18 @@ void Theme::DiscardDeviceResources() {
     brushTabBarBg.Reset();
     brushTabActiveBg.Reset();
     brushTabBorder.Reset();
+    dwriteFactory.Reset();
+    fontButtonCenter.Reset();
+    fontBadge.Reset();
+    brushIconBlue.Reset();
+    brushIconPurple.Reset();
+    brushIconYellow.Reset();
+    brushIconGreen.Reset();
+    brushIconRed.Reset();
+    brushIconOrange.Reset();
+    brushIconFolder.Reset();
+    brushIconFolderOpen.Reset();
+    brushIconGray.Reset();
 }
 
 } // namespace phide::ui

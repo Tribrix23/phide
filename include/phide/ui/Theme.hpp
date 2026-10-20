@@ -142,12 +142,26 @@ public:
     ComPtr<ID2D1SolidColorBrush> brushTabActiveBg;
     ComPtr<ID2D1SolidColorBrush> brushTabBorder;
 
-    // DirectWrite Text Formats
+    // Colorful File & Folder Tree Icon Brushes
+    ComPtr<ID2D1SolidColorBrush> brushIconBlue;
+    ComPtr<ID2D1SolidColorBrush> brushIconPurple;
+    ComPtr<ID2D1SolidColorBrush> brushIconYellow;
+    ComPtr<ID2D1SolidColorBrush> brushIconGreen;
+    ComPtr<ID2D1SolidColorBrush> brushIconRed;
+    ComPtr<ID2D1SolidColorBrush> brushIconOrange;
+    ComPtr<ID2D1SolidColorBrush> brushIconFolder;
+    ComPtr<ID2D1SolidColorBrush> brushIconFolderOpen;
+    ComPtr<ID2D1SolidColorBrush> brushIconGray;
+
+    // DirectWrite Text Formats and Factory
+    ComPtr<IDWriteFactory> dwriteFactory;
     ComPtr<IDWriteTextFormat> fontTitle;         ///< 12px Semi-bold for title
     ComPtr<IDWriteTextFormat> fontMenu;          ///< 12px Regular for top menus
     ComPtr<IDWriteTextFormat> fontMenuItem;      ///< 12px Regular Left-aligned for dropdown items
     ComPtr<IDWriteTextFormat> fontMenuShortcut;  ///< 11.5px Regular Right-aligned for shortcuts
     ComPtr<IDWriteTextFormat> fontBody;          ///< 13px Regular for UI elements
+    ComPtr<IDWriteTextFormat> fontButtonCenter;  ///< 13px Centered for buttons
+    ComPtr<IDWriteTextFormat> fontBadge;         ///< 8.5px Bold Centered for file badges (PHP, JS, TS, C++)
     ComPtr<IDWriteTextFormat> fontCode;          ///< 13px Consolas Monospace for code lines
     ComPtr<IDWriteTextFormat> fontSectionHeader; ///< 11px Semi-bold Leading for section titles (EXPLORER)
     ComPtr<IDWriteTextFormat> fontIcon;          ///< 14px Symbol font for glyphs

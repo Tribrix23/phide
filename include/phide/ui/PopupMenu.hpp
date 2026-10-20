@@ -119,6 +119,7 @@ struct PopupMenuItem {
     bool isSeparator = false;
     bool isChecked = false;
     bool hasSubmenu = false;
+    bool isEnabled = true;
     std::vector<PopupMenuItem> submenuItems;
 
     // Runtime computed bounding box in client coordinates
@@ -152,9 +153,13 @@ public:
      * @param y Top coordinate of the anchor.
      * @param config Application metrics.
      * @param autoSave Whether auto save is currently toggled on.
+     * @param hasOpenFile Whether an editor file is currently open.
+     * @param isDirty Whether the active file has unsaved changes.
+     * @param hasOpenFolder Whether a folder/project is currently loaded.
      * @param recentItems Optional list of recently opened files or folders.
      */
-    void OpenFileMenu(float x, float y, const app::AppConfig& config, bool autoSave = true,
+    void OpenFileMenu(float x, float y, const app::AppConfig& config, bool autoSave,
+                      bool hasOpenFile, bool isDirty, bool hasOpenFolder,
                       const std::vector<std::wstring>& recentItems = {});
 
     /**
@@ -196,7 +201,8 @@ public:
 
 private:
     void BuildViewMenuItems(bool isSidebarOpen, bool isZoomed, bool wordWrap);
-    void BuildFileMenuItems(bool autoSave, const std::vector<std::wstring>& recentItems = {});
+    void BuildFileMenuItems(bool autoSave, bool hasOpenFile, bool isDirty, bool hasOpenFolder,
+                            const std::vector<std::wstring>& recentItems = {});
     void LayoutMenu(std::vector<PopupMenuItem>& items, float startX, float startY, float width,
                     const app::AppConfig& config, D2D1_RECT_F& outBounds);
     void LayoutSubmenu(int parentItemIdx, const app::AppConfig& config, float clientW, float clientH);
