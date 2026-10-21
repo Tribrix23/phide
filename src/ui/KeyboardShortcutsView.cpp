@@ -74,10 +74,11 @@ std::vector<size_t> KeyboardShortcutsView::GetFilteredIndices() const {
 void KeyboardShortcutsView::DrawKeycapBadge(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
                                             const std::wstring& text, float& curX, float centerY, float badgeH) {
     float textW = 0.0f;
-    if (theme.dwriteFactory && theme.fontMenuShortcut) {
+    IDWriteTextFormat* pFmt = theme.fontKeycap ? theme.fontKeycap.Get() : theme.fontMenuShortcut.Get();
+    if (theme.dwriteFactory && pFmt) {
         Microsoft::WRL::ComPtr<IDWriteTextLayout> pLayout;
         if (SUCCEEDED(theme.dwriteFactory->CreateTextLayout(text.c_str(), static_cast<UINT32>(text.length()),
-                                                          theme.fontMenuShortcut.Get(), 200.0f, badgeH, &pLayout))) {
+                                                          pFmt, 200.0f, badgeH, &pLayout))) {
             DWRITE_TEXT_METRICS tm{};
             if (SUCCEEDED(pLayout->GetMetrics(&tm))) {
                 textW = tm.widthIncludingTrailingWhitespace;
@@ -86,7 +87,7 @@ void KeyboardShortcutsView::DrawKeycapBadge(ID2D1RenderTarget* pRT, Theme& theme
     }
 
     const float padX = config.ScaleF(7.0f);
-    const float badgeW = (std::max)(config.ScaleF(22.0f), textW + padX * 2.0f);
+    const float badgeW = (std::max)(config.ScaleF(24.0f), textW + padX * 2.0f);
     D2D1_RECT_F rcBadge = D2D1::RectF(
         curX,
         centerY - badgeH / 2.0f,
@@ -99,9 +100,9 @@ void KeyboardShortcutsView::DrawKeycapBadge(ID2D1RenderTarget* pRT, Theme& theme
     pRT->FillRoundedRectangle(rrc, theme.brushItemHover ? theme.brushItemHover.Get() : theme.brushMenuBg.Get());
     pRT->DrawRoundedRectangle(rrc, theme.brushBorderHover ? theme.brushBorderHover.Get() : theme.brushBorderSubtle.Get(), 1.0f);
 
-    // Pill text
+    // Pill text - perfectly centered horizontally and vertically
     pRT->DrawText(text.c_str(), static_cast<UINT32>(text.length()),
-                  theme.fontMenuShortcut.Get(), rcBadge, theme.brushTextPrimary.Get());
+                  pFmt, rcBadge, theme.brushTextPrimary.Get());
 
     curX += badgeW + config.ScaleF(4.0f);
 }

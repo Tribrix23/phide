@@ -203,7 +203,7 @@ void DrawerPanel::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCon
 
     const float headerH = config.ScaleF(static_cast<float>(config.headerHeight));
     const float railW   = config.ScaleF(static_cast<float>(config.railWidth));
-    const float cornerRadius = 14.0f;
+    const float cornerRadius = config.ScaleF(14.0f);
 
     // Check if cached geometry needs rebuilding
     if (!m_pDrawerBgGeometry ||
@@ -429,12 +429,15 @@ void DrawerPanel::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCon
                     railW + fullDrawerW - config.ScaleF(10.0f),
                     curY + itemH
                 );
+                ID2D1Brush* pTextBrush = theme.IsDarkMode() ? 
+                    (isHovered ? theme.brushTextWhite.Get() : (item.isFolder ? theme.brushTextWhite.Get() : theme.brushTextPrimary.Get())) :
+                    theme.brushTextPrimary.Get();
                 pRT->DrawText(
                     item.label.c_str(),
                     static_cast<UINT32>(item.label.length()),
                     theme.fontBody.Get(),
                     rcLabel,
-                    isHovered ? theme.brushTextWhite.Get() : (item.isFolder ? theme.brushTextWhite.Get() : theme.brushTextPrimary.Get())
+                    pTextBrush
                 );
 
                 curY += itemH;

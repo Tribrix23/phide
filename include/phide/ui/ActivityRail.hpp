@@ -54,6 +54,15 @@ public:
     ~ActivityRail() = default;
 
     /**
+     * @brief Releases device-dependent Direct2D resources.
+     */
+    void DiscardDeviceResources() {
+        m_pRailGradientBrush.Reset();
+        m_pLogoBitmap.Reset();
+        m_lastRailH = -1.0f;
+    }
+
+    /**
      * @brief Paints the activity rail background, divider, Lucide icons, and customized tooltip.
      * @param pRT Active Direct2D render target.
      * @param theme Visual theme containing dark brushes and typography.
@@ -89,9 +98,10 @@ private:
     void RenderCustomTooltip(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
                              const RailItem& item);
 
-    // Direct2D Purple Glass Vertical Gradient Brush
+    // Direct2D Purple Glass Vertical Gradient Brush and theme state cache
     Microsoft::WRL::ComPtr<ID2D1LinearGradientBrush> m_pRailGradientBrush;
     float m_lastRailH = -1.0f;
+    bool  m_lastIsDark = true; ///< Tracks theme transitions to invalidate gradient cache
 
     // Phide Square Brand Logo (embedded from user image)
     Microsoft::WRL::ComPtr<ID2D1Bitmap> m_pLogoBitmap;

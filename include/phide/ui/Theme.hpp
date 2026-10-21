@@ -62,10 +62,12 @@ struct ThemeColors {
     D2D1_COLOR_F homeBadgeBg     = D2D1::ColorF(0.165f, 0.176f, 0.180f, 1.0f); // #2A2D2E
     D2D1_COLOR_F runGreen        = D2D1::ColorF(0.24f, 0.84f, 0.52f, 1.0f);   // #3DD684 (Vibrant Emerald / IDE Run Green)
     D2D1_COLOR_F runGreenHover   = D2D1::ColorF(0.24f, 0.84f, 0.52f, 0.16f);  // Soft green hover glow
+    D2D1_COLOR_F headerIcon      = D2D1::ColorF(0.82f, 0.82f, 0.86f, 1.0f);   // #D1D1DB Bright silver for header/rail on dark surfaces
 
     // Customized Tooltip Colors
-    D2D1_COLOR_F tooltipBg       = D2D1::ColorF(0.145f, 0.145f, 0.149f, 0.98f); // #252526
-    D2D1_COLOR_F tooltipBorder   = D2D1::ColorF(0.243f, 0.243f, 0.243f, 1.0f);  // #3E3E3E
+    D2D1_COLOR_F tooltipBg       = D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.98f);       // White in darkmode
+    D2D1_COLOR_F tooltipBorder   = D2D1::ColorF(0.78f, 0.78f, 0.82f, 1.0f);     // Subtle border
+    D2D1_COLOR_F tooltipText     = D2D1::ColorF(0.08f, 0.08f, 0.08f, 1.0f);     // Black text in darkmode
 
     // Dropdown / Popup Menu Colors
     D2D1_COLOR_F menuBg          = D2D1::ColorF(0.122f, 0.122f, 0.122f, 0.98f); // #1F1F1F
@@ -112,11 +114,21 @@ public:
     void DiscardDeviceResources();
 
     /**
-     * @brief Sets the active theme mode and updates the color palette.
+     * @brief Sets the active theme mode and synchronizes all Direct2D brush colors.
+     * @param mode Selected ThemeMode (Dark, Light, or Auto which tracks Windows system theme).
      */
     void SetThemeMode(ThemeMode mode);
 
+    /**
+     * @brief Gets the configured theme mode setting.
+     * @return Currently active ThemeMode enum.
+     */
     [[nodiscard]] ThemeMode GetThemeMode() const noexcept { return m_mode; }
+
+    /**
+     * @brief Queries whether dark appearance colors are currently in effect (evaluated for Dark or Auto).
+     * @return True if dark palette is active, false if light palette is active.
+     */
     [[nodiscard]] bool IsDarkMode() const noexcept { return m_isDarkActive; }
 
     // Raw color definitions
@@ -137,6 +149,7 @@ public:
     ComPtr<ID2D1SolidColorBrush> brushItemHover;
     ComPtr<ID2D1SolidColorBrush> brushItemActive;
     ComPtr<ID2D1SolidColorBrush> brushCaptionHover;
+    ComPtr<ID2D1SolidColorBrush> brushHeaderIcon;       ///< Bright silver for unhovered header/rail icons on purple header
     ComPtr<ID2D1SolidColorBrush> brushCloseHoverBg;
     ComPtr<ID2D1SolidColorBrush> brushBrandAccent;
     ComPtr<ID2D1SolidColorBrush> brushHomeBadgeBg;
@@ -144,6 +157,7 @@ public:
     ComPtr<ID2D1SolidColorBrush> brushRunGreenHover;
     ComPtr<ID2D1SolidColorBrush> brushTooltipBg;
     ComPtr<ID2D1SolidColorBrush> brushTooltipBorder;
+    ComPtr<ID2D1SolidColorBrush> brushTooltipText;
     ComPtr<ID2D1SolidColorBrush> brushMenuBg;
     ComPtr<ID2D1SolidColorBrush> brushMenuBorder;
     ComPtr<ID2D1SolidColorBrush> brushMenuSeparator;
@@ -211,6 +225,7 @@ public:
     ComPtr<IDWriteTextFormat> fontTooltip;       ///< 11.5px Crisp font for customized sidebar tooltips
     ComPtr<IDWriteTextFormat> fontTab;           ///< 12px Regular Leading-aligned for editor tabs
     ComPtr<IDWriteTextFormat> fontTabPreview;    ///< 12px Italic Leading-aligned for preview tabs
+    ComPtr<IDWriteTextFormat> fontKeycap;        ///< 11.5px Centered for keycap badges
 
     struct SetiIconInfo {
         wchar_t glyph = 0xE023;

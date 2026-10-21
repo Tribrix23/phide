@@ -219,7 +219,10 @@ void Window::LoadSessionState() {
 
     m_config.activeRailTab = activeRailTab;
 
-    // Apply restored theme mode
+    // Apply restored theme mode with bounds validation (0: Dark, 1: Light, 2: Auto)
+    if (themeMode < 0 || themeMode > 2) {
+        themeMode = 0; // Default to Dark Mode if corrupt or uninitialized
+    }
     m_theme.SetThemeMode(static_cast<ui::ThemeMode>(themeMode));
 
     if (!lastOpenFolder.empty() && std::filesystem::exists(lastOpenFolder, ec)) {
@@ -1109,6 +1112,9 @@ HRESULT Window::CreateDeviceResources() {
 
 void Window::DiscardDeviceResources() {
     m_theme.DiscardDeviceResources();
+    m_editor.DiscardDeviceResources();
+    m_header.DiscardDeviceResources();
+    m_rail.DiscardDeviceResources();
     m_pRenderTarget.Reset();
     if (m_popupMenu.IsOpen()) {
         m_popupMenu.Close();
@@ -1275,9 +1281,9 @@ void Window::HandleMouseMove(POINT clientPt) {
 }
 
 void Window::HandleLButtonDown(POINT clientPt) {
-    // 0. Theme Picker Modal Clicks
+    // 0. Theme Picker Modal Clicks: only updates theme if a theme card was clicked
     if (m_themePicker.IsOpen()) {
-        ui::ThemeMode chosenMode;
+        ui::ThemeMode chosenMode = m_theme.GetThemeMode();
         if (m_themePicker.HandleLButtonDown(clientPt, chosenMode)) {
             m_theme.SetThemeMode(chosenMode);
             BOOL dm = m_theme.IsDarkMode() ? TRUE : FALSE;

@@ -88,6 +88,14 @@ public:
     ~TitleHeader() = default;
 
     /**
+     * @brief Releases device-dependent Direct2D resources.
+     */
+    void DiscardDeviceResources() {
+        m_pHeaderGradientBrush.Reset();
+        m_lastWidth = -1.0f;
+    }
+
+    /**
      * @brief Paints the header background, menus, centered title, and caption controls.
      * @param pRT Active Direct2D render target.
      * @param theme Visual theme containing dark brushes and text formats.
@@ -168,9 +176,10 @@ private:
     D2D1_RECT_F m_rcMaximize{};
     D2D1_RECT_F m_rcClose{};
 
-    // Direct2D Purple-to-Black Glass Gradient Brush
+    // Direct2D Purple Glass Gradient Brush and theme state cache
     Microsoft::WRL::ComPtr<ID2D1LinearGradientBrush> m_pHeaderGradientBrush;
     float m_lastWidth = -1.0f;
+    bool  m_lastIsDark = true; ///< Tracks theme transitions to invalidate gradient cache
 };
 
 } // namespace phide::ui

@@ -49,6 +49,7 @@ HRESULT Theme::CreateDeviceResources(ID2D1RenderTarget* pRT, IDWriteFactory* pDW
     pRT->CreateSolidColorBrush(colors.itemHover, &brushItemHover);
     pRT->CreateSolidColorBrush(colors.itemActive, &brushItemActive);
     pRT->CreateSolidColorBrush(colors.captionHover, &brushCaptionHover);
+    pRT->CreateSolidColorBrush(colors.headerIcon, &brushHeaderIcon);
     pRT->CreateSolidColorBrush(colors.closeHoverBg, &brushCloseHoverBg);
     pRT->CreateSolidColorBrush(colors.brandAccent, &brushBrandAccent);
     pRT->CreateSolidColorBrush(colors.homeBadgeBg, &brushHomeBadgeBg);
@@ -56,6 +57,7 @@ HRESULT Theme::CreateDeviceResources(ID2D1RenderTarget* pRT, IDWriteFactory* pDW
     pRT->CreateSolidColorBrush(colors.runGreenHover, &brushRunGreenHover);
     pRT->CreateSolidColorBrush(colors.tooltipBg, &brushTooltipBg);
     pRT->CreateSolidColorBrush(colors.tooltipBorder, &brushTooltipBorder);
+    pRT->CreateSolidColorBrush(colors.tooltipText, &brushTooltipText);
     pRT->CreateSolidColorBrush(colors.menuBg, &brushMenuBg);
     pRT->CreateSolidColorBrush(colors.menuBorder, &brushMenuBorder);
     pRT->CreateSolidColorBrush(colors.menuSeparator, &brushMenuSeparator);
@@ -401,10 +403,28 @@ HRESULT Theme::CreateDeviceResources(ID2D1RenderTarget* pRT, IDWriteFactory* pDW
         fontTabPreview->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
     }
 
+    // 10. Keycap Badge Font (11.5px Semi-Bold, Centered Horizontally & Vertically)
+    pDWriteFactory->CreateTextFormat(
+        L"Segoe UI",
+        nullptr,
+        DWRITE_FONT_WEIGHT_SEMI_BOLD,
+        DWRITE_FONT_STYLE_NORMAL,
+        DWRITE_FONT_STRETCH_NORMAL,
+        11.5f,
+        L"en-US",
+        &fontKeycap
+    );
+    if (fontKeycap) {
+        fontKeycap->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+        fontKeycap->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+        fontKeycap->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+    }
+
     return S_OK;
 }
 
 void Theme::DiscardDeviceResources() {
+    fontKeycap.Reset();
     fontTab.Reset();
     fontTabPreview.Reset();
     fontSectionHeader.Reset();
@@ -425,6 +445,7 @@ void Theme::DiscardDeviceResources() {
     brushItemHover.Reset();
     brushItemActive.Reset();
     brushCaptionHover.Reset();
+    brushHeaderIcon.Reset();
     brushCloseHoverBg.Reset();
     brushBrandAccent.Reset();
     brushHomeBadgeBg.Reset();
@@ -432,6 +453,7 @@ void Theme::DiscardDeviceResources() {
     brushRunGreenHover.Reset();
     brushTooltipBg.Reset();
     brushTooltipBorder.Reset();
+    brushTooltipText.Reset();
     brushMenuBg.Reset();
     brushMenuBorder.Reset();
     brushMenuSeparator.Reset();
@@ -484,6 +506,18 @@ void Theme::DiscardDeviceResources() {
     brushSetiDefault.Reset();
 }
 
+/**
+ * @brief Sets the active theme mode and updates the color palette.
+ * 
+ * In Auto mode, queries the Windows registry key:
+ * HKCU\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize\AppsUseLightTheme
+ * to dynamically mirror the host OS light/dark mode preference.
+ * 
+ * Sets up all IDE surface colors (windowBg, canvasBg, headerBg, railBg, drawerBg, tooltips, etc.).
+ * Note: windowBg is purposefully set to dark purple (#3D1461) in Dark mode and light purple (#CFB3E8)
+ * in Light mode so that the upper-left 14px rounded arc of DrawerPanel and EditorCanvas curves smoothly against
+ * the title bar and activity rail without creating a square notch.
+ */
 void Theme::SetThemeMode(ThemeMode mode) {
     m_mode = mode;
     if (mode == ThemeMode::Dark) {
@@ -525,10 +559,13 @@ void Theme::SetThemeMode(ThemeMode mode) {
         colors.itemHover       = D2D1::ColorF(0.165f, 0.176f, 0.180f, 1.0f); // #2A2D2E
         colors.itemActive      = D2D1::ColorF(0.216f, 0.216f, 0.239f, 1.0f); // #37373D
         colors.captionHover    = D2D1::ColorF(0.200f, 0.200f, 0.200f, 1.0f); // #333333
+        colors.headerIcon      = D2D1::ColorF(0.82f, 0.82f, 0.86f, 1.0f);   // #D1D1DB Bright silver
         colors.brandAccent     = D2D1::ColorF(0.0f, 0.471f, 0.831f, 1.0f);   // #0078D4
         colors.homeBadgeBg     = D2D1::ColorF(0.165f, 0.176f, 0.180f, 1.0f);
-        colors.tooltipBg       = D2D1::ColorF(0.145f, 0.145f, 0.149f, 0.98f);
-        colors.tooltipBorder   = D2D1::ColorF(0.243f, 0.243f, 0.243f, 1.0f);
+        // Tooltip in Dark Mode: White with Black Text (as requested)
+        colors.tooltipBg       = D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.98f);
+        colors.tooltipBorder   = D2D1::ColorF(0.78f, 0.78f, 0.82f, 1.0f);
+        colors.tooltipText     = D2D1::ColorF(0.08f, 0.08f, 0.08f, 1.0f);
         colors.menuBg          = D2D1::ColorF(0.122f, 0.122f, 0.122f, 0.98f);
         colors.menuBorder      = D2D1::ColorF(0.271f, 0.271f, 0.271f, 1.0f);
         colors.menuSeparator   = D2D1::ColorF(0.235f, 0.235f, 0.235f, 1.0f);
@@ -548,24 +585,27 @@ void Theme::SetThemeMode(ThemeMode mode) {
         colors.syntaxOperator  = D2D1::ColorF(0.831f, 0.831f, 0.831f, 1.0f);  // #D4D4D4
     } else {
         // Light Theme Colors
-        colors.windowBg        = D2D1::ColorF(0.93f, 0.93f, 0.93f, 1.0f);    // #ECECEC
+        colors.windowBg        = D2D1::ColorF(0.812f, 0.702f, 0.910f, 1.0f); // #CFB3E8 Light Purple base (ensures upper-left curve is seamlessly framed)
         colors.canvasBg        = D2D1::ColorF(1.0f, 1.0f, 1.0f, 1.0f);       // #FFFFFF
-        colors.headerBg        = D2D1::ColorF(0.94f, 0.94f, 0.94f, 1.0f);    // #F0F0F0
-        colors.railBg          = D2D1::ColorF(0.90f, 0.90f, 0.90f, 1.0f);    // #E5E5E5
+        colors.headerBg        = D2D1::ColorF(0.812f, 0.702f, 0.910f, 1.0f); // #CFB3E8 Light Purple
+        colors.railBg          = D2D1::ColorF(0.812f, 0.702f, 0.910f, 1.0f); // #CFB3E8 Light Purple
         colors.drawerBg        = D2D1::ColorF(0.953f, 0.953f, 0.953f, 1.0f); // #F3F3F3
         colors.borderSubtle    = D2D1::ColorF(0.88f, 0.88f, 0.88f, 1.0f);    // #E0E0E0
         colors.borderHover     = D2D1::ColorF(0.80f, 0.80f, 0.80f, 1.0f);    // #CCCCCC
         colors.textPrimary     = D2D1::ColorF(0.12f, 0.12f, 0.12f, 1.0f);    // #1E1E1E
         colors.textSecondary   = D2D1::ColorF(0.38f, 0.38f, 0.38f, 1.0f);    // #616161
         colors.textMuted       = D2D1::ColorF(0.55f, 0.55f, 0.55f, 1.0f);    // #8E8E8E
-        colors.textWhite       = D2D1::ColorF(0.12f, 0.12f, 0.12f, 1.0f);    // Dark for tab title in light mode
+        colors.textWhite       = D2D1::ColorF(1.0f, 1.0f, 1.0f, 1.0f);        // Always pure white
         colors.itemHover       = D2D1::ColorF(0.91f, 0.91f, 0.91f, 1.0f);    // #E8E8E8
         colors.itemActive      = D2D1::ColorF(0.84f, 0.84f, 0.84f, 1.0f);    // #D6D6D6
         colors.captionHover    = D2D1::ColorF(0.88f, 0.88f, 0.88f, 1.0f);
+        colors.headerIcon      = D2D1::ColorF(0.08f, 0.08f, 0.08f, 1.0f);   // #141414 Deep Black for header/rail icons in Light Mode
         colors.brandAccent     = D2D1::ColorF(0.0f, 0.471f, 0.831f, 1.0f);   // #0078D4
         colors.homeBadgeBg     = D2D1::ColorF(0.85f, 0.85f, 0.85f, 1.0f);
-        colors.tooltipBg       = D2D1::ColorF(0.96f, 0.96f, 0.96f, 0.98f);
-        colors.tooltipBorder   = D2D1::ColorF(0.80f, 0.80f, 0.80f, 1.0f);
+        // Tooltip in Light Mode: High-contrast Dark Glass with Pure White Text
+        colors.tooltipBg       = D2D1::ColorF(0.12f, 0.12f, 0.14f, 0.98f);
+        colors.tooltipBorder   = D2D1::ColorF(0.30f, 0.30f, 0.34f, 1.0f);
+        colors.tooltipText     = D2D1::ColorF(1.0f, 1.0f, 1.0f, 1.0f);
         colors.menuBg          = D2D1::ColorF(0.96f, 0.96f, 0.96f, 0.98f);
         colors.menuBorder      = D2D1::ColorF(0.82f, 0.82f, 0.82f, 1.0f);
         colors.menuSeparator   = D2D1::ColorF(0.90f, 0.90f, 0.90f, 1.0f);
@@ -600,10 +640,12 @@ void Theme::SetThemeMode(ThemeMode mode) {
     if (brushItemHover) brushItemHover->SetColor(colors.itemHover);
     if (brushItemActive) brushItemActive->SetColor(colors.itemActive);
     if (brushCaptionHover) brushCaptionHover->SetColor(colors.captionHover);
+    if (brushHeaderIcon) brushHeaderIcon->SetColor(colors.headerIcon);
     if (brushBrandAccent) brushBrandAccent->SetColor(colors.brandAccent);
     if (brushHomeBadgeBg) brushHomeBadgeBg->SetColor(colors.homeBadgeBg);
     if (brushTooltipBg) brushTooltipBg->SetColor(colors.tooltipBg);
     if (brushTooltipBorder) brushTooltipBorder->SetColor(colors.tooltipBorder);
+    if (brushTooltipText) brushTooltipText->SetColor(colors.tooltipText);
     if (brushMenuBg) brushMenuBg->SetColor(colors.menuBg);
     if (brushMenuBorder) brushMenuBorder->SetColor(colors.menuBorder);
     if (brushMenuSeparator) brushMenuSeparator->SetColor(colors.menuSeparator);

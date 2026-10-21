@@ -9,6 +9,55 @@
 
 namespace phide::ui {
 
+static void FillUpperLeftRoundedRect(ID2D1RenderTarget* pRT, ID2D1Brush* pBrush,
+                                     const D2D1_RECT_F& rc, float radius) {
+    if (!pRT || !pBrush) return;
+    if (radius <= 0.0f) {
+        pRT->FillRectangle(rc, pBrush);
+        return;
+    }
+    Microsoft::WRL::ComPtr<ID2D1Factory> pFactory;
+    pRT->GetFactory(&pFactory);
+    if (!pFactory) {
+        pRT->FillRectangle(rc, pBrush);
+        return;
+    }
+    Microsoft::WRL::ComPtr<ID2D1PathGeometry> pPath;
+    if (FAILED(pFactory->CreatePathGeometry(&pPath))) {
+        pRT->FillRectangle(rc, pBrush);
+        return;
+    }
+    Microsoft::WRL::ComPtr<ID2D1GeometrySink> sink;
+    if (FAILED(pPath->Open(&sink))) {
+        pRT->FillRectangle(rc, pBrush);
+        return;
+    }
+
+    const float maxR = (std::min)(rc.right - rc.left, rc.bottom - rc.top);
+    const float r = (maxR > 0.0f) ? (std::min)(radius, maxR) : 0.0f;
+
+    sink->BeginFigure(D2D1::Point2F(rc.left + r, rc.top), D2D1_FIGURE_BEGIN_FILLED);
+    sink->AddLine(D2D1::Point2F(rc.right, rc.top));
+    sink->AddLine(D2D1::Point2F(rc.right, rc.bottom));
+    sink->AddLine(D2D1::Point2F(rc.left, rc.bottom));
+    sink->AddLine(D2D1::Point2F(rc.left, rc.top + r));
+
+    if (r > 0.0f) {
+        D2D1_ARC_SEGMENT arc{};
+        arc.point = D2D1::Point2F(rc.left + r, rc.top);
+        arc.size = D2D1::SizeF(r, r);
+        arc.rotationAngle = 0.0f;
+        arc.sweepDirection = D2D1_SWEEP_DIRECTION_CLOCKWISE;
+        arc.arcSize = D2D1_ARC_SIZE_SMALL;
+        sink->AddArc(arc);
+    }
+
+    sink->EndFigure(D2D1_FIGURE_END_CLOSED);
+    sink->Close();
+
+    pRT->FillGeometry(pPath.Get(), pBrush);
+}
+
 static void DrawKeycap(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
                        const wchar_t* text, float& curRightX, float centerY, float capH) {
     const size_t len = wcslen(text);
@@ -22,7 +71,8 @@ static void DrawKeycap(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfi
     pRT->FillRoundedRectangle(rrc, theme.brushCaptionHover.Get());
     pRT->DrawRoundedRectangle(rrc, theme.brushBorderSubtle.Get(), 1.0f);
 
-    pRT->DrawText(text, static_cast<UINT32>(len), theme.fontMenu.Get(), rc, theme.brushTextPrimary.Get());
+    IDWriteTextFormat* pFmt = theme.fontKeycap ? theme.fontKeycap.Get() : theme.fontMenu.Get();
+    pRT->DrawText(text, static_cast<UINT32>(len), pFmt, rc, theme.brushTextPrimary.Get());
 
     curRightX = x - config.ScaleF(4.0f);
 }
@@ -34,12 +84,23 @@ static void DrawPlus(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig&
     const float y = centerY - capH / 2.0f;
 
     D2D1_RECT_F rc = D2D1::RectF(x, y, curRightX, y + capH);
-    pRT->DrawText(L"+", 1, theme.fontMenu.Get(), rc, theme.brushTextMuted.Get());
+    IDWriteTextFormat* pFmt = theme.fontKeycap ? theme.fontKeycap.Get() : theme.fontMenu.Get();
+    pRT->DrawText(L"+", 1, pFmt, rc, theme.brushTextMuted.Get());
 
     curRightX = x - config.ScaleF(4.0f);
 }
 
 EditorCanvas::EditorCanvas() = default;
+
+void EditorCanvas::DiscardDeviceResources() {
+    m_pWatermarkBitmap.Reset();
+    m_pWatermarkBitmapLight.Reset();
+    m_pCanvasGeometry.Reset();
+    m_cachedLeft = -1.0f;
+    m_cachedTop = -1.0f;
+    m_cachedRight = -1.0f;
+    m_cachedBottom = -1.0f;
+}
 
 void EditorCanvas::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
                           std::vector<editor::OpenDocument>& docs, int activeDocIdx,
@@ -49,7 +110,7 @@ void EditorCanvas::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
 
     const float headerH = config.ScaleF(static_cast<float>(config.headerHeight));
     const float canvasRight = canvasLeft + canvasWidth;
-    const float cornerRadius = hasLeftDrawer ? 0.0f : 14.0f;
+    const float cornerRadius = hasLeftDrawer ? 0.0f : config.ScaleF(14.0f);
 
     // Check if cached geometry needs rebuilding (e.g. on resize, layout changes, or drawer open/close)
     if (!m_pCanvasGeometry ||
@@ -125,7 +186,7 @@ void EditorCanvas::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
     } else {
         // When files are open: render multi-tab bar and active editor view
         const float tabH = config.ScaleF(34.0f);
-        RenderTabs(pRT, theme, config, canvasLeft, canvasWidth, headerH, docs, activeDocIdx);
+        RenderTabs(pRT, theme, config, canvasLeft, canvasWidth, headerH, docs, activeDocIdx, hasLeftDrawer);
 
         auto& activeDoc = docs[activeDocIdx];
         if (activeDoc.isSpecialView && activeDoc.viewType == L"keybindings") {
@@ -140,7 +201,7 @@ void EditorCanvas::RenderPlaceholder(ID2D1RenderTarget* pRT, Theme& theme, const
                                      float canvasLeft, float canvasWidth, float headerH, float clientHeight) {
     const float centerY = headerH + (clientHeight - headerH) / 2.0f;
 
-    // Initialize metallic white watermark bitmap if needed
+    // Initialize metallic white watermark bitmap for dark mode if needed
     if (!m_pWatermarkBitmap) {
         D2D1_SIZE_U size = D2D1::SizeU(kWatermarkLogoWidth, kWatermarkLogoHeight);
         D2D1_BITMAP_PROPERTIES props = D2D1::BitmapProperties(
@@ -148,15 +209,31 @@ void EditorCanvas::RenderPlaceholder(ID2D1RenderTarget* pRT, Theme& theme, const
         );
         pRT->CreateBitmap(size, g_watermarkLogoBgra, kWatermarkLogoWidth * 4, props, &m_pWatermarkBitmap);
     }
+    // Initialize inverted watermark bitmap for light mode if needed (black outer square, white inside)
+    if (!m_pWatermarkBitmapLight) {
+        D2D1_SIZE_U size = D2D1::SizeU(kWatermarkLogoWidth, kWatermarkLogoHeight);
+        D2D1_BITMAP_PROPERTIES props = D2D1::BitmapProperties(
+            D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED)
+        );
+        std::vector<uint8_t> lightBgra(sizeof(g_watermarkLogoBgra));
+        for (size_t i = 0; i < sizeof(g_watermarkLogoBgra); i += 4) {
+            lightBgra[i + 0] = 255 - g_watermarkLogoBgra[i + 0]; // B
+            lightBgra[i + 1] = 255 - g_watermarkLogoBgra[i + 1]; // G
+            lightBgra[i + 2] = 255 - g_watermarkLogoBgra[i + 2]; // R
+            lightBgra[i + 3] = g_watermarkLogoBgra[i + 3];       // A
+        }
+        pRT->CreateBitmap(size, lightBgra.data(), kWatermarkLogoWidth * 4, props, &m_pWatermarkBitmapLight);
+    }
 
-    // Render Metallic White / Platinum Inverted Logo Watermark in center of canvas
+    // Render Logo Watermark in center of canvas (dark logo in light mode, metallic in dark mode)
     const float logoSize = config.ScaleF(84.0f);
     const float logoX = canvasLeft + (canvasWidth - logoSize) / 2.0f;
     const float logoY = centerY - logoSize / 2.0f - config.ScaleF(40.0f);
     D2D1_RECT_F rcLogo = D2D1::RectF(logoX, logoY, logoX + logoSize, logoY + logoSize);
 
-    if (m_pWatermarkBitmap) {
-        pRT->DrawBitmap(m_pWatermarkBitmap.Get(), rcLogo);
+    ID2D1Bitmap* pBmp = theme.IsDarkMode() ? m_pWatermarkBitmap.Get() : m_pWatermarkBitmapLight.Get();
+    if (pBmp) {
+        pRT->DrawBitmap(pBmp, rcLogo);
     }
 
     // Render Visually Appealing Keybinding Cheat-sheet Card (No emojis, sleek tactile keycaps)
@@ -209,12 +286,14 @@ void EditorCanvas::RenderPlaceholder(ID2D1RenderTarget* pRT, Theme& theme, const
 
 void EditorCanvas::RenderTabs(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
                               float canvasLeft, float canvasWidth, float headerH,
-                              std::vector<editor::OpenDocument>& docs, int activeDocIdx) {
+                              std::vector<editor::OpenDocument>& docs, int activeDocIdx,
+                              bool hasLeftDrawer) {
     const float tabH = config.ScaleF(34.0f);
+    const float cornerRadius = hasLeftDrawer ? 0.0f : config.ScaleF(14.0f);
 
-    // 1. Tab Bar Background (#181818)
+    // 1. Tab Bar Background (#181818 in dark, #ECECEC in light)
     D2D1_RECT_F rcTabBar = D2D1::RectF(canvasLeft, headerH, canvasLeft + canvasWidth, headerH + tabH);
-    pRT->FillRectangle(rcTabBar, theme.brushTabBarBg.Get());
+    FillUpperLeftRoundedRect(pRT, theme.brushTabBarBg.Get(), rcTabBar, cornerRadius);
 
     // Bottom border of tab bar
     pRT->DrawLine(
@@ -228,6 +307,8 @@ void EditorCanvas::RenderTabs(ID2D1RenderTarget* pRT, Theme& theme, const app::A
     for (size_t i = 0; i < docs.size(); ++i) {
         auto& doc = docs[i];
         bool isActive = (static_cast<int>(i) == activeDocIdx);
+        bool isFirstTab = (i == 0);
+        float tabCurve = (isFirstTab && !hasLeftDrawer) ? cornerRadius : 0.0f;
 
         // Calculate tab width based on title length
         std::wstring title = doc.fileName.empty() ? L"Untitled-1" : doc.fileName;
@@ -249,6 +330,9 @@ void EditorCanvas::RenderTabs(ID2D1RenderTarget* pRT, Theme& theme, const app::A
 
         // tab width = icon(16) + pad(16) + text + dirty/close pad(42)
         float tabW = config.ScaleF(16.0f + 16.0f + 42.0f) + textW;
+        if (tabCurve > 0.0f) {
+            tabW += config.ScaleF(6.0f); // subtle extra breathing room for curved first tab
+        }
         tabW = (std::clamp)(tabW, config.ScaleF(100.0f), config.ScaleF(220.0f));
 
         D2D1_RECT_F rcTab = D2D1::RectF(curX, headerH, curX + tabW, headerH + tabH);
@@ -256,14 +340,39 @@ void EditorCanvas::RenderTabs(ID2D1RenderTarget* pRT, Theme& theme, const app::A
 
         // Draw tab surface
         if (isActive) {
-            pRT->FillRectangle(rcTab, theme.brushTabActiveBg.Get());
+            FillUpperLeftRoundedRect(pRT, theme.brushTabActiveBg.Get(), rcTab, tabCurve);
             // Top active tab highlight border (2px Accent Blue)
-            pRT->DrawLine(
-                D2D1::Point2F(rcTab.left, headerH + 1.0f),
-                D2D1::Point2F(rcTab.right, headerH + 1.0f),
-                theme.brushBrandAccent.Get(),
-                2.0f
-            );
+            if (tabCurve > 0.0f) {
+                Microsoft::WRL::ComPtr<ID2D1Factory> pFactory;
+                pRT->GetFactory(&pFactory);
+                if (pFactory) {
+                    Microsoft::WRL::ComPtr<ID2D1PathGeometry> pTopPath;
+                    if (SUCCEEDED(pFactory->CreatePathGeometry(&pTopPath))) {
+                        Microsoft::WRL::ComPtr<ID2D1GeometrySink> sinkTop;
+                        if (SUCCEEDED(pTopPath->Open(&sinkTop))) {
+                            sinkTop->BeginFigure(D2D1::Point2F(rcTab.left + 0.5f, headerH + tabCurve), D2D1_FIGURE_BEGIN_HOLLOW);
+                            D2D1_ARC_SEGMENT arcTop{};
+                            arcTop.point = D2D1::Point2F(rcTab.left + tabCurve, headerH + 1.0f);
+                            arcTop.size = D2D1::SizeF(tabCurve, tabCurve);
+                            arcTop.rotationAngle = 0.0f;
+                            arcTop.sweepDirection = D2D1_SWEEP_DIRECTION_CLOCKWISE;
+                            arcTop.arcSize = D2D1_ARC_SIZE_SMALL;
+                            sinkTop->AddArc(arcTop);
+                            sinkTop->AddLine(D2D1::Point2F(rcTab.right, headerH + 1.0f));
+                            sinkTop->EndFigure(D2D1_FIGURE_END_OPEN);
+                            sinkTop->Close();
+                            pRT->DrawGeometry(pTopPath.Get(), theme.brushBrandAccent.Get(), 2.0f);
+                        }
+                    }
+                }
+            } else {
+                pRT->DrawLine(
+                    D2D1::Point2F(rcTab.left, headerH + 1.0f),
+                    D2D1::Point2F(rcTab.right, headerH + 1.0f),
+                    theme.brushBrandAccent.Get(),
+                    2.0f
+                );
+            }
         }
 
         // Right tab divider line
@@ -275,7 +384,8 @@ void EditorCanvas::RenderTabs(ID2D1RenderTarget* pRT, Theme& theme, const app::A
         );
 
         // Icon
-        const float iconX = rcTab.left + config.ScaleF(10.0f);
+        const float iconPadX = (tabCurve > 0.0f) ? config.ScaleF(14.0f) : config.ScaleF(10.0f);
+        const float iconX = rcTab.left + iconPadX;
         const float iconCenterY = headerH + tabH / 2.0f;
         D2D1_RECT_F iconBounds = D2D1::RectF(
             iconX,
@@ -303,7 +413,7 @@ void EditorCanvas::RenderTabs(ID2D1RenderTarget* pRT, Theme& theme, const app::A
         }
 
         // Title: preview tabs use fontTabPreview (italic), pinned tabs use fontTab (regular)
-        float textStartX = rcTab.left + config.ScaleF(30.0f);
+        float textStartX = rcTab.left + ((tabCurve > 0.0f) ? config.ScaleF(34.0f) : config.ScaleF(30.0f));
         float textMaxW   = (std::max)(10.0f, rcTab.right - config.ScaleF(36.0f) - textStartX);
         D2D1_RECT_F rcTitle = D2D1::RectF(
             textStartX,
@@ -314,7 +424,9 @@ void EditorCanvas::RenderTabs(ID2D1RenderTarget* pRT, Theme& theme, const app::A
         IDWriteTextFormat* pTextFmt = doc.isPreview ? 
             (theme.fontTabPreview ? theme.fontTabPreview.Get() : theme.fontMenuItem.Get()) :
             (theme.fontTab ? theme.fontTab.Get() : theme.fontMenuItem.Get());
-        ID2D1Brush* pTextBrush = isActive ? theme.brushTextWhite.Get() : theme.brushTextSecondary.Get();
+        ID2D1Brush* pTextBrush = isActive ? 
+            (theme.IsDarkMode() ? theme.brushTextWhite.Get() : theme.brushTextPrimary.Get()) :
+            theme.brushTextSecondary.Get();
 
         pRT->PushAxisAlignedClip(rcTitle, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
         pRT->DrawText(title.c_str(), static_cast<UINT32>(title.length()), pTextFmt, rcTitle, pTextBrush);

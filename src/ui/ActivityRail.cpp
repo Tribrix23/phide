@@ -36,20 +36,32 @@ void ActivityRail::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
     const float startX  = (railW - btnSize) / 2.0f;
 
     // Ensure vertical purple glass gradient brush is initialized/updated
-    if (!m_pRailGradientBrush || std::abs(m_lastRailH - clientHeight) >= 1.0f) {
+    if (!m_pRailGradientBrush || std::abs(m_lastRailH - clientHeight) >= 1.0f || m_lastIsDark != theme.IsDarkMode()) {
         m_lastRailH = clientHeight;
+        m_lastIsDark = theme.IsDarkMode();
         m_pRailGradientBrush.Reset();
 
-        // Getting darker downwards, fading to pure black at the bottom (matching user request)
-        D2D1_GRADIENT_STOP stops[5];
-        stops[0] = { 0.00f, D2D1::ColorF(0.24f, 0.08f, 0.38f, 1.0f) }; // #3D1461 - Seamlessly matches header's left edge
-        stops[1] = { 0.20f, D2D1::ColorF(0.16f, 0.05f, 0.26f, 1.0f) }; // #290D42 - Deep Violet
-        stops[2] = { 0.45f, D2D1::ColorF(0.09f, 0.03f, 0.15f, 1.0f) }; // #170826 - Darkening Twilight
-        stops[3] = { 0.70f, D2D1::ColorF(0.05f, 0.02f, 0.07f, 1.0f) }; // #0D0512 - Very Dark
-        stops[4] = { 1.00f, D2D1::ColorF(0.03f, 0.03f, 0.04f, 1.0f) }; // #08080A - Pure Obsidian Black at bottom
-
         ComPtr<ID2D1GradientStopCollection> pStopColl;
-        if (SUCCEEDED(pRT->CreateGradientStopCollection(stops, 5, &pStopColl))) {
+        if (theme.IsDarkMode()) {
+            // Dark Mode: Getting darker downwards, fading to pure black at the bottom (matching user request)
+            D2D1_GRADIENT_STOP stops[5];
+            stops[0] = { 0.00f, D2D1::ColorF(0.24f, 0.08f, 0.38f, 1.0f) }; // #3D1461 - Seamlessly matches header's left edge
+            stops[1] = { 0.20f, D2D1::ColorF(0.16f, 0.05f, 0.26f, 1.0f) }; // #290D42 - Deep Violet
+            stops[2] = { 0.45f, D2D1::ColorF(0.09f, 0.03f, 0.15f, 1.0f) }; // #170826 - Darkening Twilight
+            stops[3] = { 0.70f, D2D1::ColorF(0.05f, 0.02f, 0.07f, 1.0f) }; // #0D0512 - Very Dark
+            stops[4] = { 1.00f, D2D1::ColorF(0.03f, 0.03f, 0.04f, 1.0f) }; // #08080A - Pure Obsidian Black at bottom
+            pRT->CreateGradientStopCollection(stops, 5, &pStopColl);
+        } else {
+            // Light Mode: Starts at #CFB3E8 (matching header left edge) and maintains distinct light purple tones down the rail
+            // ("light purple here so it should be still purple"), keeping 10:1 contrast against black icons
+            D2D1_GRADIENT_STOP stops[3];
+            stops[0] = { 0.00f, D2D1::ColorF(0.812f, 0.702f, 0.910f, 1.0f) }; // #CFB3E8 Light Purple base
+            stops[1] = { 0.45f, D2D1::ColorF(0.847f, 0.753f, 0.929f, 1.0f) }; // #D8C0EC Soft Light Purple
+            stops[2] = { 1.00f, D2D1::ColorF(0.886f, 0.812f, 0.949f, 1.0f) }; // #E2CFFA Delicate Light Purple
+            pRT->CreateGradientStopCollection(stops, 3, &pStopColl);
+        }
+
+        if (pStopColl) {
             D2D1_LINEAR_GRADIENT_BRUSH_PROPERTIES props = D2D1::LinearGradientBrushProperties(
                 D2D1::Point2F(0.0f, 0.0f),
                 D2D1::Point2F(0.0f, clientHeight)
@@ -109,16 +121,18 @@ void ActivityRail::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
         }
 
         D2D1_ROUNDED_RECT rrc = D2D1::RoundedRect(item.bounds, 6.0f, 6.0f);
-        ID2D1Brush* iconBrush = theme.brushTextSecondary.Get();
+        // In Dark Mode: bright silver (#D1D1DB) or white on hover/active.
+        // In Light Mode: deep black (#141414) as explicitly requested.
+        ID2D1Brush* iconBrush = theme.IsDarkMode()
+            ? (theme.brushHeaderIcon ? theme.brushHeaderIcon.Get() : theme.brushTextSecondary.Get())
+            : (theme.brushHeaderIcon ? theme.brushHeaderIcon.Get() : theme.brushTextPrimary.Get());
 
         if (isActive) {
-            // Dark grey rounded badge background (#2A2D2E, matching Image 2)
             pRT->FillRoundedRectangle(rrc, theme.brushHomeBadgeBg.Get());
-            iconBrush = theme.brushTextWhite.Get();
+            iconBrush = theme.IsDarkMode() ? theme.brushTextWhite.Get() : theme.brushTextPrimary.Get();
         } else if (isHovered) {
-            // Subtle hover background
             pRT->FillRoundedRectangle(rrc, theme.brushItemHover.Get());
-            iconBrush = theme.brushTextWhite.Get();
+            iconBrush = theme.IsDarkMode() ? theme.brushTextWhite.Get() : theme.brushTextPrimary.Get();
         }
 
         // Render vector icon matching official VS Code / Lucide specifications
@@ -180,7 +194,7 @@ void ActivityRail::RenderCustomTooltip(ID2D1RenderTarget* pRT, Theme& theme, con
         static_cast<UINT32>(textLen),
         theme.fontTooltip.Get(),
         rcText,
-        theme.brushTextWhite.Get()
+        theme.brushTooltipText ? theme.brushTooltipText.Get() : theme.brushTextPrimary.Get()
     );
 }
 

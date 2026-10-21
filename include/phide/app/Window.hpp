@@ -100,58 +100,171 @@ private:
         return nullptr;
     }
 
+    /**
+     * @brief Checks if there is at least one active document opened in the editor.
+     * @return True if a document is open.
+     */
     [[nodiscard]] bool HasOpenFile() const noexcept {
         return (GetActiveDoc() != nullptr);
     }
 
+    /**
+     * @brief Opens a physical file from disk into the editor tab set.
+     * @param path Full filesystem path to the file.
+     * @param isPreview If true, opens as a temporary preview tab that is replaced by subsequent clicks unless edited.
+     */
     void OpenFileDocument(const std::wstring& path, bool isPreview = false);
+
+    /**
+     * @brief Opens an in-memory virtual document (e.g. Untitled-1).
+     * @param name Display name of the virtual document.
+     * @param content Initial buffer text.
+     * @param isPreview True if opened in preview mode.
+     */
     void OpenVirtualDocument(const std::wstring& name, const std::wstring& content, bool isPreview = false);
+
+    /**
+     * @brief Opens a dedicated special full-surface view (e.g. Keyboard Shortcuts).
+     * @param viewType Unique identifier of the view (e.g. L"keybindings").
+     * @param title Title displayed on the tab header.
+     */
     void OpenSpecialView(const std::wstring& viewType, const std::wstring& title);
+
+    /**
+     * @brief Closes the open document at the given tab index.
+     * @param index 0-based document index to close.
+     */
     void CloseDocument(int index);
 
-    // File Action Handlers
+    // --- File & Window Action Handlers ---
+
+    /** @brief Creates a new empty untitled text file document (Ctrl+N). */
     void DoNewTextFile();
+
+    /** @brief Creates a new custom file prompt / untitled file (Ctrl+Alt+N). */
     void DoNewFile();
+
+    /** @brief Spawns an independent non-maximized new application window (Ctrl+Shift+N). */
     void DoNewWindow();
+
+    /** @brief Prompts with Open File dialog and loads chosen file into editor (Ctrl+O). */
     void DoOpenFile();
+
+    /** @brief Prompts with Open Folder dialog and populates explorer tree (Ctrl+K Ctrl+O). */
     void DoOpenFolder();
+
+    /** @brief Directly opens the given directory path into the sidebar tree. */
     void DoOpenFolderFromPath(const std::wstring& path);
+
+    /** @brief Prompts to open a saved workspace file. */
     void DoOpenWorkspaceFromFile();
+
+    /** @brief Adds an additional folder to the current workspace session. */
     void DoAddFolderToWorkspace();
+
+    /** @brief Prompts to save the active workspace configuration to a file. */
     void DoSaveWorkspaceAs();
+
+    /** @brief Clones the active workspace into a duplicate configuration. */
     void DoDuplicateWorkspace();
+
+    /** @brief Saves current buffer changes to disk (Ctrl+S). */
     void DoSaveFile();
+
+    /** @brief Prompts with Save As dialog to save current buffer under a new path (Ctrl+Shift+S). */
     void DoSaveFileAs();
+
+    /** @brief Saves all modified/dirty open documents to disk (Ctrl+K S). */
     void DoSaveAll();
+
+    /** @brief Exports user IDE profile settings to a JSON file. */
     void DoExportProfile();
+
+    /** @brief Imports user IDE profile settings from a JSON file. */
     void DoImportProfile();
+
+    /** @brief Opens user settings view or preferences. */
     void DoOpenSettings();
+
+    /** @brief Opens the interactive Keyboard Shortcuts view with keycap badges (Ctrl+K Ctrl+S). */
     void DoOpenKeyboardShortcuts();
+
+    /** @brief Opens user code snippets configuration. */
     void DoOpenUserSnippets();
+
+    /** @brief Opens or toggles the Theme Picker modal dialog (Ctrl+K Ctrl+T). */
     void DoToggleThemeModal();
+
+    /** @brief Cycles through Dark, Light, and Auto themes directly. */
     void DoToggleTheme();
+
+    /** @brief Reverts active document buffer back to its saved state on disk. */
     void DoRevertFile();
+
+    /** @brief Closes the currently active editor tab (Ctrl+W). */
     void DoCloseEditor();
+
+    /** @brief Unloads the open project folder and returns explorer to empty state (Ctrl+K F). */
     void DoCloseFolder();
+
+    /** @brief Re-opens the most recently closed editor document tab (Ctrl+Shift+T). */
     void DoReopenClosedEditor();
+
+    // --- Edit & Clipboard Commands ---
+
+    /** @brief Cuts selected text to system clipboard (Ctrl+X). */
     void DoCut();
+
+    /** @brief Copies selected text to system clipboard (Ctrl+C). */
     void DoCopy();
+
+    /** @brief Pastes clipboard text into active buffer (Ctrl+V). */
     void DoPaste();
+
+    /** @brief Reverts last buffer mutation (Ctrl+Z). */
     void DoUndo();
+
+    /** @brief Redoes previously undone buffer mutation (Ctrl+Y). */
     void DoRedo();
+
+    /** @brief Selects all text in current document (Ctrl+A). */
     void DoSelectAll();
+
+    // --- View & Navigation Commands ---
+
+    /** @brief Toggles line wrap in code editor canvas (Alt+Z). */
     void DoToggleWordWrap();
+
+    /** @brief Activates Explorer perspective in activity rail (Ctrl+Shift+E). */
     void DoShowExplorer();
+
+    /** @brief Activates Search perspective in activity rail (Ctrl+Shift+F). */
     void DoShowSearch();
+
+    /** @brief Activates Source Control perspective in activity rail (Ctrl+Shift+G). */
     void DoShowSourceControl();
+
+    /** @brief Spawns or toggles integrated terminal panel (Ctrl+Shift+`). */
     void DoCreateTerminal();
+
+    /** @brief Opens or focuses a file in the workspace matching the specified relative filename. */
     void OpenFileByName(const std::wstring& name);
+
+    /** @brief Loads file from filesystem path into active buffer. */
     void LoadFileFromPath(const std::wstring& path);
+
+    /** @brief Writes contents of active buffer to the specified filesystem path. */
     void SaveFileToPath(const std::wstring& path);
 
-    // Session State Persistence
+    // --- Session State Persistence ---
+
+    /** @brief Saves current workspace folder, open tabs, and active tab index to AppData JSON file. */
     void SaveSessionState();
+
+    /** @brief Restores previous workspace folder, open tabs, and active tab index from AppData JSON file. */
     void LoadSessionState();
+
+    /** @brief Computes absolute path to the session persistence file in %APPDATA%\phide\session.json. */
     std::wstring GetSessionFilePath() const;
 
     // Win32 & D2D handles

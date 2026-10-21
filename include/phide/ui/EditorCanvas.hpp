@@ -60,7 +60,16 @@ public:
     bool HitTestCodeArea(POINT pt, const app::AppConfig& config, const editor::Buffer& buffer,
                          float canvasLeft, float clientHeight, size_t& outLine, size_t& outCol) const;
 
+    /**
+     * @brief Accesses the embedded keyboard shortcuts interactive view.
+     * @return Reference to the KeyboardShortcutsView component.
+     */
     KeyboardShortcutsView& GetKeyboardShortcutsView() noexcept { return m_keybindingsView; }
+
+    /**
+     * @brief Releases device-dependent Direct2D resources (e.g. path geometries, watermark bitmaps).
+     */
+    void DiscardDeviceResources();
 
 private:
     bool m_caretVisible = true;
@@ -74,17 +83,52 @@ private:
     float m_cachedBottom        = -1.0f;
     bool  m_cachedHasLeftDrawer = false;
 
-    // Metallic white watermark logo in center of canvas
+    // Watermark logo in center of canvas (dark mode + light mode inverted)
     Microsoft::WRL::ComPtr<ID2D1Bitmap> m_pWatermarkBitmap;
+    Microsoft::WRL::ComPtr<ID2D1Bitmap> m_pWatermarkBitmapLight;
     LucideIcons m_icons;
 
+    /**
+     * @brief Renders the empty workspace placeholder with brand watermark and key shortcut hints.
+     * @param pRT Active Direct2D render target.
+     * @param theme Visual theme containing dark/light brushes.
+     * @param config Application DPI metrics and layout configuration.
+     * @param canvasLeft Left coordinate of the canvas.
+     * @param canvasWidth Width of the canvas.
+     * @param headerH Height of the top title header.
+     * @param clientHeight Total client window height.
+     */
     void RenderPlaceholder(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
                            float canvasLeft, float canvasWidth, float headerH, float clientHeight);
 
+    /**
+     * @brief Renders the multi-document tab bar with Seti file icons, preview italics, dirty dots, and close buttons.
+     * @param pRT Active Direct2D render target.
+     * @param theme Visual theme containing tab styling brushes.
+     * @param config Application metrics.
+     * @param canvasLeft Left boundary coordinate of the canvas.
+     * @param canvasWidth Available horizontal width for the tab strip.
+     * @param headerH Height offset of the top title bar.
+     * @param docs Collection of open documents.
+     * @param activeDocIdx Index of the currently active document.
+     * @param hasLeftDrawer True if the sidebar drawer is open (influences upper-left tab rounding).
+     */
     void RenderTabs(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
                     float canvasLeft, float canvasWidth, float headerH,
-                    std::vector<editor::OpenDocument>& docs, int activeDocIdx);
+                    std::vector<editor::OpenDocument>& docs, int activeDocIdx,
+                    bool hasLeftDrawer);
 
+    /**
+     * @brief Renders active buffer source lines, line gutter numbers, and syntax highlights.
+     * @param pRT Active Direct2D render target.
+     * @param theme Visual theme for syntax colors.
+     * @param config Application metrics.
+     * @param buffer In-memory document buffer to render.
+     * @param canvasLeft Left boundary coordinate of the canvas.
+     * @param canvasWidth Width of the canvas.
+     * @param topY Vertical starting coordinate below the tab bar.
+     * @param clientHeight Total client height.
+     */
     void RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
                     const editor::Buffer& buffer, float canvasLeft, float canvasWidth,
                     float topY, float clientHeight);

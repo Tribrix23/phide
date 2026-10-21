@@ -44,21 +44,35 @@ void TitleHeader::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCon
 
     const float railW = config.ScaleF(static_cast<float>(config.railWidth));
 
-    // Ensure horizontal purple-to-black glass gradient brush is initialized/updated
-    if (!m_pHeaderGradientBrush || std::abs(m_lastWidth - clientWidth) >= 1.0f) {
+    // Ensure horizontal purple glass gradient brush is initialized/updated
+    if (!m_pHeaderGradientBrush || std::abs(m_lastWidth - clientWidth) >= 1.0f || m_lastIsDark != theme.IsDarkMode()) {
         m_lastWidth = clientWidth;
+        m_lastIsDark = theme.IsDarkMode();
         m_pHeaderGradientBrush.Reset();
 
-        D2D1_GRADIENT_STOP stops[6];
-        stops[0] = { 0.00f, D2D1::ColorF(0.24f, 0.08f, 0.38f, 1.0f) }; // #3D1461 - Seamlessly matches rail's purple
-        stops[1] = { 0.20f, D2D1::ColorF(0.18f, 0.06f, 0.30f, 1.0f) }; // #2E0F4D - Deep Royal Violet
-        stops[2] = { 0.42f, D2D1::ColorF(0.12f, 0.04f, 0.21f, 1.0f) }; // #1F0B36 - Dark Twilight Purple
-        stops[3] = { 0.65f, D2D1::ColorF(0.07f, 0.03f, 0.13f, 1.0f) }; // #120721 - Midnight Shadow
-        stops[4] = { 0.85f, D2D1::ColorF(0.04f, 0.04f, 0.05f, 1.0f) }; // #0A0A0D - Transition to Black
-        stops[5] = { 1.00f, D2D1::ColorF(0.03f, 0.03f, 0.04f, 1.0f) }; // #08080A - Pure Obsidian Black on right side
-
         ComPtr<ID2D1GradientStopCollection> pStopColl;
-        if (SUCCEEDED(pRT->CreateGradientStopCollection(stops, 6, &pStopColl))) {
+        if (theme.IsDarkMode()) {
+            D2D1_GRADIENT_STOP stops[6];
+            stops[0] = { 0.00f, D2D1::ColorF(0.24f, 0.08f, 0.38f, 1.0f) }; // #3D1461 - Seamlessly matches rail's purple
+            stops[1] = { 0.20f, D2D1::ColorF(0.18f, 0.06f, 0.30f, 1.0f) }; // #2E0F4D - Deep Royal Violet
+            stops[2] = { 0.42f, D2D1::ColorF(0.12f, 0.04f, 0.21f, 1.0f) }; // #1F0B36 - Dark Twilight Purple
+            stops[3] = { 0.65f, D2D1::ColorF(0.07f, 0.03f, 0.13f, 1.0f) }; // #120721 - Midnight Shadow
+            stops[4] = { 0.85f, D2D1::ColorF(0.04f, 0.04f, 0.05f, 1.0f) }; // #0A0A0D - Transition to Black
+            stops[5] = { 1.00f, D2D1::ColorF(0.03f, 0.03f, 0.04f, 1.0f) }; // #08080A - Pure Obsidian Black on right side
+            pRT->CreateGradientStopCollection(stops, 6, &pStopColl);
+        } else {
+            // Light Mode: Starts with vibrant Light Purple (#CFB3E8) on the left ("light purple here so it should be still purple"),
+            // transitioning smoothly towards crisp pure white on the right ("should be whiter here not this dark")
+            // where the caption buttons and solid black execution widget are located.
+            D2D1_GRADIENT_STOP stops[4];
+            stops[0] = { 0.00f, D2D1::ColorF(0.812f, 0.702f, 0.910f, 1.0f) }; // #CFB3E8 Light Purple base
+            stops[1] = { 0.25f, D2D1::ColorF(0.863f, 0.784f, 0.937f, 1.0f) }; // #DCC8EF Soft Light Purple
+            stops[2] = { 0.60f, D2D1::ColorF(0.941f, 0.902f, 0.973f, 1.0f) }; // #F0E6F8 Very soft Lavender
+            stops[3] = { 1.00f, D2D1::ColorF(1.000f, 1.000f, 1.000f, 1.0f) }; // #FFFFFF Pure White on right
+            pRT->CreateGradientStopCollection(stops, 4, &pStopColl);
+        }
+
+        if (pStopColl) {
             D2D1_LINEAR_GRADIENT_BRUSH_PROPERTIES props = D2D1::LinearGradientBrushProperties(
                 D2D1::Point2F(railW, 0.0f),
                 D2D1::Point2F(clientWidth, 0.0f)
@@ -114,7 +128,11 @@ void TitleHeader::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCon
             hoveredItemPtr = &item;
         }
 
-        ID2D1Brush* brush = (isActiveSidebar || isActiveMenu || isHovered) ? theme.brushTextWhite.Get() : theme.brushTextSecondary.Get();
+        // In Dark Mode: bright silver (#D1D1DB) or white on hover.
+        // In Light Mode: crisp deep black (#141414) as explicitly requested.
+        ID2D1Brush* brush = theme.IsDarkMode()
+            ? ((isActiveSidebar || isActiveMenu || isHovered) ? theme.brushTextWhite.Get() : (theme.brushHeaderIcon ? theme.brushHeaderIcon.Get() : theme.brushTextSecondary.Get()))
+            : (theme.brushHeaderIcon ? theme.brushHeaderIcon.Get() : theme.brushTextPrimary.Get());
 
         switch (item.id) {
             case HeaderMenuId::Sidebar:
@@ -175,9 +193,9 @@ void TitleHeader::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCon
         pRT->DrawText(
             hoveredItemPtr->label,
             static_cast<UINT32>(textLen),
-            theme.fontHint.Get(),
+            theme.fontTooltip ? theme.fontTooltip.Get() : theme.fontHint.Get(),
             rcTip,
-            theme.brushTextPrimary.Get()
+            theme.brushTooltipText ? theme.brushTooltipText.Get() : theme.brushTextPrimary.Get()
         );
     }
 
@@ -192,7 +210,9 @@ void TitleHeader::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCon
     const float execRight     = clientWidth - captionTotalW - config.ScaleF(100.0f);
     const float execStartX    = execRight - (3.0f * execBtnW + 2.0f * execGap);
 
-    // Grouped pill container backdrop for the execution controls
+    // Grouped pill container backdrop for the execution controls:
+    // In Dark Mode: subtle dark pill background.
+    // In Light Mode: solid black container ("and the container of these button is not transparent but black on the light mode")
     D2D1_RECT_F rcExecContainer = D2D1::RectF(
         execStartX - config.ScaleF(4.0f),
         execY - config.ScaleF(2.0f),
@@ -200,8 +220,22 @@ void TitleHeader::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCon
         execY + execBtnH + config.ScaleF(2.0f)
     );
     D2D1_ROUNDED_RECT rrcContainer = D2D1::RoundedRect(rcExecContainer, 5.0f, 5.0f);
-    pRT->FillRoundedRectangle(rrcContainer, theme.brushTooltipBg.Get());
-    pRT->DrawRoundedRectangle(rrcContainer, theme.brushBorderSubtle.Get(), 0.8f);
+    if (theme.IsDarkMode()) {
+        pRT->FillRoundedRectangle(rrcContainer, theme.brushItemHover.Get());
+        pRT->DrawRoundedRectangle(rrcContainer, theme.brushBorderSubtle.Get(), 0.8f);
+    } else {
+        // Light Mode: Solid Black container fill with dark border
+        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushExecBg;
+        pRT->CreateSolidColorBrush(D2D1::ColorF(0.08f, 0.08f, 0.08f, 1.0f), &brushExecBg); // #141414 Black
+        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushExecBorder;
+        pRT->CreateSolidColorBrush(D2D1::ColorF(0.20f, 0.20f, 0.20f, 1.0f), &brushExecBorder); // #333333 Subtle dark border
+        if (brushExecBg) {
+            pRT->FillRoundedRectangle(rrcContainer, brushExecBg.Get());
+        }
+        if (brushExecBorder) {
+            pRT->DrawRoundedRectangle(rrcContainer, brushExecBorder.Get(), 0.8f);
+        }
+    }
 
     const ExecButton* hoveredExecPtr = nullptr;
     float curExecX = execStartX;
@@ -233,11 +267,21 @@ void TitleHeader::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCon
                 break;
             }
             case HeaderExecId::Terminal: {
-                // Explicitly NOT colored green! Clean neutral text color (white on hover)
+                // Inside the solid black container in both Dark and Light modes, the terminal icon
+                // must be rendered with white/silver for high contrast and legibility.
                 if (isHovered) {
-                    pRT->FillRoundedRectangle(rrcBtn, theme.brushItemHover.Get());
+                    if (theme.IsDarkMode()) {
+                        pRT->FillRoundedRectangle(rrcBtn, theme.brushItemHover.Get());
+                    } else {
+                        // Subtle dark hover highlight within the black container in Light Mode
+                        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushHoverDark;
+                        pRT->CreateSolidColorBrush(D2D1::ColorF(0.22f, 0.22f, 0.25f, 1.0f), &brushHoverDark);
+                        if (brushHoverDark) {
+                            pRT->FillRoundedRectangle(rrcBtn, brushHoverDark.Get());
+                        }
+                    }
                 }
-                ID2D1Brush* termBrush = isHovered ? theme.brushTextWhite.Get() : theme.brushTextSecondary.Get();
+                ID2D1Brush* termBrush = theme.brushTextWhite ? theme.brushTextWhite.Get() : theme.brushHeaderIcon.Get();
                 m_icons.DrawTerminal(pRT, btn.bounds, termBrush, 1.4f);
                 break;
             }
@@ -272,14 +316,16 @@ void TitleHeader::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCon
         pRT->DrawText(
             hoveredExecPtr->label,
             static_cast<UINT32>(textLen),
-            theme.fontHint.Get(),
+            theme.fontTooltip ? theme.fontTooltip.Get() : theme.fontHint.Get(),
             rcTip,
-            theme.brushTextPrimary.Get()
+            theme.brushTooltipText ? theme.brushTooltipText.Get() : theme.brushTextPrimary.Get()
         );
     }
 
     // 4. Render Vector Window Caption Controls (Minimize, Maximize, Close) in Top-Right
     float rightEdge = clientWidth;
+    ID2D1Brush* defaultCaptionBrush = theme.brushHeaderIcon ? theme.brushHeaderIcon.Get() : theme.brushTextSecondary.Get();
+    ID2D1Brush* captionHoverGlyphBrush = theme.IsDarkMode() ? theme.brushTextWhite.Get() : (theme.brushHeaderIcon ? theme.brushHeaderIcon.Get() : theme.brushTextPrimary.Get());
 
     // --- Close Button (✕) ---
     m_rcClose = D2D1::RectF(rightEdge - btnW, 0.0f, rightEdge, h);
@@ -288,7 +334,7 @@ void TitleHeader::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCon
         pRT->FillRectangle(m_rcClose, theme.brushCloseHoverBg.Get());
         m_icons.DrawClose(pRT, m_rcClose, theme.brushTextWhite.Get(), 1.25f);
     } else {
-        m_icons.DrawClose(pRT, m_rcClose, theme.brushTextSecondary.Get(), 1.25f);
+        m_icons.DrawClose(pRT, m_rcClose, defaultCaptionBrush, 1.25f);
     }
     rightEdge -= btnW;
 
@@ -296,9 +342,9 @@ void TitleHeader::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCon
     m_rcMaximize = D2D1::RectF(rightEdge - btnW, 0.0f, rightEdge, h);
     if (m_hoveredCaption == CaptionButtonType::Maximize) {
         pRT->FillRectangle(m_rcMaximize, theme.brushCaptionHover.Get());
-        m_icons.DrawMaximize(pRT, m_rcMaximize, theme.brushTextWhite.Get(), isZoomed, 1.25f);
+        m_icons.DrawMaximize(pRT, m_rcMaximize, captionHoverGlyphBrush, isZoomed, 1.25f);
     } else {
-        m_icons.DrawMaximize(pRT, m_rcMaximize, theme.brushTextSecondary.Get(), isZoomed, 1.25f);
+        m_icons.DrawMaximize(pRT, m_rcMaximize, defaultCaptionBrush, isZoomed, 1.25f);
     }
     rightEdge -= btnW;
 
@@ -306,9 +352,9 @@ void TitleHeader::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCon
     m_rcMinimize = D2D1::RectF(rightEdge - btnW, 0.0f, rightEdge, h);
     if (m_hoveredCaption == CaptionButtonType::Minimize) {
         pRT->FillRectangle(m_rcMinimize, theme.brushCaptionHover.Get());
-        m_icons.DrawMinimize(pRT, m_rcMinimize, theme.brushTextWhite.Get(), 1.25f);
+        m_icons.DrawMinimize(pRT, m_rcMinimize, captionHoverGlyphBrush, 1.25f);
     } else {
-        m_icons.DrawMinimize(pRT, m_rcMinimize, theme.brushTextSecondary.Get(), 1.25f);
+        m_icons.DrawMinimize(pRT, m_rcMinimize, defaultCaptionBrush, 1.25f);
     }
 }
 
