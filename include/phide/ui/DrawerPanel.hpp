@@ -101,6 +101,8 @@ struct GitCommitItem {
     std::wstring message;
     std::wstring author;
     std::wstring relativeTime;
+    std::wstring dateFormatted;
+    std::wstring statSummary;
     std::wstring refNames;
     bool isHead = false;
     bool isExpanded = false;
@@ -131,11 +133,13 @@ public:
 
     // --- Source Control (Git) Operations & Interactions (Images 2, 3, 4, 5) ---
     void OpenSourceControl();
-    void RefreshGitState(bool async = true);
+    void RefreshGitState(bool async = true, bool showLoading = false);
     void StageAllChangesAsync();
     void DiscardAllChangesAsync();
+    bool DiscardAllChanges();
     void StageFileAsync(const std::wstring& relPath);
     void DiscardFileAsync(const std::wstring& relPath);
+    bool DiscardFile(const std::wstring& relPath);
     void CommitChangesAsync(const std::wstring& message);
     void UncommitLastCommitAsync();
     void PushCommitsAsync();
@@ -149,11 +153,26 @@ public:
         return m_commitMessage;
     }
     [[nodiscard]] std::wstring GetGitFileContent(const std::wstring& relPath);
+    [[nodiscard]] std::wstring GetCommitFileContent(const std::wstring& commitHash, const std::wstring& relPath);
     void ComputeGitDiffLines(const std::wstring& relPath, std::set<size_t>& outAdded, std::set<size_t>& outDeleted);
-    bool HitTestGit(POINT pt, const app::AppConfig& config, std::wstring& outOpenFile, std::wstring& outDiscardedFile);
+    bool HitTestGit(POINT pt, const app::AppConfig& config,
+                    std::wstring& outOpenFile,
+                    std::wstring& outDiscardedFile,
+                    bool& outIsDiff,
+                    std::wstring& outOpenCommitDiff,
+                    std::wstring& outOpenUrl);
+    bool HitTestGit(POINT pt, const app::AppConfig& config, std::wstring& outOpenFile, std::wstring& outDiscardedFile) {
+        bool isDiff = false;
+        std::wstring dummyCommit;
+        std::wstring dummyUrl;
+        return HitTestGit(pt, config, outOpenFile, outDiscardedFile, isDiff, dummyCommit, dummyUrl);
+    }
     bool HitTestGit(POINT pt, const app::AppConfig& config, std::wstring& outOpenFile) {
-        std::wstring dummy;
-        return HitTestGit(pt, config, outOpenFile, dummy);
+        std::wstring dummyDiscard;
+        bool isDiff = false;
+        std::wstring dummyCommit;
+        std::wstring dummyUrl;
+        return HitTestGit(pt, config, outOpenFile, dummyDiscard, isDiff, dummyCommit, dummyUrl);
     }
     void LoadCommitFiles(GitCommitItem& ci);
     bool HandleGitMouseMove(POINT pt);
@@ -174,6 +193,17 @@ public:
     [[nodiscard]] int GetUnpushedCommitsCount() const noexcept { return m_unpushedCommitsCount; }
     void SetUnpushedCommitsCount(int count) noexcept { m_unpushedCommitsCount = count; }
     [[nodiscard]] int GetHoveredGitChangeIndex() const noexcept { return m_hoveredGitChangeIdx; }
+    [[nodiscard]] int GetSelectedCommitIndex() const noexcept { return m_selectedCommitIdx; }
+    void SetSelectedCommitIndex(int idx) noexcept {
+        m_selectedCommitIdx = idx;
+        m_hoveredCommitIdx = idx;
+        if (idx >= 0 && idx < static_cast<int>(m_gitCommits.size())) {
+            m_commitCardHash = m_gitCommits[idx].hash;
+            if (m_gitCommits[idx].statSummary.empty()) {
+                LoadCommitFiles(m_gitCommits[idx]);
+            }
+        }
+    }
     [[nodiscard]] const std::vector<GitChangeItem>& GetGitChanges() const noexcept { return m_gitChanges; }
     [[nodiscard]] const std::vector<GitCommitItem>& GetGitCommits() const noexcept { return m_gitCommits; }
     [[nodiscard]] const std::wstring& GetGitBranch() const noexcept { return m_gitBranch; }
@@ -470,6 +500,14 @@ private:
     D2D1_RECT_F m_gitGraphPushBounds{};
     D2D1_RECT_F m_gitGraphRefreshBounds{};
     D2D1_RECT_F m_gitGraphMoreBounds{};
+
+    // Commit Card Popup state (Image 5)
+    int m_hoveredCommitIdx = -1;
+    int m_selectedCommitIdx = -1;
+    D2D1_RECT_F m_commitCardBounds{};
+    D2D1_RECT_F m_commitCardOpenChangesBounds{};
+    D2D1_RECT_F m_commitCardGitHubBounds{};
+    std::wstring m_commitCardHash;
 
     // Tooltip state
     std::wstring m_gitTooltipText;

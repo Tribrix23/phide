@@ -697,6 +697,247 @@ void Window::OpenFileDocument(const std::wstring& path, bool isPreview) {
     InvalidateRect(m_hwnd, nullptr, FALSE);
 }
 
+void Window::OpenDiffDocument(const std::wstring& relPath, bool isPreview) {
+    if (relPath.empty()) return;
+    std::wstring dir = m_drawer.GetOpenFolderPath();
+    std::wstring fullPath = dir.empty() ? relPath : (dir + L"\\" + relPath);
+    std::wstring fileName = std::filesystem::path(relPath).filename().wstring();
+
+    std::wstring headContent = m_drawer.GetGitFileContent(relPath);
+
+    auto& group = GetActiveGroup();
+
+    // Check if diff tab is already open for this file
+    for (size_t i = 0; i < group.docs.size(); ++i) {
+        if (group.docs[i].filePath == fullPath && group.docs[i].isDiffView) {
+            group.activeDocIdx = static_cast<int>(i);
+            if (!isPreview) group.docs[i].isPreview = false;
+            InvalidateRect(m_hwnd, nullptr, FALSE);
+            return;
+        }
+    }
+
+    editor::OpenDocument newDoc;
+    newDoc.filePath = fullPath;
+    newDoc.fileName = fileName + L" (Working Tree)";
+    newDoc.diffOriginalTitle = fileName + L" (HEAD)";
+    newDoc.diffWorkingTitle = fileName + L" (Working Tree)";
+    newDoc.isPreview = isPreview;
+    newDoc.isDirty = false;
+    newDoc.isSpecialView = false;
+    newDoc.isDiffView = true;
+    newDoc.isDiffLeftReadOnly = true;
+    newDoc.isDiffRightReadOnly = false;
+    newDoc.diffActivePane = 1; // Focus right (editable) pane
+
+    newDoc.diffOriginalBuffer.SetText(headContent);
+    if (std::filesystem::exists(fullPath)) {
+        newDoc.buffer.LoadFromFile(fullPath);
+    } else {
+        newDoc.buffer.SetText(L"");
+    }
+
+    ComputeDiffHunks(newDoc);
+
+    bool canReplace = (group.activeDocIdx >= 0 && group.activeDocIdx < static_cast<int>(group.docs.size()) &&
+                       group.docs[group.activeDocIdx].isPreview &&
+                       !group.docs[group.activeDocIdx].isDirty &&
+                       !group.docs[group.activeDocIdx].isSpecialView);
+
+    if (canReplace) {
+        group.docs[group.activeDocIdx] = std::move(newDoc);
+    } else {
+        group.docs.push_back(std::move(newDoc));
+        group.activeDocIdx = static_cast<int>(group.docs.size() - 1);
+    }
+
+    SaveSessionState();
+    InvalidateRect(m_hwnd, nullptr, FALSE);
+}
+
+void Window::OpenCommitDiffDocument(const std::wstring& commitHash, const std::wstring& relPath) {
+    if (commitHash.empty()) return;
+
+    std::wstring targetPath = relPath;
+    std::wstring commitMsg = L"Commit";
+    int fileCount = 1;
+
+    // Find commit info from Drawer commits
+    for (const auto& ci : m_drawer.GetGitCommits()) {
+        if (ci.hash == commitHash) {
+            commitMsg = ci.message;
+            if (!ci.files.empty()) {
+                fileCount = static_cast<int>(ci.files.size());
+                if (targetPath.empty()) {
+                    targetPath = ci.files[0].path;
+                }
+            }
+            break;
+        }
+    }
+    if (targetPath.empty()) {
+        targetPath = L"changes";
+    }
+
+    std::wstring parentHash = commitHash + L"~1";
+    std::wstring leftContent = m_drawer.GetCommitFileContent(parentHash, targetPath);
+    std::wstring rightContent = m_drawer.GetCommitFileContent(commitHash, targetPath);
+
+    std::wstring fileName = std::filesystem::path(targetPath).filename().wstring();
+
+    editor::OpenDocument newDoc;
+    newDoc.filePath = L""; // virtual/commit diff
+    newDoc.fileName = commitHash.substr(0, 7) + L" - " + commitMsg + L" (" + std::to_wstring(fileCount) + L" files)";
+    newDoc.diffOriginalTitle = fileName + L" (" + commitHash.substr(0, 7) + L"~1)";
+    newDoc.diffWorkingTitle = fileName + L" (" + commitHash.substr(0, 7) + L")";
+    newDoc.isPreview = false;
+    newDoc.isDirty = false;
+    newDoc.isSpecialView = false;
+    newDoc.isDiffView = true;
+    newDoc.isDiffLeftReadOnly = true;
+    newDoc.isDiffRightReadOnly = true;
+    newDoc.diffActivePane = 1;
+
+    newDoc.diffOriginalBuffer.SetText(leftContent);
+    newDoc.buffer.SetText(rightContent);
+
+    ComputeDiffHunks(newDoc);
+
+    auto& group = GetActiveGroup();
+    group.docs.push_back(std::move(newDoc));
+    group.activeDocIdx = static_cast<int>(group.docs.size() - 1);
+
+    SaveSessionState();
+    InvalidateRect(m_hwnd, nullptr, FALSE);
+}
+
+void Window::ComputeDiffHunks(editor::OpenDocument& doc) {
+    doc.diffHunks.clear();
+    doc.diffAddedLines.clear();
+    doc.diffDeletedLines.clear();
+
+    const auto& leftBuf = doc.diffOriginalBuffer;
+    const auto& rightBuf = doc.buffer;
+
+    size_t N = leftBuf.GetLineCount();
+    size_t M = rightBuf.GetLineCount();
+    if (N == 0 && M == 0) return;
+
+    // Fast prefix matching
+    size_t prefix = 0;
+    while (prefix < N && prefix < M && leftBuf.GetLine(prefix) == rightBuf.GetLine(prefix)) {
+        prefix++;
+    }
+
+    // Fast suffix matching
+    size_t suffix = 0;
+    while (suffix < (N - prefix) && suffix < (M - prefix) &&
+           leftBuf.GetLine(N - 1 - suffix) == rightBuf.GetLine(M - 1 - suffix)) {
+        suffix++;
+    }
+
+    size_t midN = N - prefix - suffix;
+    size_t midM = M - prefix - suffix;
+
+    if (midN == 0 && midM == 0) {
+        return; // Identical
+    }
+
+    if (midN > 0 && midM > 0 && (midN * midM <= 2500000)) {
+        std::vector<int> prev(midM + 1, 0);
+        std::vector<int> curr(midM + 1, 0);
+        std::vector<std::vector<uint8_t>> dir(midN + 1, std::vector<uint8_t>(midM + 1, 0)); // 1=diag, 2=up, 3=left
+
+        for (size_t i = 1; i <= midN; ++i) {
+            for (size_t j = 1; j <= midM; ++j) {
+                if (leftBuf.GetLine(prefix + i - 1) == rightBuf.GetLine(prefix + j - 1)) {
+                    curr[j] = prev[j - 1] + 1;
+                    dir[i][j] = 1;
+                } else if (prev[j] >= curr[j - 1]) {
+                    curr[j] = prev[j];
+                    dir[i][j] = 2; // up (deleted from left)
+                } else {
+                    curr[j] = curr[j - 1];
+                    dir[i][j] = 3; // left (added to right)
+                }
+            }
+            prev = curr;
+        }
+
+        size_t i = midN, j = midM;
+        std::vector<std::pair<int, size_t>> edits; // (-1 = deleted, +1 = added; line index)
+        while (i > 0 || j > 0) {
+            if (i > 0 && j > 0 && dir[i][j] == 1) {
+                i--;
+                j--;
+            } else if (i > 0 && (j == 0 || dir[i][j] == 2)) {
+                edits.push_back({ -1, prefix + i - 1 });
+                i--;
+            } else {
+                edits.push_back({ 1, prefix + j - 1 });
+                j--;
+            }
+        }
+        std::reverse(edits.begin(), edits.end());
+
+        size_t idx = 0;
+        while (idx < edits.size()) {
+            editor::OpenDocument::DiffHunkItem hunk;
+            size_t delCount = 0;
+            size_t addCount = 0;
+            size_t delStart = 0;
+            size_t addStart = 0;
+
+            while (idx < edits.size() && edits[idx].first == -1) {
+                if (delCount == 0) delStart = edits[idx].second;
+                doc.diffDeletedLines.insert(edits[idx].second);
+                delCount++;
+                idx++;
+            }
+            while (idx < edits.size() && edits[idx].first == 1) {
+                if (addCount == 0) addStart = edits[idx].second;
+                doc.diffAddedLines.insert(edits[idx].second);
+                addCount++;
+                idx++;
+            }
+
+            if (delCount > 0 && addCount > 0) {
+                hunk.type = editor::OpenDocument::DiffHunkItem::HunkType::Modified;
+                hunk.leftStart = delStart;
+                hunk.leftCount = delCount;
+                hunk.rightStart = addStart;
+                hunk.rightCount = addCount;
+            } else if (delCount > 0) {
+                hunk.type = editor::OpenDocument::DiffHunkItem::HunkType::Deleted;
+                hunk.leftStart = delStart;
+                hunk.leftCount = delCount;
+                hunk.rightStart = (addCount > 0 ? addStart : prefix);
+                hunk.rightCount = 0;
+            } else if (addCount > 0) {
+                hunk.type = editor::OpenDocument::DiffHunkItem::HunkType::Added;
+                hunk.leftStart = prefix;
+                hunk.leftCount = 0;
+                hunk.rightStart = addStart;
+                hunk.rightCount = addCount;
+            }
+            doc.diffHunks.push_back(hunk);
+        }
+    } else {
+        editor::OpenDocument::DiffHunkItem hunk;
+        hunk.leftStart = prefix;
+        hunk.leftCount = midN;
+        hunk.rightStart = prefix;
+        hunk.rightCount = midM;
+        if (midN > 0 && midM > 0) hunk.type = editor::OpenDocument::DiffHunkItem::HunkType::Modified;
+        else if (midN > 0) hunk.type = editor::OpenDocument::DiffHunkItem::HunkType::Deleted;
+        else hunk.type = editor::OpenDocument::DiffHunkItem::HunkType::Added;
+
+        for (size_t l = prefix; l < prefix + midN; ++l) doc.diffDeletedLines.insert(l);
+        for (size_t r = prefix; r < prefix + midM; ++r) doc.diffAddedLines.insert(r);
+        doc.diffHunks.push_back(hunk);
+    }
+}
+
 void Window::OpenVirtualDocument(const std::wstring& name, const std::wstring& content, bool isPreview) {
     auto& group = GetActiveGroup();
     for (size_t i = 0; i < group.docs.size(); ++i) {
@@ -2466,11 +2707,47 @@ void Window::HandleLButtonDown(POINT clientPt) {
                     }
 
                     // Code Area click (positions caret)
-                    size_t line = 0, col = 0;
-                    if (m_editor.HitTestCodeArea(clientPt, m_config, doc, paneCanvasLeft, clientH, line, col)) {
-                        doc.buffer.SetCursor(line, col);
-                        InvalidateRect(m_hwnd, nullptr, FALSE);
-                        return;
+                    if (doc.isDiffView) {
+                        float subHeaderH = m_config.ScaleF(24.0f);
+                        float dividerW = m_config.ScaleF(32.0f);
+                        float scrollbarW = m_config.ScaleF(12.0f);
+                        float halfW = (paneW - dividerW - scrollbarW) / 2.0f;
+                        float gutterW = m_config.ScaleF(46.0f);
+                        float lineH = m_config.ScaleF(20.0f);
+                        float charW = m_config.ScaleF(7.8f);
+
+                        float leftX = paneCanvasLeft;
+                        float dividerX = leftX + halfW;
+                        float rightX = dividerX + dividerW;
+                        float codeTopY = m_config.ScaleF(38.0f) + m_config.ScaleF(34.0f) + m_config.ScaleF(24.0f) + subHeaderH;
+
+                        if (clientPt.y >= codeTopY && lineH > 0.0f) {
+                            size_t clickedLine = doc.scrollLine + static_cast<size_t>((clientPt.y - codeTopY) / lineH);
+                            if (clientPt.x >= rightX) {
+                                doc.diffActivePane = 1;
+                                size_t clickedCol = 0;
+                                if (clientPt.x >= rightX + gutterW + m_config.ScaleF(12.0f) && charW > 0.0f) {
+                                    clickedCol = static_cast<size_t>((clientPt.x - (rightX + gutterW + m_config.ScaleF(12.0f))) / charW);
+                                }
+                                doc.buffer.SetCursor(clickedLine, clickedCol);
+                            } else if (clientPt.x < dividerX) {
+                                doc.diffActivePane = 0; // Read-only side
+                                size_t clickedCol = 0;
+                                if (clientPt.x >= leftX + gutterW + m_config.ScaleF(12.0f) && charW > 0.0f) {
+                                    clickedCol = static_cast<size_t>((clientPt.x - (leftX + gutterW + m_config.ScaleF(12.0f))) / charW);
+                                }
+                                doc.diffOriginalBuffer.SetCursor(clickedLine, clickedCol);
+                            }
+                            InvalidateRect(m_hwnd, nullptr, FALSE);
+                            return;
+                        }
+                    } else {
+                        size_t line = 0, col = 0;
+                        if (m_editor.HitTestCodeArea(clientPt, m_config, doc, paneCanvasLeft, clientH, line, col)) {
+                            doc.buffer.SetCursor(line, col);
+                            InvalidateRect(m_hwnd, nullptr, FALSE);
+                            return;
+                        }
                     }
                 }
             }
@@ -2534,8 +2811,18 @@ void Window::HandleLButtonDown(POINT clientPt) {
             }
             std::wstring openFile;
             std::wstring discardedFile;
-            if (m_drawer.HitTestGit(clientPt, m_config, openFile, discardedFile)) {
-                if (!openFile.empty()) {
+            bool isDiff = false;
+            std::wstring openCommitDiff;
+            std::wstring openUrl;
+            if (m_drawer.HitTestGit(clientPt, m_config, openFile, discardedFile, isDiff, openCommitDiff, openUrl)) {
+                if (!openUrl.empty()) {
+                    ShellExecuteW(nullptr, L"open", openUrl.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+                }
+                if (!openCommitDiff.empty()) {
+                    OpenCommitDiffDocument(openCommitDiff, openFile);
+                } else if (isDiff && !openFile.empty()) {
+                    OpenDiffDocument(openFile, false);
+                } else if (!openFile.empty()) {
                     OpenFileDocument(openFile, false);
                 }
                 if (!discardedFile.empty()) {
@@ -2543,11 +2830,15 @@ void Window::HandleLButtonDown(POINT clientPt) {
                     for (auto& group : m_editorGroups) {
                         for (auto& doc : group.docs) {
                             if (!doc.filePath.empty() &&
-                                (doc.filePath == discardedFile ||
+                                (discardedFile == L"*" ||
+                                 doc.filePath == discardedFile ||
                                  doc.filePath.ends_with(discardedFile) ||
                                  discardedFile.ends_with(doc.filePath))) {
                                 doc.buffer.LoadFromFile(doc.filePath);
                                 doc.isDirty = false;
+                                if (doc.isDiffView) {
+                                    ComputeDiffHunks(doc);
+                                }
                             }
                         }
                     }
@@ -3002,8 +3293,14 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 } else {
                     // Printable characters only (Enter and Tab are cleanly handled in WM_KEYDOWN)
                     if (ch >= 32 && ch != 127) {
+                        if (pDoc->isDiffView && (pDoc->diffActivePane == 0 || pDoc->isDiffRightReadOnly)) {
+                            return 0; // Read-only side!
+                        }
                         pDoc->buffer.InsertChar(ch);
                         MarkDocumentModified(pDoc);
+                        if (pDoc->isDiffView) {
+                            ComputeDiffHunks(*pDoc);
+                        }
                         InvalidateRect(m_hwnd, nullptr, FALSE);
                     }
                 }
@@ -3313,9 +3610,28 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
             }
 
             if (pDoc && !pDoc->isSpecialView) {
+                if (pDoc->isDiffView && (pDoc->diffActivePane == 0 || pDoc->isDiffRightReadOnly)) {
+                    // Left side is READ-ONLY: allow arrow navigation only!
+                    if (wParam == VK_LEFT) {
+                        pDoc->diffOriginalBuffer.MoveCursorLeft();
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
+                    } else if (wParam == VK_RIGHT) {
+                        pDoc->diffOriginalBuffer.MoveCursorRight();
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
+                    } else if (wParam == VK_UP) {
+                        pDoc->diffOriginalBuffer.MoveCursorUp();
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
+                    } else if (wParam == VK_DOWN) {
+                        pDoc->diffOriginalBuffer.MoveCursorDown();
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
+                    }
+                    return 0;
+                }
+
                 if (wParam == VK_BACK) {
                     pDoc->buffer.Backspace();
                     MarkDocumentModified(pDoc);
+                    if (pDoc->isDiffView) ComputeDiffHunks(*pDoc);
                     InvalidateRect(m_hwnd, nullptr, FALSE);
                 } else if (wParam == VK_LEFT) {
                     pDoc->buffer.MoveCursorLeft();
@@ -3369,10 +3685,12 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                         pDoc->buffer.InsertChar(L' ');
                     }
                     MarkDocumentModified(pDoc);
+                    if (pDoc->isDiffView) ComputeDiffHunks(*pDoc);
                     InvalidateRect(m_hwnd, nullptr, FALSE);
                 } else if (wParam == VK_RETURN) {
                     pDoc->buffer.InsertChar(L'\n');
                     MarkDocumentModified(pDoc);
+                    if (pDoc->isDiffView) ComputeDiffHunks(*pDoc);
                     InvalidateRect(m_hwnd, nullptr, FALSE);
                 }
             }
@@ -3390,10 +3708,11 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     InvalidateRect(m_hwnd, nullptr, FALSE);
                 }
                 // Source Control background auto-refresh & animation update
+                // Background polling passes showLoading = false so it NEVER continuously spins the activity rail icon
                 static ULONGLONG s_lastGitPoll = 0;
-                if (m_config.activeRailTab == 2 && m_drawerAnimProgress > 0.5f && (now - s_lastGitPoll > 1800) && !m_drawer.IsGitLoading()) {
+                if (m_config.activeRailTab == 2 && m_drawerAnimProgress > 0.5f && (now - s_lastGitPoll > 20000) && !m_drawer.IsGitLoading()) {
                     s_lastGitPoll = now;
-                    m_drawer.RefreshGitState(true);
+                    m_drawer.RefreshGitState(true, false);
                 }
 
                 if (m_drawer.IsGitLoading()) {

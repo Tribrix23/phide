@@ -255,6 +255,8 @@ void EditorCanvas::RenderSinglePane(ID2D1RenderTarget* pRT, Theme& theme, const 
         RenderImageView(pRT, theme, config, activeDoc, canvasLeft, canvasWidth, contentTopY, clientHeight);
     } else if (activeDoc.isUnsupportedBinary) {
         RenderUnsupportedBinaryView(pRT, theme, config, activeDoc, canvasLeft, canvasWidth, contentTopY, clientHeight);
+    } else if (activeDoc.isDiffView) {
+        RenderDiffView(pRT, theme, config, activeDoc, canvasLeft, canvasWidth, contentTopY, clientHeight, isPaneFocused);
     } else {
         RenderCode(pRT, theme, config, activeDoc, canvasLeft, canvasWidth, contentTopY, clientHeight, isPaneFocused,
                    highlightQuery, highlightMatchCase, highlightWholeWord, highlightUseRegex, isRenaming);
@@ -1779,6 +1781,305 @@ void EditorCanvas::RenderCanvasThemeEffects(ID2D1RenderTarget* pRT, Theme& theme
             brushDusk->SetColor(D2D1::ColorF(1.0f, 0.459f, 0.337f, 0.18f)); // Amber #FF7556
             pRT->DrawLine(D2D1::Point2F(canvasLeft, duskY), D2D1::Point2F(canvasLeft + canvasWidth, duskY), brushDusk.Get(), 1.0f);
         }
+    }
+}
+
+void EditorCanvas::RenderDiffView(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
+                                  editor::OpenDocument& doc, float canvasLeft, float canvasWidth,
+                                  float topY, float clientHeight, bool isFocused) {
+    const float subHeaderH = config.ScaleF(24.0f);
+    const float dividerW = config.ScaleF(32.0f);
+    const float scrollbarW = config.ScaleF(12.0f);
+    const float halfW = (canvasWidth - dividerW - scrollbarW) / 2.0f;
+    const float gutterW = config.ScaleF(46.0f);
+    const float lineH = config.ScaleF(20.0f);
+    const float charW = (m_charWidth > 0.0f) ? m_charWidth : config.ScaleF(7.8f);
+
+    const float leftX = canvasLeft;
+    const float dividerX = leftX + halfW;
+    const float rightX = dividerX + dividerW;
+
+    // Brushes for diff styling
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushDiffRedBg;
+    pRT->CreateSolidColorBrush(D2D1::ColorF(0.55f, 0.18f, 0.20f, 0.28f), &brushDiffRedBg);
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushDiffRedWord;
+    pRT->CreateSolidColorBrush(D2D1::ColorF(0.75f, 0.22f, 0.25f, 0.50f), &brushDiffRedWord);
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushDiffRedBar;
+    pRT->CreateSolidColorBrush(D2D1::ColorF(0.878f, 0.424f, 0.459f, 1.0f), &brushDiffRedBar);
+
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushDiffGreenBg;
+    pRT->CreateSolidColorBrush(D2D1::ColorF(0.18f, 0.45f, 0.20f, 0.28f), &brushDiffGreenBg);
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushDiffGreenWord;
+    pRT->CreateSolidColorBrush(D2D1::ColorF(0.22f, 0.65f, 0.25f, 0.50f), &brushDiffGreenWord);
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushDiffGreenBar;
+    pRT->CreateSolidColorBrush(D2D1::ColorF(0.596f, 0.765f, 0.475f, 1.0f), &brushDiffGreenBar);
+
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushBridgeModBg;
+    pRT->CreateSolidColorBrush(D2D1::ColorF(0.55f, 0.20f, 0.25f, 0.35f), &brushBridgeModBg);
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushBridgeModBorder;
+    pRT->CreateSolidColorBrush(D2D1::ColorF(0.75f, 0.25f, 0.30f, 0.60f), &brushBridgeModBorder);
+
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushBridgeAddBg;
+    pRT->CreateSolidColorBrush(D2D1::ColorF(0.18f, 0.45f, 0.25f, 0.35f), &brushBridgeAddBg);
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushBridgeAddBorder;
+    pRT->CreateSolidColorBrush(D2D1::ColorF(0.30f, 0.65f, 0.35f, 0.60f), &brushBridgeAddBorder);
+
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushDividerBg;
+    pRT->CreateSolidColorBrush(D2D1::ColorF(0.10f, 0.10f, 0.12f, 0.85f), &brushDividerBg);
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushPillRoBg;
+    pRT->CreateSolidColorBrush(D2D1::ColorF(0.24f, 0.24f, 0.26f, 0.9f), &brushPillRoBg);
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushPillEditBg;
+    pRT->CreateSolidColorBrush(D2D1::ColorF(0.055f, 0.388f, 0.612f, 0.9f), &brushPillEditBg);
+
+    IDWriteTextFormat* pCodeFmt = theme.fontCode ? theme.fontCode.Get() : theme.fontBody.Get();
+    IDWriteTextFormat* pLabelFmt = theme.fontMenuItem ? theme.fontMenuItem.Get() : theme.fontBody.Get();
+
+    // =========================================================================
+    // 1. Sub-headers (Left = HEAD / Read-only, Right = Working Tree / Editable)
+    // =========================================================================
+    D2D1_RECT_F rcLeftSub = D2D1::RectF(leftX, topY, dividerX, topY + subHeaderH);
+    pRT->FillRectangle(rcLeftSub, theme.brushHeaderBg.Get());
+    pRT->DrawLine(D2D1::Point2F(leftX, topY + subHeaderH), D2D1::Point2F(dividerX, topY + subHeaderH), theme.brushBorderSubtle.Get(), 1.0f);
+
+    std::wstring leftTitle = doc.diffOriginalTitle.empty() ? (doc.fileName + L" (HEAD)") : doc.diffOriginalTitle;
+    D2D1_RECT_F rcLeftTitle = D2D1::RectF(leftX + config.ScaleF(12.0f), topY + 2.0f, dividerX - config.ScaleF(80.0f), topY + subHeaderH - 2.0f);
+    pRT->DrawText(leftTitle.c_str(), static_cast<UINT32>(leftTitle.length()),
+                  pLabelFmt, rcLeftTitle, theme.brushTextPrimary.Get());
+
+    // Left [Read-only] badge
+    float roW = config.ScaleF(68.0f);
+    float roH = config.ScaleF(16.0f);
+    D2D1_ROUNDED_RECT rrcRo = D2D1::RoundedRect(
+        D2D1::RectF(dividerX - roW - config.ScaleF(8.0f), topY + (subHeaderH - roH) / 2.0f, dividerX - config.ScaleF(8.0f), topY + (subHeaderH + roH) / 2.0f),
+        3.0f, 3.0f
+    );
+    pRT->FillRoundedRectangle(rrcRo, brushPillRoBg.Get());
+    pRT->DrawText(L"Read-only", 9, pLabelFmt,
+                  D2D1::RectF(rrcRo.rect.left + 5.0f, rrcRo.rect.top, rrcRo.rect.right, rrcRo.rect.bottom),
+                  theme.brushTextMuted.Get());
+
+    // Right Sub-header
+    D2D1_RECT_F rcRightSub = D2D1::RectF(rightX, topY, rightX + halfW, topY + subHeaderH);
+    pRT->FillRectangle(rcRightSub, theme.brushHeaderBg.Get());
+    pRT->DrawLine(D2D1::Point2F(rightX, topY + subHeaderH), D2D1::Point2F(rightX + halfW, topY + subHeaderH), theme.brushBorderSubtle.Get(), 1.0f);
+
+    std::wstring rightTitle = doc.diffWorkingTitle.empty() ? (doc.fileName + L" (Working Tree)") : doc.diffWorkingTitle;
+    D2D1_RECT_F rcRightTitle = D2D1::RectF(rightX + config.ScaleF(12.0f), topY + 2.0f, rightX + halfW - config.ScaleF(80.0f), topY + subHeaderH - 2.0f);
+    pRT->DrawText(rightTitle.c_str(), static_cast<UINT32>(rightTitle.length()),
+                  pLabelFmt, rcRightTitle, theme.brushTextPrimary.Get());
+
+    // Right [Editable] badge (or Read-only if commit diff)
+    const wchar_t* rightBadgeText = doc.isDiffRightReadOnly ? L"Read-only" : L"Editable";
+    float editW = config.ScaleF(doc.isDiffRightReadOnly ? 68.0f : 56.0f);
+    D2D1_ROUNDED_RECT rrcEdit = D2D1::RoundedRect(
+        D2D1::RectF(rightX + halfW - editW - config.ScaleF(8.0f), topY + (subHeaderH - roH) / 2.0f, rightX + halfW - config.ScaleF(8.0f), topY + (subHeaderH + roH) / 2.0f),
+        3.0f, 3.0f
+    );
+    pRT->FillRoundedRectangle(rrcEdit, doc.isDiffRightReadOnly ? brushPillRoBg.Get() : brushPillEditBg.Get());
+    pRT->DrawText(rightBadgeText, static_cast<UINT32>(wcslen(rightBadgeText)), pLabelFmt,
+                  D2D1::RectF(rrcEdit.rect.left + (doc.isDiffRightReadOnly ? 5.0f : 6.0f), rrcEdit.rect.top, rrcEdit.rect.right, rrcEdit.rect.bottom),
+                  doc.isDiffRightReadOnly ? theme.brushTextMuted.Get() : theme.brushTextWhite.Get());
+
+    // =========================================================================
+    // 2. Code Area Layout & Scrolling
+    // =========================================================================
+    float codeTopY = topY + subHeaderH;
+    float codeAreaH = clientHeight - codeTopY;
+    size_t visibleCount = (lineH > 0.0f) ? static_cast<size_t>(codeAreaH / lineH) : 20;
+
+    size_t leftTotal = doc.diffOriginalBuffer.GetLineCount();
+    size_t rightTotal = doc.buffer.GetLineCount();
+    size_t maxLines = (std::max)(leftTotal, rightTotal);
+    size_t maxScroll = (maxLines > visibleCount) ? (maxLines - visibleCount) : 0;
+    if (doc.scrollLine > maxScroll) doc.scrollLine = maxScroll;
+
+    // =========================================================================
+    // 3. Middle Divider (Connecting bridges between diff hunks) (Images 3 & 4)
+    // =========================================================================
+    D2D1_RECT_F rcDivider = D2D1::RectF(dividerX, codeTopY, dividerX + dividerW, clientHeight);
+    pRT->FillRectangle(rcDivider, brushDividerBg.Get());
+    pRT->DrawLine(D2D1::Point2F(dividerX, codeTopY), D2D1::Point2F(dividerX, clientHeight), theme.brushBorderSubtle.Get(), 1.0f);
+    pRT->DrawLine(D2D1::Point2F(dividerX + dividerW, codeTopY), D2D1::Point2F(dividerX + dividerW, clientHeight), theme.brushBorderSubtle.Get(), 1.0f);
+
+    Microsoft::WRL::ComPtr<ID2D1Factory> pFactory;
+    pRT->GetFactory(&pFactory);
+
+    for (const auto& hunk : doc.diffHunks) {
+        float yLStart = codeTopY + (static_cast<float>(hunk.leftStart) - static_cast<float>(doc.scrollLine)) * lineH;
+        float yLEnd = yLStart + static_cast<float>(hunk.leftCount) * lineH;
+        if (hunk.leftCount == 0) yLEnd = yLStart;
+
+        float yRStart = codeTopY + (static_cast<float>(hunk.rightStart) - static_cast<float>(doc.scrollLine)) * lineH;
+        float yREnd = yRStart + static_cast<float>(hunk.rightCount) * lineH;
+        if (hunk.rightCount == 0) yREnd = yRStart;
+
+        if (pFactory && ((yLEnd >= codeTopY && yLStart <= clientHeight) || (yREnd >= codeTopY && yRStart <= clientHeight))) {
+            Microsoft::WRL::ComPtr<ID2D1PathGeometry> pBridge;
+            if (SUCCEEDED(pFactory->CreatePathGeometry(&pBridge))) {
+                Microsoft::WRL::ComPtr<ID2D1GeometrySink> sink;
+                if (SUCCEEDED(pBridge->Open(&sink))) {
+                    sink->BeginFigure(D2D1::Point2F(dividerX, yLStart), D2D1_FIGURE_BEGIN_FILLED);
+                    sink->AddBezier(D2D1::BezierSegment(
+                        D2D1::Point2F(dividerX + dividerW * 0.45f, yLStart),
+                        D2D1::Point2F(dividerX + dividerW * 0.55f, yRStart),
+                        D2D1::Point2F(dividerX + dividerW, yRStart)
+                    ));
+                    sink->AddLine(D2D1::Point2F(dividerX + dividerW, yREnd));
+                    sink->AddBezier(D2D1::BezierSegment(
+                        D2D1::Point2F(dividerX + dividerW * 0.55f, yREnd),
+                        D2D1::Point2F(dividerX + dividerW * 0.45f, yLEnd),
+                        D2D1::Point2F(dividerX, yLEnd)
+                    ));
+                    sink->EndFigure(D2D1_FIGURE_END_CLOSED);
+                    sink->Close();
+
+                    bool isAdd = (hunk.type == editor::OpenDocument::DiffHunkItem::HunkType::Added);
+                    pRT->FillGeometry(pBridge.Get(), isAdd ? brushBridgeAddBg.Get() : brushBridgeModBg.Get());
+                    pRT->DrawGeometry(pBridge.Get(), isAdd ? brushBridgeAddBorder.Get() : brushBridgeModBorder.Get(), 1.0f);
+                }
+            }
+        }
+    }
+
+    // =========================================================================
+    // 4. Left Pane (Original / HEAD - Read Only)
+    // =========================================================================
+    D2D1_RECT_F rcLeftClip = D2D1::RectF(leftX, codeTopY, dividerX, clientHeight);
+    pRT->PushAxisAlignedClip(rcLeftClip, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+
+    // Gutter Background
+    D2D1_RECT_F rcLeftGutter = D2D1::RectF(leftX, codeTopY, leftX + gutterW, clientHeight);
+    pRT->FillRectangle(rcLeftGutter, theme.brushCanvasBg.Get());
+
+    size_t endLeftV = (std::min)(leftTotal, doc.scrollLine + visibleCount + 2);
+    for (size_t v = doc.scrollLine; v < endLeftV; ++v) {
+        float lineY = codeTopY + (v - doc.scrollLine) * lineH;
+        if (lineY + lineH < codeTopY || lineY > clientHeight) continue;
+
+        bool isChanged = doc.diffDeletedLines.count(v) > 0;
+        if (isChanged) {
+            // Full line red background
+            D2D1_RECT_F rcLine = D2D1::RectF(leftX + gutterW, lineY, dividerX, lineY + lineH);
+            pRT->FillRectangle(rcLine, brushDiffRedBg.Get());
+
+            // Red vertical bar in gutter
+            D2D1_RECT_F rcBar = D2D1::RectF(leftX + gutterW - config.ScaleF(3.0f), lineY, leftX + gutterW, lineY + lineH);
+            pRT->FillRectangle(rcBar, brushDiffRedBar.Get());
+        }
+
+        // Line number (11- if changed)
+        std::wstring numStr = std::to_wstring(v + 1) + (isChanged ? L"-" : L"");
+        D2D1_RECT_F rcNum = D2D1::RectF(leftX + config.ScaleF(4.0f), lineY, leftX + gutterW - config.ScaleF(10.0f), lineY + lineH);
+        pRT->DrawText(numStr.c_str(), static_cast<UINT32>(numStr.length()), theme.fontMenuShortcut.Get(),
+                      rcNum, isChanged ? brushDiffRedBar.Get() : theme.brushLineNumber.Get());
+
+        // Line text
+        std::wstring lineText = doc.diffOriginalBuffer.GetLine(v);
+        D2D1_RECT_F rcText = D2D1::RectF(leftX + gutterW + config.ScaleF(12.0f), lineY, dividerX, lineY + lineH);
+        pRT->DrawText(lineText.c_str(), static_cast<UINT32>(lineText.length()), pCodeFmt,
+                      rcText, theme.brushTextPrimary.Get());
+    }
+    pRT->PopAxisAlignedClip();
+
+    // =========================================================================
+    // 5. Right Pane (Working Tree - EDITABLE) (Images 2, 3, 4)
+    // =========================================================================
+    D2D1_RECT_F rcRightClip = D2D1::RectF(rightX, codeTopY, rightX + halfW, clientHeight);
+    pRT->PushAxisAlignedClip(rcRightClip, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+
+    // Gutter Background
+    D2D1_RECT_F rcRightGutter = D2D1::RectF(rightX, codeTopY, rightX + gutterW, clientHeight);
+    pRT->FillRectangle(rcRightGutter, theme.brushCanvasBg.Get());
+
+    auto cursor = doc.buffer.GetCursor();
+    bool isRightActive = (doc.diffActivePane == 1 && isFocused);
+
+    size_t endRightV = (std::min)(rightTotal, doc.scrollLine + visibleCount + 2);
+    for (size_t v = doc.scrollLine; v < endRightV; ++v) {
+        float lineY = codeTopY + (v - doc.scrollLine) * lineH;
+        if (lineY + lineH < codeTopY || lineY > clientHeight) continue;
+
+        // Active line highlight
+        if (isRightActive && v == cursor.line) {
+            D2D1_RECT_F rcActive = D2D1::RectF(rightX + gutterW, lineY, rightX + halfW, lineY + lineH);
+            pRT->FillRectangle(rcActive, theme.brushCurrentLineBg.Get());
+        }
+
+        bool isChanged = doc.diffAddedLines.count(v) > 0;
+        if (isChanged) {
+            // Full line green background
+            D2D1_RECT_F rcLine = D2D1::RectF(rightX + gutterW, lineY, rightX + halfW, lineY + lineH);
+            pRT->FillRectangle(rcLine, brushDiffGreenBg.Get());
+
+            // Green vertical bar in gutter
+            D2D1_RECT_F rcBar = D2D1::RectF(rightX + gutterW - config.ScaleF(3.0f), lineY, rightX + gutterW, lineY + lineH);
+            pRT->FillRectangle(rcBar, brushDiffGreenBar.Get());
+        }
+
+        // Line number (11+ if changed)
+        std::wstring numStr = std::to_wstring(v + 1) + (isChanged ? L"+" : L"");
+        D2D1_RECT_F rcNum = D2D1::RectF(rightX + config.ScaleF(4.0f), lineY, rightX + gutterW - config.ScaleF(10.0f), lineY + lineH);
+        pRT->DrawText(numStr.c_str(), static_cast<UINT32>(numStr.length()), theme.fontMenuShortcut.Get(),
+                      rcNum, isChanged ? brushDiffGreenBar.Get() : ((isRightActive && v == cursor.line) ? theme.brushTextPrimary.Get() : theme.brushLineNumber.Get()));
+
+        // Line text
+        std::wstring lineText = doc.buffer.GetLine(v);
+        D2D1_RECT_F rcText = D2D1::RectF(rightX + gutterW + config.ScaleF(12.0f), lineY, rightX + halfW, lineY + lineH);
+        pRT->DrawText(lineText.c_str(), static_cast<UINT32>(lineText.length()), pCodeFmt,
+                      rcText, theme.brushTextPrimary.Get());
+    }
+
+    // Thin Deletion Line Indicators on Right Pane (Image 4 Request)
+    // Instead of skipping a line to show changes, draw a thin horizontal line marker!
+    for (const auto& hunk : doc.diffHunks) {
+        if (hunk.type == editor::OpenDocument::DiffHunkItem::HunkType::Deleted && hunk.rightCount == 0) {
+            if (hunk.rightStart >= doc.scrollLine && hunk.rightStart <= doc.scrollLine + visibleCount + 1) {
+                float thinY = codeTopY + (static_cast<float>(hunk.rightStart) - static_cast<float>(doc.scrollLine)) * lineH;
+                // Thin horizontal red deletion marker
+                pRT->DrawLine(
+                    D2D1::Point2F(rightX + gutterW, thinY),
+                    D2D1::Point2F(rightX + halfW, thinY),
+                    brushDiffRedBar.Get(), 2.2f
+                );
+                // Small indicator triangle in gutter
+                float triX = rightX + gutterW - config.ScaleF(10.0f);
+                pRT->DrawLine(D2D1::Point2F(triX, thinY - 3.0f), D2D1::Point2F(triX + 4.5f, thinY), brushDiffRedBar.Get(), 1.6f);
+                pRT->DrawLine(D2D1::Point2F(triX + 4.5f, thinY), D2D1::Point2F(triX, thinY + 3.0f), brushDiffRedBar.Get(), 1.6f);
+            }
+        }
+    }
+
+    // Blinking Caret '|' on Editable Right Pane (Image 2)
+    if (isRightActive && m_caretVisible && !doc.isDiffRightReadOnly && cursor.line >= doc.scrollLine && cursor.line <= doc.scrollLine + visibleCount) {
+        float caretY = codeTopY + (cursor.line - doc.scrollLine) * lineH;
+        float caretX = rightX + gutterW + config.ScaleF(12.0f) + static_cast<float>(cursor.col) * charW;
+        if (caretX < rightX + halfW) {
+            pRT->DrawLine(
+                D2D1::Point2F(caretX, caretY + config.ScaleF(2.0f)),
+                D2D1::Point2F(caretX, caretY + lineH - config.ScaleF(2.0f)),
+                theme.brushTextPrimary.Get(), 1.5f
+            );
+        }
+    }
+
+    pRT->PopAxisAlignedClip();
+
+    // =========================================================================
+    // 6. Vertical Scrollbar on Far Right
+    // =========================================================================
+    float sbLeft = rightX + halfW;
+    D2D1_RECT_F rcTrack = D2D1::RectF(sbLeft, codeTopY, sbLeft + scrollbarW, clientHeight);
+    doc.scrollbarTrack = rcTrack;
+    pRT->FillRectangle(rcTrack, theme.brushCanvasBg.Get());
+
+    if (maxLines > visibleCount) {
+        float thumbRatio = (static_cast<float>(visibleCount) / static_cast<float>(maxLines));
+        float thumbH = (std::max)(config.ScaleF(24.0f), codeAreaH * thumbRatio);
+        float scrollPct = (maxScroll > 0) ? (static_cast<float>(doc.scrollLine) / static_cast<float>(maxScroll)) : 0.0f;
+        float thumbY = codeTopY + (codeAreaH - thumbH) * scrollPct;
+        doc.scrollbarThumb = D2D1::RectF(sbLeft + 2.0f, thumbY, sbLeft + scrollbarW - 2.0f, thumbY + thumbH);
+        D2D1_ROUNDED_RECT rrcThumb = D2D1::RoundedRect(doc.scrollbarThumb, 3.0f, 3.0f);
+        pRT->FillRoundedRectangle(rrcThumb, theme.brushBorderSubtle.Get());
     }
 }
 

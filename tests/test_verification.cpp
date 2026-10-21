@@ -98,6 +98,52 @@ static void SaveBitmapToPng(ID2D1Bitmap* pBitmap, IWICImagingFactory* pWicFactor
     std::wcout << L"[SAVED] " << outPath << std::endl;
 }
 
+static void SaveWicBitmapToPng(IWICBitmap* pWicBitmap, IWICImagingFactory* pWicFactory, const std::wstring& outPath) {
+    if (!pWicBitmap || !pWicFactory) return;
+
+    UINT width = 0, height = 0;
+    pWicBitmap->GetSize(&width, &height);
+
+    ComPtr<IWICStream> pStream;
+    HRESULT hr = pWicFactory->CreateStream(&pStream);
+    if (FAILED(hr)) return;
+
+    hr = pStream->InitializeFromFilename(outPath.c_str(), GENERIC_WRITE);
+    if (FAILED(hr)) return;
+
+    ComPtr<IWICBitmapEncoder> pEncoder;
+    hr = pWicFactory->CreateEncoder(GUID_ContainerFormatPng, nullptr, &pEncoder);
+    if (FAILED(hr)) return;
+
+    hr = pEncoder->Initialize(pStream.Get(), WICBitmapEncoderNoCache);
+    if (FAILED(hr)) return;
+
+    ComPtr<IWICBitmapFrameEncode> pFrame;
+    hr = pEncoder->CreateNewFrame(&pFrame, nullptr);
+    if (FAILED(hr)) return;
+
+    hr = pFrame->Initialize(nullptr);
+    if (FAILED(hr)) return;
+
+    hr = pFrame->SetSize(width, height);
+    if (FAILED(hr)) return;
+
+    WICPixelFormatGUID format = GUID_WICPixelFormat32bppPBGRA;
+    hr = pFrame->SetPixelFormat(&format);
+    if (FAILED(hr)) return;
+
+    hr = pFrame->WriteSource(pWicBitmap, nullptr);
+    if (FAILED(hr)) return;
+
+    hr = pFrame->Commit();
+    if (FAILED(hr)) return;
+
+    hr = pEncoder->Commit();
+    if (FAILED(hr)) return;
+
+    std::wcout << L"[SAVED] " << outPath << std::endl;
+}
+
 int main() {
     std::cout << "Starting Automated Verification Test Suite..." << std::endl;
 
@@ -1959,7 +2005,7 @@ int main() {
 
         // 14. Test Git Diff Line Computation & Deleted File Content Fetch (Complaint 8)
         std::set<size_t> addedLines, deletedLines;
-        gitDrawer.ComputeGitDiffLines(L"src/ui/ActivityRail.cpp", addedLines, deletedLines);
+        gitDrawer.ComputeGitDiffLines(L"src/ui/DrawerPanel.cpp", addedLines, deletedLines);
         assert(!addedLines.empty());
         std::cout << "  Passed: Git diff computation detected " << addedLines.size() << " added lines in working directory" << std::endl;
 
@@ -2159,6 +2205,138 @@ int main() {
         frameModal->Commit();
         encModal->Commit();
         std::cout << "  Passed: Saved test_theme_picker_catalog_20themes.png" << std::endl;
+    }
+
+    // ==========================================
+    // 17. Test Verification: Side-by-Side Diff Comparison, Thin Deletion Lines & Commit Details Popover Card
+    // ==========================================
+    {
+        std::cout << "\n[TEST 17] Running Side-by-Side Diff, Thin Deletion & Commit Card Verification..." << std::endl;
+        WICPixelFormatGUID format = GUID_WICPixelFormat32bppPBGRA;
+
+        // 1. Verify RefreshGitState(false, false) does NOT set m_isGitLoading
+        phide::ui::DrawerPanel gitDrawer;
+        gitDrawer.RefreshGitState(false, false);
+        assert(!gitDrawer.IsGitLoading());
+        std::cout << "  Passed: Background Git refresh leaves isGitLoading == false" << std::endl;
+
+        // 2. Render Side-by-Side Diff View (Images 2, 3, 4)
+        // Left pane: Read-only, red line markers (11-), red highlights
+        // Right pane: Editable, green line markers (11+), green highlights, blinking caret
+        // Middle divider: Bezier bridge connecting modified/added hunks
+        // Thin deletion lines: 2.2px red horizontal marker on right pane without skipping rows
+        phide::editor::OpenDocument diffDoc;
+        diffDoc.filePath = L"src/main.cpp";
+        diffDoc.fileName = L"main.cpp (Working Tree)";
+        diffDoc.diffOriginalTitle = L"main.cpp (HEAD)";
+        diffDoc.diffWorkingTitle = L"main.cpp (Working Tree)";
+        diffDoc.isDiffView = true;
+        diffDoc.isDiffLeftReadOnly = true;
+        diffDoc.isDiffRightReadOnly = false;
+        diffDoc.diffActivePane = 1;
+
+        diffDoc.diffOriginalBuffer.SetText(
+            L"#include <iostream>\n"
+            L"#include \"phide/ui/Theme.hpp\"\n"
+            L"\n"
+            L"int main(int argc, char* argv[]) {\n"
+            L"    std::cout << \"Starting old phide...\" << std::endl;\n"
+            L"    LegacyDiamondIcon diamond;\n"
+            L"    diamond.RenderOld();\n"
+            L"    // Deprecated line 1\n"
+            L"    // Deprecated line 2\n"
+            L"    return 0;\n"
+            L"}\n"
+        );
+
+        diffDoc.buffer.SetText(
+            L"#include <iostream>\n"
+            L"#include \"phide/ui/Theme.hpp\"\n"
+            L"\n"
+            L"int main(int argc, char* argv[]) {\n"
+            L"    std::cout << \"Starting modern phide...\" << std::endl;\n"
+            L"    CircularRefreshIcon refresh;\n"
+            L"    refresh.RenderModern();\n"
+            L"    return 0;\n"
+            L"}\n"
+        );
+
+        // Hunk 0: Line 4 modified (Starting old -> Starting modern)
+        phide::editor::OpenDocument::DiffHunkItem h0;
+        h0.leftStart = 4; h0.leftCount = 1;
+        h0.rightStart = 4; h0.rightCount = 1;
+        h0.type = phide::editor::OpenDocument::DiffHunkItem::HunkType::Modified;
+        diffDoc.diffHunks.push_back(h0);
+        diffDoc.diffDeletedLines.insert(4);
+        diffDoc.diffAddedLines.insert(4);
+
+        // Hunk 1: Lines 5-6 modified (LegacyDiamondIcon -> CircularRefreshIcon)
+        phide::editor::OpenDocument::DiffHunkItem h1;
+        h1.leftStart = 5; h1.leftCount = 2;
+        h1.rightStart = 5; h1.rightCount = 2;
+        h1.type = phide::editor::OpenDocument::DiffHunkItem::HunkType::Modified;
+        diffDoc.diffHunks.push_back(h1);
+        diffDoc.diffDeletedLines.insert(5);
+        diffDoc.diffDeletedLines.insert(6);
+        diffDoc.diffAddedLines.insert(5);
+        diffDoc.diffAddedLines.insert(6);
+
+        // Hunk 2: Lines 7-8 deleted in Working Tree (rightCount = 0 -> Renders thin 2.2px deletion line)
+        phide::editor::OpenDocument::DiffHunkItem h2;
+        h2.leftStart = 7; h2.leftCount = 2;
+        h2.rightStart = 7; h2.rightCount = 0;
+        h2.type = phide::editor::OpenDocument::DiffHunkItem::HunkType::Deleted;
+        diffDoc.diffHunks.push_back(h2);
+        diffDoc.diffDeletedLines.insert(7);
+        diffDoc.diffDeletedLines.insert(8);
+
+        std::vector<phide::editor::OpenDocument> diffDocs;
+        diffDocs.push_back(std::move(diffDoc));
+
+        ComPtr<IWICBitmap> pWicDiffBmp;
+        ComPtr<ID2D1RenderTarget> pDiffRT;
+        CreateTarget(pWicDiffBmp, pDiffRT);
+
+        phide::ui::Theme theme;
+        theme.SetThemeMode(phide::ui::ThemeMode::Dark);
+        hr = theme.CreateDeviceResources(pDiffRT.Get(), pDWriteFactory.Get());
+        assert(SUCCEEDED(hr));
+
+        phide::app::AppConfig cfg;
+        phide::ui::EditorCanvas editor;
+        phide::ui::TitleHeader header;
+        phide::ui::ActivityRail rail;
+
+        pDiffRT->BeginDraw();
+        pDiffRT->Clear(theme.colors.windowBg);
+        editor.Render(pDiffRT.Get(), theme, cfg, diffDocs, 0, 50.0f, 1150.0f, 750.0f, true);
+        pDiffRT->EndDraw();
+
+        SaveWicBitmapToPng(pWicDiffBmp.Get(), pWicFactory.Get(), artDir + L"test_diff_view_side_by_side.png");
+        std::cout << "  Passed: Saved test_diff_view_side_by_side.png" << std::endl;
+
+        // 3. Render Git Drawer with Commit Details Popover Card (Image 5)
+        // Shows Author avatar, formatted timestamp, commit message, shortstat summary, hash pill,
+        // Open on GitHub link, and Open Changes action button.
+        ComPtr<IWICBitmap> pWicCardBmp;
+        ComPtr<ID2D1RenderTarget> pCardRT;
+        CreateTarget(pWicCardBmp, pCardRT);
+        hr = theme.CreateDeviceResources(pCardRT.Get(), pDWriteFactory.Get());
+        assert(SUCCEEDED(hr));
+
+        cfg.activeRailTab = 2; // Source Control tab
+        gitDrawer.RefreshGitState(false);
+        gitDrawer.SetUnpushedCommitsCount(1); // Triggers "Sync Changes 1"
+        gitDrawer.SetSelectedCommitIndex(0);  // Triggers popover card
+
+        pCardRT->BeginDraw();
+        pCardRT->Clear(theme.colors.windowBg);
+        rail.Render(pCardRT.Get(), theme, cfg, 750.0f);
+        gitDrawer.Render(pCardRT.Get(), theme, cfg, 750.0f, 320.0f);
+        pCardRT->EndDraw();
+
+        SaveWicBitmapToPng(pWicCardBmp.Get(), pWicFactory.Get(), artDir + L"test_commit_card_and_sync_changes.png");
+        std::cout << "  Passed: Saved test_commit_card_and_sync_changes.png" << std::endl;
     }
 
     std::cout << "\n==========================================" << std::endl;

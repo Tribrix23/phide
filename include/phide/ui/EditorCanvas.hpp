@@ -273,6 +273,13 @@ private:
                     bool isRenaming = false);
 
     /**
+     * @brief Renders side-by-side diff comparison view with read-only left pane and editable right pane (Images 2, 3, 4, 5).
+     */
+    void RenderDiffView(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
+                        editor::OpenDocument& doc, float canvasLeft, float canvasWidth,
+                        float topY, float clientHeight, bool isFocused);
+
+    /**
      * @brief Renders ambient background theme effects (3D perspective grid, particles, starfields) for unique themes.
      */
     void RenderCanvasThemeEffects(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,

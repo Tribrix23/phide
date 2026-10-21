@@ -2669,12 +2669,14 @@ static GitCmdResult RunGitCmd(const std::wstring& cmd, const std::wstring& workD
 } // anonymous namespace
 
 void DrawerPanel::OpenSourceControl() {
-    RefreshGitState(true);
+    RefreshGitState(true, true);
 }
 
-void DrawerPanel::RefreshGitState(bool async) {
-    auto task = [this]() {
-        m_isGitLoading = true;
+void DrawerPanel::RefreshGitState(bool async, bool showLoading) {
+    auto task = [this, showLoading]() {
+        if (showLoading) {
+            m_isGitLoading = true;
+        }
         std::wstring dir = m_openFolderPath.empty() ? L"." : m_openFolderPath;
 
         // 1. Check if inside git repository
@@ -2761,8 +2763,8 @@ void DrawerPanel::RefreshGitState(bool async) {
             }
         }
 
-        // 4. Query commit history graph
-        auto resLog = RunGitCmd(L"log -n 40 --pretty=format:\"%h|%p|%s|%an|%ar|%d\"", dir);
+        // 4. Query commit history graph with formatted date
+        auto resLog = RunGitCmd(L"log -n 40 --pretty=format:\"%h|%p|%s|%an|%ar|%d|%ad\" --date=format:\"%B %d, %Y at %I:%M %p\"", dir);
         std::vector<GitCommitItem> commits;
         if (resLog.exitCode == 0) {
             std::wstringstream ss(resLog.output);
@@ -2790,13 +2792,18 @@ void DrawerPanel::RefreshGitState(bool async) {
                     ci.author = tokens.size() > 3 ? tokens[3] : L"";
                     ci.relativeTime = tokens.size() > 4 ? tokens[4] : L"";
                     ci.refNames = tokens.size() > 5 ? tokens[5] : L"";
+                    ci.dateFormatted = tokens.size() > 6 ? tokens[6] : L"";
                     ci.isHead = firstCommit || (ci.refNames.find(L"HEAD") != std::wstring::npos);
                     firstCommit = false;
+
+                    auto it = prevMap.find(ci.hash);
+                    if (it != prevMap.end()) {
+                        ci.statSummary = it->second.statSummary;
+                    }
 
                     // Restore expanded state and cached files if in m_expandedCommitHashes
                     if (m_expandedCommitHashes.count(ci.hash)) {
                         ci.isExpanded = true;
-                        auto it = prevMap.find(ci.hash);
                         if (it != prevMap.end() && it->second.filesLoaded) {
                             ci.files = std::move(it->second.files);
                             ci.filesLoaded = true;
@@ -2848,40 +2855,53 @@ void DrawerPanel::RefreshGitState(bool async) {
 }
 
 void DrawerPanel::LoadCommitFiles(GitCommitItem& ci) {
-    if (ci.filesLoaded || ci.hash.empty()) return;
+    if (ci.hash.empty()) return;
     std::wstring dir = m_openFolderPath.empty() ? L"." : m_openFolderPath;
-    auto res = RunGitCmd(L"show --name-status --pretty=\"\" " + ci.hash, dir);
-    ci.files.clear();
-    if (res.exitCode == 0) {
-        std::wstringstream ss(res.output);
-        std::wstring line;
-        while (std::getline(ss, line)) {
-            while (!line.empty() && (line.back() == L'\r' || line.back() == L'\n' || line.back() == L' ')) line.pop_back();
-            if (line.empty()) continue;
-            size_t tab = line.find(L'\t');
-            std::wstring status = L"M";
-            std::wstring filePath;
-            if (tab != std::wstring::npos) {
-                status = line.substr(0, tab);
-                filePath = line.substr(tab + 1);
-            } else {
-                filePath = line;
-            }
-            if (filePath.size() >= 2 && filePath.front() == L'"' && filePath.back() == L'"') {
-                filePath = filePath.substr(1, filePath.size() - 2);
-            }
-            for (auto& c : filePath) if (c == L'/') c = L'\\';
+    if (!ci.filesLoaded) {
+        auto res = RunGitCmd(L"show --name-status --pretty=\"\" " + ci.hash, dir);
+        ci.files.clear();
+        if (res.exitCode == 0) {
+            std::wstringstream ss(res.output);
+            std::wstring line;
+            while (std::getline(ss, line)) {
+                while (!line.empty() && (line.back() == L'\r' || line.back() == L'\n' || line.back() == L' ')) line.pop_back();
+                if (line.empty()) continue;
+                size_t tab = line.find(L'\t');
+                std::wstring status = L"M";
+                std::wstring filePath;
+                if (tab != std::wstring::npos) {
+                    status = line.substr(0, tab);
+                    filePath = line.substr(tab + 1);
+                } else {
+                    filePath = line;
+                }
+                if (filePath.size() >= 2 && filePath.front() == L'"' && filePath.back() == L'"') {
+                    filePath = filePath.substr(1, filePath.size() - 2);
+                }
+                for (auto& c : filePath) if (c == L'/') c = L'\\';
 
-            std::filesystem::path p(filePath);
-            GitCommitFile cf;
-            cf.path = filePath;
-            cf.fileName = p.filename().wstring();
-            cf.relDir = p.parent_path().wstring();
-            cf.status = status.empty() ? L"M" : status;
-            ci.files.push_back(std::move(cf));
+                std::filesystem::path p(filePath);
+                GitCommitFile cf;
+                cf.path = filePath;
+                cf.fileName = p.filename().wstring();
+                cf.relDir = p.parent_path().wstring();
+                cf.status = status.empty() ? L"M" : status;
+                ci.files.push_back(std::move(cf));
+            }
+        }
+        ci.filesLoaded = true;
+    }
+
+    if (ci.statSummary.empty()) {
+        auto resStat = RunGitCmd(L"show --shortstat --format=\"\" " + ci.hash, dir);
+        if (resStat.exitCode == 0 && !resStat.output.empty()) {
+            std::wstring st = resStat.output;
+            size_t f = st.find_first_not_of(L" \r\n\t");
+            if (f != std::wstring::npos) st = st.substr(f);
+            while (!st.empty() && (st.back() == L'\r' || st.back() == L'\n' || st.back() == L' ')) st.pop_back();
+            ci.statSummary = st;
         }
     }
-    ci.filesLoaded = true;
 }
 
 void DrawerPanel::StageAllChangesAsync() {
@@ -2889,17 +2909,24 @@ void DrawerPanel::StageAllChangesAsync() {
         m_isGitLoading = true;
         std::wstring dir = m_openFolderPath.empty() ? L"." : m_openFolderPath;
         RunGitCmd(L"add -A", dir);
-        RefreshGitState(false);
+        RefreshGitState(false, false);
     }).detach();
+}
+
+bool DrawerPanel::DiscardAllChanges() {
+    m_isGitLoading = true;
+    std::wstring dir = m_openFolderPath.empty() ? L"." : m_openFolderPath;
+    RunGitCmd(L"restore --staged --worktree .", dir);
+    RunGitCmd(L"checkout HEAD -- .", dir);
+    RunGitCmd(L"clean -fd", dir);
+    RefreshGitState(false, false);
+    m_isGitLoading = false;
+    return true;
 }
 
 void DrawerPanel::DiscardAllChangesAsync() {
     std::thread([this]() {
-        m_isGitLoading = true;
-        std::wstring dir = m_openFolderPath.empty() ? L"." : m_openFolderPath;
-        RunGitCmd(L"restore .", dir);
-        RunGitCmd(L"clean -fd", dir);
-        RefreshGitState(false);
+        DiscardAllChanges();
     }).detach();
 }
 
@@ -2907,19 +2934,39 @@ void DrawerPanel::StageFileAsync(const std::wstring& relPath) {
     std::thread([this, relPath]() {
         m_isGitLoading = true;
         std::wstring dir = m_openFolderPath.empty() ? L"." : m_openFolderPath;
-        RunGitCmd(L"add \"" + relPath + L"\"", dir);
-        RefreshGitState(false);
+        std::wstring cleanRel = relPath;
+        for (auto& c : cleanRel) if (c == L'\\') c = L'/';
+        RunGitCmd(L"add \"" + cleanRel + L"\"", dir);
+        RefreshGitState(false, false);
     }).detach();
+}
+
+bool DrawerPanel::DiscardFile(const std::wstring& relPath) {
+    m_isGitLoading = true;
+    std::wstring dir = m_openFolderPath.empty() ? L"." : m_openFolderPath;
+    std::wstring cleanRel = relPath;
+    for (auto& c : cleanRel) if (c == L'\\') c = L'/';
+    RunGitCmd(L"restore --staged --worktree -- \"" + cleanRel + L"\"", dir);
+    RunGitCmd(L"checkout HEAD -- \"" + cleanRel + L"\"", dir);
+    RunGitCmd(L"clean -fd -- \"" + cleanRel + L"\"", dir);
+    RefreshGitState(false, false);
+    m_isGitLoading = false;
+    return true;
 }
 
 void DrawerPanel::DiscardFileAsync(const std::wstring& relPath) {
     std::thread([this, relPath]() {
-        m_isGitLoading = true;
-        std::wstring dir = m_openFolderPath.empty() ? L"." : m_openFolderPath;
-        RunGitCmd(L"restore \"" + relPath + L"\"", dir);
-        RunGitCmd(L"clean -f \"" + relPath + L"\"", dir);
-        RefreshGitState(false);
+        DiscardFile(relPath);
     }).detach();
+}
+
+std::wstring DrawerPanel::GetCommitFileContent(const std::wstring& commitHash, const std::wstring& relPath) {
+    std::wstring dir = m_openFolderPath.empty() ? L"." : m_openFolderPath;
+    std::wstring cleanRel = relPath;
+    for (auto& c : cleanRel) if (c == L'\\') c = L'/';
+    auto res = RunGitCmd(L"show " + commitHash + L":\"" + cleanRel + L"\"", dir);
+    if (res.exitCode == 0) return res.output;
+    return L"";
 }
 
 void DrawerPanel::CommitChangesAsync(const std::wstring& message) {
@@ -3079,10 +3126,33 @@ void DrawerPanel::GenerateAiCommitMessage() {
     }
 }
 
-bool DrawerPanel::HitTestGit(POINT pt, const app::AppConfig& config, std::wstring& outOpenFile, std::wstring& outDiscardedFile) {
+bool DrawerPanel::HitTestGit(POINT pt, const app::AppConfig& config,
+                            std::wstring& outOpenFile,
+                            std::wstring& outDiscardedFile,
+                            bool& outIsDiff,
+                            std::wstring& outOpenCommitDiff,
+                            std::wstring& outOpenUrl) {
     (void)config;
     outOpenFile.clear();
     outDiscardedFile.clear();
+    outIsDiff = false;
+    outOpenCommitDiff.clear();
+    outOpenUrl.clear();
+
+    // 0. Check Commit Hover Card buttons first (Image 5)
+    if (m_hoveredCommitIdx >= 0 || m_selectedCommitIdx >= 0) {
+        if (pt.x >= m_commitCardOpenChangesBounds.left && pt.x <= m_commitCardOpenChangesBounds.right &&
+            pt.y >= m_commitCardOpenChangesBounds.top && pt.y <= m_commitCardOpenChangesBounds.bottom) {
+            outOpenCommitDiff = m_commitCardHash;
+            outIsDiff = true;
+            return true;
+        }
+        if (pt.x >= m_commitCardGitHubBounds.left && pt.x <= m_commitCardGitHubBounds.right &&
+            pt.y >= m_commitCardGitHubBounds.top && pt.y <= m_commitCardGitHubBounds.bottom) {
+            outOpenUrl = L"https://github.com/Tribrix23/phide/commit/" + m_commitCardHash;
+            return true;
+        }
+    }
 
     // 1. Top Popup Menus (Header Views, Changes More, Graph More)
     if (m_activeGitMenu != GitMenuType::None) {
@@ -3102,31 +3172,32 @@ bool DrawerPanel::HitTestGit(POINT pt, const app::AppConfig& config, std::wstrin
                         case 5: // Refresh All
                         case 14: // Refresh Status
                         case 20: // Refresh Graph
-                            RefreshGitState(true);
+                            RefreshGitState(true, true);
                             break;
                         case 10: // Stage All Changes
                             StageAllChangesAsync();
                             break;
                         case 11: // Discard All Changes
-                            DiscardAllChangesAsync();
+                            DiscardAllChanges();
+                            outDiscardedFile = L"*";
                             break;
                         case 13: // Undo Last Commit (Uncommit)
                             UncommitLastCommitAsync();
                             break;
                         case 12: // Stash Changes
                             RunGitCmd(L"stash", m_openFolderPath);
-                            RefreshGitState(true);
+                            RefreshGitState(true, true);
                             break;
                         case 21: // Push Commits
                             PushCommitsAsync();
                             break;
                         case 22: // Pull Commits
                             RunGitCmd(L"pull", m_openFolderPath);
-                            RefreshGitState(true);
+                            RefreshGitState(true, true);
                             break;
                         case 23: // Fetch All Remotes
                             RunGitCmd(L"fetch --all", m_openFolderPath);
-                            RefreshGitState(true);
+                            RefreshGitState(true, true);
                             break;
                         default:
                             break;
@@ -3178,7 +3249,8 @@ bool DrawerPanel::HitTestGit(POINT pt, const app::AppConfig& config, std::wstrin
         }
         if (pt.x >= m_gitDiscardAllBounds.left && pt.x <= m_gitDiscardAllBounds.right &&
             pt.y >= m_gitDiscardAllBounds.top && pt.y <= m_gitDiscardAllBounds.bottom) {
-            DiscardAllChangesAsync();
+            DiscardAllChanges();
+            outDiscardedFile = L"*";
             return true;
         }
         if (pt.x >= m_gitChangesMoreBounds.left && pt.x <= m_gitChangesMoreBounds.right &&
@@ -3243,11 +3315,12 @@ bool DrawerPanel::HitTestGit(POINT pt, const app::AppConfig& config, std::wstrin
                     }
                     if (pt.x >= item.discardBtnBounds.left && pt.x <= item.discardBtnBounds.right &&
                         pt.y >= item.discardBtnBounds.top && pt.y <= item.discardBtnBounds.bottom) {
-                        DiscardFileAsync(item.path);
+                        DiscardFile(item.path);
                         outDiscardedFile = item.path;
                         return true;
                     }
-                    outOpenFile = m_openFolderPath.empty() ? item.path : (m_openFolderPath + L"\\" + item.path);
+                    outOpenFile = item.path;
+                    outIsDiff = true; // Opens side-by-side diff comparison! (Image 2)
                     return true;
                 }
             }
@@ -3268,12 +3341,12 @@ bool DrawerPanel::HitTestGit(POINT pt, const app::AppConfig& config, std::wstrin
         }
         if (pt.x >= m_gitGraphSplitBounds.left && pt.x <= m_gitGraphSplitBounds.right &&
             pt.y >= m_gitGraphSplitBounds.top && pt.y <= m_gitGraphSplitBounds.bottom) {
-            RefreshGitState(true);
+            RefreshGitState(true, true);
             return true;
         }
         if (pt.x >= m_gitGraphMergeBounds.left && pt.x <= m_gitGraphMergeBounds.right &&
             pt.y >= m_gitGraphMergeBounds.top && pt.y <= m_gitGraphMergeBounds.bottom) {
-            RefreshGitState(true);
+            RefreshGitState(true, true);
             return true;
         }
         if (pt.x >= m_gitGraphPushBounds.left && pt.x <= m_gitGraphPushBounds.right &&
@@ -3283,7 +3356,7 @@ bool DrawerPanel::HitTestGit(POINT pt, const app::AppConfig& config, std::wstrin
         }
         if (pt.x >= m_gitGraphRefreshBounds.left && pt.x <= m_gitGraphRefreshBounds.right &&
             pt.y >= m_gitGraphRefreshBounds.top && pt.y <= m_gitGraphRefreshBounds.bottom) {
-            RefreshGitState(true);
+            RefreshGitState(true, true);
             return true;
         }
         if (pt.x >= m_gitGraphMoreBounds.left && pt.x <= m_gitGraphMoreBounds.right &&
@@ -3299,20 +3372,29 @@ bool DrawerPanel::HitTestGit(POINT pt, const app::AppConfig& config, std::wstrin
 
         // Commit Rows & Expanded File Details (Image 2 & 3)
         if (m_graphExpanded) {
-            for (auto& ci : m_gitCommits) {
-                // If commit is expanded, check clicking any of its changed files to open in editor
+            for (size_t i = 0; i < m_gitCommits.size(); ++i) {
+                auto& ci = m_gitCommits[i];
+                // If commit is expanded, check clicking any of its changed files to open diff in editor
                 if (ci.isExpanded) {
                     for (const auto& cf : ci.files) {
                         if (pt.x >= cf.bounds.left && pt.x <= cf.bounds.right &&
                             pt.y >= cf.bounds.top && pt.y <= cf.bounds.bottom) {
-                            outOpenFile = m_openFolderPath.empty() ? cf.path : (m_openFolderPath + L"\\" + cf.path);
+                            outOpenCommitDiff = ci.hash;
+                            outOpenFile = cf.path;
+                            outIsDiff = true;
                             return true;
                         }
                     }
                 }
-                // Clicking commit row toggles expansion and loads commit files
+                // Clicking commit row selects it to show card & toggles expansion
                 if (pt.x >= ci.bounds.left && pt.x <= ci.bounds.right &&
                     pt.y >= ci.bounds.top && pt.y <= ci.bounds.bottom) {
+                    m_selectedCommitIdx = static_cast<int>(i);
+                    m_hoveredCommitIdx = static_cast<int>(i);
+                    m_commitCardHash = ci.hash;
+                    if (ci.statSummary.empty()) {
+                        LoadCommitFiles(ci);
+                    }
                     ci.isExpanded = !ci.isExpanded;
                     if (ci.isExpanded) {
                         m_expandedCommitHashes.insert(ci.hash);
@@ -3418,15 +3500,37 @@ bool DrawerPanel::HandleGitMouseMove(POINT pt) {
         }
     }
 
-    // Check commit rows and expanded files (Image 2 & 3)
-    // Note: Commit row hover card is omitted to avoid obscuring the graph text (Complaint 1)
+    // Check commit rows and expanded files (Images 2, 3, 5)
+    int oldHoverCommit = m_hoveredCommitIdx;
     if (m_graphExpanded && !m_showGitTooltip) {
+        bool hitCommit = false;
+        // Preserve hover if mouse is inside the active commit card
+        if ((m_hoveredCommitIdx >= 0 || m_selectedCommitIdx >= 0) &&
+            pt.x >= m_commitCardBounds.left && pt.x <= m_commitCardBounds.right &&
+            pt.y >= m_commitCardBounds.top && pt.y <= m_commitCardBounds.bottom) {
+            hitCommit = true;
+        } else {
+            for (size_t i = 0; i < m_gitCommits.size(); ++i) {
+                const auto& ci = m_gitCommits[i];
+                if (pt.x >= ci.bounds.left && pt.x <= ci.bounds.right &&
+                    pt.y >= ci.bounds.top && pt.y <= ci.bounds.bottom) {
+                    m_hoveredCommitIdx = static_cast<int>(i);
+                    m_commitCardHash = ci.hash;
+                    hitCommit = true;
+                    break;
+                }
+            }
+        }
+        if (!hitCommit && m_selectedCommitIdx < 0) {
+            m_hoveredCommitIdx = -1;
+        }
+
         for (const auto& ci : m_gitCommits) {
             if (ci.isExpanded) {
                 for (const auto& cf : ci.files) {
                     if (pt.x >= cf.bounds.left && pt.x <= cf.bounds.right &&
                         pt.y >= cf.bounds.top && pt.y <= cf.bounds.bottom) {
-                        m_gitTooltipText = cf.path + L" [" + cf.status + L"]\nClick to open in Editor";
+                        m_gitTooltipText = cf.path + L" [" + cf.status + L"]\nClick to view diff";
                         m_gitTooltipTarget = cf.bounds;
                         m_showGitTooltip = true;
                         break;
@@ -3437,7 +3541,7 @@ bool DrawerPanel::HandleGitMouseMove(POINT pt) {
         }
     }
 
-    return (m_gitTooltipText != oldTip || m_hoveredGitChangeIdx != oldHoverChange);
+    return (m_gitTooltipText != oldTip || m_hoveredGitChangeIdx != oldHoverChange || m_hoveredCommitIdx != oldHoverCommit);
 }
 
 void DrawerPanel::HandleGitChar(wchar_t ch) {
@@ -4183,6 +4287,154 @@ void DrawerPanel::RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, 
 
             pRT->PopAxisAlignedClip();
         }
+    }
+
+    // =========================================================================
+    // 4.5 Floating Commit Details Card (Image 5)
+    // =========================================================================
+    int cardCommitIdx = (m_selectedCommitIdx >= 0) ? m_selectedCommitIdx : m_hoveredCommitIdx;
+    if (m_showGraphSection && cardCommitIdx >= 0 && cardCommitIdx < static_cast<int>(m_gitCommits.size())) {
+        auto& ci = m_gitCommits[cardCommitIdx];
+        m_commitCardHash = ci.hash;
+
+        float cardW = config.ScaleF(284.0f);
+        float cardH = config.ScaleF(116.0f);
+        float cardLeft = railW + config.ScaleF(12.0f);
+        if (cardLeft + cardW > railW + currentDrawerW - config.ScaleF(4.0f)) {
+            cardLeft = (std::max)(railW + config.ScaleF(4.0f), railW + currentDrawerW - cardW - config.ScaleF(4.0f));
+        }
+        float cardTop = ci.bounds.bottom + config.ScaleF(4.0f);
+        if (cardTop + cardH > clientHeight) {
+            cardTop = ci.bounds.top - cardH - config.ScaleF(4.0f);
+        }
+        if (cardTop < 0.0f) cardTop = config.ScaleF(40.0f);
+
+        m_commitCardBounds = D2D1::RectF(cardLeft, cardTop, cardLeft + cardW, cardTop + cardH);
+
+        // Card shadow & background
+        D2D1_ROUNDED_RECT rrcCard = D2D1::RoundedRect(m_commitCardBounds, 6.0f, 6.0f);
+        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushCardBg;
+        pRT->CreateSolidColorBrush(D2D1::ColorF(0.12f, 0.12f, 0.13f, 0.98f), &brushCardBg);
+        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushCardBorder;
+        pRT->CreateSolidColorBrush(D2D1::ColorF(0.28f, 0.28f, 0.30f, 1.0f), &brushCardBorder);
+
+        pRT->FillRoundedRectangle(rrcCard, brushCardBg.Get());
+        pRT->DrawRoundedRectangle(rrcCard, brushCardBorder.Get(), 1.0f);
+
+        // Header: Author Avatar + Name + relative time + date
+        float curCardY = cardTop + config.ScaleF(8.0f);
+        float avatarX = cardLeft + config.ScaleF(16.0f);
+        float avatarY = curCardY + config.ScaleF(7.0f);
+        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushAvatar;
+        pRT->CreateSolidColorBrush(D2D1::ColorF(0.22f, 0.55f, 0.99f, 1.0f), &brushAvatar);
+        pRT->FillEllipse(D2D1::Ellipse(D2D1::Point2F(avatarX, avatarY), 6.5f, 6.5f), brushAvatar.Get());
+
+        std::wstring authorLine = ci.author + L", " + ci.relativeTime;
+        if (!ci.dateFormatted.empty()) authorLine += L" (" + ci.dateFormatted + L")";
+
+        IDWriteTextFormat* pCardFmt = theme.fontMenuItem ? theme.fontMenuItem.Get() : theme.fontBody.Get();
+
+        D2D1_RECT_F rcAuthor = D2D1::RectF(avatarX + config.ScaleF(12.0f), curCardY, cardLeft + cardW - config.ScaleF(10.0f), curCardY + config.ScaleF(16.0f));
+        pRT->DrawText(authorLine.c_str(), static_cast<UINT32>(authorLine.length()),
+                      pCardFmt, rcAuthor, theme.brushTextMuted.Get());
+
+        curCardY += config.ScaleF(18.0f);
+
+        // Commit message (Bold/Primary text)
+        D2D1_RECT_F rcMsg = D2D1::RectF(cardLeft + config.ScaleF(10.0f), curCardY, cardLeft + cardW - config.ScaleF(10.0f), curCardY + config.ScaleF(32.0f));
+        pRT->DrawText(ci.message.c_str(), static_cast<UINT32>(ci.message.length()),
+                      pCardFmt, rcMsg, theme.brushTextPrimary.Get());
+
+        curCardY += config.ScaleF(34.0f);
+
+        // Stat line (e.g. 10 files changed, 1174 insertions(+), 83 deletions(-))
+        std::wstring statText = ci.statSummary;
+        if (statText.empty()) {
+            statText = (ci.files.empty() ? L"1 file changed" : (std::to_wstring(ci.files.size()) + L" files changed"));
+        }
+        D2D1_RECT_F rcStat = D2D1::RectF(cardLeft + config.ScaleF(10.0f), curCardY, cardLeft + cardW - config.ScaleF(10.0f), curCardY + config.ScaleF(18.0f));
+
+        // Syntax highlight insertions(+) in green, deletions(-) in red
+        size_t insPos = statText.find(L"insertion");
+        size_t delPos = statText.find(L"deletion");
+        if (insPos != std::wstring::npos || delPos != std::wstring::npos) {
+            float sX = cardLeft + config.ScaleF(10.0f);
+            size_t c1 = statText.find(L',');
+            if (c1 != std::wstring::npos) {
+                std::wstring part1 = statText.substr(0, c1 + 2); // e.g. "10 files changed, "
+                float w1 = static_cast<float>(part1.length()) * config.ScaleF(7.0f);
+                pRT->DrawText(part1.c_str(), static_cast<UINT32>(part1.length()), pCardFmt, D2D1::RectF(sX, curCardY, sX + w1, curCardY + config.ScaleF(18.0f)), theme.brushTextMuted.Get());
+                sX += w1;
+
+                size_t c2 = statText.find(L',', c1 + 1);
+                if (c2 != std::wstring::npos) {
+                    std::wstring part2 = statText.substr(c1 + 2, c2 - (c1 + 2)); // e.g. "1174 insertions(+)"
+                    float w2 = static_cast<float>(part2.length()) * config.ScaleF(7.0f);
+                    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushIns;
+                    pRT->CreateSolidColorBrush(D2D1::ColorF(0.30f, 0.78f, 0.40f, 1.0f), &brushIns);
+                    pRT->DrawText(part2.c_str(), static_cast<UINT32>(part2.length()), pCardFmt, D2D1::RectF(sX, curCardY, sX + w2, curCardY + config.ScaleF(18.0f)), brushIns.Get());
+                    sX += w2;
+
+                    std::wstring commaSep = L", ";
+                    pRT->DrawText(commaSep.c_str(), 2, pCardFmt, D2D1::RectF(sX, curCardY, sX + config.ScaleF(14.0f), curCardY + config.ScaleF(18.0f)), theme.brushTextMuted.Get());
+                    sX += config.ScaleF(14.0f);
+
+                    std::wstring part3 = statText.substr(c2 + 2); // e.g. "83 deletions(-)"
+                    float w3 = static_cast<float>(part3.length()) * config.ScaleF(7.0f);
+                    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushDel;
+                    pRT->CreateSolidColorBrush(D2D1::ColorF(0.92f, 0.35f, 0.35f, 1.0f), &brushDel);
+                    pRT->DrawText(part3.c_str(), static_cast<UINT32>(part3.length()), pCardFmt, D2D1::RectF(sX, curCardY, sX + w3, curCardY + config.ScaleF(18.0f)), brushDel.Get());
+                } else {
+                    std::wstring part2 = statText.substr(c1 + 2);
+                    pRT->DrawText(part2.c_str(), static_cast<UINT32>(part2.length()), pCardFmt, D2D1::RectF(sX, curCardY, cardLeft + cardW - config.ScaleF(10.0f), curCardY + config.ScaleF(18.0f)), theme.brushTextMuted.Get());
+                }
+            } else {
+                pRT->DrawText(statText.c_str(), static_cast<UINT32>(statText.length()), pCardFmt, rcStat, theme.brushTextMuted.Get());
+            }
+        } else {
+            pRT->DrawText(statText.c_str(), static_cast<UINT32>(statText.length()), pCardFmt, rcStat, theme.brushTextMuted.Get());
+        }
+
+        curCardY += config.ScaleF(20.0f);
+
+        // Action buttons row: [hash pill] [↗ Open on GitHub] [Open Changes]
+        float hashW = config.ScaleF(56.0f);
+        float btnH = config.ScaleF(22.0f);
+        D2D1_ROUNDED_RECT rrcHash = D2D1::RoundedRect(
+            D2D1::RectF(cardLeft + config.ScaleF(10.0f), curCardY, cardLeft + config.ScaleF(10.0f) + hashW, curCardY + btnH),
+            3.0f, 3.0f
+        );
+        pRT->FillRoundedRectangle(rrcHash, theme.brushHeaderBg.Get());
+        pRT->DrawRoundedRectangle(rrcHash, brushCardBorder.Get(), 1.0f);
+        pRT->DrawText(ci.hash.c_str(), static_cast<UINT32>(ci.hash.length()),
+                      pCardFmt,
+                      D2D1::RectF(cardLeft + config.ScaleF(14.0f), curCardY + 2.0f, cardLeft + config.ScaleF(10.0f) + hashW, curCardY + btnH),
+                      theme.brushBrandAccent.Get());
+
+        // Open on GitHub link
+        float ghLeft = cardLeft + config.ScaleF(72.0f);
+        float ghW = config.ScaleF(92.0f);
+        m_commitCardGitHubBounds = D2D1::RectF(ghLeft, curCardY, ghLeft + ghW, curCardY + btnH);
+        const wchar_t* ghText = L"↗ Open on GitHub";
+        pRT->DrawText(ghText, static_cast<UINT32>(wcslen(ghText)),
+                      pCardFmt,
+                      m_commitCardGitHubBounds, theme.brushBrandAccent.Get());
+
+        // Open Changes Button (Right-aligned, matching Image 5)
+        float chW = config.ScaleF(92.0f);
+        float chLeft = cardLeft + cardW - chW - config.ScaleF(8.0f);
+        m_commitCardOpenChangesBounds = D2D1::RectF(chLeft, curCardY, chLeft + chW, curCardY + btnH);
+        D2D1_ROUNDED_RECT rrcOpenChanges = D2D1::RoundedRect(m_commitCardOpenChangesBounds, 3.0f, 3.0f);
+        pRT->FillRoundedRectangle(rrcOpenChanges, theme.brushBrandAccent.Get());
+        const wchar_t* ocText = L"Open Changes";
+        pRT->DrawText(ocText, static_cast<UINT32>(wcslen(ocText)),
+                      pCardFmt,
+                      D2D1::RectF(chLeft + 6.0f, curCardY + 2.0f, chLeft + chW, curCardY + btnH),
+                      theme.brushTextWhite.Get());
+    } else {
+        m_commitCardBounds = D2D1::RectF(0, 0, 0, 0);
+        m_commitCardOpenChangesBounds = D2D1::RectF(0, 0, 0, 0);
+        m_commitCardGitHubBounds = D2D1::RectF(0, 0, 0, 0);
     }
 
     // =========================================================================

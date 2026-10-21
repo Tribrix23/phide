@@ -55,11 +55,26 @@ struct OpenDocument {
     std::wstring binaryFileType;         ///< Human-readable binary type descriptor
     D2D1_RECT_F unsupportedActionBtn{};  ///< Bounding box of "Reveal in File Explorer" button
 
-    // Git Diff & Deleted File State (Image 5)
-    bool isDiffView = false;             ///< True if this document is displaying git diff annotations
+    // Git Diff & Deleted File State (Images 2, 3, 4, 5)
+    bool isDiffView = false;             ///< True if this document is displaying side-by-side diff
     bool isDeletedInGit = false;         ///< True if this document was deleted in git and loaded from HEAD
-    std::set<size_t> diffAddedLines;     ///< Line indices (0-based) added relative to HEAD
-    std::set<size_t> diffDeletedLines;   ///< Line indices (0-based) where deletions occurred
+    bool isDiffLeftReadOnly = true;      ///< True if left pane is read-only (always true for working tree diff)
+    bool isDiffRightReadOnly = false;    ///< True if right pane is read-only (true for historical commit diffs)
+    int diffActivePane = 1;              ///< 0 = Left (Original/HEAD), 1 = Right (Working Tree)
+    Buffer diffOriginalBuffer;           ///< Left pane buffer (HEAD or parent commit)
+    std::wstring diffOriginalTitle;      ///< Left pane title (e.g. "LucideIcons.cpp (HEAD)")
+    std::wstring diffWorkingTitle;       ///< Right pane title (e.g. "LucideIcons.cpp (Working Tree)")
+    std::set<size_t> diffAddedLines;     ///< Right-side line indices (0-based) added relative to HEAD
+    std::set<size_t> diffDeletedLines;   ///< Left-side line indices (0-based) where deletions occurred
+
+    struct DiffHunkItem {
+        size_t leftStart = 0;   // 0-based line index in left buffer
+        size_t leftCount = 0;   // number of lines in left buffer
+        size_t rightStart = 0;  // 0-based line index in right buffer
+        size_t rightCount = 0;  // number of lines in right buffer
+        enum class HunkType { Modified, Added, Deleted } type = HunkType::Modified;
+    };
+    std::vector<DiffHunkItem> diffHunks; ///< Structured diff hunks between left and right buffers
 };
 
 /**

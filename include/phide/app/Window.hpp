@@ -138,6 +138,22 @@ private:
     void OpenFileDocument(const std::wstring& path, bool isPreview = false);
 
     /**
+     * @brief Opens a side-by-side diff comparison between HEAD and working copy (Images 2, 3, 4, 5).
+     * Left pane is HEAD (read-only); right pane is working tree (editable).
+     */
+    void OpenDiffDocument(const std::wstring& relPath, bool isPreview = false);
+
+    /**
+     * @brief Opens a historical commit diff comparison between parent commit and target commit (Image 5).
+     */
+    void OpenCommitDiffDocument(const std::wstring& commitHash, const std::wstring& relPath = L"");
+
+    /**
+     * @brief Computes diff hunks and line highlights between diffOriginalBuffer and buffer for a document.
+     */
+    void ComputeDiffHunks(editor::OpenDocument& doc);
+
+    /**
      * @brief Opens an in-memory virtual document (e.g. Untitled-1).
      * @param name Display name of the virtual document.
      * @param content Initial buffer text.
