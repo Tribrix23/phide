@@ -116,8 +116,8 @@ private:
     D2D1_RECT_F m_closeBounds{};
     D2D1_RECT_F m_moreThemesBounds{};
     D2D1_RECT_F m_backButtonBounds{};
-    D2D1_RECT_F m_cardBounds[13]{};
-    D2D1_RECT_F m_previewBoxBounds[13]{};
+    D2D1_RECT_F m_cardBounds[20]{};
+    D2D1_RECT_F m_previewBoxBounds[20]{};
 
     /**
      * @brief Renders an authentic miniature preview illustration of the Dark Mode IDE layout.

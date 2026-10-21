@@ -748,6 +748,150 @@ void ThemePickerModal::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::A
                     D2D1::ColorF(0.204f, 0.161f, 0.310f, 1.0f)  // border #34294F
                 );
                 break;
+            case ThemeMode::RetroGrid80s:
+                DrawGenericPreview(pRT, config, rcBox,
+                    D2D1::ColorF(0.071f, 0.027f, 0.133f, 1.0f), // canvas #120722
+                    D2D1::ColorF(0.165f, 0.051f, 0.282f, 1.0f), // header #2A0D48
+                    D2D1::ColorF(0.055f, 0.020f, 0.106f, 1.0f), // drawer #0E051B
+                    D2D1::ColorF(0.055f, 0.020f, 0.106f, 1.0f), // tabBar
+                    D2D1::ColorF(0.071f, 0.027f, 0.133f, 1.0f), // tabActive
+                    D2D1::ColorF(1.000f, 0.165f, 0.522f, 1.0f), // accent #FF2A85
+                    D2D1::ColorF(0.996f, 0.906f, 0.996f, 1.0f), // text #FEE7FE
+                    D2D1::ColorF(1.000f, 0.165f, 0.522f, 1.0f), // kw #FF2A85 Hot Pink
+                    D2D1::ColorF(0.000f, 0.941f, 1.000f, 1.0f), // type #00F0FF Cyan
+                    D2D1::ColorF(1.000f, 0.902f, 0.000f, 1.0f), // str #FFE600 Yellow
+                    D2D1::ColorF(0.518f, 0.263f, 0.639f, 1.0f), // comment #8443A3
+                    D2D1::ColorF(0.518f, 0.263f, 0.639f, 1.0f), // lineNum
+                    D2D1::ColorF(0.227f, 0.067f, 0.345f, 1.0f)  // border #3A1158
+                );
+                // Draw miniature 3D wireframe grid inside preview box
+                {
+                    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushPink;
+                    pRT->CreateSolidColorBrush(D2D1::ColorF(1.0f, 0.165f, 0.522f, 0.40f), &brushPink);
+                    if (brushPink) {
+                        float gridY = rcBox.top + (rcBox.bottom - rcBox.top) * 0.70f;
+                        float midX = rcBox.left + (rcBox.right - rcBox.left) * 0.55f;
+                        pRT->DrawLine(D2D1::Point2F(rcBox.left, gridY), D2D1::Point2F(rcBox.right, gridY), brushPink.Get(), 1.0f);
+                        pRT->DrawLine(D2D1::Point2F(midX - 20.0f, gridY), D2D1::Point2F(rcBox.left + 5.0f, rcBox.bottom), brushPink.Get(), 0.8f);
+                        pRT->DrawLine(D2D1::Point2F(midX, gridY), D2D1::Point2F(midX, rcBox.bottom), brushPink.Get(), 0.8f);
+                        pRT->DrawLine(D2D1::Point2F(midX + 20.0f, gridY), D2D1::Point2F(rcBox.right - 5.0f, rcBox.bottom), brushPink.Get(), 0.8f);
+                    }
+                }
+                break;
+            case ThemeMode::CosmicStarfield:
+                DrawGenericPreview(pRT, config, rcBox,
+                    D2D1::ColorF(0.035f, 0.039f, 0.078f, 1.0f), // canvas #090A14
+                    D2D1::ColorF(0.090f, 0.102f, 0.208f, 1.0f), // header #171A35
+                    D2D1::ColorF(0.027f, 0.031f, 0.063f, 1.0f), // drawer #070810
+                    D2D1::ColorF(0.027f, 0.031f, 0.063f, 1.0f), // tabBar
+                    D2D1::ColorF(0.035f, 0.039f, 0.078f, 1.0f), // tabActive
+                    D2D1::ColorF(0.545f, 0.361f, 0.965f, 1.0f), // accent #8B5CF6
+                    D2D1::ColorF(0.886f, 0.910f, 0.941f, 1.0f), // text #E2E8F0
+                    D2D1::ColorF(0.655f, 0.545f, 0.980f, 1.0f), // kw #A78BFA
+                    D2D1::ColorF(0.220f, 0.741f, 0.973f, 1.0f), // type #38BDF8
+                    D2D1::ColorF(0.992f, 0.878f, 0.278f, 1.0f), // str #FDE047
+                    D2D1::ColorF(0.278f, 0.333f, 0.412f, 1.0f), // comment #475569
+                    D2D1::ColorF(0.278f, 0.333f, 0.412f, 1.0f), // lineNum
+                    D2D1::ColorF(0.118f, 0.133f, 0.251f, 1.0f)  // border #1E2240
+                );
+                // Draw miniature stars
+                {
+                    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushStar;
+                    pRT->CreateSolidColorBrush(D2D1::ColorF(0.9f, 0.95f, 1.0f, 0.75f), &brushStar);
+                    if (brushStar) {
+                        float cx = rcBox.left + (rcBox.right - rcBox.left) * 0.65f;
+                        float cy = rcBox.top + (rcBox.bottom - rcBox.top) * 0.45f;
+                        pRT->FillEllipse(D2D1::Ellipse(D2D1::Point2F(cx, cy), 1.2f, 1.2f), brushStar.Get());
+                        pRT->FillEllipse(D2D1::Ellipse(D2D1::Point2F(cx + 18.0f, cy + 12.0f), 1.5f, 1.5f), brushStar.Get());
+                        pRT->FillEllipse(D2D1::Ellipse(D2D1::Point2F(cx - 14.0f, cy + 18.0f), 1.0f, 1.0f), brushStar.Get());
+                    }
+                }
+                break;
+            case ThemeMode::MatrixDigitalRain:
+                DrawGenericPreview(pRT, config, rcBox,
+                    D2D1::ColorF(0.012f, 0.031f, 0.016f, 1.0f), // canvas #030804
+                    D2D1::ColorF(0.043f, 0.169f, 0.075f, 1.0f), // header #0B2B13
+                    D2D1::ColorF(0.008f, 0.020f, 0.012f, 1.0f), // drawer #020503
+                    D2D1::ColorF(0.008f, 0.020f, 0.012f, 1.0f), // tabBar
+                    D2D1::ColorF(0.012f, 0.031f, 0.016f, 1.0f), // tabActive
+                    D2D1::ColorF(0.000f, 1.000f, 0.400f, 1.0f), // accent #00FF66
+                    D2D1::ColorF(0.800f, 1.000f, 0.867f, 1.0f), // text #CCFFDD
+                    D2D1::ColorF(0.000f, 1.000f, 0.400f, 1.0f), // kw #00FF66
+                    D2D1::ColorF(0.200f, 1.000f, 0.733f, 1.0f), // type #33FFBB
+                    D2D1::ColorF(0.533f, 1.000f, 0.667f, 1.0f), // str #88FFAA
+                    D2D1::ColorF(0.106f, 0.369f, 0.157f, 1.0f), // comment #1B5E28
+                    D2D1::ColorF(0.106f, 0.369f, 0.157f, 1.0f), // lineNum
+                    D2D1::ColorF(0.051f, 0.165f, 0.071f, 1.0f)  // border #0D2A12
+                );
+                break;
+            case ThemeMode::AuroraBorealis:
+                DrawGenericPreview(pRT, config, rcBox,
+                    D2D1::ColorF(0.031f, 0.075f, 0.102f, 1.0f), // canvas #08131A
+                    D2D1::ColorF(0.075f, 0.208f, 0.278f, 1.0f), // header #133547
+                    D2D1::ColorF(0.024f, 0.059f, 0.078f, 1.0f), // drawer #060F14
+                    D2D1::ColorF(0.024f, 0.059f, 0.078f, 1.0f), // tabBar
+                    D2D1::ColorF(0.031f, 0.075f, 0.102f, 1.0f), // tabActive
+                    D2D1::ColorF(0.176f, 0.831f, 0.749f, 1.0f), // accent #2DD4BF
+                    D2D1::ColorF(0.902f, 1.000f, 0.980f, 1.0f), // text #E6FFFA
+                    D2D1::ColorF(0.176f, 0.831f, 0.749f, 1.0f), // kw #2DD4BF
+                    D2D1::ColorF(0.220f, 0.741f, 0.973f, 1.0f), // type #38BDF8
+                    D2D1::ColorF(0.655f, 0.953f, 0.816f, 1.0f), // str #A7F3D0
+                    D2D1::ColorF(0.180f, 0.322f, 0.400f, 1.0f), // comment #2E5266
+                    D2D1::ColorF(0.180f, 0.322f, 0.400f, 1.0f), // lineNum
+                    D2D1::ColorF(0.078f, 0.196f, 0.259f, 1.0f)  // border #143242
+                );
+                break;
+            case ThemeMode::SunsetGlow:
+                DrawGenericPreview(pRT, config, rcBox,
+                    D2D1::ColorF(0.078f, 0.063f, 0.102f, 1.0f), // canvas #14101A
+                    D2D1::ColorF(0.188f, 0.098f, 0.231f, 1.0f), // header #30193B
+                    D2D1::ColorF(0.059f, 0.047f, 0.078f, 1.0f), // drawer #0F0C14
+                    D2D1::ColorF(0.059f, 0.047f, 0.078f, 1.0f), // tabBar
+                    D2D1::ColorF(0.078f, 0.063f, 0.102f, 1.0f), // tabActive
+                    D2D1::ColorF(1.000f, 0.369f, 0.494f, 1.0f), // accent #FF5E7E
+                    D2D1::ColorF(1.000f, 0.945f, 0.949f, 1.0f), // text #FFF1F2
+                    D2D1::ColorF(1.000f, 0.369f, 0.494f, 1.0f), // kw #FF5E7E
+                    D2D1::ColorF(1.000f, 0.620f, 0.392f, 1.0f), // type #FF9E64
+                    D2D1::ColorF(0.988f, 0.827f, 0.302f, 1.0f), // str #FCD34D
+                    D2D1::ColorF(0.420f, 0.302f, 0.431f, 1.0f), // comment #6B4D6E
+                    D2D1::ColorF(0.420f, 0.302f, 0.431f, 1.0f), // lineNum
+                    D2D1::ColorF(0.200f, 0.133f, 0.267f, 1.0f)  // border #332244
+                );
+                break;
+            case ThemeMode::EmeraldForest:
+                DrawGenericPreview(pRT, config, rcBox,
+                    D2D1::ColorF(0.031f, 0.078f, 0.055f, 1.0f), // canvas #08140E
+                    D2D1::ColorF(0.078f, 0.239f, 0.157f, 1.0f), // header #143D28
+                    D2D1::ColorF(0.024f, 0.059f, 0.039f, 1.0f), // drawer #060F0A
+                    D2D1::ColorF(0.024f, 0.059f, 0.039f, 1.0f), // tabBar
+                    D2D1::ColorF(0.031f, 0.078f, 0.055f, 1.0f), // tabActive
+                    D2D1::ColorF(0.063f, 0.725f, 0.506f, 1.0f), // accent #10B981
+                    D2D1::ColorF(0.925f, 0.992f, 0.961f, 1.0f), // text #ECFDF5
+                    D2D1::ColorF(0.204f, 0.827f, 0.600f, 1.0f), // kw #34D399
+                    D2D1::ColorF(0.431f, 0.906f, 0.718f, 1.0f), // type #6EE7B7
+                    D2D1::ColorF(0.639f, 0.902f, 0.208f, 1.0f), // str #A3E635
+                    D2D1::ColorF(0.145f, 0.322f, 0.227f, 1.0f), // comment #25523A
+                    D2D1::ColorF(0.145f, 0.322f, 0.227f, 1.0f), // lineNum
+                    D2D1::ColorF(0.086f, 0.220f, 0.157f, 1.0f)  // border #163828
+                );
+                break;
+            case ThemeMode::RosePine:
+                DrawGenericPreview(pRT, config, rcBox,
+                    D2D1::ColorF(0.098f, 0.090f, 0.141f, 1.0f), // canvas #191724
+                    D2D1::ColorF(0.153f, 0.141f, 0.235f, 1.0f), // header #27243C
+                    D2D1::ColorF(0.082f, 0.075f, 0.118f, 1.0f), // drawer #15131E
+                    D2D1::ColorF(0.082f, 0.075f, 0.118f, 1.0f), // tabBar
+                    D2D1::ColorF(0.098f, 0.090f, 0.141f, 1.0f), // tabActive
+                    D2D1::ColorF(0.922f, 0.435f, 0.573f, 1.0f), // accent #EB6F92
+                    D2D1::ColorF(0.878f, 0.871f, 0.957f, 1.0f), // text #E0DEF4
+                    D2D1::ColorF(0.192f, 0.455f, 0.561f, 1.0f), // kw #31748F
+                    D2D1::ColorF(0.612f, 0.808f, 0.847f, 1.0f), // type #9CCFD8
+                    D2D1::ColorF(0.965f, 0.757f, 0.467f, 1.0f), // str #F6C177
+                    D2D1::ColorF(0.431f, 0.416f, 0.525f, 1.0f), // comment #6E6A86
+                    D2D1::ColorF(0.431f, 0.416f, 0.525f, 1.0f), // lineNum
+                    D2D1::ColorF(0.149f, 0.137f, 0.227f, 1.0f)  // border #26233A
+                );
+                break;
         }
     };
 
@@ -923,7 +1067,7 @@ void ThemePickerModal::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::A
             modalX + modalW - config.ScaleF(60.0f),
             modalY + config.ScaleF(34.0f)
         );
-        const wchar_t* catTitleStr = L"Color Theme Catalog (13 Themes)";
+        const wchar_t* catTitleStr = L"Color Theme Catalog (20 Themes)";
         pRT->DrawText(catTitleStr, static_cast<UINT32>(wcslen(catTitleStr)),
                       theme.fontButtonCenter.Get(), rcCatTitle, brushModalTitle.Get());
 
@@ -933,7 +1077,7 @@ void ThemePickerModal::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::A
             modalX + modalW - config.ScaleF(60.0f),
             modalY + config.ScaleF(54.0f)
         );
-        const wchar_t* catSubStr = L"Select from all 13 built-in themes and color schemes";
+        const wchar_t* catSubStr = L"Select from all 20 built-in themes and color schemes";
         pRT->DrawText(catSubStr, static_cast<UINT32>(wcslen(catSubStr)),
                       theme.fontMenuShortcut.Get(), rcCatSubtitle, brushModalSub.Get());
 
@@ -950,20 +1094,27 @@ void ThemePickerModal::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::A
             ThemeMode mode;
             const wchar_t* label;
         };
-        CatalogMeta catalog[13] = {
-            { ThemeMode::Dark,       L"Dark Mode" },
-            { ThemeMode::Light,      L"Light Mode" },
-            { ThemeMode::Auto,       L"Auto (System)" },
-            { ThemeMode::Purple,     L"Deep Purple" },
-            { ThemeMode::Cyan,       L"Cyan Cyber" },
-            { ThemeMode::Turquoise,  L"Turquoise Teal" },
-            { ThemeMode::Monokai,    L"Monokai Pro" },
-            { ThemeMode::Dracula,    L"Dracula" },
-            { ThemeMode::Nord,       L"Nord Arctic" },
-            { ThemeMode::Solarized,  L"Solarized Dark" },
-            { ThemeMode::GitHubDark, L"GitHub Dark" },
-            { ThemeMode::OneDark,    L"One Dark Pro" },
-            { ThemeMode::SynthWave,  L"SynthWave '84" },
+        CatalogMeta catalog[20] = {
+            { ThemeMode::Dark,              L"Dark Mode" },
+            { ThemeMode::Light,             L"Light Mode" },
+            { ThemeMode::Auto,              L"Auto (System)" },
+            { ThemeMode::Purple,            L"Deep Purple" },
+            { ThemeMode::Cyan,              L"Cyan Cyber" },
+            { ThemeMode::Turquoise,         L"Turquoise Teal" },
+            { ThemeMode::Monokai,           L"Monokai Pro" },
+            { ThemeMode::Dracula,           L"Dracula" },
+            { ThemeMode::Nord,              L"Nord Arctic" },
+            { ThemeMode::Solarized,         L"Solarized Dark" },
+            { ThemeMode::GitHubDark,        L"GitHub Dark" },
+            { ThemeMode::OneDark,           L"One Dark Pro" },
+            { ThemeMode::SynthWave,         L"SynthWave '84" },
+            { ThemeMode::RetroGrid80s,      L"Retro Grid '80s" },
+            { ThemeMode::CosmicStarfield,   L"Cosmic Starfield" },
+            { ThemeMode::MatrixDigitalRain, L"Matrix Rain" },
+            { ThemeMode::AuroraBorealis,    L"Aurora Borealis" },
+            { ThemeMode::SunsetGlow,        L"Sunset Glow" },
+            { ThemeMode::EmeraldForest,     L"Emerald Forest" },
+            { ThemeMode::RosePine,          L"Rosé Pine" },
         };
 
         const float catCardW = config.ScaleF(216.0f);
@@ -972,7 +1123,7 @@ void ThemePickerModal::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::A
         const float catGapY  = config.ScaleF(14.0f);
         const float catStartX = modalX + config.ScaleF(24.0f);
 
-        for (int i = 0; i < 13; ++i) {
+        for (int i = 0; i < 20; ++i) {
             int col = i % 4;
             int row = i / 4;
             float x = catStartX + col * (catCardW + catGapX);
@@ -1035,7 +1186,7 @@ void ThemePickerModal::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::A
         pRT->PopAxisAlignedClip();
 
         // Optional scrollbar indicator
-        const float totalContentH = config.ScaleF(4.0f * (142.0f + 14.0f) + 20.0f);
+        const float totalContentH = config.ScaleF(5.0f * (142.0f + 14.0f) + 20.0f);
         const float clipH = rcCatalogClip.bottom - rcCatalogClip.top;
         if (totalContentH > clipH && clipH > 50.0f) {
             float thumbRatio = clipH / totalContentH;
@@ -1057,7 +1208,7 @@ void ThemePickerModal::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::A
 bool ThemePickerModal::HandleMouseWheel(short delta) {
     if (!m_isOpen || !m_showAllCatalog) return false;
     const float scrollStep = 50.0f;
-    const float totalContentH = 4.0f * (142.0f + 14.0f) + 20.0f;
+    const float totalContentH = 5.0f * (142.0f + 14.0f) + 20.0f;
     const float clipH = m_modalBounds.bottom - m_modalBounds.top - 80.0f;
     float maxScroll = (std::max)(0.0f, totalContentH - clipH);
     if (delta > 0) {
@@ -1106,7 +1257,7 @@ bool ThemePickerModal::HandleMouseMove(POINT clientPt) {
 
         if (clientPt.x >= rcCatalogClip.left && clientPt.x <= rcCatalogClip.right &&
             clientPt.y >= rcCatalogClip.top && clientPt.y <= rcCatalogClip.bottom) {
-            for (int i = 0; i < 13; ++i) {
+            for (int i = 0; i < 20; ++i) {
                 if (clientPt.x >= m_cardBounds[i].left && clientPt.x <= m_cardBounds[i].right &&
                     clientPt.y >= m_cardBounds[i].top && clientPt.y <= m_cardBounds[i].bottom) {
                     m_hoveredCard = i;
@@ -1172,7 +1323,7 @@ bool ThemePickerModal::HandleLButtonDown(POINT clientPt, ThemeMode& outChosenMod
             return false;
         }
 
-        ThemeMode catModes[13] = {
+        ThemeMode catModes[20] = {
             ThemeMode::Dark,
             ThemeMode::Light,
             ThemeMode::Auto,
@@ -1185,7 +1336,14 @@ bool ThemePickerModal::HandleLButtonDown(POINT clientPt, ThemeMode& outChosenMod
             ThemeMode::Solarized,
             ThemeMode::GitHubDark,
             ThemeMode::OneDark,
-            ThemeMode::SynthWave
+            ThemeMode::SynthWave,
+            ThemeMode::RetroGrid80s,
+            ThemeMode::CosmicStarfield,
+            ThemeMode::MatrixDigitalRain,
+            ThemeMode::AuroraBorealis,
+            ThemeMode::SunsetGlow,
+            ThemeMode::EmeraldForest,
+            ThemeMode::RosePine
         };
 
         D2D1_RECT_F rcCatalogClip = D2D1::RectF(
@@ -1197,7 +1355,7 @@ bool ThemePickerModal::HandleLButtonDown(POINT clientPt, ThemeMode& outChosenMod
 
         if (clientPt.x >= rcCatalogClip.left && clientPt.x <= rcCatalogClip.right &&
             clientPt.y >= rcCatalogClip.top && clientPt.y <= rcCatalogClip.bottom) {
-            for (int i = 0; i < 13; ++i) {
+            for (int i = 0; i < 20; ++i) {
                 if (clientPt.x >= m_cardBounds[i].left && clientPt.x <= m_cardBounds[i].right &&
                     clientPt.y >= m_cardBounds[i].top && clientPt.y <= m_cardBounds[i].bottom) {
                     outChosenMode = catModes[i];

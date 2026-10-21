@@ -111,6 +111,7 @@ private:
     Microsoft::WRL::ComPtr<ID2D1LinearGradientBrush> m_pRailGradientBrush;
     float m_lastRailH = -1.0f;
     bool  m_lastIsDark = true; ///< Tracks theme transitions to invalidate gradient cache
+    ThemeMode m_lastThemeMode = static_cast<ThemeMode>(-1);
 
     // Phide Square Brand Logo (embedded from user image)
     Microsoft::WRL::ComPtr<ID2D1Bitmap> m_pLogoBitmap;

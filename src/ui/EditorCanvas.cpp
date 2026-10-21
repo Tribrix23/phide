@@ -182,6 +182,9 @@ void EditorCanvas::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
         pRT->FillRectangle(rcFallback, theme.brushCanvasBg.Get());
     }
 
+    // 1b. Render ambient theme visual effects (3D neon perspective grid, stars, matrix rain) across canvas
+    RenderCanvasThemeEffects(pRT, theme, config, canvasLeft, canvasWidth, headerH + config.ScaleF(34.0f), clientHeight);
+
     size_t numGroups = groups.size();
     const float paneGap = 1.0f;
     const float totalGaps = (numGroups > 1) ? static_cast<float>(numGroups - 1) * paneGap : 0.0f;
@@ -1645,6 +1648,138 @@ void EditorCanvas::RenderRefactorPopup(ID2D1RenderTarget* pRT, Theme& theme, con
         rcText,
         textBrush.Get()
     );
+}
+
+void EditorCanvas::RenderCanvasThemeEffects(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
+                                            float canvasLeft, float canvasWidth, float topY, float clientHeight) {
+    if (!pRT || canvasWidth <= 20.0f || clientHeight <= topY) return;
+
+    ThemeMode mode = theme.GetThemeMode();
+    if (mode == ThemeMode::RetroGrid80s) {
+        // Synthwave 80s 3D Perspective Wireframe Grid (Image 5)
+        const float gridH = (std::min)(350.0f, (clientHeight - topY) * 0.55f);
+        const float horizonY = clientHeight - gridH;
+        const float centerX = canvasLeft + canvasWidth * 0.5f;
+
+        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushNeonPink;
+        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushNeonCyan;
+        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushHorizon;
+        pRT->CreateSolidColorBrush(D2D1::ColorF(1.0f, 0.165f, 0.522f, 0.28f), &brushNeonPink); // #FF2A85
+        pRT->CreateSolidColorBrush(D2D1::ColorF(0.0f, 0.941f, 1.0f, 0.22f), &brushNeonCyan);   // #00F0FF
+        pRT->CreateSolidColorBrush(D2D1::ColorF(1.0f, 0.165f, 0.522f, 0.45f), &brushHorizon);
+
+        if (brushHorizon) {
+            pRT->DrawLine(D2D1::Point2F(canvasLeft, horizonY), D2D1::Point2F(canvasLeft + canvasWidth, horizonY), brushHorizon.Get(), 1.5f);
+        }
+
+        // Perspective depth lines converging toward vanishing point
+        if (brushNeonPink) {
+            const int numLines = 14;
+            for (int i = -numLines; i <= numLines; ++i) {
+                float bottomX = centerX + static_cast<float>(i) * (canvasWidth / static_cast<float>(numLines * 1.5f));
+                float topX = centerX + static_cast<float>(i) * (canvasWidth * 0.05f / static_cast<float>(numLines));
+                pRT->DrawLine(D2D1::Point2F(topX, horizonY), D2D1::Point2F(bottomX, clientHeight), brushNeonPink.Get(), 1.0f);
+            }
+        }
+
+        // Horizontal perspective lines with quadratic spacing
+        if (brushNeonCyan) {
+            const int numHoriz = 10;
+            for (int h = 1; h <= numHoriz; ++h) {
+                float t = static_cast<float>(h) / static_cast<float>(numHoriz);
+                float nonLinearT = t * t;
+                float lineY = horizonY + nonLinearT * gridH;
+                float alpha = 0.10f + 0.25f * t;
+                brushNeonCyan->SetOpacity(alpha);
+                pRT->DrawLine(D2D1::Point2F(canvasLeft, lineY), D2D1::Point2F(canvasLeft + canvasWidth, lineY), brushNeonCyan.Get(), 1.0f);
+            }
+        }
+    } else if (mode == ThemeMode::CosmicStarfield) {
+        // Deep Space Cosmic Twinkling Stars & Particles
+        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushStar;
+        pRT->CreateSolidColorBrush(D2D1::ColorF(0.9f, 0.92f, 1.0f, 0.6f), &brushStar);
+        if (brushStar) {
+            const int starCount = 50;
+            for (int i = 0; i < starCount; ++i) {
+                float seedX = static_cast<float>((i * 1973 + 13) % 997) / 997.0f;
+                float seedY = static_cast<float>((i * 4729 + 17) % 991) / 991.0f;
+                float seedR = static_cast<float>((i * 7919 + 23) % 100) / 100.0f;
+
+                float starX = canvasLeft + seedX * canvasWidth;
+                float starY = topY + seedY * (clientHeight - topY);
+                float starRadius = (seedR > 0.85f) ? 1.8f : ((seedR > 0.5f) ? 1.2f : 0.8f);
+                float starAlpha = (seedR > 0.85f) ? 0.75f : ((seedR > 0.5f) ? 0.50f : 0.30f);
+
+                if (i % 3 == 0) {
+                    brushStar->SetColor(D2D1::ColorF(0.655f, 0.545f, 0.980f, starAlpha)); // Nebula Purple
+                } else if (i % 3 == 1) {
+                    brushStar->SetColor(D2D1::ColorF(0.380f, 0.750f, 1.000f, starAlpha)); // Cyan Star
+                } else {
+                    brushStar->SetColor(D2D1::ColorF(1.000f, 0.950f, 0.800f, starAlpha)); // Pale Gold Star
+                }
+                pRT->FillEllipse(D2D1::Ellipse(D2D1::Point2F(starX, starY), starRadius, starRadius), brushStar.Get());
+            }
+        }
+    } else if (mode == ThemeMode::MatrixDigitalRain) {
+        // Matrix Green Terminal Code Drops
+        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushMatrix;
+        pRT->CreateSolidColorBrush(D2D1::ColorF(0.0f, 1.0f, 0.4f, 0.35f), &brushMatrix);
+        if (brushMatrix) {
+            const int columnCount = 28;
+            for (int c = 0; c < columnCount; ++c) {
+                float colX = canvasLeft + (static_cast<float>(c) + 0.5f) * (canvasWidth / static_cast<float>(columnCount));
+                float seedY = static_cast<float>((c * 317 + 41) % 997) / 997.0f;
+                float streamLen = 80.0f + static_cast<float>((c * 191) % 120);
+                float startY = topY + seedY * (clientHeight - topY);
+
+                brushMatrix->SetColor(D2D1::ColorF(0.0f, 1.0f, 0.4f, 0.12f));
+                pRT->DrawLine(D2D1::Point2F(colX, startY), D2D1::Point2F(colX, (std::min)(clientHeight, startY + streamLen)), brushMatrix.Get(), 1.5f);
+
+                brushMatrix->SetColor(D2D1::ColorF(0.8f, 1.0f, 0.867f, 0.45f));
+                pRT->FillEllipse(D2D1::Ellipse(D2D1::Point2F(colX, (std::min)(clientHeight - 2.0f, startY + streamLen)), 1.8f, 1.8f), brushMatrix.Get());
+            }
+        }
+    } else if (mode == ThemeMode::AuroraBorealis) {
+        // Shimmering Arctic Aurora Polar Teal Curtains
+        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushAurora;
+        pRT->CreateSolidColorBrush(D2D1::ColorF(0.176f, 0.831f, 0.749f, 0.08f), &brushAurora);
+        if (brushAurora) {
+            float auroraMidY = topY + (clientHeight - topY) * 0.35f;
+            for (int w = 0; w < 4; ++w) {
+                float yOff = static_cast<float>(w) * 16.0f;
+                brushAurora->SetColor(D2D1::ColorF(0.176f, 0.831f, 0.749f, 0.06f - w * 0.012f));
+                pRT->DrawLine(D2D1::Point2F(canvasLeft, auroraMidY + yOff), D2D1::Point2F(canvasLeft + canvasWidth, auroraMidY - yOff * 0.5f), brushAurora.Get(), 8.0f);
+            }
+        }
+    } else if (mode == ThemeMode::EmeraldForest) {
+        // Glowing Fireflies Particles in deep emerald jungle
+        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushFirefly;
+        pRT->CreateSolidColorBrush(D2D1::ColorF(0.639f, 0.902f, 0.208f, 0.5f), &brushFirefly); // #A3E635
+        if (brushFirefly) {
+            const int fireflyCount = 24;
+            for (int f = 0; f < fireflyCount; ++f) {
+                float fx = canvasLeft + (static_cast<float>((f * 617 + 11) % 991) / 991.0f) * canvasWidth;
+                float fy = topY + (static_cast<float>((f * 883 + 19) % 983) / 983.0f) * (clientHeight - topY);
+                float glowR = 3.5f + static_cast<float>((f * 29) % 4);
+                brushFirefly->SetColor(D2D1::ColorF(0.639f, 0.902f, 0.208f, 0.15f));
+                pRT->FillEllipse(D2D1::Ellipse(D2D1::Point2F(fx, fy), glowR, glowR), brushFirefly.Get());
+                brushFirefly->SetColor(D2D1::ColorF(0.85f, 1.0f, 0.4f, 0.65f));
+                pRT->FillEllipse(D2D1::Ellipse(D2D1::Point2F(fx, fy), 1.2f, 1.2f), brushFirefly.Get());
+            }
+        }
+    } else if (mode == ThemeMode::SunsetGlow) {
+        // Sunset Horizon Glow at the bottom
+        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushDusk;
+        pRT->CreateSolidColorBrush(D2D1::ColorF(1.0f, 0.369f, 0.494f, 0.08f), &brushDusk); // Coral #FF5E7E
+        if (brushDusk) {
+            float duskH = (clientHeight - topY) * 0.35f;
+            float duskY = clientHeight - duskH;
+            D2D1_RECT_F rcDusk = D2D1::RectF(canvasLeft, duskY, canvasLeft + canvasWidth, clientHeight);
+            pRT->FillRectangle(rcDusk, brushDusk.Get());
+            brushDusk->SetColor(D2D1::ColorF(1.0f, 0.459f, 0.337f, 0.18f)); // Amber #FF7556
+            pRT->DrawLine(D2D1::Point2F(canvasLeft, duskY), D2D1::Point2F(canvasLeft + canvasWidth, duskY), brushDusk.Get(), 1.0f);
+        }
+    }
 }
 
 } // namespace phide::ui

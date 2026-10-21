@@ -199,6 +199,7 @@ private:
     Microsoft::WRL::ComPtr<ID2D1LinearGradientBrush> m_pHeaderGradientBrush;
     float m_lastWidth = -1.0f;
     bool  m_lastIsDark = true; ///< Tracks theme transitions to invalidate gradient cache
+    ThemeMode m_lastThemeMode = static_cast<ThemeMode>(-1);
 };
 
 } // namespace phide::ui

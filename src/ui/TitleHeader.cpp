@@ -44,32 +44,28 @@ void TitleHeader::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCon
 
     const float railW = config.ScaleF(static_cast<float>(config.railWidth));
 
-    // Ensure horizontal purple glass gradient brush is initialized/updated
-    if (!m_pHeaderGradientBrush || std::abs(m_lastWidth - clientWidth) >= 1.0f || m_lastIsDark != theme.IsDarkMode()) {
+    // Ensure horizontal glass gradient brush is initialized/updated
+    if (!m_pHeaderGradientBrush || std::abs(m_lastWidth - clientWidth) >= 1.0f || m_lastThemeMode != theme.GetThemeMode()) {
         m_lastWidth = clientWidth;
         m_lastIsDark = theme.IsDarkMode();
+        m_lastThemeMode = theme.GetThemeMode();
         m_pHeaderGradientBrush.Reset();
 
         ComPtr<ID2D1GradientStopCollection> pStopColl;
+        D2D1_COLOR_F baseCol = theme.colors.headerBg;
         if (theme.IsDarkMode()) {
-            D2D1_GRADIENT_STOP stops[6];
-            stops[0] = { 0.00f, D2D1::ColorF(0.24f, 0.08f, 0.38f, 1.0f) }; // #3D1461 - Seamlessly matches rail's purple
-            stops[1] = { 0.20f, D2D1::ColorF(0.18f, 0.06f, 0.30f, 1.0f) }; // #2E0F4D - Deep Royal Violet
-            stops[2] = { 0.42f, D2D1::ColorF(0.12f, 0.04f, 0.21f, 1.0f) }; // #1F0B36 - Dark Twilight Purple
-            stops[3] = { 0.65f, D2D1::ColorF(0.07f, 0.03f, 0.13f, 1.0f) }; // #120721 - Midnight Shadow
-            stops[4] = { 0.85f, D2D1::ColorF(0.04f, 0.04f, 0.05f, 1.0f) }; // #0A0A0D - Transition to Black
-            stops[5] = { 1.00f, D2D1::ColorF(0.03f, 0.03f, 0.04f, 1.0f) }; // #08080A - Pure Obsidian Black on right side
-            pRT->CreateGradientStopCollection(stops, 6, &pStopColl);
-        } else {
-            // Light Mode: Starts with vibrant Light Purple (#CFB3E8) on the left ("light purple here so it should be still purple"),
-            // transitioning smoothly towards crisp pure white on the right ("should be whiter here not this dark")
-            // where the caption buttons and solid black execution widget are located.
             D2D1_GRADIENT_STOP stops[4];
-            stops[0] = { 0.00f, D2D1::ColorF(0.812f, 0.702f, 0.910f, 1.0f) }; // #CFB3E8 Light Purple base
-            stops[1] = { 0.25f, D2D1::ColorF(0.863f, 0.784f, 0.937f, 1.0f) }; // #DCC8EF Soft Light Purple
-            stops[2] = { 0.60f, D2D1::ColorF(0.941f, 0.902f, 0.973f, 1.0f) }; // #F0E6F8 Very soft Lavender
-            stops[3] = { 1.00f, D2D1::ColorF(1.000f, 1.000f, 1.000f, 1.0f) }; // #FFFFFF Pure White on right
+            stops[0] = { 0.00f, baseCol };
+            stops[1] = { 0.35f, D2D1::ColorF(baseCol.r * 0.90f, baseCol.g * 0.90f, baseCol.b * 0.90f, 1.0f) };
+            stops[2] = { 0.70f, D2D1::ColorF(baseCol.r * 0.65f, baseCol.g * 0.65f, baseCol.b * 0.65f, 1.0f) };
+            stops[3] = { 1.00f, D2D1::ColorF(baseCol.r * 0.45f, baseCol.g * 0.45f, baseCol.b * 0.45f, 1.0f) };
             pRT->CreateGradientStopCollection(stops, 4, &pStopColl);
+        } else {
+            D2D1_GRADIENT_STOP stops[3];
+            stops[0] = { 0.00f, baseCol };
+            stops[1] = { 0.50f, D2D1::ColorF((std::min)(1.0f, baseCol.r * 1.05f), (std::min)(1.0f, baseCol.g * 1.05f), (std::min)(1.0f, baseCol.b * 1.05f), 1.0f) };
+            stops[2] = { 1.00f, D2D1::ColorF(1.0f, 1.0f, 1.0f, 1.0f) };
+            pRT->CreateGradientStopCollection(stops, 3, &pStopColl);
         }
 
         if (pStopColl) {

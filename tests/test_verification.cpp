@@ -1993,6 +1993,174 @@ int main() {
         std::cout << "  Passed: Saved test_git_ux_fixes_complete.png" << std::endl;
     }
 
+    // ==========================================
+    // 16. Test Verification: 20 Color Themes, Curved Corners in Deep Purple, Retro Grid 3D & Circular Refresh Icon
+    // ==========================================
+    {
+        std::cout << "\n[TEST 16] Running Theme, Corner Curvature & Git Refresh Verification..." << std::endl;
+        WICPixelFormatGUID format = GUID_WICPixelFormat32bppPBGRA;
+
+        // 1. Validate all 20 theme modes
+        phide::ui::Theme theme;
+        for (int m = 0; m <= 19; ++m) {
+            theme.SetThemeMode(static_cast<phide::ui::ThemeMode>(m));
+            assert(theme.colors.windowBg.r == theme.colors.headerBg.r);
+            assert(theme.colors.windowBg.g == theme.colors.headerBg.g);
+            assert(theme.colors.windowBg.b == theme.colors.headerBg.b);
+        }
+        std::cout << "  Passed: All 20 themes have windowBg == headerBg for seamless upper-left curvature" << std::endl;
+
+        // 2. Render Activity Rail with Authentic Circular Git Refresh Icon (Image 1)
+        ComPtr<IWICBitmap> pWicRefreshBmp;
+        ComPtr<ID2D1RenderTarget> pRefreshRT;
+        CreateTarget(pWicRefreshBmp, pRefreshRT);
+        theme.SetThemeMode(phide::ui::ThemeMode::Dark);
+        hr = theme.CreateDeviceResources(pRefreshRT.Get(), pDWriteFactory.Get());
+        assert(SUCCEEDED(hr));
+
+        phide::app::AppConfig cfg;
+        cfg.activeRailTab = 2;
+
+        phide::ui::ActivityRail rail;
+        rail.SetGitLoading(true);
+        rail.UpdateGitAnim(30.0f);
+
+        pRefreshRT->BeginDraw();
+        pRefreshRT->Clear(theme.colors.windowBg);
+        rail.Render(pRefreshRT.Get(), theme, cfg, 750.0f);
+        pRefreshRT->EndDraw();
+
+        ComPtr<IWICStream> pStreamRefresh;
+        pWicFactory->CreateStream(&pStreamRefresh);
+        pStreamRefresh->InitializeFromFilename((artDir + L"test_git_circular_sync_badge.png").c_str(), GENERIC_WRITE);
+        ComPtr<IWICBitmapEncoder> encRefresh;
+        pWicFactory->CreateEncoder(GUID_ContainerFormatPng, nullptr, &encRefresh);
+        encRefresh->Initialize(pStreamRefresh.Get(), WICBitmapEncoderNoCache);
+        ComPtr<IWICBitmapFrameEncode> frameRefresh;
+        encRefresh->CreateNewFrame(&frameRefresh, nullptr);
+        frameRefresh->Initialize(nullptr);
+        frameRefresh->SetSize(1200, 750);
+        frameRefresh->SetPixelFormat(&format);
+        frameRefresh->WriteSource(pWicRefreshBmp.Get(), nullptr);
+        frameRefresh->Commit();
+        encRefresh->Commit();
+        std::cout << "  Passed: Saved test_git_circular_sync_badge.png" << std::endl;
+
+        // 3. Render Deep Purple with Upper-Left Corner Curve
+        ComPtr<IWICBitmap> pWicPurpleBmp;
+        ComPtr<ID2D1RenderTarget> pPurpleRT;
+        CreateTarget(pWicPurpleBmp, pPurpleRT);
+        theme.SetThemeMode(phide::ui::ThemeMode::Purple);
+        theme.CreateDeviceResources(pPurpleRT.Get(), pDWriteFactory.Get());
+
+        phide::ui::TitleHeader header;
+        phide::ui::DrawerPanel drawer;
+        drawer.OpenFolder(std::filesystem::current_path().wstring());
+
+        const float railW = cfg.ScaleF(static_cast<float>(cfg.railWidth));
+        const float headerH = cfg.ScaleF(static_cast<float>(cfg.headerHeight));
+        const float drawerW = cfg.ScaleF(static_cast<float>(cfg.drawerWidth));
+
+        pPurpleRT->BeginDraw();
+        pPurpleRT->Clear(theme.colors.windowBg);
+        D2D1_RECT_F rcPatch = D2D1::RectF(railW, headerH, railW + 18.0f, headerH + 18.0f);
+        pPurpleRT->FillRectangle(rcPatch, theme.brushHeaderBg.Get());
+
+        drawer.Render(pPurpleRT.Get(), theme, cfg, 750.0f, drawerW);
+        rail.SetGitLoading(false);
+        rail.Render(pPurpleRT.Get(), theme, cfg, 750.0f);
+        header.Render(pPurpleRT.Get(), theme, cfg, 1200.0f, false);
+        pPurpleRT->EndDraw();
+
+        ComPtr<IWICStream> pStreamPurple;
+        pWicFactory->CreateStream(&pStreamPurple);
+        pStreamPurple->InitializeFromFilename((artDir + L"test_deep_purple_curve.png").c_str(), GENERIC_WRITE);
+        ComPtr<IWICBitmapEncoder> encPurple;
+        pWicFactory->CreateEncoder(GUID_ContainerFormatPng, nullptr, &encPurple);
+        encPurple->Initialize(pStreamPurple.Get(), WICBitmapEncoderNoCache);
+        ComPtr<IWICBitmapFrameEncode> framePurple;
+        encPurple->CreateNewFrame(&framePurple, nullptr);
+        framePurple->Initialize(nullptr);
+        framePurple->SetSize(1200, 750);
+        framePurple->SetPixelFormat(&format);
+        framePurple->WriteSource(pWicPurpleBmp.Get(), nullptr);
+        framePurple->Commit();
+        encPurple->Commit();
+        std::cout << "  Passed: Saved test_deep_purple_curve.png" << std::endl;
+
+        // 4. Render RetroGrid80s Theme with 3D Wireframe Grid (Image 5)
+        ComPtr<IWICBitmap> pWicRetroBmp;
+        ComPtr<ID2D1RenderTarget> pRetroRT;
+        CreateTarget(pWicRetroBmp, pRetroRT);
+        theme.SetThemeMode(phide::ui::ThemeMode::RetroGrid80s);
+        theme.CreateDeviceResources(pRetroRT.Get(), pDWriteFactory.Get());
+
+        phide::ui::EditorCanvas editor;
+        std::vector<phide::editor::OpenDocument> retroDocs;
+        phide::editor::OpenDocument rdoc;
+        rdoc.filePath = L"app.jsx";
+        rdoc.fileName = L"app.jsx";
+        rdoc.buffer.SetText(L"const App = () => {\n    fetch(\"/me\")\n        .then(response => response.json())\n        .then(user => {\n            const PrivateRoute = ({ component: Component, ...rest }) => (\n                <Route {...rest} render={props => (user.user ? <Component {...props} /> : null)} />\n            );\n        });\n};\n");
+        retroDocs.push_back(std::move(rdoc));
+
+        pRetroRT->BeginDraw();
+        pRetroRT->Clear(theme.colors.windowBg);
+        pRetroRT->FillRectangle(rcPatch, theme.brushHeaderBg.Get());
+        editor.Render(pRetroRT.Get(), theme, cfg, retroDocs, 0, railW + drawerW, 1200.0f - (railW + drawerW), 750.0f, true);
+        drawer.Render(pRetroRT.Get(), theme, cfg, 750.0f, drawerW);
+        rail.Render(pRetroRT.Get(), theme, cfg, 750.0f);
+        header.Render(pRetroRT.Get(), theme, cfg, 1200.0f, false);
+        pRetroRT->EndDraw();
+
+        ComPtr<IWICStream> pStreamRetro;
+        pWicFactory->CreateStream(&pStreamRetro);
+        pStreamRetro->InitializeFromFilename((artDir + L"test_retro_grid_80s.png").c_str(), GENERIC_WRITE);
+        ComPtr<IWICBitmapEncoder> encRetro;
+        pWicFactory->CreateEncoder(GUID_ContainerFormatPng, nullptr, &encRetro);
+        encRetro->Initialize(pStreamRetro.Get(), WICBitmapEncoderNoCache);
+        ComPtr<IWICBitmapFrameEncode> frameRetro;
+        encRetro->CreateNewFrame(&frameRetro, nullptr);
+        frameRetro->Initialize(nullptr);
+        frameRetro->SetSize(1200, 750);
+        frameRetro->SetPixelFormat(&format);
+        frameRetro->WriteSource(pWicRetroBmp.Get(), nullptr);
+        frameRetro->Commit();
+        encRetro->Commit();
+        std::cout << "  Passed: Saved test_retro_grid_80s.png" << std::endl;
+
+        // 5. Render Theme Picker Modal Full Catalog (20 Themes)
+        ComPtr<IWICBitmap> pWicModalBmp;
+        ComPtr<ID2D1RenderTarget> pModalRT;
+        CreateTarget(pWicModalBmp, pModalRT);
+        theme.SetThemeMode(phide::ui::ThemeMode::Dark);
+        theme.CreateDeviceResources(pModalRT.Get(), pDWriteFactory.Get());
+
+        phide::ui::ThemePickerModal picker;
+        picker.Open(phide::ui::ThemeMode::RetroGrid80s);
+        picker.SetCatalogView(true);
+
+        pModalRT->BeginDraw();
+        pModalRT->Clear(D2D1::ColorF(0.08f, 0.08f, 0.08f, 1.0f));
+        picker.Render(pModalRT.Get(), theme, cfg, 1200.0f, 750.0f);
+        pModalRT->EndDraw();
+
+        ComPtr<IWICStream> pStreamModal;
+        pWicFactory->CreateStream(&pStreamModal);
+        pStreamModal->InitializeFromFilename((artDir + L"test_theme_picker_catalog_20themes.png").c_str(), GENERIC_WRITE);
+        ComPtr<IWICBitmapEncoder> encModal;
+        pWicFactory->CreateEncoder(GUID_ContainerFormatPng, nullptr, &encModal);
+        encModal->Initialize(pStreamModal.Get(), WICBitmapEncoderNoCache);
+        ComPtr<IWICBitmapFrameEncode> frameModal;
+        encModal->CreateNewFrame(&frameModal, nullptr);
+        frameModal->Initialize(nullptr);
+        frameModal->SetSize(1200, 750);
+        frameModal->SetPixelFormat(&format);
+        frameModal->WriteSource(pWicModalBmp.Get(), nullptr);
+        frameModal->Commit();
+        encModal->Commit();
+        std::cout << "  Passed: Saved test_theme_picker_catalog_20themes.png" << std::endl;
+    }
+
     std::cout << "\n==========================================" << std::endl;
     std::cout << "ALL VERIFICATION TESTS PASSED SUCCESSFULLY!" << std::endl;
     std::cout << "==========================================" << std::endl;

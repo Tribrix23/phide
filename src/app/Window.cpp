@@ -399,8 +399,8 @@ void Window::LoadSessionState() {
         m_drawer.SetGitSplitY(savedGitSplitY, 100.0f, 2000.0f);
     }
 
-    // Apply restored theme mode with bounds validation (0-12 for all 13 supported themes)
-    if (themeMode < 0 || themeMode > 12) {
+    // Apply restored theme mode with bounds validation (0-19 for all 20 supported themes)
+    if (themeMode < 0 || themeMode > 19) {
         themeMode = 0; // Default to Dark Mode if corrupt or uninitialized
     }
     m_theme.SetThemeMode(static_cast<ui::ThemeMode>(themeMode));
@@ -1689,6 +1689,14 @@ void Window::OnPaint() {
 
     bool suppressEditorCaret = m_drawer.IsRenaming() ||
         (m_drawerAnimProgress > 0.001f && (m_drawer.IsGitCommitBoxFocused() || m_drawer.IsSearchFocused()));
+
+    const float headerH = m_config.ScaleF(static_cast<float>(m_config.headerHeight));
+
+    // Pre-fill the corner patch at (railW, headerH) with headerBg
+    // so the 14px inward rounded arc of DrawerPanel (or EditorCanvas when drawer is closed)
+    // curves smoothly against the title header and activity rail across all 20 themes.
+    D2D1_RECT_F rcCornerPatch = D2D1::RectF(railW, headerH, railW + m_config.ScaleF(18.0f), headerH + m_config.ScaleF(18.0f));
+    m_pRenderTarget->FillRectangle(rcCornerPatch, m_theme.brushHeaderBg.Get());
 
     m_editor.Render(m_pRenderTarget.Get(), m_theme, m_config, m_editorGroups, m_focusedGroupIdx,
                     canvasLeft, canvasWidth, clientH, hasLeftDrawer,

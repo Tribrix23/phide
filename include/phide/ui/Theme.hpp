@@ -36,7 +36,14 @@ enum class ThemeMode {
     Solarized,
     GitHubDark,
     OneDark,
-    SynthWave
+    SynthWave,
+    RetroGrid80s,      ///< Synthwave Neon 3D Perspective Grid (Image 5)
+    CosmicStarfield,   ///< Deep space void with floating twinkling stars/particles
+    MatrixDigitalRain, ///< Cyber green terminal with falling matrix code streams
+    AuroraBorealis,    ///< Ethereal northern lights polar teal & ice blue glow
+    SunsetGlow,        ///< Dusk twilight with sunset orange, magenta & golden peach
+    EmeraldForest,     ///< Rich deep moss with vibrant emerald & jade foliage glow
+    RosePine           ///< Muted velvety dark with soft rose, warm gold & iris purple
 };
 
 /**

@@ -36,28 +36,26 @@ void ActivityRail::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
     const float startX  = (railW - btnSize) / 2.0f;
 
     // Ensure vertical purple glass gradient brush is initialized/updated
-    if (!m_pRailGradientBrush || std::abs(m_lastRailH - clientHeight) >= 1.0f || m_lastIsDark != theme.IsDarkMode()) {
+    if (!m_pRailGradientBrush || std::abs(m_lastRailH - clientHeight) >= 1.0f || m_lastThemeMode != theme.GetThemeMode()) {
         m_lastRailH = clientHeight;
         m_lastIsDark = theme.IsDarkMode();
+        m_lastThemeMode = theme.GetThemeMode();
         m_pRailGradientBrush.Reset();
 
         ComPtr<ID2D1GradientStopCollection> pStopColl;
         if (theme.IsDarkMode()) {
-            // Dark Mode: Getting darker downwards, fading to pure black at the bottom (matching user request)
-            D2D1_GRADIENT_STOP stops[5];
-            stops[0] = { 0.00f, D2D1::ColorF(0.24f, 0.08f, 0.38f, 1.0f) }; // #3D1461 - Seamlessly matches header's left edge
-            stops[1] = { 0.20f, D2D1::ColorF(0.16f, 0.05f, 0.26f, 1.0f) }; // #290D42 - Deep Violet
-            stops[2] = { 0.45f, D2D1::ColorF(0.09f, 0.03f, 0.15f, 1.0f) }; // #170826 - Darkening Twilight
-            stops[3] = { 0.70f, D2D1::ColorF(0.05f, 0.02f, 0.07f, 1.0f) }; // #0D0512 - Very Dark
-            stops[4] = { 1.00f, D2D1::ColorF(0.03f, 0.03f, 0.04f, 1.0f) }; // #08080A - Pure Obsidian Black at bottom
-            pRT->CreateGradientStopCollection(stops, 5, &pStopColl);
-        } else {
-            // Light Mode: Starts at #CFB3E8 (matching header left edge) and maintains distinct light purple tones down the rail
-            // ("light purple here so it should be still purple"), keeping 10:1 contrast against black icons
+            D2D1_COLOR_F topCol = theme.colors.railBg;
             D2D1_GRADIENT_STOP stops[3];
-            stops[0] = { 0.00f, D2D1::ColorF(0.812f, 0.702f, 0.910f, 1.0f) }; // #CFB3E8 Light Purple base
-            stops[1] = { 0.45f, D2D1::ColorF(0.847f, 0.753f, 0.929f, 1.0f) }; // #D8C0EC Soft Light Purple
-            stops[2] = { 1.00f, D2D1::ColorF(0.886f, 0.812f, 0.949f, 1.0f) }; // #E2CFFA Delicate Light Purple
+            stops[0] = { 0.00f, topCol };
+            stops[1] = { 0.50f, D2D1::ColorF(topCol.r * 0.75f, topCol.g * 0.75f, topCol.b * 0.75f, 1.0f) };
+            stops[2] = { 1.00f, D2D1::ColorF(topCol.r * 0.45f, topCol.g * 0.45f, topCol.b * 0.45f, 1.0f) };
+            pRT->CreateGradientStopCollection(stops, 3, &pStopColl);
+        } else {
+            D2D1_COLOR_F topCol = theme.colors.railBg;
+            D2D1_GRADIENT_STOP stops[3];
+            stops[0] = { 0.00f, topCol };
+            stops[1] = { 0.45f, D2D1::ColorF((std::min)(1.0f, topCol.r * 1.05f), (std::min)(1.0f, topCol.g * 1.05f), (std::min)(1.0f, topCol.b * 1.05f), 1.0f) };
+            stops[2] = { 1.00f, D2D1::ColorF((std::min)(1.0f, topCol.r * 1.10f), (std::min)(1.0f, topCol.g * 1.10f), (std::min)(1.0f, topCol.b * 1.10f), 1.0f) };
             pRT->CreateGradientStopCollection(stops, 3, &pStopColl);
         }
 
@@ -166,16 +164,53 @@ void ActivityRail::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
                     pRT->GetTransform(&oldTrans);
                     pRT->SetTransform(D2D1::Matrix3x2F::Rotation(m_gitAnimAngle, D2D1::Point2F(badgeCenterX, badgeCenterY)) * oldTrans);
 
-                    const float arcR = badgeR * 0.60f;
-                    // Top arc
-                    pRT->DrawLine(D2D1::Point2F(badgeCenterX - arcR, badgeCenterY), D2D1::Point2F(badgeCenterX, badgeCenterY - arcR), brushWhite.Get(), 1.3f);
-                    pRT->DrawLine(D2D1::Point2F(badgeCenterX, badgeCenterY - arcR), D2D1::Point2F(badgeCenterX + arcR, badgeCenterY), brushWhite.Get(), 1.3f);
-                    // Bottom arc
-                    pRT->DrawLine(D2D1::Point2F(badgeCenterX + arcR, badgeCenterY), D2D1::Point2F(badgeCenterX, badgeCenterY + arcR), brushWhite.Get(), 1.3f);
-                    pRT->DrawLine(D2D1::Point2F(badgeCenterX, badgeCenterY + arcR), D2D1::Point2F(badgeCenterX - arcR, badgeCenterY), brushWhite.Get(), 1.3f);
-                    // Arrow ticks
-                    pRT->DrawLine(D2D1::Point2F(badgeCenterX + arcR - 2.0f, badgeCenterY - 2.2f), D2D1::Point2F(badgeCenterX + arcR, badgeCenterY), brushWhite.Get(), 1.3f);
-                    pRT->DrawLine(D2D1::Point2F(badgeCenterX - arcR + 2.0f, badgeCenterY + 2.2f), D2D1::Point2F(badgeCenterX - arcR, badgeCenterY), brushWhite.Get(), 1.3f);
+                    const float r = badgeR * 0.58f;
+                    Microsoft::WRL::ComPtr<ID2D1Factory> pD2DFactory;
+                    pRT->GetFactory(&pD2DFactory);
+
+                    // Top curved arc with arrowhead (Image 1)
+                    Microsoft::WRL::ComPtr<ID2D1PathGeometry> pPathTop;
+                    if (pD2DFactory && SUCCEEDED(pD2DFactory->CreatePathGeometry(&pPathTop))) {
+                        Microsoft::WRL::ComPtr<ID2D1GeometrySink> sink;
+                        if (SUCCEEDED(pPathTop->Open(&sink))) {
+                            sink->BeginFigure(D2D1::Point2F(badgeCenterX - r, badgeCenterY + 0.5f), D2D1_FIGURE_BEGIN_HOLLOW);
+                            D2D1_ARC_SEGMENT arc{};
+                            arc.point = D2D1::Point2F(badgeCenterX + r * 0.88f, badgeCenterY - r * 0.35f);
+                            arc.size = D2D1::SizeF(r, r);
+                            arc.sweepDirection = D2D1_SWEEP_DIRECTION_CLOCKWISE;
+                            sink->AddArc(arc);
+                            sink->EndFigure(D2D1_FIGURE_END_OPEN);
+                            sink->Close();
+                            pRT->DrawGeometry(pPathTop.Get(), brushWhite.Get(), 1.4f);
+                        }
+                    }
+                    // Top arrowhead
+                    float tx = badgeCenterX + r * 0.88f;
+                    float ty = badgeCenterY - r * 0.35f;
+                    pRT->DrawLine(D2D1::Point2F(tx, ty), D2D1::Point2F(tx - 2.2f, ty - 1.8f), brushWhite.Get(), 1.4f);
+                    pRT->DrawLine(D2D1::Point2F(tx, ty), D2D1::Point2F(tx - 2.3f, ty + 0.8f), brushWhite.Get(), 1.4f);
+
+                    // Bottom curved arc with arrowhead (Image 1)
+                    Microsoft::WRL::ComPtr<ID2D1PathGeometry> pPathBottom;
+                    if (pD2DFactory && SUCCEEDED(pD2DFactory->CreatePathGeometry(&pPathBottom))) {
+                        Microsoft::WRL::ComPtr<ID2D1GeometrySink> sink;
+                        if (SUCCEEDED(pPathBottom->Open(&sink))) {
+                            sink->BeginFigure(D2D1::Point2F(badgeCenterX + r, badgeCenterY - 0.5f), D2D1_FIGURE_BEGIN_HOLLOW);
+                            D2D1_ARC_SEGMENT arc{};
+                            arc.point = D2D1::Point2F(badgeCenterX - r * 0.88f, badgeCenterY + r * 0.35f);
+                            arc.size = D2D1::SizeF(r, r);
+                            arc.sweepDirection = D2D1_SWEEP_DIRECTION_CLOCKWISE;
+                            sink->AddArc(arc);
+                            sink->EndFigure(D2D1_FIGURE_END_OPEN);
+                            sink->Close();
+                            pRT->DrawGeometry(pPathBottom.Get(), brushWhite.Get(), 1.4f);
+                        }
+                    }
+                    // Bottom arrowhead
+                    float bx = badgeCenterX - r * 0.88f;
+                    float by = badgeCenterY + r * 0.35f;
+                    pRT->DrawLine(D2D1::Point2F(bx, by), D2D1::Point2F(bx + 2.2f, by + 1.8f), brushWhite.Get(), 1.4f);
+                    pRT->DrawLine(D2D1::Point2F(bx, by), D2D1::Point2F(bx + 2.3f, by - 0.8f), brushWhite.Get(), 1.4f);
 
                     pRT->SetTransform(oldTrans);
                 } else if (m_gitBadgeCount > 0) {

@@ -272,6 +272,12 @@ private:
                     bool highlightUseRegex = false,
                     bool isRenaming = false);
 
+    /**
+     * @brief Renders ambient background theme effects (3D perspective grid, particles, starfields) for unique themes.
+     */
+    void RenderCanvasThemeEffects(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
+                                  float canvasLeft, float canvasWidth, float topY, float clientHeight);
+
     void RenderRefactorPopup(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config, float clientHeight);
 
     bool m_showRefactorPopup = false;
