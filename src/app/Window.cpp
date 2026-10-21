@@ -382,8 +382,8 @@ void Window::LoadSessionState() {
 
     m_config.activeRailTab = activeRailTab;
 
-    // Apply restored theme mode with bounds validation (0: Dark, 1: Light, 2: Auto)
-    if (themeMode < 0 || themeMode > 2) {
+    // Apply restored theme mode with bounds validation (0: Dark, 1: Light, 2: Auto, 3: Purple, 4: Cyan, 5: Turquoise, 6: Monokai, 7: Dracula)
+    if (themeMode < 0 || themeMode > 7) {
         themeMode = 0; // Default to Dark Mode if corrupt or uninitialized
     }
     m_theme.SetThemeMode(static_cast<ui::ThemeMode>(themeMode));
@@ -1049,6 +1049,44 @@ void Window::DoRedo() {
             MarkDocumentModified(pDoc);
             InvalidateRect(m_hwnd, nullptr, FALSE);
         }
+    }
+}
+
+void Window::DoExplorerUndo() {
+    std::wstring oldPath, newPath;
+    bool wasRename = false;
+    if (m_explorerUndo.Undo(oldPath, newPath, wasRename)) {
+        if (wasRename && !oldPath.empty() && !newPath.empty()) {
+            for (auto& group : m_editorGroups) {
+                for (auto& doc : group.docs) {
+                    if (doc.filePath == oldPath) {
+                        doc.filePath = newPath;
+                        doc.fileName = std::filesystem::path(newPath).filename().wstring();
+                    }
+                }
+            }
+        }
+        m_drawer.RefreshTree();
+        InvalidateRect(m_hwnd, nullptr, FALSE);
+    }
+}
+
+void Window::DoExplorerRedo() {
+    std::wstring oldPath, newPath;
+    bool wasRename = false;
+    if (m_explorerUndo.Redo(oldPath, newPath, wasRename)) {
+        if (wasRename && !oldPath.empty() && !newPath.empty()) {
+            for (auto& group : m_editorGroups) {
+                for (auto& doc : group.docs) {
+                    if (doc.filePath == oldPath) {
+                        doc.filePath = newPath;
+                        doc.fileName = std::filesystem::path(newPath).filename().wstring();
+                    }
+                }
+            }
+        }
+        m_drawer.RefreshTree();
+        InvalidateRect(m_hwnd, nullptr, FALSE);
     }
 }
 
@@ -1848,6 +1886,12 @@ void Window::HandleLButtonDown(POINT clientPt) {
                             ShellExecuteW(nullptr, L"open", L"cmd.exe", gitCmd.c_str(), dir.c_str(), SW_SHOWNORMAL);
                         }
                         break;
+                    case ui::MenuActionId::CtxUndo:
+                        DoExplorerUndo();
+                        break;
+                    case ui::MenuActionId::CtxRedo:
+                        DoExplorerRedo();
+                        break;
                     case ui::MenuActionId::CtxCut:
                         if (!m_contextTargetPath.empty()) {
                             m_clipboardPath = m_contextTargetPath;
@@ -1875,9 +1919,12 @@ void Window::HandleLButtonDown(POINT clientPt) {
                                 std::filesystem::copy_file(src, dest, std::filesystem::copy_options::overwrite_existing, ec);
                             }
                             if (m_clipboardIsCut && !ec) {
+                                m_explorerUndo.PushMove(src.wstring(), dest.wstring());
                                 std::filesystem::remove_all(src, ec);
                                 m_clipboardPath.clear();
                                 m_clipboardIsCut = false;
+                            } else if (!ec) {
+                                m_explorerUndo.PushCopy(dest.wstring());
                             }
                             m_drawer.RefreshTree();
                         }
@@ -1904,8 +1951,14 @@ void Window::HandleLButtonDown(POINT clientPt) {
                             std::wstring confirmMsg = L"Are you sure you want to delete '" +
                                 std::filesystem::path(m_contextTargetPath).filename().wstring() + L"'?";
                             if (MessageBoxW(m_hwnd, confirmMsg.c_str(), L"Confirm Delete", MB_YESNO | MB_ICONWARNING) == IDYES) {
+                                std::wstring backup;
+                                bool isFolder = std::filesystem::is_directory(m_contextTargetPath);
+                                m_explorerUndo.PrepareDelete(m_contextTargetPath, isFolder, backup);
                                 std::error_code ec;
                                 std::filesystem::remove_all(m_contextTargetPath, ec);
+                                if (!ec) {
+                                    m_explorerUndo.PushDelete(m_contextTargetPath, backup, isFolder);
+                                }
                                 for (size_t g = 0; g < m_editorGroups.size(); ++g) {
                                     for (int i = 0; i < static_cast<int>(m_editorGroups[g].docs.size()); ++i) {
                                         if (m_editorGroups[g].docs[i].filePath == m_contextTargetPath) {
@@ -1928,6 +1981,7 @@ void Window::HandleLButtonDown(POINT clientPt) {
                                 std::ofstream ofs(newPath);
                                 ofs.close();
                             }
+                            m_explorerUndo.PushCreate(newPath.wstring(), false);
                             m_drawer.RefreshTree();
                             OpenFileDocument(newPath.wstring(), false);
                         }
@@ -1941,6 +1995,9 @@ void Window::HandleLButtonDown(POINT clientPt) {
                             std::filesystem::path newDirPath = std::filesystem::path(parentDir) / newFolder;
                             std::error_code ec;
                             std::filesystem::create_directories(newDirPath, ec);
+                            if (!ec) {
+                                m_explorerUndo.PushCreate(newDirPath.wstring(), true);
+                            }
                             m_drawer.RefreshTree();
                         }
                         break;
@@ -2168,6 +2225,7 @@ void Window::HandleLButtonDown(POINT clientPt) {
         }
         std::wstring oldPath, newPath;
         if (m_drawer.CommitInlineRename(oldPath, newPath)) {
+            m_explorerUndo.PushRename(oldPath, newPath);
             for (auto& group : m_editorGroups) {
                 for (auto& doc : group.docs) {
                     if (doc.filePath == oldPath) {
@@ -2296,7 +2354,9 @@ void Window::HandleRButtonDown(POINT clientPt) {
                 targetPath,
                 m_drawer.GetOpenFolderPath(),
                 m_config,
-                canPaste
+                canPaste,
+                m_explorerUndo.CanUndo(),
+                m_explorerUndo.CanRedo()
             );
             InvalidateRect(m_hwnd, nullptr, FALSE);
             return;
@@ -2331,7 +2391,9 @@ void Window::HandleRButtonDown(POINT clientPt) {
                 targetPath,
                 m_drawer.GetOpenFolderPath(),
                 m_config,
-                canPaste
+                canPaste,
+                m_explorerUndo.CanUndo(),
+                m_explorerUndo.CanRedo()
             );
             InvalidateRect(m_hwnd, nullptr, FALSE);
             return;
@@ -2640,6 +2702,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 if (wParam == VK_RETURN) {
                     std::wstring oldPath, newPath;
                     if (m_drawer.CommitInlineRename(oldPath, newPath)) {
+                        m_explorerUndo.PushRename(oldPath, newPath);
                         for (auto& group : m_editorGroups) {
                             for (auto& doc : group.docs) {
                                 if (doc.filePath == oldPath) {
@@ -2808,15 +2871,39 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     return 0;
                 }
                 if (wParam == 'Z') {
-                    if (shiftDown) {
-                        DoRedo();
+                    POINT pt;
+                    GetCursorPos(&pt);
+                    ScreenToClient(m_hwnd, &pt);
+                    const float railW = m_config.ScaleF(48.0f);
+                    const float drawerW = m_config.ScaleF(260.0f) * m_drawerAnimProgress;
+                    bool isOverDrawer = (pt.x >= railW && pt.x < railW + drawerW);
+                    if (isOverDrawer || m_drawer.IsRenaming()) {
+                        if (shiftDown) {
+                            DoExplorerRedo();
+                        } else {
+                            DoExplorerUndo();
+                        }
                     } else {
-                        DoUndo();
+                        if (shiftDown) {
+                            DoRedo();
+                        } else {
+                            DoUndo();
+                        }
                     }
                     return 0;
                 }
                 if (wParam == 'Y') {
-                    DoRedo();
+                    POINT pt;
+                    GetCursorPos(&pt);
+                    ScreenToClient(m_hwnd, &pt);
+                    const float railW = m_config.ScaleF(48.0f);
+                    const float drawerW = m_config.ScaleF(260.0f) * m_drawerAnimProgress;
+                    bool isOverDrawer = (pt.x >= railW && pt.x < railW + drawerW);
+                    if (isOverDrawer || m_drawer.IsRenaming()) {
+                        DoExplorerRedo();
+                    } else {
+                        DoRedo();
+                    }
                     return 0;
                 }
                 if (wParam == 'X') {
@@ -2972,6 +3059,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
         }
 
         case WM_DESTROY: {
+            m_explorerUndo.CleanupTrash();
             SaveSessionState();
             PostQuitMessage(0);
             return 0;

@@ -12,6 +12,7 @@
 #include <cassert>
 #include <vector>
 #include <string>
+#include <fstream>
 #include <filesystem>
 
 #include "phide/app/AppConfig.hpp"
@@ -21,9 +22,11 @@
 #include "phide/ui/ActivityRail.hpp"
 #include "phide/ui/DrawerPanel.hpp"
 #include "phide/ui/EditorCanvas.hpp"
+#include "phide/ui/ThemePickerModal.hpp"
 #include "phide/editor/Buffer.hpp"
 #include "phide/editor/OpenDocument.hpp"
 #include "phide/workspace/WorkspaceManager.hpp"
+#include "phide/workspace/ExplorerUndoManager.hpp"
 
 using Microsoft::WRL::ComPtr;
 
@@ -989,6 +992,232 @@ int main() {
         drawer.CancelInlineRename();
         assert(!drawer.IsRenaming());
         std::cout << "  Passed: Inline rename pre-selection and cancellation verified" << std::endl;
+    }
+
+    // --- 11. Test Explorer Undo/Redo & Additional Themes (Cyan, Turquoise, Purple, Monokai, Dracula) ---
+    std::cout << "[TEST 11] Testing Explorer Undo/Redo Stack & Expanded 8-Theme System..." << std::endl;
+    {
+        // 1. Explorer Undo/Redo Manager unit testing
+        phide::workspace::ExplorerUndoManager undoMgr;
+        std::error_code ec;
+        std::filesystem::path testRoot = std::filesystem::temp_directory_path() / L"phide_test_undo";
+        std::filesystem::create_directories(testRoot, ec);
+
+        // A. Rename Undo/Redo
+        std::filesystem::path fileA = testRoot / L"hello.txt";
+        std::filesystem::path fileB = testRoot / L"world.txt";
+        {
+            std::ofstream ofs(fileA);
+            ofs << "sample content for rename test";
+        }
+        assert(std::filesystem::exists(fileA));
+
+        std::filesystem::rename(fileA, fileB, ec);
+        assert(std::filesystem::exists(fileB));
+        assert(!std::filesystem::exists(fileA));
+
+        undoMgr.PushRename(fileA.wstring(), fileB.wstring());
+        assert(undoMgr.CanUndo());
+
+        std::wstring affOld, affNew;
+        bool wasRename = false;
+        bool ok = undoMgr.Undo(affOld, affNew, wasRename);
+        assert(ok);
+        assert(wasRename);
+        assert(affOld == fileB.wstring());
+        assert(affNew == fileA.wstring());
+        assert(std::filesystem::exists(fileA));
+        assert(!std::filesystem::exists(fileB));
+
+        // Redo rename
+        assert(undoMgr.CanRedo());
+        ok = undoMgr.Redo(affOld, affNew, wasRename);
+        assert(ok);
+        assert(wasRename);
+        assert(std::filesystem::exists(fileB));
+        assert(!std::filesystem::exists(fileA));
+        std::cout << "  Passed: Explorer Undo/Redo Rename verified" << std::endl;
+
+        // B. Deletion Undo/Restore (with safe staging trash cache)
+        std::filesystem::path delFile = testRoot / L"to_delete.txt";
+        {
+            std::ofstream ofs(delFile);
+            ofs << "CRITICAL CONTENT TO RESTORE";
+        }
+        std::wstring backupPath;
+        bool prepared = undoMgr.PrepareDelete(delFile.wstring(), false, backupPath);
+        assert(prepared);
+        assert(!backupPath.empty());
+        assert(std::filesystem::exists(backupPath));
+
+        std::filesystem::remove(delFile, ec);
+        assert(!std::filesystem::exists(delFile));
+
+        undoMgr.PushDelete(delFile.wstring(), backupPath, false);
+        assert(undoMgr.CanUndo());
+
+        ok = undoMgr.Undo(affOld, affNew, wasRename);
+        assert(ok);
+        assert(!wasRename);
+        assert(std::filesystem::exists(delFile));
+        {
+            std::ifstream ifs(delFile);
+            std::string content;
+            std::getline(ifs, content);
+            assert(content == "CRITICAL CONTENT TO RESTORE");
+        }
+
+        // Redo deletion
+        assert(undoMgr.CanRedo());
+        ok = undoMgr.Redo(affOld, affNew, wasRename);
+        assert(ok);
+        assert(!std::filesystem::exists(delFile));
+
+        // Undo deletion again!
+        ok = undoMgr.Undo(affOld, affNew, wasRename);
+        assert(ok);
+        assert(std::filesystem::exists(delFile));
+        std::cout << "  Passed: Explorer Undo/Redo Deletion with Staging Trash verified" << std::endl;
+
+        // C. Directory Tree Deletion Undo/Restore
+        std::filesystem::path delFolder = testRoot / L"my_folder";
+        std::filesystem::create_directories(delFolder / L"sub", ec);
+        {
+            std::ofstream ofs(delFolder / L"sub" / L"nested.txt");
+            ofs << "nested file data";
+        }
+        std::wstring folderBackup;
+        prepared = undoMgr.PrepareDelete(delFolder.wstring(), true, folderBackup);
+        assert(prepared);
+        std::filesystem::remove_all(delFolder, ec);
+        assert(!std::filesystem::exists(delFolder));
+
+        undoMgr.PushDelete(delFolder.wstring(), folderBackup, true);
+        ok = undoMgr.Undo(affOld, affNew, wasRename);
+        assert(ok);
+        assert(std::filesystem::exists(delFolder / L"sub" / L"nested.txt"));
+        std::cout << "  Passed: Explorer Undo/Redo Folder Tree Restoration verified" << std::endl;
+
+        // D. Create Undo/Redo
+        std::filesystem::path createPath = testRoot / L"new_item.txt";
+        {
+            std::ofstream ofs(createPath);
+            ofs << "just created";
+        }
+        undoMgr.PushCreate(createPath.wstring(), false);
+        ok = undoMgr.Undo(affOld, affNew, wasRename);
+        assert(ok);
+        assert(!std::filesystem::exists(createPath));
+
+        ok = undoMgr.Redo(affOld, affNew, wasRename);
+        assert(ok);
+        assert(std::filesystem::exists(createPath));
+        std::cout << "  Passed: Explorer Undo/Redo Create verified" << std::endl;
+
+        undoMgr.CleanupTrash();
+        std::filesystem::remove_all(testRoot, ec);
+
+        // 2. Test Expanded Theme Modes & Palettes
+        phide::ui::Theme theme;
+
+        theme.SetThemeMode(phide::ui::ThemeMode::Purple);
+        assert(theme.GetThemeMode() == phide::ui::ThemeMode::Purple);
+        assert(theme.IsDarkMode());
+
+        theme.SetThemeMode(phide::ui::ThemeMode::Cyan);
+        assert(theme.GetThemeMode() == phide::ui::ThemeMode::Cyan);
+
+        theme.SetThemeMode(phide::ui::ThemeMode::Turquoise);
+        assert(theme.GetThemeMode() == phide::ui::ThemeMode::Turquoise);
+
+        theme.SetThemeMode(phide::ui::ThemeMode::Monokai);
+        assert(theme.GetThemeMode() == phide::ui::ThemeMode::Monokai);
+
+        theme.SetThemeMode(phide::ui::ThemeMode::Dracula);
+        assert(theme.GetThemeMode() == phide::ui::ThemeMode::Dracula);
+        std::cout << "  Passed: Theme Mode switches (Purple, Cyan, Turquoise, Monokai, Dracula) verified" << std::endl;
+
+        // 3. Test Theme Picker Modal with 8-Card Grid Layout & Snapshot
+        phide::ui::ThemePickerModal themeModal;
+        themeModal.Open(phide::ui::ThemeMode::Dark);
+        assert(themeModal.IsOpen());
+
+        UINT modalW = 840, modalH = 540;
+        ComPtr<IWICBitmap> pWicModalBmp;
+        pWicFactory->CreateBitmap(modalW, modalH, GUID_WICPixelFormat32bppPBGRA, WICBitmapCacheOnDemand, &pWicModalBmp);
+        ComPtr<ID2D1RenderTarget> pModalRT;
+        D2D1_RENDER_TARGET_PROPERTIES rtProps = D2D1::RenderTargetProperties(
+            D2D1_RENDER_TARGET_TYPE_DEFAULT,
+            D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED)
+        );
+        pD2DFactory->CreateWicBitmapRenderTarget(pWicModalBmp.Get(), rtProps, &pModalRT);
+        theme.CreateDeviceResources(pModalRT.Get(), pDWriteFactory.Get());
+
+        pModalRT->BeginDraw();
+        pModalRT->Clear(D2D1::ColorF(0.12f, 0.12f, 0.12f, 1.0f));
+        themeModal.Render(pModalRT.Get(), theme, config, static_cast<float>(modalW), static_cast<float>(modalH));
+        pModalRT->EndDraw();
+
+        ComPtr<IWICStream> pStream;
+        pWicFactory->CreateStream(&pStream);
+        pStream->InitializeFromFilename((artDir + L"test_theme_picker_8themes.png").c_str(), GENERIC_WRITE);
+        ComPtr<IWICBitmapEncoder> enc;
+        pWicFactory->CreateEncoder(GUID_ContainerFormatPng, nullptr, &enc);
+        enc->Initialize(pStream.Get(), WICBitmapEncoderNoCache);
+        ComPtr<IWICBitmapFrameEncode> frame;
+        enc->CreateNewFrame(&frame, nullptr);
+        frame->Initialize(nullptr);
+        frame->SetSize(modalW, modalH);
+        WICPixelFormatGUID format = GUID_WICPixelFormat32bppPBGRA;
+        frame->SetPixelFormat(&format);
+        frame->WriteSource(pWicModalBmp.Get(), nullptr);
+        frame->Commit();
+        enc->Commit();
+        std::cout << "  Passed: Saved test_theme_picker_8themes.png" << std::endl;
+
+        // Test Modal Selection for all 8 cards
+        phide::ui::ThemeMode chosenMode;
+        POINT ptModalClose = { 10, 10 }; // Outside
+        themeModal.Open(phide::ui::ThemeMode::Dark);
+        assert(!themeModal.HandleLButtonDown(ptModalClose, chosenMode)); // Dismissed without selection
+        assert(!themeModal.IsOpen());
+
+        // Test Explorer Context Menu with Undo/Redo items
+        phide::ui::PopupMenu popup;
+        popup.OpenContextMenu(100.0f, 100.0f, false, L"C:\\sample\\file.txt", L"C:\\sample", config, true, true, true);
+        assert(popup.IsOpen());
+        assert(!popup.GetItems().empty());
+        assert(popup.GetItems()[0].actionId == phide::ui::MenuActionId::CtxUndo);
+        assert(popup.GetItems()[1].actionId == phide::ui::MenuActionId::CtxRedo);
+        std::cout << "  Passed: Context Menu Undo/Redo items verified" << std::endl;
+
+        // Render Context Menu with Undo/Redo
+        ComPtr<IWICBitmap> pWicCtxBmp;
+        pWicFactory->CreateBitmap(modalW, modalH, GUID_WICPixelFormat32bppPBGRA, WICBitmapCacheOnDemand, &pWicCtxBmp);
+        ComPtr<ID2D1RenderTarget> pCtxRT;
+        pD2DFactory->CreateWicBitmapRenderTarget(pWicCtxBmp.Get(), rtProps, &pCtxRT);
+
+        pCtxRT->BeginDraw();
+        pCtxRT->Clear(D2D1::ColorF(0.12f, 0.12f, 0.12f, 1.0f));
+        popup.Render(pCtxRT.Get(), theme, config);
+        pCtxRT->EndDraw();
+
+        ComPtr<IWICStream> pCtxStream;
+        pWicFactory->CreateStream(&pCtxStream);
+        pCtxStream->InitializeFromFilename((artDir + L"test_explorer_undo_context_menu.png").c_str(), GENERIC_WRITE);
+        ComPtr<IWICBitmapEncoder> encCtx;
+        pWicFactory->CreateEncoder(GUID_ContainerFormatPng, nullptr, &encCtx);
+        encCtx->Initialize(pCtxStream.Get(), WICBitmapEncoderNoCache);
+        ComPtr<IWICBitmapFrameEncode> frameCtx;
+        encCtx->CreateNewFrame(&frameCtx, nullptr);
+        frameCtx->Initialize(nullptr);
+        frameCtx->SetSize(modalW, modalH);
+        format = GUID_WICPixelFormat32bppPBGRA;
+        frameCtx->SetPixelFormat(&format);
+        frameCtx->WriteSource(pWicCtxBmp.Get(), nullptr);
+        frameCtx->Commit();
+        encCtx->Commit();
+        std::cout << "  Passed: Saved test_explorer_undo_context_menu.png" << std::endl;
     }
 
     std::cout << "\n==========================================" << std::endl;

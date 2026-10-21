@@ -43,13 +43,13 @@ void PopupMenu::OpenFileMenu(float x, float y, const app::AppConfig& config, boo
 
 void PopupMenu::OpenContextMenu(float x, float y, bool isFolder, const std::wstring& targetPath,
                                 const std::wstring& rootFolder, const app::AppConfig& config,
-                                bool canPaste) {
+                                bool canPaste, bool canUndo, bool canRedo) {
     m_isOpen = true;
     m_hoveredMainIdx = -1;
     m_activeSubmenuIdx = -1;
     m_hoveredSubmenuIdx = -1;
 
-    BuildContextMenuItems(isFolder, targetPath, rootFolder, canPaste);
+    BuildContextMenuItems(isFolder, targetPath, rootFolder, canPaste, canUndo, canRedo);
 
     const float menuW = config.ScaleF(240.0f);
     LayoutMenu(m_items, x, y, menuW, config, m_mainMenuBounds);
@@ -299,8 +299,16 @@ void PopupMenu::BuildFileMenuItems(bool autoSave, bool hasOpenFile, bool isDirty
 }
 
 void PopupMenu::BuildContextMenuItems(bool isFolder, const std::wstring& targetPath,
-                                      const std::wstring& rootFolder, bool canPaste) {
+                                      const std::wstring& rootFolder, bool canPaste,
+                                      bool canUndo, bool canRedo) {
     m_items.clear();
+
+    // 0. Undo and Redo actions (Image 1: Explorer Undo/Redo)
+    m_items.push_back({ MenuActionId::CtxUndo, L"Undo", L"Ctrl+Z", false, false, false, canUndo, {}, {} });
+    m_items.push_back({ MenuActionId::CtxRedo, L"Redo", L"Ctrl+Y", false, false, false, canRedo, {}, {} });
+
+    // --- Separator ---
+    m_items.push_back({ MenuActionId::None, L"", L"", true, false, false, false, {}, {} });
 
     if (isFolder) {
         // --- Folder Context Menu (Matching Image 5) ---

@@ -29,6 +29,7 @@
 #include "phide/editor/Buffer.hpp"
 #include "phide/editor/OpenDocument.hpp"
 #include "phide/workspace/WorkspaceManager.hpp"
+#include "phide/workspace/ExplorerUndoManager.hpp"
 #include "phide/lsp/LspClient.hpp"
 
 namespace phide::app {
@@ -262,6 +263,12 @@ private:
     /** @brief Redoes previously undone buffer mutation (Ctrl+Y). */
     void DoRedo();
 
+    /** @brief Undoes the most recent Explorer operation (rename, delete, create, move) (Ctrl+Z when explorer active). */
+    void DoExplorerUndo();
+
+    /** @brief Redoes the most recently undone Explorer operation (Ctrl+Y when explorer active). */
+    void DoExplorerRedo();
+
     /**
      * @brief Marks a document as edited, honoring Auto Save to write changes immediately to disk.
      * If Auto Save is active and the file is backed by disk, persists changes without setting dirty flag.
@@ -337,6 +344,7 @@ private:
     ui::EditorCanvas m_editor;
     ui::ThemePickerModal m_themePicker;
     workspace::WorkspaceManager m_workspace;
+    workspace::ExplorerUndoManager m_explorerUndo;
     lsp::LspClient m_lsp;
 
     // Multi-Editor Groups Architecture (Up to 3 columns)

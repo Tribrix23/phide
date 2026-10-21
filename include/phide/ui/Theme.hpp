@@ -26,7 +26,12 @@ using Microsoft::WRL::ComPtr;
 enum class ThemeMode {
     Dark,
     Light,
-    Auto
+    Auto,
+    Purple,
+    Cyan,
+    Turquoise,
+    Monokai,
+    Dracula
 };
 
 /**

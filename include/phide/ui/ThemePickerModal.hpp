@@ -87,8 +87,8 @@ private:
 
     D2D1_RECT_F m_modalBounds{};
     D2D1_RECT_F m_closeBounds{};
-    D2D1_RECT_F m_cardBounds[3]{};
-    D2D1_RECT_F m_previewBoxBounds[3]{};
+    D2D1_RECT_F m_cardBounds[8]{};
+    D2D1_RECT_F m_previewBoxBounds[8]{};
 
     /**
      * @brief Renders an authentic miniature preview illustration of the Dark Mode IDE layout.
@@ -113,6 +113,19 @@ private:
      * @param rc Bounding box of the preview box.
      */
     void DrawAutoSplitPreview(ID2D1RenderTarget* pRT, const app::AppConfig& config, const D2D1_RECT_F& rc);
+
+    /**
+     * @brief Renders a customized miniature preview illustration for any color theme palette.
+     * @param pRT Active Direct2D render target.
+     * @param config Application metrics.
+     * @param rc Bounding box of the preview box.
+     */
+    void DrawGenericPreview(ID2D1RenderTarget* pRT, const app::AppConfig& config, const D2D1_RECT_F& rc,
+                            D2D1_COLOR_F canvasCol, D2D1_COLOR_F headerCol, D2D1_COLOR_F drawerCol,
+                            D2D1_COLOR_F tabBarCol, D2D1_COLOR_F tabActiveCol, D2D1_COLOR_F accentCol,
+                            D2D1_COLOR_F textCol, D2D1_COLOR_F kwCol, D2D1_COLOR_F typeCol,
+                            D2D1_COLOR_F strCol, D2D1_COLOR_F commentCol, D2D1_COLOR_F lineNumCol,
+                            D2D1_COLOR_F borderCol);
 };
 
 } // namespace phide::ui

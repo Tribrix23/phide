@@ -108,6 +108,8 @@ enum class MenuActionId {
     ResetZoom,
 
     // Explorer Context Menu Actions (Images 4 & 5)
+    CtxUndo,
+    CtxRedo,
     CtxOpenToSide,
     CtxOpenWith,
     CtxRevealInExplorer,
@@ -201,7 +203,7 @@ public:
      */
     void OpenContextMenu(float x, float y, bool isFolder, const std::wstring& targetPath,
                          const std::wstring& rootFolder, const app::AppConfig& config,
-                         bool canPaste = false);
+                         bool canPaste = false, bool canUndo = false, bool canRedo = false);
 
     /**
      * @brief Opens the custom editor context menu (Image 4).
@@ -261,7 +263,8 @@ private:
     void BuildFileMenuItems(bool autoSave, bool hasOpenFile, bool isDirty, bool hasOpenFolder,
                             const std::vector<std::wstring>& recentItems = {});
     void BuildContextMenuItems(bool isFolder, const std::wstring& targetPath,
-                               const std::wstring& rootFolder, bool canPaste);
+                               const std::wstring& rootFolder, bool canPaste,
+                               bool canUndo = false, bool canRedo = false);
     void LayoutMenu(std::vector<PopupMenuItem>& items, float startX, float startY, float width,
                     const app::AppConfig& config, D2D1_RECT_F& outBounds);
     void LayoutSubmenu(int parentItemIdx, const app::AppConfig& config, float clientW, float clientH);
