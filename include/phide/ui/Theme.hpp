@@ -31,7 +31,12 @@ enum class ThemeMode {
     Cyan,
     Turquoise,
     Monokai,
-    Dracula
+    Dracula,
+    Nord,
+    Solarized,
+    GitHubDark,
+    OneDark,
+    SynthWave
 };
 
 /**

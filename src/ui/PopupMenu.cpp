@@ -273,8 +273,15 @@ void PopupMenu::BuildFileMenuItems(bool autoSave, bool hasOpenFile, bool isDirty
     if (recentItems.empty()) {
         openRecent.submenuItems.push_back({ MenuActionId::RecentItem0, L"phide", L"", false, false, false, true, {}, {} });
     } else {
-        const MenuActionId recentIds[] = { MenuActionId::RecentItem0, MenuActionId::RecentItem1, MenuActionId::RecentItem2, MenuActionId::RecentItem3 };
-        for (size_t r = 0; r < recentItems.size() && r < 4; ++r) {
+        const MenuActionId recentIds[] = {
+            MenuActionId::RecentItem0,
+            MenuActionId::RecentItem1,
+            MenuActionId::RecentItem2,
+            MenuActionId::RecentItem3,
+            MenuActionId::RecentItem4,
+            MenuActionId::RecentItem5
+        };
+        for (size_t r = 0; r < recentItems.size() && r < 6; ++r) {
             auto pos = recentItems[r].find_last_of(L"\\/");
             std::wstring disp = (pos != std::wstring::npos) ? recentItems[r].substr(pos + 1) : recentItems[r];
             openRecent.submenuItems.push_back({ recentIds[r], disp, L"", false, false, false, true, {}, {} });

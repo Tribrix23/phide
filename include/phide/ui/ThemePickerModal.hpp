@@ -31,6 +31,10 @@ public:
         m_selectedMode = currentMode;
         m_hoveredCard = -1;
         m_hoveredClose = false;
+        m_hoveredMoreThemes = false;
+        m_hoveredBack = false;
+        m_showAllCatalog = false;
+        m_catalogScrollY = 0.0f;
     }
 
     /**
@@ -39,6 +43,10 @@ public:
     void Close() noexcept {
         m_isOpen = false;
         m_hoveredCard = -1;
+        m_hoveredMoreThemes = false;
+        m_hoveredBack = false;
+        m_showAllCatalog = false;
+        m_catalogScrollY = 0.0f;
     }
 
     /**
@@ -46,6 +54,21 @@ public:
      * @return True if open.
      */
     [[nodiscard]] bool IsOpen() const noexcept { return m_isOpen; }
+
+    /**
+     * @brief Checks if the big full-catalog modal view is active.
+     */
+    [[nodiscard]] bool IsCatalogView() const noexcept { return m_showAllCatalog; }
+
+    /**
+     * @brief Toggles between standard 8-theme view and the big 13-theme catalog modal.
+     */
+    void SetCatalogView(bool show) noexcept { m_showAllCatalog = show; }
+
+    /**
+     * @brief Handles mouse wheel scrolling in catalog view.
+     */
+    bool HandleMouseWheel(short delta);
 
     /**
      * @brief Gets the currently selected theme mode.
@@ -82,13 +105,19 @@ public:
 private:
     bool m_isOpen = false;
     ThemeMode m_selectedMode = ThemeMode::Dark;
-    int m_hoveredCard = -1; // 0: Dark, 1: Light, 2: Auto
+    int m_hoveredCard = -1;
     bool m_hoveredClose = false;
+    bool m_hoveredMoreThemes = false;
+    bool m_hoveredBack = false;
+    bool m_showAllCatalog = false;
+    float m_catalogScrollY = 0.0f;
 
     D2D1_RECT_F m_modalBounds{};
     D2D1_RECT_F m_closeBounds{};
-    D2D1_RECT_F m_cardBounds[8]{};
-    D2D1_RECT_F m_previewBoxBounds[8]{};
+    D2D1_RECT_F m_moreThemesBounds{};
+    D2D1_RECT_F m_backButtonBounds{};
+    D2D1_RECT_F m_cardBounds[13]{};
+    D2D1_RECT_F m_previewBoxBounds[13]{};
 
     /**
      * @brief Renders an authentic miniature preview illustration of the Dark Mode IDE layout.

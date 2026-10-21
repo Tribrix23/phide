@@ -288,6 +288,14 @@ public:
     void ClearSearchResults();
 
     /**
+     * @brief Fetches next batch of search results incrementally as user scrolls down.
+     */
+    void FetchNextSearchBatch();
+
+    [[nodiscard]] bool HasMoreSearchResults() const noexcept { return m_searchHasMore; }
+    [[nodiscard]] bool IsSearching() const noexcept { return m_isSearching.load() || m_isFetchingMore.load(); }
+
+    /**
      * @brief Launches recursive workspace search on a background worker thread.
      */
     void LaunchAsyncSearch();
@@ -360,6 +368,13 @@ private:
     std::vector<SearchFileGroup> m_pendingSearchGroups;
     size_t m_pendingTotalMatches = 0;
     bool m_hasPendingResults = false;
+
+    // Search Pagination & Incremental Scrolling
+    std::vector<std::filesystem::path> m_searchCandidateFiles;
+    size_t m_searchCandidateFileIndex = 0;
+    bool m_searchHasMore = false;
+    std::atomic<bool> m_isFetchingMore{false};
+    bool m_isBatchAppend = false;
 
     // Search Tooltip State
     std::wstring m_searchTooltipText;

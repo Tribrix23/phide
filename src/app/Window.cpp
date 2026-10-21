@@ -378,12 +378,13 @@ void Window::LoadSessionState() {
 
     if (!recentPaths.empty()) {
         m_recentPaths = recentPaths;
+        if (m_recentPaths.size() > 6) m_recentPaths.resize(6);
     }
 
     m_config.activeRailTab = activeRailTab;
 
-    // Apply restored theme mode with bounds validation (0: Dark, 1: Light, 2: Auto, 3: Purple, 4: Cyan, 5: Turquoise, 6: Monokai, 7: Dracula)
-    if (themeMode < 0 || themeMode > 7) {
+    // Apply restored theme mode with bounds validation (0-12 for all 13 supported themes)
+    if (themeMode < 0 || themeMode > 12) {
         themeMode = 0; // Default to Dark Mode if corrupt or uninitialized
     }
     m_theme.SetThemeMode(static_cast<ui::ThemeMode>(themeMode));
@@ -606,11 +607,11 @@ void Window::OpenFileDocument(const std::wstring& path, bool isPreview) {
         group.activeDocIdx = static_cast<int>(group.docs.size() - 1);
     }
 
-    // Add to recent paths
+    // Add to recent paths LRU list (max 6 entries)
     auto it = std::find(m_recentPaths.begin(), m_recentPaths.end(), path);
     if (it != m_recentPaths.end()) m_recentPaths.erase(it);
     m_recentPaths.insert(m_recentPaths.begin(), path);
-    if (m_recentPaths.size() > 10) m_recentPaths.resize(10);
+    if (m_recentPaths.size() > 6) m_recentPaths.resize(6);
 
     SaveSessionState();
     InvalidateRect(m_hwnd, nullptr, FALSE);
@@ -744,11 +745,11 @@ void Window::DoOpenFolderFromPath(const std::wstring& path) {
     m_drawer.OpenFolder(path);
     m_workspace.OpenWorkspace(path);
 
-    // Track in recent paths
+    // Track in recent paths LRU list (max 6 entries)
     auto it = std::find(m_recentPaths.begin(), m_recentPaths.end(), path);
     if (it != m_recentPaths.end()) m_recentPaths.erase(it);
     m_recentPaths.insert(m_recentPaths.begin(), path);
-    if (m_recentPaths.size() > 10) m_recentPaths.resize(10);
+    if (m_recentPaths.size() > 6) m_recentPaths.resize(6);
 
     if (!m_config.isDrawerOpen) {
         ToggleSidebar();
@@ -1181,6 +1182,7 @@ void Window::DoShowSearch() {
         ToggleSidebar();
     }
     RefreshOpenDocPathsForSearch();
+    m_editor.GetKeyboardShortcutsView().SetSearchFocused(false);
     m_drawer.SetSearchFocus(1);
     SaveSessionState();
     InvalidateRect(m_hwnd, nullptr, FALSE);
@@ -1193,6 +1195,7 @@ void Window::DoShowReplace() {
     }
     m_drawer.SetReplaceOpen(true);
     RefreshOpenDocPathsForSearch();
+    m_editor.GetKeyboardShortcutsView().SetSearchFocused(false);
     m_drawer.SetSearchFocus(2);
     SaveSessionState();
     InvalidateRect(m_hwnd, nullptr, FALSE);
@@ -1853,6 +1856,18 @@ void Window::HandleLButtonDown(POINT clientPt) {
                         if (m_recentPaths.size() > 3) {
                             if (std::filesystem::is_directory(m_recentPaths[3])) DoOpenFolderFromPath(m_recentPaths[3]);
                             else LoadFileFromPath(m_recentPaths[3]);
+                        }
+                        break;
+                    case ui::MenuActionId::RecentItem4:
+                        if (m_recentPaths.size() > 4) {
+                            if (std::filesystem::is_directory(m_recentPaths[4])) DoOpenFolderFromPath(m_recentPaths[4]);
+                            else LoadFileFromPath(m_recentPaths[4]);
+                        }
+                        break;
+                    case ui::MenuActionId::RecentItem5:
+                        if (m_recentPaths.size() > 5) {
+                            if (std::filesystem::is_directory(m_recentPaths[5])) DoOpenFolderFromPath(m_recentPaths[5]);
+                            else LoadFileFromPath(m_recentPaths[5]);
                         }
                         break;
                     case ui::MenuActionId::ReopenClosedEditor:
@@ -2726,6 +2741,14 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
             POINT pt = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
             ScreenToClient(m_hwnd, &pt);
 
+            // 0. Scroll Theme Picker Catalog if modal is open
+            if (m_themePicker.IsOpen()) {
+                if (m_themePicker.HandleMouseWheel(delta)) {
+                    InvalidateRect(m_hwnd, nullptr, FALSE);
+                    return 0;
+                }
+            }
+
             float railW = m_config.ScaleF(static_cast<float>(m_config.railWidth));
             float drawerW = m_config.ScaleF(static_cast<float>(m_config.drawerWidth)) * m_drawerAnimProgress;
             float headerH = m_config.ScaleF(static_cast<float>(m_config.headerHeight));
@@ -2797,22 +2820,23 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 return 0;
             }
 
-            auto* pDoc = GetActiveDoc();
-            bool isShortcutsActive = (pDoc && pDoc->isSpecialView && pDoc->viewType == L"keybindings");
-
-            // Only forward typed characters to search drawer if keyboard shortcuts view is NOT currently open/active
-            if (!isShortcutsActive && m_config.activeRailTab == 1 && m_drawerAnimProgress > 0.001f && m_drawer.IsSearchFocused()) {
+            // 1. If Code Search in drawer has focus, typed characters MUST route to Code Search
+            if (m_config.activeRailTab == 1 && m_drawerAnimProgress > 0.001f && m_drawer.IsSearchFocused()) {
                 m_drawer.HandleSearchChar(static_cast<wchar_t>(wParam));
                 InvalidateRect(m_hwnd, nullptr, FALSE);
                 return 0;
             }
 
+            auto* pDoc = GetActiveDoc();
             if (pDoc) {
                 wchar_t ch = static_cast<wchar_t>(wParam);
-                if (isShortcutsActive) {
-                    if (m_editor.GetKeyboardShortcutsView().HandleChar(ch)) {
-                        InvalidateRect(m_hwnd, nullptr, FALSE);
-                        return 0;
+                // 2. If Keyboard Shortcuts view is active and its search bar is focused, route to shortcuts view
+                if (pDoc->isSpecialView && pDoc->viewType == L"keybindings") {
+                    if (m_editor.GetKeyboardShortcutsView().IsSearchFocused()) {
+                        if (m_editor.GetKeyboardShortcutsView().HandleChar(ch)) {
+                            InvalidateRect(m_hwnd, nullptr, FALSE);
+                            return 0;
+                        }
                     }
                 } else {
                     // Printable characters only (Enter and Tab are cleanly handled in WM_KEYDOWN)
@@ -2903,11 +2927,8 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 return 0;
             }
 
-            auto* pDoc = GetActiveDoc();
-            bool isShortcutsActive = (pDoc && pDoc->isSpecialView && pDoc->viewType == L"keybindings");
-
-            // Only forward keys to Drawer Search if Keyboard Shortcuts view is NOT active
-            if (!isShortcutsActive && m_config.activeRailTab == 1 && m_drawerAnimProgress > 0.001f && m_drawer.IsSearchFocused()) {
+            // 1. If Code Search in drawer is focused, navigation keys route to Code Search
+            if (m_config.activeRailTab == 1 && m_drawerAnimProgress > 0.001f && m_drawer.IsSearchFocused()) {
                 if (wParam == VK_BACK || wParam == VK_TAB || wParam == VK_ESCAPE || wParam == VK_RETURN) {
                     m_drawer.HandleSearchKeyDown(wParam);
                     InvalidateRect(m_hwnd, nullptr, FALSE);
@@ -2915,10 +2936,13 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 }
             }
 
-            if (isShortcutsActive) {
-                if (m_editor.GetKeyboardShortcutsView().HandleKeyDown(wParam)) {
-                    InvalidateRect(m_hwnd, nullptr, FALSE);
-                    return 0;
+            auto* pDoc = GetActiveDoc();
+            if (pDoc && pDoc->isSpecialView && pDoc->viewType == L"keybindings") {
+                if (m_editor.GetKeyboardShortcutsView().IsSearchFocused()) {
+                    if (m_editor.GetKeyboardShortcutsView().HandleKeyDown(wParam)) {
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
+                        return 0;
+                    }
                 }
             }
 

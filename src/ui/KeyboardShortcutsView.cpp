@@ -13,6 +13,7 @@ KeyboardShortcutsView::KeyboardShortcutsView() {
 }
 
 void KeyboardShortcutsView::InitializeShortcuts() {
+    // Verified genuine, operational shortcuts in phide (all fake/unimplemented entries removed)
     m_shortcuts = {
         // --- File Operations ---
         { L"File: New Text File", { L"Ctrl", L"N" }, L"global", L"Default" },
@@ -29,15 +30,9 @@ void KeyboardShortcutsView::InitializeShortcuts() {
 
         // --- View & Layout ---
         { L"View: Split Editor Right", { L"Ctrl", L"\\" }, L"global", L"Default" },
-        { L"View: Focus First Editor Group", { L"Ctrl", L"1" }, L"global", L"Default" },
-        { L"View: Focus Second Editor Group", { L"Ctrl", L"2" }, L"global", L"Default" },
-        { L"View: Focus Third Editor Group", { L"Ctrl", L"3" }, L"global", L"Default" },
         { L"View: Toggle Primary Side Bar", { L"Ctrl", L"B" }, L"global", L"Default" },
         { L"View: Toggle Full Screen", { L"F11" }, L"global", L"Default" },
         { L"View: Toggle Word Wrap", { L"Alt", L"Z" }, L"editorTextFocus", L"Default" },
-        { L"View: Zoom In", { L"Ctrl", L"=" }, L"global", L"Default" },
-        { L"View: Zoom Out", { L"Ctrl", L"-" }, L"global", L"Default" },
-        { L"View: Reset Zoom", { L"Ctrl", L"0" }, L"global", L"Default" },
         { L"View: Show Explorer", { L"Ctrl", L"Shift", L"E" }, L"global", L"Default" },
         { L"View: Show Search", { L"Ctrl", L"Shift", L"F" }, L"global", L"Default" },
         { L"View: Show Source Control", { L"Ctrl", L"Shift", L"G" }, L"global", L"Default" },
@@ -55,19 +50,13 @@ void KeyboardShortcutsView::InitializeShortcuts() {
         { L"Edit: Paste", { L"Ctrl", L"V" }, L"editorTextFocus", L"Default" },
         { L"Edit: Select All", { L"Ctrl", L"A" }, L"editorTextFocus", L"Default" },
         { L"Edit: Find", { L"Ctrl", L"F" }, L"editorTextFocus", L"Default" },
+        { L"Edit: Replace", { L"Ctrl", L"H" }, L"editorTextFocus", L"Default" },
         { L"Edit: Refactor...", { L"Ctrl", L"Shift", L"R" }, L"editorTextFocus", L"Default" },
         { L"Edit: Change All Occurrences", { L"Ctrl", L"F2" }, L"editorTextFocus", L"Default" },
         { L"Edit: Toggle Line Comment", { L"Ctrl", L"/" }, L"editorTextFocus", L"Default" },
         { L"Edit: Toggle Block Comment", { L"Shift", L"Alt", L"A" }, L"editorTextFocus", L"Default" },
         { L"Edit: Indent Line", { L"Tab" }, L"editorTextFocus", L"Default" },
         { L"Edit: Outdent Line", { L"Shift", L"Tab" }, L"editorTextFocus", L"Default" },
-        { L"Edit: Move Line Up", { L"Alt", L"Up" }, L"editorTextFocus", L"Default" },
-        { L"Edit: Move Line Down", { L"Alt", L"Down" }, L"editorTextFocus", L"Default" },
-        { L"Edit: Copy Line Up", { L"Shift", L"Alt", L"Up" }, L"editorTextFocus", L"Default" },
-        { L"Edit: Copy Line Down", { L"Shift", L"Alt", L"Down" }, L"editorTextFocus", L"Default" },
-        { L"Edit: Delete Line", { L"Ctrl", L"Shift", L"K" }, L"editorTextFocus", L"Default" },
-        { L"Edit: Insert Line Above", { L"Ctrl", L"Shift", L"Enter" }, L"editorTextFocus", L"Default" },
-        { L"Edit: Insert Line Below", { L"Ctrl", L"Enter" }, L"editorTextFocus", L"Default" },
 
         // --- Explorer Operations ---
         { L"Explorer: Undo Last File Operation", { L"Ctrl", L"Z" }, L"filesExplorerFocus", L"Default" },
@@ -84,16 +73,12 @@ void KeyboardShortcutsView::InitializeShortcuts() {
         // --- Search & Navigation ---
         { L"Search: Find in Files", { L"Ctrl", L"Shift", L"F" }, L"global", L"Default" },
         { L"Search: Replace in Files", { L"Ctrl", L"Shift", L"H" }, L"global", L"Default" },
-        { L"Navigation: Go to Line...", { L"Ctrl", L"G" }, L"editorTextFocus", L"Default" },
-        { L"Navigation: Quick Open, Go to File...", { L"Ctrl", L"P" }, L"global", L"Default" },
         { L"Navigation: Show All Commands", { L"Ctrl", L"Shift", L"P" }, L"global", L"Default" },
-        { L"Navigation: Jump to Matching Bracket", { L"Ctrl", L"Shift", L"\\" }, L"editorTextFocus", L"Default" },
 
         // --- Terminal & Window ---
         { L"Terminal: Create New Terminal", { L"Ctrl", L"Shift", L"`" }, L"global", L"Default" },
         { L"Terminal: Toggle Terminal", { L"Ctrl", L"`" }, L"global", L"Default" },
         { L"Window: Close Window", { L"Alt", L"F4" }, L"global", L"Default" },
-        { L"Window: Reload Window", { L"Ctrl", L"R" }, L"global", L"Default" },
     };
 }
 

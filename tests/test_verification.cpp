@@ -1137,14 +1137,30 @@ int main() {
 
         theme.SetThemeMode(phide::ui::ThemeMode::Dracula);
         assert(theme.GetThemeMode() == phide::ui::ThemeMode::Dracula);
-        std::cout << "  Passed: Theme Mode switches (Purple, Cyan, Turquoise, Monokai, Dracula) verified" << std::endl;
 
-        // 3. Test Theme Picker Modal with 8-Card Grid Layout & Snapshot
+        theme.SetThemeMode(phide::ui::ThemeMode::Nord);
+        assert(theme.GetThemeMode() == phide::ui::ThemeMode::Nord);
+
+        theme.SetThemeMode(phide::ui::ThemeMode::Solarized);
+        assert(theme.GetThemeMode() == phide::ui::ThemeMode::Solarized);
+
+        theme.SetThemeMode(phide::ui::ThemeMode::GitHubDark);
+        assert(theme.GetThemeMode() == phide::ui::ThemeMode::GitHubDark);
+
+        theme.SetThemeMode(phide::ui::ThemeMode::OneDark);
+        assert(theme.GetThemeMode() == phide::ui::ThemeMode::OneDark);
+
+        theme.SetThemeMode(phide::ui::ThemeMode::SynthWave);
+        assert(theme.GetThemeMode() == phide::ui::ThemeMode::SynthWave);
+        std::cout << "  Passed: All 13 Theme Mode switches verified" << std::endl;
+
+        // 3. Test Theme Picker Modal with Wide Widescreen Preview Cards & Catalog Snapshot
         phide::ui::ThemePickerModal themeModal;
         themeModal.Open(phide::ui::ThemeMode::Dark);
         assert(themeModal.IsOpen());
+        assert(!themeModal.IsCatalogView());
 
-        UINT modalW = 840, modalH = 540;
+        UINT modalW = 1040, modalH = 750;
         ComPtr<IWICBitmap> pWicModalBmp;
         pWicFactory->CreateBitmap(modalW, modalH, GUID_WICPixelFormat32bppPBGRA, WICBitmapCacheOnDemand, &pWicModalBmp);
         ComPtr<ID2D1RenderTarget> pModalRT;
@@ -1160,9 +1176,10 @@ int main() {
         themeModal.Render(pModalRT.Get(), theme, config, static_cast<float>(modalW), static_cast<float>(modalH));
         pModalRT->EndDraw();
 
+        // Save widescreen standard modal snapshot
         ComPtr<IWICStream> pStream;
         pWicFactory->CreateStream(&pStream);
-        pStream->InitializeFromFilename((artDir + L"test_theme_picker_8themes.png").c_str(), GENERIC_WRITE);
+        pStream->InitializeFromFilename((artDir + L"test_theme_picker_widescreen.png").c_str(), GENERIC_WRITE);
         ComPtr<IWICBitmapEncoder> enc;
         pWicFactory->CreateEncoder(GUID_ContainerFormatPng, nullptr, &enc);
         enc->Initialize(pStream.Get(), WICBitmapEncoderNoCache);
@@ -1175,12 +1192,67 @@ int main() {
         frame->WriteSource(pWicModalBmp.Get(), nullptr);
         frame->Commit();
         enc->Commit();
-        std::cout << "  Passed: Saved test_theme_picker_8themes.png" << std::endl;
+        std::cout << "  Passed: Saved test_theme_picker_widescreen.png" << std::endl;
 
-        // Test Modal Selection for all 8 cards
+        // Also save to test_theme_picker_8themes.png for backwards compatibility
+        pStream.Reset();
+        pWicFactory->CreateStream(&pStream);
+        pStream->InitializeFromFilename((artDir + L"test_theme_picker_8themes.png").c_str(), GENERIC_WRITE);
+        enc.Reset();
+        pWicFactory->CreateEncoder(GUID_ContainerFormatPng, nullptr, &enc);
+        enc->Initialize(pStream.Get(), WICBitmapEncoderNoCache);
+        frame.Reset();
+        enc->CreateNewFrame(&frame, nullptr);
+        frame->Initialize(nullptr);
+        frame->SetSize(modalW, modalH);
+        frame->SetPixelFormat(&format);
+        frame->WriteSource(pWicModalBmp.Get(), nullptr);
+        frame->Commit();
+        enc->Commit();
+
+        // Test Clicking "More Themes... ▸" to transition to full Catalog view
+        POINT ptMoreBtn = { static_cast<LONG>((modalW + 960) / 2.0f - 60.0f), static_cast<LONG>((modalH + 430) / 2.0f - 24.0f) };
         phide::ui::ThemeMode chosenMode;
+        bool cardSelected = themeModal.HandleLButtonDown(ptMoreBtn, chosenMode);
+        assert(!cardSelected);
+        assert(themeModal.IsOpen());
+        assert(themeModal.IsCatalogView());
+
+        // Render Catalog View with all 13 themes
+        pModalRT->BeginDraw();
+        pModalRT->Clear(D2D1::ColorF(0.12f, 0.12f, 0.12f, 1.0f));
+        themeModal.Render(pModalRT.Get(), theme, config, static_cast<float>(modalW), static_cast<float>(modalH));
+        pModalRT->EndDraw();
+
+        // Save catalog snapshot
+        pStream.Reset();
+        pWicFactory->CreateStream(&pStream);
+        pStream->InitializeFromFilename((artDir + L"test_theme_picker_catalog.png").c_str(), GENERIC_WRITE);
+        enc.Reset();
+        pWicFactory->CreateEncoder(GUID_ContainerFormatPng, nullptr, &enc);
+        enc->Initialize(pStream.Get(), WICBitmapEncoderNoCache);
+        frame.Reset();
+        enc->CreateNewFrame(&frame, nullptr);
+        frame->Initialize(nullptr);
+        frame->SetSize(modalW, modalH);
+        frame->SetPixelFormat(&format);
+        frame->WriteSource(pWicModalBmp.Get(), nullptr);
+        frame->Commit();
+        enc->Commit();
+        std::cout << "  Passed: Saved test_theme_picker_catalog.png" << std::endl;
+
+        // Test mouse wheel scrolling in catalog view
+        assert(themeModal.HandleMouseWheel(-120));
+        assert(themeModal.HandleMouseWheel(120));
+
+        // Test clicking "◂ Standard Themes" back button
+        POINT ptBackBtn = { static_cast<LONG>((modalW - 960) / 2.0f + 60.0f), static_cast<LONG>((modalH - (std::min)(700.0f, static_cast<float>(modalH) - 30.0f)) / 2.0f + 25.0f) };
+        assert(!themeModal.HandleLButtonDown(ptBackBtn, chosenMode));
+        assert(!themeModal.IsCatalogView());
+        assert(themeModal.IsOpen());
+
+        // Test Modal Dismiss on outside click
         POINT ptModalClose = { 10, 10 }; // Outside
-        themeModal.Open(phide::ui::ThemeMode::Dark);
         assert(!themeModal.HandleLButtonDown(ptModalClose, chosenMode)); // Dismissed without selection
         assert(!themeModal.IsOpen());
 
@@ -1225,10 +1297,10 @@ int main() {
     // --- 12. Rainbow Brackets, Skeletal Frame, Connector Guides, and Expanded Keyboard Shortcuts ---
     std::cout << "[TEST 12] Testing Rainbow Brackets, Skeletal Frame, Connector Guides, and Expanded Keyboard Shortcuts..." << std::endl;
     {
-        // 1. Verify KeyboardShortcutsView has 68 complete shortcuts
+        // 1. Verify KeyboardShortcutsView has exactly 51 verified genuine shortcuts
         phide::ui::KeyboardShortcutsView shortcutsView;
-        assert(shortcutsView.GetShortcutsCount() >= 60);
-        std::cout << "  Passed: KeyboardShortcutsView contains " << shortcutsView.GetShortcutsCount() << " complete shortcuts" << std::endl;
+        assert(shortcutsView.GetShortcutsCount() == 51);
+        std::cout << "  Passed: KeyboardShortcutsView contains " << shortcutsView.GetShortcutsCount() << " genuine verified shortcuts" << std::endl;
 
         // 2. Verify BracketPairAnalyzer Nesting Depth & Active Pinpointing
         std::wstring sampleCode =

@@ -59,6 +59,8 @@ enum class MenuActionId {
     RecentItem1,
     RecentItem2,
     RecentItem3,
+    RecentItem4,
+    RecentItem5,
     ReopenClosedEditor,
     ClearRecent,
     ExportProfile,

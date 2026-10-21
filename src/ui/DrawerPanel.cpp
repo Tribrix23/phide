@@ -887,8 +887,16 @@ void DrawerPanel::RenderSearchPane(ID2D1RenderTarget* pRT, Theme& theme, const a
         D2D1_ROUNDED_RECT rrcRepAll = D2D1::RoundedRect(m_rcReplaceAllBtn, 3.5f, 3.5f);
         pRT->FillRoundedRectangle(rrcRepAll, theme.brushItemHover.Get());
         pRT->DrawRoundedRectangle(rrcRepAll, theme.brushBorderSubtle.Get(), 1.0f);
-        const wchar_t* repAllGlyph = L"\u21C9";
-        pRT->DrawText(repAllGlyph, 1, theme.fontBody.Get(), m_rcReplaceAllBtn, theme.brushTextSecondary.Get());
+
+        // Clean vector Replace All icon: right-pointing arrow with vertical bar
+        float rcx = (m_rcReplaceAllBtn.left + m_rcReplaceAllBtn.right) * 0.5f;
+        float rcy = (m_rcReplaceAllBtn.top + m_rcReplaceAllBtn.bottom) * 0.5f;
+        ID2D1Brush* repBrush = theme.brushTextSecondary.Get();
+        float arrHalfW = config.ScaleF(4.5f);
+        pRT->DrawLine(D2D1::Point2F(rcx - arrHalfW, rcy), D2D1::Point2F(rcx + arrHalfW - config.ScaleF(1.0f), rcy), repBrush, 1.4f);
+        pRT->DrawLine(D2D1::Point2F(rcx + arrHalfW - config.ScaleF(3.5f), rcy - config.ScaleF(3.0f)), D2D1::Point2F(rcx + arrHalfW - config.ScaleF(1.0f), rcy), repBrush, 1.4f);
+        pRT->DrawLine(D2D1::Point2F(rcx + arrHalfW - config.ScaleF(3.5f), rcy + config.ScaleF(3.0f)), D2D1::Point2F(rcx + arrHalfW - config.ScaleF(1.0f), rcy), repBrush, 1.4f);
+        pRT->DrawLine(D2D1::Point2F(rcx + arrHalfW + config.ScaleF(1.5f), rcy - config.ScaleF(4.0f)), D2D1::Point2F(rcx + arrHalfW + config.ScaleF(1.5f), rcy + config.ScaleF(4.0f)), repBrush, 1.5f);
 
         curY += inputH + config.ScaleF(4.0f);
     } else {
@@ -908,9 +916,20 @@ void DrawerPanel::RenderSearchPane(ID2D1RenderTarget* pRT, Theme& theme, const a
     if (m_isSearchDetailsOpen) {
         pRT->FillRoundedRectangle(rrcDetails, theme.brushItemActive.Get());
         pRT->DrawRoundedRectangle(rrcDetails, theme.brushBrandAccent.Get(), 1.0f);
+    } else {
+        pRT->FillRoundedRectangle(rrcDetails, theme.brushItemHover.Get());
+        pRT->DrawRoundedRectangle(rrcDetails, theme.brushBorderSubtle.Get(), 0.8f);
     }
-    pRT->DrawText(L"...", 3, theme.fontMenuShortcut ? theme.fontMenuShortcut.Get() : theme.fontBody.Get(),
-                  m_rcToggleSearchDetailsBtn, m_isSearchDetailsOpen ? theme.brushTextPrimary.Get() : theme.brushTextSecondary.Get());
+
+    // Sleek vector 3-dot horizontal ellipsis (...)
+    float dotY = (m_rcToggleSearchDetailsBtn.top + m_rcToggleSearchDetailsBtn.bottom) * 0.5f;
+    float dotMidX = (m_rcToggleSearchDetailsBtn.left + m_rcToggleSearchDetailsBtn.right) * 0.5f;
+    float dotSpacing = config.ScaleF(4.0f);
+    float dotR = config.ScaleF(1.2f);
+    ID2D1Brush* dotBrush = m_isSearchDetailsOpen ? theme.brushBrandAccent.Get() : theme.brushTextSecondary.Get();
+    pRT->FillEllipse(D2D1::Ellipse(D2D1::Point2F(dotMidX - dotSpacing, dotY), dotR, dotR), dotBrush);
+    pRT->FillEllipse(D2D1::Ellipse(D2D1::Point2F(dotMidX, dotY), dotR, dotR), dotBrush);
+    pRT->FillEllipse(D2D1::Ellipse(D2D1::Point2F(dotMidX + dotSpacing, dotY), dotR, dotR), dotBrush);
 
     curY += detailsBtnH + config.ScaleF(4.0f);
 
@@ -954,22 +973,24 @@ void DrawerPanel::RenderSearchPane(ID2D1RenderTarget* pRT, Theme& theme, const a
             pRT->DrawRoundedRectangle(rrcBook, theme.brushBrandAccent.Get(), 1.0f);
         }
 
-        // Draw Book icon (Open Editors icon)
+        // Draw crisp vector Open Book icon
         ID2D1Brush* bookBrush = m_searchOnlyOpenEditors ? theme.brushBrandAccent.Get() : theme.brushTextSecondary.Get();
-        float bx = m_rcOpenEditorsOnlyBtn.left + (incBtnW - config.ScaleF(12.0f)) / 2.0f;
-        float by = m_rcOpenEditorsOnlyBtn.top + (incBtnH - config.ScaleF(10.0f)) / 2.0f;
-        float bw = config.ScaleF(12.0f);
-        float bh = config.ScaleF(10.0f);
-        float midX = bx + bw * 0.5f;
-        pRT->DrawLine(D2D1::Point2F(bx, by), D2D1::Point2F(bx, by + bh), bookBrush, 1.2f);
-        pRT->DrawLine(D2D1::Point2F(bx, by + bh), D2D1::Point2F(midX, by + bh - config.ScaleF(1.0f)), bookBrush, 1.2f);
-        pRT->DrawLine(D2D1::Point2F(midX, by + bh - config.ScaleF(1.0f)), D2D1::Point2F(midX, by), bookBrush, 1.2f);
-        pRT->DrawLine(D2D1::Point2F(midX, by), D2D1::Point2F(bx, by + config.ScaleF(1.0f)), bookBrush, 1.2f);
-        pRT->DrawLine(D2D1::Point2F(midX, by), D2D1::Point2F(bx + bw, by + config.ScaleF(1.0f)), bookBrush, 1.2f);
-        pRT->DrawLine(D2D1::Point2F(bx + bw, by + config.ScaleF(1.0f)), D2D1::Point2F(bx + bw, by + bh), bookBrush, 1.2f);
-        pRT->DrawLine(D2D1::Point2F(bx + bw, by + bh), D2D1::Point2F(midX, by + bh - config.ScaleF(1.0f)), bookBrush, 1.2f);
-        pRT->DrawLine(D2D1::Point2F(bx + config.ScaleF(2.5f), by + config.ScaleF(3.5f)), D2D1::Point2F(midX - config.ScaleF(1.5f), by + config.ScaleF(3.0f)), bookBrush, 1.0f);
-        pRT->DrawLine(D2D1::Point2F(midX + config.ScaleF(1.5f), by + config.ScaleF(3.0f)), D2D1::Point2F(bx + bw - config.ScaleF(2.5f), by + config.ScaleF(3.5f)), bookBrush, 1.0f);
+        float bkMidX = (m_rcOpenEditorsOnlyBtn.left + m_rcOpenEditorsOnlyBtn.right) * 0.5f;
+        float bkMidY = (m_rcOpenEditorsOnlyBtn.top + m_rcOpenEditorsOnlyBtn.bottom) * 0.5f;
+        float bkw = config.ScaleF(11.0f);
+        float bkh = config.ScaleF(8.5f);
+        float hW = bkw * 0.5f;
+        float hH = bkh * 0.5f;
+        // Center spine
+        pRT->DrawLine(D2D1::Point2F(bkMidX, bkMidY - hH), D2D1::Point2F(bkMidX, bkMidY + hH), bookBrush, 1.3f);
+        // Left page outline
+        pRT->DrawLine(D2D1::Point2F(bkMidX, bkMidY - hH), D2D1::Point2F(bkMidX - hW, bkMidY - hH * 0.6f), bookBrush, 1.2f);
+        pRT->DrawLine(D2D1::Point2F(bkMidX - hW, bkMidY - hH * 0.6f), D2D1::Point2F(bkMidX - hW, bkMidY + hH * 0.8f), bookBrush, 1.2f);
+        pRT->DrawLine(D2D1::Point2F(bkMidX - hW, bkMidY + hH * 0.8f), D2D1::Point2F(bkMidX, bkMidY + hH), bookBrush, 1.2f);
+        // Right page outline
+        pRT->DrawLine(D2D1::Point2F(bkMidX, bkMidY - hH), D2D1::Point2F(bkMidX + hW, bkMidY - hH * 0.6f), bookBrush, 1.2f);
+        pRT->DrawLine(D2D1::Point2F(bkMidX + hW, bkMidY - hH * 0.6f), D2D1::Point2F(bkMidX + hW, bkMidY + hH * 0.8f), bookBrush, 1.2f);
+        pRT->DrawLine(D2D1::Point2F(bkMidX + hW, bkMidY + hH * 0.8f), D2D1::Point2F(bkMidX, bkMidY + hH), bookBrush, 1.2f);
 
         // Include text or placeholder
         D2D1_RECT_F rcIncText = D2D1::RectF(
@@ -1042,21 +1063,21 @@ void DrawerPanel::RenderSearchPane(ID2D1RenderTarget* pRT, Theme& theme, const a
             pRT->DrawRoundedRectangle(rrcGear, theme.brushBrandAccent.Get(), 1.0f);
         }
 
-        // Draw Gear icon
+        // Draw crisp vector Gear icon (Settings / Exclude Settings)
         ID2D1Brush* gearBrush = m_useExcludeSettings ? theme.brushBrandAccent.Get() : theme.brushTextSecondary.Get();
-        float gx = m_rcUseExcludeSettingsBtn.left + excBtnW * 0.5f;
-        float gy = m_rcUseExcludeSettingsBtn.top + excBtnH * 0.5f;
-        float gr = config.ScaleF(4.2f);
+        float gx = (m_rcUseExcludeSettingsBtn.left + m_rcUseExcludeSettingsBtn.right) * 0.5f;
+        float gy = (m_rcUseExcludeSettingsBtn.top + m_rcUseExcludeSettingsBtn.bottom) * 0.5f;
+        float gr = config.ScaleF(4.0f);
         pRT->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(gx, gy), gr, gr), gearBrush, 1.2f);
+        pRT->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(gx, gy), gr * 0.45f, gr * 0.45f), gearBrush, 1.0f);
         for (int a = 0; a < 6; ++a) {
-            float angle = static_cast<float>(a) * 3.14159f / 3.0f;
-            float tx = gx + cosf(angle) * (gr + config.ScaleF(1.5f));
-            float ty = gy + sinf(angle) * (gr + config.ScaleF(1.5f));
-            float bbx = gx + cosf(angle) * gr;
-            float bby = gy + sinf(angle) * gr;
-            pRT->DrawLine(D2D1::Point2F(bbx, bby), D2D1::Point2F(tx, ty), gearBrush, 1.4f);
+            float angle = static_cast<float>(a) * 3.14159265f / 3.0f;
+            float x1 = gx + cosf(angle) * (gr - config.ScaleF(0.4f));
+            float y1 = gy + sinf(angle) * (gr - config.ScaleF(0.4f));
+            float x2 = gx + cosf(angle) * (gr + config.ScaleF(1.8f));
+            float y2 = gy + sinf(angle) * (gr + config.ScaleF(1.8f));
+            pRT->DrawLine(D2D1::Point2F(x1, y1), D2D1::Point2F(x2, y2), gearBrush, 1.6f);
         }
-        pRT->DrawLine(D2D1::Point2F(gx - config.ScaleF(2.0f), gy), D2D1::Point2F(gx + config.ScaleF(2.0f), gy), gearBrush, 1.5f);
 
         // Exclude text or placeholder
         D2D1_RECT_F rcExcText = D2D1::RectF(
@@ -1517,6 +1538,10 @@ void DrawerPanel::ClearSearchResults() {
     m_searchGroups.clear();
     m_searchGroups.shrink_to_fit();
     m_totalMatches = 0;
+    m_searchCandidateFiles.clear();
+    m_searchCandidateFileIndex = 0;
+    m_searchHasMore = false;
+    m_isBatchAppend = false;
 }
 
 void DrawerPanel::TriggerSearchThrottled(ULONGLONG nowMs) {
@@ -1537,12 +1562,27 @@ bool DrawerPanel::PollSearchThrottle(ULONGLONG nowMs) {
         }
     }
 
-    // 2. Consume completed background results (thread-safe swap)
+    // 2. Consume completed background results (thread-safe swap or incremental append)
     if (m_hasPendingResults) {
         std::lock_guard<std::mutex> lock(m_searchMutex);
-        ClearSearchResults(); // Clean previous results and free memory
-        m_searchGroups = std::move(m_pendingSearchGroups);
-        m_totalMatches = m_pendingTotalMatches;
+        if (m_isBatchAppend) {
+            for (auto& g : m_pendingSearchGroups) {
+                m_searchGroups.push_back(std::move(g));
+            }
+            m_totalMatches += m_pendingTotalMatches;
+            m_pendingSearchGroups.clear();
+            m_pendingTotalMatches = 0;
+            m_isBatchAppend = false;
+        } else {
+            for (auto& g : m_searchGroups) {
+                g.matches.clear();
+                g.matches.shrink_to_fit();
+            }
+            m_searchGroups.clear();
+            m_searchGroups.shrink_to_fit();
+            m_searchGroups = std::move(m_pendingSearchGroups);
+            m_totalMatches = m_pendingTotalMatches;
+        }
         m_hasPendingResults = false;
         needRepaint = true;
     }
@@ -1609,6 +1649,164 @@ void DrawerPanel::HandleSearchKeyDown(WPARAM wParam) {
     }
 }
 
+/**
+ * @brief Searches an individual file for occurrences of query or regex.
+ */
+static bool SearchSingleFile(
+    const std::filesystem::path& filePath,
+    const std::filesystem::path& root,
+    const std::wstring& query,
+    const std::wstring& lowerQuery,
+    bool matchCase,
+    bool matchWord,
+    bool useRegex,
+    bool regexValid,
+    const std::wregex& regexPattern,
+    SearchFileGroup& outGroup,
+    size_t& inOutTotalMatches,
+    size_t maxMatchesPerFile,
+    size_t maxTotalMatches
+) {
+    std::error_code ec;
+    auto filename = filePath.filename().wstring();
+
+    // Skip binary extensions (video, images, executables, libraries, archives, audio, fonts)
+    auto ext = filePath.extension().wstring();
+    for (auto& ch : ext) ch = towlower(ch);
+    if (ext == L".png" || ext == L".jpg" || ext == L".jpeg" || ext == L".gif" ||
+        ext == L".bmp" || ext == L".ico" || ext == L".webp" || ext == L".tiff" ||
+        ext == L".tif" || ext == L".psd" || ext == L".raw"  ||
+        ext == L".mp4" || ext == L".mkv" || ext == L".avi"  || ext == L".mov" ||
+        ext == L".wmv" || ext == L".flv" || ext == L".webm" || ext == L".mpg" ||
+        ext == L".mpeg"|| ext == L".m4v" || ext == L".3gp"  ||
+        ext == L".mp3" || ext == L".wav" || ext == L".ogg"  || ext == L".flac" ||
+        ext == L".aac" || ext == L".m4a" || ext == L".wma"  ||
+        ext == L".exe" || ext == L".dll" || ext == L".obj"  || ext == L".bin" ||
+        ext == L".lib" || ext == L".pdb" || ext == L".so"   || ext == L".dylib" ||
+        ext == L".sys" || ext == L".o"   || ext == L".a"    || ext == L".class" ||
+        ext == L".pyc" || ext == L".wasm"|| ext == L".zip"  || ext == L".rar" ||
+        ext == L".7z"  || ext == L".tar" || ext == L".gz"   || ext == L".iso" ||
+        ext == L".ttf" || ext == L".otf" || ext == L".woff" || ext == L".woff2") {
+        return false;
+    }
+
+    // Skip files > 2MB
+    auto fileSize = std::filesystem::file_size(filePath, ec);
+    if (ec || fileSize > 2 * 1024 * 1024) {
+        return false;
+    }
+
+    // Inspect initial bytes for null characters (binary file check)
+    std::ifstream file(filePath, std::ios::binary);
+    if (!file.is_open()) return false;
+
+    char headerBuf[512];
+    file.read(headerBuf, sizeof(headerBuf));
+    std::streamsize bytesRead = file.gcount();
+    for (std::streamsize b = 0; b < bytesRead; ++b) {
+        if (headerBuf[b] == '\0') {
+            file.close();
+            return false;
+        }
+    }
+
+    file.clear();
+    file.seekg(0, std::ios::beg);
+    std::string content((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+    file.close();
+
+    if (content.find('\0') != std::string::npos) return false;
+
+    int wlen = MultiByteToWideChar(CP_UTF8, 0, content.c_str(), static_cast<int>(content.size()), nullptr, 0);
+    if (wlen <= 0) return false;
+    std::wstring wcontent(wlen, L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, content.c_str(), static_cast<int>(content.size()), &wcontent[0], wlen);
+
+    outGroup.filePath = filePath.wstring();
+    outGroup.fileName = filename;
+    std::filesystem::path rel = std::filesystem::relative(filePath.parent_path(), root, ec);
+    outGroup.relDir = ec ? L"" : rel.wstring();
+    if (outGroup.relDir == L".") outGroup.relDir.clear();
+    outGroup.isExpanded = true;
+
+    size_t lineIdx = 0;
+    size_t pos = 0;
+    while (pos < wcontent.size() && outGroup.matches.size() < maxMatchesPerFile && inOutTotalMatches < maxTotalMatches) {
+        size_t nextNL = wcontent.find(L'\n', pos);
+        if (nextNL == std::wstring::npos) nextNL = wcontent.size();
+
+        std::wstring lineStr = wcontent.substr(pos, nextNL - pos);
+        if (!lineStr.empty() && lineStr.back() == L'\r') lineStr.pop_back();
+
+        // Skip extremely long single-line files (e.g. minified single-line bundle > 30,000 chars)
+        if (lineStr.size() > 30000) {
+            pos = nextNL + 1;
+            lineIdx++;
+            continue;
+        }
+
+        if (useRegex && regexValid) {
+            std::wsregex_iterator regIt(lineStr.begin(), lineStr.end(), regexPattern);
+            std::wsregex_iterator regEnd;
+            for (; regIt != regEnd && outGroup.matches.size() < maxMatchesPerFile && inOutTotalMatches < maxTotalMatches; ++regIt) {
+                size_t matchCol = static_cast<size_t>(regIt->position());
+                size_t matchLen = static_cast<size_t>(regIt->length());
+
+                size_t snipStart = (matchCol > 40) ? (matchCol - 40) : 0;
+                size_t snipEnd = (std::min)(lineStr.size(), matchCol + matchLen + 80);
+
+                SearchMatch match;
+                match.lineIndex = lineIdx;
+                match.lineText = lineStr.substr(snipStart, snipEnd - snipStart);
+                match.matchCol = matchCol - snipStart;
+                match.matchLen = matchLen;
+                outGroup.matches.push_back(std::move(match));
+                inOutTotalMatches++;
+            }
+        } else {
+            std::wstring searchLine = lineStr;
+            if (!matchCase) {
+                std::transform(searchLine.begin(), searchLine.end(), searchLine.begin(), ::towlower);
+            }
+
+            size_t findPos = 0;
+            while ((findPos = searchLine.find(lowerQuery, findPos)) != std::wstring::npos &&
+                   outGroup.matches.size() < maxMatchesPerFile && inOutTotalMatches < maxTotalMatches) {
+                bool valid = true;
+                if (matchWord) {
+                    if (findPos > 0) {
+                        wchar_t prev = searchLine[findPos - 1];
+                        if (iswalnum(prev) || prev == L'_') valid = false;
+                    }
+                    if (valid && (findPos + lowerQuery.size() < searchLine.size())) {
+                        wchar_t next = searchLine[findPos + lowerQuery.size()];
+                        if (iswalnum(next) || next == L'_') valid = false;
+                    }
+                }
+
+                if (valid) {
+                    size_t snipStart = (findPos > 40) ? (findPos - 40) : 0;
+                    size_t snipEnd = (std::min)(lineStr.size(), findPos + lowerQuery.size() + 80);
+
+                    SearchMatch match;
+                    match.lineIndex = lineIdx;
+                    match.lineText = lineStr.substr(snipStart, snipEnd - snipStart);
+                    match.matchCol = findPos - snipStart;
+                    match.matchLen = query.size();
+                    outGroup.matches.push_back(std::move(match));
+                    inOutTotalMatches++;
+                }
+                findPos += (std::max)(size_t(1), lowerQuery.size());
+            }
+        }
+
+        pos = nextNL + 1;
+        lineIdx++;
+    }
+
+    return !outGroup.matches.empty();
+}
+
 void DrawerPanel::LaunchAsyncSearch() {
     uint32_t thisGen = ++m_searchGeneration;
 
@@ -1632,7 +1830,12 @@ void DrawerPanel::LaunchAsyncSearch() {
         m_pendingSearchGroups.clear();
         m_pendingSearchGroups.shrink_to_fit();
         m_pendingTotalMatches = 0;
+        m_searchCandidateFiles.clear();
+        m_searchCandidateFileIndex = 0;
+        m_searchHasMore = false;
+        m_isBatchAppend = false;
         m_hasPendingResults = true;
+        m_isSearching = false;
         return;
     }
 
@@ -1641,244 +1844,189 @@ void DrawerPanel::LaunchAsyncSearch() {
     // Run file traversal in worker thread to prevent freezing the GUI thread!
     std::thread([this, thisGen, query, rootFolder, matchCase, matchWord, useRegex,
                  searchOnlyOpenEditors, openDocPaths, filesToInclude, filesToExclude, useExcludeSettings]() {
-        std::vector<SearchFileGroup> groups;
-        size_t totalMatches = 0;
-        const size_t MAX_MATCHES_PER_FILE = 50;
-        const size_t MAX_TOTAL_MATCHES = 1000;
+        try {
+            std::error_code ec;
+            std::filesystem::path root(rootFolder);
 
-        std::error_code ec;
-        std::filesystem::path root(rootFolder);
-
-        std::wregex regexPattern;
-        bool regexValid = false;
-        if (useRegex) {
-            try {
-                auto flags = std::regex_constants::ECMAScript;
-                if (!matchCase) flags |= std::regex_constants::icase;
-                regexPattern = std::wregex(query, flags);
-                regexValid = true;
-            } catch (...) {
-                regexValid = false;
-            }
-        }
-
-        std::wstring lowerQuery = query;
-        if (!matchCase) {
-            std::transform(lowerQuery.begin(), lowerQuery.end(), lowerQuery.begin(), ::towlower);
-        }
-
-        // Collect files to search based on "Search Open Tabs Only" toggle and include/exclude patterns
-        std::vector<std::filesystem::path> filesToProcess;
-        if (searchOnlyOpenEditors) {
-            for (const auto& op : openDocPaths) {
-                std::filesystem::path fp(op);
-                std::error_code fec;
-                if (std::filesystem::exists(fp, fec) && std::filesystem::is_regular_file(fp, fec)) {
-                    auto fname = fp.filename().wstring();
-                    auto fstr = fp.wstring();
-                    if (!filesToInclude.empty() && !MatchesPatternList(fname, fstr, filesToInclude)) continue;
-                    if (!filesToExclude.empty() && MatchesPatternList(fname, fstr, filesToExclude)) continue;
-                    filesToProcess.push_back(fp);
+            std::wregex regexPattern;
+            bool regexValid = false;
+            if (useRegex) {
+                try {
+                    auto flags = std::regex_constants::ECMAScript;
+                    if (!matchCase) flags |= std::regex_constants::icase;
+                    regexPattern = std::wregex(query, flags);
+                    regexValid = true;
+                } catch (...) {
+                    regexValid = false;
                 }
             }
-        } else {
-            for (std::filesystem::recursive_directory_iterator it(root, std::filesystem::directory_options::skip_permission_denied, ec), end;
-                 it != end; it.increment(ec)) {
-                if (m_searchGeneration.load() != thisGen) return;
-                if (ec) { ec.clear(); continue; }
 
-                const auto& entry = *it;
-                auto filename = entry.path().filename().wstring();
+            std::wstring lowerQuery = query;
+            if (!matchCase) {
+                std::transform(lowerQuery.begin(), lowerQuery.end(), lowerQuery.begin(), ::towlower);
+            }
 
-                if (!filename.empty() && filename[0] == L'.') {
-                    if (entry.is_directory(ec)) it.disable_recursion_pending();
-                    continue;
-                }
-
-                if (entry.is_directory(ec)) {
-                    if (useExcludeSettings && (filename == L"node_modules" || filename == L"build" || filename == L"bin" ||
-                        filename == L"obj" || filename == L"target" || filename == L".git" ||
-                        filename == L"dist" || filename == L"out" || filename == L"vendor" ||
-                        filename == L".cache" || filename == L"tmp" || filename == L"temp" ||
-                        filename == L"coverage" || filename == L".next" || filename == L".nuxt")) {
-                        it.disable_recursion_pending();
+            // Collect files to search based on "Search Open Tabs Only" toggle and include/exclude patterns
+            std::vector<std::filesystem::path> filesToProcess;
+            if (searchOnlyOpenEditors) {
+                for (const auto& op : openDocPaths) {
+                    std::filesystem::path fp(op);
+                    std::error_code fec;
+                    if (std::filesystem::exists(fp, fec) && std::filesystem::is_regular_file(fp, fec)) {
+                        auto fname = fp.filename().wstring();
+                        auto fstr = fp.wstring();
+                        if (!filesToInclude.empty() && !MatchesPatternList(fname, fstr, filesToInclude)) continue;
+                        if (!filesToExclude.empty() && MatchesPatternList(fname, fstr, filesToExclude)) continue;
+                        filesToProcess.push_back(fp);
                     }
-                    continue;
                 }
+            } else {
+                for (std::filesystem::recursive_directory_iterator it(root, std::filesystem::directory_options::skip_permission_denied, ec), end;
+                     it != end; it.increment(ec)) {
+                    if (m_searchGeneration.load() != thisGen) {
+                        m_isSearching = false;
+                        return;
+                    }
+                    if (ec) { ec.clear(); continue; }
 
-                if (!entry.is_regular_file(ec)) continue;
+                    const auto& entry = *it;
+                    auto filename = entry.path().filename().wstring();
 
-                auto fstr = entry.path().wstring();
-                if (!filesToInclude.empty() && !MatchesPatternList(filename, fstr, filesToInclude)) continue;
-                if (!filesToExclude.empty() && MatchesPatternList(filename, fstr, filesToExclude)) continue;
+                    if (!filename.empty() && filename[0] == L'.') {
+                        if (entry.is_directory(ec)) it.disable_recursion_pending();
+                        continue;
+                    }
 
-                filesToProcess.push_back(entry.path());
-            }
-        }
+                    if (entry.is_directory(ec)) {
+                        if (useExcludeSettings && (filename == L"node_modules" || filename == L"build" || filename == L"bin" ||
+                            filename == L"obj" || filename == L"target" || filename == L".git" ||
+                            filename == L"dist" || filename == L"out" || filename == L"vendor" ||
+                            filename == L".cache" || filename == L"tmp" || filename == L"temp" ||
+                            filename == L"coverage" || filename == L".next" || filename == L".nuxt")) {
+                            it.disable_recursion_pending();
+                        }
+                        continue;
+                    }
 
-        for (const auto& filePath : filesToProcess) {
-            if (m_searchGeneration.load() != thisGen) return;
+                    if (!entry.is_regular_file(ec)) continue;
 
-            auto filename = filePath.filename().wstring();
+                    auto fstr = entry.path().wstring();
+                    if (!filesToInclude.empty() && !MatchesPatternList(filename, fstr, filesToInclude)) continue;
+                    if (!filesToExclude.empty() && MatchesPatternList(filename, fstr, filesToExclude)) continue;
 
-            // Skip binary extensions (video, images, executables, libraries, archives, audio, fonts)
-            auto ext = filePath.extension().wstring();
-            for (auto& ch : ext) ch = towlower(ch);
-            if (ext == L".png" || ext == L".jpg" || ext == L".jpeg" || ext == L".gif" ||
-                ext == L".bmp" || ext == L".ico" || ext == L".webp" || ext == L".tiff" ||
-                ext == L".tif" || ext == L".psd" || ext == L".raw"  ||
-                ext == L".mp4" || ext == L".mkv" || ext == L".avi"  || ext == L".mov" ||
-                ext == L".wmv" || ext == L".flv" || ext == L".webm" || ext == L".mpg" ||
-                ext == L".mpeg"|| ext == L".m4v" || ext == L".3gp"  ||
-                ext == L".mp3" || ext == L".wav" || ext == L".ogg"  || ext == L".flac" ||
-                ext == L".aac" || ext == L".m4a" || ext == L".wma"  ||
-                ext == L".exe" || ext == L".dll" || ext == L".obj"  || ext == L".bin" ||
-                ext == L".lib" || ext == L".pdb" || ext == L".so"   || ext == L".dylib" ||
-                ext == L".sys" || ext == L".o"   || ext == L".a"    || ext == L".class" ||
-                ext == L".pyc" || ext == L".wasm"|| ext == L".zip"  || ext == L".rar" ||
-                ext == L".7z"  || ext == L".tar" || ext == L".gz"   || ext == L".iso" ||
-                ext == L".ttf" || ext == L".otf" || ext == L".woff" || ext == L".woff2") {
-                continue;
-            }
-
-            // Skip files > 2MB
-            auto fileSize = std::filesystem::file_size(filePath, ec);
-            if (ec || fileSize > 2 * 1024 * 1024) {
-                ec.clear();
-                continue;
+                    filesToProcess.push_back(entry.path());
+                }
             }
 
-            // Inspect initial bytes for null characters
-            std::ifstream file(filePath, std::ios::binary);
-            if (!file.is_open()) continue;
+            // Search first visible batch: target up to 12 files with matches or 35 matches, or 150 scanned files
+            std::vector<SearchFileGroup> initialGroups;
+            size_t batchMatches = 0;
+            size_t processedIdx = 0;
+            const size_t BATCH_FILE_LIMIT = 12;
+            const size_t BATCH_MATCH_LIMIT = 35;
+            const size_t MAX_SCAN_PER_CHUNK = 150;
 
-            char headerBuf[512];
-            file.read(headerBuf, sizeof(headerBuf));
-            std::streamsize bytesRead = file.gcount();
-            bool isBinary = false;
-            for (std::streamsize b = 0; b < bytesRead; ++b) {
-                if (headerBuf[b] == '\0') {
-                    isBinary = true;
+            for (; processedIdx < filesToProcess.size(); ++processedIdx) {
+                if (m_searchGeneration.load() != thisGen) {
+                    m_isSearching = false;
+                    return;
+                }
+                if (initialGroups.size() >= BATCH_FILE_LIMIT || batchMatches >= BATCH_MATCH_LIMIT || processedIdx >= MAX_SCAN_PER_CHUNK) {
                     break;
                 }
-            }
-            if (isBinary) {
-                file.close();
-                continue;
-            }
-
-            file.clear();
-            file.seekg(0, std::ios::beg);
-            std::string content((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
-            file.close();
-
-            if (content.find('\0') != std::string::npos) continue;
-
-            int wlen = MultiByteToWideChar(CP_UTF8, 0, content.c_str(), static_cast<int>(content.size()), nullptr, 0);
-            if (wlen <= 0) continue;
-            std::wstring wcontent(wlen, L'\0');
-            MultiByteToWideChar(CP_UTF8, 0, content.c_str(), static_cast<int>(content.size()), &wcontent[0], wlen);
-
-            SearchFileGroup group;
-            group.filePath = filePath.wstring();
-            group.fileName = filename;
-            std::filesystem::path rel = std::filesystem::relative(filePath.parent_path(), root, ec);
-            group.relDir = ec ? L"" : rel.wstring();
-            if (group.relDir == L".") group.relDir.clear();
-            group.isExpanded = true;
-
-            size_t lineIdx = 0;
-            size_t pos = 0;
-            while (pos < wcontent.size() && group.matches.size() < MAX_MATCHES_PER_FILE && totalMatches < MAX_TOTAL_MATCHES) {
-                if (m_searchGeneration.load() != thisGen) return;
-
-                size_t nextNL = wcontent.find(L'\n', pos);
-                if (nextNL == std::wstring::npos) nextNL = wcontent.size();
-
-                std::wstring lineStr = wcontent.substr(pos, nextNL - pos);
-                if (!lineStr.empty() && lineStr.back() == L'\r') lineStr.pop_back();
-
-                // Skip extremely long single-line files (e.g. minified single-line bundle > 30,000 chars)
-                if (lineStr.size() > 30000) {
-                    pos = nextNL + 1;
-                    lineIdx++;
-                    continue;
+                SearchFileGroup group;
+                if (SearchSingleFile(filesToProcess[processedIdx], root, query, lowerQuery,
+                                     matchCase, matchWord, useRegex, regexValid, regexPattern,
+                                     group, batchMatches, 50, 1000)) {
+                    initialGroups.push_back(std::move(group));
                 }
+            }
 
-                if (useRegex && regexValid) {
-                    std::wsregex_iterator regIt(lineStr.begin(), lineStr.end(), regexPattern);
-                    std::wsregex_iterator regEnd;
-                    for (; regIt != regEnd && group.matches.size() < MAX_MATCHES_PER_FILE && totalMatches < MAX_TOTAL_MATCHES; ++regIt) {
-                        size_t matchCol = static_cast<size_t>(regIt->position());
-                        size_t matchLen = static_cast<size_t>(regIt->length());
+            if (m_searchGeneration.load() == thisGen) {
+                std::lock_guard<std::mutex> lock(m_searchMutex);
+                m_pendingSearchGroups = std::move(initialGroups);
+                m_pendingTotalMatches = batchMatches;
+                m_searchCandidateFiles = std::move(filesToProcess);
+                m_searchCandidateFileIndex = processedIdx;
+                m_searchHasMore = (m_searchCandidateFileIndex < m_searchCandidateFiles.size());
+                m_isBatchAppend = false;
+                m_hasPendingResults = true;
+            }
+        } catch (...) {
+        }
+        m_isSearching = false;
+    }).detach();
+}
 
-                        // Generate compact snippet to prevent gigabytes of memory consumption
-                        size_t snipStart = (matchCol > 40) ? (matchCol - 40) : 0;
-                        size_t snipEnd = (std::min)(lineStr.size(), matchCol + matchLen + 80);
+void DrawerPanel::FetchNextSearchBatch() {
+    if (!m_searchHasMore || m_isFetchingMore.load() || m_isSearching.load()) return;
+    m_isFetchingMore = true;
 
-                        SearchMatch match;
-                        match.lineIndex = lineIdx;
-                        match.lineText = lineStr.substr(snipStart, snipEnd - snipStart);
-                        match.matchCol = matchCol - snipStart;
-                        match.matchLen = matchLen;
-                        group.matches.push_back(std::move(match));
-                        totalMatches++;
-                    }
-                } else {
-                    std::wstring searchLine = lineStr;
-                    if (!matchCase) {
-                        std::transform(searchLine.begin(), searchLine.end(), searchLine.begin(), ::towlower);
-                    }
+    uint32_t thisGen = m_searchGeneration.load();
+    std::wstring query = m_searchQuery;
+    std::wstring rootFolder = m_openFolderPath;
+    bool matchCase = m_matchCase;
+    bool matchWord = m_matchWholeWord;
+    bool useRegex = m_useRegex;
 
-                    size_t findPos = 0;
-                    while ((findPos = searchLine.find(lowerQuery, findPos)) != std::wstring::npos &&
-                           group.matches.size() < MAX_MATCHES_PER_FILE && totalMatches < MAX_TOTAL_MATCHES) {
-                        bool valid = true;
-                        if (matchWord) {
-                            if (findPos > 0) {
-                                wchar_t prev = searchLine[findPos - 1];
-                                if (iswalnum(prev) || prev == L'_') valid = false;
-                            }
-                            if (valid && (findPos + lowerQuery.size() < searchLine.size())) {
-                                wchar_t next = searchLine[findPos + lowerQuery.size()];
-                                if (iswalnum(next) || next == L'_') valid = false;
-                            }
-                        }
-
-                        if (valid) {
-                            size_t snipStart = (findPos > 40) ? (findPos - 40) : 0;
-                            size_t snipEnd = (std::min)(lineStr.size(), findPos + lowerQuery.size() + 80);
-
-                            SearchMatch match;
-                            match.lineIndex = lineIdx;
-                            match.lineText = lineStr.substr(snipStart, snipEnd - snipStart);
-                            match.matchCol = findPos - snipStart;
-                            match.matchLen = query.size();
-                            group.matches.push_back(std::move(match));
-                            totalMatches++;
-                        }
-                        findPos += (std::max)(size_t(1), lowerQuery.size());
-                    }
+    std::thread([this, thisGen, query, rootFolder, matchCase, matchWord, useRegex]() {
+        try {
+            std::filesystem::path root(rootFolder);
+            std::wregex regexPattern;
+            bool regexValid = false;
+            if (useRegex) {
+                try {
+                    auto flags = std::regex_constants::ECMAScript;
+                    if (!matchCase) flags |= std::regex_constants::icase;
+                    regexPattern = std::wregex(query, flags);
+                    regexValid = true;
+                } catch (...) {
+                    regexValid = false;
                 }
-
-                pos = nextNL + 1;
-                lineIdx++;
             }
 
-            if (!group.matches.empty()) {
-                groups.push_back(std::move(group));
+            std::wstring lowerQuery = query;
+            if (!matchCase) {
+                std::transform(lowerQuery.begin(), lowerQuery.end(), lowerQuery.begin(), ::towlower);
             }
 
-            if (totalMatches >= MAX_TOTAL_MATCHES) break;
-        }
+            std::vector<SearchFileGroup> nextGroups;
+            size_t batchMatches = 0;
+            const size_t BATCH_FILE_LIMIT = 12;
+            const size_t BATCH_MATCH_LIMIT = 35;
+            const size_t MAX_SCAN_PER_CHUNK = 150;
 
-        if (m_searchGeneration.load() == thisGen) {
-            std::lock_guard<std::mutex> lock(m_searchMutex);
-            m_pendingSearchGroups = std::move(groups);
-            m_pendingTotalMatches = totalMatches;
-            m_hasPendingResults = true;
-            m_isSearching = false;
+            size_t startIdx = m_searchCandidateFileIndex;
+            size_t endIdx = startIdx;
+
+            for (; endIdx < m_searchCandidateFiles.size(); ++endIdx) {
+                if (m_searchGeneration.load() != thisGen) {
+                    m_isFetchingMore = false;
+                    return;
+                }
+                if (nextGroups.size() >= BATCH_FILE_LIMIT || batchMatches >= BATCH_MATCH_LIMIT || (endIdx - startIdx) >= MAX_SCAN_PER_CHUNK) {
+                    break;
+                }
+                SearchFileGroup group;
+                if (SearchSingleFile(m_searchCandidateFiles[endIdx], root, query, lowerQuery,
+                                     matchCase, matchWord, useRegex, regexValid, regexPattern,
+                                     group, batchMatches, 50, 1000)) {
+                    nextGroups.push_back(std::move(group));
+                }
+            }
+
+            if (m_searchGeneration.load() == thisGen) {
+                std::lock_guard<std::mutex> lock(m_searchMutex);
+                m_pendingSearchGroups = std::move(nextGroups);
+                m_pendingTotalMatches = batchMatches;
+                m_searchCandidateFileIndex = endIdx;
+                m_searchHasMore = (m_searchCandidateFileIndex < m_searchCandidateFiles.size());
+                m_isBatchAppend = true;
+                m_hasPendingResults = true;
+            }
+        } catch (...) {
         }
+        m_isFetchingMore = false;
     }).detach();
 }
 
@@ -2193,6 +2341,10 @@ bool DrawerPanel::HandleMouseWheel(short delta, int activeRailTab) {
             }
         } else {
             m_searchScrollIdx += 2;
+            // Incremental lazy loading: if scrolling down and more candidate files remain, fetch next batch
+            if (m_searchHasMore && !m_isFetchingMore.load()) {
+                FetchNextSearchBatch();
+            }
         }
         return m_searchScrollIdx != oldScroll;
     }
