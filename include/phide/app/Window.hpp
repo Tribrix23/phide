@@ -228,6 +228,13 @@ private:
     /** @brief Redoes previously undone buffer mutation (Ctrl+Y). */
     void DoRedo();
 
+    /**
+     * @brief Marks a document as edited, honoring Auto Save to write changes immediately to disk.
+     * If Auto Save is active and the file is backed by disk, persists changes without setting dirty flag.
+     * @param pDoc Pointer to open document buffer being modified.
+     */
+    void MarkDocumentModified(editor::OpenDocument* pDoc);
+
     /** @brief Selects all text in current document (Ctrl+A). */
     void DoSelectAll();
 

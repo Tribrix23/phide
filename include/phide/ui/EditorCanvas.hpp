@@ -31,11 +31,19 @@ public:
 
     /**
      * @brief Renders the entire editor canvas (multi-tabs, active document or placeholder watermark).
+     * @param highlightQuery Search query string to highlight across visible lines.
+     * @param highlightMatchCase Whether search query match is case-sensitive.
+     * @param highlightWholeWord Whether search query matches whole words only.
+     * @param highlightUseRegex Whether search query is treated as a regular expression.
      */
     void Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
                 std::vector<editor::OpenDocument>& docs, int activeDocIdx,
                 float canvasLeft, float canvasWidth, float clientHeight,
-                bool hasLeftDrawer = false);
+                bool hasLeftDrawer = false,
+                const std::wstring& highlightQuery = L"",
+                bool highlightMatchCase = false,
+                bool highlightWholeWord = false,
+                bool highlightUseRegex = false);
 
     /**
      * @brief Toggles caret blink phase.
@@ -179,7 +187,11 @@ private:
      */
     void RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
                     editor::OpenDocument& doc, float canvasLeft, float canvasWidth,
-                    float topY, float clientHeight);
+                    float topY, float clientHeight,
+                    const std::wstring& highlightQuery = L"",
+                    bool highlightMatchCase = false,
+                    bool highlightWholeWord = false,
+                    bool highlightUseRegex = false);
 
     struct FoldChevronHit {
         D2D1_RECT_F bounds{};

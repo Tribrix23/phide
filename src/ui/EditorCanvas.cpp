@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <wincodec.h>
 #include <filesystem>
+#include <regex>
 
 namespace phide::ui {
 
@@ -108,7 +109,11 @@ void EditorCanvas::DiscardDeviceResources() {
 void EditorCanvas::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
                           std::vector<editor::OpenDocument>& docs, int activeDocIdx,
                           float canvasLeft, float canvasWidth, float clientHeight,
-                          bool hasLeftDrawer) {
+                          bool hasLeftDrawer,
+                          const std::wstring& highlightQuery,
+                          bool highlightMatchCase,
+                          bool highlightWholeWord,
+                          bool highlightUseRegex) {
     if (!pRT) return;
 
     const float headerH = config.ScaleF(static_cast<float>(config.headerHeight));
@@ -201,7 +206,8 @@ void EditorCanvas::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
         } else {
             const float breadcrumbH = config.ScaleF(24.0f);
             RenderBreadcrumbs(pRT, theme, config, activeDoc, canvasLeft, canvasWidth, headerH + tabH, breadcrumbH);
-            RenderCode(pRT, theme, config, activeDoc, canvasLeft, canvasWidth, headerH + tabH + breadcrumbH, clientHeight);
+            RenderCode(pRT, theme, config, activeDoc, canvasLeft, canvasWidth, headerH + tabH + breadcrumbH, clientHeight,
+                       highlightQuery, highlightMatchCase, highlightWholeWord, highlightUseRegex);
         }
     }
 }
@@ -624,7 +630,11 @@ bool EditorCanvas::GetFoldRange(const editor::Buffer& buffer, size_t startLine, 
 
 void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
                               editor::OpenDocument& doc, float canvasLeft, float canvasWidth,
-                              float topY, float clientHeight) {
+                              float topY, float clientHeight,
+                              const std::wstring& highlightQuery,
+                              bool highlightMatchCase,
+                              bool highlightWholeWord,
+                              bool highlightUseRegex) {
     auto& buffer = doc.buffer;
     const float gutterW = config.ScaleF(50.0f);
     const float lineH   = config.ScaleF(20.0f);
@@ -780,6 +790,75 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
         // Code Content
         const auto& lineStr = buffer.GetLine(vl.bufferLine);
         float curCodeEndX = codeLeft;
+
+        /**
+         * @brief Highlight all occurrences of the active search query on this line in amber.
+         * Rendered before syntax tokens so code text remains crisp and readable on top.
+         */
+        if (!highlightQuery.empty() && !lineStr.empty()) {
+            std::vector<std::pair<size_t, size_t>> matches; // (col, length)
+            if (highlightUseRegex) {
+                try {
+                    std::wregex::flag_type flags = std::regex_constants::ECMAScript;
+                    if (!highlightMatchCase) flags |= std::regex_constants::icase;
+                    std::wregex re(highlightQuery, flags);
+                    auto words_begin = std::wsregex_iterator(lineStr.begin(), lineStr.end(), re);
+                    auto words_end = std::wsregex_iterator();
+                    for (std::wsregex_iterator it = words_begin; it != words_end; ++it) {
+                        std::wsmatch sm = *it;
+                        size_t matchPos = static_cast<size_t>(sm.position());
+                        size_t matchLen = static_cast<size_t>(sm.length());
+                        if (matchLen > 0) {
+                            if (highlightWholeWord) {
+                                bool leftOk = (matchPos == 0) || !iswalnum(lineStr[matchPos - 1]);
+                                bool rightOk = (matchPos + matchLen >= lineStr.length()) || !iswalnum(lineStr[matchPos + matchLen]);
+                                if (!leftOk || !rightOk) continue;
+                            }
+                            matches.push_back({matchPos, matchLen});
+                        }
+                    }
+                } catch (...) {}
+            } else {
+                std::wstring qLower = highlightQuery;
+                std::wstring lLower = lineStr;
+                if (!highlightMatchCase) {
+                    for (auto& ch : qLower) ch = towlower(ch);
+                    for (auto& ch : lLower) ch = towlower(ch);
+                }
+                const std::wstring& target = highlightMatchCase ? lineStr : lLower;
+                const std::wstring& pattern = highlightMatchCase ? highlightQuery : qLower;
+                size_t pos = 0;
+                while ((pos = target.find(pattern, pos)) != std::wstring::npos) {
+                    size_t matchLen = pattern.length();
+                    bool keep = true;
+                    if (highlightWholeWord) {
+                        bool leftOk = (pos == 0) || !iswalnum(lineStr[pos - 1]);
+                        bool rightOk = (pos + matchLen >= lineStr.length()) || !iswalnum(lineStr[pos + matchLen]);
+                        if (!leftOk || !rightOk) keep = false;
+                    }
+                    if (keep) {
+                        matches.push_back({pos, matchLen});
+                    }
+                    pos += (std::max)(size_t(1), matchLen);
+                }
+            }
+
+            if (!matches.empty()) {
+                Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> fillBrush;
+                Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> borderBrush;
+                pRT->CreateSolidColorBrush(D2D1::ColorF(0.95f, 0.58f, 0.12f, 0.38f), &fillBrush);
+                pRT->CreateSolidColorBrush(D2D1::ColorF(0.95f, 0.58f, 0.12f, 0.85f), &borderBrush);
+
+                for (const auto& m : matches) {
+                    float hx = codeLeft + m.first * charW;
+                    float hw = m.second * charW;
+                    D2D1_RECT_F rcMatch = D2D1::RectF(hx - 1.0f, lineY + 1.0f, hx + hw + 1.0f, lineY + lineH - 1.0f);
+                    D2D1_ROUNDED_RECT rrc = D2D1::RoundedRect(rcMatch, 2.0f, 2.0f);
+                    if (fillBrush) pRT->FillRoundedRectangle(&rrc, fillBrush.Get());
+                    if (borderBrush) pRT->DrawRoundedRectangle(&rrc, borderBrush.Get(), 1.0f);
+                }
+            }
+        }
 
         if (!lineStr.empty()) {
             auto tokens = buffer.GetTokensForLine(vl.bufferLine);

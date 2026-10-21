@@ -456,24 +456,72 @@ void DrawerPanel::RenderExplorerPane(ID2D1RenderTarget* pRT, Theme& theme, const
                     m_icons.DrawFileIcon(pRT, theme, iconBounds, iconType);
                 }
 
-                // 4. Draw Item Text Label
+                // 4. Draw Item Text Label OR Inline Rename Input Box (VS Code style inline rename)
                 float labelX = iconX + config.ScaleF(22.0f);
-                D2D1_RECT_F rcLabel = D2D1::RectF(
-                    labelX,
-                    curY,
-                    railW + fullDrawerW - config.ScaleF(10.0f),
-                    curY + itemH
-                );
-                ID2D1Brush* pTextBrush = theme.IsDarkMode() ? 
-                    (isHovered ? theme.brushTextWhite.Get() : (item.isFolder ? theme.brushTextWhite.Get() : theme.brushTextPrimary.Get())) :
-                    theme.brushTextPrimary.Get();
-                pRT->DrawText(
-                    item.label.c_str(),
-                    static_cast<UINT32>(item.label.length()),
-                    theme.fontBody.Get(),
-                    rcLabel,
-                    pTextBrush
-                );
+                if (m_isRenaming && static_cast<int>(i) == m_renamingItemIdx) {
+                    m_rcRenameBox = D2D1::RectF(
+                        labelX - config.ScaleF(4.0f),
+                        curY + config.ScaleF(1.0f),
+                        railW + fullDrawerW - config.ScaleF(10.0f),
+                        curY + itemH - config.ScaleF(1.0f)
+                    );
+                    D2D1_ROUNDED_RECT rrcBox = D2D1::RoundedRect(m_rcRenameBox, 3.0f, 3.0f);
+                    pRT->FillRoundedRectangle(rrcBox, theme.brushCanvasBg.Get());
+                    pRT->DrawRoundedRectangle(rrcBox, theme.brushBrandAccent.Get(), 1.5f);
+
+                    D2D1_RECT_F rcRenameText = D2D1::RectF(
+                        m_rcRenameBox.left + config.ScaleF(4.0f),
+                        m_rcRenameBox.top + config.ScaleF(1.0f),
+                        m_rcRenameBox.right - config.ScaleF(4.0f),
+                        m_rcRenameBox.bottom - config.ScaleF(1.0f)
+                    );
+                    pRT->DrawText(
+                        m_renameText.c_str(),
+                        static_cast<UINT32>(m_renameText.length()),
+                        theme.fontBody.Get(),
+                        rcRenameText,
+                        theme.brushTextPrimary.Get()
+                    );
+
+                    // Caret inside rename box
+                    float renameTextW = 0.0f;
+                    if (theme.dwriteFactory && !m_renameText.empty()) {
+                        Microsoft::WRL::ComPtr<IDWriteTextLayout> pLayout;
+                        if (SUCCEEDED(theme.dwriteFactory->CreateTextLayout(
+                                m_renameText.c_str(), static_cast<UINT32>(m_renameText.length()),
+                                theme.fontBody.Get(), 1000.0f, itemH, &pLayout))) {
+                            DWRITE_TEXT_METRICS tm{};
+                            if (SUCCEEDED(pLayout->GetMetrics(&tm))) {
+                                renameTextW = tm.width;
+                            }
+                        }
+                    }
+                    float caretX = rcRenameText.left + renameTextW + 1.0f;
+                    if (caretX < rcRenameText.right) {
+                        pRT->DrawLine(
+                            D2D1::Point2F(caretX, m_rcRenameBox.top + config.ScaleF(3.0f)),
+                            D2D1::Point2F(caretX, m_rcRenameBox.bottom - config.ScaleF(3.0f)),
+                            theme.brushTextPrimary.Get(), 1.5f
+                        );
+                    }
+                } else {
+                    D2D1_RECT_F rcLabel = D2D1::RectF(
+                        labelX,
+                        curY,
+                        railW + fullDrawerW - config.ScaleF(10.0f),
+                        curY + itemH
+                    );
+                    ID2D1Brush* pTextBrush = theme.IsDarkMode() ? 
+                        (isHovered ? theme.brushTextWhite.Get() : (item.isFolder ? theme.brushTextWhite.Get() : theme.brushTextPrimary.Get())) :
+                        theme.brushTextPrimary.Get();
+                    pRT->DrawText(
+                        item.label.c_str(),
+                        static_cast<UINT32>(item.label.length()),
+                        theme.fontBody.Get(),
+                        rcLabel,
+                        pTextBrush
+                    );
+                }
 
                 curY += itemH;
             }
@@ -489,11 +537,11 @@ void DrawerPanel::RenderSearchPane(ID2D1RenderTarget* pRT, Theme& theme, const a
 
     float curY = headerH + config.ScaleF(14.0f);
 
-    // 1. Header: "Code Search" (matching Image 2) + Refresh (↻) and Clear (✕)
+    // 1. Header: "Code Search" + Refresh icon button (↻) (Clear '✕' removed as requested)
     D2D1_RECT_F rcTitle = D2D1::RectF(
         railW + paddingX,
         curY,
-        railW + fullDrawerW - config.ScaleF(60.0f),
+        railW + fullDrawerW - config.ScaleF(40.0f),
         curY + config.ScaleF(20.0f)
     );
     const wchar_t* title = L"Code Search";
@@ -503,23 +551,13 @@ void DrawerPanel::RenderSearchPane(ID2D1RenderTarget* pRT, Theme& theme, const a
 
     // Refresh icon button (↻)
     m_rcRefreshSearchBtn = D2D1::RectF(
-        railW + fullDrawerW - config.ScaleF(48.0f),
+        railW + fullDrawerW - config.ScaleF(32.0f),
         curY - config.ScaleF(1.0f),
-        railW + fullDrawerW - config.ScaleF(28.0f),
+        railW + fullDrawerW - config.ScaleF(10.0f),
         curY + config.ScaleF(19.0f)
     );
     const wchar_t* refreshGlyph = L"\u21BB";
     pRT->DrawText(refreshGlyph, 1, theme.fontBody.Get(), m_rcRefreshSearchBtn, theme.brushTextSecondary.Get());
-
-    // Clear search button (✕)
-    m_rcClearSearchBtn = D2D1::RectF(
-        railW + fullDrawerW - config.ScaleF(26.0f),
-        curY - config.ScaleF(1.0f),
-        railW + fullDrawerW - config.ScaleF(8.0f),
-        curY + config.ScaleF(19.0f)
-    );
-    const wchar_t* clearGlyph = L"\u2715";
-    pRT->DrawText(clearGlyph, 1, theme.fontBody.Get(), m_rcClearSearchBtn, theme.brushTextSecondary.Get());
 
     curY += config.ScaleF(28.0f);
 
@@ -910,7 +948,7 @@ void DrawerPanel::RenderSearchPane(ID2D1RenderTarget* pRT, Theme& theme, const a
                                       theme.fontMenuShortcut ? theme.fontMenuShortcut.Get() : theme.fontBody.Get(),
                                       rcLineNum, theme.brushTextMuted.Get());
 
-                        // Match snippet
+                        // Match snippet with matched keyword highlight
                         float snipX = rcLineNum.right + config.ScaleF(4.0f);
                         D2D1_RECT_F rcSnip = D2D1::RectF(
                             snipX, curY,
@@ -923,9 +961,55 @@ void DrawerPanel::RenderSearchPane(ID2D1RenderTarget* pRT, Theme& theme, const a
                             trimmed = trimmed.substr(firstNonSpace);
                         }
 
-                        pRT->DrawText(trimmed.c_str(), static_cast<UINT32>(trimmed.length()),
-                                      theme.fontCode ? theme.fontCode.Get() : theme.fontBody.Get(),
-                                      rcSnip, theme.brushTextPrimary.Get());
+                        if (theme.dwriteFactory) {
+                            Microsoft::WRL::ComPtr<IDWriteTextLayout> pSnippetLayout;
+                            if (SUCCEEDED(theme.dwriteFactory->CreateTextLayout(
+                                    trimmed.c_str(), static_cast<UINT32>(trimmed.length()),
+                                    theme.fontCode ? theme.fontCode.Get() : theme.fontBody.Get(),
+                                    rcSnip.right - rcSnip.left, rowH, &pSnippetLayout))) {
+
+                                // Find matches in trimmed snippet
+                                std::wstring qLower = m_searchQuery;
+                                std::wstring sLower = trimmed;
+                                if (!m_matchCase) {
+                                    for (auto& ch : qLower) ch = towlower(ch);
+                                    for (auto& ch : sLower) ch = towlower(ch);
+                                }
+                                const std::wstring& target = m_matchCase ? trimmed : sLower;
+                                const std::wstring& pattern = m_matchCase ? m_searchQuery : qLower;
+
+                                size_t pos = 0;
+                                Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> hlFill;
+                                Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> hlBorder;
+                                pRT->CreateSolidColorBrush(D2D1::ColorF(0.95f, 0.58f, 0.12f, 0.40f), &hlFill);
+                                pRT->CreateSolidColorBrush(D2D1::ColorF(0.95f, 0.58f, 0.12f, 0.85f), &hlBorder);
+
+                                while (!pattern.empty() && (pos = target.find(pattern, pos)) != std::wstring::npos) {
+                                    DWRITE_HIT_TEST_METRICS htm{};
+                                    UINT32 count = 0;
+                                    if (SUCCEEDED(pSnippetLayout->HitTestTextRange(
+                                            static_cast<UINT32>(pos), static_cast<UINT32>(pattern.length()),
+                                            0.0f, 0.0f, &htm, 1, &count)) && count > 0) {
+                                        D2D1_RECT_F rcHL = D2D1::RectF(
+                                            snipX + htm.left - 1.0f,
+                                            curY + htm.top + 1.0f,
+                                            snipX + htm.left + htm.width + 1.0f,
+                                            curY + htm.top + htm.height - 1.0f
+                                        );
+                                        D2D1_ROUNDED_RECT rrcHL = D2D1::RoundedRect(rcHL, 2.0f, 2.0f);
+                                        if (hlFill) pRT->FillRoundedRectangle(&rrcHL, hlFill.Get());
+                                        if (hlBorder) pRT->DrawRoundedRectangle(&rrcHL, hlBorder.Get(), 1.0f);
+                                    }
+                                    pos += (std::max)(size_t(1), pattern.length());
+                                }
+
+                                pRT->DrawTextLayout(D2D1::Point2F(snipX, curY), pSnippetLayout.Get(), theme.brushTextPrimary.Get());
+                            }
+                        } else {
+                            pRT->DrawText(trimmed.c_str(), static_cast<UINT32>(trimmed.length()),
+                                          theme.fontCode ? theme.fontCode.Get() : theme.fontBody.Get(),
+                                          rcSnip, theme.brushTextPrimary.Get());
+                        }
 
                         curY += rowH;
                     }
@@ -933,6 +1017,36 @@ void DrawerPanel::RenderSearchPane(ID2D1RenderTarget* pRT, Theme& theme, const a
                 curRowIdx++;
             }
         }
+    }
+
+    // 5. Floating Tooltip for Hovered Search Button
+    if (!m_searchTooltipText.empty()) {
+        const float tipH = config.ScaleF(22.0f);
+        const float tipPadX = config.ScaleF(8.0f);
+        size_t textLen = m_searchTooltipText.length();
+        float textW = config.ScaleF(static_cast<float>(textLen * 6.5f + 12.0f));
+        float tipW = textW + tipPadX * 2.0f;
+
+        float tipX = m_searchTooltipAnchor.left + (m_searchTooltipAnchor.right - m_searchTooltipAnchor.left - tipW) / 2.0f;
+        float tipY = m_searchTooltipAnchor.bottom + config.ScaleF(4.0f);
+
+        // Keep inside drawer viewport
+        if (tipX < railW + config.ScaleF(6.0f)) tipX = railW + config.ScaleF(6.0f);
+        if (tipX + tipW > railW + fullDrawerW - config.ScaleF(6.0f)) tipX = railW + fullDrawerW - tipW - config.ScaleF(6.0f);
+
+        D2D1_RECT_F rcTip = D2D1::RectF(tipX, tipY, tipX + tipW, tipY + tipH);
+        D2D1_ROUNDED_RECT rrcTip = D2D1::RoundedRect(rcTip, 4.0f, 4.0f);
+
+        pRT->FillRoundedRectangle(rrcTip, theme.brushTooltipBg.Get());
+        pRT->DrawRoundedRectangle(rrcTip, theme.brushTooltipBorder.Get(), 1.0f);
+
+        pRT->DrawText(
+            m_searchTooltipText.c_str(),
+            static_cast<UINT32>(textLen),
+            theme.fontTooltip ? theme.fontTooltip.Get() : theme.fontHint.Get(),
+            rcTip,
+            theme.brushTooltipText ? theme.brushTooltipText.Get() : theme.brushTextPrimary.Get()
+        );
     }
 }
 
@@ -971,16 +1085,7 @@ bool DrawerPanel::HitTestSearch(POINT pt, const app::AppConfig& config, std::wst
         return true;
     }
 
-    // 2. Clear button
-    if (pt.x >= m_rcClearSearchBtn.left && pt.x <= m_rcClearSearchBtn.right &&
-        pt.y >= m_rcClearSearchBtn.top && pt.y <= m_rcClearSearchBtn.bottom) {
-        m_searchQuery.clear();
-        m_searchGroups.clear();
-        m_totalMatches = 0;
-        return true;
-    }
-
-    // 3. Match Case (Aa) button
+    // 2. Match Case (Aa) button
     if (pt.x >= m_rcMatchCaseBtn.left && pt.x <= m_rcMatchCaseBtn.right &&
         pt.y >= m_rcMatchCaseBtn.top && pt.y <= m_rcMatchCaseBtn.bottom) {
         m_matchCase = !m_matchCase;
@@ -1348,6 +1453,141 @@ bool DrawerPanel::HandleMouseWheel(short delta, int activeRailTab) {
         }
     }
     return m_scrollIndex != oldScroll;
+}
+
+/**
+ * @brief Initiates inline rename mode on a visible tree item by its index.
+ * @param itemIdx Index in m_visibleItems to rename.
+ */
+void DrawerPanel::StartInlineRename(int itemIdx) {
+    if (itemIdx < 0 || itemIdx >= static_cast<int>(m_visibleItems.size())) return;
+    m_isRenaming = true;
+    m_renamingItemIdx = itemIdx;
+    m_renameOriginalPath = m_visibleItems[itemIdx].fullPath;
+    m_renameText = m_visibleItems[itemIdx].label;
+}
+
+/**
+ * @brief Initiates inline rename mode on a tree item matching full filesystem path.
+ * @param fullPath Canonical filesystem path of the item to rename.
+ */
+void DrawerPanel::StartInlineRenameByPath(const std::wstring& fullPath) {
+    if (fullPath.empty()) return;
+    for (size_t i = 0; i < m_visibleItems.size(); ++i) {
+        if (m_visibleItems[i].fullPath == fullPath) {
+            StartInlineRename(static_cast<int>(i));
+            return;
+        }
+    }
+    std::filesystem::path p(fullPath);
+    for (size_t i = 0; i < m_visibleItems.size(); ++i) {
+        if (m_visibleItems[i].label == p.filename().wstring()) {
+            StartInlineRename(static_cast<int>(i));
+            return;
+        }
+    }
+}
+
+/**
+ * @brief Cancels inline rename mode and discards user input.
+ */
+void DrawerPanel::CancelInlineRename() {
+    m_isRenaming = false;
+    m_renamingItemIdx = -1;
+    m_renameText.clear();
+    m_renameOriginalPath.clear();
+    m_rcRenameBox = D2D1::RectF(0, 0, 0, 0);
+}
+
+/**
+ * @brief Commits inline rename, renaming the target file/folder on disk.
+ * @param outOldPath Receives the original filesystem path.
+ * @param outNewPath Receives the newly renamed filesystem path.
+ * @return True if the rename operation succeeded on disk.
+ */
+bool DrawerPanel::CommitInlineRename(std::wstring& outOldPath, std::wstring& outNewPath) {
+    outOldPath.clear();
+    outNewPath.clear();
+    if (!m_isRenaming || m_renameOriginalPath.empty() || m_renameText.empty()) {
+        CancelInlineRename();
+        return false;
+    }
+
+    std::filesystem::path oldP(m_renameOriginalPath);
+    if (m_renameText == oldP.filename().wstring()) {
+        CancelInlineRename();
+        return false;
+    }
+
+    std::filesystem::path newP = oldP.parent_path() / m_renameText;
+    std::error_code ec;
+    std::filesystem::rename(oldP, newP, ec);
+    if (!ec) {
+        outOldPath = oldP.wstring();
+        outNewPath = newP.wstring();
+        CancelInlineRename();
+        RefreshTree();
+        return true;
+    }
+
+    CancelInlineRename();
+    return false;
+}
+
+/**
+ * @brief Handles character typed during inline rename, filtering illegal filename characters.
+ * @param ch Wide character code.
+ */
+void DrawerPanel::HandleRenameChar(wchar_t ch) {
+    if (!m_isRenaming) return;
+    if (ch >= 32 && ch != L'\\' && ch != L'/' && ch != L':' && ch != L'*' &&
+        ch != L'?' && ch != L'\"' && ch != L'<' && ch != L'>' && ch != L'|') {
+        m_renameText.push_back(ch);
+    }
+}
+
+/**
+ * @brief Handles special keys during inline rename (Backspace, Escape).
+ * @param wParam Virtual key code.
+ */
+void DrawerPanel::HandleRenameKeyDown(WPARAM wParam) {
+    if (!m_isRenaming) return;
+    if (wParam == VK_BACK) {
+        if (!m_renameText.empty()) {
+            m_renameText.pop_back();
+        }
+    } else if (wParam == VK_ESCAPE) {
+        CancelInlineRename();
+    }
+}
+
+/**
+ * @brief Handles mouse movement over Code Search buttons to update floating tooltips.
+ * @param pt Cursor point in client coordinates.
+ * @return True if tooltip state changed and requires repaint.
+ */
+bool DrawerPanel::HandleSearchMouseMove(POINT pt) {
+    std::wstring oldTip = m_searchTooltipText;
+    m_searchTooltipText.clear();
+
+    auto checkBtn = [&](const D2D1_RECT_F& rc, const wchar_t* text) {
+        if (pt.x >= rc.left && pt.x <= rc.right && pt.y >= rc.top && pt.y <= rc.bottom) {
+            m_searchTooltipText = text;
+            m_searchTooltipAnchor = rc;
+            return true;
+        }
+        return false;
+    };
+
+    if (checkBtn(m_rcRefreshSearchBtn, L"Refresh")) {}
+    else if (checkBtn(m_rcToggleReplaceChevron, L"Toggle Replace")) {}
+    else if (checkBtn(m_rcMatchCaseBtn, L"Match Case (Alt+C)")) {}
+    else if (checkBtn(m_rcMatchWholeWordBtn, L"Match Whole Word (Alt+W)")) {}
+    else if (checkBtn(m_rcUseRegexBtn, L"Use Regular Expression (Alt+R)")) {}
+    else if (m_isReplaceOpen && checkBtn(m_rcPreserveCaseBtn, L"Preserve Case (Alt+P)")) {}
+    else if (m_isReplaceOpen && checkBtn(m_rcReplaceAllBtn, L"Replace All (Ctrl+Alt+Enter)")) {}
+
+    return (m_searchTooltipText != oldTip);
 }
 
 } // namespace phide::ui

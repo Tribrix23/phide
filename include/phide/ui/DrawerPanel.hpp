@@ -189,6 +189,58 @@ public:
         ExecuteSearch();
     }
     [[nodiscard]] const std::wstring& GetSearchQuery() const noexcept { return m_searchQuery; }
+    [[nodiscard]] int GetHoveredIndex() const noexcept { return m_hoveredIndex; }
+    [[nodiscard]] bool GetMatchCase() const noexcept { return m_matchCase; }
+    [[nodiscard]] bool GetMatchWholeWord() const noexcept { return m_matchWholeWord; }
+    [[nodiscard]] bool GetUseRegex() const noexcept { return m_useRegex; }
+
+    // --- Inline Tree Item Rename ---
+    /**
+     * @brief Initiates inline rename mode on a tree item by its visible index.
+     */
+    void StartInlineRename(int itemIdx);
+
+    /**
+     * @brief Initiates inline rename mode on a tree item matching full filesystem path.
+     */
+    void StartInlineRenameByPath(const std::wstring& fullPath);
+
+    /**
+     * @brief Checks if the explorer tree is currently in inline rename mode.
+     */
+    [[nodiscard]] bool IsRenaming() const noexcept { return m_isRenaming; }
+
+    /**
+     * @brief Cancels inline rename mode without saving changes.
+     */
+    void CancelInlineRename();
+
+    /**
+     * @brief Commits inline rename, updating filesystem and returning affected paths.
+     */
+    bool CommitInlineRename(std::wstring& outOldPath, std::wstring& outNewPath);
+
+    /**
+     * @brief Handles character typed during inline rename.
+     */
+    void HandleRenameChar(wchar_t ch);
+
+    /**
+     * @brief Handles special key during inline rename (Enter to commit, Escape to cancel).
+     */
+    void HandleRenameKeyDown(WPARAM wParam);
+
+    /**
+     * @brief Gets current inline rename input box bounding rect for hit-testing outside clicks.
+     */
+    [[nodiscard]] const D2D1_RECT_F& GetRenameBox() const noexcept { return m_rcRenameBox; }
+
+    // --- Search Tooltips ---
+    /**
+     * @brief Handles mouse movement over Code Search buttons to update floating tooltips.
+     * @return True if tooltip state changed and requires repaint.
+     */
+    bool HandleSearchMouseMove(POINT pt);
 
     /**
      * @brief Executes recursive workspace file search matching current search query.
@@ -220,6 +272,13 @@ private:
     bool m_hoveredOpenFolderBtn = false;
     D2D1_RECT_F m_rcOpenFolderBtn{};
 
+    // Inline Tree Item Rename State
+    bool m_isRenaming = false;
+    int m_renamingItemIdx = -1;
+    std::wstring m_renameText;
+    std::wstring m_renameOriginalPath;
+    D2D1_RECT_F m_rcRenameBox{};
+
     // Search Pane State (Image 2)
     std::wstring m_searchQuery;
     std::wstring m_replaceQuery;
@@ -233,6 +292,10 @@ private:
     size_t m_totalMatches = 0;
     size_t m_searchScrollIdx = 0;
 
+    // Search Tooltip State
+    std::wstring m_searchTooltipText;
+    D2D1_RECT_F m_searchTooltipAnchor{};
+
     D2D1_RECT_F m_rcSearchBox{};
     D2D1_RECT_F m_rcReplaceBox{};
     D2D1_RECT_F m_rcToggleReplaceChevron{};
@@ -242,7 +305,6 @@ private:
     D2D1_RECT_F m_rcPreserveCaseBtn{};
     D2D1_RECT_F m_rcReplaceAllBtn{};
     D2D1_RECT_F m_rcRefreshSearchBtn{};
-    D2D1_RECT_F m_rcClearSearchBtn{};
 
     LucideIcons m_icons;
 

@@ -871,13 +871,23 @@ void Window::DoReopenClosedEditor() {
     }
 }
 
+void Window::MarkDocumentModified(editor::OpenDocument* pDoc) {
+    if (!pDoc || pDoc->isSpecialView) return;
+    pDoc->isPreview = false;
+    if (m_autoSave && !pDoc->filePath.empty()) {
+        pDoc->buffer.SaveToFile(pDoc->filePath);
+        pDoc->isDirty = false;
+    } else {
+        pDoc->isDirty = true;
+    }
+}
+
 void Window::DoCut() {
     auto* pDoc = GetActiveDoc();
     if (pDoc && !pDoc->isSpecialView) {
         DoCopy();
         pDoc->buffer.Backspace();
-        pDoc->isDirty = true;
-        pDoc->isPreview = false;
+        MarkDocumentModified(pDoc);
         InvalidateRect(m_hwnd, nullptr, FALSE);
     }
 }
@@ -916,8 +926,7 @@ void Window::DoPaste() {
                     GlobalUnlock(hData);
                     CloseClipboard();
                     pDoc->buffer.InsertText(clip);
-                    pDoc->isDirty = true;
-                    pDoc->isPreview = false;
+                    MarkDocumentModified(pDoc);
                     InvalidateRect(m_hwnd, nullptr, FALSE);
                     return;
                 }
@@ -931,8 +940,7 @@ void Window::DoUndo() {
     auto* pDoc = GetActiveDoc();
     if (pDoc && !pDoc->isSpecialView) {
         if (pDoc->buffer.Undo()) {
-            pDoc->isDirty = true;
-            pDoc->isPreview = false;
+            MarkDocumentModified(pDoc);
             InvalidateRect(m_hwnd, nullptr, FALSE);
         }
     }
@@ -942,8 +950,7 @@ void Window::DoRedo() {
     auto* pDoc = GetActiveDoc();
     if (pDoc && !pDoc->isSpecialView) {
         if (pDoc->buffer.Redo()) {
-            pDoc->isDirty = true;
-            pDoc->isPreview = false;
+            MarkDocumentModified(pDoc);
             InvalidateRect(m_hwnd, nullptr, FALSE);
         }
     }
@@ -1331,8 +1338,22 @@ void Window::OnPaint() {
     const float canvasWidth = (std::max)(100.0f, clientW - canvasLeft);
 
     // 1. Render Workspace Canvas (shows placeholder watermark when no file is open, multi-tabs and active doc when open)
+    // Only highlight search occurrences when user is actively inside Code Search drawer tab!
+    // As requested: highlight removes automatically when search query becomes different or user navigates to other drawers (e.g. File Explorer)
+    std::wstring searchHL;
+    bool hlMatchCase = false;
+    bool hlWholeWord = false;
+    bool hlUseRegex = false;
+    if (m_config.activeRailTab == 1 && hasLeftDrawer) {
+        searchHL = m_drawer.GetSearchQuery();
+        hlMatchCase = m_drawer.GetMatchCase();
+        hlWholeWord = m_drawer.GetMatchWholeWord();
+        hlUseRegex = m_drawer.GetUseRegex();
+    }
+
     m_editor.Render(m_pRenderTarget.Get(), m_theme, m_config, m_openDocs, m_activeDocIdx,
-                    canvasLeft, canvasWidth, clientH, hasLeftDrawer);
+                    canvasLeft, canvasWidth, clientH, hasLeftDrawer,
+                    searchHL, hlMatchCase, hlWholeWord, hlUseRegex);
 
     // 2. Render Slide-out Drawer Panel (when visible or animating, with 14px rounded curve at top-left)
     if (hasLeftDrawer) {
@@ -1473,6 +1494,10 @@ void Window::HandleMouseMove(POINT clientPt) {
                 int hoveredTree = m_drawer.HitTest(clientPt, m_config);
                 if (m_drawer.SetHoveredIndex(hoveredTree)) needRepaint = true;
             }
+        } else if (m_config.activeRailTab == 1) {
+            if (m_drawer.HandleSearchMouseMove(clientPt)) {
+                needRepaint = true;
+            }
         }
     }
 
@@ -1579,6 +1604,9 @@ void Window::HandleLButtonDown(POINT clientPt) {
                         break;
                     case ui::MenuActionId::ToggleAutoSave:
                         m_autoSave = !m_autoSave;
+                        if (m_autoSave) {
+                            DoSaveAll();
+                        }
                         break;
                     case ui::MenuActionId::Settings:
                         DoOpenSettings();
@@ -1712,23 +1740,8 @@ void Window::HandleLButtonDown(POINT clientPt) {
                         break;
                     case ui::MenuActionId::CtxRename:
                         if (!m_contextTargetPath.empty()) {
-                            std::filesystem::path p(m_contextTargetPath);
-                            std::wstring currentName = p.filename().wstring();
-                            std::wstring newName;
-                            if (PromptInputDialog(m_hwnd, L"Rename", L"Enter new name:", currentName, newName) && !newName.empty() && newName != currentName) {
-                                std::filesystem::path newPath = p.parent_path() / newName;
-                                std::error_code ec;
-                                std::filesystem::rename(p, newPath, ec);
-                                if (!ec) {
-                                    for (auto& doc : m_openDocs) {
-                                        if (doc.filePath == m_contextTargetPath) {
-                                            doc.filePath = newPath.wstring();
-                                            doc.fileName = newName;
-                                        }
-                                    }
-                                    m_drawer.RefreshTree();
-                                }
-                            }
+                            m_drawer.StartInlineRenameByPath(m_contextTargetPath);
+                            InvalidateRect(m_hwnd, nullptr, FALSE);
                         }
                         break;
                     case ui::MenuActionId::CtxDelete:
@@ -1867,7 +1880,26 @@ void Window::HandleLButtonDown(POINT clientPt) {
         return;
     }
 
-    // 5. Drawer Tree Item or Search Results Clicks
+    // 5. Handle inline tree rename commit on click outside
+    if (m_drawer.IsRenaming()) {
+        const auto& rcBox = m_drawer.GetRenameBox();
+        if (clientPt.x >= rcBox.left && clientPt.x <= rcBox.right &&
+            clientPt.y >= rcBox.top && clientPt.y <= rcBox.bottom) {
+            return;
+        }
+        std::wstring oldPath, newPath;
+        if (m_drawer.CommitInlineRename(oldPath, newPath)) {
+            for (auto& doc : m_openDocs) {
+                if (doc.filePath == oldPath) {
+                    doc.filePath = newPath;
+                    doc.fileName = std::filesystem::path(newPath).filename().wstring();
+                }
+            }
+        }
+        InvalidateRect(m_hwnd, nullptr, FALSE);
+    }
+
+    // 6. Drawer Tree Item or Search Results Clicks
     if (m_drawerAnimProgress > 0.001f) {
         if (m_config.activeRailTab == 1) {
             std::wstring jumpFile;
@@ -2240,6 +2272,12 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
         }
 
         case WM_CHAR: {
+            if (m_drawer.IsRenaming()) {
+                m_drawer.HandleRenameChar(static_cast<wchar_t>(wParam));
+                InvalidateRect(m_hwnd, nullptr, FALSE);
+                return 0;
+            }
+
             if (m_config.activeRailTab == 1 && m_drawerAnimProgress > 0.001f && m_drawer.IsSearchFocused()) {
                 m_drawer.HandleSearchChar(static_cast<wchar_t>(wParam));
                 InvalidateRect(m_hwnd, nullptr, FALSE);
@@ -2257,12 +2295,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 } else {
                     if (ch >= 32 || ch == L'\t' || ch == L'\r' || ch == L'\n') {
                         pDoc->buffer.InsertChar(ch);
-                        pDoc->isDirty = true;
-                        pDoc->isPreview = false;
-                        if (m_autoSave && !pDoc->filePath.empty()) {
-                            pDoc->buffer.SaveToFile(pDoc->filePath);
-                            pDoc->isDirty = false;
-                        }
+                        MarkDocumentModified(pDoc);
                         InvalidateRect(m_hwnd, nullptr, FALSE);
                     }
                 }
@@ -2288,6 +2321,41 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
         }
 
         case WM_KEYDOWN: {
+            // Handle inline tree rename keys (Enter to commit, Escape to cancel)
+            if (m_drawer.IsRenaming()) {
+                if (wParam == VK_RETURN) {
+                    std::wstring oldPath, newPath;
+                    if (m_drawer.CommitInlineRename(oldPath, newPath)) {
+                        for (auto& doc : m_openDocs) {
+                            if (doc.filePath == oldPath) {
+                                doc.filePath = newPath;
+                                doc.fileName = std::filesystem::path(newPath).filename().wstring();
+                            }
+                        }
+                    }
+                    InvalidateRect(m_hwnd, nullptr, FALSE);
+                    return 0;
+                } else if (wParam == VK_ESCAPE) {
+                    m_drawer.CancelInlineRename();
+                    InvalidateRect(m_hwnd, nullptr, FALSE);
+                    return 0;
+                } else {
+                    m_drawer.HandleRenameKeyDown(wParam);
+                    InvalidateRect(m_hwnd, nullptr, FALSE);
+                    return 0;
+                }
+            }
+
+            // F2 inline rename trigger when hovering over tree item in File Explorer
+            if (wParam == VK_F2 && m_config.activeRailTab == 0 && m_drawerAnimProgress > 0.001f) {
+                int hovered = m_drawer.GetHoveredIndex();
+                if (hovered >= 0) {
+                    m_drawer.StartInlineRename(hovered);
+                    InvalidateRect(m_hwnd, nullptr, FALSE);
+                    return 0;
+                }
+            }
+
             if (m_themePicker.IsOpen()) {
                 if (wParam == VK_ESCAPE) {
                     m_themePicker.Close();
@@ -2454,8 +2522,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
             if (pDoc && !pDoc->isSpecialView) {
                 if (wParam == VK_BACK) {
                     pDoc->buffer.Backspace();
-                    pDoc->isDirty = true;
-                    pDoc->isPreview = false;
+                    MarkDocumentModified(pDoc);
                     InvalidateRect(m_hwnd, nullptr, FALSE);
                 } else if (wParam == VK_LEFT) {
                     pDoc->buffer.MoveCursorLeft();
@@ -2505,13 +2572,11 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     pDoc->buffer.InsertChar(L' ');
                     pDoc->buffer.InsertChar(L' ');
                     pDoc->buffer.InsertChar(L' ');
-                    pDoc->isDirty = true;
-                    pDoc->isPreview = false;
+                    MarkDocumentModified(pDoc);
                     InvalidateRect(m_hwnd, nullptr, FALSE);
                 } else if (wParam == VK_RETURN) {
                     pDoc->buffer.InsertChar(L'\n');
-                    pDoc->isDirty = true;
-                    pDoc->isPreview = false;
+                    MarkDocumentModified(pDoc);
                     InvalidateRect(m_hwnd, nullptr, FALSE);
                 }
             }
