@@ -3,8 +3,8 @@
  * @brief Native Win32 frameless window implementation with Direct2D GPU rendering.
  * 
  * Coordinates the entire UI tree: TitleHeader, ActivityRail, DrawerPanel, EditorCanvas,
- * and FloatingPromptBar. Handles Windows 11 DWM message routing, DPI scaling, and hardware
- * acceleration.
+ * PopupMenu, and ThemePickerModal. Handles Windows 11 DWM message routing, DPI scaling,
+ * and hardware acceleration.
  */
 
 #pragma once
@@ -15,6 +15,8 @@
 #include <dwrite.h>
 #include <dwmapi.h>
 #include <wrl/client.h>
+#include <vector>
+#include <string>
 
 #include "phide/app/AppConfig.hpp"
 #include "phide/ui/Theme.hpp"
@@ -23,7 +25,9 @@
 #include "phide/ui/ActivityRail.hpp"
 #include "phide/ui/DrawerPanel.hpp"
 #include "phide/ui/EditorCanvas.hpp"
+#include "phide/ui/ThemePickerModal.hpp"
 #include "phide/editor/Buffer.hpp"
+#include "phide/editor/OpenDocument.hpp"
 #include "phide/workspace/WorkspaceManager.hpp"
 #include "phide/lsp/LspClient.hpp"
 
@@ -81,6 +85,30 @@ private:
      */
     void ToggleSidebar();
 
+    // Multi-Document Life-cycle & Preview Tab Management
+    editor::OpenDocument* GetActiveDoc() noexcept {
+        if (m_activeDocIdx >= 0 && m_activeDocIdx < static_cast<int>(m_openDocs.size())) {
+            return &m_openDocs[m_activeDocIdx];
+        }
+        return nullptr;
+    }
+
+    const editor::OpenDocument* GetActiveDoc() const noexcept {
+        if (m_activeDocIdx >= 0 && m_activeDocIdx < static_cast<int>(m_openDocs.size())) {
+            return &m_openDocs[m_activeDocIdx];
+        }
+        return nullptr;
+    }
+
+    [[nodiscard]] bool HasOpenFile() const noexcept {
+        return (GetActiveDoc() != nullptr);
+    }
+
+    void OpenFileDocument(const std::wstring& path, bool isPreview = false);
+    void OpenVirtualDocument(const std::wstring& name, const std::wstring& content, bool isPreview = false);
+    void OpenSpecialView(const std::wstring& viewType, const std::wstring& title);
+    void CloseDocument(int index);
+
     // File Action Handlers
     void DoNewTextFile();
     void DoNewFile();
@@ -100,6 +128,7 @@ private:
     void DoOpenSettings();
     void DoOpenKeyboardShortcuts();
     void DoOpenUserSnippets();
+    void DoToggleThemeModal();
     void DoToggleTheme();
     void DoRevertFile();
     void DoCloseEditor();
@@ -128,16 +157,16 @@ private:
     ui::ActivityRail m_rail;
     ui::DrawerPanel m_drawer;
     ui::EditorCanvas m_editor;
-    editor::Buffer m_buffer;
+    ui::ThemePickerModal m_themePicker;
     workspace::WorkspaceManager m_workspace;
     lsp::LspClient m_lsp;
 
+    // Open Documents Collection
+    std::vector<editor::OpenDocument> m_openDocs;
+    int m_activeDocIdx = -1;
+
     bool m_trackingMouse = false;
     bool m_wordWrap = false;
-    bool m_hasOpenFile = false;
-    std::wstring m_currentFilePath;
-    std::wstring m_currentFileName;
-    bool m_isDirty = false;
     bool m_autoSave = true;
     bool m_chordCtrlK = false;
     std::vector<std::wstring> m_recentPaths;

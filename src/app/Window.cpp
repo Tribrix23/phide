@@ -96,8 +96,21 @@ void Window::SaveSessionState() {
     out << L"{\n";
     out << L"  \"isSidebarOpen\": " << (m_config.isDrawerOpen ? L"true" : L"false") << L",\n";
     out << L"  \"activeRailTab\": " << m_config.activeRailTab << L",\n";
-    out << L"  \"lastOpenFolderPath\": \"" << EscapeJson(m_drawer.GetOpenFolderPath()) << L"\",\n";
-    out << L"  \"currentFilePath\": \"" << EscapeJson(m_currentFilePath) << L"\",\n";
+    out << L"  \"themeMode\": " << static_cast<int>(m_theme.GetThemeMode()) << L",\n";
+    out << L"  \"activeDocIdx\": " << m_activeDocIdx << L",\n";
+    if (m_drawer.HasOpenFolder()) {
+        out << L"  \"lastOpenFolderPath\": \"" << EscapeJson(m_drawer.GetOpenFolderPath()) << L"\",\n";
+    } else {
+        out << L"  \"lastOpenFolderPath\": \"\",\n";
+    }
+    out << L"  \"openDocs\": [\n";
+    size_t docCount = 0;
+    for (const auto& doc : m_openDocs) {
+        if (!doc.filePath.empty()) {
+            out << L"    \"" << EscapeJson(doc.filePath) << L"\"" << (++docCount < m_openDocs.size() ? L"," : L"") << L"\n";
+        }
+    }
+    out << L"  ],\n";
     out << L"  \"expandedDirs\": [\n";
     const auto& expanded = m_drawer.GetExpandedDirs();
     size_t count = 0;
@@ -126,10 +139,12 @@ void Window::LoadSessionState() {
 
     bool isSidebarOpen = true;
     int activeRailTab = 0;
+    int themeMode = 0;
+    int savedActiveDocIdx = -1;
     std::wstring lastOpenFolder;
-    std::wstring currentFilePath;
     std::set<std::wstring> expandedDirs;
     std::vector<std::wstring> recentPaths;
+    std::vector<std::wstring> openDocPaths;
 
     std::wstring line;
     std::wstring currentArray;
@@ -144,6 +159,16 @@ void Window::LoadSessionState() {
             auto colon = line.find(L':');
             if (colon != std::wstring::npos) {
                 activeRailTab = _wtoi(line.substr(colon + 1).c_str());
+            }
+        } else if (line.find(L"\"themeMode\"") != std::wstring::npos) {
+            auto colon = line.find(L':');
+            if (colon != std::wstring::npos) {
+                themeMode = _wtoi(line.substr(colon + 1).c_str());
+            }
+        } else if (line.find(L"\"activeDocIdx\"") != std::wstring::npos) {
+            auto colon = line.find(L':');
+            if (colon != std::wstring::npos) {
+                savedActiveDocIdx = _wtoi(line.substr(colon + 1).c_str());
             }
         } else if (line.find(L"\"lastOpenFolderPath\"") != std::wstring::npos) {
             auto colon = line.find(L':');
@@ -160,9 +185,12 @@ void Window::LoadSessionState() {
                 auto q1 = line.find(L'"', colon);
                 auto q2 = line.rfind(L'"');
                 if (q1 != std::wstring::npos && q2 != std::wstring::npos && q2 > q1) {
-                    currentFilePath = UnescapeJson(line.substr(q1 + 1, q2 - q1 - 1));
+                    std::wstring cf = UnescapeJson(line.substr(q1 + 1, q2 - q1 - 1));
+                    if (!cf.empty()) openDocPaths.push_back(cf);
                 }
             }
+        } else if (line.find(L"\"openDocs\"") != std::wstring::npos) {
+            currentArray = L"openDocs";
         } else if (line.find(L"\"expandedDirs\"") != std::wstring::npos) {
             currentArray = L"expandedDirs";
         } else if (line.find(L"\"recentPaths\"") != std::wstring::npos) {
@@ -174,7 +202,9 @@ void Window::LoadSessionState() {
             auto q2 = line.rfind(L'"');
             if (q1 != std::wstring::npos && q2 != std::wstring::npos && q2 > q1) {
                 std::wstring val = UnescapeJson(line.substr(q1 + 1, q2 - q1 - 1));
-                if (currentArray == L"expandedDirs") {
+                if (currentArray == L"openDocs") {
+                    openDocPaths.push_back(val);
+                } else if (currentArray == L"expandedDirs") {
                     expandedDirs.insert(val);
                 } else if (currentArray == L"recentPaths") {
                     recentPaths.push_back(val);
@@ -189,13 +219,22 @@ void Window::LoadSessionState() {
 
     m_config.activeRailTab = activeRailTab;
 
+    // Apply restored theme mode
+    m_theme.SetThemeMode(static_cast<ui::ThemeMode>(themeMode));
+
     if (!lastOpenFolder.empty() && std::filesystem::exists(lastOpenFolder, ec)) {
         m_drawer.OpenFolder(lastOpenFolder, &expandedDirs);
         m_workspace.OpenWorkspace(lastOpenFolder);
     }
 
-    if (!currentFilePath.empty() && std::filesystem::exists(currentFilePath, ec)) {
-        LoadFileFromPath(currentFilePath);
+    for (const auto& p : openDocPaths) {
+        if (!p.empty() && std::filesystem::exists(p, ec)) {
+            OpenFileDocument(p, false);
+        }
+    }
+
+    if (savedActiveDocIdx >= 0 && savedActiveDocIdx < static_cast<int>(m_openDocs.size())) {
+        m_activeDocIdx = savedActiveDocIdx;
     }
 
     m_config.isDrawerOpen = isSidebarOpen;
@@ -213,11 +252,12 @@ void Window::ToggleSidebar() {
 }
 
 void Window::DoNewTextFile() {
-    m_buffer.Clear();
-    m_currentFilePath.clear();
-    m_currentFileName = L"Untitled-1";
-    m_hasOpenFile = true;
-    m_isDirty = true;
+    editor::OpenDocument doc;
+    doc.fileName = L"Untitled-" + std::to_wstring(m_openDocs.size() + 1);
+    doc.isPreview = false;
+    doc.isDirty = true;
+    m_openDocs.push_back(std::move(doc));
+    m_activeDocIdx = static_cast<int>(m_openDocs.size() - 1);
     InvalidateRect(m_hwnd, nullptr, FALSE);
 }
 
@@ -236,8 +276,9 @@ void Window::DoNewFile() {
     ofn.Flags = OFN_PATHMUSTEXIST | OFN_OVERWRITEPROMPT | OFN_ENABLESIZING;
 
     if (GetSaveFileNameW(&ofn)) {
-        m_buffer.Clear();
-        SaveFileToPath(szFile);
+        std::ofstream f(std::filesystem::path{ szFile });
+        f.close();
+        OpenFileDocument(szFile, false);
         if (m_drawer.HasOpenFolder()) {
             m_drawer.RefreshTree();
         }
@@ -260,8 +301,141 @@ void Window::DoOpenFile() {
     ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_ENABLESIZING;
 
     if (GetOpenFileNameW(&ofn)) {
-        LoadFileFromPath(szFile);
+        OpenFileDocument(szFile, false);
     }
+}
+
+void Window::OpenFileDocument(const std::wstring& path, bool isPreview) {
+    if (path.empty()) return;
+
+    // 1. Check if document is already open
+    for (size_t i = 0; i < m_openDocs.size(); ++i) {
+        if (m_openDocs[i].filePath == path) {
+            m_activeDocIdx = static_cast<int>(i);
+            if (!isPreview) {
+                m_openDocs[i].isPreview = false;
+            }
+            SaveSessionState();
+            InvalidateRect(m_hwnd, nullptr, FALSE);
+            return;
+        }
+    }
+
+    // 2. Check if current active document can be replaced
+    // VS Code Rule: a tab is replaced ONLY if it is a preview tab AND has NO unsaved edits (!isDirty) AND not a special view.
+    bool canReplace = (m_activeDocIdx >= 0 && m_activeDocIdx < static_cast<int>(m_openDocs.size()) &&
+                       m_openDocs[m_activeDocIdx].isPreview &&
+                       !m_openDocs[m_activeDocIdx].isDirty &&
+                       !m_openDocs[m_activeDocIdx].isSpecialView);
+
+    editor::OpenDocument newDoc;
+    newDoc.filePath = path;
+    auto pos = path.find_last_of(L"\\/");
+    newDoc.fileName = (pos != std::wstring::npos) ? path.substr(pos + 1) : path;
+    newDoc.buffer.LoadFromFile(path);
+    newDoc.isPreview = isPreview;
+    newDoc.isDirty = false;
+    newDoc.isSpecialView = false;
+    newDoc.viewType.clear();
+
+    if (canReplace) {
+        m_openDocs[m_activeDocIdx] = std::move(newDoc);
+    } else {
+        m_openDocs.push_back(std::move(newDoc));
+        m_activeDocIdx = static_cast<int>(m_openDocs.size() - 1);
+    }
+
+    // Add to recent paths
+    auto it = std::find(m_recentPaths.begin(), m_recentPaths.end(), path);
+    if (it != m_recentPaths.end()) m_recentPaths.erase(it);
+    m_recentPaths.insert(m_recentPaths.begin(), path);
+    if (m_recentPaths.size() > 10) m_recentPaths.resize(10);
+
+    SaveSessionState();
+    InvalidateRect(m_hwnd, nullptr, FALSE);
+}
+
+void Window::OpenVirtualDocument(const std::wstring& name, const std::wstring& content, bool isPreview) {
+    for (size_t i = 0; i < m_openDocs.size(); ++i) {
+        if (m_openDocs[i].fileName == name && m_openDocs[i].filePath.empty()) {
+            m_activeDocIdx = static_cast<int>(i);
+            InvalidateRect(m_hwnd, nullptr, FALSE);
+            return;
+        }
+    }
+
+    bool canReplace = (m_activeDocIdx >= 0 && m_activeDocIdx < static_cast<int>(m_openDocs.size()) &&
+                       m_openDocs[m_activeDocIdx].isPreview &&
+                       !m_openDocs[m_activeDocIdx].isDirty &&
+                       !m_openDocs[m_activeDocIdx].isSpecialView);
+
+    editor::OpenDocument newDoc;
+    newDoc.fileName = name;
+    newDoc.filePath.clear();
+    newDoc.buffer.SetText(content);
+    newDoc.isPreview = isPreview;
+    newDoc.isDirty = false;
+    newDoc.isSpecialView = false;
+
+    if (canReplace) {
+        m_openDocs[m_activeDocIdx] = std::move(newDoc);
+    } else {
+        m_openDocs.push_back(std::move(newDoc));
+        m_activeDocIdx = static_cast<int>(m_openDocs.size() - 1);
+    }
+    InvalidateRect(m_hwnd, nullptr, FALSE);
+}
+
+void Window::OpenSpecialView(const std::wstring& viewType, const std::wstring& title) {
+    for (size_t i = 0; i < m_openDocs.size(); ++i) {
+        if (m_openDocs[i].isSpecialView && m_openDocs[i].viewType == viewType) {
+            m_activeDocIdx = static_cast<int>(i);
+            InvalidateRect(m_hwnd, nullptr, FALSE);
+            return;
+        }
+    }
+
+    bool canReplace = (m_activeDocIdx >= 0 && m_activeDocIdx < static_cast<int>(m_openDocs.size()) &&
+                       m_openDocs[m_activeDocIdx].isPreview &&
+                       !m_openDocs[m_activeDocIdx].isDirty &&
+                       !m_openDocs[m_activeDocIdx].isSpecialView);
+
+    editor::OpenDocument newDoc;
+    newDoc.fileName = title;
+    newDoc.filePath.clear();
+    newDoc.isSpecialView = true;
+    newDoc.viewType = viewType;
+    newDoc.isPreview = false;
+    newDoc.isDirty = false;
+
+    if (canReplace) {
+        m_openDocs[m_activeDocIdx] = std::move(newDoc);
+    } else {
+        m_openDocs.push_back(std::move(newDoc));
+        m_activeDocIdx = static_cast<int>(m_openDocs.size() - 1);
+    }
+    InvalidateRect(m_hwnd, nullptr, FALSE);
+}
+
+void Window::CloseDocument(int index) {
+    if (index < 0 || index >= static_cast<int>(m_openDocs.size())) return;
+
+    if (!m_openDocs[index].filePath.empty()) {
+        m_lastClosedFilePath = m_openDocs[index].filePath;
+    }
+
+    m_openDocs.erase(m_openDocs.begin() + index);
+
+    if (m_openDocs.empty()) {
+        m_activeDocIdx = -1;
+    } else if (m_activeDocIdx >= static_cast<int>(m_openDocs.size())) {
+        m_activeDocIdx = static_cast<int>(m_openDocs.size() - 1);
+    } else if (index < m_activeDocIdx) {
+        m_activeDocIdx--;
+    }
+
+    SaveSessionState();
+    InvalidateRect(m_hwnd, nullptr, FALSE);
 }
 
 void Window::DoOpenFolder() {
@@ -356,19 +530,24 @@ void Window::DoDuplicateWorkspace() {
 }
 
 void Window::DoSaveFile() {
-    if (m_currentFilePath.empty()) {
+    auto* pDoc = GetActiveDoc();
+    if (!pDoc) return;
+    if (pDoc->filePath.empty()) {
         DoSaveFileAs();
     } else {
-        SaveFileToPath(m_currentFilePath);
+        SaveFileToPath(pDoc->filePath);
     }
 }
 
 void Window::DoSaveFileAs() {
+    auto* pDoc = GetActiveDoc();
+    if (!pDoc) return;
+
     wchar_t szFile[MAX_PATH] = { 0 };
-    if (!m_currentFilePath.empty()) {
-        wcsncpy_s(szFile, m_currentFilePath.c_str(), _TRUNCATE);
-    } else if (!m_currentFileName.empty()) {
-        wcsncpy_s(szFile, m_currentFileName.c_str(), _TRUNCATE);
+    if (!pDoc->filePath.empty()) {
+        wcsncpy_s(szFile, pDoc->filePath.c_str(), _TRUNCATE);
+    } else if (!pDoc->fileName.empty()) {
+        wcsncpy_s(szFile, pDoc->fileName.c_str(), _TRUNCATE);
     }
     OPENFILENAMEW ofn = { sizeof(OPENFILENAMEW) };
     ofn.hwndOwner = m_hwnd;
@@ -386,9 +565,13 @@ void Window::DoSaveFileAs() {
 }
 
 void Window::DoSaveAll() {
-    if (m_hasOpenFile && !m_currentFilePath.empty()) {
-        SaveFileToPath(m_currentFilePath);
+    for (auto& doc : m_openDocs) {
+        if (doc.isDirty && !doc.filePath.empty()) {
+            doc.buffer.SaveToFile(doc.filePath);
+            doc.isDirty = false;
+        }
     }
+    InvalidateRect(m_hwnd, nullptr, FALSE);
 }
 
 void Window::DoExportProfile() {
@@ -424,7 +607,8 @@ void Window::DoImportProfile() {
 }
 
 void Window::DoOpenSettings() {
-    m_buffer.SetText(
+    OpenVirtualDocument(
+        L"settings.json",
         L"{\n"
         L"    // Editor configuration\n"
         L"    \"editor.fontSize\": 13,\n"
@@ -437,44 +621,18 @@ void Window::DoOpenSettings() {
         L"    \"workbench.colorTheme\": \"Default Dark Modern\",\n"
         L"    \"workbench.iconTheme\": \"vs-seti\",\n"
         L"    \"files.autoSave\": \"afterDelay\"\n"
-        L"}\n"
+        L"}\n",
+        false
     );
-    m_currentFileName = L"settings.json";
-    m_currentFilePath = L"settings.json";
-    m_hasOpenFile = true;
-    m_isDirty = false;
-    InvalidateRect(m_hwnd, nullptr, FALSE);
 }
 
 void Window::DoOpenKeyboardShortcuts() {
-    m_buffer.SetText(
-        L"[\n"
-        L"    { \"key\": \"ctrl+n\", \"command\": \"workbench.action.files.newUntitledFile\" },\n"
-        L"    { \"key\": \"ctrl+o\", \"command\": \"workbench.action.files.openFile\" },\n"
-        L"    { \"key\": \"ctrl+k ctrl+o\", \"command\": \"workbench.action.files.openFolder\" },\n"
-        L"    { \"key\": \"ctrl+s\", \"command\": \"workbench.action.files.save\" },\n"
-        L"    { \"key\": \"ctrl+shift+s\", \"command\": \"workbench.action.files.saveAs\" },\n"
-        L"    { \"key\": \"ctrl+k s\", \"command\": \"workbench.action.files.saveAll\" },\n"
-        L"    { \"key\": \"ctrl+w\", \"command\": \"workbench.action.closeActiveEditor\" },\n"
-        L"    { \"key\": \"ctrl+f4\", \"command\": \"workbench.action.closeActiveEditor\" },\n"
-        L"    { \"key\": \"ctrl+shift+t\", \"command\": \"workbench.action.reopenClosedEditor\" },\n"
-        L"    { \"key\": \"ctrl+k f\", \"command\": \"workbench.action.closeFolder\" },\n"
-        L"    { \"key\": \"ctrl+b\", \"command\": \"workbench.action.toggleSidebarVisibility\" },\n"
-        L"    { \"key\": \"ctrl+shift+p\", \"command\": \"workbench.action.showCommands\" },\n"
-        L"    { \"key\": \"ctrl+,\", \"command\": \"workbench.action.openSettings\" },\n"
-        L"    { \"key\": \"f11\", \"command\": \"workbench.action.toggleFullScreen\" },\n"
-        L"    { \"key\": \"alt+z\", \"command\": \"editor.action.toggleWordWrap\" }\n"
-        L"]\n"
-    );
-    m_currentFileName = L"keybindings.json";
-    m_currentFilePath = L"keybindings.json";
-    m_hasOpenFile = true;
-    m_isDirty = false;
-    InvalidateRect(m_hwnd, nullptr, FALSE);
+    OpenSpecialView(L"keybindings", L"Keyboard Shortcuts");
 }
 
 void Window::DoOpenUserSnippets() {
-    m_buffer.SetText(
+    OpenVirtualDocument(
+        L"snippets.json",
         L"{\n"
         L"    // Place your global snippets here\n"
         L"    \"Print to console\": {\n"
@@ -484,36 +642,32 @@ void Window::DoOpenUserSnippets() {
         L"        ],\n"
         L"        \"description\": \"Log output to console\"\n"
         L"    }\n"
-        L"}\n"
+        L"}\n",
+        false
     );
-    m_currentFileName = L"snippets.json";
-    m_currentFilePath = L"snippets.json";
-    m_hasOpenFile = true;
-    m_isDirty = false;
+}
+
+void Window::DoToggleThemeModal() {
+    m_themePicker.Open(m_theme.GetThemeMode());
     InvalidateRect(m_hwnd, nullptr, FALSE);
 }
 
 void Window::DoToggleTheme() {
-    InvalidateRect(m_hwnd, nullptr, FALSE);
+    DoToggleThemeModal();
 }
 
 void Window::DoRevertFile() {
-    if (m_hasOpenFile && !m_currentFilePath.empty() && std::filesystem::exists(m_currentFilePath)) {
-        LoadFileFromPath(m_currentFilePath);
+    auto* pDoc = GetActiveDoc();
+    if (pDoc && !pDoc->filePath.empty() && std::filesystem::exists(pDoc->filePath)) {
+        pDoc->buffer.LoadFromFile(pDoc->filePath);
+        pDoc->isDirty = false;
+        InvalidateRect(m_hwnd, nullptr, FALSE);
     }
 }
 
 void Window::DoCloseEditor() {
-    if (m_hasOpenFile) {
-        if (!m_currentFilePath.empty()) {
-            m_lastClosedFilePath = m_currentFilePath;
-        }
-        m_hasOpenFile = false;
-        m_currentFilePath.clear();
-        m_currentFileName.clear();
-        m_isDirty = false;
-        SaveSessionState();
-        InvalidateRect(m_hwnd, nullptr, FALSE);
+    if (m_activeDocIdx >= 0) {
+        CloseDocument(m_activeDocIdx);
     }
 }
 
@@ -525,45 +679,30 @@ void Window::DoCloseFolder() {
 
 void Window::DoReopenClosedEditor() {
     if (!m_lastClosedFilePath.empty() && std::filesystem::exists(m_lastClosedFilePath)) {
-        LoadFileFromPath(m_lastClosedFilePath);
+        OpenFileDocument(m_lastClosedFilePath, false);
     }
 }
 
 void Window::LoadFileFromPath(const std::wstring& path) {
-    if (m_buffer.LoadFromFile(path)) {
-        m_currentFilePath = path;
-        auto pos = path.find_last_of(L"\\/");
-        m_currentFileName = (pos != std::wstring::npos) ? path.substr(pos + 1) : path;
-        m_hasOpenFile = true;
-        m_isDirty = false;
-
-        // Add to recent list
-        auto it = std::find(m_recentPaths.begin(), m_recentPaths.end(), path);
-        if (it != m_recentPaths.end()) m_recentPaths.erase(it);
-        m_recentPaths.insert(m_recentPaths.begin(), path);
-        if (m_recentPaths.size() > 10) m_recentPaths.resize(10);
-
-        SaveSessionState();
-        InvalidateRect(m_hwnd, nullptr, FALSE);
-    }
+    OpenFileDocument(path, false);
 }
 
 void Window::SaveFileToPath(const std::wstring& path) {
-    if (m_buffer.SaveToFile(path)) {
-        m_currentFilePath = path;
-        auto pos = path.find_last_of(L"\\/");
-        m_currentFileName = (pos != std::wstring::npos) ? path.substr(pos + 1) : path;
-        m_isDirty = false;
-        SaveSessionState();
-        InvalidateRect(m_hwnd, nullptr, FALSE);
+    auto* pDoc = GetActiveDoc();
+    if (pDoc) {
+        if (pDoc->buffer.SaveToFile(path)) {
+            pDoc->filePath = path;
+            auto pos = path.find_last_of(L"\\/");
+            pDoc->fileName = (pos != std::wstring::npos) ? path.substr(pos + 1) : path;
+            pDoc->isDirty = false;
+            pDoc->isPreview = false;
+            SaveSessionState();
+            InvalidateRect(m_hwnd, nullptr, FALSE);
+        }
     }
 }
 
 void Window::OpenFileByName(const std::wstring& name) {
-    m_currentFileName = name;
-    m_hasOpenFile = true;
-    m_isDirty = false;
-
     // Check if real file exists in current workspace / directory
     std::wstring localPath;
     if (name == L"main.cpp") localPath = L"src\\main.cpp";
@@ -571,15 +710,14 @@ void Window::OpenFileByName(const std::wstring& name) {
     else localPath = name;
 
     if (!localPath.empty() && std::filesystem::exists(localPath)) {
-        if (m_buffer.LoadFromFile(localPath)) {
-            m_currentFilePath = localPath;
-            return;
-        }
+        OpenFileDocument(localPath, true);
+        return;
     }
 
     // Default rich templates representing PHP & C++ IDE
+    std::wstring templateCode;
     if (name == L"index.php") {
-        m_buffer.SetText(
+        templateCode =
             L"<?php\n\n"
             L"declare(strict_types=1);\n\n"
             L"namespace App;\n\n"
@@ -591,11 +729,9 @@ void Window::OpenFileByName(const std::wstring& name) {
             L"$request = Request::capture();\n"
             L"$response = $kernel->handle($request);\n"
             L"$response->send();\n"
-            L"$kernel->terminate($request, $response);\n"
-        );
-        m_currentFilePath = L"src\\index.php";
+            L"$kernel->terminate($request, $response);\n";
     } else if (name == L"Kernel.php") {
-        m_buffer.SetText(
+        templateCode =
             L"<?php\n\n"
             L"declare(strict_types=1);\n\n"
             L"namespace Phide\\Core;\n\n"
@@ -614,11 +750,9 @@ void Window::OpenFileByName(const std::wstring& name) {
             L"    public function terminate(Request $request, Response $response): void {\n"
             L"        // Cleanup worker threads and flush buffers\n"
             L"    }\n"
-            L"}\n"
-        );
-        m_currentFilePath = L"src\\Kernel.php";
+            L"}\n";
     } else if (name == L"composer.json") {
-        m_buffer.SetText(
+        templateCode =
             L"{\n"
             L"    \"name\": \"phide/studio\",\n"
             L"    \"description\": \"High-Performance Modern C++ & PHP IDE\",\n"
@@ -632,11 +766,9 @@ void Window::OpenFileByName(const std::wstring& name) {
             L"            \"App\\\\\": \"src/\"\n"
             L"        }\n"
             L"    }\n"
-            L"}\n"
-        );
-        m_currentFilePath = L"composer.json";
+            L"}\n";
     } else if (name == L"CMakeLists.txt") {
-        m_buffer.SetText(
+        templateCode =
             L"cmake_minimum_required(VERSION 3.22)\n"
             L"project(phide VERSION 1.0.0 LANGUAGES CXX)\n\n"
             L"set(CMAKE_CXX_STANDARD 20)\n"
@@ -652,11 +784,9 @@ void Window::OpenFileByName(const std::wstring& name) {
             L"    dwrite.lib\n"
             L"    dwmapi.lib\n"
             L"    user32.lib\n"
-            L")\n"
-        );
-        m_currentFilePath = L"CMakeLists.txt";
+            L")\n";
     } else if (name == L"main.cpp") {
-        m_buffer.SetText(
+        templateCode =
             L"#include <windows.h>\n"
             L"#include \"phide/app/Window.hpp\"\n\n"
             L"int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow) {\n"
@@ -665,10 +795,10 @@ void Window::OpenFileByName(const std::wstring& name) {
             L"        return 1;\n"
             L"    }\n"
             L"    return app.Run();\n"
-            L"}\n"
-        );
-        m_currentFilePath = L"src\\main.cpp";
+            L"}\n";
     }
+
+    OpenVirtualDocument(name, templateCode, true);
 }
 
 LRESULT CALLBACK Window::WndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
@@ -879,9 +1009,9 @@ void Window::OnPaint() {
     const float canvasLeft  = railW + currentDrawerW;
     const float canvasWidth = (std::max)(100.0f, clientW - canvasLeft);
 
-    // 1. Render Workspace Canvas (shows placeholder watermark when no file is open, code editor when open)
-    m_editor.Render(m_pRenderTarget.Get(), m_theme, m_config, m_buffer, canvasLeft, canvasWidth, clientH,
-                    hasLeftDrawer, m_hasOpenFile, m_currentFileName, m_isDirty);
+    // 1. Render Workspace Canvas (shows placeholder watermark when no file is open, multi-tabs and active doc when open)
+    m_editor.Render(m_pRenderTarget.Get(), m_theme, m_config, m_openDocs, m_activeDocIdx,
+                    canvasLeft, canvasWidth, clientH, hasLeftDrawer);
 
     // 2. Render Slide-out Drawer Panel (when visible or animating, with 14px rounded curve at top-left)
     if (hasLeftDrawer) {
@@ -897,6 +1027,11 @@ void Window::OnPaint() {
     // 5. Render Active Popup Dropdown Menu Overlay
     if (m_popupMenu.IsOpen()) {
         m_popupMenu.Render(m_pRenderTarget.Get(), m_theme, m_config);
+    }
+
+    // 6. Render Modal Theme Picker Popup (Dark, Light, Auto with preview screenshot cards)
+    if (m_themePicker.IsOpen()) {
+        m_themePicker.Render(m_pRenderTarget.Get(), m_theme, m_config, clientW, clientH);
     }
 
     HRESULT hr = m_pRenderTarget->EndDraw();
@@ -949,6 +1084,13 @@ void Window::HandleMouseMove(POINT clientPt) {
         m_trackingMouse = true;
     }
 
+    if (m_themePicker.IsOpen()) {
+        if (m_themePicker.HandleMouseMove(clientPt)) {
+            InvalidateRect(m_hwnd, nullptr, FALSE);
+        }
+        return;
+    }
+
     bool needRepaint = false;
 
     // Check Popup Menu hover first if open
@@ -958,6 +1100,14 @@ void Window::HandleMouseMove(POINT clientPt) {
         float clientW = static_cast<float>(rc.right - rc.left);
         float clientH = static_cast<float>(rc.bottom - rc.top);
         if (m_popupMenu.HandleMouseMove(clientPt, m_config, clientW, clientH)) {
+            needRepaint = true;
+        }
+    }
+
+    // Forward to keyboard shortcuts view if active doc is keybindings
+    auto* pActiveDoc = GetActiveDoc();
+    if (pActiveDoc && pActiveDoc->isSpecialView && pActiveDoc->viewType == L"keybindings") {
+        if (m_editor.GetKeyboardShortcutsView().HandleMouseMove(clientPt)) {
             needRepaint = true;
         }
     }
@@ -989,7 +1139,21 @@ void Window::HandleMouseMove(POINT clientPt) {
 }
 
 void Window::HandleLButtonDown(POINT clientPt) {
-    // 0. Popup Dropdown Menu Clicks (if menu is active)
+    // 0. Theme Picker Modal Clicks
+    if (m_themePicker.IsOpen()) {
+        ui::ThemeMode chosenMode;
+        if (m_themePicker.HandleLButtonDown(clientPt, chosenMode)) {
+            m_theme.SetThemeMode(chosenMode);
+            BOOL dm = m_theme.IsDarkMode() ? TRUE : FALSE;
+            DwmSetWindowAttribute(m_hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &dm, sizeof(dm));
+            SetWindowPos(m_hwnd, nullptr, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED);
+            SaveSessionState();
+        }
+        InvalidateRect(m_hwnd, nullptr, FALSE);
+        return;
+    }
+
+    // Popup Dropdown Menu Clicks (if menu is active)
     if (m_popupMenu.IsOpen()) {
         if (m_popupMenu.HitTestMenuArea(clientPt)) {
             auto action = m_popupMenu.HandleLButtonDown(clientPt);
@@ -1083,7 +1247,7 @@ void Window::HandleLButtonDown(POINT clientPt) {
                         DoOpenUserSnippets();
                         break;
                     case ui::MenuActionId::ThemeSettings:
-                        DoToggleTheme();
+                        DoToggleThemeModal();
                         break;
                     case ui::MenuActionId::RevertFile:
                         DoRevertFile();
@@ -1159,7 +1323,6 @@ void Window::HandleLButtonDown(POINT clientPt) {
     auto execHit = m_header.HitTestExecButton(clientPt);
     if (execHit != ui::HeaderExecId::None) {
         if (execHit == ui::HeaderExecId::Terminal) {
-            // Toggle sidebar drawer with smooth sliding animation
             ToggleSidebar();
         }
         InvalidateRect(m_hwnd, nullptr, FALSE);
@@ -1170,17 +1333,15 @@ void Window::HandleLButtonDown(POINT clientPt) {
     auto menuHit = m_header.HitTestMenu(clientPt);
     if (menuHit != ui::HeaderMenuId::None) {
         if (menuHit == ui::HeaderMenuId::Sidebar) {
-            // Toggle sidebar drawer panel with smooth sliding animation
             ToggleSidebar();
         } else if (menuHit == ui::HeaderMenuId::File) {
-            // Open File Dropdown Menu directly beneath the File header button
             D2D1_RECT_F rcFile = m_header.GetMenuItemBounds(ui::HeaderMenuId::File);
             m_popupMenu.OpenFileMenu(rcFile.left, rcFile.bottom + 2.0f, m_config, m_autoSave,
-                                     m_hasOpenFile, m_isDirty, m_drawer.HasOpenFolder(), m_recentPaths);
+                                     HasOpenFile(), (GetActiveDoc() && GetActiveDoc()->isDirty),
+                                     m_drawer.HasOpenFolder(), m_recentPaths);
             m_header.SetActiveMenu(ui::HeaderMenuId::File);
             InvalidateRect(m_hwnd, nullptr, FALSE);
         } else if (menuHit == ui::HeaderMenuId::View) {
-            // Open View Dropdown Menu directly beneath the View header button
             D2D1_RECT_F rcView = m_header.GetMenuItemBounds(ui::HeaderMenuId::View);
             m_popupMenu.OpenViewMenu(rcView.left, rcView.bottom + 2.0f, m_config,
                                      m_config.isDrawerOpen, IsZoomed(m_hwnd), m_wordWrap);
@@ -1190,13 +1351,22 @@ void Window::HandleLButtonDown(POINT clientPt) {
         return;
     }
 
-    // 4. Tab Close Button Click (closes active editor tab, restoring placeholder)
-    if (m_hasOpenFile && m_editor.HitTestTabClose(clientPt)) {
-        DoCloseEditor();
+    // 4. Tab Close Button Click (closes clicked editor tab)
+    int closeIdx = m_editor.HitTestTabClose(clientPt, m_openDocs);
+    if (closeIdx >= 0) {
+        CloseDocument(closeIdx);
         return;
     }
 
-    // 5. Drawer Tree Item Clicks (open file, toggle folder, or open folder button)
+    // 4b. Tab Header Click (switches active tab)
+    int tabHitIdx = m_editor.HitTestTab(clientPt, m_openDocs);
+    if (tabHitIdx >= 0) {
+        m_activeDocIdx = tabHitIdx;
+        InvalidateRect(m_hwnd, nullptr, FALSE);
+        return;
+    }
+
+    // 5. Drawer Tree Item Clicks (open file in preview mode, toggle folder, or open folder button)
     if (m_drawerAnimProgress > 0.001f) {
         if (!m_drawer.HasOpenFolder()) {
             if (m_drawer.HitTestOpenFolderButton(clientPt, m_config)) {
@@ -1212,8 +1382,8 @@ void Window::HandleLButtonDown(POINT clientPt) {
                         m_drawer.ToggleFolder(clickedTree);
                         SaveSessionState();
                     } else {
-                        // Open real file using its full path!
-                        LoadFileFromPath(pItem->fullPath);
+                        // Open file in preview mode! (If current file is dirty, VS Code rule adds a tab; if clean preview, replaces it)
+                        OpenFileDocument(pItem->fullPath, true);
                     }
                     InvalidateRect(m_hwnd, nullptr, FALSE);
                     return;
@@ -1222,20 +1392,28 @@ void Window::HandleLButtonDown(POINT clientPt) {
         }
     }
 
-    // 6. Click inside Editor Code Area (sets cursor position)
-    if (m_hasOpenFile) {
-        RECT rc;
-        GetClientRect(m_hwnd, &rc);
-        float clientH = static_cast<float>(rc.bottom - rc.top);
-        float railW = m_config.ScaleF(static_cast<float>(m_config.railWidth));
-        float currentDrawerW = m_config.ScaleF(static_cast<float>(m_config.drawerWidth)) * m_drawerAnimProgress;
-        float canvasLeft = railW + currentDrawerW;
+    // 6. Click inside Editor Area (sets cursor position or focuses keybindings search)
+    auto* pDoc = GetActiveDoc();
+    if (pDoc) {
+        if (pDoc->isSpecialView && pDoc->viewType == L"keybindings") {
+            if (m_editor.GetKeyboardShortcutsView().HandleLButtonDown(clientPt)) {
+                InvalidateRect(m_hwnd, nullptr, FALSE);
+                return;
+            }
+        } else {
+            RECT rc;
+            GetClientRect(m_hwnd, &rc);
+            float clientH = static_cast<float>(rc.bottom - rc.top);
+            float railW = m_config.ScaleF(static_cast<float>(m_config.railWidth));
+            float currentDrawerW = m_config.ScaleF(static_cast<float>(m_config.drawerWidth)) * m_drawerAnimProgress;
+            float canvasLeft = railW + currentDrawerW;
 
-        size_t line = 0, col = 0;
-        if (m_editor.HitTestCodeArea(clientPt, m_config, m_buffer, canvasLeft, clientH, line, col)) {
-            m_buffer.SetCursor(line, col);
-            InvalidateRect(m_hwnd, nullptr, FALSE);
-            return;
+            size_t line = 0, col = 0;
+            if (m_editor.HitTestCodeArea(clientPt, m_config, pDoc->buffer, canvasLeft, clientH, line, col)) {
+                pDoc->buffer.SetCursor(line, col);
+                InvalidateRect(m_hwnd, nullptr, FALSE);
+                return;
+            }
         }
     }
 
@@ -1243,7 +1421,6 @@ void Window::HandleLButtonDown(POINT clientPt) {
     auto railHit = m_rail.HitTest(clientPt);
     if (railHit != ui::RailTabId::None) {
         int clickedTab = static_cast<int>(railHit);
-        // Switch the active rail tab highlight badge
         m_config.activeRailTab = clickedTab;
         SaveSessionState();
         InvalidateRect(m_hwnd, nullptr, FALSE);
@@ -1330,17 +1507,38 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
             return 0;
         }
 
-        case WM_CHAR: {
-            if (m_hasOpenFile) {
-                wchar_t ch = static_cast<wchar_t>(wParam);
-                if (ch >= 32 || ch == L'\t' || ch == L'\r' || ch == L'\n') {
-                    m_buffer.InsertChar(ch);
-                    m_isDirty = true;
-                    if (m_autoSave && !m_currentFilePath.empty()) {
-                        m_buffer.SaveToFile(m_currentFilePath);
-                        m_isDirty = false;
-                    }
+        case WM_MOUSEWHEEL: {
+            auto* pDoc = GetActiveDoc();
+            if (pDoc && pDoc->isSpecialView && pDoc->viewType == L"keybindings") {
+                short delta = GET_WHEEL_DELTA_WPARAM(wParam);
+                if (m_editor.GetKeyboardShortcutsView().HandleMouseWheel(delta)) {
                     InvalidateRect(m_hwnd, nullptr, FALSE);
+                    return 0;
+                }
+            }
+            return 0;
+        }
+
+        case WM_CHAR: {
+            auto* pDoc = GetActiveDoc();
+            if (pDoc) {
+                wchar_t ch = static_cast<wchar_t>(wParam);
+                if (pDoc->isSpecialView && pDoc->viewType == L"keybindings") {
+                    if (m_editor.GetKeyboardShortcutsView().HandleChar(ch)) {
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
+                        return 0;
+                    }
+                } else {
+                    if (ch >= 32 || ch == L'\t' || ch == L'\r' || ch == L'\n') {
+                        pDoc->buffer.InsertChar(ch);
+                        pDoc->isDirty = true;
+                        pDoc->isPreview = false;
+                        if (m_autoSave && !pDoc->filePath.empty()) {
+                            pDoc->buffer.SaveToFile(pDoc->filePath);
+                            pDoc->isDirty = false;
+                        }
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
+                    }
                 }
             }
             return 0;
@@ -1356,12 +1554,28 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
         }
 
         case WM_KEYDOWN: {
+            if (m_themePicker.IsOpen()) {
+                if (wParam == VK_ESCAPE) {
+                    m_themePicker.Close();
+                    InvalidateRect(m_hwnd, nullptr, FALSE);
+                    return 0;
+                }
+            }
             if (wParam == VK_ESCAPE && m_popupMenu.IsOpen()) {
                 m_popupMenu.Close();
                 m_header.SetActiveMenu(ui::HeaderMenuId::None);
                 InvalidateRect(m_hwnd, nullptr, FALSE);
                 return 0;
             }
+
+            auto* pDoc = GetActiveDoc();
+            if (pDoc && pDoc->isSpecialView && pDoc->viewType == L"keybindings") {
+                if (m_editor.GetKeyboardShortcutsView().HandleKeyDown(wParam)) {
+                    InvalidateRect(m_hwnd, nullptr, FALSE);
+                    return 0;
+                }
+            }
+
             if (wParam == VK_F11) {
                 if (IsZoomed(m_hwnd)) ShowWindow(m_hwnd, SW_RESTORE);
                 else ShowWindow(m_hwnd, SW_MAXIMIZE);
@@ -1388,7 +1602,9 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     return 0;
                 }
                 if (wParam == 'S') {
-                    if (GetKeyState(VK_SHIFT) & 0x8000) {
+                    if (m_chordCtrlK) {
+                        DoOpenKeyboardShortcuts();
+                    } else if (GetKeyState(VK_SHIFT) & 0x8000) {
                         DoSaveFileAs();
                     } else {
                         DoSaveFile();
@@ -1412,7 +1628,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                         DoReopenClosedEditor();
                         return 0;
                     } else if (m_chordCtrlK) {
-                        DoToggleTheme();
+                        DoToggleThemeModal();
                         m_chordCtrlK = false;
                         return 0;
                     }
@@ -1435,33 +1651,36 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 return 0;
             }
 
-            if (m_hasOpenFile) {
+            if (pDoc && !pDoc->isSpecialView) {
                 if (wParam == VK_BACK) {
-                    m_buffer.Backspace();
-                    m_isDirty = true;
+                    pDoc->buffer.Backspace();
+                    pDoc->isDirty = true;
+                    pDoc->isPreview = false;
                     InvalidateRect(m_hwnd, nullptr, FALSE);
                 } else if (wParam == VK_LEFT) {
-                    m_buffer.MoveCursorLeft();
+                    pDoc->buffer.MoveCursorLeft();
                     InvalidateRect(m_hwnd, nullptr, FALSE);
                 } else if (wParam == VK_RIGHT) {
-                    m_buffer.MoveCursorRight();
+                    pDoc->buffer.MoveCursorRight();
                     InvalidateRect(m_hwnd, nullptr, FALSE);
                 } else if (wParam == VK_UP) {
-                    m_buffer.MoveCursorUp();
+                    pDoc->buffer.MoveCursorUp();
                     InvalidateRect(m_hwnd, nullptr, FALSE);
                 } else if (wParam == VK_DOWN) {
-                    m_buffer.MoveCursorDown();
+                    pDoc->buffer.MoveCursorDown();
                     InvalidateRect(m_hwnd, nullptr, FALSE);
                 } else if (wParam == VK_TAB) {
-                    m_buffer.InsertChar(L' ');
-                    m_buffer.InsertChar(L' ');
-                    m_buffer.InsertChar(L' ');
-                    m_buffer.InsertChar(L' ');
-                    m_isDirty = true;
+                    pDoc->buffer.InsertChar(L' ');
+                    pDoc->buffer.InsertChar(L' ');
+                    pDoc->buffer.InsertChar(L' ');
+                    pDoc->buffer.InsertChar(L' ');
+                    pDoc->isDirty = true;
+                    pDoc->isPreview = false;
                     InvalidateRect(m_hwnd, nullptr, FALSE);
                 } else if (wParam == VK_RETURN) {
-                    m_buffer.InsertChar(L'\n');
-                    m_isDirty = true;
+                    pDoc->buffer.InsertChar(L'\n');
+                    pDoc->isDirty = true;
+                    pDoc->isPreview = false;
                     InvalidateRect(m_hwnd, nullptr, FALSE);
                 }
             }

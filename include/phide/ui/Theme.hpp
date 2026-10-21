@@ -20,8 +20,18 @@ namespace phide::ui {
 using Microsoft::WRL::ComPtr;
 
 /**
+ * @enum ThemeMode
+ * @brief Theme appearance mode: Dark, Light, or Auto (synchronized with Windows system theme).
+ */
+enum class ThemeMode {
+    Dark,
+    Light,
+    Auto
+};
+
+/**
  * @struct ThemeColors
- * @brief Professional Dark IDE color palette (VS Code / JetBrains inspired).
+ * @brief Professional IDE color palette (VS Code / JetBrains inspired).
  */
 struct ThemeColors {
     // Window & Canvas Backgrounds
@@ -100,6 +110,14 @@ public:
      * @brief Releases device-dependent brushes when render target is recreated.
      */
     void DiscardDeviceResources();
+
+    /**
+     * @brief Sets the active theme mode and updates the color palette.
+     */
+    void SetThemeMode(ThemeMode mode);
+
+    [[nodiscard]] ThemeMode GetThemeMode() const noexcept { return m_mode; }
+    [[nodiscard]] bool IsDarkMode() const noexcept { return m_isDarkActive; }
 
     // Raw color definitions
     ThemeColors colors;
@@ -201,6 +219,10 @@ public:
      * @brief Maps a filename and folder state to an authentic Seti UI icon glyph & brand brush.
      */
     [[nodiscard]] SetiIconInfo GetSetiIcon(const std::wstring& filename, bool isFolder, bool isExpanded) const;
+
+private:
+    ThemeMode m_mode = ThemeMode::Dark;
+    bool m_isDarkActive = true;
 };
 
 } // namespace phide::ui

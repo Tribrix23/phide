@@ -42,9 +42,9 @@ static void DrawPlus(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig&
 EditorCanvas::EditorCanvas() = default;
 
 void EditorCanvas::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
-                          const editor::Buffer& buffer, float canvasLeft, float canvasWidth, float clientHeight,
-                          bool hasLeftDrawer, bool hasOpenFile,
-                          const std::wstring& currentFileName, bool isDirty) {
+                          std::vector<editor::OpenDocument>& docs, int activeDocIdx,
+                          float canvasLeft, float canvasWidth, float clientHeight,
+                          bool hasLeftDrawer) {
     if (!pRT) return;
 
     const float headerH = config.ScaleF(static_cast<float>(config.headerHeight));
@@ -119,15 +119,20 @@ void EditorCanvas::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
         pRT->FillRectangle(rcFallback, theme.brushCanvasBg.Get());
     }
 
-    if (!hasOpenFile) {
+    if (docs.empty() || activeDocIdx < 0 || activeDocIdx >= static_cast<int>(docs.size())) {
         // When no file is open: render metallic watermark logo & keybinding cheat-sheet
-        m_tabCloseBounds = {};
         RenderPlaceholder(pRT, theme, config, canvasLeft, canvasWidth, headerH, clientHeight);
     } else {
-        // When a file is open: REMOVE placeholder! Put actual tabs and code editor surface there!
+        // When files are open: render multi-tab bar and active editor view
         const float tabH = config.ScaleF(34.0f);
-        RenderTabs(pRT, theme, config, canvasLeft, canvasWidth, headerH, currentFileName, isDirty);
-        RenderCode(pRT, theme, config, buffer, canvasLeft, canvasWidth, headerH + tabH, clientHeight);
+        RenderTabs(pRT, theme, config, canvasLeft, canvasWidth, headerH, docs, activeDocIdx);
+
+        auto& activeDoc = docs[activeDocIdx];
+        if (activeDoc.isSpecialView && activeDoc.viewType == L"keybindings") {
+            m_keybindingsView.Render(pRT, theme, config, canvasLeft, canvasWidth, headerH + tabH, clientHeight - (headerH + tabH));
+        } else {
+            RenderCode(pRT, theme, config, activeDoc.buffer, canvasLeft, canvasWidth, headerH + tabH, clientHeight);
+        }
     }
 }
 
@@ -204,7 +209,7 @@ void EditorCanvas::RenderPlaceholder(ID2D1RenderTarget* pRT, Theme& theme, const
 
 void EditorCanvas::RenderTabs(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
                               float canvasLeft, float canvasWidth, float headerH,
-                              const std::wstring& currentFileName, bool isDirty) {
+                              std::vector<editor::OpenDocument>& docs, int activeDocIdx) {
     const float tabH = config.ScaleF(34.0f);
 
     // 1. Tab Bar Background (#181818)
@@ -219,59 +224,14 @@ void EditorCanvas::RenderTabs(ID2D1RenderTarget* pRT, Theme& theme, const app::A
         1.0f
     );
 
-    // 2. Active Tab
-    const float tabW = config.ScaleF(160.0f);
-    D2D1_RECT_F rcTab = D2D1::RectF(canvasLeft, headerH, canvasLeft + tabW, headerH + tabH);
-    pRT->FillRectangle(rcTab, theme.brushTabActiveBg.Get());
+    float curX = canvasLeft;
+    for (size_t i = 0; i < docs.size(); ++i) {
+        auto& doc = docs[i];
+        bool isActive = (static_cast<int>(i) == activeDocIdx);
 
-    // Top active tab highlight border (2px Accent Blue)
-    pRT->DrawLine(
-        D2D1::Point2F(rcTab.left, headerH + 1.0f),
-        D2D1::Point2F(rcTab.right, headerH + 1.0f),
-        theme.brushBrandAccent.Get(),
-        2.0f
-    );
-
-    // Right tab divider line
-    pRT->DrawLine(
-        D2D1::Point2F(rcTab.right - 0.5f, headerH),
-        D2D1::Point2F(rcTab.right - 0.5f, headerH + tabH),
-        theme.brushTabBorder.Get(),
-        1.0f
-    );
-
-    // 3. File Type Icon (Vector Lucide/Seti Icon)
-    const float iconX = rcTab.left + config.ScaleF(10.0f);
-    const float iconCenterY = headerH + tabH / 2.0f;
-    D2D1_RECT_F iconBounds = D2D1::RectF(
-        iconX,
-        iconCenterY - config.ScaleF(8.0f),
-        iconX + config.ScaleF(16.0f),
-        iconCenterY + config.ScaleF(8.0f)
-    );
-    auto setiInfo = theme.GetSetiIcon(currentFileName, false, false);
-    if (theme.fontSeti && setiInfo.pBrush) {
-        pRT->DrawText(&setiInfo.glyph, 1, theme.fontSeti.Get(), iconBounds, setiInfo.pBrush);
-    } else {
-        auto iconType = LucideIcons::GetIconTypeForPath(currentFileName, false, false);
-        m_icons.DrawFileIcon(pRT, theme, iconBounds, iconType);
-    }
-
-    // 4. File Title
-    std::wstring title = currentFileName.empty() ? L"Untitled-1" : currentFileName;
-    float textStartX = rcTab.left + config.ScaleF(32.0f);
-    float textMaxW   = rcTab.right - config.ScaleF(40.0f) - textStartX;
-    D2D1_RECT_F rcTitle = D2D1::RectF(
-        textStartX,
-        headerH,
-        textStartX + textMaxW,
-        headerH + tabH
-    );
-    pRT->DrawText(title.c_str(), static_cast<UINT32>(title.length()), theme.fontMenuItem.Get(), rcTitle, theme.brushTextWhite.Get());
-
-    // 5. Large Blue Dirty Indicator Circle (8px diameter)
-    if (isDirty) {
-        float dotX = textStartX + config.ScaleF(60.0f);
+        // Calculate tab width based on title length
+        std::wstring title = doc.fileName.empty() ? L"Untitled-1" : doc.fileName;
+        float textW = 0.0f;
         if (theme.dwriteFactory) {
             Microsoft::WRL::ComPtr<IDWriteTextLayout> pLayout;
             if (SUCCEEDED(theme.dwriteFactory->CreateTextLayout(
@@ -279,29 +239,106 @@ void EditorCanvas::RenderTabs(ID2D1RenderTarget* pRT, Theme& theme, const app::A
                     theme.fontMenuItem.Get(), 1000.0f, tabH, &pLayout))) {
                 DWRITE_TEXT_METRICS m{};
                 if (SUCCEEDED(pLayout->GetMetrics(&m))) {
-                    dotX = textStartX + m.widthIncludingTrailingWhitespace + config.ScaleF(8.0f);
+                    textW = m.widthIncludingTrailingWhitespace;
                 }
             }
         }
-        dotX = (std::min)(dotX, rcTab.right - config.ScaleF(28.0f));
-        float dotY = headerH + tabH / 2.0f;
-        float dotRadius = config.ScaleF(4.0f); // 8px diameter circle!
-        D2D1_ELLIPSE dot = D2D1::Ellipse(D2D1::Point2F(dotX, dotY), dotRadius, dotRadius);
-        pRT->FillEllipse(dot, theme.brushIconBlue ? theme.brushIconBlue.Get() : theme.brushBrandAccent.Get());
+        if (textW <= 0.0f) {
+            textW = static_cast<float>(title.length()) * config.ScaleF(7.5f);
+        }
+
+        // tab width = icon(16) + pad(16) + text + dirty/close pad(42)
+        float tabW = config.ScaleF(16.0f + 16.0f + 42.0f) + textW;
+        tabW = (std::clamp)(tabW, config.ScaleF(120.0f), config.ScaleF(240.0f));
+
+        D2D1_RECT_F rcTab = D2D1::RectF(curX, headerH, curX + tabW, headerH + tabH);
+        doc.tabBounds = rcTab;
+
+        // Draw tab surface
+        if (isActive) {
+            pRT->FillRectangle(rcTab, theme.brushTabActiveBg.Get());
+            // Top active tab highlight border (2px Accent Blue)
+            pRT->DrawLine(
+                D2D1::Point2F(rcTab.left, headerH + 1.0f),
+                D2D1::Point2F(rcTab.right, headerH + 1.0f),
+                theme.brushBrandAccent.Get(),
+                2.0f
+            );
+        }
+
+        // Right tab divider line
+        pRT->DrawLine(
+            D2D1::Point2F(rcTab.right - 0.5f, headerH),
+            D2D1::Point2F(rcTab.right - 0.5f, headerH + tabH),
+            theme.brushTabBorder.Get(),
+            1.0f
+        );
+
+        // Icon
+        const float iconX = rcTab.left + config.ScaleF(10.0f);
+        const float iconCenterY = headerH + tabH / 2.0f;
+        D2D1_RECT_F iconBounds = D2D1::RectF(
+            iconX,
+            iconCenterY - config.ScaleF(8.0f),
+            iconX + config.ScaleF(16.0f),
+            iconCenterY + config.ScaleF(8.0f)
+        );
+
+        if (doc.isSpecialView && doc.viewType == L"keybindings") {
+            // Draw keyboard glyph / settings
+            if (theme.fontSeti && theme.brushSetiJson) {
+                wchar_t kbGlyph = 0xE055;
+                pRT->DrawText(&kbGlyph, 1, theme.fontSeti.Get(), iconBounds, theme.brushSetiJson.Get());
+            } else {
+                m_icons.DrawFileIcon(pRT, theme, iconBounds, FileIconType::Json);
+            }
+        } else {
+            auto setiInfo = theme.GetSetiIcon(title, false, false);
+            if (theme.fontSeti && setiInfo.pBrush) {
+                pRT->DrawText(&setiInfo.glyph, 1, theme.fontSeti.Get(), iconBounds, setiInfo.pBrush);
+            } else {
+                auto iconType = LucideIcons::GetIconTypeForPath(title, false, false);
+                m_icons.DrawFileIcon(pRT, theme, iconBounds, iconType);
+            }
+        }
+
+        // Title: preview tabs are italic in VS Code!
+        float textStartX = rcTab.left + config.ScaleF(30.0f);
+        float textMaxW   = rcTab.right - config.ScaleF(42.0f) - textStartX;
+        D2D1_RECT_F rcTitle = D2D1::RectF(
+            textStartX,
+            headerH,
+            textStartX + textMaxW,
+            headerH + tabH
+        );
+        IDWriteTextFormat* pTextFmt = (doc.isPreview && theme.fontHint) ? theme.fontHint.Get() : theme.fontMenuItem.Get();
+        ID2D1Brush* pTextBrush = isActive ? theme.brushTextWhite.Get() : theme.brushTextSecondary.Get();
+        pRT->DrawText(title.c_str(), static_cast<UINT32>(title.length()), pTextFmt, rcTitle, pTextBrush);
+
+        // Close Tab Button (×)
+        const float closeSize = config.ScaleF(16.0f);
+        const float closeX = rcTab.right - config.ScaleF(20.0f);
+        const float closeY = headerH + (tabH - closeSize) / 2.0f;
+        doc.closeBounds = D2D1::RectF(closeX, closeY, closeX + closeSize, closeY + closeSize);
+
+        // Dirty Circle Indicator: large blue dot (8px diameter) before the close button
+        if (doc.isDirty) {
+            float dotX = closeX - config.ScaleF(10.0f);
+            float dotY = headerH + tabH / 2.0f;
+            float dotRadius = config.ScaleF(4.0f); // 8px diameter circle
+            D2D1_ELLIPSE dot = D2D1::Ellipse(D2D1::Point2F(dotX, dotY), dotRadius, dotRadius);
+            pRT->FillEllipse(dot, theme.brushIconBlue ? theme.brushIconBlue.Get() : theme.brushBrandAccent.Get());
+        }
+
+        // Vector '×' mark
+        const float cx = closeX + closeSize / 2.0f;
+        const float cy = closeY + closeSize / 2.0f;
+        const float r = config.ScaleF(3.5f);
+        pRT->DrawLine(D2D1::Point2F(cx - r, cy - r), D2D1::Point2F(cx + r, cy + r), theme.brushTextSecondary.Get(), 1.2f);
+        pRT->DrawLine(D2D1::Point2F(cx + r, cy - r), D2D1::Point2F(cx - r, cy + r), theme.brushTextSecondary.Get(), 1.2f);
+
+        curX += tabW;
     }
-
-    // Close Tab Button (×)
-    const float closeSize = config.ScaleF(16.0f);
-    const float closeX = rcTab.right - config.ScaleF(20.0f);
-    const float closeY = headerH + (tabH - closeSize) / 2.0f;
-    m_tabCloseBounds = D2D1::RectF(closeX, closeY, closeX + closeSize, closeY + closeSize);
-
-    // Vector '×' mark
-    const float cx = closeX + closeSize / 2.0f;
-    const float cy = closeY + closeSize / 2.0f;
-    const float r = config.ScaleF(3.5f);
-    pRT->DrawLine(D2D1::Point2F(cx - r, cy - r), D2D1::Point2F(cx + r, cy + r), theme.brushTextSecondary.Get(), 1.2f);
-    pRT->DrawLine(D2D1::Point2F(cx + r, cy - r), D2D1::Point2F(cx - r, cy + r), theme.brushTextSecondary.Get(), 1.2f);
 }
 
 void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
@@ -436,9 +473,24 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
     pRT->PopAxisAlignedClip();
 }
 
-bool EditorCanvas::HitTestTabClose(POINT pt) const {
-    return (pt.x >= m_tabCloseBounds.left && pt.x <= m_tabCloseBounds.right &&
-            pt.y >= m_tabCloseBounds.top && pt.y <= m_tabCloseBounds.bottom);
+int EditorCanvas::HitTestTab(POINT pt, const std::vector<editor::OpenDocument>& docs) const {
+    for (size_t i = 0; i < docs.size(); ++i) {
+        const auto& b = docs[i].tabBounds;
+        if (pt.x >= b.left && pt.x <= b.right && pt.y >= b.top && pt.y <= b.bottom) {
+            return static_cast<int>(i);
+        }
+    }
+    return -1;
+}
+
+int EditorCanvas::HitTestTabClose(POINT pt, const std::vector<editor::OpenDocument>& docs) const {
+    for (size_t i = 0; i < docs.size(); ++i) {
+        const auto& b = docs[i].closeBounds;
+        if (pt.x >= b.left - 4 && pt.x <= b.right + 4 && pt.y >= b.top - 4 && pt.y <= b.bottom + 4) {
+            return static_cast<int>(i);
+        }
+    }
+    return -1;
 }
 
 bool EditorCanvas::HitTestCodeArea(POINT pt, const app::AppConfig& config, const editor::Buffer& buffer,

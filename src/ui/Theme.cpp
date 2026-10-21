@@ -448,6 +448,145 @@ void Theme::DiscardDeviceResources() {
     brushSetiDefault.Reset();
 }
 
+void Theme::SetThemeMode(ThemeMode mode) {
+    m_mode = mode;
+    if (mode == ThemeMode::Dark) {
+        m_isDarkActive = true;
+    } else if (mode == ThemeMode::Light) {
+        m_isDarkActive = false;
+    } else { // Auto mode
+        HKEY hKey = nullptr;
+        DWORD dwValue = 0;
+        DWORD dwSize = sizeof(dwValue);
+        if (RegOpenKeyExW(HKEY_CURRENT_USER,
+                          L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize",
+                          0, KEY_READ, &hKey) == ERROR_SUCCESS) {
+            if (RegQueryValueExW(hKey, L"AppsUseLightTheme", nullptr, nullptr,
+                                 reinterpret_cast<LPBYTE>(&dwValue), &dwSize) == ERROR_SUCCESS) {
+                m_isDarkActive = (dwValue == 0);
+            } else {
+                m_isDarkActive = true;
+            }
+            RegCloseKey(hKey);
+        } else {
+            m_isDarkActive = true;
+        }
+    }
+
+    if (m_isDarkActive) {
+        // Dark Theme Colors
+        colors.windowBg        = D2D1::ColorF(0.24f, 0.08f, 0.38f, 1.0f);   // #3D1461
+        colors.canvasBg        = D2D1::ColorF(0.118f, 0.118f, 0.118f, 1.0f); // #1E1E1E
+        colors.headerBg        = D2D1::ColorF(0.24f, 0.08f, 0.38f, 1.0f);   // #3D1461
+        colors.railBg          = D2D1::ColorF(0.24f, 0.08f, 0.38f, 1.0f);   // #3D1461
+        colors.drawerBg        = D2D1::ColorF(0.094f, 0.094f, 0.094f, 1.0f); // #181818
+        colors.borderSubtle    = D2D1::ColorF(0.173f, 0.173f, 0.173f, 1.0f); // #2C2C2C
+        colors.borderHover     = D2D1::ColorF(0.243f, 0.243f, 0.243f, 1.0f); // #3E3E3E
+        colors.textPrimary     = D2D1::ColorF(0.85f, 0.85f, 0.85f, 1.0f);    // #D8D8D8
+        colors.textSecondary   = D2D1::ColorF(0.58f, 0.58f, 0.58f, 1.0f);    // #949494
+        colors.textMuted       = D2D1::ColorF(0.40f, 0.40f, 0.40f, 1.0f);    // #666666
+        colors.textWhite       = D2D1::ColorF(1.0f, 1.0f, 1.0f, 1.0f);
+        colors.itemHover       = D2D1::ColorF(0.165f, 0.176f, 0.180f, 1.0f); // #2A2D2E
+        colors.itemActive      = D2D1::ColorF(0.216f, 0.216f, 0.239f, 1.0f); // #37373D
+        colors.captionHover    = D2D1::ColorF(0.200f, 0.200f, 0.200f, 1.0f); // #333333
+        colors.brandAccent     = D2D1::ColorF(0.0f, 0.471f, 0.831f, 1.0f);   // #0078D4
+        colors.homeBadgeBg     = D2D1::ColorF(0.165f, 0.176f, 0.180f, 1.0f);
+        colors.tooltipBg       = D2D1::ColorF(0.145f, 0.145f, 0.149f, 0.98f);
+        colors.tooltipBorder   = D2D1::ColorF(0.243f, 0.243f, 0.243f, 1.0f);
+        colors.menuBg          = D2D1::ColorF(0.122f, 0.122f, 0.122f, 0.98f);
+        colors.menuBorder      = D2D1::ColorF(0.271f, 0.271f, 0.271f, 1.0f);
+        colors.menuSeparator   = D2D1::ColorF(0.235f, 0.235f, 0.235f, 1.0f);
+        colors.menuHover       = D2D1::ColorF(0.0f, 0.471f, 0.831f, 1.0f);
+        colors.menuText        = D2D1::ColorF(0.800f, 0.800f, 0.800f, 1.0f);
+        colors.menuShortcut    = D2D1::ColorF(0.550f, 0.550f, 0.550f, 1.0f);
+        colors.tabBarBg        = D2D1::ColorF(0.094f, 0.094f, 0.094f, 1.0f); // #181818
+        colors.tabActiveBg     = D2D1::ColorF(0.118f, 0.118f, 0.118f, 1.0f); // #1E1E1E
+        colors.tabBorder       = D2D1::ColorF(0.173f, 0.173f, 0.173f, 1.0f); // #2C2C2C
+        colors.currentLineBg   = D2D1::ColorF(0.145f, 0.145f, 0.145f, 1.0f);
+        colors.lineNumber      = D2D1::ColorF(0.522f, 0.522f, 0.522f, 1.0f);
+        colors.syntaxKeyword   = D2D1::ColorF(0.773f, 0.525f, 0.753f, 1.0f);  // #C586C0
+        colors.syntaxType      = D2D1::ColorF(0.306f, 0.788f, 0.690f, 1.0f);  // #4EC9B0
+        colors.syntaxString    = D2D1::ColorF(0.808f, 0.569f, 0.471f, 1.0f);  // #CE9178
+        colors.syntaxComment   = D2D1::ColorF(0.416f, 0.600f, 0.333f, 1.0f);  // #6A9955
+        colors.syntaxNumber    = D2D1::ColorF(0.710f, 0.808f, 0.659f, 1.0f);  // #B5CEA8
+        colors.syntaxOperator  = D2D1::ColorF(0.831f, 0.831f, 0.831f, 1.0f);  // #D4D4D4
+    } else {
+        // Light Theme Colors
+        colors.windowBg        = D2D1::ColorF(0.93f, 0.93f, 0.93f, 1.0f);    // #ECECEC
+        colors.canvasBg        = D2D1::ColorF(1.0f, 1.0f, 1.0f, 1.0f);       // #FFFFFF
+        colors.headerBg        = D2D1::ColorF(0.94f, 0.94f, 0.94f, 1.0f);    // #F0F0F0
+        colors.railBg          = D2D1::ColorF(0.90f, 0.90f, 0.90f, 1.0f);    // #E5E5E5
+        colors.drawerBg        = D2D1::ColorF(0.953f, 0.953f, 0.953f, 1.0f); // #F3F3F3
+        colors.borderSubtle    = D2D1::ColorF(0.88f, 0.88f, 0.88f, 1.0f);    // #E0E0E0
+        colors.borderHover     = D2D1::ColorF(0.80f, 0.80f, 0.80f, 1.0f);    // #CCCCCC
+        colors.textPrimary     = D2D1::ColorF(0.12f, 0.12f, 0.12f, 1.0f);    // #1E1E1E
+        colors.textSecondary   = D2D1::ColorF(0.38f, 0.38f, 0.38f, 1.0f);    // #616161
+        colors.textMuted       = D2D1::ColorF(0.55f, 0.55f, 0.55f, 1.0f);    // #8E8E8E
+        colors.textWhite       = D2D1::ColorF(0.12f, 0.12f, 0.12f, 1.0f);    // Dark for tab title in light mode
+        colors.itemHover       = D2D1::ColorF(0.91f, 0.91f, 0.91f, 1.0f);    // #E8E8E8
+        colors.itemActive      = D2D1::ColorF(0.84f, 0.84f, 0.84f, 1.0f);    // #D6D6D6
+        colors.captionHover    = D2D1::ColorF(0.88f, 0.88f, 0.88f, 1.0f);
+        colors.brandAccent     = D2D1::ColorF(0.0f, 0.471f, 0.831f, 1.0f);   // #0078D4
+        colors.homeBadgeBg     = D2D1::ColorF(0.85f, 0.85f, 0.85f, 1.0f);
+        colors.tooltipBg       = D2D1::ColorF(0.96f, 0.96f, 0.96f, 0.98f);
+        colors.tooltipBorder   = D2D1::ColorF(0.80f, 0.80f, 0.80f, 1.0f);
+        colors.menuBg          = D2D1::ColorF(0.96f, 0.96f, 0.96f, 0.98f);
+        colors.menuBorder      = D2D1::ColorF(0.82f, 0.82f, 0.82f, 1.0f);
+        colors.menuSeparator   = D2D1::ColorF(0.90f, 0.90f, 0.90f, 1.0f);
+        colors.menuHover       = D2D1::ColorF(0.0f, 0.471f, 0.831f, 1.0f);
+        colors.menuText        = D2D1::ColorF(0.20f, 0.20f, 0.20f, 1.0f);
+        colors.menuShortcut    = D2D1::ColorF(0.44f, 0.44f, 0.44f, 1.0f);
+        colors.tabBarBg        = D2D1::ColorF(0.925f, 0.925f, 0.925f, 1.0f); // #ECECEC
+        colors.tabActiveBg     = D2D1::ColorF(1.0f, 1.0f, 1.0f, 1.0f);       // #FFFFFF
+        colors.tabBorder       = D2D1::ColorF(0.88f, 0.88f, 0.88f, 1.0f);    // #E0E0E0
+        colors.currentLineBg   = D2D1::ColorF(0.97f, 0.97f, 0.97f, 1.0f);
+        colors.lineNumber      = D2D1::ColorF(0.43f, 0.46f, 0.51f, 1.0f);
+        colors.syntaxKeyword   = D2D1::ColorF(0.0f, 0.0f, 1.0f, 1.0f);       // #0000FF
+        colors.syntaxType      = D2D1::ColorF(0.16f, 0.50f, 0.50f, 1.0f);    // #267F99
+        colors.syntaxString    = D2D1::ColorF(0.65f, 0.16f, 0.16f, 1.0f);    // #A31515
+        colors.syntaxComment   = D2D1::ColorF(0.0f, 0.50f, 0.0f, 1.0f);       // #008000
+        colors.syntaxNumber    = D2D1::ColorF(0.035f, 0.518f, 0.329f, 1.0f); // #098658
+        colors.syntaxOperator  = D2D1::ColorF(0.20f, 0.20f, 0.20f, 1.0f);
+    }
+
+    // Refresh dynamic brush colors
+    if (brushWindowBg) brushWindowBg->SetColor(colors.windowBg);
+    if (brushCanvasBg) brushCanvasBg->SetColor(colors.canvasBg);
+    if (brushHeaderBg) brushHeaderBg->SetColor(colors.headerBg);
+    if (brushRailBg) brushRailBg->SetColor(colors.railBg);
+    if (brushDrawerBg) brushDrawerBg->SetColor(colors.drawerBg);
+    if (brushBorderSubtle) brushBorderSubtle->SetColor(colors.borderSubtle);
+    if (brushBorderHover) brushBorderHover->SetColor(colors.borderHover);
+    if (brushTextPrimary) brushTextPrimary->SetColor(colors.textPrimary);
+    if (brushTextSecondary) brushTextSecondary->SetColor(colors.textSecondary);
+    if (brushTextMuted) brushTextMuted->SetColor(colors.textMuted);
+    if (brushTextWhite) brushTextWhite->SetColor(colors.textWhite);
+    if (brushItemHover) brushItemHover->SetColor(colors.itemHover);
+    if (brushItemActive) brushItemActive->SetColor(colors.itemActive);
+    if (brushCaptionHover) brushCaptionHover->SetColor(colors.captionHover);
+    if (brushBrandAccent) brushBrandAccent->SetColor(colors.brandAccent);
+    if (brushHomeBadgeBg) brushHomeBadgeBg->SetColor(colors.homeBadgeBg);
+    if (brushTooltipBg) brushTooltipBg->SetColor(colors.tooltipBg);
+    if (brushTooltipBorder) brushTooltipBorder->SetColor(colors.tooltipBorder);
+    if (brushMenuBg) brushMenuBg->SetColor(colors.menuBg);
+    if (brushMenuBorder) brushMenuBorder->SetColor(colors.menuBorder);
+    if (brushMenuSeparator) brushMenuSeparator->SetColor(colors.menuSeparator);
+    if (brushMenuHover) brushMenuHover->SetColor(colors.menuHover);
+    if (brushMenuText) brushMenuText->SetColor(colors.menuText);
+    if (brushMenuShortcut) brushMenuShortcut->SetColor(colors.menuShortcut);
+    if (brushTabBarBg) brushTabBarBg->SetColor(colors.tabBarBg);
+    if (brushTabActiveBg) brushTabActiveBg->SetColor(colors.tabActiveBg);
+    if (brushTabBorder) brushTabBorder->SetColor(colors.tabBorder);
+    if (brushCurrentLineBg) brushCurrentLineBg->SetColor(colors.currentLineBg);
+    if (brushLineNumber) brushLineNumber->SetColor(colors.lineNumber);
+    if (brushSyntaxKeyword) brushSyntaxKeyword->SetColor(colors.syntaxKeyword);
+    if (brushSyntaxType) brushSyntaxType->SetColor(colors.syntaxType);
+    if (brushSyntaxString) brushSyntaxString->SetColor(colors.syntaxString);
+    if (brushSyntaxComment) brushSyntaxComment->SetColor(colors.syntaxComment);
+    if (brushSyntaxNumber) brushSyntaxNumber->SetColor(colors.syntaxNumber);
+    if (brushSyntaxOperator) brushSyntaxOperator->SetColor(colors.syntaxOperator);
+}
+
 Theme::SetiIconInfo Theme::GetSetiIcon(const std::wstring& filename, bool isFolder, bool isExpanded) const {
     if (isFolder) {
         return { 0xE032, isExpanded ? (brushSetiFolderOpen ? brushSetiFolderOpen.Get() : brushIconFolderOpen.Get())

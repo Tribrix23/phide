@@ -1,6 +1,6 @@
 /**
  * @file EditorCanvas.hpp
- * @brief High-performance Direct2D editor canvas, tab bar, line gutter, and syntax rendering.
+ * @brief High-performance Direct2D editor canvas, multi-tab bar, line gutter, and syntax rendering.
  */
 
 #pragma once
@@ -15,22 +15,14 @@
 #include "phide/ui/Theme.hpp"
 #include "phide/ui/LucideIcons.hpp"
 #include "phide/editor/Buffer.hpp"
+#include "phide/editor/OpenDocument.hpp"
+#include "phide/ui/KeyboardShortcutsView.hpp"
 
 namespace phide::ui {
 
 /**
- * @struct EditorTab
- * @brief Represents an open buffer tab.
- */
-struct EditorTab {
-    std::wstring title;
-    bool isActive = false;
-    D2D1_RECT_F bounds{};
-};
-
-/**
  * @class EditorCanvas
- * @brief Renders the editor workspace including tabs, line numbers, and syntax-colored lines.
+ * @brief Renders the editor workspace including multi-tabs, line numbers, syntax-colored lines, and interactive views.
  */
 class EditorCanvas {
 public:
@@ -38,23 +30,12 @@ public:
     ~EditorCanvas() = default;
 
     /**
-     * @brief Renders the entire editor canvas.
-     * @param pRT Active Direct2D render target.
-     * @param theme Theme brushes and fonts.
-     * @param config Application configuration.
-     * @param buffer Active text buffer.
-     * @param canvasLeft Left coordinate of the visible editor surface.
-     * @param canvasWidth Available width.
-     * @param clientHeight Window client height.
-     * @param hasLeftDrawer True if sidebar drawer is open or opening (makes top-left sharp).
-     * @param hasOpenFile True if a file is currently opened (replaces placeholder with code).
-     * @param currentFileName Name of the active opened file.
-     * @param isDirty True if file has unsaved changes.
+     * @brief Renders the entire editor canvas (multi-tabs, active document or placeholder watermark).
      */
     void Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
-                const editor::Buffer& buffer, float canvasLeft, float canvasWidth, float clientHeight,
-                bool hasLeftDrawer = false, bool hasOpenFile = false,
-                const std::wstring& currentFileName = L"", bool isDirty = false);
+                std::vector<editor::OpenDocument>& docs, int activeDocIdx,
+                float canvasLeft, float canvasWidth, float clientHeight,
+                bool hasLeftDrawer = false);
 
     /**
      * @brief Toggles caret blink phase.
@@ -62,9 +43,16 @@ public:
     void ToggleCaretBlink() noexcept { m_caretVisible = !m_caretVisible; }
 
     /**
-     * @brief Tests if mouse clicked the tab close button (×).
+     * @brief Tests if mouse clicked on any tab header.
+     * @return Tab index (0-based) or -1 if no tab hit.
      */
-    [[nodiscard]] bool HitTestTabClose(POINT pt) const;
+    [[nodiscard]] int HitTestTab(POINT pt, const std::vector<editor::OpenDocument>& docs) const;
+
+    /**
+     * @brief Tests if mouse clicked any tab's close button (×).
+     * @return Tab index (0-based) or -1 if no close button hit.
+     */
+    [[nodiscard]] int HitTestTabClose(POINT pt, const std::vector<editor::OpenDocument>& docs) const;
 
     /**
      * @brief Tests if mouse clicked inside the code area to position cursor.
@@ -72,10 +60,11 @@ public:
     bool HitTestCodeArea(POINT pt, const app::AppConfig& config, const editor::Buffer& buffer,
                          float canvasLeft, float clientHeight, size_t& outLine, size_t& outCol) const;
 
+    KeyboardShortcutsView& GetKeyboardShortcutsView() noexcept { return m_keybindingsView; }
+
 private:
-    std::vector<EditorTab> m_tabs;
     bool m_caretVisible = true;
-    D2D1_RECT_F m_tabCloseBounds{};
+    KeyboardShortcutsView m_keybindingsView;
 
     // Cached path geometry for workspace container (curved ONLY at upper-left corner when drawer is closed)
     Microsoft::WRL::ComPtr<ID2D1PathGeometry> m_pCanvasGeometry;
@@ -94,7 +83,7 @@ private:
 
     void RenderTabs(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
                     float canvasLeft, float canvasWidth, float headerH,
-                    const std::wstring& currentFileName, bool isDirty);
+                    std::vector<editor::OpenDocument>& docs, int activeDocIdx);
 
     void RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
                     const editor::Buffer& buffer, float canvasLeft, float canvasWidth,
