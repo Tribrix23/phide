@@ -1246,8 +1246,28 @@ void Window::HandleMouseMove(POINT clientPt) {
         }
     }
 
-    // Forward to keyboard shortcuts view if active doc is keybindings
+    // Check vertical scrollbar dragging
     auto* pActiveDoc = GetActiveDoc();
+    if (pActiveDoc && pActiveDoc->isDraggingScrollbar) {
+        float deltaY = static_cast<float>(clientPt.y) - pActiveDoc->dragStartY;
+        float trackH = pActiveDoc->scrollbarTrack.bottom - pActiveDoc->scrollbarTrack.top;
+        float thumbH = pActiveDoc->scrollbarThumb.bottom - pActiveDoc->scrollbarThumb.top;
+        float scrollRange = trackH - thumbH;
+        if (scrollRange > 0.0f) {
+            size_t totalLines = pActiveDoc->buffer.GetLineCount();
+            float linesPerPixel = static_cast<float>(totalLines) / scrollRange;
+            int newScroll = static_cast<int>(pActiveDoc->dragStartScrollLine) + static_cast<int>(deltaY * linesPerPixel);
+            if (newScroll < 0) newScroll = 0;
+            if (static_cast<size_t>(newScroll) >= totalLines) {
+                newScroll = totalLines > 0 ? static_cast<int>(totalLines - 1) : 0;
+            }
+            pActiveDoc->scrollLine = static_cast<size_t>(newScroll);
+            InvalidateRect(m_hwnd, nullptr, FALSE);
+            return;
+        }
+    }
+
+    // Forward to keyboard shortcuts view if active doc is keybindings
     if (pActiveDoc && pActiveDoc->isSpecialView && pActiveDoc->viewType == L"keybindings") {
         if (m_editor.GetKeyboardShortcutsView().HandleMouseMove(clientPt)) {
             needRepaint = true;
@@ -1550,8 +1570,42 @@ void Window::HandleLButtonDown(POINT clientPt) {
             float currentDrawerW = m_config.ScaleF(static_cast<float>(m_config.drawerWidth)) * m_drawerAnimProgress;
             float canvasLeft = railW + currentDrawerW;
 
+            // 1. Check fold chevron click in the gutter (Images 2 & 3)
+            int foldLine = m_editor.HitTestFoldChevron(clientPt);
+            if (foldLine >= 0) {
+                size_t fl = static_cast<size_t>(foldLine);
+                if (pDoc->foldedLines.count(fl)) {
+                    pDoc->foldedLines.erase(fl);
+                } else {
+                    pDoc->foldedLines.insert(fl);
+                }
+                InvalidateRect(m_hwnd, nullptr, FALSE);
+                return;
+            }
+
+            // 2. Check vertical scrollbar click & drag (Image 1)
+            bool hitThumb = false;
+            if (m_editor.HitTestScrollbar(clientPt, *pDoc, hitThumb)) {
+                if (hitThumb) {
+                    pDoc->isDraggingScrollbar = true;
+                    pDoc->dragStartY = static_cast<float>(clientPt.y);
+                    pDoc->dragStartScrollLine = pDoc->scrollLine;
+                } else {
+                    // Clicked track above or below thumb -> jump page
+                    if (clientPt.y < pDoc->scrollbarThumb.top) {
+                        if (pDoc->scrollLine >= 10) pDoc->scrollLine -= 10;
+                        else pDoc->scrollLine = 0;
+                    } else if (clientPt.y > pDoc->scrollbarThumb.bottom) {
+                        pDoc->scrollLine += 10;
+                    }
+                }
+                InvalidateRect(m_hwnd, nullptr, FALSE);
+                return;
+            }
+
+            // 3. Code Area click
             size_t line = 0, col = 0;
-            if (m_editor.HitTestCodeArea(clientPt, m_config, pDoc->buffer, canvasLeft, clientH, line, col)) {
+            if (m_editor.HitTestCodeArea(clientPt, m_config, *pDoc, canvasLeft, clientH, line, col)) {
                 pDoc->buffer.SetCursor(line, col);
                 InvalidateRect(m_hwnd, nullptr, FALSE);
                 return;
@@ -1572,6 +1626,10 @@ void Window::HandleLButtonDown(POINT clientPt) {
 
 void Window::HandleLButtonUp(POINT clientPt) {
     (void)clientPt;
+    auto* pDoc = GetActiveDoc();
+    if (pDoc) {
+        pDoc->isDraggingScrollbar = false;
+    }
 }
 
 LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
@@ -1650,10 +1708,41 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
         }
 
         case WM_MOUSEWHEEL: {
+            short delta = GET_WHEEL_DELTA_WPARAM(wParam);
+            POINT pt = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+            ScreenToClient(m_hwnd, &pt);
+
+            float railW = m_config.ScaleF(static_cast<float>(m_config.railWidth));
+            float drawerW = m_config.ScaleF(static_cast<float>(m_config.drawerWidth)) * m_drawerAnimProgress;
+            float headerH = m_config.ScaleF(static_cast<float>(m_config.headerHeight));
+
+            // 1. Scroll Drawer Panel tree if mouse is over sidebar
+            if (m_drawerAnimProgress > 0.001f && pt.x >= railW && pt.x < railW + drawerW && pt.y >= headerH) {
+                if (m_drawer.HandleMouseWheel(delta)) {
+                    InvalidateRect(m_hwnd, nullptr, FALSE);
+                    return 0;
+                }
+            }
+
+            // 2. Scroll Editor Canvas
             auto* pDoc = GetActiveDoc();
-            if (pDoc && pDoc->isSpecialView && pDoc->viewType == L"keybindings") {
-                short delta = GET_WHEEL_DELTA_WPARAM(wParam);
-                if (m_editor.GetKeyboardShortcutsView().HandleMouseWheel(delta)) {
+            if (pDoc) {
+                if (pDoc->isSpecialView && pDoc->viewType == L"keybindings") {
+                    if (m_editor.GetKeyboardShortcutsView().HandleMouseWheel(delta)) {
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
+                        return 0;
+                    }
+                } else {
+                    int linesToScroll = 3;
+                    if (delta > 0) {
+                        if (pDoc->scrollLine >= static_cast<size_t>(linesToScroll)) {
+                            pDoc->scrollLine -= linesToScroll;
+                        } else {
+                            pDoc->scrollLine = 0;
+                        }
+                    } else {
+                        pDoc->scrollLine += linesToScroll;
+                    }
                     InvalidateRect(m_hwnd, nullptr, FALSE);
                     return 0;
                 }
@@ -1873,9 +1962,40 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     InvalidateRect(m_hwnd, nullptr, FALSE);
                 } else if (wParam == VK_UP) {
                     pDoc->buffer.MoveCursorUp();
+                    size_t curLine = pDoc->buffer.GetCursor().line;
+                    if (curLine < pDoc->scrollLine) {
+                        pDoc->scrollLine = curLine;
+                    }
                     InvalidateRect(m_hwnd, nullptr, FALSE);
                 } else if (wParam == VK_DOWN) {
                     pDoc->buffer.MoveCursorDown();
+                    size_t curLine = pDoc->buffer.GetCursor().line;
+                    RECT rc;
+                    GetClientRect(m_hwnd, &rc);
+                    float h = static_cast<float>(rc.bottom - rc.top);
+                    size_t visibleLines = static_cast<size_t>(h / m_config.ScaleF(20.0f));
+                    if (curLine >= pDoc->scrollLine + visibleLines - 4) {
+                        pDoc->scrollLine = (curLine + 4 > visibleLines) ? (curLine + 4 - visibleLines) : 0;
+                    }
+                    InvalidateRect(m_hwnd, nullptr, FALSE);
+                } else if (wParam == VK_PRIOR) { // Page Up
+                    RECT rc;
+                    GetClientRect(m_hwnd, &rc);
+                    float h = static_cast<float>(rc.bottom - rc.top);
+                    size_t page = static_cast<size_t>(h / m_config.ScaleF(20.0f));
+                    if (page < 3) page = 3;
+                    for (size_t p = 0; p < page; ++p) pDoc->buffer.MoveCursorUp();
+                    if (pDoc->scrollLine >= page) pDoc->scrollLine -= page;
+                    else pDoc->scrollLine = 0;
+                    InvalidateRect(m_hwnd, nullptr, FALSE);
+                } else if (wParam == VK_NEXT) { // Page Down
+                    RECT rc;
+                    GetClientRect(m_hwnd, &rc);
+                    float h = static_cast<float>(rc.bottom - rc.top);
+                    size_t page = static_cast<size_t>(h / m_config.ScaleF(20.0f));
+                    if (page < 3) page = 3;
+                    for (size_t p = 0; p < page; ++p) pDoc->buffer.MoveCursorDown();
+                    pDoc->scrollLine += page;
                     InvalidateRect(m_hwnd, nullptr, FALSE);
                 } else if (wParam == VK_TAB) {
                     pDoc->buffer.InsertChar(L' ');

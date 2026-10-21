@@ -120,6 +120,13 @@ public:
      */
     void RefreshTree();
 
+    /**
+     * @brief Handles mouse wheel scrolling across directory tree entries.
+     * @param delta Wheel delta from WM_MOUSEWHEEL.
+     * @return True if scroll position changed.
+     */
+    bool HandleMouseWheel(short delta);
+
     [[nodiscard]] bool HasOpenFolder() const noexcept { return m_hasOpenFolder; }
     [[nodiscard]] const std::wstring& GetOpenFolderPath() const noexcept { return m_openFolderPath; }
     [[nodiscard]] const std::wstring& GetRootName() const noexcept { return m_rootName; }
@@ -135,6 +142,7 @@ private:
 
     std::set<std::wstring> m_expandedDirs;
     std::vector<DrawerTreeItem> m_visibleItems;
+    size_t m_scrollIndex = 0;           ///< Vertical scroll index for tree items
 
     int m_hoveredIndex = -1;
     bool m_hoveredOpenFolderBtn = false;

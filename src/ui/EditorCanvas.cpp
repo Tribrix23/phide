@@ -192,7 +192,9 @@ void EditorCanvas::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
         if (activeDoc.isSpecialView && activeDoc.viewType == L"keybindings") {
             m_keybindingsView.Render(pRT, theme, config, canvasLeft, canvasWidth, headerH + tabH, clientHeight - (headerH + tabH));
         } else {
-            RenderCode(pRT, theme, config, activeDoc.buffer, canvasLeft, canvasWidth, headerH + tabH, clientHeight);
+            const float breadcrumbH = config.ScaleF(24.0f);
+            RenderBreadcrumbs(pRT, theme, config, activeDoc, canvasLeft, canvasWidth, headerH + tabH, breadcrumbH);
+            RenderCode(pRT, theme, config, activeDoc, canvasLeft, canvasWidth, headerH + tabH + breadcrumbH, clientHeight);
         }
     }
 }
@@ -458,13 +460,173 @@ void EditorCanvas::RenderTabs(ID2D1RenderTarget* pRT, Theme& theme, const app::A
     }
 }
 
+void EditorCanvas::RenderBreadcrumbs(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
+                                     const editor::OpenDocument& doc, float canvasLeft, float canvasWidth,
+                                     float barY, float barHeight) {
+    if (!pRT || barHeight <= 0.0f) return;
+    const float canvasRight = canvasLeft + canvasWidth;
+    D2D1_RECT_F rcBar = D2D1::RectF(canvasLeft, barY, canvasRight, barY + barHeight);
+
+    // Subtle surface backdrop
+    if (theme.IsDarkMode()) {
+        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushBg;
+        pRT->CreateSolidColorBrush(D2D1::ColorF(0.118f, 0.118f, 0.118f, 1.0f), &brushBg); // #1E1E1E
+        if (brushBg) pRT->FillRectangle(rcBar, brushBg.Get());
+    } else {
+        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushBg;
+        pRT->CreateSolidColorBrush(D2D1::ColorF(0.97f, 0.97f, 0.97f, 1.0f), &brushBg); // #F7F7F7
+        if (brushBg) pRT->FillRectangle(rcBar, brushBg.Get());
+    }
+
+    // Bottom subtle 1px divider
+    pRT->DrawLine(
+        D2D1::Point2F(canvasLeft, barY + barHeight - 0.5f),
+        D2D1::Point2F(canvasRight, barY + barHeight - 0.5f),
+        theme.brushBorderSubtle.Get(),
+        0.8f
+    );
+
+    // Parse segments from doc.filePath (Image 4)
+    std::wstring pathStr = doc.filePath.empty() ? doc.fileName : doc.filePath;
+    for (auto& c : pathStr) {
+        if (c == L'/') c = L'\\';
+    }
+
+    std::vector<std::wstring> segments;
+    size_t start = 0;
+    while (start < pathStr.length()) {
+        size_t end = pathStr.find(L'\\', start);
+        if (end == std::wstring::npos) end = pathStr.length();
+        if (end > start) {
+            std::wstring seg = pathStr.substr(start, end - start);
+            // Skip Windows drive letter root if present (e.g. C:)
+            if (!(seg.length() == 2 && seg[1] == L':')) {
+                segments.push_back(seg);
+            }
+        }
+        start = end + 1;
+    }
+
+    // Keep up to 4 segments for a clean breadcrumb hierarchy
+    if (segments.size() > 4) {
+        segments.erase(segments.begin(), segments.end() - 4);
+    }
+    if (segments.empty()) {
+        segments.push_back(doc.fileName.empty() ? L"Untitled" : doc.fileName);
+    }
+
+    float curX = canvasLeft + config.ScaleF(14.0f);
+    IDWriteTextFormat* pFmt = theme.fontMenuShortcut ? theme.fontMenuShortcut.Get() : theme.fontBody.Get();
+
+    for (size_t s = 0; s < segments.size(); ++s) {
+        const auto& seg = segments[s];
+        bool isLast = (s == segments.size() - 1);
+
+        float textW = static_cast<float>(seg.length()) * config.ScaleF(7.0f) + config.ScaleF(6.0f);
+        D2D1_RECT_F rcSeg = D2D1::RectF(curX, barY + config.ScaleF(2.0f), curX + textW, barY + barHeight - config.ScaleF(2.0f));
+
+        ID2D1Brush* segBrush = isLast
+            ? theme.brushTextPrimary.Get()
+            : theme.brushTextSecondary.Get();
+
+        pRT->DrawText(seg.c_str(), static_cast<UINT32>(seg.length()), pFmt, rcSeg, segBrush);
+        curX += textW;
+
+        if (!isLast) {
+            // Draw chevron separator › (Unicode \u203A)
+            const wchar_t* sep = L"\u203A";
+            float sepW = config.ScaleF(14.0f);
+            D2D1_RECT_F rcSep = D2D1::RectF(curX, barY + config.ScaleF(2.0f), curX + sepW, barY + barHeight - config.ScaleF(2.0f));
+            pRT->DrawText(sep, 1, pFmt, rcSep, theme.brushTextMuted.Get());
+            curX += sepW;
+        }
+    }
+}
+
+bool EditorCanvas::GetFoldRange(const editor::Buffer& buffer, size_t startLine, size_t& outEndLine) {
+    if (startLine >= buffer.GetLineCount()) return false;
+    const std::wstring& line = buffer.GetLine(startLine);
+
+    // 1. Multiline comment /* or /** (Image 2 & 3)
+    size_t commentStart = line.find(L"/*");
+    if (commentStart != std::wstring::npos) {
+        if (line.find(L"*/", commentStart + 2) == std::wstring::npos) {
+            for (size_t l = startLine + 1; l < buffer.GetLineCount(); ++l) {
+                const std::wstring& nextLine = buffer.GetLine(l);
+                if (nextLine.find(L"*/") != std::wstring::npos) {
+                    outEndLine = l;
+                    return true;
+                }
+            }
+        }
+    }
+
+    // 2. Open brace '{' matching block
+    int braceBalance = 0;
+    bool hasOpenBrace = false;
+    for (wchar_t ch : line) {
+        if (ch == L'{') { braceBalance++; hasOpenBrace = true; }
+        else if (ch == L'}') { braceBalance--; }
+    }
+
+    if (hasOpenBrace && braceBalance > 0) {
+        int curBalance = braceBalance;
+        for (size_t l = startLine + 1; l < buffer.GetLineCount(); ++l) {
+            const std::wstring& nextLine = buffer.GetLine(l);
+            for (wchar_t ch : nextLine) {
+                if (ch == L'{') curBalance++;
+                else if (ch == L'}') {
+                    curBalance--;
+                    if (curBalance == 0) {
+                        outEndLine = l;
+                        return true;
+                    }
+                }
+            }
+        }
+    }
+
+    // 3. Indentation-based block folding (Python, YAML, and nested blocks)
+    size_t startIndent = 0;
+    while (startIndent < line.length() && (line[startIndent] == L' ' || line[startIndent] == L'\t')) {
+        startIndent++;
+    }
+    if (startIndent < line.length()) {
+        size_t lastIndented = startLine;
+        for (size_t l = startLine + 1; l < buffer.GetLineCount(); ++l) {
+            const std::wstring& nextLine = buffer.GetLine(l);
+            size_t nextIndent = 0;
+            while (nextIndent < nextLine.length() && (nextLine[nextIndent] == L' ' || nextLine[nextIndent] == L'\t')) {
+                nextIndent++;
+            }
+            if (nextIndent == nextLine.length()) continue;
+            if (nextIndent > startIndent) {
+                lastIndented = l;
+            } else {
+                break;
+            }
+        }
+        if (lastIndented > startLine) {
+            outEndLine = lastIndented;
+            return true;
+        }
+    }
+
+    return false;
+}
+
 void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
-                              const editor::Buffer& buffer, float canvasLeft, float canvasWidth,
+                              editor::OpenDocument& doc, float canvasLeft, float canvasWidth,
                               float topY, float clientHeight) {
+    auto& buffer = doc.buffer;
     const float gutterW = config.ScaleF(50.0f);
     const float lineH   = config.ScaleF(20.0f);
     const float charW   = config.ScaleF(7.8f);
+    const float scrollbarW = config.ScaleF(14.0f);
     const float canvasRight = canvasLeft + canvasWidth;
+    const float codeAreaH = clientHeight - topY;
+
+    m_foldChevrons.clear();
 
     // 1. Gutter Background & Divider
     D2D1_RECT_F rcGutter = D2D1::RectF(canvasLeft, topY, canvasLeft + gutterW, clientHeight);
@@ -477,35 +639,84 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
         1.0f
     );
 
-    // 2. Current Line Highlight
-    auto cursor = buffer.GetCursor();
-    float activeLineY = topY + config.ScaleF(6.0f) + cursor.line * lineH;
-    if (activeLineY >= topY && activeLineY + lineH <= clientHeight) {
-        D2D1_RECT_F rcActiveLine = D2D1::RectF(canvasLeft + gutterW, activeLineY, canvasRight, activeLineY + lineH);
-        pRT->FillRectangle(rcActiveLine, theme.brushCurrentLineBg.Get());
+    // Build visual lines layout (folding awareness)
+    struct VisualLine {
+        size_t bufferLine;
+        bool isFoldHeader;
+        bool isFolded;
+        size_t foldEndLine;
+    };
+    std::vector<VisualLine> visualLines;
+    visualLines.reserve(buffer.GetLineCount());
+
+    const size_t totalBufLines = buffer.GetLineCount();
+    for (size_t b = 0; b < totalBufLines; ++b) {
+        size_t foldEnd = 0;
+        bool canFold = GetFoldRange(buffer, b, foldEnd);
+        bool isFolded = canFold && (doc.foldedLines.count(b) > 0);
+
+        VisualLine vl;
+        vl.bufferLine = b;
+        vl.isFoldHeader = canFold;
+        vl.isFolded = isFolded;
+        vl.foldEndLine = foldEnd;
+        visualLines.push_back(vl);
+
+        if (isFolded) {
+            b = foldEnd; // Skip folded child lines!
+        }
     }
 
-    // 3. Line Numbers & Code Lines
-    const size_t totalLines = buffer.GetLineCount();
+    const size_t visibleCount = (lineH > 0.0f) ? static_cast<size_t>(codeAreaH / lineH) : 20;
+    const size_t maxScroll = (visualLines.size() > visibleCount) ? (visualLines.size() - visibleCount) : 0;
+    if (doc.scrollLine > maxScroll) {
+        doc.scrollLine = maxScroll;
+    }
+
+    // 2. Current Line Highlight
+    auto cursor = buffer.GetCursor();
+    size_t visualCursorIdx = 0;
+    bool foundCursorVisual = false;
+    for (size_t v = 0; v < visualLines.size(); ++v) {
+        if (visualLines[v].bufferLine == cursor.line ||
+            (cursor.line > visualLines[v].bufferLine && cursor.line <= visualLines[v].foldEndLine)) {
+            visualCursorIdx = v;
+            foundCursorVisual = true;
+            break;
+        }
+    }
+
+    if (foundCursorVisual && visualCursorIdx >= doc.scrollLine) {
+        float activeLineY = topY + config.ScaleF(6.0f) + (visualCursorIdx - doc.scrollLine) * lineH;
+        if (activeLineY >= topY && activeLineY + lineH <= clientHeight) {
+            D2D1_RECT_F rcActiveLine = D2D1::RectF(canvasLeft + gutterW, activeLineY, canvasRight - scrollbarW, activeLineY + lineH);
+            pRT->FillRectangle(rcActiveLine, theme.brushCurrentLineBg.Get());
+        }
+    }
+
+    // 3. Line Numbers, Fold Chevrons & Code Lines
     const float codeLeft = canvasLeft + gutterW + config.ScaleF(12.0f);
 
-    // Clip code to editor boundaries
-    D2D1_RECT_F clipCode = D2D1::RectF(canvasLeft, topY, canvasRight, clientHeight);
+    D2D1_RECT_F clipCode = D2D1::RectF(canvasLeft, topY, canvasRight - scrollbarW, clientHeight);
     pRT->PushAxisAlignedClip(clipCode, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
 
-    for (size_t i = 0; i < totalLines; ++i) {
-        float lineY = topY + config.ScaleF(6.0f) + i * lineH;
+    size_t startV = doc.scrollLine;
+    size_t endV = (std::min)(visualLines.size(), startV + visibleCount + 2);
+
+    for (size_t v = startV; v < endV; ++v) {
+        const auto& vl = visualLines[v];
+        float lineY = topY + config.ScaleF(6.0f) + (v - doc.scrollLine) * lineH;
         if (lineY + lineH < topY || lineY > clientHeight) continue;
 
         // Line Number in Gutter (Right-aligned)
-        std::wstring lineNumStr = std::to_wstring(i + 1);
+        std::wstring lineNumStr = std::to_wstring(vl.bufferLine + 1);
         D2D1_RECT_F rcNum = D2D1::RectF(
             canvasLeft + config.ScaleF(4.0f),
             lineY,
-            canvasLeft + gutterW - config.ScaleF(8.0f),
+            canvasLeft + gutterW - config.ScaleF(18.0f),
             lineY + lineH
         );
-        ID2D1Brush* numBrush = (i == cursor.line) ? theme.brushTextPrimary.Get() : theme.brushLineNumber.Get();
+        ID2D1Brush* numBrush = (vl.bufferLine == cursor.line) ? theme.brushTextPrimary.Get() : theme.brushLineNumber.Get();
         pRT->DrawText(
             lineNumStr.c_str(),
             static_cast<UINT32>(lineNumStr.length()),
@@ -514,80 +725,153 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
             numBrush
         );
 
-        // Code Content
-        const auto& lineStr = buffer.GetLine(i);
-        if (lineStr.empty()) continue;
+        // Code Folding Chevron in Gutter (Images 2 & 3)
+        if (vl.isFoldHeader) {
+            const float chevronSize = config.ScaleF(12.0f);
+            const float chevronX = canvasLeft + gutterW - config.ScaleF(16.0f);
+            const float chevronY = lineY + (lineH - chevronSize) / 2.0f;
+            D2D1_RECT_F rcChevron = D2D1::RectF(chevronX, chevronY, chevronX + chevronSize, chevronY + chevronSize);
 
-        auto tokens = buffer.GetTokensForLine(i);
-        if (tokens.empty()) {
-            D2D1_RECT_F rcLine = D2D1::RectF(codeLeft, lineY, canvasRight, lineY + lineH);
-            pRT->DrawText(
-                lineStr.c_str(),
-                static_cast<UINT32>(lineStr.length()),
-                theme.fontCode ? theme.fontCode.Get() : theme.fontBody.Get(),
-                rcLine,
-                theme.brushTextPrimary.Get()
-            );
-        } else {
-            // Draw syntax tokens
-            for (const auto& tok : tokens) {
-                if (tok.startCol + tok.length > lineStr.length()) continue;
+            FoldChevronHit hit;
+            hit.bounds = rcChevron;
+            hit.bufferLine = vl.bufferLine;
+            m_foldChevrons.push_back(hit);
 
-                float tokenX = codeLeft + tok.startCol * charW;
-                float tokenW = tok.length * charW;
-                D2D1_RECT_F rcTok = D2D1::RectF(tokenX, lineY, tokenX + tokenW, lineY + lineH);
-
-                ID2D1Brush* brush = theme.brushTextPrimary.Get();
-                switch (tok.type) {
-                    case editor::TokenType::Keyword:
-                        brush = theme.brushSyntaxKeyword.Get();
-                        break;
-                    case editor::TokenType::Type:
-                        brush = theme.brushSyntaxType.Get();
-                        break;
-                    case editor::TokenType::String:
-                        brush = theme.brushSyntaxString.Get();
-                        break;
-                    case editor::TokenType::Comment:
-                        brush = theme.brushSyntaxComment.Get();
-                        break;
-                    case editor::TokenType::Number:
-                        brush = theme.brushSyntaxNumber.Get();
-                        break;
-                    case editor::TokenType::Operator:
-                        brush = theme.brushSyntaxOperator.Get();
-                        break;
-                    default:
-                        brush = theme.brushTextPrimary.Get();
-                        break;
-                }
-
-                pRT->DrawText(
-                    lineStr.c_str() + tok.startCol,
-                    static_cast<UINT32>(tok.length),
-                    theme.fontCode ? theme.fontCode.Get() : theme.fontBody.Get(),
-                    rcTok,
-                    brush
-                );
+            ID2D1Brush* chevronBrush = theme.brushTextMuted.Get();
+            if (vl.isFolded) {
+                // Collapsed: Right Chevron > (Image 3)
+                float cx = rcChevron.left + chevronSize * 0.45f;
+                float cy = rcChevron.top + chevronSize * 0.5f;
+                float cr = config.ScaleF(3.0f);
+                pRT->DrawLine(D2D1::Point2F(cx - cr * 0.6f, cy - cr), D2D1::Point2F(cx + cr * 0.6f, cy), chevronBrush, 1.3f);
+                pRT->DrawLine(D2D1::Point2F(cx + cr * 0.6f, cy), D2D1::Point2F(cx - cr * 0.6f, cy + cr), chevronBrush, 1.3f);
+            } else {
+                // Expanded: Down Chevron v (Image 2)
+                float cx = rcChevron.left + chevronSize * 0.5f;
+                float cy = rcChevron.top + chevronSize * 0.45f;
+                float cr = config.ScaleF(3.0f);
+                pRT->DrawLine(D2D1::Point2F(cx - cr, cy - cr * 0.6f), D2D1::Point2F(cx, cy + cr * 0.6f), chevronBrush, 1.3f);
+                pRT->DrawLine(D2D1::Point2F(cx, cy + cr * 0.6f), D2D1::Point2F(cx + cr, cy - cr * 0.6f), chevronBrush, 1.3f);
             }
+        }
+
+        // Code Content
+        const auto& lineStr = buffer.GetLine(vl.bufferLine);
+        float curCodeEndX = codeLeft;
+
+        if (!lineStr.empty()) {
+            auto tokens = buffer.GetTokensForLine(vl.bufferLine);
+            if (tokens.empty()) {
+                D2D1_RECT_F rcLine = D2D1::RectF(codeLeft, lineY, canvasRight - scrollbarW, lineY + lineH);
+                pRT->DrawText(
+                    lineStr.c_str(),
+                    static_cast<UINT32>(lineStr.length()),
+                    theme.fontCode ? theme.fontCode.Get() : theme.fontBody.Get(),
+                    rcLine,
+                    theme.brushTextPrimary.Get()
+                );
+                curCodeEndX = codeLeft + lineStr.length() * charW;
+            } else {
+                for (const auto& tok : tokens) {
+                    if (tok.startCol + tok.length > lineStr.length()) continue;
+
+                    float tokenX = codeLeft + tok.startCol * charW;
+                    float tokenW = tok.length * charW;
+                    D2D1_RECT_F rcTok = D2D1::RectF(tokenX, lineY, tokenX + tokenW, lineY + lineH);
+
+                    ID2D1Brush* brush = theme.brushTextPrimary.Get();
+                    switch (tok.type) {
+                        case editor::TokenType::Keyword:  brush = theme.brushSyntaxKeyword.Get(); break;
+                        case editor::TokenType::Type:     brush = theme.brushSyntaxType.Get(); break;
+                        case editor::TokenType::String:   brush = theme.brushSyntaxString.Get(); break;
+                        case editor::TokenType::Comment:  brush = theme.brushSyntaxComment.Get(); break;
+                        case editor::TokenType::Number:   brush = theme.brushSyntaxNumber.Get(); break;
+                        case editor::TokenType::Operator: brush = theme.brushSyntaxOperator.Get(); break;
+                        default: brush = theme.brushTextPrimary.Get(); break;
+                    }
+
+                    pRT->DrawText(
+                        lineStr.c_str() + tok.startCol,
+                        static_cast<UINT32>(tok.length),
+                        theme.fontCode ? theme.fontCode.Get() : theme.fontBody.Get(),
+                        rcTok,
+                        brush
+                    );
+                    curCodeEndX = (std::max)(curCodeEndX, tokenX + tokenW);
+                }
+            }
+        }
+
+        // If line is folded, draw the "..." folded indicator pill (Image 3)
+        if (vl.isFolded) {
+            float pillX = curCodeEndX + config.ScaleF(8.0f);
+            float pillW = config.ScaleF(24.0f);
+            float pillH = config.ScaleF(16.0f);
+            float pillY = lineY + (lineH - pillH) / 2.0f;
+            D2D1_RECT_F rcPill = D2D1::RectF(pillX, pillY, pillX + pillW, pillY + pillH);
+            D2D1_ROUNDED_RECT rrcPill = D2D1::RoundedRect(rcPill, 3.0f, 3.0f);
+
+            pRT->FillRoundedRectangle(rrcPill, theme.brushItemHover.Get());
+            pRT->DrawRoundedRectangle(rrcPill, theme.brushBorderSubtle.Get(), 0.8f);
+
+            pRT->DrawText(L"...", 3, theme.fontMenuShortcut.Get(), rcPill, theme.brushTextMuted.Get());
         }
     }
 
-    // 4. Blinking Caret
-    if (m_caretVisible) {
+    // 4. Blinking Caret (Image 5: High-contrast in both Dark and Light modes!)
+    if (m_caretVisible && foundCursorVisual && visualCursorIdx >= doc.scrollLine) {
         float caretX = codeLeft + cursor.col * charW;
-        float caretY = topY + config.ScaleF(6.0f) + cursor.line * lineH;
+        float caretY = topY + config.ScaleF(6.0f) + (visualCursorIdx - doc.scrollLine) * lineH;
         if (caretY >= topY && caretY + lineH <= clientHeight) {
+            // In Light Mode: #1E1E1E Deep Black/Charcoal. In Dark Mode: #FFFFFF Pure White.
+            ID2D1Brush* caretBrush = theme.IsDarkMode()
+                ? theme.brushTextWhite.Get()
+                : (theme.brushTextPrimary ? theme.brushTextPrimary.Get() : theme.brushHeaderIcon.Get());
+
             pRT->DrawLine(
                 D2D1::Point2F(caretX, caretY + config.ScaleF(2.0f)),
                 D2D1::Point2F(caretX, caretY + lineH - config.ScaleF(2.0f)),
-                theme.brushTextWhite.Get(),
-                1.5f
+                caretBrush,
+                2.0f // Crisp 2.0px stroke
             );
         }
     }
 
     pRT->PopAxisAlignedClip();
+
+    // 5. Vertical Scrollbar on Right Edge (Image 1: Smooth scrolling support!)
+    doc.scrollbarTrack = D2D1::RectF(canvasRight - scrollbarW, topY, canvasRight, clientHeight);
+    if (visualLines.size() > visibleCount) {
+        float thumbH = (std::max)(config.ScaleF(28.0f), codeAreaH * (static_cast<float>(visibleCount) / visualLines.size()));
+        float scrollRange = codeAreaH - thumbH;
+        float scrollFrac = (visualLines.size() > visibleCount)
+            ? (static_cast<float>(doc.scrollLine) / static_cast<float>(visualLines.size() - visibleCount))
+            : 0.0f;
+        float thumbY = topY + scrollRange * scrollFrac;
+
+        doc.scrollbarThumb = D2D1::RectF(
+            canvasRight - scrollbarW + config.ScaleF(3.0f),
+            thumbY,
+            canvasRight - config.ScaleF(3.0f),
+            thumbY + thumbH
+        );
+
+        D2D1_ROUNDED_RECT rrcThumb = D2D1::RoundedRect(doc.scrollbarThumb, 3.5f, 3.5f);
+        // Scrollbar thumb brush: subtle semi-transparent pill that deepens when dragging
+        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushThumb;
+        if (theme.IsDarkMode()) {
+            float alpha = doc.isDraggingScrollbar ? 0.85f : 0.50f;
+            pRT->CreateSolidColorBrush(D2D1::ColorF(0.40f, 0.40f, 0.44f, alpha), &brushThumb);
+        } else {
+            float alpha = doc.isDraggingScrollbar ? 0.85f : 0.50f;
+            pRT->CreateSolidColorBrush(D2D1::ColorF(0.55f, 0.55f, 0.60f, alpha), &brushThumb);
+        }
+        if (brushThumb) {
+            pRT->FillRoundedRectangle(rrcThumb, brushThumb.Get());
+        }
+    } else {
+        doc.scrollbarThumb = D2D1::RectF(0.0f, 0.0f, 0.0f, 0.0f);
+    }
 }
 
 int EditorCanvas::HitTestTab(POINT pt, const std::vector<editor::OpenDocument>& docs) const {
@@ -610,11 +894,37 @@ int EditorCanvas::HitTestTabClose(POINT pt, const std::vector<editor::OpenDocume
     return -1;
 }
 
-bool EditorCanvas::HitTestCodeArea(POINT pt, const app::AppConfig& config, const editor::Buffer& buffer,
+bool EditorCanvas::HitTestScrollbar(POINT pt, const editor::OpenDocument& doc, bool& outHitThumb) const {
+    outHitThumb = false;
+    if (doc.scrollbarTrack.right > doc.scrollbarTrack.left) {
+        if (pt.x >= doc.scrollbarTrack.left && pt.x <= doc.scrollbarTrack.right &&
+            pt.y >= doc.scrollbarTrack.top && pt.y <= doc.scrollbarTrack.bottom) {
+            if (pt.x >= doc.scrollbarThumb.left && pt.x <= doc.scrollbarThumb.right &&
+                pt.y >= doc.scrollbarThumb.top && pt.y <= doc.scrollbarThumb.bottom) {
+                outHitThumb = true;
+            }
+            return true;
+        }
+    }
+    return false;
+}
+
+int EditorCanvas::HitTestFoldChevron(POINT pt) const {
+    for (const auto& hit : m_foldChevrons) {
+        if (pt.x >= hit.bounds.left - 4 && pt.x <= hit.bounds.right + 4 &&
+            pt.y >= hit.bounds.top - 2 && pt.y <= hit.bounds.bottom + 2) {
+            return static_cast<int>(hit.bufferLine);
+        }
+    }
+    return -1;
+}
+
+bool EditorCanvas::HitTestCodeArea(POINT pt, const app::AppConfig& config, const editor::OpenDocument& doc,
                                    float canvasLeft, float clientHeight, size_t& outLine, size_t& outCol) const {
     const float headerH = config.ScaleF(static_cast<float>(config.headerHeight));
     const float tabH    = config.ScaleF(34.0f);
-    const float topY    = headerH + tabH;
+    const float breadcrumbH = config.ScaleF(24.0f);
+    const float topY    = headerH + tabH + breadcrumbH;
     const float gutterW = config.ScaleF(50.0f);
     const float lineH   = config.ScaleF(20.0f);
     const float charW   = config.ScaleF(7.8f);
@@ -625,21 +935,43 @@ bool EditorCanvas::HitTestCodeArea(POINT pt, const app::AppConfig& config, const
 
     float relY = pt.y - (topY + config.ScaleF(6.0f));
     if (relY < 0.0f) relY = 0.0f;
-    size_t line = static_cast<size_t>(relY / lineH);
+    size_t visualSlot = doc.scrollLine + static_cast<size_t>(relY / lineH);
+
+    // Map visual slot back to buffer line taking fold state into account
+    auto& buffer = doc.buffer;
+    size_t totalBufLines = buffer.GetLineCount();
+    size_t curVisual = 0;
+    size_t mappedLine = 0;
+
+    for (size_t b = 0; b < totalBufLines; ++b) {
+        size_t foldEnd = 0;
+        bool canFold = GetFoldRange(buffer, b, foldEnd);
+        bool isFolded = canFold && (doc.foldedLines.count(b) > 0);
+
+        if (curVisual == visualSlot) {
+            mappedLine = b;
+            break;
+        }
+        curVisual++;
+        if (isFolded) {
+            b = foldEnd;
+        }
+        mappedLine = b;
+    }
 
     float relX = pt.x - (canvasLeft + gutterW + config.ScaleF(12.0f));
     if (relX < 0.0f) relX = 0.0f;
     size_t col = static_cast<size_t>((relX + charW * 0.5f) / charW);
 
-    if (line >= buffer.GetLineCount()) {
-        line = buffer.GetLineCount() > 0 ? buffer.GetLineCount() - 1 : 0;
+    if (mappedLine >= buffer.GetLineCount()) {
+        mappedLine = buffer.GetLineCount() > 0 ? buffer.GetLineCount() - 1 : 0;
     }
-    const auto& lineStr = buffer.GetLine(line);
+    const auto& lineStr = buffer.GetLine(mappedLine);
     if (col > lineStr.length()) {
         col = lineStr.length();
     }
 
-    outLine = line;
+    outLine = mappedLine;
     outCol  = col;
     return true;
 }

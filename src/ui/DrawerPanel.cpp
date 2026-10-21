@@ -348,10 +348,28 @@ void DrawerPanel::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCon
 
             curY += config.ScaleF(30.0f);
 
-            // Tree Items with Seti/Material Icons & Indentation Guidelines
+            // Clamp vertical scroll index to visible items bounds
             const float itemH = config.ScaleF(24.0f);
-            for (size_t i = 0; i < m_visibleItems.size(); ++i) {
+            const float availableTreeH = clientHeight - curY;
+            const size_t visibleSlots = (itemH > 0.0f) ? static_cast<size_t>(availableTreeH / itemH) : 10;
+            if (m_visibleItems.size() <= visibleSlots) {
+                m_scrollIndex = 0;
+            } else if (m_scrollIndex > m_visibleItems.size() - visibleSlots) {
+                m_scrollIndex = m_visibleItems.size() - visibleSlots;
+            }
+
+            // Invalidate bounds of scrolled-out items above viewport
+            for (size_t i = 0; i < m_scrollIndex; ++i) {
+                m_visibleItems[i].bounds = D2D1::RectF(0.0f, 0.0f, 0.0f, 0.0f);
+            }
+
+            // Tree Items with Seti/Material Icons & Indentation Guidelines
+            for (size_t i = m_scrollIndex; i < m_visibleItems.size(); ++i) {
                 auto& item = m_visibleItems[i];
+                if (curY + itemH > clientHeight) {
+                    item.bounds = D2D1::RectF(0.0f, 0.0f, 0.0f, 0.0f);
+                    continue;
+                }
                 item.bounds = D2D1::RectF(railW + config.ScaleF(4.0f), curY, railW + fullDrawerW - config.ScaleF(4.0f), curY + itemH);
 
                 bool isHovered = (m_hoveredIndex == static_cast<int>(i));
@@ -485,6 +503,23 @@ bool DrawerPanel::SetHoveredOpenFolderBtn(bool hovered) {
         return true;
     }
     return false;
+}
+
+bool DrawerPanel::HandleMouseWheel(short delta) {
+    if (m_visibleItems.empty()) return false;
+    size_t oldScroll = m_scrollIndex;
+    if (delta > 0) {
+        if (m_scrollIndex >= 2) {
+            m_scrollIndex -= 2;
+        } else {
+            m_scrollIndex = 0;
+        }
+    } else {
+        if (m_scrollIndex + 2 < m_visibleItems.size()) {
+            m_scrollIndex += 2;
+        }
+    }
+    return m_scrollIndex != oldScroll;
 }
 
 } // namespace phide::ui

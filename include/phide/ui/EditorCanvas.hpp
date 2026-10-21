@@ -55,10 +55,35 @@ public:
     [[nodiscard]] int HitTestTabClose(POINT pt, const std::vector<editor::OpenDocument>& docs) const;
 
     /**
+     * @brief Tests if mouse clicked on the vertical scrollbar track or thumb.
+     * @param pt Mouse point in client coordinates.
+     * @param doc Active document containing scrollbar geometry.
+     * @param outHitThumb Set to true if click was directly over the thumb pill.
+     * @return True if scrollbar was clicked.
+     */
+    [[nodiscard]] bool HitTestScrollbar(POINT pt, const editor::OpenDocument& doc, bool& outHitThumb) const;
+
+    /**
+     * @brief Tests if mouse clicked on a code folding chevron in the line number gutter.
+     * @param pt Mouse point in client coordinates.
+     * @return Buffer line index (0-based) of the fold toggle, or -1 if none hit.
+     */
+    [[nodiscard]] int HitTestFoldChevron(POINT pt) const;
+
+    /**
      * @brief Tests if mouse clicked inside the code area to position cursor.
      */
-    bool HitTestCodeArea(POINT pt, const app::AppConfig& config, const editor::Buffer& buffer,
+    bool HitTestCodeArea(POINT pt, const app::AppConfig& config, const editor::OpenDocument& doc,
                          float canvasLeft, float clientHeight, size_t& outLine, size_t& outCol) const;
+
+    /**
+     * @brief Computes whether a buffer line can be folded and returns its terminating line.
+     * @param buffer Active text buffer.
+     * @param startLine 0-based buffer line index to check.
+     * @param outEndLine Output line where the foldable region ends.
+     * @return True if startLine begins a foldable block.
+     */
+    static bool GetFoldRange(const editor::Buffer& buffer, size_t startLine, size_t& outEndLine);
 
     /**
      * @brief Accesses the embedded keyboard shortcuts interactive view.
@@ -119,19 +144,32 @@ private:
                     bool hasLeftDrawer);
 
     /**
-     * @brief Renders active buffer source lines, line gutter numbers, and syntax highlights.
+     * @brief Renders the breadcrumbs navigation bar displaying file hierarchy and icon (Image 4).
+     */
+    void RenderBreadcrumbs(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
+                           const editor::OpenDocument& doc, float canvasLeft, float canvasWidth,
+                           float barY, float barHeight);
+
+    /**
+     * @brief Renders active buffer source lines, line gutter numbers, fold chevrons, and syntax highlights.
      * @param pRT Active Direct2D render target.
      * @param theme Visual theme for syntax colors.
      * @param config Application metrics.
-     * @param buffer In-memory document buffer to render.
+     * @param doc Open document whose buffer and scroll/fold state are rendered.
      * @param canvasLeft Left boundary coordinate of the canvas.
      * @param canvasWidth Width of the canvas.
-     * @param topY Vertical starting coordinate below the tab bar.
+     * @param topY Vertical starting coordinate below the tab bar and breadcrumbs.
      * @param clientHeight Total client height.
      */
     void RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
-                    const editor::Buffer& buffer, float canvasLeft, float canvasWidth,
+                    editor::OpenDocument& doc, float canvasLeft, float canvasWidth,
                     float topY, float clientHeight);
+
+    struct FoldChevronHit {
+        D2D1_RECT_F bounds{};
+        size_t bufferLine = 0;
+    };
+    std::vector<FoldChevronHit> m_foldChevrons;
 };
 
 } // namespace phide::ui
