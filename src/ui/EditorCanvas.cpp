@@ -107,17 +107,17 @@ void EditorCanvas::DiscardDeviceResources() {
 }
 
 void EditorCanvas::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
-                          std::vector<editor::OpenDocument>& docs, int activeDocIdx,
+                          std::vector<editor::EditorGroup>& groups, int focusedGroupIdx,
                           float canvasLeft, float canvasWidth, float clientHeight,
                           bool hasLeftDrawer,
                           const std::wstring& highlightQuery,
                           bool highlightMatchCase,
                           bool highlightWholeWord,
-                          bool highlightUseRegex,
-                          bool isSplitView,
-                          int splitDocIdx,
-                          int focusedPane) {
+                          bool highlightUseRegex) {
     if (!pRT) return;
+    if (groups.empty()) {
+        groups.push_back(editor::EditorGroup{});
+    }
 
     const float headerH = config.ScaleF(static_cast<float>(config.headerHeight));
     const float canvasRight = canvasLeft + canvasWidth;
@@ -148,22 +148,12 @@ void EditorCanvas::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
                     const float maxR = (std::min)(canvasWidth / 2.0f, (clientHeight - headerH) / 2.0f);
                     const float r = (maxR > 0.0f) ? (std::min)(cornerRadius, maxR) : 0.0f;
 
-                    // 1. Begin at the top edge right after the upper-left rounded corner (or top-left if sharp)
                     sink->BeginFigure(D2D1::Point2F(canvasLeft + r, headerH), D2D1_FIGURE_BEGIN_FILLED);
-
-                    // 2. Top edge straight to top-right corner (SHARP - not curved)
                     sink->AddLine(D2D1::Point2F(canvasRight, headerH));
-
-                    // 3. Right edge straight down to bottom-right corner (SHARP - not curved)
                     sink->AddLine(D2D1::Point2F(canvasRight, clientHeight));
-
-                    // 4. Bottom edge straight to bottom-left corner (SHARP - not curved)
                     sink->AddLine(D2D1::Point2F(canvasLeft, clientHeight));
-
-                    // 5. Left edge straight up to start of the upper-left curve
                     sink->AddLine(D2D1::Point2F(canvasLeft, headerH + r));
 
-                    // 6. Arc around ONLY the upper-left corner when drawer is closed
                     if (r > 0.0f) {
                         D2D1_ARC_SEGMENT arc = {};
                         arc.point = D2D1::Point2F(canvasLeft + r, headerH);
@@ -191,35 +181,39 @@ void EditorCanvas::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
         pRT->FillRectangle(rcFallback, theme.brushCanvasBg.Get());
     }
 
-    if (docs.empty()) {
-        // When no file is open: render metallic watermark logo & keybinding cheat-sheet
-        RenderPlaceholder(pRT, theme, config, canvasLeft, canvasWidth, headerH, clientHeight);
-    } else if (isSplitView) {
-        // --- Side-by-Side Split Editor Mode (Image 4) ---
-        const float paneGap = 1.0f;
-        const float paneWidth = (canvasWidth - paneGap) / 2.0f;
+    size_t numGroups = groups.size();
+    const float paneGap = 1.0f;
+    const float totalGaps = (numGroups > 1) ? static_cast<float>(numGroups - 1) * paneGap : 0.0f;
+    const float paneWidth = (canvasWidth - totalGaps) / static_cast<float>(numGroups);
 
-        // 1. Render Left Editor Pane
-        RenderSinglePane(pRT, theme, config, docs, activeDocIdx, canvasLeft, paneWidth, headerH, clientHeight,
-                         hasLeftDrawer, (focusedPane == 0), highlightQuery, highlightMatchCase, highlightWholeWord, highlightUseRegex);
+    for (size_t g = 0; g < numGroups; ++g) {
+        float pLeft = canvasLeft + g * (paneWidth + paneGap);
+        float pWidth = (g == numGroups - 1) ? (canvasRight - pLeft) : paneWidth;
+        groups[g].bounds = D2D1::RectF(pLeft, headerH, pLeft + pWidth, clientHeight);
 
-        // 2. Vertical Divider Line (Image 4)
-        float dividerX = canvasLeft + paneWidth + 0.5f;
-        pRT->DrawLine(
-            D2D1::Point2F(dividerX, headerH),
-            D2D1::Point2F(dividerX, clientHeight),
-            theme.brushBorderSubtle.Get(),
-            1.0f
-        );
+        bool isGroupFocused = (static_cast<int>(g) == focusedGroupIdx);
+        bool isFirstPane = (g == 0);
 
-        // 3. Render Right Editor Pane
-        int rightDocIdx = (splitDocIdx >= 0 && splitDocIdx < static_cast<int>(docs.size())) ? splitDocIdx : activeDocIdx;
-        RenderSinglePane(pRT, theme, config, docs, rightDocIdx, canvasLeft + paneWidth + paneGap, paneWidth, headerH, clientHeight,
-                         true, (focusedPane == 1), highlightQuery, highlightMatchCase, highlightWholeWord, highlightUseRegex);
-    } else {
-        // --- Single Editor Pane ---
-        RenderSinglePane(pRT, theme, config, docs, activeDocIdx, canvasLeft, canvasWidth, headerH, clientHeight,
-                         hasLeftDrawer, true, highlightQuery, highlightMatchCase, highlightWholeWord, highlightUseRegex);
+        // Push clip rect for this editor group
+        pRT->PushAxisAlignedClip(groups[g].bounds, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+
+        RenderSinglePane(pRT, theme, config, groups[g].docs, groups[g].activeDocIdx,
+                         pLeft, pWidth, headerH, clientHeight,
+                         (isFirstPane ? hasLeftDrawer : true), isGroupFocused,
+                         highlightQuery, highlightMatchCase, highlightWholeWord, highlightUseRegex);
+
+        pRT->PopAxisAlignedClip();
+
+        // 1px Vertical divider line between panes (Image 4)
+        if (g < numGroups - 1) {
+            float dividerX = pLeft + pWidth + 0.5f;
+            pRT->DrawLine(
+                D2D1::Point2F(dividerX, headerH),
+                D2D1::Point2F(dividerX, clientHeight),
+                theme.brushBorderSubtle.Get(),
+                1.0f
+            );
+        }
     }
 }
 
@@ -231,15 +225,13 @@ void EditorCanvas::RenderSinglePane(ID2D1RenderTarget* pRT, Theme& theme, const 
                                     bool highlightMatchCase,
                                     bool highlightWholeWord,
                                     bool highlightUseRegex) {
-    (void)isPaneFocused;
     if (docs.empty() || docIdx < 0 || docIdx >= static_cast<int>(docs.size())) {
         RenderPlaceholder(pRT, theme, config, canvasLeft, canvasWidth, headerH, clientHeight);
         return;
     }
 
     const float tabH = config.ScaleF(34.0f);
-    bool isSplitRight = (canvasLeft > config.ScaleF(static_cast<float>(config.railWidth + config.drawerWidth)));
-    RenderTabs(pRT, theme, config, canvasLeft, canvasWidth, headerH, docs, docIdx, hasLeftDrawer, isSplitRight);
+    RenderTabs(pRT, theme, config, canvasLeft, canvasWidth, headerH, docs, docIdx, hasLeftDrawer, isPaneFocused);
 
     auto& activeDoc = docs[docIdx];
     const float breadcrumbH = config.ScaleF(24.0f);
@@ -253,7 +245,7 @@ void EditorCanvas::RenderSinglePane(ID2D1RenderTarget* pRT, Theme& theme, const 
     } else if (activeDoc.isUnsupportedBinary) {
         RenderUnsupportedBinaryView(pRT, theme, config, activeDoc, canvasLeft, canvasWidth, contentTopY, clientHeight);
     } else {
-        RenderCode(pRT, theme, config, activeDoc, canvasLeft, canvasWidth, contentTopY, clientHeight,
+        RenderCode(pRT, theme, config, activeDoc, canvasLeft, canvasWidth, contentTopY, clientHeight, isPaneFocused,
                    highlightQuery, highlightMatchCase, highlightWholeWord, highlightUseRegex);
     }
 }
@@ -348,7 +340,7 @@ void EditorCanvas::RenderPlaceholder(ID2D1RenderTarget* pRT, Theme& theme, const
 void EditorCanvas::RenderTabs(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
                               float canvasLeft, float canvasWidth, float headerH,
                               std::vector<editor::OpenDocument>& docs, int activeDocIdx,
-                              bool hasLeftDrawer, bool isSplitRight) {
+                              bool hasLeftDrawer, bool isFocused) {
     const float tabH = config.ScaleF(34.0f);
     const float cornerRadius = hasLeftDrawer ? 0.0f : config.ScaleF(14.0f);
 
@@ -397,46 +389,44 @@ void EditorCanvas::RenderTabs(ID2D1RenderTarget* pRT, Theme& theme, const app::A
         tabW = (std::clamp)(tabW, config.ScaleF(100.0f), config.ScaleF(220.0f));
 
         D2D1_RECT_F rcTab = D2D1::RectF(curX, headerH, curX + tabW, headerH + tabH);
-        if (isSplitRight) {
-            doc.splitTabBounds = rcTab;
-        } else {
-            doc.tabBounds = rcTab;
-        }
+        doc.tabBounds = rcTab;
 
         // Draw tab surface
         if (isActive) {
             FillUpperLeftRoundedRect(pRT, theme.brushTabActiveBg.Get(), rcTab, tabCurve);
-            // Top active tab highlight border (2px Accent Blue)
-            if (tabCurve > 0.0f) {
-                Microsoft::WRL::ComPtr<ID2D1Factory> pFactory;
-                pRT->GetFactory(&pFactory);
-                if (pFactory) {
-                    Microsoft::WRL::ComPtr<ID2D1PathGeometry> pTopPath;
-                    if (SUCCEEDED(pFactory->CreatePathGeometry(&pTopPath))) {
-                        Microsoft::WRL::ComPtr<ID2D1GeometrySink> sinkTop;
-                        if (SUCCEEDED(pTopPath->Open(&sinkTop))) {
-                            sinkTop->BeginFigure(D2D1::Point2F(rcTab.left + 0.5f, headerH + tabCurve), D2D1_FIGURE_BEGIN_HOLLOW);
-                            D2D1_ARC_SEGMENT arcTop{};
-                            arcTop.point = D2D1::Point2F(rcTab.left + tabCurve, headerH + 1.0f);
-                            arcTop.size = D2D1::SizeF(tabCurve, tabCurve);
-                            arcTop.rotationAngle = 0.0f;
-                            arcTop.sweepDirection = D2D1_SWEEP_DIRECTION_CLOCKWISE;
-                            arcTop.arcSize = D2D1_ARC_SIZE_SMALL;
-                            sinkTop->AddArc(arcTop);
-                            sinkTop->AddLine(D2D1::Point2F(rcTab.right, headerH + 1.0f));
-                            sinkTop->EndFigure(D2D1_FIGURE_END_OPEN);
-                            sinkTop->Close();
-                            pRT->DrawGeometry(pTopPath.Get(), theme.brushBrandAccent.Get(), 2.0f);
+            // Top active tab highlight border (2px Accent Blue) - ONLY on focused editor group!
+            if (isFocused) {
+                if (tabCurve > 0.0f) {
+                    Microsoft::WRL::ComPtr<ID2D1Factory> pFactory;
+                    pRT->GetFactory(&pFactory);
+                    if (pFactory) {
+                        Microsoft::WRL::ComPtr<ID2D1PathGeometry> pTopPath;
+                        if (SUCCEEDED(pFactory->CreatePathGeometry(&pTopPath))) {
+                            Microsoft::WRL::ComPtr<ID2D1GeometrySink> sinkTop;
+                            if (SUCCEEDED(pTopPath->Open(&sinkTop))) {
+                                sinkTop->BeginFigure(D2D1::Point2F(rcTab.left + 0.5f, headerH + tabCurve), D2D1_FIGURE_BEGIN_HOLLOW);
+                                D2D1_ARC_SEGMENT arcTop{};
+                                arcTop.point = D2D1::Point2F(rcTab.left + tabCurve, headerH + 1.0f);
+                                arcTop.size = D2D1::SizeF(tabCurve, tabCurve);
+                                arcTop.rotationAngle = 0.0f;
+                                arcTop.sweepDirection = D2D1_SWEEP_DIRECTION_CLOCKWISE;
+                                arcTop.arcSize = D2D1_ARC_SIZE_SMALL;
+                                sinkTop->AddArc(arcTop);
+                                sinkTop->AddLine(D2D1::Point2F(rcTab.right, headerH + 1.0f));
+                                sinkTop->EndFigure(D2D1_FIGURE_END_OPEN);
+                                sinkTop->Close();
+                                pRT->DrawGeometry(pTopPath.Get(), theme.brushBrandAccent.Get(), 2.0f);
+                            }
                         }
                     }
+                } else {
+                    pRT->DrawLine(
+                        D2D1::Point2F(rcTab.left, headerH + 1.0f),
+                        D2D1::Point2F(rcTab.right, headerH + 1.0f),
+                        theme.brushBrandAccent.Get(),
+                        2.0f
+                    );
                 }
-            } else {
-                pRT->DrawLine(
-                    D2D1::Point2F(rcTab.left, headerH + 1.0f),
-                    D2D1::Point2F(rcTab.right, headerH + 1.0f),
-                    theme.brushBrandAccent.Get(),
-                    2.0f
-                );
             }
         }
 
@@ -490,7 +480,7 @@ void EditorCanvas::RenderTabs(ID2D1RenderTarget* pRT, Theme& theme, const app::A
             (theme.fontTabPreview ? theme.fontTabPreview.Get() : theme.fontMenuItem.Get()) :
             (theme.fontTab ? theme.fontTab.Get() : theme.fontMenuItem.Get());
         ID2D1Brush* pTextBrush = isActive ? 
-            (theme.IsDarkMode() ? theme.brushTextWhite.Get() : theme.brushTextPrimary.Get()) :
+            (isFocused ? (theme.IsDarkMode() ? theme.brushTextWhite.Get() : theme.brushTextPrimary.Get()) : theme.brushTextSecondary.Get()) :
             theme.brushTextSecondary.Get();
 
         pRT->PushAxisAlignedClip(rcTitle, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
@@ -502,11 +492,7 @@ void EditorCanvas::RenderTabs(ID2D1RenderTarget* pRT, Theme& theme, const app::A
         const float closeX = rcTab.right - config.ScaleF(20.0f);
         const float closeY = headerH + (tabH - closeSize) / 2.0f;
         D2D1_RECT_F rcClose = D2D1::RectF(closeX, closeY, closeX + closeSize, closeY + closeSize);
-        if (isSplitRight) {
-            doc.splitCloseBounds = rcClose;
-        } else {
-            doc.closeBounds = rcClose;
-        }
+        doc.closeBounds = rcClose;
 
         // Dirty Circle Indicator: ONLY if doc.isDirty is true! (7px diameter)
         if (doc.isDirty) {
@@ -685,7 +671,7 @@ bool EditorCanvas::GetFoldRange(const editor::Buffer& buffer, size_t startLine, 
 
 void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
                               editor::OpenDocument& doc, float canvasLeft, float canvasWidth,
-                              float topY, float clientHeight,
+                              float topY, float clientHeight, bool isFocused,
                               const std::wstring& highlightQuery,
                               bool highlightMatchCase,
                               bool highlightWholeWord,
@@ -756,7 +742,7 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
         doc.scrollLine = maxScroll;
     }
 
-    // 2. Current Line Highlight
+    // 2. Current Line Highlight - Only rendered if this editor group is active/focused!
     auto cursor = buffer.GetCursor();
     size_t visualCursorIdx = 0;
     bool foundCursorVisual = false;
@@ -773,7 +759,7 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
         }
     }
 
-    if (foundCursorVisual && visualCursorIdx >= doc.scrollLine) {
+    if (isFocused && foundCursorVisual && visualCursorIdx >= doc.scrollLine) {
         float activeLineY = topY + config.ScaleF(6.0f) + (visualCursorIdx - doc.scrollLine) * lineH;
         if (activeLineY >= topY && activeLineY + lineH <= clientHeight) {
             D2D1_RECT_F rcActiveLine = D2D1::RectF(canvasLeft + gutterW, activeLineY, canvasRight - scrollbarW, activeLineY + lineH);
@@ -803,7 +789,7 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
             canvasLeft + gutterW - config.ScaleF(18.0f),
             lineY + lineH
         );
-        ID2D1Brush* numBrush = (vl.bufferLine == cursor.line) ? theme.brushTextPrimary.Get() : theme.brushLineNumber.Get();
+        ID2D1Brush* numBrush = (isFocused && vl.bufferLine == cursor.line) ? theme.brushTextPrimary.Get() : theme.brushLineNumber.Get();
         pRT->DrawText(
             lineNumStr.c_str(),
             static_cast<UINT32>(lineNumStr.length()),
@@ -976,8 +962,8 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
         }
     }
 
-    // 4. Blinking Caret (Image 5: High-contrast in both Dark and Light modes!)
-    if (m_caretVisible && foundCursorVisual && visualCursorIdx >= doc.scrollLine) {
+    // 4. Blinking Caret (Image 5: High-contrast in both Dark and Light modes!) - Only in focused group
+    if (isFocused && m_caretVisible && foundCursorVisual && visualCursorIdx >= doc.scrollLine) {
         float caretX = codeLeft + cursor.col * charW;
         float caretY = topY + config.ScaleF(6.0f) + (visualCursorIdx - doc.scrollLine) * lineH;
         if (caretY >= topY && caretY + lineH <= clientHeight) {
@@ -1032,9 +1018,9 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
     }
 }
 
-int EditorCanvas::HitTestTab(POINT pt, const std::vector<editor::OpenDocument>& docs, bool isSplitRight) const {
+int EditorCanvas::HitTestTab(POINT pt, const std::vector<editor::OpenDocument>& docs) const {
     for (size_t i = 0; i < docs.size(); ++i) {
-        const auto& b = isSplitRight ? docs[i].splitTabBounds : docs[i].tabBounds;
+        const auto& b = docs[i].tabBounds;
         if (pt.x >= b.left && pt.x <= b.right && pt.y >= b.top && pt.y <= b.bottom) {
             return static_cast<int>(i);
         }
@@ -1042,9 +1028,9 @@ int EditorCanvas::HitTestTab(POINT pt, const std::vector<editor::OpenDocument>& 
     return -1;
 }
 
-int EditorCanvas::HitTestTabClose(POINT pt, const std::vector<editor::OpenDocument>& docs, bool isSplitRight) const {
+int EditorCanvas::HitTestTabClose(POINT pt, const std::vector<editor::OpenDocument>& docs) const {
     for (size_t i = 0; i < docs.size(); ++i) {
-        const auto& b = isSplitRight ? docs[i].splitCloseBounds : docs[i].closeBounds;
+        const auto& b = docs[i].closeBounds;
         if (pt.x >= b.left - 4 && pt.x <= b.right + 4 && pt.y >= b.top - 4 && pt.y <= b.bottom + 4) {
             return static_cast<int>(i);
         }

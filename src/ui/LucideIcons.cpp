@@ -1007,7 +1007,8 @@ void LucideIcons::DrawSplitEditor(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bou
     const float cx = bounds.left + bw * 0.5f;
     const float cy = bounds.top + bh * 0.5f;
 
-    const float halfW = iconSize * 0.55f;
+    // Narrower width for compact, well-balanced split rectangle
+    const float halfW = iconSize * 0.38f;
     const float halfH = iconSize * 0.45f;
     D2D1_RECT_F rc = D2D1::RectF(cx - halfW, cy - halfH, cx + halfW, cy + halfH);
     D2D1_ROUNDED_RECT rrc = D2D1::RoundedRect(rc, 2.0f, 2.0f);

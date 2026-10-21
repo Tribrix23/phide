@@ -161,11 +161,6 @@ public:
      */
     bool SetHoveredSplitEditor(bool hovered) noexcept;
 
-    /**
-     * @brief Sets whether Split Editor mode is active.
-     */
-    void SetSplitActive(bool active) noexcept { m_isSplitActive = active; }
-    [[nodiscard]] bool IsSplitActive() const noexcept { return m_isSplitActive; }
     [[nodiscard]] D2D1_RECT_F GetSplitEditorBounds() const noexcept { return m_rcSplitEditor; }
 
     /**
@@ -199,7 +194,6 @@ private:
     // Split Editor control button (Image 3)
     D2D1_RECT_F m_rcSplitEditor{};
     bool m_hoveredSplitEditor = false;
-    bool m_isSplitActive = false;
 
     // Direct2D Purple Glass Gradient Brush and theme state cache
     Microsoft::WRL::ComPtr<ID2D1LinearGradientBrush> m_pHeaderGradientBrush;

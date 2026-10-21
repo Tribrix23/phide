@@ -86,21 +86,37 @@ private:
      */
     void ToggleSidebar();
 
-    // Multi-Document Life-cycle & Preview Tab Management
+    // Multi-Document Life-cycle & Multi-Group Management
+    editor::EditorGroup& GetActiveGroup() noexcept {
+        if (m_editorGroups.empty()) {
+            m_editorGroups.push_back(editor::EditorGroup{});
+        }
+        if (m_focusedGroupIdx < 0 || m_focusedGroupIdx >= static_cast<int>(m_editorGroups.size())) {
+            m_focusedGroupIdx = 0;
+        }
+        return m_editorGroups[m_focusedGroupIdx];
+    }
+
+    const editor::EditorGroup& GetActiveGroup() const noexcept {
+        static const editor::EditorGroup s_empty{};
+        if (m_editorGroups.empty()) return s_empty;
+        int idx = (m_focusedGroupIdx >= 0 && m_focusedGroupIdx < static_cast<int>(m_editorGroups.size()))
+            ? m_focusedGroupIdx : 0;
+        return m_editorGroups[idx];
+    }
+
     editor::OpenDocument* GetActiveDoc() noexcept {
-        int idx = (m_isSplitView && m_focusedPane == 1 && m_splitActiveDocIdx >= 0 && m_splitActiveDocIdx < static_cast<int>(m_openDocs.size()))
-            ? m_splitActiveDocIdx : m_activeDocIdx;
-        if (idx >= 0 && idx < static_cast<int>(m_openDocs.size())) {
-            return &m_openDocs[idx];
+        auto& group = GetActiveGroup();
+        if (group.activeDocIdx >= 0 && group.activeDocIdx < static_cast<int>(group.docs.size())) {
+            return &group.docs[group.activeDocIdx];
         }
         return nullptr;
     }
 
     const editor::OpenDocument* GetActiveDoc() const noexcept {
-        int idx = (m_isSplitView && m_focusedPane == 1 && m_splitActiveDocIdx >= 0 && m_splitActiveDocIdx < static_cast<int>(m_openDocs.size()))
-            ? m_splitActiveDocIdx : m_activeDocIdx;
-        if (idx >= 0 && idx < static_cast<int>(m_openDocs.size())) {
-            return &m_openDocs[idx];
+        const auto& group = GetActiveGroup();
+        if (group.activeDocIdx >= 0 && group.activeDocIdx < static_cast<int>(group.docs.size())) {
+            return &group.docs[group.activeDocIdx];
         }
         return nullptr;
     }
@@ -136,10 +152,24 @@ private:
     void OpenSpecialView(const std::wstring& viewType, const std::wstring& title);
 
     /**
-     * @brief Closes the open document at the given tab index.
+     * @brief Closes the open document at the given group and tab index.
+     * Auto-collapses the editor group if it becomes empty and multiple groups exist.
+     * @param groupIdx 0-based editor group index.
+     * @param docIdx 0-based document tab index inside that group.
+     */
+    void CloseDocument(int groupIdx, int docIdx);
+
+    /**
+     * @brief Closes the open document at the given tab index within the active group.
      * @param index 0-based document index to close.
      */
     void CloseDocument(int index);
+
+    /**
+     * @brief Splits the editor canvas into multiple side-by-side columns (up to 3).
+     * Clones only the currently active file into the new pane.
+     */
+    void SplitEditor();
 
     // --- File & Window Action Handlers ---
 
@@ -300,15 +330,10 @@ private:
     workspace::WorkspaceManager m_workspace;
     lsp::LspClient m_lsp;
 
-    // Open Documents Collection
-    std::vector<editor::OpenDocument> m_openDocs;
-    int m_activeDocIdx = -1;
+    // Multi-Editor Groups Architecture (Up to 3 columns)
+    std::vector<editor::EditorGroup> m_editorGroups;
+    int m_focusedGroupIdx = 0;
     int m_untitledCounter = 0;
-
-    // Split Editor State (Images 3 & 4)
-    bool m_isSplitView = false;
-    int m_splitActiveDocIdx = -1;
-    int m_focusedPane = 0; ///< 0 = Left Editor Pane, 1 = Right Editor Pane
 
     bool m_trackingMouse = false;
     bool m_wordWrap = false;

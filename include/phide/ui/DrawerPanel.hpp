@@ -15,6 +15,9 @@
 #include <string>
 #include <set>
 #include <filesystem>
+#include <mutex>
+#include <atomic>
+#include <thread>
 #include "phide/app/AppConfig.hpp"
 #include "phide/ui/Theme.hpp"
 #include "phide/ui/LucideIcons.hpp"
@@ -202,6 +205,7 @@ public:
         ExecuteSearch();
     }
     [[nodiscard]] const std::wstring& GetSearchQuery() const noexcept { return m_searchQuery; }
+    [[nodiscard]] const std::vector<SearchFileGroup>& GetSearchGroups() const noexcept { return m_searchGroups; }
     [[nodiscard]] int GetHoveredIndex() const noexcept { return m_hoveredIndex; }
     [[nodiscard]] bool GetMatchCase() const noexcept { return m_matchCase; }
     [[nodiscard]] bool GetMatchWholeWord() const noexcept { return m_matchWholeWord; }
@@ -256,9 +260,20 @@ public:
     bool HandleSearchMouseMove(POINT pt);
 
     /**
-     * @brief Executes recursive workspace file search matching current search query.
+     * @brief Manually clears previous search results and trims vector capacities (manual garbage collection).
      */
-    void ExecuteSearch();
+    void ClearSearchResults();
+
+    /**
+     * @brief Launches recursive workspace search on a background worker thread.
+     */
+    void LaunchAsyncSearch();
+
+    /**
+     * @brief Executes recursive workspace file search matching current search query.
+     * @param async If true, runs on a background worker thread; otherwise runs synchronously.
+     */
+    void ExecuteSearch(bool async = false);
 
     /**
      * @brief Replaces all matched occurrences across the workspace with the replace query.
@@ -305,10 +320,19 @@ private:
     size_t m_totalMatches = 0;
     size_t m_searchScrollIdx = 0;
 
-    // Search Throttler State (as requested, throttler rather than debouncer)
+    // Search Throttler State (rate-limits searches across intervals, flushes trailing queries)
     ULONGLONG m_lastSearchExecutionTime = 0;
-    ULONGLONG m_throttleIntervalMs = 250;
+    ULONGLONG m_lastKeystrokeTime = 0;
+    ULONGLONG m_throttleIntervalMs = 300;
     bool m_searchPending = false;
+
+    // Asynchronous Search Execution & Garbage Collection
+    std::mutex m_searchMutex;
+    std::atomic<uint32_t> m_searchGeneration{0};
+    std::atomic<bool> m_isSearching{false};
+    std::vector<SearchFileGroup> m_pendingSearchGroups;
+    size_t m_pendingTotalMatches = 0;
+    bool m_hasPendingResults = false;
 
     // Search Tooltip State
     std::wstring m_searchTooltipText;

@@ -39,6 +39,34 @@ public:
      * @param splitDocIdx Document index displayed in the secondary (right) split pane.
      * @param focusedPane Active pane receiving keyboard input (0 = Left, 1 = Right).
      */
+    /**
+     * @brief Renders the entire editor canvas supporting multi-column editor groups.
+     * @param pRT Active Direct2D render target.
+     * @param theme Visual theme.
+     * @param config Application config.
+     * @param groups List of active side-by-side editor groups.
+     * @param focusedGroupIdx 0-based index of the currently focused editor group.
+     * @param canvasLeft X coordinate where the editor canvas begins.
+     * @param canvasWidth Total width allocated for all editor groups.
+     * @param clientHeight Total client area height.
+     * @param hasLeftDrawer True if sidebar drawer is open.
+     * @param highlightQuery Search query for occurrences.
+     * @param highlightMatchCase Case sensitive.
+     * @param highlightWholeWord Whole word.
+     * @param highlightUseRegex Regex.
+     */
+    void Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
+                std::vector<editor::EditorGroup>& groups, int focusedGroupIdx,
+                float canvasLeft, float canvasWidth, float clientHeight,
+                bool hasLeftDrawer = false,
+                const std::wstring& highlightQuery = L"",
+                bool highlightMatchCase = false,
+                bool highlightWholeWord = false,
+                bool highlightUseRegex = false);
+
+    /**
+     * @brief Convenience overload for single-pane callers and unit tests.
+     */
     void Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
                 std::vector<editor::OpenDocument>& docs, int activeDocIdx,
                 float canvasLeft, float canvasWidth, float clientHeight,
@@ -46,10 +74,16 @@ public:
                 const std::wstring& highlightQuery = L"",
                 bool highlightMatchCase = false,
                 bool highlightWholeWord = false,
-                bool highlightUseRegex = false,
-                bool isSplitView = false,
-                int splitDocIdx = -1,
-                int focusedPane = 0);
+                bool highlightUseRegex = false) {
+        editor::EditorGroup g;
+        g.docs = docs;
+        g.activeDocIdx = activeDocIdx;
+        std::vector<editor::EditorGroup> groups;
+        groups.push_back(std::move(g));
+        Render(pRT, theme, config, groups, 0, canvasLeft, canvasWidth, clientHeight, hasLeftDrawer,
+               highlightQuery, highlightMatchCase, highlightWholeWord, highlightUseRegex);
+        docs = std::move(groups[0].docs);
+    }
 
     /**
      * @brief Toggles caret blink phase.
@@ -59,20 +93,18 @@ public:
     /**
      * @brief Tests if mouse clicked on any tab header.
      * @param pt Mouse point in client coordinates.
-     * @param docs Collection of open documents.
-     * @param isSplitRight True if testing tabs in secondary/right split pane.
+     * @param docs Collection of open documents in the target pane.
      * @return Tab index (0-based) or -1 if no tab hit.
      */
-    [[nodiscard]] int HitTestTab(POINT pt, const std::vector<editor::OpenDocument>& docs, bool isSplitRight = false) const;
+    [[nodiscard]] int HitTestTab(POINT pt, const std::vector<editor::OpenDocument>& docs) const;
 
     /**
      * @brief Tests if mouse clicked any tab's close button (×).
      * @param pt Mouse point in client coordinates.
-     * @param docs Collection of open documents.
-     * @param isSplitRight True if testing tabs in secondary/right split pane.
+     * @param docs Collection of open documents in the target pane.
      * @return Tab index (0-based) or -1 if no close button hit.
      */
-    [[nodiscard]] int HitTestTabClose(POINT pt, const std::vector<editor::OpenDocument>& docs, bool isSplitRight = false) const;
+    [[nodiscard]] int HitTestTabClose(POINT pt, const std::vector<editor::OpenDocument>& docs) const;
 
     /**
      * @brief Tests if mouse clicked on the vertical scrollbar track or thumb.
@@ -162,7 +194,7 @@ private:
     void RenderTabs(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
                     float canvasLeft, float canvasWidth, float headerH,
                     std::vector<editor::OpenDocument>& docs, int activeDocIdx,
-                    bool hasLeftDrawer, bool isSplitRight = false);
+                    bool hasLeftDrawer, bool isFocused);
 
     /**
      * @brief Renders the breadcrumbs navigation bar displaying file hierarchy and icon (Image 4).
@@ -218,7 +250,7 @@ private:
      */
     void RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
                     editor::OpenDocument& doc, float canvasLeft, float canvasWidth,
-                    float topY, float clientHeight,
+                    float topY, float clientHeight, bool isFocused,
                     const std::wstring& highlightQuery = L"",
                     bool highlightMatchCase = false,
                     bool highlightWholeWord = false,

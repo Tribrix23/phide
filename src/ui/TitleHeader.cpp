@@ -324,17 +324,14 @@ void TitleHeader::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCon
 
     // 4. Render Split Editor Button in Top-Right (Positioned between Run controls and Caption buttons)
     // As requested: In Dark Mode icon is white; in Light Mode icon is black!
-    const float splitW = config.ScaleF(28.0f);
+    const float splitW = config.ScaleF(26.0f);
     const float splitH = config.ScaleF(26.0f);
     const float splitX = rcExecContainer.right + config.ScaleF(14.0f);
     const float splitY = (h - splitH) / 2.0f;
     m_rcSplitEditor = D2D1::RectF(splitX, splitY, splitX + splitW, splitY + splitH);
 
     D2D1_ROUNDED_RECT rrcSplit = D2D1::RoundedRect(m_rcSplitEditor, 4.0f, 4.0f);
-    if (m_isSplitActive) {
-        pRT->FillRoundedRectangle(rrcSplit, theme.brushItemActive.Get());
-        pRT->DrawRoundedRectangle(rrcSplit, theme.brushBrandAccent.Get(), 1.0f);
-    } else if (m_hoveredSplitEditor) {
+    if (m_hoveredSplitEditor) {
         pRT->FillRoundedRectangle(rrcSplit, theme.brushItemHover.Get());
         pRT->DrawRoundedRectangle(rrcSplit, theme.brushBorderSubtle.Get(), 0.8f);
     }

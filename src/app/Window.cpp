@@ -188,7 +188,9 @@ static bool PromptInputDialog(HWND hParent, const std::wstring& title, const std
     return false;
 }
 
-Window::Window() = default;
+Window::Window() {
+    m_editorGroups.push_back(editor::EditorGroup{});
+}
 
 Window::~Window() {
     DiscardDeviceResources();
@@ -256,7 +258,7 @@ void Window::SaveSessionState() {
     out << L"  \"isSidebarOpen\": " << (m_config.isDrawerOpen ? L"true" : L"false") << L",\n";
     out << L"  \"activeRailTab\": " << m_config.activeRailTab << L",\n";
     out << L"  \"themeMode\": " << static_cast<int>(m_theme.GetThemeMode()) << L",\n";
-    out << L"  \"activeDocIdx\": " << m_activeDocIdx << L",\n";
+    out << L"  \"activeDocIdx\": " << GetActiveGroup().activeDocIdx << L",\n";
     if (m_drawer.HasOpenFolder()) {
         out << L"  \"lastOpenFolderPath\": \"" << EscapeJson(m_drawer.GetOpenFolderPath()) << L"\",\n";
     } else {
@@ -264,9 +266,11 @@ void Window::SaveSessionState() {
     }
     out << L"  \"openDocs\": [\n";
     size_t docCount = 0;
-    for (const auto& doc : m_openDocs) {
-        if (!doc.filePath.empty()) {
-            out << L"    \"" << EscapeJson(doc.filePath) << L"\"" << (++docCount < m_openDocs.size() ? L"," : L"") << L"\n";
+    for (const auto& grp : m_editorGroups) {
+        for (const auto& doc : grp.docs) {
+            if (!doc.filePath.empty()) {
+                out << L"    \"" << EscapeJson(doc.filePath) << L"\"" << (++docCount < 100 ? L"," : L"") << L"\n";
+            }
         }
     }
     out << L"  ],\n";
@@ -395,8 +399,8 @@ void Window::LoadSessionState() {
         }
     }
 
-    if (savedActiveDocIdx >= 0 && savedActiveDocIdx < static_cast<int>(m_openDocs.size())) {
-        m_activeDocIdx = savedActiveDocIdx;
+    if (savedActiveDocIdx >= 0 && savedActiveDocIdx < static_cast<int>(GetActiveGroup().docs.size())) {
+        GetActiveGroup().activeDocIdx = savedActiveDocIdx;
     }
 
     m_config.isDrawerOpen = isSidebarOpen;
@@ -413,23 +417,33 @@ void Window::ToggleSidebar() {
     SaveSessionState();
 }
 
-void Window::ToggleSplitEditor() {
-    m_isSplitView = !m_isSplitView;
-    m_header.SetSplitActive(m_isSplitView);
-    if (m_isSplitView) {
-        if (m_openDocs.size() >= 2) {
-            m_splitActiveDocIdx = (m_activeDocIdx == 0) ? 1 : 0;
-        } else if (m_openDocs.size() == 1) {
-            m_splitActiveDocIdx = m_activeDocIdx;
-        } else {
-            m_splitActiveDocIdx = -1;
-        }
-        m_focusedPane = 0;
+void Window::SplitEditor() {
+    if (m_editorGroups.size() >= 3) return; // Up to 3 columns
+
+    auto* curDoc = GetActiveDoc();
+    editor::EditorGroup newGroup;
+    if (curDoc) {
+        // Only clone the active file into the new group
+        newGroup.docs.push_back(*curDoc);
+        newGroup.activeDocIdx = 0;
+    } else {
+        newGroup.activeDocIdx = -1;
     }
+
+    size_t insertIdx = static_cast<size_t>(m_focusedGroupIdx + 1);
+    if (insertIdx > m_editorGroups.size()) insertIdx = m_editorGroups.size();
+    m_editorGroups.insert(m_editorGroups.begin() + insertIdx, std::move(newGroup));
+    m_focusedGroupIdx = static_cast<int>(insertIdx);
+
     InvalidateRect(m_hwnd, nullptr, FALSE);
 }
 
+void Window::ToggleSplitEditor() {
+    SplitEditor();
+}
+
 void Window::DoNewTextFile() {
+    auto& group = GetActiveGroup();
     editor::OpenDocument doc;
     m_untitledCounter++;
     doc.fileName = L"Untitled-" + std::to_wstring(m_untitledCounter);
@@ -440,8 +454,8 @@ void Window::DoNewTextFile() {
     doc.isSpecialView = false;
     doc.viewType.clear();
 
-    m_openDocs.push_back(std::move(doc));
-    m_activeDocIdx = static_cast<int>(m_openDocs.size() - 1);
+    group.docs.push_back(std::move(doc));
+    group.activeDocIdx = static_cast<int>(group.docs.size() - 1);
     SaveSessionState();
     InvalidateRect(m_hwnd, nullptr, FALSE);
 }
@@ -493,12 +507,14 @@ void Window::DoOpenFile() {
 void Window::OpenFileDocument(const std::wstring& path, bool isPreview) {
     if (path.empty()) return;
 
-    // 1. Check if document is already open
-    for (size_t i = 0; i < m_openDocs.size(); ++i) {
-        if (m_openDocs[i].filePath == path) {
-            m_activeDocIdx = static_cast<int>(i);
+    auto& group = GetActiveGroup();
+
+    // 1. Check if document is already open in active group
+    for (size_t i = 0; i < group.docs.size(); ++i) {
+        if (group.docs[i].filePath == path) {
+            group.activeDocIdx = static_cast<int>(i);
             if (!isPreview) {
-                m_openDocs[i].isPreview = false;
+                group.docs[i].isPreview = false;
             }
             SaveSessionState();
             InvalidateRect(m_hwnd, nullptr, FALSE);
@@ -508,10 +524,10 @@ void Window::OpenFileDocument(const std::wstring& path, bool isPreview) {
 
     // 2. Check if current active document can be replaced
     // VS Code Rule: a tab is replaced ONLY if it is a preview tab AND has NO unsaved edits (!isDirty) AND not a special view.
-    bool canReplace = (m_activeDocIdx >= 0 && m_activeDocIdx < static_cast<int>(m_openDocs.size()) &&
-                       m_openDocs[m_activeDocIdx].isPreview &&
-                       !m_openDocs[m_activeDocIdx].isDirty &&
-                       !m_openDocs[m_activeDocIdx].isSpecialView);
+    bool canReplace = (group.activeDocIdx >= 0 && group.activeDocIdx < static_cast<int>(group.docs.size()) &&
+                       group.docs[group.activeDocIdx].isPreview &&
+                       !group.docs[group.activeDocIdx].isDirty &&
+                       !group.docs[group.activeDocIdx].isSpecialView);
 
     // Check if file is a supported image (PNG, JPG, BMP, GIF, ICO, WEBP)
     std::wstring ext;
@@ -584,10 +600,10 @@ void Window::OpenFileDocument(const std::wstring& path, bool isPreview) {
     }
 
     if (canReplace) {
-        m_openDocs[m_activeDocIdx] = std::move(newDoc);
+        group.docs[group.activeDocIdx] = std::move(newDoc);
     } else {
-        m_openDocs.push_back(std::move(newDoc));
-        m_activeDocIdx = static_cast<int>(m_openDocs.size() - 1);
+        group.docs.push_back(std::move(newDoc));
+        group.activeDocIdx = static_cast<int>(group.docs.size() - 1);
     }
 
     // Add to recent paths
@@ -601,18 +617,19 @@ void Window::OpenFileDocument(const std::wstring& path, bool isPreview) {
 }
 
 void Window::OpenVirtualDocument(const std::wstring& name, const std::wstring& content, bool isPreview) {
-    for (size_t i = 0; i < m_openDocs.size(); ++i) {
-        if (m_openDocs[i].fileName == name && m_openDocs[i].filePath.empty()) {
-            m_activeDocIdx = static_cast<int>(i);
+    auto& group = GetActiveGroup();
+    for (size_t i = 0; i < group.docs.size(); ++i) {
+        if (group.docs[i].fileName == name && group.docs[i].filePath.empty()) {
+            group.activeDocIdx = static_cast<int>(i);
             InvalidateRect(m_hwnd, nullptr, FALSE);
             return;
         }
     }
 
-    bool canReplace = (m_activeDocIdx >= 0 && m_activeDocIdx < static_cast<int>(m_openDocs.size()) &&
-                       m_openDocs[m_activeDocIdx].isPreview &&
-                       !m_openDocs[m_activeDocIdx].isDirty &&
-                       !m_openDocs[m_activeDocIdx].isSpecialView);
+    bool canReplace = (group.activeDocIdx >= 0 && group.activeDocIdx < static_cast<int>(group.docs.size()) &&
+                       group.docs[group.activeDocIdx].isPreview &&
+                       !group.docs[group.activeDocIdx].isDirty &&
+                       !group.docs[group.activeDocIdx].isSpecialView);
 
     editor::OpenDocument newDoc;
     newDoc.fileName = name;
@@ -623,27 +640,28 @@ void Window::OpenVirtualDocument(const std::wstring& name, const std::wstring& c
     newDoc.isSpecialView = false;
 
     if (canReplace) {
-        m_openDocs[m_activeDocIdx] = std::move(newDoc);
+        group.docs[group.activeDocIdx] = std::move(newDoc);
     } else {
-        m_openDocs.push_back(std::move(newDoc));
-        m_activeDocIdx = static_cast<int>(m_openDocs.size() - 1);
+        group.docs.push_back(std::move(newDoc));
+        group.activeDocIdx = static_cast<int>(group.docs.size() - 1);
     }
     InvalidateRect(m_hwnd, nullptr, FALSE);
 }
 
 void Window::OpenSpecialView(const std::wstring& viewType, const std::wstring& title) {
-    for (size_t i = 0; i < m_openDocs.size(); ++i) {
-        if (m_openDocs[i].isSpecialView && m_openDocs[i].viewType == viewType) {
-            m_activeDocIdx = static_cast<int>(i);
+    auto& group = GetActiveGroup();
+    for (size_t i = 0; i < group.docs.size(); ++i) {
+        if (group.docs[i].isSpecialView && group.docs[i].viewType == viewType) {
+            group.activeDocIdx = static_cast<int>(i);
             InvalidateRect(m_hwnd, nullptr, FALSE);
             return;
         }
     }
 
-    bool canReplace = (m_activeDocIdx >= 0 && m_activeDocIdx < static_cast<int>(m_openDocs.size()) &&
-                       m_openDocs[m_activeDocIdx].isPreview &&
-                       !m_openDocs[m_activeDocIdx].isDirty &&
-                       !m_openDocs[m_activeDocIdx].isSpecialView);
+    bool canReplace = (group.activeDocIdx >= 0 && group.activeDocIdx < static_cast<int>(group.docs.size()) &&
+                       group.docs[group.activeDocIdx].isPreview &&
+                       !group.docs[group.activeDocIdx].isDirty &&
+                       !group.docs[group.activeDocIdx].isSpecialView);
 
     editor::OpenDocument newDoc;
     newDoc.fileName = title;
@@ -654,42 +672,51 @@ void Window::OpenSpecialView(const std::wstring& viewType, const std::wstring& t
     newDoc.isDirty = false;
 
     if (canReplace) {
-        m_openDocs[m_activeDocIdx] = std::move(newDoc);
+        group.docs[group.activeDocIdx] = std::move(newDoc);
     } else {
-        m_openDocs.push_back(std::move(newDoc));
-        m_activeDocIdx = static_cast<int>(m_openDocs.size() - 1);
+        group.docs.push_back(std::move(newDoc));
+        group.activeDocIdx = static_cast<int>(group.docs.size() - 1);
     }
     InvalidateRect(m_hwnd, nullptr, FALSE);
 }
 
-void Window::CloseDocument(int index) {
-    if (index < 0 || index >= static_cast<int>(m_openDocs.size())) return;
+void Window::CloseDocument(int groupIdx, int docIdx) {
+    if (groupIdx < 0 || groupIdx >= static_cast<int>(m_editorGroups.size())) return;
+    auto& group = m_editorGroups[groupIdx];
+    if (docIdx < 0 || docIdx >= static_cast<int>(group.docs.size())) return;
 
-    if (!m_openDocs[index].filePath.empty()) {
-        m_lastClosedFilePath = m_openDocs[index].filePath;
+    if (!group.docs[docIdx].filePath.empty()) {
+        m_lastClosedFilePath = group.docs[docIdx].filePath;
     }
 
-    m_openDocs.erase(m_openDocs.begin() + index);
+    group.docs.erase(group.docs.begin() + docIdx);
 
-    if (m_openDocs.empty()) {
-        m_activeDocIdx = -1;
-        m_splitActiveDocIdx = -1;
-    } else {
-        if (m_activeDocIdx >= static_cast<int>(m_openDocs.size())) {
-            m_activeDocIdx = static_cast<int>(m_openDocs.size() - 1);
-        } else if (index < m_activeDocIdx) {
-            m_activeDocIdx--;
+    if (group.docs.empty()) {
+        // Auto-collapse this editor group if multiple groups exist
+        if (m_editorGroups.size() > 1) {
+            m_editorGroups.erase(m_editorGroups.begin() + groupIdx);
+            if (m_focusedGroupIdx >= static_cast<int>(m_editorGroups.size())) {
+                m_focusedGroupIdx = static_cast<int>(m_editorGroups.size()) - 1;
+            } else if (groupIdx < m_focusedGroupIdx) {
+                m_focusedGroupIdx--;
+            }
+        } else {
+            group.activeDocIdx = -1;
         }
-
-        if (m_splitActiveDocIdx >= static_cast<int>(m_openDocs.size())) {
-            m_splitActiveDocIdx = static_cast<int>(m_openDocs.size() - 1);
-        } else if (index < m_splitActiveDocIdx) {
-            m_splitActiveDocIdx--;
+    } else {
+        if (group.activeDocIdx >= static_cast<int>(group.docs.size())) {
+            group.activeDocIdx = static_cast<int>(group.docs.size() - 1);
+        } else if (docIdx < group.activeDocIdx) {
+            group.activeDocIdx--;
         }
     }
 
     SaveSessionState();
     InvalidateRect(m_hwnd, nullptr, FALSE);
+}
+
+void Window::CloseDocument(int index) {
+    CloseDocument(m_focusedGroupIdx, index);
 }
 
 void Window::DoOpenFolder() {
@@ -819,10 +846,12 @@ void Window::DoSaveFileAs() {
 }
 
 void Window::DoSaveAll() {
-    for (auto& doc : m_openDocs) {
-        if (doc.isDirty && !doc.filePath.empty()) {
-            doc.buffer.SaveToFile(doc.filePath);
-            doc.isDirty = false;
+    for (auto& group : m_editorGroups) {
+        for (auto& doc : group.docs) {
+            if (doc.isDirty && !doc.filePath.empty()) {
+                doc.buffer.SaveToFile(doc.filePath);
+                doc.isDirty = false;
+            }
         }
     }
     InvalidateRect(m_hwnd, nullptr, FALSE);
@@ -920,8 +949,9 @@ void Window::DoRevertFile() {
 }
 
 void Window::DoCloseEditor() {
-    if (m_activeDocIdx >= 0) {
-        CloseDocument(m_activeDocIdx);
+    auto& group = GetActiveGroup();
+    if (group.activeDocIdx >= 0) {
+        CloseDocument(m_focusedGroupIdx, group.activeDocIdx);
     }
 }
 
@@ -1420,10 +1450,9 @@ void Window::OnPaint() {
         hlUseRegex = m_drawer.GetUseRegex();
     }
 
-    m_editor.Render(m_pRenderTarget.Get(), m_theme, m_config, m_openDocs, m_activeDocIdx,
+    m_editor.Render(m_pRenderTarget.Get(), m_theme, m_config, m_editorGroups, m_focusedGroupIdx,
                     canvasLeft, canvasWidth, clientH, hasLeftDrawer,
-                    searchHL, hlMatchCase, hlWholeWord, hlUseRegex,
-                    m_isSplitView, m_splitActiveDocIdx, m_focusedPane);
+                    searchHL, hlMatchCase, hlWholeWord, hlUseRegex);
 
     // 2. Render Slide-out Drawer Panel (when visible or animating, with 14px rounded curve at top-left)
     if (hasLeftDrawer) {
@@ -1822,10 +1851,12 @@ void Window::HandleLButtonDown(POINT clientPt) {
                             if (MessageBoxW(m_hwnd, confirmMsg.c_str(), L"Confirm Delete", MB_YESNO | MB_ICONWARNING) == IDYES) {
                                 std::error_code ec;
                                 std::filesystem::remove_all(m_contextTargetPath, ec);
-                                for (int i = 0; i < static_cast<int>(m_openDocs.size()); ++i) {
-                                    if (m_openDocs[i].filePath == m_contextTargetPath) {
-                                        CloseDocument(i);
-                                        break;
+                                for (size_t g = 0; g < m_editorGroups.size(); ++g) {
+                                    for (int i = 0; i < static_cast<int>(m_editorGroups[g].docs.size()); ++i) {
+                                        if (m_editorGroups[g].docs[i].filePath == m_contextTargetPath) {
+                                            CloseDocument(static_cast<int>(g), i);
+                                            break;
+                                        }
                                     }
                                 }
                                 m_drawer.RefreshTree();
@@ -1936,46 +1967,120 @@ void Window::HandleLButtonDown(POINT clientPt) {
         return;
     }
 
-    // 3b. Split Editor Button Click (toggles side-by-side split view, Images 3 & 4)
+    // 3b. Split Editor Button Click (splits editor up to 3 columns)
     if (m_header.HitTestSplitEditor(clientPt)) {
-        ToggleSplitEditor();
+        SplitEditor();
         return;
     }
 
-    // Determine if mouse is in the Right pane when Split View is active
     const int railW = m_config.Scale(m_config.railWidth);
     const int drawerW = static_cast<int>(m_config.Scale(m_config.drawerWidth) * m_drawerAnimProgress);
     const float canvasLeft = static_cast<float>(railW + drawerW);
+    const float headerH = m_config.ScaleF(static_cast<float>(m_config.headerHeight));
     RECT clientRc;
     GetClientRect(m_hwnd, &clientRc);
     const float canvasWidth = static_cast<float>(clientRc.right) - canvasLeft;
-    bool isSplitRight = false;
-    if (m_isSplitView && canvasWidth > 10.0f) {
-        float paneW = (canvasWidth - 1.0f) / 2.0f;
-        if (clientPt.x >= canvasLeft + paneW) {
-            isSplitRight = true;
-        }
-    }
+    const float clientH = static_cast<float>(clientRc.bottom - clientRc.top);
 
-    // 4. Tab Close Button Click (closes clicked editor tab)
-    int closeIdx = m_editor.HitTestTabClose(clientPt, m_openDocs, isSplitRight);
-    if (closeIdx >= 0) {
-        CloseDocument(closeIdx);
-        return;
-    }
-
-    // 4b. Tab Header Click (switches active tab)
-    int tabHitIdx = m_editor.HitTestTab(clientPt, m_openDocs, isSplitRight);
-    if (tabHitIdx >= 0) {
-        if (m_isSplitView && isSplitRight) {
-            m_splitActiveDocIdx = tabHitIdx;
-            m_focusedPane = 1;
-        } else {
-            m_activeDocIdx = tabHitIdx;
-            m_focusedPane = 0;
+    // 4. Editor Canvas Clicks (Multi-Editor Groups aware)
+    if (clientPt.x >= canvasLeft && clientPt.y >= headerH && !m_editorGroups.empty() && canvasWidth > 10.0f) {
+        size_t numGroups = m_editorGroups.size();
+        float paneW = canvasWidth / numGroups;
+        int targetGroup = -1;
+        for (size_t g = 0; g < numGroups; ++g) {
+            float pLeft = canvasLeft + g * paneW;
+            float pRight = pLeft + paneW;
+            if (clientPt.x >= pLeft && (clientPt.x < pRight || g == numGroups - 1)) {
+                targetGroup = static_cast<int>(g);
+                break;
+            }
         }
-        InvalidateRect(m_hwnd, nullptr, FALSE);
-        return;
+
+        if (targetGroup >= 0) {
+            m_focusedGroupIdx = targetGroup;
+            auto& group = m_editorGroups[targetGroup];
+
+            // 4a. Tab Close Button Click in this group
+            int closeIdx = m_editor.HitTestTabClose(clientPt, group.docs);
+            if (closeIdx >= 0) {
+                CloseDocument(targetGroup, closeIdx);
+                return;
+            }
+
+            // 4b. Tab Header Click in this group
+            int tabHitIdx = m_editor.HitTestTab(clientPt, group.docs);
+            if (tabHitIdx >= 0) {
+                group.activeDocIdx = tabHitIdx;
+                InvalidateRect(m_hwnd, nullptr, FALSE);
+                return;
+            }
+
+            // 4c. Content interaction within this group's active document
+            if (group.activeDocIdx >= 0 && group.activeDocIdx < static_cast<int>(group.docs.size())) {
+                auto& doc = group.docs[group.activeDocIdx];
+                if (doc.isUnsupportedBinary) {
+                    const auto& btn = doc.unsupportedActionBtn;
+                    if (clientPt.x >= btn.left && clientPt.x <= btn.right &&
+                        clientPt.y >= btn.top && clientPt.y <= btn.bottom) {
+                        std::wstring param = L"/select,\"" + doc.filePath + L"\"";
+                        ShellExecuteW(nullptr, L"open", L"explorer.exe", param.c_str(), nullptr, SW_SHOW);
+                        return;
+                    }
+                    InvalidateRect(m_hwnd, nullptr, FALSE);
+                    return;
+                } else if (doc.isSpecialView && doc.viewType == L"keybindings") {
+                    if (m_editor.GetKeyboardShortcutsView().HandleLButtonDown(clientPt)) {
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
+                        return;
+                    }
+                } else {
+                    float paneCanvasLeft = canvasLeft + targetGroup * paneW;
+
+                    // Fold chevron click in gutter
+                    int foldLine = m_editor.HitTestFoldChevron(clientPt);
+                    if (foldLine >= 0) {
+                        size_t fl = static_cast<size_t>(foldLine);
+                        if (doc.foldedLines.count(fl)) {
+                            doc.foldedLines.erase(fl);
+                        } else {
+                            doc.foldedLines.insert(fl);
+                        }
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
+                        return;
+                    }
+
+                    // Vertical scrollbar click & drag
+                    bool hitThumb = false;
+                    if (m_editor.HitTestScrollbar(clientPt, doc, hitThumb)) {
+                        if (hitThumb) {
+                            doc.isDraggingScrollbar = true;
+                            doc.dragStartY = static_cast<float>(clientPt.y);
+                            doc.dragStartScrollLine = doc.scrollLine;
+                        } else {
+                            if (clientPt.y < doc.scrollbarThumb.top) {
+                                if (doc.scrollLine >= 10) doc.scrollLine -= 10;
+                                else doc.scrollLine = 0;
+                            } else if (clientPt.y > doc.scrollbarThumb.bottom) {
+                                doc.scrollLine += 10;
+                            }
+                        }
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
+                        return;
+                    }
+
+                    // Code Area click (positions caret)
+                    size_t line = 0, col = 0;
+                    if (m_editor.HitTestCodeArea(clientPt, m_config, doc, paneCanvasLeft, clientH, line, col)) {
+                        doc.buffer.SetCursor(line, col);
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
+                        return;
+                    }
+                }
+            }
+
+            InvalidateRect(m_hwnd, nullptr, FALSE);
+            return;
+        }
     }
 
     // 5. Handle inline tree rename commit on click outside
@@ -1987,10 +2092,12 @@ void Window::HandleLButtonDown(POINT clientPt) {
         }
         std::wstring oldPath, newPath;
         if (m_drawer.CommitInlineRename(oldPath, newPath)) {
-            for (auto& doc : m_openDocs) {
-                if (doc.filePath == oldPath) {
-                    doc.filePath = newPath;
-                    doc.fileName = std::filesystem::path(newPath).filename().wstring();
+            for (auto& group : m_editorGroups) {
+                for (auto& doc : group.docs) {
+                    if (doc.filePath == oldPath) {
+                        doc.filePath = newPath;
+                        doc.fileName = std::filesystem::path(newPath).filename().wstring();
+                    }
                 }
             }
         }
@@ -2047,83 +2154,6 @@ void Window::HandleLButtonDown(POINT clientPt) {
     // Unfocus drawer search input when clicking outside drawer
     m_drawer.SetSearchFocus(0);
 
-    // Focus pane if clicking inside Editor Canvas
-    if (clientPt.x >= canvasLeft && clientPt.y >= m_config.Scale(m_config.headerHeight)) {
-        if (m_isSplitView) {
-            m_focusedPane = isSplitRight ? 1 : 0;
-        }
-    }
-
-    // 6. Click inside Editor Area (sets cursor position, handles action button or keybindings)
-    auto* pDoc = GetActiveDoc();
-    if (pDoc) {
-        if (pDoc->isUnsupportedBinary) {
-            const auto& btn = pDoc->unsupportedActionBtn;
-            if (clientPt.x >= btn.left && clientPt.x <= btn.right &&
-                clientPt.y >= btn.top && clientPt.y <= btn.bottom) {
-                std::wstring param = L"/select,\"" + pDoc->filePath + L"\"";
-                ShellExecuteW(nullptr, L"open", L"explorer.exe", param.c_str(), nullptr, SW_SHOW);
-                return;
-            }
-            return;
-        } else if (pDoc->isSpecialView && pDoc->viewType == L"keybindings") {
-            if (m_editor.GetKeyboardShortcutsView().HandleLButtonDown(clientPt)) {
-                InvalidateRect(m_hwnd, nullptr, FALSE);
-                return;
-            }
-        } else {
-            RECT rc;
-            GetClientRect(m_hwnd, &rc);
-            float clientH = static_cast<float>(rc.bottom - rc.top);
-            float paneCanvasLeft = canvasLeft;
-            if (m_isSplitView && isSplitRight) {
-                float paneW = (canvasWidth - 1.0f) / 2.0f;
-                paneCanvasLeft = canvasLeft + paneW + 1.0f;
-            }
-
-            // 1. Check fold chevron click in the gutter (Images 2 & 3)
-            int foldLine = m_editor.HitTestFoldChevron(clientPt);
-            if (foldLine >= 0) {
-                size_t fl = static_cast<size_t>(foldLine);
-                if (pDoc->foldedLines.count(fl)) {
-                    pDoc->foldedLines.erase(fl);
-                } else {
-                    pDoc->foldedLines.insert(fl);
-                }
-                InvalidateRect(m_hwnd, nullptr, FALSE);
-                return;
-            }
-
-            // 2. Check vertical scrollbar click & drag (Image 1)
-            bool hitThumb = false;
-            if (m_editor.HitTestScrollbar(clientPt, *pDoc, hitThumb)) {
-                if (hitThumb) {
-                    pDoc->isDraggingScrollbar = true;
-                    pDoc->dragStartY = static_cast<float>(clientPt.y);
-                    pDoc->dragStartScrollLine = pDoc->scrollLine;
-                } else {
-                    // Clicked track above or below thumb -> jump page
-                    if (clientPt.y < pDoc->scrollbarThumb.top) {
-                        if (pDoc->scrollLine >= 10) pDoc->scrollLine -= 10;
-                        else pDoc->scrollLine = 0;
-                    } else if (clientPt.y > pDoc->scrollbarThumb.bottom) {
-                        pDoc->scrollLine += 10;
-                    }
-                }
-                InvalidateRect(m_hwnd, nullptr, FALSE);
-                return;
-            }
-
-            // 3. Code Area click
-            size_t line = 0, col = 0;
-            if (m_editor.HitTestCodeArea(clientPt, m_config, *pDoc, paneCanvasLeft, clientH, line, col)) {
-                pDoc->buffer.SetCursor(line, col);
-                InvalidateRect(m_hwnd, nullptr, FALSE);
-                return;
-            }
-        }
-    }
-
     // 7. Activity Rail Clicks (Files, Search, Git, Debug, Extensions)
     auto railHit = m_rail.HitTest(clientPt);
     if (railHit != ui::RailTabId::None) {
@@ -2147,8 +2177,10 @@ void Window::HandleLButtonDown(POINT clientPt) {
 
 void Window::HandleLButtonUp(POINT clientPt) {
     (void)clientPt;
-    for (auto& doc : m_openDocs) {
-        doc.isDraggingScrollbar = false;
+    for (auto& group : m_editorGroups) {
+        for (auto& doc : group.docs) {
+            doc.isDraggingScrollbar = false;
+        }
     }
 }
 
@@ -2197,12 +2229,17 @@ void Window::HandleRButtonDown(POINT clientPt) {
 
     // 2. Right-click inside Editor Tab Bar or Canvas
     if (clientPt.x >= railW + drawerW && clientPt.y >= headerH) {
-        int tabHit = m_editor.HitTestTab(clientPt, m_openDocs);
         std::wstring targetPath;
-        if (tabHit >= 0 && tabHit < static_cast<int>(m_openDocs.size())) {
-            targetPath = m_openDocs[tabHit].filePath;
-        } else if (m_activeDocIdx >= 0 && m_activeDocIdx < static_cast<int>(m_openDocs.size())) {
-            targetPath = m_openDocs[m_activeDocIdx].filePath;
+        for (const auto& grp : m_editorGroups) {
+            int tabHit = m_editor.HitTestTab(clientPt, grp.docs);
+            if (tabHit >= 0 && tabHit < static_cast<int>(grp.docs.size())) {
+                targetPath = grp.docs[tabHit].filePath;
+                break;
+            }
+        }
+        if (targetPath.empty()) {
+            auto* pDoc = GetActiveDoc();
+            if (pDoc) targetPath = pDoc->filePath;
         }
 
         if (!targetPath.empty() && std::filesystem::exists(targetPath)) {
@@ -2268,9 +2305,14 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 }
 
                 // Tab bar close buttons or folding chevrons
-                if (m_editor.HitTestTabClose(pt, m_openDocs, false) >= 0 ||
-                    (m_isSplitView && m_editor.HitTestTabClose(pt, m_openDocs, true) >= 0) ||
-                    m_editor.HitTestFoldChevron(pt) >= 0) {
+                bool hitTabClose = false;
+                for (const auto& grp : m_editorGroups) {
+                    if (m_editor.HitTestTabClose(pt, grp.docs) >= 0) {
+                        hitTabClose = true;
+                        break;
+                    }
+                }
+                if (hitTabClose || m_editor.HitTestFoldChevron(pt) >= 0) {
                     SetCursor(LoadCursor(nullptr, IDC_HAND));
                     return TRUE;
                 }
@@ -2371,23 +2413,27 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
             }
 
             // 2. Scroll Editor Canvas
-            auto* pDoc = GetActiveDoc();
-            if (m_isSplitView) {
-                RECT rcClient;
-                GetClientRect(m_hwnd, &rcClient);
-                float canvasW = static_cast<float>(rcClient.right - rcClient.left) - (railW + drawerW);
-                if (canvasW > 10.0f) {
-                    float paneW = (canvasW - 1.0f) / 2.0f;
-                    if (pt.x >= (railW + drawerW) + paneW) {
-                        if (m_splitActiveDocIdx >= 0 && m_splitActiveDocIdx < static_cast<int>(m_openDocs.size())) {
-                            pDoc = &m_openDocs[m_splitActiveDocIdx];
+            editor::OpenDocument* pDoc = nullptr;
+            float canvasLeft = railW + drawerW;
+            RECT rcClient;
+            GetClientRect(m_hwnd, &rcClient);
+            float canvasW = static_cast<float>(rcClient.right - rcClient.left) - canvasLeft;
+            if (canvasW > 10.0f && !m_editorGroups.empty()) {
+                float paneW = canvasW / m_editorGroups.size();
+                for (size_t g = 0; g < m_editorGroups.size(); ++g) {
+                    float pLeft = canvasLeft + g * paneW;
+                    float pRight = pLeft + paneW;
+                    if (pt.x >= pLeft && pt.x < pRight) {
+                        auto& grp = m_editorGroups[g];
+                        if (grp.activeDocIdx >= 0 && grp.activeDocIdx < static_cast<int>(grp.docs.size())) {
+                            pDoc = &grp.docs[grp.activeDocIdx];
                         }
-                    } else {
-                        if (m_activeDocIdx >= 0 && m_activeDocIdx < static_cast<int>(m_openDocs.size())) {
-                            pDoc = &m_openDocs[m_activeDocIdx];
-                        }
+                        break;
                     }
                 }
+            }
+            if (!pDoc) {
+                pDoc = GetActiveDoc();
             }
             if (pDoc) {
                 if (pDoc->isSpecialView && pDoc->viewType == L"keybindings") {
@@ -2468,10 +2514,12 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 if (wParam == VK_RETURN) {
                     std::wstring oldPath, newPath;
                     if (m_drawer.CommitInlineRename(oldPath, newPath)) {
-                        for (auto& doc : m_openDocs) {
-                            if (doc.filePath == oldPath) {
-                                doc.filePath = newPath;
-                                doc.fileName = std::filesystem::path(newPath).filename().wstring();
+                        for (auto& group : m_editorGroups) {
+                            for (auto& doc : group.docs) {
+                                if (doc.filePath == oldPath) {
+                                    doc.filePath = newPath;
+                                    doc.fileName = std::filesystem::path(newPath).filename().wstring();
+                                }
                             }
                         }
                     }

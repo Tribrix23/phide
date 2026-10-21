@@ -56,4 +56,14 @@ struct OpenDocument {
     D2D1_RECT_F unsupportedActionBtn{};  ///< Bounding box of "Reveal in File Explorer" button
 };
 
+/**
+ * @struct EditorGroup
+ * @brief Manages an independent editor column/pane with its own list of open tabs and active document.
+ */
+struct EditorGroup {
+    std::vector<OpenDocument> docs;      ///< Independent list of document tabs open in this editor column
+    int activeDocIdx = -1;               ///< Index of the currently active document tab in this group
+    D2D1_RECT_F bounds{};                ///< Screen bounding rectangle of this editor pane
+};
+
 } // namespace phide::editor

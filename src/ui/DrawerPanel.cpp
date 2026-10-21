@@ -1172,32 +1172,53 @@ bool DrawerPanel::HitTestSearch(POINT pt, const app::AppConfig& config, std::wst
     return false;
 }
 
-void DrawerPanel::TriggerSearchThrottled(ULONGLONG nowMs) {
-    ULONGLONG now = (nowMs != 0) ? nowMs : GetTickCount64();
-    if (now - m_lastSearchExecutionTime >= m_throttleIntervalMs) {
-        ExecuteSearch();
-        m_lastSearchExecutionTime = now;
-        m_searchPending = false;
-    } else {
-        m_searchPending = true;
+void DrawerPanel::ClearSearchResults() {
+    for (auto& g : m_searchGroups) {
+        g.matches.clear();
+        g.matches.shrink_to_fit();
     }
+    m_searchGroups.clear();
+    m_searchGroups.shrink_to_fit();
+    m_totalMatches = 0;
+}
+
+void DrawerPanel::TriggerSearchThrottled(ULONGLONG nowMs) {
+    (void)nowMs;
+    m_searchPending = true;
+    m_lastKeystrokeTime = GetTickCount64();
 }
 
 bool DrawerPanel::PollSearchThrottle(ULONGLONG nowMs) {
-    if (m_searchPending && (nowMs - m_lastSearchExecutionTime >= m_throttleIntervalMs)) {
-        ExecuteSearch();
-        m_lastSearchExecutionTime = nowMs;
-        m_searchPending = false;
-        return true;
+    bool needRepaint = false;
+
+    // 1. Process pending throttled keystroke: only fire if user paused typing for 150ms and throttle interval elapsed
+    if (m_searchPending) {
+        if ((nowMs - m_lastKeystrokeTime >= 150) && (nowMs - m_lastSearchExecutionTime >= m_throttleIntervalMs)) {
+            m_searchPending = false;
+            m_lastSearchExecutionTime = nowMs;
+            LaunchAsyncSearch();
+        }
     }
-    return false;
+
+    // 2. Consume completed background results (thread-safe swap)
+    if (m_hasPendingResults) {
+        std::lock_guard<std::mutex> lock(m_searchMutex);
+        ClearSearchResults(); // Clean previous results and free memory
+        m_searchGroups = std::move(m_pendingSearchGroups);
+        m_totalMatches = m_pendingTotalMatches;
+        m_hasPendingResults = false;
+        needRepaint = true;
+    }
+
+    return needRepaint;
 }
 
 void DrawerPanel::HandleSearchChar(wchar_t ch) {
     if (m_focusedSearchInput == 1) {
         if (ch >= 32) {
             m_searchQuery.push_back(ch);
-            TriggerSearchThrottled();
+            m_searchPending = true;
+            m_lastKeystrokeTime = GetTickCount64();
         }
     } else if (m_focusedSearchInput == 2) {
         if (ch >= 32) {
@@ -1210,7 +1231,11 @@ void DrawerPanel::HandleSearchKeyDown(WPARAM wParam) {
     if (wParam == VK_BACK) {
         if (m_focusedSearchInput == 1 && !m_searchQuery.empty()) {
             m_searchQuery.pop_back();
-            TriggerSearchThrottled();
+            m_searchPending = true;
+            m_lastKeystrokeTime = GetTickCount64();
+            if (m_searchQuery.empty()) {
+                ClearSearchResults();
+            }
         } else if (m_focusedSearchInput == 2 && !m_replaceQuery.empty()) {
             m_replaceQuery.pop_back();
         }
@@ -1221,15 +1246,267 @@ void DrawerPanel::HandleSearchKeyDown(WPARAM wParam) {
     } else if (wParam == VK_ESCAPE) {
         m_focusedSearchInput = 0;
     } else if (wParam == VK_RETURN) {
-        ExecuteSearch();
-        m_lastSearchExecutionTime = GetTickCount64();
         m_searchPending = false;
+        m_lastSearchExecutionTime = GetTickCount64();
+        LaunchAsyncSearch();
     }
 }
 
-void DrawerPanel::ExecuteSearch() {
-    m_searchGroups.clear();
-    m_totalMatches = 0;
+void DrawerPanel::LaunchAsyncSearch() {
+    uint32_t thisGen = ++m_searchGeneration;
+
+    std::wstring query = m_searchQuery;
+    std::wstring rootFolder = m_openFolderPath;
+    bool matchCase = m_matchCase;
+    bool matchWord = m_matchWholeWord;
+    bool useRegex = m_useRegex;
+
+    if (query.empty() || rootFolder.empty() || !m_hasOpenFolder) {
+        std::lock_guard<std::mutex> lock(m_searchMutex);
+        for (auto& g : m_pendingSearchGroups) {
+            g.matches.clear();
+            g.matches.shrink_to_fit();
+        }
+        m_pendingSearchGroups.clear();
+        m_pendingSearchGroups.shrink_to_fit();
+        m_pendingTotalMatches = 0;
+        m_hasPendingResults = true;
+        return;
+    }
+
+    m_isSearching = true;
+
+    // Run file traversal in worker thread to prevent freezing the GUI thread!
+    std::thread([this, thisGen, query, rootFolder, matchCase, matchWord, useRegex]() {
+        std::vector<SearchFileGroup> groups;
+        size_t totalMatches = 0;
+        const size_t MAX_MATCHES_PER_FILE = 50;
+        const size_t MAX_TOTAL_MATCHES = 1000;
+
+        std::error_code ec;
+        std::filesystem::path root(rootFolder);
+
+        std::wregex regexPattern;
+        bool regexValid = false;
+        if (useRegex) {
+            try {
+                auto flags = std::regex_constants::ECMAScript;
+                if (!matchCase) flags |= std::regex_constants::icase;
+                regexPattern = std::wregex(query, flags);
+                regexValid = true;
+            } catch (...) {
+                regexValid = false;
+            }
+        }
+
+        std::wstring lowerQuery = query;
+        if (!matchCase) {
+            std::transform(lowerQuery.begin(), lowerQuery.end(), lowerQuery.begin(), ::towlower);
+        }
+
+        for (std::filesystem::recursive_directory_iterator it(root, std::filesystem::directory_options::skip_permission_denied, ec), end;
+             it != end; it.increment(ec)) {
+            // Check cancellation after every file
+            if (m_searchGeneration.load() != thisGen) {
+                return; // Newer search query has been typed; abort obsolete search immediately!
+            }
+
+            if (ec) {
+                ec.clear();
+                continue;
+            }
+
+            const auto& entry = *it;
+            auto filename = entry.path().filename().wstring();
+
+            // Skip hidden folders and files
+            if (!filename.empty() && filename[0] == L'.') {
+                if (entry.is_directory(ec)) it.disable_recursion_pending();
+                continue;
+            }
+
+            // Skip heavy folders
+            if (entry.is_directory(ec)) {
+                if (filename == L"node_modules" || filename == L"build" || filename == L"bin" ||
+                    filename == L"obj" || filename == L"target" || filename == L".git" ||
+                    filename == L"dist" || filename == L"out" || filename == L"vendor" ||
+                    filename == L".cache" || filename == L"tmp" || filename == L"temp" ||
+                    filename == L"coverage" || filename == L".next" || filename == L".nuxt") {
+                    it.disable_recursion_pending();
+                }
+                continue;
+            }
+
+            if (!entry.is_regular_file(ec)) continue;
+
+            // Skip binary extensions (video, images, executables, libraries, archives, audio, fonts)
+            auto ext = entry.path().extension().wstring();
+            for (auto& ch : ext) ch = towlower(ch);
+            if (ext == L".png" || ext == L".jpg" || ext == L".jpeg" || ext == L".gif" ||
+                ext == L".bmp" || ext == L".ico" || ext == L".webp" || ext == L".tiff" ||
+                ext == L".tif" || ext == L".psd" || ext == L".raw"  ||
+                ext == L".mp4" || ext == L".mkv" || ext == L".avi"  || ext == L".mov" ||
+                ext == L".wmv" || ext == L".flv" || ext == L".webm" || ext == L".mpg" ||
+                ext == L".mpeg"|| ext == L".m4v" || ext == L".3gp"  ||
+                ext == L".mp3" || ext == L".wav" || ext == L".ogg"  || ext == L".flac" ||
+                ext == L".aac" || ext == L".m4a" || ext == L".wma"  ||
+                ext == L".exe" || ext == L".dll" || ext == L".obj"  || ext == L".bin" ||
+                ext == L".lib" || ext == L".pdb" || ext == L".so"   || ext == L".dylib" ||
+                ext == L".sys" || ext == L".o"   || ext == L".a"    || ext == L".class" ||
+                ext == L".pyc" || ext == L".wasm"|| ext == L".zip"  || ext == L".rar" ||
+                ext == L".7z"  || ext == L".tar" || ext == L".gz"   || ext == L".iso" ||
+                ext == L".ttf" || ext == L".otf" || ext == L".woff" || ext == L".woff2") {
+                continue;
+            }
+
+            // Skip files > 2MB
+            auto fileSize = entry.file_size(ec);
+            if (ec || fileSize > 2 * 1024 * 1024) {
+                ec.clear();
+                continue;
+            }
+
+            // Inspect initial bytes for null characters
+            std::ifstream file(entry.path(), std::ios::binary);
+            if (!file.is_open()) continue;
+
+            char headerBuf[512];
+            file.read(headerBuf, sizeof(headerBuf));
+            std::streamsize bytesRead = file.gcount();
+            bool isBinary = false;
+            for (std::streamsize b = 0; b < bytesRead; ++b) {
+                if (headerBuf[b] == '\0') {
+                    isBinary = true;
+                    break;
+                }
+            }
+            if (isBinary) {
+                file.close();
+                continue;
+            }
+
+            file.clear();
+            file.seekg(0, std::ios::beg);
+            std::string content((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+            file.close();
+
+            if (content.find('\0') != std::string::npos) continue;
+
+            int wlen = MultiByteToWideChar(CP_UTF8, 0, content.c_str(), static_cast<int>(content.size()), nullptr, 0);
+            if (wlen <= 0) continue;
+            std::wstring wcontent(wlen, L'\0');
+            MultiByteToWideChar(CP_UTF8, 0, content.c_str(), static_cast<int>(content.size()), &wcontent[0], wlen);
+
+            SearchFileGroup group;
+            group.filePath = entry.path().wstring();
+            group.fileName = filename;
+            std::filesystem::path rel = std::filesystem::relative(entry.path().parent_path(), root, ec);
+            group.relDir = ec ? L"" : rel.wstring();
+            if (group.relDir == L".") group.relDir.clear();
+            group.isExpanded = true;
+
+            size_t lineIdx = 0;
+            size_t pos = 0;
+            while (pos < wcontent.size() && group.matches.size() < MAX_MATCHES_PER_FILE && totalMatches < MAX_TOTAL_MATCHES) {
+                if (m_searchGeneration.load() != thisGen) return;
+
+                size_t nextNL = wcontent.find(L'\n', pos);
+                if (nextNL == std::wstring::npos) nextNL = wcontent.size();
+
+                std::wstring lineStr = wcontent.substr(pos, nextNL - pos);
+                if (!lineStr.empty() && lineStr.back() == L'\r') lineStr.pop_back();
+
+                // Skip extremely long single-line files (e.g. minified single-line bundle > 30,000 chars)
+                if (lineStr.size() > 30000) {
+                    pos = nextNL + 1;
+                    lineIdx++;
+                    continue;
+                }
+
+                if (useRegex && regexValid) {
+                    std::wsregex_iterator regIt(lineStr.begin(), lineStr.end(), regexPattern);
+                    std::wsregex_iterator regEnd;
+                    for (; regIt != regEnd && group.matches.size() < MAX_MATCHES_PER_FILE && totalMatches < MAX_TOTAL_MATCHES; ++regIt) {
+                        size_t matchCol = static_cast<size_t>(regIt->position());
+                        size_t matchLen = static_cast<size_t>(regIt->length());
+
+                        // Generate compact snippet to prevent gigabytes of memory consumption
+                        size_t snipStart = (matchCol > 40) ? (matchCol - 40) : 0;
+                        size_t snipEnd = (std::min)(lineStr.size(), matchCol + matchLen + 80);
+
+                        SearchMatch match;
+                        match.lineIndex = lineIdx;
+                        match.lineText = lineStr.substr(snipStart, snipEnd - snipStart);
+                        match.matchCol = matchCol - snipStart;
+                        match.matchLen = matchLen;
+                        group.matches.push_back(std::move(match));
+                        totalMatches++;
+                    }
+                } else {
+                    std::wstring searchLine = lineStr;
+                    if (!matchCase) {
+                        std::transform(searchLine.begin(), searchLine.end(), searchLine.begin(), ::towlower);
+                    }
+
+                    size_t findPos = 0;
+                    while ((findPos = searchLine.find(lowerQuery, findPos)) != std::wstring::npos &&
+                           group.matches.size() < MAX_MATCHES_PER_FILE && totalMatches < MAX_TOTAL_MATCHES) {
+                        bool valid = true;
+                        if (matchWord) {
+                            if (findPos > 0) {
+                                wchar_t prev = searchLine[findPos - 1];
+                                if (iswalnum(prev) || prev == L'_') valid = false;
+                            }
+                            if (valid && (findPos + lowerQuery.size() < searchLine.size())) {
+                                wchar_t next = searchLine[findPos + lowerQuery.size()];
+                                if (iswalnum(next) || next == L'_') valid = false;
+                            }
+                        }
+
+                        if (valid) {
+                            size_t snipStart = (findPos > 40) ? (findPos - 40) : 0;
+                            size_t snipEnd = (std::min)(lineStr.size(), findPos + lowerQuery.size() + 80);
+
+                            SearchMatch match;
+                            match.lineIndex = lineIdx;
+                            match.lineText = lineStr.substr(snipStart, snipEnd - snipStart);
+                            match.matchCol = findPos - snipStart;
+                            match.matchLen = query.size();
+                            group.matches.push_back(std::move(match));
+                            totalMatches++;
+                        }
+                        findPos += (std::max)(size_t(1), lowerQuery.size());
+                    }
+                }
+
+                pos = nextNL + 1;
+                lineIdx++;
+            }
+
+            if (!group.matches.empty()) {
+                groups.push_back(std::move(group));
+            }
+
+            if (totalMatches >= MAX_TOTAL_MATCHES) break;
+        }
+
+        if (m_searchGeneration.load() == thisGen) {
+            std::lock_guard<std::mutex> lock(m_searchMutex);
+            m_pendingSearchGroups = std::move(groups);
+            m_pendingTotalMatches = totalMatches;
+            m_hasPendingResults = true;
+            m_isSearching = false;
+        }
+    }).detach();
+}
+
+void DrawerPanel::ExecuteSearch(bool async) {
+    if (async) {
+        LaunchAsyncSearch();
+        return;
+    }
+
+    ClearSearchResults();
     m_searchScrollIdx = 0;
     if (m_searchQuery.empty() || !m_hasOpenFolder || m_openFolderPath.empty()) {
         return;
@@ -1244,9 +1521,7 @@ void DrawerPanel::ExecuteSearch() {
     if (m_useRegex) {
         try {
             auto flags = std::regex_constants::ECMAScript;
-            if (!m_matchCase) {
-                flags |= std::regex_constants::icase;
-            }
+            if (!m_matchCase) flags |= std::regex_constants::icase;
             regexPattern = std::wregex(m_searchQuery, flags);
             regexValid = true;
         } catch (...) {
@@ -1258,6 +1533,9 @@ void DrawerPanel::ExecuteSearch() {
     if (!m_matchCase) {
         std::transform(lowerQuery.begin(), lowerQuery.end(), lowerQuery.begin(), ::towlower);
     }
+
+    const size_t MAX_MATCHES_PER_FILE = 50;
+    const size_t MAX_TOTAL_MATCHES = 1000;
 
     for (std::filesystem::recursive_directory_iterator it(root, std::filesystem::directory_options::skip_permission_denied, ec), end;
          it != end; it.increment(ec)) {
@@ -1271,15 +1549,16 @@ void DrawerPanel::ExecuteSearch() {
 
         // Skip hidden files/directories and common heavy folders
         if (!filename.empty() && filename[0] == L'.') {
-            if (entry.is_directory(ec)) {
-                it.disable_recursion_pending();
-            }
+            if (entry.is_directory(ec)) it.disable_recursion_pending();
             continue;
         }
 
         if (entry.is_directory(ec)) {
             if (filename == L"node_modules" || filename == L"build" || filename == L"bin" ||
-                filename == L"obj" || filename == L"target" || filename == L".git") {
+                filename == L"obj" || filename == L"target" || filename == L".git" ||
+                filename == L"dist" || filename == L"out" || filename == L"vendor" ||
+                filename == L".cache" || filename == L"tmp" || filename == L"temp" ||
+                filename == L"coverage" || filename == L".next" || filename == L".nuxt") {
                 it.disable_recursion_pending();
             }
             continue;
@@ -1287,7 +1566,7 @@ void DrawerPanel::ExecuteSearch() {
 
         if (!entry.is_regular_file(ec)) continue;
 
-        // Skip binary file extensions (video, images, executables, libraries, archives, audio, fonts)
+        // Skip binary file extensions
         auto ext = entry.path().extension().wstring();
         for (auto& ch : ext) ch = towlower(ch);
         if (ext == L".png" || ext == L".jpg" || ext == L".jpeg" || ext == L".gif" ||
@@ -1307,14 +1586,12 @@ void DrawerPanel::ExecuteSearch() {
             continue;
         }
 
-        // Skip large files (> 2MB)
         auto fileSize = entry.file_size(ec);
         if (ec || fileSize > 2 * 1024 * 1024) {
             ec.clear();
             continue;
         }
 
-        // Open and check initial bytes for binary null characters before loading full contents
         std::ifstream file(entry.path(), std::ios::binary);
         if (!file.is_open()) continue;
 
@@ -1333,13 +1610,11 @@ void DrawerPanel::ExecuteSearch() {
             continue;
         }
 
-        // Seek back to start and read full text content
         file.clear();
         file.seekg(0, std::ios::beg);
         std::string content((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
         file.close();
 
-        // Secondary verification: discard if null byte found in remaining bytes
         if (content.find('\0') != std::string::npos) continue;
 
         int wlen = MultiByteToWideChar(CP_UTF8, 0, content.c_str(), static_cast<int>(content.size()), nullptr, 0);
@@ -1357,25 +1632,36 @@ void DrawerPanel::ExecuteSearch() {
 
         size_t lineIdx = 0;
         size_t pos = 0;
-        while (pos < wcontent.size()) {
+        while (pos < wcontent.size() && group.matches.size() < MAX_MATCHES_PER_FILE && m_totalMatches < MAX_TOTAL_MATCHES) {
             size_t nextNL = wcontent.find(L'\n', pos);
             if (nextNL == std::wstring::npos) nextNL = wcontent.size();
 
             std::wstring lineStr = wcontent.substr(pos, nextNL - pos);
-            if (!lineStr.empty() && lineStr.back() == L'\r') {
-                lineStr.pop_back();
+            if (!lineStr.empty() && lineStr.back() == L'\r') lineStr.pop_back();
+
+            if (lineStr.size() > 30000) {
+                pos = nextNL + 1;
+                lineIdx++;
+                continue;
             }
 
             if (m_useRegex && regexValid) {
                 std::wsregex_iterator regIt(lineStr.begin(), lineStr.end(), regexPattern);
                 std::wsregex_iterator regEnd;
-                for (; regIt != regEnd; ++regIt) {
+                for (; regIt != regEnd && group.matches.size() < MAX_MATCHES_PER_FILE && m_totalMatches < MAX_TOTAL_MATCHES; ++regIt) {
+                    size_t matchCol = static_cast<size_t>(regIt->position());
+                    size_t matchLen = static_cast<size_t>(regIt->length());
+
+                    size_t snipStart = (matchCol > 40) ? (matchCol - 40) : 0;
+                    size_t snipEnd = (std::min)(lineStr.size(), matchCol + matchLen + 80);
+
                     SearchMatch match;
                     match.lineIndex = lineIdx;
-                    match.lineText = lineStr;
-                    match.matchCol = static_cast<size_t>(regIt->position());
-                    match.matchLen = static_cast<size_t>(regIt->length());
-                    group.matches.push_back(match);
+                    match.lineText = lineStr.substr(snipStart, snipEnd - snipStart);
+                    match.matchCol = matchCol - snipStart;
+                    match.matchLen = matchLen;
+                    group.matches.push_back(std::move(match));
+                    m_totalMatches++;
                 }
             } else {
                 std::wstring searchLine = lineStr;
@@ -1384,7 +1670,8 @@ void DrawerPanel::ExecuteSearch() {
                 }
 
                 size_t findPos = 0;
-                while ((findPos = searchLine.find(lowerQuery, findPos)) != std::wstring::npos) {
+                while ((findPos = searchLine.find(lowerQuery, findPos)) != std::wstring::npos &&
+                       group.matches.size() < MAX_MATCHES_PER_FILE && m_totalMatches < MAX_TOTAL_MATCHES) {
                     bool valid = true;
                     if (m_matchWholeWord) {
                         if (findPos > 0) {
@@ -1398,12 +1685,16 @@ void DrawerPanel::ExecuteSearch() {
                     }
 
                     if (valid) {
+                        size_t snipStart = (findPos > 40) ? (findPos - 40) : 0;
+                        size_t snipEnd = (std::min)(lineStr.size(), findPos + lowerQuery.size() + 80);
+
                         SearchMatch match;
                         match.lineIndex = lineIdx;
-                        match.lineText = lineStr;
-                        match.matchCol = findPos;
+                        match.lineText = lineStr.substr(snipStart, snipEnd - snipStart);
+                        match.matchCol = findPos - snipStart;
                         match.matchLen = m_searchQuery.size();
-                        group.matches.push_back(match);
+                        group.matches.push_back(std::move(match));
+                        m_totalMatches++;
                     }
                     findPos += (std::max)(size_t(1), lowerQuery.size());
                 }
@@ -1414,11 +1705,10 @@ void DrawerPanel::ExecuteSearch() {
         }
 
         if (!group.matches.empty()) {
-            m_totalMatches += group.matches.size();
             m_searchGroups.push_back(std::move(group));
         }
 
-        if (m_totalMatches >= 1000) break;
+        if (m_totalMatches >= MAX_TOTAL_MATCHES) break;
     }
 }
 

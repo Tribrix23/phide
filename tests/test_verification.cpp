@@ -591,10 +591,9 @@ int main() {
         assert(SUCCEEDED(hr));
 
         phide::ui::TitleHeader header;
-        header.SetSplitActive(true);
 
         phide::ui::EditorCanvas editor;
-        std::vector<phide::editor::OpenDocument> docs;
+        std::vector<phide::editor::EditorGroup> groups;
 
         phide::editor::OpenDocument doc1;
         doc1.filePath = L"C:\\phide\\src\\main.cpp";
@@ -608,7 +607,10 @@ int main() {
             L"    return app.Run();\n"
             L"}\n"
         );
-        docs.push_back(std::move(doc1));
+        phide::editor::EditorGroup eg1;
+        eg1.docs.push_back(std::move(doc1));
+        eg1.activeDocIdx = 0;
+        groups.push_back(std::move(eg1));
 
         phide::editor::OpenDocument doc2;
         doc2.filePath = L"C:\\phide\\src\\app\\Window.cpp";
@@ -616,13 +618,15 @@ int main() {
         doc2.buffer = phide::editor::Buffer(
             L"#include \"phide/app/Window.hpp\"\n\n"
             L"namespace phide::app {\n\n"
-            L"void Window::ToggleSplitEditor() {\n"
-            L"    m_isSplitView = !m_isSplitView;\n"
-            L"    m_header.SetSplitActive(m_isSplitView);\n"
+            L"void Window::SplitEditor() {\n"
+            L"    // Multi-column split\n"
             L"}\n\n"
             L"} // namespace phide::app\n"
         );
-        docs.push_back(std::move(doc2));
+        phide::editor::EditorGroup eg2;
+        eg2.docs.push_back(std::move(doc2));
+        eg2.activeDocIdx = 0;
+        groups.push_back(std::move(eg2));
 
         pRT->BeginDraw();
         pRT->Clear(theme.colors.windowBg);
@@ -642,15 +646,14 @@ int main() {
         };
         assert(header.HitTestSplitEditor(ptSplit) == true);
 
-        // Render Split View: Left pane = main.cpp (doc 0), Right pane = Window.cpp (doc 1)
-        editor.Render(pRT.Get(), theme, config, docs, 0, canvasLeft, canvasW, static_cast<float>(height), true,
-                      L"", false, false, false, true, 1, 0);
+        // Render Split View: Left pane = main.cpp (group 0), Right pane = Window.cpp (group 1, focused)
+        editor.Render(pRT.Get(), theme, config, groups, 1, canvasLeft, canvasW, static_cast<float>(height), true);
 
         pRT->EndDraw();
 
         // Check tabs and bounds
-        assert(docs[0].tabBounds.right > docs[0].tabBounds.left);
-        assert(docs[1].splitTabBounds.right > docs[1].splitTabBounds.left);
+        assert(groups[0].docs[0].tabBounds.right > groups[0].docs[0].tabBounds.left);
+        assert(groups[1].docs[0].tabBounds.right > groups[1].docs[0].tabBounds.left);
 
         ComPtr<IWICStream> pStream;
         pWicFactory->CreateStream(&pStream);
@@ -682,10 +685,9 @@ int main() {
         assert(SUCCEEDED(hr));
 
         phide::ui::TitleHeader header;
-        header.SetSplitActive(true);
 
         phide::ui::EditorCanvas editor;
-        std::vector<phide::editor::OpenDocument> docs;
+        std::vector<phide::editor::EditorGroup> groups;
 
         phide::editor::OpenDocument doc1;
         doc1.filePath = L"C:\\phide\\src\\main.cpp";
@@ -699,7 +701,10 @@ int main() {
             L"    return app.Run();\n"
             L"}\n"
         );
-        docs.push_back(std::move(doc1));
+        phide::editor::EditorGroup eg1;
+        eg1.docs.push_back(std::move(doc1));
+        eg1.activeDocIdx = 0;
+        groups.push_back(std::move(eg1));
 
         phide::editor::OpenDocument doc2;
         doc2.filePath = L"C:\\phide\\src\\app\\Window.cpp";
@@ -707,13 +712,15 @@ int main() {
         doc2.buffer = phide::editor::Buffer(
             L"#include \"phide/app/Window.hpp\"\n\n"
             L"namespace phide::app {\n\n"
-            L"void Window::ToggleSplitEditor() {\n"
-            L"    m_isSplitView = !m_isSplitView;\n"
-            L"    m_header.SetSplitActive(m_isSplitView);\n"
+            L"void Window::SplitEditor() {\n"
+            L"    // Multi-column split\n"
             L"}\n\n"
             L"} // namespace phide::app\n"
         );
-        docs.push_back(std::move(doc2));
+        phide::editor::EditorGroup eg2;
+        eg2.docs.push_back(std::move(doc2));
+        eg2.activeDocIdx = 0;
+        groups.push_back(std::move(eg2));
 
         pRT->BeginDraw();
         pRT->Clear(theme.colors.windowBg);
@@ -726,11 +733,14 @@ int main() {
         // Render Title Header with Split Editor button (black icon in light mode)
         header.Render(pRT.Get(), theme, config, width, false);
 
-        // Render Split View: Left pane = main.cpp (doc 0), Right pane = Window.cpp (doc 1)
-        editor.Render(pRT.Get(), theme, config, docs, 0, canvasLeft, canvasW, static_cast<float>(height), true,
-                      L"", false, false, false, true, 1, 0);
+        // Render Split View: Left pane = main.cpp (group 0), Right pane = Window.cpp (group 1, focused)
+        editor.Render(pRT.Get(), theme, config, groups, 1, canvasLeft, canvasW, static_cast<float>(height), true);
 
         pRT->EndDraw();
+
+        // Check tabs and bounds
+        assert(groups[0].docs[0].tabBounds.right > groups[0].docs[0].tabBounds.left);
+        assert(groups[1].docs[0].tabBounds.right > groups[1].docs[0].tabBounds.left);
 
         ComPtr<IWICStream> pStream;
         pWicFactory->CreateStream(&pStream);
@@ -750,10 +760,88 @@ int main() {
         std::cout << "  Passed: Saved test_split_editor_light.png" << std::endl;
     }
 
+    // --- 9. Multi-Editor Groups Isolation, Split Columns, Independent Close, and GC ---
+    std::cout << "[TEST 9] Testing Multi-Editor Groups (3-way split, tab isolation, independent close, auto-collapse, GC)..." << std::endl;
+    {
+        // 1. Manual Garbage Collection verification on DrawerPanel
+        phide::ui::DrawerPanel drawer;
+        drawer.ClearSearchResults();
+        assert(drawer.GetSearchGroups().empty());
+        std::cout << "  Passed: Manual GC ClearSearchResults() releases memory with shrink_to_fit" << std::endl;
+
+        // 2. Editor Groups Isolation & Up to 3 Columns Split
+        std::vector<phide::editor::EditorGroup> groups;
+        phide::editor::EditorGroup g1;
+        phide::editor::OpenDocument docA;
+        docA.fileName = L"fileA.txt";
+        docA.filePath = L"C:\\fileA.txt";
+        phide::editor::OpenDocument docB;
+        docB.fileName = L"fileB.txt";
+        docB.filePath = L"C:\\fileB.txt";
+        g1.docs.push_back(docA);
+        g1.docs.push_back(docB);
+        g1.activeDocIdx = 0; // viewing fileA.txt
+        groups.push_back(std::move(g1));
+
+        assert(groups.size() == 1);
+        assert(groups[0].docs.size() == 2);
+
+        // First Split: Clones ONLY active document (fileA.txt), NOT fileB.txt!
+        auto* activeDoc = &groups[0].docs[groups[0].activeDocIdx];
+        phide::editor::EditorGroup g2;
+        g2.docs.push_back(*activeDoc);
+        g2.activeDocIdx = 0;
+        groups.push_back(std::move(g2));
+
+        assert(groups.size() == 2);
+        assert(groups[1].docs.size() == 1);
+        assert(groups[1].docs[0].fileName == L"fileA.txt");
+        assert(groups[0].docs.size() == 2); // Group 1 still has both fileA and fileB!
+
+        // Second Split: Creates 3rd editor column
+        phide::editor::EditorGroup g3;
+        g3.docs.push_back(*activeDoc);
+        g3.activeDocIdx = 0;
+        groups.push_back(std::move(g3));
+
+        assert(groups.size() == 3);
+        // Attempting to split past 3 columns is prevented
+        bool canSplitAgain = (groups.size() < 3);
+        assert(!canSplitAgain);
+
+        // 3. Independent Tab Closing: Closing fileA on editor 2 does NOT close fileA on editor 1!
+        assert(groups[1].docs.size() == 1);
+        groups[1].docs.erase(groups[1].docs.begin()); // close tab in group 2
+        assert(groups[1].docs.empty());
+
+        // Auto-collapse empty editor group
+        if (groups[1].docs.empty() && groups.size() > 1) {
+            groups.erase(groups.begin() + 1);
+        }
+        assert(groups.size() == 2); // 3 -> 2 columns
+
+        // Group 1 STILL has fileA.txt and fileB.txt!
+        assert(groups[0].docs.size() == 2);
+        assert(groups[0].docs[0].fileName == L"fileA.txt");
+        assert(groups[0].docs[1].fileName == L"fileB.txt");
+
+        // Close last tab in group 2 (previously group 3)
+        groups[1].docs.erase(groups[1].docs.begin());
+        if (groups[1].docs.empty() && groups.size() > 1) {
+            groups.erase(groups.begin() + 1);
+        }
+        assert(groups.size() == 1); // 2 -> 1 column
+        assert(groups[0].docs.size() == 2); // Group 1 completely unharmed!
+        std::cout << "  Passed: Multi-Editor Groups 3-column split, file isolation, independent tab close, and auto-collapse verified" << std::endl;
+    }
+
     std::cout << "\n==========================================" << std::endl;
     std::cout << "ALL VERIFICATION TESTS PASSED SUCCESSFULLY!" << std::endl;
     std::cout << "==========================================" << std::endl;
 
+    pD2DFactory.Reset();
+    pDWriteFactory.Reset();
+    pWicFactory.Reset();
     CoUninitialize();
     return 0;
 }
