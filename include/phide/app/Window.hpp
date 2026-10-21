@@ -109,6 +109,11 @@ private:
     void LoadFileFromPath(const std::wstring& path);
     void SaveFileToPath(const std::wstring& path);
 
+    // Session State Persistence
+    void SaveSessionState();
+    void LoadSessionState();
+    std::wstring GetSessionFilePath() const;
+
     // Win32 & D2D handles
     HWND m_hwnd = nullptr;
     ComPtr<ID2D1Factory> m_pD2DFactory;

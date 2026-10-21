@@ -15,7 +15,7 @@ DrawerPanel::DrawerPanel() {
     m_visibleItems.clear();
 }
 
-void DrawerPanel::OpenFolder(const std::wstring& folderPath) {
+void DrawerPanel::OpenFolder(const std::wstring& folderPath, const std::set<std::wstring>* pInitialExpanded) {
     if (folderPath.empty()) return;
 
     std::error_code ec;
@@ -39,8 +39,21 @@ void DrawerPanel::OpenFolder(const std::wstring& folderPath) {
 
     m_hasOpenFolder = true;
     m_expandedDirs.clear();
-    m_expandedDirs.insert(m_openFolderPath);
+    if (pInitialExpanded && !pInitialExpanded->empty()) {
+        m_expandedDirs = *pInitialExpanded;
+        m_expandedDirs.insert(m_openFolderPath);
+    } else {
+        m_expandedDirs.insert(m_openFolderPath);
+    }
 
+    RebuildVisibleItems();
+}
+
+void DrawerPanel::SetExpandedDirs(const std::set<std::wstring>& dirs) {
+    m_expandedDirs = dirs;
+    if (m_hasOpenFolder && !m_openFolderPath.empty()) {
+        m_expandedDirs.insert(m_openFolderPath);
+    }
     RebuildVisibleItems();
 }
 
@@ -392,7 +405,7 @@ void DrawerPanel::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCon
                     }
                 }
 
-                // 3. Vector Icon (Lucide & Seti File/Folder Icon)
+                // 3. Official VS Code Seti File/Folder Icon
                 float iconX = chevronX + config.ScaleF(10.0f);
                 D2D1_RECT_F iconBounds = D2D1::RectF(
                     iconX,
@@ -400,8 +413,13 @@ void DrawerPanel::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCon
                     iconX + config.ScaleF(16.0f),
                     cy + config.ScaleF(8.0f)
                 );
-                auto iconType = LucideIcons::GetIconTypeForPath(item.label, item.isFolder, item.isExpanded);
-                m_icons.DrawFileIcon(pRT, theme, iconBounds, iconType);
+                auto setiInfo = theme.GetSetiIcon(item.label, item.isFolder, item.isExpanded);
+                if (theme.fontSeti && setiInfo.pBrush) {
+                    pRT->DrawText(&setiInfo.glyph, 1, theme.fontSeti.Get(), iconBounds, setiInfo.pBrush);
+                } else {
+                    auto iconType = LucideIcons::GetIconTypeForPath(item.label, item.isFolder, item.isExpanded);
+                    m_icons.DrawFileIcon(pRT, theme, iconBounds, iconType);
+                }
 
                 // 4. Draw Item Text Label
                 float labelX = iconX + config.ScaleF(22.0f);

@@ -98,7 +98,17 @@ public:
     /**
      * @brief Opens a folder and populates the explorer tree with real filesystem contents.
      */
-    void OpenFolder(const std::wstring& folderPath);
+    void OpenFolder(const std::wstring& folderPath, const std::set<std::wstring>* pInitialExpanded = nullptr);
+
+    /**
+     * @brief Gets the currently expanded directories in the tree.
+     */
+    [[nodiscard]] const std::set<std::wstring>& GetExpandedDirs() const noexcept { return m_expandedDirs; }
+
+    /**
+     * @brief Restores the expanded directories and refreshes visible tree items.
+     */
+    void SetExpandedDirs(const std::set<std::wstring>& dirs);
 
     /**
      * @brief Closes the currently opened folder, returning the explorer to the "NO FOLDER OPENED" state.

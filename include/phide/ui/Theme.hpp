@@ -11,7 +11,9 @@
 
 #include <d2d1.h>
 #include <dwrite.h>
+#include <dwrite_3.h>
 #include <wrl/client.h>
+#include <string>
 
 namespace phide::ui {
 
@@ -153,8 +155,29 @@ public:
     ComPtr<ID2D1SolidColorBrush> brushIconFolderOpen;
     ComPtr<ID2D1SolidColorBrush> brushIconGray;
 
+    // Seti Official Brand Palette Brushes
+    ComPtr<ID2D1SolidColorBrush> brushSetiPhp;       ///< PHP (#777BB4 / #8892BF)
+    ComPtr<ID2D1SolidColorBrush> brushSetiJs;        ///< JavaScript (#F7DF1E)
+    ComPtr<ID2D1SolidColorBrush> brushSetiTs;        ///< TypeScript (#519ABA)
+    ComPtr<ID2D1SolidColorBrush> brushSetiCpp;       ///< C / C++ (#519ABA)
+    ComPtr<ID2D1SolidColorBrush> brushSetiJson;      ///< JSON (#CBCB41)
+    ComPtr<ID2D1SolidColorBrush> brushSetiHtml;      ///< HTML5 (#E34C26)
+    ComPtr<ID2D1SolidColorBrush> brushSetiCss;       ///< CSS3 (#42A5F5)
+    ComPtr<ID2D1SolidColorBrush> brushSetiPython;    ///< Python (#3572A5)
+    ComPtr<ID2D1SolidColorBrush> brushSetiRust;      ///< Rust (#DEA584)
+    ComPtr<ID2D1SolidColorBrush> brushSetiJava;      ///< Java (#CC3E44)
+    ComPtr<ID2D1SolidColorBrush> brushSetiGit;       ///< Git (#F14E32)
+    ComPtr<ID2D1SolidColorBrush> brushSetiShell;     ///< Terminal / Shell / Make (#4D9375)
+    ComPtr<ID2D1SolidColorBrush> brushSetiYaml;      ///< YAML (#CB171E)
+    ComPtr<ID2D1SolidColorBrush> brushSetiImage;     ///< Images / SVG (#8A52BE)
+    ComPtr<ID2D1SolidColorBrush> brushSetiFolder;    ///< Folder Closed (#7998B5)
+    ComPtr<ID2D1SolidColorBrush> brushSetiFolderOpen;///< Folder Open (#8CAECF)
+    ComPtr<ID2D1SolidColorBrush> brushSetiDefault;   ///< Default Document (#9E9E9E)
+
     // DirectWrite Text Formats and Factory
     ComPtr<IDWriteFactory> dwriteFactory;
+    ComPtr<IDWriteFontCollection1> customFontCollection; ///< Process font collection for Seti font
+    ComPtr<IDWriteTextFormat> fontSeti;          ///< 14.5px Centered Seti UI icon font format
     ComPtr<IDWriteTextFormat> fontTitle;         ///< 12px Semi-bold for title
     ComPtr<IDWriteTextFormat> fontMenu;          ///< 12px Regular for top menus
     ComPtr<IDWriteTextFormat> fontMenuItem;      ///< 12px Regular Left-aligned for dropdown items
@@ -168,6 +191,16 @@ public:
     ComPtr<IDWriteTextFormat> fontCaption;       ///< 12px Caption button font
     ComPtr<IDWriteTextFormat> fontHint;          ///< 13px Italic/Muted for workspace hints
     ComPtr<IDWriteTextFormat> fontTooltip;       ///< 11.5px Crisp font for customized sidebar tooltips
+
+    struct SetiIconInfo {
+        wchar_t glyph = 0xE023;
+        ID2D1Brush* pBrush = nullptr;
+    };
+
+    /**
+     * @brief Maps a filename and folder state to an authentic Seti UI icon glyph & brand brush.
+     */
+    [[nodiscard]] SetiIconInfo GetSetiIcon(const std::wstring& filename, bool isFolder, bool isExpanded) const;
 };
 
 } // namespace phide::ui

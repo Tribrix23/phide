@@ -4,8 +4,27 @@
  */
 
 #include "phide/ui/Theme.hpp"
+#include <filesystem>
+#include <windows.h>
 
 namespace phide::ui {
+
+static std::wstring FindFontPath(const std::wstring& filename) {
+    wchar_t exePath[MAX_PATH] = { 0 };
+    GetModuleFileNameW(nullptr, exePath, MAX_PATH);
+    std::filesystem::path exeDir = std::filesystem::path(exePath).parent_path();
+
+    std::filesystem::path cand1 = exeDir / L"assets" / L"fonts" / filename;
+    if (std::filesystem::exists(cand1)) return cand1.wstring();
+
+    std::filesystem::path cand2 = exeDir.parent_path() / L"assets" / L"fonts" / filename;
+    if (std::filesystem::exists(cand2)) return cand2.wstring();
+
+    std::filesystem::path cand3 = std::filesystem::current_path() / L"assets" / L"fonts" / filename;
+    if (std::filesystem::exists(cand3)) return cand3.wstring();
+
+    return L"";
+}
 
 Theme::Theme() = default;
 
@@ -67,6 +86,65 @@ HRESULT Theme::CreateDeviceResources(ID2D1RenderTarget* pRT, IDWriteFactory* pDW
     pRT->CreateSolidColorBrush(D2D1::ColorF(0.474f, 0.592f, 0.709f, 1.0f), &brushIconFolder);
     pRT->CreateSolidColorBrush(D2D1::ColorF(0.600f, 0.721f, 0.835f, 1.0f), &brushIconFolderOpen);
     pRT->CreateSolidColorBrush(D2D1::ColorF(0.620f, 0.620f, 0.620f, 1.0f), &brushIconGray);
+
+    // Official VS Code Seti Brand Palette Brushes
+    pRT->CreateSolidColorBrush(D2D1::ColorF(0.533f, 0.572f, 0.749f, 1.0f), &brushSetiPhp);
+    pRT->CreateSolidColorBrush(D2D1::ColorF(0.968f, 0.874f, 0.117f, 1.0f), &brushSetiJs);
+    pRT->CreateSolidColorBrush(D2D1::ColorF(0.318f, 0.604f, 0.729f, 1.0f), &brushSetiTs);
+    pRT->CreateSolidColorBrush(D2D1::ColorF(0.318f, 0.604f, 0.729f, 1.0f), &brushSetiCpp);
+    pRT->CreateSolidColorBrush(D2D1::ColorF(0.796f, 0.796f, 0.255f, 1.0f), &brushSetiJson);
+    pRT->CreateSolidColorBrush(D2D1::ColorF(0.890f, 0.298f, 0.149f, 1.0f), &brushSetiHtml);
+    pRT->CreateSolidColorBrush(D2D1::ColorF(0.259f, 0.647f, 0.961f, 1.0f), &brushSetiCss);
+    pRT->CreateSolidColorBrush(D2D1::ColorF(0.208f, 0.447f, 0.647f, 1.0f), &brushSetiPython);
+    pRT->CreateSolidColorBrush(D2D1::ColorF(0.871f, 0.647f, 0.518f, 1.0f), &brushSetiRust);
+    pRT->CreateSolidColorBrush(D2D1::ColorF(0.800f, 0.243f, 0.267f, 1.0f), &brushSetiJava);
+    pRT->CreateSolidColorBrush(D2D1::ColorF(0.945f, 0.306f, 0.196f, 1.0f), &brushSetiGit);
+    pRT->CreateSolidColorBrush(D2D1::ColorF(0.302f, 0.576f, 0.459f, 1.0f), &brushSetiShell);
+    pRT->CreateSolidColorBrush(D2D1::ColorF(0.796f, 0.090f, 0.118f, 1.0f), &brushSetiYaml);
+    pRT->CreateSolidColorBrush(D2D1::ColorF(0.541f, 0.322f, 0.745f, 1.0f), &brushSetiImage);
+    pRT->CreateSolidColorBrush(D2D1::ColorF(0.474f, 0.596f, 0.709f, 1.0f), &brushSetiFolder);
+    pRT->CreateSolidColorBrush(D2D1::ColorF(0.550f, 0.680f, 0.810f, 1.0f), &brushSetiFolderOpen);
+    pRT->CreateSolidColorBrush(D2D1::ColorF(0.620f, 0.620f, 0.620f, 1.0f), &brushSetiDefault);
+
+    // Load Official VS Code Seti Font into DirectWrite Custom Font Collection
+    std::wstring setiPath = FindFontPath(L"seti.ttf");
+    if (!setiPath.empty()) {
+        ComPtr<IDWriteFactory3> dwriteFactory3;
+        if (SUCCEEDED(pDWriteFactory->QueryInterface(__uuidof(IDWriteFactory3), (void**)&dwriteFactory3))) {
+            ComPtr<IDWriteFontFile> pFontFile;
+            if (SUCCEEDED(pDWriteFactory->CreateFontFileReference(setiPath.c_str(), nullptr, &pFontFile))) {
+                ComPtr<IDWriteFontFaceReference> pFaceRef;
+                if (SUCCEEDED(dwriteFactory3->CreateFontFaceReference(pFontFile.Get(), 0, DWRITE_FONT_SIMULATIONS_NONE, &pFaceRef))) {
+                    ComPtr<IDWriteFontSetBuilder> pBuilder;
+                    if (SUCCEEDED(dwriteFactory3->CreateFontSetBuilder(&pBuilder))) {
+                        pBuilder->AddFontFaceReference(pFaceRef.Get());
+                        ComPtr<IDWriteFontSet> pFontSet;
+                        if (SUCCEEDED(pBuilder->CreateFontSet(&pFontSet))) {
+                            dwriteFactory3->CreateFontCollectionFromFontSet(pFontSet.Get(), &customFontCollection);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if (customFontCollection) {
+        pDWriteFactory->CreateTextFormat(
+            L"seti",
+            customFontCollection.Get(),
+            DWRITE_FONT_WEIGHT_NORMAL,
+            DWRITE_FONT_STYLE_NORMAL,
+            DWRITE_FONT_STRETCH_NORMAL,
+            14.5f,
+            L"en-US",
+            &fontSeti
+        );
+        if (fontSeti) {
+            fontSeti->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+            fontSeti->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+            fontSeti->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+        }
+    }
 
     // Create DirectWrite Text Formats
     // 1. Title Font
@@ -347,6 +425,89 @@ void Theme::DiscardDeviceResources() {
     brushIconFolder.Reset();
     brushIconFolderOpen.Reset();
     brushIconGray.Reset();
+
+    // Reset Seti Font and Brushes
+    fontSeti.Reset();
+    customFontCollection.Reset();
+    brushSetiPhp.Reset();
+    brushSetiJs.Reset();
+    brushSetiTs.Reset();
+    brushSetiCpp.Reset();
+    brushSetiJson.Reset();
+    brushSetiHtml.Reset();
+    brushSetiCss.Reset();
+    brushSetiPython.Reset();
+    brushSetiRust.Reset();
+    brushSetiJava.Reset();
+    brushSetiGit.Reset();
+    brushSetiShell.Reset();
+    brushSetiYaml.Reset();
+    brushSetiImage.Reset();
+    brushSetiFolder.Reset();
+    brushSetiFolderOpen.Reset();
+    brushSetiDefault.Reset();
+}
+
+Theme::SetiIconInfo Theme::GetSetiIcon(const std::wstring& filename, bool isFolder, bool isExpanded) const {
+    if (isFolder) {
+        return { 0xE032, isExpanded ? (brushSetiFolderOpen ? brushSetiFolderOpen.Get() : brushIconFolderOpen.Get())
+                                     : (brushSetiFolder ? brushSetiFolder.Get() : brushIconFolder.Get()) };
+    }
+
+    std::wstring lower = filename;
+    for (auto& c : lower) c = towlower(c);
+
+    // Exact filename matches
+    if (lower == L"composer.json" || lower == L"package.json" || lower == L"tsconfig.json" || lower == L"jsconfig.json") {
+        return { 0xE055, brushSetiJson ? brushSetiJson.Get() : brushIconYellow.Get() };
+    }
+    if (lower == L"cmakelists.txt" || lower == L"makefile") {
+        return { 0xE05F, brushSetiShell ? brushSetiShell.Get() : brushIconGreen.Get() };
+    }
+    if (lower == L".gitignore" || lower == L".gitattributes" || lower == L".gitmodules") {
+        return { 0xE034, brushSetiGit ? brushSetiGit.Get() : brushIconRed.Get() };
+    }
+    if (lower == L".editorconfig") {
+        return { 0xE026, brushSetiDefault ? brushSetiDefault.Get() : brushIconGray.Get() };
+    }
+    if (lower == L"dockerfile") {
+        return { 0xE025, brushSetiCss ? brushSetiCss.Get() : brushIconBlue.Get() };
+    }
+    if (lower == L"license" || lower == L"license.txt" || lower == L"license.md") {
+        return { 0xE05A, brushSetiJson ? brushSetiJson.Get() : brushIconYellow.Get() };
+    }
+
+    auto dot = lower.find_last_of(L'.');
+    if (dot != std::wstring::npos) {
+        std::wstring ext = lower.substr(dot);
+        if (ext == L".php" || ext == L".phtml") return { 0xE070, brushSetiPhp ? brushSetiPhp.Get() : brushIconPurple.Get() };
+        if (ext == L".js" || ext == L".mjs" || ext == L".cjs" || ext == L".jsx") return { 0xE051, brushSetiJs ? brushSetiJs.Get() : brushIconYellow.Get() };
+        if (ext == L".ts" || ext == L".tsx") return { 0xE099, brushSetiTs ? brushSetiTs.Get() : brushIconBlue.Get() };
+        if (ext == L".cpp" || ext == L".cc" || ext == L".cxx" || ext == L".hpp" || ext == L".hxx" || ext == L".hh") return { 0xE01A, brushSetiCpp ? brushSetiCpp.Get() : brushIconBlue.Get() };
+        if (ext == L".c" || ext == L".h") return { 0xE00C, brushSetiCpp ? brushSetiCpp.Get() : brushIconBlue.Get() };
+        if (ext == L".cs") return { 0xE00B, brushSetiShell ? brushSetiShell.Get() : brushIconGreen.Get() };
+        if (ext == L".json" || ext == L".jsonc") return { 0xE055, brushSetiJson ? brushSetiJson.Get() : brushIconYellow.Get() };
+        if (ext == L".md" || ext == L".markdown" || ext == L".mdown") return { 0xE060, brushSetiTs ? brushSetiTs.Get() : brushIconBlue.Get() };
+        if (ext == L".html" || ext == L".htm") return { 0xE048, brushSetiHtml ? brushSetiHtml.Get() : brushIconOrange.Get() };
+        if (ext == L".css" || ext == L".scss" || ext == L".sass" || ext == L".less") return { 0xE01D, brushSetiCss ? brushSetiCss.Get() : brushIconBlue.Get() };
+        if (ext == L".py" || ext == L".pyw") return { 0xE07B, brushSetiPython ? brushSetiPython.Get() : brushIconBlue.Get() };
+        if (ext == L".rs") return { 0xE082, brushSetiRust ? brushSetiRust.Get() : brushIconOrange.Get() };
+        if (ext == L".go") return { 0xE039, brushSetiTs ? brushSetiTs.Get() : brushIconBlue.Get() };
+        if (ext == L".java") return { 0xE050, brushSetiJava ? brushSetiJava.Get() : brushIconRed.Get() };
+        if (ext == L".kt" || ext == L".kts") return { 0xE058, brushSetiHtml ? brushSetiHtml.Get() : brushIconOrange.Get() };
+        if (ext == L".yaml" || ext == L".yml") return { 0xE0A6, brushSetiYaml ? brushSetiYaml.Get() : brushIconRed.Get() };
+        if (ext == L".xml") return { 0xE0A4, brushSetiJson ? brushSetiJson.Get() : brushIconYellow.Get() };
+        if (ext == L".svg") return { 0xE091, brushSetiImage ? brushSetiImage.Get() : brushIconPurple.Get() };
+        if (ext == L".png" || ext == L".jpg" || ext == L".jpeg" || ext == L".gif" || ext == L".ico" || ext == L".webp") return { 0xE04C, brushSetiImage ? brushSetiImage.Get() : brushIconPurple.Get() };
+        if (ext == L".bat" || ext == L".cmd" || ext == L".sh" || ext == L".bash") return { 0xE089, brushSetiShell ? brushSetiShell.Get() : brushIconGreen.Get() };
+        if (ext == L".ps1") return { 0xE074, brushSetiShell ? brushSetiShell.Get() : brushIconGreen.Get() };
+        if (ext == L".exe" || ext == L".dll" || ext == L".bin" || ext == L".so" || ext == L".obj") return { 0xE088, brushSetiShell ? brushSetiShell.Get() : brushIconGreen.Get() };
+        if (ext == L".zip" || ext == L".tar" || ext == L".gz" || ext == L".7z" || ext == L".rar") return { 0xE0A8, brushSetiJson ? brushSetiJson.Get() : brushIconYellow.Get() };
+        if (ext == L".lock") return { 0xE05D, brushSetiDefault ? brushSetiDefault.Get() : brushIconGray.Get() };
+        if (ext == L".txt" || ext == L".log" || ext == L".ini" || ext == L".conf") return { 0xE023, brushSetiDefault ? brushSetiDefault.Get() : brushIconGray.Get() };
+    }
+
+    return { 0xE023, brushSetiDefault ? brushSetiDefault.Get() : brushIconGray.Get() };
 }
 
 } // namespace phide::ui

@@ -39,11 +39,177 @@ Window::~Window() {
     }
 }
 
+static std::wstring EscapeJson(const std::wstring& s) {
+    std::wstring out;
+    out.reserve(s.size() + 16);
+    for (wchar_t c : s) {
+        if (c == L'\\') out += L"\\\\";
+        else if (c == L'"') out += L"\\\"";
+        else if (c == L'\n') out += L"\\n";
+        else if (c == L'\r') out += L"\\r";
+        else if (c == L'\t') out += L"\\t";
+        else out += c;
+    }
+    return out;
+}
+
+static std::wstring UnescapeJson(const std::wstring& s) {
+    std::wstring out;
+    out.reserve(s.size());
+    for (size_t i = 0; i < s.size(); ++i) {
+        if (s[i] == L'\\' && i + 1 < s.size()) {
+            wchar_t next = s[++i];
+            if (next == L'\\') out += L'\\';
+            else if (next == L'"') out += L'"';
+            else if (next == L'n') out += L'\n';
+            else if (next == L'r') out += L'\r';
+            else if (next == L't') out += L'\t';
+            else out += next;
+        } else {
+            out += s[i];
+        }
+    }
+    return out;
+}
+
+std::wstring Window::GetSessionFilePath() const {
+    wchar_t* pAppData = nullptr;
+    size_t len = 0;
+    if (_wdupenv_s(&pAppData, &len, L"APPDATA") == 0 && pAppData) {
+        std::filesystem::path p(pAppData);
+        free(pAppData);
+        std::filesystem::path dir = p / L"phide";
+        std::error_code ec;
+        std::filesystem::create_directories(dir, ec);
+        return (dir / L"session_state.json").wstring();
+    }
+    return L"";
+}
+
+void Window::SaveSessionState() {
+    std::wstring filePath = GetSessionFilePath();
+    if (filePath.empty()) return;
+
+    std::wofstream out(filePath, std::ios::trunc);
+    if (!out.is_open()) return;
+
+    out << L"{\n";
+    out << L"  \"isSidebarOpen\": " << (m_config.isDrawerOpen ? L"true" : L"false") << L",\n";
+    out << L"  \"activeRailTab\": " << m_config.activeRailTab << L",\n";
+    out << L"  \"lastOpenFolderPath\": \"" << EscapeJson(m_drawer.GetOpenFolderPath()) << L"\",\n";
+    out << L"  \"currentFilePath\": \"" << EscapeJson(m_currentFilePath) << L"\",\n";
+    out << L"  \"expandedDirs\": [\n";
+    const auto& expanded = m_drawer.GetExpandedDirs();
+    size_t count = 0;
+    for (const auto& d : expanded) {
+        out << L"    \"" << EscapeJson(d) << L"\"" << (++count < expanded.size() ? L"," : L"") << L"\n";
+    }
+    out << L"  ],\n";
+    out << L"  \"recentPaths\": [\n";
+    count = 0;
+    for (const auto& r : m_recentPaths) {
+        out << L"    \"" << EscapeJson(r) << L"\"" << (++count < m_recentPaths.size() ? L"," : L"") << L"\n";
+    }
+    out << L"  ]\n";
+    out << L"}\n";
+}
+
+void Window::LoadSessionState() {
+    std::wstring filePath = GetSessionFilePath();
+    if (filePath.empty()) return;
+
+    std::error_code ec;
+    if (!std::filesystem::exists(filePath, ec)) return;
+
+    std::wifstream in(filePath);
+    if (!in.is_open()) return;
+
+    bool isSidebarOpen = true;
+    int activeRailTab = 0;
+    std::wstring lastOpenFolder;
+    std::wstring currentFilePath;
+    std::set<std::wstring> expandedDirs;
+    std::vector<std::wstring> recentPaths;
+
+    std::wstring line;
+    std::wstring currentArray;
+    while (std::getline(in, line)) {
+        size_t first = line.find_first_not_of(L" \t\r\n");
+        if (first == std::wstring::npos) continue;
+        line = line.substr(first);
+
+        if (line.find(L"\"isSidebarOpen\"") != std::wstring::npos) {
+            isSidebarOpen = (line.find(L"true") != std::wstring::npos);
+        } else if (line.find(L"\"activeRailTab\"") != std::wstring::npos) {
+            auto colon = line.find(L':');
+            if (colon != std::wstring::npos) {
+                activeRailTab = _wtoi(line.substr(colon + 1).c_str());
+            }
+        } else if (line.find(L"\"lastOpenFolderPath\"") != std::wstring::npos) {
+            auto colon = line.find(L':');
+            if (colon != std::wstring::npos) {
+                auto q1 = line.find(L'"', colon);
+                auto q2 = line.rfind(L'"');
+                if (q1 != std::wstring::npos && q2 != std::wstring::npos && q2 > q1) {
+                    lastOpenFolder = UnescapeJson(line.substr(q1 + 1, q2 - q1 - 1));
+                }
+            }
+        } else if (line.find(L"\"currentFilePath\"") != std::wstring::npos) {
+            auto colon = line.find(L':');
+            if (colon != std::wstring::npos) {
+                auto q1 = line.find(L'"', colon);
+                auto q2 = line.rfind(L'"');
+                if (q1 != std::wstring::npos && q2 != std::wstring::npos && q2 > q1) {
+                    currentFilePath = UnescapeJson(line.substr(q1 + 1, q2 - q1 - 1));
+                }
+            }
+        } else if (line.find(L"\"expandedDirs\"") != std::wstring::npos) {
+            currentArray = L"expandedDirs";
+        } else if (line.find(L"\"recentPaths\"") != std::wstring::npos) {
+            currentArray = L"recentPaths";
+        } else if (line.find(L"]") != std::wstring::npos) {
+            currentArray.clear();
+        } else if (!currentArray.empty()) {
+            auto q1 = line.find(L'"');
+            auto q2 = line.rfind(L'"');
+            if (q1 != std::wstring::npos && q2 != std::wstring::npos && q2 > q1) {
+                std::wstring val = UnescapeJson(line.substr(q1 + 1, q2 - q1 - 1));
+                if (currentArray == L"expandedDirs") {
+                    expandedDirs.insert(val);
+                } else if (currentArray == L"recentPaths") {
+                    recentPaths.push_back(val);
+                }
+            }
+        }
+    }
+
+    if (!recentPaths.empty()) {
+        m_recentPaths = recentPaths;
+    }
+
+    m_config.activeRailTab = activeRailTab;
+
+    if (!lastOpenFolder.empty() && std::filesystem::exists(lastOpenFolder, ec)) {
+        m_drawer.OpenFolder(lastOpenFolder, &expandedDirs);
+        m_workspace.OpenWorkspace(lastOpenFolder);
+    }
+
+    if (!currentFilePath.empty() && std::filesystem::exists(currentFilePath, ec)) {
+        LoadFileFromPath(currentFilePath);
+    }
+
+    m_config.isDrawerOpen = isSidebarOpen;
+    m_drawerAnimProgress   = isSidebarOpen ? 1.0f : 0.0f;
+    m_targetDrawerProgress = m_drawerAnimProgress;
+    m_isDrawerAnimating    = false;
+}
+
 void Window::ToggleSidebar() {
     m_config.isDrawerOpen = !m_config.isDrawerOpen;
     m_targetDrawerProgress = m_config.isDrawerOpen ? 1.0f : 0.0f;
     m_isDrawerAnimating = true;
     SetTimer(m_hwnd, m_animTimerId, 16, nullptr);
+    SaveSessionState();
 }
 
 void Window::DoNewTextFile() {
@@ -132,6 +298,7 @@ void Window::DoOpenFolderFromPath(const std::wstring& path) {
     if (!m_config.isDrawerOpen) {
         ToggleSidebar();
     }
+    SaveSessionState();
     InvalidateRect(m_hwnd, nullptr, FALSE);
 }
 
@@ -345,12 +512,14 @@ void Window::DoCloseEditor() {
         m_currentFilePath.clear();
         m_currentFileName.clear();
         m_isDirty = false;
+        SaveSessionState();
         InvalidateRect(m_hwnd, nullptr, FALSE);
     }
 }
 
 void Window::DoCloseFolder() {
     m_drawer.CloseFolder();
+    SaveSessionState();
     InvalidateRect(m_hwnd, nullptr, FALSE);
 }
 
@@ -374,6 +543,7 @@ void Window::LoadFileFromPath(const std::wstring& path) {
         m_recentPaths.insert(m_recentPaths.begin(), path);
         if (m_recentPaths.size() > 10) m_recentPaths.resize(10);
 
+        SaveSessionState();
         InvalidateRect(m_hwnd, nullptr, FALSE);
     }
 }
@@ -384,6 +554,7 @@ void Window::SaveFileToPath(const std::wstring& path) {
         auto pos = path.find_last_of(L"\\/");
         m_currentFileName = (pos != std::wstring::npos) ? path.substr(pos + 1) : path;
         m_isDirty = false;
+        SaveSessionState();
         InvalidateRect(m_hwnd, nullptr, FALSE);
     }
 }
@@ -575,10 +746,8 @@ bool Window::Create(HINSTANCE hInstance, int nCmdShow) {
     // Start 500ms Caret blink timer
     SetTimer(m_hwnd, m_caretTimerId, 500, nullptr);
 
-    // Initialize sidebar sliding animation state
-    m_drawerAnimProgress   = m_config.isDrawerOpen ? 1.0f : 0.0f;
-    m_targetDrawerProgress = m_drawerAnimProgress;
-    m_isDrawerAnimating    = false;
+    // Restore saved IDE session state (open folder, expanded tree dirs, open file, sidebar open/close state)
+    LoadSessionState();
 
     // Launch application windowed or maximized based on invocation parameters
     bool startWindowed = false;
@@ -1041,6 +1210,7 @@ void Window::HandleLButtonDown(POINT clientPt) {
                 if (pItem) {
                     if (pItem->isFolder) {
                         m_drawer.ToggleFolder(clickedTree);
+                        SaveSessionState();
                     } else {
                         // Open real file using its full path!
                         LoadFileFromPath(pItem->fullPath);
@@ -1075,6 +1245,7 @@ void Window::HandleLButtonDown(POINT clientPt) {
         int clickedTab = static_cast<int>(railHit);
         // Switch the active rail tab highlight badge
         m_config.activeRailTab = clickedTab;
+        SaveSessionState();
         InvalidateRect(m_hwnd, nullptr, FALSE);
         return;
     }
@@ -1343,7 +1514,14 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
             return 0;
         }
 
+        case WM_CLOSE: {
+            SaveSessionState();
+            DestroyWindow(m_hwnd);
+            return 0;
+        }
+
         case WM_DESTROY: {
+            SaveSessionState();
             PostQuitMessage(0);
             return 0;
         }

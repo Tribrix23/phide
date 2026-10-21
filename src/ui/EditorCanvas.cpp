@@ -249,8 +249,13 @@ void EditorCanvas::RenderTabs(ID2D1RenderTarget* pRT, Theme& theme, const app::A
         iconX + config.ScaleF(16.0f),
         iconCenterY + config.ScaleF(8.0f)
     );
-    auto iconType = LucideIcons::GetIconTypeForPath(currentFileName, false, false);
-    m_icons.DrawFileIcon(pRT, theme, iconBounds, iconType);
+    auto setiInfo = theme.GetSetiIcon(currentFileName, false, false);
+    if (theme.fontSeti && setiInfo.pBrush) {
+        pRT->DrawText(&setiInfo.glyph, 1, theme.fontSeti.Get(), iconBounds, setiInfo.pBrush);
+    } else {
+        auto iconType = LucideIcons::GetIconTypeForPath(currentFileName, false, false);
+        m_icons.DrawFileIcon(pRT, theme, iconBounds, iconType);
+    }
 
     // 4. File Title
     std::wstring title = currentFileName.empty() ? L"Untitled-1" : currentFileName;

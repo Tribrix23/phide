@@ -33,8 +33,12 @@ if %errorlevel% neq 0 (
     exit /b %errorlevel%
 )
 
-:: 2. Ensure Output Directory Exists
+:: 2. Ensure Output Directory and Assets Exist
 if not exist "bin" mkdir "bin"
+if not exist "bin\assets\fonts" mkdir "bin\assets\fonts"
+if exist "assets" (
+    xcopy /y /e /i "assets" "bin\assets" >nul 2>&1
+)
 
 :: 3. Collect Source Files
 set "SOURCES=src\main.cpp src\app\Window.cpp src\ui\Theme.cpp src\ui\LucideIcons.cpp src\ui\TitleHeader.cpp src\ui\PopupMenu.cpp src\ui\ActivityRail.cpp src\ui\DrawerPanel.cpp src\ui\EditorCanvas.cpp src\editor\Buffer.cpp src\workspace\WorkspaceManager.cpp src\lsp\LspClient.cpp"
