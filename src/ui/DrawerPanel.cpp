@@ -2914,18 +2914,18 @@ bool DrawerPanel::HitTestGit(POINT pt, const app::AppConfig& config, std::wstrin
                             DiscardAllChangesAsync();
                             break;
                         case 12: // Stash Changes
-                            RunGitCmd(L"git stash", false);
+                            RunGitCmd(L"stash", m_openFolderPath);
                             RefreshGitState(true);
                             break;
                         case 21: // Push Commits
                             PushCommitsAsync();
                             break;
                         case 22: // Pull Commits
-                            RunGitCmd(L"git pull", false);
+                            RunGitCmd(L"pull", m_openFolderPath);
                             RefreshGitState(true);
                             break;
                         case 23: // Fetch All Remotes
-                            RunGitCmd(L"git fetch --all", false);
+                            RunGitCmd(L"fetch --all", m_openFolderPath);
                             RefreshGitState(true);
                             break;
                         default:
@@ -3183,9 +3183,9 @@ void DrawerPanel::HandleGitKeyDown(WPARAM wParam) {
 void DrawerPanel::RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config, float clientHeight, float currentDrawerW) {
     const float headerH = config.ScaleF(static_cast<float>(config.headerHeight));
     const float railW   = config.ScaleF(static_cast<float>(config.railWidth));
-    const float paddingX = config.ScaleF(16.0f);
+    const float paddingX = config.ScaleF(14.0f);
 
-    // 1. Pane Title: "SOURCE CONTROL"
+    // 1. Pane Title: "Source Control"
     D2D1_RECT_F rcTitle = D2D1::RectF(
         railW + paddingX,
         headerH + config.ScaleF(10.0f),
@@ -3194,19 +3194,19 @@ void DrawerPanel::RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, 
     );
     const wchar_t* titleStr = L"Source Control";
     pRT->DrawText(titleStr, static_cast<UINT32>(wcslen(titleStr)),
-                  theme.fontButtonCenter.Get() ? theme.fontButtonCenter.Get() : theme.fontMenuItem.Get(),
+                  theme.fontMenuItem.Get() ? theme.fontMenuItem.Get() : theme.fontButtonCenter.Get(),
                   rcTitle, theme.brushTextPrimary.Get());
 
-    // 2. Top-Right "..." Button (Image 2 & 3)
+    // 2. Top-Right "..." Button (Header Views & More Actions)
     m_gitHeaderMoreBounds = D2D1::RectF(
-        railW + currentDrawerW - config.ScaleF(32.0f),
+        railW + currentDrawerW - config.ScaleF(30.0f),
         headerH + config.ScaleF(10.0f),
-        railW + currentDrawerW - config.ScaleF(12.0f),
+        railW + currentDrawerW - config.ScaleF(10.0f),
         headerH + config.ScaleF(30.0f)
     );
     float dotY = (m_gitHeaderMoreBounds.top + m_gitHeaderMoreBounds.bottom) / 2.0f;
     float dotMidX = (m_gitHeaderMoreBounds.left + m_gitHeaderMoreBounds.right) / 2.0f;
-    float dotOffset = config.ScaleF(5.0f);
+    float dotOffset = config.ScaleF(4.5f);
     pRT->FillEllipse(D2D1::Ellipse(D2D1::Point2F(dotMidX - dotOffset, dotY), 1.4f, 1.4f), theme.brushTextMuted.Get());
     pRT->FillEllipse(D2D1::Ellipse(D2D1::Point2F(dotMidX, dotY), 1.4f, 1.4f), theme.brushTextMuted.Get());
     pRT->FillEllipse(D2D1::Ellipse(D2D1::Point2F(dotMidX + dotOffset, dotY), 1.4f, 1.4f), theme.brushTextMuted.Get());
@@ -3223,15 +3223,24 @@ void DrawerPanel::RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, 
         );
         const wchar_t* noGitMsg = L"No Git repository detected in the current workspace.\n\nOpen a workspace with a Git repository to view Changes and Graph.";
         pRT->DrawText(noGitMsg, static_cast<UINT32>(wcslen(noGitMsg)),
-                      theme.fontMenuShortcut.Get(), rcNoGit, theme.brushTextMuted.Get());
+                      theme.fontMenuItem.Get() ? theme.fontMenuItem.Get() : theme.fontMenuShortcut.Get(),
+                      rcNoGit, theme.brushTextMuted.Get());
         return;
+    }
+
+    float secH = config.ScaleF(24.0f);
+
+    // Clamp and initialize dynamic vertical splitter between Changes and Graph
+    float minSplitY = curY + config.ScaleF(110.0f);
+    float maxSplitY = clientHeight - config.ScaleF(70.0f);
+    if (m_gitSplitY < minSplitY || m_gitSplitY > maxSplitY) {
+        m_gitSplitY = curY + (clientHeight - curY) * 0.46f;
     }
 
     // =========================================================================
     // 3. Section 1: "Changes" (collapsible)
     // =========================================================================
     if (m_showChangesSection) {
-        float secH = config.ScaleF(24.0f);
         m_gitChangesHeaderBounds = D2D1::RectF(railW, curY, railW + currentDrawerW, curY + secH);
 
         // Chevron (v or >)
@@ -3240,28 +3249,23 @@ void DrawerPanel::RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, 
         m_gitChangesChevronBounds = D2D1::RectF(chevX - 6.0f, chevY - 6.0f, chevX + 6.0f, chevY + 6.0f);
 
         if (m_changesExpanded) {
-            // Downward triangle
             pRT->DrawLine(D2D1::Point2F(chevX - 3.5f, chevY - 2.0f), D2D1::Point2F(chevX, chevY + 2.0f), theme.brushTextPrimary.Get(), 1.4f);
             pRT->DrawLine(D2D1::Point2F(chevX, chevY + 2.0f), D2D1::Point2F(chevX + 3.5f, chevY - 2.0f), theme.brushTextPrimary.Get(), 1.4f);
         } else {
-            // Rightward triangle
             pRT->DrawLine(D2D1::Point2F(chevX - 2.0f, chevY - 3.5f), D2D1::Point2F(chevX + 2.0f, chevY), theme.brushTextPrimary.Get(), 1.4f);
             pRT->DrawLine(D2D1::Point2F(chevX + 2.0f, chevY), D2D1::Point2F(chevX - 2.0f, chevY + 3.5f), theme.brushTextPrimary.Get(), 1.4f);
         }
 
-        // Title: Changes (N)
-        std::wstring changesLabel = L"Changes";
-        if (!m_gitChanges.empty()) {
-            changesLabel += L" " + std::to_wstring(m_gitChanges.size());
-        }
-        D2D1_RECT_F rcChangesText = D2D1::RectF(chevX + config.ScaleF(12.0f), curY, railW + currentDrawerW - config.ScaleF(80.0f), curY + secH);
-        pRT->DrawText(changesLabel.c_str(), static_cast<UINT32>(changesLabel.length()),
-                      theme.fontMenuShortcut.Get(), rcChangesText, theme.brushTextPrimary.Get());
+        // Title: Changes (LEFT-ALIGNED right next to chevron, NOT on the right!)
+        D2D1_RECT_F rcChangesText = D2D1::RectF(chevX + config.ScaleF(12.0f), curY, chevX + config.ScaleF(70.0f), curY + secH);
+        pRT->DrawText(L"Changes", 7,
+                      theme.fontMenuItem.Get() ? theme.fontMenuItem.Get() : theme.fontButtonCenter.Get(),
+                      rcChangesText, theme.brushTextPrimary.Get());
 
-        // Header Action Buttons on right (Image 5): ✓ (Stage All), 🔄 (Discard All), ... (More)
+        // Header Action Buttons on right: ✓ (Stage All), 🔄 (Discard All), ... (More)
         float btnW = config.ScaleF(18.0f);
         float btnGap = config.ScaleF(4.0f);
-        float rightX = railW + currentDrawerW - config.ScaleF(12.0f);
+        float rightX = railW + currentDrawerW - config.ScaleF(10.0f);
 
         m_gitChangesMoreBounds = D2D1::RectF(rightX - btnW, curY + 2.0f, rightX, curY + secH - 2.0f);
         rightX -= (btnW + btnGap);
@@ -3270,6 +3274,22 @@ void DrawerPanel::RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, 
         rightX -= (btnW + btnGap);
 
         m_gitStageAllBounds = D2D1::RectF(rightX - btnW, curY + 2.0f, rightX, curY + secH - 2.0f);
+        rightX -= (btnW + btnGap);
+
+        // Circular count pill badge [ N ] (matching VS Code Image 4)
+        if (!m_gitChanges.empty()) {
+            float badgeW = config.ScaleF(18.0f);
+            float badgeH = config.ScaleF(16.0f);
+            D2D1_ROUNDED_RECT rrcBadge = D2D1::RoundedRect(
+                D2D1::RectF(rightX - badgeW, curY + (secH - badgeH) / 2.0f, rightX, curY + (secH + badgeH) / 2.0f),
+                8.0f, 8.0f
+            );
+            pRT->FillRoundedRectangle(rrcBadge, theme.brushItemHover.Get());
+            std::wstring cntStr = std::to_wstring(m_gitChanges.size());
+            pRT->DrawText(cntStr.c_str(), static_cast<UINT32>(cntStr.length()),
+                          theme.fontBadge.Get() ? theme.fontBadge.Get() : theme.fontMenuShortcut.Get(),
+                          rrcBadge.rect, theme.brushTextPrimary.Get());
+        }
 
         // Draw ✓ icon on m_gitStageAllBounds
         float ckX = (m_gitStageAllBounds.left + m_gitStageAllBounds.right) / 2.0f;
@@ -3280,7 +3300,7 @@ void DrawerPanel::RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, 
         // Draw 🔄 circular arrow on m_gitDiscardAllBounds
         float rcX = (m_gitDiscardAllBounds.left + m_gitDiscardAllBounds.right) / 2.0f;
         float rcY = (m_gitDiscardAllBounds.top + m_gitDiscardAllBounds.bottom) / 2.0f;
-        D2D1_ELLIPSE elDisc = D2D1::Ellipse(D2D1::Point2F(rcX, rcY), 4.2f, 4.2f);
+        D2D1_ELLIPSE elDisc = D2D1::Ellipse(D2D1::Point2F(rcX, rcY), 4.0f, 4.0f);
         pRT->DrawEllipse(elDisc, theme.brushTextMuted.Get(), 1.3f);
         pRT->DrawLine(D2D1::Point2F(rcX + 4.0f, rcY - 2.5f), D2D1::Point2F(rcX + 4.0f, rcY), theme.brushTextMuted.Get(), 1.3f);
 
@@ -3309,34 +3329,57 @@ void DrawerPanel::RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, 
                 m_focusedGitInput == 1 ? theme.brushBorderHover.Get() : theme.brushBorderSubtle.Get(),
                 m_focusedGitInput == 1 ? 1.4f : 1.0f);
 
-            // AI Generate Button inside message box on right
-            float genW = config.ScaleF(78.0f);
+            // AI Commit Message Sparkle Button (compact square with ✦ sparkle icon, NO "Generate" text!)
+            float btnSize = config.ScaleF(22.0f);
             m_gitGenerateAiBounds = D2D1::RectF(
-                m_gitMsgBoxBounds.right - genW - config.ScaleF(3.0f),
-                m_gitMsgBoxBounds.top + config.ScaleF(2.5f),
+                m_gitMsgBoxBounds.right - btnSize - config.ScaleF(3.0f),
+                m_gitMsgBoxBounds.top + (msgH - btnSize) / 2.0f,
                 m_gitMsgBoxBounds.right - config.ScaleF(3.0f),
-                m_gitMsgBoxBounds.bottom - config.ScaleF(2.5f)
+                m_gitMsgBoxBounds.top + (msgH - btnSize) / 2.0f + btnSize
             );
             D2D1_ROUNDED_RECT rrcGen = D2D1::RoundedRect(m_gitGenerateAiBounds, 3.0f, 3.0f);
-            pRT->FillRoundedRectangle(rrcGen, theme.brushItemActive.Get());
-            const wchar_t* genText = L"Generate 🪄";
-            pRT->DrawText(genText, static_cast<UINT32>(wcslen(genText)),
-                          theme.fontMenuShortcut.Get(), m_gitGenerateAiBounds, theme.brushBrandAccent.Get());
+            pRT->FillRoundedRectangle(rrcGen, theme.brushBrandAccent.Get());
 
-            // Message text or placeholder
+            // Vector 4-pointed Sparkle (✦) icon in crisp white
+            float scx = (m_gitGenerateAiBounds.left + m_gitGenerateAiBounds.right) / 2.0f;
+            float scy = (m_gitGenerateAiBounds.top + m_gitGenerateAiBounds.bottom) / 2.0f;
+            float sr = config.ScaleF(5.0f);
+            Microsoft::WRL::ComPtr<ID2D1PathGeometry> pSparkle;
+            Microsoft::WRL::ComPtr<ID2D1Factory> pFactory;
+            pRT->GetFactory(&pFactory);
+            if (pFactory && SUCCEEDED(pFactory->CreatePathGeometry(&pSparkle))) {
+                Microsoft::WRL::ComPtr<ID2D1GeometrySink> sink;
+                if (SUCCEEDED(pSparkle->Open(&sink))) {
+                    sink->BeginFigure(D2D1::Point2F(scx, scy - sr), D2D1_FIGURE_BEGIN_FILLED);
+                    sink->AddLine(D2D1::Point2F(scx + sr * 0.28f, scy - sr * 0.28f));
+                    sink->AddLine(D2D1::Point2F(scx + sr, scy));
+                    sink->AddLine(D2D1::Point2F(scx + sr * 0.28f, scy + sr * 0.28f));
+                    sink->AddLine(D2D1::Point2F(scx, scy + sr));
+                    sink->AddLine(D2D1::Point2F(scx - sr * 0.28f, scy + sr * 0.28f));
+                    sink->AddLine(D2D1::Point2F(scx - sr, scy));
+                    sink->AddLine(D2D1::Point2F(scx - sr * 0.28f, scy - sr * 0.28f));
+                    sink->EndFigure(D2D1_FIGURE_END_CLOSED);
+                    sink->Close();
+                    pRT->FillGeometry(pSparkle.Get(), theme.brushTextWhite.Get());
+                }
+            }
+
+            // Message text or placeholder (LEFT-ALIGNED)
             D2D1_RECT_F rcMsgText = D2D1::RectF(
-                m_gitMsgBoxBounds.left + config.ScaleF(6.0f),
+                m_gitMsgBoxBounds.left + config.ScaleF(8.0f),
                 m_gitMsgBoxBounds.top,
-                m_gitGenerateAiBounds.left - config.ScaleF(4.0f),
+                m_gitGenerateAiBounds.left - config.ScaleF(6.0f),
                 m_gitMsgBoxBounds.bottom
             );
             if (m_commitMessage.empty()) {
-                const wchar_t* phStr = L"Message (Ctrl+Enter to co...";
+                const wchar_t* phStr = L"Message (Ctrl+Enter to commit)";
                 pRT->DrawText(phStr, static_cast<UINT32>(wcslen(phStr)),
-                              theme.fontMenuShortcut.Get(), rcMsgText, theme.brushTextMuted.Get());
+                              theme.fontMenuItem.Get() ? theme.fontMenuItem.Get() : theme.fontButtonCenter.Get(),
+                              rcMsgText, theme.brushTextMuted.Get());
             } else {
                 pRT->DrawText(m_commitMessage.c_str(), static_cast<UINT32>(m_commitMessage.length()),
-                              theme.fontMenuShortcut.Get(), rcMsgText, theme.brushTextPrimary.Get());
+                              theme.fontMenuItem.Get() ? theme.fontMenuItem.Get() : theme.fontButtonCenter.Get(),
+                              rcMsgText, theme.brushTextPrimary.Get());
             }
 
             curY += msgH + config.ScaleF(6.0f);
@@ -3373,72 +3416,113 @@ void DrawerPanel::RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, 
             pRT->DrawLine(D2D1::Point2F(dchX - 3.0f, dchY - 1.5f), D2D1::Point2F(dchX, dchY + 2.0f), theme.brushTextWhite.Get(), 1.4f);
             pRT->DrawLine(D2D1::Point2F(dchX, dchY + 2.0f), D2D1::Point2F(dchX + 3.0f, dchY - 1.5f), theme.brushTextWhite.Get(), 1.4f);
 
-            curY += commitH + config.ScaleF(10.0f);
+            curY += commitH + config.ScaleF(8.0f);
 
-            // Changed Files Rows
-            if (m_gitChanges.empty()) {
-                D2D1_RECT_F rcNoCh = D2D1::RectF(railW + paddingX, curY, railW + currentDrawerW - paddingX, curY + 20.0f);
-                const wchar_t* noChStr = L"No changes detected";
-                pRT->DrawText(noChStr, static_cast<UINT32>(wcslen(noChStr)),
-                              theme.fontMenuShortcut.Get(), rcNoCh, theme.brushTextMuted.Get());
-                curY += config.ScaleF(24.0f);
-            } else {
-                float rowH = config.ScaleF(24.0f);
-                size_t displayCount = (std::min)(m_gitChanges.size(), static_cast<size_t>(6));
-                for (size_t i = 0; i < displayCount; ++i) {
-                    auto& item = m_gitChanges[i];
-                    item.bounds = D2D1::RectF(railW, curY, railW + currentDrawerW, curY + rowH);
+            // Changed Files Scrollable List (Bounded above draggable splitter)
+            float fileListTopY = curY;
+            float fileListBottomY = m_showGraphSection ? (m_gitSplitY - config.ScaleF(4.0f)) : clientHeight;
 
-                    // File icon glyph / extension
-                    D2D1_RECT_F rcIcon = D2D1::RectF(railW + config.ScaleF(16.0f), curY + 3.0f, railW + config.ScaleF(32.0f), curY + rowH - 3.0f);
-                    pRT->DrawText(L"📄", 2, theme.fontMenuShortcut.Get(), rcIcon, theme.brushTextMuted.Get());
+            if (fileListBottomY > fileListTopY) {
+                D2D1_RECT_F rcChangesClip = D2D1::RectF(railW, fileListTopY, railW + currentDrawerW, fileListBottomY);
+                pRT->PushAxisAlignedClip(rcChangesClip, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
 
-                    // File name and relative directory
-                    D2D1_RECT_F rcName = D2D1::RectF(
-                        railW + config.ScaleF(34.0f),
-                        curY,
-                        railW + currentDrawerW - config.ScaleF(48.0f),
-                        curY + rowH
-                    );
-                    pRT->DrawText(item.fileName.c_str(), static_cast<UINT32>(item.fileName.length()),
-                                  theme.fontMenuItem.Get() ? theme.fontMenuItem.Get() : theme.fontButtonCenter.Get(),
-                                  rcName, theme.brushTextPrimary.Get());
+                if (m_gitChanges.empty()) {
+                    D2D1_RECT_F rcNoCh = D2D1::RectF(railW + paddingX, fileListTopY, railW + currentDrawerW - paddingX, fileListTopY + 20.0f);
+                    const wchar_t* noChStr = L"No changes detected";
+                    pRT->DrawText(noChStr, static_cast<UINT32>(wcslen(noChStr)),
+                                  theme.fontMenuItem.Get() ? theme.fontMenuItem.Get() : theme.fontMenuShortcut.Get(),
+                                  rcNoCh, theme.brushTextMuted.Get());
+                } else {
+                    float rowH = config.ScaleF(24.0f);
+                    float itemY = fileListTopY;
+                    size_t startCh = (std::min)(m_gitChangesScrollIdx, m_gitChanges.empty() ? size_t(0) : m_gitChanges.size() - 1);
+                    for (size_t i = startCh; i < m_gitChanges.size() && itemY < fileListBottomY; ++i) {
+                        auto& item = m_gitChanges[i];
+                        item.bounds = D2D1::RectF(railW, itemY, railW + currentDrawerW, itemY + rowH);
 
-                    // Status letter (M = yellow, U/A = green, D = red)
-                    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushStatus;
-                    if (item.status.find(L"M") != std::wstring::npos) {
-                        pRT->CreateSolidColorBrush(D2D1::ColorF(0.898f, 0.753f, 0.482f, 1.0f), &brushStatus); // #E5C07B
-                    } else if (item.status.find(L"D") != std::wstring::npos) {
-                        pRT->CreateSolidColorBrush(D2D1::ColorF(0.878f, 0.424f, 0.459f, 1.0f), &brushStatus); // #E06C75
-                    } else {
-                        pRT->CreateSolidColorBrush(D2D1::ColorF(0.596f, 0.765f, 0.475f, 1.0f), &brushStatus); // #98C379
+                        // Row hover background
+                        if (static_cast<int>(i) == m_hoveredGitChangeIdx) {
+                            pRT->FillRectangle(item.bounds, theme.brushItemHover.Get());
+                        }
+
+                        // 1. Authentic Seti UI File Icon with brand color (Image 4 & 5)
+                        float iconX = railW + config.ScaleF(14.0f);
+                        D2D1_RECT_F rcIcon = D2D1::RectF(
+                            iconX,
+                            itemY + config.ScaleF(4.0f),
+                            iconX + config.ScaleF(16.0f),
+                            itemY + rowH - config.ScaleF(4.0f)
+                        );
+                        auto setiInfo = theme.GetSetiIcon(item.fileName, false, false);
+                        if (theme.fontSeti && setiInfo.pBrush) {
+                            pRT->DrawText(&setiInfo.glyph, 1, theme.fontSeti.Get(), rcIcon, setiInfo.pBrush);
+                        } else {
+                            auto iconType = LucideIcons::GetIconTypeForPath(item.fileName, false, false);
+                            m_icons.DrawFileIcon(pRT, theme, rcIcon, iconType);
+                        }
+
+                        // 2. File Name (LEFT-ALIGNED)
+                        float nameX = iconX + config.ScaleF(20.0f);
+                        D2D1_RECT_F rcName = D2D1::RectF(
+                            nameX,
+                            itemY,
+                            railW + currentDrawerW - config.ScaleF(46.0f),
+                            itemY + rowH
+                        );
+                        pRT->DrawText(item.fileName.c_str(), static_cast<UINT32>(item.fileName.length()),
+                                      theme.fontMenuItem.Get() ? theme.fontMenuItem.Get() : theme.fontButtonCenter.Get(),
+                                      rcName, theme.brushTextPrimary.Get());
+
+                        // 3. Status letter (M = yellow #E5C07B, D = red #E06C75, U/A/R = green #98C379)
+                        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushStatus;
+                        if (item.status.find(L"M") != std::wstring::npos) {
+                            pRT->CreateSolidColorBrush(D2D1::ColorF(0.898f, 0.753f, 0.482f, 1.0f), &brushStatus);
+                        } else if (item.status.find(L"D") != std::wstring::npos) {
+                            pRT->CreateSolidColorBrush(D2D1::ColorF(0.878f, 0.424f, 0.459f, 1.0f), &brushStatus);
+                        } else {
+                            pRT->CreateSolidColorBrush(D2D1::ColorF(0.596f, 0.765f, 0.475f, 1.0f), &brushStatus);
+                        }
+
+                        D2D1_RECT_F rcStatus = D2D1::RectF(
+                            railW + currentDrawerW - config.ScaleF(26.0f),
+                            itemY,
+                            railW + currentDrawerW - config.ScaleF(10.0f),
+                            itemY + rowH
+                        );
+                        const wchar_t* statChar = item.status.empty() ? L"M" : item.status.c_str();
+                        pRT->DrawText(statChar, 1,
+                                      theme.fontButtonCenter.Get() ? theme.fontButtonCenter.Get() : theme.fontMenuItem.Get(),
+                                      rcStatus, brushStatus.Get());
+
+                        // 4. Stage (+) and Discard (↩) buttons on row hover
+                        item.stageBtnBounds = D2D1::RectF(railW + currentDrawerW - config.ScaleF(46.0f), itemY + 3.0f, railW + currentDrawerW - config.ScaleF(32.0f), itemY + rowH - 3.0f);
+                        item.discardBtnBounds = D2D1::RectF(railW + currentDrawerW - config.ScaleF(30.0f), itemY + 3.0f, railW + currentDrawerW - config.ScaleF(16.0f), itemY + rowH - 3.0f);
+
+                        itemY += rowH;
                     }
-
-                    D2D1_RECT_F rcStatus = D2D1::RectF(
-                        railW + currentDrawerW - config.ScaleF(28.0f),
-                        curY,
-                        railW + currentDrawerW - config.ScaleF(12.0f),
-                        curY + rowH
-                    );
-                    const wchar_t* statChar = item.status.empty() ? L"M" : item.status.c_str();
-                    pRT->DrawText(statChar, 1, theme.fontButtonCenter.Get() ? theme.fontButtonCenter.Get() : theme.fontMenuItem.Get(),
-                                  rcStatus, brushStatus.Get());
-
-                    // Stage (+) and Discard (↩) buttons on row
-                    item.stageBtnBounds = D2D1::RectF(railW + currentDrawerW - config.ScaleF(46.0f), curY + 3.0f, railW + currentDrawerW - config.ScaleF(32.0f), curY + rowH - 3.0f);
-                    item.discardBtnBounds = D2D1::RectF(railW + currentDrawerW - config.ScaleF(30.0f), curY + 3.0f, railW + currentDrawerW - config.ScaleF(16.0f), curY + rowH - 3.0f);
-
-                    curY += rowH;
                 }
+
+                pRT->PopAxisAlignedClip();
             }
         }
     }
 
     // =========================================================================
-    // 4. Section 2: "Graph" (Images 2 & 3)
+    // 4. Draggable Splitter & Section 2: "Graph" (Images 2 & 3)
     // =========================================================================
     if (m_showGraphSection) {
-        float secH = config.ScaleF(24.0f);
+        if (m_showChangesSection) {
+            curY = m_gitSplitY;
+
+            // Draw horizontal splitter divider line
+            pRT->DrawLine(
+                D2D1::Point2F(railW, m_gitSplitY),
+                D2D1::Point2F(railW + currentDrawerW, m_gitSplitY),
+                theme.brushBorderSubtle.Get(), 1.0f
+            );
+            m_gitSplitterBounds = D2D1::RectF(railW, m_gitSplitY - 4.0f, railW + currentDrawerW, m_gitSplitY + 4.0f);
+        }
+
         m_gitGraphHeaderBounds = D2D1::RectF(railW, curY, railW + currentDrawerW, curY + secH);
 
         // Chevron (v or >)
@@ -3454,11 +3538,12 @@ void DrawerPanel::RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, 
             pRT->DrawLine(D2D1::Point2F(chevX + 2.0f, chevY), D2D1::Point2F(chevX - 2.0f, chevY + 3.5f), theme.brushTextPrimary.Get(), 1.4f);
         }
 
-        // Title: Graph
-        D2D1_RECT_F rcGraphTitle = D2D1::RectF(chevX + config.ScaleF(12.0f), curY, railW + config.ScaleF(80.0f), curY + secH);
+        // Title: Graph (LEFT-ALIGNED right next to chevron)
+        D2D1_RECT_F rcGraphTitle = D2D1::RectF(chevX + config.ScaleF(12.0f), curY, chevX + config.ScaleF(60.0f), curY + secH);
         const wchar_t* graphTitleStr = L"Graph";
         pRT->DrawText(graphTitleStr, static_cast<UINT32>(wcslen(graphTitleStr)),
-                      theme.fontMenuShortcut.Get(), rcGraphTitle, theme.brushTextPrimary.Get());
+                      theme.fontMenuItem.Get() ? theme.fontMenuItem.Get() : theme.fontButtonCenter.Get(),
+                      rcGraphTitle, theme.brushTextPrimary.Get());
 
         // Header Action Toolbar on right (Images 2 & 3): Auto, ◎, ⑂, ⑃, ↑, 🔄, ...
         float tbW = config.ScaleF(18.0f);
@@ -3479,7 +3564,7 @@ void DrawerPanel::RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, 
         rightX -= (tbW + tbGap);
         float grx = (m_gitGraphRefreshBounds.left + m_gitGraphRefreshBounds.right) / 2.0f;
         float gry = (m_gitGraphRefreshBounds.top + m_gitGraphRefreshBounds.bottom) / 2.0f;
-        pRT->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(grx, gry), 4.2f, 4.2f), theme.brushTextMuted.Get(), 1.3f);
+        pRT->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(grx, gry), 4.0f, 4.0f), theme.brushTextMuted.Get(), 1.3f);
         pRT->DrawLine(D2D1::Point2F(grx + 4.0f, gry - 2.5f), D2D1::Point2F(grx + 4.0f, gry), theme.brushTextMuted.Get(), 1.3f);
 
         // ↑ Push
@@ -3522,20 +3607,21 @@ void DrawerPanel::RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, 
         float autoW = config.ScaleF(32.0f);
         m_gitGraphAutoBounds = D2D1::RectF(rightX - autoW, curY + 2.0f, rightX, curY + secH - 2.0f);
         const wchar_t* autoStr = L"Auto";
-        pRT->DrawText(autoStr, 4, theme.fontMenuShortcut.Get(), m_gitGraphAutoBounds,
+        pRT->DrawText(autoStr, 4,
+                      theme.fontButtonCenter.Get() ? theme.fontButtonCenter.Get() : theme.fontMenuItem.Get(),
+                      m_gitGraphAutoBounds,
                       m_gitAutoRefresh ? theme.brushBrandAccent.Get() : theme.brushTextMuted.Get());
 
         curY += secH + config.ScaleF(4.0f);
 
         if (m_graphExpanded) {
-            // Clip to Graph scrollable area
+            // Clip to Graph scrollable area (cleanly bounded, never spills over)
             D2D1_RECT_F rcGraphClip = D2D1::RectF(railW, curY, railW + currentDrawerW, clientHeight);
             pRT->PushAxisAlignedClip(rcGraphClip, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
 
             float rowH = config.ScaleF(26.0f);
             float timelineX = railW + config.ScaleF(24.0f);
 
-            // Connective graph line brush
             Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushLine;
             pRT->CreateSolidColorBrush(D2D1::ColorF(0.0f, 0.471f, 0.831f, 0.75f), &brushLine);
 
@@ -3549,7 +3635,7 @@ void DrawerPanel::RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, 
             pRT->CreateSolidColorBrush(D2D1::ColorF(0.122f, 0.231f, 0.373f, 0.85f), &brushBranchBadge);
 
             Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushCloud;
-            pRT->CreateSolidColorBrush(D2D1::ColorF(0.741f, 0.576f, 0.976f, 1.0f), &brushCloud); // purple cloud #BD93F9
+            pRT->CreateSolidColorBrush(D2D1::ColorF(0.741f, 0.576f, 0.976f, 1.0f), &brushCloud);
 
             size_t startIdx = (std::min)(m_gitGraphScrollIdx, m_gitCommits.empty() ? size_t(0) : m_gitCommits.size() - 1);
             for (size_t i = startIdx; i < m_gitCommits.size() && curY < clientHeight; ++i) {
@@ -3589,7 +3675,7 @@ void DrawerPanel::RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, 
 
                     // Badge text
                     pRT->DrawText(branchBadgeText.c_str(), static_cast<UINT32>(branchBadgeText.length()),
-                                  theme.fontMenuShortcut.Get(),
+                                  theme.fontMenuItem.Get() ? theme.fontMenuItem.Get() : theme.fontButtonCenter.Get(),
                                   D2D1::RectF(textLeft + 3.0f, nodeY - bH / 2.0f, textLeft + bW - 14.0f, nodeY + bH / 2.0f),
                                   brushHeadNode.Get());
 
@@ -3602,15 +3688,16 @@ void DrawerPanel::RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, 
                     textLeft += bW + config.ScaleF(8.0f);
                 }
 
-                // Commit message text
+                // Commit message text (LEFT-ALIGNED, never overlapping or backwards)
                 D2D1_RECT_F rcMsg = D2D1::RectF(
                     textLeft,
                     curY,
-                    railW + currentDrawerW - config.ScaleF(12.0f),
+                    railW + currentDrawerW - config.ScaleF(10.0f),
                     curY + rowH
                 );
                 pRT->DrawText(ci.message.c_str(), static_cast<UINT32>(ci.message.length()),
-                              theme.fontMenuShortcut.Get(), rcMsg, theme.brushTextPrimary.Get());
+                              theme.fontMenuItem.Get() ? theme.fontMenuItem.Get() : theme.fontButtonCenter.Get(),
+                              rcMsg, theme.brushTextPrimary.Get());
 
                 curY += rowH;
             }
@@ -3620,54 +3707,90 @@ void DrawerPanel::RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, 
     }
 
     // =========================================================================
-    // 5. Top View Dropdown Menu (Image 3: Repositories, ✓ Changes, ✓ Graph)
+    // 5. Floating Popup Menus (Header Views, Changes More, Graph More)
     // =========================================================================
-    if (m_showGitViewMenu) {
-        float menuW = config.ScaleF(138.0f);
-        float menuH = config.ScaleF(78.0f);
-        m_gitViewMenuBounds = D2D1::RectF(
-            m_gitHeaderMoreBounds.right - menuW,
-            m_gitHeaderMoreBounds.bottom + config.ScaleF(2.0f),
-            m_gitHeaderMoreBounds.right,
-            m_gitHeaderMoreBounds.bottom + config.ScaleF(2.0f) + menuH
-        );
+    if (m_activeGitMenu != GitMenuType::None || m_showGitViewMenu) {
+        m_gitMenuItems.clear();
+        D2D1_RECT_F anchor = m_gitHeaderMoreBounds;
+        float menuW = config.ScaleF(150.0f);
 
-        D2D1_ROUNDED_RECT rrcMenu = D2D1::RoundedRect(m_gitViewMenuBounds, 4.0f, 4.0f);
+        if (m_activeGitMenu == GitMenuType::ChangesMore) {
+            anchor = m_gitChangesMoreBounds;
+            menuW = config.ScaleF(170.0f);
+            m_gitMenuItems.push_back({ 10, L"✓  Stage All Changes" });
+            m_gitMenuItems.push_back({ 11, L"🔄 Discard All Changes" });
+            m_gitMenuItems.push_back({ 12, L"📦 Stash Changes" });
+            m_gitMenuItems.push_back({ 0,  L"", false, true }); // separator
+            m_gitMenuItems.push_back({ 14, L"🔄 Refresh Status" });
+        } else if (m_activeGitMenu == GitMenuType::GraphMore) {
+            anchor = m_gitGraphMoreBounds;
+            menuW = config.ScaleF(170.0f);
+            m_gitMenuItems.push_back({ 20, L"🔄 Refresh Graph" });
+            m_gitMenuItems.push_back({ 21, L"↑  Push Commits" });
+            m_gitMenuItems.push_back({ 22, L"↓  Pull Commits" });
+            m_gitMenuItems.push_back({ 23, L"☁  Fetch All Remotes" });
+        } else {
+            // Header Views
+            anchor = m_gitHeaderMoreBounds;
+            menuW = config.ScaleF(145.0f);
+            m_gitMenuItems.push_back({ 1, L"Repositories", true }); // header
+            m_gitMenuItems.push_back({ 2, m_showChangesSection ? L"✓  Changes" : L"    Changes", false, false, m_showChangesSection });
+            m_gitMenuItems.push_back({ 3, m_showGraphSection ? L"✓  Graph" : L"    Graph", false, false, m_showGraphSection });
+            m_gitMenuItems.push_back({ 0, L"", false, true }); // separator
+            m_gitMenuItems.push_back({ 5, L"🔄 Refresh All" });
+        }
+
+        float itemH = config.ScaleF(24.0f);
+        float menuH = config.ScaleF(8.0f);
+        for (const auto& itm : m_gitMenuItems) {
+            menuH += itm.isSeparator ? config.ScaleF(6.0f) : itemH;
+        }
+
+        float menuRight = (std::min)(anchor.right, railW + currentDrawerW - config.ScaleF(4.0f));
+        float menuLeft = menuRight - menuW;
+        if (menuLeft < railW + config.ScaleF(4.0f)) menuLeft = railW + config.ScaleF(4.0f);
+        float menuTop = anchor.bottom + config.ScaleF(2.0f);
+        if (menuTop + menuH > clientHeight) menuTop = anchor.top - menuH - config.ScaleF(2.0f);
+
+        m_gitMenuBounds = D2D1::RectF(menuLeft, menuTop, menuLeft + menuW, menuTop + menuH);
+        m_gitViewMenuBounds = m_gitMenuBounds; // Backwards compatibility for tests
+
+        D2D1_ROUNDED_RECT rrcMenu = D2D1::RoundedRect(m_gitMenuBounds, 4.0f, 4.0f);
         pRT->FillRoundedRectangle(rrcMenu, theme.brushMenuBg.Get());
         pRT->DrawRoundedRectangle(rrcMenu, theme.brushMenuBorder.Get(), 1.0f);
 
-        float itemH = menuH / 3.0f;
-        float itemY = m_gitViewMenuBounds.top;
+        float itemY = menuTop + config.ScaleF(4.0f);
+        for (size_t i = 0; i < m_gitMenuItems.size(); ++i) {
+            auto& itm = m_gitMenuItems[i];
+            if (itm.isSeparator) {
+                float lineY = itemY + config.ScaleF(3.0f);
+                pRT->DrawLine(D2D1::Point2F(menuLeft + 6.0f, lineY), D2D1::Point2F(menuLeft + menuW - 6.0f, lineY),
+                              theme.brushBorderSubtle.Get(), 1.0f);
+                itemY += config.ScaleF(6.0f);
+            } else {
+                itm.bounds = D2D1::RectF(menuLeft + 3.0f, itemY, menuLeft + menuW - 3.0f, itemY + itemH);
+                if (itm.id == 2) m_gitViewMenuChangesBounds = itm.bounds;
+                if (itm.id == 3) m_gitViewMenuGraphBounds = itm.bounds;
 
-        // Row 1: "Repositories" (disabled title)
-        D2D1_RECT_F rcRep = D2D1::RectF(m_gitViewMenuBounds.left + config.ScaleF(14.0f), itemY, m_gitViewMenuBounds.right, itemY + itemH);
-        const wchar_t* repStr = L"Repositories";
-        pRT->DrawText(repStr, static_cast<UINT32>(wcslen(repStr)),
-                      theme.fontMenuShortcut.Get(), rcRep, theme.brushTextMuted.Get());
-        itemY += itemH;
+                if (!itm.isHeader && static_cast<int>(i) == m_hoveredGitMenuItem) {
+                    D2D1_ROUNDED_RECT rrcHover = D2D1::RoundedRect(itm.bounds, 3.0f, 3.0f);
+                    pRT->FillRoundedRectangle(rrcHover, theme.brushItemHover.Get());
+                }
 
-        // Row 2: "✓ Changes"
-        m_gitViewMenuChangesBounds = D2D1::RectF(m_gitViewMenuBounds.left, itemY, m_gitViewMenuBounds.right, itemY + itemH);
-        std::wstring chText = (m_showChangesSection ? L"✓  Changes" : L"    Changes");
-        pRT->DrawText(chText.c_str(), static_cast<UINT32>(chText.length()),
-                      theme.fontMenuItem.Get() ? theme.fontMenuItem.Get() : theme.fontButtonCenter.Get(),
-                      D2D1::RectF(m_gitViewMenuBounds.left + config.ScaleF(10.0f), itemY, m_gitViewMenuBounds.right, itemY + itemH),
-                      theme.brushTextPrimary.Get());
-        itemY += itemH;
-
-        // Row 3: "✓ Graph"
-        m_gitViewMenuGraphBounds = D2D1::RectF(m_gitViewMenuBounds.left, itemY, m_gitViewMenuBounds.right, itemY + itemH);
-        std::wstring grText = (m_showGraphSection ? L"✓  Graph" : L"    Graph");
-        pRT->DrawText(grText.c_str(), static_cast<UINT32>(grText.length()),
-                      theme.fontMenuItem.Get() ? theme.fontMenuItem.Get() : theme.fontButtonCenter.Get(),
-                      D2D1::RectF(m_gitViewMenuBounds.left + config.ScaleF(10.0f), itemY, m_gitViewMenuBounds.right, itemY + itemH),
-                      theme.brushTextPrimary.Get());
+                D2D1_RECT_F rcItemText = D2D1::RectF(itm.bounds.left + config.ScaleF(8.0f), itm.bounds.top,
+                                                     itm.bounds.right - config.ScaleF(6.0f), itm.bounds.bottom);
+                pRT->DrawText(itm.label.c_str(), static_cast<UINT32>(itm.label.length()),
+                              theme.fontMenuItem.Get() ? theme.fontMenuItem.Get() : theme.fontButtonCenter.Get(),
+                              rcItemText, itm.isHeader ? theme.brushTextMuted.Get() : theme.brushTextPrimary.Get());
+                itemY += itemH;
+            }
+        }
     }
 
     // =========================================================================
-    // 6. Floating Tooltip Rendering
+    // 6. Floating Tooltip Rendering (Only when menus are closed)
     // =========================================================================
-    if (m_showGitTooltip && !m_gitTooltipText.empty()) {
+    if (m_showGitTooltip && !m_gitTooltipText.empty() && m_activeGitMenu == GitMenuType::None) {
         float tipPadX = config.ScaleF(8.0f);
         float tipPadY = config.ScaleF(4.0f);
         float tipW = (std::min)(config.ScaleF(260.0f), config.ScaleF(static_cast<float>(m_gitTooltipText.length() * 7 + 16)));
@@ -3685,7 +3808,8 @@ void DrawerPanel::RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, 
 
         D2D1_RECT_F rcTipText = D2D1::RectF(tipX + tipPadX, tipY + tipPadY, tipX + tipW - tipPadX, tipY + tipH - tipPadY);
         pRT->DrawText(m_gitTooltipText.c_str(), static_cast<UINT32>(m_gitTooltipText.length()),
-                      theme.fontMenuShortcut.Get(), rcTipText, theme.brushTooltipText.Get());
+                      theme.fontMenuItem.Get() ? theme.fontMenuItem.Get() : theme.fontButtonCenter.Get(),
+                      rcTipText, theme.brushTooltipText.Get());
     }
 }
 

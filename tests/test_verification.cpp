@@ -1836,7 +1836,19 @@ int main() {
         assert(gitDrawer.GetGitTooltipText() == L"Views and More Actions...");
         std::cout << "  Passed: Tooltip system on all Source Control buttons verified" << std::endl;
 
-        // 6. Test Views Menu Dropdown (Image 3)
+        // 6. Test Draggable Splitter between Changes and Graph (Image 2 & 3)
+        float initialSplit = gitDrawer.GetGitSplitY();
+        assert(initialSplit > 100.0f);
+        POINT ptSplit = {
+            static_cast<LONG>(cfg.ScaleF(static_cast<float>(cfg.railWidth)) + 80.0f),
+            static_cast<LONG>(initialSplit)
+        };
+        assert(gitDrawer.HitTestGitSplitter(ptSplit));
+        gitDrawer.SetGitSplitY(310.0f, 100.0f, 600.0f);
+        assert(gitDrawer.GetGitSplitY() == 310.0f);
+        std::cout << "  Passed: Vertical draggable splitter between Changes and Graph verified" << std::endl;
+
+        // 7. Test Views Menu Dropdown (Image 3)
         std::wstring openFile;
         bool hitMore = gitDrawer.HitTestGit(ptHeaderMore, cfg, openFile);
         assert(hitMore);
