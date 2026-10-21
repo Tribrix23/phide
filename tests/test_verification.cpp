@@ -1932,6 +1932,65 @@ int main() {
         frameExp->Commit();
         encExp->Commit();
         std::cout << "  Passed: Saved test_source_control_commit_details_expanded.png" << std::endl;
+
+        // 11. Test Commit Expansion Persistence across Background Polls (Complaint 2)
+        assert(gitDrawer.GetGitCommits()[0].isExpanded);
+        gitDrawer.RefreshGitState(false); // Synchronous refresh
+        assert(gitDrawer.GetGitCommits()[0].isExpanded);
+        assert(!gitDrawer.GetGitCommits()[0].files.empty());
+        std::cout << "  Passed: Commit expansion persistence across background polls verified" << std::endl;
+
+        // 12. Test Refusal to Commit with Empty Message (Complaint 5 & 7)
+        gitDrawer.SetCommitMessage(L"   ");
+        gitDrawer.CommitChangesAsync(L"   ");
+        assert(gitDrawer.IsGitCommitBoxFocused());
+        assert(gitDrawer.IsGitTooltipVisible());
+        assert(gitDrawer.GetGitTooltipText() == L"Please provide a commit message before committing.");
+        std::cout << "  Passed: Cannot commit without message strictly verified" << std::endl;
+
+        // 13. Test Splitter Persistence across Render (Complaint 7)
+        gitDrawer.SetGitSplitY(260.0f, 100.0f, 600.0f);
+        assert(gitDrawer.GetGitSplitY() == 260.0f);
+        pGitRT->BeginDraw();
+        gitDrawer.Render(pGitRT.Get(), theme, cfg, 750.0f, 280.0f);
+        pGitRT->EndDraw();
+        assert(gitDrawer.GetGitSplitY() == 260.0f); // Did not reset to 0.46f!
+        std::cout << "  Passed: Draggable splitter position persistence verified" << std::endl;
+
+        // 14. Test Git Diff Line Computation & Deleted File Content Fetch (Complaint 8)
+        std::set<size_t> addedLines, deletedLines;
+        gitDrawer.ComputeGitDiffLines(L"src/ui/ActivityRail.cpp", addedLines, deletedLines);
+        assert(!addedLines.empty());
+        std::cout << "  Passed: Git diff computation detected " << addedLines.size() << " added lines in working directory" << std::endl;
+
+        std::wstring headContent = gitDrawer.GetGitFileContent(L"include/phide/ui/DrawerPanel.hpp");
+        assert(!headContent.empty());
+        assert(headContent.find(L"DrawerPanel") != std::wstring::npos);
+        std::cout << "  Passed: Git show HEAD file content fetch verified (" << headContent.size() << " chars)" << std::endl;
+
+        // 15. Test Activity Rail Git Changes Badge (Complaint 3)
+        rail.SetGitBadgeCount(gitDrawer.GetGitChanges().size());
+        pGitRT->BeginDraw();
+        pGitRT->Clear(D2D1::ColorF(0.12f, 0.12f, 0.12f, 1.0f));
+        rail.Render(pGitRT.Get(), theme, cfg, 750.0f);
+        gitDrawer.Render(pGitRT.Get(), theme, cfg, 750.0f, 280.0f);
+        pGitRT->EndDraw();
+
+        ComPtr<IWICStream> pStreamBadge;
+        pWicFactory->CreateStream(&pStreamBadge);
+        pStreamBadge->InitializeFromFilename((artDir + L"test_git_ux_fixes_complete.png").c_str(), GENERIC_WRITE);
+        ComPtr<IWICBitmapEncoder> encBadge;
+        pWicFactory->CreateEncoder(GUID_ContainerFormatPng, nullptr, &encBadge);
+        encBadge->Initialize(pStreamBadge.Get(), WICBitmapEncoderNoCache);
+        ComPtr<IWICBitmapFrameEncode> frameBadge;
+        encBadge->CreateNewFrame(&frameBadge, nullptr);
+        frameBadge->Initialize(nullptr);
+        frameBadge->SetSize(1200, 750);
+        frameBadge->SetPixelFormat(&format);
+        frameBadge->WriteSource(pWicGitBmp.Get(), nullptr);
+        frameBadge->Commit();
+        encBadge->Commit();
+        std::cout << "  Passed: Saved test_git_ux_fixes_complete.png" << std::endl;
     }
 
     std::cout << "\n==========================================" << std::endl;

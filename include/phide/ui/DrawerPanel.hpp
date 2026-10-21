@@ -14,6 +14,7 @@
 #include <vector>
 #include <string>
 #include <set>
+#include <map>
 #include <filesystem>
 #include <mutex>
 #include <atomic>
@@ -136,8 +137,19 @@ public:
     void StageFileAsync(const std::wstring& relPath);
     void DiscardFileAsync(const std::wstring& relPath);
     void CommitChangesAsync(const std::wstring& message);
+    void UncommitLastCommitAsync();
     void PushCommitsAsync();
     void GenerateAiCommitMessage();
+    void SetCommitMessage(const std::wstring& msg) {
+        std::lock_guard<std::mutex> lock(m_gitMutex);
+        m_commitMessage = msg;
+    }
+    [[nodiscard]] std::wstring GetCommitMessage() const {
+        std::lock_guard<std::mutex> lock(m_gitMutex);
+        return m_commitMessage;
+    }
+    [[nodiscard]] std::wstring GetGitFileContent(const std::wstring& relPath);
+    void ComputeGitDiffLines(const std::wstring& relPath, std::set<size_t>& outAdded, std::set<size_t>& outDeleted);
     bool HitTestGit(POINT pt, const app::AppConfig& config, std::wstring& outOpenFile, std::wstring& outDiscardedFile);
     bool HitTestGit(POINT pt, const app::AppConfig& config, std::wstring& outOpenFile) {
         std::wstring dummy;
@@ -152,6 +164,7 @@ public:
     void SetGitSplitY(float y, float minY, float maxY) noexcept;
     [[nodiscard]] float GetGitSplitY() const noexcept { return m_gitSplitY; }
 
+    [[nodiscard]] bool IsGitRepo() const noexcept { return m_isGitRepo; }
     [[nodiscard]] bool IsGitLoading() const noexcept { return m_isGitLoading.load(); }
     void UpdateGitLoadingAnim(float deltaAngle) noexcept { m_gitAnimAngle += deltaAngle; }
     [[nodiscard]] bool IsGitCommitBoxFocused() const noexcept { return m_focusedGitInput == 1; }
@@ -421,7 +434,7 @@ private:
     std::vector<GitCommitItem> m_gitCommits;
     std::atomic<bool> m_isGitLoading{false};
     float m_gitAnimAngle = 0.0f;
-    std::mutex m_gitMutex;
+    mutable std::mutex m_gitMutex;
 
     bool m_showChangesSection = true;
     bool m_showGraphSection = true;
@@ -433,6 +446,7 @@ private:
     int m_focusedGitInput = 0; // 0 = none, 1 = commit message input box
     bool m_gitCaretVisible = true;
     int m_unpushedCommitsCount = 0;
+    std::set<std::wstring> m_expandedCommitHashes;
 
     // Hit-testing bounds
     D2D1_RECT_F m_gitHeaderMoreBounds{};

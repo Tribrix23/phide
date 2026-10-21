@@ -897,6 +897,33 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
         float lineY = topY + config.ScaleF(6.0f) + (v - doc.scrollLine) * lineH;
         if (lineY + lineH < topY || lineY > clientHeight) continue;
 
+        // Git Diff Line Highlights (Image 5)
+        if (doc.isDiffView || doc.isDeletedInGit) {
+            if (doc.isDeletedInGit || doc.diffDeletedLines.count(vl.bufferLine)) {
+                // Red background for deleted lines / deleted file
+                D2D1_RECT_F rcDiffLine = D2D1::RectF(canvasLeft + gutterW, lineY, canvasRight - scrollbarW, lineY + lineH);
+                Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushDiffRed;
+                pRT->CreateSolidColorBrush(D2D1::ColorF(0.55f, 0.18f, 0.20f, 0.25f), &brushDiffRed);
+                pRT->FillRectangle(rcDiffLine, brushDiffRed.Get());
+
+                D2D1_RECT_F rcGutterBar = D2D1::RectF(canvasLeft + gutterW - config.ScaleF(3.0f), lineY, canvasLeft + gutterW, lineY + lineH);
+                Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushRedBar;
+                pRT->CreateSolidColorBrush(D2D1::ColorF(0.878f, 0.424f, 0.459f, 1.0f), &brushRedBar);
+                pRT->FillRectangle(rcGutterBar, brushRedBar.Get());
+            } else if (doc.diffAddedLines.count(vl.bufferLine)) {
+                // Green background for added lines
+                D2D1_RECT_F rcDiffLine = D2D1::RectF(canvasLeft + gutterW, lineY, canvasRight - scrollbarW, lineY + lineH);
+                Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushDiffGreen;
+                pRT->CreateSolidColorBrush(D2D1::ColorF(0.18f, 0.45f, 0.20f, 0.25f), &brushDiffGreen);
+                pRT->FillRectangle(rcDiffLine, brushDiffGreen.Get());
+
+                D2D1_RECT_F rcGutterBar = D2D1::RectF(canvasLeft + gutterW - config.ScaleF(3.0f), lineY, canvasLeft + gutterW, lineY + lineH);
+                Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushGreenBar;
+                pRT->CreateSolidColorBrush(D2D1::ColorF(0.596f, 0.765f, 0.475f, 1.0f), &brushGreenBar);
+                pRT->FillRectangle(rcGutterBar, brushGreenBar.Get());
+            }
+        }
+
         // Line Number in Gutter (Right-aligned)
         std::wstring lineNumStr = std::to_wstring(vl.bufferLine + 1);
         D2D1_RECT_F rcNum = D2D1::RectF(

@@ -90,11 +90,14 @@ public:
     void SetGitLoading(bool loading) noexcept { m_isGitLoading = loading; }
     [[nodiscard]] bool IsGitLoading() const noexcept { return m_isGitLoading; }
     void UpdateGitAnim(float deltaAngle) noexcept { m_gitAnimAngle += deltaAngle; }
+    void SetGitBadgeCount(size_t count) noexcept { m_gitBadgeCount = count; }
+    [[nodiscard]] size_t GetGitBadgeCount() const noexcept { return m_gitBadgeCount; }
 
 private:
     RailTabId m_hoveredTab = RailTabId::None;
     bool m_isGitLoading = false;
     float m_gitAnimAngle = 0.0f;
+    size_t m_gitBadgeCount = 0;
     std::vector<RailItem> m_items;
     LucideIcons m_lucide;
 

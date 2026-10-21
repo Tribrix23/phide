@@ -262,6 +262,7 @@ void Window::SaveSessionState() {
     out << L"{\n";
     out << L"  \"isSidebarOpen\": " << (m_config.isDrawerOpen ? L"true" : L"false") << L",\n";
     out << L"  \"activeRailTab\": " << m_config.activeRailTab << L",\n";
+    out << L"  \"gitSplitY\": " << m_drawer.GetGitSplitY() << L",\n";
     out << L"  \"themeMode\": " << static_cast<int>(m_theme.GetThemeMode()) << L",\n";
     out << L"  \"activeDocIdx\": " << GetActiveGroup().activeDocIdx << L",\n";
     if (m_drawer.HasOpenFolder()) {
@@ -307,6 +308,7 @@ void Window::LoadSessionState() {
 
     bool isSidebarOpen = true;
     int activeRailTab = 0;
+    float savedGitSplitY = 320.0f;
     int themeMode = 0;
     int savedActiveDocIdx = -1;
     std::wstring lastOpenFolder;
@@ -327,6 +329,11 @@ void Window::LoadSessionState() {
             auto colon = line.find(L':');
             if (colon != std::wstring::npos) {
                 activeRailTab = _wtoi(line.substr(colon + 1).c_str());
+            }
+        } else if (line.find(L"\"gitSplitY\"") != std::wstring::npos) {
+            auto colon = line.find(L':');
+            if (colon != std::wstring::npos) {
+                savedGitSplitY = static_cast<float>(_wtof(line.substr(colon + 1).c_str()));
             }
         } else if (line.find(L"\"themeMode\"") != std::wstring::npos) {
             auto colon = line.find(L':');
@@ -387,6 +394,10 @@ void Window::LoadSessionState() {
     }
 
     m_config.activeRailTab = activeRailTab;
+    if (savedGitSplitY > 100.0f) {
+        m_config.gitSplitY = savedGitSplitY;
+        m_drawer.SetGitSplitY(savedGitSplitY, 100.0f, 2000.0f);
+    }
 
     // Apply restored theme mode with bounds validation (0-12 for all 13 supported themes)
     if (themeMode < 0 || themeMode > 12) {
@@ -550,6 +561,41 @@ void Window::OpenFileDocument(const std::wstring& path, bool isPreview) {
                        !group.docs[group.activeDocIdx].isDirty &&
                        !group.docs[group.activeDocIdx].isSpecialView);
 
+    // Check if file exists on disk, or if it is a deleted file in Git (Complaint 8)
+    std::error_code ecExists;
+    bool fileExists = std::filesystem::exists(path, ecExists);
+    if (!fileExists && m_drawer.IsGitRepo()) {
+        std::wstring relPath = path;
+        if (m_drawer.HasOpenFolder()) {
+            try {
+                relPath = std::filesystem::relative(path, m_drawer.GetOpenFolderPath()).wstring();
+            } catch (...) {}
+        }
+        std::wstring gitContent = m_drawer.GetGitFileContent(relPath);
+        if (!gitContent.empty()) {
+            editor::OpenDocument newDoc;
+            newDoc.filePath = path;
+            auto ppos = path.find_last_of(L"\\/");
+            newDoc.fileName = (ppos != std::wstring::npos) ? path.substr(ppos + 1) : path;
+            newDoc.isPreview = isPreview;
+            newDoc.isDirty = false;
+            newDoc.isSpecialView = false;
+            newDoc.isDeletedInGit = true;
+            newDoc.isDiffView = true;
+            newDoc.buffer.SetText(gitContent);
+
+            if (canReplace) {
+                group.docs[group.activeDocIdx] = std::move(newDoc);
+            } else {
+                group.docs.push_back(std::move(newDoc));
+                group.activeDocIdx = static_cast<int>(group.docs.size() - 1);
+            }
+            SaveSessionState();
+            InvalidateRect(m_hwnd, nullptr, FALSE);
+            return;
+        }
+    }
+
     // Check if file is a supported image (PNG, JPG, BMP, GIF, ICO, WEBP)
     std::wstring ext;
     auto dotPos = path.find_last_of(L".");
@@ -618,6 +664,20 @@ void Window::OpenFileDocument(const std::wstring& path, bool isPreview) {
         newDoc.binaryFileSize = std::filesystem::file_size(path, ec);
     } else {
         newDoc.buffer.LoadFromFile(path);
+
+        // Compute Git diff highlights against HEAD if inside a git repository (Image 5)
+        if (m_drawer.IsGitRepo()) {
+            std::wstring relPath = path;
+            if (m_drawer.HasOpenFolder()) {
+                try {
+                    relPath = std::filesystem::relative(path, m_drawer.GetOpenFolderPath()).wstring();
+                } catch (...) {}
+            }
+            m_drawer.ComputeGitDiffLines(relPath, newDoc.diffAddedLines, newDoc.diffDeletedLines);
+            if (!newDoc.diffAddedLines.empty() || !newDoc.diffDeletedLines.empty()) {
+                newDoc.isDiffView = true;
+            }
+        }
     }
 
     if (canReplace) {
@@ -764,6 +824,7 @@ void Window::DoOpenFolderFromPath(const std::wstring& path) {
     if (path.empty()) return;
     m_drawer.OpenFolder(path);
     m_workspace.OpenWorkspace(path);
+    m_drawer.RefreshGitState(true);
 
     // Track in recent paths LRU list (max 6 entries)
     auto it = std::find(m_recentPaths.begin(), m_recentPaths.end(), path);
@@ -980,6 +1041,7 @@ void Window::DoCloseEditor() {
 
 void Window::DoCloseFolder() {
     m_drawer.CloseFolder();
+    m_drawer.RefreshGitState(true);
     SaveSessionState();
     InvalidateRect(m_hwnd, nullptr, FALSE);
 }
@@ -1640,6 +1702,7 @@ void Window::OnPaint() {
 
     // 3. Render Collapsed Activity Rail (Home -> Search -> Git with customized tooltips)
     m_rail.SetGitLoading(m_drawer.IsGitLoading());
+    m_rail.SetGitBadgeCount(m_drawer.GetGitChanges().size());
     m_rail.Render(m_pRenderTarget.Get(), m_theme, m_config, clientH);
 
     // 4. Render Dark Frameless Title Header at Top (with active highlight on Sidebar button when open)
@@ -2541,6 +2604,8 @@ void Window::HandleLButtonUp(POINT clientPt) {
     (void)clientPt;
     if (m_isDraggingGitSplitter) {
         m_isDraggingGitSplitter = false;
+        m_config.gitSplitY = m_drawer.GetGitSplitY();
+        SaveSessionState();
         ReleaseCapture();
         InvalidateRect(m_hwnd, nullptr, FALSE);
     }

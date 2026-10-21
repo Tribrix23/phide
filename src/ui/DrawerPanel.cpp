@@ -2718,6 +2718,30 @@ void DrawerPanel::RefreshGitState(bool async) {
                 }
                 for (auto& c : filePath) if (c == L'/') c = L'\\';
 
+                // Check for rename destination "old -> new"
+                size_t arrowPos = filePath.find(L" -> ");
+                if (arrowPos != std::wstring::npos) {
+                    filePath = filePath.substr(arrowPos + 4);
+                    if (filePath.size() >= 2 && filePath.front() == L'"' && filePath.back() == L'"') {
+                        filePath = filePath.substr(1, filePath.size() - 2);
+                    }
+                    for (auto& c : filePath) if (c == L'/') c = L'\\';
+                    statusStr = L"R";
+                }
+
+                // Normalize porcelain status letters (Images 3 & 4)
+                if (statusStr.find(L"?") != std::wstring::npos) {
+                    statusStr = L"U"; // Untracked
+                } else if (statusStr.find(L"R") != std::wstring::npos) {
+                    statusStr = L"R"; // Renamed
+                } else if (statusStr.find(L"M") != std::wstring::npos) {
+                    statusStr = L"M"; // Modified
+                } else if (statusStr.find(L"D") != std::wstring::npos) {
+                    statusStr = L"D"; // Deleted
+                } else if (statusStr.find(L"A") != std::wstring::npos) {
+                    statusStr = L"A"; // Added
+                }
+
                 std::filesystem::path p(filePath);
                 GitChangeItem item;
                 item.path = filePath;
@@ -2725,6 +2749,15 @@ void DrawerPanel::RefreshGitState(bool async) {
                 item.relDir = p.parent_path().wstring();
                 item.status = statusStr.empty() ? L"M" : statusStr;
                 changes.push_back(item);
+            }
+        }
+
+        // Snapshot existing commits to preserve expanded states and cached files across background polling (Complaint 2)
+        std::map<std::wstring, GitCommitItem> prevMap;
+        {
+            std::lock_guard<std::mutex> lock(m_gitMutex);
+            for (auto& item : m_gitCommits) {
+                prevMap[item.hash] = std::move(item);
             }
         }
 
@@ -2759,7 +2792,20 @@ void DrawerPanel::RefreshGitState(bool async) {
                     ci.refNames = tokens.size() > 5 ? tokens[5] : L"";
                     ci.isHead = firstCommit || (ci.refNames.find(L"HEAD") != std::wstring::npos);
                     firstCommit = false;
-                    commits.push_back(ci);
+
+                    // Restore expanded state and cached files if in m_expandedCommitHashes
+                    if (m_expandedCommitHashes.count(ci.hash)) {
+                        ci.isExpanded = true;
+                        auto it = prevMap.find(ci.hash);
+                        if (it != prevMap.end() && it->second.filesLoaded) {
+                            ci.files = std::move(it->second.files);
+                            ci.filesLoaded = true;
+                        } else {
+                            LoadCommitFiles(ci);
+                        }
+                    }
+
+                    commits.push_back(std::move(ci));
                 }
             }
         }
@@ -2878,20 +2924,56 @@ void DrawerPanel::DiscardFileAsync(const std::wstring& relPath) {
 
 void DrawerPanel::CommitChangesAsync(const std::wstring& message) {
     std::wstring msg = message;
-    if (msg.empty()) {
-        GenerateAiCommitMessage();
-        msg = m_commitMessage;
+    // Trim whitespace
+    size_t first = msg.find_first_not_of(L" \t\r\n");
+    if (first == std::wstring::npos) {
+        // Refuse to commit without message (Complaint 5 & 7)
+        m_focusedGitInput = 1;
+        m_gitTooltipText = L"Please provide a commit message before committing.";
+        m_gitTooltipTarget = m_gitMsgBoxBounds;
+        m_showGitTooltip = true;
+        return;
     }
-    if (msg.empty()) msg = L"chore: update workspace";
+    msg = msg.substr(first);
+    size_t last = msg.find_last_not_of(L" \t\r\n");
+    if (last != std::wstring::npos) msg = msg.substr(0, last + 1);
 
     std::thread([this, msg]() {
         m_isGitLoading = true;
         std::wstring dir = m_openFolderPath.empty() ? L"." : m_openFolderPath;
         RunGitCmd(L"add -A", dir);
-        RunGitCmd(L"commit -m \"" + msg + L"\"", dir);
+        std::wstring escapedMsg;
+        for (wchar_t c : msg) {
+            if (c == L'"') escapedMsg += L"\\\"";
+            else escapedMsg += c;
+        }
+        RunGitCmd(L"commit -m \"" + escapedMsg + L"\"", dir);
         {
             std::lock_guard<std::mutex> lock(m_gitMutex);
             m_commitMessage.clear();
+        }
+        RefreshGitState(false);
+    }).detach();
+}
+
+void DrawerPanel::UncommitLastCommitAsync() {
+    std::thread([this]() {
+        m_isGitLoading = true;
+        std::wstring dir = m_openFolderPath.empty() ? L"." : m_openFolderPath;
+        // 1. Get the last commit message before undoing
+        auto resMsg = RunGitCmd(L"log -1 --pretty=%B", dir);
+        std::wstring lastMsg = resMsg.output;
+        while (!lastMsg.empty() && (lastMsg.back() == L'\r' || lastMsg.back() == L'\n' || lastMsg.back() == L' ')) {
+            lastMsg.pop_back();
+        }
+        // 2. Soft reset HEAD~1 (keeps all modified/staged files in working directory)
+        auto resReset = RunGitCmd(L"reset --soft HEAD~1", dir);
+        if (resReset.exitCode == 0) {
+            std::lock_guard<std::mutex> lock(m_gitMutex);
+            if (!lastMsg.empty()) {
+                m_commitMessage = lastMsg;
+            }
+            m_focusedGitInput = 1;
         }
         RefreshGitState(false);
     }).detach();
@@ -2904,6 +2986,63 @@ void DrawerPanel::PushCommitsAsync() {
         RunGitCmd(L"push", dir);
         RefreshGitState(false);
     }).detach();
+}
+
+std::wstring DrawerPanel::GetGitFileContent(const std::wstring& relPath) {
+    std::wstring dir = m_openFolderPath.empty() ? L"." : m_openFolderPath;
+    std::wstring cleanRel = relPath;
+    for (auto& c : cleanRel) if (c == L'\\') c = L'/';
+    auto res = RunGitCmd(L"show HEAD:\"" + cleanRel + L"\"", dir);
+    if (res.exitCode == 0) {
+        return res.output;
+    }
+    return L"";
+}
+
+void DrawerPanel::ComputeGitDiffLines(const std::wstring& relPath, std::set<size_t>& outAdded, std::set<size_t>& outDeleted) {
+    outAdded.clear();
+    outDeleted.clear();
+    std::wstring dir = m_openFolderPath.empty() ? L"." : m_openFolderPath;
+    std::wstring cleanRel = relPath;
+    for (auto& c : cleanRel) if (c == L'\\') c = L'/';
+    auto res = RunGitCmd(L"diff -U0 HEAD -- \"" + cleanRel + L"\"", dir);
+    if (res.exitCode == 0 && !res.output.empty()) {
+        std::wstringstream ss(res.output);
+        std::wstring line;
+        while (std::getline(ss, line)) {
+            if (line.rfind(L"@@", 0) == 0) {
+                // e.g. @@ -10,3 +10,5 @@ or @@ -10 +10,5 @@
+                size_t plusPos = line.find(L'+');
+                if (plusPos != std::wstring::npos) {
+                    size_t endPos = line.find(L' ', plusPos);
+                    std::wstring hunk = (endPos != std::wstring::npos) ?
+                        line.substr(plusPos + 1, endPos - plusPos - 1) :
+                        line.substr(plusPos + 1);
+                    size_t commaPos = hunk.find(L',');
+                    int startLine = 1;
+                    int count = 1;
+                    if (commaPos != std::wstring::npos) {
+                        try {
+                            startLine = std::stoi(hunk.substr(0, commaPos));
+                            count = std::stoi(hunk.substr(commaPos + 1));
+                        } catch (...) {}
+                    } else {
+                        try {
+                            startLine = std::stoi(hunk);
+                            count = 1;
+                        } catch (...) {}
+                    }
+                    if (count > 0 && startLine > 0) {
+                        for (int l = 0; l < count; ++l) {
+                            outAdded.insert(static_cast<size_t>(startLine - 1 + l));
+                        }
+                    } else if (count == 0 && startLine > 0) {
+                        outDeleted.insert(static_cast<size_t>(startLine > 1 ? startLine - 1 : 0));
+                    }
+                }
+            }
+        }
+    }
 }
 
 void DrawerPanel::GenerateAiCommitMessage() {
@@ -2970,6 +3109,9 @@ bool DrawerPanel::HitTestGit(POINT pt, const app::AppConfig& config, std::wstrin
                             break;
                         case 11: // Discard All Changes
                             DiscardAllChangesAsync();
+                            break;
+                        case 13: // Undo Last Commit (Uncommit)
+                            UncommitLastCommitAsync();
                             break;
                         case 12: // Stash Changes
                             RunGitCmd(L"stash", m_openFolderPath);
@@ -3072,6 +3214,15 @@ bool DrawerPanel::HitTestGit(POINT pt, const app::AppConfig& config, std::wstrin
             if (pt.x >= m_gitCommitBtnBounds.left && pt.x <= m_gitCommitBtnBounds.right &&
                 pt.y >= m_gitCommitBtnBounds.top && pt.y <= m_gitCommitBtnBounds.bottom) {
                 if (!m_gitChanges.empty()) {
+                    std::wstring trimmed = m_commitMessage;
+                    size_t f = trimmed.find_first_not_of(L" \t\r\n");
+                    if (f == std::wstring::npos) {
+                        m_focusedGitInput = 1;
+                        m_gitTooltipText = L"Please provide a commit message before committing.";
+                        m_gitTooltipTarget = m_gitMsgBoxBounds;
+                        m_showGitTooltip = true;
+                        return true;
+                    }
                     CommitChangesAsync(m_commitMessage);
                     return true;
                 } else if (m_unpushedCommitsCount > 0) {
@@ -3163,8 +3314,13 @@ bool DrawerPanel::HitTestGit(POINT pt, const app::AppConfig& config, std::wstrin
                 if (pt.x >= ci.bounds.left && pt.x <= ci.bounds.right &&
                     pt.y >= ci.bounds.top && pt.y <= ci.bounds.bottom) {
                     ci.isExpanded = !ci.isExpanded;
-                    if (ci.isExpanded && !ci.filesLoaded) {
-                        LoadCommitFiles(ci);
+                    if (ci.isExpanded) {
+                        m_expandedCommitHashes.insert(ci.hash);
+                        if (!ci.filesLoaded) {
+                            LoadCommitFiles(ci);
+                        }
+                    } else {
+                        m_expandedCommitHashes.erase(ci.hash);
                     }
                     return true;
                 }
@@ -3250,12 +3406,20 @@ bool DrawerPanel::HandleGitMouseMove(POINT pt) {
                 if (checkBtn(item.stageBtnBounds, L"Stage Changes (+)")) {
                     break;
                 }
+                std::wstring desc = (item.status == L"U") ? L"Untracked" :
+                                    (item.status == L"D") ? L"Deleted" :
+                                    (item.status == L"R") ? L"Renamed" :
+                                    (item.status == L"A") ? L"Added" : L"Modified";
+                m_gitTooltipText = item.path + L" • " + desc;
+                m_gitTooltipTarget = item.bounds;
+                m_showGitTooltip = true;
                 break;
             }
         }
     }
 
     // Check commit rows and expanded files (Image 2 & 3)
+    // Note: Commit row hover card is omitted to avoid obscuring the graph text (Complaint 1)
     if (m_graphExpanded && !m_showGitTooltip) {
         for (const auto& ci : m_gitCommits) {
             if (ci.isExpanded) {
@@ -3269,13 +3433,6 @@ bool DrawerPanel::HandleGitMouseMove(POINT pt) {
                     }
                 }
                 if (m_showGitTooltip) break;
-            }
-            if (pt.x >= ci.bounds.left && pt.x <= ci.bounds.right &&
-                pt.y >= ci.bounds.top && pt.y <= ci.bounds.bottom) {
-                m_gitTooltipText = ci.message + L" (" + ci.hash + L")\n" + ci.author + L" • " + ci.relativeTime + L"\nClick to " + (ci.isExpanded ? L"collapse" : L"view changed files");
-                m_gitTooltipTarget = ci.bounds;
-                m_showGitTooltip = true;
-                break;
             }
         }
     }
@@ -3299,7 +3456,15 @@ void DrawerPanel::HandleGitKeyDown(WPARAM wParam) {
         }
     } else if (wParam == VK_RETURN) {
         if (GetKeyState(VK_CONTROL) & 0x8000) {
-            CommitChangesAsync(m_commitMessage);
+            std::wstring trimmed = m_commitMessage;
+            size_t f = trimmed.find_first_not_of(L" \t\r\n");
+            if (f != std::wstring::npos) {
+                CommitChangesAsync(m_commitMessage);
+            } else {
+                m_gitTooltipText = L"Please provide a commit message before committing.";
+                m_gitTooltipTarget = m_gitMsgBoxBounds;
+                m_showGitTooltip = true;
+            }
         }
     } else if (wParam == VK_ESCAPE) {
         m_focusedGitInput = 0;
@@ -3356,11 +3521,14 @@ void DrawerPanel::RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, 
 
     float secH = config.ScaleF(24.0f);
 
-    // Clamp and initialize dynamic vertical splitter between Changes and Graph
+    // Clamp vertical splitter between Changes and Graph with persistence (Complaint 7)
     float minSplitY = curY + config.ScaleF(110.0f);
     float maxSplitY = clientHeight - config.ScaleF(70.0f);
-    if (m_gitSplitY < minSplitY || m_gitSplitY > maxSplitY) {
+    if (m_gitSplitY <= 0.0f) {
         m_gitSplitY = curY + (clientHeight - curY) * 0.46f;
+    } else {
+        if (m_gitSplitY < minSplitY) m_gitSplitY = minSplitY;
+        if (m_gitSplitY > maxSplitY) m_gitSplitY = maxSplitY;
     }
 
     // =========================================================================
@@ -3680,12 +3848,14 @@ void DrawerPanel::RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, 
                                       theme.fontMenuItem.Get() ? theme.fontMenuItem.Get() : theme.fontButtonCenter.Get(),
                                       rcName, theme.brushTextPrimary.Get());
 
-                        // 3. Status letter (M = yellow #E5C07B, D = red #E06C75, U/A/R = green #98C379)
+                        // 3. Status letter (M = yellow #E5C07B, D = red #E06C75, U/A = green #98C379, R = blue #61AFEF)
                         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushStatus;
                         if (item.status.find(L"M") != std::wstring::npos) {
                             pRT->CreateSolidColorBrush(D2D1::ColorF(0.898f, 0.753f, 0.482f, 1.0f), &brushStatus);
                         } else if (item.status.find(L"D") != std::wstring::npos) {
                             pRT->CreateSolidColorBrush(D2D1::ColorF(0.878f, 0.424f, 0.459f, 1.0f), &brushStatus);
+                        } else if (item.status.find(L"R") != std::wstring::npos) {
+                            pRT->CreateSolidColorBrush(D2D1::ColorF(0.380f, 0.686f, 0.937f, 1.0f), &brushStatus);
                         } else {
                             pRT->CreateSolidColorBrush(D2D1::ColorF(0.596f, 0.765f, 0.475f, 1.0f), &brushStatus);
                         }
@@ -4028,12 +4198,14 @@ void DrawerPanel::RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, 
             menuW = config.ScaleF(170.0f);
             m_gitMenuItems.push_back({ 10, L"✓  Stage All Changes" });
             m_gitMenuItems.push_back({ 11, L"🔄 Discard All Changes" });
+            m_gitMenuItems.push_back({ 13, L"↩  Undo Last Commit" });
             m_gitMenuItems.push_back({ 12, L"📦 Stash Changes" });
             m_gitMenuItems.push_back({ 0,  L"", false, true }); // separator
             m_gitMenuItems.push_back({ 14, L"🔄 Refresh Status" });
         } else if (m_activeGitMenu == GitMenuType::GraphMore) {
             anchor = m_gitGraphMoreBounds;
             menuW = config.ScaleF(170.0f);
+            m_gitMenuItems.push_back({ 13, L"↩  Undo Last Commit" });
             m_gitMenuItems.push_back({ 20, L"🔄 Refresh Graph" });
             m_gitMenuItems.push_back({ 21, L"↑  Push Commits" });
             m_gitMenuItems.push_back({ 22, L"↓  Pull Commits" });
@@ -4046,6 +4218,7 @@ void DrawerPanel::RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, 
             m_gitMenuItems.push_back({ 2, m_showChangesSection ? L"✓  Changes" : L"    Changes", false, false, m_showChangesSection });
             m_gitMenuItems.push_back({ 3, m_showGraphSection ? L"✓  Graph" : L"    Graph", false, false, m_showGraphSection });
             m_gitMenuItems.push_back({ 0, L"", false, true }); // separator
+            m_gitMenuItems.push_back({ 13, L"↩  Undo Last Commit" });
             m_gitMenuItems.push_back({ 5, L"🔄 Refresh All" });
         }
 

@@ -54,6 +54,12 @@ struct OpenDocument {
     uint64_t binaryFileSize = 0;         ///< File size on disk in bytes
     std::wstring binaryFileType;         ///< Human-readable binary type descriptor
     D2D1_RECT_F unsupportedActionBtn{};  ///< Bounding box of "Reveal in File Explorer" button
+
+    // Git Diff & Deleted File State (Image 5)
+    bool isDiffView = false;             ///< True if this document is displaying git diff annotations
+    bool isDeletedInGit = false;         ///< True if this document was deleted in git and loaded from HEAD
+    std::set<size_t> diffAddedLines;     ///< Line indices (0-based) added relative to HEAD
+    std::set<size_t> diffDeletedLines;   ///< Line indices (0-based) where deletions occurred
 };
 
 /**

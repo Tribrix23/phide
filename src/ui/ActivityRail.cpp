@@ -178,6 +178,24 @@ void ActivityRail::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
                     pRT->DrawLine(D2D1::Point2F(badgeCenterX - arcR + 2.0f, badgeCenterY + 2.2f), D2D1::Point2F(badgeCenterX - arcR, badgeCenterY), brushWhite.Get(), 1.3f);
 
                     pRT->SetTransform(oldTrans);
+                } else if (m_gitBadgeCount > 0) {
+                    // Render blue circular / pill badge with the number of changes (Images 2 & 5)
+                    const float badgeCenterX = item.bounds.right - config.ScaleF(5.0f);
+                    const float badgeCenterY = item.bounds.bottom - config.ScaleF(5.0f);
+                    const float badgeW = config.ScaleF(m_gitBadgeCount >= 10 ? 18.0f : 14.0f);
+                    const float badgeH = config.ScaleF(14.0f);
+                    D2D1_ROUNDED_RECT rrcBadge = D2D1::RoundedRect(
+                        D2D1::RectF(badgeCenterX - badgeW / 2.0f, badgeCenterY - badgeH / 2.0f, badgeCenterX + badgeW / 2.0f, badgeCenterY + badgeH / 2.0f),
+                        badgeH / 2.0f, badgeH / 2.0f
+                    );
+                    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushBadge;
+                    pRT->CreateSolidColorBrush(D2D1::ColorF(0.0f, 0.471f, 0.831f, 1.0f), &brushBadge);
+                    pRT->FillRoundedRectangle(rrcBadge, brushBadge.Get());
+
+                    std::wstring countStr = std::to_wstring(m_gitBadgeCount);
+                    pRT->DrawText(countStr.c_str(), static_cast<UINT32>(countStr.length()),
+                                  theme.fontBadge.Get() ? theme.fontBadge.Get() : theme.fontMenuShortcut.Get(),
+                                  rrcBadge.rect, theme.brushTextWhite.Get());
                 }
                 break;
             default:
