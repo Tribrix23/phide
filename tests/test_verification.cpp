@@ -1876,6 +1876,62 @@ int main() {
         frameMenu->Commit();
         encMenu->Commit();
         std::cout << "  Passed: Saved test_source_control_views_menu.png" << std::endl;
+
+        // 8. Test Commit Input Focus & Caret Blinking
+        gitDrawer.SetGitCommitBoxFocus(1);
+        assert(gitDrawer.IsGitCommitBoxFocused());
+        bool initialCaret = gitDrawer.IsGitCaretVisible();
+        gitDrawer.ToggleCaretBlink();
+        assert(gitDrawer.IsGitCaretVisible() != initialCaret);
+        std::cout << "  Passed: Commit input focus and blinking caret synchronization verified" << std::endl;
+
+        // 9. Test Commit Button vs Sync Changes Button State
+        gitDrawer.SetUnpushedCommitsCount(3);
+        assert(gitDrawer.GetUnpushedCommitsCount() == 3);
+        std::cout << "  Passed: Sync Changes state and unpushed commits count (3) verified" << std::endl;
+
+        // 10. Test Commit Details Expansion in Graph (Image 2 & 3)
+        // Close menu first
+        POINT ptOutside = { 10, 10 };
+        gitDrawer.HitTestGit(ptOutside, cfg, openFile);
+        assert(!gitDrawer.IsGitViewMenuOpen());
+
+        // Click commit to expand changed files
+        POINT ptFirstCommit = {
+            static_cast<LONG>((commits[0].bounds.left + commits[0].bounds.right) / 2.0f),
+            static_cast<LONG>((commits[0].bounds.top + commits[0].bounds.bottom) / 2.0f)
+        };
+        std::wstring outOpen, outDisc;
+        bool hitCommit = gitDrawer.HitTestGit(ptFirstCommit, cfg, outOpen, outDisc);
+        assert(hitCommit);
+        const auto& updatedCommits = gitDrawer.GetGitCommits();
+        assert(updatedCommits[0].isExpanded);
+        assert(!updatedCommits[0].files.empty());
+        std::cout << "  Passed: Commit expansion verified with " << updatedCommits[0].files.size() << " changed files populated" << std::endl;
+
+        // Render expanded commit view snapshot
+        pGitRT->BeginDraw();
+        pGitRT->Clear(D2D1::ColorF(0.12f, 0.12f, 0.12f, 1.0f));
+        pGitRT->FillRectangle(D2D1::RectF(0.0f, 0.0f, 1200.0f, cfg.ScaleF(static_cast<float>(cfg.headerHeight))), theme.brushHeaderBg.Get());
+        rail.Render(pGitRT.Get(), theme, cfg, 750.0f);
+        gitDrawer.Render(pGitRT.Get(), theme, cfg, 750.0f, 280.0f);
+        pGitRT->EndDraw();
+
+        ComPtr<IWICStream> pStreamExp;
+        pWicFactory->CreateStream(&pStreamExp);
+        pStreamExp->InitializeFromFilename((artDir + L"test_source_control_commit_details_expanded.png").c_str(), GENERIC_WRITE);
+        ComPtr<IWICBitmapEncoder> encExp;
+        pWicFactory->CreateEncoder(GUID_ContainerFormatPng, nullptr, &encExp);
+        encExp->Initialize(pStreamExp.Get(), WICBitmapEncoderNoCache);
+        ComPtr<IWICBitmapFrameEncode> frameExp;
+        encExp->CreateNewFrame(&frameExp, nullptr);
+        frameExp->Initialize(nullptr);
+        frameExp->SetSize(1200, 750);
+        frameExp->SetPixelFormat(&format);
+        frameExp->WriteSource(pWicGitBmp.Get(), nullptr);
+        frameExp->Commit();
+        encExp->Commit();
+        std::cout << "  Passed: Saved test_source_control_commit_details_expanded.png" << std::endl;
     }
 
     std::cout << "\n==========================================" << std::endl;

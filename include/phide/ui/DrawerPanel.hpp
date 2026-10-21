@@ -79,6 +79,18 @@ struct GitChangeItem {
 };
 
 /**
+ * @struct GitCommitFile
+ * @brief Represents a file modified in a specific git commit (Image 3).
+ */
+struct GitCommitFile {
+    std::wstring path;
+    std::wstring fileName;
+    std::wstring relDir;
+    std::wstring status; ///< "M", "A", "D"
+    D2D1_RECT_F bounds{};
+};
+
+/**
  * @struct GitCommitItem
  * @brief Represents a commit in the git history tree.
  */
@@ -90,7 +102,11 @@ struct GitCommitItem {
     std::wstring relativeTime;
     std::wstring refNames;
     bool isHead = false;
+    bool isExpanded = false;
+    bool filesLoaded = false;
+    std::vector<GitCommitFile> files;
     D2D1_RECT_F bounds{};
+    D2D1_RECT_F chevronBounds{};
 };
 
 /**
@@ -122,7 +138,12 @@ public:
     void CommitChangesAsync(const std::wstring& message);
     void PushCommitsAsync();
     void GenerateAiCommitMessage();
-    bool HitTestGit(POINT pt, const app::AppConfig& config, std::wstring& outOpenFile);
+    bool HitTestGit(POINT pt, const app::AppConfig& config, std::wstring& outOpenFile, std::wstring& outDiscardedFile);
+    bool HitTestGit(POINT pt, const app::AppConfig& config, std::wstring& outOpenFile) {
+        std::wstring dummy;
+        return HitTestGit(pt, config, outOpenFile, dummy);
+    }
+    void LoadCommitFiles(GitCommitItem& ci);
     bool HandleGitMouseMove(POINT pt);
     void HandleGitChar(wchar_t ch);
     void HandleGitKeyDown(WPARAM wParam);
@@ -134,6 +155,12 @@ public:
     [[nodiscard]] bool IsGitLoading() const noexcept { return m_isGitLoading.load(); }
     void UpdateGitLoadingAnim(float deltaAngle) noexcept { m_gitAnimAngle += deltaAngle; }
     [[nodiscard]] bool IsGitCommitBoxFocused() const noexcept { return m_focusedGitInput == 1; }
+    void SetGitCommitBoxFocus(int focus) noexcept { m_focusedGitInput = focus; }
+    void ToggleCaretBlink() noexcept { m_gitCaretVisible = !m_gitCaretVisible; }
+    [[nodiscard]] bool IsGitCaretVisible() const noexcept { return m_gitCaretVisible; }
+    [[nodiscard]] int GetUnpushedCommitsCount() const noexcept { return m_unpushedCommitsCount; }
+    void SetUnpushedCommitsCount(int count) noexcept { m_unpushedCommitsCount = count; }
+    [[nodiscard]] int GetHoveredGitChangeIndex() const noexcept { return m_hoveredGitChangeIdx; }
     [[nodiscard]] const std::vector<GitChangeItem>& GetGitChanges() const noexcept { return m_gitChanges; }
     [[nodiscard]] const std::vector<GitCommitItem>& GetGitCommits() const noexcept { return m_gitCommits; }
     [[nodiscard]] const std::wstring& GetGitBranch() const noexcept { return m_gitBranch; }
@@ -404,6 +431,8 @@ private:
 
     std::wstring m_commitMessage;
     int m_focusedGitInput = 0; // 0 = none, 1 = commit message input box
+    bool m_gitCaretVisible = true;
+    int m_unpushedCommitsCount = 0;
 
     // Hit-testing bounds
     D2D1_RECT_F m_gitHeaderMoreBounds{};

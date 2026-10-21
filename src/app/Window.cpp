@@ -1288,6 +1288,7 @@ void Window::SaveFileToPath(const std::wstring& path) {
             pDoc->fileName = (pos != std::wstring::npos) ? path.substr(pos + 1) : path;
             pDoc->isDirty = false;
             pDoc->isPreview = false;
+            m_drawer.RefreshGitState(true);
             SaveSessionState();
             InvalidateRect(m_hwnd, nullptr, FALSE);
         }
@@ -1624,10 +1625,13 @@ void Window::OnPaint() {
     auto* curDoc = GetActiveDoc();
     m_drawer.SetActiveFilePath(curDoc ? curDoc->filePath : L"");
 
+    bool suppressEditorCaret = m_drawer.IsRenaming() ||
+        (m_drawerAnimProgress > 0.001f && (m_drawer.IsGitCommitBoxFocused() || m_drawer.IsSearchFocused()));
+
     m_editor.Render(m_pRenderTarget.Get(), m_theme, m_config, m_editorGroups, m_focusedGroupIdx,
                     canvasLeft, canvasWidth, clientH, hasLeftDrawer,
                     searchHL, hlMatchCase, hlWholeWord, hlUseRegex,
-                    m_drawer.IsRenaming());
+                    suppressEditorCaret);
 
     // 2. Render Slide-out Drawer Panel (when visible or animating, with 14px rounded curve at top-left)
     if (hasLeftDrawer) {
@@ -2458,9 +2462,24 @@ void Window::HandleLButtonDown(POINT clientPt) {
                 return;
             }
             std::wstring openFile;
-            if (m_drawer.HitTestGit(clientPt, m_config, openFile)) {
+            std::wstring discardedFile;
+            if (m_drawer.HitTestGit(clientPt, m_config, openFile, discardedFile)) {
                 if (!openFile.empty()) {
                     OpenFileDocument(openFile, false);
+                }
+                if (!discardedFile.empty()) {
+                    // Reload open document buffers if matching discarded file
+                    for (auto& group : m_editorGroups) {
+                        for (auto& doc : group.docs) {
+                            if (!doc.filePath.empty() &&
+                                (doc.filePath == discardedFile ||
+                                 doc.filePath.ends_with(discardedFile) ||
+                                 discardedFile.ends_with(doc.filePath))) {
+                                doc.buffer.LoadFromFile(doc.filePath);
+                                doc.isDirty = false;
+                            }
+                        }
+                    }
                 }
                 InvalidateRect(m_hwnd, nullptr, FALSE);
                 return;
@@ -2491,8 +2510,9 @@ void Window::HandleLButtonDown(POINT clientPt) {
         }
     }
 
-    // Unfocus drawer search input when clicking outside drawer
+    // Unfocus drawer search and git commit inputs when clicking outside drawer
     m_drawer.SetSearchFocus(0);
+    m_drawer.SetGitCommitBoxFocus(0);
 
     // 7. Activity Rail Clicks (Files, Search, Git, Debug, Extensions)
     auto railHit = m_rail.HitTest(clientPt);
@@ -3289,12 +3309,20 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
         case WM_TIMER: {
             if (wParam == m_caretTimerId) {
                 m_editor.ToggleCaretBlink();
+                m_drawer.ToggleCaretBlink();
                 InvalidateRect(m_hwnd, nullptr, FALSE);
             } else if (wParam == m_throttleTimerId) {
-                if (m_drawer.PollSearchThrottle(GetTickCount64())) {
+                ULONGLONG now = GetTickCount64();
+                if (m_drawer.PollSearchThrottle(now)) {
                     InvalidateRect(m_hwnd, nullptr, FALSE);
                 }
-                // Source Control background animation update
+                // Source Control background auto-refresh & animation update
+                static ULONGLONG s_lastGitPoll = 0;
+                if (m_config.activeRailTab == 2 && m_drawerAnimProgress > 0.5f && (now - s_lastGitPoll > 1800) && !m_drawer.IsGitLoading()) {
+                    s_lastGitPoll = now;
+                    m_drawer.RefreshGitState(true);
+                }
+
                 if (m_drawer.IsGitLoading()) {
                     m_rail.UpdateGitAnim(14.0f);
                     m_drawer.UpdateGitLoadingAnim(14.0f);
