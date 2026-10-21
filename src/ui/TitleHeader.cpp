@@ -322,7 +322,57 @@ void TitleHeader::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCon
         );
     }
 
-    // 4. Render Vector Window Caption Controls (Minimize, Maximize, Close) in Top-Right
+    // 4. Render Split Editor Button in Top-Right (Positioned between Run controls and Caption buttons)
+    // As requested: In Dark Mode icon is white; in Light Mode icon is black!
+    const float splitW = config.ScaleF(28.0f);
+    const float splitH = config.ScaleF(26.0f);
+    const float splitX = rcExecContainer.right + config.ScaleF(14.0f);
+    const float splitY = (h - splitH) / 2.0f;
+    m_rcSplitEditor = D2D1::RectF(splitX, splitY, splitX + splitW, splitY + splitH);
+
+    D2D1_ROUNDED_RECT rrcSplit = D2D1::RoundedRect(m_rcSplitEditor, 4.0f, 4.0f);
+    if (m_isSplitActive) {
+        pRT->FillRoundedRectangle(rrcSplit, theme.brushItemActive.Get());
+        pRT->DrawRoundedRectangle(rrcSplit, theme.brushBrandAccent.Get(), 1.0f);
+    } else if (m_hoveredSplitEditor) {
+        pRT->FillRoundedRectangle(rrcSplit, theme.brushItemHover.Get());
+        pRT->DrawRoundedRectangle(rrcSplit, theme.brushBorderSubtle.Get(), 0.8f);
+    }
+
+    ID2D1Brush* pSplitBrush = theme.IsDarkMode() ? theme.brushTextWhite.Get() : theme.brushTextPrimary.Get();
+    m_icons.DrawSplitEditor(pRT, m_rcSplitEditor, pSplitBrush, 1.3f);
+
+    // Floating Tooltip for Hovered Split Editor Button
+    if (m_hoveredSplitEditor) {
+        const float tipH    = config.ScaleF(24.0f);
+        const float tipPadX = config.ScaleF(10.0f);
+        const wchar_t* tipText = L"Split Editor Right (Ctrl+\\)";
+        size_t textLen = wcslen(tipText);
+        float textW    = config.ScaleF(static_cast<float>(textLen * 6.5f + 14.0f));
+        float tipW     = textW + tipPadX * 2.0f;
+
+        float tipX     = m_rcSplitEditor.left + (splitW - tipW) / 2.0f;
+        float tipY     = m_rcSplitEditor.bottom + config.ScaleF(6.0f);
+
+        if (tipX < 10.0f) tipX = 10.0f;
+        if (tipX + tipW > clientWidth - 10.0f) tipX = clientWidth - tipW - 10.0f;
+
+        D2D1_RECT_F rcTip = D2D1::RectF(tipX, tipY, tipX + tipW, tipY + tipH);
+        D2D1_ROUNDED_RECT rrcTip = D2D1::RoundedRect(rcTip, 4.0f, 4.0f);
+
+        pRT->FillRoundedRectangle(rrcTip, theme.brushTooltipBg.Get());
+        pRT->DrawRoundedRectangle(rrcTip, theme.brushTooltipBorder.Get(), 1.0f);
+
+        pRT->DrawText(
+            tipText,
+            static_cast<UINT32>(textLen),
+            theme.fontTooltip ? theme.fontTooltip.Get() : theme.fontHint.Get(),
+            rcTip,
+            theme.brushTooltipText ? theme.brushTooltipText.Get() : theme.brushTextPrimary.Get()
+        );
+    }
+
+    // 5. Render Vector Window Caption Controls (Minimize, Maximize, Close) in Top-Right
     float rightEdge = clientWidth;
     ID2D1Brush* defaultCaptionBrush = theme.brushHeaderIcon ? theme.brushHeaderIcon.Get() : theme.brushTextSecondary.Get();
     ID2D1Brush* captionHoverGlyphBrush = theme.IsDarkMode() ? theme.brushTextWhite.Get() : (theme.brushHeaderIcon ? theme.brushHeaderIcon.Get() : theme.brushTextPrimary.Get());
@@ -392,13 +442,27 @@ CaptionButtonType TitleHeader::HitTestCaptionButton(POINT pt) const {
     return CaptionButtonType::None;
 }
 
+bool TitleHeader::HitTestSplitEditor(POINT pt) const noexcept {
+    return (pt.x >= m_rcSplitEditor.left && pt.x <= m_rcSplitEditor.right &&
+            pt.y >= m_rcSplitEditor.top && pt.y <= m_rcSplitEditor.bottom);
+}
+
+bool TitleHeader::SetHoveredSplitEditor(bool hovered) noexcept {
+    if (m_hoveredSplitEditor != hovered) {
+        m_hoveredSplitEditor = hovered;
+        return true;
+    }
+    return false;
+}
+
 LRESULT TitleHeader::HitTestNCHitTest(POINT pt, const app::AppConfig& config) {
     const float h = config.ScaleF(static_cast<float>(config.headerHeight));
     if (pt.y >= h) return HTCLIENT;
 
-    // If mouse is over any interactive element (menus, exec buttons, or caption buttons), return HTCLIENT
+    // If mouse is over any interactive element (menus, exec buttons, split editor, or caption buttons), return HTCLIENT
     if (HitTestMenu(pt) != HeaderMenuId::None) return HTCLIENT;
     if (HitTestExecButton(pt) != HeaderExecId::None) return HTCLIENT;
+    if (HitTestSplitEditor(pt)) return HTCLIENT;
     if (HitTestCaptionButton(pt) != CaptionButtonType::None) return HTCLIENT;
 
     // The remaining empty header area allows dragging the window

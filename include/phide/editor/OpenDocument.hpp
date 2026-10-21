@@ -27,6 +27,8 @@ struct OpenDocument {
     std::wstring viewType;       ///< Special view identifier (e.g. L"keybindings")
     D2D1_RECT_F tabBounds{};     ///< Screen bounding box of the tab
     D2D1_RECT_F closeBounds{};   ///< Screen bounding box of the tab close button (×)
+    D2D1_RECT_F splitTabBounds{};   ///< Screen bounding box of the tab in secondary/right split pane
+    D2D1_RECT_F splitCloseBounds{}; ///< Screen bounding box of tab close button in right split pane
 
     // Viewport Scrolling State
     size_t scrollLine = 0;              ///< Top-most visible visual line index
@@ -46,6 +48,12 @@ struct OpenDocument {
     UINT imageWidth = 0;                ///< Pixel width of the decoded image
     UINT imageHeight = 0;               ///< Pixel height of the decoded image
     uint64_t imageFileSize = 0;         ///< File size on disk in bytes
+
+    // Unsupported Binary File View State (Image 2)
+    bool isUnsupportedBinary = false;    ///< True if this document is an unsupported binary file (e.g. .exe, .dll, video)
+    uint64_t binaryFileSize = 0;         ///< File size on disk in bytes
+    std::wstring binaryFileType;         ///< Human-readable binary type descriptor
+    D2D1_RECT_F unsupportedActionBtn{};  ///< Bounding box of "Reveal in File Explorer" button
 };
 
 } // namespace phide::editor

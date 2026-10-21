@@ -448,6 +448,308 @@ int main() {
         std::cout << "  Passed: Cursor logic perfectly isolates code area for IDC_IBEAM" << std::endl;
     }
 
+    // --- 6. Search Throttler & Binary Exclusion Verification ---
+    std::cout << "[TEST 6] Testing Search Throttler and Binary File Exclusion..." << std::endl;
+    {
+        phide::ui::DrawerPanel drawer;
+        drawer.SetSearchFocus(1);
+
+        // 1. Initial keystroke triggers immediate search
+        ULONGLONG t0 = GetTickCount64();
+        drawer.TriggerSearchThrottled(t0);
+        // Next keystroke 50ms later is within throttle interval (< 250ms), marked pending
+        drawer.TriggerSearchThrottled(t0 + 50);
+
+        // Poll at 100ms (< 250ms interval) -> does NOT fire
+        assert(drawer.PollSearchThrottle(t0 + 100) == false);
+
+        // Poll at 260ms (>= 250ms interval) -> FIRES pending search!
+        assert(drawer.PollSearchThrottle(t0 + 260) == true);
+
+        // Subsequent poll without changes -> does NOT fire
+        assert(drawer.PollSearchThrottle(t0 + 300) == false);
+        std::cout << "  Passed: Throttler strictly enforces 250ms rate limit" << std::endl;
+    }
+
+    // --- 7. Unsupported Binary File View Test ---
+    std::cout << "[TEST 7] Testing Unsupported Binary File View rendering..." << std::endl;
+    {
+        // Dark Mode
+        ComPtr<IWICBitmap> pWicBmp;
+        ComPtr<ID2D1RenderTarget> pRT;
+        CreateTarget(pWicBmp, pRT);
+
+        phide::ui::Theme theme;
+        theme.SetThemeMode(phide::ui::ThemeMode::Dark);
+        hr = theme.CreateDeviceResources(pRT.Get(), pDWriteFactory.Get());
+        assert(SUCCEEDED(hr));
+
+        phide::ui::EditorCanvas editor;
+        std::vector<phide::editor::OpenDocument> docs;
+        phide::editor::OpenDocument doc;
+        doc.filePath = L"C:\\phide\\coordinator.exe";
+        doc.fileName = L"coordinator.exe";
+        doc.isUnsupportedBinary = true;
+        doc.binaryFileType = L"Executable / Binary";
+        doc.binaryFileSize = 14582912; // 13.9 MB
+        docs.push_back(std::move(doc));
+
+        pRT->BeginDraw();
+        pRT->Clear(theme.colors.windowBg);
+
+        float railW = 48.0f;
+        float drawerW = 250.0f;
+        float canvasLeft = railW + drawerW;
+        float canvasW = static_cast<float>(width) - canvasLeft;
+
+        editor.Render(pRT.Get(), theme, config, docs, 0, canvasLeft, canvasW, static_cast<float>(height), true);
+        pRT->EndDraw();
+
+        // Verify action button bounds were computed
+        assert(docs[0].unsupportedActionBtn.right > docs[0].unsupportedActionBtn.left);
+        assert(docs[0].unsupportedActionBtn.bottom > docs[0].unsupportedActionBtn.top);
+
+        ComPtr<IWICStream> pStream;
+        pWicFactory->CreateStream(&pStream);
+        pStream->InitializeFromFilename((artDir + L"test_unsupported_binary_dark.png").c_str(), GENERIC_WRITE);
+        ComPtr<IWICBitmapEncoder> enc;
+        pWicFactory->CreateEncoder(GUID_ContainerFormatPng, nullptr, &enc);
+        enc->Initialize(pStream.Get(), WICBitmapEncoderNoCache);
+        ComPtr<IWICBitmapFrameEncode> frame;
+        enc->CreateNewFrame(&frame, nullptr);
+        frame->Initialize(nullptr);
+        frame->SetSize(width, height);
+        WICPixelFormatGUID fmt = GUID_WICPixelFormat32bppPBGRA;
+        frame->SetPixelFormat(&fmt);
+        frame->WriteSource(pWicBmp.Get(), nullptr);
+        frame->Commit();
+        enc->Commit();
+        std::cout << "  Passed: Saved test_unsupported_binary_dark.png" << std::endl;
+    }
+
+    {
+        // Light Mode Unsupported Binary View
+        ComPtr<IWICBitmap> pWicBmp;
+        ComPtr<ID2D1RenderTarget> pRT;
+        CreateTarget(pWicBmp, pRT);
+
+        phide::ui::Theme theme;
+        theme.SetThemeMode(phide::ui::ThemeMode::Light);
+        hr = theme.CreateDeviceResources(pRT.Get(), pDWriteFactory.Get());
+        assert(SUCCEEDED(hr));
+
+        phide::ui::EditorCanvas editor;
+        std::vector<phide::editor::OpenDocument> docs;
+        phide::editor::OpenDocument doc;
+        doc.filePath = L"C:\\phide\\coordinator.exe";
+        doc.fileName = L"coordinator.exe";
+        doc.isUnsupportedBinary = true;
+        doc.binaryFileType = L"Executable / Binary";
+        doc.binaryFileSize = 14582912; // 13.9 MB
+        docs.push_back(std::move(doc));
+
+        pRT->BeginDraw();
+        pRT->Clear(theme.colors.windowBg);
+
+        float railW = 48.0f;
+        float drawerW = 250.0f;
+        float canvasLeft = railW + drawerW;
+        float canvasW = static_cast<float>(width) - canvasLeft;
+
+        editor.Render(pRT.Get(), theme, config, docs, 0, canvasLeft, canvasW, static_cast<float>(height), true);
+        pRT->EndDraw();
+
+        ComPtr<IWICStream> pStream;
+        pWicFactory->CreateStream(&pStream);
+        pStream->InitializeFromFilename((artDir + L"test_unsupported_binary_light.png").c_str(), GENERIC_WRITE);
+        ComPtr<IWICBitmapEncoder> enc;
+        pWicFactory->CreateEncoder(GUID_ContainerFormatPng, nullptr, &enc);
+        enc->Initialize(pStream.Get(), WICBitmapEncoderNoCache);
+        ComPtr<IWICBitmapFrameEncode> frame;
+        enc->CreateNewFrame(&frame, nullptr);
+        frame->Initialize(nullptr);
+        frame->SetSize(width, height);
+        WICPixelFormatGUID fmt = GUID_WICPixelFormat32bppPBGRA;
+        frame->SetPixelFormat(&fmt);
+        frame->WriteSource(pWicBmp.Get(), nullptr);
+        frame->Commit();
+        enc->Commit();
+        std::cout << "  Passed: Saved test_unsupported_binary_light.png" << std::endl;
+    }
+
+    // --- 8. Split Editor Button & Side-by-Side View ---
+    std::cout << "[TEST 8] Testing Split Editor button and Side-by-Side Split View..." << std::endl;
+    {
+        // Dark Mode Side-by-Side Split View
+        ComPtr<IWICBitmap> pWicBmp;
+        ComPtr<ID2D1RenderTarget> pRT;
+        CreateTarget(pWicBmp, pRT);
+
+        phide::ui::Theme theme;
+        theme.SetThemeMode(phide::ui::ThemeMode::Dark);
+        hr = theme.CreateDeviceResources(pRT.Get(), pDWriteFactory.Get());
+        assert(SUCCEEDED(hr));
+
+        phide::ui::TitleHeader header;
+        header.SetSplitActive(true);
+
+        phide::ui::EditorCanvas editor;
+        std::vector<phide::editor::OpenDocument> docs;
+
+        phide::editor::OpenDocument doc1;
+        doc1.filePath = L"C:\\phide\\src\\main.cpp";
+        doc1.fileName = L"main.cpp";
+        doc1.buffer = phide::editor::Buffer(
+            L"#include <windows.h>\n"
+            L"#include \"phide/app/Window.hpp\"\n\n"
+            L"int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow) {\n"
+            L"    phide::app::Window app;\n"
+            L"    if (!app.Initialize(hInstance, nCmdShow)) return 1;\n"
+            L"    return app.Run();\n"
+            L"}\n"
+        );
+        docs.push_back(std::move(doc1));
+
+        phide::editor::OpenDocument doc2;
+        doc2.filePath = L"C:\\phide\\src\\app\\Window.cpp";
+        doc2.fileName = L"Window.cpp";
+        doc2.buffer = phide::editor::Buffer(
+            L"#include \"phide/app/Window.hpp\"\n\n"
+            L"namespace phide::app {\n\n"
+            L"void Window::ToggleSplitEditor() {\n"
+            L"    m_isSplitView = !m_isSplitView;\n"
+            L"    m_header.SetSplitActive(m_isSplitView);\n"
+            L"}\n\n"
+            L"} // namespace phide::app\n"
+        );
+        docs.push_back(std::move(doc2));
+
+        pRT->BeginDraw();
+        pRT->Clear(theme.colors.windowBg);
+
+        float railW = 48.0f;
+        float drawerW = 250.0f;
+        float canvasLeft = railW + drawerW;
+        float canvasW = static_cast<float>(width) - canvasLeft;
+
+        // Render Title Header with Split Editor button
+        header.Render(pRT.Get(), theme, config, width, false);
+
+        // Verify Split Editor button HitTest
+        POINT ptSplit = {
+            static_cast<LONG>((header.GetSplitEditorBounds().left + header.GetSplitEditorBounds().right) / 2.0f),
+            static_cast<LONG>((header.GetSplitEditorBounds().top + header.GetSplitEditorBounds().bottom) / 2.0f)
+        };
+        assert(header.HitTestSplitEditor(ptSplit) == true);
+
+        // Render Split View: Left pane = main.cpp (doc 0), Right pane = Window.cpp (doc 1)
+        editor.Render(pRT.Get(), theme, config, docs, 0, canvasLeft, canvasW, static_cast<float>(height), true,
+                      L"", false, false, false, true, 1, 0);
+
+        pRT->EndDraw();
+
+        // Check tabs and bounds
+        assert(docs[0].tabBounds.right > docs[0].tabBounds.left);
+        assert(docs[1].splitTabBounds.right > docs[1].splitTabBounds.left);
+
+        ComPtr<IWICStream> pStream;
+        pWicFactory->CreateStream(&pStream);
+        pStream->InitializeFromFilename((artDir + L"test_split_editor_dark.png").c_str(), GENERIC_WRITE);
+        ComPtr<IWICBitmapEncoder> enc;
+        pWicFactory->CreateEncoder(GUID_ContainerFormatPng, nullptr, &enc);
+        enc->Initialize(pStream.Get(), WICBitmapEncoderNoCache);
+        ComPtr<IWICBitmapFrameEncode> frame;
+        enc->CreateNewFrame(&frame, nullptr);
+        frame->Initialize(nullptr);
+        frame->SetSize(width, height);
+        WICPixelFormatGUID fmt = GUID_WICPixelFormat32bppPBGRA;
+        frame->SetPixelFormat(&fmt);
+        frame->WriteSource(pWicBmp.Get(), nullptr);
+        frame->Commit();
+        enc->Commit();
+        std::cout << "  Passed: Saved test_split_editor_dark.png" << std::endl;
+    }
+
+    {
+        // Light Mode Side-by-Side Split View
+        ComPtr<IWICBitmap> pWicBmp;
+        ComPtr<ID2D1RenderTarget> pRT;
+        CreateTarget(pWicBmp, pRT);
+
+        phide::ui::Theme theme;
+        theme.SetThemeMode(phide::ui::ThemeMode::Light);
+        hr = theme.CreateDeviceResources(pRT.Get(), pDWriteFactory.Get());
+        assert(SUCCEEDED(hr));
+
+        phide::ui::TitleHeader header;
+        header.SetSplitActive(true);
+
+        phide::ui::EditorCanvas editor;
+        std::vector<phide::editor::OpenDocument> docs;
+
+        phide::editor::OpenDocument doc1;
+        doc1.filePath = L"C:\\phide\\src\\main.cpp";
+        doc1.fileName = L"main.cpp";
+        doc1.buffer = phide::editor::Buffer(
+            L"#include <windows.h>\n"
+            L"#include \"phide/app/Window.hpp\"\n\n"
+            L"int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow) {\n"
+            L"    phide::app::Window app;\n"
+            L"    if (!app.Initialize(hInstance, nCmdShow)) return 1;\n"
+            L"    return app.Run();\n"
+            L"}\n"
+        );
+        docs.push_back(std::move(doc1));
+
+        phide::editor::OpenDocument doc2;
+        doc2.filePath = L"C:\\phide\\src\\app\\Window.cpp";
+        doc2.fileName = L"Window.cpp";
+        doc2.buffer = phide::editor::Buffer(
+            L"#include \"phide/app/Window.hpp\"\n\n"
+            L"namespace phide::app {\n\n"
+            L"void Window::ToggleSplitEditor() {\n"
+            L"    m_isSplitView = !m_isSplitView;\n"
+            L"    m_header.SetSplitActive(m_isSplitView);\n"
+            L"}\n\n"
+            L"} // namespace phide::app\n"
+        );
+        docs.push_back(std::move(doc2));
+
+        pRT->BeginDraw();
+        pRT->Clear(theme.colors.windowBg);
+
+        float railW = 48.0f;
+        float drawerW = 250.0f;
+        float canvasLeft = railW + drawerW;
+        float canvasW = static_cast<float>(width) - canvasLeft;
+
+        // Render Title Header with Split Editor button (black icon in light mode)
+        header.Render(pRT.Get(), theme, config, width, false);
+
+        // Render Split View: Left pane = main.cpp (doc 0), Right pane = Window.cpp (doc 1)
+        editor.Render(pRT.Get(), theme, config, docs, 0, canvasLeft, canvasW, static_cast<float>(height), true,
+                      L"", false, false, false, true, 1, 0);
+
+        pRT->EndDraw();
+
+        ComPtr<IWICStream> pStream;
+        pWicFactory->CreateStream(&pStream);
+        pStream->InitializeFromFilename((artDir + L"test_split_editor_light.png").c_str(), GENERIC_WRITE);
+        ComPtr<IWICBitmapEncoder> enc;
+        pWicFactory->CreateEncoder(GUID_ContainerFormatPng, nullptr, &enc);
+        enc->Initialize(pStream.Get(), WICBitmapEncoderNoCache);
+        ComPtr<IWICBitmapFrameEncode> frame;
+        enc->CreateNewFrame(&frame, nullptr);
+        frame->Initialize(nullptr);
+        frame->SetSize(width, height);
+        WICPixelFormatGUID fmt = GUID_WICPixelFormat32bppPBGRA;
+        frame->SetPixelFormat(&fmt);
+        frame->WriteSource(pWicBmp.Get(), nullptr);
+        frame->Commit();
+        enc->Commit();
+        std::cout << "  Passed: Saved test_split_editor_light.png" << std::endl;
+    }
+
     std::cout << "\n==========================================" << std::endl;
     std::cout << "ALL VERIFICATION TESTS PASSED SUCCESSFULLY!" << std::endl;
     std::cout << "==========================================" << std::endl;

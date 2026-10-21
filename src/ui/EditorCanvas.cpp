@@ -113,7 +113,10 @@ void EditorCanvas::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
                           const std::wstring& highlightQuery,
                           bool highlightMatchCase,
                           bool highlightWholeWord,
-                          bool highlightUseRegex) {
+                          bool highlightUseRegex,
+                          bool isSplitView,
+                          int splitDocIdx,
+                          int focusedPane) {
     if (!pRT) return;
 
     const float headerH = config.ScaleF(static_cast<float>(config.headerHeight));
@@ -188,27 +191,70 @@ void EditorCanvas::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
         pRT->FillRectangle(rcFallback, theme.brushCanvasBg.Get());
     }
 
-    if (docs.empty() || activeDocIdx < 0 || activeDocIdx >= static_cast<int>(docs.size())) {
+    if (docs.empty()) {
         // When no file is open: render metallic watermark logo & keybinding cheat-sheet
         RenderPlaceholder(pRT, theme, config, canvasLeft, canvasWidth, headerH, clientHeight);
-    } else {
-        // When files are open: render multi-tab bar and active editor view
-        const float tabH = config.ScaleF(34.0f);
-        RenderTabs(pRT, theme, config, canvasLeft, canvasWidth, headerH, docs, activeDocIdx, hasLeftDrawer);
+    } else if (isSplitView) {
+        // --- Side-by-Side Split Editor Mode (Image 4) ---
+        const float paneGap = 1.0f;
+        const float paneWidth = (canvasWidth - paneGap) / 2.0f;
 
-        auto& activeDoc = docs[activeDocIdx];
-        if (activeDoc.isSpecialView && activeDoc.viewType == L"keybindings") {
-            m_keybindingsView.Render(pRT, theme, config, canvasLeft, canvasWidth, headerH + tabH, clientHeight - (headerH + tabH));
-        } else if (activeDoc.isImageView) {
-            const float breadcrumbH = config.ScaleF(24.0f);
-            RenderBreadcrumbs(pRT, theme, config, activeDoc, canvasLeft, canvasWidth, headerH + tabH, breadcrumbH);
-            RenderImageView(pRT, theme, config, activeDoc, canvasLeft, canvasWidth, headerH + tabH + breadcrumbH, clientHeight);
-        } else {
-            const float breadcrumbH = config.ScaleF(24.0f);
-            RenderBreadcrumbs(pRT, theme, config, activeDoc, canvasLeft, canvasWidth, headerH + tabH, breadcrumbH);
-            RenderCode(pRT, theme, config, activeDoc, canvasLeft, canvasWidth, headerH + tabH + breadcrumbH, clientHeight,
-                       highlightQuery, highlightMatchCase, highlightWholeWord, highlightUseRegex);
-        }
+        // 1. Render Left Editor Pane
+        RenderSinglePane(pRT, theme, config, docs, activeDocIdx, canvasLeft, paneWidth, headerH, clientHeight,
+                         hasLeftDrawer, (focusedPane == 0), highlightQuery, highlightMatchCase, highlightWholeWord, highlightUseRegex);
+
+        // 2. Vertical Divider Line (Image 4)
+        float dividerX = canvasLeft + paneWidth + 0.5f;
+        pRT->DrawLine(
+            D2D1::Point2F(dividerX, headerH),
+            D2D1::Point2F(dividerX, clientHeight),
+            theme.brushBorderSubtle.Get(),
+            1.0f
+        );
+
+        // 3. Render Right Editor Pane
+        int rightDocIdx = (splitDocIdx >= 0 && splitDocIdx < static_cast<int>(docs.size())) ? splitDocIdx : activeDocIdx;
+        RenderSinglePane(pRT, theme, config, docs, rightDocIdx, canvasLeft + paneWidth + paneGap, paneWidth, headerH, clientHeight,
+                         true, (focusedPane == 1), highlightQuery, highlightMatchCase, highlightWholeWord, highlightUseRegex);
+    } else {
+        // --- Single Editor Pane ---
+        RenderSinglePane(pRT, theme, config, docs, activeDocIdx, canvasLeft, canvasWidth, headerH, clientHeight,
+                         hasLeftDrawer, true, highlightQuery, highlightMatchCase, highlightWholeWord, highlightUseRegex);
+    }
+}
+
+void EditorCanvas::RenderSinglePane(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
+                                    std::vector<editor::OpenDocument>& docs, int docIdx,
+                                    float canvasLeft, float canvasWidth, float headerH, float clientHeight,
+                                    bool hasLeftDrawer, bool isPaneFocused,
+                                    const std::wstring& highlightQuery,
+                                    bool highlightMatchCase,
+                                    bool highlightWholeWord,
+                                    bool highlightUseRegex) {
+    (void)isPaneFocused;
+    if (docs.empty() || docIdx < 0 || docIdx >= static_cast<int>(docs.size())) {
+        RenderPlaceholder(pRT, theme, config, canvasLeft, canvasWidth, headerH, clientHeight);
+        return;
+    }
+
+    const float tabH = config.ScaleF(34.0f);
+    bool isSplitRight = (canvasLeft > config.ScaleF(static_cast<float>(config.railWidth + config.drawerWidth)));
+    RenderTabs(pRT, theme, config, canvasLeft, canvasWidth, headerH, docs, docIdx, hasLeftDrawer, isSplitRight);
+
+    auto& activeDoc = docs[docIdx];
+    const float breadcrumbH = config.ScaleF(24.0f);
+    RenderBreadcrumbs(pRT, theme, config, activeDoc, canvasLeft, canvasWidth, headerH + tabH, breadcrumbH);
+
+    float contentTopY = headerH + tabH + breadcrumbH;
+    if (activeDoc.isSpecialView && activeDoc.viewType == L"keybindings") {
+        m_keybindingsView.Render(pRT, theme, config, canvasLeft, canvasWidth, contentTopY, clientHeight - contentTopY);
+    } else if (activeDoc.isImageView) {
+        RenderImageView(pRT, theme, config, activeDoc, canvasLeft, canvasWidth, contentTopY, clientHeight);
+    } else if (activeDoc.isUnsupportedBinary) {
+        RenderUnsupportedBinaryView(pRT, theme, config, activeDoc, canvasLeft, canvasWidth, contentTopY, clientHeight);
+    } else {
+        RenderCode(pRT, theme, config, activeDoc, canvasLeft, canvasWidth, contentTopY, clientHeight,
+                   highlightQuery, highlightMatchCase, highlightWholeWord, highlightUseRegex);
     }
 }
 
@@ -302,7 +348,7 @@ void EditorCanvas::RenderPlaceholder(ID2D1RenderTarget* pRT, Theme& theme, const
 void EditorCanvas::RenderTabs(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
                               float canvasLeft, float canvasWidth, float headerH,
                               std::vector<editor::OpenDocument>& docs, int activeDocIdx,
-                              bool hasLeftDrawer) {
+                              bool hasLeftDrawer, bool isSplitRight) {
     const float tabH = config.ScaleF(34.0f);
     const float cornerRadius = hasLeftDrawer ? 0.0f : config.ScaleF(14.0f);
 
@@ -351,7 +397,11 @@ void EditorCanvas::RenderTabs(ID2D1RenderTarget* pRT, Theme& theme, const app::A
         tabW = (std::clamp)(tabW, config.ScaleF(100.0f), config.ScaleF(220.0f));
 
         D2D1_RECT_F rcTab = D2D1::RectF(curX, headerH, curX + tabW, headerH + tabH);
-        doc.tabBounds = rcTab;
+        if (isSplitRight) {
+            doc.splitTabBounds = rcTab;
+        } else {
+            doc.tabBounds = rcTab;
+        }
 
         // Draw tab surface
         if (isActive) {
@@ -451,7 +501,12 @@ void EditorCanvas::RenderTabs(ID2D1RenderTarget* pRT, Theme& theme, const app::A
         const float closeSize = config.ScaleF(16.0f);
         const float closeX = rcTab.right - config.ScaleF(20.0f);
         const float closeY = headerH + (tabH - closeSize) / 2.0f;
-        doc.closeBounds = D2D1::RectF(closeX, closeY, closeX + closeSize, closeY + closeSize);
+        D2D1_RECT_F rcClose = D2D1::RectF(closeX, closeY, closeX + closeSize, closeY + closeSize);
+        if (isSplitRight) {
+            doc.splitCloseBounds = rcClose;
+        } else {
+            doc.closeBounds = rcClose;
+        }
 
         // Dirty Circle Indicator: ONLY if doc.isDirty is true! (7px diameter)
         if (doc.isDirty) {
@@ -977,9 +1032,9 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
     }
 }
 
-int EditorCanvas::HitTestTab(POINT pt, const std::vector<editor::OpenDocument>& docs) const {
+int EditorCanvas::HitTestTab(POINT pt, const std::vector<editor::OpenDocument>& docs, bool isSplitRight) const {
     for (size_t i = 0; i < docs.size(); ++i) {
-        const auto& b = docs[i].tabBounds;
+        const auto& b = isSplitRight ? docs[i].splitTabBounds : docs[i].tabBounds;
         if (pt.x >= b.left && pt.x <= b.right && pt.y >= b.top && pt.y <= b.bottom) {
             return static_cast<int>(i);
         }
@@ -987,9 +1042,9 @@ int EditorCanvas::HitTestTab(POINT pt, const std::vector<editor::OpenDocument>& 
     return -1;
 }
 
-int EditorCanvas::HitTestTabClose(POINT pt, const std::vector<editor::OpenDocument>& docs) const {
+int EditorCanvas::HitTestTabClose(POINT pt, const std::vector<editor::OpenDocument>& docs, bool isSplitRight) const {
     for (size_t i = 0; i < docs.size(); ++i) {
-        const auto& b = docs[i].closeBounds;
+        const auto& b = isSplitRight ? docs[i].splitCloseBounds : docs[i].closeBounds;
         if (pt.x >= b.left - 4 && pt.x <= b.right + 4 && pt.y >= b.top - 4 && pt.y <= b.bottom + 4) {
             return static_cast<int>(i);
         }
@@ -1212,6 +1267,126 @@ void EditorCanvas::RenderImageView(ID2D1RenderTarget* pRT, Theme& theme, const a
             pRT->DrawText(msg.c_str(), static_cast<UINT32>(msg.length()), pFmt, rcMsg, theme.brushTextMuted.Get());
         }
     }
+}
+
+/**
+ * @brief Renders the unsupported binary file view (red circled X, center text, subheader) matching Image 2.
+ */
+void EditorCanvas::RenderUnsupportedBinaryView(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
+                                              editor::OpenDocument& doc, float canvasLeft, float canvasWidth,
+                                              float topY, float clientHeight) {
+    if (doc.binaryFileSize == 0 && !doc.filePath.empty()) {
+        std::error_code ec;
+        doc.binaryFileSize = std::filesystem::file_size(doc.filePath, ec);
+    }
+
+    const float availH = clientHeight - topY;
+    const float centerY = topY + availH * 0.42f;
+    const float centerX = canvasLeft + canvasWidth / 2.0f;
+
+    // 1. Red circled X icon (as requested: "have X incircle red or anything")
+    const float circleR = config.ScaleF(28.0f);
+    D2D1_ELLIPSE redCircle = D2D1::Ellipse(D2D1::Point2F(centerX, centerY - config.ScaleF(50.0f)), circleR, circleR);
+
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushRedBg;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushRedBorder;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushRedCross;
+    pRT->CreateSolidColorBrush(D2D1::ColorF(0.92f, 0.22f, 0.22f, 0.16f), &brushRedBg);
+    pRT->CreateSolidColorBrush(D2D1::ColorF(0.92f, 0.22f, 0.22f, 0.90f), &brushRedBorder);
+    pRT->CreateSolidColorBrush(theme.IsDarkMode() ? D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.95f) : D2D1::ColorF(0.90f, 0.18f, 0.18f, 1.0f), &brushRedCross);
+
+    if (brushRedBg) pRT->FillEllipse(redCircle, brushRedBg.Get());
+    if (brushRedBorder) pRT->DrawEllipse(redCircle, brushRedBorder.Get(), 2.0f);
+
+    if (brushRedCross) {
+        float cr = config.ScaleF(10.0f);
+        float ccx = redCircle.point.x;
+        float ccy = redCircle.point.y;
+        pRT->DrawLine(D2D1::Point2F(ccx - cr, ccy - cr), D2D1::Point2F(ccx + cr, ccy + cr), brushRedCross.Get(), 2.4f);
+        pRT->DrawLine(D2D1::Point2F(ccx + cr, ccy - cr), D2D1::Point2F(ccx - cr, ccy + cr), brushRedCross.Get(), 2.4f);
+    }
+
+    // 2. Bold Headline: "The file cannot be opened in the editor"
+    const wchar_t* headline = L"The file cannot be opened in the editor";
+    const float headlineW = config.ScaleF(460.0f);
+    const float headlineH = config.ScaleF(28.0f);
+    D2D1_RECT_F rcHeadline = D2D1::RectF(
+        centerX - headlineW / 2.0f,
+        centerY - config.ScaleF(6.0f),
+        centerX + headlineW / 2.0f,
+        centerY + headlineH - config.ScaleF(6.0f)
+    );
+    IDWriteTextFormat* pHeadFmt = theme.fontSectionHeader ? theme.fontSectionHeader.Get() : theme.fontBody.Get();
+    if (pHeadFmt) {
+        DWRITE_TEXT_ALIGNMENT oldAlign = pHeadFmt->GetTextAlignment();
+        pHeadFmt->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+        pRT->DrawText(headline, static_cast<UINT32>(wcslen(headline)), pHeadFmt, rcHeadline, theme.brushTextPrimary.Get());
+        pHeadFmt->SetTextAlignment(oldAlign);
+    }
+
+    // 3. Sub-header: "This file is unsupported because it is binary or an executable file."
+    const wchar_t* subheader = L"This file is unsupported because it is binary or an executable file.";
+    const float subH = config.ScaleF(24.0f);
+    D2D1_RECT_F rcSub = D2D1::RectF(
+        centerX - headlineW / 2.0f,
+        rcHeadline.bottom + config.ScaleF(4.0f),
+        centerX + headlineW / 2.0f,
+        rcHeadline.bottom + config.ScaleF(4.0f) + subH
+    );
+    if (theme.fontBody) {
+        DWRITE_TEXT_ALIGNMENT oldAlign = theme.fontBody->GetTextAlignment();
+        theme.fontBody->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+        pRT->DrawText(subheader, static_cast<UINT32>(wcslen(subheader)), theme.fontBody.Get(), rcSub, theme.brushTextSecondary.Get());
+        theme.fontBody->SetTextAlignment(oldAlign);
+    }
+
+    // 4. File metadata pill (e.g. coordinator.exe | Binary File | 1.42 MB)
+    std::wstring sizeStr;
+    if (doc.binaryFileSize < 1024) {
+        sizeStr = std::to_wstring(doc.binaryFileSize) + L" B";
+    } else if (doc.binaryFileSize < 1024 * 1024) {
+        sizeStr = std::to_wstring(doc.binaryFileSize / 1024) + L" KB";
+    } else {
+        sizeStr = std::to_wstring(doc.binaryFileSize / (1024 * 1024)) + L" MB";
+    }
+
+    std::wstring typeStr = doc.binaryFileType.empty() ? L"Binary File" : doc.binaryFileType;
+    std::wstring pillText = doc.fileName + L"   |   " + typeStr + L"   |   " + sizeStr;
+
+    const float pillH = config.ScaleF(24.0f);
+    const float pillW = config.ScaleF(static_cast<float>(pillText.length() * 7.0f + 24.0f));
+    const float pillX = centerX - pillW / 2.0f;
+    const float pillY = rcSub.bottom + config.ScaleF(14.0f);
+
+    D2D1_ROUNDED_RECT rrcPill = D2D1::RoundedRect(
+        D2D1::RectF(pillX, pillY, pillX + pillW, pillY + pillH),
+        config.ScaleF(12.0f), config.ScaleF(12.0f)
+    );
+    pRT->FillRoundedRectangle(rrcPill, theme.brushItemHover.Get());
+    pRT->DrawRoundedRectangle(rrcPill, theme.brushBorderSubtle.Get(), 0.8f);
+
+    IDWriteTextFormat* pMenuFmt = theme.fontMenu ? theme.fontMenu.Get() : theme.fontCode.Get();
+    if (pMenuFmt) {
+        DWRITE_TEXT_ALIGNMENT oldAlign = pMenuFmt->GetTextAlignment();
+        pMenuFmt->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+        pRT->DrawText(pillText.c_str(), static_cast<UINT32>(pillText.length()), pMenuFmt, rrcPill.rect, theme.brushTextSecondary.Get());
+        pMenuFmt->SetTextAlignment(oldAlign);
+    }
+
+    // 5. Action Button: "Reveal in File Explorer"
+    const float btnW = config.ScaleF(170.0f);
+    const float btnH = config.ScaleF(32.0f);
+    const float btnX = centerX - btnW / 2.0f;
+    const float btnY = pillY + pillH + config.ScaleF(20.0f);
+
+    doc.unsupportedActionBtn = D2D1::RectF(btnX, btnY, btnX + btnW, btnY + btnH);
+    D2D1_ROUNDED_RECT rrcBtn = D2D1::RoundedRect(doc.unsupportedActionBtn, 4.0f, 4.0f);
+    pRT->FillRoundedRectangle(rrcBtn, theme.brushBrandAccent.Get());
+
+    const wchar_t* btnLabel = L"Reveal in File Explorer";
+    pRT->DrawText(btnLabel, static_cast<UINT32>(wcslen(btnLabel)),
+                  theme.fontButtonCenter ? theme.fontButtonCenter.Get() : theme.fontBody.Get(),
+                  doc.unsupportedActionBtn, theme.brushTextWhite.Get());
 }
 
 } // namespace phide::ui

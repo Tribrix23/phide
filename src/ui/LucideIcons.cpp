@@ -997,4 +997,27 @@ void LucideIcons::DrawFileCss(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds,
     pRT->DrawLine(MapPoint(4.0f, 15.0f, ox, oy, s), MapPoint(20.0f, 15.0f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
 }
 
+void LucideIcons::DrawSplitEditor(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, ID2D1Brush* pBrush, float strokeWidth) const {
+    if (!pRT || !pBrush) return;
+    EnsureStrokeStyle(pRT, const_cast<ComPtr<ID2D1StrokeStyle>&>(m_pStrokeStyle));
+
+    const float bw = bounds.right - bounds.left;
+    const float bh = bounds.bottom - bounds.top;
+    const float iconSize = (std::min)(bw, bh) * 0.70f;
+    const float cx = bounds.left + bw * 0.5f;
+    const float cy = bounds.top + bh * 0.5f;
+
+    const float halfW = iconSize * 0.55f;
+    const float halfH = iconSize * 0.45f;
+    D2D1_RECT_F rc = D2D1::RectF(cx - halfW, cy - halfH, cx + halfW, cy + halfH);
+    D2D1_ROUNDED_RECT rrc = D2D1::RoundedRect(rc, 2.0f, 2.0f);
+
+    pRT->DrawRoundedRectangle(&rrc, pBrush, strokeWidth, m_pStrokeStyle.Get());
+    pRT->DrawLine(
+        D2D1::Point2F(cx, cy - halfH),
+        D2D1::Point2F(cx, cy + halfH),
+        pBrush, strokeWidth, m_pStrokeStyle.Get()
+    );
+}
+
 } // namespace phide::ui

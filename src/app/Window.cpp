@@ -413,6 +413,22 @@ void Window::ToggleSidebar() {
     SaveSessionState();
 }
 
+void Window::ToggleSplitEditor() {
+    m_isSplitView = !m_isSplitView;
+    m_header.SetSplitActive(m_isSplitView);
+    if (m_isSplitView) {
+        if (m_openDocs.size() >= 2) {
+            m_splitActiveDocIdx = (m_activeDocIdx == 0) ? 1 : 0;
+        } else if (m_openDocs.size() == 1) {
+            m_splitActiveDocIdx = m_activeDocIdx;
+        } else {
+            m_splitActiveDocIdx = -1;
+        }
+        m_focusedPane = 0;
+    }
+    InvalidateRect(m_hwnd, nullptr, FALSE);
+}
+
 void Window::DoNewTextFile() {
     editor::OpenDocument doc;
     m_untitledCounter++;
@@ -509,6 +525,42 @@ void Window::OpenFileDocument(const std::wstring& path, bool isPreview) {
                     ext == L".bmp" || ext == L".gif" || ext == L".ico" ||
                     ext == L".webp" || ext == L".tiff" || ext == L".tif");
 
+    bool isBinary = false;
+    std::wstring binaryType;
+    if (ext == L".exe" || ext == L".dll" || ext == L".obj" || ext == L".bin" ||
+        ext == L".lib" || ext == L".pdb" || ext == L".so" || ext == L".dylib" ||
+        ext == L".sys" || ext == L".o" || ext == L".a" || ext == L".class" ||
+        ext == L".pyc" || ext == L".wasm") {
+        isBinary = true;
+        binaryType = L"Executable / Binary";
+    } else if (ext == L".mp4" || ext == L".mkv" || ext == L".avi" || ext == L".mov" ||
+               ext == L".wmv" || ext == L".flv" || ext == L".webm" || ext == L".mpg" || ext == L".mpeg" || ext == L".m4v") {
+        isBinary = true;
+        binaryType = L"Video File";
+    } else if (ext == L".mp3" || ext == L".wav" || ext == L".ogg" || ext == L".flac" || ext == L".m4a") {
+        isBinary = true;
+        binaryType = L"Audio File";
+    } else if (ext == L".zip" || ext == L".rar" || ext == L".7z" || ext == L".tar" || ext == L".gz" || ext == L".iso") {
+        isBinary = true;
+        binaryType = L"Compressed Archive";
+    }
+
+    if (!isImage && !isBinary) {
+        std::ifstream fileCheck(path, std::ios::binary);
+        if (fileCheck.is_open()) {
+            char buf[1024];
+            fileCheck.read(buf, sizeof(buf));
+            std::streamsize bytesRead = fileCheck.gcount();
+            for (std::streamsize b = 0; b < bytesRead; ++b) {
+                if (buf[b] == '\0') {
+                    isBinary = true;
+                    binaryType = L"Binary File";
+                    break;
+                }
+            }
+        }
+    }
+
     editor::OpenDocument newDoc;
     newDoc.filePath = path;
     auto pos = path.find_last_of(L"\\/");
@@ -517,11 +569,16 @@ void Window::OpenFileDocument(const std::wstring& path, bool isPreview) {
     newDoc.isDirty = false;
     newDoc.isSpecialView = false;
     newDoc.isImageView = isImage;
+    newDoc.isUnsupportedBinary = isBinary;
+    newDoc.binaryFileType = binaryType;
     newDoc.viewType.clear();
 
     if (isImage) {
         std::error_code ec;
         newDoc.imageFileSize = std::filesystem::file_size(path, ec);
+    } else if (isBinary) {
+        std::error_code ec;
+        newDoc.binaryFileSize = std::filesystem::file_size(path, ec);
     } else {
         newDoc.buffer.LoadFromFile(path);
     }
@@ -616,10 +673,19 @@ void Window::CloseDocument(int index) {
 
     if (m_openDocs.empty()) {
         m_activeDocIdx = -1;
-    } else if (m_activeDocIdx >= static_cast<int>(m_openDocs.size())) {
-        m_activeDocIdx = static_cast<int>(m_openDocs.size() - 1);
-    } else if (index < m_activeDocIdx) {
-        m_activeDocIdx--;
+        m_splitActiveDocIdx = -1;
+    } else {
+        if (m_activeDocIdx >= static_cast<int>(m_openDocs.size())) {
+            m_activeDocIdx = static_cast<int>(m_openDocs.size() - 1);
+        } else if (index < m_activeDocIdx) {
+            m_activeDocIdx--;
+        }
+
+        if (m_splitActiveDocIdx >= static_cast<int>(m_openDocs.size())) {
+            m_splitActiveDocIdx = static_cast<int>(m_openDocs.size() - 1);
+        } else if (index < m_splitActiveDocIdx) {
+            m_splitActiveDocIdx--;
+        }
     }
 
     SaveSessionState();
@@ -1201,6 +1267,9 @@ bool Window::Create(HINSTANCE hInstance, int nCmdShow) {
     // Start 500ms Caret blink timer
     SetTimer(m_hwnd, m_caretTimerId, 500, nullptr);
 
+    // Start 50ms Search throttler polling timer
+    SetTimer(m_hwnd, m_throttleTimerId, 50, nullptr);
+
     // Restore saved IDE session state (open folder, expanded tree dirs, open file, sidebar open/close state)
     LoadSessionState();
 
@@ -1353,7 +1422,8 @@ void Window::OnPaint() {
 
     m_editor.Render(m_pRenderTarget.Get(), m_theme, m_config, m_openDocs, m_activeDocIdx,
                     canvasLeft, canvasWidth, clientH, hasLeftDrawer,
-                    searchHL, hlMatchCase, hlWholeWord, hlUseRegex);
+                    searchHL, hlMatchCase, hlWholeWord, hlUseRegex,
+                    m_isSplitView, m_splitActiveDocIdx, m_focusedPane);
 
     // 2. Render Slide-out Drawer Panel (when visible or animating, with 14px rounded curve at top-left)
     if (hasLeftDrawer) {
@@ -1474,11 +1544,12 @@ void Window::HandleMouseMove(POINT clientPt) {
         }
     }
 
-    // Check Header menu, execution buttons, and caption button hover
+    // Check Header menu, execution buttons, split editor button, and caption button hover
     auto hoveredMenu = m_header.HitTestMenu(clientPt);
     auto hoveredCaption = m_header.HitTestCaptionButton(clientPt);
     auto hoveredExec = m_header.HitTestExecButton(clientPt);
     if (m_header.UpdateHoverState(hoveredMenu, hoveredCaption, hoveredExec)) needRepaint = true;
+    if (m_header.SetHoveredSplitEditor(m_header.HitTestSplitEditor(clientPt))) needRepaint = true;
 
     // Check Rail icon hover (triggers customized tooltip)
     auto hoveredRail = m_rail.HitTest(clientPt);
@@ -1865,17 +1936,44 @@ void Window::HandleLButtonDown(POINT clientPt) {
         return;
     }
 
+    // 3b. Split Editor Button Click (toggles side-by-side split view, Images 3 & 4)
+    if (m_header.HitTestSplitEditor(clientPt)) {
+        ToggleSplitEditor();
+        return;
+    }
+
+    // Determine if mouse is in the Right pane when Split View is active
+    const int railW = m_config.Scale(m_config.railWidth);
+    const int drawerW = static_cast<int>(m_config.Scale(m_config.drawerWidth) * m_drawerAnimProgress);
+    const float canvasLeft = static_cast<float>(railW + drawerW);
+    RECT clientRc;
+    GetClientRect(m_hwnd, &clientRc);
+    const float canvasWidth = static_cast<float>(clientRc.right) - canvasLeft;
+    bool isSplitRight = false;
+    if (m_isSplitView && canvasWidth > 10.0f) {
+        float paneW = (canvasWidth - 1.0f) / 2.0f;
+        if (clientPt.x >= canvasLeft + paneW) {
+            isSplitRight = true;
+        }
+    }
+
     // 4. Tab Close Button Click (closes clicked editor tab)
-    int closeIdx = m_editor.HitTestTabClose(clientPt, m_openDocs);
+    int closeIdx = m_editor.HitTestTabClose(clientPt, m_openDocs, isSplitRight);
     if (closeIdx >= 0) {
         CloseDocument(closeIdx);
         return;
     }
 
     // 4b. Tab Header Click (switches active tab)
-    int tabHitIdx = m_editor.HitTestTab(clientPt, m_openDocs);
+    int tabHitIdx = m_editor.HitTestTab(clientPt, m_openDocs, isSplitRight);
     if (tabHitIdx >= 0) {
-        m_activeDocIdx = tabHitIdx;
+        if (m_isSplitView && isSplitRight) {
+            m_splitActiveDocIdx = tabHitIdx;
+            m_focusedPane = 1;
+        } else {
+            m_activeDocIdx = tabHitIdx;
+            m_focusedPane = 0;
+        }
         InvalidateRect(m_hwnd, nullptr, FALSE);
         return;
     }
@@ -1949,10 +2047,26 @@ void Window::HandleLButtonDown(POINT clientPt) {
     // Unfocus drawer search input when clicking outside drawer
     m_drawer.SetSearchFocus(0);
 
-    // 6. Click inside Editor Area (sets cursor position or focuses keybindings search)
+    // Focus pane if clicking inside Editor Canvas
+    if (clientPt.x >= canvasLeft && clientPt.y >= m_config.Scale(m_config.headerHeight)) {
+        if (m_isSplitView) {
+            m_focusedPane = isSplitRight ? 1 : 0;
+        }
+    }
+
+    // 6. Click inside Editor Area (sets cursor position, handles action button or keybindings)
     auto* pDoc = GetActiveDoc();
     if (pDoc) {
-        if (pDoc->isSpecialView && pDoc->viewType == L"keybindings") {
+        if (pDoc->isUnsupportedBinary) {
+            const auto& btn = pDoc->unsupportedActionBtn;
+            if (clientPt.x >= btn.left && clientPt.x <= btn.right &&
+                clientPt.y >= btn.top && clientPt.y <= btn.bottom) {
+                std::wstring param = L"/select,\"" + pDoc->filePath + L"\"";
+                ShellExecuteW(nullptr, L"open", L"explorer.exe", param.c_str(), nullptr, SW_SHOW);
+                return;
+            }
+            return;
+        } else if (pDoc->isSpecialView && pDoc->viewType == L"keybindings") {
             if (m_editor.GetKeyboardShortcutsView().HandleLButtonDown(clientPt)) {
                 InvalidateRect(m_hwnd, nullptr, FALSE);
                 return;
@@ -1961,9 +2075,11 @@ void Window::HandleLButtonDown(POINT clientPt) {
             RECT rc;
             GetClientRect(m_hwnd, &rc);
             float clientH = static_cast<float>(rc.bottom - rc.top);
-            float railW = m_config.ScaleF(static_cast<float>(m_config.railWidth));
-            float currentDrawerW = m_config.ScaleF(static_cast<float>(m_config.drawerWidth)) * m_drawerAnimProgress;
-            float canvasLeft = railW + currentDrawerW;
+            float paneCanvasLeft = canvasLeft;
+            if (m_isSplitView && isSplitRight) {
+                float paneW = (canvasWidth - 1.0f) / 2.0f;
+                paneCanvasLeft = canvasLeft + paneW + 1.0f;
+            }
 
             // 1. Check fold chevron click in the gutter (Images 2 & 3)
             int foldLine = m_editor.HitTestFoldChevron(clientPt);
@@ -2000,7 +2116,7 @@ void Window::HandleLButtonDown(POINT clientPt) {
 
             // 3. Code Area click
             size_t line = 0, col = 0;
-            if (m_editor.HitTestCodeArea(clientPt, m_config, *pDoc, canvasLeft, clientH, line, col)) {
+            if (m_editor.HitTestCodeArea(clientPt, m_config, *pDoc, paneCanvasLeft, clientH, line, col)) {
                 pDoc->buffer.SetCursor(line, col);
                 InvalidateRect(m_hwnd, nullptr, FALSE);
                 return;
@@ -2031,9 +2147,8 @@ void Window::HandleLButtonDown(POINT clientPt) {
 
 void Window::HandleLButtonUp(POINT clientPt) {
     (void)clientPt;
-    auto* pDoc = GetActiveDoc();
-    if (pDoc) {
-        pDoc->isDraggingScrollbar = false;
+    for (auto& doc : m_openDocs) {
+        doc.isDraggingScrollbar = false;
     }
 }
 
@@ -2143,18 +2258,31 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     return TRUE;
                 }
 
-                // Also provide pointer hand cursor over caption buttons, menus, and execution buttons
+                // Also provide pointer hand cursor over caption buttons, menus, execution buttons, and split editor
                 if (m_header.HitTestCaptionButton(pt) != ui::CaptionButtonType::None ||
                     m_header.HitTestMenu(pt) != ui::HeaderMenuId::None ||
-                    m_header.HitTestExecButton(pt) != ui::HeaderExecId::None) {
+                    m_header.HitTestExecButton(pt) != ui::HeaderExecId::None ||
+                    m_header.HitTestSplitEditor(pt)) {
                     SetCursor(LoadCursor(nullptr, IDC_HAND));
                     return TRUE;
                 }
 
                 // Tab bar close buttons or folding chevrons
-                if (m_editor.HitTestTabClose(pt, m_openDocs) >= 0 || m_editor.HitTestFoldChevron(pt) >= 0) {
+                if (m_editor.HitTestTabClose(pt, m_openDocs, false) >= 0 ||
+                    (m_isSplitView && m_editor.HitTestTabClose(pt, m_openDocs, true) >= 0) ||
+                    m_editor.HitTestFoldChevron(pt) >= 0) {
                     SetCursor(LoadCursor(nullptr, IDC_HAND));
                     return TRUE;
+                }
+
+                // Unsupported binary action button ("Reveal in File Explorer")
+                auto* pCurDoc = GetActiveDoc();
+                if (pCurDoc && pCurDoc->isUnsupportedBinary) {
+                    const auto& b = pCurDoc->unsupportedActionBtn;
+                    if (pt.x >= b.left && pt.x <= b.right && pt.y >= b.top && pt.y <= b.bottom) {
+                        SetCursor(LoadCursor(nullptr, IDC_HAND));
+                        return TRUE;
+                    }
                 }
 
                 // Open Folder button in drawer when empty
@@ -2164,28 +2292,25 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 }
 
                 // Editor code text area: show I-beam cursor (matching Image 1)
-                if (!m_openDocs.empty() && m_activeDocIdx >= 0 && m_activeDocIdx < static_cast<int>(m_openDocs.size())) {
-                    const auto& activeDoc = m_openDocs[m_activeDocIdx];
-                    if (!activeDoc.isSpecialView && !activeDoc.isImageView) {
-                        float railW = m_config.ScaleF(static_cast<float>(m_config.railWidth));
-                        float drawerW = m_config.ScaleF(static_cast<float>(m_config.drawerWidth)) * m_drawerAnimProgress;
-                        float canvasLeft = railW + drawerW;
-                        float gutterW = m_config.ScaleF(50.0f);
-                        float headerH = m_config.ScaleF(static_cast<float>(m_config.headerHeight));
-                        float tabH    = m_config.ScaleF(34.0f);
-                        float breadcrumbH = m_config.ScaleF(24.0f);
-                        float topY    = headerH + tabH + breadcrumbH;
-                        float scrollbarW = m_config.ScaleF(14.0f);
-                        RECT rcClient;
-                        GetClientRect(m_hwnd, &rcClient);
-                        float clientW = static_cast<float>(rcClient.right - rcClient.left);
-                        float clientH = static_cast<float>(rcClient.bottom - rcClient.top);
+                if (pCurDoc && !pCurDoc->isSpecialView && !pCurDoc->isImageView && !pCurDoc->isUnsupportedBinary) {
+                    float railW = m_config.ScaleF(static_cast<float>(m_config.railWidth));
+                    float drawerW = m_config.ScaleF(static_cast<float>(m_config.drawerWidth)) * m_drawerAnimProgress;
+                    float canvasLeft = railW + drawerW;
+                    float gutterW = m_config.ScaleF(50.0f);
+                    float headerH = m_config.ScaleF(static_cast<float>(m_config.headerHeight));
+                    float tabH    = m_config.ScaleF(34.0f);
+                    float breadcrumbH = m_config.ScaleF(24.0f);
+                    float topY    = headerH + tabH + breadcrumbH;
+                    float scrollbarW = m_config.ScaleF(14.0f);
+                    RECT rcClient;
+                    GetClientRect(m_hwnd, &rcClient);
+                    float clientW = static_cast<float>(rcClient.right - rcClient.left);
+                    float clientH = static_cast<float>(rcClient.bottom - rcClient.top);
 
-                        if (pt.x >= canvasLeft + gutterW && pt.x < clientW - scrollbarW &&
-                            pt.y >= topY && pt.y < clientH) {
-                            SetCursor(LoadCursor(nullptr, IDC_IBEAM));
-                            return TRUE;
-                        }
+                    if (pt.x >= canvasLeft + gutterW && pt.x < clientW - scrollbarW &&
+                        pt.y >= topY && pt.y < clientH) {
+                        SetCursor(LoadCursor(nullptr, IDC_IBEAM));
+                        return TRUE;
                     }
                 }
 
@@ -2247,6 +2372,23 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
 
             // 2. Scroll Editor Canvas
             auto* pDoc = GetActiveDoc();
+            if (m_isSplitView) {
+                RECT rcClient;
+                GetClientRect(m_hwnd, &rcClient);
+                float canvasW = static_cast<float>(rcClient.right - rcClient.left) - (railW + drawerW);
+                if (canvasW > 10.0f) {
+                    float paneW = (canvasW - 1.0f) / 2.0f;
+                    if (pt.x >= (railW + drawerW) + paneW) {
+                        if (m_splitActiveDocIdx >= 0 && m_splitActiveDocIdx < static_cast<int>(m_openDocs.size())) {
+                            pDoc = &m_openDocs[m_splitActiveDocIdx];
+                        }
+                    } else {
+                        if (m_activeDocIdx >= 0 && m_activeDocIdx < static_cast<int>(m_openDocs.size())) {
+                            pDoc = &m_openDocs[m_activeDocIdx];
+                        }
+                    }
+                }
+            }
             if (pDoc) {
                 if (pDoc->isSpecialView && pDoc->viewType == L"keybindings") {
                     if (m_editor.GetKeyboardShortcutsView().HandleMouseWheel(delta)) {
@@ -2397,6 +2539,10 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 bool shiftDown = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
                 bool altDown   = (GetKeyState(VK_MENU) & 0x8000) != 0;
 
+                if (wParam == VK_OEM_5) { // Ctrl+\ (Split Editor Right, Images 3 & 4)
+                    ToggleSplitEditor();
+                    return 0;
+                }
                 if (wParam == 'B') {
                     ToggleSidebar();
                     return 0;
@@ -2587,6 +2733,10 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
             if (wParam == m_caretTimerId) {
                 m_editor.ToggleCaretBlink();
                 InvalidateRect(m_hwnd, nullptr, FALSE);
+            } else if (wParam == m_throttleTimerId) {
+                if (m_drawer.PollSearchThrottle(GetTickCount64())) {
+                    InvalidateRect(m_hwnd, nullptr, FALSE);
+                }
             } else if (wParam == m_animTimerId) {
                 const float speed = 0.22f; // Smooth, quick sliding animation
                 float diff = m_targetDrawerProgress - m_drawerAnimProgress;

@@ -178,6 +178,19 @@ public:
      */
     void HandleSearchKeyDown(WPARAM wParam);
 
+    /**
+     * @brief Schedules a throttled workspace search.
+     * Executes immediately if minimum interval has elapsed, otherwise marks pending.
+     */
+    void TriggerSearchThrottled(ULONGLONG nowMs = 0);
+
+    /**
+     * @brief Polls throttled search timer (called on animation / timer loop).
+     * @param nowMs Current monotonic millisecond timestamp.
+     * @return True if a pending search was executed and UI needs repaint.
+     */
+    bool PollSearchThrottle(ULONGLONG nowMs);
+
     [[nodiscard]] bool IsSearchFocused() const noexcept { return m_focusedSearchInput > 0; }
     void SetSearchFocus(int inputId) noexcept { m_focusedSearchInput = inputId; }
 
@@ -291,6 +304,11 @@ private:
     std::vector<SearchFileGroup> m_searchGroups;
     size_t m_totalMatches = 0;
     size_t m_searchScrollIdx = 0;
+
+    // Search Throttler State (as requested, throttler rather than debouncer)
+    ULONGLONG m_lastSearchExecutionTime = 0;
+    ULONGLONG m_throttleIntervalMs = 250;
+    bool m_searchPending = false;
 
     // Search Tooltip State
     std::wstring m_searchTooltipText;

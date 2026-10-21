@@ -30,11 +30,14 @@ public:
     ~EditorCanvas() = default;
 
     /**
-     * @brief Renders the entire editor canvas (multi-tabs, active document or placeholder watermark).
+     * @brief Renders the entire editor canvas (multi-tabs, active document, split editor side-by-side panes, or placeholder watermark).
      * @param highlightQuery Search query string to highlight across visible lines.
      * @param highlightMatchCase Whether search query match is case-sensitive.
      * @param highlightWholeWord Whether search query matches whole words only.
      * @param highlightUseRegex Whether search query is treated as a regular expression.
+     * @param isSplitView Whether side-by-side split editor mode is active (Image 4).
+     * @param splitDocIdx Document index displayed in the secondary (right) split pane.
+     * @param focusedPane Active pane receiving keyboard input (0 = Left, 1 = Right).
      */
     void Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
                 std::vector<editor::OpenDocument>& docs, int activeDocIdx,
@@ -43,7 +46,10 @@ public:
                 const std::wstring& highlightQuery = L"",
                 bool highlightMatchCase = false,
                 bool highlightWholeWord = false,
-                bool highlightUseRegex = false);
+                bool highlightUseRegex = false,
+                bool isSplitView = false,
+                int splitDocIdx = -1,
+                int focusedPane = 0);
 
     /**
      * @brief Toggles caret blink phase.
@@ -52,15 +58,21 @@ public:
 
     /**
      * @brief Tests if mouse clicked on any tab header.
+     * @param pt Mouse point in client coordinates.
+     * @param docs Collection of open documents.
+     * @param isSplitRight True if testing tabs in secondary/right split pane.
      * @return Tab index (0-based) or -1 if no tab hit.
      */
-    [[nodiscard]] int HitTestTab(POINT pt, const std::vector<editor::OpenDocument>& docs) const;
+    [[nodiscard]] int HitTestTab(POINT pt, const std::vector<editor::OpenDocument>& docs, bool isSplitRight = false) const;
 
     /**
      * @brief Tests if mouse clicked any tab's close button (×).
+     * @param pt Mouse point in client coordinates.
+     * @param docs Collection of open documents.
+     * @param isSplitRight True if testing tabs in secondary/right split pane.
      * @return Tab index (0-based) or -1 if no close button hit.
      */
-    [[nodiscard]] int HitTestTabClose(POINT pt, const std::vector<editor::OpenDocument>& docs) const;
+    [[nodiscard]] int HitTestTabClose(POINT pt, const std::vector<editor::OpenDocument>& docs, bool isSplitRight = false) const;
 
     /**
      * @brief Tests if mouse clicked on the vertical scrollbar track or thumb.
@@ -150,7 +162,7 @@ private:
     void RenderTabs(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
                     float canvasLeft, float canvasWidth, float headerH,
                     std::vector<editor::OpenDocument>& docs, int activeDocIdx,
-                    bool hasLeftDrawer);
+                    bool hasLeftDrawer, bool isSplitRight = false);
 
     /**
      * @brief Renders the breadcrumbs navigation bar displaying file hierarchy and icon (Image 4).
@@ -173,6 +185,25 @@ private:
     void RenderImageView(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
                          editor::OpenDocument& doc, float canvasLeft, float canvasWidth,
                          float topY, float clientHeight);
+
+    /**
+     * @brief Renders the unsupported binary file view (red circled X, center text, subheader) matching Image 2.
+     */
+    void RenderUnsupportedBinaryView(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
+                                    editor::OpenDocument& doc, float canvasLeft, float canvasWidth,
+                                    float topY, float clientHeight);
+
+    /**
+     * @brief Renders a single editor pane (tabs, breadcrumbs, content).
+     */
+    void RenderSinglePane(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
+                          std::vector<editor::OpenDocument>& docs, int activeDocIdx,
+                          float canvasLeft, float canvasWidth, float headerH, float clientHeight,
+                          bool hasLeftDrawer, bool isPaneFocused,
+                          const std::wstring& highlightQuery = L"",
+                          bool highlightMatchCase = false,
+                          bool highlightWholeWord = false,
+                          bool highlightUseRegex = false);
 
     /**
      * @brief Renders active buffer source lines, line gutter numbers, fold chevrons, and syntax highlights.

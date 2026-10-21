@@ -1172,11 +1172,32 @@ bool DrawerPanel::HitTestSearch(POINT pt, const app::AppConfig& config, std::wst
     return false;
 }
 
+void DrawerPanel::TriggerSearchThrottled(ULONGLONG nowMs) {
+    ULONGLONG now = (nowMs != 0) ? nowMs : GetTickCount64();
+    if (now - m_lastSearchExecutionTime >= m_throttleIntervalMs) {
+        ExecuteSearch();
+        m_lastSearchExecutionTime = now;
+        m_searchPending = false;
+    } else {
+        m_searchPending = true;
+    }
+}
+
+bool DrawerPanel::PollSearchThrottle(ULONGLONG nowMs) {
+    if (m_searchPending && (nowMs - m_lastSearchExecutionTime >= m_throttleIntervalMs)) {
+        ExecuteSearch();
+        m_lastSearchExecutionTime = nowMs;
+        m_searchPending = false;
+        return true;
+    }
+    return false;
+}
+
 void DrawerPanel::HandleSearchChar(wchar_t ch) {
     if (m_focusedSearchInput == 1) {
         if (ch >= 32) {
             m_searchQuery.push_back(ch);
-            ExecuteSearch();
+            TriggerSearchThrottled();
         }
     } else if (m_focusedSearchInput == 2) {
         if (ch >= 32) {
@@ -1189,7 +1210,7 @@ void DrawerPanel::HandleSearchKeyDown(WPARAM wParam) {
     if (wParam == VK_BACK) {
         if (m_focusedSearchInput == 1 && !m_searchQuery.empty()) {
             m_searchQuery.pop_back();
-            ExecuteSearch();
+            TriggerSearchThrottled();
         } else if (m_focusedSearchInput == 2 && !m_replaceQuery.empty()) {
             m_replaceQuery.pop_back();
         }
@@ -1201,6 +1222,8 @@ void DrawerPanel::HandleSearchKeyDown(WPARAM wParam) {
         m_focusedSearchInput = 0;
     } else if (wParam == VK_RETURN) {
         ExecuteSearch();
+        m_lastSearchExecutionTime = GetTickCount64();
+        m_searchPending = false;
     }
 }
 
@@ -1264,6 +1287,26 @@ void DrawerPanel::ExecuteSearch() {
 
         if (!entry.is_regular_file(ec)) continue;
 
+        // Skip binary file extensions (video, images, executables, libraries, archives, audio, fonts)
+        auto ext = entry.path().extension().wstring();
+        for (auto& ch : ext) ch = towlower(ch);
+        if (ext == L".png" || ext == L".jpg" || ext == L".jpeg" || ext == L".gif" ||
+            ext == L".bmp" || ext == L".ico" || ext == L".webp" || ext == L".tiff" ||
+            ext == L".tif" || ext == L".psd" || ext == L".raw"  ||
+            ext == L".mp4" || ext == L".mkv" || ext == L".avi"  || ext == L".mov" ||
+            ext == L".wmv" || ext == L".flv" || ext == L".webm" || ext == L".mpg" ||
+            ext == L".mpeg"|| ext == L".m4v" || ext == L".3gp"  ||
+            ext == L".mp3" || ext == L".wav" || ext == L".ogg"  || ext == L".flac" ||
+            ext == L".aac" || ext == L".m4a" || ext == L".wma"  ||
+            ext == L".exe" || ext == L".dll" || ext == L".obj"  || ext == L".bin" ||
+            ext == L".lib" || ext == L".pdb" || ext == L".so"   || ext == L".dylib" ||
+            ext == L".sys" || ext == L".o"   || ext == L".a"    || ext == L".class" ||
+            ext == L".pyc" || ext == L".wasm"|| ext == L".zip"  || ext == L".rar" ||
+            ext == L".7z"  || ext == L".tar" || ext == L".gz"   || ext == L".iso" ||
+            ext == L".ttf" || ext == L".otf" || ext == L".woff" || ext == L".woff2") {
+            continue;
+        }
+
         // Skip large files (> 2MB)
         auto fileSize = entry.file_size(ec);
         if (ec || fileSize > 2 * 1024 * 1024) {
@@ -1271,14 +1314,32 @@ void DrawerPanel::ExecuteSearch() {
             continue;
         }
 
-        // Open and read file lines
+        // Open and check initial bytes for binary null characters before loading full contents
         std::ifstream file(entry.path(), std::ios::binary);
         if (!file.is_open()) continue;
 
+        char headerBuf[512];
+        file.read(headerBuf, sizeof(headerBuf));
+        std::streamsize bytesRead = file.gcount();
+        bool isBinary = false;
+        for (std::streamsize b = 0; b < bytesRead; ++b) {
+            if (headerBuf[b] == '\0') {
+                isBinary = true;
+                break;
+            }
+        }
+        if (isBinary) {
+            file.close();
+            continue;
+        }
+
+        // Seek back to start and read full text content
+        file.clear();
+        file.seekg(0, std::ios::beg);
         std::string content((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
         file.close();
 
-        // Skip binary files
+        // Secondary verification: discard if null byte found in remaining bytes
         if (content.find('\0') != std::string::npos) continue;
 
         int wlen = MultiByteToWideChar(CP_UTF8, 0, content.c_str(), static_cast<int>(content.size()), nullptr, 0);

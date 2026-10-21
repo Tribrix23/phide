@@ -149,6 +149,26 @@ public:
     [[nodiscard]] HeaderExecId GetHoveredExec() const noexcept { return m_hoveredExec; }
 
     /**
+     * @brief Checks if mouse is over the Split Editor button.
+     * @param pt Mouse point in client coordinates.
+     * @return True if cursor is over the Split Editor button.
+     */
+    [[nodiscard]] bool HitTestSplitEditor(POINT pt) const noexcept;
+
+    /**
+     * @brief Updates hover state for the Split Editor button.
+     * @return True if hover state changed and repaint is needed.
+     */
+    bool SetHoveredSplitEditor(bool hovered) noexcept;
+
+    /**
+     * @brief Sets whether Split Editor mode is active.
+     */
+    void SetSplitActive(bool active) noexcept { m_isSplitActive = active; }
+    [[nodiscard]] bool IsSplitActive() const noexcept { return m_isSplitActive; }
+    [[nodiscard]] D2D1_RECT_F GetSplitEditorBounds() const noexcept { return m_rcSplitEditor; }
+
+    /**
      * @brief Gets the bounding rectangle of a menu button.
      * @param id HeaderMenuId to query.
      * @return D2D1_RECT_F bounds of the button.
@@ -175,6 +195,11 @@ private:
     D2D1_RECT_F m_rcMinimize{};
     D2D1_RECT_F m_rcMaximize{};
     D2D1_RECT_F m_rcClose{};
+
+    // Split Editor control button (Image 3)
+    D2D1_RECT_F m_rcSplitEditor{};
+    bool m_hoveredSplitEditor = false;
+    bool m_isSplitActive = false;
 
     // Direct2D Purple Glass Gradient Brush and theme state cache
     Microsoft::WRL::ComPtr<ID2D1LinearGradientBrush> m_pHeaderGradientBrush;

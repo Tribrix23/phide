@@ -171,6 +171,15 @@ public:
     void DrawHelp(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, ID2D1Brush* pBrush, float strokeWidth = 1.4f) const;
 
     /**
+     * @brief Draws the Split Editor icon (columns-2 split pane [ | ]).
+     * @param pRT Active Direct2D render target.
+     * @param bounds Screen rectangle where the icon is centered.
+     * @param pBrush Direct2D brush (white in dark mode, black in light mode).
+     * @param strokeWidth Line stroke thickness.
+     */
+    void DrawSplitEditor(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, ID2D1Brush* pBrush, float strokeWidth = 1.3f) const;
+
+    /**
      * @brief Draws the vector Minimize caption icon.
      */
     void DrawMinimize(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, ID2D1Brush* pBrush, float strokeWidth = 1.2f) const;

@@ -88,15 +88,19 @@ private:
 
     // Multi-Document Life-cycle & Preview Tab Management
     editor::OpenDocument* GetActiveDoc() noexcept {
-        if (m_activeDocIdx >= 0 && m_activeDocIdx < static_cast<int>(m_openDocs.size())) {
-            return &m_openDocs[m_activeDocIdx];
+        int idx = (m_isSplitView && m_focusedPane == 1 && m_splitActiveDocIdx >= 0 && m_splitActiveDocIdx < static_cast<int>(m_openDocs.size()))
+            ? m_splitActiveDocIdx : m_activeDocIdx;
+        if (idx >= 0 && idx < static_cast<int>(m_openDocs.size())) {
+            return &m_openDocs[idx];
         }
         return nullptr;
     }
 
     const editor::OpenDocument* GetActiveDoc() const noexcept {
-        if (m_activeDocIdx >= 0 && m_activeDocIdx < static_cast<int>(m_openDocs.size())) {
-            return &m_openDocs[m_activeDocIdx];
+        int idx = (m_isSplitView && m_focusedPane == 1 && m_splitActiveDocIdx >= 0 && m_splitActiveDocIdx < static_cast<int>(m_openDocs.size()))
+            ? m_splitActiveDocIdx : m_activeDocIdx;
+        if (idx >= 0 && idx < static_cast<int>(m_openDocs.size())) {
+            return &m_openDocs[idx];
         }
         return nullptr;
     }
@@ -243,6 +247,9 @@ private:
     /** @brief Toggles line wrap in code editor canvas (Alt+Z). */
     void DoToggleWordWrap();
 
+    /** @brief Toggles side-by-side split editor mode (Ctrl+\). */
+    void ToggleSplitEditor();
+
     /** @brief Activates Explorer perspective in activity rail (Ctrl+Shift+E). */
     void DoShowExplorer();
 
@@ -298,6 +305,11 @@ private:
     int m_activeDocIdx = -1;
     int m_untitledCounter = 0;
 
+    // Split Editor State (Images 3 & 4)
+    bool m_isSplitView = false;
+    int m_splitActiveDocIdx = -1;
+    int m_focusedPane = 0; ///< 0 = Left Editor Pane, 1 = Right Editor Pane
+
     bool m_trackingMouse = false;
     bool m_wordWrap = false;
     bool m_autoSave = true;
@@ -312,8 +324,9 @@ private:
     bool m_clipboardIsCut = false;
     std::wstring m_compareSourcePath;
 
-    UINT_PTR m_caretTimerId = 1001;
-    UINT_PTR m_animTimerId  = 1002;
+    UINT_PTR m_caretTimerId    = 1001;
+    UINT_PTR m_animTimerId     = 1002;
+    UINT_PTR m_throttleTimerId = 1003; ///< 50ms timer for throttled code search queries
 
     float m_drawerAnimProgress   = 0.0f;
     float m_targetDrawerProgress = 0.0f;
