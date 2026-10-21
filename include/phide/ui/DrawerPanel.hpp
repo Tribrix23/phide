@@ -36,6 +36,31 @@ struct DrawerTreeItem {
 };
 
 /**
+ * @struct SearchMatch
+ * @brief Individual matched occurrence inside a source file.
+ */
+struct SearchMatch {
+    size_t lineIndex = 0;       ///< 0-based buffer line
+    std::wstring lineText;      ///< Full text of the matched line
+    size_t matchCol = 0;        ///< Column offset of match
+    size_t matchLen = 0;        ///< Length of match string
+    D2D1_RECT_F bounds{};       ///< Clickable row bounding box
+};
+
+/**
+ * @struct SearchFileGroup
+ * @brief Grouping of all matches located inside a single file.
+ */
+struct SearchFileGroup {
+    std::wstring filePath;
+    std::wstring fileName;
+    std::wstring relDir;
+    bool isExpanded = true;
+    D2D1_RECT_F headerBounds{};
+    std::vector<SearchMatch> matches;
+};
+
+/**
  * @class DrawerPanel
  * @brief Renders the expandable sidebar drawer when active.
  */
@@ -121,17 +146,64 @@ public:
     void RefreshTree();
 
     /**
-     * @brief Handles mouse wheel scrolling across directory tree entries.
+     * @brief Handles mouse wheel scrolling across directory tree entries or search results.
      * @param delta Wheel delta from WM_MOUSEWHEEL.
+     * @param activeRailTab Current active perspective on the rail (0 = Explorer, 1 = Search).
      * @return True if scroll position changed.
      */
-    bool HandleMouseWheel(short delta);
+    bool HandleMouseWheel(short delta, int activeRailTab = 0);
 
     [[nodiscard]] bool HasOpenFolder() const noexcept { return m_hasOpenFolder; }
     [[nodiscard]] const std::wstring& GetOpenFolderPath() const noexcept { return m_openFolderPath; }
     [[nodiscard]] const std::wstring& GetRootName() const noexcept { return m_rootName; }
 
+    // --- Search Pane Interactions (Image 2) ---
+    /**
+     * @brief Dispatches mouse click inside the Code Search sidebar pane.
+     * @param pt Mouse coordinate in client space.
+     * @param config Application metrics.
+     * @param outJumpFile Returns path of file clicked in search results.
+     * @param outJumpLine Returns 0-based line to jump to.
+     * @return True if a UI element was handled.
+     */
+    bool HitTestSearch(POINT pt, const app::AppConfig& config, std::wstring& outJumpFile, size_t& outJumpLine);
+
+    /**
+     * @brief Handles character typed into the active search or replace input box.
+     */
+    void HandleSearchChar(wchar_t ch);
+
+    /**
+     * @brief Handles special key navigation in the active search/replace box.
+     */
+    void HandleSearchKeyDown(WPARAM wParam);
+
+    [[nodiscard]] bool IsSearchFocused() const noexcept { return m_focusedSearchInput > 0; }
+    void SetSearchFocus(int inputId) noexcept { m_focusedSearchInput = inputId; }
+
+    /**
+     * @brief Sets search query programmatically and runs search.
+     */
+    void SetSearchQuery(const std::wstring& q) {
+        m_searchQuery = q;
+        ExecuteSearch();
+    }
+    [[nodiscard]] const std::wstring& GetSearchQuery() const noexcept { return m_searchQuery; }
+
+    /**
+     * @brief Executes recursive workspace file search matching current search query.
+     */
+    void ExecuteSearch();
+
+    /**
+     * @brief Replaces all matched occurrences across the workspace with the replace query.
+     */
+    void ExecuteReplaceAll();
+
 private:
+    void RenderExplorerPane(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config, float clientHeight, float currentDrawerW);
+    void RenderSearchPane(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config, float clientHeight, float currentDrawerW);
+
     void RebuildVisibleItems();
     void AddDirectoryChildren(const std::wstring& dirPath, int depth);
     std::wstring GetIconForFile(const std::wstring& filename, bool isDir, bool isExpanded) const;
@@ -147,6 +219,30 @@ private:
     int m_hoveredIndex = -1;
     bool m_hoveredOpenFolderBtn = false;
     D2D1_RECT_F m_rcOpenFolderBtn{};
+
+    // Search Pane State (Image 2)
+    std::wstring m_searchQuery;
+    std::wstring m_replaceQuery;
+    bool m_matchCase = false;
+    bool m_matchWholeWord = false;
+    bool m_useRegex = false;
+    bool m_preserveCase = false;
+    bool m_isReplaceOpen = true;
+    int m_focusedSearchInput = 1;       ///< 1 = Search, 2 = Replace, 0 = Unfocused
+    std::vector<SearchFileGroup> m_searchGroups;
+    size_t m_totalMatches = 0;
+    size_t m_searchScrollIdx = 0;
+
+    D2D1_RECT_F m_rcSearchBox{};
+    D2D1_RECT_F m_rcReplaceBox{};
+    D2D1_RECT_F m_rcToggleReplaceChevron{};
+    D2D1_RECT_F m_rcMatchCaseBtn{};
+    D2D1_RECT_F m_rcMatchWholeWordBtn{};
+    D2D1_RECT_F m_rcUseRegexBtn{};
+    D2D1_RECT_F m_rcPreserveCaseBtn{};
+    D2D1_RECT_F m_rcReplaceAllBtn{};
+    D2D1_RECT_F m_rcRefreshSearchBtn{};
+    D2D1_RECT_F m_rcClearSearchBtn{};
 
     LucideIcons m_icons;
 

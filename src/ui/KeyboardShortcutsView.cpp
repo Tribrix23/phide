@@ -128,7 +128,7 @@ void KeyboardShortcutsView::Render(ID2D1RenderTarget* pRT, Theme& theme, const a
     );
 
     D2D1_ROUNDED_RECT rrcSearch = D2D1::RoundedRect(m_searchBoxBounds, 4.0f, 4.0f);
-    pRT->FillRoundedRectangle(rrcSearch, theme.brushDrawerBg.Get());
+    pRT->FillRoundedRectangle(rrcSearch, theme.IsDarkMode() ? theme.brushDrawerBg.Get() : theme.brushCanvasBg.Get());
 
     // Focus / Active outline
     if (m_isSearchFocused) {
@@ -155,13 +155,15 @@ void KeyboardShortcutsView::Render(ID2D1RenderTarget* pRT, Theme& theme, const a
         curY + searchH
     );
 
+    ID2D1Brush* textBrush = theme.brushTextPrimary ? theme.brushTextPrimary.Get() : theme.brushTextWhite.Get();
+
     if (m_searchQuery.empty()) {
         const wchar_t* placeholder = L"Type to search in keybindings";
         pRT->DrawText(placeholder, static_cast<UINT32>(wcslen(placeholder)),
                       theme.fontBody.Get(), rcSearchText, theme.brushTextMuted.Get());
     } else {
         pRT->DrawText(m_searchQuery.c_str(), static_cast<UINT32>(m_searchQuery.length()),
-                      theme.fontBody.Get(), rcSearchText, theme.brushTextWhite.Get());
+                      theme.fontBody.Get(), rcSearchText, textBrush);
 
         // Blinking search cursor
         if (m_isSearchFocused) {
@@ -181,7 +183,7 @@ void KeyboardShortcutsView::Render(ID2D1RenderTarget* pRT, Theme& theme, const a
             pRT->DrawLine(
                 D2D1::Point2F(cursorX, cy - config.ScaleF(8.0f)),
                 D2D1::Point2F(cursorX, cy + config.ScaleF(8.0f)),
-                theme.brushTextWhite.Get(),
+                textBrush,
                 1.5f
             );
         }

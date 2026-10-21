@@ -979,6 +979,7 @@ void Window::DoShowSearch() {
     if (!m_config.isDrawerOpen) {
         ToggleSidebar();
     }
+    m_drawer.SetSearchFocus(1);
     SaveSessionState();
     InvalidateRect(m_hwnd, nullptr, FALSE);
 }
@@ -1464,12 +1465,14 @@ void Window::HandleMouseMove(POINT clientPt) {
 
     // Check Drawer hover
     if (m_drawerAnimProgress > 0.001f) {
-        if (!m_drawer.HasOpenFolder()) {
-            bool btnHover = m_drawer.HitTestOpenFolderButton(clientPt, m_config);
-            if (m_drawer.SetHoveredOpenFolderBtn(btnHover)) needRepaint = true;
-        } else {
-            int hoveredTree = m_drawer.HitTest(clientPt, m_config);
-            if (m_drawer.SetHoveredIndex(hoveredTree)) needRepaint = true;
+        if (m_config.activeRailTab == 0) {
+            if (!m_drawer.HasOpenFolder()) {
+                bool btnHover = m_drawer.HitTestOpenFolderButton(clientPt, m_config);
+                if (m_drawer.SetHoveredOpenFolderBtn(btnHover)) needRepaint = true;
+            } else {
+                int hoveredTree = m_drawer.HitTest(clientPt, m_config);
+                if (m_drawer.SetHoveredIndex(hoveredTree)) needRepaint = true;
+            }
         }
     }
 
@@ -1864,31 +1867,55 @@ void Window::HandleLButtonDown(POINT clientPt) {
         return;
     }
 
-    // 5. Drawer Tree Item Clicks (open file in preview mode, toggle folder, or open folder button)
+    // 5. Drawer Tree Item or Search Results Clicks
     if (m_drawerAnimProgress > 0.001f) {
-        if (!m_drawer.HasOpenFolder()) {
-            if (m_drawer.HitTestOpenFolderButton(clientPt, m_config)) {
-                DoOpenFolder();
+        if (m_config.activeRailTab == 1) {
+            std::wstring jumpFile;
+            size_t jumpLine = 0;
+            if (m_drawer.HitTestSearch(clientPt, m_config, jumpFile, jumpLine)) {
+                if (!jumpFile.empty()) {
+                    OpenFileDocument(jumpFile, false);
+                    auto* pDoc = GetActiveDoc();
+                    if (pDoc) {
+                        pDoc->buffer.SetCursor(jumpLine, 0);
+                        if (jumpLine > 10) {
+                            pDoc->scrollLine = jumpLine - 10;
+                        } else {
+                            pDoc->scrollLine = 0;
+                        }
+                    }
+                }
+                InvalidateRect(m_hwnd, nullptr, FALSE);
                 return;
             }
         } else {
-            int clickedTree = m_drawer.HitTest(clientPt, m_config);
-            if (clickedTree >= 0) {
-                const auto* pItem = m_drawer.GetItem(clickedTree);
-                if (pItem) {
-                    if (pItem->isFolder) {
-                        m_drawer.ToggleFolder(clickedTree);
-                        SaveSessionState();
-                    } else {
-                        // Open file in preview mode! (If current file is dirty, VS Code rule adds a tab; if clean preview, replaces it)
-                        OpenFileDocument(pItem->fullPath, true);
-                    }
-                    InvalidateRect(m_hwnd, nullptr, FALSE);
+            if (!m_drawer.HasOpenFolder()) {
+                if (m_drawer.HitTestOpenFolderButton(clientPt, m_config)) {
+                    DoOpenFolder();
                     return;
+                }
+            } else {
+                int clickedTree = m_drawer.HitTest(clientPt, m_config);
+                if (clickedTree >= 0) {
+                    const auto* pItem = m_drawer.GetItem(clickedTree);
+                    if (pItem) {
+                        if (pItem->isFolder) {
+                            m_drawer.ToggleFolder(clickedTree);
+                            SaveSessionState();
+                        } else {
+                            // Open file in preview mode! (If current file is dirty, VS Code rule adds a tab; if clean preview, replaces it)
+                            OpenFileDocument(pItem->fullPath, true);
+                        }
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
+                        return;
+                    }
                 }
             }
         }
     }
+
+    // Unfocus drawer search input when clicking outside drawer
+    m_drawer.SetSearchFocus(0);
 
     // 6. Click inside Editor Area (sets cursor position or focuses keybindings search)
     auto* pDoc = GetActiveDoc();
@@ -1953,7 +1980,17 @@ void Window::HandleLButtonDown(POINT clientPt) {
     auto railHit = m_rail.HitTest(clientPt);
     if (railHit != ui::RailTabId::None) {
         int clickedTab = static_cast<int>(railHit);
-        m_config.activeRailTab = clickedTab;
+        if (m_config.activeRailTab == clickedTab && m_config.isDrawerOpen) {
+            ToggleSidebar();
+        } else {
+            m_config.activeRailTab = clickedTab;
+            if (!m_config.isDrawerOpen) {
+                ToggleSidebar();
+            }
+            if (clickedTab == 1) {
+                m_drawer.SetSearchFocus(1);
+            }
+        }
         SaveSessionState();
         InvalidateRect(m_hwnd, nullptr, FALSE);
         return;
@@ -2170,7 +2207,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
 
             // 1. Scroll Drawer Panel tree if mouse is over sidebar
             if (m_drawerAnimProgress > 0.001f && pt.x >= railW && pt.x < railW + drawerW && pt.y >= headerH) {
-                if (m_drawer.HandleMouseWheel(delta)) {
+                if (m_drawer.HandleMouseWheel(delta, m_config.activeRailTab)) {
                     InvalidateRect(m_hwnd, nullptr, FALSE);
                     return 0;
                 }
@@ -2203,6 +2240,12 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
         }
 
         case WM_CHAR: {
+            if (m_config.activeRailTab == 1 && m_drawerAnimProgress > 0.001f && m_drawer.IsSearchFocused()) {
+                m_drawer.HandleSearchChar(static_cast<wchar_t>(wParam));
+                InvalidateRect(m_hwnd, nullptr, FALSE);
+                return 0;
+            }
+
             auto* pDoc = GetActiveDoc();
             if (pDoc) {
                 wchar_t ch = static_cast<wchar_t>(wParam);
@@ -2257,6 +2300,14 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 m_header.SetActiveMenu(ui::HeaderMenuId::None);
                 InvalidateRect(m_hwnd, nullptr, FALSE);
                 return 0;
+            }
+
+            if (m_config.activeRailTab == 1 && m_drawerAnimProgress > 0.001f && m_drawer.IsSearchFocused()) {
+                if (wParam == VK_BACK || wParam == VK_TAB || wParam == VK_ESCAPE || wParam == VK_RETURN) {
+                    m_drawer.HandleSearchKeyDown(wParam);
+                    InvalidateRect(m_hwnd, nullptr, FALSE);
+                    return 0;
+                }
             }
 
             auto* pDoc = GetActiveDoc();

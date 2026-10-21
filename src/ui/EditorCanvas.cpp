@@ -98,6 +98,7 @@ void EditorCanvas::DiscardDeviceResources() {
     m_pWatermarkBitmap.Reset();
     m_pWatermarkBitmapLight.Reset();
     m_pCanvasGeometry.Reset();
+    m_charWidth = 0.0f;
     m_cachedLeft = -1.0f;
     m_cachedTop = -1.0f;
     m_cachedRight = -1.0f;
@@ -627,7 +628,18 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
     auto& buffer = doc.buffer;
     const float gutterW = config.ScaleF(50.0f);
     const float lineH   = config.ScaleF(20.0f);
-    const float charW   = config.ScaleF(7.8f);
+
+    if (m_charWidth <= 0.0f && theme.dwriteFactory && theme.fontCode) {
+        Microsoft::WRL::ComPtr<IDWriteTextLayout> pLayout;
+        if (SUCCEEDED(theme.dwriteFactory->CreateTextLayout(
+                L"M", 1, theme.fontCode.Get(), 1000.0f, 100.0f, &pLayout))) {
+            DWRITE_TEXT_METRICS tm{};
+            if (SUCCEEDED(pLayout->GetMetrics(&tm))) {
+                m_charWidth = tm.widthIncludingTrailingWhitespace;
+            }
+        }
+    }
+    const float charW   = (m_charWidth > 0.0f) ? m_charWidth : config.ScaleF(7.8f);
     const float scrollbarW = config.ScaleF(14.0f);
     const float canvasRight = canvasLeft + canvasWidth;
     const float codeAreaH = clientHeight - topY;
@@ -684,8 +696,12 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
     size_t visualCursorIdx = 0;
     bool foundCursorVisual = false;
     for (size_t v = 0; v < visualLines.size(); ++v) {
-        if (visualLines[v].bufferLine == cursor.line ||
-            (cursor.line > visualLines[v].bufferLine && cursor.line <= visualLines[v].foldEndLine)) {
+        if (visualLines[v].bufferLine == cursor.line) {
+            visualCursorIdx = v;
+            foundCursorVisual = true;
+            break;
+        }
+        if (visualLines[v].isFolded && cursor.line > visualLines[v].bufferLine && cursor.line <= visualLines[v].foldEndLine) {
             visualCursorIdx = v;
             foundCursorVisual = true;
             break;
@@ -935,7 +951,7 @@ bool EditorCanvas::HitTestCodeArea(POINT pt, const app::AppConfig& config, const
     const float topY    = headerH + tabH + breadcrumbH;
     const float gutterW = config.ScaleF(50.0f);
     const float lineH   = config.ScaleF(20.0f);
-    const float charW   = config.ScaleF(7.8f);
+    const float charW   = (m_charWidth > 0.0f) ? m_charWidth : config.ScaleF(7.8f);
 
     if (pt.x < canvasLeft + gutterW || pt.y < topY || pt.y > clientHeight) {
         return false;

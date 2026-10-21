@@ -98,6 +98,7 @@ public:
 
 private:
     bool m_caretVisible = true;
+    mutable float m_charWidth = 0.0f;
     KeyboardShortcutsView m_keybindingsView;
 
     // Cached path geometry for workspace container (curved ONLY at upper-left corner when drawer is closed)
