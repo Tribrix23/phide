@@ -13,6 +13,7 @@
 #include <string>
 #include "phide/app/AppConfig.hpp"
 #include "phide/ui/Theme.hpp"
+#include "phide/ui/LucideIcons.hpp"
 #include "phide/editor/Buffer.hpp"
 
 namespace phide::ui {
@@ -86,6 +87,7 @@ private:
 
     // Metallic white watermark logo in center of canvas
     Microsoft::WRL::ComPtr<ID2D1Bitmap> m_pWatermarkBitmap;
+    LucideIcons m_icons;
 
     void RenderPlaceholder(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
                            float canvasLeft, float canvasWidth, float headerH, float clientHeight);

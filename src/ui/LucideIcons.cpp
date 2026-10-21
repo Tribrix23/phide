@@ -4,6 +4,7 @@
  */
 
 #include "phide/ui/LucideIcons.hpp"
+#include "phide/ui/Theme.hpp"
 #include <algorithm>
 
 namespace phide::ui {
@@ -560,6 +561,440 @@ void LucideIcons::DrawClose(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, I
 
     pRT->DrawLine(D2D1::Point2F(cx - s, cy - s), D2D1::Point2F(cx + s, cy + s), pBrush, strokeWidth);
     pRT->DrawLine(D2D1::Point2F(cx + s, cy - s), D2D1::Point2F(cx - s, cy + s), pBrush, strokeWidth);
+}
+
+static inline void EnsureStrokeStyle(ID2D1RenderTarget* pRT, ComPtr<ID2D1StrokeStyle>& pStyle) {
+    if (!pStyle && pRT) {
+        ComPtr<ID2D1Factory> pFactory;
+        pRT->GetFactory(&pFactory);
+        if (pFactory) {
+            D2D1_STROKE_STYLE_PROPERTIES props = D2D1::StrokeStyleProperties(
+                D2D1_CAP_STYLE_ROUND, D2D1_CAP_STYLE_ROUND, D2D1_CAP_STYLE_ROUND,
+                D2D1_LINE_JOIN_ROUND, 10.0f, D2D1_DASH_STYLE_SOLID, 0.0f
+            );
+            pFactory->CreateStrokeStyle(props, nullptr, 0, &pStyle);
+        }
+    }
+}
+
+FileIconType LucideIcons::GetIconTypeForPath(const std::wstring& filename, bool isFolder, bool isExpanded) {
+    if (isFolder) {
+        return isExpanded ? FileIconType::FolderOpen : FileIconType::Folder;
+    }
+
+    std::wstring lower = filename;
+    std::transform(lower.begin(), lower.end(), lower.begin(), ::towlower);
+
+    // Exact filename matches
+    if (lower == L"package.json" || lower == L"package-lock.json" || lower == L"composer.json" || lower == L"tsconfig.json") {
+        return FileIconType::Json;
+    }
+    if (lower == L"cmakelists.txt" || lower == L"makefile") {
+        return FileIconType::Cpp;
+    }
+    if (lower == L"dockerfile") {
+        return FileIconType::Terminal;
+    }
+
+    // Extension matches
+    auto dot = lower.find_last_of(L'.');
+    if (dot != std::wstring::npos) {
+        std::wstring ext = lower.substr(dot);
+        if (ext == L".php" || ext == L".phtml") return FileIconType::Php;
+        if (ext == L".cpp" || ext == L".cxx" || ext == L".cc" || ext == L".c") return FileIconType::Cpp;
+        if (ext == L".hpp" || ext == L".hxx" || ext == L".hh" || ext == L".h") return FileIconType::Header;
+        if (ext == L".js" || ext == L".mjs" || ext == L".cjs" || ext == L".jsx") return FileIconType::Js;
+        if (ext == L".ts" || ext == L".tsx") return FileIconType::Ts;
+        if (ext == L".json" || ext == L".jsonc") return FileIconType::Json;
+        if (ext == L".md" || ext == L".markdown" || ext == L".mdown") return FileIconType::Markdown;
+        if (ext == L".html" || ext == L".htm") return FileIconType::Html;
+        if (ext == L".css" || ext == L".scss" || ext == L".sass" || ext == L".less") return FileIconType::Css;
+        if (ext == L".bat" || ext == L".cmd" || ext == L".sh" || ext == L".ps1" || ext == L".bash") return FileIconType::Terminal;
+        if (ext == L".yml" || ext == L".yaml") return FileIconType::Yaml;
+        if (ext == L".png" || ext == L".jpg" || ext == L".jpeg" || ext == L".svg" || ext == L".gif" || ext == L".ico" || ext == L".webp") return FileIconType::Image;
+        if (ext == L".exe" || ext == L".dll" || ext == L".bin" || ext == L".so" || ext == L".obj") return FileIconType::Exe;
+    }
+
+    return FileIconType::DefaultFile;
+}
+
+void LucideIcons::DrawFileIcon(ID2D1RenderTarget* pRT, Theme& theme, const D2D1_RECT_F& bounds, FileIconType type) const {
+    if (!pRT) return;
+
+    switch (type) {
+        case FileIconType::Folder:
+            DrawFolder(pRT, bounds, theme.brushIconFolder.Get(), false);
+            break;
+        case FileIconType::FolderOpen:
+            DrawFolder(pRT, bounds, theme.brushIconFolderOpen.Get(), true);
+            break;
+        case FileIconType::Php:
+            DrawFilePhp(pRT, bounds, theme.brushIconPurple.Get());
+            break;
+        case FileIconType::Cpp:
+            DrawFileCpp(pRT, bounds, theme.brushIconBlue.Get());
+            break;
+        case FileIconType::Header:
+            DrawFileHeader(pRT, bounds, theme.brushIconBlue.Get());
+            break;
+        case FileIconType::Js:
+            DrawFileJs(pRT, bounds, theme.brushIconYellow.Get());
+            break;
+        case FileIconType::Ts:
+            DrawFileTs(pRT, bounds, theme.brushIconBlue.Get());
+            break;
+        case FileIconType::Json:
+            DrawFileJson(pRT, bounds, theme.brushIconYellow.Get());
+            break;
+        case FileIconType::Markdown:
+            DrawFileMarkdown(pRT, bounds, theme.brushIconBlue.Get());
+            break;
+        case FileIconType::Html:
+            DrawFileHtml(pRT, bounds, theme.brushIconOrange.Get());
+            break;
+        case FileIconType::Css:
+            DrawFileCss(pRT, bounds, theme.brushIconBlue.Get());
+            break;
+        case FileIconType::Terminal:
+            DrawTerminal(pRT, bounds, theme.brushIconGreen.Get());
+            break;
+        case FileIconType::Yaml:
+            DrawFileYaml(pRT, bounds, theme.brushIconRed.Get());
+            break;
+        case FileIconType::Image:
+            DrawFileImage(pRT, bounds, theme.brushIconPurple.Get());
+            break;
+        case FileIconType::Exe:
+            DrawFileExe(pRT, bounds, theme.brushIconGreen.Get());
+            break;
+        case FileIconType::DefaultFile:
+        default:
+            DrawFile(pRT, bounds, theme.brushIconGray.Get());
+            break;
+    }
+}
+
+void LucideIcons::DrawFolder(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, ID2D1Brush* pBrush, bool isOpen, float strokeWidth) const {
+    if (!pRT || !pBrush) return;
+    EnsureStrokeStyle(pRT, const_cast<ComPtr<ID2D1StrokeStyle>&>(m_pStrokeStyle));
+
+    const float bw = bounds.right - bounds.left;
+    const float bh = bounds.bottom - bounds.top;
+    const float iconSize = (std::min)(bw, bh) * 0.90f;
+    const float s = iconSize / 24.0f;
+    const float ox = bounds.left + (bw - 24.0f * s) / 2.0f;
+    const float oy = bounds.top + (bh - 24.0f * s) / 2.0f;
+
+    // Folder tab & back: (3, 5) -> (9, 5) -> (11, 7.5) -> (21, 7.5) -> (21, 19) -> (3, 19) -> (3, 5)
+    pRT->DrawLine(MapPoint(3.0f, 5.0f, ox, oy, s), MapPoint(9.0f, 5.0f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+    pRT->DrawLine(MapPoint(9.0f, 5.0f, ox, oy, s), MapPoint(11.0f, 7.5f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+    pRT->DrawLine(MapPoint(11.0f, 7.5f, ox, oy, s), MapPoint(21.0f, 7.5f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+    pRT->DrawLine(MapPoint(21.0f, 7.5f, ox, oy, s), MapPoint(21.0f, 19.0f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+    pRT->DrawLine(MapPoint(21.0f, 19.0f, ox, oy, s), MapPoint(3.0f, 19.0f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+    pRT->DrawLine(MapPoint(3.0f, 19.0f, ox, oy, s), MapPoint(3.0f, 5.0f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+
+    if (isOpen) {
+        // Open front flap angled forward
+        pRT->DrawLine(MapPoint(1.5f, 19.0f, ox, oy, s), MapPoint(4.5f, 11.5f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+        pRT->DrawLine(MapPoint(4.5f, 11.5f, ox, oy, s), MapPoint(21.5f, 11.5f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+        pRT->DrawLine(MapPoint(21.5f, 11.5f, ox, oy, s), MapPoint(18.5f, 19.0f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+    } else {
+        // Closed horizontal crease
+        pRT->DrawLine(MapPoint(3.0f, 9.5f, ox, oy, s), MapPoint(21.0f, 9.5f, ox, oy, s), pBrush, strokeWidth * 0.85f, m_pStrokeStyle.Get());
+    }
+}
+
+void LucideIcons::DrawFileJson(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, ID2D1Brush* pBrush, float strokeWidth) const {
+    if (!pRT || !pBrush) return;
+    EnsureStrokeStyle(pRT, const_cast<ComPtr<ID2D1StrokeStyle>&>(m_pStrokeStyle));
+
+    const float bw = bounds.right - bounds.left;
+    const float bh = bounds.bottom - bounds.top;
+    const float iconSize = (std::min)(bw, bh) * 0.90f;
+    const float s = iconSize / 24.0f;
+    const float ox = bounds.left + (bw - 24.0f * s) / 2.0f;
+    const float oy = bounds.top + (bh - 24.0f * s) / 2.0f;
+
+    // Left curly brace '{'
+    pRT->DrawLine(MapPoint(9.5f, 4.0f, ox, oy, s), MapPoint(7.0f, 4.0f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+    pRT->DrawLine(MapPoint(7.0f, 4.0f, ox, oy, s), MapPoint(7.0f, 10.0f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+    pRT->DrawLine(MapPoint(7.0f, 10.0f, ox, oy, s), MapPoint(4.5f, 12.0f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+    pRT->DrawLine(MapPoint(4.5f, 12.0f, ox, oy, s), MapPoint(7.0f, 14.0f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+    pRT->DrawLine(MapPoint(7.0f, 14.0f, ox, oy, s), MapPoint(7.0f, 20.0f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+    pRT->DrawLine(MapPoint(7.0f, 20.0f, ox, oy, s), MapPoint(9.5f, 20.0f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+
+    // Right curly brace '}'
+    pRT->DrawLine(MapPoint(14.5f, 4.0f, ox, oy, s), MapPoint(17.0f, 4.0f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+    pRT->DrawLine(MapPoint(17.0f, 4.0f, ox, oy, s), MapPoint(17.0f, 10.0f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+    pRT->DrawLine(MapPoint(17.0f, 10.0f, ox, oy, s), MapPoint(19.5f, 12.0f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+    pRT->DrawLine(MapPoint(19.5f, 12.0f, ox, oy, s), MapPoint(17.0f, 14.0f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+    pRT->DrawLine(MapPoint(17.0f, 14.0f, ox, oy, s), MapPoint(17.0f, 20.0f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+    pRT->DrawLine(MapPoint(17.0f, 20.0f, ox, oy, s), MapPoint(14.5f, 20.0f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+}
+
+void LucideIcons::DrawFileJs(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, ID2D1Brush* pBrush, float strokeWidth) const {
+    if (!pRT || !pBrush) return;
+    EnsureStrokeStyle(pRT, const_cast<ComPtr<ID2D1StrokeStyle>&>(m_pStrokeStyle));
+
+    const float bw = bounds.right - bounds.left;
+    const float bh = bounds.bottom - bounds.top;
+    const float iconSize = (std::min)(bw, bh) * 0.90f;
+    const float s = iconSize / 24.0f;
+    const float ox = bounds.left + (bw - 24.0f * s) / 2.0f;
+    const float oy = bounds.top + (bh - 24.0f * s) / 2.0f;
+
+    // 'J'
+    pRT->DrawLine(MapPoint(6.5f, 6.0f, ox, oy, s), MapPoint(11.5f, 6.0f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+    pRT->DrawLine(MapPoint(11.5f, 6.0f, ox, oy, s), MapPoint(11.5f, 15.5f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+    pRT->DrawLine(MapPoint(11.5f, 15.5f, ox, oy, s), MapPoint(9.5f, 18.0f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+    pRT->DrawLine(MapPoint(9.5f, 18.0f, ox, oy, s), MapPoint(6.5f, 16.5f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+
+    // 'S'
+    pRT->DrawLine(MapPoint(18.0f, 7.5f, ox, oy, s), MapPoint(14.5f, 6.0f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+    pRT->DrawLine(MapPoint(14.5f, 6.0f, ox, oy, s), MapPoint(13.5f, 8.5f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+    pRT->DrawLine(MapPoint(13.5f, 8.5f, ox, oy, s), MapPoint(18.0f, 12.0f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+    pRT->DrawLine(MapPoint(18.0f, 12.0f, ox, oy, s), MapPoint(17.5f, 17.5f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+    pRT->DrawLine(MapPoint(17.5f, 17.5f, ox, oy, s), MapPoint(13.5f, 18.0f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+}
+
+void LucideIcons::DrawFileTs(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, ID2D1Brush* pBrush, float strokeWidth) const {
+    if (!pRT || !pBrush) return;
+    EnsureStrokeStyle(pRT, const_cast<ComPtr<ID2D1StrokeStyle>&>(m_pStrokeStyle));
+
+    const float bw = bounds.right - bounds.left;
+    const float bh = bounds.bottom - bounds.top;
+    const float iconSize = (std::min)(bw, bh) * 0.90f;
+    const float s = iconSize / 24.0f;
+    const float ox = bounds.left + (bw - 24.0f * s) / 2.0f;
+    const float oy = bounds.top + (bh - 24.0f * s) / 2.0f;
+
+    // 'T'
+    pRT->DrawLine(MapPoint(4.0f, 6.0f, ox, oy, s), MapPoint(13.0f, 6.0f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+    pRT->DrawLine(MapPoint(8.5f, 6.0f, ox, oy, s), MapPoint(8.5f, 18.0f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+
+    // 'S'
+    pRT->DrawLine(MapPoint(19.0f, 7.5f, ox, oy, s), MapPoint(15.5f, 6.0f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+    pRT->DrawLine(MapPoint(15.5f, 6.0f, ox, oy, s), MapPoint(14.5f, 8.5f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+    pRT->DrawLine(MapPoint(14.5f, 8.5f, ox, oy, s), MapPoint(19.0f, 12.0f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+    pRT->DrawLine(MapPoint(19.0f, 12.0f, ox, oy, s), MapPoint(18.5f, 17.5f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+    pRT->DrawLine(MapPoint(18.5f, 17.5f, ox, oy, s), MapPoint(14.5f, 18.0f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+}
+
+void LucideIcons::DrawFileCpp(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, ID2D1Brush* pBrush, float strokeWidth) const {
+    if (!pRT || !pBrush) return;
+    EnsureStrokeStyle(pRT, const_cast<ComPtr<ID2D1StrokeStyle>&>(m_pStrokeStyle));
+
+    const float bw = bounds.right - bounds.left;
+    const float bh = bounds.bottom - bounds.top;
+    const float iconSize = (std::min)(bw, bh) * 0.90f;
+    const float s = iconSize / 24.0f;
+    const float ox = bounds.left + (bw - 24.0f * s) / 2.0f;
+    const float oy = bounds.top + (bh - 24.0f * s) / 2.0f;
+
+    // 'C'
+    pRT->DrawLine(MapPoint(10.5f, 7.0f, ox, oy, s), MapPoint(6.5f, 7.0f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+    pRT->DrawLine(MapPoint(6.5f, 7.0f, ox, oy, s), MapPoint(4.5f, 12.0f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+    pRT->DrawLine(MapPoint(4.5f, 12.0f, ox, oy, s), MapPoint(6.5f, 17.0f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+    pRT->DrawLine(MapPoint(6.5f, 17.0f, ox, oy, s), MapPoint(10.5f, 17.0f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+
+    // First '+'
+    pRT->DrawLine(MapPoint(12.0f, 12.0f, ox, oy, s), MapPoint(16.0f, 12.0f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+    pRT->DrawLine(MapPoint(14.0f, 10.0f, ox, oy, s), MapPoint(14.0f, 14.0f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+
+    // Second '+'
+    pRT->DrawLine(MapPoint(17.5f, 12.0f, ox, oy, s), MapPoint(21.5f, 12.0f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+    pRT->DrawLine(MapPoint(19.5f, 10.0f, ox, oy, s), MapPoint(19.5f, 14.0f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+}
+
+void LucideIcons::DrawFileHeader(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, ID2D1Brush* pBrush, float strokeWidth) const {
+    if (!pRT || !pBrush) return;
+    EnsureStrokeStyle(pRT, const_cast<ComPtr<ID2D1StrokeStyle>&>(m_pStrokeStyle));
+
+    const float bw = bounds.right - bounds.left;
+    const float bh = bounds.bottom - bounds.top;
+    const float iconSize = (std::min)(bw, bh) * 0.90f;
+    const float s = iconSize / 24.0f;
+    const float ox = bounds.left + (bw - 24.0f * s) / 2.0f;
+    const float oy = bounds.top + (bh - 24.0f * s) / 2.0f;
+
+    // 'C'
+    pRT->DrawLine(MapPoint(9.5f, 7.0f, ox, oy, s), MapPoint(5.5f, 7.0f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+    pRT->DrawLine(MapPoint(5.5f, 7.0f, ox, oy, s), MapPoint(4.0f, 12.0f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+    pRT->DrawLine(MapPoint(4.0f, 12.0f, ox, oy, s), MapPoint(5.5f, 17.0f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+    pRT->DrawLine(MapPoint(5.5f, 17.0f, ox, oy, s), MapPoint(9.5f, 17.0f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+
+    // 'H'
+    pRT->DrawLine(MapPoint(13.5f, 7.0f, ox, oy, s), MapPoint(13.5f, 17.0f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+    pRT->DrawLine(MapPoint(19.0f, 7.0f, ox, oy, s), MapPoint(19.0f, 17.0f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+    pRT->DrawLine(MapPoint(13.5f, 12.0f, ox, oy, s), MapPoint(19.0f, 12.0f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+}
+
+void LucideIcons::DrawFilePhp(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, ID2D1Brush* pBrush, float strokeWidth) const {
+    if (!pRT || !pBrush) return;
+    EnsureStrokeStyle(pRT, const_cast<ComPtr<ID2D1StrokeStyle>&>(m_pStrokeStyle));
+
+    const float bw = bounds.right - bounds.left;
+    const float bh = bounds.bottom - bounds.top;
+    const float iconSize = (std::min)(bw, bh) * 0.90f;
+    const float s = iconSize / 24.0f;
+    const float ox = bounds.left + (bw - 24.0f * s) / 2.0f;
+    const float oy = bounds.top + (bh - 24.0f * s) / 2.0f;
+
+    // First 'p'
+    pRT->DrawLine(MapPoint(4.0f, 8.0f, ox, oy, s), MapPoint(4.0f, 18.0f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+    pRT->DrawLine(MapPoint(4.0f, 8.0f, ox, oy, s), MapPoint(8.0f, 8.0f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+    pRT->DrawLine(MapPoint(8.0f, 8.0f, ox, oy, s), MapPoint(8.0f, 13.0f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+    pRT->DrawLine(MapPoint(8.0f, 13.0f, ox, oy, s), MapPoint(4.0f, 13.0f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+
+    // 'h'
+    pRT->DrawLine(MapPoint(10.5f, 5.0f, ox, oy, s), MapPoint(10.5f, 17.0f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+    pRT->DrawLine(MapPoint(10.5f, 10.5f, ox, oy, s), MapPoint(14.5f, 10.5f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+    pRT->DrawLine(MapPoint(14.5f, 10.5f, ox, oy, s), MapPoint(14.5f, 17.0f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+
+    // Second 'p'
+    pRT->DrawLine(MapPoint(17.0f, 8.0f, ox, oy, s), MapPoint(17.0f, 18.0f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+    pRT->DrawLine(MapPoint(17.0f, 8.0f, ox, oy, s), MapPoint(21.0f, 8.0f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+    pRT->DrawLine(MapPoint(21.0f, 8.0f, ox, oy, s), MapPoint(21.0f, 13.0f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+    pRT->DrawLine(MapPoint(21.0f, 13.0f, ox, oy, s), MapPoint(17.0f, 13.0f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+}
+
+void LucideIcons::DrawFileMarkdown(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, ID2D1Brush* pBrush, float strokeWidth) const {
+    if (!pRT || !pBrush) return;
+    EnsureStrokeStyle(pRT, const_cast<ComPtr<ID2D1StrokeStyle>&>(m_pStrokeStyle));
+
+    const float bw = bounds.right - bounds.left;
+    const float bh = bounds.bottom - bounds.top;
+    const float iconSize = (std::min)(bw, bh) * 0.90f;
+    const float s = iconSize / 24.0f;
+    const float ox = bounds.left + (bw - 24.0f * s) / 2.0f;
+    const float oy = bounds.top + (bh - 24.0f * s) / 2.0f;
+
+    // 'M'
+    pRT->DrawLine(MapPoint(3.5f, 17.0f, ox, oy, s), MapPoint(3.5f, 7.0f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+    pRT->DrawLine(MapPoint(3.5f, 7.0f, ox, oy, s), MapPoint(8.5f, 12.5f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+    pRT->DrawLine(MapPoint(8.5f, 12.5f, ox, oy, s), MapPoint(13.5f, 7.0f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+    pRT->DrawLine(MapPoint(13.5f, 7.0f, ox, oy, s), MapPoint(13.5f, 17.0f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+
+    // '↓'
+    pRT->DrawLine(MapPoint(18.5f, 7.0f, ox, oy, s), MapPoint(18.5f, 17.0f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+    pRT->DrawLine(MapPoint(16.0f, 14.5f, ox, oy, s), MapPoint(18.5f, 17.0f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+    pRT->DrawLine(MapPoint(18.5f, 17.0f, ox, oy, s), MapPoint(21.0f, 14.5f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+}
+
+void LucideIcons::DrawFileImage(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, ID2D1Brush* pBrush, float strokeWidth) const {
+    if (!pRT || !pBrush) return;
+    EnsureStrokeStyle(pRT, const_cast<ComPtr<ID2D1StrokeStyle>&>(m_pStrokeStyle));
+
+    const float bw = bounds.right - bounds.left;
+    const float bh = bounds.bottom - bounds.top;
+    const float iconSize = (std::min)(bw, bh) * 0.90f;
+    const float s = iconSize / 24.0f;
+    const float ox = bounds.left + (bw - 24.0f * s) / 2.0f;
+    const float oy = bounds.top + (bh - 24.0f * s) / 2.0f;
+
+    // Picture frame: (3, 4) to (21, 20) with 2px corner radius
+    D2D1_RECT_F rcFrame = D2D1::RectF(ox + 3.0f * s, oy + 4.0f * s, ox + 21.0f * s, oy + 20.0f * s);
+    pRT->DrawRoundedRectangle(D2D1::RoundedRect(rcFrame, 2.0f * s, 2.0f * s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+
+    // Circle Sun: Center at (8.5, 9.0) radius 2.0
+    D2D1_ELLIPSE sun = D2D1::Ellipse(MapPoint(8.5f, 9.0f, ox, oy, s), 2.0f * s, 2.0f * s);
+    pRT->DrawEllipse(sun, pBrush, strokeWidth, m_pStrokeStyle.Get());
+
+    // Mountains: (21, 15) -> (16, 10.5) -> (12, 14.5) -> (9, 12) -> (3, 17.5)
+    pRT->DrawLine(MapPoint(21.0f, 15.0f, ox, oy, s), MapPoint(16.0f, 10.5f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+    pRT->DrawLine(MapPoint(16.0f, 10.5f, ox, oy, s), MapPoint(12.0f, 14.5f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+    pRT->DrawLine(MapPoint(12.0f, 14.5f, ox, oy, s), MapPoint(9.0f, 12.0f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+    pRT->DrawLine(MapPoint(9.0f, 12.0f, ox, oy, s), MapPoint(3.0f, 17.5f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+}
+
+void LucideIcons::DrawFileYaml(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, ID2D1Brush* pBrush, float strokeWidth) const {
+    if (!pRT || !pBrush) return;
+    EnsureStrokeStyle(pRT, const_cast<ComPtr<ID2D1StrokeStyle>&>(m_pStrokeStyle));
+
+    const float bw = bounds.right - bounds.left;
+    const float bh = bounds.bottom - bounds.top;
+    const float iconSize = (std::min)(bw, bh) * 0.90f;
+    const float s = iconSize / 24.0f;
+    const float ox = bounds.left + (bw - 24.0f * s) / 2.0f;
+    const float oy = bounds.top + (bh - 24.0f * s) / 2.0f;
+
+    // 'Y'
+    pRT->DrawLine(MapPoint(5.0f, 6.0f, ox, oy, s), MapPoint(11.0f, 12.0f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+    pRT->DrawLine(MapPoint(17.0f, 6.0f, ox, oy, s), MapPoint(11.0f, 12.0f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+    pRT->DrawLine(MapPoint(11.0f, 12.0f, ox, oy, s), MapPoint(11.0f, 18.0f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+
+    // '!'
+    pRT->DrawLine(MapPoint(20.0f, 6.0f, ox, oy, s), MapPoint(20.0f, 14.0f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+    D2D1_ELLIPSE dot = D2D1::Ellipse(MapPoint(20.0f, 17.5f, ox, oy, s), 1.0f * s, 1.0f * s);
+    pRT->FillEllipse(dot, pBrush);
+}
+
+void LucideIcons::DrawFileExe(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, ID2D1Brush* pBrush, float strokeWidth) const {
+    if (!pRT || !pBrush) return;
+    EnsureStrokeStyle(pRT, const_cast<ComPtr<ID2D1StrokeStyle>&>(m_pStrokeStyle));
+
+    const float bw = bounds.right - bounds.left;
+    const float bh = bounds.bottom - bounds.top;
+    const float iconSize = (std::min)(bw, bh) * 0.90f;
+    const float s = iconSize / 24.0f;
+    const float ox = bounds.left + (bw - 24.0f * s) / 2.0f;
+    const float oy = bounds.top + (bh - 24.0f * s) / 2.0f;
+
+    // Lucide Cogwheel / Settings gear for Executables (.exe)
+    D2D1_ELLIPSE hub = D2D1::Ellipse(MapPoint(12.0f, 12.0f, ox, oy, s), 4.5f * s, 4.5f * s);
+    pRT->DrawEllipse(hub, pBrush, strokeWidth, m_pStrokeStyle.Get());
+
+    // 8 gear teeth
+    pRT->DrawLine(MapPoint(12.0f, 3.5f, ox, oy, s), MapPoint(12.0f, 6.5f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+    pRT->DrawLine(MapPoint(12.0f, 17.5f, ox, oy, s), MapPoint(12.0f, 20.5f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+    pRT->DrawLine(MapPoint(3.5f, 12.0f, ox, oy, s), MapPoint(6.5f, 12.0f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+    pRT->DrawLine(MapPoint(17.5f, 12.0f, ox, oy, s), MapPoint(20.5f, 12.0f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+
+    pRT->DrawLine(MapPoint(6.0f, 6.0f, ox, oy, s), MapPoint(8.1f, 8.1f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+    pRT->DrawLine(MapPoint(15.9f, 15.9f, ox, oy, s), MapPoint(18.0f, 18.0f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+    pRT->DrawLine(MapPoint(18.0f, 6.0f, ox, oy, s), MapPoint(15.9f, 8.1f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+    pRT->DrawLine(MapPoint(8.1f, 15.9f, ox, oy, s), MapPoint(6.0f, 18.0f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+}
+
+void LucideIcons::DrawFileHtml(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, ID2D1Brush* pBrush, float strokeWidth) const {
+    if (!pRT || !pBrush) return;
+    EnsureStrokeStyle(pRT, const_cast<ComPtr<ID2D1StrokeStyle>&>(m_pStrokeStyle));
+
+    const float bw = bounds.right - bounds.left;
+    const float bh = bounds.bottom - bounds.top;
+    const float iconSize = (std::min)(bw, bh) * 0.90f;
+    const float s = iconSize / 24.0f;
+    const float ox = bounds.left + (bw - 24.0f * s) / 2.0f;
+    const float oy = bounds.top + (bh - 24.0f * s) / 2.0f;
+
+    // '<'
+    pRT->DrawLine(MapPoint(7.5f, 7.5f, ox, oy, s), MapPoint(3.5f, 12.0f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+    pRT->DrawLine(MapPoint(3.5f, 12.0f, ox, oy, s), MapPoint(7.5f, 16.5f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+
+    // '/'
+    pRT->DrawLine(MapPoint(13.5f, 6.0f, ox, oy, s), MapPoint(10.5f, 18.0f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+
+    // '>'
+    pRT->DrawLine(MapPoint(16.5f, 7.5f, ox, oy, s), MapPoint(20.5f, 12.0f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+    pRT->DrawLine(MapPoint(20.5f, 12.0f, ox, oy, s), MapPoint(16.5f, 16.5f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+}
+
+void LucideIcons::DrawFileCss(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, ID2D1Brush* pBrush, float strokeWidth) const {
+    if (!pRT || !pBrush) return;
+    EnsureStrokeStyle(pRT, const_cast<ComPtr<ID2D1StrokeStyle>&>(m_pStrokeStyle));
+
+    const float bw = bounds.right - bounds.left;
+    const float bh = bounds.bottom - bounds.top;
+    const float iconSize = (std::min)(bw, bh) * 0.90f;
+    const float s = iconSize / 24.0f;
+    const float ox = bounds.left + (bw - 24.0f * s) / 2.0f;
+    const float oy = bounds.top + (bh - 24.0f * s) / 2.0f;
+
+    // Lucide Hash '#'
+    pRT->DrawLine(MapPoint(9.0f, 4.0f, ox, oy, s), MapPoint(7.0f, 20.0f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+    pRT->DrawLine(MapPoint(17.0f, 4.0f, ox, oy, s), MapPoint(15.0f, 20.0f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+    pRT->DrawLine(MapPoint(4.0f, 9.5f, ox, oy, s), MapPoint(20.0f, 9.5f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+    pRT->DrawLine(MapPoint(4.0f, 15.0f, ox, oy, s), MapPoint(20.0f, 15.0f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
 }
 
 } // namespace phide::ui

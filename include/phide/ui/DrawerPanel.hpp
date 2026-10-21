@@ -17,6 +17,7 @@
 #include <filesystem>
 #include "phide/app/AppConfig.hpp"
 #include "phide/ui/Theme.hpp"
+#include "phide/ui/LucideIcons.hpp"
 
 namespace phide::ui {
 
@@ -128,6 +129,8 @@ private:
     int m_hoveredIndex = -1;
     bool m_hoveredOpenFolderBtn = false;
     D2D1_RECT_F m_rcOpenFolderBtn{};
+
+    LucideIcons m_icons;
 
     Microsoft::WRL::ComPtr<ID2D1PathGeometry> m_pDrawerBgGeometry;
     float m_cachedRailW = -1.0f;

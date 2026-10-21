@@ -13,14 +13,40 @@
 
 #include <d2d1.h>
 #include <wrl/client.h>
+#include <string>
 
 namespace phide::ui {
+
+class Theme;
 
 using Microsoft::WRL::ComPtr;
 
 /**
+ * @enum FileIconType
+ * @brief Distinct semantic file and folder types for vector icon mapping.
+ */
+enum class FileIconType {
+    Folder,
+    FolderOpen,
+    Php,
+    Cpp,
+    Header,
+    Js,
+    Ts,
+    Json,
+    Markdown,
+    Html,
+    Css,
+    Terminal,
+    Yaml,
+    Image,
+    Exe,
+    DefaultFile
+};
+
+/**
  * @class LucideIcons
- * @brief GPU-accelerated vector drawing engine for Lucide icons.
+ * @brief GPU-accelerated vector drawing engine for Lucide icons and Seti file types.
  */
 class LucideIcons {
 public:
@@ -28,11 +54,36 @@ public:
     ~LucideIcons() = default;
 
     /**
+     * @brief Maps a filename and directory state to its appropriate FileIconType.
+     */
+    static FileIconType GetIconTypeForPath(const std::wstring& filename, bool isFolder, bool isExpanded);
+
+    /**
+     * @brief High-level dispatcher to render the appropriate vector icon with proper theme colors.
+     */
+    void DrawFileIcon(ID2D1RenderTarget* pRT, Theme& theme, const D2D1_RECT_F& bounds, FileIconType type) const;
+
+    /**
      * @brief Initializes stroke styles (round cap, round join) on the D2D factory.
      * @param pFactory Direct2D factory.
      * @return S_OK on success.
      */
     HRESULT Initialize(ID2D1Factory* pFactory);
+
+    // --- Vector Tree File & Folder Icons ---
+    void DrawFolder(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, ID2D1Brush* pBrush, bool isOpen, float strokeWidth = 1.3f) const;
+    void DrawFileJson(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, ID2D1Brush* pBrush, float strokeWidth = 1.4f) const;
+    void DrawFileJs(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, ID2D1Brush* pBrush, float strokeWidth = 1.5f) const;
+    void DrawFileTs(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, ID2D1Brush* pBrush, float strokeWidth = 1.5f) const;
+    void DrawFileCpp(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, ID2D1Brush* pBrush, float strokeWidth = 1.5f) const;
+    void DrawFileHeader(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, ID2D1Brush* pBrush, float strokeWidth = 1.5f) const;
+    void DrawFilePhp(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, ID2D1Brush* pBrush, float strokeWidth = 1.4f) const;
+    void DrawFileMarkdown(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, ID2D1Brush* pBrush, float strokeWidth = 1.4f) const;
+    void DrawFileImage(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, ID2D1Brush* pBrush, float strokeWidth = 1.3f) const;
+    void DrawFileYaml(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, ID2D1Brush* pBrush, float strokeWidth = 1.4f) const;
+    void DrawFileHtml(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, ID2D1Brush* pBrush, float strokeWidth = 1.4f) const;
+    void DrawFileCss(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, ID2D1Brush* pBrush, float strokeWidth = 1.4f) const;
+    void DrawFileExe(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, ID2D1Brush* pBrush, float strokeWidth = 1.3f) const;
 
     /**
      * @brief Draws the Lucide Home icon inside the specified bounding box.
