@@ -378,6 +378,8 @@ private:
     bool m_autoSave = true;
     bool m_chordCtrlK = false;
     bool m_suppressNextChar = false;
+    bool m_isCleanNewWindow = false;
+    bool m_isDraggingGitSplitter = false;
     std::vector<std::wstring> m_recentPaths;
     std::wstring m_lastClosedFilePath;
 

@@ -64,6 +64,36 @@ struct SearchFileGroup {
 };
 
 /**
+ * @struct GitChangeItem
+ * @brief Represents a modified, untracked, added, or deleted file in working tree.
+ */
+struct GitChangeItem {
+    std::wstring path;
+    std::wstring fileName;
+    std::wstring relDir;
+    std::wstring status; ///< "M", "A", "D", "U"
+    bool isStaged = false;
+    D2D1_RECT_F bounds{};
+    D2D1_RECT_F stageBtnBounds{};
+    D2D1_RECT_F discardBtnBounds{};
+};
+
+/**
+ * @struct GitCommitItem
+ * @brief Represents a commit in the git history tree.
+ */
+struct GitCommitItem {
+    std::wstring hash;
+    std::wstring parentHash;
+    std::wstring message;
+    std::wstring author;
+    std::wstring relativeTime;
+    std::wstring refNames;
+    bool isHead = false;
+    D2D1_RECT_F bounds{};
+};
+
+/**
  * @class DrawerPanel
  * @brief Renders the expandable sidebar drawer when active.
  */
@@ -71,6 +101,47 @@ class DrawerPanel {
 public:
     DrawerPanel();
     ~DrawerPanel() = default;
+
+    enum class GitMenuType { None, HeaderViews, ChangesMore, GraphMore };
+    struct GitMenuItemDef {
+        int id = 0;
+        std::wstring label;
+        bool isHeader = false;
+        bool isSeparator = false;
+        bool isChecked = false;
+        D2D1_RECT_F bounds{};
+    };
+
+    // --- Source Control (Git) Operations & Interactions (Images 2, 3, 4, 5) ---
+    void OpenSourceControl();
+    void RefreshGitState(bool async = true);
+    void StageAllChangesAsync();
+    void DiscardAllChangesAsync();
+    void StageFileAsync(const std::wstring& relPath);
+    void DiscardFileAsync(const std::wstring& relPath);
+    void CommitChangesAsync(const std::wstring& message);
+    void PushCommitsAsync();
+    void GenerateAiCommitMessage();
+    bool HitTestGit(POINT pt, const app::AppConfig& config, std::wstring& outOpenFile);
+    bool HandleGitMouseMove(POINT pt);
+    void HandleGitChar(wchar_t ch);
+    void HandleGitKeyDown(WPARAM wParam);
+
+    [[nodiscard]] bool HitTestGitSplitter(POINT pt) const noexcept;
+    void SetGitSplitY(float y, float minY, float maxY) noexcept;
+    [[nodiscard]] float GetGitSplitY() const noexcept { return m_gitSplitY; }
+
+    [[nodiscard]] bool IsGitLoading() const noexcept { return m_isGitLoading.load(); }
+    void UpdateGitLoadingAnim(float deltaAngle) noexcept { m_gitAnimAngle += deltaAngle; }
+    [[nodiscard]] bool IsGitCommitBoxFocused() const noexcept { return m_focusedGitInput == 1; }
+    [[nodiscard]] const std::vector<GitChangeItem>& GetGitChanges() const noexcept { return m_gitChanges; }
+    [[nodiscard]] const std::vector<GitCommitItem>& GetGitCommits() const noexcept { return m_gitCommits; }
+    [[nodiscard]] const std::wstring& GetGitBranch() const noexcept { return m_gitBranch; }
+    [[nodiscard]] const D2D1_RECT_F& GetGitHeaderMoreBounds() const noexcept { return m_gitHeaderMoreBounds; }
+    [[nodiscard]] const std::wstring& GetGitTooltipText() const noexcept { return m_gitTooltipText; }
+    [[nodiscard]] bool IsGitTooltipVisible() const noexcept { return m_showGitTooltip; }
+    [[nodiscard]] bool IsGitViewMenuOpen() const noexcept { return m_activeGitMenu == GitMenuType::HeaderViews || m_showGitViewMenu; }
+    [[nodiscard]] GitMenuType GetActiveGitMenu() const noexcept { return m_activeGitMenu; }
 
     /**
      * @brief Paints the drawer background, header, and contents with animated width and upper-left curve.
@@ -154,7 +225,7 @@ public:
      * @param activeRailTab Current active perspective on the rail (0 = Explorer, 1 = Search).
      * @return True if scroll position changed.
      */
-    bool HandleMouseWheel(short delta, int activeRailTab = 0);
+    bool HandleMouseWheel(short delta, int activeRailTab = 0, float mouseY = 0.0f);
 
     [[nodiscard]] bool HasOpenFolder() const noexcept { return m_hasOpenFolder; }
     [[nodiscard]] const std::wstring& GetOpenFolderPath() const noexcept { return m_openFolderPath; }
@@ -314,6 +385,74 @@ public:
 private:
     void RenderExplorerPane(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config, float clientHeight, float currentDrawerW);
     void RenderSearchPane(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config, float clientHeight, float currentDrawerW);
+    void RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config, float clientHeight, float currentDrawerW);
+
+    // --- Git / Source Control State (Images 2, 3, 4, 5) ---
+    bool m_isGitRepo = true;
+    std::wstring m_gitBranch = L"master";
+    std::vector<GitChangeItem> m_gitChanges;
+    std::vector<GitCommitItem> m_gitCommits;
+    std::atomic<bool> m_isGitLoading{false};
+    float m_gitAnimAngle = 0.0f;
+    std::mutex m_gitMutex;
+
+    bool m_showChangesSection = true;
+    bool m_showGraphSection = true;
+    bool m_changesExpanded = true;
+    bool m_graphExpanded = true;
+    bool m_gitAutoRefresh = true;
+
+    std::wstring m_commitMessage;
+    int m_focusedGitInput = 0; // 0 = none, 1 = commit message input box
+
+    // Hit-testing bounds
+    D2D1_RECT_F m_gitHeaderMoreBounds{};
+    D2D1_RECT_F m_gitChangesHeaderBounds{};
+    D2D1_RECT_F m_gitChangesChevronBounds{};
+    D2D1_RECT_F m_gitStageAllBounds{};
+    D2D1_RECT_F m_gitDiscardAllBounds{};
+    D2D1_RECT_F m_gitChangesMoreBounds{};
+
+    D2D1_RECT_F m_gitMsgBoxBounds{};
+    D2D1_RECT_F m_gitGenerateAiBounds{};
+    D2D1_RECT_F m_gitCommitBtnBounds{};
+    D2D1_RECT_F m_gitCommitDropdownBounds{};
+
+    D2D1_RECT_F m_gitGraphHeaderBounds{};
+    D2D1_RECT_F m_gitGraphChevronBounds{};
+    D2D1_RECT_F m_gitGraphAutoBounds{};
+    D2D1_RECT_F m_gitGraphBullseyeBounds{};
+    D2D1_RECT_F m_gitGraphSplitBounds{};
+    D2D1_RECT_F m_gitGraphMergeBounds{};
+    D2D1_RECT_F m_gitGraphPushBounds{};
+    D2D1_RECT_F m_gitGraphRefreshBounds{};
+    D2D1_RECT_F m_gitGraphMoreBounds{};
+
+    // Tooltip state
+    std::wstring m_gitTooltipText;
+    D2D1_RECT_F m_gitTooltipTarget{};
+    bool m_showGitTooltip = false;
+
+    // Multi-menu state (Header Views, Changes More, Graph More)
+    GitMenuType m_activeGitMenu = GitMenuType::None;
+    D2D1_RECT_F m_gitMenuBounds{};
+    std::vector<GitMenuItemDef> m_gitMenuItems;
+    int m_hoveredGitMenuItem = -1;
+
+    // Draggable Splitter between Changes and Graph (Image 2 & 3)
+    float m_gitSplitY = 320.0f;
+    D2D1_RECT_F m_gitSplitterBounds{};
+
+    // View popup menu (Image 3: Repositories, ✓ Changes, ✓ Graph)
+    bool m_showGitViewMenu = false;
+    D2D1_RECT_F m_gitViewMenuBounds{};
+    D2D1_RECT_F m_gitViewMenuChangesBounds{};
+    D2D1_RECT_F m_gitViewMenuGraphBounds{};
+
+    size_t m_gitGraphScrollIdx = 0;
+    size_t m_gitChangesScrollIdx = 0;
+    int m_hoveredGitChangeIdx = -1;
+    int m_hoveredGitCommitIdx = -1;
 
     void RebuildVisibleItems();
     void AddDirectoryChildren(const std::wstring& dirPath, int depth);

@@ -145,6 +145,40 @@ void ActivityRail::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
                 break;
             case RailTabId::Git:
                 m_lucide.DrawGitBranch(pRT, item.bounds, iconBrush, 1.6f);
+                if (m_isGitLoading) {
+                    // Render blue circular badge with rotating sync/loading arrows on bottom-right (Image 4)
+                    const float badgeCenterX = item.bounds.right - config.ScaleF(7.0f);
+                    const float badgeCenterY = item.bounds.bottom - config.ScaleF(7.0f);
+                    const float badgeR = config.ScaleF(6.5f);
+                    D2D1_ROUNDED_RECT rrcBadge = D2D1::RoundedRect(
+                        D2D1::RectF(badgeCenterX - badgeR, badgeCenterY - badgeR, badgeCenterX + badgeR, badgeCenterY + badgeR),
+                        3.5f, 3.5f
+                    );
+                    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushBadge;
+                    pRT->CreateSolidColorBrush(D2D1::ColorF(0.0f, 0.471f, 0.831f, 1.0f), &brushBadge);
+                    pRT->FillRoundedRectangle(rrcBadge, brushBadge.Get());
+
+                    // Draw rotating circular sync arrows in white
+                    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushWhite;
+                    pRT->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 1.0f), &brushWhite);
+
+                    D2D1_MATRIX_3X2_F oldTrans;
+                    pRT->GetTransform(&oldTrans);
+                    pRT->SetTransform(D2D1::Matrix3x2F::Rotation(m_gitAnimAngle, D2D1::Point2F(badgeCenterX, badgeCenterY)) * oldTrans);
+
+                    const float arcR = badgeR * 0.60f;
+                    // Top arc
+                    pRT->DrawLine(D2D1::Point2F(badgeCenterX - arcR, badgeCenterY), D2D1::Point2F(badgeCenterX, badgeCenterY - arcR), brushWhite.Get(), 1.3f);
+                    pRT->DrawLine(D2D1::Point2F(badgeCenterX, badgeCenterY - arcR), D2D1::Point2F(badgeCenterX + arcR, badgeCenterY), brushWhite.Get(), 1.3f);
+                    // Bottom arc
+                    pRT->DrawLine(D2D1::Point2F(badgeCenterX + arcR, badgeCenterY), D2D1::Point2F(badgeCenterX, badgeCenterY + arcR), brushWhite.Get(), 1.3f);
+                    pRT->DrawLine(D2D1::Point2F(badgeCenterX, badgeCenterY + arcR), D2D1::Point2F(badgeCenterX - arcR, badgeCenterY), brushWhite.Get(), 1.3f);
+                    // Arrow ticks
+                    pRT->DrawLine(D2D1::Point2F(badgeCenterX + arcR - 2.0f, badgeCenterY - 2.2f), D2D1::Point2F(badgeCenterX + arcR, badgeCenterY), brushWhite.Get(), 1.3f);
+                    pRT->DrawLine(D2D1::Point2F(badgeCenterX - arcR + 2.0f, badgeCenterY + 2.2f), D2D1::Point2F(badgeCenterX - arcR, badgeCenterY), brushWhite.Get(), 1.3f);
+
+                    pRT->SetTransform(oldTrans);
+                }
                 break;
             default:
                 break;

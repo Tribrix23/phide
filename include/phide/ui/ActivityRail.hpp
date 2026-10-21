@@ -87,8 +87,14 @@ public:
 
     [[nodiscard]] RailTabId GetHoveredTab() const noexcept { return m_hoveredTab; }
 
+    void SetGitLoading(bool loading) noexcept { m_isGitLoading = loading; }
+    [[nodiscard]] bool IsGitLoading() const noexcept { return m_isGitLoading; }
+    void UpdateGitAnim(float deltaAngle) noexcept { m_gitAnimAngle += deltaAngle; }
+
 private:
     RailTabId m_hoveredTab = RailTabId::None;
+    bool m_isGitLoading = false;
+    float m_gitAnimAngle = 0.0f;
     std::vector<RailItem> m_items;
     LucideIcons m_lucide;
 

@@ -248,6 +248,11 @@ std::wstring Window::GetSessionFilePath() const {
 }
 
 void Window::SaveSessionState() {
+    // If opened as a clean new window and user hasn't opened any folder or files, do not overwrite primary session state
+    if (m_isCleanNewWindow && !m_drawer.HasOpenFolder() && GetActiveGroup().docs.empty()) {
+        return;
+    }
+
     std::wstring filePath = GetSessionFilePath();
     if (filePath.empty()) return;
 
@@ -389,19 +394,34 @@ void Window::LoadSessionState() {
     }
     m_theme.SetThemeMode(static_cast<ui::ThemeMode>(themeMode));
 
-    if (!lastOpenFolder.empty() && std::filesystem::exists(lastOpenFolder, ec)) {
-        m_drawer.OpenFolder(lastOpenFolder, &expandedDirs);
-        m_workspace.OpenWorkspace(lastOpenFolder);
+    // Check if launched as a freshly clean new window (Ctrl+Shift+N / File > New Window)
+    LPCWSTR cmdLine = GetCommandLineW();
+    bool isNewWindowClean = (cmdLine && wcsstr(cmdLine, L"--new-window") != nullptr);
+    if (isNewWindowClean) {
+        m_isCleanNewWindow = true;
     }
 
-    for (const auto& p : openDocPaths) {
-        if (!p.empty() && std::filesystem::exists(p, ec)) {
-            OpenFileDocument(p, false);
+    if (!isNewWindowClean) {
+        if (!lastOpenFolder.empty() && std::filesystem::exists(lastOpenFolder, ec)) {
+            m_drawer.OpenFolder(lastOpenFolder, &expandedDirs);
+            m_workspace.OpenWorkspace(lastOpenFolder);
         }
-    }
 
-    if (savedActiveDocIdx >= 0 && savedActiveDocIdx < static_cast<int>(GetActiveGroup().docs.size())) {
-        GetActiveGroup().activeDocIdx = savedActiveDocIdx;
+        for (const auto& p : openDocPaths) {
+            if (!p.empty() && std::filesystem::exists(p, ec)) {
+                OpenFileDocument(p, false);
+            }
+        }
+
+        if (savedActiveDocIdx >= 0 && savedActiveDocIdx < static_cast<int>(GetActiveGroup().docs.size())) {
+            GetActiveGroup().activeDocIdx = savedActiveDocIdx;
+        }
+    } else {
+        // Clean new window: no open folder, no open document tabs, freshly clean with preserved theme & recents
+        m_drawer.CloseFolder();
+        m_editorGroups.resize(1);
+        m_editorGroups[0].docs.clear();
+        m_editorGroups[0].activeDocIdx = -1;
     }
 
     m_config.isDrawerOpen = isSidebarOpen;
@@ -488,7 +508,7 @@ void Window::DoNewFile() {
 void Window::DoNewWindow() {
     wchar_t szExe[MAX_PATH] = { 0 };
     GetModuleFileNameW(nullptr, szExe, MAX_PATH);
-    ShellExecuteW(nullptr, L"open", szExe, L"--windowed", nullptr, SW_SHOWNORMAL);
+    ShellExecuteW(nullptr, L"open", szExe, L"--windowed --new-window", nullptr, SW_SHOWNORMAL);
 }
 
 void Window::DoOpenFile() {
@@ -1242,6 +1262,7 @@ void Window::DoShowSourceControl() {
     if (!m_config.isDrawerOpen) {
         ToggleSidebar();
     }
+    m_drawer.OpenSourceControl();
     SaveSessionState();
     InvalidateRect(m_hwnd, nullptr, FALSE);
 }
@@ -1614,6 +1635,7 @@ void Window::OnPaint() {
     }
 
     // 3. Render Collapsed Activity Rail (Home -> Search -> Git with customized tooltips)
+    m_rail.SetGitLoading(m_drawer.IsGitLoading());
     m_rail.Render(m_pRenderTarget.Get(), m_theme, m_config, clientH);
 
     // 4. Render Dark Frameless Title Header at Top (with active highlight on Sidebar button when open)
@@ -1777,6 +1799,17 @@ void Window::HandleMouseMove(POINT clientPt) {
             }
         } else if (m_config.activeRailTab == 1) {
             if (m_drawer.HandleSearchMouseMove(clientPt)) {
+                needRepaint = true;
+            }
+        } else if (m_config.activeRailTab == 2) {
+            if (m_isDraggingGitSplitter) {
+                const float headerH = m_config.ScaleF(static_cast<float>(m_config.headerHeight));
+                RECT clientRc;
+                GetClientRect(m_hwnd, &clientRc);
+                const float clientH = static_cast<float>(clientRc.bottom - clientRc.top);
+                m_drawer.SetGitSplitY(static_cast<float>(clientPt.y), headerH + 110.0f, clientH - 70.0f);
+                needRepaint = true;
+            } else if (m_drawer.HandleGitMouseMove(clientPt)) {
                 needRepaint = true;
             }
         }
@@ -2417,6 +2450,21 @@ void Window::HandleLButtonDown(POINT clientPt) {
                 InvalidateRect(m_hwnd, nullptr, FALSE);
                 return;
             }
+        } else if (m_config.activeRailTab == 2) {
+            // Check vertical splitter drag between Changes and Graph (Image 2 & 3)
+            if (m_drawer.HitTestGitSplitter(clientPt)) {
+                m_isDraggingGitSplitter = true;
+                SetCapture(m_hwnd);
+                return;
+            }
+            std::wstring openFile;
+            if (m_drawer.HitTestGit(clientPt, m_config, openFile)) {
+                if (!openFile.empty()) {
+                    OpenFileDocument(openFile, false);
+                }
+                InvalidateRect(m_hwnd, nullptr, FALSE);
+                return;
+            }
         } else {
             if (!m_drawer.HasOpenFolder()) {
                 if (m_drawer.HitTestOpenFolderButton(clientPt, m_config)) {
@@ -2459,6 +2507,8 @@ void Window::HandleLButtonDown(POINT clientPt) {
             }
             if (clickedTab == 1) {
                 m_drawer.SetSearchFocus(1);
+            } else if (clickedTab == 2) {
+                m_drawer.OpenSourceControl();
             }
         }
         SaveSessionState();
@@ -2469,6 +2519,11 @@ void Window::HandleLButtonDown(POINT clientPt) {
 
 void Window::HandleLButtonUp(POINT clientPt) {
     (void)clientPt;
+    if (m_isDraggingGitSplitter) {
+        m_isDraggingGitSplitter = false;
+        ReleaseCapture();
+        InvalidateRect(m_hwnd, nullptr, FALSE);
+    }
     for (auto& group : m_editorGroups) {
         for (auto& doc : group.docs) {
             doc.isDraggingScrollbar = false;
@@ -2674,6 +2729,12 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     }
                 }
 
+                // Source Control: Draggable splitter between Changes and Graph (Image 2 & 3)
+                if (m_config.activeRailTab == 2 && m_drawerAnimProgress > 0.5f && m_drawer.HitTestGitSplitter(pt)) {
+                    SetCursor(LoadCursor(nullptr, IDC_SIZENS));
+                    return TRUE;
+                }
+
                 // Editor code text area: show I-beam cursor (matching Image 1)
                 if (pCurDoc && !pCurDoc->isSpecialView && !pCurDoc->isImageView && !pCurDoc->isUnsupportedBinary) {
                     float railW = m_config.ScaleF(static_cast<float>(m_config.railWidth));
@@ -2755,7 +2816,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
 
             // 1. Scroll Drawer Panel tree if mouse is over sidebar
             if (m_drawerAnimProgress > 0.001f && pt.x >= railW && pt.x < railW + drawerW && pt.y >= headerH) {
-                if (m_drawer.HandleMouseWheel(delta, m_config.activeRailTab)) {
+                if (m_drawer.HandleMouseWheel(delta, m_config.activeRailTab, static_cast<float>(pt.y))) {
                     InvalidateRect(m_hwnd, nullptr, FALSE);
                     return 0;
                 }
@@ -2823,6 +2884,13 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
             // 1. If Code Search in drawer has focus, typed characters MUST route to Code Search
             if (m_config.activeRailTab == 1 && m_drawerAnimProgress > 0.001f && m_drawer.IsSearchFocused()) {
                 m_drawer.HandleSearchChar(static_cast<wchar_t>(wParam));
+                InvalidateRect(m_hwnd, nullptr, FALSE);
+                return 0;
+            }
+
+            // 1b. If Git commit message input has focus, typed characters MUST route to Git input
+            if (m_config.activeRailTab == 2 && m_drawerAnimProgress > 0.001f && m_drawer.IsGitCommitBoxFocused()) {
+                m_drawer.HandleGitChar(static_cast<wchar_t>(wParam));
                 InvalidateRect(m_hwnd, nullptr, FALSE);
                 return 0;
             }
@@ -2931,6 +2999,15 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
             if (m_config.activeRailTab == 1 && m_drawerAnimProgress > 0.001f && m_drawer.IsSearchFocused()) {
                 if (wParam == VK_BACK || wParam == VK_TAB || wParam == VK_ESCAPE || wParam == VK_RETURN) {
                     m_drawer.HandleSearchKeyDown(wParam);
+                    InvalidateRect(m_hwnd, nullptr, FALSE);
+                    return 0;
+                }
+            }
+
+            // 1b. If Git commit message in drawer is focused, navigation keys route to Git input
+            if (m_config.activeRailTab == 2 && m_drawerAnimProgress > 0.001f && m_drawer.IsGitCommitBoxFocused()) {
+                if (wParam == VK_BACK || wParam == VK_ESCAPE || wParam == VK_RETURN) {
+                    m_drawer.HandleGitKeyDown(wParam);
                     InvalidateRect(m_hwnd, nullptr, FALSE);
                     return 0;
                 }
@@ -3216,6 +3293,15 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
             } else if (wParam == m_throttleTimerId) {
                 if (m_drawer.PollSearchThrottle(GetTickCount64())) {
                     InvalidateRect(m_hwnd, nullptr, FALSE);
+                }
+                // Source Control background animation update
+                if (m_drawer.IsGitLoading()) {
+                    m_rail.UpdateGitAnim(14.0f);
+                    m_drawer.UpdateGitLoadingAnim(14.0f);
+                    m_rail.SetGitLoading(true);
+                    InvalidateRect(m_hwnd, nullptr, FALSE);
+                } else {
+                    m_rail.SetGitLoading(false);
                 }
             } else if (wParam == m_animTimerId) {
                 const float speed = 0.22f; // Smooth, quick sliding animation
