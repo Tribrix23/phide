@@ -67,6 +67,7 @@ public:
     bool HandleKeyDown(WPARAM key);
 
     [[nodiscard]] bool IsSearchFocused() const noexcept { return m_isSearchFocused; }
+    [[nodiscard]] size_t GetShortcutsCount() const noexcept { return m_shortcuts.size(); }
 
 private:
     std::vector<ShortcutItem> m_shortcuts;

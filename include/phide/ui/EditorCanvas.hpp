@@ -16,6 +16,7 @@
 #include "phide/ui/LucideIcons.hpp"
 #include "phide/editor/Buffer.hpp"
 #include "phide/editor/OpenDocument.hpp"
+#include "phide/editor/BracketPairAnalyzer.hpp"
 #include "phide/ui/KeyboardShortcutsView.hpp"
 
 namespace phide::ui {

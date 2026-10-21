@@ -782,6 +782,113 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
     D2D1_RECT_F clipCode = D2D1::RectF(canvasLeft, topY, canvasRight - scrollbarW, clientHeight);
     pRT->PushAxisAlignedClip(clipCode, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
 
+    // Analyze rainbow bracket pairs, nesting depths, and active cursor pair
+    auto bracketAnalysis = editor::BracketPairAnalyzer::Analyze(buffer, cursor.line, cursor.col);
+    std::vector<std::vector<const editor::BracketItem*>> bracketsByLine(totalBufLines);
+    for (const auto& b : bracketAnalysis.brackets) {
+        if (b.line < totalBufLines) {
+            bracketsByLine[b.line].push_back(&b);
+        }
+    }
+
+    const editor::BracketPair* pActivePair = nullptr;
+    float activeOpenLineY = 0.0f;
+    float activeCloseLineY = 0.0f;
+    bool hasActiveOpenY = false;
+    bool hasActiveCloseY = false;
+
+    if (isFocused && bracketAnalysis.activePairIdx >= 0 &&
+        bracketAnalysis.activePairIdx < static_cast<int>(bracketAnalysis.pairs.size())) {
+        pActivePair = &bracketAnalysis.pairs[bracketAnalysis.activePairIdx];
+        for (size_t v = 0; v < visualLines.size(); ++v) {
+            if (visualLines[v].bufferLine == pActivePair->openLine) {
+                activeOpenLineY = topY + config.ScaleF(6.0f) + (static_cast<float>(v) - static_cast<float>(doc.scrollLine)) * lineH;
+                hasActiveOpenY = true;
+            }
+            if (visualLines[v].bufferLine == pActivePair->closeLine) {
+                activeCloseLineY = topY + config.ScaleF(6.0f) + (static_cast<float>(v) - static_cast<float>(doc.scrollLine)) * lineH;
+                hasActiveCloseY = true;
+            }
+            if (hasActiveOpenY && hasActiveCloseY) break;
+        }
+    }
+
+    // Render active bracket connector guide lines (Images 4 & 5)
+    if (pActivePair && hasActiveOpenY && hasActiveCloseY && pActivePair->closeLine > pActivePair->openLine) {
+        ID2D1Brush* guideBrush = theme.GetBracketBrush(pActivePair->depth);
+        if (guideBrush) {
+            float guideX = codeLeft + static_cast<float>(pActivePair->guideCol) * charW + charW * 0.5f;
+            float openCharX = codeLeft + static_cast<float>(pActivePair->openCol) * charW + charW * 0.5f;
+            float closeCharX = codeLeft + static_cast<float>(pActivePair->closeCol) * charW + charW * 0.5f;
+
+            // Start vertical line at bottom of open line if openCol > guideCol (K&R style),
+            // or at center of open line if openCol == guideCol (Allman style)
+            float startY = (pActivePair->openCol == pActivePair->guideCol)
+                ? (activeOpenLineY + lineH * 0.5f)
+                : (activeOpenLineY + lineH);
+            float endY = activeCloseLineY + lineH * 0.5f;
+
+            if (endY > startY) {
+                // Vertical connector line from opening bracket line down to closing bracket line
+                pRT->DrawLine(
+                    D2D1::Point2F(guideX, startY),
+                    D2D1::Point2F(guideX, endY),
+                    guideBrush,
+                    1.5f
+                );
+            }
+
+            // Bottom horizontal hook to closing bracket (if indented)
+            if (closeCharX > guideX) {
+                pRT->DrawLine(
+                    D2D1::Point2F(guideX, endY),
+                    D2D1::Point2F(closeCharX, endY),
+                    guideBrush,
+                    1.5f
+                );
+            }
+        }
+    }
+
+    // Render skeletal highlight frames around opening and closing brackets of the active pair (Images 4 & 5)
+    if (pActivePair) {
+        ID2D1Brush* frameBrush = theme.GetBracketBrush(pActivePair->depth);
+        if (frameBrush) {
+            Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> fillBrush;
+            auto* solid = static_cast<ID2D1SolidColorBrush*>(frameBrush);
+            D2D1_COLOR_F c = solid->GetColor();
+            pRT->CreateSolidColorBrush(D2D1::ColorF(c.r, c.g, c.b, 0.22f), &fillBrush);
+
+            // Opening bracket skeletal frame
+            if (hasActiveOpenY && (activeOpenLineY + lineH >= topY) && (activeOpenLineY <= clientHeight)) {
+                float ox = codeLeft + static_cast<float>(pActivePair->openCol) * charW;
+                D2D1_RECT_F rcOpen = D2D1::RectF(
+                    ox - config.ScaleF(1.0f),
+                    activeOpenLineY + config.ScaleF(2.0f),
+                    ox + charW + config.ScaleF(1.0f),
+                    activeOpenLineY + lineH - config.ScaleF(2.0f)
+                );
+                D2D1_ROUNDED_RECT rrcOpen = D2D1::RoundedRect(rcOpen, config.ScaleF(2.5f), config.ScaleF(2.5f));
+                if (fillBrush) pRT->FillRoundedRectangle(rrcOpen, fillBrush.Get());
+                pRT->DrawRoundedRectangle(rrcOpen, frameBrush, 1.5f);
+            }
+
+            // Closing bracket skeletal frame
+            if (hasActiveCloseY && (activeCloseLineY + lineH >= topY) && (activeCloseLineY <= clientHeight)) {
+                float cx = codeLeft + static_cast<float>(pActivePair->closeCol) * charW;
+                D2D1_RECT_F rcClose = D2D1::RectF(
+                    cx - config.ScaleF(1.0f),
+                    activeCloseLineY + config.ScaleF(2.0f),
+                    cx + charW + config.ScaleF(1.0f),
+                    activeCloseLineY + lineH - config.ScaleF(2.0f)
+                );
+                D2D1_ROUNDED_RECT rrcClose = D2D1::RoundedRect(rcClose, config.ScaleF(2.5f), config.ScaleF(2.5f));
+                if (fillBrush) pRT->FillRoundedRectangle(rrcClose, fillBrush.Get());
+                pRT->DrawRoundedRectangle(rrcClose, frameBrush, 1.5f);
+            }
+        }
+    }
+
     size_t startV = doc.scrollLine;
     size_t endV = (std::min)(visualLines.size(), startV + visibleCount + 2);
 
@@ -928,19 +1035,32 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
 
                     float tokenX = codeLeft + tok.startCol * charW;
                     float tokenW = tok.length * charW;
-                    D2D1_RECT_F rcTok = D2D1::RectF(tokenX, lineY, tokenX + tokenW, lineY + lineH);
+                    D2D1_RECT_F rcTok = D2D1::RectF(tokenX, lineY, tokenX + tokenW + config.ScaleF(4.0f), lineY + lineH);
 
                     ID2D1Brush* brush = theme.brushTextPrimary.Get();
-                    switch (tok.type) {
-                        case editor::TokenType::Keyword:   brush = theme.brushSyntaxKeyword.Get(); break;
-                        case editor::TokenType::Type:      brush = theme.brushSyntaxType.Get(); break;
-                        case editor::TokenType::String:    brush = theme.brushSyntaxString.Get(); break;
-                        case editor::TokenType::Comment:   brush = theme.brushSyntaxComment.Get(); break;
-                        case editor::TokenType::Number:    brush = theme.brushSyntaxNumber.Get(); break;
-                        case editor::TokenType::Operator:  brush = theme.brushSyntaxOperator.Get(); break;
-                        case editor::TokenType::Tag:       brush = theme.brushSyntaxTag.Get(); break;
-                        case editor::TokenType::Attribute: brush = theme.brushSyntaxAttribute.Get(); break;
-                        default: brush = theme.brushTextPrimary.Get(); break;
+                    bool isBracketToken = false;
+                    if (tok.type == editor::TokenType::Operator && tok.length == 1 && vl.bufferLine < bracketsByLine.size()) {
+                        for (const auto* b : bracketsByLine[vl.bufferLine]) {
+                            if (b->col == tok.startCol) {
+                                brush = theme.GetBracketBrush(b->depth);
+                                isBracketToken = true;
+                                break;
+                            }
+                        }
+                    }
+
+                    if (!isBracketToken) {
+                        switch (tok.type) {
+                            case editor::TokenType::Keyword:   brush = theme.brushSyntaxKeyword.Get(); break;
+                            case editor::TokenType::Type:      brush = theme.brushSyntaxType.Get(); break;
+                            case editor::TokenType::String:    brush = theme.brushSyntaxString.Get(); break;
+                            case editor::TokenType::Comment:   brush = theme.brushSyntaxComment.Get(); break;
+                            case editor::TokenType::Number:    brush = theme.brushSyntaxNumber.Get(); break;
+                            case editor::TokenType::Operator:  brush = theme.brushSyntaxOperator.Get(); break;
+                            case editor::TokenType::Tag:       brush = theme.brushSyntaxTag.Get(); break;
+                            case editor::TokenType::Attribute: brush = theme.brushSyntaxAttribute.Get(); break;
+                            default: brush = theme.brushTextPrimary.Get(); break;
+                        }
                     }
 
                     pRT->DrawText(

@@ -356,6 +356,7 @@ private:
     bool m_wordWrap = false;
     bool m_autoSave = true;
     bool m_chordCtrlK = false;
+    bool m_suppressNextChar = false;
     std::vector<std::wstring> m_recentPaths;
     std::wstring m_lastClosedFilePath;
 

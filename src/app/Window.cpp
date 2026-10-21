@@ -2643,6 +2643,11 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
         }
 
         case WM_CHAR: {
+            if (m_suppressNextChar) {
+                m_suppressNextChar = false;
+                return 0;
+            }
+
             if (m_drawer.IsRenaming()) {
                 m_drawer.HandleRenameChar(static_cast<wchar_t>(wParam));
                 InvalidateRect(m_hwnd, nullptr, FALSE);
@@ -2664,7 +2669,8 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                         return 0;
                     }
                 } else {
-                    if (ch >= 32 || ch == L'\t' || ch == L'\r' || ch == L'\n') {
+                    // Printable characters only (Enter and Tab are cleanly handled in WM_KEYDOWN)
+                    if (ch >= 32 && ch != 127) {
                         pDoc->buffer.InsertChar(ch);
                         MarkDocumentModified(pDoc);
                         InvalidateRect(m_hwnd, nullptr, FALSE);
@@ -2700,6 +2706,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
             // Handle inline tree rename keys (Enter to commit, Escape to cancel)
             if (m_drawer.IsRenaming()) {
                 if (wParam == VK_RETURN) {
+                    m_suppressNextChar = true;
                     std::wstring oldPath, newPath;
                     if (m_drawer.CommitInlineRename(oldPath, newPath)) {
                         m_explorerUndo.PushRename(oldPath, newPath);
@@ -2715,6 +2722,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     InvalidateRect(m_hwnd, nullptr, FALSE);
                     return 0;
                 } else if (wParam == VK_ESCAPE) {
+                    m_suppressNextChar = true;
                     m_drawer.CancelInlineRename();
                     InvalidateRect(m_hwnd, nullptr, FALSE);
                     return 0;

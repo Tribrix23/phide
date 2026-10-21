@@ -23,7 +23,9 @@
 #include "phide/ui/DrawerPanel.hpp"
 #include "phide/ui/EditorCanvas.hpp"
 #include "phide/ui/ThemePickerModal.hpp"
+#include "phide/ui/KeyboardShortcutsView.hpp"
 #include "phide/editor/Buffer.hpp"
+#include "phide/editor/BracketPairAnalyzer.hpp"
 #include "phide/editor/OpenDocument.hpp"
 #include "phide/workspace/WorkspaceManager.hpp"
 #include "phide/workspace/ExplorerUndoManager.hpp"
@@ -1218,6 +1220,133 @@ int main() {
         frameCtx->Commit();
         encCtx->Commit();
         std::cout << "  Passed: Saved test_explorer_undo_context_menu.png" << std::endl;
+    }
+
+    // --- 12. Rainbow Brackets, Skeletal Frame, Connector Guides, and Expanded Keyboard Shortcuts ---
+    std::cout << "[TEST 12] Testing Rainbow Brackets, Skeletal Frame, Connector Guides, and Expanded Keyboard Shortcuts..." << std::endl;
+    {
+        // 1. Verify KeyboardShortcutsView has 68 complete shortcuts
+        phide::ui::KeyboardShortcutsView shortcutsView;
+        assert(shortcutsView.GetShortcutsCount() >= 60);
+        std::cout << "  Passed: KeyboardShortcutsView contains " << shortcutsView.GetShortcutsCount() << " complete shortcuts" << std::endl;
+
+        // 2. Verify BracketPairAnalyzer Nesting Depth & Active Pinpointing
+        std::wstring sampleCode =
+            L"function computeMetrics(data) {\n"
+            L"    let matrix = [\n"
+            L"        { id: 1, sum: (10 + 20) },\n"
+            L"        { id: 2, sum: (30 + 40) }\n"
+            L"    ];\n"
+            L"    return matrix;\n"
+            L"}";
+
+        phide::editor::Buffer buf(sampleCode);
+        assert(buf.GetLineCount() == 7);
+
+        // Analyze with cursor touching the outer opening brace on line 0 (col 30)
+        auto analysis1 = phide::editor::BracketPairAnalyzer::Analyze(buf, 0, 30);
+        assert(analysis1.activePairIdx >= 0);
+        const auto& pair1 = analysis1.pairs[analysis1.activePairIdx];
+        assert(pair1.openLine == 0);
+        assert(pair1.openChar == L'{');
+        assert(pair1.closeLine == 6);
+        assert(pair1.closeChar == L'}');
+        assert(pair1.depth == 0); // Level 0: Purple
+        assert(pair1.guideCol == 0);
+
+        // Analyze with cursor inside the array bracket on line 1 (col 18)
+        auto analysis2 = phide::editor::BracketPairAnalyzer::Analyze(buf, 1, 18);
+        assert(analysis2.activePairIdx >= 0);
+        const auto& pair2 = analysis2.pairs[analysis2.activePairIdx];
+        assert(pair2.openLine == 1);
+        assert(pair2.openChar == L'[');
+        assert(pair2.closeLine == 4);
+        assert(pair2.closeChar == L']');
+        assert(pair2.depth == 1); // Level 1: Yellow
+        assert(pair2.guideCol == 4);
+
+        // Analyze with cursor touching the innermost parenthesis on line 2 (col 23)
+        auto analysis3 = phide::editor::BracketPairAnalyzer::Analyze(buf, 2, 23);
+        assert(analysis3.activePairIdx >= 0);
+        const auto& pair3 = analysis3.pairs[analysis3.activePairIdx];
+        assert(pair3.openLine == 2);
+        assert(pair3.openChar == L'(');
+        assert(pair3.closeLine == 2);
+        assert(pair3.closeChar == L')');
+        assert(pair3.depth == 3); // Level 3: depth % 3 == 0 (Purple cycle)
+
+        std::cout << "  Passed: BracketPairAnalyzer depth calculations, matching, and active pair pinpointing verified" << std::endl;
+
+        // 3. Render Direct2D Snapshot of Rainbow Brackets & Active Skeletal Frame with Connector Guide
+        ComPtr<IWICBitmap> pWicEditorBmp;
+        ComPtr<ID2D1RenderTarget> pEditorRT;
+        CreateTarget(pWicEditorBmp, pEditorRT);
+
+        phide::ui::Theme theme;
+        theme.SetThemeMode(phide::ui::ThemeMode::Dark);
+        hr = theme.CreateDeviceResources(pEditorRT.Get(), pDWriteFactory.Get());
+        assert(SUCCEEDED(hr));
+
+        phide::ui::EditorCanvas editor;
+        std::vector<phide::editor::OpenDocument> docs;
+        phide::editor::OpenDocument doc;
+        doc.filePath = L"C:\\phide\\metrics.js";
+        doc.fileName = L"metrics.js";
+        doc.buffer = buf;
+        doc.buffer.SetCursor(0, 30); // Cursor placed at opening brace
+        docs.push_back(std::move(doc));
+
+        pEditorRT->BeginDraw();
+        pEditorRT->Clear(D2D1::ColorF(0.12f, 0.12f, 0.12f, 1.0f));
+        editor.Render(pEditorRT.Get(), theme, config, docs, 0,
+                      298.0f, 1200.0f - 298.0f, 750.0f, true);
+        hr = pEditorRT->EndDraw();
+        assert(SUCCEEDED(hr));
+
+        // Save screenshot test_bracket_pairs_rainbow.png
+        ComPtr<IWICStream> pStream;
+        pWicFactory->CreateStream(&pStream);
+        pStream->InitializeFromFilename((artDir + L"test_bracket_pairs_rainbow.png").c_str(), GENERIC_WRITE);
+        ComPtr<IWICBitmapEncoder> enc;
+        pWicFactory->CreateEncoder(GUID_ContainerFormatPng, nullptr, &enc);
+        enc->Initialize(pStream.Get(), WICBitmapEncoderNoCache);
+        ComPtr<IWICBitmapFrameEncode> frame;
+        enc->CreateNewFrame(&frame, nullptr);
+        frame->Initialize(nullptr);
+        frame->SetSize(1200, 750);
+        WICPixelFormatGUID format = GUID_WICPixelFormat32bppPBGRA;
+        frame->SetPixelFormat(&format);
+        frame->WriteSource(pWicEditorBmp.Get(), nullptr);
+        frame->Commit();
+        enc->Commit();
+        std::cout << "  Passed: Saved test_bracket_pairs_rainbow.png" << std::endl;
+
+        // 4. Render Keyboard Shortcuts View snapshot
+        ComPtr<IWICBitmap> pWicShortcutsBmp;
+        ComPtr<ID2D1RenderTarget> pShortcutsRT;
+        CreateTarget(pWicShortcutsBmp, pShortcutsRT);
+        theme.CreateDeviceResources(pShortcutsRT.Get(), pDWriteFactory.Get());
+
+        pShortcutsRT->BeginDraw();
+        pShortcutsRT->Clear(D2D1::ColorF(0.12f, 0.12f, 0.12f, 1.0f));
+        shortcutsView.Render(pShortcutsRT.Get(), theme, config, 298.0f, 1200.0f - 298.0f, 38.0f, 750.0f);
+        pShortcutsRT->EndDraw();
+
+        ComPtr<IWICStream> pShortcutsStream;
+        pWicFactory->CreateStream(&pShortcutsStream);
+        pShortcutsStream->InitializeFromFilename((artDir + L"test_keyboard_shortcuts_expanded.png").c_str(), GENERIC_WRITE);
+        ComPtr<IWICBitmapEncoder> encShortcuts;
+        pWicFactory->CreateEncoder(GUID_ContainerFormatPng, nullptr, &encShortcuts);
+        encShortcuts->Initialize(pShortcutsStream.Get(), WICBitmapEncoderNoCache);
+        ComPtr<IWICBitmapFrameEncode> frameShortcuts;
+        encShortcuts->CreateNewFrame(&frameShortcuts, nullptr);
+        frameShortcuts->Initialize(nullptr);
+        frameShortcuts->SetSize(1200, 750);
+        frameShortcuts->SetPixelFormat(&format);
+        frameShortcuts->WriteSource(pWicShortcutsBmp.Get(), nullptr);
+        frameShortcuts->Commit();
+        encShortcuts->Commit();
+        std::cout << "  Passed: Saved test_keyboard_shortcuts_expanded.png" << std::endl;
     }
 
     std::cout << "\n==========================================" << std::endl;

@@ -81,6 +81,11 @@ HRESULT Theme::CreateDeviceResources(ID2D1RenderTarget* pRT, IDWriteFactory* pDW
     pRT->CreateSolidColorBrush(colors.tabActiveBg, &brushTabActiveBg);
     pRT->CreateSolidColorBrush(colors.tabBorder, &brushTabBorder);
 
+    // Rainbow Bracket Brushes (Purple, Yellow, Cyan)
+    pRT->CreateSolidColorBrush(colors.bracket1, &brushBracket1);
+    pRT->CreateSolidColorBrush(colors.bracket2, &brushBracket2);
+    pRT->CreateSolidColorBrush(colors.bracket3, &brushBracket3);
+
     // Tree & File Type Icon Brushes (Seti/Material palette matching Image 5)
     pRT->CreateSolidColorBrush(D2D1::ColorF(0.0f, 0.596f, 1.0f, 1.0f), &brushIconBlue);
     pRT->CreateSolidColorBrush(D2D1::ColorF(0.533f, 0.572f, 0.749f, 1.0f), &brushIconPurple);
@@ -477,6 +482,9 @@ void Theme::DiscardDeviceResources() {
     brushTabBarBg.Reset();
     brushTabActiveBg.Reset();
     brushTabBorder.Reset();
+    brushBracket1.Reset();
+    brushBracket2.Reset();
+    brushBracket3.Reset();
     dwriteFactory.Reset();
     fontButtonCenter.Reset();
     fontBadge.Reset();
@@ -594,6 +602,9 @@ void Theme::SetThemeMode(ThemeMode mode) {
         colors.syntaxOperator  = D2D1::ColorF(0.20f, 0.20f, 0.20f, 1.0f);
         colors.syntaxTag       = D2D1::ColorF(0.502f, 0.0f, 0.0f, 1.0f);      // #800000
         colors.syntaxAttribute = D2D1::ColorF(0.9f, 0.1f, 0.1f, 1.0f);       // #E61919
+        colors.bracket1        = D2D1::ColorF(0.482f, 0.122f, 0.635f, 1.0f); // #7B1FA2 Purple
+        colors.bracket2        = D2D1::ColorF(0.851f, 0.467f, 0.024f, 1.0f); // #D97706 Warm Amber Yellow
+        colors.bracket3        = D2D1::ColorF(0.008f, 0.518f, 0.780f, 1.0f); // #0284C7 Sky Blue
     } else if (m_mode == ThemeMode::Cyan) {
         // Cyan Cyber Theme
         colors.windowBg        = D2D1::ColorF(0.027f, 0.082f, 0.133f, 1.0f); // #071522
@@ -636,6 +647,9 @@ void Theme::SetThemeMode(ThemeMode mode) {
         colors.syntaxOperator  = D2D1::ColorF(0.0f, 0.706f, 0.847f, 1.0f);   // #00B4D8
         colors.syntaxTag       = D2D1::ColorF(0.0f, 0.898f, 1.0f, 1.0f);
         colors.syntaxAttribute = D2D1::ColorF(0.792f, 0.941f, 0.973f, 1.0f); // #CAF0F8
+        colors.bracket1        = D2D1::ColorF(0.702f, 0.533f, 1.000f, 1.0f); // #B388FF Purple
+        colors.bracket2        = D2D1::ColorF(1.000f, 0.820f, 0.400f, 1.0f); // #FFD166 Gold
+        colors.bracket3        = D2D1::ColorF(0.000f, 0.898f, 1.000f, 1.0f); // #00E5FF Cyan
     } else if (m_mode == ThemeMode::Turquoise) {
         // Turquoise Teal Theme
         colors.windowBg        = D2D1::ColorF(0.008f, 0.106f, 0.102f, 1.0f); // #021B1A
@@ -678,6 +692,9 @@ void Theme::SetThemeMode(ThemeMode mode) {
         colors.syntaxOperator  = D2D1::ColorF(0.282f, 0.792f, 0.894f, 1.0f); // #48CAE4
         colors.syntaxTag       = D2D1::ColorF(0.114f, 0.914f, 0.714f, 1.0f);
         colors.syntaxAttribute = D2D1::ColorF(0.502f, 1.0f, 0.910f, 1.0f);   // #80FFE8
+        colors.bracket1        = D2D1::ColorF(0.780f, 0.490f, 1.000f, 1.0f); // #C77DFF Purple
+        colors.bracket2        = D2D1::ColorF(1.000f, 0.878f, 0.400f, 1.0f); // #FFE066 Warm Yellow
+        colors.bracket3        = D2D1::ColorF(0.114f, 0.914f, 0.714f, 1.0f); // #1DE9B6 Seafoam Turquoise
     } else if (m_mode == ThemeMode::Purple) {
         // Synthwave Deep Purple Theme
         colors.windowBg        = D2D1::ColorF(0.102f, 0.039f, 0.165f, 1.0f); // #1A0A2A
@@ -720,6 +737,9 @@ void Theme::SetThemeMode(ThemeMode mode) {
         colors.syntaxOperator  = D2D1::ColorF(0.780f, 0.490f, 1.0f, 1.0f);   // #C77DFF
         colors.syntaxTag       = D2D1::ColorF(0.780f, 0.490f, 1.0f, 1.0f);
         colors.syntaxAttribute = D2D1::ColorF(0.878f, 0.667f, 1.0f, 1.0f);
+        colors.bracket1        = D2D1::ColorF(0.878f, 0.667f, 1.000f, 1.0f); // #E0AAFF Lilac Purple
+        colors.bracket2        = D2D1::ColorF(1.000f, 0.718f, 0.012f, 1.0f); // #FFB703 Warm Yellow
+        colors.bracket3        = D2D1::ColorF(0.392f, 1.000f, 0.855f, 1.0f); // #64FFDA Cyan Mint
     } else if (m_mode == ThemeMode::Monokai) {
         // Monokai Pro Theme
         colors.windowBg        = D2D1::ColorF(0.118f, 0.122f, 0.110f, 1.0f); // #1E1F1C
@@ -762,6 +782,9 @@ void Theme::SetThemeMode(ThemeMode mode) {
         colors.syntaxOperator  = D2D1::ColorF(0.992f, 0.592f, 0.122f, 1.0f); // #FD971F
         colors.syntaxTag       = D2D1::ColorF(0.976f, 0.149f, 0.447f, 1.0f);
         colors.syntaxAttribute = D2D1::ColorF(0.651f, 0.886f, 0.180f, 1.0f); // #A6E22E
+        colors.bracket1        = D2D1::ColorF(0.976f, 0.149f, 0.447f, 1.0f); // #F92672 Magenta Purple
+        colors.bracket2        = D2D1::ColorF(0.902f, 0.859f, 0.455f, 1.0f); // #E6DB74 Warm Yellow
+        colors.bracket3        = D2D1::ColorF(0.400f, 0.851f, 0.937f, 1.0f); // #66D9EF Cyan
     } else if (m_mode == ThemeMode::Dracula) {
         // Dracula Theme
         colors.windowBg        = D2D1::ColorF(0.118f, 0.122f, 0.161f, 1.0f); // #1E1F29
@@ -804,6 +827,9 @@ void Theme::SetThemeMode(ThemeMode mode) {
         colors.syntaxOperator  = D2D1::ColorF(0.314f, 0.980f, 0.482f, 1.0f); // #50FA7B
         colors.syntaxTag       = D2D1::ColorF(1.0f, 0.475f, 0.776f, 1.0f);
         colors.syntaxAttribute = D2D1::ColorF(0.314f, 0.980f, 0.482f, 1.0f);
+        colors.bracket1        = D2D1::ColorF(0.741f, 0.576f, 0.976f, 1.0f); // #BD93F9 Purple
+        colors.bracket2        = D2D1::ColorF(0.945f, 0.980f, 0.549f, 1.0f); // #F1FA8C Yellow
+        colors.bracket3        = D2D1::ColorF(0.545f, 0.914f, 0.992f, 1.0f); // #8BE9FD Cyan
     } else {
         // Default Dark Theme Colors
         colors.windowBg        = D2D1::ColorF(0.24f, 0.08f, 0.38f, 1.0f);   // #3D1461
@@ -846,6 +872,9 @@ void Theme::SetThemeMode(ThemeMode mode) {
         colors.syntaxOperator  = D2D1::ColorF(0.831f, 0.831f, 0.831f, 1.0f);  // #D4D4D4
         colors.syntaxTag       = D2D1::ColorF(0.337f, 0.612f, 0.839f, 1.0f);  // #569CD6
         colors.syntaxAttribute = D2D1::ColorF(0.612f, 0.863f, 0.996f, 1.0f);  // #9CDCFE
+        colors.bracket1        = D2D1::ColorF(0.776f, 0.471f, 0.867f, 1.0f);  // #C678DD Purple
+        colors.bracket2        = D2D1::ColorF(1.000f, 0.843f, 0.000f, 1.0f);  // #FFD700 Yellow
+        colors.bracket3        = D2D1::ColorF(0.000f, 0.898f, 1.000f, 1.0f);  // #00E5FF Cyan
     }
 
     // Refresh dynamic brush colors
@@ -889,6 +918,9 @@ void Theme::SetThemeMode(ThemeMode mode) {
     if (brushSyntaxOperator) brushSyntaxOperator->SetColor(colors.syntaxOperator);
     if (brushSyntaxTag) brushSyntaxTag->SetColor(colors.syntaxTag);
     if (brushSyntaxAttribute) brushSyntaxAttribute->SetColor(colors.syntaxAttribute);
+    if (brushBracket1) brushBracket1->SetColor(colors.bracket1);
+    if (brushBracket2) brushBracket2->SetColor(colors.bracket2);
+    if (brushBracket3) brushBracket3->SetColor(colors.bracket3);
 }
 
 Theme::SetiIconInfo Theme::GetSetiIcon(const std::wstring& filename, bool isFolder, bool isExpanded) const {

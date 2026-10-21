@@ -97,6 +97,11 @@ struct ThemeColors {
     D2D1_COLOR_F tabBarBg        = D2D1::ColorF(0.094f, 0.094f, 0.094f, 1.0f);  // #181818 (Tab Bar Surface)
     D2D1_COLOR_F tabActiveBg     = D2D1::ColorF(0.118f, 0.118f, 0.118f, 1.0f);  // #1E1E1E (Active Tab Surface)
     D2D1_COLOR_F tabBorder       = D2D1::ColorF(0.173f, 0.173f, 0.173f, 1.0f);  // #2C2C2C
+
+    // Rainbow Bracket Pair Colors (User preference: Level 1 Purple -> Level 2 Yellow -> Level 3 Blue/Cyan)
+    D2D1_COLOR_F bracket1        = D2D1::ColorF(0.776f, 0.471f, 0.867f, 1.0f);  // #C678DD (Purple / Orchid)
+    D2D1_COLOR_F bracket2        = D2D1::ColorF(1.000f, 0.843f, 0.000f, 1.0f);  // #FFD700 (Warm Yellow / Gold)
+    D2D1_COLOR_F bracket3        = D2D1::ColorF(0.000f, 0.898f, 1.000f, 1.0f);  // #00E5FF (Electric Cyan / Sky Blue)
 };
 
 /**
@@ -187,6 +192,11 @@ public:
     ComPtr<ID2D1SolidColorBrush> brushTabActiveBg;
     ComPtr<ID2D1SolidColorBrush> brushTabBorder;
 
+    // Rainbow Bracket Pair Brushes
+    ComPtr<ID2D1SolidColorBrush> brushBracket1; // Purple
+    ComPtr<ID2D1SolidColorBrush> brushBracket2; // Yellow
+    ComPtr<ID2D1SolidColorBrush> brushBracket3; // Cyan/Blue
+
     // Colorful File & Folder Tree Icon Brushes
     ComPtr<ID2D1SolidColorBrush> brushIconBlue;
     ComPtr<ID2D1SolidColorBrush> brushIconPurple;
@@ -247,6 +257,19 @@ public:
      * @brief Maps a filename and folder state to an authentic Seti UI icon glyph & brand brush.
      */
     [[nodiscard]] SetiIconInfo GetSetiIcon(const std::wstring& filename, bool isFolder, bool isExpanded) const;
+
+    /**
+     * @brief Returns the solid color brush for rainbow bracket hierarchy at the given nesting depth.
+     * depth % 3 == 0: Purple / Orchid
+     * depth % 3 == 1: Gold / Yellow
+     * depth % 3 == 2: Cyan / Blue
+     */
+    [[nodiscard]] ID2D1Brush* GetBracketBrush(int depth) const {
+        int d = (depth >= 0) ? (depth % 3) : 0;
+        if (d == 0) return brushBracket1 ? brushBracket1.Get() : brushTextPrimary.Get();
+        if (d == 1) return brushBracket2 ? brushBracket2.Get() : brushTextPrimary.Get();
+        return brushBracket3 ? brushBracket3.Get() : brushTextPrimary.Get();
+    }
 
 private:
     ThemeMode m_mode = ThemeMode::Dark;
