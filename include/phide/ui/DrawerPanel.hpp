@@ -252,6 +252,12 @@ public:
      */
     [[nodiscard]] const D2D1_RECT_F& GetRenameBox() const noexcept { return m_rcRenameBox; }
 
+    /**
+     * @brief Sets canonical path of the currently active editor document to synchronize explorer selection (Images 2 & 3).
+     */
+    void SetActiveFilePath(const std::wstring& path) noexcept { m_activeFilePath = path; }
+    [[nodiscard]] const std::wstring& GetActiveFilePath() const noexcept { return m_activeFilePath; }
+
     // --- Search Tooltips ---
     /**
      * @brief Handles mouse movement over Code Search buttons to update floating tooltips.
@@ -306,6 +312,10 @@ private:
     std::wstring m_renameText;
     std::wstring m_renameOriginalPath;
     D2D1_RECT_F m_rcRenameBox{};
+    size_t m_renameSelStart = 0;
+    size_t m_renameSelEnd = 0;
+    size_t m_renameCaretPos = 0;
+    std::wstring m_activeFilePath;
 
     // Search Pane State (Image 2)
     std::wstring m_searchQuery;

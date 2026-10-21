@@ -55,6 +55,40 @@ void PopupMenu::OpenContextMenu(float x, float y, bool isFolder, const std::wstr
     LayoutMenu(m_items, x, y, menuW, config, m_mainMenuBounds);
 }
 
+void PopupMenu::OpenEditorContextMenu(float x, float y, const app::AppConfig& config,
+                                     bool hasSelection, bool canPaste) {
+    (void)hasSelection;
+    m_isOpen = true;
+    m_hoveredMainIdx = -1;
+    m_activeSubmenuIdx = -1;
+    m_hoveredSubmenuIdx = -1;
+    m_items.clear();
+
+    // 1. Change All Occurrences (Ctrl+F2)
+    m_items.push_back({ MenuActionId::EditorChangeAllOccurrences, L"Change All Occurrences", L"Ctrl+F2", false, false, false, true, {}, {} });
+    // 2. Refactor... (Ctrl+Shift+R)
+    m_items.push_back({ MenuActionId::EditorRefactor, L"Refactor...", L"Ctrl+Shift+R", false, false, false, true, {}, {} });
+
+    // --- Separator ---
+    m_items.push_back({ MenuActionId::None, L"", L"", true, false, false, false, {}, {} });
+
+    // 3. Cut (Ctrl+X)
+    m_items.push_back({ MenuActionId::EditorCut, L"Cut", L"Ctrl+X", false, false, false, true, {}, {} });
+    // 4. Copy (Ctrl+C)
+    m_items.push_back({ MenuActionId::EditorCopy, L"Copy", L"Ctrl+C", false, false, false, true, {}, {} });
+    // 5. Paste (Ctrl+V)
+    m_items.push_back({ MenuActionId::EditorPaste, L"Paste", L"Ctrl+V", false, false, false, canPaste, {}, {} });
+
+    // --- Separator ---
+    m_items.push_back({ MenuActionId::None, L"", L"", true, false, false, false, {}, {} });
+
+    // 6. Command Palette... (Ctrl+Shift+P)
+    m_items.push_back({ MenuActionId::EditorCommandPalette, L"Command Palette...", L"Ctrl+Shift+P", false, false, false, true, {}, {} });
+
+    const float menuW = config.ScaleF(240.0f);
+    LayoutMenu(m_items, x, y, menuW, config, m_mainMenuBounds);
+}
+
 void PopupMenu::Close() {
     m_isOpen = false;
     m_hoveredMainIdx = -1;

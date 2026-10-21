@@ -1063,6 +1063,52 @@ void Window::DoSelectAll() {
     }
 }
 
+void Window::DoChangeAllOccurrences() {
+    auto* pDoc = GetActiveDoc();
+    if (!pDoc || pDoc->isSpecialView) return;
+
+    auto cursor = pDoc->buffer.GetCursor();
+    const auto& line = pDoc->buffer.GetLine(cursor.line);
+    if (line.empty()) return;
+
+    size_t col = (cursor.col < line.size()) ? cursor.col : (line.empty() ? 0 : line.size() - 1);
+    if (!iswalnum(line[col]) && line[col] != L'_') {
+        if (col > 0 && (iswalnum(line[col - 1]) || line[col - 1] == L'_')) {
+            --col;
+        }
+    }
+    if (!iswalnum(line[col]) && line[col] != L'_') return;
+
+    size_t start = col;
+    while (start > 0 && (iswalnum(line[start - 1]) || line[start - 1] == L'_')) {
+        --start;
+    }
+    size_t end = col;
+    while (end < line.size() && (iswalnum(line[end]) || line[end] == L'_')) {
+        ++end;
+    }
+
+    std::wstring word = line.substr(start, end - start);
+    if (!word.empty()) {
+        m_config.activeRailTab = 1; // Switch to Search tab
+        if (m_drawerAnimProgress < 0.1f) {
+            ToggleSidebar();
+        }
+        m_drawer.SetSearchQuery(word);
+        m_drawer.ExecuteSearch(true);
+        InvalidateRect(m_hwnd, nullptr, FALSE);
+    }
+}
+
+void Window::DoRefactor() {
+    m_editor.ShowRefactorPopup(L"No refactorings available");
+    InvalidateRect(m_hwnd, nullptr, FALSE);
+}
+
+void Window::DoCommandPalette() {
+    DoOpenKeyboardShortcuts();
+}
+
 void Window::DoToggleWordWrap() {
     m_wordWrap = !m_wordWrap;
     InvalidateRect(m_hwnd, nullptr, FALSE);
@@ -1450,9 +1496,13 @@ void Window::OnPaint() {
         hlUseRegex = m_drawer.GetUseRegex();
     }
 
+    auto* curDoc = GetActiveDoc();
+    m_drawer.SetActiveFilePath(curDoc ? curDoc->filePath : L"");
+
     m_editor.Render(m_pRenderTarget.Get(), m_theme, m_config, m_editorGroups, m_focusedGroupIdx,
                     canvasLeft, canvasWidth, clientH, hasLeftDrawer,
-                    searchHL, hlMatchCase, hlWholeWord, hlUseRegex);
+                    searchHL, hlMatchCase, hlWholeWord, hlUseRegex,
+                    m_drawer.IsRenaming());
 
     // 2. Render Slide-out Drawer Panel (when visible or animating, with 14px rounded curve at top-left)
     if (hasLeftDrawer) {
@@ -1607,6 +1657,11 @@ void Window::HandleMouseMove(POINT clientPt) {
 }
 
 void Window::HandleLButtonDown(POINT clientPt) {
+    if (m_editor.IsRefactorPopupVisible()) {
+        m_editor.DismissRefactorPopup();
+        InvalidateRect(m_hwnd, nullptr, FALSE);
+    }
+
     // 0. Theme Picker Modal Clicks: only updates theme if a theme card was clicked
     if (m_themePicker.IsOpen()) {
         ui::ThemeMode chosenMode = m_theme.GetThemeMode();
@@ -1892,6 +1947,27 @@ void Window::HandleLButtonDown(POINT clientPt) {
                     }
                     case ui::MenuActionId::CtxFindInFolder:
                         DoShowSearch();
+                        break;
+
+                    // Editor Context Menu Actions (Images 4 & 5)
+                    case ui::MenuActionId::EditorChangeAllOccurrences:
+                        DoChangeAllOccurrences();
+                        break;
+                    case ui::MenuActionId::EditorRefactor:
+                        DoRefactor();
+                        break;
+                    case ui::MenuActionId::EditorCut:
+                        DoCut();
+                        break;
+                    case ui::MenuActionId::EditorCopy:
+                        DoCopy();
+                        break;
+                    case ui::MenuActionId::EditorPaste:
+                        DoPaste();
+                        break;
+                    case ui::MenuActionId::EditorCommandPalette:
+                    case ui::MenuActionId::CommandPalette:
+                        DoCommandPalette();
                         break;
                     default:
                         break;
@@ -2227,8 +2303,10 @@ void Window::HandleRButtonDown(POINT clientPt) {
         }
     }
 
-    // 2. Right-click inside Editor Tab Bar or Canvas
-    if (clientPt.x >= railW + drawerW && clientPt.y >= headerH) {
+    const float tabH = m_config.ScaleF(34.0f);
+
+    // 2. Right-click inside Editor Tab Bar
+    if (clientPt.x >= railW + drawerW && clientPt.y >= headerH && clientPt.y < headerH + tabH) {
         std::wstring targetPath;
         for (const auto& grp : m_editorGroups) {
             int tabHit = m_editor.HitTestTab(clientPt, grp.docs);
@@ -2258,6 +2336,40 @@ void Window::HandleRButtonDown(POINT clientPt) {
             InvalidateRect(m_hwnd, nullptr, FALSE);
             return;
         }
+    }
+
+    // 3. Right-click inside Editor Canvas / Code Area (Image 4: Editor Context Menu)
+    if (clientPt.x >= railW + drawerW && clientPt.y >= headerH + tabH) {
+        // Focus the editor group containing click & position cursor
+        for (size_t g = 0; g < m_editorGroups.size(); ++g) {
+            const auto& b = m_editorGroups[g].bounds;
+            if (clientPt.x >= b.left && clientPt.x < b.right && clientPt.y >= b.top && clientPt.y < b.bottom) {
+                m_focusedGroupIdx = static_cast<int>(g);
+                auto* pDoc = GetActiveDoc();
+                if (pDoc && !pDoc->isSpecialView && !pDoc->isImageView && !pDoc->isUnsupportedBinary) {
+                    RECT rc;
+                    GetClientRect(m_hwnd, &rc);
+                    float clientH = static_cast<float>(rc.bottom - rc.top);
+                    size_t outLine = 0, outCol = 0;
+                    if (m_editor.HitTestCodeArea(clientPt, m_config, *pDoc, b.left, clientH, outLine, outCol)) {
+                        pDoc->buffer.SetCursor(outLine, outCol);
+                    }
+                }
+                break;
+            }
+        }
+
+        bool hasSelection = (GetActiveDoc() != nullptr);
+        bool canPaste = (IsClipboardFormatAvailable(CF_UNICODETEXT) != FALSE);
+        m_popupMenu.OpenEditorContextMenu(
+            static_cast<float>(clientPt.x),
+            static_cast<float>(clientPt.y),
+            m_config,
+            hasSelection,
+            canPaste
+        );
+        InvalidateRect(m_hwnd, nullptr, FALSE);
+        return;
     }
 }
 
@@ -2331,6 +2443,15 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 if (!m_drawer.HasOpenFolder() && m_drawer.HitTestOpenFolderButton(pt, m_config)) {
                     SetCursor(LoadCursor(nullptr, IDC_HAND));
                     return TRUE;
+                }
+
+                // Inline rename input box in drawer: show I-beam cursor
+                if (m_drawer.IsRenaming()) {
+                    const auto& rcBox = m_drawer.GetRenameBox();
+                    if (pt.x >= rcBox.left && pt.x <= rcBox.right && pt.y >= rcBox.top && pt.y <= rcBox.bottom) {
+                        SetCursor(LoadCursor(nullptr, IDC_IBEAM));
+                        return TRUE;
+                    }
                 }
 
                 // Editor code text area: show I-beam cursor (matching Image 1)
@@ -2509,6 +2630,11 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
         }
 
         case WM_KEYDOWN: {
+            if (m_editor.IsRefactorPopupVisible() && wParam != VK_SHIFT && wParam != VK_CONTROL && wParam != VK_MENU) {
+                m_editor.DismissRefactorPopup();
+                InvalidateRect(m_hwnd, nullptr, FALSE);
+            }
+
             // Handle inline tree rename keys (Enter to commit, Escape to cancel)
             if (m_drawer.IsRenaming()) {
                 if (wParam == VK_RETURN) {
@@ -2589,6 +2715,18 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
 
                 if (wParam == VK_OEM_5) { // Ctrl+\ (Split Editor Right, Images 3 & 4)
                     ToggleSplitEditor();
+                    return 0;
+                }
+                if (wParam == VK_F2) {
+                    DoChangeAllOccurrences();
+                    return 0;
+                }
+                if (wParam == 'R' && shiftDown) {
+                    DoRefactor();
+                    return 0;
+                }
+                if (wParam == 'P' && shiftDown) {
+                    DoCommandPalette();
                     return 0;
                 }
                 if (wParam == 'B') {

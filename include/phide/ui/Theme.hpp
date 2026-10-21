@@ -54,6 +54,7 @@ struct ThemeColors {
     // Interactive States & Caption Buttons
     D2D1_COLOR_F itemHover       = D2D1::ColorF(0.165f, 0.176f, 0.180f, 1.0f); // #2A2D2E
     D2D1_COLOR_F itemActive      = D2D1::ColorF(0.216f, 0.216f, 0.239f, 1.0f); // #37373D
+    D2D1_COLOR_F treeSelected    = D2D1::ColorF(0.016f, 0.380f, 0.647f, 0.85f); // #0461A5 (Active explorer selection bar)
     D2D1_COLOR_F captionHover    = D2D1::ColorF(0.200f, 0.200f, 0.200f, 1.0f); // #333333
     D2D1_COLOR_F closeHoverBg    = D2D1::ColorF(0.910f, 0.067f, 0.137f, 1.0f); // #E81123 (Vibrant Red Close Hover)
 
@@ -150,6 +151,7 @@ public:
     ComPtr<ID2D1SolidColorBrush> brushTextWhite;
     ComPtr<ID2D1SolidColorBrush> brushItemHover;
     ComPtr<ID2D1SolidColorBrush> brushItemActive;
+    ComPtr<ID2D1SolidColorBrush> brushTreeSelected;
     ComPtr<ID2D1SolidColorBrush> brushCaptionHover;
     ComPtr<ID2D1SolidColorBrush> brushHeaderIcon;       ///< Bright silver for unhovered header/rail icons on purple header
     ComPtr<ID2D1SolidColorBrush> brushCloseHoverBg;

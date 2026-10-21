@@ -389,9 +389,23 @@ void DrawerPanel::RenderExplorerPane(ID2D1RenderTarget* pRT, Theme& theme, const
                 }
                 item.bounds = D2D1::RectF(railW + config.ScaleF(4.0f), curY, railW + fullDrawerW - config.ScaleF(4.0f), curY + itemH);
 
+                bool isActive = (!m_activeFilePath.empty() && item.fullPath == m_activeFilePath);
                 bool isHovered = (m_hoveredIndex == static_cast<int>(i));
-                if (isHovered) {
-                    D2D1_ROUNDED_RECT rrc = D2D1::RoundedRect(item.bounds, 3.5f, 3.5f);
+
+                D2D1_ROUNDED_RECT rrc = D2D1::RoundedRect(item.bounds, 3.5f, 3.5f);
+                if (isActive) {
+                    // Active selection highlight bar matching Images 2 & 3
+                    if (theme.brushTreeSelected) {
+                        pRT->FillRoundedRectangle(rrc, theme.brushTreeSelected.Get());
+                    } else {
+                        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushActive;
+                        pRT->CreateSolidColorBrush(
+                            theme.IsDarkMode() ? D2D1::ColorF(0.04f, 0.38f, 0.65f, 0.40f) : D2D1::ColorF(0.04f, 0.45f, 0.85f, 0.25f),
+                            &brushActive
+                        );
+                        if (brushActive) pRT->FillRoundedRectangle(rrc, brushActive.Get());
+                    }
+                } else if (isHovered) {
                     pRT->FillRoundedRectangle(rrc, theme.brushItemHover.Get());
                 }
 
@@ -475,6 +489,33 @@ void DrawerPanel::RenderExplorerPane(ID2D1RenderTarget* pRT, Theme& theme, const
                         m_rcRenameBox.right - config.ScaleF(4.0f),
                         m_rcRenameBox.bottom - config.ScaleF(1.0f)
                     );
+
+                    // Pre-selection highlight (name selected, excluding extension)
+                    if (m_renameSelEnd > m_renameSelStart && theme.dwriteFactory && !m_renameText.empty()) {
+                        Microsoft::WRL::ComPtr<IDWriteTextLayout> pLayout;
+                        if (SUCCEEDED(theme.dwriteFactory->CreateTextLayout(
+                                m_renameText.c_str(), static_cast<UINT32>(m_renameText.length()),
+                                theme.fontBody.Get(), 1000.0f, itemH, &pLayout))) {
+                            DWRITE_HIT_TEST_METRICS htm[16];
+                            UINT32 actualCount = 0;
+                            if (SUCCEEDED(pLayout->HitTestTextRange(
+                                    static_cast<UINT32>(m_renameSelStart),
+                                    static_cast<UINT32>(m_renameSelEnd - m_renameSelStart),
+                                    0.0f, 0.0f, htm, 16, &actualCount))) {
+                                for (UINT32 h = 0; h < actualCount; ++h) {
+                                    D2D1_RECT_F rcSel = D2D1::RectF(
+                                        rcRenameText.left + htm[h].left,
+                                        rcRenameText.top + config.ScaleF(1.5f),
+                                        rcRenameText.left + htm[h].left + htm[h].width,
+                                        rcRenameText.bottom - config.ScaleF(1.5f)
+                                    );
+                                    ID2D1Brush* pSelBrush = theme.brushBrandAccent ? theme.brushBrandAccent.Get() : theme.brushItemHover.Get();
+                                    pRT->FillRectangle(rcSel, pSelBrush);
+                                }
+                            }
+                        }
+                    }
+
                     pRT->DrawText(
                         m_renameText.c_str(),
                         static_cast<UINT32>(m_renameText.length()),
@@ -483,20 +524,22 @@ void DrawerPanel::RenderExplorerPane(ID2D1RenderTarget* pRT, Theme& theme, const
                         theme.brushTextPrimary.Get()
                     );
 
-                    // Caret inside rename box
-                    float renameTextW = 0.0f;
-                    if (theme.dwriteFactory && !m_renameText.empty()) {
+                    // Caret inside rename box at m_renameCaretPos
+                    float caretOffset = 0.0f;
+                    if (theme.dwriteFactory && m_renameCaretPos > 0 && !m_renameText.empty()) {
                         Microsoft::WRL::ComPtr<IDWriteTextLayout> pLayout;
                         if (SUCCEEDED(theme.dwriteFactory->CreateTextLayout(
                                 m_renameText.c_str(), static_cast<UINT32>(m_renameText.length()),
                                 theme.fontBody.Get(), 1000.0f, itemH, &pLayout))) {
-                            DWRITE_TEXT_METRICS tm{};
-                            if (SUCCEEDED(pLayout->GetMetrics(&tm))) {
-                                renameTextW = tm.width;
+                            FLOAT hx = 0.0f, hy = 0.0f;
+                            DWRITE_HIT_TEST_METRICS htm{};
+                            if (SUCCEEDED(pLayout->HitTestTextPosition(
+                                    static_cast<UINT32>(m_renameCaretPos), FALSE, &hx, &hy, &htm))) {
+                                caretOffset = hx;
                             }
                         }
                     }
-                    float caretX = rcRenameText.left + renameTextW + 1.0f;
+                    float caretX = rcRenameText.left + caretOffset + 1.0f;
                     if (caretX < rcRenameText.right) {
                         pRT->DrawLine(
                             D2D1::Point2F(caretX, m_rcRenameBox.top + config.ScaleF(3.0f)),
@@ -511,9 +554,11 @@ void DrawerPanel::RenderExplorerPane(ID2D1RenderTarget* pRT, Theme& theme, const
                         railW + fullDrawerW - config.ScaleF(10.0f),
                         curY + itemH
                     );
-                    ID2D1Brush* pTextBrush = theme.IsDarkMode() ? 
-                        (isHovered ? theme.brushTextWhite.Get() : (item.isFolder ? theme.brushTextWhite.Get() : theme.brushTextPrimary.Get())) :
-                        theme.brushTextPrimary.Get();
+                    ID2D1Brush* pTextBrush = isActive ?
+                        (theme.IsDarkMode() ? theme.brushTextWhite.Get() : theme.brushTextPrimary.Get()) :
+                        (theme.IsDarkMode() ? 
+                            (isHovered ? theme.brushTextWhite.Get() : (item.isFolder ? theme.brushTextWhite.Get() : theme.brushTextPrimary.Get())) :
+                            theme.brushTextPrimary.Get());
                     pRT->DrawText(
                         item.label.c_str(),
                         static_cast<UINT32>(item.label.length()),
@@ -1816,6 +1861,24 @@ void DrawerPanel::StartInlineRename(int itemIdx) {
     m_renamingItemIdx = itemIdx;
     m_renameOriginalPath = m_visibleItems[itemIdx].fullPath;
     m_renameText = m_visibleItems[itemIdx].label;
+
+    // Pre-select filename excluding extension (matching VS Code / Windows Explorer standard)
+    if (!m_visibleItems[itemIdx].isFolder) {
+        size_t dotPos = m_renameText.find_last_of(L'.');
+        if (dotPos != std::wstring::npos && dotPos > 0) {
+            m_renameSelStart = 0;
+            m_renameSelEnd = dotPos;
+            m_renameCaretPos = dotPos;
+        } else {
+            m_renameSelStart = 0;
+            m_renameSelEnd = m_renameText.length();
+            m_renameCaretPos = m_renameText.length();
+        }
+    } else {
+        m_renameSelStart = 0;
+        m_renameSelEnd = m_renameText.length();
+        m_renameCaretPos = m_renameText.length();
+    }
 }
 
 /**
@@ -1847,6 +1910,9 @@ void DrawerPanel::CancelInlineRename() {
     m_renamingItemIdx = -1;
     m_renameText.clear();
     m_renameOriginalPath.clear();
+    m_renameSelStart = 0;
+    m_renameSelEnd = 0;
+    m_renameCaretPos = 0;
     m_rcRenameBox = D2D1::RectF(0, 0, 0, 0);
 }
 
@@ -1893,7 +1959,17 @@ void DrawerPanel::HandleRenameChar(wchar_t ch) {
     if (!m_isRenaming) return;
     if (ch >= 32 && ch != L'\\' && ch != L'/' && ch != L':' && ch != L'*' &&
         ch != L'?' && ch != L'\"' && ch != L'<' && ch != L'>' && ch != L'|') {
-        m_renameText.push_back(ch);
+        if (m_renameSelEnd > m_renameSelStart && m_renameSelEnd <= m_renameText.length()) {
+            m_renameText.erase(m_renameSelStart, m_renameSelEnd - m_renameSelStart);
+            m_renameText.insert(m_renameSelStart, 1, ch);
+            m_renameCaretPos = m_renameSelStart + 1;
+            m_renameSelStart = m_renameSelEnd = m_renameCaretPos;
+        } else {
+            if (m_renameCaretPos > m_renameText.length()) m_renameCaretPos = m_renameText.length();
+            m_renameText.insert(m_renameCaretPos, 1, ch);
+            m_renameCaretPos++;
+            m_renameSelStart = m_renameSelEnd = m_renameCaretPos;
+        }
     }
 }
 
@@ -1904,9 +1980,36 @@ void DrawerPanel::HandleRenameChar(wchar_t ch) {
 void DrawerPanel::HandleRenameKeyDown(WPARAM wParam) {
     if (!m_isRenaming) return;
     if (wParam == VK_BACK) {
-        if (!m_renameText.empty()) {
-            m_renameText.pop_back();
+        if (m_renameSelEnd > m_renameSelStart && m_renameSelEnd <= m_renameText.length()) {
+            m_renameText.erase(m_renameSelStart, m_renameSelEnd - m_renameSelStart);
+            m_renameCaretPos = m_renameSelStart;
+            m_renameSelStart = m_renameSelEnd = m_renameCaretPos;
+        } else if (m_renameCaretPos > 0 && m_renameCaretPos <= m_renameText.length()) {
+            m_renameText.erase(m_renameCaretPos - 1, 1);
+            m_renameCaretPos--;
+            m_renameSelStart = m_renameSelEnd = m_renameCaretPos;
         }
+    } else if (wParam == VK_DELETE) {
+        if (m_renameSelEnd > m_renameSelStart && m_renameSelEnd <= m_renameText.length()) {
+            m_renameText.erase(m_renameSelStart, m_renameSelEnd - m_renameSelStart);
+            m_renameCaretPos = m_renameSelStart;
+            m_renameSelStart = m_renameSelEnd = m_renameCaretPos;
+        } else if (m_renameCaretPos < m_renameText.length()) {
+            m_renameText.erase(m_renameCaretPos, 1);
+            m_renameSelStart = m_renameSelEnd = m_renameCaretPos;
+        }
+    } else if (wParam == VK_LEFT) {
+        if (m_renameCaretPos > 0) m_renameCaretPos--;
+        m_renameSelStart = m_renameSelEnd = m_renameCaretPos;
+    } else if (wParam == VK_RIGHT) {
+        if (m_renameCaretPos < m_renameText.length()) m_renameCaretPos++;
+        m_renameSelStart = m_renameSelEnd = m_renameCaretPos;
+    } else if (wParam == VK_HOME) {
+        m_renameCaretPos = 0;
+        m_renameSelStart = m_renameSelEnd = 0;
+    } else if (wParam == VK_END) {
+        m_renameCaretPos = m_renameText.length();
+        m_renameSelStart = m_renameSelEnd = m_renameCaretPos;
     } else if (wParam == VK_ESCAPE) {
         CancelInlineRename();
     }

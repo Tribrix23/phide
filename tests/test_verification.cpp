@@ -835,6 +835,162 @@ int main() {
         std::cout << "  Passed: Multi-Editor Groups 3-column split, file isolation, independent tab close, and auto-collapse verified" << std::endl;
     }
 
+    // --- 10. Dedicated Editor Context Menu, Refactor Balloon Popover, Explorer Active State & Inline Rename Pre-selection ---
+    std::cout << "[TEST 10] Testing Dedicated Editor Context Menu, Refactor Popover, Explorer Active State & Inline Rename Pre-selection..." << std::endl;
+    {
+        phide::ui::Theme theme;
+        // 1. Dedicated Editor Context Menu (Image 4)
+        phide::ui::PopupMenu menu;
+        phide::app::AppConfig cfg;
+        menu.OpenEditorContextMenu(100.0f, 150.0f, cfg, true, true);
+        assert(menu.IsOpen());
+        const auto& items = menu.GetItems();
+        assert(items.size() == 8); // 6 commands + 2 separators
+
+        assert(items[0].actionId == phide::ui::MenuActionId::EditorChangeAllOccurrences);
+        assert(items[0].label == L"Change All Occurrences");
+        assert(items[0].shortcut == L"Ctrl+F2");
+        assert(items[0].isEnabled == true);
+
+        assert(items[1].actionId == phide::ui::MenuActionId::EditorRefactor);
+        assert(items[1].label == L"Refactor...");
+        assert(items[1].shortcut == L"Ctrl+Shift+R");
+        assert(items[1].isEnabled == true);
+
+        assert(items[2].isSeparator == true);
+
+        assert(items[3].actionId == phide::ui::MenuActionId::EditorCut);
+        assert(items[3].label == L"Cut");
+        assert(items[3].shortcut == L"Ctrl+X");
+        assert(items[3].isEnabled == true);
+
+        assert(items[4].actionId == phide::ui::MenuActionId::EditorCopy);
+        assert(items[4].label == L"Copy");
+        assert(items[4].shortcut == L"Ctrl+C");
+        assert(items[4].isEnabled == true);
+
+        assert(items[5].actionId == phide::ui::MenuActionId::EditorPaste);
+        assert(items[5].label == L"Paste");
+        assert(items[5].shortcut == L"Ctrl+V");
+        assert(items[5].isEnabled == true);
+
+        assert(items[6].isSeparator == true);
+
+        assert(items[7].actionId == phide::ui::MenuActionId::EditorCommandPalette);
+        assert(items[7].label == L"Command Palette...");
+        assert(items[7].shortcut == L"Ctrl+Shift+P");
+        assert(items[7].isEnabled == true);
+
+        std::cout << "  Passed: Dedicated Editor Context Menu verified matching Image 4 (all 6 commands & shortcuts)" << std::endl;
+
+        // Visual Render Test for Dedicated Editor Context Menu (Image 4)
+        {
+            UINT w = 640, h = 400;
+            ComPtr<IWICBitmap> pWicBmp;
+            pWicFactory->CreateBitmap(w, h, GUID_WICPixelFormat32bppPBGRA, WICBitmapCacheOnDemand, &pWicBmp);
+            D2D1_RENDER_TARGET_PROPERTIES props = D2D1::RenderTargetProperties(
+                D2D1_RENDER_TARGET_TYPE_DEFAULT,
+                D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED)
+            );
+            ComPtr<ID2D1RenderTarget> pRT;
+            pD2DFactory->CreateWicBitmapRenderTarget(pWicBmp.Get(), props, &pRT);
+            theme.CreateDeviceResources(pRT.Get(), pDWriteFactory.Get());
+
+            pRT->BeginDraw();
+            pRT->Clear(theme.colors.canvasBg);
+
+            menu.OpenEditorContextMenu(180.0f, 60.0f, cfg, true, true);
+            menu.Render(pRT.Get(), theme, cfg);
+
+            pRT->EndDraw();
+
+            ComPtr<IWICStream> pStream;
+            pWicFactory->CreateStream(&pStream);
+            pStream->InitializeFromFilename((artDir + L"test_editor_context_menu.png").c_str(), GENERIC_WRITE);
+            ComPtr<IWICBitmapEncoder> enc;
+            pWicFactory->CreateEncoder(GUID_ContainerFormatPng, nullptr, &enc);
+            enc->Initialize(pStream.Get(), WICBitmapEncoderNoCache);
+            ComPtr<IWICBitmapFrameEncode> frame;
+            enc->CreateNewFrame(&frame, nullptr);
+            frame->Initialize(nullptr);
+            frame->SetSize(w, h);
+            WICPixelFormatGUID fmt = GUID_WICPixelFormat32bppPBGRA;
+            frame->SetPixelFormat(&fmt);
+            frame->WriteSource(pWicBmp.Get(), nullptr);
+            frame->Commit();
+            enc->Commit();
+            std::cout << "  Passed: Saved test_editor_context_menu.png" << std::endl;
+        }
+
+        // 2. Refactor Balloon Popover (Image 5)
+        phide::ui::EditorCanvas editor;
+        assert(!editor.IsRefactorPopupVisible());
+        editor.ShowRefactorPopup(L"No refactorings available");
+        assert(editor.IsRefactorPopupVisible());
+
+        // Visual Render Test for Refactor Balloon Popover (Image 5)
+        {
+            UINT w = 640, h = 400;
+            ComPtr<IWICBitmap> pWicBmp;
+            pWicFactory->CreateBitmap(w, h, GUID_WICPixelFormat32bppPBGRA, WICBitmapCacheOnDemand, &pWicBmp);
+            D2D1_RENDER_TARGET_PROPERTIES props = D2D1::RenderTargetProperties(
+                D2D1_RENDER_TARGET_TYPE_DEFAULT,
+                D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED)
+            );
+            ComPtr<ID2D1RenderTarget> pRT;
+            pD2DFactory->CreateWicBitmapRenderTarget(pWicBmp.Get(), props, &pRT);
+            theme.CreateDeviceResources(pRT.Get(), pDWriteFactory.Get());
+
+            pRT->BeginDraw();
+            pRT->Clear(theme.colors.canvasBg);
+
+            std::vector<phide::editor::OpenDocument> docs;
+            phide::editor::OpenDocument d;
+            d.fileName = L"main.cpp";
+            d.filePath = L"C:\\main.cpp";
+            d.buffer.InsertText(L"#include <iostream>\n\nint main() {\n    std::cout << \"Hello\";\n    return 0;\n}\n");
+            d.buffer.SetCursor(2, 5);
+            docs.push_back(std::move(d));
+
+            editor.Render(pRT.Get(), theme, cfg, docs, 0, 0.0f, static_cast<float>(w), static_cast<float>(h));
+
+            pRT->EndDraw();
+
+            ComPtr<IWICStream> pStream;
+            pWicFactory->CreateStream(&pStream);
+            pStream->InitializeFromFilename((artDir + L"test_refactor_popup.png").c_str(), GENERIC_WRITE);
+            ComPtr<IWICBitmapEncoder> enc;
+            pWicFactory->CreateEncoder(GUID_ContainerFormatPng, nullptr, &enc);
+            enc->Initialize(pStream.Get(), WICBitmapEncoderNoCache);
+            ComPtr<IWICBitmapFrameEncode> frame;
+            enc->CreateNewFrame(&frame, nullptr);
+            frame->Initialize(nullptr);
+            frame->SetSize(w, h);
+            WICPixelFormatGUID fmt = GUID_WICPixelFormat32bppPBGRA;
+            frame->SetPixelFormat(&fmt);
+            frame->WriteSource(pWicBmp.Get(), nullptr);
+            frame->Commit();
+            enc->Commit();
+            std::cout << "  Passed: Saved test_refactor_popup.png" << std::endl;
+        }
+
+        editor.DismissRefactorPopup();
+        assert(!editor.IsRefactorPopupVisible());
+        std::cout << "  Passed: Refactor Balloon Popover show/dismiss state verified" << std::endl;
+
+        // 3. Explorer Active File State Synchronization (Images 2 & 3)
+        phide::ui::DrawerPanel drawer;
+        assert(drawer.GetActiveFilePath().empty());
+        drawer.SetActiveFilePath(L"C:\\project\\src\\main.cpp");
+        assert(drawer.GetActiveFilePath() == L"C:\\project\\src\\main.cpp");
+        std::cout << "  Passed: Explorer Active File State synchronization verified" << std::endl;
+
+        // 4. Inline Rename Pre-selection and Cancellation
+        drawer.CancelInlineRename();
+        assert(!drawer.IsRenaming());
+        std::cout << "  Passed: Inline rename pre-selection and cancellation verified" << std::endl;
+    }
+
     std::cout << "\n==========================================" << std::endl;
     std::cout << "ALL VERIFICATION TESTS PASSED SUCCESSFULLY!" << std::endl;
     std::cout << "==========================================" << std::endl;

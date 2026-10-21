@@ -113,7 +113,8 @@ void EditorCanvas::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
                           const std::wstring& highlightQuery,
                           bool highlightMatchCase,
                           bool highlightWholeWord,
-                          bool highlightUseRegex) {
+                          bool highlightUseRegex,
+                          bool isRenaming) {
     if (!pRT) return;
     if (groups.empty()) {
         groups.push_back(editor::EditorGroup{});
@@ -200,7 +201,8 @@ void EditorCanvas::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
         RenderSinglePane(pRT, theme, config, groups[g].docs, groups[g].activeDocIdx,
                          pLeft, pWidth, headerH, clientHeight,
                          (isFirstPane ? hasLeftDrawer : true), isGroupFocused,
-                         highlightQuery, highlightMatchCase, highlightWholeWord, highlightUseRegex);
+                         highlightQuery, highlightMatchCase, highlightWholeWord, highlightUseRegex,
+                         isRenaming);
 
         pRT->PopAxisAlignedClip();
 
@@ -215,6 +217,11 @@ void EditorCanvas::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
             );
         }
     }
+
+    // Render floating refactor balloon popover if visible (Image 5)
+    if (m_showRefactorPopup) {
+        RenderRefactorPopup(pRT, theme, config, clientHeight);
+    }
 }
 
 void EditorCanvas::RenderSinglePane(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
@@ -224,7 +231,8 @@ void EditorCanvas::RenderSinglePane(ID2D1RenderTarget* pRT, Theme& theme, const 
                                     const std::wstring& highlightQuery,
                                     bool highlightMatchCase,
                                     bool highlightWholeWord,
-                                    bool highlightUseRegex) {
+                                    bool highlightUseRegex,
+                                    bool isRenaming) {
     if (docs.empty() || docIdx < 0 || docIdx >= static_cast<int>(docs.size())) {
         RenderPlaceholder(pRT, theme, config, canvasLeft, canvasWidth, headerH, clientHeight);
         return;
@@ -246,7 +254,7 @@ void EditorCanvas::RenderSinglePane(ID2D1RenderTarget* pRT, Theme& theme, const 
         RenderUnsupportedBinaryView(pRT, theme, config, activeDoc, canvasLeft, canvasWidth, contentTopY, clientHeight);
     } else {
         RenderCode(pRT, theme, config, activeDoc, canvasLeft, canvasWidth, contentTopY, clientHeight, isPaneFocused,
-                   highlightQuery, highlightMatchCase, highlightWholeWord, highlightUseRegex);
+                   highlightQuery, highlightMatchCase, highlightWholeWord, highlightUseRegex, isRenaming);
     }
 }
 
@@ -675,7 +683,8 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
                               const std::wstring& highlightQuery,
                               bool highlightMatchCase,
                               bool highlightWholeWord,
-                              bool highlightUseRegex) {
+                              bool highlightUseRegex,
+                              bool isRenaming) {
     auto& buffer = doc.buffer;
     const float gutterW = config.ScaleF(50.0f);
     const float lineH   = config.ScaleF(20.0f);
@@ -963,21 +972,27 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
     }
 
     // 4. Blinking Caret (Image 5: High-contrast in both Dark and Light modes!) - Only in focused group
-    if (isFocused && m_caretVisible && foundCursorVisual && visualCursorIdx >= doc.scrollLine) {
+    if (foundCursorVisual && visualCursorIdx >= doc.scrollLine) {
         float caretX = codeLeft + cursor.col * charW;
         float caretY = topY + config.ScaleF(6.0f) + (visualCursorIdx - doc.scrollLine) * lineH;
-        if (caretY >= topY && caretY + lineH <= clientHeight) {
-            // In Light Mode: #1E1E1E Deep Black/Charcoal. In Dark Mode: #FFFFFF Pure White.
-            ID2D1Brush* caretBrush = theme.IsDarkMode()
-                ? theme.brushTextWhite.Get()
-                : (theme.brushTextPrimary ? theme.brushTextPrimary.Get() : theme.brushHeaderIcon.Get());
+        if (isFocused) {
+            m_lastCaretX = caretX;
+            m_lastCaretY = caretY;
+        }
+        if (isFocused && !isRenaming && m_caretVisible) {
+            if (caretY >= topY && caretY + lineH <= clientHeight) {
+                // In Light Mode: #1E1E1E Deep Black/Charcoal. In Dark Mode: #FFFFFF Pure White.
+                ID2D1Brush* caretBrush = theme.IsDarkMode()
+                    ? theme.brushTextWhite.Get()
+                    : (theme.brushTextPrimary ? theme.brushTextPrimary.Get() : theme.brushHeaderIcon.Get());
 
-            pRT->DrawLine(
-                D2D1::Point2F(caretX, caretY + config.ScaleF(2.0f)),
-                D2D1::Point2F(caretX, caretY + lineH - config.ScaleF(2.0f)),
-                caretBrush,
-                2.0f // Crisp 2.0px stroke
-            );
+                pRT->DrawLine(
+                    D2D1::Point2F(caretX, caretY + config.ScaleF(2.0f)),
+                    D2D1::Point2F(caretX, caretY + lineH - config.ScaleF(2.0f)),
+                    caretBrush,
+                    2.0f // Crisp 2.0px stroke
+                );
+            }
         }
     }
 
@@ -1373,6 +1388,116 @@ void EditorCanvas::RenderUnsupportedBinaryView(ID2D1RenderTarget* pRT, Theme& th
     pRT->DrawText(btnLabel, static_cast<UINT32>(wcslen(btnLabel)),
                   theme.fontButtonCenter ? theme.fontButtonCenter.Get() : theme.fontBody.Get(),
                   doc.unsupportedActionBtn, theme.brushTextWhite.Get());
+}
+
+void EditorCanvas::RenderRefactorPopup(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config, float clientHeight) {
+    if (!pRT || m_refactorMessage.empty()) return;
+
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> bgBrush;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> borderBrush;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> textBrush;
+
+    if (theme.IsDarkMode()) {
+        pRT->CreateSolidColorBrush(D2D1::ColorF(0.145f, 0.145f, 0.155f, 0.98f), &bgBrush);
+        pRT->CreateSolidColorBrush(D2D1::ColorF(0.0f, 0.478f, 0.800f, 1.0f), &borderBrush); // #007ACC
+        pRT->CreateSolidColorBrush(D2D1::ColorF(0.88f, 0.88f, 0.88f, 1.0f), &textBrush);
+    } else {
+        pRT->CreateSolidColorBrush(D2D1::ColorF(0.96f, 0.96f, 0.96f, 0.98f), &bgBrush);
+        pRT->CreateSolidColorBrush(D2D1::ColorF(0.0f, 0.478f, 0.800f, 1.0f), &borderBrush); // #007ACC
+        pRT->CreateSolidColorBrush(D2D1::ColorF(0.12f, 0.12f, 0.12f, 1.0f), &textBrush);
+    }
+
+    if (!bgBrush || !borderBrush || !textBrush) return;
+
+    float textW = 160.0f;
+    float textH = 18.0f;
+    IDWriteTextFormat* pFmt = theme.fontMenu ? theme.fontMenu.Get() : theme.fontBody.Get();
+
+    if (theme.dwriteFactory && pFmt) {
+        Microsoft::WRL::ComPtr<IDWriteTextLayout> pLayout;
+        if (SUCCEEDED(theme.dwriteFactory->CreateTextLayout(
+                m_refactorMessage.c_str(),
+                static_cast<UINT32>(m_refactorMessage.length()),
+                pFmt, 400.0f, 100.0f, &pLayout))) {
+            DWRITE_TEXT_METRICS tm{};
+            if (SUCCEEDED(pLayout->GetMetrics(&tm))) {
+                textW = tm.widthIncludingTrailingWhitespace;
+                textH = tm.height;
+            }
+        }
+    }
+
+    const float padX = config.ScaleF(12.0f);
+    const float padY = config.ScaleF(5.0f);
+    const float popupW = textW + padX * 2.0f;
+    const float popupH = textH + padY * 2.0f;
+    const float arrowW = config.ScaleF(10.0f);
+    const float arrowH = config.ScaleF(6.0f);
+
+    float tipX = m_lastCaretX;
+    if (tipX < 20.0f) tipX = 200.0f;
+    float tipY = m_lastCaretY;
+    if (tipY < 40.0f) tipY = 150.0f;
+
+    float popupLeft = tipX - popupW * 0.5f;
+    if (popupLeft < config.ScaleF(10.0f)) popupLeft = config.ScaleF(10.0f);
+
+    bool flipBelow = (tipY - popupH - arrowH < config.ScaleF(60.0f));
+    float popupTop = 0.0f;
+    float popupBottom = 0.0f;
+
+    if (!flipBelow) {
+        popupBottom = tipY - arrowH;
+        popupTop = popupBottom - popupH;
+    } else {
+        popupTop = tipY + config.ScaleF(20.0f) + arrowH;
+        popupBottom = popupTop + popupH;
+    }
+
+    D2D1_RECT_F rcBox = D2D1::RectF(popupLeft, popupTop, popupLeft + popupW, popupBottom);
+    D2D1_ROUNDED_RECT rrc = D2D1::RoundedRect(rcBox, 4.0f, 4.0f);
+
+    // Draw main popover balloon body
+    pRT->FillRoundedRectangle(rrc, bgBrush.Get());
+    pRT->DrawRoundedRectangle(rrc, borderBrush.Get(), 1.2f);
+
+    // Draw pointer triangle
+    Microsoft::WRL::ComPtr<ID2D1Factory> pFactory;
+    pRT->GetFactory(&pFactory);
+    if (pFactory) {
+        Microsoft::WRL::ComPtr<ID2D1PathGeometry> pTri;
+        if (SUCCEEDED(pFactory->CreatePathGeometry(&pTri))) {
+            Microsoft::WRL::ComPtr<ID2D1GeometrySink> sink;
+            if (SUCCEEDED(pTri->Open(&sink))) {
+                if (!flipBelow) {
+                    // Downward triangle pointing at caret
+                    sink->BeginFigure(D2D1::Point2F(tipX - arrowW * 0.5f, popupBottom - 0.5f), D2D1_FIGURE_BEGIN_FILLED);
+                    sink->AddLine(D2D1::Point2F(tipX + arrowW * 0.5f, popupBottom - 0.5f));
+                    sink->AddLine(D2D1::Point2F(tipX, tipY));
+                    sink->EndFigure(D2D1_FIGURE_END_CLOSED);
+                } else {
+                    // Upward triangle pointing at caret
+                    sink->BeginFigure(D2D1::Point2F(tipX - arrowW * 0.5f, popupTop + 0.5f), D2D1_FIGURE_BEGIN_FILLED);
+                    sink->AddLine(D2D1::Point2F(tipX + arrowW * 0.5f, popupTop + 0.5f));
+                    sink->AddLine(D2D1::Point2F(tipX, tipY + config.ScaleF(20.0f)));
+                    sink->EndFigure(D2D1_FIGURE_END_CLOSED);
+                }
+                sink->Close();
+                pRT->FillGeometry(pTri.Get(), bgBrush.Get());
+                pRT->DrawGeometry(pTri.Get(), borderBrush.Get(), 1.2f);
+            }
+        }
+    }
+
+    // Draw popover message text
+    D2D1_RECT_F rcText = D2D1::RectF(popupLeft + padX, popupTop + padY, popupLeft + popupW - padX, popupBottom - padY);
+    pRT->DrawText(
+        m_refactorMessage.c_str(),
+        static_cast<UINT32>(m_refactorMessage.length()),
+        pFmt,
+        rcText,
+        textBrush.Get()
+    );
 }
 
 } // namespace phide::ui

@@ -62,7 +62,8 @@ public:
                 const std::wstring& highlightQuery = L"",
                 bool highlightMatchCase = false,
                 bool highlightWholeWord = false,
-                bool highlightUseRegex = false);
+                bool highlightUseRegex = false,
+                bool isRenaming = false);
 
     /**
      * @brief Convenience overload for single-pane callers and unit tests.
@@ -74,16 +75,28 @@ public:
                 const std::wstring& highlightQuery = L"",
                 bool highlightMatchCase = false,
                 bool highlightWholeWord = false,
-                bool highlightUseRegex = false) {
+                bool highlightUseRegex = false,
+                bool isRenaming = false) {
         editor::EditorGroup g;
         g.docs = docs;
         g.activeDocIdx = activeDocIdx;
         std::vector<editor::EditorGroup> groups;
         groups.push_back(std::move(g));
         Render(pRT, theme, config, groups, 0, canvasLeft, canvasWidth, clientHeight, hasLeftDrawer,
-               highlightQuery, highlightMatchCase, highlightWholeWord, highlightUseRegex);
+               highlightQuery, highlightMatchCase, highlightWholeWord, highlightUseRegex, isRenaming);
         docs = std::move(groups[0].docs);
     }
+
+    /**
+     * @brief Displays the floating refactor action / warning popup matching Image 5.
+     * @param message Text to display (e.g. L"No refactorings available").
+     */
+    void ShowRefactorPopup(const std::wstring& message = L"No refactorings available") {
+        m_showRefactorPopup = true;
+        m_refactorMessage = message;
+    }
+    void DismissRefactorPopup() noexcept { m_showRefactorPopup = false; }
+    [[nodiscard]] bool IsRefactorPopupVisible() const noexcept { return m_showRefactorPopup; }
 
     /**
      * @brief Toggles caret blink phase.
@@ -235,7 +248,8 @@ private:
                           const std::wstring& highlightQuery = L"",
                           bool highlightMatchCase = false,
                           bool highlightWholeWord = false,
-                          bool highlightUseRegex = false);
+                          bool highlightUseRegex = false,
+                          bool isRenaming = false);
 
     /**
      * @brief Renders active buffer source lines, line gutter numbers, fold chevrons, and syntax highlights.
@@ -254,7 +268,15 @@ private:
                     const std::wstring& highlightQuery = L"",
                     bool highlightMatchCase = false,
                     bool highlightWholeWord = false,
-                    bool highlightUseRegex = false);
+                    bool highlightUseRegex = false,
+                    bool isRenaming = false);
+
+    void RenderRefactorPopup(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config, float clientHeight);
+
+    bool m_showRefactorPopup = false;
+    std::wstring m_refactorMessage;
+    float m_lastCaretX = 0.0f;
+    float m_lastCaretY = 0.0f;
 
     struct FoldChevronHit {
         D2D1_RECT_F bounds{};

@@ -124,7 +124,15 @@ enum class MenuActionId {
     CtxDelete,
     CtxNewFile,
     CtxNewFolder,
-    CtxFindInFolder
+    CtxFindInFolder,
+
+    // Editor Context Menu Actions (Image 4)
+    EditorChangeAllOccurrences,
+    EditorRefactor,
+    EditorCut,
+    EditorCopy,
+    EditorPaste,
+    EditorCommandPalette
 };
 
 /**
@@ -196,6 +204,17 @@ public:
                          bool canPaste = false);
 
     /**
+     * @brief Opens the custom editor context menu (Image 4).
+     * @param x Left coordinate of the anchor.
+     * @param y Top coordinate of the anchor.
+     * @param config Application metrics.
+     * @param hasSelection Whether text is currently selected in active editor.
+     * @param canPaste Whether Windows clipboard has text to paste.
+     */
+    void OpenEditorContextMenu(float x, float y, const app::AppConfig& config,
+                               bool hasSelection = false, bool canPaste = true);
+
+    /**
      * @brief Closes the popup menu and any open submenus.
      */
     void Close();
@@ -231,6 +250,11 @@ public:
      * @brief Tests if the given point is inside the main menu or active submenu bounding rects.
      */
     [[nodiscard]] bool HitTestMenuArea(POINT clientPt) const;
+
+    /**
+     * @brief Accesses currently displayed menu items (used for inspection and unit testing).
+     */
+    [[nodiscard]] const std::vector<PopupMenuItem>& GetItems() const noexcept { return m_items; }
 
 private:
     void BuildViewMenuItems(bool isSidebarOpen, bool isZoomed, bool wordWrap);

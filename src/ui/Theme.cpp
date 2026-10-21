@@ -48,6 +48,7 @@ HRESULT Theme::CreateDeviceResources(ID2D1RenderTarget* pRT, IDWriteFactory* pDW
     pRT->CreateSolidColorBrush(colors.textWhite, &brushTextWhite);
     pRT->CreateSolidColorBrush(colors.itemHover, &brushItemHover);
     pRT->CreateSolidColorBrush(colors.itemActive, &brushItemActive);
+    pRT->CreateSolidColorBrush(colors.treeSelected, &brushTreeSelected);
     pRT->CreateSolidColorBrush(colors.captionHover, &brushCaptionHover);
     pRT->CreateSolidColorBrush(colors.headerIcon, &brushHeaderIcon);
     pRT->CreateSolidColorBrush(colors.closeHoverBg, &brushCloseHoverBg);
@@ -446,6 +447,7 @@ void Theme::DiscardDeviceResources() {
     brushTextWhite.Reset();
     brushItemHover.Reset();
     brushItemActive.Reset();
+    brushTreeSelected.Reset();
     brushCaptionHover.Reset();
     brushHeaderIcon.Reset();
     brushCloseHoverBg.Reset();
@@ -562,6 +564,7 @@ void Theme::SetThemeMode(ThemeMode mode) {
         colors.textWhite       = D2D1::ColorF(1.0f, 1.0f, 1.0f, 1.0f);
         colors.itemHover       = D2D1::ColorF(0.165f, 0.176f, 0.180f, 1.0f); // #2A2D2E
         colors.itemActive      = D2D1::ColorF(0.216f, 0.216f, 0.239f, 1.0f); // #37373D
+        colors.treeSelected    = D2D1::ColorF(0.016f, 0.380f, 0.647f, 0.85f); // #0461A5
         colors.captionHover    = D2D1::ColorF(0.200f, 0.200f, 0.200f, 1.0f); // #333333
         colors.headerIcon      = D2D1::ColorF(0.82f, 0.82f, 0.86f, 1.0f);   // #D1D1DB Bright silver
         colors.brandAccent     = D2D1::ColorF(0.0f, 0.471f, 0.831f, 1.0f);   // #0078D4
@@ -604,6 +607,7 @@ void Theme::SetThemeMode(ThemeMode mode) {
         colors.textWhite       = D2D1::ColorF(1.0f, 1.0f, 1.0f, 1.0f);        // Always pure white
         colors.itemHover       = D2D1::ColorF(0.91f, 0.91f, 0.91f, 1.0f);    // #E8E8E8
         colors.itemActive      = D2D1::ColorF(0.84f, 0.84f, 0.84f, 1.0f);    // #D6D6D6
+        colors.treeSelected    = D2D1::ColorF(0.016f, 0.380f, 0.647f, 0.35f);
         colors.captionHover    = D2D1::ColorF(0.88f, 0.88f, 0.88f, 1.0f);
         colors.headerIcon      = D2D1::ColorF(0.08f, 0.08f, 0.08f, 1.0f);   // #141414 Deep Black for header/rail icons in Light Mode
         colors.brandAccent     = D2D1::ColorF(0.0f, 0.471f, 0.831f, 1.0f);   // #0078D4
@@ -647,6 +651,7 @@ void Theme::SetThemeMode(ThemeMode mode) {
     if (brushTextWhite) brushTextWhite->SetColor(colors.textWhite);
     if (brushItemHover) brushItemHover->SetColor(colors.itemHover);
     if (brushItemActive) brushItemActive->SetColor(colors.itemActive);
+    if (brushTreeSelected) brushTreeSelected->SetColor(colors.treeSelected);
     if (brushCaptionHover) brushCaptionHover->SetColor(colors.captionHover);
     if (brushHeaderIcon) brushHeaderIcon->SetColor(colors.headerIcon);
     if (brushBrandAccent) brushBrandAccent->SetColor(colors.brandAccent);

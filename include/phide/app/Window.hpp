@@ -272,6 +272,15 @@ private:
     /** @brief Selects all text in current document (Ctrl+A). */
     void DoSelectAll();
 
+    /** @brief Selects and highlights all occurrences of active word or selection (Ctrl+F2). */
+    void DoChangeAllOccurrences();
+
+    /** @brief Displays refactoring options or 'No refactorings available' popover balloon (Ctrl+Shift+R). */
+    void DoRefactor();
+
+    /** @brief Opens Command Palette / Keybindings lookup (Ctrl+Shift+P). */
+    void DoCommandPalette();
+
     // --- View & Navigation Commands ---
 
     /** @brief Toggles line wrap in code editor canvas (Alt+Z). */
