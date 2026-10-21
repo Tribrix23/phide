@@ -263,6 +263,27 @@ private:
     /** @brief Redoes previously undone buffer mutation (Ctrl+Y). */
     void DoRedo();
 
+    /** @brief Focuses Find / Search in document (Ctrl+F). */
+    void DoFind();
+
+    /** @brief Focuses Replace in document (Ctrl+H). */
+    void DoReplace();
+
+    /** @brief Focuses Replace perspective in Search drawer (Ctrl+Shift+H). */
+    void DoShowReplace();
+
+    /** @brief Toggles line comment on active line or selection (Ctrl+/). */
+    void DoToggleLineComment();
+
+    /** @brief Toggles block comment on active line or selection (Shift+Alt+A). */
+    void DoToggleBlockComment();
+
+    /** @brief Expands Emmet abbreviation before cursor (Tab). */
+    void DoEmmetExpand();
+
+    /** @brief Collects all open document paths across all editor groups and synchronizes with Drawer. */
+    void RefreshOpenDocPathsForSearch();
+
     /** @brief Undoes the most recent Explorer operation (rename, delete, create, move) (Ctrl+Z when explorer active). */
     void DoExplorerUndo();
 

@@ -12,6 +12,63 @@
 
 namespace phide::ui {
 
+namespace {
+
+bool MatchesWildcard(const std::wstring& str, const std::wstring& pattern) {
+    size_t s = 0, p = 0, match = 0, starIdx = std::wstring::npos;
+    while (s < str.length()) {
+        if (p < pattern.length() && (pattern[p] == L'?' || towlower(pattern[p]) == towlower(str[s]))) {
+            ++s;
+            ++p;
+        } else if (p < pattern.length() && pattern[p] == L'*') {
+            starIdx = p;
+            match = s;
+            ++p;
+        } else if (starIdx != std::wstring::npos) {
+            p = starIdx + 1;
+            ++match;
+            s = match;
+        } else {
+            return false;
+        }
+    }
+    while (p < pattern.length() && pattern[p] == L'*') {
+        ++p;
+    }
+    return p == pattern.length();
+}
+
+bool MatchesPatternList(const std::wstring& filename, const std::wstring& fullPath, const std::wstring& patternList) {
+    if (patternList.empty()) return true;
+    size_t start = 0;
+    while (start < patternList.length()) {
+        while (start < patternList.length() && iswspace(patternList[start])) ++start;
+        size_t comma = patternList.find(L',', start);
+        size_t end = (comma == std::wstring::npos) ? patternList.length() : comma;
+        std::wstring pat = patternList.substr(start, end - start);
+        while (!pat.empty() && iswspace(pat.back())) pat.pop_back();
+
+        if (!pat.empty()) {
+            if (pat.find(L'*') == std::wstring::npos && pat.find(L'?') == std::wstring::npos) {
+                std::wstring lPath = fullPath;
+                std::wstring lPat = pat;
+                for (auto& ch : lPath) ch = towlower(ch);
+                for (auto& ch : lPat) ch = towlower(ch);
+                if (lPath.find(lPat) != std::wstring::npos) return true;
+            } else {
+                if (MatchesWildcard(filename, pat) || MatchesWildcard(fullPath, pat)) {
+                    return true;
+                }
+            }
+        }
+        if (comma == std::wstring::npos) break;
+        start = comma + 1;
+    }
+    return false;
+}
+
+} // anonymous namespace
+
 DrawerPanel::DrawerPanel() {
     // Starts with no folder opened - mock tree is completely removed
     m_hasOpenFolder = false;
@@ -833,9 +890,204 @@ void DrawerPanel::RenderSearchPane(ID2D1RenderTarget* pRT, Theme& theme, const a
         const wchar_t* repAllGlyph = L"\u21C9";
         pRT->DrawText(repAllGlyph, 1, theme.fontBody.Get(), m_rcReplaceAllBtn, theme.brushTextSecondary.Get());
 
-        curY += inputH + config.ScaleF(8.0f);
+        curY += inputH + config.ScaleF(4.0f);
     } else {
-        curY += config.ScaleF(6.0f);
+        curY += config.ScaleF(4.0f);
+    }
+
+    // 3b. Toggle Search Details (...) Button Row (Images 2, 3, 4)
+    const float detailsBtnW = config.ScaleF(24.0f);
+    const float detailsBtnH = config.ScaleF(18.0f);
+    m_rcToggleSearchDetailsBtn = D2D1::RectF(
+        railW + fullDrawerW - paddingX - detailsBtnW,
+        curY,
+        railW + fullDrawerW - paddingX,
+        curY + detailsBtnH
+    );
+    D2D1_ROUNDED_RECT rrcDetails = D2D1::RoundedRect(m_rcToggleSearchDetailsBtn, 3.0f, 3.0f);
+    if (m_isSearchDetailsOpen) {
+        pRT->FillRoundedRectangle(rrcDetails, theme.brushItemActive.Get());
+        pRT->DrawRoundedRectangle(rrcDetails, theme.brushBrandAccent.Get(), 1.0f);
+    }
+    pRT->DrawText(L"...", 3, theme.fontMenuShortcut ? theme.fontMenuShortcut.Get() : theme.fontBody.Get(),
+                  m_rcToggleSearchDetailsBtn, m_isSearchDetailsOpen ? theme.brushTextPrimary.Get() : theme.brushTextSecondary.Get());
+
+    curY += detailsBtnH + config.ScaleF(4.0f);
+
+    // If Search Details (...) is expanded, render "files to include" and "files to exclude" (Image 3 & 4)
+    if (m_isSearchDetailsOpen) {
+        // --- A. "files to include" ---
+        D2D1_RECT_F rcIncludeLabel = D2D1::RectF(
+            railW + paddingX,
+            curY,
+            railW + fullDrawerW - paddingX,
+            curY + config.ScaleF(16.0f)
+        );
+        pRT->DrawText(L"files to include", 16,
+                      theme.fontMenuShortcut ? theme.fontMenuShortcut.Get() : theme.fontBody.Get(),
+                      rcIncludeLabel, theme.brushTextMuted.Get());
+        curY += config.ScaleF(16.0f);
+
+        m_rcFilesToIncludeBox = D2D1::RectF(
+            railW + paddingX,
+            curY,
+            railW + fullDrawerW - paddingX,
+            curY + inputH
+        );
+        D2D1_ROUNDED_RECT rrcInc = D2D1::RoundedRect(m_rcFilesToIncludeBox, 3.5f, 3.5f);
+        pRT->FillRoundedRectangle(rrcInc, theme.brushCanvasBg.Get());
+        if (m_focusedSearchInput == 3) {
+            pRT->DrawRoundedRectangle(rrcInc, theme.brushBrandAccent.Get(), 1.5f);
+        } else {
+            pRT->DrawRoundedRectangle(rrcInc, theme.brushBorderSubtle.Get(), 1.0f);
+        }
+
+        // Open Editors only toggle button inside Include box on right (Book icon, Image 3 & 4)
+        float incBtnW = config.ScaleF(22.0f);
+        float incBtnH = config.ScaleF(18.0f);
+        float incBtnX = m_rcFilesToIncludeBox.right - incBtnW - config.ScaleF(4.0f);
+        float incBtnY = curY + (inputH - incBtnH) / 2.0f;
+        m_rcOpenEditorsOnlyBtn = D2D1::RectF(incBtnX, incBtnY, incBtnX + incBtnW, incBtnY + incBtnH);
+        D2D1_ROUNDED_RECT rrcBook = D2D1::RoundedRect(m_rcOpenEditorsOnlyBtn, 2.5f, 2.5f);
+        if (m_searchOnlyOpenEditors) {
+            pRT->FillRoundedRectangle(rrcBook, theme.brushItemActive.Get());
+            pRT->DrawRoundedRectangle(rrcBook, theme.brushBrandAccent.Get(), 1.0f);
+        }
+
+        // Draw Book icon (Open Editors icon)
+        ID2D1Brush* bookBrush = m_searchOnlyOpenEditors ? theme.brushBrandAccent.Get() : theme.brushTextSecondary.Get();
+        float bx = m_rcOpenEditorsOnlyBtn.left + (incBtnW - config.ScaleF(12.0f)) / 2.0f;
+        float by = m_rcOpenEditorsOnlyBtn.top + (incBtnH - config.ScaleF(10.0f)) / 2.0f;
+        float bw = config.ScaleF(12.0f);
+        float bh = config.ScaleF(10.0f);
+        float midX = bx + bw * 0.5f;
+        pRT->DrawLine(D2D1::Point2F(bx, by), D2D1::Point2F(bx, by + bh), bookBrush, 1.2f);
+        pRT->DrawLine(D2D1::Point2F(bx, by + bh), D2D1::Point2F(midX, by + bh - config.ScaleF(1.0f)), bookBrush, 1.2f);
+        pRT->DrawLine(D2D1::Point2F(midX, by + bh - config.ScaleF(1.0f)), D2D1::Point2F(midX, by), bookBrush, 1.2f);
+        pRT->DrawLine(D2D1::Point2F(midX, by), D2D1::Point2F(bx, by + config.ScaleF(1.0f)), bookBrush, 1.2f);
+        pRT->DrawLine(D2D1::Point2F(midX, by), D2D1::Point2F(bx + bw, by + config.ScaleF(1.0f)), bookBrush, 1.2f);
+        pRT->DrawLine(D2D1::Point2F(bx + bw, by + config.ScaleF(1.0f)), D2D1::Point2F(bx + bw, by + bh), bookBrush, 1.2f);
+        pRT->DrawLine(D2D1::Point2F(bx + bw, by + bh), D2D1::Point2F(midX, by + bh - config.ScaleF(1.0f)), bookBrush, 1.2f);
+        pRT->DrawLine(D2D1::Point2F(bx + config.ScaleF(2.5f), by + config.ScaleF(3.5f)), D2D1::Point2F(midX - config.ScaleF(1.5f), by + config.ScaleF(3.0f)), bookBrush, 1.0f);
+        pRT->DrawLine(D2D1::Point2F(midX + config.ScaleF(1.5f), by + config.ScaleF(3.0f)), D2D1::Point2F(bx + bw - config.ScaleF(2.5f), by + config.ScaleF(3.5f)), bookBrush, 1.0f);
+
+        // Include text or placeholder
+        D2D1_RECT_F rcIncText = D2D1::RectF(
+            m_rcFilesToIncludeBox.left + config.ScaleF(6.0f),
+            curY + config.ScaleF(3.0f),
+            incBtnX - config.ScaleF(4.0f),
+            curY + inputH - config.ScaleF(3.0f)
+        );
+        float incTextWidth = 0.0f;
+        if (m_filesToInclude.empty()) {
+            pRT->DrawText(L"e.g. *.ts, src/**/include", 24, theme.fontBody.Get(), rcIncText, theme.brushTextMuted.Get());
+        } else {
+            pRT->DrawText(m_filesToInclude.c_str(), static_cast<UINT32>(m_filesToInclude.length()),
+                          theme.fontBody.Get(), rcIncText, theme.brushTextPrimary.Get());
+            if (theme.dwriteFactory) {
+                Microsoft::WRL::ComPtr<IDWriteTextLayout> pLayout;
+                if (SUCCEEDED(theme.dwriteFactory->CreateTextLayout(
+                        m_filesToInclude.c_str(), static_cast<UINT32>(m_filesToInclude.length()),
+                        theme.fontBody.Get(), 1000.0f, inputH, &pLayout))) {
+                    DWRITE_TEXT_METRICS tm{};
+                    if (SUCCEEDED(pLayout->GetMetrics(&tm))) incTextWidth = tm.width;
+                }
+            }
+        }
+        if (m_focusedSearchInput == 3) {
+            float caretX = rcIncText.left + incTextWidth + 1.0f;
+            if (caretX < rcIncText.right) {
+                pRT->DrawLine(D2D1::Point2F(caretX, curY + config.ScaleF(4.0f)),
+                              D2D1::Point2F(caretX, curY + inputH - config.ScaleF(4.0f)),
+                              theme.brushTextPrimary.Get(), 1.5f);
+            }
+        }
+        curY += inputH + config.ScaleF(6.0f);
+
+        // --- B. "files to exclude" ---
+        D2D1_RECT_F rcExcludeLabel = D2D1::RectF(
+            railW + paddingX,
+            curY,
+            railW + fullDrawerW - paddingX,
+            curY + config.ScaleF(16.0f)
+        );
+        pRT->DrawText(L"files to exclude", 16,
+                      theme.fontMenuShortcut ? theme.fontMenuShortcut.Get() : theme.fontBody.Get(),
+                      rcExcludeLabel, theme.brushTextMuted.Get());
+        curY += config.ScaleF(16.0f);
+
+        m_rcFilesToExcludeBox = D2D1::RectF(
+            railW + paddingX,
+            curY,
+            railW + fullDrawerW - paddingX,
+            curY + inputH
+        );
+        D2D1_ROUNDED_RECT rrcExc = D2D1::RoundedRect(m_rcFilesToExcludeBox, 3.5f, 3.5f);
+        pRT->FillRoundedRectangle(rrcExc, theme.brushCanvasBg.Get());
+        if (m_focusedSearchInput == 4) {
+            pRT->DrawRoundedRectangle(rrcExc, theme.brushBrandAccent.Get(), 1.5f);
+        } else {
+            pRT->DrawRoundedRectangle(rrcExc, theme.brushBorderSubtle.Get(), 1.0f);
+        }
+
+        // Use Exclude Settings toggle button inside Exclude box on right (Gear icon, Image 3 & 4)
+        float excBtnW = config.ScaleF(22.0f);
+        float excBtnH = config.ScaleF(18.0f);
+        float excBtnX = m_rcFilesToExcludeBox.right - excBtnW - config.ScaleF(4.0f);
+        float excBtnY = curY + (inputH - excBtnH) / 2.0f;
+        m_rcUseExcludeSettingsBtn = D2D1::RectF(excBtnX, excBtnY, excBtnX + excBtnW, excBtnY + excBtnH);
+        D2D1_ROUNDED_RECT rrcGear = D2D1::RoundedRect(m_rcUseExcludeSettingsBtn, 2.5f, 2.5f);
+        if (m_useExcludeSettings) {
+            pRT->FillRoundedRectangle(rrcGear, theme.brushItemActive.Get());
+            pRT->DrawRoundedRectangle(rrcGear, theme.brushBrandAccent.Get(), 1.0f);
+        }
+
+        // Draw Gear icon
+        ID2D1Brush* gearBrush = m_useExcludeSettings ? theme.brushBrandAccent.Get() : theme.brushTextSecondary.Get();
+        float gx = m_rcUseExcludeSettingsBtn.left + excBtnW * 0.5f;
+        float gy = m_rcUseExcludeSettingsBtn.top + excBtnH * 0.5f;
+        float gr = config.ScaleF(4.2f);
+        pRT->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(gx, gy), gr, gr), gearBrush, 1.2f);
+        for (int a = 0; a < 6; ++a) {
+            float angle = static_cast<float>(a) * 3.14159f / 3.0f;
+            float tx = gx + cosf(angle) * (gr + config.ScaleF(1.5f));
+            float ty = gy + sinf(angle) * (gr + config.ScaleF(1.5f));
+            float bbx = gx + cosf(angle) * gr;
+            float bby = gy + sinf(angle) * gr;
+            pRT->DrawLine(D2D1::Point2F(bbx, bby), D2D1::Point2F(tx, ty), gearBrush, 1.4f);
+        }
+        pRT->DrawLine(D2D1::Point2F(gx - config.ScaleF(2.0f), gy), D2D1::Point2F(gx + config.ScaleF(2.0f), gy), gearBrush, 1.5f);
+
+        // Exclude text or placeholder
+        D2D1_RECT_F rcExcText = D2D1::RectF(
+            m_rcFilesToExcludeBox.left + config.ScaleF(6.0f),
+            curY + config.ScaleF(3.0f),
+            excBtnX - config.ScaleF(4.0f),
+            curY + inputH - config.ScaleF(3.0f)
+        );
+        float excTextWidth = 0.0f;
+        if (!m_filesToExclude.empty()) {
+            pRT->DrawText(m_filesToExclude.c_str(), static_cast<UINT32>(m_filesToExclude.length()),
+                          theme.fontBody.Get(), rcExcText, theme.brushTextPrimary.Get());
+            if (theme.dwriteFactory) {
+                Microsoft::WRL::ComPtr<IDWriteTextLayout> pLayout;
+                if (SUCCEEDED(theme.dwriteFactory->CreateTextLayout(
+                        m_filesToExclude.c_str(), static_cast<UINT32>(m_filesToExclude.length()),
+                        theme.fontBody.Get(), 1000.0f, inputH, &pLayout))) {
+                    DWRITE_TEXT_METRICS tm{};
+                    if (SUCCEEDED(pLayout->GetMetrics(&tm))) excTextWidth = tm.width;
+                }
+            }
+        }
+        if (m_focusedSearchInput == 4) {
+            float caretX = rcExcText.left + excTextWidth + 1.0f;
+            if (caretX < rcExcText.right) {
+                pRT->DrawLine(D2D1::Point2F(caretX, curY + config.ScaleF(4.0f)),
+                              D2D1::Point2F(caretX, curY + inputH - config.ScaleF(4.0f)),
+                              theme.brushTextPrimary.Get(), 1.5f);
+            }
+        }
+        curY += inputH + config.ScaleF(8.0f);
     }
 
     // 4. Results List
@@ -1192,6 +1444,46 @@ bool DrawerPanel::HitTestSearch(POINT pt, const app::AppConfig& config, std::wst
         return true;
     }
 
+    // 10b. Toggle Search Details (...) button
+    if (pt.x >= m_rcToggleSearchDetailsBtn.left && pt.x <= m_rcToggleSearchDetailsBtn.right &&
+        pt.y >= m_rcToggleSearchDetailsBtn.top && pt.y <= m_rcToggleSearchDetailsBtn.bottom) {
+        m_isSearchDetailsOpen = !m_isSearchDetailsOpen;
+        return true;
+    }
+
+    // 10c. Include / Exclude Inputs & Toggles (when Search Details is open)
+    if (m_isSearchDetailsOpen) {
+        // Book / Search Open Tabs Only icon button (Images 3 & 4)
+        if (pt.x >= m_rcOpenEditorsOnlyBtn.left && pt.x <= m_rcOpenEditorsOnlyBtn.right &&
+            pt.y >= m_rcOpenEditorsOnlyBtn.top && pt.y <= m_rcOpenEditorsOnlyBtn.bottom) {
+            m_searchOnlyOpenEditors = !m_searchOnlyOpenEditors;
+            ExecuteSearch();
+            return true;
+        }
+
+        // Gear / Use Exclude Settings icon button (Images 3 & 4)
+        if (pt.x >= m_rcUseExcludeSettingsBtn.left && pt.x <= m_rcUseExcludeSettingsBtn.right &&
+            pt.y >= m_rcUseExcludeSettingsBtn.top && pt.y <= m_rcUseExcludeSettingsBtn.bottom) {
+            m_useExcludeSettings = !m_useExcludeSettings;
+            ExecuteSearch();
+            return true;
+        }
+
+        // Files to Include Box
+        if (pt.x >= m_rcFilesToIncludeBox.left && pt.x <= m_rcFilesToIncludeBox.right &&
+            pt.y >= m_rcFilesToIncludeBox.top && pt.y <= m_rcFilesToIncludeBox.bottom) {
+            m_focusedSearchInput = 3;
+            return true;
+        }
+
+        // Files to Exclude Box
+        if (pt.x >= m_rcFilesToExcludeBox.left && pt.x <= m_rcFilesToExcludeBox.right &&
+            pt.y >= m_rcFilesToExcludeBox.top && pt.y <= m_rcFilesToExcludeBox.bottom) {
+            m_focusedSearchInput = 4;
+            return true;
+        }
+    }
+
     // 11. Search Results: File Header toggling & Match clicking
     for (auto& group : m_searchGroups) {
         if (group.headerBounds.right > group.headerBounds.left &&
@@ -1259,16 +1551,22 @@ bool DrawerPanel::PollSearchThrottle(ULONGLONG nowMs) {
 }
 
 void DrawerPanel::HandleSearchChar(wchar_t ch) {
+    if (ch < 32) return;
+
     if (m_focusedSearchInput == 1) {
-        if (ch >= 32) {
-            m_searchQuery.push_back(ch);
-            m_searchPending = true;
-            m_lastKeystrokeTime = GetTickCount64();
-        }
+        m_searchQuery.push_back(ch);
+        m_searchPending = true;
+        m_lastKeystrokeTime = GetTickCount64();
     } else if (m_focusedSearchInput == 2) {
-        if (ch >= 32) {
-            m_replaceQuery.push_back(ch);
-        }
+        m_replaceQuery.push_back(ch);
+    } else if (m_focusedSearchInput == 3) {
+        m_filesToInclude.push_back(ch);
+        m_searchPending = true;
+        m_lastKeystrokeTime = GetTickCount64();
+    } else if (m_focusedSearchInput == 4) {
+        m_filesToExclude.push_back(ch);
+        m_searchPending = true;
+        m_lastKeystrokeTime = GetTickCount64();
     }
 }
 
@@ -1283,10 +1581,24 @@ void DrawerPanel::HandleSearchKeyDown(WPARAM wParam) {
             }
         } else if (m_focusedSearchInput == 2 && !m_replaceQuery.empty()) {
             m_replaceQuery.pop_back();
+        } else if (m_focusedSearchInput == 3 && !m_filesToInclude.empty()) {
+            m_filesToInclude.pop_back();
+            m_searchPending = true;
+            m_lastKeystrokeTime = GetTickCount64();
+        } else if (m_focusedSearchInput == 4 && !m_filesToExclude.empty()) {
+            m_filesToExclude.pop_back();
+            m_searchPending = true;
+            m_lastKeystrokeTime = GetTickCount64();
         }
     } else if (wParam == VK_TAB) {
-        if (m_isReplaceOpen) {
-            m_focusedSearchInput = (m_focusedSearchInput == 1) ? 2 : 1;
+        if (m_focusedSearchInput == 1) {
+            m_focusedSearchInput = m_isReplaceOpen ? 2 : (m_isSearchDetailsOpen ? 3 : 1);
+        } else if (m_focusedSearchInput == 2) {
+            m_focusedSearchInput = m_isSearchDetailsOpen ? 3 : 1;
+        } else if (m_focusedSearchInput == 3) {
+            m_focusedSearchInput = 4;
+        } else if (m_focusedSearchInput == 4) {
+            m_focusedSearchInput = 1;
         }
     } else if (wParam == VK_ESCAPE) {
         m_focusedSearchInput = 0;
@@ -1305,8 +1617,13 @@ void DrawerPanel::LaunchAsyncSearch() {
     bool matchCase = m_matchCase;
     bool matchWord = m_matchWholeWord;
     bool useRegex = m_useRegex;
+    bool searchOnlyOpenEditors = m_searchOnlyOpenEditors;
+    std::vector<std::wstring> openDocPaths = m_openDocPaths;
+    std::wstring filesToInclude = m_filesToInclude;
+    std::wstring filesToExclude = m_filesToExclude;
+    bool useExcludeSettings = m_useExcludeSettings;
 
-    if (query.empty() || rootFolder.empty() || !m_hasOpenFolder) {
+    if (query.empty() || (!searchOnlyOpenEditors && (rootFolder.empty() || !m_hasOpenFolder))) {
         std::lock_guard<std::mutex> lock(m_searchMutex);
         for (auto& g : m_pendingSearchGroups) {
             g.matches.clear();
@@ -1322,7 +1639,8 @@ void DrawerPanel::LaunchAsyncSearch() {
     m_isSearching = true;
 
     // Run file traversal in worker thread to prevent freezing the GUI thread!
-    std::thread([this, thisGen, query, rootFolder, matchCase, matchWord, useRegex]() {
+    std::thread([this, thisGen, query, rootFolder, matchCase, matchWord, useRegex,
+                 searchOnlyOpenEditors, openDocPaths, filesToInclude, filesToExclude, useExcludeSettings]() {
         std::vector<SearchFileGroup> groups;
         size_t totalMatches = 0;
         const size_t MAX_MATCHES_PER_FILE = 50;
@@ -1349,43 +1667,62 @@ void DrawerPanel::LaunchAsyncSearch() {
             std::transform(lowerQuery.begin(), lowerQuery.end(), lowerQuery.begin(), ::towlower);
         }
 
-        for (std::filesystem::recursive_directory_iterator it(root, std::filesystem::directory_options::skip_permission_denied, ec), end;
-             it != end; it.increment(ec)) {
-            // Check cancellation after every file
-            if (m_searchGeneration.load() != thisGen) {
-                return; // Newer search query has been typed; abort obsolete search immediately!
-            }
-
-            if (ec) {
-                ec.clear();
-                continue;
-            }
-
-            const auto& entry = *it;
-            auto filename = entry.path().filename().wstring();
-
-            // Skip hidden folders and files
-            if (!filename.empty() && filename[0] == L'.') {
-                if (entry.is_directory(ec)) it.disable_recursion_pending();
-                continue;
-            }
-
-            // Skip heavy folders
-            if (entry.is_directory(ec)) {
-                if (filename == L"node_modules" || filename == L"build" || filename == L"bin" ||
-                    filename == L"obj" || filename == L"target" || filename == L".git" ||
-                    filename == L"dist" || filename == L"out" || filename == L"vendor" ||
-                    filename == L".cache" || filename == L"tmp" || filename == L"temp" ||
-                    filename == L"coverage" || filename == L".next" || filename == L".nuxt") {
-                    it.disable_recursion_pending();
+        // Collect files to search based on "Search Open Tabs Only" toggle and include/exclude patterns
+        std::vector<std::filesystem::path> filesToProcess;
+        if (searchOnlyOpenEditors) {
+            for (const auto& op : openDocPaths) {
+                std::filesystem::path fp(op);
+                std::error_code fec;
+                if (std::filesystem::exists(fp, fec) && std::filesystem::is_regular_file(fp, fec)) {
+                    auto fname = fp.filename().wstring();
+                    auto fstr = fp.wstring();
+                    if (!filesToInclude.empty() && !MatchesPatternList(fname, fstr, filesToInclude)) continue;
+                    if (!filesToExclude.empty() && MatchesPatternList(fname, fstr, filesToExclude)) continue;
+                    filesToProcess.push_back(fp);
                 }
-                continue;
             }
+        } else {
+            for (std::filesystem::recursive_directory_iterator it(root, std::filesystem::directory_options::skip_permission_denied, ec), end;
+                 it != end; it.increment(ec)) {
+                if (m_searchGeneration.load() != thisGen) return;
+                if (ec) { ec.clear(); continue; }
 
-            if (!entry.is_regular_file(ec)) continue;
+                const auto& entry = *it;
+                auto filename = entry.path().filename().wstring();
+
+                if (!filename.empty() && filename[0] == L'.') {
+                    if (entry.is_directory(ec)) it.disable_recursion_pending();
+                    continue;
+                }
+
+                if (entry.is_directory(ec)) {
+                    if (useExcludeSettings && (filename == L"node_modules" || filename == L"build" || filename == L"bin" ||
+                        filename == L"obj" || filename == L"target" || filename == L".git" ||
+                        filename == L"dist" || filename == L"out" || filename == L"vendor" ||
+                        filename == L".cache" || filename == L"tmp" || filename == L"temp" ||
+                        filename == L"coverage" || filename == L".next" || filename == L".nuxt")) {
+                        it.disable_recursion_pending();
+                    }
+                    continue;
+                }
+
+                if (!entry.is_regular_file(ec)) continue;
+
+                auto fstr = entry.path().wstring();
+                if (!filesToInclude.empty() && !MatchesPatternList(filename, fstr, filesToInclude)) continue;
+                if (!filesToExclude.empty() && MatchesPatternList(filename, fstr, filesToExclude)) continue;
+
+                filesToProcess.push_back(entry.path());
+            }
+        }
+
+        for (const auto& filePath : filesToProcess) {
+            if (m_searchGeneration.load() != thisGen) return;
+
+            auto filename = filePath.filename().wstring();
 
             // Skip binary extensions (video, images, executables, libraries, archives, audio, fonts)
-            auto ext = entry.path().extension().wstring();
+            auto ext = filePath.extension().wstring();
             for (auto& ch : ext) ch = towlower(ch);
             if (ext == L".png" || ext == L".jpg" || ext == L".jpeg" || ext == L".gif" ||
                 ext == L".bmp" || ext == L".ico" || ext == L".webp" || ext == L".tiff" ||
@@ -1405,14 +1742,14 @@ void DrawerPanel::LaunchAsyncSearch() {
             }
 
             // Skip files > 2MB
-            auto fileSize = entry.file_size(ec);
+            auto fileSize = std::filesystem::file_size(filePath, ec);
             if (ec || fileSize > 2 * 1024 * 1024) {
                 ec.clear();
                 continue;
             }
 
             // Inspect initial bytes for null characters
-            std::ifstream file(entry.path(), std::ios::binary);
+            std::ifstream file(filePath, std::ios::binary);
             if (!file.is_open()) continue;
 
             char headerBuf[512];
@@ -1443,9 +1780,9 @@ void DrawerPanel::LaunchAsyncSearch() {
             MultiByteToWideChar(CP_UTF8, 0, content.c_str(), static_cast<int>(content.size()), &wcontent[0], wlen);
 
             SearchFileGroup group;
-            group.filePath = entry.path().wstring();
+            group.filePath = filePath.wstring();
             group.fileName = filename;
-            std::filesystem::path rel = std::filesystem::relative(entry.path().parent_path(), root, ec);
+            std::filesystem::path rel = std::filesystem::relative(filePath.parent_path(), root, ec);
             group.relDir = ec ? L"" : rel.wstring();
             if (group.relDir == L".") group.relDir.clear();
             group.isExpanded = true;
@@ -1553,13 +1890,13 @@ void DrawerPanel::ExecuteSearch(bool async) {
 
     ClearSearchResults();
     m_searchScrollIdx = 0;
-    if (m_searchQuery.empty() || !m_hasOpenFolder || m_openFolderPath.empty()) {
+    if (m_searchQuery.empty() || (!m_searchOnlyOpenEditors && (!m_hasOpenFolder || m_openFolderPath.empty()))) {
         return;
     }
 
     std::error_code ec;
     std::filesystem::path root(m_openFolderPath);
-    if (!std::filesystem::exists(root, ec)) return;
+    if (!m_searchOnlyOpenEditors && !std::filesystem::exists(root, ec)) return;
 
     std::wregex regexPattern;
     bool regexValid = false;
@@ -1582,37 +1919,62 @@ void DrawerPanel::ExecuteSearch(bool async) {
     const size_t MAX_MATCHES_PER_FILE = 50;
     const size_t MAX_TOTAL_MATCHES = 1000;
 
-    for (std::filesystem::recursive_directory_iterator it(root, std::filesystem::directory_options::skip_permission_denied, ec), end;
-         it != end; it.increment(ec)) {
-        if (ec) {
-            ec.clear();
-            continue;
-        }
-
-        const auto& entry = *it;
-        auto filename = entry.path().filename().wstring();
-
-        // Skip hidden files/directories and common heavy folders
-        if (!filename.empty() && filename[0] == L'.') {
-            if (entry.is_directory(ec)) it.disable_recursion_pending();
-            continue;
-        }
-
-        if (entry.is_directory(ec)) {
-            if (filename == L"node_modules" || filename == L"build" || filename == L"bin" ||
-                filename == L"obj" || filename == L"target" || filename == L".git" ||
-                filename == L"dist" || filename == L"out" || filename == L"vendor" ||
-                filename == L".cache" || filename == L"tmp" || filename == L"temp" ||
-                filename == L"coverage" || filename == L".next" || filename == L".nuxt") {
-                it.disable_recursion_pending();
+    std::vector<std::filesystem::path> filesToProcess;
+    if (m_searchOnlyOpenEditors) {
+        for (const auto& op : m_openDocPaths) {
+            std::filesystem::path fp(op);
+            std::error_code fec;
+            if (std::filesystem::exists(fp, fec) && std::filesystem::is_regular_file(fp, fec)) {
+                auto fname = fp.filename().wstring();
+                auto fstr = fp.wstring();
+                if (!m_filesToInclude.empty() && !MatchesPatternList(fname, fstr, m_filesToInclude)) continue;
+                if (!m_filesToExclude.empty() && MatchesPatternList(fname, fstr, m_filesToExclude)) continue;
+                filesToProcess.push_back(fp);
             }
-            continue;
         }
+    } else {
+        for (std::filesystem::recursive_directory_iterator it(root, std::filesystem::directory_options::skip_permission_denied, ec), end;
+             it != end; it.increment(ec)) {
+            if (ec) {
+                ec.clear();
+                continue;
+            }
 
-        if (!entry.is_regular_file(ec)) continue;
+            const auto& entry = *it;
+            auto filename = entry.path().filename().wstring();
+
+            // Skip hidden files/directories and common heavy folders
+            if (!filename.empty() && filename[0] == L'.') {
+                if (entry.is_directory(ec)) it.disable_recursion_pending();
+                continue;
+            }
+
+            if (entry.is_directory(ec)) {
+                if (m_useExcludeSettings && (filename == L"node_modules" || filename == L"build" || filename == L"bin" ||
+                    filename == L"obj" || filename == L"target" || filename == L".git" ||
+                    filename == L"dist" || filename == L"out" || filename == L"vendor" ||
+                    filename == L".cache" || filename == L"tmp" || filename == L"temp" ||
+                    filename == L"coverage" || filename == L".next" || filename == L".nuxt")) {
+                    it.disable_recursion_pending();
+                }
+                continue;
+            }
+
+            if (!entry.is_regular_file(ec)) continue;
+
+            auto fstr = entry.path().wstring();
+            if (!m_filesToInclude.empty() && !MatchesPatternList(filename, fstr, m_filesToInclude)) continue;
+            if (!m_filesToExclude.empty() && MatchesPatternList(filename, fstr, m_filesToExclude)) continue;
+
+            filesToProcess.push_back(entry.path());
+        }
+    }
+
+    for (const auto& filePath : filesToProcess) {
+        auto filename = filePath.filename().wstring();
 
         // Skip binary file extensions
-        auto ext = entry.path().extension().wstring();
+        auto ext = filePath.extension().wstring();
         for (auto& ch : ext) ch = towlower(ch);
         if (ext == L".png" || ext == L".jpg" || ext == L".jpeg" || ext == L".gif" ||
             ext == L".bmp" || ext == L".ico" || ext == L".webp" || ext == L".tiff" ||
@@ -1631,13 +1993,13 @@ void DrawerPanel::ExecuteSearch(bool async) {
             continue;
         }
 
-        auto fileSize = entry.file_size(ec);
+        auto fileSize = std::filesystem::file_size(filePath, ec);
         if (ec || fileSize > 2 * 1024 * 1024) {
             ec.clear();
             continue;
         }
 
-        std::ifstream file(entry.path(), std::ios::binary);
+        std::ifstream file(filePath, std::ios::binary);
         if (!file.is_open()) continue;
 
         char headerBuf[512];
@@ -1668,9 +2030,9 @@ void DrawerPanel::ExecuteSearch(bool async) {
         MultiByteToWideChar(CP_UTF8, 0, content.c_str(), static_cast<int>(content.size()), &wcontent[0], wlen);
 
         SearchFileGroup group;
-        group.filePath = entry.path().wstring();
+        group.filePath = filePath.wstring();
         group.fileName = filename;
-        std::filesystem::path rel = std::filesystem::relative(entry.path().parent_path(), root, ec);
+        std::filesystem::path rel = std::filesystem::relative(filePath.parent_path(), root, ec);
         group.relDir = ec ? L"" : rel.wstring();
         if (group.relDir == L".") group.relDir.clear();
         group.isExpanded = true;
@@ -2040,6 +2402,9 @@ bool DrawerPanel::HandleSearchMouseMove(POINT pt) {
     else if (checkBtn(m_rcUseRegexBtn, L"Use Regular Expression (Alt+R)")) {}
     else if (m_isReplaceOpen && checkBtn(m_rcPreserveCaseBtn, L"Preserve Case (Alt+P)")) {}
     else if (m_isReplaceOpen && checkBtn(m_rcReplaceAllBtn, L"Replace All (Ctrl+Alt+Enter)")) {}
+    else if (checkBtn(m_rcToggleSearchDetailsBtn, L"Toggle Search Details")) {}
+    else if (m_isSearchDetailsOpen && checkBtn(m_rcOpenEditorsOnlyBtn, L"Search Open Tabs Only (Alt+L)")) {}
+    else if (m_isSearchDetailsOpen && checkBtn(m_rcUseExcludeSettingsBtn, L"Use Exclude Settings and Ignore Files")) {}
 
     return (m_searchTooltipText != oldTip);
 }

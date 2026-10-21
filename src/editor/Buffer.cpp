@@ -10,6 +10,7 @@
 #include <fstream>
 #include <sstream>
 #include <filesystem>
+#include <unordered_set>
 
 namespace phide::editor {
 
@@ -513,6 +514,91 @@ bool Buffer::SaveToFile(const std::wstring& path) {
 
     m_isModified = false;
     return true;
+}
+
+void Buffer::ToggleLineComment() {
+    if (m_lines.empty()) return;
+    PushUndo();
+    if (m_cursor.line >= m_lines.size()) m_cursor.line = m_lines.size() - 1;
+    auto& line = m_lines[m_cursor.line];
+
+    size_t firstNonWs = 0;
+    while (firstNonWs < line.length() && (line[firstNonWs] == L' ' || line[firstNonWs] == L'\t')) {
+        ++firstNonWs;
+    }
+
+    if (firstNonWs + 1 < line.length() && line[firstNonWs] == L'/' && line[firstNonWs + 1] == L'/') {
+        size_t removeLen = (firstNonWs + 2 < line.length() && line[firstNonWs + 2] == L' ') ? 3 : 2;
+        line.erase(firstNonWs, removeLen);
+        if (m_cursor.col > firstNonWs) {
+            m_cursor.col = (m_cursor.col >= firstNonWs + removeLen) ? (m_cursor.col - removeLen) : firstNonWs;
+        }
+    } else {
+        line.insert(firstNonWs, L"// ");
+        if (m_cursor.col >= firstNonWs) {
+            m_cursor.col += 3;
+        }
+    }
+    m_isModified = true;
+}
+
+void Buffer::ToggleBlockComment() {
+    if (m_lines.empty()) return;
+    PushUndo();
+    if (m_cursor.line >= m_lines.size()) m_cursor.line = m_lines.size() - 1;
+    auto& line = m_lines[m_cursor.line];
+
+    size_t openPos = line.find(L"/*");
+    size_t closePos = line.rfind(L"*/");
+    if (openPos != std::wstring::npos && closePos != std::wstring::npos && closePos >= openPos + 2) {
+        // Erase closing tag (and preceding space if present)
+        size_t closeStart = (closePos > 0 && line[closePos - 1] == L' ') ? (closePos - 1) : closePos;
+        size_t closeLen = (closePos > 0 && line[closePos - 1] == L' ') ? 3 : 2;
+        line.erase(closeStart, closeLen);
+
+        // Erase opening tag (and following space if present)
+        size_t openLen = (openPos + 2 < line.length() && line[openPos + 2] == L' ') ? 3 : 2;
+        line.erase(openPos, openLen);
+    } else {
+        line = L"/* " + line + L" */";
+        m_cursor.col += 3;
+    }
+    m_isModified = true;
+}
+
+bool Buffer::ExpandEmmet() {
+    if (m_lines.empty()) return false;
+    if (m_cursor.line >= m_lines.size()) m_cursor.line = m_lines.size() - 1;
+    auto& line = m_lines[m_cursor.line];
+    if (m_cursor.col == 0 || line.empty()) return false;
+
+    size_t startCol = m_cursor.col;
+    while (startCol > 0 && iswalnum(line[startCol - 1])) {
+        --startCol;
+    }
+    if (startCol == m_cursor.col) return false;
+
+    std::wstring tag = line.substr(startCol, m_cursor.col - startCol);
+    static const std::unordered_set<std::wstring> knownTags = {
+        L"div", L"span", L"p", L"a", L"button", L"input", L"form", L"ul", L"ol", L"li",
+        L"header", L"footer", L"nav", L"section", L"article", L"h1", L"h2", L"h3", L"h4",
+        L"h5", L"h6", L"table", L"tr", L"td", L"th", L"main", L"label", L"select", L"option"
+    };
+
+    if (knownTags.count(tag)) {
+        PushUndo();
+        std::wstring expansion;
+        if (tag == L"input") {
+            expansion = L"<input type=\"text\" />";
+        } else {
+            expansion = L"<" + tag + L"></" + tag + L">";
+        }
+        line.replace(startCol, tag.length(), expansion);
+        m_cursor.col = startCol + tag.length() + 2;
+        m_isModified = true;
+        return true;
+    }
+    return false;
 }
 
 } // namespace phide::editor

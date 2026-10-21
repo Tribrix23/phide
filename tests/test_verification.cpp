@@ -1349,6 +1349,308 @@ int main() {
         std::cout << "  Passed: Saved test_keyboard_shortcuts_expanded.png" << std::endl;
     }
 
+    // =========================================================================
+    // --- 16. Unit Test: Buffer Editing Operations (Comments & Emmet) ---
+    // =========================================================================
+    std::cout << "\n[TEST 16] Testing Buffer editing (Line comment, Block comment, Emmet)..." << std::endl;
+    {
+        phide::editor::Buffer editBuf;
+        editBuf.SetText(L"const greeting = \"hello\";\n    let count = 0;");
+
+        // 1. Line comment toggle on line 0
+        editBuf.SetCursor(0, 5);
+        editBuf.ToggleLineComment();
+        assert(editBuf.GetLine(0) == L"// const greeting = \"hello\";");
+        editBuf.ToggleLineComment();
+        assert(editBuf.GetLine(0) == L"const greeting = \"hello\";");
+
+        // 2. Line comment toggle on indented line 1
+        editBuf.SetCursor(1, 6);
+        editBuf.ToggleLineComment();
+        assert(editBuf.GetLine(1) == L"    // let count = 0;");
+        editBuf.ToggleLineComment();
+        assert(editBuf.GetLine(1) == L"    let count = 0;");
+
+        // 3. Block comment toggle
+        editBuf.SetCursor(0, 0);
+        editBuf.ToggleBlockComment();
+        assert(editBuf.GetLine(0) == L"/* const greeting = \"hello\"; */");
+        editBuf.ToggleBlockComment();
+        assert(editBuf.GetLine(0) == L"const greeting = \"hello\";");
+
+        // 4. Emmet abbreviation expansions
+        phide::editor::Buffer htmlBuf;
+        htmlBuf.SetText(L"div");
+        htmlBuf.SetCursor(0, 3);
+        bool emmetOk = htmlBuf.ExpandEmmet();
+        assert(emmetOk);
+        assert(htmlBuf.GetLine(0) == L"<div></div>");
+        assert(htmlBuf.GetCursor().line == 0 && htmlBuf.GetCursor().col == 5); // Cursor placed inside tag!
+
+        // Emmet self-closing input
+        phide::editor::Buffer inputBuf;
+        inputBuf.SetText(L"input");
+        inputBuf.SetCursor(0, 5);
+        emmetOk = inputBuf.ExpandEmmet();
+        assert(emmetOk);
+        assert(inputBuf.GetLine(0) == L"<input type=\"text\" />");
+
+        std::cout << "  Passed: Buffer ToggleLineComment, ToggleBlockComment, and ExpandEmmet" << std::endl;
+    }
+
+    // =========================================================================
+    // --- 17. Unit Test: Code Search Details Panel, Include/Exclude, Open Tabs Only ---
+    // =========================================================================
+    std::cout << "\n[TEST 17] Testing Code Search Details Panel (...), Filters & Open Tabs Only..." << std::endl;
+    {
+        phide::app::AppConfig cfg;
+        phide::ui::DrawerPanel drawer;
+        drawer.OpenFolder(L"C:\\phide");
+
+        // Initially search details panel is closed
+        assert(!drawer.IsSearchDetailsOpen());
+        assert(!drawer.IsSearchOnlyOpenEditors());
+        assert(drawer.GetFilesToInclude().empty());
+        assert(drawer.GetFilesToExclude().empty());
+
+        // Toggle search details open
+        drawer.SetSearchDetailsOpen(true);
+        assert(drawer.IsSearchDetailsOpen());
+
+        // Set Include / Exclude filters
+        drawer.SetFilesToInclude(L"*.cpp, *.hpp");
+        drawer.SetFilesToExclude(L"node_modules/**, build/*");
+        assert(drawer.GetFilesToInclude() == L"*.cpp, *.hpp");
+        assert(drawer.GetFilesToExclude() == L"node_modules/**, build/*");
+
+        // Toggle Search Open Tabs Only mode
+        drawer.SetSearchOnlyOpenEditors(true);
+        assert(drawer.IsSearchOnlyOpenEditors());
+
+        // Provide open document paths
+        std::vector<std::wstring> openTabs = {
+            L"C:\\phide\\main.cpp",
+            L"C:\\phide\\Window.cpp"
+        };
+        drawer.SetOpenDocPaths(openTabs);
+        assert(drawer.GetOpenDocPaths().size() == 2);
+
+        // Verify focus cycling via Tab across search inputs (1: search -> 2: replace -> 3: include -> 4: exclude -> 1)
+        drawer.SetSearchFocus(1); // query box
+        drawer.HandleSearchKeyDown(VK_TAB);
+        assert(drawer.GetSearchFocus() == 2); // replace box
+        drawer.HandleSearchKeyDown(VK_TAB);
+        assert(drawer.GetSearchFocus() == 3); // files to include
+        drawer.HandleSearchKeyDown(VK_TAB);
+        assert(drawer.GetSearchFocus() == 4); // files to exclude
+        drawer.HandleSearchKeyDown(VK_TAB);
+        assert(drawer.GetSearchFocus() == 1); // back to query box
+
+        // Test typing into include/exclude boxes
+        drawer.SetSearchFocus(3);
+        drawer.SetFilesToInclude(L"");
+        drawer.HandleSearchChar(L'*');
+        drawer.HandleSearchChar(L'.');
+        drawer.HandleSearchChar(L'h');
+        assert(drawer.GetFilesToInclude() == L"*.h");
+
+        drawer.SetSearchFocus(4);
+        drawer.SetFilesToExclude(L"");
+        drawer.HandleSearchChar(L'o');
+        drawer.HandleSearchChar(L'u');
+        drawer.HandleSearchChar(L't');
+        assert(drawer.GetFilesToExclude() == L"out");
+
+        std::cout << "  Passed: Search details panel (...), include/exclude inputs, tab cycling, and open tabs filter" << std::endl;
+    }
+
+    // =========================================================================
+    // --- 18. Unit Test: Focus Separation between Search Drawer and Shortcuts View ---
+    // =========================================================================
+    std::cout << "\n[TEST 18] Testing Input Focus Separation (Drawer Search vs Shortcuts Search)..." << std::endl;
+    {
+        phide::ui::DrawerPanel drawer;
+        phide::ui::KeyboardShortcutsView shortcutsView;
+
+        // 1. Initially focus drawer search box 1, blur shortcuts
+        drawer.SetSearchFocus(1);
+        shortcutsView.SetSearchFocused(false);
+        assert(drawer.IsSearchFocused());
+        assert(!shortcutsView.IsSearchFocused());
+
+        // 2. User clicks/focuses shortcuts view search box
+        drawer.SetSearchFocus(0);
+        shortcutsView.SetSearchFocused(true);
+        assert(!drawer.IsSearchFocused());
+        assert(shortcutsView.IsSearchFocused());
+
+        // 3. Type character while shortcuts search is focused
+        shortcutsView.HandleChar(L'e');
+        shortcutsView.HandleChar(L'd');
+        shortcutsView.HandleChar(L'i');
+        shortcutsView.HandleChar(L't');
+        assert(shortcutsView.GetSearchQuery() == L"edit");
+        assert(drawer.GetSearchQuery().empty()); // Drawer search was untouched!
+
+        // 4. User clicks back into drawer search
+        shortcutsView.SetSearchFocused(false);
+        drawer.SetSearchFocus(1);
+        assert(drawer.IsSearchFocused());
+        assert(!shortcutsView.IsSearchFocused());
+
+        std::cout << "  Passed: Input focus separation cleanly routes keys to active target without cross-pollution" << std::endl;
+    }
+
+    // =========================================================================
+    // --- 19. Unit Test: Top Edit Dropdown Menu Model & Actions ---
+    // =========================================================================
+    std::cout << "\n[TEST 19] Testing Edit Dropdown Menu Items & Actions..." << std::endl;
+    {
+        phide::app::AppConfig cfg;
+        phide::ui::PopupMenu popup;
+        popup.OpenEditMenu(120.0f, 38.0f, cfg, true, true, true);
+        const auto& editItems = popup.GetItems();
+        assert(!editItems.empty());
+
+        // Verify key actions and shortcuts matching Image 5
+        bool hasUndo = false, hasRedo = false, hasCut = false, hasCopy = false, hasPaste = false;
+        bool hasFind = false, hasReplace = false, hasFindInFiles = false, hasReplaceInFiles = false;
+        bool hasLineComment = false, hasBlockComment = false, hasEmmet = false;
+
+        for (const auto& item : editItems) {
+            if (item.actionId == phide::ui::MenuActionId::EditUndo) {
+                hasUndo = true;
+                assert(item.shortcut == L"Ctrl+Z");
+            } else if (item.actionId == phide::ui::MenuActionId::EditRedo) {
+                hasRedo = true;
+                assert(item.shortcut == L"Ctrl+Y");
+            } else if (item.actionId == phide::ui::MenuActionId::EditCut) {
+                hasCut = true;
+                assert(item.shortcut == L"Ctrl+X");
+            } else if (item.actionId == phide::ui::MenuActionId::EditCopy) {
+                hasCopy = true;
+                assert(item.shortcut == L"Ctrl+C");
+            } else if (item.actionId == phide::ui::MenuActionId::EditPaste) {
+                hasPaste = true;
+                assert(item.shortcut == L"Ctrl+V");
+            } else if (item.actionId == phide::ui::MenuActionId::EditFind) {
+                hasFind = true;
+                assert(item.shortcut == L"Ctrl+F");
+            } else if (item.actionId == phide::ui::MenuActionId::EditReplace) {
+                hasReplace = true;
+                assert(item.shortcut == L"Ctrl+H");
+            } else if (item.actionId == phide::ui::MenuActionId::EditFindInFiles) {
+                hasFindInFiles = true;
+                assert(item.shortcut == L"Ctrl+Shift+F");
+            } else if (item.actionId == phide::ui::MenuActionId::EditReplaceInFiles) {
+                hasReplaceInFiles = true;
+                assert(item.shortcut == L"Ctrl+Shift+H");
+            } else if (item.actionId == phide::ui::MenuActionId::EditToggleLineComment) {
+                hasLineComment = true;
+                assert(item.shortcut == L"Ctrl+/");
+            } else if (item.actionId == phide::ui::MenuActionId::EditToggleBlockComment) {
+                hasBlockComment = true;
+                assert(item.shortcut == L"Shift+Alt+A");
+            } else if (item.actionId == phide::ui::MenuActionId::EditEmmetExpand) {
+                hasEmmet = true;
+                assert(item.shortcut == L"Tab");
+            }
+        }
+
+        assert(hasUndo && hasRedo && hasCut && hasCopy && hasPaste);
+        assert(hasFind && hasReplace && hasFindInFiles && hasReplaceInFiles);
+        assert(hasLineComment && hasBlockComment && hasEmmet);
+        std::cout << "  Passed: All 12 Edit menu actions and shortcuts correctly verified against design specification" << std::endl;
+    }
+
+    // =========================================================================
+    // --- 20. Direct2D Rendering: Edit Menu Dropdown and Search Details Panel ---
+    // =========================================================================
+    std::cout << "\n[TEST 20] Rendering D2D Snapshots for Edit Menu and Code Search Details..." << std::endl;
+    {
+        // 1. Render Edit Menu Dropdown Snapshot
+        ComPtr<IWICBitmap> pWicEditMenuBmp;
+        ComPtr<ID2D1RenderTarget> pEditMenuRT;
+        CreateTarget(pWicEditMenuBmp, pEditMenuRT);
+
+        phide::ui::Theme theme;
+        theme.SetThemeMode(phide::ui::ThemeMode::Dark);
+        hr = theme.CreateDeviceResources(pEditMenuRT.Get(), pDWriteFactory.Get());
+        assert(SUCCEEDED(hr));
+
+        phide::app::AppConfig cfg;
+        phide::ui::PopupMenu popup;
+        popup.OpenEditMenu(120.0f, 38.0f, cfg, true, true, true);
+
+        pEditMenuRT->BeginDraw();
+        pEditMenuRT->Clear(D2D1::ColorF(0.12f, 0.12f, 0.12f, 1.0f));
+
+        // Draw simulated top bar
+        pEditMenuRT->FillRectangle(D2D1::RectF(0.0f, 0.0f, 1200.0f, 38.0f), theme.brushHeaderBg.Get());
+        // Draw open menu
+        popup.Render(pEditMenuRT.Get(), theme, cfg);
+        hr = pEditMenuRT->EndDraw();
+        assert(SUCCEEDED(hr));
+
+        // Save screenshot test_edit_menu_dropdown.png
+        ComPtr<IWICStream> pStreamEdit;
+        pWicFactory->CreateStream(&pStreamEdit);
+        pStreamEdit->InitializeFromFilename((artDir + L"test_edit_menu_dropdown.png").c_str(), GENERIC_WRITE);
+        ComPtr<IWICBitmapEncoder> encEdit;
+        pWicFactory->CreateEncoder(GUID_ContainerFormatPng, nullptr, &encEdit);
+        encEdit->Initialize(pStreamEdit.Get(), WICBitmapEncoderNoCache);
+        ComPtr<IWICBitmapFrameEncode> frameEdit;
+        encEdit->CreateNewFrame(&frameEdit, nullptr);
+        frameEdit->Initialize(nullptr);
+        frameEdit->SetSize(1200, 750);
+        WICPixelFormatGUID format = GUID_WICPixelFormat32bppPBGRA;
+        frameEdit->SetPixelFormat(&format);
+        frameEdit->WriteSource(pWicEditMenuBmp.Get(), nullptr);
+        frameEdit->Commit();
+        encEdit->Commit();
+        std::cout << "  Passed: Saved test_edit_menu_dropdown.png" << std::endl;
+
+        // 2. Render Code Search Details Panel Snapshot
+        ComPtr<IWICBitmap> pWicSearchBmp;
+        ComPtr<ID2D1RenderTarget> pSearchRT;
+        CreateTarget(pWicSearchBmp, pSearchRT);
+        theme.CreateDeviceResources(pSearchRT.Get(), pDWriteFactory.Get());
+
+        phide::ui::DrawerPanel searchDrawer;
+        searchDrawer.OpenFolder(L"C:\\phide");
+        searchDrawer.SetSearchQuery(L"render");
+        searchDrawer.SetSearchDetailsOpen(true);
+        searchDrawer.SetFilesToInclude(L"*.cpp, *.hpp");
+        searchDrawer.SetFilesToExclude(L"node_modules/**");
+        searchDrawer.SetSearchOnlyOpenEditors(true);
+        searchDrawer.SetSearchFocus(3); // focus include box
+
+        pSearchRT->BeginDraw();
+        pSearchRT->Clear(D2D1::ColorF(0.12f, 0.12f, 0.12f, 1.0f));
+        // Render drawer with active search tab (activeRailTab = 1)
+        cfg.activeRailTab = 1;
+        searchDrawer.Render(pSearchRT.Get(), theme, cfg, 750.0f, 260.0f);
+        hr = pSearchRT->EndDraw();
+        assert(SUCCEEDED(hr));
+
+        // Save screenshot test_search_details_panel.png
+        ComPtr<IWICStream> pStreamSearch;
+        pWicFactory->CreateStream(&pStreamSearch);
+        pStreamSearch->InitializeFromFilename((artDir + L"test_search_details_panel.png").c_str(), GENERIC_WRITE);
+        ComPtr<IWICBitmapEncoder> encSearch;
+        pWicFactory->CreateEncoder(GUID_ContainerFormatPng, nullptr, &encSearch);
+        encSearch->Initialize(pStreamSearch.Get(), WICBitmapEncoderNoCache);
+        ComPtr<IWICBitmapFrameEncode> frameSearch;
+        encSearch->CreateNewFrame(&frameSearch, nullptr);
+        frameSearch->Initialize(nullptr);
+        frameSearch->SetSize(1200, 750);
+        frameSearch->SetPixelFormat(&format);
+        frameSearch->WriteSource(pWicSearchBmp.Get(), nullptr);
+        frameSearch->Commit();
+        encSearch->Commit();
+        std::cout << "  Passed: Saved test_search_details_panel.png" << std::endl;
+    }
+
     std::cout << "\n==========================================" << std::endl;
     std::cout << "ALL VERIFICATION TESTS PASSED SUCCESSFULLY!" << std::endl;
     std::cout << "==========================================" << std::endl;

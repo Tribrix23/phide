@@ -67,6 +67,8 @@ public:
     bool HandleKeyDown(WPARAM key);
 
     [[nodiscard]] bool IsSearchFocused() const noexcept { return m_isSearchFocused; }
+    void SetSearchFocused(bool focused) noexcept { m_isSearchFocused = focused; }
+    [[nodiscard]] const std::wstring& GetSearchQuery() const noexcept { return m_searchQuery; }
     [[nodiscard]] size_t GetShortcutsCount() const noexcept { return m_shortcuts.size(); }
 
 private:

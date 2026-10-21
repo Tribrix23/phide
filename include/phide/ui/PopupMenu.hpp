@@ -134,7 +134,21 @@ enum class MenuActionId {
     EditorCut,
     EditorCopy,
     EditorPaste,
-    EditorCommandPalette
+    EditorCommandPalette,
+
+    // Edit Menu Actions (Image 5)
+    EditUndo,
+    EditRedo,
+    EditCut,
+    EditCopy,
+    EditPaste,
+    EditFind,
+    EditReplace,
+    EditFindInFiles,
+    EditReplaceInFiles,
+    EditToggleLineComment,
+    EditToggleBlockComment,
+    EditEmmetExpand
 };
 
 /**
@@ -190,6 +204,18 @@ public:
     void OpenFileMenu(float x, float y, const app::AppConfig& config, bool autoSave,
                       bool hasOpenFile, bool isDirty, bool hasOpenFolder,
                       const std::vector<std::wstring>& recentItems = {});
+
+    /**
+     * @brief Opens the Edit dropdown menu at the specified anchor point (Image 5).
+     * @param x Left coordinate of the anchor.
+     * @param y Top coordinate of the anchor.
+     * @param config Application metrics.
+     * @param canUndo Whether undo is available.
+     * @param canRedo Whether redo is available.
+     * @param hasSelection Whether text is selected.
+     */
+    void OpenEditMenu(float x, float y, const app::AppConfig& config,
+                      bool canUndo = true, bool canRedo = true, bool hasSelection = true);
 
     /**
      * @brief Opens the custom explorer context menu for a file or folder (matching Images 4 & 5).
@@ -260,6 +286,7 @@ public:
 
 private:
     void BuildViewMenuItems(bool isSidebarOpen, bool isZoomed, bool wordWrap);
+    void BuildEditMenuItems(bool canUndo, bool canRedo, bool hasSelection);
     void BuildFileMenuItems(bool autoSave, bool hasOpenFile, bool isDirty, bool hasOpenFolder,
                             const std::vector<std::wstring>& recentItems = {});
     void BuildContextMenuItems(bool isFolder, const std::wstring& targetPath,

@@ -105,9 +105,30 @@ public:
     bool Redo();
 
     /**
+     * @brief Checks if there are actions available to undo or redo.
+     */
+    [[nodiscard]] bool CanUndo() const noexcept { return !m_undoStack.empty(); }
+    [[nodiscard]] bool CanRedo() const noexcept { return !m_redoStack.empty(); }
+
+    /**
      * @brief Inserts a string (possibly multi-line) at the cursor.
      */
     void InsertText(const std::wstring& text);
+
+    /**
+     * @brief Toggles single-line comment (//) on the current line.
+     */
+    void ToggleLineComment();
+
+    /**
+     * @brief Toggles block comment (/* ... * /) on the current line.
+     */
+    void ToggleBlockComment();
+
+    /**
+     * @brief Expands Emmet-style HTML tag abbreviation at cursor (e.g. div -> <div></div>).
+     */
+    bool ExpandEmmet();
 
     [[nodiscard]] const std::wstring& GetFilePath() const noexcept { return m_filePath; }
     void SetFilePath(const std::wstring& path) { m_filePath = path; }

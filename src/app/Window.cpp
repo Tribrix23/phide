@@ -910,6 +910,8 @@ void Window::DoOpenSettings() {
 }
 
 void Window::DoOpenKeyboardShortcuts() {
+    m_drawer.SetSearchFocus(0);
+    m_editor.GetKeyboardShortcutsView().SetSearchFocused(true);
     OpenSpecialView(L"keybindings", L"Keyboard Shortcuts");
 }
 
@@ -1161,14 +1163,75 @@ void Window::DoShowExplorer() {
     InvalidateRect(m_hwnd, nullptr, FALSE);
 }
 
+void Window::RefreshOpenDocPathsForSearch() {
+    std::vector<std::wstring> openPaths;
+    for (const auto& grp : m_editorGroups) {
+        for (const auto& doc : grp.docs) {
+            if (!doc.filePath.empty() && !doc.isSpecialView && !doc.isUnsupportedBinary) {
+                openPaths.push_back(doc.filePath);
+            }
+        }
+    }
+    m_drawer.SetOpenDocPaths(openPaths);
+}
+
 void Window::DoShowSearch() {
     m_config.activeRailTab = 1;
     if (!m_config.isDrawerOpen) {
         ToggleSidebar();
     }
+    RefreshOpenDocPathsForSearch();
     m_drawer.SetSearchFocus(1);
     SaveSessionState();
     InvalidateRect(m_hwnd, nullptr, FALSE);
+}
+
+void Window::DoShowReplace() {
+    m_config.activeRailTab = 1;
+    if (!m_config.isDrawerOpen) {
+        ToggleSidebar();
+    }
+    m_drawer.SetReplaceOpen(true);
+    RefreshOpenDocPathsForSearch();
+    m_drawer.SetSearchFocus(2);
+    SaveSessionState();
+    InvalidateRect(m_hwnd, nullptr, FALSE);
+}
+
+void Window::DoFind() {
+    DoShowSearch();
+}
+
+void Window::DoReplace() {
+    DoShowReplace();
+}
+
+void Window::DoToggleLineComment() {
+    auto* pDoc = GetActiveDoc();
+    if (pDoc && !pDoc->isSpecialView) {
+        pDoc->buffer.ToggleLineComment();
+        MarkDocumentModified(pDoc);
+        InvalidateRect(m_hwnd, nullptr, FALSE);
+    }
+}
+
+void Window::DoToggleBlockComment() {
+    auto* pDoc = GetActiveDoc();
+    if (pDoc && !pDoc->isSpecialView) {
+        pDoc->buffer.ToggleBlockComment();
+        MarkDocumentModified(pDoc);
+        InvalidateRect(m_hwnd, nullptr, FALSE);
+    }
+}
+
+void Window::DoEmmetExpand() {
+    auto* pDoc = GetActiveDoc();
+    if (pDoc && !pDoc->isSpecialView) {
+        if (pDoc->buffer.ExpandEmmet()) {
+            MarkDocumentModified(pDoc);
+            InvalidateRect(m_hwnd, nullptr, FALSE);
+        }
+    }
 }
 
 void Window::DoShowSourceControl() {
@@ -1668,6 +1731,33 @@ void Window::HandleMouseMove(POINT clientPt) {
     if (m_header.UpdateHoverState(hoveredMenu, hoveredCaption, hoveredExec)) needRepaint = true;
     if (m_header.SetHoveredSplitEditor(m_header.HitTestSplitEditor(clientPt))) needRepaint = true;
 
+    // Dynamic top-menu switching when any menu is currently open and mouse hovers over another header item
+    if (m_popupMenu.IsOpen() && m_header.GetActiveMenu() != ui::HeaderMenuId::None) {
+        if (hoveredMenu == ui::HeaderMenuId::File && m_header.GetActiveMenu() != ui::HeaderMenuId::File) {
+            D2D1_RECT_F rcFile = m_header.GetMenuItemBounds(ui::HeaderMenuId::File);
+            m_popupMenu.OpenFileMenu(rcFile.left, rcFile.bottom + 2.0f, m_config, m_autoSave,
+                                     HasOpenFile(), (GetActiveDoc() && GetActiveDoc()->isDirty),
+                                     m_drawer.HasOpenFolder(), m_recentPaths);
+            m_header.SetActiveMenu(ui::HeaderMenuId::File);
+            needRepaint = true;
+        } else if (hoveredMenu == ui::HeaderMenuId::Edit && m_header.GetActiveMenu() != ui::HeaderMenuId::Edit) {
+            D2D1_RECT_F rcEdit = m_header.GetMenuItemBounds(ui::HeaderMenuId::Edit);
+            auto* pDoc = GetActiveDoc();
+            bool hasDoc = (pDoc != nullptr && !pDoc->isSpecialView);
+            bool canUndo = hasDoc && pDoc->buffer.CanUndo();
+            bool canRedo = hasDoc && pDoc->buffer.CanRedo();
+            m_popupMenu.OpenEditMenu(rcEdit.left, rcEdit.bottom + 2.0f, m_config, canUndo, canRedo);
+            m_header.SetActiveMenu(ui::HeaderMenuId::Edit);
+            needRepaint = true;
+        } else if (hoveredMenu == ui::HeaderMenuId::View && m_header.GetActiveMenu() != ui::HeaderMenuId::View) {
+            D2D1_RECT_F rcView = m_header.GetMenuItemBounds(ui::HeaderMenuId::View);
+            m_popupMenu.OpenViewMenu(rcView.left, rcView.bottom + 2.0f, m_config,
+                                     m_config.isDrawerOpen, IsZoomed(m_hwnd), m_wordWrap);
+            m_header.SetActiveMenu(ui::HeaderMenuId::View);
+            needRepaint = true;
+        }
+    }
+
     // Check Rail icon hover (triggers customized tooltip)
     auto hoveredRail = m_rail.HitTest(clientPt);
     if (m_rail.SetHoveredTab(hoveredRail)) needRepaint = true;
@@ -2006,6 +2096,44 @@ void Window::HandleLButtonDown(POINT clientPt) {
                         DoShowSearch();
                         break;
 
+                    // Top Edit Menu Actions (User Request & Image 5)
+                    case ui::MenuActionId::EditUndo:
+                        DoUndo();
+                        break;
+                    case ui::MenuActionId::EditRedo:
+                        DoRedo();
+                        break;
+                    case ui::MenuActionId::EditCut:
+                        DoCut();
+                        break;
+                    case ui::MenuActionId::EditCopy:
+                        DoCopy();
+                        break;
+                    case ui::MenuActionId::EditPaste:
+                        DoPaste();
+                        break;
+                    case ui::MenuActionId::EditFind:
+                        DoFind();
+                        break;
+                    case ui::MenuActionId::EditReplace:
+                        DoReplace();
+                        break;
+                    case ui::MenuActionId::EditFindInFiles:
+                        DoShowSearch();
+                        break;
+                    case ui::MenuActionId::EditReplaceInFiles:
+                        DoShowReplace();
+                        break;
+                    case ui::MenuActionId::EditToggleLineComment:
+                        DoToggleLineComment();
+                        break;
+                    case ui::MenuActionId::EditToggleBlockComment:
+                        DoToggleBlockComment();
+                        break;
+                    case ui::MenuActionId::EditEmmetExpand:
+                        DoEmmetExpand();
+                        break;
+
                     // Editor Context Menu Actions (Images 4 & 5)
                     case ui::MenuActionId::EditorChangeAllOccurrences:
                         DoChangeAllOccurrences();
@@ -2090,6 +2218,15 @@ void Window::HandleLButtonDown(POINT clientPt) {
                                      m_drawer.HasOpenFolder(), m_recentPaths);
             m_header.SetActiveMenu(ui::HeaderMenuId::File);
             InvalidateRect(m_hwnd, nullptr, FALSE);
+        } else if (menuHit == ui::HeaderMenuId::Edit) {
+            D2D1_RECT_F rcEdit = m_header.GetMenuItemBounds(ui::HeaderMenuId::Edit);
+            auto* pDoc = GetActiveDoc();
+            bool hasDoc = (pDoc != nullptr && !pDoc->isSpecialView);
+            bool canUndo = hasDoc && pDoc->buffer.CanUndo();
+            bool canRedo = hasDoc && pDoc->buffer.CanRedo();
+            m_popupMenu.OpenEditMenu(rcEdit.left, rcEdit.bottom + 2.0f, m_config, canUndo, canRedo);
+            m_header.SetActiveMenu(ui::HeaderMenuId::Edit);
+            InvalidateRect(m_hwnd, nullptr, FALSE);
         } else if (menuHit == ui::HeaderMenuId::View) {
             D2D1_RECT_F rcView = m_header.GetMenuItemBounds(ui::HeaderMenuId::View);
             m_popupMenu.OpenViewMenu(rcView.left, rcView.bottom + 2.0f, m_config,
@@ -2117,6 +2254,8 @@ void Window::HandleLButtonDown(POINT clientPt) {
 
     // 4. Editor Canvas Clicks (Multi-Editor Groups aware)
     if (clientPt.x >= canvasLeft && clientPt.y >= headerH && !m_editorGroups.empty() && canvasWidth > 10.0f) {
+        // Clear drawer search focus whenever user clicks anywhere inside the editor canvas
+        m_drawer.SetSearchFocus(0);
         size_t numGroups = m_editorGroups.size();
         float paneW = canvasWidth / numGroups;
         int targetGroup = -1;
@@ -2162,6 +2301,8 @@ void Window::HandleLButtonDown(POINT clientPt) {
                     InvalidateRect(m_hwnd, nullptr, FALSE);
                     return;
                 } else if (doc.isSpecialView && doc.viewType == L"keybindings") {
+                    // Ensure drawer search focus is cleared when interacting with keyboard shortcuts view
+                    m_drawer.SetSearchFocus(0);
                     if (m_editor.GetKeyboardShortcutsView().HandleLButtonDown(clientPt)) {
                         InvalidateRect(m_hwnd, nullptr, FALSE);
                         return;
@@ -2243,6 +2384,8 @@ void Window::HandleLButtonDown(POINT clientPt) {
         if (m_config.activeRailTab == 1) {
             std::wstring jumpFile;
             size_t jumpLine = 0;
+            // Clear shortcuts view search focus when interacting with search drawer
+            m_editor.GetKeyboardShortcutsView().SetSearchFocused(false);
             if (m_drawer.HitTestSearch(clientPt, m_config, jumpFile, jumpLine)) {
                 if (!jumpFile.empty()) {
                     OpenFileDocument(jumpFile, false);
@@ -2654,16 +2797,19 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 return 0;
             }
 
-            if (m_config.activeRailTab == 1 && m_drawerAnimProgress > 0.001f && m_drawer.IsSearchFocused()) {
+            auto* pDoc = GetActiveDoc();
+            bool isShortcutsActive = (pDoc && pDoc->isSpecialView && pDoc->viewType == L"keybindings");
+
+            // Only forward typed characters to search drawer if keyboard shortcuts view is NOT currently open/active
+            if (!isShortcutsActive && m_config.activeRailTab == 1 && m_drawerAnimProgress > 0.001f && m_drawer.IsSearchFocused()) {
                 m_drawer.HandleSearchChar(static_cast<wchar_t>(wParam));
                 InvalidateRect(m_hwnd, nullptr, FALSE);
                 return 0;
             }
 
-            auto* pDoc = GetActiveDoc();
             if (pDoc) {
                 wchar_t ch = static_cast<wchar_t>(wParam);
-                if (pDoc->isSpecialView && pDoc->viewType == L"keybindings") {
+                if (isShortcutsActive) {
                     if (m_editor.GetKeyboardShortcutsView().HandleChar(ch)) {
                         InvalidateRect(m_hwnd, nullptr, FALSE);
                         return 0;
@@ -2757,7 +2903,11 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 return 0;
             }
 
-            if (m_config.activeRailTab == 1 && m_drawerAnimProgress > 0.001f && m_drawer.IsSearchFocused()) {
+            auto* pDoc = GetActiveDoc();
+            bool isShortcutsActive = (pDoc && pDoc->isSpecialView && pDoc->viewType == L"keybindings");
+
+            // Only forward keys to Drawer Search if Keyboard Shortcuts view is NOT active
+            if (!isShortcutsActive && m_config.activeRailTab == 1 && m_drawerAnimProgress > 0.001f && m_drawer.IsSearchFocused()) {
                 if (wParam == VK_BACK || wParam == VK_TAB || wParam == VK_ESCAPE || wParam == VK_RETURN) {
                     m_drawer.HandleSearchKeyDown(wParam);
                     InvalidateRect(m_hwnd, nullptr, FALSE);
@@ -2765,8 +2915,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 }
             }
 
-            auto* pDoc = GetActiveDoc();
-            if (pDoc && pDoc->isSpecialView && pDoc->viewType == L"keybindings") {
+            if (isShortcutsActive) {
                 if (m_editor.GetKeyboardShortcutsView().HandleKeyDown(wParam)) {
                     InvalidateRect(m_hwnd, nullptr, FALSE);
                     return 0;
@@ -2779,10 +2928,22 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 return 0;
             }
 
+            // Shift+Alt+A: Toggle Block Comment (VS Code standard)
+            if ((GetKeyState(VK_SHIFT) & 0x8000) && (GetKeyState(VK_MENU) & 0x8000) && wParam == 'A') {
+                DoToggleBlockComment();
+                return 0;
+            }
+
             // Keyboard Shortcuts with Ctrl key
             if (GetKeyState(VK_CONTROL) & 0x8000) {
                 bool shiftDown = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
                 bool altDown   = (GetKeyState(VK_MENU) & 0x8000) != 0;
+
+                // Ctrl+/ (VK_OEM_2): Toggle Line Comment
+                if (wParam == VK_OEM_2) {
+                    DoToggleLineComment();
+                    return 0;
+                }
 
                 if (wParam == VK_OEM_5) { // Ctrl+\ (Split Editor Right, Images 3 & 4)
                     ToggleSplitEditor();
@@ -2846,7 +3007,18 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     } else if (shiftDown) {
                         DoShowSearch();
                         return 0;
+                    } else {
+                        DoFind();
+                        return 0;
                     }
+                }
+                if (wParam == 'H') {
+                    if (shiftDown) {
+                        DoShowReplace();
+                    } else {
+                        DoReplace();
+                    }
+                    return 0;
                 }
                 if (wParam == 'E') {
                     if (shiftDown) {
@@ -2995,10 +3167,13 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     pDoc->scrollLine += page;
                     InvalidateRect(m_hwnd, nullptr, FALSE);
                 } else if (wParam == VK_TAB) {
-                    pDoc->buffer.InsertChar(L' ');
-                    pDoc->buffer.InsertChar(L' ');
-                    pDoc->buffer.InsertChar(L' ');
-                    pDoc->buffer.InsertChar(L' ');
+                    // Try expanding Emmet abbreviation first (e.g., div -> <div></div>)
+                    if (!pDoc->buffer.ExpandEmmet()) {
+                        pDoc->buffer.InsertChar(L' ');
+                        pDoc->buffer.InsertChar(L' ');
+                        pDoc->buffer.InsertChar(L' ');
+                        pDoc->buffer.InsertChar(L' ');
+                    }
                     MarkDocumentModified(pDoc);
                     InvalidateRect(m_hwnd, nullptr, FALSE);
                 } else if (wParam == VK_RETURN) {

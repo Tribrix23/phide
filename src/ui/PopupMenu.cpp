@@ -89,6 +89,65 @@ void PopupMenu::OpenEditorContextMenu(float x, float y, const app::AppConfig& co
     LayoutMenu(m_items, x, y, menuW, config, m_mainMenuBounds);
 }
 
+void PopupMenu::OpenEditMenu(float x, float y, const app::AppConfig& config,
+                             bool canUndo, bool canRedo, bool hasSelection) {
+    m_isOpen = true;
+    m_hoveredMainIdx = -1;
+    m_activeSubmenuIdx = -1;
+    m_hoveredSubmenuIdx = -1;
+
+    BuildEditMenuItems(canUndo, canRedo, hasSelection);
+
+    const float menuW = config.ScaleF(240.0f);
+    LayoutMenu(m_items, x, y, menuW, config, m_mainMenuBounds);
+}
+
+void PopupMenu::BuildEditMenuItems(bool canUndo, bool canRedo, bool hasSelection) {
+    (void)hasSelection;
+    m_items.clear();
+
+    // 1. Undo (Ctrl+Z)
+    m_items.push_back({ MenuActionId::EditUndo, L"Undo", L"Ctrl+Z", false, false, false, canUndo, {}, {} });
+    // 2. Redo (Ctrl+Y)
+    m_items.push_back({ MenuActionId::EditRedo, L"Redo", L"Ctrl+Y", false, false, false, canRedo, {}, {} });
+
+    // --- Separator ---
+    m_items.push_back({ MenuActionId::None, L"", L"", true, false, false, false, {}, {} });
+
+    // 3. Cut (Ctrl+X)
+    m_items.push_back({ MenuActionId::EditCut, L"Cut", L"Ctrl+X", false, false, false, true, {}, {} });
+    // 4. Copy (Ctrl+C)
+    m_items.push_back({ MenuActionId::EditCopy, L"Copy", L"Ctrl+C", false, false, false, true, {}, {} });
+    // 5. Paste (Ctrl+V)
+    m_items.push_back({ MenuActionId::EditPaste, L"Paste", L"Ctrl+V", false, false, false, true, {}, {} });
+
+    // --- Separator ---
+    m_items.push_back({ MenuActionId::None, L"", L"", true, false, false, false, {}, {} });
+
+    // 6. Find (Ctrl+F)
+    m_items.push_back({ MenuActionId::EditFind, L"Find", L"Ctrl+F", false, false, false, true, {}, {} });
+    // 7. Replace (Ctrl+H)
+    m_items.push_back({ MenuActionId::EditReplace, L"Replace", L"Ctrl+H", false, false, false, true, {}, {} });
+
+    // --- Separator ---
+    m_items.push_back({ MenuActionId::None, L"", L"", true, false, false, false, {}, {} });
+
+    // 8. Find in Files (Ctrl+Shift+F)
+    m_items.push_back({ MenuActionId::EditFindInFiles, L"Find in Files", L"Ctrl+Shift+F", false, false, false, true, {}, {} });
+    // 9. Replace in Files (Ctrl+Shift+H)
+    m_items.push_back({ MenuActionId::EditReplaceInFiles, L"Replace in Files", L"Ctrl+Shift+H", false, false, false, true, {}, {} });
+
+    // --- Separator ---
+    m_items.push_back({ MenuActionId::None, L"", L"", true, false, false, false, {}, {} });
+
+    // 10. Toggle Line Comment (Ctrl+/)
+    m_items.push_back({ MenuActionId::EditToggleLineComment, L"Toggle Line Comment", L"Ctrl+/", false, false, false, true, {}, {} });
+    // 11. Toggle Block Comment (Shift+Alt+A)
+    m_items.push_back({ MenuActionId::EditToggleBlockComment, L"Toggle Block Comment", L"Shift+Alt+A", false, false, false, true, {}, {} });
+    // 12. Emmet: Expand Abbreviation (Tab)
+    m_items.push_back({ MenuActionId::EditEmmetExpand, L"Emmet: Expand Abbreviation", L"Tab", false, false, false, true, {}, {} });
+}
+
 void PopupMenu::Close() {
     m_isOpen = false;
     m_hoveredMainIdx = -1;

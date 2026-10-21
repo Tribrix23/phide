@@ -210,6 +210,23 @@ public:
     [[nodiscard]] bool GetMatchCase() const noexcept { return m_matchCase; }
     [[nodiscard]] bool GetMatchWholeWord() const noexcept { return m_matchWholeWord; }
     [[nodiscard]] bool GetUseRegex() const noexcept { return m_useRegex; }
+    [[nodiscard]] bool IsReplaceOpen() const noexcept { return m_isReplaceOpen; }
+    void SetReplaceOpen(bool open) noexcept { m_isReplaceOpen = open; }
+
+    [[nodiscard]] bool IsSearchDetailsOpen() const noexcept { return m_isSearchDetailsOpen; }
+    void SetSearchDetailsOpen(bool open) noexcept { m_isSearchDetailsOpen = open; }
+    [[nodiscard]] bool GetSearchOnlyOpenEditors() const noexcept { return m_searchOnlyOpenEditors; }
+    [[nodiscard]] bool IsSearchOnlyOpenEditors() const noexcept { return m_searchOnlyOpenEditors; }
+    void SetSearchOnlyOpenEditors(bool openOnly) noexcept { m_searchOnlyOpenEditors = openOnly; }
+    [[nodiscard]] bool GetUseExcludeSettings() const noexcept { return m_useExcludeSettings; }
+    void SetUseExcludeSettings(bool useExclude) noexcept { m_useExcludeSettings = useExclude; }
+    [[nodiscard]] const std::wstring& GetFilesToInclude() const noexcept { return m_filesToInclude; }
+    void SetFilesToInclude(const std::wstring& inc) { m_filesToInclude = inc; }
+    [[nodiscard]] const std::wstring& GetFilesToExclude() const noexcept { return m_filesToExclude; }
+    void SetFilesToExclude(const std::wstring& exc) { m_filesToExclude = exc; }
+    void SetOpenDocPaths(const std::vector<std::wstring>& paths) { m_openDocPaths = paths; }
+    [[nodiscard]] const std::vector<std::wstring>& GetOpenDocPaths() const noexcept { return m_openDocPaths; }
+    [[nodiscard]] int GetSearchFocus() const noexcept { return m_focusedSearchInput; }
 
     // --- Inline Tree Item Rename ---
     /**
@@ -357,6 +374,20 @@ private:
     D2D1_RECT_F m_rcPreserveCaseBtn{};
     D2D1_RECT_F m_rcReplaceAllBtn{};
     D2D1_RECT_F m_rcRefreshSearchBtn{};
+
+    // Search Details / Include Exclude State (Images 2, 3, 4)
+    bool m_isSearchDetailsOpen = false;
+    bool m_searchOnlyOpenEditors = false;
+    bool m_useExcludeSettings = true;
+    std::wstring m_filesToInclude;
+    std::wstring m_filesToExclude;
+    std::vector<std::wstring> m_openDocPaths;
+
+    D2D1_RECT_F m_rcToggleSearchDetailsBtn{};
+    D2D1_RECT_F m_rcFilesToIncludeBox{};
+    D2D1_RECT_F m_rcFilesToExcludeBox{};
+    D2D1_RECT_F m_rcOpenEditorsOnlyBtn{};
+    D2D1_RECT_F m_rcUseExcludeSettingsBtn{};
 
     LucideIcons m_icons;
 
