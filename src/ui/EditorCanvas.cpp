@@ -249,7 +249,7 @@ void EditorCanvas::RenderTabs(ID2D1RenderTarget* pRT, Theme& theme, const app::A
 
         // tab width = icon(16) + pad(16) + text + dirty/close pad(42)
         float tabW = config.ScaleF(16.0f + 16.0f + 42.0f) + textW;
-        tabW = (std::clamp)(tabW, config.ScaleF(120.0f), config.ScaleF(240.0f));
+        tabW = (std::clamp)(tabW, config.ScaleF(100.0f), config.ScaleF(220.0f));
 
         D2D1_RECT_F rcTab = D2D1::RectF(curX, headerH, curX + tabW, headerH + tabH);
         doc.tabBounds = rcTab;
@@ -302,18 +302,23 @@ void EditorCanvas::RenderTabs(ID2D1RenderTarget* pRT, Theme& theme, const app::A
             }
         }
 
-        // Title: preview tabs are italic in VS Code!
+        // Title: preview tabs use fontTabPreview (italic), pinned tabs use fontTab (regular)
         float textStartX = rcTab.left + config.ScaleF(30.0f);
-        float textMaxW   = rcTab.right - config.ScaleF(42.0f) - textStartX;
+        float textMaxW   = (std::max)(10.0f, rcTab.right - config.ScaleF(36.0f) - textStartX);
         D2D1_RECT_F rcTitle = D2D1::RectF(
             textStartX,
             headerH,
             textStartX + textMaxW,
             headerH + tabH
         );
-        IDWriteTextFormat* pTextFmt = (doc.isPreview && theme.fontHint) ? theme.fontHint.Get() : theme.fontMenuItem.Get();
+        IDWriteTextFormat* pTextFmt = doc.isPreview ? 
+            (theme.fontTabPreview ? theme.fontTabPreview.Get() : theme.fontMenuItem.Get()) :
+            (theme.fontTab ? theme.fontTab.Get() : theme.fontMenuItem.Get());
         ID2D1Brush* pTextBrush = isActive ? theme.brushTextWhite.Get() : theme.brushTextSecondary.Get();
+
+        pRT->PushAxisAlignedClip(rcTitle, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
         pRT->DrawText(title.c_str(), static_cast<UINT32>(title.length()), pTextFmt, rcTitle, pTextBrush);
+        pRT->PopAxisAlignedClip();
 
         // Close Tab Button (×)
         const float closeSize = config.ScaleF(16.0f);
@@ -321,11 +326,11 @@ void EditorCanvas::RenderTabs(ID2D1RenderTarget* pRT, Theme& theme, const app::A
         const float closeY = headerH + (tabH - closeSize) / 2.0f;
         doc.closeBounds = D2D1::RectF(closeX, closeY, closeX + closeSize, closeY + closeSize);
 
-        // Dirty Circle Indicator: large blue dot (8px diameter) before the close button
+        // Dirty Circle Indicator: ONLY if doc.isDirty is true! (7px diameter)
         if (doc.isDirty) {
-            float dotX = closeX - config.ScaleF(10.0f);
+            float dotX = closeX - config.ScaleF(9.0f);
             float dotY = headerH + tabH / 2.0f;
-            float dotRadius = config.ScaleF(4.0f); // 8px diameter circle
+            float dotRadius = config.ScaleF(3.5f);
             D2D1_ELLIPSE dot = D2D1::Ellipse(D2D1::Point2F(dotX, dotY), dotRadius, dotRadius);
             pRT->FillEllipse(dot, theme.brushIconBlue ? theme.brushIconBlue.Get() : theme.brushBrandAccent.Get());
         }

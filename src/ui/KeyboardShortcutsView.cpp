@@ -15,7 +15,7 @@ KeyboardShortcutsView::KeyboardShortcutsView() {
 void KeyboardShortcutsView::InitializeShortcuts() {
     m_shortcuts = {
         { L"File: New Text File", { L"Ctrl", L"N" }, L"global", L"Default" },
-        { L"File: New File...", { L"Ctrl", L"Alt", L"Win", L"N" }, L"global", L"Default" },
+        { L"File: New File...", { L"Ctrl", L"Alt", L"N" }, L"global", L"Default" },
         { L"File: New Window", { L"Ctrl", L"Shift", L"N" }, L"global", L"Default" },
         { L"File: Open File...", { L"Ctrl", L"O" }, L"global", L"Default" },
         { L"File: Open Folder...", { L"Ctrl", L"K", L"Ctrl", L"O" }, L"global", L"Default" },

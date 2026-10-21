@@ -209,6 +209,8 @@ public:
     ComPtr<IDWriteTextFormat> fontCaption;       ///< 12px Caption button font
     ComPtr<IDWriteTextFormat> fontHint;          ///< 13px Italic/Muted for workspace hints
     ComPtr<IDWriteTextFormat> fontTooltip;       ///< 11.5px Crisp font for customized sidebar tooltips
+    ComPtr<IDWriteTextFormat> fontTab;           ///< 12px Regular Leading-aligned for editor tabs
+    ComPtr<IDWriteTextFormat> fontTabPreview;    ///< 12px Italic Leading-aligned for preview tabs
 
     struct SetiIconInfo {
         wchar_t glyph = 0xE023;

@@ -134,6 +134,17 @@ private:
     void DoCloseEditor();
     void DoCloseFolder();
     void DoReopenClosedEditor();
+    void DoCut();
+    void DoCopy();
+    void DoPaste();
+    void DoUndo();
+    void DoRedo();
+    void DoSelectAll();
+    void DoToggleWordWrap();
+    void DoShowExplorer();
+    void DoShowSearch();
+    void DoShowSourceControl();
+    void DoCreateTerminal();
     void OpenFileByName(const std::wstring& name);
     void LoadFileFromPath(const std::wstring& path);
     void SaveFileToPath(const std::wstring& path);
@@ -164,6 +175,7 @@ private:
     // Open Documents Collection
     std::vector<editor::OpenDocument> m_openDocs;
     int m_activeDocIdx = -1;
+    int m_untitledCounter = 0;
 
     bool m_trackingMouse = false;
     bool m_wordWrap = false;

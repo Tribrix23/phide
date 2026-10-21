@@ -98,6 +98,17 @@ public:
      */
     bool SaveToFile(const std::wstring& path);
 
+    /**
+     * @brief Performs undo and redo operations.
+     */
+    bool Undo();
+    bool Redo();
+
+    /**
+     * @brief Inserts a string (possibly multi-line) at the cursor.
+     */
+    void InsertText(const std::wstring& text);
+
     [[nodiscard]] const std::wstring& GetFilePath() const noexcept { return m_filePath; }
     void SetFilePath(const std::wstring& path) { m_filePath = path; }
 
@@ -115,6 +126,14 @@ private:
     std::wstring m_filePath;
     std::wstring m_fileName;
     bool m_isModified = false;
+
+    struct BufferSnapshot {
+        std::vector<std::wstring> lines;
+        CursorPosition cursor;
+    };
+    std::vector<BufferSnapshot> m_undoStack;
+    std::vector<BufferSnapshot> m_redoStack;
+    void PushUndo();
 
     void LoadDefaultSample();
 };

@@ -367,10 +367,46 @@ HRESULT Theme::CreateDeviceResources(ID2D1RenderTarget* pRT, IDWriteFactory* pDW
         fontTooltip->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
     }
 
+    // 8. Editor Tab Font (12px Regular, Leading-aligned, Centered vertically)
+    pDWriteFactory->CreateTextFormat(
+        L"Segoe UI",
+        nullptr,
+        DWRITE_FONT_WEIGHT_REGULAR,
+        DWRITE_FONT_STYLE_NORMAL,
+        DWRITE_FONT_STRETCH_NORMAL,
+        12.0f,
+        L"en-US",
+        &fontTab
+    );
+    if (fontTab) {
+        fontTab->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
+        fontTab->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+        fontTab->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+    }
+
+    // 9. Editor Tab Preview Font (12px Italic, Leading-aligned, Centered vertically)
+    pDWriteFactory->CreateTextFormat(
+        L"Segoe UI",
+        nullptr,
+        DWRITE_FONT_WEIGHT_REGULAR,
+        DWRITE_FONT_STYLE_ITALIC,
+        DWRITE_FONT_STRETCH_NORMAL,
+        12.0f,
+        L"en-US",
+        &fontTabPreview
+    );
+    if (fontTabPreview) {
+        fontTabPreview->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
+        fontTabPreview->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+        fontTabPreview->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+    }
+
     return S_OK;
 }
 
 void Theme::DiscardDeviceResources() {
+    fontTab.Reset();
+    fontTabPreview.Reset();
     fontSectionHeader.Reset();
     fontMenuItem.Reset();
     fontMenuShortcut.Reset();
@@ -595,6 +631,11 @@ Theme::SetiIconInfo Theme::GetSetiIcon(const std::wstring& filename, bool isFold
 
     std::wstring lower = filename;
     for (auto& c : lower) c = towlower(c);
+
+    // Untitled or new buffer
+    if (lower.rfind(L"untitled", 0) == 0) {
+        return { 0xE023, brushSetiDefault ? brushSetiDefault.Get() : brushIconGray.Get() };
+    }
 
     // Exact filename matches
     if (lower == L"composer.json" || lower == L"package.json" || lower == L"tsconfig.json" || lower == L"jsconfig.json") {

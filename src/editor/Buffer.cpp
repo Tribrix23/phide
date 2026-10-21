@@ -111,12 +111,74 @@ std::vector<SyntaxToken> SyntaxLexer::TokenizeLine(const std::wstring& line) con
 // --- Buffer Implementation ---
 
 Buffer::Buffer() {
-    LoadDefaultSample();
+    m_lines = { L"" };
+    m_cursor = { 0, 0 };
+    m_isModified = false;
 }
 
 Buffer::Buffer(const std::wstring& initialContent) {
-    (void)initialContent;
-    LoadDefaultSample();
+    if (initialContent.empty()) {
+        m_lines = { L"" };
+        m_cursor = { 0, 0 };
+        m_isModified = false;
+    } else {
+        SetText(initialContent);
+    }
+}
+
+void Buffer::PushUndo() {
+    m_undoStack.push_back({ m_lines, m_cursor });
+    if (m_undoStack.size() > 100) {
+        m_undoStack.erase(m_undoStack.begin());
+    }
+    m_redoStack.clear();
+}
+
+bool Buffer::Undo() {
+    if (m_undoStack.empty()) return false;
+    m_redoStack.push_back({ m_lines, m_cursor });
+    auto last = m_undoStack.back();
+    m_undoStack.pop_back();
+    m_lines = last.lines;
+    m_cursor = last.cursor;
+    m_isModified = true;
+    return true;
+}
+
+bool Buffer::Redo() {
+    if (m_redoStack.empty()) return false;
+    m_undoStack.push_back({ m_lines, m_cursor });
+    auto next = m_redoStack.back();
+    m_redoStack.pop_back();
+    m_lines = next.lines;
+    m_cursor = next.cursor;
+    m_isModified = true;
+    return true;
+}
+
+void Buffer::InsertText(const std::wstring& text) {
+    if (text.empty()) return;
+    PushUndo();
+    for (wchar_t ch : text) {
+        if (ch == L'\r') continue;
+        if (m_lines.empty()) m_lines.push_back(L"");
+        if (m_cursor.line >= m_lines.size()) m_cursor.line = m_lines.size() - 1;
+
+        auto& line = m_lines[m_cursor.line];
+        if (m_cursor.col > line.length()) m_cursor.col = line.length();
+
+        if (ch == L'\n') {
+            std::wstring remainder = line.substr(m_cursor.col);
+            line = line.substr(0, m_cursor.col);
+            m_lines.insert(m_lines.begin() + m_cursor.line + 1, remainder);
+            m_cursor.line++;
+            m_cursor.col = 0;
+        } else {
+            line.insert(line.begin() + m_cursor.col, ch);
+            m_cursor.col++;
+        }
+    }
+    m_isModified = true;
 }
 
 void Buffer::LoadDefaultSample() {
@@ -170,6 +232,7 @@ void Buffer::SetCursor(size_t line, size_t col) {
 }
 
 void Buffer::InsertChar(wchar_t ch) {
+    PushUndo();
     if (m_lines.empty()) m_lines.push_back(L"");
     if (m_cursor.line >= m_lines.size()) m_cursor.line = m_lines.size() - 1;
 
@@ -192,6 +255,7 @@ void Buffer::InsertChar(wchar_t ch) {
 
 void Buffer::Backspace() {
     if (m_lines.empty()) return;
+    PushUndo();
     if (m_cursor.line >= m_lines.size()) m_cursor.line = m_lines.size() - 1;
 
     auto& line = m_lines[m_cursor.line];

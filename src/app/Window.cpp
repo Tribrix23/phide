@@ -253,11 +253,18 @@ void Window::ToggleSidebar() {
 
 void Window::DoNewTextFile() {
     editor::OpenDocument doc;
-    doc.fileName = L"Untitled-" + std::to_wstring(m_openDocs.size() + 1);
+    m_untitledCounter++;
+    doc.fileName = L"Untitled-" + std::to_wstring(m_untitledCounter);
+    doc.filePath = L"";
+    doc.buffer = editor::Buffer(); // Empty blank buffer
     doc.isPreview = false;
-    doc.isDirty = true;
+    doc.isDirty = false;   // Clean, not dirty initially
+    doc.isSpecialView = false;
+    doc.viewType.clear();
+
     m_openDocs.push_back(std::move(doc));
     m_activeDocIdx = static_cast<int>(m_openDocs.size() - 1);
+    SaveSessionState();
     InvalidateRect(m_hwnd, nullptr, FALSE);
 }
 
@@ -681,6 +688,135 @@ void Window::DoReopenClosedEditor() {
     if (!m_lastClosedFilePath.empty() && std::filesystem::exists(m_lastClosedFilePath)) {
         OpenFileDocument(m_lastClosedFilePath, false);
     }
+}
+
+void Window::DoCut() {
+    auto* pDoc = GetActiveDoc();
+    if (pDoc && !pDoc->isSpecialView) {
+        DoCopy();
+        pDoc->buffer.Backspace();
+        pDoc->isDirty = true;
+        pDoc->isPreview = false;
+        InvalidateRect(m_hwnd, nullptr, FALSE);
+    }
+}
+
+void Window::DoCopy() {
+    auto* pDoc = GetActiveDoc();
+    if (pDoc && !pDoc->isSpecialView) {
+        auto cursor = pDoc->buffer.GetCursor();
+        std::wstring lineText = pDoc->buffer.GetLine(cursor.line);
+        if (OpenClipboard(m_hwnd)) {
+            EmptyClipboard();
+            size_t bytes = (lineText.length() + 1) * sizeof(wchar_t);
+            HGLOBAL hMem = GlobalAlloc(GMEM_MOVEABLE, bytes);
+            if (hMem) {
+                void* pMem = GlobalLock(hMem);
+                if (pMem) {
+                    memcpy(pMem, lineText.c_str(), bytes);
+                    GlobalUnlock(hMem);
+                    SetClipboardData(CF_UNICODETEXT, hMem);
+                }
+            }
+            CloseClipboard();
+        }
+    }
+}
+
+void Window::DoPaste() {
+    auto* pDoc = GetActiveDoc();
+    if (pDoc && !pDoc->isSpecialView) {
+        if (OpenClipboard(m_hwnd)) {
+            HANDLE hData = GetClipboardData(CF_UNICODETEXT);
+            if (hData) {
+                wchar_t* pText = static_cast<wchar_t*>(GlobalLock(hData));
+                if (pText) {
+                    std::wstring clip(pText);
+                    GlobalUnlock(hData);
+                    CloseClipboard();
+                    pDoc->buffer.InsertText(clip);
+                    pDoc->isDirty = true;
+                    pDoc->isPreview = false;
+                    InvalidateRect(m_hwnd, nullptr, FALSE);
+                    return;
+                }
+            }
+            CloseClipboard();
+        }
+    }
+}
+
+void Window::DoUndo() {
+    auto* pDoc = GetActiveDoc();
+    if (pDoc && !pDoc->isSpecialView) {
+        if (pDoc->buffer.Undo()) {
+            pDoc->isDirty = true;
+            pDoc->isPreview = false;
+            InvalidateRect(m_hwnd, nullptr, FALSE);
+        }
+    }
+}
+
+void Window::DoRedo() {
+    auto* pDoc = GetActiveDoc();
+    if (pDoc && !pDoc->isSpecialView) {
+        if (pDoc->buffer.Redo()) {
+            pDoc->isDirty = true;
+            pDoc->isPreview = false;
+            InvalidateRect(m_hwnd, nullptr, FALSE);
+        }
+    }
+}
+
+void Window::DoSelectAll() {
+    auto* pDoc = GetActiveDoc();
+    if (pDoc && !pDoc->isSpecialView) {
+        size_t count = pDoc->buffer.GetLineCount();
+        if (count > 0) {
+            pDoc->buffer.SetCursor(count - 1, pDoc->buffer.GetLine(count - 1).length());
+            InvalidateRect(m_hwnd, nullptr, FALSE);
+        }
+    }
+}
+
+void Window::DoToggleWordWrap() {
+    m_wordWrap = !m_wordWrap;
+    InvalidateRect(m_hwnd, nullptr, FALSE);
+}
+
+void Window::DoShowExplorer() {
+    m_config.activeRailTab = 0;
+    if (!m_config.isDrawerOpen) {
+        ToggleSidebar();
+    }
+    SaveSessionState();
+    InvalidateRect(m_hwnd, nullptr, FALSE);
+}
+
+void Window::DoShowSearch() {
+    m_config.activeRailTab = 1;
+    if (!m_config.isDrawerOpen) {
+        ToggleSidebar();
+    }
+    SaveSessionState();
+    InvalidateRect(m_hwnd, nullptr, FALSE);
+}
+
+void Window::DoShowSourceControl() {
+    m_config.activeRailTab = 2;
+    if (!m_config.isDrawerOpen) {
+        ToggleSidebar();
+    }
+    SaveSessionState();
+    InvalidateRect(m_hwnd, nullptr, FALSE);
+}
+
+void Window::DoCreateTerminal() {
+    std::wstring dir;
+    if (m_drawer.HasOpenFolder()) {
+        dir = m_drawer.GetOpenFolderPath();
+    }
+    ShellExecuteW(nullptr, L"open", L"cmd.exe", nullptr, dir.empty() ? nullptr : dir.c_str(), SW_SHOWNORMAL);
 }
 
 void Window::LoadFileFromPath(const std::wstring& path) {
@@ -1553,6 +1689,14 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
             return 0;
         }
 
+        case WM_SYSKEYDOWN: {
+            if (wParam == 'Z') {
+                DoToggleWordWrap();
+                return 0;
+            }
+            return DefWindowProc(m_hwnd, uMsg, wParam, lParam);
+        }
+
         case WM_KEYDOWN: {
             if (m_themePicker.IsOpen()) {
                 if (wParam == VK_ESCAPE) {
@@ -1584,12 +1728,21 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
 
             // Keyboard Shortcuts with Ctrl key
             if (GetKeyState(VK_CONTROL) & 0x8000) {
+                bool shiftDown = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
+                bool altDown   = (GetKeyState(VK_MENU) & 0x8000) != 0;
+
                 if (wParam == 'B') {
                     ToggleSidebar();
                     return 0;
                 }
                 if (wParam == 'N') {
-                    DoNewTextFile();
+                    if (shiftDown) {
+                        DoNewWindow();
+                    } else if (altDown) {
+                        DoNewFile();
+                    } else {
+                        DoNewTextFile();
+                    }
                     return 0;
                 }
                 if (wParam == 'O') {
@@ -1603,8 +1756,8 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 }
                 if (wParam == 'S') {
                     if (m_chordCtrlK) {
-                        DoOpenKeyboardShortcuts();
-                    } else if (GetKeyState(VK_SHIFT) & 0x8000) {
+                        DoSaveAll();
+                    } else if (shiftDown) {
                         DoSaveFileAs();
                     } else {
                         DoSaveFile();
@@ -1621,10 +1774,29 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                         DoCloseFolder();
                         m_chordCtrlK = false;
                         return 0;
+                    } else if (shiftDown) {
+                        DoShowSearch();
+                        return 0;
                     }
                 }
+                if (wParam == 'E') {
+                    if (shiftDown) {
+                        DoShowExplorer();
+                        return 0;
+                    }
+                }
+                if (wParam == 'G') {
+                    if (shiftDown) {
+                        DoShowSourceControl();
+                        return 0;
+                    }
+                }
+                if (wParam == VK_OEM_3) { // Backtick (`)
+                    DoCreateTerminal();
+                    return 0;
+                }
                 if (wParam == 'T') {
-                    if (GetKeyState(VK_SHIFT) & 0x8000) {
+                    if (shiftDown) {
                         DoReopenClosedEditor();
                         return 0;
                     } else if (m_chordCtrlK) {
@@ -1637,12 +1809,42 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     DoOpenSettings();
                     return 0;
                 }
+                if (wParam == 'Z') {
+                    if (shiftDown) {
+                        DoRedo();
+                    } else {
+                        DoUndo();
+                    }
+                    return 0;
+                }
+                if (wParam == 'Y') {
+                    DoRedo();
+                    return 0;
+                }
+                if (wParam == 'X') {
+                    DoCut();
+                    return 0;
+                }
+                if (wParam == 'C') {
+                    DoCopy();
+                    return 0;
+                }
+                if (wParam == 'V') {
+                    DoPaste();
+                    return 0;
+                }
+                if (wParam == 'A') {
+                    DoSelectAll();
+                    return 0;
+                }
                 if (wParam == 'K') {
                     m_chordCtrlK = true;
                     return 0;
                 }
             } else {
-                m_chordCtrlK = false;
+                if (wParam != VK_CONTROL && wParam != VK_SHIFT && wParam != VK_MENU) {
+                    m_chordCtrlK = false;
+                }
             }
 
             // Close Editor via Ctrl+F4
