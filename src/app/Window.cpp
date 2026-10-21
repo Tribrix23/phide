@@ -29,6 +29,165 @@
 
 namespace phide::app {
 
+static void SetClipboardText(HWND hwnd, const std::wstring& text) {
+    if (!OpenClipboard(hwnd)) return;
+    EmptyClipboard();
+    size_t bytes = (text.length() + 1) * sizeof(wchar_t);
+    HGLOBAL hGlobal = GlobalAlloc(GMEM_MOVEABLE, bytes);
+    if (hGlobal) {
+        void* pMem = GlobalLock(hGlobal);
+        if (pMem) {
+            memcpy(pMem, text.c_str(), bytes);
+            GlobalUnlock(hGlobal);
+            SetClipboardData(CF_UNICODETEXT, hGlobal);
+        }
+    }
+    CloseClipboard();
+}
+
+static std::wstring GetRelativePath(const std::wstring& fullPath, const std::wstring& basePath) {
+    if (basePath.empty()) return fullPath;
+    std::error_code ec;
+    auto rel = std::filesystem::relative(fullPath, basePath, ec);
+    if (!ec && !rel.empty()) {
+        return rel.wstring();
+    }
+    return fullPath;
+}
+
+struct InputDialogData {
+    std::wstring title;
+    std::wstring prompt;
+    std::wstring result;
+    bool accepted = false;
+};
+
+static LRESULT CALLBACK InputDialogWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    auto* pData = reinterpret_cast<InputDialogData*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+    switch (msg) {
+        case WM_CREATE: {
+            auto* cs = reinterpret_cast<CREATESTRUCTW*>(lParam);
+            pData = reinterpret_cast<InputDialogData*>(cs->lpCreateParams);
+            SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(pData));
+
+            HFONT hFont = static_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT));
+
+            HWND hStatic = CreateWindowExW(0, L"STATIC", pData->prompt.c_str(),
+                WS_CHILD | WS_VISIBLE, 20, 16, 360, 20, hwnd, nullptr, nullptr, nullptr);
+            SendMessageW(hStatic, WM_SETFONT, reinterpret_cast<WPARAM>(hFont), TRUE);
+
+            HWND hEdit = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", pData->result.c_str(),
+                WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL, 20, 42, 360, 24, hwnd, reinterpret_cast<HMENU>(101), nullptr, nullptr);
+            SendMessageW(hEdit, WM_SETFONT, reinterpret_cast<WPARAM>(hFont), TRUE);
+            SendMessageW(hEdit, EM_SETSEL, 0, -1);
+            SetFocus(hEdit);
+
+            HWND hBtnOk = CreateWindowExW(0, L"BUTTON", L"OK",
+                WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON, 210, 80, 80, 26, hwnd, reinterpret_cast<HMENU>(IDOK), nullptr, nullptr);
+            SendMessageW(hBtnOk, WM_SETFONT, reinterpret_cast<WPARAM>(hFont), TRUE);
+
+            HWND hBtnCancel = CreateWindowExW(0, L"BUTTON", L"Cancel",
+                WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON, 300, 80, 80, 26, hwnd, reinterpret_cast<HMENU>(IDCANCEL), nullptr, nullptr);
+            SendMessageW(hBtnCancel, WM_SETFONT, reinterpret_cast<WPARAM>(hFont), TRUE);
+            return 0;
+        }
+        case WM_COMMAND: {
+            int id = LOWORD(wParam);
+            if (id == IDOK) {
+                if (pData) {
+                    wchar_t buf[512] = {0};
+                    GetDlgItemTextW(hwnd, 101, buf, 512);
+                    pData->result = buf;
+                    pData->accepted = true;
+                }
+                DestroyWindow(hwnd);
+                return 0;
+            } else if (id == IDCANCEL) {
+                if (pData) pData->accepted = false;
+                DestroyWindow(hwnd);
+                return 0;
+            }
+            break;
+        }
+        case WM_CLOSE: {
+            if (pData) pData->accepted = false;
+            DestroyWindow(hwnd);
+            return 0;
+        }
+        case WM_DESTROY: {
+            PostQuitMessage(0);
+            return 0;
+        }
+    }
+    return DefWindowProcW(hwnd, msg, wParam, lParam);
+}
+
+static bool PromptInputDialog(HWND hParent, const std::wstring& title, const std::wstring& prompt,
+                              const std::wstring& initialText, std::wstring& outResult) {
+    static bool s_classRegistered = false;
+    if (!s_classRegistered) {
+        WNDCLASSEXW wc = { sizeof(wc) };
+        wc.lpfnWndProc = InputDialogWndProc;
+        wc.hInstance = GetModuleHandleW(nullptr);
+        wc.lpszClassName = L"PhideInputDialogModal";
+        wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
+        wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
+        RegisterClassExW(&wc);
+        s_classRegistered = true;
+    }
+
+    InputDialogData data;
+    data.title = title;
+    data.prompt = prompt;
+    data.result = initialText;
+    data.accepted = false;
+
+    RECT rcParent;
+    GetWindowRect(hParent, &rcParent);
+    int w = 416;
+    int h = 156;
+    int x = rcParent.left + (rcParent.right - rcParent.left - w) / 2;
+    int y = rcParent.top + (rcParent.bottom - rcParent.top - h) / 2;
+
+    HWND hDlg = CreateWindowExW(
+        WS_EX_DLGMODALFRAME,
+        L"PhideInputDialogModal",
+        title.c_str(),
+        WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_VISIBLE,
+        x, y, w, h,
+        hParent, nullptr, GetModuleHandleW(nullptr), &data
+    );
+
+    if (!hDlg) return false;
+
+    EnableWindow(hParent, FALSE);
+
+    MSG msg;
+    while (GetMessageW(&msg, nullptr, 0, 0)) {
+        if (msg.message == WM_KEYDOWN) {
+            if (msg.wParam == VK_RETURN) {
+                SendMessageW(hDlg, WM_COMMAND, IDOK, 0);
+                continue;
+            } else if (msg.wParam == VK_ESCAPE) {
+                SendMessageW(hDlg, WM_COMMAND, IDCANCEL, 0);
+                continue;
+            }
+        }
+        TranslateMessage(&msg);
+        DispatchMessageW(&msg);
+        if (!IsWindow(hDlg)) break;
+    }
+
+    EnableWindow(hParent, TRUE);
+    SetForegroundWindow(hParent);
+
+    if (data.accepted) {
+        outResult = data.result;
+        return true;
+    }
+    return false;
+}
+
 Window::Window() = default;
 
 Window::~Window() {
@@ -338,15 +497,34 @@ void Window::OpenFileDocument(const std::wstring& path, bool isPreview) {
                        !m_openDocs[m_activeDocIdx].isDirty &&
                        !m_openDocs[m_activeDocIdx].isSpecialView);
 
+    // Check if file is a supported image (PNG, JPG, BMP, GIF, ICO, WEBP)
+    std::wstring ext;
+    auto dotPos = path.find_last_of(L".");
+    if (dotPos != std::wstring::npos) {
+        ext = path.substr(dotPos);
+        for (auto& ch : ext) ch = towlower(ch);
+    }
+
+    bool isImage = (ext == L".png" || ext == L".jpg" || ext == L".jpeg" ||
+                    ext == L".bmp" || ext == L".gif" || ext == L".ico" ||
+                    ext == L".webp" || ext == L".tiff" || ext == L".tif");
+
     editor::OpenDocument newDoc;
     newDoc.filePath = path;
     auto pos = path.find_last_of(L"\\/");
     newDoc.fileName = (pos != std::wstring::npos) ? path.substr(pos + 1) : path;
-    newDoc.buffer.LoadFromFile(path);
     newDoc.isPreview = isPreview;
     newDoc.isDirty = false;
     newDoc.isSpecialView = false;
+    newDoc.isImageView = isImage;
     newDoc.viewType.clear();
+
+    if (isImage) {
+        std::error_code ec;
+        newDoc.imageFileSize = std::filesystem::file_size(path, ec);
+    } else {
+        newDoc.buffer.LoadFromFile(path);
+    }
 
     if (canReplace) {
         m_openDocs[m_activeDocIdx] = std::move(newDoc);
@@ -1439,6 +1617,164 @@ void Window::HandleLButtonDown(POINT clientPt) {
                     case ui::MenuActionId::Terminal:
                         ToggleSidebar();
                         break;
+
+                    // Context Menu Actions (Images 4 & 5)
+                    case ui::MenuActionId::CtxOpenToSide:
+                        if (!m_contextTargetPath.empty()) {
+                            OpenFileDocument(m_contextTargetPath, false);
+                        }
+                        break;
+                    case ui::MenuActionId::CtxOpenWith:
+                        if (!m_contextTargetPath.empty()) {
+                            ShellExecuteW(m_hwnd, L"open", L"rundll32.exe",
+                                         (L"shell32.dll,OpenAs_RunDLL " + m_contextTargetPath).c_str(),
+                                         nullptr, SW_SHOWNORMAL);
+                        }
+                        break;
+                    case ui::MenuActionId::CtxRevealInExplorer:
+                        if (!m_contextTargetPath.empty()) {
+                            std::wstring param = L"/select,\"" + m_contextTargetPath + L"\"";
+                            ShellExecuteW(nullptr, L"open", L"explorer.exe", param.c_str(), nullptr, SW_SHOWNORMAL);
+                        }
+                        break;
+                    case ui::MenuActionId::CtxOpenInTerminal:
+                        if (!m_contextTargetPath.empty()) {
+                            std::wstring dir = m_contextTargetIsFolder ? m_contextTargetPath
+                                : std::filesystem::path(m_contextTargetPath).parent_path().wstring();
+                            ShellExecuteW(nullptr, L"open", L"cmd.exe", nullptr, dir.empty() ? nullptr : dir.c_str(), SW_SHOWNORMAL);
+                        }
+                        break;
+                    case ui::MenuActionId::CtxCompareWithSelected:
+                        if (!m_compareSourcePath.empty() && std::filesystem::exists(m_compareSourcePath)) {
+                            std::wstring msg = L"Diff Comparison:\nSelected: " + m_compareSourcePath + L"\nTarget: " + m_contextTargetPath;
+                            MessageBoxW(m_hwnd, msg.c_str(), L"Compare with Selected", MB_OK | MB_ICONINFORMATION);
+                        } else {
+                            m_compareSourcePath = m_contextTargetPath;
+                        }
+                        break;
+                    case ui::MenuActionId::CtxSelectForCompare:
+                        m_compareSourcePath = m_contextTargetPath;
+                        break;
+                    case ui::MenuActionId::CtxOpenTimeline:
+                        if (!m_contextTargetPath.empty()) {
+                            std::wstring dir = std::filesystem::path(m_contextTargetPath).parent_path().wstring();
+                            std::wstring gitCmd = L"/k git log -p -- \"" + m_contextTargetPath + L"\"";
+                            ShellExecuteW(nullptr, L"open", L"cmd.exe", gitCmd.c_str(), dir.c_str(), SW_SHOWNORMAL);
+                        }
+                        break;
+                    case ui::MenuActionId::CtxCut:
+                        if (!m_contextTargetPath.empty()) {
+                            m_clipboardPath = m_contextTargetPath;
+                            m_clipboardIsCut = true;
+                            SetClipboardText(m_hwnd, m_contextTargetPath);
+                        }
+                        break;
+                    case ui::MenuActionId::CtxCopy:
+                        if (!m_contextTargetPath.empty()) {
+                            m_clipboardPath = m_contextTargetPath;
+                            m_clipboardIsCut = false;
+                            SetClipboardText(m_hwnd, m_contextTargetPath);
+                        }
+                        break;
+                    case ui::MenuActionId::CtxPaste:
+                        if (!m_clipboardPath.empty() && std::filesystem::exists(m_clipboardPath)) {
+                            std::filesystem::path src(m_clipboardPath);
+                            std::filesystem::path destDir = m_contextTargetIsFolder ? m_contextTargetPath
+                                : std::filesystem::path(m_contextTargetPath).parent_path().wstring();
+                            std::filesystem::path dest = destDir / src.filename();
+                            std::error_code ec;
+                            if (std::filesystem::is_directory(src)) {
+                                std::filesystem::copy(src, dest, std::filesystem::copy_options::recursive | std::filesystem::copy_options::overwrite_existing, ec);
+                            } else {
+                                std::filesystem::copy_file(src, dest, std::filesystem::copy_options::overwrite_existing, ec);
+                            }
+                            if (m_clipboardIsCut && !ec) {
+                                std::filesystem::remove_all(src, ec);
+                                m_clipboardPath.clear();
+                                m_clipboardIsCut = false;
+                            }
+                            m_drawer.RefreshTree();
+                        }
+                        break;
+                    case ui::MenuActionId::CtxCopyPath:
+                        if (!m_contextTargetPath.empty()) {
+                            SetClipboardText(m_hwnd, m_contextTargetPath);
+                        }
+                        break;
+                    case ui::MenuActionId::CtxCopyRelativePath:
+                        if (!m_contextTargetPath.empty()) {
+                            std::wstring rel = GetRelativePath(m_contextTargetPath, m_drawer.GetOpenFolderPath());
+                            SetClipboardText(m_hwnd, rel);
+                        }
+                        break;
+                    case ui::MenuActionId::CtxRename:
+                        if (!m_contextTargetPath.empty()) {
+                            std::filesystem::path p(m_contextTargetPath);
+                            std::wstring currentName = p.filename().wstring();
+                            std::wstring newName;
+                            if (PromptInputDialog(m_hwnd, L"Rename", L"Enter new name:", currentName, newName) && !newName.empty() && newName != currentName) {
+                                std::filesystem::path newPath = p.parent_path() / newName;
+                                std::error_code ec;
+                                std::filesystem::rename(p, newPath, ec);
+                                if (!ec) {
+                                    for (auto& doc : m_openDocs) {
+                                        if (doc.filePath == m_contextTargetPath) {
+                                            doc.filePath = newPath.wstring();
+                                            doc.fileName = newName;
+                                        }
+                                    }
+                                    m_drawer.RefreshTree();
+                                }
+                            }
+                        }
+                        break;
+                    case ui::MenuActionId::CtxDelete:
+                        if (!m_contextTargetPath.empty()) {
+                            std::wstring confirmMsg = L"Are you sure you want to delete '" +
+                                std::filesystem::path(m_contextTargetPath).filename().wstring() + L"'?";
+                            if (MessageBoxW(m_hwnd, confirmMsg.c_str(), L"Confirm Delete", MB_YESNO | MB_ICONWARNING) == IDYES) {
+                                std::error_code ec;
+                                std::filesystem::remove_all(m_contextTargetPath, ec);
+                                for (int i = 0; i < static_cast<int>(m_openDocs.size()); ++i) {
+                                    if (m_openDocs[i].filePath == m_contextTargetPath) {
+                                        CloseDocument(i);
+                                        break;
+                                    }
+                                }
+                                m_drawer.RefreshTree();
+                            }
+                        }
+                        break;
+                    case ui::MenuActionId::CtxNewFile: {
+                        std::wstring parentDir = m_contextTargetIsFolder ? m_contextTargetPath
+                            : std::filesystem::path(m_contextTargetPath).parent_path().wstring();
+                        std::wstring newName = L"Untitled.txt";
+                        if (PromptInputDialog(m_hwnd, L"New File", L"File name:", newName, newName) && !newName.empty()) {
+                            std::filesystem::path newPath = std::filesystem::path(parentDir) / newName;
+                            if (!std::filesystem::exists(newPath)) {
+                                std::ofstream ofs(newPath);
+                                ofs.close();
+                            }
+                            m_drawer.RefreshTree();
+                            OpenFileDocument(newPath.wstring(), false);
+                        }
+                        break;
+                    }
+                    case ui::MenuActionId::CtxNewFolder: {
+                        std::wstring parentDir = m_contextTargetIsFolder ? m_contextTargetPath
+                            : std::filesystem::path(m_contextTargetPath).parent_path().wstring();
+                        std::wstring newFolder = L"NewFolder";
+                        if (PromptInputDialog(m_hwnd, L"New Folder", L"Folder name:", newFolder, newFolder) && !newFolder.empty()) {
+                            std::filesystem::path newDirPath = std::filesystem::path(parentDir) / newFolder;
+                            std::error_code ec;
+                            std::filesystem::create_directories(newDirPath, ec);
+                            m_drawer.RefreshTree();
+                        }
+                        break;
+                    }
+                    case ui::MenuActionId::CtxFindInFolder:
+                        DoShowSearch();
+                        break;
                     default:
                         break;
                 }
@@ -1632,6 +1968,78 @@ void Window::HandleLButtonUp(POINT clientPt) {
     }
 }
 
+void Window::HandleRButtonDown(POINT clientPt) {
+    if (m_popupMenu.IsOpen()) {
+        m_popupMenu.Close();
+        m_header.SetActiveMenu(ui::HeaderMenuId::None);
+        InvalidateRect(m_hwnd, nullptr, FALSE);
+    }
+
+    float railW = m_config.ScaleF(static_cast<float>(m_config.railWidth));
+    float drawerW = m_config.ScaleF(static_cast<float>(m_config.drawerWidth)) * m_drawerAnimProgress;
+    float headerH = m_config.ScaleF(static_cast<float>(m_config.headerHeight));
+
+    // 1. Right-click inside Drawer Explorer
+    if (m_drawerAnimProgress > 0.001f && clientPt.x >= railW && clientPt.x < railW + drawerW && clientPt.y >= headerH) {
+        int hitIdx = m_drawer.HitTest(clientPt, m_config);
+        const ui::DrawerTreeItem* pItem = (hitIdx >= 0) ? m_drawer.GetItem(hitIdx) : nullptr;
+        bool isFolder = false;
+        std::wstring targetPath;
+        if (pItem) {
+            isFolder = pItem->isFolder;
+            targetPath = pItem->fullPath;
+        } else if (m_drawer.HasOpenFolder()) {
+            isFolder = true;
+            targetPath = m_drawer.GetOpenFolderPath();
+        }
+
+        if (!targetPath.empty()) {
+            m_contextTargetPath = targetPath;
+            m_contextTargetIsFolder = isFolder;
+            bool canPaste = !m_clipboardPath.empty() && std::filesystem::exists(m_clipboardPath);
+            m_popupMenu.OpenContextMenu(
+                static_cast<float>(clientPt.x),
+                static_cast<float>(clientPt.y),
+                isFolder,
+                targetPath,
+                m_drawer.GetOpenFolderPath(),
+                m_config,
+                canPaste
+            );
+            InvalidateRect(m_hwnd, nullptr, FALSE);
+            return;
+        }
+    }
+
+    // 2. Right-click inside Editor Tab Bar or Canvas
+    if (clientPt.x >= railW + drawerW && clientPt.y >= headerH) {
+        int tabHit = m_editor.HitTestTab(clientPt, m_openDocs);
+        std::wstring targetPath;
+        if (tabHit >= 0 && tabHit < static_cast<int>(m_openDocs.size())) {
+            targetPath = m_openDocs[tabHit].filePath;
+        } else if (m_activeDocIdx >= 0 && m_activeDocIdx < static_cast<int>(m_openDocs.size())) {
+            targetPath = m_openDocs[m_activeDocIdx].filePath;
+        }
+
+        if (!targetPath.empty() && std::filesystem::exists(targetPath)) {
+            m_contextTargetPath = targetPath;
+            m_contextTargetIsFolder = std::filesystem::is_directory(targetPath);
+            bool canPaste = !m_clipboardPath.empty() && std::filesystem::exists(m_clipboardPath);
+            m_popupMenu.OpenContextMenu(
+                static_cast<float>(clientPt.x),
+                static_cast<float>(clientPt.y),
+                m_contextTargetIsFolder,
+                targetPath,
+                m_drawer.GetOpenFolderPath(),
+                m_config,
+                canPaste
+            );
+            InvalidateRect(m_hwnd, nullptr, FALSE);
+            return;
+        }
+    }
+}
+
 LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
     switch (uMsg) {
         case WM_NCCALCSIZE: {
@@ -1674,6 +2082,44 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     return TRUE;
                 }
 
+                // Tab bar close buttons or folding chevrons
+                if (m_editor.HitTestTabClose(pt, m_openDocs) >= 0 || m_editor.HitTestFoldChevron(pt) >= 0) {
+                    SetCursor(LoadCursor(nullptr, IDC_HAND));
+                    return TRUE;
+                }
+
+                // Open Folder button in drawer when empty
+                if (!m_drawer.HasOpenFolder() && m_drawer.HitTestOpenFolderButton(pt, m_config)) {
+                    SetCursor(LoadCursor(nullptr, IDC_HAND));
+                    return TRUE;
+                }
+
+                // Editor code text area: show I-beam cursor (matching Image 1)
+                if (!m_openDocs.empty() && m_activeDocIdx >= 0 && m_activeDocIdx < static_cast<int>(m_openDocs.size())) {
+                    const auto& activeDoc = m_openDocs[m_activeDocIdx];
+                    if (!activeDoc.isSpecialView && !activeDoc.isImageView) {
+                        float railW = m_config.ScaleF(static_cast<float>(m_config.railWidth));
+                        float drawerW = m_config.ScaleF(static_cast<float>(m_config.drawerWidth)) * m_drawerAnimProgress;
+                        float canvasLeft = railW + drawerW;
+                        float gutterW = m_config.ScaleF(50.0f);
+                        float headerH = m_config.ScaleF(static_cast<float>(m_config.headerHeight));
+                        float tabH    = m_config.ScaleF(34.0f);
+                        float breadcrumbH = m_config.ScaleF(24.0f);
+                        float topY    = headerH + tabH + breadcrumbH;
+                        float scrollbarW = m_config.ScaleF(14.0f);
+                        RECT rcClient;
+                        GetClientRect(m_hwnd, &rcClient);
+                        float clientW = static_cast<float>(rcClient.right - rcClient.left);
+                        float clientH = static_cast<float>(rcClient.bottom - rcClient.top);
+
+                        if (pt.x >= canvasLeft + gutterW && pt.x < clientW - scrollbarW &&
+                            pt.y >= topY && pt.y < clientH) {
+                            SetCursor(LoadCursor(nullptr, IDC_IBEAM));
+                            return TRUE;
+                        }
+                    }
+                }
+
                 SetCursor(LoadCursor(nullptr, IDC_ARROW));
                 return TRUE;
             }
@@ -1704,6 +2150,12 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
         case WM_LBUTTONUP: {
             POINT pt = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
             HandleLButtonUp(pt);
+            return 0;
+        }
+
+        case WM_RBUTTONDOWN: {
+            POINT pt = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+            HandleRButtonDown(pt);
             return 0;
         }
 

@@ -105,7 +105,26 @@ enum class MenuActionId {
     ToggleRenderControlChars,
     ZoomIn,
     ZoomOut,
-    ResetZoom
+    ResetZoom,
+
+    // Explorer Context Menu Actions (Images 4 & 5)
+    CtxOpenToSide,
+    CtxOpenWith,
+    CtxRevealInExplorer,
+    CtxOpenInTerminal,
+    CtxCompareWithSelected,
+    CtxSelectForCompare,
+    CtxOpenTimeline,
+    CtxCut,
+    CtxCopy,
+    CtxPaste,
+    CtxCopyPath,
+    CtxCopyRelativePath,
+    CtxRename,
+    CtxDelete,
+    CtxNewFile,
+    CtxNewFolder,
+    CtxFindInFolder
 };
 
 /**
@@ -163,6 +182,20 @@ public:
                       const std::vector<std::wstring>& recentItems = {});
 
     /**
+     * @brief Opens the custom explorer context menu for a file or folder (matching Images 4 & 5).
+     * @param x Left coordinate of the anchor.
+     * @param y Top coordinate of the anchor.
+     * @param isFolder True if target is a folder, false if a file.
+     * @param targetPath Absolute filesystem path of the right-clicked item.
+     * @param rootFolder Root workspace path for relative path calculation.
+     * @param config Application metrics.
+     * @param canPaste True if clipboard contains a path that can be pasted.
+     */
+    void OpenContextMenu(float x, float y, bool isFolder, const std::wstring& targetPath,
+                         const std::wstring& rootFolder, const app::AppConfig& config,
+                         bool canPaste = false);
+
+    /**
      * @brief Closes the popup menu and any open submenus.
      */
     void Close();
@@ -203,6 +236,8 @@ private:
     void BuildViewMenuItems(bool isSidebarOpen, bool isZoomed, bool wordWrap);
     void BuildFileMenuItems(bool autoSave, bool hasOpenFile, bool isDirty, bool hasOpenFolder,
                             const std::vector<std::wstring>& recentItems = {});
+    void BuildContextMenuItems(bool isFolder, const std::wstring& targetPath,
+                               const std::wstring& rootFolder, bool canPaste);
     void LayoutMenu(std::vector<PopupMenuItem>& items, float startX, float startY, float width,
                     const app::AppConfig& config, D2D1_RECT_F& outBounds);
     void LayoutSubmenu(int parentItemIdx, const app::AppConfig& config, float clientW, float clientH);

@@ -16,21 +16,29 @@ namespace phide::editor {
 // --- SyntaxLexer Implementation ---
 
 SyntaxLexer::SyntaxLexer() {
-    // PHP & C++ Keywords
+    // PHP, JS/TS & C++ Keywords (matching user requirements for <?php, var, let, require, etc.)
     m_keywords = {
         L"class", L"function", L"public", L"private", L"protected",
         L"return", L"namespace", L"use", L"echo", L"new", L"if", L"else",
-        L"while", L"for", L"foreach", L"switch", L"case", L"break",
-        L"try", L"catch", L"throw", L"static", L"const", L"auto",
-        L"template", L"typename", L"struct", L"enum", L"virtual",
-        L"override", L"final", L"constexpr", L"explicit", L"inline"
+        L"while", L"for", L"foreach", L"switch", L"case", L"break", L"default",
+        L"continue", L"goto", L"try", L"catch", L"finally", L"throw", L"static",
+        L"const", L"auto", L"template", L"typename", L"struct", L"enum", L"virtual",
+        L"override", L"final", L"constexpr", L"explicit", L"inline", L"noexcept",
+        L"var", L"let", L"require", L"import", L"export", L"from", L"as", L"async",
+        L"await", L"yield", L"fn", L"def", L"print", L"die", L"exit", L"isset",
+        L"empty", L"include", L"include_once", L"require_once", L"declare",
+        L"strict_types", L"match", L"global", L"extends", L"implements", L"interface",
+        L"trait", L"abstract", L"readonly", L"null", L"nullptr", L"true", L"false",
+        L"this", L"self", L"parent", L"delete", L"sizeof", L"typedef"
     };
 
     // Common Primitive & Standard Types
     m_types = {
         L"string", L"int", L"bool", L"float", L"void", L"array",
-        L"object", L"mixed", L"iterable", L"std::string", L"std::vector",
-        L"uint32_t", L"size_t", L"int32_t", L"double", L"char", L"wchar_t"
+        L"object", L"mixed", L"iterable", L"callable", L"never",
+        L"std::string", L"std::wstring", L"std::vector", L"std::map", L"std::set",
+        L"uint32_t", L"uint64_t", L"size_t", L"int32_t", L"int64_t", L"double",
+        L"char", L"wchar_t"
     };
 }
 
@@ -48,19 +56,121 @@ std::vector<SyntaxToken> SyntaxLexer::TokenizeLine(const std::wstring& line) con
             continue;
         }
 
-        // Single-line Comments (// or #)
+        // 1. PHP Open Tags: <?php, <?=, <?
+        if (i + 1 < len && line[i] == L'<' && line[i + 1] == L'?') {
+            size_t start = i;
+            i += 2;
+            if (i + 3 <= len && line.substr(i, 3) == L"php") {
+                i += 3;
+            } else if (i < len && line[i] == L'=') {
+                i += 1;
+            }
+            tokens.push_back({ TokenType::Keyword, start, i - start });
+            continue;
+        }
+
+        // 2. PHP Close Tag: ?>
+        if (i + 1 < len && line[i] == L'?' && line[i + 1] == L'>') {
+            tokens.push_back({ TokenType::Keyword, i, 2 });
+            i += 2;
+            continue;
+        }
+
+        // 3. HTML/XML Comment (<!-- ... -->)
+        if (i + 3 < len && line.substr(i, 4) == L"<!--") {
+            size_t start = i;
+            auto endPos = line.find(L"-->", i + 4);
+            if (endPos != std::wstring::npos) {
+                i = endPos + 3;
+            } else {
+                i = len;
+            }
+            tokens.push_back({ TokenType::Comment, start, i - start });
+            continue;
+        }
+
+        // 4. HTML DOCTYPE (<!DOCTYPE ...>)
+        if (i + 8 < len && _wcsnicmp(line.c_str() + i, L"<!DOCTYPE", 9) == 0) {
+            size_t start = i;
+            auto endPos = line.find(L'>', i + 9);
+            if (endPos != std::wstring::npos) {
+                i = endPos + 1;
+            } else {
+                i = len;
+            }
+            tokens.push_back({ TokenType::Keyword, start, i - start });
+            continue;
+        }
+
+        // 5. HTML / XML / JSX Tags (<tag ...>, </tag>)
+        if (line[i] == L'<' && (i + 1 < len && (iswalpha(line[i + 1]) || (line[i + 1] == L'/' && i + 2 < len && iswalpha(line[i + 2]))))) {
+            // Opening bracket < or </
+            size_t bracketStart = i;
+            if (line[i + 1] == L'/') i += 2;
+            else i += 1;
+            tokens.push_back({ TokenType::Operator, bracketStart, i - bracketStart });
+
+            // Tag name (e.g. div, span, form, input, Button, Component)
+            size_t tagStart = i;
+            while (i < len && (iswalnum(line[i]) || line[i] == L'-' || line[i] == L':' || line[i] == L'_')) ++i;
+            tokens.push_back({ TokenType::Tag, tagStart, i - tagStart });
+
+            // Attributes inside the tag until > or end of line
+            while (i < len && line[i] != L'>') {
+                if (iswspace(line[i])) {
+                    ++i;
+                    continue;
+                }
+                // Self-closing slash />
+                if (line[i] == L'/' && i + 1 < len && line[i + 1] == L'>') {
+                    tokens.push_back({ TokenType::Operator, i, 2 });
+                    i += 2;
+                    break;
+                }
+                // Attribute name (e.g. class, id, href, src, onClick)
+                if (iswalpha(line[i]) || line[i] == L'@' || line[i] == L':' || line[i] == L'-' || line[i] == L'_') {
+                    size_t attrStart = i++;
+                    while (i < len && (iswalnum(line[i]) || line[i] == L'-' || line[i] == L':' || line[i] == L'_' || line[i] == L'.')) ++i;
+                    tokens.push_back({ TokenType::Attribute, attrStart, i - attrStart });
+                    continue;
+                }
+                // Attribute string value ("..." or '...')
+                if (line[i] == L'"' || line[i] == L'\'') {
+                    wchar_t quote = line[i];
+                    size_t strStart = i++;
+                    while (i < len && line[i] != quote) {
+                        if (line[i] == L'\\' && i + 1 < len) i += 2;
+                        else ++i;
+                    }
+                    if (i < len) ++i;
+                    tokens.push_back({ TokenType::String, strStart, i - strStart });
+                    continue;
+                }
+                // Equals sign or other punctuation inside tag
+                tokens.push_back({ TokenType::Operator, i, 1 });
+                ++i;
+            }
+
+            if (i < len && line[i] == L'>') {
+                tokens.push_back({ TokenType::Operator, i, 1 });
+                ++i;
+            }
+            continue;
+        }
+
+        // 6. Single-line Comments (// or #)
         if ((i + 1 < len && line[i] == L'/' && line[i + 1] == L'/') || (line[i] == L'#')) {
             tokens.push_back({ TokenType::Comment, i, len - i });
             break;
         }
 
-        // Block Comment opening or inside (/* ...)
+        // 7. Block Comment opening or inside (/* ...)
         if (i + 1 < len && line[i] == L'/' && line[i + 1] == L'*') {
             tokens.push_back({ TokenType::Comment, i, len - i });
             break;
         }
 
-        // String literals ("..." or '...')
+        // 8. String literals ("..." or '...')
         if (line[i] == L'"' || line[i] == L'\'') {
             wchar_t quote = line[i];
             size_t start = i++;
@@ -73,7 +183,7 @@ std::vector<SyntaxToken> SyntaxLexer::TokenizeLine(const std::wstring& line) con
             continue;
         }
 
-        // Numeric Literals
+        // 9. Numeric Literals
         if (iswdigit(line[i])) {
             size_t start = i++;
             while (i < len && (iswalnum(line[i]) || line[i] == L'.')) ++i;
@@ -81,7 +191,7 @@ std::vector<SyntaxToken> SyntaxLexer::TokenizeLine(const std::wstring& line) con
             continue;
         }
 
-        // Identifiers, Keywords, and Variables (e.g., $workspace, class, echo)
+        // 10. Identifiers, Keywords, and Variables (e.g., $workspace, class, echo)
         if (iswalpha(line[i]) || line[i] == L'_' || line[i] == L'$') {
             size_t start = i++;
             while (i < len && (iswalnum(line[i]) || line[i] == L'_' || line[i] == L':')) ++i;

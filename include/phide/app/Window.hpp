@@ -79,6 +79,7 @@ private:
     void HandleMouseMove(POINT clientPt);
     void HandleLButtonDown(POINT clientPt);
     void HandleLButtonUp(POINT clientPt);
+    void HandleRButtonDown(POINT clientPt);
 
     /**
      * @brief Toggles the sidebar drawer panel with smooth sliding animation.
@@ -296,6 +297,13 @@ private:
     bool m_chordCtrlK = false;
     std::vector<std::wstring> m_recentPaths;
     std::wstring m_lastClosedFilePath;
+
+    // Explorer Context Menu & Clipboard State (Images 4 & 5)
+    std::wstring m_contextTargetPath;
+    bool m_contextTargetIsFolder = false;
+    std::wstring m_clipboardPath;
+    bool m_clipboardIsCut = false;
+    std::wstring m_compareSourcePath;
 
     UINT_PTR m_caretTimerId = 1001;
     UINT_PTR m_animTimerId  = 1002;

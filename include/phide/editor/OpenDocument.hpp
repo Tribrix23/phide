@@ -8,6 +8,7 @@
 #include <string>
 #include <set>
 #include <d2d1.h>
+#include <wrl/client.h>
 #include "phide/editor/Buffer.hpp"
 
 namespace phide::editor {
@@ -38,6 +39,13 @@ struct OpenDocument {
 
     // Code Folding State (Images 2 & 3)
     std::set<size_t> foldedLines;       ///< Set of starting line indices (0-based buffer line) that are folded
+
+    // Picture Viewer State (Image 2)
+    bool isImageView = false;           ///< True if this document is displaying a picture/image file
+    Microsoft::WRL::ComPtr<ID2D1Bitmap> pImageBitmap; ///< Decoded Direct2D bitmap
+    UINT imageWidth = 0;                ///< Pixel width of the decoded image
+    UINT imageHeight = 0;               ///< Pixel height of the decoded image
+    uint64_t imageFileSize = 0;         ///< File size on disk in bytes
 };
 
 } // namespace phide::editor

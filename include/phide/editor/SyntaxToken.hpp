@@ -17,12 +17,14 @@ namespace phide::editor {
  */
 enum class TokenType {
     Default,
-    Keyword,    ///< Language keywords (e.g., class, public, function, return, if, namespace)
+    Keyword,    ///< Language keywords (e.g., class, public, function, return, if, namespace, <?php)
     Type,       ///< Primitive and standard types (e.g., int, void, string, std::vector)
     String,     ///< String literals ("...", '...')
     Comment,    ///< Line comments (//, #) and block comments
     Number,     ///< Numeric literals
-    Operator    ///< Operators and punctuation
+    Operator,   ///< Operators and punctuation
+    Tag,        ///< Markup tag names (e.g., <div>, </span>, <html>, <Component>)
+    Attribute   ///< Markup attributes (e.g., class, id, src, href, style)
 };
 
 /**

@@ -6,6 +6,8 @@
 #include "phide/ui/EditorCanvas.hpp"
 #include "phide/ui/WatermarkLogo.hpp"
 #include <algorithm>
+#include <wincodec.h>
+#include <filesystem>
 
 namespace phide::ui {
 
@@ -191,6 +193,10 @@ void EditorCanvas::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
         auto& activeDoc = docs[activeDocIdx];
         if (activeDoc.isSpecialView && activeDoc.viewType == L"keybindings") {
             m_keybindingsView.Render(pRT, theme, config, canvasLeft, canvasWidth, headerH + tabH, clientHeight - (headerH + tabH));
+        } else if (activeDoc.isImageView) {
+            const float breadcrumbH = config.ScaleF(24.0f);
+            RenderBreadcrumbs(pRT, theme, config, activeDoc, canvasLeft, canvasWidth, headerH + tabH, breadcrumbH);
+            RenderImageView(pRT, theme, config, activeDoc, canvasLeft, canvasWidth, headerH + tabH + breadcrumbH, clientHeight);
         } else {
             const float breadcrumbH = config.ScaleF(24.0f);
             RenderBreadcrumbs(pRT, theme, config, activeDoc, canvasLeft, canvasWidth, headerH + tabH, breadcrumbH);
@@ -781,12 +787,14 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
 
                     ID2D1Brush* brush = theme.brushTextPrimary.Get();
                     switch (tok.type) {
-                        case editor::TokenType::Keyword:  brush = theme.brushSyntaxKeyword.Get(); break;
-                        case editor::TokenType::Type:     brush = theme.brushSyntaxType.Get(); break;
-                        case editor::TokenType::String:   brush = theme.brushSyntaxString.Get(); break;
-                        case editor::TokenType::Comment:  brush = theme.brushSyntaxComment.Get(); break;
-                        case editor::TokenType::Number:   brush = theme.brushSyntaxNumber.Get(); break;
-                        case editor::TokenType::Operator: brush = theme.brushSyntaxOperator.Get(); break;
+                        case editor::TokenType::Keyword:   brush = theme.brushSyntaxKeyword.Get(); break;
+                        case editor::TokenType::Type:      brush = theme.brushSyntaxType.Get(); break;
+                        case editor::TokenType::String:    brush = theme.brushSyntaxString.Get(); break;
+                        case editor::TokenType::Comment:   brush = theme.brushSyntaxComment.Get(); break;
+                        case editor::TokenType::Number:    brush = theme.brushSyntaxNumber.Get(); break;
+                        case editor::TokenType::Operator:  brush = theme.brushSyntaxOperator.Get(); break;
+                        case editor::TokenType::Tag:       brush = theme.brushSyntaxTag.Get(); break;
+                        case editor::TokenType::Attribute: brush = theme.brushSyntaxAttribute.Get(); break;
                         default: brush = theme.brushTextPrimary.Get(); break;
                     }
 
@@ -974,6 +982,141 @@ bool EditorCanvas::HitTestCodeArea(POINT pt, const app::AppConfig& config, const
     outLine = mappedLine;
     outCol  = col;
     return true;
+}
+
+void EditorCanvas::RenderImageView(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
+                                   editor::OpenDocument& doc, float canvasLeft, float canvasWidth,
+                                   float topY, float clientHeight) {
+    if (!pRT) return;
+
+    // Load bitmap using WIC if not yet loaded
+    if (!doc.pImageBitmap && !doc.filePath.empty()) {
+        Microsoft::WRL::ComPtr<IWICImagingFactory> pWicFactory;
+        HRESULT hr = CoCreateInstance(
+            CLSID_WICImagingFactory,
+            nullptr,
+            CLSCTX_INPROC_SERVER,
+            IID_PPV_ARGS(&pWicFactory)
+        );
+        if (SUCCEEDED(hr) && pWicFactory) {
+            Microsoft::WRL::ComPtr<IWICBitmapDecoder> pDecoder;
+            hr = pWicFactory->CreateDecoderFromFilename(
+                doc.filePath.c_str(),
+                nullptr,
+                GENERIC_READ,
+                WICDecodeMetadataCacheOnDemand,
+                &pDecoder
+            );
+            if (SUCCEEDED(hr) && pDecoder) {
+                Microsoft::WRL::ComPtr<IWICBitmapFrameDecode> pFrame;
+                hr = pDecoder->GetFrame(0, &pFrame);
+                if (SUCCEEDED(hr) && pFrame) {
+                    pFrame->GetSize(&doc.imageWidth, &doc.imageHeight);
+
+                    Microsoft::WRL::ComPtr<IWICFormatConverter> pConverter;
+                    hr = pWicFactory->CreateFormatConverter(&pConverter);
+                    if (SUCCEEDED(hr) && pConverter) {
+                        hr = pConverter->Initialize(
+                            pFrame.Get(),
+                            GUID_WICPixelFormat32bppPBGRA,
+                            WICBitmapDitherTypeNone,
+                            nullptr,
+                            0.0,
+                            WICBitmapPaletteTypeCustom
+                        );
+                        if (SUCCEEDED(hr)) {
+                            pRT->CreateBitmapFromWicBitmap(pConverter.Get(), nullptr, &doc.pImageBitmap);
+                        }
+                    }
+                }
+            }
+        }
+        if (doc.imageFileSize == 0 && !doc.filePath.empty()) {
+            std::error_code ec;
+            doc.imageFileSize = std::filesystem::file_size(doc.filePath, ec);
+        }
+    }
+
+    const float availW = canvasWidth - config.ScaleF(80.0f);
+    const float availH = (clientHeight - topY) - config.ScaleF(100.0f);
+
+    if (doc.pImageBitmap && doc.imageWidth > 0 && doc.imageHeight > 0 && availW > 10.0f && availH > 10.0f) {
+        float scale = 1.0f;
+        if (static_cast<float>(doc.imageWidth) > availW || static_cast<float>(doc.imageHeight) > availH) {
+            float scaleX = availW / static_cast<float>(doc.imageWidth);
+            float scaleY = availH / static_cast<float>(doc.imageHeight);
+            scale = (std::min)(scaleX, scaleY);
+        }
+
+        const float drawW = static_cast<float>(doc.imageWidth) * scale;
+        const float drawH = static_cast<float>(doc.imageHeight) * scale;
+        const float drawX = canvasLeft + (canvasWidth - drawW) / 2.0f;
+        const float drawY = topY + ((clientHeight - topY) - drawH) / 2.0f - config.ScaleF(20.0f);
+
+        D2D1_RECT_F imgRect = D2D1::RectF(drawX, drawY, drawX + drawW, drawY + drawH);
+
+        // Subtle frame around image
+        D2D1_RECT_F borderRect = D2D1::RectF(drawX - 1.0f, drawY - 1.0f, drawX + drawW + 1.0f, drawY + drawH + 1.0f);
+        pRT->DrawRectangle(borderRect, theme.brushBorderSubtle.Get(), 1.0f);
+
+        // Draw image bitmap
+        pRT->DrawBitmap(doc.pImageBitmap.Get(), imgRect);
+
+        // Format metadata info
+        std::wstring ext;
+        auto dotPos = doc.filePath.find_last_of(L".");
+        if (dotPos != std::wstring::npos) {
+            ext = doc.filePath.substr(dotPos + 1);
+            for (auto& ch : ext) ch = towupper(ch);
+        } else {
+            ext = L"IMAGE";
+        }
+
+        std::wstring sizeStr;
+        if (doc.imageFileSize < 1024) {
+            sizeStr = std::to_wstring(doc.imageFileSize) + L" B";
+        } else if (doc.imageFileSize < 1024 * 1024) {
+            sizeStr = std::to_wstring(doc.imageFileSize / 1024) + L" KB";
+        } else {
+            sizeStr = std::to_wstring(doc.imageFileSize / (1024 * 1024)) + L" MB";
+        }
+
+        std::wstring infoText = std::to_wstring(doc.imageWidth) + L" \u00D7 " +
+                                std::to_wstring(doc.imageHeight) + L" px   |   " +
+                                ext + L"   |   " + sizeStr;
+
+        const float badgeH = config.ScaleF(26.0f);
+        const float badgeW = config.ScaleF(250.0f);
+        const float badgeX = canvasLeft + (canvasWidth - badgeW) / 2.0f;
+        const float badgeY = clientHeight - badgeH - config.ScaleF(16.0f);
+
+        D2D1_ROUNDED_RECT rcBadge = D2D1::RoundedRect(
+            D2D1::RectF(badgeX, badgeY, badgeX + badgeW, badgeY + badgeH),
+            config.ScaleF(13.0f), config.ScaleF(13.0f)
+        );
+        pRT->FillRoundedRectangle(rcBadge, theme.brushItemHover.Get());
+        pRT->DrawRoundedRectangle(rcBadge, theme.brushBorderSubtle.Get(), 1.0f);
+
+        D2D1_RECT_F rcText = rcBadge.rect;
+        IDWriteTextFormat* pFmt = theme.fontMenu ? theme.fontMenu.Get() : theme.fontCode.Get();
+        if (pFmt) {
+            DWRITE_TEXT_ALIGNMENT oldAlign = pFmt->GetTextAlignment();
+            DWRITE_PARAGRAPH_ALIGNMENT oldPara = pFmt->GetParagraphAlignment();
+            pFmt->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+            pFmt->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+            pRT->DrawText(infoText.c_str(), static_cast<UINT32>(infoText.length()),
+                          pFmt, rcText, theme.brushTextSecondary.Get());
+            pFmt->SetTextAlignment(oldAlign);
+            pFmt->SetParagraphAlignment(oldPara);
+        }
+    } else {
+        std::wstring msg = L"Unable to display image: " + doc.fileName;
+        D2D1_RECT_F rcMsg = D2D1::RectF(canvasLeft, topY, canvasLeft + canvasWidth, clientHeight);
+        IDWriteTextFormat* pFmt = theme.fontMenu ? theme.fontMenu.Get() : theme.fontCode.Get();
+        if (pFmt) {
+            pRT->DrawText(msg.c_str(), static_cast<UINT32>(msg.length()), pFmt, rcMsg, theme.brushTextMuted.Get());
+        }
+    }
 }
 
 } // namespace phide::ui

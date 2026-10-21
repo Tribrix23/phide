@@ -151,6 +151,21 @@ private:
                            float barY, float barHeight);
 
     /**
+     * @brief Renders the native picture viewer for images (PNG, JPG, BMP, GIF, ICO, WEBP) matching Image 2.
+     * @param pRT Active Direct2D render target.
+     * @param theme Visual theme containing dark/light brushes.
+     * @param config Application metrics.
+     * @param doc Open document whose image bitmap and dimensions are displayed.
+     * @param canvasLeft Left boundary coordinate of the canvas.
+     * @param canvasWidth Width of the canvas.
+     * @param topY Vertical starting coordinate below the tab bar and breadcrumbs.
+     * @param clientHeight Total client height.
+     */
+    void RenderImageView(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
+                         editor::OpenDocument& doc, float canvasLeft, float canvasWidth,
+                         float topY, float clientHeight);
+
+    /**
      * @brief Renders active buffer source lines, line gutter numbers, fold chevrons, and syntax highlights.
      * @param pRT Active Direct2D render target.
      * @param theme Visual theme for syntax colors.

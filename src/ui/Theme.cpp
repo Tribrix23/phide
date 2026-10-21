@@ -72,6 +72,8 @@ HRESULT Theme::CreateDeviceResources(ID2D1RenderTarget* pRT, IDWriteFactory* pDW
     pRT->CreateSolidColorBrush(colors.syntaxComment, &brushSyntaxComment);
     pRT->CreateSolidColorBrush(colors.syntaxNumber, &brushSyntaxNumber);
     pRT->CreateSolidColorBrush(colors.syntaxOperator, &brushSyntaxOperator);
+    pRT->CreateSolidColorBrush(colors.syntaxTag, &brushSyntaxTag);
+    pRT->CreateSolidColorBrush(colors.syntaxAttribute, &brushSyntaxAttribute);
     pRT->CreateSolidColorBrush(colors.lineNumber, &brushLineNumber);
     pRT->CreateSolidColorBrush(colors.currentLineBg, &brushCurrentLineBg);
     pRT->CreateSolidColorBrush(colors.tabBarBg, &brushTabBarBg);
@@ -466,6 +468,8 @@ void Theme::DiscardDeviceResources() {
     brushSyntaxComment.Reset();
     brushSyntaxNumber.Reset();
     brushSyntaxOperator.Reset();
+    brushSyntaxTag.Reset();
+    brushSyntaxAttribute.Reset();
     brushLineNumber.Reset();
     brushCurrentLineBg.Reset();
     brushTabBarBg.Reset();
@@ -583,6 +587,8 @@ void Theme::SetThemeMode(ThemeMode mode) {
         colors.syntaxComment   = D2D1::ColorF(0.416f, 0.600f, 0.333f, 1.0f);  // #6A9955
         colors.syntaxNumber    = D2D1::ColorF(0.710f, 0.808f, 0.659f, 1.0f);  // #B5CEA8
         colors.syntaxOperator  = D2D1::ColorF(0.831f, 0.831f, 0.831f, 1.0f);  // #D4D4D4
+        colors.syntaxTag       = D2D1::ColorF(0.337f, 0.612f, 0.839f, 1.0f);  // #569CD6 (Blue for tags)
+        colors.syntaxAttribute = D2D1::ColorF(0.612f, 0.863f, 0.996f, 1.0f);  // #9CDCFE (Light Blue for attributes)
     } else {
         // Light Theme Colors
         colors.windowBg        = D2D1::ColorF(0.812f, 0.702f, 0.910f, 1.0f); // #CFB3E8 Light Purple base (ensures upper-left curve is seamlessly framed)
@@ -623,6 +629,8 @@ void Theme::SetThemeMode(ThemeMode mode) {
         colors.syntaxComment   = D2D1::ColorF(0.0f, 0.50f, 0.0f, 1.0f);       // #008000
         colors.syntaxNumber    = D2D1::ColorF(0.035f, 0.518f, 0.329f, 1.0f); // #098658
         colors.syntaxOperator  = D2D1::ColorF(0.20f, 0.20f, 0.20f, 1.0f);
+        colors.syntaxTag       = D2D1::ColorF(0.502f, 0.0f, 0.0f, 1.0f);      // #800000 (Dark Red for tags)
+        colors.syntaxAttribute = D2D1::ColorF(0.9f, 0.1f, 0.1f, 1.0f);       // #E61919 (Red for attributes)
     }
 
     // Refresh dynamic brush colors
@@ -663,6 +671,8 @@ void Theme::SetThemeMode(ThemeMode mode) {
     if (brushSyntaxComment) brushSyntaxComment->SetColor(colors.syntaxComment);
     if (brushSyntaxNumber) brushSyntaxNumber->SetColor(colors.syntaxNumber);
     if (brushSyntaxOperator) brushSyntaxOperator->SetColor(colors.syntaxOperator);
+    if (brushSyntaxTag) brushSyntaxTag->SetColor(colors.syntaxTag);
+    if (brushSyntaxAttribute) brushSyntaxAttribute->SetColor(colors.syntaxAttribute);
 }
 
 Theme::SetiIconInfo Theme::GetSetiIcon(const std::wstring& filename, bool isFolder, bool isExpanded) const {

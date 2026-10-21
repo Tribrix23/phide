@@ -41,6 +41,20 @@ void PopupMenu::OpenFileMenu(float x, float y, const app::AppConfig& config, boo
     LayoutMenu(m_items, x, y, menuW, config, m_mainMenuBounds);
 }
 
+void PopupMenu::OpenContextMenu(float x, float y, bool isFolder, const std::wstring& targetPath,
+                                const std::wstring& rootFolder, const app::AppConfig& config,
+                                bool canPaste) {
+    m_isOpen = true;
+    m_hoveredMainIdx = -1;
+    m_activeSubmenuIdx = -1;
+    m_hoveredSubmenuIdx = -1;
+
+    BuildContextMenuItems(isFolder, targetPath, rootFolder, canPaste);
+
+    const float menuW = config.ScaleF(240.0f);
+    LayoutMenu(m_items, x, y, menuW, config, m_mainMenuBounds);
+}
+
 void PopupMenu::Close() {
     m_isOpen = false;
     m_hoveredMainIdx = -1;
@@ -248,6 +262,99 @@ void PopupMenu::BuildFileMenuItems(bool autoSave, bool hasOpenFile, bool isDirty
 
     // 22. Exit
     m_items.push_back({ MenuActionId::Exit, L"Exit", L"", false, false, false, true, {}, {} });
+}
+
+void PopupMenu::BuildContextMenuItems(bool isFolder, const std::wstring& targetPath,
+                                      const std::wstring& rootFolder, bool canPaste) {
+    m_items.clear();
+
+    if (isFolder) {
+        // --- Folder Context Menu (Matching Image 5) ---
+        // 1. New File...
+        m_items.push_back({ MenuActionId::CtxNewFile,           L"New File...",                  L"",                       false, false, false, true, {}, {} });
+        // 2. New Folder...
+        m_items.push_back({ MenuActionId::CtxNewFolder,         L"New Folder...",                L"",                       false, false, false, true, {}, {} });
+        // 3. Reveal in File Explorer (Shift+Alt+R)
+        m_items.push_back({ MenuActionId::CtxRevealInExplorer,  L"Reveal in File Explorer",      L"Shift+Alt+R",            false, false, false, true, {}, {} });
+        // 4. Open in Integrated Terminal
+        m_items.push_back({ MenuActionId::CtxOpenInTerminal,    L"Open in Integrated Terminal",  L"",                       false, false, false, true, {}, {} });
+
+        // --- Separator ---
+        m_items.push_back({ MenuActionId::None,                 L"",                             L"",                       true,  false, false, false, {}, {} });
+
+        // 5. Find in Folder... (Shift+Alt+F)
+        m_items.push_back({ MenuActionId::CtxFindInFolder,      L"Find in Folder...",            L"Shift+Alt+F",            false, false, false, true, {}, {} });
+
+        // --- Separator ---
+        m_items.push_back({ MenuActionId::None,                 L"",                             L"",                       true,  false, false, false, {}, {} });
+
+        // 6. Cut (Ctrl+X)
+        m_items.push_back({ MenuActionId::CtxCut,               L"Cut",                          L"Ctrl+X",                 false, false, false, true, {}, {} });
+        // 7. Copy (Ctrl+C)
+        m_items.push_back({ MenuActionId::CtxCopy,              L"Copy",                         L"Ctrl+C",                 false, false, false, true, {}, {} });
+        // 8. Paste (Ctrl+V)
+        m_items.push_back({ MenuActionId::CtxPaste,             L"Paste",                        L"Ctrl+V",                 false, false, false, canPaste, {}, {} });
+
+        // --- Separator ---
+        m_items.push_back({ MenuActionId::None,                 L"",                             L"",                       true,  false, false, false, {}, {} });
+
+        // 9. Copy Path (Shift+Alt+C)
+        m_items.push_back({ MenuActionId::CtxCopyPath,          L"Copy Path",                    L"Shift+Alt+C",            false, false, false, true, {}, {} });
+        // 10. Copy Relative Path (Ctrl+K Ctrl+Shift+C)
+        m_items.push_back({ MenuActionId::CtxCopyRelativePath,  L"Copy Relative Path",           L"Ctrl+K Ctrl+Shift+C",    false, false, false, true, {}, {} });
+
+        // --- Separator ---
+        m_items.push_back({ MenuActionId::None,                 L"",                             L"",                       true,  false, false, false, {}, {} });
+
+        // 11. Rename... (F2)
+        m_items.push_back({ MenuActionId::CtxRename,            L"Rename...",                    L"F2",                     false, false, false, true, {}, {} });
+        // 12. Delete (Delete)
+        m_items.push_back({ MenuActionId::CtxDelete,            L"Delete",                       L"Delete",                 false, false, false, true, {}, {} });
+    } else {
+        // --- File Context Menu (Matching Image 4) ---
+        // 1. Open to the Side
+        m_items.push_back({ MenuActionId::CtxOpenToSide,        L"Open to the Side",             L"",                       false, false, false, true, {}, {} });
+        // 2. Open With...
+        m_items.push_back({ MenuActionId::CtxOpenWith,          L"Open With...",                 L"",                       false, false, false, true, {}, {} });
+        // 3. Reveal in File Explorer (Shift+Alt+R)
+        m_items.push_back({ MenuActionId::CtxRevealInExplorer,  L"Reveal in File Explorer",      L"Shift+Alt+R",            false, false, false, true, {}, {} });
+        // 4. Open in Integrated Terminal
+        m_items.push_back({ MenuActionId::CtxOpenInTerminal,    L"Open in Integrated Terminal",  L"",                       false, false, false, true, {}, {} });
+
+        // --- Separator ---
+        m_items.push_back({ MenuActionId::None,                 L"",                             L"",                       true,  false, false, false, {}, {} });
+
+        // 5. Compare with Selected
+        m_items.push_back({ MenuActionId::CtxCompareWithSelected, L"Compare with Selected",      L"",                       false, false, false, true, {}, {} });
+        // 6. Select for Compare
+        m_items.push_back({ MenuActionId::CtxSelectForCompare,    L"Select for Compare",         L"",                       false, false, false, true, {}, {} });
+        // 7. Open Timeline
+        m_items.push_back({ MenuActionId::CtxOpenTimeline,      L"Open Timeline",                L"",                       false, false, false, true, {}, {} });
+
+        // --- Separator ---
+        m_items.push_back({ MenuActionId::None,                 L"",                             L"",                       true,  false, false, false, {}, {} });
+
+        // 8. Cut (Ctrl+X)
+        m_items.push_back({ MenuActionId::CtxCut,               L"Cut",                          L"Ctrl+X",                 false, false, false, true, {}, {} });
+        // 9. Copy (Ctrl+C)
+        m_items.push_back({ MenuActionId::CtxCopy,              L"Copy",                         L"Ctrl+C",                 false, false, false, true, {}, {} });
+
+        // --- Separator ---
+        m_items.push_back({ MenuActionId::None,                 L"",                             L"",                       true,  false, false, false, {}, {} });
+
+        // 10. Copy Path (Shift+Alt+C)
+        m_items.push_back({ MenuActionId::CtxCopyPath,          L"Copy Path",                    L"Shift+Alt+C",            false, false, false, true, {}, {} });
+        // 11. Copy Relative Path (Ctrl+K Ctrl+Shift+C)
+        m_items.push_back({ MenuActionId::CtxCopyRelativePath,  L"Copy Relative Path",           L"Ctrl+K Ctrl+Shift+C",    false, false, false, true, {}, {} });
+
+        // --- Separator ---
+        m_items.push_back({ MenuActionId::None,                 L"",                             L"",                       true,  false, false, false, {}, {} });
+
+        // 12. Rename... (F2)
+        m_items.push_back({ MenuActionId::CtxRename,            L"Rename...",                    L"F2",                     false, false, false, true, {}, {} });
+        // 13. Delete (Delete)
+        m_items.push_back({ MenuActionId::CtxDelete,            L"Delete",                       L"Delete",                 false, false, false, true, {}, {} });
+    }
 }
 
 void PopupMenu::LayoutMenu(std::vector<PopupMenuItem>& items, float startX, float startY, float width,

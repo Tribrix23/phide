@@ -84,6 +84,8 @@ struct ThemeColors {
     D2D1_COLOR_F syntaxComment   = D2D1::ColorF(0.416f, 0.600f, 0.333f, 1.0f);  // #6A9955 (Green)
     D2D1_COLOR_F syntaxNumber    = D2D1::ColorF(0.710f, 0.808f, 0.659f, 1.0f);  // #B5CEA8 (Light Mint)
     D2D1_COLOR_F syntaxOperator  = D2D1::ColorF(0.831f, 0.831f, 0.831f, 1.0f);  // #D4D4D4 (Light Neutral)
+    D2D1_COLOR_F syntaxTag       = D2D1::ColorF(0.337f, 0.612f, 0.839f, 1.0f);  // #569CD6 (VS Code Blue for tags)
+    D2D1_COLOR_F syntaxAttribute = D2D1::ColorF(0.612f, 0.863f, 0.996f, 1.0f);  // #9CDCFE (Light Blue for attributes)
     D2D1_COLOR_F lineNumber      = D2D1::ColorF(0.522f, 0.522f, 0.522f, 1.0f);  // #858585 (Gutter Line Numbers)
     D2D1_COLOR_F currentLineBg   = D2D1::ColorF(0.145f, 0.145f, 0.145f, 1.0f);  // #252525 (Current Line Highlight)
     D2D1_COLOR_F tabBarBg        = D2D1::ColorF(0.094f, 0.094f, 0.094f, 1.0f);  // #181818 (Tab Bar Surface)
@@ -170,6 +172,8 @@ public:
     ComPtr<ID2D1SolidColorBrush> brushSyntaxComment;
     ComPtr<ID2D1SolidColorBrush> brushSyntaxNumber;
     ComPtr<ID2D1SolidColorBrush> brushSyntaxOperator;
+    ComPtr<ID2D1SolidColorBrush> brushSyntaxTag;
+    ComPtr<ID2D1SolidColorBrush> brushSyntaxAttribute;
     ComPtr<ID2D1SolidColorBrush> brushLineNumber;
     ComPtr<ID2D1SolidColorBrush> brushCurrentLineBg;
     ComPtr<ID2D1SolidColorBrush> brushTabBarBg;
