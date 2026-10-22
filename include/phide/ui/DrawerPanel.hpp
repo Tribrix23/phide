@@ -629,6 +629,7 @@ private:
     std::function<void(const std::vector<std::wstring>&)> m_onFilesReplaced;
     int m_hoveredSearchGroupIdx = -1;
     int m_hoveredSearchMatchIdx = -1;
+    POINT m_searchMousePos{ -1, -1 };
     size_t m_totalMatches = 0;
     size_t m_searchScrollIdx = 0;
 

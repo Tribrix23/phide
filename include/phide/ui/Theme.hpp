@@ -259,6 +259,7 @@ public:
     ComPtr<IDWriteTextFormat> fontTab;           ///< 12px Regular Leading-aligned for editor tabs
     ComPtr<IDWriteTextFormat> fontTabPreview;    ///< 12px Italic Leading-aligned for preview tabs
     ComPtr<IDWriteTextFormat> fontKeycap;        ///< 11.5px Centered for keycap badges
+    ComPtr<IDWriteTextFormat> fontCounterBadge;  ///< 11.0px Semi-Bold Centered for search & count badges
 
     struct SetiIconInfo {
         wchar_t glyph = 0xE023;

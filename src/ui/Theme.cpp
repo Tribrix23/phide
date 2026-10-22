@@ -428,10 +428,28 @@ HRESULT Theme::CreateDeviceResources(ID2D1RenderTarget* pRT, IDWriteFactory* pDW
         fontKeycap->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
     }
 
+    // 11. Counter Badge Font (11.0px Semi-Bold, Centered Horizontally & Vertically)
+    pDWriteFactory->CreateTextFormat(
+        L"Segoe UI",
+        nullptr,
+        DWRITE_FONT_WEIGHT_SEMI_BOLD,
+        DWRITE_FONT_STYLE_NORMAL,
+        DWRITE_FONT_STRETCH_NORMAL,
+        11.0f,
+        L"en-US",
+        &fontCounterBadge
+    );
+    if (fontCounterBadge) {
+        fontCounterBadge->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+        fontCounterBadge->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+        fontCounterBadge->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+    }
+
     return S_OK;
 }
 
 void Theme::DiscardDeviceResources() {
+    fontCounterBadge.Reset();
     fontKeycap.Reset();
     fontTab.Reset();
     fontTabPreview.Reset();

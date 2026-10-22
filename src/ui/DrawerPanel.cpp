@@ -1225,16 +1225,47 @@ void DrawerPanel::RenderSearchPane(ID2D1RenderTarget* pRT, Theme& theme, const a
 
                 // File Name
                 float nameX = iconX + config.ScaleF(18.0f);
-                D2D1_RECT_F rcName = D2D1::RectF(
-                    nameX, curY,
-                    railW + fullDrawerW - config.ScaleF(46.0f), curY + rowH
-                );
+                float maxTextRight = railW + fullDrawerW - config.ScaleF(50.0f);
+                float availW = (std::max)(10.0f, maxTextRight - nameX);
                 std::wstring fileLabel = group.fileName;
                 if (!group.relDir.empty()) {
                     fileLabel += L"  " + group.relDir;
                 }
-                pRT->DrawText(fileLabel.c_str(), static_cast<UINT32>(fileLabel.length()),
-                              theme.fontBody.Get(), rcName, theme.brushTextPrimary.Get());
+
+                if (theme.dwriteFactory) {
+                    Microsoft::WRL::ComPtr<IDWriteTextLayout> pLayout;
+                    if (SUCCEEDED(theme.dwriteFactory->CreateTextLayout(
+                            fileLabel.c_str(), static_cast<UINT32>(fileLabel.length()),
+                            theme.fontBody.Get(), availW, rowH, &pLayout))) {
+                        pLayout->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+                        pLayout->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+
+                        DWRITE_TRIMMING trimming = { DWRITE_TRIMMING_GRANULARITY_CHARACTER, 0, 0 };
+                        Microsoft::WRL::ComPtr<IDWriteInlineObject> pEllipsis;
+                        if (SUCCEEDED(theme.dwriteFactory->CreateEllipsisTrimmingSign(theme.fontBody.Get(), &pEllipsis))) {
+                            pLayout->SetTrimming(&trimming, pEllipsis.Get());
+                        }
+
+                        if (theme.brushTextMuted && !group.relDir.empty() && fileLabel.length() > group.fileName.length() + 2) {
+                            DWRITE_TEXT_RANGE dirRange{
+                                static_cast<UINT32>(group.fileName.length() + 2),
+                                static_cast<UINT32>(group.relDir.length())
+                            };
+                            pLayout->SetDrawingEffect(theme.brushTextMuted.Get(), dirRange);
+                        }
+
+                        D2D1_RECT_F clipRect = D2D1::RectF(nameX, curY, maxTextRight, curY + rowH);
+                        pRT->PushAxisAlignedClip(clipRect, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+                        pRT->DrawTextLayout(D2D1::Point2F(nameX, curY), pLayout.Get(), theme.brushTextPrimary.Get());
+                        pRT->PopAxisAlignedClip();
+                    }
+                } else {
+                    D2D1_RECT_F clipRect = D2D1::RectF(nameX, curY, maxTextRight, curY + rowH);
+                    pRT->PushAxisAlignedClip(clipRect, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+                    pRT->DrawText(fileLabel.c_str(), static_cast<UINT32>(fileLabel.length()),
+                                  theme.fontBody.Get(), clipRect, theme.brushTextPrimary.Get());
+                    pRT->PopAxisAlignedClip();
+                }
 
                 if (isGroupHovered) {
                     float btnSize = config.ScaleF(16.0f);
@@ -1243,42 +1274,66 @@ void DrawerPanel::RenderSearchPane(ID2D1RenderTarget* pRT, Theme& theme, const a
                     rightX -= (btnSize + config.ScaleF(3.0f));
                     group.replaceAllBtnBounds = D2D1::RectF(rightX - btnSize, curY + (rowH - btnSize) * 0.5f, rightX, curY + (rowH + btnSize) * 0.5f);
 
+                    bool isDismissHovered = (m_searchMousePos.x >= group.dismissBtnBounds.left && m_searchMousePos.x <= group.dismissBtnBounds.right &&
+                                             m_searchMousePos.y >= group.dismissBtnBounds.top && m_searchMousePos.y <= group.dismissBtnBounds.bottom);
+                    bool isReplaceHovered = (m_searchMousePos.x >= group.replaceAllBtnBounds.left && m_searchMousePos.x <= group.replaceAllBtnBounds.right &&
+                                             m_searchMousePos.y >= group.replaceAllBtnBounds.top && m_searchMousePos.y <= group.replaceAllBtnBounds.bottom);
+
+                    if (isDismissHovered) {
+                        D2D1_ROUNDED_RECT rrc = D2D1::RoundedRect(group.dismissBtnBounds, 3.0f, 3.0f);
+                        pRT->FillRoundedRectangle(&rrc, theme.brushItemActive ? theme.brushItemActive.Get() : theme.brushItemHover.Get());
+                    }
+                    if (isReplaceHovered) {
+                        D2D1_ROUNDED_RECT rrc = D2D1::RoundedRect(group.replaceAllBtnBounds, 3.0f, 3.0f);
+                        pRT->FillRoundedRectangle(&rrc, theme.brushItemActive ? theme.brushItemActive.Get() : theme.brushItemHover.Get());
+                    }
+
                     // Draw Dismiss (✕) Button
                     float dmx = (group.dismissBtnBounds.left + group.dismissBtnBounds.right) * 0.5f;
                     float dmy = (group.dismissBtnBounds.top + group.dismissBtnBounds.bottom) * 0.5f;
                     float dr = config.ScaleF(3.5f);
-                    pRT->DrawLine(D2D1::Point2F(dmx - dr, dmy - dr), D2D1::Point2F(dmx + dr, dmy + dr), theme.brushTextSecondary.Get(), 1.2f);
-                    pRT->DrawLine(D2D1::Point2F(dmx + dr, dmy - dr), D2D1::Point2F(dmx - dr, dmy + dr), theme.brushTextSecondary.Get(), 1.2f);
+                    pRT->DrawLine(D2D1::Point2F(dmx - dr, dmy - dr), D2D1::Point2F(dmx + dr, dmy + dr),
+                                  isDismissHovered ? theme.brushTextPrimary.Get() : theme.brushTextSecondary.Get(), 1.2f);
+                    pRT->DrawLine(D2D1::Point2F(dmx + dr, dmy - dr), D2D1::Point2F(dmx - dr, dmy + dr),
+                                  isDismissHovered ? theme.brushTextPrimary.Get() : theme.brushTextSecondary.Get(), 1.2f);
 
                     // Draw Replace All in File Button (document with arrow)
                     float rpx = (group.replaceAllBtnBounds.left + group.replaceAllBtnBounds.right) * 0.5f;
                     float rpy = (group.replaceAllBtnBounds.top + group.replaceAllBtnBounds.bottom) * 0.5f;
                     float rw = config.ScaleF(4.0f);
                     float rh = config.ScaleF(4.5f);
-                    pRT->DrawRectangle(D2D1::RectF(rpx - rw, rpy - rh, rpx + rw, rpy + rh), theme.brushTextSecondary.Get(), 1.0f);
-                    pRT->DrawLine(D2D1::Point2F(rpx - rw + 1.5f, rpy), D2D1::Point2F(rpx + rw - 1.5f, rpy), theme.brushTextPrimary.Get(), 1.2f);
-                    pRT->DrawLine(D2D1::Point2F(rpx + rw - 3.0f, rpy - 1.5f), D2D1::Point2F(rpx + rw - 1.5f, rpy), theme.brushTextPrimary.Get(), 1.2f);
-                    pRT->DrawLine(D2D1::Point2F(rpx + rw - 3.0f, rpy + 1.5f), D2D1::Point2F(rpx + rw - 1.5f, rpy), theme.brushTextPrimary.Get(), 1.2f);
+                    pRT->DrawRectangle(D2D1::RectF(rpx - rw, rpy - rh, rpx + rw, rpy + rh),
+                                       isReplaceHovered ? theme.brushTextPrimary.Get() : theme.brushTextSecondary.Get(), 1.0f);
+                    pRT->DrawLine(D2D1::Point2F(rpx - rw + 1.5f, rpy), D2D1::Point2F(rpx + rw - 1.5f, rpy),
+                                  isReplaceHovered ? theme.brushTextPrimary.Get() : theme.brushTextSecondary.Get(), 1.2f);
+                    pRT->DrawLine(D2D1::Point2F(rpx + rw - 3.0f, rpy - 1.5f), D2D1::Point2F(rpx + rw - 1.5f, rpy),
+                                  isReplaceHovered ? theme.brushTextPrimary.Get() : theme.brushTextSecondary.Get(), 1.2f);
+                    pRT->DrawLine(D2D1::Point2F(rpx + rw - 3.0f, rpy + 1.5f), D2D1::Point2F(rpx + rw - 1.5f, rpy),
+                                  isReplaceHovered ? theme.brushTextPrimary.Get() : theme.brushTextSecondary.Get(), 1.2f);
                 } else {
                     group.replaceAllBtnBounds = D2D1::RectF(0, 0, 0, 0);
                     group.dismissBtnBounds = D2D1::RectF(0, 0, 0, 0);
 
-                    // Badge count pill
+                    // Badge count pill - perfectly centered horizontally and vertically
                     std::wstring countStr = std::to_wstring(group.matches.size());
                     float badgeH = config.ScaleF(16.0f);
+                    float badgeW = config.ScaleF(countStr.length() > 2 ? 30.0f : (countStr.length() > 1 ? 24.0f : 18.0f));
+                    float badgeRight = railW + fullDrawerW - config.ScaleF(12.0f);
+                    float badgeLeft = badgeRight - badgeW;
                     D2D1_ROUNDED_RECT rrcBadge = D2D1::RoundedRect(
                         D2D1::RectF(
-                            railW + fullDrawerW - config.ScaleF(32.0f),
-                            curY + (rowH - badgeH) / 2.0f,
-                            railW + fullDrawerW - config.ScaleF(12.0f),
-                            curY + (rowH + badgeH) / 2.0f
+                            badgeLeft,
+                            curY + (rowH - badgeH) * 0.5f,
+                            badgeRight,
+                            curY + (rowH + badgeH) * 0.5f
                         ),
                         config.ScaleF(8.0f), config.ScaleF(8.0f)
                     );
                     pRT->FillRoundedRectangle(rrcBadge, theme.brushItemHover.Get());
+                    IDWriteTextFormat* pBadgeFmt = theme.fontCounterBadge ? theme.fontCounterBadge.Get() :
+                                                   (theme.fontButtonCenter ? theme.fontButtonCenter.Get() : theme.fontBody.Get());
                     pRT->DrawText(countStr.c_str(), static_cast<UINT32>(countStr.length()),
-                              theme.fontMenuShortcut ? theme.fontMenuShortcut.Get() : theme.fontBody.Get(),
-                              rrcBadge.rect, theme.brushTextSecondary.Get());
+                                  pBadgeFmt, rrcBadge.rect, theme.brushTextSecondary.Get());
                 }
 
                 curY += rowH;
@@ -1320,10 +1375,9 @@ void DrawerPanel::RenderSearchPane(ID2D1RenderTarget* pRT, Theme& theme, const a
 
                         // Match snippet with matched keyword highlight
                         float snipX = rcLineNum.right + config.ScaleF(4.0f);
-                        D2D1_RECT_F rcSnip = D2D1::RectF(
-                            snipX, curY,
-                            railW + fullDrawerW - config.ScaleF(10.0f), curY + rowH
-                        );
+                        float maxSnipRight = railW + fullDrawerW - config.ScaleF(50.0f);
+                        float snipW = (std::max)(10.0f, maxSnipRight - snipX);
+                        D2D1_RECT_F rcSnip = D2D1::RectF(snipX, curY, maxSnipRight, curY + rowH);
 
                         std::wstring trimmed = match.lineText;
                         size_t firstNonSpace = trimmed.find_first_not_of(L" \t");
@@ -1331,12 +1385,23 @@ void DrawerPanel::RenderSearchPane(ID2D1RenderTarget* pRT, Theme& theme, const a
                             trimmed = trimmed.substr(firstNonSpace);
                         }
 
+                        D2D1_RECT_F snipClip = D2D1::RectF(snipX, curY, maxSnipRight, curY + rowH);
+                        pRT->PushAxisAlignedClip(snipClip, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+
                         if (theme.dwriteFactory) {
                             Microsoft::WRL::ComPtr<IDWriteTextLayout> pSnippetLayout;
                             if (SUCCEEDED(theme.dwriteFactory->CreateTextLayout(
                                     trimmed.c_str(), static_cast<UINT32>(trimmed.length()),
                                     theme.fontCode ? theme.fontCode.Get() : theme.fontBody.Get(),
-                                    rcSnip.right - rcSnip.left, rowH, &pSnippetLayout))) {
+                                    snipW, rowH, &pSnippetLayout))) {
+                                pSnippetLayout->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+                                pSnippetLayout->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+
+                                DWRITE_TRIMMING trimming = { DWRITE_TRIMMING_GRANULARITY_CHARACTER, 0, 0 };
+                                Microsoft::WRL::ComPtr<IDWriteInlineObject> pEllipsis;
+                                if (SUCCEEDED(theme.dwriteFactory->CreateEllipsisTrimmingSign(theme.fontCode ? theme.fontCode.Get() : theme.fontBody.Get(), &pEllipsis))) {
+                                    pSnippetLayout->SetTrimming(&trimming, pEllipsis.Get());
+                                }
 
                                 // Find matches in trimmed snippet
                                 std::wstring qLower = m_searchQuery;
@@ -1381,6 +1446,8 @@ void DrawerPanel::RenderSearchPane(ID2D1RenderTarget* pRT, Theme& theme, const a
                                           rcSnip, theme.brushTextPrimary.Get());
                         }
 
+                        pRT->PopAxisAlignedClip();
+
                         if (isMatchHovered) {
                             float btnSize = config.ScaleF(16.0f);
                             float rightX = railW + fullDrawerW - config.ScaleF(8.0f);
@@ -1388,18 +1455,36 @@ void DrawerPanel::RenderSearchPane(ID2D1RenderTarget* pRT, Theme& theme, const a
                             rightX -= (btnSize + config.ScaleF(3.0f));
                             match.replaceBtnBounds = D2D1::RectF(rightX - btnSize, curY + (rowH - btnSize) * 0.5f, rightX, curY + (rowH + btnSize) * 0.5f);
 
+                            bool isDismissHovered = (m_searchMousePos.x >= match.dismissBtnBounds.left && m_searchMousePos.x <= match.dismissBtnBounds.right &&
+                                                     m_searchMousePos.y >= match.dismissBtnBounds.top && m_searchMousePos.y <= match.dismissBtnBounds.bottom);
+                            bool isReplaceHovered = (m_searchMousePos.x >= match.replaceBtnBounds.left && m_searchMousePos.x <= match.replaceBtnBounds.right &&
+                                                     m_searchMousePos.y >= match.replaceBtnBounds.top && m_searchMousePos.y <= match.replaceBtnBounds.bottom);
+
+                            if (isDismissHovered) {
+                                D2D1_ROUNDED_RECT rrc = D2D1::RoundedRect(match.dismissBtnBounds, 3.0f, 3.0f);
+                                pRT->FillRoundedRectangle(&rrc, theme.brushItemActive ? theme.brushItemActive.Get() : theme.brushItemHover.Get());
+                            }
+                            if (isReplaceHovered) {
+                                D2D1_ROUNDED_RECT rrc = D2D1::RoundedRect(match.replaceBtnBounds, 3.0f, 3.0f);
+                                pRT->FillRoundedRectangle(&rrc, theme.brushItemActive ? theme.brushItemActive.Get() : theme.brushItemHover.Get());
+                            }
+
                             // Draw Dismiss (✕) Button
                             float dmx = (match.dismissBtnBounds.left + match.dismissBtnBounds.right) * 0.5f;
                             float dmy = (match.dismissBtnBounds.top + match.dismissBtnBounds.bottom) * 0.5f;
                             float dr = config.ScaleF(3.5f);
-                            pRT->DrawLine(D2D1::Point2F(dmx - dr, dmy - dr), D2D1::Point2F(dmx + dr, dmy + dr), theme.brushTextSecondary.Get(), 1.2f);
-                            pRT->DrawLine(D2D1::Point2F(dmx + dr, dmy - dr), D2D1::Point2F(dmx - dr, dmy + dr), theme.brushTextSecondary.Get(), 1.2f);
+                            pRT->DrawLine(D2D1::Point2F(dmx - dr, dmy - dr), D2D1::Point2F(dmx + dr, dmy + dr),
+                                          isDismissHovered ? theme.brushTextPrimary.Get() : theme.brushTextSecondary.Get(), 1.2f);
+                            pRT->DrawLine(D2D1::Point2F(dmx + dr, dmy - dr), D2D1::Point2F(dmx - dr, dmy + dr),
+                                          isDismissHovered ? theme.brushTextPrimary.Get() : theme.brushTextSecondary.Get(), 1.2f);
 
                             // Draw Replace Occurrence Button (pen/replace icon)
                             float rpx = (match.replaceBtnBounds.left + match.replaceBtnBounds.right) * 0.5f;
                             float rpy = (match.replaceBtnBounds.top + match.replaceBtnBounds.bottom) * 0.5f;
-                            pRT->DrawLine(D2D1::Point2F(rpx - 3.5f, rpy + 3.5f), D2D1::Point2F(rpx + 2.5f, rpy - 2.5f), theme.brushTextSecondary.Get(), 1.2f);
-                            pRT->DrawLine(D2D1::Point2F(rpx + 0.5f, rpy - 4.0f), D2D1::Point2F(rpx + 4.0f, rpy - 0.5f), theme.brushTextPrimary.Get(), 1.2f);
+                            pRT->DrawLine(D2D1::Point2F(rpx - 3.5f, rpy + 3.5f), D2D1::Point2F(rpx + 2.5f, rpy - 2.5f),
+                                          isReplaceHovered ? theme.brushTextPrimary.Get() : theme.brushTextSecondary.Get(), 1.2f);
+                            pRT->DrawLine(D2D1::Point2F(rpx + 0.5f, rpy - 4.0f), D2D1::Point2F(rpx + 4.0f, rpy - 0.5f),
+                                          isReplaceHovered ? theme.brushTextPrimary.Get() : theme.brushTextSecondary.Get(), 1.2f);
                         } else {
                             match.replaceBtnBounds = D2D1::RectF(0, 0, 0, 0);
                             match.dismissBtnBounds = D2D1::RectF(0, 0, 0, 0);
@@ -2746,6 +2831,7 @@ void DrawerPanel::HandleRenameKeyDown(WPARAM wParam) {
  * @return True if tooltip state changed and requires repaint.
  */
 bool DrawerPanel::HandleSearchMouseMove(POINT pt) {
+    m_searchMousePos = pt;
     std::wstring oldTip = m_searchTooltipText;
     m_searchTooltipText.clear();
 

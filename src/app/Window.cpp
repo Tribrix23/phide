@@ -2015,6 +2015,32 @@ bool Window::Create(HINSTANCE hInstance, int nCmdShow) {
 
     // Register callback for reactive git state updates
     m_drawer.SetOnGitStateChanged([this]() {
+        // Auto-close any working tree diff view whose file no longer has git changes
+        const auto& gitChanges = m_drawer.GetGitChanges();
+        for (int g = static_cast<int>(m_editorGroups.size()) - 1; g >= 0; --g) {
+            if (g >= static_cast<int>(m_editorGroups.size())) continue;
+            for (int d = static_cast<int>(m_editorGroups[g].docs.size()) - 1; d >= 0; --d) {
+                if (g >= static_cast<int>(m_editorGroups.size())) break;
+                if (d >= static_cast<int>(m_editorGroups[g].docs.size())) continue;
+                auto& doc = m_editorGroups[g].docs[d];
+                if (doc.isDiffView && !doc.isDiffRightReadOnly) {
+                    bool stillHasChanges = false;
+                    for (const auto& item : gitChanges) {
+                        std::wstring cleanDoc = doc.filePath;
+                        for (auto& c : cleanDoc) if (c == L'/') c = L'\\';
+                        std::wstring cleanItem = item.path;
+                        for (auto& c : cleanItem) if (c == L'/') c = L'\\';
+                        if (cleanDoc == cleanItem || cleanDoc.ends_with(cleanItem) || cleanItem.ends_with(cleanDoc)) {
+                            stillHasChanges = true;
+                            break;
+                        }
+                    }
+                    if (!stillHasChanges) {
+                        CloseDocument(g, d);
+                    }
+                }
+            }
+        }
         if (m_hwnd) {
             InvalidateRect(m_hwnd, nullptr, FALSE);
         }
@@ -3168,7 +3194,31 @@ void Window::HandleLButtonDown(POINT clientPt) {
                     OpenFileDocument(openFile, false);
                 }
                 if (!discardedFile.empty()) {
-                    // Reload open document buffers if matching discarded file
+                    // 1. Auto-close any working tree diff view tabs matching the discarded file(s)
+                    for (int g = static_cast<int>(m_editorGroups.size()) - 1; g >= 0; --g) {
+                        if (g >= static_cast<int>(m_editorGroups.size())) continue;
+                        for (int d = static_cast<int>(m_editorGroups[g].docs.size()) - 1; d >= 0; --d) {
+                            if (g >= static_cast<int>(m_editorGroups.size())) break;
+                            if (d >= static_cast<int>(m_editorGroups[g].docs.size())) continue;
+                            auto& doc = m_editorGroups[g].docs[d];
+                            if (doc.isDiffView && !doc.isDiffRightReadOnly) {
+                                std::wstring cleanDoc = doc.filePath;
+                                for (auto& c : cleanDoc) if (c == L'/') c = L'\\';
+                                std::wstring cleanDisc = discardedFile;
+                                for (auto& c : cleanDisc) if (c == L'/') c = L'\\';
+
+                                bool matches = (discardedFile == L"*") ||
+                                               (cleanDoc == cleanDisc) ||
+                                               (cleanDoc.ends_with(cleanDisc)) ||
+                                               (cleanDisc.ends_with(cleanDoc));
+                                if (matches) {
+                                    CloseDocument(g, d);
+                                }
+                            }
+                        }
+                    }
+
+                    // 2. Reload open regular document buffers if matching discarded file
                     for (auto& group : m_editorGroups) {
                         for (auto& doc : group.docs) {
                             if (!doc.filePath.empty()) {
