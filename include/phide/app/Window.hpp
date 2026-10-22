@@ -373,6 +373,9 @@ private:
     void StartWorkspaceWatcher(const std::wstring& folderPath);
     void StopWorkspaceWatcher();
 
+    /** @brief Queues a debounced Git status refresh (e.g. 2s after typing/saving stops). */
+    void TriggerDebouncedGitRefresh(DWORD delayMs = 2000);
+
     // Win32 & D2D handles
     HWND m_hwnd = nullptr;
     ComPtr<ID2D1Factory> m_pD2DFactory;
@@ -409,6 +412,8 @@ private:
     bool m_suppressNextChar = false;
     bool m_isCleanNewWindow = false;
     bool m_isDraggingGitSplitter = false;
+    bool m_gitRefreshPending = false;
+    ULONGLONG m_gitRefreshTargetTime = 0;
     std::vector<std::wstring> m_recentPaths;
     std::wstring m_lastClosedFilePath;
 

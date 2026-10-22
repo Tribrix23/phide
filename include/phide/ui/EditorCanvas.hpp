@@ -247,6 +247,13 @@ private:
                               float topY, float clientHeight);
 
     /**
+     * @brief Renders the multi-file commit diff view (matching Image 4) showing all files changed in a commit.
+     */
+    void RenderMultiFileDiffView(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
+                                 editor::OpenDocument& doc, float canvasLeft, float canvasWidth,
+                                 float topY, float clientHeight, bool isPaneFocused);
+
+    /**
      * @brief Renders a single editor pane (tabs, breadcrumbs, content).
      */
     void RenderSinglePane(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,

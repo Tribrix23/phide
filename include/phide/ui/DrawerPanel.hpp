@@ -80,6 +80,13 @@ struct GitChangeItem {
     D2D1_RECT_F discardBtnBounds{};
 };
 
+struct GitCmdResult {
+    int exitCode = -1;
+    std::wstring output;
+};
+
+GitCmdResult RunGitCmd(const std::wstring& cmd, const std::wstring& workDir);
+
 /**
  * @struct GitCommitFile
  * @brief Represents a file modified in a specific git commit (Image 3).
@@ -111,6 +118,7 @@ struct GitCommitItem {
     std::vector<GitCommitFile> files;
     D2D1_RECT_F bounds{};
     D2D1_RECT_F chevronBounds{};
+    D2D1_RECT_F openChangesBtnBounds{};
 };
 
 /**
@@ -186,6 +194,8 @@ public:
 
     [[nodiscard]] bool IsGitRepo() const noexcept { return m_isGitRepo; }
     [[nodiscard]] bool IsGitLoading() const noexcept { return m_isGitLoading.load(); }
+    [[nodiscard]] bool IsGitRefreshing() const noexcept { return m_isGitRefreshing.load(); }
+    [[nodiscard]] std::mutex& GetGitMutex() const noexcept { return m_gitMutex; }
     void UpdateGitLoadingAnim(float deltaAngle) noexcept { m_gitAnimAngle += deltaAngle; }
     [[nodiscard]] bool IsGitCommitBoxFocused() const noexcept { return m_focusedGitInput == 1; }
     void SetGitCommitBoxFocus(int focus) noexcept { m_focusedGitInput = focus; }
@@ -223,6 +233,12 @@ public:
     }
     [[nodiscard]] bool IsCommitCardVisible() const noexcept {
         return (m_hoveredCommitIdx >= 0 || m_selectedCommitIdx >= 0);
+    }
+    [[nodiscard]] const D2D1_RECT_F& GetCommitCardBounds() const noexcept { return m_commitCardBounds; }
+    [[nodiscard]] bool HitTestCommitCard(POINT pt) const noexcept {
+        return IsCommitCardVisible() &&
+               pt.x >= m_commitCardBounds.left && pt.x <= m_commitCardBounds.right &&
+               pt.y >= m_commitCardBounds.top && pt.y <= m_commitCardBounds.bottom;
     }
     void SetOnGitStateChanged(std::function<void()> cb) { m_onGitStateChanged = std::move(cb); }
 
@@ -476,6 +492,7 @@ private:
     std::vector<GitChangeItem> m_gitChanges;
     std::vector<GitCommitItem> m_gitCommits;
     std::atomic<bool> m_isGitLoading{false};
+    std::atomic<bool> m_isGitRefreshing{false};
     float m_gitAnimAngle = 0.0f;
     mutable std::mutex m_gitMutex;
 

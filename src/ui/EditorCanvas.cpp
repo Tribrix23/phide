@@ -256,7 +256,9 @@ void EditorCanvas::RenderSinglePane(ID2D1RenderTarget* pRT, Theme& theme, const 
     } else if (activeDoc.isUnsupportedBinary) {
         RenderUnsupportedBinaryView(pRT, theme, config, activeDoc, canvasLeft, canvasWidth, contentTopY, clientHeight);
     } else if (activeDoc.isDiffView) {
-        if (activeDoc.isDiffBinary) {
+        if (activeDoc.isMultiFileDiff) {
+            RenderMultiFileDiffView(pRT, theme, config, activeDoc, canvasLeft, canvasWidth, contentTopY, clientHeight, isPaneFocused);
+        } else if (activeDoc.isDiffBinary) {
             RenderDiffBinaryView(pRT, theme, config, activeDoc, canvasLeft, canvasWidth, contentTopY, clientHeight);
         } else {
             RenderDiffView(pRT, theme, config, activeDoc, canvasLeft, canvasWidth, contentTopY, clientHeight, isPaneFocused);
@@ -2159,6 +2161,263 @@ void EditorCanvas::RenderDiffBinaryView(ID2D1RenderTarget* pRT, Theme& theme, co
     D2D1_RECT_F rcSub = D2D1::RectF(rcCard.left + config.ScaleF(16.0f), rcCard.top + config.ScaleF(72.0f), rcCard.right - config.ScaleF(16.0f), rcCard.bottom - config.ScaleF(10.0f));
     pRT->DrawText(sub.c_str(), static_cast<UINT32>(sub.length()),
                   theme.fontBody.Get(), rcSub, theme.brushTextSecondary.Get());
+}
+
+void EditorCanvas::RenderMultiFileDiffView(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
+                                           editor::OpenDocument& doc, float canvasLeft, float canvasWidth,
+                                           float topY, float clientHeight, bool isPaneFocused) {
+    (void)isPaneFocused;
+    const float headerBarH = config.ScaleF(28.0f);
+    const float lineH = config.ScaleF(20.0f);
+    const float gutterW = config.ScaleF(46.0f);
+    const float scrollbarW = config.ScaleF(12.0f);
+    const float dividerW = config.ScaleF(24.0f);
+    const float usableW = canvasWidth - scrollbarW;
+    const float halfW = (usableW - dividerW) * 0.5f;
+
+    const float leftX = canvasLeft;
+    const float dividerX = leftX + halfW;
+    const float rightX = dividerX + dividerW;
+
+    IDWriteTextFormat* pCodeFmt = theme.fontCode ? theme.fontCode.Get() : theme.fontBody.Get();
+    IDWriteTextFormat* pLabelFmt = theme.fontMenuItem ? theme.fontMenuItem.Get() : theme.fontBody.Get();
+
+    // Clip rendering to content area
+    pRT->PushAxisAlignedClip(D2D1::RectF(canvasLeft, topY, canvasLeft + canvasWidth, clientHeight), D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+
+    // Calculate total visual rows for scrollbar
+    size_t totalVisualRows = 0;
+    for (const auto& entry : doc.multiFileDiffs) {
+        totalVisualRows += 2; // header bar (~1.4 rows)
+        if (!entry.isCollapsed) {
+            if (entry.isBinary) {
+                totalVisualRows += 3;
+            } else {
+                size_t nLeft = entry.originalBuffer.GetLineCount();
+                size_t nRight = entry.workingBuffer.GetLineCount();
+                totalVisualRows += (std::max)(nLeft, nRight);
+            }
+        }
+    }
+    if (totalVisualRows == 0) totalVisualRows = 1;
+
+    // Viewport row capacity
+    float viewH = clientHeight - topY;
+    size_t visibleRows = static_cast<size_t>(viewH / lineH);
+    if (visibleRows < 2) visibleRows = 2;
+    if (doc.scrollLine > totalVisualRows) doc.scrollLine = (totalVisualRows > visibleRows) ? (totalVisualRows - visibleRows) : 0;
+
+    // Virtual Y start based on scrollLine
+    float curY = topY - static_cast<float>(doc.scrollLine) * lineH;
+
+    // Common brushes for diff highlights
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushDiffRedBg;
+    pRT->CreateSolidColorBrush(D2D1::ColorF(0.55f, 0.18f, 0.20f, 0.28f), &brushDiffRedBg);
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushDiffRedBar;
+    pRT->CreateSolidColorBrush(D2D1::ColorF(0.878f, 0.424f, 0.459f, 1.0f), &brushDiffRedBar);
+
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushDiffGreenBg;
+    pRT->CreateSolidColorBrush(D2D1::ColorF(0.18f, 0.45f, 0.20f, 0.28f), &brushDiffGreenBg);
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushDiffGreenBar;
+    pRT->CreateSolidColorBrush(D2D1::ColorF(0.40f, 0.78f, 0.45f, 1.0f), &brushDiffGreenBar);
+
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushHeaderBg;
+    pRT->CreateSolidColorBrush(D2D1::ColorF(0.14f, 0.14f, 0.16f, 1.0f), &brushHeaderBg);
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushHeaderBorder;
+    pRT->CreateSolidColorBrush(D2D1::ColorF(0.24f, 0.24f, 0.26f, 1.0f), &brushHeaderBorder);
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushHiddenLinesBg;
+    pRT->CreateSolidColorBrush(D2D1::ColorF(0.16f, 0.16f, 0.18f, 0.85f), &brushHiddenLinesBg);
+
+    for (size_t fIdx = 0; fIdx < doc.multiFileDiffs.size(); ++fIdx) {
+        auto& entry = doc.multiFileDiffs[fIdx];
+
+        // 1. Render Collapsible File Header Banner (Image 4)
+        entry.headerBounds = D2D1::RectF(canvasLeft, curY, canvasLeft + usableW, curY + headerBarH);
+
+        if (curY + headerBarH >= topY && curY <= clientHeight) {
+            pRT->FillRectangle(entry.headerBounds, brushHeaderBg.Get());
+            pRT->DrawLine(D2D1::Point2F(canvasLeft, curY), D2D1::Point2F(canvasLeft + usableW, curY), brushHeaderBorder.Get(), 1.0f);
+            pRT->DrawLine(D2D1::Point2F(canvasLeft, curY + headerBarH), D2D1::Point2F(canvasLeft + usableW, curY + headerBarH), brushHeaderBorder.Get(), 1.0f);
+
+            // Expand/collapse chevron
+            const wchar_t* chv = entry.isCollapsed ? L"›" : L"⌄";
+            D2D1_RECT_F rcChv = D2D1::RectF(canvasLeft + config.ScaleF(10.0f), curY + config.ScaleF(2.0f), canvasLeft + config.ScaleF(24.0f), curY + headerBarH);
+            pRT->DrawText(chv, 1, pLabelFmt, rcChv, theme.brushTextMuted.Get());
+
+            // File icon representation (e.g. C- for C++, js for JS, etc.)
+            float textX = canvasLeft + config.ScaleF(28.0f);
+            float iconW = config.ScaleF(18.0f);
+            Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushIcon;
+            if (entry.fileName.ends_with(L".hpp") || entry.fileName.ends_with(L".h")) {
+                pRT->CreateSolidColorBrush(D2D1::ColorF(0.35f, 0.65f, 0.95f, 1.0f), &brushIcon);
+            } else if (entry.fileName.ends_with(L".cpp") || entry.fileName.ends_with(L".c")) {
+                pRT->CreateSolidColorBrush(D2D1::ColorF(0.20f, 0.50f, 0.90f, 1.0f), &brushIcon);
+            } else if (entry.fileName.ends_with(L".json") || entry.fileName.ends_with(L".yml") || entry.fileName.ends_with(L".yaml")) {
+                pRT->CreateSolidColorBrush(D2D1::ColorF(0.95f, 0.75f, 0.25f, 1.0f), &brushIcon);
+            } else {
+                pRT->CreateSolidColorBrush(D2D1::ColorF(0.70f, 0.70f, 0.75f, 1.0f), &brushIcon);
+            }
+            D2D1_RECT_F rcIcon = D2D1::RectF(textX, curY + config.ScaleF(5.0f), textX + iconW, curY + config.ScaleF(23.0f));
+            pRT->DrawRectangle(rcIcon, brushIcon.Get(), 1.2f);
+            textX += iconW + config.ScaleF(8.0f);
+
+            // File Name (bold white)
+            float nameW = static_cast<float>(entry.fileName.length()) * config.ScaleF(8.0f);
+            D2D1_RECT_F rcName = D2D1::RectF(textX, curY + config.ScaleF(4.0f), textX + nameW, curY + headerBarH);
+            pRT->DrawText(entry.fileName.c_str(), static_cast<UINT32>(entry.fileName.length()), pLabelFmt, rcName, theme.brushTextPrimary.Get());
+            textX += nameW + config.ScaleF(10.0f);
+
+            // Relative directory (dimmed gray, matching Image 4)
+            if (!entry.relDir.empty()) {
+                D2D1_RECT_F rcDir = D2D1::RectF(textX, curY + config.ScaleF(4.0f), canvasLeft + usableW - config.ScaleF(120.0f), curY + headerBarH);
+                pRT->DrawText(entry.relDir.c_str(), static_cast<UINT32>(entry.relDir.length()), pLabelFmt, rcDir, theme.brushTextMuted.Get());
+            }
+
+            // Right-side stats/pills
+            if (entry.isBinary) {
+                float badgeW = config.ScaleF(56.0f);
+                float badgeH = config.ScaleF(16.0f);
+                D2D1_ROUNDED_RECT rrcPill = D2D1::RoundedRect(
+                    D2D1::RectF(canvasLeft + usableW - badgeW - config.ScaleF(12.0f), curY + (headerBarH - badgeH) * 0.5f,
+                                canvasLeft + usableW - config.ScaleF(12.0f), curY + (headerBarH + badgeH) * 0.5f),
+                    3.0f, 3.0f
+                );
+                Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushBadge;
+                pRT->CreateSolidColorBrush(D2D1::ColorF(0.65f, 0.45f, 0.95f, 1.0f), &brushBadge);
+                pRT->FillRoundedRectangle(rrcPill, brushBadge.Get());
+                const wchar_t* bText = L"BINARY";
+                pRT->DrawText(bText, 6, pLabelFmt, rrcPill.rect, theme.brushTextWhite.Get());
+            } else {
+                size_t nAdds = entry.addedLines.size();
+                size_t nDels = entry.deletedLines.size();
+                std::wstring statStr = L"+" + std::to_wstring(nAdds) + L" -" + std::to_wstring(nDels);
+                D2D1_RECT_F rcStat = D2D1::RectF(canvasLeft + usableW - config.ScaleF(110.0f), curY + config.ScaleF(4.0f),
+                                                 canvasLeft + usableW - config.ScaleF(14.0f), curY + headerBarH);
+                pRT->DrawText(statStr.c_str(), static_cast<UINT32>(statStr.length()), pLabelFmt, rcStat, brushDiffGreenBar.Get());
+            }
+        }
+        curY += headerBarH;
+
+        // 2. Render File Diff Body (if expanded)
+        if (!entry.isCollapsed) {
+            if (entry.isBinary) {
+                // Binary placeholder box
+                float boxH = config.ScaleF(44.0f);
+                if (curY + boxH >= topY && curY <= clientHeight) {
+                    D2D1_RECT_F rcBox = D2D1::RectF(canvasLeft, curY, canvasLeft + usableW, curY + boxH);
+                    pRT->FillRectangle(rcBox, theme.brushCanvasBg.Get());
+                    const wchar_t* binNotice = L"Binary file not shown";
+                    D2D1_RECT_F rcNotice = D2D1::RectF(canvasLeft + config.ScaleF(40.0f), curY + config.ScaleF(12.0f), canvasLeft + usableW, curY + boxH);
+                    pRT->DrawText(binNotice, static_cast<UINT32>(wcslen(binNotice)), pLabelFmt, rcNotice, theme.brushTextMuted.Get());
+                }
+                curY += boxH;
+            } else {
+                size_t nLeft = entry.originalBuffer.GetLineCount();
+                size_t nRight = entry.workingBuffer.GetLineCount();
+                size_t maxLines = (std::max)(nLeft, nRight);
+
+                // Render side-by-side lines
+                size_t l = 0;
+                while (l < maxLines) {
+                    // Check for consecutive unchanged lines to show hidden lines banner (Image 4)
+                    bool isLeftDel = (l < nLeft && entry.deletedLines.contains(l));
+                    bool isRightAdd = (l < nRight && entry.addedLines.contains(l));
+
+                    if (!isLeftDel && !isRightAdd) {
+                        size_t unchangedCount = 0;
+                        size_t peek = l;
+                        while (peek < maxLines) {
+                            bool pd = (peek < nLeft && entry.deletedLines.contains(peek));
+                            bool pa = (peek < nRight && entry.addedLines.contains(peek));
+                            if (pd || pa) break;
+                            unchangedCount++;
+                            peek++;
+                        }
+
+                        if (unchangedCount > 8) {
+                            // Render Hidden Lines Bar (Image 4)
+                            float barH = lineH;
+                            if (curY + barH >= topY && curY <= clientHeight) {
+                                D2D1_RECT_F rcBar = D2D1::RectF(canvasLeft, curY, canvasLeft + usableW, curY + barH);
+                                pRT->FillRectangle(rcBar, brushHiddenLinesBg.Get());
+                                pRT->DrawLine(D2D1::Point2F(canvasLeft, curY), D2D1::Point2F(canvasLeft + usableW, curY), brushHeaderBorder.Get(), 0.8f);
+                                pRT->DrawLine(D2D1::Point2F(canvasLeft, curY + barH), D2D1::Point2F(canvasLeft + usableW, curY + barH), brushHeaderBorder.Get(), 0.8f);
+
+                                std::wstring hidText = L"❊  " + std::to_wstring(unchangedCount) + L" hidden lines  ❊";
+                                D2D1_RECT_F rcHidText = D2D1::RectF(canvasLeft + gutterW, curY + 1.0f, canvasLeft + usableW, curY + barH);
+                                pRT->DrawText(hidText.c_str(), static_cast<UINT32>(hidText.length()), pLabelFmt, rcHidText, theme.brushTextMuted.Get());
+                            }
+                            curY += barH;
+                            l += unchangedCount;
+                            continue;
+                        }
+                    }
+
+                    if (curY + lineH >= topY && curY <= clientHeight) {
+                        // Left pane line (Parent commit)
+                        if (l < nLeft) {
+                            D2D1_RECT_F rcLeftLine = D2D1::RectF(leftX, curY, dividerX, curY + lineH);
+                            if (isLeftDel) {
+                                pRT->FillRectangle(rcLeftLine, brushDiffRedBg.Get());
+                                pRT->FillRectangle(D2D1::RectF(leftX, curY, leftX + 3.0f, curY + lineH), brushDiffRedBar.Get());
+                            }
+                            // Gutter number
+                            std::wstring num = std::to_wstring(l + 1);
+                            D2D1_RECT_F rcGutter = D2D1::RectF(leftX + 2.0f, curY + 1.0f, leftX + gutterW - 6.0f, curY + lineH);
+                            pRT->DrawText(num.c_str(), static_cast<UINT32>(num.length()), pCodeFmt, rcGutter, theme.brushLineNumber.Get());
+
+                            // Text
+                            std::wstring lineText = entry.originalBuffer.GetLine(l);
+                            D2D1_RECT_F rcText = D2D1::RectF(leftX + gutterW, curY + 1.0f, dividerX, curY + lineH);
+                            pRT->DrawText(lineText.c_str(), static_cast<UINT32>(lineText.length()), pCodeFmt, rcText, isLeftDel ? brushDiffRedBar.Get() : theme.brushTextPrimary.Get());
+                        }
+
+                        // Right pane line (This commit)
+                        if (l < nRight) {
+                            D2D1_RECT_F rcRightLine = D2D1::RectF(rightX, curY, rightX + halfW, curY + lineH);
+                            if (isRightAdd) {
+                                pRT->FillRectangle(rcRightLine, brushDiffGreenBg.Get());
+                                pRT->FillRectangle(D2D1::RectF(rightX, curY, rightX + 3.0f, curY + lineH), brushDiffGreenBar.Get());
+                            }
+                            // Gutter number
+                            std::wstring num = std::to_wstring(l + 1);
+                            D2D1_RECT_F rcGutter = D2D1::RectF(rightX + 2.0f, curY + 1.0f, rightX + gutterW - 6.0f, curY + lineH);
+                            pRT->DrawText(num.c_str(), static_cast<UINT32>(num.length()), pCodeFmt, rcGutter, theme.brushLineNumber.Get());
+
+                            // Text
+                            std::wstring lineText = entry.workingBuffer.GetLine(l);
+                            D2D1_RECT_F rcText = D2D1::RectF(rightX + gutterW, curY + 1.0f, rightX + halfW, curY + lineH);
+                            pRT->DrawText(lineText.c_str(), static_cast<UINT32>(lineText.length()), pCodeFmt, rcText, isRightAdd ? brushDiffGreenBar.Get() : theme.brushTextPrimary.Get());
+                        }
+
+                        // Divider between left and right
+                        pRT->DrawLine(D2D1::Point2F(dividerX + dividerW * 0.5f, curY), D2D1::Point2F(dividerX + dividerW * 0.5f, curY + lineH), brushHeaderBorder.Get(), 0.5f);
+                    }
+                    curY += lineH;
+                    l++;
+                }
+            }
+        }
+    }
+
+    // Scrollbar Track & Thumb
+    float trackLeft = canvasLeft + canvasWidth - scrollbarW;
+    doc.scrollbarTrack = D2D1::RectF(trackLeft, topY, canvasLeft + canvasWidth, clientHeight);
+    pRT->FillRectangle(doc.scrollbarTrack, theme.brushHeaderBg.Get());
+
+    if (totalVisualRows > visibleRows) {
+        float ratio = static_cast<float>(visibleRows) / static_cast<float>(totalVisualRows);
+        float thumbH = (std::max)(viewH * ratio, config.ScaleF(24.0f));
+        float scrollRange = viewH - thumbH;
+        float progress = static_cast<float>(doc.scrollLine) / static_cast<float>(totalVisualRows - visibleRows);
+        float thumbY = topY + progress * scrollRange;
+
+        doc.scrollbarThumb = D2D1::RectF(trackLeft + 2.0f, thumbY, trackLeft + scrollbarW - 2.0f, thumbY + thumbH);
+        D2D1_ROUNDED_RECT rrcThumb = D2D1::RoundedRect(doc.scrollbarThumb, 3.0f, 3.0f);
+        pRT->FillRoundedRectangle(rrcThumb, theme.brushBorderSubtle.Get());
+    }
+
+    pRT->PopAxisAlignedClip();
 }
 
 } // namespace phide::ui

@@ -77,6 +77,28 @@ struct OpenDocument {
         enum class HunkType { Modified, Added, Deleted } type = HunkType::Modified;
     };
     std::vector<DiffHunkItem> diffHunks; ///< Structured diff hunks between left and right buffers
+
+    // Multi-File Commit Diff View (Image 4)
+    struct MultiFileDiffEntry {
+        std::wstring filePath;           ///< Relative path (e.g. "include/phide/app/Window.hpp")
+        std::wstring fileName;           ///< Basename (e.g. "Window.hpp")
+        std::wstring relDir;             ///< Directory path (e.g. "include\\phide\\app")
+        std::wstring status;             ///< Status code (e.g. "M", "A", "D")
+        bool isCollapsed = false;        ///< Collapsed accordion state
+        bool isBinary = false;           ///< True for binary files (e.g. .exe, .png)
+        Buffer originalBuffer;           // Parent commit content
+        Buffer workingBuffer;            // Commit content
+        std::set<size_t> addedLines;
+        std::set<size_t> deletedLines;
+        std::vector<DiffHunkItem> hunks;
+        D2D1_RECT_F headerBounds{};      // Clickable file header banner
+    };
+    bool isMultiFileDiff = false;        ///< True if this document renders all files changed in a commit (Image 4)
+    std::wstring commitHash;             ///< Commit hash for multi-file commit diff
+    std::wstring commitAuthor;           ///< Commit author
+    std::wstring commitDate;             ///< Commit date
+    std::wstring commitMessage;          ///< Full commit message
+    std::vector<MultiFileDiffEntry> multiFileDiffs; ///< List of all files changed in this commit
 };
 
 /**

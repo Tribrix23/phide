@@ -296,6 +296,11 @@ std::wstring Window::GetSnippetsConfigPath() const {
     return L"snippets.json";
 }
 
+void Window::TriggerDebouncedGitRefresh(DWORD delayMs) {
+    m_gitRefreshPending = true;
+    m_gitRefreshTargetTime = GetTickCount64() + static_cast<ULONGLONG>(delayMs);
+}
+
 void Window::StartWorkspaceWatcher(const std::wstring& folderPath) {
     StopWorkspaceWatcher();
     if (folderPath.empty() || !std::filesystem::exists(folderPath)) return;
@@ -322,12 +327,11 @@ void Window::StartWorkspaceWatcher(const std::wstring& folderPath) {
             if (waitRes == WAIT_OBJECT_0) {
                 break;
             } else if (waitRes == WAIT_OBJECT_0 + 1) {
-                // Event-driven change detected on disk!
-                Sleep(250); // Debounce
+                // Coalesce rapid disk events (debounced quiet period)
+                Sleep(1500);
                 FindNextChangeNotification(hChange);
-                self->m_drawer.RefreshGitState(true, false);
                 if (self->m_hwnd) {
-                    PostMessageW(self->m_hwnd, WM_USER + 201, 0, 0);
+                    PostMessageW(self->m_hwnd, WM_USER + 202, 0, 0);
                 }
             } else {
                 break;
@@ -872,72 +876,138 @@ void Window::OpenDiffDocument(const std::wstring& relPath, bool isPreview) {
 void Window::OpenCommitDiffDocument(const std::wstring& commitHash, const std::wstring& relPath) {
     if (commitHash.empty()) return;
 
-    std::wstring targetPath = relPath;
-    std::wstring commitMsg = L"Commit";
-    int fileCount = 1;
+    try {
+        std::wstring commitMsg = L"Commit";
+        std::wstring author = L"";
+        std::wstring dateStr = L"";
+        std::vector<ui::GitCommitFile> commitFiles;
 
-    // Find commit info from Drawer commits
-    for (const auto& ci : m_drawer.GetGitCommits()) {
-        if (ci.hash == commitHash) {
-            commitMsg = ci.message;
-            if (!ci.files.empty()) {
-                fileCount = static_cast<int>(ci.files.size());
-                if (targetPath.empty()) {
-                    for (const auto& f : ci.files) {
-                        if (!IsBinaryDiffPath(f.path)) {
-                            targetPath = f.path;
-                            break;
-                        }
-                    }
-                    if (targetPath.empty()) {
-                        targetPath = ci.files[0].path;
-                    }
+        {
+            std::lock_guard<std::mutex> lock(m_drawer.GetGitMutex());
+            for (const auto& ci : m_drawer.GetGitCommits()) {
+                if (ci.hash == commitHash) {
+                    commitMsg = ci.message;
+                    author = ci.author;
+                    dateStr = ci.relativeTime;
+                    commitFiles = ci.files;
+                    break;
                 }
             }
-            break;
         }
+
+        // If files not loaded yet, query git show --name-status
+        if (commitFiles.empty()) {
+            std::wstring dir = m_drawer.GetOpenFolderPath();
+            if (dir.empty()) dir = L".";
+            auto res = ui::RunGitCmd(L"show --name-status --pretty=\"\" " + commitHash, dir);
+            if (res.exitCode == 0) {
+                std::wstringstream ss(res.output);
+                std::wstring line;
+                while (std::getline(ss, line)) {
+                    while (!line.empty() && (line.back() == L'\r' || line.back() == L'\n' || line.back() == L' ')) line.pop_back();
+                    if (line.empty()) continue;
+                    size_t tab = line.find(L'\t');
+                    std::wstring status = L"M";
+                    std::wstring fPath;
+                    if (tab != std::wstring::npos) {
+                        status = line.substr(0, tab);
+                        fPath = line.substr(tab + 1);
+                    } else {
+                        fPath = line;
+                    }
+                    if (fPath.size() >= 2 && fPath.front() == L'"' && fPath.back() == L'"') {
+                        fPath = fPath.substr(1, fPath.size() - 2);
+                    }
+                    for (auto& c : fPath) if (c == L'/') c = L'\\';
+                    std::filesystem::path p(fPath);
+                    ui::GitCommitFile cf;
+                    cf.path = fPath;
+                    cf.fileName = p.filename().wstring();
+                    cf.relDir = p.parent_path().wstring();
+                    cf.status = status.empty() ? L"M" : status;
+                    commitFiles.push_back(std::move(cf));
+                }
+            }
+        }
+
+        size_t shortLen = (commitHash.length() < 7) ? commitHash.length() : 7;
+        std::wstring shortHash = commitHash.substr(0, shortLen);
+
+        editor::OpenDocument newDoc;
+        newDoc.filePath = L""; // virtual/commit diff
+        newDoc.fileName = shortHash + L" - " + commitMsg + L" (" + std::to_wstring(commitFiles.size()) + L" files)";
+        newDoc.diffOriginalTitle = shortHash + L"~1";
+        newDoc.diffWorkingTitle = shortHash;
+        newDoc.isPreview = false;
+        newDoc.isDirty = false;
+        newDoc.isSpecialView = false;
+        newDoc.isDiffView = true;
+        newDoc.isMultiFileDiff = true;
+        newDoc.isDiffLeftReadOnly = true;
+        newDoc.isDiffRightReadOnly = true;
+        newDoc.commitHash = commitHash;
+        newDoc.commitAuthor = author;
+        newDoc.commitDate = dateStr;
+        newDoc.commitMessage = commitMsg;
+
+        std::wstring parentHash = commitHash + L"~1";
+
+        for (const auto& cf : commitFiles) {
+            editor::OpenDocument::MultiFileDiffEntry entry;
+            entry.filePath = cf.path;
+            entry.fileName = cf.fileName;
+            entry.relDir = cf.relDir;
+            entry.status = cf.status;
+
+            std::wstring leftContent = m_drawer.GetCommitFileContent(parentHash, cf.path);
+            std::wstring rightContent = m_drawer.GetCommitFileContent(commitHash, cf.path);
+
+            entry.isBinary = IsBinaryDiffPath(cf.path) || HasBinaryNullBytes(leftContent) || HasBinaryNullBytes(rightContent);
+
+            if (!entry.isBinary) {
+                entry.originalBuffer.SetText(leftContent);
+                entry.workingBuffer.SetText(rightContent);
+
+                // Compute diff hunks for this file
+                editor::OpenDocument tempDoc;
+                tempDoc.diffOriginalBuffer.SetText(leftContent);
+                tempDoc.buffer.SetText(rightContent);
+                ComputeDiffHunks(tempDoc);
+                entry.addedLines = std::move(tempDoc.diffAddedLines);
+                entry.deletedLines = std::move(tempDoc.diffDeletedLines);
+                entry.hunks = std::move(tempDoc.diffHunks);
+            }
+
+            if (!relPath.empty()) {
+                if (cf.path == relPath || cf.fileName == relPath) {
+                    entry.isCollapsed = false;
+                } else {
+                    entry.isCollapsed = true;
+                }
+            } else {
+                entry.isCollapsed = false;
+            }
+
+            newDoc.multiFileDiffs.push_back(std::move(entry));
+        }
+
+        auto& group = GetActiveGroup();
+        for (size_t i = 0; i < group.docs.size(); ++i) {
+            if (group.docs[i].isMultiFileDiff && group.docs[i].commitHash == commitHash) {
+                group.activeDocIdx = static_cast<int>(i);
+                InvalidateRect(m_hwnd, nullptr, FALSE);
+                return;
+            }
+        }
+
+        group.docs.push_back(std::move(newDoc));
+        group.activeDocIdx = static_cast<int>(group.docs.size() - 1);
+
+        SaveSessionState();
+        InvalidateRect(m_hwnd, nullptr, FALSE);
+    } catch (...) {
+        // Safe catch prevents any possible crash
     }
-    if (targetPath.empty()) {
-        targetPath = L"changes";
-    }
-
-    std::wstring parentHash = commitHash + L"~1";
-    std::wstring leftContent = m_drawer.GetCommitFileContent(parentHash, targetPath);
-    std::wstring rightContent = m_drawer.GetCommitFileContent(commitHash, targetPath);
-
-    std::wstring fileName = std::filesystem::path(targetPath).filename().wstring();
-
-    editor::OpenDocument newDoc;
-    newDoc.filePath = L""; // virtual/commit diff
-    newDoc.fileName = commitHash.substr(0, 7) + L" - " + commitMsg + L" (" + std::to_wstring(fileCount) + L" files)";
-    newDoc.diffOriginalTitle = fileName + L" (" + commitHash.substr(0, 7) + L"~1)";
-    newDoc.diffWorkingTitle = fileName + L" (" + commitHash.substr(0, 7) + L")";
-    newDoc.isPreview = false;
-    newDoc.isDirty = false;
-    newDoc.isSpecialView = false;
-    newDoc.isDiffView = true;
-    newDoc.isDiffLeftReadOnly = true;
-    newDoc.isDiffRightReadOnly = true;
-    newDoc.diffActivePane = 1;
-
-    bool isBin = IsBinaryDiffPath(targetPath) || HasBinaryNullBytes(leftContent) || HasBinaryNullBytes(rightContent);
-    if (isBin) {
-        newDoc.isDiffBinary = true;
-        newDoc.diffBinaryFileName = fileName;
-        newDoc.diffOriginalBuffer.SetText(L"");
-        newDoc.buffer.SetText(L"");
-    } else {
-        newDoc.diffOriginalBuffer.SetText(leftContent);
-        newDoc.buffer.SetText(rightContent);
-        ComputeDiffHunks(newDoc);
-    }
-
-    auto& group = GetActiveGroup();
-    group.docs.push_back(std::move(newDoc));
-    group.activeDocIdx = static_cast<int>(group.docs.size() - 1);
-
-    SaveSessionState();
-    InvalidateRect(m_hwnd, nullptr, FALSE);
 }
 
 void Window::ComputeDiffHunks(editor::OpenDocument& doc) {
@@ -1313,7 +1383,7 @@ void Window::DoSaveAll() {
         }
     }
     if (anySaved) {
-        m_drawer.RefreshGitState(true, false);
+        TriggerDebouncedGitRefresh(1000);
     }
     InvalidateRect(m_hwnd, nullptr, FALSE);
 }
@@ -1425,9 +1495,10 @@ void Window::MarkDocumentModified(editor::OpenDocument* pDoc) {
     if (m_autoSave && !pDoc->filePath.empty()) {
         pDoc->buffer.SaveToFile(pDoc->filePath);
         pDoc->isDirty = false;
-        m_drawer.RefreshGitState(true, false);
+        TriggerDebouncedGitRefresh(1500);
     } else {
         pDoc->isDirty = true;
+        TriggerDebouncedGitRefresh(2000);
     }
 }
 
@@ -1721,7 +1792,7 @@ void Window::SaveFileToPath(const std::wstring& path) {
             if (path == m_snippetManager.GetSnippetsFilePath()) {
                 m_snippetManager.LoadSnippets();
             }
-            m_drawer.RefreshGitState(true, false);
+            TriggerDebouncedGitRefresh(1000);
             SaveSessionState();
             InvalidateRect(m_hwnd, nullptr, FALSE);
         }
@@ -2190,6 +2261,15 @@ void Window::HandleMouseMove(POINT clientPt) {
         float scrollRange = trackH - thumbH;
         if (scrollRange > 0.0f) {
             size_t totalLines = pActiveDoc->buffer.GetLineCount();
+            if (pActiveDoc->isMultiFileDiff) {
+                totalLines = 0;
+                for (const auto& entry : pActiveDoc->multiFileDiffs) {
+                    totalLines += 2;
+                    if (!entry.isCollapsed) {
+                        totalLines += entry.isBinary ? 3 : (std::max)(entry.originalBuffer.GetLineCount(), entry.workingBuffer.GetLineCount());
+                    }
+                }
+            }
             float linesPerPixel = static_cast<float>(totalLines) / scrollRange;
             int newScroll = static_cast<int>(pActiveDoc->dragStartScrollLine) + static_cast<int>(deltaY * linesPerPixel);
             if (newScroll < 0) newScroll = 0;
@@ -2281,6 +2361,25 @@ void Window::HandleMouseMove(POINT clientPt) {
 }
 
 void Window::HandleLButtonDown(POINT clientPt) {
+    // 0a. Floating commit card click check (card is positioned outside drawer over editor canvas)
+    if (m_config.activeRailTab == 2 && m_drawer.IsCommitCardVisible() && m_drawer.HitTestCommitCard(clientPt)) {
+        std::wstring openFile;
+        std::wstring discardedFile;
+        bool isDiff = false;
+        std::wstring openCommitDiff;
+        std::wstring openUrl;
+        if (m_drawer.HitTestGit(clientPt, m_config, openFile, discardedFile, isDiff, openCommitDiff, openUrl)) {
+            if (!openUrl.empty()) {
+                ShellExecuteW(nullptr, L"open", openUrl.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+            }
+            if (!openCommitDiff.empty()) {
+                OpenCommitDiffDocument(openCommitDiff, openFile);
+            }
+            InvalidateRect(m_hwnd, nullptr, FALSE);
+            return;
+        }
+    }
+
     {
         float curRailW = m_config.ScaleF(static_cast<float>(m_config.railWidth));
         float curDrawerW = m_config.ScaleF(static_cast<float>(m_config.drawerWidth)) * m_drawerAnimProgress;
@@ -2823,6 +2922,38 @@ void Window::HandleLButtonDown(POINT clientPt) {
                         InvalidateRect(m_hwnd, nullptr, FALSE);
                         return;
                     }
+                } else if (doc.isMultiFileDiff) {
+                    // 1. Collapsible file header clicks in multi-file diff view (Image 4)
+                    for (auto& entry : doc.multiFileDiffs) {
+                        if (clientPt.x >= entry.headerBounds.left && clientPt.x <= entry.headerBounds.right &&
+                            clientPt.y >= entry.headerBounds.top && clientPt.y <= entry.headerBounds.bottom) {
+                            entry.isCollapsed = !entry.isCollapsed;
+                            InvalidateRect(m_hwnd, nullptr, FALSE);
+                            return;
+                        }
+                    }
+
+                    // 2. Vertical scrollbar click & drag in multi-file diff view
+                    bool hitThumb = false;
+                    if (m_editor.HitTestScrollbar(clientPt, doc, hitThumb)) {
+                        if (hitThumb) {
+                            doc.isDraggingScrollbar = true;
+                            doc.dragStartY = static_cast<float>(clientPt.y);
+                            doc.dragStartScrollLine = doc.scrollLine;
+                        } else {
+                            if (clientPt.y < doc.scrollbarThumb.top) {
+                                if (doc.scrollLine >= 10) doc.scrollLine -= 10;
+                                else doc.scrollLine = 0;
+                            } else if (clientPt.y > doc.scrollbarThumb.bottom) {
+                                doc.scrollLine += 10;
+                            }
+                        }
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
+                        return;
+                    }
+
+                    InvalidateRect(m_hwnd, nullptr, FALSE);
+                    return;
                 } else {
                     float paneCanvasLeft = canvasLeft + targetGroup * paneW;
 
@@ -3872,10 +4003,19 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 if (m_drawer.PollSearchThrottle(now)) {
                     InvalidateRect(m_hwnd, nullptr, FALSE);
                 }
+
+                // Debounced Git auto-refresh on idle after typing/saving
+                if (m_gitRefreshPending && now >= m_gitRefreshTargetTime) {
+                    m_gitRefreshPending = false;
+                    if (!m_drawer.IsGitRefreshing()) {
+                        m_drawer.RefreshGitState(true, false);
+                    }
+                }
+
                 // Source Control background auto-refresh & animation update
                 // Background polling passes showLoading = false so it NEVER continuously spins the activity rail icon
                 static ULONGLONG s_lastGitPoll = 0;
-                if (m_config.activeRailTab == 2 && m_drawerAnimProgress > 0.5f && (now - s_lastGitPoll > 20000) && !m_drawer.IsGitLoading()) {
+                if (m_config.activeRailTab == 2 && m_drawerAnimProgress > 0.5f && (now - s_lastGitPoll > 20000) && !m_drawer.IsGitLoading() && !m_drawer.IsGitRefreshing()) {
                     s_lastGitPoll = now;
                     m_drawer.RefreshGitState(true, false);
                 }
@@ -3932,6 +4072,11 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
 
         case WM_USER + 201: {
             InvalidateRect(m_hwnd, nullptr, FALSE);
+            return 0;
+        }
+
+        case WM_USER + 202: {
+            TriggerDebouncedGitRefresh(1500);
             return 0;
         }
 
