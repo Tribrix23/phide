@@ -95,6 +95,15 @@ public:
     [[nodiscard]] int GetSelectedIndex() const noexcept { return m_selectedIndex; }
     void SetQuery(const std::wstring& q) { m_query = q; FilterItems(); }
 
+    [[nodiscard]] bool HitTest(POINT pt) const noexcept {
+        return m_isOpen && (pt.x >= m_modalBounds.left && pt.x <= m_modalBounds.right &&
+                            pt.y >= m_modalBounds.top && pt.y <= m_modalBounds.bottom);
+    }
+    [[nodiscard]] bool HitTestInput(POINT pt) const noexcept {
+        return m_isOpen && (pt.x >= m_inputBounds.left && pt.x <= m_inputBounds.right &&
+                            pt.y >= m_inputBounds.top && pt.y <= m_inputBounds.bottom);
+    }
+
 private:
     void FilterItems();
 

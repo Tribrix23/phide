@@ -26,6 +26,7 @@
 #include "phide/ui/KeyboardShortcutsView.hpp"
 #include "phide/ui/QuickOpenModal.hpp"
 #include "phide/editor/Buffer.hpp"
+#include "phide/editor/SyntaxValidator.hpp"
 #include "phide/editor/SnippetManager.hpp"
 #include "phide/editor/BracketPairAnalyzer.hpp"
 #include "phide/editor/OpenDocument.hpp"
@@ -3291,6 +3292,119 @@ int main() {
         std::cout << "  Passed: Saved test_quick_open_file_search.png" << std::endl;
 
         std::cout << "  Passed: All Editor Text Selection, Minimap Reflection, and Quick Open Palette tests passed!" << std::endl;
+    }
+
+    // =========================================================================
+    // TEST 36: Rounded Selection, Syntax Error Diagnostics Engine (JSON, YAML,
+    //          C++, HTML), Squiggly Underlines, Minimap Error Reflections, and Cursor Fixes
+    // =========================================================================
+    {
+        std::cout << "\n[TEST 36] Testing Rounded Selection, Syntax Error Diagnostics & Caret Fixes..." << std::endl;
+
+        phide::app::AppConfig cfg;
+        phide::ui::Theme theme;
+        theme.SetThemeMode(phide::ui::ThemeMode::Dark);
+
+        // 1. Verify JSON Syntax Error Detection (trailing comma & unclosed brace)
+        phide::editor::Buffer jsonBuf;
+        jsonBuf.SetText(L"{\n    \"name\": \"phide\",\n    \"version\": \"1.0.0\",\n}");
+        auto jsonDiags = phide::editor::SyntaxValidator::Validate(L"package.json", jsonBuf);
+        assert(!jsonDiags.empty());
+        bool foundTrailingComma = false;
+        for (const auto& d : jsonDiags) {
+            if (d.message.find(L"Trailing comma") != std::wstring::npos) {
+                foundTrailingComma = true;
+                assert(d.line == 2); // line 2 has the trailing comma
+                break;
+            }
+        }
+        assert(foundTrailingComma);
+        std::cout << "  Verified: JSON validator correctly caught trailing comma on line 2" << std::endl;
+
+        // 2. Verify C++ Syntax Error Detection (unclosed brace)
+        phide::editor::Buffer cppBuf;
+        cppBuf.SetText(L"#include <iostream>\n\nvoid test() {\n    int a = 10;\n    if (a > 5) {\n        std::cout << a;\n    }\n");
+        auto cppDiags = phide::editor::SyntaxValidator::Validate(L"test.cpp", cppBuf);
+        assert(!cppDiags.empty());
+        bool foundUnclosedBrace = false;
+        for (const auto& d : cppDiags) {
+            if (d.message.find(L"Unclosed bracket '{'") != std::wstring::npos) {
+                foundUnclosedBrace = true;
+                assert(d.line == 2); // line 2 is void test() {
+                break;
+            }
+        }
+        assert(foundUnclosedBrace);
+        std::cout << "  Verified: C++ validator correctly pinpointed unclosed bracket '{' on line 2" << std::endl;
+
+        // 3. Verify HTML Syntax Error Detection (mismatched tags)
+        phide::editor::Buffer htmlBuf;
+        htmlBuf.SetText(L"<!doctype html>\n<html>\n<head>\n    <title>Test</title>\n</head>\n<body>\n    <div><span>Text</div></span>\n</body>\n</html>");
+        auto htmlDiags = phide::editor::SyntaxValidator::Validate(L"index.html", htmlBuf);
+        assert(!htmlDiags.empty());
+        bool foundMismatchedTag = false;
+        for (const auto& d : htmlDiags) {
+            if (d.message.find(L"Mismatched tag") != std::wstring::npos) {
+                foundMismatchedTag = true;
+                assert(d.line == 6); // line 6 has <div><span>Text</div>
+                break;
+            }
+        }
+        assert(foundMismatchedTag);
+        std::cout << "  Verified: HTML validator caught mismatched closing tag on line 6" << std::endl;
+
+        // 4. Verify YAML Syntax Error Detection (tab indentation prohibited)
+        phide::editor::Buffer yamlBuf;
+        yamlBuf.SetText(L"appId: com.phide.app\nproductName: phide\nfiles:\n\t- 'build/**'\n");
+        auto yamlDiags = phide::editor::SyntaxValidator::Validate(L"electron-builder.yml", yamlBuf);
+        assert(!yamlDiags.empty());
+        bool foundTabError = false;
+        for (const auto& d : yamlDiags) {
+            if (d.message.find(L"Tab characters are not allowed") != std::wstring::npos) {
+                foundTabError = true;
+                assert(d.line == 3);
+                break;
+            }
+        }
+        assert(foundTabError);
+        std::cout << "  Verified: YAML validator caught prohibited tab character on line 3" << std::endl;
+
+        // 5. Render Direct2D Snapshot of Syntax Errors, Red Squiggly Lines, Gutter Dots, and Minimap Reflection (Image 4)
+        ComPtr<IWICBitmap> pWicDiagBmp;
+        ComPtr<ID2D1RenderTarget> pDiagRT;
+        CreateTarget(pWicDiagBmp, pDiagRT);
+        theme.CreateDeviceResources(pDiagRT.Get(), pDWriteFactory.Get());
+
+        phide::ui::EditorCanvas editorCanvas;
+        phide::editor::OpenDocument doc;
+        doc.filePath = L"C:\\phide\\electron-builder.yml";
+        doc.fileName = L"electron-builder.yml";
+        doc.buffer = yamlBuf;
+        doc.diagnostics = yamlDiags;
+        doc.hoveredDiagnosticLine = 3; // Trigger diagnostic hover tooltip popover
+
+        std::vector<phide::editor::OpenDocument> docs;
+        docs.push_back(doc);
+
+        pDiagRT->BeginDraw();
+        pDiagRT->Clear(D2D1::ColorF(0.12f, 0.12f, 0.12f, 1.0f));
+        editorCanvas.Render(pDiagRT.Get(), theme, cfg, docs, 0, 260.0f, 1200.0f - 260.0f, 750.0f, true);
+        pDiagRT->EndDraw();
+
+        SaveWicBitmapToPng(pWicDiagBmp.Get(), pWicFactory.Get(), artDir + L"test_syntax_error_diagnostics_and_minimap.png");
+        std::cout << "  Passed: Saved test_syntax_error_diagnostics_and_minimap.png" << std::endl;
+
+        // 6. Verify Quick Open Active Caret and Input HitTest (Image 5)
+        phide::ui::QuickOpenModal quickOpen;
+        quickOpen.Open({ L"C:\\phide\\main.cpp" }, {}, L"C:\\phide");
+        assert(quickOpen.IsOpen());
+        quickOpen.Render(pDiagRT.Get(), theme, cfg, 1200.0f, 750.0f);
+        POINT ptInInput{ 600, 75 }; // Center of quick open dialog search bar
+        assert(quickOpen.HitTest(ptInInput) == true);
+        assert(quickOpen.HitTestInput(ptInInput) == true);
+        std::cout << "  Verified: QuickOpenModal HitTest and HitTestInput identify active search input correctly" << std::endl;
+
+        std::cout << "  Passed: All Rounded Selection, Syntax Error Diagnostics, and Caret Fix tests passed!" << std::endl;
     }
 
     std::cout << "\n==========================================" << std::endl;

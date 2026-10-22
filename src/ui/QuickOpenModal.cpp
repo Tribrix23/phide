@@ -158,6 +158,8 @@ void QuickOpenModal::Open(const std::vector<std::wstring>& recentPaths,
     }
 
     FilterItems();
+    m_modalBounds = D2D1::RectF(290.0f, 46.0f, 910.0f, 486.0f);
+    m_inputBounds = D2D1::RectF(300.0f, 56.0f, 900.0f, 90.0f);
 }
 
 void QuickOpenModal::Close() noexcept {
@@ -238,6 +240,7 @@ void QuickOpenModal::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::App
     // Text inside Search Box
     D2D1_RECT_F rcText = D2D1::RectF(m_inputBounds.left + config.ScaleF(8.0f), m_inputBounds.top + config.ScaleF(6.0f),
                                      m_inputBounds.right - config.ScaleF(8.0f), m_inputBounds.bottom);
+    float textWidth = 0.0f;
     if (m_query.empty()) {
         const wchar_t* placeholder = L"Search files by name (append : to go to line or @ to go to symbol)";
         pRT->DrawText(placeholder, static_cast<UINT32>(wcslen(placeholder)),
@@ -246,6 +249,20 @@ void QuickOpenModal::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::App
     } else {
         pRT->DrawText(m_query.c_str(), static_cast<UINT32>(m_query.length()),
                       theme.fontBody.Get(), rcText, theme.brushTextPrimary.Get());
+        textWidth = static_cast<float>(m_query.length()) * config.ScaleF(7.5f);
+    }
+
+    // Active input blinking caret | (Image 5)
+    bool caretBlink = ((GetTickCount64() / 500) % 2 == 0);
+    if (caretBlink) {
+        float caretX = rcText.left + textWidth;
+        float caretTop = m_inputBounds.top + config.ScaleF(5.0f);
+        float caretBottom = m_inputBounds.bottom - config.ScaleF(5.0f);
+        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> caretBrush;
+        pRT->CreateSolidColorBrush(theme.IsDarkMode() ? D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.95f) : D2D1::ColorF(0.0f, 0.47f, 0.83f, 1.0f), &caretBrush);
+        if (caretBrush) {
+            pRT->DrawLine(D2D1::Point2F(caretX, caretTop), D2D1::Point2F(caretX, caretBottom), caretBrush.Get(), 1.8f);
+        }
     }
 
     // 4. Results List

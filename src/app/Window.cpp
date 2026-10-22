@@ -8,6 +8,7 @@
  */
 
 #include "phide/app/Window.hpp"
+#include "phide/editor/SyntaxValidator.hpp"
 #include <windowsx.h>
 #include <commdlg.h>
 #include <shobjidl.h>
@@ -811,6 +812,10 @@ void Window::OpenFileDocument(const std::wstring& path, bool isPreview) {
                 newDoc.isDiffView = true;
             }
         }
+
+        if (!newDoc.isSpecialView && !newDoc.isImageView && !newDoc.isUnsupportedBinary) {
+            newDoc.diagnostics = editor::SyntaxValidator::Validate(newDoc.filePath.empty() ? newDoc.fileName : newDoc.filePath, newDoc.buffer);
+        }
     }
 
     if (canReplace) {
@@ -1191,6 +1196,7 @@ void Window::OpenVirtualDocument(const std::wstring& name, const std::wstring& c
     newDoc.isPreview = isPreview;
     newDoc.isDirty = false;
     newDoc.isSpecialView = false;
+    newDoc.diagnostics = editor::SyntaxValidator::Validate(name, newDoc.buffer);
 
     if (canReplace) {
         group.docs[group.activeDocIdx] = std::move(newDoc);
@@ -1541,6 +1547,7 @@ void Window::SyncDocumentBuffers(editor::OpenDocument* sourceDoc) {
 void Window::MarkDocumentModified(editor::OpenDocument* pDoc) {
     if (!pDoc || pDoc->isSpecialView) return;
     pDoc->isPreview = false;
+    pDoc->diagnostics = editor::SyntaxValidator::Validate(pDoc->filePath.empty() ? pDoc->fileName : pDoc->filePath, pDoc->buffer);
     if (m_autoSave && !pDoc->filePath.empty()) {
         pDoc->buffer.SaveToFile(pDoc->filePath);
         pDoc->isDirty = false;
@@ -2276,7 +2283,8 @@ void Window::OnPaint() {
     auto* curDoc = GetActiveDoc();
     m_drawer.SetActiveFilePath(curDoc ? curDoc->filePath : L"");
 
-    bool suppressEditorCaret = m_drawer.IsRenaming() ||
+    bool suppressEditorCaret = m_quickOpen.IsOpen() || m_themePicker.IsOpen() || m_popupMenu.IsOpen() ||
+        m_drawer.IsRenaming() ||
         (m_drawerAnimProgress > 0.001f && (m_drawer.IsGitCommitBoxFocused() || m_drawer.IsSearchFocused()));
 
     const float headerH = m_config.ScaleF(static_cast<float>(m_config.headerHeight));
@@ -2421,6 +2429,35 @@ void Window::HandleMouseMove(POINT clientPt) {
                 InvalidateRect(m_hwnd, nullptr, FALSE);
                 return;
             }
+        }
+    }
+
+    // Check diagnostic error hover in active document
+    if (pActiveDoc && !pActiveDoc->diagnostics.empty()) {
+        size_t prevHover = pActiveDoc->hoveredDiagnosticLine;
+        pActiveDoc->hoveredDiagnosticLine = static_cast<size_t>(-1);
+        RECT clientRc;
+        GetClientRect(m_hwnd, &clientRc);
+        const int railW = m_config.Scale(m_config.railWidth);
+        const int drawerW = static_cast<int>(m_config.Scale(m_config.drawerWidth) * m_drawerAnimProgress);
+        const float canvasLeft = static_cast<float>(railW + drawerW);
+        const float canvasWidth = static_cast<float>(clientRc.right) - canvasLeft;
+        const float clientH = static_cast<float>(clientRc.bottom - clientRc.top);
+        if (canvasWidth > 10.0f && !m_editorGroups.empty()) {
+            float paneW = canvasWidth / m_editorGroups.size();
+            float paneCanvasLeft = canvasLeft + m_focusedGroupIdx * paneW;
+            size_t hoverLine = 0, hoverCol = 0;
+            if (m_editor.HitTestCodeArea(clientPt, m_config, *pActiveDoc, paneCanvasLeft, clientH, hoverLine, hoverCol)) {
+                for (const auto& d : pActiveDoc->diagnostics) {
+                    if (d.line == hoverLine) {
+                        pActiveDoc->hoveredDiagnosticLine = hoverLine;
+                        break;
+                    }
+                }
+            }
+        }
+        if (pActiveDoc->hoveredDiagnosticLine != prevHover) {
+            needRepaint = true;
         }
     }
 
@@ -3745,32 +3782,74 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 GetCursorPos(&pt);
                 ScreenToClient(m_hwnd, &pt);
 
+                // 0a. Quick Open File Search Modal (Image 5)
+                if (m_quickOpen.IsOpen()) {
+                    if (m_quickOpen.HitTestInput(pt)) {
+                        SetCursor(LoadCursor(nullptr, IDC_IBEAM));
+                        return TRUE;
+                    }
+                    if (m_quickOpen.HitTest(pt)) {
+                        SetCursor(LoadCursor(nullptr, IDC_HAND));
+                        return TRUE;
+                    }
+                    SetCursor(LoadCursor(nullptr, IDC_ARROW));
+                    return TRUE;
+                }
+
+                // 0b. Popup Menu Dropdowns (File, Edit, View, Context Menus)
+                if (m_popupMenu.IsOpen()) {
+                    if (m_popupMenu.HitTestMenuArea(pt)) {
+                        SetCursor(LoadCursor(nullptr, IDC_HAND));
+                        return TRUE;
+                    }
+                    SetCursor(LoadCursor(nullptr, IDC_ARROW));
+                    return TRUE;
+                }
+
+                // 0c. Theme Picker Catalog Modal
+                if (m_themePicker.IsOpen()) {
+                    SetCursor(LoadCursor(nullptr, IDC_HAND));
+                    return TRUE;
+                }
+
                 // Set pointer (hand) cursor when hovering over sidebar icons
                 if (m_rail.HitTest(pt) != ui::RailTabId::None) {
                     SetCursor(LoadCursor(nullptr, IDC_HAND));
                     return TRUE;
                 }
 
-                // Also provide pointer hand cursor over caption buttons, menus, execution buttons, and split editor
+                // Provide pointer hand cursor over caption buttons, menus, execution buttons, split editor, and quick open
                 if (m_header.HitTestCaptionButton(pt) != ui::CaptionButtonType::None ||
                     m_header.HitTestMenu(pt) != ui::HeaderMenuId::None ||
                     m_header.HitTestExecButton(pt) != ui::HeaderExecId::None ||
-                    m_header.HitTestSplitEditor(pt)) {
+                    m_header.HitTestSplitEditor(pt) ||
+                    m_header.HitTestQuickOpen(pt)) {
                     SetCursor(LoadCursor(nullptr, IDC_HAND));
                     return TRUE;
                 }
 
-                // Tab bar close buttons or folding chevrons
-                bool hitTabClose = false;
+                // Tab bar tabs, close buttons or folding chevrons
                 for (const auto& grp : m_editorGroups) {
-                    if (m_editor.HitTestTabClose(pt, grp.docs) >= 0) {
-                        hitTabClose = true;
-                        break;
+                    if (m_editor.HitTestTab(pt, grp.docs) >= 0 || m_editor.HitTestTabClose(pt, grp.docs) >= 0) {
+                        SetCursor(LoadCursor(nullptr, IDC_HAND));
+                        return TRUE;
                     }
                 }
-                if (hitTabClose || m_editor.HitTestFoldChevron(pt) >= 0) {
+                if (m_editor.HitTestFoldChevron(pt) >= 0) {
                     SetCursor(LoadCursor(nullptr, IDC_HAND));
                     return TRUE;
+                }
+
+                // Drawer Search Pane Buttons & Inputs
+                if (m_config.activeRailTab == 1 && m_drawerAnimProgress > 0.001f) {
+                    if (m_drawer.HitTestSearchButtons(pt)) {
+                        SetCursor(LoadCursor(nullptr, IDC_HAND));
+                        return TRUE;
+                    }
+                    if (m_drawer.HitTestSearchInputs(pt)) {
+                        SetCursor(LoadCursor(nullptr, IDC_IBEAM));
+                        return TRUE;
+                    }
                 }
 
                 // Unsupported binary action button ("Reveal in File Explorer")

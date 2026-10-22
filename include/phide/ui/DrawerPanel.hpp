@@ -424,6 +424,38 @@ public:
     [[nodiscard]] const std::vector<std::wstring>& GetOpenDocPaths() const noexcept { return m_openDocPaths; }
     [[nodiscard]] int GetSearchFocus() const noexcept { return m_focusedSearchInput; }
 
+    [[nodiscard]] bool HitTestSearchButtons(POINT pt) const noexcept {
+        auto inRect = [](POINT p, const D2D1_RECT_F& rc) {
+            return p.x >= rc.left && p.x <= rc.right && p.y >= rc.top && p.y <= rc.bottom;
+        };
+        if (inRect(pt, m_rcToggleReplaceChevron) || inRect(pt, m_rcMatchCaseBtn) ||
+            inRect(pt, m_rcMatchWholeWordBtn) || inRect(pt, m_rcUseRegexBtn) ||
+            inRect(pt, m_rcPreserveCaseBtn) || inRect(pt, m_rcReplaceAllBtn) ||
+            inRect(pt, m_rcRefreshSearchBtn) || inRect(pt, m_rcToggleSearchDetailsBtn) ||
+            inRect(pt, m_rcOpenEditorsOnlyBtn) || inRect(pt, m_rcUseExcludeSettingsBtn)) {
+            return true;
+        }
+        for (const auto& grp : m_searchGroups) {
+            if (inRect(pt, grp.headerBounds) || inRect(pt, grp.replaceAllBtnBounds) || inRect(pt, grp.dismissBtnBounds)) {
+                return true;
+            }
+            for (const auto& m : grp.matches) {
+                if (inRect(pt, m.replaceBtnBounds) || inRect(pt, m.dismissBtnBounds)) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    [[nodiscard]] bool HitTestSearchInputs(POINT pt) const noexcept {
+        auto inRect = [](POINT p, const D2D1_RECT_F& rc) {
+            return p.x >= rc.left && p.x <= rc.right && p.y >= rc.top && p.y <= rc.bottom;
+        };
+        return inRect(pt, m_rcSearchBox) || inRect(pt, m_rcReplaceBox) ||
+               inRect(pt, m_rcFilesToIncludeBox) || inRect(pt, m_rcFilesToExcludeBox);
+    }
+
     // --- Inline Tree Item Rename ---
     /**
      * @brief Initiates inline rename mode on a tree item by its visible index.

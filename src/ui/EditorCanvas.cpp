@@ -561,6 +561,23 @@ void EditorCanvas::RenderBreadcrumbs(ID2D1RenderTarget* pRT, Theme& theme, const
         0.8f
     );
 
+    // Diagnostic error count badge on breadcrumb bar (Image 4)
+    if (!doc.diagnostics.empty()) {
+        std::wstring errBadgeStr = L"ⓧ " + std::to_wstring(doc.diagnostics.size()) +
+            (doc.diagnostics.size() == 1 ? L" error" : L" errors");
+        float badgeW = config.ScaleF(75.0f);
+        float badgeH = config.ScaleF(18.0f);
+        float badgeX = canvasRight - config.ScaleF(110.0f);
+        float badgeY = barY + (barHeight - badgeH) / 2.0f;
+        D2D1_RECT_F rcErrBadge = D2D1::RectF(badgeX, badgeY, badgeX + badgeW, badgeY + badgeH);
+        D2D1_ROUNDED_RECT rrcErrBadge = D2D1::RoundedRect(rcErrBadge, 3.0f, 3.0f);
+        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> errBadgeBg;
+        pRT->CreateSolidColorBrush(D2D1::ColorF(0.85f, 0.22f, 0.22f, 0.20f), &errBadgeBg);
+        if (errBadgeBg) pRT->FillRoundedRectangle(&rrcErrBadge, errBadgeBg.Get());
+        pRT->DrawText(errBadgeStr.c_str(), static_cast<UINT32>(errBadgeStr.length()),
+                      theme.fontMenuShortcut.Get(), rcErrBadge, theme.brushIconRed ? theme.brushIconRed.Get() : theme.brushTextPrimary.Get());
+    }
+
     // Parse segments from doc.filePath (Image 4)
     std::wstring pathStr = doc.filePath.empty() ? doc.fileName : doc.filePath;
     for (auto& c : pathStr) {
@@ -968,6 +985,13 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
         }
 
         // Line Number in Gutter (Right-aligned)
+        bool hasDiagError = false;
+        for (const auto& d : doc.diagnostics) {
+            if (d.line == vl.bufferLine) {
+                hasDiagError = true;
+                break;
+            }
+        }
         std::wstring lineNumStr = std::to_wstring(vl.bufferLine + 1);
         D2D1_RECT_F rcNum = D2D1::RectF(
             canvasLeft + config.ScaleF(4.0f),
@@ -975,7 +999,8 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
             canvasLeft + gutterW - config.ScaleF(18.0f),
             lineY + lineH
         );
-        ID2D1Brush* numBrush = (isFocused && vl.bufferLine == cursor.line) ? theme.brushTextPrimary.Get() : theme.brushLineNumber.Get();
+        ID2D1Brush* numBrush = hasDiagError ? (theme.brushIconRed ? theme.brushIconRed.Get() : theme.brushCloseHoverBg.Get()) :
+            ((isFocused && vl.bufferLine == cursor.line) ? theme.brushTextPrimary.Get() : theme.brushLineNumber.Get());
         pRT->DrawText(
             lineNumStr.c_str(),
             static_cast<UINT32>(lineNumStr.length()),
@@ -983,6 +1008,14 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
             rcNum,
             numBrush
         );
+
+        // Gutter Diagnostic Error Indicator Dot (Image 4)
+        if (hasDiagError) {
+            float errDotX = canvasLeft + config.ScaleF(8.0f);
+            float errDotY = lineY + lineH / 2.0f;
+            float errDotR = config.ScaleF(2.5f);
+            pRT->FillEllipse(D2D1::Ellipse(D2D1::Point2F(errDotX, errDotY), errDotR, errDotR), theme.brushIconRed ? theme.brushIconRed.Get() : theme.brushCloseHoverBg.Get());
+        }
 
         // Code Folding Chevron in Gutter (Images 2 & 3)
         if (vl.isFoldHeader) {
@@ -1111,10 +1144,11 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
                 }
 
                 if (selX2 > selX1) {
-                    D2D1_RECT_F rcSel = D2D1::RectF(selX1, lineY, selX2, lineY + lineH);
+                    D2D1_RECT_F rcSel = D2D1::RectF(selX1, lineY + 0.5f, selX2, lineY + lineH - 0.5f);
+                    D2D1_ROUNDED_RECT rrcSel = D2D1::RoundedRect(rcSel, 4.0f, 4.0f);
                     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> selBrush;
                     pRT->CreateSolidColorBrush(D2D1::ColorF(0.15f, 0.38f, 0.68f, 0.48f), &selBrush);
-                    if (selBrush) pRT->FillRectangle(rcSel, selBrush.Get());
+                    if (selBrush) pRT->FillRoundedRectangle(&rrcSel, selBrush.Get());
                 }
             }
         }
@@ -1235,6 +1269,28 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
 
             pRT->DrawText(L"...", 3, theme.fontMenuShortcut.Get(), rcPill, theme.brushTextMuted.Get());
         }
+
+        // Render Syntax Error Squiggly Underlines (Image 4)
+        for (const auto& diag : doc.diagnostics) {
+            if (diag.line == vl.bufferLine) {
+                float errX1 = codeLeft + static_cast<float>(diag.col) * charW;
+                size_t errLen = (diag.length > 0) ? diag.length : (std::max)(1ULL, lineStr.length() > diag.col ? lineStr.length() - diag.col : 1);
+                float errX2 = (std::max)(errX1 + static_cast<float>(errLen) * charW, errX1 + config.ScaleF(14.0f));
+                if (errX1 < codeRight) {
+                    errX2 = (std::min)(errX2, codeRight);
+                    float waveY = lineY + lineH - config.ScaleF(2.0f);
+                    float waveH = config.ScaleF(2.0f);
+                    float step = config.ScaleF(2.5f);
+                    ID2D1Brush* pErrBrush = (diag.severity == 1) ?
+                        (theme.brushIconRed ? theme.brushIconRed.Get() : theme.brushCloseHoverBg.Get()) :
+                        (theme.brushIconOrange ? theme.brushIconOrange.Get() : theme.brushSyntaxNumber.Get());
+                    for (float wx = errX1; wx < errX2; wx += step * 2.0f) {
+                        pRT->DrawLine(D2D1::Point2F(wx, waveY), D2D1::Point2F(wx + step, waveY - waveH), pErrBrush, 1.3f);
+                        pRT->DrawLine(D2D1::Point2F(wx + step, waveY - waveH), D2D1::Point2F((std::min)(wx + step * 2.0f, errX2), waveY), pErrBrush, 1.3f);
+                    }
+                }
+            }
+        }
     }
 
     // 4. Blinking Caret (Image 5: High-contrast in both Dark and Light modes!) - Only in focused group
@@ -1325,6 +1381,23 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
                 Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> targetMiniBrush;
                 pRT->CreateSolidColorBrush(D2D1::ColorF(1.0f, 0.82f, 0.0f, 0.65f), &targetMiniBrush);
                 if (targetMiniBrush) pRT->FillRectangle(rcTargetMini, targetMiniBrush.Get());
+            }
+
+            // Diagnostic syntax error markers on minimap (Image 4)
+            for (const auto& diag : doc.diagnostics) {
+                if (diag.line == b) {
+                    D2D1_RECT_F rcErrMini = D2D1::RectF(
+                        doc.minimapTrack.left + 1.0f,
+                        my - 0.5f,
+                        doc.minimapTrack.right - 1.0f,
+                        my + (std::max)(microH + 1.5f, stepY)
+                    );
+                    ID2D1Brush* pErrBrush = (diag.severity == 1) ?
+                        (theme.brushIconRed ? theme.brushIconRed.Get() : theme.brushCloseHoverBg.Get()) :
+                        (theme.brushIconOrange ? theme.brushIconOrange.Get() : theme.brushSyntaxNumber.Get());
+                    pRT->FillRectangle(rcErrMini, pErrBrush);
+                    break;
+                }
             }
 
             if (lineStr.empty()) continue;
@@ -1457,6 +1530,54 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
             }
         } else {
             doc.scrollbarThumb = D2D1::RectF(0.0f, 0.0f, 0.0f, 0.0f);
+        }
+    }
+
+    // 7. Diagnostic Error Hover Popover (VS Code / Antigravity style)
+    if (doc.hoveredDiagnosticLine != static_cast<size_t>(-1)) {
+        const lsp::Diagnostic* pDiag = nullptr;
+        for (const auto& d : doc.diagnostics) {
+            if (d.line == doc.hoveredDiagnosticLine) {
+                pDiag = &d;
+                break;
+            }
+        }
+        if (pDiag && pDiag->line >= doc.scrollLine) {
+            float popY = topY + config.ScaleF(6.0f) + (pDiag->line - doc.scrollLine + 1) * lineH + config.ScaleF(2.0f);
+            float popX = codeLeft + config.ScaleF(20.0f);
+            float popW = config.ScaleF(420.0f);
+            float popH = config.ScaleF(46.0f);
+            if (popY + popH > clientHeight - config.ScaleF(10.0f)) {
+                popY = topY + config.ScaleF(6.0f) + (pDiag->line - doc.scrollLine) * lineH - popH - config.ScaleF(2.0f);
+            }
+            D2D1_RECT_F rcCard = D2D1::RectF(popX, popY, popX + popW, popY + popH);
+            D2D1_ROUNDED_RECT rrcCard = D2D1::RoundedRect(rcCard, 4.0f, 4.0f);
+
+            Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> cardBg;
+            Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> cardBorder;
+            pRT->CreateSolidColorBrush(theme.IsDarkMode() ? D2D1::ColorF(0.14f, 0.14f, 0.16f, 0.98f) : D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.98f), &cardBg);
+            pRT->CreateSolidColorBrush(D2D1::ColorF(0.92f, 0.28f, 0.28f, 1.0f), &cardBorder);
+            if (cardBg) pRT->FillRoundedRectangle(&rrcCard, cardBg.Get());
+            if (cardBorder) pRT->DrawRoundedRectangle(&rrcCard, cardBorder.Get(), 1.2f);
+
+            // Red Error badge circle (x)
+            float badgeX = popX + config.ScaleF(14.0f);
+            float badgeY = popY + config.ScaleF(16.0f);
+            pRT->FillEllipse(D2D1::Ellipse(D2D1::Point2F(badgeX, badgeY), config.ScaleF(6.0f), config.ScaleF(6.0f)),
+                             theme.brushIconRed ? theme.brushIconRed.Get() : theme.brushCloseHoverBg.Get());
+            // Draw 'x' inside badge
+            float xr = config.ScaleF(2.5f);
+            pRT->DrawLine(D2D1::Point2F(badgeX - xr, badgeY - xr), D2D1::Point2F(badgeX + xr, badgeY + xr), theme.brushTextWhite.Get(), 1.2f);
+            pRT->DrawLine(D2D1::Point2F(badgeX + xr, badgeY - xr), D2D1::Point2F(badgeX - xr, badgeY + xr), theme.brushTextWhite.Get(), 1.2f);
+
+            // Message text
+            D2D1_RECT_F rcMsg = D2D1::RectF(popX + config.ScaleF(26.0f), popY + config.ScaleF(6.0f), popX + popW - config.ScaleF(10.0f), popY + config.ScaleF(24.0f));
+            pRT->DrawText(pDiag->message.c_str(), static_cast<UINT32>(pDiag->message.length()), theme.fontBody.Get(), rcMsg, theme.brushTextPrimary.Get());
+
+            // Source line/col info
+            std::wstring locStr = doc.fileName + L" (" + std::to_wstring(pDiag->line + 1) + L":" + std::to_wstring(pDiag->col + 1) + L")";
+            D2D1_RECT_F rcLoc = D2D1::RectF(popX + config.ScaleF(26.0f), popY + config.ScaleF(24.0f), popX + popW - config.ScaleF(10.0f), popY + popH - config.ScaleF(4.0f));
+            pRT->DrawText(locStr.c_str(), static_cast<UINT32>(locStr.length()), theme.fontMenuShortcut.Get(), rcLoc, theme.brushTextMuted.Get());
         }
     }
 }

@@ -41,7 +41,7 @@ if exist "assets" (
 )
 
 :: 3. Collect Source Files
-set "SOURCES=src\main.cpp src\app\Window.cpp src\ui\Theme.cpp src\ui\LucideIcons.cpp src\ui\TitleHeader.cpp src\ui\PopupMenu.cpp src\ui\ActivityRail.cpp src\ui\DrawerPanel.cpp src\ui\EditorCanvas.cpp src\ui\KeyboardShortcutsView.cpp src\ui\ThemePickerModal.cpp src\ui\QuickOpenModal.cpp src\editor\Buffer.cpp src\editor\SnippetManager.cpp src\workspace\WorkspaceManager.cpp src\lsp\LspClient.cpp"
+set "SOURCES=src\main.cpp src\app\Window.cpp src\ui\Theme.cpp src\ui\LucideIcons.cpp src\ui\TitleHeader.cpp src\ui\PopupMenu.cpp src\ui\ActivityRail.cpp src\ui\DrawerPanel.cpp src\ui\EditorCanvas.cpp src\ui\KeyboardShortcutsView.cpp src\ui\ThemePickerModal.cpp src\ui\QuickOpenModal.cpp src\editor\Buffer.cpp src\editor\SnippetManager.cpp src\editor\SyntaxValidator.cpp src\workspace\WorkspaceManager.cpp src\lsp\LspClient.cpp"
 
 :: 4. Compile with MSVC (C++20, Optimizations, Unicode, Native Subsystem)
 echo [INFO] Compiling C++20 sources with MSVC cl.exe...

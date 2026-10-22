@@ -10,6 +10,7 @@
 #include <d2d1.h>
 #include <wrl/client.h>
 #include "phide/editor/Buffer.hpp"
+#include "phide/lsp/LspClient.hpp"
 
 namespace phide::editor {
 
@@ -173,6 +174,11 @@ struct OpenDocument {
 
     // Code Folding State (Images 2 & 3)
     std::set<size_t> foldedLines;       ///< Set of starting line indices (0-based buffer line) that are folded
+
+    // Syntax Error Diagnostics & Hover Popover State
+    std::vector<phide::lsp::Diagnostic> diagnostics;   ///< Diagnostic errors and warnings for this document
+    size_t hoveredDiagnosticLine = static_cast<size_t>(-1); ///< Line of currently hovered diagnostic error
+    D2D1_RECT_F diagnosticTooltipBounds{};             ///< Hitbox of floating diagnostic error tooltip
 
     // Picture Viewer State (Image 2)
     bool isImageView = false;           ///< True if this document is displaying a picture/image file
