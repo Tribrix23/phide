@@ -55,6 +55,41 @@ static std::wstring GetRelativePath(const std::wstring& fullPath, const std::wst
     return fullPath;
 }
 
+static bool IsBinaryDiffPath(const std::wstring& path) {
+    std::wstring p = path;
+    std::transform(p.begin(), p.end(), p.begin(), ::towlower);
+    static const wchar_t* const binExts[] = {
+        L".exe", L".dll", L".bin", L".obj", L".o", L".pdb", L".lib",
+        L".node", L".iso", L".zip", L".7z", L".tar", L".gz", L".png",
+        L".jpg", L".jpeg", L".gif", L".ico", L".bmp", L".webp", L".pdf",
+        L".wasm", L".class", L".pyc", L".so", L".dylib"
+    };
+    for (const auto* ext : binExts) {
+        size_t elen = wcslen(ext);
+        if (p.size() >= elen && p.compare(p.size() - elen, elen, ext) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool HasBinaryNullBytes(const std::wstring& str) {
+    return str.find(L'\0') != std::wstring::npos;
+}
+
+static bool FileHasBinaryBytes(const std::wstring& fullPath) {
+    if (!std::filesystem::exists(fullPath)) return false;
+    std::ifstream f(std::filesystem::path(fullPath), std::ios::binary);
+    if (!f) return false;
+    char buf[2048];
+    f.read(buf, sizeof(buf));
+    std::streamsize n = f.gcount();
+    for (std::streamsize i = 0; i < n; ++i) {
+        if (buf[i] == '\0') return true;
+    }
+    return false;
+}
+
 struct InputDialogData {
     std::wstring title;
     std::wstring prompt;
@@ -245,6 +280,77 @@ std::wstring Window::GetSessionFilePath() const {
         return (dir / L"session_state.json").wstring();
     }
     return L"";
+}
+
+std::wstring Window::GetSnippetsConfigPath() const {
+    wchar_t* pAppData = nullptr;
+    size_t len = 0;
+    if (_wdupenv_s(&pAppData, &len, L"APPDATA") == 0 && pAppData) {
+        std::filesystem::path p(pAppData);
+        free(pAppData);
+        std::filesystem::path dir = p / L"phide" / L"snippets";
+        std::error_code ec;
+        std::filesystem::create_directories(dir, ec);
+        return (dir / L"snippets.json").wstring();
+    }
+    return L"snippets.json";
+}
+
+void Window::StartWorkspaceWatcher(const std::wstring& folderPath) {
+    StopWorkspaceWatcher();
+    if (folderPath.empty() || !std::filesystem::exists(folderPath)) return;
+
+    m_hWatcherStopEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    if (!m_hWatcherStopEvent) return;
+
+    m_hWatcherThread = CreateThread(nullptr, 0, [](LPVOID param) -> DWORD {
+        auto* self = static_cast<Window*>(param);
+        std::wstring dir = self->m_drawer.GetOpenFolderPath();
+        if (dir.empty()) return 0;
+
+        HANDLE hChange = FindFirstChangeNotificationW(
+            dir.c_str(),
+            TRUE,
+            FILE_NOTIFY_CHANGE_FILE_NAME | FILE_NOTIFY_CHANGE_DIR_NAME |
+            FILE_NOTIFY_CHANGE_LAST_WRITE | FILE_NOTIFY_CHANGE_SIZE
+        );
+        if (hChange == INVALID_HANDLE_VALUE) return 0;
+
+        HANDLE waitHandles[2] = { self->m_hWatcherStopEvent, hChange };
+        while (true) {
+            DWORD waitRes = WaitForMultipleObjects(2, waitHandles, FALSE, INFINITE);
+            if (waitRes == WAIT_OBJECT_0) {
+                break;
+            } else if (waitRes == WAIT_OBJECT_0 + 1) {
+                // Event-driven change detected on disk!
+                Sleep(250); // Debounce
+                FindNextChangeNotification(hChange);
+                self->m_drawer.RefreshGitState(true, false);
+                if (self->m_hwnd) {
+                    PostMessageW(self->m_hwnd, WM_USER + 201, 0, 0);
+                }
+            } else {
+                break;
+            }
+        }
+        FindCloseChangeNotification(hChange);
+        return 0;
+    }, this, 0, nullptr);
+}
+
+void Window::StopWorkspaceWatcher() {
+    if (m_hWatcherStopEvent) {
+        SetEvent(m_hWatcherStopEvent);
+    }
+    if (m_hWatcherThread) {
+        WaitForSingleObject(m_hWatcherThread, 1000);
+        CloseHandle(m_hWatcherThread);
+        m_hWatcherThread = nullptr;
+    }
+    if (m_hWatcherStopEvent) {
+        CloseHandle(m_hWatcherStopEvent);
+        m_hWatcherStopEvent = nullptr;
+    }
 }
 
 void Window::SaveSessionState() {
@@ -737,7 +843,15 @@ void Window::OpenDiffDocument(const std::wstring& relPath, bool isPreview) {
         newDoc.buffer.SetText(L"");
     }
 
-    ComputeDiffHunks(newDoc);
+    bool isBin = IsBinaryDiffPath(relPath) || FileHasBinaryBytes(fullPath) || HasBinaryNullBytes(headContent);
+    if (isBin) {
+        newDoc.isDiffBinary = true;
+        newDoc.diffBinaryFileName = fileName;
+        newDoc.diffOriginalBuffer.SetText(L"");
+        newDoc.buffer.SetText(L"");
+    } else {
+        ComputeDiffHunks(newDoc);
+    }
 
     bool canReplace = (group.activeDocIdx >= 0 && group.activeDocIdx < static_cast<int>(group.docs.size()) &&
                        group.docs[group.activeDocIdx].isPreview &&
@@ -769,7 +883,15 @@ void Window::OpenCommitDiffDocument(const std::wstring& commitHash, const std::w
             if (!ci.files.empty()) {
                 fileCount = static_cast<int>(ci.files.size());
                 if (targetPath.empty()) {
-                    targetPath = ci.files[0].path;
+                    for (const auto& f : ci.files) {
+                        if (!IsBinaryDiffPath(f.path)) {
+                            targetPath = f.path;
+                            break;
+                        }
+                    }
+                    if (targetPath.empty()) {
+                        targetPath = ci.files[0].path;
+                    }
                 }
             }
             break;
@@ -798,10 +920,17 @@ void Window::OpenCommitDiffDocument(const std::wstring& commitHash, const std::w
     newDoc.isDiffRightReadOnly = true;
     newDoc.diffActivePane = 1;
 
-    newDoc.diffOriginalBuffer.SetText(leftContent);
-    newDoc.buffer.SetText(rightContent);
-
-    ComputeDiffHunks(newDoc);
+    bool isBin = IsBinaryDiffPath(targetPath) || HasBinaryNullBytes(leftContent) || HasBinaryNullBytes(rightContent);
+    if (isBin) {
+        newDoc.isDiffBinary = true;
+        newDoc.diffBinaryFileName = fileName;
+        newDoc.diffOriginalBuffer.SetText(L"");
+        newDoc.buffer.SetText(L"");
+    } else {
+        newDoc.diffOriginalBuffer.SetText(leftContent);
+        newDoc.buffer.SetText(rightContent);
+        ComputeDiffHunks(newDoc);
+    }
 
     auto& group = GetActiveGroup();
     group.docs.push_back(std::move(newDoc));
@@ -1066,6 +1195,7 @@ void Window::DoOpenFolderFromPath(const std::wstring& path) {
     m_drawer.OpenFolder(path);
     m_workspace.OpenWorkspace(path);
     m_drawer.RefreshGitState(true);
+    StartWorkspaceWatcher(path);
 
     // Track in recent paths LRU list (max 6 entries)
     auto it = std::find(m_recentPaths.begin(), m_recentPaths.end(), path);
@@ -1169,13 +1299,21 @@ void Window::DoSaveFileAs() {
 }
 
 void Window::DoSaveAll() {
+    bool anySaved = false;
     for (auto& group : m_editorGroups) {
         for (auto& doc : group.docs) {
             if (doc.isDirty && !doc.filePath.empty()) {
                 doc.buffer.SaveToFile(doc.filePath);
                 doc.isDirty = false;
+                anySaved = true;
+                if (doc.filePath == m_snippetManager.GetSnippetsFilePath()) {
+                    m_snippetManager.LoadSnippets();
+                }
             }
         }
+    }
+    if (anySaved) {
+        m_drawer.RefreshGitState(true, false);
     }
     InvalidateRect(m_hwnd, nullptr, FALSE);
 }
@@ -1239,20 +1377,8 @@ void Window::DoOpenKeyboardShortcuts() {
 }
 
 void Window::DoOpenUserSnippets() {
-    OpenVirtualDocument(
-        L"snippets.json",
-        L"{\n"
-        L"    // Place your global snippets here\n"
-        L"    \"Print to console\": {\n"
-        L"        \"prefix\": \"log\",\n"
-        L"        \"body\": [\n"
-        L"            \"std::cout << \\\"$1\\\" << std::endl;\"\n"
-        L"        ],\n"
-        L"        \"description\": \"Log output to console\"\n"
-        L"    }\n"
-        L"}\n",
-        false
-    );
+    m_snippetManager.EnsureDefaultSnippetsFile();
+    OpenFileDocument(m_snippetManager.GetSnippetsFilePath(), false);
 }
 
 void Window::DoToggleThemeModal() {
@@ -1299,6 +1425,7 @@ void Window::MarkDocumentModified(editor::OpenDocument* pDoc) {
     if (m_autoSave && !pDoc->filePath.empty()) {
         pDoc->buffer.SaveToFile(pDoc->filePath);
         pDoc->isDirty = false;
+        m_drawer.RefreshGitState(true, false);
     } else {
         pDoc->isDirty = true;
     }
@@ -1591,7 +1718,10 @@ void Window::SaveFileToPath(const std::wstring& path) {
             pDoc->fileName = (pos != std::wstring::npos) ? path.substr(pos + 1) : path;
             pDoc->isDirty = false;
             pDoc->isPreview = false;
-            m_drawer.RefreshGitState(true);
+            if (path == m_snippetManager.GetSnippetsFilePath()) {
+                m_snippetManager.LoadSnippets();
+            }
+            m_drawer.RefreshGitState(true, false);
             SaveSessionState();
             InvalidateRect(m_hwnd, nullptr, FALSE);
         }
@@ -1775,8 +1905,22 @@ bool Window::Create(HINSTANCE hInstance, int nCmdShow) {
     // Start 50ms Search throttler polling timer
     SetTimer(m_hwnd, m_throttleTimerId, 50, nullptr);
 
+    // Initialize user snippets engine
+    m_snippetManager.Initialize(GetSnippetsConfigPath());
+
+    // Register callback for reactive git state updates
+    m_drawer.SetOnGitStateChanged([this]() {
+        if (m_hwnd) {
+            InvalidateRect(m_hwnd, nullptr, FALSE);
+        }
+    });
+
     // Restore saved IDE session state (open folder, expanded tree dirs, open file, sidebar open/close state)
     LoadSessionState();
+
+    if (m_drawer.HasOpenFolder()) {
+        StartWorkspaceWatcher(m_drawer.GetOpenFolderPath());
+    }
 
     // Launch application windowed or maximized based on invocation parameters
     bool startWindowed = false;
@@ -2137,6 +2281,14 @@ void Window::HandleMouseMove(POINT clientPt) {
 }
 
 void Window::HandleLButtonDown(POINT clientPt) {
+    {
+        float curRailW = m_config.ScaleF(static_cast<float>(m_config.railWidth));
+        float curDrawerW = m_config.ScaleF(static_cast<float>(m_config.drawerWidth)) * m_drawerAnimProgress;
+        if (clientPt.x > curRailW + curDrawerW) {
+            m_drawer.DismissCommitCard();
+        }
+    }
+
     if (m_editor.IsRefactorPopupVisible()) {
         m_editor.DismissRefactorPopup();
         InvalidateRect(m_hwnd, nullptr, FALSE);
@@ -3371,6 +3523,9 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 }
             }
 
+            if (wParam == VK_ESCAPE) {
+                m_drawer.DismissCommitCard();
+            }
             if (m_themePicker.IsOpen()) {
                 if (wParam == VK_ESCAPE) {
                     m_themePicker.Close();
@@ -3677,12 +3832,22 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     pDoc->scrollLine += page;
                     InvalidateRect(m_hwnd, nullptr, FALSE);
                 } else if (wParam == VK_TAB) {
-                    // Try expanding Emmet abbreviation first (e.g., div -> <div></div>)
-                    if (!pDoc->buffer.ExpandEmmet()) {
-                        pDoc->buffer.InsertChar(L' ');
-                        pDoc->buffer.InsertChar(L' ');
-                        pDoc->buffer.InsertChar(L' ');
-                        pDoc->buffer.InsertChar(L' ');
+                    std::wstring ext = L"";
+                    if (!pDoc->filePath.empty()) {
+                        std::filesystem::path p(pDoc->filePath);
+                        ext = p.extension().wstring();
+                    } else if (!pDoc->fileName.empty()) {
+                        std::filesystem::path p(pDoc->fileName);
+                        ext = p.extension().wstring();
+                    }
+                    if (!m_snippetManager.TryExpand(pDoc->buffer, ext)) {
+                        // Try expanding Emmet abbreviation next (e.g., div -> <div></div>)
+                        if (!pDoc->buffer.ExpandEmmet()) {
+                            pDoc->buffer.InsertChar(L' ');
+                            pDoc->buffer.InsertChar(L' ');
+                            pDoc->buffer.InsertChar(L' ');
+                            pDoc->buffer.InsertChar(L' ');
+                        }
                     }
                     MarkDocumentModified(pDoc);
                     if (pDoc->isDiffView) ComputeDiffHunks(*pDoc);
@@ -3765,6 +3930,11 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
             return 0;
         }
 
+        case WM_USER + 201: {
+            InvalidateRect(m_hwnd, nullptr, FALSE);
+            return 0;
+        }
+
         case WM_CLOSE: {
             SaveSessionState();
             DestroyWindow(m_hwnd);
@@ -3772,6 +3942,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
         }
 
         case WM_DESTROY: {
+            StopWorkspaceWatcher();
             m_explorerUndo.CleanupTrash();
             SaveSessionState();
             PostQuitMessage(0);

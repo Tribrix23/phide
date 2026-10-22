@@ -256,7 +256,11 @@ void EditorCanvas::RenderSinglePane(ID2D1RenderTarget* pRT, Theme& theme, const 
     } else if (activeDoc.isUnsupportedBinary) {
         RenderUnsupportedBinaryView(pRT, theme, config, activeDoc, canvasLeft, canvasWidth, contentTopY, clientHeight);
     } else if (activeDoc.isDiffView) {
-        RenderDiffView(pRT, theme, config, activeDoc, canvasLeft, canvasWidth, contentTopY, clientHeight, isPaneFocused);
+        if (activeDoc.isDiffBinary) {
+            RenderDiffBinaryView(pRT, theme, config, activeDoc, canvasLeft, canvasWidth, contentTopY, clientHeight);
+        } else {
+            RenderDiffView(pRT, theme, config, activeDoc, canvasLeft, canvasWidth, contentTopY, clientHeight, isPaneFocused);
+        }
     } else {
         RenderCode(pRT, theme, config, activeDoc, canvasLeft, canvasWidth, contentTopY, clientHeight, isPaneFocused,
                    highlightQuery, highlightMatchCase, highlightWholeWord, highlightUseRegex, isRenaming);
@@ -2081,6 +2085,80 @@ void EditorCanvas::RenderDiffView(ID2D1RenderTarget* pRT, Theme& theme, const ap
         D2D1_ROUNDED_RECT rrcThumb = D2D1::RoundedRect(doc.scrollbarThumb, 3.0f, 3.0f);
         pRT->FillRoundedRectangle(rrcThumb, theme.brushBorderSubtle.Get());
     }
+}
+
+void EditorCanvas::RenderDiffBinaryView(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
+                                        editor::OpenDocument& doc, float canvasLeft, float canvasWidth,
+                                        float topY, float clientHeight) {
+    const float subHeaderH = config.ScaleF(24.0f);
+    const float dividerW = config.ScaleF(32.0f);
+    const float halfW = (canvasWidth - dividerW) / 2.0f;
+    const float leftX = canvasLeft;
+    const float dividerX = leftX + halfW;
+    const float rightX = dividerX + dividerW;
+
+    IDWriteTextFormat* pLabelFmt = theme.fontMenuItem ? theme.fontMenuItem.Get() : theme.fontBody.Get();
+
+    // Sub-headers
+    D2D1_RECT_F rcLeftSub = D2D1::RectF(leftX, topY, dividerX, topY + subHeaderH);
+    pRT->FillRectangle(rcLeftSub, theme.brushHeaderBg.Get());
+    pRT->DrawLine(D2D1::Point2F(leftX, topY + subHeaderH), D2D1::Point2F(dividerX, topY + subHeaderH), theme.brushBorderSubtle.Get(), 1.0f);
+    std::wstring leftTitle = doc.diffOriginalTitle.empty() ? (doc.fileName + L" (HEAD)") : doc.diffOriginalTitle;
+    pRT->DrawText(leftTitle.c_str(), static_cast<UINT32>(leftTitle.length()), pLabelFmt,
+                  D2D1::RectF(leftX + config.ScaleF(12.0f), topY + 2.0f, dividerX - config.ScaleF(80.0f), topY + subHeaderH - 2.0f),
+                  theme.brushTextPrimary.Get());
+
+    D2D1_RECT_F rcRightSub = D2D1::RectF(rightX, topY, rightX + halfW, topY + subHeaderH);
+    pRT->FillRectangle(rcRightSub, theme.brushHeaderBg.Get());
+    pRT->DrawLine(D2D1::Point2F(rightX, topY + subHeaderH), D2D1::Point2F(rightX + halfW, topY + subHeaderH), theme.brushBorderSubtle.Get(), 1.0f);
+    std::wstring rightTitle = doc.diffWorkingTitle.empty() ? (doc.fileName + L" (Working Tree)") : doc.diffWorkingTitle;
+    pRT->DrawText(rightTitle.c_str(), static_cast<UINT32>(rightTitle.length()), pLabelFmt,
+                  D2D1::RectF(rightX + config.ScaleF(12.0f), topY + 2.0f, rightX + halfW - config.ScaleF(80.0f), topY + subHeaderH - 2.0f),
+                  theme.brushTextPrimary.Get());
+
+    // Center Banner: Binary File Not Shown
+    float contentTop = topY + subHeaderH;
+    float contentH = clientHeight - contentTop;
+    float centerY = contentTop + contentH * 0.40f;
+    float centerX = canvasLeft + canvasWidth * 0.5f;
+
+    // Card background
+    float cardW = config.ScaleF(460.0f);
+    float cardH = config.ScaleF(130.0f);
+    D2D1_RECT_F rcCard = D2D1::RectF(centerX - cardW * 0.5f, centerY - cardH * 0.5f, centerX + cardW * 0.5f, centerY + cardH * 0.5f);
+    D2D1_ROUNDED_RECT rrcCard = D2D1::RoundedRect(rcCard, 8.0f, 8.0f);
+
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushCardBg;
+    pRT->CreateSolidColorBrush(D2D1::ColorF(0.12f, 0.12f, 0.14f, 0.95f), &brushCardBg);
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushBadge;
+    pRT->CreateSolidColorBrush(D2D1::ColorF(0.65f, 0.45f, 0.95f, 1.0f), &brushBadge);
+
+    pRT->FillRoundedRectangle(rrcCard, brushCardBg.Get());
+    pRT->DrawRoundedRectangle(rrcCard, theme.brushBorderSubtle.Get(), 1.0f);
+
+    // Pill badge: [BINARY]
+    D2D1_ROUNDED_RECT rrcPill = D2D1::RoundedRect(
+        D2D1::RectF(centerX - config.ScaleF(36.0f), rcCard.top + config.ScaleF(14.0f), centerX + config.ScaleF(36.0f), rcCard.top + config.ScaleF(32.0f)),
+        3.0f, 3.0f
+    );
+    pRT->FillRoundedRectangle(rrcPill, brushBadge.Get());
+    const wchar_t* pillText = L"BINARY";
+    pRT->DrawText(pillText, 6, theme.fontButtonCenter.Get() ? theme.fontButtonCenter.Get() : pLabelFmt,
+                  rrcPill.rect, theme.brushTextWhite.Get());
+
+    // Headline: "Binary file not shown"
+    const wchar_t* headline = L"Binary file not shown";
+    D2D1_RECT_F rcHead = D2D1::RectF(rcCard.left, rcCard.top + config.ScaleF(38.0f), rcCard.right, rcCard.top + config.ScaleF(66.0f));
+    pRT->DrawText(headline, static_cast<UINT32>(wcslen(headline)),
+                  theme.fontTitle.Get() ? theme.fontTitle.Get() : theme.fontBody.Get(),
+                  rcHead, theme.brushTextPrimary.Get());
+
+    // Subtitle
+    std::wstring targetName = doc.diffBinaryFileName.empty() ? doc.fileName : doc.diffBinaryFileName;
+    std::wstring sub = L"The file '" + targetName + L"' is binary or an executable and cannot be compared as text.";
+    D2D1_RECT_F rcSub = D2D1::RectF(rcCard.left + config.ScaleF(16.0f), rcCard.top + config.ScaleF(72.0f), rcCard.right - config.ScaleF(16.0f), rcCard.bottom - config.ScaleF(10.0f));
+    pRT->DrawText(sub.c_str(), static_cast<UINT32>(sub.length()),
+                  theme.fontBody.Get(), rcSub, theme.brushTextSecondary.Get());
 }
 
 } // namespace phide::ui

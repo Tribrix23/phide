@@ -130,6 +130,11 @@ public:
      */
     bool ExpandEmmet();
 
+    /**
+     * @brief Replaces prefix before cursor with snippet body lines, preserving indentation.
+     */
+    bool ReplacePrefixWithSnippet(size_t prefixLen, const std::vector<std::wstring>& bodyLines, int targetCursorLineOffset, int targetCursorCol);
+
     [[nodiscard]] const std::wstring& GetFilePath() const noexcept { return m_filePath; }
     void SetFilePath(const std::wstring& path) { m_filePath = path; }
 

@@ -601,4 +601,55 @@ bool Buffer::ExpandEmmet() {
     return false;
 }
 
+bool Buffer::ReplacePrefixWithSnippet(size_t prefixLen, const std::vector<std::wstring>& bodyLines, int targetCursorLineOffset, int targetCursorCol) {
+    if (m_lines.empty() || bodyLines.empty() || prefixLen == 0) return false;
+    if (m_cursor.line >= m_lines.size()) m_cursor.line = m_lines.size() - 1;
+    auto& line = m_lines[m_cursor.line];
+    if (m_cursor.col < prefixLen) return false;
+
+    PushUndo();
+    size_t startCol = m_cursor.col - prefixLen;
+    std::wstring suffix = line.substr(m_cursor.col);
+
+    // Determine leading indentation on current line
+    size_t indentLen = 0;
+    while (indentLen < startCol && (line[indentLen] == L' ' || line[indentLen] == L'\t')) {
+        indentLen++;
+    }
+    std::wstring indent = line.substr(0, indentLen);
+
+    if (bodyLines.size() == 1) {
+        line = line.substr(0, startCol) + bodyLines[0] + suffix;
+        if (targetCursorCol >= 0) {
+            m_cursor.col = startCol + static_cast<size_t>(targetCursorCol);
+        } else {
+            m_cursor.col = startCol + bodyLines[0].length();
+        }
+    } else {
+        line = line.substr(0, startCol) + bodyLines[0];
+        size_t baseLine = m_cursor.line;
+        for (size_t i = 1; i < bodyLines.size(); ++i) {
+            std::wstring nextLine = indent + bodyLines[i];
+            if (i == bodyLines.size() - 1) {
+                nextLine += suffix;
+            }
+            m_lines.insert(m_lines.begin() + baseLine + i, nextLine);
+        }
+        if (targetCursorLineOffset >= 0 && targetCursorLineOffset < static_cast<int>(bodyLines.size())) {
+            m_cursor.line = baseLine + static_cast<size_t>(targetCursorLineOffset);
+            if (targetCursorLineOffset == 0) {
+                m_cursor.col = startCol + static_cast<size_t>(targetCursorCol >= 0 ? targetCursorCol : bodyLines[0].length());
+            } else {
+                m_cursor.col = indent.length() + static_cast<size_t>(targetCursorCol >= 0 ? targetCursorCol : bodyLines[targetCursorLineOffset].length());
+            }
+        } else {
+            m_cursor.line = baseLine + bodyLines.size() - 1;
+            m_cursor.col = indent.length() + bodyLines.back().length();
+        }
+    }
+
+    m_isModified = true;
+    return true;
+}
+
 } // namespace phide::editor

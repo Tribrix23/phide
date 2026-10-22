@@ -57,6 +57,8 @@ struct OpenDocument {
 
     // Git Diff & Deleted File State (Images 2, 3, 4, 5)
     bool isDiffView = false;             ///< True if this document is displaying side-by-side diff
+    bool isDiffBinary = false;           ///< True if diff target is a binary file (e.g. .exe, .dll) not suitable for text comparison
+    std::wstring diffBinaryFileName;     ///< File name of the binary diff target
     bool isDeletedInGit = false;         ///< True if this document was deleted in git and loaded from HEAD
     bool isDiffLeftReadOnly = true;      ///< True if left pane is read-only (always true for working tree diff)
     bool isDiffRightReadOnly = false;    ///< True if right pane is read-only (true for historical commit diffs)

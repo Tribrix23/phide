@@ -25,6 +25,7 @@
 #include "phide/ui/ThemePickerModal.hpp"
 #include "phide/ui/KeyboardShortcutsView.hpp"
 #include "phide/editor/Buffer.hpp"
+#include "phide/editor/SnippetManager.hpp"
 #include "phide/editor/BracketPairAnalyzer.hpp"
 #include "phide/editor/OpenDocument.hpp"
 #include "phide/workspace/WorkspaceManager.hpp"
@@ -2337,6 +2338,119 @@ int main() {
 
         SaveWicBitmapToPng(pWicCardBmp.Get(), pWicFactory.Get(), artDir + L"test_commit_card_and_sync_changes.png");
         std::cout << "  Passed: Saved test_commit_card_and_sync_changes.png" << std::endl;
+    }
+
+    // -------------------------------------------------------------
+    // Test 24: Snippet Expansion Engine & User Snippets Persistence
+    // -------------------------------------------------------------
+    {
+        std::cout << "\n[Test 24] Testing SnippetManager & User Snippets Expansion..." << std::endl;
+        std::wstring testSnippetFile = L"test_snippets.json";
+        if (std::filesystem::exists(testSnippetFile)) {
+            std::filesystem::remove(testSnippetFile);
+        }
+
+        phide::editor::SnippetManager sm;
+        sm.Initialize(testSnippetFile);
+        assert(std::filesystem::exists(testSnippetFile));
+        assert(!sm.GetSnippets().empty());
+
+        // Test 1: Expansion of "log" in C++
+        {
+            phide::editor::Buffer buf;
+            buf.SetText(L"log");
+            buf.SetCursor(0, 3);
+            bool expanded = sm.TryExpand(buf, L"cpp");
+            assert(expanded);
+            assert(buf.GetLine(0).find(L"std::cout") != std::wstring::npos);
+            std::cout << "  Passed: Expanded 'log' -> " << buf.GetLine(0).length() << " chars" << std::endl;
+        }
+
+        // Test 2: Expansion of "main" in C++
+        {
+            phide::editor::Buffer buf;
+            buf.SetText(L"main");
+            buf.SetCursor(0, 4);
+            bool expanded = sm.TryExpand(buf, L"cpp");
+            assert(expanded);
+            assert(buf.GetLineCount() >= 4);
+            assert(buf.GetLine(0).find(L"int main") != std::wstring::npos);
+            std::cout << "  Passed: Expanded 'main' -> multi-line main function" << std::endl;
+        }
+
+        // Test 3: Language-scoped expansion: 'clg' should expand in js/ts but not in cpp
+        {
+            phide::editor::Buffer bufJs;
+            bufJs.SetText(L"clg");
+            bufJs.SetCursor(0, 3);
+            bool expandedJs = sm.TryExpand(bufJs, L"ts");
+            assert(expandedJs);
+            assert(bufJs.GetLine(0).find(L"console.log") != std::wstring::npos);
+
+            phide::editor::Buffer bufCpp;
+            bufCpp.SetText(L"clg");
+            bufCpp.SetCursor(0, 3);
+            bool expandedCpp = sm.TryExpand(bufCpp, L"cpp");
+            assert(!expandedCpp);
+            std::cout << "  Passed: Language scoping verified (clg expands in ts, rejected in cpp)" << std::endl;
+        }
+
+        // Clean up test file
+        if (std::filesystem::exists(testSnippetFile)) {
+            std::filesystem::remove(testSnippetFile);
+        }
+    }
+
+    // -------------------------------------------------------------
+    // Test 25: Commit Popover Card Dismissal & DirectWrite Truncation
+    // -------------------------------------------------------------
+    {
+        std::cout << "\n[Test 25] Testing Commit Popover Card Dismissal..." << std::endl;
+        phide::ui::DrawerPanel gitDrawer;
+        gitDrawer.RefreshGitState(false);
+        gitDrawer.SetSelectedCommitIndex(0);
+        assert(gitDrawer.GetSelectedCommitIndex() == 0);
+
+        // Dismiss card
+        gitDrawer.DismissCommitCard();
+        assert(gitDrawer.GetSelectedCommitIndex() == -1);
+        std::cout << "  Passed: Popover card cleanly dismissed via DismissCommitCard()" << std::endl;
+    }
+
+    // -------------------------------------------------------------
+    // Test 26: Binary Diff Protection & RenderDiffBinaryView
+    // -------------------------------------------------------------
+    {
+        std::cout << "\n[Test 26] Testing Binary Diff Protection View..." << std::endl;
+        ComPtr<IWICBitmap> pWicBinDiffBmp;
+        ComPtr<ID2D1RenderTarget> pBinDiffRT;
+        CreateTarget(pWicBinDiffBmp, pBinDiffRT);
+
+        phide::ui::Theme theme;
+        theme.SetThemeMode(phide::ui::ThemeMode::Dark);
+        hr = theme.CreateDeviceResources(pBinDiffRT.Get(), pDWriteFactory.Get());
+        assert(SUCCEEDED(hr));
+
+        phide::app::AppConfig cfg;
+        phide::ui::EditorCanvas editor;
+
+        std::vector<phide::editor::OpenDocument> docs;
+        phide::editor::OpenDocument binDoc;
+        binDoc.fileName = L"cleaveshell.exe (Working Tree)";
+        binDoc.diffOriginalTitle = L"cleaveshell.exe (HEAD)";
+        binDoc.diffWorkingTitle = L"cleaveshell.exe (Working Tree)";
+        binDoc.isDiffView = true;
+        binDoc.isDiffBinary = true;
+        binDoc.diffBinaryFileName = L"cleaveshell.exe";
+        docs.push_back(binDoc);
+
+        pBinDiffRT->BeginDraw();
+        pBinDiffRT->Clear(theme.colors.windowBg);
+        editor.Render(pBinDiffRT.Get(), theme, cfg, docs, 0, 50.0f, 1150.0f, 750.0f, true);
+        pBinDiffRT->EndDraw();
+
+        SaveWicBitmapToPng(pWicBinDiffBmp.Get(), pWicFactory.Get(), artDir + L"test_binary_diff_view.png");
+        std::cout << "  Passed: Rendered and saved test_binary_diff_view.png" << std::endl;
     }
 
     std::cout << "\n==========================================" << std::endl;

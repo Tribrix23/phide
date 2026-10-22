@@ -30,6 +30,7 @@
 #include "phide/editor/OpenDocument.hpp"
 #include "phide/workspace/WorkspaceManager.hpp"
 #include "phide/workspace/ExplorerUndoManager.hpp"
+#include "phide/editor/SnippetManager.hpp"
 #include "phide/lsp/LspClient.hpp"
 
 namespace phide::app {
@@ -365,6 +366,13 @@ private:
     /** @brief Computes absolute path to the session persistence file in %APPDATA%\phide\session.json. */
     std::wstring GetSessionFilePath() const;
 
+    /** @brief Computes absolute path to the user snippets configuration file in %APPDATA%\phide\snippets\snippets.json. */
+    std::wstring GetSnippetsConfigPath() const;
+
+    /** @brief Starts background filesystem watcher on active workspace for event-driven Git & tree reactivity. */
+    void StartWorkspaceWatcher(const std::wstring& folderPath);
+    void StopWorkspaceWatcher();
+
     // Win32 & D2D handles
     HWND m_hwnd = nullptr;
     ComPtr<ID2D1Factory> m_pD2DFactory;
@@ -382,7 +390,12 @@ private:
     ui::ThemePickerModal m_themePicker;
     workspace::WorkspaceManager m_workspace;
     workspace::ExplorerUndoManager m_explorerUndo;
+    editor::SnippetManager m_snippetManager;
     lsp::LspClient m_lsp;
+
+    // Filesystem Watcher Handles
+    HANDLE m_hWatcherThread = nullptr;
+    HANDLE m_hWatcherStopEvent = nullptr;
 
     // Multi-Editor Groups Architecture (Up to 3 columns)
     std::vector<editor::EditorGroup> m_editorGroups;

@@ -16,6 +16,7 @@
 #include <set>
 #include <map>
 #include <filesystem>
+#include <functional>
 #include <mutex>
 #include <atomic>
 #include <thread>
@@ -212,6 +213,18 @@ public:
     [[nodiscard]] bool IsGitTooltipVisible() const noexcept { return m_showGitTooltip; }
     [[nodiscard]] bool IsGitViewMenuOpen() const noexcept { return m_activeGitMenu == GitMenuType::HeaderViews || m_showGitViewMenu; }
     [[nodiscard]] GitMenuType GetActiveGitMenu() const noexcept { return m_activeGitMenu; }
+    void DismissCommitCard() noexcept {
+        m_hoveredCommitIdx = -1;
+        m_selectedCommitIdx = -1;
+        m_commitCardBounds = D2D1::RectF(0, 0, 0, 0);
+        m_commitCardCloseBounds = D2D1::RectF(0, 0, 0, 0);
+        m_commitCardOpenChangesBounds = D2D1::RectF(0, 0, 0, 0);
+        m_commitCardGitHubBounds = D2D1::RectF(0, 0, 0, 0);
+    }
+    [[nodiscard]] bool IsCommitCardVisible() const noexcept {
+        return (m_hoveredCommitIdx >= 0 || m_selectedCommitIdx >= 0);
+    }
+    void SetOnGitStateChanged(std::function<void()> cb) { m_onGitStateChanged = std::move(cb); }
 
     /**
      * @brief Paints the drawer background, header, and contents with animated width and upper-left curve.
@@ -505,9 +518,11 @@ private:
     int m_hoveredCommitIdx = -1;
     int m_selectedCommitIdx = -1;
     D2D1_RECT_F m_commitCardBounds{};
+    D2D1_RECT_F m_commitCardCloseBounds{};
     D2D1_RECT_F m_commitCardOpenChangesBounds{};
     D2D1_RECT_F m_commitCardGitHubBounds{};
     std::wstring m_commitCardHash;
+    std::function<void()> m_onGitStateChanged;
 
     // Tooltip state
     std::wstring m_gitTooltipText;

@@ -2845,6 +2845,10 @@ void DrawerPanel::RefreshGitState(bool async, bool showLoading) {
             m_unpushedCommitsCount = unpushedCount;
             m_isGitLoading = false;
         }
+
+        if (m_onGitStateChanged) {
+            m_onGitStateChanged();
+        }
     };
 
     if (async) {
@@ -3141,16 +3145,27 @@ bool DrawerPanel::HitTestGit(POINT pt, const app::AppConfig& config,
 
     // 0. Check Commit Hover Card buttons first (Image 5)
     if (m_hoveredCommitIdx >= 0 || m_selectedCommitIdx >= 0) {
+        if (pt.x >= m_commitCardCloseBounds.left && pt.x <= m_commitCardCloseBounds.right &&
+            pt.y >= m_commitCardCloseBounds.top && pt.y <= m_commitCardCloseBounds.bottom) {
+            DismissCommitCard();
+            return true;
+        }
         if (pt.x >= m_commitCardOpenChangesBounds.left && pt.x <= m_commitCardOpenChangesBounds.right &&
             pt.y >= m_commitCardOpenChangesBounds.top && pt.y <= m_commitCardOpenChangesBounds.bottom) {
             outOpenCommitDiff = m_commitCardHash;
             outIsDiff = true;
+            DismissCommitCard();
             return true;
         }
         if (pt.x >= m_commitCardGitHubBounds.left && pt.x <= m_commitCardGitHubBounds.right &&
             pt.y >= m_commitCardGitHubBounds.top && pt.y <= m_commitCardGitHubBounds.bottom) {
             outOpenUrl = L"https://github.com/Tribrix23/phide/commit/" + m_commitCardHash;
+            DismissCommitCard();
             return true;
+        }
+        if (pt.x >= m_commitCardBounds.left && pt.x <= m_commitCardBounds.right &&
+            pt.y >= m_commitCardBounds.top && pt.y <= m_commitCardBounds.bottom) {
+            return true; // Click inside card body is absorbed
         }
     }
 
@@ -3503,26 +3518,29 @@ bool DrawerPanel::HandleGitMouseMove(POINT pt) {
     // Check commit rows and expanded files (Images 2, 3, 5)
     int oldHoverCommit = m_hoveredCommitIdx;
     if (m_graphExpanded && !m_showGitTooltip) {
-        bool hitCommit = false;
-        // Preserve hover if mouse is inside the active commit card
-        if ((m_hoveredCommitIdx >= 0 || m_selectedCommitIdx >= 0) &&
-            pt.x >= m_commitCardBounds.left && pt.x <= m_commitCardBounds.right &&
-            pt.y >= m_commitCardBounds.top && pt.y <= m_commitCardBounds.bottom) {
-            hitCommit = true;
-        } else {
-            for (size_t i = 0; i < m_gitCommits.size(); ++i) {
-                const auto& ci = m_gitCommits[i];
-                if (pt.x >= ci.bounds.left && pt.x <= ci.bounds.right &&
-                    pt.y >= ci.bounds.top && pt.y <= ci.bounds.bottom) {
-                    m_hoveredCommitIdx = static_cast<int>(i);
-                    m_commitCardHash = ci.hash;
-                    hitCommit = true;
-                    break;
-                }
+        bool inCard = (m_commitCardBounds.right > m_commitCardBounds.left &&
+                       pt.x >= m_commitCardBounds.left && pt.x <= m_commitCardBounds.right &&
+                       pt.y >= m_commitCardBounds.top && pt.y <= m_commitCardBounds.bottom);
+        int hitCommitIdx = -1;
+        for (size_t i = 0; i < m_gitCommits.size(); ++i) {
+            const auto& ci = m_gitCommits[i];
+            if (pt.x >= ci.bounds.left && pt.x <= ci.bounds.right &&
+                pt.y >= ci.bounds.top && pt.y <= ci.bounds.bottom) {
+                hitCommitIdx = static_cast<int>(i);
+                break;
             }
         }
-        if (!hitCommit && m_selectedCommitIdx < 0) {
+
+        if (hitCommitIdx >= 0) {
+            m_hoveredCommitIdx = hitCommitIdx;
+            m_commitCardHash = m_gitCommits[hitCommitIdx].hash;
+        } else if (inCard) {
+            // Keep card alive while hovering inside the card bounds
+        } else {
+            // Mouse is outside both commit rows and card: dismiss card immediately (Issue 1)
             m_hoveredCommitIdx = -1;
+            m_selectedCommitIdx = -1;
+            m_commitCardBounds = D2D1::RectF(0, 0, 0, 0);
         }
 
         for (const auto& ci : m_gitCommits) {
@@ -3952,9 +3970,19 @@ void DrawerPanel::RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, 
                                       theme.fontMenuItem.Get() ? theme.fontMenuItem.Get() : theme.fontButtonCenter.Get(),
                                       rcName, theme.brushTextPrimary.Get());
 
-                        // 3. Status letter (M = yellow #E5C07B, D = red #E06C75, U/A = green #98C379, R = blue #61AFEF)
+                        bool isBin = false;
+                        auto dot = item.path.rfind(L'.');
+                        if (dot != std::wstring::npos) {
+                            std::wstring ext = item.path.substr(dot);
+                            for (auto& c : ext) c = towlower(c);
+                            if (ext == L".exe" || ext == L".dll" || ext == L".bin" || ext == L".obj" || ext == L".lib" || ext == L".node") isBin = true;
+                        }
+
+                        // 3. Status letter (M = yellow #E5C07B, D = red #E06C75, U/A = green #98C379, R = blue #61AFEF, BIN = purple)
                         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushStatus;
-                        if (item.status.find(L"M") != std::wstring::npos) {
+                        if (isBin) {
+                            pRT->CreateSolidColorBrush(D2D1::ColorF(0.65f, 0.45f, 0.95f, 1.0f), &brushStatus);
+                        } else if (item.status.find(L"M") != std::wstring::npos) {
                             pRT->CreateSolidColorBrush(D2D1::ColorF(0.898f, 0.753f, 0.482f, 1.0f), &brushStatus);
                         } else if (item.status.find(L"D") != std::wstring::npos) {
                             pRT->CreateSolidColorBrush(D2D1::ColorF(0.878f, 0.424f, 0.459f, 1.0f), &brushStatus);
@@ -3970,7 +3998,7 @@ void DrawerPanel::RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, 
                             railW + currentDrawerW - config.ScaleF(8.0f),
                             itemY + rowH
                         );
-                        const wchar_t* statChar = item.status.empty() ? L"M" : item.status.c_str();
+                        const wchar_t* statChar = isBin ? L"B" : (item.status.empty() ? L"M" : item.status.c_str());
 
                         // 4. Stage (+) and Discard (↩) buttons on row hover (Image 4 & 5)
                         item.discardBtnBounds = D2D1::RectF(railW + currentDrawerW - config.ScaleF(26.0f), itemY + 2.0f, railW + currentDrawerW - config.ScaleF(10.0f), itemY + rowH - 2.0f);
@@ -4199,16 +4227,37 @@ void DrawerPanel::RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, 
                     textLeft += bW + config.ScaleF(8.0f);
                 }
 
-                // Commit message text (LEFT-ALIGNED, never overlapping or backwards)
-                D2D1_RECT_F rcMsg = D2D1::RectF(
-                    textLeft,
-                    curY,
-                    railW + currentDrawerW - config.ScaleF(10.0f),
-                    curY + rowH
-                );
-                pRT->DrawText(ci.message.c_str(), static_cast<UINT32>(ci.message.length()),
-                              theme.fontMenuItem.Get() ? theme.fontMenuItem.Get() : theme.fontButtonCenter.Get(),
-                              rcMsg, theme.brushTextPrimary.Get());
+                // Commit message text with genuine ellipsis '...' before truncation (Image 3)
+                float availW = (railW + currentDrawerW - config.ScaleF(10.0f)) - textLeft;
+                if (availW > config.ScaleF(20.0f)) {
+                    IDWriteTextFormat* pFmt = theme.fontMenuItem.Get() ? theme.fontMenuItem.Get() : theme.fontButtonCenter.Get();
+                    bool drawn = false;
+                    if (theme.dwriteFactory && pFmt) {
+                        Microsoft::WRL::ComPtr<IDWriteTextLayout> pLayout;
+                        HRESULT hr = theme.dwriteFactory->CreateTextLayout(
+                            ci.message.c_str(),
+                            static_cast<UINT32>(ci.message.length()),
+                            pFmt,
+                            availW,
+                            rowH,
+                            &pLayout
+                        );
+                        if (SUCCEEDED(hr) && pLayout) {
+                            DWRITE_TRIMMING trimming = { DWRITE_TRIMMING_GRANULARITY_CHARACTER, 0, 0 };
+                            Microsoft::WRL::ComPtr<IDWriteInlineObject> pEllipsis;
+                            theme.dwriteFactory->CreateEllipsisTrimmingSign(pFmt, &pEllipsis);
+                            pLayout->SetTrimming(&trimming, pEllipsis.Get());
+                            pLayout->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+                            pRT->DrawTextLayout(D2D1::Point2F(textLeft, curY), pLayout.Get(), theme.brushTextPrimary.Get());
+                            drawn = true;
+                        }
+                    }
+                    if (!drawn) {
+                        D2D1_RECT_F rcMsg = D2D1::RectF(textLeft, curY, textLeft + availW, curY + rowH);
+                        pRT->DrawText(ci.message.c_str(), static_cast<UINT32>(ci.message.length()),
+                                      pFmt, rcMsg, theme.brushTextPrimary.Get());
+                    }
+                }
 
                 curY += rowH;
 
@@ -4260,9 +4309,19 @@ void DrawerPanel::RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, 
                                       theme.fontMenuItem.Get() ? theme.fontMenuItem.Get() : theme.fontButtonCenter.Get(),
                                       rcFileName, theme.brushTextPrimary.Get());
 
-                        // Status Badge (M, A, D)
+                        // Status Badge (M, A, D, B)
+                        bool isBin = false;
+                        auto dot = cf.path.rfind(L'.');
+                        if (dot != std::wstring::npos) {
+                            std::wstring ext = cf.path.substr(dot);
+                            for (auto& c : ext) c = towlower(c);
+                            if (ext == L".exe" || ext == L".dll" || ext == L".bin" || ext == L".obj" || ext == L".lib" || ext == L".node") isBin = true;
+                        }
+
                         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushStatus;
-                        if (cf.status.find(L"M") != std::wstring::npos) {
+                        if (isBin) {
+                            pRT->CreateSolidColorBrush(D2D1::ColorF(0.65f, 0.45f, 0.95f, 1.0f), &brushStatus);
+                        } else if (cf.status.find(L"M") != std::wstring::npos) {
                             pRT->CreateSolidColorBrush(D2D1::ColorF(0.898f, 0.753f, 0.482f, 1.0f), &brushStatus);
                         } else if (cf.status.find(L"D") != std::wstring::npos) {
                             pRT->CreateSolidColorBrush(D2D1::ColorF(0.878f, 0.424f, 0.459f, 1.0f), &brushStatus);
@@ -4275,7 +4334,7 @@ void DrawerPanel::RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, 
                             railW + currentDrawerW - config.ScaleF(8.0f),
                             curY + fileRowH
                         );
-                        const wchar_t* sChar = cf.status.empty() ? L"M" : cf.status.c_str();
+                        const wchar_t* sChar = isBin ? L"B" : (cf.status.empty() ? L"M" : cf.status.c_str());
                         pRT->DrawText(sChar, 1,
                                       theme.fontButtonCenter.Get() ? theme.fontButtonCenter.Get() : theme.fontMenuItem.Get(),
                                       rcStatus, brushStatus.Get());
@@ -4320,6 +4379,20 @@ void DrawerPanel::RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, 
 
         pRT->FillRoundedRectangle(rrcCard, brushCardBg.Get());
         pRT->DrawRoundedRectangle(rrcCard, brushCardBorder.Get(), 1.0f);
+
+        // Close '×' button on top-right of commit card (Issue 1)
+        float closeBtnSize = config.ScaleF(18.0f);
+        m_commitCardCloseBounds = D2D1::RectF(
+            cardLeft + cardW - closeBtnSize - config.ScaleF(6.0f),
+            cardTop + config.ScaleF(6.0f),
+            cardLeft + cardW - config.ScaleF(6.0f),
+            cardTop + config.ScaleF(6.0f) + closeBtnSize
+        );
+        float cx = (m_commitCardCloseBounds.left + m_commitCardCloseBounds.right) * 0.5f;
+        float cy = (m_commitCardCloseBounds.top + m_commitCardCloseBounds.bottom) * 0.5f;
+        float cr = config.ScaleF(3.5f);
+        pRT->DrawLine(D2D1::Point2F(cx - cr, cy - cr), D2D1::Point2F(cx + cr, cy + cr), theme.brushTextMuted.Get(), 1.4f);
+        pRT->DrawLine(D2D1::Point2F(cx + cr, cy - cr), D2D1::Point2F(cx - cr, cy + cr), theme.brushTextMuted.Get(), 1.4f);
 
         // Header: Author Avatar + Name + relative time + date
         float curCardY = cardTop + config.ScaleF(8.0f);
