@@ -50,6 +50,8 @@ struct SearchMatch {
     size_t matchCol = 0;        ///< Column offset of match
     size_t matchLen = 0;        ///< Length of match string
     D2D1_RECT_F bounds{};       ///< Clickable row bounding box
+    D2D1_RECT_F replaceBtnBounds{0, 0, 0, 0};
+    D2D1_RECT_F dismissBtnBounds{0, 0, 0, 0};
 };
 
 /**
@@ -62,6 +64,8 @@ struct SearchFileGroup {
     std::wstring relDir;
     bool isExpanded = true;
     D2D1_RECT_F headerBounds{};
+    D2D1_RECT_F replaceAllBtnBounds{0, 0, 0, 0};
+    D2D1_RECT_F dismissBtnBounds{0, 0, 0, 0};
     std::vector<SearchMatch> matches;
 };
 
@@ -143,6 +147,7 @@ public:
     // --- Source Control (Git) Operations & Interactions (Images 2, 3, 4, 5) ---
     void OpenSourceControl();
     void RefreshGitState(bool async = true, bool showLoading = false);
+    void RefreshGitStatusOnly(bool async = true);
     void StageAllChangesAsync();
     void DiscardAllChangesAsync();
     bool DiscardAllChanges();
@@ -380,6 +385,15 @@ public:
     }
     [[nodiscard]] const std::wstring& GetSearchQuery() const noexcept { return m_searchQuery; }
     [[nodiscard]] const std::vector<SearchFileGroup>& GetSearchGroups() const noexcept { return m_searchGroups; }
+    [[nodiscard]] size_t GetTotalMatches() const noexcept { return m_totalMatches; }
+    void SetReplaceQuery(const std::wstring& rq) { m_replaceQuery = rq; }
+    [[nodiscard]] const std::wstring& GetReplaceQuery() const noexcept { return m_replaceQuery; }
+    void ExecuteReplaceSingleMatch(const std::wstring& filePath, const SearchMatch& match);
+    void ExecuteReplaceInFile(const std::wstring& filePath);
+    void DismissSearchMatch(size_t groupIdx, size_t matchIdx);
+    void DismissSearchGroup(size_t groupIdx);
+    void SetOnRefreshOpenDocs(std::function<void()> cb) { m_onRefreshOpenDocs = cb; }
+    void SetOnFilesReplaced(std::function<void(const std::vector<std::wstring>&)> cb) { m_onFilesReplaced = cb; }
     [[nodiscard]] int GetHoveredIndex() const noexcept { return m_hoveredIndex; }
     [[nodiscard]] bool GetMatchCase() const noexcept { return m_matchCase; }
     [[nodiscard]] bool GetMatchWholeWord() const noexcept { return m_matchWholeWord; }
@@ -608,6 +622,10 @@ private:
     bool m_isReplaceOpen = true;
     int m_focusedSearchInput = 1;       ///< 1 = Search, 2 = Replace, 0 = Unfocused
     std::vector<SearchFileGroup> m_searchGroups;
+    std::function<void()> m_onRefreshOpenDocs;
+    std::function<void(const std::vector<std::wstring>&)> m_onFilesReplaced;
+    int m_hoveredSearchGroupIdx = -1;
+    int m_hoveredSearchMatchIdx = -1;
     size_t m_totalMatches = 0;
     size_t m_searchScrollIdx = 0;
 

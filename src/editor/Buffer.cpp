@@ -437,6 +437,13 @@ void Buffer::SetLines(const std::vector<std::wstring>& lines) {
     m_isModified = false;
 }
 
+void Buffer::SetLine(size_t lineIdx, const std::wstring& text) {
+    if (lineIdx < m_lines.size()) {
+        m_lines[lineIdx] = text;
+        m_isModified = true;
+    }
+}
+
 void Buffer::SetText(const std::wstring& text) {
     m_lines.clear();
     std::wistringstream ss(text);

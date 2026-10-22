@@ -5,7 +5,9 @@
 
 #include "phide/ui/DrawerPanel.hpp"
 #include "phide/ui/ActivityRail.hpp"
+#include "phide/editor/Buffer.hpp"
 #include <algorithm>
+#include <iostream>
 #include <fstream>
 #include <regex>
 #include <sstream>
@@ -86,6 +88,9 @@ void DrawerPanel::OpenFolder(const std::wstring& folderPath, const std::set<std:
 
     m_openFolderPath = std::filesystem::canonical(fsPath, ec).wstring();
     if (m_openFolderPath.empty()) m_openFolderPath = folderPath;
+    if (m_openFolderPath.size() >= 4 && m_openFolderPath[0] == L'\\' && m_openFolderPath[1] == L'\\' && m_openFolderPath[2] == L'?' && m_openFolderPath[3] == L'\\') {
+        m_openFolderPath = m_openFolderPath.substr(4);
+    }
 
     // Extract folder name
     std::filesystem::path canon(m_openFolderPath);
@@ -1168,6 +1173,11 @@ void DrawerPanel::RenderSearchPane(ID2D1RenderTarget* pRT, Theme& theme, const a
                     curY + rowH
                 );
 
+                bool isGroupHovered = (static_cast<int>(g) == m_hoveredSearchGroupIdx);
+                if (isGroupHovered) {
+                    pRT->FillRectangle(group.headerBounds, theme.brushItemHover.Get());
+                }
+
                 // File Chevron
                 float gChevronX = railW + paddingX;
                 float gCenterY = curY + rowH / 2.0f;
@@ -1219,22 +1229,50 @@ void DrawerPanel::RenderSearchPane(ID2D1RenderTarget* pRT, Theme& theme, const a
                 pRT->DrawText(fileLabel.c_str(), static_cast<UINT32>(fileLabel.length()),
                               theme.fontBody.Get(), rcName, theme.brushTextPrimary.Get());
 
-                // Badge count pill
-                std::wstring countStr = std::to_wstring(group.matches.size());
-                float badgeH = config.ScaleF(16.0f);
-                D2D1_ROUNDED_RECT rrcBadge = D2D1::RoundedRect(
-                    D2D1::RectF(
-                        railW + fullDrawerW - config.ScaleF(32.0f),
-                        curY + (rowH - badgeH) / 2.0f,
-                        railW + fullDrawerW - config.ScaleF(12.0f),
-                        curY + (rowH + badgeH) / 2.0f
-                    ),
-                    config.ScaleF(8.0f), config.ScaleF(8.0f)
-                );
-                pRT->FillRoundedRectangle(rrcBadge, theme.brushItemHover.Get());
-                pRT->DrawText(countStr.c_str(), static_cast<UINT32>(countStr.length()),
+                if (isGroupHovered) {
+                    float btnSize = config.ScaleF(16.0f);
+                    float rightX = railW + fullDrawerW - config.ScaleF(8.0f);
+                    group.dismissBtnBounds = D2D1::RectF(rightX - btnSize, curY + (rowH - btnSize) * 0.5f, rightX, curY + (rowH + btnSize) * 0.5f);
+                    rightX -= (btnSize + config.ScaleF(3.0f));
+                    group.replaceAllBtnBounds = D2D1::RectF(rightX - btnSize, curY + (rowH - btnSize) * 0.5f, rightX, curY + (rowH + btnSize) * 0.5f);
+
+                    // Draw Dismiss (✕) Button
+                    float dmx = (group.dismissBtnBounds.left + group.dismissBtnBounds.right) * 0.5f;
+                    float dmy = (group.dismissBtnBounds.top + group.dismissBtnBounds.bottom) * 0.5f;
+                    float dr = config.ScaleF(3.5f);
+                    pRT->DrawLine(D2D1::Point2F(dmx - dr, dmy - dr), D2D1::Point2F(dmx + dr, dmy + dr), theme.brushTextSecondary.Get(), 1.2f);
+                    pRT->DrawLine(D2D1::Point2F(dmx + dr, dmy - dr), D2D1::Point2F(dmx - dr, dmy + dr), theme.brushTextSecondary.Get(), 1.2f);
+
+                    // Draw Replace All in File Button (document with arrow)
+                    float rpx = (group.replaceAllBtnBounds.left + group.replaceAllBtnBounds.right) * 0.5f;
+                    float rpy = (group.replaceAllBtnBounds.top + group.replaceAllBtnBounds.bottom) * 0.5f;
+                    float rw = config.ScaleF(4.0f);
+                    float rh = config.ScaleF(4.5f);
+                    pRT->DrawRectangle(D2D1::RectF(rpx - rw, rpy - rh, rpx + rw, rpy + rh), theme.brushTextSecondary.Get(), 1.0f);
+                    pRT->DrawLine(D2D1::Point2F(rpx - rw + 1.5f, rpy), D2D1::Point2F(rpx + rw - 1.5f, rpy), theme.brushTextPrimary.Get(), 1.2f);
+                    pRT->DrawLine(D2D1::Point2F(rpx + rw - 3.0f, rpy - 1.5f), D2D1::Point2F(rpx + rw - 1.5f, rpy), theme.brushTextPrimary.Get(), 1.2f);
+                    pRT->DrawLine(D2D1::Point2F(rpx + rw - 3.0f, rpy + 1.5f), D2D1::Point2F(rpx + rw - 1.5f, rpy), theme.brushTextPrimary.Get(), 1.2f);
+                } else {
+                    group.replaceAllBtnBounds = D2D1::RectF(0, 0, 0, 0);
+                    group.dismissBtnBounds = D2D1::RectF(0, 0, 0, 0);
+
+                    // Badge count pill
+                    std::wstring countStr = std::to_wstring(group.matches.size());
+                    float badgeH = config.ScaleF(16.0f);
+                    D2D1_ROUNDED_RECT rrcBadge = D2D1::RoundedRect(
+                        D2D1::RectF(
+                            railW + fullDrawerW - config.ScaleF(32.0f),
+                            curY + (rowH - badgeH) / 2.0f,
+                            railW + fullDrawerW - config.ScaleF(12.0f),
+                            curY + (rowH + badgeH) / 2.0f
+                        ),
+                        config.ScaleF(8.0f), config.ScaleF(8.0f)
+                    );
+                    pRT->FillRoundedRectangle(rrcBadge, theme.brushItemHover.Get());
+                    pRT->DrawText(countStr.c_str(), static_cast<UINT32>(countStr.length()),
                               theme.fontMenuShortcut ? theme.fontMenuShortcut.Get() : theme.fontBody.Get(),
                               rrcBadge.rect, theme.brushTextSecondary.Get());
+                }
 
                 curY += rowH;
             }
@@ -1255,6 +1293,11 @@ void DrawerPanel::RenderSearchPane(ID2D1RenderTarget* pRT, Theme& theme, const a
                             railW + fullDrawerW - config.ScaleF(4.0f),
                             curY + rowH
                         );
+
+                        bool isMatchHovered = (static_cast<int>(g) == m_hoveredSearchGroupIdx && static_cast<int>(m) == m_hoveredSearchMatchIdx);
+                        if (isMatchHovered) {
+                            pRT->FillRectangle(match.bounds, theme.brushItemHover.Get());
+                        }
 
                         // Match line number (e.g. "14")
                         std::wstring lineNum = std::to_wstring(match.lineIndex + 1);
@@ -1329,6 +1372,30 @@ void DrawerPanel::RenderSearchPane(ID2D1RenderTarget* pRT, Theme& theme, const a
                             pRT->DrawText(trimmed.c_str(), static_cast<UINT32>(trimmed.length()),
                                           theme.fontCode ? theme.fontCode.Get() : theme.fontBody.Get(),
                                           rcSnip, theme.brushTextPrimary.Get());
+                        }
+
+                        if (isMatchHovered) {
+                            float btnSize = config.ScaleF(16.0f);
+                            float rightX = railW + fullDrawerW - config.ScaleF(8.0f);
+                            match.dismissBtnBounds = D2D1::RectF(rightX - btnSize, curY + (rowH - btnSize) * 0.5f, rightX, curY + (rowH + btnSize) * 0.5f);
+                            rightX -= (btnSize + config.ScaleF(3.0f));
+                            match.replaceBtnBounds = D2D1::RectF(rightX - btnSize, curY + (rowH - btnSize) * 0.5f, rightX, curY + (rowH + btnSize) * 0.5f);
+
+                            // Draw Dismiss (✕) Button
+                            float dmx = (match.dismissBtnBounds.left + match.dismissBtnBounds.right) * 0.5f;
+                            float dmy = (match.dismissBtnBounds.top + match.dismissBtnBounds.bottom) * 0.5f;
+                            float dr = config.ScaleF(3.5f);
+                            pRT->DrawLine(D2D1::Point2F(dmx - dr, dmy - dr), D2D1::Point2F(dmx + dr, dmy + dr), theme.brushTextSecondary.Get(), 1.2f);
+                            pRT->DrawLine(D2D1::Point2F(dmx + dr, dmy - dr), D2D1::Point2F(dmx - dr, dmy + dr), theme.brushTextSecondary.Get(), 1.2f);
+
+                            // Draw Replace Occurrence Button (pen/replace icon)
+                            float rpx = (match.replaceBtnBounds.left + match.replaceBtnBounds.right) * 0.5f;
+                            float rpy = (match.replaceBtnBounds.top + match.replaceBtnBounds.bottom) * 0.5f;
+                            pRT->DrawLine(D2D1::Point2F(rpx - 3.5f, rpy + 3.5f), D2D1::Point2F(rpx + 2.5f, rpy - 2.5f), theme.brushTextSecondary.Get(), 1.2f);
+                            pRT->DrawLine(D2D1::Point2F(rpx + 0.5f, rpy - 4.0f), D2D1::Point2F(rpx + 4.0f, rpy - 0.5f), theme.brushTextPrimary.Get(), 1.2f);
+                        } else {
+                            match.replaceBtnBounds = D2D1::RectF(0, 0, 0, 0);
+                            match.dismissBtnBounds = D2D1::RectF(0, 0, 0, 0);
                         }
 
                         curY += rowH;
@@ -1507,8 +1574,27 @@ bool DrawerPanel::HitTestSearch(POINT pt, const app::AppConfig& config, std::wst
         }
     }
 
-    // 11. Search Results: File Header toggling & Match clicking
-    for (auto& group : m_searchGroups) {
+    // 11. Search Results: File Header buttons & Match buttons
+    for (size_t g = 0; g < m_searchGroups.size(); ++g) {
+        auto& group = m_searchGroups[g];
+
+        // Replace all in file
+        if (group.replaceAllBtnBounds.right > group.replaceAllBtnBounds.left &&
+            pt.x >= group.replaceAllBtnBounds.left && pt.x <= group.replaceAllBtnBounds.right &&
+            pt.y >= group.replaceAllBtnBounds.top && pt.y <= group.replaceAllBtnBounds.bottom) {
+            ExecuteReplaceInFile(group.filePath);
+            return true;
+        }
+
+        // Dismiss file
+        if (group.dismissBtnBounds.right > group.dismissBtnBounds.left &&
+            pt.x >= group.dismissBtnBounds.left && pt.x <= group.dismissBtnBounds.right &&
+            pt.y >= group.dismissBtnBounds.top && pt.y <= group.dismissBtnBounds.bottom) {
+            DismissSearchGroup(g);
+            return true;
+        }
+
+        // Click on file header to expand/collapse
         if (group.headerBounds.right > group.headerBounds.left &&
             pt.x >= group.headerBounds.left && pt.x <= group.headerBounds.right &&
             pt.y >= group.headerBounds.top && pt.y <= group.headerBounds.bottom) {
@@ -1517,7 +1603,26 @@ bool DrawerPanel::HitTestSearch(POINT pt, const app::AppConfig& config, std::wst
         }
 
         if (group.isExpanded) {
-            for (const auto& match : group.matches) {
+            for (size_t m = 0; m < group.matches.size(); ++m) {
+                auto& match = group.matches[m];
+
+                // Replace single match
+                if (match.replaceBtnBounds.right > match.replaceBtnBounds.left &&
+                    pt.x >= match.replaceBtnBounds.left && pt.x <= match.replaceBtnBounds.right &&
+                    pt.y >= match.replaceBtnBounds.top && pt.y <= match.replaceBtnBounds.bottom) {
+                    ExecuteReplaceSingleMatch(group.filePath, match);
+                    return true;
+                }
+
+                // Dismiss single match
+                if (match.dismissBtnBounds.right > match.dismissBtnBounds.left &&
+                    pt.x >= match.dismissBtnBounds.left && pt.x <= match.dismissBtnBounds.right &&
+                    pt.y >= match.dismissBtnBounds.top && pt.y <= match.dismissBtnBounds.bottom) {
+                    DismissSearchMatch(g, m);
+                    return true;
+                }
+
+                // Click on match row to jump to code
                 if (match.bounds.right > match.bounds.left &&
                     pt.x >= match.bounds.left && pt.x <= match.bounds.right &&
                     pt.y >= match.bounds.top && pt.y <= match.bounds.bottom) {
@@ -1812,6 +1917,10 @@ static bool SearchSingleFile(
 void DrawerPanel::LaunchAsyncSearch() {
     uint32_t thisGen = ++m_searchGeneration;
 
+    if (m_onRefreshOpenDocs) {
+        m_onRefreshOpenDocs();
+    }
+
     std::wstring query = m_searchQuery;
     std::wstring rootFolder = m_openFolderPath;
     bool matchCase = m_matchCase;
@@ -1874,6 +1983,10 @@ void DrawerPanel::LaunchAsyncSearch() {
                 for (const auto& op : openDocPaths) {
                     std::filesystem::path fp(op);
                     std::error_code fec;
+                    if (!std::filesystem::exists(fp, fec) && !rootFolder.empty()) {
+                        std::filesystem::path cand = std::filesystem::path(rootFolder) / fp;
+                        if (std::filesystem::exists(cand, fec)) fp = cand;
+                    }
                     if (std::filesystem::exists(fp, fec) && std::filesystem::is_regular_file(fp, fec)) {
                         auto fname = fp.filename().wstring();
                         auto fstr = fp.wstring();
@@ -2038,6 +2151,10 @@ void DrawerPanel::ExecuteSearch(bool async) {
         return;
     }
 
+    if (m_onRefreshOpenDocs) {
+        m_onRefreshOpenDocs();
+    }
+
     ClearSearchResults();
     m_searchScrollIdx = 0;
     if (m_searchQuery.empty() || (!m_searchOnlyOpenEditors && (!m_hasOpenFolder || m_openFolderPath.empty()))) {
@@ -2074,6 +2191,10 @@ void DrawerPanel::ExecuteSearch(bool async) {
         for (const auto& op : m_openDocPaths) {
             std::filesystem::path fp(op);
             std::error_code fec;
+            if (!std::filesystem::exists(fp, fec) && !m_openFolderPath.empty()) {
+                std::filesystem::path cand = std::filesystem::path(m_openFolderPath) / fp;
+                if (std::filesystem::exists(cand, fec)) fp = cand;
+            }
             if (std::filesystem::exists(fp, fec) && std::filesystem::is_regular_file(fp, fec)) {
                 auto fname = fp.filename().wstring();
                 auto fstr = fp.wstring();
@@ -2269,51 +2390,7 @@ void DrawerPanel::ExecuteSearch(bool async) {
     }
 }
 
-void DrawerPanel::ExecuteReplaceAll() {
-    if (m_searchQuery.empty() || m_searchGroups.empty()) return;
 
-    for (const auto& group : m_searchGroups) {
-        std::ifstream file(group.filePath, std::ios::binary);
-        if (!file.is_open()) continue;
-        std::string content((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
-        file.close();
-
-        int wlen = MultiByteToWideChar(CP_UTF8, 0, content.c_str(), static_cast<int>(content.size()), nullptr, 0);
-        if (wlen <= 0) continue;
-        std::wstring wcontent(wlen, L'\0');
-        MultiByteToWideChar(CP_UTF8, 0, content.c_str(), static_cast<int>(content.size()), &wcontent[0], wlen);
-
-        std::wstring newContent;
-        size_t lastPos = 0;
-        size_t pos = 0;
-        std::wstring lowerContent = wcontent;
-        std::wstring lowerQuery = m_searchQuery;
-        if (!m_matchCase) {
-            std::transform(lowerContent.begin(), lowerContent.end(), lowerContent.begin(), ::towlower);
-            std::transform(lowerQuery.begin(), lowerQuery.end(), lowerQuery.begin(), ::towlower);
-        }
-
-        while ((pos = lowerContent.find(lowerQuery, lastPos)) != std::wstring::npos) {
-            newContent.append(wcontent, lastPos, pos - lastPos);
-            newContent.append(m_replaceQuery);
-            lastPos = pos + m_searchQuery.length();
-        }
-        newContent.append(wcontent, lastPos, wcontent.length() - lastPos);
-
-        int u8len = WideCharToMultiByte(CP_UTF8, 0, newContent.c_str(), static_cast<int>(newContent.size()), nullptr, 0, nullptr, nullptr);
-        if (u8len > 0) {
-            std::string u8(u8len, '\0');
-            WideCharToMultiByte(CP_UTF8, 0, newContent.c_str(), static_cast<int>(newContent.size()), &u8[0], u8len, nullptr, nullptr);
-            std::ofstream out(group.filePath, std::ios::binary | std::ios::trunc);
-            if (out.is_open()) {
-                out.write(u8.data(), u8.size());
-                out.close();
-            }
-        }
-    }
-
-    ExecuteSearch();
-}
 
 bool DrawerPanel::SetHoveredIndex(int index) {
     if (m_hoveredIndex != index) {
@@ -2595,7 +2672,41 @@ bool DrawerPanel::HandleSearchMouseMove(POINT pt) {
     else if (m_isSearchDetailsOpen && checkBtn(m_rcOpenEditorsOnlyBtn, L"Search Open Tabs Only (Alt+L)")) {}
     else if (m_isSearchDetailsOpen && checkBtn(m_rcUseExcludeSettingsBtn, L"Use Exclude Settings and Ignore Files")) {}
 
-    return (m_searchTooltipText != oldTip);
+    int oldHoverGroup = m_hoveredSearchGroupIdx;
+    int oldHoverMatch = m_hoveredSearchMatchIdx;
+    m_hoveredSearchGroupIdx = -1;
+    m_hoveredSearchMatchIdx = -1;
+
+    for (size_t g = 0; g < m_searchGroups.size(); ++g) {
+        auto& group = m_searchGroups[g];
+        if (group.headerBounds.right > group.headerBounds.left &&
+            pt.x >= group.headerBounds.left && pt.x <= group.headerBounds.right &&
+            pt.y >= group.headerBounds.top && pt.y <= group.headerBounds.bottom) {
+            m_hoveredSearchGroupIdx = static_cast<int>(g);
+            m_hoveredSearchMatchIdx = -1;
+            if (checkBtn(group.replaceAllBtnBounds, L"Replace All (Ctrl+Shift+1)")) {}
+            else if (checkBtn(group.dismissBtnBounds, L"Dismiss (Exclude from results)")) {}
+            break;
+        }
+
+        if (group.isExpanded) {
+            for (size_t m = 0; m < group.matches.size(); ++m) {
+                auto& match = group.matches[m];
+                if (match.bounds.right > match.bounds.left &&
+                    pt.x >= match.bounds.left && pt.x <= match.bounds.right &&
+                    pt.y >= match.bounds.top && pt.y <= match.bounds.bottom) {
+                    m_hoveredSearchGroupIdx = static_cast<int>(g);
+                    m_hoveredSearchMatchIdx = static_cast<int>(m);
+                    if (checkBtn(match.replaceBtnBounds, L"Replace (Ctrl+Shift+1)")) {}
+                    else if (checkBtn(match.dismissBtnBounds, L"Dismiss (Remove from results)")) {}
+                    break;
+                }
+            }
+            if (m_hoveredSearchGroupIdx >= 0) break;
+        }
+    }
+
+    return (m_searchTooltipText != oldTip || m_hoveredSearchGroupIdx != oldHoverGroup || m_hoveredSearchMatchIdx != oldHoverMatch);
 }
 
 // =========================================================================
@@ -2616,6 +2727,9 @@ static std::wstring GitUtf8ToWide(const std::string& str) {
 } // anonymous namespace
 
 GitCmdResult RunGitCmd(const std::wstring& cmd, const std::wstring& workDir) {
+    static std::mutex s_gitCmdMutex;
+    std::lock_guard<std::mutex> cmdLock(s_gitCmdMutex);
+
     GitCmdResult res;
     SECURITY_ATTRIBUTES sa{ sizeof(sa), nullptr, TRUE };
     HANDLE hReadPipe = nullptr, hWritePipe = nullptr;
@@ -2625,6 +2739,7 @@ GitCmdResult RunGitCmd(const std::wstring& cmd, const std::wstring& workDir) {
     STARTUPINFOW si{ sizeof(si) };
     si.dwFlags = STARTF_USESHOWWINDOW | STARTF_USESTDHANDLES;
     si.wShowWindow = SW_HIDE;
+    si.hStdInput = nullptr;
     si.hStdOutput = hWritePipe;
     si.hStdError = hWritePipe;
 
@@ -2633,7 +2748,11 @@ GitCmdResult RunGitCmd(const std::wstring& cmd, const std::wstring& workDir) {
     std::vector<wchar_t> cmdBuf(fullCmd.begin(), fullCmd.end());
     cmdBuf.push_back(L'\0');
 
-    LPCWSTR pDir = workDir.empty() ? nullptr : workDir.c_str();
+    std::wstring cleanWorkDir = workDir;
+    if (cleanWorkDir.size() >= 4 && cleanWorkDir[0] == L'\\' && cleanWorkDir[1] == L'\\' && cleanWorkDir[2] == L'?' && cleanWorkDir[3] == L'\\') {
+        cleanWorkDir = cleanWorkDir.substr(4);
+    }
+    LPCWSTR pDir = cleanWorkDir.empty() ? nullptr : cleanWorkDir.c_str();
 
     BOOL ok = CreateProcessW(nullptr, cmdBuf.data(), nullptr, nullptr, TRUE,
                              CREATE_NO_WINDOW, nullptr, pDir, &si, &pi);
@@ -2877,6 +2996,290 @@ void DrawerPanel::RefreshGitState(bool async, bool showLoading) {
     }
 }
 
+
+static bool PerformLineReplacement(std::wstring& text, const std::wstring& searchQ, const std::wstring& replaceQ, bool matchCase, bool matchWord) {
+    if (searchQ.empty()) return false;
+    bool anyReplaced = false;
+
+    std::wstring lowerText = text;
+    std::wstring lowerQ = searchQ;
+    if (!matchCase) {
+        for (auto& c : lowerText) c = towlower(c);
+        for (auto& c : lowerQ) c = towlower(c);
+    }
+
+    std::wstring result;
+    size_t lastPos = 0;
+    size_t pos = 0;
+
+    auto isWordBoundary = [](wchar_t c) {
+        return !iswalnum(c) && c != L'_';
+    };
+
+    while ((pos = lowerText.find(lowerQ, lastPos)) != std::wstring::npos) {
+        if (matchWord) {
+            bool leftOk = (pos == 0) || isWordBoundary(text[pos - 1]);
+            bool rightOk = (pos + searchQ.length() >= text.length()) || isWordBoundary(text[pos + searchQ.length()]);
+            if (!leftOk || !rightOk) {
+                result.append(text, lastPos, pos - lastPos + searchQ.length());
+                lastPos = pos + searchQ.length();
+                continue;
+            }
+        }
+        result.append(text, lastPos, pos - lastPos);
+        result.append(replaceQ);
+        lastPos = pos + searchQ.length();
+        anyReplaced = true;
+    }
+    result.append(text, lastPos, text.length() - lastPos);
+    if (anyReplaced) {
+        text = result;
+    }
+    return anyReplaced;
+}
+
+void DrawerPanel::ExecuteReplaceSingleMatch(const std::wstring& filePath, const SearchMatch& match) {
+    if (m_searchQuery.empty()) return;
+    phide::editor::Buffer buf;
+    if (!buf.LoadFromFile(filePath)) return;
+
+    if (match.lineIndex < buf.GetLineCount()) {
+        std::wstring line = buf.GetLine(match.lineIndex);
+        bool modified = false;
+        if (match.matchCol + match.matchLen <= line.length()) {
+            std::wstring sub = line.substr(match.matchCol, match.matchLen);
+            bool matchesSub = m_matchCase ? (sub == m_searchQuery) : (_wcsicmp(sub.c_str(), m_searchQuery.c_str()) == 0);
+            if (matchesSub) {
+                line.replace(match.matchCol, match.matchLen, m_replaceQuery);
+                modified = true;
+            }
+        }
+        if (!modified) {
+            modified = PerformLineReplacement(line, m_searchQuery, m_replaceQuery, m_matchCase, m_matchWholeWord);
+        }
+        if (modified) {
+            buf.SetLine(match.lineIndex, line);
+            buf.SaveToFile(filePath);
+            if (m_onFilesReplaced) {
+                m_onFilesReplaced({ filePath });
+            }
+        }
+    }
+
+    // Remove this match from search results
+    for (size_t g = 0; g < m_searchGroups.size(); ++g) {
+        if (m_searchGroups[g].filePath == filePath) {
+            for (size_t m = 0; m < m_searchGroups[g].matches.size(); ++m) {
+                if (m_searchGroups[g].matches[m].lineIndex == match.lineIndex &&
+                    m_searchGroups[g].matches[m].matchCol == match.matchCol) {
+                    DismissSearchMatch(g, m);
+                    return;
+                }
+            }
+            for (size_t m = 0; m < m_searchGroups[g].matches.size(); ++m) {
+                if (m_searchGroups[g].matches[m].lineIndex == match.lineIndex) {
+                    DismissSearchMatch(g, m);
+                    return;
+                }
+            }
+            break;
+        }
+    }
+}
+
+void DrawerPanel::ExecuteReplaceInFile(const std::wstring& filePath) {
+    if (m_searchQuery.empty()) return;
+    phide::editor::Buffer buf;
+    if (!buf.LoadFromFile(filePath)) return;
+
+    bool anyModified = false;
+    for (size_t l = 0; l < buf.GetLineCount(); ++l) {
+        std::wstring line = buf.GetLine(l);
+        if (PerformLineReplacement(line, m_searchQuery, m_replaceQuery, m_matchCase, m_matchWholeWord)) {
+            buf.SetLine(l, line);
+            anyModified = true;
+        }
+    }
+    if (anyModified) {
+        buf.SaveToFile(filePath);
+        if (m_onFilesReplaced) {
+            m_onFilesReplaced({ filePath });
+        }
+    }
+
+    // Dismiss this file group from search results
+    for (size_t g = 0; g < m_searchGroups.size(); ++g) {
+        if (m_searchGroups[g].filePath == filePath) {
+            DismissSearchGroup(g);
+            return;
+        }
+    }
+}
+
+void DrawerPanel::ExecuteReplaceAll() {
+    if (m_searchQuery.empty() || m_searchGroups.empty()) return;
+
+    std::vector<std::wstring> replacedFiles;
+    for (const auto& group : m_searchGroups) {
+        phide::editor::Buffer buf;
+        if (!buf.LoadFromFile(group.filePath)) continue;
+
+        bool anyModified = false;
+        for (size_t l = 0; l < buf.GetLineCount(); ++l) {
+            std::wstring line = buf.GetLine(l);
+            if (PerformLineReplacement(line, m_searchQuery, m_replaceQuery, m_matchCase, m_matchWholeWord)) {
+                buf.SetLine(l, line);
+                anyModified = true;
+            }
+        }
+        if (anyModified) {
+            buf.SaveToFile(group.filePath);
+            replacedFiles.push_back(group.filePath);
+        }
+    }
+
+    ClearSearchResults();
+    if (m_onFilesReplaced && !replacedFiles.empty()) {
+        m_onFilesReplaced(replacedFiles);
+    }
+}
+
+void DrawerPanel::DismissSearchMatch(size_t groupIdx, size_t matchIdx) {
+    if (groupIdx >= m_searchGroups.size()) return;
+    auto& group = m_searchGroups[groupIdx];
+    if (matchIdx >= group.matches.size()) return;
+
+    group.matches.erase(group.matches.begin() + matchIdx);
+    if (m_totalMatches > 0) m_totalMatches--;
+
+    if (group.matches.empty()) {
+        m_searchGroups.erase(m_searchGroups.begin() + groupIdx);
+    }
+}
+
+void DrawerPanel::DismissSearchGroup(size_t groupIdx) {
+    if (groupIdx >= m_searchGroups.size()) return;
+    m_totalMatches -= (std::min)(m_totalMatches, m_searchGroups[groupIdx].matches.size());
+    m_searchGroups.erase(m_searchGroups.begin() + groupIdx);
+}
+
+void DrawerPanel::RefreshGitStatusOnly(bool async) {
+    auto task = [this]() {
+        std::wstring dir = m_openFolderPath.empty() ? L"." : m_openFolderPath;
+
+        // 1. Check if git repo
+        auto resCheck = RunGitCmd(L"rev-parse --is-inside-work-tree", dir);
+        if (resCheck.exitCode != 0) {
+            std::lock_guard<std::recursive_mutex> lock(m_gitMutex);
+            m_isGitRepo = false;
+            m_gitChanges.clear();
+            return;
+        }
+
+        // 2. Query active branch
+        auto resBranch = RunGitCmd(L"branch --show-current", dir);
+        std::wstring branch = L"master";
+        if (resBranch.exitCode == 0 && !resBranch.output.empty()) {
+            branch = resBranch.output;
+            while (!branch.empty() && (branch.back() == L'\r' || branch.back() == L'\n' || branch.back() == L' ')) {
+                branch.pop_back();
+            }
+        }
+
+        // 3. Query working tree changes
+        auto resStatus = RunGitCmd(L"status --porcelain=v1", dir);
+        std::vector<GitChangeItem> changes;
+        if (resStatus.exitCode == 0) {
+            std::wstringstream ss(resStatus.output);
+            std::wstring line;
+            while (std::getline(ss, line)) {
+                if (line.size() < 3) continue;
+                std::wstring statusStr = line.substr(0, 2);
+                size_t first = statusStr.find_first_not_of(L" ");
+                if (first != std::wstring::npos) statusStr = statusStr.substr(first);
+                size_t last = statusStr.find_last_not_of(L" ");
+                if (last != std::wstring::npos) statusStr = statusStr.substr(0, last + 1);
+
+                std::wstring filePath = line.substr(3);
+                if (filePath.size() >= 2 && filePath.front() == L'"' && filePath.back() == L'"') {
+                    filePath = filePath.substr(1, filePath.size() - 2);
+                }
+                for (auto& c : filePath) if (c == L'/') c = L'\\';
+
+                size_t arrowPos = filePath.find(L" -> ");
+                if (arrowPos != std::wstring::npos) {
+                    filePath = filePath.substr(arrowPos + 4);
+                    if (filePath.size() >= 2 && filePath.front() == L'"' && filePath.back() == L'"') {
+                        filePath = filePath.substr(1, filePath.size() - 2);
+                    }
+                    for (auto& c : filePath) if (c == L'/') c = L'\\';
+                    statusStr = L"R";
+                }
+
+                if (statusStr.find(L"?") != std::wstring::npos) statusStr = L"U";
+                else if (statusStr.find(L"R") != std::wstring::npos) statusStr = L"R";
+                else if (statusStr.find(L"M") != std::wstring::npos) statusStr = L"M";
+                else if (statusStr.find(L"D") != std::wstring::npos) statusStr = L"D";
+                else if (statusStr.find(L"A") != std::wstring::npos) statusStr = L"A";
+
+                std::filesystem::path p(filePath);
+                GitChangeItem item;
+                item.path = filePath;
+                item.fileName = p.filename().wstring();
+                item.relDir = p.parent_path().wstring();
+                item.status = statusStr.empty() ? L"M" : statusStr;
+                changes.push_back(item);
+            }
+        }
+
+        // 4. Query unpushed commits count
+        int unpushedCount = 0;
+        auto resRevList = RunGitCmd(L"rev-list --count @{u}..HEAD", dir);
+        if (resRevList.exitCode == 0 && !resRevList.output.empty()) {
+            try { unpushedCount = std::stoi(resRevList.output); } catch (...) {}
+        } else {
+            auto resSb = RunGitCmd(L"status -sb", dir);
+            if (resSb.exitCode == 0) {
+                size_t aheadPos = resSb.output.find(L"ahead ");
+                if (aheadPos != std::wstring::npos) {
+                    try { unpushedCount = std::stoi(resSb.output.substr(aheadPos + 6)); } catch (...) {}
+                }
+            }
+        }
+
+        bool stateChanged = false;
+        {
+            std::lock_guard<std::recursive_mutex> lock(m_gitMutex);
+            if (!m_isGitRepo || m_gitBranch != branch || m_unpushedCommitsCount != unpushedCount ||
+                m_gitChanges.size() != changes.size()) {
+                stateChanged = true;
+            } else {
+                for (size_t i = 0; i < changes.size(); ++i) {
+                    if (m_gitChanges[i].path != changes[i].path || m_gitChanges[i].status != changes[i].status) {
+                        stateChanged = true;
+                        break;
+                    }
+                }
+            }
+
+            m_isGitRepo = true;
+            m_gitBranch = branch;
+            m_gitChanges = std::move(changes);
+            m_unpushedCommitsCount = unpushedCount;
+        }
+
+        if (stateChanged && m_onGitStateChanged) {
+            m_onGitStateChanged();
+        }
+    };
+
+    if (async) {
+        std::thread(task).detach();
+    } else {
+        task();
+    }
+}
+
 void DrawerPanel::LoadCommitFiles(GitCommitItem& ci) {
     if (ci.hash.empty()) return;
     std::wstring dir = m_openFolderPath.empty() ? L"." : m_openFolderPath;
@@ -2932,7 +3335,8 @@ void DrawerPanel::StageAllChangesAsync() {
         m_isGitLoading = true;
         std::wstring dir = m_openFolderPath.empty() ? L"." : m_openFolderPath;
         RunGitCmd(L"add -A", dir);
-        RefreshGitState(false, false);
+        RefreshGitStatusOnly(false);
+        m_isGitLoading = false;
     }).detach();
 }
 
@@ -2942,7 +3346,7 @@ bool DrawerPanel::DiscardAllChanges() {
     RunGitCmd(L"restore --staged --worktree .", dir);
     RunGitCmd(L"checkout HEAD -- .", dir);
     RunGitCmd(L"clean -fd", dir);
-    RefreshGitState(false, false);
+    RefreshGitStatusOnly(false);
     m_isGitLoading = false;
     return true;
 }
@@ -2960,7 +3364,8 @@ void DrawerPanel::StageFileAsync(const std::wstring& relPath) {
         std::wstring cleanRel = relPath;
         for (auto& c : cleanRel) if (c == L'\\') c = L'/';
         RunGitCmd(L"add \"" + cleanRel + L"\"", dir);
-        RefreshGitState(false, false);
+        RefreshGitStatusOnly(false);
+        m_isGitLoading = false;
     }).detach();
 }
 
@@ -2972,7 +3377,7 @@ bool DrawerPanel::DiscardFile(const std::wstring& relPath) {
     RunGitCmd(L"restore --staged --worktree -- \"" + cleanRel + L"\"", dir);
     RunGitCmd(L"checkout HEAD -- \"" + cleanRel + L"\"", dir);
     RunGitCmd(L"clean -fd -- \"" + cleanRel + L"\"", dir);
-    RefreshGitState(false, false);
+    RefreshGitStatusOnly(false);
     m_isGitLoading = false;
     return true;
 }

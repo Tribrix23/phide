@@ -2020,6 +2020,27 @@ bool Window::Create(HINSTANCE hInstance, int nCmdShow) {
         }
     });
 
+    m_drawer.SetOnRefreshOpenDocs([this]() {
+        RefreshOpenDocPathsForSearch();
+    });
+
+    m_drawer.SetOnFilesReplaced([this](const std::vector<std::wstring>& paths) {
+        for (const auto& p : paths) {
+            for (auto& grp : m_editorGroups) {
+                for (auto& doc : grp.docs) {
+                    if (doc.filePath == p) {
+                        doc.buffer.LoadFromFile(p);
+                        doc.isDirty = false;
+                    }
+                }
+            }
+        }
+        TriggerDebouncedGitRefresh(500);
+        if (m_hwnd) {
+            InvalidateRect(m_hwnd, nullptr, FALSE);
+        }
+    });
+
     // Restore saved IDE session state (open folder, expanded tree dirs, open file, sidebar open/close state)
     LoadSessionState();
 
@@ -3221,6 +3242,7 @@ void Window::HandleLButtonDown(POINT clientPt) {
                 ToggleSidebar();
             }
             if (clickedTab == 1) {
+                RefreshOpenDocPathsForSearch();
                 m_drawer.SetSearchFocus(1);
             } else if (clickedTab == 2) {
                 m_drawer.OpenSourceControl();
@@ -4058,16 +4080,17 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 if (m_gitRefreshPending && now >= m_gitRefreshTargetTime) {
                     m_gitRefreshPending = false;
                     if (!m_drawer.IsGitRefreshing()) {
-                        m_drawer.RefreshGitState(true, false);
+                        m_drawer.RefreshGitStatusOnly(true);
                     }
                 }
 
                 // Source Control background auto-refresh & animation update
                 // Background polling passes showLoading = false so it NEVER continuously spins the activity rail icon
+                // Uses RefreshGitStatusOnly to avoid reloading or blinking the commit graph!
                 static ULONGLONG s_lastGitPoll = 0;
-                if (m_config.activeRailTab == 2 && m_drawerAnimProgress > 0.5f && (now - s_lastGitPoll > 20000) && !m_drawer.IsGitLoading() && !m_drawer.IsGitRefreshing()) {
+                if (m_config.activeRailTab == 2 && m_drawerAnimProgress > 0.5f && (now - s_lastGitPoll > 30000) && !m_drawer.IsGitLoading() && !m_drawer.IsGitRefreshing()) {
                     s_lastGitPoll = now;
-                    m_drawer.RefreshGitState(true, false);
+                    m_drawer.RefreshGitStatusOnly(true);
                 }
 
                 if (m_drawer.IsGitLoading()) {

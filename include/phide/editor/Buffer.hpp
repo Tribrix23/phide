@@ -96,6 +96,7 @@ public:
      */
     void SetLines(const std::vector<std::wstring>& lines);
     void SetText(const std::wstring& text);
+    void SetLine(size_t lineIdx, const std::wstring& text);
 
     /**
      * @brief Loads text file from disk into buffer lines.
