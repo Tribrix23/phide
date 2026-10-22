@@ -1135,11 +1135,18 @@ void DrawerPanel::RenderSearchPane(ID2D1RenderTarget* pRT, Theme& theme, const a
     // Summary line
     std::wstring summary;
     if (m_totalMatches == 0) {
-        summary = L"No results found.";
+        if (m_isSearching.load()) {
+            summary = L"Searching...";
+        } else {
+            summary = L"No results found.";
+        }
     } else {
         summary = std::to_wstring(m_totalMatches) + L" results in " +
                   std::to_wstring(m_searchGroups.size()) +
                   (m_searchGroups.size() == 1 ? L" file" : L" files");
+        if (m_isSearching.load()) {
+            summary += L" (searching...)";
+        }
     }
 
     D2D1_RECT_F rcSummary = D2D1::RectF(
@@ -1468,7 +1475,7 @@ bool DrawerPanel::HitTestSearch(POINT pt, const app::AppConfig& config, std::wst
     // 1. Refresh button
     if (pt.x >= m_rcRefreshSearchBtn.left && pt.x <= m_rcRefreshSearchBtn.right &&
         pt.y >= m_rcRefreshSearchBtn.top && pt.y <= m_rcRefreshSearchBtn.bottom) {
-        ExecuteSearch();
+        LaunchAsyncSearch();
         return true;
     }
 
@@ -1476,7 +1483,7 @@ bool DrawerPanel::HitTestSearch(POINT pt, const app::AppConfig& config, std::wst
     if (pt.x >= m_rcMatchCaseBtn.left && pt.x <= m_rcMatchCaseBtn.right &&
         pt.y >= m_rcMatchCaseBtn.top && pt.y <= m_rcMatchCaseBtn.bottom) {
         m_matchCase = !m_matchCase;
-        ExecuteSearch();
+        LaunchAsyncSearch();
         return true;
     }
 
@@ -1484,7 +1491,7 @@ bool DrawerPanel::HitTestSearch(POINT pt, const app::AppConfig& config, std::wst
     if (pt.x >= m_rcMatchWholeWordBtn.left && pt.x <= m_rcMatchWholeWordBtn.right &&
         pt.y >= m_rcMatchWholeWordBtn.top && pt.y <= m_rcMatchWholeWordBtn.bottom) {
         m_matchWholeWord = !m_matchWholeWord;
-        ExecuteSearch();
+        LaunchAsyncSearch();
         return true;
     }
 
@@ -1492,7 +1499,7 @@ bool DrawerPanel::HitTestSearch(POINT pt, const app::AppConfig& config, std::wst
     if (pt.x >= m_rcUseRegexBtn.left && pt.x <= m_rcUseRegexBtn.right &&
         pt.y >= m_rcUseRegexBtn.top && pt.y <= m_rcUseRegexBtn.bottom) {
         m_useRegex = !m_useRegex;
-        ExecuteSearch();
+        LaunchAsyncSearch();
         return true;
     }
 
@@ -1547,7 +1554,7 @@ bool DrawerPanel::HitTestSearch(POINT pt, const app::AppConfig& config, std::wst
         if (pt.x >= m_rcOpenEditorsOnlyBtn.left && pt.x <= m_rcOpenEditorsOnlyBtn.right &&
             pt.y >= m_rcOpenEditorsOnlyBtn.top && pt.y <= m_rcOpenEditorsOnlyBtn.bottom) {
             m_searchOnlyOpenEditors = !m_searchOnlyOpenEditors;
-            ExecuteSearch();
+            LaunchAsyncSearch();
             return true;
         }
 
@@ -1555,7 +1562,7 @@ bool DrawerPanel::HitTestSearch(POINT pt, const app::AppConfig& config, std::wst
         if (pt.x >= m_rcUseExcludeSettingsBtn.left && pt.x <= m_rcUseExcludeSettingsBtn.right &&
             pt.y >= m_rcUseExcludeSettingsBtn.top && pt.y <= m_rcUseExcludeSettingsBtn.bottom) {
             m_useExcludeSettings = !m_useExcludeSettings;
-            ExecuteSearch();
+            LaunchAsyncSearch();
             return true;
         }
 
@@ -1753,6 +1760,26 @@ void DrawerPanel::HandleSearchKeyDown(WPARAM wParam) {
         m_searchPending = false;
         m_lastSearchExecutionTime = GetTickCount64();
         LaunchAsyncSearch();
+    } else if (wParam == 'L' || wParam == 'l') {
+        if ((GetKeyState(VK_MENU) & 0x8000) != 0) {
+            m_searchOnlyOpenEditors = !m_searchOnlyOpenEditors;
+            LaunchAsyncSearch();
+        }
+    } else if (wParam == 'C' || wParam == 'c') {
+        if ((GetKeyState(VK_MENU) & 0x8000) != 0) {
+            m_matchCase = !m_matchCase;
+            LaunchAsyncSearch();
+        }
+    } else if (wParam == 'W' || wParam == 'w') {
+        if ((GetKeyState(VK_MENU) & 0x8000) != 0) {
+            m_matchWholeWord = !m_matchWholeWord;
+            LaunchAsyncSearch();
+        }
+    } else if (wParam == 'R' || wParam == 'r') {
+        if ((GetKeyState(VK_MENU) & 0x8000) != 0) {
+            m_useRegex = !m_useRegex;
+            LaunchAsyncSearch();
+        }
     }
 }
 
@@ -2013,11 +2040,27 @@ void DrawerPanel::LaunchAsyncSearch() {
                     }
 
                     if (entry.is_directory(ec)) {
-                        if (useExcludeSettings && (filename == L"node_modules" || filename == L"build" || filename == L"bin" ||
-                            filename == L"obj" || filename == L"target" || filename == L".git" ||
-                            filename == L"dist" || filename == L"out" || filename == L"vendor" ||
-                            filename == L".cache" || filename == L"tmp" || filename == L"temp" ||
-                            filename == L"coverage" || filename == L".next" || filename == L".nuxt")) {
+                        bool excludeDir = false;
+                        if (useExcludeSettings) {
+                            std::wstring lowerDir = filename;
+                            for (auto& c : lowerDir) c = towlower(c);
+                            if (lowerDir == L"node_modules" || lowerDir == L"build" || lowerDir == L"bin" ||
+                                lowerDir == L"obj" || lowerDir == L"target" || lowerDir == L".git" ||
+                                lowerDir == L"dist" || lowerDir == L"out" || lowerDir == L"vendor" ||
+                                lowerDir == L".cache" || lowerDir == L"tmp" || lowerDir == L"temp" ||
+                                lowerDir == L"coverage" || lowerDir == L".next" || lowerDir == L".nuxt" ||
+                                lowerDir == L"_internal" || lowerDir == L"venv" || lowerDir == L".venv" ||
+                                lowerDir == L"__pycache__" || lowerDir == L".vscode") {
+                                excludeDir = true;
+                            }
+                        }
+                        if (!excludeDir && !filesToExclude.empty()) {
+                            auto dstr = entry.path().wstring();
+                            if (MatchesPatternList(filename, dstr, filesToExclude)) {
+                                excludeDir = true;
+                            }
+                        }
+                        if (excludeDir) {
                             it.disable_recursion_pending();
                         }
                         continue;
@@ -2033,37 +2076,75 @@ void DrawerPanel::LaunchAsyncSearch() {
                 }
             }
 
-            // Search first visible batch: target up to 12 files with matches or 35 matches, or 150 scanned files
-            std::vector<SearchFileGroup> initialGroups;
+            // Stream results continuously in worker thread in responsive batches
+            std::vector<SearchFileGroup> currentBatch;
             size_t batchMatches = 0;
-            size_t processedIdx = 0;
+            bool isFirstBatch = true;
             const size_t BATCH_FILE_LIMIT = 12;
             const size_t BATCH_MATCH_LIMIT = 35;
-            const size_t MAX_SCAN_PER_CHUNK = 150;
+            const size_t MAX_TOTAL_MATCHES = 1000;
+            size_t totalFound = 0;
 
-            for (; processedIdx < filesToProcess.size(); ++processedIdx) {
+            for (size_t i = 0; i < filesToProcess.size(); ++i) {
                 if (m_searchGeneration.load() != thisGen) {
                     m_isSearching = false;
                     return;
                 }
-                if (initialGroups.size() >= BATCH_FILE_LIMIT || batchMatches >= BATCH_MATCH_LIMIT || processedIdx >= MAX_SCAN_PER_CHUNK) {
+                if (totalFound >= MAX_TOTAL_MATCHES) {
                     break;
                 }
+
                 SearchFileGroup group;
-                if (SearchSingleFile(filesToProcess[processedIdx], root, query, lowerQuery,
+                if (SearchSingleFile(filesToProcess[i], root, query, lowerQuery,
                                      matchCase, matchWord, useRegex, regexValid, regexPattern,
-                                     group, batchMatches, 50, 1000)) {
-                    initialGroups.push_back(std::move(group));
+                                     group, batchMatches, 50, MAX_TOTAL_MATCHES)) {
+                    totalFound += group.matches.size();
+                    currentBatch.push_back(std::move(group));
+                }
+
+                bool batchReady = (currentBatch.size() >= BATCH_FILE_LIMIT || batchMatches >= BATCH_MATCH_LIMIT);
+                bool isLast = (i + 1 == filesToProcess.size()) || (totalFound >= MAX_TOTAL_MATCHES);
+
+                if ((batchReady || isLast) && (!currentBatch.empty() || isLast)) {
+                    if (m_searchGeneration.load() != thisGen) {
+                        m_isSearching = false;
+                        return;
+                    }
+                    {
+                        std::lock_guard<std::mutex> lock(m_searchMutex);
+                        if (isFirstBatch) {
+                            m_pendingSearchGroups = std::move(currentBatch);
+                            m_pendingTotalMatches = totalFound;
+                            m_isBatchAppend = false;
+                            isFirstBatch = false;
+                        } else {
+                            for (auto& g : currentBatch) {
+                                m_pendingSearchGroups.push_back(std::move(g));
+                            }
+                            m_pendingTotalMatches = totalFound;
+                            m_isBatchAppend = true;
+                        }
+                        m_searchCandidateFiles.clear();
+                        m_searchCandidateFileIndex = i + 1;
+                        m_searchHasMore = !isLast;
+                        m_hasPendingResults = true;
+                    }
+                    currentBatch.clear();
+                    batchMatches = 0;
+
+                    if (!isLast) {
+                        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+                    }
                 }
             }
 
-            if (m_searchGeneration.load() == thisGen) {
+            if (isFirstBatch) {
                 std::lock_guard<std::mutex> lock(m_searchMutex);
-                m_pendingSearchGroups = std::move(initialGroups);
-                m_pendingTotalMatches = batchMatches;
-                m_searchCandidateFiles = std::move(filesToProcess);
-                m_searchCandidateFileIndex = processedIdx;
-                m_searchHasMore = (m_searchCandidateFileIndex < m_searchCandidateFiles.size());
+                m_pendingSearchGroups.clear();
+                m_pendingTotalMatches = 0;
+                m_searchCandidateFiles.clear();
+                m_searchCandidateFileIndex = 0;
+                m_searchHasMore = false;
                 m_isBatchAppend = false;
                 m_hasPendingResults = true;
             }
@@ -2221,11 +2302,27 @@ void DrawerPanel::ExecuteSearch(bool async) {
             }
 
             if (entry.is_directory(ec)) {
-                if (m_useExcludeSettings && (filename == L"node_modules" || filename == L"build" || filename == L"bin" ||
-                    filename == L"obj" || filename == L"target" || filename == L".git" ||
-                    filename == L"dist" || filename == L"out" || filename == L"vendor" ||
-                    filename == L".cache" || filename == L"tmp" || filename == L"temp" ||
-                    filename == L"coverage" || filename == L".next" || filename == L".nuxt")) {
+                bool excludeDir = false;
+                if (m_useExcludeSettings) {
+                    std::wstring lowerDir = filename;
+                    for (auto& c : lowerDir) c = towlower(c);
+                    if (lowerDir == L"node_modules" || lowerDir == L"build" || lowerDir == L"bin" ||
+                        lowerDir == L"obj" || lowerDir == L"target" || lowerDir == L".git" ||
+                        lowerDir == L"dist" || lowerDir == L"out" || lowerDir == L"vendor" ||
+                        lowerDir == L".cache" || lowerDir == L"tmp" || lowerDir == L"temp" ||
+                        lowerDir == L"coverage" || lowerDir == L".next" || lowerDir == L".nuxt" ||
+                        lowerDir == L"_internal" || lowerDir == L"venv" || lowerDir == L".venv" ||
+                        lowerDir == L"__pycache__" || lowerDir == L".vscode") {
+                        excludeDir = true;
+                    }
+                }
+                if (!excludeDir && !m_filesToExclude.empty()) {
+                    auto dstr = entry.path().wstring();
+                    if (MatchesPatternList(filename, dstr, m_filesToExclude)) {
+                        excludeDir = true;
+                    }
+                }
+                if (excludeDir) {
                     it.disable_recursion_pending();
                 }
                 continue;

@@ -381,7 +381,7 @@ public:
      */
     void SetSearchQuery(const std::wstring& q) {
         m_searchQuery = q;
-        ExecuteSearch();
+        ExecuteSearch(true);
     }
     [[nodiscard]] const std::wstring& GetSearchQuery() const noexcept { return m_searchQuery; }
     [[nodiscard]] const std::vector<SearchFileGroup>& GetSearchGroups() const noexcept { return m_searchGroups; }
@@ -396,8 +396,11 @@ public:
     void SetOnFilesReplaced(std::function<void(const std::vector<std::wstring>&)> cb) { m_onFilesReplaced = cb; }
     [[nodiscard]] int GetHoveredIndex() const noexcept { return m_hoveredIndex; }
     [[nodiscard]] bool GetMatchCase() const noexcept { return m_matchCase; }
+    void SetMatchCase(bool val) noexcept { m_matchCase = val; }
     [[nodiscard]] bool GetMatchWholeWord() const noexcept { return m_matchWholeWord; }
+    void SetMatchWholeWord(bool val) noexcept { m_matchWholeWord = val; }
     [[nodiscard]] bool GetUseRegex() const noexcept { return m_useRegex; }
+    void SetUseRegex(bool val) noexcept { m_useRegex = val; }
     [[nodiscard]] bool IsReplaceOpen() const noexcept { return m_isReplaceOpen; }
     void SetReplaceOpen(bool open) noexcept { m_isReplaceOpen = open; }
 
@@ -492,7 +495,7 @@ public:
      * @brief Executes recursive workspace file search matching current search query.
      * @param async If true, runs on a background worker thread; otherwise runs synchronously.
      */
-    void ExecuteSearch(bool async = false);
+    void ExecuteSearch(bool async = true);
 
     /**
      * @brief Replaces all matched occurrences across the workspace with the replace query.

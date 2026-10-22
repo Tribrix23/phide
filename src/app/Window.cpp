@@ -3677,6 +3677,29 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 DoToggleWordWrap();
                 return 0;
             }
+            if (m_config.activeRailTab == 1 && m_drawerAnimProgress > 0.001f) {
+                if (wParam == 'L') {
+                    m_drawer.SetSearchOnlyOpenEditors(!m_drawer.GetSearchOnlyOpenEditors());
+                    m_drawer.LaunchAsyncSearch();
+                    InvalidateRect(m_hwnd, nullptr, FALSE);
+                    return 0;
+                } else if (wParam == 'C') {
+                    m_drawer.SetMatchCase(!m_drawer.GetMatchCase());
+                    m_drawer.LaunchAsyncSearch();
+                    InvalidateRect(m_hwnd, nullptr, FALSE);
+                    return 0;
+                } else if (wParam == 'W') {
+                    m_drawer.SetMatchWholeWord(!m_drawer.GetMatchWholeWord());
+                    m_drawer.LaunchAsyncSearch();
+                    InvalidateRect(m_hwnd, nullptr, FALSE);
+                    return 0;
+                } else if (wParam == 'R') {
+                    m_drawer.SetUseRegex(!m_drawer.GetUseRegex());
+                    m_drawer.LaunchAsyncSearch();
+                    InvalidateRect(m_hwnd, nullptr, FALSE);
+                    return 0;
+                }
+            }
             return DefWindowProc(m_hwnd, uMsg, wParam, lParam);
         }
 

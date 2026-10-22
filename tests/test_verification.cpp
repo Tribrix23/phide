@@ -2864,6 +2864,35 @@ int main() {
         std::filesystem::remove(testFile1);
         std::filesystem::remove(testFile2);
 
+        // Subtest 33.5: Search Open Tabs Only Toggle Deactivation & Asynchronous Non-Blocking Execution
+        {
+            phide::ui::DrawerPanel toggleDrawer;
+            toggleDrawer.OpenFolder(L".");
+            toggleDrawer.SetSearchOnlyOpenEditors(true);
+            toggleDrawer.SetOpenDocPaths({ L"include\\phide\\ui\\DrawerPanel.hpp" });
+            toggleDrawer.SetSearchQuery(L"SearchOnlyOpenEditors");
+            toggleDrawer.ExecuteSearch(false);
+            assert(toggleDrawer.GetTotalMatches() >= 1);
+            std::cout << "  Verified: Search Open Tabs Only active found matches in open header" << std::endl;
+
+            // Deactivate toggle and ensure async launch is completely non-blocking
+            toggleDrawer.SetSearchOnlyOpenEditors(false);
+            ULONGLONG startT = GetTickCount64();
+            toggleDrawer.ExecuteSearch(true); // Should launch asynchronously and return immediately
+            ULONGLONG elapsed = GetTickCount64() - startT;
+            assert(elapsed < 100);
+            std::cout << "  Verified: Deactivating Search Open Tabs Only launches asynchronously in " << elapsed << "ms without freezing UI" << std::endl;
+
+            // Wait for background worker to stream results safely
+            int waitCount = 0;
+            while (waitCount++ < 150) {
+                if (toggleDrawer.PollSearchThrottle(GetTickCount64()) && toggleDrawer.GetTotalMatches() >= 1) break;
+                Sleep(20);
+            }
+            assert(toggleDrawer.GetTotalMatches() >= 1);
+            std::cout << "  Verified: Background search completed with " << toggleDrawer.GetTotalMatches() << " matches across workspace without freezing" << std::endl;
+        }
+
         std::cout << "  Passed: All Git stability and Search Replace/Dismiss tests succeeded!" << std::endl;
     }
 
