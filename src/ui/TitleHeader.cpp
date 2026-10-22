@@ -318,11 +318,11 @@ void TitleHeader::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCon
         );
     }
 
-    // 4. Render Split Editor Button in Top-Right (Positioned between Run controls and Caption buttons)
+    // 4. Render Split Editor Button and Quick Open Button (Image 5) in Top-Right
     // As requested: In Dark Mode icon is white; in Light Mode icon is black!
     const float splitW = config.ScaleF(26.0f);
     const float splitH = config.ScaleF(26.0f);
-    const float splitX = rcExecContainer.right + config.ScaleF(14.0f);
+    const float splitX = rcExecContainer.right + config.ScaleF(12.0f);
     const float splitY = (h - splitH) / 2.0f;
     m_rcSplitEditor = D2D1::RectF(splitX, splitY, splitX + splitW, splitY + splitH);
 
@@ -334,6 +334,48 @@ void TitleHeader::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCon
 
     ID2D1Brush* pSplitBrush = theme.IsDarkMode() ? theme.brushTextWhite.Get() : theme.brushTextPrimary.Get();
     m_icons.DrawSplitEditor(pRT, m_rcSplitEditor, pSplitBrush, 1.3f);
+
+    // Magnifying Glass / Quick Open Button right beside Split Editor (Image 5)
+    const float quickOpenX = splitX + splitW + config.ScaleF(6.0f);
+    m_rcQuickOpen = D2D1::RectF(quickOpenX, splitY, quickOpenX + splitW, splitY + splitH);
+
+    D2D1_ROUNDED_RECT rrcQuickOpen = D2D1::RoundedRect(m_rcQuickOpen, 4.0f, 4.0f);
+    if (m_hoveredQuickOpen) {
+        pRT->FillRoundedRectangle(rrcQuickOpen, theme.brushItemHover.Get());
+        pRT->DrawRoundedRectangle(rrcQuickOpen, theme.brushBorderSubtle.Get(), 0.8f);
+    }
+
+    m_icons.DrawSearch(pRT, m_rcQuickOpen, pSplitBrush, 1.4f);
+
+    // Floating Tooltip for Hovered Quick Open Button
+    if (m_hoveredQuickOpen) {
+        const float tipH    = config.ScaleF(24.0f);
+        const float tipPadX = config.ScaleF(10.0f);
+        const wchar_t* tipText = L"Go to File... (Ctrl+K, Ctrl+P)";
+        size_t textLen = wcslen(tipText);
+        float textW    = config.ScaleF(static_cast<float>(textLen * 6.5f + 14.0f));
+        float tipW     = textW + tipPadX * 2.0f;
+
+        float tipX     = m_rcQuickOpen.left + (splitW - tipW) / 2.0f;
+        float tipY     = m_rcQuickOpen.bottom + config.ScaleF(6.0f);
+
+        if (tipX < 10.0f) tipX = 10.0f;
+        if (tipX + tipW > clientWidth - 10.0f) tipX = clientWidth - tipW - 10.0f;
+
+        D2D1_RECT_F rcTip = D2D1::RectF(tipX, tipY, tipX + tipW, tipY + tipH);
+        D2D1_ROUNDED_RECT rrcTip = D2D1::RoundedRect(rcTip, 4.0f, 4.0f);
+
+        pRT->FillRoundedRectangle(rrcTip, theme.brushTooltipBg.Get());
+        pRT->DrawRoundedRectangle(rrcTip, theme.brushTooltipBorder.Get(), 1.0f);
+
+        pRT->DrawText(
+            tipText,
+            static_cast<UINT32>(textLen),
+            theme.fontTooltip ? theme.fontTooltip.Get() : theme.fontHint.Get(),
+            rcTip,
+            theme.brushTooltipText ? theme.brushTooltipText.Get() : theme.brushTextPrimary.Get()
+        );
+    }
 
     // Floating Tooltip for Hovered Split Editor Button
     if (m_hoveredSplitEditor) {
@@ -448,14 +490,28 @@ bool TitleHeader::SetHoveredSplitEditor(bool hovered) noexcept {
     return false;
 }
 
+bool TitleHeader::HitTestQuickOpen(POINT pt) const noexcept {
+    return (pt.x >= m_rcQuickOpen.left && pt.x <= m_rcQuickOpen.right &&
+            pt.y >= m_rcQuickOpen.top && pt.y <= m_rcQuickOpen.bottom);
+}
+
+bool TitleHeader::SetHoveredQuickOpen(bool hovered) noexcept {
+    if (m_hoveredQuickOpen != hovered) {
+        m_hoveredQuickOpen = hovered;
+        return true;
+    }
+    return false;
+}
+
 LRESULT TitleHeader::HitTestNCHitTest(POINT pt, const app::AppConfig& config) {
     const float h = config.ScaleF(static_cast<float>(config.headerHeight));
     if (pt.y >= h) return HTCLIENT;
 
-    // If mouse is over any interactive element (menus, exec buttons, split editor, or caption buttons), return HTCLIENT
+    // If mouse is over any interactive element (menus, exec buttons, split editor, quick open, or caption buttons), return HTCLIENT
     if (HitTestMenu(pt) != HeaderMenuId::None) return HTCLIENT;
     if (HitTestExecButton(pt) != HeaderExecId::None) return HTCLIENT;
     if (HitTestSplitEditor(pt)) return HTCLIENT;
+    if (HitTestQuickOpen(pt)) return HTCLIENT;
     if (HitTestCaptionButton(pt) != CaptionButtonType::None) return HTCLIENT;
 
     // The remaining empty header area allows dragging the window

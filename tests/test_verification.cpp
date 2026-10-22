@@ -24,6 +24,7 @@
 #include "phide/ui/EditorCanvas.hpp"
 #include "phide/ui/ThemePickerModal.hpp"
 #include "phide/ui/KeyboardShortcutsView.hpp"
+#include "phide/ui/QuickOpenModal.hpp"
 #include "phide/editor/Buffer.hpp"
 #include "phide/editor/SnippetManager.hpp"
 #include "phide/editor/BracketPairAnalyzer.hpp"
@@ -3128,6 +3129,168 @@ int main() {
         std::cout << "  Passed: Saved test_view_menu_submenus.png" << std::endl;
 
         std::cout << "  Passed: All Search Jump, Minimap and View Menu tests succeeded!" << std::endl;
+    }
+
+    // =========================================================================
+    // TEST 35: Editor Text Selection, Word Occurrences, Minimap Reflections,
+    //          Magnifying Button and Quick Open File Search Palette (Images 1-5)
+    // =========================================================================
+    {
+        std::cout << "\n[TEST 35] Editor Text Selection, Minimap Reflections & Quick Open File Search..." << std::endl;
+
+        phide::app::AppConfig cfg;
+        phide::ui::Theme theme;
+        theme.SetThemeMode(phide::ui::ThemeMode::Dark);
+
+        // 1. Verify Word Selection at identifier coordinates (Image 4)
+        phide::editor::OpenDocument doc;
+        doc.filePath = L"C:\\phide\\TitleHeader.cpp";
+        doc.fileName = L"TitleHeader.cpp";
+        std::wstring sampleCode =
+            L"#include \"phide/ui/TitleHeader.hpp\"\n"
+            L"\n"
+            L"void RenderHeader(D2D1_RECT_F headerBounds) {\n"
+            L"    if (headerBounds.right > headerBounds.left) {\n"
+            L"        DrawBackground(headerBounds);\n"
+            L"    }\n"
+            L"}\n";
+        doc.buffer.SetText(sampleCode);
+
+        // Line 2: "void RenderHeader(D2D1_RECT_F headerBounds) {"
+        // "headerBounds" starts at column 30 and ends at column 42
+        doc.SelectWordAt(2, 35);
+        assert(doc.HasSelection() == true);
+        assert(doc.selectedWord == L"headerBounds");
+        assert(doc.GetSelectedText() == L"headerBounds");
+        assert(doc.selAnchor.line == 2 && doc.selAnchor.col == 30);
+        assert(doc.selEnd.line == 2 && doc.selEnd.col == 42);
+        std::wcout << L"  Verified: SelectWordAt correctly selected '" << doc.selectedWord
+                  << L"' (bounds: 30..42) matching double-click behavior in Image 4" << std::endl;
+
+        // 2. Verify Multi-Line Text Selection & Deletion
+        doc.selAnchor = { 2, 0 };
+        doc.selEnd = { 3, 10 };
+        doc.hasSelection = true;
+        assert(doc.HasSelection() == true);
+        std::wstring selText = doc.GetSelectedText();
+        assert(!selText.empty());
+        assert(selText.find(L"RenderHeader") != std::wstring::npos);
+
+        // Test DeleteSelection()
+        bool deleted = doc.DeleteSelection();
+        assert(deleted == true);
+        assert(!doc.HasSelection());
+        std::cout << "  Verified: Multi-line selection extraction and DeleteSelection verified" << std::endl;
+
+        // Reset document back to sample code for rendering
+        doc.buffer.SetText(sampleCode);
+        doc.SelectWordAt(2, 35); // Select headerBounds again
+
+        // 3. Render Editor with Text Selection, Matching Word Occurrences, and Minimap Reflection (Images 3 & 4)
+        ComPtr<IWICBitmap> pWicEditorBmp;
+        ComPtr<ID2D1RenderTarget> pEditorRT;
+        CreateTarget(pWicEditorBmp, pEditorRT);
+        theme.CreateDeviceResources(pEditorRT.Get(), pDWriteFactory.Get());
+
+        phide::ui::EditorCanvas editorCanvas;
+        std::vector<phide::editor::OpenDocument> docs;
+        docs.push_back(doc);
+
+        pEditorRT->BeginDraw();
+        pEditorRT->Clear(D2D1::ColorF(0.12f, 0.12f, 0.12f, 1.0f));
+        editorCanvas.Render(pEditorRT.Get(), theme, cfg, docs, 0, 260.0f, 1200.0f - 260.0f, 750.0f, true);
+        pEditorRT->EndDraw();
+
+        SaveWicBitmapToPng(pWicEditorBmp.Get(), pWicFactory.Get(), artDir + L"test_editor_selection_and_minimap.png");
+        std::cout << "  Passed: Saved test_editor_selection_and_minimap.png" << std::endl;
+
+        // 4. Verify TitleHeader Magnifying Button beside Split Editor (Image 5)
+        phide::ui::TitleHeader header;
+        ComPtr<IWICBitmap> pWicHeaderBmp;
+        ComPtr<ID2D1RenderTarget> pHeaderRT;
+        CreateTarget(pWicHeaderBmp, pHeaderRT);
+        theme.CreateDeviceResources(pHeaderRT.Get(), pDWriteFactory.Get());
+
+        pHeaderRT->BeginDraw();
+        pHeaderRT->Clear(D2D1::ColorF(0.10f, 0.10f, 0.10f, 1.0f));
+        header.Render(pHeaderRT.Get(), theme, cfg, 1200.0f, L"phide - Modern C++ IDE");
+        pHeaderRT->EndDraw();
+
+        const auto& rcQuick = header.GetQuickOpenBounds();
+        const auto& rcSplit = header.GetSplitEditorBounds();
+        assert(rcQuick.right > rcQuick.left && rcQuick.bottom > rcQuick.top);
+        assert(rcSplit.right > rcSplit.left && rcSplit.bottom > rcSplit.top);
+        // Verify Quick Open magnifying button is positioned immediately beside Split Editor
+        assert(rcQuick.right <= rcSplit.left || rcQuick.left >= rcSplit.right);
+
+        POINT ptInQuick{ static_cast<LONG>((rcQuick.left + rcQuick.right) / 2.0f), static_cast<LONG>((rcQuick.top + rcQuick.bottom) / 2.0f) };
+        assert(header.HitTestQuickOpen(ptInQuick) == true);
+        std::cout << "  Verified: TitleHeader magnifying button bounds and HitTestQuickOpen verified" << std::endl;
+
+        // 5. Verify QuickOpenModal (Image 5)
+        phide::ui::QuickOpenModal quickOpen;
+        std::vector<std::wstring> recents = {
+            L"C:\\phide\\src\\main.cpp",
+            L"C:\\phide\\src\\app\\Window.cpp",
+            L"C:\\phide\\include\\phide\\ui\\TitleHeader.hpp",
+            L"C:\\phide\\package.json",
+            L"C:\\phide\\CMakeLists.txt"
+        };
+        std::vector<std::wstring> openDocs = {
+            L"C:\\phide\\src\\main.cpp",
+            L"C:\\phide\\include\\phide\\ui\\TitleHeader.hpp"
+        };
+
+        quickOpen.Open(recents, openDocs, L"C:\\phide");
+        assert(quickOpen.IsOpen() == true);
+        assert(quickOpen.GetItems().size() > 0);
+        std::cout << "  Verified: QuickOpenModal populated with action items and recent files ("
+                  << quickOpen.GetItems().size() << " total entries)" << std::endl;
+
+        // Verify keyboard navigation
+        std::wstring chosenFile;
+        quickOpen.HandleKeyDown(VK_DOWN, chosenFile);
+        assert(quickOpen.GetSelectedIndex() == 1);
+        quickOpen.HandleKeyDown(VK_UP, chosenFile);
+        assert(quickOpen.GetSelectedIndex() == 0);
+
+        // Verify text filtering
+        quickOpen.HandleChar(L'W');
+        quickOpen.HandleChar(L'i');
+        quickOpen.HandleChar(L'n');
+        assert(quickOpen.GetFilterQuery() == L"Win");
+        // Verify filtered results contain Window.cpp
+        bool foundWindow = false;
+        for (const auto& it : quickOpen.GetItems()) {
+            if (it.title.find(L"Window") != std::wstring::npos) {
+                foundWindow = true;
+                break;
+            }
+        }
+        assert(foundWindow);
+        std::cout << "  Verified: QuickOpenModal real-time filtering for 'Win' found Window.cpp" << std::endl;
+
+        // Reset query to empty to render complete modal view matching Image 5
+        quickOpen.HandleKeyDown(VK_BACK, chosenFile);
+        quickOpen.HandleKeyDown(VK_BACK, chosenFile);
+        quickOpen.HandleKeyDown(VK_BACK, chosenFile);
+        assert(quickOpen.GetFilterQuery().empty());
+
+        // 6. Render Direct2D Snapshot of Quick Open File Search Palette (Image 5)
+        ComPtr<IWICBitmap> pWicQuickBmp;
+        ComPtr<ID2D1RenderTarget> pQuickRT;
+        CreateTarget(pWicQuickBmp, pQuickRT);
+        theme.CreateDeviceResources(pQuickRT.Get(), pDWriteFactory.Get());
+
+        pQuickRT->BeginDraw();
+        pQuickRT->Clear(D2D1::ColorF(0.08f, 0.08f, 0.08f, 1.0f));
+        quickOpen.Render(pQuickRT.Get(), theme, cfg, 1200.0f, 750.0f);
+        pQuickRT->EndDraw();
+
+        SaveWicBitmapToPng(pWicQuickBmp.Get(), pWicFactory.Get(), artDir + L"test_quick_open_file_search.png");
+        std::cout << "  Passed: Saved test_quick_open_file_search.png" << std::endl;
+
+        std::cout << "  Passed: All Editor Text Selection, Minimap Reflection, and Quick Open Palette tests passed!" << std::endl;
     }
 
     std::cout << "\n==========================================" << std::endl;

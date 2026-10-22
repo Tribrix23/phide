@@ -26,6 +26,7 @@
 #include "phide/ui/DrawerPanel.hpp"
 #include "phide/ui/EditorCanvas.hpp"
 #include "phide/ui/ThemePickerModal.hpp"
+#include "phide/ui/QuickOpenModal.hpp"
 #include "phide/editor/Buffer.hpp"
 #include "phide/editor/OpenDocument.hpp"
 #include "phide/workspace/WorkspaceManager.hpp"
@@ -253,6 +254,9 @@ private:
     /** @brief Opens or toggles the Theme Picker modal dialog (Ctrl+K Ctrl+T). */
     void DoToggleThemeModal();
 
+    /** @brief Opens the Quick Open file search palette modal (Ctrl+K, Ctrl+P). */
+    void DoQuickOpenFileSearch();
+
     /** @brief Cycles through Dark, Light, and Auto themes directly. */
     void DoToggleTheme();
 
@@ -396,6 +400,7 @@ private:
     ui::DrawerPanel m_drawer;
     ui::EditorCanvas m_editor;
     ui::ThemePickerModal m_themePicker;
+    ui::QuickOpenModal m_quickOpen;
     workspace::WorkspaceManager m_workspace;
     workspace::ExplorerUndoManager m_explorerUndo;
     editor::SnippetManager m_snippetManager;

@@ -1557,7 +1557,11 @@ void Window::DoCut() {
     auto* pDoc = GetActiveDoc();
     if (pDoc && !pDoc->isSpecialView) {
         DoCopy();
-        pDoc->buffer.Backspace();
+        if (pDoc->HasSelection()) {
+            pDoc->DeleteSelection();
+        } else {
+            pDoc->buffer.Backspace();
+        }
         MarkDocumentModified(pDoc);
         InvalidateRect(m_hwnd, nullptr, FALSE);
     }
@@ -1566,16 +1570,21 @@ void Window::DoCut() {
 void Window::DoCopy() {
     auto* pDoc = GetActiveDoc();
     if (pDoc && !pDoc->isSpecialView) {
-        auto cursor = pDoc->buffer.GetCursor();
-        std::wstring lineText = pDoc->buffer.GetLine(cursor.line);
-        if (OpenClipboard(m_hwnd)) {
+        std::wstring textToCopy;
+        if (pDoc->HasSelection()) {
+            textToCopy = pDoc->GetSelectedText();
+        } else {
+            auto cursor = pDoc->buffer.GetCursor();
+            textToCopy = pDoc->buffer.GetLine(cursor.line);
+        }
+        if (!textToCopy.empty() && OpenClipboard(m_hwnd)) {
             EmptyClipboard();
-            size_t bytes = (lineText.length() + 1) * sizeof(wchar_t);
+            size_t bytes = (textToCopy.length() + 1) * sizeof(wchar_t);
             HGLOBAL hMem = GlobalAlloc(GMEM_MOVEABLE, bytes);
             if (hMem) {
                 void* pMem = GlobalLock(hMem);
                 if (pMem) {
-                    memcpy(pMem, lineText.c_str(), bytes);
+                    memcpy(pMem, textToCopy.c_str(), bytes);
                     GlobalUnlock(hMem);
                     SetClipboardData(CF_UNICODETEXT, hMem);
                 }
@@ -1596,6 +1605,9 @@ void Window::DoPaste() {
                     std::wstring clip(pText);
                     GlobalUnlock(hData);
                     CloseClipboard();
+                    if (pDoc->HasSelection()) {
+                        pDoc->DeleteSelection();
+                    }
                     pDoc->buffer.InsertText(clip);
                     MarkDocumentModified(pDoc);
                     InvalidateRect(m_hwnd, nullptr, FALSE);
@@ -1670,6 +1682,10 @@ void Window::DoSelectAll() {
     if (pDoc && !pDoc->isSpecialView) {
         size_t count = pDoc->buffer.GetLineCount();
         if (count > 0) {
+            pDoc->selAnchor = { 0, 0 };
+            pDoc->selEnd = { count - 1, pDoc->buffer.GetLine(count - 1).length() };
+            pDoc->hasSelection = true;
+            pDoc->selectedWord = pDoc->GetSelectedText();
             pDoc->buffer.SetCursor(count - 1, pDoc->buffer.GetLine(count - 1).length());
             InvalidateRect(m_hwnd, nullptr, FALSE);
         }
@@ -1746,6 +1762,19 @@ void Window::RefreshOpenDocPathsForSearch() {
         }
     }
     m_drawer.SetOpenDocPaths(openPaths);
+}
+
+void Window::DoQuickOpenFileSearch() {
+    std::vector<std::wstring> openPaths;
+    for (const auto& grp : m_editorGroups) {
+        for (const auto& doc : grp.docs) {
+            if (!doc.filePath.empty() && !doc.isSpecialView && !doc.isUnsupportedBinary) {
+                openPaths.push_back(doc.filePath);
+            }
+        }
+    }
+    m_quickOpen.Open(m_recentPaths, openPaths, m_drawer.GetOpenFolderPath());
+    InvalidateRect(m_hwnd, nullptr, FALSE);
 }
 
 void Window::DoShowSearch() {
@@ -1980,7 +2009,7 @@ bool Window::Create(HINSTANCE hInstance, int nCmdShow) {
 
     WNDCLASSEX wc{};
     wc.cbSize = sizeof(WNDCLASSEX);
-    wc.style = CS_HREDRAW | CS_VREDRAW;
+    wc.style = CS_HREDRAW | CS_VREDRAW | CS_DBLCLKS;
     wc.lpfnWndProc = Window::WndProc;
     wc.hInstance = hInstance;
     wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
@@ -2286,6 +2315,11 @@ void Window::OnPaint() {
         m_themePicker.Render(m_pRenderTarget.Get(), m_theme, m_config, clientW, clientH);
     }
 
+    // 7. Render Quick Open File Search Palette Modal (Ctrl+K, Ctrl+P, Magnifying button)
+    if (m_quickOpen.IsOpen()) {
+        m_quickOpen.Render(m_pRenderTarget.Get(), m_theme, m_config, clientW, clientH);
+    }
+
     HRESULT hr = m_pRenderTarget->EndDraw();
     if (hr == D2DERR_RECREATE_TARGET) {
         DiscardDeviceResources();
@@ -2343,7 +2377,52 @@ void Window::HandleMouseMove(POINT clientPt) {
         return;
     }
 
+    if (m_quickOpen.IsOpen()) {
+        if (m_quickOpen.HandleMouseMove(clientPt)) {
+            InvalidateRect(m_hwnd, nullptr, FALSE);
+        }
+        return;
+    }
+
     bool needRepaint = false;
+
+    // Check Editor Mouse Drag Text Selection (Images 2, 3, 4)
+    auto* pActiveDoc = GetActiveDoc();
+    if (pActiveDoc && pActiveDoc->isSelecting && (GetKeyState(VK_LBUTTON) & 0x8000)) {
+        RECT clientRc;
+        GetClientRect(m_hwnd, &clientRc);
+        const int railW = m_config.Scale(m_config.railWidth);
+        const int drawerW = static_cast<int>(m_config.Scale(m_config.drawerWidth) * m_drawerAnimProgress);
+        const float canvasLeft = static_cast<float>(railW + drawerW);
+        const float canvasWidth = static_cast<float>(clientRc.right) - canvasLeft;
+        const float clientH = static_cast<float>(clientRc.bottom - clientRc.top);
+        if (canvasWidth > 10.0f && !m_editorGroups.empty()) {
+            float paneW = canvasWidth / m_editorGroups.size();
+            float paneCanvasLeft = canvasLeft + m_focusedGroupIdx * paneW;
+            size_t line = 0, col = 0;
+            if (m_editor.HitTestCodeArea(clientPt, m_config, *pActiveDoc, paneCanvasLeft, clientH, line, col)) {
+                pActiveDoc->selEnd = { line, col };
+                pActiveDoc->buffer.SetCursor(line, col);
+                if (pActiveDoc->selAnchor.line != pActiveDoc->selEnd.line || pActiveDoc->selAnchor.col != pActiveDoc->selEnd.col) {
+                    pActiveDoc->hasSelection = true;
+                    pActiveDoc->selectedWord = pActiveDoc->GetSelectedText();
+                } else {
+                    pActiveDoc->hasSelection = false;
+                    pActiveDoc->selectedWord.clear();
+                }
+
+                // Edge scrolling when dragging near top/bottom
+                float headerH = m_config.ScaleF(static_cast<float>(m_config.headerHeight));
+                if (clientPt.y < headerH + 25 && pActiveDoc->scrollLine > 0) {
+                    pActiveDoc->scrollLine--;
+                } else if (clientPt.y > clientH - 25 && pActiveDoc->scrollLine + 1 < pActiveDoc->buffer.GetLineCount()) {
+                    pActiveDoc->scrollLine++;
+                }
+                InvalidateRect(m_hwnd, nullptr, FALSE);
+                return;
+            }
+        }
+    }
 
     // Check Popup Menu hover first if open
     if (m_popupMenu.IsOpen()) {
@@ -2357,7 +2436,6 @@ void Window::HandleMouseMove(POINT clientPt) {
     }
 
     // Check vertical scrollbar dragging
-    auto* pActiveDoc = GetActiveDoc();
     if (pActiveDoc && pActiveDoc->isDraggingScrollbar) {
         float deltaY = static_cast<float>(clientPt.y) - pActiveDoc->dragStartY;
         float trackH = pActiveDoc->scrollbarTrack.bottom - pActiveDoc->scrollbarTrack.top;
@@ -2419,6 +2497,7 @@ void Window::HandleMouseMove(POINT clientPt) {
     auto hoveredExec = m_header.HitTestExecButton(clientPt);
     if (m_header.UpdateHoverState(hoveredMenu, hoveredCaption, hoveredExec)) needRepaint = true;
     if (m_header.SetHoveredSplitEditor(m_header.HitTestSplitEditor(clientPt))) needRepaint = true;
+    if (m_header.SetHoveredQuickOpen(m_header.HitTestQuickOpen(clientPt))) needRepaint = true;
 
     // Dynamic top-menu switching when any menu is currently open and mouse hovers over another header item
     if (m_popupMenu.IsOpen() && m_header.GetActiveMenu() != ui::HeaderMenuId::None) {
@@ -2531,6 +2610,18 @@ void Window::HandleLButtonDown(POINT clientPt) {
             DwmSetWindowAttribute(m_hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &dm, sizeof(dm));
             SetWindowPos(m_hwnd, nullptr, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED);
             SaveSessionState();
+        }
+        InvalidateRect(m_hwnd, nullptr, FALSE);
+        return;
+    }
+
+    // 0b. Quick Open Modal Clicks (Image 5)
+    if (m_quickOpen.IsOpen()) {
+        std::wstring chosenFile;
+        if (m_quickOpen.HandleMouseDown(clientPt, chosenFile)) {
+            if (!chosenFile.empty()) {
+                OpenFileDocument(chosenFile, false);
+            }
         }
         InvalidateRect(m_hwnd, nullptr, FALSE);
         return;
@@ -3067,6 +3158,12 @@ void Window::HandleLButtonDown(POINT clientPt) {
         return;
     }
 
+    // 3c. Quick Open Magnifying Button Click (Image 5)
+    if (m_header.HitTestQuickOpen(clientPt)) {
+        DoQuickOpenFileSearch();
+        return;
+    }
+
     const int railW = m_config.Scale(m_config.railWidth);
     const int drawerW = static_cast<int>(m_config.Scale(m_config.drawerWidth) * m_drawerAnimProgress);
     const float canvasLeft = static_cast<float>(railW + drawerW);
@@ -3265,6 +3362,13 @@ void Window::HandleLButtonDown(POINT clientPt) {
                             doc.buffer.SetCursor(line, col);
                             doc.targetHighlightLine = static_cast<size_t>(-1);
                             doc.targetHighlightLen = 0;
+                            // Start drag text selection (Images 2, 3, 4)
+                            doc.selAnchor = { line, col };
+                            doc.selEnd = { line, col };
+                            doc.hasSelection = false;
+                            doc.isSelecting = true;
+                            doc.selectedWord.clear();
+                            SetCapture(m_hwnd);
                             InvalidateRect(m_hwnd, nullptr, FALSE);
                             return;
                         }
@@ -3484,6 +3588,13 @@ void Window::HandleLButtonUp(POINT clientPt) {
         for (auto& doc : group.docs) {
             doc.isDraggingScrollbar = false;
             doc.isDraggingMinimap = false;
+            if (doc.isSelecting) {
+                doc.isSelecting = false;
+                if (doc.selAnchor.line == doc.selEnd.line && doc.selAnchor.col == doc.selEnd.col) {
+                    doc.hasSelection = false;
+                    doc.selectedWord.clear();
+                }
+            }
         }
     }
     ReleaseCapture();
@@ -3743,6 +3854,57 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
             return 0;
         }
 
+        case WM_LBUTTONDBLCLK: {
+            POINT clientPt = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+            const int railW = m_config.Scale(m_config.railWidth);
+            const int drawerW = static_cast<int>(m_config.Scale(m_config.drawerWidth) * m_drawerAnimProgress);
+            const float canvasLeft = static_cast<float>(railW + drawerW);
+            RECT clientRc;
+            GetClientRect(m_hwnd, &clientRc);
+            const float canvasWidth = static_cast<float>(clientRc.right) - canvasLeft;
+            const float clientH = static_cast<float>(clientRc.bottom - clientRc.top);
+            const float headerH = m_config.ScaleF(static_cast<float>(m_config.headerHeight));
+
+            if (clientPt.x >= canvasLeft && clientPt.y >= headerH && !m_editorGroups.empty() && canvasWidth > 10.0f) {
+                float paneW = canvasWidth / m_editorGroups.size();
+                int targetGroup = -1;
+                for (size_t g = 0; g < m_editorGroups.size(); ++g) {
+                    float pLeft = canvasLeft + g * paneW;
+                    float pRight = pLeft + paneW;
+                    if (clientPt.x >= pLeft && (clientPt.x < pRight || g == m_editorGroups.size() - 1)) {
+                        targetGroup = static_cast<int>(g);
+                        break;
+                    }
+                }
+                if (targetGroup >= 0) {
+                    m_focusedGroupIdx = targetGroup;
+                    auto& group = m_editorGroups[targetGroup];
+
+                    // Tab double-click: makes preview tab permanent
+                    int tabHit = m_editor.HitTestTab(clientPt, group.docs);
+                    if (tabHit >= 0 && tabHit < static_cast<int>(group.docs.size())) {
+                        group.docs[tabHit].isPreview = false;
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
+                        return 0;
+                    }
+
+                    if (group.activeDocIdx >= 0 && group.activeDocIdx < static_cast<int>(group.docs.size())) {
+                        auto& doc = group.docs[group.activeDocIdx];
+                        if (!doc.isSpecialView && !doc.isImageView && !doc.isUnsupportedBinary) {
+                            float paneCanvasLeft = canvasLeft + targetGroup * paneW;
+                            size_t line = 0, col = 0;
+                            if (m_editor.HitTestCodeArea(clientPt, m_config, doc, paneCanvasLeft, clientH, line, col)) {
+                                doc.SelectWordAt(line, col);
+                                InvalidateRect(m_hwnd, nullptr, FALSE);
+                                return 0;
+                            }
+                        }
+                    }
+                }
+            }
+            return 0;
+        }
+
         case WM_LBUTTONUP: {
             POINT pt = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
             HandleLButtonUp(pt);
@@ -3760,7 +3922,15 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
             POINT pt = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
             ScreenToClient(m_hwnd, &pt);
 
-            // 0. Scroll Theme Picker Catalog if modal is open
+            // 0a. Scroll Quick Open search results if modal is open (Image 5)
+            if (m_quickOpen.IsOpen()) {
+                if (m_quickOpen.HandleMouseWheel(delta)) {
+                    InvalidateRect(m_hwnd, nullptr, FALSE);
+                    return 0;
+                }
+            }
+
+            // 0b. Scroll Theme Picker Catalog if modal is open
             if (m_themePicker.IsOpen()) {
                 if (m_themePicker.HandleMouseWheel(delta)) {
                     InvalidateRect(m_hwnd, nullptr, FALSE);
@@ -3833,6 +4003,14 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 return 0;
             }
 
+            // 0. Quick Open file search input (Image 5)
+            if (m_quickOpen.IsOpen()) {
+                if (m_quickOpen.HandleChar(static_cast<wchar_t>(wParam))) {
+                    InvalidateRect(m_hwnd, nullptr, FALSE);
+                    return 0;
+                }
+            }
+
             if (m_drawer.IsRenaming()) {
                 m_drawer.HandleRenameChar(static_cast<wchar_t>(wParam));
                 InvalidateRect(m_hwnd, nullptr, FALSE);
@@ -3869,6 +4047,9 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     if (ch >= 32 && ch != 127) {
                         if (pDoc->isDiffView && (pDoc->diffActivePane == 0 || pDoc->isDiffRightReadOnly)) {
                             return 0; // Read-only side!
+                        }
+                        if (pDoc->HasSelection()) {
+                            pDoc->DeleteSelection();
                         }
                         pDoc->buffer.InsertChar(ch);
                         MarkDocumentModified(pDoc);
@@ -3928,6 +4109,24 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 InvalidateRect(m_hwnd, nullptr, FALSE);
             }
 
+            // 0. Quick Open file search palette (Image 5)
+            if (m_quickOpen.IsOpen()) {
+                if (wParam == VK_ESCAPE) {
+                    m_quickOpen.Close();
+                    InvalidateRect(m_hwnd, nullptr, FALSE);
+                    return 0;
+                }
+                std::wstring chosenFile;
+                if (m_quickOpen.HandleKeyDown(wParam, chosenFile)) {
+                    if (!chosenFile.empty()) {
+                        OpenFileDocument(chosenFile, false);
+                    }
+                    InvalidateRect(m_hwnd, nullptr, FALSE);
+                    return 0;
+                }
+                return 0;
+            }
+
             // Handle inline tree rename keys (Enter to commit, Escape to cancel)
             if (m_drawer.IsRenaming()) {
                 if (wParam == VK_RETURN) {
@@ -3970,6 +4169,12 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
 
             if (wParam == VK_ESCAPE) {
                 m_drawer.DismissCommitCard();
+                auto* pCurDoc = GetActiveDoc();
+                if (pCurDoc && pCurDoc->HasSelection()) {
+                    pCurDoc->ClearSelection();
+                    InvalidateRect(m_hwnd, nullptr, FALSE);
+                    return 0;
+                }
             }
             if (m_themePicker.IsOpen()) {
                 if (wParam == VK_ESCAPE) {
@@ -4074,8 +4279,12 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     DoRefactor();
                     return 0;
                 }
-                if (wParam == 'P' && shiftDown) {
-                    DoCommandPalette();
+                if (wParam == 'P') {
+                    if (shiftDown) {
+                        DoCommandPalette();
+                    } else {
+                        DoQuickOpenFileSearch();
+                    }
                     return 0;
                 }
                 if (wParam == 'B') {
@@ -4227,6 +4436,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 }
                 if (wParam == 'K') {
                     m_chordCtrlK = true;
+                    DoQuickOpenFileSearch();
                     return 0;
                 }
             } else {
@@ -4260,18 +4470,32 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     return 0;
                 }
 
-                if (wParam == VK_BACK) {
-                    pDoc->buffer.Backspace();
+                if (wParam == VK_BACK || wParam == VK_DELETE) {
+                    if (pDoc->HasSelection()) {
+                        pDoc->DeleteSelection();
+                    } else if (wParam == VK_BACK) {
+                        pDoc->buffer.Backspace();
+                    }
                     MarkDocumentModified(pDoc);
                     if (pDoc->isDiffView) ComputeDiffHunks(*pDoc);
                     InvalidateRect(m_hwnd, nullptr, FALSE);
+                    return 0;
                 } else if (wParam == VK_LEFT) {
+                    if (pDoc->HasSelection() && !(GetKeyState(VK_SHIFT) & 0x8000)) {
+                        pDoc->ClearSelection();
+                    }
                     pDoc->buffer.MoveCursorLeft();
                     InvalidateRect(m_hwnd, nullptr, FALSE);
                 } else if (wParam == VK_RIGHT) {
+                    if (pDoc->HasSelection() && !(GetKeyState(VK_SHIFT) & 0x8000)) {
+                        pDoc->ClearSelection();
+                    }
                     pDoc->buffer.MoveCursorRight();
                     InvalidateRect(m_hwnd, nullptr, FALSE);
                 } else if (wParam == VK_UP) {
+                    if (pDoc->HasSelection() && !(GetKeyState(VK_SHIFT) & 0x8000)) {
+                        pDoc->ClearSelection();
+                    }
                     pDoc->buffer.MoveCursorUp();
                     size_t curLine = pDoc->buffer.GetCursor().line;
                     if (curLine < pDoc->scrollLine) {
@@ -4279,6 +4503,9 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     }
                     InvalidateRect(m_hwnd, nullptr, FALSE);
                 } else if (wParam == VK_DOWN) {
+                    if (pDoc->HasSelection() && !(GetKeyState(VK_SHIFT) & 0x8000)) {
+                        pDoc->ClearSelection();
+                    }
                     pDoc->buffer.MoveCursorDown();
                     size_t curLine = pDoc->buffer.GetCursor().line;
                     RECT rc;
