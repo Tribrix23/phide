@@ -254,6 +254,15 @@ private:
                                  float topY, float clientHeight, bool isPaneFocused);
 
     /**
+     * @brief Renders syntax-highlighted tokens for a single line of code with fallback plain text.
+     */
+    void RenderSyntaxTokensLine(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
+                                const editor::Buffer& buffer, size_t lineIdx,
+                                float codeLeft, float lineY, float maxRight,
+                                float lineH, float charW, IDWriteTextFormat* pCodeFmt,
+                                ID2D1Brush* defaultTextBrush = nullptr);
+
+    /**
      * @brief Renders a single editor pane (tabs, breadcrumbs, content).
      */
     void RenderSinglePane(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,

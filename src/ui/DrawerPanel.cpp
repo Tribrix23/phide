@@ -2699,7 +2699,7 @@ void DrawerPanel::RefreshGitState(bool async, bool showLoading) {
         // 1. Check if inside git repository
         auto resCheck = RunGitCmd(L"rev-parse --is-inside-work-tree", dir);
         if (resCheck.exitCode != 0) {
-            std::lock_guard<std::mutex> lock(m_gitMutex);
+            std::lock_guard<std::recursive_mutex> lock(m_gitMutex);
             m_isGitRepo = false;
             m_gitChanges.clear();
             m_gitCommits.clear();
@@ -2774,7 +2774,7 @@ void DrawerPanel::RefreshGitState(bool async, bool showLoading) {
         // Snapshot existing commits to preserve expanded states and cached files across background polling (Complaint 2)
         std::map<std::wstring, GitCommitItem> prevMap;
         {
-            std::lock_guard<std::mutex> lock(m_gitMutex);
+            std::lock_guard<std::recursive_mutex> lock(m_gitMutex);
             for (auto& item : m_gitCommits) {
                 prevMap[item.hash] = std::move(item);
             }
@@ -2854,7 +2854,7 @@ void DrawerPanel::RefreshGitState(bool async, bool showLoading) {
         }
 
         {
-            std::lock_guard<std::mutex> lock(m_gitMutex);
+            std::lock_guard<std::recursive_mutex> lock(m_gitMutex);
             m_isGitRepo = true;
             m_gitBranch = branch;
             m_gitChanges = std::move(changes);
@@ -3019,7 +3019,7 @@ void DrawerPanel::CommitChangesAsync(const std::wstring& message) {
         }
         RunGitCmd(L"commit -m \"" + escapedMsg + L"\"", dir);
         {
-            std::lock_guard<std::mutex> lock(m_gitMutex);
+            std::lock_guard<std::recursive_mutex> lock(m_gitMutex);
             m_commitMessage.clear();
         }
         RefreshGitState(false);
@@ -3039,7 +3039,7 @@ void DrawerPanel::UncommitLastCommitAsync() {
         // 2. Soft reset HEAD~1 (keeps all modified/staged files in working directory)
         auto resReset = RunGitCmd(L"reset --soft HEAD~1", dir);
         if (resReset.exitCode == 0) {
-            std::lock_guard<std::mutex> lock(m_gitMutex);
+            std::lock_guard<std::recursive_mutex> lock(m_gitMutex);
             if (!lastMsg.empty()) {
                 m_commitMessage = lastMsg;
             }
@@ -3051,10 +3051,66 @@ void DrawerPanel::UncommitLastCommitAsync() {
 
 void DrawerPanel::PushCommitsAsync() {
     std::thread([this]() {
-        m_isGitLoading = true;
-        std::wstring dir = m_openFolderPath.empty() ? L"." : m_openFolderPath;
-        RunGitCmd(L"push", dir);
-        RefreshGitState(false);
+        try {
+            m_isGitLoading = true;
+            std::wstring dir = m_openFolderPath.empty() ? L"." : m_openFolderPath;
+            RunGitCmd(L"push", dir);
+            RefreshGitState(false);
+        } catch (...) {}
+    }).detach();
+}
+
+void DrawerPanel::PullCommitsAsync() {
+    std::thread([this]() {
+        try {
+            m_isGitLoading = true;
+            std::wstring dir = m_openFolderPath.empty() ? L"." : m_openFolderPath;
+            RunGitCmd(L"pull", dir);
+            RefreshGitState(false);
+        } catch (...) {}
+    }).detach();
+}
+
+void DrawerPanel::FetchAllRemotesAsync() {
+    std::thread([this]() {
+        try {
+            m_isGitLoading = true;
+            std::wstring dir = m_openFolderPath.empty() ? L"." : m_openFolderPath;
+            RunGitCmd(L"fetch --all", dir);
+            RefreshGitState(false);
+        } catch (...) {}
+    }).detach();
+}
+
+void DrawerPanel::StashChangesAsync() {
+    std::thread([this]() {
+        try {
+            m_isGitLoading = true;
+            std::wstring dir = m_openFolderPath.empty() ? L"." : m_openFolderPath;
+            RunGitCmd(L"stash", dir);
+            RefreshGitState(false);
+        } catch (...) {}
+    }).detach();
+}
+
+void DrawerPanel::RunGarbageCollectionAsync() {
+    std::thread([this]() {
+        try {
+            m_isGitLoading = true;
+            std::wstring dir = m_openFolderPath.empty() ? L"." : m_openFolderPath;
+            // 1. Run git garbage collection & prune loose unreachable objects
+            RunGitCmd(L"gc --prune=now --auto", dir);
+            // 2. Perform in-memory IDE garbage collection
+            {
+                std::lock_guard<std::recursive_mutex> lock(m_gitMutex);
+                m_gitCommits.shrink_to_fit();
+                m_gitChanges.shrink_to_fit();
+                m_expandedCommitHashes.clear();
+            }
+            // 3. Trim process working set
+            SetProcessWorkingSetSize(GetCurrentProcess(), static_cast<SIZE_T>(-1), static_cast<SIZE_T>(-1));
+            RefreshGitState(false);
+        } catch (...) {}
     }).detach();
 }
 
@@ -3116,7 +3172,7 @@ void DrawerPanel::ComputeGitDiffLines(const std::wstring& relPath, std::set<size
 }
 
 void DrawerPanel::GenerateAiCommitMessage() {
-    std::lock_guard<std::mutex> lock(m_gitMutex);
+    std::lock_guard<std::recursive_mutex> lock(m_gitMutex);
     if (m_gitChanges.empty()) {
         m_commitMessage = L"chore: update repository files";
         return;
@@ -3156,7 +3212,7 @@ bool DrawerPanel::HitTestGit(POINT pt, const app::AppConfig& config,
                             std::wstring& outOpenCommitDiff,
                             std::wstring& outOpenUrl) {
     (void)config;
-    std::lock_guard<std::mutex> lock(m_gitMutex);
+    std::lock_guard<std::recursive_mutex> lock(m_gitMutex);
     outOpenFile.clear();
     outDiscardedFile.clear();
     outIsDiff = false;
@@ -3213,26 +3269,26 @@ bool DrawerPanel::HitTestGit(POINT pt, const app::AppConfig& config,
                             StageAllChangesAsync();
                             break;
                         case 11: // Discard All Changes
-                            DiscardAllChanges();
+                            DiscardAllChangesAsync();
                             outDiscardedFile = L"*";
                             break;
                         case 13: // Undo Last Commit (Uncommit)
                             UncommitLastCommitAsync();
                             break;
                         case 12: // Stash Changes
-                            RunGitCmd(L"stash", m_openFolderPath);
-                            RefreshGitState(true, true);
+                            StashChangesAsync();
                             break;
                         case 21: // Push Commits
                             PushCommitsAsync();
                             break;
                         case 22: // Pull Commits
-                            RunGitCmd(L"pull", m_openFolderPath);
-                            RefreshGitState(true, true);
+                            PullCommitsAsync();
                             break;
                         case 23: // Fetch All Remotes
-                            RunGitCmd(L"fetch --all", m_openFolderPath);
-                            RefreshGitState(true, true);
+                            FetchAllRemotesAsync();
+                            break;
+                        case 24: // Run Garbage Collection (git gc)
+                            RunGarbageCollectionAsync();
                             break;
                         default:
                             break;
@@ -3284,7 +3340,7 @@ bool DrawerPanel::HitTestGit(POINT pt, const app::AppConfig& config,
         }
         if (pt.x >= m_gitDiscardAllBounds.left && pt.x <= m_gitDiscardAllBounds.right &&
             pt.y >= m_gitDiscardAllBounds.top && pt.y <= m_gitDiscardAllBounds.bottom) {
-            DiscardAllChanges();
+            DiscardAllChangesAsync();
             outDiscardedFile = L"*";
             return true;
         }
@@ -3350,7 +3406,7 @@ bool DrawerPanel::HitTestGit(POINT pt, const app::AppConfig& config,
                     }
                     if (pt.x >= item.discardBtnBounds.left && pt.x <= item.discardBtnBounds.right &&
                         pt.y >= item.discardBtnBounds.top && pt.y <= item.discardBtnBounds.bottom) {
-                        DiscardFile(item.path);
+                        DiscardFileAsync(item.path);
                         outDiscardedFile = item.path;
                         return true;
                     }
@@ -4596,30 +4652,34 @@ void DrawerPanel::RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, 
 
         if (m_activeGitMenu == GitMenuType::ChangesMore) {
             anchor = m_gitChangesMoreBounds;
-            menuW = config.ScaleF(170.0f);
+            menuW = config.ScaleF(190.0f);
             m_gitMenuItems.push_back({ 10, L"✓  Stage All Changes" });
             m_gitMenuItems.push_back({ 11, L"🔄 Discard All Changes" });
             m_gitMenuItems.push_back({ 13, L"↩  Undo Last Commit" });
             m_gitMenuItems.push_back({ 12, L"📦 Stash Changes" });
             m_gitMenuItems.push_back({ 0,  L"", false, true }); // separator
+            m_gitMenuItems.push_back({ 24, L"🧹 Run Garbage Collection" });
             m_gitMenuItems.push_back({ 14, L"🔄 Refresh Status" });
         } else if (m_activeGitMenu == GitMenuType::GraphMore) {
             anchor = m_gitGraphMoreBounds;
-            menuW = config.ScaleF(170.0f);
+            menuW = config.ScaleF(190.0f);
             m_gitMenuItems.push_back({ 13, L"↩  Undo Last Commit" });
             m_gitMenuItems.push_back({ 20, L"🔄 Refresh Graph" });
             m_gitMenuItems.push_back({ 21, L"↑  Push Commits" });
             m_gitMenuItems.push_back({ 22, L"↓  Pull Commits" });
             m_gitMenuItems.push_back({ 23, L"☁  Fetch All Remotes" });
+            m_gitMenuItems.push_back({ 0,  L"", false, true }); // separator
+            m_gitMenuItems.push_back({ 24, L"🧹 Run Garbage Collection" });
         } else {
             // Header Views
             anchor = m_gitHeaderMoreBounds;
-            menuW = config.ScaleF(145.0f);
+            menuW = config.ScaleF(180.0f);
             m_gitMenuItems.push_back({ 1, L"Repositories", true }); // header
             m_gitMenuItems.push_back({ 2, m_showChangesSection ? L"✓  Changes" : L"    Changes", false, false, m_showChangesSection });
             m_gitMenuItems.push_back({ 3, m_showGraphSection ? L"✓  Graph" : L"    Graph", false, false, m_showGraphSection });
             m_gitMenuItems.push_back({ 0, L"", false, true }); // separator
             m_gitMenuItems.push_back({ 13, L"↩  Undo Last Commit" });
+            m_gitMenuItems.push_back({ 24, L"🧹 Run Garbage Collection" });
             m_gitMenuItems.push_back({ 5, L"🔄 Refresh All" });
         }
 

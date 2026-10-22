@@ -152,13 +152,17 @@ public:
     void CommitChangesAsync(const std::wstring& message);
     void UncommitLastCommitAsync();
     void PushCommitsAsync();
+    void PullCommitsAsync();
+    void FetchAllRemotesAsync();
+    void StashChangesAsync();
+    void RunGarbageCollectionAsync();
     void GenerateAiCommitMessage();
     void SetCommitMessage(const std::wstring& msg) {
-        std::lock_guard<std::mutex> lock(m_gitMutex);
+        std::lock_guard<std::recursive_mutex> lock(m_gitMutex);
         m_commitMessage = msg;
     }
     [[nodiscard]] std::wstring GetCommitMessage() const {
-        std::lock_guard<std::mutex> lock(m_gitMutex);
+        std::lock_guard<std::recursive_mutex> lock(m_gitMutex);
         return m_commitMessage;
     }
     [[nodiscard]] std::wstring GetGitFileContent(const std::wstring& relPath);
@@ -195,7 +199,7 @@ public:
     [[nodiscard]] bool IsGitRepo() const noexcept { return m_isGitRepo; }
     [[nodiscard]] bool IsGitLoading() const noexcept { return m_isGitLoading.load(); }
     [[nodiscard]] bool IsGitRefreshing() const noexcept { return m_isGitRefreshing.load(); }
-    [[nodiscard]] std::mutex& GetGitMutex() const noexcept { return m_gitMutex; }
+    [[nodiscard]] std::recursive_mutex& GetGitMutex() const noexcept { return m_gitMutex; }
     void UpdateGitLoadingAnim(float deltaAngle) noexcept { m_gitAnimAngle += deltaAngle; }
     [[nodiscard]] bool IsGitCommitBoxFocused() const noexcept { return m_focusedGitInput == 1; }
     void SetGitCommitBoxFocus(int focus) noexcept { m_focusedGitInput = focus; }
@@ -494,7 +498,7 @@ private:
     std::atomic<bool> m_isGitLoading{false};
     std::atomic<bool> m_isGitRefreshing{false};
     float m_gitAnimAngle = 0.0f;
-    mutable std::mutex m_gitMutex;
+    mutable std::recursive_mutex m_gitMutex;
 
     bool m_showChangesSection = true;
     bool m_showGraphSection = true;

@@ -33,6 +33,15 @@ public:
      * @brief Gets the number of lines in the document.
      */
     [[nodiscard]] size_t GetLineCount() const noexcept { return m_lines.size(); }
+    [[nodiscard]] const std::vector<std::wstring>& GetLines() const noexcept { return m_lines; }
+    [[nodiscard]] std::wstring GetText() const {
+        std::wstring res;
+        for (size_t i = 0; i < m_lines.size(); ++i) {
+            res += m_lines[i];
+            if (i + 1 < m_lines.size()) res += L"\n";
+        }
+        return res;
+    }
 
     /**
      * @brief Retrieves the text content of a line by index.

@@ -163,6 +163,11 @@ private:
     void OpenVirtualDocument(const std::wstring& name, const std::wstring& content, bool isPreview = false);
 
     /**
+     * @brief Synchronizes buffer contents across all open tabs (normal docs and diff views) matching sourceDoc's filePath.
+     */
+    void SyncDocumentBuffers(editor::OpenDocument* sourceDoc);
+
+    /**
      * @brief Opens a dedicated special full-surface view (e.g. Keyboard Shortcuts).
      * @param viewType Unique identifier of the view (e.g. L"keybindings").
      * @param title Title displayed on the tab header.

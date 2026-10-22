@@ -1790,6 +1790,54 @@ void EditorCanvas::RenderCanvasThemeEffects(ID2D1RenderTarget* pRT, Theme& theme
     }
 }
 
+void EditorCanvas::RenderSyntaxTokensLine(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
+                                         const editor::Buffer& buffer, size_t lineIdx,
+                                         float codeLeft, float lineY, float maxRight,
+                                         float lineH, float charW, IDWriteTextFormat* pCodeFmt,
+                                         ID2D1Brush* defaultTextBrush) {
+    std::wstring lineStr = buffer.GetLine(lineIdx);
+    if (lineStr.empty() || codeLeft >= maxRight) return;
+
+    auto tokens = buffer.GetTokensForLine(lineIdx);
+    if (tokens.empty()) {
+        D2D1_RECT_F rcLine = D2D1::RectF(codeLeft, lineY, maxRight, lineY + lineH);
+        pRT->DrawText(lineStr.c_str(), static_cast<UINT32>(lineStr.length()), pCodeFmt, rcLine,
+                      defaultTextBrush ? defaultTextBrush : theme.brushTextPrimary.Get());
+        return;
+    }
+
+    for (const auto& tok : tokens) {
+        if (tok.startCol + tok.length > lineStr.length()) continue;
+        float tokenX = codeLeft + static_cast<float>(tok.startCol) * charW;
+        float tokenW = static_cast<float>(tok.length) * charW;
+        if (tokenX >= maxRight) break;
+
+        D2D1_RECT_F rcTok = D2D1::RectF(tokenX, lineY, (std::min)(tokenX + tokenW + config.ScaleF(4.0f), maxRight), lineY + lineH);
+
+        ID2D1Brush* brush = defaultTextBrush ? defaultTextBrush : theme.brushTextPrimary.Get();
+        switch (tok.type) {
+            case editor::TokenType::Keyword:   brush = theme.brushSyntaxKeyword.Get(); break;
+            case editor::TokenType::Type:      brush = theme.brushSyntaxType.Get(); break;
+            case editor::TokenType::String:    brush = theme.brushSyntaxString.Get(); break;
+            case editor::TokenType::Comment:   brush = theme.brushSyntaxComment.Get(); break;
+            case editor::TokenType::Number:    brush = theme.brushSyntaxNumber.Get(); break;
+            case editor::TokenType::Operator:  brush = theme.brushSyntaxOperator.Get(); break;
+            case editor::TokenType::Tag:       brush = theme.brushSyntaxTag.Get(); break;
+            case editor::TokenType::Attribute: brush = theme.brushSyntaxAttribute.Get(); break;
+            default: break;
+        }
+        if (!brush) brush = theme.brushTextPrimary.Get();
+
+        pRT->DrawText(
+            lineStr.c_str() + tok.startCol,
+            static_cast<UINT32>(tok.length),
+            pCodeFmt,
+            rcTok,
+            brush
+        );
+    }
+}
+
 void EditorCanvas::RenderDiffView(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
                                   editor::OpenDocument& doc, float canvasLeft, float canvasWidth,
                                   float topY, float clientHeight, bool isFocused) {
@@ -1979,11 +2027,9 @@ void EditorCanvas::RenderDiffView(ID2D1RenderTarget* pRT, Theme& theme, const ap
         pRT->DrawText(numStr.c_str(), static_cast<UINT32>(numStr.length()), theme.fontMenuShortcut.Get(),
                       rcNum, isChanged ? brushDiffRedBar.Get() : theme.brushLineNumber.Get());
 
-        // Line text
-        std::wstring lineText = doc.diffOriginalBuffer.GetLine(v);
-        D2D1_RECT_F rcText = D2D1::RectF(leftX + gutterW + config.ScaleF(12.0f), lineY, dividerX, lineY + lineH);
-        pRT->DrawText(lineText.c_str(), static_cast<UINT32>(lineText.length()), pCodeFmt,
-                      rcText, theme.brushTextPrimary.Get());
+        // Line text with syntax highlighting
+        float textX = leftX + gutterW + config.ScaleF(12.0f);
+        RenderSyntaxTokensLine(pRT, theme, config, doc.diffOriginalBuffer, v, textX, lineY, dividerX, lineH, charW, pCodeFmt, isChanged ? brushDiffRedBar.Get() : theme.brushTextPrimary.Get());
     }
     pRT->PopAxisAlignedClip();
 
@@ -2028,11 +2074,9 @@ void EditorCanvas::RenderDiffView(ID2D1RenderTarget* pRT, Theme& theme, const ap
         pRT->DrawText(numStr.c_str(), static_cast<UINT32>(numStr.length()), theme.fontMenuShortcut.Get(),
                       rcNum, isChanged ? brushDiffGreenBar.Get() : ((isRightActive && v == cursor.line) ? theme.brushTextPrimary.Get() : theme.brushLineNumber.Get()));
 
-        // Line text
-        std::wstring lineText = doc.buffer.GetLine(v);
-        D2D1_RECT_F rcText = D2D1::RectF(rightX + gutterW + config.ScaleF(12.0f), lineY, rightX + halfW, lineY + lineH);
-        pRT->DrawText(lineText.c_str(), static_cast<UINT32>(lineText.length()), pCodeFmt,
-                      rcText, theme.brushTextPrimary.Get());
+        // Line text with syntax highlighting
+        float textX = rightX + gutterW + config.ScaleF(12.0f);
+        RenderSyntaxTokensLine(pRT, theme, config, doc.buffer, v, textX, lineY, rightX + halfW, lineH, charW, pCodeFmt, isChanged ? brushDiffGreenBar.Get() : theme.brushTextPrimary.Get());
     }
 
     // Thin Deletion Line Indicators on Right Pane (Image 4 Request)
@@ -2366,10 +2410,9 @@ void EditorCanvas::RenderMultiFileDiffView(ID2D1RenderTarget* pRT, Theme& theme,
                             D2D1_RECT_F rcGutter = D2D1::RectF(leftX + 2.0f, curY + 1.0f, leftX + gutterW - 6.0f, curY + lineH);
                             pRT->DrawText(num.c_str(), static_cast<UINT32>(num.length()), pCodeFmt, rcGutter, theme.brushLineNumber.Get());
 
-                            // Text
-                            std::wstring lineText = entry.originalBuffer.GetLine(l);
-                            D2D1_RECT_F rcText = D2D1::RectF(leftX + gutterW, curY + 1.0f, dividerX, curY + lineH);
-                            pRT->DrawText(lineText.c_str(), static_cast<UINT32>(lineText.length()), pCodeFmt, rcText, isLeftDel ? brushDiffRedBar.Get() : theme.brushTextPrimary.Get());
+                            // Text with syntax highlighting
+                            float textX = leftX + gutterW + config.ScaleF(8.0f);
+                            RenderSyntaxTokensLine(pRT, theme, config, entry.originalBuffer, l, textX, curY + 1.0f, dividerX, lineH, config.ScaleF(7.8f), pCodeFmt, isLeftDel ? brushDiffRedBar.Get() : theme.brushTextPrimary.Get());
                         }
 
                         // Right pane line (This commit)
@@ -2384,10 +2427,9 @@ void EditorCanvas::RenderMultiFileDiffView(ID2D1RenderTarget* pRT, Theme& theme,
                             D2D1_RECT_F rcGutter = D2D1::RectF(rightX + 2.0f, curY + 1.0f, rightX + gutterW - 6.0f, curY + lineH);
                             pRT->DrawText(num.c_str(), static_cast<UINT32>(num.length()), pCodeFmt, rcGutter, theme.brushLineNumber.Get());
 
-                            // Text
-                            std::wstring lineText = entry.workingBuffer.GetLine(l);
-                            D2D1_RECT_F rcText = D2D1::RectF(rightX + gutterW, curY + 1.0f, rightX + halfW, curY + lineH);
-                            pRT->DrawText(lineText.c_str(), static_cast<UINT32>(lineText.length()), pCodeFmt, rcText, isRightAdd ? brushDiffGreenBar.Get() : theme.brushTextPrimary.Get());
+                            // Text with syntax highlighting
+                            float textX = rightX + gutterW + config.ScaleF(8.0f);
+                            RenderSyntaxTokensLine(pRT, theme, config, entry.workingBuffer, l, textX, curY + 1.0f, rightX + halfW, lineH, config.ScaleF(7.8f), pCodeFmt, isRightAdd ? brushDiffGreenBar.Get() : theme.brushTextPrimary.Get());
                         }
 
                         // Divider between left and right

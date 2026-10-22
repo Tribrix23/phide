@@ -883,7 +883,7 @@ void Window::OpenCommitDiffDocument(const std::wstring& commitHash, const std::w
         std::vector<ui::GitCommitFile> commitFiles;
 
         {
-            std::lock_guard<std::mutex> lock(m_drawer.GetGitMutex());
+            std::lock_guard<std::recursive_mutex> lock(m_drawer.GetGitMutex());
             for (const auto& ci : m_drawer.GetGitCommits()) {
                 if (ci.hash == commitHash) {
                     commitMsg = ci.message;
@@ -1064,16 +1064,17 @@ void Window::ComputeDiffHunks(editor::OpenDocument& doc) {
         }
 
         size_t i = midN, j = midM;
-        std::vector<std::pair<int, size_t>> edits; // (-1 = deleted, +1 = added; line index)
+        struct DiffEditOp { int type; size_t leftLine; size_t rightLine; };
+        std::vector<DiffEditOp> edits; // (-1 = deleted, +1 = added)
         while (i > 0 || j > 0) {
             if (i > 0 && j > 0 && dir[i][j] == 1) {
                 i--;
                 j--;
             } else if (i > 0 && (j == 0 || dir[i][j] == 2)) {
-                edits.push_back({ -1, prefix + i - 1 });
+                edits.push_back({ -1, prefix + i - 1, prefix + j });
                 i--;
             } else {
-                edits.push_back({ 1, prefix + j - 1 });
+                edits.push_back({ 1, prefix + i, prefix + j - 1 });
                 j--;
             }
         }
@@ -1086,16 +1087,24 @@ void Window::ComputeDiffHunks(editor::OpenDocument& doc) {
             size_t addCount = 0;
             size_t delStart = 0;
             size_t addStart = 0;
+            size_t delRightPos = 0;
+            size_t addLeftPos = 0;
 
-            while (idx < edits.size() && edits[idx].first == -1) {
-                if (delCount == 0) delStart = edits[idx].second;
-                doc.diffDeletedLines.insert(edits[idx].second);
+            while (idx < edits.size() && edits[idx].type == -1) {
+                if (delCount == 0) {
+                    delStart = edits[idx].leftLine;
+                    delRightPos = edits[idx].rightLine;
+                }
+                doc.diffDeletedLines.insert(edits[idx].leftLine);
                 delCount++;
                 idx++;
             }
-            while (idx < edits.size() && edits[idx].first == 1) {
-                if (addCount == 0) addStart = edits[idx].second;
-                doc.diffAddedLines.insert(edits[idx].second);
+            while (idx < edits.size() && edits[idx].type == 1) {
+                if (addCount == 0) {
+                    addStart = edits[idx].rightLine;
+                    addLeftPos = edits[idx].leftLine;
+                }
+                doc.diffAddedLines.insert(edits[idx].rightLine);
                 addCount++;
                 idx++;
             }
@@ -1110,11 +1119,11 @@ void Window::ComputeDiffHunks(editor::OpenDocument& doc) {
                 hunk.type = editor::OpenDocument::DiffHunkItem::HunkType::Deleted;
                 hunk.leftStart = delStart;
                 hunk.leftCount = delCount;
-                hunk.rightStart = (addCount > 0 ? addStart : prefix);
+                hunk.rightStart = delRightPos;
                 hunk.rightCount = 0;
             } else if (addCount > 0) {
                 hunk.type = editor::OpenDocument::DiffHunkItem::HunkType::Added;
-                hunk.leftStart = prefix;
+                hunk.leftStart = addLeftPos;
                 hunk.leftCount = 0;
                 hunk.rightStart = addStart;
                 hunk.rightCount = addCount;
@@ -1376,6 +1385,7 @@ void Window::DoSaveAll() {
                 doc.buffer.SaveToFile(doc.filePath);
                 doc.isDirty = false;
                 anySaved = true;
+                SyncDocumentBuffers(&doc);
                 if (doc.filePath == m_snippetManager.GetSnippetsFilePath()) {
                     m_snippetManager.LoadSnippets();
                 }
@@ -1489,15 +1499,33 @@ void Window::DoReopenClosedEditor() {
     }
 }
 
+void Window::SyncDocumentBuffers(editor::OpenDocument* sourceDoc) {
+    if (!sourceDoc || sourceDoc->filePath.empty() || sourceDoc->isSpecialView) return;
+    std::wstring text = sourceDoc->buffer.GetText();
+    for (auto& group : m_editorGroups) {
+        for (auto& doc : group.docs) {
+            if (&doc != sourceDoc && !doc.filePath.empty() && doc.filePath == sourceDoc->filePath) {
+                doc.buffer.SetText(text);
+                doc.isDirty = sourceDoc->isDirty;
+                if (doc.isDiffView) {
+                    ComputeDiffHunks(doc);
+                }
+            }
+        }
+    }
+}
+
 void Window::MarkDocumentModified(editor::OpenDocument* pDoc) {
     if (!pDoc || pDoc->isSpecialView) return;
     pDoc->isPreview = false;
     if (m_autoSave && !pDoc->filePath.empty()) {
         pDoc->buffer.SaveToFile(pDoc->filePath);
         pDoc->isDirty = false;
+        SyncDocumentBuffers(pDoc);
         TriggerDebouncedGitRefresh(1500);
     } else {
         pDoc->isDirty = true;
+        SyncDocumentBuffers(pDoc);
         TriggerDebouncedGitRefresh(2000);
     }
 }
@@ -1786,12 +1814,18 @@ void Window::SaveFileToPath(const std::wstring& path) {
         if (pDoc->buffer.SaveToFile(path)) {
             pDoc->filePath = path;
             auto pos = path.find_last_of(L"\\/");
-            pDoc->fileName = (pos != std::wstring::npos) ? path.substr(pos + 1) : path;
+            std::wstring baseName = (pos != std::wstring::npos) ? path.substr(pos + 1) : path;
+            if (pDoc->isDiffView) {
+                pDoc->fileName = baseName + L" (Working Tree)";
+            } else {
+                pDoc->fileName = baseName;
+            }
             pDoc->isDirty = false;
             pDoc->isPreview = false;
             if (path == m_snippetManager.GetSnippetsFilePath()) {
                 m_snippetManager.LoadSnippets();
             }
+            SyncDocumentBuffers(pDoc);
             TriggerDebouncedGitRefresh(1000);
             SaveSessionState();
             InvalidateRect(m_hwnd, nullptr, FALSE);
@@ -2374,6 +2408,10 @@ void Window::HandleLButtonDown(POINT clientPt) {
             }
             if (!openCommitDiff.empty()) {
                 OpenCommitDiffDocument(openCommitDiff, openFile);
+            } else if (isDiff && !openFile.empty()) {
+                OpenDiffDocument(openFile, false);
+            } else if (!openFile.empty()) {
+                OpenFileDocument(openFile, false);
             }
             InvalidateRect(m_hwnd, nullptr, FALSE);
             return;
@@ -3112,19 +3150,31 @@ void Window::HandleLButtonDown(POINT clientPt) {
                     // Reload open document buffers if matching discarded file
                     for (auto& group : m_editorGroups) {
                         for (auto& doc : group.docs) {
-                            if (!doc.filePath.empty() &&
-                                (discardedFile == L"*" ||
-                                 doc.filePath == discardedFile ||
-                                 doc.filePath.ends_with(discardedFile) ||
-                                 discardedFile.ends_with(doc.filePath))) {
-                                doc.buffer.LoadFromFile(doc.filePath);
-                                doc.isDirty = false;
-                                if (doc.isDiffView) {
-                                    ComputeDiffHunks(doc);
+                            if (!doc.filePath.empty()) {
+                                std::wstring cleanDoc = doc.filePath;
+                                for (auto& c : cleanDoc) if (c == L'/') c = L'\\';
+                                std::wstring cleanDisc = discardedFile;
+                                for (auto& c : cleanDisc) if (c == L'/') c = L'\\';
+
+                                bool matches = (discardedFile == L"*") ||
+                                               (cleanDoc == cleanDisc) ||
+                                               (cleanDoc.ends_with(cleanDisc)) ||
+                                               (cleanDisc.ends_with(cleanDoc));
+                                if (matches) {
+                                    if (std::filesystem::exists(doc.filePath)) {
+                                        doc.buffer.LoadFromFile(doc.filePath);
+                                    } else {
+                                        doc.buffer.SetText(L"");
+                                    }
+                                    doc.isDirty = false;
+                                    if (doc.isDiffView) {
+                                        ComputeDiffHunks(doc);
+                                    }
                                 }
                             }
                         }
                     }
+                    TriggerDebouncedGitRefresh(500);
                 }
                 InvalidateRect(m_hwnd, nullptr, FALSE);
                 return;
