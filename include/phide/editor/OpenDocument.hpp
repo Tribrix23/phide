@@ -39,6 +39,19 @@ struct OpenDocument {
     float dragStartY = 0.0f;            ///< Mouse Y coordinate at start of scrollbar drag
     size_t dragStartScrollLine = 0;     ///< scrollLine at start of scrollbar drag
 
+    // Target Line / Search Jump Flash State
+    size_t targetHighlightLine = static_cast<size_t>(-1);
+    size_t targetHighlightCol = 0;
+    size_t targetHighlightLen = 0;
+    ULONGLONG targetHighlightTime = 0;   ///< Timestamp when jump occurred
+
+    // Minimap Interaction State
+    D2D1_RECT_F minimapTrack{};         ///< Bounding box of the minimap on the right of the editor
+    D2D1_RECT_F minimapSlider{};        ///< Bounding box of the visible viewport slider in the minimap
+    bool isDraggingMinimap = false;     ///< True while user is actively dragging the minimap slider
+    float minimapDragStartY = 0.0f;     ///< Mouse Y at start of drag
+    size_t minimapDragStartLine = 0;    ///< scrollLine at start of drag
+
     // Code Folding State (Images 2 & 3)
     std::set<size_t> foldedLines;       ///< Set of starting line indices (0-based buffer line) that are folded
 

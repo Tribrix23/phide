@@ -15,13 +15,13 @@ static bool PtInRectF(POINT pt, const D2D1_RECT_F& rc) {
 PopupMenu::PopupMenu() = default;
 
 void PopupMenu::OpenViewMenu(float x, float y, const app::AppConfig& config,
-                             bool isSidebarOpen, bool isZoomed, bool wordWrap) {
+                             bool isSidebarOpen, bool isZoomed, bool wordWrap, size_t groupCount) {
     m_isOpen = true;
     m_hoveredMainIdx = -1;
     m_activeSubmenuIdx = -1;
     m_hoveredSubmenuIdx = -1;
 
-    BuildViewMenuItems(isSidebarOpen, isZoomed, wordWrap);
+    BuildViewMenuItems(config, isSidebarOpen, isZoomed, wordWrap, groupCount);
 
     const float menuW = config.ScaleF(230.0f);
     LayoutMenu(m_items, x, y, menuW, config, m_mainMenuBounds);
@@ -157,80 +157,107 @@ void PopupMenu::Close() {
     m_submenuBounds = {};
 }
 
-void PopupMenu::BuildViewMenuItems(bool isSidebarOpen, bool isZoomed, bool wordWrap) {
+void PopupMenu::BuildViewMenuItems(const app::AppConfig& config, bool isSidebarOpen, bool isZoomed, bool wordWrap, size_t groupCount) {
+    (void)wordWrap;
     m_items.clear();
 
     // 1. Command Palette... (Ctrl+Shift+P)
-    m_items.push_back({ MenuActionId::CommandPalette, L"Command Palette...", L"Ctrl+Shift+P", false, false, false, {} });
+    m_items.push_back({ MenuActionId::CommandPalette, L"Command Palette...", L"Ctrl+Shift+P", false, false, false, true, {}, {} });
     // 2. Open View...
-    m_items.push_back({ MenuActionId::OpenView,       L"Open View...",       L"",             false, false, false, {} });
+    m_items.push_back({ MenuActionId::OpenView,       L"Open View...",       L"",             false, false, false, true, {}, {} });
 
     // --- Separator ---
-    m_items.push_back({ MenuActionId::None,           L"",                   L"",             true,  false, false, {} });
+    m_items.push_back({ MenuActionId::None,           L"",                   L"",             true,  false, false, false, {}, {} });
 
-    // 3. Appearance ▸ (Cascading Submenu matching user reference image)
+    // 3. Appearance ▸ (Cascading Submenu matching user reference Image 4)
     PopupMenuItem appearanceItem;
     appearanceItem.actionId = MenuActionId::AppearanceCascade;
     appearanceItem.label = L"Appearance";
     appearanceItem.hasSubmenu = true;
 
     // Appearance Submenu Items
-    appearanceItem.submenuItems.push_back({ MenuActionId::FullScreen,                L"Full Screen",                  L"F11",          false, isZoomed,       false, {} });
-    appearanceItem.submenuItems.push_back({ MenuActionId::ZenMode,                   L"Zen Mode",                     L"Ctrl+K Z",     false, false,          false, {} });
-    appearanceItem.submenuItems.push_back({ MenuActionId::CenteredLayout,            L"Centered Layout",              L"",             false, false,          false, {} });
+    appearanceItem.submenuItems.push_back({ MenuActionId::FullScreen,                L"Full Screen",                  L"F11",          false, isZoomed,                 false, true, {}, {} });
+    appearanceItem.submenuItems.push_back({ MenuActionId::ZenMode,                   L"Zen Mode",                     L"Ctrl+K Z",     false, config.zenMode,           false, true, {}, {} });
+    appearanceItem.submenuItems.push_back({ MenuActionId::CenteredLayout,            L"Centered Layout",              L"",             false, false,                    false, true, {}, {} });
     // --- Submenu Separator ---
-    appearanceItem.submenuItems.push_back({ MenuActionId::None,                      L"",                             L"",             true,  false,          false, {} });
-    appearanceItem.submenuItems.push_back({ MenuActionId::ToggleMenuBar,             L"Menu Bar",                     L"",             false, true,           false, {} });
-    appearanceItem.submenuItems.push_back({ MenuActionId::TogglePrimarySideBar,      L"Primary Side Bar",             L"Ctrl+B",       false, isSidebarOpen,  false, {} });
-    appearanceItem.submenuItems.push_back({ MenuActionId::ToggleSecondarySideBar,    L"Secondary Side Bar",           L"",             false, false,          false, {} });
-    appearanceItem.submenuItems.push_back({ MenuActionId::ToggleStatusBar,          L"Status Bar",                   L"",             false, true,           false, {} });
-    appearanceItem.submenuItems.push_back({ MenuActionId::TogglePanel,              L"Panel",                        L"Ctrl+J",       false, true,           false, {} });
+    appearanceItem.submenuItems.push_back({ MenuActionId::None,                      L"",                             L"",             true,  false,                    false, false, {}, {} });
+    appearanceItem.submenuItems.push_back({ MenuActionId::ToggleMenuBar,             L"Menu Bar",                     L"",             false, true,                     false, true, {}, {} });
+    appearanceItem.submenuItems.push_back({ MenuActionId::TogglePrimarySideBar,      L"Primary Side Bar",             L"Ctrl+B",       false, isSidebarOpen,            false, true, {}, {} });
+    appearanceItem.submenuItems.push_back({ MenuActionId::ToggleSecondarySideBar,    L"Secondary Side Bar",           L"",             false, false,                    false, true, {}, {} });
+    appearanceItem.submenuItems.push_back({ MenuActionId::ToggleStatusBar,          L"Status Bar",                   L"",             false, true,                     false, true, {}, {} });
+    appearanceItem.submenuItems.push_back({ MenuActionId::TogglePanel,              L"Panel",                        L"Ctrl+J",       false, true,                     false, true, {}, {} });
     // --- Submenu Separator ---
-    appearanceItem.submenuItems.push_back({ MenuActionId::MoveSideBarRight,          L"Move Primary Side Bar Right",  L"",             false, false,          false, {} });
-    appearanceItem.submenuItems.push_back({ MenuActionId::ActivityBarPosition,       L"Activity Bar Position",        L"",             false, false,          true,  {} });
-    appearanceItem.submenuItems.push_back({ MenuActionId::SecondaryActivityBarPosition, L"Secondary Activity Bar Position", L"",      false, false,          true,  {} });
-    appearanceItem.submenuItems.push_back({ MenuActionId::PanelPosition,             L"Panel Position",               L"",             false, false,          true,  {} });
-    appearanceItem.submenuItems.push_back({ MenuActionId::AlignPanel,                L"Align Panel",                  L"",             false, false,          true,  {} });
+    appearanceItem.submenuItems.push_back({ MenuActionId::MoveSideBarRight,          L"Move Primary Side Bar Right",  L"",             false, false,                    false, true, {}, {} });
+    appearanceItem.submenuItems.push_back({ MenuActionId::ActivityBarPosition,       L"Activity Bar Position",        L"",             false, false,                    true,  true, {}, {} });
+    appearanceItem.submenuItems.push_back({ MenuActionId::SecondaryActivityBarPosition, L"Secondary Activity Bar Position", L"",      false, false,                    true,  true, {}, {} });
+    appearanceItem.submenuItems.push_back({ MenuActionId::PanelPosition,             L"Panel Position",               L"",             false, false,                    true,  true, {}, {} });
+    appearanceItem.submenuItems.push_back({ MenuActionId::AlignPanel,                L"Align Panel",                  L"",             false, false,                    true,  true, {}, {} });
     // --- Submenu Separator ---
-    appearanceItem.submenuItems.push_back({ MenuActionId::ToggleMinimap,             L"Minimap",                      L"",             false, true,           false, {} });
-    appearanceItem.submenuItems.push_back({ MenuActionId::ToggleBreadcrumbs,         L"Breadcrumbs",                  L"",             false, true,           false, {} });
-    appearanceItem.submenuItems.push_back({ MenuActionId::ToggleStickyScroll,        L"Sticky Scroll",                L"",             false, true,           false, {} });
-    appearanceItem.submenuItems.push_back({ MenuActionId::ToggleRenderWhitespace,    L"Render Whitespace",            L"",             false, false,          false, {} });
-    appearanceItem.submenuItems.push_back({ MenuActionId::ToggleRenderControlChars, L"Render Control Characters",     L"",             false, false,          false, {} });
+    appearanceItem.submenuItems.push_back({ MenuActionId::ToggleMinimap,             L"Minimap",                      L"",             false, config.showMinimap,       false, true, {}, {} });
+    appearanceItem.submenuItems.push_back({ MenuActionId::ToggleBreadcrumbs,         L"Breadcrumbs",                  L"",             false, config.showBreadcrumbs,   false, true, {}, {} });
+    appearanceItem.submenuItems.push_back({ MenuActionId::ToggleStickyScroll,        L"Sticky Scroll",                L"",             false, true,                     false, true, {}, {} });
+    appearanceItem.submenuItems.push_back({ MenuActionId::ToggleRenderWhitespace,    L"Render Whitespace",            L"",             false, config.renderWhitespace,  false, true, {}, {} });
+    appearanceItem.submenuItems.push_back({ MenuActionId::ToggleRenderControlChars, L"Render Control Characters",     L"",             false, false,                    false, true, {}, {} });
     // --- Submenu Separator ---
-    appearanceItem.submenuItems.push_back({ MenuActionId::ZoomIn,                    L"Zoom In",                      L"Ctrl+=",       false, false,          false, {} });
-    appearanceItem.submenuItems.push_back({ MenuActionId::ZoomOut,                   L"Zoom Out",                     L"Ctrl+-",       false, false,          false, {} });
-    appearanceItem.submenuItems.push_back({ MenuActionId::ResetZoom,                 L"Reset Zoom",                   L"Ctrl+Num0",    false, false,          false, {} });
+    appearanceItem.submenuItems.push_back({ MenuActionId::ZoomIn,                    L"Zoom In",                      L"Ctrl+=",       false, false,                    false, true, {}, {} });
+    appearanceItem.submenuItems.push_back({ MenuActionId::ZoomOut,                   L"Zoom Out",                     L"Ctrl+-",       false, false,                    false, true, {}, {} });
+    appearanceItem.submenuItems.push_back({ MenuActionId::ResetZoom,                 L"Reset Zoom",                   L"Ctrl+Num0",    false, false,                    false, true, {}, {} });
 
     m_items.push_back(std::move(appearanceItem));
 
-    // 4. Editor Layout ▸
-    m_items.push_back({ MenuActionId::EditorLayoutCascade, L"Editor Layout", L"", false, false, true, {} });
+    // 4. Editor Layout ▸ (Cascading Submenu matching user reference Image 3)
+    PopupMenuItem layoutItem;
+    layoutItem.actionId = MenuActionId::EditorLayoutCascade;
+    layoutItem.label = L"Editor Layout";
+    layoutItem.hasSubmenu = true;
+
+    layoutItem.submenuItems.push_back({ MenuActionId::LayoutSplitUp,           L"Split Up",                   L"Ctrl+K Ctrl+\\", false, false,                  false, true, {}, {} });
+    layoutItem.submenuItems.push_back({ MenuActionId::LayoutSplitDown,         L"Split Down",                 L"",               false, false,                  false, true, {}, {} });
+    layoutItem.submenuItems.push_back({ MenuActionId::LayoutSplitLeft,         L"Split Left",                 L"",               false, false,                  false, true, {}, {} });
+    layoutItem.submenuItems.push_back({ MenuActionId::LayoutSplitRight,        L"Split Right",                L"",               false, false,                  false, true, {}, {} });
+    layoutItem.submenuItems.push_back({ MenuActionId::LayoutSplitInGroup,      L"Split in Group",             L"Ctrl+K Ctrl+Shift+\\", false, false,            false, true, {}, {} });
+    layoutItem.submenuItems.push_back({ MenuActionId::LayoutMoveNewWindow,     L"Move Editor into New Window",L"",               false, false,                  false, true, {}, {} });
+    layoutItem.submenuItems.push_back({ MenuActionId::LayoutCopyNewWindow,     L"Copy Editor into New Window",L"Ctrl+K O",       false, false,                  false, true, {}, {} });
+    // --- Submenu Separator ---
+    layoutItem.submenuItems.push_back({ MenuActionId::None,                    L"",                           L"",               true,  false,                  false, false, {}, {} });
+    layoutItem.submenuItems.push_back({ MenuActionId::LayoutSingle,            L"Single",                     L"",               false, groupCount <= 1,        false, true, {}, {} });
+    layoutItem.submenuItems.push_back({ MenuActionId::LayoutTwoColumns,        L"Two Columns",                L"",               false, groupCount == 2,        false, true, {}, {} });
+    layoutItem.submenuItems.push_back({ MenuActionId::LayoutThreeColumns,      L"Three Columns",              L"",               false, groupCount >= 3,        false, true, {}, {} });
+    layoutItem.submenuItems.push_back({ MenuActionId::LayoutTwoRows,           L"Two Rows",                   L"",               false, false,                  false, true, {}, {} });
+    layoutItem.submenuItems.push_back({ MenuActionId::LayoutThreeRows,         L"Three Rows",                 L"",               false, false,                  false, true, {}, {} });
+    layoutItem.submenuItems.push_back({ MenuActionId::LayoutGrid2x2,           L"Grid (2x2)",                 L"",               false, false,                  false, true, {}, {} });
+    layoutItem.submenuItems.push_back({ MenuActionId::LayoutTwoRowsRight,      L"Two Rows Right",             L"",               false, false,                  false, true, {}, {} });
+    layoutItem.submenuItems.push_back({ MenuActionId::LayoutTwoColumnsBottom,   L"Two Columns Bottom",         L"",               false, false,                  false, true, {}, {} });
+    // --- Submenu Separator ---
+    layoutItem.submenuItems.push_back({ MenuActionId::None,                    L"",                           L"",               true,  false,                  false, false, {}, {} });
+    layoutItem.submenuItems.push_back({ MenuActionId::LayoutFlip,              L"Flip Layout",                L"Shift+Alt+0",    false, false,                  false, true, {}, {} });
+
+    m_items.push_back(std::move(layoutItem));
 
     // --- Separator ---
-    m_items.push_back({ MenuActionId::None,           L"",                   L"",             true,  false, false, {} });
+    m_items.push_back({ MenuActionId::None,           L"",                   L"",             true,  false, false, false, {}, {} });
 
     // 5. Explorer, Search, Source Control, Run, Extensions
-    m_items.push_back({ MenuActionId::Explorer,       L"Explorer",           L"Ctrl+Shift+E", false, false, false, {} });
-    m_items.push_back({ MenuActionId::Search,         L"Search",             L"Ctrl+Shift+F", false, false, false, {} });
-    m_items.push_back({ MenuActionId::SourceControl,  L"Source Control",     L"Ctrl+Shift+G", false, false, false, {} });
-    m_items.push_back({ MenuActionId::Run,            L"Run",                L"Ctrl+Shift+D", false, false, false, {} });
-    m_items.push_back({ MenuActionId::Extensions,     L"Extensions",         L"Ctrl+Shift+X", false, false, false, {} });
+    m_items.push_back({ MenuActionId::Explorer,       L"Explorer",           L"Ctrl+Shift+E", false, false, false, true, {}, {} });
+    m_items.push_back({ MenuActionId::Search,         L"Search",             L"Ctrl+Shift+F", false, false, false, true, {}, {} });
+    m_items.push_back({ MenuActionId::SourceControl,  L"Source Control",     L"Ctrl+Shift+G", false, false, false, true, {}, {} });
+    m_items.push_back({ MenuActionId::Run,            L"Run",                L"Ctrl+Shift+D", false, false, false, true, {}, {} });
+    m_items.push_back({ MenuActionId::Extensions,     L"Extensions",         L"Ctrl+Shift+X", false, false, false, true, {}, {} });
 
     // --- Separator ---
-    m_items.push_back({ MenuActionId::None,           L"",                   L"",             true,  false, false, {} });
+    m_items.push_back({ MenuActionId::None,           L"",                   L"",             true,  false, false, false, {}, {} });
 
     // 6. Problems, Output, Debug Console, Terminal
-    m_items.push_back({ MenuActionId::Problems,       L"Problems",           L"Ctrl+Shift+M", false, false, false, {} });
-    m_items.push_back({ MenuActionId::Output,         L"Output",             L"Ctrl+Shift+U", false, false, false, {} });
-    m_items.push_back({ MenuActionId::DebugConsole,   L"Debug Console",      L"Ctrl+Shift+Y", false, false, false, {} });
-    m_items.push_back({ MenuActionId::Terminal,       L"Terminal",           L"Ctrl+`",       false, false, false, {} });
+    m_items.push_back({ MenuActionId::Problems,       L"Problems",           L"Ctrl+Shift+M", false, false, false, true, {}, {} });
+    m_items.push_back({ MenuActionId::Output,         L"Output",             L"Ctrl+Shift+U", false, false, false, true, {}, {} });
+    m_items.push_back({ MenuActionId::DebugConsole,   L"Debug Console",      L"Ctrl+Shift+Y", false, false, false, true, {}, {} });
+    m_items.push_back({ MenuActionId::Terminal,       L"Terminal",           L"Ctrl+`",       false, false, false, true, {}, {} });
 
     // --- Separator ---
-    m_items.push_back({ MenuActionId::None,           L"",                   L"",             true,  false, false, {} });
+    m_items.push_back({ MenuActionId::None,           L"",                   L"",             true,  false, false, false, {}, {} });
 
     // 7. Word Wrap (Alt+Z)
-    m_items.push_back({ MenuActionId::WordWrap,       L"Word Wrap",          L"Alt+Z",        false, wordWrap, false, {} });
+    m_items.push_back({ MenuActionId::WordWrap,       L"Word Wrap",          L"Alt+Z",        false, config.wordWrap, false, true, {}, {} });
 }
 
 void PopupMenu::BuildFileMenuItems(bool autoSave, bool hasOpenFile, bool isDirty, bool hasOpenFolder,

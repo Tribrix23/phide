@@ -130,6 +130,15 @@ public:
     [[nodiscard]] bool HitTestScrollbar(POINT pt, const editor::OpenDocument& doc, bool& outHitThumb) const;
 
     /**
+     * @brief Tests if mouse clicked on the code minimap track or viewport slider.
+     * @param pt Mouse point in client coordinates.
+     * @param doc Active document containing minimap geometry.
+     * @param outHitSlider Set to true if click was directly over the minimap slider box.
+     * @return True if minimap was clicked.
+     */
+    [[nodiscard]] bool HitTestMinimap(POINT pt, const editor::OpenDocument& doc, bool& outHitSlider) const;
+
+    /**
      * @brief Tests if mouse clicked on a code folding chevron in the line number gutter.
      * @param pt Mouse point in client coordinates.
      * @return Buffer line index (0-based) of the fold toggle, or -1 if none hit.

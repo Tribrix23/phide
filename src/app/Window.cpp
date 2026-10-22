@@ -649,20 +649,43 @@ void Window::DoOpenFile() {
 void Window::OpenFileDocument(const std::wstring& path, bool isPreview) {
     if (path.empty()) return;
 
-    auto& group = GetActiveGroup();
+    auto PathsMatch = [](const std::wstring& p1, const std::wstring& p2) -> bool {
+        if (p1.empty() || p2.empty()) return false;
+        std::wstring c1 = p1;
+        std::wstring c2 = p2;
+        for (auto& c : c1) { if (c == L'/') c = L'\\'; c = towlower(c); }
+        for (auto& c : c2) { if (c == L'/') c = L'\\'; c = towlower(c); }
+        if (c1 == c2) return true;
+        if (c1.ends_with(L"\\" + c2) || c2.ends_with(L"\\" + c1)) return true;
+        if (c1.ends_with(c2) || c2.ends_with(c1)) return true;
+        return false;
+    };
 
-    // 1. Check if document is already open in active group
-    for (size_t i = 0; i < group.docs.size(); ++i) {
-        if (group.docs[i].filePath == path) {
-            group.activeDocIdx = static_cast<int>(i);
-            if (!isPreview) {
-                group.docs[i].isPreview = false;
+    // 1. Check if document is already open in ANY editor group
+    for (size_t g = 0; g < m_editorGroups.size(); ++g) {
+        for (size_t i = 0; i < m_editorGroups[g].docs.size(); ++i) {
+            if (PathsMatch(m_editorGroups[g].docs[i].filePath, path)) {
+                m_focusedGroupIdx = static_cast<int>(g);
+                m_editorGroups[g].activeDocIdx = static_cast<int>(i);
+                if (!isPreview) {
+                    m_editorGroups[g].docs[i].isPreview = false;
+                }
+                SaveSessionState();
+                InvalidateRect(m_hwnd, nullptr, FALSE);
+                return;
             }
-            SaveSessionState();
-            InvalidateRect(m_hwnd, nullptr, FALSE);
-            return;
         }
     }
+
+    std::wstring resolvedPath = path;
+    if (!std::filesystem::exists(resolvedPath) && m_drawer.HasOpenFolder()) {
+        std::wstring candidate = m_drawer.GetOpenFolderPath() + L"\\" + path;
+        if (std::filesystem::exists(candidate)) {
+            resolvedPath = candidate;
+        }
+    }
+
+    auto& group = GetActiveGroup();
 
     // 2. Check if current active document can be replaced
     // VS Code Rule: a tab is replaced ONLY if it is a preview tab AND has NO unsaved edits (!isDirty) AND not a special view.
@@ -673,20 +696,20 @@ void Window::OpenFileDocument(const std::wstring& path, bool isPreview) {
 
     // Check if file exists on disk, or if it is a deleted file in Git (Complaint 8)
     std::error_code ecExists;
-    bool fileExists = std::filesystem::exists(path, ecExists);
+    bool fileExists = std::filesystem::exists(resolvedPath, ecExists);
     if (!fileExists && m_drawer.IsGitRepo()) {
-        std::wstring relPath = path;
+        std::wstring relPath = resolvedPath;
         if (m_drawer.HasOpenFolder()) {
             try {
-                relPath = std::filesystem::relative(path, m_drawer.GetOpenFolderPath()).wstring();
+                relPath = std::filesystem::relative(resolvedPath, m_drawer.GetOpenFolderPath()).wstring();
             } catch (...) {}
         }
         std::wstring gitContent = m_drawer.GetGitFileContent(relPath);
         if (!gitContent.empty()) {
             editor::OpenDocument newDoc;
-            newDoc.filePath = path;
-            auto ppos = path.find_last_of(L"\\/");
-            newDoc.fileName = (ppos != std::wstring::npos) ? path.substr(ppos + 1) : path;
+            newDoc.filePath = resolvedPath;
+            auto ppos = resolvedPath.find_last_of(L"\\/");
+            newDoc.fileName = (ppos != std::wstring::npos) ? resolvedPath.substr(ppos + 1) : resolvedPath;
             newDoc.isPreview = isPreview;
             newDoc.isDirty = false;
             newDoc.isSpecialView = false;
@@ -708,9 +731,9 @@ void Window::OpenFileDocument(const std::wstring& path, bool isPreview) {
 
     // Check if file is a supported image (PNG, JPG, BMP, GIF, ICO, WEBP)
     std::wstring ext;
-    auto dotPos = path.find_last_of(L".");
+    auto dotPos = resolvedPath.find_last_of(L".");
     if (dotPos != std::wstring::npos) {
-        ext = path.substr(dotPos);
+        ext = resolvedPath.substr(dotPos);
         for (auto& ch : ext) ch = towlower(ch);
     }
 
@@ -739,7 +762,7 @@ void Window::OpenFileDocument(const std::wstring& path, bool isPreview) {
     }
 
     if (!isImage && !isBinary) {
-        std::ifstream fileCheck(path, std::ios::binary);
+        std::ifstream fileCheck(resolvedPath, std::ios::binary);
         if (fileCheck.is_open()) {
             char buf[1024];
             fileCheck.read(buf, sizeof(buf));
@@ -755,9 +778,9 @@ void Window::OpenFileDocument(const std::wstring& path, bool isPreview) {
     }
 
     editor::OpenDocument newDoc;
-    newDoc.filePath = path;
-    auto pos = path.find_last_of(L"\\/");
-    newDoc.fileName = (pos != std::wstring::npos) ? path.substr(pos + 1) : path;
+    newDoc.filePath = resolvedPath;
+    auto pos = resolvedPath.find_last_of(L"\\/");
+    newDoc.fileName = (pos != std::wstring::npos) ? resolvedPath.substr(pos + 1) : resolvedPath;
     newDoc.isPreview = isPreview;
     newDoc.isDirty = false;
     newDoc.isSpecialView = false;
@@ -768,19 +791,19 @@ void Window::OpenFileDocument(const std::wstring& path, bool isPreview) {
 
     if (isImage) {
         std::error_code ec;
-        newDoc.imageFileSize = std::filesystem::file_size(path, ec);
+        newDoc.imageFileSize = std::filesystem::file_size(resolvedPath, ec);
     } else if (isBinary) {
         std::error_code ec;
-        newDoc.binaryFileSize = std::filesystem::file_size(path, ec);
+        newDoc.binaryFileSize = std::filesystem::file_size(resolvedPath, ec);
     } else {
-        newDoc.buffer.LoadFromFile(path);
+        newDoc.buffer.LoadFromFile(resolvedPath);
 
         // Compute Git diff highlights against HEAD if inside a git repository (Image 5)
         if (m_drawer.IsGitRepo()) {
-            std::wstring relPath = path;
+            std::wstring relPath = resolvedPath;
             if (m_drawer.HasOpenFolder()) {
                 try {
-                    relPath = std::filesystem::relative(path, m_drawer.GetOpenFolderPath()).wstring();
+                    relPath = std::filesystem::relative(resolvedPath, m_drawer.GetOpenFolderPath()).wstring();
                 } catch (...) {}
             }
             m_drawer.ComputeGitDiffLines(relPath, newDoc.diffAddedLines, newDoc.diffDeletedLines);
@@ -798,9 +821,9 @@ void Window::OpenFileDocument(const std::wstring& path, bool isPreview) {
     }
 
     // Add to recent paths LRU list (max 6 entries)
-    auto it = std::find(m_recentPaths.begin(), m_recentPaths.end(), path);
+    auto it = std::find(m_recentPaths.begin(), m_recentPaths.end(), resolvedPath);
     if (it != m_recentPaths.end()) m_recentPaths.erase(it);
-    m_recentPaths.insert(m_recentPaths.begin(), path);
+    m_recentPaths.insert(m_recentPaths.begin(), resolvedPath);
     if (m_recentPaths.size() > 6) m_recentPaths.resize(6);
 
     SaveSessionState();
@@ -2363,6 +2386,26 @@ void Window::HandleMouseMove(POINT clientPt) {
         }
     }
 
+    // Check Minimap viewport slider dragging (Image 5)
+    if (pActiveDoc && pActiveDoc->isDraggingMinimap) {
+        float deltaY = static_cast<float>(clientPt.y) - pActiveDoc->minimapDragStartY;
+        float trackH = pActiveDoc->minimapTrack.bottom - pActiveDoc->minimapTrack.top;
+        float sliderH = pActiveDoc->minimapSlider.bottom - pActiveDoc->minimapSlider.top;
+        float scrollRange = trackH - sliderH;
+        if (scrollRange > 0.0f) {
+            size_t totalLines = pActiveDoc->buffer.GetLineCount();
+            float linesPerPixel = static_cast<float>(totalLines) / scrollRange;
+            int newScroll = static_cast<int>(pActiveDoc->minimapDragStartLine) + static_cast<int>(deltaY * linesPerPixel);
+            if (newScroll < 0) newScroll = 0;
+            if (totalLines > 0 && static_cast<size_t>(newScroll) >= totalLines) {
+                newScroll = static_cast<int>(totalLines - 1);
+            }
+            pActiveDoc->scrollLine = static_cast<size_t>(newScroll);
+            InvalidateRect(m_hwnd, nullptr, FALSE);
+            return;
+        }
+    }
+
     // Forward to keyboard shortcuts view if active doc is keybindings
     if (pActiveDoc && pActiveDoc->isSpecialView && pActiveDoc->viewType == L"keybindings") {
         if (m_editor.GetKeyboardShortcutsView().HandleMouseMove(clientPt)) {
@@ -2398,7 +2441,8 @@ void Window::HandleMouseMove(POINT clientPt) {
         } else if (hoveredMenu == ui::HeaderMenuId::View && m_header.GetActiveMenu() != ui::HeaderMenuId::View) {
             D2D1_RECT_F rcView = m_header.GetMenuItemBounds(ui::HeaderMenuId::View);
             m_popupMenu.OpenViewMenu(rcView.left, rcView.bottom + 2.0f, m_config,
-                                     m_config.isDrawerOpen, IsZoomed(m_hwnd), m_wordWrap);
+                                     m_config.isDrawerOpen, IsZoomed(m_hwnd), m_wordWrap,
+                                     m_editorGroups.size());
             m_header.SetActiveMenu(ui::HeaderMenuId::View);
             needRepaint = true;
         }
@@ -2617,7 +2661,7 @@ void Window::HandleLButtonDown(POINT clientPt) {
                         DestroyWindow(m_hwnd);
                         return;
 
-                    // View Menu Actions
+                    // View Menu Actions (Images 2, 3, 4)
                     case ui::MenuActionId::TogglePrimarySideBar:
                         ToggleSidebar();
                         break;
@@ -2625,11 +2669,90 @@ void Window::HandleLButtonDown(POINT clientPt) {
                         if (IsZoomed(m_hwnd)) ShowWindow(m_hwnd, SW_RESTORE);
                         else ShowWindow(m_hwnd, SW_MAXIMIZE);
                         break;
+                    case ui::MenuActionId::ZenMode:
+                        m_config.zenMode = !m_config.zenMode;
+                        break;
+                    case ui::MenuActionId::ToggleMinimap:
+                        m_config.showMinimap = !m_config.showMinimap;
+                        break;
+                    case ui::MenuActionId::ToggleBreadcrumbs:
+                        m_config.showBreadcrumbs = !m_config.showBreadcrumbs;
+                        break;
+                    case ui::MenuActionId::ToggleRenderWhitespace:
+                        m_config.renderWhitespace = !m_config.renderWhitespace;
+                        break;
+                    case ui::MenuActionId::Explorer:
+                        DoShowExplorer();
+                        break;
+                    case ui::MenuActionId::Search:
+                        DoShowSearch();
+                        break;
+                    case ui::MenuActionId::SourceControl:
+                        DoShowSourceControl();
+                        break;
                     case ui::MenuActionId::WordWrap:
                         m_wordWrap = !m_wordWrap;
                         break;
                     case ui::MenuActionId::Terminal:
-                        ToggleSidebar();
+                        DoCreateTerminal();
+                        break;
+                    case ui::MenuActionId::ZoomIn:
+                        if (m_config.fontSize < 36.0f) m_config.fontSize += 2.0f;
+                        break;
+                    case ui::MenuActionId::ZoomOut:
+                        if (m_config.fontSize > 8.0f) m_config.fontSize -= 2.0f;
+                        break;
+                    case ui::MenuActionId::ResetZoom:
+                        m_config.fontSize = 14.0f;
+                        break;
+
+                    // Editor Layout Submenu Actions (Image 3)
+                    case ui::MenuActionId::LayoutSingle:
+                        if (m_editorGroups.size() > 1) {
+                            if (m_focusedGroupIdx >= 0 && static_cast<size_t>(m_focusedGroupIdx) < m_editorGroups.size()) {
+                                auto keepGroup = std::move(m_editorGroups[m_focusedGroupIdx]);
+                                m_editorGroups.clear();
+                                m_editorGroups.push_back(std::move(keepGroup));
+                            } else {
+                                m_editorGroups.resize(1);
+                            }
+                            m_focusedGroupIdx = 0;
+                        }
+                        break;
+                    case ui::MenuActionId::LayoutTwoColumns:
+                        if (m_editorGroups.size() < 2) {
+                            SplitEditor();
+                        } else if (m_editorGroups.size() > 2) {
+                            m_editorGroups.resize(2);
+                            if (m_focusedGroupIdx >= 2) m_focusedGroupIdx = 1;
+                        }
+                        break;
+                    case ui::MenuActionId::LayoutThreeColumns:
+                        while (m_editorGroups.size() < 3) {
+                            SplitEditor();
+                        }
+                        break;
+                    case ui::MenuActionId::LayoutSplitRight:
+                    case ui::MenuActionId::LayoutSplitDown:
+                    case ui::MenuActionId::LayoutSplitLeft:
+                    case ui::MenuActionId::LayoutSplitUp:
+                    case ui::MenuActionId::LayoutSplitInGroup:
+                    case ui::MenuActionId::LayoutTwoRows:
+                    case ui::MenuActionId::LayoutThreeRows:
+                    case ui::MenuActionId::LayoutGrid2x2:
+                    case ui::MenuActionId::LayoutTwoRowsRight:
+                    case ui::MenuActionId::LayoutTwoColumnsBottom:
+                        SplitEditor();
+                        break;
+                    case ui::MenuActionId::LayoutFlip:
+                        if (m_editorGroups.size() > 1) {
+                            std::reverse(m_editorGroups.begin(), m_editorGroups.end());
+                            m_focusedGroupIdx = static_cast<int>(m_editorGroups.size() - 1 - m_focusedGroupIdx);
+                        }
+                        break;
+                    case ui::MenuActionId::LayoutMoveNewWindow:
+                    case ui::MenuActionId::LayoutCopyNewWindow:
+                        DoNewWindow();
                         break;
 
                     // Context Menu Actions (Images 4 & 5)
@@ -2930,7 +3053,8 @@ void Window::HandleLButtonDown(POINT clientPt) {
         } else if (menuHit == ui::HeaderMenuId::View) {
             D2D1_RECT_F rcView = m_header.GetMenuItemBounds(ui::HeaderMenuId::View);
             m_popupMenu.OpenViewMenu(rcView.left, rcView.bottom + 2.0f, m_config,
-                                     m_config.isDrawerOpen, IsZoomed(m_hwnd), m_wordWrap);
+                                     m_config.isDrawerOpen, IsZoomed(m_hwnd), m_wordWrap,
+                                     m_editorGroups.size());
             m_header.SetActiveMenu(ui::HeaderMenuId::View);
             InvalidateRect(m_hwnd, nullptr, FALSE);
         }
@@ -3055,9 +3179,35 @@ void Window::HandleLButtonDown(POINT clientPt) {
                         return;
                     }
 
-                    // Vertical scrollbar click & drag
+                    // Minimap click & drag (Image 5)
+                    bool hitMinimapSlider = false;
+                    if (m_config.showMinimap && m_editor.HitTestMinimap(clientPt, doc, hitMinimapSlider)) {
+                        doc.isDraggingMinimap = true;
+                        doc.minimapDragStartY = static_cast<float>(clientPt.y);
+                        doc.minimapDragStartLine = doc.scrollLine;
+                        SetCapture(m_hwnd);
+
+                        if (!hitMinimapSlider) {
+                            // Direct click on minimap track: jump scroll position to center clicked line
+                            float trackH = doc.minimapTrack.bottom - doc.minimapTrack.top;
+                            if (trackH > 0.0f) {
+                                float relY = static_cast<float>(clientPt.y) - doc.minimapTrack.top;
+                                float ratio = (std::max)(0.0f, (std::min)(1.0f, relY / trackH));
+                                size_t totalLines = doc.buffer.GetLineCount();
+                                if (totalLines > 0) {
+                                    size_t targetLine = static_cast<size_t>(ratio * totalLines);
+                                    if (targetLine > 10) doc.scrollLine = targetLine - 10;
+                                    else doc.scrollLine = 0;
+                                }
+                            }
+                        }
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
+                        return;
+                    }
+
+                    // Vertical scrollbar click & drag (when minimap is disabled)
                     bool hitThumb = false;
-                    if (m_editor.HitTestScrollbar(clientPt, doc, hitThumb)) {
+                    if (!m_config.showMinimap && m_editor.HitTestScrollbar(clientPt, doc, hitThumb)) {
                         if (hitThumb) {
                             doc.isDraggingScrollbar = true;
                             doc.dragStartY = static_cast<float>(clientPt.y);
@@ -3113,6 +3263,8 @@ void Window::HandleLButtonDown(POINT clientPt) {
                         size_t line = 0, col = 0;
                         if (m_editor.HitTestCodeArea(clientPt, m_config, doc, paneCanvasLeft, clientH, line, col)) {
                             doc.buffer.SetCursor(line, col);
+                            doc.targetHighlightLine = static_cast<size_t>(-1);
+                            doc.targetHighlightLen = 0;
                             InvalidateRect(m_hwnd, nullptr, FALSE);
                             return;
                         }
@@ -3152,16 +3304,31 @@ void Window::HandleLButtonDown(POINT clientPt) {
         if (m_config.activeRailTab == 1) {
             std::wstring jumpFile;
             size_t jumpLine = 0;
+            size_t matchCol = 0;
+            size_t matchLen = 0;
             // Clear shortcuts view search focus when interacting with search drawer
             m_editor.GetKeyboardShortcutsView().SetSearchFocused(false);
-            if (m_drawer.HitTestSearch(clientPt, m_config, jumpFile, jumpLine)) {
+            if (m_drawer.HitTestSearch(clientPt, m_config, jumpFile, jumpLine, matchCol, matchLen)) {
                 if (!jumpFile.empty()) {
                     OpenFileDocument(jumpFile, false);
                     auto* pDoc = GetActiveDoc();
                     if (pDoc) {
-                        pDoc->buffer.SetCursor(jumpLine, 0);
-                        if (jumpLine > 10) {
-                            pDoc->scrollLine = jumpLine - 10;
+                        pDoc->targetHighlightLine = jumpLine;
+                        pDoc->targetHighlightCol = matchCol;
+                        pDoc->targetHighlightLen = matchLen;
+                        pDoc->targetHighlightTime = GetTickCount64();
+                        pDoc->buffer.SetCursor(jumpLine, matchCol + matchLen);
+
+                        // Center line vertically in editor view
+                        RECT rcClient;
+                        GetClientRect(m_hwnd, &rcClient);
+                        float headerH = m_config.ScaleF(static_cast<float>(m_config.headerHeight));
+                        float editorH = static_cast<float>(rcClient.bottom - rcClient.top) - headerH;
+                        float lineH = m_config.fontSize * m_config.lineHeightMultiplier;
+                        size_t visibleLines = (lineH > 0.0f) ? static_cast<size_t>(editorH / lineH) : 25;
+                        size_t halfVisible = visibleLines / 2;
+                        if (jumpLine > halfVisible) {
+                            pDoc->scrollLine = jumpLine - halfVisible;
                         } else {
                             pDoc->scrollLine = 0;
                         }
@@ -3316,8 +3483,10 @@ void Window::HandleLButtonUp(POINT clientPt) {
     for (auto& group : m_editorGroups) {
         for (auto& doc : group.docs) {
             doc.isDraggingScrollbar = false;
+            doc.isDraggingMinimap = false;
         }
     }
+    ReleaseCapture();
 }
 
 void Window::HandleRButtonDown(POINT clientPt) {
@@ -3856,10 +4025,36 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 return 0;
             }
 
+            // Alt+Z: Toggle Word Wrap
+            if ((GetKeyState(VK_MENU) & 0x8000) && !(GetKeyState(VK_CONTROL) & 0x8000) && wParam == 'Z') {
+                m_wordWrap = !m_wordWrap;
+                InvalidateRect(m_hwnd, nullptr, FALSE);
+                return 0;
+            }
+
             // Keyboard Shortcuts with Ctrl key
             if (GetKeyState(VK_CONTROL) & 0x8000) {
                 bool shiftDown = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
                 bool altDown   = (GetKeyState(VK_MENU) & 0x8000) != 0;
+
+                // Zoom In: Ctrl+= / Ctrl++ (VK_OEM_PLUS or VK_ADD)
+                if (wParam == VK_OEM_PLUS || wParam == VK_ADD) {
+                    if (m_config.fontSize < 36.0f) m_config.fontSize += 2.0f;
+                    InvalidateRect(m_hwnd, nullptr, FALSE);
+                    return 0;
+                }
+                // Zoom Out: Ctrl+- (VK_OEM_MINUS or VK_SUBTRACT)
+                if (wParam == VK_OEM_MINUS || wParam == VK_SUBTRACT) {
+                    if (m_config.fontSize > 8.0f) m_config.fontSize -= 2.0f;
+                    InvalidateRect(m_hwnd, nullptr, FALSE);
+                    return 0;
+                }
+                // Reset Zoom: Ctrl+0 ('0' or VK_NUMPAD0)
+                if (wParam == '0' || wParam == VK_NUMPAD0) {
+                    m_config.fontSize = 14.0f;
+                    InvalidateRect(m_hwnd, nullptr, FALSE);
+                    return 0;
+                }
 
                 // Ctrl+/ (VK_OEM_2): Toggle Line Comment
                 if (wParam == VK_OEM_2) {
@@ -3973,6 +4168,12 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     return 0;
                 }
                 if (wParam == 'Z') {
+                    if (m_chordCtrlK) {
+                        m_config.zenMode = !m_config.zenMode;
+                        m_chordCtrlK = false;
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
+                        return 0;
+                    }
                     POINT pt;
                     GetCursorPos(&pt);
                     ScreenToClient(m_hwnd, &pt);

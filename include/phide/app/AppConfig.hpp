@@ -40,6 +40,16 @@ struct AppConfig {
     int activeRailTab = 0;      ///< Current active rail tab (Default: 0 = Files / Explorer matching Image 2).
     float gitSplitY   = 320.0f; ///< Vertical splitter position between Changes and Graph.
 
+    // --- View and Appearance Settings ---
+    bool showMinimap = true;            ///< True if code minimap is rendered on right of editor canvas.
+    bool showBreadcrumbs = true;        ///< True if file breadcrumbs hierarchy is visible above editor.
+    bool wordWrap = false;              ///< True if word wrap is enabled in editor.
+    bool renderWhitespace = false;      ///< True if whitespace dots are rendered.
+    bool zenMode = false;               ///< True if Zen Mode (distraction-free full screen) is active.
+    float fontSize = 14.0f;             ///< Editor font size in points.
+    float lineHeightMultiplier = 1.45f; ///< Line height relative to font size.
+    float zoomLevel = 1.0f;             ///< Zoom multiplier (1.0 = 100%).
+
     // --- Floating Prompt Bar Metrics ---
     int promptBarWidth  = 540;  ///< Width of the bottom floating AI prompt pill.
     int promptBarHeight = 44;   ///< Height of the floating prompt pill.

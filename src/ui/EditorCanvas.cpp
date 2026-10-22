@@ -245,8 +245,10 @@ void EditorCanvas::RenderSinglePane(ID2D1RenderTarget* pRT, Theme& theme, const 
     RenderTabs(pRT, theme, config, canvasLeft, canvasWidth, headerH, docs, docIdx, hasLeftDrawer, isPaneFocused);
 
     auto& activeDoc = docs[docIdx];
-    const float breadcrumbH = config.ScaleF(24.0f);
-    RenderBreadcrumbs(pRT, theme, config, activeDoc, canvasLeft, canvasWidth, headerH + tabH, breadcrumbH);
+    const float breadcrumbH = config.showBreadcrumbs ? config.ScaleF(24.0f) : 0.0f;
+    if (config.showBreadcrumbs) {
+        RenderBreadcrumbs(pRT, theme, config, activeDoc, canvasLeft, canvasWidth, headerH + tabH, breadcrumbH);
+    }
 
     float contentTopY = headerH + tabH + breadcrumbH;
     if (activeDoc.isSpecialView && activeDoc.viewType == L"keybindings") {
@@ -712,8 +714,10 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
     }
     const float charW   = (m_charWidth > 0.0f) ? m_charWidth : config.ScaleF(7.8f);
     const float scrollbarW = config.ScaleF(14.0f);
+    const float minimapW = config.ScaleF(72.0f);
     const float canvasRight = canvasLeft + canvasWidth;
     const float codeAreaH = clientHeight - topY;
+    const float codeRight = config.showMinimap ? (canvasRight - minimapW - config.ScaleF(4.0f)) : (canvasRight - scrollbarW);
 
     m_foldChevrons.clear();
 
@@ -762,7 +766,7 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
         doc.scrollLine = maxScroll;
     }
 
-    // 2. Current Line Highlight - Only rendered if this editor group is active/focused!
+    // 2. Current Line Highlight - Rendered if focused or has search target line
     auto cursor = buffer.GetCursor();
     size_t visualCursorIdx = 0;
     bool foundCursorVisual = false;
@@ -779,10 +783,10 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
         }
     }
 
-    if (isFocused && foundCursorVisual && visualCursorIdx >= doc.scrollLine) {
+    if ((isFocused || doc.targetHighlightLine != static_cast<size_t>(-1)) && foundCursorVisual && visualCursorIdx >= doc.scrollLine) {
         float activeLineY = topY + config.ScaleF(6.0f) + (visualCursorIdx - doc.scrollLine) * lineH;
         if (activeLineY >= topY && activeLineY + lineH <= clientHeight) {
-            D2D1_RECT_F rcActiveLine = D2D1::RectF(canvasLeft + gutterW, activeLineY, canvasRight - scrollbarW, activeLineY + lineH);
+            D2D1_RECT_F rcActiveLine = D2D1::RectF(canvasLeft + gutterW, activeLineY, codeRight, activeLineY + lineH);
             pRT->FillRectangle(rcActiveLine, theme.brushCurrentLineBg.Get());
         }
     }
@@ -790,7 +794,7 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
     // 3. Line Numbers, Fold Chevrons & Code Lines
     const float codeLeft = canvasLeft + gutterW + config.ScaleF(12.0f);
 
-    D2D1_RECT_F clipCode = D2D1::RectF(canvasLeft, topY, canvasRight - scrollbarW, clientHeight);
+    D2D1_RECT_F clipCode = D2D1::RectF(canvasLeft, topY, codeRight, clientHeight);
     pRT->PushAxisAlignedClip(clipCode, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
 
     // Analyze rainbow bracket pairs, nesting depths, and active cursor pair
@@ -912,7 +916,7 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
         if (doc.isDiffView || doc.isDeletedInGit) {
             if (doc.isDeletedInGit || doc.diffDeletedLines.count(vl.bufferLine)) {
                 // Red background for deleted lines / deleted file
-                D2D1_RECT_F rcDiffLine = D2D1::RectF(canvasLeft + gutterW, lineY, canvasRight - scrollbarW, lineY + lineH);
+                D2D1_RECT_F rcDiffLine = D2D1::RectF(canvasLeft + gutterW, lineY, codeRight, lineY + lineH);
                 Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushDiffRed;
                 pRT->CreateSolidColorBrush(D2D1::ColorF(0.55f, 0.18f, 0.20f, 0.25f), &brushDiffRed);
                 pRT->FillRectangle(rcDiffLine, brushDiffRed.Get());
@@ -923,7 +927,7 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
                 pRT->FillRectangle(rcGutterBar, brushRedBar.Get());
             } else if (doc.diffAddedLines.count(vl.bufferLine)) {
                 // Green background for added lines
-                D2D1_RECT_F rcDiffLine = D2D1::RectF(canvasLeft + gutterW, lineY, canvasRight - scrollbarW, lineY + lineH);
+                D2D1_RECT_F rcDiffLine = D2D1::RectF(canvasLeft + gutterW, lineY, codeRight, lineY + lineH);
                 Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushDiffGreen;
                 pRT->CreateSolidColorBrush(D2D1::ColorF(0.18f, 0.45f, 0.20f, 0.25f), &brushDiffGreen);
                 pRT->FillRectangle(rcDiffLine, brushDiffGreen.Get());
@@ -932,6 +936,34 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
                 Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushGreenBar;
                 pRT->CreateSolidColorBrush(D2D1::ColorF(0.596f, 0.765f, 0.475f, 1.0f), &brushGreenBar);
                 pRT->FillRectangle(rcGutterBar, brushGreenBar.Get());
+            }
+        }
+
+        // Target Line / Search Jump Highlight Banner (Image 1)
+        if (vl.bufferLine == doc.targetHighlightLine) {
+            D2D1_RECT_F rcTargetLine = D2D1::RectF(canvasLeft + gutterW, lineY, codeRight, lineY + lineH);
+            Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushTargetBg;
+            Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushTargetBorder;
+            pRT->CreateSolidColorBrush(D2D1::ColorF(0.0f, 0.47f, 0.83f, 0.28f), &brushTargetBg);
+            pRT->CreateSolidColorBrush(D2D1::ColorF(0.0f, 0.47f, 0.83f, 0.85f), &brushTargetBorder);
+            if (brushTargetBg) pRT->FillRectangle(rcTargetLine, brushTargetBg.Get());
+            if (brushTargetBorder) {
+                pRT->DrawLine(D2D1::Point2F(rcTargetLine.left, rcTargetLine.top), D2D1::Point2F(rcTargetLine.right, rcTargetLine.top), brushTargetBorder.Get(), 1.2f);
+                pRT->DrawLine(D2D1::Point2F(rcTargetLine.left, rcTargetLine.bottom), D2D1::Point2F(rcTargetLine.right, rcTargetLine.bottom), brushTargetBorder.Get(), 1.2f);
+            }
+
+            // High-contrast keyword box on target line
+            if (doc.targetHighlightLen > 0) {
+                float hx = codeLeft + doc.targetHighlightCol * charW;
+                float hw = doc.targetHighlightLen * charW;
+                D2D1_RECT_F rcKeyword = D2D1::RectF(hx - 2.0f, lineY + 1.0f, hx + hw + 2.0f, lineY + lineH - 1.0f);
+                D2D1_ROUNDED_RECT rrcKey = D2D1::RoundedRect(rcKeyword, 3.0f, 3.0f);
+                Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> keyFill;
+                Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> keyBorder;
+                pRT->CreateSolidColorBrush(D2D1::ColorF(1.0f, 0.82f, 0.0f, 0.50f), &keyFill);
+                pRT->CreateSolidColorBrush(D2D1::ColorF(1.0f, 0.82f, 0.0f, 0.95f), &keyBorder);
+                if (keyFill) pRT->FillRoundedRectangle(&rrcKey, keyFill.Get());
+                if (keyBorder) pRT->DrawRoundedRectangle(&rrcKey, keyBorder.Get(), 1.5f);
             }
         }
 
@@ -1056,9 +1088,25 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
         }
 
         if (!lineStr.empty()) {
+            // Render whitespace indicators if toggled on in View > Appearance
+            if (config.renderWhitespace) {
+                for (size_t col = 0; col < lineStr.length(); ++col) {
+                    wchar_t ch = lineStr[col];
+                    if (ch == L' ') {
+                        float dotX = codeLeft + (static_cast<float>(col) + 0.5f) * charW;
+                        float dotY = lineY + lineH * 0.5f;
+                        pRT->FillEllipse(D2D1::Ellipse(D2D1::Point2F(dotX, dotY), 1.0f, 1.0f), theme.brushTextMuted.Get());
+                    } else if (ch == L'\t') {
+                        float arrX = codeLeft + (static_cast<float>(col) + 0.5f) * charW;
+                        float arrY = lineY + lineH * 0.5f;
+                        pRT->DrawLine(D2D1::Point2F(arrX - 2.0f, arrY), D2D1::Point2F(arrX + 2.0f, arrY), theme.brushTextMuted.Get(), 1.0f);
+                    }
+                }
+            }
+
             auto tokens = buffer.GetTokensForLine(vl.bufferLine);
             if (tokens.empty()) {
-                D2D1_RECT_F rcLine = D2D1::RectF(codeLeft, lineY, canvasRight - scrollbarW, lineY + lineH);
+                D2D1_RECT_F rcLine = D2D1::RectF(codeLeft, lineY, codeRight, lineY + lineH);
                 pRT->DrawText(
                     lineStr.c_str(),
                     static_cast<UINT32>(lineStr.length()),
@@ -1156,38 +1204,153 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
 
     pRT->PopAxisAlignedClip();
 
-    // 5. Vertical Scrollbar on Right Edge (Image 1: Smooth scrolling support!)
-    doc.scrollbarTrack = D2D1::RectF(canvasRight - scrollbarW, topY, canvasRight, clientHeight);
-    if (visualLines.size() > visibleCount) {
-        float thumbH = (std::max)(config.ScaleF(28.0f), codeAreaH * (static_cast<float>(visibleCount) / visualLines.size()));
-        float scrollRange = codeAreaH - thumbH;
-        float scrollFrac = (visualLines.size() > visibleCount)
-            ? (static_cast<float>(doc.scrollLine) / static_cast<float>(visualLines.size() - visibleCount))
-            : 0.0f;
-        float thumbY = topY + scrollRange * scrollFrac;
+    // 5. Code Minimap (Image 5: scaled miniature code preview with syntax highlighting, search ticks, and viewport slider)
+    if (config.showMinimap && !doc.isSpecialView && !doc.isImageView && !doc.isUnsupportedBinary) {
+        doc.minimapTrack = D2D1::RectF(canvasRight - minimapW, topY, canvasRight, clientHeight);
 
-        doc.scrollbarThumb = D2D1::RectF(
-            canvasRight - scrollbarW + config.ScaleF(3.0f),
-            thumbY,
-            canvasRight - config.ScaleF(3.0f),
-            thumbY + thumbH
+        // Minimap background with subtle left border
+        D2D1_COLOR_F miniBg = theme.IsDarkMode() ? D2D1::ColorF(0.11f, 0.11f, 0.12f, 0.85f) : D2D1::ColorF(0.96f, 0.96f, 0.97f, 0.85f);
+        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> miniBgBrush;
+        pRT->CreateSolidColorBrush(miniBg, &miniBgBrush);
+        if (miniBgBrush) pRT->FillRectangle(doc.minimapTrack, miniBgBrush.Get());
+
+        pRT->DrawLine(
+            D2D1::Point2F(doc.minimapTrack.left, topY),
+            D2D1::Point2F(doc.minimapTrack.left, clientHeight),
+            theme.brushBorderSubtle.Get(),
+            1.0f
         );
 
-        D2D1_ROUNDED_RECT rrcThumb = D2D1::RoundedRect(doc.scrollbarThumb, 3.5f, 3.5f);
-        // Scrollbar thumb brush: subtle semi-transparent pill that deepens when dragging
-        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushThumb;
-        if (theme.IsDarkMode()) {
-            float alpha = doc.isDraggingScrollbar ? 0.85f : 0.50f;
-            pRT->CreateSolidColorBrush(D2D1::ColorF(0.40f, 0.40f, 0.44f, alpha), &brushThumb);
-        } else {
-            float alpha = doc.isDraggingScrollbar ? 0.85f : 0.50f;
-            pRT->CreateSolidColorBrush(D2D1::ColorF(0.55f, 0.55f, 0.60f, alpha), &brushThumb);
+        pRT->PushAxisAlignedClip(doc.minimapTrack, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+
+        size_t totalLines = buffer.GetLineCount();
+        float miniH = clientHeight - topY;
+        float lineScale = (totalLines * 2.2f > miniH) ? (miniH / (totalLines * 2.2f)) : 1.0f;
+        float stepY = 2.2f * lineScale;
+        float microH = (std::max)(1.0f, 1.6f * lineScale);
+        float microCharW = 1.4f * lineScale;
+
+        // Render micro-lines with syntax colors
+        for (size_t b = 0; b < totalLines; ++b) {
+            float my = topY + static_cast<float>(b) * stepY;
+            if (my + microH > clientHeight) break;
+
+            const auto& lineStr = buffer.GetLine(b);
+            if (lineStr.empty()) continue;
+
+            size_t indent = lineStr.find_first_not_of(L" \t");
+            if (indent == std::wstring::npos) continue;
+
+            auto tokens = buffer.GetTokensForLine(b);
+            if (!tokens.empty()) {
+                for (const auto& tok : tokens) {
+                    if (tok.startCol + tok.length > lineStr.length()) continue;
+                    float tx = doc.minimapTrack.left + config.ScaleF(4.0f) + static_cast<float>(tok.startCol) * microCharW;
+                    float tw = (std::min)(doc.minimapTrack.right - tx - 2.0f, static_cast<float>(tok.length) * microCharW);
+                    if (tw <= 0.5f) continue;
+
+                    ID2D1Brush* brush = theme.brushTextMuted.Get();
+                    switch (tok.type) {
+                        case editor::TokenType::Keyword:   brush = theme.brushSyntaxKeyword.Get(); break;
+                        case editor::TokenType::Type:      brush = theme.brushSyntaxType.Get(); break;
+                        case editor::TokenType::String:    brush = theme.brushSyntaxString.Get(); break;
+                        case editor::TokenType::Comment:   brush = theme.brushSyntaxComment.Get(); break;
+                        case editor::TokenType::Number:    brush = theme.brushSyntaxNumber.Get(); break;
+                        case editor::TokenType::Operator:  brush = theme.brushSyntaxOperator.Get(); break;
+                        case editor::TokenType::Tag:       brush = theme.brushSyntaxTag.Get(); break;
+                        case editor::TokenType::Attribute: brush = theme.brushSyntaxAttribute.Get(); break;
+                        default: brush = theme.brushTextPrimary.Get(); break;
+                    }
+                    pRT->FillRectangle(D2D1::RectF(tx, my, tx + tw, my + microH), brush);
+                }
+            } else {
+                float mx = doc.minimapTrack.left + config.ScaleF(4.0f) + static_cast<float>(indent) * microCharW;
+                float tw = (std::min)(doc.minimapTrack.right - mx - 2.0f, static_cast<float>(lineStr.length() - indent) * microCharW);
+                if (tw > 0.5f) {
+                    pRT->FillRectangle(D2D1::RectF(mx, my, mx + tw, my + microH), theme.brushTextMuted.Get());
+                }
+            }
+
+            // Search highlight tick on right side of minimap line
+            if (!highlightQuery.empty()) {
+                std::wstring qLower = highlightQuery;
+                std::wstring lLower = lineStr;
+                if (!highlightMatchCase) {
+                    for (auto& ch : qLower) ch = towlower(ch);
+                    for (auto& ch : lLower) ch = towlower(ch);
+                }
+                if (lLower.find(qLower) != std::wstring::npos) {
+                    D2D1_RECT_F rcTick = D2D1::RectF(
+                        doc.minimapTrack.right - config.ScaleF(8.0f),
+                        my,
+                        doc.minimapTrack.right - config.ScaleF(1.0f),
+                        my + (std::max)(2.0f, microH)
+                    );
+                    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> hlTickBrush;
+                    pRT->CreateSolidColorBrush(D2D1::ColorF(0.95f, 0.58f, 0.12f, 0.90f), &hlTickBrush);
+                    if (hlTickBrush) pRT->FillRectangle(rcTick, hlTickBrush.Get());
+                }
+            }
         }
-        if (brushThumb) {
-            pRT->FillRoundedRectangle(rrcThumb, brushThumb.Get());
-        }
+
+        // Viewport Slider Box
+        float sliderTop = topY + static_cast<float>(doc.scrollLine) * stepY;
+        float sliderBottom = sliderTop + static_cast<float>(visibleCount) * stepY;
+        sliderBottom = (std::max)(sliderTop + config.ScaleF(18.0f), (std::min)(sliderBottom, clientHeight));
+
+        doc.minimapSlider = D2D1::RectF(
+            doc.minimapTrack.left + 1.0f,
+            sliderTop,
+            doc.minimapTrack.right - 1.0f,
+            sliderBottom
+        );
+
+        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> sliderBgBrush;
+        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> sliderBorderBrush;
+        float sliderAlpha = doc.isDraggingMinimap ? 0.28f : 0.16f;
+        pRT->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, sliderAlpha), &sliderBgBrush);
+        pRT->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, sliderAlpha + 0.18f), &sliderBorderBrush);
+
+        if (sliderBgBrush) pRT->FillRectangle(doc.minimapSlider, sliderBgBrush.Get());
+        if (sliderBorderBrush) pRT->DrawRectangle(doc.minimapSlider, sliderBorderBrush.Get(), 1.0f);
+
+        pRT->PopAxisAlignedClip();
     } else {
-        doc.scrollbarThumb = D2D1::RectF(0.0f, 0.0f, 0.0f, 0.0f);
+        doc.minimapTrack = D2D1::RectF(0.0f, 0.0f, 0.0f, 0.0f);
+        doc.minimapSlider = D2D1::RectF(0.0f, 0.0f, 0.0f, 0.0f);
+
+        // 6. Vertical Scrollbar on Right Edge when Minimap is disabled
+        doc.scrollbarTrack = D2D1::RectF(canvasRight - scrollbarW, topY, canvasRight, clientHeight);
+        if (visualLines.size() > visibleCount) {
+            float thumbH = (std::max)(config.ScaleF(28.0f), codeAreaH * (static_cast<float>(visibleCount) / visualLines.size()));
+            float scrollRange = codeAreaH - thumbH;
+            float scrollFrac = (visualLines.size() > visibleCount)
+                ? (static_cast<float>(doc.scrollLine) / static_cast<float>(visualLines.size() - visibleCount))
+                : 0.0f;
+            float thumbY = topY + scrollRange * scrollFrac;
+
+            doc.scrollbarThumb = D2D1::RectF(
+                canvasRight - scrollbarW + config.ScaleF(3.0f),
+                thumbY,
+                canvasRight - config.ScaleF(3.0f),
+                thumbY + thumbH
+            );
+
+            D2D1_ROUNDED_RECT rrcThumb = D2D1::RoundedRect(doc.scrollbarThumb, 3.5f, 3.5f);
+            Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushThumb;
+            if (theme.IsDarkMode()) {
+                float alpha = doc.isDraggingScrollbar ? 0.85f : 0.50f;
+                pRT->CreateSolidColorBrush(D2D1::ColorF(0.40f, 0.40f, 0.44f, alpha), &brushThumb);
+            } else {
+                float alpha = doc.isDraggingScrollbar ? 0.85f : 0.50f;
+                pRT->CreateSolidColorBrush(D2D1::ColorF(0.55f, 0.55f, 0.60f, alpha), &brushThumb);
+            }
+            if (brushThumb) {
+                pRT->FillRoundedRectangle(rrcThumb, brushThumb.Get());
+            }
+        } else {
+            doc.scrollbarThumb = D2D1::RectF(0.0f, 0.0f, 0.0f, 0.0f);
+        }
     }
 }
 
@@ -1222,6 +1385,20 @@ bool EditorCanvas::HitTestScrollbar(POINT pt, const editor::OpenDocument& doc, b
             }
             return true;
         }
+    }
+    return false;
+}
+
+bool EditorCanvas::HitTestMinimap(POINT pt, const editor::OpenDocument& doc, bool& outHitSlider) const {
+    outHitSlider = false;
+    if (doc.minimapTrack.right <= doc.minimapTrack.left) return false;
+    if (pt.x >= doc.minimapTrack.left && pt.x <= doc.minimapTrack.right &&
+        pt.y >= doc.minimapTrack.top && pt.y <= doc.minimapTrack.bottom) {
+        if (pt.x >= doc.minimapSlider.left && pt.x <= doc.minimapSlider.right &&
+            pt.y >= doc.minimapSlider.top && pt.y <= doc.minimapSlider.bottom) {
+            outHitSlider = true;
+        }
+        return true;
     }
     return false;
 }

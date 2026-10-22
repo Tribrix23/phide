@@ -1552,10 +1552,12 @@ bool DrawerPanel::HitTestOpenFolderButton(POINT pt, const app::AppConfig& config
     return false;
 }
 
-bool DrawerPanel::HitTestSearch(POINT pt, const app::AppConfig& config, std::wstring& outJumpFile, size_t& outJumpLine) {
+bool DrawerPanel::HitTestSearch(POINT pt, const app::AppConfig& config, std::wstring& outJumpFile, size_t& outJumpLine, size_t& outMatchCol, size_t& outMatchLen) {
     (void)config;
     outJumpFile.clear();
     outJumpLine = 0;
+    outMatchCol = 0;
+    outMatchLen = 0;
 
     // 1. Refresh button
     if (pt.x >= m_rcRefreshSearchBtn.left && pt.x <= m_rcRefreshSearchBtn.right &&
@@ -1720,6 +1722,9 @@ bool DrawerPanel::HitTestSearch(POINT pt, const app::AppConfig& config, std::wst
                     pt.y >= match.bounds.top && pt.y <= match.bounds.bottom) {
                     outJumpFile = group.filePath;
                     outJumpLine = match.lineIndex;
+                    outMatchCol = match.matchCol;
+                    outMatchLen = match.matchLen;
+                    m_focusedSearchInput = 0;
                     return true;
                 }
             }

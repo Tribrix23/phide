@@ -348,7 +348,12 @@ public:
      * @param outJumpLine Returns 0-based line to jump to.
      * @return True if a UI element was handled.
      */
-    bool HitTestSearch(POINT pt, const app::AppConfig& config, std::wstring& outJumpFile, size_t& outJumpLine);
+    bool HitTestSearch(POINT pt, const app::AppConfig& config, std::wstring& outJumpFile, size_t& outJumpLine,
+                       size_t& outMatchCol, size_t& outMatchLen);
+    bool HitTestSearch(POINT pt, const app::AppConfig& config, std::wstring& outJumpFile, size_t& outJumpLine) {
+        size_t c = 0, l = 0;
+        return HitTestSearch(pt, config, outJumpFile, outJumpLine, c, l);
+    }
 
     /**
      * @brief Handles character typed into the active search or replace input box.

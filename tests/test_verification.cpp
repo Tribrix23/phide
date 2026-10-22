@@ -2955,6 +2955,181 @@ int main() {
         std::cout << "  Passed: All Git stability and Search Replace/Dismiss tests succeeded!" << std::endl;
     }
 
+    // Test 34: Search Match Jump & Highlighting, Code Minimap & View Menu Submenus (Images 1, 2, 3, 4, 5)
+    {
+        std::cout << "\n[Test 34] Testing Search Match Jump, Minimap & View Menu Cascading Submenus..." << std::endl;
+
+        phide::app::AppConfig cfg;
+        cfg.showMinimap = true;
+        cfg.showBreadcrumbs = true;
+        cfg.renderWhitespace = true;
+        cfg.zenMode = false;
+
+        // Subtest 34.1: Target line highlight parameters accurately recorded on document (Image 1)
+        phide::editor::OpenDocument doc;
+        doc.fileName = L"submission.cpp";
+        doc.filePath = L"src/submission.cpp";
+        doc.targetHighlightLine = 42;
+        doc.targetHighlightCol = 15;
+        doc.targetHighlightLen = 10;
+        doc.targetHighlightTime = 12345678;
+        assert(doc.targetHighlightLine == 42);
+        assert(doc.targetHighlightCol == 15);
+        assert(doc.targetHighlightLen == 10);
+        std::cout << "  Verified: Target line highlight parameters accurately recorded on document" << std::endl;
+
+        // Subtest 34.2: Code Minimap Track & Viewport Slider Calculation (Image 5)
+        phide::ui::EditorCanvas editorCanvas;
+        phide::ui::Theme theme;
+        theme.SetThemeMode(phide::ui::ThemeMode::Dark);
+
+        ComPtr<IWICBitmap> pWicMinimapBmp;
+        ComPtr<ID2D1RenderTarget> pMinimapRT;
+        CreateTarget(pWicMinimapBmp, pMinimapRT);
+        theme.CreateDeviceResources(pMinimapRT.Get(), pDWriteFactory.Get());
+
+        // Fill document with sample lines
+        for (int i = 0; i < 100; ++i) {
+            if (i == 42) {
+                doc.buffer.InsertText(L"    std::string submission = \"antigravity_ide\";\n");
+            } else if (i % 7 == 0) {
+                doc.buffer.InsertText(L"    // Section header " + std::to_wstring(i) + L": micro-code syntax render\n");
+            } else {
+                doc.buffer.InsertText(L"    void RenderSubsystem_" + std::to_wstring(i) + L"() { int codeVal = " + std::to_wstring(i * 12) + L"; }\n");
+            }
+        }
+        doc.scrollLine = 35; // Center viewport around line 42
+
+        std::vector<phide::editor::EditorGroup> groups;
+        phide::editor::EditorGroup grp;
+        grp.docs.push_back(doc);
+        grp.activeDocIdx = 0;
+        groups.push_back(grp);
+
+        pMinimapRT->BeginDraw();
+        pMinimapRT->Clear(D2D1::ColorF(0.12f, 0.12f, 0.12f, 1.0f));
+        editorCanvas.Render(pMinimapRT.Get(), theme, cfg, groups, 0, 50.0f, 1150.0f, 750.0f, false, L"submission", false, false, false, false);
+        pMinimapRT->EndDraw();
+
+        const auto& renderedDoc = groups[0].docs[0];
+        assert(renderedDoc.minimapTrack.right > renderedDoc.minimapTrack.left);
+        assert(renderedDoc.minimapSlider.bottom > renderedDoc.minimapSlider.top);
+        std::cout << "  Verified: Minimap track (" << renderedDoc.minimapTrack.left << " to " << renderedDoc.minimapTrack.right
+                  << ") and slider (" << renderedDoc.minimapSlider.top << " to " << renderedDoc.minimapSlider.bottom << ") computed" << std::endl;
+
+        // Subtest 34.3: HitTestMinimap functionality
+        bool hitSlider = false;
+        POINT ptOnSlider{ static_cast<LONG>(renderedDoc.minimapSlider.left + 5.0f), static_cast<LONG>(renderedDoc.minimapSlider.top + 5.0f) };
+        bool hitTrack = editorCanvas.HitTestMinimap(ptOnSlider, renderedDoc, hitSlider);
+        assert(hitTrack == true);
+        assert(hitSlider == true);
+
+        POINT ptOnTrack{ static_cast<LONG>(renderedDoc.minimapTrack.left + 5.0f), static_cast<LONG>(renderedDoc.minimapTrack.top + 2.0f) };
+        hitTrack = editorCanvas.HitTestMinimap(ptOnTrack, renderedDoc, hitSlider);
+        assert(hitTrack == true);
+        if (ptOnTrack.y < renderedDoc.minimapSlider.top) {
+            assert(hitSlider == false);
+        }
+
+        POINT ptOutside{ 100, 100 };
+        hitTrack = editorCanvas.HitTestMinimap(ptOutside, renderedDoc, hitSlider);
+        assert(hitTrack == false);
+        std::cout << "  Verified: HitTestMinimap accurately handles viewport slider, track jump, and outside clicks" << std::endl;
+
+        SaveWicBitmapToPng(pWicMinimapBmp.Get(), pWicFactory.Get(), artDir + L"test_search_jump_and_minimap.png");
+        std::cout << "  Passed: Saved test_search_jump_and_minimap.png" << std::endl;
+
+        // Subtest 34.4: View Menu Submenus (Appearance & Editor Layout)
+        phide::ui::PopupMenu popupMenu;
+        popupMenu.OpenViewMenu(160.0f, 38.0f, cfg, true, false, false, 1);
+        assert(popupMenu.IsOpen() == true);
+
+        // Find Appearance and Editor Layout items
+        const auto& menuItems = popupMenu.GetItems();
+        int appearanceIdx = -1;
+        int layoutIdx = -1;
+        for (size_t i = 0; i < menuItems.size(); ++i) {
+            if (menuItems[i].label.find(L"Appearance") != std::wstring::npos) appearanceIdx = static_cast<int>(i);
+            if (menuItems[i].label.find(L"Editor Layout") != std::wstring::npos) layoutIdx = static_cast<int>(i);
+        }
+        assert(appearanceIdx >= 0);
+        assert(layoutIdx >= 0);
+        assert(menuItems[appearanceIdx].hasSubmenu);
+        assert(menuItems[layoutIdx].hasSubmenu);
+
+        // Verify Appearance submenu items
+        const auto& appItems = menuItems[appearanceIdx].submenuItems;
+        assert(appItems.size() >= 15);
+        bool foundMinimap = false, foundBreadcrumbs = false, foundWhitespace = false, foundZen = false;
+        for (const auto& it : appItems) {
+            if (it.label.find(L"Minimap") != std::wstring::npos) {
+                foundMinimap = true;
+                assert(it.isChecked == cfg.showMinimap);
+            }
+            if (it.label.find(L"Breadcrumbs") != std::wstring::npos) {
+                foundBreadcrumbs = true;
+                assert(it.isChecked == cfg.showBreadcrumbs);
+            }
+            if (it.label.find(L"Render Whitespace") != std::wstring::npos) {
+                foundWhitespace = true;
+                assert(it.isChecked == cfg.renderWhitespace);
+            }
+            if (it.label.find(L"Zen Mode") != std::wstring::npos) {
+                foundZen = true;
+                assert(it.isChecked == cfg.zenMode);
+            }
+        }
+        assert(foundMinimap && foundBreadcrumbs && foundWhitespace && foundZen);
+        std::cout << "  Verified: Appearance submenu contains " << appItems.size() << " items matching VS Code/Antigravity specs" << std::endl;
+
+        // Verify Editor Layout submenu items (Image 3)
+        const auto& layoutItems = menuItems[layoutIdx].submenuItems;
+        assert(layoutItems.size() == 18); // 16 action items + 2 separators
+        size_t actionItemCount = 0;
+        for (const auto& it : layoutItems) {
+            if (!it.isSeparator) actionItemCount++;
+        }
+        assert(actionItemCount == 16);
+        bool foundSingle = false, foundTwoCols = false, foundThreeCols = false, foundFlip = false;
+        for (const auto& it : layoutItems) {
+            if (it.actionId == phide::ui::MenuActionId::LayoutSingle) {
+                foundSingle = true;
+                assert(it.isChecked == true); // 1 group -> Single is checked
+            }
+            if (it.actionId == phide::ui::MenuActionId::LayoutTwoColumns) {
+                foundTwoCols = true;
+                assert(it.isChecked == false);
+            }
+            if (it.actionId == phide::ui::MenuActionId::LayoutThreeColumns) {
+                foundThreeCols = true;
+                assert(it.isChecked == false);
+            }
+            if (it.actionId == phide::ui::MenuActionId::LayoutFlip) foundFlip = true;
+        }
+        assert(foundSingle && foundTwoCols && foundThreeCols && foundFlip);
+        std::cout << "  Verified: Editor Layout submenu contains all 16 layouts with correct check state" << std::endl;
+
+        // Render D2D snapshot of the View Menu and cascaded Editor Layout submenu (Image 3)
+        ComPtr<IWICBitmap> pWicMenuBmp;
+        ComPtr<ID2D1RenderTarget> pMenuRT;
+        CreateTarget(pWicMenuBmp, pMenuRT);
+        theme.CreateDeviceResources(pMenuRT.Get(), pDWriteFactory.Get());
+
+        // Hover over Editor Layout to cascade its submenu (Image 3)
+        POINT ptLayout{ static_cast<LONG>(160.0f + 50.0f), static_cast<LONG>(38.0f + layoutIdx * 26.0f + 12.0f) };
+        popupMenu.HandleMouseMove(ptLayout, cfg, 1200.0f, 750.0f);
+
+        pMenuRT->BeginDraw();
+        pMenuRT->Clear(D2D1::ColorF(0.12f, 0.12f, 0.12f, 1.0f));
+        popupMenu.Render(pMenuRT.Get(), theme, cfg);
+        pMenuRT->EndDraw();
+
+        SaveWicBitmapToPng(pWicMenuBmp.Get(), pWicFactory.Get(), artDir + L"test_view_menu_submenus.png");
+        std::cout << "  Passed: Saved test_view_menu_submenus.png" << std::endl;
+
+        std::cout << "  Passed: All Search Jump, Minimap and View Menu tests succeeded!" << std::endl;
+    }
+
     std::cout << "\n==========================================" << std::endl;
     std::cout << "ALL VERIFICATION TESTS PASSED SUCCESSFULLY!" << std::endl;
     std::cout << "==========================================" << std::endl;

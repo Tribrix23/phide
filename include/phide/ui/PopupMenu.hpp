@@ -109,6 +109,24 @@ enum class MenuActionId {
     ZoomOut,
     ResetZoom,
 
+    // Editor Layout Submenu Actions (Image 3)
+    LayoutSplitUp,
+    LayoutSplitDown,
+    LayoutSplitLeft,
+    LayoutSplitRight,
+    LayoutSplitInGroup,
+    LayoutMoveNewWindow,
+    LayoutCopyNewWindow,
+    LayoutSingle,
+    LayoutTwoColumns,
+    LayoutThreeColumns,
+    LayoutTwoRows,
+    LayoutThreeRows,
+    LayoutGrid2x2,
+    LayoutTwoRowsRight,
+    LayoutTwoColumnsBottom,
+    LayoutFlip,
+
     // Explorer Context Menu Actions (Images 4 & 5)
     CtxUndo,
     CtxRedo,
@@ -190,7 +208,7 @@ public:
      * @param wordWrap Whether editor word wrap is currently active.
      */
     void OpenViewMenu(float x, float y, const app::AppConfig& config,
-                      bool isSidebarOpen, bool isZoomed, bool wordWrap = false);
+                      bool isSidebarOpen, bool isZoomed, bool wordWrap = false, size_t groupCount = 1);
 
     /**
      * @brief Opens the File dropdown menu at the specified anchor point.
@@ -287,7 +305,7 @@ public:
     [[nodiscard]] const std::vector<PopupMenuItem>& GetItems() const noexcept { return m_items; }
 
 private:
-    void BuildViewMenuItems(bool isSidebarOpen, bool isZoomed, bool wordWrap);
+    void BuildViewMenuItems(const app::AppConfig& config, bool isSidebarOpen, bool isZoomed, bool wordWrap, size_t groupCount = 1);
     void BuildEditMenuItems(bool canUndo, bool canRedo, bool hasSelection);
     void BuildFileMenuItems(bool autoSave, bool hasOpenFile, bool isDirty, bool hasOpenFolder,
                             const std::vector<std::wstring>& recentItems = {});
