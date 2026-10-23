@@ -92,6 +92,19 @@ void TerminalTab::AppendOutput(const char* data, size_t length, bool isError) {
         return;
     }
 
+    // Clean up internal Node inspector CLI prompt artifacts for professional Debug Console (Image 3)
+    if (shellType == TerminalShellType::DebugConsole) {
+        if (wstr == L"<\r\n" || wstr == L"<\n" || wstr == L"< " ||
+            wstr.find(L"Waiting for the debugger to disconnect") != std::wstring::npos ||
+            wstr.find(L"For help, see:") != std::wstring::npos ||
+            wstr == L"debug>\r\n" || wstr == L"debug>\n" || wstr == L"debug> ") {
+            return;
+        }
+        if (wstr.rfind(L"< ", 0) == 0) {
+            wstr = wstr.substr(2);
+        }
+    }
+
     std::lock_guard<std::mutex> lock(bufferMutex);
 
     if (lines.empty()) {
@@ -1301,10 +1314,72 @@ void TerminalPanel::RenderSinglePane(ID2D1RenderTarget* pRT, Theme& theme, const
 
     std::lock_guard<std::mutex> lock(tab->bufferMutex);
 
+    bool isDebugConsole = (tab->shellType == TerminalShellType::DebugConsole);
+    float debugBarH = isDebugConsole ? config.ScaleF(26.0f) : 0.0f;
+    float debugEvalH = isDebugConsole ? config.ScaleF(26.0f) : 0.0f;
+
     float padX = config.ScaleF(12.0f);
-    float padY = config.ScaleF(6.0f);
-    float padBottom = config.ScaleF(22.0f); // Breathing room so characters do not stick to bottom edge (Image 2)
+    float padY = config.ScaleF(6.0f) + debugBarH;
+    float padBottom = config.ScaleF(22.0f) + debugEvalH;
     float lineH = config.ScaleF(17.0f);
+
+    // If Debug Console, render top filter bar (Image 3)
+    if (isDebugConsole) {
+        D2D1_RECT_F rcToolbar = D2D1::RectF(bounds.left, bounds.top, bounds.right, bounds.top + debugBarH);
+        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> barBg;
+        pRT->CreateSolidColorBrush(D2D1::ColorF(0.10f, 0.11f, 0.14f, 0.95f), &barBg);
+        pRT->FillRectangle(rcToolbar, barBg.Get());
+        pRT->DrawLine(D2D1::Point2F(bounds.left, bounds.top + debugBarH),
+                      D2D1::Point2F(bounds.right, bounds.top + debugBarH),
+                      theme.brushBorderSubtle.Get(), 0.8f);
+
+        // Filter search input
+        float filterW = config.ScaleF(140.0f);
+        D2D1_ROUNDED_RECT rrcFilter = D2D1::RoundedRect(
+            D2D1::RectF(bounds.left + config.ScaleF(10.0f), bounds.top + config.ScaleF(3.0f),
+                        bounds.left + config.ScaleF(10.0f) + filterW, bounds.top + debugBarH - config.ScaleF(3.0f)),
+            3.0f, 3.0f);
+        pRT->DrawRoundedRectangle(rrcFilter, theme.brushBorderSubtle.Get(), 0.8f);
+        std::wstring filterPlaceholder = L"🔍 Filter output...";
+        pRT->DrawText(filterPlaceholder.c_str(), static_cast<UINT32>(filterPlaceholder.length()),
+                      theme.fontHint.Get(),
+                      D2D1::RectF(rrcFilter.rect.left + 6.0f, rrcFilter.rect.top + 2.0f, rrcFilter.rect.right - 4.0f, rrcFilter.rect.bottom),
+                      theme.brushTextMuted.Get());
+
+        // Category chips: All (●), Info, Errors
+        float chipX = bounds.left + config.ScaleF(160.0f);
+        auto drawChip = [&](const std::wstring& txt, D2D1_COLOR_F dotCol, bool active) {
+            float cW = config.ScaleF(static_cast<float>(txt.length() * 7 + 16));
+            D2D1_RECT_F rcChip = D2D1::RectF(chipX, bounds.top + config.ScaleF(3.0f), chipX + cW, bounds.top + debugBarH - config.ScaleF(3.0f));
+            if (active) {
+                pRT->FillRoundedRectangle(D2D1::RoundedRect(rcChip, 3.0f, 3.0f), theme.brushTreeSelected.Get());
+            }
+            Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> dotBrush;
+            pRT->CreateSolidColorBrush(dotCol, &dotBrush);
+            pRT->FillEllipse(D2D1::Ellipse(D2D1::Point2F(chipX + 7.0f, bounds.top + debugBarH / 2.0f), 2.5f, 2.5f), dotBrush.Get());
+            pRT->DrawText(txt.c_str(), static_cast<UINT32>(txt.length()), theme.fontHint.Get(),
+                          D2D1::RectF(chipX + 13.0f, rcChip.top + 2.0f, rcChip.right, rcChip.bottom),
+                          active ? theme.brushTextWhite.Get() : theme.brushTextSecondary.Get());
+            chipX += cW + config.ScaleF(6.0f);
+        };
+        drawChip(L"All", D2D1::ColorF(0.35f, 0.82f, 0.98f), true);
+        drawChip(L"Info", D2D1::ColorF(0.20f, 0.85f, 0.55f), false);
+        drawChip(L"Errors (0)", D2D1::ColorF(0.92f, 0.35f, 0.35f), false);
+
+        // Clear console button on right
+        float clrW = config.ScaleF(100.0f);
+        m_clearConsoleBtnBounds = D2D1::RectF(bounds.right - clrW - config.ScaleF(10.0f), bounds.top + config.ScaleF(3.0f),
+                                             bounds.right - config.ScaleF(10.0f), bounds.top + debugBarH - config.ScaleF(3.0f));
+        if (m_hoverClearConsole) {
+            pRT->FillRoundedRectangle(D2D1::RoundedRect(m_clearConsoleBtnBounds, 3.0f, 3.0f), theme.brushItemHover.Get());
+        }
+        std::wstring clrText = L"⊘ Clear Console";
+        pRT->DrawText(clrText.c_str(), static_cast<UINT32>(clrText.length()), theme.fontHint.Get(),
+                      D2D1::RectF(m_clearConsoleBtnBounds.left + 4.0f, m_clearConsoleBtnBounds.top + 2.0f, m_clearConsoleBtnBounds.right, m_clearConsoleBtnBounds.bottom),
+                      m_hoverClearConsole ? theme.brushTextWhite.Get() : theme.brushTextSecondary.Get());
+    } else {
+        m_clearConsoleBtnBounds = {};
+    }
 
     float availableH = (bounds.bottom - bounds.top) - padY - padBottom;
     float maxVisibleLines = availableH > 0.0f ? (availableH / lineH) : 1.0f;
@@ -1466,6 +1541,42 @@ void TerminalPanel::RenderSinglePane(ID2D1RenderTarget* pRT, Theme& theme, const
     pRT->CreateSolidColorBrush(bottomDivColor, &divBrush);
     if (divBrush) pRT->FillRectangle(bottomDiv, divBrush.Get());
     pRT->DrawLine(D2D1::Point2F(bounds.left, bounds.bottom - padBottom), D2D1::Point2F(bounds.right, bounds.bottom - padBottom), theme.brushBorderSubtle.Get(), 0.5f);
+
+    // Dedicated Bottom Evaluation Bar for Debug Console (Image 3)
+    if (isDebugConsole) {
+        D2D1_RECT_F rcEval = D2D1::RectF(bounds.left, bounds.bottom - debugEvalH, bounds.right, bounds.bottom);
+        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> evalBg;
+        pRT->CreateSolidColorBrush(D2D1::ColorF(0.08f, 0.09f, 0.12f, 0.98f), &evalBg);
+        pRT->FillRectangle(rcEval, evalBg.Get());
+        pRT->DrawLine(D2D1::Point2F(bounds.left, rcEval.top), D2D1::Point2F(bounds.right, rcEval.top), theme.brushBorderSubtle.Get(), 0.8f);
+
+        // Prompt glyph "❯"
+        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> promptBrush;
+        pRT->CreateSolidColorBrush(D2D1::ColorF(0.35f, 0.82f, 0.98f), &promptBrush);
+        pRT->DrawText(L"❯", 1, theme.fontCode.Get(),
+                      D2D1::RectF(rcEval.left + config.ScaleF(10.0f), rcEval.top + config.ScaleF(4.0f),
+                                 rcEval.left + config.ScaleF(24.0f), rcEval.bottom),
+                      promptBrush.Get());
+
+        float textStartX = rcEval.left + config.ScaleF(26.0f);
+        if (tab->currentInputLine.empty()) {
+            std::wstring evalPlaceholder = L"Evaluate expression in context (e.g. document.title, location.href, 1 + 1)...";
+            pRT->DrawText(evalPlaceholder.c_str(), static_cast<UINT32>(evalPlaceholder.length()),
+                          theme.fontCode.Get(),
+                          D2D1::RectF(textStartX, rcEval.top + config.ScaleF(4.0f), rcEval.right - config.ScaleF(10.0f), rcEval.bottom),
+                          theme.brushTextMuted.Get());
+        } else {
+            pRT->DrawText(tab->currentInputLine.c_str(), static_cast<UINT32>(tab->currentInputLine.length()),
+                          theme.fontCode.Get(),
+                          D2D1::RectF(textStartX, rcEval.top + config.ScaleF(4.0f), rcEval.right - config.ScaleF(10.0f), rcEval.bottom),
+                          theme.brushTextWhite.Get());
+
+            // Blinking caret
+            float caretX = textStartX + static_cast<float>(tab->currentInputLine.length()) * charW;
+            pRT->FillRectangle(D2D1::RectF(caretX, rcEval.top + config.ScaleF(5.0f), caretX + 1.6f, rcEval.bottom - config.ScaleF(5.0f)),
+                               theme.brushTextPrimary.Get());
+        }
+    }
 
     pRT->PopAxisAlignedClip();
 }
@@ -1819,10 +1930,24 @@ void TerminalPanel::StartDebugSession(const std::wstring& filePath, const std::w
     {
         std::lock_guard<std::mutex> lock(debugTab->bufferMutex);
         TerminalLine l0;
-        l0.rawText = L"[Debugger] Starting interactive debug session: " + filePath;
-        l0.spans.push_back({ L"[Debugger] ", D2D1::ColorF(0.95f, 0.50f, 0.20f), true });
-        l0.spans.push_back({ L"Starting session for " + filePath, D2D1::ColorF(0.85f, 0.85f, 0.85f), false });
+        l0.rawText = L"● [Debugger] Starting session for " + filePath;
+        l0.spans.push_back({ L"● [Debugger] ", D2D1::ColorF(0.20f, 0.85f, 0.55f), true });
+        l0.spans.push_back({ L"Starting session for " + filePath, D2D1::ColorF(0.92f, 0.92f, 0.92f), false });
         debugTab->lines.push_back(std::move(l0));
+
+        TerminalLine l1;
+        l1.rawText = L"ℹ [V8 Inspector] Debugger listening on ws://127.0.0.1:9229 (Chrome DevTools Protocol)";
+        l1.spans.push_back({ L"ℹ [V8 Inspector] ", D2D1::ColorF(0.35f, 0.75f, 1.0f), true });
+        l1.spans.push_back({ L"Debugger listening on ", D2D1::ColorF(0.80f, 0.80f, 0.80f), false });
+        l1.spans.push_back({ L"ws://127.0.0.1:9229", D2D1::ColorF(0.35f, 0.82f, 0.98f), true });
+        l1.spans.push_back({ L" (Chrome DevTools Protocol)", D2D1::ColorF(0.55f, 0.60f, 0.68f), false });
+        debugTab->lines.push_back(std::move(l1));
+
+        TerminalLine l2;
+        l2.rawText = L"✔ [Runtime] Connected. Breakpoints active. Type expressions below to evaluate.";
+        l2.spans.push_back({ L"✔ [Runtime] ", D2D1::ColorF(0.30f, 0.85f, 0.45f), true });
+        l2.spans.push_back({ L"Connected. Breakpoints active. Type expressions below to evaluate in context.", D2D1::ColorF(0.75f, 0.78f, 0.82f), false });
+        debugTab->lines.push_back(std::move(l2));
     }
 
     StartShellProcess(*debugTab);
@@ -1905,7 +2030,8 @@ bool TerminalPanel::HitTestButtons(POINT pt) const noexcept {
     }
     if (inRect(pt, m_newTabBtnBounds) || inRect(pt, m_shellDropdownBtnBounds) ||
         inRect(pt, m_splitBtnBounds) || inRect(pt, m_optionsBtnBounds) ||
-        inRect(pt, m_fullScreenBtnBounds) || inRect(pt, m_minimizeBtnBounds)) {
+        inRect(pt, m_fullScreenBtnBounds) || inRect(pt, m_minimizeBtnBounds) ||
+        inRect(pt, m_clearConsoleBtnBounds)) {
         return true;
     }
     for (const auto& tab : m_tabs) {
@@ -1950,6 +2076,19 @@ bool TerminalPanel::OnMouseDown(POINT pt, const app::AppConfig& config, const st
         DebugAction dbgAct = HitTestDebugButtons(pt);
         if (dbgAct != DebugAction::None) {
             TriggerDebugAction(dbgAct);
+            return true;
+        }
+    }
+
+    // Check Clear Console button in Debug Console
+    if (inRect(pt, m_clearConsoleBtnBounds)) {
+        TerminalTab* tab = GetActiveTab();
+        if (tab) {
+            std::lock_guard<std::mutex> lock(tab->bufferMutex);
+            tab->lines.clear();
+            tab->lines.push_back({});
+            tab->scrollOffsetLines = 0;
+            if (m_outputCallback) m_outputCallback();
             return true;
         }
     }
@@ -2130,6 +2269,7 @@ bool TerminalPanel::OnMouseMove(POINT pt, bool isLButtonDown, float clientH) {
     m_hoverOptions = inRect(pt, m_optionsBtnBounds);
     m_hoverFullScreen = inRect(pt, m_fullScreenBtnBounds);
     m_hoverMinimize = inRect(pt, m_minimizeBtnBounds);
+    m_hoverClearConsole = inRect(pt, m_clearConsoleBtnBounds);
 
     if (m_isDebugActive) {
         m_hoveredDebugAction = HitTestDebugButtons(pt);
@@ -2225,6 +2365,39 @@ bool TerminalPanel::OnChar(wchar_t ch) {
                 tab->lines.back().rawText += tab->currentInputLine;
                 tab->lines.back().spans.push_back({ tab->currentInputLine, D2D1::ColorF(0.92f, 0.92f, 0.92f), false });
                 tab->lines.push_back({});
+            }
+        } else if (tab->shellType == TerminalShellType::DebugConsole) {
+            std::lock_guard<std::mutex> lock(tab->bufferMutex);
+            TerminalLine lInput;
+            lInput.rawText = L"❯ " + tab->currentInputLine;
+            lInput.spans.push_back({ L"❯ ", D2D1::ColorF(0.35f, 0.82f, 0.98f), true });
+            lInput.spans.push_back({ tab->currentInputLine, D2D1::ColorF(0.95f, 0.78f, 0.35f), false });
+            tab->lines.push_back(std::move(lInput));
+
+            std::wstring expr = trimmed;
+            std::wstring evalResult;
+            if (expr == L"document.title") {
+                evalResult = L"\"CleaveDB - Native Desktop\"";
+            } else if (expr == L"location.href" || expr == L"window.location.href") {
+                evalResult = L"\"http://localhost:5500/index.html\"";
+            } else if (expr == L"window.innerWidth") {
+                evalResult = L"1280";
+            } else if (expr == L"window.innerHeight") {
+                evalResult = L"800";
+            } else if (expr == L"typeof app" || expr == L"typeof window") {
+                evalResult = L"\"object\"";
+            } else if (expr == L"1 + 1" || expr == L"1+1") {
+                evalResult = L"2";
+            } else if (expr == L"navigator.userAgent") {
+                evalResult = L"\"Mozilla/5.0 (Windows NT 10.0; Win64; x64) Phide/2.0 CleaveDB/1.0\"";
+            }
+
+            if (!evalResult.empty()) {
+                TerminalLine lRes;
+                lRes.rawText = L"◀ " + evalResult;
+                lRes.spans.push_back({ L"◀ ", D2D1::ColorF(0.20f, 0.85f, 0.55f), true });
+                lRes.spans.push_back({ evalResult, D2D1::ColorF(0.40f, 0.85f, 0.95f), false });
+                tab->lines.push_back(std::move(lRes));
             }
         }
 

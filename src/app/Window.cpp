@@ -1589,6 +1589,24 @@ void Window::CommitAutocompleteSelection() {
     const auto& lineText = pDoc->buffer.GetLine(pos.line);
     std::wstring prefix = editor::IntelliSenseEngine::ExtractQueryPrefix(lineText, pos.col);
 
+    // Check if user is completing a snippet (e.g. "!", "html:5", "clg", "flexcenter")
+    if (item->kind == editor::CompletionKind::Snippet) {
+        std::wstring ext;
+        auto dotPos = pDoc->fileName.rfind(L'.');
+        if (dotPos != std::wstring::npos) ext = pDoc->fileName.substr(dotPos + 1);
+        for (auto& c : ext) c = towlower(c);
+
+        const auto* pSnip = m_snippetManager.FindSnippetByPrefix(item->label, ext);
+        if (pSnip) {
+            m_snippetManager.ExpandSnippet(*pSnip, pDoc->buffer, prefix.length());
+            MarkDocumentModified(pDoc);
+            m_editor.DismissAutocomplete();
+            m_editor.ClearGhostText();
+            InvalidateRect(m_hwnd, nullptr, FALSE);
+            return;
+        }
+    }
+
     // Check if user is completing an HTML tag (e.g. typed "<div" or "div")
     bool isTagKind = (item->kind == editor::CompletionKind::Tag);
     size_t prefixStart = (pos.col >= prefix.length()) ? (pos.col - prefix.length()) : 0;
@@ -2555,6 +2573,7 @@ bool Window::Create(HINSTANCE hInstance, int nCmdShow) {
 
     // Initialize user snippets engine
     m_snippetManager.Initialize(GetSnippetsConfigPath());
+    m_intelliSense.SetSnippetManager(&m_snippetManager);
 
     // Register callback for reactive git state updates
     m_drawer.SetOnGitStateChanged([this]() {
@@ -3188,6 +3207,20 @@ void Window::HandleMouseMove(POINT clientPt) {
                                      m_config.isDrawerOpen, IsZoomed(m_hwnd), m_wordWrap,
                                      m_editorGroups.size());
             m_header.SetActiveMenu(ui::HeaderMenuId::View);
+            needRepaint = true;
+        } else if (hoveredMenu == ui::HeaderMenuId::Code && m_header.GetActiveMenu() != ui::HeaderMenuId::Code) {
+            D2D1_RECT_F rcCode = m_header.GetMenuItemBounds(ui::HeaderMenuId::Code);
+            auto* pDoc = GetActiveDoc();
+            bool hasDoc = (pDoc != nullptr && !pDoc->isSpecialView);
+            bool hasSelection = (pDoc != nullptr && pDoc->HasSelection());
+            m_popupMenu.OpenCodeMenu(rcCode.left, rcCode.bottom + 2.0f, m_config, hasDoc, hasSelection);
+            m_header.SetActiveMenu(ui::HeaderMenuId::Code);
+            needRepaint = true;
+        } else if (hoveredMenu == ui::HeaderMenuId::Tools && m_header.GetActiveMenu() != ui::HeaderMenuId::Tools) {
+            D2D1_RECT_F rcTools = m_header.GetMenuItemBounds(ui::HeaderMenuId::Tools);
+            m_popupMenu.OpenToolsMenu(rcTools.left, rcTools.bottom + 2.0f, m_config,
+                                      HasOpenFile(), m_terminal.IsOpen(), m_header.IsLiveServerRunning());
+            m_header.SetActiveMenu(ui::HeaderMenuId::Tools);
             needRepaint = true;
         }
     }
@@ -3871,6 +3904,54 @@ void Window::HandleLButtonDown(POINT clientPt) {
                     case ui::MenuActionId::CodeEmmetExpand:
                         DoEmmetExpand();
                         break;
+                    case ui::MenuActionId::ToolsBuildProject: {
+                        if (!m_terminal.IsOpen()) {
+                            DoCreateTerminal();
+                        }
+                        auto* tab = m_terminal.GetActiveTab();
+                        if (tab) tab->SendInput("cmd.exe /c scripts\\build.bat\r\n");
+                        break;
+                    }
+                    case ui::MenuActionId::ToolsRunTests: {
+                        if (!m_terminal.IsOpen()) {
+                            DoCreateTerminal();
+                        }
+                        auto* tab = m_terminal.GetActiveTab();
+                        if (tab) tab->SendInput("cmd.exe /c scripts\\run_test.bat\r\n");
+                        break;
+                    }
+                    case ui::MenuActionId::ToolsFormatDocument:
+                        DoFormatDocument();
+                        break;
+                    case ui::MenuActionId::ToolsEmmetExpand:
+                        DoEmmetExpand();
+                        break;
+                    case ui::MenuActionId::ToolsColorThemePicker:
+                        DoToggleThemeModal();
+                        break;
+                    case ui::MenuActionId::ToolsKeyboardShortcuts:
+                        DoOpenKeyboardShortcuts();
+                        break;
+                    case ui::MenuActionId::ToolsCommandPalette:
+                        DoCommandPalette();
+                        break;
+                    case ui::MenuActionId::ToolsToggleTerminal:
+                        DoCreateTerminal();
+                        break;
+                    case ui::MenuActionId::ToolsToggleGitGraph:
+                        DoShowSourceControl();
+                        break;
+                    case ui::MenuActionId::ToolsLiveServerManager:
+                        if (m_header.IsLiveServerRunning()) {
+                            DoStopServer();
+                        } else {
+                            DoRunActiveDocument();
+                        }
+                        break;
+                    case ui::MenuActionId::ToolsCleanMemoryCache:
+                        m_drawer.ClearSearchResults();
+                        SetProcessWorkingSetSize(GetCurrentProcess(), (SIZE_T)-1, (SIZE_T)-1);
+                        break;
                     default:
                         break;
                 }
@@ -3975,6 +4056,12 @@ void Window::HandleLButtonDown(POINT clientPt) {
             bool hasSelection = (pDoc != nullptr && pDoc->HasSelection());
             m_popupMenu.OpenCodeMenu(rcCode.left, rcCode.bottom + 2.0f, m_config, hasDoc, hasSelection);
             m_header.SetActiveMenu(ui::HeaderMenuId::Code);
+            InvalidateRect(m_hwnd, nullptr, FALSE);
+        } else if (menuHit == ui::HeaderMenuId::Tools) {
+            D2D1_RECT_F rcTools = m_header.GetMenuItemBounds(ui::HeaderMenuId::Tools);
+            m_popupMenu.OpenToolsMenu(rcTools.left, rcTools.bottom + 2.0f, m_config,
+                                      HasOpenFile(), m_terminal.IsOpen(), m_header.IsLiveServerRunning());
+            m_header.SetActiveMenu(ui::HeaderMenuId::Tools);
             InvalidateRect(m_hwnd, nullptr, FALSE);
         }
         return;

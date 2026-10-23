@@ -375,6 +375,8 @@ private:
     D2D1_RECT_F m_debugRestartBounds{};
     D2D1_RECT_F m_debugStopBounds{};
     DebugAction m_hoveredDebugAction = DebugAction::None;
+    D2D1_RECT_F m_clearConsoleBtnBounds{};
+    bool m_hoverClearConsole = false;
     mutable std::vector<TerminalUrlHit> m_visibleUrls;
     std::function<void(const std::wstring&)> m_onLiveServerTabClosed;
 };

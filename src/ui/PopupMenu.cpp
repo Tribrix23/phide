@@ -194,6 +194,54 @@ void PopupMenu::OpenCodeMenu(float x, float y, const app::AppConfig& config,
     LayoutMenu(m_items, x, y, codeMenuW, config, m_mainMenuBounds);
 }
 
+void PopupMenu::OpenToolsMenu(float x, float y, const app::AppConfig& config,
+                              bool hasDoc, bool isTerminalOpen, bool isLiveServerRunning) {
+    m_isOpen = true;
+    m_hoveredMainIdx = -1;
+    m_activeSubmenuIdx = -1;
+    m_hoveredSubmenuIdx = -1;
+
+    m_items.clear();
+
+    // 1. Build & Test Actions
+    m_items.push_back({ MenuActionId::ToolsBuildProject,        L"Build Project",                 L"Ctrl+Shift+B", false, false, false, true, {}, {} });
+    m_items.push_back({ MenuActionId::ToolsRunTests,            L"Run Verification Tests",        L"Ctrl+Alt+T",   false, false, false, true, {}, {} });
+
+    // --- Separator ---
+    m_items.push_back({ MenuActionId::None,                     L"",                              L"",             true,  false, false, false, {}, {} });
+
+    // 2. Editor Tools
+    m_items.push_back({ MenuActionId::ToolsFormatDocument,      L"Format Active Document",        L"Shift+Alt+F",  false, false, false, hasDoc, {}, {} });
+    m_items.push_back({ MenuActionId::ToolsEmmetExpand,         L"Expand Snippet / Emmet",        L"Tab",          false, false, false, hasDoc, {}, {} });
+
+    // --- Separator ---
+    m_items.push_back({ MenuActionId::None,                     L"",                              L"",             true,  false, false, false, {}, {} });
+
+    // 3. Modals & Palettes
+    m_items.push_back({ MenuActionId::ToolsColorThemePicker,    L"Color Theme Picker...",         L"Ctrl+K Ctrl+T",false, false, false, true, {}, {} });
+    m_items.push_back({ MenuActionId::ToolsKeyboardShortcuts,   L"Keyboard Shortcuts Reference",  L"Ctrl+K Ctrl+S",false, false, false, true, {}, {} });
+    m_items.push_back({ MenuActionId::ToolsCommandPalette,      L"Command Palette / Quick Open...",L"Ctrl+P",      false, false, false, true, {}, {} });
+
+    // --- Separator ---
+    m_items.push_back({ MenuActionId::None,                     L"",                              L"",             true,  false, false, false, {}, {} });
+
+    // 4. Panel & Server Toggles
+    std::wstring termLabel = isTerminalOpen ? L"Close Integrated Terminal" : L"Toggle Integrated Terminal";
+    m_items.push_back({ MenuActionId::ToolsToggleTerminal,      termLabel,                        L"Ctrl+`",       false, false, false, true, {}, {} });
+    m_items.push_back({ MenuActionId::ToolsToggleGitGraph,      L"Open Source Control Git Graph", L"Ctrl+Shift+G", false, false, false, true, {}, {} });
+    std::wstring liveLabel = isLiveServerRunning ? L"Stop Live Server" : L"Start Live Server (HTTP)";
+    m_items.push_back({ MenuActionId::ToolsLiveServerManager,   liveLabel,                        L"Ctrl+Alt+L",   false, false, false, true, {}, {} });
+
+    // --- Separator ---
+    m_items.push_back({ MenuActionId::None,                     L"",                              L"",             true,  false, false, false, {}, {} });
+
+    // 5. Diagnostics & Memory Cache
+    m_items.push_back({ MenuActionId::ToolsCleanMemoryCache,    L"Clean Memory Cache & Run GC",   L"",             false, false, false, true, {}, {} });
+
+    const float toolsMenuW = config.ScaleF(265.0f);
+    LayoutMenu(m_items, x, y, toolsMenuW, config, m_mainMenuBounds);
+}
+
 void PopupMenu::BuildEditMenuItems(bool canUndo, bool canRedo, bool hasSelection) {
     (void)hasSelection;
     m_items.clear();

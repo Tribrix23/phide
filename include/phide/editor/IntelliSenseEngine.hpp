@@ -32,12 +32,21 @@ struct IntelliSenseItem {
     size_t matchLen = 0;
 };
 
+class SnippetManager;
+
 /**
  * @brief Massive complete HTML5 and JavaScript/TypeScript IntelliSense knowledge engine.
  */
 class IntelliSenseEngine {
 public:
     IntelliSenseEngine();
+
+    /**
+     * @brief Attaches SnippetManager for exposing snippet proposals in autocomplete.
+     */
+    void SetSnippetManager(const SnippetManager* pSnippets) noexcept {
+        m_pSnippetManager = pSnippets;
+    }
 
     /**
      * @brief Queries code completions for a file based on file extension and prefix.
@@ -69,6 +78,7 @@ private:
     std::vector<IntelliSenseItem> m_jsDomApis;
     std::vector<IntelliSenseItem> m_jsPrototypes;
     std::vector<IntelliSenseItem> m_commonVocabulary;
+    const SnippetManager* m_pSnippetManager = nullptr;
 };
 
 } // namespace phide::editor

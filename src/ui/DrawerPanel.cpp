@@ -3212,6 +3212,7 @@ void DrawerPanel::RefreshGitState(bool async, bool showLoading) {
                     commits.push_back(std::move(ci));
                 }
             }
+            ComputeGitGraphLanes(commits);
         }
 
         // 5. Query unpushed commits count (rev-list @{u}..HEAD or ahead in status -sb)
@@ -3668,6 +3669,92 @@ void DrawerPanel::LoadCommitFiles(GitCommitItem& ci) {
             if (f != std::wstring::npos) st = st.substr(f);
             while (!st.empty() && (st.back() == L'\r' || st.back() == L'\n' || st.back() == L' ')) st.pop_back();
             ci.statSummary = st;
+        }
+    }
+}
+
+void DrawerPanel::ComputeGitGraphLanes(std::vector<GitCommitItem>& commits) {
+    if (commits.empty()) return;
+
+    std::vector<std::wstring> activeLanes;
+
+    for (size_t i = 0; i < commits.size(); ++i) {
+        auto& ci = commits[i];
+
+        // 1. Locate lane for this commit if assigned by child
+        int assignedLane = -1;
+        for (size_t l = 0; l < activeLanes.size(); ++l) {
+            if (!activeLanes[l].empty() && activeLanes[l] == ci.hash) {
+                assignedLane = static_cast<int>(l);
+                break;
+            }
+        }
+
+        if (assignedLane == -1) {
+            for (size_t l = 0; l < activeLanes.size(); ++l) {
+                if (activeLanes[l].empty()) {
+                    assignedLane = static_cast<int>(l);
+                    break;
+                }
+            }
+        }
+
+        if (assignedLane == -1) {
+            assignedLane = static_cast<int>(activeLanes.size());
+            activeLanes.push_back(ci.hash);
+        } else {
+            activeLanes[assignedLane] = ci.hash;
+        }
+
+        ci.lane = assignedLane;
+        ci.colorIdx = assignedLane % 8;
+
+        // 2. Tokenize parent hashes
+        std::vector<std::wstring> parents;
+        std::wstringstream pss(ci.parentHash);
+        std::wstring ph;
+        while (pss >> ph) {
+            if (!ph.empty()) parents.push_back(ph);
+        }
+
+        // 3. Mark pass-through lanes for vertical continuation
+        for (size_t l = 0; l < activeLanes.size(); ++l) {
+            if (static_cast<int>(l) != ci.lane && !activeLanes[l].empty()) {
+                ci.passThroughLanes.push_back(static_cast<int>(l));
+            }
+        }
+
+        // 4. Update active lanes with parents
+        if (parents.empty()) {
+            activeLanes[ci.lane].clear();
+        } else {
+            activeLanes[ci.lane] = parents[0];
+            ci.parentLanes.push_back(ci.lane);
+
+            for (size_t p = 1; p < parents.size(); ++p) {
+                const auto& parentHash = parents[p];
+                int pLane = -1;
+                for (size_t l = 0; l < activeLanes.size(); ++l) {
+                    if (activeLanes[l] == parentHash) {
+                        pLane = static_cast<int>(l);
+                        break;
+                    }
+                }
+                if (pLane == -1) {
+                    for (size_t l = 0; l < activeLanes.size(); ++l) {
+                        if (activeLanes[l].empty()) {
+                            pLane = static_cast<int>(l);
+                            activeLanes[l] = parentHash;
+                            break;
+                        }
+                    }
+                }
+                if (pLane == -1) {
+                    pLane = static_cast<int>(activeLanes.size());
+                    activeLanes.push_back(parentHash);
+                }
+                ci.parentLanes.push_back(pLane);
+            }
         }
     }
 }
@@ -5029,14 +5116,22 @@ void DrawerPanel::RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, 
             float rowH = config.ScaleF(26.0f);
             float timelineX = railW + config.ScaleF(24.0f);
 
-            Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushLine;
-            pRT->CreateSolidColorBrush(D2D1::ColorF(0.0f, 0.471f, 0.831f, 0.75f), &brushLine);
+            // VS Code Git Graph multi-lane color palette (Image 2)
+            static const D2D1_COLOR_F s_gitLaneColors[] = {
+                D2D1::ColorF(0.23f, 0.51f, 0.96f), // 0: Blue #3B82F6
+                D2D1::ColorF(0.93f, 0.28f, 0.60f), // 1: Pink #EC4899
+                D2D1::ColorF(0.58f, 0.64f, 0.72f), // 2: Grey #94A3B8
+                D2D1::ColorF(0.13f, 0.77f, 0.37f), // 3: Green #22C55E
+                D2D1::ColorF(0.92f, 0.70f, 0.03f), // 4: Amber/Gold #EAB308
+                D2D1::ColorF(0.08f, 0.72f, 0.65f), // 5: Teal #14B8A6
+                D2D1::ColorF(0.66f, 0.33f, 0.97f), // 6: Purple #A855F7
+                D2D1::ColorF(0.98f, 0.45f, 0.09f), // 7: Orange #F97316
+            };
 
-            Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushHeadNode;
-            pRT->CreateSolidColorBrush(D2D1::ColorF(0.345f, 0.651f, 1.000f, 1.0f), &brushHeadNode);
-
-            Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushNode;
-            pRT->CreateSolidColorBrush(D2D1::ColorF(0.149f, 0.545f, 0.824f, 1.0f), &brushNode);
+            Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> laneBrushes[8];
+            for (int k = 0; k < 8; ++k) {
+                pRT->CreateSolidColorBrush(s_gitLaneColors[k], &laneBrushes[k]);
+            }
 
             Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushBranchBadge;
             pRT->CreateSolidColorBrush(D2D1::ColorF(0.122f, 0.231f, 0.373f, 0.85f), &brushBranchBadge);
@@ -5045,6 +5140,17 @@ void DrawerPanel::RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, 
             pRT->CreateSolidColorBrush(D2D1::ColorF(0.741f, 0.576f, 0.976f, 1.0f), &brushCloud);
 
             size_t startIdx = (std::min)(m_gitGraphScrollIdx, m_gitCommits.empty() ? size_t(0) : m_gitCommits.size() - 1);
+
+            int maxLaneVisible = 0;
+            for (size_t k = startIdx; k < m_gitCommits.size(); ++k) {
+                maxLaneVisible = (std::max)(maxLaneVisible, m_gitCommits[k].lane);
+                for (int pl : m_gitCommits[k].passThroughLanes) {
+                    maxLaneVisible = (std::max)(maxLaneVisible, pl);
+                }
+            }
+            const float laneSpacing = config.ScaleF(12.0f);
+            const float originTimelineX = railW + config.ScaleF(16.0f);
+
             for (size_t i = startIdx; i < m_gitCommits.size() && curY < clientHeight; ++i) {
                 auto& ci = m_gitCommits[i];
                 ci.bounds = D2D1::RectF(railW, curY, railW + currentDrawerW, curY + rowH);
@@ -5054,18 +5160,68 @@ void DrawerPanel::RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, 
                     pRT->FillRectangle(ci.bounds, isSelected ? theme.brushTreeSelected.Get() : theme.brushItemHover.Get());
                 }
 
-                // Vertical timeline connector line
-                pRT->DrawLine(
-                    D2D1::Point2F(timelineX, curY),
-                    D2D1::Point2F(timelineX, curY + rowH),
-                    brushLine.Get(), 1.6f
-                );
-
-                // Commit circle node
                 float nodeY = curY + rowH / 2.0f;
+                float nodeX = originTimelineX + ci.lane * laneSpacing;
+                ID2D1SolidColorBrush* pCommitBrush = laneBrushes[ci.colorIdx % 8].Get();
 
-                // Chevron expander for commit details (Image 3)
-                float chX = railW + config.ScaleF(10.0f);
+                // 1. Pass-through vertical lines for other active lanes
+                for (int passLane : ci.passThroughLanes) {
+                    float plx = originTimelineX + passLane * laneSpacing;
+                    pRT->DrawLine(
+                        D2D1::Point2F(plx, curY),
+                        D2D1::Point2F(plx, curY + rowH),
+                        laneBrushes[passLane % 8].Get(), 1.6f
+                    );
+                }
+
+                // 2. Incoming vertical line from parent commit above
+                if (i > 0) {
+                    pRT->DrawLine(
+                        D2D1::Point2F(nodeX, curY),
+                        D2D1::Point2F(nodeX, nodeY),
+                        pCommitBrush, 1.6f
+                    );
+                }
+
+                // 3. Outgoing connector lines to parent commits below
+                for (int pLane : ci.parentLanes) {
+                    float x1 = nodeX;
+                    float x2 = originTimelineX + pLane * laneSpacing;
+                    float y1 = nodeY;
+                    float y2 = curY + rowH;
+                    if (std::abs(x1 - x2) < 0.5f) {
+                        pRT->DrawLine(
+                            D2D1::Point2F(x1, y1),
+                            D2D1::Point2F(x2, y2),
+                            pCommitBrush, 1.6f
+                        );
+                    } else {
+                        // Smooth Bézier S-curve matching VS Code Git Graph (Image 2)
+                        Microsoft::WRL::ComPtr<ID2D1Factory> pFactory;
+                        pRT->GetFactory(&pFactory);
+                        if (pFactory) {
+                            Microsoft::WRL::ComPtr<ID2D1PathGeometry> path;
+                            if (SUCCEEDED(pFactory->CreatePathGeometry(&path)) && path) {
+                                Microsoft::WRL::ComPtr<ID2D1GeometrySink> sink;
+                                if (SUCCEEDED(path->Open(&sink)) && sink) {
+                                    sink->BeginFigure(D2D1::Point2F(x1, y1), D2D1_FIGURE_BEGIN_HOLLOW);
+                                    float midY = (y1 + y2) * 0.5f;
+                                    sink->AddBezier(D2D1::BezierSegment(
+                                        D2D1::Point2F(x1, midY),
+                                        D2D1::Point2F(x2, midY),
+                                        D2D1::Point2F(x2, y2)
+                                    ));
+                                    sink->EndFigure(D2D1_FIGURE_END_OPEN);
+                                    sink->Close();
+                                    pRT->DrawGeometry(path.Get(), laneBrushes[pLane % 8].Get(), 1.6f);
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Chevron expander for commit details
+                float chX = railW + config.ScaleF(8.0f);
                 ci.chevronBounds = D2D1::RectF(chX - 4.0f, nodeY - 6.0f, chX + 4.0f, nodeY + 6.0f);
                 if (ci.isExpanded) {
                     pRT->DrawLine(D2D1::Point2F(chX - 2.5f, nodeY - 1.5f), D2D1::Point2F(chX, nodeY + 1.5f), theme.brushTextMuted.Get(), 1.2f);
@@ -5075,14 +5231,15 @@ void DrawerPanel::RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, 
                     pRT->DrawLine(D2D1::Point2F(chX + 1.5f, nodeY), D2D1::Point2F(chX - 1.5f, nodeY + 2.5f), theme.brushTextMuted.Get(), 1.2f);
                 }
 
+                // 4. Commit circle node
                 if (ci.isHead) {
-                    pRT->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(timelineX, nodeY), 4.5f, 4.5f), brushHeadNode.Get(), 1.6f);
-                    pRT->FillEllipse(D2D1::Ellipse(D2D1::Point2F(timelineX, nodeY), 2.2f, 2.2f), brushHeadNode.Get());
+                    pRT->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(nodeX, nodeY), 4.8f, 4.8f), pCommitBrush, 1.8f);
+                    pRT->FillEllipse(D2D1::Ellipse(D2D1::Point2F(nodeX, nodeY), 2.2f, 2.2f), pCommitBrush);
                 } else {
-                    pRT->FillEllipse(D2D1::Ellipse(D2D1::Point2F(timelineX, nodeY), 2.8f, 2.8f), brushNode.Get());
+                    pRT->FillEllipse(D2D1::Ellipse(D2D1::Point2F(nodeX, nodeY), 3.2f, 3.2f), pCommitBrush);
                 }
 
-                float textLeft = timelineX + config.ScaleF(14.0f);
+                float textLeft = originTimelineX + (maxLaneVisible + 1) * laneSpacing + config.ScaleF(8.0f);
 
                 // Branch pill badge (e.g. master + cloud) if HEAD or has refNames
                 if (ci.isHead || !ci.refNames.empty()) {
@@ -5095,13 +5252,13 @@ void DrawerPanel::RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, 
                         3.0f, 3.0f
                     );
                     pRT->FillRoundedRectangle(rrcBadge, brushBranchBadge.Get());
-                    pRT->DrawRoundedRectangle(rrcBadge, brushHeadNode.Get(), 1.0f);
+                    pRT->DrawRoundedRectangle(rrcBadge, pCommitBrush, 1.0f);
 
                     // Badge text
                     pRT->DrawText(branchBadgeText.c_str(), static_cast<UINT32>(branchBadgeText.length()),
                                   theme.fontMenuItem.Get() ? theme.fontMenuItem.Get() : theme.fontButtonCenter.Get(),
                                   D2D1::RectF(textLeft + 3.0f, nodeY - bH / 2.0f, textLeft + bW - 14.0f, nodeY + bH / 2.0f),
-                                  brushHeadNode.Get());
+                                  pCommitBrush);
 
                     // Cloud icon on right edge of pill
                     float cloudX = textLeft + bW - 8.0f;
@@ -5179,13 +5336,13 @@ void DrawerPanel::RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, 
                         pRT->DrawLine(
                             D2D1::Point2F(timelineX, curY),
                             D2D1::Point2F(timelineX, curY + fileRowH),
-                            brushLine.Get(), 1.0f
+                            pCommitBrush, 1.0f
                         );
                         // Small branch connecting timeline to file
                         pRT->DrawLine(
                             D2D1::Point2F(timelineX, curY + fileRowH / 2.0f),
                             D2D1::Point2F(fileIndent, curY + fileRowH / 2.0f),
-                            brushLine.Get(), 1.0f
+                            pCommitBrush, 1.0f
                         );
 
                         // Seti UI File Icon

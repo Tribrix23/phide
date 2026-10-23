@@ -1,4 +1,5 @@
 #include "phide/editor/IntelliSenseEngine.hpp"
+#include "phide/editor/SnippetManager.hpp"
 #include <algorithm>
 #include <cwctype>
 #include <unordered_set>
@@ -734,7 +735,7 @@ std::wstring IntelliSenseEngine::ExtractQueryPrefix(const std::wstring& line, si
     size_t start = col;
     while (start > 0) {
         wchar_t c = line[start - 1];
-        if (iswalnum(c) || c == L'_' || c == L'$' || c == L'-') {
+        if (iswalnum(c) || c == L'_' || c == L'$' || c == L'-' || c == L'!' || c == L':') {
             start--;
         } else {
             break;
@@ -760,6 +761,22 @@ std::vector<IntelliSenseItem> IntelliSenseEngine::QueryCompletions(
     for (auto& c : prefixLower) c = static_cast<wchar_t>(towlower(c));
 
     std::vector<IntelliSenseItem> rawCandidates;
+
+    // 0. Include matching user & built-in snippets (Image 3 request: "like you know ! in vs code create html template")
+    std::wstring extNoDot = ext.empty() ? L"" : (ext[0] == L'.' ? ext.substr(1) : ext);
+    if (m_pSnippetManager) {
+        for (const auto& snip : m_pSnippetManager->GetSnippets()) {
+            if (SnippetManager::MatchesScope(snip.scope, extNoDot)) {
+                IntelliSenseItem sItem;
+                sItem.label = snip.prefix;
+                sItem.detail = snip.name + (snip.description.empty() ? L"" : (L" - " + snip.description));
+                sItem.insertText = snip.prefix;
+                sItem.kind = CompletionKind::Snippet;
+                sItem.score = 600; // Baseline high snippet score so user shortcuts appear prominently
+                rawCandidates.push_back(std::move(sItem));
+            }
+        }
+    }
 
     bool isHtml = (ext == L".html" || ext == L".htm" || ext == L".php");
     bool isJs = (ext == L".js" || ext == L".jsx" || ext == L".ts" || ext == L".tsx" || ext == L".mjs" || ext == L".cjs" || isHtml);

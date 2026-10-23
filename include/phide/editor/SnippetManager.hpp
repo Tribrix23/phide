@@ -60,12 +60,26 @@ public:
      */
     bool TryExpand(Buffer& buffer, const std::wstring& fileExt);
 
+    /**
+     * @brief Finds a snippet matching the exact prefix and file scope.
+     */
+    [[nodiscard]] const Snippet* FindSnippetByPrefix(const std::wstring& prefix, const std::wstring& fileExt) const;
+
+    /**
+     * @brief Expands the given snippet into the buffer, replacing prefixLen chars.
+     */
+    bool ExpandSnippet(const Snippet& snippet, Buffer& buffer, size_t prefixLen);
+
+    /**
+     * @brief Checks whether the snippet scope matches the given file extension.
+     */
+    [[nodiscard]] static bool MatchesScope(const std::wstring& scope, const std::wstring& fileExt);
+
 private:
     std::vector<Snippet> m_snippets;
     std::wstring m_snippetsFilePath;
 
     void LoadDefaults();
-    [[nodiscard]] bool MatchesScope(const std::wstring& scope, const std::wstring& fileExt) const;
 };
 
 } // namespace phide::editor

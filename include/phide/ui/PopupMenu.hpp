@@ -194,7 +194,20 @@ enum class MenuActionId {
     CodeRefactor,
     CodeToggleLineComment,
     CodeToggleBlockComment,
-    CodeEmmetExpand
+    CodeEmmetExpand,
+
+    // Tools Menu Actions (Image 4)
+    ToolsBuildProject,
+    ToolsRunTests,
+    ToolsFormatDocument,
+    ToolsEmmetExpand,
+    ToolsColorThemePicker,
+    ToolsKeyboardShortcuts,
+    ToolsCommandPalette,
+    ToolsToggleTerminal,
+    ToolsToggleGitGraph,
+    ToolsLiveServerManager,
+    ToolsCleanMemoryCache
 };
 
 /**
@@ -285,6 +298,18 @@ public:
      */
     void OpenCodeMenu(float x, float y, const app::AppConfig& config,
                       bool hasDoc, bool hasSelection);
+
+    /**
+     * @brief Opens the Tools dropdown menu for the wrench icon (matching Image 4).
+     * @param x Left coordinate of the anchor.
+     * @param y Top coordinate of the anchor.
+     * @param config Application metrics.
+     * @param hasDoc Whether an active editor document exists.
+     * @param isTerminalOpen Whether the integrated terminal panel is open.
+     * @param isLiveServerRunning Whether the Live Server is active.
+     */
+    void OpenToolsMenu(float x, float y, const app::AppConfig& config,
+                       bool hasDoc, bool isTerminalOpen, bool isLiveServerRunning);
 
     /**
      * @brief Opens the custom explorer context menu for a file or folder (matching Images 4 & 5).

@@ -119,6 +119,10 @@ struct GitCommitItem {
     bool isHead = false;
     bool isExpanded = false;
     bool filesLoaded = false;
+    int lane = 0;
+    int colorIdx = 0;
+    std::vector<int> parentLanes;
+    std::vector<int> passThroughLanes;
     std::vector<GitCommitFile> files;
     D2D1_RECT_F bounds{};
     D2D1_RECT_F chevronBounds{};
@@ -194,6 +198,7 @@ public:
         return HitTestGit(pt, config, outOpenFile, dummyDiscard, isDiff, dummyCommit, dummyUrl);
     }
     void LoadCommitFiles(GitCommitItem& ci);
+    static void ComputeGitGraphLanes(std::vector<GitCommitItem>& commits);
     bool HandleGitMouseMove(POINT pt);
     void HandleGitChar(wchar_t ch);
     void HandleGitKeyDown(WPARAM wParam);
