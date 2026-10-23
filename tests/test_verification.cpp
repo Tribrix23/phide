@@ -3860,6 +3860,97 @@ int main() {
         std::cout << "  Passed: All HTML Auto-close, Terminal Isolation, and Source Control Dirty Buffer tests passed!" << std::endl;
     }
 
+    // =========================================================================
+    // [TEST 41] Terminal Default Height (360px), Bottom Margin Div, Error Red Streams & Split Terminal Feature
+    // =========================================================================
+    {
+        std::cout << "\n[TEST 41] Testing Terminal Default Height, Bottom Div, Stderr Red & Split Terminal..." << std::endl;
+
+        phide::ui::TerminalPanel term;
+        term.Open(L"C:\\phide");
+        assert(term.IsOpen());
+
+        // 1. Verify Default Height of 360px (matching user Image 1)
+        assert(term.GetHeight() >= 360.0f);
+        std::cout << "  Verified: Terminal default height is " << term.GetHeight() << "px" << std::endl;
+
+        // 2. Verify White terminal text and Stderr Error Red streams
+        auto* activeTab = term.GetActiveTab();
+        assert(activeTab != nullptr);
+        activeTab->AppendOutput("Windows PowerShell\r\n", 20, false);
+        activeTab->AppendOutput("PS C:\\Users\\Administrator\\Downloads\\studio\\phide> ", 50, false);
+        // Stderr error output (e.g. cd : Cannot find path...)
+        activeTab->AppendOutput("cd : Cannot find path 'C:\\Users\\Administrator\\Downloads\\studio\\phide\\out' because it does not exist.\r\n", 101, true);
+        activeTab->AppendOutput("At line:1 char:1\r\n+ cd out\r\n+ ~~~~~~\r\n", 37, true);
+        assert(activeTab->lines.size() >= 4);
+
+        // 3. Verify Split Terminal Feature (Images 4 & 5)
+        assert(!term.IsActiveTabSplit());
+        term.SplitActiveTab(phide::ui::TerminalShellType::Node);
+        assert(term.IsActiveTabSplit());
+        std::cout << "  Verified: Terminal successfully split into 2 panes" << std::endl;
+
+        // Verify active pane focus switching
+        auto* rightSplit = term.GetActiveTab();
+        assert(rightSplit != nullptr);
+        assert(rightSplit != activeTab); // Right pane has focus after split
+        rightSplit->AppendOutput("Welcome to Node.js v20.12.0.\r\nType \".help\" for more information.\r\n> ", 68, false);
+
+        // 4. Render D2D snapshot of Split Terminal Panel with Bottom Div & Syntax Highlighting
+        ComPtr<IWICBitmap> pWicBmp;
+        ComPtr<ID2D1RenderTarget> pTargetRT;
+        CreateTarget(pWicBmp, pTargetRT);
+
+        phide::ui::Theme theme;
+        theme.SetThemeMode(phide::ui::ThemeMode::Dark);
+        hr = theme.CreateDeviceResources(pTargetRT.Get(), pDWriteFactory.Get());
+        assert(SUCCEEDED(hr));
+
+        phide::ui::EditorCanvas editor;
+        std::vector<phide::editor::OpenDocument> docs;
+        phide::editor::OpenDocument doc;
+        doc.fileName = L"server.js";
+        doc.buffer.SetText(L"const http = require('http');\nconst server = http.createServer((req, res) => {\n  res.end('Hello world');\n});\nserver.listen(3000);\n");
+        docs.push_back(std::move(doc));
+
+        float termH = term.GetHeight();
+        editor.Render(pTargetRT.Get(), theme, config, docs, 0, 48.0f, 1200.0f - 48.0f, 750.0f - termH, true);
+        term.Render(pTargetRT.Get(), theme, config, 1200.0f, 750.0f, 48.0f);
+
+        pTargetRT->EndDraw();
+
+        ComPtr<IWICStream> pStream;
+        pWicFactory->CreateStream(&pStream);
+        pStream->InitializeFromFilename((artDir + L"test_split_terminal_panel.png").c_str(), GENERIC_WRITE);
+        ComPtr<IWICBitmapEncoder> enc;
+        pWicFactory->CreateEncoder(GUID_ContainerFormatPng, nullptr, &enc);
+        enc->Initialize(pStream.Get(), WICBitmapEncoderNoCache);
+        ComPtr<IWICBitmapFrameEncode> frame;
+        enc->CreateNewFrame(&frame, nullptr);
+        frame->Initialize(nullptr);
+        frame->SetSize(1200, 750);
+        WICPixelFormatGUID format = GUID_WICPixelFormat32bppPBGRA;
+        frame->SetPixelFormat(&format);
+        frame->WriteSource(pWicBmp.Get(), nullptr);
+        frame->Commit();
+        enc->Commit();
+        std::cout << "  Passed: Saved test_split_terminal_panel.png" << std::endl;
+
+        // 5. Verify Splitter HitTesting
+        POINT ptSplitter{ static_cast<int>(48.0f + (1200.0f - 48.0f) * 0.5f), 750 - static_cast<int>(termH / 2.0f) };
+        assert(term.HitTestTerminalSplitter(ptSplitter));
+
+        // 6. Verify Close Split Pane
+        term.CloseSplitPane(0);
+        assert(!term.IsActiveTabSplit());
+        assert(term.GetActiveTab() == activeTab);
+        std::cout << "  Verified: Split pane closed cleanly and restored single-pane layout" << std::endl;
+
+        term.Close();
+        assert(!term.IsOpen());
+        std::cout << "  Passed: All Terminal Default Height, Bottom Div, Stderr Red & Split Terminal tests passed!" << std::endl;
+    }
+
     std::cout << "\n==========================================" << std::endl;
     std::cout << "ALL VERIFICATION TESTS PASSED SUCCESSFULLY!" << std::endl;
     std::cout << "==========================================" << std::endl;

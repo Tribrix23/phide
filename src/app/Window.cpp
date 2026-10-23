@@ -4119,10 +4119,14 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     }
                 }
 
-                // Terminal Panel cursor handling (Images 1, 2, 3, 4)
+                // Terminal Panel cursor handling (Images 1, 2, 3, 4, 5)
                 if (m_terminal.IsOpen() && m_terminal.HitTest(pt)) {
                     if (m_terminal.HitTestSplitter(pt)) {
                         SetCursor(LoadCursor(nullptr, IDC_SIZENS));
+                        return TRUE;
+                    }
+                    if (m_terminal.HitTestTerminalSplitter(pt)) {
+                        SetCursor(LoadCursor(nullptr, IDC_SIZEWE));
                         return TRUE;
                     }
                     if (m_terminal.HitTestButtons(pt)) {
@@ -4587,6 +4591,13 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
             // Toggle integrated terminal panel via Ctrl+` (VK_OEM_3)
             if ((GetKeyState(VK_CONTROL) & 0x8000) && wParam == VK_OEM_3) {
                 DoCreateTerminal();
+                return 0;
+            }
+
+            // Split active terminal via Ctrl+Shift+5 or Ctrl+Shift+\ (Images 4 & 5)
+            if (m_terminal.IsOpen() && m_isTerminalFocused && (GetKeyState(VK_CONTROL) & 0x8000) && (GetKeyState(VK_SHIFT) & 0x8000) && (wParam == '5' || wParam == VK_OEM_5)) {
+                m_terminal.SplitActiveTab();
+                InvalidateRect(m_hwnd, nullptr, FALSE);
                 return 0;
             }
 

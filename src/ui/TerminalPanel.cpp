@@ -11,6 +11,10 @@ TerminalTab::~TerminalTab() {
 
 void TerminalTab::Terminate() {
     isAlive = false;
+    if (splitTab) {
+        splitTab->Terminate();
+        splitTab.reset();
+    }
     if (hStdinWrite) {
         CloseHandle(hStdinWrite);
         hStdinWrite = NULL;
@@ -28,9 +32,16 @@ void TerminalTab::Terminate() {
     if (readerThread.joinable()) {
         readerThread.join();
     }
+    if (stderrReaderThread.joinable()) {
+        stderrReaderThread.join();
+    }
     if (hStdoutRead) {
         CloseHandle(hStdoutRead);
         hStdoutRead = NULL;
+    }
+    if (hStderrRead) {
+        CloseHandle(hStderrRead);
+        hStderrRead = NULL;
     }
 }
 
@@ -40,7 +51,7 @@ void TerminalTab::SendInput(const std::string& input) {
     WriteFile(hStdinWrite, input.data(), static_cast<DWORD>(input.size()), &written, NULL);
 }
 
-void TerminalTab::AppendOutput(const char* data, size_t length) {
+void TerminalTab::AppendOutput(const char* data, size_t length, bool isError) {
     if (!data || length == 0 || !isAlive.load()) return;
 
     // Convert UTF-8 / ANSI to wide string
@@ -67,8 +78,8 @@ void TerminalTab::AppendOutput(const char* data, size_t length) {
     }
 
     // Parse ANSI escapes and accumulate spans
-    D2D1_COLOR_F curColor = D2D1::ColorF(0.85f, 0.85f, 0.85f, 1.0f);
-    bool bold = false;
+    D2D1_COLOR_F curColor = isError ? D2D1::ColorF(0.94f, 0.32f, 0.32f, 1.0f) : D2D1::ColorF(0.92f, 0.92f, 0.92f, 1.0f);
+    bool bold = isError;
 
     for (size_t i = 0; i < wstr.length(); ++i) {
         wchar_t ch = wstr[i];
@@ -98,7 +109,7 @@ void TerminalTab::AppendOutput(const char* data, size_t length) {
                         int code = 0;
                         try { if (!codeStr.empty()) code = std::stoi(codeStr); } catch (...) {}
                         if (code == 0) {
-                            curColor = D2D1::ColorF(0.85f, 0.85f, 0.85f, 1.0f);
+                            curColor = D2D1::ColorF(0.92f, 0.92f, 0.92f, 1.0f);
                             bold = false;
                         } else if (code == 1) {
                             bold = true;
@@ -123,7 +134,7 @@ void TerminalTab::AppendOutput(const char* data, size_t length) {
                         } else if (code == 90) {
                             curColor = D2D1::ColorF(0.55f, 0.55f, 0.58f, 1.0f); // Gray
                         } else if (code == 39) {
-                            curColor = D2D1::ColorF(0.85f, 0.85f, 0.85f, 1.0f);
+                            curColor = D2D1::ColorF(0.92f, 0.92f, 0.92f, 1.0f);
                         }
                     }
                 } else if (cmd == L'K' || cmd == L'J') {
@@ -207,6 +218,9 @@ TerminalPanel::~TerminalPanel() {
 void TerminalPanel::Open(const std::wstring& workingDir) {
     m_isOpen = true;
     m_defaultWorkingDir = workingDir;
+    if (m_height < 320.0f) {
+        m_height = 360.0f; // Tall default size matching Image 1
+    }
     if (m_availableProfiles.empty()) {
         m_availableProfiles = DetectAvailableShells();
     }
@@ -283,9 +297,58 @@ void TerminalPanel::SetActiveTabIdx(int idx) noexcept {
 
 TerminalTab* TerminalPanel::GetActiveTab() {
     if (m_activeTabIdx >= 0 && m_activeTabIdx < static_cast<int>(m_tabs.size())) {
-        return m_tabs[m_activeTabIdx].get();
+        auto* primary = m_tabs[m_activeTabIdx].get();
+        if (primary && primary->splitTab && primary->activeSplitIndex == 1) {
+            return primary->splitTab.get();
+        }
+        return primary;
     }
     return nullptr;
+}
+
+bool TerminalPanel::IsActiveTabSplit() const noexcept {
+    if (m_activeTabIdx >= 0 && m_activeTabIdx < static_cast<int>(m_tabs.size())) {
+        return m_tabs[m_activeTabIdx] && m_tabs[m_activeTabIdx]->splitTab != nullptr;
+    }
+    return false;
+}
+
+void TerminalPanel::SplitActiveTab(TerminalShellType shell) {
+    if (m_activeTabIdx < 0 || m_activeTabIdx >= static_cast<int>(m_tabs.size())) return;
+    auto& primary = m_tabs[m_activeTabIdx];
+    if (!primary) return;
+
+    if (primary->splitTab) {
+        // Already split - close split pane
+        CloseSplitPane(static_cast<size_t>(m_activeTabIdx));
+        return;
+    }
+
+    auto split = std::make_unique<TerminalTab>();
+    split->shellType = shell;
+    split->workingDir = primary->workingDir.empty() ? m_defaultWorkingDir : primary->workingDir;
+    std::wstring shellName = L"powershell";
+    if (shell == TerminalShellType::Cmd) shellName = L"cmd";
+    else if (shell == TerminalShellType::GitBash) shellName = L"bash";
+    else if (shell == TerminalShellType::Node) shellName = L"node";
+    else if (shell == TerminalShellType::Python) shellName = L"python";
+    split->title = primary->title + L" (split: " + shellName + L")";
+    split->onOutput = m_outputCallback;
+
+    StartShellProcess(*split);
+    primary->splitTab = std::move(split);
+    primary->splitRatio = 0.5f;
+    primary->activeSplitIndex = 1; // Focus right split pane
+}
+
+void TerminalPanel::CloseSplitPane(size_t tabIdx) {
+    if (tabIdx >= m_tabs.size()) return;
+    auto& tab = m_tabs[tabIdx];
+    if (tab && tab->splitTab) {
+        tab->splitTab->Terminate();
+        tab->splitTab.reset();
+        tab->activeSplitIndex = 0;
+    }
 }
 
 void TerminalPanel::SetWorkingDir(const std::wstring& dir) {
@@ -294,6 +357,7 @@ void TerminalPanel::SetWorkingDir(const std::wstring& dir) {
 
 void TerminalPanel::StartShellProcess(TerminalTab& tab) {
     HANDLE hStdoutRead = NULL, hStdoutWrite = NULL;
+    HANDLE hStderrRead = NULL, hStderrWrite = NULL;
     HANDLE hStdinRead = NULL, hStdinWrite = NULL;
 
     SECURITY_ATTRIBUTES sa{};
@@ -304,11 +368,15 @@ void TerminalPanel::StartShellProcess(TerminalTab& tab) {
     CreatePipe(&hStdoutRead, &hStdoutWrite, &sa, 0);
     SetHandleInformation(hStdoutRead, HANDLE_FLAG_INHERIT, 0);
 
+    CreatePipe(&hStderrRead, &hStderrWrite, &sa, 0);
+    SetHandleInformation(hStderrRead, HANDLE_FLAG_INHERIT, 0);
+
     CreatePipe(&hStdinRead, &hStdinWrite, &sa, 0);
     SetHandleInformation(hStdinWrite, HANDLE_FLAG_INHERIT, 0);
 
     tab.hStdinWrite = hStdinWrite;
     tab.hStdoutRead = hStdoutRead;
+    tab.hStderrRead = hStderrRead;
 
     // Determine executable command
     std::wstring cmd;
@@ -326,11 +394,11 @@ void TerminalPanel::StartShellProcess(TerminalTab& tab) {
         }
     } else if (tab.shellType == TerminalShellType::Node) {
         if (std::filesystem::exists(L"C:\\Program Files\\nodejs\\node.exe")) {
-            cmd = L"\"C:\\Program Files\\nodejs\\node.exe\"";
+            cmd = L"\"C:\\Program Files\\nodejs\\node.exe\" -i";
         } else if (std::filesystem::exists(L"C:\\Program Files (x86)\\nodejs\\node.exe")) {
-            cmd = L"\"C:\\Program Files (x86)\\nodejs\\node.exe\"";
+            cmd = L"\"C:\\Program Files (x86)\\nodejs\\node.exe\" -i";
         } else {
-            cmd = L"node.exe";
+            cmd = L"node.exe -i";
         }
     } else if (tab.shellType == TerminalShellType::Python) {
         cmd = L"python.exe -i";
@@ -338,7 +406,7 @@ void TerminalPanel::StartShellProcess(TerminalTab& tab) {
 
     STARTUPINFOW si{};
     si.cb = sizeof(si);
-    si.hStdError = hStdoutWrite;
+    si.hStdError = hStderrWrite;
     si.hStdOutput = hStdoutWrite;
     si.hStdInput = hStdinRead;
     si.dwFlags |= STARTF_USESTDHANDLES | STARTF_USESHOWWINDOW;
@@ -369,6 +437,7 @@ void TerminalPanel::StartShellProcess(TerminalTab& tab) {
     );
 
     CloseHandle(hStdoutWrite);
+    CloseHandle(hStderrWrite);
     CloseHandle(hStdinRead);
 
     if (success) {
@@ -377,14 +446,24 @@ void TerminalPanel::StartShellProcess(TerminalTab& tab) {
         tab.processId = pi.dwProcessId;
         tab.isAlive = true;
 
-        // Background asynchronous reader thread
+        // Background asynchronous stdout reader thread
         TerminalTab* pTab = &tab;
         tab.readerThread = std::thread([pTab, hStdoutRead]() {
             char buffer[4096];
             DWORD bytesRead = 0;
             while (pTab->isAlive.load() && ReadFile(hStdoutRead, buffer, sizeof(buffer) - 1, &bytesRead, NULL) && bytesRead > 0) {
                 buffer[bytesRead] = '\0';
-                pTab->AppendOutput(buffer, bytesRead);
+                pTab->AppendOutput(buffer, bytesRead, false);
+            }
+        });
+
+        // Background asynchronous stderr reader thread (Errors rendered in vibrant RED matching Image 3)
+        tab.stderrReaderThread = std::thread([pTab, hStderrRead]() {
+            char buffer[4096];
+            DWORD bytesRead = 0;
+            while (pTab->isAlive.load() && ReadFile(hStderrRead, buffer, sizeof(buffer) - 1, &bytesRead, NULL) && bytesRead > 0) {
+                buffer[bytesRead] = '\0';
+                pTab->AppendOutput(buffer, bytesRead, true);
             }
         });
     } else {
@@ -627,6 +706,21 @@ void TerminalPanel::RenderHeader(ID2D1RenderTarget* pRT, Theme& theme, const app
         pRT->DrawRectangle(D2D1::RectF(fcx - fSize - 1.0f, fcy - fSize + 1.0f, fcx + fSize - 1.0f, fcy + fSize + 1.0f), theme.brushTextSecondary.Get(), 1.2f);
     }
 
+    // Split Terminal Button [|] (Images 4 & 5)
+    rightX -= (btnSize + config.ScaleF(4.0f));
+    m_splitBtnBounds = D2D1::RectF(rightX, btnY, rightX + btnSize, btnY + btnSize);
+    bool isSplitActive = IsActiveTabSplit();
+    if (m_hoverSplitBtn || isSplitActive) {
+        D2D1_ROUNDED_RECT rrc = D2D1::RoundedRect(m_splitBtnBounds, 3.0f, 3.0f);
+        pRT->FillRoundedRectangle(rrc, isSplitActive ? theme.brushBrandAccent.Get() : theme.brushItemHover.Get());
+    }
+    float scxSplit = rightX + btnSize / 2.0f;
+    float scySplit = btnY + btnSize / 2.0f;
+    float sSizeSplit = config.ScaleF(4.5f);
+    ID2D1Brush* splitBrush = isSplitActive ? theme.brushTextWhite.Get() : theme.brushTextSecondary.Get();
+    pRT->DrawRectangle(D2D1::RectF(scxSplit - sSizeSplit, scySplit - sSizeSplit, scxSplit + sSizeSplit, scySplit + sSizeSplit), splitBrush, 1.2f);
+    pRT->DrawLine(D2D1::Point2F(scxSplit, scySplit - sSizeSplit), D2D1::Point2F(scxSplit, scySplit + sSizeSplit), splitBrush, 1.2f);
+
     // '...' Options Menu Button (Circled in Green in Image 3)
     rightX -= (btnSize + config.ScaleF(4.0f));
     m_optionsBtnBounds = D2D1::RectF(rightX, btnY, rightX + btnSize, btnY + btnSize);
@@ -644,30 +738,98 @@ void TerminalPanel::RenderHeader(ID2D1RenderTarget* pRT, Theme& theme, const app
 
 void TerminalPanel::RenderContent(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
                                  float x, float y, float w, float h) {
-    TerminalTab* tab = GetActiveTab();
+    if (m_activeTabIdx < 0 || m_activeTabIdx >= static_cast<int>(m_tabs.size())) return;
+    auto* primaryTab = m_tabs[m_activeTabIdx].get();
+    if (!primaryTab) return;
+
+    if (primaryTab->splitTab) {
+        float splitterW = config.ScaleF(4.0f);
+        float totalW = w;
+        float leftW = (totalW - splitterW) * primaryTab->splitRatio;
+        float rightW = totalW - splitterW - leftW;
+
+        D2D1_RECT_F leftBounds = D2D1::RectF(x, y, x + leftW, y + h);
+        primaryTab->paneBounds = leftBounds;
+
+        D2D1_RECT_F splitterBounds = D2D1::RectF(x + leftW, y, x + leftW + splitterW, y + h);
+        primaryTab->splitSplitterBounds = splitterBounds;
+
+        D2D1_RECT_F rightBounds = D2D1::RectF(x + leftW + splitterW, y, x + totalW, y + h);
+        primaryTab->splitTab->paneBounds = rightBounds;
+
+        // Render left pane
+        RenderSinglePane(pRT, theme, config, primaryTab, leftBounds, primaryTab->activeSplitIndex == 0);
+
+        // Render vertical splitter bar
+        ID2D1Brush* splitterBrush = m_isSplitDragging ? theme.brushBrandAccent.Get() : theme.brushBorderSubtle.Get();
+        pRT->FillRectangle(splitterBounds, splitterBrush);
+
+        // Render right pane
+        RenderSinglePane(pRT, theme, config, primaryTab->splitTab.get(), rightBounds, primaryTab->activeSplitIndex == 1);
+    } else {
+        primaryTab->paneBounds = D2D1::RectF(x, y, x + w, y + h);
+        RenderSinglePane(pRT, theme, config, primaryTab, primaryTab->paneBounds, true);
+    }
+}
+
+void TerminalPanel::RenderSinglePane(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
+                                     TerminalTab* tab, const D2D1_RECT_F& bounds, bool isFocused) {
     if (!tab) return;
 
-    pRT->PushAxisAlignedClip(D2D1::RectF(x, y, x + w, y + h), D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+    pRT->PushAxisAlignedClip(bounds, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+
+    // Active pane highlight border (when split)
+    if (IsActiveTabSplit() && isFocused) {
+        pRT->DrawRectangle(bounds, theme.brushBrandAccent.Get(), 1.0f);
+    }
+
+    // Split pane badge and close button (if split and this is the right split tab)
+    if (IsActiveTabSplit() && tab != m_tabs[m_activeTabIdx].get()) {
+        float badgeW = config.ScaleF(static_cast<float>(tab->title.length() * 6 + 28));
+        float badgeH = config.ScaleF(18.0f);
+        float badgeX = bounds.right - badgeW - config.ScaleF(8.0f);
+        float badgeY = bounds.top + config.ScaleF(4.0f);
+        D2D1_RECT_F rcBadge = D2D1::RectF(badgeX, badgeY, badgeX + badgeW, badgeY + badgeH);
+        D2D1_ROUNDED_RECT rrcBadge = D2D1::RoundedRect(rcBadge, 3.0f, 3.0f);
+
+        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> badgeBrush;
+        pRT->CreateSolidColorBrush(theme.IsDarkMode() ? D2D1::ColorF(0.14f, 0.16f, 0.20f, 0.90f) : D2D1::ColorF(0.90f, 0.92f, 0.95f, 0.90f), &badgeBrush);
+        if (badgeBrush) pRT->FillRoundedRectangle(rrcBadge, badgeBrush.Get());
+
+        D2D1_RECT_F rcBadgeText = D2D1::RectF(badgeX + config.ScaleF(6.0f), badgeY, badgeX + badgeW - config.ScaleF(14.0f), badgeY + badgeH);
+        pRT->DrawText(tab->title.c_str(), static_cast<UINT32>(tab->title.length()),
+                      theme.fontMenuItem.Get() ? theme.fontMenuItem.Get() : theme.fontButtonCenter.Get(),
+                      rcBadgeText, theme.brushTextSecondary.Get());
+
+        // Split close button 'x'
+        float cx = badgeX + badgeW - config.ScaleF(8.0f);
+        float cy = badgeY + badgeH / 2.0f;
+        float cr = config.ScaleF(3.0f);
+        tab->splitCloseBounds = D2D1::RectF(cx - cr - 2.0f, cy - cr - 2.0f, cx + cr + 2.0f, cy + cr + 2.0f);
+        pRT->DrawLine(D2D1::Point2F(cx - cr, cy - cr), D2D1::Point2F(cx + cr, cy + cr), theme.brushTextMuted.Get(), 1.2f);
+        pRT->DrawLine(D2D1::Point2F(cx + cr, cy - cr), D2D1::Point2F(cx - cr, cy + cr), theme.brushTextMuted.Get(), 1.2f);
+    }
 
     std::lock_guard<std::mutex> lock(tab->bufferMutex);
 
     float padX = config.ScaleF(12.0f);
     float padY = config.ScaleF(6.0f);
+    float padBottom = config.ScaleF(22.0f); // Breathing room so characters do not stick to bottom edge (Image 2)
     float lineH = config.ScaleF(17.0f);
 
-    size_t totalLines = tab->lines.size();
-    float maxVisibleLines = h / lineH;
+    float availableH = (bounds.bottom - bounds.top) - padY - padBottom;
+    float maxVisibleLines = availableH > 0.0f ? (availableH / lineH) : 1.0f;
 
-    // Calculate start line based on scroll
+    size_t totalLines = tab->lines.size();
     size_t startLine = 0;
     if (totalLines > static_cast<size_t>(maxVisibleLines)) {
         startLine = totalLines - static_cast<size_t>(maxVisibleLines);
     }
 
-    float curY = y + padY;
-    float curX = x + padX;
+    float curY = bounds.top + padY;
+    float curX = bounds.left + padX;
 
-    // Exact monospace character advance width calculation via DirectWrite to prevent cursor drift
+    // DirectWrite character advance width
     float charW = config.ScaleF(7.8f);
     if (theme.dwriteFactory && theme.fontCode) {
         Microsoft::WRL::ComPtr<IDWriteTextLayout> pLayout;
@@ -679,16 +841,30 @@ void TerminalPanel::RenderContent(ID2D1RenderTarget* pRT, Theme& theme, const ap
         }
     }
 
-    for (size_t l = startLine; l < totalLines && curY < y + h; ++l) {
+    for (size_t l = startLine; l < totalLines && (curY + lineH) <= (bounds.bottom - padBottom + 2.0f); ++l) {
         const auto& line = tab->lines[l];
-        curX = x + padX;
+        curX = bounds.left + padX;
+
+        // Auto-detect error lines
+        bool isLineError = false;
+        if (line.rawText.find(L"Cannot find path") != std::wstring::npos ||
+            line.rawText.find(L"CategoryInfo") != std::wstring::npos ||
+            line.rawText.find(L"FullyQualifiedErrorId") != std::wstring::npos ||
+            line.rawText.rfind(L"+ ", 0) == 0 ||
+            line.rawText.rfind(L"Error:", 0) == 0 ||
+            line.rawText.rfind(L"Exception:", 0) == 0 ||
+            line.rawText.find(L"The term '") != std::wstring::npos) {
+            isLineError = true;
+        }
 
         for (const auto& span : line.spans) {
             float spanW = static_cast<float>(span.text.length()) * charW;
             D2D1_RECT_F rcSpan = D2D1::RectF(curX, curY, curX + spanW + 50.0f, curY + lineH);
 
+            D2D1_COLOR_F renderColor = isLineError ? D2D1::ColorF(0.94f, 0.32f, 0.32f, 1.0f) : span.color;
+
             Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> spanBrush;
-            pRT->CreateSolidColorBrush(span.color, &spanBrush);
+            pRT->CreateSolidColorBrush(renderColor, &spanBrush);
             if (spanBrush) {
                 pRT->DrawText(span.text.c_str(), static_cast<UINT32>(span.text.length()),
                               theme.fontCode.Get(), rcSpan, spanBrush.Get());
@@ -697,7 +873,7 @@ void TerminalPanel::RenderContent(ID2D1RenderTarget* pRT, Theme& theme, const ap
         }
 
         // Blinking cursor '█' on the last active output line
-        if (l == totalLines - 1) {
+        if (isFocused && l == totalLines - 1) {
             bool blinkOn = ((GetTickCount64() / 500) % 2 == 0);
             if (blinkOn) {
                 float cursorW = config.ScaleF(7.5f);
@@ -709,6 +885,14 @@ void TerminalPanel::RenderContent(ID2D1RenderTarget* pRT, Theme& theme, const ap
 
         curY += lineH;
     }
+
+    // Bottom div under terminal so letters don't stick to bottom border (Image 2)
+    D2D1_RECT_F bottomDiv = D2D1::RectF(bounds.left, bounds.bottom - padBottom, bounds.right, bounds.bottom);
+    D2D1_COLOR_F bottomDivColor = theme.IsDarkMode() ? D2D1::ColorF(0.07f, 0.07f, 0.08f, 1.0f) : D2D1::ColorF(0.94f, 0.94f, 0.95f, 1.0f);
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> divBrush;
+    pRT->CreateSolidColorBrush(bottomDivColor, &divBrush);
+    if (divBrush) pRT->FillRectangle(bottomDiv, divBrush.Get());
+    pRT->DrawLine(D2D1::Point2F(bounds.left, bounds.bottom - padBottom), D2D1::Point2F(bounds.right, bounds.bottom - padBottom), theme.brushBorderSubtle.Get(), 0.5f);
 
     pRT->PopAxisAlignedClip();
 }
@@ -874,18 +1058,40 @@ bool TerminalPanel::HitTestSplitter(POINT pt) const noexcept {
            pt.y >= m_splitterBounds.top - 2 && pt.y <= m_splitterBounds.bottom + 2;
 }
 
+bool TerminalPanel::HitTestSplitButton(POINT pt) const noexcept {
+    if (!m_isOpen) return false;
+    return pt.x >= m_splitBtnBounds.left && pt.x <= m_splitBtnBounds.right &&
+           pt.y >= m_splitBtnBounds.top && pt.y <= m_splitBtnBounds.bottom;
+}
+
+bool TerminalPanel::HitTestTerminalSplitter(POINT pt) const noexcept {
+    if (!m_isOpen) return false;
+    if (m_activeTabIdx >= 0 && m_activeTabIdx < static_cast<int>(m_tabs.size())) {
+        const auto& tab = m_tabs[m_activeTabIdx];
+        if (tab && tab->splitTab) {
+            const auto& sb = tab->splitSplitterBounds;
+            return pt.x >= sb.left - 2 && pt.x <= sb.right + 2 &&
+                   pt.y >= sb.top && pt.y <= sb.bottom;
+        }
+    }
+    return false;
+}
+
 bool TerminalPanel::HitTestButtons(POINT pt) const noexcept {
     if (!m_isOpen) return false;
     auto inRect = [](POINT p, const D2D1_RECT_F& rc) {
         return p.x >= rc.left && p.x <= rc.right && p.y >= rc.top && p.y <= rc.bottom;
     };
     if (inRect(pt, m_newTabBtnBounds) || inRect(pt, m_shellDropdownBtnBounds) ||
-        inRect(pt, m_optionsBtnBounds) || inRect(pt, m_fullScreenBtnBounds) ||
-        inRect(pt, m_minimizeBtnBounds)) {
+        inRect(pt, m_splitBtnBounds) || inRect(pt, m_optionsBtnBounds) ||
+        inRect(pt, m_fullScreenBtnBounds) || inRect(pt, m_minimizeBtnBounds)) {
         return true;
     }
     for (const auto& tab : m_tabs) {
         if (inRect(pt, tab->tabBounds) || inRect(pt, tab->closeBounds)) {
+            return true;
+        }
+        if (tab->splitTab && inRect(pt, tab->splitTab->splitCloseBounds)) {
             return true;
         }
     }
@@ -917,7 +1123,46 @@ bool TerminalPanel::OnMouseDown(POINT pt, const app::AppConfig& config, const st
         return true;
     }
 
-    // 2. Check Shell Menu Items (Image 2)
+    // 2. Check Split Button [|]
+    if (inRect(pt, m_splitBtnBounds)) {
+        SplitActiveTab();
+        return true;
+    }
+
+    // 3. Check Split Pane Close button
+    if (m_activeTabIdx >= 0 && m_activeTabIdx < static_cast<int>(m_tabs.size())) {
+        auto& primary = m_tabs[m_activeTabIdx];
+        if (primary && primary->splitTab && inRect(pt, primary->splitTab->splitCloseBounds)) {
+            CloseSplitPane(static_cast<size_t>(m_activeTabIdx));
+            return true;
+        }
+    }
+
+    // 4. Check Terminal Splitter Drag (vertical divider between panes)
+    if (HitTestTerminalSplitter(pt)) {
+        m_isSplitDragging = true;
+        m_splitDragStartX = static_cast<float>(pt.x);
+        if (m_activeTabIdx >= 0 && m_activeTabIdx < static_cast<int>(m_tabs.size())) {
+            m_splitRatioStart = m_tabs[m_activeTabIdx]->splitRatio;
+        }
+        return true;
+    }
+
+    // 5. Check Pane Focus Selection
+    if (m_activeTabIdx >= 0 && m_activeTabIdx < static_cast<int>(m_tabs.size())) {
+        auto& primary = m_tabs[m_activeTabIdx];
+        if (primary && primary->splitTab) {
+            if (inRect(pt, primary->paneBounds)) {
+                primary->activeSplitIndex = 0;
+                return true;
+            } else if (inRect(pt, primary->splitTab->paneBounds)) {
+                primary->activeSplitIndex = 1;
+                return true;
+            }
+        }
+    }
+
+    // 6. Check Shell Menu Items (Image 2)
     if (m_showShellMenu) {
         if (inRect(pt, m_shellMenuBounds)) {
             float relY = pt.y - (m_shellMenuBounds.top + 6.0f);
@@ -933,7 +1178,7 @@ bool TerminalPanel::OnMouseDown(POINT pt, const app::AppConfig& config, const st
         }
     }
 
-    // 3. Check Options Menu Items (Image 4)
+    // 7. Check Options Menu Items (Image 4)
     if (m_showOptionsMenu) {
         if (inRect(pt, m_optionsMenuBounds)) {
             float relY = pt.y - (m_optionsMenuBounds.top + 4.0f);
@@ -966,33 +1211,33 @@ bool TerminalPanel::OnMouseDown(POINT pt, const app::AppConfig& config, const st
         return true;
     }
 
-    // 4. Check '-' Minimize Button
+    // 8. Check '-' Minimize Button
     if (inRect(pt, m_minimizeBtnBounds)) {
         Close();
         return true;
     }
 
-    // 5. Check '...' Options Button
+    // 9. Check '...' Options Button
     if (inRect(pt, m_optionsBtnBounds)) {
         m_showOptionsMenu = !m_showOptionsMenu;
         m_showShellMenu = false;
         return true;
     }
 
-    // 6. Check 'v' Shell Dropdown Button
+    // 10. Check 'v' Shell Dropdown Button
     if (inRect(pt, m_shellDropdownBtnBounds)) {
         m_showShellMenu = !m_showShellMenu;
         m_showOptionsMenu = false;
         return true;
     }
 
-    // 7. Check '+' New Tab Button
+    // 11. Check '+' New Tab Button
     if (inRect(pt, m_newTabBtnBounds)) {
         NewTab(TerminalShellType::PowerShell, workingDir);
         return true;
     }
 
-    // 8. Check Tabs and Tab Close Buttons
+    // 12. Check Tabs and Tab Close Buttons
     for (size_t i = 0; i < m_tabs.size(); ++i) {
         if (inRect(pt, m_tabs[i]->closeBounds)) {
             CloseTab(i);
@@ -1004,7 +1249,7 @@ bool TerminalPanel::OnMouseDown(POINT pt, const app::AppConfig& config, const st
         }
     }
 
-    // 9. Focus Terminal Content Area
+    // 13. Focus Terminal Content Area
     if (HitTestTextArea(pt)) {
         return true;
     }
@@ -1021,12 +1266,28 @@ bool TerminalPanel::OnMouseMove(POINT pt, bool isLButtonDown, float clientH) {
         return true;
     }
 
+    if (m_isSplitDragging && isLButtonDown) {
+        if (m_activeTabIdx >= 0 && m_activeTabIdx < static_cast<int>(m_tabs.size())) {
+            auto& primary = m_tabs[m_activeTabIdx];
+            if (primary && primary->splitTab) {
+                float totalW = m_textAreaBounds.right - m_textAreaBounds.left;
+                if (totalW > 50.0f) {
+                    float deltaX = static_cast<float>(pt.x) - m_splitDragStartX;
+                    float newRatio = m_splitRatioStart + (deltaX / totalW);
+                    primary->splitRatio = (std::max)(0.2f, (std::min)(0.8f, newRatio));
+                }
+            }
+        }
+        return true;
+    }
+
     auto inRect = [](POINT p, const D2D1_RECT_F& rc) {
         return p.x >= rc.left && p.x <= rc.right && p.y >= rc.top && p.y <= rc.bottom;
     };
 
     m_hoverNewTab = inRect(pt, m_newTabBtnBounds);
     m_hoverShellDropdown = inRect(pt, m_shellDropdownBtnBounds);
+    m_hoverSplitBtn = inRect(pt, m_splitBtnBounds);
     m_hoverOptions = inRect(pt, m_optionsBtnBounds);
     m_hoverFullScreen = inRect(pt, m_fullScreenBtnBounds);
     m_hoverMinimize = inRect(pt, m_minimizeBtnBounds);
@@ -1062,6 +1323,7 @@ bool TerminalPanel::OnMouseMove(POINT pt, bool isLButtonDown, float clientH) {
 void TerminalPanel::OnMouseUp(POINT pt) {
     (void)pt;
     m_isResizing = false;
+    m_isSplitDragging = false;
 }
 
 bool TerminalPanel::OnMouseWheel(POINT pt, short delta) {

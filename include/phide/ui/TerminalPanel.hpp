@@ -140,15 +140,25 @@ struct TerminalTab {
     HANDLE hThread = NULL;
     HANDLE hStdinWrite = NULL;
     HANDLE hStdoutRead = NULL;
+    HANDLE hStderrRead = NULL;
     DWORD processId = 0;
     std::atomic<bool> isAlive{false};
     std::thread readerThread;
+    std::thread stderrReaderThread;
 
     std::vector<TerminalLine> lines;
     std::wstring currentInputLine;
     float scrollOffsetY = 0.0f;
     std::mutex bufferMutex;
     std::function<void()> onOutput;
+
+    // Split Terminal support (Image 4 & 5)
+    std::unique_ptr<TerminalTab> splitTab;
+    float splitRatio = 0.5f;
+    int activeSplitIndex = 0; // 0 = primary left, 1 = splitTab right
+    D2D1_RECT_F paneBounds{};
+    D2D1_RECT_F splitSplitterBounds{};
+    D2D1_RECT_F splitCloseBounds{};
 
     // Hit-testing bounds
     D2D1_RECT_F tabBounds{};
@@ -157,7 +167,7 @@ struct TerminalTab {
     ~TerminalTab();
     void Terminate();
     void SendInput(const std::string& input);
-    void AppendOutput(const char* data, size_t length);
+    void AppendOutput(const char* data, size_t length, bool isError = false);
 };
 
 /**
@@ -186,14 +196,17 @@ public:
     void SetFullScreen(bool fs) noexcept { m_isFullScreen = fs; }
     void ToggleFullScreen() noexcept { m_isFullScreen = !m_isFullScreen; }
 
-    // Tab Management
+    // Tab & Split Management (Images 4 & 5)
     void NewTab(TerminalShellType shell, const std::wstring& workingDir);
+    void SplitActiveTab(TerminalShellType shell = TerminalShellType::PowerShell);
+    void CloseSplitPane(size_t tabIdx);
     void CloseTab(size_t index);
     void CloseAllTabs();
     [[nodiscard]] size_t GetTabCount() const noexcept { return m_tabs.size(); }
     [[nodiscard]] int GetActiveTabIdx() const noexcept { return m_activeTabIdx; }
     void SetActiveTabIdx(int idx) noexcept;
     TerminalTab* GetActiveTab();
+    [[nodiscard]] bool IsActiveTabSplit() const noexcept;
 
     // Direct2D Rendering
     void Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
@@ -204,6 +217,8 @@ public:
     [[nodiscard]] bool HitTestSplitter(POINT pt) const noexcept;
     [[nodiscard]] bool HitTestButtons(POINT pt) const noexcept;
     [[nodiscard]] bool HitTestTextArea(POINT pt) const noexcept;
+    [[nodiscard]] bool HitTestSplitButton(POINT pt) const noexcept;
+    [[nodiscard]] bool HitTestTerminalSplitter(POINT pt) const noexcept;
 
     bool OnMouseDown(POINT pt, const app::AppConfig& config, const std::wstring& workingDir);
     bool OnMouseMove(POINT pt, bool isLButtonDown, float clientH);
@@ -218,7 +233,10 @@ public:
     void SetOutputCallback(std::function<void()> cb) {
         m_outputCallback = std::move(cb);
         for (auto& tab : m_tabs) {
-            if (tab) tab->onOutput = m_outputCallback;
+            if (tab) {
+                tab->onOutput = m_outputCallback;
+                if (tab->splitTab) tab->splitTab->onOutput = m_outputCallback;
+            }
         }
     }
 
@@ -239,11 +257,13 @@ private:
                       float x, float y, float w, float h);
     void RenderContent(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
                        float x, float y, float w, float h);
+    void RenderSinglePane(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
+                          TerminalTab* tab, const D2D1_RECT_F& bounds, bool isFocused);
     void RenderShellMenu(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config);
     void RenderOptionsMenu(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config);
 
     bool m_isOpen = false;
-    float m_height = 240.0f;
+    float m_height = 360.0f; // Taller default height matching Image 1
     bool m_isResizing = false;
     float m_dragStartY = 0.0f;
     float m_heightStart = 0.0f;
@@ -264,16 +284,23 @@ private:
 
     D2D1_RECT_F m_newTabBtnBounds{};
     D2D1_RECT_F m_shellDropdownBtnBounds{};
+    D2D1_RECT_F m_splitBtnBounds{};
     D2D1_RECT_F m_optionsBtnBounds{};
     D2D1_RECT_F m_fullScreenBtnBounds{};
     D2D1_RECT_F m_minimizeBtnBounds{};
 
     bool m_hoverNewTab = false;
     bool m_hoverShellDropdown = false;
+    bool m_hoverSplitBtn = false;
     bool m_hoverOptions = false;
     bool m_hoverFullScreen = false;
     bool m_hoverMinimize = false;
     bool m_isFullScreen = false;
+
+    // Terminal Splitter dragging (Image 5)
+    bool m_isSplitDragging = false;
+    float m_splitDragStartX = 0.0f;
+    float m_splitRatioStart = 0.5f;
 
     // Shell Dropdown Menu (Image 2)
     bool m_showShellMenu = false;
