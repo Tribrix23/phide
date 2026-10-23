@@ -11,6 +11,7 @@
 
 #include <windows.h>
 #include <windowsx.h>
+#include <shellapi.h>
 #include <d2d1.h>
 #include <dwrite.h>
 #include <dwmapi.h>
@@ -28,6 +29,7 @@
 #include "phide/ui/ThemePickerModal.hpp"
 #include "phide/ui/QuickOpenModal.hpp"
 #include "phide/ui/TerminalPanel.hpp"
+#include "phide/server/LiveServer.hpp"
 #include "phide/editor/Buffer.hpp"
 #include "phide/editor/OpenDocument.hpp"
 #include "phide/workspace/WorkspaceManager.hpp"
@@ -366,6 +368,15 @@ private:
     /** @brief Spawns or toggles integrated terminal panel (Ctrl+Shift+`). */
     void DoCreateTerminal();
 
+    /** @brief Executes the active file: Live Server for HTML with clickable URLs, Node for JS, disabled for CSS. */
+    void DoRunActiveDocument();
+
+    /** @brief Starts an interactive debugging session with the active document (same layout as terminal). */
+    void DoDebugActiveDocument();
+
+    /** @brief Updates enabled/disabled state of Run and Debug buttons based on active file type. */
+    void UpdateExecutionButtonStates();
+
     /** @brief Opens or focuses a file in the workspace matching the specified relative filename. */
     void OpenFileByName(const std::wstring& name);
 
@@ -420,6 +431,9 @@ private:
     ui::QuickOpenModal m_quickOpen;
     ui::TerminalPanel m_terminal;
     bool m_isTerminalFocused = false;
+    server::LiveServer m_liveServer;
+    D2D1_RECT_F m_liveServerPillBounds{};
+    bool m_hoverLiveServerPill = false;
     workspace::WorkspaceManager m_workspace;
     workspace::ExplorerUndoManager m_explorerUndo;
     editor::SnippetManager m_snippetManager;

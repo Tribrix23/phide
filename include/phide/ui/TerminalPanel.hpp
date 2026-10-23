@@ -26,7 +26,30 @@ enum class TerminalShellType {
     Cmd,
     GitBash,
     Node,
-    Python
+    Python,
+    LiveServer,
+    DebugConsole
+};
+
+/**
+ * @brief Debug execution toolbar actions (Continue, Step Over, Step Into, Step Out, Restart, Stop).
+ */
+enum class DebugAction {
+    None,
+    Continue,  ///< Continue execution (F5)
+    StepOver,  ///< Step over next instruction (F10)
+    StepInto,  ///< Step into function call (F11)
+    StepOut,   ///< Step out of current function (Shift+F11)
+    Restart,   ///< Restart debug session (Ctrl+Shift+F5)
+    Stop       ///< Stop debugging session (Shift+F5)
+};
+
+/**
+ * @brief Bounding box and target for clickable hyperlinks (e.g. http://localhost:5500).
+ */
+struct TerminalUrlHit {
+    std::wstring url;
+    D2D1_RECT_F bounds{};
 };
 
 /**
@@ -212,6 +235,20 @@ public:
     TerminalTab* GetActiveTab();
     [[nodiscard]] bool IsActiveTabSplit() const noexcept;
 
+    // URL Link Navigation (Ctrl + Click)
+    [[nodiscard]] bool HitTestUrl(POINT pt, std::wstring* outUrl = nullptr) const;
+
+    // Live Server and Execution
+    void StartLiveServerSession(const std::wstring& localUrl, const std::wstring& networkUrl);
+    void ExecuteCommandLine(const std::wstring& command);
+
+    // Debug Session Management (Same layout as terminal, fully functional)
+    void StartDebugSession(const std::wstring& filePath, const std::wstring& workingDir);
+    void TriggerDebugAction(DebugAction action);
+    void StopDebugSession();
+    [[nodiscard]] bool IsDebugActive() const noexcept { return m_isDebugActive; }
+    [[nodiscard]] DebugAction HitTestDebugButtons(POINT pt) const noexcept;
+
     // Direct2D Rendering
     void Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
                 float clientW, float clientH, float leftOffset);
@@ -323,6 +360,18 @@ private:
 
     int m_engineType = 0; // 0 = Reworked 2025, 1 = Classic
     bool m_showToolbar = true;
+
+    // Debugging controls & state
+    bool m_isDebugActive = false;
+    std::wstring m_debugTargetFile;
+    D2D1_RECT_F m_debugContinueBounds{};
+    D2D1_RECT_F m_debugStepOverBounds{};
+    D2D1_RECT_F m_debugStepIntoBounds{};
+    D2D1_RECT_F m_debugStepOutBounds{};
+    D2D1_RECT_F m_debugRestartBounds{};
+    D2D1_RECT_F m_debugStopBounds{};
+    DebugAction m_hoveredDebugAction = DebugAction::None;
+    mutable std::vector<TerminalUrlHit> m_visibleUrls;
 };
 
 } // namespace phide::ui

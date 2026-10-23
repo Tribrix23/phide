@@ -199,7 +199,16 @@ public:
     void SetActiveMenu(HeaderMenuId id) { m_activeMenu = id; }
     [[nodiscard]] HeaderMenuId GetActiveMenu() const noexcept { return m_activeMenu; }
 
+    // Run & Debug Execution state
+    void SetRunEnabled(bool enabled) noexcept { m_runEnabled = enabled; }
+    [[nodiscard]] bool IsRunEnabled() const noexcept { return m_runEnabled; }
+    void SetDebugEnabled(bool enabled) noexcept { m_debugEnabled = enabled; }
+    [[nodiscard]] bool IsDebugEnabled() const noexcept { return m_debugEnabled; }
+
 private:
+    bool m_runEnabled = true;
+    bool m_debugEnabled = true;
+
     HeaderMenuId m_hoveredMenu = HeaderMenuId::None;
     HeaderMenuId m_activeMenu = HeaderMenuId::None;
     CaptionButtonType m_hoveredCaption = CaptionButtonType::None;

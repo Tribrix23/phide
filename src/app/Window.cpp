@@ -2025,6 +2025,102 @@ void Window::DoCreateTerminal() {
     InvalidateRect(m_hwnd, nullptr, FALSE);
 }
 
+void Window::UpdateExecutionButtonStates() {
+    auto* pDoc = GetActiveDoc();
+    if (!pDoc || pDoc->isSpecialView) {
+        m_header.SetRunEnabled(false);
+        m_header.SetDebugEnabled(false);
+        return;
+    }
+
+    std::filesystem::path p(pDoc->filePath);
+    std::wstring ext = p.extension().wstring();
+    for (auto& c : ext) c = towlower(c);
+
+    // Executable file types for Run: .html, .htm, .js, .mjs, .cjs, .ts, .jsx, .tsx, .py
+    // CSS and unsupported files are disabled per user specification
+    bool isHtml = (ext == L".html" || ext == L".htm");
+    bool isJsTs = (ext == L".js" || ext == L".mjs" || ext == L".cjs" || ext == L".ts" || ext == L".jsx" || ext == L".tsx");
+    bool isPython = (ext == L".py");
+
+    bool canRun = isHtml || isJsTs || isPython;
+    bool canDebug = isJsTs || isPython || isHtml;
+
+    m_header.SetRunEnabled(canRun);
+    m_header.SetDebugEnabled(canDebug);
+}
+
+void Window::DoRunActiveDocument() {
+    auto* pDoc = GetActiveDoc();
+    if (!pDoc) return;
+
+    std::filesystem::path p(pDoc->filePath);
+    std::wstring ext = p.extension().wstring();
+    for (auto& c : ext) c = towlower(c);
+
+    if (ext == L".html" || ext == L".htm") {
+        // Fast Live Server startup with clickable URLs
+        std::wstring folder = p.parent_path().wstring();
+        if (folder.empty() && m_drawer.HasOpenFolder()) {
+            folder = m_drawer.GetOpenFolderPath();
+        }
+        if (folder.empty()) {
+            folder = m_workspace.GetRootPath();
+        }
+        if (folder.empty()) {
+            wchar_t cur[MAX_PATH];
+            GetCurrentDirectoryW(MAX_PATH, cur);
+            folder = cur;
+        }
+
+        if (!m_liveServer.IsRunning() || m_liveServer.GetRootDir() != folder) {
+            m_liveServer.Stop();
+            m_liveServer.Start(folder, p.filename().wstring(), 5500);
+        }
+
+        std::wstring fileName = p.filename().wstring();
+        std::wstring localUrl = m_liveServer.GetLocalUrl(fileName);
+        std::wstring networkUrl = m_liveServer.GetNetworkUrl(fileName);
+
+        m_terminal.Open(folder);
+        m_terminal.StartLiveServerSession(localUrl, networkUrl);
+        m_isTerminalFocused = true;
+        InvalidateRect(m_hwnd, nullptr, FALSE);
+    } else if (ext == L".js" || ext == L".mjs" || ext == L".cjs" || ext == L".ts" || ext == L".jsx" || ext == L".tsx") {
+        std::wstring folder = p.parent_path().wstring();
+        if (folder.empty() && m_drawer.HasOpenFolder()) folder = m_drawer.GetOpenFolderPath();
+        if (folder.empty()) folder = m_workspace.GetRootPath();
+
+        m_terminal.Open(folder);
+        m_terminal.ExecuteCommandLine(L"node \"" + pDoc->filePath + L"\"");
+        m_isTerminalFocused = true;
+        InvalidateRect(m_hwnd, nullptr, FALSE);
+    } else if (ext == L".py") {
+        std::wstring folder = p.parent_path().wstring();
+        if (folder.empty() && m_drawer.HasOpenFolder()) folder = m_drawer.GetOpenFolderPath();
+        if (folder.empty()) folder = m_workspace.GetRootPath();
+
+        m_terminal.Open(folder);
+        m_terminal.ExecuteCommandLine(L"python \"" + pDoc->filePath + L"\"");
+        m_isTerminalFocused = true;
+        InvalidateRect(m_hwnd, nullptr, FALSE);
+    }
+}
+
+void Window::DoDebugActiveDocument() {
+    auto* pDoc = GetActiveDoc();
+    if (!pDoc) return;
+
+    std::wstring folder = std::filesystem::path(pDoc->filePath).parent_path().wstring();
+    if (folder.empty() && m_drawer.HasOpenFolder()) folder = m_drawer.GetOpenFolderPath();
+    if (folder.empty()) folder = m_workspace.GetRootPath();
+
+    m_terminal.Open(folder);
+    m_terminal.StartDebugSession(pDoc->filePath, folder);
+    m_isTerminalFocused = true;
+    InvalidateRect(m_hwnd, nullptr, FALSE);
+}
+
 void Window::LoadFileFromPath(const std::wstring& path) {
     OpenFileDocument(path, false);
 }
@@ -2482,6 +2578,42 @@ void Window::OnPaint() {
         m_terminal.Render(m_pRenderTarget.Get(), m_theme, m_config, clientW, clientH, canvasLeft);
     }
 
+    // Live Server Status Badge / Pill (Image 2: ⚡ Port: 5500)
+    if (m_liveServer.IsRunning()) {
+        float pillW = m_config.ScaleF(110.0f);
+        float pillH = m_config.ScaleF(22.0f);
+        float pillX = clientW - pillW - m_config.ScaleF(12.0f);
+        float pillY = clientH - pillH - m_config.ScaleF(6.0f);
+        if (m_terminal.IsOpen()) {
+            float th = m_terminal.IsFullScreen() ? (clientH - headerH) : m_terminal.GetHeight();
+            pillY = clientH - th - pillH - m_config.ScaleF(6.0f);
+        }
+        m_liveServerPillBounds = D2D1::RectF(pillX, pillY, pillX + pillW, pillY + pillH);
+        D2D1_ROUNDED_RECT rrcPill = D2D1::RoundedRect(m_liveServerPillBounds, 4.0f, 4.0f);
+
+        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> pillBgBrush;
+        m_pRenderTarget->CreateSolidColorBrush(
+            m_hoverLiveServerPill
+                ? (m_theme.IsDarkMode() ? D2D1::ColorF(0.20f, 0.40f, 0.25f, 0.95f) : D2D1::ColorF(0.80f, 0.95f, 0.85f, 0.95f))
+                : (m_theme.IsDarkMode() ? D2D1::ColorF(0.12f, 0.25f, 0.16f, 0.90f) : D2D1::ColorF(0.88f, 0.96f, 0.90f, 0.90f)),
+            &pillBgBrush
+        );
+        if (pillBgBrush) m_pRenderTarget->FillRoundedRectangle(rrcPill, pillBgBrush.Get());
+        m_pRenderTarget->DrawRoundedRectangle(rrcPill, m_theme.brushBrandAccent.Get() ? m_theme.brushBrandAccent.Get() : m_theme.brushBorderSubtle.Get(), 1.0f);
+
+        std::wstring pillText = L"⚡ Port: " + std::to_wstring(m_liveServer.GetPort());
+        D2D1_RECT_F rcPillText = D2D1::RectF(pillX + m_config.ScaleF(6.0f), pillY, pillX + pillW, pillY + pillH);
+        m_pRenderTarget->DrawText(
+            pillText.c_str(),
+            static_cast<UINT32>(pillText.length()),
+            m_theme.fontMenuItem.Get() ? m_theme.fontMenuItem.Get() : m_theme.fontCode.Get(),
+            rcPillText,
+            m_theme.brushTextWhite.Get() ? m_theme.brushTextWhite.Get() : m_theme.brushTextPrimary.Get()
+        );
+    } else {
+        m_liveServerPillBounds = {};
+    }
+
     // 2. Render Slide-out Drawer Panel (when visible or animating, with 14px rounded curve at top-left)
     if (hasLeftDrawer) {
         m_drawer.Render(m_pRenderTarget.Get(), m_theme, m_config, clientH, currentDrawerW);
@@ -2493,6 +2625,7 @@ void Window::OnPaint() {
     m_rail.Render(m_pRenderTarget.Get(), m_theme, m_config, clientH);
 
     // 4. Render Dark Frameless Title Header at Top (with active highlight on Sidebar button when open)
+    UpdateExecutionButtonStates();
     m_header.Render(m_pRenderTarget.Get(), m_theme, m_config, clientW, IsZoomed(m_hwnd));
 
     // 5. Render Active Popup Dropdown Menu Overlay
@@ -2558,6 +2691,17 @@ void Window::HandleMouseMove(POINT clientPt) {
         TRACKMOUSEEVENT tme{ sizeof(TRACKMOUSEEVENT), TME_LEAVE, m_hwnd, 0 };
         TrackMouseEvent(&tme);
         m_trackingMouse = true;
+    }
+
+    bool oldHoverPill = m_hoverLiveServerPill;
+    m_hoverLiveServerPill = m_liveServer.IsRunning() &&
+        (clientPt.x >= m_liveServerPillBounds.left && clientPt.x <= m_liveServerPillBounds.right &&
+         clientPt.y >= m_liveServerPillBounds.top && clientPt.y <= m_liveServerPillBounds.bottom);
+    if (m_hoverLiveServerPill != oldHoverPill) {
+        InvalidateRect(m_hwnd, nullptr, FALSE);
+    }
+    if (m_hoverLiveServerPill) {
+        SetCursor(LoadCursor(NULL, IDC_HAND));
     }
 
     if (m_terminal.IsOpen()) {
@@ -2811,6 +2955,16 @@ void Window::HandleMouseMove(POINT clientPt) {
 }
 
 void Window::HandleLButtonDown(POINT clientPt) {
+    // Check Live Server Status Pill Click (Opens browser to localUrl)
+    if (m_liveServer.IsRunning() && clientPt.x >= m_liveServerPillBounds.left && clientPt.x <= m_liveServerPillBounds.right &&
+        clientPt.y >= m_liveServerPillBounds.top && clientPt.y <= m_liveServerPillBounds.bottom) {
+        auto* pDoc = GetActiveDoc();
+        std::wstring fileName = pDoc ? std::filesystem::path(pDoc->filePath).filename().wstring() : L"";
+        std::wstring url = m_liveServer.GetLocalUrl(fileName);
+        ShellExecuteW(NULL, L"open", url.c_str(), NULL, NULL, SW_SHOWNORMAL);
+        return;
+    }
+
     // Check Terminal Panel Clicks (Image 1, 2, 3, 4)
     if (m_terminal.IsOpen() && m_terminal.HitTest(clientPt)) {
         m_isTerminalFocused = true;
@@ -3394,7 +3548,11 @@ void Window::HandleLButtonDown(POINT clientPt) {
     // 2. Execution Widget Button Clicks (Run, Debug, Terminal)
     auto execHit = m_header.HitTestExecButton(clientPt);
     if (execHit != ui::HeaderExecId::None) {
-        if (execHit == ui::HeaderExecId::Terminal) {
+        if (execHit == ui::HeaderExecId::Run) {
+            DoRunActiveDocument();
+        } else if (execHit == ui::HeaderExecId::Debug) {
+            DoDebugActiveDocument();
+        } else if (execHit == ui::HeaderExecId::Terminal) {
             DoCreateTerminal();
         }
         InvalidateRect(m_hwnd, nullptr, FALSE);
@@ -4648,6 +4806,46 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     InvalidateRect(m_hwnd, nullptr, FALSE);
                     return 0;
                 }
+            }
+
+            // F5 execution shortcuts (Ctrl+F5 = Run, F5 = Debug)
+            if (wParam == VK_F5) {
+                if ((GetKeyState(VK_CONTROL) & 0x8000) != 0 && (GetKeyState(VK_SHIFT) & 0x8000) != 0 && m_terminal.IsDebugActive()) {
+                    m_terminal.TriggerDebugAction(ui::DebugAction::Restart);
+                    InvalidateRect(m_hwnd, nullptr, FALSE);
+                    return 0;
+                } else if ((GetKeyState(VK_SHIFT) & 0x8000) != 0 && m_terminal.IsDebugActive()) {
+                    m_terminal.TriggerDebugAction(ui::DebugAction::Stop);
+                    InvalidateRect(m_hwnd, nullptr, FALSE);
+                    return 0;
+                } else if ((GetKeyState(VK_CONTROL) & 0x8000) != 0) {
+                    DoRunActiveDocument();
+                    return 0;
+                } else {
+                    if (m_terminal.IsDebugActive()) {
+                        m_terminal.TriggerDebugAction(ui::DebugAction::Continue);
+                    } else {
+                        DoDebugActiveDocument();
+                    }
+                    InvalidateRect(m_hwnd, nullptr, FALSE);
+                    return 0;
+                }
+            }
+
+            if (wParam == VK_F10 && m_terminal.IsDebugActive()) {
+                m_terminal.TriggerDebugAction(ui::DebugAction::StepOver);
+                InvalidateRect(m_hwnd, nullptr, FALSE);
+                return 0;
+            }
+
+            if (wParam == VK_F11 && m_terminal.IsDebugActive()) {
+                if ((GetKeyState(VK_SHIFT) & 0x8000) != 0) {
+                    m_terminal.TriggerDebugAction(ui::DebugAction::StepOut);
+                } else {
+                    m_terminal.TriggerDebugAction(ui::DebugAction::StepInto);
+                }
+                InvalidateRect(m_hwnd, nullptr, FALSE);
+                return 0;
             }
 
             // Toggle integrated terminal panel via Ctrl+` (VK_OEM_3)

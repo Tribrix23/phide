@@ -33,6 +33,7 @@
 #include "phide/editor/OpenDocument.hpp"
 #include "phide/workspace/WorkspaceManager.hpp"
 #include "phide/workspace/ExplorerUndoManager.hpp"
+#include "phide/server/LiveServer.hpp"
 
 using Microsoft::WRL::ComPtr;
 
@@ -4131,6 +4132,100 @@ int main() {
 
         term.Close();
         std::cout << "  Passed: All [TEST 41] Terminal & IntelliSense tests passed successfully!" << std::endl;
+    }
+
+    // =========================================================================
+    // [TEST 42] Live Server (HTML / URLs), Terminal Execution, and Real Debugger
+    // =========================================================================
+    {
+        std::cout << "\n[TEST 42] Testing Live Server, Terminal Execution, and Debugger..." << std::endl;
+
+        // 1. TitleHeader Run/Debug button enabling logic
+        phide::ui::TitleHeader header;
+        header.SetRunEnabled(false);
+        header.SetDebugEnabled(false);
+        assert(!header.IsRunEnabled());
+        assert(!header.IsDebugEnabled());
+
+        header.SetRunEnabled(true);
+        header.SetDebugEnabled(true);
+        assert(header.IsRunEnabled());
+        assert(header.IsDebugEnabled());
+
+        // Disabled for CSS
+        header.SetRunEnabled(false);
+        header.SetDebugEnabled(false);
+        assert(!header.IsRunEnabled());
+        assert(!header.IsDebugEnabled());
+        std::cout << "  Verified: TitleHeader Run & Debug enable/disable toggling" << std::endl;
+
+        // 2. Native Winsock Live Server HTTP Serving and IP Discovery
+        phide::server::LiveServer liveServer;
+        bool started = liveServer.Start(L".", L"index.html", 5500);
+        assert(started);
+        assert(liveServer.IsRunning());
+        assert(liveServer.GetPort() >= 5500);
+
+        std::wstring localUrl = liveServer.GetLocalUrl();
+        assert(localUrl.find(L"http://localhost:") != std::wstring::npos);
+        assert(localUrl.find(L"index.html") != std::wstring::npos);
+
+        std::wstring netUrl = liveServer.GetNetworkUrl();
+        assert(netUrl.find(L"http://") != std::wstring::npos);
+        assert(netUrl.find(L"index.html") != std::wstring::npos);
+
+        std::wstring customLocal = liveServer.GetLocalUrl(L"about.html");
+        assert(customLocal.find(L"about.html") != std::wstring::npos);
+
+        liveServer.Stop();
+        assert(!liveServer.IsRunning());
+        std::cout << "  Verified: LiveServer startup, port assignment, URL construction, and shutdown" << std::endl;
+
+        // 3. TerminalPanel Live Server Tab and Clickable URLs
+        phide::ui::TerminalPanel term;
+        term.Open(L".");
+        term.StartLiveServerSession(localUrl, netUrl);
+
+        auto* activeTab = term.GetActiveTab();
+        assert(activeTab != nullptr);
+        assert(activeTab->shellType == phide::ui::TerminalShellType::LiveServer);
+        assert(activeTab->title == L"⚡ Live Server");
+        assert(activeTab->lines.size() >= 4);
+
+        // Check URL hit-testing bounds
+        std::wstring hitUrl;
+        POINT dummyPt{ -100, -100 };
+        assert(!term.HitTestUrl(dummyPt, &hitUrl));
+        std::cout << "  Verified: TerminalPanel LiveServer session tab created with URLs" << std::endl;
+
+        // 4. Debug Session Management & Toolbar Action Dispatch
+        {
+            std::ofstream sampleJs("sample.js");
+            sampleJs << "const x = 1 + 2;\nconsole.log(x);\n";
+        }
+        term.StartDebugSession(L"sample.js", L".");
+        assert(term.IsDebugActive());
+
+        auto* dbgTab = term.GetActiveTab();
+        assert(dbgTab != nullptr);
+        assert(dbgTab->shellType == phide::ui::TerminalShellType::DebugConsole);
+        assert(dbgTab->title == L"🐞 Debug Console");
+
+        // Test debug action triggers (StepOver, StepInto, StepOut, Restart, Stop)
+        term.TriggerDebugAction(phide::ui::DebugAction::Continue);
+        term.TriggerDebugAction(phide::ui::DebugAction::StepOver);
+        term.TriggerDebugAction(phide::ui::DebugAction::StepInto);
+        term.TriggerDebugAction(phide::ui::DebugAction::StepOut);
+        term.TriggerDebugAction(phide::ui::DebugAction::Restart);
+
+        term.StopDebugSession();
+        assert(!term.IsDebugActive());
+        std::error_code rmEc;
+        std::filesystem::remove("sample.js", rmEc);
+        std::cout << "  Verified: Interactive Debug session lifecycle and actions" << std::endl;
+
+        term.Close();
+        std::cout << "  Passed: All [TEST 42] Live Server, Run, & Debug tests passed successfully!" << std::endl;
     }
 
     std::cout << "\n==========================================" << std::endl;

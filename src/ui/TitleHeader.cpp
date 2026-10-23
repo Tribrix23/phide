@@ -359,6 +359,10 @@ void TitleHeader::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCon
 
         switch (btn.id) {
             case HeaderExecId::Run: {
+                if (!m_runEnabled) {
+                    m_icons.DrawRun(pRT, btn.bounds, theme.brushTextMuted.Get(), 1.4f);
+                    break;
+                }
                 if (isHovered) {
                     pRT->FillRoundedRectangle(rrcBtn, theme.brushRunGreenHover.Get());
                 }
@@ -367,6 +371,10 @@ void TitleHeader::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCon
                 break;
             }
             case HeaderExecId::Debug: {
+                if (!m_debugEnabled) {
+                    m_icons.DrawBug(pRT, btn.bounds, theme.brushTextMuted.Get(), 1.4f);
+                    break;
+                }
                 if (isHovered) {
                     pRT->FillRoundedRectangle(rrcBtn, theme.brushRunGreenHover.Get());
                 }
