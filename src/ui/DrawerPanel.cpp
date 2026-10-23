@@ -3025,7 +3025,25 @@ void DrawerPanel::RefreshGitState(bool async, bool showLoading) {
         }
 
         // 3. Query working tree changes
+        RunGitCmd(L"update-index -q --refresh", dir);
         auto resStatus = RunGitCmd(L"status --porcelain=v1", dir);
+        auto resDiff = RunGitCmd(L"diff --name-only", dir);
+        auto resCached = RunGitCmd(L"diff --cached --name-only", dir);
+        std::unordered_set<std::wstring> filesWithRealDiff;
+        auto addDiffLines = [&](const std::wstring& out) {
+            std::wstringstream dss(out);
+            std::wstring dl;
+            while (std::getline(dss, dl)) {
+                while (!dl.empty() && (dl.back() == L'\r' || dl.back() == L'\n' || dl.back() == L' ')) dl.pop_back();
+                if (!dl.empty()) {
+                    for (auto& c : dl) if (c == L'/') c = L'\\';
+                    filesWithRealDiff.insert(dl);
+                }
+            }
+        };
+        addDiffLines(resDiff.output);
+        addDiffLines(resCached.output);
+
         std::vector<GitChangeItem> changes;
         if (resStatus.exitCode == 0) {
             std::wstringstream ss(resStatus.output);
@@ -3068,6 +3086,29 @@ void DrawerPanel::RefreshGitState(bool async, bool showLoading) {
                     statusStr = L"A"; // Added
                 }
 
+                // Filter out false positives (e.g. electron-builder.yml unchanged files)
+                if (statusStr == L"M") {
+                    std::wstring cleanRel = filePath;
+                    for (auto& c : cleanRel) if (c == L'/') c = L'\\';
+
+                    bool isDirtyInMemory = false;
+                    {
+                        std::lock_guard<std::recursive_mutex> lock(m_gitMutex);
+                        for (const auto& df : m_dirtyFilePaths) {
+                            std::wstring dfClean = df;
+                            for (auto& c : dfClean) if (c == L'/') c = L'\\';
+                            if (dfClean.ends_with(cleanRel) || cleanRel.ends_with(dfClean)) {
+                                isDirtyInMemory = true;
+                                break;
+                            }
+                        }
+                    }
+
+                    if (!isDirtyInMemory && filesWithRealDiff.count(cleanRel) == 0) {
+                        continue; // File has ZERO diff! Prune false positive!
+                    }
+                }
+
                 std::filesystem::path p(filePath);
                 GitChangeItem item;
                 item.path = filePath;
@@ -3075,6 +3116,38 @@ void DrawerPanel::RefreshGitState(bool async, bool showLoading) {
                 item.relDir = p.parent_path().wstring();
                 item.status = statusStr.empty() ? L"M" : statusStr;
                 changes.push_back(item);
+            }
+        }
+
+        // Incorporate in-memory dirty documents into changes list
+        {
+            std::lock_guard<std::recursive_mutex> lock(m_gitMutex);
+            for (const auto& fp : m_dirtyFilePaths) {
+                std::wstring rel = fp;
+                if (!dir.empty() && rel.rfind(dir, 0) == 0) {
+                    rel = rel.substr(dir.length());
+                    while (!rel.empty() && (rel.front() == L'\\' || rel.front() == L'/')) {
+                        rel.erase(0, 1);
+                    }
+                }
+                for (auto& c : rel) if (c == L'/') c = L'\\';
+                if (rel.empty()) continue;
+
+                bool exists = false;
+                for (const auto& chg : changes) {
+                    if (_wcsicmp(chg.path.c_str(), rel.c_str()) == 0) {
+                        exists = true;
+                        break;
+                    }
+                }
+                if (!exists) {
+                    GitChangeItem item;
+                    item.path = rel;
+                    item.fileName = std::filesystem::path(rel).filename().wstring();
+                    item.relDir = std::filesystem::path(rel).parent_path().wstring();
+                    item.status = L"M";
+                    changes.push_back(std::move(item));
+                }
             }
         }
 
@@ -3375,7 +3448,25 @@ void DrawerPanel::RefreshGitStatusOnly(bool async) {
         }
 
         // 3. Query working tree changes
+        RunGitCmd(L"update-index -q --refresh", dir);
         auto resStatus = RunGitCmd(L"status --porcelain=v1", dir);
+        auto resDiff = RunGitCmd(L"diff --name-only", dir);
+        auto resCached = RunGitCmd(L"diff --cached --name-only", dir);
+        std::unordered_set<std::wstring> filesWithRealDiff;
+        auto addDiffLines = [&](const std::wstring& out) {
+            std::wstringstream dss(out);
+            std::wstring dl;
+            while (std::getline(dss, dl)) {
+                while (!dl.empty() && (dl.back() == L'\r' || dl.back() == L'\n' || dl.back() == L' ')) dl.pop_back();
+                if (!dl.empty()) {
+                    for (auto& c : dl) if (c == L'/') c = L'\\';
+                    filesWithRealDiff.insert(dl);
+                }
+            }
+        };
+        addDiffLines(resDiff.output);
+        addDiffLines(resCached.output);
+
         std::vector<GitChangeItem> changes;
         if (resStatus.exitCode == 0) {
             std::wstringstream ss(resStatus.output);
@@ -3394,6 +3485,7 @@ void DrawerPanel::RefreshGitStatusOnly(bool async) {
                 }
                 for (auto& c : filePath) if (c == L'/') c = L'\\';
 
+                // Check for rename destination "old -> new"
                 size_t arrowPos = filePath.find(L" -> ");
                 if (arrowPos != std::wstring::npos) {
                     filePath = filePath.substr(arrowPos + 4);
@@ -3404,11 +3496,41 @@ void DrawerPanel::RefreshGitStatusOnly(bool async) {
                     statusStr = L"R";
                 }
 
-                if (statusStr.find(L"?") != std::wstring::npos) statusStr = L"U";
-                else if (statusStr.find(L"R") != std::wstring::npos) statusStr = L"R";
-                else if (statusStr.find(L"M") != std::wstring::npos) statusStr = L"M";
-                else if (statusStr.find(L"D") != std::wstring::npos) statusStr = L"D";
-                else if (statusStr.find(L"A") != std::wstring::npos) statusStr = L"A";
+                // Normalize porcelain status letters (Images 3 & 4)
+                if (statusStr.find(L"?") != std::wstring::npos) {
+                    statusStr = L"U"; // Untracked
+                } else if (statusStr.find(L"R") != std::wstring::npos) {
+                    statusStr = L"R"; // Renamed
+                } else if (statusStr.find(L"M") != std::wstring::npos) {
+                    statusStr = L"M"; // Modified
+                } else if (statusStr.find(L"D") != std::wstring::npos) {
+                    statusStr = L"D"; // Deleted
+                } else if (statusStr.find(L"A") != std::wstring::npos) {
+                    statusStr = L"A"; // Added
+                }
+
+                // Filter out false positives (e.g. electron-builder.yml unchanged files)
+                if (statusStr == L"M") {
+                    std::wstring cleanRel = filePath;
+                    for (auto& c : cleanRel) if (c == L'/') c = L'\\';
+
+                    bool isDirtyInMemory = false;
+                    {
+                        std::lock_guard<std::recursive_mutex> lock(m_gitMutex);
+                        for (const auto& df : m_dirtyFilePaths) {
+                            std::wstring dfClean = df;
+                            for (auto& c : dfClean) if (c == L'/') c = L'\\';
+                            if (dfClean.ends_with(cleanRel) || cleanRel.ends_with(dfClean)) {
+                                isDirtyInMemory = true;
+                                break;
+                            }
+                        }
+                    }
+
+                    if (!isDirtyInMemory && filesWithRealDiff.count(cleanRel) == 0) {
+                        continue; // File has ZERO diff! Prune false positive!
+                    }
+                }
 
                 std::filesystem::path p(filePath);
                 GitChangeItem item;
@@ -3417,6 +3539,38 @@ void DrawerPanel::RefreshGitStatusOnly(bool async) {
                 item.relDir = p.parent_path().wstring();
                 item.status = statusStr.empty() ? L"M" : statusStr;
                 changes.push_back(item);
+            }
+        }
+
+        // Incorporate in-memory dirty documents into changes list
+        {
+            std::lock_guard<std::recursive_mutex> lock(m_gitMutex);
+            for (const auto& fp : m_dirtyFilePaths) {
+                std::wstring rel = fp;
+                if (!dir.empty() && rel.rfind(dir, 0) == 0) {
+                    rel = rel.substr(dir.length());
+                    while (!rel.empty() && (rel.front() == L'\\' || rel.front() == L'/')) {
+                        rel.erase(0, 1);
+                    }
+                }
+                for (auto& c : rel) if (c == L'/') c = L'\\';
+                if (rel.empty()) continue;
+
+                bool exists = false;
+                for (const auto& chg : changes) {
+                    if (_wcsicmp(chg.path.c_str(), rel.c_str()) == 0) {
+                        exists = true;
+                        break;
+                    }
+                }
+                if (!exists) {
+                    GitChangeItem item;
+                    item.path = rel;
+                    item.fileName = std::filesystem::path(rel).filename().wstring();
+                    item.relDir = std::filesystem::path(rel).parent_path().wstring();
+                    item.status = L"M";
+                    changes.push_back(std::move(item));
+                }
             }
         }
 
@@ -3515,6 +3669,48 @@ void DrawerPanel::LoadCommitFiles(GitCommitItem& ci) {
             while (!st.empty() && (st.back() == L'\r' || st.back() == L'\n' || st.back() == L' ')) st.pop_back();
             ci.statSummary = st;
         }
+    }
+}
+
+void DrawerPanel::SetDirtyFiles(const std::vector<std::wstring>& dirtyFilePaths) {
+    std::lock_guard<std::recursive_mutex> lock(m_gitMutex);
+    m_dirtyFilePaths = dirtyFilePaths;
+    if (!m_isGitRepo) return;
+
+    std::wstring dir = m_openFolderPath.empty() ? L"." : m_openFolderPath;
+
+    bool changed = false;
+    for (const auto& fp : m_dirtyFilePaths) {
+        std::wstring rel = fp;
+        if (!dir.empty() && rel.rfind(dir, 0) == 0) {
+            rel = rel.substr(dir.length());
+            while (!rel.empty() && (rel.front() == L'\\' || rel.front() == L'/')) {
+                rel.erase(0, 1);
+            }
+        }
+        for (auto& c : rel) if (c == L'/') c = L'\\';
+        if (rel.empty()) continue;
+
+        bool found = false;
+        for (const auto& chg : m_gitChanges) {
+            if (_wcsicmp(chg.path.c_str(), rel.c_str()) == 0) {
+                found = true;
+                break;
+            }
+        }
+        if (!found) {
+            GitChangeItem item;
+            item.path = rel;
+            item.fileName = std::filesystem::path(rel).filename().wstring();
+            item.relDir = std::filesystem::path(rel).parent_path().wstring();
+            item.status = L"M";
+            m_gitChanges.push_back(std::move(item));
+            changed = true;
+        }
+    }
+
+    if (changed && m_onGitStateChanged) {
+        m_onGitStateChanged();
     }
 }
 

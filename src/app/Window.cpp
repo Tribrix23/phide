@@ -869,7 +869,24 @@ void Window::OpenDiffDocument(const std::wstring& relPath, bool isPreview) {
     newDoc.diffActivePane = 1; // Focus right (editable) pane
 
     newDoc.diffOriginalBuffer.SetText(headContent);
-    if (std::filesystem::exists(fullPath)) {
+    // If file is currently open in an editor group with unsaved changes, use the in-memory buffer!
+    const editor::OpenDocument* pExisting = nullptr;
+    for (const auto& g : m_editorGroups) {
+        for (const auto& d : g.docs) {
+            if (!d.isDiffView && !d.isSpecialView && !d.filePath.empty()) {
+                if (_wcsicmp(d.filePath.c_str(), fullPath.c_str()) == 0) {
+                    pExisting = &d;
+                    break;
+                }
+            }
+        }
+        if (pExisting) break;
+    }
+
+    if (pExisting) {
+        newDoc.buffer.SetText(pExisting->buffer.GetText());
+        newDoc.isDirty = pExisting->isDirty;
+    } else if (std::filesystem::exists(fullPath)) {
         newDoc.buffer.LoadFromFile(fullPath);
     } else {
         newDoc.buffer.SetText(L"");
@@ -1270,6 +1287,7 @@ void Window::CloseDocument(int groupIdx, int docIdx) {
         }
     }
 
+    UpdateDrawerDirtyFiles();
     SaveSessionState();
     InvalidateRect(m_hwnd, nullptr, FALSE);
 }
@@ -1422,6 +1440,7 @@ void Window::DoSaveAll() {
         }
     }
     if (anySaved) {
+        UpdateDrawerDirtyFiles();
         TriggerDebouncedGitRefresh(1000);
     }
     InvalidateRect(m_hwnd, nullptr, FALSE);
@@ -1544,6 +1563,117 @@ void Window::SyncDocumentBuffers(editor::OpenDocument* sourceDoc) {
     }
 }
 
+void Window::UpdateDrawerDirtyFiles() {
+    std::vector<std::wstring> dirtyPaths;
+    for (const auto& group : m_editorGroups) {
+        for (const auto& doc : group.docs) {
+            if (doc.isDirty && !doc.filePath.empty() && !doc.isSpecialView) {
+                dirtyPaths.push_back(doc.filePath);
+            }
+        }
+    }
+    m_drawer.SetDirtyFiles(dirtyPaths);
+}
+
+void Window::CommitAutocompleteSelection() {
+    const auto* item = m_editor.GetSelectedAutocompleteItem();
+    auto* pDoc = GetActiveDoc();
+    if (!item || !pDoc) {
+        m_editor.DismissAutocomplete();
+        m_editor.ClearGhostText();
+        return;
+    }
+
+    m_suppressNextChar = true;
+    auto pos = pDoc->buffer.GetCursor();
+    const auto& lineText = pDoc->buffer.GetLine(pos.line);
+    std::wstring prefix = editor::IntelliSenseEngine::ExtractQueryPrefix(lineText, pos.col);
+
+    // Check if user is completing an HTML tag (e.g. typed "<div" or "div")
+    bool isTagKind = (item->kind == editor::CompletionKind::Tag);
+    size_t prefixStart = (pos.col >= prefix.length()) ? (pos.col - prefix.length()) : 0;
+    bool hasLeadingAngle = (prefixStart > 0 && lineText[prefixStart - 1] == L'<');
+
+    static const std::unordered_set<std::wstring> voidTags = {
+        L"area", L"base", L"br", L"col", L"embed", L"hr", L"img", L"input",
+        L"link", L"meta", L"param", L"source", L"track", L"wbr"
+    };
+
+    std::wstring tagLower = item->label;
+    for (auto& c : tagLower) c = towlower(c);
+    bool isVoid = (voidTags.count(tagLower) > 0);
+
+    if (isTagKind || hasLeadingAngle) {
+        // Tag completion: create the whole block! (User complaint: "instead creating the whole block")
+        for (size_t i = 0; i < prefix.length(); ++i) {
+            pDoc->buffer.Backspace();
+        }
+
+        if (hasLeadingAngle) {
+            // Already has '<'. Complete after '<'
+            if (isVoid) {
+                std::wstring toInsert;
+                if (tagLower == L"img") {
+                    toInsert = L"img src=\"\" alt=\"\" />";
+                } else if (tagLower == L"input") {
+                    toInsert = L"input type=\"text\" />";
+                } else if (tagLower == L"link") {
+                    toInsert = L"link rel=\"stylesheet\" href=\"\" />";
+                } else if (tagLower == L"meta") {
+                    toInsert = L"meta charset=\"UTF-8\" />";
+                } else {
+                    toInsert = item->label + L" />";
+                }
+                for (wchar_t c : toInsert) pDoc->buffer.InsertChar(c);
+            } else {
+                // Container tag: e.g. <div -> <div></div> with cursor inside
+                std::wstring openPart = item->label + L">";
+                std::wstring closePart = L"</" + item->label + L">";
+                for (wchar_t c : openPart) pDoc->buffer.InsertChar(c);
+                size_t insideLine = pDoc->buffer.GetCursor().line;
+                size_t insideCol = pDoc->buffer.GetCursor().col;
+                for (wchar_t c : closePart) pDoc->buffer.InsertChar(c);
+                pDoc->buffer.SetCursor(insideLine, insideCol);
+            }
+        } else {
+            // No leading '<' (e.g. user typed "div" and picked tag item)
+            if (isVoid) {
+                std::wstring toInsert;
+                if (tagLower == L"img") {
+                    toInsert = L"<img src=\"\" alt=\"\" />";
+                } else if (tagLower == L"input") {
+                    toInsert = L"<input type=\"text\" />";
+                } else {
+                    toInsert = L"<" + item->label + L" />";
+                }
+                for (wchar_t c : toInsert) pDoc->buffer.InsertChar(c);
+            } else {
+                std::wstring openPart = L"<" + item->label + L">";
+                std::wstring closePart = L"</" + item->label + L">";
+                for (wchar_t c : openPart) pDoc->buffer.InsertChar(c);
+                size_t insideLine = pDoc->buffer.GetCursor().line;
+                size_t insideCol = pDoc->buffer.GetCursor().col;
+                for (wchar_t c : closePart) pDoc->buffer.InsertChar(c);
+                pDoc->buffer.SetCursor(insideLine, insideCol);
+            }
+        }
+    } else {
+        // Normal completion (method, property, keyword, etc.)
+        for (size_t i = 0; i < prefix.length(); ++i) {
+            pDoc->buffer.Backspace();
+        }
+        const std::wstring& toInsert = !item->insertText.empty() ? item->insertText : item->label;
+        for (wchar_t c : toInsert) {
+            pDoc->buffer.InsertChar(c);
+        }
+    }
+
+    MarkDocumentModified(pDoc);
+    m_editor.DismissAutocomplete();
+    m_editor.ClearGhostText();
+    InvalidateRect(m_hwnd, nullptr, FALSE);
+}
+
 void Window::MarkDocumentModified(editor::OpenDocument* pDoc) {
     if (!pDoc || pDoc->isSpecialView) return;
     pDoc->isPreview = false;
@@ -1552,10 +1682,12 @@ void Window::MarkDocumentModified(editor::OpenDocument* pDoc) {
         pDoc->buffer.SaveToFile(pDoc->filePath);
         pDoc->isDirty = false;
         SyncDocumentBuffers(pDoc);
+        UpdateDrawerDirtyFiles();
         TriggerDebouncedGitRefresh(1500);
     } else {
         pDoc->isDirty = true;
         SyncDocumentBuffers(pDoc);
+        UpdateDrawerDirtyFiles();
         TriggerDebouncedGitRefresh(2000);
     }
 }
@@ -1860,7 +1992,9 @@ void Window::DoCreateTerminal() {
     if (m_drawer.HasOpenFolder()) {
         dir = m_drawer.GetOpenFolderPath();
     }
-    ShellExecuteW(nullptr, L"open", L"cmd.exe", nullptr, dir.empty() ? nullptr : dir.c_str(), SW_SHOWNORMAL);
+    m_terminal.Toggle(dir);
+    m_isTerminalFocused = m_terminal.IsOpen();
+    InvalidateRect(m_hwnd, nullptr, FALSE);
 }
 
 void Window::LoadFileFromPath(const std::wstring& path) {
@@ -1885,6 +2019,7 @@ void Window::SaveFileToPath(const std::wstring& path) {
                 m_snippetManager.LoadSnippets();
             }
             SyncDocumentBuffers(pDoc);
+            UpdateDrawerDirtyFiles();
             TriggerDebouncedGitRefresh(1000);
             SaveSessionState();
             InvalidateRect(m_hwnd, nullptr, FALSE);
@@ -2068,6 +2203,13 @@ bool Window::Create(HINSTANCE hInstance, int nCmdShow) {
 
     // Start 50ms Search throttler polling timer
     SetTimer(m_hwnd, m_throttleTimerId, 50, nullptr);
+
+    // Register callback for immediate terminal output repainting
+    m_terminal.SetOutputCallback([this]() {
+        if (m_hwnd) {
+            InvalidateRect(m_hwnd, nullptr, FALSE);
+        }
+    });
 
     // Initialize user snippets engine
     m_snippetManager.Initialize(GetSnippetsConfigPath());
@@ -2284,6 +2426,7 @@ void Window::OnPaint() {
     m_drawer.SetActiveFilePath(curDoc ? curDoc->filePath : L"");
 
     bool suppressEditorCaret = m_quickOpen.IsOpen() || m_themePicker.IsOpen() || m_popupMenu.IsOpen() ||
+        (m_terminal.IsOpen() && m_isTerminalFocused) ||
         m_drawer.IsRenaming() ||
         (m_drawerAnimProgress > 0.001f && (m_drawer.IsGitCommitBoxFocused() || m_drawer.IsSearchFocused()));
 
@@ -2295,10 +2438,21 @@ void Window::OnPaint() {
     D2D1_RECT_F rcCornerPatch = D2D1::RectF(railW, headerH, railW + m_config.ScaleF(18.0f), headerH + m_config.ScaleF(18.0f));
     m_pRenderTarget->FillRectangle(rcCornerPatch, m_theme.brushHeaderBg.Get());
 
+    float termH = 0.0f;
+    if (m_terminal.IsOpen()) {
+        termH = m_terminal.IsFullScreen() ? (clientH - headerH) : m_terminal.GetHeight();
+    }
+    float editorH = clientH - termH;
+
     m_editor.Render(m_pRenderTarget.Get(), m_theme, m_config, m_editorGroups, m_focusedGroupIdx,
-                    canvasLeft, canvasWidth, clientH, hasLeftDrawer,
+                    canvasLeft, canvasWidth, editorH, hasLeftDrawer,
                     searchHL, hlMatchCase, hlWholeWord, hlUseRegex,
                     suppressEditorCaret);
+
+    // Integrated Terminal Panel at Bottom (Images 1, 2, 3, 4)
+    if (m_terminal.IsOpen()) {
+        m_terminal.Render(m_pRenderTarget.Get(), m_theme, m_config, clientW, clientH, canvasLeft);
+    }
 
     // 2. Render Slide-out Drawer Panel (when visible or animating, with 14px rounded curve at top-left)
     if (hasLeftDrawer) {
@@ -2378,6 +2532,15 @@ void Window::HandleMouseMove(POINT clientPt) {
         m_trackingMouse = true;
     }
 
+    if (m_terminal.IsOpen()) {
+        RECT rcClient;
+        GetClientRect(m_hwnd, &rcClient);
+        float clientH = static_cast<float>(rcClient.bottom - rcClient.top);
+        if (m_terminal.OnMouseMove(clientPt, (GetKeyState(VK_LBUTTON) & 0x8000) != 0, clientH)) {
+            InvalidateRect(m_hwnd, nullptr, FALSE);
+        }
+    }
+
     if (m_themePicker.IsOpen()) {
         if (m_themePicker.HandleMouseMove(clientPt)) {
             InvalidateRect(m_hwnd, nullptr, FALSE);
@@ -2390,6 +2553,18 @@ void Window::HandleMouseMove(POINT clientPt) {
             InvalidateRect(m_hwnd, nullptr, FALSE);
         }
         return;
+    }
+
+    // Check Autocomplete Popup Mouse Hover (Images 2, 5)
+    if (m_editor.IsAutocompleteVisible()) {
+        int hitIdx = -1;
+        if (m_editor.HitTestAutocomplete(clientPt, hitIdx)) {
+            if (hitIdx >= 0 && hitIdx != static_cast<int>(m_editor.GetAutocompleteSelectedIndex())) {
+                m_editor.SetAutocompleteSelectedIndex(static_cast<size_t>(hitIdx));
+                InvalidateRect(m_hwnd, nullptr, FALSE);
+            }
+            return;
+        }
     }
 
     bool needRepaint = false;
@@ -2602,6 +2777,41 @@ void Window::HandleMouseMove(POINT clientPt) {
 }
 
 void Window::HandleLButtonDown(POINT clientPt) {
+    // Check Terminal Panel Clicks (Image 1, 2, 3, 4)
+    if (m_terminal.IsOpen() && m_terminal.HitTest(clientPt)) {
+        m_isTerminalFocused = true;
+        std::wstring dir;
+        if (m_drawer.HasOpenFolder()) dir = m_drawer.GetOpenFolderPath();
+        m_terminal.OnMouseDown(clientPt, m_config, dir);
+        if (m_terminal.IsResizing()) {
+            SetCapture(m_hwnd);
+        }
+        InvalidateRect(m_hwnd, nullptr, FALSE);
+        return;
+    } else {
+        m_isTerminalFocused = false;
+        m_terminal.CloseMenus();
+    }
+
+    // Check Autocomplete Popup Click (Images 2 & 5)
+    if (m_editor.IsAutocompleteVisible()) {
+        int hitIdx = -1;
+        if (m_editor.HitTestAutocomplete(clientPt, hitIdx)) {
+            if (hitIdx >= 0) {
+                m_editor.SetAutocompleteSelectedIndex(static_cast<size_t>(hitIdx));
+                CommitAutocompleteSelection();
+            } else {
+                m_editor.DismissAutocomplete();
+                m_editor.ClearGhostText();
+                InvalidateRect(m_hwnd, nullptr, FALSE);
+            }
+            return;
+        } else {
+            m_editor.DismissAutocomplete();
+            m_editor.ClearGhostText();
+        }
+    }
+
     // 0a. Floating commit card click check (card is positioned outside drawer over editor canvas)
     if (m_config.activeRailTab == 2 && m_drawer.IsCommitCardVisible() && m_drawer.HitTestCommitCard(clientPt)) {
         std::wstring openFile;
@@ -3151,7 +3361,7 @@ void Window::HandleLButtonDown(POINT clientPt) {
     auto execHit = m_header.HitTestExecButton(clientPt);
     if (execHit != ui::HeaderExecId::None) {
         if (execHit == ui::HeaderExecId::Terminal) {
-            ToggleSidebar();
+            DoCreateTerminal();
         }
         InvalidateRect(m_hwnd, nullptr, FALSE);
         return;
@@ -3614,6 +3824,13 @@ void Window::HandleLButtonDown(POINT clientPt) {
 
 void Window::HandleLButtonUp(POINT clientPt) {
     (void)clientPt;
+    if (m_terminal.IsOpen()) {
+        bool wasResizing = m_terminal.IsResizing();
+        m_terminal.OnMouseUp(clientPt);
+        if (wasResizing) {
+            ReleaseCapture();
+        }
+    }
     if (m_isDraggingGitSplitter) {
         m_isDraggingGitSplitter = false;
         m_config.gitSplitY = m_drawer.GetGitSplitY();
@@ -3877,9 +4094,46 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     }
                 }
 
-                // Source Control: Draggable splitter between Changes and Graph (Image 2 & 3)
-                if (m_config.activeRailTab == 2 && m_drawerAnimProgress > 0.5f && m_drawer.HitTestGitSplitter(pt)) {
-                    SetCursor(LoadCursor(nullptr, IDC_SIZENS));
+                // Source Control: Draggable splitter, buttons and inputs (Images 1, 2, 3, 5)
+                if (m_config.activeRailTab == 2 && m_drawerAnimProgress > 0.5f) {
+                    if (m_drawer.HitTestGitSplitter(pt)) {
+                        SetCursor(LoadCursor(nullptr, IDC_SIZENS));
+                        return TRUE;
+                    }
+                    if (m_drawer.HitTestGitInputs(pt)) {
+                        SetCursor(LoadCursor(nullptr, IDC_IBEAM));
+                        return TRUE;
+                    }
+                    if (m_drawer.HitTestGitButtons(pt)) {
+                        SetCursor(LoadCursor(nullptr, IDC_HAND));
+                        return TRUE;
+                    }
+                }
+
+                // Autocomplete popup cursor handling (Images 2, 5)
+                if (m_editor.IsAutocompleteVisible()) {
+                    int hitIdx = -1;
+                    if (m_editor.HitTestAutocomplete(pt, hitIdx)) {
+                        SetCursor(LoadCursor(nullptr, (hitIdx >= 0) ? IDC_HAND : IDC_ARROW));
+                        return TRUE;
+                    }
+                }
+
+                // Terminal Panel cursor handling (Images 1, 2, 3, 4)
+                if (m_terminal.IsOpen() && m_terminal.HitTest(pt)) {
+                    if (m_terminal.HitTestSplitter(pt)) {
+                        SetCursor(LoadCursor(nullptr, IDC_SIZENS));
+                        return TRUE;
+                    }
+                    if (m_terminal.HitTestButtons(pt)) {
+                        SetCursor(LoadCursor(nullptr, IDC_HAND));
+                        return TRUE;
+                    }
+                    if (m_terminal.HitTestTextArea(pt)) {
+                        SetCursor(LoadCursor(nullptr, IDC_IBEAM));
+                        return TRUE;
+                    }
+                    SetCursor(LoadCursor(nullptr, IDC_ARROW));
                     return TRUE;
                 }
 
@@ -4001,6 +4255,13 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
             POINT pt = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
             ScreenToClient(m_hwnd, &pt);
 
+            if (m_terminal.IsOpen() && m_terminal.HitTest(pt)) {
+                if (m_terminal.OnMouseWheel(pt, delta)) {
+                    InvalidateRect(m_hwnd, nullptr, FALSE);
+                    return 0;
+                }
+            }
+
             // 0a. Scroll Quick Open search results if modal is open (Image 5)
             if (m_quickOpen.IsOpen()) {
                 if (m_quickOpen.HandleMouseWheel(delta)) {
@@ -4082,6 +4343,13 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 return 0;
             }
 
+            // Integrated Terminal keystroke input (Image 1) - completely swallowed when terminal is focused!
+            if (m_terminal.IsOpen() && m_isTerminalFocused) {
+                m_terminal.OnChar(static_cast<wchar_t>(wParam));
+                InvalidateRect(m_hwnd, nullptr, FALSE);
+                return 0;
+            }
+
             // 0. Quick Open file search input (Image 5)
             if (m_quickOpen.IsOpen()) {
                 if (m_quickOpen.HandleChar(static_cast<wchar_t>(wParam))) {
@@ -4130,10 +4398,84 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                         if (pDoc->HasSelection()) {
                             pDoc->DeleteSelection();
                         }
+
+                        // Auto-closing HTML tag on '>' (Image 1: <div> -> <div></div>)
+                        if (ch == L'>') {
+                            auto pos = pDoc->buffer.GetCursor();
+                            const auto& lineText = pDoc->buffer.GetLine(pos.line);
+                            std::wstring prefixText = (pos.col <= lineText.length()) ? lineText.substr(0, pos.col) : lineText;
+
+                            size_t openBracket = prefixText.rfind(L'<');
+                            if (openBracket != std::wstring::npos) {
+                                bool isClosing = (openBracket + 1 < prefixText.length() && prefixText[openBracket + 1] == L'/');
+                                bool isSelfClosing = (!prefixText.empty() && prefixText.back() == L'/');
+                                bool isCommentOrDoctype = (prefixText.substr(openBracket).rfind(L"<!--", 0) == 0 ||
+                                                           prefixText.substr(openBracket).rfind(L"<!", 0) == 0 ||
+                                                           prefixText.substr(openBracket).rfind(L"<?", 0) == 0);
+
+                                if (!isClosing && !isSelfClosing && !isCommentOrDoctype) {
+                                    size_t tagStart = openBracket + 1;
+                                    while (tagStart < prefixText.length() && (prefixText[tagStart] == L' ' || prefixText[tagStart] == L'\t')) {
+                                        tagStart++;
+                                    }
+                                    size_t tagEnd = tagStart;
+                                    while (tagEnd < prefixText.length() && (iswalnum(prefixText[tagEnd]) || prefixText[tagEnd] == L'-' || prefixText[tagEnd] == L':' || prefixText[tagEnd] == L'_')) {
+                                        tagEnd++;
+                                    }
+                                    std::wstring tagName = prefixText.substr(tagStart, tagEnd - tagStart);
+                                    std::wstring tagLower = tagName;
+                                    for (auto& c : tagLower) c = towlower(c);
+
+                                    static const std::unordered_set<std::wstring> voidTags = {
+                                        L"area", L"base", L"br", L"col", L"embed", L"hr", L"img", L"input",
+                                        L"link", L"meta", L"param", L"source", L"track", L"wbr"
+                                    };
+
+                                    if (!tagName.empty() && voidTags.count(tagLower) == 0) {
+                                        pDoc->buffer.InsertChar(L'>');
+                                        std::wstring closeTag = L"</" + tagName + L">";
+                                        for (wchar_t c : closeTag) {
+                                            pDoc->buffer.InsertChar(c);
+                                        }
+                                        auto cur = pDoc->buffer.GetCursor();
+                                        pDoc->buffer.SetCursor(cur.line, cur.col - closeTag.length());
+                                        MarkDocumentModified(pDoc);
+                                        if (pDoc->isDiffView) ComputeDiffHunks(*pDoc);
+                                        m_editor.DismissAutocomplete();
+                                        m_editor.ClearGhostText();
+                                        InvalidateRect(m_hwnd, nullptr, FALSE);
+                                        return 0;
+                                    }
+                                }
+                            }
+                        }
+
                         pDoc->buffer.InsertChar(ch);
                         MarkDocumentModified(pDoc);
                         if (pDoc->isDiffView) {
                             ComputeDiffHunks(*pDoc);
+                        }
+
+                        // Query massive HTML5 / JavaScript / Python IntelliSense (Image 5)
+                        if (iswalnum(ch) || ch == L'.' || ch == L'<' || ch == L':' || ch == L'$' || ch == L'_') {
+                            auto pos = pDoc->buffer.GetCursor();
+                            const auto& lineText = pDoc->buffer.GetLine(pos.line);
+                            auto items = m_intelliSense.QueryCompletions(pDoc->fileName, lineText, pos.col);
+                            if (!items.empty()) {
+                                m_editor.ShowAutocomplete(items);
+                                std::wstring prefix = editor::IntelliSenseEngine::ExtractQueryPrefix(lineText, pos.col);
+                                std::wstring ghost = items[0].label;
+                                if (!prefix.empty() && ghost.rfind(prefix, 0) == 0) {
+                                    ghost = ghost.substr(prefix.length());
+                                }
+                                m_editor.SetGhostText(ghost);
+                            } else {
+                                m_editor.DismissAutocomplete();
+                                m_editor.ClearGhostText();
+                            }
+                        } else {
+                            m_editor.DismissAutocomplete();
+                            m_editor.ClearGhostText();
                         }
                         InvalidateRect(m_hwnd, nullptr, FALSE);
                     }
@@ -4186,6 +4528,84 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
             if (m_editor.IsRefactorPopupVisible() && wParam != VK_SHIFT && wParam != VK_CONTROL && wParam != VK_MENU) {
                 m_editor.DismissRefactorPopup();
                 InvalidateRect(m_hwnd, nullptr, FALSE);
+            }
+
+            // Inline Ghost Text Tab-to-complete (Image 3)
+            if (wParam == VK_TAB && !m_editor.GetGhostText().empty() && !m_editor.IsAutocompleteVisible()) {
+                auto* pDoc = GetActiveDoc();
+                if (pDoc) {
+                    m_suppressNextChar = true;
+                    const std::wstring& ghost = m_editor.GetGhostText();
+                    for (wchar_t c : ghost) {
+                        pDoc->buffer.InsertChar(c);
+                    }
+                    MarkDocumentModified(pDoc);
+                    m_editor.ClearGhostText();
+                    InvalidateRect(m_hwnd, nullptr, FALSE);
+                    return 0;
+                }
+            }
+
+            // Autocomplete Popup Navigation & Completion Insertion (Image 5)
+            if (m_editor.IsAutocompleteVisible()) {
+                if (wParam == VK_ESCAPE) {
+                    m_editor.DismissAutocomplete();
+                    InvalidateRect(m_hwnd, nullptr, FALSE);
+                    return 0;
+                }
+                if (wParam == VK_UP) {
+                    m_editor.SelectPrevAutocomplete();
+                    InvalidateRect(m_hwnd, nullptr, FALSE);
+                    return 0;
+                }
+                if (wParam == VK_DOWN) {
+                    m_editor.SelectNextAutocomplete();
+                    InvalidateRect(m_hwnd, nullptr, FALSE);
+                    return 0;
+                }
+                if (wParam == VK_RETURN || wParam == VK_TAB) {
+                    CommitAutocompleteSelection();
+                    return 0;
+                }
+            }
+
+            // Ctrl+Space IntelliSense Trigger
+            if ((GetKeyState(VK_CONTROL) & 0x8000) && wParam == VK_SPACE) {
+                auto* pDoc = GetActiveDoc();
+                if (pDoc) {
+                    auto pos = pDoc->buffer.GetCursor();
+                    const auto& lineText = pDoc->buffer.GetLine(pos.line);
+                    auto items = m_intelliSense.QueryCompletions(pDoc->fileName, lineText, pos.col);
+                    if (!items.empty()) {
+                        m_editor.ShowAutocomplete(items);
+                    }
+                    InvalidateRect(m_hwnd, nullptr, FALSE);
+                    return 0;
+                }
+            }
+
+            // Toggle integrated terminal panel via Ctrl+` (VK_OEM_3)
+            if ((GetKeyState(VK_CONTROL) & 0x8000) && wParam == VK_OEM_3) {
+                DoCreateTerminal();
+                return 0;
+            }
+
+            // Integrated Terminal key handling - completely isolated so backspace/typing NEVER leaks into editor!
+            if (m_terminal.IsOpen() && m_isTerminalFocused) {
+                if (wParam == VK_ESCAPE) {
+                    m_terminal.Close();
+                    m_isTerminalFocused = false;
+                    InvalidateRect(m_hwnd, nullptr, FALSE);
+                    return 0;
+                }
+                if (m_terminal.OnKeyDown(static_cast<UINT>(wParam), (GetKeyState(VK_CONTROL) & 0x8000) != 0, (GetKeyState(VK_SHIFT) & 0x8000) != 0)) {
+                    InvalidateRect(m_hwnd, nullptr, FALSE);
+                    return 0;
+                }
+                // When terminal has focus, swallow all editing & navigation keys so editor buffer is untouched
+                if (!(GetKeyState(VK_CONTROL) & 0x8000)) {
+                    return 0;
+                }
             }
 
             // 0. Quick Open file search palette (Image 5)
@@ -4636,6 +5056,29 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     if (pDoc->isDiffView) ComputeDiffHunks(*pDoc);
                     InvalidateRect(m_hwnd, nullptr, FALSE);
                 } else if (wParam == VK_RETURN) {
+                    // Check if between opening and closing tags: <div>|</div>
+                    auto pos = pDoc->buffer.GetCursor();
+                    const auto& lineText = pDoc->buffer.GetLine(pos.line);
+                    if (pos.col > 0 && pos.col < lineText.length() && lineText[pos.col - 1] == L'>' && lineText[pos.col] == L'<' && pos.col + 1 < lineText.length() && lineText[pos.col + 1] == L'/') {
+                        size_t indent = 0;
+                        while (indent < lineText.length() && (lineText[indent] == L' ' || lineText[indent] == L'\t')) {
+                            indent++;
+                        }
+                        std::wstring baseIndent = lineText.substr(0, indent);
+                        std::wstring extraIndent = L"    ";
+                        pDoc->buffer.InsertChar(L'\n');
+                        for (wchar_t c : baseIndent) pDoc->buffer.InsertChar(c);
+                        for (wchar_t c : extraIndent) pDoc->buffer.InsertChar(c);
+                        size_t targetLine = pos.line + 1;
+                        size_t targetCol = baseIndent.length() + extraIndent.length();
+                        pDoc->buffer.InsertChar(L'\n');
+                        for (wchar_t c : baseIndent) pDoc->buffer.InsertChar(c);
+                        pDoc->buffer.SetCursor(targetLine, targetCol);
+                        MarkDocumentModified(pDoc);
+                        if (pDoc->isDiffView) ComputeDiffHunks(*pDoc);
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
+                        return 0;
+                    }
                     pDoc->buffer.InsertChar(L'\n');
                     MarkDocumentModified(pDoc);
                     if (pDoc->isDiffView) ComputeDiffHunks(*pDoc);

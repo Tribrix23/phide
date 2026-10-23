@@ -175,6 +175,15 @@ struct OpenDocument {
     // Code Folding State (Images 2 & 3)
     std::set<size_t> foldedLines;       ///< Set of starting line indices (0-based buffer line) that are folded
 
+    // Inlay Hints & Ghost Completion State (Images 1, 2, 3, 5)
+    struct InlayHint {
+        size_t line = 0;              ///< 0-based buffer line index
+        size_t col = 0;               ///< Column index where hint badge appears
+        std::wstring label;           ///< Badge text e.g. L": {shape, __add__}" or L"Tab to complete"
+        bool isGhostText = false;      ///< True for inline completion ghost text
+    };
+    std::vector<InlayHint> inlayHints;
+
     // Syntax Error Diagnostics & Hover Popover State
     std::vector<phide::lsp::Diagnostic> diagnostics;   ///< Diagnostic errors and warnings for this document
     size_t hoveredDiagnosticLine = static_cast<size_t>(-1); ///< Line of currently hovered diagnostic error

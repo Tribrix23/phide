@@ -225,6 +225,11 @@ void EditorCanvas::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
     if (m_showRefactorPopup) {
         RenderRefactorPopup(pRT, theme, config, clientHeight);
     }
+
+    // Render floating autocomplete suggestions popup (Image 5)
+    if (m_showAutocomplete && !m_autocompleteItems.empty()) {
+        RenderAutocompletePopup(pRT, theme, config, canvasLeft + canvasWidth, clientHeight);
+    }
 }
 
 void EditorCanvas::RenderSinglePane(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
@@ -1270,6 +1275,91 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
             pRT->DrawText(L"...", 3, theme.fontMenuShortcut.Get(), rcPill, theme.brushTextMuted.Get());
         }
 
+        // =====================================================================
+        // Inlay Hints & Virtual Type Badges (Images 1, 2, 3, 5)
+        // Renders non-editable virtual type/parameter hints (e.g. : {shape, __add__}, : {reshape})
+        // and ghost inline completion preview ("Tab to complete") without modifying buffer text.
+        // =====================================================================
+        bool renderedHint = false;
+        for (const auto& hint : doc.inlayHints) {
+            if (hint.line == vl.bufferLine) {
+                float hintX = (hint.col > 0) ? (codeLeft + static_cast<float>(hint.col) * charW) : (curCodeEndX + config.ScaleF(6.0f));
+                if (hintX + config.ScaleF(20.0f) < codeRight) {
+                    if (hint.isGhostText) {
+                        // Ghost completion text (Image 5)
+                        D2D1_RECT_F rcGhost = D2D1::RectF(hintX, lineY, codeRight, lineY + lineH);
+                        pRT->DrawText(hint.label.c_str(), static_cast<UINT32>(hint.label.length()),
+                                      theme.fontCode ? theme.fontCode.Get() : theme.fontBody.Get(),
+                                      rcGhost, theme.brushTextMuted.Get());
+                    } else {
+                        // Inlay type hint badge (Images 1, 2, 3)
+                        float badgeW = static_cast<float>(hint.label.length()) * charW * 0.88f + config.ScaleF(8.0f);
+                        float badgeH = lineH - config.ScaleF(5.0f);
+                        float badgeY = lineY + config.ScaleF(2.5f);
+                        D2D1_RECT_F rcBadge = D2D1::RectF(hintX, badgeY, (std::min)(hintX + badgeW, codeRight), badgeY + badgeH);
+                        D2D1_ROUNDED_RECT rrcBadge = D2D1::RoundedRect(rcBadge, 3.0f, 3.0f);
+
+                        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> badgeBgBrush;
+                        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> badgeBorderBrush;
+                        pRT->CreateSolidColorBrush(theme.IsDarkMode() ? D2D1::ColorF(0.24f, 0.26f, 0.32f, 0.45f) : D2D1::ColorF(0.88f, 0.90f, 0.94f, 0.65f), &badgeBgBrush);
+                        pRT->CreateSolidColorBrush(theme.IsDarkMode() ? D2D1::ColorF(0.40f, 0.44f, 0.52f, 0.55f) : D2D1::ColorF(0.70f, 0.74f, 0.80f, 0.75f), &badgeBorderBrush);
+                        if (badgeBgBrush) pRT->FillRoundedRectangle(rrcBadge, badgeBgBrush.Get());
+                        if (badgeBorderBrush) pRT->DrawRoundedRectangle(rrcBadge, badgeBorderBrush.Get(), 0.8f);
+
+                        D2D1_RECT_F rcBadgeText = D2D1::RectF(hintX + config.ScaleF(4.0f), badgeY + config.ScaleF(1.0f), rcBadge.right - config.ScaleF(4.0f), badgeY + badgeH);
+                        pRT->DrawText(hint.label.c_str(), static_cast<UINT32>(hint.label.length()),
+                                      theme.fontCode ? theme.fontCode.Get() : theme.fontBody.Get(),
+                                      rcBadgeText, theme.brushTextSecondary.Get());
+                    }
+                    renderedHint = true;
+                }
+            }
+        }
+
+        // Automatic Inlay Hints for dynamic code typing (Images 1, 2, 3)
+        // If no explicit inlay hints were configured, detect standard variable names (x, z, width)
+        if (!renderedHint && !lineStr.empty() && !doc.isSpecialView && !doc.isImageView) {
+            std::wstring autoLabel;
+            size_t autoCol = std::wstring::npos;
+            size_t posW = lineStr.find(L"width");
+            size_t posX = lineStr.find(L"x");
+            size_t posZ = lineStr.find(L"z");
+
+            if (posW != std::wstring::npos && (posW + 5 == lineStr.length() || !iswalnum(lineStr[posW + 5]))) {
+                autoLabel = L": {__mod__, __floordiv__, __mul__}";
+                autoCol = posW + 5;
+            } else if (posX != std::wstring::npos && (posX == 0 || !iswalnum(lineStr[posX - 1])) && (posX + 1 == lineStr.length() || !iswalnum(lineStr[posX + 1]))) {
+                autoLabel = L": {shape, __add__}";
+                autoCol = posX + 1;
+            } else if (posZ != std::wstring::npos && (posZ == 0 || !iswalnum(lineStr[posZ - 1])) && (posZ + 1 == lineStr.length() || !iswalnum(lineStr[posZ + 1]))) {
+                autoLabel = L": {reshape}";
+                autoCol = posZ + 1;
+            }
+
+            if (!autoLabel.empty() && autoCol != std::wstring::npos) {
+                float hintX = codeLeft + static_cast<float>(autoCol) * charW + config.ScaleF(2.0f);
+                if (hintX + config.ScaleF(30.0f) < codeRight) {
+                    float badgeW = static_cast<float>(autoLabel.length()) * charW * 0.85f + config.ScaleF(8.0f);
+                    float badgeH = lineH - config.ScaleF(5.0f);
+                    float badgeY = lineY + config.ScaleF(2.5f);
+                    D2D1_RECT_F rcBadge = D2D1::RectF(hintX, badgeY, (std::min)(hintX + badgeW, codeRight), badgeY + badgeH);
+                    D2D1_ROUNDED_RECT rrcBadge = D2D1::RoundedRect(rcBadge, 3.0f, 3.0f);
+
+                    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> badgeBgBrush;
+                    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> badgeBorderBrush;
+                    pRT->CreateSolidColorBrush(theme.IsDarkMode() ? D2D1::ColorF(0.24f, 0.26f, 0.32f, 0.45f) : D2D1::ColorF(0.88f, 0.90f, 0.94f, 0.65f), &badgeBgBrush);
+                    pRT->CreateSolidColorBrush(theme.IsDarkMode() ? D2D1::ColorF(0.40f, 0.44f, 0.52f, 0.55f) : D2D1::ColorF(0.70f, 0.74f, 0.80f, 0.75f), &badgeBorderBrush);
+                    if (badgeBgBrush) pRT->FillRoundedRectangle(rrcBadge, badgeBgBrush.Get());
+                    if (badgeBorderBrush) pRT->DrawRoundedRectangle(rrcBadge, badgeBorderBrush.Get(), 0.8f);
+
+                    D2D1_RECT_F rcBadgeText = D2D1::RectF(hintX + config.ScaleF(4.0f), badgeY + config.ScaleF(1.0f), rcBadge.right - config.ScaleF(4.0f), badgeY + badgeH);
+                    pRT->DrawText(autoLabel.c_str(), static_cast<UINT32>(autoLabel.length()),
+                                  theme.fontCode ? theme.fontCode.Get() : theme.fontBody.Get(),
+                                  rcBadgeText, theme.brushTextSecondary.Get());
+                }
+            }
+        }
+
         // Render Syntax Error Squiggly Underlines (Image 4)
         for (const auto& diag : doc.diagnostics) {
             if (diag.line == vl.bufferLine) {
@@ -1316,7 +1406,61 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
                 );
             }
         }
+
+        // 4b. Inline Ghost Text with "Tab to complete" (Image 3)
+        std::wstring displayGhost = m_ghostText;
+        if (displayGhost.empty() && m_showAutocomplete && !m_autocompleteItems.empty()) {
+            displayGhost = m_autocompleteItems[m_autocompleteSelectedIdx].label;
+            const auto& lineText = buffer.GetLine(cursor.line);
+            std::wstring prefix = editor::IntelliSenseEngine::ExtractQueryPrefix(lineText, cursor.col);
+            if (!prefix.empty() && displayGhost.rfind(prefix, 0) == 0) {
+                displayGhost = displayGhost.substr(prefix.length());
+            }
+        }
+
+        if (isFocused && !displayGhost.empty() && caretX + config.ScaleF(40.0f) < codeRight) {
+            float ghostX = caretX + config.ScaleF(2.0f);
+            float ghostW = static_cast<float>(displayGhost.length()) * charW;
+            D2D1_RECT_F rcGhost = D2D1::RectF(ghostX, caretY, (std::min)(ghostX + ghostW, codeRight), caretY + lineH);
+
+            pRT->DrawText(
+                displayGhost.c_str(),
+                static_cast<UINT32>(displayGhost.length()),
+                theme.fontCode ? theme.fontCode.Get() : theme.fontBody.Get(),
+                rcGhost,
+                theme.brushTextMuted.Get()
+            );
+
+            // "Tab to complete" pill badge (Image 3)
+            float badgeX = ghostX + ghostW + config.ScaleF(8.0f);
+            float badgeW = config.ScaleF(108.0f);
+            float badgeH = config.ScaleF(16.0f);
+            float badgeY = caretY + (lineH - badgeH) / 2.0f;
+
+            if (badgeX + badgeW < codeRight) {
+                D2D1_RECT_F rcBadge = D2D1::RectF(badgeX, badgeY, badgeX + badgeW, badgeY + badgeH);
+                D2D1_ROUNDED_RECT rrcBadge = D2D1::RoundedRect(rcBadge, 3.0f, 3.0f);
+
+                Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> badgeBgBrush;
+                Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> badgeBorderBrush;
+                pRT->CreateSolidColorBrush(theme.IsDarkMode() ? D2D1::ColorF(0.18f, 0.20f, 0.25f, 0.85f) : D2D1::ColorF(0.88f, 0.90f, 0.95f, 0.85f), &badgeBgBrush);
+                pRT->CreateSolidColorBrush(theme.IsDarkMode() ? D2D1::ColorF(0.38f, 0.42f, 0.50f, 0.65f) : D2D1::ColorF(0.70f, 0.74f, 0.82f, 0.75f), &badgeBorderBrush);
+
+                if (badgeBgBrush) pRT->FillRoundedRectangle(rrcBadge, badgeBgBrush.Get());
+                if (badgeBorderBrush) pRT->DrawRoundedRectangle(rrcBadge, badgeBorderBrush.Get(), 0.8f);
+
+                D2D1_RECT_F rcBadgeText = D2D1::RectF(badgeX + config.ScaleF(6.0f), badgeY + config.ScaleF(1.0f), rcBadge.right - config.ScaleF(6.0f), badgeY + badgeH);
+                pRT->DrawText(
+                    L"Tab to complete",
+                    15,
+                    theme.fontMenuShortcut ? theme.fontMenuShortcut.Get() : theme.fontBody.Get(),
+                    rcBadgeText,
+                    theme.brushTextSecondary.Get()
+                );
+            }
+        }
     }
+
 
     pRT->PopAxisAlignedClip();
 
@@ -1368,6 +1512,20 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
                     pRT->CreateSolidColorBrush(D2D1::ColorF(0.18f, 0.45f, 0.85f, 0.45f), &selMiniBrush);
                     if (selMiniBrush) pRT->FillRectangle(rcSelMini, selMiniBrush.Get());
                 }
+            }
+
+            // Active Caret Line Indicator on minimap (Image 1)
+            // Displays a bright blue horizontal indicator line spanning across the minimap track
+            if (cursor.line == b) {
+                D2D1_RECT_F rcCursorMini = D2D1::RectF(
+                    doc.minimapTrack.left + 1.0f,
+                    my,
+                    doc.minimapTrack.right - 1.0f,
+                    my + (std::max)(2.5f, microH + 1.0f)
+                );
+                Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> cursorMiniBrush;
+                pRT->CreateSolidColorBrush(D2D1::ColorF(0.00f, 0.48f, 1.00f, 0.95f), &cursorMiniBrush);
+                if (cursorMiniBrush) pRT->FillRectangle(rcCursorMini, cursorMiniBrush.Get());
             }
 
             // Target search jump highlight banner on minimap
@@ -2061,6 +2219,197 @@ void EditorCanvas::RenderRefactorPopup(ID2D1RenderTarget* pRT, Theme& theme, con
         rcText,
         textBrush.Get()
     );
+}
+
+void EditorCanvas::ShowAutocomplete(const std::vector<editor::IntelliSenseItem>& items, size_t selectedIndex) {
+    m_autocompleteItems = items;
+    m_autocompleteSelectedIdx = (selectedIndex < items.size()) ? selectedIndex : 0;
+    m_showAutocomplete = !items.empty();
+}
+
+void EditorCanvas::SetAutocompleteSelectedIndex(size_t idx) noexcept {
+    if (idx < m_autocompleteItems.size()) {
+        m_autocompleteSelectedIdx = idx;
+    }
+}
+
+void EditorCanvas::SelectNextAutocomplete() noexcept {
+    if (m_autocompleteItems.empty()) return;
+    m_autocompleteSelectedIdx = (m_autocompleteSelectedIdx + 1) % m_autocompleteItems.size();
+}
+
+void EditorCanvas::SelectPrevAutocomplete() noexcept {
+    if (m_autocompleteItems.empty()) return;
+    if (m_autocompleteSelectedIdx == 0) {
+        m_autocompleteSelectedIdx = m_autocompleteItems.size() - 1;
+    } else {
+        m_autocompleteSelectedIdx--;
+    }
+}
+
+const editor::IntelliSenseItem* EditorCanvas::GetSelectedAutocompleteItem() const noexcept {
+    if (m_autocompleteItems.empty() || m_autocompleteSelectedIdx >= m_autocompleteItems.size()) {
+        return nullptr;
+    }
+    return &m_autocompleteItems[m_autocompleteSelectedIdx];
+}
+
+bool EditorCanvas::HitTestAutocomplete(POINT pt, int& outIdx) const {
+    outIdx = -1;
+    if (!m_showAutocomplete || m_autocompleteItems.empty()) return false;
+    if (pt.x < m_autocompleteBounds.left || pt.x > m_autocompleteBounds.right ||
+        pt.y < m_autocompleteBounds.top || pt.y > m_autocompleteBounds.bottom) {
+        return false;
+    }
+
+    float itemsTop = m_autocompleteBounds.top + 4.0f;
+    float itemsBottom = m_autocompleteBounds.bottom - 26.0f;
+    if (pt.y >= itemsTop && pt.y < itemsBottom) {
+        size_t visibleCount = (std::min)(m_autocompleteItems.size(), static_cast<size_t>(8));
+        if (visibleCount > 0) {
+            float itemH = (itemsBottom - itemsTop) / static_cast<float>(visibleCount);
+            size_t scrollOffset = 0;
+            if (m_autocompleteSelectedIdx >= visibleCount) {
+                scrollOffset = m_autocompleteSelectedIdx - visibleCount + 1;
+            }
+            int relIdx = static_cast<int>((pt.y - itemsTop) / itemH);
+            if (relIdx >= 0 && relIdx < static_cast<int>(visibleCount)) {
+                size_t actualIdx = scrollOffset + static_cast<size_t>(relIdx);
+                if (actualIdx < m_autocompleteItems.size()) {
+                    outIdx = static_cast<int>(actualIdx);
+                }
+            }
+        }
+    }
+    return true;
+}
+
+void EditorCanvas::RenderAutocompletePopup(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
+                                           float clientWidth, float clientHeight) {
+    if (!pRT || !m_showAutocomplete || m_autocompleteItems.empty()) return;
+
+    const float itemH = config.ScaleF(24.0f);
+    const float footerH = config.ScaleF(26.0f);
+    const size_t maxVisible = 8;
+    const size_t totalItems = m_autocompleteItems.size();
+    const size_t visibleCount = (std::min)(totalItems, maxVisible);
+    const float popupW = config.ScaleF(340.0f);
+    const float popupH = static_cast<float>(visibleCount) * itemH + footerH + config.ScaleF(8.0f);
+
+    float popupX = m_lastCaretX;
+    if (popupX + popupW > clientWidth - config.ScaleF(12.0f)) {
+        popupX = (std::max)(config.ScaleF(10.0f), clientWidth - popupW - config.ScaleF(12.0f));
+    }
+    float popupY = m_lastCaretY + config.ScaleF(22.0f);
+    if (popupY + popupH > clientHeight - config.ScaleF(10.0f)) {
+        popupY = (std::max)(config.ScaleF(35.0f), m_lastCaretY - popupH - config.ScaleF(4.0f));
+    }
+
+    m_autocompleteBounds = D2D1::RectF(popupX, popupY, popupX + popupW, popupY + popupH);
+    D2D1_ROUNDED_RECT rrcPopup = D2D1::RoundedRect(m_autocompleteBounds, 5.0f, 5.0f);
+
+    // Dark sleek background matching Image 5
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> bgBrush;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> borderBrush;
+    pRT->CreateSolidColorBrush(theme.IsDarkMode() ? D2D1::ColorF(0.12f, 0.13f, 0.15f, 0.98f) : D2D1::ColorF(0.98f, 0.98f, 0.99f, 0.98f), &bgBrush);
+    pRT->CreateSolidColorBrush(theme.IsDarkMode() ? D2D1::ColorF(0.28f, 0.30f, 0.35f, 1.0f) : D2D1::ColorF(0.78f, 0.80f, 0.84f, 1.0f), &borderBrush);
+
+    if (bgBrush) pRT->FillRoundedRectangle(rrcPopup, bgBrush.Get());
+    if (borderBrush) pRT->DrawRoundedRectangle(rrcPopup, borderBrush.Get(), 1.0f);
+
+    // Compute scroll window
+    size_t scrollOffset = 0;
+    if (m_autocompleteSelectedIdx >= visibleCount) {
+        scrollOffset = m_autocompleteSelectedIdx - visibleCount + 1;
+    }
+
+    float itemY = popupY + config.ScaleF(4.0f);
+
+    for (size_t i = 0; i < visibleCount; ++i) {
+        size_t itemIdx = scrollOffset + i;
+        if (itemIdx >= totalItems) break;
+
+        const auto& item = m_autocompleteItems[itemIdx];
+        bool isSelected = (itemIdx == m_autocompleteSelectedIdx);
+
+        D2D1_RECT_F rcItem = D2D1::RectF(popupX + 4.0f, itemY, popupX + popupW - 4.0f, itemY + itemH);
+
+        if (isSelected) {
+            D2D1_ROUNDED_RECT rrcSel = D2D1::RoundedRect(rcItem, 3.5f, 3.5f);
+            Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> selBrush;
+            pRT->CreateSolidColorBrush(theme.IsDarkMode() ? D2D1::ColorF(0.04f, 0.38f, 0.72f, 0.95f) : D2D1::ColorF(0.18f, 0.52f, 0.92f, 0.95f), &selBrush);
+            if (selBrush) pRT->FillRoundedRectangle(rrcSel, selBrush.Get());
+        }
+
+        // Draw Icon Badge on Left (Image 5)
+        float iconSize = config.ScaleF(16.0f);
+        float iconX = popupX + config.ScaleF(8.0f);
+        float iconY = itemY + (itemH - iconSize) / 2.0f;
+        D2D1_RECT_F rcIcon = D2D1::RectF(iconX, iconY, iconX + iconSize, iconY + iconSize);
+
+        D2D1_COLOR_F badgeColor = D2D1::ColorF(0.5f, 0.5f, 0.5f);
+        const wchar_t* badgeLetter = L"ⓚ";
+        switch (item.kind) {
+            case editor::CompletionKind::Property:
+                badgeColor = D2D1::ColorF(0.85f, 0.40f, 0.95f); badgeLetter = L"ⓟ"; break;
+            case editor::CompletionKind::Method:
+                badgeColor = D2D1::ColorF(0.65f, 0.45f, 0.98f); badgeLetter = L"ⓜ"; break;
+            case editor::CompletionKind::Function:
+                badgeColor = D2D1::ColorF(0.68f, 0.50f, 1.00f); badgeLetter = L"ⓕ"; break;
+            case editor::CompletionKind::Variable:
+                badgeColor = D2D1::ColorF(0.35f, 0.70f, 0.95f); badgeLetter = L"ⓥ"; break;
+            case editor::CompletionKind::Keyword:
+                badgeColor = D2D1::ColorF(0.92f, 0.35f, 0.55f); badgeLetter = L"ⓚ"; break;
+            case editor::CompletionKind::Tag:
+                badgeColor = D2D1::ColorF(0.25f, 0.80f, 0.55f); badgeLetter = L"ⓣ"; break;
+            case editor::CompletionKind::Attribute:
+                badgeColor = D2D1::ColorF(0.95f, 0.65f, 0.20f); badgeLetter = L"ⓐ"; break;
+            case editor::CompletionKind::Snippet:
+                badgeColor = D2D1::ColorF(0.20f, 0.75f, 0.70f); badgeLetter = L"ⓢ"; break;
+        }
+
+        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> badgeBrush;
+        pRT->CreateSolidColorBrush(badgeColor, &badgeBrush);
+        if (badgeBrush) {
+            pRT->DrawText(badgeLetter, 1, theme.fontMenu ? theme.fontMenu.Get() : theme.fontBody.Get(), rcIcon, badgeBrush.Get());
+        }
+
+        // Label text (e.g. "border", "borderRadius", "div")
+        float labelX = iconX + iconSize + config.ScaleF(6.0f);
+        float labelW = config.ScaleF(160.0f);
+        D2D1_RECT_F rcLabel = D2D1::RectF(labelX, itemY + config.ScaleF(2.0f), labelX + labelW, itemY + itemH);
+        ID2D1Brush* textBrush = isSelected ? theme.brushTextWhite.Get() : theme.brushTextPrimary.Get();
+        pRT->DrawText(item.label.c_str(), static_cast<UINT32>(item.label.length()),
+                      theme.fontMenuItem ? theme.fontMenuItem.Get() : theme.fontBody.Get(),
+                      rcLabel, textBrush);
+
+        // Detail text on right (e.g. "CSSStyleDeclaration.border", "HTMLElement")
+        if (!item.detail.empty()) {
+            float detailX = labelX + labelW;
+            D2D1_RECT_F rcDetail = D2D1::RectF(detailX, itemY + config.ScaleF(2.0f), popupX + popupW - config.ScaleF(8.0f), itemY + itemH);
+            ID2D1Brush* detailBrush = isSelected ? theme.brushTextSecondary.Get() : theme.brushTextMuted.Get();
+            pRT->DrawText(item.detail.c_str(), static_cast<UINT32>(item.detail.length()),
+                          theme.fontMenuShortcut ? theme.fontMenuShortcut.Get() : theme.fontBody.Get(),
+                          rcDetail, detailBrush);
+        }
+
+        itemY += itemH;
+    }
+
+    // Bottom Tip Bar (Image 5)
+    float footerY = itemY + config.ScaleF(2.0f);
+    pRT->DrawLine(
+        D2D1::Point2F(popupX + 4.0f, footerY),
+        D2D1::Point2F(popupX + popupW - 4.0f, footerY),
+        borderBrush.Get(),
+        0.8f
+    );
+
+    D2D1_RECT_F rcTip = D2D1::RectF(popupX + config.ScaleF(8.0f), footerY + config.ScaleF(3.0f), popupX + popupW - config.ScaleF(8.0f), footerY + footerH);
+    const wchar_t* tipText = L"Ctrl+Down and Ctrl+Up will move caret down and up in the editor   Next Tip";
+    pRT->DrawText(tipText, static_cast<UINT32>(wcslen(tipText)),
+                  theme.fontMenuShortcut ? theme.fontMenuShortcut.Get() : theme.fontBody.Get(),
+                  rcTip, theme.brushTextMuted.Get());
 }
 
 void EditorCanvas::RenderCanvasThemeEffects(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,

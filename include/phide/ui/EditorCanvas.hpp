@@ -17,6 +17,7 @@
 #include "phide/editor/Buffer.hpp"
 #include "phide/editor/OpenDocument.hpp"
 #include "phide/editor/BracketPairAnalyzer.hpp"
+#include "phide/editor/IntelliSenseEngine.hpp"
 #include "phide/ui/KeyboardShortcutsView.hpp"
 
 namespace phide::ui {
@@ -98,6 +99,23 @@ public:
     }
     void DismissRefactorPopup() noexcept { m_showRefactorPopup = false; }
     [[nodiscard]] bool IsRefactorPopupVisible() const noexcept { return m_showRefactorPopup; }
+
+    // Autocomplete / IntelliSense Popup State (Image 5)
+    void ShowAutocomplete(const std::vector<editor::IntelliSenseItem>& items, size_t selectedIndex = 0);
+    void DismissAutocomplete() noexcept { m_showAutocomplete = false; }
+    [[nodiscard]] bool IsAutocompleteVisible() const noexcept { return m_showAutocomplete && !m_autocompleteItems.empty(); }
+    [[nodiscard]] size_t GetAutocompleteSelectedIndex() const noexcept { return m_autocompleteSelectedIdx; }
+    void SetAutocompleteSelectedIndex(size_t idx) noexcept;
+    void SelectNextAutocomplete() noexcept;
+    void SelectPrevAutocomplete() noexcept;
+    [[nodiscard]] const std::vector<editor::IntelliSenseItem>& GetAutocompleteItems() const noexcept { return m_autocompleteItems; }
+    [[nodiscard]] const editor::IntelliSenseItem* GetSelectedAutocompleteItem() const noexcept;
+    [[nodiscard]] bool HitTestAutocomplete(POINT pt, int& outIdx) const;
+
+    // Inline Ghost Text with "Tab to complete" (Image 3)
+    [[nodiscard]] const std::wstring& GetGhostText() const noexcept { return m_ghostText; }
+    void SetGhostText(const std::wstring& ghost) { m_ghostText = ghost; }
+    void ClearGhostText() noexcept { m_ghostText.clear(); }
 
     /**
      * @brief Toggles caret blink phase.
@@ -318,11 +336,19 @@ private:
                                   float canvasLeft, float canvasWidth, float topY, float clientHeight);
 
     void RenderRefactorPopup(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config, float clientHeight);
+    void RenderAutocompletePopup(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
+                                 float clientWidth, float clientHeight);
 
     bool m_showRefactorPopup = false;
     std::wstring m_refactorMessage;
     float m_lastCaretX = 0.0f;
     float m_lastCaretY = 0.0f;
+
+    bool m_showAutocomplete = false;
+    std::vector<editor::IntelliSenseItem> m_autocompleteItems;
+    size_t m_autocompleteSelectedIdx = 0;
+    D2D1_RECT_F m_autocompleteBounds{};
+    std::wstring m_ghostText;
 
     struct FoldChevronHit {
         D2D1_RECT_F bounds{};

@@ -148,6 +148,7 @@ public:
     void OpenSourceControl();
     void RefreshGitState(bool async = true, bool showLoading = false);
     void RefreshGitStatusOnly(bool async = true);
+    void SetDirtyFiles(const std::vector<std::wstring>& dirtyFilePaths);
     void StageAllChangesAsync();
     void DiscardAllChangesAsync();
     bool DiscardAllChanges();
@@ -456,6 +457,31 @@ public:
                inRect(pt, m_rcFilesToIncludeBox) || inRect(pt, m_rcFilesToExcludeBox);
     }
 
+    [[nodiscard]] bool HitTestGitInputs(POINT pt) const noexcept {
+        auto inRect = [](POINT p, const D2D1_RECT_F& rc) {
+            return p.x >= rc.left && p.x <= rc.right && p.y >= rc.top && p.y <= rc.bottom;
+        };
+        return inRect(pt, m_gitMsgBoxBounds);
+    }
+
+    [[nodiscard]] bool HitTestGitButtons(POINT pt) const noexcept {
+        auto inRect = [](POINT p, const D2D1_RECT_F& rc) {
+            return p.x >= rc.left && p.x <= rc.right && p.y >= rc.top && p.y <= rc.bottom;
+        };
+        return inRect(pt, m_gitCommitBtnBounds) || inRect(pt, m_gitCommitDropdownBounds) ||
+               inRect(pt, m_gitGenerateAiBounds) || inRect(pt, m_gitStageAllBounds) ||
+               inRect(pt, m_gitDiscardAllBounds) || inRect(pt, m_gitChangesChevronBounds) ||
+               inRect(pt, m_gitChangesMoreBounds) || inRect(pt, m_gitHeaderMoreBounds) ||
+               inRect(pt, m_gitGraphChevronBounds) || inRect(pt, m_gitGraphAutoBounds) ||
+               inRect(pt, m_gitGraphBullseyeBounds) || inRect(pt, m_gitGraphSplitBounds) ||
+               inRect(pt, m_gitGraphMergeBounds) || inRect(pt, m_gitGraphPushBounds) ||
+               inRect(pt, m_gitGraphRefreshBounds) || inRect(pt, m_gitGraphMoreBounds) ||
+               inRect(pt, m_commitCardCloseBounds) || inRect(pt, m_commitCardOpenChangesBounds) ||
+               inRect(pt, m_commitCardGitHubBounds);
+    }
+    [[nodiscard]] bool IsCommitting() const noexcept { return m_isCommitting.load(); }
+    [[nodiscard]] bool IsSyncing() const noexcept { return m_isSyncing.load(); }
+
     // --- Inline Tree Item Rename ---
     /**
      * @brief Initiates inline rename mode on a tree item by its visible index.
@@ -549,8 +575,12 @@ private:
     std::wstring m_gitBranch = L"master";
     std::vector<GitChangeItem> m_gitChanges;
     std::vector<GitCommitItem> m_gitCommits;
+    std::vector<std::wstring> m_dirtyFilePaths;
     std::atomic<bool> m_isGitLoading{false};
     std::atomic<bool> m_isGitRefreshing{false};
+    std::atomic<bool> m_isCommitting{false};
+    std::atomic<bool> m_isSyncing{false};
+    bool m_gitCommitBtnPressed = false;
     float m_gitAnimAngle = 0.0f;
     mutable std::recursive_mutex m_gitMutex;
 

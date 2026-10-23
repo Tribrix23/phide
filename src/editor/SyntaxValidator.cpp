@@ -293,10 +293,11 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidateHtml(const Buffer& buffer)
     auto isVoidTag = [](const std::wstring& name) {
         std::wstring lower = name;
         for (auto& c : lower) c = static_cast<wchar_t>(towlower(c));
+        if (lower.rfind(L"!", 0) == 0 || lower.rfind(L"?", 0) == 0) return true;
         return lower == L"area" || lower == L"base" || lower == L"br" || lower == L"col" ||
                lower == L"embed" || lower == L"hr" || lower == L"img" || lower == L"input" ||
                lower == L"link" || lower == L"meta" || lower == L"param" || lower == L"source" ||
-               lower == L"track" || lower == L"wbr" || lower == L"!doctype";
+               lower == L"track" || lower == L"wbr";
     };
 
     bool inComment = false;
@@ -319,43 +320,82 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidateHtml(const Buffer& buffer)
             }
 
             if (line[c] == L'<') {
+                size_t tagStartLine = l;
                 size_t tagStartCol = c;
-                size_t closePos = line.find(L'>', c);
-                if (closePos == std::wstring::npos) {
-                    // Check if tag might close on next line, or flag unclosed '<'
-                    // For single line checks:
-                    bool foundOnNext = false;
-                    for (size_t nl = l + 1; nl < (std::min)(buffer.GetLineCount(), l + 3); ++nl) {
-                        if (buffer.GetLine(nl).find(L'>') != std::wstring::npos) {
-                            foundOnNext = true;
-                            break;
+
+                // Find closing '>' possibly across multiple lines (e.g. multi-line <meta ... /> in Image 2)
+                bool foundClose = false;
+                size_t endLine = l;
+                size_t endCol = 0;
+                bool inQuotes = false;
+                wchar_t quoteChar = L'\0';
+
+                size_t curScanL = l;
+                size_t curScanC = c + 1;
+
+                while (curScanL < buffer.GetLineCount()) {
+                    const auto& scanText = buffer.GetLine(curScanL);
+                    for (size_t k = curScanC; k < scanText.length(); ++k) {
+                        wchar_t ch = scanText[k];
+                        if (inQuotes) {
+                            if (ch == quoteChar) inQuotes = false;
+                        } else {
+                            if (ch == L'"' || ch == L'\'') {
+                                inQuotes = true;
+                                quoteChar = ch;
+                            } else if (ch == L'>') {
+                                endLine = curScanL;
+                                endCol = k;
+                                foundClose = true;
+                                break;
+                            }
                         }
                     }
-                    if (!foundOnNext) {
-                        diagnostics.push_back({ l, tagStartCol, 1, L"Syntax Error: Unclosed tag bracket '<'", 1 });
-                    }
+                    if (foundClose) break;
+                    curScanL++;
+                    curScanC = 0;
+                }
+
+                if (!foundClose) {
+                    diagnostics.push_back({ tagStartLine, tagStartCol, 1, L"Syntax Error: Unclosed tag bracket '<'", 1 });
                     break;
                 }
 
-                std::wstring tagContent = line.substr(c + 1, closePos - (c + 1));
-                c = closePos;
+                std::wstring tagContent;
+                if (endLine == l) {
+                    tagContent = line.substr(c + 1, endCol - (c + 1));
+                    c = endCol;
+                } else {
+                    tagContent = line.substr(c + 1);
+                    for (size_t nl = l + 1; nl < endLine; ++nl) {
+                        tagContent += L" " + buffer.GetLine(nl);
+                    }
+                    tagContent += L" " + buffer.GetLine(endLine).substr(0, endCol);
+                    l = endLine;
+                    c = endCol;
+                }
+
+                size_t lastNonWs = tagContent.find_last_not_of(L" \t\r\n");
+                if (lastNonWs != std::wstring::npos) {
+                    tagContent = tagContent.substr(0, lastNonWs + 1);
+                }
 
                 if (tagContent.empty()) continue;
 
-                // Self closing: e.g. <div />
-                if (tagContent.back() == L'/') {
+                // Self-closing: e.g. <div /> or multiline <meta ... />
+                if (!tagContent.empty() && tagContent.back() == L'/') {
                     continue;
                 }
 
                 // Closing tag: </tag>
                 if (tagContent.front() == L'/') {
                     std::wstring closeName = tagContent.substr(1);
-                    size_t sp = closeName.find_first_of(L" \t");
+                    size_t sp = closeName.find_first_of(L" \t\r\n");
                     if (sp != std::wstring::npos) closeName = closeName.substr(0, sp);
                     for (auto& ch : closeName) ch = static_cast<wchar_t>(towlower(ch));
 
                     if (tagStack.empty()) {
-                        diagnostics.push_back({ l, tagStartCol, closeName.length() + 3,
+                        diagnostics.push_back({ tagStartLine, tagStartCol, closeName.length() + 3,
                             L"Syntax Error: Unexpected closing tag </" + closeName + L">", 1 });
                     } else {
                         std::wstring expected = tagStack.back().name;
@@ -363,17 +403,61 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidateHtml(const Buffer& buffer)
                         if (expected == closeName) {
                             tagStack.pop_back();
                         } else {
-                            diagnostics.push_back({ l, tagStartCol, closeName.length() + 3,
+                            // Mismatched tag: pinpoint expected vs actual
+                            diagnostics.push_back({ tagStartLine, tagStartCol, closeName.length() + 3,
                                 L"Syntax Error: Mismatched tag: expected </" + tagStack.back().name + L"> but found </" + closeName + L">", 1 });
-                            tagStack.pop_back();
+
+                            // Recover by finding ancestor match if present
+                            int matchIdx = -1;
+                            for (int i = static_cast<int>(tagStack.size()) - 1; i >= 0; --i) {
+                                std::wstring curName = tagStack[i].name;
+                                for (auto& ch : curName) ch = static_cast<wchar_t>(towlower(ch));
+                                if (curName == closeName) {
+                                    matchIdx = i;
+                                    break;
+                                }
+                            }
+                            if (matchIdx >= 0) {
+                                tagStack.erase(tagStack.begin() + matchIdx, tagStack.end());
+                            } else {
+                                tagStack.pop_back();
+                            }
                         }
                     }
                 } else {
                     // Opening tag
-                    size_t sp = tagContent.find_first_of(L" \t/");
+                    size_t sp = tagContent.find_first_of(L" \t\r\n/");
                     std::wstring tagName = (sp == std::wstring::npos) ? tagContent : tagContent.substr(0, sp);
                     if (!tagName.empty() && !isVoidTag(tagName)) {
-                        tagStack.push_back({ tagName, l, tagStartCol });
+                        std::wstring lowerTag = tagName;
+                        for (auto& ch : lowerTag) ch = static_cast<wchar_t>(towlower(ch));
+                        if (lowerTag == L"script" || lowerTag == L"style") {
+                            // Raw text element: scan until </script> or </style>
+                            std::wstring endPattern = L"</" + lowerTag;
+                            bool foundRawEnd = false;
+                            while (l < buffer.GetLineCount()) {
+                                const auto& rawLine = buffer.GetLine(l);
+                                std::wstring rawLower = rawLine;
+                                for (auto& ch : rawLower) ch = static_cast<wchar_t>(towlower(ch));
+                                size_t foundPos = rawLower.find(endPattern, (l == tagStartLine) ? c + 1 : 0);
+                                if (foundPos != std::wstring::npos) {
+                                    size_t closeGt = rawLine.find(L'>', foundPos);
+                                    if (closeGt != std::wstring::npos) {
+                                        c = closeGt;
+                                        foundRawEnd = true;
+                                        break;
+                                    }
+                                }
+                                l++;
+                                c = 0;
+                            }
+                            if (!foundRawEnd) {
+                                diagnostics.push_back({ tagStartLine, tagStartCol, tagName.length() + 2,
+                                    L"Syntax Error: Unclosed <" + tagName + L"> block (missing </" + tagName + L">)", 1 });
+                            }
+                        } else {
+                            tagStack.push_back({ tagName, tagStartLine, tagStartCol });
+                        }
                     }
                 }
             }
@@ -394,27 +478,98 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidateYaml(const Buffer& buffer)
     std::vector<lsp::Diagnostic> diagnostics;
 
     for (size_t l = 0; l < buffer.GetLineCount(); ++l) {
-        const auto& line = buffer.GetLine(l);
-        if (line.empty()) continue;
+        const auto& fullLine = buffer.GetLine(l);
+        if (fullLine.empty()) continue;
 
         // In YAML, tab indentation is strictly prohibited!
-        size_t firstNonSpace = line.find_first_not_of(L" ");
-        if (firstNonSpace != std::wstring::npos && line[firstNonSpace] == L'\t') {
+        size_t firstNonSpace = fullLine.find_first_not_of(L" ");
+        if (firstNonSpace != std::wstring::npos && fullLine[firstNonSpace] == L'\t') {
             diagnostics.push_back({ l, firstNonSpace, 1, L"Syntax Error: Tab characters are not allowed for indentation in YAML", 1 });
+            continue;
         }
 
-        // Check unclosed quotes on YAML line
-        int singleQuotes = 0;
-        int doubleQuotes = 0;
-        for (wchar_t ch : line) {
-            if (ch == L'\'') singleQuotes++;
-            if (ch == L'"') doubleQuotes++;
+        // Strip comments that begin with '#' (preceded by whitespace or at start of line)
+        // unless '#' is inside quotes
+        std::wstring line = fullLine;
+        bool inSq = false, inDq = false;
+        size_t commentPos = std::wstring::npos;
+        for (size_t i = 0; i < line.length(); ++i) {
+            wchar_t c = line[i];
+            if (c == L'\'' && !inDq) inSq = !inSq;
+            else if (c == L'"' && !inSq && (i == 0 || line[i - 1] != L'\\')) inDq = !inDq;
+            else if (c == L'#' && !inSq && !inDq) {
+                if (i == 0 || iswspace(line[i - 1])) {
+                    commentPos = i;
+                    break;
+                }
+            }
         }
-        if (singleQuotes % 2 != 0) {
-            diagnostics.push_back({ l, 0, (std::max)(1ULL, line.length()), L"Syntax Error: Unclosed single quote in YAML", 1 });
+        if (commentPos != std::wstring::npos) {
+            line = line.substr(0, commentPos);
         }
-        if (doubleQuotes % 2 != 0) {
-            diagnostics.push_back({ l, 0, (std::max)(1ULL, line.length()), L"Syntax Error: Unclosed double quote in YAML", 1 });
+
+        size_t start = line.find_first_not_of(L" \t");
+        if (start == std::wstring::npos) continue;
+
+        // Skip list marker '- '
+        if (line[start] == L'-' && start + 1 < line.length() && iswspace(line[start + 1])) {
+            start = line.find_first_not_of(L" \t", start + 2);
+            if (start == std::wstring::npos) continue;
+        }
+
+        // Helper to check for unclosed quotes ONLY when a scalar actually begins with a quote delimiter
+        auto checkQuotedScalar = [&](size_t pos, const std::wstring& context) {
+            if (pos >= line.length()) return;
+            wchar_t q = line[pos];
+            if (q == L'\'') {
+                bool closed = false;
+                for (size_t i = pos + 1; i < line.length(); ++i) {
+                    if (line[i] == L'\'') {
+                        if (i + 1 < line.length() && line[i + 1] == L'\'') {
+                            i++; // Skip escaped quote ''
+                        } else {
+                            closed = true;
+                            break;
+                        }
+                    }
+                }
+                if (!closed) {
+                    diagnostics.push_back({ l, pos, line.length() - pos, L"Syntax Error: Unclosed single quote in YAML " + context, 1 });
+                }
+            } else if (q == L'"') {
+                bool closed = false;
+                for (size_t i = pos + 1; i < line.length(); ++i) {
+                    if (line[i] == L'\\') {
+                        i++; // Skip escaped char
+                        continue;
+                    }
+                    if (line[i] == L'"') {
+                        closed = true;
+                        break;
+                    }
+                }
+                if (!closed) {
+                    diagnostics.push_back({ l, pos, line.length() - pos, L"Syntax Error: Unclosed double quote in YAML " + context, 1 });
+                }
+            }
+        };
+
+        // Check if key starts with quote
+        if (line[start] == L'\'' || line[start] == L'"') {
+            checkQuotedScalar(start, L"key");
+        }
+
+        // Find ':' delimiter for key-value pair
+        size_t colon = line.find(L':');
+        if (colon != std::wstring::npos) {
+            size_t valStart = line.find_first_not_of(L" \t", colon + 1);
+            if (valStart != std::wstring::npos) {
+                // In YAML, apostrophes inside unquoted plain strings (e.g. "device's camera") are plain text!
+                // Only inspect quotes if the value explicitly begins with a quote delimiter.
+                if (line[valStart] == L'\'' || line[valStart] == L'"') {
+                    checkQuotedScalar(valStart, L"value");
+                }
+            }
         }
     }
 

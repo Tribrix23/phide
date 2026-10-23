@@ -27,11 +27,13 @@
 #include "phide/ui/EditorCanvas.hpp"
 #include "phide/ui/ThemePickerModal.hpp"
 #include "phide/ui/QuickOpenModal.hpp"
+#include "phide/ui/TerminalPanel.hpp"
 #include "phide/editor/Buffer.hpp"
 #include "phide/editor/OpenDocument.hpp"
 #include "phide/workspace/WorkspaceManager.hpp"
 #include "phide/workspace/ExplorerUndoManager.hpp"
 #include "phide/editor/SnippetManager.hpp"
+#include "phide/editor/IntelliSenseEngine.hpp"
 #include "phide/lsp/LspClient.hpp"
 
 namespace phide::app {
@@ -385,6 +387,12 @@ private:
     /** @brief Queues a debounced Git status refresh (e.g. 2s after typing/saving stops). */
     void TriggerDebouncedGitRefresh(DWORD delayMs = 2000);
 
+    /** @brief Synchronizes all open in-memory dirty documents into the Source Control drawer (Images 3 & 4). */
+    void UpdateDrawerDirtyFiles();
+
+    /** @brief Commits selected autocomplete item or HTML tag block (Images 1 & 5). */
+    void CommitAutocompleteSelection();
+
     // Win32 & D2D handles
     HWND m_hwnd = nullptr;
     ComPtr<ID2D1Factory> m_pD2DFactory;
@@ -401,9 +409,12 @@ private:
     ui::EditorCanvas m_editor;
     ui::ThemePickerModal m_themePicker;
     ui::QuickOpenModal m_quickOpen;
+    ui::TerminalPanel m_terminal;
+    bool m_isTerminalFocused = false;
     workspace::WorkspaceManager m_workspace;
     workspace::ExplorerUndoManager m_explorerUndo;
     editor::SnippetManager m_snippetManager;
+    editor::IntelliSenseEngine m_intelliSense;
     lsp::LspClient m_lsp;
 
     // Filesystem Watcher Handles
