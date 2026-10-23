@@ -102,6 +102,98 @@ void PopupMenu::OpenEditMenu(float x, float y, const app::AppConfig& config,
     LayoutMenu(m_items, x, y, menuW, config, m_mainMenuBounds);
 }
 
+void PopupMenu::OpenDebugMenu(float x, float y, const app::AppConfig& config,
+                              bool isLiveServerRunning, bool isDebugActive, bool canRun) {
+    m_isOpen = true;
+    m_hoveredMainIdx = -1;
+    m_activeSubmenuIdx = -1;
+    m_hoveredSubmenuIdx = -1;
+
+    m_items.clear();
+
+    // 1. Start Debugging (F5)
+    m_items.push_back({ MenuActionId::DebugStart, L"Start Debugging", L"F5", false, false, false, canRun, {}, {} });
+
+    // 2. Run Without Debugging (Ctrl+F5)
+    m_items.push_back({ MenuActionId::DebugRunWithoutDebug, L"Run Without Debugging", L"Ctrl+F5", false, false, false, canRun, {}, {} });
+
+    // 3. Stop (Shift+F5)
+    m_items.push_back({ MenuActionId::DebugStop, L"Stop", L"Shift+F5", false, false, false, (isLiveServerRunning || isDebugActive), {}, {} });
+
+    // 4. Restart (Ctrl+Shift+F5)
+    m_items.push_back({ MenuActionId::DebugRestart, L"Restart", L"Ctrl+Shift+F5", false, false, false, (isLiveServerRunning || isDebugActive), {}, {} });
+
+    // --- Separator ---
+    m_items.push_back({ MenuActionId::None, L"", L"", true, false, false, false, {}, {} });
+
+    // 5. Stepping actions
+    m_items.push_back({ MenuActionId::DebugStepOver, L"Step Over", L"F10", false, false, false, isDebugActive, {}, {} });
+    m_items.push_back({ MenuActionId::DebugStepInto, L"Step Into", L"F11", false, false, false, isDebugActive, {}, {} });
+    m_items.push_back({ MenuActionId::DebugStepOut, L"Step Out", L"Shift+F11", false, false, false, isDebugActive, {}, {} });
+    m_items.push_back({ MenuActionId::DebugContinue, L"Continue", L"F5", false, false, false, isDebugActive, {}, {} });
+
+    // --- Separator ---
+    m_items.push_back({ MenuActionId::None, L"", L"", true, false, false, false, {}, {} });
+
+    // 6. Breakpoint actions
+    m_items.push_back({ MenuActionId::DebugToggleBreakpoint, L"Toggle Breakpoint", L"F9", false, false, false, true, {}, {} });
+    m_items.push_back({ MenuActionId::DebugConsole, L"Debug Console", L"Ctrl+Shift+Y", false, false, false, true, {}, {} });
+
+    // --- Separator ---
+    m_items.push_back({ MenuActionId::None, L"", L"", true, false, false, false, {}, {} });
+
+    // 7. Live Server Controls
+    if (!isLiveServerRunning) {
+        m_items.push_back({ MenuActionId::DebugStartLiveServer, L"⚡ Start Live Server", L"", false, false, false, true, {}, {} });
+    } else {
+        m_items.push_back({ MenuActionId::DebugStopLiveServer, L"⏹ Stop Live Server", L"", false, false, false, true, {}, {} });
+        m_items.push_back({ MenuActionId::DebugRestartLiveServer, L"↻ Restart Live Server", L"", false, false, false, true, {}, {} });
+    }
+
+    const float menuW = config.ScaleF(240.0f);
+    LayoutMenu(m_items, x, y, menuW, config, m_mainMenuBounds);
+}
+
+void PopupMenu::OpenCodeMenu(float x, float y, const app::AppConfig& config,
+                             bool hasDoc, bool hasSelection) {
+    m_isOpen = true;
+    m_hoveredMainIdx = -1;
+    m_activeSubmenuIdx = -1;
+    m_hoveredSubmenuIdx = -1;
+
+    m_items.clear();
+
+    // 1. Formatting
+    m_items.push_back({ MenuActionId::CodeFormatDocument,   L"Format Document",              L"Shift+Alt+F", false, false, false, hasDoc, {}, {} });
+    m_items.push_back({ MenuActionId::CodeFormatSelection,  L"Format Selection",             L"Ctrl+K Ctrl+F", false, false, false, hasDoc && hasSelection, {}, {} });
+
+    // --- Separator ---
+    m_items.push_back({ MenuActionId::None,                 L"",                             L"",            true,  false, false, false, {}, {} });
+
+    // 2. Comments & Emmet
+    m_items.push_back({ MenuActionId::CodeToggleLineComment,  L"Toggle Line Comment",        L"Ctrl+/",      false, false, false, hasDoc, {}, {} });
+    m_items.push_back({ MenuActionId::CodeToggleBlockComment, L"Toggle Block Comment",       L"Shift+Alt+A", false, false, false, hasDoc, {}, {} });
+    m_items.push_back({ MenuActionId::CodeEmmetExpand,        L"Emmet: Expand Abbreviation", L"Tab",         false, false, false, hasDoc, {}, {} });
+
+    // --- Separator ---
+    m_items.push_back({ MenuActionId::None,                 L"",                             L"",            true,  false, false, false, {}, {} });
+
+    // 3. Navigation & Symbol Operations
+    m_items.push_back({ MenuActionId::CodeGoToDefinition,   L"Go to Definition",             L"F12",         false, false, false, hasDoc, {}, {} });
+    m_items.push_back({ MenuActionId::CodePeekDefinition,   L"Peek Definition",              L"Alt+F12",     false, false, false, hasDoc, {}, {} });
+    m_items.push_back({ MenuActionId::CodeRenameSymbol,     L"Rename Symbol",                L"F2",          false, false, false, hasDoc, {}, {} });
+    m_items.push_back({ MenuActionId::CodeRefactor,         L"Refactor...",                  L"Ctrl+Shift+R",false, false, false, hasDoc, {}, {} });
+
+    // --- Separator ---
+    m_items.push_back({ MenuActionId::None,                 L"",                             L"",            true,  false, false, false, {}, {} });
+
+    // 4. Imports & Source Actions
+    m_items.push_back({ MenuActionId::CodeOrganizeImports,  L"Organize Imports",             L"Shift+Alt+O", false, false, false, hasDoc, {}, {} });
+
+    const float codeMenuW = config.ScaleF(250.0f);
+    LayoutMenu(m_items, x, y, codeMenuW, config, m_mainMenuBounds);
+}
+
 void PopupMenu::BuildEditMenuItems(bool canUndo, bool canRedo, bool hasSelection) {
     (void)hasSelection;
     m_items.clear();

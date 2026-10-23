@@ -1014,8 +1014,21 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
             numBrush
         );
 
+        // Breakpoint Marker in Gutter (F9 / Debug Menu / Click Gutter)
+        bool hasBreakpoint = (std::find(doc.breakpoints.begin(), doc.breakpoints.end(), vl.bufferLine) != doc.breakpoints.end());
+        if (hasBreakpoint) {
+            float bpX = canvasLeft + config.ScaleF(12.0f);
+            float bpY = lineY + lineH / 2.0f;
+            float bpR = config.ScaleF(4.5f);
+            Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> bpBrush;
+            pRT->CreateSolidColorBrush(D2D1::ColorF(0.92f, 0.25f, 0.25f), &bpBrush);
+            if (bpBrush) {
+                pRT->FillEllipse(D2D1::Ellipse(D2D1::Point2F(bpX, bpY), bpR, bpR), bpBrush.Get());
+            }
+        }
+
         // Gutter Diagnostic Error Indicator Dot (Image 4)
-        if (hasDiagError) {
+        if (hasDiagError && !hasBreakpoint) {
             float errDotX = canvasLeft + config.ScaleF(8.0f);
             float errDotY = lineY + lineH / 2.0f;
             float errDotR = config.ScaleF(2.5f);

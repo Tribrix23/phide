@@ -82,6 +82,27 @@ HRESULT LucideIcons::Initialize(ID2D1Factory* pFactory) {
         }
     }
 
+    if (!m_pRestartGeometry) {
+        if (SUCCEEDED(pFactory->CreatePathGeometry(&m_pRestartGeometry))) {
+            ComPtr<ID2D1GeometrySink> sink;
+            if (SUCCEEDED(m_pRestartGeometry->Open(&sink))) {
+                // Official Lucide rotate-cw: 270 degree circular arc with arrowhead
+                sink->BeginFigure(D2D1::Point2F(21.0f, 12.0f), D2D1_FIGURE_BEGIN_HOLLOW);
+                D2D1_ARC_SEGMENT arc{ D2D1::Point2F(18.0f, 6.0f), D2D1::SizeF(8.5f, 8.5f), 0.0f, D2D1_SWEEP_DIRECTION_CLOCKWISE, D2D1_ARC_SIZE_LARGE };
+                sink->AddArc(&arc);
+                sink->EndFigure(D2D1_FIGURE_END_OPEN);
+
+                // Arrowhead at top-right
+                sink->BeginFigure(D2D1::Point2F(21.0f, 2.5f), D2D1_FIGURE_BEGIN_HOLLOW);
+                sink->AddLine(D2D1::Point2F(21.0f, 7.5f));
+                sink->AddLine(D2D1::Point2F(16.0f, 7.5f));
+                sink->EndFigure(D2D1_FIGURE_END_OPEN);
+
+                sink->Close();
+            }
+        }
+    }
+
     return S_OK;
 }
 
@@ -423,6 +444,31 @@ void LucideIcons::DrawRun(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, ID2
         pRT->DrawLine(p1, p2, pBrush, strokeWidth, m_pStrokeStyle.Get());
         pRT->DrawLine(p2, p3, pBrush, strokeWidth, m_pStrokeStyle.Get());
         pRT->DrawLine(p3, p1, pBrush, strokeWidth, m_pStrokeStyle.Get());
+    }
+}
+
+void LucideIcons::DrawRestart(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, ID2D1Brush* pBrush, float strokeWidth) const {
+    if (!pRT || !pBrush) return;
+    const float bw = bounds.right - bounds.left;
+    const float bh = bounds.bottom - bounds.top;
+    const float iconSize = (std::min)(bw, bh) * 0.52f;
+    const float s = iconSize / 24.0f;
+    const float ox = bounds.left + (bw - 24.0f * s) / 2.0f;
+    const float oy = bounds.top + (bh - 24.0f * s) / 2.0f;
+
+    if (m_pRestartGeometry) {
+        D2D1_MATRIX_3X2_F oldTransform;
+        pRT->GetTransform(&oldTransform);
+        D2D1_MATRIX_3X2_F iconTransform = D2D1::Matrix3x2F::Scale(s, s) *
+                                           D2D1::Matrix3x2F::Translation(ox, oy) *
+                                           oldTransform;
+        pRT->SetTransform(iconTransform);
+        pRT->DrawGeometry(m_pRestartGeometry.Get(), pBrush, strokeWidth / s, m_pStrokeStyle.Get());
+        pRT->SetTransform(oldTransform);
+    } else {
+        // Fallback drawing if geometry not yet created
+        D2D1_ELLIPSE circle = D2D1::Ellipse(MapPoint(12.0f, 12.0f, ox, oy, s), 8.5f * s, 8.5f * s);
+        pRT->DrawEllipse(circle, pBrush, strokeWidth, m_pStrokeStyle.Get());
     }
 }
 

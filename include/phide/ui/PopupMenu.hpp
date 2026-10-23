@@ -168,7 +168,33 @@ enum class MenuActionId {
     EditReplaceInFiles,
     EditToggleLineComment,
     EditToggleBlockComment,
-    EditEmmetExpand
+    EditEmmetExpand,
+
+    // Debug & Run Menu Actions
+    DebugStart,
+    DebugRunWithoutDebug,
+    DebugStop,
+    DebugRestart,
+    DebugStepOver,
+    DebugStepInto,
+    DebugStepOut,
+    DebugContinue,
+    DebugToggleBreakpoint,
+    DebugStartLiveServer,
+    DebugStopLiveServer,
+    DebugRestartLiveServer,
+
+    // Code Menu Actions (Image 4)
+    CodeFormatDocument,
+    CodeFormatSelection,
+    CodeOrganizeImports,
+    CodeGoToDefinition,
+    CodePeekDefinition,
+    CodeRenameSymbol,
+    CodeRefactor,
+    CodeToggleLineComment,
+    CodeToggleBlockComment,
+    CodeEmmetExpand
 };
 
 /**
@@ -236,6 +262,29 @@ public:
      */
     void OpenEditMenu(float x, float y, const app::AppConfig& config,
                       bool canUndo = true, bool canRedo = true, bool hasSelection = true);
+
+    /**
+     * @brief Opens the Run & Debug dropdown menu at the specified anchor point.
+     * @param x Left coordinate of the anchor.
+     * @param y Top coordinate of the anchor.
+     * @param config Application metrics.
+     * @param isLiveServerRunning Whether the HTTP Live Server is running.
+     * @param isDebugActive Whether an interactive debugger session is running.
+     * @param canRun Whether the active document can be executed.
+     */
+    void OpenDebugMenu(float x, float y, const app::AppConfig& config,
+                       bool isLiveServerRunning, bool isDebugActive, bool canRun);
+
+    /**
+     * @brief Opens the Code dropdown menu for the < > icon (matching Image 4).
+     * @param x Left coordinate of the anchor.
+     * @param y Top coordinate of the anchor.
+     * @param config Application metrics.
+     * @param hasDoc Whether an active editor document exists.
+     * @param hasSelection Whether text is currently selected in the editor.
+     */
+    void OpenCodeMenu(float x, float y, const app::AppConfig& config,
+                      bool hasDoc, bool hasSelection);
 
     /**
      * @brief Opens the custom explorer context menu for a file or folder (matching Images 4 & 5).

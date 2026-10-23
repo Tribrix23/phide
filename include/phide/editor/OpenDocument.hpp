@@ -31,6 +31,9 @@ struct OpenDocument {
     D2D1_RECT_F splitTabBounds{};   ///< Screen bounding box of the tab in secondary/right split pane
     D2D1_RECT_F splitCloseBounds{}; ///< Screen bounding box of tab close button in right split pane
 
+    // Breakpoints for Debugging (F9 / Debug Menu)
+    std::vector<size_t> breakpoints; ///< 0-based line indices where breakpoints are set
+
     // Text Selection State (Images 2, 3, 4)
     bool hasSelection = false;          ///< True if text is selected
     CursorPosition selAnchor{ 0, 0 };   ///< Starting anchor of selection

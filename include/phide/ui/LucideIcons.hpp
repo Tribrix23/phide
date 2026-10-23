@@ -151,6 +151,11 @@ public:
     void DrawRun(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, ID2D1Brush* pBrush, float strokeWidth = 1.5f) const;
 
     /**
+     * @brief Draws the Lucide Restart / Reload circular arrow icon (↻ rotate-cw).
+     */
+    void DrawRestart(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, ID2D1Brush* pBrush, float strokeWidth = 1.4f) const;
+
+    /**
      * @brief Draws the Lucide Bug / Debugger icon (beetle glyph).
      */
     void DrawBug(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, ID2D1Brush* pBrush, float strokeWidth = 1.5f) const;
@@ -198,6 +203,7 @@ private:
     ComPtr<ID2D1StrokeStyle> m_pStrokeStyle;
     ComPtr<ID2D1PathGeometry> m_pWrenchGeometry;
     ComPtr<ID2D1PathGeometry> m_pRunGeometry;
+    ComPtr<ID2D1PathGeometry> m_pRestartGeometry;
 };
 
 } // namespace phide::ui

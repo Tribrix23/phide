@@ -44,7 +44,9 @@ enum class HeaderExecId {
     None = -1,
     Run = 0,        ///< Run / Execute application (vibrant green)
     Debug = 1,      ///< Debug application (vibrant green)
-    Terminal = 2    ///< Terminal toggle (neutral/white text, explicitly not green)
+    Terminal = 2,   ///< Terminal toggle (neutral/white text, explicitly not green)
+    Restart = 3,    ///< Restart live server / process
+    Stop = 4        ///< Stop live server / process (red square with rounded corners)
 };
 
 /**
@@ -204,10 +206,13 @@ public:
     [[nodiscard]] bool IsRunEnabled() const noexcept { return m_runEnabled; }
     void SetDebugEnabled(bool enabled) noexcept { m_debugEnabled = enabled; }
     [[nodiscard]] bool IsDebugEnabled() const noexcept { return m_debugEnabled; }
+    void SetLiveServerRunning(bool running) noexcept { m_liveServerRunning = running; }
+    [[nodiscard]] bool IsLiveServerRunning() const noexcept { return m_liveServerRunning; }
 
 private:
     bool m_runEnabled = true;
     bool m_debugEnabled = true;
+    bool m_liveServerRunning = false;
 
     HeaderMenuId m_hoveredMenu = HeaderMenuId::None;
     HeaderMenuId m_activeMenu = HeaderMenuId::None;

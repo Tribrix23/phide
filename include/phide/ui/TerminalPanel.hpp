@@ -159,6 +159,7 @@ struct TerminalTab {
     std::wstring title;
     TerminalShellType shellType = TerminalShellType::PowerShell;
     std::wstring workingDir;
+    std::wstring associatedFilePath;
 
     HANDLE hProcess = NULL;
     HANDLE hThread = NULL;
@@ -239,11 +240,14 @@ public:
     [[nodiscard]] bool HitTestUrl(POINT pt, std::wstring* outUrl = nullptr) const;
 
     // Live Server and Execution
-    void StartLiveServerSession(const std::wstring& localUrl, const std::wstring& networkUrl);
+    void StartLiveServerSession(const std::wstring& localUrl, const std::wstring& networkUrl, const std::wstring& filePath = L"", const std::wstring& fileName = L"");
+    bool CloseTabByAssociatedFile(const std::wstring& filePath);
+    void SetOnLiveServerTabClosed(std::function<void(const std::wstring&)> cb) { m_onLiveServerTabClosed = std::move(cb); }
     void ExecuteCommandLine(const std::wstring& command);
 
     // Debug Session Management (Same layout as terminal, fully functional)
     void StartDebugSession(const std::wstring& filePath, const std::wstring& workingDir);
+    void ShowDebugConsole();
     void TriggerDebugAction(DebugAction action);
     void StopDebugSession();
     [[nodiscard]] bool IsDebugActive() const noexcept { return m_isDebugActive; }
@@ -372,6 +376,7 @@ private:
     D2D1_RECT_F m_debugStopBounds{};
     DebugAction m_hoveredDebugAction = DebugAction::None;
     mutable std::vector<TerminalUrlHit> m_visibleUrls;
+    std::function<void(const std::wstring&)> m_onLiveServerTabClosed;
 };
 
 } // namespace phide::ui

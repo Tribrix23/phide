@@ -123,9 +123,10 @@ void LiveServer::Stop() {
         return;
     }
 
-    if (m_listenSock != INVALID_SOCKET) {
-        closesocket(m_listenSock);
-        m_listenSock = INVALID_SOCKET;
+    SOCKET sock = m_listenSock;
+    m_listenSock = INVALID_SOCKET;
+    if (sock != INVALID_SOCKET) {
+        closesocket(sock);
     }
 
     if (m_workerThread.joinable()) {
@@ -135,9 +136,26 @@ void LiveServer::Stop() {
 
 void LiveServer::ServerWorker() {
     while (m_isRunning.load()) {
+        SOCKET s = m_listenSock;
+        if (s == INVALID_SOCKET) break;
+
+        fd_set readSet;
+        FD_ZERO(&readSet);
+        FD_SET(s, &readSet);
+
+        timeval tv;
+        tv.tv_sec = 0;
+        tv.tv_usec = 50000; // 50ms polling timeout to keep thread responsive to Stop()
+
+        int sel = select(0, &readSet, nullptr, nullptr, &tv);
+        if (sel <= 0) {
+            if (!m_isRunning.load() || m_listenSock == INVALID_SOCKET) break;
+            continue;
+        }
+
         sockaddr_in clientAddr{};
         int clientLen = sizeof(clientAddr);
-        SOCKET clientSock = accept(m_listenSock, reinterpret_cast<sockaddr*>(&clientAddr), &clientLen);
+        SOCKET clientSock = accept(s, reinterpret_cast<sockaddr*>(&clientAddr), &clientLen);
 
         if (clientSock == INVALID_SOCKET) {
             if (!m_isRunning.load()) break;

@@ -295,6 +295,8 @@ void TerminalPanel::NewTab(TerminalShellType shell, const std::wstring& workingD
 
 void TerminalPanel::CloseTab(size_t index) {
     if (index >= m_tabs.size()) return;
+    std::wstring associatedPath = m_tabs[index]->associatedFilePath;
+    bool isLive = (m_tabs[index]->shellType == TerminalShellType::LiveServer);
     m_tabs[index]->Terminate();
     m_tabs.erase(m_tabs.begin() + index);
 
@@ -304,6 +306,29 @@ void TerminalPanel::CloseTab(size_t index) {
     } else if (m_activeTabIdx >= static_cast<int>(m_tabs.size())) {
         m_activeTabIdx = static_cast<int>(m_tabs.size() - 1);
     }
+
+    if (isLive && !associatedPath.empty() && m_onLiveServerTabClosed) {
+        m_onLiveServerTabClosed(associatedPath);
+    }
+}
+
+bool TerminalPanel::CloseTabByAssociatedFile(const std::wstring& filePath) {
+    if (filePath.empty()) return false;
+    for (size_t i = 0; i < m_tabs.size(); ++i) {
+        if (m_tabs[i]->shellType == TerminalShellType::LiveServer &&
+            _wcsicmp(m_tabs[i]->associatedFilePath.c_str(), filePath.c_str()) == 0) {
+            m_tabs[i]->Terminate();
+            m_tabs.erase(m_tabs.begin() + i);
+            if (m_tabs.empty()) {
+                m_isOpen = false;
+                m_activeTabIdx = 0;
+            } else if (m_activeTabIdx >= static_cast<int>(m_tabs.size())) {
+                m_activeTabIdx = static_cast<int>(m_tabs.size() - 1);
+            }
+            return true;
+        }
+    }
+    return false;
 }
 
 void TerminalPanel::CloseAllTabs() {
@@ -1037,51 +1062,74 @@ void TerminalPanel::RenderHeader(ID2D1RenderTarget* pRT, Theme& theme, const app
 
     // =========================================================================
     // Debug Toolbar Controls: Continue, Step Over, Step Into, Step Out, Restart, Stop
-    // Rendered when Debug session is active (Same layout as terminal, fully functional)
+    // Rendered when Debug session is active (Reinforced toolbar pill with tooltips)
     // =========================================================================
     if (m_isDebugActive) {
         float dbgBtnW = config.ScaleF(24.0f);
         float dbgSpacing = config.ScaleF(3.0f);
+        float numBtns = 6.0f;
+        float totalToolbarW = numBtns * dbgBtnW + (numBtns - 1.0f) * dbgSpacing + config.ScaleF(8.0f);
+
+        rightX -= config.ScaleF(8.0f);
+        float toolbarRight = rightX;
+        float toolbarLeft = toolbarRight - totalToolbarW;
+        float toolbarTop = btnY - config.ScaleF(1.0f);
+        float toolbarBottom = btnY + btnSize + config.ScaleF(1.0f);
+
+        // Reinforced toolbar container backdrop
+        D2D1_ROUNDED_RECT rrcToolbar = D2D1::RoundedRect(
+            D2D1::RectF(toolbarLeft, toolbarTop, toolbarRight, toolbarBottom), 4.0f, 4.0f);
+        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> toolbarBg;
+        pRT->CreateSolidColorBrush(
+            theme.IsDarkMode() ? D2D1::ColorF(0.12f, 0.12f, 0.14f, 0.90f) : D2D1::ColorF(0.88f, 0.88f, 0.92f, 0.90f),
+            &toolbarBg);
+        if (toolbarBg) pRT->FillRoundedRectangle(rrcToolbar, toolbarBg.Get());
+        pRT->DrawRoundedRectangle(rrcToolbar, theme.brushBorderSubtle ? theme.brushBorderSubtle.Get() : theme.brushItemHover.Get(), 0.8f);
 
         // 6. Stop Debugging (Shift+F5)
-        rightX -= (dbgBtnW + config.ScaleF(8.0f));
-        m_debugStopBounds = D2D1::RectF(rightX, btnY, rightX + dbgBtnW, btnY + btnSize);
+        float curBtnX = toolbarRight - config.ScaleF(4.0f) - dbgBtnW;
+        m_debugStopBounds = D2D1::RectF(curBtnX, btnY, curBtnX + dbgBtnW, btnY + btnSize);
         if (m_hoveredDebugAction == DebugAction::Stop) {
             pRT->FillRoundedRectangle(D2D1::RoundedRect(m_debugStopBounds, 3.0f, 3.0f), theme.brushItemHover.Get());
         }
-        float stcx = rightX + dbgBtnW / 2.0f;
+        float stcx = curBtnX + dbgBtnW / 2.0f;
         float stcy = btnY + btnSize / 2.0f;
         float stSize = config.ScaleF(4.0f);
         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> stopBrush;
         pRT->CreateSolidColorBrush(D2D1::ColorF(0.95f, 0.35f, 0.35f), &stopBrush);
         if (stopBrush) {
-            pRT->FillRectangle(D2D1::RectF(stcx - stSize, stcy - stSize, stcx + stSize, stcy + stSize), stopBrush.Get());
+            D2D1_ROUNDED_RECT rrcSt = D2D1::RoundedRect(
+                D2D1::RectF(stcx - stSize, stcy - stSize, stcx + stSize, stcy + stSize), 2.0f, 2.0f);
+            pRT->FillRoundedRectangle(rrcSt, stopBrush.Get());
         }
 
         // 5. Restart Session (Ctrl+Shift+F5)
-        rightX -= (dbgBtnW + dbgSpacing);
-        m_debugRestartBounds = D2D1::RectF(rightX, btnY, rightX + dbgBtnW, btnY + btnSize);
+        curBtnX -= (dbgBtnW + dbgSpacing);
+        m_debugRestartBounds = D2D1::RectF(curBtnX, btnY, curBtnX + dbgBtnW, btnY + btnSize);
         if (m_hoveredDebugAction == DebugAction::Restart) {
             pRT->FillRoundedRectangle(D2D1::RoundedRect(m_debugRestartBounds, 3.0f, 3.0f), theme.brushItemHover.Get());
         }
         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> restartBrush;
-        pRT->CreateSolidColorBrush(D2D1::ColorF(0.40f, 0.85f, 0.50f), &restartBrush);
+        pRT->CreateSolidColorBrush(D2D1::ColorF(0.95f, 0.82f, 0.25f), &restartBrush);
         if (restartBrush) {
-            float rcx = rightX + dbgBtnW / 2.0f;
+            float rcx = curBtnX + dbgBtnW / 2.0f;
             float rcy = btnY + btnSize / 2.0f;
-            pRT->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(rcx, rcy), config.ScaleF(4.0f), config.ScaleF(4.0f)), restartBrush.Get(), 1.3f);
+            float rcr = config.ScaleF(4.0f);
+            pRT->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(rcx, rcy), rcr, rcr), restartBrush.Get(), 1.4f);
+            pRT->DrawLine(D2D1::Point2F(rcx + rcr - 2.0f, rcy - 2.0f), D2D1::Point2F(rcx + rcr, rcy), restartBrush.Get(), 1.4f);
+            pRT->DrawLine(D2D1::Point2F(rcx + rcr + 2.0f, rcy - 2.0f), D2D1::Point2F(rcx + rcr, rcy), restartBrush.Get(), 1.4f);
         }
 
         // 4. Step Out (Shift+F11)
-        rightX -= (dbgBtnW + dbgSpacing);
-        m_debugStepOutBounds = D2D1::RectF(rightX, btnY, rightX + dbgBtnW, btnY + btnSize);
+        curBtnX -= (dbgBtnW + dbgSpacing);
+        m_debugStepOutBounds = D2D1::RectF(curBtnX, btnY, curBtnX + dbgBtnW, btnY + btnSize);
         if (m_hoveredDebugAction == DebugAction::StepOut) {
             pRT->FillRoundedRectangle(D2D1::RoundedRect(m_debugStepOutBounds, 3.0f, 3.0f), theme.brushItemHover.Get());
         }
         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> stepBrush;
         pRT->CreateSolidColorBrush(D2D1::ColorF(0.35f, 0.75f, 0.98f), &stepBrush);
         if (stepBrush) {
-            float sox = rightX + dbgBtnW / 2.0f;
+            float sox = curBtnX + dbgBtnW / 2.0f;
             float soy = btnY + btnSize / 2.0f;
             pRT->DrawLine(D2D1::Point2F(sox - 3.0f, soy + 3.0f), D2D1::Point2F(sox - 3.0f, soy - 2.0f), stepBrush.Get(), 1.3f);
             pRT->DrawLine(D2D1::Point2F(sox - 3.0f, soy - 2.0f), D2D1::Point2F(sox + 3.0f, soy - 2.0f), stepBrush.Get(), 1.3f);
@@ -1090,13 +1138,13 @@ void TerminalPanel::RenderHeader(ID2D1RenderTarget* pRT, Theme& theme, const app
         }
 
         // 3. Step Into (F11)
-        rightX -= (dbgBtnW + dbgSpacing);
-        m_debugStepIntoBounds = D2D1::RectF(rightX, btnY, rightX + dbgBtnW, btnY + btnSize);
+        curBtnX -= (dbgBtnW + dbgSpacing);
+        m_debugStepIntoBounds = D2D1::RectF(curBtnX, btnY, curBtnX + dbgBtnW, btnY + btnSize);
         if (m_hoveredDebugAction == DebugAction::StepInto) {
             pRT->FillRoundedRectangle(D2D1::RoundedRect(m_debugStepIntoBounds, 3.0f, 3.0f), theme.brushItemHover.Get());
         }
         if (stepBrush) {
-            float six = rightX + dbgBtnW / 2.0f;
+            float six = curBtnX + dbgBtnW / 2.0f;
             float siy = btnY + btnSize / 2.0f;
             pRT->DrawLine(D2D1::Point2F(six - 3.0f, siy - 3.0f), D2D1::Point2F(six - 3.0f, siy + 2.0f), stepBrush.Get(), 1.3f);
             pRT->DrawLine(D2D1::Point2F(six - 3.0f, siy + 2.0f), D2D1::Point2F(six + 3.0f, siy + 2.0f), stepBrush.Get(), 1.3f);
@@ -1105,13 +1153,13 @@ void TerminalPanel::RenderHeader(ID2D1RenderTarget* pRT, Theme& theme, const app
         }
 
         // 2. Step Over (F10)
-        rightX -= (dbgBtnW + dbgSpacing);
-        m_debugStepOverBounds = D2D1::RectF(rightX, btnY, rightX + dbgBtnW, btnY + btnSize);
+        curBtnX -= (dbgBtnW + dbgSpacing);
+        m_debugStepOverBounds = D2D1::RectF(curBtnX, btnY, curBtnX + dbgBtnW, btnY + btnSize);
         if (m_hoveredDebugAction == DebugAction::StepOver) {
             pRT->FillRoundedRectangle(D2D1::RoundedRect(m_debugStepOverBounds, 3.0f, 3.0f), theme.brushItemHover.Get());
         }
         if (stepBrush) {
-            float sox = rightX + dbgBtnW / 2.0f;
+            float sox = curBtnX + dbgBtnW / 2.0f;
             float soy = btnY + btnSize / 2.0f;
             pRT->DrawLine(D2D1::Point2F(sox - 4.0f, soy + 2.0f), D2D1::Point2F(sox - 2.0f, soy - 3.0f), stepBrush.Get(), 1.3f);
             pRT->DrawLine(D2D1::Point2F(sox - 2.0f, soy - 3.0f), D2D1::Point2F(sox + 2.0f, soy - 3.0f), stepBrush.Get(), 1.3f);
@@ -1119,20 +1167,54 @@ void TerminalPanel::RenderHeader(ID2D1RenderTarget* pRT, Theme& theme, const app
         }
 
         // 1. Continue (F5)
-        rightX -= (dbgBtnW + dbgSpacing);
-        m_debugContinueBounds = D2D1::RectF(rightX, btnY, rightX + dbgBtnW, btnY + btnSize);
+        curBtnX -= (dbgBtnW + dbgSpacing);
+        m_debugContinueBounds = D2D1::RectF(curBtnX, btnY, curBtnX + dbgBtnW, btnY + btnSize);
         if (m_hoveredDebugAction == DebugAction::Continue) {
             pRT->FillRoundedRectangle(D2D1::RoundedRect(m_debugContinueBounds, 3.0f, 3.0f), theme.brushItemHover.Get());
         }
         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> contBrush;
         pRT->CreateSolidColorBrush(D2D1::ColorF(0.30f, 0.85f, 0.45f), &contBrush);
         if (contBrush) {
-            float cx = rightX + dbgBtnW / 2.0f;
+            float cx = curBtnX + dbgBtnW / 2.0f;
             float cy = btnY + btnSize / 2.0f;
             pRT->DrawLine(D2D1::Point2F(cx - 3.0f, cy - 4.0f), D2D1::Point2F(cx + 4.0f, cy), contBrush.Get(), 1.5f);
             pRT->DrawLine(D2D1::Point2F(cx + 4.0f, cy), D2D1::Point2F(cx - 3.0f, cy + 4.0f), contBrush.Get(), 1.5f);
             pRT->DrawLine(D2D1::Point2F(cx - 3.0f, cy + 4.0f), D2D1::Point2F(cx - 3.0f, cy - 4.0f), contBrush.Get(), 1.5f);
         }
+
+        // Floating Tooltip for Hovered Debug Action
+        if (m_hoveredDebugAction != DebugAction::None) {
+            const wchar_t* tipText = L"";
+            D2D1_RECT_F tipTarget{};
+            switch (m_hoveredDebugAction) {
+                case DebugAction::Continue: tipText = L"Continue (F5)"; tipTarget = m_debugContinueBounds; break;
+                case DebugAction::StepOver: tipText = L"Step Over (F10)"; tipTarget = m_debugStepOverBounds; break;
+                case DebugAction::StepInto: tipText = L"Step Into (F11)"; tipTarget = m_debugStepIntoBounds; break;
+                case DebugAction::StepOut: tipText = L"Step Out (Shift+F11)"; tipTarget = m_debugStepOutBounds; break;
+                case DebugAction::Restart: tipText = L"Restart (Ctrl+Shift+F5)"; tipTarget = m_debugRestartBounds; break;
+                case DebugAction::Stop: tipText = L"Stop (Shift+F5)"; tipTarget = m_debugStopBounds; break;
+                default: break;
+            }
+            if (tipText[0] != L'\0') {
+                size_t tipLen = wcslen(tipText);
+                float textW = config.ScaleF(static_cast<float>(tipLen * 7.0f + 14.0f));
+                float tipH = config.ScaleF(22.0f);
+                float tipW = textW + config.ScaleF(16.0f);
+                float tipX = tipTarget.left + (dbgBtnW - tipW) / 2.0f;
+                float tipY = tipTarget.top - tipH - config.ScaleF(4.0f);
+                if (tipY < 2.0f) tipY = tipTarget.bottom + config.ScaleF(4.0f);
+
+                D2D1_ROUNDED_RECT rrcTip = D2D1::RoundedRect(D2D1::RectF(tipX, tipY, tipX + tipW, tipY + tipH), 4.0f, 4.0f);
+                pRT->FillRoundedRectangle(rrcTip, theme.brushTooltipBg ? theme.brushTooltipBg.Get() : theme.brushMenuBg.Get());
+                pRT->DrawRoundedRectangle(rrcTip, theme.brushTooltipBorder ? theme.brushTooltipBorder.Get() : theme.brushMenuBorder.Get(), 0.8f);
+                pRT->DrawText(tipText, static_cast<UINT32>(tipLen),
+                              theme.fontTooltip ? theme.fontTooltip.Get() : theme.fontHint.Get(),
+                              rrcTip.rect,
+                              theme.brushTooltipText ? theme.brushTooltipText.Get() : theme.brushTextPrimary.Get());
+            }
+        }
+
+        rightX = toolbarLeft - config.ScaleF(6.0f);
     } else {
         m_debugContinueBounds = {};
         m_debugStepOverBounds = {};
@@ -1282,51 +1364,52 @@ void TerminalPanel::RenderSinglePane(ID2D1RenderTarget* pRT, Theme& theme, const
                 pRT->DrawText(span.text.c_str(), static_cast<UINT32>(span.text.length()),
                               theme.fontCode.Get(), rcSpan, spanBrush.Get());
             }
+
+            // Detect hyperlinks directly within span.text for pixel-perfect Ctrl+Click hitboxes
+            size_t searchPos = 0;
+            while (searchPos < span.text.length()) {
+                size_t pHttp = span.text.find(L"http://", searchPos);
+                size_t pHttps = span.text.find(L"https://", searchPos);
+                size_t uStart = std::wstring::npos;
+                if (pHttp != std::wstring::npos && pHttps != std::wstring::npos) {
+                    uStart = (std::min)(pHttp, pHttps);
+                } else if (pHttp != std::wstring::npos) {
+                    uStart = pHttp;
+                } else {
+                    uStart = pHttps;
+                }
+
+                if (uStart == std::wstring::npos) break;
+
+                size_t uEnd = uStart;
+                while (uEnd < span.text.length()) {
+                    wchar_t uc = span.text[uEnd];
+                    if (uc == L' ' || uc == L'\t' || uc == L'\r' || uc == L'\n' || uc == L'"' || uc == L'\'' || uc == L'<' || uc == L'>' || uc == L')' || uc == L']') {
+                        break;
+                    }
+                    uEnd++;
+                }
+
+                if (uEnd > uStart) {
+                    std::wstring uStr = span.text.substr(uStart, uEnd - uStart);
+                    float uX = curX + static_cast<float>(uStart) * charW;
+                    float uW = static_cast<float>(uStr.length()) * charW;
+                    D2D1_RECT_F uRc = D2D1::RectF(uX, curY, uX + uW, curY + lineH);
+                    m_visibleUrls.push_back({ uStr, uRc });
+
+                    if ((GetKeyState(VK_CONTROL) & 0x8000) != 0) {
+                        pRT->DrawLine(
+                            D2D1::Point2F(uX, curY + lineH - 2.0f),
+                            D2D1::Point2F(uX + uW, curY + lineH - 2.0f),
+                            theme.brushBrandAccent.Get() ? theme.brushBrandAccent.Get() : theme.brushTextPrimary.Get(),
+                            1.2f
+                        );
+                    }
+                }
+                searchPos = uEnd + 1;
+            }
+
             curX += spanW;
-        }
-
-        // Detect hyperlinks (http://, https://) in line for Ctrl+Click navigation
-        size_t searchPos = 0;
-        while (searchPos < line.rawText.length()) {
-            size_t pHttp = line.rawText.find(L"http://", searchPos);
-            size_t pHttps = line.rawText.find(L"https://", searchPos);
-            size_t uStart = std::wstring::npos;
-            if (pHttp != std::wstring::npos && pHttps != std::wstring::npos) {
-                uStart = (std::min)(pHttp, pHttps);
-            } else if (pHttp != std::wstring::npos) {
-                uStart = pHttp;
-            } else {
-                uStart = pHttps;
-            }
-
-            if (uStart == std::wstring::npos) break;
-
-            size_t uEnd = uStart;
-            while (uEnd < line.rawText.length()) {
-                wchar_t uc = line.rawText[uEnd];
-                if (uc == L' ' || uc == L'\t' || uc == L'\r' || uc == L'\n' || uc == L'"' || uc == L'\'' || uc == L'<' || uc == L'>' || uc == L')' || uc == L']') {
-                    break;
-                }
-                uEnd++;
-            }
-
-            if (uEnd > uStart) {
-                std::wstring uStr = line.rawText.substr(uStart, uEnd - uStart);
-                float uX = bounds.left + padX + static_cast<float>(uStart) * charW;
-                float uW = static_cast<float>(uStr.length()) * charW;
-                D2D1_RECT_F uRc = D2D1::RectF(uX, curY, uX + uW, curY + lineH);
-                m_visibleUrls.push_back({ uStr, uRc });
-
-                if ((GetKeyState(VK_CONTROL) & 0x8000) != 0) {
-                    pRT->DrawLine(
-                        D2D1::Point2F(uX, curY + lineH - 2.0f),
-                        D2D1::Point2F(uX + uW, curY + lineH - 2.0f),
-                        theme.brushBrandAccent.Get() ? theme.brushBrandAccent.Get() : theme.brushTextPrimary.Get(),
-                        1.2f
-                    );
-                }
-            }
-            searchPos = uEnd + 1;
         }
 
         // Render typed command line in real-time
@@ -1595,7 +1678,7 @@ DebugAction TerminalPanel::HitTestDebugButtons(POINT pt) const noexcept {
     return DebugAction::None;
 }
 
-void TerminalPanel::StartLiveServerSession(const std::wstring& localUrl, const std::wstring& networkUrl) {
+void TerminalPanel::StartLiveServerSession(const std::wstring& localUrl, const std::wstring& networkUrl, const std::wstring& filePath, const std::wstring& fileName) {
     if (!m_isOpen) {
         Open(m_defaultWorkingDir);
     }
@@ -1603,8 +1686,13 @@ void TerminalPanel::StartLiveServerSession(const std::wstring& localUrl, const s
     int liveTabIdx = -1;
     for (size_t i = 0; i < m_tabs.size(); ++i) {
         if (m_tabs[i]->shellType == TerminalShellType::LiveServer) {
-            liveTabIdx = static_cast<int>(i);
-            break;
+            if (!filePath.empty() && _wcsicmp(m_tabs[i]->associatedFilePath.c_str(), filePath.c_str()) == 0) {
+                liveTabIdx = static_cast<int>(i);
+                break;
+            } else if (filePath.empty() && m_tabs[i]->associatedFilePath.empty()) {
+                liveTabIdx = static_cast<int>(i);
+                break;
+            }
         }
     }
 
@@ -1612,10 +1700,15 @@ void TerminalPanel::StartLiveServerSession(const std::wstring& localUrl, const s
     if (liveTabIdx >= 0) {
         m_activeTabIdx = liveTabIdx;
         tab = m_tabs[liveTabIdx].get();
+        if (!fileName.empty()) {
+            tab->title = L"⚡ Live Server (" + fileName + L")";
+        }
+        tab->associatedFilePath = filePath;
     } else {
         auto newTab = std::make_unique<TerminalTab>();
         newTab->shellType = TerminalShellType::LiveServer;
-        newTab->title = L"⚡ Live Server";
+        newTab->title = fileName.empty() ? L"⚡ Live Server" : (L"⚡ Live Server (" + fileName + L")");
+        newTab->associatedFilePath = filePath;
         newTab->workingDir = m_defaultWorkingDir;
         newTab->isAlive = true;
         newTab->onOutput = m_outputCallback;
@@ -1630,42 +1723,53 @@ void TerminalPanel::StartLiveServerSession(const std::wstring& localUrl, const s
         std::lock_guard<std::mutex> lock(tab->bufferMutex);
         tab->lines.clear();
 
-        // Line 1: Header banner
+        // 1. Header banner (Clean, modern card - v1.0.0 removed)
         TerminalLine l1;
-        l1.rawText = L"[Live Server] Server running at " + localUrl;
-        l1.spans.push_back({ L"[Live Server] ", D2D1::ColorF(0.30f, 0.85f, 0.45f), true });
-        l1.spans.push_back({ L"Server running and watching for changes", D2D1::ColorF(0.85f, 0.85f, 0.85f), false });
+        l1.rawText = L"  ⚡ PHIDE LIVE SERVER";
+        l1.spans.push_back({ L"  ⚡ PHIDE LIVE SERVER", D2D1::ColorF(0.20f, 0.85f, 0.55f), true });
         tab->lines.push_back(std::move(l1));
 
-        // Line 2: Empty line
+        // 2. Empty spacer
         tab->lines.push_back({});
 
-        // Line 3: Local URL
+        // 3. Local URL line
         TerminalLine l3;
-        l3.rawText = L"  > Local:   " + localUrl;
-        l3.spans.push_back({ L"  > Local:   ", D2D1::ColorF(0.95f, 0.80f, 0.25f), true });
-        l3.spans.push_back({ localUrl, D2D1::ColorF(0.35f, 0.75f, 1.0f), true });
+        l3.rawText = L"  ➜  Local:    " + localUrl;
+        l3.spans.push_back({ L"  ➜  ", D2D1::ColorF(0.20f, 0.85f, 0.55f), true });
+        l3.spans.push_back({ L"Local:    ", D2D1::ColorF(0.92f, 0.92f, 0.95f), true });
+        l3.spans.push_back({ localUrl, D2D1::ColorF(0.35f, 0.78f, 1.0f), true });
         tab->lines.push_back(std::move(l3));
 
-        // Line 4: Network URL
+        // 4. Network URL line
         TerminalLine l4;
-        l4.rawText = L"  > Network: " + networkUrl;
-        l4.spans.push_back({ L"  > Network: ", D2D1::ColorF(0.95f, 0.80f, 0.25f), true });
-        l4.spans.push_back({ networkUrl, D2D1::ColorF(0.35f, 0.75f, 1.0f), true });
+        l4.rawText = L"  ➜  Network:  " + networkUrl;
+        l4.spans.push_back({ L"  ➜  ", D2D1::ColorF(0.20f, 0.85f, 0.55f), true });
+        l4.spans.push_back({ L"Network:  ", D2D1::ColorF(0.92f, 0.92f, 0.95f), true });
+        l4.spans.push_back({ networkUrl, D2D1::ColorF(0.35f, 0.78f, 1.0f), true });
         tab->lines.push_back(std::move(l4));
 
-        // Line 5: Empty line
+        // 5. Empty spacer
         tab->lines.push_back({});
 
-        // Line 6: Tip to Ctrl + Click
+        // 6. Usage tip (Hold Ctrl + Click)
         TerminalLine l6;
-        l6.rawText = L"  Hold Ctrl and click on any link above to open in your browser.";
-        l6.spans.push_back({ L"  Hold ", D2D1::ColorF(0.65f, 0.65f, 0.70f), false });
-        l6.spans.push_back({ L"Ctrl + Click", D2D1::ColorF(1.0f, 0.85f, 0.30f), true });
-        l6.spans.push_back({ L" on any link above to open in your browser.", D2D1::ColorF(0.65f, 0.65f, 0.70f), false });
+        l6.rawText = L"  ➜  press Ctrl + Click to open in browser";
+        l6.spans.push_back({ L"  ➜  ", D2D1::ColorF(0.45f, 0.48f, 0.55f), false });
+        l6.spans.push_back({ L"press ", D2D1::ColorF(0.60f, 0.62f, 0.68f), false });
+        l6.spans.push_back({ L"Ctrl + Click", D2D1::ColorF(0.98f, 0.82f, 0.28f), true });
+        l6.spans.push_back({ L" to open in browser", D2D1::ColorF(0.60f, 0.62f, 0.68f), false });
         tab->lines.push_back(std::move(l6));
 
+        // 7. Watcher status
+        TerminalLine l7;
+        l7.rawText = L"  ➜  watching for file changes...";
+        l7.spans.push_back({ L"  ➜  ", D2D1::ColorF(0.45f, 0.48f, 0.55f), false });
+        l7.spans.push_back({ L"watching for file changes...", D2D1::ColorF(0.50f, 0.52f, 0.58f), false });
+        tab->lines.push_back(std::move(l7));
+
+        // 8. Empty spacer
         tab->lines.push_back({});
+
         tab->scrollOffsetLines = 0;
     }
 
@@ -1726,6 +1830,20 @@ void TerminalPanel::StartDebugSession(const std::wstring& filePath, const std::w
     m_activeTabIdx = static_cast<int>(m_tabs.size() - 1);
 
     if (m_outputCallback) m_outputCallback();
+}
+
+void TerminalPanel::ShowDebugConsole() {
+    if (!m_isOpen) {
+        Open(m_defaultWorkingDir);
+    }
+    for (size_t i = 0; i < m_tabs.size(); ++i) {
+        if (m_tabs[i]->shellType == TerminalShellType::DebugConsole) {
+            m_activeTabIdx = static_cast<int>(i);
+            if (m_outputCallback) m_outputCallback();
+            return;
+        }
+    }
+    StartDebugSession(L"Debug Console", m_defaultWorkingDir);
 }
 
 void TerminalPanel::TriggerDebugAction(DebugAction action) {

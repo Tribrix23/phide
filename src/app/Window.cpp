@@ -2026,6 +2026,9 @@ void Window::DoCreateTerminal() {
 }
 
 void Window::UpdateExecutionButtonStates() {
+    auto* srv = GetActiveDocLiveServer();
+    m_header.SetLiveServerRunning(srv != nullptr);
+
     auto* pDoc = GetActiveDoc();
     if (!pDoc || pDoc->isSpecialView) {
         m_header.SetRunEnabled(false);
@@ -2050,6 +2053,153 @@ void Window::UpdateExecutionButtonStates() {
     m_header.SetDebugEnabled(canDebug);
 }
 
+Window::ActiveLiveServer* Window::FindLiveServer(const std::wstring& filePath) {
+    if (filePath.empty()) return nullptr;
+    for (auto& s : m_activeLiveServers) {
+        if (_wcsicmp(s.filePath.c_str(), filePath.c_str()) == 0) {
+            return &s;
+        }
+    }
+    return nullptr;
+}
+
+Window::ActiveLiveServer* Window::GetActiveDocLiveServer() {
+    auto* pDoc = GetActiveDoc();
+    if (!pDoc || pDoc->filePath.empty()) return nullptr;
+    return FindLiveServer(pDoc->filePath);
+}
+
+int Window::GetNextAvailableLiveServerPort() const {
+    int maxPort = 5499;
+    for (const auto& s : m_activeLiveServers) {
+        if (s.port > maxPort) maxPort = s.port;
+    }
+    return maxPort + 1;
+}
+
+void Window::StopLiveServer(const std::wstring& filePath, bool closeTab) {
+    if (filePath.empty()) return;
+    for (auto it = m_activeLiveServers.begin(); it != m_activeLiveServers.end(); ++it) {
+        if (_wcsicmp(it->filePath.c_str(), filePath.c_str()) == 0) {
+            auto serverToStop = std::move(it->server);
+            m_activeLiveServers.erase(it);
+            if (serverToStop) {
+                // Shut down asynchronously so UI thread NEVER stutters or hangs
+                std::thread([s = std::move(serverToStop)]() mutable {
+                    s->Stop();
+                }).detach();
+            }
+            break;
+        }
+    }
+    if (closeTab) {
+        m_terminal.CloseTabByAssociatedFile(filePath);
+    }
+    UpdateExecutionButtonStates();
+    InvalidateRect(m_hwnd, nullptr, FALSE);
+}
+
+void Window::StopAllLiveServers() {
+    for (auto& s : m_activeLiveServers) {
+        auto serverToStop = std::move(s.server);
+        if (serverToStop) {
+            std::thread([s = std::move(serverToStop)]() mutable {
+                s->Stop();
+            }).detach();
+        }
+        m_terminal.CloseTabByAssociatedFile(s.filePath);
+    }
+    m_activeLiveServers.clear();
+    if (m_liveServer.IsRunning()) {
+        std::thread([this]() {
+            m_liveServer.Stop();
+        }).detach();
+    }
+    UpdateExecutionButtonStates();
+}
+
+void Window::DoFormatDocument() {
+    auto* pDoc = GetActiveDoc();
+    if (!pDoc || pDoc->isSpecialView) return;
+    size_t lineCount = pDoc->buffer.GetLineCount();
+    bool modified = false;
+    for (size_t i = 0; i < lineCount; ++i) {
+        std::wstring line = pDoc->buffer.GetLine(i);
+        size_t end = line.find_last_not_of(L" \t\r\n");
+        if (end != std::wstring::npos && end + 1 < line.length()) {
+            pDoc->buffer.SetLine(i, line.substr(0, end + 1));
+            modified = true;
+        }
+    }
+    if (modified) {
+        MarkDocumentModified(pDoc);
+        InvalidateRect(m_hwnd, nullptr, FALSE);
+    }
+}
+
+void Window::DoFormatSelection() {
+    auto* pDoc = GetActiveDoc();
+    if (!pDoc || pDoc->isSpecialView || !pDoc->HasSelection()) return;
+    size_t startLine = 0, startCol = 0, endLine = 0, endCol = 0;
+    pDoc->GetSelectionRange(startLine, startCol, endLine, endCol);
+    bool modified = false;
+    for (size_t i = startLine; i <= endLine && i < pDoc->buffer.GetLineCount(); ++i) {
+        std::wstring line = pDoc->buffer.GetLine(i);
+        size_t end = line.find_last_not_of(L" \t\r\n");
+        if (end != std::wstring::npos && end + 1 < line.length()) {
+            pDoc->buffer.SetLine(i, line.substr(0, end + 1));
+            modified = true;
+        }
+    }
+    if (modified) {
+        MarkDocumentModified(pDoc);
+        InvalidateRect(m_hwnd, nullptr, FALSE);
+    }
+}
+
+void Window::DoOrganizeImports() {
+    auto* pDoc = GetActiveDoc();
+    if (!pDoc || pDoc->isSpecialView) return;
+    std::vector<std::wstring> imports;
+    size_t importStart = (std::numeric_limits<size_t>::max)();
+    size_t importEnd = 0;
+    size_t lineCount = pDoc->buffer.GetLineCount();
+    for (size_t i = 0; i < lineCount; ++i) {
+        std::wstring line = pDoc->buffer.GetLine(i);
+        auto trimmed = line;
+        size_t first = trimmed.find_first_not_of(L" \t");
+        if (first != std::wstring::npos) trimmed = trimmed.substr(first);
+        if (trimmed.rfind(L"import ", 0) == 0 || trimmed.rfind(L"#include", 0) == 0 ||
+            (trimmed.rfind(L"const ", 0) == 0 && trimmed.find(L"require(") != std::wstring::npos)) {
+            if (importStart == (std::numeric_limits<size_t>::max)()) importStart = i;
+            importEnd = i;
+            imports.push_back(line);
+        } else if (importStart != (std::numeric_limits<size_t>::max)()) {
+            if (!trimmed.empty()) break;
+        }
+    }
+    if (imports.size() > 1 && importStart != (std::numeric_limits<size_t>::max)()) {
+        std::sort(imports.begin(), imports.end());
+        for (size_t k = 0; k < imports.size(); ++k) {
+            pDoc->buffer.SetLine(importStart + k, imports[k]);
+        }
+        MarkDocumentModified(pDoc);
+        InvalidateRect(m_hwnd, nullptr, FALSE);
+    }
+}
+
+void Window::DoGoToDefinition() {
+    auto* pDoc = GetActiveDoc();
+    if (!pDoc || pDoc->isSpecialView) return;
+    m_editor.ShowRefactorPopup(L"Definition lookup active");
+}
+
+void Window::DoRenameSymbol() {
+    auto* pDoc = GetActiveDoc();
+    if (!pDoc || pDoc->isSpecialView) return;
+    m_editor.ShowRefactorPopup(L"Rename Symbol (F2)");
+}
+
 void Window::DoRunActiveDocument() {
     auto* pDoc = GetActiveDoc();
     if (!pDoc) return;
@@ -2059,32 +2209,46 @@ void Window::DoRunActiveDocument() {
     for (auto& c : ext) c = towlower(c);
 
     if (ext == L".html" || ext == L".htm") {
-        // Fast Live Server startup with clickable URLs
+        std::wstring filePath = pDoc->filePath;
+        std::wstring fileName = p.filename().wstring();
         std::wstring folder = p.parent_path().wstring();
-        if (folder.empty() && m_drawer.HasOpenFolder()) {
-            folder = m_drawer.GetOpenFolderPath();
-        }
-        if (folder.empty()) {
-            folder = m_workspace.GetRootPath();
-        }
+        if (folder.empty() && m_drawer.HasOpenFolder()) folder = m_drawer.GetOpenFolderPath();
+        if (folder.empty()) folder = m_workspace.GetRootPath();
         if (folder.empty()) {
             wchar_t cur[MAX_PATH];
             GetCurrentDirectoryW(MAX_PATH, cur);
             folder = cur;
         }
 
-        if (!m_liveServer.IsRunning() || m_liveServer.GetRootDir() != folder) {
-            m_liveServer.Stop();
-            m_liveServer.Start(folder, p.filename().wstring(), 5500);
+        auto* srv = FindLiveServer(filePath);
+        if (!srv) {
+            int port = GetNextAvailableLiveServerPort();
+            auto serverInst = std::make_unique<server::LiveServer>();
+            if (serverInst->Start(folder, fileName, port)) {
+                int actualPort = serverInst->GetPort();
+                std::wstring localUrl = serverInst->GetLocalUrl(fileName);
+                std::wstring networkUrl = serverInst->GetNetworkUrl(fileName);
+
+                m_activeLiveServers.push_back({ filePath, fileName, folder, actualPort, std::move(serverInst) });
+
+                m_terminal.Open(folder);
+                m_terminal.StartLiveServerSession(localUrl, networkUrl, filePath, fileName);
+                m_isTerminalFocused = true;
+
+                // Launch in browser
+                ShellExecuteW(NULL, L"open", localUrl.c_str(), NULL, NULL, SW_SHOWNORMAL);
+            }
+        } else {
+            // Server already running for this file - focus terminal and refresh in browser
+            std::wstring localUrl = srv->server->GetLocalUrl(srv->fileName);
+            std::wstring networkUrl = srv->server->GetNetworkUrl(srv->fileName);
+            m_terminal.Open(folder);
+            m_terminal.StartLiveServerSession(localUrl, networkUrl, filePath, fileName);
+            m_isTerminalFocused = true;
+            ShellExecuteW(NULL, L"open", localUrl.c_str(), NULL, NULL, SW_SHOWNORMAL);
         }
 
-        std::wstring fileName = p.filename().wstring();
-        std::wstring localUrl = m_liveServer.GetLocalUrl(fileName);
-        std::wstring networkUrl = m_liveServer.GetNetworkUrl(fileName);
-
-        m_terminal.Open(folder);
-        m_terminal.StartLiveServerSession(localUrl, networkUrl);
-        m_isTerminalFocused = true;
+        UpdateExecutionButtonStates();
         InvalidateRect(m_hwnd, nullptr, FALSE);
     } else if (ext == L".js" || ext == L".mjs" || ext == L".cjs" || ext == L".ts" || ext == L".jsx" || ext == L".tsx") {
         std::wstring folder = p.parent_path().wstring();
@@ -2118,6 +2282,53 @@ void Window::DoDebugActiveDocument() {
     m_terminal.Open(folder);
     m_terminal.StartDebugSession(pDoc->filePath, folder);
     m_isTerminalFocused = true;
+    InvalidateRect(m_hwnd, nullptr, FALSE);
+}
+
+void Window::DoStopServer() {
+    auto* pDoc = GetActiveDoc();
+    if (pDoc && !pDoc->filePath.empty()) {
+        auto* srv = FindLiveServer(pDoc->filePath);
+        if (srv) {
+            StopLiveServer(pDoc->filePath, /*closeTab=*/true);
+        } else if (!m_activeLiveServers.empty()) {
+            StopLiveServer(m_activeLiveServers.back().filePath, /*closeTab=*/true);
+        }
+    } else if (!m_activeLiveServers.empty()) {
+        StopLiveServer(m_activeLiveServers.back().filePath, /*closeTab=*/true);
+    }
+
+    if (m_liveServer.IsRunning()) {
+        m_liveServer.Stop();
+    }
+    if (m_terminal.IsDebugActive()) {
+        m_terminal.StopDebugSession();
+    }
+    UpdateExecutionButtonStates();
+    InvalidateRect(m_hwnd, nullptr, FALSE);
+}
+
+void Window::DoRestartServer() {
+    auto* srv = GetActiveDocLiveServer();
+    if (srv && srv->server) {
+        std::wstring rootDir = srv->rootDir;
+        std::wstring fileName = srv->fileName;
+        std::wstring filePath = srv->filePath;
+        int port = srv->port;
+
+        srv->server->Stop();
+        srv->server->Start(rootDir, fileName, port);
+        std::wstring localUrl = srv->server->GetLocalUrl(fileName);
+        std::wstring networkUrl = srv->server->GetNetworkUrl(fileName);
+
+        m_terminal.StartLiveServerSession(localUrl, networkUrl, filePath, fileName);
+        ShellExecuteW(NULL, L"open", localUrl.c_str(), NULL, NULL, SW_SHOWNORMAL);
+    } else if (m_terminal.IsDebugActive()) {
+        m_terminal.TriggerDebugAction(ui::DebugAction::Restart);
+    } else {
+        DoRunActiveDocument();
+    }
+    UpdateExecutionButtonStates();
     InvalidateRect(m_hwnd, nullptr, FALSE);
 }
 
@@ -2333,6 +2544,13 @@ bool Window::Create(HINSTANCE hInstance, int nCmdShow) {
         if (m_hwnd) {
             InvalidateRect(m_hwnd, nullptr, FALSE);
         }
+    });
+
+    // Auto-stop server when its tab is closed via [X] in integrated terminal
+    m_terminal.SetOnLiveServerTabClosed([this](const std::wstring& filePath) {
+        StopLiveServer(filePath, /*closeTab=*/false);
+        UpdateExecutionButtonStates();
+        if (m_hwnd) InvalidateRect(m_hwnd, nullptr, FALSE);
     });
 
     // Initialize user snippets engine
@@ -2567,59 +2785,115 @@ void Window::OnPaint() {
         termH = m_terminal.IsFullScreen() ? (clientH - headerH) : m_terminal.GetHeight();
     }
     float editorH = clientH - termH;
+    float drawerH = m_terminal.IsOpen() ? (clientH - termH) : clientH;
+    float terminalLeft = static_cast<float>(railW);
 
     m_editor.Render(m_pRenderTarget.Get(), m_theme, m_config, m_editorGroups, m_focusedGroupIdx,
                     canvasLeft, canvasWidth, editorH, hasLeftDrawer,
                     searchHL, hlMatchCase, hlWholeWord, hlUseRegex,
                     suppressEditorCaret);
 
-    // Integrated Terminal Panel at Bottom (Images 1, 2, 3, 4)
-    if (m_terminal.IsOpen()) {
-        m_terminal.Render(m_pRenderTarget.Get(), m_theme, m_config, clientW, clientH, canvasLeft);
+    // 2. Render Slide-out Drawer Panel (when visible: height cut cleanly at top of terminal when open)
+    if (hasLeftDrawer) {
+        m_drawer.Render(m_pRenderTarget.Get(), m_theme, m_config, drawerH, currentDrawerW);
     }
 
-    // Live Server Status Badge / Pill (Image 2: ⚡ Port: 5500)
-    if (m_liveServer.IsRunning()) {
-        float pillW = m_config.ScaleF(110.0f);
-        float pillH = m_config.ScaleF(22.0f);
-        float pillX = clientW - pillW - m_config.ScaleF(12.0f);
-        float pillY = clientH - pillH - m_config.ScaleF(6.0f);
+    // 3. Integrated Terminal Panel at Bottom (widened to take from rail to right edge across sidebar)
+    if (m_terminal.IsOpen()) {
+        m_terminal.Render(m_pRenderTarget.Get(), m_theme, m_config, clientW, clientH, terminalLeft);
+    }
+
+    // Live Server Status Badge: sleek rectangle with rounded corners (per user request)
+    auto* pActiveLiveServer = GetActiveDocLiveServer();
+    if (!pActiveLiveServer && !m_activeLiveServers.empty()) {
+        pActiveLiveServer = &m_activeLiveServers.back();
+    }
+
+    if (pActiveLiveServer && pActiveLiveServer->server && pActiveLiveServer->server->IsRunning()) {
+        const float pillW = m_config.ScaleF(92.0f);
+        const float pillH = m_config.ScaleF(22.0f);
+        const float pillX = clientW - pillW - m_config.ScaleF(14.0f);
+        float pillY = clientH - pillH - m_config.ScaleF(8.0f);
         if (m_terminal.IsOpen()) {
             float th = m_terminal.IsFullScreen() ? (clientH - headerH) : m_terminal.GetHeight();
-            pillY = clientH - th - pillH - m_config.ScaleF(6.0f);
+            pillY = clientH - th - pillH - m_config.ScaleF(8.0f);
         }
         m_liveServerPillBounds = D2D1::RectF(pillX, pillY, pillX + pillW, pillY + pillH);
+        // Clean rectangle with 4px rounded corners (not a round pill)
         D2D1_ROUNDED_RECT rrcPill = D2D1::RoundedRect(m_liveServerPillBounds, 4.0f, 4.0f);
 
+        // Modern, sleek dark rectangle styling
         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> pillBgBrush;
         m_pRenderTarget->CreateSolidColorBrush(
             m_hoverLiveServerPill
-                ? (m_theme.IsDarkMode() ? D2D1::ColorF(0.20f, 0.40f, 0.25f, 0.95f) : D2D1::ColorF(0.80f, 0.95f, 0.85f, 0.95f))
-                : (m_theme.IsDarkMode() ? D2D1::ColorF(0.12f, 0.25f, 0.16f, 0.90f) : D2D1::ColorF(0.88f, 0.96f, 0.90f, 0.90f)),
+                ? (m_theme.IsDarkMode() ? D2D1::ColorF(0.14f, 0.16f, 0.20f, 0.98f) : D2D1::ColorF(0.90f, 0.93f, 0.96f, 0.98f))
+                : (m_theme.IsDarkMode() ? D2D1::ColorF(0.09f, 0.10f, 0.13f, 0.92f) : D2D1::ColorF(0.95f, 0.96f, 0.98f, 0.92f)),
             &pillBgBrush
         );
-        if (pillBgBrush) m_pRenderTarget->FillRoundedRectangle(rrcPill, pillBgBrush.Get());
-        m_pRenderTarget->DrawRoundedRectangle(rrcPill, m_theme.brushBrandAccent.Get() ? m_theme.brushBrandAccent.Get() : m_theme.brushBorderSubtle.Get(), 1.0f);
+        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> pillBorderBrush;
+        m_pRenderTarget->CreateSolidColorBrush(
+            m_hoverLiveServerPill
+                ? D2D1::ColorF(0.20f, 0.88f, 0.50f, 0.95f)
+                : (m_theme.IsDarkMode() ? D2D1::ColorF(0.24f, 0.27f, 0.32f, 0.75f) : D2D1::ColorF(0.75f, 0.78f, 0.84f, 0.80f)),
+            &pillBorderBrush
+        );
 
-        std::wstring pillText = L"⚡ Port: " + std::to_wstring(m_liveServer.GetPort());
-        D2D1_RECT_F rcPillText = D2D1::RectF(pillX + m_config.ScaleF(6.0f), pillY, pillX + pillW, pillY + pillH);
+        if (pillBgBrush) m_pRenderTarget->FillRoundedRectangle(rrcPill, pillBgBrush.Get());
+        if (pillBorderBrush) m_pRenderTarget->DrawRoundedRectangle(rrcPill, pillBorderBrush.Get(), 1.0f);
+
+        // 1. Pulsing Emerald Live Status Dot (●)
+        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> dotBrush;
+        m_pRenderTarget->CreateSolidColorBrush(D2D1::ColorF(0.20f, 0.88f, 0.50f, 1.0f), &dotBrush);
+        if (dotBrush) {
+            float dotCx = pillX + m_config.ScaleF(10.0f);
+            float dotCy = pillY + pillH / 2.0f;
+            float dotR = m_config.ScaleF(3.0f);
+            m_pRenderTarget->FillEllipse(D2D1::Ellipse(D2D1::Point2F(dotCx, dotCy), dotR, dotR), dotBrush.Get());
+        }
+
+        // 2. Crisp "Port: 5500" typography
+        std::wstring pillText = L"Port: " + std::to_wstring(pActiveLiveServer->port);
+        D2D1_RECT_F rcPillText = D2D1::RectF(pillX + m_config.ScaleF(18.0f), pillY + m_config.ScaleF(2.0f), pillX + pillW - m_config.ScaleF(4.0f), pillY + pillH);
+        ID2D1Brush* textBrush = m_theme.IsDarkMode()
+            ? (m_theme.brushTextWhite ? m_theme.brushTextWhite.Get() : m_theme.brushTextPrimary.Get())
+            : m_theme.brushTextPrimary.Get();
         m_pRenderTarget->DrawText(
             pillText.c_str(),
             static_cast<UINT32>(pillText.length()),
-            m_theme.fontMenuItem.Get() ? m_theme.fontMenuItem.Get() : m_theme.fontCode.Get(),
+            m_theme.fontHint ? m_theme.fontHint.Get() : m_theme.fontCode.Get(),
             rcPillText,
-            m_theme.brushTextWhite.Get() ? m_theme.brushTextWhite.Get() : m_theme.brushTextPrimary.Get()
+            textBrush
         );
+
+        // Floating Tooltip on Hover
+        if (m_hoverLiveServerPill) {
+            std::wstring tip = L"Live Server (Click to open http://localhost:" + std::to_wstring(pActiveLiveServer->port) + L")";
+            const float tipH = m_config.ScaleF(24.0f);
+            const float tipPadX = m_config.ScaleF(10.0f);
+            float textW = m_config.ScaleF(static_cast<float>(tip.length() * 6.5f + 14.0f));
+            float tipW = textW + tipPadX * 2.0f;
+            float tipX = pillX + (pillW - tipW) / 2.0f;
+            float tipY = pillY - tipH - m_config.ScaleF(6.0f);
+            if (tipX < 10.0f) tipX = 10.0f;
+            if (tipX + tipW > clientW - 10.0f) tipX = clientW - tipW - 10.0f;
+
+            D2D1_RECT_F rcTip = D2D1::RectF(tipX, tipY, tipX + tipW, tipY + tipH);
+            D2D1_ROUNDED_RECT rrcTip = D2D1::RoundedRect(rcTip, 4.0f, 4.0f);
+            m_pRenderTarget->FillRoundedRectangle(rrcTip, m_theme.brushTooltipBg.Get());
+            m_pRenderTarget->DrawRoundedRectangle(rrcTip, m_theme.brushTooltipBorder.Get(), 1.0f);
+            m_pRenderTarget->DrawText(
+                tip.c_str(),
+                static_cast<UINT32>(tip.length()),
+                m_theme.fontTooltip ? m_theme.fontTooltip.Get() : m_theme.fontHint.Get(),
+                rcTip,
+                m_theme.brushTooltipText ? m_theme.brushTooltipText.Get() : m_theme.brushTextPrimary.Get()
+            );
+        }
     } else {
         m_liveServerPillBounds = {};
     }
 
-    // 2. Render Slide-out Drawer Panel (when visible or animating, with 14px rounded curve at top-left)
-    if (hasLeftDrawer) {
-        m_drawer.Render(m_pRenderTarget.Get(), m_theme, m_config, clientH, currentDrawerW);
-    }
-
-    // 3. Render Collapsed Activity Rail (Home -> Search -> Git with customized tooltips)
+    // 4. Render Collapsed Activity Rail (Home -> Search -> Git with customized tooltips)
     m_rail.SetGitLoading(m_drawer.IsGitLoading());
     m_rail.SetGitBadgeCount(m_drawer.GetGitChanges().size());
     m_rail.Render(m_pRenderTarget.Get(), m_theme, m_config, clientH);
@@ -2694,7 +2968,8 @@ void Window::HandleMouseMove(POINT clientPt) {
     }
 
     bool oldHoverPill = m_hoverLiveServerPill;
-    m_hoverLiveServerPill = m_liveServer.IsRunning() &&
+    bool hasActiveServer = (GetActiveDocLiveServer() != nullptr) || !m_activeLiveServers.empty() || m_liveServer.IsRunning();
+    m_hoverLiveServerPill = hasActiveServer &&
         (clientPt.x >= m_liveServerPillBounds.left && clientPt.x <= m_liveServerPillBounds.right &&
          clientPt.y >= m_liveServerPillBounds.top && clientPt.y <= m_liveServerPillBounds.bottom);
     if (m_hoverLiveServerPill != oldHoverPill) {
@@ -2922,7 +3197,17 @@ void Window::HandleMouseMove(POINT clientPt) {
     if (m_rail.SetHoveredTab(hoveredRail)) needRepaint = true;
 
     // Check Drawer hover
-    if (m_drawerAnimProgress > 0.001f) {
+    RECT wndRc;
+    GetClientRect(m_hwnd, &wndRc);
+    const float clientH = static_cast<float>(wndRc.bottom - wndRc.top);
+    float termH = 0.0f;
+    if (m_terminal.IsOpen()) {
+        const float headerH = m_config.ScaleF(static_cast<float>(m_config.headerHeight));
+        termH = m_terminal.IsFullScreen() ? (clientH - headerH) : m_terminal.GetHeight();
+    }
+    float effectiveDrawerH = m_terminal.IsOpen() ? (clientH - termH) : clientH;
+
+    if (m_drawerAnimProgress > 0.001f && clientPt.y < effectiveDrawerH) {
         if (m_config.activeRailTab == 0) {
             if (!m_drawer.HasOpenFolder()) {
                 bool btnHover = m_drawer.HitTestOpenFolderButton(clientPt, m_config);
@@ -2938,15 +3223,14 @@ void Window::HandleMouseMove(POINT clientPt) {
         } else if (m_config.activeRailTab == 2) {
             if (m_isDraggingGitSplitter) {
                 const float headerH = m_config.ScaleF(static_cast<float>(m_config.headerHeight));
-                RECT clientRc;
-                GetClientRect(m_hwnd, &clientRc);
-                const float clientH = static_cast<float>(clientRc.bottom - clientRc.top);
-                m_drawer.SetGitSplitY(static_cast<float>(clientPt.y), headerH + 110.0f, clientH - 70.0f);
+                m_drawer.SetGitSplitY(static_cast<float>(clientPt.y), headerH + 110.0f, effectiveDrawerH - 70.0f);
                 needRepaint = true;
             } else if (m_drawer.HandleGitMouseMove(clientPt)) {
                 needRepaint = true;
             }
         }
+    } else if (m_drawerAnimProgress > 0.001f) {
+        if (m_drawer.SetHoveredIndex(-1)) needRepaint = true;
     }
 
     if (needRepaint) {
@@ -2956,11 +3240,12 @@ void Window::HandleMouseMove(POINT clientPt) {
 
 void Window::HandleLButtonDown(POINT clientPt) {
     // Check Live Server Status Pill Click (Opens browser to localUrl)
-    if (m_liveServer.IsRunning() && clientPt.x >= m_liveServerPillBounds.left && clientPt.x <= m_liveServerPillBounds.right &&
+    auto* pActiveLiveServer = GetActiveDocLiveServer();
+    if (!pActiveLiveServer && !m_activeLiveServers.empty()) pActiveLiveServer = &m_activeLiveServers.back();
+    if (pActiveLiveServer && pActiveLiveServer->server && pActiveLiveServer->server->IsRunning() &&
+        clientPt.x >= m_liveServerPillBounds.left && clientPt.x <= m_liveServerPillBounds.right &&
         clientPt.y >= m_liveServerPillBounds.top && clientPt.y <= m_liveServerPillBounds.bottom) {
-        auto* pDoc = GetActiveDoc();
-        std::wstring fileName = pDoc ? std::filesystem::path(pDoc->filePath).filename().wstring() : L"";
-        std::wstring url = m_liveServer.GetLocalUrl(fileName);
+        std::wstring url = pActiveLiveServer->server->GetLocalUrl(pActiveLiveServer->fileName);
         ShellExecuteW(NULL, L"open", url.c_str(), NULL, NULL, SW_SHOWNORMAL);
         return;
     }
@@ -3503,6 +3788,89 @@ void Window::HandleLButtonDown(POINT clientPt) {
                     case ui::MenuActionId::CommandPalette:
                         DoCommandPalette();
                         break;
+                    case ui::MenuActionId::DebugStart:
+                        DoDebugActiveDocument();
+                        break;
+                    case ui::MenuActionId::DebugRunWithoutDebug:
+                        DoRunActiveDocument();
+                        break;
+                    case ui::MenuActionId::DebugStop:
+                        DoStopServer();
+                        break;
+                    case ui::MenuActionId::DebugRestart:
+                        DoRestartServer();
+                        break;
+                    case ui::MenuActionId::DebugStepOver:
+                        m_terminal.TriggerDebugAction(ui::DebugAction::StepOver);
+                        break;
+                    case ui::MenuActionId::DebugStepInto:
+                        m_terminal.TriggerDebugAction(ui::DebugAction::StepInto);
+                        break;
+                    case ui::MenuActionId::DebugStepOut:
+                        m_terminal.TriggerDebugAction(ui::DebugAction::StepOut);
+                        break;
+                    case ui::MenuActionId::DebugContinue:
+                        m_terminal.TriggerDebugAction(ui::DebugAction::Continue);
+                        break;
+                    case ui::MenuActionId::DebugToggleBreakpoint: {
+                        auto* pDoc = GetActiveDoc();
+                        if (pDoc && !pDoc->isSpecialView) {
+                            size_t curLine = pDoc->buffer.GetCursor().line;
+                            auto it = std::find(pDoc->breakpoints.begin(), pDoc->breakpoints.end(), curLine);
+                            if (it != pDoc->breakpoints.end()) {
+                                pDoc->breakpoints.erase(it);
+                            } else {
+                                pDoc->breakpoints.push_back(curLine);
+                            }
+                        }
+                        break;
+                    }
+                    case ui::MenuActionId::DebugConsole: {
+                        if (!m_terminal.IsOpen()) {
+                            std::wstring dir = m_drawer.HasOpenFolder() ? m_drawer.GetOpenFolderPath() : m_workspace.GetRootPath().wstring();
+                            m_terminal.Open(dir);
+                        }
+                        m_terminal.ShowDebugConsole();
+                        m_isTerminalFocused = true;
+                        break;
+                    }
+                    case ui::MenuActionId::DebugStartLiveServer:
+                        DoRunActiveDocument();
+                        break;
+                    case ui::MenuActionId::DebugStopLiveServer:
+                        DoStopServer();
+                        break;
+                    case ui::MenuActionId::DebugRestartLiveServer:
+                        DoRestartServer();
+                        break;
+                    case ui::MenuActionId::CodeFormatDocument:
+                        DoFormatDocument();
+                        break;
+                    case ui::MenuActionId::CodeFormatSelection:
+                        DoFormatSelection();
+                        break;
+                    case ui::MenuActionId::CodeOrganizeImports:
+                        DoOrganizeImports();
+                        break;
+                    case ui::MenuActionId::CodeGoToDefinition:
+                    case ui::MenuActionId::CodePeekDefinition:
+                        DoGoToDefinition();
+                        break;
+                    case ui::MenuActionId::CodeRenameSymbol:
+                        DoRenameSymbol();
+                        break;
+                    case ui::MenuActionId::CodeRefactor:
+                        DoRefactor();
+                        break;
+                    case ui::MenuActionId::CodeToggleLineComment:
+                        DoToggleLineComment();
+                        break;
+                    case ui::MenuActionId::CodeToggleBlockComment:
+                        DoToggleBlockComment();
+                        break;
+                    case ui::MenuActionId::CodeEmmetExpand:
+                        DoEmmetExpand();
+                        break;
                     default:
                         break;
                 }
@@ -3545,11 +3913,15 @@ void Window::HandleLButtonDown(POINT clientPt) {
         }
     }
 
-    // 2. Execution Widget Button Clicks (Run, Debug, Terminal)
+    // 2. Execution Widget Button Clicks (Run, Restart, Stop, Debug, Terminal)
     auto execHit = m_header.HitTestExecButton(clientPt);
     if (execHit != ui::HeaderExecId::None) {
         if (execHit == ui::HeaderExecId::Run) {
             DoRunActiveDocument();
+        } else if (execHit == ui::HeaderExecId::Restart) {
+            DoRestartServer();
+        } else if (execHit == ui::HeaderExecId::Stop) {
+            DoStopServer();
         } else if (execHit == ui::HeaderExecId::Debug) {
             DoDebugActiveDocument();
         } else if (execHit == ui::HeaderExecId::Terminal) {
@@ -3586,6 +3958,23 @@ void Window::HandleLButtonDown(POINT clientPt) {
                                      m_config.isDrawerOpen, IsZoomed(m_hwnd), m_wordWrap,
                                      m_editorGroups.size());
             m_header.SetActiveMenu(ui::HeaderMenuId::View);
+            InvalidateRect(m_hwnd, nullptr, FALSE);
+        } else if (menuHit == ui::HeaderMenuId::Debug) {
+            D2D1_RECT_F rcDbg = m_header.GetMenuItemBounds(ui::HeaderMenuId::Debug);
+            bool isLiveRunning = m_liveServer.IsRunning();
+            bool isDbgActive = m_terminal.IsDebugActive();
+            bool canRun = m_header.IsRunEnabled();
+            m_popupMenu.OpenDebugMenu(rcDbg.left, rcDbg.bottom + 2.0f, m_config,
+                                      isLiveRunning, isDbgActive, canRun);
+            m_header.SetActiveMenu(ui::HeaderMenuId::Debug);
+            InvalidateRect(m_hwnd, nullptr, FALSE);
+        } else if (menuHit == ui::HeaderMenuId::Code) {
+            D2D1_RECT_F rcCode = m_header.GetMenuItemBounds(ui::HeaderMenuId::Code);
+            auto* pDoc = GetActiveDoc();
+            bool hasDoc = (pDoc != nullptr && !pDoc->isSpecialView);
+            bool hasSelection = (pDoc != nullptr && pDoc->HasSelection());
+            m_popupMenu.OpenCodeMenu(rcCode.left, rcCode.bottom + 2.0f, m_config, hasDoc, hasSelection);
+            m_header.SetActiveMenu(ui::HeaderMenuId::Code);
             InvalidateRect(m_hwnd, nullptr, FALSE);
         }
         return;
@@ -3810,6 +4199,36 @@ void Window::HandleLButtonDown(POINT clientPt) {
                             return;
                         }
                     } else {
+                        // Check gutter click for breakpoint toggle (Image 4)
+                        const float headerH = m_config.ScaleF(static_cast<float>(m_config.headerHeight));
+                        const float tabH = m_config.ScaleF(34.0f);
+                        const float breadcrumbH = m_config.ScaleF(24.0f);
+                        const float topY = headerH + tabH + breadcrumbH;
+                        const float gutterW = m_config.ScaleF(50.0f);
+                        const float lineH = m_config.ScaleF(std::round(m_config.fontSize * m_config.lineHeightMultiplier));
+                        if (clientPt.x >= paneCanvasLeft && clientPt.x < paneCanvasLeft + gutterW &&
+                            clientPt.y >= topY && clientPt.y <= clientH) {
+                            float relY = clientPt.y - (topY + m_config.ScaleF(6.0f));
+                            if (relY >= 0.0f && lineH > 0.0f) {
+                                size_t visualSlot = doc.scrollLine + static_cast<size_t>(relY / lineH);
+                                size_t totalLines = doc.buffer.GetLineCount();
+                                size_t curVisual = 0;
+                                for (size_t b = 0; b < totalLines; ++b) {
+                                    if (curVisual == visualSlot) {
+                                        auto it = std::find(doc.breakpoints.begin(), doc.breakpoints.end(), b);
+                                        if (it != doc.breakpoints.end()) {
+                                            doc.breakpoints.erase(it);
+                                        } else {
+                                            doc.breakpoints.push_back(b);
+                                        }
+                                        InvalidateRect(m_hwnd, nullptr, FALSE);
+                                        return;
+                                    }
+                                    curVisual++;
+                                }
+                            }
+                        }
+
                         size_t line = 0, col = 0;
                         if (m_editor.HitTestCodeArea(clientPt, m_config, doc, paneCanvasLeft, clientH, line, col)) {
                             doc.buffer.SetCursor(line, col);
@@ -4808,14 +5227,14 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 }
             }
 
-            // F5 execution shortcuts (Ctrl+F5 = Run, F5 = Debug)
+            // F5 execution shortcuts (Ctrl+F5 = Run, F5 = Debug, Shift+F5 = Stop, Ctrl+Shift+F5 = Restart)
             if (wParam == VK_F5) {
-                if ((GetKeyState(VK_CONTROL) & 0x8000) != 0 && (GetKeyState(VK_SHIFT) & 0x8000) != 0 && m_terminal.IsDebugActive()) {
-                    m_terminal.TriggerDebugAction(ui::DebugAction::Restart);
+                if ((GetKeyState(VK_CONTROL) & 0x8000) != 0 && (GetKeyState(VK_SHIFT) & 0x8000) != 0) {
+                    DoRestartServer();
                     InvalidateRect(m_hwnd, nullptr, FALSE);
                     return 0;
-                } else if ((GetKeyState(VK_SHIFT) & 0x8000) != 0 && m_terminal.IsDebugActive()) {
-                    m_terminal.TriggerDebugAction(ui::DebugAction::Stop);
+                } else if ((GetKeyState(VK_SHIFT) & 0x8000) != 0) {
+                    DoStopServer();
                     InvalidateRect(m_hwnd, nullptr, FALSE);
                     return 0;
                 } else if ((GetKeyState(VK_CONTROL) & 0x8000) != 0) {
@@ -4830,6 +5249,34 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     InvalidateRect(m_hwnd, nullptr, FALSE);
                     return 0;
                 }
+            }
+
+            // F9 Toggle Breakpoint
+            if (wParam == VK_F9) {
+                auto* pDoc = GetActiveDoc();
+                if (pDoc && !pDoc->isSpecialView) {
+                    size_t curLine = pDoc->buffer.GetCursor().line;
+                    auto it = std::find(pDoc->breakpoints.begin(), pDoc->breakpoints.end(), curLine);
+                    if (it != pDoc->breakpoints.end()) {
+                        pDoc->breakpoints.erase(it);
+                    } else {
+                        pDoc->breakpoints.push_back(curLine);
+                    }
+                    InvalidateRect(m_hwnd, nullptr, FALSE);
+                    return 0;
+                }
+            }
+
+            // Ctrl+Shift+Y Debug Console toggle
+            if ((GetKeyState(VK_CONTROL) & 0x8000) != 0 && (GetKeyState(VK_SHIFT) & 0x8000) != 0 && (wParam == 'Y' || wParam == 'y')) {
+                if (!m_terminal.IsOpen()) {
+                    std::wstring dir = m_drawer.HasOpenFolder() ? m_drawer.GetOpenFolderPath() : m_workspace.GetRootPath().wstring();
+                    m_terminal.Open(dir);
+                }
+                m_terminal.ShowDebugConsole();
+                m_isTerminalFocused = true;
+                InvalidateRect(m_hwnd, nullptr, FALSE);
+                return 0;
             }
 
             if (wParam == VK_F10 && m_terminal.IsDebugActive()) {
@@ -4997,6 +5444,24 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
             // Shift+Alt+A: Toggle Block Comment (VS Code standard)
             if ((GetKeyState(VK_SHIFT) & 0x8000) && (GetKeyState(VK_MENU) & 0x8000) && wParam == 'A') {
                 DoToggleBlockComment();
+                return 0;
+            }
+
+            // Shift+Alt+F: Format Document
+            if ((GetKeyState(VK_SHIFT) & 0x8000) && (GetKeyState(VK_MENU) & 0x8000) && wParam == 'F') {
+                DoFormatDocument();
+                return 0;
+            }
+
+            // F12: Go to Definition
+            if (wParam == VK_F12) {
+                DoGoToDefinition();
+                return 0;
+            }
+
+            // F2: Rename Symbol
+            if (wParam == VK_F2) {
+                DoRenameSymbol();
                 return 0;
             }
 

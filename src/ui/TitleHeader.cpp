@@ -197,7 +197,20 @@ void TitleHeader::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCon
     }
 
     // 3. Render Top-Right Execution Control Widget (Run ▶, Debug 🐞, Terminal >_)
-    // Positioned with a generous 100px buffer to the left of the window caption controls (Minimize, Maximize, Close)
+    // When Live Server is running, Run is replaced by Stop (red square with rounded corners)
+    // and a Restart button (circular arrow) is positioned before it.
+    m_execButtons.clear();
+    if (m_liveServerRunning) {
+        m_execButtons.push_back({ HeaderExecId::Restart,  L"Restart (Ctrl+Shift+F5)", {} });
+        m_execButtons.push_back({ HeaderExecId::Stop,     L"Stop (Shift+F5)",        {} });
+        m_execButtons.push_back({ HeaderExecId::Debug,    L"Debug (F5)",             {} });
+        m_execButtons.push_back({ HeaderExecId::Terminal, L"Terminal (Ctrl+`)",      {} });
+    } else {
+        m_execButtons.push_back({ HeaderExecId::Run,      L"Run (Ctrl+F5)",          {} });
+        m_execButtons.push_back({ HeaderExecId::Debug,    L"Debug (F5)",             {} });
+        m_execButtons.push_back({ HeaderExecId::Terminal, L"Terminal (Ctrl+`)",      {} });
+    }
+
     const float btnW          = config.ScaleF(static_cast<float>(config.captionBtnWidth)); // 46px
     const float captionTotalW = 3.0f * btnW;
     const float execGap       = config.ScaleF(4.0f);
@@ -205,7 +218,8 @@ void TitleHeader::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCon
     const float execBtnH      = config.ScaleF(26.0f);
     const float execY         = (h - execBtnH) / 2.0f;
     const float execRight     = clientWidth - captionTotalW - config.ScaleF(100.0f);
-    const float execStartX    = execRight - (3.0f * execBtnW + 2.0f * execGap);
+    const size_t numExecBtns  = m_execButtons.size();
+    const float execStartX    = execRight - (static_cast<float>(numExecBtns) * execBtnW + static_cast<float>(numExecBtns - 1) * execGap);
 
     // Grouped pill container backdrop for the execution controls:
     // In Dark Mode: subtle dark pill background.
@@ -221,11 +235,11 @@ void TitleHeader::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCon
         pRT->FillRoundedRectangle(rrcContainer, theme.brushItemHover.Get());
         pRT->DrawRoundedRectangle(rrcContainer, theme.brushBorderSubtle.Get(), 0.8f);
     } else {
-        // Light Mode: Solid Black container fill with dark border
+        // Light Mode: Clean subtle light pill container matching theme
         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushExecBg;
-        pRT->CreateSolidColorBrush(D2D1::ColorF(0.08f, 0.08f, 0.08f, 1.0f), &brushExecBg); // #141414 Black
+        pRT->CreateSolidColorBrush(D2D1::ColorF(0.92f, 0.93f, 0.95f, 1.0f), &brushExecBg);
         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushExecBorder;
-        pRT->CreateSolidColorBrush(D2D1::ColorF(0.20f, 0.20f, 0.20f, 1.0f), &brushExecBorder); // #333333 Subtle dark border
+        pRT->CreateSolidColorBrush(D2D1::ColorF(0.82f, 0.83f, 0.86f, 1.0f), &brushExecBorder);
         if (brushExecBg) {
             pRT->FillRoundedRectangle(rrcContainer, brushExecBg.Get());
         }
@@ -358,6 +372,36 @@ void TitleHeader::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCon
         D2D1_ROUNDED_RECT rrcBtn = D2D1::RoundedRect(btn.bounds, 4.0f, 4.0f);
 
         switch (btn.id) {
+            case HeaderExecId::Restart: {
+                if (isHovered) {
+                    pRT->FillRoundedRectangle(rrcBtn, theme.brushItemHover.Get());
+                }
+                // White in dark mode, black in light mode (Lucide rotate-cw vector icon)
+                ID2D1Brush* restartBrush = theme.IsDarkMode()
+                    ? (theme.brushTextWhite ? theme.brushTextWhite.Get() : theme.brushHeaderIcon.Get())
+                    : (theme.brushTextPrimary ? theme.brushTextPrimary.Get() : theme.brushHeaderIcon.Get());
+                m_icons.DrawRestart(pRT, btn.bounds, restartBrush, 1.4f);
+                break;
+            }
+            case HeaderExecId::Stop: {
+                // Red square with rounded corners (user requirement: "the run button should be change to red sqyare with rounded corder and the tooltip is stop")
+                if (isHovered) {
+                    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> stopHover;
+                    pRT->CreateSolidColorBrush(D2D1::ColorF(0.95f, 0.25f, 0.25f, 0.25f), &stopHover);
+                    if (stopHover) pRT->FillRoundedRectangle(rrcBtn, stopHover.Get());
+                }
+                float cx = (btn.bounds.left + btn.bounds.right) / 2.0f;
+                float cy = (btn.bounds.top + btn.bounds.bottom) / 2.0f;
+                float s = config.ScaleF(4.5f);
+                D2D1_RECT_F rcSq = D2D1::RectF(cx - s, cy - s, cx + s, cy + s);
+                D2D1_ROUNDED_RECT rrcSq = D2D1::RoundedRect(rcSq, 2.5f, 2.5f);
+                Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> stopBrush;
+                pRT->CreateSolidColorBrush(D2D1::ColorF(0.95f, 0.30f, 0.30f, 1.0f), &stopBrush);
+                if (stopBrush) {
+                    pRT->FillRoundedRectangle(rrcSq, stopBrush.Get());
+                }
+                break;
+            }
             case HeaderExecId::Run: {
                 if (!m_runEnabled) {
                     m_icons.DrawRun(pRT, btn.bounds, theme.brushTextMuted.Get(), 1.4f);
@@ -383,21 +427,12 @@ void TitleHeader::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCon
                 break;
             }
             case HeaderExecId::Terminal: {
-                // Inside the solid black container in both Dark and Light modes, the terminal icon
-                // must be rendered with white/silver for high contrast and legibility.
                 if (isHovered) {
-                    if (theme.IsDarkMode()) {
-                        pRT->FillRoundedRectangle(rrcBtn, theme.brushItemHover.Get());
-                    } else {
-                        // Subtle dark hover highlight within the black container in Light Mode
-                        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushHoverDark;
-                        pRT->CreateSolidColorBrush(D2D1::ColorF(0.22f, 0.22f, 0.25f, 1.0f), &brushHoverDark);
-                        if (brushHoverDark) {
-                            pRT->FillRoundedRectangle(rrcBtn, brushHoverDark.Get());
-                        }
-                    }
+                    pRT->FillRoundedRectangle(rrcBtn, theme.brushItemHover.Get());
                 }
-                ID2D1Brush* termBrush = theme.brushTextWhite ? theme.brushTextWhite.Get() : theme.brushHeaderIcon.Get();
+                ID2D1Brush* termBrush = theme.IsDarkMode()
+                    ? (theme.brushTextWhite ? theme.brushTextWhite.Get() : theme.brushHeaderIcon.Get())
+                    : (theme.brushTextPrimary ? theme.brushTextPrimary.Get() : theme.brushHeaderIcon.Get());
                 m_icons.DrawTerminal(pRT, btn.bounds, termBrush, 1.4f);
                 break;
             }

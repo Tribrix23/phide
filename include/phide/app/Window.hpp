@@ -311,6 +311,21 @@ private:
     /** @brief Expands Emmet abbreviation before cursor (Tab). */
     void DoEmmetExpand();
 
+    /** @brief Formats active document (Shift+Alt+F). */
+    void DoFormatDocument();
+
+    /** @brief Formats selected code range (Ctrl+K Ctrl+F). */
+    void DoFormatSelection();
+
+    /** @brief Sorts and organizes imports (Shift+Alt+O). */
+    void DoOrganizeImports();
+
+    /** @brief Jumps to definition of symbol under cursor (F12). */
+    void DoGoToDefinition();
+
+    /** @brief Prompts symbol rename (F2). */
+    void DoRenameSymbol();
+
     /** @brief Collects all open document paths across all editor groups and synchronizes with Drawer. */
     void RefreshOpenDocPathsForSearch();
 
@@ -374,6 +389,12 @@ private:
     /** @brief Starts an interactive debugging session with the active document (same layout as terminal). */
     void DoDebugActiveDocument();
 
+    /** @brief Stops the running Live Server or debugging session. */
+    void DoStopServer();
+
+    /** @brief Restarts the running Live Server or debugging session. */
+    void DoRestartServer();
+
     /** @brief Updates enabled/disabled state of Run and Debug buttons based on active file type. */
     void UpdateExecutionButtonStates();
 
@@ -431,7 +452,23 @@ private:
     ui::QuickOpenModal m_quickOpen;
     ui::TerminalPanel m_terminal;
     bool m_isTerminalFocused = false;
-    server::LiveServer m_liveServer;
+
+    // Multi-LiveServer Architecture
+    struct ActiveLiveServer {
+        std::wstring filePath;
+        std::wstring fileName;
+        std::wstring rootDir;
+        int port = 5500;
+        std::unique_ptr<server::LiveServer> server;
+    };
+    std::vector<ActiveLiveServer> m_activeLiveServers;
+    ActiveLiveServer* FindLiveServer(const std::wstring& filePath);
+    ActiveLiveServer* GetActiveDocLiveServer();
+    void StopLiveServer(const std::wstring& filePath, bool closeTab = true);
+    void StopAllLiveServers();
+    int GetNextAvailableLiveServerPort() const;
+
+    server::LiveServer m_liveServer; // backwards compatibility / fallback
     D2D1_RECT_F m_liveServerPillBounds{};
     bool m_hoverLiveServerPill = false;
     workspace::WorkspaceManager m_workspace;

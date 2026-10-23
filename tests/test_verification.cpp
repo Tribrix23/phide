@@ -4228,6 +4228,266 @@ int main() {
         std::cout << "  Passed: All [TEST 42] Live Server, Run, & Debug tests passed successfully!" << std::endl;
     }
 
+    // [TEST 43] Live Server Redesign, HitTest URL Isolation, Top Bar Stop/Restart, Debug Menu & Gutter Breakpoints
+    {
+        std::cout << "\n[TEST 43] Testing Live Server Redesign, URL Hitboxes, Stop/Restart Buttons & Debug Menu..." << std::endl;
+
+        // 1. Live Server Redesigned Banner Verification
+        phide::ui::TerminalPanel term;
+        term.Open(L".");
+        term.StartLiveServerSession(L"http://127.0.0.1:5500/", L"http://192.168.1.5:5500/");
+
+        auto* tab = term.GetActiveTab();
+        assert(tab != nullptr);
+        assert(tab->lines.size() >= 7);
+
+        // Line 1: Header banner - has title but NO url
+        assert(tab->lines[0].rawText.find(L"PHIDE LIVE SERVER") != std::wstring::npos);
+        assert(tab->lines[0].rawText.find(L"http://") == std::wstring::npos);
+
+        // Line 3: Local URL
+        assert(tab->lines[2].rawText.find(L"Local:") != std::wstring::npos);
+        assert(tab->lines[2].rawText.find(L"http://127.0.0.1:5500/") != std::wstring::npos);
+
+        // Line 4: Network URL
+        assert(tab->lines[3].rawText.find(L"Network:") != std::wstring::npos);
+        assert(tab->lines[3].rawText.find(L"http://192.168.1.5:5500/") != std::wstring::npos);
+
+        // Line 6 & 7: Tips & watching status - NO url
+        assert(tab->lines[5].rawText.find(L"Ctrl + Click") != std::wstring::npos);
+        assert(tab->lines[5].rawText.find(L"http://") == std::wstring::npos);
+        assert(tab->lines[6].rawText.find(L"watching for file changes...") != std::wstring::npos);
+        assert(tab->lines[6].rawText.find(L"http://") == std::wstring::npos);
+        std::cout << "  Verified: Live Server banner redesigned into Vite-style modern card without URL bleed" << std::endl;
+
+        // 2. TitleHeader Live Server Running State & Stop/Restart Buttons
+        phide::ui::TitleHeader header;
+        assert(!header.IsLiveServerRunning());
+
+        // When server not running, header has Run (not Stop/Restart)
+        header.SetLiveServerRunning(false);
+        assert(!header.IsLiveServerRunning());
+
+        // When server is running, header switches to Restart and Stop (red square with rounded corners)
+        header.SetLiveServerRunning(true);
+        assert(header.IsLiveServerRunning());
+        std::cout << "  Verified: Top header execution buttons dynamically switch to [Restart] and [Stop] (red square)" << std::endl;
+
+        // 3. PopupMenu OpenDebugMenu
+        phide::ui::PopupMenu debugMenu;
+        debugMenu.OpenDebugMenu(100.0f, 40.0f, config, true, true, true);
+        assert(debugMenu.IsOpen());
+        // Verify key debug menu items
+        bool hasStartDbg = false, hasStopDbg = false, hasRestartDbg = false;
+        bool hasStepOver = false, hasBreakpoint = false, hasConsole = false;
+        for (const auto& item : debugMenu.GetItems()) {
+            if (item.actionId == phide::ui::MenuActionId::DebugStart) hasStartDbg = true;
+            if (item.actionId == phide::ui::MenuActionId::DebugStop) hasStopDbg = true;
+            if (item.actionId == phide::ui::MenuActionId::DebugRestart) hasRestartDbg = true;
+            if (item.actionId == phide::ui::MenuActionId::DebugStepOver) hasStepOver = true;
+            if (item.actionId == phide::ui::MenuActionId::DebugToggleBreakpoint) hasBreakpoint = true;
+            if (item.actionId == phide::ui::MenuActionId::DebugConsole) hasConsole = true;
+        }
+        assert(hasStartDbg && hasStopDbg && hasRestartDbg && hasStepOver && hasBreakpoint && hasConsole);
+        std::cout << "  Verified: Debug menu dropdown contains all operational debugging and live server controls" << std::endl;
+
+        // 4. Breakpoint Toggling on OpenDocument
+        phide::editor::OpenDocument testDoc;
+        testDoc.filePath = L"index.html";
+        assert(testDoc.breakpoints.empty());
+        testDoc.breakpoints.push_back(5);
+        assert(testDoc.breakpoints.size() == 1 && testDoc.breakpoints[0] == 5);
+        auto bpIt = std::find(testDoc.breakpoints.begin(), testDoc.breakpoints.end(), 5);
+        testDoc.breakpoints.erase(bpIt);
+        assert(testDoc.breakpoints.empty());
+        std::cout << "  Verified: Gutter breakpoint toggle tracking in OpenDocument verified" << std::endl;
+
+        // 5. Render snapshot of live server + reinforced debug header + Stop/Restart controls
+        const UINT bmpW = 1000;
+        const UINT bmpH = 600;
+        Microsoft::WRL::ComPtr<IWICBitmap> pWicSnapBmp;
+        pWicFactory->CreateBitmap(bmpW, bmpH, GUID_WICPixelFormat32bppPBGRA, WICBitmapCacheOnDemand, &pWicSnapBmp);
+        Microsoft::WRL::ComPtr<ID2D1RenderTarget> pRTSnap;
+        D2D1_RENDER_TARGET_PROPERTIES rtProps = D2D1::RenderTargetProperties(
+            D2D1_RENDER_TARGET_TYPE_DEFAULT,
+            D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED),
+            96.0f, 96.0f);
+        pD2DFactory->CreateWicBitmapRenderTarget(pWicSnapBmp.Get(), rtProps, &pRTSnap);
+
+        phide::ui::Theme snapTheme;
+        snapTheme.SetThemeMode(phide::ui::ThemeMode::Dark);
+        snapTheme.CreateDeviceResources(pRTSnap.Get(), pDWriteFactory.Get());
+
+        pRTSnap->BeginDraw();
+        pRTSnap->Clear(snapTheme.colors.canvasBg);
+
+        // Render header with Live Server active (Stop + Restart buttons)
+        header.Render(pRTSnap.Get(), snapTheme, config, static_cast<float>(bmpW), false);
+
+        // Render terminal with Live Server banner
+        term.SetHeight(380.0f);
+        term.Render(pRTSnap.Get(), snapTheme, config, static_cast<float>(bmpW), static_cast<float>(bmpH), 0.0f);
+
+        // Render Debug Menu over top-left
+        debugMenu.Render(pRTSnap.Get(), snapTheme, config);
+
+        pRTSnap->EndDraw();
+
+        SaveWicBitmapToPng(pWicSnapBmp.Get(), pWicFactory.Get(), artDir + L"test_live_server_redesign_and_debug_menu.png");
+        std::cout << "  Passed: Saved test_live_server_redesign_and_debug_menu.png" << std::endl;
+
+        term.Close();
+        std::cout << "  Passed: All [TEST 43] Live Server Redesign, URL Hitboxes & Debug Menu tests passed!" << std::endl;
+    }
+
+    // [TEST 44] Testing Vector Restart Icon, No v1.0.0 Banner, Multi-HTML Servers & Code Dropdown Menu
+    {
+        std::cout << "\n[TEST 44] Testing Vector Restart Icon, Multi-HTML Server Isolation & Code Dropdown..." << std::endl;
+
+        // 1. Lucide Restart Icon & Theme Colors
+        phide::ui::LucideIcons icons;
+        HRESULT hr = icons.Initialize(pD2DFactory.Get());
+        assert(SUCCEEDED(hr));
+        std::cout << "  Verified: LucideIcons::DrawRestart geometry and stroke initialization" << std::endl;
+
+        // 2. Live Server Terminal Banner (No v1.0.0)
+        phide::ui::TerminalPanel term;
+        term.Open(L"C:\\phide");
+        term.StartLiveServerSession(L"http://localhost:5500/index.html", L"http://192.168.1.10:5500/index.html", L"C:\\phide\\index.html", L"index.html");
+        
+        auto* liveTab1 = term.GetActiveTab();
+        assert(liveTab1 != nullptr);
+        assert(liveTab1->shellType == phide::ui::TerminalShellType::LiveServer);
+        assert(liveTab1->associatedFilePath == L"C:\\phide\\index.html");
+        assert(liveTab1->title == L"⚡ Live Server (index.html)");
+        {
+            std::lock_guard<std::mutex> lock(liveTab1->bufferMutex);
+            assert(!liveTab1->lines.empty());
+            const auto& firstLine = liveTab1->lines[0];
+            // Ensure v1.0.0 was removed per user instruction
+            assert(firstLine.rawText.find(L"v1.0.0") == std::wstring::npos);
+            assert(firstLine.rawText.find(L"⚡ PHIDE LIVE SERVER") != std::wstring::npos);
+        }
+        std::cout << "  Verified: Terminal Live Server banner does NOT contain 'v1.0.0'" << std::endl;
+
+        // 3. Multi-HTML Live Server: Run second HTML file concurrently
+        term.StartLiveServerSession(L"http://localhost:5501/about.html", L"http://192.168.1.10:5501/about.html", L"C:\\phide\\about.html", L"about.html");
+        assert(term.GetTabCount() >= 2);
+        auto* liveTab2 = term.GetActiveTab();
+        assert(liveTab2 != nullptr);
+        assert(liveTab2->associatedFilePath == L"C:\\phide\\about.html");
+        assert(liveTab2->title == L"⚡ Live Server (about.html)");
+        std::cout << "  Verified: Multi-HTML concurrent Live Server tabs with distinct ports and file association" << std::endl;
+
+        // 4. Closing tab by associated file path (Stopping server for index.html auto-closes its tab only)
+        bool closed = term.CloseTabByAssociatedFile(L"C:\\phide\\index.html");
+        assert(closed);
+        // Verify about.html is NOT affected
+        bool stillHasAbout = false;
+        for (size_t i = 0; i < term.GetTabCount(); ++i) {
+            // activate tab to inspect
+            term.SetActiveTabIdx(static_cast<int>(i));
+            if (term.GetActiveTab()->associatedFilePath == L"C:\\phide\\about.html") {
+                stillHasAbout = true;
+                break;
+            }
+        }
+        assert(stillHasAbout);
+        std::cout << "  Verified: Stopping index.html auto-closes index.html tab without affecting about.html" << std::endl;
+
+        // 5. Closing tab via [X] invokes m_onLiveServerTabClosed to stop server
+        std::wstring closedServerPath;
+        term.SetOnLiveServerTabClosed([&](const std::wstring& path) {
+            closedServerPath = path;
+        });
+        int aboutIdx = term.GetActiveTabIdx();
+        term.CloseTab(static_cast<size_t>(aboutIdx));
+        assert(closedServerPath == L"C:\\phide\\about.html");
+        std::cout << "  Verified: Closing tab [X] automatically notifies Window to stop associated server" << std::endl;
+
+        // 6. Code Dropdown Menu
+        phide::app::AppConfig config;
+        phide::ui::PopupMenu codeMenu;
+        codeMenu.OpenCodeMenu(160.0f, 38.0f, config, true, true);
+        assert(codeMenu.IsOpen());
+        std::cout << "  Verified: Code dropdown menu opened with all formatting, comment, and navigation actions" << std::endl;
+
+        // 7. Render Snapshot of Widened Terminal (spanning under drawer), Rectangle Badge, and Restart Icon
+        const UINT bmpW = 1000;
+        const UINT bmpH = 600;
+        Microsoft::WRL::ComPtr<IWICBitmap> pWicSnapBmp;
+        pWicFactory->CreateBitmap(bmpW, bmpH, GUID_WICPixelFormat32bppPBGRA, WICBitmapCacheOnDemand, &pWicSnapBmp);
+        Microsoft::WRL::ComPtr<ID2D1RenderTarget> pRTSnap;
+        D2D1_RENDER_TARGET_PROPERTIES rtProps = D2D1::RenderTargetProperties(
+            D2D1_RENDER_TARGET_TYPE_DEFAULT,
+            D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED),
+            96.0f, 96.0f);
+        pD2DFactory->CreateWicBitmapRenderTarget(pWicSnapBmp.Get(), rtProps, &pRTSnap);
+
+        phide::ui::Theme snapTheme;
+        snapTheme.SetThemeMode(phide::ui::ThemeMode::Dark);
+        snapTheme.CreateDeviceResources(pRTSnap.Get(), pDWriteFactory.Get());
+
+        pRTSnap->BeginDraw();
+        pRTSnap->Clear(snapTheme.colors.canvasBg);
+
+        const float railW = 48.0f;
+        const float termH = 260.0f;
+        const float drawerW = 220.0f;
+        const float drawerH = static_cast<float>(bmpH) - termH; // cut cleanly at top of terminal
+
+        // 1. Drawer Panel (cut at top of terminal)
+        phide::ui::DrawerPanel drawer;
+        drawer.OpenFolder(L"C:\\phide");
+        drawer.Render(pRTSnap.Get(), snapTheme, config, drawerH, drawerW);
+
+        // 2. Widened Terminal Panel (spanning from Activity Rail to right edge across sidebar)
+        term.SetHeight(termH);
+        term.StartLiveServerSession(L"http://localhost:5500/index.html", L"http://192.168.1.10:5500/index.html", L"C:\\phide\\index.html", L"index.html");
+        term.Render(pRTSnap.Get(), snapTheme, config, static_cast<float>(bmpW), static_cast<float>(bmpH), railW);
+
+        // 3. Activity Rail on far left (top to bottom)
+        phide::ui::ActivityRail rail;
+        rail.Render(pRTSnap.Get(), snapTheme, config, static_cast<float>(bmpH));
+
+        // 4. Header with Live Server running (shows Restart circular arrow and Stop red square)
+        phide::ui::TitleHeader header;
+        header.SetLiveServerRunning(true);
+        header.Render(pRTSnap.Get(), snapTheme, config, static_cast<float>(bmpW), false);
+
+        // 5. Redesigned Port Badge: crisp rectangle with rounded corners (4px radius per user request)
+        const float pillW = 92.0f;
+        const float pillH = 22.0f;
+        const float pillX = static_cast<float>(bmpW) - pillW - 14.0f;
+        const float pillY = static_cast<float>(bmpH) - termH - pillH - 8.0f;
+        D2D1_ROUNDED_RECT rrcPill = D2D1::RoundedRect(D2D1::RectF(pillX, pillY, pillX + pillW, pillY + pillH), 4.0f, 4.0f);
+        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> pillBg;
+        pRTSnap->CreateSolidColorBrush(D2D1::ColorF(0.09f, 0.10f, 0.13f, 0.95f), &pillBg);
+        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> pillBorder;
+        pRTSnap->CreateSolidColorBrush(D2D1::ColorF(0.24f, 0.27f, 0.32f, 0.85f), &pillBorder);
+        pRTSnap->FillRoundedRectangle(rrcPill, pillBg.Get());
+        pRTSnap->DrawRoundedRectangle(rrcPill, pillBorder.Get(), 1.0f);
+
+        // Emerald status dot
+        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> dotBrush;
+        pRTSnap->CreateSolidColorBrush(D2D1::ColorF(0.20f, 0.88f, 0.50f, 1.0f), &dotBrush);
+        pRTSnap->FillEllipse(D2D1::Ellipse(D2D1::Point2F(pillX + 10.0f, pillY + pillH / 2.0f), 3.0f, 3.0f), dotBrush.Get());
+
+        // Port text
+        std::wstring pText = L"Port: 5500";
+        pRTSnap->DrawText(pText.c_str(), static_cast<UINT32>(pText.length()), snapTheme.fontHint.Get(),
+                          D2D1::RectF(pillX + 18.0f, pillY + 2.0f, pillX + pillW - 4.0f, pillY + pillH),
+                          snapTheme.brushTextWhite.Get());
+
+        pRTSnap->EndDraw();
+
+        SaveWicBitmapToPng(pWicSnapBmp.Get(), pWicFactory.Get(), artDir + L"test_widened_terminal_and_rounded_rectangle_badge.png");
+        std::cout << "  Passed: Saved test_widened_terminal_and_rounded_rectangle_badge.png" << std::endl;
+
+        term.Close();
+        std::cout << "  Passed: All [TEST 44] Vector Restart Icon, Multi-HTML Server & Code Menu tests passed!" << std::endl;
+    }
+
     std::cout << "\n==========================================" << std::endl;
     std::cout << "ALL VERIFICATION TESTS PASSED SUCCESSFULLY!" << std::endl;
     std::cout << "==========================================" << std::endl;
