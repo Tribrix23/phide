@@ -4,6 +4,7 @@
  */
 
 #include "phide/ui/TitleHeader.hpp"
+#include <cmath>
 
 namespace phide::ui {
 
@@ -231,6 +232,117 @@ void TitleHeader::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCon
         if (brushExecBorder) {
             pRT->DrawRoundedRectangle(rrcContainer, brushExecBorder.Get(), 0.8f);
         }
+    }
+
+    // 3b. Render Editor Zoom In / Zoom Out Control Widget ([-] 100% [+]) directly to left of Execution controls (Image 3)
+    const float zoomBtnW = config.ScaleF(22.0f);
+    const float zoomTextW = config.ScaleF(44.0f);
+    const float zoomTotalW = zoomBtnW * 2.0f + zoomTextW;
+    const float zoomGap = config.ScaleF(10.0f);
+    const float zoomRight = rcExecContainer.left - zoomGap;
+    const float zoomLeft = zoomRight - zoomTotalW;
+    const float zoomTop = execY - config.ScaleF(2.0f);
+    const float zoomBottom = execY + execBtnH + config.ScaleF(2.0f);
+
+    m_rcZoomContainer = D2D1::RectF(zoomLeft, zoomTop, zoomRight, zoomBottom);
+    m_rcZoomOut = D2D1::RectF(zoomLeft, zoomTop, zoomLeft + zoomBtnW, zoomBottom);
+    m_rcZoomReset = D2D1::RectF(zoomLeft + zoomBtnW, zoomTop, zoomRight - zoomBtnW, zoomBottom);
+    m_rcZoomIn = D2D1::RectF(zoomRight - zoomBtnW, zoomTop, zoomRight, zoomBottom);
+
+    D2D1_ROUNDED_RECT rrcZoom = D2D1::RoundedRect(m_rcZoomContainer, 5.0f, 5.0f);
+    if (theme.IsDarkMode()) {
+        pRT->FillRoundedRectangle(rrcZoom, theme.brushItemHover.Get());
+        pRT->DrawRoundedRectangle(rrcZoom, theme.brushBorderSubtle.Get(), 0.8f);
+    } else {
+        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushZoomBg;
+        pRT->CreateSolidColorBrush(D2D1::ColorF(0.08f, 0.08f, 0.08f, 1.0f), &brushZoomBg);
+        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushZoomBorder;
+        pRT->CreateSolidColorBrush(D2D1::ColorF(0.20f, 0.20f, 0.20f, 1.0f), &brushZoomBorder);
+        if (brushZoomBg) {
+            pRT->FillRoundedRectangle(rrcZoom, brushZoomBg.Get());
+        }
+        if (brushZoomBorder) {
+            pRT->DrawRoundedRectangle(rrcZoom, brushZoomBorder.Get(), 0.8f);
+        }
+    }
+
+    // Hover background highlights
+    if (m_hoveredZoom == 1) { // Zoom Out
+        D2D1_ROUNDED_RECT rrcOut = D2D1::RoundedRect(m_rcZoomOut, 4.0f, 4.0f);
+        pRT->FillRoundedRectangle(rrcOut, theme.brushCaptionHover ? theme.brushCaptionHover.Get() : theme.brushItemHover.Get());
+    } else if (m_hoveredZoom == 2) { // Zoom Reset
+        D2D1_ROUNDED_RECT rrcReset = D2D1::RoundedRect(m_rcZoomReset, 4.0f, 4.0f);
+        pRT->FillRoundedRectangle(rrcReset, theme.brushCaptionHover ? theme.brushCaptionHover.Get() : theme.brushItemHover.Get());
+    } else if (m_hoveredZoom == 3) { // Zoom In
+        D2D1_ROUNDED_RECT rrcIn = D2D1::RoundedRect(m_rcZoomIn, 4.0f, 4.0f);
+        pRT->FillRoundedRectangle(rrcIn, theme.brushCaptionHover ? theme.brushCaptionHover.Get() : theme.brushItemHover.Get());
+    }
+
+    ID2D1Brush* brushZoomGlyph = theme.brushTextWhite ? theme.brushTextWhite.Get() : theme.brushTextPrimary.Get();
+
+    // Minus glyph [-]
+    float cxOut = (m_rcZoomOut.left + m_rcZoomOut.right) / 2.0f;
+    float cyOut = (m_rcZoomOut.top + m_rcZoomOut.bottom) / 2.0f;
+    float hw = config.ScaleF(4.0f);
+    pRT->DrawLine(D2D1::Point2F(cxOut - hw, cyOut), D2D1::Point2F(cxOut + hw, cyOut), brushZoomGlyph, 1.5f);
+
+    // Zoom percentage text (e.g. 100%)
+    int zoomPercent = static_cast<int>(std::round((config.fontSize / 14.0f) * 100.0f));
+    std::wstring zoomStr = std::to_wstring(zoomPercent) + L"%";
+    pRT->DrawText(
+        zoomStr.c_str(),
+        static_cast<UINT32>(zoomStr.length()),
+        theme.fontButtonCenter ? theme.fontButtonCenter.Get() : theme.fontCode.Get(),
+        m_rcZoomReset,
+        brushZoomGlyph
+    );
+
+    // Plus glyph [+]
+    float cxIn = (m_rcZoomIn.left + m_rcZoomIn.right) / 2.0f;
+    float cyIn = (m_rcZoomIn.top + m_rcZoomIn.bottom) / 2.0f;
+    pRT->DrawLine(D2D1::Point2F(cxIn - hw, cyIn), D2D1::Point2F(cxIn + hw, cyIn), brushZoomGlyph, 1.5f);
+    pRT->DrawLine(D2D1::Point2F(cxIn, cyIn - hw), D2D1::Point2F(cxIn, cyIn + hw), brushZoomGlyph, 1.5f);
+
+    // Floating Tooltip for Hovered Zoom Button
+    if (m_hoveredZoom != 0) {
+        const wchar_t* tipText = L"";
+        D2D1_RECT_F rcTarget = m_rcZoomContainer;
+        if (m_hoveredZoom == 1) {
+            tipText = L"Zoom Out (Ctrl+-)";
+            rcTarget = m_rcZoomOut;
+        } else if (m_hoveredZoom == 2) {
+            tipText = L"Reset Zoom (Ctrl+0)";
+            rcTarget = m_rcZoomReset;
+        } else if (m_hoveredZoom == 3) {
+            tipText = L"Zoom In (Ctrl+=)";
+            rcTarget = m_rcZoomIn;
+        }
+
+        const float tipH    = config.ScaleF(24.0f);
+        const float tipPadX = config.ScaleF(10.0f);
+        size_t textLen = wcslen(tipText);
+        float textW    = config.ScaleF(static_cast<float>(textLen * 6.5f + 14.0f));
+        float tipW     = textW + tipPadX * 2.0f;
+
+        float tipX     = rcTarget.left + ((rcTarget.right - rcTarget.left) - tipW) / 2.0f;
+        float tipY     = m_rcZoomContainer.bottom + config.ScaleF(6.0f);
+
+        if (tipX < 10.0f) tipX = 10.0f;
+        if (tipX + tipW > clientWidth - 10.0f) tipX = clientWidth - tipW - 10.0f;
+
+        D2D1_RECT_F rcTip = D2D1::RectF(tipX, tipY, tipX + tipW, tipY + tipH);
+        D2D1_ROUNDED_RECT rrcTip = D2D1::RoundedRect(rcTip, 4.0f, 4.0f);
+
+        pRT->FillRoundedRectangle(rrcTip, theme.brushTooltipBg.Get());
+        pRT->DrawRoundedRectangle(rrcTip, theme.brushTooltipBorder.Get(), 1.0f);
+
+        pRT->DrawText(
+            tipText,
+            static_cast<UINT32>(textLen),
+            theme.fontTooltip ? theme.fontTooltip.Get() : theme.fontHint.Get(),
+            rcTip,
+            theme.brushTooltipText ? theme.brushTooltipText.Get() : theme.brushTextPrimary.Get()
+        );
     }
 
     const ExecButton* hoveredExecPtr = nullptr;
@@ -503,15 +615,39 @@ bool TitleHeader::SetHoveredQuickOpen(bool hovered) noexcept {
     return false;
 }
 
+bool TitleHeader::HitTestZoomIn(POINT pt) const noexcept {
+    return (pt.x >= m_rcZoomIn.left && pt.x <= m_rcZoomIn.right &&
+            pt.y >= m_rcZoomIn.top && pt.y <= m_rcZoomIn.bottom);
+}
+
+bool TitleHeader::HitTestZoomOut(POINT pt) const noexcept {
+    return (pt.x >= m_rcZoomOut.left && pt.x <= m_rcZoomOut.right &&
+            pt.y >= m_rcZoomOut.top && pt.y <= m_rcZoomOut.bottom);
+}
+
+bool TitleHeader::HitTestZoomReset(POINT pt) const noexcept {
+    return (pt.x >= m_rcZoomReset.left && pt.x <= m_rcZoomReset.right &&
+            pt.y >= m_rcZoomReset.top && pt.y <= m_rcZoomReset.bottom);
+}
+
+bool TitleHeader::SetHoveredZoom(int hovered) noexcept {
+    if (m_hoveredZoom != hovered) {
+        m_hoveredZoom = hovered;
+        return true;
+    }
+    return false;
+}
+
 LRESULT TitleHeader::HitTestNCHitTest(POINT pt, const app::AppConfig& config) {
     const float h = config.ScaleF(static_cast<float>(config.headerHeight));
     if (pt.y >= h) return HTCLIENT;
 
-    // If mouse is over any interactive element (menus, exec buttons, split editor, quick open, or caption buttons), return HTCLIENT
+    // If mouse is over any interactive element (menus, exec buttons, split editor, quick open, zoom controls, or caption buttons), return HTCLIENT
     if (HitTestMenu(pt) != HeaderMenuId::None) return HTCLIENT;
     if (HitTestExecButton(pt) != HeaderExecId::None) return HTCLIENT;
     if (HitTestSplitEditor(pt)) return HTCLIENT;
     if (HitTestQuickOpen(pt)) return HTCLIENT;
+    if (HitTestZoomIn(pt) || HitTestZoomOut(pt) || HitTestZoomReset(pt)) return HTCLIENT;
     if (HitTestCaptionButton(pt) != CaptionButtonType::None) return HTCLIENT;
 
     // The remaining empty header area allows dragging the window

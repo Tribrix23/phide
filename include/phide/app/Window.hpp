@@ -339,6 +339,15 @@ private:
 
     // --- View & Navigation Commands ---
 
+    /** @brief Zooms in editor font size by 2pt (Ctrl+=). */
+    void DoZoomIn();
+
+    /** @brief Zooms out editor font size by 2pt (Ctrl+-). */
+    void DoZoomOut();
+
+    /** @brief Resets editor font size to default 14pt (100%) (Ctrl+0). */
+    void DoResetZoom();
+
     /** @brief Toggles line wrap in code editor canvas (Alt+Z). */
     void DoToggleWordWrap();
 

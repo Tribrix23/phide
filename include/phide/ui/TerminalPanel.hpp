@@ -10,6 +10,7 @@
 #include <thread>
 #include <mutex>
 #include <functional>
+#include <optional>
 #include <windows.h>
 #include <filesystem>
 #include "phide/app/AppConfig.hpp"
@@ -149,6 +150,9 @@ struct TerminalTab {
     std::vector<TerminalLine> lines;
     std::wstring currentInputLine;
     float scrollOffsetY = 0.0f;
+    int scrollOffsetLines = 0;
+    std::vector<std::wstring> commandHistory;
+    int historyIndex = -1;
     std::mutex bufferMutex;
     std::function<void()> onOutput;
 
@@ -198,7 +202,7 @@ public:
 
     // Tab & Split Management (Images 4 & 5)
     void NewTab(TerminalShellType shell, const std::wstring& workingDir);
-    void SplitActiveTab(TerminalShellType shell = TerminalShellType::PowerShell);
+    void SplitActiveTab(std::optional<TerminalShellType> shell = std::nullopt);
     void CloseSplitPane(size_t tabIdx);
     void CloseTab(size_t index);
     void CloseAllTabs();
@@ -244,6 +248,8 @@ public:
      * @brief Tokenizes and colors terminal command lines (e.g. cd, git, npm, flags, strings).
      */
     static std::vector<TerminalSpan> TokenizeCommandLine(const std::wstring& cmdLine);
+    static std::vector<TerminalSpan> FormatTerminalLine(const TerminalLine& line, bool isError, const std::wstring& workingDir = L"");
+    static std::vector<TerminalSpan> TokenizeCommandLineWithLinuxRules(const std::wstring& text, const std::wstring& workingDir = L"");
 
     // Menus & Profiles
     [[nodiscard]] const std::vector<TerminalProfileDef>& GetAvailableProfiles() const noexcept { return m_availableProfiles; }

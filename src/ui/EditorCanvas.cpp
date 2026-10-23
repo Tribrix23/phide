@@ -722,7 +722,7 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
                               bool isRenaming) {
     auto& buffer = doc.buffer;
     const float gutterW = config.ScaleF(50.0f);
-    const float lineH   = config.ScaleF(20.0f);
+    const float lineH   = config.ScaleF(std::round(config.fontSize * config.lineHeightMultiplier));
 
     if (m_charWidth <= 0.0f && theme.dwriteFactory && theme.fontCode) {
         Microsoft::WRL::ComPtr<IDWriteTextLayout> pLayout;
@@ -1806,7 +1806,7 @@ bool EditorCanvas::HitTestCodeArea(POINT pt, const app::AppConfig& config, const
     const float breadcrumbH = config.ScaleF(24.0f);
     const float topY    = headerH + tabH + breadcrumbH;
     const float gutterW = config.ScaleF(50.0f);
-    const float lineH   = config.ScaleF(20.0f);
+    const float lineH   = config.ScaleF(std::round(config.fontSize * config.lineHeightMultiplier));
     const float charW   = (m_charWidth > 0.0f) ? m_charWidth : config.ScaleF(7.8f);
 
     if (pt.x < canvasLeft + gutterW || pt.y < topY || pt.y > clientHeight) {
@@ -2222,20 +2222,47 @@ void EditorCanvas::RenderRefactorPopup(ID2D1RenderTarget* pRT, Theme& theme, con
 }
 
 void EditorCanvas::ShowAutocomplete(const std::vector<editor::IntelliSenseItem>& items, size_t selectedIndex) {
+    m_autocompleteScrollOffset = 0;
     m_autocompleteItems = items;
     m_autocompleteSelectedIdx = (selectedIndex < items.size()) ? selectedIndex : 0;
     m_showAutocomplete = !items.empty();
 }
 
+bool EditorCanvas::HandleAutocompleteMouseWheel(short delta) noexcept {
+    if (!m_showAutocomplete || m_autocompleteItems.empty()) return false;
+    const size_t maxVisible = 8;
+    if (m_autocompleteItems.size() <= maxVisible) return false;
+    size_t maxScroll = m_autocompleteItems.size() - maxVisible;
+
+    int step = (delta > 0) ? -2 : 2;
+    int newOffset = static_cast<int>(m_autocompleteScrollOffset) + step;
+    if (newOffset < 0) newOffset = 0;
+    if (newOffset > static_cast<int>(maxScroll)) newOffset = static_cast<int>(maxScroll);
+    m_autocompleteScrollOffset = static_cast<size_t>(newOffset);
+    return true;
+}
+
 void EditorCanvas::SetAutocompleteSelectedIndex(size_t idx) noexcept {
     if (idx < m_autocompleteItems.size()) {
         m_autocompleteSelectedIdx = idx;
+        const size_t maxVisible = 8;
+        if (m_autocompleteSelectedIdx < m_autocompleteScrollOffset) {
+            m_autocompleteScrollOffset = m_autocompleteSelectedIdx;
+        } else if (m_autocompleteSelectedIdx >= m_autocompleteScrollOffset + maxVisible) {
+            m_autocompleteScrollOffset = m_autocompleteSelectedIdx - maxVisible + 1;
+        }
     }
 }
 
 void EditorCanvas::SelectNextAutocomplete() noexcept {
     if (m_autocompleteItems.empty()) return;
     m_autocompleteSelectedIdx = (m_autocompleteSelectedIdx + 1) % m_autocompleteItems.size();
+    const size_t maxVisible = 8;
+    if (m_autocompleteSelectedIdx < m_autocompleteScrollOffset) {
+        m_autocompleteScrollOffset = m_autocompleteSelectedIdx;
+    } else if (m_autocompleteSelectedIdx >= m_autocompleteScrollOffset + maxVisible) {
+        m_autocompleteScrollOffset = m_autocompleteSelectedIdx - maxVisible + 1;
+    }
 }
 
 void EditorCanvas::SelectPrevAutocomplete() noexcept {
@@ -2244,6 +2271,12 @@ void EditorCanvas::SelectPrevAutocomplete() noexcept {
         m_autocompleteSelectedIdx = m_autocompleteItems.size() - 1;
     } else {
         m_autocompleteSelectedIdx--;
+    }
+    const size_t maxVisible = 8;
+    if (m_autocompleteSelectedIdx < m_autocompleteScrollOffset) {
+        m_autocompleteScrollOffset = m_autocompleteSelectedIdx;
+    } else if (m_autocompleteSelectedIdx >= m_autocompleteScrollOffset + maxVisible) {
+        m_autocompleteScrollOffset = m_autocompleteSelectedIdx - maxVisible + 1;
     }
 }
 
@@ -2268,10 +2301,10 @@ bool EditorCanvas::HitTestAutocomplete(POINT pt, int& outIdx) const {
         size_t visibleCount = (std::min)(m_autocompleteItems.size(), static_cast<size_t>(8));
         if (visibleCount > 0) {
             float itemH = (itemsBottom - itemsTop) / static_cast<float>(visibleCount);
-            size_t scrollOffset = 0;
-            if (m_autocompleteSelectedIdx >= visibleCount) {
-                scrollOffset = m_autocompleteSelectedIdx - visibleCount + 1;
-            }
+            size_t scrollOffset = m_autocompleteScrollOffset;
+
+
+
             int relIdx = static_cast<int>((pt.y - itemsTop) / itemH);
             if (relIdx >= 0 && relIdx < static_cast<int>(visibleCount)) {
                 size_t actualIdx = scrollOffset + static_cast<size_t>(relIdx);
@@ -2318,10 +2351,19 @@ void EditorCanvas::RenderAutocompletePopup(ID2D1RenderTarget* pRT, Theme& theme,
     if (borderBrush) pRT->DrawRoundedRectangle(rrcPopup, borderBrush.Get(), 1.0f);
 
     // Compute scroll window
-    size_t scrollOffset = 0;
-    if (m_autocompleteSelectedIdx >= visibleCount) {
-        scrollOffset = m_autocompleteSelectedIdx - visibleCount + 1;
+    if (m_autocompleteSelectedIdx < m_autocompleteScrollOffset) {
+        m_autocompleteScrollOffset = m_autocompleteSelectedIdx;
+    } else if (m_autocompleteSelectedIdx >= m_autocompleteScrollOffset + visibleCount) {
+        m_autocompleteScrollOffset = m_autocompleteSelectedIdx - visibleCount + 1;
     }
+    if (totalItems > visibleCount) {
+        if (m_autocompleteScrollOffset > totalItems - visibleCount) {
+            m_autocompleteScrollOffset = totalItems - visibleCount;
+        }
+    } else {
+        m_autocompleteScrollOffset = 0;
+    }
+    size_t scrollOffset = m_autocompleteScrollOffset;
 
     float itemY = popupY + config.ScaleF(4.0f);
 
@@ -2374,14 +2416,46 @@ void EditorCanvas::RenderAutocompletePopup(ID2D1RenderTarget* pRT, Theme& theme,
             pRT->DrawText(badgeLetter, 1, theme.fontMenu ? theme.fontMenu.Get() : theme.fontBody.Get(), rcIcon, badgeBrush.Get());
         }
 
-        // Label text (e.g. "border", "borderRadius", "div")
+        // Label text (e.g. "border", "borderRadius", "div", "hello")
         float labelX = iconX + iconSize + config.ScaleF(6.0f);
         float labelW = config.ScaleF(160.0f);
         D2D1_RECT_F rcLabel = D2D1::RectF(labelX, itemY + config.ScaleF(2.0f), labelX + labelW, itemY + itemH);
         ID2D1Brush* textBrush = isSelected ? theme.brushTextWhite.Get() : theme.brushTextPrimary.Get();
-        pRT->DrawText(item.label.c_str(), static_cast<UINT32>(item.label.length()),
-                      theme.fontMenuItem ? theme.fontMenuItem.Get() : theme.fontBody.Get(),
-                      rcLabel, textBrush);
+
+        // Highlight matched characters within item label
+        Microsoft::WRL::ComPtr<IDWriteTextLayout> pTextLayout;
+        if (theme.dwriteFactory && theme.fontMenuItem) {
+            theme.dwriteFactory->CreateTextLayout(
+                item.label.c_str(),
+                static_cast<UINT32>(item.label.length()),
+                theme.fontMenuItem.Get(),
+                labelW,
+                itemH,
+                &pTextLayout
+            );
+        }
+
+        if (pTextLayout) {
+            if (item.matchLen > 0 && item.matchStart < item.label.length()) {
+                UINT32 mLen = static_cast<UINT32>((std::min)(item.matchLen, item.label.length() - item.matchStart));
+                DWRITE_TEXT_RANGE matchRange = { static_cast<UINT32>(item.matchStart), mLen };
+                pTextLayout->SetFontWeight(DWRITE_FONT_WEIGHT_BOLD, matchRange);
+                Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> hlBrush;
+                if (isSelected) {
+                    pRT->CreateSolidColorBrush(D2D1::ColorF(1.0f, 0.88f, 0.30f), &hlBrush); // warm gold/yellow on blue selection
+                } else {
+                    pRT->CreateSolidColorBrush(theme.IsDarkMode() ? D2D1::ColorF(0.20f, 0.65f, 1.0f) : D2D1::ColorF(0.0f, 0.45f, 0.88f), &hlBrush); // vibrant blue highlight
+                }
+                if (hlBrush) {
+                    pTextLayout->SetDrawingEffect(hlBrush.Get(), matchRange);
+                }
+            }
+            pRT->DrawTextLayout(D2D1::Point2F(labelX, itemY + config.ScaleF(2.0f)), pTextLayout.Get(), textBrush);
+        } else {
+            pRT->DrawText(item.label.c_str(), static_cast<UINT32>(item.label.length()),
+                          theme.fontMenuItem ? theme.fontMenuItem.Get() : theme.fontBody.Get(),
+                          rcLabel, textBrush);
+        }
 
         // Detail text on right (e.g. "CSSStyleDeclaration.border", "HTMLElement")
         if (!item.detail.empty()) {
@@ -2394,6 +2468,30 @@ void EditorCanvas::RenderAutocompletePopup(ID2D1RenderTarget* pRT, Theme& theme,
         }
 
         itemY += itemH;
+    }
+
+    // Vertical scrollbar on right if totalItems > visibleCount
+    if (totalItems > visibleCount) {
+        float sbW = config.ScaleF(4.0f);
+        float sbPad = config.ScaleF(3.0f);
+        float sbRight = popupX + popupW - sbPad;
+        float sbLeft = sbRight - sbW;
+        float sbTop = popupY + config.ScaleF(4.0f);
+        float sbH = static_cast<float>(visibleCount) * itemH;
+
+        D2D1_ROUNDED_RECT rrcSbTrack = D2D1::RoundedRect(D2D1::RectF(sbLeft, sbTop, sbRight, sbTop + sbH), 2.0f, 2.0f);
+        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> trackBrush;
+        pRT->CreateSolidColorBrush(D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.15f), &trackBrush);
+        if (trackBrush) pRT->FillRoundedRectangle(rrcSbTrack, trackBrush.Get());
+
+        float maxScroll = static_cast<float>(totalItems - visibleCount);
+        float thumbH = (std::max)(config.ScaleF(14.0f), sbH * (static_cast<float>(visibleCount) / static_cast<float>(totalItems)));
+        float thumbY = sbTop + (static_cast<float>(m_autocompleteScrollOffset) / maxScroll) * (sbH - thumbH);
+
+        D2D1_ROUNDED_RECT rrcSbThumb = D2D1::RoundedRect(D2D1::RectF(sbLeft, thumbY, sbRight, thumbY + thumbH), 2.0f, 2.0f);
+        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> thumbBrush;
+        pRT->CreateSolidColorBrush(theme.IsDarkMode() ? D2D1::ColorF(0.50f, 0.52f, 0.58f, 0.7f) : D2D1::ColorF(0.60f, 0.62f, 0.68f, 0.8f), &thumbBrush);
+        if (thumbBrush) pRT->FillRoundedRectangle(rrcSbThumb, thumbBrush.Get());
     }
 
     // Bottom Tip Bar (Image 5)
@@ -2600,7 +2698,7 @@ void EditorCanvas::RenderDiffView(ID2D1RenderTarget* pRT, Theme& theme, const ap
     const float scrollbarW = config.ScaleF(12.0f);
     const float halfW = (canvasWidth - dividerW - scrollbarW) / 2.0f;
     const float gutterW = config.ScaleF(46.0f);
-    const float lineH = config.ScaleF(20.0f);
+    const float lineH = config.ScaleF(std::round(config.fontSize * config.lineHeightMultiplier));
     const float charW = (m_charWidth > 0.0f) ? m_charWidth : config.ScaleF(7.8f);
 
     const float leftX = canvasLeft;
@@ -2966,7 +3064,7 @@ void EditorCanvas::RenderMultiFileDiffView(ID2D1RenderTarget* pRT, Theme& theme,
                                            float topY, float clientHeight, bool isPaneFocused) {
     (void)isPaneFocused;
     const float headerBarH = config.ScaleF(28.0f);
-    const float lineH = config.ScaleF(20.0f);
+    const float lineH = config.ScaleF(std::round(config.fontSize * config.lineHeightMultiplier));
     const float gutterW = config.ScaleF(46.0f);
     const float scrollbarW = config.ScaleF(12.0f);
     const float dividerW = config.ScaleF(24.0f);

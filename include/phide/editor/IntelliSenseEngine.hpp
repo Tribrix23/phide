@@ -28,6 +28,8 @@ struct IntelliSenseItem {
     std::wstring insertText;
     CompletionKind kind = CompletionKind::Keyword;
     int score = 0;
+    size_t matchStart = 0;
+    size_t matchLen = 0;
 };
 
 /**
@@ -58,6 +60,7 @@ private:
     void PopulateJavaScriptGlobals();
     void PopulateJavaScriptDomApis();
     void PopulateJavaScriptPrototypeMethods();
+    void PopulateCommonVocabulary();
 
     std::vector<IntelliSenseItem> m_htmlTags;
     std::vector<IntelliSenseItem> m_htmlAttributes;
@@ -65,6 +68,7 @@ private:
     std::vector<IntelliSenseItem> m_jsGlobals;
     std::vector<IntelliSenseItem> m_jsDomApis;
     std::vector<IntelliSenseItem> m_jsPrototypes;
+    std::vector<IntelliSenseItem> m_commonVocabulary;
 };
 
 } // namespace phide::editor

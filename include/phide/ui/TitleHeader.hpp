@@ -178,6 +178,14 @@ public:
 
     [[nodiscard]] D2D1_RECT_F GetQuickOpenBounds() const noexcept { return m_rcQuickOpen; }
 
+    // Zoom In / Zoom Out Controls (Image 3)
+    [[nodiscard]] bool HitTestZoomIn(POINT pt) const noexcept;
+    [[nodiscard]] bool HitTestZoomOut(POINT pt) const noexcept;
+    [[nodiscard]] bool HitTestZoomReset(POINT pt) const noexcept;
+    bool SetHoveredZoom(int hovered) noexcept; // 0=none, 1=out, 2=reset, 3=in
+    [[nodiscard]] int GetHoveredZoom() const noexcept { return m_hoveredZoom; }
+    [[nodiscard]] D2D1_RECT_F GetZoomContainerBounds() const noexcept { return m_rcZoomContainer; }
+
     /**
      * @brief Gets the bounding rectangle of a menu button.
      * @param id HeaderMenuId to query.
@@ -213,6 +221,13 @@ private:
     // Quick Open (magnifying glass) button (Image 5)
     D2D1_RECT_F m_rcQuickOpen{};
     bool m_hoveredQuickOpen = false;
+
+    // Zoom In / Zoom Out controls widget (Image 3)
+    D2D1_RECT_F m_rcZoomContainer{};
+    D2D1_RECT_F m_rcZoomOut{};
+    D2D1_RECT_F m_rcZoomReset{};
+    D2D1_RECT_F m_rcZoomIn{};
+    int m_hoveredZoom = 0; // 0=none, 1=out, 2=reset, 3=in
 
     // Direct2D Purple Glass Gradient Brush and theme state cache
     Microsoft::WRL::ComPtr<ID2D1LinearGradientBrush> m_pHeaderGradientBrush;

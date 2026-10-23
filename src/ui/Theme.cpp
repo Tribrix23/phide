@@ -538,6 +538,27 @@ void Theme::DiscardDeviceResources() {
     brushSetiDefault.Reset();
 }
 
+void Theme::SetEditorFontSize(float size) {
+    if (dwriteFactory) {
+        fontCode.Reset();
+        dwriteFactory->CreateTextFormat(
+            L"Consolas",
+            nullptr,
+            DWRITE_FONT_WEIGHT_REGULAR,
+            DWRITE_FONT_STYLE_NORMAL,
+            DWRITE_FONT_STRETCH_NORMAL,
+            (std::max)(6.0f, size),
+            L"en-US",
+            &fontCode
+        );
+        if (fontCode) {
+            fontCode->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
+            fontCode->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+            fontCode->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+        }
+    }
+}
+
 /**
  * @brief Sets the active theme mode and updates the color palette.
  * 

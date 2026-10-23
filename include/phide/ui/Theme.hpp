@@ -139,6 +139,12 @@ public:
     void DiscardDeviceResources();
 
     /**
+     * @brief Dynamically updates the editor monospace font size and recreates fontCode.
+     * @param size Font size in points.
+     */
+    void SetEditorFontSize(float size);
+
+    /**
      * @brief Sets the active theme mode and synchronizes all Direct2D brush colors.
      * @param mode Selected ThemeMode (Dark, Light, or Auto which tracks Windows system theme).
      */

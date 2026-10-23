@@ -71,6 +71,13 @@ void TerminalTab::AppendOutput(const char* data, size_t length, bool isError) {
         }
     }
 
+    // Filter out Git Bash non-PTY startup warnings (Image 4)
+    if (wstr.find(L"cannot set terminal process group") != std::wstring::npos ||
+        wstr.find(L"no job control in this shell") != std::wstring::npos ||
+        wstr.find(L"Inappropriate ioctl for device") != std::wstring::npos) {
+        return;
+    }
+
     std::lock_guard<std::mutex> lock(bufferMutex);
 
     if (lines.empty()) {
@@ -137,12 +144,18 @@ void TerminalTab::AppendOutput(const char* data, size_t length, bool isError) {
                             curColor = D2D1::ColorF(0.92f, 0.92f, 0.92f, 1.0f);
                         }
                     }
-                } else if (cmd == L'K' || cmd == L'J') {
-                    if (seq == L"2") {
-                        if (!lines.empty()) {
-                            lines.back().spans.clear();
-                            lines.back().rawText.clear();
-                        }
+                } else if (cmd == L'J') {
+                    // ANSI Erase in Display: Clear terminal screen & scrollback
+                    if (seq == L"2" || seq == L"3" || seq.empty()) {
+                        lines.clear();
+                        lines.push_back({});
+                        scrollOffsetY = 0.0f;
+                    }
+                } else if (cmd == L'K') {
+                    // ANSI Erase in Line
+                    if (!lines.empty()) {
+                        lines.back().spans.clear();
+                        lines.back().rawText.clear();
                     }
                 }
                 i = j;
@@ -313,7 +326,7 @@ bool TerminalPanel::IsActiveTabSplit() const noexcept {
     return false;
 }
 
-void TerminalPanel::SplitActiveTab(TerminalShellType shell) {
+void TerminalPanel::SplitActiveTab(std::optional<TerminalShellType> shell) {
     if (m_activeTabIdx < 0 || m_activeTabIdx >= static_cast<int>(m_tabs.size())) return;
     auto& primary = m_tabs[m_activeTabIdx];
     if (!primary) return;
@@ -324,14 +337,15 @@ void TerminalPanel::SplitActiveTab(TerminalShellType shell) {
         return;
     }
 
+    TerminalShellType splitShell = shell.value_or(primary->shellType);
     auto split = std::make_unique<TerminalTab>();
-    split->shellType = shell;
+    split->shellType = splitShell;
     split->workingDir = primary->workingDir.empty() ? m_defaultWorkingDir : primary->workingDir;
     std::wstring shellName = L"powershell";
-    if (shell == TerminalShellType::Cmd) shellName = L"cmd";
-    else if (shell == TerminalShellType::GitBash) shellName = L"bash";
-    else if (shell == TerminalShellType::Node) shellName = L"node";
-    else if (shell == TerminalShellType::Python) shellName = L"python";
+    if (splitShell == TerminalShellType::Cmd) shellName = L"cmd";
+    else if (splitShell == TerminalShellType::GitBash) shellName = L"bash";
+    else if (splitShell == TerminalShellType::Node) shellName = L"node";
+    else if (splitShell == TerminalShellType::Python) shellName = L"python";
     split->title = primary->title + L" (split: " + shellName + L")";
     split->onOutput = m_outputCallback;
 
@@ -532,6 +546,253 @@ std::vector<TerminalSpan> TerminalPanel::TokenizeCommandLine(const std::wstring&
     }
 
     return spans;
+}
+
+std::vector<TerminalSpan> TerminalPanel::TokenizeCommandLineWithLinuxRules(const std::wstring& text, const std::wstring& workingDir) {
+    std::vector<TerminalSpan> spans;
+    if (text.empty()) return spans;
+
+    size_t i = 0;
+    bool isFirstCommand = true;
+    bool isFolderArgCmd = false;
+
+    while (i < text.length()) {
+        // Collect whitespace
+        if (text[i] == L' ' || text[i] == L'\t') {
+            size_t wsStart = i;
+            while (i < text.length() && (text[i] == L' ' || text[i] == L'\t')) {
+                i++;
+            }
+            spans.push_back({ text.substr(wsStart, i - wsStart), D2D1::ColorF(0.92f, 0.92f, 0.92f), false });
+            continue;
+        }
+
+        // Delimiter '>' should NEVER be blue; it is always white!
+        if (text[i] == L'>') {
+            spans.push_back({ L">", D2D1::ColorF(0.92f, 0.92f, 0.92f), false });
+            i++;
+            continue;
+        }
+
+        // Quoted string: "..." or '...'
+        if (text[i] == L'"' || text[i] == L'\'') {
+            wchar_t q = text[i];
+            size_t strStart = i;
+            i++;
+            while (i < text.length() && text[i] != q) {
+                if (text[i] == L'\\' && i + 1 < text.length()) i += 2;
+                else i++;
+            }
+            if (i < text.length()) i++;
+            std::wstring strVal = text.substr(strStart, i - strStart);
+            std::wstring unquoted = (strVal.length() >= 2) ? strVal.substr(1, strVal.length() - 2) : strVal;
+            bool isRealDir = false;
+            if (!unquoted.empty()) {
+                std::error_code ec;
+                std::filesystem::path p(unquoted);
+                if (std::filesystem::is_directory(p, ec)) isRealDir = true;
+                else if (!workingDir.empty() && std::filesystem::is_directory(std::filesystem::path(workingDir) / p, ec)) isRealDir = true;
+            }
+            D2D1_COLOR_F strColor = (isFolderArgCmd && isRealDir) ? D2D1::ColorF(0.38f, 0.68f, 0.98f) : D2D1::ColorF(0.92f, 0.92f, 0.92f);
+            spans.push_back({ strVal, strColor, false });
+            isFirstCommand = false;
+            continue;
+        }
+
+        // Word token (stop on whitespace, quotes, or '>')
+        size_t wordStart = i;
+        while (i < text.length() && text[i] != L' ' && text[i] != L'\t' && text[i] != L'"' && text[i] != L'\'' && text[i] != L'>') {
+            i++;
+        }
+        std::wstring word = text.substr(wordStart, i - wordStart);
+
+        if (word == L"|" || word == L";" || word == L"&&" || word == L"||") {
+            spans.push_back({ word, D2D1::ColorF(0.95f, 0.80f, 0.25f), true });
+            isFirstCommand = true;
+            isFolderArgCmd = false;
+        } else if (isFirstCommand) {
+            // Command name: Gold / Yellow color matching Image 2
+            spans.push_back({ word, D2D1::ColorF(0.95f, 0.80f, 0.25f), true });
+            isFirstCommand = false;
+
+            std::wstring lowerWord = word;
+            for (auto& c : lowerWord) c = towlower(c);
+            if (lowerWord == L"cd" || lowerWord == L"dir" || lowerWord == L"ls" ||
+                lowerWord == L"mkdir" || lowerWord == L"md" || lowerWord == L"rmdir" ||
+                lowerWord == L"rd" || lowerWord == L"pushd" || lowerWord == L"popd") {
+                isFolderArgCmd = true;
+            }
+        } else {
+            // Check if argument is an ACTUAL existing folder on disk!
+            // "why its color blue even tho theres no folder like that and the shouldnt be blue"
+            bool isFolder = false;
+            if (word == L"." || word == L".." || word == L"~") {
+                isFolder = true;
+            } else if (!word.empty() && word[0] != L'-' && word[0] != L'/') {
+                std::error_code ec;
+                std::filesystem::path p(word);
+                if (std::filesystem::is_directory(p, ec)) {
+                    isFolder = true;
+                } else if (!workingDir.empty()) {
+                    std::filesystem::path combined = std::filesystem::path(workingDir) / p;
+                    if (std::filesystem::is_directory(combined, ec)) {
+                        isFolder = true;
+                    }
+                }
+            }
+
+            if (isFolder) {
+                spans.push_back({ word, D2D1::ColorF(0.38f, 0.68f, 0.98f), false });
+            } else {
+                spans.push_back({ word, D2D1::ColorF(0.92f, 0.92f, 0.92f), false });
+            }
+        }
+    }
+
+    return spans;
+}
+
+std::vector<TerminalSpan> TerminalPanel::FormatTerminalLine(const TerminalLine& line, bool isError, const std::wstring& workingDir) {
+    if (isError) {
+        return { { line.rawText, D2D1::ColorF(0.94f, 0.32f, 0.32f), false } };
+    }
+
+    const std::wstring& text = line.rawText;
+    if (text.empty()) {
+        return line.spans;
+    }
+
+    // 1. Error line detection
+    if (text.find(L"Cannot find path") != std::wstring::npos ||
+        text.find(L"CategoryInfo") != std::wstring::npos ||
+        text.find(L"FullyQualifiedErrorId") != std::wstring::npos ||
+        text.rfind(L"+ ", 0) == 0 ||
+        text.rfind(L"Error:", 0) == 0 ||
+        text.rfind(L"Exception:", 0) == 0 ||
+        text.find(L"The term '") != std::wstring::npos) {
+        return { { text, D2D1::ColorF(0.94f, 0.32f, 0.32f), false } };
+    }
+
+    // 2. PowerShell prompt: "PS C:\path> command"
+    if (text.rfind(L"PS ", 0) == 0) {
+        size_t gt = text.find(L">");
+        if (gt != std::wstring::npos) {
+            std::vector<TerminalSpan> out;
+            out.push_back({ L"PS", D2D1::ColorF(0.95f, 0.80f, 0.25f), true });
+            out.push_back({ L" ", D2D1::ColorF(0.92f, 0.92f, 0.92f), false });
+
+            // Folder path in BLUE
+            if (gt > 3) {
+                out.push_back({ text.substr(3, gt - 3), D2D1::ColorF(0.38f, 0.68f, 0.98f), false });
+            }
+
+            // ">" in white (NEVER blue!)
+            out.push_back({ L">", D2D1::ColorF(0.92f, 0.92f, 0.92f), false });
+
+            // Command part after ">"
+            if (gt + 1 < text.length()) {
+                auto cmdSpans = TokenizeCommandLineWithLinuxRules(text.substr(gt + 1), workingDir);
+                out.insert(out.end(), cmdSpans.begin(), cmdSpans.end());
+            }
+            return out;
+        }
+    }
+
+    // 3. CMD prompt: "C:\path> command"
+    size_t gt = text.find(L">");
+    if (gt != std::wstring::npos && gt >= 2 && text[1] == L':') {
+        std::vector<TerminalSpan> out;
+        out.push_back({ text.substr(0, gt), D2D1::ColorF(0.38f, 0.68f, 0.98f), false });
+        out.push_back({ L">", D2D1::ColorF(0.92f, 0.92f, 0.92f), false });
+        if (gt + 1 < text.length()) {
+            auto cmdSpans = TokenizeCommandLineWithLinuxRules(text.substr(gt + 1), workingDir);
+            out.insert(out.end(), cmdSpans.begin(), cmdSpans.end());
+        }
+        return out;
+    }
+
+    // 4. Git Bash / Linux prompt: "user@host:path$ command"
+    size_t dollar = text.find(L"$");
+    if (dollar != std::wstring::npos && text.find(L"@") != std::wstring::npos) {
+        std::vector<TerminalSpan> out;
+        size_t atPos = text.find(L"@");
+        size_t spaceAfterHost = text.find(L' ', atPos);
+        if (spaceAfterHost != std::wstring::npos) {
+            out.push_back({ text.substr(0, spaceAfterHost), D2D1::ColorF(0.95f, 0.80f, 0.25f), true });
+
+            size_t pathStart = text.find_first_of(L"/~", spaceAfterHost);
+            if (pathStart != std::wstring::npos && pathStart < dollar) {
+                out.push_back({ text.substr(spaceAfterHost, pathStart - spaceAfterHost), D2D1::ColorF(0.92f, 0.92f, 0.92f), false });
+                size_t pathEnd = text.find_first_of(L" (", pathStart);
+                if (pathEnd == std::wstring::npos || pathEnd > dollar) pathEnd = dollar;
+                out.push_back({ text.substr(pathStart, pathEnd - pathStart), D2D1::ColorF(0.38f, 0.68f, 0.98f), false });
+                out.push_back({ text.substr(pathEnd, dollar - pathEnd + 1), D2D1::ColorF(0.92f, 0.92f, 0.92f), false });
+            } else {
+                out.push_back({ text.substr(spaceAfterHost, dollar - spaceAfterHost + 1), D2D1::ColorF(0.92f, 0.92f, 0.92f), false });
+            }
+
+            if (dollar + 1 < text.length()) {
+                auto cmdSpans = TokenizeCommandLineWithLinuxRules(text.substr(dollar + 1), workingDir);
+                out.insert(out.end(), cmdSpans.begin(), cmdSpans.end());
+            }
+            return out;
+        }
+    }
+
+    // 5. Standalone command line starting with a command (e.g. "cd src", "npm run build")
+    std::wstring trimmed = text;
+    size_t firstNonSpace = trimmed.find_first_not_of(L" \t");
+    if (firstNonSpace != std::wstring::npos) {
+        size_t firstWordEnd = trimmed.find_first_of(L" \t", firstNonSpace);
+        std::wstring firstWord = trimmed.substr(firstNonSpace, (firstWordEnd == std::wstring::npos) ? std::wstring::npos : (firstWordEnd - firstNonSpace));
+        std::wstring lowerFirstWord = firstWord;
+        for (auto& c : lowerFirstWord) c = towlower(c);
+        if (lowerFirstWord == L"cd" || lowerFirstWord == L"dir" || lowerFirstWord == L"ls" ||
+            lowerFirstWord == L"mkdir" || lowerFirstWord == L"rmdir" || lowerFirstWord == L"git" ||
+            lowerFirstWord == L"npm" || lowerFirstWord == L"node" || lowerFirstWord == L"python" ||
+            lowerFirstWord == L"cargo" || lowerFirstWord == L"cmake" || lowerFirstWord == L"cat") {
+            return TokenizeCommandLineWithLinuxRules(text, workingDir);
+        }
+    }
+
+    // 6. Directory listing line (dir / ls): Folder names in BLUE
+    bool isDirEntry = false;
+    size_t dirTokenPos = text.find(L"<DIR>");
+    if (dirTokenPos == std::wstring::npos) {
+        if (text.rfind(L"d----", 0) == 0 || text.rfind(L"d-r--", 0) == 0 || text.rfind(L"drwx", 0) == 0) {
+            isDirEntry = true;
+            dirTokenPos = 0;
+        }
+    } else {
+        isDirEntry = true;
+    }
+
+    if (isDirEntry) {
+        size_t lastNonWs = text.find_last_not_of(L" \t");
+        if (lastNonWs != std::wstring::npos) {
+            size_t nameStart = text.find_last_of(L" \t", lastNonWs);
+            if (nameStart != std::wstring::npos && nameStart > dirTokenPos) {
+                std::vector<TerminalSpan> out;
+                out.push_back({ text.substr(0, nameStart + 1), D2D1::ColorF(0.92f, 0.92f, 0.92f), false });
+                out.push_back({ text.substr(nameStart + 1), D2D1::ColorF(0.38f, 0.68f, 0.98f), true });
+                return out;
+            }
+        }
+    }
+
+    // 6. Explicit ANSI escape colors
+    bool hasCustomAnsi = false;
+    for (const auto& sp : line.spans) {
+        if (std::abs(sp.color.r - 0.92f) > 0.05f || std::abs(sp.color.g - 0.92f) > 0.05f || std::abs(sp.color.b - 0.92f) > 0.05f) {
+            hasCustomAnsi = true;
+            break;
+        }
+    }
+    if (hasCustomAnsi) {
+        return line.spans;
+    }
+
+    return { { text, D2D1::ColorF(0.92f, 0.92f, 0.92f), false } };
 }
 
 void TerminalPanel::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
@@ -821,10 +1082,14 @@ void TerminalPanel::RenderSinglePane(ID2D1RenderTarget* pRT, Theme& theme, const
     float maxVisibleLines = availableH > 0.0f ? (availableH / lineH) : 1.0f;
 
     size_t totalLines = tab->lines.size();
-    size_t startLine = 0;
-    if (totalLines > static_cast<size_t>(maxVisibleLines)) {
-        startLine = totalLines - static_cast<size_t>(maxVisibleLines);
+    size_t maxScroll = (totalLines > static_cast<size_t>(maxVisibleLines)) ? (totalLines - static_cast<size_t>(maxVisibleLines)) : 0;
+    if (tab->scrollOffsetLines > static_cast<int>(maxScroll)) {
+        tab->scrollOffsetLines = static_cast<int>(maxScroll);
     }
+    if (tab->scrollOffsetLines < 0) {
+        tab->scrollOffsetLines = 0;
+    }
+    size_t startLine = (maxScroll > 0) ? (maxScroll - static_cast<size_t>(tab->scrollOffsetLines)) : 0;
 
     float curY = bounds.top + padY;
     float curX = bounds.left + padX;
@@ -857,19 +1122,35 @@ void TerminalPanel::RenderSinglePane(ID2D1RenderTarget* pRT, Theme& theme, const
             isLineError = true;
         }
 
-        for (const auto& span : line.spans) {
+        auto formattedSpans = FormatTerminalLine(line, isLineError, tab->workingDir);
+
+        for (const auto& span : formattedSpans) {
             float spanW = static_cast<float>(span.text.length()) * charW;
             D2D1_RECT_F rcSpan = D2D1::RectF(curX, curY, curX + spanW + 50.0f, curY + lineH);
 
-            D2D1_COLOR_F renderColor = isLineError ? D2D1::ColorF(0.94f, 0.32f, 0.32f, 1.0f) : span.color;
-
             Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> spanBrush;
-            pRT->CreateSolidColorBrush(renderColor, &spanBrush);
+            pRT->CreateSolidColorBrush(span.color, &spanBrush);
             if (spanBrush) {
                 pRT->DrawText(span.text.c_str(), static_cast<UINT32>(span.text.length()),
                               theme.fontCode.Get(), rcSpan, spanBrush.Get());
             }
             curX += spanW;
+        }
+
+        // Render typed command line in real-time
+        if (l == totalLines - 1 && !tab->currentInputLine.empty()) {
+            auto inputSpans = TokenizeCommandLineWithLinuxRules(tab->currentInputLine, tab->workingDir);
+            for (const auto& span : inputSpans) {
+                float spanW = static_cast<float>(span.text.length()) * charW;
+                D2D1_RECT_F rcSpan = D2D1::RectF(curX, curY, curX + spanW + 50.0f, curY + lineH);
+                Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> spanBrush;
+                pRT->CreateSolidColorBrush(span.color, &spanBrush);
+                if (spanBrush) {
+                    pRT->DrawText(span.text.c_str(), static_cast<UINT32>(span.text.length()),
+                                  theme.fontCode.Get(), rcSpan, spanBrush.Get());
+                }
+                curX += spanW;
+            }
         }
 
         // Blinking cursor '█' on the last active output line
@@ -884,6 +1165,23 @@ void TerminalPanel::RenderSinglePane(ID2D1RenderTarget* pRT, Theme& theme, const
         }
 
         curY += lineH;
+    }
+
+    // Vertical scrollbar on right if content overflows
+    if (totalLines > static_cast<size_t>(maxVisibleLines) && maxScroll > 0) {
+        float sbW = config.ScaleF(4.0f);
+        float sbRight = bounds.right - config.ScaleF(2.0f);
+        float sbLeft = sbRight - sbW;
+        float sbTop = bounds.top + padY;
+        float sbH = availableH;
+
+        float thumbH = (std::max)(config.ScaleF(14.0f), sbH * (maxVisibleLines / static_cast<float>(totalLines)));
+        float thumbY = sbTop + (static_cast<float>(maxScroll - tab->scrollOffsetLines) / static_cast<float>(maxScroll)) * (sbH - thumbH);
+
+        D2D1_ROUNDED_RECT rrcSb = D2D1::RoundedRect(D2D1::RectF(sbLeft, thumbY, sbRight, thumbY + thumbH), 2.0f, 2.0f);
+        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> sbBrush;
+        pRT->CreateSolidColorBrush(theme.IsDarkMode() ? D2D1::ColorF(0.40f, 0.42f, 0.48f, 0.6f) : D2D1::ColorF(0.65f, 0.65f, 0.70f, 0.7f), &sbBrush);
+        if (sbBrush) pRT->FillRoundedRectangle(rrcSb, sbBrush.Get());
     }
 
     // Bottom div under terminal so letters don't stick to bottom border (Image 2)
@@ -1327,11 +1625,14 @@ void TerminalPanel::OnMouseUp(POINT pt) {
 }
 
 bool TerminalPanel::OnMouseWheel(POINT pt, short delta) {
-    if (!m_isOpen || !HitTestTextArea(pt)) return false;
+    if (!m_isOpen) return false;
+    if (m_textAreaBounds.bottom > m_textAreaBounds.top && !HitTestTextArea(pt)) return false;
     TerminalTab* tab = GetActiveTab();
     if (!tab) return false;
 
-    tab->scrollOffsetY += static_cast<float>(delta) / 10.0f;
+    int lineDelta = (delta > 0) ? 3 : -3;
+    tab->scrollOffsetLines += lineDelta;
+    if (tab->scrollOffsetLines < 0) tab->scrollOffsetLines = 0;
     return true;
 }
 
@@ -1345,23 +1646,61 @@ bool TerminalPanel::OnChar(wchar_t ch) {
     if (!tab) return false;
 
     if (ch == L'\r' || ch == L'\n') {
-        tab->SendInput("\r\n");
+        std::wstring trimmed = tab->currentInputLine;
+        while (!trimmed.empty() && (trimmed.front() == L' ' || trimmed.front() == L'\t')) trimmed.erase(trimmed.begin());
+        while (!trimmed.empty() && (trimmed.back() == L' ' || trimmed.back() == L'\t')) trimmed.pop_back();
+        std::wstring lower = trimmed;
+        for (auto& c : lower) c = towlower(c);
+        if (lower == L"cls" || lower == L"clear" || lower == L"clear-host") {
+            std::lock_guard<std::mutex> lock(tab->bufferMutex);
+            tab->lines.clear();
+            tab->lines.push_back({});
+            tab->scrollOffsetY = 0.0f;
+            tab->scrollOffsetLines = 0;
+        }
+
+        // Add to history
+        if (!trimmed.empty()) {
+            if (tab->commandHistory.empty() || tab->commandHistory.back() != tab->currentInputLine) {
+                tab->commandHistory.push_back(tab->currentInputLine);
+            }
+        }
+        tab->historyIndex = -1;
+
+        // For Node and Python, append user's command to lines so it remains visible above output
+        if (tab->shellType == TerminalShellType::Node || tab->shellType == TerminalShellType::Python) {
+            std::lock_guard<std::mutex> lock(tab->bufferMutex);
+            if (!tab->lines.empty()) {
+                tab->lines.back().rawText += tab->currentInputLine;
+                tab->lines.back().spans.push_back({ tab->currentInputLine, D2D1::ColorF(0.92f, 0.92f, 0.92f), false });
+                tab->lines.push_back({});
+            }
+        }
+
+        // Convert currentInputLine to UTF-8 and send complete line + newline to process
+        int utf8Len = WideCharToMultiByte(CP_UTF8, 0, tab->currentInputLine.c_str(), -1, NULL, 0, NULL, NULL);
+        if (utf8Len > 1) {
+            std::string utf8(utf8Len - 1, '\0');
+            WideCharToMultiByte(CP_UTF8, 0, tab->currentInputLine.c_str(), -1, &utf8[0], utf8Len, NULL, NULL);
+            utf8 += "\r\n";
+            tab->SendInput(utf8);
+        } else {
+            tab->SendInput("\r\n");
+        }
+
         tab->currentInputLine.clear();
+        tab->scrollOffsetLines = 0; // pin back to bottom
         return true;
     } else if (ch == L'\b') {
         if (!tab->currentInputLine.empty()) {
             tab->currentInputLine.pop_back();
         }
-        tab->SendInput("\b");
         return true;
     } else if (ch == L'\t') {
-        tab->SendInput("\t");
+        tab->currentInputLine += L"    ";
         return true;
     } else if (ch >= 32) {
         tab->currentInputLine += ch;
-        char utf8[8] = {0};
-        WideCharToMultiByte(CP_UTF8, 0, &ch, 1, utf8, sizeof(utf8), NULL, NULL);
-        tab->SendInput(utf8);
         return true;
     }
     return true;
@@ -1385,12 +1724,7 @@ bool TerminalPanel::OnKeyDown(UINT vk, bool isCtrl, bool isShift) {
             if (hData) {
                 LPCWSTR pText = static_cast<LPCWSTR>(GlobalLock(hData));
                 if (pText) {
-                    int utf8Len = WideCharToMultiByte(CP_UTF8, 0, pText, -1, NULL, 0, NULL, NULL);
-                    if (utf8Len > 1) {
-                        std::string utf8(utf8Len - 1, '\0');
-                        WideCharToMultiByte(CP_UTF8, 0, pText, -1, &utf8[0], utf8Len, NULL, NULL);
-                        tab->SendInput(utf8);
-                    }
+                    tab->currentInputLine += pText;
                     GlobalUnlock(hData);
                 }
             }
@@ -1421,10 +1755,27 @@ bool TerminalPanel::OnKeyDown(UINT vk, bool isCtrl, bool isShift) {
         tab->SendInput("\x1b[F");
         return true;
     } else if (vk == VK_UP) {
-        tab->SendInput("\x1b[A"); // History previous
+        if (!tab->commandHistory.empty()) {
+            if (tab->historyIndex == -1) {
+                tab->historyIndex = static_cast<int>(tab->commandHistory.size()) - 1;
+            } else if (tab->historyIndex > 0) {
+                tab->historyIndex--;
+            }
+            if (tab->historyIndex >= 0 && tab->historyIndex < static_cast<int>(tab->commandHistory.size())) {
+                tab->currentInputLine = tab->commandHistory[tab->historyIndex];
+            }
+        }
         return true;
     } else if (vk == VK_DOWN) {
-        tab->SendInput("\x1b[B"); // History next
+        if (tab->historyIndex >= 0) {
+            if (tab->historyIndex + 1 < static_cast<int>(tab->commandHistory.size())) {
+                tab->historyIndex++;
+                tab->currentInputLine = tab->commandHistory[tab->historyIndex];
+            } else {
+                tab->historyIndex = -1;
+                tab->currentInputLine.clear();
+            }
+        }
         return true;
     }
 

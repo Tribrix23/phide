@@ -3946,9 +3946,191 @@ int main() {
         assert(term.GetActiveTab() == activeTab);
         std::cout << "  Verified: Split pane closed cleanly and restored single-pane layout" << std::endl;
 
+        // 7. Verify 'cls' / 'clear' command clears terminal lines (Image 1)
+        activeTab->currentInputLine = L"cls";
+        term.OnChar(L'\r');
+        assert(activeTab->lines.size() <= 1);
+        std::cout << "  Verified: 'cls' / 'clear' command clears terminal lines" << std::endl;
+
+        // 8. Verify Terminal syntax rules (Images 1 & 2):
+        // Prompt path is blue, '>' delimiter is strictly white, commands in gold, existing folders in blue, non-existent paths in white!
+        phide::ui::TerminalLine testLine;
+        testLine.rawText = L"PS C:\\Users\\Administrator\\Downloads\\cleave-gui> cd redo";
+        auto parsedSpans = phide::ui::TerminalPanel::FormatTerminalLine(testLine, false, L".");
+        assert(!parsedSpans.empty());
+        assert(parsedSpans[0].text == L"PS");
+        assert(parsedSpans[0].color.r > 0.9f && parsedSpans[0].color.g > 0.7f && parsedSpans[0].color.b < 0.4f);
+
+        bool foundBluePromptFolder = false;
+        bool foundWhiteDelimiter = false;
+        bool foundGoldCommand = false;
+        bool foundWhiteRedo = false;
+
+        for (const auto& sp : parsedSpans) {
+            if (sp.text == L"C:\\Users\\Administrator\\Downloads\\cleave-gui") {
+                foundBluePromptFolder = (sp.color.b > 0.9f);
+            }
+            if (sp.text == L">") {
+                // '>' must ALWAYS be white, NEVER blue!
+                foundWhiteDelimiter = (sp.color.r > 0.9f && sp.color.g > 0.9f && sp.color.b > 0.9f);
+            }
+            if (sp.text == L"cd") {
+                foundGoldCommand = (sp.color.r > 0.9f && sp.color.g > 0.7f && sp.color.b < 0.4f);
+            }
+            if (sp.text == L"redo") {
+                // Non-existent folder 'redo' must NOT be blue, it must be white!
+                foundWhiteRedo = (sp.color.r > 0.9f && sp.color.g > 0.9f && sp.color.b > 0.9f);
+            }
+        }
+        assert(foundBluePromptFolder);
+        assert(foundWhiteDelimiter);
+        assert(foundGoldCommand);
+        assert(foundWhiteRedo);
+        std::cout << "  Verified: Prompt folder is blue, delimiter '>' is white, 'redo' (non-existent) is white" << std::endl;
+
+        // Verify that genuine existing folders (like 'src' or '..') ARE colored blue
+        phide::ui::TerminalLine existingFolderLine;
+        existingFolderLine.rawText = L"cd src";
+        auto existSpans = phide::ui::TerminalPanel::FormatTerminalLine(existingFolderLine, false, L".");
+        bool foundBlueSrc = false;
+        for (const auto& sp : existSpans) {
+            if (sp.text == L"src") {
+                foundBlueSrc = (sp.color.b > 0.9f);
+            }
+        }
+        assert(foundBlueSrc);
+        std::cout << "  Verified: Existing folder 'src' is highlighted in blue" << std::endl;
+
+        // 9. Verify Editor Zoom In / Zoom Out Title Bar Widget (Image 3)
+        phide::ui::TitleHeader header;
+        header.Render(pTargetRT.Get(), theme, config, 1200.0f, false);
+        D2D1_RECT_F rcZoom = header.GetZoomContainerBounds();
+        assert(rcZoom.right > rcZoom.left);
+        assert(rcZoom.bottom > rcZoom.top);
+
+        POINT ptZoomOut{ static_cast<int>(rcZoom.left + 5.0f), static_cast<int>(rcZoom.top + 5.0f) };
+        POINT ptZoomReset{ static_cast<int>((rcZoom.left + rcZoom.right) / 2.0f), static_cast<int>(rcZoom.top + 5.0f) };
+        POINT ptZoomIn{ static_cast<int>(rcZoom.right - 5.0f), static_cast<int>(rcZoom.top + 5.0f) };
+
+        assert(header.HitTestZoomOut(ptZoomOut));
+        assert(header.HitTestZoomReset(ptZoomReset));
+        assert(header.HitTestZoomIn(ptZoomIn));
+        assert(header.HitTestNCHitTest(ptZoomIn, config) == HTCLIENT);
+        std::cout << "  Verified: Editor Zoom In / Zoom Out title bar widget hit-testing and rendering" << std::endl;
+
         term.Close();
         assert(!term.IsOpen());
-        std::cout << "  Passed: All Terminal Default Height, Bottom Div, Stderr Red & Split Terminal tests passed!" << std::endl;
+        std::cout << "  Passed: All Terminal Default Height, Delimiter/Folder Coloring & Editor Zoom tests passed!" << std::endl;
+    }
+
+    // =========================================================================
+    // [TEST 41] Terminal Backspace Boundary, Bash Warning Filter, Shell Split Inheritance,
+    //           Terminal & Autocomplete Mouse Wheel Scroll, Massive Vocabulary & Tag Priority
+    // =========================================================================
+    {
+        std::cout << "\n[TEST 41] Testing Terminal Backspace Boundary, Bash Warning Filter, Split Inheritance & Autocomplete Enhancements..." << std::endl;
+
+        // 1. Verify Terminal Backspace Safety (Never deletes prompt or locks cursor)
+        phide::ui::TerminalPanel term;
+        term.Open(L".");
+        auto* activeTab = term.GetActiveTab();
+        assert(activeTab != nullptr);
+        {
+            std::lock_guard<std::mutex> lock(activeTab->bufferMutex);
+            activeTab->lines.clear();
+            activeTab->lines.push_back({});
+            activeTab->lines.back().rawText = L"PS C:\\Users\\Administrator\\Downloads\\studio\\phide> ";
+        }
+
+        // Type 'hel'
+        assert(term.OnChar(L'h'));
+        assert(term.OnChar(L'e'));
+        assert(term.OnChar(L'l'));
+        assert(activeTab->currentInputLine == L"hel");
+
+        // Backspace 5 times (more than 3 times typed)
+        assert(term.OnChar(L'\b'));
+        assert(term.OnChar(L'\b'));
+        assert(term.OnChar(L'\b'));
+        assert(term.OnChar(L'\b')); // Extra backspace at boundary
+        assert(term.OnChar(L'\b')); // Extra backspace at boundary
+        assert(activeTab->currentInputLine.empty());
+        assert(!activeTab->lines.empty());
+        assert(activeTab->lines.back().rawText == L"PS C:\\Users\\Administrator\\Downloads\\studio\\phide> ");
+        std::cout << "  Verified: Backspace stops at boundary without eating prompt" << std::endl;
+
+        // 2. Verify Bash Process Group / Job Control Warning Filter
+        size_t linesBeforeWarning = activeTab->lines.size();
+        activeTab->AppendOutput("bash: cannot set terminal process group (-1): Inappropriate ioctl for device\r\n", 79, true);
+        activeTab->AppendOutput("bash: no job control in this shell\r\n", 36, true);
+        assert(activeTab->lines.size() == linesBeforeWarning);
+        std::cout << "  Verified: Bash non-PTY startup warnings filtered out" << std::endl;
+
+        // 3. Verify Split Terminal Shell Type Inheritance
+        term.NewTab(phide::ui::TerminalShellType::GitBash, L".");
+        assert(term.GetActiveTab()->shellType == phide::ui::TerminalShellType::GitBash);
+        term.SplitActiveTab(); // Split without arguments inherits active shell
+        assert(term.IsActiveTabSplit());
+        assert(term.GetActiveTab()->shellType == phide::ui::TerminalShellType::GitBash);
+        std::cout << "  Verified: Split terminal inherits active shell type (GitBash -> GitBash)" << std::endl;
+
+        // 4. Verify Terminal Mouse Wheel Scrolling
+        POINT ptTermArea{ 400, 700 };
+        assert(term.OnMouseWheel(ptTermArea, 120)); // Scroll up
+        assert(term.GetActiveTab()->scrollOffsetLines == 3);
+        assert(term.OnMouseWheel(ptTermArea, -120)); // Scroll back down
+        assert(term.GetActiveTab()->scrollOffsetLines == 0);
+        std::cout << "  Verified: Terminal mouse wheel updates scrollOffsetLines" << std::endl;
+
+        // 5. Verify Massive HTML/JS Vocabulary and Tag Priority
+        phide::editor::IntelliSenseEngine engine;
+        auto diItems = engine.QueryCompletions(L"index.html", L"di", 2);
+        assert(!diItems.empty());
+        assert(diItems[0].label == L"div"); // 'div' tag prioritized over 'dispatchEvent'
+        assert(diItems[0].score >= 1100);
+        std::cout << "  Verified: In HTML, 'div' tag is prioritized at top for 'di'" << std::endl;
+
+        // Verify continuity / web vocabulary ('hel' -> 'hello', 'help', 'header', 'height')
+        auto helItems = engine.QueryCompletions(L"app.js", L"hel", 3);
+        bool foundHello = false;
+        for (const auto& it : helItems) {
+            if (it.label == L"hello") {
+                foundHello = true;
+                assert(it.matchStart == 0);
+                assert(it.matchLen == 3);
+            }
+        }
+        assert(foundHello);
+        std::cout << "  Verified: Continuity vocabulary matches 'hello' with matchStart/matchLen" << std::endl;
+
+        // Verify substring / fuzzy matching ('lo' -> matches 'hello' and 'dialog')
+        auto loItems = engine.QueryCompletions(L"index.html", L"lo", 2);
+        bool foundSubstringMatch = false;
+        for (const auto& it : loItems) {
+            if (it.label == L"hello" || it.label == L"dialog") {
+                foundSubstringMatch = true;
+                assert(it.matchLen == 2);
+            }
+        }
+        assert(foundSubstringMatch);
+        std::cout << "  Verified: Substring matching highlights 'lo' in 'hello' and 'dialog'" << std::endl;
+
+        // 6. Verify Autocomplete Mouse Wheel Scroll
+        phide::ui::EditorCanvas canvas;
+        std::vector<phide::editor::IntelliSenseItem> testItems;
+        for (int i = 0; i < 20; ++i) {
+            testItems.push_back({ L"item" + std::to_wstring(i), L"detail", L"item" + std::to_wstring(i), phide::editor::CompletionKind::Keyword, 100, 0, 0 });
+        }
+        canvas.ShowAutocomplete(testItems, 0);
+        assert(canvas.GetAutocompleteScrollOffset() == 0);
+        assert(canvas.HandleAutocompleteMouseWheel(-120)); // Scroll down
+        assert(canvas.GetAutocompleteScrollOffset() == 2);
+        assert(canvas.HandleAutocompleteMouseWheel(120));  // Scroll up
+        assert(canvas.GetAutocompleteScrollOffset() == 0);
+        std::cout << "  Verified: Autocomplete mouse wheel scrolling updates scroll offset" << std::endl;
+
+        term.Close();
+        std::cout << "  Passed: All [TEST 41] Terminal & IntelliSense tests passed successfully!" << std::endl;
     }
 
     std::cout << "\n==========================================" << std::endl;

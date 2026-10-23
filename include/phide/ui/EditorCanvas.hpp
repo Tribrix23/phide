@@ -111,6 +111,9 @@ public:
     [[nodiscard]] const std::vector<editor::IntelliSenseItem>& GetAutocompleteItems() const noexcept { return m_autocompleteItems; }
     [[nodiscard]] const editor::IntelliSenseItem* GetSelectedAutocompleteItem() const noexcept;
     [[nodiscard]] bool HitTestAutocomplete(POINT pt, int& outIdx) const;
+    bool HandleAutocompleteMouseWheel(short delta) noexcept;
+    void SetAutocompleteScrollOffset(size_t offset) noexcept { m_autocompleteScrollOffset = offset; }
+    [[nodiscard]] size_t GetAutocompleteScrollOffset() const noexcept { return m_autocompleteScrollOffset; }
 
     // Inline Ghost Text with "Tab to complete" (Image 3)
     [[nodiscard]] const std::wstring& GetGhostText() const noexcept { return m_ghostText; }
@@ -188,6 +191,7 @@ public:
      * @brief Releases device-dependent Direct2D resources (e.g. path geometries, watermark bitmaps).
      */
     void DiscardDeviceResources();
+    void ResetCharWidth() const noexcept { m_charWidth = 0.0f; }
 
 private:
     bool m_caretVisible = true;
@@ -347,6 +351,7 @@ private:
     bool m_showAutocomplete = false;
     std::vector<editor::IntelliSenseItem> m_autocompleteItems;
     size_t m_autocompleteSelectedIdx = 0;
+    size_t m_autocompleteScrollOffset = 0;
     D2D1_RECT_F m_autocompleteBounds{};
     std::wstring m_ghostText;
 

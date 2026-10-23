@@ -1877,6 +1877,34 @@ void Window::DoCommandPalette() {
     DoOpenKeyboardShortcuts();
 }
 
+void Window::DoZoomIn() {
+    if (m_config.fontSize < 36.0f) {
+        m_config.fontSize += 2.0f;
+        m_config.zoomLevel = m_config.fontSize / 14.0f;
+        m_theme.SetEditorFontSize(m_config.fontSize);
+        m_editor.ResetCharWidth();
+        InvalidateRect(m_hwnd, nullptr, FALSE);
+    }
+}
+
+void Window::DoZoomOut() {
+    if (m_config.fontSize > 8.0f) {
+        m_config.fontSize -= 2.0f;
+        m_config.zoomLevel = m_config.fontSize / 14.0f;
+        m_theme.SetEditorFontSize(m_config.fontSize);
+        m_editor.ResetCharWidth();
+        InvalidateRect(m_hwnd, nullptr, FALSE);
+    }
+}
+
+void Window::DoResetZoom() {
+    m_config.fontSize = 14.0f;
+    m_config.zoomLevel = 1.0f;
+    m_theme.SetEditorFontSize(m_config.fontSize);
+    m_editor.ResetCharWidth();
+    InvalidateRect(m_hwnd, nullptr, FALSE);
+}
+
 void Window::DoToggleWordWrap() {
     m_wordWrap = !m_wordWrap;
     InvalidateRect(m_hwnd, nullptr, FALSE);
@@ -2703,13 +2731,19 @@ void Window::HandleMouseMove(POINT clientPt) {
         }
     }
 
-    // Check Header menu, execution buttons, split editor button, and caption button hover
+    // Check Header menu, execution buttons, split editor button, zoom buttons, and caption button hover
     auto hoveredMenu = m_header.HitTestMenu(clientPt);
     auto hoveredCaption = m_header.HitTestCaptionButton(clientPt);
     auto hoveredExec = m_header.HitTestExecButton(clientPt);
     if (m_header.UpdateHoverState(hoveredMenu, hoveredCaption, hoveredExec)) needRepaint = true;
     if (m_header.SetHoveredSplitEditor(m_header.HitTestSplitEditor(clientPt))) needRepaint = true;
     if (m_header.SetHoveredQuickOpen(m_header.HitTestQuickOpen(clientPt))) needRepaint = true;
+
+    int hoveredZoom = 0;
+    if (m_header.HitTestZoomOut(clientPt)) hoveredZoom = 1;
+    else if (m_header.HitTestZoomReset(clientPt)) hoveredZoom = 2;
+    else if (m_header.HitTestZoomIn(clientPt)) hoveredZoom = 3;
+    if (m_header.SetHoveredZoom(hoveredZoom)) needRepaint = true;
 
     // Dynamic top-menu switching when any menu is currently open and mouse hovers over another header item
     if (m_popupMenu.IsOpen() && m_header.GetActiveMenu() != ui::HeaderMenuId::None) {
@@ -3035,13 +3069,13 @@ void Window::HandleLButtonDown(POINT clientPt) {
                         DoCreateTerminal();
                         break;
                     case ui::MenuActionId::ZoomIn:
-                        if (m_config.fontSize < 36.0f) m_config.fontSize += 2.0f;
+                        DoZoomIn();
                         break;
                     case ui::MenuActionId::ZoomOut:
-                        if (m_config.fontSize > 8.0f) m_config.fontSize -= 2.0f;
+                        DoZoomOut();
                         break;
                     case ui::MenuActionId::ResetZoom:
-                        m_config.fontSize = 14.0f;
+                        DoResetZoom();
                         break;
 
                     // Editor Layout Submenu Actions (Image 3)
@@ -3408,6 +3442,20 @@ void Window::HandleLButtonDown(POINT clientPt) {
     // 3c. Quick Open Magnifying Button Click (Image 5)
     if (m_header.HitTestQuickOpen(clientPt)) {
         DoQuickOpenFileSearch();
+        return;
+    }
+
+    // 3d. Editor Zoom In / Zoom Out Widget Click (Image 3)
+    if (m_header.HitTestZoomOut(clientPt)) {
+        DoZoomOut();
+        return;
+    }
+    if (m_header.HitTestZoomReset(clientPt)) {
+        DoResetZoom();
+        return;
+    }
+    if (m_header.HitTestZoomIn(clientPt)) {
+        DoZoomIn();
         return;
     }
 
@@ -4035,12 +4083,15 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     return TRUE;
                 }
 
-                // Provide pointer hand cursor over caption buttons, menus, execution buttons, split editor, and quick open
+                // Provide pointer hand cursor over caption buttons, menus, execution buttons, split editor, quick open, and zoom buttons
                 if (m_header.HitTestCaptionButton(pt) != ui::CaptionButtonType::None ||
                     m_header.HitTestMenu(pt) != ui::HeaderMenuId::None ||
                     m_header.HitTestExecButton(pt) != ui::HeaderExecId::None ||
                     m_header.HitTestSplitEditor(pt) ||
-                    m_header.HitTestQuickOpen(pt)) {
+                    m_header.HitTestQuickOpen(pt) ||
+                    m_header.HitTestZoomIn(pt) ||
+                    m_header.HitTestZoomOut(pt) ||
+                    m_header.HitTestZoomReset(pt)) {
                     SetCursor(LoadCursor(nullptr, IDC_HAND));
                     return TRUE;
                 }
@@ -4263,6 +4314,17 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 if (m_terminal.OnMouseWheel(pt, delta)) {
                     InvalidateRect(m_hwnd, nullptr, FALSE);
                     return 0;
+                }
+            }
+
+            // Check Autocomplete popup mouse wheel (Images 2 & 5)
+            if (m_editor.IsAutocompleteVisible()) {
+                int hitDummy = -1;
+                if (m_editor.HitTestAutocomplete(pt, hitDummy)) {
+                    if (m_editor.HandleAutocompleteMouseWheel(delta)) {
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
+                        return 0;
+                    }
                 }
             }
 
@@ -4754,20 +4816,17 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
 
                 // Zoom In: Ctrl+= / Ctrl++ (VK_OEM_PLUS or VK_ADD)
                 if (wParam == VK_OEM_PLUS || wParam == VK_ADD) {
-                    if (m_config.fontSize < 36.0f) m_config.fontSize += 2.0f;
-                    InvalidateRect(m_hwnd, nullptr, FALSE);
+                    DoZoomIn();
                     return 0;
                 }
                 // Zoom Out: Ctrl+- (VK_OEM_MINUS or VK_SUBTRACT)
                 if (wParam == VK_OEM_MINUS || wParam == VK_SUBTRACT) {
-                    if (m_config.fontSize > 8.0f) m_config.fontSize -= 2.0f;
-                    InvalidateRect(m_hwnd, nullptr, FALSE);
+                    DoZoomOut();
                     return 0;
                 }
                 // Reset Zoom: Ctrl+0 ('0' or VK_NUMPAD0)
                 if (wParam == '0' || wParam == VK_NUMPAD0) {
-                    m_config.fontSize = 14.0f;
-                    InvalidateRect(m_hwnd, nullptr, FALSE);
+                    DoResetZoom();
                     return 0;
                 }
 
