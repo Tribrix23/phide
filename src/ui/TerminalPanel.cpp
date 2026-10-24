@@ -7,6 +7,54 @@
 
 namespace phide::ui {
 
+static void FillUpperLeftRoundedRect(ID2D1RenderTarget* pRT, ID2D1Brush* pBrush,
+                                     const D2D1_RECT_F& rc, float radius) {
+    if (!pRT || !pBrush) return;
+    if (radius <= 0.0f) {
+        pRT->FillRectangle(rc, pBrush);
+        return;
+    }
+    Microsoft::WRL::ComPtr<ID2D1Factory> pFactory;
+    pRT->GetFactory(&pFactory);
+    if (!pFactory) {
+        pRT->FillRectangle(rc, pBrush);
+        return;
+    }
+    Microsoft::WRL::ComPtr<ID2D1PathGeometry> pPath;
+    if (FAILED(pFactory->CreatePathGeometry(&pPath))) {
+        pRT->FillRectangle(rc, pBrush);
+        return;
+    }
+    Microsoft::WRL::ComPtr<ID2D1GeometrySink> sink;
+    if (FAILED(pPath->Open(&sink))) {
+        pRT->FillRectangle(rc, pBrush);
+        return;
+    }
+
+    const float maxR = (std::min)(rc.right - rc.left, rc.bottom - rc.top);
+    const float r = (maxR > 0.0f) ? (std::min)(radius, maxR) : 0.0f;
+
+    sink->BeginFigure(D2D1::Point2F(rc.left + r, rc.top), D2D1_FIGURE_BEGIN_FILLED);
+    sink->AddLine(D2D1::Point2F(rc.right, rc.top));
+    sink->AddLine(D2D1::Point2F(rc.right, rc.bottom));
+    sink->AddLine(D2D1::Point2F(rc.left, rc.bottom));
+    sink->AddLine(D2D1::Point2F(rc.left, rc.top + r));
+
+    if (r > 0.0f) {
+        D2D1_ARC_SEGMENT arc{};
+        arc.point = D2D1::Point2F(rc.left + r, rc.top);
+        arc.size = D2D1::SizeF(r, r);
+        arc.rotationAngle = 0.0f;
+        arc.sweepDirection = D2D1_SWEEP_DIRECTION_CLOCKWISE;
+        arc.arcSize = D2D1_ARC_SIZE_SMALL;
+        sink->AddArc(arc);
+    }
+    sink->EndFigure(D2D1_FIGURE_END_CLOSED);
+    sink->Close();
+
+    pRT->FillGeometry(pPath.Get(), pBrush);
+}
+
 TerminalTab::~TerminalTab() {
     Terminate();
 }
@@ -877,7 +925,12 @@ void TerminalPanel::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppC
     if (!m_isOpen) return;
 
     float panelX = leftOffset;
-    float maxH = m_isFullScreen ? (clientH - config.headerHeight) : m_height;
+    const float headerTopH = config.ScaleF(static_cast<float>(config.headerHeight));
+    float fullH = clientH - headerTopH;
+    float maxH = m_height + (fullH - m_height) * m_fullScreenProgress;
+    if (m_isFullScreen && m_fullScreenProgress <= 0.001f) {
+        maxH = fullH;
+    }
     float panelH = (animatedHeight >= 0.0f) ? animatedHeight : maxH;
     if (panelH <= 0.0f) return;
     float panelY = clientH - panelH;
@@ -887,16 +940,26 @@ void TerminalPanel::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppC
 
     pRT->PushAxisAlignedClip(m_panelBounds, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
 
+    // Check if terminal is maximized or nearing top edge -> apply 14px upper-left curvature (Image 4)
+    bool isMaximized = (m_isFullScreen || m_fullScreenProgress > 0.01f || panelY <= headerTopH + 2.0f);
+    float cornerRadius = isMaximized ? config.ScaleF(14.0f) : 0.0f;
+
     // 1. Panel Background
     D2D1_COLOR_F bgColor = theme.IsDarkMode() ? D2D1::ColorF(0.08f, 0.08f, 0.09f, 1.0f) : D2D1::ColorF(0.96f, 0.96f, 0.97f, 1.0f);
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> bgBrush;
     pRT->CreateSolidColorBrush(bgColor, &bgBrush);
-    if (bgBrush) pRT->FillRectangle(m_panelBounds, bgBrush.Get());
+    if (bgBrush) {
+        if (cornerRadius > 0.0f) {
+            FillUpperLeftRoundedRect(pRT, bgBrush.Get(), m_panelBounds, cornerRadius);
+        } else {
+            pRT->FillRectangle(m_panelBounds, bgBrush.Get());
+        }
+    }
 
     // 2. Top Resizing Splitter (4px border)
     m_splitterBounds = D2D1::RectF(panelX, panelY, panelX + panelW, panelY + config.ScaleF(4.0f));
     pRT->DrawLine(
-        D2D1::Point2F(panelX, panelY),
+        D2D1::Point2F(panelX + cornerRadius, panelY),
         D2D1::Point2F(panelX + panelW, panelY),
         theme.brushBorderSubtle.Get(),
         1.0f
@@ -905,7 +968,7 @@ void TerminalPanel::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppC
     // 3. Header Toolbar (Image 1)
     float headerH = config.ScaleF(32.0f);
     m_headerBounds = D2D1::RectF(panelX, panelY + config.ScaleF(2.0f), panelX + panelW, panelY + headerH);
-    RenderHeader(pRT, theme, config, panelX, panelY + config.ScaleF(2.0f), panelW, headerH - config.ScaleF(2.0f));
+    RenderHeader(pRT, theme, config, panelX, panelY + config.ScaleF(2.0f), panelW, headerH - config.ScaleF(2.0f), cornerRadius);
 
     // 4. Terminal Content Area
     float contentY = panelY + headerH;
@@ -929,7 +992,7 @@ void TerminalPanel::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppC
 }
 
 void TerminalPanel::RenderHeader(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
-                                float x, float y, float w, float h) {
+                                float x, float y, float w, float h, float cornerRadius) {
     // Subtle header bottom line
     pRT->DrawLine(
         D2D1::Point2F(x, y + h),
@@ -938,7 +1001,7 @@ void TerminalPanel::RenderHeader(ID2D1RenderTarget* pRT, Theme& theme, const app
         1.0f
     );
 
-    float curX = x + config.ScaleF(12.0f);
+    float curX = x + (cornerRadius > 0.0f ? config.ScaleF(18.0f) : config.ScaleF(12.0f));
 
     // "Terminal" Title Label (Image 1)
     D2D1_RECT_F rcTitle = D2D1::RectF(curX, y, curX + config.ScaleF(60.0f), y + h);
@@ -2194,6 +2257,9 @@ bool TerminalPanel::OnMouseDown(POINT pt, const app::AppConfig& config, const st
     // Check Full Screen / Maximize Button
     if (inRect(pt, m_fullScreenBtnBounds)) {
         ToggleFullScreen();
+        if (m_onToggleFullScreen) {
+            m_onToggleFullScreen(m_isFullScreen);
+        }
         return true;
     }
 

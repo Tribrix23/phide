@@ -197,6 +197,34 @@ public:
     void DiscardDeviceResources();
     void ResetCharWidth() const noexcept { m_charWidth = 0.0f; }
 
+    void RenderTabs(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
+                    float canvasLeft, float canvasWidth, float headerH,
+                    std::vector<editor::OpenDocument>& docs, int activeDocIdx,
+                    bool hasLeftDrawer, bool isFocused,
+                    float& tabScrollOffset, float& totalTabsWidth, int groupIdx = 0,
+                    D2D1_RECT_F* outTrack = nullptr, D2D1_RECT_F* outThumb = nullptr);
+
+    void RenderTabs(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
+                    float canvasLeft, float canvasWidth, float headerH,
+                    std::vector<editor::OpenDocument>& docs, int activeDocIdx,
+                    bool hasLeftDrawer, bool isFocused) {
+        float dummyScroll = 0.0f;
+        float dummyTotal = 0.0f;
+        RenderTabs(pRT, theme, config, canvasLeft, canvasWidth, headerH, docs, activeDocIdx, hasLeftDrawer, isFocused, dummyScroll, dummyTotal, 0);
+    }
+
+    void SetTabDragState(bool isDragging, int dragGroup, int dragIdx, int dropTargetIdx,
+                         D2D1_POINT_2F dragPos = { 0.0f, 0.0f },
+                         const std::wstring& dragTitle = L"") noexcept {
+        m_isDraggingTab = isDragging;
+        m_dragTabGroup = dragGroup;
+        m_dragTabIdx = dragIdx;
+        m_tabDropTargetIdx = dropTargetIdx;
+        m_dragTabPos = dragPos;
+        m_dragTabTitle = dragTitle;
+    }
+    [[nodiscard]] bool IsDraggingTab() const noexcept { return m_isDraggingTab; }
+
 private:
     bool m_caretVisible = true;
     mutable float m_charWidth = 0.0f;
@@ -227,23 +255,6 @@ private:
      */
     void RenderPlaceholder(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
                            float canvasLeft, float canvasWidth, float headerH, float clientHeight);
-
-    /**
-     * @brief Renders the multi-document tab bar with Seti file icons, preview italics, dirty dots, and close buttons.
-     * @param pRT Active Direct2D render target.
-     * @param theme Visual theme containing tab styling brushes.
-     * @param config Application metrics.
-     * @param canvasLeft Left boundary coordinate of the canvas.
-     * @param canvasWidth Available horizontal width for the tab strip.
-     * @param headerH Height offset of the top title bar.
-     * @param docs Collection of open documents.
-     * @param activeDocIdx Index of the currently active document.
-     * @param hasLeftDrawer True if the sidebar drawer is open (influences upper-left tab rounding).
-     */
-    void RenderTabs(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
-                    float canvasLeft, float canvasWidth, float headerH,
-                    std::vector<editor::OpenDocument>& docs, int activeDocIdx,
-                    bool hasLeftDrawer, bool isFocused);
 
     /**
      * @brief Renders the breadcrumbs navigation bar displaying file hierarchy and icon (Image 4).
@@ -304,11 +315,29 @@ private:
                           std::vector<editor::OpenDocument>& docs, int activeDocIdx,
                           float canvasLeft, float canvasWidth, float headerH, float clientHeight,
                           bool hasLeftDrawer, bool isPaneFocused,
+                          const std::wstring& highlightQuery,
+                          bool highlightMatchCase,
+                          bool highlightWholeWord,
+                          bool highlightUseRegex,
+                          bool isRenaming,
+                          float& tabScrollOffset, float& totalTabsWidth, int groupIdx = 0,
+                          D2D1_RECT_F* outTrack = nullptr, D2D1_RECT_F* outThumb = nullptr);
+
+    void RenderSinglePane(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
+                          std::vector<editor::OpenDocument>& docs, int activeDocIdx,
+                          float canvasLeft, float canvasWidth, float headerH, float clientHeight,
+                          bool hasLeftDrawer, bool isPaneFocused,
                           const std::wstring& highlightQuery = L"",
                           bool highlightMatchCase = false,
                           bool highlightWholeWord = false,
                           bool highlightUseRegex = false,
-                          bool isRenaming = false);
+                          bool isRenaming = false) {
+        float dummyScroll = 0.0f;
+        float dummyTotal = 0.0f;
+        RenderSinglePane(pRT, theme, config, docs, activeDocIdx, canvasLeft, canvasWidth, headerH, clientHeight,
+                         hasLeftDrawer, isPaneFocused, highlightQuery, highlightMatchCase, highlightWholeWord, highlightUseRegex, isRenaming,
+                         dummyScroll, dummyTotal, 0);
+    }
 
     /**
      * @brief Renders active buffer source lines, line gutter numbers, fold chevrons, and syntax highlights.
@@ -358,6 +387,14 @@ private:
     size_t m_autocompleteScrollOffset = 0;
     D2D1_RECT_F m_autocompleteBounds{};
     std::wstring m_ghostText;
+
+    // Tab Drag & Drop State
+    bool m_isDraggingTab = false;
+    int m_dragTabGroup = -1;
+    int m_dragTabIdx = -1;
+    int m_tabDropTargetIdx = -1;
+    D2D1_POINT_2F m_dragTabPos = { 0.0f, 0.0f };
+    std::wstring m_dragTabTitle;
 
     struct FoldChevronHit {
         D2D1_RECT_F bounds{};

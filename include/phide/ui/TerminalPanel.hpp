@@ -223,6 +223,9 @@ public:
     [[nodiscard]] bool IsFullScreen() const noexcept { return m_isFullScreen; }
     void SetFullScreen(bool fs) noexcept { m_isFullScreen = fs; }
     void ToggleFullScreen() noexcept { m_isFullScreen = !m_isFullScreen; }
+    [[nodiscard]] float GetFullScreenProgress() const noexcept { return m_fullScreenProgress; }
+    void SetFullScreenProgress(float progress) noexcept { m_fullScreenProgress = progress; }
+    void SetOnToggleFullScreen(std::function<void(bool)> cb) { m_onToggleFullScreen = std::move(cb); }
 
     // Tab & Split Management (Images 4 & 5)
     void NewTab(TerminalShellType shell, const std::wstring& workingDir);
@@ -303,7 +306,7 @@ public:
 private:
     void StartShellProcess(TerminalTab& tab);
     void RenderHeader(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
-                      float x, float y, float w, float h);
+                      float x, float y, float w, float h, float cornerRadius = 0.0f);
     void RenderContent(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
                        float x, float y, float w, float h);
     void RenderSinglePane(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
@@ -382,6 +385,8 @@ private:
     mutable std::vector<TerminalUrlHit> m_visibleUrls;
     std::function<void(const std::wstring&)> m_onLiveServerTabClosed;
     std::function<void()> m_onMinimize;
+    std::function<void(bool)> m_onToggleFullScreen;
+    float m_fullScreenProgress = 0.0f;
 };
 
 } // namespace phide::ui

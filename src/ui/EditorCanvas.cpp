@@ -205,7 +205,8 @@ void EditorCanvas::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
                          pLeft, pWidth, headerH, clientHeight,
                          (isFirstPane ? hasLeftDrawer : true), isGroupFocused,
                          highlightQuery, highlightMatchCase, highlightWholeWord, highlightUseRegex,
-                         isRenaming);
+                         isRenaming, groups[g].tabScrollOffset, groups[g].totalTabsWidth, static_cast<int>(g),
+                         &groups[g].tabScrollTrack, &groups[g].tabScrollThumb);
 
         pRT->PopAxisAlignedClip();
 
@@ -240,14 +241,16 @@ void EditorCanvas::RenderSinglePane(ID2D1RenderTarget* pRT, Theme& theme, const 
                                     bool highlightMatchCase,
                                     bool highlightWholeWord,
                                     bool highlightUseRegex,
-                                    bool isRenaming) {
+                                    bool isRenaming,
+                                    float& tabScrollOffset, float& totalTabsWidth, int groupIdx,
+                                    D2D1_RECT_F* outTrack, D2D1_RECT_F* outThumb) {
     if (docs.empty() || docIdx < 0 || docIdx >= static_cast<int>(docs.size())) {
         RenderPlaceholder(pRT, theme, config, canvasLeft, canvasWidth, headerH, clientHeight);
         return;
     }
 
     const float tabH = config.ScaleF(34.0f);
-    RenderTabs(pRT, theme, config, canvasLeft, canvasWidth, headerH, docs, docIdx, hasLeftDrawer, isPaneFocused);
+    RenderTabs(pRT, theme, config, canvasLeft, canvasWidth, headerH, docs, docIdx, hasLeftDrawer, isPaneFocused, tabScrollOffset, totalTabsWidth, groupIdx, outTrack, outThumb);
 
     auto& activeDoc = docs[docIdx];
     const float breadcrumbH = config.showBreadcrumbs ? config.ScaleF(24.0f) : 0.0f;
@@ -366,7 +369,9 @@ void EditorCanvas::RenderPlaceholder(ID2D1RenderTarget* pRT, Theme& theme, const
 void EditorCanvas::RenderTabs(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
                               float canvasLeft, float canvasWidth, float headerH,
                               std::vector<editor::OpenDocument>& docs, int activeDocIdx,
-                              bool hasLeftDrawer, bool isFocused) {
+                              bool hasLeftDrawer, bool isFocused,
+                              float& tabScrollOffset, float& totalTabsWidth, int groupIdx,
+                              D2D1_RECT_F* outTrack, D2D1_RECT_F* outThumb) {
     const float tabH = config.ScaleF(34.0f);
     const float cornerRadius = hasLeftDrawer ? 0.0f : config.ScaleF(14.0f);
 
@@ -375,44 +380,60 @@ void EditorCanvas::RenderTabs(ID2D1RenderTarget* pRT, Theme& theme, const app::A
     FillUpperLeftRoundedRect(pRT, theme.brushTabBarBg.Get(), rcTabBar, cornerRadius);
 
     // Bottom border of tab bar
-    pRT->DrawLine(
-        D2D1::Point2F(canvasLeft, headerH + tabH - 0.5f),
-        D2D1::Point2F(canvasLeft + canvasWidth, headerH + tabH - 0.5f),
-        theme.brushTabBorder.Get(),
-        1.0f
-    );
+    if (theme.brushTabBorder) {
+        pRT->DrawLine(
+            D2D1::Point2F(canvasLeft, headerH + tabH - 0.5f),
+            D2D1::Point2F(canvasLeft + canvasWidth, headerH + tabH - 0.5f),
+            theme.brushTabBorder.Get(),
+            1.0f
+        );
+    }
 
-    float curX = canvasLeft;
+    // First pass: Precalculate tab widths and total strip width for horizontal scrolling
+    std::vector<float> tabWidths(docs.size());
+    float sumW = 0.0f;
+    for (size_t i = 0; i < docs.size(); ++i) {
+        auto& doc = docs[i];
+        bool isFirstTab = (i == 0);
+        float tabCurve = (isFirstTab && !hasLeftDrawer) ? cornerRadius : 0.0f;
+
+        std::wstring title = doc.fileName.empty() ? L"Untitled-1" : doc.fileName;
+        float textW = static_cast<float>(title.length()) * config.ScaleF(7.5f);
+
+        float tabW = config.ScaleF(16.0f + 16.0f + 42.0f) + textW;
+        if (tabCurve > 0.0f) {
+            tabW += config.ScaleF(6.0f);
+        }
+        tabW = (std::clamp)(tabW, config.ScaleF(100.0f), config.ScaleF(220.0f));
+        tabWidths[i] = tabW;
+        sumW += tabW;
+    }
+    totalTabsWidth = sumW;
+
+    float maxScroll = (std::max)(0.0f, totalTabsWidth - canvasWidth);
+    if (activeDocIdx >= 0 && activeDocIdx < static_cast<int>(docs.size())) {
+        float activeStart = 0.0f;
+        for (int i = 0; i < activeDocIdx; ++i) activeStart += tabWidths[i];
+        float activeEnd = activeStart + tabWidths[activeDocIdx];
+
+        if (activeStart < tabScrollOffset) {
+            tabScrollOffset = activeStart;
+        } else if (activeEnd > tabScrollOffset + canvasWidth) {
+            tabScrollOffset = activeEnd - canvasWidth;
+        }
+    }
+    tabScrollOffset = (std::clamp)(tabScrollOffset, 0.0f, maxScroll);
+
+    pRT->PushAxisAlignedClip(rcTabBar, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+
+    float curX = canvasLeft - tabScrollOffset;
     for (size_t i = 0; i < docs.size(); ++i) {
         auto& doc = docs[i];
         bool isActive = (static_cast<int>(i) == activeDocIdx);
         bool isFirstTab = (i == 0);
-        float tabCurve = (isFirstTab && !hasLeftDrawer) ? cornerRadius : 0.0f;
-
-        // Calculate tab width based on title length
+        float tabCurve = (isFirstTab && !hasLeftDrawer && tabScrollOffset <= 0.0f) ? cornerRadius : 0.0f;
+        float tabW = tabWidths[i];
         std::wstring title = doc.fileName.empty() ? L"Untitled-1" : doc.fileName;
-        float textW = 0.0f;
-        if (theme.dwriteFactory) {
-            Microsoft::WRL::ComPtr<IDWriteTextLayout> pLayout;
-            if (SUCCEEDED(theme.dwriteFactory->CreateTextLayout(
-                    title.c_str(), static_cast<UINT32>(title.length()),
-                    theme.fontMenuItem.Get(), 1000.0f, tabH, &pLayout))) {
-                DWRITE_TEXT_METRICS m{};
-                if (SUCCEEDED(pLayout->GetMetrics(&m))) {
-                    textW = m.widthIncludingTrailingWhitespace;
-                }
-            }
-        }
-        if (textW <= 0.0f) {
-            textW = static_cast<float>(title.length()) * config.ScaleF(7.5f);
-        }
-
-        // tab width = icon(16) + pad(16) + text + dirty/close pad(42)
-        float tabW = config.ScaleF(16.0f + 16.0f + 42.0f) + textW;
-        if (tabCurve > 0.0f) {
-            tabW += config.ScaleF(6.0f); // subtle extra breathing room for curved first tab
-        }
-        tabW = (std::clamp)(tabW, config.ScaleF(100.0f), config.ScaleF(220.0f));
 
         D2D1_RECT_F rcTab = D2D1::RectF(curX, headerH, curX + tabW, headerH + tabH);
         doc.tabBounds = rcTab;
@@ -446,23 +467,27 @@ void EditorCanvas::RenderTabs(ID2D1RenderTarget* pRT, Theme& theme, const app::A
                         }
                     }
                 } else {
-                    pRT->DrawLine(
-                        D2D1::Point2F(rcTab.left, headerH + 1.0f),
-                        D2D1::Point2F(rcTab.right, headerH + 1.0f),
-                        theme.brushBrandAccent.Get(),
-                        2.0f
-                    );
+                    if (theme.brushBrandAccent) {
+                        pRT->DrawLine(
+                            D2D1::Point2F(rcTab.left, headerH + 1.0f),
+                            D2D1::Point2F(rcTab.right, headerH + 1.0f),
+                            theme.brushBrandAccent.Get(),
+                            2.0f
+                        );
+                    }
                 }
             }
         }
 
         // Right tab divider line
-        pRT->DrawLine(
-            D2D1::Point2F(rcTab.right - 0.5f, headerH),
-            D2D1::Point2F(rcTab.right - 0.5f, headerH + tabH),
-            theme.brushTabBorder.Get(),
-            1.0f
-        );
+        if (theme.brushTabBorder) {
+            pRT->DrawLine(
+                D2D1::Point2F(rcTab.right - 0.5f, headerH),
+                D2D1::Point2F(rcTab.right - 0.5f, headerH + tabH),
+                theme.brushTabBorder.Get(),
+                1.0f
+            );
+        }
 
         // Icon
         const float iconPadX = (tabCurve > 0.0f) ? config.ScaleF(14.0f) : config.ScaleF(10.0f);
@@ -512,9 +537,11 @@ void EditorCanvas::RenderTabs(ID2D1RenderTarget* pRT, Theme& theme, const app::A
                 (isFocused ? (theme.IsDarkMode() ? theme.brushTextWhite.Get() : theme.brushTextPrimary.Get()) : theme.brushTextSecondary.Get()) :
                 theme.brushTextSecondary.Get());
 
-        pRT->PushAxisAlignedClip(rcTitle, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
-        pRT->DrawText(title.c_str(), static_cast<UINT32>(title.length()), pTextFmt, rcTitle, pTextBrush);
-        pRT->PopAxisAlignedClip();
+        if (pTextBrush && pTextFmt) {
+            pRT->PushAxisAlignedClip(rcTitle, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+            pRT->DrawText(title.c_str(), static_cast<UINT32>(title.length()), pTextFmt, rcTitle, pTextBrush);
+            pRT->PopAxisAlignedClip();
+        }
 
         // Close Tab Button (×)
         const float closeSize = config.ScaleF(16.0f);
@@ -545,10 +572,134 @@ void EditorCanvas::RenderTabs(ID2D1RenderTarget* pRT, Theme& theme, const app::A
         const float cx = closeX + closeSize / 2.0f;
         const float cy = closeY + closeSize / 2.0f;
         const float r = config.ScaleF(3.5f);
-        pRT->DrawLine(D2D1::Point2F(cx - r, cy - r), D2D1::Point2F(cx + r, cy + r), theme.brushTextSecondary.Get(), 1.2f);
-        pRT->DrawLine(D2D1::Point2F(cx + r, cy - r), D2D1::Point2F(cx - r, cy + r), theme.brushTextSecondary.Get(), 1.2f);
+        if (theme.brushTextSecondary) {
+            pRT->DrawLine(D2D1::Point2F(cx - r, cy - r), D2D1::Point2F(cx + r, cy + r), theme.brushTextSecondary.Get(), 1.2f);
+            pRT->DrawLine(D2D1::Point2F(cx + r, cy - r), D2D1::Point2F(cx - r, cy + r), theme.brushTextSecondary.Get(), 1.2f);
+        }
 
         curX += tabW;
+    }
+
+    pRT->PopAxisAlignedClip();
+
+    // 2. Horizontal Scrollbar for Tab Bar (User request: "since i do many tag it many now there should be a scrol bar so i could scroll throught them")
+    if (totalTabsWidth > canvasWidth) {
+        float trackH = config.ScaleF(4.0f);
+        float hitH = config.ScaleF(10.0f);
+        D2D1_RECT_F rcTrack = D2D1::RectF(canvasLeft, headerH + tabH - trackH, canvasLeft + canvasWidth, headerH + tabH);
+        D2D1_RECT_F rcTrackHit = D2D1::RectF(canvasLeft, headerH + tabH - hitH, canvasLeft + canvasWidth, headerH + tabH);
+        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushTrack;
+        pRT->CreateSolidColorBrush(
+            theme.IsDarkMode() ? D2D1::ColorF(0.12f, 0.12f, 0.12f, 0.6f) : D2D1::ColorF(0.85f, 0.85f, 0.85f, 0.6f),
+            &brushTrack
+        );
+        if (brushTrack) pRT->FillRectangle(rcTrack, brushTrack.Get());
+
+        float thumbW = (std::max)(config.ScaleF(36.0f), (canvasWidth / totalTabsWidth) * canvasWidth);
+        float maxScroll = totalTabsWidth - canvasWidth;
+        float ratio = (maxScroll > 0.0f) ? (tabScrollOffset / maxScroll) : 0.0f;
+        float thumbX = canvasLeft + ratio * (canvasWidth - thumbW);
+        D2D1_RECT_F rcThumb = D2D1::RectF(thumbX, headerH + tabH - trackH, thumbX + thumbW, headerH + tabH);
+        D2D1_RECT_F rcThumbHit = D2D1::RectF(thumbX, headerH + tabH - hitH, thumbX + thumbW, headerH + tabH);
+
+        D2D1_ROUNDED_RECT rrcThumb = D2D1::RoundedRect(rcThumb, 2.0f, 2.0f);
+        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushThumb;
+        pRT->CreateSolidColorBrush(
+            theme.IsDarkMode() ? D2D1::ColorF(0.48f, 0.48f, 0.52f, 0.85f) : D2D1::ColorF(0.52f, 0.52f, 0.56f, 0.85f),
+            &brushThumb
+        );
+        if (brushThumb) pRT->FillRoundedRectangle(rrcThumb, brushThumb.Get());
+
+        if (outTrack) *outTrack = rcTrackHit;
+        if (outThumb) *outThumb = rcThumbHit;
+    } else {
+        if (outTrack) *outTrack = D2D1::RectF(0, 0, 0, 0);
+        if (outThumb) *outThumb = D2D1::RectF(0, 0, 0, 0);
+    }
+
+    // 3. Tab Drag-and-Drop Insertion Line Indicator & Floating Tab Pill (Image 3: "Buffer.cpp")
+    if (m_isDraggingTab && m_dragTabGroup == groupIdx) {
+        if (m_tabDropTargetIdx >= 0) {
+            float dropX = canvasLeft - tabScrollOffset;
+            for (int i = 0; i < m_tabDropTargetIdx && i < static_cast<int>(docs.size()); ++i) {
+                dropX += tabWidths[i];
+            }
+            if (dropX >= canvasLeft && dropX <= canvasLeft + canvasWidth) {
+                D2D1_RECT_F rcDropLine = D2D1::RectF(dropX - 1.5f, headerH + 1.0f, dropX + 1.5f, headerH + tabH - 1.0f);
+                ID2D1Brush* pDropBrush = theme.brushBrandAccent ? theme.brushBrandAccent.Get() : theme.brushTabBorder.Get();
+                if (pDropBrush) {
+                    pRT->FillRectangle(rcDropLine, pDropBrush);
+                }
+            }
+        }
+
+        // Render floating dragged tab pill attached to mouse cursor (Image 3: "Buffer.cpp [x]")
+        if (!m_dragTabTitle.empty() && (m_dragTabPos.x > 0.0f || m_dragTabPos.y > 0.0f)) {
+            float pillW = (std::min)(220.0f, (std::max)(130.0f, config.ScaleF(145.0f)));
+            float pillH = config.ScaleF(28.0f);
+            float pillX = m_dragTabPos.x - pillW / 2.0f;
+            float pillY = m_dragTabPos.y - pillH / 2.0f;
+            D2D1_RECT_F rcPill = D2D1::RectF(pillX, pillY, pillX + pillW, pillY + pillH);
+            D2D1_ROUNDED_RECT rrcPill = D2D1::RoundedRect(rcPill, 4.0f, 4.0f);
+
+            // Elevated card drop shadow
+            Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> shadowBrush;
+            pRT->CreateSolidColorBrush(D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.35f), &shadowBrush);
+            if (shadowBrush) {
+                D2D1_ROUNDED_RECT rrcShadow = D2D1::RoundedRect(
+                    D2D1::RectF(pillX + 2.0f, pillY + 3.0f, pillX + pillW + 2.0f, pillY + pillH + 3.0f),
+                    4.0f, 4.0f
+                );
+                pRT->FillRoundedRectangle(rrcShadow, shadowBrush.Get());
+            }
+
+            // Pill background
+            Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> pillBg;
+            pRT->CreateSolidColorBrush(
+                theme.IsDarkMode() ? D2D1::ColorF(0.18f, 0.18f, 0.20f, 0.95f) : D2D1::ColorF(0.92f, 0.92f, 0.94f, 0.95f),
+                &pillBg
+            );
+            if (pillBg) pRT->FillRoundedRectangle(rrcPill, pillBg.Get());
+
+            // Brand accent border
+            if (theme.brushBrandAccent) {
+                pRT->DrawRoundedRectangle(rrcPill, theme.brushBrandAccent.Get(), 1.5f);
+            }
+
+            // File Icon (Seti or Lucide)
+            float iconX = pillX + config.ScaleF(8.0f);
+            float iconY = pillY + (pillH - config.ScaleF(16.0f)) / 2.0f;
+            D2D1_RECT_F iconBounds = D2D1::RectF(iconX, iconY, iconX + config.ScaleF(16.0f), iconY + config.ScaleF(16.0f));
+            auto setiInfo = theme.GetSetiIcon(m_dragTabTitle, false, false);
+            if (theme.fontSeti && setiInfo.pBrush) {
+                pRT->DrawText(&setiInfo.glyph, 1, theme.fontSeti.Get(), iconBounds, setiInfo.pBrush);
+            } else {
+                auto iconType = LucideIcons::GetIconTypeForPath(m_dragTabTitle, false, false);
+                m_icons.DrawFileIcon(pRT, theme, iconBounds, iconType);
+            }
+
+            // File title text
+            float textX = iconX + config.ScaleF(18.0f);
+            float textW = pillW - config.ScaleF(44.0f);
+            D2D1_RECT_F rcText = D2D1::RectF(textX, pillY, textX + textW, pillY + pillH);
+            IDWriteTextFormat* pFmt = theme.fontTab ? theme.fontTab.Get() : theme.fontBody.Get();
+            ID2D1Brush* pTxtBrush = theme.brushTextPrimary ? theme.brushTextPrimary.Get() : theme.brushTextWhite.Get();
+            if (pFmt && pTxtBrush) {
+                pRT->DrawText(m_dragTabTitle.c_str(), static_cast<UINT32>(m_dragTabTitle.size()),
+                              pFmt, rcText, pTxtBrush);
+            }
+
+            // Close 'x' icon
+            float closeX = pillX + pillW - config.ScaleF(18.0f);
+            float closeY = pillY + (pillH - config.ScaleF(10.0f)) / 2.0f;
+            float cx = closeX + config.ScaleF(5.0f);
+            float cy = closeY + config.ScaleF(5.0f);
+            float cr = config.ScaleF(3.5f);
+            if (theme.brushTextSecondary) {
+                pRT->DrawLine(D2D1::Point2F(cx - cr, cy - cr), D2D1::Point2F(cx + cr, cy + cr), theme.brushTextSecondary.Get(), 1.2f);
+                pRT->DrawLine(D2D1::Point2F(cx + cr, cy - cr), D2D1::Point2F(cx - cr, cy + cr), theme.brushTextSecondary.Get(), 1.2f);
+            }
+        }
     }
 }
 

@@ -84,7 +84,7 @@ private:
 
     // Hit-testing and Mouse Events
     LRESULT HandleNCHitTest(POINT screenPt);
-    void HandleMouseMove(POINT clientPt);
+    void HandleMouseMove(POINT clientPt, WPARAM wParam = 0);
     void HandleLButtonDown(POINT clientPt);
     void HandleLButtonUp(POINT clientPt);
     void HandleRButtonDown(POINT clientPt);
@@ -530,6 +530,19 @@ private:
     float m_targetTerminalProgress = 0.0f;
     bool  m_isTerminalAnimating    = false;
 
+    float m_termFullScreenProgress    = 0.0f;
+    float m_targetTermFullScreen      = 0.0f;
+    bool  m_isTermFullScreenAnimating = false;
+
+    [[nodiscard]] float GetCurrentTerminalHeight(float clientH) const noexcept {
+        if (!m_terminal.IsOpen() && !m_isTerminalAnimating) return 0.0f;
+        const float headerH = m_config.ScaleF(static_cast<float>(m_config.headerHeight));
+        float normalH = m_terminal.GetHeight();
+        float fullH = (std::max)(normalH, clientH - headerH);
+        float effectiveMax = normalH + (fullH - normalH) * m_termFullScreenProgress;
+        return effectiveMax * m_terminalAnimProgress;
+    }
+
     // Explorer Drag & Drop Import State (Godot / VS Code style)
     bool m_isDraggingExplorerFile = false;
     std::wstring m_dragCandidatePath;
@@ -540,6 +553,14 @@ private:
     size_t m_dragDropTargetLine = 0;
     size_t m_dragDropTargetCol = 0;
     int m_dragDropTargetGroup = -1;
+
+    // Tab Drag & Drop Reordering State (Image 2)
+    bool m_isDraggingTab = false;
+    int m_dragTabGroup = -1;
+    int m_dragTabIdx = -1;
+    int m_tabDropTargetIdx = -1;
+    POINT m_dragTabStartPt{ 0, 0 };
+    POINT m_dragTabCurrentPt{ 0, 0 };
 
     void AnimateTerminalOpen();
     void AnimateTerminalClose();

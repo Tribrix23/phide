@@ -136,7 +136,7 @@ struct GitCommitItem {
 class DrawerPanel {
 public:
     DrawerPanel();
-    ~DrawerPanel() = default;
+    ~DrawerPanel();
 
     enum class GitMenuType { None, HeaderViews, ChangesMore, GraphMore };
     struct GitMenuItemDef {
@@ -248,6 +248,32 @@ public:
     [[nodiscard]] bool HasGitNotification() const noexcept {
         return (GetTickCount64() < m_gitNotificationExpiry && !m_gitNotificationText.empty());
     }
+
+    bool IsActionPending(const std::wstring& path) const {
+        std::lock_guard<std::recursive_mutex> lock(m_gitMutex);
+        auto itAll = m_pendingActionFiles.find(L"*");
+        if (itAll != m_pendingActionFiles.end()) {
+            if (GetTickCount64() < itAll->second) return true;
+        }
+        auto it = m_pendingActionFiles.find(path);
+        if (it != m_pendingActionFiles.end()) {
+            if (GetTickCount64() < it->second) return true;
+        }
+        return false;
+    }
+    void SetActionPending(const std::wstring& path, ULONGLONG durationMs = 3000) {
+        std::lock_guard<std::recursive_mutex> lock(m_gitMutex);
+        m_pendingActionFiles[path] = GetTickCount64() + durationMs;
+    }
+    void ClearActionPending(const std::wstring& path) {
+        std::lock_guard<std::recursive_mutex> lock(m_gitMutex);
+        m_pendingActionFiles.erase(path);
+    }
+    void SetHoveredGitButton(const std::wstring& btn) { m_hoveredGitButton = btn; }
+    [[nodiscard]] const std::wstring& GetHoveredGitButton() const noexcept { return m_hoveredGitButton; }
+    void SetPressedGitButton(const std::wstring& btn) { m_pressedGitButton = btn; }
+    [[nodiscard]] const std::wstring& GetPressedGitButton() const noexcept { return m_pressedGitButton; }
+
     [[nodiscard]] bool IsGitViewMenuOpen() const noexcept { return m_activeGitMenu == GitMenuType::HeaderViews || m_showGitViewMenu; }
     [[nodiscard]] GitMenuType GetActiveGitMenu() const noexcept { return m_activeGitMenu; }
     void DismissCommitCard() noexcept {
@@ -628,6 +654,9 @@ private:
     std::atomic<bool> m_isCommitting{false};
     std::atomic<bool> m_isSyncing{false};
     bool m_gitCommitBtnPressed = false;
+    std::unordered_map<std::wstring, ULONGLONG> m_pendingActionFiles;
+    std::wstring m_hoveredGitButton;
+    std::wstring m_pressedGitButton;
     float m_gitAnimAngle = 0.0f;
     mutable std::recursive_mutex m_gitMutex;
 
@@ -812,6 +841,9 @@ private:
     D2D1_RECT_F m_rcUseExcludeSettingsBtn{};
 
     LucideIcons m_icons;
+
+    std::shared_ptr<std::atomic<bool>> m_isAlive = std::make_shared<std::atomic<bool>>(true);
+    std::shared_ptr<std::atomic<int>> m_activeWorkers = std::make_shared<std::atomic<int>>(0);
 
     Microsoft::WRL::ComPtr<ID2D1PathGeometry> m_pDrawerBgGeometry;
     float m_cachedRailW = -1.0f;

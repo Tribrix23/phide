@@ -22,6 +22,7 @@ struct OpenDocument {
     std::wstring filePath;       ///< Full filesystem path (empty for virtual/special views)
     std::wstring fileName;       ///< Display title or basename (e.g. index.php)
     Buffer buffer;               ///< Dedicated text buffer
+    std::wstring originalDiskText; ///< Pristine file text on disk / HEAD for accurate clean/dirty tracking
     bool isDirty = false;        ///< True if document has unsaved edits
     bool isPreview = false;      ///< True if single-clicked and not yet edited/pinned (VS Code preview tab)
     bool isSpecialView = false;  ///< True for Keyboard Shortcuts, settings, etc.
@@ -260,6 +261,13 @@ struct EditorGroup {
     std::vector<OpenDocument> docs;      ///< Independent list of document tabs open in this editor column
     int activeDocIdx = -1;               ///< Index of the currently active document tab in this group
     D2D1_RECT_F bounds{};                ///< Screen bounding rectangle of this editor pane
+    float tabScrollOffset = 0.0f;        ///< Horizontal scroll offset in pixels for tab strip
+    float totalTabsWidth = 0.0f;         ///< Total width of all tabs in this strip
+    D2D1_RECT_F tabScrollTrack{};        ///< Hit-test bounds for tab horizontal scroll track
+    D2D1_RECT_F tabScrollThumb{};        ///< Hit-test bounds for tab horizontal scroll thumb
+    bool isDraggingTabScroll = false;    ///< True when tab scroll thumb is currently being dragged
+    float dragTabScrollStartX = 0.0f;    ///< Starting mouse X when dragging tab scroll
+    float dragTabScrollStartOffset = 0.0f; ///< Starting tabScrollOffset when dragging tab scroll
 };
 
 } // namespace phide::editor

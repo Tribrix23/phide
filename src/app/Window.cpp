@@ -504,7 +504,8 @@ void Window::LoadSessionState() {
         if (m_recentPaths.size() > 6) m_recentPaths.resize(6);
     }
 
-    m_config.activeRailTab = activeRailTab;
+    // Always default to Explorer (tab 0) on startup, even if in Source Control prior to exit (User requirement)
+    m_config.activeRailTab = 0;
     if (savedGitSplitY > 100.0f) {
         m_config.gitSplitY = savedGitSplitY;
         m_drawer.SetGitSplitY(savedGitSplitY, 100.0f, 2000.0f);
@@ -803,6 +804,7 @@ void Window::OpenFileDocument(const std::wstring& path, bool isPreview) {
         newDoc.binaryFileSize = std::filesystem::file_size(resolvedPath, ec);
     } else {
         newDoc.buffer.LoadFromFile(resolvedPath);
+        newDoc.originalDiskText = newDoc.buffer.GetText();
 
         // Compute Git diff highlights against HEAD if inside a git repository (Image 5)
         if (m_drawer.IsGitRepo()) {
@@ -897,6 +899,7 @@ void Window::OpenDiffDocument(const std::wstring& relPath, bool isPreview) {
     } else {
         newDoc.buffer.SetText(L"");
     }
+    newDoc.originalDiskText = newDoc.buffer.GetText();
 
     bool isBin = IsBinaryDiffPath(relPath) || FileHasBinaryBytes(fullPath) || HasBinaryNullBytes(headContent);
     if (isBin) {
@@ -1092,6 +1095,9 @@ void Window::ComputeDiffHunks(editor::OpenDocument& doc) {
     size_t midM = M - prefix - suffix;
 
     if (midN == 0 && midM == 0) {
+        doc.isDirty = false;
+        UpdateDrawerDirtyFiles();
+        m_drawer.RefreshGitStatusOnly(true);
         return; // Identical
     }
 
@@ -1487,6 +1493,7 @@ void Window::DoSaveAll() {
             if (doc.isDirty && !doc.filePath.empty()) {
                 doc.buffer.SaveToFile(doc.filePath);
                 doc.isDirty = false;
+                doc.originalDiskText = doc.buffer.GetText();
                 anySaved = true;
                 SyncDocumentBuffers(&doc);
                 if (doc.filePath == m_snippetManager.GetSnippetsFilePath()) {
@@ -1497,7 +1504,7 @@ void Window::DoSaveAll() {
     }
     if (anySaved) {
         UpdateDrawerDirtyFiles();
-        TriggerDebouncedGitRefresh(1000);
+        m_drawer.RefreshGitStatusOnly(true);
     }
     InvalidateRect(m_hwnd, nullptr, FALSE);
 }
@@ -1625,6 +1632,8 @@ void Window::UpdateDrawerDirtyFiles() {
     for (const auto& group : m_editorGroups) {
         for (const auto& doc : group.docs) {
             if (doc.isDirty && !doc.filePath.empty() && !doc.isSpecialView) {
+                if (doc.isDiffView && doc.diffHunks.empty()) continue;
+                if (!doc.isDiffView && !doc.originalDiskText.empty() && doc.buffer.GetText() == doc.originalDiskText) continue;
                 dirtyPaths.push_back(doc.filePath);
             }
         }
@@ -1804,17 +1813,38 @@ void Window::MarkDocumentModified(editor::OpenDocument* pDoc) {
     pDoc->isPreview = false;
     pDoc->diagnostics = editor::SyntaxValidator::Validate(pDoc->filePath.empty() ? pDoc->fileName : pDoc->filePath, pDoc->buffer);
     UpdateDrawerErrorFiles();
+
+    // Check if document content has reverted to match pristine disk text or HEAD
+    bool isActuallyDirty = true;
+    if (pDoc->isDiffView) {
+        ComputeDiffHunks(*pDoc);
+        if (pDoc->diffHunks.empty()) {
+            isActuallyDirty = false;
+        }
+    } else if (!pDoc->originalDiskText.empty()) {
+        if (pDoc->buffer.GetText() == pDoc->originalDiskText) {
+            isActuallyDirty = false;
+        }
+    }
+
     if (m_autoSave && !pDoc->filePath.empty()) {
         pDoc->buffer.SaveToFile(pDoc->filePath);
         pDoc->isDirty = false;
+        pDoc->originalDiskText = pDoc->buffer.GetText();
         SyncDocumentBuffers(pDoc);
         UpdateDrawerDirtyFiles();
-        TriggerDebouncedGitRefresh(1500);
+        TriggerDebouncedGitRefresh(100);
     } else {
-        pDoc->isDirty = true;
+        bool dirtyDroppedToClean = (pDoc->isDirty && !isActuallyDirty);
+        pDoc->isDirty = isActuallyDirty;
         SyncDocumentBuffers(pDoc);
         UpdateDrawerDirtyFiles();
-        TriggerDebouncedGitRefresh(2000);
+        if (dirtyDroppedToClean) {
+            // Edits were removed/erased: immediately trigger git refresh to vanish from Source Control!
+            m_drawer.RefreshGitStatusOnly(true);
+        } else {
+            TriggerDebouncedGitRefresh(300); // 300ms responsive refresh instead of 2000ms
+        }
     }
 }
 
@@ -2530,13 +2560,14 @@ void Window::SaveFileToPath(const std::wstring& path) {
                 pDoc->fileName = baseName;
             }
             pDoc->isDirty = false;
+            pDoc->originalDiskText = pDoc->buffer.GetText();
             pDoc->isPreview = false;
             if (path == m_snippetManager.GetSnippetsFilePath()) {
                 m_snippetManager.LoadSnippets();
             }
             SyncDocumentBuffers(pDoc);
             UpdateDrawerDirtyFiles();
-            TriggerDebouncedGitRefresh(1000);
+            m_drawer.RefreshGitStatusOnly(true); // Immediate 0ms refresh on Save!
             UpdateDrawerErrorFiles();
     SaveSessionState();
             InvalidateRect(m_hwnd, nullptr, FALSE);
@@ -2739,6 +2770,13 @@ bool Window::Create(HINSTANCE hInstance, int nCmdShow) {
     m_terminal.SetOnMinimize([this]() {
         m_isTerminalFocused = false;
         AnimateTerminalClose();
+    });
+
+    // Animate terminal maximize / restore smoothly (User requirement)
+    m_terminal.SetOnToggleFullScreen([this](bool isFs) {
+        m_targetTermFullScreen = isFs ? 1.0f : 0.0f;
+        m_isTermFullScreenAnimating = true;
+        SetTimer(m_hwnd, m_animTimerId, 16, nullptr);
     });
 
     // Initialize user snippets engine
@@ -2973,10 +3011,8 @@ void Window::OnPaint() {
         m_terminalAnimProgress = 0.0f;
     }
 
-    float maxTermH = m_terminal.IsFullScreen() ? (clientH - headerH) : m_terminal.GetHeight();
-    float currentTermH = (m_terminal.IsOpen() || m_isTerminalAnimating)
-        ? (maxTermH * m_terminalAnimProgress)
-        : 0.0f;
+    float currentTermH = GetCurrentTerminalHeight(clientH);
+    m_terminal.SetFullScreenProgress(m_termFullScreenProgress);
 
     float editorH = clientH - currentTermH;
     float drawerH = clientH - currentTermH;
@@ -3050,7 +3086,7 @@ void Window::OnPaint() {
         const float pillX = clientW - pillW - m_config.ScaleF(14.0f);
         float pillY = clientH - pillH - m_config.ScaleF(8.0f);
         if (m_terminal.IsOpen()) {
-            float th = m_terminal.IsFullScreen() ? (clientH - headerH) : m_terminal.GetHeight();
+            float th = GetCurrentTerminalHeight(clientH);
             pillY = clientH - th - pillH - m_config.ScaleF(8.0f);
         }
         m_liveServerPillBounds = D2D1::RectF(pillX, pillY, pillX + pillW, pillY + pillH);
@@ -3251,11 +3287,37 @@ LRESULT Window::HandleNCHitTest(POINT screenPt) {
     return HTCLIENT;
 }
 
-void Window::HandleMouseMove(POINT clientPt) {
+void Window::HandleMouseMove(POINT clientPt, WPARAM wParam) {
     if (!m_trackingMouse) {
         TRACKMOUSEEVENT tme{ sizeof(TRACKMOUSEEVENT), TME_LEAVE, m_hwnd, 0 };
         TrackMouseEvent(&tme);
         m_trackingMouse = true;
+    }
+
+    // Check Tab Scrollbar dragging across editor groups (User requirement)
+    for (auto& group : m_editorGroups) {
+        if (group.isDraggingTabScroll) {
+            bool lbuttonDown = (wParam & MK_LBUTTON) != 0 ||
+                               ((GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0) ||
+                               ((GetKeyState(VK_LBUTTON) & 0x8000) != 0);
+            if (!lbuttonDown) {
+                group.isDraggingTabScroll = false;
+                ReleaseCapture();
+                InvalidateRect(m_hwnd, nullptr, FALSE);
+                return;
+            }
+            float dx = static_cast<float>(clientPt.x) - group.dragTabScrollStartX;
+            float canvasW = group.bounds.right - group.bounds.left;
+            float maxScroll = (std::max)(0.0f, group.totalTabsWidth - canvasW);
+            float thumbW = (std::max)(m_config.ScaleF(36.0f), (canvasW / group.totalTabsWidth) * canvasW);
+            float scrollableTrack = canvasW - thumbW;
+            if (scrollableTrack > 0.0f && maxScroll > 0.0f) {
+                float deltaOffset = (dx / scrollableTrack) * maxScroll;
+                group.tabScrollOffset = (std::clamp)(group.dragTabScrollStartOffset + deltaOffset, 0.0f, maxScroll);
+                InvalidateRect(m_hwnd, nullptr, FALSE);
+            }
+            return;
+        }
     }
 
     bool oldHoverPill = m_hoverLiveServerPill;
@@ -3305,6 +3367,52 @@ void Window::HandleMouseMove(POINT clientPt) {
         }
     }
 
+    // Check Tab Dragging & Reordering (User request: "and i cant drag this tab to reaarangfe", Image 3)
+    if (m_dragTabIdx >= 0 && m_dragTabGroup >= 0 && m_dragTabGroup < static_cast<int>(m_editorGroups.size())) {
+        bool lbuttonDown = (wParam & MK_LBUTTON) != 0 ||
+                           ((GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0) ||
+                           ((GetKeyState(VK_LBUTTON) & 0x8000) != 0);
+        if (!lbuttonDown) {
+            m_dragTabIdx = -1;
+            m_dragTabGroup = -1;
+            m_tabDropTargetIdx = -1;
+            m_isDraggingTab = false;
+            m_editor.SetTabDragState(false, -1, -1, -1);
+            ReleaseCapture();
+            InvalidateRect(m_hwnd, nullptr, FALSE);
+            return;
+        }
+
+        float dx = static_cast<float>(clientPt.x - m_dragTabStartPt.x);
+        float dy = static_cast<float>(clientPt.y - m_dragTabStartPt.y);
+        if (!m_isDraggingTab && std::hypot(dx, dy) > 4.0f) {
+            m_isDraggingTab = true;
+        }
+
+        if (m_isDraggingTab) {
+            m_dragTabCurrentPt = clientPt;
+            auto& group = m_editorGroups[m_dragTabGroup];
+            int targetIdx = static_cast<int>(group.docs.size());
+            for (size_t i = 0; i < group.docs.size(); ++i) {
+                const auto& b = group.docs[i].tabBounds;
+                float midX = (b.left + b.right) / 2.0f;
+                if (clientPt.x < midX) {
+                    targetIdx = static_cast<int>(i);
+                    break;
+                }
+            }
+            m_tabDropTargetIdx = targetIdx;
+            std::wstring dragTitle = (m_dragTabIdx >= 0 && m_dragTabIdx < static_cast<int>(group.docs.size()))
+                ? group.docs[m_dragTabIdx].fileName
+                : L"";
+            m_editor.SetTabDragState(true, m_dragTabGroup, m_dragTabIdx, m_tabDropTargetIdx,
+                                     D2D1::Point2F(static_cast<float>(clientPt.x), static_cast<float>(clientPt.y)),
+                                     dragTitle);
+            InvalidateRect(m_hwnd, nullptr, FALSE);
+            return;
+        }
+    }
+
     // Check Explorer File Dragging (Godot / VS Code style)
     if (!m_dragCandidatePath.empty()) {
         if (!(GetKeyState(VK_LBUTTON) & 0x8000)) {
@@ -3337,8 +3445,7 @@ void Window::HandleMouseMove(POINT clientPt) {
             const float headerH = m_config.ScaleF(static_cast<float>(m_config.headerHeight));
             const float tabH = m_config.ScaleF(34.0f);
 
-            float currentTermH = (m_terminal.IsOpen() || m_isTerminalAnimating)
-                ? (m_terminal.GetHeight() * m_terminalAnimProgress) : 0.0f;
+            float currentTermH = GetCurrentTerminalHeight(clientH);
             float editorH = clientH - currentTermH;
 
             m_hasDragDropTarget = false;
@@ -3593,11 +3700,7 @@ void Window::HandleMouseMove(POINT clientPt) {
     RECT wndRc;
     GetClientRect(m_hwnd, &wndRc);
     const float clientH = static_cast<float>(wndRc.bottom - wndRc.top);
-    float termH = 0.0f;
-    if (m_terminal.IsOpen()) {
-        const float headerH = m_config.ScaleF(static_cast<float>(m_config.headerHeight));
-        termH = m_terminal.IsFullScreen() ? (clientH - headerH) : m_terminal.GetHeight();
-    }
+    float termH = GetCurrentTerminalHeight(clientH);
     float effectiveDrawerH = m_terminal.IsOpen() ? (clientH - termH) : clientH;
 
     if (m_drawerAnimProgress > 0.001f && clientPt.y < effectiveDrawerH) {
@@ -4514,17 +4617,58 @@ void Window::HandleLButtonDown(POINT clientPt) {
             m_focusedGroupIdx = targetGroup;
             auto& group = m_editorGroups[targetGroup];
 
-            // 4a. Tab Close Button Click in this group
+            // 4a. Check Tab Scrollbar interaction for this group (User requirement: "i cant use the croll batr")
+            float groupCanvasW = group.bounds.right - group.bounds.left;
+            if (group.totalTabsWidth > groupCanvasW && groupCanvasW > 10.0f) {
+                float maxScroll = (std::max)(0.0f, group.totalTabsWidth - groupCanvasW);
+                float thumbW = (std::max)(m_config.ScaleF(36.0f), (groupCanvasW / group.totalTabsWidth) * groupCanvasW);
+                float scrollableTrack = groupCanvasW - thumbW;
+
+                // Check thumb click -> start dragging
+                if (clientPt.x >= group.tabScrollThumb.left && clientPt.x <= group.tabScrollThumb.right &&
+                    clientPt.y >= group.tabScrollThumb.top && clientPt.y <= group.tabScrollThumb.bottom) {
+                    group.isDraggingTabScroll = true;
+                    group.dragTabScrollStartX = static_cast<float>(clientPt.x);
+                    group.dragTabScrollStartOffset = group.tabScrollOffset;
+                    SetCapture(m_hwnd);
+                    InvalidateRect(m_hwnd, nullptr, FALSE);
+                    return;
+                }
+                // Check track click -> jump scroll
+                else if (clientPt.x >= group.tabScrollTrack.left && clientPt.x <= group.tabScrollTrack.right &&
+                         clientPt.y >= group.tabScrollTrack.top && clientPt.y <= group.tabScrollTrack.bottom) {
+                    if (scrollableTrack > 0.0f && maxScroll > 0.0f) {
+                        float clickRelX = static_cast<float>(clientPt.x) - group.tabScrollTrack.left - thumbW / 2.0f;
+                        float ratio = (std::clamp)(clickRelX / scrollableTrack, 0.0f, 1.0f);
+                        group.tabScrollOffset = ratio * maxScroll;
+                        group.isDraggingTabScroll = true;
+                        group.dragTabScrollStartX = static_cast<float>(clientPt.x);
+                        group.dragTabScrollStartOffset = group.tabScrollOffset;
+                        SetCapture(m_hwnd);
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
+                        return;
+                    }
+                }
+            }
+
+            // 4b. Tab Close Button Click in this group
             int closeIdx = m_editor.HitTestTabClose(clientPt, group.docs);
             if (closeIdx >= 0) {
                 CloseDocument(targetGroup, closeIdx);
                 return;
             }
 
-            // 4b. Tab Header Click in this group
+            // 4b. Tab Header Click in this group (initiates potential tab drag-and-drop reorder)
             int tabHitIdx = m_editor.HitTestTab(clientPt, group.docs);
             if (tabHitIdx >= 0) {
                 group.activeDocIdx = tabHitIdx;
+                m_dragTabGroup = targetGroup;
+                m_dragTabIdx = tabHitIdx;
+                m_tabDropTargetIdx = tabHitIdx;
+                m_dragTabStartPt = clientPt;
+                m_dragTabCurrentPt = clientPt;
+                m_isDraggingTab = false;
+                SetCapture(m_hwnd);
                 InvalidateRect(m_hwnd, nullptr, FALSE);
                 return;
             }
@@ -4896,6 +5040,7 @@ void Window::HandleLButtonDown(POINT clientPt) {
                                         CloseDocument(g, d);
                                     } else {
                                         doc.buffer.LoadFromFile(doc.filePath);
+                                        doc.originalDiskText = doc.buffer.GetText();
                                         doc.isDirty = false;
                                         doc.ClearSelection();
                                         if (doc.buffer.GetCursor().line >= doc.buffer.GetLineCount()) {
@@ -4984,6 +5129,46 @@ void Window::HandleLButtonDown(POINT clientPt) {
 }
 
 void Window::HandleLButtonUp(POINT clientPt) {
+    // 0a. Tab Scrollbar Dragging release (User requirement)
+    for (auto& group : m_editorGroups) {
+        if (group.isDraggingTabScroll) {
+            group.isDraggingTabScroll = false;
+            ReleaseCapture();
+            InvalidateRect(m_hwnd, nullptr, FALSE);
+            return;
+        }
+    }
+
+    // 0b. Tab Drag & Drop Reordering commit (User request: "and i cant drag this tab to reaarangfe", Image 3)
+    if (m_dragTabIdx >= 0 && m_dragTabGroup >= 0 && m_dragTabGroup < static_cast<int>(m_editorGroups.size())) {
+        if (m_isDraggingTab && m_tabDropTargetIdx >= 0) {
+            auto& group = m_editorGroups[m_dragTabGroup];
+            int from = m_dragTabIdx;
+            int to = m_tabDropTargetIdx;
+            if (from >= 0 && from < static_cast<int>(group.docs.size()) &&
+                to >= 0 && to <= static_cast<int>(group.docs.size())) {
+                auto doc = std::move(group.docs[from]);
+                group.docs.erase(group.docs.begin() + from);
+                int insertPos = (to > from) ? (to - 1) : to;
+                if (insertPos < 0) insertPos = 0;
+                if (insertPos > static_cast<int>(group.docs.size())) {
+                    insertPos = static_cast<int>(group.docs.size());
+                }
+                group.docs.insert(group.docs.begin() + insertPos, std::move(doc));
+                group.activeDocIdx = insertPos;
+                SaveSessionState();
+            }
+        }
+        m_isDraggingTab = false;
+        m_dragTabGroup = -1;
+        m_dragTabIdx = -1;
+        m_tabDropTargetIdx = -1;
+        m_editor.SetTabDragState(false, -1, -1, -1);
+        ReleaseCapture();
+        InvalidateRect(m_hwnd, nullptr, FALSE);
+        return;
+    }
+
     if (!m_dragCandidatePath.empty()) {
         if (m_isDraggingExplorerFile) {
             RECT clientRc;
@@ -5453,7 +5638,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
 
         case WM_MOUSEMOVE: {
             POINT pt = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
-            HandleMouseMove(pt);
+            HandleMouseMove(pt, wParam);
             return 0;
         }
 
@@ -5599,12 +5784,38 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 }
             }
 
-            // 2. Scroll Editor Canvas
-            editor::OpenDocument* pDoc = nullptr;
             float canvasLeft = railW + drawerW;
             RECT rcClient;
             GetClientRect(m_hwnd, &rcClient);
             float canvasW = static_cast<float>(rcClient.right - rcClient.left) - canvasLeft;
+
+            // 1b. Scroll Tab Strip horizontally if mouse is over Tab Bar (User request: "since i do many tag it many now there should be a scrol bar so i could scroll throught them")
+            const float tabH = m_config.ScaleF(34.0f);
+            if (pt.y >= headerH && pt.y < headerH + tabH && pt.x >= canvasLeft) {
+                if (canvasW > 10.0f && !m_editorGroups.empty()) {
+                    float paneW = canvasW / m_editorGroups.size();
+                    size_t targetG = 0;
+                    for (size_t g = 0; g < m_editorGroups.size(); ++g) {
+                        float pLeft = canvasLeft + g * paneW;
+                        float pRight = pLeft + paneW;
+                        if (pt.x >= pLeft && pt.x < pRight) {
+                            targetG = g;
+                            break;
+                        }
+                    }
+                    auto& grp = m_editorGroups[targetG];
+                    if (grp.totalTabsWidth > paneW) {
+                        float maxScroll = grp.totalTabsWidth - paneW;
+                        float scrollAmount = (delta > 0) ? -50.0f : 50.0f;
+                        grp.tabScrollOffset = (std::clamp)(grp.tabScrollOffset + scrollAmount, 0.0f, maxScroll);
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
+                        return 0;
+                    }
+                }
+            }
+
+            // 2. Scroll Editor Canvas
+            editor::OpenDocument* pDoc = nullptr;
             if (canvasW > 10.0f && !m_editorGroups.empty()) {
                 float paneW = canvasW / m_editorGroups.size();
                 for (size_t g = 0; g < m_editorGroups.size(); ++g) {
@@ -6632,7 +6843,18 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     keepAnimating = true;
                 }
 
-                if (!keepAnimating && !m_isDrawerAnimating && !m_isTerminalAnimating) {
+                // Smoothly animate terminal maximize / minimize full screen progress (User requirement)
+                float diffFs = m_targetTermFullScreen - m_termFullScreenProgress;
+                if (std::abs(diffFs) < 0.005f) {
+                    m_termFullScreenProgress = m_targetTermFullScreen;
+                    m_isTermFullScreenAnimating = false;
+                } else {
+                    m_termFullScreenProgress += diffFs * speed;
+                    keepAnimating = true;
+                }
+                m_terminal.SetFullScreenProgress(m_termFullScreenProgress);
+
+                if (!keepAnimating && !m_isDrawerAnimating && !m_isTerminalAnimating && !m_isTermFullScreenAnimating) {
                     KillTimer(m_hwnd, m_animTimerId);
                 }
                 InvalidateRect(m_hwnd, nullptr, FALSE);

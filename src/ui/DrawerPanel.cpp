@@ -77,6 +77,16 @@ DrawerPanel::DrawerPanel() {
     m_visibleItems.clear();
 }
 
+DrawerPanel::~DrawerPanel() {
+    if (m_isAlive) {
+        m_isAlive->store(false);
+    }
+    int spin = 0;
+    while (m_activeWorkers && m_activeWorkers->load() > 0 && spin++ < 60) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+}
+
 void DrawerPanel::OpenFolder(const std::wstring& folderPath, const std::set<std::wstring>* pInitialExpanded) {
     if (folderPath.empty()) return;
 
@@ -2354,8 +2364,13 @@ void DrawerPanel::LaunchAsyncSearch() {
     m_isSearching = true;
 
     // Run file traversal in worker thread to prevent freezing the GUI thread!
-    std::thread([this, thisGen, query, rootFolder, matchCase, matchWord, useRegex,
+    auto alive = m_isAlive;
+    auto workers = m_activeWorkers;
+    std::thread([this, alive, workers, thisGen, query, rootFolder, matchCase, matchWord, useRegex,
                  searchOnlyOpenEditors, openDocPaths, filesToInclude, filesToExclude, useExcludeSettings]() {
+        if (workers) workers->fetch_add(1);
+        auto finish = [&]() { if (workers) workers->fetch_sub(1); };
+        if (!alive || !alive->load()) { finish(); return; }
         try {
             std::error_code ec;
             std::filesystem::path root(rootFolder);
@@ -2524,7 +2539,10 @@ void DrawerPanel::LaunchAsyncSearch() {
             }
         } catch (...) {
         }
-        m_isSearching = false;
+        if (alive && alive->load()) {
+            m_isSearching = false;
+        }
+        finish();
     }).detach();
 }
 
@@ -2539,7 +2557,12 @@ void DrawerPanel::FetchNextSearchBatch() {
     bool matchWord = m_matchWholeWord;
     bool useRegex = m_useRegex;
 
-    std::thread([this, thisGen, query, rootFolder, matchCase, matchWord, useRegex]() {
+    auto alive = m_isAlive;
+    auto workers = m_activeWorkers;
+    std::thread([this, alive, workers, thisGen, query, rootFolder, matchCase, matchWord, useRegex]() {
+        if (workers) workers->fetch_add(1);
+        auto finish = [&]() { if (workers) workers->fetch_sub(1); };
+        if (!alive || !alive->load()) { finish(); return; }
         try {
             std::filesystem::path root(rootFolder);
             std::wregex regexPattern;
@@ -2596,7 +2619,10 @@ void DrawerPanel::FetchNextSearchBatch() {
             }
         } catch (...) {
         }
-        m_isFetchingMore = false;
+        if (alive && alive->load()) {
+            m_isFetchingMore = false;
+        }
+        finish();
     }).detach();
 }
 
@@ -3406,7 +3432,17 @@ void DrawerPanel::RefreshGitState(bool async, bool showLoading) {
         m_isGitRefreshing.store(true);
     }
 
-    auto task = [this, showLoading, async]() {
+    auto alive = m_isAlive;
+    auto workers = m_activeWorkers;
+    auto task = [this, alive, workers, showLoading, async]() {
+        struct WorkerGuard {
+            std::shared_ptr<std::atomic<int>> w;
+            WorkerGuard(std::shared_ptr<std::atomic<int>> ptr) : w(ptr) { if (w) w->fetch_add(1); }
+            ~WorkerGuard() { if (w) w->fetch_sub(1); }
+        } guard(workers);
+
+        if (!alive || !alive->load()) return;
+
         struct RefreshFinisher {
             std::atomic<bool>& flag;
             std::atomic<bool>& loadingFlag;
@@ -3419,13 +3455,16 @@ void DrawerPanel::RefreshGitState(bool async, bool showLoading) {
             }
         } finisher(m_isGitRefreshing, m_isGitLoading, showLoading);
 
+        if (!alive || !alive->load()) return;
         if (showLoading) {
             m_isGitLoading = true;
         }
         std::wstring dir = m_openFolderPath.empty() ? L"." : m_openFolderPath;
 
         // 1. Check if inside git repository
+        if (!alive || !alive->load()) return;
         auto resCheck = RunGitCmd(L"rev-parse --is-inside-work-tree", dir);
+        if (!alive || !alive->load()) return;
         if (resCheck.exitCode != 0) {
             std::lock_guard<std::recursive_mutex> lock(m_gitMutex);
             m_isGitRepo = false;
@@ -3436,6 +3475,7 @@ void DrawerPanel::RefreshGitState(bool async, bool showLoading) {
         }
 
         // 2. Query active branch
+        if (!alive || !alive->load()) return;
         auto resBranch = RunGitCmd(L"branch --show-current", dir);
         std::wstring branch = L"master";
         if (resBranch.exitCode == 0 && !resBranch.output.empty()) {
@@ -3446,6 +3486,7 @@ void DrawerPanel::RefreshGitState(bool async, bool showLoading) {
         }
 
         // 3. Query working tree changes
+        if (!alive || !alive->load()) return;
         RunGitCmd(L"update-index -q --refresh", dir);
         auto resStatus = RunGitCmd(L"status --porcelain=v1", dir);
         auto resDiff = RunGitCmd(L"diff --name-only", dir);
@@ -3620,6 +3661,7 @@ void DrawerPanel::RefreshGitState(bool async, bool showLoading) {
                     }
 
                     // Restore expanded state and cached files if in m_expandedCommitHashes
+                    if (!alive || !alive->load()) return;
                     if (m_expandedCommitHashes.count(ci.hash)) {
                         ci.isExpanded = true;
                         if (it != prevMap.end() && it->second.filesLoaded) {
@@ -3633,10 +3675,12 @@ void DrawerPanel::RefreshGitState(bool async, bool showLoading) {
                     commits.push_back(std::move(ci));
                 }
             }
+            if (!alive || !alive->load()) return;
             ComputeGitGraphLanes(commits);
         }
 
         // 5. Query unpushed commits count (rev-list @{u}..HEAD or ahead in status -sb)
+        if (!alive || !alive->load()) return;
         int unpushedCount = 0;
         auto resRevList = RunGitCmd(L"rev-list --count @{u}..HEAD", dir);
         if (resRevList.exitCode == 0 && !resRevList.output.empty()) {
@@ -3655,6 +3699,7 @@ void DrawerPanel::RefreshGitState(bool async, bool showLoading) {
             }
         }
 
+        if (!alive || !alive->load()) return;
         {
             std::lock_guard<std::recursive_mutex> lock(m_gitMutex);
             m_isGitRepo = true;
@@ -3667,6 +3712,7 @@ void DrawerPanel::RefreshGitState(bool async, bool showLoading) {
             }
         }
 
+        if (!alive || !alive->load()) return;
         if (m_onGitStateChanged) {
             m_onGitStateChanged();
         }
@@ -3847,11 +3893,22 @@ void DrawerPanel::DismissSearchGroup(size_t groupIdx) {
 }
 
 void DrawerPanel::RefreshGitStatusOnly(bool async) {
-    auto task = [this]() {
+    auto alive = m_isAlive;
+    auto workers = m_activeWorkers;
+    auto task = [this, alive, workers]() {
+        struct WorkerGuard {
+            std::shared_ptr<std::atomic<int>> w;
+            WorkerGuard(std::shared_ptr<std::atomic<int>> ptr) : w(ptr) { if (w) w->fetch_add(1); }
+            ~WorkerGuard() { if (w) w->fetch_sub(1); }
+        } guard(workers);
+
+        if (!alive || !alive->load()) return;
         std::wstring dir = m_openFolderPath.empty() ? L"." : m_openFolderPath;
 
         // 1. Check if git repo
+        if (!alive || !alive->load()) return;
         auto resCheck = RunGitCmd(L"rev-parse --is-inside-work-tree", dir);
+        if (!alive || !alive->load()) return;
         if (resCheck.exitCode != 0) {
             std::lock_guard<std::recursive_mutex> lock(m_gitMutex);
             m_isGitRepo = false;
@@ -3860,6 +3917,7 @@ void DrawerPanel::RefreshGitStatusOnly(bool async) {
         }
 
         // 2. Query active branch
+        if (!alive || !alive->load()) return;
         auto resBranch = RunGitCmd(L"branch --show-current", dir);
         std::wstring branch = L"master";
         if (resBranch.exitCode == 0 && !resBranch.output.empty()) {
@@ -3870,6 +3928,7 @@ void DrawerPanel::RefreshGitStatusOnly(bool async) {
         }
 
         // 3. Query working tree changes
+        if (!alive || !alive->load()) return;
         RunGitCmd(L"update-index -q --refresh", dir);
         auto resStatus = RunGitCmd(L"status --porcelain=v1", dir);
         auto resDiff = RunGitCmd(L"diff --name-only", dir);
@@ -4011,6 +4070,7 @@ void DrawerPanel::RefreshGitStatusOnly(bool async) {
             }
         }
 
+        if (!alive || !alive->load()) return;
         bool stateChanged = false;
         {
             std::lock_guard<std::recursive_mutex> lock(m_gitMutex);
@@ -4032,6 +4092,7 @@ void DrawerPanel::RefreshGitStatusOnly(bool async) {
             m_unpushedCommitsCount = unpushedCount;
         }
 
+        if (!alive || !alive->load()) return;
         if (stateChanged && m_onGitStateChanged) {
             m_onGitStateChanged();
         }
@@ -4227,16 +4288,27 @@ void DrawerPanel::SetErrorFiles(const std::map<std::wstring, size_t>& errorFiles
 }
 
 void DrawerPanel::StageAllChangesAsync() {
-    std::thread([this]() {
+    SetActionPending(L"*", 5000);
+    auto alive = m_isAlive;
+    auto workers = m_activeWorkers;
+    std::thread([this, alive, workers]() {
+        if (workers) workers->fetch_add(1);
+        auto finish = [&]() { if (workers) workers->fetch_sub(1); };
+        if (!alive || !alive->load()) { finish(); return; }
         m_isGitLoading = true;
         std::wstring dir = m_openFolderPath.empty() ? L"." : m_openFolderPath;
         RunGitCmd(L"add -A", dir);
+        if (!alive || !alive->load()) { finish(); return; }
+        ClearActionPending(L"*");
         RefreshGitStatusOnly(false);
         m_isGitLoading = false;
+        ShowGitNotification(L"✓ Staged all changes");
+        finish();
     }).detach();
 }
 
 bool DrawerPanel::DiscardAllChanges() {
+    SetActionPending(L"*", 5000);
     m_isGitLoading = true;
     std::wstring dir = m_openFolderPath.empty() ? L"." : m_openFolderPath;
     RunGitCmd(L"restore --staged --worktree .", dir);
@@ -4246,30 +4318,49 @@ bool DrawerPanel::DiscardAllChanges() {
         std::lock_guard<std::recursive_mutex> lock(m_gitMutex);
         m_dirtyFilePaths.clear();
     }
+    ClearActionPending(L"*");
     RefreshGitStatusOnly(false);
     m_isGitLoading = false;
     return true;
 }
 
 void DrawerPanel::DiscardAllChangesAsync() {
-    std::thread([this]() {
-        DiscardAllChanges();
+    auto alive = m_isAlive;
+    auto workers = m_activeWorkers;
+    std::thread([this, alive, workers]() {
+        if (workers) workers->fetch_add(1);
+        if (alive && alive->load()) {
+            DiscardAllChanges();
+        }
+        if (workers) workers->fetch_sub(1);
     }).detach();
 }
 
 void DrawerPanel::StageFileAsync(const std::wstring& relPath) {
-    std::thread([this, relPath]() {
+    SetActionPending(relPath, 3000);
+    auto alive = m_isAlive;
+    auto workers = m_activeWorkers;
+    std::thread([this, alive, workers, relPath]() {
+        if (workers) workers->fetch_add(1);
+        auto finish = [&]() { if (workers) workers->fetch_sub(1); };
+        if (!alive || !alive->load()) { finish(); return; }
         m_isGitLoading = true;
         std::wstring dir = m_openFolderPath.empty() ? L"." : m_openFolderPath;
         std::wstring cleanRel = relPath;
         for (auto& c : cleanRel) if (c == L'\\') c = L'/';
         RunGitCmd(L"add \"" + cleanRel + L"\"", dir);
+        if (!alive || !alive->load()) { finish(); return; }
+        ClearActionPending(relPath);
         RefreshGitStatusOnly(false);
         m_isGitLoading = false;
+        std::wstring baseName = std::filesystem::path(relPath).filename().wstring();
+        ShowGitNotification(L"✓ Staged " + baseName);
+        finish();
     }).detach();
 }
 
 bool DrawerPanel::DiscardFile(const std::wstring& relPath) {
+    SetActionPending(relPath, 3000);
     m_isGitLoading = true;
     std::wstring dir = m_openFolderPath.empty() ? L"." : m_openFolderPath;
     std::wstring cleanRel = relPath;
@@ -4310,14 +4401,21 @@ bool DrawerPanel::DiscardFile(const std::wstring& relPath) {
         m_dirtyFilePaths.erase(it, m_dirtyFilePaths.end());
     }
 
+    ClearActionPending(relPath);
     RefreshGitStatusOnly(false);
     m_isGitLoading = false;
     return true;
 }
 
 void DrawerPanel::DiscardFileAsync(const std::wstring& relPath) {
-    std::thread([this, relPath]() {
-        DiscardFile(relPath);
+    auto alive = m_isAlive;
+    auto workers = m_activeWorkers;
+    std::thread([this, alive, workers, relPath]() {
+        if (workers) workers->fetch_add(1);
+        if (alive && alive->load()) {
+            DiscardFile(relPath);
+        }
+        if (workers) workers->fetch_sub(1);
     }).detach();
 }
 
@@ -4346,26 +4444,39 @@ void DrawerPanel::CommitChangesAsync(const std::wstring& message) {
     size_t last = msg.find_last_not_of(L" \t\r\n");
     if (last != std::wstring::npos) msg = msg.substr(0, last + 1);
 
-    std::thread([this, msg]() {
+    auto alive = m_isAlive;
+    auto workers = m_activeWorkers;
+    std::thread([this, alive, workers, msg]() {
+        if (workers) workers->fetch_add(1);
+        auto finish = [&]() { if (workers) workers->fetch_sub(1); };
+        if (!alive || !alive->load()) { finish(); return; }
         m_isGitLoading = true;
         std::wstring dir = m_openFolderPath.empty() ? L"." : m_openFolderPath;
         RunGitCmd(L"add -A", dir);
+        if (!alive || !alive->load()) { finish(); return; }
         std::wstring escapedMsg;
         for (wchar_t c : msg) {
             if (c == L'"') escapedMsg += L"\\\"";
             else escapedMsg += c;
         }
         RunGitCmd(L"commit -m \"" + escapedMsg + L"\"", dir);
+        if (!alive || !alive->load()) { finish(); return; }
         {
             std::lock_guard<std::recursive_mutex> lock(m_gitMutex);
             m_commitMessage.clear();
         }
         RefreshGitState(false);
+        finish();
     }).detach();
 }
 
 void DrawerPanel::UncommitLastCommitAsync() {
-    std::thread([this]() {
+    auto alive = m_isAlive;
+    auto workers = m_activeWorkers;
+    std::thread([this, alive, workers]() {
+        if (workers) workers->fetch_add(1);
+        auto finish = [&]() { if (workers) workers->fetch_sub(1); };
+        if (!alive || !alive->load()) { finish(); return; }
         m_isGitLoading = true;
         std::wstring dir = m_openFolderPath.empty() ? L"." : m_openFolderPath;
         // 1. Get the last commit message before undoing
@@ -4374,8 +4485,10 @@ void DrawerPanel::UncommitLastCommitAsync() {
         while (!lastMsg.empty() && (lastMsg.back() == L'\r' || lastMsg.back() == L'\n' || lastMsg.back() == L' ')) {
             lastMsg.pop_back();
         }
+        if (!alive || !alive->load()) { finish(); return; }
         // 2. Soft reset HEAD~1 (keeps all modified/staged files in working directory)
         auto resReset = RunGitCmd(L"reset --soft HEAD~1", dir);
+        if (!alive || !alive->load()) { finish(); return; }
         if (resReset.exitCode == 0) {
             std::lock_guard<std::recursive_mutex> lock(m_gitMutex);
             if (!lastMsg.empty()) {
@@ -4384,71 +4497,112 @@ void DrawerPanel::UncommitLastCommitAsync() {
             m_focusedGitInput = 1;
         }
         RefreshGitState(false);
+        finish();
     }).detach();
 }
 
 void DrawerPanel::PushCommitsAsync() {
-    std::thread([this]() {
+    auto alive = m_isAlive;
+    auto workers = m_activeWorkers;
+    std::thread([this, alive, workers]() {
+        if (workers) workers->fetch_add(1);
         try {
-            m_isGitLoading = true;
-            std::wstring dir = m_openFolderPath.empty() ? L"." : m_openFolderPath;
-            RunGitCmd(L"push", dir);
-            RefreshGitState(false);
+            if (alive && alive->load()) {
+                m_isGitLoading = true;
+                std::wstring dir = m_openFolderPath.empty() ? L"." : m_openFolderPath;
+                RunGitCmd(L"push", dir);
+                if (alive && alive->load()) {
+                    RefreshGitState(false);
+                }
+            }
         } catch (...) {}
+        if (workers) workers->fetch_sub(1);
     }).detach();
 }
 
 void DrawerPanel::PullCommitsAsync() {
-    std::thread([this]() {
+    auto alive = m_isAlive;
+    auto workers = m_activeWorkers;
+    std::thread([this, alive, workers]() {
+        if (workers) workers->fetch_add(1);
         try {
-            m_isGitLoading = true;
-            std::wstring dir = m_openFolderPath.empty() ? L"." : m_openFolderPath;
-            RunGitCmd(L"pull", dir);
-            RefreshGitState(false);
+            if (alive && alive->load()) {
+                m_isGitLoading = true;
+                std::wstring dir = m_openFolderPath.empty() ? L"." : m_openFolderPath;
+                RunGitCmd(L"pull", dir);
+                if (alive && alive->load()) {
+                    RefreshGitState(false);
+                }
+            }
         } catch (...) {}
+        if (workers) workers->fetch_sub(1);
     }).detach();
 }
 
 void DrawerPanel::FetchAllRemotesAsync() {
-    std::thread([this]() {
+    auto alive = m_isAlive;
+    auto workers = m_activeWorkers;
+    std::thread([this, alive, workers]() {
+        if (workers) workers->fetch_add(1);
         try {
-            m_isGitLoading = true;
-            std::wstring dir = m_openFolderPath.empty() ? L"." : m_openFolderPath;
-            RunGitCmd(L"fetch --all", dir);
-            RefreshGitState(false);
+            if (alive && alive->load()) {
+                m_isGitLoading = true;
+                std::wstring dir = m_openFolderPath.empty() ? L"." : m_openFolderPath;
+                RunGitCmd(L"fetch --all", dir);
+                if (alive && alive->load()) {
+                    RefreshGitState(false);
+                }
+            }
         } catch (...) {}
+        if (workers) workers->fetch_sub(1);
     }).detach();
 }
 
 void DrawerPanel::StashChangesAsync() {
-    std::thread([this]() {
+    auto alive = m_isAlive;
+    auto workers = m_activeWorkers;
+    std::thread([this, alive, workers]() {
+        if (workers) workers->fetch_add(1);
         try {
-            m_isGitLoading = true;
-            std::wstring dir = m_openFolderPath.empty() ? L"." : m_openFolderPath;
-            RunGitCmd(L"stash", dir);
-            RefreshGitState(false);
+            if (alive && alive->load()) {
+                m_isGitLoading = true;
+                std::wstring dir = m_openFolderPath.empty() ? L"." : m_openFolderPath;
+                RunGitCmd(L"stash", dir);
+                if (alive && alive->load()) {
+                    RefreshGitState(false);
+                }
+            }
         } catch (...) {}
+        if (workers) workers->fetch_sub(1);
     }).detach();
 }
 
 void DrawerPanel::RunGarbageCollectionAsync() {
-    std::thread([this]() {
+    auto alive = m_isAlive;
+    auto workers = m_activeWorkers;
+    std::thread([this, alive, workers]() {
+        if (workers) workers->fetch_add(1);
         try {
-            m_isGitLoading = true;
-            std::wstring dir = m_openFolderPath.empty() ? L"." : m_openFolderPath;
-            // 1. Run git garbage collection & prune loose unreachable objects
-            RunGitCmd(L"gc --prune=now --auto", dir);
-            // 2. Perform in-memory IDE garbage collection
-            {
-                std::lock_guard<std::recursive_mutex> lock(m_gitMutex);
-                m_gitCommits.shrink_to_fit();
-                m_gitChanges.shrink_to_fit();
-                m_expandedCommitHashes.clear();
+            if (alive && alive->load()) {
+                m_isGitLoading = true;
+                std::wstring dir = m_openFolderPath.empty() ? L"." : m_openFolderPath;
+                // 1. Run git garbage collection & prune loose unreachable objects
+                RunGitCmd(L"gc --prune=now --auto", dir);
+                // 2. Perform in-memory IDE garbage collection
+                if (alive && alive->load()) {
+                    std::lock_guard<std::recursive_mutex> lock(m_gitMutex);
+                    m_gitCommits.shrink_to_fit();
+                    m_gitChanges.shrink_to_fit();
+                    m_expandedCommitHashes.clear();
+                }
+                // 3. Trim process working set
+                SetProcessWorkingSetSize(GetCurrentProcess(), static_cast<SIZE_T>(-1), static_cast<SIZE_T>(-1));
+                if (alive && alive->load()) {
+                    RefreshGitState(false);
+                }
             }
-            // 3. Trim process working set
-            SetProcessWorkingSetSize(GetCurrentProcess(), static_cast<SIZE_T>(-1), static_cast<SIZE_T>(-1));
-            RefreshGitState(false);
         } catch (...) {}
+        if (workers) workers->fetch_sub(1);
     }).detach();
 }
 
@@ -4674,13 +4828,19 @@ bool DrawerPanel::HitTestGit(POINT pt, const app::AppConfig& config,
     if (m_showChangesSection) {
         if (pt.x >= m_gitStageAllBounds.left && pt.x <= m_gitStageAllBounds.right &&
             pt.y >= m_gitStageAllBounds.top && pt.y <= m_gitStageAllBounds.bottom) {
+            if (IsActionPending(L"*")) return true;
+            m_pressedGitButton = L"stageAll";
+            ShowGitNotification(L"Staging all changes...");
             StageAllChangesAsync();
             return true;
         }
         if (pt.x >= m_gitDiscardAllBounds.left && pt.x <= m_gitDiscardAllBounds.right &&
             pt.y >= m_gitDiscardAllBounds.top && pt.y <= m_gitDiscardAllBounds.bottom) {
+            if (IsActionPending(L"*")) return true;
+            m_pressedGitButton = L"discardAll";
+            ShowGitNotification(L"Discarding all changes...");
             DiscardAllChanges();
-            ShowGitNotification(L"Discarded all changes");
+            ShowGitNotification(L"✓ Discarded all changes");
             outDiscardedFile = L"*";
             return true;
         }
@@ -4742,19 +4902,25 @@ bool DrawerPanel::HitTestGit(POINT pt, const app::AppConfig& config,
                     pt.y >= item.bounds.top && pt.y <= item.bounds.bottom) {
                     if (pt.x >= item.stageBtnBounds.left && pt.x <= item.stageBtnBounds.right &&
                         pt.y >= item.stageBtnBounds.top && pt.y <= item.stageBtnBounds.bottom) {
+                        if (IsActionPending(item.path)) return true;
+                        m_pressedGitButton = L"stage:" + item.path;
+                        ShowGitNotification(L"Staging " + item.fileName + L"...");
                         StageFileAsync(item.path);
                         return true;
                     }
                     if (pt.x >= item.discardBtnBounds.left && pt.x <= item.discardBtnBounds.right &&
                         pt.y >= item.discardBtnBounds.top && pt.y <= item.discardBtnBounds.bottom) {
+                        if (IsActionPending(item.path)) return true;
+                        m_pressedGitButton = L"discard:" + item.path;
                         outDiscardedFile = item.path;
-                        m_gitTooltipText = L"Discarded " + item.fileName;
+                        m_gitTooltipText = L"Discarding " + item.fileName + L"...";
                         m_showGitTooltip = true;
                         m_gitTooltipTarget = item.bounds;
-                        ShowGitNotification(L"Discarded " + item.fileName);
+                        ShowGitNotification(L"Discarding " + item.fileName + L"...");
                         std::wstring discardPath = item.path;
                         m_gitChanges.erase(m_gitChanges.begin() + i);
                         DiscardFile(discardPath);
+                        ShowGitNotification(L"✓ Discarded " + item.fileName);
                         return true;
                     }
                     outOpenFile = item.path;
@@ -4896,9 +5062,10 @@ bool DrawerPanel::HandleGitMouseMove(POINT pt) {
         return false;
     };
 
+    m_hoveredGitButton.clear();
     if (checkBtn(m_gitHeaderMoreBounds, L"Views and More Actions...")) {}
-    else if (checkBtn(m_gitStageAllBounds, L"Stage All Changes (✓)")) {}
-    else if (checkBtn(m_gitDiscardAllBounds, L"Discard All Changes (🔄)")) {}
+    else if (checkBtn(m_gitStageAllBounds, L"Stage All Changes (✓)")) { m_hoveredGitButton = L"stageAll"; }
+    else if (checkBtn(m_gitDiscardAllBounds, L"Discard All Changes (🔄)")) { m_hoveredGitButton = L"discardAll"; }
     else if (checkBtn(m_gitChangesMoreBounds, L"More Actions...")) {}
     else if (checkBtn(m_gitGenerateAiBounds, L"Generate Commit Message with AI")) {}
     else if (pt.x >= m_gitCommitBtnBounds.left && pt.x <= m_gitCommitBtnBounds.right &&
@@ -4930,9 +5097,11 @@ bool DrawerPanel::HandleGitMouseMove(POINT pt) {
                 m_hoveredGitChangeIdx = static_cast<int>(i);
 
                 if (checkBtn(item.discardBtnBounds, L"Discard Changes (↩)")) {
+                    m_hoveredGitButton = L"discard:" + item.path;
                     break;
                 }
                 if (checkBtn(item.stageBtnBounds, L"Stage Changes (+)")) {
+                    m_hoveredGitButton = L"stage:" + item.path;
                     break;
                 }
                 std::wstring desc = (item.status == L"U") ? L"Untracked" :
@@ -5145,18 +5314,30 @@ void DrawerPanel::RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, 
                           rrcBadge.rect, theme.brushTextPrimary.Get());
         }
 
-        // Draw ✓ icon on m_gitStageAllBounds
+        // Draw ✓ icon on m_gitStageAllBounds (with hover pill & disabled state)
+        bool isStageAllHovered = (m_hoveredGitButton == L"stageAll");
+        bool isStageAllPending = IsActionPending(L"*");
+        if (isStageAllHovered && !isStageAllPending) {
+            pRT->FillRoundedRectangle(D2D1::RoundedRect(m_gitStageAllBounds, 3.0f, 3.0f), theme.brushItemHover.Get());
+        }
         float ckX = (m_gitStageAllBounds.left + m_gitStageAllBounds.right) / 2.0f;
         float ckY = (m_gitStageAllBounds.top + m_gitStageAllBounds.bottom) / 2.0f;
-        pRT->DrawLine(D2D1::Point2F(ckX - 3.5f, ckY), D2D1::Point2F(ckX - 1.0f, ckY + 3.0f), theme.brushTextMuted.Get(), 1.4f);
-        pRT->DrawLine(D2D1::Point2F(ckX - 1.0f, ckY + 3.0f), D2D1::Point2F(ckX + 4.0f, ckY - 3.0f), theme.brushTextMuted.Get(), 1.4f);
+        ID2D1Brush* pStageAllBrush = isStageAllPending ? theme.brushTextMuted.Get() : (isStageAllHovered ? (theme.IsDarkMode() ? theme.brushTextWhite.Get() : theme.brushTextPrimary.Get()) : theme.brushTextSecondary.Get());
+        pRT->DrawLine(D2D1::Point2F(ckX - 3.5f, ckY), D2D1::Point2F(ckX - 1.0f, ckY + 3.0f), pStageAllBrush, 1.4f);
+        pRT->DrawLine(D2D1::Point2F(ckX - 1.0f, ckY + 3.0f), D2D1::Point2F(ckX + 4.0f, ckY - 3.0f), pStageAllBrush, 1.4f);
 
-        // Draw 🔄 circular arrow on m_gitDiscardAllBounds
+        // Draw 🔄 circular arrow on m_gitDiscardAllBounds (with hover pill & disabled state)
+        bool isDiscardAllHovered = (m_hoveredGitButton == L"discardAll");
+        bool isDiscardAllPending = IsActionPending(L"*");
+        if (isDiscardAllHovered && !isDiscardAllPending) {
+            pRT->FillRoundedRectangle(D2D1::RoundedRect(m_gitDiscardAllBounds, 3.0f, 3.0f), theme.brushItemHover.Get());
+        }
         float rcX = (m_gitDiscardAllBounds.left + m_gitDiscardAllBounds.right) / 2.0f;
         float rcY = (m_gitDiscardAllBounds.top + m_gitDiscardAllBounds.bottom) / 2.0f;
+        ID2D1Brush* pDiscAllBrush = isDiscardAllPending ? theme.brushTextMuted.Get() : (isDiscardAllHovered ? (theme.IsDarkMode() ? theme.brushTextWhite.Get() : theme.brushTextPrimary.Get()) : theme.brushTextSecondary.Get());
         D2D1_ELLIPSE elDisc = D2D1::Ellipse(D2D1::Point2F(rcX, rcY), 4.0f, 4.0f);
-        pRT->DrawEllipse(elDisc, theme.brushTextMuted.Get(), 1.3f);
-        pRT->DrawLine(D2D1::Point2F(rcX + 4.0f, rcY - 2.5f), D2D1::Point2F(rcX + 4.0f, rcY), theme.brushTextMuted.Get(), 1.3f);
+        pRT->DrawEllipse(elDisc, pDiscAllBrush, 1.3f);
+        pRT->DrawLine(D2D1::Point2F(rcX + 4.0f, rcY - 2.5f), D2D1::Point2F(rcX + 4.0f, rcY), pDiscAllBrush, 1.3f);
 
         // Draw ... on m_gitChangesMoreBounds
         float mx = (m_gitChangesMoreBounds.left + m_gitChangesMoreBounds.right) / 2.0f;
@@ -5474,25 +5655,51 @@ void DrawerPanel::RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, 
                         );
                         const wchar_t* statChar = isBin ? L"B" : (item.status.empty() ? L"M" : item.status.c_str());
 
-                        // 4. Stage (+) and Discard (↩) buttons on row hover (Image 4 & 5)
+                        // 4. Stage (+) and Discard (↩) buttons on row hover or pending (User request: visual confirmation & disabled state)
                         item.discardBtnBounds = D2D1::RectF(railW + currentDrawerW - config.ScaleF(26.0f), itemY + 2.0f, railW + currentDrawerW - config.ScaleF(10.0f), itemY + rowH - 2.0f);
                         item.stageBtnBounds = D2D1::RectF(railW + currentDrawerW - config.ScaleF(46.0f), itemY + 2.0f, railW + currentDrawerW - config.ScaleF(30.0f), itemY + rowH - 2.0f);
 
-                        if (isRowHovered) {
+                        bool isPending = IsActionPending(item.path);
+                        if (isRowHovered || isPending) {
+                            bool isStageHovered = (m_hoveredGitButton == L"stage:" + item.path);
+                            bool isDiscardHovered = (m_hoveredGitButton == L"discard:" + item.path);
+                            bool isStagePressed = (m_pressedGitButton == L"stage:" + item.path);
+                            bool isDiscardPressed = (m_pressedGitButton == L"discard:" + item.path);
+
                             // Stage (+) button
+                            if ((isStageHovered || isStagePressed) && !isPending) {
+                                D2D1_ROUNDED_RECT rrc = D2D1::RoundedRect(item.stageBtnBounds, 3.0f, 3.0f);
+                                pRT->FillRoundedRectangle(rrc, isStagePressed ? (theme.brushBrandAccent ? theme.brushBrandAccent.Get() : theme.brushItemHover.Get()) : theme.brushItemHover.Get());
+                            }
                             float sx = (item.stageBtnBounds.left + item.stageBtnBounds.right) / 2.0f;
                             float sy = (item.stageBtnBounds.top + item.stageBtnBounds.bottom) / 2.0f;
-                            pRT->DrawLine(D2D1::Point2F(sx - 3.5f, sy), D2D1::Point2F(sx + 3.5f, sy), theme.brushTextPrimary.Get(), 1.3f);
-                            pRT->DrawLine(D2D1::Point2F(sx, sy - 3.5f), D2D1::Point2F(sx, sy + 3.5f), theme.brushTextPrimary.Get(), 1.3f);
+                            ID2D1Brush* pStageBrush = isPending ? theme.brushTextMuted.Get() : (isStageHovered ? (theme.IsDarkMode() ? theme.brushTextWhite.Get() : theme.brushTextPrimary.Get()) : theme.brushTextSecondary.Get());
+                            pRT->DrawLine(D2D1::Point2F(sx - 3.5f, sy), D2D1::Point2F(sx + 3.5f, sy), pStageBrush, 1.3f);
+                            pRT->DrawLine(D2D1::Point2F(sx, sy - 3.5f), D2D1::Point2F(sx, sy + 3.5f), pStageBrush, 1.3f);
 
                             // Discard (↩) button (curved undo arrow)
-                            float dx = (item.discardBtnBounds.left + item.discardBtnBounds.right) / 2.0f;
-                            float dy = (item.discardBtnBounds.top + item.discardBtnBounds.bottom) / 2.0f;
-                            pRT->DrawLine(D2D1::Point2F(dx - 1.5f, dy + 2.0f), D2D1::Point2F(dx + 3.0f, dy + 2.0f), theme.brushTextPrimary.Get(), 1.3f);
-                            pRT->DrawLine(D2D1::Point2F(dx + 3.0f, dy + 2.0f), D2D1::Point2F(dx + 3.0f, dy - 2.0f), theme.brushTextPrimary.Get(), 1.3f);
-                            pRT->DrawLine(D2D1::Point2F(dx + 3.0f, dy - 2.0f), D2D1::Point2F(dx - 3.0f, dy - 2.0f), theme.brushTextPrimary.Get(), 1.3f);
-                            pRT->DrawLine(D2D1::Point2F(dx - 3.0f, dy - 2.0f), D2D1::Point2F(dx - 0.5f, dy - 4.5f), theme.brushTextPrimary.Get(), 1.3f);
-                            pRT->DrawLine(D2D1::Point2F(dx - 3.0f, dy - 2.0f), D2D1::Point2F(dx - 0.5f, dy + 0.5f), theme.brushTextPrimary.Get(), 1.3f);
+                            if (isPending) {
+                                // Disabled / waiting indicator: subtle rounded pill and muted spinner circle
+                                D2D1_ROUNDED_RECT rrcWait = D2D1::RoundedRect(item.discardBtnBounds, 3.0f, 3.0f);
+                                pRT->FillRoundedRectangle(rrcWait, theme.brushItemHover.Get());
+                                float dx = (item.discardBtnBounds.left + item.discardBtnBounds.right) / 2.0f;
+                                float dy = (item.discardBtnBounds.top + item.discardBtnBounds.bottom) / 2.0f;
+                                D2D1_ELLIPSE elWait = D2D1::Ellipse(D2D1::Point2F(dx, dy), 4.0f, 4.0f);
+                                pRT->DrawEllipse(elWait, theme.brushTextMuted.Get(), 1.2f);
+                            } else {
+                                if (isDiscardHovered || isDiscardPressed) {
+                                    D2D1_ROUNDED_RECT rrc = D2D1::RoundedRect(item.discardBtnBounds, 3.0f, 3.0f);
+                                    pRT->FillRoundedRectangle(rrc, isDiscardPressed ? (theme.brushBrandAccent ? theme.brushBrandAccent.Get() : theme.brushItemHover.Get()) : theme.brushItemHover.Get());
+                                }
+                                float dx = (item.discardBtnBounds.left + item.discardBtnBounds.right) / 2.0f;
+                                float dy = (item.discardBtnBounds.top + item.discardBtnBounds.bottom) / 2.0f;
+                                ID2D1Brush* pDiscBrush = isDiscardHovered ? (theme.IsDarkMode() ? theme.brushTextWhite.Get() : theme.brushTextPrimary.Get()) : theme.brushTextSecondary.Get();
+                                pRT->DrawLine(D2D1::Point2F(dx - 1.5f, dy + 2.0f), D2D1::Point2F(dx + 3.0f, dy + 2.0f), pDiscBrush, 1.3f);
+                                pRT->DrawLine(D2D1::Point2F(dx + 3.0f, dy + 2.0f), D2D1::Point2F(dx + 3.0f, dy - 2.0f), pDiscBrush, 1.3f);
+                                pRT->DrawLine(D2D1::Point2F(dx + 3.0f, dy - 2.0f), D2D1::Point2F(dx - 3.0f, dy - 2.0f), pDiscBrush, 1.3f);
+                                pRT->DrawLine(D2D1::Point2F(dx - 3.0f, dy - 2.0f), D2D1::Point2F(dx - 0.5f, dy - 4.5f), pDiscBrush, 1.3f);
+                                pRT->DrawLine(D2D1::Point2F(dx - 3.0f, dy - 2.0f), D2D1::Point2F(dx - 0.5f, dy + 0.5f), pDiscBrush, 1.3f);
+                            }
                         } else {
                             pRT->DrawText(statChar, 1,
                                           theme.fontButtonCenter.Get() ? theme.fontButtonCenter.Get() : theme.fontMenuItem.Get(),
