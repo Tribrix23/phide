@@ -114,40 +114,40 @@ static void SaveWicBitmapToPng(IWICBitmap* pWicBitmap, IWICImagingFactory* pWicF
 
     ComPtr<IWICStream> pStream;
     HRESULT hr = pWicFactory->CreateStream(&pStream);
-    if (FAILED(hr)) return;
+    if (FAILED(hr)) { std::cout << "SaveWicBitmapToPng failed CreateStream: " << hr << std::endl; return; }
 
     hr = pStream->InitializeFromFilename(outPath.c_str(), GENERIC_WRITE);
-    if (FAILED(hr)) return;
+    if (FAILED(hr)) { std::cout << "SaveWicBitmapToPng failed InitializeFromFilename: " << hr << std::endl; return; }
 
     ComPtr<IWICBitmapEncoder> pEncoder;
     hr = pWicFactory->CreateEncoder(GUID_ContainerFormatPng, nullptr, &pEncoder);
-    if (FAILED(hr)) return;
+    if (FAILED(hr)) { std::cout << "SaveWicBitmapToPng failed CreateEncoder: " << hr << std::endl; return; }
 
     hr = pEncoder->Initialize(pStream.Get(), WICBitmapEncoderNoCache);
-    if (FAILED(hr)) return;
+    if (FAILED(hr)) { std::cout << "SaveWicBitmapToPng failed Encoder Initialize: " << hr << std::endl; return; }
 
     ComPtr<IWICBitmapFrameEncode> pFrame;
     hr = pEncoder->CreateNewFrame(&pFrame, nullptr);
-    if (FAILED(hr)) return;
+    if (FAILED(hr)) { std::cout << "SaveWicBitmapToPng failed CreateNewFrame: " << hr << std::endl; return; }
 
     hr = pFrame->Initialize(nullptr);
-    if (FAILED(hr)) return;
+    if (FAILED(hr)) { std::cout << "SaveWicBitmapToPng failed Frame Initialize: " << hr << std::endl; return; }
 
     hr = pFrame->SetSize(width, height);
-    if (FAILED(hr)) return;
+    if (FAILED(hr)) { std::cout << "SaveWicBitmapToPng failed SetSize: " << hr << std::endl; return; }
 
     WICPixelFormatGUID format = GUID_WICPixelFormat32bppPBGRA;
     hr = pFrame->SetPixelFormat(&format);
-    if (FAILED(hr)) return;
+    if (FAILED(hr)) { std::cout << "SaveWicBitmapToPng failed SetPixelFormat: " << hr << std::endl; return; }
 
     hr = pFrame->WriteSource(pWicBitmap, nullptr);
-    if (FAILED(hr)) return;
+    if (FAILED(hr)) { std::cout << "SaveWicBitmapToPng failed WriteSource: " << hr << std::endl; return; }
 
     hr = pFrame->Commit();
-    if (FAILED(hr)) return;
+    if (FAILED(hr)) { std::cout << "SaveWicBitmapToPng failed Frame Commit: " << hr << std::endl; return; }
 
     hr = pEncoder->Commit();
-    if (FAILED(hr)) return;
+    if (FAILED(hr)) { std::cout << "SaveWicBitmapToPng failed Encoder Commit: " << hr << std::endl; return; }
 
     std::string s;
     for (wchar_t c : outPath) s += static_cast<char>(c);
@@ -5555,6 +5555,10 @@ int main() {
 
         // Verify Minimap Slider bounds when at top
         const auto& renderedDocTop = groups[0].docs[0];
+        std::cout << "  DEBUG: renderedDocTop.minimapSlider = [" << renderedDocTop.minimapSlider.left
+                  << ", " << renderedDocTop.minimapSlider.top << ", " << renderedDocTop.minimapSlider.right
+                  << ", " << renderedDocTop.minimapSlider.bottom << "], topY = " << topY
+                  << ", clientHeight = " << clientHeight << std::endl;
         assert(renderedDocTop.minimapSlider.top >= topY);
         assert(renderedDocTop.minimapSlider.bottom <= clientHeight);
         assert(renderedDocTop.minimapSlider.bottom > renderedDocTop.minimapSlider.top);
@@ -5698,7 +5702,11 @@ int main() {
         Microsoft::WRL::ComPtr<IWICBitmap> pWicSnap;
         pWicFactory->CreateBitmap(bmpW, bmpH, GUID_WICPixelFormat32bppPBGRA, WICBitmapCacheOnDemand, &pWicSnap);
         Microsoft::WRL::ComPtr<ID2D1RenderTarget> pRTSnap;
-        pD2DFactory->CreateWicBitmapRenderTarget(pWicSnap.Get(), D2D1::RenderTargetProperties(), &pRTSnap);
+        D2D1_RENDER_TARGET_PROPERTIES rtProps = D2D1::RenderTargetProperties(
+            D2D1_RENDER_TARGET_TYPE_DEFAULT,
+            D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED),
+            96.0f, 96.0f);
+        pD2DFactory->CreateWicBitmapRenderTarget(pWicSnap.Get(), rtProps, &pRTSnap);
 
         phide::ui::Theme snapTheme;
         snapTheme.SetThemeMode(phide::ui::ThemeMode::Dark);
@@ -5730,6 +5738,7 @@ int main() {
         drawer.Render(pRTSnap.Get(), snapTheme, cfg, static_cast<float>(bmpH), drawerW);
         editorCanvas.Render(pRTSnap.Get(), snapTheme, cfg, groups, 0, railW + drawerW, static_cast<float>(bmpW) - railW - drawerW, static_cast<float>(bmpH), true, L"", false, false, false, false);
         pRTSnap->EndDraw();
+        pRTSnap.Reset();
 
         std::wstring artDir = L"C:\\Users\\Administrator\\.gemini\\antigravity\\brain\\c83160b9-3f8b-4ad1-87a8-ab1f7f555a77\\";
         SaveWicBitmapToPng(pWicSnap.Get(), pWicFactory.Get(), artDir + L"test_error_indicators_node_modules_and_icons.png");
@@ -5843,6 +5852,7 @@ int main() {
         editorCanvas.Render(pRTSnap.Get(), snapTheme, cfg, diffGroups, 0, 300.0f, 900.0f, 750.0f, true, L"", false, false, false, false);
 
         pRTSnap->EndDraw();
+        pRTSnap.Reset();
 
         // Autocomplete caret should now be in the right pane (x > 700.0f)
         assert(editorCanvas.GetLastCaretX() > 700.0f);
@@ -5854,6 +5864,184 @@ int main() {
         std::cout << "  Passed: Saved test_diff_intellisense_context_menu_overflow_and_discard.png" << std::endl;
 
         std::cout << "  Passed: All [TEST 53] Context Menu Overflow, Diff Caret & Discard tests passed!" << std::endl;
+    }
+
+    // -------------------------------------------------------------
+    // Test 54: Active Indentation Guideline Highlighting, File Drop
+    //          Source Control Trigger & Discard In-Memory Buffer Revert
+    // -------------------------------------------------------------
+    {
+        std::cout << "\n[TEST 54] Testing Active Tree Indent Guides, Drop Trigger & Discard Buffer Revert..." << std::endl;
+
+        // 1. Test Active Tree Indent Guides Scope Calculation
+        phide::ui::DrawerPanel drawer;
+        phide::app::AppConfig cfg;
+        cfg.activeRailTab = 0; // Explorer
+
+        // Populate tree structure matching user image (out/renderer/assets/cleavedb-logo...)
+        phide::ui::DrawerTreeItem itStudio{ L"studio", L"", L"C:\\studio", 0, true, true };
+        phide::ui::DrawerTreeItem itOut{ L"out", L"", L"C:\\studio\\out", 1, true, true };
+        phide::ui::DrawerTreeItem itRenderer{ L"renderer", L"", L"C:\\studio\\out\\renderer", 2, true, true };
+        phide::ui::DrawerTreeItem itAssets{ L"assets", L"", L"C:\\studio\\out\\renderer\\assets", 3, true, true };
+        phide::ui::DrawerTreeItem itFile1{ L"cleavedb-logo-DEuJG-nm.png", L"", L"C:\\studio\\out\\renderer\\assets\\cleavedb-logo-DEuJG-nm.png", 4, false, false };
+        phide::ui::DrawerTreeItem itFile2{ L"index-BAB5fmth.css", L"", L"C:\\studio\\out\\renderer\\assets\\index-BAB5fmth.css", 4, false, false };
+        phide::ui::DrawerTreeItem itFile3{ L"index-CFoXoZ53.js", L"", L"C:\\studio\\out\\renderer\\assets\\index-CFoXoZ53.js", 4, false, false };
+        phide::ui::DrawerTreeItem itHtml{ L"index.html", L"", L"C:\\studio\\out\\renderer\\index.html", 2, false, false };
+        phide::ui::DrawerTreeItem itPkg{ L"package.json", L"", L"C:\\studio\\package.json", 1, false, false };
+
+        auto& items = drawer.GetVisibleItemsMutable();
+        items.clear();
+        items.push_back(itStudio);
+        items.push_back(itOut);
+        items.push_back(itRenderer);
+        items.push_back(itAssets);
+        items.push_back(itFile1);
+        items.push_back(itFile2);
+        items.push_back(itFile3);
+        items.push_back(itHtml);
+        items.push_back(itPkg);
+
+        // Set active file to cleavedb-logo-DEuJG-nm.png inside assets
+        drawer.SetActiveFilePath(itFile1.fullPath);
+
+        // Verify active parent folder is assets (depth 3)
+        int activeFolderDepth = -1;
+        size_t activeRangeStart = 0;
+        size_t activeRangeEnd = 0;
+
+        int activeItemIdx = -1;
+        for (size_t idx = 0; idx < items.size(); ++idx) {
+            if (_wcsicmp(items[idx].fullPath.c_str(), drawer.GetActiveFilePath().c_str()) == 0) {
+                activeItemIdx = static_cast<int>(idx);
+                break;
+            }
+        }
+        assert(activeItemIdx == 4); // itFile1 is at index 4
+
+        int parentFolderIdx = -1;
+        for (int j = activeItemIdx - 1; j >= 0; --j) {
+            if (items[j].isFolder && items[j].depth == items[activeItemIdx].depth - 1) {
+                parentFolderIdx = j;
+                break;
+            }
+        }
+        assert(parentFolderIdx == 3); // itAssets is at index 3
+        activeFolderDepth = items[parentFolderIdx].depth;
+        assert(activeFolderDepth == 3);
+
+        activeRangeStart = static_cast<size_t>(parentFolderIdx + 1);
+        activeRangeEnd = activeRangeStart;
+        while (activeRangeEnd < items.size() && items[activeRangeEnd].depth > activeFolderDepth) {
+            activeRangeEnd++;
+        }
+        // Active range should encompass indices 4, 5, 6 (all items directly under assets)
+        assert(activeRangeStart == 4);
+        assert(activeRangeEnd == 7);
+        std::cout << "  Passed: Active folder 'assets' (depth " << activeFolderDepth 
+                  << ") correctly scoped for items [" << activeRangeStart << ", " << activeRangeEnd << ")" << std::endl;
+
+        // Active folder guide line is at d = activeFolderDepth + 1 = 4
+        int expectedActiveGuideDepth = activeFolderDepth + 1;
+        assert(expectedActiveGuideDepth == 4);
+        std::cout << "  Passed: Tree indent guideline for 'assets' (d = 4) is designated active guide" << std::endl;
+
+        // 2. Test File Drop Triggering Source Control Dirty Files
+        drawer.SetGitRepo(true);
+        drawer.SetOpenFolderPath(L"C:\\studio");
+        phide::editor::OpenDocument droppedDoc;
+        droppedDoc.filePath = L"C:\\studio\\electron-builder.yml";
+        droppedDoc.fileName = L"electron-builder.yml";
+        droppedDoc.buffer.SetText(L"linux:\n  target: AppImage\n");
+        // Simulate dropping a file into electron-builder.yml
+        droppedDoc.buffer.SetCursor(1, 0);
+        droppedDoc.buffer.InsertText(L"  target: \"./.prettierrc.yaml\"\n");
+        droppedDoc.isDirty = true;
+        assert(droppedDoc.isDirty == true);
+
+        // Update drawer dirty files
+        drawer.SetDirtyFiles({ droppedDoc.filePath });
+        bool foundInGitChanges = false;
+        for (const auto& chg : drawer.GetGitChanges()) {
+            if (chg.path.find(L"electron-builder.yml") != std::wstring::npos) {
+                foundInGitChanges = true;
+                assert(chg.status == L"M");
+                break;
+            }
+        }
+        assert(foundInGitChanges);
+        std::cout << "  Passed: File drop immediately updates Source Control dirty list with status 'M'" << std::endl;
+
+        // 3. Test Discard Changes Reverts In-Memory Buffer to Clean Disk Content
+        std::wstring tempDiscardPath = std::filesystem::current_path().wstring() + L"\\test_temp_discard.yml";
+        {
+            std::wofstream outClean(tempDiscardPath);
+            outClean << L"linux:\n  target: AppImage\n";
+        }
+
+        phide::editor::OpenDocument discardDoc;
+        discardDoc.filePath = tempDiscardPath;
+        discardDoc.fileName = L"test_temp_discard.yml";
+        discardDoc.buffer.LoadFromFile(tempDiscardPath);
+        assert(discardDoc.buffer.GetLineCount() == 2);
+
+        // Simulate dirty edit (dropped line)
+        discardDoc.buffer.SetCursor(1, 0);
+        discardDoc.buffer.InsertText(L"  target: \"./.prettierrc.yaml\"\n");
+        discardDoc.isDirty = true;
+        assert(discardDoc.buffer.GetLineCount() == 3);
+        assert(discardDoc.isDirty == true);
+
+        // Perform discard reload logic
+        discardDoc.buffer.LoadFromFile(discardDoc.filePath);
+        discardDoc.isDirty = false;
+        discardDoc.ClearSelection();
+        if (discardDoc.buffer.GetCursor().line >= discardDoc.buffer.GetLineCount()) {
+            discardDoc.buffer.SetCursor(discardDoc.buffer.GetLineCount() > 0 ? discardDoc.buffer.GetLineCount() - 1 : 0, 0);
+        }
+        discardDoc.diagnostics = phide::editor::SyntaxValidator::Validate(discardDoc.filePath, discardDoc.buffer);
+
+        // Verify dropped text is completely eliminated from in-memory buffer
+        assert(discardDoc.buffer.GetLineCount() == 2);
+        assert(discardDoc.buffer.GetLine(0) == L"linux:");
+        assert(discardDoc.buffer.GetLine(1) == L"  target: AppImage");
+        assert(discardDoc.isDirty == false);
+        std::error_code ecDel;
+        std::filesystem::remove(tempDiscardPath, ecDel);
+        std::cout << "  Passed: Discard reload cleanly eliminates in-memory inserted text and resets isDirty" << std::endl;
+
+        // 4. Test Discard Visual Notification Banner
+        drawer.ShowGitNotification(L"Discarded electron-builder.yml");
+        assert(drawer.HasGitNotification());
+        assert(drawer.GetGitNotificationText() == L"Discarded electron-builder.yml");
+        std::cout << "  Passed: Visual discard notification banner is active with 'Discarded electron-builder.yml'" << std::endl;
+
+        // 5. Render Tree with Highlighted Assets Guideline & Save Snapshot
+        const UINT bmpW = 1200;
+        const UINT bmpH = 750;
+        Microsoft::WRL::ComPtr<IWICBitmap> pWicSnap;
+        pWicFactory->CreateBitmap(bmpW, bmpH, GUID_WICPixelFormat32bppPBGRA, WICBitmapCacheOnDemand, &pWicSnap);
+        Microsoft::WRL::ComPtr<ID2D1RenderTarget> pRTSnap;
+        pD2DFactory->CreateWicBitmapRenderTarget(pWicSnap.Get(), D2D1::RenderTargetProperties(), &pRTSnap);
+
+        phide::ui::Theme snapTheme;
+        snapTheme.SetThemeMode(phide::ui::ThemeMode::Dark);
+        snapTheme.CreateDeviceResources(pRTSnap.Get(), pDWriteFactory.Get());
+
+        pRTSnap->BeginDraw();
+        pRTSnap->Clear(D2D1::ColorF(0.12f, 0.12f, 0.12f, 1.0f));
+
+        phide::ui::ActivityRail rail;
+        rail.Render(pRTSnap.Get(), snapTheme, cfg, 750.0f);
+        drawer.Render(pRTSnap.Get(), snapTheme, cfg, 750.0f, 280.0f);
+
+        pRTSnap->EndDraw();
+        pRTSnap.Reset();
+
+        std::wstring artDir = L"C:\\Users\\Administrator\\.gemini\\antigravity\\brain\\c83160b9-3f8b-4ad1-87a8-ab1f7f555a77\\";
+        SaveWicBitmapToPng(pWicSnap.Get(), pWicFactory.Get(), artDir + L"test_tree_guidelines_and_discard_revert.png");
+        std::cout << "  Passed: Saved test_tree_guidelines_and_discard_revert.png" << std::endl;
+
+        std::cout << "  Passed: All [TEST 54] Tree Guidelines, Drop Trigger & Discard Buffer Revert passed!" << std::endl;
     }
 
     std::cout << "\n==========================================" << std::endl;

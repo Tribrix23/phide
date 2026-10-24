@@ -4844,6 +4844,19 @@ void Window::HandleLButtonDown(POINT clientPt) {
                     OpenFileDocument(openFile, false);
                 }
                 if (!discardedFile.empty()) {
+                    auto PathsMatch = [](const std::wstring& p1, const std::wstring& p2) -> bool {
+                        if (p1.empty() || p2.empty()) return false;
+                        if (p2 == L"*") return true;
+                        std::wstring c1 = p1;
+                        std::wstring c2 = p2;
+                        for (auto& c : c1) { if (c == L'/') c = L'\\'; c = static_cast<wchar_t>(towlower(c)); }
+                        for (auto& c : c2) { if (c == L'/') c = L'\\'; c = static_cast<wchar_t>(towlower(c)); }
+                        if (c1 == c2) return true;
+                        if (c1.ends_with(L"\\" + c2) || c2.ends_with(L"\\" + c1)) return true;
+                        if (c1.ends_with(c2) || c2.ends_with(c1)) return true;
+                        return false;
+                    };
+
                     // 0. If discarded file is untracked new file, remove from disk immediately
                     std::wstring dir = m_drawer.GetOpenFolderPath();
                     std::filesystem::path candP = std::filesystem::path(dir) / discardedFile;
@@ -4863,16 +4876,7 @@ void Window::HandleLButtonDown(POINT clientPt) {
                             if (d >= static_cast<int>(m_editorGroups[g].docs.size())) continue;
                             auto& doc = m_editorGroups[g].docs[d];
                             if (doc.isDiffView && !doc.isDiffRightReadOnly) {
-                                std::wstring cleanDoc = doc.filePath;
-                                for (auto& c : cleanDoc) if (c == L'/') c = L'\\';
-                                std::wstring cleanDisc = discardedFile;
-                                for (auto& c : cleanDisc) if (c == L'/') c = L'\\';
-
-                                bool matches = (discardedFile == L"*") ||
-                                               (cleanDoc == cleanDisc) ||
-                                               (cleanDoc.ends_with(cleanDisc)) ||
-                                               (cleanDisc.ends_with(cleanDoc));
-                                if (matches) {
+                                if (PathsMatch(doc.filePath, discardedFile)) {
                                     CloseDocument(g, d);
                                 }
                             }
@@ -4887,21 +4891,17 @@ void Window::HandleLButtonDown(POINT clientPt) {
                             if (d >= static_cast<int>(m_editorGroups[g].docs.size())) continue;
                             auto& doc = m_editorGroups[g].docs[d];
                             if (!doc.filePath.empty()) {
-                                std::wstring cleanDoc = doc.filePath;
-                                for (auto& c : cleanDoc) if (c == L'/') c = L'\\';
-                                std::wstring cleanDisc = discardedFile;
-                                for (auto& c : cleanDisc) if (c == L'/') c = L'\\';
-
-                                bool matches = (discardedFile == L"*") ||
-                                               (cleanDoc == cleanDisc) ||
-                                               (cleanDoc.ends_with(cleanDisc)) ||
-                                               (cleanDisc.ends_with(cleanDoc));
-                                if (matches) {
+                                if (PathsMatch(doc.filePath, discardedFile)) {
                                     if (!std::filesystem::exists(doc.filePath)) {
                                         CloseDocument(g, d);
                                     } else {
                                         doc.buffer.LoadFromFile(doc.filePath);
                                         doc.isDirty = false;
+                                        doc.ClearSelection();
+                                        if (doc.buffer.GetCursor().line >= doc.buffer.GetLineCount()) {
+                                            doc.buffer.SetCursor(doc.buffer.GetLineCount() > 0 ? doc.buffer.GetLineCount() - 1 : 0, 0);
+                                        }
+                                        doc.diagnostics = editor::SyntaxValidator::Validate(doc.filePath, doc.buffer);
                                         if (doc.isDiffView) {
                                             ComputeDiffHunks(doc);
                                         }
@@ -4913,7 +4913,7 @@ void Window::HandleLButtonDown(POINT clientPt) {
                     m_drawer.RefreshTree();
                     UpdateDrawerDirtyFiles();
                     UpdateDrawerErrorFiles();
-                    TriggerDebouncedGitRefresh(500);
+                    m_drawer.RefreshGitStatusOnly(false);
                 }
                 InvalidateRect(m_hwnd, nullptr, FALSE);
                 return;
@@ -5043,6 +5043,9 @@ void Window::HandleLButtonUp(POINT clientPt) {
                             MarkDocumentModified(pDoc);
                             m_editor.DismissAutocomplete();
                             m_editor.ClearGhostText();
+                            // Immediately update Source Control dirty files & git status (User request: "when i drop a file to editor it should also trugger the source control")
+                            UpdateDrawerDirtyFiles();
+                            m_drawer.RefreshGitStatusOnly(true);
                         }
                     }
                 } else if (!pDoc) {
@@ -6092,7 +6095,10 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
             }
 
             // Delete key: deletes selected file/folder in File Explorer (User request: "the del keyboard key doesnt work i click the file and click on the keyboard the del ut the fiule is not deleted")
-            if (wParam == VK_DELETE && m_config.activeRailTab == 0 && m_drawerAnimProgress > 0.001f && m_explorerHasFocus) {
+            auto* pActiveDocCheck = GetActiveDoc();
+            bool docHasSelection = (pActiveDocCheck && pActiveDocCheck->HasSelection());
+            if (wParam == VK_DELETE && m_config.activeRailTab == 0 && m_drawerAnimProgress > 0.001f &&
+                (m_explorerHasFocus || (!m_selectedExplorerPath.empty() && !docHasSelection))) {
                 DoDeleteSelectedExplorerItem();
                 return 0;
             }

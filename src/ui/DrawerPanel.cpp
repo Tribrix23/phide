@@ -533,6 +533,80 @@ void DrawerPanel::RenderExplorerPane(ID2D1RenderTarget* pRT, Theme& theme, const
                 drawCreateRow();
             }
 
+            // Precalculate active folder scope for tree indent guideline highlighting
+            // (User request: "the lines are not noticeable and since I'm inside the assets the line of assets should be more noticeable")
+            int activeFolderDepth = -1;
+            size_t activeRangeStart = 0;
+            size_t activeRangeEnd = 0;
+
+            int activeItemIdx = -1;
+            if (!m_activeFilePath.empty()) {
+                for (size_t idx = 0; idx < m_visibleItems.size(); ++idx) {
+                    if (_wcsicmp(m_visibleItems[idx].fullPath.c_str(), m_activeFilePath.c_str()) == 0) {
+                        activeItemIdx = static_cast<int>(idx);
+                        break;
+                    }
+                }
+                // Fallback: check if m_activeFilePath is a descendant of a visible folder
+                if (activeItemIdx == -1) {
+                    std::wstring normActive = m_activeFilePath;
+                    for (auto& c : normActive) if (c == L'/') c = L'\\';
+                    for (int idx = static_cast<int>(m_visibleItems.size()) - 1; idx >= 0; --idx) {
+                        if (m_visibleItems[idx].isFolder) {
+                            std::wstring normFolder = m_visibleItems[idx].fullPath;
+                            for (auto& c : normFolder) if (c == L'/') c = L'\\';
+                            if (!normFolder.empty() && normFolder.back() != L'\\') normFolder += L'\\';
+                            if (normActive.rfind(normFolder, 0) == 0) {
+                                activeItemIdx = idx;
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+
+            if (activeItemIdx >= 0 && activeItemIdx < static_cast<int>(m_visibleItems.size())) {
+                const auto& activeItem = m_visibleItems[activeItemIdx];
+                int parentFolderIdx = -1;
+                if (activeItem.isFolder) {
+                    parentFolderIdx = activeItemIdx;
+                } else {
+                    for (int j = activeItemIdx - 1; j >= 0; --j) {
+                        if (m_visibleItems[j].isFolder && m_visibleItems[j].depth == activeItem.depth - 1) {
+                            parentFolderIdx = j;
+                            break;
+                        }
+                    }
+                }
+
+                if (parentFolderIdx >= 0) {
+                    activeFolderDepth = m_visibleItems[parentFolderIdx].depth;
+                    activeRangeStart = static_cast<size_t>(parentFolderIdx + 1);
+                    activeRangeEnd = activeRangeStart;
+                    while (activeRangeEnd < m_visibleItems.size() && m_visibleItems[activeRangeEnd].depth > activeFolderDepth) {
+                        activeRangeEnd++;
+                    }
+                }
+            }
+
+            // Indentation guideline brushes: enhanced contrast & active ancestor highlight
+            Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushActiveGuide;
+            Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushActiveAncestorGuide;
+            Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushIndentGuide;
+
+            pRT->CreateSolidColorBrush(
+                theme.colors.brandAccent,
+                &brushActiveGuide
+            );
+            pRT->CreateSolidColorBrush(
+                theme.IsDarkMode() ? D2D1::ColorF(0.50f, 0.50f, 0.54f, 0.85f) : D2D1::ColorF(0.55f, 0.55f, 0.58f, 0.90f),
+                &brushActiveAncestorGuide
+            );
+            pRT->CreateSolidColorBrush(
+                theme.IsDarkMode() ? D2D1::ColorF(0.35f, 0.35f, 0.38f, 0.65f) : D2D1::ColorF(0.72f, 0.72f, 0.75f, 0.85f),
+                &brushIndentGuide
+            );
+
             // Tree Items with Seti/Material Icons & Indentation Guidelines
             for (size_t i = m_scrollIndex; i < m_visibleItems.size(); ++i) {
                 auto& item = m_visibleItems[i];
@@ -564,15 +638,32 @@ void DrawerPanel::RenderExplorerPane(ID2D1RenderTarget* pRT, Theme& theme, const
 
                 float indent = config.ScaleF(static_cast<float>(item.depth * 14));
 
-                // 1. Draw vertical tree indent guidelines for depth > 0
+                // 1. Draw vertical tree indent guidelines for depth > 0 (enhanced contrast & active ancestor highlight)
                 for (int d = 1; d <= item.depth; ++d) {
                     float guideX = railW + paddingX + config.ScaleF(static_cast<float>((d - 1) * 14)) + config.ScaleF(2.0f);
-                    pRT->DrawLine(
-                        D2D1::Point2F(guideX, curY),
-                        D2D1::Point2F(guideX, curY + itemH),
-                        theme.brushBorderSubtle.Get(),
-                        1.0f
-                    );
+                    ID2D1Brush* pGuideBrush = brushIndentGuide ? brushIndentGuide.Get() : theme.brushBorderSubtle.Get();
+                    float strokeW = 1.0f;
+
+                    if (i >= activeRangeStart && i < activeRangeEnd) {
+                        if (d == activeFolderDepth + 1) {
+                            // Active folder's guideline (e.g. assets) - clearly noticeable accent highlight
+                            pGuideBrush = brushActiveGuide ? brushActiveGuide.Get() : (theme.brushBrandAccent ? theme.brushBrandAccent.Get() : theme.brushBorderSubtle.Get());
+                            strokeW = 1.5f;
+                        } else if (d <= activeFolderDepth) {
+                            // Active branch ancestors
+                            pGuideBrush = brushActiveAncestorGuide ? brushActiveAncestorGuide.Get() : pGuideBrush;
+                            strokeW = 1.0f;
+                        }
+                    }
+
+                    if (pGuideBrush) {
+                        pRT->DrawLine(
+                            D2D1::Point2F(guideX, curY),
+                            D2D1::Point2F(guideX, curY + itemH),
+                            pGuideBrush,
+                            strokeW
+                        );
+                    }
                 }
 
                 float cy = curY + itemH / 2.0f;
@@ -4151,6 +4242,10 @@ bool DrawerPanel::DiscardAllChanges() {
     RunGitCmd(L"restore --staged --worktree .", dir);
     RunGitCmd(L"checkout HEAD -- .", dir);
     RunGitCmd(L"clean -fd", dir);
+    {
+        std::lock_guard<std::recursive_mutex> lock(m_gitMutex);
+        m_dirtyFilePaths.clear();
+    }
     RefreshGitStatusOnly(false);
     m_isGitLoading = false;
     return true;
@@ -4199,6 +4294,22 @@ bool DrawerPanel::DiscardFile(const std::wstring& relPath) {
     RunGitCmd(L"restore --staged --worktree -- \"" + cleanRel + L"\"", dir);
     RunGitCmd(L"checkout HEAD -- \"" + cleanRel + L"\"", dir);
     RunGitCmd(L"clean -f -d -- \"" + cleanRel + L"\"", dir);
+
+    // Remove from m_dirtyFilePaths
+    {
+        std::lock_guard<std::recursive_mutex> lock(m_gitMutex);
+        auto it = std::remove_if(m_dirtyFilePaths.begin(), m_dirtyFilePaths.end(), [&](const std::wstring& p) {
+            std::wstring cp = p;
+            for (auto& c : cp) if (c == L'/') c = L'\\';
+            std::wstring cr = relPath;
+            for (auto& c : cr) if (c == L'/') c = L'\\';
+            return _wcsicmp(cp.c_str(), cr.c_str()) == 0 ||
+                   cp.ends_with(L"\\" + cr) ||
+                   cr.ends_with(L"\\" + cp);
+        });
+        m_dirtyFilePaths.erase(it, m_dirtyFilePaths.end());
+    }
+
     RefreshGitStatusOnly(false);
     m_isGitLoading = false;
     return true;
@@ -4496,7 +4607,8 @@ bool DrawerPanel::HitTestGit(POINT pt, const app::AppConfig& config,
                             StageAllChangesAsync();
                             break;
                         case 11: // Discard All Changes
-                            DiscardAllChangesAsync();
+                            DiscardAllChanges();
+                            ShowGitNotification(L"Discarded all changes");
                             outDiscardedFile = L"*";
                             break;
                         case 13: // Undo Last Commit (Uncommit)
@@ -4567,7 +4679,8 @@ bool DrawerPanel::HitTestGit(POINT pt, const app::AppConfig& config,
         }
         if (pt.x >= m_gitDiscardAllBounds.left && pt.x <= m_gitDiscardAllBounds.right &&
             pt.y >= m_gitDiscardAllBounds.top && pt.y <= m_gitDiscardAllBounds.bottom) {
-            DiscardAllChangesAsync();
+            DiscardAllChanges();
+            ShowGitNotification(L"Discarded all changes");
             outDiscardedFile = L"*";
             return true;
         }
@@ -4638,9 +4751,10 @@ bool DrawerPanel::HitTestGit(POINT pt, const app::AppConfig& config,
                         m_gitTooltipText = L"Discarded " + item.fileName;
                         m_showGitTooltip = true;
                         m_gitTooltipTarget = item.bounds;
+                        ShowGitNotification(L"Discarded " + item.fileName);
                         std::wstring discardPath = item.path;
                         m_gitChanges.erase(m_gitChanges.begin() + i);
-                        DiscardFileAsync(discardPath);
+                        DiscardFile(discardPath);
                         return true;
                     }
                     outOpenFile = item.path;
@@ -5052,6 +5166,42 @@ void DrawerPanel::RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, 
         pRT->FillEllipse(D2D1::Ellipse(D2D1::Point2F(mx + 3.5f, my), 1.2f, 1.2f), theme.brushTextMuted.Get());
 
         curY += secH + config.ScaleF(6.0f);
+
+        // Visual Notification Pill (e.g. "✓ Discarded <file>") - gives instant visual info when discarding
+        if (HasGitNotification()) {
+            float notifH = config.ScaleF(22.0f);
+            D2D1_RECT_F rcNotif = D2D1::RectF(
+                railW + paddingX,
+                curY,
+                railW + currentDrawerW - paddingX,
+                curY + notifH
+            );
+            D2D1_ROUNDED_RECT rrcNotif = D2D1::RoundedRect(rcNotif, 4.0f, 4.0f);
+            Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushNotifBg;
+            Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushNotifBorder;
+            pRT->CreateSolidColorBrush(
+                theme.IsDarkMode() ? D2D1::ColorF(0.10f, 0.22f, 0.35f, 0.95f) : D2D1::ColorF(0.85f, 0.92f, 1.0f, 0.95f),
+                &brushNotifBg
+            );
+            pRT->CreateSolidColorBrush(
+                theme.brushBrandAccent ? theme.brushBrandAccent->GetColor() : D2D1::ColorF(0.0f, 0.471f, 0.831f, 0.80f),
+                &brushNotifBorder
+            );
+            if (brushNotifBg) pRT->FillRoundedRectangle(rrcNotif, brushNotifBg.Get());
+            if (brushNotifBorder) pRT->DrawRoundedRectangle(rrcNotif, brushNotifBorder.Get(), 1.0f);
+
+            D2D1_RECT_F rcNotifText = D2D1::RectF(
+                rcNotif.left + config.ScaleF(6.0f),
+                rcNotif.top + config.ScaleF(1.0f),
+                rcNotif.right - config.ScaleF(6.0f),
+                rcNotif.bottom - config.ScaleF(1.0f)
+            );
+            std::wstring fullMsg = L"✓ " + m_gitNotificationText;
+            pRT->DrawText(fullMsg.c_str(), static_cast<UINT32>(fullMsg.length()),
+                          theme.fontMenuItem.Get() ? theme.fontMenuItem.Get() : theme.fontButtonCenter.Get(),
+                          rcNotifText, theme.brushTextPrimary.Get());
+            curY += notifH + config.ScaleF(6.0f);
+        }
 
         if (m_changesExpanded) {
             // Commit Message Input Box

@@ -209,6 +209,7 @@ public:
     [[nodiscard]] float GetGitSplitY() const noexcept { return m_gitSplitY; }
 
     [[nodiscard]] bool IsGitRepo() const noexcept { return m_isGitRepo; }
+    void SetGitRepo(bool isRepo) noexcept { m_isGitRepo = isRepo; }
     [[nodiscard]] bool IsGitLoading() const noexcept { return m_isGitLoading.load(); }
     [[nodiscard]] bool IsGitRefreshing() const noexcept { return m_isGitRefreshing.load(); }
     [[nodiscard]] std::recursive_mutex& GetGitMutex() const noexcept { return m_gitMutex; }
@@ -239,6 +240,14 @@ public:
     [[nodiscard]] const D2D1_RECT_F& GetGitHeaderMoreBounds() const noexcept { return m_gitHeaderMoreBounds; }
     [[nodiscard]] const std::wstring& GetGitTooltipText() const noexcept { return m_gitTooltipText; }
     [[nodiscard]] bool IsGitTooltipVisible() const noexcept { return m_showGitTooltip; }
+    void ShowGitNotification(const std::wstring& msg, ULONGLONG durationMs = 2500) noexcept {
+        m_gitNotificationText = msg;
+        m_gitNotificationExpiry = GetTickCount64() + durationMs;
+    }
+    [[nodiscard]] const std::wstring& GetGitNotificationText() const noexcept { return m_gitNotificationText; }
+    [[nodiscard]] bool HasGitNotification() const noexcept {
+        return (GetTickCount64() < m_gitNotificationExpiry && !m_gitNotificationText.empty());
+    }
     [[nodiscard]] bool IsGitViewMenuOpen() const noexcept { return m_activeGitMenu == GitMenuType::HeaderViews || m_showGitViewMenu; }
     [[nodiscard]] GitMenuType GetActiveGitMenu() const noexcept { return m_activeGitMenu; }
     void DismissCommitCard() noexcept {
@@ -310,6 +319,10 @@ public:
         return m_visibleItems;
     }
 
+    [[nodiscard]] std::vector<DrawerTreeItem>& GetVisibleItemsMutable() noexcept {
+        return m_visibleItems;
+    }
+
     [[nodiscard]] size_t GetItemCount() const noexcept {
         return m_visibleItems.size();
     }
@@ -354,6 +367,7 @@ public:
 
     [[nodiscard]] bool HasOpenFolder() const noexcept { return m_hasOpenFolder; }
     [[nodiscard]] const std::wstring& GetOpenFolderPath() const noexcept { return m_openFolderPath; }
+    void SetOpenFolderPath(const std::wstring& path) noexcept { m_openFolderPath = path; }
     [[nodiscard]] const std::wstring& GetRootName() const noexcept { return m_rootName; }
 
     // --- Search Pane Interactions (Image 2) ---
@@ -666,6 +680,10 @@ private:
     std::wstring m_gitTooltipText;
     D2D1_RECT_F m_gitTooltipTarget{};
     bool m_showGitTooltip = false;
+
+    // Visual notification state (per user request: visual feedback for discard action)
+    std::wstring m_gitNotificationText;
+    ULONGLONG m_gitNotificationExpiry = 0;
 
     // Multi-menu state (Header Views, Changes More, Graph More)
     GitMenuType m_activeGitMenu = GitMenuType::None;
