@@ -873,15 +873,19 @@ std::vector<TerminalSpan> TerminalPanel::FormatTerminalLine(const TerminalLine& 
 }
 
 void TerminalPanel::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
-                           float clientW, float clientH, float leftOffset) {
+                           float clientW, float clientH, float leftOffset, float animatedHeight) {
     if (!m_isOpen) return;
 
     float panelX = leftOffset;
-    float panelH = m_isFullScreen ? (clientH - config.headerHeight) : m_height;
+    float maxH = m_isFullScreen ? (clientH - config.headerHeight) : m_height;
+    float panelH = (animatedHeight >= 0.0f) ? animatedHeight : maxH;
+    if (panelH <= 0.0f) return;
     float panelY = clientH - panelH;
     float panelW = clientW - leftOffset;
 
     m_panelBounds = D2D1::RectF(panelX, panelY, panelX + panelW, panelY + panelH);
+
+    pRT->PushAxisAlignedClip(m_panelBounds, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
 
     // 1. Panel Background
     D2D1_COLOR_F bgColor = theme.IsDarkMode() ? D2D1::ColorF(0.08f, 0.08f, 0.09f, 1.0f) : D2D1::ColorF(0.96f, 0.96f, 0.97f, 1.0f);
@@ -907,7 +911,9 @@ void TerminalPanel::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppC
     float contentY = panelY + headerH;
     float contentH = panelH - headerH;
     m_textAreaBounds = D2D1::RectF(panelX, contentY, panelX + panelW, panelY + panelH);
-    RenderContent(pRT, theme, config, panelX, contentY, panelW, contentH);
+    if (contentH > 5.0f) {
+        RenderContent(pRT, theme, config, panelX, contentY, panelW, contentH);
+    }
 
     // 5. Shell Dropdown Menu (Image 2)
     if (m_showShellMenu) {
@@ -918,6 +924,8 @@ void TerminalPanel::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppC
     if (m_showOptionsMenu) {
         RenderOptionsMenu(pRT, theme, config);
     }
+
+    pRT->PopAxisAlignedClip();
 }
 
 void TerminalPanel::RenderHeader(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
@@ -2191,7 +2199,11 @@ bool TerminalPanel::OnMouseDown(POINT pt, const app::AppConfig& config, const st
 
     // 8. Check '-' Minimize Button
     if (inRect(pt, m_minimizeBtnBounds)) {
-        Close();
+        if (m_onMinimize) {
+            m_onMinimize();
+        } else {
+            Close();
+        }
         return true;
     }
 

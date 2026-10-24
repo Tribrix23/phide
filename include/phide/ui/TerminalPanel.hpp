@@ -243,6 +243,7 @@ public:
     void StartLiveServerSession(const std::wstring& localUrl, const std::wstring& networkUrl, const std::wstring& filePath = L"", const std::wstring& fileName = L"");
     bool CloseTabByAssociatedFile(const std::wstring& filePath);
     void SetOnLiveServerTabClosed(std::function<void(const std::wstring&)> cb) { m_onLiveServerTabClosed = std::move(cb); }
+    void SetOnMinimize(std::function<void()> cb) { m_onMinimize = std::move(cb); }
     void ExecuteCommandLine(const std::wstring& command);
 
     // Debug Session Management (Same layout as terminal, fully functional)
@@ -255,7 +256,7 @@ public:
 
     // Direct2D Rendering
     void Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
-                float clientW, float clientH, float leftOffset);
+                float clientW, float clientH, float leftOffset, float animatedHeight = -1.0f);
 
     // Hit-testing & Mouse Event Handling
     [[nodiscard]] bool HitTest(POINT pt) const noexcept;
@@ -264,6 +265,7 @@ public:
     [[nodiscard]] bool HitTestTextArea(POINT pt) const noexcept;
     [[nodiscard]] bool HitTestSplitButton(POINT pt) const noexcept;
     [[nodiscard]] bool HitTestTerminalSplitter(POINT pt) const noexcept;
+    [[nodiscard]] const D2D1_RECT_F& GetMinimizeBtnBounds() const noexcept { return m_minimizeBtnBounds; }
 
     bool OnMouseDown(POINT pt, const app::AppConfig& config, const std::wstring& workingDir);
     bool OnMouseMove(POINT pt, bool isLButtonDown, float clientH);
@@ -379,6 +381,7 @@ private:
     bool m_hoverClearConsole = false;
     mutable std::vector<TerminalUrlHit> m_visibleUrls;
     std::function<void(const std::wstring&)> m_onLiveServerTabClosed;
+    std::function<void()> m_onMinimize;
 };
 
 } // namespace phide::ui

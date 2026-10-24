@@ -1,0 +1,683 @@
+{
+    // User Code Snippets for phide IDE
+    // Each snippet is defined under a snippet name and has a prefix, body, description, and scope.
+    // Use $1, $2 for tab stops, $0 for final cursor position, and ${1:label} for placeholders.
+
+    "HTML5 Boilerplate Template (!)": {
+        "prefix": "!",
+        "body": [
+            "<!DOCTYPE html>",
+            "<html lang=\"en\">",
+            "<head>",
+            "    <meta charset=\"UTF-8\">",
+            "    <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">",
+            "    <title>${1:Document}</title>",
+            "</head>",
+            "<body>",
+            "    $0",
+            "</body>",
+            "</html>"
+        ],
+        "description": "Complete HTML5 boilerplate skeleton with DOCTYPE, meta charset, viewport, title, and body",
+        "scope": "html,htm,php"
+    },
+
+    "HTML5 Boilerplate (html:5)": {
+        "prefix": "html:5",
+        "body": [
+            "<!DOCTYPE html>",
+            "<html lang=\"en\">",
+            "<head>",
+            "    <meta charset=\"UTF-8\">",
+            "    <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">",
+            "    <title>${1:Document}</title>",
+            "</head>",
+            "<body>",
+            "    $0",
+            "</body>",
+            "</html>"
+        ],
+        "description": "Complete HTML5 boilerplate skeleton with DOCTYPE, meta charset, viewport, title, and body",
+        "scope": "html,htm,php"
+    },
+
+    "Link External CSS Stylesheet": {
+        "prefix": "link:css",
+        "body": [
+            "<link rel=\"stylesheet\" href=\"${1:style.css}\" />"
+        ],
+        "description": "Link external stylesheet link element",
+        "scope": "html,htm,php"
+    },
+
+    "External JavaScript Script Tag": {
+        "prefix": "script:src",
+        "body": [
+            "<script src=\"${1:app.js}\"></script>"
+        ],
+        "description": "Include external JavaScript source script element",
+        "scope": "html,htm,php"
+    },
+
+    "Meta Viewport Tag": {
+        "prefix": "meta:vp",
+        "body": [
+            "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\" />"
+        ],
+        "description": "Responsive viewport meta tag",
+        "scope": "html,htm,php"
+    },
+
+    "Meta Charset UTF-8": {
+        "prefix": "meta:utf",
+        "body": [
+            "<meta charset=\"UTF-8\" />"
+        ],
+        "description": "Standard UTF-8 encoding meta tag",
+        "scope": "html,htm,php"
+    },
+
+    "Anchor Hyperlink": {
+        "prefix": "a",
+        "body": [
+            "<a href=\"${1:#}\">${2:Link}</a>"
+        ],
+        "description": "HTML anchor hyperlink tag",
+        "scope": "html,htm,php"
+    },
+
+    "Image Element": {
+        "prefix": "img",
+        "body": [
+            "<img src=\"${1:image.png}\" alt=\"${2:description}\" />"
+        ],
+        "description": "HTML image tag with src and alt",
+        "scope": "html,htm,php"
+    },
+
+    "Button Element": {
+        "prefix": "btn",
+        "body": [
+            "<button type=\"${1:button}\">${2:Click}</button>"
+        ],
+        "description": "HTML button element with type and text",
+        "scope": "html,htm,php"
+    },
+
+    "Form Post Element": {
+        "prefix": "form:post",
+        "body": [
+            "<form action=\"${1:#}\" method=\"post\">",
+            "    $0",
+            "</form>"
+        ],
+        "description": "HTML form element with POST action",
+        "scope": "html,htm,php"
+    },
+
+    "Input Text Field": {
+        "prefix": "input:text",
+        "body": [
+            "<input type=\"text\" name=\"${1:name}\" placeholder=\"${2:Enter text...}\" />"
+        ],
+        "description": "HTML text input field",
+        "scope": "html,htm,php"
+    },
+
+    "Input Password Field": {
+        "prefix": "input:password",
+        "body": [
+            "<input type=\"password\" name=\"${1:password}\" />"
+        ],
+        "description": "HTML password input field",
+        "scope": "html,htm,php"
+    },
+
+    "Input Email Field": {
+        "prefix": "input:email",
+        "body": [
+            "<input type=\"email\" name=\"${1:email}\" placeholder=\"${2:name@example.com}\" />"
+        ],
+        "description": "HTML email input field",
+        "scope": "html,htm,php"
+    },
+
+    "Input Submit Button": {
+        "prefix": "input:submit",
+        "body": [
+            "<input type=\"submit\" value=\"${1:Submit}\" />"
+        ],
+        "description": "HTML form submit button",
+        "scope": "html,htm,php"
+    },
+
+    "HTML Table Structure": {
+        "prefix": "table",
+        "body": [
+            "<table>",
+            "    <thead>",
+            "        <tr>",
+            "            <th>${1:Header}</th>",
+            "        </tr>",
+            "    </thead>",
+            "    <tbody>",
+            "        <tr>",
+            "            <td>$0</td>",
+            "        </tr>",
+            "    </tbody>",
+            "</table>"
+        ],
+        "description": "Complete HTML table skeleton structure",
+        "scope": "html,htm,php"
+    },
+
+    "Unordered List with Item": {
+        "prefix": "ul>li",
+        "body": [
+            "<ul>",
+            "    <li>$0</li>",
+            "</ul>"
+        ],
+        "description": "HTML unordered list with list item",
+        "scope": "html,htm,php"
+    },
+
+    "Ordered List with Item": {
+        "prefix": "ol>li",
+        "body": [
+            "<ol>",
+            "    <li>$0</li>",
+            "</ol>"
+        ],
+        "description": "HTML ordered list with list item",
+        "scope": "html,htm,php"
+    },
+
+    "Container Div Element": {
+        "prefix": "div:container",
+        "body": [
+            "<div class=\"${1:container}\">",
+            "    $0",
+            "</div>"
+        ],
+        "description": "HTML div container element",
+        "scope": "html,htm,php"
+    },
+
+    "Embedded Style Block": {
+        "prefix": "style",
+        "body": [
+            "<style>",
+            "    $0",
+            "</style>"
+        ],
+        "description": "HTML embedded CSS style block",
+        "scope": "html,htm,php"
+    },
+
+    "Embedded Script Block": {
+        "prefix": "script",
+        "body": [
+            "<script>",
+            "    $0",
+            "</script>"
+        ],
+        "description": "HTML embedded JavaScript script block",
+        "scope": "html,htm,php"
+    },
+
+    "Flexbox Center Alignment": {
+        "prefix": "flexcenter",
+        "body": [
+            "display: flex;",
+            "justify-content: center;",
+            "align-items: center;"
+        ],
+        "description": "CSS flexbox centering layout",
+        "scope": "css,scss,less,html"
+    },
+
+    "Flexbox Column Layout": {
+        "prefix": "flexcol",
+        "body": [
+            "display: flex;",
+            "flex-direction: column;",
+            "gap: ${1:12px};"
+        ],
+        "description": "CSS flexbox vertical column layout",
+        "scope": "css,scss,less,html"
+    },
+
+    "CSS Grid Columns Layout": {
+        "prefix": "grid",
+        "body": [
+            "display: grid;",
+            "grid-template-columns: repeat(${1:3}, 1fr);",
+            "gap: ${2:16px};"
+        ],
+        "description": "CSS grid responsive columns layout",
+        "scope": "css,scss,less,html"
+    },
+
+    "Universal CSS Reset": {
+        "prefix": "reset",
+        "body": [
+            "*, *::before, *::after {",
+            "    box-sizing: border-box;",
+            "    margin: 0;",
+            "    padding: 0;",
+            "}"
+        ],
+        "description": "Universal CSS box-sizing and margin reset",
+        "scope": "css,scss,less,html"
+    },
+
+    "CSS Media Query": {
+        "prefix": "media",
+        "body": [
+            "@media (max-width: ${1:768px}) {",
+            "    $0",
+            "}"
+        ],
+        "description": "CSS responsive media query",
+        "scope": "css,scss,less,html"
+    },
+
+    "CSS Animation Keyframes": {
+        "prefix": "keyframes",
+        "body": [
+            "@keyframes ${1:fadeIn} {",
+            "    from { opacity: 0; }",
+            "    to   { opacity: 1; }",
+            "}"
+        ],
+        "description": "CSS keyframe animation definition",
+        "scope": "css,scss,less,html"
+    },
+
+    "Glassmorphism Card Effect": {
+        "prefix": "glass",
+        "body": [
+            "background: rgba(255, 255, 255, 0.08);",
+            "backdrop-filter: blur(12px);",
+            "border: 1px solid rgba(255, 255, 255, 0.15);",
+            "border-radius: 8px;"
+        ],
+        "description": "Modern glassmorphism translucent card styling",
+        "scope": "css,scss,less,html"
+    },
+
+    "Console Log (JS/TS/HTML)": {
+        "prefix": "log",
+        "body": [
+            "console.log($1);"
+        ],
+        "description": "Log output to developer console",
+        "scope": "html,htm,js,ts,jsx,tsx,php"
+    },
+
+    "Console Log (clg)": {
+        "prefix": "clg",
+        "body": [
+            "console.log($1);"
+        ],
+        "description": "Log output to developer console",
+        "scope": "ts,js,tsx,jsx,html,htm,php"
+    },
+
+    "Console Error": {
+        "prefix": "cerr",
+        "body": [
+            "console.error($1);"
+        ],
+        "description": "Log error diagnostic to developer console",
+        "scope": "ts,js,tsx,jsx,html"
+    },
+
+    "Console Warn": {
+        "prefix": "cwarn",
+        "body": [
+            "console.warn($1);"
+        ],
+        "description": "Log warning alert to developer console",
+        "scope": "ts,js,tsx,jsx,html"
+    },
+
+    "Console Table": {
+        "prefix": "ctable",
+        "body": [
+            "console.table($1);"
+        ],
+        "description": "Log tabular dataset to developer console",
+        "scope": "ts,js,tsx,jsx,html"
+    },
+
+    "Arrow Function": {
+        "prefix": "afn",
+        "body": [
+            "const ${1:name} = ($2) => {",
+            "    $0",
+            "};"
+        ],
+        "description": "ES6 Arrow Function declaration",
+        "scope": "ts,js,tsx,jsx,html"
+    },
+
+    "Standard Function": {
+        "prefix": "fn",
+        "body": [
+            "function ${1:name}($2) {",
+            "    $0",
+            "}"
+        ],
+        "description": "Standard function declaration",
+        "scope": "ts,js,tsx,jsx,html"
+    },
+
+    "Async Function": {
+        "prefix": "asyncfn",
+        "body": [
+            "async function ${1:name}($2) {",
+            "    $0",
+            "}"
+        ],
+        "description": "Asynchronous function declaration",
+        "scope": "ts,js,tsx,jsx,html"
+    },
+
+    "New Promise": {
+        "prefix": "prom",
+        "body": [
+            "new Promise((resolve, reject) => {",
+            "    $0",
+            "});"
+        ],
+        "description": "Construct new ES6 Promise",
+        "scope": "ts,js,tsx,jsx,html"
+    },
+
+    "Fetch API Request": {
+        "prefix": "fetch",
+        "body": [
+            "fetch('${1:url}')",
+            "    .then(res => res.json())",
+            "    .then(data => {",
+            "        $0",
+            "    });"
+        ],
+        "description": "Standard fetch JSON request promise chain",
+        "scope": "ts,js,tsx,jsx,html"
+    },
+
+    "Try Catch Block": {
+        "prefix": "trycatch",
+        "body": [
+            "try {",
+            "    $1",
+            "} catch (error) {",
+            "    console.error(error);",
+            "    $0",
+            "}"
+        ],
+        "description": "Try Catch error handling block",
+        "scope": "ts,js,tsx,jsx,html"
+    },
+
+    "For Loop (JS)": {
+        "prefix": "fori",
+        "body": [
+            "for (let ${1:i} = 0; ${1:i} < ${2:array}.length; ${1:i}++) {",
+            "    $0",
+            "}"
+        ],
+        "description": "Standard indexed for loop",
+        "scope": "ts,js,tsx,jsx,html"
+    },
+
+    "For Of Loop (JS)": {
+        "prefix": "forof",
+        "body": [
+            "for (const ${1:item} of ${2:iterable}) {",
+            "    $0",
+            "}"
+        ],
+        "description": "ES6 for..of iterable loop",
+        "scope": "ts,js,tsx,jsx,html"
+    },
+
+    "Add Event Listener": {
+        "prefix": "ael",
+        "body": [
+            "${1:element}.addEventListener('${2:click}', (e) => {",
+            "    $0",
+            "});"
+        ],
+        "description": "DOM addEventListener callback binding",
+        "scope": "ts,js,tsx,jsx,html"
+    },
+
+    "Document Query Selector": {
+        "prefix": "qs",
+        "body": [
+            "document.querySelector('${1:selector}')"
+        ],
+        "description": "Query single DOM element",
+        "scope": "ts,js,tsx,jsx,html"
+    },
+
+    "Document Query Selector All": {
+        "prefix": "qsa",
+        "body": [
+            "document.querySelectorAll('${1:selector}')"
+        ],
+        "description": "Query all matching DOM elements",
+        "scope": "ts,js,tsx,jsx,html"
+    },
+
+    "Import Statement": {
+        "prefix": "imp",
+        "body": [
+            "import { $1 } from '$2';"
+        ],
+        "description": "ES6 import statement",
+        "scope": "ts,js,tsx,jsx"
+    },
+
+    "CommonJS Require": {
+        "prefix": "req",
+        "body": [
+            "const $1 = require('$2');"
+        ],
+        "description": "CommonJS module require statement",
+        "scope": "ts,js"
+    },
+
+    "Export Default": {
+        "prefix": "ed",
+        "body": [
+            "export default $1;"
+        ],
+        "description": "ES6 export default statement",
+        "scope": "ts,js,tsx,jsx"
+    },
+
+    "React Functional Component": {
+        "prefix": "rfc",
+        "body": [
+            "export const ${1:ComponentName} = () => {",
+            "    return (",
+            "        <div>",
+            "            $0",
+            "        </div>",
+            "    );",
+            "};"
+        ],
+        "description": "React functional component export",
+        "scope": "tsx,jsx"
+    },
+
+    "React useState Hook": {
+        "prefix": "us",
+        "body": [
+            "const [${1:state}, set${1:state}] = useState($2);"
+        ],
+        "description": "React useState hook",
+        "scope": "tsx,jsx,ts,js"
+    },
+
+    "React useEffect Hook": {
+        "prefix": "ue",
+        "body": [
+            "useEffect(() => {",
+            "    $0",
+            "}, []);"
+        ],
+        "description": "React useEffect hook",
+        "scope": "tsx,jsx,ts,js"
+    },
+
+    "Include Header": {
+        "prefix": "inc",
+        "body": [
+            "#include <$1>"
+        ],
+        "description": "Include standard library header",
+        "scope": "cpp,hpp,c,h,cc,cxx"
+    },
+
+    "Include Local Header": {
+        "prefix": "incl",
+        "body": [
+            "#include \"$1\""
+        ],
+        "description": "Include project local header",
+        "scope": "cpp,hpp,c,h,cc,cxx"
+    },
+
+    "Main Function": {
+        "prefix": "main",
+        "body": [
+            "int main(int argc, char* argv[]) {",
+            "    $0",
+            "    return 0;",
+            "}"
+        ],
+        "description": "Standard main entry function",
+        "scope": "cpp,c,cc,cxx"
+    },
+
+    "Print to Console (C++ log)": {
+        "prefix": "log",
+        "body": [
+            "std::cout << \"$1\" << std::endl;"
+        ],
+        "description": "Log output to console in C++",
+        "scope": "cpp,hpp,c,h,cc,cxx"
+    },
+
+    "Print to Console (C++ cout)": {
+        "prefix": "cout",
+        "body": [
+            "std::cout << $1 << std::endl;"
+        ],
+        "description": "Print expression to standard console output",
+        "scope": "cpp,hpp,c,h,cc,cxx"
+    },
+
+    "For Loop (C++)": {
+        "prefix": "fori",
+        "body": [
+            "for (size_t ${1:i} = 0; ${1:i} < ${2:count}; ++${1:i}) {",
+            "    $0",
+            "}"
+        ],
+        "description": "Standard indexed for loop",
+        "scope": "cpp,c,cc,cxx"
+    },
+
+    "Class Definition": {
+        "prefix": "class",
+        "body": [
+            "class ${1:MyClass} {",
+            "public:",
+            "    ${1:MyClass}();",
+            "    virtual ~${1:MyClass}();",
+            "private:",
+            "    $0",
+            "};"
+        ],
+        "description": "C++ Class boilerplate",
+        "scope": "cpp,hpp,cc,h"
+    },
+
+    "Struct Definition": {
+        "prefix": "struct",
+        "body": [
+            "struct ${1:MyStruct} {",
+            "    $0",
+            "};"
+        ],
+        "description": "C++ Struct boilerplate",
+        "scope": "cpp,hpp,cc,h"
+    },
+
+    "Std Vector Declaration": {
+        "prefix": "vec",
+        "body": [
+            "std::vector<${1:int}> ${2:items};"
+        ],
+        "description": "Standard vector container declaration",
+        "scope": "cpp,hpp,cc,h"
+    },
+
+    "Python Function": {
+        "prefix": "def",
+        "body": [
+            "def ${1:function_name}($2):",
+            "    \"\"\"$3\"\"\"",
+            "    $0"
+        ],
+        "description": "Python function definition",
+        "scope": "py"
+    },
+
+    "Python If Main": {
+        "prefix": "ifmain",
+        "body": [
+            "if __name__ == '__main__':",
+            "    $0"
+        ],
+        "description": "Python entrypoint boilerplate",
+        "scope": "py"
+    },
+
+    "Python Class": {
+        "prefix": "class",
+        "body": [
+            "class ${1:ClassName}:",
+            "    def __init__(self$2):",
+            "        $0"
+        ],
+        "description": "Python class definition",
+        "scope": "py"
+    },
+
+    "Python Print": {
+        "prefix": "print",
+        "body": [
+            "print($1)"
+        ],
+        "description": "Python print statement",
+        "scope": "py"
+    },
+
+    "Print to Console (Python)": {
+        "prefix": "log",
+        "body": [
+            "print($1)"
+        ],
+        "description": "Print expression to standard console output in Python",
+        "scope": "py"
+    }
+
+}

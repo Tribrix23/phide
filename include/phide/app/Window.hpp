@@ -36,6 +36,7 @@
 #include "phide/workspace/ExplorerUndoManager.hpp"
 #include "phide/editor/SnippetManager.hpp"
 #include "phide/editor/IntelliSenseEngine.hpp"
+#include "phide/editor/SmartImportHelper.hpp"
 #include "phide/lsp/LspClient.hpp"
 
 namespace phide::app {
@@ -398,6 +399,12 @@ private:
     /** @brief Updates enabled/disabled state of Run and Debug buttons based on active file type. */
     void UpdateExecutionButtonStates();
 
+    /** @brief Switches to next document tab in the active editor group (Ctrl+Tab). */
+    void DoNextTab();
+
+    /** @brief Switches to previous document tab in the active editor group (Ctrl+Shift+Tab). */
+    void DoPrevTab();
+
     /** @brief Opens or focuses a file in the workspace matching the specified relative filename. */
     void OpenFileByName(const std::wstring& name);
 
@@ -512,6 +519,24 @@ private:
     float m_drawerAnimProgress   = 0.0f;
     float m_targetDrawerProgress = 0.0f;
     bool  m_isDrawerAnimating    = false;
+
+    float m_terminalAnimProgress   = 0.0f;
+    float m_targetTerminalProgress = 0.0f;
+    bool  m_isTerminalAnimating    = false;
+
+    // Explorer Drag & Drop Import State (Godot / VS Code style)
+    bool m_isDraggingExplorerFile = false;
+    std::wstring m_dragCandidatePath;
+    std::wstring m_dragCandidateName;
+    POINT m_dragStartPt{ 0, 0 };
+    POINT m_dragCurrentPt{ 0, 0 };
+    bool m_hasDragDropTarget = false;
+    size_t m_dragDropTargetLine = 0;
+    size_t m_dragDropTargetCol = 0;
+    int m_dragDropTargetGroup = -1;
+
+    void AnimateTerminalOpen();
+    void AnimateTerminalClose();
 };
 
 } // namespace phide::app

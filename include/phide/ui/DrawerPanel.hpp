@@ -528,6 +528,19 @@ public:
      */
     [[nodiscard]] const D2D1_RECT_F& GetRenameBox() const noexcept { return m_rcRenameBox; }
 
+    // --- Inline Tree Item Create (Images 2 & 3: VS Code style new file / new folder) ---
+    void StartInlineCreate(const std::wstring& parentPath, bool isFolder);
+    [[nodiscard]] bool IsCreating() const noexcept { return m_isCreating; }
+    [[nodiscard]] bool IsCreatingFolder() const noexcept { return m_createIsFolder; }
+    void CancelInlineCreate();
+    bool CommitInlineCreate(std::wstring& outCreatedPath);
+    void HandleCreateChar(wchar_t ch);
+    void HandleCreateKeyDown(WPARAM wParam);
+    [[nodiscard]] const D2D1_RECT_F& GetCreateBox() const noexcept { return m_rcCreateBox; }
+    [[nodiscard]] const D2D1_RECT_F& GetCreatePill() const noexcept { return m_rcCreatePill; }
+    [[nodiscard]] const std::wstring& GetCreateParentDir() const noexcept { return m_createParentDir; }
+    [[nodiscard]] const std::wstring& GetCreateText() const noexcept { return m_createText; }
+
     /**
      * @brief Sets canonical path of the currently active editor document to synchronize explorer selection (Images 2 & 3).
      */
@@ -686,6 +699,17 @@ private:
     size_t m_renameSelEnd = 0;
     size_t m_renameCaretPos = 0;
     std::wstring m_activeFilePath;
+
+    // Inline Tree Item Create State (Images 2 & 3: VS Code style new file / new folder)
+    bool m_isCreating = false;
+    bool m_createIsFolder = false;
+    std::wstring m_createParentDir;
+    std::wstring m_createText;
+    size_t m_createCaretPos = 0;
+    D2D1_RECT_F m_rcCreateBox{};
+    D2D1_RECT_F m_rcCreatePill{};
+    int m_createInsertAfterIdx = -1;
+    int m_createDepth = 0;
 
     // Search Pane State (Image 2)
     std::wstring m_searchQuery;

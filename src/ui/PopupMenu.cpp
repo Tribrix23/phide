@@ -242,6 +242,48 @@ void PopupMenu::OpenToolsMenu(float x, float y, const app::AppConfig& config,
     LayoutMenu(m_items, x, y, toolsMenuW, config, m_mainMenuBounds);
 }
 
+void PopupMenu::OpenWindowMenu(float x, float y, const app::AppConfig& config,
+                              bool isFullscreen, bool isSidebarOpen, bool isTerminalOpen, bool hasDoc) {
+    m_isOpen = true;
+    m_hoveredMainIdx = -1;
+    m_activeSubmenuIdx = -1;
+    m_hoveredSubmenuIdx = -1;
+
+    m_items.clear();
+
+    // 1. Window Creation & Close
+    m_items.push_back({ MenuActionId::WindowNewWindow,          L"New Window",                 L"Ctrl+Shift+N",   false, false, false, true, {}, {} });
+    m_items.push_back({ MenuActionId::WindowCloseWindow,        L"Close Window",               L"Alt+F4",         false, false, false, true, {}, {} });
+
+    // --- Separator ---
+    m_items.push_back({ MenuActionId::None,                     L"",                           L"",               true,  false, false, false, {}, {} });
+
+    // 2. Window Layout & Zoom
+    m_items.push_back({ MenuActionId::WindowToggleFullScreen,   L"Toggle Full Screen",         L"F11",            false, isFullscreen, false, true, {}, {} });
+    m_items.push_back({ MenuActionId::WindowZoomIn,             L"Zoom In",                    L"Ctrl+=",         false, false, false, true, {}, {} });
+    m_items.push_back({ MenuActionId::WindowZoomOut,            L"Zoom Out",                   L"Ctrl+-",         false, false, false, true, {}, {} });
+    m_items.push_back({ MenuActionId::WindowResetZoom,          L"Reset Zoom",                 L"Ctrl+0",         false, false, false, true, {}, {} });
+
+    // --- Separator ---
+    m_items.push_back({ MenuActionId::None,                     L"",                           L"",               true,  false, false, false, {}, {} });
+
+    // 3. Panels & Sidebars
+    m_items.push_back({ MenuActionId::WindowToggleSideBar,      L"Toggle Primary Side Bar",    L"Ctrl+B",         false, isSidebarOpen, false, true, {}, {} });
+    m_items.push_back({ MenuActionId::WindowToggleTerminal,     L"Toggle Integrated Terminal", L"Ctrl+`",         false, isTerminalOpen, false, true, {}, {} });
+
+    // --- Separator ---
+    m_items.push_back({ MenuActionId::None,                     L"",                           L"",               true,  false, false, false, {}, {} });
+
+    // 4. Tab Navigation & Split
+    m_items.push_back({ MenuActionId::WindowNextTab,            L"Next Tab",                   L"Ctrl+Tab",       false, false, false, hasDoc, {}, {} });
+    m_items.push_back({ MenuActionId::WindowPrevTab,            L"Previous Tab",               L"Ctrl+Shift+Tab", false, false, false, hasDoc, {}, {} });
+    m_items.push_back({ MenuActionId::WindowSplitEditor,        L"Split Editor Right",         L"Ctrl+\\",        false, false, false, hasDoc, {}, {} });
+    m_items.push_back({ MenuActionId::WindowCloseEditor,        L"Close Active Editor",        L"Ctrl+W",         false, false, false, hasDoc, {}, {} });
+
+    const float windowMenuW = config.ScaleF(270.0f);
+    LayoutMenu(m_items, x, y, windowMenuW, config, m_mainMenuBounds);
+}
+
 void PopupMenu::BuildEditMenuItems(bool canUndo, bool canRedo, bool hasSelection) {
     (void)hasSelection;
     m_items.clear();

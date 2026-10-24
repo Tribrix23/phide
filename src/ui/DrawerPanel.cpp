@@ -444,6 +444,95 @@ void DrawerPanel::RenderExplorerPane(ID2D1RenderTarget* pRT, Theme& theme, const
                 m_visibleItems[i].bounds = D2D1::RectF(0.0f, 0.0f, 0.0f, 0.0f);
             }
 
+            bool createRowDrawn = false;
+            auto drawCreateRow = [&]() {
+                if (!m_isCreating || createRowDrawn || curY + itemH > clientHeight) return;
+                createRowDrawn = true;
+
+                float indent = config.ScaleF(static_cast<float>(m_createDepth * 14));
+                // Indent guides
+                for (int d = 1; d <= m_createDepth; ++d) {
+                    float guideX = railW + paddingX + config.ScaleF(static_cast<float>((d - 1) * 14)) + config.ScaleF(2.0f);
+                    pRT->DrawLine(D2D1::Point2F(guideX, curY), D2D1::Point2F(guideX, curY + itemH), theme.brushBorderSubtle.Get(), 1.0f);
+                }
+
+                float cy = curY + itemH / 2.0f;
+                float chevronX = railW + config.ScaleF(14.0f) + indent;
+
+                if (m_createIsFolder) {
+                    // Closed right chevron
+                    pRT->DrawLine(D2D1::Point2F(chevronX - config.ScaleF(2.0f), cy - config.ScaleF(3.5f)),
+                                  D2D1::Point2F(chevronX + config.ScaleF(2.0f), cy), theme.brushTextSecondary.Get(), 1.3f);
+                    pRT->DrawLine(D2D1::Point2F(chevronX + config.ScaleF(2.0f), cy),
+                                  D2D1::Point2F(chevronX - config.ScaleF(2.0f), cy + config.ScaleF(3.5f)), theme.brushTextSecondary.Get(), 1.3f);
+                }
+
+                float iconX = chevronX + config.ScaleF(10.0f);
+                D2D1_RECT_F iconBounds = D2D1::RectF(iconX, cy - config.ScaleF(8.0f), iconX + config.ScaleF(16.0f), cy + config.ScaleF(8.0f));
+                if (m_createIsFolder) {
+                    auto setiInfo = theme.GetSetiIcon(L"folder", true, false);
+                    if (theme.fontSeti && setiInfo.pBrush) {
+                        pRT->DrawText(&setiInfo.glyph, 1, theme.fontSeti.Get(), iconBounds, setiInfo.pBrush);
+                    } else {
+                        m_icons.DrawFileIcon(pRT, theme, iconBounds, FileIconType::Folder);
+                    }
+                } else {
+                    auto setiInfo = theme.GetSetiIcon(m_createText.empty() ? L"file.txt" : m_createText, false, false);
+                    if (theme.fontSeti && setiInfo.pBrush) {
+                        pRT->DrawText(&setiInfo.glyph, 1, theme.fontSeti.Get(), iconBounds, setiInfo.pBrush);
+                    } else {
+                        auto fType = LucideIcons::GetIconTypeForPath(m_createText.empty() ? L"file.txt" : m_createText, false, false);
+                        m_icons.DrawFileIcon(pRT, theme, iconBounds, fType);
+                    }
+                }
+
+                float labelX = iconX + config.ScaleF(22.0f);
+                m_rcCreateBox = D2D1::RectF(
+                    labelX - config.ScaleF(4.0f),
+                    curY + config.ScaleF(1.0f),
+                    railW + fullDrawerW - config.ScaleF(10.0f),
+                    curY + itemH - config.ScaleF(1.0f)
+                );
+
+                // 1. Draw inline input box matching Image 2 & 3
+                D2D1_ROUNDED_RECT rrcBox = D2D1::RoundedRect(m_rcCreateBox, 3.5f, 3.5f);
+                pRT->FillRoundedRectangle(rrcBox, theme.brushCanvasBg.Get());
+                pRT->DrawRoundedRectangle(rrcBox, theme.brushBrandAccent.Get(), 1.5f);
+
+                D2D1_RECT_F rcInputText = D2D1::RectF(
+                    m_rcCreateBox.left + config.ScaleF(6.0f),
+                    m_rcCreateBox.top + config.ScaleF(1.0f),
+                    m_rcCreateBox.right - config.ScaleF(4.0f),
+                    m_rcCreateBox.bottom - config.ScaleF(1.0f)
+                );
+
+                pRT->DrawText(m_createText.c_str(), static_cast<UINT32>(m_createText.length()),
+                              theme.fontBody.Get(), rcInputText, theme.brushTextPrimary.Get());
+
+                // Blinking caret
+                float caretX = rcInputText.left;
+                if (theme.dwriteFactory && !m_createText.empty()) {
+                    Microsoft::WRL::ComPtr<IDWriteTextLayout> pLayout;
+                    if (SUCCEEDED(theme.dwriteFactory->CreateTextLayout(
+                            m_createText.c_str(), static_cast<UINT32>(m_createText.length()),
+                            theme.fontBody.Get(), 1000.0f, itemH, &pLayout))) {
+                        FLOAT hx = 0.0f, hy = 0.0f;
+                        DWRITE_HIT_TEST_METRICS htm{};
+                        pLayout->HitTestTextPosition(static_cast<UINT32>(m_createCaretPos), FALSE, &hx, &hy, &htm);
+                        caretX += hx;
+                    }
+                }
+                pRT->DrawLine(D2D1::Point2F(caretX, m_rcCreateBox.top + config.ScaleF(3.0f)),
+                              D2D1::Point2F(caretX, m_rcCreateBox.bottom - config.ScaleF(3.0f)),
+                              theme.brushTextPrimary.Get(), 1.5f);
+
+                curY += itemH;
+            };
+
+            if (m_isCreating && m_createInsertAfterIdx == -1) {
+                drawCreateRow();
+            }
+
             // Tree Items with Seti/Material Icons & Indentation Guidelines
             for (size_t i = m_scrollIndex; i < m_visibleItems.size(); ++i) {
                 auto& item = m_visibleItems[i];
@@ -633,6 +722,59 @@ void DrawerPanel::RenderExplorerPane(ID2D1RenderTarget* pRT, Theme& theme, const
                 }
 
                 curY += itemH;
+                if (m_isCreating && static_cast<int>(i) == m_createInsertAfterIdx) {
+                    drawCreateRow();
+                }
+            }
+
+            if (m_isCreating && !createRowDrawn) {
+                drawCreateRow();
+            }
+
+            // Draw floating path pill card below input box (Images 2 & 3)
+            if (m_isCreating && m_rcCreateBox.right > m_rcCreateBox.left) {
+                std::wstring displayPath = m_createParentDir;
+                if (!displayPath.empty() && displayPath.back() != L'\\' && displayPath.back() != L'/') {
+                    displayPath += L"\\";
+                }
+
+                float pillH = config.ScaleF(20.0f);
+                float pillY = m_rcCreateBox.bottom + config.ScaleF(2.0f);
+                float maxPillW = (railW + fullDrawerW - config.ScaleF(8.0f)) - m_rcCreateBox.left;
+                float idealPillW = static_cast<float>(displayPath.length()) * 6.5f + config.ScaleF(16.0f);
+                float pillW = (std::min)(maxPillW, (std::max)(config.ScaleF(140.0f), idealPillW));
+                m_rcCreatePill = D2D1::RectF(m_rcCreateBox.left, pillY, m_rcCreateBox.left + pillW, pillY + pillH);
+
+                // Drop shadow
+                D2D1_ROUNDED_RECT rrcShadow = D2D1::RoundedRect(
+                    D2D1::RectF(m_rcCreatePill.left + 1.0f, m_rcCreatePill.top + 2.0f, m_rcCreatePill.right + 1.0f, m_rcCreatePill.bottom + 2.0f),
+                    3.5f, 3.5f
+                );
+                Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> shadowBrush;
+                pRT->CreateSolidColorBrush(D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.40f), &shadowBrush);
+                if (shadowBrush) pRT->FillRoundedRectangle(rrcShadow, shadowBrush.Get());
+
+                D2D1_ROUNDED_RECT rrcPill = D2D1::RoundedRect(m_rcCreatePill, 3.5f, 3.5f);
+                Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> pillBg;
+                pRT->CreateSolidColorBrush(D2D1::ColorF(0.14f, 0.14f, 0.16f, 1.0f), &pillBg);
+                if (pillBg) pRT->FillRoundedRectangle(rrcPill, pillBg.Get());
+
+                Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> pillBorder;
+                pRT->CreateSolidColorBrush(D2D1::ColorF(0.28f, 0.28f, 0.32f, 1.0f), &pillBorder);
+                if (pillBorder) pRT->DrawRoundedRectangle(rrcPill, pillBorder.Get(), 1.0f);
+
+                D2D1_RECT_F rcPillText = D2D1::RectF(
+                    m_rcCreatePill.left + config.ScaleF(8.0f),
+                    m_rcCreatePill.top,
+                    m_rcCreatePill.right - config.ScaleF(4.0f),
+                    m_rcCreatePill.bottom
+                );
+
+                pRT->PushAxisAlignedClip(m_rcCreatePill, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+                pRT->DrawText(displayPath.c_str(), static_cast<UINT32>(displayPath.length()),
+                              theme.fontMenuItem ? theme.fontMenuItem.Get() : theme.fontBody.Get(),
+                              rcPillText, theme.brushTextSecondary.Get());
+                pRT->PopAxisAlignedClip();
             }
         }
     }
@@ -2827,6 +2969,143 @@ void DrawerPanel::HandleRenameKeyDown(WPARAM wParam) {
         m_renameSelStart = m_renameSelEnd = m_renameCaretPos;
     } else if (wParam == VK_ESCAPE) {
         CancelInlineRename();
+    }
+}
+
+// --- Inline Tree Item Create (Images 2 & 3: VS Code style new file / new folder) ---
+
+void DrawerPanel::StartInlineCreate(const std::wstring& parentPath, bool isFolder) {
+    CancelInlineRename();
+    m_isCreating = true;
+    m_createIsFolder = isFolder;
+    m_createText.clear();
+    m_createCaretPos = 0;
+    m_rcCreateBox = D2D1::RectF(0, 0, 0, 0);
+    m_rcCreatePill = D2D1::RectF(0, 0, 0, 0);
+
+    std::wstring dir = parentPath;
+    if (dir.empty()) {
+        dir = m_openFolderPath.empty() ? L"." : m_openFolderPath;
+    } else {
+        std::error_code ec;
+        if (std::filesystem::exists(dir, ec) && !std::filesystem::is_directory(dir, ec)) {
+            dir = std::filesystem::path(dir).parent_path().wstring();
+        }
+    }
+    m_createParentDir = dir;
+
+    // Ensure parent folder is expanded
+    if (dir != m_openFolderPath && !dir.empty()) {
+        m_expandedDirs.insert(dir);
+        RefreshTree();
+    }
+
+    // Determine depth and position in m_visibleItems
+    m_createDepth = 0;
+    m_createInsertAfterIdx = -1;
+
+    std::wstring cleanDir = dir;
+    while (cleanDir.size() > 3 && (cleanDir.back() == L'\\' || cleanDir.back() == L'/')) {
+        cleanDir.pop_back();
+    }
+
+    std::error_code ec;
+    std::wstring canonDir = std::filesystem::canonical(cleanDir, ec).wstring();
+    if (canonDir.size() >= 4 && canonDir.rfind(L"\\\\?\\", 0) == 0) canonDir = canonDir.substr(4);
+    if (canonDir.empty()) canonDir = cleanDir;
+
+    for (size_t i = 0; i < m_visibleItems.size(); ++i) {
+        std::wstring itemPath = m_visibleItems[i].fullPath;
+        while (itemPath.size() > 3 && (itemPath.back() == L'\\' || itemPath.back() == L'/')) itemPath.pop_back();
+        if (_wcsicmp(itemPath.c_str(), cleanDir.c_str()) == 0 ||
+            _wcsicmp(itemPath.c_str(), canonDir.c_str()) == 0) {
+            m_createInsertAfterIdx = static_cast<int>(i);
+            m_createDepth = m_visibleItems[i].depth + 1;
+            break;
+        }
+    }
+}
+
+void DrawerPanel::CancelInlineCreate() {
+    m_isCreating = false;
+    m_createIsFolder = false;
+    m_createParentDir.clear();
+    m_createText.clear();
+    m_createCaretPos = 0;
+    m_createInsertAfterIdx = -1;
+    m_createDepth = 0;
+    m_rcCreateBox = D2D1::RectF(0, 0, 0, 0);
+    m_rcCreatePill = D2D1::RectF(0, 0, 0, 0);
+}
+
+bool DrawerPanel::CommitInlineCreate(std::wstring& outCreatedPath) {
+    outCreatedPath.clear();
+    if (!m_isCreating || m_createParentDir.empty() || m_createText.empty()) {
+        CancelInlineCreate();
+        return false;
+    }
+
+    std::filesystem::path target = std::filesystem::path(m_createParentDir) / m_createText;
+    std::error_code ec;
+    if (std::filesystem::exists(target, ec)) {
+        CancelInlineCreate();
+        return false;
+    }
+
+    if (m_createIsFolder) {
+        std::filesystem::create_directories(target, ec);
+        if (ec) {
+            CancelInlineCreate();
+            return false;
+        }
+        m_expandedDirs.insert(target.wstring());
+    } else {
+        std::filesystem::create_directories(target.parent_path(), ec);
+        std::ofstream ofs(target);
+        if (!ofs.is_open()) {
+            CancelInlineCreate();
+            return false;
+        }
+        ofs.close();
+    }
+
+    outCreatedPath = target.wstring();
+    CancelInlineCreate();
+    RefreshTree();
+    return true;
+}
+
+void DrawerPanel::HandleCreateChar(wchar_t ch) {
+    if (!m_isCreating) return;
+    if (ch >= 32 && ch != L'\\' && ch != L'/' && ch != L':' && ch != L'*' &&
+        ch != L'?' && ch != L'\"' && ch != L'<' && ch != L'>' && ch != L'|') {
+        if (m_createCaretPos > m_createText.length()) m_createCaretPos = m_createText.length();
+        m_createText.insert(m_createCaretPos, 1, ch);
+        m_createCaretPos++;
+    }
+}
+
+void DrawerPanel::HandleCreateKeyDown(WPARAM wParam) {
+    if (!m_isCreating) return;
+    if (wParam == VK_BACK) {
+        if (m_createCaretPos > 0 && !m_createText.empty()) {
+            m_createText.erase(m_createCaretPos - 1, 1);
+            m_createCaretPos--;
+        }
+    } else if (wParam == VK_DELETE) {
+        if (m_createCaretPos < m_createText.length()) {
+            m_createText.erase(m_createCaretPos, 1);
+        }
+    } else if (wParam == VK_LEFT) {
+        if (m_createCaretPos > 0) m_createCaretPos--;
+    } else if (wParam == VK_RIGHT) {
+        if (m_createCaretPos < m_createText.length()) m_createCaretPos++;
+    } else if (wParam == VK_HOME) {
+        m_createCaretPos = 0;
+    } else if (wParam == VK_END) {
+        m_createCaretPos = m_createText.length();
+    } else if (wParam == VK_ESCAPE) {
+        CancelInlineCreate();
     }
 }
 

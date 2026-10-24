@@ -114,6 +114,7 @@ public:
     bool HandleAutocompleteMouseWheel(short delta) noexcept;
     void SetAutocompleteScrollOffset(size_t offset) noexcept { m_autocompleteScrollOffset = offset; }
     [[nodiscard]] size_t GetAutocompleteScrollOffset() const noexcept { return m_autocompleteScrollOffset; }
+    [[nodiscard]] const D2D1_RECT_F& GetAutocompleteBounds() const noexcept { return m_autocompleteBounds; }
 
     // Inline Ghost Text with "Tab to complete" (Image 3)
     [[nodiscard]] const std::wstring& GetGhostText() const noexcept { return m_ghostText; }

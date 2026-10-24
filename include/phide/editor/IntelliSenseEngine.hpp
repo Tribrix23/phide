@@ -30,6 +30,7 @@ struct IntelliSenseItem {
     int score = 0;
     size_t matchStart = 0;
     size_t matchLen = 0;
+    std::wstring origin; ///< Provider origin / source (e.g. L"snippets", L"builtins", L"html", L"css")
 };
 
 class SnippetManager;

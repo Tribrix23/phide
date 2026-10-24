@@ -207,7 +207,21 @@ enum class MenuActionId {
     ToolsToggleTerminal,
     ToolsToggleGitGraph,
     ToolsLiveServerManager,
-    ToolsCleanMemoryCache
+    ToolsCleanMemoryCache,
+
+    // Window Menu Actions (Image 4)
+    WindowNewWindow,
+    WindowCloseWindow,
+    WindowToggleFullScreen,
+    WindowZoomIn,
+    WindowZoomOut,
+    WindowResetZoom,
+    WindowToggleSideBar,
+    WindowToggleTerminal,
+    WindowNextTab,
+    WindowPrevTab,
+    WindowSplitEditor,
+    WindowCloseEditor
 };
 
 /**
@@ -310,6 +324,12 @@ public:
      */
     void OpenToolsMenu(float x, float y, const app::AppConfig& config,
                        bool hasDoc, bool isTerminalOpen, bool isLiveServerRunning);
+
+    /**
+     * @brief Opens the Window dropdown menu for the window icon (Image 4).
+     */
+    void OpenWindowMenu(float x, float y, const app::AppConfig& config,
+                        bool isFullscreen, bool isSidebarOpen, bool isTerminalOpen, bool hasDoc);
 
     /**
      * @brief Opens the custom explorer context menu for a file or folder (matching Images 4 & 5).

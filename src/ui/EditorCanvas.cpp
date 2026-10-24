@@ -1420,15 +1420,22 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
             }
         }
 
-        // 4b. Inline Ghost Text with "Tab to complete" (Image 3)
+        // 4b. Inline Ghost Text with "Tab to complete" (Image 5)
         std::wstring displayGhost = m_ghostText;
-        if (displayGhost.empty() && m_showAutocomplete && !m_autocompleteItems.empty()) {
-            displayGhost = m_autocompleteItems[m_autocompleteSelectedIdx].label;
-            const auto& lineText = buffer.GetLine(cursor.line);
-            std::wstring prefix = editor::IntelliSenseEngine::ExtractQueryPrefix(lineText, cursor.col);
-            if (!prefix.empty() && displayGhost.rfind(prefix, 0) == 0) {
-                displayGhost = displayGhost.substr(prefix.length());
+
+        // ONLY allow inline ghost text if cursor is at the end of the line (no non-whitespace chars follow).
+        // This strictly prevents ghost text from double-rendering over existing code (e.g. width=ddevvicee--wwiiddtthh).
+        const auto& lineText = buffer.GetLine(cursor.line);
+        bool isAtEndOfLine = true;
+        for (size_t col = cursor.col; col < lineText.length(); ++col) {
+            if (lineText[col] != L' ' && lineText[col] != L'\t' && lineText[col] != L'\r' && lineText[col] != L'\n') {
+                isAtEndOfLine = false;
+                break;
             }
+        }
+
+        if (!isAtEndOfLine) {
+            displayGhost.clear();
         }
 
         if (isFocused && !displayGhost.empty() && caretX + config.ScaleF(40.0f) < codeRight) {
@@ -2339,7 +2346,12 @@ void EditorCanvas::RenderAutocompletePopup(ID2D1RenderTarget* pRT, Theme& theme,
     const size_t maxVisible = 8;
     const size_t totalItems = m_autocompleteItems.size();
     const size_t visibleCount = (std::min)(totalItems, maxVisible);
-    const float popupW = config.ScaleF(340.0f);
+
+    // VS Code IntelliSense card dimensions (Image 5 benchmark: 440px wide for ample breathing room)
+    float popupW = config.ScaleF(440.0f);
+    if (popupW > clientWidth - config.ScaleF(24.0f)) {
+        popupW = (std::max)(config.ScaleF(300.0f), clientWidth - config.ScaleF(24.0f));
+    }
     const float popupH = static_cast<float>(visibleCount) * itemH + footerH + config.ScaleF(8.0f);
 
     float popupX = m_lastCaretX;
@@ -2352,13 +2364,33 @@ void EditorCanvas::RenderAutocompletePopup(ID2D1RenderTarget* pRT, Theme& theme,
     }
 
     m_autocompleteBounds = D2D1::RectF(popupX, popupY, popupX + popupW, popupY + popupH);
-    D2D1_ROUNDED_RECT rrcPopup = D2D1::RoundedRect(m_autocompleteBounds, 5.0f, 5.0f);
 
-    // Dark sleek background matching Image 5
+    // 1. Elevated soft drop shadow (Image 5)
+    for (int s = 1; s <= 3; ++s) {
+        float expand = static_cast<float>(s) * config.ScaleF(1.5f);
+        float alpha = 0.03f + static_cast<float>(s) * 0.025f;
+        D2D1_RECT_F rcShadow = D2D1::RectF(
+            popupX - expand, popupY - expand * 0.5f + config.ScaleF(2.0f),
+            popupX + popupW + expand, popupY + popupH + expand + config.ScaleF(2.0f)
+        );
+        D2D1_ROUNDED_RECT rrcShadow = D2D1::RoundedRect(rcShadow, 6.0f + expand, 6.0f + expand);
+        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> shadowBrush;
+        pRT->CreateSolidColorBrush(D2D1::ColorF(0.0f, 0.0f, 0.0f, alpha), &shadowBrush);
+        if (shadowBrush) pRT->FillRoundedRectangle(rrcShadow, shadowBrush.Get());
+    }
+
+    // 2. VS Code Card Body (#1e1e1e / #252526 dark card with subtle #3c3c3c border)
+    D2D1_ROUNDED_RECT rrcPopup = D2D1::RoundedRect(m_autocompleteBounds, 6.0f, 6.0f);
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> bgBrush;
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> borderBrush;
-    pRT->CreateSolidColorBrush(theme.IsDarkMode() ? D2D1::ColorF(0.12f, 0.13f, 0.15f, 0.98f) : D2D1::ColorF(0.98f, 0.98f, 0.99f, 0.98f), &bgBrush);
-    pRT->CreateSolidColorBrush(theme.IsDarkMode() ? D2D1::ColorF(0.28f, 0.30f, 0.35f, 1.0f) : D2D1::ColorF(0.78f, 0.80f, 0.84f, 1.0f), &borderBrush);
+    pRT->CreateSolidColorBrush(
+        theme.IsDarkMode() ? D2D1::ColorF(0.12f, 0.12f, 0.13f, 0.98f) : D2D1::ColorF(0.97f, 0.97f, 0.98f, 0.98f),
+        &bgBrush
+    );
+    pRT->CreateSolidColorBrush(
+        theme.IsDarkMode() ? D2D1::ColorF(0.24f, 0.24f, 0.26f, 1.0f) : D2D1::ColorF(0.80f, 0.82f, 0.85f, 1.0f),
+        &borderBrush
+    );
 
     if (bgBrush) pRT->FillRoundedRectangle(rrcPopup, bgBrush.Get());
     if (borderBrush) pRT->DrawRoundedRectangle(rrcPopup, borderBrush.Get(), 1.0f);
@@ -2378,6 +2410,7 @@ void EditorCanvas::RenderAutocompletePopup(ID2D1RenderTarget* pRT, Theme& theme,
     }
     size_t scrollOffset = m_autocompleteScrollOffset;
 
+    const bool hasScrollbar = (totalItems > visibleCount);
     float itemY = popupY + config.ScaleF(4.0f);
 
     for (size_t i = 0; i < visibleCount; ++i) {
@@ -2387,41 +2420,54 @@ void EditorCanvas::RenderAutocompletePopup(ID2D1RenderTarget* pRT, Theme& theme,
         const auto& item = m_autocompleteItems[itemIdx];
         bool isSelected = (itemIdx == m_autocompleteSelectedIdx);
 
-        D2D1_RECT_F rcItem = D2D1::RectF(popupX + 4.0f, itemY, popupX + popupW - 4.0f, itemY + itemH);
+        D2D1_RECT_F rcItem = D2D1::RectF(popupX + config.ScaleF(4.0f), itemY, popupX + popupW - config.ScaleF(4.0f), itemY + itemH);
 
+        // 3. Selection row highlight: Subtle VS Code blue #094771 / #264f78 (Image 5)
         if (isSelected) {
             D2D1_ROUNDED_RECT rrcSel = D2D1::RoundedRect(rcItem, 3.5f, 3.5f);
             Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> selBrush;
-            pRT->CreateSolidColorBrush(theme.IsDarkMode() ? D2D1::ColorF(0.04f, 0.38f, 0.72f, 0.95f) : D2D1::ColorF(0.18f, 0.52f, 0.92f, 0.95f), &selBrush);
+            pRT->CreateSolidColorBrush(
+                theme.IsDarkMode() ? D2D1::ColorF(0.04f, 0.28f, 0.48f, 0.95f) : D2D1::ColorF(0.80f, 0.89f, 0.98f, 0.95f),
+                &selBrush
+            );
             if (selBrush) pRT->FillRoundedRectangle(rrcSel, selBrush.Get());
         }
 
-        // Draw Icon Badge on Left (Image 5)
+        // Strict clipping for this item row: GUARANTEES no text leaks past row bounds
+        pRT->PushAxisAlignedClip(rcItem, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+
+        // 4. Icon Badge on Left (Image 5)
         float iconSize = config.ScaleF(16.0f);
         float iconX = popupX + config.ScaleF(8.0f);
         float iconY = itemY + (itemH - iconSize) / 2.0f;
         D2D1_RECT_F rcIcon = D2D1::RectF(iconX, iconY, iconX + iconSize, iconY + iconSize);
 
-        D2D1_COLOR_F badgeColor = D2D1::ColorF(0.5f, 0.5f, 0.5f);
+        D2D1_COLOR_F badgeColor = D2D1::ColorF(0.6f, 0.6f, 0.6f);
         const wchar_t* badgeLetter = L"ⓚ";
         switch (item.kind) {
             case editor::CompletionKind::Property:
-                badgeColor = D2D1::ColorF(0.85f, 0.40f, 0.95f); badgeLetter = L"ⓟ"; break;
+                badgeColor = D2D1::ColorF(0.75f, 0.52f, 0.99f); badgeLetter = L"ⓟ"; break;
             case editor::CompletionKind::Method:
-                badgeColor = D2D1::ColorF(0.65f, 0.45f, 0.98f); badgeLetter = L"ⓜ"; break;
+                badgeColor = D2D1::ColorF(0.51f, 0.55f, 0.97f); badgeLetter = L"ⓜ"; break;
             case editor::CompletionKind::Function:
-                badgeColor = D2D1::ColorF(0.68f, 0.50f, 1.00f); badgeLetter = L"ⓕ"; break;
+                badgeColor = D2D1::ColorF(0.65f, 0.54f, 0.98f); badgeLetter = L"ⓕ"; break;
             case editor::CompletionKind::Variable:
-                badgeColor = D2D1::ColorF(0.35f, 0.70f, 0.95f); badgeLetter = L"ⓥ"; break;
+                badgeColor = D2D1::ColorF(0.38f, 0.65f, 0.98f); badgeLetter = L"ⓥ"; break;
             case editor::CompletionKind::Keyword:
-                badgeColor = D2D1::ColorF(0.92f, 0.35f, 0.55f); badgeLetter = L"ⓚ"; break;
+                badgeColor = D2D1::ColorF(0.96f, 0.45f, 0.71f); badgeLetter = L"ⓚ"; break;
             case editor::CompletionKind::Tag:
-                badgeColor = D2D1::ColorF(0.25f, 0.80f, 0.55f); badgeLetter = L"ⓣ"; break;
+                badgeColor = D2D1::ColorF(0.29f, 0.87f, 0.50f); badgeLetter = L"ⓣ"; break;
             case editor::CompletionKind::Attribute:
-                badgeColor = D2D1::ColorF(0.95f, 0.65f, 0.20f); badgeLetter = L"ⓐ"; break;
+                badgeColor = D2D1::ColorF(0.98f, 0.57f, 0.24f); badgeLetter = L"ⓐ"; break;
             case editor::CompletionKind::Snippet:
-                badgeColor = D2D1::ColorF(0.20f, 0.75f, 0.70f); badgeLetter = L"ⓢ"; break;
+                badgeColor = D2D1::ColorF(0.22f, 0.74f, 0.97f); badgeLetter = L"ⓢ"; break;
         }
+
+        // Pill container for symbol badge
+        D2D1_ROUNDED_RECT rrcBadge = D2D1::RoundedRect(rcIcon, 3.0f, 3.0f);
+        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> badgeBgBrush;
+        pRT->CreateSolidColorBrush(D2D1::ColorF(badgeColor.r, badgeColor.g, badgeColor.b, 0.15f), &badgeBgBrush);
+        if (badgeBgBrush) pRT->FillRoundedRectangle(rrcBadge, badgeBgBrush.Get());
 
         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> badgeBrush;
         pRT->CreateSolidColorBrush(badgeColor, &badgeBrush);
@@ -2429,10 +2475,63 @@ void EditorCanvas::RenderAutocompletePopup(ID2D1RenderTarget* pRT, Theme& theme,
             pRT->DrawText(badgeLetter, 1, theme.fontMenu ? theme.fontMenu.Get() : theme.fontBody.Get(), rcIcon, badgeBrush.Get());
         }
 
-        // Label text (e.g. "border", "borderRadius", "div", "hello")
-        float labelX = iconX + iconSize + config.ScaleF(6.0f);
-        float labelW = config.ScaleF(160.0f);
-        D2D1_RECT_F rcLabel = D2D1::RectF(labelX, itemY + config.ScaleF(2.0f), labelX + labelW, itemY + itemH);
+        // 5. Origin Tag on Far Right (e.g. "builtins", "snippets", "html", "css", right-aligned)
+        float originW = config.ScaleF(76.0f);
+        float originRight = popupX + popupW - config.ScaleF(hasScrollbar ? 16.0f : 10.0f);
+        float originLeft = originRight - originW;
+
+        std::wstring originText = item.origin;
+        if (originText.empty()) {
+            switch (item.kind) {
+                case editor::CompletionKind::Snippet: originText = L"snippets"; break;
+                case editor::CompletionKind::Tag:
+                case editor::CompletionKind::Attribute: originText = L"html"; break;
+                case editor::CompletionKind::Property: originText = L"css"; break;
+                case editor::CompletionKind::Method:
+                case editor::CompletionKind::Function:
+                case editor::CompletionKind::Variable: originText = L"builtins"; break;
+                case editor::CompletionKind::Keyword: originText = L"keyword"; break;
+                default: originText = L"code"; break;
+            }
+        }
+
+        D2D1_RECT_F rcOrigin = D2D1::RectF(originLeft, itemY + config.ScaleF(2.0f), originRight, itemY + itemH);
+        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> originBrush;
+        pRT->CreateSolidColorBrush(
+            isSelected
+                ? (theme.IsDarkMode() ? D2D1::ColorF(0.70f, 0.78f, 0.88f) : D2D1::ColorF(0.35f, 0.45f, 0.60f))
+                : (theme.IsDarkMode() ? D2D1::ColorF(0.50f, 0.52f, 0.56f) : D2D1::ColorF(0.55f, 0.57f, 0.62f)),
+            &originBrush
+        );
+        if (originBrush) {
+            // fontMenuShortcut has DWRITE_TEXT_ALIGNMENT_TRAILING for right-alignment
+            pRT->DrawText(originText.c_str(), static_cast<UINT32>(originText.length()),
+                          theme.fontMenuShortcut ? theme.fontMenuShortcut.Get() : theme.fontBody.Get(),
+                          rcOrigin, originBrush.Get());
+        }
+
+        // 6. Label Text with Measured Width & Highlight (Image 5)
+        float labelX = iconX + iconSize + config.ScaleF(8.0f);
+        float maxLabelAvailW = originLeft - labelX - config.ScaleF(12.0f);
+
+        float measuredLabelW = 0.0f;
+        if (theme.dwriteFactory && theme.fontMenuItem) {
+            Microsoft::WRL::ComPtr<IDWriteTextLayout> pMeasureLayout;
+            if (SUCCEEDED(theme.dwriteFactory->CreateTextLayout(
+                    item.label.c_str(), static_cast<UINT32>(item.label.length()),
+                    theme.fontMenuItem.Get(), (std::max)(100.0f, maxLabelAvailW), itemH, &pMeasureLayout))) {
+                DWRITE_TEXT_METRICS tm{};
+                if (SUCCEEDED(pMeasureLayout->GetMetrics(&tm))) {
+                    measuredLabelW = tm.widthIncludingTrailingWhitespace;
+                }
+            }
+        }
+        if (measuredLabelW <= 0.0f) {
+            measuredLabelW = static_cast<float>(item.label.length()) * config.ScaleF(7.5f);
+        }
+
+        float actualLabelW = (std::min)(measuredLabelW + config.ScaleF(2.0f), maxLabelAvailW * 0.55f);
+        D2D1_RECT_F rcLabel = D2D1::RectF(labelX, itemY + config.ScaleF(2.0f), labelX + actualLabelW, itemY + itemH);
         ID2D1Brush* textBrush = isSelected ? theme.brushTextWhite.Get() : theme.brushTextPrimary.Get();
 
         // Highlight matched characters within item label
@@ -2442,7 +2541,7 @@ void EditorCanvas::RenderAutocompletePopup(ID2D1RenderTarget* pRT, Theme& theme,
                 item.label.c_str(),
                 static_cast<UINT32>(item.label.length()),
                 theme.fontMenuItem.Get(),
-                labelW,
+                actualLabelW + config.ScaleF(4.0f),
                 itemH,
                 &pTextLayout
             );
@@ -2455,9 +2554,9 @@ void EditorCanvas::RenderAutocompletePopup(ID2D1RenderTarget* pRT, Theme& theme,
                 pTextLayout->SetFontWeight(DWRITE_FONT_WEIGHT_BOLD, matchRange);
                 Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> hlBrush;
                 if (isSelected) {
-                    pRT->CreateSolidColorBrush(D2D1::ColorF(1.0f, 0.88f, 0.30f), &hlBrush); // warm gold/yellow on blue selection
+                    pRT->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f), &hlBrush); // crisp bold white on selection
                 } else {
-                    pRT->CreateSolidColorBrush(theme.IsDarkMode() ? D2D1::ColorF(0.20f, 0.65f, 1.0f) : D2D1::ColorF(0.0f, 0.45f, 0.88f), &hlBrush); // vibrant blue highlight
+                    pRT->CreateSolidColorBrush(theme.IsDarkMode() ? D2D1::ColorF(0.22f, 0.62f, 1.0f) : D2D1::ColorF(0.0f, 0.45f, 0.88f), &hlBrush); // subtle VS Code blue
                 }
                 if (hlBrush) {
                     pTextLayout->SetDrawingEffect(hlBrush.Get(), matchRange);
@@ -2470,20 +2569,26 @@ void EditorCanvas::RenderAutocompletePopup(ID2D1RenderTarget* pRT, Theme& theme,
                           rcLabel, textBrush);
         }
 
-        // Detail text on right (e.g. "CSSStyleDeclaration.border", "HTMLElement")
-        if (!item.detail.empty()) {
-            float detailX = labelX + labelW;
-            D2D1_RECT_F rcDetail = D2D1::RectF(detailX, itemY + config.ScaleF(2.0f), popupX + popupW - config.ScaleF(8.0f), itemY + itemH);
-            ID2D1Brush* detailBrush = isSelected ? theme.brushTextSecondary.Get() : theme.brushTextMuted.Get();
+        // 7. Detail text with strict clipping (e.g. "(values, sep, end, file, flush)" or "CSSStyleDeclaration.border")
+        float detailX = labelX + actualLabelW + config.ScaleF(8.0f);
+        float detailRight = originLeft - config.ScaleF(6.0f);
+        if (!item.detail.empty() && detailRight > detailX + config.ScaleF(10.0f)) {
+            D2D1_RECT_F rcDetail = D2D1::RectF(detailX, itemY + config.ScaleF(2.0f), detailRight, itemY + itemH);
+            pRT->PushAxisAlignedClip(rcDetail, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+            ID2D1Brush* detailBrush = isSelected
+                ? (theme.IsDarkMode() ? theme.brushTextSecondary.Get() : theme.brushTextPrimary.Get())
+                : theme.brushTextMuted.Get();
             pRT->DrawText(item.detail.c_str(), static_cast<UINT32>(item.detail.length()),
-                          theme.fontMenuShortcut ? theme.fontMenuShortcut.Get() : theme.fontBody.Get(),
+                          theme.fontMenuItem ? theme.fontMenuItem.Get() : theme.fontBody.Get(),
                           rcDetail, detailBrush);
+            pRT->PopAxisAlignedClip();
         }
 
+        pRT->PopAxisAlignedClip(); // End item row clip
         itemY += itemH;
     }
 
-    // Vertical scrollbar on right if totalItems > visibleCount
+    // 8. Vertical scrollbar on right if totalItems > visibleCount
     if (totalItems > visibleCount) {
         float sbW = config.ScaleF(4.0f);
         float sbPad = config.ScaleF(3.0f);
@@ -2507,20 +2612,44 @@ void EditorCanvas::RenderAutocompletePopup(ID2D1RenderTarget* pRT, Theme& theme,
         if (thumbBrush) pRT->FillRoundedRectangle(rrcSbThumb, thumbBrush.Get());
     }
 
-    // Bottom Tip Bar (Image 5)
+    // 9. Bottom Tip Bar (Image 5 benchmark: clipped, clean separator, Next Tip & ⋮ icon)
     float footerY = itemY + config.ScaleF(2.0f);
     pRT->DrawLine(
-        D2D1::Point2F(popupX + 4.0f, footerY),
-        D2D1::Point2F(popupX + popupW - 4.0f, footerY),
+        D2D1::Point2F(popupX + config.ScaleF(4.0f), footerY),
+        D2D1::Point2F(popupX + popupW - config.ScaleF(4.0f), footerY),
         borderBrush.Get(),
         0.8f
     );
 
-    D2D1_RECT_F rcTip = D2D1::RectF(popupX + config.ScaleF(8.0f), footerY + config.ScaleF(3.0f), popupX + popupW - config.ScaleF(8.0f), footerY + footerH);
-    const wchar_t* tipText = L"Ctrl+Down and Ctrl+Up will move caret down and up in the editor   Next Tip";
+    D2D1_RECT_F rcFooter = D2D1::RectF(popupX + config.ScaleF(4.0f), footerY, popupX + popupW - config.ScaleF(4.0f), popupY + popupH);
+    pRT->PushAxisAlignedClip(rcFooter, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+
+    // Left Tip Text
+    const wchar_t* tipText = L"Press Tab to insert \u2022 \u2191\u2193 to navigate";
+    D2D1_RECT_F rcTip = D2D1::RectF(popupX + config.ScaleF(8.0f), footerY + config.ScaleF(3.0f), popupX + popupW - config.ScaleF(88.0f), popupY + popupH);
     pRT->DrawText(tipText, static_cast<UINT32>(wcslen(tipText)),
-                  theme.fontMenuShortcut ? theme.fontMenuShortcut.Get() : theme.fontBody.Get(),
+                  theme.fontMenuItem ? theme.fontMenuItem.Get() : theme.fontBody.Get(),
                   rcTip, theme.brushTextMuted.Get());
+
+    // Right "Next Tip" link
+    const wchar_t* nextTipText = L"Next Tip";
+    D2D1_RECT_F rcNextTip = D2D1::RectF(popupX + popupW - config.ScaleF(84.0f), footerY + config.ScaleF(3.0f), popupX + popupW - config.ScaleF(24.0f), popupY + popupH);
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> linkBrush;
+    pRT->CreateSolidColorBrush(D2D1::ColorF(0.25f, 0.60f, 0.95f), &linkBrush);
+    if (linkBrush) {
+        pRT->DrawText(nextTipText, static_cast<UINT32>(wcslen(nextTipText)),
+                      theme.fontMenuItem ? theme.fontMenuItem.Get() : theme.fontBody.Get(),
+                      rcNextTip, linkBrush.Get());
+    }
+
+    // Right "⋮" menu dots
+    const wchar_t* dotsText = L"\u22EE";
+    D2D1_RECT_F rcDots = D2D1::RectF(popupX + popupW - config.ScaleF(20.0f), footerY + config.ScaleF(3.0f), popupX + popupW - config.ScaleF(6.0f), popupY + popupH);
+    pRT->DrawText(dotsText, 1,
+                  theme.fontMenuItem ? theme.fontMenuItem.Get() : theme.fontBody.Get(),
+                  rcDots, theme.brushTextMuted.Get());
+
+    pRT->PopAxisAlignedClip(); // End footer clip
 }
 
 void EditorCanvas::RenderCanvasThemeEffects(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,

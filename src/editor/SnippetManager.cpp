@@ -18,7 +18,7 @@ void SnippetManager::LoadDefaults() {
 
     // 1. HTML5 Boilerplate & HTML Templates (Image 3 request: "like you know ! in vs code create html template")
     m_snippets.push_back({
-        L"HTML5 Boilerplate Template",
+        L"HTML5 Boilerplate Template (!)",
         L"!",
         {
             L"<!DOCTYPE html>",
@@ -38,7 +38,7 @@ void SnippetManager::LoadDefaults() {
     });
 
     m_snippets.push_back({
-        L"HTML5 Boilerplate Template",
+        L"HTML5 Boilerplate (html:5)",
         L"html:5",
         {
             L"<!DOCTYPE html>",
@@ -329,11 +329,19 @@ void SnippetManager::LoadDefaults() {
 
     // 3. TypeScript / JavaScript Snippets
     m_snippets.push_back({
-        L"Console Log",
+        L"Console Log (JS/TS/HTML)",
+        L"log",
+        { L"console.log($1);" },
+        L"Log output to developer console",
+        L"html,htm,js,ts,jsx,tsx,php"
+    });
+
+    m_snippets.push_back({
+        L"Console Log (clg)",
         L"clg",
         { L"console.log($1);" },
         L"Log output to developer console",
-        L"ts,js,tsx,jsx,html"
+        L"ts,js,tsx,jsx,html,htm,php"
     });
 
     m_snippets.push_back({
@@ -580,7 +588,15 @@ void SnippetManager::LoadDefaults() {
     });
 
     m_snippets.push_back({
-        L"Print to Console (C++)",
+        L"Print to Console (C++ log)",
+        L"log",
+        { L"std::cout << \"$1\" << std::endl;" },
+        L"Log output to console in C++",
+        L"cpp,hpp,c,h,cc,cxx"
+    });
+
+    m_snippets.push_back({
+        L"Print to Console (C++ cout)",
         L"cout",
         { L"std::cout << $1 << std::endl;" },
         L"Print expression to standard console output",
@@ -678,6 +694,59 @@ void SnippetManager::LoadDefaults() {
         L"Python print statement",
         L"py"
     });
+
+    m_snippets.push_back({
+        L"Print to Console (Python)",
+        L"log",
+        { L"print($1)" },
+        L"Print expression to standard console output in Python",
+        L"py"
+    });
+}
+
+static std::wstring EscapeJsonString(const std::wstring& input) {
+    std::wstring out;
+    out.reserve(input.length() * 2);
+    for (wchar_t c : input) {
+        if (c == L'\\') out += L"\\\\";
+        else if (c == L'"') out += L"\\\"";
+        else if (c == L'\n') out += L"\\n";
+        else if (c == L'\r') out += L"\\r";
+        else if (c == L'\t') out += L"\\t";
+        else out += c;
+    }
+    return out;
+}
+
+void SnippetManager::SaveSnippets(const std::wstring& filePath) const {
+    std::wofstream out(filePath);
+    if (!out.is_open()) return;
+
+    out << L"{\n";
+    out << L"    // User Code Snippets for phide IDE\n";
+    out << L"    // Each snippet is defined under a snippet name and has a prefix, body, description, and scope.\n";
+    out << L"    // Use $1, $2 for tab stops, $0 for final cursor position, and ${1:label} for placeholders.\n\n";
+
+    for (size_t sIdx = 0; sIdx < m_snippets.size(); ++sIdx) {
+        const auto& sn = m_snippets[sIdx];
+        out << L"    \"" << EscapeJsonString(sn.name) << L"\": {\n";
+        out << L"        \"prefix\": \"" << EscapeJsonString(sn.prefix) << L"\",\n";
+        out << L"        \"body\": [\n";
+        for (size_t bIdx = 0; bIdx < sn.body.size(); ++bIdx) {
+            out << L"            \"" << EscapeJsonString(sn.body[bIdx]) << L"\"";
+            if (bIdx + 1 < sn.body.size()) out << L",";
+            out << L"\n";
+        }
+        out << L"        ],\n";
+        out << L"        \"description\": \"" << EscapeJsonString(sn.description) << L"\",\n";
+        out << L"        \"scope\": \"" << EscapeJsonString(sn.scope) << L"\"\n";
+        out << L"    }";
+        if (sIdx + 1 < m_snippets.size()) out << L",";
+        out << L"\n\n";
+    }
+
+    out << L"}\n";
+    out.close();
 }
 
 void SnippetManager::EnsureDefaultSnippetsFile() {
@@ -687,81 +756,24 @@ void SnippetManager::EnsureDefaultSnippetsFile() {
     std::error_code ec;
     std::filesystem::create_directories(p.parent_path(), ec);
 
-    if (!std::filesystem::exists(p, ec)) {
-        std::wofstream out(m_snippetsFilePath);
-        if (out.is_open()) {
-            out << LR"RAW_SNIPPETS({
-    // User Code Snippets for phide IDE
-    // Each snippet is defined under a snippet name and has a prefix, body and 
-    // description. The prefix is what is used to trigger the snippet and the body will be
-    // expanded and inserted. Possible variables are:
-    // $1, $2 for tab stops, $0 for the final cursor position, and ${1:label}, ${2:another} for placeholders.
-
-    "Print to Console (C++)": {
-        "prefix": "log",
-        "body": [
-            "std::cout << \"$1\" << std::endl;"
-        ],
-        "description": "Log output to console in C++",
-        "scope": "cpp,hpp,c,h"
-    },
-    "Main Function": {
-        "prefix": "main",
-        "body": [
-            "int main(int argc, char* argv[]) {",
-            "    $0",
-            "    return 0;",
-            "}"
-        ],
-        "description": "Standard C++ main entry point",
-        "scope": "cpp,c"
-    },
-    "Console Log (JS/TS)": {
-        "prefix": "clg",
-        "body": [
-            "console.log($1);"
-        ],
-        "description": "Console log in JS/TS",
-        "scope": "ts,js,tsx,jsx"
-    },
-    "Arrow Function": {
-        "prefix": "afn",
-        "body": [
-            "const ${1:name} = ($2) => {",
-            "    $0",
-            "};"
-        ],
-        "description": "Arrow function declaration",
-        "scope": "ts,js,tsx,jsx"
-    },
-    "React Functional Component": {
-        "prefix": "rfc",
-        "body": [
-            "export const ${1:ComponentName} = () => {",
-            "    return (",
-            "        <div>",
-            "            $0",
-            "        </div>",
-            "    );",
-            "};"
-        ],
-        "description": "React functional component",
-        "scope": "tsx,jsx"
-    },
-    "Python Function": {
-        "prefix": "def",
-        "body": [
-            "def ${1:function_name}($2):",
-            "    \"\"\"$3\"\"\"",
-            "    $0"
-        ],
-        "description": "Python function definition",
-        "scope": "py"
-    }
-}
-)RAW_SNIPPETS";
-            out.close();
+    bool needsExport = !std::filesystem::exists(p, ec);
+    if (!needsExport) {
+        // If file exists, check if it's the old 6-snippet stub or lacks the "!" boilerplate snippet
+        std::wifstream in(m_snippetsFilePath);
+        if (in.is_open()) {
+            std::wstring content((std::istreambuf_iterator<wchar_t>(in)), std::istreambuf_iterator<wchar_t>());
+            in.close();
+            // If missing "!" or file is too small to contain the full catalog
+            if (content.find(L"\"prefix\": \"!\"") == std::wstring::npos || content.length() < 3000) {
+                needsExport = true;
+            }
+        } else {
+            needsExport = true;
         }
+    }
+
+    if (needsExport) {
+        SaveSnippets(m_snippetsFilePath);
     }
 }
 
@@ -880,7 +892,7 @@ void SnippetManager::LoadSnippets() {
         if (!sn.prefix.empty() && !sn.body.empty()) {
             // Replace existing or add
             auto it = std::find_if(m_snippets.begin(), m_snippets.end(), [&](const Snippet& s) {
-                return s.name == sn.name || (s.prefix == sn.prefix && s.scope == sn.scope);
+                return (s.name == sn.name && s.prefix == sn.prefix) || (s.prefix == sn.prefix && s.scope == sn.scope);
             });
             if (it != m_snippets.end()) {
                 *it = sn;
@@ -900,6 +912,9 @@ bool SnippetManager::MatchesScope(const std::wstring& scope, const std::wstring&
 
     std::wstring lowerExt = fileExt;
     for (auto& c : lowerExt) c = towlower(c);
+    if (!lowerExt.empty() && lowerExt[0] == L'.') {
+        lowerExt = lowerExt.substr(1);
+    }
 
     std::wstringstream ss(scope);
     std::wstring item;
@@ -908,6 +923,9 @@ bool SnippetManager::MatchesScope(const std::wstring& scope, const std::wstring&
         size_t l = item.find_last_not_of(L" ");
         if (f != std::wstring::npos) item = item.substr(f, l - f + 1);
         for (auto& c : item) c = towlower(c);
+        if (!item.empty() && item[0] == L'.') {
+            item = item.substr(1);
+        }
         if (item == lowerExt) return true;
     }
     return false;

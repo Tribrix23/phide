@@ -1923,6 +1923,32 @@ void Window::DoResetZoom() {
     InvalidateRect(m_hwnd, nullptr, FALSE);
 }
 
+void Window::DoNextTab() {
+    if (m_editorGroups.empty()) return;
+    auto& group = m_editorGroups[m_focusedGroupIdx];
+    if (group.docs.size() > 1) {
+        group.activeDocIdx = (group.activeDocIdx + 1) % static_cast<int>(group.docs.size());
+        m_editor.DismissAutocomplete();
+        m_editor.ClearGhostText();
+        UpdateExecutionButtonStates();
+        SaveSessionState();
+        InvalidateRect(m_hwnd, nullptr, FALSE);
+    }
+}
+
+void Window::DoPrevTab() {
+    if (m_editorGroups.empty()) return;
+    auto& group = m_editorGroups[m_focusedGroupIdx];
+    if (group.docs.size() > 1) {
+        group.activeDocIdx = (group.activeDocIdx - 1 + static_cast<int>(group.docs.size())) % static_cast<int>(group.docs.size());
+        m_editor.DismissAutocomplete();
+        m_editor.ClearGhostText();
+        UpdateExecutionButtonStates();
+        SaveSessionState();
+        InvalidateRect(m_hwnd, nullptr, FALSE);
+    }
+}
+
 void Window::DoToggleWordWrap() {
     m_wordWrap = !m_wordWrap;
     InvalidateRect(m_hwnd, nullptr, FALSE);
@@ -2033,13 +2059,31 @@ void Window::DoShowSourceControl() {
     InvalidateRect(m_hwnd, nullptr, FALSE);
 }
 
+void Window::AnimateTerminalOpen() {
+    m_targetTerminalProgress = 1.0f;
+    m_isTerminalAnimating = true;
+    SetTimer(m_hwnd, m_animTimerId, 16, nullptr);
+}
+
+void Window::AnimateTerminalClose() {
+    m_targetTerminalProgress = 0.0f;
+    m_isTerminalAnimating = true;
+    SetTimer(m_hwnd, m_animTimerId, 16, nullptr);
+}
+
 void Window::DoCreateTerminal() {
     std::wstring dir;
     if (m_drawer.HasOpenFolder()) {
         dir = m_drawer.GetOpenFolderPath();
     }
-    m_terminal.Toggle(dir);
-    m_isTerminalFocused = m_terminal.IsOpen();
+    if (!m_terminal.IsOpen()) {
+        m_terminal.Open(dir);
+        m_isTerminalFocused = true;
+        AnimateTerminalOpen();
+    } else {
+        m_isTerminalFocused = false;
+        AnimateTerminalClose();
+    }
     InvalidateRect(m_hwnd, nullptr, FALSE);
 }
 
@@ -2250,6 +2294,7 @@ void Window::DoRunActiveDocument() {
                 m_activeLiveServers.push_back({ filePath, fileName, folder, actualPort, std::move(serverInst) });
 
                 m_terminal.Open(folder);
+                AnimateTerminalOpen();
                 m_terminal.StartLiveServerSession(localUrl, networkUrl, filePath, fileName);
                 m_isTerminalFocused = true;
 
@@ -2261,6 +2306,7 @@ void Window::DoRunActiveDocument() {
             std::wstring localUrl = srv->server->GetLocalUrl(srv->fileName);
             std::wstring networkUrl = srv->server->GetNetworkUrl(srv->fileName);
             m_terminal.Open(folder);
+            AnimateTerminalOpen();
             m_terminal.StartLiveServerSession(localUrl, networkUrl, filePath, fileName);
             m_isTerminalFocused = true;
             ShellExecuteW(NULL, L"open", localUrl.c_str(), NULL, NULL, SW_SHOWNORMAL);
@@ -2274,6 +2320,7 @@ void Window::DoRunActiveDocument() {
         if (folder.empty()) folder = m_workspace.GetRootPath();
 
         m_terminal.Open(folder);
+        AnimateTerminalOpen();
         m_terminal.ExecuteCommandLine(L"node \"" + pDoc->filePath + L"\"");
         m_isTerminalFocused = true;
         InvalidateRect(m_hwnd, nullptr, FALSE);
@@ -2283,6 +2330,7 @@ void Window::DoRunActiveDocument() {
         if (folder.empty()) folder = m_workspace.GetRootPath();
 
         m_terminal.Open(folder);
+        AnimateTerminalOpen();
         m_terminal.ExecuteCommandLine(L"python \"" + pDoc->filePath + L"\"");
         m_isTerminalFocused = true;
         InvalidateRect(m_hwnd, nullptr, FALSE);
@@ -2298,6 +2346,7 @@ void Window::DoDebugActiveDocument() {
     if (folder.empty()) folder = m_workspace.GetRootPath();
 
     m_terminal.Open(folder);
+    AnimateTerminalOpen();
     m_terminal.StartDebugSession(pDoc->filePath, folder);
     m_isTerminalFocused = true;
     InvalidateRect(m_hwnd, nullptr, FALSE);
@@ -2571,6 +2620,12 @@ bool Window::Create(HINSTANCE hInstance, int nCmdShow) {
         if (m_hwnd) InvalidateRect(m_hwnd, nullptr, FALSE);
     });
 
+    // Animate terminal close when '-' minimize button is clicked in integrated terminal
+    m_terminal.SetOnMinimize([this]() {
+        m_isTerminalFocused = false;
+        AnimateTerminalClose();
+    });
+
     // Initialize user snippets engine
     m_snippetManager.Initialize(GetSnippetsConfigPath());
     m_intelliSense.SetSnippetManager(&m_snippetManager);
@@ -2788,7 +2843,7 @@ void Window::OnPaint() {
 
     bool suppressEditorCaret = m_quickOpen.IsOpen() || m_themePicker.IsOpen() || m_popupMenu.IsOpen() ||
         (m_terminal.IsOpen() && m_isTerminalFocused) ||
-        m_drawer.IsRenaming() ||
+        m_drawer.IsRenaming() || m_drawer.IsCreating() ||
         (m_drawerAnimProgress > 0.001f && (m_drawer.IsGitCommitBoxFocused() || m_drawer.IsSearchFocused()));
 
     const float headerH = m_config.ScaleF(static_cast<float>(m_config.headerHeight));
@@ -2799,12 +2854,17 @@ void Window::OnPaint() {
     D2D1_RECT_F rcCornerPatch = D2D1::RectF(railW, headerH, railW + m_config.ScaleF(18.0f), headerH + m_config.ScaleF(18.0f));
     m_pRenderTarget->FillRectangle(rcCornerPatch, m_theme.brushHeaderBg.Get());
 
-    float termH = 0.0f;
-    if (m_terminal.IsOpen()) {
-        termH = m_terminal.IsFullScreen() ? (clientH - headerH) : m_terminal.GetHeight();
+    if (!m_terminal.IsOpen() && !m_isTerminalAnimating) {
+        m_terminalAnimProgress = 0.0f;
     }
-    float editorH = clientH - termH;
-    float drawerH = m_terminal.IsOpen() ? (clientH - termH) : clientH;
+
+    float maxTermH = m_terminal.IsFullScreen() ? (clientH - headerH) : m_terminal.GetHeight();
+    float currentTermH = (m_terminal.IsOpen() || m_isTerminalAnimating)
+        ? (maxTermH * m_terminalAnimProgress)
+        : 0.0f;
+
+    float editorH = clientH - currentTermH;
+    float drawerH = clientH - currentTermH;
     float terminalLeft = static_cast<float>(railW);
 
     m_editor.Render(m_pRenderTarget.Get(), m_theme, m_config, m_editorGroups, m_focusedGroupIdx,
@@ -2812,14 +2872,55 @@ void Window::OnPaint() {
                     searchHL, hlMatchCase, hlWholeWord, hlUseRegex,
                     suppressEditorCaret);
 
-    // 2. Render Slide-out Drawer Panel (when visible: height cut cleanly at top of terminal when open)
+    // 1b. Render Explorer Drag-and-Drop Insertion Caret / Target Indicator
+    if (m_isDraggingExplorerFile && m_hasDragDropTarget && m_dragDropTargetGroup >= 0 &&
+        m_dragDropTargetGroup < static_cast<int>(m_editorGroups.size())) {
+        const auto& group = m_editorGroups[m_dragDropTargetGroup];
+        if (group.activeDocIdx >= 0 && group.activeDocIdx < static_cast<int>(group.docs.size())) {
+            const auto& doc = group.docs[group.activeDocIdx];
+            if (!doc.isSpecialView && !doc.isImageView && !doc.isDiffView) {
+                float paneW = canvasWidth / m_editorGroups.size();
+                float pLeft = canvasLeft + m_dragDropTargetGroup * paneW;
+                float gutterW = m_config.ScaleF(50.0f);
+                float tabH = m_config.ScaleF(34.0f);
+                float breadcrumbH = m_config.ScaleF(24.0f);
+                float topY = headerH + tabH + breadcrumbH;
+                float lineH = m_config.ScaleF(std::round(m_config.fontSize * m_config.lineHeightMultiplier));
+                float charW = m_config.ScaleF(7.8f);
+
+                if (m_dragDropTargetLine >= doc.scrollLine) {
+                    size_t visualLine = m_dragDropTargetLine - doc.scrollLine;
+                    float lineY = topY + m_config.ScaleF(6.0f) + visualLine * lineH;
+                    if (lineY + lineH <= editorH) {
+                        float caretX = pLeft + gutterW + m_config.ScaleF(12.0f) + m_dragDropTargetCol * charW;
+                        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> dropTargetBrush;
+                        m_pRenderTarget->CreateSolidColorBrush(D2D1::ColorF(0.0f, 0.48f, 0.85f, 0.9f), &dropTargetBrush);
+                        if (dropTargetBrush) {
+                            m_pRenderTarget->FillRectangle(
+                                D2D1::RectF(caretX - 1.5f, lineY, caretX + 1.5f, lineY + lineH),
+                                dropTargetBrush.Get()
+                            );
+                            m_pRenderTarget->DrawLine(
+                                D2D1::Point2F(pLeft + gutterW + m_config.ScaleF(6.0f), lineY + lineH),
+                                D2D1::Point2F(pLeft + paneW - m_config.ScaleF(20.0f), lineY + lineH),
+                                dropTargetBrush.Get(),
+                                1.5f
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // 2. Render Slide-out Drawer Panel (smoothly morphs and resizes its bottom with terminal)
     if (hasLeftDrawer) {
         m_drawer.Render(m_pRenderTarget.Get(), m_theme, m_config, drawerH, currentDrawerW);
     }
 
-    // 3. Integrated Terminal Panel at Bottom (widened to take from rail to right edge across sidebar)
-    if (m_terminal.IsOpen()) {
-        m_terminal.Render(m_pRenderTarget.Get(), m_theme, m_config, clientW, clientH, terminalLeft);
+    // 3. Integrated Terminal Panel at Bottom (smoothly slides up across workspace and sidebar)
+    if (m_terminalAnimProgress > 0.001f && m_terminal.IsOpen()) {
+        m_terminal.Render(m_pRenderTarget.Get(), m_theme, m_config, clientW, clientH, terminalLeft, currentTermH);
     }
 
     // Live Server Status Badge: sleek rectangle with rounded corners (per user request)
@@ -2936,6 +3037,62 @@ void Window::OnPaint() {
         m_quickOpen.Render(m_pRenderTarget.Get(), m_theme, m_config, clientW, clientH);
     }
 
+    // 8. Render Floating Drag-and-Drop Ghost Pill (Godot / VS Code style)
+    if (m_isDraggingExplorerFile && !m_dragCandidateName.empty()) {
+        float ghostX = static_cast<float>(m_dragCurrentPt.x) + 14.0f;
+        float ghostY = static_cast<float>(m_dragCurrentPt.y) + 14.0f;
+        float badgeW = m_config.ScaleF(static_cast<float>(m_dragCandidateName.length() * 8.0f + 64.0f));
+        if (badgeW < m_config.ScaleF(140.0f)) badgeW = m_config.ScaleF(140.0f);
+        if (badgeW > m_config.ScaleF(260.0f)) badgeW = m_config.ScaleF(260.0f);
+        const float badgeH = m_config.ScaleF(28.0f);
+
+        if (ghostX + badgeW > clientW - 8.0f) ghostX = clientW - badgeW - 8.0f;
+        if (ghostY + badgeH > clientH - 8.0f) ghostY = clientH - badgeH - 8.0f;
+
+        D2D1_RECT_F rcBadge = D2D1::RectF(ghostX, ghostY, ghostX + badgeW, ghostY + badgeH);
+        D2D1_ROUNDED_RECT rrcBadge = D2D1::RoundedRect(rcBadge, 5.0f, 5.0f);
+
+        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> badgeBg;
+        m_pRenderTarget->CreateSolidColorBrush(
+            m_theme.IsDarkMode() ? D2D1::ColorF(0.12f, 0.14f, 0.18f, 0.95f) : D2D1::ColorF(0.96f, 0.97f, 0.99f, 0.95f),
+            &badgeBg
+        );
+        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> badgeBorder;
+        m_pRenderTarget->CreateSolidColorBrush(
+            m_hasDragDropTarget ? D2D1::ColorF(0.0f, 0.50f, 0.95f, 0.95f) : D2D1::ColorF(0.40f, 0.45f, 0.52f, 0.8f),
+            &badgeBorder
+        );
+
+        if (badgeBg) m_pRenderTarget->FillRoundedRectangle(rrcBadge, badgeBg.Get());
+        if (badgeBorder) m_pRenderTarget->DrawRoundedRectangle(rrcBadge, badgeBorder.Get(), 1.5f);
+
+        float iconCx = ghostX + m_config.ScaleF(14.0f);
+        float iconCy = ghostY + badgeH / 2.0f;
+        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> plusBrush;
+        m_pRenderTarget->CreateSolidColorBrush(
+            m_hasDragDropTarget ? D2D1::ColorF(0.20f, 0.85f, 0.40f, 1.0f) : D2D1::ColorF(0.0f, 0.50f, 0.95f, 1.0f),
+            &plusBrush
+        );
+        if (plusBrush) {
+            m_pRenderTarget->DrawLine(D2D1::Point2F(iconCx - 4.0f, iconCy), D2D1::Point2F(iconCx + 4.0f, iconCy), plusBrush.Get(), 1.8f);
+            m_pRenderTarget->DrawLine(D2D1::Point2F(iconCx, iconCy - 4.0f), D2D1::Point2F(iconCx, iconCy + 4.0f), plusBrush.Get(), 1.8f);
+        }
+
+        std::wstring dragLabel = m_dragCandidateName;
+        if (m_hasDragDropTarget) {
+            dragLabel += L" (import)";
+        }
+        D2D1_RECT_F rcText = D2D1::RectF(ghostX + m_config.ScaleF(26.0f), ghostY + m_config.ScaleF(4.0f), ghostX + badgeW - m_config.ScaleF(6.0f), ghostY + badgeH);
+        ID2D1Brush* textBrush = m_theme.IsDarkMode() ? (m_theme.brushTextWhite ? m_theme.brushTextWhite.Get() : m_theme.brushTextPrimary.Get()) : m_theme.brushTextPrimary.Get();
+        m_pRenderTarget->DrawText(
+            dragLabel.c_str(),
+            static_cast<UINT32>(dragLabel.length()),
+            m_theme.fontHint ? m_theme.fontHint.Get() : m_theme.fontCode.Get(),
+            rcText,
+            textBrush
+        );
+    }
+
     HRESULT hr = m_pRenderTarget->EndDraw();
     if (hr == D2DERR_RECREATE_TARGET) {
         DiscardDeviceResources();
@@ -3029,6 +3186,92 @@ void Window::HandleMouseMove(POINT clientPt) {
                 m_editor.SetAutocompleteSelectedIndex(static_cast<size_t>(hitIdx));
                 InvalidateRect(m_hwnd, nullptr, FALSE);
             }
+            return;
+        }
+    }
+
+    // Check Explorer File Dragging (Godot / VS Code style)
+    if (!m_dragCandidatePath.empty()) {
+        if (!(GetKeyState(VK_LBUTTON) & 0x8000)) {
+            m_dragCandidatePath.clear();
+            m_dragCandidateName.clear();
+            m_isDraggingExplorerFile = false;
+            m_hasDragDropTarget = false;
+            m_dragDropTargetGroup = -1;
+            ReleaseCapture();
+            InvalidateRect(m_hwnd, nullptr, FALSE);
+            return;
+        }
+
+        float dx = static_cast<float>(clientPt.x - m_dragStartPt.x);
+        float dy = static_cast<float>(clientPt.y - m_dragStartPt.y);
+        if (!m_isDraggingExplorerFile && std::hypot(dx, dy) > 5.0f) {
+            m_isDraggingExplorerFile = true;
+        }
+
+        if (m_isDraggingExplorerFile) {
+            m_dragCurrentPt = clientPt;
+
+            RECT clientRc;
+            GetClientRect(m_hwnd, &clientRc);
+            const int railW = m_config.Scale(m_config.railWidth);
+            const int drawerW = static_cast<int>(m_config.Scale(m_config.drawerWidth) * m_drawerAnimProgress);
+            const float canvasLeft = static_cast<float>(railW + drawerW);
+            const float canvasWidth = static_cast<float>(clientRc.right) - canvasLeft;
+            const float clientH = static_cast<float>(clientRc.bottom - clientRc.top);
+            const float headerH = m_config.ScaleF(static_cast<float>(m_config.headerHeight));
+            const float tabH = m_config.ScaleF(34.0f);
+
+            float currentTermH = (m_terminal.IsOpen() || m_isTerminalAnimating)
+                ? (m_terminal.GetHeight() * m_terminalAnimProgress) : 0.0f;
+            float editorH = clientH - currentTermH;
+
+            m_hasDragDropTarget = false;
+            m_dragDropTargetGroup = -1;
+
+            if (clientPt.x >= canvasLeft && clientPt.x < clientRc.right &&
+                clientPt.y >= headerH + tabH && clientPt.y < editorH &&
+                canvasWidth > 10.0f && !m_editorGroups.empty()) {
+
+                float paneW = canvasWidth / m_editorGroups.size();
+                for (size_t g = 0; g < m_editorGroups.size(); ++g) {
+                    float pLeft = canvasLeft + g * paneW;
+                    float pRight = pLeft + paneW;
+                    if (clientPt.x >= pLeft && (clientPt.x < pRight || g == m_editorGroups.size() - 1)) {
+                        m_dragDropTargetGroup = static_cast<int>(g);
+                        auto& group = m_editorGroups[g];
+                        if (group.activeDocIdx >= 0 && group.activeDocIdx < static_cast<int>(group.docs.size())) {
+                            auto& doc = group.docs[group.activeDocIdx];
+                            if (!doc.isSpecialView && !doc.isImageView && !doc.isDiffView) {
+                                size_t line = 0, col = 0;
+                                if (m_editor.HitTestCodeArea(clientPt, m_config, doc, pLeft, editorH, line, col)) {
+                                    m_dragDropTargetLine = line;
+                                    m_dragDropTargetCol = col;
+                                    m_hasDragDropTarget = true;
+                                } else {
+                                    const float breadcrumbH = m_config.ScaleF(24.0f);
+                                    const float topY = headerH + tabH + breadcrumbH;
+                                    const float lineH = m_config.ScaleF(std::round(m_config.fontSize * m_config.lineHeightMultiplier));
+                                    float relY = static_cast<float>(clientPt.y) - (topY + m_config.ScaleF(6.0f));
+                                    if (relY < 0.0f) relY = 0.0f;
+                                    size_t visualSlot = doc.scrollLine + static_cast<size_t>(relY / lineH);
+                                    if (visualSlot >= doc.buffer.GetLineCount()) {
+                                        m_dragDropTargetLine = doc.buffer.GetLineCount() > 0 ? doc.buffer.GetLineCount() - 1 : 0;
+                                        m_dragDropTargetCol = doc.buffer.GetLine(m_dragDropTargetLine).length();
+                                    } else {
+                                        m_dragDropTargetLine = visualSlot;
+                                        m_dragDropTargetCol = 0;
+                                    }
+                                    m_hasDragDropTarget = true;
+                                }
+                            }
+                        }
+                        break;
+                    }
+                }
+            }
+
+            InvalidateRect(m_hwnd, nullptr, FALSE);
             return;
         }
     }
@@ -3221,6 +3464,12 @@ void Window::HandleMouseMove(POINT clientPt) {
             m_popupMenu.OpenToolsMenu(rcTools.left, rcTools.bottom + 2.0f, m_config,
                                       HasOpenFile(), m_terminal.IsOpen(), m_header.IsLiveServerRunning());
             m_header.SetActiveMenu(ui::HeaderMenuId::Tools);
+            needRepaint = true;
+        } else if (hoveredMenu == ui::HeaderMenuId::Window && m_header.GetActiveMenu() != ui::HeaderMenuId::Window) {
+            D2D1_RECT_F rcWindow = m_header.GetMenuItemBounds(ui::HeaderMenuId::Window);
+            m_popupMenu.OpenWindowMenu(rcWindow.left, rcWindow.bottom + 2.0f, m_config,
+                                       IsZoomed(m_hwnd), m_config.isDrawerOpen, m_terminal.IsOpen(), HasOpenFile());
+            m_header.SetActiveMenu(ui::HeaderMenuId::Window);
             needRepaint = true;
         }
     }
@@ -3730,33 +3979,18 @@ void Window::HandleLButtonDown(POINT clientPt) {
                         break;
                     case ui::MenuActionId::CtxNewFile: {
                         std::wstring parentDir = m_contextTargetIsFolder ? m_contextTargetPath
-                            : std::filesystem::path(m_contextTargetPath).parent_path().wstring();
-                        std::wstring newName = L"Untitled.txt";
-                        if (PromptInputDialog(m_hwnd, L"New File", L"File name:", newName, newName) && !newName.empty()) {
-                            std::filesystem::path newPath = std::filesystem::path(parentDir) / newName;
-                            if (!std::filesystem::exists(newPath)) {
-                                std::ofstream ofs(newPath);
-                                ofs.close();
-                            }
-                            m_explorerUndo.PushCreate(newPath.wstring(), false);
-                            m_drawer.RefreshTree();
-                            OpenFileDocument(newPath.wstring(), false);
-                        }
+                            : (m_contextTargetPath.empty() ? (m_drawer.HasOpenFolder() ? m_drawer.GetOpenFolderPath() : L".")
+                                                           : std::filesystem::path(m_contextTargetPath).parent_path().wstring());
+                        m_drawer.StartInlineCreate(parentDir, false);
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
                         break;
                     }
                     case ui::MenuActionId::CtxNewFolder: {
                         std::wstring parentDir = m_contextTargetIsFolder ? m_contextTargetPath
-                            : std::filesystem::path(m_contextTargetPath).parent_path().wstring();
-                        std::wstring newFolder = L"NewFolder";
-                        if (PromptInputDialog(m_hwnd, L"New Folder", L"Folder name:", newFolder, newFolder) && !newFolder.empty()) {
-                            std::filesystem::path newDirPath = std::filesystem::path(parentDir) / newFolder;
-                            std::error_code ec;
-                            std::filesystem::create_directories(newDirPath, ec);
-                            if (!ec) {
-                                m_explorerUndo.PushCreate(newDirPath.wstring(), true);
-                            }
-                            m_drawer.RefreshTree();
-                        }
+                            : (m_contextTargetPath.empty() ? (m_drawer.HasOpenFolder() ? m_drawer.GetOpenFolderPath() : L".")
+                                                           : std::filesystem::path(m_contextTargetPath).parent_path().wstring());
+                        m_drawer.StartInlineCreate(parentDir, true);
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
                         break;
                     }
                     case ui::MenuActionId::CtxFindInFolder:
@@ -3952,6 +4186,45 @@ void Window::HandleLButtonDown(POINT clientPt) {
                         m_drawer.ClearSearchResults();
                         SetProcessWorkingSetSize(GetCurrentProcess(), (SIZE_T)-1, (SIZE_T)-1);
                         break;
+
+                    // Window Menu Actions (Image 4)
+                    case ui::MenuActionId::WindowNewWindow:
+                        DoNewWindow();
+                        break;
+                    case ui::MenuActionId::WindowCloseWindow:
+                        PostMessageW(m_hwnd, WM_CLOSE, 0, 0);
+                        break;
+                    case ui::MenuActionId::WindowToggleFullScreen:
+                        if (IsZoomed(m_hwnd)) ShowWindow(m_hwnd, SW_RESTORE);
+                        else ShowWindow(m_hwnd, SW_MAXIMIZE);
+                        break;
+                    case ui::MenuActionId::WindowZoomIn:
+                        DoZoomIn();
+                        break;
+                    case ui::MenuActionId::WindowZoomOut:
+                        DoZoomOut();
+                        break;
+                    case ui::MenuActionId::WindowResetZoom:
+                        DoResetZoom();
+                        break;
+                    case ui::MenuActionId::WindowToggleSideBar:
+                        ToggleSidebar();
+                        break;
+                    case ui::MenuActionId::WindowToggleTerminal:
+                        DoCreateTerminal();
+                        break;
+                    case ui::MenuActionId::WindowNextTab:
+                        DoNextTab();
+                        break;
+                    case ui::MenuActionId::WindowPrevTab:
+                        DoPrevTab();
+                        break;
+                    case ui::MenuActionId::WindowSplitEditor:
+                        SplitEditor();
+                        break;
+                    case ui::MenuActionId::WindowCloseEditor:
+                        DoCloseEditor();
+                        break;
                     default:
                         break;
                 }
@@ -4062,6 +4335,12 @@ void Window::HandleLButtonDown(POINT clientPt) {
             m_popupMenu.OpenToolsMenu(rcTools.left, rcTools.bottom + 2.0f, m_config,
                                       HasOpenFile(), m_terminal.IsOpen(), m_header.IsLiveServerRunning());
             m_header.SetActiveMenu(ui::HeaderMenuId::Tools);
+            InvalidateRect(m_hwnd, nullptr, FALSE);
+        } else if (menuHit == ui::HeaderMenuId::Window) {
+            D2D1_RECT_F rcWindow = m_header.GetMenuItemBounds(ui::HeaderMenuId::Window);
+            m_popupMenu.OpenWindowMenu(rcWindow.left, rcWindow.bottom + 2.0f, m_config,
+                                       IsZoomed(m_hwnd), m_config.isDrawerOpen, m_terminal.IsOpen(), HasOpenFile());
+            m_header.SetActiveMenu(ui::HeaderMenuId::Window);
             InvalidateRect(m_hwnd, nullptr, FALSE);
         }
         return;
@@ -4362,6 +4641,29 @@ void Window::HandleLButtonDown(POINT clientPt) {
         InvalidateRect(m_hwnd, nullptr, FALSE);
     }
 
+    // 5b. Handle inline tree item creation commit on click outside
+    if (m_drawer.IsCreating()) {
+        const auto& rcBox = m_drawer.GetCreateBox();
+        const auto& rcPill = m_drawer.GetCreatePill();
+        if ((clientPt.x >= rcBox.left && clientPt.x <= rcBox.right &&
+             clientPt.y >= rcBox.top && clientPt.y <= rcBox.bottom) ||
+            (clientPt.x >= rcPill.left && clientPt.x <= rcPill.right &&
+             clientPt.y >= rcPill.top && clientPt.y <= rcPill.bottom)) {
+            return;
+        }
+        std::wstring createdPath;
+        bool isFolder = m_drawer.IsCreatingFolder();
+        if (m_drawer.CommitInlineCreate(createdPath)) {
+            m_explorerUndo.PushCreate(createdPath, isFolder);
+            if (!isFolder) {
+                OpenFileDocument(createdPath, false);
+            }
+        } else {
+            m_drawer.CancelInlineCreate();
+        }
+        InvalidateRect(m_hwnd, nullptr, FALSE);
+    }
+
     // 6. Drawer Tree Item or Search Results Clicks
     if (m_drawerAnimProgress > 0.001f) {
         if (m_config.activeRailTab == 1) {
@@ -4495,11 +4797,17 @@ void Window::HandleLButtonDown(POINT clientPt) {
                             m_drawer.ToggleFolder(clickedTree);
                             SaveSessionState();
                         } else {
-                            // Open file in preview mode! (If current file is dirty, VS Code rule adds a tab; if clean preview, replaces it)
-                            OpenFileDocument(pItem->fullPath, true);
+                            // File item clicked: initiate potential drag candidate
+                            m_dragCandidatePath = pItem->fullPath;
+                            m_dragCandidateName = pItem->label;
+                            m_dragStartPt = clientPt;
+                            m_dragCurrentPt = clientPt;
+                            m_isDraggingExplorerFile = false;
+                            m_hasDragDropTarget = false;
+                            m_dragDropTargetGroup = -1;
+                            SetCapture(m_hwnd);
+                            return;
                         }
-                        InvalidateRect(m_hwnd, nullptr, FALSE);
-                        return;
                     }
                 }
             }
@@ -4535,6 +4843,63 @@ void Window::HandleLButtonDown(POINT clientPt) {
 }
 
 void Window::HandleLButtonUp(POINT clientPt) {
+    if (!m_dragCandidatePath.empty()) {
+        if (m_isDraggingExplorerFile) {
+            RECT clientRc;
+            GetClientRect(m_hwnd, &clientRc);
+            const int railW = m_config.Scale(m_config.railWidth);
+            const int drawerW = static_cast<int>(m_config.Scale(m_config.drawerWidth) * m_drawerAnimProgress);
+            const float canvasLeft = static_cast<float>(railW + drawerW);
+            const float headerH = m_config.ScaleF(static_cast<float>(m_config.headerHeight));
+            const float tabH = m_config.ScaleF(34.0f);
+
+            // Dropped on Tab Bar -> open file as a tab!
+            if (clientPt.x >= canvasLeft && clientPt.y >= headerH && clientPt.y < headerH + tabH) {
+                OpenFileDocument(m_dragCandidatePath, false);
+            } else if (m_hasDragDropTarget && m_dragDropTargetGroup >= 0) {
+                m_focusedGroupIdx = m_dragDropTargetGroup;
+                auto* pDoc = GetActiveDoc();
+                if (pDoc && !pDoc->isSpecialView && !pDoc->isImageView && !pDoc->isDiffView) {
+                    if (pDoc->filePath != m_dragCandidatePath) {
+                        std::wstring importText = phide::editor::SmartImportHelper::Generate(pDoc->filePath, m_dragCandidatePath);
+                        if (!importText.empty()) {
+                            if (pDoc->buffer.GetLineCount() == 0) {
+                                pDoc->buffer.InsertText(importText);
+                            } else {
+                                size_t line = (std::min)(m_dragDropTargetLine, pDoc->buffer.GetLineCount() - 1);
+                                size_t col = (std::min)(m_dragDropTargetCol, pDoc->buffer.GetLine(line).length());
+                                pDoc->buffer.SetCursor(line, col);
+                                pDoc->buffer.InsertText(importText);
+                            }
+                            MarkDocumentModified(pDoc);
+                            m_editor.DismissAutocomplete();
+                            m_editor.ClearGhostText();
+                        }
+                    }
+                } else if (!pDoc) {
+                    OpenFileDocument(m_dragCandidatePath, false);
+                }
+            } else if (clientPt.x >= canvasLeft && clientPt.y >= headerH) {
+                auto* pDoc = GetActiveDoc();
+                if (!pDoc) {
+                    OpenFileDocument(m_dragCandidatePath, false);
+                }
+            }
+        } else {
+            // Normal click without drag: preview/open file document!
+            OpenFileDocument(m_dragCandidatePath, true);
+        }
+
+        m_dragCandidatePath.clear();
+        m_dragCandidateName.clear();
+        m_isDraggingExplorerFile = false;
+        m_hasDragDropTarget = false;
+        m_dragDropTargetGroup = -1;
+        ReleaseCapture();
+        InvalidateRect(m_hwnd, nullptr, FALSE);
+        return;
+    }
+
     (void)clientPt;
     if (m_terminal.IsOpen()) {
         bool wasResizing = m_terminal.IsResizing();
@@ -4711,6 +5076,12 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 GetCursorPos(&pt);
                 ScreenToClient(m_hwnd, &pt);
 
+                // Explorer Drag & Drop Cursor
+                if (m_isDraggingExplorerFile) {
+                    SetCursor(LoadCursor(nullptr, m_hasDragDropTarget ? IDC_ARROW : IDC_NO));
+                    return TRUE;
+                }
+
                 // 0a. Quick Open File Search Modal (Image 5)
                 if (m_quickOpen.IsOpen()) {
                     if (m_quickOpen.HitTestInput(pt)) {
@@ -4800,9 +5171,9 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     return TRUE;
                 }
 
-                // Inline rename input box in drawer: show I-beam cursor
-                if (m_drawer.IsRenaming()) {
-                    const auto& rcBox = m_drawer.GetRenameBox();
+                // Inline rename / create input box in drawer: show I-beam cursor
+                if (m_drawer.IsRenaming() || m_drawer.IsCreating()) {
+                    const auto& rcBox = m_drawer.IsRenaming() ? m_drawer.GetRenameBox() : m_drawer.GetCreateBox();
                     if (pt.x >= rcBox.left && pt.x <= rcBox.right && pt.y >= rcBox.top && pt.y <= rcBox.bottom) {
                         SetCursor(LoadCursor(nullptr, IDC_IBEAM));
                         return TRUE;
@@ -4916,6 +5287,19 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
             const float canvasWidth = static_cast<float>(clientRc.right) - canvasLeft;
             const float clientH = static_cast<float>(clientRc.bottom - clientRc.top);
             const float headerH = m_config.ScaleF(static_cast<float>(m_config.headerHeight));
+
+            // Double click in Explorer tree: open file permanently (not preview)!
+            if (m_drawerAnimProgress > 0.001f && clientPt.x >= railW && clientPt.x < railW + drawerW && clientPt.y >= headerH) {
+                int clickedTree = m_drawer.HitTest(clientPt, m_config);
+                if (clickedTree >= 0) {
+                    const auto* pItem = m_drawer.GetItem(clickedTree);
+                    if (pItem && !pItem->isFolder) {
+                        OpenFileDocument(pItem->fullPath, false);
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
+                        return 0;
+                    }
+                }
+            }
 
             if (clientPt.x >= canvasLeft && clientPt.y >= headerH && !m_editorGroups.empty() && canvasWidth > 10.0f) {
                 float paneW = canvasWidth / m_editorGroups.size();
@@ -5094,6 +5478,12 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 return 0;
             }
 
+            if (m_drawer.IsCreating()) {
+                m_drawer.HandleCreateChar(static_cast<wchar_t>(wParam));
+                InvalidateRect(m_hwnd, nullptr, FALSE);
+                return 0;
+            }
+
             // 1. If Code Search in drawer has focus, typed characters MUST route to Code Search
             if (m_config.activeRailTab == 1 && m_drawerAnimProgress > 0.001f && m_drawer.IsSearchFocused()) {
                 m_drawer.HandleSearchChar(static_cast<wchar_t>(wParam));
@@ -5186,8 +5576,8 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                             ComputeDiffHunks(*pDoc);
                         }
 
-                        // Query massive HTML5 / JavaScript / Python IntelliSense (Image 5)
-                        if (iswalnum(ch) || ch == L'.' || ch == L'<' || ch == L':' || ch == L'$' || ch == L'_') {
+                        // Query massive HTML5 / JavaScript / Python IntelliSense & Snippets (Images 2 & 5)
+                        if (iswalnum(ch) || ch == L'!' || ch == L'@' || ch == L'#' || ch == L'-' || ch == L'.' || ch == L'<' || ch == L':' || ch == L'$' || ch == L'_') {
                             auto pos = pDoc->buffer.GetCursor();
                             const auto& lineText = pDoc->buffer.GetLine(pos.line);
                             auto items = m_intelliSense.QueryCompletions(pDoc->fileName, lineText, pos.col);
@@ -5461,6 +5851,32 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 }
             }
 
+            // Handle inline tree item create keys (Enter to commit, Escape to cancel)
+            if (m_drawer.IsCreating()) {
+                if (wParam == VK_RETURN) {
+                    m_suppressNextChar = true;
+                    std::wstring createdPath;
+                    bool isFolder = m_drawer.IsCreatingFolder();
+                    if (m_drawer.CommitInlineCreate(createdPath)) {
+                        m_explorerUndo.PushCreate(createdPath, isFolder);
+                        if (!isFolder) {
+                            OpenFileDocument(createdPath, false);
+                        }
+                    }
+                    InvalidateRect(m_hwnd, nullptr, FALSE);
+                    return 0;
+                } else if (wParam == VK_ESCAPE) {
+                    m_suppressNextChar = true;
+                    m_drawer.CancelInlineCreate();
+                    InvalidateRect(m_hwnd, nullptr, FALSE);
+                    return 0;
+                } else {
+                    m_drawer.HandleCreateKeyDown(wParam);
+                    InvalidateRect(m_hwnd, nullptr, FALSE);
+                    return 0;
+                }
+            }
+
             // F2 inline rename trigger when hovering over tree item in File Explorer
             if (wParam == VK_F2 && m_config.activeRailTab == 0 && m_drawerAnimProgress > 0.001f) {
                 int hovered = m_drawer.GetHoveredIndex();
@@ -5472,6 +5888,16 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
             }
 
             if (wParam == VK_ESCAPE) {
+                if (m_isDraggingExplorerFile) {
+                    m_isDraggingExplorerFile = false;
+                    m_dragCandidatePath.clear();
+                    m_dragCandidateName.clear();
+                    m_hasDragDropTarget = false;
+                    m_dragDropTargetGroup = -1;
+                    ReleaseCapture();
+                    InvalidateRect(m_hwnd, nullptr, FALSE);
+                    return 0;
+                }
                 m_drawer.DismissCommitCard();
                 auto* pCurDoc = GetActiveDoc();
                 if (pCurDoc && pCurDoc->HasSelection()) {
@@ -5863,6 +6289,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                         std::filesystem::path p(pDoc->fileName);
                         ext = p.extension().wstring();
                     }
+                    if (!ext.empty() && ext[0] == L'.') ext = ext.substr(1);
                     if (!m_snippetManager.TryExpand(pDoc->buffer, ext)) {
                         // Try expanding Emmet abbreviation next (e.g., div -> <div></div>)
                         if (!pDoc->buffer.ExpandEmmet()) {
@@ -5876,6 +6303,26 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     if (pDoc->isDiffView) ComputeDiffHunks(*pDoc);
                     InvalidateRect(m_hwnd, nullptr, FALSE);
                 } else if (wParam == VK_RETURN) {
+                    std::wstring ext = L"";
+                    if (!pDoc->filePath.empty()) {
+                        std::filesystem::path p(pDoc->filePath);
+                        ext = p.extension().wstring();
+                    } else if (!pDoc->fileName.empty()) {
+                        std::filesystem::path p(pDoc->fileName);
+                        ext = p.extension().wstring();
+                    }
+                    if (!ext.empty() && ext[0] == L'.') ext = ext.substr(1);
+
+                    // Check if current prefix can expand as a snippet on Enter (e.g. typing "log" or "!" and hitting Enter)
+                    if (m_snippetManager.TryExpand(pDoc->buffer, ext)) {
+                        MarkDocumentModified(pDoc);
+                        if (pDoc->isDiffView) ComputeDiffHunks(*pDoc);
+                        m_editor.DismissAutocomplete();
+                        m_editor.ClearGhostText();
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
+                        return 0;
+                    }
+
                     // Check if between opening and closing tags: <div>|</div>
                     auto pos = pDoc->buffer.GetCursor();
                     const auto& lineText = pDoc->buffer.GetLine(pos.line);
@@ -5945,14 +6392,32 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     m_rail.SetGitLoading(false);
                 }
             } else if (wParam == m_animTimerId) {
+                bool keepAnimating = false;
                 const float speed = 0.22f; // Smooth, quick sliding animation
-                float diff = m_targetDrawerProgress - m_drawerAnimProgress;
-                if (std::abs(diff) < 0.005f) {
+
+                float diffDrawer = m_targetDrawerProgress - m_drawerAnimProgress;
+                if (std::abs(diffDrawer) < 0.005f) {
                     m_drawerAnimProgress = m_targetDrawerProgress;
                     m_isDrawerAnimating = false;
-                    KillTimer(m_hwnd, m_animTimerId);
                 } else {
-                    m_drawerAnimProgress += diff * speed;
+                    m_drawerAnimProgress += diffDrawer * speed;
+                    keepAnimating = true;
+                }
+
+                float diffTerm = m_targetTerminalProgress - m_terminalAnimProgress;
+                if (std::abs(diffTerm) < 0.005f) {
+                    m_terminalAnimProgress = m_targetTerminalProgress;
+                    m_isTerminalAnimating = false;
+                    if (m_terminalAnimProgress <= 0.001f && m_terminal.IsOpen()) {
+                        m_terminal.Close();
+                    }
+                } else {
+                    m_terminalAnimProgress += diffTerm * speed;
+                    keepAnimating = true;
+                }
+
+                if (!keepAnimating && !m_isDrawerAnimating && !m_isTerminalAnimating) {
+                    KillTimer(m_hwnd, m_animTimerId);
                 }
                 InvalidateRect(m_hwnd, nullptr, FALSE);
             }

@@ -38,9 +38,15 @@ public:
     void LoadSnippets();
 
     /**
-     * @brief Creates the snippets file with rich default templates if it does not exist.
+     * @brief Creates the snippets file with rich default templates if it does not exist or is legacy stub.
      */
     void EnsureDefaultSnippetsFile();
+
+    /**
+     * @brief Serializes all loaded snippets to target JSON file.
+     * @param filePath Destination path for snippets.json.
+     */
+    void SaveSnippets(const std::wstring& filePath) const;
 
     /**
      * @brief Retrieves all loaded snippets.
