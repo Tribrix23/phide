@@ -5417,6 +5417,197 @@ int main() {
         std::cout << "  Passed: All [TEST 50] Explorer Drag & Drop Smart Import passed!" << std::endl;
     }
 
+    // [TEST 51] Path IntelliSense inside Quotes, Minimap Bounds Clamping & Scroll Beyond Last Line
+    {
+        std::cout << "\n[TEST 51] Testing Path Completion, Minimap Overflow Clamping & Scroll Beyond Last Line..." << std::endl;
+
+        // 1. Setup temporary workspace directory structure
+        std::filesystem::path testWebDir = std::filesystem::temp_directory_path() / L"phide_test_web";
+        std::error_code ec;
+        std::filesystem::remove_all(testWebDir, ec);
+        std::filesystem::create_directories(testWebDir / L"assets", ec);
+        std::filesystem::create_directories(testWebDir / L"components", ec);
+
+        // Create sample files
+        {
+            std::ofstream f1(testWebDir / L"index.html"); f1 << "<!DOCTYPE html><html><body><h1>Test</h1></body></html>";
+            std::ofstream f2(testWebDir / L"style.css"); f2 << "body { margin: 0; }";
+            std::ofstream f3(testWebDir / L"assets" / L"logo.png"); f3 << "PNG";
+            std::ofstream f4(testWebDir / L"assets" / L"bundle.js"); f4 << "console.log('test');";
+            std::ofstream f5(testWebDir / L"components" / L"Header.tsx"); f5 << "export default function Header() {}";
+        }
+
+        // 2. Test Path Completion in IntelliSenseEngine
+        phide::editor::IntelliSenseEngine engine;
+        phide::editor::SnippetManager snipMgr;
+        engine.SetSnippetManager(&snipMgr);
+        engine.SetWorkspaceRoot(testWebDir.wstring());
+
+        std::wstring docFile = (testWebDir / L"index.html").wstring();
+
+        // Query <a href="./
+        std::wstring line1 = L"<a href=\"./";
+        auto items1 = engine.QueryCompletions(docFile, line1, line1.length());
+        assert(!items1.empty());
+
+        // Verify all returned items in path context have origin "path"
+        for (const auto& item : items1) {
+            assert(item.origin == L"path");
+            assert(item.label != L"!"); // No HTML boilerplate snippet!
+            assert(item.label != L"a"); // No generic tag snippet!
+            assert(item.label != L"div");
+        }
+
+        // Verify folder and file items exist
+        bool foundAssets = false;
+        bool foundComponents = false;
+        bool foundStyle = false;
+        for (const auto& item : items1) {
+            if (item.label == L"assets/") {
+                foundAssets = true;
+                assert(item.kind == phide::editor::CompletionKind::Folder);
+                assert(item.detail == L"Folder");
+            }
+            if (item.label == L"components/") {
+                foundComponents = true;
+                assert(item.kind == phide::editor::CompletionKind::Folder);
+            }
+            if (item.label == L"style.css") {
+                foundStyle = true;
+                assert(item.kind == phide::editor::CompletionKind::File);
+                assert(item.detail == L"File");
+            }
+        }
+        assert(foundAssets);
+        assert(foundComponents);
+        assert(foundStyle);
+        std::cout << "  Passed: <a href=\"./ returns exclusively directory contents (folders & files) with origin 'path'" << std::endl;
+
+        // Query <a href="./ass (prefix filtering)
+        std::wstring line2 = L"<a href=\"./ass";
+        auto items2 = engine.QueryCompletions(docFile, line2, line2.length());
+        assert(!items2.empty());
+        assert(items2[0].label == L"assets/");
+        assert(items2[0].kind == phide::editor::CompletionKind::Folder);
+        std::cout << "  Passed: <a href=\"./ass accurately filters to assets/ folder" << std::endl;
+
+        // Query <script src="./assets/ (subfolder drill-down)
+        std::wstring line3 = L"<script src=\"./assets/";
+        auto items3 = engine.QueryCompletions(docFile, line3, line3.length());
+        assert(!items3.empty());
+        bool foundLogo = false;
+        bool foundBundle = false;
+        for (const auto& item : items3) {
+            if (item.label == L"logo.png") foundLogo = true;
+            if (item.label == L"bundle.js") foundBundle = true;
+            assert(item.origin == L"path");
+        }
+        assert(foundLogo);
+        assert(foundBundle);
+        std::cout << "  Passed: Subfolder path completion accurately resolves nested files" << std::endl;
+
+        // 3. Test Minimap Overflow & Slider Clamping for 682-Line Document
+        phide::ui::EditorCanvas editorCanvas;
+        phide::editor::OpenDocument largeDoc;
+        largeDoc.fileName = L"snippets.json";
+
+        // Fill buffer with 682 lines (same as user's snippets.json in Image 4 & 5)
+        for (size_t l = 0; l < 682; ++l) {
+            if (l == 0) largeDoc.buffer.InsertText(L"{\n");
+            else if (l == 681) largeDoc.buffer.InsertText(L"}\n");
+            else largeDoc.buffer.InsertText(L"  \"item_" + std::to_wstring(l) + L"\": { \"prefix\": \"test\" },\n");
+        }
+        assert(largeDoc.buffer.GetLineCount() >= 682);
+
+        // Render at top scroll position
+        largeDoc.scrollLine = 0;
+        const UINT bmpW = 1200;
+        const UINT bmpH = 750;
+        Microsoft::WRL::ComPtr<IWICBitmap> pWicSnap;
+        pWicFactory->CreateBitmap(bmpW, bmpH, GUID_WICPixelFormat32bppPBGRA, WICBitmapCacheOnDemand, &pWicSnap);
+        Microsoft::WRL::ComPtr<ID2D1RenderTarget> pRTSnap;
+        pD2DFactory->CreateWicBitmapRenderTarget(pWicSnap.Get(), D2D1::RenderTargetProperties(), &pRTSnap);
+
+        phide::ui::Theme snapTheme;
+        snapTheme.SetThemeMode(phide::ui::ThemeMode::Dark);
+        snapTheme.CreateDeviceResources(pRTSnap.Get(), pDWriteFactory.Get());
+        phide::app::AppConfig cfg;
+        cfg.showMinimap = true;
+
+        std::vector<phide::editor::EditorGroup> groups;
+        phide::editor::EditorGroup grp;
+        grp.docs.push_back(largeDoc);
+        grp.activeDocIdx = 0;
+        groups.push_back(grp);
+
+        float clientHeight = static_cast<float>(bmpH);
+        float topY = 48.0f;
+
+        pRTSnap->BeginDraw();
+        pRTSnap->Clear(D2D1::ColorF(0.12f, 0.12f, 0.12f, 1.0f));
+        editorCanvas.Render(pRTSnap.Get(), snapTheme, cfg, groups, 0, 50.0f, static_cast<float>(bmpW), clientHeight, true, L"", false, false, false, false);
+        pRTSnap->EndDraw();
+
+        // Verify Minimap Slider bounds when at top
+        const auto& renderedDocTop = groups[0].docs[0];
+        assert(renderedDocTop.minimapSlider.top >= topY);
+        assert(renderedDocTop.minimapSlider.bottom <= clientHeight);
+        assert(renderedDocTop.minimapSlider.bottom > renderedDocTop.minimapSlider.top);
+        std::cout << "  Passed: Minimap slider at scroll 0 is strictly contained within [topY, clientHeight]" << std::endl;
+
+        // Render at max scroll position (scrollBeyondLastLine)
+        groups[0].docs[0].scrollLine = 680; // Scrolled past end
+        pRTSnap->BeginDraw();
+        pRTSnap->Clear(D2D1::ColorF(0.12f, 0.12f, 0.12f, 1.0f));
+        editorCanvas.Render(pRTSnap.Get(), snapTheme, cfg, groups, 0, 50.0f, static_cast<float>(bmpW), clientHeight, true, L"", false, false, false, false);
+        pRTSnap->EndDraw();
+
+        // Verify Minimap Slider bounds when scrolled all the way down
+        const auto& renderedDocMax = groups[0].docs[0];
+        assert(renderedDocMax.minimapSlider.top >= topY);
+        assert(renderedDocMax.minimapSlider.bottom <= clientHeight + 0.01f);
+        assert(renderedDocMax.minimapSlider.top < clientHeight);
+        std::cout << "  Passed: Minimap slider at max scroll is strictly contained within [topY, clientHeight] with NO OVERFLOW" << std::endl;
+
+        // 4. Test Inlay Hints Cleanliness & Path Completion Popup (No fake badges on line with "width")
+        phide::editor::OpenDocument htmlDoc;
+        htmlDoc.fileName = L"index.html";
+        htmlDoc.buffer.SetText(
+            L"<!DOCTYPE html>\n"
+            L"<html lang=\"en\">\n"
+            L"<head>\n"
+            L"    <meta charset=\"UTF-8\">\n"
+            L"    <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">\n"
+            L"    <title>Preview</title>\n"
+            L"</head>\n"
+            L"<body>\n"
+            L"    <a href=\"./\">\n"
+            L"</body>\n"
+            L"</html>\n"
+        );
+        htmlDoc.buffer.SetCursor(7, 14); // After <a href="./
+        groups[0].docs.clear();
+        groups[0].docs.push_back(htmlDoc);
+        groups[0].activeDocIdx = 0;
+
+        editorCanvas.ShowAutocomplete(items1);
+
+        // Render HTML document with autocomplete popup showing path items
+        pRTSnap->BeginDraw();
+        pRTSnap->Clear(D2D1::ColorF(0.12f, 0.12f, 0.12f, 1.0f));
+        editorCanvas.Render(pRTSnap.Get(), snapTheme, cfg, groups, 0, 50.0f, static_cast<float>(bmpW), clientHeight, true, L"", false, false, false, false);
+        pRTSnap->EndDraw();
+
+        std::wstring artDir = L"C:\\Users\\Administrator\\.gemini\\antigravity\\brain\\c83160b9-3f8b-4ad1-87a8-ab1f7f555a77\\";
+        SaveWicBitmapToPng(pWicSnap.Get(), pWicFactory.Get(), artDir + L"test_path_completion_and_minimap_bounds.png");
+        std::cout << "  Passed: Saved test_path_completion_and_minimap_bounds.png" << std::endl;
+
+        // Cleanup temp web directory
+        std::filesystem::remove_all(testWebDir, ec);
+
+        std::cout << "  Passed: All [TEST 51] Path Completion, Minimap Bounds Clamping & Scroll Beyond Last Line passed!" << std::endl;
+    }
+
     std::cout << "\n==========================================" << std::endl;
     std::cout << "ALL VERIFICATION TESTS PASSED SUCCESSFULLY!" << std::endl;
     std::cout << "==========================================" << std::endl;

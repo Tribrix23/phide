@@ -2,6 +2,7 @@
 #include "phide/editor/SnippetManager.hpp"
 #include <algorithm>
 #include <cwctype>
+#include <filesystem>
 #include <unordered_set>
 
 namespace phide::editor {
@@ -562,6 +563,168 @@ std::vector<IntelliSenseItem> IntelliSenseEngine::QueryCompletions(
     const std::wstring& currentLine,
     size_t cursorCol
 ) const {
+    // 0. Check if cursor is in a File / Folder Path context (Images 2 & 3)
+    // E.g.: <a href="./", <script src="./", import ... from "./", require("./"), preload("./"), url("./"), etc.
+    size_t lastDouble = currentLine.rfind(L'"', cursorCol > 0 ? cursorCol - 1 : 0);
+    size_t lastSingle = currentLine.rfind(L'\'', cursorCol > 0 ? cursorCol - 1 : 0);
+    size_t quotePos = std::wstring::npos;
+    if (lastDouble != std::wstring::npos && lastSingle != std::wstring::npos) {
+        quotePos = (std::max)(lastDouble, lastSingle);
+    } else if (lastDouble != std::wstring::npos) {
+        quotePos = lastDouble;
+    } else if (lastSingle != std::wstring::npos) {
+        quotePos = lastSingle;
+    }
+
+    bool isPathContext = false;
+    std::wstring pathTyped;
+    if (quotePos != std::wstring::npos && quotePos < cursorCol) {
+        std::wstring insideQuote = currentLine.substr(quotePos + 1, cursorCol - (quotePos + 1));
+        std::wstring beforeQuote = currentLine.substr(0, quotePos);
+        while (!beforeQuote.empty() && iswspace(beforeQuote.back())) beforeQuote.pop_back();
+
+        bool isAttrOrImport = false;
+        static const std::vector<std::wstring> triggers = {
+            L"href=", L"src=", L"action=", L"poster=", L"data=", L"content=",
+            L"from", L"require(", L"import(", L"import", L"include", L"url(",
+            L"preload(", L"load(", L"open("
+        };
+        for (const auto& trig : triggers) {
+            if (beforeQuote.length() >= trig.length()) {
+                std::wstring tail = beforeQuote.substr(beforeQuote.length() - trig.length());
+                for (auto& c : tail) c = static_cast<wchar_t>(towlower(c));
+                if (tail == trig) {
+                    isAttrOrImport = true;
+                    break;
+                }
+            }
+        }
+
+        bool hasPathMarker = (insideQuote.rfind(L"./", 0) == 0 ||
+                              insideQuote.rfind(L"../", 0) == 0 ||
+                              insideQuote.rfind(L"/", 0) == 0 ||
+                              insideQuote.rfind(L"\\", 0) == 0 ||
+                              insideQuote.find(L'/') != std::wstring::npos ||
+                              insideQuote.find(L'\\') != std::wstring::npos);
+
+        if (isAttrOrImport || hasPathMarker) {
+            isPathContext = true;
+            pathTyped = insideQuote;
+        }
+    }
+
+    if (isPathContext) {
+        std::filesystem::path baseDir;
+        std::error_code ec;
+        if (!fileName.empty()) {
+            std::filesystem::path docPath(fileName);
+            if (std::filesystem::exists(docPath, ec) && !std::filesystem::is_directory(docPath, ec)) {
+                baseDir = docPath.parent_path();
+            } else if (docPath.has_parent_path()) {
+                baseDir = docPath.parent_path();
+            }
+        }
+        if (baseDir.empty() && !m_workspaceRoot.empty() && std::filesystem::exists(m_workspaceRoot, ec)) {
+            baseDir = std::filesystem::path(m_workspaceRoot);
+        }
+        if (baseDir.empty()) {
+            baseDir = std::filesystem::current_path(ec);
+        }
+
+        std::wstring normPath = pathTyped;
+        for (auto& ch : normPath) {
+            if (ch == L'\\') ch = L'/';
+        }
+
+        std::wstring dirPart;
+        std::wstring filePrefix;
+        size_t lastSlash = normPath.find_last_of(L'/');
+        if (lastSlash != std::wstring::npos) {
+            dirPart = normPath.substr(0, lastSlash);
+            filePrefix = normPath.substr(lastSlash + 1);
+        } else {
+            dirPart = L"";
+            filePrefix = normPath;
+        }
+
+        std::filesystem::path searchDir = baseDir;
+        if (!dirPart.empty()) {
+            if (dirPart == L".") {
+                searchDir = baseDir;
+            } else if (dirPart.rfind(L"./", 0) == 0) {
+                searchDir = baseDir / dirPart.substr(2);
+            } else if (dirPart.rfind(L"/", 0) == 0) {
+                if (!m_workspaceRoot.empty()) searchDir = std::filesystem::path(m_workspaceRoot) / dirPart.substr(1);
+                else searchDir = baseDir / dirPart.substr(1);
+            } else {
+                searchDir = baseDir / dirPart;
+            }
+        }
+        searchDir = searchDir.lexically_normal();
+
+        std::wstring filePrefixLower = filePrefix;
+        for (auto& c : filePrefixLower) c = static_cast<wchar_t>(towlower(c));
+
+        std::vector<IntelliSenseItem> pathItems;
+        if (std::filesystem::exists(searchDir, ec) && std::filesystem::is_directory(searchDir, ec)) {
+            for (std::filesystem::directory_iterator it(searchDir, ec); !ec && it != std::filesystem::directory_iterator(); it.increment(ec)) {
+                if (ec) break;
+                const auto& entry = *it;
+                std::wstring entryName = entry.path().filename().wstring();
+                if (entryName.empty()) continue;
+                if (entryName == L"." || entryName == L".." || entryName == L".git" || entryName == L".phide" || entryName == L".vs") continue;
+
+                bool isDir = entry.is_directory(ec);
+                bool isReg = entry.is_regular_file(ec);
+                if (!isDir && !isReg) continue;
+
+                std::wstring candName = entryName + (isDir ? L"/" : L"");
+                std::wstring candLower = candName;
+                for (auto& c : candLower) c = static_cast<wchar_t>(towlower(c));
+
+                int score = 0;
+                size_t matchStart = 0;
+                size_t matchLen = 0;
+
+                if (filePrefixLower.empty()) {
+                    score = isDir ? 1200 : 1000;
+                } else {
+                    size_t p = candLower.find(filePrefixLower);
+                    if (p == 0) {
+                        score = (isDir ? 2000 : 1800) - static_cast<int>(candName.length());
+                        matchStart = 0;
+                        matchLen = filePrefix.length();
+                    } else if (p != std::wstring::npos) {
+                        score = (isDir ? 1500 : 1300) - static_cast<int>(p * 10 + candName.length());
+                        matchStart = p;
+                        matchLen = filePrefix.length();
+                    } else {
+                        continue;
+                    }
+                }
+
+                IntelliSenseItem pi;
+                pi.label = candName;
+                pi.detail = isDir ? L"Folder" : L"File";
+                pi.insertText = candName;
+                pi.kind = isDir ? CompletionKind::Folder : CompletionKind::File;
+                pi.score = score;
+                pi.matchStart = matchStart;
+                pi.matchLen = matchLen;
+                pi.origin = L"path";
+                pathItems.push_back(std::move(pi));
+            }
+        }
+
+        // Return EXCLUSIVELY path items in path context (no HTML snippets/tags polluting href="./"!)
+        std::sort(pathItems.begin(), pathItems.end(), [](const IntelliSenseItem& a, const IntelliSenseItem& b) {
+            if (a.score != b.score) return a.score > b.score;
+            return a.label < b.label;
+        });
+        if (pathItems.size() > 50) pathItems.resize(50);
+        return pathItems;
+    }
+
     std::wstring ext;
     auto pos = fileName.rfind(L'.');
     if (pos != std::wstring::npos) {

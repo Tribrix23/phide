@@ -527,6 +527,7 @@ void Window::LoadSessionState() {
         if (!lastOpenFolder.empty() && std::filesystem::exists(lastOpenFolder, ec)) {
             m_drawer.OpenFolder(lastOpenFolder, &expandedDirs);
             m_workspace.OpenWorkspace(lastOpenFolder);
+            m_intelliSense.SetWorkspaceRoot(lastOpenFolder);
         }
 
         for (const auto& p : openDocPaths) {
@@ -1320,6 +1321,7 @@ void Window::DoOpenFolderFromPath(const std::wstring& path) {
     if (path.empty()) return;
     m_drawer.OpenFolder(path);
     m_workspace.OpenWorkspace(path);
+    m_intelliSense.SetWorkspaceRoot(path);
     m_drawer.RefreshGitState(true);
     StartWorkspaceWatcher(path);
 
@@ -1588,6 +1590,41 @@ void Window::CommitAutocompleteSelection() {
     auto pos = pDoc->buffer.GetCursor();
     const auto& lineText = pDoc->buffer.GetLine(pos.line);
     std::wstring prefix = editor::IntelliSenseEngine::ExtractQueryPrefix(lineText, pos.col);
+
+    // Check if completing a file or directory path (Images 2 & 3)
+    if (item->origin == L"path" || item->kind == editor::CompletionKind::Folder || item->kind == editor::CompletionKind::File) {
+        size_t lastSep = lineText.find_last_of(L"/\\\"'", pos.col > 0 ? pos.col - 1 : 0);
+        size_t charsToDel = (lastSep != std::wstring::npos && pos.col > lastSep) ? (pos.col - lastSep - 1) : 0;
+        for (size_t i = 0; i < charsToDel; ++i) {
+            pDoc->buffer.Backspace();
+        }
+        for (wchar_t c : item->insertText) {
+            pDoc->buffer.InsertChar(c);
+        }
+        MarkDocumentModified(pDoc);
+
+        // If completed a folder, immediately trigger sub-directory completion!
+        if (item->kind == editor::CompletionKind::Folder || item->insertText.ends_with(L"/")) {
+            auto newPos = pDoc->buffer.GetCursor();
+            const auto& newLine = pDoc->buffer.GetLine(newPos.line);
+            std::wstring docTarget = pDoc->filePath.empty() ? pDoc->fileName : pDoc->filePath;
+            if (m_intelliSense.GetWorkspaceRoot().empty() && m_drawer.HasOpenFolder()) {
+                m_intelliSense.SetWorkspaceRoot(m_drawer.GetOpenFolderPath());
+            }
+            auto subItems = m_intelliSense.QueryCompletions(docTarget, newLine, newPos.col);
+            if (!subItems.empty()) {
+                m_editor.ShowAutocomplete(subItems);
+            } else {
+                m_editor.DismissAutocomplete();
+                m_editor.ClearGhostText();
+            }
+        } else {
+            m_editor.DismissAutocomplete();
+            m_editor.ClearGhostText();
+        }
+        InvalidateRect(m_hwnd, nullptr, FALSE);
+        return;
+    }
 
     // Check if user is completing a snippet (e.g. "!", "html:5", "clg", "flexcenter")
     if (item->kind == editor::CompletionKind::Snippet) {
@@ -3393,11 +3430,12 @@ void Window::HandleMouseMove(POINT clientPt) {
         float scrollRange = trackH - sliderH;
         if (scrollRange > 0.0f) {
             size_t totalLines = pActiveDoc->buffer.GetLineCount();
-            float linesPerPixel = static_cast<float>(totalLines) / scrollRange;
+            size_t maxS = (totalLines > 3) ? (totalLines - 3) : 0;
+            float linesPerPixel = static_cast<float>(maxS) / scrollRange;
             int newScroll = static_cast<int>(pActiveDoc->minimapDragStartLine) + static_cast<int>(deltaY * linesPerPixel);
             if (newScroll < 0) newScroll = 0;
-            if (totalLines > 0 && static_cast<size_t>(newScroll) >= totalLines) {
-                newScroll = static_cast<int>(totalLines - 1);
+            if (newScroll > static_cast<int>(maxS)) {
+                newScroll = static_cast<int>(maxS);
             }
             pActiveDoc->scrollLine = static_cast<size_t>(newScroll);
             InvalidateRect(m_hwnd, nullptr, FALSE);
@@ -4499,11 +4537,8 @@ void Window::HandleLButtonDown(POINT clientPt) {
                                 float relY = static_cast<float>(clientPt.y) - doc.minimapTrack.top;
                                 float ratio = (std::max)(0.0f, (std::min)(1.0f, relY / trackH));
                                 size_t totalLines = doc.buffer.GetLineCount();
-                                if (totalLines > 0) {
-                                    size_t targetLine = static_cast<size_t>(ratio * totalLines);
-                                    if (targetLine > 10) doc.scrollLine = targetLine - 10;
-                                    else doc.scrollLine = 0;
-                                }
+                                size_t maxS = (totalLines > 3) ? (totalLines - 3) : 0;
+                                doc.scrollLine = static_cast<size_t>(ratio * maxS);
                             }
                         }
                         InvalidateRect(m_hwnd, nullptr, FALSE);
@@ -5576,19 +5611,27 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                             ComputeDiffHunks(*pDoc);
                         }
 
-                        // Query massive HTML5 / JavaScript / Python IntelliSense & Snippets (Images 2 & 5)
-                        if (iswalnum(ch) || ch == L'!' || ch == L'@' || ch == L'#' || ch == L'-' || ch == L'.' || ch == L'<' || ch == L':' || ch == L'$' || ch == L'_') {
+                        // Query massive HTML5 / JavaScript / Python / Path IntelliSense & Snippets (Images 2 & 5)
+                        if (iswalnum(ch) || ch == L'!' || ch == L'@' || ch == L'#' || ch == L'-' || ch == L'.' || ch == L'<' || ch == L':' || ch == L'$' || ch == L'_' || ch == L'/' || ch == L'\\' || ch == L'"' || ch == L'\'') {
                             auto pos = pDoc->buffer.GetCursor();
                             const auto& lineText = pDoc->buffer.GetLine(pos.line);
-                            auto items = m_intelliSense.QueryCompletions(pDoc->fileName, lineText, pos.col);
+                            std::wstring docTarget = pDoc->filePath.empty() ? pDoc->fileName : pDoc->filePath;
+                            if (m_intelliSense.GetWorkspaceRoot().empty() && m_drawer.HasOpenFolder()) {
+                                m_intelliSense.SetWorkspaceRoot(m_drawer.GetOpenFolderPath());
+                            }
+                            auto items = m_intelliSense.QueryCompletions(docTarget, lineText, pos.col);
                             if (!items.empty()) {
                                 m_editor.ShowAutocomplete(items);
-                                std::wstring prefix = editor::IntelliSenseEngine::ExtractQueryPrefix(lineText, pos.col);
-                                std::wstring ghost = items[0].label;
-                                if (!prefix.empty() && ghost.rfind(prefix, 0) == 0) {
-                                    ghost = ghost.substr(prefix.length());
+                                if (items[0].kind == editor::CompletionKind::Folder || items[0].kind == editor::CompletionKind::File) {
+                                    m_editor.ClearGhostText();
+                                } else {
+                                    std::wstring prefix = editor::IntelliSenseEngine::ExtractQueryPrefix(lineText, pos.col);
+                                    std::wstring ghost = items[0].label;
+                                    if (!prefix.empty() && ghost.rfind(prefix, 0) == 0) {
+                                        ghost = ghost.substr(prefix.length());
+                                    }
+                                    m_editor.SetGhostText(ghost);
                                 }
-                                m_editor.SetGhostText(ghost);
                             } else {
                                 m_editor.DismissAutocomplete();
                                 m_editor.ClearGhostText();
@@ -5695,7 +5738,11 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 if (pDoc) {
                     auto pos = pDoc->buffer.GetCursor();
                     const auto& lineText = pDoc->buffer.GetLine(pos.line);
-                    auto items = m_intelliSense.QueryCompletions(pDoc->fileName, lineText, pos.col);
+                    std::wstring docTarget = pDoc->filePath.empty() ? pDoc->fileName : pDoc->filePath;
+                    if (m_intelliSense.GetWorkspaceRoot().empty() && m_drawer.HasOpenFolder()) {
+                        m_intelliSense.SetWorkspaceRoot(m_drawer.GetOpenFolderPath());
+                    }
+                    auto items = m_intelliSense.QueryCompletions(docTarget, lineText, pos.col);
                     if (!items.empty()) {
                         m_editor.ShowAutocomplete(items);
                     }

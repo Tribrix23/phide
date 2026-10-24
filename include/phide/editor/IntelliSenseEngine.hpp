@@ -16,7 +16,9 @@ enum class CompletionKind {
     Keyword,    ///< ⓚ Keyword
     Tag,        ///< ⓣ HTML / XML Element Tag
     Attribute,  ///< ⓐ HTML Attribute
-    Snippet     ///< ⓢ Snippet / Template
+    Snippet,    ///< ⓢ Snippet / Template
+    Folder,     ///< 📁 Folder / Directory
+    File        ///< 📄 File
 };
 
 /**
@@ -50,6 +52,17 @@ public:
     }
 
     /**
+     * @brief Sets workspace root directory for resolving file path completions.
+     */
+    void SetWorkspaceRoot(const std::wstring& root) {
+        m_workspaceRoot = root;
+    }
+
+    [[nodiscard]] const std::wstring& GetWorkspaceRoot() const noexcept {
+        return m_workspaceRoot;
+    }
+
+    /**
      * @brief Queries code completions for a file based on file extension and prefix.
      */
     [[nodiscard]] std::vector<IntelliSenseItem> QueryCompletions(
@@ -80,6 +93,7 @@ private:
     std::vector<IntelliSenseItem> m_jsPrototypes;
     std::vector<IntelliSenseItem> m_commonVocabulary;
     const SnippetManager* m_pSnippetManager = nullptr;
+    std::wstring m_workspaceRoot;
 };
 
 } // namespace phide::editor

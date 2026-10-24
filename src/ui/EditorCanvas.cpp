@@ -783,7 +783,8 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
     }
 
     const size_t visibleCount = (lineH > 0.0f) ? static_cast<size_t>(codeAreaH / lineH) : 20;
-    const size_t maxScroll = (visualLines.size() > visibleCount) ? (visualLines.size() - visibleCount) : 0;
+    // Scroll beyond last line (VS Code scrollBeyondLastLine feature): allows scrolling closing brackets comfortably up into view
+    const size_t maxScroll = visualLines.empty() ? 0 : (visualLines.size() > 3 ? visualLines.size() - 3 : 0);
     if (doc.scrollLine > maxScroll) {
         doc.scrollLine = maxScroll;
     }
@@ -1329,50 +1330,6 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
             }
         }
 
-        // Automatic Inlay Hints for dynamic code typing (Images 1, 2, 3)
-        // If no explicit inlay hints were configured, detect standard variable names (x, z, width)
-        if (!renderedHint && !lineStr.empty() && !doc.isSpecialView && !doc.isImageView) {
-            std::wstring autoLabel;
-            size_t autoCol = std::wstring::npos;
-            size_t posW = lineStr.find(L"width");
-            size_t posX = lineStr.find(L"x");
-            size_t posZ = lineStr.find(L"z");
-
-            if (posW != std::wstring::npos && (posW + 5 == lineStr.length() || !iswalnum(lineStr[posW + 5]))) {
-                autoLabel = L": {__mod__, __floordiv__, __mul__}";
-                autoCol = posW + 5;
-            } else if (posX != std::wstring::npos && (posX == 0 || !iswalnum(lineStr[posX - 1])) && (posX + 1 == lineStr.length() || !iswalnum(lineStr[posX + 1]))) {
-                autoLabel = L": {shape, __add__}";
-                autoCol = posX + 1;
-            } else if (posZ != std::wstring::npos && (posZ == 0 || !iswalnum(lineStr[posZ - 1])) && (posZ + 1 == lineStr.length() || !iswalnum(lineStr[posZ + 1]))) {
-                autoLabel = L": {reshape}";
-                autoCol = posZ + 1;
-            }
-
-            if (!autoLabel.empty() && autoCol != std::wstring::npos) {
-                float hintX = codeLeft + static_cast<float>(autoCol) * charW + config.ScaleF(2.0f);
-                if (hintX + config.ScaleF(30.0f) < codeRight) {
-                    float badgeW = static_cast<float>(autoLabel.length()) * charW * 0.85f + config.ScaleF(8.0f);
-                    float badgeH = lineH - config.ScaleF(5.0f);
-                    float badgeY = lineY + config.ScaleF(2.5f);
-                    D2D1_RECT_F rcBadge = D2D1::RectF(hintX, badgeY, (std::min)(hintX + badgeW, codeRight), badgeY + badgeH);
-                    D2D1_ROUNDED_RECT rrcBadge = D2D1::RoundedRect(rcBadge, 3.0f, 3.0f);
-
-                    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> badgeBgBrush;
-                    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> badgeBorderBrush;
-                    pRT->CreateSolidColorBrush(theme.IsDarkMode() ? D2D1::ColorF(0.24f, 0.26f, 0.32f, 0.45f) : D2D1::ColorF(0.88f, 0.90f, 0.94f, 0.65f), &badgeBgBrush);
-                    pRT->CreateSolidColorBrush(theme.IsDarkMode() ? D2D1::ColorF(0.40f, 0.44f, 0.52f, 0.55f) : D2D1::ColorF(0.70f, 0.74f, 0.80f, 0.75f), &badgeBorderBrush);
-                    if (badgeBgBrush) pRT->FillRoundedRectangle(rrcBadge, badgeBgBrush.Get());
-                    if (badgeBorderBrush) pRT->DrawRoundedRectangle(rrcBadge, badgeBorderBrush.Get(), 0.8f);
-
-                    D2D1_RECT_F rcBadgeText = D2D1::RectF(hintX + config.ScaleF(4.0f), badgeY + config.ScaleF(1.0f), rcBadge.right - config.ScaleF(4.0f), badgeY + badgeH);
-                    pRT->DrawText(autoLabel.c_str(), static_cast<UINT32>(autoLabel.length()),
-                                  theme.fontCode ? theme.fontCode.Get() : theme.fontBody.Get(),
-                                  rcBadgeText, theme.brushTextSecondary.Get());
-                }
-            }
-        }
-
         // Render Syntax Error Squiggly Underlines (Image 4)
         for (const auto& diag : doc.diagnostics) {
             if (diag.line == vl.bufferLine) {
@@ -1504,11 +1461,10 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
         pRT->PushAxisAlignedClip(doc.minimapTrack, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
 
         size_t totalLines = buffer.GetLineCount();
-        float miniH = clientHeight - topY;
-        float lineScale = (totalLines * 2.4f > miniH) ? (miniH / (totalLines * 2.4f)) : 1.0f;
-        float stepY = (std::max)(1.8f, 2.4f * lineScale);
-        float microH = (std::max)(1.4f, 1.9f * lineScale);
-        float microCharW = 1.6f * lineScale;
+        float miniH = (std::max)(10.0f, clientHeight - topY);
+        float stepY = (totalLines * 2.4f > miniH && totalLines > 0) ? (miniH / static_cast<float>(totalLines)) : 2.4f;
+        float microH = (std::max)(0.6f, stepY * 0.85f);
+        float microCharW = (std::max)(0.5f, stepY * 0.7f);
 
         // Render micro-lines with syntax colors, selection reflection, and word occurrences
         for (size_t b = 0; b < totalLines; ++b) {
@@ -1651,9 +1607,17 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
         }
 
         // Viewport Slider Box with smooth modern translucency (Images 3 & 4)
-        float sliderTop = topY + static_cast<float>(doc.scrollLine) * stepY;
-        float sliderBottom = sliderTop + static_cast<float>(visibleCount) * stepY;
-        sliderBottom = (std::max)(sliderTop + config.ScaleF(20.0f), (std::min)(sliderBottom, clientHeight));
+        float sliderH = (maxScroll > 0)
+            ? (std::max)(config.ScaleF(24.0f), (static_cast<float>(visibleCount) / static_cast<float>(visualLines.size() + visibleCount)) * miniH)
+            : miniH;
+        if (sliderH > miniH) sliderH = miniH;
+
+        float sliderTop = topY;
+        if (maxScroll > 0) {
+            float scrollRatio = (std::max)(0.0f, (std::min)(1.0f, static_cast<float>(doc.scrollLine) / static_cast<float>(maxScroll)));
+            sliderTop = topY + scrollRatio * (miniH - sliderH);
+        }
+        float sliderBottom = (std::min)(topY + miniH, sliderTop + sliderH);
 
         doc.minimapSlider = D2D1::RectF(
             doc.minimapTrack.left + 1.0f,
@@ -1679,11 +1643,11 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
 
         // 6. Vertical Scrollbar on Right Edge when Minimap is disabled
         doc.scrollbarTrack = D2D1::RectF(canvasRight - scrollbarW, topY, canvasRight, clientHeight);
-        if (visualLines.size() > visibleCount) {
-            float thumbH = (std::max)(config.ScaleF(28.0f), codeAreaH * (static_cast<float>(visibleCount) / visualLines.size()));
+        if (maxScroll > 0) {
+            float thumbH = (std::max)(config.ScaleF(28.0f), codeAreaH * (static_cast<float>(visibleCount) / (visualLines.size() + visibleCount)));
             float scrollRange = codeAreaH - thumbH;
-            float scrollFrac = (visualLines.size() > visibleCount)
-                ? (static_cast<float>(doc.scrollLine) / static_cast<float>(visualLines.size() - visibleCount))
+            float scrollFrac = (maxScroll > 0)
+                ? (static_cast<float>(doc.scrollLine) / static_cast<float>(maxScroll))
                 : 0.0f;
             float thumbY = topY + scrollRange * scrollFrac;
 
@@ -2461,6 +2425,10 @@ void EditorCanvas::RenderAutocompletePopup(ID2D1RenderTarget* pRT, Theme& theme,
                 badgeColor = D2D1::ColorF(0.98f, 0.57f, 0.24f); badgeLetter = L"ⓐ"; break;
             case editor::CompletionKind::Snippet:
                 badgeColor = D2D1::ColorF(0.22f, 0.74f, 0.97f); badgeLetter = L"ⓢ"; break;
+            case editor::CompletionKind::Folder:
+                badgeColor = D2D1::ColorF(0.95f, 0.78f, 0.25f); badgeLetter = L"📁"; break;
+            case editor::CompletionKind::File:
+                badgeColor = D2D1::ColorF(0.35f, 0.75f, 0.95f); badgeLetter = L"📄"; break;
         }
 
         // Pill container for symbol badge
@@ -2486,6 +2454,8 @@ void EditorCanvas::RenderAutocompletePopup(ID2D1RenderTarget* pRT, Theme& theme,
                 case editor::CompletionKind::Snippet: originText = L"snippets"; break;
                 case editor::CompletionKind::Tag:
                 case editor::CompletionKind::Attribute: originText = L"html"; break;
+                case editor::CompletionKind::Folder:
+                case editor::CompletionKind::File: originText = L"path"; break;
                 case editor::CompletionKind::Property: originText = L"css"; break;
                 case editor::CompletionKind::Method:
                 case editor::CompletionKind::Function:
