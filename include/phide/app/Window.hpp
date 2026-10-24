@@ -514,6 +514,9 @@ private:
     std::wstring m_clipboardPath;
     bool m_clipboardIsCut = false;
     std::wstring m_compareSourcePath;
+    std::wstring m_selectedExplorerPath;
+    bool m_explorerHasFocus = false;
+    void DoDeleteSelectedExplorerItem();
 
     UINT_PTR m_caretTimerId    = 1001;
     UINT_PTR m_animTimerId     = 1002;

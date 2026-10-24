@@ -1,0 +1,335 @@
+Starting Automated Verification Test Suite...
+[TEST 1] Testing SyntaxLexer tokenization...
+  Passed: <?php tokenized as Keyword
+  Passed: ?> tokenized as Keyword
+  Passed: <div class="container"> tags, attributes and string tokenized
+  Passed: </div> closing tag tokenized
+  Passed: var, let, require tokenized as Keywords
+[TEST 2] Testing Picture Viewer rendering...
+  Passed: Image decoded, size: 128x128
+[TEST 3] Testing Syntax Highlighting for PHP & HTML tags...
+  Passed: Saved test_syntax_tags_dark.png
+[TEST 4] Testing Context Menus (File vs Folder)...
+  Passed: Saved test_file_context_menu.png
+  Passed: Saved test_folder_context_menu.png
+[TEST 5] Testing Mouse Cursor HitTest bounds...
+  Passed: Cursor logic perfectly isolates code area for IDC_IBEAM
+[TEST 6] Testing Search Throttler and Binary File Exclusion...
+  Passed: Throttler strictly enforces 250ms rate limit
+[TEST 7] Testing Unsupported Binary File View rendering...
+  Passed: Saved test_unsupported_binary_dark.png
+  Passed: Saved test_unsupported_binary_light.png
+[TEST 8] Testing Split Editor button and Side-by-Side Split View...
+  Passed: Saved test_split_editor_dark.png
+  Passed: Saved test_split_editor_light.png
+[TEST 9] Testing Multi-Editor Groups (3-way split, tab isolation, independent close, auto-collapse, GC)...
+  Passed: Manual GC ClearSearchResults() releases memory with shrink_to_fit
+  Passed: Multi-Editor Groups 3-column split, file isolation, independent tab close, and auto-collapse verified
+[TEST 10] Testing Dedicated Editor Context Menu, Refactor Popover, Explorer Active State & Inline Rename Pre-selection...
+  Passed: Dedicated Editor Context Menu verified matching Image 4 (all 6 commands & shortcuts)
+  Passed: Saved test_editor_context_menu.png
+  Passed: Saved test_refactor_popup.png
+  Passed: Refactor Balloon Popover show/dismiss state verified
+  Passed: Explorer Active File State synchronization verified
+  Passed: Inline rename pre-selection and cancellation verified
+[TEST 11] Testing Explorer Undo/Redo Stack & Expanded 8-Theme System...
+  Passed: Explorer Undo/Redo Rename verified
+  Passed: Explorer Undo/Redo Deletion with Staging Trash verified
+  Passed: Explorer Undo/Redo Folder Tree Restoration verified
+  Passed: Explorer Undo/Redo Create verified
+  Passed: All 13 Theme Mode switches verified
+  Passed: Saved test_theme_picker_widescreen.png
+  Passed: Saved test_theme_picker_catalog.png
+  Passed: Context Menu Undo/Redo items verified
+  Passed: Saved test_explorer_undo_context_menu.png
+[TEST 12] Testing Rainbow Brackets, Skeletal Frame, Connector Guides, and Expanded Keyboard Shortcuts...
+  Passed: KeyboardShortcutsView contains 51 genuine verified shortcuts
+  Passed: BracketPairAnalyzer depth calculations, matching, and active pair pinpointing verified
+  Passed: Saved test_bracket_pairs_rainbow.png
+  Passed: Saved test_keyboard_shortcuts_expanded.png
+
+[TEST 16] Testing Buffer editing (Line comment, Block comment, Emmet)...
+  Passed: Buffer ToggleLineComment, ToggleBlockComment, and ExpandEmmet
+
+[TEST 17] Testing Code Search Details Panel (...), Filters & Open Tabs Only...
+  Passed: Search details panel (...), include/exclude inputs, tab cycling, and open tabs filter
+
+[TEST 18] Testing Input Focus Separation (Drawer Search vs Shortcuts Search)...
+  Passed: Input focus separation cleanly routes keys to active target without cross-pollution
+
+[TEST 19] Testing Edit Dropdown Menu Items & Actions...
+  Passed: All 12 Edit menu actions and shortcuts correctly verified against design specification
+
+[TEST 20] Rendering D2D Snapshots for Edit Menu and Code Search Details...
+  Passed: Saved test_edit_menu_dropdown.png
+  Passed: Saved test_search_details_panel.png
+
+[TEST 21] Testing Clean New Window State & Real Git Source Control (Real Data, Tooltips, Spinning Loading Indicator)...
+  Passed: Real Git branch detected: master
+  Passed: Real Git history populated with 40 commits
+  Passed: Saved test_git_loading_rail_badge.png
+  Passed: Saved test_source_control_pane_real_git.png
+  Passed: Tooltip system on all Source Control buttons verified
+  Passed: Vertical draggable splitter between Changes and Graph verified
+  Passed: Saved test_source_control_views_menu.png
+  Passed: Commit input focus and blinking caret synchronization verified
+  Passed: Sync Changes state and unpushed commits count (3) verified
+  Passed: Commit expansion verified with 7 changed files populated
+  Passed: Saved test_source_control_commit_details_expanded.png
+  Passed: Commit expansion persistence across background polls verified
+  Passed: Cannot commit without message strictly verified
+  Passed: Draggable splitter position persistence verified
+  Passed: Git diff computation detected 28 added lines in working directory
+  Passed: Git show HEAD file content fetch verified (32885 chars)
+  Passed: Saved test_git_ux_fixes_complete.png
+
+[TEST 16] Running Theme, Corner Curvature & Git Refresh Verification...
+  Passed: All 20 themes have windowBg == headerBg for seamless upper-left curvature
+  Passed: Saved test_git_circular_sync_badge.png
+  Passed: Saved test_deep_purple_curve.png
+  Passed: Saved test_retro_grid_80s.png
+  Passed: Saved test_theme_picker_catalog_20themes.png
+
+[TEST 17] Running Side-by-Side Diff, Thin Deletion & Commit Card Verification...
+  Passed: Background Git refresh leaves isGitLoading == false
+[SAVED] C:\Users\Administrator\.gemini\antigravity\brain\c83160b9-3f8b-4ad1-87a8-ab1f7f555a77\test_diff_view_side_by_side.png
+  Passed: Saved test_diff_view_side_by_side.png
+[SAVED] C:\Users\Administrator\.gemini\antigravity\brain\c83160b9-3f8b-4ad1-87a8-ab1f7f555a77\test_commit_card_and_sync_changes.png
+  Passed: Saved test_commit_card_and_sync_changes.png
+
+[Test 24] Testing SnippetManager & User Snippets Expansion...
+  Passed: Expanded 'log' -> 29 chars
+  Passed: Expanded 'main' -> multi-line main function
+  Passed: Language scoping verified (clg expands in ts, rejected in cpp)
+
+[Test 25] Testing Commit Popover Card Dismissal...
+  Passed: Popover card cleanly dismissed via DismissCommitCard()
+
+[Test 26] Testing Binary Diff Protection View...
+[SAVED] C:\Users\Administrator\.gemini\antigravity\brain\c83160b9-3f8b-4ad1-87a8-ab1f7f555a77\test_binary_diff_view.png
+  Passed: Rendered and saved test_binary_diff_view.png
+
+[Test 27] Testing Floating Commit Card Positioned Outside Drawer...
+  Verified: Commit card left edge (320) is outside drawer border (310)
+  Verified: HitTestCommitCard returns true inside floating card bounds
+  Verified: HitTestCommitCard returns false for point inside drawer
+[SAVED] C:\Users\Administrator\.gemini\antigravity\brain\c83160b9-3f8b-4ad1-87a8-ab1f7f555a77\test_commit_card_outside_drawer.png
+  Passed: Saved test_commit_card_outside_drawer.png
+
+[Test 28] Testing Multi-File Diff View with Collapsible Headers...
+  Verified: Header bounds calculated for all multi-file diff entries
+  Verified: Collapse state toggles cleanly on header click
+[SAVED] C:\Users\Administrator\.gemini\antigravity\brain\c83160b9-3f8b-4ad1-87a8-ab1f7f555a77\test_multi_file_diff_view.png
+  Passed: Saved test_multi_file_diff_view.png
+
+[Test 29] Testing Git Refresh Atomic Single-Flight Guard...
+  Verified: Silent background refresh keeps IsGitLoading == false (no 50ms blinking)
+  Passed: Git Refresh single-flight atomic guard functional
+
+[Test 30] Testing Syntax Highlighting in Git Diff View...
+  Verified: Tokens generated for diff view line (import keyword + string)
+[SAVED] C:\Users\Administrator\.gemini\antigravity\brain\c83160b9-3f8b-4ad1-87a8-ab1f7f555a77\test_diff_view_syntax_highlighted.png
+  Passed: Rendered and saved test_diff_view_syntax_highlighted.png
+
+[Test 31] Testing Crash-Free Discard and Git Button Dispatch...
+  Verified: HitTestGit and all Git async actions execute safely with recursive mutex
+  Passed: Zero crashes on Git buttons
+
+[Test 32] Testing Git & IDE Memory Garbage Collection...
+  Verified: Memory trimming and garbage collection operational
+  Passed: Garbage Collection operational
+
+[Test 33] Testing Git Graph Stability, Search Open Tabs Only & Match/File Replace Actions...
+  Initial git commits loaded: 40
+  Verified: RefreshGitStatusOnly does not clear or reload commit graph (commits count preserved: 40)
+  Verified: Search Open Tabs Only found 1 matches for 'detect' in open tab eslint.config.mjs
+  Initial test search matches count: 4
+  Verified: ExecuteReplaceSingleMatch replaced only target occurrence and removed match from results (remaining: 3)
+  Verified: DismissSearchMatch removed match without touching file on disk (remaining: 2)
+  Verified: ExecuteReplaceInFile replaced all occurrences in file and dismissed group (remaining groups: 1)
+  Verified: DismissSearchGroup excluded group from results
+  Verified: ExecuteReplaceAll replaced all occurrences across multiple files
+  Verified: Search Open Tabs Only active found matches in open header
+  Verified: Deactivating Search Open Tabs Only launches asynchronously in 0ms without freezing UI
+  Verified: Background search completed with 7 matches across workspace without freezing
+  Verified: fontCounterBadge has centered horizontal & vertical alignments
+  Verified: Search file header layout truncates long paths cleanly with ellipsis trimming
+  Verified: Discarding changes auto-closes working tree diff tab while preserving regular editor tabs
+  Passed: All Git stability and Search Replace/Dismiss tests succeeded!
+
+[Test 34] Testing Search Match Jump, Minimap & View Menu Cascading Submenus...
+  Verified: Target line highlight parameters accurately recorded on document
+  Verified: Minimap track (1112 to 1200) and slider (276.289 to 432.68) computed
+  Verified: HitTestMinimap accurately handles viewport slider, track jump, and outside clicks
+[SAVED] C:\Users\Administrator\.gemini\antigravity\brain\c83160b9-3f8b-4ad1-87a8-ab1f7f555a77\test_search_jump_and_minimap.png
+  Passed: Saved test_search_jump_and_minimap.png
+  Verified: Appearance submenu contains 22 items matching VS Code/Antigravity specs
+  Verified: Editor Layout submenu contains all 16 layouts with correct check state
+[SAVED] C:\Users\Administrator\.gemini\antigravity\brain\c83160b9-3f8b-4ad1-87a8-ab1f7f555a77\test_view_menu_submenus.png
+  Passed: Saved test_view_menu_submenus.png
+  Passed: All Search Jump, Minimap and View Menu tests succeeded!
+
+[TEST 35] Editor Text Selection, Minimap Reflections & Quick Open File Search...
+  Verified: SelectWordAt correctly selected 'headerBounds' (bounds: 30..42) matching double-click behavior in Image 4
+  Verified: Multi-line selection extraction and DeleteSelection verified
+[SAVED] C:\Users\Administrator\.gemini\antigravity\brain\c83160b9-3f8b-4ad1-87a8-ab1f7f555a77\test_editor_selection_and_minimap.png
+  Passed: Saved test_editor_selection_and_minimap.png
+  Verified: TitleHeader magnifying button bounds and HitTestQuickOpen verified
+  Verified: QuickOpenModal populated with action items and recent files (13 total entries)
+  Verified: QuickOpenModal real-time filtering for 'Win' found Window.cpp
+[SAVED] C:\Users\Administrator\.gemini\antigravity\brain\c83160b9-3f8b-4ad1-87a8-ab1f7f555a77\test_quick_open_file_search.png
+  Passed: Saved test_quick_open_file_search.png
+  Passed: All Editor Text Selection, Minimap Reflection, and Quick Open Palette tests passed!
+
+[TEST 36] Testing Rounded Selection, Syntax Error Diagnostics & Caret Fixes...
+  Verified: JSON validator correctly caught trailing comma on line 2
+  Verified: C++ validator correctly pinpointed unclosed bracket '{' on line 2
+  Verified: HTML validator caught mismatched closing tag on line 6
+  Verified: YAML validator caught prohibited tab character on line 3
+[SAVED] C:\Users\Administrator\.gemini\antigravity\brain\c83160b9-3f8b-4ad1-87a8-ab1f7f555a77\test_syntax_error_diagnostics_and_minimap.png
+  Passed: Saved test_syntax_error_diagnostics_and_minimap.png
+  Verified: QuickOpenModal HitTest and HitTestInput identify active search input correctly
+  Passed: All Rounded Selection, Syntax Error Diagnostics, and Caret Fix tests passed!
+
+[TEST 37] Testing YAML False Positive Fix, Commit/Sync Loading & Integrated Terminal...
+  Verified: YAML parser correctly accepts apostrophes in plain scalars (0 false positives on device's / user's)
+  Verified: YAML parser correctly flags genuine unclosed quoted scalar
+  Verified: Git Commit and Sync buttons have idempotency and loading state tracking
+[SAVED] C:\Users\Administrator\.gemini\antigravity\brain\c83160b9-3f8b-4ad1-87a8-ab1f7f555a77\test_integrated_terminal_panel.png
+  Passed: Saved test_integrated_terminal_panel.png
+  Passed: All YAML false positive fixes, Git Commit loading, and Integrated Terminal tests passed!
+
+[TEST 38] Testing Minimap Line, Inlay Hints, Terminal Fullscreen, and HTML/JS IntelliSense...
+  Passed: All Minimap Line, Inlay Hints, Terminal Fullscreen, and HTML/JS IntelliSense tests passed!
+
+[TEST 39] Testing Multiline HTML Void Tags, Terminal Colors & IntelliSense Mouse Hover/Click...
+  Passed: Multiline HTML void tags, Terminal colors, and IntelliSense mouse hover/click tests passed!
+
+[TEST 40] Testing HTML Auto-closing, Terminal Isolation & Source Control...
+  Verified: HTML validator accurately pinpoints unclosed <div> on opening line rather than false positive </html>
+  Verified: Detected all installed PC terminals: PowerShell, CMD, Git Bash, Node.js
+  Verified: Modern numbered tab titles (1: powershell, 2: cmd, 3: bash, 4: node) running real processes
+  Verified: TerminalPanel::OnKeyDown swallows Backspace, Delete, and Arrow keys to isolate from editor
+  Verified: DrawerPanel::SetDirtyFiles immediately reflects unsaved editor buffer in Source Control Changes
+  Passed: Saved test_html_autoclose_and_source_control_dirty.png
+  Passed: All HTML Auto-close, Terminal Isolation, and Source Control Dirty Buffer tests passed!
+
+[TEST 41] Testing Terminal Default Height, Bottom Div, Stderr Red & Split Terminal...
+  Verified: Terminal default height is 360px
+  Verified: Terminal successfully split into 2 panes
+  Passed: Saved test_split_terminal_panel.png
+  Verified: Split pane closed cleanly and restored single-pane layout
+  Verified: 'cls' / 'clear' command clears terminal lines
+  Verified: Prompt folder is blue, delimiter '>' is white, 'redo' (non-existent) is white
+  Verified: Existing folder 'src' is highlighted in blue
+  Verified: Editor Zoom In / Zoom Out title bar widget hit-testing and rendering
+  Passed: All Terminal Default Height, Delimiter/Folder Coloring & Editor Zoom tests passed!
+
+[TEST 41] Testing Terminal Backspace Boundary, Bash Warning Filter, Split Inheritance & Autocomplete Enhancements...
+  Verified: Backspace stops at boundary without eating prompt
+  Verified: Bash non-PTY startup warnings filtered out
+  Verified: Split terminal inherits active shell type (GitBash -> GitBash)
+  Verified: Terminal mouse wheel updates scrollOffsetLines
+  Verified: In HTML, 'div' tag is prioritized at top for 'di'
+  Verified: Scoped JS keyword 'function' matches with matchStart/matchLen
+  Verified: Substring matching highlights 'log' in 'dialog' tag
+  Verified: Autocomplete mouse wheel scrolling updates scroll offset
+  Passed: All [TEST 41] Terminal & IntelliSense tests passed successfully!
+
+[TEST 42] Testing Live Server, Terminal Execution, and Debugger...
+  Verified: TitleHeader Run & Debug enable/disable toggling
+  Verified: LiveServer startup, port assignment, URL construction, and shutdown
+  Verified: TerminalPanel LiveServer session tab created with URLs
+  Verified: Interactive Debug session lifecycle and actions
+  Passed: All [TEST 42] Live Server, Run, & Debug tests passed successfully!
+
+[TEST 43] Testing Live Server Redesign, URL Hitboxes, Stop/Restart Buttons & Debug Menu...
+  Verified: Live Server banner redesigned into Vite-style modern card without URL bleed
+  Verified: Top header execution buttons dynamically switch to [Restart] and [Stop] (red square)
+  Verified: Debug menu dropdown contains all operational debugging and live server controls
+  Verified: Gutter breakpoint toggle tracking in OpenDocument verified
+[SAVED] C:\Users\Administrator\.gemini\antigravity\brain\c83160b9-3f8b-4ad1-87a8-ab1f7f555a77\test_live_server_redesign_and_debug_menu.png
+  Passed: Saved test_live_server_redesign_and_debug_menu.png
+  Passed: All [TEST 43] Live Server Redesign, URL Hitboxes & Debug Menu tests passed!
+
+[TEST 44] Testing Vector Restart Icon, Multi-HTML Server Isolation & Code Dropdown...
+  Verified: LucideIcons::DrawRestart geometry and stroke initialization
+  Verified: Terminal Live Server banner does NOT contain 'v1.0.0'
+  Verified: Multi-HTML concurrent Live Server tabs with distinct ports and file association
+  Verified: Stopping index.html auto-closes index.html tab without affecting about.html
+  Verified: Closing tab [X] automatically notifies Window to stop associated server
+  Verified: Code dropdown menu opened with all formatting, comment, and navigation actions
+[SAVED] C:\Users\Administrator\.gemini\antigravity\brain\c83160b9-3f8b-4ad1-87a8-ab1f7f555a77\test_widened_terminal_and_rounded_rectangle_badge.png
+  Passed: Saved test_widened_terminal_and_rounded_rectangle_badge.png
+  Passed: All [TEST 44] Vector Restart Icon, Multi-HTML Server & Code Menu tests passed!
+
+[TEST 45] Testing VS Code Multi-Lane Curved Git Graph, Production Debugger, Tools Dropdown & Massive Snippets...
+  Verified: Multi-branch fork and merge topological lane allocation (lane 0 and lane 1)
+  Verified: Massive Snippets library contains 63 built-in snippets
+  Verified: Typing '!' in HTML exposes HTML5 boilerplate snippet at top of IntelliSense
+  Verified: Expanding '!' creates complete HTML5 template in buffer
+  Verified: Typing 'flexce' in CSS exposes 'flexcenter' snippet
+  Verified: Typing 'clg' in JS exposes console.log snippet
+  Verified: Tools dropdown menu opened with all build, test, format, palette & GC actions
+  Verified: Debug Console evaluation executes and returns formatted result in context
+[SAVED] C:\Users\Administrator\.gemini\antigravity\brain\c83160b9-3f8b-4ad1-87a8-ab1f7f555a77\test_production_debugger_and_vscode_git_graph.png
+  Passed: Saved test_production_debugger_and_vscode_git_graph.png
+  Passed: All [TEST 45] VS Code Multi-Lane Git Graph, Debugger, Tools & Snippets passed!
+
+[Test 46] Testing Inline File/Folder Creation, IntelliSense Snippets & Animated Sidebar Morphing...
+  Verified: Inline file creation committed without Win32 dialog: C:\Users\ADMINI~1\AppData\Local\Temp\phide_test_inline\src\Navbar.tsx
+  Verified: Inline folder creation cancels cleanly on Escape
+  Verified: C++ IntelliSense contains 'const' and zero 'continuity' vocabulary pollution
+  Verified: HTML '!' triggers HTML5 Template snippet from snippets.json
+[SAVED] C:\Users\Administrator\.gemini\antigravity\brain\c83160b9-3f8b-4ad1-87a8-ab1f7f555a77\test_inline_create_and_sidebar_morphing.png
+  Passed: Saved test_inline_create_and_sidebar_morphing.png
+  Passed: All [TEST 46] Inline File Creation, Clean IntelliSense & Sidebar Morphing passed!
+
+[Test 47] Testing Restored Web Vocabulary, '!' Snippet IntelliSense, Terminal Minimize & Window Menu...
+  Verified: '!' in sd.html surfaces HTML5 Boilerplate Template snippet at #1 priority
+  Verified: Restored vocabulary: 'href', 'height', 'localStorage', 'hello' properly available
+  Verified: Terminal '-' minimize button triggers custom callback and closes cleanly
+  Verified: Window dropdown menu opened with all new window, zoom, panel, and tab actions
+[SAVED] C:\Users\Administrator\.gemini\antigravity\brain\c83160b9-3f8b-4ad1-87a8-ab1f7f555a77\test_window_menu_and_exclam_intellisense.png
+  Passed: Saved test_window_menu_and_exclam_intellisense.png
+  Passed: All [TEST 47] Restored Vocabulary, '!' Snippet, Terminal Minimize & Window Menu passed!
+
+[TEST 48] Testing VS Code IntelliSense Redesign & Ghost Text Suppression (Image 5)...
+  Verified: Line 4 has characters following cursor ('evice-width, initial-scale=1.0>')
+  Verified: Autocomplete popup card width is 440px (>= 420px comfortable VS Code width)
+[SAVED] C:\Users\Administrator\.gemini\antigravity\brain\c83160b9-3f8b-4ad1-87a8-ab1f7f555a77\test_vscode_intellisense_redesign.png
+  Passed: Saved test_vscode_intellisense_redesign.png
+  Passed: All [TEST 48] VS Code IntelliSense Redesign & Ghost Text Suppression passed!
+
+[TEST 49] Testing Full Snippets Serialization, '!' in snippets.json & 'log' Expansion...
+  Verified: snippets.json exported with complete catalog size: 18631 bytes
+  Verified: '!' and 'log' are present in snippets.json
+  Verified: 'log' in HTML/JS expands to console.log();
+  Verified: 'log' in C++ expands to std::cout << "" << std::endl;
+  Verified: 'log' in Python expands to print()
+  Verified: '!' in HTML expands to full HTML5 boilerplate (11 lines)
+  Verified: IntelliSense query for 'log' in sd.html ranks snippet at #1 with 'snippets' origin
+[SAVED] C:\Users\Administrator\.gemini\antigravity\brain\c83160b9-3f8b-4ad1-87a8-ab1f7f555a77\test_snippets_json_and_log_expansion.png
+  Passed: Saved test_snippets_json_and_log_expansion.png
+  Passed: All [TEST 49] Full Snippets Serialization & 'log' Expansion passed!
+
+[TEST 50] Explorer Drag & Drop Smart Import (Godot / VS Code style)...
+  Verified: ToPascalCase and ToCamelCase casing helpers
+  Verified: Relative path normalization with forward slashes and leading ./
+  Verified: Godot game engine preload(...) smart imports for scenes, scripts and assets
+  Verified: React / TypeScript imports for components, stylesheets, SVG assets, and JSON data
+  Verified: HTML smart tags (<link>, <script>, <img>, <video>) on file drop
+  Verified: Python import statements for local modules and subpackages
+  Verified: C/C++ #include statements
+  Verified: Markdown image and resource syntax
+  Verified: Buffer drop insertion cleanly places import and preserves existing content
+[SAVED] C:\Users\Administrator\.gemini\antigravity\brain\c83160b9-3f8b-4ad1-87a8-ab1f7f555a77\test_explorer_drag_drop_import.png
+  Passed: Saved test_explorer_drag_drop_import.png
+  Passed: All [TEST 50] Explorer Drag & Drop Smart Import passed!
+
+[TEST 51] Testing Path Completion, Minimap Overflow Clamping & Scroll Beyond Last Line...
+  Passed: <a href="./ returns exclusively directory contents (folders & files) with origin 'path'
+  Passed: <a href="./ass accurately filters to assets/ folder
+  Passed: Subfolder path completion accurately resolves nested files
+  Passed: Minimap slider at scroll 0 is strictly contained within [topY, clientHeight]
+  Passed: Minimap slider at max scroll is strictly contained within [topY, clientHeight] with NO OVERFLOW

@@ -1347,6 +1347,51 @@ void Window::DoOpenFolderFromPath(const std::wstring& path) {
     InvalidateRect(m_hwnd, nullptr, FALSE);
 }
 
+void Window::DoDeleteSelectedExplorerItem() {
+    std::wstring targetPath = m_selectedExplorerPath;
+    if (targetPath.empty()) {
+        int hovered = m_drawer.GetHoveredIndex();
+        if (hovered >= 0) {
+            const auto* pItem = m_drawer.GetItem(hovered);
+            if (pItem) targetPath = pItem->fullPath;
+        }
+    }
+    if (targetPath.empty()) {
+        targetPath = m_drawer.GetActiveFilePath();
+    }
+    if (targetPath.empty()) {
+        auto* pDoc = GetActiveDoc();
+        if (pDoc) targetPath = pDoc->filePath;
+    }
+    if (targetPath.empty() || !std::filesystem::exists(targetPath)) return;
+
+    std::wstring confirmMsg = L"Are you sure you want to delete '" +
+        std::filesystem::path(targetPath).filename().wstring() + L"'?";
+    if (MessageBoxW(m_hwnd, confirmMsg.c_str(), L"Confirm Delete", MB_YESNO | MB_ICONWARNING) == IDYES) {
+        std::wstring backup;
+        bool isFolder = std::filesystem::is_directory(targetPath);
+        m_explorerUndo.PrepareDelete(targetPath, isFolder, backup);
+        std::error_code ec;
+        std::filesystem::remove_all(targetPath, ec);
+        if (!ec) {
+            m_explorerUndo.PushDelete(targetPath, backup, isFolder);
+        }
+        for (size_t g = 0; g < m_editorGroups.size(); ++g) {
+            for (int i = 0; i < static_cast<int>(m_editorGroups[g].docs.size()); ++i) {
+                if (m_editorGroups[g].docs[i].filePath == targetPath) {
+                    CloseDocument(static_cast<int>(g), i);
+                    break;
+                }
+            }
+        }
+        if (m_selectedExplorerPath == targetPath) m_selectedExplorerPath.clear();
+        m_drawer.RefreshTree();
+        UpdateDrawerDirtyFiles();
+        UpdateDrawerErrorFiles();
+        InvalidateRect(m_hwnd, nullptr, FALSE);
+    }
+}
+
 void Window::DoOpenWorkspaceFromFile() {
     wchar_t szFile[MAX_PATH] = { 0 };
     OPENFILENAMEW ofn = { sizeof(OPENFILENAMEW) };
@@ -1592,10 +1637,9 @@ void Window::UpdateDrawerErrorFiles() {
     for (const auto& group : m_editorGroups) {
         for (const auto& doc : group.docs) {
             if (!doc.diagnostics.empty() && !doc.isSpecialView) {
-                std::wstring key = doc.filePath.empty() ? doc.fileName : doc.filePath;
-                errorFiles[key] = doc.diagnostics.size();
-                if (!doc.fileName.empty()) {
-                    errorFiles[doc.fileName] = doc.diagnostics.size();
+                std::wstring key = !doc.filePath.empty() ? doc.filePath : doc.fileName;
+                if (!key.empty()) {
+                    errorFiles[key] = doc.diagnostics.size();
                 }
             }
         }
@@ -4451,6 +4495,7 @@ void Window::HandleLButtonDown(POINT clientPt) {
 
     // 4. Editor Canvas Clicks (Multi-Editor Groups aware)
     if (clientPt.x >= canvasLeft && clientPt.y >= headerH && !m_editorGroups.empty() && canvasWidth > 10.0f) {
+        m_explorerHasFocus = false;
         // Clear drawer search focus whenever user clicks anywhere inside the editor canvas
         m_drawer.SetSearchFocus(0);
         size_t numGroups = m_editorGroups.size();
@@ -4799,6 +4844,17 @@ void Window::HandleLButtonDown(POINT clientPt) {
                     OpenFileDocument(openFile, false);
                 }
                 if (!discardedFile.empty()) {
+                    // 0. If discarded file is untracked new file, remove from disk immediately
+                    std::wstring dir = m_drawer.GetOpenFolderPath();
+                    std::filesystem::path candP = std::filesystem::path(dir) / discardedFile;
+                    std::error_code ec;
+                    if (discardedFile != L"*" && std::filesystem::exists(candP, ec)) {
+                        auto res = ui::RunGitCmd(L"ls-files --error-unmatch \"" + discardedFile + L"\"", dir);
+                        if (res.exitCode != 0) {
+                            std::filesystem::remove_all(candP, ec);
+                        }
+                    }
+
                     // 1. Auto-close any working tree diff view tabs matching the discarded file(s)
                     for (int g = static_cast<int>(m_editorGroups.size()) - 1; g >= 0; --g) {
                         if (g >= static_cast<int>(m_editorGroups.size())) continue;
@@ -4823,9 +4879,13 @@ void Window::HandleLButtonDown(POINT clientPt) {
                         }
                     }
 
-                    // 2. Reload open regular document buffers if matching discarded file
-                    for (auto& group : m_editorGroups) {
-                        for (auto& doc : group.docs) {
+                    // 2. Reload open regular document buffers or close them if file no longer exists
+                    for (int g = static_cast<int>(m_editorGroups.size()) - 1; g >= 0; --g) {
+                        if (g >= static_cast<int>(m_editorGroups.size())) continue;
+                        for (int d = static_cast<int>(m_editorGroups[g].docs.size()) - 1; d >= 0; --d) {
+                            if (g >= static_cast<int>(m_editorGroups.size())) break;
+                            if (d >= static_cast<int>(m_editorGroups[g].docs.size())) continue;
+                            auto& doc = m_editorGroups[g].docs[d];
                             if (!doc.filePath.empty()) {
                                 std::wstring cleanDoc = doc.filePath;
                                 for (auto& c : cleanDoc) if (c == L'/') c = L'\\';
@@ -4837,19 +4897,22 @@ void Window::HandleLButtonDown(POINT clientPt) {
                                                (cleanDoc.ends_with(cleanDisc)) ||
                                                (cleanDisc.ends_with(cleanDoc));
                                 if (matches) {
-                                    if (std::filesystem::exists(doc.filePath)) {
-                                        doc.buffer.LoadFromFile(doc.filePath);
+                                    if (!std::filesystem::exists(doc.filePath)) {
+                                        CloseDocument(g, d);
                                     } else {
-                                        doc.buffer.SetText(L"");
-                                    }
-                                    doc.isDirty = false;
-                                    if (doc.isDiffView) {
-                                        ComputeDiffHunks(doc);
+                                        doc.buffer.LoadFromFile(doc.filePath);
+                                        doc.isDirty = false;
+                                        if (doc.isDiffView) {
+                                            ComputeDiffHunks(doc);
+                                        }
                                     }
                                 }
                             }
                         }
                     }
+                    m_drawer.RefreshTree();
+                    UpdateDrawerDirtyFiles();
+                    UpdateDrawerErrorFiles();
                     TriggerDebouncedGitRefresh(500);
                 }
                 InvalidateRect(m_hwnd, nullptr, FALSE);
@@ -4864,8 +4927,11 @@ void Window::HandleLButtonDown(POINT clientPt) {
             } else {
                 int clickedTree = m_drawer.HitTest(clientPt, m_config);
                 if (clickedTree >= 0) {
+                    m_explorerHasFocus = true;
                     const auto* pItem = m_drawer.GetItem(clickedTree);
                     if (pItem) {
+                        m_selectedExplorerPath = pItem->fullPath;
+                        m_drawer.SetActiveFilePath(pItem->fullPath);
                         if (pItem->isFolder) {
                             m_drawer.ToggleFolder(clickedTree);
                             UpdateDrawerErrorFiles();
@@ -4990,6 +5056,8 @@ void Window::HandleLButtonUp(POINT clientPt) {
             }
         } else {
             // Normal click without drag: preview/open file document!
+            m_selectedExplorerPath = m_dragCandidatePath;
+            m_explorerHasFocus = true;
             OpenFileDocument(m_dragCandidatePath, true);
         }
 
@@ -5063,6 +5131,12 @@ void Window::HandleRButtonDown(POINT clientPt) {
         if (!targetPath.empty()) {
             m_contextTargetPath = targetPath;
             m_contextTargetIsFolder = isFolder;
+            m_selectedExplorerPath = targetPath;
+            m_explorerHasFocus = true;
+            RECT clientRc;
+            GetClientRect(m_hwnd, &clientRc);
+            float clientW = static_cast<float>(clientRc.right - clientRc.left);
+            float clientH = static_cast<float>(clientRc.bottom - clientRc.top);
             bool canPaste = !m_clipboardPath.empty() && std::filesystem::exists(m_clipboardPath);
             m_popupMenu.OpenContextMenu(
                 static_cast<float>(clientPt.x),
@@ -5073,7 +5147,9 @@ void Window::HandleRButtonDown(POINT clientPt) {
                 m_config,
                 canPaste,
                 m_explorerUndo.CanUndo(),
-                m_explorerUndo.CanRedo()
+                m_explorerUndo.CanRedo(),
+                clientW,
+                clientH
             );
             InvalidateRect(m_hwnd, nullptr, FALSE);
             return;
@@ -5101,6 +5177,10 @@ void Window::HandleRButtonDown(POINT clientPt) {
             m_contextTargetPath = targetPath;
             m_contextTargetIsFolder = std::filesystem::is_directory(targetPath);
             bool canPaste = !m_clipboardPath.empty() && std::filesystem::exists(m_clipboardPath);
+            RECT clientRc;
+            GetClientRect(m_hwnd, &clientRc);
+            float clientW = static_cast<float>(clientRc.right - clientRc.left);
+            float clientH = static_cast<float>(clientRc.bottom - clientRc.top);
             m_popupMenu.OpenContextMenu(
                 static_cast<float>(clientPt.x),
                 static_cast<float>(clientPt.y),
@@ -5110,7 +5190,9 @@ void Window::HandleRButtonDown(POINT clientPt) {
                 m_config,
                 canPaste,
                 m_explorerUndo.CanUndo(),
-                m_explorerUndo.CanRedo()
+                m_explorerUndo.CanRedo(),
+                clientW,
+                clientH
             );
             InvalidateRect(m_hwnd, nullptr, FALSE);
             return;
@@ -5140,12 +5222,18 @@ void Window::HandleRButtonDown(POINT clientPt) {
 
         bool hasSelection = (GetActiveDoc() != nullptr);
         bool canPaste = (IsClipboardFormatAvailable(CF_UNICODETEXT) != FALSE);
+        RECT clientRc;
+        GetClientRect(m_hwnd, &clientRc);
+        float clientW = static_cast<float>(clientRc.right - clientRc.left);
+        float clientH = static_cast<float>(clientRc.bottom - clientRc.top);
         m_popupMenu.OpenEditorContextMenu(
             static_cast<float>(clientPt.x),
             static_cast<float>(clientPt.y),
             m_config,
             hasSelection,
-            canPaste
+            canPaste,
+            clientW,
+            clientH
         );
         InvalidateRect(m_hwnd, nullptr, FALSE);
         return;
@@ -6001,6 +6089,12 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     InvalidateRect(m_hwnd, nullptr, FALSE);
                     return 0;
                 }
+            }
+
+            // Delete key: deletes selected file/folder in File Explorer (User request: "the del keyboard key doesnt work i click the file and click on the keyboard the del ut the fiule is not deleted")
+            if (wParam == VK_DELETE && m_config.activeRailTab == 0 && m_drawerAnimProgress > 0.001f && m_explorerHasFocus) {
+                DoDeleteSelectedExplorerItem();
+                return 0;
             }
 
             if (wParam == VK_ESCAPE) {

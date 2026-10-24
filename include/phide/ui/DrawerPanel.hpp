@@ -232,6 +232,8 @@ public:
         }
     }
     [[nodiscard]] const std::vector<GitChangeItem>& GetGitChanges() const noexcept { return m_gitChanges; }
+    [[nodiscard]] std::vector<GitChangeItem>& GetGitChangesMutable() noexcept { return m_gitChanges; }
+    [[nodiscard]] const std::map<std::wstring, size_t>& GetErrorFiles() const noexcept { return m_errorFiles; }
     [[nodiscard]] const std::vector<GitCommitItem>& GetGitCommits() const noexcept { return m_gitCommits; }
     [[nodiscard]] const std::wstring& GetGitBranch() const noexcept { return m_gitBranch; }
     [[nodiscard]] const D2D1_RECT_F& GetGitHeaderMoreBounds() const noexcept { return m_gitHeaderMoreBounds; }
@@ -482,6 +484,9 @@ public:
         auto inRect = [](POINT p, const D2D1_RECT_F& rc) {
             return p.x >= rc.left && p.x <= rc.right && p.y >= rc.top && p.y <= rc.bottom;
         };
+        for (const auto& item : m_gitChanges) {
+            if (inRect(pt, item.discardBtnBounds) || inRect(pt, item.stageBtnBounds)) return true;
+        }
         return inRect(pt, m_gitCommitBtnBounds) || inRect(pt, m_gitCommitDropdownBounds) ||
                inRect(pt, m_gitGenerateAiBounds) || inRect(pt, m_gitStageAllBounds) ||
                inRect(pt, m_gitDiscardAllBounds) || inRect(pt, m_gitChangesChevronBounds) ||

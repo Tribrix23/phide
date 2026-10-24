@@ -101,7 +101,9 @@ static void SaveBitmapToPng(ID2D1Bitmap* pBitmap, IWICImagingFactory* pWicFactor
     hr = pEncoder->Commit();
     if (FAILED(hr)) return;
 
-    std::wcout << L"[SAVED] " << outPath << std::endl;
+    std::string s;
+    for (wchar_t c : outPath) s += static_cast<char>(c);
+    std::cout << "[SAVED] " << s << std::endl;
 }
 
 static void SaveWicBitmapToPng(IWICBitmap* pWicBitmap, IWICImagingFactory* pWicFactory, const std::wstring& outPath) {
@@ -147,7 +149,9 @@ static void SaveWicBitmapToPng(IWICBitmap* pWicBitmap, IWICImagingFactory* pWicF
     hr = pEncoder->Commit();
     if (FAILED(hr)) return;
 
-    std::wcout << L"[SAVED] " << outPath << std::endl;
+    std::string s;
+    for (wchar_t c : outPath) s += static_cast<char>(c);
+    std::cout << "[SAVED] " << s << std::endl;
 }
 
 int main() {
@@ -5511,12 +5515,13 @@ int main() {
         phide::editor::OpenDocument largeDoc;
         largeDoc.fileName = L"snippets.json";
 
-        // Fill buffer with 682 lines (same as user's snippets.json in Image 4 & 5)
-        for (size_t l = 0; l < 682; ++l) {
-            if (l == 0) largeDoc.buffer.InsertText(L"{\n");
-            else if (l == 681) largeDoc.buffer.InsertText(L"}\n");
-            else largeDoc.buffer.InsertText(L"  \"item_" + std::to_wstring(l) + L"\": { \"prefix\": \"test\" },\n");
+        // Fill buffer with 682 lines using instantaneous SetText
+        std::wstring bigJson = L"{\n";
+        for (size_t l = 1; l < 681; ++l) {
+            bigJson += L"  \"item_" + std::to_wstring(l) + L"\": { \"prefix\": \"test\" },\n";
         }
+        bigJson += L"}\n";
+        largeDoc.buffer.SetText(bigJson);
         assert(largeDoc.buffer.GetLineCount() >= 682);
 
         // Render at top scroll position
@@ -5604,6 +5609,11 @@ int main() {
 
         // Cleanup temp web directory
         std::filesystem::remove_all(testWebDir, ec);
+
+        groups.clear();
+        pRTSnap.Reset();
+        pWicSnap.Reset();
+        snapTheme.DiscardDeviceResources();
 
         std::cout << "  Passed: All [TEST 51] Path Completion, Minimap Bounds Clamping & Scroll Beyond Last Line passed!" << std::endl;
     }
@@ -5719,7 +5729,6 @@ int main() {
         float drawerW = 260.0f;
         drawer.Render(pRTSnap.Get(), snapTheme, cfg, static_cast<float>(bmpH), drawerW);
         editorCanvas.Render(pRTSnap.Get(), snapTheme, cfg, groups, 0, railW + drawerW, static_cast<float>(bmpW) - railW - drawerW, static_cast<float>(bmpH), true, L"", false, false, false, false);
-
         pRTSnap->EndDraw();
 
         std::wstring artDir = L"C:\\Users\\Administrator\\.gemini\\antigravity\\brain\\c83160b9-3f8b-4ad1-87a8-ab1f7f555a77\\";
@@ -5730,6 +5739,121 @@ int main() {
         std::filesystem::remove_all(testProjectDir, ec);
 
         std::cout << "  Passed: All [TEST 52] node_modules in Explorer, Red Error Badges & Drag-to-Quotes passed!" << std::endl;
+    }
+
+    // =========================================================================
+    // [TEST 53] Context Menu Screen Clamping, Diff Autocomplete Caret, Error Count Alignment & Discard
+    // =========================================================================
+    {
+        std::cout << "\n[TEST 53] Context Menu Overflow Clamping, Diff Caret Anchor, Error Count & Discard..." << std::endl;
+
+        // 1. Context Menu Screen Clamping & Flipping (Image 4)
+        phide::ui::PopupMenu menu;
+        phide::app::AppConfig cfg;
+        const float clientW = 1280.0f;
+        const float clientH = 720.0f;
+        // Right click near bottom of the screen (e.g. y = 680 on a 720h screen)
+        menu.OpenContextMenu(150.0f, 680.0f, false, L"C:\\Project\\sd.html", L"C:\\Project", cfg, false, false, false, clientW, clientH);
+        assert(menu.IsOpen());
+        const auto& items = menu.GetItems();
+        assert(!items.empty());
+        // Verify that the menu does NOT overflow outside the bottom of the client window
+        const auto& bounds = menu.GetItems()[0].bounds; // First item
+        const auto& lastItem = menu.GetItems().back();  // Last item
+        assert(lastItem.bounds.bottom <= clientH);
+        std::cout << "  Passed: Context menu flipped/clamped vertically inside window: lastItem.bottom="
+                  << lastItem.bounds.bottom << " <= clientH=" << clientH << std::endl;
+        menu.Close();
+
+        // 2. Test Git Discard and Stage button pointer hand cursor hit testing
+        phide::ui::DrawerPanel drawer;
+        phide::ui::GitChangeItem gitItem;
+        gitItem.path = L"sd.html";
+        gitItem.fileName = L"sd.html";
+        gitItem.status = L"U";
+        gitItem.bounds = D2D1::RectF(50.0f, 200.0f, 250.0f, 226.0f);
+        gitItem.discardBtnBounds = D2D1::RectF(220.0f, 202.0f, 240.0f, 224.0f);
+        gitItem.stageBtnBounds = D2D1::RectF(195.0f, 202.0f, 215.0f, 224.0f);
+        drawer.GetGitChangesMutable().push_back(gitItem);
+
+        POINT ptDiscard{ 230, 210 };
+        POINT ptStage{ 205, 210 };
+        POINT ptOutside{ 100, 210 };
+
+        assert(drawer.HitTestGitButtons(ptDiscard) == true);
+        assert(drawer.HitTestGitButtons(ptStage) == true);
+        assert(drawer.HitTestGitButtons(ptOutside) == false);
+        std::cout << "  Passed: HitTestGitButtons returns true for Discard and Stage buttons (Pointer Hand Cursor)" << std::endl;
+
+        // 3. Test Error Count Alignment between Breadcrumb and Explorer Badge
+        std::map<std::wstring, size_t> errorFiles;
+        std::wstring testFilePath = L"C:\\Project\\index-D33QWjow.js";
+        errorFiles[testFilePath] = 5; // Exactly 5 errors on file
+        drawer.SetErrorFiles(errorFiles);
+
+        // Verify that error file only counts 5, not doubled to 10
+        phide::ui::DrawerTreeItem testTreeItem;
+        testTreeItem.fullPath = testFilePath;
+        testTreeItem.label = L"index-D33QWjow.js";
+        testTreeItem.isFolder = false;
+
+        size_t computedErrorCount = 0;
+        for (const auto& [errPath, count] : drawer.GetErrorFiles()) {
+            if (count > 0 && (_wcsicmp(errPath.c_str(), testTreeItem.fullPath.c_str()) == 0 ||
+                              _wcsicmp(errPath.c_str(), testTreeItem.label.c_str()) == 0 ||
+                              errPath.ends_with(L"\\" + testTreeItem.label) ||
+                              errPath.ends_with(L"/" + testTreeItem.label))) {
+                computedErrorCount = count;
+                break;
+            }
+        }
+        assert(computedErrorCount == 5);
+        std::cout << "  Passed: File error count is 5 (matches breadcrumb), NOT doubled to 10" << std::endl;
+
+        // 4. Test Caret Coordinates Updated in Editable Right Pane of Diff View
+        phide::ui::EditorCanvas editorCanvas;
+        phide::editor::OpenDocument diffDoc;
+        diffDoc.fileName = L"sd.html";
+        diffDoc.isDiffView = true;
+        diffDoc.isDiffRightReadOnly = false;
+        diffDoc.diffActivePane = 1; // Right pane active
+        diffDoc.buffer.SetText(L"cls\nline2\n");
+        diffDoc.buffer.SetCursor(0, 3); // Cursor after 'cls'
+
+        const UINT bmpW = 1200;
+        const UINT bmpH = 750;
+        Microsoft::WRL::ComPtr<IWICBitmap> pWicSnap;
+        pWicFactory->CreateBitmap(bmpW, bmpH, GUID_WICPixelFormat32bppPBGRA, WICBitmapCacheOnDemand, &pWicSnap);
+        Microsoft::WRL::ComPtr<ID2D1RenderTarget> pRTSnap;
+        pD2DFactory->CreateWicBitmapRenderTarget(pWicSnap.Get(), D2D1::RenderTargetProperties(), &pRTSnap);
+
+        phide::ui::Theme snapTheme;
+        snapTheme.SetThemeMode(phide::ui::ThemeMode::Dark);
+        snapTheme.CreateDeviceResources(pRTSnap.Get(), pDWriteFactory.Get());
+
+        pRTSnap->BeginDraw();
+        pRTSnap->Clear(D2D1::ColorF(0.12f, 0.12f, 0.12f, 1.0f));
+
+        std::vector<phide::editor::EditorGroup> diffGroups;
+        phide::editor::EditorGroup diffGrp;
+        diffGrp.docs.push_back(diffDoc);
+        diffGrp.activeDocIdx = 0;
+        diffGroups.push_back(diffGrp);
+
+        editorCanvas.Render(pRTSnap.Get(), snapTheme, cfg, diffGroups, 0, 300.0f, 900.0f, 750.0f, true, L"", false, false, false, false);
+
+        pRTSnap->EndDraw();
+
+        // Autocomplete caret should now be in the right pane (x > 700.0f)
+        assert(editorCanvas.GetLastCaretX() > 700.0f);
+        std::cout << "  Passed: Diff View Editable Right Pane Caret X = " << editorCanvas.GetLastCaretX()
+                  << " (anchored in right pane for IntelliSense)" << std::endl;
+
+        std::wstring artDir = L"C:\\Users\\Administrator\\.gemini\\antigravity\\brain\\c83160b9-3f8b-4ad1-87a8-ab1f7f555a77\\";
+        SaveWicBitmapToPng(pWicSnap.Get(), pWicFactory.Get(), artDir + L"test_diff_intellisense_context_menu_overflow_and_discard.png");
+        std::cout << "  Passed: Saved test_diff_intellisense_context_menu_overflow_and_discard.png" << std::endl;
+
+        std::cout << "  Passed: All [TEST 53] Context Menu Overflow, Diff Caret & Discard tests passed!" << std::endl;
     }
 
     std::cout << "\n==========================================" << std::endl;

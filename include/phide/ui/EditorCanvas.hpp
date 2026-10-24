@@ -188,6 +188,9 @@ public:
      */
     KeyboardShortcutsView& GetKeyboardShortcutsView() noexcept { return m_keybindingsView; }
 
+    [[nodiscard]] float GetLastCaretX() const noexcept { return m_lastCaretX; }
+    [[nodiscard]] float GetLastCaretY() const noexcept { return m_lastCaretY; }
+
     /**
      * @brief Releases device-dependent Direct2D resources (e.g. path geometries, watermark bitmaps).
      */

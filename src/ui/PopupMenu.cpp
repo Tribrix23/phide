@@ -43,7 +43,8 @@ void PopupMenu::OpenFileMenu(float x, float y, const app::AppConfig& config, boo
 
 void PopupMenu::OpenContextMenu(float x, float y, bool isFolder, const std::wstring& targetPath,
                                 const std::wstring& rootFolder, const app::AppConfig& config,
-                                bool canPaste, bool canUndo, bool canRedo) {
+                                bool canPaste, bool canUndo, bool canRedo,
+                                float clientW, float clientH) {
     m_isOpen = true;
     m_hoveredMainIdx = -1;
     m_activeSubmenuIdx = -1;
@@ -52,11 +53,12 @@ void PopupMenu::OpenContextMenu(float x, float y, bool isFolder, const std::wstr
     BuildContextMenuItems(isFolder, targetPath, rootFolder, canPaste, canUndo, canRedo);
 
     const float menuW = config.ScaleF(240.0f);
-    LayoutMenu(m_items, x, y, menuW, config, m_mainMenuBounds);
+    LayoutMenu(m_items, x, y, menuW, config, m_mainMenuBounds, clientW, clientH);
 }
 
 void PopupMenu::OpenEditorContextMenu(float x, float y, const app::AppConfig& config,
-                                     bool hasSelection, bool canPaste) {
+                                     bool hasSelection, bool canPaste,
+                                     float clientW, float clientH) {
     (void)hasSelection;
     m_isOpen = true;
     m_hoveredMainIdx = -1;
@@ -86,7 +88,7 @@ void PopupMenu::OpenEditorContextMenu(float x, float y, const app::AppConfig& co
     m_items.push_back({ MenuActionId::EditorCommandPalette, L"Command Palette...", L"Ctrl+Shift+P", false, false, false, true, {}, {} });
 
     const float menuW = config.ScaleF(240.0f);
-    LayoutMenu(m_items, x, y, menuW, config, m_mainMenuBounds);
+    LayoutMenu(m_items, x, y, menuW, config, m_mainMenuBounds, clientW, clientH);
 }
 
 void PopupMenu::OpenEditMenu(float x, float y, const app::AppConfig& config,
@@ -675,24 +677,45 @@ void PopupMenu::BuildContextMenuItems(bool isFolder, const std::wstring& targetP
 }
 
 void PopupMenu::LayoutMenu(std::vector<PopupMenuItem>& items, float startX, float startY, float width,
-                          const app::AppConfig& config, D2D1_RECT_F& outBounds) {
+                          const app::AppConfig& config, D2D1_RECT_F& outBounds,
+                          float clientW, float clientH) {
     const float padY   = config.ScaleF(4.0f);
     const float itemH  = config.ScaleF(25.0f);
     const float sepH   = config.ScaleF(7.0f);
 
-    float curY = startY + padY;
+    float totalH = padY * 2.0f;
+    for (const auto& item : items) {
+        totalH += item.isSeparator ? sepH : itemH;
+    }
+
+    float finalX = startX;
+    float finalY = startY;
+
+    // Prevent overflowing beyond the right or bottom of the window! (Image 4 fix)
+    if (clientW > 0.0f && finalX + width > clientW - config.ScaleF(8.0f)) {
+        finalX = (std::max)(config.ScaleF(8.0f), clientW - width - config.ScaleF(8.0f));
+    }
+    if (clientH > 0.0f && finalY + totalH > clientH - config.ScaleF(8.0f)) {
+        if (startY - totalH >= config.ScaleF(8.0f)) {
+            finalY = startY - totalH; // Flip upwards above the click point
+        } else {
+            finalY = (std::max)(config.ScaleF(8.0f), clientH - totalH - config.ScaleF(8.0f)); // Clamp to screen
+        }
+    }
+
+    float curY = finalY + padY;
 
     for (auto& item : items) {
         if (item.isSeparator) {
-            item.bounds = D2D1::RectF(startX, curY, startX + width, curY + sepH);
+            item.bounds = D2D1::RectF(finalX, curY, finalX + width, curY + sepH);
             curY += sepH;
         } else {
-            item.bounds = D2D1::RectF(startX, curY, startX + width, curY + itemH);
+            item.bounds = D2D1::RectF(finalX, curY, finalX + width, curY + itemH);
             curY += itemH;
         }
     }
 
-    outBounds = D2D1::RectF(startX, startY, startX + width, curY + padY);
+    outBounds = D2D1::RectF(finalX, finalY, finalX + width, curY + padY);
 }
 
 void PopupMenu::LayoutSubmenu(int parentItemIdx, const app::AppConfig& config, float clientW, float clientH) {

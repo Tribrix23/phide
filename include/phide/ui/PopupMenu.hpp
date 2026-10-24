@@ -343,7 +343,8 @@ public:
      */
     void OpenContextMenu(float x, float y, bool isFolder, const std::wstring& targetPath,
                          const std::wstring& rootFolder, const app::AppConfig& config,
-                         bool canPaste = false, bool canUndo = false, bool canRedo = false);
+                         bool canPaste = false, bool canUndo = false, bool canRedo = false,
+                         float clientW = 0.0f, float clientH = 0.0f);
 
     /**
      * @brief Opens the custom editor context menu (Image 4).
@@ -354,7 +355,8 @@ public:
      * @param canPaste Whether Windows clipboard has text to paste.
      */
     void OpenEditorContextMenu(float x, float y, const app::AppConfig& config,
-                               bool hasSelection = false, bool canPaste = true);
+                               bool hasSelection = false, bool canPaste = true,
+                               float clientW = 0.0f, float clientH = 0.0f);
 
     /**
      * @brief Closes the popup menu and any open submenus.
@@ -407,7 +409,8 @@ private:
                                const std::wstring& rootFolder, bool canPaste,
                                bool canUndo = false, bool canRedo = false);
     void LayoutMenu(std::vector<PopupMenuItem>& items, float startX, float startY, float width,
-                    const app::AppConfig& config, D2D1_RECT_F& outBounds);
+                    const app::AppConfig& config, D2D1_RECT_F& outBounds,
+                    float clientW = 0.0f, float clientH = 0.0f);
     void LayoutSubmenu(int parentItemIdx, const app::AppConfig& config, float clientW, float clientH);
 
     void RenderMenuPanel(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,

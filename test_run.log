@@ -1,0 +1,11 @@
+test_verification.cpp
+Theme.cpp
+LucideIcons.cpp
+TitleHeader.cpp
+PopupMenu.cpp
+ActivityRail.cpp
+DrawerPanel.cpp
+EditorCanvas.cpp
+KeyboardShortcutsView.cpp
+ThemePickerModal.cpp
+QuickOpenModal.cpp

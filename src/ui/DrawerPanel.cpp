@@ -710,7 +710,8 @@ void DrawerPanel::RenderExplorerPane(ID2D1RenderTarget* pRT, Theme& theme, const
                                               errPath.ends_with(L"\\" + item.label) ||
                                               errPath.ends_with(L"/" + item.label))) {
                                 itemHasError = true;
-                                errorCount += count;
+                                errorCount = count;
+                                break;
                             }
                         }
                     } else {
@@ -4178,9 +4179,26 @@ bool DrawerPanel::DiscardFile(const std::wstring& relPath) {
     std::wstring dir = m_openFolderPath.empty() ? L"." : m_openFolderPath;
     std::wstring cleanRel = relPath;
     for (auto& c : cleanRel) if (c == L'\\') c = L'/';
+
+    // Direct deletion if file is untracked or new
+    std::error_code ec;
+    std::filesystem::path fullP = std::filesystem::path(dir) / relPath;
+    if (std::filesystem::exists(fullP, ec)) {
+        auto resTrack = RunGitCmd(L"ls-files --error-unmatch \"" + cleanRel + L"\"", dir);
+        if (resTrack.exitCode != 0) {
+            std::filesystem::remove_all(fullP, ec);
+        }
+    }
+    if (std::filesystem::exists(relPath, ec)) {
+        auto resTrack = RunGitCmd(L"ls-files --error-unmatch \"" + cleanRel + L"\"", dir);
+        if (resTrack.exitCode != 0) {
+            std::filesystem::remove_all(relPath, ec);
+        }
+    }
+
     RunGitCmd(L"restore --staged --worktree -- \"" + cleanRel + L"\"", dir);
     RunGitCmd(L"checkout HEAD -- \"" + cleanRel + L"\"", dir);
-    RunGitCmd(L"clean -fd -- \"" + cleanRel + L"\"", dir);
+    RunGitCmd(L"clean -f -d -- \"" + cleanRel + L"\"", dir);
     RefreshGitStatusOnly(false);
     m_isGitLoading = false;
     return true;
@@ -4605,7 +4623,8 @@ bool DrawerPanel::HitTestGit(POINT pt, const app::AppConfig& config,
             }
 
             // Changed file rows (Image 4 & 5)
-            for (const auto& item : m_gitChanges) {
+            for (size_t i = 0; i < m_gitChanges.size(); ++i) {
+                const auto& item = m_gitChanges[i];
                 if (pt.x >= item.bounds.left && pt.x <= item.bounds.right &&
                     pt.y >= item.bounds.top && pt.y <= item.bounds.bottom) {
                     if (pt.x >= item.stageBtnBounds.left && pt.x <= item.stageBtnBounds.right &&
@@ -4615,8 +4634,13 @@ bool DrawerPanel::HitTestGit(POINT pt, const app::AppConfig& config,
                     }
                     if (pt.x >= item.discardBtnBounds.left && pt.x <= item.discardBtnBounds.right &&
                         pt.y >= item.discardBtnBounds.top && pt.y <= item.discardBtnBounds.bottom) {
-                        DiscardFileAsync(item.path);
                         outDiscardedFile = item.path;
+                        m_gitTooltipText = L"Discarded " + item.fileName;
+                        m_showGitTooltip = true;
+                        m_gitTooltipTarget = item.bounds;
+                        std::wstring discardPath = item.path;
+                        m_gitChanges.erase(m_gitChanges.begin() + i);
+                        DiscardFileAsync(discardPath);
                         return true;
                     }
                     outOpenFile = item.path;

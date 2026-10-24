@@ -3110,10 +3110,12 @@ void EditorCanvas::RenderDiffView(ID2D1RenderTarget* pRT, Theme& theme, const ap
     }
 
     // Blinking Caret '|' on Editable Right Pane (Image 2)
-    if (isRightActive && m_caretVisible && !doc.isDiffRightReadOnly && cursor.line >= doc.scrollLine && cursor.line <= doc.scrollLine + visibleCount) {
+    if (isRightActive && !doc.isDiffRightReadOnly && cursor.line >= doc.scrollLine && cursor.line <= doc.scrollLine + visibleCount) {
         float caretY = codeTopY + (cursor.line - doc.scrollLine) * lineH;
         float caretX = rightX + gutterW + config.ScaleF(12.0f) + static_cast<float>(cursor.col) * charW;
-        if (caretX < rightX + halfW) {
+        m_lastCaretX = caretX;
+        m_lastCaretY = caretY;
+        if (m_caretVisible && caretX < rightX + halfW) {
             pRT->DrawLine(
                 D2D1::Point2F(caretX, caretY + config.ScaleF(2.0f)),
                 D2D1::Point2F(caretX, caretY + lineH - config.ScaleF(2.0f)),
