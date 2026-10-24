@@ -215,9 +215,9 @@ void DrawerPanel::AddDirectoryChildren(const std::wstring& dirPath, int depth) {
 
     for (const auto& entry : std::filesystem::directory_iterator(fsPath, std::filesystem::directory_options::skip_permission_denied, ec)) {
         std::wstring name = entry.path().filename().wstring();
-        if (name.empty() || name[0] == L'.') continue; // Skip hidden
-        if (name == L"bin" || name == L"obj" || name == L"build" || name == L"node_modules" || name == L".git" || name == L".vs") {
-            continue;
+        if (name.empty()) continue;
+        if (name == L".git" || name == L".vs") {
+            continue; // Skip internal VCS control metadata
         }
 
         bool isDir = entry.is_directory(ec);
@@ -701,17 +701,47 @@ void DrawerPanel::RenderExplorerPane(ID2D1RenderTarget* pRT, Theme& theme, const
                         );
                     }
                 } else {
+                    bool itemHasError = false;
+                    size_t errorCount = 0;
+                    if (!item.isFolder) {
+                        for (const auto& [errPath, count] : m_errorFiles) {
+                            if (count > 0 && (_wcsicmp(errPath.c_str(), item.fullPath.c_str()) == 0 ||
+                                              _wcsicmp(errPath.c_str(), item.label.c_str()) == 0 ||
+                                              errPath.ends_with(L"\\" + item.label) ||
+                                              errPath.ends_with(L"/" + item.label))) {
+                                itemHasError = true;
+                                errorCount += count;
+                            }
+                        }
+                    } else {
+                        for (const auto& [errPath, count] : m_errorFiles) {
+                            if (count > 0) {
+                                std::wstring normFolder = item.fullPath;
+                                for (auto& c : normFolder) if (c == L'/') c = L'\\';
+                                if (!normFolder.empty() && normFolder.back() != L'\\') normFolder += L'\\';
+                                std::wstring normErr = errPath;
+                                for (auto& c : normErr) if (c == L'/') c = L'\\';
+                                if (_wcsnicmp(normErr.c_str(), normFolder.c_str(), normFolder.length()) == 0) {
+                                    itemHasError = true;
+                                    errorCount += count;
+                                }
+                            }
+                        }
+                    }
+
                     D2D1_RECT_F rcLabel = D2D1::RectF(
                         labelX,
                         curY,
-                        railW + fullDrawerW - config.ScaleF(10.0f),
+                        railW + fullDrawerW - config.ScaleF(itemHasError ? 30.0f : 10.0f),
                         curY + itemH
                     );
-                    ID2D1Brush* pTextBrush = isActive ?
-                        (theme.IsDarkMode() ? theme.brushTextWhite.Get() : theme.brushTextPrimary.Get()) :
-                        (theme.IsDarkMode() ? 
-                            (isHovered ? theme.brushTextWhite.Get() : (item.isFolder ? theme.brushTextWhite.Get() : theme.brushTextPrimary.Get())) :
-                            theme.brushTextPrimary.Get());
+                    ID2D1Brush* pTextBrush = itemHasError ?
+                        (theme.brushIconRed ? theme.brushIconRed.Get() : theme.brushTextPrimary.Get()) :
+                        (isActive ?
+                            (theme.IsDarkMode() ? theme.brushTextWhite.Get() : theme.brushTextPrimary.Get()) :
+                            (theme.IsDarkMode() ? 
+                                (isHovered ? theme.brushTextWhite.Get() : (item.isFolder ? theme.brushTextWhite.Get() : theme.brushTextPrimary.Get())) :
+                                theme.brushTextPrimary.Get()));
                     pRT->DrawText(
                         item.label.c_str(),
                         static_cast<UINT32>(item.label.length()),
@@ -719,6 +749,26 @@ void DrawerPanel::RenderExplorerPane(ID2D1RenderTarget* pRT, Theme& theme, const
                         rcLabel,
                         pTextBrush
                     );
+
+                    // Red error indicator badge in explorer tree (Image 3)
+                    if (itemHasError) {
+                        float badgeRight = railW + fullDrawerW - config.ScaleF(12.0f);
+                        float badgeCy = curY + itemH / 2.0f;
+                        if (!item.isFolder) {
+                            std::wstring errNum = std::to_wstring(errorCount);
+                            float errBadgeW = config.ScaleF(15.0f + (errNum.length() > 1 ? 5.0f : 0.0f));
+                            float errBadgeH = config.ScaleF(14.0f);
+                            D2D1_RECT_F rcErrPill = D2D1::RectF(badgeRight - errBadgeW, badgeCy - errBadgeH / 2.0f, badgeRight, badgeCy + errBadgeH / 2.0f);
+                            D2D1_ROUNDED_RECT rrcErrPill = D2D1::RoundedRect(rcErrPill, 4.0f, 4.0f);
+                            if (theme.brushIconRed) pRT->FillRoundedRectangle(rrcErrPill, theme.brushIconRed.Get());
+                            pRT->DrawText(errNum.c_str(), static_cast<UINT32>(errNum.length()),
+                                          theme.fontButtonCenter ? theme.fontButtonCenter.Get() : theme.fontBody.Get(),
+                                          rcErrPill, theme.brushTextWhite.Get());
+                        } else {
+                            D2D1_ELLIPSE errDot = D2D1::Ellipse(D2D1::Point2F(badgeRight - config.ScaleF(4.0f), badgeCy), config.ScaleF(3.0f), config.ScaleF(3.0f));
+                            if (theme.brushIconRed) pRT->FillEllipse(errDot, theme.brushIconRed.Get());
+                        }
+                    }
                 }
 
                 curY += itemH;
@@ -4078,6 +4128,10 @@ void DrawerPanel::SetDirtyFiles(const std::vector<std::wstring>& dirtyFilePaths)
     if (changed && m_onGitStateChanged) {
         m_onGitStateChanged();
     }
+}
+
+void DrawerPanel::SetErrorFiles(const std::map<std::wstring, size_t>& errorFiles) {
+    m_errorFiles = errorFiles;
 }
 
 void DrawerPanel::StageAllChangesAsync() {

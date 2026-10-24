@@ -173,6 +173,7 @@ struct OpenDocument {
     D2D1_RECT_F minimapSlider{};        ///< Bounding box of the visible viewport slider in the minimap
     bool isDraggingMinimap = false;     ///< True while user is actively dragging the minimap slider
     float minimapDragStartY = 0.0f;     ///< Mouse Y at start of drag
+    float minimapGrabOffsetY = 0.0f;    ///< Offset from slider top when grabbed
     size_t minimapDragStartLine = 0;    ///< scrollLine at start of drag
 
     // Code Folding State (Images 2 & 3)

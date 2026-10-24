@@ -438,6 +438,9 @@ private:
     /** @brief Synchronizes all open in-memory dirty documents into the Source Control drawer (Images 3 & 4). */
     void UpdateDrawerDirtyFiles();
 
+    /** @brief Synchronizes documents with syntax/diagnostic errors into the Explorer drawer (Image 3). */
+    void UpdateDrawerErrorFiles();
+
     /** @brief Commits selected autocomplete item or HTML tag block (Images 1 & 5). */
     void CommitAutocompleteSelection();
 

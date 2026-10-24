@@ -505,9 +505,12 @@ void EditorCanvas::RenderTabs(ID2D1RenderTarget* pRT, Theme& theme, const app::A
         IDWriteTextFormat* pTextFmt = doc.isPreview ? 
             (theme.fontTabPreview ? theme.fontTabPreview.Get() : theme.fontMenuItem.Get()) :
             (theme.fontTab ? theme.fontTab.Get() : theme.fontMenuItem.Get());
-        ID2D1Brush* pTextBrush = isActive ? 
-            (isFocused ? (theme.IsDarkMode() ? theme.brushTextWhite.Get() : theme.brushTextPrimary.Get()) : theme.brushTextSecondary.Get()) :
-            theme.brushTextSecondary.Get();
+        bool hasErrors = !doc.diagnostics.empty();
+        ID2D1Brush* pTextBrush = hasErrors ?
+            (theme.brushIconRed ? theme.brushIconRed.Get() : theme.brushTextPrimary.Get()) :
+            (isActive ? 
+                (isFocused ? (theme.IsDarkMode() ? theme.brushTextWhite.Get() : theme.brushTextPrimary.Get()) : theme.brushTextSecondary.Get()) :
+                theme.brushTextSecondary.Get());
 
         pRT->PushAxisAlignedClip(rcTitle, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
         pRT->DrawText(title.c_str(), static_cast<UINT32>(title.length()), pTextFmt, rcTitle, pTextBrush);
@@ -519,6 +522,15 @@ void EditorCanvas::RenderTabs(ID2D1RenderTarget* pRT, Theme& theme, const app::A
         const float closeY = headerH + (tabH - closeSize) / 2.0f;
         D2D1_RECT_F rcClose = D2D1::RectF(closeX, closeY, closeX + closeSize, closeY + closeSize);
         doc.closeBounds = rcClose;
+
+        // Red Error Indicator on Tab (Image 3)
+        if (hasErrors) {
+            float errDotX = closeX - config.ScaleF(doc.isDirty ? 18.0f : 9.0f);
+            float errDotY = headerH + tabH / 2.0f;
+            float errDotR = config.ScaleF(3.5f);
+            D2D1_ELLIPSE elErr = D2D1::Ellipse(D2D1::Point2F(errDotX, errDotY), errDotR, errDotR);
+            if (theme.brushIconRed) pRT->FillEllipse(elErr, theme.brushIconRed.Get());
+        }
 
         // Dirty Circle Indicator: ONLY if doc.isDirty is true! (7px diameter)
         if (doc.isDirty) {
@@ -566,21 +578,38 @@ void EditorCanvas::RenderBreadcrumbs(ID2D1RenderTarget* pRT, Theme& theme, const
         0.8f
     );
 
-    // Diagnostic error count badge on breadcrumb bar (Image 4)
+    // Diagnostic error count badge on breadcrumb bar (Image 4) - centered text & vector icon
     if (!doc.diagnostics.empty()) {
-        std::wstring errBadgeStr = L"ⓧ " + std::to_wstring(doc.diagnostics.size()) +
+        std::wstring errBadgeStr = std::to_wstring(doc.diagnostics.size()) +
             (doc.diagnostics.size() == 1 ? L" error" : L" errors");
-        float badgeW = config.ScaleF(75.0f);
+        float badgeW = config.ScaleF(80.0f);
         float badgeH = config.ScaleF(18.0f);
-        float badgeX = canvasRight - config.ScaleF(110.0f);
+        float badgeX = canvasRight - config.ScaleF(95.0f);
         float badgeY = barY + (barHeight - badgeH) / 2.0f;
         D2D1_RECT_F rcErrBadge = D2D1::RectF(badgeX, badgeY, badgeX + badgeW, badgeY + badgeH);
-        D2D1_ROUNDED_RECT rrcErrBadge = D2D1::RoundedRect(rcErrBadge, 3.0f, 3.0f);
+        D2D1_ROUNDED_RECT rrcErrBadge = D2D1::RoundedRect(rcErrBadge, 4.0f, 4.0f);
         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> errBadgeBg;
-        pRT->CreateSolidColorBrush(D2D1::ColorF(0.85f, 0.22f, 0.22f, 0.20f), &errBadgeBg);
+        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> errBadgeBorder;
+        pRT->CreateSolidColorBrush(D2D1::ColorF(0.85f, 0.22f, 0.22f, 0.18f), &errBadgeBg);
+        pRT->CreateSolidColorBrush(D2D1::ColorF(0.95f, 0.30f, 0.30f, 0.40f), &errBadgeBorder);
         if (errBadgeBg) pRT->FillRoundedRectangle(&rrcErrBadge, errBadgeBg.Get());
+        if (errBadgeBorder) pRT->DrawRoundedRectangle(&rrcErrBadge, errBadgeBorder.Get(), 0.9f);
+
+        ID2D1Brush* redBrush = theme.brushIconRed ? theme.brushIconRed.Get() : theme.brushTextPrimary.Get();
+
+        // Vector ⊗ symbol
+        float iconR = config.ScaleF(4.5f);
+        float iconCx = badgeX + config.ScaleF(9.5f);
+        float iconCy = badgeY + badgeH / 2.0f;
+        D2D1_ELLIPSE el = D2D1::Ellipse(D2D1::Point2F(iconCx, iconCy), iconR, iconR);
+        pRT->DrawEllipse(el, redBrush, 1.2f);
+        pRT->DrawLine(D2D1::Point2F(iconCx - 2.0f, iconCy - 2.0f), D2D1::Point2F(iconCx + 2.0f, iconCy + 2.0f), redBrush, 1.2f);
+        pRT->DrawLine(D2D1::Point2F(iconCx + 2.0f, iconCy - 2.0f), D2D1::Point2F(iconCx - 2.0f, iconCy + 2.0f), redBrush, 1.2f);
+
+        // Perfectly centered text
+        D2D1_RECT_F rcErrText = D2D1::RectF(iconCx + config.ScaleF(6.0f), badgeY, badgeX + badgeW - config.ScaleF(2.0f), badgeY + badgeH);
         pRT->DrawText(errBadgeStr.c_str(), static_cast<UINT32>(errBadgeStr.length()),
-                      theme.fontMenuShortcut.Get(), rcErrBadge, theme.brushIconRed ? theme.brushIconRed.Get() : theme.brushTextPrimary.Get());
+                      theme.fontButtonCenter ? theme.fontButtonCenter.Get() : theme.fontBody.Get(), rcErrText, redBrush);
     }
 
     // Parse segments from doc.filePath (Image 4)
@@ -2426,21 +2455,38 @@ void EditorCanvas::RenderAutocompletePopup(ID2D1RenderTarget* pRT, Theme& theme,
             case editor::CompletionKind::Snippet:
                 badgeColor = D2D1::ColorF(0.22f, 0.74f, 0.97f); badgeLetter = L"ⓢ"; break;
             case editor::CompletionKind::Folder:
-                badgeColor = D2D1::ColorF(0.95f, 0.78f, 0.25f); badgeLetter = L"📁"; break;
             case editor::CompletionKind::File:
-                badgeColor = D2D1::ColorF(0.35f, 0.75f, 0.95f); badgeLetter = L"📄"; break;
+                break;
         }
 
-        // Pill container for symbol badge
-        D2D1_ROUNDED_RECT rrcBadge = D2D1::RoundedRect(rcIcon, 3.0f, 3.0f);
-        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> badgeBgBrush;
-        pRT->CreateSolidColorBrush(D2D1::ColorF(badgeColor.r, badgeColor.g, badgeColor.b, 0.15f), &badgeBgBrush);
-        if (badgeBgBrush) pRT->FillRoundedRectangle(rrcBadge, badgeBgBrush.Get());
+        // Render genuine explorer-style icons for Folders & Files, or badges for symbols (Images 4 & 5)
+        if (item.kind == editor::CompletionKind::Folder) {
+            auto setiInfo = theme.GetSetiIcon(item.label, true, false);
+            if (theme.fontSeti && setiInfo.pBrush) {
+                pRT->DrawText(&setiInfo.glyph, 1, theme.fontSeti.Get(), rcIcon, setiInfo.pBrush);
+            } else {
+                m_icons.DrawFileIcon(pRT, theme, rcIcon, FileIconType::Folder);
+            }
+        } else if (item.kind == editor::CompletionKind::File) {
+            auto setiInfo = theme.GetSetiIcon(item.label, false, false);
+            if (theme.fontSeti && setiInfo.pBrush) {
+                pRT->DrawText(&setiInfo.glyph, 1, theme.fontSeti.Get(), rcIcon, setiInfo.pBrush);
+            } else {
+                auto fType = LucideIcons::GetIconTypeForPath(item.label, false, false);
+                m_icons.DrawFileIcon(pRT, theme, rcIcon, fType);
+            }
+        } else {
+            // Pill container for symbol badge (ⓟ, ⓜ, ⓕ, ⓥ, ⓚ, ⓣ, ⓐ, ⓢ)
+            D2D1_ROUNDED_RECT rrcBadge = D2D1::RoundedRect(rcIcon, 3.0f, 3.0f);
+            Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> badgeBgBrush;
+            pRT->CreateSolidColorBrush(D2D1::ColorF(badgeColor.r, badgeColor.g, badgeColor.b, 0.15f), &badgeBgBrush);
+            if (badgeBgBrush) pRT->FillRoundedRectangle(rrcBadge, badgeBgBrush.Get());
 
-        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> badgeBrush;
-        pRT->CreateSolidColorBrush(badgeColor, &badgeBrush);
-        if (badgeBrush) {
-            pRT->DrawText(badgeLetter, 1, theme.fontMenu ? theme.fontMenu.Get() : theme.fontBody.Get(), rcIcon, badgeBrush.Get());
+            Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> badgeBrush;
+            pRT->CreateSolidColorBrush(badgeColor, &badgeBrush);
+            if (badgeBrush) {
+                pRT->DrawText(badgeLetter, 1, theme.fontMenu ? theme.fontMenu.Get() : theme.fontBody.Get(), rcIcon, badgeBrush.Get());
+            }
         }
 
         // 5. Origin Tag on Far Right (e.g. "builtins", "snippets", "html", "css", right-aligned)

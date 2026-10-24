@@ -153,6 +153,7 @@ public:
     void RefreshGitState(bool async = true, bool showLoading = false);
     void RefreshGitStatusOnly(bool async = true);
     void SetDirtyFiles(const std::vector<std::wstring>& dirtyFilePaths);
+    void SetErrorFiles(const std::map<std::wstring, size_t>& errorFiles);
     void StageAllChangesAsync();
     void DiscardAllChangesAsync();
     bool DiscardAllChanges();
@@ -301,6 +302,14 @@ public:
             return &m_visibleItems[index];
         }
         return nullptr;
+    }
+
+    [[nodiscard]] const std::vector<DrawerTreeItem>& GetTreeItems() const noexcept {
+        return m_visibleItems;
+    }
+
+    [[nodiscard]] size_t GetItemCount() const noexcept {
+        return m_visibleItems.size();
     }
 
     /**
@@ -594,6 +603,7 @@ private:
     std::vector<GitChangeItem> m_gitChanges;
     std::vector<GitCommitItem> m_gitCommits;
     std::vector<std::wstring> m_dirtyFilePaths;
+    std::map<std::wstring, size_t> m_errorFiles;
     std::atomic<bool> m_isGitLoading{false};
     std::atomic<bool> m_isGitRefreshing{false};
     std::atomic<bool> m_isCommitting{false};

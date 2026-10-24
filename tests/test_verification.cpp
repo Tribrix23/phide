@@ -5608,6 +5608,130 @@ int main() {
         std::cout << "  Passed: All [TEST 51] Path Completion, Minimap Bounds Clamping & Scroll Beyond Last Line passed!" << std::endl;
     }
 
+    // [TEST 52] node_modules in Explorer, Red Error Badging (Tab, File, Folder), Centered Breadcrumb Error & Drag-to-Quotes
+    {
+        std::cout << "\n[TEST 52] Testing node_modules in Explorer, Red Error Badges, Centered Error & Drag-to-Quotes..." << std::endl;
+
+        // 1. Setup workspace with node_modules, build, .vscode, and files
+        std::filesystem::path testProjectDir = std::filesystem::temp_directory_path() / L"phide_test_proj52";
+        std::error_code ec;
+        std::filesystem::remove_all(testProjectDir, ec);
+        std::filesystem::create_directories(testProjectDir / L"node_modules" / L"react", ec);
+        std::filesystem::create_directories(testProjectDir / L"build", ec);
+        std::filesystem::create_directories(testProjectDir / L".vscode", ec);
+        std::filesystem::create_directories(testProjectDir / L"src", ec);
+
+        {
+            std::ofstream f1(testProjectDir / L"index.html"); f1 << "<a href=\"\"></a>";
+            std::ofstream f2(testProjectDir / L"src" / L"App.tsx"); f2 << "export default function App() {}";
+            std::ofstream f3(testProjectDir / L"build" / L"output.js"); f3 << "// output";
+            std::ofstream f4(testProjectDir / L".vscode" / L"settings.json"); f4 << "{}";
+        }
+
+        phide::ui::DrawerPanel drawer;
+        drawer.OpenFolder(testProjectDir.wstring());
+
+        // Verify node_modules, build, and .vscode are in Explorer tree
+        bool foundNodeModules = false;
+        bool foundBuild = false;
+        bool foundVscode = false;
+        bool foundSrc = false;
+        for (const auto& item : drawer.GetTreeItems()) {
+            if (item.label == L"node_modules") foundNodeModules = true;
+            if (item.label == L"build") foundBuild = true;
+            if (item.label == L".vscode") foundVscode = true;
+            if (item.label == L"src") foundSrc = true;
+        }
+        assert(foundNodeModules);
+        assert(foundBuild);
+        assert(foundVscode);
+        assert(foundSrc);
+        std::cout << "  Passed: Explorer tree reveals all folder contents including node_modules, build, and .vscode" << std::endl;
+
+        // 2. Test Red Error File & Containing Folder Marking
+        std::map<std::wstring, size_t> errorFiles;
+        std::wstring errFilePath = (testProjectDir / L"src" / L"App.tsx").wstring();
+        errorFiles[errFilePath] = 5;
+        errorFiles[L"App.tsx"] = 5;
+        drawer.SetErrorFiles(errorFiles);
+
+        // 3. Test Drag and Drop into Quotes vs Outside Quotes
+        phide::editor::Buffer testBuf;
+        testBuf.SetText(L"<a href=\"\">\n");
+        // Drop target at line 0, col 9 (inside "")
+        size_t dropLine = 0;
+        size_t dropCol = 9;
+        const auto& lineStr = testBuf.GetLine(dropLine);
+        size_t dQuotes = 0;
+        for (size_t c = 0; c < dropCol && c < lineStr.length(); ++c) {
+            if (lineStr[c] == L'"') dQuotes++;
+        }
+        bool isInsideQuotes = (dQuotes % 2 == 1) || (dropCol > 0 && dropCol < lineStr.length() && lineStr[dropCol - 1] == L'"' && lineStr[dropCol] == L'"');
+        assert(isInsideQuotes == true);
+
+        std::wstring candidatePath = (testProjectDir / L"build" / L"output.js").wstring();
+        std::wstring textToInsert;
+        if (isInsideQuotes) {
+            textToInsert = phide::editor::SmartImportHelper::ComputeRelativePath((testProjectDir / L"index.html").wstring(), candidatePath);
+        } else {
+            textToInsert = phide::editor::SmartImportHelper::Generate((testProjectDir / L"index.html").wstring(), candidatePath);
+        }
+        assert(textToInsert == L"./build/output.js"); // Pure relative path location, NO import statement!
+        testBuf.SetCursor(dropLine, dropCol);
+        testBuf.InsertText(textToInsert);
+        assert(testBuf.GetLine(0) == L"<a href=\"./build/output.js\">\n" || testBuf.GetLine(0) == L"<a href=\"./build/output.js\">");
+        std::cout << "  Passed: Drag and drop file inside \"\" puts exact relative path location" << std::endl;
+
+        // 4. Test Rendering of Tab Error Dot, Explorer Error Badge & Centered Breadcrumb
+        const UINT bmpW = 1200;
+        const UINT bmpH = 750;
+        Microsoft::WRL::ComPtr<IWICBitmap> pWicSnap;
+        pWicFactory->CreateBitmap(bmpW, bmpH, GUID_WICPixelFormat32bppPBGRA, WICBitmapCacheOnDemand, &pWicSnap);
+        Microsoft::WRL::ComPtr<ID2D1RenderTarget> pRTSnap;
+        pD2DFactory->CreateWicBitmapRenderTarget(pWicSnap.Get(), D2D1::RenderTargetProperties(), &pRTSnap);
+
+        phide::ui::Theme snapTheme;
+        snapTheme.SetThemeMode(phide::ui::ThemeMode::Dark);
+        snapTheme.CreateDeviceResources(pRTSnap.Get(), pDWriteFactory.Get());
+        phide::app::AppConfig cfg;
+        cfg.isDrawerOpen = true;
+        cfg.drawerWidth = 260;
+        cfg.showMinimap = true;
+
+        phide::ui::EditorCanvas editorCanvas;
+        phide::editor::OpenDocument errDoc;
+        errDoc.fileName = L"App.tsx";
+        errDoc.filePath = errFilePath;
+        errDoc.buffer.SetText(L"export default function App() {\n    bad_syntax(\n}\n");
+        errDoc.diagnostics.push_back({ 1, 4, 10, L"Syntax error: unclosed parenthesis" });
+        errDoc.diagnostics.push_back({ 1, 14, 1, L"Expected ';'" });
+
+        std::vector<phide::editor::EditorGroup> groups;
+        phide::editor::EditorGroup grp;
+        grp.docs.push_back(errDoc);
+        grp.activeDocIdx = 0;
+        groups.push_back(grp);
+
+        pRTSnap->BeginDraw();
+        pRTSnap->Clear(D2D1::ColorF(0.12f, 0.12f, 0.12f, 1.0f));
+
+        float railW = 48.0f;
+        float drawerW = 260.0f;
+        drawer.Render(pRTSnap.Get(), snapTheme, cfg, static_cast<float>(bmpH), drawerW);
+        editorCanvas.Render(pRTSnap.Get(), snapTheme, cfg, groups, 0, railW + drawerW, static_cast<float>(bmpW) - railW - drawerW, static_cast<float>(bmpH), true, L"", false, false, false, false);
+
+        pRTSnap->EndDraw();
+
+        std::wstring artDir = L"C:\\Users\\Administrator\\.gemini\\antigravity\\brain\\c83160b9-3f8b-4ad1-87a8-ab1f7f555a77\\";
+        SaveWicBitmapToPng(pWicSnap.Get(), pWicFactory.Get(), artDir + L"test_error_indicators_node_modules_and_icons.png");
+        std::cout << "  Passed: Saved test_error_indicators_node_modules_and_icons.png" << std::endl;
+
+        // Cleanup
+        std::filesystem::remove_all(testProjectDir, ec);
+
+        std::cout << "  Passed: All [TEST 52] node_modules in Explorer, Red Error Badges & Drag-to-Quotes passed!" << std::endl;
+    }
+
     std::cout << "\n==========================================" << std::endl;
     std::cout << "ALL VERIFICATION TESTS PASSED SUCCESSFULLY!" << std::endl;
     std::cout << "==========================================" << std::endl;

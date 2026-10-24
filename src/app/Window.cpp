@@ -558,6 +558,7 @@ void Window::ToggleSidebar() {
     m_targetDrawerProgress = m_config.isDrawerOpen ? 1.0f : 0.0f;
     m_isDrawerAnimating = true;
     SetTimer(m_hwnd, m_animTimerId, 16, nullptr);
+    UpdateDrawerErrorFiles();
     SaveSessionState();
 }
 
@@ -600,6 +601,7 @@ void Window::DoNewTextFile() {
 
     group.docs.push_back(std::move(doc));
     group.activeDocIdx = static_cast<int>(group.docs.size() - 1);
+    UpdateDrawerErrorFiles();
     SaveSessionState();
     InvalidateRect(m_hwnd, nullptr, FALSE);
 }
@@ -672,7 +674,8 @@ void Window::OpenFileDocument(const std::wstring& path, bool isPreview) {
                 if (!isPreview) {
                     m_editorGroups[g].docs[i].isPreview = false;
                 }
-                SaveSessionState();
+                UpdateDrawerErrorFiles();
+    SaveSessionState();
                 InvalidateRect(m_hwnd, nullptr, FALSE);
                 return;
             }
@@ -725,7 +728,8 @@ void Window::OpenFileDocument(const std::wstring& path, bool isPreview) {
                 group.docs.push_back(std::move(newDoc));
                 group.activeDocIdx = static_cast<int>(group.docs.size() - 1);
             }
-            SaveSessionState();
+            UpdateDrawerErrorFiles();
+    SaveSessionState();
             InvalidateRect(m_hwnd, nullptr, FALSE);
             return;
         }
@@ -832,6 +836,7 @@ void Window::OpenFileDocument(const std::wstring& path, bool isPreview) {
     m_recentPaths.insert(m_recentPaths.begin(), resolvedPath);
     if (m_recentPaths.size() > 6) m_recentPaths.resize(6);
 
+    UpdateDrawerErrorFiles();
     SaveSessionState();
     InvalidateRect(m_hwnd, nullptr, FALSE);
 }
@@ -915,6 +920,7 @@ void Window::OpenDiffDocument(const std::wstring& relPath, bool isPreview) {
         group.activeDocIdx = static_cast<int>(group.docs.size() - 1);
     }
 
+    UpdateDrawerErrorFiles();
     SaveSessionState();
     InvalidateRect(m_hwnd, nullptr, FALSE);
 }
@@ -1049,7 +1055,8 @@ void Window::OpenCommitDiffDocument(const std::wstring& commitHash, const std::w
         group.docs.push_back(std::move(newDoc));
         group.activeDocIdx = static_cast<int>(group.docs.size() - 1);
 
-        SaveSessionState();
+        UpdateDrawerErrorFiles();
+    SaveSessionState();
         InvalidateRect(m_hwnd, nullptr, FALSE);
     } catch (...) {
         // Safe catch prevents any possible crash
@@ -1289,6 +1296,7 @@ void Window::CloseDocument(int groupIdx, int docIdx) {
     }
 
     UpdateDrawerDirtyFiles();
+    UpdateDrawerErrorFiles();
     SaveSessionState();
     InvalidateRect(m_hwnd, nullptr, FALSE);
 }
@@ -1334,6 +1342,7 @@ void Window::DoOpenFolderFromPath(const std::wstring& path) {
     if (!m_config.isDrawerOpen) {
         ToggleSidebar();
     }
+    UpdateDrawerErrorFiles();
     SaveSessionState();
     InvalidateRect(m_hwnd, nullptr, FALSE);
 }
@@ -1539,6 +1548,7 @@ void Window::DoCloseEditor() {
 void Window::DoCloseFolder() {
     m_drawer.CloseFolder();
     m_drawer.RefreshGitState(true);
+    UpdateDrawerErrorFiles();
     SaveSessionState();
     InvalidateRect(m_hwnd, nullptr, FALSE);
 }
@@ -1575,6 +1585,22 @@ void Window::UpdateDrawerDirtyFiles() {
         }
     }
     m_drawer.SetDirtyFiles(dirtyPaths);
+}
+
+void Window::UpdateDrawerErrorFiles() {
+    std::map<std::wstring, size_t> errorFiles;
+    for (const auto& group : m_editorGroups) {
+        for (const auto& doc : group.docs) {
+            if (!doc.diagnostics.empty() && !doc.isSpecialView) {
+                std::wstring key = doc.filePath.empty() ? doc.fileName : doc.filePath;
+                errorFiles[key] = doc.diagnostics.size();
+                if (!doc.fileName.empty()) {
+                    errorFiles[doc.fileName] = doc.diagnostics.size();
+                }
+            }
+        }
+    }
+    m_drawer.SetErrorFiles(errorFiles);
 }
 
 void Window::CommitAutocompleteSelection() {
@@ -1733,6 +1759,7 @@ void Window::MarkDocumentModified(editor::OpenDocument* pDoc) {
     if (!pDoc || pDoc->isSpecialView) return;
     pDoc->isPreview = false;
     pDoc->diagnostics = editor::SyntaxValidator::Validate(pDoc->filePath.empty() ? pDoc->fileName : pDoc->filePath, pDoc->buffer);
+    UpdateDrawerErrorFiles();
     if (m_autoSave && !pDoc->filePath.empty()) {
         pDoc->buffer.SaveToFile(pDoc->filePath);
         pDoc->isDirty = false;
@@ -1968,7 +1995,8 @@ void Window::DoNextTab() {
         m_editor.DismissAutocomplete();
         m_editor.ClearGhostText();
         UpdateExecutionButtonStates();
-        SaveSessionState();
+        UpdateDrawerErrorFiles();
+    SaveSessionState();
         InvalidateRect(m_hwnd, nullptr, FALSE);
     }
 }
@@ -1981,7 +2009,8 @@ void Window::DoPrevTab() {
         m_editor.DismissAutocomplete();
         m_editor.ClearGhostText();
         UpdateExecutionButtonStates();
-        SaveSessionState();
+        UpdateDrawerErrorFiles();
+    SaveSessionState();
         InvalidateRect(m_hwnd, nullptr, FALSE);
     }
 }
@@ -1996,6 +2025,7 @@ void Window::DoShowExplorer() {
     if (!m_config.isDrawerOpen) {
         ToggleSidebar();
     }
+    UpdateDrawerErrorFiles();
     SaveSessionState();
     InvalidateRect(m_hwnd, nullptr, FALSE);
 }
@@ -2033,6 +2063,7 @@ void Window::DoShowSearch() {
     RefreshOpenDocPathsForSearch();
     m_editor.GetKeyboardShortcutsView().SetSearchFocused(false);
     m_drawer.SetSearchFocus(1);
+    UpdateDrawerErrorFiles();
     SaveSessionState();
     InvalidateRect(m_hwnd, nullptr, FALSE);
 }
@@ -2046,6 +2077,7 @@ void Window::DoShowReplace() {
     RefreshOpenDocPathsForSearch();
     m_editor.GetKeyboardShortcutsView().SetSearchFocused(false);
     m_drawer.SetSearchFocus(2);
+    UpdateDrawerErrorFiles();
     SaveSessionState();
     InvalidateRect(m_hwnd, nullptr, FALSE);
 }
@@ -2092,6 +2124,7 @@ void Window::DoShowSourceControl() {
         ToggleSidebar();
     }
     m_drawer.OpenSourceControl();
+    UpdateDrawerErrorFiles();
     SaveSessionState();
     InvalidateRect(m_hwnd, nullptr, FALSE);
 }
@@ -2460,7 +2493,8 @@ void Window::SaveFileToPath(const std::wstring& path) {
             SyncDocumentBuffers(pDoc);
             UpdateDrawerDirtyFiles();
             TriggerDebouncedGitRefresh(1000);
-            SaveSessionState();
+            UpdateDrawerErrorFiles();
+    SaveSessionState();
             InvalidateRect(m_hwnd, nullptr, FALSE);
         }
     }
@@ -3422,22 +3456,17 @@ void Window::HandleMouseMove(POINT clientPt) {
         }
     }
 
-    // Check Minimap viewport slider dragging (Image 5)
+    // Check Minimap viewport slider dragging (Image 5) - direct 1:1 proportional tracking
     if (pActiveDoc && pActiveDoc->isDraggingMinimap) {
-        float deltaY = static_cast<float>(clientPt.y) - pActiveDoc->minimapDragStartY;
         float trackH = pActiveDoc->minimapTrack.bottom - pActiveDoc->minimapTrack.top;
         float sliderH = pActiveDoc->minimapSlider.bottom - pActiveDoc->minimapSlider.top;
         float scrollRange = trackH - sliderH;
         if (scrollRange > 0.0f) {
             size_t totalLines = pActiveDoc->buffer.GetLineCount();
             size_t maxS = (totalLines > 3) ? (totalLines - 3) : 0;
-            float linesPerPixel = static_cast<float>(maxS) / scrollRange;
-            int newScroll = static_cast<int>(pActiveDoc->minimapDragStartLine) + static_cast<int>(deltaY * linesPerPixel);
-            if (newScroll < 0) newScroll = 0;
-            if (newScroll > static_cast<int>(maxS)) {
-                newScroll = static_cast<int>(maxS);
-            }
-            pActiveDoc->scrollLine = static_cast<size_t>(newScroll);
+            float desiredSliderTop = (static_cast<float>(clientPt.y) - pActiveDoc->minimapTrack.top) - pActiveDoc->minimapGrabOffsetY;
+            float ratio = (std::max)(0.0f, (std::min)(1.0f, desiredSliderTop / scrollRange));
+            pActiveDoc->scrollLine = static_cast<size_t>(ratio * maxS);
             InvalidateRect(m_hwnd, nullptr, FALSE);
             return;
         }
@@ -3649,7 +3678,8 @@ void Window::HandleLButtonDown(POINT clientPt) {
             BOOL dm = m_theme.IsDarkMode() ? TRUE : FALSE;
             DwmSetWindowAttribute(m_hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &dm, sizeof(dm));
             SetWindowPos(m_hwnd, nullptr, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED);
-            SaveSessionState();
+            UpdateDrawerErrorFiles();
+    SaveSessionState();
         }
         InvalidateRect(m_hwnd, nullptr, FALSE);
         return;
@@ -4522,25 +4552,33 @@ void Window::HandleLButtonDown(POINT clientPt) {
                         return;
                     }
 
-                    // Minimap click & drag (Image 5)
+                    // Minimap click & drag (Image 5) - flawless center jump & drag
                     bool hitMinimapSlider = false;
                     if (m_config.showMinimap && m_editor.HitTestMinimap(clientPt, doc, hitMinimapSlider)) {
                         doc.isDraggingMinimap = true;
-                        doc.minimapDragStartY = static_cast<float>(clientPt.y);
-                        doc.minimapDragStartLine = doc.scrollLine;
                         SetCapture(m_hwnd);
 
-                        if (!hitMinimapSlider) {
-                            // Direct click on minimap track: jump scroll position to center clicked line
-                            float trackH = doc.minimapTrack.bottom - doc.minimapTrack.top;
-                            if (trackH > 0.0f) {
-                                float relY = static_cast<float>(clientPt.y) - doc.minimapTrack.top;
-                                float ratio = (std::max)(0.0f, (std::min)(1.0f, relY / trackH));
-                                size_t totalLines = doc.buffer.GetLineCount();
-                                size_t maxS = (totalLines > 3) ? (totalLines - 3) : 0;
+                        float trackH = doc.minimapTrack.bottom - doc.minimapTrack.top;
+                        float sliderH = doc.minimapSlider.bottom - doc.minimapSlider.top;
+                        float scrollRange = trackH - sliderH;
+                        size_t totalLines = doc.buffer.GetLineCount();
+                        size_t maxS = (totalLines > 3) ? (totalLines - 3) : 0;
+
+                        if (hitMinimapSlider) {
+                            // Clicked on slider: preserve exact grab offset
+                            doc.minimapGrabOffsetY = static_cast<float>(clientPt.y) - doc.minimapSlider.top;
+                        } else {
+                            // Clicked on track: center slider around click point
+                            doc.minimapGrabOffsetY = sliderH * 0.5f;
+                            if (scrollRange > 0.0f) {
+                                float targetSliderTop = (static_cast<float>(clientPt.y) - doc.minimapTrack.top) - doc.minimapGrabOffsetY;
+                                float ratio = (std::max)(0.0f, (std::min)(1.0f, targetSliderTop / scrollRange));
                                 doc.scrollLine = static_cast<size_t>(ratio * maxS);
                             }
                         }
+                        doc.minimapDragStartY = static_cast<float>(clientPt.y);
+                        doc.minimapDragStartLine = doc.scrollLine;
+
                         InvalidateRect(m_hwnd, nullptr, FALSE);
                         return;
                     }
@@ -4830,7 +4868,8 @@ void Window::HandleLButtonDown(POINT clientPt) {
                     if (pItem) {
                         if (pItem->isFolder) {
                             m_drawer.ToggleFolder(clickedTree);
-                            SaveSessionState();
+                            UpdateDrawerErrorFiles();
+    SaveSessionState();
                         } else {
                             // File item clicked: initiate potential drag candidate
                             m_dragCandidatePath = pItem->fullPath;
@@ -4871,7 +4910,8 @@ void Window::HandleLButtonDown(POINT clientPt) {
                 m_drawer.OpenSourceControl();
             }
         }
-        SaveSessionState();
+        UpdateDrawerErrorFiles();
+    SaveSessionState();
         InvalidateRect(m_hwnd, nullptr, FALSE);
         return;
     }
@@ -4896,15 +4936,43 @@ void Window::HandleLButtonUp(POINT clientPt) {
                 auto* pDoc = GetActiveDoc();
                 if (pDoc && !pDoc->isSpecialView && !pDoc->isImageView && !pDoc->isDiffView) {
                     if (pDoc->filePath != m_dragCandidatePath) {
-                        std::wstring importText = phide::editor::SmartImportHelper::Generate(pDoc->filePath, m_dragCandidatePath);
-                        if (!importText.empty()) {
+                        size_t line = pDoc->buffer.GetLineCount() > 0 ? (std::min)(m_dragDropTargetLine, pDoc->buffer.GetLineCount() - 1) : 0;
+                        size_t col = (line < pDoc->buffer.GetLineCount()) ? (std::min)(m_dragDropTargetCol, pDoc->buffer.GetLine(line).length()) : 0;
+
+                        // Check if drop target is inside quotes (Image 4 & User request: "when i drag a file on "" it put the directory of that")
+                        bool isInsideQuotes = false;
+                        if (line < pDoc->buffer.GetLineCount()) {
+                            const auto& lineStr = pDoc->buffer.GetLine(line);
+                            size_t dQuotes = 0, sQuotes = 0;
+                            for (size_t c = 0; c < col && c < lineStr.length(); ++c) {
+                                if (lineStr[c] == L'"') dQuotes++;
+                                else if (lineStr[c] == L'\'') sQuotes++;
+                            }
+                            if ((dQuotes % 2 == 1) || (sQuotes % 2 == 1)) {
+                                isInsideQuotes = true;
+                            } else if (col > 0 && col < lineStr.length()) {
+                                if ((lineStr[col - 1] == L'"' && lineStr[col] == L'"') ||
+                                    (lineStr[col - 1] == L'\'' && lineStr[col] == L'\'')) {
+                                    isInsideQuotes = true;
+                                }
+                            }
+                        }
+
+                        std::wstring textToInsert;
+                        if (isInsideQuotes) {
+                            // User dropped into quotes: insert just the relative file path location!
+                            textToInsert = phide::editor::SmartImportHelper::ComputeRelativePath(pDoc->filePath, m_dragCandidatePath);
+                        } else {
+                            // User dropped outside quotes: generate smart language-aware import statement!
+                            textToInsert = phide::editor::SmartImportHelper::Generate(pDoc->filePath, m_dragCandidatePath);
+                        }
+
+                        if (!textToInsert.empty()) {
                             if (pDoc->buffer.GetLineCount() == 0) {
-                                pDoc->buffer.InsertText(importText);
+                                pDoc->buffer.InsertText(textToInsert);
                             } else {
-                                size_t line = (std::min)(m_dragDropTargetLine, pDoc->buffer.GetLineCount() - 1);
-                                size_t col = (std::min)(m_dragDropTargetCol, pDoc->buffer.GetLine(line).length());
                                 pDoc->buffer.SetCursor(line, col);
-                                pDoc->buffer.InsertText(importText);
+                                pDoc->buffer.InsertText(textToInsert);
                             }
                             MarkDocumentModified(pDoc);
                             m_editor.DismissAutocomplete();
@@ -4946,7 +5014,8 @@ void Window::HandleLButtonUp(POINT clientPt) {
     if (m_isDraggingGitSplitter) {
         m_isDraggingGitSplitter = false;
         m_config.gitSplitY = m_drawer.GetGitSplitY();
-        SaveSessionState();
+        UpdateDrawerErrorFiles();
+    SaveSessionState();
         ReleaseCapture();
         InvalidateRect(m_hwnd, nullptr, FALSE);
     }
@@ -6509,7 +6578,8 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
         }
 
         case WM_CLOSE: {
-            SaveSessionState();
+            UpdateDrawerErrorFiles();
+    SaveSessionState();
             DestroyWindow(m_hwnd);
             return 0;
         }
@@ -6517,7 +6587,8 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
         case WM_DESTROY: {
             StopWorkspaceWatcher();
             m_explorerUndo.CleanupTrash();
-            SaveSessionState();
+            UpdateDrawerErrorFiles();
+    SaveSessionState();
             PostQuitMessage(0);
             return 0;
         }
