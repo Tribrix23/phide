@@ -16,6 +16,7 @@
 #include <filesystem>
 
 #include "phide/app/AppConfig.hpp"
+#include "phide/app/Window.hpp"
 #include "phide/ui/Theme.hpp"
 #include "phide/ui/TitleHeader.hpp"
 #include "phide/ui/PopupMenu.hpp"
@@ -7367,6 +7368,167 @@ int main() {
         std::wcout << L"  Passed: Saved Runtimes, Staged Changes & Flat Notice modal visual verification to: " << testArtifactPath << std::endl;
 
         std::cout << "  Passed: All [TEST 62] Runtimes Renaming, Staged vs Unstaged Collapsible Sections, Unstage (-), and Flat Notice Modal tests passed!" << std::endl;
+    }
+
+    // =========================================================================
+    // [TEST 63] Machine Learning Decision Tree Framework Detector & Project Runner,
+    // Fast Timestamp Invalidation Cache, Upward Root Resolver & Restored Clean Modal
+    // =========================================================================
+    {
+        std::cout << "\n[TEST 63] Running Fast Decision Tree Framework Classifier, Root Traversal & Restored Modal Tests..." << std::endl;
+
+        phide::app::Window win;
+
+        // 1. Test IsFileInDirectory helper
+        assert(phide::app::Window::IsFileInDirectory(L"C:\\Users\\test\\my-proj\\src\\main.ts", L"C:\\Users\\test\\my-proj") == true);
+        assert(phide::app::Window::IsFileInDirectory(L"C:/Users/test/my-proj/src/main.ts", L"C:\\Users\\test\\my-proj") == true);
+        assert(phide::app::Window::IsFileInDirectory(L"C:\\other\\script.py", L"C:\\Users\\test\\my-proj") == false);
+        std::cout << "  Passed: IsFileInDirectory correctly identifies files in project directory hierarchy." << std::endl;
+
+        // 2. Setup mock projects on disk
+        std::filesystem::path baseTestDir = std::filesystem::temp_directory_path() / "phide_decision_tree_test";
+        std::filesystem::remove_all(baseTestDir);
+        std::filesystem::create_directories(baseTestDir);
+
+        // 2a. Electron-Vite project (matching cleave-gui Image 1)
+        std::filesystem::path electronDir = baseTestDir / "cleave-gui";
+        std::filesystem::create_directories(electronDir / "src" / "main");
+        std::filesystem::path electronPkg = electronDir / "package.json";
+        {
+            std::ofstream f(electronPkg);
+            f << "{\n  \"name\": \"cleave-gui\",\n  \"scripts\": { \"dev\": \"electron-vite dev\", \"start\": \"electron-vite preview\" },\n"
+              << "  \"devDependencies\": { \"electron\": \"^39.0.0\", \"electron-vite\": \"^5.0.0\", \"vite\": \"^7.0.0\" }\n}\n";
+        }
+        std::filesystem::path electronConfig = electronDir / "electron.vite.config.ts";
+        {
+            std::ofstream f(electronConfig);
+            f << "import { defineConfig } from 'electron-vite';\nexport default defineConfig({});\n";
+        }
+        std::filesystem::path mainTs = electronDir / "src" / "main" / "index.ts";
+        {
+            std::ofstream f(mainTs);
+            f << "import { app } from 'electron';\n";
+        }
+
+        // Test FindProjectRootForFile upward traversal
+        std::wstring foundRoot = win.FindProjectRootForFile(mainTs.wstring());
+        assert(_wcsicmp(foundRoot.c_str(), electronDir.wstring().c_str()) == 0);
+        std::cout << "  Passed: FindProjectRootForFile walked upward from src/main/index.ts to cleave-gui root." << std::endl;
+
+        // Test Decision Tree classification for Electron-Vite
+        auto decElectron = win.DetectFramework(electronDir.wstring(), mainTs.wstring());
+        assert(decElectron.framework == phide::app::Window::ProjectFramework::Electron);
+        assert(decElectron.command == L"npm run dev");
+        assert(decElectron.title == L"Electron Dev Server");
+        std::cout << "  Passed: Decision Tree classified Electron-Vite project -> npm run dev." << std::endl;
+
+        // 2b. Test Pure Electron project ("if its electron it npm run start")
+        std::filesystem::path pureElectronDir = baseTestDir / "pure-electron";
+        std::filesystem::create_directories(pureElectronDir);
+        std::filesystem::path purePkg = pureElectronDir / "package.json";
+        {
+            std::ofstream f(purePkg);
+            f << "{\n  \"name\": \"my-app\",\n  \"scripts\": { \"start\": \"electron .\" },\n"
+              << "  \"devDependencies\": { \"electron\": \"^30.0.0\" }\n}\n";
+        }
+        auto decPureElectron = win.DetectFramework(pureElectronDir.wstring(), (pureElectronDir / "main.js").wstring());
+        assert(decPureElectron.framework == phide::app::Window::ProjectFramework::Electron);
+        assert(decPureElectron.command == L"npm run start");
+        std::cout << "  Passed: Decision Tree classified pure Electron project -> npm run start." << std::endl;
+
+        // 2c. Test Vite project ("running the vite like npm run dev")
+        std::filesystem::path viteDir = baseTestDir / "my-vite";
+        std::filesystem::create_directories(viteDir);
+        std::filesystem::path vitePkg = viteDir / "package.json";
+        {
+            std::ofstream f(vitePkg);
+            f << "{\n  \"name\": \"vite-app\",\n  \"scripts\": { \"dev\": \"vite\" },\n"
+              << "  \"devDependencies\": { \"vite\": \"^6.0.0\" }\n}\n";
+        }
+        std::filesystem::path viteCfg = viteDir / "vite.config.ts";
+        {
+            std::ofstream f(viteCfg);
+            f << "export default {};\n";
+        }
+        auto decVite = win.DetectFramework(viteDir.wstring(), (viteDir / "App.tsx").wstring());
+        assert(decVite.framework == phide::app::Window::ProjectFramework::Vite);
+        assert(decVite.command == L"npm run dev");
+        assert(decVite.port == 5173);
+        std::cout << "  Passed: Decision Tree classified Vite project -> npm run dev on port 5173." << std::endl;
+
+        // 2d. Test Decision Tree Fast Timestamp Cache and Invalidation
+        auto decViteCached = win.DetectFramework(viteDir.wstring(), (viteDir / "App.tsx").wstring());
+        assert(decViteCached.framework == phide::app::Window::ProjectFramework::Vite);
+        assert(decViteCached.command == L"npm run dev");
+
+        // Mutate project: convert to Next.js
+        {
+            std::ofstream f(vitePkg);
+            f << "{\n  \"name\": \"migrated-next\",\n  \"scripts\": { \"dev\": \"next dev\" },\n"
+              << "  \"dependencies\": { \"next\": \"^15.0.0\" }\n}\n";
+        }
+        std::filesystem::path nextCfg = viteDir / "next.config.js";
+        {
+            std::ofstream f(nextCfg);
+            f << "module.exports = {};\n";
+        }
+        std::filesystem::remove(viteCfg);
+
+        auto decNext = win.DetectFramework(viteDir.wstring(), (viteDir / "page.tsx").wstring());
+        assert(decNext.framework == phide::app::Window::ProjectFramework::NextJs);
+        assert(decNext.command == L"npm run dev");
+        assert(decNext.port == 3000);
+        std::cout << "  Passed: Decision Tree detected project mutation to Next.js via timestamp invalidation." << std::endl;
+
+        // 2e. Standalone Python execution test ("on python file one can run also you can run another file")
+        std::wstring pyScript = L"C:\\scripts\\calculate.py";
+        auto decPy = win.DetectFramework(L"", pyScript);
+        assert(decPy.framework == phide::app::Window::ProjectFramework::PythonScript);
+        assert(decPy.command.find(L"python") != std::wstring::npos);
+        std::cout << "  Passed: Python script classified for independent single-file execution." << std::endl;
+
+        // 3. Test Restored Modal Design (Image 2) Visual Rendering
+        const UINT snapW = 1280;
+        const UINT snapH = 720;
+        Microsoft::WRL::ComPtr<IWICBitmap> pWicSnap;
+        assert(SUCCEEDED(pWicFactory->CreateBitmap(snapW, snapH, GUID_WICPixelFormat32bppPBGRA, WICBitmapCacheOnDemand, &pWicSnap)));
+        Microsoft::WRL::ComPtr<ID2D1RenderTarget> pRTSnap;
+        D2D1_RENDER_TARGET_PROPERTIES rtProps = D2D1::RenderTargetProperties(
+            D2D1_RENDER_TARGET_TYPE_DEFAULT,
+            D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED),
+            96.0f, 96.0f
+        );
+        assert(SUCCEEDED(pD2DFactory->CreateWicBitmapRenderTarget(pWicSnap.Get(), &rtProps, &pRTSnap)));
+
+        phide::ui::Theme theme;
+        theme.CreateDeviceResources(pRTSnap.Get(), pDWriteFactory.Get());
+        phide::app::AppConfig testCfg;
+
+        phide::ui::ConfirmDiscardModal modal;
+        modal.Open(L".prettierrc.yaml", L".prettierrc.yaml", L"M", 1);
+        assert(modal.IsOpen());
+
+        pRTSnap->BeginDraw();
+        pRTSnap->Clear(D2D1::ColorF(0.08f, 0.09f, 0.11f, 1.0f));
+
+        modal.Render(pRTSnap.Get(), theme, testCfg, static_cast<float>(snapW), static_cast<float>(snapH));
+
+        // Test HitTestButtons on Discard File button
+        POINT ptDiscardBtn = { static_cast<LONG>(snapW / 2 + 150), static_cast<LONG>(snapH / 2 + 45) };
+        assert(modal.HitTestButtons(ptDiscardBtn));
+        std::cout << "  Passed: Restored clean modal rendered with compact card, amber warning badge and pointer cursor." << std::endl;
+
+        HRESULT hrEnd = pRTSnap->EndDraw();
+        assert(SUCCEEDED(hrEnd));
+
+        std::wstring testArtifactPath = L"C:\\Users\\Administrator\\.gemini\\antigravity\\brain\\c83160b9-3f8b-4ad1-87a8-ab1f7f555a77\\test_restored_clean_modal_and_decision_tree.png";
+        SaveWicBitmapToPng(pWicSnap.Get(), pWicFactory.Get(), testArtifactPath);
+        assert(std::filesystem::exists(testArtifactPath));
+        std::wcout << L"  Passed: Saved restored clean modal visual verification to: " << testArtifactPath << std::endl;
+
+        // Cleanup temp test directory
+        std::filesystem::remove_all(baseTestDir);
+        std::cout << "  Passed: All [TEST 63] Machine Learning Decision Tree, Root Traversal, Timestamp Cache & Restored Modal tests passed!" << std::endl;
     }
 
     std::cout << "\n==========================================" << std::endl;

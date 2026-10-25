@@ -2245,13 +2245,11 @@ void Window::DoCreateTerminal() {
 }
 
 void Window::UpdateExecutionButtonStates() {
-    auto* srv = GetActiveDocLiveServer();
-    m_header.SetLiveServerRunning(srv != nullptr);
-
     auto* pDoc = GetActiveDoc();
     if (!pDoc || pDoc->isSpecialView) {
         m_header.SetRunEnabled(false);
         m_header.SetDebugEnabled(false);
+        m_header.SetLiveServerRunning(false);
         return;
     }
 
@@ -2259,17 +2257,51 @@ void Window::UpdateExecutionButtonStates() {
     std::wstring ext = p.extension().wstring();
     for (auto& c : ext) c = towlower(c);
 
-    // Executable file types for Run: .html, .htm, .js, .mjs, .cjs, .ts, .jsx, .tsx, .py
-    // CSS and unsupported files are disabled per user specification
-    bool isHtml = (ext == L".html" || ext == L".htm");
-    bool isJsTs = (ext == L".js" || ext == L".mjs" || ext == L".cjs" || ext == L".ts" || ext == L".jsx" || ext == L".tsx");
-    bool isPython = (ext == L".py");
+    // 1. PHP Check: User explicitly instructed: "and for now leave the php run empty for now"
+    if (ext == L".php" || ext == L".phtml" || ext == L".php8") {
+        m_header.SetRunEnabled(false);
+        m_header.SetDebugEnabled(false);
+        m_header.SetLiveServerRunning(false);
+        return;
+    }
 
-    bool canRun = isHtml || isJsTs || isPython;
-    bool canDebug = isJsTs || isPython || isHtml;
+    // 2. Python Script: Independent execution
+    // "unless i go to a python file, html file, and other file . on python file one can run also oyou can run another file its not single run at a time get it?"
+    if (ext == L".py") {
+        m_header.SetRunEnabled(true);
+        m_header.SetDebugEnabled(true);
+        m_header.SetLiveServerRunning(false); // ALWAYS Green Play (Run)!
+        return;
+    }
+
+    // 3. Project Dev Server Running:
+    // "if that next js is running then it already running even when i go to another file on that project then the run button is still stop as its a dev run get it"
+    if (m_isProjectRunning && !m_runningProjectRoot.empty()) {
+        if (IsFileInDirectory(pDoc->filePath, m_runningProjectRoot)) {
+            m_header.SetRunEnabled(true);
+            m_header.SetDebugEnabled(false);
+            m_header.SetLiveServerRunning(true); // Red Square (STOP)!
+            return;
+        }
+    }
+
+    // 4. HTML Standalone File
+    if (ext == L".html" || ext == L".htm") {
+        auto* srv = FindLiveServer(pDoc->filePath);
+        m_header.SetRunEnabled(true);
+        m_header.SetDebugEnabled(false);
+        m_header.SetLiveServerRunning(srv != nullptr);
+        return;
+    }
+
+    // 5. Executable file types for Run: .js, .mjs, .cjs, .ts, .jsx, .tsx, etc.
+    bool isJsTs = (ext == L".js" || ext == L".mjs" || ext == L".cjs" || ext == L".ts" || ext == L".jsx" || ext == L".tsx" || ext == L".json" || ext == L".yaml" || ext == L".yml");
+    bool canRun = isJsTs;
+    bool canDebug = isJsTs;
 
     m_header.SetRunEnabled(canRun);
     m_header.SetDebugEnabled(canDebug);
+    m_header.SetLiveServerRunning(false);
 }
 
 Window::ActiveLiveServer* Window::FindLiveServer(const std::wstring& filePath) {
@@ -2285,7 +2317,12 @@ Window::ActiveLiveServer* Window::FindLiveServer(const std::wstring& filePath) {
 Window::ActiveLiveServer* Window::GetActiveDocLiveServer() {
     auto* pDoc = GetActiveDoc();
     if (!pDoc || pDoc->filePath.empty()) return nullptr;
-    return FindLiveServer(pDoc->filePath);
+    auto* s = FindLiveServer(pDoc->filePath);
+    if (s) return s;
+    if (m_isProjectRunning && !m_runningProjectRoot.empty() && IsFileInDirectory(pDoc->filePath, m_runningProjectRoot)) {
+        return FindLiveServer(m_runningProjectRoot);
+    }
+    return nullptr;
 }
 
 int Window::GetNextAvailableLiveServerPort() const {
@@ -2419,79 +2456,315 @@ void Window::DoRenameSymbol() {
     m_editor.ShowRefactorPopup(L"Rename Symbol (F2)");
 }
 
-Window::ProjectFramework Window::DetectFramework(const std::wstring& rootDir, const std::wstring& activeFilePath) const {
+bool Window::IsFileInDirectory(const std::wstring& filePath, const std::wstring& dirPath) {
+    if (filePath.empty() || dirPath.empty()) return false;
+    std::wstring fNorm = filePath;
+    std::wstring dNorm = dirPath;
+    for (auto& c : fNorm) { if (c == L'/') c = L'\\'; c = static_cast<wchar_t>(towlower(c)); }
+    for (auto& c : dNorm) { if (c == L'/') c = L'\\'; c = static_cast<wchar_t>(towlower(c)); }
+    while (!dNorm.empty() && dNorm.back() == L'\\') dNorm.pop_back();
+    if (fNorm.rfind(dNorm + L'\\', 0) == 0 || fNorm == dNorm) {
+        return true;
+    }
+    return false;
+}
+
+std::wstring Window::FindProjectRootForFile(const std::wstring& filePath) const {
+    std::wstring openFolder = m_drawer.HasOpenFolder() ? m_drawer.GetOpenFolderPath() : m_workspace.GetRootPath().wstring();
+    if (filePath.empty()) {
+        return openFolder;
+    }
+
+    std::filesystem::path cur = std::filesystem::path(filePath);
+    std::error_code ec;
+    if (!std::filesystem::is_directory(cur, ec)) {
+        cur = cur.parent_path();
+    }
+
+    std::filesystem::path stopPath;
+    if (!openFolder.empty()) {
+        stopPath = std::filesystem::weakly_canonical(openFolder, ec);
+    }
+
+    std::filesystem::path bestRoot;
+    std::filesystem::path p = cur;
+    while (!p.empty() && p.has_relative_path()) {
+        if (std::filesystem::exists(p / L"package.json", ec) ||
+            std::filesystem::exists(p / L"electron.vite.config.ts", ec) ||
+            std::filesystem::exists(p / L"electron.vite.config.js", ec) ||
+            std::filesystem::exists(p / L"vite.config.ts", ec) ||
+            std::filesystem::exists(p / L"vite.config.js", ec) ||
+            std::filesystem::exists(p / L"next.config.js", ec) ||
+            std::filesystem::exists(p / L"next.config.mjs", ec) ||
+            std::filesystem::exists(p / L"next.config.ts", ec) ||
+            std::filesystem::exists(p / L"manage.py", ec) ||
+            std::filesystem::exists(p / L"composer.json", ec)) {
+            bestRoot = p;
+            break;
+        }
+
+        if (!stopPath.empty() && std::filesystem::equivalent(p, stopPath, ec)) {
+            bestRoot = p;
+            break;
+        }
+
+        std::filesystem::path parent = p.parent_path();
+        if (parent == p) break;
+        p = parent;
+    }
+
+    if (!bestRoot.empty()) {
+        return bestRoot.wstring();
+    }
+    if (!openFolder.empty()) {
+        return openFolder;
+    }
+    return cur.wstring();
+}
+
+Window::ProjectDecision Window::DetectFramework(const std::wstring& rootDir, const std::wstring& activeFilePath) {
+    // 1. High-speed Decision Tree Cache Lookup with Timestamp Validation
+    std::wstring key = rootDir;
+    for (auto& c : key) c = static_cast<wchar_t>(towlower(c));
+
+    auto it = m_projectDecisionCache.find(key);
+    if (it != m_projectDecisionCache.end() && !it->second.markerPath.empty()) {
+        std::error_code ec;
+        if (std::filesystem::exists(it->second.markerPath, ec)) {
+            auto curTime = std::filesystem::last_write_time(it->second.markerPath, ec);
+            if (!ec && curTime == it->second.markerTime) {
+                return it->second;
+            }
+        }
+    }
+
+    // 2. Decision Tree Evaluation
+    ProjectDecision decision;
+    decision.rootDir = rootDir;
+    decision.framework = ProjectFramework::None;
+
+    std::error_code ec;
+    std::filesystem::path root(rootDir);
+
+    // Feature Node 1: package.json (Vite, Electron, Next.js, etc.)
+    std::filesystem::path pkgPath = root / L"package.json";
+    if (std::filesystem::exists(pkgPath, ec)) {
+        decision.markerPath = pkgPath.wstring();
+        decision.markerTime = std::filesystem::last_write_time(pkgPath, ec);
+
+        std::string pkgContent;
+        {
+            std::ifstream f(pkgPath, std::ios::binary);
+            if (f.is_open()) {
+                std::stringstream buffer;
+                buffer << f.rdbuf();
+                pkgContent = buffer.str();
+            }
+        }
+
+        auto hasDep = [&](const std::string& name) -> bool {
+            return pkgContent.find("\"" + name + "\"") != std::string::npos;
+        };
+
+        // Decision Branch 1A: Electron / Electron-Vite
+        bool hasElectronViteConfig = std::filesystem::exists(root / L"electron.vite.config.ts", ec) ||
+                                     std::filesystem::exists(root / L"electron.vite.config.js", ec) ||
+                                     std::filesystem::exists(root / L"electron.vite.config.mjs", ec);
+        bool hasElectronBuilder = std::filesystem::exists(root / L"electron-builder.yml", ec) ||
+                                  std::filesystem::exists(root / L"electron-builder.json", ec);
+        bool hasElectron = hasDep("electron") || hasDep("electron-vite") || hasElectronViteConfig || hasElectronBuilder;
+
+        if (hasElectron) {
+            decision.framework = ProjectFramework::Electron;
+            if (hasElectronViteConfig || hasDep("electron-vite")) {
+                decision.title = L"Electron Dev Server";
+                decision.command = L"npm run dev";
+            } else if (pkgContent.find("\"start\"") != std::string::npos) {
+                decision.title = L"Electron App";
+                decision.command = L"npm run start";
+            } else if (pkgContent.find("\"dev\"") != std::string::npos) {
+                decision.title = L"Electron App";
+                decision.command = L"npm run dev";
+            } else {
+                decision.title = L"Electron App";
+                decision.command = L"npm start";
+            }
+            decision.port = 0;
+            decision.customUrl = L"";
+            m_projectDecisionCache[key] = decision;
+            return decision;
+        }
+
+        // Decision Branch 1B: Next.js
+        bool hasNextConfig = std::filesystem::exists(root / L"next.config.js", ec) ||
+                             std::filesystem::exists(root / L"next.config.mjs", ec) ||
+                             std::filesystem::exists(root / L"next.config.ts", ec) ||
+                             std::filesystem::exists(root / L"next.config.cjs", ec) ||
+                             std::filesystem::exists(root / L".next", ec);
+        if (hasNextConfig || hasDep("next")) {
+            decision.framework = ProjectFramework::NextJs;
+            decision.title = L"Next.js Dev Server";
+            decision.command = L"npm run dev";
+            decision.port = 3000;
+            decision.customUrl = L"http://localhost:3000";
+            m_projectDecisionCache[key] = decision;
+            return decision;
+        }
+
+        // Decision Branch 1C: Vite
+        bool hasViteConfig = std::filesystem::exists(root / L"vite.config.ts", ec) ||
+                             std::filesystem::exists(root / L"vite.config.js", ec) ||
+                             std::filesystem::exists(root / L"vite.config.mjs", ec) ||
+                             std::filesystem::exists(root / L"vite.config.cjs", ec);
+        if (hasViteConfig || hasDep("vite")) {
+            decision.framework = ProjectFramework::Vite;
+            decision.title = L"Vite Dev Server";
+            decision.command = L"npm run dev";
+            decision.port = 5173;
+            decision.customUrl = L"http://localhost:5173";
+            m_projectDecisionCache[key] = decision;
+            return decision;
+        }
+
+        // Decision Branch 1D: Astro / Nuxt
+        if (std::filesystem::exists(root / L"astro.config.mjs", ec) || std::filesystem::exists(root / L"astro.config.ts", ec) || hasDep("astro")) {
+            decision.framework = ProjectFramework::Vite;
+            decision.title = L"Astro Dev Server";
+            decision.command = L"npm run dev";
+            decision.port = 4321;
+            decision.customUrl = L"http://localhost:4321";
+            m_projectDecisionCache[key] = decision;
+            return decision;
+        }
+        if (std::filesystem::exists(root / L"nuxt.config.ts", ec) || std::filesystem::exists(root / L"nuxt.config.js", ec) || hasDep("nuxt")) {
+            decision.framework = ProjectFramework::Vite;
+            decision.title = L"Nuxt Dev Server";
+            decision.command = L"npm run dev";
+            decision.port = 3000;
+            decision.customUrl = L"http://localhost:3000";
+            m_projectDecisionCache[key] = decision;
+            return decision;
+        }
+
+        // Decision Branch 1E: Generic Node.js with package.json
+        decision.framework = ProjectFramework::NodeScript;
+        decision.title = L"Node.js App";
+        if (pkgContent.find("\"dev\"") != std::string::npos) {
+            decision.command = L"npm run dev";
+        } else if (pkgContent.find("\"start\"") != std::string::npos) {
+            decision.command = L"npm start";
+        } else {
+            decision.command = L"npm test";
+        }
+        decision.port = 0;
+        decision.customUrl = L"";
+        m_projectDecisionCache[key] = decision;
+        return decision;
+    }
+
+    // Feature Node 2: Django (manage.py)
+    std::filesystem::path managePy = root / L"manage.py";
+    if (std::filesystem::exists(managePy, ec)) {
+        decision.markerPath = managePy.wstring();
+        decision.markerTime = std::filesystem::last_write_time(managePy, ec);
+        decision.framework = ProjectFramework::Django;
+        decision.title = L"Django Server";
+        decision.command = L"python manage.py runserver";
+        decision.port = 8000;
+        decision.customUrl = L"http://127.0.0.1:8000";
+        m_projectDecisionCache[key] = decision;
+        return decision;
+    }
+
+    // Feature Node 3: PHP Check (composer.json or index.php)
+    std::filesystem::path composerJson = root / L"composer.json";
+    std::filesystem::path indexPhp = root / L"index.php";
+    if (std::filesystem::exists(composerJson, ec) || std::filesystem::exists(indexPhp, ec)) {
+        decision.framework = ProjectFramework::Php;
+        decision.title = L"PHP";
+        decision.command = L"";
+        m_projectDecisionCache[key] = decision;
+        return decision;
+    }
+
+    // Feature Node 4: Static HTML
+    std::filesystem::path indexHtml = root / L"index.html";
+    if (std::filesystem::exists(indexHtml, ec)) {
+        decision.framework = ProjectFramework::LiveServerHtml;
+        decision.title = L"Live Server";
+        decision.command = L"";
+        decision.port = 5500;
+        decision.customUrl = L"http://127.0.0.1:5500";
+        m_projectDecisionCache[key] = decision;
+        return decision;
+    }
+
+    // Feature Node 5: Standalone single-file fallback based on active file extension
     std::filesystem::path p(activeFilePath);
     std::wstring ext = p.extension().wstring();
-    for (auto& c : ext) c = towlower(c);
+    for (auto& c : ext) c = static_cast<wchar_t>(towlower(c));
 
-    // 1. PHP Check (User explicitly requested: "and for now leave the php run empty for now")
     if (ext == L".php" || ext == L".phtml" || ext == L".php8") {
-        return ProjectFramework::Php;
+        decision.framework = ProjectFramework::Php;
+        decision.title = L"PHP";
+        decision.command = L"";
+    } else if (ext == L".py") {
+        decision.framework = ProjectFramework::PythonScript;
+        decision.title = L"Python Script";
+        decision.command = L"python \"" + activeFilePath + L"\"";
+    } else if (ext == L".html" || ext == L".htm") {
+        decision.framework = ProjectFramework::LiveServerHtml;
+        decision.title = L"Live Server";
+        decision.port = 5500;
+        decision.customUrl = L"http://127.0.0.1:5500";
+    } else if (ext == L".js" || ext == L".ts" || ext == L".mjs" || ext == L".cjs") {
+        decision.framework = ProjectFramework::NodeScript;
+        decision.title = L"Node.js Script";
+        decision.command = L"node \"" + activeFilePath + L"\"";
     }
 
-    // 2. Project-level checks in rootDir
-    std::wstring searchDir = rootDir;
-    if (searchDir.empty() && m_drawer.HasOpenFolder()) searchDir = m_drawer.GetOpenFolderPath();
-    if (searchDir.empty()) searchDir = m_workspace.GetRootPath();
-    if (searchDir.empty() && !activeFilePath.empty()) searchDir = p.parent_path().wstring();
+    return decision;
+}
 
-    if (!searchDir.empty()) {
-        std::error_code ec;
-        // Next.js detection: next.config.js/.mjs/.ts/.cjs or package.json containing "next"
-        if (std::filesystem::exists(std::filesystem::path(searchDir) / L"next.config.js", ec) ||
-            std::filesystem::exists(std::filesystem::path(searchDir) / L"next.config.mjs", ec) ||
-            std::filesystem::exists(std::filesystem::path(searchDir) / L"next.config.ts", ec) ||
-            std::filesystem::exists(std::filesystem::path(searchDir) / L"next.config.cjs", ec)) {
-            return ProjectFramework::NextJs;
-        }
+void Window::RunProjectDevServer(const std::wstring& projectRoot, const ProjectDecision& decision) {
+    m_isProjectRunning = true;
+    m_runningProjectRoot = projectRoot;
+    m_runningProjectDecision = decision;
 
-        // Vite detection: vite.config.js/.mjs/.ts/.cjs
-        if (std::filesystem::exists(std::filesystem::path(searchDir) / L"vite.config.js", ec) ||
-            std::filesystem::exists(std::filesystem::path(searchDir) / L"vite.config.ts", ec) ||
-            std::filesystem::exists(std::filesystem::path(searchDir) / L"vite.config.mjs", ec) ||
-            std::filesystem::exists(std::filesystem::path(searchDir) / L"vite.config.cjs", ec)) {
-            return ProjectFramework::Vite;
-        }
-
-        // Check package.json for Next.js or Vite
-        std::filesystem::path pkgPath = std::filesystem::path(searchDir) / L"package.json";
-        if (std::filesystem::exists(pkgPath, ec)) {
-            std::ifstream f(pkgPath);
-            if (f.is_open()) {
-                std::stringstream buffer;
-                buffer << f.rdbuf();
-                std::string content = buffer.str();
-                if (content.find("\"next\"") != std::string::npos || content.find("next dev") != std::string::npos) {
-                    return ProjectFramework::NextJs;
-                }
-                if (content.find("\"vite\"") != std::string::npos || content.find("vite") != std::string::npos) {
-                    return ProjectFramework::Vite;
-                }
-            }
-        }
-
-        // Django detection: manage.py exists and contains "django"
-        std::filesystem::path managePy = std::filesystem::path(searchDir) / L"manage.py";
-        if (std::filesystem::exists(managePy, ec)) {
-            std::ifstream f(managePy);
-            if (f.is_open()) {
-                std::stringstream buffer;
-                buffer << f.rdbuf();
-                std::string content = buffer.str();
-                if (content.find("django") != std::string::npos) {
-                    return ProjectFramework::Django;
-                }
-            }
-            return ProjectFramework::Django;
-        }
+    auto* srv = FindLiveServer(projectRoot);
+    if (!srv) {
+        ActiveLiveServer entry;
+        entry.filePath = projectRoot;
+        entry.fileName = std::filesystem::path(projectRoot).filename().wstring();
+        entry.rootDir = projectRoot;
+        entry.port = decision.port;
+        entry.framework = decision.title;
+        entry.title = decision.title;
+        entry.customUrl = decision.customUrl;
+        entry.progress = 0.05f;
+        entry.progressDurationMs = 2200.0f;
+        entry.elapsedMs = 0.0f;
+        entry.browserOpened = false;
+        entry.isStarting = true;
+        m_activeLiveServers.push_back(std::move(entry));
+    } else {
+        srv->framework = decision.title;
+        srv->title = decision.title;
+        srv->customUrl = decision.customUrl;
+        srv->port = decision.port;
+        srv->progress = 0.05f;
+        srv->elapsedMs = 0.0f;
+        srv->isStarting = true;
+        srv->browserOpened = false;
     }
 
-    // 3. File-level fallback
-    if (ext == L".html" || ext == L".htm") return ProjectFramework::LiveServerHtml;
-    if (ext == L".js" || ext == L".mjs" || ext == L".cjs" || ext == L".ts" || ext == L".jsx" || ext == L".tsx") return ProjectFramework::NodeScript;
-    if (ext == L".py") return ProjectFramework::PythonScript;
-
-    return ProjectFramework::None;
+    m_terminal.Open(projectRoot);
+    AnimateTerminalOpen();
+    m_terminal.ExecuteCommandLine(decision.command);
+    m_isTerminalFocused = true;
+    SetTimer(m_hwnd, m_animTimerId, 16, nullptr);
+    UpdateExecutionButtonStates();
+    InvalidateRect(m_hwnd, nullptr, FALSE);
 }
 
 void Window::ExecuteDiscardOrRestore(const std::wstring& targetPath, const std::wstring& targetFileName, const std::wstring& targetStatus) {
@@ -2578,138 +2851,61 @@ void Window::DoRunActiveDocument() {
     std::filesystem::path p(pDoc->filePath);
     std::wstring filePath = pDoc->filePath;
     std::wstring fileName = p.filename().wstring();
-    std::wstring folder = p.parent_path().wstring();
-    if (folder.empty() && m_drawer.HasOpenFolder()) folder = m_drawer.GetOpenFolderPath();
-    if (folder.empty()) folder = m_workspace.GetRootPath();
-    if (folder.empty()) {
-        wchar_t cur[MAX_PATH];
-        GetCurrentDirectoryW(MAX_PATH, cur);
-        folder = cur;
-    }
+    std::wstring ext = p.extension().wstring();
+    for (auto& c : ext) c = static_cast<wchar_t>(towlower(c));
 
-    ProjectFramework fw = DetectFramework(folder, filePath);
-
-    // 1. PHP Check: "and for now leave the php run empty for now"
-    if (fw == ProjectFramework::Php) {
+    // 1. PHP Check: User explicitly requested:
+    // "and for now leave the php run empty for now"
+    if (ext == L".php" || ext == L".phtml" || ext == L".php8") {
         return;
     }
 
-    // 2. Next.js Framework Run: "if it is a next js then run dev right"
-    if (fw == ProjectFramework::NextJs) {
-        auto* srv = FindLiveServer(filePath);
-        if (!srv) {
-            ActiveLiveServer entry;
-            entry.filePath = filePath;
-            entry.fileName = fileName;
-            entry.rootDir = folder;
-            entry.port = 3000;
-            entry.framework = L"Next.js";
-            entry.title = L"Next.js Dev Server";
-            entry.customUrl = L"http://localhost:3000";
-            entry.progress = 0.05f;
-            entry.progressDurationMs = 2200.0f;
-            entry.elapsedMs = 0.0f;
-            entry.browserOpened = false;
-            entry.isStarting = true;
-            m_activeLiveServers.push_back(std::move(entry));
-        } else {
-            srv->framework = L"Next.js";
-            srv->title = L"Next.js Dev Server";
-            srv->customUrl = L"http://localhost:3000";
-            srv->progress = 0.05f;
-            srv->elapsedMs = 0.0f;
-            srv->isStarting = true;
-            srv->browserOpened = false;
+    // Identify project root
+    std::wstring projectRoot = FindProjectRootForFile(filePath);
+
+    // 2. Python Script: Independent execution
+    // User explicitly requested:
+    // "unless i go to a python file, html file, and other file . on python file one can run also oyou can run another file its not single run at a time get it?"
+    if (ext == L".py") {
+        if (p.filename() == L"manage.py") {
+            ProjectDecision decision = DetectFramework(projectRoot, filePath);
+            if (decision.framework == ProjectFramework::Django) {
+                RunProjectDevServer(projectRoot, decision);
+                return;
+            }
         }
 
-        m_terminal.Open(folder);
+        std::wstring runDir = p.parent_path().wstring();
+        if (runDir.empty()) runDir = projectRoot;
+        m_terminal.Open(runDir);
         AnimateTerminalOpen();
-        m_terminal.ExecuteCommandLine(L"npm run dev");
+        m_terminal.ExecuteCommandLine(L"python \"" + filePath + L"\"");
         m_isTerminalFocused = true;
-        SetTimer(m_hwnd, m_animTimerId, 16, nullptr);
         UpdateExecutionButtonStates();
         InvalidateRect(m_hwnd, nullptr, FALSE);
         return;
     }
 
-    // 3. Vite Framework Run: "same with other frame work like vite"
-    if (fw == ProjectFramework::Vite) {
-        auto* srv = FindLiveServer(filePath);
-        if (!srv) {
-            ActiveLiveServer entry;
-            entry.filePath = filePath;
-            entry.fileName = fileName;
-            entry.rootDir = folder;
-            entry.port = 5173;
-            entry.framework = L"Vite";
-            entry.title = L"Vite Dev Server";
-            entry.customUrl = L"http://localhost:5173";
-            entry.progress = 0.05f;
-            entry.progressDurationMs = 2200.0f;
-            entry.elapsedMs = 0.0f;
-            entry.browserOpened = false;
-            entry.isStarting = true;
-            m_activeLiveServers.push_back(std::move(entry));
-        } else {
-            srv->framework = L"Vite";
-            srv->title = L"Vite Dev Server";
-            srv->customUrl = L"http://localhost:5173";
-            srv->progress = 0.05f;
-            srv->elapsedMs = 0.0f;
-            srv->isStarting = true;
-            srv->browserOpened = false;
-        }
+    // 3. Project-Level Framework Run (Electron, Next.js, Vite, Django, etc.)
+    ProjectDecision decision = DetectFramework(projectRoot, filePath);
 
-        m_terminal.Open(folder);
-        AnimateTerminalOpen();
-        m_terminal.ExecuteCommandLine(L"npm run dev");
-        m_isTerminalFocused = true;
-        SetTimer(m_hwnd, m_animTimerId, 16, nullptr);
-        UpdateExecutionButtonStates();
-        InvalidateRect(m_hwnd, nullptr, FALSE);
+    if (decision.framework == ProjectFramework::Php) {
+        return; // PHP left empty
+    }
+
+    if (decision.framework == ProjectFramework::NextJs ||
+        decision.framework == ProjectFramework::Vite ||
+        decision.framework == ProjectFramework::Electron ||
+        decision.framework == ProjectFramework::Django) {
+        RunProjectDevServer(projectRoot, decision);
         return;
     }
 
-    // 4. Django Framework Run: "if its a django project then run using django"
-    if (fw == ProjectFramework::Django) {
-        auto* srv = FindLiveServer(filePath);
-        if (!srv) {
-            ActiveLiveServer entry;
-            entry.filePath = filePath;
-            entry.fileName = fileName;
-            entry.rootDir = folder;
-            entry.port = 8000;
-            entry.framework = L"Django";
-            entry.title = L"Django Server";
-            entry.customUrl = L"http://127.0.0.1:8000";
-            entry.progress = 0.05f;
-            entry.progressDurationMs = 2200.0f;
-            entry.elapsedMs = 0.0f;
-            entry.browserOpened = false;
-            entry.isStarting = true;
-            m_activeLiveServers.push_back(std::move(entry));
-        } else {
-            srv->framework = L"Django";
-            srv->title = L"Django Server";
-            srv->customUrl = L"http://127.0.0.1:8000";
-            srv->progress = 0.05f;
-            srv->elapsedMs = 0.0f;
-            srv->isStarting = true;
-            srv->browserOpened = false;
-        }
+    // 4. Static HTML Live Server Run
+    if (decision.framework == ProjectFramework::LiveServerHtml || ext == L".html" || ext == L".htm") {
+        std::wstring folder = p.parent_path().wstring();
+        if (folder.empty()) folder = projectRoot;
 
-        m_terminal.Open(folder);
-        AnimateTerminalOpen();
-        m_terminal.ExecuteCommandLine(L"python manage.py runserver");
-        m_isTerminalFocused = true;
-        SetTimer(m_hwnd, m_animTimerId, 16, nullptr);
-        UpdateExecutionButtonStates();
-        InvalidateRect(m_hwnd, nullptr, FALSE);
-        return;
-    }
-
-    // 5. Static HTML Live Server Run
-    if (fw == ProjectFramework::LiveServerHtml) {
         auto* srv = FindLiveServer(filePath);
         if (!srv) {
             int port = GetNextAvailableLiveServerPort();
@@ -2762,21 +2958,13 @@ void Window::DoRunActiveDocument() {
         return;
     }
 
-    // 6. Generic JS/TS Script
-    if (fw == ProjectFramework::NodeScript) {
-        m_terminal.Open(folder);
+    // 5. Generic Node Script fallback
+    if (decision.framework == ProjectFramework::NodeScript || ext == L".js" || ext == L".ts" || ext == L".mjs" || ext == L".cjs") {
+        std::wstring runDir = p.parent_path().wstring();
+        if (runDir.empty()) runDir = projectRoot;
+        m_terminal.Open(runDir);
         AnimateTerminalOpen();
-        m_terminal.ExecuteCommandLine(L"node \"" + pDoc->filePath + L"\"");
-        m_isTerminalFocused = true;
-        InvalidateRect(m_hwnd, nullptr, FALSE);
-        return;
-    }
-
-    // 7. Generic Python Script
-    if (fw == ProjectFramework::PythonScript) {
-        m_terminal.Open(folder);
-        AnimateTerminalOpen();
-        m_terminal.ExecuteCommandLine(L"python \"" + pDoc->filePath + L"\"");
+        m_terminal.ExecuteCommandLine(L"node \"" + filePath + L"\"");
         m_isTerminalFocused = true;
         InvalidateRect(m_hwnd, nullptr, FALSE);
         return;
@@ -2799,6 +2987,15 @@ void Window::DoDebugActiveDocument() {
 }
 
 void Window::DoStopServer() {
+    // 1. If project dev server is running, terminate it
+    if (m_isProjectRunning && !m_runningProjectRoot.empty()) {
+        m_isProjectRunning = false;
+        m_terminal.OnKeyDown('C', true, false); // Send Ctrl+C / SIGINT to terminal
+        StopLiveServer(m_runningProjectRoot, /*closeTab=*/false);
+        m_runningProjectRoot.clear();
+    }
+
+    // 2. If active doc or file-level server is running, stop it
     auto* pDoc = GetActiveDoc();
     if (pDoc && !pDoc->filePath.empty()) {
         auto* srv = FindLiveServer(pDoc->filePath);

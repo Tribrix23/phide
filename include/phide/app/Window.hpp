@@ -18,6 +18,8 @@
 #include <wrl/client.h>
 #include <vector>
 #include <string>
+#include <unordered_map>
+#include <filesystem>
 
 #include "phide/app/AppConfig.hpp"
 #include "phide/ui/Theme.hpp"
@@ -72,6 +74,34 @@ public:
      * @brief Static window procedure routing messages to the Window instance.
      */
     static LRESULT CALLBACK WndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam);
+
+    enum class ProjectFramework {
+        None,
+        Php,
+        NextJs,
+        Vite,
+        Electron,
+        Django,
+        LiveServerHtml,
+        NodeScript,
+        PythonScript
+    };
+
+    struct ProjectDecision {
+        ProjectFramework framework = ProjectFramework::None;
+        std::wstring rootDir;
+        std::wstring command;
+        std::wstring title;
+        std::wstring customUrl;
+        int port = 0;
+        std::wstring markerPath;
+        std::filesystem::file_time_type markerTime{};
+    };
+
+    std::wstring FindProjectRootForFile(const std::wstring& filePath) const;
+    ProjectDecision DetectFramework(const std::wstring& rootDir, const std::wstring& activeFilePath);
+    void RunProjectDevServer(const std::wstring& projectRoot, const ProjectDecision& decision);
+    static bool IsFileInDirectory(const std::wstring& filePath, const std::wstring& dirPath);
 
 private:
     LRESULT HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam);
@@ -467,18 +497,10 @@ private:
     ui::ExtensionsPanel m_extensionsPanel;
     bool m_isTerminalFocused = false;
 
-    enum class ProjectFramework {
-        None,
-        Php,
-        NextJs,
-        Vite,
-        Django,
-        LiveServerHtml,
-        NodeScript,
-        PythonScript
-    };
-
-    ProjectFramework DetectFramework(const std::wstring& rootDir, const std::wstring& activeFilePath) const;
+    std::unordered_map<std::wstring, ProjectDecision> m_projectDecisionCache;
+    std::wstring m_runningProjectRoot;
+    ProjectDecision m_runningProjectDecision;
+    bool m_isProjectRunning = false;
     void ExecuteDiscardOrRestore(const std::wstring& targetPath, const std::wstring& targetFileName, const std::wstring& targetStatus);
 
     // Multi-LiveServer Architecture
