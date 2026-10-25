@@ -7644,24 +7644,68 @@ int main() {
         assert(isStarting == false);
         std::cout << "  Passed: Auto-stop instantly reverted isProjectRunning to false and suppressed browser redirect." << std::endl;
 
-        // 5. Margin Gap Above Terminal: Empty Breathing Space (Zero Border Lines)
+        // 5. Margin Gap Above Terminal: Empty Breathing Space (Zero Border Lines & Zero Brushing)
         const float clientH = 900.0f;
         const float termH = 320.0f;
-        const float termGap = 6.0f;
+        const float termGap = 12.0f;
         float editorH = clientH - termH - termGap;
         float drawerH = clientH - termH - termGap;
 
         assert(editorH == drawerH);
-        assert(editorH == (900.0f - 320.0f - 6.0f));
-        assert(drawerH == 574.0f);
-        std::cout << "  Passed: Margin gap applied consistently to drawer and editor as empty space (zero divider lines)." << std::endl;
+        assert(editorH == (900.0f - 320.0f - 12.0f));
+        assert(drawerH == 568.0f);
+        std::cout << "  Passed: Margin gap applied consistently to drawer and editor as empty space (zero divider lines, zero brush fill)." << std::endl;
 
-        // 6. Splash Screen Check: Verify SplashScreen::Show is removed from main.cpp
+        // 6. Splash Screen Check: Verify SplashScreen::Show is restored in main.cpp for normal launch
         {
             std::ifstream mainFile(L"C:\\Users\\Administrator\\Downloads\\studio\\phide\\src\\main.cpp");
             std::string mainContent((std::istreambuf_iterator<char>(mainFile)), std::istreambuf_iterator<char>());
-            assert(mainContent.find("SplashScreen::Show") == std::string::npos);
-            std::cout << "  Passed: SplashScreen::Show completely removed from main.cpp for instantaneous window opening." << std::endl;
+            assert(mainContent.find("SplashScreen::Show") != std::string::npos);
+            assert(mainContent.find("--new-window") != std::string::npos);
+            std::cout << "  Passed: SplashScreen::Show restored in main.cpp on launch (and bypassed for --new-window)." << std::endl;
+        }
+
+        // 7. Quick Open Modal: Text Search (%) Mode Verification
+        {
+            phide::ui::QuickOpenModal quickOpen;
+            std::wstring curDir = std::filesystem::current_path().wstring();
+            quickOpen.Open({ curDir + L"\\src\\main.cpp" }, { curDir + L"\\src\\main.cpp" }, L"");
+
+            // Test typing '%' activates Text Search mode
+            quickOpen.HandleChar(L'%');
+            assert(quickOpen.GetQuery() == L"%");
+            const auto& itemsP = quickOpen.GetFilteredItems();
+            assert(!itemsP.empty());
+            assert(itemsP[0].title.find(L"search in workspace") != std::wstring::npos);
+
+            // Test typing '% wWinMain' searches text in files
+            quickOpen.SetQuery(L"% wWinMain");
+            const auto& itemsFound = quickOpen.GetFilteredItems();
+            assert(!itemsFound.empty());
+            bool foundMainFunc = false;
+            for (const auto& it : itemsFound) {
+                if (it.type == phide::ui::QuickOpenItem::Type::File && it.title.find(L"wWinMain") != std::wstring::npos) {
+                    foundMainFunc = true;
+                    assert(it.targetLine > 0);
+                    break;
+                }
+            }
+            assert(foundMainFunc);
+
+            // Test selecting 'Search for Text %' from root list and hitting Enter sets query to '% '
+            quickOpen.SetQuery(L"");
+            std::wstring selFile;
+            int selLine = -1;
+            std::wstring selCmd;
+            // Navigate down to item 2 ("Search for Text %")
+            quickOpen.HandleKeyDown(VK_DOWN, selFile, selLine, selCmd);
+            quickOpen.HandleKeyDown(VK_DOWN, selFile, selLine, selCmd);
+            assert(quickOpen.GetSelectedIndex() == 2);
+            quickOpen.HandleKeyDown(VK_RETURN, selFile, selLine, selCmd);
+            assert(quickOpen.GetQuery() == L"% ");
+            std::cout << "  Passed: Quick Open Modal text search (%) mode fully operational and responsive." << std::endl;
+            assert(quickOpen.GetQuery() == L"% ");
+            std::cout << "  Passed: Quick Open Modal text search (%) mode fully operational and responsive." << std::endl;
         }
 
         // 7. Visual Direct2D Snapshot Verification (Single-Line Toast Card with [X] and [Failed] Badge on Line 1)

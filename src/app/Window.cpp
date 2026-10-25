@@ -1451,6 +1451,123 @@ void Window::DoDuplicateWorkspace() {
     DoNewWindow();
 }
 
+void Window::ExecuteQuickOpenAction(const std::wstring& actionCmd) {
+    if (actionCmd.empty()) return;
+
+    if (actionCmd.rfind(L"open_search:", 0) == 0) {
+        std::wstring term = actionCmd.substr(12);
+        m_config.activeRailTab = 1; // Search tab
+        m_config.isDrawerOpen = true;
+        m_drawer.SetSearchQuery(term);
+        m_drawer.SetSearchFocus(1);
+        InvalidateRect(m_hwnd, nullptr, FALSE);
+        return;
+    }
+
+    if (actionCmd.rfind(L"goto_line:", 0) == 0) {
+        try {
+            int line = std::stoi(actionCmd.substr(10));
+            JumpToEditorLine(static_cast<size_t>(line));
+        } catch (...) {}
+        InvalidateRect(m_hwnd, nullptr, FALSE);
+        return;
+    }
+
+    if (actionCmd == L"cmd_new_file") { DoNewFile(); return; }
+    if (actionCmd == L"cmd_new_window") { DoNewWindow(); return; }
+    if (actionCmd == L"cmd_open_file") { DoOpenFile(); return; }
+    if (actionCmd == L"cmd_open_folder") { DoOpenFolder(); return; }
+    if (actionCmd == L"cmd_save") { DoSaveFile(); return; }
+    if (actionCmd == L"cmd_save_as") { DoSaveFileAs(); return; }
+    if (actionCmd == L"cmd_save_all") { DoSaveAll(); return; }
+    if (actionCmd == L"cmd_close_editor") { DoCloseEditor(); return; }
+    if (actionCmd == L"cmd_undo") { DoUndo(); return; }
+    if (actionCmd == L"cmd_redo") { DoRedo(); return; }
+    if (actionCmd == L"cmd_cut") { DoCut(); return; }
+    if (actionCmd == L"cmd_copy") { DoCopy(); return; }
+    if (actionCmd == L"cmd_paste") { DoPaste(); return; }
+    if (actionCmd == L"cmd_find_in_files") {
+        m_config.activeRailTab = 1;
+        m_config.isDrawerOpen = true;
+        m_drawer.SetSearchFocus(1);
+        InvalidateRect(m_hwnd, nullptr, FALSE);
+        return;
+    }
+    if (actionCmd == L"cmd_replace_in_files") {
+        m_config.activeRailTab = 1;
+        m_config.isDrawerOpen = true;
+        m_drawer.SetSearchFocus(2);
+        InvalidateRect(m_hwnd, nullptr, FALSE);
+        return;
+    }
+    if (actionCmd == L"cmd_toggle_sidebar") {
+        m_config.isDrawerOpen = !m_config.isDrawerOpen;
+        InvalidateRect(m_hwnd, nullptr, FALSE);
+        return;
+    }
+    if (actionCmd == L"cmd_toggle_terminal") {
+        DoCreateTerminal();
+        return;
+    }
+    if (actionCmd == L"cmd_theme_picker") {
+        m_themePicker.Open(m_theme.GetThemeMode());
+        InvalidateRect(m_hwnd, nullptr, FALSE);
+        return;
+    }
+    if (actionCmd == L"cmd_shortcuts") {
+        OpenSpecialView(L"keybindings", L"Keyboard Shortcuts");
+        InvalidateRect(m_hwnd, nullptr, FALSE);
+        return;
+    }
+    if (actionCmd == L"cmd_runtimes") {
+        m_config.activeRailTab = 4;
+        m_config.isDrawerOpen = true;
+        InvalidateRect(m_hwnd, nullptr, FALSE);
+        return;
+    }
+    if (actionCmd == L"cmd_new_terminal") {
+        if (!m_terminal.IsOpen()) {
+            DoCreateTerminal();
+        }
+        std::wstring dir = m_drawer.HasOpenFolder() ? m_drawer.GetOpenFolderPath() : L"";
+        m_terminal.NewTab(ui::TerminalShellType::PowerShell, dir);
+        InvalidateRect(m_hwnd, nullptr, FALSE);
+        return;
+    }
+    if (actionCmd == L"cmd_start_debugging") {
+        DoDebugActiveDocument();
+        return;
+    }
+    if (actionCmd == L"cmd_run_without_debugging") {
+        DoRunActiveDocument();
+        return;
+    }
+    if (actionCmd == L"cmd_git_commit") {
+        m_config.activeRailTab = 2; // Source Control tab
+        m_config.isDrawerOpen = true;
+        m_drawer.SetGitCommitBoxFocus(1);
+        InvalidateRect(m_hwnd, nullptr, FALSE);
+        return;
+    }
+    if (actionCmd == L"cmd_git_refresh") {
+        m_drawer.RefreshGitStatusOnly(true);
+        InvalidateRect(m_hwnd, nullptr, FALSE);
+        return;
+    }
+}
+
+void Window::JumpToEditorLine(size_t targetLine) {
+    auto* pDoc = GetActiveDoc();
+    if (pDoc && targetLine > 0 && targetLine <= pDoc->buffer.GetLineCount()) {
+        size_t lineIdx = targetLine - 1;
+        pDoc->buffer.SetCursor(lineIdx, 0);
+        if (lineIdx < pDoc->scrollLine || lineIdx >= pDoc->scrollLine + 25) {
+            pDoc->scrollLine = (lineIdx >= 5) ? lineIdx - 5 : 0;
+        }
+        InvalidateRect(m_hwnd, nullptr, FALSE);
+    }
+}
+
 void Window::DoSaveFile() {
     auto* pDoc = GetActiveDoc();
     if (!pDoc) return;
@@ -3551,7 +3668,8 @@ void Window::OnPaint() {
     float currentTermH = GetCurrentTerminalHeight(clientH);
     m_terminal.SetFullScreenProgress(m_termFullScreenProgress);
 
-    const float termGap = (m_terminalAnimProgress > 0.001f && m_terminal.IsOpen()) ? m_config.ScaleF(6.0f) : 0.0f;
+    // Resize editor and sidebar more so that they do not stick to the terminal (per user request: "gap is space, not a line", "it shouldn't brush")
+    const float termGap = (m_terminalAnimProgress > 0.001f && m_terminal.IsOpen()) ? m_config.ScaleF(12.0f) : 0.0f;
     float editorH = clientH - currentTermH - termGap;
     float drawerH = clientH - currentTermH - termGap;
     float terminalLeft = static_cast<float>(railW);
@@ -3560,21 +3678,6 @@ void Window::OnPaint() {
                     canvasLeft, canvasWidth, editorH, hasLeftDrawer,
                     searchHL, hlMatchCase, hlWholeWord, hlUseRegex,
                     suppressEditorCaret);
-
-    // Empty space margin gap above terminal across both sidebar and editor (zero divider lines, seamless breathing space - no purple line!)
-    if (termGap > 0.0f) {
-        float gapTop = clientH - currentTermH - termGap;
-        float gapBottom = clientH - currentTermH;
-        if (hasLeftDrawer && canvasLeft > terminalLeft) {
-            D2D1_RECT_F rcDrawerGap = D2D1::RectF(terminalLeft, gapTop, canvasLeft, gapBottom);
-            m_pRenderTarget->FillRectangle(rcDrawerGap, m_theme.brushDrawerBg.Get());
-            D2D1_RECT_F rcEditorGap = D2D1::RectF(canvasLeft, gapTop, clientW, gapBottom);
-            m_pRenderTarget->FillRectangle(rcEditorGap, m_theme.brushCanvasBg.Get());
-        } else {
-            D2D1_RECT_F rcEditorGap = D2D1::RectF(terminalLeft, gapTop, clientW, gapBottom);
-            m_pRenderTarget->FillRectangle(rcEditorGap, m_theme.brushCanvasBg.Get());
-        }
-    }
 
     // 1b. Render Explorer Drag-and-Drop Insertion Caret / Target Indicator
     if (m_isDraggingExplorerFile && m_hasDragDropTarget && m_dragDropTargetGroup >= 0 &&
@@ -4645,9 +4748,16 @@ void Window::HandleLButtonDown(POINT clientPt) {
     // 0b. Quick Open Modal Clicks (Image 5)
     if (m_quickOpen.IsOpen()) {
         std::wstring chosenFile;
-        if (m_quickOpen.HandleMouseDown(clientPt, chosenFile)) {
-            if (!chosenFile.empty()) {
+        int targetLine = -1;
+        std::wstring actionCmd;
+        if (m_quickOpen.HandleMouseDown(clientPt, chosenFile, targetLine, actionCmd)) {
+            if (!actionCmd.empty()) {
+                ExecuteQuickOpenAction(actionCmd);
+            } else if (!chosenFile.empty()) {
                 OpenFileDocument(chosenFile, false);
+                if (targetLine > 0) {
+                    JumpToEditorLine(static_cast<size_t>(targetLine));
+                }
             }
         }
         InvalidateRect(m_hwnd, nullptr, FALSE);
@@ -7125,9 +7235,16 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     return 0;
                 }
                 std::wstring chosenFile;
-                if (m_quickOpen.HandleKeyDown(wParam, chosenFile)) {
-                    if (!chosenFile.empty()) {
+                int targetLine = -1;
+                std::wstring actionCmd;
+                if (m_quickOpen.HandleKeyDown(wParam, chosenFile, targetLine, actionCmd)) {
+                    if (!actionCmd.empty()) {
+                        ExecuteQuickOpenAction(actionCmd);
+                    } else if (!chosenFile.empty()) {
                         OpenFileDocument(chosenFile, false);
+                        if (targetLine > 0) {
+                            JumpToEditorLine(static_cast<size_t>(targetLine));
+                        }
                     }
                     InvalidateRect(m_hwnd, nullptr, FALSE);
                     return 0;

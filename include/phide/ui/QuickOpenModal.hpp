@@ -33,6 +33,8 @@ struct QuickOpenItem {
     FileIconType iconType = FileIconType::DefaultFile;
     bool isRecent = false;
     D2D1_RECT_F bounds{};
+    int targetLine = -1;
+    std::wstring actionCommand;
 };
 
 /**
@@ -71,12 +73,24 @@ public:
     /**
      * @brief Handles mouse clicks on items or background.
      */
-    bool HandleMouseDown(POINT pt, std::wstring& outSelectedFile);
+    bool HandleMouseDown(POINT pt, std::wstring& outSelectedFile, int& outTargetLine, std::wstring& outActionCommand);
 
     /**
      * @brief Handles keyboard navigation (arrows, Enter, Escape, Backspace).
      */
-    bool HandleKeyDown(WPARAM wParam, std::wstring& outSelectedFile);
+    bool HandleKeyDown(WPARAM wParam, std::wstring& outSelectedFile, int& outTargetLine, std::wstring& outActionCommand);
+
+    // Overloads for backwards compatibility
+    bool HandleMouseDown(POINT pt, std::wstring& outSelectedFile) {
+        int dummyLine = -1;
+        std::wstring dummyCmd;
+        return HandleMouseDown(pt, outSelectedFile, dummyLine, dummyCmd);
+    }
+    bool HandleKeyDown(WPARAM wParam, std::wstring& outSelectedFile) {
+        int dummyLine = -1;
+        std::wstring dummyCmd;
+        return HandleKeyDown(wParam, outSelectedFile, dummyLine, dummyCmd);
+    }
 
     /**
      * @brief Handles printable character typing into the search input.
@@ -115,6 +129,10 @@ private:
 
     std::vector<QuickOpenItem> m_allItems;
     std::vector<QuickOpenItem> m_filteredItems;
+
+    std::vector<std::wstring> m_recentPaths;
+    std::vector<std::wstring> m_openPaths;
+    std::wstring m_workspaceFolder;
 
     D2D1_RECT_F m_modalBounds{};
     D2D1_RECT_F m_inputBounds{};

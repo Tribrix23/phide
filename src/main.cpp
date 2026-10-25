@@ -9,6 +9,7 @@
 #include <windows.h>
 #include <objbase.h>
 #include "phide/app/Window.hpp"
+#include "phide/ui/SplashScreen.hpp"
 
 /**
  * @brief Win32 Application Entry Point.
@@ -20,7 +21,6 @@
  */
 int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPWSTR lpCmdLine, int nCmdShow) {
     (void)hPrevInstance;
-    (void)lpCmdLine;
 
     // 1. Enable Per-Monitor V2 High-DPI Awareness for razor-sharp typography and scaling
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
@@ -31,7 +31,13 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPWSTR lpCmdLi
         return 1;
     }
 
-    // 3. Create Main Application Window (splash screen removed per user request: open window directly with zero delay)
+    // 3. Show Splash Screen on startup (bypassed if launched as secondary new window via --new-window)
+    bool isNewWindow = (lpCmdLine && wcsstr(lpCmdLine, L"--new-window") != nullptr);
+    if (!isNewWindow) {
+        phide::ui::SplashScreen::Show(hInstance, 5000);
+    }
+
+    // 4. Create Main Application Window
     phide::app::Window window;
     if (!window.Create(hInstance, nCmdShow)) {
         MessageBoxW(nullptr, L"Failed to initialize Direct2D / Window graphics pipeline.", L"phide Error", MB_ICONERROR);
@@ -39,10 +45,10 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPWSTR lpCmdLi
         return 1;
     }
 
-    // 4. Run Message Loop
+    // 5. Run Message Loop
     int exitCode = window.Run();
 
-    // 5. Cleanup COM
+    // 6. Cleanup COM
     CoUninitialize();
 
     return exitCode;

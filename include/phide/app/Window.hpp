@@ -264,6 +264,12 @@ private:
     /** @brief Clones the active workspace into a duplicate configuration. */
     void DoDuplicateWorkspace();
 
+    /** @brief Executes a quick open palette action or command. */
+    void ExecuteQuickOpenAction(const std::wstring& actionCmd);
+
+    /** @brief Jumps the active editor document cursor and viewport to the target 1-based line number. */
+    void JumpToEditorLine(size_t targetLine);
+
     /** @brief Saves current buffer changes to disk (Ctrl+S). */
     void DoSaveFile();
 

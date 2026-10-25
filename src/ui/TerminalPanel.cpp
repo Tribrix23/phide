@@ -1017,8 +1017,8 @@ void TerminalPanel::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppC
         }
     }
 
-    // 2. Top Resizing Splitter (hit-testable drag handle, zero border lines drawn per user request: "gap is space, not a line")
-    m_splitterBounds = D2D1::RectF(panelX, panelY, panelX + panelW, panelY + config.ScaleF(4.0f));
+    // 2. Top Resizing Splitter (hit-testable drag handle across the margin gap, zero border lines drawn: "gap is space, not a line")
+    m_splitterBounds = D2D1::RectF(panelX, panelY - config.ScaleF(12.0f), panelX + panelW, panelY + config.ScaleF(4.0f));
 
     // 3. Header Toolbar (Image 1)
     float headerH = config.ScaleF(32.0f);
