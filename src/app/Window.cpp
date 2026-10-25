@@ -3839,7 +3839,7 @@ void Window::OpenFileByName(const std::wstring& name) {
         templateCode =
             L"{\n"
             L"    \"name\": \"phide/studio\",\n"
-            L"    \"description\": \"phide - Webdevelopment IDE\",\n"
+            L"    \"description\": \"phide - Web Development IDE\",\n"
             L"    \"type\": \"project\",\n"
             L"    \"require\": {\n"
             L"        \"php\": \">=8.2\",\n"
@@ -3980,7 +3980,7 @@ bool Window::Create(HINSTANCE hInstance, int nCmdShow) {
     m_hwnd = CreateWindowEx(
         WS_EX_APPWINDOW,
         wc.lpszClassName,
-        L"phide - Webdevelopment IDE",
+        L"phide - Web Development IDE",
         WS_OVERLAPPEDWINDOW | WS_VISIBLE,
         x, y, width, height,
         nullptr, nullptr, hInstance, this

@@ -2,7 +2,7 @@
 setlocal enabledelayedexpansion
 
 echo ======================================================================
-echo  Building phide - Webdevelopment IDE (Direct2D Native Desktop)
+echo  Building phide - Web Development IDE (Direct2D Native Desktop)
 echo ======================================================================
 
 :: 1. Locate Visual Studio x64 Environment
