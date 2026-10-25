@@ -515,6 +515,8 @@ private:
         float elapsedMs = 0.0f;             ///< Milliseconds elapsed
         bool browserOpened = false;         ///< True after browser launched
         bool isStarting = false;            ///< True while progression active
+        bool hasError = false;              ///< True if dev server failed/errored
+        std::wstring errorMsg;              ///< Error message from dev server
         std::wstring framework;             ///< Framework name (Next.js, Vite, Django, Live Server)
         std::wstring title;                 ///< Display title (Next.js Dev Server, Vite Dev Server, Django Server, Live Server)
         std::wstring customUrl;             ///< http://localhost:3000, etc.

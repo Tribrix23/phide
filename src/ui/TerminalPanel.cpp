@@ -153,6 +153,31 @@ void TerminalTab::AppendOutput(const char* data, size_t length, bool isError) {
         }
     }
 
+    if (isServerTab) {
+        std::wstring checkText = wstr;
+        for (auto& c : checkText) c = static_cast<wchar_t>(towlower(c));
+        if (isError ||
+            checkText.find(L"not recognized as the name of a cmdlet") != std::wstring::npos ||
+            checkText.find(L"not recognized as an internal or external command") != std::wstring::npos ||
+            checkText.find(L"commandnotfoundexception") != std::wstring::npos ||
+            checkText.find(L"npm err!") != std::wstring::npos ||
+            checkText.find(L"npm error") != std::wstring::npos ||
+            checkText.find(L"elifecycle") != std::wstring::npos ||
+            checkText.find(L"modulenotfounderror") != std::wstring::npos ||
+            checkText.find(L"cannot find module") != std::wstring::npos ||
+            checkText.find(L"fatal error") != std::wstring::npos ||
+            checkText.find(L"failed to compile") != std::wstring::npos) {
+            hasError = true;
+            if (lastErrorText.empty()) {
+                std::wstring line = wstr;
+                size_t nl = line.find(L'\n');
+                if (nl != std::wstring::npos) line = line.substr(0, nl);
+                while (!line.empty() && (line.back() == L'\r' || line.back() == L' ')) line.pop_back();
+                lastErrorText = line;
+            }
+        }
+    }
+
     std::lock_guard<std::mutex> lock(bufferMutex);
 
     if (lines.empty()) {
@@ -357,7 +382,7 @@ void TerminalPanel::NewTab(TerminalShellType shell, const std::wstring& workingD
 void TerminalPanel::CloseTab(size_t index) {
     if (index >= m_tabs.size()) return;
     std::wstring associatedPath = m_tabs[index]->associatedFilePath;
-    bool isLive = (m_tabs[index]->shellType == TerminalShellType::LiveServer);
+    bool isServer = (m_tabs[index]->shellType == TerminalShellType::LiveServer || m_tabs[index]->isServerTab);
     m_tabs[index]->Terminate();
     m_tabs.erase(m_tabs.begin() + index);
 
@@ -368,7 +393,7 @@ void TerminalPanel::CloseTab(size_t index) {
         m_activeTabIdx = static_cast<int>(m_tabs.size() - 1);
     }
 
-    if (isLive && !associatedPath.empty() && m_onLiveServerTabClosed) {
+    if (isServer && !associatedPath.empty() && m_onLiveServerTabClosed) {
         m_onLiveServerTabClosed(associatedPath);
     }
 }
@@ -1977,6 +2002,112 @@ void TerminalPanel::ExecuteCommandLine(const std::wstring& command) {
     }
 }
 
+void TerminalPanel::StartServerSession(const std::wstring& serverTitle, const std::wstring& command, const std::wstring& workingDir, const std::wstring& projectRoot) {
+    if (!m_isOpen) {
+        Open(workingDir.empty() ? m_defaultWorkingDir : workingDir);
+    }
+
+    TerminalTab* tab = nullptr;
+    int existingIdx = -1;
+    for (size_t i = 0; i < m_tabs.size(); ++i) {
+        if (m_tabs[i]->isServerTab && (_wcsicmp(m_tabs[i]->associatedFilePath.c_str(), projectRoot.c_str()) == 0 || m_tabs[i]->title == serverTitle)) {
+            existingIdx = static_cast<int>(i);
+            break;
+        }
+    }
+
+    if (existingIdx >= 0) {
+        m_activeTabIdx = existingIdx;
+        tab = m_tabs[existingIdx].get();
+        tab->Terminate();
+        tab->title = serverTitle;
+        tab->associatedFilePath = projectRoot;
+        tab->workingDir = workingDir.empty() ? m_defaultWorkingDir : workingDir;
+        tab->hasError = false;
+        tab->lastErrorText.clear();
+        std::lock_guard<std::mutex> lock(tab->bufferMutex);
+        tab->lines.clear();
+        tab->lines.push_back({});
+        tab->scrollOffsetY = 0.0f;
+        tab->scrollOffsetLines = 0;
+    } else {
+        auto newTab = std::make_unique<TerminalTab>();
+        newTab->shellType = TerminalShellType::PowerShell;
+        newTab->title = serverTitle;
+        newTab->isServerTab = true;
+        newTab->associatedFilePath = projectRoot;
+        newTab->workingDir = workingDir.empty() ? m_defaultWorkingDir : workingDir;
+        newTab->onOutput = m_outputCallback;
+        newTab->hasError = false;
+        newTab->lastErrorText.clear();
+        m_tabs.push_back(std::move(newTab));
+        m_activeTabIdx = static_cast<int>(m_tabs.size() - 1);
+        tab = m_tabs.back().get();
+    }
+
+    if (!tab) return;
+    StartShellProcess(*tab);
+
+    if (!command.empty()) {
+        int utf8Len = WideCharToMultiByte(CP_UTF8, 0, command.c_str(), -1, NULL, 0, NULL, NULL);
+        if (utf8Len > 1) {
+            std::string utf8(utf8Len - 1, '\0');
+            WideCharToMultiByte(CP_UTF8, 0, command.c_str(), -1, &utf8[0], utf8Len, NULL, NULL);
+            utf8 += "\r\n";
+            tab->SendInput(utf8);
+        }
+    }
+}
+
+void TerminalPanel::TerminateServerSession(const std::wstring& projectRoot) {
+    for (auto& tab : m_tabs) {
+        if (tab && tab->isServerTab) {
+            if (projectRoot.empty() || _wcsicmp(tab->associatedFilePath.c_str(), projectRoot.c_str()) == 0) {
+                tab->Terminate();
+                std::lock_guard<std::mutex> lock(tab->bufferMutex);
+                TerminalLine lStop;
+                lStop.rawText = L"\r\n● Server stopped.";
+                lStop.spans.push_back({ L"● Server stopped.", D2D1::ColorF(0.92f, 0.40f, 0.40f, 1.0f), true });
+                tab->lines.push_back(std::move(lStop));
+                if (tab->onOutput) tab->onOutput();
+            }
+        }
+    }
+}
+
+bool TerminalPanel::HasServerError(const std::wstring& projectRoot) const {
+    for (const auto& tab : m_tabs) {
+        if (tab && tab->isServerTab) {
+            if (projectRoot.empty() || _wcsicmp(tab->associatedFilePath.c_str(), projectRoot.c_str()) == 0) {
+                if (tab->hasError) return true;
+            }
+        }
+    }
+    return false;
+}
+
+std::wstring TerminalPanel::GetServerErrorText(const std::wstring& projectRoot) const {
+    for (const auto& tab : m_tabs) {
+        if (tab && tab->isServerTab) {
+            if (projectRoot.empty() || _wcsicmp(tab->associatedFilePath.c_str(), projectRoot.c_str()) == 0) {
+                if (tab->hasError) return tab->lastErrorText;
+            }
+        }
+    }
+    return L"";
+}
+
+TerminalTab* TerminalPanel::FindServerTab(const std::wstring& projectRoot) {
+    for (auto& tab : m_tabs) {
+        if (tab && tab->isServerTab) {
+            if (projectRoot.empty() || _wcsicmp(tab->associatedFilePath.c_str(), projectRoot.c_str()) == 0) {
+                return tab.get();
+            }
+        }
+    }
+    return nullptr;
+}
+
 void TerminalPanel::StartDebugSession(const std::wstring& filePath, const std::wstring& workingDir) {
     if (!m_isOpen) {
         Open(workingDir);
@@ -2414,6 +2545,11 @@ bool TerminalPanel::OnChar(wchar_t ch) {
     TerminalTab* tab = GetActiveTab();
     if (!tab) return false;
 
+    // Server tabs (e.g. Vite Server) are dedicated process streams: typing is locked (User requirement)
+    if (tab->isServerTab || tab->shellType == TerminalShellType::LiveServer) {
+        return true;
+    }
+
     if (ch == L'\r' || ch == L'\n') {
         std::wstring trimmed = tab->currentInputLine;
         while (!trimmed.empty() && (trimmed.front() == L' ' || trimmed.front() == L'\t')) trimmed.erase(trimmed.begin());
@@ -2513,6 +2649,15 @@ bool TerminalPanel::OnKeyDown(UINT vk, bool isCtrl, bool isShift) {
     if (!m_isOpen) return false;
     TerminalTab* tab = GetActiveTab();
     if (!tab) return false;
+
+    // Server tabs: typing is locked; allow Ctrl+C to send SIGINT
+    if (tab->isServerTab || tab->shellType == TerminalShellType::LiveServer) {
+        if (isCtrl && (vk == 'C' || vk == 'c')) {
+            tab->SendInput("\x03"); // SIGINT interrupt
+            return true;
+        }
+        return true; // Ignore all other keys
+    }
 
     if (isCtrl && (vk == 'C' || vk == 'c')) {
         tab->SendInput("\x03"); // SIGINT interrupt

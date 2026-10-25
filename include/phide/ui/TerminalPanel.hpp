@@ -160,6 +160,9 @@ struct TerminalTab {
     TerminalShellType shellType = TerminalShellType::PowerShell;
     std::wstring workingDir;
     std::wstring associatedFilePath;
+    bool isServerTab = false;
+    bool hasError = false;
+    std::wstring lastErrorText;
 
     HANDLE hProcess = NULL;
     HANDLE hThread = NULL;
@@ -244,6 +247,11 @@ public:
 
     // Live Server and Execution
     void StartLiveServerSession(const std::wstring& localUrl, const std::wstring& networkUrl, const std::wstring& filePath = L"", const std::wstring& fileName = L"");
+    void StartServerSession(const std::wstring& serverTitle, const std::wstring& command, const std::wstring& workingDir, const std::wstring& projectRoot);
+    void TerminateServerSession(const std::wstring& projectRoot);
+    [[nodiscard]] bool HasServerError(const std::wstring& projectRoot = L"") const;
+    [[nodiscard]] std::wstring GetServerErrorText(const std::wstring& projectRoot = L"") const;
+    [[nodiscard]] TerminalTab* FindServerTab(const std::wstring& projectRoot);
     bool CloseTabByAssociatedFile(const std::wstring& filePath);
     void SetOnLiveServerTabClosed(std::function<void(const std::wstring&)> cb) { m_onLiveServerTabClosed = std::move(cb); }
     void SetOnMinimize(std::function<void()> cb) { m_onMinimize = std::move(cb); }

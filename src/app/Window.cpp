@@ -2576,17 +2576,14 @@ Window::ProjectDecision Window::DetectFramework(const std::wstring& rootDir, con
 
         if (hasElectron) {
             decision.framework = ProjectFramework::Electron;
+            decision.title = L"Electron Server";
             if (hasElectronViteConfig || hasDep("electron-vite")) {
-                decision.title = L"Electron Dev Server";
                 decision.command = L"npm run dev";
             } else if (pkgContent.find("\"start\"") != std::string::npos) {
-                decision.title = L"Electron App";
                 decision.command = L"npm run start";
             } else if (pkgContent.find("\"dev\"") != std::string::npos) {
-                decision.title = L"Electron App";
                 decision.command = L"npm run dev";
             } else {
-                decision.title = L"Electron App";
                 decision.command = L"npm start";
             }
             decision.port = 0;
@@ -2603,7 +2600,7 @@ Window::ProjectDecision Window::DetectFramework(const std::wstring& rootDir, con
                              std::filesystem::exists(root / L".next", ec);
         if (hasNextConfig || hasDep("next")) {
             decision.framework = ProjectFramework::NextJs;
-            decision.title = L"Next.js Dev Server";
+            decision.title = L"Next.js Server";
             decision.command = L"npm run dev";
             decision.port = 3000;
             decision.customUrl = L"http://localhost:3000";
@@ -2618,7 +2615,7 @@ Window::ProjectDecision Window::DetectFramework(const std::wstring& rootDir, con
                              std::filesystem::exists(root / L"vite.config.cjs", ec);
         if (hasViteConfig || hasDep("vite")) {
             decision.framework = ProjectFramework::Vite;
-            decision.title = L"Vite Dev Server";
+            decision.title = L"Vite Server";
             decision.command = L"npm run dev";
             decision.port = 5173;
             decision.customUrl = L"http://localhost:5173";
@@ -2629,7 +2626,7 @@ Window::ProjectDecision Window::DetectFramework(const std::wstring& rootDir, con
         // Decision Branch 1D: Astro / Nuxt
         if (std::filesystem::exists(root / L"astro.config.mjs", ec) || std::filesystem::exists(root / L"astro.config.ts", ec) || hasDep("astro")) {
             decision.framework = ProjectFramework::Vite;
-            decision.title = L"Astro Dev Server";
+            decision.title = L"Astro Server";
             decision.command = L"npm run dev";
             decision.port = 4321;
             decision.customUrl = L"http://localhost:4321";
@@ -2638,7 +2635,7 @@ Window::ProjectDecision Window::DetectFramework(const std::wstring& rootDir, con
         }
         if (std::filesystem::exists(root / L"nuxt.config.ts", ec) || std::filesystem::exists(root / L"nuxt.config.js", ec) || hasDep("nuxt")) {
             decision.framework = ProjectFramework::Vite;
-            decision.title = L"Nuxt Dev Server";
+            decision.title = L"Nuxt Server";
             decision.command = L"npm run dev";
             decision.port = 3000;
             decision.customUrl = L"http://localhost:3000";
@@ -2746,6 +2743,8 @@ void Window::RunProjectDevServer(const std::wstring& projectRoot, const ProjectD
         entry.elapsedMs = 0.0f;
         entry.browserOpened = false;
         entry.isStarting = true;
+        entry.hasError = false;
+        entry.errorMsg.clear();
         m_activeLiveServers.push_back(std::move(entry));
     } else {
         srv->framework = decision.title;
@@ -2756,11 +2755,13 @@ void Window::RunProjectDevServer(const std::wstring& projectRoot, const ProjectD
         srv->elapsedMs = 0.0f;
         srv->isStarting = true;
         srv->browserOpened = false;
+        srv->hasError = false;
+        srv->errorMsg.clear();
     }
 
     m_terminal.Open(projectRoot);
     AnimateTerminalOpen();
-    m_terminal.ExecuteCommandLine(decision.command);
+    m_terminal.StartServerSession(decision.title, decision.command, projectRoot, projectRoot);
     m_isTerminalFocused = true;
     SetTimer(m_hwnd, m_animTimerId, 16, nullptr);
     UpdateExecutionButtonStates();
@@ -2990,7 +2991,7 @@ void Window::DoStopServer() {
     // 1. If project dev server is running, terminate it
     if (m_isProjectRunning && !m_runningProjectRoot.empty()) {
         m_isProjectRunning = false;
-        m_terminal.OnKeyDown('C', true, false); // Send Ctrl+C / SIGINT to terminal
+        m_terminal.TerminateServerSession(m_runningProjectRoot);
         StopLiveServer(m_runningProjectRoot, /*closeTab=*/false);
         m_runningProjectRoot.clear();
     }
@@ -3260,6 +3261,10 @@ bool Window::Create(HINSTANCE hInstance, int nCmdShow) {
 
     // Auto-stop server when its tab is closed via [X] in integrated terminal
     m_terminal.SetOnLiveServerTabClosed([this](const std::wstring& filePath) {
+        if (m_isProjectRunning && (m_runningProjectRoot == filePath || filePath.empty() || IsFileInDirectory(filePath, m_runningProjectRoot))) {
+            m_isProjectRunning = false;
+            m_runningProjectRoot.clear();
+        }
         StopLiveServer(filePath, /*closeTab=*/false);
         UpdateExecutionButtonStates();
         if (m_hwnd) InvalidateRect(m_hwnd, nullptr, FALSE);
@@ -3530,7 +3535,7 @@ void Window::OnPaint() {
 
     const float termGap = (m_terminalAnimProgress > 0.001f && m_terminal.IsOpen()) ? m_config.ScaleF(6.0f) : 0.0f;
     float editorH = clientH - currentTermH - termGap;
-    float drawerH = clientH - currentTermH;
+    float drawerH = clientH - currentTermH - termGap;
     float terminalLeft = static_cast<float>(railW);
 
     m_editor.Render(m_pRenderTarget.Get(), m_theme, m_config, m_editorGroups, m_focusedGroupIdx,
@@ -3538,11 +3543,10 @@ void Window::OnPaint() {
                     searchHL, hlMatchCase, hlWholeWord, hlUseRegex,
                     suppressEditorCaret);
 
-    // Subtle 6px gap separator above terminal to give breathing room and show the terminal clearly (Image 3)
+    // Empty space margin gap above terminal across both sidebar and editor (zero divider lines, clean margin space)
     if (termGap > 0.0f) {
-        D2D1_RECT_F rcGap = D2D1::RectF(canvasLeft, editorH, clientW, editorH + termGap);
-        m_pRenderTarget->FillRectangle(rcGap, m_theme.brushHeaderBg.Get());
-        m_pRenderTarget->DrawLine(D2D1::Point2F(canvasLeft, editorH), D2D1::Point2F(clientW, editorH), m_theme.brushBorderSubtle.Get(), 1.0f);
+        D2D1_RECT_F rcGap = D2D1::RectF(terminalLeft, clientH - currentTermH - termGap, clientW, clientH - currentTermH);
+        m_pRenderTarget->FillRectangle(rcGap, m_theme.brushWindowBg.Get());
     }
 
     // 1b. Render Explorer Drag-and-Drop Insertion Caret / Target Indicator
@@ -3611,8 +3615,11 @@ void Window::OnPaint() {
     if (!pActiveLiveServer && !m_activeLiveServers.empty()) {
         pActiveLiveServer = &m_activeLiveServers.back();
     }
+    if (!pActiveLiveServer && m_isProjectRunning && !m_runningProjectRoot.empty()) {
+        pActiveLiveServer = FindLiveServer(m_runningProjectRoot);
+    }
 
-    if (pActiveLiveServer && ((pActiveLiveServer->server && pActiveLiveServer->server->IsRunning()) || !pActiveLiveServer->customUrl.empty())) {
+    if (pActiveLiveServer && (m_isProjectRunning || pActiveLiveServer->isStarting || pActiveLiveServer->hasError || (pActiveLiveServer->server && pActiveLiveServer->server->IsRunning()) || !pActiveLiveServer->customUrl.empty() || !pActiveLiveServer->title.empty())) {
         const float cardW = m_config.ScaleF(280.0f); // Sleek modern developer toast card
         const float cardH = m_config.ScaleF(54.0f);  // Flat card height
         const float minimapW = m_config.ScaleF(88.0f);
@@ -3646,12 +3653,14 @@ void Window::OnPaint() {
         );
         if (cardBorderBrush) m_pRenderTarget->DrawRoundedRectangle(rrcCard, cardBorderBrush.Get(), 1.0f);
 
-        // 1. Glowing Status Dot (●) - Blue pulse while starting, Emerald green when live
+        // 1. Glowing Status Dot (●) - Red error dot, Blue pulse while starting, Emerald green when live
         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> dotBrush;
         m_pRenderTarget->CreateSolidColorBrush(
-            pActiveLiveServer->isStarting
-                ? D2D1::ColorF(0.24f, 0.58f, 1.0f, 1.0f)
-                : D2D1::ColorF(0.20f, 0.88f, 0.50f, 1.0f),
+            pActiveLiveServer->hasError
+                ? D2D1::ColorF(0.94f, 0.28f, 0.28f, 1.0f)
+                : (pActiveLiveServer->isStarting
+                    ? D2D1::ColorF(0.24f, 0.58f, 1.0f, 1.0f)
+                    : D2D1::ColorF(0.20f, 0.88f, 0.50f, 1.0f)),
             &dotBrush
         );
         float dotCx = cardX + m_config.ScaleF(14.0f);
@@ -3661,8 +3670,11 @@ void Window::OnPaint() {
             m_pRenderTarget->FillEllipse(D2D1::Ellipse(D2D1::Point2F(dotCx, dotCy), dotR, dotR), dotBrush.Get());
         }
 
-        // 2. Title / Framework Name (e.g. "Next.js Dev Server", "Vite Dev Server", "Django Server", "Live Server")
+        // 2. Title / Framework Name (e.g. "Next.js Server", "Vite Server", "Django Server", "Live Server")
         std::wstring titleText = !pActiveLiveServer->title.empty() ? pActiveLiveServer->title : L"Live Server";
+        if (pActiveLiveServer->hasError) {
+            titleText += L" (Error)";
+        }
         D2D1_RECT_F rcTitle = D2D1::RectF(cardX + m_config.ScaleF(26.0f), cardY + m_config.ScaleF(7.0f), cardX + cardW - m_config.ScaleF(85.0f), cardY + m_config.ScaleF(26.0f));
         ID2D1Brush* textPrimary = m_theme.IsDarkMode()
             ? (m_theme.brushTextWhite ? m_theme.brushTextWhite.Get() : m_theme.brushTextPrimary.Get())
@@ -3673,44 +3685,71 @@ void Window::OnPaint() {
         }
 
         // 3. Port Pill Badge on Top Right
-        std::wstring portText = L"Port: " + std::to_wstring(pActiveLiveServer->port);
+        std::wstring portText;
+        if (pActiveLiveServer->hasError) {
+            portText = L"Failed";
+        } else if (pActiveLiveServer->port > 0) {
+            portText = L"Port: " + std::to_wstring(pActiveLiveServer->port);
+        } else {
+            portText = L"Native";
+        }
         const float portBadgeW = m_config.ScaleF(68.0f);
         const float portBadgeH = m_config.ScaleF(18.0f);
         D2D1_RECT_F rcPortBadge = D2D1::RectF(cardX + cardW - portBadgeW - m_config.ScaleF(12.0f), cardY + m_config.ScaleF(8.0f), cardX + cardW - m_config.ScaleF(12.0f), cardY + m_config.ScaleF(8.0f) + portBadgeH);
         D2D1_ROUNDED_RECT rrcPortBadge = D2D1::RoundedRect(rcPortBadge, m_config.ScaleF(4.0f), m_config.ScaleF(4.0f));
         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> portBadgeBrush;
         m_pRenderTarget->CreateSolidColorBrush(
-            m_theme.IsDarkMode() ? D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.08f) : D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.06f),
+            pActiveLiveServer->hasError
+                ? D2D1::ColorF(0.92f, 0.25f, 0.25f, 0.18f)
+                : (m_theme.IsDarkMode() ? D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.08f) : D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.06f)),
             &portBadgeBrush
         );
         if (portBadgeBrush) m_pRenderTarget->FillRoundedRectangle(rrcPortBadge, portBadgeBrush.Get());
 
         IDWriteTextFormat* pFmtHint = m_theme.fontHint ? m_theme.fontHint.Get() : m_theme.fontCode.Get();
         ID2D1Brush* textMuted = m_theme.brushTextMuted ? m_theme.brushTextMuted.Get() : textPrimary;
-        if (pFmtHint && textMuted) {
+        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> errBadgeTextBrush;
+        if (pActiveLiveServer->hasError) {
+            m_pRenderTarget->CreateSolidColorBrush(D2D1::ColorF(0.95f, 0.45f, 0.45f, 1.0f), &errBadgeTextBrush);
+        }
+        ID2D1Brush* badgeTextBrush = (pActiveLiveServer->hasError && errBadgeTextBrush) ? errBadgeTextBrush.Get() : textMuted;
+        if (pFmtHint && badgeTextBrush) {
             DWRITE_TEXT_ALIGNMENT prevAlign = pFmtHint->GetTextAlignment();
             DWRITE_PARAGRAPH_ALIGNMENT prevPAlign = pFmtHint->GetParagraphAlignment();
             pFmtHint->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
             pFmtHint->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
-            m_pRenderTarget->DrawText(portText.c_str(), static_cast<UINT32>(portText.length()), pFmtHint, rcPortBadge, textMuted);
+            m_pRenderTarget->DrawText(portText.c_str(), static_cast<UINT32>(portText.length()), pFmtHint, rcPortBadge, badgeTextBrush);
             pFmtHint->SetTextAlignment(prevAlign);
             pFmtHint->SetParagraphAlignment(prevPAlign);
         }
 
-        // 4. Subtitle: Local URL with launch arrow or starting progression
+        // 4. Subtitle: Local URL with launch arrow or starting progression or error
         std::wstring targetUrl = !pActiveLiveServer->customUrl.empty()
             ? pActiveLiveServer->customUrl
-            : (pActiveLiveServer->server ? pActiveLiveServer->server->GetLocalUrl(pActiveLiveServer->fileName) : (L"http://127.0.0.1:" + std::to_wstring(pActiveLiveServer->port)));
+            : (pActiveLiveServer->server ? pActiveLiveServer->server->GetLocalUrl(pActiveLiveServer->fileName) : (pActiveLiveServer->port > 0 ? (L"http://127.0.0.1:" + std::to_wstring(pActiveLiveServer->port)) : L""));
 
-        std::wstring subText = pActiveLiveServer->isStarting
-            ? (L"Starting dev server... (" + std::to_wstring(static_cast<int>(pActiveLiveServer->progress * 100.0f)) + L"%)")
-            : (targetUrl + L" ↗");
+        std::wstring subText;
+        if (pActiveLiveServer->hasError) {
+            subText = !pActiveLiveServer->errorMsg.empty() ? pActiveLiveServer->errorMsg : L"Dev server failed - check terminal";
+        } else if (pActiveLiveServer->isStarting) {
+            subText = L"Starting dev server... (" + std::to_wstring(static_cast<int>(pActiveLiveServer->progress * 100.0f)) + L"%)";
+        } else if (!targetUrl.empty()) {
+            subText = targetUrl + L" ↗";
+        } else {
+            subText = L"Running";
+        }
 
         D2D1_RECT_F rcSub = D2D1::RectF(cardX + m_config.ScaleF(26.0f), cardY + m_config.ScaleF(27.0f), cardX + cardW - m_config.ScaleF(12.0f), cardY + cardH - m_config.ScaleF(8.0f));
         if (pFmtHint) {
-            ID2D1Brush* subBrush = (!pActiveLiveServer->isStarting && m_hoverLiveServerPill)
-                ? (m_theme.brushBrandAccent ? m_theme.brushBrandAccent.Get() : textPrimary)
-                : textMuted;
+            Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> errSubBrush;
+            if (pActiveLiveServer->hasError) {
+                m_pRenderTarget->CreateSolidColorBrush(D2D1::ColorF(0.92f, 0.45f, 0.45f, 1.0f), &errSubBrush);
+            }
+            ID2D1Brush* subBrush = pActiveLiveServer->hasError
+                ? (errSubBrush ? errSubBrush.Get() : textMuted)
+                : ((!pActiveLiveServer->isStarting && m_hoverLiveServerPill)
+                    ? (m_theme.brushBrandAccent ? m_theme.brushBrandAccent.Get() : textPrimary)
+                    : textMuted);
             m_pRenderTarget->DrawText(subText.c_str(), static_cast<UINT32>(subText.length()), pFmtHint, rcSub, subBrush);
         }
 
@@ -3727,21 +3766,27 @@ void Window::OnPaint() {
         m_pRenderTarget->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.08f), &progTrackBrush);
         if (progTrackBrush) m_pRenderTarget->FillRoundedRectangle(rrcProgTrack, progTrackBrush.Get());
 
-        float fillRatio = pActiveLiveServer->isStarting ? (std::clamp)(pActiveLiveServer->progress, 0.05f, 1.0f) : 1.0f;
+        float fillRatio = pActiveLiveServer->hasError
+            ? 1.0f
+            : (pActiveLiveServer->isStarting ? (std::clamp)(pActiveLiveServer->progress, 0.05f, 1.0f) : 1.0f);
         float fillW = trackW * fillRatio;
         D2D1_ROUNDED_RECT rrcProgFill = D2D1::RoundedRect(D2D1::RectF(trackLeft, trackY, trackLeft + fillW, trackY + trackH), 1.5f, 1.5f);
         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> progFillBrush;
         m_pRenderTarget->CreateSolidColorBrush(
-            pActiveLiveServer->isStarting
-                ? D2D1::ColorF(0.24f, 0.56f, 0.95f, 1.0f) // Electric blue progression
-                : D2D1::ColorF(0.20f, 0.88f, 0.50f, 0.85f), // Emerald green online indicator
+            pActiveLiveServer->hasError
+                ? D2D1::ColorF(0.92f, 0.28f, 0.28f, 0.85f) // Crimson red indicator
+                : (pActiveLiveServer->isStarting
+                    ? D2D1::ColorF(0.24f, 0.56f, 0.95f, 1.0f) // Electric blue progression
+                    : D2D1::ColorF(0.20f, 0.88f, 0.50f, 0.85f)), // Emerald green online indicator
             &progFillBrush
         );
         if (progFillBrush) m_pRenderTarget->FillRoundedRectangle(rrcProgFill, progFillBrush.Get());
 
         // Floating Tooltip on Hover
         if (m_hoverLiveServerPill && !pActiveLiveServer->isStarting) {
-            std::wstring tip = titleText + L" (Click to open " + targetUrl + L")";
+            std::wstring tip = pActiveLiveServer->hasError
+                ? L"Dev server encountered an error. Click to view terminal output."
+                : (!targetUrl.empty() ? (titleText + L" (Click to open " + targetUrl + L")") : titleText);
             const float tipH = m_config.ScaleF(24.0f);
             const float tipPadX = m_config.ScaleF(10.0f);
             float textW = m_config.ScaleF(static_cast<float>(tip.length() * 6.5f + 14.0f));
@@ -4357,7 +4402,8 @@ void Window::HandleMouseMove(POINT clientPt, WPARAM wParam) {
     GetClientRect(m_hwnd, &wndRc);
     const float clientH = static_cast<float>(wndRc.bottom - wndRc.top);
     float termH = GetCurrentTerminalHeight(clientH);
-    float effectiveDrawerH = m_terminal.IsOpen() ? (clientH - termH) : clientH;
+    const float termGap = (m_terminalAnimProgress > 0.001f && m_terminal.IsOpen()) ? m_config.ScaleF(6.0f) : 0.0f;
+    float effectiveDrawerH = m_terminal.IsOpen() ? (clientH - termH - termGap) : clientH;
 
     if (m_drawerAnimProgress > 0.001f && clientPt.y < effectiveDrawerH) {
         if (m_config.activeRailTab == 0) {
@@ -4407,15 +4453,26 @@ void Window::HandleLButtonDown(POINT clientPt) {
         }
     }
 
-    // Check Live Server Status Pill Click (Opens browser to localUrl)
+    // Check Live Server Status Pill Click
     auto* pActiveLiveServer = GetActiveDocLiveServer();
     if (!pActiveLiveServer && !m_activeLiveServers.empty()) pActiveLiveServer = &m_activeLiveServers.back();
-    if (pActiveLiveServer && ((pActiveLiveServer->server && pActiveLiveServer->server->IsRunning()) || !pActiveLiveServer->customUrl.empty()) &&
+    if (!pActiveLiveServer && m_isProjectRunning && !m_runningProjectRoot.empty()) pActiveLiveServer = FindLiveServer(m_runningProjectRoot);
+    if (pActiveLiveServer && (m_isProjectRunning || pActiveLiveServer->isStarting || pActiveLiveServer->hasError || (pActiveLiveServer->server && pActiveLiveServer->server->IsRunning()) || !pActiveLiveServer->customUrl.empty() || !pActiveLiveServer->title.empty()) &&
         clientPt.x >= m_liveServerPillBounds.left && clientPt.x <= m_liveServerPillBounds.right &&
         clientPt.y >= m_liveServerPillBounds.top && clientPt.y <= m_liveServerPillBounds.bottom) {
+        if (pActiveLiveServer->hasError) {
+            // Error state: Focus terminal so user can inspect error output! Do NOT open browser!
+            if (!m_terminal.IsOpen()) {
+                m_terminal.Open(pActiveLiveServer->rootDir);
+                AnimateTerminalOpen();
+            }
+            m_isTerminalFocused = true;
+            InvalidateRect(m_hwnd, nullptr, FALSE);
+            return;
+        }
         std::wstring url = !pActiveLiveServer->customUrl.empty()
             ? pActiveLiveServer->customUrl
-            : (pActiveLiveServer->server ? pActiveLiveServer->server->GetLocalUrl(pActiveLiveServer->fileName) : L"");
+            : (pActiveLiveServer->server ? pActiveLiveServer->server->GetLocalUrl(pActiveLiveServer->fileName) : (pActiveLiveServer->port > 0 ? (L"http://127.0.0.1:" + std::to_wstring(pActiveLiveServer->port)) : L""));
         if (!url.empty()) {
             ShellExecuteW(NULL, L"open", url.c_str(), NULL, NULL, SW_SHOWNORMAL);
         }
@@ -7657,14 +7714,27 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 // Smoothly update Live Server progression and auto-open user browser upon completion
                 for (auto& srv : m_activeLiveServers) {
                     if (srv.isStarting) {
+                        if (m_terminal.HasServerError(srv.rootDir)) {
+                            srv.hasError = true;
+                            srv.errorMsg = m_terminal.GetServerErrorText(srv.rootDir);
+                            srv.isStarting = false;
+                            srv.browserOpened = true; // Handled: NEVER launch browser on error!
+                            continue;
+                        }
                         srv.elapsedMs += 16.0f;
                         srv.progress = (std::min)(1.0f, srv.elapsedMs / srv.progressDurationMs);
                         keepAnimating = true;
                         if (!srv.browserOpened && srv.progress >= 1.0f) {
                             srv.browserOpened = true;
                             srv.isStarting = false;
-                            std::wstring localUrl = srv.server ? srv.server->GetLocalUrl(srv.fileName) : (L"http://127.0.0.1:" + std::to_wstring(srv.port));
-                            ShellExecuteW(NULL, L"open", localUrl.c_str(), NULL, NULL, SW_SHOWNORMAL);
+                            if (!srv.hasError && !m_terminal.HasServerError(srv.rootDir)) {
+                                if (srv.port > 0 || !srv.customUrl.empty()) {
+                                    std::wstring localUrl = !srv.customUrl.empty()
+                                        ? srv.customUrl
+                                        : (srv.server ? srv.server->GetLocalUrl(srv.fileName) : (L"http://127.0.0.1:" + std::to_wstring(srv.port)));
+                                    ShellExecuteW(NULL, L"open", localUrl.c_str(), NULL, NULL, SW_SHOWNORMAL);
+                                }
+                            }
                         }
                     }
                 }
