@@ -269,6 +269,14 @@ public:
     [[nodiscard]] bool IsServerDropdownOpen() const noexcept { return m_showServerDropdown; }
     [[nodiscard]] bool HitTestDropdowns(POINT pt) const noexcept;
     bool HandleDropdownClick(POINT pt) noexcept;
+    bool SetHoveredDropdownItem(int item) noexcept {
+        if (m_hoveredDropdownItem != item) {
+            m_hoveredDropdownItem = item;
+            return true;
+        }
+        return false;
+    }
+    [[nodiscard]] int GetHoveredDropdownItem() const noexcept { return m_hoveredDropdownItem; }
 
     // Zoom In / Zoom Out Controls (Image 3)
     [[nodiscard]] bool HitTestZoomIn(POINT pt) const noexcept;
@@ -347,6 +355,7 @@ private:
 
     bool m_showDatabaseDropdown = false;
     bool m_showServerDropdown = false;
+    int m_hoveredDropdownItem = -1; // -1=none, 0=item1, 1=item2
     D2D1_RECT_F m_rcDatabaseDropdown{};
     D2D1_RECT_F m_rcServerDropdown{};
 

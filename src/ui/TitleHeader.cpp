@@ -419,8 +419,10 @@ void TitleHeader::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCon
     D2D1_ROUNDED_RECT rrcDatabase = D2D1::RoundedRect(m_rcDatabase, 5.0f, 5.0f);
     if (m_databaseState == DatabaseState::Running && !m_databaseLogOpened) {
         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> bBg, bBdr;
-        pRT->CreateSolidColorBrush(D2D1::ColorF(0.12f, 0.50f, 0.25f, 0.22f), &bBg);
-        pRT->CreateSolidColorBrush(D2D1::ColorF(0.20f, 0.70f, 0.35f, 0.65f), &bBdr);
+        // User requirement: "the database color is white the icon and name"
+        // Translucent white glass pill with white border
+        pRT->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.12f), &bBg);
+        pRT->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.35f), &bBdr);
         if (bBg) pRT->FillRoundedRectangle(rrcDatabase, bBg.Get());
         if (bBdr) pRT->DrawRoundedRectangle(rrcDatabase, bBdr.Get(), 0.8f);
     } else if (m_databaseState == DatabaseState::Retrying) {
@@ -447,9 +449,10 @@ void TitleHeader::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCon
     }
 
     D2D1_RECT_F rcDbIcon = D2D1::RectF(dbBtnX, extBtnY, dbBtnX + extBtnW, extBtnY + extBtnH);
-    ID2D1Brush* pDbBrush = theme.IsDarkMode() ? theme.brushTextWhite.Get() : theme.brushTextPrimary.Get();
+    ID2D1Brush* pDbBrush = theme.brushTextWhite ? theme.brushTextWhite.Get() : theme.brushTextPrimary.Get();
     if (m_databaseState == DatabaseState::Running && !m_databaseLogOpened) {
-        pDbBrush = theme.brushRunGreen ? theme.brushRunGreen.Get() : theme.brushTextWhite.Get();
+        // User explicitly specified: "the database color is white the icon and name"
+        pDbBrush = theme.brushTextWhite ? theme.brushTextWhite.Get() : theme.brushTextPrimary.Get();
     } else if (m_databaseState == DatabaseState::Retrying) {
         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> bAmber;
         pRT->CreateSolidColorBrush(D2D1::ColorF(0.95f, 0.75f, 0.20f, 1.0f), &bAmber);
@@ -475,7 +478,7 @@ void TitleHeader::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCon
         float dotX = m_rcDatabase.right - config.ScaleF(4.0f);
         float dotY = m_rcDatabase.top + config.ScaleF(4.0f);
         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> bDot;
-        D2D1_COLOR_F dotCol = (m_databaseState == DatabaseState::Running) ? D2D1::ColorF(0.25f, 0.85f, 0.40f) : D2D1::ColorF(0.95f, 0.30f, 0.30f);
+        D2D1_COLOR_F dotCol = (m_databaseState == DatabaseState::Running) ? D2D1::ColorF(1.0f, 1.0f, 1.0f, 1.0f) : D2D1::ColorF(0.95f, 0.30f, 0.30f);
         pRT->CreateSolidColorBrush(dotCol, &bDot);
         if (bDot) pRT->FillEllipse(D2D1::Ellipse(D2D1::Point2F(dotX, dotY), 2.2f, 2.2f), bDot.Get());
     }
@@ -860,27 +863,37 @@ void TitleHeader::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCon
         m_icons.DrawMinimize(pRT, m_rcMinimize, defaultCaptionBrush, 1.25f);
     }
 
-    // --- Render Database & Server Checklist Dropdowns on Top (Image 2) ---
+    // --- Render Database & Server Checklist Dropdowns on Top (Image 2 & 3: matches sleek dark PopupMenu) ---
     if (m_showDatabaseDropdown) {
-        const float dropW = config.ScaleF(190.0f);
+        const float dropW = config.ScaleF(210.0f);
         const float dropH = config.ScaleF(74.0f);
         const float dropX = (std::max)(10.0f, m_rcDatabase.left);
         const float dropY = m_rcDatabase.bottom + config.ScaleF(4.0f);
         m_rcDatabaseDropdown = D2D1::RectF(dropX, dropY, dropX + dropW, dropY + dropH);
         D2D1_ROUNDED_RECT rrcDrop = D2D1::RoundedRect(m_rcDatabaseDropdown, 6.0f, 6.0f);
 
-        pRT->FillRoundedRectangle(rrcDrop, theme.brushTooltipBg ? theme.brushTooltipBg.Get() : theme.brushItemHover.Get());
-        pRT->DrawRoundedRectangle(rrcDrop, theme.brushBorderSubtle ? theme.brushBorderSubtle.Get() : theme.brushBorderHover.Get(), 1.0f);
+        // Dropdown Panel Background with Rounded Corners (matching PopupMenu in Image 3)
+        pRT->FillRoundedRectangle(rrcDrop, theme.brushMenuBg ? theme.brushMenuBg.Get() : theme.brushDrawerBg.Get());
+
+        // 1px Subtle Menu Border (#454545 / theme.brushMenuBorder)
+        pRT->DrawRoundedRectangle(rrcDrop, theme.brushMenuBorder ? theme.brushMenuBorder.Get() : theme.brushBorderSubtle.Get(), 1.0f);
 
         IDWriteTextFormat* pFmt = theme.fontMenuItem ? theme.fontMenuItem.Get() : theme.fontHint.Get();
 
         // Item 1: phpMyAdmin
         bool pmaChecked = m_serverDbConfig.phpMyAdminEnabled && !m_serverDbConfig.dontRunDatabase;
+        bool isItem1Hovered = (m_hoveredDropdownItem == 0);
+
+        if (isItem1Hovered && theme.brushMenuHover) {
+            D2D1_RECT_F rcHover1 = D2D1::RectF(dropX + config.ScaleF(4.0f), dropY + config.ScaleF(4.0f), dropX + dropW - config.ScaleF(4.0f), dropY + config.ScaleF(34.0f));
+            pRT->FillRoundedRectangle(D2D1::RoundedRect(rcHover1, 3.5f, 3.5f), theme.brushMenuHover.Get());
+        }
+
         float chk1X = dropX + config.ScaleF(12.0f);
-        float chk1Y = dropY + config.ScaleF(11.0f);
+        float chk1Y = dropY + config.ScaleF(12.0f);
         float chkS  = config.ScaleF(14.0f);
         D2D1_RECT_F rcChk1 = D2D1::RectF(chk1X, chk1Y, chk1X + chkS, chk1Y + chkS);
-        D2D1_ROUNDED_RECT rrcChk1 = D2D1::RoundedRect(rcChk1, 2.5f, 2.5f);
+        D2D1_ROUNDED_RECT rrcChk1 = D2D1::RoundedRect(rcChk1, 3.0f, 3.0f);
         if (pmaChecked) {
             ID2D1Brush* pAccent = theme.brushBrandAccent ? theme.brushBrandAccent.Get() : theme.brushTextPrimary.Get();
             pRT->FillRoundedRectangle(rrcChk1, pAccent);
@@ -888,21 +901,40 @@ void TitleHeader::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCon
             pRT->DrawLine(D2D1::Point2F(chk1X + 3.0f, chk1Y + 7.0f), D2D1::Point2F(chk1X + 6.0f, chk1Y + 11.0f), pWhite, 1.6f);
             pRT->DrawLine(D2D1::Point2F(chk1X + 6.0f, chk1Y + 11.0f), D2D1::Point2F(chk1X + 11.5f, chk1Y + 3.5f), pWhite, 1.6f);
         } else {
-            pRT->DrawRoundedRectangle(rrcChk1, theme.brushBorderHover ? theme.brushBorderHover.Get() : theme.brushBorderSubtle.Get(), 1.0f);
+            pRT->DrawRoundedRectangle(rrcChk1, theme.brushMenuBorder ? theme.brushMenuBorder.Get() : theme.brushBorderSubtle.Get(), 1.0f);
         }
-        D2D1_RECT_F rcLbl1 = D2D1::RectF(chk1X + chkS + config.ScaleF(8.0f), dropY + config.ScaleF(6.0f), dropX + dropW - config.ScaleF(8.0f), dropY + config.ScaleF(32.0f));
-        pRT->DrawText(L"phpMyAdmin", 10, pFmt, rcLbl1, theme.brushTextPrimary.Get());
 
-        // Separator
-        float sepY = dropY + config.ScaleF(36.0f);
-        pRT->DrawLine(D2D1::Point2F(dropX + 6.0f, sepY), D2D1::Point2F(dropX + dropW - 6.0f, sepY), theme.brushBorderSubtle.Get(), 0.8f);
+        ID2D1Brush* pWhiteBrush = theme.brushTextWhite ? theme.brushTextWhite.Get() : theme.brushTextPrimary.Get();
+
+        // Database icon in dropdown (pure white)
+        float dbIcoX = chk1X + chkS + config.ScaleF(8.0f);
+        float dbIcoY = dropY + config.ScaleF(11.0f);
+        float dbIcoS = config.ScaleF(16.0f);
+        D2D1_RECT_F rcMiniDb = D2D1::RectF(dbIcoX, dbIcoY, dbIcoX + dbIcoS, dbIcoY + dbIcoS);
+        m_icons.DrawDatabase(pRT, rcMiniDb, pWhiteBrush, 1.2f);
+
+        // Database name: phpMyAdmin in pure white (user requirement: "the database color is white the icon and name")
+        D2D1_RECT_F rcLbl1 = D2D1::RectF(dbIcoX + dbIcoS + config.ScaleF(6.0f), dropY + config.ScaleF(4.0f), dropX + dropW - config.ScaleF(8.0f), dropY + config.ScaleF(34.0f));
+        pRT->DrawText(L"phpMyAdmin", 10, pFmt, rcLbl1, pWhiteBrush);
+
+        // Separator matching PopupMenu
+        float sepY = dropY + config.ScaleF(37.0f);
+        pRT->DrawLine(D2D1::Point2F(dropX + config.ScaleF(10.0f), sepY), D2D1::Point2F(dropX + dropW - config.ScaleF(10.0f), sepY),
+                      theme.brushMenuSeparator ? theme.brushMenuSeparator.Get() : theme.brushBorderSubtle.Get(), 1.0f);
 
         // Item 2: Don't run database
         bool noDbChecked = m_serverDbConfig.dontRunDatabase;
+        bool isItem2Hovered = (m_hoveredDropdownItem == 1);
+
+        if (isItem2Hovered && theme.brushMenuHover) {
+            D2D1_RECT_F rcHover2 = D2D1::RectF(dropX + config.ScaleF(4.0f), dropY + config.ScaleF(40.0f), dropX + dropW - config.ScaleF(4.0f), dropY + config.ScaleF(70.0f));
+            pRT->FillRoundedRectangle(D2D1::RoundedRect(rcHover2, 3.5f, 3.5f), theme.brushMenuHover.Get());
+        }
+
         float chk2X = dropX + config.ScaleF(12.0f);
-        float chk2Y = dropY + config.ScaleF(46.0f);
+        float chk2Y = dropY + config.ScaleF(48.0f);
         D2D1_RECT_F rcChk2 = D2D1::RectF(chk2X, chk2Y, chk2X + chkS, chk2Y + chkS);
-        D2D1_ROUNDED_RECT rrcChk2 = D2D1::RoundedRect(rcChk2, 2.5f, 2.5f);
+        D2D1_ROUNDED_RECT rrcChk2 = D2D1::RoundedRect(rcChk2, 3.0f, 3.0f);
         if (noDbChecked) {
             ID2D1Brush* pAccent = theme.brushBrandAccent ? theme.brushBrandAccent.Get() : theme.brushTextPrimary.Get();
             pRT->FillRoundedRectangle(rrcChk2, pAccent);
@@ -910,32 +942,44 @@ void TitleHeader::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCon
             pRT->DrawLine(D2D1::Point2F(chk2X + 3.0f, chk2Y + 7.0f), D2D1::Point2F(chk2X + 6.0f, chk2Y + 11.0f), pWhite, 1.6f);
             pRT->DrawLine(D2D1::Point2F(chk2X + 6.0f, chk2Y + 11.0f), D2D1::Point2F(chk2X + 11.5f, chk2Y + 3.5f), pWhite, 1.6f);
         } else {
-            pRT->DrawRoundedRectangle(rrcChk2, theme.brushBorderHover ? theme.brushBorderHover.Get() : theme.brushBorderSubtle.Get(), 1.0f);
+            pRT->DrawRoundedRectangle(rrcChk2, theme.brushMenuBorder ? theme.brushMenuBorder.Get() : theme.brushBorderSubtle.Get(), 1.0f);
         }
-        D2D1_RECT_F rcLbl2 = D2D1::RectF(chk2X + chkS + config.ScaleF(8.0f), dropY + config.ScaleF(41.0f), dropX + dropW - config.ScaleF(8.0f), dropY + config.ScaleF(68.0f));
-        pRT->DrawText(L"Don't run database", 18, pFmt, rcLbl2, theme.brushTextPrimary.Get());
+        D2D1_RECT_F rcLbl2 = D2D1::RectF(chk2X + chkS + config.ScaleF(10.0f), dropY + config.ScaleF(40.0f), dropX + dropW - config.ScaleF(8.0f), dropY + config.ScaleF(70.0f));
+        ID2D1Brush* lbl2Brush = isItem2Hovered ? (theme.brushTextWhite ? theme.brushTextWhite.Get() : theme.brushTextPrimary.Get())
+                                               : (theme.brushMenuText ? theme.brushMenuText.Get() : theme.brushTextPrimary.Get());
+        pRT->DrawText(L"Don't run database", 18, pFmt, rcLbl2, lbl2Brush);
     }
 
     if (m_showServerDropdown) {
-        const float dropW = config.ScaleF(180.0f);
+        const float dropW = config.ScaleF(200.0f);
         const float dropH = config.ScaleF(74.0f);
         const float dropX = (std::max)(10.0f, m_rcServer.left);
         const float dropY = m_rcServer.bottom + config.ScaleF(4.0f);
         m_rcServerDropdown = D2D1::RectF(dropX, dropY, dropX + dropW, dropY + dropH);
         D2D1_ROUNDED_RECT rrcDrop = D2D1::RoundedRect(m_rcServerDropdown, 6.0f, 6.0f);
 
-        pRT->FillRoundedRectangle(rrcDrop, theme.brushTooltipBg ? theme.brushTooltipBg.Get() : theme.brushItemHover.Get());
-        pRT->DrawRoundedRectangle(rrcDrop, theme.brushBorderSubtle ? theme.brushBorderSubtle.Get() : theme.brushBorderHover.Get(), 1.0f);
+        // Dropdown Panel Background with Rounded Corners (matching PopupMenu in Image 3)
+        pRT->FillRoundedRectangle(rrcDrop, theme.brushMenuBg ? theme.brushMenuBg.Get() : theme.brushDrawerBg.Get());
+
+        // 1px Subtle Menu Border (#454545 / theme.brushMenuBorder)
+        pRT->DrawRoundedRectangle(rrcDrop, theme.brushMenuBorder ? theme.brushMenuBorder.Get() : theme.brushBorderSubtle.Get(), 1.0f);
 
         IDWriteTextFormat* pFmt = theme.fontMenuItem ? theme.fontMenuItem.Get() : theme.fontHint.Get();
 
         // Item 1: nginx
         bool nginxChecked = m_serverDbConfig.nginxEnabled && !m_serverDbConfig.dontRunServer;
+        bool isItem1Hovered = (m_hoveredDropdownItem == 0);
+
+        if (isItem1Hovered && theme.brushMenuHover) {
+            D2D1_RECT_F rcHover1 = D2D1::RectF(dropX + config.ScaleF(4.0f), dropY + config.ScaleF(4.0f), dropX + dropW - config.ScaleF(4.0f), dropY + config.ScaleF(34.0f));
+            pRT->FillRoundedRectangle(D2D1::RoundedRect(rcHover1, 3.5f, 3.5f), theme.brushMenuHover.Get());
+        }
+
         float chk1X = dropX + config.ScaleF(12.0f);
-        float chk1Y = dropY + config.ScaleF(11.0f);
+        float chk1Y = dropY + config.ScaleF(12.0f);
         float chkS  = config.ScaleF(14.0f);
         D2D1_RECT_F rcChk1 = D2D1::RectF(chk1X, chk1Y, chk1X + chkS, chk1Y + chkS);
-        D2D1_ROUNDED_RECT rrcChk1 = D2D1::RoundedRect(rcChk1, 2.5f, 2.5f);
+        D2D1_ROUNDED_RECT rrcChk1 = D2D1::RoundedRect(rcChk1, 3.0f, 3.0f);
         if (nginxChecked) {
             ID2D1Brush* pAccent = theme.brushBrandAccent ? theme.brushBrandAccent.Get() : theme.brushTextPrimary.Get();
             pRT->FillRoundedRectangle(rrcChk1, pAccent);
@@ -943,21 +987,40 @@ void TitleHeader::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCon
             pRT->DrawLine(D2D1::Point2F(chk1X + 3.0f, chk1Y + 7.0f), D2D1::Point2F(chk1X + 6.0f, chk1Y + 11.0f), pWhite, 1.6f);
             pRT->DrawLine(D2D1::Point2F(chk1X + 6.0f, chk1Y + 11.0f), D2D1::Point2F(chk1X + 11.5f, chk1Y + 3.5f), pWhite, 1.6f);
         } else {
-            pRT->DrawRoundedRectangle(rrcChk1, theme.brushBorderHover ? theme.brushBorderHover.Get() : theme.brushBorderSubtle.Get(), 1.0f);
+            pRT->DrawRoundedRectangle(rrcChk1, theme.brushMenuBorder ? theme.brushMenuBorder.Get() : theme.brushBorderSubtle.Get(), 1.0f);
         }
-        D2D1_RECT_F rcLbl1 = D2D1::RectF(chk1X + chkS + config.ScaleF(8.0f), dropY + config.ScaleF(6.0f), dropX + dropW - config.ScaleF(8.0f), dropY + config.ScaleF(32.0f));
-        pRT->DrawText(L"nginx", 5, pFmt, rcLbl1, theme.brushTextPrimary.Get());
 
-        // Separator
-        float sepY = dropY + config.ScaleF(36.0f);
-        pRT->DrawLine(D2D1::Point2F(dropX + 6.0f, sepY), D2D1::Point2F(dropX + dropW - 6.0f, sepY), theme.brushBorderSubtle.Get(), 0.8f);
+        ID2D1Brush* pWhiteBrush = theme.brushTextWhite ? theme.brushTextWhite.Get() : theme.brushTextPrimary.Get();
+
+        // Server icon in dropdown (pure white)
+        float srvIcoX = chk1X + chkS + config.ScaleF(8.0f);
+        float srvIcoY = dropY + config.ScaleF(11.0f);
+        float srvIcoS = config.ScaleF(16.0f);
+        D2D1_RECT_F rcMiniSrv = D2D1::RectF(srvIcoX, srvIcoY, srvIcoX + srvIcoS, srvIcoY + srvIcoS);
+        m_icons.DrawServer(pRT, rcMiniSrv, pWhiteBrush, 1.2f);
+
+        // Server label: nginx in pure white
+        D2D1_RECT_F rcLbl1 = D2D1::RectF(srvIcoX + srvIcoS + config.ScaleF(6.0f), dropY + config.ScaleF(4.0f), dropX + dropW - config.ScaleF(8.0f), dropY + config.ScaleF(34.0f));
+        pRT->DrawText(L"nginx", 5, pFmt, rcLbl1, pWhiteBrush);
+
+        // Separator matching PopupMenu
+        float sepY = dropY + config.ScaleF(37.0f);
+        pRT->DrawLine(D2D1::Point2F(dropX + config.ScaleF(10.0f), sepY), D2D1::Point2F(dropX + dropW - config.ScaleF(10.0f), sepY),
+                      theme.brushMenuSeparator ? theme.brushMenuSeparator.Get() : theme.brushBorderSubtle.Get(), 1.0f);
 
         // Item 2: Don't run server
         bool noSrvChecked = m_serverDbConfig.dontRunServer;
+        bool isItem2Hovered = (m_hoveredDropdownItem == 1);
+
+        if (isItem2Hovered && theme.brushMenuHover) {
+            D2D1_RECT_F rcHover2 = D2D1::RectF(dropX + config.ScaleF(4.0f), dropY + config.ScaleF(40.0f), dropX + dropW - config.ScaleF(4.0f), dropY + config.ScaleF(70.0f));
+            pRT->FillRoundedRectangle(D2D1::RoundedRect(rcHover2, 3.5f, 3.5f), theme.brushMenuHover.Get());
+        }
+
         float chk2X = dropX + config.ScaleF(12.0f);
-        float chk2Y = dropY + config.ScaleF(46.0f);
+        float chk2Y = dropY + config.ScaleF(48.0f);
         D2D1_RECT_F rcChk2 = D2D1::RectF(chk2X, chk2Y, chk2X + chkS, chk2Y + chkS);
-        D2D1_ROUNDED_RECT rrcChk2 = D2D1::RoundedRect(rcChk2, 2.5f, 2.5f);
+        D2D1_ROUNDED_RECT rrcChk2 = D2D1::RoundedRect(rcChk2, 3.0f, 3.0f);
         if (noSrvChecked) {
             ID2D1Brush* pAccent = theme.brushBrandAccent ? theme.brushBrandAccent.Get() : theme.brushTextPrimary.Get();
             pRT->FillRoundedRectangle(rrcChk2, pAccent);
@@ -965,10 +1028,12 @@ void TitleHeader::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCon
             pRT->DrawLine(D2D1::Point2F(chk2X + 3.0f, chk2Y + 7.0f), D2D1::Point2F(chk2X + 6.0f, chk2Y + 11.0f), pWhite, 1.6f);
             pRT->DrawLine(D2D1::Point2F(chk2X + 6.0f, chk2Y + 11.0f), D2D1::Point2F(chk2X + 11.5f, chk2Y + 3.5f), pWhite, 1.6f);
         } else {
-            pRT->DrawRoundedRectangle(rrcChk2, theme.brushBorderHover ? theme.brushBorderHover.Get() : theme.brushBorderSubtle.Get(), 1.0f);
+            pRT->DrawRoundedRectangle(rrcChk2, theme.brushMenuBorder ? theme.brushMenuBorder.Get() : theme.brushBorderSubtle.Get(), 1.0f);
         }
-        D2D1_RECT_F rcLbl2 = D2D1::RectF(chk2X + chkS + config.ScaleF(8.0f), dropY + config.ScaleF(41.0f), dropX + dropW - config.ScaleF(8.0f), dropY + config.ScaleF(68.0f));
-        pRT->DrawText(L"Don't run server", 16, pFmt, rcLbl2, theme.brushTextPrimary.Get());
+        D2D1_RECT_F rcLbl2 = D2D1::RectF(chk2X + chkS + config.ScaleF(10.0f), dropY + config.ScaleF(40.0f), dropX + dropW - config.ScaleF(8.0f), dropY + config.ScaleF(70.0f));
+        ID2D1Brush* lbl2Brush = isItem2Hovered ? (theme.brushTextWhite ? theme.brushTextWhite.Get() : theme.brushTextPrimary.Get())
+                                               : (theme.brushMenuText ? theme.brushMenuText.Get() : theme.brushTextPrimary.Get());
+        pRT->DrawText(L"Don't run server", 16, pFmt, rcLbl2, lbl2Brush);
     }
 }
 

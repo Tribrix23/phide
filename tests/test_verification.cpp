@@ -7955,10 +7955,18 @@ int main() {
         header.SetDatabaseState(phide::ui::DatabaseState::Running);
         header.SetDatabaseLogOpened(false); // morph pill "phpMyAdmin is up"
         header.ToggleDatabaseDropdown();
+        header.SetHoveredDropdownItem(0); // hover highlight matching PopupMenu
         header.Render(pRTSnap.Get(), theme, testCfg, static_cast<float>(snapW), false);
 
-        // Terminal Panel at bottom (100% drawn flush, panelY = snapH - termH)
+        // Workspace background and panels with 8px margin gap above terminal
         const float termH = 260.0f;
+        const float termGap = 8.0f;
+        float editorH = snapH - termH - termGap;
+        float drawerH = snapH - termH - termGap;
+        assert(editorH == drawerH);
+        assert(editorH == (snapH - termH - 8.0f));
+
+        // Terminal Panel at bottom (panelY = snapH - termH, leaving 8px gap above it)
         terminal.Render(pRTSnap.Get(), theme, testCfg, static_cast<float>(snapW), static_cast<float>(snapH), 50.0f, termH);
 
         HRESULT hrEnd = pRTSnap->EndDraw();

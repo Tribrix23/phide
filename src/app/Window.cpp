@@ -3819,6 +3819,11 @@ void Window::OnPaint() {
 
     const float headerH = m_config.ScaleF(static_cast<float>(m_config.headerHeight));
 
+    // Fill workspace canvas background behind all panels
+    // so when terminal is open with a gap, the gap matches the dark canvas background seamlessly
+    D2D1_RECT_F rcWorkspace = D2D1::RectF(railW, headerH, clientW, clientH);
+    m_pRenderTarget->FillRectangle(rcWorkspace, m_theme.brushCanvasBg ? m_theme.brushCanvasBg.Get() : m_theme.brushDrawerBg.Get());
+
     // Pre-fill the corner patch at (railW, headerH) with headerBg
     // so the 14px inward rounded arc of DrawerPanel (or EditorCanvas when drawer is closed)
     // curves smoothly against the title header and activity rail across all 20 themes.
@@ -3832,10 +3837,10 @@ void Window::OnPaint() {
     float currentTermH = GetCurrentTerminalHeight(clientH);
     m_terminal.SetFullScreenProgress(m_termFullScreenProgress);
 
-    // 100% drawn flush against terminal (user requirement: "see the color dont match so i means this 100percent drawn", zero gap / zero line)
-    const float termGap = 0.0f;
-    float editorH = clientH - currentTermH;
-    float drawerH = clientH - currentTermH;
+    // Apply margin gap when terminal is open (user requirement: "make the height of the sidebar and editory misus it a bit when the terminal is open")
+    const float termGap = (m_terminalAnimProgress > 0.001f && m_terminal.IsOpen()) ? m_config.ScaleF(8.0f) : 0.0f;
+    float editorH = clientH - currentTermH - termGap;
+    float drawerH = clientH - currentTermH - termGap;
     float terminalLeft = static_cast<float>(railW);
 
     m_editor.Render(m_pRenderTarget.Get(), m_theme, m_config, m_editorGroups, m_focusedGroupIdx,
@@ -4635,6 +4640,23 @@ void Window::HandleMouseMove(POINT clientPt, WPARAM wParam) {
     if (m_header.SetHoveredExtensions(m_header.HitTestExtensions(clientPt))) needRepaint = true;
     if (m_header.SetHoveredDatabase(m_header.HitTestDatabase(clientPt))) needRepaint = true;
     if (m_header.SetHoveredServer(m_header.HitTestServer(clientPt))) needRepaint = true;
+
+    // Track hovered item inside Database or Server checklist dropdowns
+    int hoveredDropItem = -1;
+    if (m_header.IsDatabaseDropdownOpen()) {
+        auto rc = m_header.GetDatabaseDropdownBounds();
+        if (clientPt.x >= rc.left && clientPt.x <= rc.right && clientPt.y >= rc.top && clientPt.y <= rc.bottom) {
+            float midY = (rc.top + rc.bottom) * 0.5f;
+            hoveredDropItem = (clientPt.y < midY) ? 0 : 1;
+        }
+    } else if (m_header.IsServerDropdownOpen()) {
+        auto rc = m_header.GetServerDropdownBounds();
+        if (clientPt.x >= rc.left && clientPt.x <= rc.right && clientPt.y >= rc.top && clientPt.y <= rc.bottom) {
+            float midY = (rc.top + rc.bottom) * 0.5f;
+            hoveredDropItem = (clientPt.y < midY) ? 0 : 1;
+        }
+    }
+    if (m_header.SetHoveredDropdownItem(hoveredDropItem)) needRepaint = true;
 
     // Check Extensions right sidebar hover
     if (m_rightSidebarAnimProgress > 0.001f && m_extensionsPanel.IsOpen()) {
