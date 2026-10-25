@@ -1,0 +1,5 @@
+2026/10/25 19:42:26 [notice] 708#16520: signal process started
+2026/10/25 19:42:40 [notice] 7872#21384: signal process started
+2026/10/25 19:42:40 [error] 7872#21384: OpenEvent("Global\ngx_stop_21660") failed (2: The system cannot find the file specified)
+2026/10/25 20:08:35 [notice] 22248#10216: signal process started
+2026/10/25 20:11:09 [notice] 21552#21764: signal process started

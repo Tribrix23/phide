@@ -264,6 +264,10 @@ int main(int argc, char* argv[]) {
 
     const std::wstring artDir = L"C:\\Users\\Administrator\\.gemini\\antigravity\\brain\\c83160b9-3f8b-4ad1-87a8-ab1f7f555a77\\";
 
+    if (targetTest == 66) {
+        goto run_test_66;
+    }
+
     // --- 3. Render Test: Picture Viewer in Dark & Light Modes ---
     std::cout << "[TEST 2] Testing Picture Viewer rendering..." << std::endl;
     {
@@ -7956,9 +7960,9 @@ int main(int argc, char* argv[]) {
 
         // Header with Database & Server Buttons
         header.SetServerState(phide::ui::ServerState::Running);
-        header.SetServerLogOpened(false); // morph pill "nginx is up"
+        header.SetServerLogOpened(true); // User requirement: "and whenni open log whentheyu running they shouldnt go back to just icon" - pills STAY expanded!
         header.SetDatabaseState(phide::ui::DatabaseState::Running);
-        header.SetDatabaseLogOpened(false); // morph pill "phpMyAdmin is up"
+        header.SetDatabaseLogOpened(true); // User requirement: stays expanded as phpMyAdmin is up even when log tab is opened!
         header.ToggleDatabaseDropdown();
         header.SetHoveredDropdownItem(0); // hover highlight matching PopupMenu
         header.Render(pRTSnap.Get(), theme, testCfg, static_cast<float>(snapW), false);
@@ -7989,6 +7993,7 @@ int main(int argc, char* argv[]) {
     // =========================================================================
     // [TEST 66] Database & phpMyAdmin Settings Modal, Nginx Config, PHP Run Enabled & Tab Isolation
     // =========================================================================
+run_test_66:
     if (targetTest == 0 || targetTest == 66) {
         std::cout << "\n[TEST 66] Running Database & phpMyAdmin Settings Modal, Nginx Config, PHP Run Enabled & Tab Isolation Tests..." << std::endl;
 
@@ -8055,8 +8060,8 @@ int main(int argc, char* argv[]) {
         // 4. Test Tab Switching to Nginx and Render Nginx Settings Modal Snapshot
         dbModal.SetActiveTab(phide::ui::DatabaseModalTab::NginxServer);
         assert(dbModal.GetActiveTab() == phide::ui::DatabaseModalTab::NginxServer);
-        assert(dbModal.GetNginxUrl() == L"http://localhost:8080");
-        assert(dbModal.GetNginxPort() == L"8080");
+        assert(dbModal.GetNginxUrl() == L"http://localhost:80");
+        assert(dbModal.GetNginxPort() == L"80");
 
         pRTSnap->BeginDraw();
         pRTSnap->Clear(theme.colors.canvasBg);

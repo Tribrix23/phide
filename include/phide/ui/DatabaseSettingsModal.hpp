@@ -33,6 +33,8 @@ enum class DatabaseModalAction {
     CopyNginxUrl,
     CopyNginxPort,
     CopyNginxConfigPath,
+    TogglePmaRun,
+    ToggleServerRun,
     OpenBrowserPma,
     OpenBrowserNginx,
     EditPmaConfig,
@@ -58,6 +60,8 @@ public:
         m_isPmaRunning = pmaRunning;
         m_isNginxRunning = nginxRunning;
     }
+    [[nodiscard]] bool IsPmaRunning() const noexcept { return m_isPmaRunning; }
+    [[nodiscard]] bool IsNginxRunning() const noexcept { return m_isNginxRunning; }
 
     void SetCopiedFeedback(const std::wstring& fieldName) {
         m_copiedField = fieldName;
@@ -111,8 +115,8 @@ private:
     std::wstring m_mysqliSnippet = L"$conn = new mysqli(\"127.0.0.1\", \"root\", \"\", \"student_crud\", 3306);";
 
     // Nginx parameters
-    std::wstring m_nginxUrl = L"http://localhost:8080";
-    std::wstring m_nginxPort = L"8080";
+    std::wstring m_nginxUrl = L"http://localhost:80";
+    std::wstring m_nginxPort = L"80";
     std::wstring m_nginxHost = L"localhost";
     std::wstring m_nginxConfigFile = L"include\\phide\\server\\nginx\\conf\\nginx.conf";
 
@@ -138,12 +142,14 @@ private:
     D2D1_RECT_F m_rcCopyPdoSnippet{};
     D2D1_RECT_F m_rcCopyMysqliSnippet{};
 
+    D2D1_RECT_F m_rcBtnTogglePma{};
     D2D1_RECT_F m_rcBtnOpenPma{};
     D2D1_RECT_F m_rcBtnEditPma{};
 
     D2D1_RECT_F m_rcCopyNginxUrl{};
     D2D1_RECT_F m_rcCopyNginxPort{};
     D2D1_RECT_F m_rcCopyNginxConfigPath{};
+    D2D1_RECT_F m_rcBtnToggleNginx{};
     D2D1_RECT_F m_rcBtnOpenNginx{};
     D2D1_RECT_F m_rcBtnEditNginx{};
 

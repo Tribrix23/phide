@@ -322,8 +322,8 @@ void TitleHeader::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCon
         srvW = config.ScaleF(118.0f);
         isSrvExpanded = true;
         srvText = L"Starting nginx...";
-    } else if (m_serverState == ServerState::Running && !m_serverLogOpened) {
-        srvW = config.ScaleF(110.0f);
+    } else if (m_serverState == ServerState::Running) {
+        srvW = config.ScaleF(112.0f);
         isSrvExpanded = true;
         srvText = m_hoveredServer ? L"nginx log" : L"nginx is up";
     } else if (m_serverState == ServerState::Failed && !m_serverLogOpened) {
@@ -344,8 +344,8 @@ void TitleHeader::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCon
         dbW = config.ScaleF(122.0f);
         isDbExpanded = true;
         dbText = L"Retrying... (" + std::to_wstring(m_databaseRetryCount) + L"/3)";
-    } else if (m_databaseState == DatabaseState::Running && !m_databaseLogOpened) {
-        dbW = config.ScaleF(134.0f);
+    } else if (m_databaseState == DatabaseState::Running) {
+        dbW = config.ScaleF(138.0f);
         isDbExpanded = true;
         dbText = m_hoveredDatabase ? L"phpMyAdmin log" : L"phpMyAdmin is up";
     } else if (m_databaseState == DatabaseState::Failed && !m_databaseLogOpened) {
@@ -362,7 +362,7 @@ void TitleHeader::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCon
 
     // --- Render Web Server Button (nginx) ---
     D2D1_ROUNDED_RECT rrcServer = D2D1::RoundedRect(m_rcServer, 5.0f, 5.0f);
-    if (m_serverState == ServerState::Running && !m_serverLogOpened) {
+    if (m_serverState == ServerState::Running) {
         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> bBg, bBdr;
         pRT->CreateSolidColorBrush(D2D1::ColorF(0.12f, 0.50f, 0.25f, 0.22f), &bBg);
         pRT->CreateSolidColorBrush(D2D1::ColorF(0.20f, 0.70f, 0.35f, 0.65f), &bBdr);
@@ -387,7 +387,7 @@ void TitleHeader::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCon
 
     D2D1_RECT_F rcSrvIcon = D2D1::RectF(srvBtnX, extBtnY, srvBtnX + extBtnW, extBtnY + extBtnH);
     ID2D1Brush* pSrvBrush = theme.IsDarkMode() ? theme.brushTextWhite.Get() : theme.brushTextPrimary.Get();
-    if (m_serverState == ServerState::Running && !m_serverLogOpened) {
+    if (m_serverState == ServerState::Running) {
         pSrvBrush = theme.brushRunGreen ? theme.brushRunGreen.Get() : theme.brushTextWhite.Get();
     } else if (m_serverState == ServerState::Failed && !m_serverLogOpened) {
         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> bRed;
@@ -417,7 +417,7 @@ void TitleHeader::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCon
 
     // --- Render Database Button (phpMyAdmin) ---
     D2D1_ROUNDED_RECT rrcDatabase = D2D1::RoundedRect(m_rcDatabase, 5.0f, 5.0f);
-    if (m_databaseState == DatabaseState::Running && !m_databaseLogOpened) {
+    if (m_databaseState == DatabaseState::Running) {
         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> bBg, bBdr;
         // User requirement: "the database color is white the icon and name"
         // Translucent white glass pill with white border
@@ -450,7 +450,7 @@ void TitleHeader::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCon
 
     D2D1_RECT_F rcDbIcon = D2D1::RectF(dbBtnX, extBtnY, dbBtnX + extBtnW, extBtnY + extBtnH);
     ID2D1Brush* pDbBrush = theme.brushTextWhite ? theme.brushTextWhite.Get() : theme.brushTextPrimary.Get();
-    if (m_databaseState == DatabaseState::Running && !m_databaseLogOpened) {
+    if (m_databaseState == DatabaseState::Running) {
         // User explicitly specified: "the database color is white the icon and name"
         pDbBrush = theme.brushTextWhite ? theme.brushTextWhite.Get() : theme.brushTextPrimary.Get();
     } else if (m_databaseState == DatabaseState::Retrying) {

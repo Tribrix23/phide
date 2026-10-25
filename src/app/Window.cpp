@@ -229,6 +229,9 @@ Window::Window() {
 }
 
 Window::~Window() {
+    StopPhpServer();
+    StopNginxServer();
+    StopPmaServer();
     DiscardDeviceResources();
     if (m_hwnd) {
         KillTimer(m_hwnd, m_caretTimerId);
@@ -2493,6 +2496,9 @@ void Window::StopLiveServer(const std::wstring& filePath, bool closeTab) {
     if (filePath.empty()) return;
     for (auto it = m_activeLiveServers.begin(); it != m_activeLiveServers.end(); ++it) {
         if (_wcsicmp(it->filePath.c_str(), filePath.c_str()) == 0) {
+            if (it->framework == L"PHP Server") {
+                StopPhpServer();
+            }
             auto serverToStop = std::move(it->server);
             m_activeLiveServers.erase(it);
             if (serverToStop) {
@@ -2512,6 +2518,9 @@ void Window::StopLiveServer(const std::wstring& filePath, bool closeTab) {
 }
 
 void Window::StopAllLiveServers() {
+    StopPhpServer();
+    StopNginxServer();
+    StopPmaServer();
     for (auto& s : m_activeLiveServers) {
         auto serverToStop = std::move(s.server);
         if (serverToStop) {
@@ -3178,6 +3187,9 @@ void Window::DoStopServer() {
     if (m_terminal.IsDebugActive()) {
         m_terminal.StopDebugSession();
     }
+    StopPhpServer();
+    StopNginxServer();
+    StopPmaServer();
     m_header.SetServerState(ui::ServerState::Stopped);
     m_header.SetDatabaseState(ui::DatabaseState::Stopped);
     m_header.SetServerLogOpened(false);
@@ -3189,6 +3201,9 @@ void Window::DoStopServer() {
 
 void Window::DoRestartServer() {
     m_header.SetRunErrorStopped(false);
+    StopPhpServer();
+    StopNginxServer();
+    StopPmaServer();
     m_header.SetServerState(ui::ServerState::Stopped);
     m_header.SetDatabaseState(ui::DatabaseState::Stopped);
     m_header.SetServerLogOpened(false);
@@ -3286,6 +3301,123 @@ void Window::DoOpenErrorLog() {
     InvalidateRect(m_hwnd, nullptr, FALSE);
 }
 
+void Window::StartPhpServer(const std::wstring& rootDir, int port) {
+    StopPhpServer();
+    std::wstring phpExe = L"C:\\Users\\Administrator\\AppData\\Local\\Programs\\PHP\\v8.5\\php.exe";
+    if (!std::filesystem::exists(phpExe)) {
+        phpExe = L"php.exe";
+    }
+    std::wstring cmd = L"\"" + phpExe + L"\" -S 127.0.0.1:" + std::to_wstring(port) + L" -t \"" + rootDir + L"\"";
+    std::vector<wchar_t> cmdBuf(cmd.begin(), cmd.end());
+    cmdBuf.push_back(L'\0');
+
+    STARTUPINFOW si{};
+    si.cb = sizeof(si);
+    si.dwFlags = STARTF_USESHOWWINDOW;
+    si.wShowWindow = SW_HIDE;
+    PROCESS_INFORMATION pi{};
+    if (CreateProcessW(NULL, cmdBuf.data(), NULL, NULL, FALSE, CREATE_NO_WINDOW, NULL, rootDir.c_str(), &si, &pi)) {
+        m_hPhpServerProcess = pi.hProcess;
+        CloseHandle(pi.hThread);
+    }
+}
+
+void Window::StopPhpServer() {
+    if (m_hPhpServerProcess) {
+        TerminateProcess(m_hPhpServerProcess, 0);
+        CloseHandle(m_hPhpServerProcess);
+        m_hPhpServerProcess = nullptr;
+    }
+}
+
+void Window::StartNginxServer() {
+    StopNginxServer();
+    std::filesystem::path nginxDir = std::filesystem::current_path() / L"include" / L"phide" / L"server" / L"nginx";
+    std::filesystem::path nginxExe = nginxDir / L"nginx.exe";
+    if (!std::filesystem::exists(nginxExe)) {
+        m_header.SetServerState(ui::ServerState::Failed);
+        return;
+    }
+    std::wstring cmd = L"\"" + nginxExe.wstring() + L"\"";
+    std::vector<wchar_t> cmdBuf(cmd.begin(), cmd.end());
+    cmdBuf.push_back(L'\0');
+
+    STARTUPINFOW si{};
+    si.cb = sizeof(si);
+    si.dwFlags = STARTF_USESHOWWINDOW;
+    si.wShowWindow = SW_HIDE;
+    PROCESS_INFORMATION pi{};
+    if (CreateProcessW(NULL, cmdBuf.data(), NULL, NULL, FALSE, CREATE_NO_WINDOW, NULL, nginxDir.wstring().c_str(), &si, &pi)) {
+        m_hNginxProcess = pi.hProcess;
+        CloseHandle(pi.hThread);
+        m_header.SetServerState(ui::ServerState::Running);
+    } else {
+        m_header.SetServerState(ui::ServerState::Failed);
+    }
+}
+
+void Window::StopNginxServer() {
+    if (m_hNginxProcess) {
+        std::filesystem::path nginxDir = std::filesystem::current_path() / L"include" / L"phide" / L"server" / L"nginx";
+        std::filesystem::path nginxExe = nginxDir / L"nginx.exe";
+        std::wstring cmd = L"\"" + nginxExe.wstring() + L"\" -s stop";
+        std::vector<wchar_t> cmdBuf(cmd.begin(), cmd.end());
+        cmdBuf.push_back(L'\0');
+        STARTUPINFOW si{};
+        si.cb = sizeof(si);
+        si.dwFlags = STARTF_USESHOWWINDOW;
+        si.wShowWindow = SW_HIDE;
+        PROCESS_INFORMATION pi{};
+        if (CreateProcessW(NULL, cmdBuf.data(), NULL, NULL, FALSE, CREATE_NO_WINDOW, NULL, nginxDir.wstring().c_str(), &si, &pi)) {
+            WaitForSingleObject(pi.hProcess, 500);
+            CloseHandle(pi.hProcess);
+            CloseHandle(pi.hThread);
+        }
+        TerminateProcess(m_hNginxProcess, 0);
+        CloseHandle(m_hNginxProcess);
+        m_hNginxProcess = nullptr;
+    }
+    m_header.SetServerState(ui::ServerState::Stopped);
+}
+
+void Window::StartPmaServer() {
+    StopPmaServer();
+    std::filesystem::path pmaDir = std::filesystem::current_path() / L"include" / L"phide" / L"db" / L"phpMyAdmin";
+    if (!std::filesystem::exists(pmaDir)) {
+        m_header.SetDatabaseState(ui::DatabaseState::Failed);
+        return;
+    }
+    std::wstring phpExe = L"C:\\Users\\Administrator\\AppData\\Local\\Programs\\PHP\\v8.5\\php.exe";
+    if (!std::filesystem::exists(phpExe)) {
+        phpExe = L"php.exe";
+    }
+    std::wstring cmd = L"\"" + phpExe + L"\" -S 127.0.0.1:8081 -t \"" + pmaDir.wstring() + L"\"";
+    std::vector<wchar_t> cmdBuf(cmd.begin(), cmd.end());
+    cmdBuf.push_back(L'\0');
+
+    STARTUPINFOW si{};
+    si.cb = sizeof(si);
+    si.dwFlags = STARTF_USESHOWWINDOW;
+    si.wShowWindow = SW_HIDE;
+    PROCESS_INFORMATION pi{};
+    if (CreateProcessW(NULL, cmdBuf.data(), NULL, NULL, FALSE, CREATE_NO_WINDOW, NULL, pmaDir.wstring().c_str(), &si, &pi)) {
+        m_hPmaProcess = pi.hProcess;
+        CloseHandle(pi.hThread);
+        m_header.SetDatabaseState(ui::DatabaseState::Running);
+    } else {
+        m_header.SetDatabaseState(ui::DatabaseState::Failed);
+    }
+}
+
+void Window::StopPmaServer() {
+    if (m_hPmaProcess) {
+        TerminateProcess(m_hPmaProcess, 0);
+        CloseHandle(m_hPmaProcess);
+        m_hPmaProcess = nullptr;
+    }
+    m_header.SetDatabaseState(ui::DatabaseState::Stopped);
+}
+
 void Window::DoRunPhpApplication(const std::wstring& filePath, const std::wstring& projectRoot) {
     auto& srvCfg = m_header.GetServerDatabaseConfig();
 
@@ -3294,11 +3426,8 @@ void Window::DoRunPhpApplication(const std::wstring& filePath, const std::wstrin
     if (needServer) {
         m_header.SetServerState(ui::ServerState::Starting);
         m_header.SetServerLogOpened(false);
-        std::filesystem::path nginxExe = std::filesystem::current_path() / L"include" / L"phide" / L"server" / L"nginx" / L"nginx.exe";
-        std::error_code ecSrv;
-        if (std::filesystem::exists(nginxExe, ecSrv)) {
-            m_header.SetServerState(ui::ServerState::Running);
-        } else {
+        StartNginxServer();
+        if (m_header.GetServerState() != ui::ServerState::Running) {
             m_header.SetServerState(ui::ServerState::Failed);
             m_header.SetRunErrorStopped(true);
             m_lastTerminalErrorText = L"nginx.exe not found or failed to initialize";
@@ -3312,25 +3441,28 @@ void Window::DoRunPhpApplication(const std::wstring& filePath, const std::wstrin
     if (needDb) {
         m_header.SetDatabaseState(ui::DatabaseState::Starting);
         m_header.SetDatabaseLogOpened(false);
-        std::filesystem::path pmaDir = std::filesystem::current_path() / L"include" / L"phide" / L"db" / L"phpMyAdmin";
-        std::error_code ecDb;
-        if (std::filesystem::exists(pmaDir, ecDb)) {
-            m_header.SetDatabaseState(ui::DatabaseState::Running);
-        } else {
+        StartPmaServer();
+        if (m_header.GetDatabaseState() != ui::DatabaseState::Running) {
             // Auto retry up to 3 times
             for (int r = 1; r <= 3; ++r) {
                 m_header.SetDatabaseRetryCount(r);
                 m_header.SetDatabaseState(ui::DatabaseState::Retrying);
+                StartPmaServer();
+                if (m_header.GetDatabaseState() == ui::DatabaseState::Running) break;
             }
-            m_header.SetDatabaseState(ui::DatabaseState::Failed);
+            if (m_header.GetDatabaseState() != ui::DatabaseState::Running) {
+                m_header.SetDatabaseState(ui::DatabaseState::Failed);
+            }
         }
     }
 
-    // 3. Open terminal tab for PHP Server
+    // 3. Open terminal tab for PHP Server and launch PHP process
     std::filesystem::path p(filePath);
     std::wstring fileName = p.filename().wstring();
     std::wstring folder = p.parent_path().wstring();
     if (folder.empty()) folder = projectRoot;
+
+    StartPhpServer(folder, 8080);
 
     std::wstring localUrl = L"http://localhost:8080/" + fileName;
     std::wstring networkUrl = L"http://192.168.1.105:8080/" + fileName;
@@ -4871,10 +5003,48 @@ void Window::HandleLButtonDown(POINT clientPt) {
                 SetClipboardText(m_hwnd, m_dbSettingsModal.GetNginxConfigPath());
                 m_dbSettingsModal.SetCopiedFeedback(L"Nginx Config Path");
                 break;
+            case ui::DatabaseModalAction::TogglePmaRun: {
+                if (m_hPmaProcess != nullptr || m_header.GetDatabaseState() == ui::DatabaseState::Running) {
+                    StopPmaServer();
+                } else {
+                    StartPmaServer();
+                }
+                m_dbSettingsModal.SetRuntimeStatus(
+                    m_header.GetDatabaseState() == ui::DatabaseState::Running,
+                    m_header.GetServerState() == ui::ServerState::Running
+                );
+                break;
+            }
+            case ui::DatabaseModalAction::ToggleServerRun: {
+                if (m_hNginxProcess != nullptr || m_header.GetServerState() == ui::ServerState::Running) {
+                    StopNginxServer();
+                } else {
+                    StartNginxServer();
+                }
+                m_dbSettingsModal.SetRuntimeStatus(
+                    m_header.GetDatabaseState() == ui::DatabaseState::Running,
+                    m_header.GetServerState() == ui::ServerState::Running
+                );
+                break;
+            }
             case ui::DatabaseModalAction::OpenBrowserPma:
+                if (m_hPmaProcess == nullptr && m_header.GetDatabaseState() != ui::DatabaseState::Running) {
+                    StartPmaServer();
+                    m_dbSettingsModal.SetRuntimeStatus(
+                        m_header.GetDatabaseState() == ui::DatabaseState::Running,
+                        m_header.GetServerState() == ui::ServerState::Running
+                    );
+                }
                 ShellExecuteW(nullptr, L"open", m_dbSettingsModal.GetPmaUrl().c_str(), nullptr, nullptr, SW_SHOWNORMAL);
                 break;
             case ui::DatabaseModalAction::OpenBrowserNginx:
+                if (m_hNginxProcess == nullptr && m_header.GetServerState() != ui::ServerState::Running) {
+                    StartNginxServer();
+                    m_dbSettingsModal.SetRuntimeStatus(
+                        m_header.GetDatabaseState() == ui::DatabaseState::Running,
+                        m_header.GetServerState() == ui::ServerState::Running
+                    );
+                }
                 ShellExecuteW(nullptr, L"open", m_dbSettingsModal.GetNginxUrl().c_str(), nullptr, nullptr, SW_SHOWNORMAL);
                 break;
             case ui::DatabaseModalAction::EditPmaConfig: {
