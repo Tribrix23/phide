@@ -61,6 +61,8 @@ TerminalTab::~TerminalTab() {
 
 void TerminalTab::Terminate() {
     isAlive = false;
+    onErrorCallback = nullptr;
+    onOutput = nullptr;
     if (splitTab) {
         splitTab->Terminate();
         splitTab.reset();
@@ -157,6 +159,10 @@ void TerminalTab::AppendOutput(const char* data, size_t length, bool isError) {
         std::wstring checkText = wstr;
         for (auto& c : checkText) c = static_cast<wchar_t>(towlower(c));
         if (isError ||
+            checkText.find(L"error:") != std::wstring::npos ||
+            checkText.find(L": error") != std::wstring::npos ||
+            checkText.find(L"error ") != std::wstring::npos ||
+            checkText.find(L"[error]") != std::wstring::npos ||
             checkText.find(L"not recognized as the name of a cmdlet") != std::wstring::npos ||
             checkText.find(L"not recognized as an internal or external command") != std::wstring::npos ||
             checkText.find(L"commandnotfoundexception") != std::wstring::npos ||
@@ -166,7 +172,8 @@ void TerminalTab::AppendOutput(const char* data, size_t length, bool isError) {
             checkText.find(L"modulenotfounderror") != std::wstring::npos ||
             checkText.find(L"cannot find module") != std::wstring::npos ||
             checkText.find(L"fatal error") != std::wstring::npos ||
-            checkText.find(L"failed to compile") != std::wstring::npos) {
+            checkText.find(L"failed to compile") != std::wstring::npos ||
+            checkText.find(L"syntaxerror") != std::wstring::npos) {
             hasError = true;
             if (lastErrorText.empty()) {
                 std::wstring line = wstr;
@@ -174,6 +181,9 @@ void TerminalTab::AppendOutput(const char* data, size_t length, bool isError) {
                 if (nl != std::wstring::npos) line = line.substr(0, nl);
                 while (!line.empty() && (line.back() == L'\r' || line.back() == L' ')) line.pop_back();
                 lastErrorText = line;
+            }
+            if (onErrorCallback) {
+                onErrorCallback(associatedFilePath, lastErrorText);
             }
         }
     }
@@ -615,6 +625,19 @@ void TerminalPanel::StartShellProcess(TerminalTab& tab) {
                 buffer[bytesRead] = '\0';
                 pTab->AppendOutput(buffer, bytesRead, false);
             }
+            if (pTab->isAlive.load() && pTab->isServerTab && pTab->hProcess) {
+                WaitForSingleObject(pTab->hProcess, 100);
+                DWORD exitCode = 0;
+                if (pTab->isAlive.load() && GetExitCodeProcess(pTab->hProcess, &exitCode) && exitCode != STILL_ACTIVE && exitCode != 0) {
+                    pTab->hasError = true;
+                    if (pTab->lastErrorText.empty()) {
+                        pTab->lastErrorText = L"Process exited with error code " + std::to_wstring(exitCode);
+                    }
+                    if (pTab->isAlive.load() && pTab->onErrorCallback) {
+                        pTab->onErrorCallback(pTab->associatedFilePath, pTab->lastErrorText);
+                    }
+                }
+            }
         });
 
         // Background asynchronous stderr reader thread (Errors rendered in vibrant RED matching Image 3)
@@ -624,6 +647,19 @@ void TerminalPanel::StartShellProcess(TerminalTab& tab) {
             while (pTab->isAlive.load() && ReadFile(hStderrRead, buffer, sizeof(buffer) - 1, &bytesRead, NULL) && bytesRead > 0) {
                 buffer[bytesRead] = '\0';
                 pTab->AppendOutput(buffer, bytesRead, true);
+            }
+            if (pTab->isAlive.load() && pTab->isServerTab && pTab->hProcess) {
+                WaitForSingleObject(pTab->hProcess, 100);
+                DWORD exitCode = 0;
+                if (pTab->isAlive.load() && GetExitCodeProcess(pTab->hProcess, &exitCode) && exitCode != STILL_ACTIVE && exitCode != 0) {
+                    pTab->hasError = true;
+                    if (pTab->lastErrorText.empty()) {
+                        pTab->lastErrorText = L"Process exited with error code " + std::to_wstring(exitCode);
+                    }
+                    if (pTab->isAlive.load() && pTab->onErrorCallback) {
+                        pTab->onErrorCallback(pTab->associatedFilePath, pTab->lastErrorText);
+                    }
+                }
             }
         });
     } else {
@@ -981,14 +1017,8 @@ void TerminalPanel::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppC
         }
     }
 
-    // 2. Top Resizing Splitter (4px border)
+    // 2. Top Resizing Splitter (hit-testable drag handle, zero border lines drawn per user request: "gap is space, not a line")
     m_splitterBounds = D2D1::RectF(panelX, panelY, panelX + panelW, panelY + config.ScaleF(4.0f));
-    pRT->DrawLine(
-        D2D1::Point2F(panelX + cornerRadius, panelY),
-        D2D1::Point2F(panelX + panelW, panelY),
-        theme.brushBorderSubtle.Get(),
-        1.0f
-    );
 
     // 3. Header Toolbar (Image 1)
     float headerH = config.ScaleF(32.0f);
@@ -2023,6 +2053,7 @@ void TerminalPanel::StartServerSession(const std::wstring& serverTitle, const st
         tab->title = serverTitle;
         tab->associatedFilePath = projectRoot;
         tab->workingDir = workingDir.empty() ? m_defaultWorkingDir : workingDir;
+        tab->onErrorCallback = m_onServerError;
         tab->hasError = false;
         tab->lastErrorText.clear();
         std::lock_guard<std::mutex> lock(tab->bufferMutex);
@@ -2038,6 +2069,7 @@ void TerminalPanel::StartServerSession(const std::wstring& serverTitle, const st
         newTab->associatedFilePath = projectRoot;
         newTab->workingDir = workingDir.empty() ? m_defaultWorkingDir : workingDir;
         newTab->onOutput = m_outputCallback;
+        newTab->onErrorCallback = m_onServerError;
         newTab->hasError = false;
         newTab->lastErrorText.clear();
         m_tabs.push_back(std::move(newTab));

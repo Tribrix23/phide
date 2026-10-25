@@ -163,6 +163,7 @@ struct TerminalTab {
     bool isServerTab = false;
     bool hasError = false;
     std::wstring lastErrorText;
+    std::function<void(const std::wstring&, const std::wstring&)> onErrorCallback;
 
     HANDLE hProcess = NULL;
     HANDLE hThread = NULL;
@@ -254,6 +255,7 @@ public:
     [[nodiscard]] TerminalTab* FindServerTab(const std::wstring& projectRoot);
     bool CloseTabByAssociatedFile(const std::wstring& filePath);
     void SetOnLiveServerTabClosed(std::function<void(const std::wstring&)> cb) { m_onLiveServerTabClosed = std::move(cb); }
+    void SetOnServerError(std::function<void(const std::wstring&, const std::wstring&)> cb) { m_onServerError = std::move(cb); }
     void SetOnMinimize(std::function<void()> cb) { m_onMinimize = std::move(cb); }
     void ExecuteCommandLine(const std::wstring& command);
 
@@ -392,6 +394,7 @@ private:
     bool m_hoverClearConsole = false;
     mutable std::vector<TerminalUrlHit> m_visibleUrls;
     std::function<void(const std::wstring&)> m_onLiveServerTabClosed;
+    std::function<void(const std::wstring&, const std::wstring&)> m_onServerError;
     std::function<void()> m_onMinimize;
     std::function<void(bool)> m_onToggleFullScreen;
     float m_fullScreenProgress = 0.0f;

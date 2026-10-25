@@ -530,7 +530,9 @@ private:
 
     server::LiveServer m_liveServer; // backwards compatibility / fallback
     D2D1_RECT_F m_liveServerPillBounds{};
+    D2D1_RECT_F m_liveServerCloseBounds{};
     bool m_hoverLiveServerPill = false;
+    bool m_hoverLiveServerClose = false;
     workspace::WorkspaceManager m_workspace;
     workspace::ExplorerUndoManager m_explorerUndo;
     editor::SnippetManager m_snippetManager;

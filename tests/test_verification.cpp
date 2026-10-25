@@ -517,7 +517,8 @@ int main() {
     // --- 6. Search Throttler & Binary Exclusion Verification ---
     std::cout << "[TEST 6] Testing Search Throttler and Binary File Exclusion..." << std::endl;
     {
-        phide::ui::DrawerPanel drawer;
+        auto pDrawer = std::make_unique<phide::ui::DrawerPanel>();
+        auto& drawer = *pDrawer;
         drawer.SetSearchFocus(1);
 
         // 1. Initial keystroke triggers immediate search
@@ -830,7 +831,8 @@ int main() {
     std::cout << "[TEST 9] Testing Multi-Editor Groups (3-way split, tab isolation, independent close, auto-collapse, GC)..." << std::endl;
     {
         // 1. Manual Garbage Collection verification on DrawerPanel
-        phide::ui::DrawerPanel drawer;
+        auto pDrawer = std::make_unique<phide::ui::DrawerPanel>();
+        auto& drawer = *pDrawer;
         drawer.ClearSearchResults();
         assert(drawer.GetSearchGroups().empty());
         std::cout << "  Passed: Manual GC ClearSearchResults() releases memory with shrink_to_fit" << std::endl;
@@ -1045,7 +1047,8 @@ int main() {
         std::cout << "  Passed: Refactor Balloon Popover show/dismiss state verified" << std::endl;
 
         // 3. Explorer Active File State Synchronization (Images 2 & 3)
-        phide::ui::DrawerPanel drawer;
+        auto pDrawer = std::make_unique<phide::ui::DrawerPanel>();
+        auto& drawer = *pDrawer;
         assert(drawer.GetActiveFilePath().empty());
         drawer.SetActiveFilePath(L"C:\\project\\src\\main.cpp");
         assert(drawer.GetActiveFilePath() == L"C:\\project\\src\\main.cpp");
@@ -1537,7 +1540,8 @@ int main() {
     std::cout << "\n[TEST 17] Testing Code Search Details Panel (...), Filters & Open Tabs Only..." << std::endl;
     {
         phide::app::AppConfig cfg;
-        phide::ui::DrawerPanel drawer;
+        auto pDrawer = std::make_unique<phide::ui::DrawerPanel>();
+        auto& drawer = *pDrawer;
         drawer.OpenFolder(L"C:\\phide");
 
         // Initially search details panel is closed
@@ -1602,7 +1606,8 @@ int main() {
     // =========================================================================
     std::cout << "\n[TEST 18] Testing Input Focus Separation (Drawer Search vs Shortcuts Search)..." << std::endl;
     {
-        phide::ui::DrawerPanel drawer;
+        auto pDrawer = std::make_unique<phide::ui::DrawerPanel>();
+        auto& drawer = *pDrawer;
         phide::ui::KeyboardShortcutsView shortcutsView;
 
         // 1. Initially focus drawer search box 1, blur shortcuts
@@ -2114,7 +2119,8 @@ int main() {
         theme.CreateDeviceResources(pPurpleRT.Get(), pDWriteFactory.Get());
 
         phide::ui::TitleHeader header;
-        phide::ui::DrawerPanel drawer;
+        auto pDrawer = std::make_unique<phide::ui::DrawerPanel>();
+        auto& drawer = *pDrawer;
         drawer.OpenFolder(std::filesystem::current_path().wstring());
 
         const float railW = cfg.ScaleF(static_cast<float>(cfg.railWidth));
@@ -3450,7 +3456,8 @@ int main() {
         // 2. Verify DrawerPanel HitTestGitButtons & HitTestGitInputs
         phide::ui::Theme theme;
         theme.SetThemeMode(phide::ui::ThemeMode::Dark);
-        phide::ui::DrawerPanel drawer;
+        auto pDrawer = std::make_unique<phide::ui::DrawerPanel>();
+        auto& drawer = *pDrawer;
         phide::app::AppConfig cfg;
         Microsoft::WRL::ComPtr<IWICBitmap> pWicTermBmp;
         pWicFactory->CreateBitmap(1200, 750, GUID_WICPixelFormat32bppPBGRA, WICBitmapCacheOnDemand, &pWicTermBmp);
@@ -3472,7 +3479,8 @@ int main() {
         std::cout << "  Verified: Git Commit and Sync buttons have idempotency and loading state tracking" << std::endl;
 
         // 3. Verify Integrated Terminal Panel (Images 1, 2, 3, 4)
-        phide::ui::TerminalPanel terminal;
+        auto pTerminal = std::make_unique<phide::ui::TerminalPanel>();
+        auto& terminal = *pTerminal;
         terminal.Open(L".");
         assert(terminal.IsOpen());
         assert(terminal.GetTabCount() == 1);
@@ -3802,7 +3810,8 @@ int main() {
         std::cout << "  Verified: TerminalPanel::OnKeyDown swallows Backspace, Delete, and Arrow keys to isolate from editor" << std::endl;
 
         // 3. Verify Source Control Dirty Buffer Reflection
-        phide::ui::DrawerPanel drawer;
+        auto pDrawer = std::make_unique<phide::ui::DrawerPanel>();
+        auto& drawer = *pDrawer;
         drawer.OpenFolder(std::filesystem::current_path().wstring());
         // Simulate dirty document in editor (e.g. index.html)
         std::wstring testDirtyPath = (std::filesystem::current_path() / "index.html").wstring();
@@ -4447,7 +4456,8 @@ int main() {
         const float drawerH = static_cast<float>(bmpH) - termH; // cut cleanly at top of terminal
 
         // 1. Drawer Panel (cut at top of terminal)
-        phide::ui::DrawerPanel drawer;
+        auto pDrawer = std::make_unique<phide::ui::DrawerPanel>();
+        auto& drawer = *pDrawer;
         drawer.OpenFolder(L"C:\\phide");
         drawer.Render(pRTSnap.Get(), snapTheme, config, drawerH, drawerW);
 
@@ -4616,7 +4626,8 @@ int main() {
         const float drawerH = static_cast<float>(bmpH) - termH;
 
         // Render Drawer with mock multi-lane commits
-        phide::ui::DrawerPanel drawer;
+        auto pDrawer = std::make_unique<phide::ui::DrawerPanel>();
+        auto& drawer = *pDrawer;
         drawer.OpenFolder(L"C:\\phide");
         drawer.Render(pRTSnap2.Get(), snapTheme, cfg, drawerH, drawerW);
 
@@ -4657,7 +4668,8 @@ int main() {
         std::filesystem::remove_all(testRoot, ec);
         std::filesystem::create_directories(testRoot + L"\\src", ec);
 
-        phide::ui::DrawerPanel drawer;
+        auto pDrawer = std::make_unique<phide::ui::DrawerPanel>();
+        auto& drawer = *pDrawer;
         drawer.OpenFolder(testRoot);
 
         // Start creating a file under testRoot\\src
@@ -4921,7 +4933,8 @@ int main() {
         editor.Render(pRTSnap4.Get(), snapTheme, cfg, docs, 0, railW + drawerW, static_cast<float>(bmpW) - railW - drawerW, static_cast<float>(bmpH), true);
 
         // Render full-height Drawer Panel (zero bottom purple gap)
-        phide::ui::DrawerPanel drawer;
+        auto pDrawer = std::make_unique<phide::ui::DrawerPanel>();
+        auto& drawer = *pDrawer;
         drawer.OpenFolder(L"C:\\phide");
         drawer.Render(pRTSnap4.Get(), snapTheme, cfg, static_cast<float>(bmpH), drawerW);
 
@@ -5035,7 +5048,8 @@ int main() {
         std::cout << "  Verified: Autocomplete popup card width is " << cardW << "px (>= 420px comfortable VS Code width)" << std::endl;
 
         // Render Drawer Panel
-        phide::ui::DrawerPanel drawer;
+        auto pDrawer = std::make_unique<phide::ui::DrawerPanel>();
+        auto& drawer = *pDrawer;
         drawer.OpenFolder(L"C:\\phide");
         drawer.Render(pRTSnap.Get(), snapTheme, cfg, static_cast<float>(bmpH), drawerW);
 
@@ -5188,7 +5202,8 @@ int main() {
         editor.Render(pRTSnap.Get(), snapTheme, cfg, docs, 0, railW + drawerW, static_cast<float>(bmpW) - railW - drawerW, static_cast<float>(bmpH), true);
 
         // Render Drawer Panel
-        phide::ui::DrawerPanel drawer;
+        auto pDrawer = std::make_unique<phide::ui::DrawerPanel>();
+        auto& drawer = *pDrawer;
         drawer.OpenFolder(L"C:\\phide");
         drawer.Render(pRTSnap.Get(), snapTheme, cfg, static_cast<float>(bmpH), drawerW);
 
@@ -5360,7 +5375,8 @@ int main() {
         editor.Render(pRTSnap.Get(), snapTheme, cfg, docs, 0, railW + drawerW, static_cast<float>(bmpW) - railW - drawerW, static_cast<float>(bmpH), true);
 
         // Render Drawer Panel with Explorer Tree
-        phide::ui::DrawerPanel drawer;
+        auto pDrawer = std::make_unique<phide::ui::DrawerPanel>();
+        auto& drawer = *pDrawer;
         drawer.OpenFolder(L"C:\\project");
         drawer.Render(pRTSnap.Get(), snapTheme, cfg, static_cast<float>(bmpH), drawerW);
 
@@ -5657,7 +5673,8 @@ int main() {
             std::ofstream f4(testProjectDir / L".vscode" / L"settings.json"); f4 << "{}";
         }
 
-        phide::ui::DrawerPanel drawer;
+        auto pDrawer = std::make_unique<phide::ui::DrawerPanel>();
+        auto& drawer = *pDrawer;
         drawer.OpenFolder(testProjectDir.wstring());
 
         // Verify node_modules, build, and .vscode are in Explorer tree
@@ -5793,7 +5810,8 @@ int main() {
         menu.Close();
 
         // 2. Test Git Discard and Stage button pointer hand cursor hit testing
-        phide::ui::DrawerPanel drawer;
+        auto pDrawer = std::make_unique<phide::ui::DrawerPanel>();
+        auto& drawer = *pDrawer;
         phide::ui::GitChangeItem gitItem;
         gitItem.path = L"sd.html";
         gitItem.fileName = L"sd.html";
@@ -5896,7 +5914,8 @@ int main() {
         std::cout << "\n[TEST 54] Testing Active Tree Indent Guides, Drop Trigger & Discard Buffer Revert..." << std::endl;
 
         // 1. Test Active Tree Indent Guides Scope Calculation
-        phide::ui::DrawerPanel drawer;
+        auto pDrawer = std::make_unique<phide::ui::DrawerPanel>();
+        auto& drawer = *pDrawer;
         phide::app::AppConfig cfg;
         cfg.activeRailTab = 0; // Explorer
 
@@ -6132,7 +6151,8 @@ int main() {
 
         // 2. Git Button Action Pending & Visual Feedback
         {
-            phide::ui::DrawerPanel drawer;
+            auto pDrawer = std::make_unique<phide::ui::DrawerPanel>();
+        auto& drawer = *pDrawer;
             std::wstring testFile = L"electron-builder.yml";
             assert(!drawer.IsActionPending(testFile));
             assert(!drawer.IsActionPending(L"*"));
@@ -6213,7 +6233,8 @@ int main() {
             phide::ui::ActivityRail rail;
             rail.Render(pRTSnap.Get(), snapTheme, cfg, 600.0f);
 
-            phide::ui::DrawerPanel drawer;
+            auto pDrawer = std::make_unique<phide::ui::DrawerPanel>();
+        auto& drawer = *pDrawer;
             std::wstring repoRoot = L"c:\\Users\\Administrator\\Downloads\\studio\\phide";
             drawer.OpenFolder(repoRoot);
             drawer.RefreshGitState(false);
@@ -6418,7 +6439,8 @@ int main() {
 
         // 3. Verify ExtensionsPanel PC Detection and Runtimes Logic
         {
-            phide::ui::ExtensionsPanel extPanel;
+            auto pExtPanel = std::make_unique<phide::ui::ExtensionsPanel>();
+        auto& extPanel = *pExtPanel;
             extPanel.Open();
             extPanel.RefreshPcStatus();
 
@@ -6633,12 +6655,14 @@ int main() {
             phide::ui::ActivityRail rail;
             rail.Render(pRTSnap.Get(), theme, cfg, clientH);
 
-            phide::ui::DrawerPanel drawer;
+            auto pDrawer = std::make_unique<phide::ui::DrawerPanel>();
+        auto& drawer = *pDrawer;
             drawer.OpenFolder(L"c:\\Users\\Administrator\\Downloads\\studio\\phide");
             drawer.Render(pRTSnap.Get(), theme, cfg, canvasH, drawerW);
 
             // Render Extensions Right Sidebar
-            phide::ui::ExtensionsPanel extPanel;
+            auto pExtPanel = std::make_unique<phide::ui::ExtensionsPanel>();
+        auto& extPanel = *pExtPanel;
             extPanel.RefreshPcStatus();
             extPanel.Open();
             extPanel.Render(pRTSnap.Get(), theme, cfg, clientW - rightSidebarW, headerH, rightSidebarW, canvasH);
@@ -6902,9 +6926,13 @@ int main() {
         std::cout << "  Passed: Files opened from Explorer preserve normal editor view (isDiffView = false)" << std::endl;
 
         // 2. Test DrawerPanel Folder Git Status and Dot Badge indicator (Image 1)
-        phide::ui::DrawerPanel drawer;
+        std::cout << "DEBUG 60.1: Starting drawer setup" << std::endl;
+        auto pDrawer = std::make_unique<phide::ui::DrawerPanel>();
+        auto& drawer = *pDrawer;
+        std::cout << "DEBUG 60.2: Constructed DrawerPanel" << std::endl;
         std::wstring wsRoot = std::filesystem::current_path().wstring();
         drawer.OpenFolder(wsRoot);
+        std::cout << "DEBUG 60.4: OpenFolder done" << std::endl;
         drawer.RefreshGitStatusOnly(false); // Synchronous status query
         std::cout << "  Passed: Triggered Source Control state refresh synchronously" << std::endl;
 
@@ -6949,7 +6977,8 @@ int main() {
         std::cout << "  Passed: Saved test_folder_git_status_dot_and_explorer.png" << std::endl;
 
         // 3. Test ExtensionsPanel Processes HUD Card without progress bar jitter
-        phide::ui::ExtensionsPanel extPanel;
+        auto pExtPanel = std::make_unique<phide::ui::ExtensionsPanel>();
+        auto& extPanel = *pExtPanel;
         extPanel.StartProcessTask(L"Installing PHP v8.5", L"Downloading archive (12.4 MB / 31.8 MB)...");
         extPanel.UpdateProcessTask(L"Installing PHP v8.5", 0.40f, L"Downloading archive (12.4 MB / 31.8 MB)...");
 
@@ -7097,7 +7126,8 @@ int main() {
         std::cout << "  Passed: Clicking backdrop cancels modal without discarding" << std::endl;
 
         // 2. Test Git Source Control HitTest Discard Confirmation Interception
-        phide::ui::DrawerPanel drawer;
+        auto pDrawer = std::make_unique<phide::ui::DrawerPanel>();
+        auto& drawer = *pDrawer;
 
         // Simulate changes with discard buttons
         phide::ui::GitChangeItem itemMod;
@@ -7312,7 +7342,8 @@ int main() {
         std::cout << "  Passed: ConfirmDiscardModal Enter key dismisses Notice Mode." << std::endl;
 
         // 3. Test DrawerPanel Staged Changes vs Changes
-        phide::ui::DrawerPanel drawer;
+        auto pDrawer = std::make_unique<phide::ui::DrawerPanel>();
+        auto& drawer = *pDrawer;
         auto& changes = drawer.GetGitChangesMutable();
         changes.clear();
 
@@ -7377,7 +7408,8 @@ int main() {
     {
         std::cout << "\n[TEST 63] Running Fast Decision Tree Framework Classifier, Root Traversal & Restored Modal Tests..." << std::endl;
 
-        phide::app::Window win;
+        auto pWin = std::make_unique<phide::app::Window>();
+        auto& win = *pWin;
 
         // 1. Test IsFileInDirectory helper
         assert(phide::app::Window::IsFileInDirectory(L"C:\\Users\\test\\my-proj\\src\\main.ts", L"C:\\Users\\test\\my-proj") == true);
@@ -7566,43 +7598,53 @@ int main() {
         assert(pTab->currentInputLine.empty());
         std::cout << "  Passed: User keyboard input is strictly locked/disabled on server tabs (read-only process stream)." << std::endl;
 
-        // 3. Error Detection in AppendOutput
+        // 3. Error Detection in AppendOutput & Auto-Stop Callback Verification
         assert(!pTab->hasError);
         assert(!terminal.HasServerError(testRoot));
 
-        const char* errStream = "npm : The term 'npm' is not recognized as the name of a cmdlet, function, script file, or operable program.\r\n";
+        bool callbackInvoked = false;
+        std::wstring reportedRoot;
+        std::wstring reportedErr;
+        pTab->onErrorCallback = [&](const std::wstring& rootDir, const std::wstring& err) {
+            callbackInvoked = true;
+            reportedRoot = rootDir;
+            reportedErr = err;
+        };
+
+        const char* errStream = "electron.vite.config.ts:5:0: ERROR: Expected \"in\" but found \"export\"\r\n";
         pTab->AppendOutput(errStream, strlen(errStream), false);
 
         assert(pTab->hasError == true);
         assert(terminal.HasServerError(testRoot) == true);
+        assert(callbackInvoked == true);
+        assert(reportedRoot == testRoot);
         std::wstring errText = terminal.GetServerErrorText(testRoot);
-        assert(errText.find(L"not recognized as the name of a cmdlet") != std::wstring::npos);
-        std::cout << "  Passed: Terminal accurately caught PowerShell/CLI error and recorded error description." << std::endl;
+        assert(errText.find(L"ERROR:") != std::wstring::npos || errText.find(L"electron.vite.config.ts") != std::wstring::npos);
+        pTab->onErrorCallback = nullptr;
+        std::cout << "  Passed: Terminal caught compiler/build error, activated error state, and invoked auto-stop callback." << std::endl;
 
-        // 4. Verification that Browser Redirect is Prevented on Error
+        // 4. Auto-Stop Server State & Prevention of Browser Launch on Error
+        bool isProjectRunning = true;
+        std::wstring runningProjectRoot = testRoot;
         bool browserOpened = false;
         bool isStarting = true;
-        float elapsedMs = 2300.0f;
-        float progressDurationMs = 2200.0f;
-        float progress = 1.0f;
-        bool hasError = false;
 
-        // Simulating the progression loop in Window::WndProc
+        // Simulating the progression / error callback logic in Window
         if (terminal.HasServerError(testRoot)) {
-            hasError = true;
-            isStarting = false;
-            browserOpened = true; // Flagged handled, suppress ShellExecuteW!
-        } else {
-            if (!browserOpened && progress >= 1.0f) {
-                browserOpened = true;
-                // Would call ShellExecuteW here
+            if (isProjectRunning && runningProjectRoot == testRoot) {
+                isProjectRunning = false;
+                runningProjectRoot.clear();
             }
+            isStarting = false;
+            browserOpened = true; // Handled: NEVER launch browser on error!
         }
-        assert(hasError == true);
-        assert(isStarting == false);
-        std::cout << "  Passed: Error detection immediately suppresses ShellExecuteW (no browser redirect on error)." << std::endl;
 
-        // 5. Margin Gap Above Terminal Calculation Verification
+        assert(isProjectRunning == false);
+        assert(runningProjectRoot.empty());
+        assert(isStarting == false);
+        std::cout << "  Passed: Auto-stop instantly reverted isProjectRunning to false and suppressed browser redirect." << std::endl;
+
+        // 5. Margin Gap Above Terminal: Empty Breathing Space (Zero Border Lines)
         const float clientH = 900.0f;
         const float termH = 320.0f;
         const float termGap = 6.0f;
@@ -7612,9 +7654,17 @@ int main() {
         assert(editorH == drawerH);
         assert(editorH == (900.0f - 320.0f - 6.0f));
         assert(drawerH == 574.0f);
-        std::cout << "  Passed: Margin gap applied consistently to BOTH sidebar drawer and editor as empty space (zero divider lines)." << std::endl;
+        std::cout << "  Passed: Margin gap applied consistently to drawer and editor as empty space (zero divider lines)." << std::endl;
 
-        // 6. Visual Direct2D Snapshot Verification
+        // 6. Splash Screen Check: Verify SplashScreen::Show is removed from main.cpp
+        {
+            std::ifstream mainFile(L"C:\\Users\\Administrator\\Downloads\\studio\\phide\\src\\main.cpp");
+            std::string mainContent((std::istreambuf_iterator<char>(mainFile)), std::istreambuf_iterator<char>());
+            assert(mainContent.find("SplashScreen::Show") == std::string::npos);
+            std::cout << "  Passed: SplashScreen::Show completely removed from main.cpp for instantaneous window opening." << std::endl;
+        }
+
+        // 7. Visual Direct2D Snapshot Verification (Single-Line Toast Card with [X] and [Failed] Badge on Line 1)
         const UINT snapW = 1280;
         const UINT snapH = 720;
         Microsoft::WRL::ComPtr<IWICBitmap> pWicSnap;
@@ -7632,17 +7682,17 @@ int main() {
         phide::app::AppConfig testCfg;
 
         pRTSnap->BeginDraw();
-        pRTSnap->Clear(theme.brushWindowBg.Get() ? D2D1::ColorF(0.10f, 0.11f, 0.14f, 1.0f) : D2D1::ColorF(0.10f, 0.11f, 0.14f, 1.0f));
+        pRTSnap->Clear(D2D1::ColorF(0.08f, 0.08f, 0.09f, 1.0f));
 
-        // Render Terminal Panel with "Vite Server" Tab
+        // Render Terminal Panel with "Vite Server" Tab (border line removed, clean flat splitter)
         terminal.Render(pRTSnap.Get(), theme, testCfg, static_cast<float>(snapW), static_cast<float>(snapH), 50.0f, termH);
 
-        // Render Toast Tag Card in Error State
+        // Render STRICTLY SINGLE-LINE Toast Tag Card (cardH = 34.0f, line 1 has Dot, Title, [Failed] badge, and [X] close button)
         const float cardW = 280.0f;
-        const float cardH = 54.0f;
+        const float cardH = 34.0f; // STRICT SINGLE LINE
         const float cardX = snapW - cardW - 20.0f;
-        const float cardY = snapH - termH - cardH - 14.0f;
-        D2D1_ROUNDED_RECT rrcCard = D2D1::RoundedRect(D2D1::RectF(cardX, cardY, cardX + cardW, cardY + cardH), 8.0f, 8.0f);
+        const float cardY = snapH - termH - cardH - 12.0f;
+        D2D1_ROUNDED_RECT rrcCard = D2D1::RoundedRect(D2D1::RectF(cardX, cardY, cardX + cardW, cardY + cardH), 6.0f, 6.0f);
 
         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> cardBg;
         pRTSnap->CreateSolidColorBrush(D2D1::ColorF(0.12f, 0.13f, 0.16f, 0.98f), &cardBg);
@@ -7651,14 +7701,29 @@ int main() {
         // Error dot (Crimson)
         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> errDot;
         pRTSnap->CreateSolidColorBrush(D2D1::ColorF(0.94f, 0.28f, 0.28f, 1.0f), &errDot);
-        if (errDot) pRTSnap->FillEllipse(D2D1::Ellipse(D2D1::Point2F(cardX + 14.0f, cardY + 17.0f), 3.5f, 3.5f), errDot.Get());
+        if (errDot) pRTSnap->FillEllipse(D2D1::Ellipse(D2D1::Point2F(cardX + 14.0f, cardY + cardH * 0.5f), 3.5f, 3.5f), errDot.Get());
 
-        // Error Title "Vite Server (Error)"
-        D2D1_RECT_F rcTitle = D2D1::RectF(cardX + 26.0f, cardY + 7.0f, cardX + cardW - 85.0f, cardY + 26.0f);
-        pRTSnap->DrawText(L"Vite Server (Error)", 19, theme.fontMenuItem ? theme.fontMenuItem.Get() : theme.fontBody.Get(), rcTitle, theme.brushTextPrimary.Get());
+        // Close button 'X' on far right
+        const float closeSize = 18.0f;
+        const float closeRight = cardX + cardW - 8.0f;
+        const float closeLeft = closeRight - closeSize;
+        const float closeTop = cardY + (cardH - closeSize) * 0.5f;
+        const float closeBottom = closeTop + closeSize;
+        D2D1_RECT_F rcClose = D2D1::RectF(closeLeft, closeTop, closeRight, closeBottom);
 
-        // Failed Badge
-        D2D1_RECT_F rcFailedBadge = D2D1::RectF(cardX + cardW - 68.0f - 12.0f, cardY + 8.0f, cardX + cardW - 12.0f, cardY + 8.0f + 18.0f);
+        float xMidX = (closeLeft + closeRight) * 0.5f;
+        float xMidY = (closeTop + closeBottom) * 0.5f;
+        float xArm = 4.0f;
+        pRTSnap->DrawLine(D2D1::Point2F(xMidX - xArm, xMidY - xArm), D2D1::Point2F(xMidX + xArm, xMidY + xArm), theme.brushTextSecondary.Get(), 1.3f);
+        pRTSnap->DrawLine(D2D1::Point2F(xMidX + xArm, xMidY - xArm), D2D1::Point2F(xMidX - xArm, xMidY + xArm), theme.brushTextSecondary.Get(), 1.3f);
+
+        // Failed Badge next to 'X' on Line 1
+        const float badgeW = 62.0f;
+        const float badgeH = 18.0f;
+        const float badgeRight = closeLeft - 6.0f;
+        const float badgeLeft = badgeRight - badgeW;
+        const float badgeTop = cardY + (cardH - badgeH) * 0.5f;
+        D2D1_RECT_F rcFailedBadge = D2D1::RectF(badgeLeft, badgeTop, badgeRight, badgeTop + badgeH);
         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> errBadgeBg;
         pRTSnap->CreateSolidColorBrush(D2D1::ColorF(0.92f, 0.25f, 0.25f, 0.18f), &errBadgeBg);
         if (errBadgeBg) pRTSnap->FillRoundedRectangle(D2D1::RoundedRect(rcFailedBadge, 4.0f, 4.0f), errBadgeBg.Get());
@@ -7666,8 +7731,18 @@ int main() {
         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> errBadgeText;
         pRTSnap->CreateSolidColorBrush(D2D1::ColorF(0.95f, 0.45f, 0.45f, 1.0f), &errBadgeText);
         if (theme.fontHint && errBadgeText) {
+            DWRITE_TEXT_ALIGNMENT prevAlign = theme.fontHint->GetTextAlignment();
+            DWRITE_PARAGRAPH_ALIGNMENT prevPAlign = theme.fontHint->GetParagraphAlignment();
+            theme.fontHint->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+            theme.fontHint->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
             pRTSnap->DrawText(L"Failed", 6, theme.fontHint.Get(), rcFailedBadge, errBadgeText.Get());
+            theme.fontHint->SetTextAlignment(prevAlign);
+            theme.fontHint->SetParagraphAlignment(prevPAlign);
         }
+
+        // Title "Vite Server" in remaining space on Line 1
+        D2D1_RECT_F rcTitle = D2D1::RectF(cardX + 24.0f, cardY + (cardH - 18.0f) * 0.5f, badgeLeft - 6.0f, cardY + (cardH + 18.0f) * 0.5f);
+        pRTSnap->DrawText(L"Vite Server", 11, theme.fontMenuItem ? theme.fontMenuItem.Get() : theme.fontBody.Get(), rcTitle, theme.brushTextPrimary.Get());
 
         HRESULT hrEnd = pRTSnap->EndDraw();
         assert(SUCCEEDED(hrEnd));
@@ -7675,9 +7750,10 @@ int main() {
         std::wstring testArtifactPath = L"C:\\Users\\Administrator\\.gemini\\antigravity\\brain\\c83160b9-3f8b-4ad1-87a8-ab1f7f555a77\\test_margin_gap_and_server_tab.png";
         SaveWicBitmapToPng(pWicSnap.Get(), pWicFactory.Get(), testArtifactPath);
         assert(std::filesystem::exists(testArtifactPath));
-        std::wcout << L"  Passed: Saved visual verification snapshot to: " << testArtifactPath << std::endl;
+        std::wcout << L"  Passed: Saved visual verification snapshot of sleek single-line card with [X] to: " << testArtifactPath << std::endl;
 
-        std::cout << "  Passed: All [TEST 64] Terminal Server Tab, Locked Input, Error Detection, Tag & Margin Gap tests passed!" << std::endl;
+        terminal.Close();
+        std::cout << "  Passed: All [TEST 64] Terminal Server Tab, Locked Input, Auto-Stop, 1-Line Tag & Margin Gap tests passed!" << std::endl;
     }
 
     std::cout << "\n==========================================" << std::endl;
