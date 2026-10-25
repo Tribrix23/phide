@@ -9,6 +9,7 @@
 
 #include "phide/app/Window.hpp"
 #include "phide/editor/SyntaxValidator.hpp"
+#include "phide/ui/PhideLogo.hpp"
 #include <windowsx.h>
 #include <commdlg.h>
 #include <shobjidl.h>
@@ -3838,7 +3839,7 @@ void Window::OpenFileByName(const std::wstring& name) {
         templateCode =
             L"{\n"
             L"    \"name\": \"phide/studio\",\n"
-            L"    \"description\": \"High-Performance Modern C++ & PHP IDE\",\n"
+            L"    \"description\": \"phide - Webdevelopment IDE\",\n"
             L"    \"type\": \"project\",\n"
             L"    \"require\": {\n"
             L"        \"php\": \">=8.2\",\n"
@@ -3902,16 +3903,59 @@ LRESULT CALLBACK Window::WndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lPa
     return DefWindowProc(hwnd, uMsg, wParam, lParam);
 }
 
+static HICON CreatePhideAppIcon(HINSTANCE hInstance) {
+    HICON hResIcon = LoadIconW(hInstance, MAKEINTRESOURCEW(101));
+    if (hResIcon) return hResIcon;
+
+    BITMAPV5HEADER bi{};
+    bi.bV5Size        = sizeof(BITMAPV5HEADER);
+    bi.bV5Width       = static_cast<LONG>(ui::kPhideLogoWidth);
+    bi.bV5Height      = -static_cast<LONG>(ui::kPhideLogoHeight); // Top-down DIB
+    bi.bV5Planes      = 1;
+    bi.bV5BitCount    = 32;
+    bi.bV5Compression = BI_BITFIELDS;
+    bi.bV5RedMask     = 0x00FF0000;
+    bi.bV5GreenMask   = 0x0000FF00;
+    bi.bV5BlueMask    = 0x000000FF;
+    bi.bV5AlphaMask   = 0xFF000000;
+
+    HDC hdc = GetDC(nullptr);
+    void* lpBits = nullptr;
+    HBITMAP hColor = CreateDIBSection(hdc, reinterpret_cast<BITMAPINFO*>(&bi), DIB_RGB_COLORS, &lpBits, nullptr, 0);
+    ReleaseDC(nullptr, hdc);
+    if (!hColor || !lpBits) {
+        if (hColor) DeleteObject(hColor);
+        return nullptr;
+    }
+
+    memcpy(lpBits, ui::g_phideLogoBgra, ui::kPhideLogoWidth * ui::kPhideLogoHeight * 4);
+    HBITMAP hMask = CreateBitmap(ui::kPhideLogoWidth, ui::kPhideLogoHeight, 1, 1, nullptr);
+
+    ICONINFO ii{};
+    ii.fIcon    = TRUE;
+    ii.hbmMask  = hMask;
+    ii.hbmColor = hColor;
+    HICON hIcon = CreateIconIndirect(&ii);
+
+    DeleteObject(hColor);
+    if (hMask) DeleteObject(hMask);
+    return hIcon;
+}
+
 bool Window::Create(HINSTANCE hInstance, int nCmdShow) {
     if (FAILED(CreateDeviceIndependentResources())) {
         return false;
     }
+
+    HICON hAppIcon = CreatePhideAppIcon(hInstance);
 
     WNDCLASSEX wc{};
     wc.cbSize = sizeof(WNDCLASSEX);
     wc.style = CS_HREDRAW | CS_VREDRAW | CS_DBLCLKS;
     wc.lpfnWndProc = Window::WndProc;
     wc.hInstance = hInstance;
+    wc.hIcon = hAppIcon;
+    wc.hIconSm = hAppIcon;
     wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
     wc.hbrBackground = nullptr; // Direct2D handles full background rendering
     wc.lpszClassName = L"phide_WindowClass";
@@ -3936,13 +3980,18 @@ bool Window::Create(HINSTANCE hInstance, int nCmdShow) {
     m_hwnd = CreateWindowEx(
         WS_EX_APPWINDOW,
         wc.lpszClassName,
-        L"phide - Modern C++ & PHP IDE",
+        L"phide - Webdevelopment IDE",
         WS_OVERLAPPEDWINDOW | WS_VISIBLE,
         x, y, width, height,
         nullptr, nullptr, hInstance, this
     );
 
     if (!m_hwnd) return false;
+
+    if (hAppIcon) {
+        SendMessageW(m_hwnd, WM_SETICON, ICON_BIG, reinterpret_cast<LPARAM>(hAppIcon));
+        SendMessageW(m_hwnd, WM_SETICON, ICON_SMALL, reinterpret_cast<LPARAM>(hAppIcon));
+    }
 
     // Enable Windows 11 Immersive Dark Mode for window frame and menus
     BOOL darkMode = TRUE;
