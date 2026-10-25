@@ -3331,7 +3331,8 @@ void Window::OnPaint() {
     float currentTermH = GetCurrentTerminalHeight(clientH);
     m_terminal.SetFullScreenProgress(m_termFullScreenProgress);
 
-    float editorH = clientH - currentTermH;
+    const float termGap = (m_terminalAnimProgress > 0.001f && m_terminal.IsOpen()) ? m_config.ScaleF(6.0f) : 0.0f;
+    float editorH = clientH - currentTermH - termGap;
     float drawerH = clientH - currentTermH;
     float terminalLeft = static_cast<float>(railW);
 
@@ -3339,6 +3340,13 @@ void Window::OnPaint() {
                     canvasLeft, canvasWidth, editorH, hasLeftDrawer,
                     searchHL, hlMatchCase, hlWholeWord, hlUseRegex,
                     suppressEditorCaret);
+
+    // Subtle 6px gap separator above terminal to give breathing room and show the terminal clearly (Image 3)
+    if (termGap > 0.0f) {
+        D2D1_RECT_F rcGap = D2D1::RectF(canvasLeft, editorH, clientW, editorH + termGap);
+        m_pRenderTarget->FillRectangle(rcGap, m_theme.brushHeaderBg.Get());
+        m_pRenderTarget->DrawLine(D2D1::Point2F(canvasLeft, editorH), D2D1::Point2F(clientW, editorH), m_theme.brushBorderSubtle.Get(), 1.0f);
+    }
 
     // 1b. Render Explorer Drag-and-Drop Insertion Caret / Target Indicator
     if (m_isDraggingExplorerFile && m_hasDragDropTarget && m_dragDropTargetGroup >= 0 &&
@@ -3888,7 +3896,8 @@ void Window::HandleMouseMove(POINT clientPt, WPARAM wParam) {
             const float tabH = m_config.ScaleF(34.0f);
 
             float currentTermH = GetCurrentTerminalHeight(clientH);
-            float editorH = clientH - currentTermH;
+            const float termGap = (m_terminalAnimProgress > 0.001f && m_terminal.IsOpen()) ? m_config.ScaleF(6.0f) : 0.0f;
+            float editorH = clientH - currentTermH - termGap;
 
             m_hasDragDropTarget = false;
             m_dragDropTargetGroup = -1;
@@ -4185,13 +4194,16 @@ void Window::HandleMouseMove(POINT clientPt, WPARAM wParam) {
 }
 
 void Window::HandleLButtonDown(POINT clientPt) {
-    // Check Confirm Discard / Restore Modal Clicks (Images 2 & 3)
+    // Check Confirm Discard / Restore / Notice Modal Clicks (Images 2, 3, 4, 5)
     if (m_confirmDiscardModal.IsOpen()) {
+        bool wasNotice = (m_confirmDiscardModal.GetType() == ui::ConfirmModalType::Notice);
         bool confirmed = false;
         std::wstring targetPath, targetFileName, targetStatus;
         if (m_confirmDiscardModal.HandleMouseDown(clientPt, confirmed, targetPath, targetFileName, targetStatus)) {
             if (confirmed) {
                 ExecuteDiscardOrRestore(targetPath, targetFileName, targetStatus);
+            } else if (wasNotice) {
+                m_drawer.SetGitCommitBoxFocus(1);
             }
             InvalidateRect(m_hwnd, nullptr, FALSE);
             return;
@@ -4259,8 +4271,18 @@ void Window::HandleLButtonDown(POINT clientPt) {
         std::wstring discardFileName;
         std::wstring discardStatus;
         size_t discardCount = 1;
+        bool promptEmptyCommit = false;
         if (m_drawer.HitTestGit(clientPt, m_config, openFile, discardedFile, isDiff, openCommitDiff, openUrl,
-                                &promptDiscard, &discardFileName, &discardStatus, &discardCount)) {
+                                &promptDiscard, &discardFileName, &discardStatus, &discardCount, &promptEmptyCommit)) {
+            if (promptEmptyCommit) {
+                m_confirmDiscardModal.OpenNotice(
+                    L"Commit Message Required",
+                    L"Please enter a commit message before committing your changes.",
+                    L"Git commits require a summary message to record the changes in repository history."
+                );
+                InvalidateRect(m_hwnd, nullptr, FALSE);
+                return;
+            }
             if (promptDiscard) {
                 m_confirmDiscardModal.Open(discardedFile, discardFileName, discardStatus, discardCount);
                 InvalidateRect(m_hwnd, nullptr, FALSE);
@@ -5479,8 +5501,18 @@ void Window::HandleLButtonDown(POINT clientPt) {
             std::wstring discardFileName;
             std::wstring discardStatus;
             size_t discardCount = 1;
+            bool promptEmptyCommit = false;
             if (m_drawer.HitTestGit(clientPt, m_config, openFile, discardedFile, isDiff, openCommitDiff, openUrl,
-                                    &promptDiscard, &discardFileName, &discardStatus, &discardCount)) {
+                                    &promptDiscard, &discardFileName, &discardStatus, &discardCount, &promptEmptyCommit)) {
+                if (promptEmptyCommit) {
+                    m_confirmDiscardModal.OpenNotice(
+                        L"Commit Message Required",
+                        L"Please enter a commit message before committing your changes.",
+                        L"Git commits require a summary message to record the changes in repository history."
+                    );
+                    InvalidateRect(m_hwnd, nullptr, FALSE);
+                    return;
+                }
                 if (promptDiscard) {
                     m_confirmDiscardModal.Open(discardedFile, discardFileName, discardStatus, discardCount);
                     InvalidateRect(m_hwnd, nullptr, FALSE);
@@ -5944,6 +5976,16 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 // Explorer Drag & Drop Cursor
                 if (m_isDraggingExplorerFile) {
                     SetCursor(LoadCursor(nullptr, m_hasDragDropTarget ? IDC_ARROW : IDC_NO));
+                    return TRUE;
+                }
+
+                // 00. Confirm Discard / Restore / Notice Modal (Images 2, 3, 4, 5)
+                if (m_confirmDiscardModal.IsOpen()) {
+                    if (m_confirmDiscardModal.HitTestButtons(pt)) {
+                        SetCursor(LoadCursor(nullptr, IDC_HAND));
+                        return TRUE;
+                    }
+                    SetCursor(LoadCursor(nullptr, IDC_ARROW));
                     return TRUE;
                 }
 
@@ -6677,6 +6719,17 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 }
             }
 
+            // Ctrl+Shift+X Runtimes Panel toggle (Images 1 & 2)
+            if ((GetKeyState(VK_CONTROL) & 0x8000) != 0 && (GetKeyState(VK_SHIFT) & 0x8000) != 0 && (wParam == 'X' || wParam == 'x')) {
+                if (m_extensionsPanel.IsOpen()) {
+                    AnimateRightSidebarClose();
+                } else {
+                    AnimateRightSidebarOpen();
+                }
+                InvalidateRect(m_hwnd, nullptr, FALSE);
+                return 0;
+            }
+
             // Ctrl+Shift+Y Debug Console toggle
             if ((GetKeyState(VK_CONTROL) & 0x8000) != 0 && (GetKeyState(VK_SHIFT) & 0x8000) != 0 && (wParam == 'Y' || wParam == 'y')) {
                 if (!m_terminal.IsOpen()) {
@@ -6736,13 +6789,16 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 }
             }
 
-            // 0a. Confirm Discard / Restore modal keyboard handling (Images 2 & 3)
+            // 0a. Confirm Discard / Restore / Notice modal keyboard handling (Images 2, 3, 4, 5)
             if (m_confirmDiscardModal.IsOpen()) {
+                bool wasNotice = (m_confirmDiscardModal.GetType() == ui::ConfirmModalType::Notice);
                 bool confirmed = false;
                 std::wstring targetPath, targetFileName, targetStatus;
                 if (m_confirmDiscardModal.HandleKeyDown(wParam, confirmed, targetPath, targetFileName, targetStatus)) {
                     if (confirmed) {
                         ExecuteDiscardOrRestore(targetPath, targetFileName, targetStatus);
+                    } else if (wasNotice) {
+                        m_drawer.SetGitCommitBoxFocus(1);
                     }
                     InvalidateRect(m_hwnd, nullptr, FALSE);
                     return 0;

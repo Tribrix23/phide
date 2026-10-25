@@ -155,9 +155,11 @@ public:
     void SetDirtyFiles(const std::vector<std::wstring>& dirtyFilePaths);
     void SetErrorFiles(const std::map<std::wstring, size_t>& errorFiles);
     void StageAllChangesAsync();
+    void UnstageAllChangesAsync();
     void DiscardAllChangesAsync();
     bool DiscardAllChanges();
     void StageFileAsync(const std::wstring& relPath);
+    void UnstageFileAsync(const std::wstring& relPath);
     void DiscardFileAsync(const std::wstring& relPath);
     bool DiscardFile(const std::wstring& relPath);
     void CommitChangesAsync(const std::wstring& message);
@@ -188,7 +190,8 @@ public:
                     bool* pOutPromptDiscard = nullptr,
                     std::wstring* pOutDiscardFileName = nullptr,
                     std::wstring* pOutDiscardStatus = nullptr,
-                    size_t* pOutDiscardCount = nullptr);
+                    size_t* pOutDiscardCount = nullptr,
+                    bool* pOutPromptEmptyCommit = nullptr);
     bool HitTestGit(POINT pt, const app::AppConfig& config, std::wstring& outOpenFile, std::wstring& outDiscardedFile) {
         bool isDiff = false;
         std::wstring dummyCommit;
@@ -535,6 +538,8 @@ public:
                inRect(pt, m_gitGenerateAiBounds) || inRect(pt, m_gitStageAllBounds) ||
                inRect(pt, m_gitDiscardAllBounds) || inRect(pt, m_gitChangesChevronBounds) ||
                inRect(pt, m_gitChangesMoreBounds) || inRect(pt, m_gitHeaderMoreBounds) ||
+               inRect(pt, m_gitStagedChevronBounds) || inRect(pt, m_gitUnstageAllBounds) ||
+               inRect(pt, m_gitStagedMoreBounds) ||
                inRect(pt, m_gitGraphChevronBounds) || inRect(pt, m_gitGraphAutoBounds) ||
                inRect(pt, m_gitGraphBullseyeBounds) || inRect(pt, m_gitGraphSplitBounds) ||
                inRect(pt, m_gitGraphMergeBounds) || inRect(pt, m_gitGraphPushBounds) ||
@@ -666,6 +671,7 @@ private:
 
     bool m_showChangesSection = true;
     bool m_showGraphSection = true;
+    bool m_stagedExpanded = true;
     bool m_changesExpanded = true;
     bool m_graphExpanded = true;
     bool m_gitAutoRefresh = true;
@@ -678,6 +684,11 @@ private:
 
     // Hit-testing bounds
     D2D1_RECT_F m_gitHeaderMoreBounds{};
+    D2D1_RECT_F m_gitStagedHeaderBounds{};
+    D2D1_RECT_F m_gitStagedChevronBounds{};
+    D2D1_RECT_F m_gitUnstageAllBounds{};
+    D2D1_RECT_F m_gitStagedMoreBounds{};
+
     D2D1_RECT_F m_gitChangesHeaderBounds{};
     D2D1_RECT_F m_gitChangesChevronBounds{};
     D2D1_RECT_F m_gitStageAllBounds{};

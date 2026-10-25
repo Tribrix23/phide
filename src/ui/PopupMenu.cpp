@@ -426,7 +426,7 @@ void PopupMenu::BuildViewMenuItems(const app::AppConfig& config, bool isSidebarO
     m_items.push_back({ MenuActionId::Search,         L"Search",             L"Ctrl+Shift+F", false, false, false, true, {}, {} });
     m_items.push_back({ MenuActionId::SourceControl,  L"Source Control",     L"Ctrl+Shift+G", false, false, false, true, {}, {} });
     m_items.push_back({ MenuActionId::Run,            L"Run",                L"Ctrl+Shift+D", false, false, false, true, {}, {} });
-    m_items.push_back({ MenuActionId::Extensions,     L"Extensions",         L"Ctrl+Shift+X", false, false, false, true, {}, {} });
+    m_items.push_back({ MenuActionId::Extensions,     L"Runtimes",           L"Ctrl+Shift+X", false, false, false, true, {}, {} });
 
     // --- Separator ---
     m_items.push_back({ MenuActionId::None,           L"",                   L"",             true,  false, false, false, {}, {} });

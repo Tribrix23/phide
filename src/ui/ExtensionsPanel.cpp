@@ -1689,7 +1689,7 @@ void ExtensionsPanel::RenderListView(ID2D1RenderTarget* pRT, Theme& theme, const
     IDWriteTextFormat* pFmtTitle = m_pHeaderFormat ? m_pHeaderFormat.Get() : (theme.fontTitle ? theme.fontTitle.Get() : theme.fontMenuItem.Get());
     if (pFmtTitle && pTxtBrush) {
         if (m_pHeaderFormat) m_pHeaderFormat->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
-        pRT->DrawText(L"EXTENSIONS", 10, pFmtTitle, rcTitle, pTxtBrush);
+        pRT->DrawText(L"RUNTIMES", 8, pFmtTitle, rcTitle, pTxtBrush);
     }
     // Wide generous gap between EXTENSIONS header and entry cards (no divider line)
     curY += config.ScaleF(38.0f);

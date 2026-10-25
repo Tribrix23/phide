@@ -284,7 +284,7 @@ void TitleHeader::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCon
     if (m_hoveredExtensions) {
         const float tipH    = config.ScaleF(24.0f);
         const float tipPadX = config.ScaleF(10.0f);
-        const wchar_t* tipText = L"Extensions (Python, PHP, Node.js)";
+        const wchar_t* tipText = L"Runtimes (Ctrl+Shift+X)";
         size_t textLen = wcslen(tipText);
         float textW    = config.ScaleF(static_cast<float>(textLen * 6.5f + 14.0f));
         float tipW     = textW + tipPadX * 2.0f;

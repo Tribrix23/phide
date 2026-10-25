@@ -1,6 +1,6 @@
 /**
  * @file ConfirmDiscardModal.hpp
- * @brief Modal visual confirmation dialog for discarding or restoring Git changes (Images 2 & 3).
+ * @brief Modern flat visual confirmation and alert modal dialog (Images 2, 3, 4, 5).
  */
 
 #pragma once
@@ -15,8 +15,19 @@
 namespace phide::ui {
 
 /**
+ * @enum ConfirmModalType
+ * @brief Type of confirmation or alert modal being presented.
+ */
+enum class ConfirmModalType {
+    DiscardFile,
+    DiscardAll,
+    RestoreFile,
+    Notice
+};
+
+/**
  * @class ConfirmDiscardModal
- * @brief Manages the visual confirmation dialog matching user reference Images 2 & 3.
+ * @brief Manages modern flat confirmation and notice dialogs with sleek vector icons and pointer cursors.
  */
 class ConfirmDiscardModal {
 public:
@@ -35,6 +46,29 @@ public:
         m_fileName = fileName.empty() ? filePath : fileName;
         m_status = status;
         m_changeCount = changeCount;
+        m_type = (status == L"D") ? ConfirmModalType::RestoreFile :
+                 (status == L"ALL" ? ConfirmModalType::DiscardAll : ConfirmModalType::DiscardFile);
+        m_title.clear();
+        m_message.clear();
+        m_subtext.clear();
+        m_isOpen = true;
+        m_isConfirmHovered = false;
+        m_isCancelHovered = false;
+        m_isCloseHovered = false;
+    }
+
+    /**
+     * @brief Opens a centered alert notice dialog (e.g. Commit Message Required).
+     */
+    void OpenNotice(const std::wstring& title, const std::wstring& message, const std::wstring& subtext) {
+        m_type = ConfirmModalType::Notice;
+        m_title = title;
+        m_message = message;
+        m_subtext = subtext;
+        m_filePath.clear();
+        m_fileName.clear();
+        m_status.clear();
+        m_changeCount = 0;
         m_isOpen = true;
         m_isConfirmHovered = false;
         m_isCancelHovered = false;
@@ -52,9 +86,30 @@ public:
     }
 
     [[nodiscard]] bool IsOpen() const noexcept { return m_isOpen; }
+    [[nodiscard]] ConfirmModalType GetType() const noexcept { return m_type; }
     [[nodiscard]] const std::wstring& GetTargetFilePath() const noexcept { return m_filePath; }
     [[nodiscard]] const std::wstring& GetTargetFileName() const noexcept { return m_fileName; }
     [[nodiscard]] const std::wstring& GetTargetStatus() const noexcept { return m_status; }
+
+    /**
+     * @brief Checks if a client point is over any clickable buttons on the modal (Confirm, Cancel, Close).
+     */
+    [[nodiscard]] bool HitTestButtons(POINT pt) const noexcept {
+        if (!m_isOpen) return false;
+        auto inRect = [](POINT p, const D2D1_RECT_F& rc) {
+            return (p.x >= rc.left && p.x <= rc.right && p.y >= rc.top && p.y <= rc.bottom);
+        };
+        return inRect(pt, m_confirmBtnBounds) || inRect(pt, m_cancelBtnBounds) || inRect(pt, m_closeBtnBounds);
+    }
+
+    /**
+     * @brief Checks if a client point is inside the modal card.
+     */
+    [[nodiscard]] bool HitTestCard(POINT pt) const noexcept {
+        if (!m_isOpen) return false;
+        return (pt.x >= m_cardBounds.left && pt.x <= m_cardBounds.right &&
+                pt.y >= m_cardBounds.top && pt.y <= m_cardBounds.bottom);
+    }
 
     /**
      * @brief Renders the confirmation modal with dimmed backdrop and flat styled card.
@@ -78,10 +133,15 @@ public:
 
 private:
     bool m_isOpen = false;
+    ConfirmModalType m_type = ConfirmModalType::DiscardFile;
     std::wstring m_filePath;
     std::wstring m_fileName;
     std::wstring m_status; // "D", "M", "U", "A", or "ALL"
     size_t m_changeCount = 1;
+
+    std::wstring m_title;
+    std::wstring m_message;
+    std::wstring m_subtext;
 
     D2D1_RECT_F m_cardBounds{};
     D2D1_RECT_F m_confirmBtnBounds{};

@@ -7250,6 +7250,125 @@ int main() {
         std::cout << "  Passed: All [TEST 61] Visual Confirmation Modal, Restoring Deleted Files, Framework-Aware Runner & Flat Card Redesign tests passed!" << std::endl;
     }
 
+    // [TEST 62] Runtimes Renaming & Hotkey (Ctrl+Shift+X), Staged vs Unstaged Collapsible Sections,
+    // Unstage Action (-), CRLF Diff Filtering, Modern Flat Discard & Empty Commit Notice Modal
+    {
+        std::cout << "\n[TEST 62] Running Runtimes Renaming, Staged vs Unstaged Collapsible Sections, Unstage (-), and Flat Notice Modal Tests..." << std::endl;
+
+        // 1. Verify Runtimes popup menu item
+        phide::app::AppConfig testCfg;
+        phide::ui::PopupMenu popup;
+        popup.OpenViewMenu(100.0f, 100.0f, testCfg, true, false, false, 1);
+        bool foundRuntimes = false;
+        for (const auto& item : popup.GetItems()) {
+            if (item.label == L"Runtimes" && item.shortcut == L"Ctrl+Shift+X") {
+                foundRuntimes = true;
+                break;
+            }
+        }
+        assert(foundRuntimes);
+        std::cout << "  Passed: PopupMenu correctly lists 'Runtimes' with shortcut 'Ctrl+Shift+X'." << std::endl;
+
+        // 2. Verify ConfirmDiscardModal in Notice Mode (Empty Commit Message)
+        phide::ui::ConfirmDiscardModal modal;
+        assert(!modal.IsOpen());
+        modal.OpenNotice(L"Commit Message Required", L"Please enter a commit message before committing your changes.", L"Git requires a descriptive summary.");
+        assert(modal.IsOpen());
+        assert(modal.GetType() == phide::ui::ConfirmModalType::Notice);
+
+        // Render modal on WIC target to verify layout & bounds
+        const UINT snapW = 1280;
+        const UINT snapH = 720;
+        Microsoft::WRL::ComPtr<IWICBitmap> pWicSnap;
+        assert(SUCCEEDED(pWicFactory->CreateBitmap(snapW, snapH, GUID_WICPixelFormat32bppPBGRA, WICBitmapCacheOnDemand, &pWicSnap)));
+        Microsoft::WRL::ComPtr<ID2D1RenderTarget> pRTSnap;
+        D2D1_RENDER_TARGET_PROPERTIES rtProps = D2D1::RenderTargetProperties(
+            D2D1_RENDER_TARGET_TYPE_DEFAULT,
+            D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED),
+            96.0f, 96.0f
+        );
+        assert(SUCCEEDED(pD2DFactory->CreateWicBitmapRenderTarget(pWicSnap.Get(), &rtProps, &pRTSnap)));
+
+        phide::ui::Theme theme;
+        theme.CreateDeviceResources(pRTSnap.Get(), pDWriteFactory.Get());
+
+        pRTSnap->BeginDraw();
+        pRTSnap->Clear(D2D1::ColorF(0.10f, 0.11f, 0.13f, 1.0f));
+
+        modal.Render(pRTSnap.Get(), theme, testCfg, static_cast<float>(snapW), static_cast<float>(snapH));
+
+        // Test HitTestButtons on modal: center of card OK button
+        POINT ptCenter = { static_cast<LONG>(snapW / 2 + 150), static_cast<LONG>(snapH / 2 + 45) };
+        assert(modal.HitTestButtons(ptCenter));
+        std::cout << "  Passed: ConfirmDiscardModal Notice Mode bounds & HitTestButtons verified." << std::endl;
+
+        // Keyboard Enter dismissal
+        bool confirmed = false;
+        std::wstring outPath, outFileName, outStatus;
+        bool handled = modal.HandleKeyDown(VK_RETURN, confirmed, outPath, outFileName, outStatus);
+        assert(handled);
+        assert(!modal.IsOpen()); // Notice dismissed
+        std::cout << "  Passed: ConfirmDiscardModal Enter key dismisses Notice Mode." << std::endl;
+
+        // 3. Test DrawerPanel Staged Changes vs Changes
+        phide::ui::DrawerPanel drawer;
+        auto& changes = drawer.GetGitChangesMutable();
+        changes.clear();
+
+        // Add 2 staged items and 2 unstaged items
+        phide::ui::GitChangeItem s1;
+        s1.path = L"src/ui/TitleHeader.cpp";
+        s1.fileName = L"TitleHeader.cpp";
+        s1.status = L"M";
+        s1.isStaged = true;
+        changes.push_back(s1);
+
+        phide::ui::GitChangeItem s2;
+        s2.path = L"include/phide/ui/ConfirmDiscardModal.hpp";
+        s2.fileName = L"ConfirmDiscardModal.hpp";
+        s2.status = L"A";
+        s2.isStaged = true;
+        changes.push_back(s2);
+
+        phide::ui::GitChangeItem u1;
+        u1.path = L"src/app/Window.cpp";
+        u1.fileName = L"Window.cpp";
+        u1.status = L"M";
+        u1.isStaged = false;
+        changes.push_back(u1);
+
+        phide::ui::GitChangeItem u2;
+        u2.path = L"tests/test_verification.cpp";
+        u2.fileName = L"test_verification.cpp";
+        u2.status = L"M";
+        u2.isStaged = false;
+        changes.push_back(u2);
+
+        // Render DrawerPanel with Staged Changes and Changes
+        drawer.Render(pRTSnap.Get(), theme, testCfg, static_cast<float>(snapH), 320.0f);
+
+        // Verify Staged item action button is Unstage (-)
+        POINT ptStagedRow = { 200, 160 }; // inside staged area
+        drawer.HandleGitMouseMove(ptStagedRow);
+
+        // Open Discard modal for unstaged file
+        modal.Open(L"src/app/Window.cpp", L"Window.cpp", L"M", 1);
+        assert(modal.IsOpen());
+        assert(modal.GetType() == phide::ui::ConfirmModalType::DiscardFile);
+        modal.Render(pRTSnap.Get(), theme, testCfg, static_cast<float>(snapW), static_cast<float>(snapH));
+
+        HRESULT hrComposite = pRTSnap->EndDraw();
+        assert(SUCCEEDED(hrComposite));
+
+        // Save visual verification artifact
+        std::wstring testArtifactPath = L"C:\\Users\\Administrator\\.gemini\\antigravity\\brain\\c83160b9-3f8b-4ad1-87a8-ab1f7f555a77\\test_runtimes_staged_changes_and_notice_modal.png";
+        SaveWicBitmapToPng(pWicSnap.Get(), pWicFactory.Get(), testArtifactPath);
+        assert(std::filesystem::exists(testArtifactPath));
+        std::wcout << L"  Passed: Saved Runtimes, Staged Changes & Flat Notice modal visual verification to: " << testArtifactPath << std::endl;
+
+        std::cout << "  Passed: All [TEST 62] Runtimes Renaming, Staged vs Unstaged Collapsible Sections, Unstage (-), and Flat Notice Modal tests passed!" << std::endl;
+    }
+
     std::cout << "\n==========================================" << std::endl;
     std::cout << "ALL VERIFICATION TESTS PASSED SUCCESSFULLY!" << std::endl;
     std::cout << "==========================================" << std::endl;

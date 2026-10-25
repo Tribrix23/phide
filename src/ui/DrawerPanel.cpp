@@ -3599,13 +3599,13 @@ void DrawerPanel::RefreshGitState(bool async, bool showLoading) {
             std::wstring line;
             while (std::getline(ss, line)) {
                 if (line.size() < 3) continue;
-                std::wstring statusStr = line.substr(0, 2);
-                size_t first = statusStr.find_first_not_of(L" ");
-                if (first != std::wstring::npos) statusStr = statusStr.substr(first);
-                size_t last = statusStr.find_last_not_of(L" ");
-                if (last != std::wstring::npos) statusStr = statusStr.substr(0, last + 1);
+                wchar_t idxChar = line[0];
+                wchar_t wtChar = line[1];
 
                 std::wstring filePath = line.substr(3);
+                while (!filePath.empty() && (filePath.back() == L'\r' || filePath.back() == L'\n' || filePath.back() == L' ')) {
+                    filePath.pop_back();
+                }
                 if (filePath.size() >= 2 && filePath.front() == L'"' && filePath.back() == L'"') {
                     filePath = filePath.substr(1, filePath.size() - 2);
                 }
@@ -3619,52 +3619,106 @@ void DrawerPanel::RefreshGitState(bool async, bool showLoading) {
                         filePath = filePath.substr(1, filePath.size() - 2);
                     }
                     for (auto& c : filePath) if (c == L'/') c = L'\\';
-                    statusStr = L"R";
                 }
 
-                // Normalize porcelain status letters (Images 3 & 4)
-                if (statusStr.find(L"?") != std::wstring::npos) {
-                    statusStr = L"U"; // Untracked
-                } else if (statusStr.find(L"R") != std::wstring::npos) {
-                    statusStr = L"R"; // Renamed
-                } else if (statusStr.find(L"M") != std::wstring::npos) {
-                    statusStr = L"M"; // Modified
-                } else if (statusStr.find(L"D") != std::wstring::npos) {
-                    statusStr = L"D"; // Deleted
-                } else if (statusStr.find(L"A") != std::wstring::npos) {
-                    statusStr = L"A"; // Added
+                std::filesystem::path p(filePath);
+                std::wstring baseFileName = p.filename().wstring();
+                std::wstring parentDir = p.parent_path().wstring();
+
+                // 1. Staged change in index
+                if (idxChar != L' ' && idxChar != L'?' && idxChar != L'!') {
+                    GitChangeItem stagedItem;
+                    stagedItem.path = filePath;
+                    stagedItem.fileName = baseFileName;
+                    stagedItem.relDir = parentDir;
+                    stagedItem.isStaged = true;
+                    if (idxChar == L'A') stagedItem.status = L"A";
+                    else if (idxChar == L'D') stagedItem.status = L"D";
+                    else if (idxChar == L'R') stagedItem.status = L"R";
+                    else stagedItem.status = L"M";
+                    changes.push_back(std::move(stagedItem));
                 }
 
-                // Filter out false positives (e.g. electron-builder.yml unchanged files)
-                if (statusStr == L"M") {
-                    std::wstring cleanRel = filePath;
-                    for (auto& c : cleanRel) if (c == L'/') c = L'\\';
+                // 2. Unstaged change in working tree
+                if (wtChar != L' ' && wtChar != L'!') {
+                    std::wstring unstagedStatus;
+                    if (idxChar == L'?' || wtChar == L'?') {
+                        unstagedStatus = L"U";
+                    } else if (wtChar == L'D') {
+                        unstagedStatus = L"D";
+                    } else if (wtChar == L'A') {
+                        unstagedStatus = L"A";
+                    } else {
+                        unstagedStatus = L"M";
+                    }
 
-                    bool isDirtyInMemory = false;
-                    {
-                        std::lock_guard<std::recursive_mutex> lock(m_gitMutex);
-                        for (const auto& df : m_dirtyFilePaths) {
-                            std::wstring dfClean = df;
-                            for (auto& c : dfClean) if (c == L'/') c = L'\\';
-                            if (dfClean.ends_with(cleanRel) || cleanRel.ends_with(dfClean)) {
-                                isDirtyInMemory = true;
-                                break;
+                    // Filter out false positives (e.g. .prettierrc.yaml / CRLF-only differences)
+                    if (unstagedStatus == L"M") {
+                        std::wstring cleanRel = filePath;
+                        for (auto& c : cleanRel) if (c == L'/') c = L'\\';
+
+                        bool isDirtyInMemory = false;
+                        {
+                            std::lock_guard<std::recursive_mutex> lock(m_gitMutex);
+                            for (const auto& df : m_dirtyFilePaths) {
+                                std::wstring dfClean = df;
+                                for (auto& c : dfClean) if (c == L'/') c = L'\\';
+                                if (dfClean.ends_with(cleanRel) || cleanRel.ends_with(dfClean)) {
+                                    isDirtyInMemory = true;
+                                    break;
+                                }
+                            }
+                        }
+
+                        if (!isDirtyInMemory) {
+                            if (filesWithRealDiff.count(cleanRel) == 0) {
+                                continue; // File has ZERO diff! Prune false positive!
+                            }
+
+                            // Compare normalized disk content with HEAD to prune pure CRLF / stat differences
+                            std::filesystem::path fullP = std::filesystem::path(dir) / cleanRel;
+                            std::error_code ec;
+                            if (std::filesystem::exists(fullP, ec)) {
+                                std::ifstream ifs(fullP, std::ios::binary);
+                                if (ifs) {
+                                    std::string diskBytes((std::istreambuf_iterator<char>(ifs)), std::istreambuf_iterator<char>());
+                                    std::string diskNorm;
+                                    diskNorm.reserve(diskBytes.size());
+                                    for (char c : diskBytes) if (c != '\r') diskNorm.push_back(c);
+
+                                    std::wstring gitRel = cleanRel;
+                                    for (auto& c : gitRel) if (c == L'\\') c = L'/';
+                                    auto resHead = RunGitCmd(L"show HEAD:\"" + gitRel + L"\"", dir);
+                                    if (resHead.exitCode == 0) {
+                                        std::string headNorm;
+                                        headNorm.reserve(resHead.output.size());
+                                        for (wchar_t wc : resHead.output) {
+                                            if (wc != L'\r') {
+                                                if (wc < 128) headNorm.push_back(static_cast<char>(wc));
+                                                else {
+                                                    char buf[8] = {0};
+                                                    WideCharToMultiByte(CP_UTF8, 0, &wc, 1, buf, sizeof(buf), nullptr, nullptr);
+                                                    headNorm.append(buf);
+                                                }
+                                            }
+                                        }
+                                        if (diskNorm == headNorm) {
+                                            continue; // Identical normalized content! Prune false positive!
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
 
-                    if (!isDirtyInMemory && filesWithRealDiff.count(cleanRel) == 0) {
-                        continue; // File has ZERO diff! Prune false positive!
-                    }
+                    GitChangeItem unstagedItem;
+                    unstagedItem.path = filePath;
+                    unstagedItem.fileName = baseFileName;
+                    unstagedItem.relDir = parentDir;
+                    unstagedItem.status = unstagedStatus;
+                    unstagedItem.isStaged = false;
+                    changes.push_back(std::move(unstagedItem));
                 }
-
-                std::filesystem::path p(filePath);
-                GitChangeItem item;
-                item.path = filePath;
-                item.fileName = p.filename().wstring();
-                item.relDir = p.parent_path().wstring();
-                item.status = statusStr.empty() ? L"M" : statusStr;
-                changes.push_back(item);
             }
         }
 
@@ -4041,13 +4095,13 @@ void DrawerPanel::RefreshGitStatusOnly(bool async) {
             std::wstring line;
             while (std::getline(ss, line)) {
                 if (line.size() < 3) continue;
-                std::wstring statusStr = line.substr(0, 2);
-                size_t first = statusStr.find_first_not_of(L" ");
-                if (first != std::wstring::npos) statusStr = statusStr.substr(first);
-                size_t last = statusStr.find_last_not_of(L" ");
-                if (last != std::wstring::npos) statusStr = statusStr.substr(0, last + 1);
+                wchar_t idxChar = line[0];
+                wchar_t wtChar = line[1];
 
                 std::wstring filePath = line.substr(3);
+                while (!filePath.empty() && (filePath.back() == L'\r' || filePath.back() == L'\n' || filePath.back() == L' ')) {
+                    filePath.pop_back();
+                }
                 if (filePath.size() >= 2 && filePath.front() == L'"' && filePath.back() == L'"') {
                     filePath = filePath.substr(1, filePath.size() - 2);
                 }
@@ -4061,52 +4115,106 @@ void DrawerPanel::RefreshGitStatusOnly(bool async) {
                         filePath = filePath.substr(1, filePath.size() - 2);
                     }
                     for (auto& c : filePath) if (c == L'/') c = L'\\';
-                    statusStr = L"R";
                 }
 
-                // Normalize porcelain status letters (Images 3 & 4)
-                if (statusStr.find(L"?") != std::wstring::npos) {
-                    statusStr = L"U"; // Untracked
-                } else if (statusStr.find(L"R") != std::wstring::npos) {
-                    statusStr = L"R"; // Renamed
-                } else if (statusStr.find(L"M") != std::wstring::npos) {
-                    statusStr = L"M"; // Modified
-                } else if (statusStr.find(L"D") != std::wstring::npos) {
-                    statusStr = L"D"; // Deleted
-                } else if (statusStr.find(L"A") != std::wstring::npos) {
-                    statusStr = L"A"; // Added
+                std::filesystem::path p(filePath);
+                std::wstring baseFileName = p.filename().wstring();
+                std::wstring parentDir = p.parent_path().wstring();
+
+                // 1. Staged change in index
+                if (idxChar != L' ' && idxChar != L'?' && idxChar != L'!') {
+                    GitChangeItem stagedItem;
+                    stagedItem.path = filePath;
+                    stagedItem.fileName = baseFileName;
+                    stagedItem.relDir = parentDir;
+                    stagedItem.isStaged = true;
+                    if (idxChar == L'A') stagedItem.status = L"A";
+                    else if (idxChar == L'D') stagedItem.status = L"D";
+                    else if (idxChar == L'R') stagedItem.status = L"R";
+                    else stagedItem.status = L"M";
+                    changes.push_back(std::move(stagedItem));
                 }
 
-                // Filter out false positives (e.g. electron-builder.yml unchanged files)
-                if (statusStr == L"M") {
-                    std::wstring cleanRel = filePath;
-                    for (auto& c : cleanRel) if (c == L'/') c = L'\\';
+                // 2. Unstaged change in working tree
+                if (wtChar != L' ' && wtChar != L'!') {
+                    std::wstring unstagedStatus;
+                    if (idxChar == L'?' || wtChar == L'?') {
+                        unstagedStatus = L"U";
+                    } else if (wtChar == L'D') {
+                        unstagedStatus = L"D";
+                    } else if (wtChar == L'A') {
+                        unstagedStatus = L"A";
+                    } else {
+                        unstagedStatus = L"M";
+                    }
 
-                    bool isDirtyInMemory = false;
-                    {
-                        std::lock_guard<std::recursive_mutex> lock(m_gitMutex);
-                        for (const auto& df : m_dirtyFilePaths) {
-                            std::wstring dfClean = df;
-                            for (auto& c : dfClean) if (c == L'/') c = L'\\';
-                            if (dfClean.ends_with(cleanRel) || cleanRel.ends_with(dfClean)) {
-                                isDirtyInMemory = true;
-                                break;
+                    // Filter out false positives (e.g. .prettierrc.yaml / CRLF-only differences)
+                    if (unstagedStatus == L"M") {
+                        std::wstring cleanRel = filePath;
+                        for (auto& c : cleanRel) if (c == L'/') c = L'\\';
+
+                        bool isDirtyInMemory = false;
+                        {
+                            std::lock_guard<std::recursive_mutex> lock(m_gitMutex);
+                            for (const auto& df : m_dirtyFilePaths) {
+                                std::wstring dfClean = df;
+                                for (auto& c : dfClean) if (c == L'/') c = L'\\';
+                                if (dfClean.ends_with(cleanRel) || cleanRel.ends_with(dfClean)) {
+                                    isDirtyInMemory = true;
+                                    break;
+                                }
+                            }
+                        }
+
+                        if (!isDirtyInMemory) {
+                            if (filesWithRealDiff.count(cleanRel) == 0) {
+                                continue; // File has ZERO diff! Prune false positive!
+                            }
+
+                            // Compare normalized disk content with HEAD to prune pure CRLF / stat differences
+                            std::filesystem::path fullP = std::filesystem::path(dir) / cleanRel;
+                            std::error_code ec;
+                            if (std::filesystem::exists(fullP, ec)) {
+                                std::ifstream ifs(fullP, std::ios::binary);
+                                if (ifs) {
+                                    std::string diskBytes((std::istreambuf_iterator<char>(ifs)), std::istreambuf_iterator<char>());
+                                    std::string diskNorm;
+                                    diskNorm.reserve(diskBytes.size());
+                                    for (char c : diskBytes) if (c != '\r') diskNorm.push_back(c);
+
+                                    std::wstring gitRel = cleanRel;
+                                    for (auto& c : gitRel) if (c == L'\\') c = L'/';
+                                    auto resHead = RunGitCmd(L"show HEAD:\"" + gitRel + L"\"", dir);
+                                    if (resHead.exitCode == 0) {
+                                        std::string headNorm;
+                                        headNorm.reserve(resHead.output.size());
+                                        for (wchar_t wc : resHead.output) {
+                                            if (wc != L'\r') {
+                                                if (wc < 128) headNorm.push_back(static_cast<char>(wc));
+                                                else {
+                                                    char buf[8] = {0};
+                                                    WideCharToMultiByte(CP_UTF8, 0, &wc, 1, buf, sizeof(buf), nullptr, nullptr);
+                                                    headNorm.append(buf);
+                                                }
+                                            }
+                                        }
+                                        if (diskNorm == headNorm) {
+                                            continue; // Identical normalized content! Prune false positive!
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
 
-                    if (!isDirtyInMemory && filesWithRealDiff.count(cleanRel) == 0) {
-                        continue; // File has ZERO diff! Prune false positive!
-                    }
+                    GitChangeItem unstagedItem;
+                    unstagedItem.path = filePath;
+                    unstagedItem.fileName = baseFileName;
+                    unstagedItem.relDir = parentDir;
+                    unstagedItem.status = unstagedStatus;
+                    unstagedItem.isStaged = false;
+                    changes.push_back(std::move(unstagedItem));
                 }
-
-                std::filesystem::path p(filePath);
-                GitChangeItem item;
-                item.path = filePath;
-                item.fileName = p.filename().wstring();
-                item.relDir = p.parent_path().wstring();
-                item.status = statusStr.empty() ? L"M" : statusStr;
-                changes.push_back(item);
             }
         }
 
@@ -4394,6 +4502,27 @@ void DrawerPanel::StageAllChangesAsync() {
     }).detach();
 }
 
+void DrawerPanel::UnstageAllChangesAsync() {
+    SetActionPending(L"*", 5000);
+    auto alive = m_isAlive;
+    auto workers = m_activeWorkers;
+    std::thread([this, alive, workers]() {
+        if (workers) workers->fetch_add(1);
+        auto finish = [&]() { if (workers) workers->fetch_sub(1); };
+        if (!alive || !alive->load()) { finish(); return; }
+        m_isGitLoading = true;
+        std::wstring dir = m_openFolderPath.empty() ? L"." : m_openFolderPath;
+        RunGitCmd(L"restore --staged .", dir);
+        RunGitCmd(L"reset HEAD", dir);
+        if (!alive || !alive->load()) { finish(); return; }
+        ClearActionPending(L"*");
+        RefreshGitStatusOnly(false);
+        m_isGitLoading = false;
+        ShowGitNotification(L"✓ Unstaged all changes");
+        finish();
+    }).detach();
+}
+
 bool DrawerPanel::DiscardAllChanges() {
     SetActionPending(L"*", 5000);
     m_isGitLoading = true;
@@ -4443,6 +4572,30 @@ void DrawerPanel::StageFileAsync(const std::wstring& relPath) {
         m_isGitLoading = false;
         std::wstring baseName = std::filesystem::path(relPath).filename().wstring();
         ShowGitNotification(L"✓ Staged " + baseName);
+        finish();
+    }).detach();
+}
+
+void DrawerPanel::UnstageFileAsync(const std::wstring& relPath) {
+    SetActionPending(relPath, 3000);
+    auto alive = m_isAlive;
+    auto workers = m_activeWorkers;
+    std::thread([this, alive, workers, relPath]() {
+        if (workers) workers->fetch_add(1);
+        auto finish = [&]() { if (workers) workers->fetch_sub(1); };
+        if (!alive || !alive->load()) { finish(); return; }
+        m_isGitLoading = true;
+        std::wstring dir = m_openFolderPath.empty() ? L"." : m_openFolderPath;
+        std::wstring cleanRel = relPath;
+        for (auto& c : cleanRel) if (c == L'\\') c = L'/';
+        RunGitCmd(L"restore --staged -- \"" + cleanRel + L"\"", dir);
+        RunGitCmd(L"reset HEAD -- \"" + cleanRel + L"\"", dir);
+        if (!alive || !alive->load()) { finish(); return; }
+        ClearActionPending(relPath);
+        RefreshGitStatusOnly(false);
+        m_isGitLoading = false;
+        std::wstring baseName = std::filesystem::path(relPath).filename().wstring();
+        ShowGitNotification(L"✓ Unstaged " + baseName);
         finish();
     }).detach();
 }
@@ -4795,7 +4948,8 @@ bool DrawerPanel::HitTestGit(POINT pt, const app::AppConfig& config,
                             bool* pOutPromptDiscard,
                             std::wstring* pOutDiscardFileName,
                             std::wstring* pOutDiscardStatus,
-                            size_t* pOutDiscardCount) {
+                            size_t* pOutDiscardCount,
+                            bool* pOutPromptEmptyCommit) {
     (void)config;
     std::lock_guard<std::recursive_mutex> lock(m_gitMutex);
     outOpenFile.clear();
@@ -4925,8 +5079,71 @@ bool DrawerPanel::HitTestGit(POINT pt, const app::AppConfig& config,
         return true;
     }
 
-    // 3. Changes Section Header & Buttons (Image 5)
+    // 3. Changes & Staged Changes Section Headers & Buttons (Image 5)
     if (m_showChangesSection) {
+        // AI Generate Commit Message button (compact sparkle icon)
+        if (pt.x >= m_gitGenerateAiBounds.left && pt.x <= m_gitGenerateAiBounds.right &&
+            pt.y >= m_gitGenerateAiBounds.top && pt.y <= m_gitGenerateAiBounds.bottom) {
+            GenerateAiCommitMessage();
+            m_focusedGitInput = 1;
+            return true;
+        }
+
+        // Commit Message input box focus
+        if (pt.x >= m_gitMsgBoxBounds.left && pt.x <= m_gitMsgBoxBounds.right &&
+            pt.y >= m_gitMsgBoxBounds.top && pt.y <= m_gitMsgBoxBounds.bottom) {
+            m_focusedGitInput = 1;
+            return true;
+        } else if (pt.y >= m_gitMsgBoxBounds.top && pt.y <= m_gitMsgBoxBounds.bottom) {
+            m_focusedGitInput = 0;
+        }
+
+        // Primary Commit / Sync Changes Button (Image 1 & 5)
+        if (pt.x >= m_gitCommitBtnBounds.left && pt.x <= m_gitCommitBtnBounds.right &&
+            pt.y >= m_gitCommitBtnBounds.top && pt.y <= m_gitCommitBtnBounds.bottom) {
+            if (!m_gitChanges.empty()) {
+                std::wstring trimmed = m_commitMessage;
+                size_t f = trimmed.find_first_not_of(L" \t\r\n");
+                if (f == std::wstring::npos) {
+                    m_focusedGitInput = 1;
+                    if (pOutPromptEmptyCommit) {
+                        *pOutPromptEmptyCommit = true;
+                        return true;
+                    }
+                    m_gitTooltipText = L"Please provide a commit message before committing.";
+                    m_gitTooltipTarget = m_gitMsgBoxBounds;
+                    m_showGitTooltip = true;
+                    return true;
+                }
+                CommitChangesAsync(m_commitMessage);
+                return true;
+            } else if (m_unpushedCommitsCount > 0) {
+                PushCommitsAsync();
+                return true;
+            }
+            return true; // Disabled when 0 changes and 0 unpushed
+        }
+
+        // Staged Changes Header buttons & chevron
+        if (pt.x >= m_gitUnstageAllBounds.left && pt.x <= m_gitUnstageAllBounds.right &&
+            pt.y >= m_gitUnstageAllBounds.top && pt.y <= m_gitUnstageAllBounds.bottom) {
+            if (IsActionPending(L"*")) return true;
+            m_pressedGitButton = L"unstageAll";
+            ShowGitNotification(L"Unstaging all changes...");
+            UnstageAllChangesAsync();
+            return true;
+        }
+        if (pt.x >= m_gitStagedMoreBounds.left && pt.x <= m_gitStagedMoreBounds.right &&
+            pt.y >= m_gitStagedMoreBounds.top && pt.y <= m_gitStagedMoreBounds.bottom) {
+            return true;
+        }
+        if (pt.x >= m_gitStagedHeaderBounds.left && pt.x <= m_gitStagedHeaderBounds.right &&
+            pt.y >= m_gitStagedHeaderBounds.top && pt.y <= m_gitStagedHeaderBounds.bottom) {
+            m_stagedExpanded = !m_stagedExpanded;
+            return true;
+        }
+
+        // Changes (Unstaged) Header buttons & chevron
         if (pt.x >= m_gitStageAllBounds.left && pt.x <= m_gitStageAllBounds.right &&
             pt.y >= m_gitStageAllBounds.top && pt.y <= m_gitStageAllBounds.bottom) {
             if (IsActionPending(L"*")) return true;
@@ -4964,51 +5181,21 @@ bool DrawerPanel::HitTestGit(POINT pt, const app::AppConfig& config,
             return true;
         }
 
-        if (m_changesExpanded) {
-            // AI Generate Commit Message button (compact sparkle icon)
-            if (pt.x >= m_gitGenerateAiBounds.left && pt.x <= m_gitGenerateAiBounds.right &&
-                pt.y >= m_gitGenerateAiBounds.top && pt.y <= m_gitGenerateAiBounds.bottom) {
-                GenerateAiCommitMessage();
-                m_focusedGitInput = 1;
-                return true;
-            }
-
-            // Commit Message input box focus
-            if (pt.x >= m_gitMsgBoxBounds.left && pt.x <= m_gitMsgBoxBounds.right &&
-                pt.y >= m_gitMsgBoxBounds.top && pt.y <= m_gitMsgBoxBounds.bottom) {
-                m_focusedGitInput = 1;
-                return true;
-            } else if (pt.y >= m_gitMsgBoxBounds.top && pt.y <= m_gitMsgBoxBounds.bottom) {
-                m_focusedGitInput = 0;
-            }
-
-            // Primary Commit / Sync Changes Button (Image 1 & 5)
-            if (pt.x >= m_gitCommitBtnBounds.left && pt.x <= m_gitCommitBtnBounds.right &&
-                pt.y >= m_gitCommitBtnBounds.top && pt.y <= m_gitCommitBtnBounds.bottom) {
-                if (!m_gitChanges.empty()) {
-                    std::wstring trimmed = m_commitMessage;
-                    size_t f = trimmed.find_first_not_of(L" \t\r\n");
-                    if (f == std::wstring::npos) {
-                        m_focusedGitInput = 1;
-                        m_gitTooltipText = L"Please provide a commit message before committing.";
-                        m_gitTooltipTarget = m_gitMsgBoxBounds;
-                        m_showGitTooltip = true;
+        // File rows (staged & unstaged)
+        for (size_t i = 0; i < m_gitChanges.size(); ++i) {
+            const auto& item = m_gitChanges[i];
+            if (pt.x >= item.bounds.left && pt.x <= item.bounds.right &&
+                pt.y >= item.bounds.top && pt.y <= item.bounds.bottom) {
+                if (item.isStaged) {
+                    if (pt.x >= item.stageBtnBounds.left && pt.x <= item.stageBtnBounds.right &&
+                        pt.y >= item.stageBtnBounds.top && pt.y <= item.stageBtnBounds.bottom) {
+                        if (IsActionPending(item.path)) return true;
+                        m_pressedGitButton = L"unstage:" + item.path;
+                        ShowGitNotification(L"Unstaging " + item.fileName + L"...");
+                        UnstageFileAsync(item.path);
                         return true;
                     }
-                    CommitChangesAsync(m_commitMessage);
-                    return true;
-                } else if (m_unpushedCommitsCount > 0) {
-                    PushCommitsAsync();
-                    return true;
-                }
-                return true; // Disabled when 0 changes and 0 unpushed
-            }
-
-            // Changed file rows (Image 4 & 5)
-            for (size_t i = 0; i < m_gitChanges.size(); ++i) {
-                const auto& item = m_gitChanges[i];
-                if (pt.x >= item.bounds.left && pt.x <= item.bounds.right &&
-                    pt.y >= item.bounds.top && pt.y <= item.bounds.bottom) {
+                } else {
                     if (pt.x >= item.stageBtnBounds.left && pt.x <= item.stageBtnBounds.right &&
                         pt.y >= item.stageBtnBounds.top && pt.y <= item.stageBtnBounds.bottom) {
                         if (IsActionPending(item.path)) return true;
@@ -5030,20 +5217,16 @@ bool DrawerPanel::HitTestGit(POINT pt, const app::AppConfig& config,
                         }
                         m_pressedGitButton = L"discard:" + item.path;
                         outDiscardedFile = item.path;
-                        m_gitTooltipText = L"Discarding " + item.fileName + L"...";
-                        m_showGitTooltip = true;
-                        m_gitTooltipTarget = item.bounds;
-                        ShowGitNotification(L"Discarding " + item.fileName + L"...");
                         std::wstring discardPath = item.path;
                         m_gitChanges.erase(m_gitChanges.begin() + i);
                         DiscardFile(discardPath);
                         ShowGitNotification(L"✓ Discarded " + item.fileName);
                         return true;
                     }
-                    outOpenFile = item.path;
-                    outIsDiff = true; // Opens side-by-side diff comparison! (Image 2)
-                    return true;
                 }
+                outOpenFile = item.path;
+                outIsDiff = true; // Opens side-by-side diff comparison! (Image 2)
+                return true;
             }
         }
     }
@@ -5181,6 +5364,8 @@ bool DrawerPanel::HandleGitMouseMove(POINT pt) {
 
     m_hoveredGitButton.clear();
     if (checkBtn(m_gitHeaderMoreBounds, L"Views and More Actions...")) {}
+    else if (checkBtn(m_gitUnstageAllBounds, L"Unstage All Changes (⊖)")) { m_hoveredGitButton = L"unstageAll"; }
+    else if (checkBtn(m_gitStagedMoreBounds, L"More Staged Actions...")) {}
     else if (checkBtn(m_gitStageAllBounds, L"Stage All Changes (✓)")) { m_hoveredGitButton = L"stageAll"; }
     else if (checkBtn(m_gitDiscardAllBounds, L"Discard All Changes (🔄)")) { m_hoveredGitButton = L"discardAll"; }
     else if (checkBtn(m_gitChangesMoreBounds, L"More Actions...")) {}
@@ -5206,13 +5391,18 @@ bool DrawerPanel::HandleGitMouseMove(POINT pt) {
     else if (checkBtn(m_gitGraphMoreBounds, L"More Graph Actions...")) {}
 
     // Check changed file rows (Image 4 & 5)
-    if (m_changesExpanded) {
-        for (size_t i = 0; i < m_gitChanges.size(); ++i) {
-            const auto& item = m_gitChanges[i];
-            if (pt.x >= item.bounds.left && pt.x <= item.bounds.right &&
-                pt.y >= item.bounds.top && pt.y <= item.bounds.bottom) {
-                m_hoveredGitChangeIdx = static_cast<int>(i);
+    for (size_t i = 0; i < m_gitChanges.size(); ++i) {
+        const auto& item = m_gitChanges[i];
+        if (pt.x >= item.bounds.left && pt.x <= item.bounds.right &&
+            pt.y >= item.bounds.top && pt.y <= item.bounds.bottom) {
+            m_hoveredGitChangeIdx = static_cast<int>(i);
 
+            if (item.isStaged) {
+                if (checkBtn(item.stageBtnBounds, L"Unstage Changes (-)")) {
+                    m_hoveredGitButton = L"unstage:" + item.path;
+                    break;
+                }
+            } else {
                 if (checkBtn(item.discardBtnBounds, L"Discard Changes (↩)")) {
                     m_hoveredGitButton = L"discard:" + item.path;
                     break;
@@ -5221,15 +5411,15 @@ bool DrawerPanel::HandleGitMouseMove(POINT pt) {
                     m_hoveredGitButton = L"stage:" + item.path;
                     break;
                 }
-                std::wstring desc = (item.status == L"U") ? L"Untracked" :
-                                    (item.status == L"D") ? L"Deleted" :
-                                    (item.status == L"R") ? L"Renamed" :
-                                    (item.status == L"A") ? L"Added" : L"Modified";
-                m_gitTooltipText = item.path + L" • " + desc;
-                m_gitTooltipTarget = item.bounds;
-                m_showGitTooltip = true;
-                break;
             }
+            std::wstring desc = (item.status == L"U") ? L"Untracked" :
+                                (item.status == L"D") ? L"Deleted" :
+                                (item.status == L"R") ? L"Renamed" :
+                                (item.status == L"A") ? L"Added" : L"Modified";
+            m_gitTooltipText = item.path + L" • " + desc + (item.isStaged ? L" (Staged)" : L"");
+            m_gitTooltipTarget = item.bounds;
+            m_showGitTooltip = true;
+            break;
         }
     }
 
@@ -5378,94 +5568,10 @@ void DrawerPanel::RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, 
     }
 
     // =========================================================================
-    // 3. Section 1: "Changes" (collapsible)
+    // 3. Section 1: "Changes" & "Staged Changes"
     // =========================================================================
     if (m_showChangesSection) {
-        m_gitChangesHeaderBounds = D2D1::RectF(railW, curY, railW + currentDrawerW, curY + secH);
-
-        // Chevron (v or >)
-        float chevX = railW + config.ScaleF(14.0f);
-        float chevY = curY + secH / 2.0f;
-        m_gitChangesChevronBounds = D2D1::RectF(chevX - 6.0f, chevY - 6.0f, chevX + 6.0f, chevY + 6.0f);
-
-        if (m_changesExpanded) {
-            pRT->DrawLine(D2D1::Point2F(chevX - 3.5f, chevY - 2.0f), D2D1::Point2F(chevX, chevY + 2.0f), theme.brushTextPrimary.Get(), 1.4f);
-            pRT->DrawLine(D2D1::Point2F(chevX, chevY + 2.0f), D2D1::Point2F(chevX + 3.5f, chevY - 2.0f), theme.brushTextPrimary.Get(), 1.4f);
-        } else {
-            pRT->DrawLine(D2D1::Point2F(chevX - 2.0f, chevY - 3.5f), D2D1::Point2F(chevX + 2.0f, chevY), theme.brushTextPrimary.Get(), 1.4f);
-            pRT->DrawLine(D2D1::Point2F(chevX + 2.0f, chevY), D2D1::Point2F(chevX - 2.0f, chevY + 3.5f), theme.brushTextPrimary.Get(), 1.4f);
-        }
-
-        // Title: Changes (LEFT-ALIGNED right next to chevron, NOT on the right!)
-        D2D1_RECT_F rcChangesText = D2D1::RectF(chevX + config.ScaleF(12.0f), curY, chevX + config.ScaleF(70.0f), curY + secH);
-        pRT->DrawText(L"Changes", 7,
-                      theme.fontMenuItem.Get() ? theme.fontMenuItem.Get() : theme.fontButtonCenter.Get(),
-                      rcChangesText, theme.brushTextPrimary.Get());
-
-        // Header Action Buttons on right: ✓ (Stage All), 🔄 (Discard All), ... (More)
-        float btnW = config.ScaleF(18.0f);
-        float btnGap = config.ScaleF(4.0f);
-        float rightX = railW + currentDrawerW - config.ScaleF(10.0f);
-
-        m_gitChangesMoreBounds = D2D1::RectF(rightX - btnW, curY + 2.0f, rightX, curY + secH - 2.0f);
-        rightX -= (btnW + btnGap);
-
-        m_gitDiscardAllBounds = D2D1::RectF(rightX - btnW, curY + 2.0f, rightX, curY + secH - 2.0f);
-        rightX -= (btnW + btnGap);
-
-        m_gitStageAllBounds = D2D1::RectF(rightX - btnW, curY + 2.0f, rightX, curY + secH - 2.0f);
-        rightX -= (btnW + btnGap);
-
-        // Circular count pill badge [ N ] (matching VS Code Image 4)
-        if (!m_gitChanges.empty()) {
-            float badgeW = config.ScaleF(18.0f);
-            float badgeH = config.ScaleF(16.0f);
-            D2D1_ROUNDED_RECT rrcBadge = D2D1::RoundedRect(
-                D2D1::RectF(rightX - badgeW, curY + (secH - badgeH) / 2.0f, rightX, curY + (secH + badgeH) / 2.0f),
-                8.0f, 8.0f
-            );
-            pRT->FillRoundedRectangle(rrcBadge, theme.brushItemHover.Get());
-            std::wstring cntStr = std::to_wstring(m_gitChanges.size());
-            pRT->DrawText(cntStr.c_str(), static_cast<UINT32>(cntStr.length()),
-                          theme.fontBadge.Get() ? theme.fontBadge.Get() : theme.fontMenuShortcut.Get(),
-                          rrcBadge.rect, theme.brushTextPrimary.Get());
-        }
-
-        // Draw ✓ icon on m_gitStageAllBounds (with hover pill & disabled state)
-        bool isStageAllHovered = (m_hoveredGitButton == L"stageAll");
-        bool isStageAllPending = IsActionPending(L"*");
-        if (isStageAllHovered && !isStageAllPending) {
-            pRT->FillRoundedRectangle(D2D1::RoundedRect(m_gitStageAllBounds, 3.0f, 3.0f), theme.brushItemHover.Get());
-        }
-        float ckX = (m_gitStageAllBounds.left + m_gitStageAllBounds.right) / 2.0f;
-        float ckY = (m_gitStageAllBounds.top + m_gitStageAllBounds.bottom) / 2.0f;
-        ID2D1Brush* pStageAllBrush = isStageAllPending ? theme.brushTextMuted.Get() : (isStageAllHovered ? (theme.IsDarkMode() ? theme.brushTextWhite.Get() : theme.brushTextPrimary.Get()) : theme.brushTextSecondary.Get());
-        pRT->DrawLine(D2D1::Point2F(ckX - 3.5f, ckY), D2D1::Point2F(ckX - 1.0f, ckY + 3.0f), pStageAllBrush, 1.4f);
-        pRT->DrawLine(D2D1::Point2F(ckX - 1.0f, ckY + 3.0f), D2D1::Point2F(ckX + 4.0f, ckY - 3.0f), pStageAllBrush, 1.4f);
-
-        // Draw 🔄 circular arrow on m_gitDiscardAllBounds (with hover pill & disabled state)
-        bool isDiscardAllHovered = (m_hoveredGitButton == L"discardAll");
-        bool isDiscardAllPending = IsActionPending(L"*");
-        if (isDiscardAllHovered && !isDiscardAllPending) {
-            pRT->FillRoundedRectangle(D2D1::RoundedRect(m_gitDiscardAllBounds, 3.0f, 3.0f), theme.brushItemHover.Get());
-        }
-        float rcX = (m_gitDiscardAllBounds.left + m_gitDiscardAllBounds.right) / 2.0f;
-        float rcY = (m_gitDiscardAllBounds.top + m_gitDiscardAllBounds.bottom) / 2.0f;
-        ID2D1Brush* pDiscAllBrush = isDiscardAllPending ? theme.brushTextMuted.Get() : (isDiscardAllHovered ? (theme.IsDarkMode() ? theme.brushTextWhite.Get() : theme.brushTextPrimary.Get()) : theme.brushTextSecondary.Get());
-        D2D1_ELLIPSE elDisc = D2D1::Ellipse(D2D1::Point2F(rcX, rcY), 4.0f, 4.0f);
-        pRT->DrawEllipse(elDisc, pDiscAllBrush, 1.3f);
-        pRT->DrawLine(D2D1::Point2F(rcX + 4.0f, rcY - 2.5f), D2D1::Point2F(rcX + 4.0f, rcY), pDiscAllBrush, 1.3f);
-
-        // Draw ... on m_gitChangesMoreBounds
-        float mx = (m_gitChangesMoreBounds.left + m_gitChangesMoreBounds.right) / 2.0f;
-        float my = (m_gitChangesMoreBounds.top + m_gitChangesMoreBounds.bottom) / 2.0f;
-        pRT->FillEllipse(D2D1::Ellipse(D2D1::Point2F(mx - 3.5f, my), 1.2f, 1.2f), theme.brushTextMuted.Get());
-        pRT->FillEllipse(D2D1::Ellipse(D2D1::Point2F(mx, my), 1.2f, 1.2f), theme.brushTextMuted.Get());
-        pRT->FillEllipse(D2D1::Ellipse(D2D1::Point2F(mx + 3.5f, my), 1.2f, 1.2f), theme.brushTextMuted.Get());
-
-        curY += secH + config.ScaleF(6.0f);
-
-        // Visual Notification Pill (e.g. "✓ Discarded <file>") - gives instant visual info when discarding
+        // Visual Notification Pill (e.g. "✓ Discarded <file>")
         if (HasGitNotification()) {
             float notifH = config.ScaleF(22.0f);
             D2D1_RECT_F rcNotif = D2D1::RectF(
@@ -5501,227 +5607,278 @@ void DrawerPanel::RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, 
             curY += notifH + config.ScaleF(6.0f);
         }
 
-        if (m_changesExpanded) {
-            // Commit Message Input Box
-            float msgH = config.ScaleF(28.0f);
-            m_gitMsgBoxBounds = D2D1::RectF(
-                railW + paddingX,
-                curY,
-                railW + currentDrawerW - paddingX,
-                curY + msgH
-            );
+        // Commit Message Input Box (Always accessible at top of Source Control)
+        float msgH = config.ScaleF(28.0f);
+        m_gitMsgBoxBounds = D2D1::RectF(
+            railW + paddingX,
+            curY,
+            railW + currentDrawerW - paddingX,
+            curY + msgH
+        );
 
-            D2D1_ROUNDED_RECT rrcMsg = D2D1::RoundedRect(m_gitMsgBoxBounds, 4.0f, 4.0f);
-            pRT->FillRoundedRectangle(rrcMsg, theme.brushCanvasBg.Get());
-            pRT->DrawRoundedRectangle(rrcMsg,
-                m_focusedGitInput == 1 ? theme.brushBorderHover.Get() : theme.brushBorderSubtle.Get(),
-                m_focusedGitInput == 1 ? 1.4f : 1.0f);
+        D2D1_ROUNDED_RECT rrcMsg = D2D1::RoundedRect(m_gitMsgBoxBounds, 4.0f, 4.0f);
+        pRT->FillRoundedRectangle(rrcMsg, theme.brushCanvasBg.Get());
+        pRT->DrawRoundedRectangle(rrcMsg,
+            m_focusedGitInput == 1 ? theme.brushBorderHover.Get() : theme.brushBorderSubtle.Get(),
+            m_focusedGitInput == 1 ? 1.4f : 1.0f);
 
-            // AI Commit Message Sparkle Button (compact square with ✦ sparkle icon, NO "Generate" text!)
-            float btnSize = config.ScaleF(22.0f);
-            m_gitGenerateAiBounds = D2D1::RectF(
-                m_gitMsgBoxBounds.right - btnSize - config.ScaleF(3.0f),
-                m_gitMsgBoxBounds.top + (msgH - btnSize) / 2.0f,
-                m_gitMsgBoxBounds.right - config.ScaleF(3.0f),
-                m_gitMsgBoxBounds.top + (msgH - btnSize) / 2.0f + btnSize
-            );
-            D2D1_ROUNDED_RECT rrcGen = D2D1::RoundedRect(m_gitGenerateAiBounds, 3.0f, 3.0f);
-            pRT->FillRoundedRectangle(rrcGen, theme.brushBrandAccent.Get());
+        // AI Commit Message Sparkle Button (compact square with ✦ sparkle icon)
+        float btnSize = config.ScaleF(22.0f);
+        m_gitGenerateAiBounds = D2D1::RectF(
+            m_gitMsgBoxBounds.right - btnSize - config.ScaleF(3.0f),
+            m_gitMsgBoxBounds.top + (msgH - btnSize) / 2.0f,
+            m_gitMsgBoxBounds.right - config.ScaleF(3.0f),
+            m_gitMsgBoxBounds.top + (msgH - btnSize) / 2.0f + btnSize
+        );
+        D2D1_ROUNDED_RECT rrcGen = D2D1::RoundedRect(m_gitGenerateAiBounds, 3.0f, 3.0f);
+        pRT->FillRoundedRectangle(rrcGen, theme.brushBrandAccent.Get());
 
-            // Vector 4-pointed Sparkle (✦) icon in crisp white
-            float scx = (m_gitGenerateAiBounds.left + m_gitGenerateAiBounds.right) / 2.0f;
-            float scy = (m_gitGenerateAiBounds.top + m_gitGenerateAiBounds.bottom) / 2.0f;
-            float sr = config.ScaleF(5.0f);
-            Microsoft::WRL::ComPtr<ID2D1PathGeometry> pSparkle;
-            Microsoft::WRL::ComPtr<ID2D1Factory> pFactory;
-            pRT->GetFactory(&pFactory);
-            if (pFactory && SUCCEEDED(pFactory->CreatePathGeometry(&pSparkle))) {
-                Microsoft::WRL::ComPtr<ID2D1GeometrySink> sink;
-                if (SUCCEEDED(pSparkle->Open(&sink))) {
-                    sink->BeginFigure(D2D1::Point2F(scx, scy - sr), D2D1_FIGURE_BEGIN_FILLED);
-                    sink->AddLine(D2D1::Point2F(scx + sr * 0.28f, scy - sr * 0.28f));
-                    sink->AddLine(D2D1::Point2F(scx + sr, scy));
-                    sink->AddLine(D2D1::Point2F(scx + sr * 0.28f, scy + sr * 0.28f));
-                    sink->AddLine(D2D1::Point2F(scx, scy + sr));
-                    sink->AddLine(D2D1::Point2F(scx - sr * 0.28f, scy + sr * 0.28f));
-                    sink->AddLine(D2D1::Point2F(scx - sr, scy));
-                    sink->AddLine(D2D1::Point2F(scx - sr * 0.28f, scy - sr * 0.28f));
-                    sink->EndFigure(D2D1_FIGURE_END_CLOSED);
-                    sink->Close();
-                    pRT->FillGeometry(pSparkle.Get(), theme.brushTextWhite.Get());
-                }
+        // Vector 4-pointed Sparkle (✦) icon in crisp white
+        float scx = (m_gitGenerateAiBounds.left + m_gitGenerateAiBounds.right) / 2.0f;
+        float scy = (m_gitGenerateAiBounds.top + m_gitGenerateAiBounds.bottom) / 2.0f;
+        float sr = config.ScaleF(5.0f);
+        Microsoft::WRL::ComPtr<ID2D1PathGeometry> pSparkle;
+        Microsoft::WRL::ComPtr<ID2D1Factory> pFactory;
+        pRT->GetFactory(&pFactory);
+        if (pFactory && SUCCEEDED(pFactory->CreatePathGeometry(&pSparkle))) {
+            Microsoft::WRL::ComPtr<ID2D1GeometrySink> sink;
+            if (SUCCEEDED(pSparkle->Open(&sink))) {
+                sink->BeginFigure(D2D1::Point2F(scx, scy - sr), D2D1_FIGURE_BEGIN_FILLED);
+                sink->AddLine(D2D1::Point2F(scx + sr * 0.28f, scy - sr * 0.28f));
+                sink->AddLine(D2D1::Point2F(scx + sr, scy));
+                sink->AddLine(D2D1::Point2F(scx + sr * 0.28f, scy + sr * 0.28f));
+                sink->AddLine(D2D1::Point2F(scx, scy + sr));
+                sink->AddLine(D2D1::Point2F(scx - sr * 0.28f, scy + sr * 0.28f));
+                sink->AddLine(D2D1::Point2F(scx - sr, scy));
+                sink->AddLine(D2D1::Point2F(scx - sr * 0.28f, scy - sr * 0.28f));
+                sink->EndFigure(D2D1_FIGURE_END_CLOSED);
+                sink->Close();
+                pRT->FillGeometry(pSparkle.Get(), theme.brushTextWhite.Get());
             }
+        }
 
-            // Message text or placeholder (LEFT-ALIGNED)
-            D2D1_RECT_F rcMsgText = D2D1::RectF(
-                m_gitMsgBoxBounds.left + config.ScaleF(8.0f),
-                m_gitMsgBoxBounds.top,
-                m_gitGenerateAiBounds.left - config.ScaleF(6.0f),
-                m_gitMsgBoxBounds.bottom
-            );
-            float msgTextWidth = 0.0f;
-            if (m_commitMessage.empty()) {
-                const wchar_t* phStr = L"Message (Ctrl+Enter to commit)";
-                pRT->DrawText(phStr, static_cast<UINT32>(wcslen(phStr)),
-                              theme.fontMenuItem.Get() ? theme.fontMenuItem.Get() : theme.fontButtonCenter.Get(),
-                              rcMsgText, theme.brushTextMuted.Get());
-            } else {
-                pRT->DrawText(m_commitMessage.c_str(), static_cast<UINT32>(m_commitMessage.length()),
-                              theme.fontMenuItem.Get() ? theme.fontMenuItem.Get() : theme.fontButtonCenter.Get(),
-                              rcMsgText, theme.brushTextPrimary.Get());
+        // Message text or placeholder (LEFT-ALIGNED)
+        D2D1_RECT_F rcMsgText = D2D1::RectF(
+            m_gitMsgBoxBounds.left + config.ScaleF(8.0f),
+            m_gitMsgBoxBounds.top,
+            m_gitGenerateAiBounds.left - config.ScaleF(6.0f),
+            m_gitMsgBoxBounds.bottom
+        );
+        float msgTextWidth = 0.0f;
+        if (m_commitMessage.empty()) {
+            const wchar_t* phStr = L"Message (Ctrl+Enter to commit)";
+            pRT->DrawText(phStr, static_cast<UINT32>(wcslen(phStr)),
+                          theme.fontMenuItem.Get() ? theme.fontMenuItem.Get() : theme.fontButtonCenter.Get(),
+                          rcMsgText, theme.brushTextMuted.Get());
+        } else {
+            pRT->DrawText(m_commitMessage.c_str(), static_cast<UINT32>(m_commitMessage.length()),
+                          theme.fontMenuItem.Get() ? theme.fontMenuItem.Get() : theme.fontButtonCenter.Get(),
+                          rcMsgText, theme.brushTextPrimary.Get());
 
-                if (theme.dwriteFactory) {
-                    Microsoft::WRL::ComPtr<IDWriteTextLayout> pLayout;
-                    if (SUCCEEDED(theme.dwriteFactory->CreateTextLayout(
-                            m_commitMessage.c_str(), static_cast<UINT32>(m_commitMessage.length()),
-                            theme.fontMenuItem.Get() ? theme.fontMenuItem.Get() : theme.fontButtonCenter.Get(),
-                            1000.0f, msgH, &pLayout))) {
-                        DWRITE_TEXT_METRICS tm{};
-                        if (SUCCEEDED(pLayout->GetMetrics(&tm))) {
-                            msgTextWidth = tm.width;
-                        }
+            if (theme.dwriteFactory) {
+                Microsoft::WRL::ComPtr<IDWriteTextLayout> pLayout;
+                if (SUCCEEDED(theme.dwriteFactory->CreateTextLayout(
+                        m_commitMessage.c_str(), static_cast<UINT32>(m_commitMessage.length()),
+                        theme.fontMenuItem.Get() ? theme.fontMenuItem.Get() : theme.fontButtonCenter.Get(),
+                        1000.0f, msgH, &pLayout))) {
+                    DWRITE_TEXT_METRICS tm{};
+                    if (SUCCEEDED(pLayout->GetMetrics(&tm))) {
+                        msgTextWidth = tm.width;
                     }
                 }
             }
+        }
 
-            // Blinking Caret '|' in Commit Message Box (Image 1)
-            if (m_focusedGitInput == 1 && m_gitCaretVisible) {
-                float caretX = rcMsgText.left + msgTextWidth + 1.0f;
-                if (caretX < rcMsgText.right) {
-                    pRT->DrawLine(
-                        D2D1::Point2F(caretX, m_gitMsgBoxBounds.top + config.ScaleF(5.0f)),
-                        D2D1::Point2F(caretX, m_gitMsgBoxBounds.bottom - config.ScaleF(5.0f)),
-                        theme.brushTextPrimary.Get(), 1.5f
-                    );
-                }
+        // Blinking Caret '|' in Commit Message Box (Image 1)
+        if (m_focusedGitInput == 1 && m_gitCaretVisible) {
+            float caretX = rcMsgText.left + msgTextWidth + 1.0f;
+            if (caretX < rcMsgText.right) {
+                pRT->DrawLine(
+                    D2D1::Point2F(caretX, m_gitMsgBoxBounds.top + config.ScaleF(5.0f)),
+                    D2D1::Point2F(caretX, m_gitMsgBoxBounds.bottom - config.ScaleF(5.0f)),
+                    theme.brushTextPrimary.Get(), 1.5f
+                );
             }
+        }
 
-            curY += msgH + config.ScaleF(6.0f);
+        curY += msgH + config.ScaleF(6.0f);
 
-            // Primary Commit / Sync Changes Button (Images 1 & 5)
-            float commitH = config.ScaleF(28.0f);
-            m_gitCommitBtnBounds = D2D1::RectF(
-                railW + paddingX,
+        // Primary Commit / Sync Changes Button (Images 1 & 5)
+        float commitH = config.ScaleF(28.0f);
+        m_gitCommitBtnBounds = D2D1::RectF(
+            railW + paddingX,
+            curY,
+            railW + currentDrawerW - paddingX,
+            curY + commitH
+        );
+        D2D1_ROUNDED_RECT rrcCommit = D2D1::RoundedRect(m_gitCommitBtnBounds, 4.0f, 4.0f);
+
+        bool hasChanges = !m_gitChanges.empty();
+        bool hasUnpushed = (m_unpushedCommitsCount > 0);
+
+        if (hasChanges) {
+            // Active Commit Button (Blue)
+            pRT->FillRoundedRectangle(rrcCommit, theme.brushBrandAccent.Get());
+
+            D2D1_RECT_F rcCommitLabel = D2D1::RectF(
+                m_gitCommitBtnBounds.left,
                 curY,
-                railW + currentDrawerW - paddingX,
+                m_gitCommitBtnBounds.right - config.ScaleF(26.0f),
                 curY + commitH
             );
-            D2D1_ROUNDED_RECT rrcCommit = D2D1::RoundedRect(m_gitCommitBtnBounds, 4.0f, 4.0f);
+            const wchar_t* commitText = L"✓ Commit";
+            pRT->DrawText(commitText, static_cast<UINT32>(wcslen(commitText)),
+                          theme.fontButtonCenter.Get() ? theme.fontButtonCenter.Get() : theme.fontMenuItem.Get(),
+                          rcCommitLabel, theme.brushTextWhite.Get());
 
-            bool hasChanges = !m_gitChanges.empty();
-            bool hasUnpushed = (m_unpushedCommitsCount > 0);
+            // Vertical divider and chevron dropdown
+            float divX = m_gitCommitBtnBounds.right - config.ScaleF(26.0f);
+            pRT->DrawLine(D2D1::Point2F(divX, curY + 4.0f), D2D1::Point2F(divX, curY + commitH - 4.0f),
+                          theme.brushBorderSubtle.Get(), 1.0f);
+            float dchX = (divX + m_gitCommitBtnBounds.right) / 2.0f;
+            float dchY = curY + commitH / 2.0f;
+            pRT->DrawLine(D2D1::Point2F(dchX - 3.0f, dchY - 1.5f), D2D1::Point2F(dchX, dchY + 2.0f), theme.brushTextWhite.Get(), 1.4f);
+            pRT->DrawLine(D2D1::Point2F(dchX, dchY + 2.0f), D2D1::Point2F(dchX + 3.0f, dchY - 1.5f), theme.brushTextWhite.Get(), 1.4f);
+        } else if (hasUnpushed) {
+            // Active Sync Changes Button (Blue, with unpushed count matching Image 5)
+            pRT->FillRoundedRectangle(rrcCommit, theme.brushBrandAccent.Get());
 
-            if (hasChanges) {
-                // Active Commit Button (Blue)
-                pRT->FillRoundedRectangle(rrcCommit, theme.brushBrandAccent.Get());
+            D2D1_RECT_F rcSyncLabel = D2D1::RectF(
+                m_gitCommitBtnBounds.left,
+                curY,
+                m_gitCommitBtnBounds.right - config.ScaleF(26.0f),
+                curY + commitH
+            );
+            std::wstring syncText = L"🔄 Sync Changes " + std::to_wstring(m_unpushedCommitsCount);
+            pRT->DrawText(syncText.c_str(), static_cast<UINT32>(syncText.length()),
+                          theme.fontButtonCenter.Get() ? theme.fontButtonCenter.Get() : theme.fontMenuItem.Get(),
+                          rcSyncLabel, theme.brushTextWhite.Get());
 
-                D2D1_RECT_F rcCommitLabel = D2D1::RectF(
-                    m_gitCommitBtnBounds.left,
-                    curY,
-                    m_gitCommitBtnBounds.right - config.ScaleF(26.0f),
-                    curY + commitH
-                );
-                const wchar_t* commitText = L"✓ Commit";
-                pRT->DrawText(commitText, static_cast<UINT32>(wcslen(commitText)),
-                              theme.fontButtonCenter.Get() ? theme.fontButtonCenter.Get() : theme.fontMenuItem.Get(),
-                              rcCommitLabel, theme.brushTextWhite.Get());
+            // Vertical divider and chevron dropdown
+            float divX = m_gitCommitBtnBounds.right - config.ScaleF(26.0f);
+            pRT->DrawLine(D2D1::Point2F(divX, curY + 4.0f), D2D1::Point2F(divX, curY + commitH - 4.0f),
+                          theme.brushBorderSubtle.Get(), 1.0f);
+            float dchX = (divX + m_gitCommitBtnBounds.right) / 2.0f;
+            float dchY = curY + commitH / 2.0f;
+            pRT->DrawLine(D2D1::Point2F(dchX - 3.0f, dchY - 1.5f), D2D1::Point2F(dchX, dchY + 2.0f), theme.brushTextWhite.Get(), 1.4f);
+            pRT->DrawLine(D2D1::Point2F(dchX, dchY + 2.0f), D2D1::Point2F(dchX + 3.0f, dchY - 1.5f), theme.brushTextWhite.Get(), 1.4f);
+        } else {
+            // Disabled Muted Commit Button (0 changes and 0 unpushed commits)
+            Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushDisabled;
+            pRT->CreateSolidColorBrush(D2D1::ColorF(0.22f, 0.22f, 0.22f, 0.6f), &brushDisabled);
+            pRT->FillRoundedRectangle(rrcCommit, brushDisabled.Get() ? brushDisabled.Get() : theme.brushBorderSubtle.Get());
 
-                // Vertical divider and chevron dropdown
-                float divX = m_gitCommitBtnBounds.right - config.ScaleF(26.0f);
-                pRT->DrawLine(D2D1::Point2F(divX, curY + 4.0f), D2D1::Point2F(divX, curY + commitH - 4.0f),
-                              theme.brushBorderSubtle.Get(), 1.0f);
-                float dchX = (divX + m_gitCommitBtnBounds.right) / 2.0f;
-                float dchY = curY + commitH / 2.0f;
-                pRT->DrawLine(D2D1::Point2F(dchX - 3.0f, dchY - 1.5f), D2D1::Point2F(dchX, dchY + 2.0f), theme.brushTextWhite.Get(), 1.4f);
-                pRT->DrawLine(D2D1::Point2F(dchX, dchY + 2.0f), D2D1::Point2F(dchX + 3.0f, dchY - 1.5f), theme.brushTextWhite.Get(), 1.4f);
-            } else if (hasUnpushed) {
-                // Active Sync Changes Button (Blue, with unpushed count matching Image 5)
-                pRT->FillRoundedRectangle(rrcCommit, theme.brushBrandAccent.Get());
+            D2D1_RECT_F rcCommitLabel = D2D1::RectF(
+                m_gitCommitBtnBounds.left,
+                curY,
+                m_gitCommitBtnBounds.right - config.ScaleF(26.0f),
+                curY + commitH
+            );
+            const wchar_t* commitText = L"✓ Commit";
+            pRT->DrawText(commitText, static_cast<UINT32>(wcslen(commitText)),
+                          theme.fontButtonCenter.Get() ? theme.fontButtonCenter.Get() : theme.fontMenuItem.Get(),
+                          rcCommitLabel, theme.brushTextMuted.Get());
 
-                D2D1_RECT_F rcSyncLabel = D2D1::RectF(
-                    m_gitCommitBtnBounds.left,
-                    curY,
-                    m_gitCommitBtnBounds.right - config.ScaleF(26.0f),
-                    curY + commitH
-                );
-                std::wstring syncText = L"🔄 Sync Changes " + std::to_wstring(m_unpushedCommitsCount);
-                pRT->DrawText(syncText.c_str(), static_cast<UINT32>(syncText.length()),
-                              theme.fontButtonCenter.Get() ? theme.fontButtonCenter.Get() : theme.fontMenuItem.Get(),
-                              rcSyncLabel, theme.brushTextWhite.Get());
+            float divX = m_gitCommitBtnBounds.right - config.ScaleF(26.0f);
+            pRT->DrawLine(D2D1::Point2F(divX, curY + 4.0f), D2D1::Point2F(divX, curY + commitH - 4.0f),
+                          theme.brushBorderSubtle.Get(), 1.0f);
+            float dchX = (divX + m_gitCommitBtnBounds.right) / 2.0f;
+            float dchY = curY + commitH / 2.0f;
+            pRT->DrawLine(D2D1::Point2F(dchX - 3.0f, dchY - 1.5f), D2D1::Point2F(dchX, dchY + 2.0f), theme.brushTextMuted.Get(), 1.4f);
+            pRT->DrawLine(D2D1::Point2F(dchX, dchY + 2.0f), D2D1::Point2F(dchX + 3.0f, dchY - 1.5f), theme.brushTextMuted.Get(), 1.4f);
+        }
 
-                // Vertical divider and chevron dropdown
-                float divX = m_gitCommitBtnBounds.right - config.ScaleF(26.0f);
-                pRT->DrawLine(D2D1::Point2F(divX, curY + 4.0f), D2D1::Point2F(divX, curY + commitH - 4.0f),
-                              theme.brushBorderSubtle.Get(), 1.0f);
-                float dchX = (divX + m_gitCommitBtnBounds.right) / 2.0f;
-                float dchY = curY + commitH / 2.0f;
-                pRT->DrawLine(D2D1::Point2F(dchX - 3.0f, dchY - 1.5f), D2D1::Point2F(dchX, dchY + 2.0f), theme.brushTextWhite.Get(), 1.4f);
-                pRT->DrawLine(D2D1::Point2F(dchX, dchY + 2.0f), D2D1::Point2F(dchX + 3.0f, dchY - 1.5f), theme.brushTextWhite.Get(), 1.4f);
-            } else {
-                // Disabled Muted Commit Button (0 changes and 0 unpushed commits)
-                Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushDisabled;
-                pRT->CreateSolidColorBrush(D2D1::ColorF(0.22f, 0.22f, 0.22f, 0.6f), &brushDisabled);
-                pRT->FillRoundedRectangle(rrcCommit, brushDisabled.Get() ? brushDisabled.Get() : theme.brushBorderSubtle.Get());
+        curY += commitH + config.ScaleF(8.0f);
 
-                D2D1_RECT_F rcCommitLabel = D2D1::RectF(
-                    m_gitCommitBtnBounds.left,
-                    curY,
-                    m_gitCommitBtnBounds.right - config.ScaleF(26.0f),
-                    curY + commitH
-                );
-                const wchar_t* commitText = L"✓ Commit";
-                pRT->DrawText(commitText, static_cast<UINT32>(wcslen(commitText)),
-                              theme.fontButtonCenter.Get() ? theme.fontButtonCenter.Get() : theme.fontMenuItem.Get(),
-                              rcCommitLabel, theme.brushTextMuted.Get());
+        // Scrollable List of Staged Changes & Changes (Bounded above draggable splitter)
+        float fileListTopY = curY;
+        float fileListBottomY = m_showGraphSection ? (m_gitSplitY - config.ScaleF(4.0f)) : clientHeight;
 
-                float divX = m_gitCommitBtnBounds.right - config.ScaleF(26.0f);
-                pRT->DrawLine(D2D1::Point2F(divX, curY + 4.0f), D2D1::Point2F(divX, curY + commitH - 4.0f),
-                              theme.brushBorderSubtle.Get(), 1.0f);
-                float dchX = (divX + m_gitCommitBtnBounds.right) / 2.0f;
-                float dchY = curY + commitH / 2.0f;
-                pRT->DrawLine(D2D1::Point2F(dchX - 3.0f, dchY - 1.5f), D2D1::Point2F(dchX, dchY + 2.0f), theme.brushTextMuted.Get(), 1.4f);
-                pRT->DrawLine(D2D1::Point2F(dchX, dchY + 2.0f), D2D1::Point2F(dchX + 3.0f, dchY - 1.5f), theme.brushTextMuted.Get(), 1.4f);
+        if (fileListBottomY > fileListTopY) {
+            D2D1_RECT_F rcChangesClip = D2D1::RectF(railW, fileListTopY, railW + currentDrawerW, fileListBottomY);
+            pRT->PushAxisAlignedClip(rcChangesClip, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+
+            size_t stagedCount = 0;
+            size_t unstagedCount = 0;
+            for (const auto& c : m_gitChanges) {
+                if (c.isStaged) stagedCount++;
+                else unstagedCount++;
             }
 
-            curY += commitH + config.ScaleF(8.0f);
+            float itemY = fileListTopY;
+            float rowH = config.ScaleF(24.0f);
 
-            // Changed Files Scrollable List (Bounded above draggable splitter)
-            float fileListTopY = curY;
-            float fileListBottomY = m_showGraphSection ? (m_gitSplitY - config.ScaleF(4.0f)) : clientHeight;
+            // =========================================================
+            // A. STAGED CHANGES SECTION (Collapsible, appears when stagedCount > 0)
+            // =========================================================
+            if (stagedCount > 0) {
+                m_gitStagedHeaderBounds = D2D1::RectF(railW, itemY, railW + currentDrawerW, itemY + secH);
+                float chevX = railW + config.ScaleF(14.0f);
+                float chevY = itemY + secH / 2.0f;
+                m_gitStagedChevronBounds = D2D1::RectF(chevX - 6.0f, chevY - 6.0f, chevX + 6.0f, chevY + 6.0f);
 
-            if (fileListBottomY > fileListTopY) {
-                D2D1_RECT_F rcChangesClip = D2D1::RectF(railW, fileListTopY, railW + currentDrawerW, fileListBottomY);
-                pRT->PushAxisAlignedClip(rcChangesClip, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
-
-                if (m_gitChanges.empty()) {
-                    D2D1_RECT_F rcNoCh = D2D1::RectF(railW + paddingX, fileListTopY, railW + currentDrawerW - paddingX, fileListTopY + 20.0f);
-                    const wchar_t* noChStr = L"No changes detected";
-                    pRT->DrawText(noChStr, static_cast<UINT32>(wcslen(noChStr)),
-                                  theme.fontMenuItem.Get() ? theme.fontMenuItem.Get() : theme.fontMenuShortcut.Get(),
-                                  rcNoCh, theme.brushTextMuted.Get());
+                if (m_stagedExpanded) {
+                    pRT->DrawLine(D2D1::Point2F(chevX - 3.5f, chevY - 2.0f), D2D1::Point2F(chevX, chevY + 2.0f), theme.brushTextPrimary.Get(), 1.4f);
+                    pRT->DrawLine(D2D1::Point2F(chevX, chevY + 2.0f), D2D1::Point2F(chevX + 3.5f, chevY - 2.0f), theme.brushTextPrimary.Get(), 1.4f);
                 } else {
-                    float rowH = config.ScaleF(24.0f);
-                    float itemY = fileListTopY;
-                    size_t startCh = (std::min)(m_gitChangesScrollIdx, m_gitChanges.empty() ? size_t(0) : m_gitChanges.size() - 1);
-                    for (size_t i = startCh; i < m_gitChanges.size() && itemY < fileListBottomY; ++i) {
+                    pRT->DrawLine(D2D1::Point2F(chevX - 2.0f, chevY - 3.5f), D2D1::Point2F(chevX + 2.0f, chevY), theme.brushTextPrimary.Get(), 1.4f);
+                    pRT->DrawLine(D2D1::Point2F(chevX + 2.0f, chevY), D2D1::Point2F(chevX - 2.0f, chevY + 3.5f), theme.brushTextPrimary.Get(), 1.4f);
+                }
+
+                // Title: Staged Changes
+                D2D1_RECT_F rcStagedText = D2D1::RectF(chevX + config.ScaleF(12.0f), itemY, chevX + config.ScaleF(125.0f), itemY + secH);
+                pRT->DrawText(L"Staged Changes", 14,
+                              theme.fontMenuItem.Get() ? theme.fontMenuItem.Get() : theme.fontButtonCenter.Get(),
+                              rcStagedText, theme.brushTextPrimary.Get());
+
+                float btnW = config.ScaleF(18.0f);
+                float btnGap = config.ScaleF(4.0f);
+                float rightX = railW + currentDrawerW - config.ScaleF(10.0f);
+
+                m_gitStagedMoreBounds = D2D1::RectF(rightX - btnW, itemY + 2.0f, rightX, itemY + secH - 2.0f);
+                rightX -= (btnW + btnGap);
+
+                m_gitUnstageAllBounds = D2D1::RectF(rightX - btnW, itemY + 2.0f, rightX, itemY + secH - 2.0f);
+                rightX -= (btnW + btnGap);
+
+                // Circular count pill badge [ stagedCount ]
+                float badgeW = config.ScaleF(18.0f);
+                float badgeH = config.ScaleF(16.0f);
+                D2D1_ROUNDED_RECT rrcBadge = D2D1::RoundedRect(
+                    D2D1::RectF(rightX - badgeW, itemY + (secH - badgeH) / 2.0f, rightX, itemY + (secH + badgeH) / 2.0f),
+                    8.0f, 8.0f
+                );
+                pRT->FillRoundedRectangle(rrcBadge, theme.brushItemHover.Get());
+                std::wstring cntStr = std::to_wstring(stagedCount);
+                pRT->DrawText(cntStr.c_str(), static_cast<UINT32>(cntStr.length()),
+                              theme.fontBadge.Get() ? theme.fontBadge.Get() : theme.fontMenuShortcut.Get(),
+                              rrcBadge.rect, theme.brushTextPrimary.Get());
+
+                // Draw ⊖ (minus) icon on m_gitUnstageAllBounds
+                bool isUnstageAllHovered = (m_hoveredGitButton == L"unstageAll");
+                bool isUnstageAllPending = IsActionPending(L"*");
+                if (isUnstageAllHovered && !isUnstageAllPending) {
+                    pRT->FillRoundedRectangle(D2D1::RoundedRect(m_gitUnstageAllBounds, 3.0f, 3.0f), theme.brushItemHover.Get());
+                }
+                float ux = (m_gitUnstageAllBounds.left + m_gitUnstageAllBounds.right) / 2.0f;
+                float uy = (m_gitUnstageAllBounds.top + m_gitUnstageAllBounds.bottom) / 2.0f;
+                ID2D1Brush* pUnstageAllBrush = isUnstageAllPending ? theme.brushTextMuted.Get() : (isUnstageAllHovered ? (theme.IsDarkMode() ? theme.brushTextWhite.Get() : theme.brushTextPrimary.Get()) : theme.brushTextSecondary.Get());
+                pRT->DrawLine(D2D1::Point2F(ux - 3.5f, uy), D2D1::Point2F(ux + 3.5f, uy), pUnstageAllBrush, 1.4f);
+
+                itemY += secH;
+
+                if (m_stagedExpanded) {
+                    for (size_t i = 0; i < m_gitChanges.size() && itemY < fileListBottomY; ++i) {
                         auto& item = m_gitChanges[i];
+                        if (!item.isStaged) continue;
+
                         item.bounds = D2D1::RectF(railW, itemY, railW + currentDrawerW, itemY + rowH);
-
                         bool isRowHovered = (static_cast<int>(i) == m_hoveredGitChangeIdx);
+                        if (isRowHovered) pRT->FillRectangle(item.bounds, theme.brushItemHover.Get());
 
-                        // Row hover background
-                        if (isRowHovered) {
-                            pRT->FillRectangle(item.bounds, theme.brushItemHover.Get());
-                        }
-
-                        // 1. Authentic Seti UI File Icon with brand color (Image 4 & 5)
+                        // Seti icon
                         float iconX = railW + config.ScaleF(14.0f);
-                        D2D1_RECT_F rcIcon = D2D1::RectF(
-                            iconX,
-                            itemY + config.ScaleF(4.0f),
-                            iconX + config.ScaleF(16.0f),
-                            itemY + rowH - config.ScaleF(4.0f)
-                        );
+                        D2D1_RECT_F rcIcon = D2D1::RectF(iconX, itemY + config.ScaleF(4.0f), iconX + config.ScaleF(16.0f), itemY + rowH - config.ScaleF(4.0f));
                         auto setiInfo = theme.GetSetiIcon(item.fileName, false, false);
                         if (theme.fontSeti && setiInfo.pBrush) {
                             pRT->DrawText(&setiInfo.glyph, 1, theme.fontSeti.Get(), rcIcon, setiInfo.pBrush);
@@ -5730,14 +5887,173 @@ void DrawerPanel::RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, 
                             m_icons.DrawFileIcon(pRT, theme, rcIcon, iconType);
                         }
 
-                        // 2. File Name (LEFT-ALIGNED)
+                        // File Name
                         float nameX = iconX + config.ScaleF(20.0f);
-                        D2D1_RECT_F rcName = D2D1::RectF(
-                            nameX,
-                            itemY,
-                            railW + currentDrawerW - config.ScaleF(50.0f),
-                            itemY + rowH
-                        );
+                        D2D1_RECT_F rcName = D2D1::RectF(nameX, itemY, railW + currentDrawerW - config.ScaleF(50.0f), itemY + rowH);
+                        pRT->DrawText(item.fileName.c_str(), static_cast<UINT32>(item.fileName.length()),
+                                      theme.fontMenuItem.Get() ? theme.fontMenuItem.Get() : theme.fontButtonCenter.Get(),
+                                      rcName, theme.brushTextPrimary.Get());
+
+                        // Status letter
+                        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushStatus;
+                        if (item.status.find(L"D") != std::wstring::npos) {
+                            pRT->CreateSolidColorBrush(D2D1::ColorF(0.878f, 0.424f, 0.459f, 1.0f), &brushStatus);
+                        } else if (item.status.find(L"A") != std::wstring::npos) {
+                            pRT->CreateSolidColorBrush(D2D1::ColorF(0.596f, 0.765f, 0.475f, 1.0f), &brushStatus);
+                        } else {
+                            pRT->CreateSolidColorBrush(D2D1::ColorF(0.898f, 0.753f, 0.482f, 1.0f), &brushStatus);
+                        }
+                        D2D1_RECT_F rcStatus = D2D1::RectF(railW + currentDrawerW - config.ScaleF(24.0f), itemY, railW + currentDrawerW - config.ScaleF(8.0f), itemY + rowH);
+                        const wchar_t* statChar = item.status.empty() ? L"M" : item.status.c_str();
+
+                        // Unstage (-) button
+                        item.stageBtnBounds = D2D1::RectF(railW + currentDrawerW - config.ScaleF(26.0f), itemY + 2.0f, railW + currentDrawerW - config.ScaleF(10.0f), itemY + rowH - 2.0f);
+                        item.discardBtnBounds = D2D1::RectF(0, 0, 0, 0);
+
+                        bool isPending = IsActionPending(item.path);
+                        if (isRowHovered || isPending) {
+                            bool isUnstageHovered = (m_hoveredGitButton == L"unstage:" + item.path);
+                            bool isUnstagePressed = (m_pressedGitButton == L"unstage:" + item.path);
+
+                            if ((isUnstageHovered || isUnstagePressed) && !isPending) {
+                                D2D1_ROUNDED_RECT rrc = D2D1::RoundedRect(item.stageBtnBounds, 3.0f, 3.0f);
+                                pRT->FillRoundedRectangle(rrc, isUnstagePressed ? (theme.brushBrandAccent ? theme.brushBrandAccent.Get() : theme.brushItemHover.Get()) : theme.brushItemHover.Get());
+                            }
+                            float sx = (item.stageBtnBounds.left + item.stageBtnBounds.right) / 2.0f;
+                            float sy = (item.stageBtnBounds.top + item.stageBtnBounds.bottom) / 2.0f;
+                            ID2D1Brush* pUnstageBrush = isPending ? theme.brushTextMuted.Get() : (isUnstageHovered ? (theme.IsDarkMode() ? theme.brushTextWhite.Get() : theme.brushTextPrimary.Get()) : theme.brushTextSecondary.Get());
+                            pRT->DrawLine(D2D1::Point2F(sx - 3.5f, sy), D2D1::Point2F(sx + 3.5f, sy), pUnstageBrush, 1.4f);
+                        } else {
+                            pRT->DrawText(statChar, 1,
+                                          theme.fontButtonCenter.Get() ? theme.fontButtonCenter.Get() : theme.fontMenuItem.Get(),
+                                          rcStatus, brushStatus.Get());
+                        }
+
+                        itemY += rowH;
+                    }
+                }
+                itemY += config.ScaleF(4.0f);
+            } else {
+                m_gitStagedHeaderBounds = D2D1::RectF(0, 0, 0, 0);
+                m_gitStagedChevronBounds = D2D1::RectF(0, 0, 0, 0);
+                m_gitUnstageAllBounds = D2D1::RectF(0, 0, 0, 0);
+                m_gitStagedMoreBounds = D2D1::RectF(0, 0, 0, 0);
+            }
+
+            // =========================================================
+            // B. CHANGES SECTION (Unstaged files)
+            // =========================================================
+            m_gitChangesHeaderBounds = D2D1::RectF(railW, itemY, railW + currentDrawerW, itemY + secH);
+            float chevX = railW + config.ScaleF(14.0f);
+            float chevY = itemY + secH / 2.0f;
+            m_gitChangesChevronBounds = D2D1::RectF(chevX - 6.0f, chevY - 6.0f, chevX + 6.0f, chevY + 6.0f);
+
+            if (m_changesExpanded) {
+                pRT->DrawLine(D2D1::Point2F(chevX - 3.5f, chevY - 2.0f), D2D1::Point2F(chevX, chevY + 2.0f), theme.brushTextPrimary.Get(), 1.4f);
+                pRT->DrawLine(D2D1::Point2F(chevX, chevY + 2.0f), D2D1::Point2F(chevX + 3.5f, chevY - 2.0f), theme.brushTextPrimary.Get(), 1.4f);
+            } else {
+                pRT->DrawLine(D2D1::Point2F(chevX - 2.0f, chevY - 3.5f), D2D1::Point2F(chevX + 2.0f, chevY), theme.brushTextPrimary.Get(), 1.4f);
+                pRT->DrawLine(D2D1::Point2F(chevX + 2.0f, chevY), D2D1::Point2F(chevX - 2.0f, chevY + 3.5f), theme.brushTextPrimary.Get(), 1.4f);
+            }
+
+            // Title: Changes (LEFT-ALIGNED right next to chevron)
+            D2D1_RECT_F rcChangesText = D2D1::RectF(chevX + config.ScaleF(12.0f), itemY, chevX + config.ScaleF(70.0f), itemY + secH);
+            pRT->DrawText(L"Changes", 7,
+                          theme.fontMenuItem.Get() ? theme.fontMenuItem.Get() : theme.fontButtonCenter.Get(),
+                          rcChangesText, theme.brushTextPrimary.Get());
+
+            float btnW = config.ScaleF(18.0f);
+            float btnGap = config.ScaleF(4.0f);
+            float rightX = railW + currentDrawerW - config.ScaleF(10.0f);
+
+            m_gitChangesMoreBounds = D2D1::RectF(rightX - btnW, itemY + 2.0f, rightX, itemY + secH - 2.0f);
+            rightX -= (btnW + btnGap);
+
+            m_gitDiscardAllBounds = D2D1::RectF(rightX - btnW, itemY + 2.0f, rightX, itemY + secH - 2.0f);
+            rightX -= (btnW + btnGap);
+
+            m_gitStageAllBounds = D2D1::RectF(rightX - btnW, itemY + 2.0f, rightX, itemY + secH - 2.0f);
+            rightX -= (btnW + btnGap);
+
+            // Circular count pill badge [ unstagedCount ]
+            if (unstagedCount > 0) {
+                float badgeW = config.ScaleF(18.0f);
+                float badgeH = config.ScaleF(16.0f);
+                D2D1_ROUNDED_RECT rrcBadge = D2D1::RoundedRect(
+                    D2D1::RectF(rightX - badgeW, itemY + (secH - badgeH) / 2.0f, rightX, itemY + (secH + badgeH) / 2.0f),
+                    8.0f, 8.0f
+                );
+                pRT->FillRoundedRectangle(rrcBadge, theme.brushItemHover.Get());
+                std::wstring cntStr = std::to_wstring(unstagedCount);
+                pRT->DrawText(cntStr.c_str(), static_cast<UINT32>(cntStr.length()),
+                              theme.fontBadge.Get() ? theme.fontBadge.Get() : theme.fontMenuShortcut.Get(),
+                              rrcBadge.rect, theme.brushTextPrimary.Get());
+            }
+
+            // Draw ✓ icon on m_gitStageAllBounds
+            bool isStageAllHovered = (m_hoveredGitButton == L"stageAll");
+            bool isStageAllPending = IsActionPending(L"*");
+            if (isStageAllHovered && !isStageAllPending) {
+                pRT->FillRoundedRectangle(D2D1::RoundedRect(m_gitStageAllBounds, 3.0f, 3.0f), theme.brushItemHover.Get());
+            }
+            float ckX = (m_gitStageAllBounds.left + m_gitStageAllBounds.right) / 2.0f;
+            float ckY = (m_gitStageAllBounds.top + m_gitStageAllBounds.bottom) / 2.0f;
+            ID2D1Brush* pStageAllBrush = isStageAllPending ? theme.brushTextMuted.Get() : (isStageAllHovered ? (theme.IsDarkMode() ? theme.brushTextWhite.Get() : theme.brushTextPrimary.Get()) : theme.brushTextSecondary.Get());
+            pRT->DrawLine(D2D1::Point2F(ckX - 3.5f, ckY), D2D1::Point2F(ckX - 1.0f, ckY + 3.0f), pStageAllBrush, 1.4f);
+            pRT->DrawLine(D2D1::Point2F(ckX - 1.0f, ckY + 3.0f), D2D1::Point2F(ckX + 4.0f, ckY - 3.0f), pStageAllBrush, 1.4f);
+
+            // Draw 🔄 circular arrow on m_gitDiscardAllBounds
+            bool isDiscardAllHovered = (m_hoveredGitButton == L"discardAll");
+            bool isDiscardAllPending = IsActionPending(L"*");
+            if (isDiscardAllHovered && !isDiscardAllPending) {
+                pRT->FillRoundedRectangle(D2D1::RoundedRect(m_gitDiscardAllBounds, 3.0f, 3.0f), theme.brushItemHover.Get());
+            }
+            float rcX = (m_gitDiscardAllBounds.left + m_gitDiscardAllBounds.right) / 2.0f;
+            float rcY = (m_gitDiscardAllBounds.top + m_gitDiscardAllBounds.bottom) / 2.0f;
+            ID2D1Brush* pDiscAllBrush = isDiscardAllPending ? theme.brushTextMuted.Get() : (isDiscardAllHovered ? (theme.IsDarkMode() ? theme.brushTextWhite.Get() : theme.brushTextPrimary.Get()) : theme.brushTextSecondary.Get());
+            D2D1_ELLIPSE elDisc = D2D1::Ellipse(D2D1::Point2F(rcX, rcY), 4.0f, 4.0f);
+            pRT->DrawEllipse(elDisc, pDiscAllBrush, 1.3f);
+            pRT->DrawLine(D2D1::Point2F(rcX + 4.0f, rcY - 2.5f), D2D1::Point2F(rcX + 4.0f, rcY), pDiscAllBrush, 1.3f);
+
+            // Draw ... on m_gitChangesMoreBounds
+            float mx = (m_gitChangesMoreBounds.left + m_gitChangesMoreBounds.right) / 2.0f;
+            float my = (m_gitChangesMoreBounds.top + m_gitChangesMoreBounds.bottom) / 2.0f;
+            pRT->FillEllipse(D2D1::Ellipse(D2D1::Point2F(mx - 3.5f, my), 1.2f, 1.2f), theme.brushTextMuted.Get());
+            pRT->FillEllipse(D2D1::Ellipse(D2D1::Point2F(mx, my), 1.2f, 1.2f), theme.brushTextMuted.Get());
+            pRT->FillEllipse(D2D1::Ellipse(D2D1::Point2F(mx + 3.5f, my), 1.2f, 1.2f), theme.brushTextMuted.Get());
+
+            itemY += secH;
+
+            if (m_changesExpanded) {
+                if (unstagedCount == 0 && stagedCount == 0) {
+                    D2D1_RECT_F rcNoCh = D2D1::RectF(railW + paddingX, itemY + config.ScaleF(4.0f), railW + currentDrawerW - paddingX, itemY + config.ScaleF(24.0f));
+                    const wchar_t* noChStr = L"No changes detected";
+                    pRT->DrawText(noChStr, static_cast<UINT32>(wcslen(noChStr)),
+                                  theme.fontMenuItem.Get() ? theme.fontMenuItem.Get() : theme.fontMenuShortcut.Get(),
+                                  rcNoCh, theme.brushTextMuted.Get());
+                } else {
+                    for (size_t i = 0; i < m_gitChanges.size() && itemY < fileListBottomY; ++i) {
+                        auto& item = m_gitChanges[i];
+                        if (item.isStaged) continue;
+
+                        item.bounds = D2D1::RectF(railW, itemY, railW + currentDrawerW, itemY + rowH);
+                        bool isRowHovered = (static_cast<int>(i) == m_hoveredGitChangeIdx);
+                        if (isRowHovered) pRT->FillRectangle(item.bounds, theme.brushItemHover.Get());
+
+                        // Seti icon
+                        float iconX = railW + config.ScaleF(14.0f);
+                        D2D1_RECT_F rcIcon = D2D1::RectF(iconX, itemY + config.ScaleF(4.0f), iconX + config.ScaleF(16.0f), itemY + rowH - config.ScaleF(4.0f));
+                        auto setiInfo = theme.GetSetiIcon(item.fileName, false, false);
+                        if (theme.fontSeti && setiInfo.pBrush) {
+                            pRT->DrawText(&setiInfo.glyph, 1, theme.fontSeti.Get(), rcIcon, setiInfo.pBrush);
+                        } else {
+                            auto iconType = LucideIcons::GetIconTypeForPath(item.fileName, false, false);
+                            m_icons.DrawFileIcon(pRT, theme, rcIcon, iconType);
+                        }
+
+                        // File Name
+                        float nameX = iconX + config.ScaleF(20.0f);
+                        D2D1_RECT_F rcName = D2D1::RectF(nameX, itemY, railW + currentDrawerW - config.ScaleF(50.0f), itemY + rowH);
                         pRT->DrawText(item.fileName.c_str(), static_cast<UINT32>(item.fileName.length()),
                                       theme.fontMenuItem.Get() ? theme.fontMenuItem.Get() : theme.fontButtonCenter.Get(),
                                       rcName, theme.brushTextPrimary.Get());
@@ -5750,18 +6066,18 @@ void DrawerPanel::RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, 
                             if (ext == L".exe" || ext == L".dll" || ext == L".bin" || ext == L".obj" || ext == L".lib" || ext == L".node") isBin = true;
                         }
 
-                        // 3. Status letter (M = yellow #E5C07B, D = red #E06C75, U/A = green #98C379, R = blue #61AFEF, BIN = purple)
+                        // Status letter
                         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushStatus;
                         if (isBin) {
                             pRT->CreateSolidColorBrush(D2D1::ColorF(0.65f, 0.45f, 0.95f, 1.0f), &brushStatus);
-                        } else if (item.status.find(L"M") != std::wstring::npos) {
-                            pRT->CreateSolidColorBrush(D2D1::ColorF(0.898f, 0.753f, 0.482f, 1.0f), &brushStatus);
                         } else if (item.status.find(L"D") != std::wstring::npos) {
                             pRT->CreateSolidColorBrush(D2D1::ColorF(0.878f, 0.424f, 0.459f, 1.0f), &brushStatus);
                         } else if (item.status.find(L"R") != std::wstring::npos) {
                             pRT->CreateSolidColorBrush(D2D1::ColorF(0.380f, 0.686f, 0.937f, 1.0f), &brushStatus);
-                        } else {
+                        } else if (item.status.find(L"U") != std::wstring::npos || item.status.find(L"A") != std::wstring::npos) {
                             pRT->CreateSolidColorBrush(D2D1::ColorF(0.596f, 0.765f, 0.475f, 1.0f), &brushStatus);
+                        } else {
+                            pRT->CreateSolidColorBrush(D2D1::ColorF(0.898f, 0.753f, 0.482f, 1.0f), &brushStatus);
                         }
 
                         D2D1_RECT_F rcStatus = D2D1::RectF(
@@ -5772,7 +6088,7 @@ void DrawerPanel::RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, 
                         );
                         const wchar_t* statChar = isBin ? L"B" : (item.status.empty() ? L"M" : item.status.c_str());
 
-                        // 4. Stage (+) and Discard (↩) buttons on row hover or pending (User request: visual confirmation & disabled state)
+                        // Stage (+) and Discard (↩) buttons on row hover or pending
                         item.discardBtnBounds = D2D1::RectF(railW + currentDrawerW - config.ScaleF(26.0f), itemY + 2.0f, railW + currentDrawerW - config.ScaleF(10.0f), itemY + rowH - 2.0f);
                         item.stageBtnBounds = D2D1::RectF(railW + currentDrawerW - config.ScaleF(46.0f), itemY + 2.0f, railW + currentDrawerW - config.ScaleF(30.0f), itemY + rowH - 2.0f);
 
@@ -5794,9 +6110,8 @@ void DrawerPanel::RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, 
                             pRT->DrawLine(D2D1::Point2F(sx - 3.5f, sy), D2D1::Point2F(sx + 3.5f, sy), pStageBrush, 1.3f);
                             pRT->DrawLine(D2D1::Point2F(sx, sy - 3.5f), D2D1::Point2F(sx, sy + 3.5f), pStageBrush, 1.3f);
 
-                            // Discard (↩) button (curved undo arrow)
+                            // Discard (↩) button
                             if (isPending) {
-                                // Disabled / waiting indicator: subtle rounded pill and muted spinner circle
                                 D2D1_ROUNDED_RECT rrcWait = D2D1::RoundedRect(item.discardBtnBounds, 3.0f, 3.0f);
                                 pRT->FillRoundedRectangle(rrcWait, theme.brushItemHover.Get());
                                 float dx = (item.discardBtnBounds.left + item.discardBtnBounds.right) / 2.0f;
@@ -5826,9 +6141,9 @@ void DrawerPanel::RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, 
                         itemY += rowH;
                     }
                 }
-
-                pRT->PopAxisAlignedClip();
             }
+
+            pRT->PopAxisAlignedClip();
         }
     }
 
