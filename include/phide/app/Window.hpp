@@ -29,6 +29,7 @@
 #include "phide/ui/ThemePickerModal.hpp"
 #include "phide/ui/QuickOpenModal.hpp"
 #include "phide/ui/TerminalPanel.hpp"
+#include "phide/ui/ExtensionsPanel.hpp"
 #include "phide/server/LiveServer.hpp"
 #include "phide/editor/Buffer.hpp"
 #include "phide/editor/OpenDocument.hpp"
@@ -461,6 +462,7 @@ private:
     ui::ThemePickerModal m_themePicker;
     ui::QuickOpenModal m_quickOpen;
     ui::TerminalPanel m_terminal;
+    ui::ExtensionsPanel m_extensionsPanel;
     bool m_isTerminalFocused = false;
 
     // Multi-LiveServer Architecture
@@ -470,6 +472,11 @@ private:
         std::wstring rootDir;
         int port = 5500;
         std::unique_ptr<server::LiveServer> server;
+        float progress = 0.0f;              ///< 0.0f to 1.0f progression
+        float progressDurationMs = 2200.0f; ///< ~2.2 seconds progression
+        float elapsedMs = 0.0f;             ///< Milliseconds elapsed
+        bool browserOpened = false;         ///< True after browser launched
+        bool isStarting = false;            ///< True while progression active
     };
     std::vector<ActiveLiveServer> m_activeLiveServers;
     ActiveLiveServer* FindLiveServer(const std::wstring& filePath);
@@ -534,6 +541,10 @@ private:
     float m_targetTermFullScreen      = 0.0f;
     bool  m_isTermFullScreenAnimating = false;
 
+    float m_rightSidebarAnimProgress   = 0.0f;
+    float m_targetRightSidebarProgress = 0.0f;
+    bool  m_isRightSidebarAnimating    = false;
+
     [[nodiscard]] float GetCurrentTerminalHeight(float clientH) const noexcept {
         if (!m_terminal.IsOpen() && !m_isTerminalAnimating) return 0.0f;
         const float headerH = m_config.ScaleF(static_cast<float>(m_config.headerHeight));
@@ -558,12 +569,15 @@ private:
     bool m_isDraggingTab = false;
     int m_dragTabGroup = -1;
     int m_dragTabIdx = -1;
+    int m_tabDropTargetGroup = -1;
     int m_tabDropTargetIdx = -1;
     POINT m_dragTabStartPt{ 0, 0 };
     POINT m_dragTabCurrentPt{ 0, 0 };
 
     void AnimateTerminalOpen();
     void AnimateTerminalClose();
+    void AnimateRightSidebarOpen();
+    void AnimateRightSidebarClose();
 };
 
 } // namespace phide::app

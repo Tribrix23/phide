@@ -831,19 +831,86 @@ void DrawerPanel::RenderExplorerPane(ID2D1RenderTarget* pRT, Theme& theme, const
                         }
                     }
 
+                    // Determine Git status for Explorer tree item (Files & Folders, Image 1)
+                    std::wstring gitStatus;
+                    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushGitStatus;
+                    if (m_isGitRepo) {
+                        std::lock_guard<std::recursive_mutex> lock(m_gitMutex);
+                        if (!m_gitChanges.empty()) {
+                            std::wstring relItem;
+                            if (m_hasOpenFolder && !m_openFolderPath.empty() && item.fullPath.rfind(m_openFolderPath, 0) == 0) {
+                                relItem = item.fullPath.substr(m_openFolderPath.length());
+                                while (!relItem.empty() && (relItem.front() == L'\\' || relItem.front() == L'/')) {
+                                    relItem.erase(0, 1);
+                                }
+                            } else {
+                                relItem = item.fullPath;
+                            }
+                            for (auto& c : relItem) if (c == L'/') c = L'\\';
+
+                            if (!item.isFolder) {
+                                for (const auto& chg : m_gitChanges) {
+                                    std::wstring normChg = chg.path;
+                                    for (auto& c : normChg) if (c == L'/') c = L'\\';
+                                    if (_wcsicmp(normChg.c_str(), relItem.c_str()) == 0 ||
+                                        normChg.ends_with(L"\\" + item.label) ||
+                                        _wcsicmp(normChg.c_str(), item.label.c_str()) == 0) {
+                                        gitStatus = chg.status.empty() ? L"M" : chg.status;
+                                        break;
+                                    }
+                                }
+                            } else if (item.depth > 0) {
+                                // Folder: aggregate status of all modified files within it
+                                std::wstring folderPrefix = relItem.empty() ? L"" : (relItem + L"\\");
+                                bool hasM = false, hasU = false, hasA = false, hasD = false;
+                                for (const auto& chg : m_gitChanges) {
+                                    std::wstring normChg = chg.path;
+                                    for (auto& c : normChg) if (c == L'/') c = L'\\';
+                                    if (!folderPrefix.empty() && _wcsnicmp(normChg.c_str(), folderPrefix.c_str(), folderPrefix.length()) == 0) {
+                                        if (chg.status.find(L"M") != std::wstring::npos) hasM = true;
+                                        else if (chg.status.find(L"U") != std::wstring::npos || chg.status.find(L"?") != std::wstring::npos) hasU = true;
+                                        else if (chg.status.find(L"A") != std::wstring::npos) hasA = true;
+                                        else if (chg.status.find(L"D") != std::wstring::npos) hasD = true;
+                                        else hasM = true;
+                                    }
+                                }
+                                if (hasM) gitStatus = L"M";
+                                else if (hasU) gitStatus = L"U";
+                                else if (hasA) gitStatus = L"A";
+                                else if (hasD) gitStatus = L"D";
+                            }
+                        }
+                    }
+
+                    if (!gitStatus.empty()) {
+                        D2D1_COLOR_F gitColor;
+                        if (gitStatus.find(L"M") != std::wstring::npos) {
+                            gitColor = D2D1::ColorF(0.898f, 0.753f, 0.482f, 1.0f); // Amber / Yellow
+                        } else if (gitStatus.find(L"D") != std::wstring::npos) {
+                            gitColor = D2D1::ColorF(0.878f, 0.424f, 0.459f, 1.0f); // Red
+                        } else if (gitStatus.find(L"R") != std::wstring::npos) {
+                            gitColor = D2D1::ColorF(0.380f, 0.686f, 0.937f, 1.0f); // Blue
+                        } else {
+                            gitColor = D2D1::ColorF(0.451f, 0.788f, 0.569f, 1.0f); // Green (Untracked / Added)
+                        }
+                        pRT->CreateSolidColorBrush(gitColor, &brushGitStatus);
+                    }
+
                     D2D1_RECT_F rcLabel = D2D1::RectF(
                         labelX,
                         curY,
-                        railW + fullDrawerW - config.ScaleF(itemHasError ? 30.0f : 10.0f),
+                        railW + fullDrawerW - config.ScaleF((itemHasError || !gitStatus.empty()) ? 30.0f : 10.0f),
                         curY + itemH
                     );
                     ID2D1Brush* pTextBrush = itemHasError ?
                         (theme.brushIconRed ? theme.brushIconRed.Get() : theme.brushTextPrimary.Get()) :
-                        (isActive ?
-                            (theme.IsDarkMode() ? theme.brushTextWhite.Get() : theme.brushTextPrimary.Get()) :
-                            (theme.IsDarkMode() ? 
-                                (isHovered ? theme.brushTextWhite.Get() : (item.isFolder ? theme.brushTextWhite.Get() : theme.brushTextPrimary.Get())) :
-                                theme.brushTextPrimary.Get()));
+                        (brushGitStatus ?
+                            brushGitStatus.Get() :
+                            (isActive ?
+                                (theme.IsDarkMode() ? theme.brushTextWhite.Get() : theme.brushTextPrimary.Get()) :
+                                (theme.IsDarkMode() ? 
+                                    (isHovered ? theme.brushTextWhite.Get() : (item.isFolder ? theme.brushTextWhite.Get() : theme.brushTextPrimary.Get())) :
+                                    theme.brushTextPrimary.Get())));
                     pRT->DrawText(
                         item.label.c_str(),
                         static_cast<UINT32>(item.label.length()),
@@ -869,6 +936,26 @@ void DrawerPanel::RenderExplorerPane(ID2D1RenderTarget* pRT, Theme& theme, const
                         } else {
                             D2D1_ELLIPSE errDot = D2D1::Ellipse(D2D1::Point2F(badgeRight - config.ScaleF(4.0f), badgeCy), config.ScaleF(3.0f), config.ScaleF(3.0f));
                             if (theme.brushIconRed) pRT->FillEllipse(errDot, theme.brushIconRed.Get());
+                        }
+                    } else if (!gitStatus.empty() && brushGitStatus) {
+                        // Colored Git status badge / dot indicator (VS Code style, Image 1)
+                        float badgeRight = railW + fullDrawerW - config.ScaleF(12.0f);
+                        float badgeCy = curY + itemH / 2.0f;
+                        if (item.isFolder) {
+                            // Folder: Draw filled circular dot badge matching child change status (Image 1)
+                            D2D1_ELLIPSE gitDot = D2D1::Ellipse(D2D1::Point2F(badgeRight - config.ScaleF(4.0f), badgeCy), config.ScaleF(3.2f), config.ScaleF(3.2f));
+                            pRT->FillEllipse(gitDot, brushGitStatus.Get());
+                        } else {
+                            // File: Draw Git status character (M, U, A, etc.)
+                            std::wstring dispStat = (gitStatus.find(L"M") != std::wstring::npos) ? L"M" :
+                                                    ((gitStatus.find(L"U") != std::wstring::npos || gitStatus.find(L"?") != std::wstring::npos) ? L"U" :
+                                                    ((gitStatus.find(L"A") != std::wstring::npos) ? L"A" :
+                                                    ((gitStatus.find(L"D") != std::wstring::npos) ? L"D" : L"M")));
+                            D2D1_RECT_F rcStat = D2D1::RectF(badgeRight - config.ScaleF(16.0f), curY, badgeRight, curY + itemH);
+                            IDWriteTextFormat* pStatFmt = theme.fontHint ? theme.fontHint.Get() : theme.fontBody.Get();
+                            if (pStatFmt) {
+                                pRT->DrawText(dispStat.c_str(), static_cast<UINT32>(dispStat.length()), pStatFmt, rcStat, brushGitStatus.Get());
+                            }
                         }
                     }
                 }

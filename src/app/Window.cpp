@@ -529,6 +529,7 @@ void Window::LoadSessionState() {
             m_drawer.OpenFolder(lastOpenFolder, &expandedDirs);
             m_workspace.OpenWorkspace(lastOpenFolder);
             m_intelliSense.SetWorkspaceRoot(lastOpenFolder);
+            m_drawer.RefreshGitState(true);
         }
 
         for (const auto& p : openDocPaths) {
@@ -815,9 +816,8 @@ void Window::OpenFileDocument(const std::wstring& path, bool isPreview) {
                 } catch (...) {}
             }
             m_drawer.ComputeGitDiffLines(relPath, newDoc.diffAddedLines, newDoc.diffDeletedLines);
-            if (!newDoc.diffAddedLines.empty() || !newDoc.diffDeletedLines.empty()) {
-                newDoc.isDiffView = true;
-            }
+            // NOTE: Normal files opened from Explorer should NEVER be forced into Diff View!
+            // Diff View is strictly reserved for user clicking a diff item from Source Control.
         }
 
         if (!newDoc.isSpecialView && !newDoc.isImageView && !newDoc.isUnsupportedBinary) {
@@ -2215,6 +2215,19 @@ void Window::AnimateTerminalClose() {
     SetTimer(m_hwnd, m_animTimerId, 16, nullptr);
 }
 
+void Window::AnimateRightSidebarOpen() {
+    m_extensionsPanel.Open();
+    m_targetRightSidebarProgress = 1.0f;
+    m_isRightSidebarAnimating = true;
+    SetTimer(m_hwnd, m_animTimerId, 16, nullptr);
+}
+
+void Window::AnimateRightSidebarClose() {
+    m_targetRightSidebarProgress = 0.0f;
+    m_isRightSidebarAnimating = true;
+    SetTimer(m_hwnd, m_animTimerId, 16, nullptr);
+}
+
 void Window::DoCreateTerminal() {
     std::wstring dir;
     if (m_drawer.HasOpenFolder()) {
@@ -2435,25 +2448,39 @@ void Window::DoRunActiveDocument() {
                 std::wstring localUrl = serverInst->GetLocalUrl(fileName);
                 std::wstring networkUrl = serverInst->GetNetworkUrl(fileName);
 
-                m_activeLiveServers.push_back({ filePath, fileName, folder, actualPort, std::move(serverInst) });
+                ActiveLiveServer entry;
+                entry.filePath = filePath;
+                entry.fileName = fileName;
+                entry.rootDir = folder;
+                entry.port = actualPort;
+                entry.server = std::move(serverInst);
+                entry.progress = 0.05f;
+                entry.progressDurationMs = 2200.0f; // ~2.2 seconds progression before auto-opening browser
+                entry.elapsedMs = 0.0f;
+                entry.browserOpened = false;
+                entry.isStarting = true;
+                m_activeLiveServers.push_back(std::move(entry));
 
                 m_terminal.Open(folder);
                 AnimateTerminalOpen();
                 m_terminal.StartLiveServerSession(localUrl, networkUrl, filePath, fileName);
                 m_isTerminalFocused = true;
 
-                // Launch in browser
-                ShellExecuteW(NULL, L"open", localUrl.c_str(), NULL, NULL, SW_SHOWNORMAL);
+                SetTimer(m_hwnd, m_animTimerId, 16, nullptr);
             }
         } else {
-            // Server already running for this file - focus terminal and refresh in browser
+            // Server already running for this file - restart progression then open browser
+            srv->progress = 0.05f;
+            srv->elapsedMs = 0.0f;
+            srv->isStarting = true;
+            srv->browserOpened = false;
             std::wstring localUrl = srv->server->GetLocalUrl(srv->fileName);
             std::wstring networkUrl = srv->server->GetNetworkUrl(srv->fileName);
             m_terminal.Open(folder);
             AnimateTerminalOpen();
             m_terminal.StartLiveServerSession(localUrl, networkUrl, filePath, fileName);
             m_isTerminalFocused = true;
-            ShellExecuteW(NULL, L"open", localUrl.c_str(), NULL, NULL, SW_SHOWNORMAL);
+            SetTimer(m_hwnd, m_animTimerId, 16, nullptr);
         }
 
         UpdateExecutionButtonStates();
@@ -2783,6 +2810,14 @@ bool Window::Create(HINSTANCE hInstance, int nCmdShow) {
     m_snippetManager.Initialize(GetSnippetsConfigPath());
     m_intelliSense.SetSnippetManager(&m_snippetManager);
 
+    // Detect installed PC environment runtimes (Python, Node.js, PHP)
+    m_extensionsPanel.RefreshPcStatus();
+    m_extensionsPanel.SetOnDataChanged([this]() {
+        if (m_hwnd) {
+            InvalidateRect(m_hwnd, nullptr, FALSE);
+        }
+    });
+
     // Register callback for reactive git state updates
     m_drawer.SetOnGitStateChanged([this]() {
         // Auto-close any working tree diff view whose file no longer has git changes
@@ -2839,6 +2874,9 @@ bool Window::Create(HINSTANCE hInstance, int nCmdShow) {
 
     // Restore saved IDE session state (open folder, expanded tree dirs, open file, sidebar open/close state)
     LoadSessionState();
+
+    // Trigger Source Control to load immediately in background on app startup (User requirement)
+    m_drawer.RefreshGitState(true);
 
     if (m_drawer.HasOpenFolder()) {
         StartWorkspaceWatcher(m_drawer.GetOpenFolderPath());
@@ -2974,8 +3012,12 @@ void Window::OnPaint() {
     const float currentDrawerW = fullDrawerW * m_drawerAnimProgress;
     const bool hasLeftDrawer = (m_drawerAnimProgress > 0.001f);
 
+    const float fullRightSidebarW = m_config.ScaleF(340.0f);
+    const float currentRightSidebarW = fullRightSidebarW * m_rightSidebarAnimProgress;
+    const bool hasRightSidebar = (m_rightSidebarAnimProgress > 0.001f);
+
     const float canvasLeft  = railW + currentDrawerW;
-    const float canvasWidth = (std::max)(100.0f, clientW - canvasLeft);
+    const float canvasWidth = (std::max)(100.0f, clientW - canvasLeft - currentRightSidebarW);
 
     // 1. Render Workspace Canvas (shows placeholder watermark when no file is open, multi-tabs and active doc when open)
     // Only highlight search occurrences when user is actively inside Code Search drawer tab!
@@ -3069,82 +3111,134 @@ void Window::OnPaint() {
         m_drawer.Render(m_pRenderTarget.Get(), m_theme, m_config, drawerH, currentDrawerW);
     }
 
+    // 2b. Render Extensions Right Sidebar Panel (smoothly slides in from right with zero content squishing!)
+    if (hasRightSidebar) {
+        float rightSidebarX = clientW - currentRightSidebarW;
+        float rightSidebarH = (std::max)(50.0f, clientH - headerH - currentTermH);
+        D2D1_RECT_F clipRect = D2D1::RectF(rightSidebarX, headerH, clientW, headerH + rightSidebarH);
+        m_pRenderTarget->PushAxisAlignedClip(clipRect, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+        m_extensionsPanel.Render(m_pRenderTarget.Get(), m_theme, m_config, rightSidebarX, headerH, fullRightSidebarW, rightSidebarH);
+        m_pRenderTarget->PopAxisAlignedClip();
+    }
+
     // 3. Integrated Terminal Panel at Bottom (smoothly slides up across workspace and sidebar)
     if (m_terminalAnimProgress > 0.001f && m_terminal.IsOpen()) {
         m_terminal.Render(m_pRenderTarget.Get(), m_theme, m_config, clientW, clientH, terminalLeft, currentTermH);
     }
 
-    // Live Server Status Badge: sleek rectangle with rounded corners (per user request)
+    // Live Server Status Card: Bigger, longer, and modern flat design with progression (per user request)
     auto* pActiveLiveServer = GetActiveDocLiveServer();
     if (!pActiveLiveServer && !m_activeLiveServers.empty()) {
         pActiveLiveServer = &m_activeLiveServers.back();
     }
 
     if (pActiveLiveServer && pActiveLiveServer->server && pActiveLiveServer->server->IsRunning()) {
-        const float pillW = m_config.ScaleF(92.0f);
-        const float pillH = m_config.ScaleF(22.0f);
-        const float pillX = clientW - pillW - m_config.ScaleF(14.0f);
-        float pillY = clientH - pillH - m_config.ScaleF(8.0f);
+        const float cardW = m_config.ScaleF(250.0f); // Bigger and longer card
+        const float cardH = m_config.ScaleF(46.0f);  // Flat card height
+        const float minimapW = m_config.ScaleF(88.0f);
+        const float rightOffset = (hasRightSidebar ? currentRightSidebarW : 0.0f) +
+            (m_config.showMinimap ? minimapW : 0.0f) +
+            m_config.ScaleF(16.0f);
+        const float cardX = clientW - cardW - rightOffset;
+        float cardY = clientH - cardH - m_config.ScaleF(12.0f);
         if (m_terminal.IsOpen()) {
             float th = GetCurrentTerminalHeight(clientH);
-            pillY = clientH - th - pillH - m_config.ScaleF(8.0f);
+            cardY = clientH - th - cardH - m_config.ScaleF(12.0f);
         }
-        m_liveServerPillBounds = D2D1::RectF(pillX, pillY, pillX + pillW, pillY + pillH);
-        // Clean rectangle with 4px rounded corners (not a round pill)
-        D2D1_ROUNDED_RECT rrcPill = D2D1::RoundedRect(m_liveServerPillBounds, 4.0f, 4.0f);
+        m_liveServerPillBounds = D2D1::RectF(cardX, cardY, cardX + cardW, cardY + cardH);
+        D2D1_ROUNDED_RECT rrcCard = D2D1::RoundedRect(m_liveServerPillBounds, 6.0f, 6.0f);
 
-        // Modern, sleek dark rectangle styling
-        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> pillBgBrush;
+        // Modern FLAT background (NO HARSH BORDER, subtle flat tone matching phide)
+        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> cardBgBrush;
         m_pRenderTarget->CreateSolidColorBrush(
             m_hoverLiveServerPill
-                ? (m_theme.IsDarkMode() ? D2D1::ColorF(0.14f, 0.16f, 0.20f, 0.98f) : D2D1::ColorF(0.90f, 0.93f, 0.96f, 0.98f))
-                : (m_theme.IsDarkMode() ? D2D1::ColorF(0.09f, 0.10f, 0.13f, 0.92f) : D2D1::ColorF(0.95f, 0.96f, 0.98f, 0.92f)),
-            &pillBgBrush
+                ? (m_theme.IsDarkMode() ? D2D1::ColorF(0.14f, 0.15f, 0.18f, 0.98f) : D2D1::ColorF(0.89f, 0.91f, 0.94f, 0.98f))
+                : (m_theme.IsDarkMode() ? D2D1::ColorF(0.11f, 0.115f, 0.135f, 0.98f) : D2D1::ColorF(0.93f, 0.935f, 0.95f, 0.98f)),
+            &cardBgBrush
         );
-        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> pillBorderBrush;
-        m_pRenderTarget->CreateSolidColorBrush(
-            m_hoverLiveServerPill
-                ? D2D1::ColorF(0.20f, 0.88f, 0.50f, 0.95f)
-                : (m_theme.IsDarkMode() ? D2D1::ColorF(0.24f, 0.27f, 0.32f, 0.75f) : D2D1::ColorF(0.75f, 0.78f, 0.84f, 0.80f)),
-            &pillBorderBrush
-        );
+        if (cardBgBrush) m_pRenderTarget->FillRoundedRectangle(rrcCard, cardBgBrush.Get());
 
-        if (pillBgBrush) m_pRenderTarget->FillRoundedRectangle(rrcPill, pillBgBrush.Get());
-        if (pillBorderBrush) m_pRenderTarget->DrawRoundedRectangle(rrcPill, pillBorderBrush.Get(), 1.0f);
-
-        // 1. Pulsing Emerald Live Status Dot (●)
+        // 1. Pulsing Status Dot (●) - Blue while progressing/starting, Emerald green when live
         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> dotBrush;
-        m_pRenderTarget->CreateSolidColorBrush(D2D1::ColorF(0.20f, 0.88f, 0.50f, 1.0f), &dotBrush);
+        m_pRenderTarget->CreateSolidColorBrush(
+            pActiveLiveServer->isStarting
+                ? D2D1::ColorF(0.24f, 0.56f, 0.95f, 1.0f)
+                : D2D1::ColorF(0.20f, 0.88f, 0.50f, 1.0f),
+            &dotBrush
+        );
+        float dotCx = cardX + m_config.ScaleF(14.0f);
+        float dotCy = cardY + m_config.ScaleF(15.0f);
+        float dotR = m_config.ScaleF(3.5f);
         if (dotBrush) {
-            float dotCx = pillX + m_config.ScaleF(10.0f);
-            float dotCy = pillY + pillH / 2.0f;
-            float dotR = m_config.ScaleF(3.0f);
             m_pRenderTarget->FillEllipse(D2D1::Ellipse(D2D1::Point2F(dotCx, dotCy), dotR, dotR), dotBrush.Get());
         }
 
-        // 2. Crisp "Port: 5500" typography
-        std::wstring pillText = L"Port: " + std::to_wstring(pActiveLiveServer->port);
-        D2D1_RECT_F rcPillText = D2D1::RectF(pillX + m_config.ScaleF(18.0f), pillY + m_config.ScaleF(2.0f), pillX + pillW - m_config.ScaleF(4.0f), pillY + pillH);
-        ID2D1Brush* textBrush = m_theme.IsDarkMode()
+        // 2. Title: "Live Server"
+        std::wstring titleText = L"Live Server";
+        D2D1_RECT_F rcTitle = D2D1::RectF(cardX + m_config.ScaleF(24.0f), cardY + m_config.ScaleF(5.0f), cardX + cardW - m_config.ScaleF(85.0f), cardY + m_config.ScaleF(23.0f));
+        ID2D1Brush* textPrimary = m_theme.IsDarkMode()
             ? (m_theme.brushTextWhite ? m_theme.brushTextWhite.Get() : m_theme.brushTextPrimary.Get())
             : m_theme.brushTextPrimary.Get();
-        m_pRenderTarget->DrawText(
-            pillText.c_str(),
-            static_cast<UINT32>(pillText.length()),
-            m_theme.fontHint ? m_theme.fontHint.Get() : m_theme.fontCode.Get(),
-            rcPillText,
-            textBrush
+        IDWriteTextFormat* pFmtTitle = m_theme.fontMenuItem ? m_theme.fontMenuItem.Get() : m_theme.fontBody.Get();
+        if (pFmtTitle && textPrimary) {
+            m_pRenderTarget->DrawText(titleText.c_str(), static_cast<UINT32>(titleText.length()), pFmtTitle, rcTitle, textPrimary);
+        }
+
+        // 3. Port Badge on Top Right: "Port: 5500"
+        std::wstring portText = L"Port: " + std::to_wstring(pActiveLiveServer->port);
+        D2D1_RECT_F rcPort = D2D1::RectF(cardX + cardW - m_config.ScaleF(90.0f), cardY + m_config.ScaleF(5.0f), cardX + cardW - m_config.ScaleF(12.0f), cardY + m_config.ScaleF(23.0f));
+        IDWriteTextFormat* pFmtHint = m_theme.fontHint ? m_theme.fontHint.Get() : m_theme.fontCode.Get();
+        ID2D1Brush* textMuted = m_theme.brushTextMuted ? m_theme.brushTextMuted.Get() : textPrimary;
+        if (pFmtHint && textMuted) {
+            DWRITE_TEXT_ALIGNMENT prevAlign = pFmtHint->GetTextAlignment();
+            pFmtHint->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_TRAILING);
+            m_pRenderTarget->DrawText(portText.c_str(), static_cast<UINT32>(portText.length()), pFmtHint, rcPort, textMuted);
+            pFmtHint->SetTextAlignment(prevAlign);
+        }
+
+        // 4. Subtitle: Status message or Local URL
+        std::wstring subText = pActiveLiveServer->isStarting
+            ? (L"Starting live preview... (" + std::to_wstring(static_cast<int>(pActiveLiveServer->progress * 100.0f)) + L"%)")
+            : (L"http://127.0.0.1:" + std::to_wstring(pActiveLiveServer->port));
+        D2D1_RECT_F rcSub = D2D1::RectF(cardX + m_config.ScaleF(24.0f), cardY + m_config.ScaleF(23.0f), cardX + cardW - m_config.ScaleF(12.0f), cardY + cardH - m_config.ScaleF(8.0f));
+        if (pFmtHint && textMuted) {
+            m_pRenderTarget->DrawText(subText.c_str(), static_cast<UINT32>(subText.length()), pFmtHint, rcSub, textMuted);
+        }
+
+        // 5. Progression Bar: "under that card is like progression and after the progression which is jsut few sec it open the user browser"
+        float progPad = m_config.ScaleF(8.0f);
+        float trackLeft = cardX + progPad;
+        float trackRight = cardX + cardW - progPad;
+        float trackW = trackRight - trackLeft;
+        float trackH = m_config.ScaleF(3.0f);
+        float trackY = cardY + cardH - trackH - m_config.ScaleF(3.0f);
+
+        D2D1_ROUNDED_RECT rrcProgTrack = D2D1::RoundedRect(D2D1::RectF(trackLeft, trackY, trackRight, trackY + trackH), 1.5f, 1.5f);
+        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> progTrackBrush;
+        m_pRenderTarget->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.08f), &progTrackBrush);
+        if (progTrackBrush) m_pRenderTarget->FillRoundedRectangle(rrcProgTrack, progTrackBrush.Get());
+
+        float fillRatio = pActiveLiveServer->isStarting ? (std::clamp)(pActiveLiveServer->progress, 0.05f, 1.0f) : 1.0f;
+        float fillW = trackW * fillRatio;
+        D2D1_ROUNDED_RECT rrcProgFill = D2D1::RoundedRect(D2D1::RectF(trackLeft, trackY, trackLeft + fillW, trackY + trackH), 1.5f, 1.5f);
+        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> progFillBrush;
+        m_pRenderTarget->CreateSolidColorBrush(
+            pActiveLiveServer->isStarting
+                ? D2D1::ColorF(0.24f, 0.56f, 0.95f, 1.0f) // Electric blue progression bar
+                : D2D1::ColorF(0.20f, 0.88f, 0.50f, 0.85f), // Emerald green online indicator
+            &progFillBrush
         );
+        if (progFillBrush) m_pRenderTarget->FillRoundedRectangle(rrcProgFill, progFillBrush.Get());
 
         // Floating Tooltip on Hover
-        if (m_hoverLiveServerPill) {
-            std::wstring tip = L"Live Server (Click to open http://localhost:" + std::to_wstring(pActiveLiveServer->port) + L")";
+        if (m_hoverLiveServerPill && !pActiveLiveServer->isStarting) {
+            std::wstring tip = L"Live Server (Click to open http://127.0.0.1:" + std::to_wstring(pActiveLiveServer->port) + L")";
             const float tipH = m_config.ScaleF(24.0f);
             const float tipPadX = m_config.ScaleF(10.0f);
             float textW = m_config.ScaleF(static_cast<float>(tip.length() * 6.5f + 14.0f));
             float tipW = textW + tipPadX * 2.0f;
-            float tipX = pillX + (pillW - tipW) / 2.0f;
-            float tipY = pillY - tipH - m_config.ScaleF(6.0f);
+            float tipX = cardX + (cardW - tipW) / 2.0f;
+            float tipY = cardY - tipH - m_config.ScaleF(6.0f);
             if (tipX < 10.0f) tipX = 10.0f;
             if (tipX + tipW > clientW - 10.0f) tipX = clientW - tipW - 10.0f;
 
@@ -3170,6 +3264,7 @@ void Window::OnPaint() {
     m_rail.Render(m_pRenderTarget.Get(), m_theme, m_config, clientH);
 
     // 4. Render Dark Frameless Title Header at Top (with active highlight on Sidebar button when open)
+    m_header.SetExtensionsActive(m_extensionsPanel.IsOpen());
     UpdateExecutionButtonStates();
     m_header.Render(m_pRenderTarget.Get(), m_theme, m_config, clientW, IsZoomed(m_hwnd));
 
@@ -3367,7 +3462,7 @@ void Window::HandleMouseMove(POINT clientPt, WPARAM wParam) {
         }
     }
 
-    // Check Tab Dragging & Reordering (User request: "and i cant drag this tab to reaarangfe", Image 3)
+    // Check Tab Dragging & Reordering (User request: "fix i cant drag the tab of split 1 to the other split", Image 4)
     if (m_dragTabIdx >= 0 && m_dragTabGroup >= 0 && m_dragTabGroup < static_cast<int>(m_editorGroups.size())) {
         bool lbuttonDown = (wParam & MK_LBUTTON) != 0 ||
                            ((GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0) ||
@@ -3375,9 +3470,10 @@ void Window::HandleMouseMove(POINT clientPt, WPARAM wParam) {
         if (!lbuttonDown) {
             m_dragTabIdx = -1;
             m_dragTabGroup = -1;
+            m_tabDropTargetGroup = -1;
             m_tabDropTargetIdx = -1;
             m_isDraggingTab = false;
-            m_editor.SetTabDragState(false, -1, -1, -1);
+            m_editor.SetTabDragState(false, -1, -1, -1, -1);
             ReleaseCapture();
             InvalidateRect(m_hwnd, nullptr, FALSE);
             return;
@@ -3391,10 +3487,38 @@ void Window::HandleMouseMove(POINT clientPt, WPARAM wParam) {
 
         if (m_isDraggingTab) {
             m_dragTabCurrentPt = clientPt;
-            auto& group = m_editorGroups[m_dragTabGroup];
-            int targetIdx = static_cast<int>(group.docs.size());
-            for (size_t i = 0; i < group.docs.size(); ++i) {
-                const auto& b = group.docs[i].tabBounds;
+
+            RECT clientRc;
+            GetClientRect(m_hwnd, &clientRc);
+            const int railW = m_config.Scale(m_config.railWidth);
+            const int drawerW = static_cast<int>(m_config.Scale(m_config.drawerWidth) * m_drawerAnimProgress);
+            const float canvasLeft = static_cast<float>(railW + drawerW);
+            const float clientW = static_cast<float>(clientRc.right - clientRc.left);
+            const float rightSidebarW = (m_extensionsPanel.IsOpen() || m_isRightSidebarAnimating)
+                ? (m_config.ScaleF(320.0f) * m_rightSidebarAnimProgress) : 0.0f;
+            const float canvasRight = clientW - rightSidebarW;
+            const float canvasWidth = (std::max)(0.0f, canvasRight - canvasLeft);
+
+            // Determine which editor group pane the mouse is hovering over (supports cross-split tab dragging!)
+            size_t numGroups = m_editorGroups.size();
+            float paneW = (numGroups > 0) ? (canvasWidth / static_cast<float>(numGroups)) : canvasWidth;
+            int hoverGroup = m_dragTabGroup;
+            for (size_t g = 0; g < numGroups; ++g) {
+                float pLeft = canvasLeft + static_cast<float>(g) * paneW;
+                float pRight = pLeft + paneW;
+                if (clientPt.x >= pLeft && (clientPt.x < pRight || g == numGroups - 1)) {
+                    hoverGroup = static_cast<int>(g);
+                    break;
+                }
+            }
+
+            m_tabDropTargetGroup = hoverGroup;
+            auto& targetGroup = m_editorGroups[hoverGroup];
+            int targetIdx = static_cast<int>(targetGroup.docs.size());
+
+            // If mouse is within the tab bar area or over the tabs, find the exact insertion index
+            for (size_t i = 0; i < targetGroup.docs.size(); ++i) {
+                const auto& b = targetGroup.docs[i].tabBounds;
                 float midX = (b.left + b.right) / 2.0f;
                 if (clientPt.x < midX) {
                     targetIdx = static_cast<int>(i);
@@ -3402,10 +3526,12 @@ void Window::HandleMouseMove(POINT clientPt, WPARAM wParam) {
                 }
             }
             m_tabDropTargetIdx = targetIdx;
-            std::wstring dragTitle = (m_dragTabIdx >= 0 && m_dragTabIdx < static_cast<int>(group.docs.size()))
-                ? group.docs[m_dragTabIdx].fileName
+
+            auto& srcGroup = m_editorGroups[m_dragTabGroup];
+            std::wstring dragTitle = (m_dragTabIdx >= 0 && m_dragTabIdx < static_cast<int>(srcGroup.docs.size()))
+                ? srcGroup.docs[m_dragTabIdx].fileName
                 : L"";
-            m_editor.SetTabDragState(true, m_dragTabGroup, m_dragTabIdx, m_tabDropTargetIdx,
+            m_editor.SetTabDragState(true, m_dragTabGroup, m_dragTabIdx, m_tabDropTargetGroup, m_tabDropTargetIdx,
                                      D2D1::Point2F(static_cast<float>(clientPt.x), static_cast<float>(clientPt.y)),
                                      dragTitle);
             InvalidateRect(m_hwnd, nullptr, FALSE);
@@ -3637,6 +3763,14 @@ void Window::HandleMouseMove(POINT clientPt, WPARAM wParam) {
     if (m_header.UpdateHoverState(hoveredMenu, hoveredCaption, hoveredExec)) needRepaint = true;
     if (m_header.SetHoveredSplitEditor(m_header.HitTestSplitEditor(clientPt))) needRepaint = true;
     if (m_header.SetHoveredQuickOpen(m_header.HitTestQuickOpen(clientPt))) needRepaint = true;
+    if (m_header.SetHoveredExtensions(m_header.HitTestExtensions(clientPt))) needRepaint = true;
+
+    // Check Extensions right sidebar hover
+    if (m_rightSidebarAnimProgress > 0.001f && m_extensionsPanel.IsOpen()) {
+        if (m_extensionsPanel.HandleMouseMove(clientPt)) {
+            needRepaint = true;
+        }
+    }
 
     int hoveredZoom = 0;
     if (m_header.HitTestZoomOut(clientPt)) hoveredZoom = 1;
@@ -4587,13 +4721,34 @@ void Window::HandleLButtonDown(POINT clientPt) {
         return;
     }
 
+    // 3e. Extensions 2x2 Grid Button Click (Toggles Right Sidebar)
+    if (m_header.HitTestExtensions(clientPt)) {
+        if (m_extensionsPanel.IsOpen()) {
+            AnimateRightSidebarClose();
+        } else {
+            AnimateRightSidebarOpen();
+        }
+        InvalidateRect(m_hwnd, nullptr, FALSE);
+        return;
+    }
+
+    // 3f. Extensions Right Sidebar Panel Clicks
+    if (m_rightSidebarAnimProgress > 0.001f && m_extensionsPanel.IsOpen() && m_extensionsPanel.HitTest(clientPt)) {
+        bool handled = m_extensionsPanel.HandleLButtonDown(clientPt);
+        if (handled) {
+            InvalidateRect(m_hwnd, nullptr, FALSE);
+            return;
+        }
+    }
+
     const int railW = m_config.Scale(m_config.railWidth);
     const int drawerW = static_cast<int>(m_config.Scale(m_config.drawerWidth) * m_drawerAnimProgress);
     const float canvasLeft = static_cast<float>(railW + drawerW);
     const float headerH = m_config.ScaleF(static_cast<float>(m_config.headerHeight));
     RECT clientRc;
     GetClientRect(m_hwnd, &clientRc);
-    const float canvasWidth = static_cast<float>(clientRc.right) - canvasLeft;
+    const float rightSidebarW = m_config.ScaleF(340.0f) * m_rightSidebarAnimProgress;
+    const float canvasWidth = static_cast<float>(clientRc.right) - canvasLeft - rightSidebarW;
     const float clientH = static_cast<float>(clientRc.bottom - clientRc.top);
 
     // 4. Editor Canvas Clicks (Multi-Editor Groups aware)
@@ -4664,6 +4819,7 @@ void Window::HandleLButtonDown(POINT clientPt) {
                 group.activeDocIdx = tabHitIdx;
                 m_dragTabGroup = targetGroup;
                 m_dragTabIdx = tabHitIdx;
+                m_tabDropTargetGroup = targetGroup;
                 m_tabDropTargetIdx = tabHitIdx;
                 m_dragTabStartPt = clientPt;
                 m_dragTabCurrentPt = clientPt;
@@ -5139,31 +5295,77 @@ void Window::HandleLButtonUp(POINT clientPt) {
         }
     }
 
-    // 0b. Tab Drag & Drop Reordering commit (User request: "and i cant drag this tab to reaarangfe", Image 3)
+    // 0b. Tab Drag & Drop Reordering commit (User request: "fix i cant drag the tab of split 1 to the other split", Image 4)
     if (m_dragTabIdx >= 0 && m_dragTabGroup >= 0 && m_dragTabGroup < static_cast<int>(m_editorGroups.size())) {
-        if (m_isDraggingTab && m_tabDropTargetIdx >= 0) {
-            auto& group = m_editorGroups[m_dragTabGroup];
+        if (m_isDraggingTab && m_tabDropTargetGroup >= 0 && m_tabDropTargetGroup < static_cast<int>(m_editorGroups.size()) && m_tabDropTargetIdx >= 0) {
+            int srcGroup = m_dragTabGroup;
+            int dstGroup = m_tabDropTargetGroup;
             int from = m_dragTabIdx;
             int to = m_tabDropTargetIdx;
-            if (from >= 0 && from < static_cast<int>(group.docs.size()) &&
-                to >= 0 && to <= static_cast<int>(group.docs.size())) {
-                auto doc = std::move(group.docs[from]);
-                group.docs.erase(group.docs.begin() + from);
-                int insertPos = (to > from) ? (to - 1) : to;
-                if (insertPos < 0) insertPos = 0;
-                if (insertPos > static_cast<int>(group.docs.size())) {
-                    insertPos = static_cast<int>(group.docs.size());
+
+            if (srcGroup == dstGroup) {
+                // Same group reordering
+                auto& group = m_editorGroups[srcGroup];
+                if (from >= 0 && from < static_cast<int>(group.docs.size()) &&
+                    to >= 0 && to <= static_cast<int>(group.docs.size())) {
+                    auto doc = std::move(group.docs[from]);
+                    group.docs.erase(group.docs.begin() + from);
+                    int insertPos = (to > from) ? (to - 1) : to;
+                    if (insertPos < 0) insertPos = 0;
+                    if (insertPos > static_cast<int>(group.docs.size())) {
+                        insertPos = static_cast<int>(group.docs.size());
+                    }
+                    group.docs.insert(group.docs.begin() + insertPos, std::move(doc));
+                    group.activeDocIdx = insertPos;
+                    SaveSessionState();
                 }
-                group.docs.insert(group.docs.begin() + insertPos, std::move(doc));
-                group.activeDocIdx = insertPos;
-                SaveSessionState();
+            } else {
+                // Cross-group move: drag tab from split A to split B!
+                auto& fromGrp = m_editorGroups[srcGroup];
+                auto& toGrp = m_editorGroups[dstGroup];
+                if (from >= 0 && from < static_cast<int>(fromGrp.docs.size()) &&
+                    to >= 0 && to <= static_cast<int>(toGrp.docs.size())) {
+                    auto doc = std::move(fromGrp.docs[from]);
+                    fromGrp.docs.erase(fromGrp.docs.begin() + from);
+
+                    int insertPos = to;
+                    if (insertPos < 0) insertPos = 0;
+                    if (insertPos > static_cast<int>(toGrp.docs.size())) {
+                        insertPos = static_cast<int>(toGrp.docs.size());
+                    }
+                    toGrp.docs.insert(toGrp.docs.begin() + insertPos, std::move(doc));
+                    toGrp.activeDocIdx = insertPos;
+
+                    // If source group has no remaining documents, auto-collapse split if multiple splits exist
+                    if (fromGrp.docs.empty()) {
+                        if (m_editorGroups.size() > 1) {
+                            m_editorGroups.erase(m_editorGroups.begin() + srcGroup);
+                            int finalDst = (srcGroup < dstGroup) ? (dstGroup - 1) : dstGroup;
+                            if (finalDst < 0) finalDst = 0;
+                            if (finalDst >= static_cast<int>(m_editorGroups.size())) {
+                                finalDst = static_cast<int>(m_editorGroups.size()) - 1;
+                            }
+                            m_focusedGroupIdx = finalDst;
+                        } else {
+                            fromGrp.activeDocIdx = -1;
+                            m_focusedGroupIdx = 0;
+                        }
+                    } else {
+                        if (fromGrp.activeDocIdx >= static_cast<int>(fromGrp.docs.size())) {
+                            fromGrp.activeDocIdx = static_cast<int>(fromGrp.docs.size()) - 1;
+                        }
+                        m_focusedGroupIdx = dstGroup;
+                    }
+                    SaveSessionState();
+                }
             }
         }
         m_isDraggingTab = false;
         m_dragTabGroup = -1;
         m_dragTabIdx = -1;
+        m_tabDropTargetGroup = -1;
         m_tabDropTargetIdx = -1;
-        m_editor.SetTabDragState(false, -1, -1, -1);
+        m_editor.SetTabDragState(false, -1, -1, -1, -1);
         ReleaseCapture();
         InvalidateRect(m_hwnd, nullptr, FALSE);
         return;
@@ -5498,17 +5700,40 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     return TRUE;
                 }
 
-                // Provide pointer hand cursor over caption buttons, menus, execution buttons, split editor, quick open, and zoom buttons
+                // Provide pointer hand cursor over caption buttons, menus, execution buttons, split editor, quick open, extensions, and zoom buttons
                 if (m_header.HitTestCaptionButton(pt) != ui::CaptionButtonType::None ||
                     m_header.HitTestMenu(pt) != ui::HeaderMenuId::None ||
                     m_header.HitTestExecButton(pt) != ui::HeaderExecId::None ||
                     m_header.HitTestSplitEditor(pt) ||
                     m_header.HitTestQuickOpen(pt) ||
+                    m_header.HitTestExtensions(pt) ||
                     m_header.HitTestZoomIn(pt) ||
                     m_header.HitTestZoomOut(pt) ||
                     m_header.HitTestZoomReset(pt)) {
                     SetCursor(LoadCursor(nullptr, IDC_HAND));
                     return TRUE;
+                }
+
+                // Extensions Right Sidebar Panel
+                if (m_rightSidebarAnimProgress > 0.001f && m_extensionsPanel.IsOpen() && m_extensionsPanel.HitTest(pt)) {
+                    SetCursor(LoadCursor(nullptr, IDC_HAND));
+                    return TRUE;
+                }
+
+                // Tab horizontal scrollbar thumb and track (User requirement: "i cant still drag the scroll bar")
+                for (const auto& grp : m_editorGroups) {
+                    if (grp.totalTabsWidth > (grp.bounds.right - grp.bounds.left)) {
+                        if (pt.x >= grp.tabScrollThumb.left && pt.x <= grp.tabScrollThumb.right &&
+                            pt.y >= grp.tabScrollThumb.top && pt.y <= grp.tabScrollThumb.bottom) {
+                            SetCursor(LoadCursor(nullptr, IDC_SIZEWE));
+                            return TRUE;
+                        }
+                        if (pt.x >= grp.tabScrollTrack.left && pt.x <= grp.tabScrollTrack.right &&
+                            pt.y >= grp.tabScrollTrack.top && pt.y <= grp.tabScrollTrack.bottom) {
+                            SetCursor(LoadCursor(nullptr, IDC_HAND));
+                            return TRUE;
+                        }
+                    }
                 }
 
                 // Tab bar tabs, close buttons or folding chevrons
@@ -5740,6 +5965,13 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
 
             if (m_terminal.IsOpen() && m_terminal.HitTest(pt)) {
                 if (m_terminal.OnMouseWheel(pt, delta)) {
+                    InvalidateRect(m_hwnd, nullptr, FALSE);
+                    return 0;
+                }
+            }
+
+            if (m_rightSidebarAnimProgress > 0.001f && m_extensionsPanel.IsOpen() && m_extensionsPanel.HitTest(pt)) {
+                if (m_extensionsPanel.HandleMouseWheel(delta)) {
                     InvalidateRect(m_hwnd, nullptr, FALSE);
                     return 0;
                 }
@@ -6854,7 +7086,40 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 }
                 m_terminal.SetFullScreenProgress(m_termFullScreenProgress);
 
-                if (!keepAnimating && !m_isDrawerAnimating && !m_isTerminalAnimating && !m_isTermFullScreenAnimating) {
+                // Smoothly animate right sidebar slide in / out
+                float diffRightSidebar = m_targetRightSidebarProgress - m_rightSidebarAnimProgress;
+                if (std::abs(diffRightSidebar) < 0.005f) {
+                    m_rightSidebarAnimProgress = m_targetRightSidebarProgress;
+                    m_isRightSidebarAnimating = false;
+                    if (m_rightSidebarAnimProgress <= 0.001f && m_extensionsPanel.IsOpen()) {
+                        m_extensionsPanel.Close();
+                    }
+                } else {
+                    m_rightSidebarAnimProgress += diffRightSidebar * speed;
+                    keepAnimating = true;
+                }
+
+                if (m_rightSidebarAnimProgress > 0.001f || m_extensionsPanel.IsOpen()) {
+                    m_extensionsPanel.UpdateAnim(16.0f);
+                    keepAnimating = true;
+                }
+
+                // Smoothly update Live Server progression and auto-open user browser upon completion
+                for (auto& srv : m_activeLiveServers) {
+                    if (srv.isStarting) {
+                        srv.elapsedMs += 16.0f;
+                        srv.progress = (std::min)(1.0f, srv.elapsedMs / srv.progressDurationMs);
+                        keepAnimating = true;
+                        if (!srv.browserOpened && srv.progress >= 1.0f) {
+                            srv.browserOpened = true;
+                            srv.isStarting = false;
+                            std::wstring localUrl = srv.server ? srv.server->GetLocalUrl(srv.fileName) : (L"http://127.0.0.1:" + std::to_wstring(srv.port));
+                            ShellExecuteW(NULL, L"open", localUrl.c_str(), NULL, NULL, SW_SHOWNORMAL);
+                        }
+                    }
+                }
+
+                if (!keepAnimating && !m_isDrawerAnimating && !m_isTerminalAnimating && !m_isTermFullScreenAnimating && !m_isRightSidebarAnimating) {
                     KillTimer(m_hwnd, m_animTimerId);
                 }
                 InvalidateRect(m_hwnd, nullptr, FALSE);

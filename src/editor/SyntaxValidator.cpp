@@ -34,8 +34,15 @@ std::vector<lsp::Diagnostic> SyntaxValidator::Validate(const std::wstring& fileP
     if (ext == L".php") {
         return ValidateBracketsAndQuotes(buffer, true);
     }
-    // Default to C++, C, JS, TS, Java, Rust, Go bracket & quote validation
-    return ValidateBracketsAndQuotes(buffer, false);
+    // Only perform bracket & quote validation on recognized code file extensions.
+    // Plain text, markdown, METADATA, documentation, licenses, and config files must never report false syntax errors!
+    if (ext == L".js" || ext == L".jsx" || ext == L".ts" || ext == L".tsx" ||
+        ext == L".cpp" || ext == L".c" || ext == L".cc" || ext == L".cxx" ||
+        ext == L".h" || ext == L".hpp" || ext == L".hxx" || ext == L".cs" ||
+        ext == L".java" || ext == L".rs" || ext == L".go") {
+        return ValidateBracketsAndQuotes(buffer, false);
+    }
+    return {};
 }
 
 std::vector<lsp::Diagnostic> SyntaxValidator::ValidateJson(const Buffer& buffer) {

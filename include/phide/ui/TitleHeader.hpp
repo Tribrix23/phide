@@ -46,7 +46,8 @@ enum class HeaderExecId {
     Debug = 1,      ///< Debug application (vibrant green)
     Terminal = 2,   ///< Terminal toggle (neutral/white text, explicitly not green)
     Restart = 3,    ///< Restart live server / process
-    Stop = 4        ///< Stop live server / process (red square with rounded corners)
+    Stop = 4,       ///< Stop live server / process (red square with rounded corners)
+    Extensions = 5  ///< Extensions toggle (2x2 grid icon)
 };
 
 /**
@@ -180,6 +181,20 @@ public:
 
     [[nodiscard]] D2D1_RECT_F GetQuickOpenBounds() const noexcept { return m_rcQuickOpen; }
 
+    /**
+     * @brief Checks if mouse is over the Extensions (2x2 grid) button (Image 2).
+     */
+    [[nodiscard]] bool HitTestExtensions(POINT pt) const noexcept;
+
+    /**
+     * @brief Updates hover state for the Extensions button.
+     */
+    bool SetHoveredExtensions(bool hovered) noexcept;
+    void SetExtensionsActive(bool active) noexcept { m_activeExtensions = active; }
+    [[nodiscard]] bool IsExtensionsActive() const noexcept { return m_activeExtensions; }
+
+    [[nodiscard]] D2D1_RECT_F GetExtensionsBounds() const noexcept { return m_rcExtensions; }
+
     // Zoom In / Zoom Out Controls (Image 3)
     [[nodiscard]] bool HitTestZoomIn(POINT pt) const noexcept;
     [[nodiscard]] bool HitTestZoomOut(POINT pt) const noexcept;
@@ -235,6 +250,11 @@ private:
     // Quick Open (magnifying glass) button (Image 5)
     D2D1_RECT_F m_rcQuickOpen{};
     bool m_hoveredQuickOpen = false;
+
+    // Extensions (2x2 grid) button (Image 2)
+    D2D1_RECT_F m_rcExtensions{};
+    bool m_hoveredExtensions = false;
+    bool m_activeExtensions = false;
 
     // Zoom In / Zoom Out controls widget (Image 3)
     D2D1_RECT_F m_rcZoomContainer{};

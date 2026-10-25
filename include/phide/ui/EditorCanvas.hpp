@@ -202,7 +202,8 @@ public:
                     std::vector<editor::OpenDocument>& docs, int activeDocIdx,
                     bool hasLeftDrawer, bool isFocused,
                     float& tabScrollOffset, float& totalTabsWidth, int groupIdx = 0,
-                    D2D1_RECT_F* outTrack = nullptr, D2D1_RECT_F* outThumb = nullptr);
+                    D2D1_RECT_F* outTrack = nullptr, D2D1_RECT_F* outThumb = nullptr,
+                    int* pLastScrolledActiveDocIdx = nullptr, bool isDraggingTabScroll = false);
 
     void RenderTabs(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
                     float canvasLeft, float canvasWidth, float headerH,
@@ -213,15 +214,22 @@ public:
         RenderTabs(pRT, theme, config, canvasLeft, canvasWidth, headerH, docs, activeDocIdx, hasLeftDrawer, isFocused, dummyScroll, dummyTotal, 0);
     }
 
-    void SetTabDragState(bool isDragging, int dragGroup, int dragIdx, int dropTargetIdx,
+    void SetTabDragState(bool isDragging, int dragGroup, int dragIdx, int dropTargetGroup, int dropTargetIdx,
                          D2D1_POINT_2F dragPos = { 0.0f, 0.0f },
                          const std::wstring& dragTitle = L"") noexcept {
         m_isDraggingTab = isDragging;
         m_dragTabGroup = dragGroup;
         m_dragTabIdx = dragIdx;
+        m_tabDropTargetGroup = dropTargetGroup;
         m_tabDropTargetIdx = dropTargetIdx;
         m_dragTabPos = dragPos;
         m_dragTabTitle = dragTitle;
+    }
+
+    void SetTabDragState(bool isDragging, int dragGroup, int dragIdx, int dropTargetIdx,
+                         D2D1_POINT_2F dragPos = { 0.0f, 0.0f },
+                         const std::wstring& dragTitle = L"") noexcept {
+        SetTabDragState(isDragging, dragGroup, dragIdx, dragGroup, dropTargetIdx, dragPos, dragTitle);
     }
     [[nodiscard]] bool IsDraggingTab() const noexcept { return m_isDraggingTab; }
 
@@ -321,7 +329,8 @@ private:
                           bool highlightUseRegex,
                           bool isRenaming,
                           float& tabScrollOffset, float& totalTabsWidth, int groupIdx = 0,
-                          D2D1_RECT_F* outTrack = nullptr, D2D1_RECT_F* outThumb = nullptr);
+                          D2D1_RECT_F* outTrack = nullptr, D2D1_RECT_F* outThumb = nullptr,
+                          int* pLastScrolledActiveDocIdx = nullptr, bool isDraggingTabScroll = false);
 
     void RenderSinglePane(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
                           std::vector<editor::OpenDocument>& docs, int activeDocIdx,
@@ -392,6 +401,7 @@ private:
     bool m_isDraggingTab = false;
     int m_dragTabGroup = -1;
     int m_dragTabIdx = -1;
+    int m_tabDropTargetGroup = -1;
     int m_tabDropTargetIdx = -1;
     D2D1_POINT_2F m_dragTabPos = { 0.0f, 0.0f };
     std::wstring m_dragTabTitle;

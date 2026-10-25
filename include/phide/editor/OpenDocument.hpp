@@ -268,6 +268,7 @@ struct EditorGroup {
     bool isDraggingTabScroll = false;    ///< True when tab scroll thumb is currently being dragged
     float dragTabScrollStartX = 0.0f;    ///< Starting mouse X when dragging tab scroll
     float dragTabScrollStartOffset = 0.0f; ///< Starting tabScrollOffset when dragging tab scroll
+    int lastScrolledActiveDocIdx = -1;   ///< Tracks last active doc idx to only auto-scroll into view when active tab changes
 };
 
 } // namespace phide::editor

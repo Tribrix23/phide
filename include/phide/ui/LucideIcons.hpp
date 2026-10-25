@@ -185,6 +185,16 @@ public:
     void DrawSplitEditor(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, ID2D1Brush* pBrush, float strokeWidth = 1.3f) const;
 
     /**
+     * @brief Draws the 2x2 grid icon for Extensions / Environment sidebar (Image 2).
+     */
+    void DrawExtensionsGrid(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, ID2D1Brush* pBrush, float strokeWidth = 1.3f) const;
+
+    /**
+     * @brief Draws the curved return back arrow icon (Image 5).
+     */
+    void DrawReturnBack(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, ID2D1Brush* pBrush, float strokeWidth = 1.8f) const;
+
+    /**
      * @brief Draws the vector Minimize caption icon.
      */
     void DrawMinimize(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, ID2D1Brush* pBrush, float strokeWidth = 1.2f) const;

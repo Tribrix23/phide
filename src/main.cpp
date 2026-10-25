@@ -9,6 +9,7 @@
 #include <windows.h>
 #include <objbase.h>
 #include "phide/app/Window.hpp"
+#include "phide/ui/SplashScreen.hpp"
 
 /**
  * @brief Win32 Application Entry Point.
@@ -31,7 +32,10 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPWSTR lpCmdLi
         return 1;
     }
 
-    // 3. Create Main Application Window
+    // 3. Show Phide Architectural Branding Splash Screen for 5 Seconds (User requirement)
+    phide::ui::SplashScreen::Show(hInstance, 5000);
+
+    // 4. Create Main Application Window
     phide::app::Window window;
     if (!window.Create(hInstance, nCmdShow)) {
         MessageBoxW(nullptr, L"Failed to initialize Direct2D / Window graphics pipeline.", L"phide Error", MB_ICONERROR);

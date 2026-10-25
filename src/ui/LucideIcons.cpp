@@ -1067,4 +1067,106 @@ void LucideIcons::DrawSplitEditor(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bou
     );
 }
 
+void LucideIcons::DrawExtensionsGrid(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, ID2D1Brush* pBrush, float strokeWidth) const {
+    if (!pRT || !pBrush) return;
+    EnsureStrokeStyle(pRT, const_cast<ComPtr<ID2D1StrokeStyle>&>(m_pStrokeStyle));
+
+    const float bw = bounds.right - bounds.left;
+    const float bh = bounds.bottom - bounds.top;
+    const float cx = bounds.left + bw * 0.5f;
+    const float cy = bounds.top + bh * 0.5f;
+
+    // 2x2 grid of squares with rounded corners, sized proportionally to match beside buttons (~16-17px total)
+    const float totalSize = (std::min)(bw, bh) * 0.56f;
+    const float g = 2.6f;
+    const float s = (totalSize - g) * 0.5f;
+    const float off = g * 0.5f;
+    const float r = 1.4f;
+
+    // Top-left
+    D2D1_ROUNDED_RECT rrcTL = D2D1::RoundedRect(D2D1::RectF(cx - s - off, cy - s - off, cx - off, cy - off), r, r);
+    pRT->DrawRoundedRectangle(&rrcTL, pBrush, strokeWidth, m_pStrokeStyle.Get());
+
+    // Top-right
+    D2D1_ROUNDED_RECT rrcTR = D2D1::RoundedRect(D2D1::RectF(cx + off, cy - s - off, cx + s + off, cy - off), r, r);
+    pRT->DrawRoundedRectangle(&rrcTR, pBrush, strokeWidth, m_pStrokeStyle.Get());
+
+    // Bottom-left
+    D2D1_ROUNDED_RECT rrcBL = D2D1::RoundedRect(D2D1::RectF(cx - s - off, cy + off, cx - off, cy + s + off), r, r);
+    pRT->DrawRoundedRectangle(&rrcBL, pBrush, strokeWidth, m_pStrokeStyle.Get());
+
+    // Bottom-right
+    D2D1_ROUNDED_RECT rrcBR = D2D1::RoundedRect(D2D1::RectF(cx + off, cy + off, cx + s + off, cy + s + off), r, r);
+    pRT->DrawRoundedRectangle(&rrcBR, pBrush, strokeWidth, m_pStrokeStyle.Get());
+}
+
+void LucideIcons::DrawReturnBack(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, ID2D1Brush* pBrush, float strokeWidth) const {
+    if (!pRT || !pBrush) return;
+    EnsureStrokeStyle(pRT, const_cast<ComPtr<ID2D1StrokeStyle>&>(m_pStrokeStyle));
+
+    const float bw = bounds.right - bounds.left;
+    const float bh = bounds.bottom - bounds.top;
+    const float cx = bounds.left + bw * 0.5f;
+    const float cy = bounds.top + bh * 0.5f;
+    const float s = (std::min)(bw, bh) * 0.55f;
+
+    // Dimensions matching return back icon (Image 5)
+    const float arrowTipX = cx - s * 0.48f;
+    const float topY = cy - s * 0.28f;
+    const float botY = cy + s * 0.36f;
+    const float r = (botY - topY) * 0.5f;
+    const float rightX = cx + s * 0.48f;
+    const float headSize = s * 0.28f;
+
+    // Arrow Head pointing Left (<)
+    pRT->DrawLine(
+        D2D1::Point2F(arrowTipX + headSize, topY - headSize),
+        D2D1::Point2F(arrowTipX, topY),
+        pBrush, strokeWidth, m_pStrokeStyle.Get()
+    );
+    pRT->DrawLine(
+        D2D1::Point2F(arrowTipX + headSize, topY + headSize),
+        D2D1::Point2F(arrowTipX, topY),
+        pBrush, strokeWidth, m_pStrokeStyle.Get()
+    );
+
+    // Top horizontal shaft
+    pRT->DrawLine(
+        D2D1::Point2F(arrowTipX, topY),
+        D2D1::Point2F(rightX - r, topY),
+        pBrush, strokeWidth, m_pStrokeStyle.Get()
+    );
+
+    // Bottom horizontal shaft
+    const float botStartX = cx - s * 0.30f;
+    pRT->DrawLine(
+        D2D1::Point2F(botStartX, botY),
+        D2D1::Point2F(rightX - r, botY),
+        pBrush, strokeWidth, m_pStrokeStyle.Get()
+    );
+
+    // Right rounded curve connecting top and bottom shafts (Image 5)
+    Microsoft::WRL::ComPtr<ID2D1Factory> pFactory;
+    pRT->GetFactory(&pFactory);
+    if (pFactory) {
+        Microsoft::WRL::ComPtr<ID2D1PathGeometry> pPath;
+        if (SUCCEEDED(pFactory->CreatePathGeometry(&pPath)) && pPath) {
+            Microsoft::WRL::ComPtr<ID2D1GeometrySink> pSink;
+            if (SUCCEEDED(pPath->Open(&pSink)) && pSink) {
+                pSink->BeginFigure(D2D1::Point2F(rightX - r, topY), D2D1_FIGURE_BEGIN_HOLLOW);
+                pSink->AddArc(D2D1::ArcSegment(
+                    D2D1::Point2F(rightX - r, botY),
+                    D2D1::SizeF(r, r),
+                    0.0f,
+                    D2D1_SWEEP_DIRECTION_CLOCKWISE,
+                    D2D1_ARC_SIZE_SMALL
+                ));
+                pSink->EndFigure(D2D1_FIGURE_END_OPEN);
+                pSink->Close();
+                pRT->DrawGeometry(pPath.Get(), pBrush, strokeWidth, m_pStrokeStyle.Get());
+            }
+        }
+    }
+}
+
 } // namespace phide::ui

@@ -263,6 +263,51 @@ void TitleHeader::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCon
     m_rcZoomReset = D2D1::RectF(zoomLeft + zoomBtnW, zoomTop, zoomRight - zoomBtnW, zoomBottom);
     m_rcZoomIn = D2D1::RectF(zoomRight - zoomBtnW, zoomTop, zoomRight, zoomBottom);
 
+    // 3c. Extensions Button with 2x2 square grid icon directly to the left of Zoom Controls (Image 1)
+    // Vertically aligned and matching height with m_rcZoomContainer
+    const float extBtnH = zoomBottom - zoomTop;
+    const float extBtnW = extBtnH;
+    const float extBtnY = zoomTop;
+    const float extBtnX = zoomLeft - config.ScaleF(8.0f) - extBtnW;
+    m_rcExtensions = D2D1::RectF(extBtnX, extBtnY, extBtnX + extBtnW, extBtnY + extBtnH);
+
+    D2D1_ROUNDED_RECT rrcExtensions = D2D1::RoundedRect(m_rcExtensions, 5.0f, 5.0f);
+    if (m_hoveredExtensions || m_activeExtensions) {
+        ID2D1Brush* pExtBg = m_activeExtensions ? (theme.brushItemActive ? theme.brushItemActive.Get() : theme.brushItemHover.Get()) : theme.brushItemHover.Get();
+        pRT->FillRoundedRectangle(rrcExtensions, pExtBg);
+        pRT->DrawRoundedRectangle(rrcExtensions, theme.brushBorderSubtle.Get(), 0.8f);
+    }
+    ID2D1Brush* pExtBrush = theme.IsDarkMode() ? theme.brushTextWhite.Get() : theme.brushTextPrimary.Get();
+    m_icons.DrawExtensionsGrid(pRT, m_rcExtensions, pExtBrush, 1.4f);
+
+    // Floating Tooltip for Hovered Extensions Button (Image 1)
+    if (m_hoveredExtensions) {
+        const float tipH    = config.ScaleF(24.0f);
+        const float tipPadX = config.ScaleF(10.0f);
+        const wchar_t* tipText = L"Extensions (Python, PHP, Node.js)";
+        size_t textLen = wcslen(tipText);
+        float textW    = config.ScaleF(static_cast<float>(textLen * 6.5f + 14.0f));
+        float tipW     = textW + tipPadX * 2.0f;
+
+        float tipX     = m_rcExtensions.left + (extBtnW - tipW) / 2.0f;
+        float tipY     = m_rcExtensions.bottom + config.ScaleF(6.0f);
+
+        if (tipX < 10.0f) tipX = 10.0f;
+        if (tipX + tipW > clientWidth - 10.0f) tipX = clientWidth - tipW - 10.0f;
+
+        D2D1_RECT_F rcTip = D2D1::RectF(tipX, tipY, tipX + tipW, tipY + tipH);
+        D2D1_ROUNDED_RECT rrcTip = D2D1::RoundedRect(rcTip, 4.0f, 4.0f);
+        pRT->FillRoundedRectangle(rrcTip, theme.brushTooltipBg.Get());
+        pRT->DrawRoundedRectangle(rrcTip, theme.brushTooltipBorder.Get(), 1.0f);
+        pRT->DrawText(
+            tipText,
+            static_cast<UINT32>(textLen),
+            theme.fontTooltip ? theme.fontTooltip.Get() : theme.fontHint.Get(),
+            rcTip,
+            theme.brushTooltipText ? theme.brushTooltipText.Get() : theme.brushTextPrimary.Get()
+        );
+    }
+
     D2D1_ROUNDED_RECT rrcZoom = D2D1::RoundedRect(m_rcZoomContainer, 5.0f, 5.0f);
     if (theme.IsDarkMode()) {
         pRT->FillRoundedRectangle(rrcZoom, theme.brushItemHover.Get());
@@ -658,6 +703,19 @@ bool TitleHeader::SetHoveredQuickOpen(bool hovered) noexcept {
     return false;
 }
 
+bool TitleHeader::HitTestExtensions(POINT pt) const noexcept {
+    return (pt.x >= m_rcExtensions.left && pt.x <= m_rcExtensions.right &&
+            pt.y >= m_rcExtensions.top && pt.y <= m_rcExtensions.bottom);
+}
+
+bool TitleHeader::SetHoveredExtensions(bool hovered) noexcept {
+    if (m_hoveredExtensions != hovered) {
+        m_hoveredExtensions = hovered;
+        return true;
+    }
+    return false;
+}
+
 bool TitleHeader::HitTestZoomIn(POINT pt) const noexcept {
     return (pt.x >= m_rcZoomIn.left && pt.x <= m_rcZoomIn.right &&
             pt.y >= m_rcZoomIn.top && pt.y <= m_rcZoomIn.bottom);
@@ -690,6 +748,7 @@ LRESULT TitleHeader::HitTestNCHitTest(POINT pt, const app::AppConfig& config) {
     if (HitTestExecButton(pt) != HeaderExecId::None) return HTCLIENT;
     if (HitTestSplitEditor(pt)) return HTCLIENT;
     if (HitTestQuickOpen(pt)) return HTCLIENT;
+    if (HitTestExtensions(pt)) return HTCLIENT;
     if (HitTestZoomIn(pt) || HitTestZoomOut(pt) || HitTestZoomReset(pt)) return HTCLIENT;
     if (HitTestCaptionButton(pt) != CaptionButtonType::None) return HTCLIENT;
 
