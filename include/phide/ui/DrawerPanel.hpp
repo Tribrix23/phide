@@ -184,7 +184,11 @@ public:
                     std::wstring& outDiscardedFile,
                     bool& outIsDiff,
                     std::wstring& outOpenCommitDiff,
-                    std::wstring& outOpenUrl);
+                    std::wstring& outOpenUrl,
+                    bool* pOutPromptDiscard = nullptr,
+                    std::wstring* pOutDiscardFileName = nullptr,
+                    std::wstring* pOutDiscardStatus = nullptr,
+                    size_t* pOutDiscardCount = nullptr);
     bool HitTestGit(POINT pt, const app::AppConfig& config, std::wstring& outOpenFile, std::wstring& outDiscardedFile) {
         bool isDiff = false;
         std::wstring dummyCommit;

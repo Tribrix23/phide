@@ -2419,26 +2419,297 @@ void Window::DoRenameSymbol() {
     m_editor.ShowRefactorPopup(L"Rename Symbol (F2)");
 }
 
+Window::ProjectFramework Window::DetectFramework(const std::wstring& rootDir, const std::wstring& activeFilePath) const {
+    std::filesystem::path p(activeFilePath);
+    std::wstring ext = p.extension().wstring();
+    for (auto& c : ext) c = towlower(c);
+
+    // 1. PHP Check (User explicitly requested: "and for now leave the php run empty for now")
+    if (ext == L".php" || ext == L".phtml" || ext == L".php8") {
+        return ProjectFramework::Php;
+    }
+
+    // 2. Project-level checks in rootDir
+    std::wstring searchDir = rootDir;
+    if (searchDir.empty() && m_drawer.HasOpenFolder()) searchDir = m_drawer.GetOpenFolderPath();
+    if (searchDir.empty()) searchDir = m_workspace.GetRootPath();
+    if (searchDir.empty() && !activeFilePath.empty()) searchDir = p.parent_path().wstring();
+
+    if (!searchDir.empty()) {
+        std::error_code ec;
+        // Next.js detection: next.config.js/.mjs/.ts/.cjs or package.json containing "next"
+        if (std::filesystem::exists(std::filesystem::path(searchDir) / L"next.config.js", ec) ||
+            std::filesystem::exists(std::filesystem::path(searchDir) / L"next.config.mjs", ec) ||
+            std::filesystem::exists(std::filesystem::path(searchDir) / L"next.config.ts", ec) ||
+            std::filesystem::exists(std::filesystem::path(searchDir) / L"next.config.cjs", ec)) {
+            return ProjectFramework::NextJs;
+        }
+
+        // Vite detection: vite.config.js/.mjs/.ts/.cjs
+        if (std::filesystem::exists(std::filesystem::path(searchDir) / L"vite.config.js", ec) ||
+            std::filesystem::exists(std::filesystem::path(searchDir) / L"vite.config.ts", ec) ||
+            std::filesystem::exists(std::filesystem::path(searchDir) / L"vite.config.mjs", ec) ||
+            std::filesystem::exists(std::filesystem::path(searchDir) / L"vite.config.cjs", ec)) {
+            return ProjectFramework::Vite;
+        }
+
+        // Check package.json for Next.js or Vite
+        std::filesystem::path pkgPath = std::filesystem::path(searchDir) / L"package.json";
+        if (std::filesystem::exists(pkgPath, ec)) {
+            std::ifstream f(pkgPath);
+            if (f.is_open()) {
+                std::stringstream buffer;
+                buffer << f.rdbuf();
+                std::string content = buffer.str();
+                if (content.find("\"next\"") != std::string::npos || content.find("next dev") != std::string::npos) {
+                    return ProjectFramework::NextJs;
+                }
+                if (content.find("\"vite\"") != std::string::npos || content.find("vite") != std::string::npos) {
+                    return ProjectFramework::Vite;
+                }
+            }
+        }
+
+        // Django detection: manage.py exists and contains "django"
+        std::filesystem::path managePy = std::filesystem::path(searchDir) / L"manage.py";
+        if (std::filesystem::exists(managePy, ec)) {
+            std::ifstream f(managePy);
+            if (f.is_open()) {
+                std::stringstream buffer;
+                buffer << f.rdbuf();
+                std::string content = buffer.str();
+                if (content.find("django") != std::string::npos) {
+                    return ProjectFramework::Django;
+                }
+            }
+            return ProjectFramework::Django;
+        }
+    }
+
+    // 3. File-level fallback
+    if (ext == L".html" || ext == L".htm") return ProjectFramework::LiveServerHtml;
+    if (ext == L".js" || ext == L".mjs" || ext == L".cjs" || ext == L".ts" || ext == L".jsx" || ext == L".tsx") return ProjectFramework::NodeScript;
+    if (ext == L".py") return ProjectFramework::PythonScript;
+
+    return ProjectFramework::None;
+}
+
+void Window::ExecuteDiscardOrRestore(const std::wstring& targetPath, const std::wstring& targetFileName, const std::wstring& targetStatus) {
+    if (targetPath.empty()) return;
+
+    if (targetPath == L"*" || targetStatus == L"ALL") {
+        m_drawer.DiscardAllChanges();
+        m_drawer.ShowGitNotification(L"✓ Discarded all changes");
+    } else {
+        m_drawer.DiscardFile(targetPath);
+        if (targetStatus == L"D") {
+            m_drawer.ShowGitNotification(L"✓ Restored " + targetFileName);
+        } else {
+            m_drawer.ShowGitNotification(L"✓ Discarded " + targetFileName);
+        }
+    }
+
+    auto PathsMatch = [](const std::wstring& p1, const std::wstring& p2) -> bool {
+        if (p1.empty() || p2.empty()) return false;
+        if (p2 == L"*") return true;
+        std::wstring c1 = p1;
+        std::wstring c2 = p2;
+        for (auto& c : c1) { if (c == L'/') c = L'\\'; c = static_cast<wchar_t>(towlower(c)); }
+        for (auto& c : c2) { if (c == L'/') c = L'\\'; c = static_cast<wchar_t>(towlower(c)); }
+        if (c1 == c2) return true;
+        if (c1.ends_with(L"\\" + c2) || c2.ends_with(L"\\" + c1)) return true;
+        if (c1.ends_with(c2) || c2.ends_with(c1)) return true;
+        return false;
+    };
+
+    // Close matching working tree diff view tabs
+    for (int g = static_cast<int>(m_editorGroups.size()) - 1; g >= 0; --g) {
+        if (g >= static_cast<int>(m_editorGroups.size())) continue;
+        for (int d = static_cast<int>(m_editorGroups[g].docs.size()) - 1; d >= 0; --d) {
+            if (g >= static_cast<int>(m_editorGroups.size())) break;
+            if (d >= static_cast<int>(m_editorGroups[g].docs.size())) continue;
+            auto& doc = m_editorGroups[g].docs[d];
+            if (doc.isDiffView && !doc.isDiffRightReadOnly) {
+                if (PathsMatch(doc.filePath, targetPath)) {
+                    CloseDocument(g, d);
+                }
+            }
+        }
+    }
+
+    // Reload open regular document buffers or close them if file no longer exists
+    for (int g = static_cast<int>(m_editorGroups.size()) - 1; g >= 0; --g) {
+        if (g >= static_cast<int>(m_editorGroups.size())) continue;
+        for (int d = static_cast<int>(m_editorGroups[g].docs.size()) - 1; d >= 0; --d) {
+            if (g >= static_cast<int>(m_editorGroups.size())) break;
+            if (d >= static_cast<int>(m_editorGroups[g].docs.size())) continue;
+            auto& doc = m_editorGroups[g].docs[d];
+            if (!doc.filePath.empty() && PathsMatch(doc.filePath, targetPath)) {
+                if (!std::filesystem::exists(doc.filePath)) {
+                    CloseDocument(g, d);
+                } else {
+                    doc.buffer.LoadFromFile(doc.filePath);
+                    doc.originalDiskText = doc.buffer.GetText();
+                    doc.isDirty = false;
+                    doc.ClearSelection();
+                    if (doc.buffer.GetCursor().line >= doc.buffer.GetLineCount()) {
+                        doc.buffer.SetCursor(doc.buffer.GetLineCount() > 0 ? doc.buffer.GetLineCount() - 1 : 0, 0);
+                    }
+                    doc.diagnostics = editor::SyntaxValidator::Validate(doc.filePath, doc.buffer);
+                    if (doc.isDiffView) {
+                        ComputeDiffHunks(doc);
+                    }
+                }
+            }
+        }
+    }
+
+    m_drawer.RefreshTree();
+    UpdateDrawerDirtyFiles();
+    UpdateDrawerErrorFiles();
+    m_drawer.RefreshGitStatusOnly(false);
+    InvalidateRect(m_hwnd, nullptr, FALSE);
+}
+
 void Window::DoRunActiveDocument() {
     auto* pDoc = GetActiveDoc();
     if (!pDoc) return;
 
     std::filesystem::path p(pDoc->filePath);
-    std::wstring ext = p.extension().wstring();
-    for (auto& c : ext) c = towlower(c);
+    std::wstring filePath = pDoc->filePath;
+    std::wstring fileName = p.filename().wstring();
+    std::wstring folder = p.parent_path().wstring();
+    if (folder.empty() && m_drawer.HasOpenFolder()) folder = m_drawer.GetOpenFolderPath();
+    if (folder.empty()) folder = m_workspace.GetRootPath();
+    if (folder.empty()) {
+        wchar_t cur[MAX_PATH];
+        GetCurrentDirectoryW(MAX_PATH, cur);
+        folder = cur;
+    }
 
-    if (ext == L".html" || ext == L".htm") {
-        std::wstring filePath = pDoc->filePath;
-        std::wstring fileName = p.filename().wstring();
-        std::wstring folder = p.parent_path().wstring();
-        if (folder.empty() && m_drawer.HasOpenFolder()) folder = m_drawer.GetOpenFolderPath();
-        if (folder.empty()) folder = m_workspace.GetRootPath();
-        if (folder.empty()) {
-            wchar_t cur[MAX_PATH];
-            GetCurrentDirectoryW(MAX_PATH, cur);
-            folder = cur;
+    ProjectFramework fw = DetectFramework(folder, filePath);
+
+    // 1. PHP Check: "and for now leave the php run empty for now"
+    if (fw == ProjectFramework::Php) {
+        return;
+    }
+
+    // 2. Next.js Framework Run: "if it is a next js then run dev right"
+    if (fw == ProjectFramework::NextJs) {
+        auto* srv = FindLiveServer(filePath);
+        if (!srv) {
+            ActiveLiveServer entry;
+            entry.filePath = filePath;
+            entry.fileName = fileName;
+            entry.rootDir = folder;
+            entry.port = 3000;
+            entry.framework = L"Next.js";
+            entry.title = L"Next.js Dev Server";
+            entry.customUrl = L"http://localhost:3000";
+            entry.progress = 0.05f;
+            entry.progressDurationMs = 2200.0f;
+            entry.elapsedMs = 0.0f;
+            entry.browserOpened = false;
+            entry.isStarting = true;
+            m_activeLiveServers.push_back(std::move(entry));
+        } else {
+            srv->framework = L"Next.js";
+            srv->title = L"Next.js Dev Server";
+            srv->customUrl = L"http://localhost:3000";
+            srv->progress = 0.05f;
+            srv->elapsedMs = 0.0f;
+            srv->isStarting = true;
+            srv->browserOpened = false;
         }
 
+        m_terminal.Open(folder);
+        AnimateTerminalOpen();
+        m_terminal.ExecuteCommandLine(L"npm run dev");
+        m_isTerminalFocused = true;
+        SetTimer(m_hwnd, m_animTimerId, 16, nullptr);
+        UpdateExecutionButtonStates();
+        InvalidateRect(m_hwnd, nullptr, FALSE);
+        return;
+    }
+
+    // 3. Vite Framework Run: "same with other frame work like vite"
+    if (fw == ProjectFramework::Vite) {
+        auto* srv = FindLiveServer(filePath);
+        if (!srv) {
+            ActiveLiveServer entry;
+            entry.filePath = filePath;
+            entry.fileName = fileName;
+            entry.rootDir = folder;
+            entry.port = 5173;
+            entry.framework = L"Vite";
+            entry.title = L"Vite Dev Server";
+            entry.customUrl = L"http://localhost:5173";
+            entry.progress = 0.05f;
+            entry.progressDurationMs = 2200.0f;
+            entry.elapsedMs = 0.0f;
+            entry.browserOpened = false;
+            entry.isStarting = true;
+            m_activeLiveServers.push_back(std::move(entry));
+        } else {
+            srv->framework = L"Vite";
+            srv->title = L"Vite Dev Server";
+            srv->customUrl = L"http://localhost:5173";
+            srv->progress = 0.05f;
+            srv->elapsedMs = 0.0f;
+            srv->isStarting = true;
+            srv->browserOpened = false;
+        }
+
+        m_terminal.Open(folder);
+        AnimateTerminalOpen();
+        m_terminal.ExecuteCommandLine(L"npm run dev");
+        m_isTerminalFocused = true;
+        SetTimer(m_hwnd, m_animTimerId, 16, nullptr);
+        UpdateExecutionButtonStates();
+        InvalidateRect(m_hwnd, nullptr, FALSE);
+        return;
+    }
+
+    // 4. Django Framework Run: "if its a django project then run using django"
+    if (fw == ProjectFramework::Django) {
+        auto* srv = FindLiveServer(filePath);
+        if (!srv) {
+            ActiveLiveServer entry;
+            entry.filePath = filePath;
+            entry.fileName = fileName;
+            entry.rootDir = folder;
+            entry.port = 8000;
+            entry.framework = L"Django";
+            entry.title = L"Django Server";
+            entry.customUrl = L"http://127.0.0.1:8000";
+            entry.progress = 0.05f;
+            entry.progressDurationMs = 2200.0f;
+            entry.elapsedMs = 0.0f;
+            entry.browserOpened = false;
+            entry.isStarting = true;
+            m_activeLiveServers.push_back(std::move(entry));
+        } else {
+            srv->framework = L"Django";
+            srv->title = L"Django Server";
+            srv->customUrl = L"http://127.0.0.1:8000";
+            srv->progress = 0.05f;
+            srv->elapsedMs = 0.0f;
+            srv->isStarting = true;
+            srv->browserOpened = false;
+        }
+
+        m_terminal.Open(folder);
+        AnimateTerminalOpen();
+        m_terminal.ExecuteCommandLine(L"python manage.py runserver");
+        m_isTerminalFocused = true;
+        SetTimer(m_hwnd, m_animTimerId, 16, nullptr);
+        UpdateExecutionButtonStates();
+        InvalidateRect(m_hwnd, nullptr, FALSE);
+        return;
+    }
+
+    // 5. Static HTML Live Server Run
+    if (fw == ProjectFramework::LiveServerHtml) {
         auto* srv = FindLiveServer(filePath);
         if (!srv) {
             int port = GetNextAvailableLiveServerPort();
@@ -2453,6 +2724,9 @@ void Window::DoRunActiveDocument() {
                 entry.fileName = fileName;
                 entry.rootDir = folder;
                 entry.port = actualPort;
+                entry.framework = L"Live Server";
+                entry.title = L"Live Server";
+                entry.customUrl = localUrl;
                 entry.server = std::move(serverInst);
                 entry.progress = 0.05f;
                 entry.progressDurationMs = 2200.0f; // ~2.2 seconds progression before auto-opening browser
@@ -2474,8 +2748,8 @@ void Window::DoRunActiveDocument() {
             srv->elapsedMs = 0.0f;
             srv->isStarting = true;
             srv->browserOpened = false;
-            std::wstring localUrl = srv->server->GetLocalUrl(srv->fileName);
-            std::wstring networkUrl = srv->server->GetNetworkUrl(srv->fileName);
+            std::wstring localUrl = srv->server ? srv->server->GetLocalUrl(srv->fileName) : srv->customUrl;
+            std::wstring networkUrl = srv->server ? srv->server->GetNetworkUrl(srv->fileName) : localUrl;
             m_terminal.Open(folder);
             AnimateTerminalOpen();
             m_terminal.StartLiveServerSession(localUrl, networkUrl, filePath, fileName);
@@ -2485,26 +2759,27 @@ void Window::DoRunActiveDocument() {
 
         UpdateExecutionButtonStates();
         InvalidateRect(m_hwnd, nullptr, FALSE);
-    } else if (ext == L".js" || ext == L".mjs" || ext == L".cjs" || ext == L".ts" || ext == L".jsx" || ext == L".tsx") {
-        std::wstring folder = p.parent_path().wstring();
-        if (folder.empty() && m_drawer.HasOpenFolder()) folder = m_drawer.GetOpenFolderPath();
-        if (folder.empty()) folder = m_workspace.GetRootPath();
+        return;
+    }
 
+    // 6. Generic JS/TS Script
+    if (fw == ProjectFramework::NodeScript) {
         m_terminal.Open(folder);
         AnimateTerminalOpen();
         m_terminal.ExecuteCommandLine(L"node \"" + pDoc->filePath + L"\"");
         m_isTerminalFocused = true;
         InvalidateRect(m_hwnd, nullptr, FALSE);
-    } else if (ext == L".py") {
-        std::wstring folder = p.parent_path().wstring();
-        if (folder.empty() && m_drawer.HasOpenFolder()) folder = m_drawer.GetOpenFolderPath();
-        if (folder.empty()) folder = m_workspace.GetRootPath();
+        return;
+    }
 
+    // 7. Generic Python Script
+    if (fw == ProjectFramework::PythonScript) {
         m_terminal.Open(folder);
         AnimateTerminalOpen();
         m_terminal.ExecuteCommandLine(L"python \"" + pDoc->filePath + L"\"");
         m_isTerminalFocused = true;
         InvalidateRect(m_hwnd, nullptr, FALSE);
+        return;
     }
 }
 
@@ -3132,50 +3407,58 @@ void Window::OnPaint() {
         pActiveLiveServer = &m_activeLiveServers.back();
     }
 
-    if (pActiveLiveServer && pActiveLiveServer->server && pActiveLiveServer->server->IsRunning()) {
-        const float cardW = m_config.ScaleF(250.0f); // Bigger and longer card
-        const float cardH = m_config.ScaleF(46.0f);  // Flat card height
+    if (pActiveLiveServer && ((pActiveLiveServer->server && pActiveLiveServer->server->IsRunning()) || !pActiveLiveServer->customUrl.empty())) {
+        const float cardW = m_config.ScaleF(280.0f); // Sleek modern developer toast card
+        const float cardH = m_config.ScaleF(54.0f);  // Flat card height
         const float minimapW = m_config.ScaleF(88.0f);
         const float rightOffset = (hasRightSidebar ? currentRightSidebarW : 0.0f) +
             (m_config.showMinimap ? minimapW : 0.0f) +
             m_config.ScaleF(16.0f);
         const float cardX = clientW - cardW - rightOffset;
-        float cardY = clientH - cardH - m_config.ScaleF(12.0f);
+        float cardY = clientH - cardH - m_config.ScaleF(14.0f);
         if (m_terminal.IsOpen()) {
             float th = GetCurrentTerminalHeight(clientH);
-            cardY = clientH - th - cardH - m_config.ScaleF(12.0f);
+            cardY = clientH - th - cardH - m_config.ScaleF(14.0f);
         }
         m_liveServerPillBounds = D2D1::RectF(cardX, cardY, cardX + cardW, cardY + cardH);
-        D2D1_ROUNDED_RECT rrcCard = D2D1::RoundedRect(m_liveServerPillBounds, 6.0f, 6.0f);
+        D2D1_ROUNDED_RECT rrcCard = D2D1::RoundedRect(m_liveServerPillBounds, m_config.ScaleF(8.0f), m_config.ScaleF(8.0f));
 
-        // Modern FLAT background (NO HARSH BORDER, subtle flat tone matching phide)
+        // Modern FLAT background (zero harsh lines, subtle surface matching phide)
         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> cardBgBrush;
         m_pRenderTarget->CreateSolidColorBrush(
             m_hoverLiveServerPill
-                ? (m_theme.IsDarkMode() ? D2D1::ColorF(0.14f, 0.15f, 0.18f, 0.98f) : D2D1::ColorF(0.89f, 0.91f, 0.94f, 0.98f))
-                : (m_theme.IsDarkMode() ? D2D1::ColorF(0.11f, 0.115f, 0.135f, 0.98f) : D2D1::ColorF(0.93f, 0.935f, 0.95f, 0.98f)),
+                ? (m_theme.IsDarkMode() ? D2D1::ColorF(0.14f, 0.15f, 0.19f, 0.98f) : D2D1::ColorF(0.89f, 0.91f, 0.94f, 0.98f))
+                : (m_theme.IsDarkMode() ? D2D1::ColorF(0.11f, 0.12f, 0.15f, 0.98f) : D2D1::ColorF(0.94f, 0.95f, 0.97f, 0.98f)),
             &cardBgBrush
         );
         if (cardBgBrush) m_pRenderTarget->FillRoundedRectangle(rrcCard, cardBgBrush.Get());
 
-        // 1. Pulsing Status Dot (●) - Blue while progressing/starting, Emerald green when live
+        // Subtle 1px flat border
+        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> cardBorderBrush;
+        m_pRenderTarget->CreateSolidColorBrush(
+            m_theme.IsDarkMode() ? D2D1::ColorF(0.22f, 0.24f, 0.30f, 0.90f) : D2D1::ColorF(0.82f, 0.84f, 0.88f, 0.90f),
+            &cardBorderBrush
+        );
+        if (cardBorderBrush) m_pRenderTarget->DrawRoundedRectangle(rrcCard, cardBorderBrush.Get(), 1.0f);
+
+        // 1. Glowing Status Dot (●) - Blue pulse while starting, Emerald green when live
         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> dotBrush;
         m_pRenderTarget->CreateSolidColorBrush(
             pActiveLiveServer->isStarting
-                ? D2D1::ColorF(0.24f, 0.56f, 0.95f, 1.0f)
+                ? D2D1::ColorF(0.24f, 0.58f, 1.0f, 1.0f)
                 : D2D1::ColorF(0.20f, 0.88f, 0.50f, 1.0f),
             &dotBrush
         );
         float dotCx = cardX + m_config.ScaleF(14.0f);
-        float dotCy = cardY + m_config.ScaleF(15.0f);
+        float dotCy = cardY + m_config.ScaleF(17.0f);
         float dotR = m_config.ScaleF(3.5f);
         if (dotBrush) {
             m_pRenderTarget->FillEllipse(D2D1::Ellipse(D2D1::Point2F(dotCx, dotCy), dotR, dotR), dotBrush.Get());
         }
 
-        // 2. Title: "Live Server"
-        std::wstring titleText = L"Live Server";
-        D2D1_RECT_F rcTitle = D2D1::RectF(cardX + m_config.ScaleF(24.0f), cardY + m_config.ScaleF(5.0f), cardX + cardW - m_config.ScaleF(85.0f), cardY + m_config.ScaleF(23.0f));
+        // 2. Title / Framework Name (e.g. "Next.js Dev Server", "Vite Dev Server", "Django Server", "Live Server")
+        std::wstring titleText = !pActiveLiveServer->title.empty() ? pActiveLiveServer->title : L"Live Server";
+        D2D1_RECT_F rcTitle = D2D1::RectF(cardX + m_config.ScaleF(26.0f), cardY + m_config.ScaleF(7.0f), cardX + cardW - m_config.ScaleF(85.0f), cardY + m_config.ScaleF(26.0f));
         ID2D1Brush* textPrimary = m_theme.IsDarkMode()
             ? (m_theme.brushTextWhite ? m_theme.brushTextWhite.Get() : m_theme.brushTextPrimary.Get())
             : m_theme.brushTextPrimary.Get();
@@ -3184,33 +3467,54 @@ void Window::OnPaint() {
             m_pRenderTarget->DrawText(titleText.c_str(), static_cast<UINT32>(titleText.length()), pFmtTitle, rcTitle, textPrimary);
         }
 
-        // 3. Port Badge on Top Right: "Port: 5500"
+        // 3. Port Pill Badge on Top Right
         std::wstring portText = L"Port: " + std::to_wstring(pActiveLiveServer->port);
-        D2D1_RECT_F rcPort = D2D1::RectF(cardX + cardW - m_config.ScaleF(90.0f), cardY + m_config.ScaleF(5.0f), cardX + cardW - m_config.ScaleF(12.0f), cardY + m_config.ScaleF(23.0f));
+        const float portBadgeW = m_config.ScaleF(68.0f);
+        const float portBadgeH = m_config.ScaleF(18.0f);
+        D2D1_RECT_F rcPortBadge = D2D1::RectF(cardX + cardW - portBadgeW - m_config.ScaleF(12.0f), cardY + m_config.ScaleF(8.0f), cardX + cardW - m_config.ScaleF(12.0f), cardY + m_config.ScaleF(8.0f) + portBadgeH);
+        D2D1_ROUNDED_RECT rrcPortBadge = D2D1::RoundedRect(rcPortBadge, m_config.ScaleF(4.0f), m_config.ScaleF(4.0f));
+        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> portBadgeBrush;
+        m_pRenderTarget->CreateSolidColorBrush(
+            m_theme.IsDarkMode() ? D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.08f) : D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.06f),
+            &portBadgeBrush
+        );
+        if (portBadgeBrush) m_pRenderTarget->FillRoundedRectangle(rrcPortBadge, portBadgeBrush.Get());
+
         IDWriteTextFormat* pFmtHint = m_theme.fontHint ? m_theme.fontHint.Get() : m_theme.fontCode.Get();
         ID2D1Brush* textMuted = m_theme.brushTextMuted ? m_theme.brushTextMuted.Get() : textPrimary;
         if (pFmtHint && textMuted) {
             DWRITE_TEXT_ALIGNMENT prevAlign = pFmtHint->GetTextAlignment();
-            pFmtHint->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_TRAILING);
-            m_pRenderTarget->DrawText(portText.c_str(), static_cast<UINT32>(portText.length()), pFmtHint, rcPort, textMuted);
+            DWRITE_PARAGRAPH_ALIGNMENT prevPAlign = pFmtHint->GetParagraphAlignment();
+            pFmtHint->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+            pFmtHint->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+            m_pRenderTarget->DrawText(portText.c_str(), static_cast<UINT32>(portText.length()), pFmtHint, rcPortBadge, textMuted);
             pFmtHint->SetTextAlignment(prevAlign);
+            pFmtHint->SetParagraphAlignment(prevPAlign);
         }
 
-        // 4. Subtitle: Status message or Local URL
+        // 4. Subtitle: Local URL with launch arrow or starting progression
+        std::wstring targetUrl = !pActiveLiveServer->customUrl.empty()
+            ? pActiveLiveServer->customUrl
+            : (pActiveLiveServer->server ? pActiveLiveServer->server->GetLocalUrl(pActiveLiveServer->fileName) : (L"http://127.0.0.1:" + std::to_wstring(pActiveLiveServer->port)));
+
         std::wstring subText = pActiveLiveServer->isStarting
-            ? (L"Starting live preview... (" + std::to_wstring(static_cast<int>(pActiveLiveServer->progress * 100.0f)) + L"%)")
-            : (L"http://127.0.0.1:" + std::to_wstring(pActiveLiveServer->port));
-        D2D1_RECT_F rcSub = D2D1::RectF(cardX + m_config.ScaleF(24.0f), cardY + m_config.ScaleF(23.0f), cardX + cardW - m_config.ScaleF(12.0f), cardY + cardH - m_config.ScaleF(8.0f));
-        if (pFmtHint && textMuted) {
-            m_pRenderTarget->DrawText(subText.c_str(), static_cast<UINT32>(subText.length()), pFmtHint, rcSub, textMuted);
+            ? (L"Starting dev server... (" + std::to_wstring(static_cast<int>(pActiveLiveServer->progress * 100.0f)) + L"%)")
+            : (targetUrl + L" ↗");
+
+        D2D1_RECT_F rcSub = D2D1::RectF(cardX + m_config.ScaleF(26.0f), cardY + m_config.ScaleF(27.0f), cardX + cardW - m_config.ScaleF(12.0f), cardY + cardH - m_config.ScaleF(8.0f));
+        if (pFmtHint) {
+            ID2D1Brush* subBrush = (!pActiveLiveServer->isStarting && m_hoverLiveServerPill)
+                ? (m_theme.brushBrandAccent ? m_theme.brushBrandAccent.Get() : textPrimary)
+                : textMuted;
+            m_pRenderTarget->DrawText(subText.c_str(), static_cast<UINT32>(subText.length()), pFmtHint, rcSub, subBrush);
         }
 
-        // 5. Progression Bar: "under that card is like progression and after the progression which is jsut few sec it open the user browser"
+        // 5. Progression Bar across the bottom of the card
         float progPad = m_config.ScaleF(8.0f);
         float trackLeft = cardX + progPad;
         float trackRight = cardX + cardW - progPad;
         float trackW = trackRight - trackLeft;
-        float trackH = m_config.ScaleF(3.0f);
+        float trackH = m_config.ScaleF(2.5f);
         float trackY = cardY + cardH - trackH - m_config.ScaleF(3.0f);
 
         D2D1_ROUNDED_RECT rrcProgTrack = D2D1::RoundedRect(D2D1::RectF(trackLeft, trackY, trackRight, trackY + trackH), 1.5f, 1.5f);
@@ -3224,7 +3528,7 @@ void Window::OnPaint() {
         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> progFillBrush;
         m_pRenderTarget->CreateSolidColorBrush(
             pActiveLiveServer->isStarting
-                ? D2D1::ColorF(0.24f, 0.56f, 0.95f, 1.0f) // Electric blue progression bar
+                ? D2D1::ColorF(0.24f, 0.56f, 0.95f, 1.0f) // Electric blue progression
                 : D2D1::ColorF(0.20f, 0.88f, 0.50f, 0.85f), // Emerald green online indicator
             &progFillBrush
         );
@@ -3232,7 +3536,7 @@ void Window::OnPaint() {
 
         // Floating Tooltip on Hover
         if (m_hoverLiveServerPill && !pActiveLiveServer->isStarting) {
-            std::wstring tip = L"Live Server (Click to open http://127.0.0.1:" + std::to_wstring(pActiveLiveServer->port) + L")";
+            std::wstring tip = titleText + L" (Click to open " + targetUrl + L")";
             const float tipH = m_config.ScaleF(24.0f);
             const float tipPadX = m_config.ScaleF(10.0f);
             float textW = m_config.ScaleF(static_cast<float>(tip.length() * 6.5f + 14.0f));
@@ -3339,6 +3643,11 @@ void Window::OnPaint() {
         );
     }
 
+    // 9. Render Confirm Discard / Restore Modal Overlay (Images 2 & 3)
+    if (m_confirmDiscardModal.IsOpen()) {
+        m_confirmDiscardModal.Render(m_pRenderTarget.Get(), m_theme, m_config, clientW, clientH);
+    }
+
     HRESULT hr = m_pRenderTarget->EndDraw();
     if (hr == D2DERR_RECREATE_TARGET) {
         DiscardDeviceResources();
@@ -3383,6 +3692,13 @@ LRESULT Window::HandleNCHitTest(POINT screenPt) {
 }
 
 void Window::HandleMouseMove(POINT clientPt, WPARAM wParam) {
+    if (m_confirmDiscardModal.IsOpen()) {
+        if (m_confirmDiscardModal.HandleMouseMove(clientPt)) {
+            InvalidateRect(m_hwnd, nullptr, FALSE);
+        }
+        return;
+    }
+
     if (!m_trackingMouse) {
         TRACKMOUSEEVENT tme{ sizeof(TRACKMOUSEEVENT), TME_LEAVE, m_hwnd, 0 };
         TrackMouseEvent(&tme);
@@ -3869,14 +4185,31 @@ void Window::HandleMouseMove(POINT clientPt, WPARAM wParam) {
 }
 
 void Window::HandleLButtonDown(POINT clientPt) {
+    // Check Confirm Discard / Restore Modal Clicks (Images 2 & 3)
+    if (m_confirmDiscardModal.IsOpen()) {
+        bool confirmed = false;
+        std::wstring targetPath, targetFileName, targetStatus;
+        if (m_confirmDiscardModal.HandleMouseDown(clientPt, confirmed, targetPath, targetFileName, targetStatus)) {
+            if (confirmed) {
+                ExecuteDiscardOrRestore(targetPath, targetFileName, targetStatus);
+            }
+            InvalidateRect(m_hwnd, nullptr, FALSE);
+            return;
+        }
+    }
+
     // Check Live Server Status Pill Click (Opens browser to localUrl)
     auto* pActiveLiveServer = GetActiveDocLiveServer();
     if (!pActiveLiveServer && !m_activeLiveServers.empty()) pActiveLiveServer = &m_activeLiveServers.back();
-    if (pActiveLiveServer && pActiveLiveServer->server && pActiveLiveServer->server->IsRunning() &&
+    if (pActiveLiveServer && ((pActiveLiveServer->server && pActiveLiveServer->server->IsRunning()) || !pActiveLiveServer->customUrl.empty()) &&
         clientPt.x >= m_liveServerPillBounds.left && clientPt.x <= m_liveServerPillBounds.right &&
         clientPt.y >= m_liveServerPillBounds.top && clientPt.y <= m_liveServerPillBounds.bottom) {
-        std::wstring url = pActiveLiveServer->server->GetLocalUrl(pActiveLiveServer->fileName);
-        ShellExecuteW(NULL, L"open", url.c_str(), NULL, NULL, SW_SHOWNORMAL);
+        std::wstring url = !pActiveLiveServer->customUrl.empty()
+            ? pActiveLiveServer->customUrl
+            : (pActiveLiveServer->server ? pActiveLiveServer->server->GetLocalUrl(pActiveLiveServer->fileName) : L"");
+        if (!url.empty()) {
+            ShellExecuteW(NULL, L"open", url.c_str(), NULL, NULL, SW_SHOWNORMAL);
+        }
         return;
     }
 
@@ -3922,7 +4255,17 @@ void Window::HandleLButtonDown(POINT clientPt) {
         bool isDiff = false;
         std::wstring openCommitDiff;
         std::wstring openUrl;
-        if (m_drawer.HitTestGit(clientPt, m_config, openFile, discardedFile, isDiff, openCommitDiff, openUrl)) {
+        bool promptDiscard = false;
+        std::wstring discardFileName;
+        std::wstring discardStatus;
+        size_t discardCount = 1;
+        if (m_drawer.HitTestGit(clientPt, m_config, openFile, discardedFile, isDiff, openCommitDiff, openUrl,
+                                &promptDiscard, &discardFileName, &discardStatus, &discardCount)) {
+            if (promptDiscard) {
+                m_confirmDiscardModal.Open(discardedFile, discardFileName, discardStatus, discardCount);
+                InvalidateRect(m_hwnd, nullptr, FALSE);
+                return;
+            }
             if (!openUrl.empty()) {
                 ShellExecuteW(nullptr, L"open", openUrl.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
             }
@@ -5132,7 +5475,17 @@ void Window::HandleLButtonDown(POINT clientPt) {
             bool isDiff = false;
             std::wstring openCommitDiff;
             std::wstring openUrl;
-            if (m_drawer.HitTestGit(clientPt, m_config, openFile, discardedFile, isDiff, openCommitDiff, openUrl)) {
+            bool promptDiscard = false;
+            std::wstring discardFileName;
+            std::wstring discardStatus;
+            size_t discardCount = 1;
+            if (m_drawer.HitTestGit(clientPt, m_config, openFile, discardedFile, isDiff, openCommitDiff, openUrl,
+                                    &promptDiscard, &discardFileName, &discardStatus, &discardCount)) {
+                if (promptDiscard) {
+                    m_confirmDiscardModal.Open(discardedFile, discardFileName, discardStatus, discardCount);
+                    InvalidateRect(m_hwnd, nullptr, FALSE);
+                    return;
+                }
                 if (!openUrl.empty()) {
                     ShellExecuteW(nullptr, L"open", openUrl.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
                 }
@@ -5144,77 +5497,7 @@ void Window::HandleLButtonDown(POINT clientPt) {
                     OpenFileDocument(openFile, false);
                 }
                 if (!discardedFile.empty()) {
-                    auto PathsMatch = [](const std::wstring& p1, const std::wstring& p2) -> bool {
-                        if (p1.empty() || p2.empty()) return false;
-                        if (p2 == L"*") return true;
-                        std::wstring c1 = p1;
-                        std::wstring c2 = p2;
-                        for (auto& c : c1) { if (c == L'/') c = L'\\'; c = static_cast<wchar_t>(towlower(c)); }
-                        for (auto& c : c2) { if (c == L'/') c = L'\\'; c = static_cast<wchar_t>(towlower(c)); }
-                        if (c1 == c2) return true;
-                        if (c1.ends_with(L"\\" + c2) || c2.ends_with(L"\\" + c1)) return true;
-                        if (c1.ends_with(c2) || c2.ends_with(c1)) return true;
-                        return false;
-                    };
-
-                    // 0. If discarded file is untracked new file, remove from disk immediately
-                    std::wstring dir = m_drawer.GetOpenFolderPath();
-                    std::filesystem::path candP = std::filesystem::path(dir) / discardedFile;
-                    std::error_code ec;
-                    if (discardedFile != L"*" && std::filesystem::exists(candP, ec)) {
-                        auto res = ui::RunGitCmd(L"ls-files --error-unmatch \"" + discardedFile + L"\"", dir);
-                        if (res.exitCode != 0) {
-                            std::filesystem::remove_all(candP, ec);
-                        }
-                    }
-
-                    // 1. Auto-close any working tree diff view tabs matching the discarded file(s)
-                    for (int g = static_cast<int>(m_editorGroups.size()) - 1; g >= 0; --g) {
-                        if (g >= static_cast<int>(m_editorGroups.size())) continue;
-                        for (int d = static_cast<int>(m_editorGroups[g].docs.size()) - 1; d >= 0; --d) {
-                            if (g >= static_cast<int>(m_editorGroups.size())) break;
-                            if (d >= static_cast<int>(m_editorGroups[g].docs.size())) continue;
-                            auto& doc = m_editorGroups[g].docs[d];
-                            if (doc.isDiffView && !doc.isDiffRightReadOnly) {
-                                if (PathsMatch(doc.filePath, discardedFile)) {
-                                    CloseDocument(g, d);
-                                }
-                            }
-                        }
-                    }
-
-                    // 2. Reload open regular document buffers or close them if file no longer exists
-                    for (int g = static_cast<int>(m_editorGroups.size()) - 1; g >= 0; --g) {
-                        if (g >= static_cast<int>(m_editorGroups.size())) continue;
-                        for (int d = static_cast<int>(m_editorGroups[g].docs.size()) - 1; d >= 0; --d) {
-                            if (g >= static_cast<int>(m_editorGroups.size())) break;
-                            if (d >= static_cast<int>(m_editorGroups[g].docs.size())) continue;
-                            auto& doc = m_editorGroups[g].docs[d];
-                            if (!doc.filePath.empty()) {
-                                if (PathsMatch(doc.filePath, discardedFile)) {
-                                    if (!std::filesystem::exists(doc.filePath)) {
-                                        CloseDocument(g, d);
-                                    } else {
-                                        doc.buffer.LoadFromFile(doc.filePath);
-                                        doc.originalDiskText = doc.buffer.GetText();
-                                        doc.isDirty = false;
-                                        doc.ClearSelection();
-                                        if (doc.buffer.GetCursor().line >= doc.buffer.GetLineCount()) {
-                                            doc.buffer.SetCursor(doc.buffer.GetLineCount() > 0 ? doc.buffer.GetLineCount() - 1 : 0, 0);
-                                        }
-                                        doc.diagnostics = editor::SyntaxValidator::Validate(doc.filePath, doc.buffer);
-                                        if (doc.isDiffView) {
-                                            ComputeDiffHunks(doc);
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    m_drawer.RefreshTree();
-                    UpdateDrawerDirtyFiles();
-                    UpdateDrawerErrorFiles();
-                    m_drawer.RefreshGitStatusOnly(false);
+                    ExecuteDiscardOrRestore(discardedFile, discardedFile, L"M");
                 }
                 InvalidateRect(m_hwnd, nullptr, FALSE);
                 return;
@@ -6451,6 +6734,20 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 if (!(GetKeyState(VK_CONTROL) & 0x8000)) {
                     return 0;
                 }
+            }
+
+            // 0a. Confirm Discard / Restore modal keyboard handling (Images 2 & 3)
+            if (m_confirmDiscardModal.IsOpen()) {
+                bool confirmed = false;
+                std::wstring targetPath, targetFileName, targetStatus;
+                if (m_confirmDiscardModal.HandleKeyDown(wParam, confirmed, targetPath, targetFileName, targetStatus)) {
+                    if (confirmed) {
+                        ExecuteDiscardOrRestore(targetPath, targetFileName, targetStatus);
+                    }
+                    InvalidateRect(m_hwnd, nullptr, FALSE);
+                    return 0;
+                }
+                return 0;
             }
 
             // 0. Quick Open file search palette (Image 5)

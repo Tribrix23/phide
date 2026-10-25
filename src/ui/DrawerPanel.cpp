@@ -4406,6 +4406,7 @@ bool DrawerPanel::DiscardAllChanges() {
         m_dirtyFilePaths.clear();
     }
     ClearActionPending(L"*");
+    RebuildVisibleItems();
     RefreshGitStatusOnly(false);
     m_isGitLoading = false;
     return true;
@@ -4489,6 +4490,7 @@ bool DrawerPanel::DiscardFile(const std::wstring& relPath) {
     }
 
     ClearActionPending(relPath);
+    RebuildVisibleItems();
     RefreshGitStatusOnly(false);
     m_isGitLoading = false;
     return true;
@@ -4789,7 +4791,11 @@ bool DrawerPanel::HitTestGit(POINT pt, const app::AppConfig& config,
                             std::wstring& outDiscardedFile,
                             bool& outIsDiff,
                             std::wstring& outOpenCommitDiff,
-                            std::wstring& outOpenUrl) {
+                            std::wstring& outOpenUrl,
+                            bool* pOutPromptDiscard,
+                            std::wstring* pOutDiscardFileName,
+                            std::wstring* pOutDiscardStatus,
+                            size_t* pOutDiscardCount) {
     (void)config;
     std::lock_guard<std::recursive_mutex> lock(m_gitMutex);
     outOpenFile.clear();
@@ -4848,6 +4854,14 @@ bool DrawerPanel::HitTestGit(POINT pt, const app::AppConfig& config,
                             StageAllChangesAsync();
                             break;
                         case 11: // Discard All Changes
+                            if (pOutPromptDiscard) {
+                                *pOutPromptDiscard = true;
+                                if (pOutDiscardFileName) *pOutDiscardFileName = L"all files";
+                                if (pOutDiscardStatus) *pOutDiscardStatus = L"ALL";
+                                if (pOutDiscardCount) *pOutDiscardCount = m_gitChanges.size();
+                                outDiscardedFile = L"*";
+                                break;
+                            }
                             DiscardAllChanges();
                             ShowGitNotification(L"Discarded all changes");
                             outDiscardedFile = L"*";
@@ -4924,6 +4938,14 @@ bool DrawerPanel::HitTestGit(POINT pt, const app::AppConfig& config,
         if (pt.x >= m_gitDiscardAllBounds.left && pt.x <= m_gitDiscardAllBounds.right &&
             pt.y >= m_gitDiscardAllBounds.top && pt.y <= m_gitDiscardAllBounds.bottom) {
             if (IsActionPending(L"*")) return true;
+            if (pOutPromptDiscard) {
+                *pOutPromptDiscard = true;
+                if (pOutDiscardFileName) *pOutDiscardFileName = L"all files";
+                if (pOutDiscardStatus) *pOutDiscardStatus = L"ALL";
+                if (pOutDiscardCount) *pOutDiscardCount = m_gitChanges.size();
+                outDiscardedFile = L"*";
+                return true;
+            }
             m_pressedGitButton = L"discardAll";
             ShowGitNotification(L"Discarding all changes...");
             DiscardAllChanges();
@@ -4998,6 +5020,14 @@ bool DrawerPanel::HitTestGit(POINT pt, const app::AppConfig& config,
                     if (pt.x >= item.discardBtnBounds.left && pt.x <= item.discardBtnBounds.right &&
                         pt.y >= item.discardBtnBounds.top && pt.y <= item.discardBtnBounds.bottom) {
                         if (IsActionPending(item.path)) return true;
+                        if (pOutPromptDiscard) {
+                            *pOutPromptDiscard = true;
+                            if (pOutDiscardFileName) *pOutDiscardFileName = item.fileName;
+                            if (pOutDiscardStatus) *pOutDiscardStatus = item.status;
+                            if (pOutDiscardCount) *pOutDiscardCount = 1;
+                            outDiscardedFile = item.path;
+                            return true;
+                        }
                         m_pressedGitButton = L"discard:" + item.path;
                         outDiscardedFile = item.path;
                         m_gitTooltipText = L"Discarding " + item.fileName + L"...";

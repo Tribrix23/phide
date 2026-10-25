@@ -28,6 +28,7 @@
 #include "phide/ui/EditorCanvas.hpp"
 #include "phide/ui/ThemePickerModal.hpp"
 #include "phide/ui/QuickOpenModal.hpp"
+#include "phide/ui/ConfirmDiscardModal.hpp"
 #include "phide/ui/TerminalPanel.hpp"
 #include "phide/ui/ExtensionsPanel.hpp"
 #include "phide/server/LiveServer.hpp"
@@ -461,9 +462,24 @@ private:
     ui::EditorCanvas m_editor;
     ui::ThemePickerModal m_themePicker;
     ui::QuickOpenModal m_quickOpen;
+    ui::ConfirmDiscardModal m_confirmDiscardModal;
     ui::TerminalPanel m_terminal;
     ui::ExtensionsPanel m_extensionsPanel;
     bool m_isTerminalFocused = false;
+
+    enum class ProjectFramework {
+        None,
+        Php,
+        NextJs,
+        Vite,
+        Django,
+        LiveServerHtml,
+        NodeScript,
+        PythonScript
+    };
+
+    ProjectFramework DetectFramework(const std::wstring& rootDir, const std::wstring& activeFilePath) const;
+    void ExecuteDiscardOrRestore(const std::wstring& targetPath, const std::wstring& targetFileName, const std::wstring& targetStatus);
 
     // Multi-LiveServer Architecture
     struct ActiveLiveServer {
@@ -477,6 +493,9 @@ private:
         float elapsedMs = 0.0f;             ///< Milliseconds elapsed
         bool browserOpened = false;         ///< True after browser launched
         bool isStarting = false;            ///< True while progression active
+        std::wstring framework;             ///< Framework name (Next.js, Vite, Django, Live Server)
+        std::wstring title;                 ///< Display title (Next.js Dev Server, Vite Dev Server, Django Server, Live Server)
+        std::wstring customUrl;             ///< http://localhost:3000, etc.
     };
     std::vector<ActiveLiveServer> m_activeLiveServers;
     ActiveLiveServer* FindLiveServer(const std::wstring& filePath);
