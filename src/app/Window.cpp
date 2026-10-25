@@ -6222,6 +6222,33 @@ void Window::HandleLButtonDown(POINT clientPt) {
                     case ui::MenuActionId::WindowCloseEditor:
                         DoCloseEditor();
                         break;
+
+                    // Help Menu Actions (User Request: email, Facebook, WhatsApp, Discord)
+                    case ui::MenuActionId::HelpDocumentation:
+                        ShellExecuteW(nullptr, L"open", L"https://github.com", nullptr, nullptr, SW_SHOWNORMAL);
+                        break;
+                    case ui::MenuActionId::HelpKeyboardShortcuts:
+                        DoOpenKeyboardShortcuts();
+                        break;
+                    case ui::MenuActionId::HelpContactEmail:
+                        // Opens Google Gmail compose with recipient prefilled to john12david12perez@gmail.com
+                        ShellExecuteW(nullptr, L"open", L"https://mail.google.com/mail/?view=cm&fs=1&to=john12david12perez@gmail.com&su=Phide%20Web%20Development%20IDE%20Inquiry", nullptr, nullptr, SW_SHOWNORMAL);
+                        break;
+                    case ui::MenuActionId::HelpFacebook:
+                        ShellExecuteW(nullptr, L"open", L"https://www.facebook.com/johndavid.laniohan", nullptr, nullptr, SW_SHOWNORMAL);
+                        break;
+                    case ui::MenuActionId::HelpWhatsApp:
+                        ShellExecuteW(nullptr, L"open", L"https://whatsapp.com/channel/0029Vb936ZR5K3zdoSrSB33V", nullptr, nullptr, SW_SHOWNORMAL);
+                        break;
+                    case ui::MenuActionId::HelpDiscord:
+                        ShellExecuteW(nullptr, L"open", L"https://discord.gg/t2UEppVgbN", nullptr, nullptr, SW_SHOWNORMAL);
+                        break;
+                    case ui::MenuActionId::HelpAbout:
+                        MessageBoxW(m_hwnd,
+                            L"Phide - Web Development IDE\nVersion 1.0.0 (Direct2D Native Desktop)\n\nFast, lightweight, native C++ desktop IDE for Web & PHP development.\n\nAuthor: John David Laniohan Perez\nEmail: john12david12perez@gmail.com",
+                            L"About Phide - Web Development IDE",
+                            MB_OK | MB_ICONINFORMATION);
+                        break;
                     default:
                         break;
                 }
@@ -6400,6 +6427,11 @@ void Window::HandleLButtonDown(POINT clientPt) {
             m_popupMenu.OpenWindowMenu(rcWindow.left, rcWindow.bottom + 2.0f, m_config,
                                        IsZoomed(m_hwnd), m_config.isDrawerOpen, m_terminal.IsOpen(), HasOpenFile());
             m_header.SetActiveMenu(ui::HeaderMenuId::Window);
+            InvalidateRect(m_hwnd, nullptr, FALSE);
+        } else if (menuHit == ui::HeaderMenuId::Help) {
+            D2D1_RECT_F rcHelp = m_header.GetMenuItemBounds(ui::HeaderMenuId::Help);
+            m_popupMenu.OpenHelpMenu(rcHelp.left, rcHelp.bottom + 2.0f, m_config);
+            m_header.SetActiveMenu(ui::HeaderMenuId::Help);
             InvalidateRect(m_hwnd, nullptr, FALSE);
         }
         return;

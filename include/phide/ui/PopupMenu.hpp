@@ -221,7 +221,16 @@ enum class MenuActionId {
     WindowNextTab,
     WindowPrevTab,
     WindowSplitEditor,
-    WindowCloseEditor
+    WindowCloseEditor,
+
+    // Help Menu Actions
+    HelpDocumentation,
+    HelpKeyboardShortcuts,
+    HelpContactEmail,
+    HelpFacebook,
+    HelpWhatsApp,
+    HelpDiscord,
+    HelpAbout
 };
 
 /**
@@ -330,6 +339,11 @@ public:
      */
     void OpenWindowMenu(float x, float y, const app::AppConfig& config,
                         bool isFullscreen, bool isSidebarOpen, bool isTerminalOpen, bool hasDoc);
+
+    /**
+     * @brief Opens the Help dropdown menu for the help icon with contact and community links.
+     */
+    void OpenHelpMenu(float x, float y, const app::AppConfig& config);
 
     /**
      * @brief Opens the custom explorer context menu for a file or folder (matching Images 4 & 5).

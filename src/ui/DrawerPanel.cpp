@@ -5673,9 +5673,12 @@ void DrawerPanel::RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, 
 
         D2D1_ROUNDED_RECT rrcMsg = D2D1::RoundedRect(m_gitMsgBoxBounds, 4.0f, 4.0f);
         pRT->FillRoundedRectangle(rrcMsg, theme.brushCanvasBg.Get());
-        pRT->DrawRoundedRectangle(rrcMsg,
-            m_focusedGitInput == 1 ? theme.brushBorderHover.Get() : theme.brushBorderSubtle.Get(),
-            m_focusedGitInput == 1 ? 1.4f : 1.0f);
+        // Prominent brand blue focus ring when focused, subtle border when unfocused
+        if (m_focusedGitInput == 1) {
+            pRT->DrawRoundedRectangle(rrcMsg, theme.brushBrandAccent.Get(), 1.5f);
+        } else {
+            pRT->DrawRoundedRectangle(rrcMsg, theme.brushBorderSubtle.Get(), 1.0f);
+        }
 
         // AI Commit Message Sparkle Button (compact square with ✦ sparkle icon)
         float btnSize = config.ScaleF(22.0f);
@@ -5712,49 +5715,65 @@ void DrawerPanel::RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, 
             }
         }
 
-        // Message text or placeholder (LEFT-ALIGNED)
+        // Message text or placeholder (LEFT-ALIGNED with strict clipping & horizontal scrolling)
         D2D1_RECT_F rcMsgText = D2D1::RectF(
             m_gitMsgBoxBounds.left + config.ScaleF(8.0f),
             m_gitMsgBoxBounds.top,
             m_gitGenerateAiBounds.left - config.ScaleF(6.0f),
             m_gitMsgBoxBounds.bottom
         );
+        float availW = (std::max)(10.0f, rcMsgText.right - rcMsgText.left);
         float msgTextWidth = 0.0f;
+
+        if (theme.dwriteFactory && !m_commitMessage.empty()) {
+            Microsoft::WRL::ComPtr<IDWriteTextLayout> pLayout;
+            if (SUCCEEDED(theme.dwriteFactory->CreateTextLayout(
+                    m_commitMessage.c_str(), static_cast<UINT32>(m_commitMessage.length()),
+                    theme.fontMenuItem.Get() ? theme.fontMenuItem.Get() : theme.fontButtonCenter.Get(),
+                    10000.0f, msgH, &pLayout))) {
+                DWRITE_TEXT_METRICS tm{};
+                if (SUCCEEDED(pLayout->GetMetrics(&tm))) {
+                    msgTextWidth = tm.width;
+                }
+            }
+        }
+
+        float scrollX = 0.0f;
+        if (msgTextWidth > (availW - config.ScaleF(4.0f))) {
+            scrollX = msgTextWidth - (availW - config.ScaleF(4.0f));
+        }
+
+        // Clip strictly to rcMsgText so overflowing text NEVER leaks outside the box
+        pRT->PushAxisAlignedClip(rcMsgText, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+
         if (m_commitMessage.empty()) {
             const wchar_t* phStr = L"Message (Ctrl+Enter to commit)";
             pRT->DrawText(phStr, static_cast<UINT32>(wcslen(phStr)),
                           theme.fontMenuItem.Get() ? theme.fontMenuItem.Get() : theme.fontButtonCenter.Get(),
                           rcMsgText, theme.brushTextMuted.Get());
         } else {
+            D2D1_RECT_F rcScrolled = D2D1::RectF(
+                rcMsgText.left - scrollX,
+                rcMsgText.top,
+                rcMsgText.left - scrollX + (std::max)(availW, msgTextWidth + 20.0f),
+                rcMsgText.bottom
+            );
             pRT->DrawText(m_commitMessage.c_str(), static_cast<UINT32>(m_commitMessage.length()),
                           theme.fontMenuItem.Get() ? theme.fontMenuItem.Get() : theme.fontButtonCenter.Get(),
-                          rcMsgText, theme.brushTextPrimary.Get());
-
-            if (theme.dwriteFactory) {
-                Microsoft::WRL::ComPtr<IDWriteTextLayout> pLayout;
-                if (SUCCEEDED(theme.dwriteFactory->CreateTextLayout(
-                        m_commitMessage.c_str(), static_cast<UINT32>(m_commitMessage.length()),
-                        theme.fontMenuItem.Get() ? theme.fontMenuItem.Get() : theme.fontButtonCenter.Get(),
-                        1000.0f, msgH, &pLayout))) {
-                    DWRITE_TEXT_METRICS tm{};
-                    if (SUCCEEDED(pLayout->GetMetrics(&tm))) {
-                        msgTextWidth = tm.width;
-                    }
-                }
-            }
+                          rcScrolled, theme.brushTextPrimary.Get());
         }
 
         // Blinking Caret '|' in Commit Message Box (Image 1)
         if (m_focusedGitInput == 1 && m_gitCaretVisible) {
-            float caretX = rcMsgText.left + msgTextWidth + 1.0f;
-            if (caretX < rcMsgText.right) {
-                pRT->DrawLine(
-                    D2D1::Point2F(caretX, m_gitMsgBoxBounds.top + config.ScaleF(5.0f)),
-                    D2D1::Point2F(caretX, m_gitMsgBoxBounds.bottom - config.ScaleF(5.0f)),
-                    theme.brushTextPrimary.Get(), 1.5f
-                );
-            }
+            float caretX = rcMsgText.left - scrollX + msgTextWidth + 1.0f;
+            pRT->DrawLine(
+                D2D1::Point2F(caretX, m_gitMsgBoxBounds.top + config.ScaleF(5.0f)),
+                D2D1::Point2F(caretX, m_gitMsgBoxBounds.bottom - config.ScaleF(5.0f)),
+                theme.brushTextPrimary.Get(), 1.5f
+            );
         }
+
+        pRT->PopAxisAlignedClip();
 
         curY += msgH + config.ScaleF(6.0f);
 

@@ -28,15 +28,6 @@ void KeyboardShortcutsView::InitializeShortcuts() {
         { L"File: Close Folder", { L"Ctrl", L"K", L"F" }, L"global", L"Default" },
         { L"File: Reopen Closed Editor", { L"Ctrl", L"Shift", L"T" }, L"global", L"Default" },
 
-        // --- View & Layout ---
-        { L"View: Split Editor Right", { L"Ctrl", L"\\" }, L"global", L"Default" },
-        { L"View: Toggle Primary Side Bar", { L"Ctrl", L"B" }, L"global", L"Default" },
-        { L"View: Toggle Full Screen", { L"F11" }, L"global", L"Default" },
-        { L"View: Toggle Word Wrap", { L"Alt", L"Z" }, L"editorTextFocus", L"Default" },
-        { L"View: Show Explorer", { L"Ctrl", L"Shift", L"E" }, L"global", L"Default" },
-        { L"View: Show Search", { L"Ctrl", L"Shift", L"F" }, L"global", L"Default" },
-        { L"View: Show Source Control", { L"Ctrl", L"Shift", L"G" }, L"global", L"Default" },
-
         // --- Preferences ---
         { L"Preferences: Color Theme", { L"Ctrl", L"K", L"Ctrl", L"T" }, L"global", L"Default" },
         { L"Preferences: Open Keyboard Shortcuts", { L"Ctrl", L"K", L"Ctrl", L"S" }, L"global", L"Default" },
@@ -71,13 +62,56 @@ void KeyboardShortcutsView::InitializeShortcuts() {
         { L"Explorer: Copy Relative Path", { L"Ctrl", L"K", L"Ctrl", L"Shift", L"C" }, L"filesExplorerFocus", L"Default" },
 
         // --- Search & Navigation ---
+        { L"Navigation: Quick Open (Go to File)", { L"Ctrl", L"P" }, L"global", L"Default" },
+        { L"Navigation: Quick Open / File Search", { L"Ctrl", L"K" }, L"global", L"Default" },
+        { L"Navigation: Show All Commands", { L"Ctrl", L"Shift", L"P" }, L"global", L"Default" },
+        { L"Navigation: Command Palette (Alternative)", { L"F1" }, L"global", L"Default" },
+        { L"Navigation: Go to Definition", { L"F12" }, L"editorTextFocus", L"Default" },
         { L"Search: Find in Files", { L"Ctrl", L"Shift", L"F" }, L"global", L"Default" },
         { L"Search: Replace in Files", { L"Ctrl", L"Shift", L"H" }, L"global", L"Default" },
-        { L"Navigation: Show All Commands", { L"Ctrl", L"Shift", L"P" }, L"global", L"Default" },
+
+        // --- Debug & Execution Controls ---
+        { L"Run: Run Without Debugging", { L"Ctrl", L"F5" }, L"global", L"Default" },
+        { L"Debug: Start Debugging", { L"F5" }, L"global", L"Default" },
+        { L"Debug: Stop Execution / Server", { L"Shift", L"F5" }, L"global", L"Default" },
+        { L"Debug: Restart Execution / Server", { L"Ctrl", L"Shift", L"F5" }, L"global", L"Default" },
+        { L"Debug: Toggle Breakpoint", { L"F9" }, L"editorTextFocus", L"Default" },
+        { L"Debug: Step Over", { L"F10" }, L"debugFocus", L"Default" },
+        { L"Debug: Step Into", { L"F11" }, L"debugFocus", L"Default" },
+        { L"Debug: Step Out", { L"Shift", L"F11" }, L"debugFocus", L"Default" },
+        { L"Debug: Continue Execution", { L"F5" }, L"debugFocus", L"Default" },
+        { L"Debug: Toggle Debug Console", { L"Ctrl", L"Shift", L"Y" }, L"global", L"Default" },
+
+        // --- Code Editing & IntelliSense ---
+        { L"Code: Format Document", { L"Shift", L"Alt", L"F" }, L"editorTextFocus", L"Default" },
+        { L"Code: Rename Symbol", { L"F2" }, L"editorTextFocus", L"Default" },
+        { L"Code: Trigger IntelliSense Autocomplete", { L"Ctrl", L"Space" }, L"editorTextFocus", L"Default" },
+        { L"Code: Emmet Expand Abbreviation", { L"Tab" }, L"editorTextFocus", L"Default" },
+
+        // --- Source Control ---
+        { L"Source Control: Commit Changes", { L"Ctrl", L"Enter" }, L"sourceControlFocus", L"Default" },
+        { L"Source Control: Dismiss / Close Box", { L"Escape" }, L"sourceControlFocus", L"Default" },
+
+        // --- View & Layout ---
+        { L"View: Split Editor Right", { L"Ctrl", L"\\" }, L"global", L"Default" },
+        { L"View: Toggle Primary Side Bar", { L"Ctrl", L"B" }, L"global", L"Default" },
+        { L"View: Toggle Runtimes Panel (Extensions)", { L"Ctrl", L"Shift", L"X" }, L"global", L"Default" },
+        { L"View: Toggle Full Screen", { L"F11" }, L"global", L"Default" },
+        { L"View: Toggle Word Wrap", { L"Alt", L"Z" }, L"editorTextFocus", L"Default" },
+        { L"View: Zoom In", { L"Ctrl", L"=" }, L"global", L"Default" },
+        { L"View: Zoom Out", { L"Ctrl", L"-" }, L"global", L"Default" },
+        { L"View: Reset Zoom", { L"Ctrl", L"0" }, L"global", L"Default" },
+        { L"View: Next Tab", { L"Ctrl", L"Tab" }, L"global", L"Default" },
+        { L"View: Previous Tab", { L"Ctrl", L"Shift", L"Tab" }, L"global", L"Default" },
+        { L"View: Show Explorer", { L"Ctrl", L"Shift", L"E" }, L"global", L"Default" },
+        { L"View: Show Search", { L"Ctrl", L"Shift", L"F" }, L"global", L"Default" },
+        { L"View: Show Source Control", { L"Ctrl", L"Shift", L"G" }, L"global", L"Default" },
 
         // --- Terminal & Window ---
         { L"Terminal: Create New Terminal", { L"Ctrl", L"Shift", L"`" }, L"global", L"Default" },
-        { L"Terminal: Toggle Terminal", { L"Ctrl", L"`" }, L"global", L"Default" },
+        { L"Terminal: Toggle Terminal Panel", { L"Ctrl", L"`" }, L"global", L"Default" },
+        { L"Terminal: Split Active Terminal Tab", { L"Ctrl", L"Shift", L"5" }, L"terminalFocus", L"Default" },
+        { L"Terminal: Split Active Terminal (Alternative)", { L"Ctrl", L"Shift", L"\\" }, L"terminalFocus", L"Default" },
         { L"Window: Close Window", { L"Alt", L"F4" }, L"global", L"Default" },
     };
 }

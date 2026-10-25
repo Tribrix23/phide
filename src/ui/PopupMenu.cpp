@@ -286,6 +286,37 @@ void PopupMenu::OpenWindowMenu(float x, float y, const app::AppConfig& config,
     LayoutMenu(m_items, x, y, windowMenuW, config, m_mainMenuBounds);
 }
 
+void PopupMenu::OpenHelpMenu(float x, float y, const app::AppConfig& config) {
+    m_isOpen = true;
+    m_hoveredMainIdx = -1;
+    m_activeSubmenuIdx = -1;
+    m_hoveredSubmenuIdx = -1;
+
+    m_items.clear();
+
+    // 1. Documentation & Keyboard Shortcuts
+    m_items.push_back({ MenuActionId::HelpDocumentation,      L"Documentation",                 L"F1",             false, false, false, true, {}, {} });
+    m_items.push_back({ MenuActionId::HelpKeyboardShortcuts,  L"Keyboard Shortcuts",            L"Ctrl+K Ctrl+S",  false, false, false, true, {}, {} });
+
+    // --- Separator ---
+    m_items.push_back({ MenuActionId::None,                   L"",                              L"",               true,  false, false, false, {}, {} });
+
+    // 2. Direct Social & Support Channels
+    m_items.push_back({ MenuActionId::HelpContactEmail,       L"✉ Contact via Email (Gmail)",  L"",               false, false, false, true, {}, {} });
+    m_items.push_back({ MenuActionId::HelpFacebook,           L"🌐 Facebook Profile",           L"",               false, false, false, true, {}, {} });
+    m_items.push_back({ MenuActionId::HelpWhatsApp,           L"💬 WhatsApp Channel",           L"",               false, false, false, true, {}, {} });
+    m_items.push_back({ MenuActionId::HelpDiscord,            L"🎮 Discord Community",          L"",               false, false, false, true, {}, {} });
+
+    // --- Separator ---
+    m_items.push_back({ MenuActionId::None,                   L"",                              L"",               true,  false, false, false, {}, {} });
+
+    // 3. About
+    m_items.push_back({ MenuActionId::HelpAbout,              L"About Phide - Web Development IDE", L"",           false, false, false, true, {}, {} });
+
+    const float helpMenuW = config.ScaleF(280.0f);
+    LayoutMenu(m_items, x, y, helpMenuW, config, m_mainMenuBounds);
+}
+
 void PopupMenu::BuildEditMenuItems(bool canUndo, bool canRedo, bool hasSelection) {
     (void)hasSelection;
     m_items.clear();

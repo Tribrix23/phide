@@ -238,6 +238,636 @@ void SnippetManager::LoadDefaults() {
         L"html,htm,php"
     });
 
+    m_snippets.push_back({
+        L"Favicon Link",
+        L"link:favicon",
+        { L"<link rel=\"icon\" type=\"image/x-icon\" href=\"${1:favicon.ico}\">" },
+        L"HTML link favicon tag",
+        L"html,htm,php"
+    });
+
+    m_snippets.push_back({
+        L"Google Fonts Link Preconnect",
+        L"link:font",
+        {
+            L"<link rel=\"preconnect\" href=\"https://fonts.googleapis.com\">",
+            L"<link rel=\"preconnect\" href=\"https://fonts.gstatic.com\" crossorigin>",
+            L"<link href=\"${1:https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap}\" rel=\"stylesheet\">"
+        },
+        L"Google Fonts preconnect and stylesheet link tags",
+        L"html,htm,php"
+    });
+
+    m_snippets.push_back({
+        L"Canonical Link",
+        L"link:canonical",
+        { L"<link rel=\"canonical\" href=\"${1:https://example.com/}\" />" },
+        L"SEO canonical URL link tag",
+        L"html,htm,php"
+    });
+
+    m_snippets.push_back({
+        L"ES Module Script Tag",
+        L"script:module",
+        { L"<script type=\"module\" src=\"${1:main.js}\"></script>" },
+        L"JavaScript ES module script tag",
+        L"html,htm,php"
+    });
+
+    m_snippets.push_back({
+        L"DOM Ready Script Block",
+        L"script:inline",
+        {
+            L"<script>",
+            L"    document.addEventListener('DOMContentLoaded', () => {",
+            L"        $0",
+            L"    });",
+            L"</script>"
+        },
+        L"Inline script block with DOMContentLoaded event listener",
+        L"html,htm,php"
+    });
+
+    m_snippets.push_back({
+        L"Meta Description Tag",
+        L"meta:desc",
+        { L"<meta name=\"description\" content=\"${1:Page description here}\" />" },
+        L"SEO meta description tag",
+        L"html,htm,php"
+    });
+
+    m_snippets.push_back({
+        L"OpenGraph Social Meta Tags",
+        L"meta:og",
+        {
+            L"<meta property=\"og:title\" content=\"${1:Title}\" />",
+            L"<meta property=\"og:description\" content=\"${2:Description}\" />",
+            L"<meta property=\"og:image\" content=\"${3:https://example.com/og-image.png}\" />",
+            L"<meta property=\"og:url\" content=\"${4:https://example.com/}\" />",
+            L"<meta property=\"og:type\" content=\"website\" />"
+        },
+        L"OpenGraph metadata tags for social sharing previews",
+        L"html,htm,php"
+    });
+
+    m_snippets.push_back({
+        L"Twitter Card Meta Tags",
+        L"meta:twitter",
+        {
+            L"<meta name=\"twitter:card\" content=\"summary_large_image\" />",
+            L"<meta name=\"twitter:title\" content=\"${1:Title}\" />",
+            L"<meta name=\"twitter:description\" content=\"${2:Description}\" />",
+            L"<meta name=\"twitter:image\" content=\"${3:https://example.com/og-image.png}\" />"
+        },
+        L"Twitter Card metadata tags",
+        L"html,htm,php"
+    });
+
+    m_snippets.push_back({
+        L"Theme Color Meta Tag",
+        L"meta:theme",
+        { L"<meta name=\"theme-color\" content=\"${1:#0f172a}\" />" },
+        L"Browser mobile theme color meta tag",
+        L"html,htm,php"
+    });
+
+    m_snippets.push_back({
+        L"Form GET Method",
+        L"form:get",
+        {
+            L"<form action=\"${1:#}\" method=\"get\">",
+            L"    $0",
+            L"</form>"
+        },
+        L"HTML form element with GET method",
+        L"html,htm,php"
+    });
+
+    m_snippets.push_back({
+        L"Form Multipart File Upload",
+        L"form:upload",
+        {
+            L"<form action=\"${1:#}\" method=\"post\" enctype=\"multipart/form-data\">",
+            L"    <input type=\"file\" name=\"${2:file}\" />",
+            L"    <button type=\"submit\">${3:Upload}</button>",
+            L"</form>"
+        },
+        L"HTML form with multipart file upload support",
+        L"html,htm,php"
+    });
+
+    m_snippets.push_back({
+        L"Input Number Field",
+        L"input:number",
+        { L"<input type=\"number\" name=\"${1:quantity}\" min=\"${2:1}\" max=\"${3:100}\" value=\"${4:1}\" />" },
+        L"HTML numeric input field with min and max bounds",
+        L"html,htm,php"
+    });
+
+    m_snippets.push_back({
+        L"Input Telephone Field",
+        L"input:tel",
+        { L"<input type=\"tel\" name=\"${1:phone}\" placeholder=\"${2:+1 (555) 000-0000}\" autocomplete=\"tel\" />" },
+        L"HTML telephone number input field",
+        L"html,htm,php"
+    });
+
+    m_snippets.push_back({
+        L"Input URL Field",
+        L"input:url",
+        { L"<input type=\"url\" name=\"${1:url}\" placeholder=\"${2:https://example.com}\" />" },
+        L"HTML URL input field",
+        L"html,htm,php"
+    });
+
+    m_snippets.push_back({
+        L"Input Search Field",
+        L"input:search",
+        { L"<input type=\"search\" name=\"${1:q}\" placeholder=\"${2:Search...}\" />" },
+        L"HTML search query input field",
+        L"html,htm,php"
+    });
+
+    m_snippets.push_back({
+        L"Input Date Field",
+        L"input:date",
+        { L"<input type=\"date\" name=\"${1:date}\" />" },
+        L"HTML date picker input field",
+        L"html,htm,php"
+    });
+
+    m_snippets.push_back({
+        L"Input Time Field",
+        L"input:time",
+        { L"<input type=\"time\" name=\"${1:time}\" />" },
+        L"HTML time picker input field",
+        L"html,htm,php"
+    });
+
+    m_snippets.push_back({
+        L"Input Color Picker Field",
+        L"input:color",
+        { L"<input type=\"color\" name=\"${1:color}\" value=\"${2:#3b82f6}\" />" },
+        L"HTML color picker input field",
+        L"html,htm,php"
+    });
+
+    m_snippets.push_back({
+        L"Input Range Slider Field",
+        L"input:range",
+        { L"<input type=\"range\" name=\"${1:range}\" min=\"${2:0}\" max=\"${3:100}\" value=\"${4:50}\" />" },
+        L"HTML range slider input field",
+        L"html,htm,php"
+    });
+
+    m_snippets.push_back({
+        L"Input Checkbox with Label",
+        L"input:checkbox",
+        { L"<label><input type=\"checkbox\" name=\"${1:remember}\" value=\"${2:1}\" /> ${3:Remember me}</label>" },
+        L"HTML checkbox with wrapping label",
+        L"html,htm,php"
+    });
+
+    m_snippets.push_back({
+        L"Input Radio Button with Label",
+        L"input:radio",
+        { L"<label><input type=\"radio\" name=\"${1:option}\" value=\"${2:val}\" checked /> ${3:Option}</label>" },
+        L"HTML radio button with wrapping label",
+        L"html,htm,php"
+    });
+
+    m_snippets.push_back({
+        L"Input File Picker",
+        L"input:file",
+        { L"<input type=\"file\" name=\"${1:attachment}\" accept=\"${2:image/*}\" />" },
+        L"HTML file chooser input field",
+        L"html,htm,php"
+    });
+
+    m_snippets.push_back({
+        L"Input Hidden Field",
+        L"input:hidden",
+        { L"<input type=\"hidden\" name=\"${1:token}\" value=\"${2:value}\" />" },
+        L"HTML hidden input field",
+        L"html,htm,php"
+    });
+
+    m_snippets.push_back({
+        L"Input Reset Button",
+        L"input:reset",
+        { L"<input type=\"reset\" value=\"${1:Reset}\" />" },
+        L"HTML form reset button",
+        L"html,htm,php"
+    });
+
+    m_snippets.push_back({
+        L"Textarea Multi-line Control",
+        L"textarea:full",
+        { L"<textarea name=\"${1:message}\" rows=\"${2:4}\" cols=\"${3:50}\" placeholder=\"${4:Enter your message...}\"></textarea>" },
+        L"HTML multi-line textarea input with rows and cols",
+        L"html,htm,php"
+    });
+
+    m_snippets.push_back({
+        L"Select Dropdown with Options",
+        L"select:options",
+        {
+            L"<select name=\"${1:selectName}\" id=\"${1:selectName}\">",
+            L"    <option value=\"\">${2:Select an option...}</option>",
+            L"    <option value=\"${3:val1}\">${4:Option 1}</option>",
+            L"    <option value=\"${5:val2}\">${6:Option 2}</option>",
+            L"</select>"
+        },
+        L"HTML select dropdown list with placeholder and option elements",
+        L"html,htm,php"
+    });
+
+    m_snippets.push_back({
+        L"Input with Datalist Autocomplete",
+        L"datalist:options",
+        {
+            L"<input list=\"${1:suggestions}\" name=\"${2:item}\" placeholder=\"${3:Choose or type...}\" />",
+            L"<datalist id=\"${1:suggestions}\">",
+            L"    <option value=\"${4:Choice 1}\">",
+            L"    <option value=\"${5:Choice 2}\">",
+            L"    <option value=\"${6:Choice 3}\">",
+            L"</datalist>"
+        },
+        L"HTML datalist autocomplete suggestion component",
+        L"html,htm,php"
+    });
+
+    m_snippets.push_back({
+        L"Submit Button Element",
+        L"btn:submit",
+        { L"<button type=\"submit\" class=\"${1:btn btn-primary}\">${2:Submit}</button>" },
+        L"HTML form submit button",
+        L"html,htm,php"
+    });
+
+    m_snippets.push_back({
+        L"Reset Button Element",
+        L"btn:reset",
+        { L"<button type=\"reset\" class=\"${1:btn btn-secondary}\">${2:Reset}</button>" },
+        L"HTML form reset button",
+        L"html,htm,php"
+    });
+
+    m_snippets.push_back({
+        L"Navigation Bar Component",
+        L"nav:bar",
+        {
+            L"<nav class=\"navbar\">",
+            L"    <div class=\"nav-brand\"><a href=\"${1:#}\">${2:Brand}</a></div>",
+            L"    <ul class=\"nav-links\">",
+            L"        <li><a href=\"${3:#}\">${4:Home}</a></li>",
+            L"        <li><a href=\"${5:#}\">${6:About}</a></li>",
+            L"        <li><a href=\"${7:#}\">${8:Contact}</a></li>",
+            L"    </ul>",
+            L"</nav>"
+        },
+        L"Complete responsive navigation bar component",
+        L"html,htm,php"
+    });
+
+    m_snippets.push_back({
+        L"Header Hero Section",
+        L"header:hero",
+        {
+            L"<header class=\"hero-section\">",
+            L"    <h1>${1:Welcome to Our Platform}</h1>",
+            L"    <p class=\"hero-lead\">${2:Build fast, modern, and high-performance web applications.}</p>",
+            L"    <div class=\"hero-actions\">",
+            L"        <a href=\"${3:#}\" class=\"btn btn-primary\">${4:Get Started}</a>",
+            L"        <a href=\"${5:#}\" class=\"btn btn-outline\">${6:Learn More}</a>",
+            L"    </div>",
+            L"</header>"
+        },
+        L"Hero header landing banner section",
+        L"html,htm,php"
+    });
+
+    m_snippets.push_back({
+        L"Footer Copyright Section",
+        L"footer:copy",
+        {
+            L"<footer class=\"site-footer\">",
+            L"    <p>&copy; ${1:2026} ${2:Your Name or Company}. All rights reserved.</p>",
+            L"</footer>"
+        },
+        L"Standard copyright page footer",
+        L"html,htm,php"
+    });
+
+    m_snippets.push_back({
+        L"Main Document Content Wrapper",
+        L"main:content",
+        {
+            L"<main role=\"main\" class=\"container mx-auto px-4 py-8\">",
+            L"    $0",
+            L"</main>"
+        },
+        L"HTML5 main landmark wrapper",
+        L"html,htm,php"
+    });
+
+    m_snippets.push_back({
+        L"Section with Heading Container",
+        L"section:card",
+        {
+            L"<section class=\"py-12\">",
+            L"    <div class=\"container\">",
+            L"        <h2 class=\"text-2xl font-bold mb-4\">${1:Section Title}</h2>",
+            L"        <p class=\"text-gray-600 mb-6\">${2:Section subtitle or introduction.}</p>",
+            L"        $0",
+            L"    </div>",
+            L"</section>"
+        },
+        L"Semantic section block with container",
+        L"html,htm,php"
+    });
+
+    m_snippets.push_back({
+        L"Blog Article Post Component",
+        L"article:post",
+        {
+            L"<article class=\"post\">",
+            L"    <header class=\"post-header\">",
+            L"        <h1>${1:Article Title}</h1>",
+            L"        <div class=\"post-meta\">",
+            L"            <span>By <a href=\"${2:#}\">${3:Author}</a></span>",
+            L"            <time datetime=\"${4:2026-01-01}\">${5:Jan 1, 2026}</time>",
+            L"        </div>",
+            L"    </header>",
+            L"    <div class=\"post-content\">",
+            L"        <p>$0</p>",
+            L"    </div>",
+            L"</article>"
+        },
+        L"Complete blog article post markup",
+        L"html,htm,php"
+    });
+
+    m_snippets.push_back({
+        L"Sidebar Aside Component",
+        L"aside:sidebar",
+        {
+            L"<aside class=\"sidebar\" aria-label=\"${1:Sidebar}\">",
+            L"    <div class=\"widget\">",
+            L"        <h3>${2:Related Topics}</h3>",
+            L"        <ul>",
+            L"            <li><a href=\"${3:#}\">${4:Topic 1}</a></li>",
+            L"            <li><a href=\"${5:#}\">${6:Topic 2}</a></li>",
+            L"        </ul>",
+            L"    </div>",
+            L"</aside>"
+        },
+        L"Semantic aside sidebar component",
+        L"html,htm,php"
+    });
+
+    m_snippets.push_back({
+        L"Figure with Caption",
+        L"figure:img",
+        {
+            L"<figure>",
+            L"    <img src=\"${1:image.jpg}\" alt=\"${2:Description}\" />",
+            L"    <figcaption>${3:Caption describing the image}</figcaption>",
+            L"</figure>"
+        },
+        L"HTML figure with nested image and figcaption",
+        L"html,htm,php"
+    });
+
+    m_snippets.push_back({
+        L"Responsive Picture with WebP Fallback",
+        L"picture:webp",
+        {
+            L"<picture>",
+            L"    <source srcset=\"${1:image.webp}\" type=\"image/webp\">",
+            L"    <source srcset=\"${2:image.jpg}\" type=\"image/jpeg\">",
+            L"    <img src=\"${2:image.jpg}\" alt=\"${3:Description}\" loading=\"lazy\">",
+            L"</picture>"
+        },
+        L"Responsive picture element with WebP next-gen format support",
+        L"html,htm,php"
+    });
+
+    m_snippets.push_back({
+        L"HTML5 Video Player",
+        L"video:controls",
+        {
+            L"<video src=\"${1:video.mp4}\" controls poster=\"${2:poster.jpg}\" width=\"${3:640}\" height=\"${4:360}\">",
+            L"    <track kind=\"subtitles\" src=\"${5:subtitles.vtt}\" srclang=\"en\" label=\"English\">",
+            L"    Your browser does not support the video tag.",
+            L"</video>"
+        },
+        L"HTML5 video player element with controls and subtitles",
+        L"html,htm,php"
+    });
+
+    m_snippets.push_back({
+        L"HTML5 Audio Player",
+        L"audio:controls",
+        {
+            L"<audio controls src=\"${1:audio.mp3}\">",
+            L"    Your browser does not support the audio element.",
+            L"</audio>"
+        },
+        L"HTML5 audio player element with controls",
+        L"html,htm,php"
+    });
+
+    m_snippets.push_back({
+        L"HTML5 Native Dialog Modal",
+        L"dialog:modal",
+        {
+            L"<dialog id=\"${1:myDialog}\" class=\"dialog-modal\">",
+            L"    <form method=\"dialog\">",
+            L"        <h2>${2:Dialog Title}</h2>",
+            L"        <p>${3:Dialog body text content goes here.}</p>",
+            L"        <button value=\"cancel\">${4:Cancel}</button>",
+            L"        <button value=\"confirm\" class=\"btn-primary\">${5:Confirm}</button>",
+            L"    </form>",
+            L"</dialog>"
+        },
+        L"HTML5 native dialog modal element with form method dialog",
+        L"html,htm,php"
+    });
+
+    m_snippets.push_back({
+        L"Details Accordion Disclosure",
+        L"details:summary",
+        {
+            L"<details>",
+            L"    <summary>${1:Click to reveal details}</summary>",
+            L"    <p>${2:Hidden details content that unfolds on user click.}</p>",
+            L"</details>"
+        },
+        L"HTML5 collapsible details and summary disclosure widget",
+        L"html,htm,php"
+    });
+
+    m_snippets.push_back({
+        L"SVG Feather/Lucide Icon Template",
+        L"svg:icon",
+        {
+            L"<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"${1:24}\" height=\"${1:24}\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\">",
+            L"    $0",
+            L"</svg>"
+        },
+        L"SVG vector icon template container",
+        L"html,htm,php"
+    });
+
+    m_snippets.push_back({
+        L"Canvas 2D Context Setup",
+        L"canvas:2d",
+        {
+            L"<canvas id=\"${1:myCanvas}\" width=\"${2:600}\" height=\"${3:400}\"></canvas>",
+            L"<script>",
+            L"    const canvas = document.getElementById('${1:myCanvas}');",
+            L"    const ctx = canvas.getContext('2d');",
+            L"    $0",
+            L"</script>"
+        },
+        L"HTML5 canvas element with 2D rendering context boilerplate",
+        L"html,htm,php"
+    });
+
+    m_snippets.push_back({
+        L"Definition Description List",
+        L"dl:terms",
+        {
+            L"<dl>",
+            L"    <dt>${1:Term 1}</dt>",
+            L"    <dd>${2:Definition of term 1}</dd>",
+            L"    <dt>${3:Term 2}</dt>",
+            L"    <dd>${4:Definition of term 2}</dd>",
+            L"</dl>"
+        },
+        L"HTML definition list with terms and descriptions",
+        L"html,htm,php"
+    });
+
+    m_snippets.push_back({
+        L"Table Striped with Thead and Tbody",
+        L"table:striped",
+        {
+            L"<table class=\"table table-striped\">",
+            L"    <thead>",
+            L"        <tr>",
+            L"            <th>${1:#}</th>",
+            L"            <th>${2:Name}</th>",
+            L"            <th>${3:Email}</th>",
+            L"            <th>${4:Status}</th>",
+            L"        </tr>",
+            L"    </thead>",
+            L"    <tbody>",
+            L"        <tr>",
+            L"            <td>1</td>",
+            L"            <td>${5:John Doe}</td>",
+            L"            <td>${6:john@example.com}</td>",
+            L"            <td><span class=\"badge badge-success\">${7:Active}</span></td>",
+            L"        </tr>",
+            L"    </tbody>",
+            L"</table>"
+        },
+        L"Complete formatted table component with headers, rows and badges",
+        L"html,htm,php"
+    });
+
+    m_snippets.push_back({
+        L"Card Component",
+        L"div:card",
+        {
+            L"<div class=\"card\">",
+            L"    <div class=\"card-header\">",
+            L"        <h3 class=\"card-title\">${1:Card Title}</h3>",
+            L"    </div>",
+            L"    <div class=\"card-body\">",
+            L"        <p>${2:Card description text and details.}</p>",
+            L"    </div>",
+            L"    <div class=\"card-footer\">",
+            L"        <button class=\"btn btn-primary\">${3:Action}</button>",
+            L"    </div>",
+            L"</div>"
+        },
+        L"Standard UI card container with header, body and footer",
+        L"html,htm,php"
+    });
+
+    m_snippets.push_back({
+        L"CSS Grid Container",
+        L"div:grid",
+        {
+            L"<div class=\"grid grid-cols-${1:3} gap-6\">",
+            L"    <div class=\"col-item\">$0</div>",
+            L"    <div class=\"col-item\"></div>",
+            L"    <div class=\"col-item\"></div>",
+            L"</div>"
+        },
+        L"Responsive CSS grid layout container",
+        L"html,htm,php"
+    });
+
+    m_snippets.push_back({
+        L"CSS Flexbox Row Container",
+        L"div:flex",
+        {
+            L"<div class=\"flex items-center justify-between\">",
+            L"    <div>$1</div>",
+            L"    <div>$0</div>",
+            L"</div>"
+        },
+        L"Flexbox row layout with space-between alignment",
+        L"html,htm,php"
+    });
+
+    m_snippets.push_back({
+        L"Badge Status Pill",
+        L"div:badge",
+        { L"<span class=\"badge badge-${1:primary}\">${2:New}</span>" },
+        L"UI status badge pill component",
+        L"html,htm,php"
+    });
+
+    m_snippets.push_back({
+        L"Alert Notification Box",
+        L"div:alert",
+        {
+            L"<div class=\"alert alert-${1:info}\" role=\"alert\">",
+            L"    <strong>${2:Notice:}</strong> ${3:Operation completed successfully.}",
+            L"</div>"
+        },
+        L"Accessible alert notification component",
+        L"html,htm,php"
+    });
+
+    m_snippets.push_back({
+        L"Breadcrumb Navigation Component",
+        L"div:breadcrumb",
+        {
+            L"<nav aria-label=\"Breadcrumb\">",
+            L"    <ol class=\"breadcrumb\">",
+            L"        <li><a href=\"${1:/}\">Home</a></li>",
+            L"        <li><a href=\"${2:/section}\">${3:Section}</a></li>",
+            L"        <li aria-current=\"page\">${4:Current Page}</li>",
+            L"    </ol>",
+            L"</nav>"
+        },
+        L"Accessible breadcrumb trail navigation component",
+        L"html,htm,php"
+    });
+
+    m_snippets.push_back({
+        L"Iframe Embedded Frame",
+        L"iframe:embed",
+        { L"<iframe src=\"${1:https://example.com}\" width=\"${2:100%}\" height=\"${3:450}\" style=\"border:0;\" allowfullscreen=\"\" loading=\"lazy\"></iframe>" },
+        L"Responsive embedded iframe element",
+        L"html,htm,php"
+    });
+
     // 2. CSS Snippets
     m_snippets.push_back({
         L"Flexbox Center Alignment",
@@ -758,13 +1388,15 @@ void SnippetManager::EnsureDefaultSnippetsFile() {
 
     bool needsExport = !std::filesystem::exists(p, ec);
     if (!needsExport) {
-        // If file exists, check if it's the old 6-snippet stub or lacks the "!" boilerplate snippet
+        // If file exists, check if it's the old stub or lacks newly expanded HTML snippets like picture:webp
         std::wifstream in(m_snippetsFilePath);
         if (in.is_open()) {
             std::wstring content((std::istreambuf_iterator<wchar_t>(in)), std::istreambuf_iterator<wchar_t>());
             in.close();
-            // If missing "!" or file is too small to contain the full catalog
-            if (content.find(L"\"prefix\": \"!\"") == std::wstring::npos || content.length() < 3000) {
+            // If missing "!" or "picture:webp" or file is too small to contain the full expanded catalog
+            if (content.find(L"\"prefix\": \"!\"") == std::wstring::npos || 
+                content.find(L"\"prefix\": \"picture:webp\"") == std::wstring::npos ||
+                content.length() < 10000) {
                 needsExport = true;
             }
         } else {
