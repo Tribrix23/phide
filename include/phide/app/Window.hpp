@@ -555,16 +555,19 @@ private:
     void StopAllLiveServers();
     int GetNextAvailableLiveServerPort() const;
 
-    // Background web server processes (PHP, Nginx, phpMyAdmin)
+    // Background web server processes (PHP, Nginx, phpMyAdmin, MySQL)
     HANDLE m_hPhpServerProcess = nullptr;
     HANDLE m_hNginxProcess = nullptr;
     HANDLE m_hPmaProcess = nullptr;
+    HANDLE m_hMysqlProcess = nullptr;
     void StartPhpServer(const std::wstring& rootDir, int port = 8080);
     void StopPhpServer();
     void StartNginxServer();
     void StopNginxServer();
     void StartPmaServer();
     void StopPmaServer();
+    void StartMysqlServer();
+    void StopMysqlServer();
 
     server::LiveServer m_liveServer; // backwards compatibility / fallback
     D2D1_RECT_F m_liveServerPillBounds{};

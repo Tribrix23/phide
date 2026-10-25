@@ -21,6 +21,16 @@ enum class DatabaseModalTab {
     NginxServer = 1
 };
 
+enum class DatabaseEditField {
+    None,
+    Host,
+    Port,
+    User,
+    Pass,
+    Database,
+    Charset
+};
+
 enum class DatabaseModalAction {
     None,
     CopyHost,
@@ -39,6 +49,7 @@ enum class DatabaseModalAction {
     OpenBrowserNginx,
     EditPmaConfig,
     EditNginxConfig,
+    ImportSql,
     SwitchTabPma,
     SwitchTabNginx,
     CloseModal
@@ -63,6 +74,9 @@ public:
     [[nodiscard]] bool IsPmaRunning() const noexcept { return m_isPmaRunning; }
     [[nodiscard]] bool IsNginxRunning() const noexcept { return m_isNginxRunning; }
 
+    void SetSqlFileAvailable(const std::wstring& sqlFileName) noexcept { m_sqlFileName = sqlFileName; }
+    [[nodiscard]] const std::wstring& GetSqlFileName() const noexcept { return m_sqlFileName; }
+
     void SetCopiedFeedback(const std::wstring& fieldName) {
         m_copiedField = fieldName;
         m_copiedTimerTicks = 120; // ~2 seconds at 60fps
@@ -78,14 +92,23 @@ public:
     void Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config, float clientW, float clientH);
 
     DatabaseModalAction HitTestAction(POINT pt) const noexcept;
+    void HandleClick(POINT pt) noexcept;
     void OnMouseMove(POINT pt) noexcept;
     [[nodiscard]] bool HitTestBounds(POINT pt) const noexcept;
+
+    bool OnChar(wchar_t ch);
+    bool OnKeyDown(WPARAM wParam);
+    void SetFocusedField(DatabaseEditField field) noexcept { m_focusedField = field; }
+    [[nodiscard]] DatabaseEditField GetFocusedField() const noexcept { return m_focusedField; }
+    void ToggleCaret() noexcept { m_caretVisible = !m_caretVisible; }
+    void UpdateSnippets();
 
     [[nodiscard]] const std::wstring& GetHost() const noexcept { return m_host; }
     [[nodiscard]] const std::wstring& GetPort() const noexcept { return m_port; }
     [[nodiscard]] const std::wstring& GetUser() const noexcept { return m_user; }
     [[nodiscard]] const std::wstring& GetPass() const noexcept { return m_pass; }
     [[nodiscard]] const std::wstring& GetDefaultDb() const noexcept { return m_defaultDb; }
+    [[nodiscard]] const std::wstring& GetCharset() const noexcept { return m_charset; }
     [[nodiscard]] const std::wstring& GetPdoSnippet() const noexcept { return m_pdoSnippet; }
     [[nodiscard]] const std::wstring& GetMysqliSnippet() const noexcept { return m_mysqliSnippet; }
     [[nodiscard]] const std::wstring& GetPmaUrl() const noexcept { return m_pmaUrl; }
@@ -99,7 +122,7 @@ private:
     DatabaseModalTab m_activeTab = DatabaseModalTab::PhpMyAdmin;
 
     // Database parameters (matches config.inc.php and config.php)
-    std::wstring m_host = L"127.0.0.1";
+    std::wstring m_host = L"localhost";
     std::wstring m_port = L"3306";
     std::wstring m_user = L"root";
     std::wstring m_pass = L"";
@@ -111,8 +134,8 @@ private:
     std::wstring m_pmaConfigFile = L"include\\phide\\db\\phpMyAdmin\\config.inc.php";
 
     // Snippets for PHP
-    std::wstring m_pdoSnippet = L"$pdo = new PDO(\"mysql:host=127.0.0.1;port=3306;dbname=student_crud;charset=utf8mb4\", \"root\", \"\");";
-    std::wstring m_mysqliSnippet = L"$conn = new mysqli(\"127.0.0.1\", \"root\", \"\", \"student_crud\", 3306);";
+    std::wstring m_pdoSnippet = L"$pdo = new PDO(\"mysql:host=localhost;port=3306;dbname=student_crud;charset=utf8mb4\", \"root\", \"\");";
+    std::wstring m_mysqliSnippet = L"$conn = new mysqli(\"localhost\", \"root\", \"\", \"student_crud\", 3306);";
 
     // Nginx parameters
     std::wstring m_nginxUrl = L"http://localhost:80";
@@ -122,6 +145,9 @@ private:
 
     bool m_isPmaRunning = false;
     bool m_isNginxRunning = false;
+
+    DatabaseEditField m_focusedField = DatabaseEditField::None;
+    bool m_caretVisible = true;
 
     std::wstring m_copiedField;
     int m_copiedTimerTicks = 0;
@@ -133,6 +159,14 @@ private:
     D2D1_RECT_F m_rcCloseBtn{};
     D2D1_RECT_F m_rcTabPma{};
     D2D1_RECT_F m_rcTabNginx{};
+
+    // Editable input fields in Section A
+    D2D1_RECT_F m_rcInputHost{};
+    D2D1_RECT_F m_rcInputPort{};
+    D2D1_RECT_F m_rcInputUser{};
+    D2D1_RECT_F m_rcInputPass{};
+    D2D1_RECT_F m_rcInputDb{};
+    D2D1_RECT_F m_rcInputCharset{};
 
     D2D1_RECT_F m_rcCopyHost{};
     D2D1_RECT_F m_rcCopyPort{};
@@ -154,6 +188,8 @@ private:
     D2D1_RECT_F m_rcBtnEditNginx{};
 
     D2D1_RECT_F m_rcBtnDone{};
+    D2D1_RECT_F m_rcBtnImportSql{};
+    std::wstring m_sqlFileName;
 
     DatabaseModalAction m_hoveredAction = DatabaseModalAction::None;
 };

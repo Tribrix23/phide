@@ -323,11 +323,11 @@ void TitleHeader::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCon
         isSrvExpanded = true;
         srvText = L"Starting nginx...";
     } else if (m_serverState == ServerState::Running) {
-        srvW = config.ScaleF(112.0f);
+        srvW = m_hoveredServer ? config.ScaleF(154.0f) : config.ScaleF(112.0f);
         isSrvExpanded = true;
         srvText = m_hoveredServer ? L"nginx log" : L"nginx is up";
-    } else if (m_serverState == ServerState::Failed && !m_serverLogOpened) {
-        srvW = config.ScaleF(108.0f);
+    } else if (m_serverState == ServerState::Failed) {
+        srvW = m_hoveredServer ? config.ScaleF(150.0f) : config.ScaleF(108.0f);
         isSrvExpanded = true;
         srvText = m_hoveredServer ? L"View Log" : L"nginx failed";
     }
@@ -345,11 +345,11 @@ void TitleHeader::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCon
         isDbExpanded = true;
         dbText = L"Retrying... (" + std::to_wstring(m_databaseRetryCount) + L"/3)";
     } else if (m_databaseState == DatabaseState::Running) {
-        dbW = config.ScaleF(138.0f);
+        dbW = m_hoveredDatabase ? config.ScaleF(182.0f) : config.ScaleF(138.0f);
         isDbExpanded = true;
         dbText = m_hoveredDatabase ? L"phpMyAdmin log" : L"phpMyAdmin is up";
-    } else if (m_databaseState == DatabaseState::Failed && !m_databaseLogOpened) {
-        dbW = config.ScaleF(108.0f);
+    } else if (m_databaseState == DatabaseState::Failed) {
+        dbW = m_hoveredDatabase ? config.ScaleF(150.0f) : config.ScaleF(108.0f);
         isDbExpanded = true;
         dbText = m_hoveredDatabase ? L"View Log" : L"db failed";
     }
@@ -368,7 +368,7 @@ void TitleHeader::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCon
         pRT->CreateSolidColorBrush(D2D1::ColorF(0.20f, 0.70f, 0.35f, 0.65f), &bBdr);
         if (bBg) pRT->FillRoundedRectangle(rrcServer, bBg.Get());
         if (bBdr) pRT->DrawRoundedRectangle(rrcServer, bBdr.Get(), 0.8f);
-    } else if (m_serverState == ServerState::Failed && !m_serverLogOpened) {
+    } else if (m_serverState == ServerState::Failed) {
         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> bBg, bBdr;
         pRT->CreateSolidColorBrush(D2D1::ColorF(0.85f, 0.20f, 0.20f, 0.25f), &bBg);
         pRT->CreateSolidColorBrush(D2D1::ColorF(0.95f, 0.35f, 0.35f, 0.70f), &bBdr);
@@ -389,7 +389,7 @@ void TitleHeader::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCon
     ID2D1Brush* pSrvBrush = theme.IsDarkMode() ? theme.brushTextWhite.Get() : theme.brushTextPrimary.Get();
     if (m_serverState == ServerState::Running) {
         pSrvBrush = theme.brushRunGreen ? theme.brushRunGreen.Get() : theme.brushTextWhite.Get();
-    } else if (m_serverState == ServerState::Failed && !m_serverLogOpened) {
+    } else if (m_serverState == ServerState::Failed) {
         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> bRed;
         pRT->CreateSolidColorBrush(D2D1::ColorF(0.95f, 0.35f, 0.35f, 1.0f), &bRed);
         if (bRed) pSrvBrush = bRed.Get();
@@ -403,7 +403,37 @@ void TitleHeader::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCon
     }
 
     if (isSrvExpanded && !srvText.empty()) {
-        D2D1_RECT_F rcSrvLabel = D2D1::RectF(srvBtnX + extBtnW - config.ScaleF(2.0f), extBtnY, srvBtnX + srvW - config.ScaleF(6.0f), extBtnY + extBtnH);
+        float labelRight = srvBtnX + srvW - config.ScaleF(6.0f);
+        if (m_hoveredServer && (m_serverState == ServerState::Running || m_serverState == ServerState::Failed)) {
+            const float miniW = config.ScaleF(18.0f);
+            const float miniH = config.ScaleF(18.0f);
+            const float miniY = extBtnY + (extBtnH - miniH) * 0.5f;
+
+            float srvSetX = m_rcServer.right - miniW - config.ScaleF(4.0f);
+            m_rcSrvPillSettings = D2D1::RectF(srvSetX, miniY, srvSetX + miniW, miniY + miniH);
+
+            float srvBroX = srvSetX - miniW - config.ScaleF(3.0f);
+            m_rcSrvPillBrowser = D2D1::RectF(srvBroX, miniY, srvBroX + miniW, miniY + miniH);
+
+            labelRight = srvBroX - config.ScaleF(3.0f);
+
+            // Draw Browser action button (↗) inside Server pill
+            if (m_hoveredSrvPillBrowser && theme.brushItemHover) {
+                pRT->FillRoundedRectangle(D2D1::RoundedRect(m_rcSrvPillBrowser, 3.5f, 3.5f), theme.brushItemHover.Get());
+            }
+            m_icons.DrawExternalLink(pRT, m_rcSrvPillBrowser, pSrvBrush, 1.2f);
+
+            // Draw Settings action button (⚙) inside Server pill
+            if (m_hoveredSrvPillSettings && theme.brushItemHover) {
+                pRT->FillRoundedRectangle(D2D1::RoundedRect(m_rcSrvPillSettings, 3.5f, 3.5f), theme.brushItemHover.Get());
+            }
+            m_icons.DrawSettings(pRT, m_rcSrvPillSettings, pSrvBrush, 1.2f);
+        } else {
+            m_rcSrvPillSettings = D2D1::RectF(0, 0, 0, 0);
+            m_rcSrvPillBrowser = D2D1::RectF(0, 0, 0, 0);
+        }
+
+        D2D1_RECT_F rcSrvLabel = D2D1::RectF(srvBtnX + extBtnW - config.ScaleF(2.0f), extBtnY, labelRight, extBtnY + extBtnH);
         IDWriteTextFormat* pFmt = theme.fontCounterBadge ? theme.fontCounterBadge.Get() : (theme.fontHint ? theme.fontHint.Get() : theme.fontMenuItem.Get());
         pRT->DrawText(srvText.c_str(), static_cast<UINT32>(srvText.size()), pFmt, rcSrvLabel, pSrvBrush);
     } else if (m_serverLogOpened && (m_serverState == ServerState::Running || m_serverState == ServerState::Failed)) {
@@ -431,7 +461,7 @@ void TitleHeader::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCon
         pRT->CreateSolidColorBrush(D2D1::ColorF(0.95f, 0.70f, 0.20f, 0.70f), &bBdr);
         if (bBg) pRT->FillRoundedRectangle(rrcDatabase, bBg.Get());
         if (bBdr) pRT->DrawRoundedRectangle(rrcDatabase, bBdr.Get(), 0.8f);
-    } else if (m_databaseState == DatabaseState::Failed && !m_databaseLogOpened) {
+    } else if (m_databaseState == DatabaseState::Failed) {
         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> bBg, bBdr;
         pRT->CreateSolidColorBrush(D2D1::ColorF(0.85f, 0.20f, 0.20f, 0.25f), &bBg);
         pRT->CreateSolidColorBrush(D2D1::ColorF(0.95f, 0.35f, 0.35f, 0.70f), &bBdr);
@@ -457,7 +487,7 @@ void TitleHeader::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCon
         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> bAmber;
         pRT->CreateSolidColorBrush(D2D1::ColorF(0.95f, 0.75f, 0.20f, 1.0f), &bAmber);
         if (bAmber) pDbBrush = bAmber.Get();
-    } else if (m_databaseState == DatabaseState::Failed && !m_databaseLogOpened) {
+    } else if (m_databaseState == DatabaseState::Failed) {
         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> bRed;
         pRT->CreateSolidColorBrush(D2D1::ColorF(0.95f, 0.35f, 0.35f, 1.0f), &bRed);
         if (bRed) pDbBrush = bRed.Get();
@@ -471,7 +501,37 @@ void TitleHeader::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCon
     }
 
     if (isDbExpanded && !dbText.empty()) {
-        D2D1_RECT_F rcDbLabel = D2D1::RectF(dbBtnX + extBtnW - config.ScaleF(2.0f), extBtnY, dbBtnX + dbW - config.ScaleF(6.0f), extBtnY + extBtnH);
+        float dbLabelRight = dbBtnX + dbW - config.ScaleF(6.0f);
+        if (m_hoveredDatabase && (m_databaseState == DatabaseState::Running || m_databaseState == DatabaseState::Failed)) {
+            const float miniW = config.ScaleF(18.0f);
+            const float miniH = config.ScaleF(18.0f);
+            const float miniY = extBtnY + (extBtnH - miniH) * 0.5f;
+
+            float dbSetX = m_rcDatabase.right - miniW - config.ScaleF(4.0f);
+            m_rcDbPillSettings = D2D1::RectF(dbSetX, miniY, dbSetX + miniW, miniY + miniH);
+
+            float dbBroX = dbSetX - miniW - config.ScaleF(3.0f);
+            m_rcDbPillBrowser = D2D1::RectF(dbBroX, miniY, dbBroX + miniW, miniY + miniH);
+
+            dbLabelRight = dbBroX - config.ScaleF(3.0f);
+
+            // Draw Browser action button (↗) inside Database pill
+            if (m_hoveredDbPillBrowser && theme.brushItemHover) {
+                pRT->FillRoundedRectangle(D2D1::RoundedRect(m_rcDbPillBrowser, 3.5f, 3.5f), theme.brushItemHover.Get());
+            }
+            m_icons.DrawExternalLink(pRT, m_rcDbPillBrowser, pDbBrush, 1.2f);
+
+            // Draw Settings action button (⚙) inside Database pill
+            if (m_hoveredDbPillSettings && theme.brushItemHover) {
+                pRT->FillRoundedRectangle(D2D1::RoundedRect(m_rcDbPillSettings, 3.5f, 3.5f), theme.brushItemHover.Get());
+            }
+            m_icons.DrawSettings(pRT, m_rcDbPillSettings, pDbBrush, 1.2f);
+        } else {
+            m_rcDbPillSettings = D2D1::RectF(0, 0, 0, 0);
+            m_rcDbPillBrowser = D2D1::RectF(0, 0, 0, 0);
+        }
+
+        D2D1_RECT_F rcDbLabel = D2D1::RectF(dbBtnX + extBtnW - config.ScaleF(2.0f), extBtnY, dbLabelRight, extBtnY + extBtnH);
         IDWriteTextFormat* pFmt = theme.fontCounterBadge ? theme.fontCounterBadge.Get() : (theme.fontHint ? theme.fontHint.Get() : theme.fontMenuItem.Get());
         pRT->DrawText(dbText.c_str(), static_cast<UINT32>(dbText.size()), pFmt, rcDbLabel, pDbBrush);
     } else if (m_databaseLogOpened && (m_databaseState == DatabaseState::Running || m_databaseState == DatabaseState::Failed)) {
@@ -867,7 +927,7 @@ void TitleHeader::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCon
     if (m_showDatabaseDropdown) {
         const float dropW = config.ScaleF(220.0f);
         const float dropH = config.ScaleF(74.0f);
-        const float dropX = (std::max)(10.0f, m_rcDatabase.left);
+        const float dropX = (std::max)(10.0f, m_rcDatabase.right - dropW);
         const float dropY = m_rcDatabase.bottom + config.ScaleF(4.0f);
         m_rcDatabaseDropdown = D2D1::RectF(dropX, dropY, dropX + dropW, dropY + dropH);
         D2D1_ROUNDED_RECT rrcDrop = D2D1::RoundedRect(m_rcDatabaseDropdown, 6.0f, 6.0f);
@@ -964,7 +1024,7 @@ void TitleHeader::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCon
     if (m_showServerDropdown) {
         const float dropW = config.ScaleF(220.0f);
         const float dropH = config.ScaleF(74.0f);
-        const float dropX = (std::max)(10.0f, m_rcServer.left);
+        const float dropX = (std::max)(10.0f, m_rcServer.right - dropW);
         const float dropY = m_rcServer.bottom + config.ScaleF(4.0f);
         m_rcServerDropdown = D2D1::RectF(dropX, dropY, dropX + dropW, dropY + dropH);
         D2D1_ROUNDED_RECT rrcDrop = D2D1::RoundedRect(m_rcServerDropdown, 6.0f, 6.0f);
@@ -1153,6 +1213,30 @@ bool TitleHeader::SetHoveredZoom(int hovered) noexcept {
         return true;
     }
     return false;
+}
+
+bool TitleHeader::HitTestDbPillSettings(POINT pt) const noexcept {
+    return (m_hoveredDatabase && (m_databaseState == DatabaseState::Running || m_databaseState == DatabaseState::Failed) &&
+            pt.x >= m_rcDbPillSettings.left && pt.x <= m_rcDbPillSettings.right &&
+            pt.y >= m_rcDbPillSettings.top && pt.y <= m_rcDbPillSettings.bottom);
+}
+
+bool TitleHeader::HitTestDbPillBrowser(POINT pt) const noexcept {
+    return (m_hoveredDatabase && (m_databaseState == DatabaseState::Running || m_databaseState == DatabaseState::Failed) &&
+            pt.x >= m_rcDbPillBrowser.left && pt.x <= m_rcDbPillBrowser.right &&
+            pt.y >= m_rcDbPillBrowser.top && pt.y <= m_rcDbPillBrowser.bottom);
+}
+
+bool TitleHeader::HitTestSrvPillSettings(POINT pt) const noexcept {
+    return (m_hoveredServer && (m_serverState == ServerState::Running || m_serverState == ServerState::Failed) &&
+            pt.x >= m_rcSrvPillSettings.left && pt.x <= m_rcSrvPillSettings.right &&
+            pt.y >= m_rcSrvPillSettings.top && pt.y <= m_rcSrvPillSettings.bottom);
+}
+
+bool TitleHeader::HitTestSrvPillBrowser(POINT pt) const noexcept {
+    return (m_hoveredServer && (m_serverState == ServerState::Running || m_serverState == ServerState::Failed) &&
+            pt.x >= m_rcSrvPillBrowser.left && pt.x <= m_rcSrvPillBrowser.right &&
+            pt.y >= m_rcSrvPillBrowser.top && pt.y <= m_rcSrvPillBrowser.bottom);
 }
 
 bool TitleHeader::HitTestDatabase(POINT pt) const noexcept {

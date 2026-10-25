@@ -63,12 +63,21 @@ public:
     }
 
     /**
-     * @brief Queries code completions for a file based on file extension and prefix.
+     * @brief Queries code completions for a file based on file extension, prefix, and document buffer.
      */
     [[nodiscard]] std::vector<IntelliSenseItem> QueryCompletions(
         const std::wstring& fileName,
         const std::wstring& currentLine,
-        size_t cursorCol
+        size_t cursorCol,
+        const std::vector<std::wstring>* pDocLines = nullptr
+    ) const;
+
+    /**
+     * @brief Dynamically extracts user-defined variables and typed symbols from document lines.
+     */
+    [[nodiscard]] std::vector<IntelliSenseItem> ExtractDocumentSymbols(
+        const std::vector<std::wstring>& docLines,
+        const std::wstring& fileExt
     ) const;
 
     /**

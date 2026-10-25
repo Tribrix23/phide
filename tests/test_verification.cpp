@@ -8037,20 +8037,34 @@ run_test_66:
         assert(dbModal.IsOpen());
         assert(dbModal.GetActiveTab() == phide::ui::DatabaseModalTab::PhpMyAdmin);
 
-        assert(dbModal.GetHost() == L"127.0.0.1");
+        assert(dbModal.GetHost() == L"localhost");
         assert(dbModal.GetPort() == L"3306");
         assert(dbModal.GetUser() == L"root");
         assert(dbModal.GetDefaultDb() == L"student_crud");
-        assert(dbModal.GetPdoSnippet().find(L"mysql:host=127.0.0.1;port=3306;dbname=student_crud") != std::wstring::npos);
-        assert(dbModal.GetMysqliSnippet().find(L"127.0.0.1") != std::wstring::npos);
-        std::cout << "  Passed: Database credentials and PDO/MySQLi snippets correctly loaded." << std::endl;
+        assert(dbModal.GetPdoSnippet().find(L"mysql:host=localhost;port=3306;dbname=student_crud") != std::wstring::npos);
+        assert(dbModal.GetMysqliSnippet().find(L"localhost") != std::wstring::npos);
+        std::cout << "  Passed: Database credentials default host is 'localhost' and PDO/MySQLi snippets correctly loaded." << std::endl;
 
-        // 3. Render Database & phpMyAdmin Settings Modal Snapshot
+        // Test Interactive Field Editing (Image 3 & 4 user request: "the user can edit here")
+        dbModal.SetFocusedField(phide::ui::DatabaseEditField::Host);
+        assert(dbModal.GetFocusedField() == phide::ui::DatabaseEditField::Host);
+        dbModal.OnChar(L'1');
+        assert(dbModal.GetHost() == L"localhost1");
+        assert(dbModal.GetPdoSnippet().find(L"mysql:host=localhost1") != std::wstring::npos);
+        // Backspace
+        dbModal.OnChar(8);
+        assert(dbModal.GetHost() == L"localhost");
+        std::cout << "  Passed: Interactive editing of credential fields dynamically updates PDO and MySQLi snippets." << std::endl;
+
+        // 3. Render Database & phpMyAdmin Settings Modal Snapshot with Focused Host Input
+        dbModal.SetSqlFileAvailable(L"database.sql");
+        dbModal.SetFocusedField(phide::ui::DatabaseEditField::Host);
         dbModal.SetRuntimeStatus(/*pmaRunning=*/true, /*nginxRunning=*/false);
         dbModal.Render(pRTSnap.Get(), theme, testCfg, static_cast<float>(snapW), static_cast<float>(snapH));
 
         HRESULT hrEnd1 = pRTSnap->EndDraw();
         assert(SUCCEEDED(hrEnd1));
+        assert(dbModal.GetSqlFileName() == L"database.sql");
 
         std::wstring artifactDbPath = L"C:\\Users\\Administrator\\.gemini\\antigravity\\brain\\c83160b9-3f8b-4ad1-87a8-ab1f7f555a77\\test_database_phpmyadmin_settings_modal.png";
         SaveWicBitmapToPng(pWicSnap.Get(), pWicFactory.Get(), artifactDbPath);
@@ -8076,6 +8090,79 @@ run_test_66:
         SaveWicBitmapToPng(pWicSnap.Get(), pWicFactory.Get(), artifactNginxPath);
         assert(std::filesystem::exists(artifactNginxPath));
         std::wcout << L"  Passed: Saved visual verification of Nginx Settings Modal to: " << artifactNginxPath << std::endl;
+
+        // 5. Test IntelliSense Variable & Datatype Detection from Document (User request: "when i type port as varuiable...")
+        phide::editor::IntelliSenseEngine engine;
+        std::vector<std::wstring> phpDoc = {
+            L"<?php",
+            L"$port = 3306;",
+            L"$host = 'localhost';",
+            L"$isReady = true;",
+            L"$conn = new PDO('...');",
+            L""
+        };
+        auto phpComps = engine.QueryCompletions(L"db.php", L"$p", 2, &phpDoc);
+        bool foundPhpPort = false;
+        for (const auto& item : phpComps) {
+            if (item.label == L"$port") {
+                assert(item.kind == phide::editor::CompletionKind::Variable);
+                assert(item.detail == L"Variable (int)");
+                foundPhpPort = true;
+            }
+        }
+        assert(foundPhpPort);
+        std::cout << "  Passed: PHP $port variable with inferred datatype 'Variable (int)' recognized in IntelliSense." << std::endl;
+
+        // Test C++ / Typed Language variable detection
+        std::vector<std::wstring> cppDoc = {
+            L"#include <iostream>",
+            L"int port = 8080;",
+            L"std::string host = \"127.0.0.1\";",
+            L""
+        };
+        auto cppComps = engine.QueryCompletions(L"server.cpp", L"port", 4, &cppDoc);
+        bool foundCppPort = false;
+        for (const auto& item : cppComps) {
+            if (item.label == L"port" && item.origin == L"variable") {
+                assert(item.kind == phide::editor::CompletionKind::Variable);
+                assert(item.detail == L"Variable (int)");
+                foundCppPort = true;
+            }
+        }
+        assert(foundCppPort);
+        std::cout << "  Passed: C++ typed variable 'int port' with 'Variable (int)' recognized in IntelliSense." << std::endl;
+
+        // 6. Test Running Server & Database Pill Hover Action Buttons (Settings & Browser)
+        header.CloseServerDatabaseDropdowns();
+        header.SetDatabaseState(phide::ui::DatabaseState::Running);
+        header.SetServerState(phide::ui::ServerState::Running);
+        header.SetHoveredDatabase(true);
+        header.SetHoveredServer(true);
+
+        pRTSnap->BeginDraw();
+        pRTSnap->Clear(theme.colors.canvasBg);
+        header.Render(pRTSnap.Get(), theme, testCfg, static_cast<float>(snapW), false);
+
+        D2D1_RECT_F rcDb = header.GetDatabaseBounds();
+        POINT ptDbSet{ static_cast<LONG>(rcDb.right - 10.0f), static_cast<LONG>(rcDb.top + 14.0f) };
+        POINT ptDbBro{ static_cast<LONG>(rcDb.right - 30.0f), static_cast<LONG>(rcDb.top + 14.0f) };
+        assert(header.HitTestDbPillSettings(ptDbSet));
+        assert(header.HitTestDbPillBrowser(ptDbBro));
+
+        D2D1_RECT_F rcSrv = header.GetServerBounds();
+        POINT ptSrvSet{ static_cast<LONG>(rcSrv.right - 10.0f), static_cast<LONG>(rcSrv.top + 14.0f) };
+        POINT ptSrvBro{ static_cast<LONG>(rcSrv.right - 30.0f), static_cast<LONG>(rcSrv.top + 14.0f) };
+        assert(header.HitTestSrvPillSettings(ptSrvSet));
+        assert(header.HitTestSrvPillBrowser(ptSrvBro));
+        std::cout << "  Passed: Running Server and Database pills render Settings (⚙) and Open in Browser (↗) action buttons on hover." << std::endl;
+
+        HRESULT hrEnd3 = pRTSnap->EndDraw();
+        assert(SUCCEEDED(hrEnd3));
+
+        std::wstring artifactPillsPath = L"C:\\Users\\Administrator\\.gemini\\antigravity\\brain\\c83160b9-3f8b-4ad1-87a8-ab1f7f555a77\\test_running_pills_hover_actions.png";
+        SaveWicBitmapToPng(pWicSnap.Get(), pWicFactory.Get(), artifactPillsPath);
+        assert(std::filesystem::exists(artifactPillsPath));
+        std::wcout << L"  Passed: Saved visual verification of Running Pills Hover Actions to: " << artifactPillsPath << std::endl;
 
         // 5. Test PHP File Run Action is Enabled
         header.SetRunEnabled(true);

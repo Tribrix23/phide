@@ -3,3 +3,12 @@
 2026/10/25 19:42:40 [error] 7872#21384: OpenEvent("Global\ngx_stop_21660") failed (2: The system cannot find the file specified)
 2026/10/25 20:08:35 [notice] 22248#10216: signal process started
 2026/10/25 20:11:09 [notice] 21552#21764: signal process started
+2026/10/25 21:28:18 [notice] 16400#17508: signal process started
+2026/10/25 21:28:18 [error] 16400#17508: OpenEvent("Global\ngx_stop_16768") failed (2: The system cannot find the file specified)
+2026/10/25 21:29:56 [notice] 20964#20736: signal process started
+2026/10/25 21:46:43 [notice] 20304#9872: signal process started
+2026/10/25 21:46:43 [error] 20304#9872: CreateFile() "C:\Users\Administrator\Downloads\studio\phide\include\phide\server\nginx/logs/nginx.pid" failed (2: The system cannot find the file specified)
+2026/10/25 21:48:01 [error] 3320#18692: *1 CreateFile() "C:\Users\Administrator\Downloads\studio\phide\include\phide\server\nginx/html/favicon.ico" failed (2: The system cannot find the file specified), client: 127.0.0.1, server: localhost, request: "GET /favicon.ico HTTP/1.1", host: "localhost", referrer: "http://localhost/"
+2026/10/25 21:57:08 [notice] 12332#12400: signal process started
+2026/10/25 22:31:04 [notice] 10320#13972: signal process started
+2026/10/25 22:31:04 [error] 10320#13972: CreateFile() "C:\Users\Administrator\Downloads\studio\phide\include\phide\server\nginx/logs/nginx.pid" failed (2: The system cannot find the file specified)

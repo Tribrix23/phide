@@ -518,7 +518,94 @@ void IntelliSenseEngine::PopulateCommonVocabulary() {
         { L"close", L"Closes modal, dialog, or network socket", CompletionKind::Function },
         { L"open", L"Opens modal, dialog, or network stream", CompletionKind::Function },
         { L"start", L"Initiates background task or timer loop", CompletionKind::Function },
-        { L"stop", L"Halts execution or cancels running process", CompletionKind::Function }
+        { L"stop", L"Halts execution or cancels running process", CompletionKind::Function },
+
+        // Network, Database, Web Server, and PHP vocabulary (Image 3 request: "when i type port theres no recommended auto complete")
+        { L"port", L"Network listening port number (e.g. 80, 8080, 3306)", CompletionKind::Variable },
+        { L"host", L"Host name or server address (e.g. localhost, 127.0.0.1)", CompletionKind::Variable },
+        { L"hostname", L"Domain host name or server address without port", CompletionKind::Property },
+        { L"database", L"Database name or connection schema", CompletionKind::Variable },
+        { L"dbname", L"Database name parameter or connection string", CompletionKind::Variable },
+        { L"db", L"Database handle or instance reference", CompletionKind::Variable },
+        { L"username", L"User login name or authentication credential", CompletionKind::Variable },
+        { L"password", L"User authentication secret or credential", CompletionKind::Variable },
+        { L"pass", L"Password credential parameter or variable", CompletionKind::Variable },
+        { L"user", L"User profile or session account entity", CompletionKind::Variable },
+        { L"charset", L"Character encoding set (e.g. utf8mb4, utf8)", CompletionKind::Property },
+        { L"pdo", L"PHP Data Objects database abstraction layer", CompletionKind::Variable },
+        { L"mysqli", L"MySQL Improved Extension client instance", CompletionKind::Variable },
+        { L"conn", L"Database connection handle or socket", CompletionKind::Variable },
+        { L"connection", L"Active client-server database connection stream", CompletionKind::Variable },
+        { L"stmt", L"Prepared SQL statement handle or cursor", CompletionKind::Variable },
+        { L"statement", L"Prepared SQL query or execution statement", CompletionKind::Variable },
+        { L"table", L"Relational database table entity", CompletionKind::Variable },
+        { L"column", L"Relational database column field", CompletionKind::Property },
+        { L"row", L"Single record row in database result set", CompletionKind::Variable },
+        { L"rows", L"Collection of record rows retrieved from database", CompletionKind::Variable },
+        { L"execute", L"Executes prepared query or SQL statement", CompletionKind::Method },
+        { L"prepare", L"Prepares parameterized SQL query statement", CompletionKind::Method },
+        { L"fetch", L"Fetches next record row from result set cursor", CompletionKind::Method },
+        { L"fetchAll", L"Fetches all remaining rows in query result set", CompletionKind::Method },
+        { L"fetch_assoc", L"Fetches result row as associative array", CompletionKind::Method },
+        { L"fetch_array", L"Fetches result row as indexed or associative array", CompletionKind::Method },
+        { L"rowCount", L"Returns number of rows affected or retrieved", CompletionKind::Method },
+        { L"connect", L"Establishes network or database connection", CompletionKind::Function },
+        { L"disconnect", L"Closes active network or database connection", CompletionKind::Function },
+        { L"query", L"Executes raw SQL query statement or CSS selector", CompletionKind::Method },
+        { L"server", L"Web or application server instance / daemon", CompletionKind::Variable },
+        { L"nginx", L"High-performance Nginx HTTP web server reverse proxy", CompletionKind::Variable },
+        { L"apache", L"Apache HTTP Server daemon", CompletionKind::Variable },
+        { L"mysql", L"MySQL relational database management system", CompletionKind::Variable },
+        { L"mariadb", L"MariaDB community database management server", CompletionKind::Variable },
+        { L"phpmyadmin", L"Web-based MySQL and MariaDB administration tool", CompletionKind::Variable },
+        { L"localhost", L"Local loopback network address (127.0.0.1)", CompletionKind::Variable },
+        { L"socket", L"Network socket or UNIX domain socket descriptor", CompletionKind::Variable },
+        { L"endpoint", L"API or service network endpoint URI", CompletionKind::Property },
+        { L"session", L"User stateful session instance or cookie store", CompletionKind::Variable },
+        { L"cookie", L"HTTP cookie header or browser state token", CompletionKind::Property },
+        { L"token", L"Authentication bearer token or security credential", CompletionKind::Variable },
+        { L"params", L"URL query parameters or routing arguments", CompletionKind::Variable },
+        { L"route", L"Application URL route definition or handler", CompletionKind::Variable },
+        { L"router", L"HTTP routing dispatcher or gateway", CompletionKind::Variable },
+        { L"middleware", L"HTTP request-response pipeline middleware interceptor", CompletionKind::Function },
+        { L"controller", L"Application MVC controller business logic class", CompletionKind::Variable },
+        { L"model", L"Application data model or ORM entity", CompletionKind::Variable },
+        { L"view", L"Application UI view template or presentation component", CompletionKind::Variable },
+        { L"service", L"Background or business logic service provider", CompletionKind::Variable },
+        { L"repository", L"Data access repository pattern interface", CompletionKind::Variable },
+        { L"entity", L"Persistent database domain model entity", CompletionKind::Variable },
+        { L"schema", L"Database or validation data schema definition", CompletionKind::Variable },
+        { L"migration", L"Database structure migration version script", CompletionKind::Variable },
+        { L"env", L"Environment variable configuration map (.env)", CompletionKind::Variable },
+        { L"dotenv", L"Loads environment variables from .env file", CompletionKind::Function },
+
+        // PHP Superglobals (Image 3 request: "say its varuiable")
+        { L"$_GET", L"PHP Superglobal: HTTP GET query parameters array", CompletionKind::Variable },
+        { L"$_POST", L"PHP Superglobal: HTTP POST form data array", CompletionKind::Variable },
+        { L"$_SESSION", L"PHP Superglobal: Current session variables array", CompletionKind::Variable },
+        { L"$_COOKIE", L"PHP Superglobal: HTTP cookies array", CompletionKind::Variable },
+        { L"$_SERVER", L"PHP Superglobal: Web server and execution environment headers", CompletionKind::Variable },
+        { L"$_REQUEST", L"PHP Superglobal: Combined GET, POST, and COOKIE input data", CompletionKind::Variable },
+        { L"$_FILES", L"PHP Superglobal: HTTP file upload items array", CompletionKind::Variable },
+        { L"$_ENV", L"PHP Superglobal: Environment variables array", CompletionKind::Variable },
+        { L"$GLOBALS", L"PHP Superglobal: References all global variables", CompletionKind::Variable },
+
+        // PHP Built-in Functions & Keywords
+        { L"echo", L"Outputs one or more strings to the output buffer", CompletionKind::Keyword },
+        { L"print", L"Outputs a string expression", CompletionKind::Keyword },
+        { L"var_dump", L"Dumps structured information about a variable", CompletionKind::Function },
+        { L"print_r", L"Prints human-readable information about a variable", CompletionKind::Function },
+        { L"die", L"Equivalent to exit(); prints message and terminates script", CompletionKind::Function },
+        { L"exit", L"Terminates current script execution with status code", CompletionKind::Function },
+        { L"isset", L"Determines if a variable is declared and different from null", CompletionKind::Function },
+        { L"empty", L"Determines whether a variable is empty", CompletionKind::Function },
+        { L"unset", L"Destroys specified variables", CompletionKind::Function },
+        { L"header", L"Sends a raw HTTP header to client", CompletionKind::Function },
+        { L"json_encode", L"Returns JSON representation of a value", CompletionKind::Function },
+        { L"json_decode", L"Decodes a JSON string into PHP object/array", CompletionKind::Function },
+        { L"include_once", L"Includes and evaluates specified file once during execution", CompletionKind::Keyword },
+        { L"require_once", L"Requires specified file once; produces fatal error if not found", CompletionKind::Keyword },
+        { L"session_start", L"Initializes or resumes an existing PHP session", CompletionKind::Function }
     };
 
     m_commonVocabulary.reserve(sizeof(words) / sizeof(words[0]));
@@ -558,10 +645,232 @@ std::wstring IntelliSenseEngine::ExtractQueryPrefix(const std::wstring& line, si
     return line.substr(start, col - start);
 }
 
+std::vector<IntelliSenseItem> IntelliSenseEngine::ExtractDocumentSymbols(
+    const std::vector<std::wstring>& docLines,
+    const std::wstring& fileExt
+) const {
+    std::vector<IntelliSenseItem> results;
+    std::unordered_set<std::wstring> seenVars;
+
+    auto trim = [](const std::wstring& s) -> std::wstring {
+        size_t start = 0;
+        while (start < s.length() && iswspace(s[start])) start++;
+        size_t end = s.length();
+        while (end > start && iswspace(s[end - 1])) end--;
+        return s.substr(start, end - start);
+    };
+
+    auto isIdentChar = [](wchar_t c) {
+        return iswalnum(c) || c == L'_';
+    };
+
+    auto inferTypeFromVal = [](const std::wstring& val) -> std::wstring {
+        if (val.empty()) return L"";
+        if (val[0] == L'"' || val[0] == L'\'') return L"string";
+        if (val == L"true" || val == L"false" || val == L"TRUE" || val == L"FALSE") return L"bool";
+        if (val[0] == L'[' || val.rfind(L"array(", 0) == 0) return L"array";
+        if (val[0] == L'{') return L"object";
+        if (val.rfind(L"new ", 0) == 0) {
+            size_t p = 4;
+            while (p < val.length() && iswspace(val[p])) p++;
+            size_t q = p;
+            while (q < val.length() && (iswalnum(val[q]) || val[q] == L'_' || val[q] == L'\\')) q++;
+            if (q > p) return val.substr(p, q - p);
+            return L"object";
+        }
+        size_t startIdx = (val[0] == L'-' || val[0] == L'+') ? 1 : 0;
+        if (startIdx < val.length() && iswdigit(val[startIdx])) {
+            if (val.find(L'.') != std::wstring::npos) return L"float";
+            return L"int";
+        }
+        return L"";
+    };
+
+    for (const auto& line : docLines) {
+        std::wstring trimmed = trim(line);
+        if (trimmed.empty()) continue;
+        if (trimmed.rfind(L"//", 0) == 0 || trimmed.rfind(L"#", 0) == 0 || trimmed.rfind(L"/*", 0) == 0 || trimmed.rfind(L"*", 0) == 0) {
+            continue;
+        }
+
+        // 1. PHP style variables: $port = 3306;
+        size_t pDollar = 0;
+        while ((pDollar = line.find(L'$', pDollar)) != std::wstring::npos) {
+            size_t pStart = pDollar + 1;
+            if (pStart < line.length() && (iswalpha(line[pStart]) || line[pStart] == L'_')) {
+                size_t pEnd = pStart;
+                while (pEnd < line.length() && isIdentChar(line[pEnd])) {
+                    pEnd++;
+                }
+                std::wstring varName = line.substr(pStart, pEnd - pStart);
+                std::wstring fullVar = L"$" + varName;
+
+                std::wstring inferredType;
+                size_t pEq = line.find(L'=', pEnd);
+                if (pEq != std::wstring::npos) {
+                    bool isAssign = true;
+                    if (pEq + 1 < line.length() && (line[pEq + 1] == L'=' || line[pEq + 1] == L'>')) isAssign = false;
+                    if (pEq > 0 && (line[pEq - 1] == L'=' || line[pEq - 1] == L'!' || line[pEq - 1] == L'<' || line[pEq - 1] == L'>')) isAssign = false;
+                    if (isAssign) {
+                        std::wstring rightSide = trim(line.substr(pEq + 1));
+                        if (!rightSide.empty() && rightSide.back() == L';') rightSide.pop_back();
+                        rightSide = trim(rightSide);
+                        inferredType = inferTypeFromVal(rightSide);
+                    }
+                }
+
+                std::wstring detailStr = inferredType.empty() ? L"Variable" : (L"Variable (" + inferredType + L")");
+
+                if (seenVars.insert(fullVar).second) {
+                    IntelliSenseItem item;
+                    item.label = fullVar;
+                    item.detail = detailStr;
+                    item.insertText = fullVar;
+                    item.kind = CompletionKind::Variable;
+                    item.score = 550;
+                    item.origin = L"variable";
+                    results.push_back(std::move(item));
+                }
+                if (seenVars.insert(varName).second) {
+                    IntelliSenseItem item;
+                    item.label = varName;
+                    item.detail = detailStr;
+                    item.insertText = varName;
+                    item.kind = CompletionKind::Variable;
+                    item.score = 540;
+                    item.origin = L"variable";
+                    results.push_back(std::move(item));
+                }
+                pDollar = pEnd;
+            } else {
+                pDollar++;
+            }
+        }
+
+        // 2. JS/TS declarations: const port = 3000; or let port = ...
+        static const std::vector<std::wstring> jsVarKws = { L"const", L"let", L"var" };
+        for (const auto& kw : jsVarKws) {
+            if (trimmed.rfind(kw + L" ", 0) == 0) {
+                size_t pStart = kw.length();
+                while (pStart < trimmed.length() && iswspace(trimmed[pStart])) pStart++;
+                if (pStart < trimmed.length() && (iswalpha(trimmed[pStart]) || trimmed[pStart] == L'_')) {
+                    size_t pEnd = pStart;
+                    while (pEnd < trimmed.length() && isIdentChar(trimmed[pEnd])) pEnd++;
+                    std::wstring varName = trimmed.substr(pStart, pEnd - pStart);
+
+                    std::wstring inferredType;
+                    size_t pColon = trimmed.find(L':', pEnd);
+                    size_t pEq = trimmed.find(L'=', pEnd);
+                    if (pColon != std::wstring::npos && (pEq == std::wstring::npos || pColon < pEq)) {
+                        size_t tStart = pColon + 1;
+                        while (tStart < trimmed.length() && iswspace(trimmed[tStart])) tStart++;
+                        size_t tEnd = (pEq != std::wstring::npos) ? pEq : trimmed.length();
+                        inferredType = trim(trimmed.substr(tStart, tEnd - tStart));
+                        if (!inferredType.empty() && inferredType.back() == L';') inferredType.pop_back();
+                        inferredType = trim(inferredType);
+                    } else if (pEq != std::wstring::npos) {
+                        std::wstring rightSide = trim(trimmed.substr(pEq + 1));
+                        if (!rightSide.empty() && rightSide.back() == L';') rightSide.pop_back();
+                        rightSide = trim(rightSide);
+                        inferredType = inferTypeFromVal(rightSide);
+                    }
+
+                    std::wstring detailStr = inferredType.empty() ? L"Variable" : (L"Variable (" + inferredType + L")");
+                    if (seenVars.insert(varName).second) {
+                        IntelliSenseItem item;
+                        item.label = varName;
+                        item.detail = detailStr;
+                        item.insertText = varName;
+                        item.kind = CompletionKind::Variable;
+                        item.score = 550;
+                        item.origin = L"variable";
+                        results.push_back(std::move(item));
+                    }
+                }
+                break;
+            }
+        }
+
+        // 3. Typed language declarations (C, C++, Java, C#):
+        static const std::vector<std::wstring> cTypes = {
+            L"int", L"float", L"double", L"bool", L"char", L"string", L"std::string",
+            L"auto", L"size_t", L"uint32_t", L"int32_t", L"uint64_t", L"int64_t",
+            L"long", L"short", L"unsigned", L"void*", L"DWORD", L"HANDLE", L"UINT", L"BOOL"
+        };
+        for (const auto& cType : cTypes) {
+            std::wstring prefix = cType + L" ";
+            std::wstring constPrefix = L"const " + prefix;
+            size_t pTypeStart = std::wstring::npos;
+            if (trimmed.rfind(constPrefix, 0) == 0) {
+                pTypeStart = constPrefix.length();
+            } else if (trimmed.rfind(prefix, 0) == 0) {
+                pTypeStart = prefix.length();
+            }
+
+            if (pTypeStart != std::wstring::npos) {
+                while (pTypeStart < trimmed.length() && iswspace(trimmed[pTypeStart])) pTypeStart++;
+                if (pTypeStart < trimmed.length() && (iswalpha(trimmed[pTypeStart]) || trimmed[pTypeStart] == L'_')) {
+                    size_t pEnd = pTypeStart;
+                    while (pEnd < trimmed.length() && isIdentChar(trimmed[pEnd])) pEnd++;
+                    std::wstring varName = trimmed.substr(pTypeStart, pEnd - pTypeStart);
+
+                    std::wstring detailStr = L"Variable (" + cType + L")";
+                    if (seenVars.insert(varName).second) {
+                        IntelliSenseItem item;
+                        item.label = varName;
+                        item.detail = detailStr;
+                        item.insertText = varName;
+                        item.kind = CompletionKind::Variable;
+                        item.score = 550;
+                        item.origin = L"variable";
+                        results.push_back(std::move(item));
+                    }
+                }
+                break;
+            }
+        }
+
+        // 4. Python / Generic assignment: port = 8080
+        size_t eqPos = trimmed.find(L'=');
+        if (eqPos != std::wstring::npos && eqPos > 0) {
+            bool isAssign = true;
+            if (eqPos + 1 < trimmed.length() && (trimmed[eqPos + 1] == L'=' || trimmed[eqPos + 1] == L'>')) isAssign = false;
+            if (trimmed[eqPos - 1] == L'=' || trimmed[eqPos - 1] == L'!' || trimmed[eqPos - 1] == L'<' || trimmed[eqPos - 1] == L'>' || trimmed[eqPos - 1] == L'+' || trimmed[eqPos - 1] == L'-') isAssign = false;
+            if (isAssign) {
+                std::wstring leftSide = trim(trimmed.substr(0, eqPos));
+                bool validIdent = !leftSide.empty() && (iswalpha(leftSide[0]) || leftSide[0] == L'_');
+                for (size_t i = 1; i < leftSide.length(); ++i) {
+                    if (!isIdentChar(leftSide[i])) { validIdent = false; break; }
+                }
+                if (validIdent && leftSide != L"if" && leftSide != L"while" && leftSide != L"return" && leftSide != L"case") {
+                    std::wstring rightSide = trim(trimmed.substr(eqPos + 1));
+                    if (!rightSide.empty() && rightSide.back() == L';') rightSide.pop_back();
+                    rightSide = trim(rightSide);
+                    std::wstring inferred = inferTypeFromVal(rightSide);
+                    std::wstring detailStr = inferred.empty() ? L"Variable" : (L"Variable (" + inferred + L")");
+                    if (seenVars.insert(leftSide).second) {
+                        IntelliSenseItem item;
+                        item.label = leftSide;
+                        item.detail = detailStr;
+                        item.insertText = leftSide;
+                        item.kind = CompletionKind::Variable;
+                        item.score = 550;
+                        item.origin = L"variable";
+                        results.push_back(std::move(item));
+                    }
+                }
+            }
+        }
+    }
+
+    return results;
+}
+
 std::vector<IntelliSenseItem> IntelliSenseEngine::QueryCompletions(
     const std::wstring& fileName,
     const std::wstring& currentLine,
-    size_t cursorCol
+    size_t cursorCol,
+    const std::vector<std::wstring>* pDocLines
 ) const {
     // 0. Check if cursor is in a File / Folder Path context (Images 2 & 3)
     // E.g.: <a href="./", <script src="./", import ... from "./", require("./"), preload("./"), url("./"), etc.
@@ -828,6 +1137,14 @@ std::vector<IntelliSenseItem> IntelliSenseEngine::QueryCompletions(
         };
         for (const auto* kw : cppKeywords) {
             rawCandidates.push_back({ kw, L"C++ Keyword", kw, CompletionKind::Keyword, 120, 0, 0, L"c++" });
+        }
+    }
+
+    // Dynamic Document Variables & Typed Symbols (Image 3 request: "when i type port as variable then when i go to another line the port same case is in the intelisense... saying its variable if like another lang that they specifies then it say datatype and variable")
+    if (pDocLines && !pDocLines->empty()) {
+        auto docSymbols = ExtractDocumentSymbols(*pDocLines, ext);
+        for (auto& sym : docSymbols) {
+            rawCandidates.push_back(std::move(sym));
         }
     }
 

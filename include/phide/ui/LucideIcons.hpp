@@ -229,6 +229,11 @@ public:
      */
     void DrawSettings(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, ID2D1Brush* pBrush, float strokeWidth = 1.2f) const;
 
+    /**
+     * @brief Draws the vector External Link / Open in Browser icon (↗).
+     */
+    void DrawExternalLink(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, ID2D1Brush* pBrush, float strokeWidth = 1.3f) const;
+
 private:
     ComPtr<ID2D1StrokeStyle> m_pStrokeStyle;
     ComPtr<ID2D1PathGeometry> m_pWrenchGeometry;

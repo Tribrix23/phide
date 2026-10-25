@@ -15,6 +15,7 @@
 #include <filesystem>
 #include <fstream>
 #include <algorithm>
+#include <tlhelp32.h>
 
 #pragma comment(lib, "user32.lib")
 #pragma comment(lib, "gdi32.lib")
@@ -44,6 +45,23 @@ static void SetClipboardText(HWND hwnd, const std::wstring& text) {
         }
     }
     CloseClipboard();
+}
+
+static std::filesystem::path GetPhideRoot() {
+    wchar_t buf[MAX_PATH];
+    GetModuleFileNameW(nullptr, buf, MAX_PATH);
+    std::filesystem::path p(buf);
+    std::filesystem::path dir = p.parent_path();
+    if (std::filesystem::exists(dir / L"include" / L"phide")) {
+        return dir;
+    }
+    if (std::filesystem::exists(dir.parent_path() / L"include" / L"phide")) {
+        return dir.parent_path();
+    }
+    if (std::filesystem::exists(std::filesystem::current_path() / L"include" / L"phide")) {
+        return std::filesystem::current_path();
+    }
+    return std::filesystem::path(L"c:\\Users\\Administrator\\Downloads\\studio\\phide");
 }
 
 static std::wstring GetRelativePath(const std::wstring& fullPath, const std::wstring& basePath) {
@@ -232,6 +250,7 @@ Window::~Window() {
     StopPhpServer();
     StopNginxServer();
     StopPmaServer();
+    StopMysqlServer();
     DiscardDeviceResources();
     if (m_hwnd) {
         KillTimer(m_hwnd, m_caretTimerId);
@@ -1828,7 +1847,7 @@ void Window::CommitAutocompleteSelection() {
             if (m_intelliSense.GetWorkspaceRoot().empty() && m_drawer.HasOpenFolder()) {
                 m_intelliSense.SetWorkspaceRoot(m_drawer.GetOpenFolderPath());
             }
-            auto subItems = m_intelliSense.QueryCompletions(docTarget, newLine, newPos.col);
+            auto subItems = m_intelliSense.QueryCompletions(docTarget, newLine, newPos.col, pDoc ? &pDoc->buffer.GetLines() : nullptr);
             if (!subItems.empty()) {
                 m_editor.ShowAutocomplete(subItems);
             } else {
@@ -2271,6 +2290,38 @@ void Window::DoOpenDatabaseSettings() {
     bool pmaRunning = (m_header.GetDatabaseState() == ui::DatabaseState::Running);
     bool nginxRunning = (m_header.GetServerState() == ui::ServerState::Running);
     m_dbSettingsModal.SetRuntimeStatus(pmaRunning, nginxRunning);
+
+    std::wstring sqlName;
+    auto checkDirForSql = [](const std::filesystem::path& dir) -> std::wstring {
+        if (dir.empty()) return L"";
+        if (std::filesystem::exists(dir / L"database.sql")) return L"database.sql";
+        std::error_code ec;
+        for (const auto& entry : std::filesystem::directory_iterator(dir, ec)) {
+            if (entry.is_regular_file() && entry.path().extension() == L".sql") {
+                return entry.path().filename().wstring();
+            }
+        }
+        return L"";
+    };
+
+    if (!m_workspace.GetRootPath().empty()) {
+        sqlName = checkDirForSql(m_workspace.GetRootPath());
+    }
+    if (sqlName.empty() && !m_runningProjectRoot.empty()) {
+        sqlName = checkDirForSql(m_runningProjectRoot);
+    }
+    std::wstring activeDocPath;
+    if (m_focusedGroupIdx >= 0 && m_focusedGroupIdx < (int)m_editorGroups.size()) {
+        auto& grp = m_editorGroups[m_focusedGroupIdx];
+        if (grp.activeDocIdx >= 0 && grp.activeDocIdx < (int)grp.docs.size()) {
+            activeDocPath = grp.docs[grp.activeDocIdx].filePath;
+        }
+    }
+    if (sqlName.empty() && !activeDocPath.empty()) {
+        sqlName = checkDirForSql(std::filesystem::path(activeDocPath).parent_path());
+    }
+    m_dbSettingsModal.SetSqlFileAvailable(sqlName);
+
     m_dbSettingsModal.Open(ui::DatabaseModalTab::PhpMyAdmin);
     m_header.CloseServerDatabaseDropdowns();
     InvalidateRect(m_hwnd, nullptr, FALSE);
@@ -3244,13 +3295,16 @@ void Window::DoOpenServerLog() {
     logLines.push_back(L"[2026/10/25 16:24:01] [notice] 14208#0: listening on http://0.0.0.0:80");
     logLines.push_back(L"[2026/10/25 16:24:02] [info] 14208#0: connection accepted from 127.0.0.1");
 
-    std::filesystem::path logPath = std::filesystem::current_path() / L"include" / L"phide" / L"server" / L"nginx" / L"logs" / L"error.log";
+    std::filesystem::path logPath = GetPhideRoot() / L"include" / L"phide" / L"server" / L"nginx" / L"logs" / L"error.log";
     std::error_code ecLog;
     if (std::filesystem::exists(logPath, ecLog)) {
         std::ifstream ifs(logPath);
         std::string line;
         while (std::getline(ifs, line) && logLines.size() < 100) {
             if (!line.empty()) {
+                if (line.find("OpenEvent(\"Global\\ngx_stop_") != std::string::npos) {
+                    continue;
+                }
                 std::wstring wLine(line.begin(), line.end());
                 logLines.push_back(wLine);
             }
@@ -3332,13 +3386,17 @@ void Window::StopPhpServer() {
 
 void Window::StartNginxServer() {
     StopNginxServer();
-    std::filesystem::path nginxDir = std::filesystem::current_path() / L"include" / L"phide" / L"server" / L"nginx";
+    std::filesystem::path nginxDir = GetPhideRoot() / L"include" / L"phide" / L"server" / L"nginx";
     std::filesystem::path nginxExe = nginxDir / L"nginx.exe";
     if (!std::filesystem::exists(nginxExe)) {
         m_header.SetServerState(ui::ServerState::Failed);
         return;
     }
-    std::wstring cmd = L"\"" + nginxExe.wstring() + L"\"";
+    std::error_code ec;
+    std::filesystem::remove(nginxDir / L"logs" / L"nginx.pid", ec);
+    std::filesystem::create_directories(nginxDir / L"logs", ec);
+
+    std::wstring cmd = L"\"" + nginxExe.wstring() + L"\" -p \"" + nginxDir.wstring() + L"\"";
     std::vector<wchar_t> cmdBuf(cmd.begin(), cmd.end());
     cmdBuf.push_back(L'\0');
 
@@ -3357,10 +3415,10 @@ void Window::StartNginxServer() {
 }
 
 void Window::StopNginxServer() {
-    if (m_hNginxProcess) {
-        std::filesystem::path nginxDir = std::filesystem::current_path() / L"include" / L"phide" / L"server" / L"nginx";
-        std::filesystem::path nginxExe = nginxDir / L"nginx.exe";
-        std::wstring cmd = L"\"" + nginxExe.wstring() + L"\" -s stop";
+    std::filesystem::path nginxDir = GetPhideRoot() / L"include" / L"phide" / L"server" / L"nginx";
+    std::filesystem::path nginxExe = nginxDir / L"nginx.exe";
+    if (std::filesystem::exists(nginxExe)) {
+        std::wstring cmd = L"\"" + nginxExe.wstring() + L"\" -p \"" + nginxDir.wstring() + L"\" -s stop";
         std::vector<wchar_t> cmdBuf(cmd.begin(), cmd.end());
         cmdBuf.push_back(L'\0');
         STARTUPINFOW si{};
@@ -3373,16 +3431,72 @@ void Window::StopNginxServer() {
             CloseHandle(pi.hProcess);
             CloseHandle(pi.hThread);
         }
+    }
+    if (m_hNginxProcess) {
         TerminateProcess(m_hNginxProcess, 0);
         CloseHandle(m_hNginxProcess);
         m_hNginxProcess = nullptr;
     }
+    std::error_code ec;
+    std::filesystem::remove(nginxDir / L"logs" / L"nginx.pid", ec);
     m_header.SetServerState(ui::ServerState::Stopped);
+}
+
+static bool IsMysqlProcessRunning() {
+    HANDLE hSnap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (hSnap == INVALID_HANDLE_VALUE) return false;
+    PROCESSENTRY32W pe{};
+    pe.dwSize = sizeof(pe);
+    bool found = false;
+    if (Process32FirstW(hSnap, &pe)) {
+        do {
+            if (_wcsicmp(pe.szExeFile, L"mysqld.exe") == 0 || _wcsicmp(pe.szExeFile, L"mariadbd.exe") == 0) {
+                found = true;
+                break;
+            }
+        } while (Process32NextW(hSnap, &pe));
+    }
+    CloseHandle(hSnap);
+    return found;
+}
+
+void Window::StartMysqlServer() {
+    if (m_hMysqlProcess != nullptr) return;
+    if (IsMysqlProcessRunning()) return;
+
+    std::filesystem::path mysqldExe = L"C:\\xampp\\mysql\\bin\\mysqld.exe";
+    std::filesystem::path myIni = L"C:\\xampp\\mysql\\bin\\my.ini";
+    std::filesystem::path xamppDir = L"C:\\xampp";
+
+    if (std::filesystem::exists(mysqldExe) && std::filesystem::exists(myIni)) {
+        std::wstring cmd = L"\"" + mysqldExe.wstring() + L"\" --defaults-file=\"" + myIni.wstring() + L"\" --standalone";
+        std::vector<wchar_t> cmdBuf(cmd.begin(), cmd.end());
+        cmdBuf.push_back(L'\0');
+
+        STARTUPINFOW si{};
+        si.cb = sizeof(si);
+        si.dwFlags = STARTF_USESHOWWINDOW;
+        si.wShowWindow = SW_HIDE;
+        PROCESS_INFORMATION pi{};
+        if (CreateProcessW(NULL, cmdBuf.data(), NULL, NULL, FALSE, CREATE_NO_WINDOW, NULL, xamppDir.wstring().c_str(), &si, &pi)) {
+            m_hMysqlProcess = pi.hProcess;
+            CloseHandle(pi.hThread);
+        }
+    }
+}
+
+void Window::StopMysqlServer() {
+    if (m_hMysqlProcess) {
+        TerminateProcess(m_hMysqlProcess, 0);
+        CloseHandle(m_hMysqlProcess);
+        m_hMysqlProcess = nullptr;
+    }
 }
 
 void Window::StartPmaServer() {
     StopPmaServer();
-    std::filesystem::path pmaDir = std::filesystem::current_path() / L"include" / L"phide" / L"db" / L"phpMyAdmin";
+    StartMysqlServer();
+    std::filesystem::path pmaDir = GetPhideRoot() / L"include" / L"phide" / L"db" / L"phpMyAdmin";
     if (!std::filesystem::exists(pmaDir)) {
         m_header.SetDatabaseState(ui::DatabaseState::Failed);
         return;
@@ -4822,6 +4936,10 @@ void Window::HandleMouseMove(POINT clientPt, WPARAM wParam) {
     if (m_header.SetHoveredExtensions(m_header.HitTestExtensions(clientPt))) needRepaint = true;
     if (m_header.SetHoveredDatabase(m_header.HitTestDatabase(clientPt))) needRepaint = true;
     if (m_header.SetHoveredServer(m_header.HitTestServer(clientPt))) needRepaint = true;
+    if (m_header.SetHoveredDbPillSettings(m_header.HitTestDbPillSettings(clientPt))) needRepaint = true;
+    if (m_header.SetHoveredDbPillBrowser(m_header.HitTestDbPillBrowser(clientPt))) needRepaint = true;
+    if (m_header.SetHoveredSrvPillSettings(m_header.HitTestSrvPillSettings(clientPt))) needRepaint = true;
+    if (m_header.SetHoveredSrvPillBrowser(m_header.HitTestSrvPillBrowser(clientPt))) needRepaint = true;
 
     // Track hovered item inside Database or Server checklist dropdowns
     int hoveredDropItem = -1;
@@ -4952,6 +5070,7 @@ void Window::HandleMouseMove(POINT clientPt, WPARAM wParam) {
 void Window::HandleLButtonDown(POINT clientPt) {
     // Check Database & phpMyAdmin / Nginx Settings Modal Clicks (Images 3 & 4)
     if (m_dbSettingsModal.IsOpen()) {
+        m_dbSettingsModal.HandleClick(clientPt);
         ui::DatabaseModalAction act = m_dbSettingsModal.HitTestAction(clientPt);
         switch (act) {
             case ui::DatabaseModalAction::CloseModal:
@@ -5049,14 +5168,51 @@ void Window::HandleLButtonDown(POINT clientPt) {
                 break;
             case ui::DatabaseModalAction::EditPmaConfig: {
                 m_dbSettingsModal.Close();
-                std::filesystem::path fullP = std::filesystem::current_path() / m_dbSettingsModal.GetPmaConfigPath();
+                std::filesystem::path fullP = GetPhideRoot() / m_dbSettingsModal.GetPmaConfigPath();
                 OpenFileDocument(fullP.wstring(), false);
                 break;
             }
             case ui::DatabaseModalAction::EditNginxConfig: {
                 m_dbSettingsModal.Close();
-                std::filesystem::path fullP = std::filesystem::current_path() / m_dbSettingsModal.GetNginxConfigPath();
+                std::filesystem::path fullP = GetPhideRoot() / m_dbSettingsModal.GetNginxConfigPath();
                 OpenFileDocument(fullP.wstring(), false);
+                break;
+            }
+            case ui::DatabaseModalAction::ImportSql: {
+                StartMysqlServer();
+                std::wstring sqlFile = m_dbSettingsModal.GetSqlFileName();
+                std::wstring activeDocPath;
+                if (m_focusedGroupIdx >= 0 && m_focusedGroupIdx < (int)m_editorGroups.size()) {
+                    auto& grp = m_editorGroups[m_focusedGroupIdx];
+                    if (grp.activeDocIdx >= 0 && grp.activeDocIdx < (int)grp.docs.size()) {
+                        activeDocPath = grp.docs[grp.activeDocIdx].filePath;
+                    }
+                }
+                std::filesystem::path sqlPath;
+                if (!m_workspace.GetRootPath().empty() && std::filesystem::exists(m_workspace.GetRootPath() / sqlFile)) {
+                    sqlPath = m_workspace.GetRootPath() / sqlFile;
+                } else if (!m_runningProjectRoot.empty() && std::filesystem::exists(std::filesystem::path(m_runningProjectRoot) / sqlFile)) {
+                    sqlPath = std::filesystem::path(m_runningProjectRoot) / sqlFile;
+                } else if (!activeDocPath.empty() && std::filesystem::exists(std::filesystem::path(activeDocPath).parent_path() / sqlFile)) {
+                    sqlPath = std::filesystem::path(activeDocPath).parent_path() / sqlFile;
+                }
+                std::filesystem::path mysqlExe = L"C:\\xampp\\mysql\\bin\\mysql.exe";
+                if (std::filesystem::exists(mysqlExe) && !sqlPath.empty()) {
+                    std::wstring cmd = L"cmd.exe /c \"\"" + mysqlExe.wstring() + L"\" -u root < \"" + sqlPath.wstring() + L"\"\"";
+                    std::vector<wchar_t> cmdBuf(cmd.begin(), cmd.end());
+                    cmdBuf.push_back(L'\0');
+                    STARTUPINFOW si{};
+                    si.cb = sizeof(si);
+                    si.dwFlags = STARTF_USESHOWWINDOW;
+                    si.wShowWindow = SW_HIDE;
+                    PROCESS_INFORMATION pi{};
+                    if (CreateProcessW(NULL, cmdBuf.data(), NULL, NULL, FALSE, CREATE_NO_WINDOW, NULL, NULL, &si, &pi)) {
+                        WaitForSingleObject(pi.hProcess, 4000);
+                        CloseHandle(pi.hProcess);
+                        CloseHandle(pi.hThread);
+                        m_dbSettingsModal.SetCopiedFeedback(L"imported " + sqlFile + L"!");
+                    }
+                }
                 break;
             }
             case ui::DatabaseModalAction::None:
@@ -5912,6 +6068,28 @@ void Window::HandleLButtonDown(POINT clientPt) {
         }
         m_header.CloseServerDatabaseDropdowns();
         InvalidateRect(m_hwnd, nullptr, FALSE);
+    }
+
+    // Check pill settings or browser icon clicks on running server/database (User request: "even if they are running have a setting icon when user hover so they can see and like see the settings and do open in browser")
+    if (m_header.HitTestDbPillSettings(clientPt)) {
+        DoOpenDatabaseSettings();
+        InvalidateRect(m_hwnd, nullptr, FALSE);
+        return;
+    }
+    if (m_header.HitTestDbPillBrowser(clientPt)) {
+        ShellExecuteW(nullptr, L"open", m_dbSettingsModal.GetPmaUrl().c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+        InvalidateRect(m_hwnd, nullptr, FALSE);
+        return;
+    }
+    if (m_header.HitTestSrvPillSettings(clientPt)) {
+        DoOpenServerSettings();
+        InvalidateRect(m_hwnd, nullptr, FALSE);
+        return;
+    }
+    if (m_header.HitTestSrvPillBrowser(clientPt)) {
+        ShellExecuteW(nullptr, L"open", m_dbSettingsModal.GetNginxUrl().c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+        InvalidateRect(m_hwnd, nullptr, FALSE);
+        return;
     }
 
     if (m_header.HitTestDatabase(clientPt)) {
@@ -7390,6 +7568,13 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 return 0;
             }
 
+            if (m_dbSettingsModal.IsOpen()) {
+                if (m_dbSettingsModal.OnChar(static_cast<wchar_t>(wParam))) {
+                    InvalidateRect(m_hwnd, nullptr, FALSE);
+                }
+                return 0;
+            }
+
             // Integrated Terminal keystroke input (Image 1) - completely swallowed when terminal is focused!
             if (m_terminal.IsOpen() && m_isTerminalFocused) {
                 m_terminal.OnChar(static_cast<wchar_t>(wParam));
@@ -7517,7 +7702,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                             if (m_intelliSense.GetWorkspaceRoot().empty() && m_drawer.HasOpenFolder()) {
                                 m_intelliSense.SetWorkspaceRoot(m_drawer.GetOpenFolderPath());
                             }
-                            auto items = m_intelliSense.QueryCompletions(docTarget, lineText, pos.col);
+                            auto items = m_intelliSense.QueryCompletions(docTarget, lineText, pos.col, pDoc ? &pDoc->buffer.GetLines() : nullptr);
                             if (!items.empty()) {
                                 m_editor.ShowAutocomplete(items);
                                 if (items[0].kind == editor::CompletionKind::Folder || items[0].kind == editor::CompletionKind::File) {
@@ -7587,6 +7772,10 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
 
         case WM_KEYDOWN: {
             if (m_dbSettingsModal.IsOpen()) {
+                if (m_dbSettingsModal.OnKeyDown(wParam)) {
+                    InvalidateRect(m_hwnd, nullptr, FALSE);
+                    return 0;
+                }
                 if (wParam == VK_ESCAPE) {
                     m_dbSettingsModal.Close();
                     InvalidateRect(m_hwnd, nullptr, FALSE);
@@ -7648,7 +7837,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     if (m_intelliSense.GetWorkspaceRoot().empty() && m_drawer.HasOpenFolder()) {
                         m_intelliSense.SetWorkspaceRoot(m_drawer.GetOpenFolderPath());
                     }
-                    auto items = m_intelliSense.QueryCompletions(docTarget, lineText, pos.col);
+                    auto items = m_intelliSense.QueryCompletions(docTarget, lineText, pos.col, pDoc ? &pDoc->buffer.GetLines() : nullptr);
                     if (!items.empty()) {
                         m_editor.ShowAutocomplete(items);
                     }
@@ -8356,6 +8545,9 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
             if (wParam == m_caretTimerId) {
                 m_editor.ToggleCaretBlink();
                 m_drawer.ToggleCaretBlink();
+                if (m_dbSettingsModal.IsOpen()) {
+                    m_dbSettingsModal.ToggleCaret();
+                }
                 InvalidateRect(m_hwnd, nullptr, FALSE);
             } else if (wParam == m_throttleTimerId) {
                 ULONGLONG now = GetTickCount64();

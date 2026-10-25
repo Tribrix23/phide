@@ -6,6 +6,18 @@ if %errorlevel% neq 0 (
     exit /b 1
 )
 
+cl /nologo /EHsc /std:c++20 /O2 /W3 /utf-8 /DUNICODE /D_UNICODE /DWIN32_LEAN_AND_MEAN /I include /c src\ui\LucideIcons.cpp /Fo:bin\LucideIcons.obj
+if %errorlevel% neq 0 exit /b %errorlevel%
+
+cl /nologo /EHsc /std:c++20 /O2 /W3 /utf-8 /DUNICODE /D_UNICODE /DWIN32_LEAN_AND_MEAN /I include /c src\ui\TitleHeader.cpp /Fo:bin\TitleHeader.obj
+if %errorlevel% neq 0 exit /b %errorlevel%
+
+cl /nologo /EHsc /std:c++20 /O2 /W3 /utf-8 /DUNICODE /D_UNICODE /DWIN32_LEAN_AND_MEAN /I include /c src\app\Window.cpp /Fo:bin\Window.obj
+if %errorlevel% neq 0 exit /b %errorlevel%
+
+cl /nologo /EHsc /std:c++20 /O2 /W3 /utf-8 /DUNICODE /D_UNICODE /DWIN32_LEAN_AND_MEAN /I include /c src\editor\IntelliSenseEngine.cpp /Fo:bin\IntelliSenseEngine.obj
+if %errorlevel% neq 0 exit /b %errorlevel%
+
 cl /nologo /EHsc /std:c++20 /O2 /W3 /utf-8 /DUNICODE /D_UNICODE /DWIN32_LEAN_AND_MEAN /I include /c tests\test_verification.cpp /Fo:bin\test_verification.obj
 if %errorlevel% neq 0 exit /b %errorlevel%
 

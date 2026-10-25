@@ -20,7 +20,7 @@ $i = 0;
  */
 $i++;
 $cfg['Servers'][$i]['auth_type'] = 'config'; // 'config' for seamless direct login, or 'cookie'
-$cfg['Servers'][$i]['host'] = '127.0.0.1';
+$cfg['Servers'][$i]['host'] = 'localhost';
 $cfg['Servers'][$i]['port'] = '3306';
 $cfg['Servers'][$i]['connect_type'] = 'tcp';
 $cfg['Servers'][$i]['extension'] = 'mysqli';

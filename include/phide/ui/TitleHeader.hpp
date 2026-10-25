@@ -296,6 +296,33 @@ public:
     }
     [[nodiscard]] int GetHoveredDropdownItem() const noexcept { return m_hoveredDropdownItem; }
 
+    // Hover Action Buttons inside Running Server & Database Pills (Image 3)
+    [[nodiscard]] bool HitTestDbPillSettings(POINT pt) const noexcept;
+    [[nodiscard]] bool HitTestDbPillBrowser(POINT pt) const noexcept;
+    [[nodiscard]] bool HitTestSrvPillSettings(POINT pt) const noexcept;
+    [[nodiscard]] bool HitTestSrvPillBrowser(POINT pt) const noexcept;
+
+    bool SetHoveredDbPillSettings(bool hovered) noexcept {
+        if (m_hoveredDbPillSettings != hovered) { m_hoveredDbPillSettings = hovered; return true; }
+        return false;
+    }
+    bool SetHoveredDbPillBrowser(bool hovered) noexcept {
+        if (m_hoveredDbPillBrowser != hovered) { m_hoveredDbPillBrowser = hovered; return true; }
+        return false;
+    }
+    bool SetHoveredSrvPillSettings(bool hovered) noexcept {
+        if (m_hoveredSrvPillSettings != hovered) { m_hoveredSrvPillSettings = hovered; return true; }
+        return false;
+    }
+    bool SetHoveredSrvPillBrowser(bool hovered) noexcept {
+        if (m_hoveredSrvPillBrowser != hovered) { m_hoveredSrvPillBrowser = hovered; return true; }
+        return false;
+    }
+    [[nodiscard]] bool IsHoveredDbPillSettings() const noexcept { return m_hoveredDbPillSettings; }
+    [[nodiscard]] bool IsHoveredDbPillBrowser() const noexcept { return m_hoveredDbPillBrowser; }
+    [[nodiscard]] bool IsHoveredSrvPillSettings() const noexcept { return m_hoveredSrvPillSettings; }
+    [[nodiscard]] bool IsHoveredSrvPillBrowser() const noexcept { return m_hoveredSrvPillBrowser; }
+
     // Zoom In / Zoom Out Controls (Image 3)
     [[nodiscard]] bool HitTestZoomIn(POINT pt) const noexcept;
     [[nodiscard]] bool HitTestZoomOut(POINT pt) const noexcept;
@@ -380,6 +407,16 @@ private:
     D2D1_RECT_F m_rcServerSettingsBtn{};
     D2D1_RECT_F m_rcDatabaseDropdown{};
     D2D1_RECT_F m_rcServerDropdown{};
+
+    // Mini action buttons inside running pills (Image 3)
+    D2D1_RECT_F m_rcDbPillSettings{};
+    D2D1_RECT_F m_rcDbPillBrowser{};
+    D2D1_RECT_F m_rcSrvPillSettings{};
+    D2D1_RECT_F m_rcSrvPillBrowser{};
+    bool m_hoveredDbPillSettings = false;
+    bool m_hoveredDbPillBrowser = false;
+    bool m_hoveredSrvPillSettings = false;
+    bool m_hoveredSrvPillBrowser = false;
 
     // Zoom In / Zoom Out controls widget (Image 3)
     D2D1_RECT_F m_rcZoomContainer{};

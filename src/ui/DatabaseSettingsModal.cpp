@@ -10,6 +10,22 @@
 
 namespace phide::ui {
 
+static std::filesystem::path GetPhideRoot() {
+    wchar_t exePath[MAX_PATH] = { 0 };
+    GetModuleFileNameW(nullptr, exePath, MAX_PATH);
+    std::filesystem::path dir = std::filesystem::path(exePath).parent_path();
+    if (std::filesystem::exists(dir / L"include" / L"phide")) {
+        return dir;
+    }
+    if (std::filesystem::exists(dir.parent_path() / L"include" / L"phide")) {
+        return dir.parent_path();
+    }
+    if (std::filesystem::exists(std::filesystem::current_path() / L"include" / L"phide")) {
+        return std::filesystem::current_path();
+    }
+    return std::filesystem::path(L"c:\\Users\\Administrator\\Downloads\\studio\\phide");
+}
+
 static inline bool PtInRectF(POINT pt, const D2D1_RECT_F& rc) {
     return (pt.x >= rc.left && pt.x <= rc.right && pt.y >= rc.top && pt.y <= rc.bottom);
 }
@@ -20,9 +36,11 @@ void DatabaseSettingsModal::Open(DatabaseModalTab initialTab) {
     m_copiedField.clear();
     m_copiedTimerTicks = 0;
     m_hoveredAction = DatabaseModalAction::None;
+    m_focusedField = DatabaseEditField::None;
+    m_caretVisible = true;
 
     // Check if config.inc.php exists and parse basic values
-    std::filesystem::path pmaCfgPath = std::filesystem::current_path() / L"include" / L"phide" / L"db" / L"phpMyAdmin" / L"config.inc.php";
+    std::filesystem::path pmaCfgPath = GetPhideRoot() / L"include" / L"phide" / L"db" / L"phpMyAdmin" / L"config.inc.php";
     if (std::filesystem::exists(pmaCfgPath)) {
         std::wifstream in(pmaCfgPath);
         std::wstring line;
@@ -54,6 +72,63 @@ void DatabaseSettingsModal::Open(DatabaseModalTab initialTab) {
             }
         }
     }
+    UpdateSnippets();
+}
+
+bool DatabaseSettingsModal::OnChar(wchar_t ch) {
+    if (!m_isOpen || m_focusedField == DatabaseEditField::None) return false;
+    std::wstring* target = nullptr;
+    switch (m_focusedField) {
+        case DatabaseEditField::Host: target = &m_host; break;
+        case DatabaseEditField::Port: target = &m_port; break;
+        case DatabaseEditField::User: target = &m_user; break;
+        case DatabaseEditField::Pass: target = &m_pass; break;
+        case DatabaseEditField::Database: target = &m_defaultDb; break;
+        case DatabaseEditField::Charset: target = &m_charset; break;
+        default: break;
+    }
+    if (!target) return false;
+
+    if (ch == 8) { // Backspace
+        if (!target->empty()) {
+            target->pop_back();
+            UpdateSnippets();
+            return true;
+        }
+    } else if (ch >= 32) {
+        if (target->size() < 64) {
+            target->push_back(ch);
+            UpdateSnippets();
+            return true;
+        }
+    }
+    return false;
+}
+
+bool DatabaseSettingsModal::OnKeyDown(WPARAM wParam) {
+    if (!m_isOpen || m_focusedField == DatabaseEditField::None) return false;
+    if (wParam == VK_ESCAPE || wParam == VK_RETURN) {
+        m_focusedField = DatabaseEditField::None;
+        return true;
+    }
+    if (wParam == VK_TAB) {
+        switch (m_focusedField) {
+            case DatabaseEditField::Host: m_focusedField = DatabaseEditField::Port; break;
+            case DatabaseEditField::Port: m_focusedField = DatabaseEditField::User; break;
+            case DatabaseEditField::User: m_focusedField = DatabaseEditField::Pass; break;
+            case DatabaseEditField::Pass: m_focusedField = DatabaseEditField::Database; break;
+            case DatabaseEditField::Database: m_focusedField = DatabaseEditField::Charset; break;
+            case DatabaseEditField::Charset: m_focusedField = DatabaseEditField::Host; break;
+            default: m_focusedField = DatabaseEditField::Host; break;
+        }
+        return true;
+    }
+    return false;
+}
+
+void DatabaseSettingsModal::UpdateSnippets() {
+    m_pdoSnippet = L"$pdo = new PDO(\"mysql:host=" + m_host + L";port=" + m_port + L";dbname=" + m_defaultDb + L";charset=" + m_charset + L"\", \"" + m_user + L"\", \"" + m_pass + L"\");";
+    m_mysqliSnippet = L"$conn = new mysqli(\"" + m_host + L"\", \"" + m_user + L"\", \"" + m_pass + L"\", \"" + m_defaultDb + L"\", " + m_port + L");";
 }
 
 bool DatabaseSettingsModal::HitTestBounds(POINT pt) const noexcept {
@@ -66,6 +141,7 @@ DatabaseModalAction DatabaseSettingsModal::HitTestAction(POINT pt) const noexcep
 
     if (PtInRectF(pt, m_rcCloseBtn)) return DatabaseModalAction::CloseModal;
     if (PtInRectF(pt, m_rcBtnDone)) return DatabaseModalAction::CloseModal;
+    if (!m_sqlFileName.empty() && PtInRectF(pt, m_rcBtnImportSql)) return DatabaseModalAction::ImportSql;
 
     if (PtInRectF(pt, m_rcTabPma)) return DatabaseModalAction::SwitchTabPma;
     if (PtInRectF(pt, m_rcTabNginx)) return DatabaseModalAction::SwitchTabNginx;
@@ -91,6 +167,23 @@ DatabaseModalAction DatabaseSettingsModal::HitTestAction(POINT pt) const noexcep
     }
 
     return DatabaseModalAction::None;
+}
+
+void DatabaseSettingsModal::HandleClick(POINT pt) noexcept {
+    if (!m_isOpen) return;
+
+    if (m_activeTab == DatabaseModalTab::PhpMyAdmin) {
+        if (PtInRectF(pt, m_rcInputHost)) { m_focusedField = DatabaseEditField::Host; m_caretVisible = true; return; }
+        if (PtInRectF(pt, m_rcInputPort)) { m_focusedField = DatabaseEditField::Port; m_caretVisible = true; return; }
+        if (PtInRectF(pt, m_rcInputUser)) { m_focusedField = DatabaseEditField::User; m_caretVisible = true; return; }
+        if (PtInRectF(pt, m_rcInputPass)) { m_focusedField = DatabaseEditField::Pass; m_caretVisible = true; return; }
+        if (PtInRectF(pt, m_rcInputDb)) { m_focusedField = DatabaseEditField::Database; m_caretVisible = true; return; }
+        if (PtInRectF(pt, m_rcInputCharset)) { m_focusedField = DatabaseEditField::Charset; m_caretVisible = true; return; }
+
+        if (PtInRectF(pt, m_rcModalCard)) {
+            m_focusedField = DatabaseEditField::None;
+        }
+    }
 }
 
 void DatabaseSettingsModal::OnMouseMove(POINT pt) noexcept {
@@ -202,7 +295,9 @@ void DatabaseSettingsModal::Render(ID2D1RenderTarget* pRT, Theme& theme, const a
 
     float contentY = tabY + tabH + config.ScaleF(16.0f);
 
-    auto DrawFieldBadge = [&](const std::wstring& label, const std::wstring& value, const D2D1_RECT_F& rc, D2D1_RECT_F& outBtn, DatabaseModalAction action) {
+    D2D1_RECT_F dummyInput{};
+
+    auto DrawFieldBadge = [&](const std::wstring& label, const std::wstring& value, const D2D1_RECT_F& rc, D2D1_RECT_F& outBtn, DatabaseModalAction action, DatabaseEditField editField, D2D1_RECT_F& outInput) {
         // Field card background
         pRT->FillRoundedRectangle(D2D1::RoundedRect(rc, 4.0f, 4.0f), theme.brushCanvasBg ? theme.brushCanvasBg.Get() : theme.brushDrawerBg.Get());
         pRT->DrawRoundedRectangle(D2D1::RoundedRect(rc, 4.0f, 4.0f), pBorderBrush, 0.8f);
@@ -215,10 +310,37 @@ void DatabaseSettingsModal::Render(ID2D1RenderTarget* pRT, Theme& theme, const a
         // Value with axis-aligned clipping so long strings never overflow
         bool hasBtn = (action != DatabaseModalAction::None);
         float valRight = hasBtn ? (rc.right - config.ScaleF(56.0f)) : (rc.right - config.ScaleF(10.0f));
-        D2D1_RECT_F rcVal = D2D1::RectF(rc.left + lblW + config.ScaleF(4.0f), rc.top + config.ScaleF(4.0f), valRight, rc.bottom);
-        std::wstring dispVal = value.empty() ? L"(empty / none)" : value;
+        outInput = D2D1::RectF(rc.left + lblW + config.ScaleF(2.0f), rc.top + config.ScaleF(2.0f), valRight, rc.bottom - config.ScaleF(2.0f));
+
+        bool isFocused = (editField != DatabaseEditField::None && m_focusedField == editField);
+        if (isFocused) {
+            Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> bFocusBorder;
+            pRT->CreateSolidColorBrush(D2D1::ColorF(0.09f, 0.52f, 0.95f, 1.0f), &bFocusBorder);
+            Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> bFocusBg;
+            pRT->CreateSolidColorBrush(D2D1::ColorF(0.09f, 0.52f, 0.95f, 0.15f), &bFocusBg);
+            if (bFocusBg) pRT->FillRoundedRectangle(D2D1::RoundedRect(outInput, 3.0f, 3.0f), bFocusBg.Get());
+            if (bFocusBorder) pRT->DrawRoundedRectangle(D2D1::RoundedRect(outInput, 3.0f, 3.0f), bFocusBorder.Get(), 1.2f);
+        }
+
+        D2D1_RECT_F rcVal = D2D1::RectF(outInput.left + config.ScaleF(4.0f), outInput.top + config.ScaleF(2.0f), outInput.right - config.ScaleF(4.0f), outInput.bottom);
+        std::wstring dispVal = value.empty() ? (isFocused ? L"" : L"(empty / none)") : value;
         pRT->PushAxisAlignedClip(rcVal, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
-        pRT->DrawText(dispVal.c_str(), static_cast<UINT32>(dispVal.size()), pFmtCode, rcVal, pWhiteBrush);
+        ID2D1Brush* textBrush = (value.empty() && !isFocused) ? pMutedBrush : pWhiteBrush;
+        pRT->DrawText(dispVal.c_str(), static_cast<UINT32>(dispVal.size()), pFmtCode, rcVal, textBrush);
+
+        // Blinking caret cursor if focused
+        if (isFocused && m_caretVisible) {
+            float textW = static_cast<float>(value.size()) * config.ScaleF(7.5f);
+            float caretX = rcVal.left + textW;
+            if (caretX < rcVal.right - config.ScaleF(2.0f)) {
+                pRT->DrawLine(
+                    D2D1::Point2F(caretX, rcVal.top + config.ScaleF(2.0f)),
+                    D2D1::Point2F(caretX, rcVal.bottom - config.ScaleF(2.0f)),
+                    pWhiteBrush,
+                    1.4f
+                );
+            }
+        }
         pRT->PopAxisAlignedClip();
 
         // Copy button
@@ -253,23 +375,23 @@ void DatabaseSettingsModal::Render(ID2D1RenderTarget* pRT, Theme& theme, const a
         // Row 1: Host and Port
         D2D1_RECT_F rcHost = D2D1::RectF(rcSecA.left + config.ScaleF(10.0f), row1Y, rcSecA.left + config.ScaleF(10.0f) + halfW, row1Y + rowH);
         D2D1_RECT_F rcPort = D2D1::RectF(rcSecA.left + config.ScaleF(18.0f) + halfW, row1Y, rcSecA.right - config.ScaleF(10.0f), row1Y + rowH);
-        DrawFieldBadge(L"Host ($host)", m_host, rcHost, m_rcCopyHost, DatabaseModalAction::CopyHost);
-        DrawFieldBadge(L"Port", m_port, rcPort, m_rcCopyPort, DatabaseModalAction::CopyPort);
+        DrawFieldBadge(L"Host ($host)", m_host, rcHost, m_rcCopyHost, DatabaseModalAction::CopyHost, DatabaseEditField::Host, m_rcInputHost);
+        DrawFieldBadge(L"Port", m_port, rcPort, m_rcCopyPort, DatabaseModalAction::CopyPort, DatabaseEditField::Port, m_rcInputPort);
 
         // Row 2: User and Password
         float row2Y = row1Y + rowH + config.ScaleF(5.0f);
         D2D1_RECT_F rcUser = D2D1::RectF(rcSecA.left + config.ScaleF(10.0f), row2Y, rcSecA.left + config.ScaleF(10.0f) + halfW, row2Y + rowH);
         D2D1_RECT_F rcPass = D2D1::RectF(rcSecA.left + config.ScaleF(18.0f) + halfW, row2Y, rcSecA.right - config.ScaleF(10.0f), row2Y + rowH);
-        DrawFieldBadge(L"User ($user)", m_user, rcUser, m_rcCopyUser, DatabaseModalAction::CopyUser);
-        DrawFieldBadge(L"Pass ($pass)", m_pass, rcPass, m_rcCopyPass, DatabaseModalAction::CopyPass);
+        DrawFieldBadge(L"User ($user)", m_user, rcUser, m_rcCopyUser, DatabaseModalAction::CopyUser, DatabaseEditField::User, m_rcInputUser);
+        DrawFieldBadge(L"Pass ($pass)", m_pass, rcPass, m_rcCopyPass, DatabaseModalAction::CopyPass, DatabaseEditField::Pass, m_rcInputPass);
 
         // Row 3: Database and Charset
         float row3Y = row2Y + rowH + config.ScaleF(5.0f);
         D2D1_RECT_F rcDb = D2D1::RectF(rcSecA.left + config.ScaleF(10.0f), row3Y, rcSecA.left + config.ScaleF(10.0f) + halfW, row3Y + rowH);
         D2D1_RECT_F rcCharset = D2D1::RectF(rcSecA.left + config.ScaleF(18.0f) + halfW, row3Y, rcSecA.right - config.ScaleF(10.0f), row3Y + rowH);
         D2D1_RECT_F dummyBtn;
-        DrawFieldBadge(L"Database ($db)", m_defaultDb, rcDb, m_rcCopyDb, DatabaseModalAction::CopyDb);
-        DrawFieldBadge(L"Charset", m_charset, rcCharset, dummyBtn, DatabaseModalAction::None);
+        DrawFieldBadge(L"Database ($db)", m_defaultDb, rcDb, m_rcCopyDb, DatabaseModalAction::CopyDb, DatabaseEditField::Database, m_rcInputDb);
+        DrawFieldBadge(L"Charset", m_charset, rcCharset, dummyBtn, DatabaseModalAction::None, DatabaseEditField::Charset, m_rcInputCharset);
 
         // Section B: Quick PHP Connection Snippets (2-line layout with zero button collisions)
         float secBY = rcSecA.bottom + config.ScaleF(10.0f);
@@ -395,21 +517,21 @@ void DatabaseSettingsModal::Render(ID2D1RenderTarget* pRT, Theme& theme, const a
         // Row 1: URL and Port
         D2D1_RECT_F rcUrl = D2D1::RectF(rcSecN.left + config.ScaleF(10.0f), row1Y, rcSecN.left + config.ScaleF(10.0f) + halfW, row1Y + rowH);
         D2D1_RECT_F rcPort = D2D1::RectF(rcSecN.left + config.ScaleF(18.0f) + halfW, row1Y, rcSecN.right - config.ScaleF(10.0f), row1Y + rowH);
-        DrawFieldBadge(L"Local URL", m_nginxUrl, rcUrl, m_rcCopyNginxUrl, DatabaseModalAction::CopyNginxUrl);
-        DrawFieldBadge(L"Port", m_nginxPort, rcPort, m_rcCopyNginxPort, DatabaseModalAction::CopyNginxPort);
+        DrawFieldBadge(L"Local URL", m_nginxUrl, rcUrl, m_rcCopyNginxUrl, DatabaseModalAction::CopyNginxUrl, DatabaseEditField::None, dummyInput);
+        DrawFieldBadge(L"Port", m_nginxPort, rcPort, m_rcCopyNginxPort, DatabaseModalAction::CopyNginxPort, DatabaseEditField::None, dummyInput);
 
         // Row 2: Server Name & FastCGI Upstream
         float row2Y = row1Y + rowH + config.ScaleF(5.0f);
         D2D1_RECT_F rcHost = D2D1::RectF(rcSecN.left + config.ScaleF(10.0f), row2Y, rcSecN.left + config.ScaleF(10.0f) + halfW, row2Y + rowH);
         D2D1_RECT_F rcFastCgi = D2D1::RectF(rcSecN.left + config.ScaleF(18.0f) + halfW, row2Y, rcSecN.right - config.ScaleF(10.0f), row2Y + rowH);
         D2D1_RECT_F dummyBtn;
-        DrawFieldBadge(L"Server Name", m_nginxHost, rcHost, dummyBtn, DatabaseModalAction::None);
-        DrawFieldBadge(L"FastCGI PHP", L"127.0.0.1:9000", rcFastCgi, dummyBtn, DatabaseModalAction::None);
+        DrawFieldBadge(L"Server Name", m_nginxHost, rcHost, dummyBtn, DatabaseModalAction::None, DatabaseEditField::None, dummyInput);
+        DrawFieldBadge(L"FastCGI PHP", L"127.0.0.1:9000", rcFastCgi, dummyBtn, DatabaseModalAction::None, DatabaseEditField::None, dummyInput);
 
         // Row 3: Config file with copy button
         float row3Y = row2Y + rowH + config.ScaleF(5.0f);
         D2D1_RECT_F rcCfg = D2D1::RectF(rcSecN.left + config.ScaleF(10.0f), row3Y, rcSecN.right - config.ScaleF(10.0f), row3Y + rowH);
-        DrawFieldBadge(L"Config File", m_nginxConfigFile, rcCfg, m_rcCopyNginxConfigPath, DatabaseModalAction::CopyNginxConfigPath);
+        DrawFieldBadge(L"Config File", m_nginxConfigFile, rcCfg, m_rcCopyNginxConfigPath, DatabaseModalAction::CopyNginxConfigPath, DatabaseEditField::None, dummyInput);
 
         // Section B: Document Root & Binary Card
         float secNBY = rcSecN.bottom + config.ScaleF(10.0f);
@@ -422,11 +544,11 @@ void DatabaseSettingsModal::Render(ID2D1RenderTarget* pRT, Theme& theme, const a
 
         float nbRow1Y = rcSecNB.top + config.ScaleF(28.0f);
         D2D1_RECT_F rcDocRoot = D2D1::RectF(rcSecNB.left + config.ScaleF(10.0f), nbRow1Y, rcSecNB.right - config.ScaleF(10.0f), nbRow1Y + rowH);
-        DrawFieldBadge(L"Doc Root", L"include\\phide\\server\\nginx\\html", rcDocRoot, dummyBtn, DatabaseModalAction::None);
+        DrawFieldBadge(L"Doc Root", L"include\\phide\\server\\nginx\\html", rcDocRoot, dummyBtn, DatabaseModalAction::None, DatabaseEditField::None, dummyInput);
 
         float nbRow2Y = nbRow1Y + rowH + config.ScaleF(5.0f);
         D2D1_RECT_F rcBin = D2D1::RectF(rcSecNB.left + config.ScaleF(10.0f), nbRow2Y, rcSecNB.right - config.ScaleF(10.0f), nbRow2Y + rowH);
-        DrawFieldBadge(L"Executable", L"include\\phide\\server\\nginx\\nginx.exe", rcBin, dummyBtn, DatabaseModalAction::None);
+        DrawFieldBadge(L"Executable", L"include\\phide\\server\\nginx\\nginx.exe", rcBin, dummyBtn, DatabaseModalAction::None, DatabaseEditField::None, dummyInput);
 
         // Section C: Nginx Actions & Tools Card
         float secNY = rcSecNB.bottom + config.ScaleF(10.0f);
@@ -503,6 +625,19 @@ void DatabaseSettingsModal::Render(ID2D1RenderTarget* pRT, Theme& theme, const a
     pRT->DrawText(L"Done", 4, pFmtMain,
                   D2D1::RectF(m_rcBtnDone.left + config.ScaleF(26.0f), m_rcBtnDone.top + config.ScaleF(4.0f), m_rcBtnDone.right, m_rcBtnDone.bottom),
                   pWhiteBrush);
+
+    if (!m_sqlFileName.empty() && m_activeTab == DatabaseModalTab::PhpMyAdmin) {
+        float importW = config.ScaleF(170.0f);
+        m_rcBtnImportSql = D2D1::RectF(m_rcBtnDone.left - importW - config.ScaleF(10.0f), footY, m_rcBtnDone.left - config.ScaleF(10.0f), footY + doneH);
+        bool isImportHov = (m_hoveredAction == DatabaseModalAction::ImportSql);
+        pRT->FillRoundedRectangle(D2D1::RoundedRect(m_rcBtnImportSql, 4.0f, 4.0f), isImportHov ? pAccentBrush : pBorderBrush);
+        std::wstring importLabel = L"⚡ Import " + m_sqlFileName;
+        pRT->DrawText(importLabel.c_str(), static_cast<UINT32>(importLabel.size()), pFmtMain,
+                      D2D1::RectF(m_rcBtnImportSql.left + config.ScaleF(12.0f), m_rcBtnImportSql.top + config.ScaleF(4.0f), m_rcBtnImportSql.right, m_rcBtnImportSql.bottom),
+                      pWhiteBrush);
+    } else {
+        m_rcBtnImportSql = D2D1::RectF(0, 0, 0, 0);
+    }
 }
 
 } // namespace phide::ui
