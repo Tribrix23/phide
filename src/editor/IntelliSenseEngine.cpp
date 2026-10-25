@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cwctype>
 #include <filesystem>
+#include <functional>
 #include <unordered_set>
 
 namespace phide::editor {
@@ -10,6 +11,8 @@ namespace phide::editor {
 IntelliSenseEngine::IntelliSenseEngine() {
     PopulateHtmlTags();
     PopulateHtmlAttributes();
+    PopulateCssProperties();
+    PopulateCssValues();
     PopulateJavaScriptKeywords();
     PopulateJavaScriptGlobals();
     PopulateJavaScriptDomApis();
@@ -338,6 +341,233 @@ void IntelliSenseEngine::PopulateHtmlAttributes() {
         item.kind = CompletionKind::Attribute;
         item.origin = L"html";
         m_htmlAttributes.push_back(std::move(item));
+    }
+}
+
+void IntelliSenseEngine::PopulateCssProperties() {
+    struct PropDef { const wchar_t* name; const wchar_t* desc; };
+    static const PropDef cssProps[] = {
+        // Layout & Display
+        { L"display", L"In combination with 'float' and 'position', determines the type of box generated for an element (block, flex, grid, inline, none)." },
+        { L"position", L"Specifies how an element is positioned in a document (static, relative, absolute, fixed, sticky)." },
+        { L"top", L"Participates in specifying the vertical position of a positioned element." },
+        { L"right", L"Participates in specifying the horizontal position of a positioned element." },
+        { L"bottom", L"Participates in specifying the bottom position of a positioned element." },
+        { L"left", L"Participates in specifying the left position of a positioned element." },
+        { L"inset", L"Shorthand property corresponding to the top, right, bottom, and/or left properties." },
+        { L"inset-block", L"Defines the logical block start and block end offsets of an element." },
+        { L"inset-inline", L"Defines the logical inline start and inline end offsets of an element." },
+        { L"z-index", L"Sets the z-order of a positioned element and its descendants or flex/grid items." },
+        { L"float", L"Places an element on the left or right side of its container, allowing text and inline elements to wrap around it." },
+        { L"clear", L"Sets whether an element must be moved below preceding floating elements." },
+        { L"visibility", L"Shows or hides an element without changing the layout of a document (visible, hidden, collapse)." },
+        { L"box-sizing", L"Sets how the total width and height of an element is calculated (content-box, border-box)." },
+        { L"overflow", L"Sets what happens if content overflows an element's box (visible, hidden, scroll, auto, clip)." },
+        { L"overflow-x", L"Sets what happens if content overflows the left and right edges of an element's content area." },
+        { L"overflow-y", L"Sets what happens if content overflows the top and bottom edges of an element's content area." },
+        { L"clip-path", L"Creates a clipping region that sets what part of an element should be shown." },
+
+        // Flexbox Layout
+        { L"flex", L"Shorthand property for flex-grow, flex-shrink, and flex-basis combined." },
+        { L"flex-direction", L"Specifies how flex items are placed in the flex container defining the main axis (row, column, row-reverse, column-reverse)." },
+        { L"flex-wrap", L"Sets whether flex items are forced onto one line or can wrap onto multiple lines (nowrap, wrap, wrap-reverse)." },
+        { L"flex-flow", L"Shorthand property for flex-direction and flex-wrap." },
+        { L"justify-content", L"Defines the alignment along the main axis of the current line of the flex or grid container." },
+        { L"align-items", L"Defines the default behavior for how flex items are laid out along the cross axis on the current line." },
+        { L"align-content", L"Aligns a flex container's lines within the flexible container when there is extra space in the cross-axis." },
+        { L"align-self", L"Overrides a flex or grid item's align-items value." },
+        { L"justify-items", L"Defines the default justify-self for all items of the box, giving them the default way of justifying each box along the appropriate axis." },
+        { L"justify-self", L"Sets the way a box is justified inside its alignment container along the appropriate axis." },
+        { L"place-items", L"Shorthand property for align-items and justify-items combined (e.g. place-items: center)." },
+        { L"place-content", L"Shorthand property for align-content and justify-content combined." },
+        { L"place-self", L"Shorthand property for align-self and justify-self combined." },
+        { L"flex-grow", L"Sets the flex grow factor of a flex item main size." },
+        { L"flex-shrink", L"Sets the flex shrink factor of a flex item." },
+        { L"flex-basis", L"Sets the initial main size of a flex item." },
+        { L"order", L"Sets the order to lay out an item in a flex or grid container." },
+        { L"gap", L"Sets the gaps (gutters) between rows and columns in flex and grid layouts." },
+        { L"row-gap", L"Sets the size of the gap (gutter) between an element's grid rows." },
+        { L"column-gap", L"Sets the size of the gap (gutter) between an element's columns." },
+
+        // Grid Layout
+        { L"grid", L"Shorthand property that sets all explicit and implicit grid properties." },
+        { L"grid-template-columns", L"Defines the line names and track sizing functions of the grid columns." },
+        { L"grid-template-rows", L"Defines the line names and track sizing functions of the grid rows." },
+        { L"grid-template-areas", L"Specifies named grid areas, establishing the cells in the grid and assigning them names." },
+        { L"grid-column", L"Shorthand property for grid-column-start and grid-column-end." },
+        { L"grid-row", L"Shorthand property for grid-row-start and grid-row-end." },
+        { L"grid-area", L"Shorthand for grid-row-start, grid-column-start, grid-row-end, and grid-column-end." },
+        { L"grid-auto-flow", L"Controls how the auto-placement algorithm works, specifying exactly how auto-placed items get flowed into the grid." },
+        { L"grid-auto-columns", L"Specifies the size of an implicitly-created grid column track or pattern of tracks." },
+        { L"grid-auto-rows", L"Specifies the size of an implicitly-created grid row track or pattern of tracks." },
+
+        // Box Model & Dimensions
+        { L"width", L"Sets an element's width." },
+        { L"min-width", L"Sets the minimum width of an element." },
+        { L"max-width", L"Sets the maximum width of an element." },
+        { L"height", L"Sets an element's height." },
+        { L"min-height", L"Sets the minimum height of an element." },
+        { L"max-height", L"Sets the maximum height of an element." },
+        { L"aspect-ratio", L"Sets a preferred aspect ratio for the box, which will be used in the calculation of auto sizes." },
+        { L"margin", L"Shorthand property sets the margin area on all four sides of an element." },
+        { L"margin-top", L"Sets the margin area on the top of an element." },
+        { L"margin-right", L"Sets the margin area on the right of an element." },
+        { L"margin-bottom", L"Sets the margin area on the bottom of an element." },
+        { L"margin-left", L"Sets the margin area on the left of an element." },
+        { L"padding", L"Shorthand property sets the padding area on all four sides of an element." },
+        { L"padding-top", L"Sets the padding area on the top of an element." },
+        { L"padding-right", L"Sets the padding area on the right of an element." },
+        { L"padding-bottom", L"Sets the padding area on the bottom of an element." },
+        { L"padding-left", L"Sets the padding area on the left of an element." },
+
+        // Colors & Backgrounds
+        { L"color", L"Sets the foreground color value of an element's text and text decorations." },
+        { L"background", L"Shorthand for setting background properties (color, image, position, size, repeat)." },
+        { L"background-color", L"Sets the background color of an element." },
+        { L"background-image", L"Sets one or more background images on an element." },
+        { L"background-position", L"Sets the initial position for each background image." },
+        { L"background-size", L"Sets the size of the element's background images (cover, contain, auto)." },
+        { L"background-repeat", L"Sets how background images are repeated (repeat, no-repeat, repeat-x, repeat-y)." },
+        { L"background-attachment", L"Sets whether a background image's position is fixed within the viewport, or scrolls with its containing block." },
+        { L"background-clip", L"Sets whether an element's background extends beneath its border box, padding box, or content box." },
+        { L"opacity", L"Sets the opacity of an element (0.0 fully transparent to 1.0 fully opaque)." },
+
+        // Borders & Outlines
+        { L"border", L"Shorthand property for setting border width, line style, and color." },
+        { L"border-width", L"Sets the line width of an element's four borders." },
+        { L"border-style", L"Sets the line style for all four sides of an element's border (solid, dashed, dotted, none)." },
+        { L"border-color", L"Sets the color of an element's four borders." },
+        { L"border-radius", L"Rounds the corners of an element's outer border edge." },
+        { L"border-top", L"Shorthand for border-top-width, border-top-style, and border-top-color." },
+        { L"border-right", L"Shorthand for border-right-width, border-right-style, and border-right-color." },
+        { L"border-bottom", L"Shorthand for border-bottom-width, border-bottom-style, and border-bottom-color." },
+        { L"border-left", L"Shorthand for border-left-width, border-left-style, and border-left-color." },
+        { L"outline", L"Shorthand for setting outline width, style, and color in a single declaration." },
+        { L"outline-offset", L"Sets the amount of space between an outline and the edge or border of an element." },
+        { L"box-shadow", L"Adds shadow effects around an element's frame. You can set multiple effects separated by commas." },
+
+        // Typography & Text
+        { L"font", L"Shorthand property for font-style, font-variant, font-weight, font-size/line-height, and font-family." },
+        { L"font-family", L"Specifies a prioritized list of one or more font family names and/or generic family names." },
+        { L"font-size", L"Sets the size of the font." },
+        { L"font-weight", L"Sets the weight (or boldness) of the font (bold, normal, 100-900)." },
+        { L"font-style", L"Sets whether a font should be styled with a normal, italic, or oblique face." },
+        { L"line-height", L"Sets the height of a line box. Commonly used to set distance between lines of text." },
+        { L"letter-spacing", L"Sets the horizontal spacing behavior between text characters." },
+        { L"word-spacing", L"Sets the spacing behavior between words." },
+        { L"text-align", L"Sets the horizontal alignment of the inline-level content inside a block element." },
+        { L"text-decoration", L"Sets the appearance of decorative lines on text (underline, line-through, none)." },
+        { L"text-transform", L"Specifies how to capitalize an element's text (uppercase, lowercase, capitalize)." },
+        { L"text-overflow", L"Sets how hidden overflow content is signaled to users (clip, ellipsis)." },
+        { L"text-shadow", L"Adds shadows to text. It accepts a comma-separated list of shadows to be applied." },
+        { L"white-space", L"Sets how white space inside an element is handled (nowrap, pre, pre-wrap, normal)." },
+        { L"word-break", L"Sets whether line breaks appear wherever the text would otherwise overflow its content box." },
+
+        // Transforms, Transitions & Animations
+        { L"transform", L"Applies 2D or 3D transformation to an element (rotate, scale, translate, skew)." },
+        { L"transform-origin", L"Sets the origin for an element's transformations." },
+        { L"transition", L"Shorthand property for transition-property, transition-duration, transition-timing-function, and transition-delay." },
+        { L"transition-duration", L"Sets the length of time a transition animation should take to complete." },
+        { L"transition-property", L"Sets the CSS properties to which a transition effect should be applied." },
+        { L"transition-timing-function", L"Sets how intermediate values are calculated for CSS properties being affected by a transition effect (ease, linear, ease-in-out)." },
+        { L"animation", L"Shorthand property applies an animation between styles." },
+        { L"animation-name", L"Specifies the names of one or more @keyframes at-rules describing the animation." },
+        { L"animation-duration", L"Sets the length of time that an animation takes to complete one cycle." },
+        { L"animation-iteration-count", L"Sets the number of times an animation sequence should be played before stopping (infinite, 1, 2)." },
+
+        // UI & Interactivity
+        { L"cursor", L"Sets the mouse cursor to show when the mouse pointer is over an element (pointer, default, not-allowed, grab)." },
+        { L"pointer-events", L"Sets whether an element reacts to pointer events (auto, none)." },
+        { L"user-select", L"Controls whether the user can select text (none, auto, text, all)." },
+        { L"resize", L"Sets whether an element is resizable, and if so, in which directions (none, both, horizontal, vertical)." },
+        { L"filter", L"Applies graphical effects like blur, brightness, contrast, drop-shadow to an element." },
+        { L"backdrop-filter", L"Applies graphical effects to the area behind an element (e.g. blur(10px) for glassmorphism)." },
+        { L"object-fit", L"Sets how the content of a replaced element, such as an <img>, should be resized to fit its container (cover, contain, fill)." },
+        { L"object-position", L"Specifies the alignment of the selected replaced element's contents within the element's box." },
+        { L"content", L"Replaces an element with a generated value (used with ::before and ::after pseudo-elements)." },
+        { L"will-change", L"Hints to browsers how an element is expected to change, allowing optimizations before the element is animated." }
+    };
+
+    for (const auto& p : cssProps) {
+        IntelliSenseItem item;
+        item.label = p.name;
+        item.detail = p.desc;
+        item.insertText = std::wstring(p.name) + L": $0;";
+        item.kind = CompletionKind::Property;
+        item.origin = L"css";
+        m_cssProperties.push_back(std::move(item));
+    }
+}
+
+void IntelliSenseEngine::PopulateCssValues() {
+    struct ValDef { const wchar_t* name; const wchar_t* desc; };
+    static const ValDef cssVals[] = {
+        // Display values
+        { L"flex", L"Displays an element as a block-level flex container" },
+        { L"grid", L"Displays an element as a block-level grid container" },
+        { L"block", L"Displays an element as a block element" },
+        { L"inline-block", L"Displays an element as an inline-level block container" },
+        { L"inline", L"Displays an element as an inline element" },
+        { L"none", L"Turns off the display of an element" },
+        { L"inline-flex", L"Displays an element as an inline-level flex container" },
+        { L"inline-grid", L"Displays an element as an inline-level grid container" },
+
+        // Position values
+        { L"relative", L"Element is positioned according to normal flow, then offset relative to itself" },
+        { L"absolute", L"Element is removed from normal flow and positioned relative to nearest positioned ancestor" },
+        { L"fixed", L"Element is removed from normal flow and positioned relative to the viewport" },
+        { L"sticky", L"Element is positioned based on the user's scroll position (hybrid relative/fixed)" },
+        { L"static", L"Default value. Elements render in order as they appear in document flow" },
+
+        // Flex & Grid alignment values
+        { L"center", L"Centers items along the alignment axis" },
+        { L"space-between", L"Items are evenly distributed; first item on start line, last on end line" },
+        { L"space-around", L"Items are evenly distributed with equal space around them" },
+        { L"space-evenly", L"Items are distributed so spacing between any two adjacent items is equal" },
+        { L"flex-start", L"Items are packed toward the start line of the container" },
+        { L"flex-end", L"Items are packed toward the end line of the container" },
+        { L"stretch", L"Stretches items to fill the container along the cross axis" },
+        { L"baseline", L"Items are aligned such that their baselines align" },
+
+        // Cursor values
+        { L"pointer", L"The cursor is a pointer that indicates a link" },
+        { L"default", L"The platform-dependent default cursor (arrow)" },
+        { L"not-allowed", L"Indicates that the requested action will not be carried out" },
+        { L"grab", L"Indicates that something can be grabbed" },
+        { L"grabbing", L"Indicates that something is being grabbed" },
+        { L"text", L"Indicates text that can be selected (I-beam)" },
+        { L"move", L"Indicates something is to be moved" },
+        { L"crosshair", L"A simple crosshair cursor" },
+        { L"wait", L"Indicates that the program is busy (hourglass or watch)" },
+
+        // Box sizing & overflow
+        { L"border-box", L"Width and height properties include content, padding, and border" },
+        { L"content-box", L"Default. Width and height properties only include content" },
+        { L"hidden", L"Content is clipped and no scrollbars are provided" },
+        { L"auto", L"Browser automatically determines sizing or provides scrollbars if needed" },
+        { L"scroll", L"Content is clipped and browser always displays scrollbars" },
+        { L"visible", L"Default. Content is not clipped and renders outside the element's box" },
+
+        // Object fit
+        { L"cover", L"Replaced content is sized to maintain its aspect ratio while filling the element box" },
+        { L"contain", L"Replaced content is scaled to maintain its aspect ratio while fitting within the box" },
+
+        // Global CSS keywords
+        { L"inherit", L"Inherits this property from its parent element" },
+        { L"initial", L"Sets this property to its default initial value" },
+        { L"unset", L"Resets the property to its natural value (inherited if inherited, initial if not)" },
+        { L"currentColor", L"Uses the value of the color property on this element" },
+        { L"transparent", L"Fully transparent color value rgba(0, 0, 0, 0)" }
+    };
+
+    for (const auto& v : cssVals) {
+        IntelliSenseItem item;
+        item.label = v.name;
+        item.detail = v.desc;
+        item.insertText = v.name;
+        item.kind = CompletionKind::Keyword;
+        item.origin = L"css";
+        m_cssValues.push_back(std::move(item));
     }
 }
 
@@ -769,6 +999,195 @@ void IntelliSenseEngine::PopulateCommonVocabulary() {
     }
 }
 
+std::wstring IntelliSenseEngine::ExtractEmmetPrefix(const std::wstring& line, size_t cursorCol) {
+    if (line.empty() || cursorCol == 0) return L"";
+    size_t col = (std::min)(cursorCol, line.length());
+    size_t start = col;
+    while (start > 0) {
+        wchar_t c = line[start - 1];
+        if (c == L' ' || c == L'\t' || c == L'<' || c == L';' || c == L'\"' || c == L'\'') {
+            break;
+        }
+        if (c == L'>') {
+            // '>' can be child operator in Emmet like ul>li, but if preceded by '/' or tag close '</tag>', stop
+            if (start >= 2 && line[start - 2] == L'/') {
+                break;
+            }
+        }
+        start--;
+    }
+    while (start < col && (line[start] == L'>' || line[start] == L' ' || line[start] == L'\t')) {
+        start++;
+    }
+    if (start >= col) return L"";
+    return line.substr(start, col - start);
+}
+
+std::wstring IntelliSenseEngine::ExpandEmmet(const std::wstring& abbr) {
+    if (abbr.empty()) return L"";
+
+    // Quick syntax validation: must look like an Emmet expression
+    bool hasEmmetSyntax = (abbr.find_first_of(L">*+^$") != std::wstring::npos) ||
+                          (abbr.find(L'.') != std::wstring::npos && abbr.length() > 2) ||
+                          (abbr.find(L'#') != std::wstring::npos && abbr.length() > 2);
+    if (!hasEmmetSyntax) return L"";
+
+    struct Node {
+        std::wstring tag = L"div";
+        std::wstring id;
+        std::vector<std::wstring> classes;
+        std::wstring text;
+        int count = 1;
+        std::vector<Node> children;
+    };
+
+    auto parseSingle = [](const std::wstring& s) -> Node {
+        Node n;
+        size_t len = s.length();
+        if (len == 0) return n;
+
+        // Check multiplier *N at end
+        size_t star = s.rfind(L'*');
+        if (star != std::wstring::npos && star + 1 < len) {
+            bool allDig = true;
+            for (size_t d = star + 1; d < len; ++d) {
+                if (!iswdigit(s[d])) { allDig = false; break; }
+            }
+            if (allDig) {
+                n.count = (std::max)(1, _wtoi(s.substr(star + 1).c_str()));
+                len = star;
+            }
+        }
+
+        size_t tagEnd = 0;
+        while (tagEnd < len && s[tagEnd] != L'.' && s[tagEnd] != L'#' && s[tagEnd] != L'{') {
+            tagEnd++;
+        }
+        if (tagEnd > 0) {
+            n.tag = s.substr(0, tagEnd);
+        } else {
+            n.tag = L"div";
+        }
+
+        size_t i = tagEnd;
+        while (i < len) {
+            if (s[i] == L'#') {
+                i++;
+                size_t idEnd = i;
+                while (idEnd < len && s[idEnd] != L'.' && s[idEnd] != L'#' && s[idEnd] != L'{') idEnd++;
+                n.id = s.substr(i, idEnd - i);
+                i = idEnd;
+            } else if (s[i] == L'.') {
+                i++;
+                size_t clsEnd = i;
+                while (clsEnd < len && s[clsEnd] != L'.' && s[clsEnd] != L'#' && s[clsEnd] != L'{') clsEnd++;
+                n.classes.push_back(s.substr(i, clsEnd - i));
+                i = clsEnd;
+            } else if (s[i] == L'{') {
+                i++;
+                size_t txtEnd = s.find(L'}', i);
+                if (txtEnd != std::wstring::npos && txtEnd <= len) {
+                    n.text = s.substr(i, txtEnd - i);
+                    i = txtEnd + 1;
+                } else {
+                    n.text = s.substr(i, len - i);
+                    break;
+                }
+            } else {
+                i++;
+            }
+        }
+        return n;
+    };
+
+    // Parse hierarchy by splitting along '>'
+    std::vector<std::wstring> levels;
+    size_t prev = 0;
+    for (size_t i = 0; i < abbr.length(); ++i) {
+        if (abbr[i] == L'>') {
+            levels.push_back(abbr.substr(prev, i - prev));
+            prev = i + 1;
+        }
+    }
+    levels.push_back(abbr.substr(prev));
+    if (levels.empty()) return L"";
+
+    // Build tree
+    std::function<Node(size_t)> buildTree = [&](size_t idx) -> Node {
+        Node curr = parseSingle(levels[idx]);
+        if (idx + 1 < levels.size()) {
+            curr.children.push_back(buildTree(idx + 1));
+        }
+        return curr;
+    };
+
+    Node root = buildTree(0);
+
+    // Render tree with indentation and $ numbering replacement
+    auto isVoidTag = [](const std::wstring& t) {
+        return t == L"img" || t == L"input" || t == L"br" || t == L"hr" || t == L"meta" || t == L"link" || t == L"source";
+    };
+
+    auto replaceNum = [](const std::wstring& inStr, int num) -> std::wstring {
+        std::wstring out = inStr;
+        std::wstring numStr = std::to_wstring(num);
+        size_t pos = 0;
+        while ((pos = out.find(L'$', pos)) != std::wstring::npos) {
+            out.replace(pos, 1, numStr);
+            pos += numStr.length();
+        }
+        return out;
+    };
+
+    std::wstring result;
+    std::function<void(const Node&, int, int)> render = [&](const Node& n, int depth, int num) {
+        std::wstring indent(depth * 4, L' ');
+        result += indent + L"<" + n.tag;
+        if (!n.id.empty()) {
+            result += L" id=\"" + replaceNum(n.id, num) + L"\"";
+        }
+        if (!n.classes.empty()) {
+            result += L" class=\"";
+            for (size_t c = 0; c < n.classes.size(); ++c) {
+                if (c > 0) result += L" ";
+                result += replaceNum(n.classes[c], num);
+            }
+            result += L"\"";
+        }
+
+        if (isVoidTag(n.tag)) {
+            result += L" />\n";
+            return;
+        }
+
+        result += L">";
+        if (!n.text.empty()) {
+            result += replaceNum(n.text, num);
+        }
+
+        if (!n.children.empty()) {
+            result += L"\n";
+            for (const auto& child : n.children) {
+                for (int k = 1; k <= child.count; ++k) {
+                    render(child, depth + 1, k);
+                }
+            }
+            result += indent;
+        }
+
+        result += L"</" + n.tag + L">\n";
+    };
+
+    for (int k = 1; k <= root.count; ++k) {
+        render(root, 0, k);
+    }
+
+    if (!result.empty() && result.back() == L'\n') {
+        result.pop_back();
+    }
+    return result;
+}
+
 std::wstring IntelliSenseEngine::ExtractQueryPrefix(const std::wstring& line, size_t cursorCol) {
     if (line.empty() || cursorCol == 0) return L"";
     size_t col = (std::min)(cursorCol, line.length());
@@ -884,6 +1303,30 @@ std::vector<IntelliSenseItem> IntelliSenseEngine::ExtractDocumentSymbols(
             } else {
                 pDollar++;
             }
+        }
+
+        // 1b. CSS Custom Properties: --var-name: #hex;
+        size_t pDash = 0;
+        while ((pDash = line.find(L"--", pDash)) != std::wstring::npos) {
+            size_t pStart = pDash;
+            size_t pEnd = pStart + 2;
+            while (pEnd < line.length() && (iswalnum(line[pEnd]) || line[pEnd] == L'-' || line[pEnd] == L'_')) {
+                pEnd++;
+            }
+            if (pEnd > pStart + 2) {
+                std::wstring varName = line.substr(pStart, pEnd - pStart);
+                if (seenVars.insert(varName).second) {
+                    IntelliSenseItem item;
+                    item.label = varName;
+                    item.detail = L"CSS Custom Property";
+                    item.insertText = varName;
+                    item.kind = CompletionKind::Variable;
+                    item.score = 550;
+                    item.origin = L"css-var";
+                    results.push_back(std::move(item));
+                }
+            }
+            pDash = pEnd;
         }
 
         // 2. JS/TS declarations: const port = 3000; or let port = ...
@@ -1204,36 +1647,129 @@ std::vector<IntelliSenseItem> IntelliSenseEngine::QueryCompletions(
     }
 
     bool isHtml = (ext == L".html" || ext == L".htm" || ext == L".php");
-    bool isJs = (ext == L".js" || ext == L".jsx" || ext == L".ts" || ext == L".tsx" || ext == L".mjs" || ext == L".cjs" || isHtml);
+    bool isCss = (ext == L".css" || ext == L".scss" || ext == L".less");
+    bool isJs = (ext == L".js" || ext == L".jsx" || ext == L".ts" || ext == L".tsx" || ext == L".mjs" || ext == L".cjs");
     bool isPy = (ext == L".py");
 
-    // Check context on line: if typing after '<' or in tag
-    size_t lastOpenTag = currentLine.rfind(L'<', cursorCol > 0 ? cursorCol - 1 : 0);
-    size_t lastCloseTag = currentLine.rfind(L'>', cursorCol > 0 ? cursorCol - 1 : 0);
-    bool insideTag = (isHtml && lastOpenTag != std::wstring::npos && (lastCloseTag == std::wstring::npos || lastOpenTag > lastCloseTag));
+    // Detect contextual block (embedded <style> or <script>) in HTML/PHP files
+    bool insideStyle = isCss;
+    bool insideScript = isJs;
 
-    if (insideTag) {
-        // Tag name or attributes
-        size_t spaceAfterOpen = currentLine.find_first_of(L" \t", lastOpenTag);
-        if (spaceAfterOpen == std::wstring::npos || cursorCol <= spaceAfterOpen) {
-            for (const auto& tag : m_htmlTags) rawCandidates.push_back(tag);
+    if (isHtml) {
+        // Check if cursor line has inline style="..." or on*="..." attributes
+        size_t styleAttr = currentLine.rfind(L"style=\"", cursorCol > 0 ? cursorCol - 1 : 0);
+        if (styleAttr != std::wstring::npos) {
+            size_t closeQ = currentLine.find(L'"', styleAttr + 7);
+            if (closeQ == std::wstring::npos || cursorCol <= closeQ) {
+                insideStyle = true;
+            }
+        }
+        if (!insideStyle && pDocLines && !pDocLines->empty()) {
+            // Scan backwards from current line to find enclosing <style> or <script> tags
+            size_t curL = 0;
+            // Approximate line by finding matching text or looking at last lines
+            for (size_t l = 0; l < pDocLines->size(); ++l) {
+                const auto& dLine = (*pDocLines)[l];
+                if (dLine.find(L"<style") != std::wstring::npos) insideStyle = true;
+                if (dLine.find(L"</style>") != std::wstring::npos) insideStyle = false;
+                if (dLine.find(L"<script") != std::wstring::npos) insideScript = true;
+                if (dLine.find(L"</script>") != std::wstring::npos) insideScript = false;
+            }
+        }
+    }
+
+    if (insideStyle) {
+        // In CSS context: Check if typing inside rule block { ... } or at selector level
+        bool insideBraces = false;
+        size_t lastOpenBrace = currentLine.rfind(L'{', cursorCol > 0 ? cursorCol - 1 : 0);
+        size_t lastCloseBrace = currentLine.rfind(L'}', cursorCol > 0 ? cursorCol - 1 : 0);
+        if (lastOpenBrace != std::wstring::npos && (lastCloseBrace == std::wstring::npos || lastOpenBrace > lastCloseBrace)) {
+            insideBraces = true;
+        } else if (pDocLines && !pDocLines->empty()) {
+            int depth = 0;
+            for (const auto& dLine : *pDocLines) {
+                if (&dLine == &currentLine) {
+                    for (size_t i = 0; i < cursorCol && i < dLine.length(); ++i) {
+                        if (dLine[i] == L'{') depth++;
+                        else if (dLine[i] == L'}') { if (depth > 0) depth--; }
+                    }
+                    break;
+                }
+                for (wchar_t ch : dLine) {
+                    if (ch == L'{') depth++;
+                    else if (ch == L'}') { if (depth > 0) depth--; }
+                }
+            }
+            insideBraces = (depth > 0);
+        }
+
+        size_t lastColon = currentLine.rfind(L':', cursorCol > 0 ? cursorCol - 1 : 0);
+        size_t lastSemi = currentLine.rfind(L';', cursorCol > 0 ? cursorCol - 1 : 0);
+        bool colonPrecededByIdent = (lastColon != std::wstring::npos && lastColon > 0 && iswalnum(currentLine[lastColon - 1]));
+        bool typingValue = insideBraces && (lastColon != std::wstring::npos && (lastSemi == std::wstring::npos || lastColon > lastSemi) && colonPrecededByIdent);
+
+        if (typingValue) {
+            for (const auto& v : m_cssValues) rawCandidates.push_back(v);
         } else {
-            for (const auto& attr : m_htmlAttributes) rawCandidates.push_back(attr);
+            for (const auto& p : m_cssProperties) rawCandidates.push_back(p);
+
+            // Standard CSS Pseudo-Classes & Pseudo-Elements
+            static const struct PseudoDef { const wchar_t* name; const wchar_t* desc; } cssPseudos[] = {
+                { L":root", L"Matches the document root element (usually <html>). Primary selector for declaring global CSS variables." },
+                { L":hover", L"Matches an element when the user hovers over it with a pointing device." },
+                { L":focus", L"Matches an element when it has gained focus." },
+                { L":focus-visible", L"Matches an element when focused and UA determines focus indication should be visible." },
+                { L":focus-within", L"Matches an element if the element itself or any descendant has focus." },
+                { L":active", L"Matches an element being activated by the user (e.g. mouse button down)." },
+                { L":visited", L"Matches links that the user has already visited in browser history." },
+                { L":checked", L"Matches radio buttons, checkboxes, or options that are checked/selected." },
+                { L":disabled", L"Matches form elements that are in a disabled state." },
+                { L":first-child", L"Matches an element that is the first child of its parent." },
+                { L":last-child", L"Matches an element that is the last child of its parent." },
+                { L":nth-child()", L"Matches elements based on their position in siblings (e.g. :nth-child(2n+1))." },
+                { L":not()", L"Matches elements that do not match the selector list argument." },
+                { L":is()", L"Takes a selector list and selects any element that matches any of the selectors in that list." },
+                { L":where()", L"Takes a selector list and matches with 0 specificity." },
+                { L":has()", L"Relational pseudo-class: matches an element if any selector in arguments matches relative to :scope." },
+                { L"::before", L"Creates a pseudo-element that is the first child of the selected element (used with 'content')." },
+                { L"::after", L"Creates a pseudo-element that is the last child of the selected element (used with 'content')." },
+                { L"::placeholder", L"Represents the placeholder text in an <input> or <textarea> element." },
+                { L"::selection", L"Applies styles to the part of a document that has been highlighted/selected by the user." },
+                { L"::-webkit-scrollbar", L"Targets the entire scrollbar in WebKit-based rendering engines." }
+            };
+
+            for (const auto& ps : cssPseudos) {
+                IntelliSenseItem it;
+                it.label = ps.name;
+                it.detail = ps.desc;
+                it.insertText = ps.name;
+                it.kind = CompletionKind::Keyword;
+                it.score = 500;
+                it.origin = L"css";
+                rawCandidates.push_back(std::move(it));
+            }
+
+            if (!insideBraces) {
+                static const struct AtRuleDef { const wchar_t* name; const wchar_t* desc; } atRules[] = {
+                    { L"@media", L"Applies CSS styles conditionally based on media type and screen capabilities." },
+                    { L"@keyframes", L"Controls the intermediate steps in a CSS animation sequence." },
+                    { L"@import", L"Imports style rules from other style sheets." },
+                    { L"@font-face", L"Specifies a custom font with which to display text." },
+                    { L"@supports", L"Tests whether the browser supports a specific CSS property and value." }
+                };
+                for (const auto& ar : atRules) {
+                    IntelliSenseItem it;
+                    it.label = ar.name;
+                    it.detail = ar.desc;
+                    it.insertText = ar.name;
+                    it.kind = CompletionKind::Keyword;
+                    it.score = 500;
+                    it.origin = L"css";
+                    rawCandidates.push_back(std::move(it));
+                }
+            }
         }
-    } else if (isHtml) {
-        // In HTML outside of tags (e.g. typing "div" or "a" directly in document)
-        // 1. Suggest HTML tags (div, dialog, header, head, p, span, etc.) with highest priority!
-        for (const auto& tag : m_htmlTags) {
-            IntelliSenseItem it = tag;
-            it.insertText = std::wstring(L"<") + tag.label + L">$0</" + tag.label + L">";
-            it.score += 300; // Prioritize tags in HTML so 'div' beats generic symbols
-            rawCandidates.push_back(std::move(it));
-        }
-        // 2. Suggest JS globals & keywords if inside script or inline handlers
-        for (const auto& g : m_jsGlobals) rawCandidates.push_back(g);
-        for (const auto& kw : m_jsKeywords) rawCandidates.push_back(kw);
-        for (const auto& d : m_jsDomApis) rawCandidates.push_back(d);
-    } else if (isJs) {
+    } else if (insideScript) {
         size_t dotPos = (cursorCol > prefix.length() && cursorCol > 0) ? cursorCol - prefix.length() - 1 : std::wstring::npos;
         bool afterDot = (dotPos != std::wstring::npos && dotPos < currentLine.length() && currentLine[dotPos] == L'.');
 
@@ -1245,6 +1781,46 @@ std::vector<IntelliSenseItem> IntelliSenseEngine::QueryCompletions(
             for (const auto& kw : m_jsKeywords) rawCandidates.push_back(kw);
             for (const auto& d : m_jsDomApis) rawCandidates.push_back(d);
         }
+    } else if (isHtml) {
+        // Check context on line: if typing after '<' or in tag
+        size_t lastOpenTag = currentLine.rfind(L'<', cursorCol > 0 ? cursorCol - 1 : 0);
+        size_t lastCloseTag = currentLine.rfind(L'>', cursorCol > 0 ? cursorCol - 1 : 0);
+        bool insideTag = (lastOpenTag != std::wstring::npos && (lastCloseTag == std::wstring::npos || lastOpenTag > lastCloseTag));
+
+        if (insideTag) {
+            // Tag name or attributes
+            size_t spaceAfterOpen = currentLine.find_first_of(L" \t", lastOpenTag);
+            if (spaceAfterOpen == std::wstring::npos || cursorCol <= spaceAfterOpen) {
+                for (const auto& tag : m_htmlTags) rawCandidates.push_back(tag);
+            } else {
+                for (const auto& attr : m_htmlAttributes) rawCandidates.push_back(attr);
+            }
+        } else {
+            // In HTML markup outside of tags (e.g. typing "div", "header", or Emmet abbreviations)
+            // 1. Suggest HTML tags with priority
+            for (const auto& tag : m_htmlTags) {
+                IntelliSenseItem it = tag;
+                it.insertText = std::wstring(L"<") + tag.label + L">$0</" + tag.label + L">";
+                it.score += 300;
+                rawCandidates.push_back(std::move(it));
+            }
+
+            // 2. Check for Emmet Abbreviation (Image 4: ul>li*3>span.hello$)
+            std::wstring emmetPrefix = ExtractEmmetPrefix(currentLine, cursorCol);
+            if (!emmetPrefix.empty() && emmetPrefix.length() >= 3) {
+                std::wstring expanded = ExpandEmmet(emmetPrefix);
+                if (!expanded.empty()) {
+                    IntelliSenseItem eItem;
+                    eItem.label = emmetPrefix;
+                    eItem.detail = L"Emmet Abbreviation\n" + expanded;
+                    eItem.insertText = expanded;
+                    eItem.kind = CompletionKind::Snippet;
+                    eItem.origin = L"emmet";
+                    eItem.score = 3500; // Highest priority at top of list!
+                    rawCandidates.push_back(std::move(eItem));
+                }
+            }
+        }
     } else if (isPy) {
         const wchar_t* pyKeywords[] = {
             L"def", L"class", L"self", L"return", L"import", L"from", L"if", L"elif", L"else",
@@ -1253,18 +1829,6 @@ std::vector<IntelliSenseItem> IntelliSenseEngine::QueryCompletions(
         };
         for (const auto* kw : pyKeywords) {
             rawCandidates.push_back({ kw, L"Python Keyword", kw, CompletionKind::Keyword, 120, 0, 0, L"keyword" });
-        }
-    } else if (ext == L".css" || ext == L".scss" || ext == L".less") {
-        const wchar_t* cssProps[] = {
-            L"display", L"position", L"flex", L"grid", L"margin", L"padding", L"width", L"height",
-            L"color", L"background", L"border", L"font-size", L"font-family", L"font-weight",
-            L"line-height", L"letter-spacing", L"text-align", L"justify-content", L"align-items",
-            L"flex-direction", L"flex-wrap", L"gap", L"opacity", L"visibility", L"overflow",
-            L"z-index", L"box-shadow", L"border-radius", L"transform", L"transition", L"animation",
-            L"cursor", L"outline", L"box-sizing", L"max-width", L"min-width", L"max-height", L"min-height"
-        };
-        for (const auto* cp : cssProps) {
-            rawCandidates.push_back({ cp, L"CSS Property", cp, CompletionKind::Property, 120, 0, 0, L"css" });
         }
     } else if (ext == L".cpp" || ext == L".h" || ext == L".hpp" || ext == L".c") {
         const wchar_t* cppKeywords[] = {
@@ -1288,11 +1852,14 @@ std::vector<IntelliSenseItem> IntelliSenseEngine::QueryCompletions(
     }
 
     // Common web and programming vocabulary (properties, tags, methods, identifiers)
-    for (const auto& v : m_commonVocabulary) {
-        rawCandidates.push_back(v);
+    // In CSS files, keep completion list clean and strictly scoped to CSS
+    if (!isCss && !insideStyle) {
+        for (const auto& v : m_commonVocabulary) {
+            rawCandidates.push_back(v);
+        }
     }
 
-    // Matching & Scoring Engine: Exact prefix (1000), Substring match (500), Fuzzy match (100)
+    // Matching & Scoring Engine: Exact prefix (1000), Boundary match (750), Substring match (100)
     std::vector<IntelliSenseItem> matches;
     std::unordered_set<std::wstring> seenLabels;
 
@@ -1313,6 +1880,8 @@ std::vector<IntelliSenseItem> IntelliSenseEngine::QueryCompletions(
         for (auto& c : candLower) c = static_cast<wchar_t>(towlower(c));
 
         size_t p = candLower.find(prefixLower);
+        bool isSnippet = (item.kind == CompletionKind::Snippet);
+
         if (p == 0) {
             // Exact prefix match: Highest priority (score ~ 1000)
             IntelliSenseItem scored = item;
@@ -1322,30 +1891,70 @@ std::vector<IntelliSenseItem> IntelliSenseEngine::QueryCompletions(
             seenLabels.insert(item.label);
             matches.push_back(std::move(scored));
         } else if (p != std::wstring::npos) {
-            // Substring match: Medium priority (score ~ 500)
-            IntelliSenseItem scored = item;
-            scored.score += 500 - static_cast<int>(p * 10 + item.label.length());
-            scored.matchStart = p;
-            scored.matchLen = prefix.length();
-            seenLabels.insert(item.label);
-            matches.push_back(std::move(scored));
-        } else {
-            // Fuzzy match: all chars of prefix appear in order (score ~ 100)
-            size_t pi = 0;
-            size_t firstMatch = std::wstring::npos;
-            for (size_t ci = 0; ci < candLower.length() && pi < prefixLower.length(); ++ci) {
-                if (candLower[ci] == prefixLower[pi]) {
-                    if (firstMatch == std::wstring::npos) firstMatch = ci;
-                    pi++;
+            // Check if this match starts at a word or delimiter boundary (':', '-', '_', '.', '>')
+            wchar_t prevChar = candLower[p - 1];
+            bool isBoundary = (prevChar == L':' || prevChar == L'-' || prevChar == L'_' || prevChar == L'.' || prevChar == L' ' || prevChar == L'>');
+
+            if (isSnippet) {
+                // Snippets MUST only match at prefix start (p == 0) or at a delimiter boundary (e.g. typing "bread" matches "div:breadcrumb")!
+                // Middle-of-word substrings like typing "read" inside "breadcrumb" MUST NEVER MATCH!
+                if (isBoundary) {
+                    IntelliSenseItem scored = item;
+                    scored.score += 700 - static_cast<int>(p * 5 + item.label.length());
+                    scored.matchStart = p;
+                    scored.matchLen = prefix.length();
+                    seenLabels.insert(item.label);
+                    matches.push_back(std::move(scored));
+                }
+            } else {
+                if (isBoundary) {
+                    // Word boundary match: High priority (score ~ 750)
+                    IntelliSenseItem scored = item;
+                    scored.score += 750 - static_cast<int>(p * 5 + item.label.length());
+                    scored.matchStart = p;
+                    scored.matchLen = prefix.length();
+                    seenLabels.insert(item.label);
+                    matches.push_back(std::move(scored));
+                } else if (prefix.length() >= 3) {
+                    // Substring in middle of word: Low priority (score ~ 100), only for longer queries
+                    IntelliSenseItem scored = item;
+                    scored.score += 100 - static_cast<int>(p * 15 + item.label.length());
+                    scored.matchStart = p;
+                    scored.matchLen = prefix.length();
+                    seenLabels.insert(item.label);
+                    matches.push_back(std::move(scored));
                 }
             }
-            if (pi == prefixLower.length()) {
-                IntelliSenseItem scored = item;
-                scored.score += 100 - static_cast<int>(item.label.length());
-                scored.matchStart = (firstMatch != std::wstring::npos) ? firstMatch : 0;
-                scored.matchLen = prefix.length();
-                seenLabels.insert(item.label);
-                matches.push_back(std::move(scored));
+        } else if (!isSnippet) {
+            // Fuzzy match for non-snippets only: require match to start at 0 or at word boundary,
+            // or have adjacent character matches (avoids matching 'root' into 'rowCount'!)
+            if (prefixLower.length() >= 2) {
+                size_t pi = 0;
+                size_t firstMatch = std::wstring::npos;
+                size_t maxGap = 0;
+                size_t lastMatchIdx = 0;
+                for (size_t ci = 0; ci < candLower.length() && pi < prefixLower.length(); ++ci) {
+                    if (candLower[ci] == prefixLower[pi]) {
+                        if (firstMatch == std::wstring::npos) firstMatch = ci;
+                        else {
+                            size_t gap = ci - lastMatchIdx;
+                            if (gap > maxGap) maxGap = gap;
+                        }
+                        lastMatchIdx = ci;
+                        pi++;
+                    }
+                }
+                // Accept fuzzy match only if all characters matched AND either:
+                // 1) starts at index 0 or word boundary with small gap (<= 2), OR
+                // 2) no large gaps scattering letters across unrelated words
+                if (pi == prefixLower.length() && (firstMatch == 0 || maxGap <= 2)) {
+                    IntelliSenseItem scored = item;
+                    scored.score += 50 - static_cast<int>(item.label.length() + firstMatch * 10);
+                    scored.matchStart = (firstMatch != std::wstring::npos) ? firstMatch : 0;
+                    scored.matchLen = prefix.length();
+                    seenLabels.insert(item.label);
+                    matches.push_back(std::move(scored));
+                }
             }
         }
     }

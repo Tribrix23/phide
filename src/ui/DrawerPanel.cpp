@@ -716,9 +716,11 @@ void DrawerPanel::RenderExplorerPane(ID2D1RenderTarget* pRT, Theme& theme, const
                     iconX + config.ScaleF(16.0f),
                     cy + config.ScaleF(8.0f)
                 );
+                bool isGitIgnored = IsPathGitIgnored(item.fullPath, item.label);
                 auto setiInfo = theme.GetSetiIcon(item.label, item.isFolder, item.isExpanded);
-                if (theme.fontSeti && setiInfo.pBrush) {
-                    pRT->DrawText(&setiInfo.glyph, 1, theme.fontSeti.Get(), iconBounds, setiInfo.pBrush);
+                ID2D1Brush* pIconBrush = isGitIgnored ? theme.brushTextMuted.Get() : setiInfo.pBrush;
+                if (theme.fontSeti && pIconBrush) {
+                    pRT->DrawText(&setiInfo.glyph, 1, theme.fontSeti.Get(), iconBounds, pIconBrush);
                 } else {
                     auto iconType = LucideIcons::GetIconTypeForPath(item.label, item.isFolder, item.isExpanded);
                     m_icons.DrawFileIcon(pRT, theme, iconBounds, iconType);
@@ -906,11 +908,13 @@ void DrawerPanel::RenderExplorerPane(ID2D1RenderTarget* pRT, Theme& theme, const
                         (theme.brushIconRed ? theme.brushIconRed.Get() : theme.brushTextPrimary.Get()) :
                         (brushGitStatus ?
                             brushGitStatus.Get() :
-                            (isActive ?
-                                (theme.IsDarkMode() ? theme.brushTextWhite.Get() : theme.brushTextPrimary.Get()) :
-                                (theme.IsDarkMode() ? 
-                                    (isHovered ? theme.brushTextWhite.Get() : (item.isFolder ? theme.brushTextWhite.Get() : theme.brushTextPrimary.Get())) :
-                                    theme.brushTextPrimary.Get())));
+                            (isGitIgnored ?
+                                theme.brushTextMuted.Get() :
+                                (isActive ?
+                                    (theme.IsDarkMode() ? theme.brushTextWhite.Get() : theme.brushTextPrimary.Get()) :
+                                    (theme.IsDarkMode() ? 
+                                        (isHovered ? theme.brushTextWhite.Get() : (item.isFolder ? theme.brushTextWhite.Get() : theme.brushTextPrimary.Get())) :
+                                        theme.brushTextPrimary.Get()))));
                     pRT->DrawText(
                         item.label.c_str(),
                         static_cast<UINT32>(item.label.length()),
@@ -3604,10 +3608,10 @@ void DrawerPanel::RefreshGitState(bool async, bool showLoading) {
             }
         }
 
-        // 3. Query working tree changes
+        // 3. Query working tree changes and git-ignored files
         if (!alive || !alive->load()) return;
         RunGitCmd(L"update-index -q --refresh", dir);
-        auto resStatus = RunGitCmd(L"status --porcelain=v1", dir);
+        auto resStatus = RunGitCmd(L"status --porcelain=v1 --ignored=matching", dir);
         auto resDiff = RunGitCmd(L"diff --name-only", dir);
         auto resCached = RunGitCmd(L"diff --cached --name-only", dir);
         std::unordered_set<std::wstring> filesWithRealDiff;
@@ -3626,6 +3630,7 @@ void DrawerPanel::RefreshGitState(bool async, bool showLoading) {
         addDiffLines(resCached.output);
 
         std::vector<GitChangeItem> changes;
+        std::unordered_set<std::wstring> ignoredFiles;
         if (resStatus.exitCode == 0) {
             std::wstringstream ss(resStatus.output);
             std::wstring line;
@@ -3633,6 +3638,17 @@ void DrawerPanel::RefreshGitState(bool async, bool showLoading) {
                 if (line.size() < 3) continue;
                 wchar_t idxChar = line[0];
                 wchar_t wtChar = line[1];
+
+                // Check for git-ignored files (!! path)
+                if (idxChar == L'!' && wtChar == L'!') {
+                    std::wstring igPath = line.substr(3);
+                    while (!igPath.empty() && (igPath.back() == L'\r' || igPath.back() == L'\n' || igPath.back() == L' ')) igPath.pop_back();
+                    if (igPath.size() >= 2 && igPath.front() == L'"' && igPath.back() == L'"') igPath = igPath.substr(1, igPath.size() - 2);
+                    for (auto& c : igPath) if (c == L'/') c = L'\\';
+                    while (!igPath.empty() && igPath.back() == L'\\') igPath.pop_back();
+                    if (!igPath.empty()) ignoredFiles.insert(igPath);
+                    continue;
+                }
 
                 std::wstring filePath = line.substr(3);
                 while (!filePath.empty() && (filePath.back() == L'\r' || filePath.back() == L'\n' || filePath.back() == L' ')) {
@@ -3878,6 +3894,7 @@ void DrawerPanel::RefreshGitState(bool async, bool showLoading) {
             m_isGitRepo = true;
             m_gitBranch = branch;
             m_gitChanges = std::move(changes);
+            m_gitIgnoredSet = std::move(ignoredFiles);
             m_gitCommits = std::move(commits);
             m_unpushedCommitsCount = unpushedCount;
             if (showLoading) {
@@ -3896,6 +3913,37 @@ void DrawerPanel::RefreshGitState(bool async, bool showLoading) {
     } else {
         task();
     }
+}
+
+bool DrawerPanel::IsPathGitIgnored(const std::wstring& fullPath, const std::wstring& label) const {
+    if (label == L".git" || _wcsicmp(label.c_str(), L".git") == 0) return true;
+    if (label.ends_with(L".obj") || label.ends_with(L".pdb") || label.ends_with(L".exe")) {
+        return true;
+    }
+    std::lock_guard<std::recursive_mutex> lock(m_gitMutex);
+    if (m_gitIgnoredSet.empty()) return false;
+
+    std::wstring relItem;
+    if (m_hasOpenFolder && !m_openFolderPath.empty() && fullPath.rfind(m_openFolderPath, 0) == 0) {
+        relItem = fullPath.substr(m_openFolderPath.length());
+        while (!relItem.empty() && (relItem.front() == L'\\' || relItem.front() == L'/')) {
+            relItem.erase(0, 1);
+        }
+    } else {
+        relItem = fullPath;
+    }
+    for (auto& c : relItem) if (c == L'/') c = L'\\';
+    while (!relItem.empty() && relItem.back() == L'\\') relItem.pop_back();
+
+    if (m_gitIgnoredSet.count(relItem) > 0) return true;
+
+    size_t sep = relItem.find(L'\\');
+    while (sep != std::wstring::npos) {
+        std::wstring parent = relItem.substr(0, sep);
+        if (m_gitIgnoredSet.count(parent) > 0) return true;
+        sep = relItem.find(L'\\', sep + 1);
+    }
+    return false;
 }
 
 
@@ -4132,10 +4180,10 @@ void DrawerPanel::RefreshGitStatusOnly(bool async) {
             }
         }
 
-        // 3. Query working tree changes
+        // 3. Query working tree changes and git-ignored files
         if (!alive || !alive->load()) return;
         RunGitCmd(L"update-index -q --refresh", dir);
-        auto resStatus = RunGitCmd(L"status --porcelain=v1", dir);
+        auto resStatus = RunGitCmd(L"status --porcelain=v1 --ignored=matching", dir);
         auto resDiff = RunGitCmd(L"diff --name-only", dir);
         auto resCached = RunGitCmd(L"diff --cached --name-only", dir);
         std::unordered_set<std::wstring> filesWithRealDiff;
@@ -4154,6 +4202,7 @@ void DrawerPanel::RefreshGitStatusOnly(bool async) {
         addDiffLines(resCached.output);
 
         std::vector<GitChangeItem> changes;
+        std::unordered_set<std::wstring> ignoredFiles;
         if (resStatus.exitCode == 0) {
             std::wstringstream ss(resStatus.output);
             std::wstring line;
@@ -4161,6 +4210,17 @@ void DrawerPanel::RefreshGitStatusOnly(bool async) {
                 if (line.size() < 3) continue;
                 wchar_t idxChar = line[0];
                 wchar_t wtChar = line[1];
+
+                // Check for git-ignored files (!! path)
+                if (idxChar == L'!' && wtChar == L'!') {
+                    std::wstring igPath = line.substr(3);
+                    while (!igPath.empty() && (igPath.back() == L'\r' || igPath.back() == L'\n' || igPath.back() == L' ')) igPath.pop_back();
+                    if (igPath.size() >= 2 && igPath.front() == L'"' && igPath.back() == L'"') igPath = igPath.substr(1, igPath.size() - 2);
+                    for (auto& c : igPath) if (c == L'/') c = L'\\';
+                    while (!igPath.empty() && igPath.back() == L'\\') igPath.pop_back();
+                    if (!igPath.empty()) ignoredFiles.insert(igPath);
+                    continue;
+                }
 
                 std::wstring filePath = line.substr(3);
                 while (!filePath.empty() && (filePath.back() == L'\r' || filePath.back() == L'\n' || filePath.back() == L' ')) {

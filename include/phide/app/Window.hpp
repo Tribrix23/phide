@@ -29,6 +29,7 @@
 #include "phide/ui/DrawerPanel.hpp"
 #include "phide/ui/EditorCanvas.hpp"
 #include "phide/ui/ThemePickerModal.hpp"
+#include "phide/ui/ColorPickerModal.hpp"
 #include "phide/ui/QuickOpenModal.hpp"
 #include "phide/ui/ConfirmDiscardModal.hpp"
 #include "phide/ui/DatabaseSettingsModal.hpp"
@@ -232,6 +233,9 @@ private:
      * Clones only the currently active file into the new pane.
      */
     void SplitEditor();
+
+    /** @brief Keeps cursor within horizontal viewport bounds when typing or navigating. */
+    void EnsureCursorVisible();
 
     // --- File & Window Action Handlers ---
 
@@ -516,6 +520,7 @@ private:
     ui::DrawerPanel m_drawer;
     ui::EditorCanvas m_editor;
     ui::ThemePickerModal m_themePicker;
+    ui::ColorPickerModal m_colorPicker;
     ui::QuickOpenModal m_quickOpen;
     ui::ConfirmDiscardModal m_confirmDiscardModal;
     ui::DatabaseSettingsModal m_dbSettingsModal;

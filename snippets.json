@@ -226,6 +226,629 @@
         "scope": "html,htm,php"
     },
 
+    "Favicon Link": {
+        "prefix": "link:favicon",
+        "body": [
+            "<link rel=\"icon\" type=\"image/x-icon\" href=\"${1:favicon.ico}\">"
+        ],
+        "description": "HTML link favicon tag",
+        "scope": "html,htm,php"
+    },
+
+    "Google Fonts Link Preconnect": {
+        "prefix": "link:font",
+        "body": [
+            "<link rel=\"preconnect\" href=\"https://fonts.googleapis.com\">",
+            "<link rel=\"preconnect\" href=\"https://fonts.gstatic.com\" crossorigin>",
+            "<link href=\"${1:https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap}\" rel=\"stylesheet\">"
+        ],
+        "description": "Google Fonts preconnect and stylesheet link tags",
+        "scope": "html,htm,php"
+    },
+
+    "Canonical Link": {
+        "prefix": "link:canonical",
+        "body": [
+            "<link rel=\"canonical\" href=\"${1:https://example.com/}\" />"
+        ],
+        "description": "SEO canonical URL link tag",
+        "scope": "html,htm,php"
+    },
+
+    "ES Module Script Tag": {
+        "prefix": "script:module",
+        "body": [
+            "<script type=\"module\" src=\"${1:main.js}\"></script>"
+        ],
+        "description": "JavaScript ES module script tag",
+        "scope": "html,htm,php"
+    },
+
+    "DOM Ready Script Block": {
+        "prefix": "script:inline",
+        "body": [
+            "<script>",
+            "    document.addEventListener('DOMContentLoaded', () => {",
+            "        $0",
+            "    });",
+            "</script>"
+        ],
+        "description": "Inline script block with DOMContentLoaded event listener",
+        "scope": "html,htm,php"
+    },
+
+    "Meta Description Tag": {
+        "prefix": "meta:desc",
+        "body": [
+            "<meta name=\"description\" content=\"${1:Page description here}\" />"
+        ],
+        "description": "SEO meta description tag",
+        "scope": "html,htm,php"
+    },
+
+    "OpenGraph Social Meta Tags": {
+        "prefix": "meta:og",
+        "body": [
+            "<meta property=\"og:title\" content=\"${1:Title}\" />",
+            "<meta property=\"og:description\" content=\"${2:Description}\" />",
+            "<meta property=\"og:image\" content=\"${3:https://example.com/og-image.png}\" />",
+            "<meta property=\"og:url\" content=\"${4:https://example.com/}\" />",
+            "<meta property=\"og:type\" content=\"website\" />"
+        ],
+        "description": "OpenGraph metadata tags for social sharing previews",
+        "scope": "html,htm,php"
+    },
+
+    "Twitter Card Meta Tags": {
+        "prefix": "meta:twitter",
+        "body": [
+            "<meta name=\"twitter:card\" content=\"summary_large_image\" />",
+            "<meta name=\"twitter:title\" content=\"${1:Title}\" />",
+            "<meta name=\"twitter:description\" content=\"${2:Description}\" />",
+            "<meta name=\"twitter:image\" content=\"${3:https://example.com/og-image.png}\" />"
+        ],
+        "description": "Twitter Card metadata tags",
+        "scope": "html,htm,php"
+    },
+
+    "Theme Color Meta Tag": {
+        "prefix": "meta:theme",
+        "body": [
+            "<meta name=\"theme-color\" content=\"${1:#0f172a}\" />"
+        ],
+        "description": "Browser mobile theme color meta tag",
+        "scope": "html,htm,php"
+    },
+
+    "Form GET Method": {
+        "prefix": "form:get",
+        "body": [
+            "<form action=\"${1:#}\" method=\"get\">",
+            "    $0",
+            "</form>"
+        ],
+        "description": "HTML form element with GET method",
+        "scope": "html,htm,php"
+    },
+
+    "Form Multipart File Upload": {
+        "prefix": "form:upload",
+        "body": [
+            "<form action=\"${1:#}\" method=\"post\" enctype=\"multipart/form-data\">",
+            "    <input type=\"file\" name=\"${2:file}\" />",
+            "    <button type=\"submit\">${3:Upload}</button>",
+            "</form>"
+        ],
+        "description": "HTML form with multipart file upload support",
+        "scope": "html,htm,php"
+    },
+
+    "Input Number Field": {
+        "prefix": "input:number",
+        "body": [
+            "<input type=\"number\" name=\"${1:quantity}\" min=\"${2:1}\" max=\"${3:100}\" value=\"${4:1}\" />"
+        ],
+        "description": "HTML numeric input field with min and max bounds",
+        "scope": "html,htm,php"
+    },
+
+    "Input Telephone Field": {
+        "prefix": "input:tel",
+        "body": [
+            "<input type=\"tel\" name=\"${1:phone}\" placeholder=\"${2:+1 (555) 000-0000}\" autocomplete=\"tel\" />"
+        ],
+        "description": "HTML telephone number input field",
+        "scope": "html,htm,php"
+    },
+
+    "Input URL Field": {
+        "prefix": "input:url",
+        "body": [
+            "<input type=\"url\" name=\"${1:url}\" placeholder=\"${2:https://example.com}\" />"
+        ],
+        "description": "HTML URL input field",
+        "scope": "html,htm,php"
+    },
+
+    "Input Search Field": {
+        "prefix": "input:search",
+        "body": [
+            "<input type=\"search\" name=\"${1:q}\" placeholder=\"${2:Search...}\" />"
+        ],
+        "description": "HTML search query input field",
+        "scope": "html,htm,php"
+    },
+
+    "Input Date Field": {
+        "prefix": "input:date",
+        "body": [
+            "<input type=\"date\" name=\"${1:date}\" />"
+        ],
+        "description": "HTML date picker input field",
+        "scope": "html,htm,php"
+    },
+
+    "Input Time Field": {
+        "prefix": "input:time",
+        "body": [
+            "<input type=\"time\" name=\"${1:time}\" />"
+        ],
+        "description": "HTML time picker input field",
+        "scope": "html,htm,php"
+    },
+
+    "Input Color Picker Field": {
+        "prefix": "input:color",
+        "body": [
+            "<input type=\"color\" name=\"${1:color}\" value=\"${2:#3b82f6}\" />"
+        ],
+        "description": "HTML color picker input field",
+        "scope": "html,htm,php"
+    },
+
+    "Input Range Slider Field": {
+        "prefix": "input:range",
+        "body": [
+            "<input type=\"range\" name=\"${1:range}\" min=\"${2:0}\" max=\"${3:100}\" value=\"${4:50}\" />"
+        ],
+        "description": "HTML range slider input field",
+        "scope": "html,htm,php"
+    },
+
+    "Input Checkbox with Label": {
+        "prefix": "input:checkbox",
+        "body": [
+            "<label><input type=\"checkbox\" name=\"${1:remember}\" value=\"${2:1}\" /> ${3:Remember me}</label>"
+        ],
+        "description": "HTML checkbox with wrapping label",
+        "scope": "html,htm,php"
+    },
+
+    "Input Radio Button with Label": {
+        "prefix": "input:radio",
+        "body": [
+            "<label><input type=\"radio\" name=\"${1:option}\" value=\"${2:val}\" checked /> ${3:Option}</label>"
+        ],
+        "description": "HTML radio button with wrapping label",
+        "scope": "html,htm,php"
+    },
+
+    "Input File Picker": {
+        "prefix": "input:file",
+        "body": [
+            "<input type=\"file\" name=\"${1:attachment}\" accept=\"${2:image/*}\" />"
+        ],
+        "description": "HTML file chooser input field",
+        "scope": "html,htm,php"
+    },
+
+    "Input Hidden Field": {
+        "prefix": "input:hidden",
+        "body": [
+            "<input type=\"hidden\" name=\"${1:token}\" value=\"${2:value}\" />"
+        ],
+        "description": "HTML hidden input field",
+        "scope": "html,htm,php"
+    },
+
+    "Input Reset Button": {
+        "prefix": "input:reset",
+        "body": [
+            "<input type=\"reset\" value=\"${1:Reset}\" />"
+        ],
+        "description": "HTML form reset button",
+        "scope": "html,htm,php"
+    },
+
+    "Textarea Multi-line Control": {
+        "prefix": "textarea:full",
+        "body": [
+            "<textarea name=\"${1:message}\" rows=\"${2:4}\" cols=\"${3:50}\" placeholder=\"${4:Enter your message...}\"></textarea>"
+        ],
+        "description": "HTML multi-line textarea input with rows and cols",
+        "scope": "html,htm,php"
+    },
+
+    "Select Dropdown with Options": {
+        "prefix": "select:options",
+        "body": [
+            "<select name=\"${1:selectName}\" id=\"${1:selectName}\">",
+            "    <option value=\"\">${2:Select an option...}</option>",
+            "    <option value=\"${3:val1}\">${4:Option 1}</option>",
+            "    <option value=\"${5:val2}\">${6:Option 2}</option>",
+            "</select>"
+        ],
+        "description": "HTML select dropdown list with placeholder and option elements",
+        "scope": "html,htm,php"
+    },
+
+    "Input with Datalist Autocomplete": {
+        "prefix": "datalist:options",
+        "body": [
+            "<input list=\"${1:suggestions}\" name=\"${2:item}\" placeholder=\"${3:Choose or type...}\" />",
+            "<datalist id=\"${1:suggestions}\">",
+            "    <option value=\"${4:Choice 1}\">",
+            "    <option value=\"${5:Choice 2}\">",
+            "    <option value=\"${6:Choice 3}\">",
+            "</datalist>"
+        ],
+        "description": "HTML datalist autocomplete suggestion component",
+        "scope": "html,htm,php"
+    },
+
+    "Submit Button Element": {
+        "prefix": "btn:submit",
+        "body": [
+            "<button type=\"submit\" class=\"${1:btn btn-primary}\">${2:Submit}</button>"
+        ],
+        "description": "HTML form submit button",
+        "scope": "html,htm,php"
+    },
+
+    "Reset Button Element": {
+        "prefix": "btn:reset",
+        "body": [
+            "<button type=\"reset\" class=\"${1:btn btn-secondary}\">${2:Reset}</button>"
+        ],
+        "description": "HTML form reset button",
+        "scope": "html,htm,php"
+    },
+
+    "Navigation Bar Component": {
+        "prefix": "nav:bar",
+        "body": [
+            "<nav class=\"navbar\">",
+            "    <div class=\"nav-brand\"><a href=\"${1:#}\">${2:Brand}</a></div>",
+            "    <ul class=\"nav-links\">",
+            "        <li><a href=\"${3:#}\">${4:Home}</a></li>",
+            "        <li><a href=\"${5:#}\">${6:About}</a></li>",
+            "        <li><a href=\"${7:#}\">${8:Contact}</a></li>",
+            "    </ul>",
+            "</nav>"
+        ],
+        "description": "Complete responsive navigation bar component",
+        "scope": "html,htm,php"
+    },
+
+    "Header Hero Section": {
+        "prefix": "header:hero",
+        "body": [
+            "<header class=\"hero-section\">",
+            "    <h1>${1:Welcome to Our Platform}</h1>",
+            "    <p class=\"hero-lead\">${2:Build fast, modern, and high-performance web applications.}</p>",
+            "    <div class=\"hero-actions\">",
+            "        <a href=\"${3:#}\" class=\"btn btn-primary\">${4:Get Started}</a>",
+            "        <a href=\"${5:#}\" class=\"btn btn-outline\">${6:Learn More}</a>",
+            "    </div>",
+            "</header>"
+        ],
+        "description": "Hero header landing banner section",
+        "scope": "html,htm,php"
+    },
+
+    "Footer Copyright Section": {
+        "prefix": "footer:copy",
+        "body": [
+            "<footer class=\"site-footer\">",
+            "    <p>&copy; ${1:2026} ${2:Your Name or Company}. All rights reserved.</p>",
+            "</footer>"
+        ],
+        "description": "Standard copyright page footer",
+        "scope": "html,htm,php"
+    },
+
+    "Main Document Content Wrapper": {
+        "prefix": "main:content",
+        "body": [
+            "<main role=\"main\" class=\"container mx-auto px-4 py-8\">",
+            "    $0",
+            "</main>"
+        ],
+        "description": "HTML5 main landmark wrapper",
+        "scope": "html,htm,php"
+    },
+
+    "Section with Heading Container": {
+        "prefix": "section:card",
+        "body": [
+            "<section class=\"py-12\">",
+            "    <div class=\"container\">",
+            "        <h2 class=\"text-2xl font-bold mb-4\">${1:Section Title}</h2>",
+            "        <p class=\"text-gray-600 mb-6\">${2:Section subtitle or introduction.}</p>",
+            "        $0",
+            "    </div>",
+            "</section>"
+        ],
+        "description": "Semantic section block with container",
+        "scope": "html,htm,php"
+    },
+
+    "Blog Article Post Component": {
+        "prefix": "article:post",
+        "body": [
+            "<article class=\"post\">",
+            "    <header class=\"post-header\">",
+            "        <h1>${1:Article Title}</h1>",
+            "        <div class=\"post-meta\">",
+            "            <span>By <a href=\"${2:#}\">${3:Author}</a></span>",
+            "            <time datetime=\"${4:2026-01-01}\">${5:Jan 1, 2026}</time>",
+            "        </div>",
+            "    </header>",
+            "    <div class=\"post-content\">",
+            "        <p>$0</p>",
+            "    </div>",
+            "</article>"
+        ],
+        "description": "Complete blog article post markup",
+        "scope": "html,htm,php"
+    },
+
+    "Sidebar Aside Component": {
+        "prefix": "aside:sidebar",
+        "body": [
+            "<aside class=\"sidebar\" aria-label=\"${1:Sidebar}\">",
+            "    <div class=\"widget\">",
+            "        <h3>${2:Related Topics}</h3>",
+            "        <ul>",
+            "            <li><a href=\"${3:#}\">${4:Topic 1}</a></li>",
+            "            <li><a href=\"${5:#}\">${6:Topic 2}</a></li>",
+            "        </ul>",
+            "    </div>",
+            "</aside>"
+        ],
+        "description": "Semantic aside sidebar component",
+        "scope": "html,htm,php"
+    },
+
+    "Figure with Caption": {
+        "prefix": "figure:img",
+        "body": [
+            "<figure>",
+            "    <img src=\"${1:image.jpg}\" alt=\"${2:Description}\" />",
+            "    <figcaption>${3:Caption describing the image}</figcaption>",
+            "</figure>"
+        ],
+        "description": "HTML figure with nested image and figcaption",
+        "scope": "html,htm,php"
+    },
+
+    "Responsive Picture with WebP Fallback": {
+        "prefix": "picture:webp",
+        "body": [
+            "<picture>",
+            "    <source srcset=\"${1:image.webp}\" type=\"image/webp\">",
+            "    <source srcset=\"${2:image.jpg}\" type=\"image/jpeg\">",
+            "    <img src=\"${2:image.jpg}\" alt=\"${3:Description}\" loading=\"lazy\">",
+            "</picture>"
+        ],
+        "description": "Responsive picture element with WebP next-gen format support",
+        "scope": "html,htm,php"
+    },
+
+    "HTML5 Video Player": {
+        "prefix": "video:controls",
+        "body": [
+            "<video src=\"${1:video.mp4}\" controls poster=\"${2:poster.jpg}\" width=\"${3:640}\" height=\"${4:360}\">",
+            "    <track kind=\"subtitles\" src=\"${5:subtitles.vtt}\" srclang=\"en\" label=\"English\">",
+            "    Your browser does not support the video tag.",
+            "</video>"
+        ],
+        "description": "HTML5 video player element with controls and subtitles",
+        "scope": "html,htm,php"
+    },
+
+    "HTML5 Audio Player": {
+        "prefix": "audio:controls",
+        "body": [
+            "<audio controls src=\"${1:audio.mp3}\">",
+            "    Your browser does not support the audio element.",
+            "</audio>"
+        ],
+        "description": "HTML5 audio player element with controls",
+        "scope": "html,htm,php"
+    },
+
+    "HTML5 Native Dialog Modal": {
+        "prefix": "dialog:modal",
+        "body": [
+            "<dialog id=\"${1:myDialog}\" class=\"dialog-modal\">",
+            "    <form method=\"dialog\">",
+            "        <h2>${2:Dialog Title}</h2>",
+            "        <p>${3:Dialog body text content goes here.}</p>",
+            "        <button value=\"cancel\">${4:Cancel}</button>",
+            "        <button value=\"confirm\" class=\"btn-primary\">${5:Confirm}</button>",
+            "    </form>",
+            "</dialog>"
+        ],
+        "description": "HTML5 native dialog modal element with form method dialog",
+        "scope": "html,htm,php"
+    },
+
+    "Details Accordion Disclosure": {
+        "prefix": "details:summary",
+        "body": [
+            "<details>",
+            "    <summary>${1:Click to reveal details}</summary>",
+            "    <p>${2:Hidden details content that unfolds on user click.}</p>",
+            "</details>"
+        ],
+        "description": "HTML5 collapsible details and summary disclosure widget",
+        "scope": "html,htm,php"
+    },
+
+    "SVG Feather/Lucide Icon Template": {
+        "prefix": "svg:icon",
+        "body": [
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"${1:24}\" height=\"${1:24}\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\">",
+            "    $0",
+            "</svg>"
+        ],
+        "description": "SVG vector icon template container",
+        "scope": "html,htm,php"
+    },
+
+    "Canvas 2D Context Setup": {
+        "prefix": "canvas:2d",
+        "body": [
+            "<canvas id=\"${1:myCanvas}\" width=\"${2:600}\" height=\"${3:400}\"></canvas>",
+            "<script>",
+            "    const canvas = document.getElementById('${1:myCanvas}');",
+            "    const ctx = canvas.getContext('2d');",
+            "    $0",
+            "</script>"
+        ],
+        "description": "HTML5 canvas element with 2D rendering context boilerplate",
+        "scope": "html,htm,php"
+    },
+
+    "Definition Description List": {
+        "prefix": "dl:terms",
+        "body": [
+            "<dl>",
+            "    <dt>${1:Term 1}</dt>",
+            "    <dd>${2:Definition of term 1}</dd>",
+            "    <dt>${3:Term 2}</dt>",
+            "    <dd>${4:Definition of term 2}</dd>",
+            "</dl>"
+        ],
+        "description": "HTML definition list with terms and descriptions",
+        "scope": "html,htm,php"
+    },
+
+    "Table Striped with Thead and Tbody": {
+        "prefix": "table:striped",
+        "body": [
+            "<table class=\"table table-striped\">",
+            "    <thead>",
+            "        <tr>",
+            "            <th>${1:#}</th>",
+            "            <th>${2:Name}</th>",
+            "            <th>${3:Email}</th>",
+            "            <th>${4:Status}</th>",
+            "        </tr>",
+            "    </thead>",
+            "    <tbody>",
+            "        <tr>",
+            "            <td>1</td>",
+            "            <td>${5:John Doe}</td>",
+            "            <td>${6:john@example.com}</td>",
+            "            <td><span class=\"badge badge-success\">${7:Active}</span></td>",
+            "        </tr>",
+            "    </tbody>",
+            "</table>"
+        ],
+        "description": "Complete formatted table component with headers, rows and badges",
+        "scope": "html,htm,php"
+    },
+
+    "Card Component": {
+        "prefix": "div:card",
+        "body": [
+            "<div class=\"card\">",
+            "    <div class=\"card-header\">",
+            "        <h3 class=\"card-title\">${1:Card Title}</h3>",
+            "    </div>",
+            "    <div class=\"card-body\">",
+            "        <p>${2:Card description text and details.}</p>",
+            "    </div>",
+            "    <div class=\"card-footer\">",
+            "        <button class=\"btn btn-primary\">${3:Action}</button>",
+            "    </div>",
+            "</div>"
+        ],
+        "description": "Standard UI card container with header, body and footer",
+        "scope": "html,htm,php"
+    },
+
+    "CSS Grid Container": {
+        "prefix": "div:grid",
+        "body": [
+            "<div class=\"grid grid-cols-${1:3} gap-6\">",
+            "    <div class=\"col-item\">$0</div>",
+            "    <div class=\"col-item\"></div>",
+            "    <div class=\"col-item\"></div>",
+            "</div>"
+        ],
+        "description": "Responsive CSS grid layout container",
+        "scope": "html,htm,php"
+    },
+
+    "CSS Flexbox Row Container": {
+        "prefix": "div:flex",
+        "body": [
+            "<div class=\"flex items-center justify-between\">",
+            "    <div>$1</div>",
+            "    <div>$0</div>",
+            "</div>"
+        ],
+        "description": "Flexbox row layout with space-between alignment",
+        "scope": "html,htm,php"
+    },
+
+    "Badge Status Pill": {
+        "prefix": "div:badge",
+        "body": [
+            "<span class=\"badge badge-${1:primary}\">${2:New}</span>"
+        ],
+        "description": "UI status badge pill component",
+        "scope": "html,htm,php"
+    },
+
+    "Alert Notification Box": {
+        "prefix": "div:alert",
+        "body": [
+            "<div class=\"alert alert-${1:info}\" role=\"alert\">",
+            "    <strong>${2:Notice:}</strong> ${3:Operation completed successfully.}",
+            "</div>"
+        ],
+        "description": "Accessible alert notification component",
+        "scope": "html,htm,php"
+    },
+
+    "Breadcrumb Navigation Component": {
+        "prefix": "div:breadcrumb",
+        "body": [
+            "<nav aria-label=\"Breadcrumb\">",
+            "    <ol class=\"breadcrumb\">",
+            "        <li><a href=\"${1:/}\">Home</a></li>",
+            "        <li><a href=\"${2:/section}\">${3:Section}</a></li>",
+            "        <li aria-current=\"page\">${4:Current Page}</li>",
+            "    </ol>",
+            "</nav>"
+        ],
+        "description": "Accessible breadcrumb trail navigation component",
+        "scope": "html,htm,php"
+    },
+
+    "Iframe Embedded Frame": {
+        "prefix": "iframe:embed",
+        "body": [
+            "<iframe src=\"${1:https://example.com}\" width=\"${2:100%}\" height=\"${3:450}\" style=\"border:0;\" allowfullscreen=\"\" loading=\"lazy\"></iframe>"
+        ],
+        "description": "Responsive embedded iframe element",
+        "scope": "html,htm,php"
+    },
+
     "Flexbox Center Alignment": {
         "prefix": "flexcenter",
         "body": [
@@ -304,6 +927,183 @@
             "border-radius: 8px;"
         ],
         "description": "Modern glassmorphism translucent card styling",
+        "scope": "css,scss,less,html"
+    },
+
+    "CSS Custom Properties Root Variables": {
+        "prefix": ":root",
+        "body": [
+            ":root {",
+            "    --primary: ${1:#3b82f6};",
+            "    --background: ${2:#0f172a};",
+            "    --text: ${3:#f8fafc};",
+            "    --radius: ${4:8px};",
+            "}"
+        ],
+        "description": "CSS custom variables declarations in :root selector",
+        "scope": "css,scss,less,html"
+    },
+
+    "CSS Custom Properties Root Variables": {
+        "prefix": "root",
+        "body": [
+            ":root {",
+            "    --primary: ${1:#3b82f6};",
+            "    --background: ${2:#0f172a};",
+            "    --text: ${3:#f8fafc};",
+            "    --radius: ${4:8px};",
+            "}"
+        ],
+        "description": "CSS custom variables declarations in :root selector",
+        "scope": "css,scss,less,html"
+    },
+
+    "CSS Responsive Auto-fit Grid": {
+        "prefix": "grid:auto",
+        "body": [
+            "display: grid;",
+            "grid-template-columns: repeat(auto-fit, minmax(${1:250px}, 1fr));",
+            "gap: ${2:1.5rem};"
+        ],
+        "description": "Responsive auto-fit CSS grid template",
+        "scope": "css,scss,less,html"
+    },
+
+    "Modern Drop Shadow": {
+        "prefix": "shadow",
+        "body": [
+            "box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -4px rgba(0, 0, 0, 0.1);"
+        ],
+        "description": "Modern layered box shadow",
+        "scope": "css,scss,less,html"
+    },
+
+    "Linear Gradient Background": {
+        "prefix": "gradient",
+        "body": [
+            "background: linear-gradient(${1:135deg}, ${2:#3b82f6} 0%, ${3:#8b5cf6} 100%);"
+        ],
+        "description": "CSS linear gradient background",
+        "scope": "css,scss,less,html"
+    },
+
+    "CSS Card Container Styling": {
+        "prefix": "card",
+        "body": [
+            "background: ${1:#ffffff};",
+            "border: 1px solid ${2:#e2e8f0};",
+            "border-radius: ${3:8px};",
+            "padding: ${4:1.5rem};",
+            "box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);"
+        ],
+        "description": "Complete CSS card component styling rules",
+        "scope": "css,scss,less,html"
+    },
+
+    "CSS Interactive Button": {
+        "prefix": "btn",
+        "body": [
+            "display: inline-flex;",
+            "align-items: center;",
+            "justify-content: center;",
+            "padding: 0.5rem 1rem;",
+            "border-radius: 6px;",
+            "font-weight: 500;",
+            "cursor: pointer;",
+            "transition: all 0.2s ease;"
+        ],
+        "description": "Modern flexible button component styling",
+        "scope": "css,scss,less,html"
+    },
+
+    "Absolute Centering Transform": {
+        "prefix": "center:abs",
+        "body": [
+            "position: absolute;",
+            "top: 50%;",
+            "left: 50%;",
+            "transform: translate(-50%, -50%);"
+        ],
+        "description": "Exact centering using absolute positioning and translate",
+        "scope": "css,scss,less,html"
+    },
+
+    "Single-line Text Truncation Ellipsis": {
+        "prefix": "truncate",
+        "body": [
+            "white-space: nowrap;",
+            "overflow: hidden;",
+            "text-overflow: ellipsis;"
+        ],
+        "description": "CSS single-line ellipsis text truncation",
+        "scope": "css,scss,less,html"
+    },
+
+    "Multi-line Text Line Clamp": {
+        "prefix": "clamp",
+        "body": [
+            "display: -webkit-box;",
+            "-webkit-line-clamp: ${1:3};",
+            "-webkit-box-orient: vertical;",
+            "overflow: hidden;"
+        ],
+        "description": "Multi-line text clamping with ellipsis",
+        "scope": "css,scss,less,html"
+    },
+
+    "Smooth Page Scroll Behavior": {
+        "prefix": "scroll",
+        "body": [
+            "scroll-behavior: smooth;"
+        ],
+        "description": "Smooth scrolling behavior for html root",
+        "scope": "css,scss,less,html"
+    },
+
+    "Dark Mode Prefers Color Scheme": {
+        "prefix": "dark",
+        "body": [
+            "@media (prefers-color-scheme: dark) {",
+            "    $0",
+            "}"
+        ],
+        "description": "Media query for user dark color scheme preference",
+        "scope": "css,scss,less,html"
+    },
+
+    "Custom Webkit Scrollbar Styling": {
+        "prefix": "scrollbar",
+        "body": [
+            "::-webkit-scrollbar {",
+            "    width: ${1:8px};",
+            "}",
+            "::-webkit-scrollbar-track {",
+            "    background: ${2:#f1f5f9};",
+            "}",
+            "::-webkit-scrollbar-thumb {",
+            "    background: ${3:#cbd5e1};",
+            "    border-radius: 4px;",
+            "}"
+        ],
+        "description": "Custom scrollbar track and thumb styling",
+        "scope": "css,scss,less,html"
+    },
+
+    "Smooth Transition Declaration": {
+        "prefix": "transition",
+        "body": [
+            "transition: ${1:all} ${2:0.3s} ${3:ease};"
+        ],
+        "description": "CSS transition timing shorthand",
+        "scope": "css,scss,less,html"
+    },
+
+    "Aspect Ratio Box": {
+        "prefix": "aspect",
+        "body": [
+            "aspect-ratio: ${1:16 / 9};"
+        ],
+        "description": "Modern CSS aspect-ratio declaration",
         "scope": "css,scss,less,html"
     },
 

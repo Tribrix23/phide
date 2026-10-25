@@ -157,11 +157,19 @@ struct OpenDocument {
     // Viewport Scrolling State
     size_t scrollLine = 0;              ///< Top-most visible visual line index
     float scrollOffsetX = 0.0f;         ///< Horizontal scroll offset in pixels
+    float maxContentWidth = 0.0f;       ///< Maximum content width in pixels across lines
     D2D1_RECT_F scrollbarTrack{};       ///< Bounding box of the vertical scrollbar track
     D2D1_RECT_F scrollbarThumb{};       ///< Bounding box of the vertical scrollbar thumb
     bool isDraggingScrollbar = false;   ///< True while user is actively dragging the scrollbar thumb
     float dragStartY = 0.0f;            ///< Mouse Y coordinate at start of scrollbar drag
     size_t dragStartScrollLine = 0;     ///< scrollLine at start of scrollbar drag
+
+    // Horizontal Scrollbar State
+    D2D1_RECT_F hScrollbarTrack{};      ///< Bounding box of horizontal scrollbar track
+    D2D1_RECT_F hScrollbarThumb{};      ///< Bounding box of horizontal scrollbar thumb
+    bool isDraggingHScrollbar = false;  ///< True while user is actively dragging the horizontal scrollbar
+    float dragStartHX = 0.0f;           ///< Mouse X coordinate at start of horizontal scrollbar drag
+    float dragStartScrollOffsetX = 0.0f;///< scrollOffsetX at start of horizontal scrollbar drag
 
     // Target Line / Search Jump Flash State
     size_t targetHighlightLine = static_cast<size_t>(-1);

@@ -957,6 +957,188 @@ void SnippetManager::LoadDefaults() {
         L"css,scss,less,html"
     });
 
+    m_snippets.push_back({
+        L"CSS Custom Properties Root Variables",
+        L":root",
+        {
+            L":root {",
+            L"    --primary: ${1:#3b82f6};",
+            L"    --background: ${2:#0f172a};",
+            L"    --text: ${3:#f8fafc};",
+            L"    --radius: ${4:8px};",
+            L"}"
+        },
+        L"CSS custom variables declarations in :root selector",
+        L"css,scss,less,html"
+    });
+
+    m_snippets.push_back({
+        L"CSS Custom Properties Root Variables",
+        L"root",
+        {
+            L":root {",
+            L"    --primary: ${1:#3b82f6};",
+            L"    --background: ${2:#0f172a};",
+            L"    --text: ${3:#f8fafc};",
+            L"    --radius: ${4:8px};",
+            L"}"
+        },
+        L"CSS custom variables declarations in :root selector",
+        L"css,scss,less,html"
+    });
+
+    m_snippets.push_back({
+        L"CSS Responsive Auto-fit Grid",
+        L"grid:auto",
+        {
+            L"display: grid;",
+            L"grid-template-columns: repeat(auto-fit, minmax(${1:250px}, 1fr));",
+            L"gap: ${2:1.5rem};"
+        },
+        L"Responsive auto-fit CSS grid template",
+        L"css,scss,less,html"
+    });
+
+    m_snippets.push_back({
+        L"Modern Drop Shadow",
+        L"shadow",
+        { L"box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -4px rgba(0, 0, 0, 0.1);" },
+        L"Modern layered box shadow",
+        L"css,scss,less,html"
+    });
+
+    m_snippets.push_back({
+        L"Linear Gradient Background",
+        L"gradient",
+        { L"background: linear-gradient(${1:135deg}, ${2:#3b82f6} 0%, ${3:#8b5cf6} 100%);" },
+        L"CSS linear gradient background",
+        L"css,scss,less,html"
+    });
+
+    m_snippets.push_back({
+        L"CSS Card Container Styling",
+        L"card",
+        {
+            L"background: ${1:#ffffff};",
+            L"border: 1px solid ${2:#e2e8f0};",
+            L"border-radius: ${3:8px};",
+            L"padding: ${4:1.5rem};",
+            L"box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);"
+        },
+        L"Complete CSS card component styling rules",
+        L"css,scss,less,html"
+    });
+
+    m_snippets.push_back({
+        L"CSS Interactive Button",
+        L"btn",
+        {
+            L"display: inline-flex;",
+            L"align-items: center;",
+            L"justify-content: center;",
+            L"padding: 0.5rem 1rem;",
+            L"border-radius: 6px;",
+            L"font-weight: 500;",
+            L"cursor: pointer;",
+            L"transition: all 0.2s ease;"
+        },
+        L"Modern flexible button component styling",
+        L"css,scss,less,html"
+    });
+
+    m_snippets.push_back({
+        L"Absolute Centering Transform",
+        L"center:abs",
+        {
+            L"position: absolute;",
+            L"top: 50%;",
+            L"left: 50%;",
+            L"transform: translate(-50%, -50%);"
+        },
+        L"Exact centering using absolute positioning and translate",
+        L"css,scss,less,html"
+    });
+
+    m_snippets.push_back({
+        L"Single-line Text Truncation Ellipsis",
+        L"truncate",
+        {
+            L"white-space: nowrap;",
+            L"overflow: hidden;",
+            L"text-overflow: ellipsis;"
+        },
+        L"CSS single-line ellipsis text truncation",
+        L"css,scss,less,html"
+    });
+
+    m_snippets.push_back({
+        L"Multi-line Text Line Clamp",
+        L"clamp",
+        {
+            L"display: -webkit-box;",
+            L"-webkit-line-clamp: ${1:3};",
+            L"-webkit-box-orient: vertical;",
+            L"overflow: hidden;"
+        },
+        L"Multi-line text clamping with ellipsis",
+        L"css,scss,less,html"
+    });
+
+    m_snippets.push_back({
+        L"Smooth Page Scroll Behavior",
+        L"scroll",
+        { L"scroll-behavior: smooth;" },
+        L"Smooth scrolling behavior for html root",
+        L"css,scss,less,html"
+    });
+
+    m_snippets.push_back({
+        L"Dark Mode Prefers Color Scheme",
+        L"dark",
+        {
+            L"@media (prefers-color-scheme: dark) {",
+            L"    $0",
+            L"}"
+        },
+        L"Media query for user dark color scheme preference",
+        L"css,scss,less,html"
+    });
+
+    m_snippets.push_back({
+        L"Custom Webkit Scrollbar Styling",
+        L"scrollbar",
+        {
+            L"::-webkit-scrollbar {",
+            L"    width: ${1:8px};",
+            L"}",
+            L"::-webkit-scrollbar-track {",
+            L"    background: ${2:#f1f5f9};",
+            L"}",
+            L"::-webkit-scrollbar-thumb {",
+            L"    background: ${3:#cbd5e1};",
+            L"    border-radius: 4px;",
+            L"}"
+        },
+        L"Custom scrollbar track and thumb styling",
+        L"css,scss,less,html"
+    });
+
+    m_snippets.push_back({
+        L"Smooth Transition Declaration",
+        L"transition",
+        { L"transition: ${1:all} ${2:0.3s} ${3:ease};" },
+        L"CSS transition timing shorthand",
+        L"css,scss,less,html"
+    });
+
+    m_snippets.push_back({
+        L"Aspect Ratio Box",
+        L"aspect",
+        { L"aspect-ratio: ${1:16 / 9};" },
+        L"Modern CSS aspect-ratio declaration",
+        L"css,scss,less,html"
+    });
+
     // 3. TypeScript / JavaScript Snippets
     m_snippets.push_back({
         L"Console Log (JS/TS/HTML)",
@@ -1393,10 +1575,11 @@ void SnippetManager::EnsureDefaultSnippetsFile() {
         if (in.is_open()) {
             std::wstring content((std::istreambuf_iterator<wchar_t>(in)), std::istreambuf_iterator<wchar_t>());
             in.close();
-            // If missing "!" or "picture:webp" or file is too small to contain the full expanded catalog
+            // If missing "!" or "picture:webp" or "css:gradient" or file is too small to contain the full expanded catalog
             if (content.find(L"\"prefix\": \"!\"") == std::wstring::npos || 
                 content.find(L"\"prefix\": \"picture:webp\"") == std::wstring::npos ||
-                content.length() < 10000) {
+                content.find(L"\"prefix\": \"css:gradient\"") == std::wstring::npos ||
+                content.length() < 15000) {
                 needsExport = true;
             }
         } else {

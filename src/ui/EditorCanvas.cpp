@@ -5,6 +5,7 @@
 
 #include "phide/ui/EditorCanvas.hpp"
 #include "phide/ui/WatermarkLogo.hpp"
+#include "phide/ui/ColorPickerModal.hpp"
 #include <algorithm>
 #include <wincodec.h>
 #include <filesystem>
@@ -946,8 +947,11 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
     const float canvasRight = canvasLeft + canvasWidth;
     const float codeAreaH = clientHeight - topY;
     const float codeRight = config.showMinimap ? (canvasRight - minimapW - config.ScaleF(6.0f)) : (canvasRight - scrollbarW);
+    const float swatchSpan = config.ScaleF(14.0f);
+    const float swatchSize = config.ScaleF(10.5f);
 
     m_foldChevrons.clear();
+    m_visibleColorSwatches.clear();
 
     // 1. Gutter Background & Divider
     D2D1_RECT_F rcGutter = D2D1::RectF(canvasLeft, topY, canvasLeft + gutterW, clientHeight);
@@ -1022,8 +1026,10 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
 
     // 3. Line Numbers, Fold Chevrons & Code Lines
     const float codeLeft = canvasLeft + gutterW + config.ScaleF(12.0f);
+    const float scrollX = doc.scrollOffsetX;
+    float maxLineWidth = 0.0f;
 
-    D2D1_RECT_F clipCode = D2D1::RectF(canvasLeft, topY, codeRight, clientHeight);
+    D2D1_RECT_F clipCode = D2D1::RectF(canvasLeft + gutterW, topY, codeRight, clientHeight);
     pRT->PushAxisAlignedClip(clipCode, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
 
     // Analyze rainbow bracket pairs, nesting depths, and active cursor pair
@@ -1061,9 +1067,9 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
     if (pActivePair && hasActiveOpenY && hasActiveCloseY && pActivePair->closeLine > pActivePair->openLine) {
         ID2D1Brush* guideBrush = theme.GetBracketBrush(pActivePair->depth);
         if (guideBrush) {
-            float guideX = codeLeft + static_cast<float>(pActivePair->guideCol) * charW + charW * 0.5f;
-            float openCharX = codeLeft + static_cast<float>(pActivePair->openCol) * charW + charW * 0.5f;
-            float closeCharX = codeLeft + static_cast<float>(pActivePair->closeCol) * charW + charW * 0.5f;
+            float guideX = codeLeft - scrollX + static_cast<float>(pActivePair->guideCol) * charW + charW * 0.5f;
+            float openCharX = codeLeft - scrollX + static_cast<float>(pActivePair->openCol) * charW + charW * 0.5f;
+            float closeCharX = codeLeft - scrollX + static_cast<float>(pActivePair->closeCol) * charW + charW * 0.5f;
 
             // Start vertical line at bottom of open line if openCol > guideCol (K&R style),
             // or at center of open line if openCol == guideCol (Allman style)
@@ -1105,7 +1111,7 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
 
             // Opening bracket skeletal frame
             if (hasActiveOpenY && (activeOpenLineY + lineH >= topY) && (activeOpenLineY <= clientHeight)) {
-                float ox = codeLeft + static_cast<float>(pActivePair->openCol) * charW;
+                float ox = codeLeft - scrollX + static_cast<float>(pActivePair->openCol) * charW;
                 D2D1_RECT_F rcOpen = D2D1::RectF(
                     ox - config.ScaleF(1.0f),
                     activeOpenLineY + config.ScaleF(2.0f),
@@ -1119,7 +1125,7 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
 
             // Closing bracket skeletal frame
             if (hasActiveCloseY && (activeCloseLineY + lineH >= topY) && (activeCloseLineY <= clientHeight)) {
-                float cx = codeLeft + static_cast<float>(pActivePair->closeCol) * charW;
+                float cx = codeLeft - scrollX + static_cast<float>(pActivePair->closeCol) * charW;
                 D2D1_RECT_F rcClose = D2D1::RectF(
                     cx - config.ScaleF(1.0f),
                     activeCloseLineY + config.ScaleF(2.0f),
@@ -1345,27 +1351,83 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
             }
         }
 
+        // Discover in-context color tokens on line to compute visual column layout
+        struct LineColorSpan {
+            size_t col;
+            size_t len;
+            std::wstring colorStr;
+            D2D1_COLOR_F color;
+            ColorFormat format;
+            bool hasAlpha;
+        };
+        std::vector<LineColorSpan> lineColors;
+        size_t scanCIdx = 0;
+        while (scanCIdx < lineStr.length()) {
+            if (lineStr[scanCIdx] == L'#') {
+                size_t hStart = scanCIdx;
+                size_t hEnd = hStart + 1;
+                while (hEnd < lineStr.length() && iswxdigit(lineStr[hEnd])) hEnd++;
+                size_t hLen = hEnd - hStart - 1;
+                if (hLen == 3 || hLen == 4 || hLen == 6 || hLen == 8) {
+                    std::wstring colorStr = lineStr.substr(hStart, hEnd - hStart);
+                    D2D1_COLOR_F c{};
+                    ColorFormat fmt = ColorFormat::Hex;
+                    bool hasAlpha = false;
+                    if (ColorPickerModal::TryParseColor(colorStr, c, fmt, hasAlpha)) {
+                        lineColors.push_back({ hStart, colorStr.length(), colorStr, c, fmt, hasAlpha });
+                    }
+                }
+                scanCIdx = hEnd;
+                continue;
+            }
+            if (lineStr.compare(scanCIdx, 4, L"rgb(") == 0 || lineStr.compare(scanCIdx, 5, L"rgba(") == 0 ||
+                lineStr.compare(scanCIdx, 4, L"hsl(") == 0 || lineStr.compare(scanCIdx, 5, L"hsla(") == 0) {
+                size_t closeParen = lineStr.find(L')', scanCIdx);
+                if (closeParen != std::wstring::npos) {
+                    std::wstring colorStr = lineStr.substr(scanCIdx, closeParen - scanCIdx + 1);
+                    D2D1_COLOR_F c{};
+                    ColorFormat fmt = ColorFormat::Hex;
+                    bool hasAlpha = false;
+                    if (ColorPickerModal::TryParseColor(colorStr, c, fmt, hasAlpha)) {
+                        lineColors.push_back({ scanCIdx, colorStr.length(), colorStr, c, fmt, hasAlpha });
+                    }
+                    scanCIdx = closeParen + 1;
+                    continue;
+                }
+            }
+            scanCIdx++;
+        }
+
+        const float swatchSpan = config.ScaleF(14.0f);
+        const float swatchSize = config.ScaleF(10.5f);
+
+        auto getColVisualX = [&](size_t col) -> float {
+            size_t swBefore = 0;
+            for (const auto& cs : lineColors) {
+                if (col >= cs.col) swBefore++;
+            }
+            return codeLeft - scrollX + static_cast<float>(col) * charW + static_cast<float>(swBefore) * swatchSpan;
+        };
+
         // Active Text Selection Background on Code Line (Images 3 & 4)
         if (doc.HasSelection()) {
             size_t sLine = 0, sCol = 0, eLine = 0, eCol = 0;
             doc.GetSelectionRange(sLine, sCol, eLine, eCol);
             if (vl.bufferLine >= sLine && vl.bufferLine <= eLine) {
-                float selX1 = codeLeft;
-                float selX2 = codeLeft;
+                float selX1 = codeLeft - scrollX;
+                float selX2 = codeLeft - scrollX;
                 if (vl.bufferLine == sLine && vl.bufferLine == eLine) {
-                    selX1 = codeLeft + static_cast<float>(sCol) * charW;
-                    selX2 = codeLeft + static_cast<float>(eCol) * charW;
+                    selX1 = getColVisualX(sCol);
+                    selX2 = getColVisualX(eCol);
                 } else if (vl.bufferLine == sLine) {
-                    selX1 = codeLeft + static_cast<float>(sCol) * charW;
-                    float lineLen = static_cast<float>((std::max)(sCol + 1, lineStr.length()));
-                    selX2 = codeLeft + lineLen * charW + config.ScaleF(8.0f);
+                    selX1 = getColVisualX(sCol);
+                    selX2 = getColVisualX(lineStr.length()) + config.ScaleF(8.0f);
                 } else if (vl.bufferLine == eLine) {
-                    selX1 = codeLeft;
-                    selX2 = codeLeft + static_cast<float>(eCol) * charW;
+                    selX1 = codeLeft - scrollX;
+                    selX2 = getColVisualX(eCol);
                 } else {
-                    selX1 = codeLeft;
-                    float lineLen = static_cast<float>(lineStr.length());
-                    selX2 = (std::max)(codeLeft + lineLen * charW + config.ScaleF(8.0f), codeLeft + config.ScaleF(24.0f));
+                    selX1 = codeLeft - scrollX;
+                    selX2 = (std::max)(getColVisualX(lineStr.length()) + config.ScaleF(8.0f), codeLeft - scrollX + config.ScaleF(24.0f));
                 }
 
                 if (selX2 > selX1) {
@@ -1391,8 +1453,8 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
                     }
                 }
                 if (!isCurrentSelection) {
-                    float wx = codeLeft + static_cast<float>(wpos) * charW;
-                    float ww = static_cast<float>(doc.selectedWord.length()) * charW;
+                    float wx = getColVisualX(wpos);
+                    float ww = getColVisualX(wpos + doc.selectedWord.length()) - wx;
                     D2D1_RECT_F rcWord = D2D1::RectF(wx - 1.0f, lineY + 1.0f, wx + ww + 1.0f, lineY + lineH - 1.0f);
                     D2D1_ROUNDED_RECT rrcWord = D2D1::RoundedRect(rcWord, 2.0f, 2.0f);
                     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> wordFill;
@@ -1412,11 +1474,11 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
                 for (size_t col = 0; col < lineStr.length(); ++col) {
                     wchar_t ch = lineStr[col];
                     if (ch == L' ') {
-                        float dotX = codeLeft + (static_cast<float>(col) + 0.5f) * charW;
+                        float dotX = getColVisualX(col) + charW * 0.5f;
                         float dotY = lineY + lineH * 0.5f;
                         pRT->FillEllipse(D2D1::Ellipse(D2D1::Point2F(dotX, dotY), 1.0f, 1.0f), theme.brushTextMuted.Get());
                     } else if (ch == L'\t') {
-                        float arrX = codeLeft + (static_cast<float>(col) + 0.5f) * charW;
+                        float arrX = getColVisualX(col) + charW * 0.5f;
                         float arrY = lineY + lineH * 0.5f;
                         pRT->DrawLine(D2D1::Point2F(arrX - 2.0f, arrY), D2D1::Point2F(arrX + 2.0f, arrY), theme.brushTextMuted.Get(), 1.0f);
                     }
@@ -1425,7 +1487,7 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
 
             auto tokens = buffer.GetTokensForLine(vl.bufferLine);
             if (tokens.empty()) {
-                D2D1_RECT_F rcLine = D2D1::RectF(codeLeft, lineY, codeRight, lineY + lineH);
+                D2D1_RECT_F rcLine = D2D1::RectF(codeLeft - scrollX, lineY, codeRight, lineY + lineH);
                 pRT->DrawText(
                     lineStr.c_str(),
                     static_cast<UINT32>(lineStr.length()),
@@ -1433,13 +1495,13 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
                     rcLine,
                     theme.brushTextPrimary.Get()
                 );
-                curCodeEndX = codeLeft + lineStr.length() * charW;
+                curCodeEndX = getColVisualX(lineStr.length());
             } else {
                 for (const auto& tok : tokens) {
                     if (tok.startCol + tok.length > lineStr.length()) continue;
 
-                    float tokenX = codeLeft + tok.startCol * charW;
-                    float tokenW = tok.length * charW;
+                    float tokenX = getColVisualX(tok.startCol);
+                    float tokenW = getColVisualX(tok.startCol + tok.length) - tokenX;
                     D2D1_RECT_F rcTok = D2D1::RectF(tokenX, lineY, tokenX + tokenW + config.ScaleF(4.0f), lineY + lineH);
 
                     ID2D1Brush* brush = theme.brushTextPrimary.Get();
@@ -1480,6 +1542,41 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
             }
         }
 
+        // Render in-context Color Preview Swatches inside dedicated gap (before color code, never replacing characters)
+        for (size_t sIdx = 0; sIdx < lineColors.size(); ++sIdx) {
+            const auto& cs = lineColors[sIdx];
+            float swatchX = codeLeft - scrollX + static_cast<float>(cs.col) * charW + static_cast<float>(sIdx) * swatchSpan + config.ScaleF(1.0f);
+            float swatchY = lineY + (lineH - swatchSize) / 2.0f;
+            if (swatchX >= codeLeft - swatchSize && swatchX + swatchSize < codeRight) {
+                D2D1_RECT_F rcSwatch = D2D1::RectF(swatchX, swatchY, swatchX + swatchSize, swatchY + swatchSize);
+                D2D1_ROUNDED_RECT rrcSwatch = D2D1::RoundedRect(rcSwatch, 1.5f, 1.5f);
+
+                if (cs.hasAlpha && cs.color.a < 0.999f) {
+                    float half = swatchSize / 2.0f;
+                    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> bChk;
+                    pRT->CreateSolidColorBrush(D2D1::ColorF(0x333333), &bChk);
+                    if (bChk) {
+                        pRT->FillRectangle(D2D1::RectF(swatchX, swatchY, swatchX + half, swatchY + half), bChk.Get());
+                        pRT->FillRectangle(D2D1::RectF(swatchX + half, swatchY + half, swatchX + swatchSize, swatchY + swatchSize), bChk.Get());
+                        bChk->SetColor(D2D1::ColorF(0x888888));
+                        pRT->FillRectangle(D2D1::RectF(swatchX + half, swatchY, swatchX + swatchSize, swatchY + half), bChk.Get());
+                        pRT->FillRectangle(D2D1::RectF(swatchX, swatchY + half, swatchX + half, swatchY + swatchSize), bChk.Get());
+                    }
+                }
+
+                Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> bCol;
+                pRT->CreateSolidColorBrush(cs.color, &bCol);
+                if (bCol) pRT->FillRoundedRectangle(rrcSwatch, bCol.Get());
+                pRT->DrawRoundedRectangle(rrcSwatch, theme.brushBorderSubtle.Get(), 1.0f);
+
+                m_visibleColorSwatches.push_back({ rcSwatch, vl.bufferLine, cs.col, cs.len, cs.colorStr });
+            }
+        }
+
+        // Track max visual width for horizontal scrolling
+        float lineVisualW = getColVisualX(lineStr.length()) - (codeLeft - scrollX);
+        maxLineWidth = (std::max)(maxLineWidth, lineVisualW);
+
         // If line is folded, draw the "..." folded indicator pill (Image 3)
         if (vl.isFolded) {
             float pillX = curCodeEndX + config.ScaleF(8.0f);
@@ -1497,22 +1594,19 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
 
         // =====================================================================
         // Inlay Hints & Virtual Type Badges (Images 1, 2, 3, 5)
-        // Renders non-editable virtual type/parameter hints (e.g. : {shape, __add__}, : {reshape})
-        // and ghost inline completion preview ("Tab to complete") without modifying buffer text.
+        // Renders non-editable virtual type/parameter hints without modifying buffer text.
         // =====================================================================
         bool renderedHint = false;
         for (const auto& hint : doc.inlayHints) {
             if (hint.line == vl.bufferLine) {
-                float hintX = (hint.col > 0) ? (codeLeft + static_cast<float>(hint.col) * charW) : (curCodeEndX + config.ScaleF(6.0f));
+                float hintX = (hint.col > 0) ? getColVisualX(hint.col) : (curCodeEndX + config.ScaleF(6.0f));
                 if (hintX + config.ScaleF(20.0f) < codeRight) {
                     if (hint.isGhostText) {
-                        // Ghost completion text (Image 5)
                         D2D1_RECT_F rcGhost = D2D1::RectF(hintX, lineY, codeRight, lineY + lineH);
                         pRT->DrawText(hint.label.c_str(), static_cast<UINT32>(hint.label.length()),
                                       theme.fontCode ? theme.fontCode.Get() : theme.fontBody.Get(),
                                       rcGhost, theme.brushTextMuted.Get());
                     } else {
-                        // Inlay type hint badge (Images 1, 2, 3)
                         float badgeW = static_cast<float>(hint.label.length()) * charW * 0.88f + config.ScaleF(8.0f);
                         float badgeH = lineH - config.ScaleF(5.0f);
                         float badgeY = lineY + config.ScaleF(2.5f);
@@ -1539,9 +1633,9 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
         // Render Syntax Error Squiggly Underlines (Image 4)
         for (const auto& diag : doc.diagnostics) {
             if (diag.line == vl.bufferLine) {
-                float errX1 = codeLeft + static_cast<float>(diag.col) * charW;
+                float errX1 = getColVisualX(diag.col);
                 size_t errLen = (diag.length > 0) ? diag.length : (std::max)(1ULL, lineStr.length() > diag.col ? lineStr.length() - diag.col : 1);
-                float errX2 = (std::max)(errX1 + static_cast<float>(errLen) * charW, errX1 + config.ScaleF(14.0f));
+                float errX2 = (std::max)(getColVisualX(diag.col + errLen), errX1 + config.ScaleF(14.0f));
                 if (errX1 < codeRight) {
                     errX2 = (std::min)(errX2, codeRight);
                     float waveY = lineY + lineH - config.ScaleF(2.0f);
@@ -1561,7 +1655,28 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
 
     // 4. Blinking Caret (Image 5: High-contrast in both Dark and Light modes!) - Only in focused group
     if (foundCursorVisual && visualCursorIdx >= doc.scrollLine) {
-        float caretX = codeLeft + cursor.col * charW;
+        float caretX = codeLeft - scrollX + cursor.col * charW;
+        if (cursor.line < buffer.GetLineCount()) {
+            const auto& curLineStr = buffer.GetLine(cursor.line);
+            size_t swBefore = 0;
+            size_t cIdx = 0;
+            while (cIdx < curLineStr.length() && cIdx <= cursor.col) {
+                if (curLineStr[cIdx] == L'#') {
+                    size_t e = cIdx + 1;
+                    while (e < curLineStr.length() && iswxdigit(curLineStr[e])) e++;
+                    size_t l = e - cIdx - 1;
+                    if (l == 3 || l == 4 || l == 6 || l == 8) {
+                        D2D1_COLOR_F c{}; ColorFormat f; bool a;
+                        if (ColorPickerModal::TryParseColor(curLineStr.substr(cIdx, e - cIdx), c, f, a)) {
+                            if (cursor.col >= cIdx) swBefore++;
+                        }
+                    }
+                    cIdx = e; continue;
+                }
+                cIdx++;
+            }
+            caretX = codeLeft - scrollX + static_cast<float>(cursor.col) * charW + static_cast<float>(swBefore) * swatchSpan;
+        }
         float caretY = topY + config.ScaleF(6.0f) + (visualCursorIdx - doc.scrollLine) * lineH;
         if (isFocused) {
             m_lastCaretX = caretX;
@@ -1853,6 +1968,36 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
         }
     }
 
+    // 6b. Horizontal Scrollbar when content overflows horizontally
+    doc.maxContentWidth = maxLineWidth;
+    float viewportCodeW = codeRight - (canvasLeft + gutterW);
+    float maxScrollX = (doc.maxContentWidth > viewportCodeW) ? (doc.maxContentWidth - viewportCodeW + config.ScaleF(40.0f)) : 0.0f;
+    if (maxScrollX > 0.0f) {
+        float hTrackH = config.ScaleF(10.0f);
+        float hTrackY1 = clientHeight - hTrackH;
+        float hTrackY2 = clientHeight - config.ScaleF(2.0f);
+        float hTrackX1 = canvasLeft + gutterW;
+        float hTrackX2 = codeRight;
+
+        doc.hScrollbarTrack = D2D1::RectF(hTrackX1, hTrackY1, hTrackX2, hTrackY2);
+        float trackW = hTrackX2 - hTrackX1;
+        float thumbW = (std::max)(config.ScaleF(32.0f), (viewportCodeW / (doc.maxContentWidth + config.ScaleF(40.0f))) * trackW);
+        float thumbMaxTravel = trackW - thumbW;
+        float thumbX = hTrackX1 + (maxScrollX > 0.0f ? ((std::clamp)(doc.scrollOffsetX, 0.0f, maxScrollX) / maxScrollX) * thumbMaxTravel : 0.0f);
+        doc.hScrollbarThumb = D2D1::RectF(thumbX, hTrackY1, thumbX + thumbW, hTrackY2);
+
+        D2D1_ROUNDED_RECT rrcHThumb = D2D1::RoundedRect(doc.hScrollbarThumb, 3.5f, 3.5f);
+        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushHThumb;
+        float alpha = doc.isDraggingHScrollbar ? 0.85f : 0.50f;
+        pRT->CreateSolidColorBrush(theme.IsDarkMode() ? D2D1::ColorF(0.40f, 0.40f, 0.44f, alpha) : D2D1::ColorF(0.55f, 0.55f, 0.60f, alpha), &brushHThumb);
+        if (brushHThumb) {
+            pRT->FillRoundedRectangle(rrcHThumb, brushHThumb.Get());
+        }
+    } else {
+        doc.hScrollbarTrack = D2D1::RectF(0.0f, 0.0f, 0.0f, 0.0f);
+        doc.hScrollbarThumb = D2D1::RectF(0.0f, 0.0f, 0.0f, 0.0f);
+    }
+
     // 7. Diagnostic Error Hover Popover (VS Code / Antigravity style)
     if (doc.hoveredDiagnosticLine != static_cast<size_t>(-1)) {
         const lsp::Diagnostic* pDiag = nullptr;
@@ -1937,6 +2082,22 @@ bool EditorCanvas::HitTestScrollbar(POINT pt, const editor::OpenDocument& doc, b
     return false;
 }
 
+bool EditorCanvas::HitTestHScrollbar(POINT pt, const editor::OpenDocument& doc, bool& outHitThumb) const {
+    outHitThumb = false;
+    if (doc.hScrollbarTrack.right > doc.hScrollbarTrack.left) {
+        float px = static_cast<float>(pt.x);
+        float py = static_cast<float>(pt.y);
+        if (px >= doc.hScrollbarTrack.left && px <= doc.hScrollbarTrack.right &&
+            py >= doc.hScrollbarTrack.top && py <= doc.hScrollbarTrack.bottom) {
+            if (px >= doc.hScrollbarThumb.left && px <= doc.hScrollbarThumb.right) {
+                outHitThumb = true;
+            }
+            return true;
+        }
+    }
+    return false;
+}
+
 bool EditorCanvas::HitTestMinimap(POINT pt, const editor::OpenDocument& doc, bool& outHitSlider) const {
     outHitSlider = false;
     if (doc.minimapTrack.right <= doc.minimapTrack.left) return false;
@@ -2001,14 +2162,29 @@ bool EditorCanvas::HitTestCodeArea(POINT pt, const app::AppConfig& config, const
         mappedLine = b;
     }
 
-    float relX = pt.x - (canvasLeft + gutterW + config.ScaleF(12.0f));
+    const auto& lineStr = buffer.GetLine(mappedLine);
+    const float swatchSpan = config.ScaleF(14.0f);
+    float relX = pt.x - (canvasLeft + gutterW + config.ScaleF(12.0f)) + doc.scrollOffsetX;
     if (relX < 0.0f) relX = 0.0f;
-    size_t col = static_cast<size_t>((relX + charW * 0.5f) / charW);
+
+    size_t col = 0;
+    float bestDiff = 999999.0f;
+    for (size_t c = 0; c <= lineStr.length(); ++c) {
+        size_t swBefore = 0;
+        for (const auto& sw : m_visibleColorSwatches) {
+            if (sw.line == mappedLine && c >= sw.col) swBefore++;
+        }
+        float vx = static_cast<float>(c) * charW + static_cast<float>(swBefore) * swatchSpan;
+        float diff = std::abs(relX - vx);
+        if (diff < bestDiff) {
+            bestDiff = diff;
+            col = c;
+        }
+    }
 
     if (mappedLine >= buffer.GetLineCount()) {
         mappedLine = buffer.GetLineCount() > 0 ? buffer.GetLineCount() - 1 : 0;
     }
-    const auto& lineStr = buffer.GetLine(mappedLine);
     if (col > lineStr.length()) {
         col = lineStr.length();
     }
@@ -3621,6 +3797,18 @@ void EditorCanvas::RenderMultiFileDiffView(ID2D1RenderTarget* pRT, Theme& theme,
     }
 
     pRT->PopAxisAlignedClip();
+}
+
+const EditorCanvas::ColorSwatchHit* EditorCanvas::HitTestColorSwatch(POINT pt) const {
+    float x = static_cast<float>(pt.x);
+    float y = static_cast<float>(pt.y);
+    for (const auto& s : m_visibleColorSwatches) {
+        if (x >= s.bounds.left - 3.0f && x <= s.bounds.right + 3.0f &&
+            y >= s.bounds.top - 3.0f && y <= s.bounds.bottom + 3.0f) {
+            return &s;
+        }
+    }
+    return nullptr;
 }
 
 } // namespace phide::ui

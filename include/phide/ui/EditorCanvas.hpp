@@ -152,6 +152,15 @@ public:
     [[nodiscard]] bool HitTestScrollbar(POINT pt, const editor::OpenDocument& doc, bool& outHitThumb) const;
 
     /**
+     * @brief Tests if mouse clicked on the horizontal scrollbar track or thumb.
+     * @param pt Mouse point in client coordinates.
+     * @param doc Active document containing horizontal scrollbar geometry.
+     * @param outHitThumb Set to true if click was directly over the horizontal thumb pill.
+     * @return True if horizontal scrollbar was clicked.
+     */
+    [[nodiscard]] bool HitTestHScrollbar(POINT pt, const editor::OpenDocument& doc, bool& outHitThumb) const;
+
+    /**
      * @brief Tests if mouse clicked on the code minimap track or viewport slider.
      * @param pt Mouse point in client coordinates.
      * @param doc Active document containing minimap geometry.
@@ -196,6 +205,7 @@ public:
      */
     void DiscardDeviceResources();
     void ResetCharWidth() const noexcept { m_charWidth = 0.0f; }
+    [[nodiscard]] float GetCharWidth() const noexcept { return m_charWidth; }
 
     void RenderTabs(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
                     float canvasLeft, float canvasWidth, float headerH,
@@ -411,6 +421,19 @@ private:
         size_t bufferLine = 0;
     };
     std::vector<FoldChevronHit> m_foldChevrons;
+
+    struct ColorSwatchHit {
+        D2D1_RECT_F bounds{};
+        size_t line = 0;
+        size_t col = 0;
+        size_t length = 0;
+        std::wstring colorText;
+    };
+    std::vector<ColorSwatchHit> m_visibleColorSwatches;
+
+public:
+    [[nodiscard]] const ColorSwatchHit* HitTestColorSwatch(POINT pt) const;
+    [[nodiscard]] const std::vector<ColorSwatchHit>& GetVisibleColorSwatches() const noexcept { return m_visibleColorSwatches; }
 };
 
 } // namespace phide::ui

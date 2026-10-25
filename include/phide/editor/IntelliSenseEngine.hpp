@@ -85,9 +85,21 @@ public:
      */
     static std::wstring ExtractQueryPrefix(const std::wstring& line, size_t cursorCol);
 
+    /**
+     * @brief Extracts an Emmet abbreviation string from line ending at cursorCol.
+     */
+    static std::wstring ExtractEmmetPrefix(const std::wstring& line, size_t cursorCol);
+
+    /**
+     * @brief Expands an Emmet abbreviation into full structured HTML.
+     */
+    static std::wstring ExpandEmmet(const std::wstring& abbr);
+
 private:
     void PopulateHtmlTags();
     void PopulateHtmlAttributes();
+    void PopulateCssProperties();
+    void PopulateCssValues();
     void PopulateJavaScriptKeywords();
     void PopulateJavaScriptGlobals();
     void PopulateJavaScriptDomApis();
@@ -96,6 +108,8 @@ private:
 
     std::vector<IntelliSenseItem> m_htmlTags;
     std::vector<IntelliSenseItem> m_htmlAttributes;
+    std::vector<IntelliSenseItem> m_cssProperties;
+    std::vector<IntelliSenseItem> m_cssValues;
     std::vector<IntelliSenseItem> m_jsKeywords;
     std::vector<IntelliSenseItem> m_jsGlobals;
     std::vector<IntelliSenseItem> m_jsDomApis;

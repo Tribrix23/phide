@@ -15,6 +15,8 @@
 #include <string>
 #include <set>
 #include <map>
+#include <unordered_set>
+#include <unordered_map>
 #include <filesystem>
 #include <functional>
 #include <mutex>
@@ -243,6 +245,7 @@ public:
     [[nodiscard]] std::vector<GitChangeItem>& GetGitChangesMutable() noexcept { return m_gitChanges; }
     [[nodiscard]] const std::map<std::wstring, size_t>& GetErrorFiles() const noexcept { return m_errorFiles; }
     [[nodiscard]] const std::vector<GitCommitItem>& GetGitCommits() const noexcept { return m_gitCommits; }
+    [[nodiscard]] bool IsPathGitIgnored(const std::wstring& fullPath, const std::wstring& label) const;
     [[nodiscard]] const std::wstring& GetGitBranch() const noexcept { return m_gitBranch; }
     [[nodiscard]] const D2D1_RECT_F& GetGitHeaderMoreBounds() const noexcept { return m_gitHeaderMoreBounds; }
     [[nodiscard]] const std::wstring& GetGitTooltipText() const noexcept { return m_gitTooltipText; }
@@ -674,6 +677,7 @@ private:
     bool m_isGitRepo = true;
     std::wstring m_gitBranch = L"master";
     std::vector<GitChangeItem> m_gitChanges;
+    std::unordered_set<std::wstring> m_gitIgnoredSet;
     std::vector<GitCommitItem> m_gitCommits;
     std::vector<std::wstring> m_dirtyFilePaths;
     std::map<std::wstring, size_t> m_errorFiles;
