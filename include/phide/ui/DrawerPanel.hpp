@@ -302,6 +302,25 @@ public:
     }
     void SetOnGitStateChanged(std::function<void()> cb) { m_onGitStateChanged = std::move(cb); }
 
+    // --- First-Time Commit / Publish Repository Popup (VS Code Top-Center Modal) ---
+    void OpenPublishRepoModal();
+    void ClosePublishRepoModal() noexcept { m_isPublishModalOpen = false; }
+    [[nodiscard]] bool IsPublishRepoModalOpen() const noexcept { return m_isPublishModalOpen; }
+    void RenderPublishRepoModal(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config, float clientW, float clientH);
+    bool HandlePublishRepoMouseMove(POINT pt);
+    bool HandlePublishRepoMouseDown(POINT pt);
+    bool HandlePublishRepoKeyDown(WPARAM wParam);
+    bool HandlePublishRepoChar(wchar_t ch);
+    void ConfirmPublishRepo(int visibilityChoice); // 0 = Private, 1 = Public
+    [[nodiscard]] const std::wstring& GetPublishRepoName() const noexcept { return m_publishRepoName; }
+    void SetPublishRepoName(const std::wstring& name) { m_publishRepoName = name; }
+    [[nodiscard]] int GetPublishRepoSelectedChoice() const noexcept { return m_publishRepoSelectedChoice; }
+    [[nodiscard]] const D2D1_RECT_F& GetPublishModalBounds() const noexcept { return m_publishModalBounds; }
+    [[nodiscard]] const D2D1_RECT_F& GetPublishInputBounds() const noexcept { return m_publishInputBounds; }
+    [[nodiscard]] const D2D1_RECT_F& GetPublishOptionBounds(int idx) const noexcept { return m_publishOptionBounds[idx == 1 ? 1 : 0]; }
+    [[nodiscard]] bool IsPublishedPrivate() const noexcept { return m_publishedVisibility == 0; }
+    [[nodiscard]] int GetPublishedVisibility() const noexcept { return m_publishedVisibility; }
+
     /**
      * @brief Paints the drawer background, header, and contents with animated width and upper-left curve.
      * @param pRT Active Direct2D render target.
@@ -744,6 +763,16 @@ private:
     D2D1_RECT_F m_gitViewMenuBounds{};
     D2D1_RECT_F m_gitViewMenuChangesBounds{};
     D2D1_RECT_F m_gitViewMenuGraphBounds{};
+
+    // First-Time Commit / Publish Repository Popup state
+    bool m_isPublishModalOpen = false;
+    std::wstring m_publishRepoName;
+    int m_publishRepoSelectedChoice = 0; // 0 = Private, 1 = Public
+    int m_publishRepoHoveredChoice = -1;
+    int m_publishedVisibility = -1; // -1 = Not published yet, 0 = Private, 1 = Public
+    D2D1_RECT_F m_publishModalBounds{};
+    D2D1_RECT_F m_publishInputBounds{};
+    D2D1_RECT_F m_publishOptionBounds[2]{};
 
     size_t m_gitGraphScrollIdx = 0;
     size_t m_gitChangesScrollIdx = 0;

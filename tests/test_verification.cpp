@@ -8077,6 +8077,22 @@ run_test_66:
         assert(dbModal.GetNginxUrl() == L"http://localhost:80");
         assert(dbModal.GetNginxPort() == L"80");
 
+        // Test Dynamic Browser URL Configuration (User request: "create when open on browser it depend on the configuration if what port and if its localhost")
+        dbModal.SetFocusedField(phide::ui::DatabaseEditField::NginxPort);
+        dbModal.OnChar(8); // backspace '0'
+        dbModal.OnChar(8); // backspace '8'
+        dbModal.OnChar(L'8');
+        dbModal.OnChar(L'0');
+        dbModal.OnChar(L'8');
+        dbModal.OnChar(L'8');
+        assert(dbModal.GetNginxPort() == L"8088");
+        assert(dbModal.GetNginxUrl() == L"http://localhost:8088");
+        // Restore default port 80
+        dbModal.OnChar(8); dbModal.OnChar(8); dbModal.OnChar(8); dbModal.OnChar(8);
+        dbModal.OnChar(L'8'); dbModal.OnChar(L'0');
+        assert(dbModal.GetNginxUrl() == L"http://localhost:80");
+        std::cout << "  Passed: Open in Browser URL dynamically updates based on configured host and port." << std::endl;
+
         pRTSnap->BeginDraw();
         pRTSnap->Clear(theme.colors.canvasBg);
         header.Render(pRTSnap.Get(), theme, testCfg, static_cast<float>(snapW), false);
@@ -8183,6 +8199,75 @@ run_test_66:
 
         dbModal.Close();
         assert(!dbModal.IsOpen());
+
+        // 7. Test Source Control Non-Git Full Design & VS Code First-Time Publish Repository Center Popup
+        phide::ui::DrawerPanel gitDrawer;
+        std::filesystem::path tempRepoDir = std::filesystem::temp_directory_path() / L"phide_test_publish_repo";
+        std::error_code ecTmp;
+        std::filesystem::remove_all(tempRepoDir, ecTmp);
+        std::filesystem::create_directories(tempRepoDir, ecTmp);
+        {
+            std::ofstream ofs(tempRepoDir / L"index.php");
+            ofs << "<?php echo 'Hello World'; ?>\n";
+        }
+        {
+            std::ofstream ofs2(tempRepoDir / L"config.php");
+            ofs2 << "<?php $host = 'localhost'; ?>\n";
+        }
+
+        gitDrawer.OpenFolder(tempRepoDir.wstring());
+        testCfg.activeRailTab = 2; // Source Control
+        gitDrawer.RefreshGitState(false);
+
+        // Even before git init, Source Control shows untracked files and full design!
+        assert(!gitDrawer.IsGitRepo());
+        assert(gitDrawer.GetGitChanges().size() >= 2);
+        std::cout << "  Passed: Non-Git workspace still displays full Source Control design and untracked workspace files." << std::endl;
+
+        // Render Source Control + Trigger First-Time Commit / Publish Repository Popup
+        pRTSnap->BeginDraw();
+        pRTSnap->Clear(theme.colors.canvasBg);
+        header.Render(pRTSnap.Get(), theme, testCfg, static_cast<float>(snapW), false);
+        gitDrawer.Render(pRTSnap.Get(), theme, testCfg, static_cast<float>(snapH), testCfg.ScaleF(static_cast<float>(testCfg.drawerWidth)));
+        HRESULT hrEndSc = pRTSnap->EndDraw();
+        assert(SUCCEEDED(hrEndSc));
+
+        // Click Commit button on first-time repo -> opens VS Code centered Publish Repository popup!
+        gitDrawer.OpenPublishRepoModal();
+        assert(gitDrawer.IsPublishRepoModalOpen());
+        assert(gitDrawer.GetPublishRepoName() == L"phide_test_publish_repo");
+        assert(gitDrawer.GetPublishRepoSelectedChoice() == 0); // Default Private
+
+        // Test typing custom repository name and arrow navigation between Private and Public choices
+        gitDrawer.SetPublishRepoName(L"student-crud-app");
+        assert(gitDrawer.GetPublishRepoName() == L"student-crud-app");
+        gitDrawer.HandlePublishRepoKeyDown(VK_DOWN);
+        assert(gitDrawer.GetPublishRepoSelectedChoice() == 1); // Public
+        gitDrawer.HandlePublishRepoKeyDown(VK_UP);
+        assert(gitDrawer.GetPublishRepoSelectedChoice() == 0); // Private
+
+        pRTSnap->BeginDraw();
+        pRTSnap->Clear(theme.colors.canvasBg);
+        header.Render(pRTSnap.Get(), theme, testCfg, static_cast<float>(snapW), false);
+        gitDrawer.Render(pRTSnap.Get(), theme, testCfg, static_cast<float>(snapH), testCfg.ScaleF(static_cast<float>(testCfg.drawerWidth)));
+        gitDrawer.RenderPublishRepoModal(pRTSnap.Get(), theme, testCfg, static_cast<float>(snapW), static_cast<float>(snapH));
+        HRESULT hrEndPub = pRTSnap->EndDraw();
+        assert(SUCCEEDED(hrEndPub));
+
+        std::wstring artifactPublishPath = L"C:\\Users\\Administrator\\.gemini\\antigravity\\brain\\c83160b9-3f8b-4ad1-87a8-ab1f7f555a77\\test_source_control_publish_repo_modal.png";
+        SaveWicBitmapToPng(pWicSnap.Get(), pWicFactory.Get(), artifactPublishPath);
+        assert(std::filesystem::exists(artifactPublishPath));
+        std::wcout << L"  Passed: Saved visual verification of Source Control & First-Time Publish Repo Modal to: " << artifactPublishPath << std::endl;
+
+        // Confirm publish (Private = 0) -> initializes Git repo and commits initial changes!
+        gitDrawer.HandlePublishRepoKeyDown(VK_RETURN);
+        assert(!gitDrawer.IsPublishRepoModalOpen());
+        assert(gitDrawer.IsGitRepo());
+        assert(gitDrawer.GetPublishedVisibility() == 0);
+        assert(!gitDrawer.GetGitCommits().empty());
+        std::cout << "  Passed: Confirming Publish Repository modal initializes Git repository, commits files, and populates Git Graph." << std::endl;
+
+        std::filesystem::remove_all(tempRepoDir, ecTmp);
         std::cout << "  Passed: All [TEST 66] Database & phpMyAdmin Settings Modal, Nginx Config & PHP Run tests passed!" << std::endl;
     }
 

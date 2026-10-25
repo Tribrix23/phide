@@ -9,6 +9,12 @@ if %errorlevel% neq 0 (
 cl /nologo /EHsc /std:c++20 /O2 /W3 /utf-8 /DUNICODE /D_UNICODE /DWIN32_LEAN_AND_MEAN /I include /c src\ui\LucideIcons.cpp /Fo:bin\LucideIcons.obj
 if %errorlevel% neq 0 exit /b %errorlevel%
 
+cl /nologo /EHsc /std:c++20 /O2 /W3 /utf-8 /DUNICODE /D_UNICODE /DWIN32_LEAN_AND_MEAN /I include /c src\ui\DrawerPanel.cpp /Fo:bin\DrawerPanel.obj
+if %errorlevel% neq 0 exit /b %errorlevel%
+
+cl /nologo /EHsc /std:c++20 /O2 /W3 /utf-8 /DUNICODE /D_UNICODE /DWIN32_LEAN_AND_MEAN /I include /c src\ui\DatabaseSettingsModal.cpp /Fo:bin\DatabaseSettingsModal.obj
+if %errorlevel% neq 0 exit /b %errorlevel%
+
 cl /nologo /EHsc /std:c++20 /O2 /W3 /utf-8 /DUNICODE /D_UNICODE /DWIN32_LEAN_AND_MEAN /I include /c src\ui\TitleHeader.cpp /Fo:bin\TitleHeader.obj
 if %errorlevel% neq 0 exit /b %errorlevel%
 

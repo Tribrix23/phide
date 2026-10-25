@@ -2980,7 +2980,7 @@ void Window::RunProjectDevServer(const std::wstring& projectRoot, const ProjectD
     m_terminal.Open(projectRoot);
     AnimateTerminalOpen();
     m_terminal.StartServerSession(decision.title, decision.command, projectRoot, projectRoot);
-    m_isTerminalFocused = true;
+    m_isTerminalFocused = false;
     SetTimer(m_hwnd, m_animTimerId, 16, nullptr);
     UpdateExecutionButtonStates();
     InvalidateRect(m_hwnd, nullptr, FALSE);
@@ -3160,7 +3160,7 @@ void Window::DoRunActiveDocument() {
                 m_terminal.Open(folder);
                 AnimateTerminalOpen();
                 m_terminal.StartLiveServerSession(localUrl, networkUrl, filePath, fileName);
-                m_isTerminalFocused = true;
+                m_isTerminalFocused = false;
 
                 SetTimer(m_hwnd, m_animTimerId, 16, nullptr);
             }
@@ -3175,7 +3175,7 @@ void Window::DoRunActiveDocument() {
             m_terminal.Open(folder);
             AnimateTerminalOpen();
             m_terminal.StartLiveServerSession(localUrl, networkUrl, filePath, fileName);
-            m_isTerminalFocused = true;
+            m_isTerminalFocused = false;
             SetTimer(m_hwnd, m_animTimerId, 16, nullptr);
         }
 
@@ -3365,7 +3365,19 @@ void Window::StartPhpServer(const std::wstring& rootDir, int port) {
     }
     std::wstring phpIni = L"C:\\Users\\Administrator\\AppData\\Local\\Programs\\PHP\\v8.5\\php.ini";
     std::wstring iniArg = std::filesystem::exists(phpIni) ? (L" -c \"" + phpIni + L"\"") : L"";
-    std::wstring cmd = L"\"" + phpExe + L"\"" + iniArg + L" -S 0.0.0.0:" + std::to_wstring(port) + L" -t \"" + rootDir + L"\"";
+
+    std::filesystem::path prependPath = GetPhideRoot() / L"include" / L"phide" / L"server" / L"phide_prepend.php";
+    std::filesystem::path appendPath  = GetPhideRoot() / L"include" / L"phide" / L"server" / L"phide_append.php";
+    std::wstring liveReloadArgs = L" -d opcache.enable=0 -d output_buffering=Off";
+    if (std::filesystem::exists(prependPath) && std::filesystem::exists(appendPath)) {
+        std::wstring prepFwd = prependPath.wstring();
+        std::wstring appFwd  = appendPath.wstring();
+        for (auto& ch : prepFwd) if (ch == L'\\') ch = L'/';
+        for (auto& ch : appFwd)  if (ch == L'\\') ch = L'/';
+        liveReloadArgs += L" -d \"auto_prepend_file=" + prepFwd + L"\" -d \"auto_append_file=" + appFwd + L"\"";
+    }
+
+    std::wstring cmd = L"\"" + phpExe + L"\"" + iniArg + liveReloadArgs + L" -S 0.0.0.0:" + std::to_wstring(port) + L" -t \"" + rootDir + L"\"";
     std::vector<wchar_t> cmdBuf(cmd.begin(), cmd.end());
     cmdBuf.push_back(L'\0');
 
@@ -3447,17 +3459,36 @@ void Window::StopNginxServer() {
 }
 
 static bool IsPortListening(int port) {
+    // 1. Check IPv4 TCP listeners
     DWORD dwSize = 0;
     GetExtendedTcpTable(NULL, &dwSize, FALSE, AF_INET, TCP_TABLE_OWNER_PID_LISTENER, 0);
-    if (dwSize == 0) return false;
-    std::vector<BYTE> buffer(dwSize);
-    if (GetExtendedTcpTable(buffer.data(), &dwSize, FALSE, AF_INET, TCP_TABLE_OWNER_PID_LISTENER, 0) == NO_ERROR) {
-        auto* table = reinterpret_cast<MIB_TCPTABLE_OWNER_PID*>(buffer.data());
-        for (DWORD i = 0; i < table->dwNumEntries; ++i) {
-            DWORD p = table->table[i].dwLocalPort;
-            int localPort = static_cast<int>(((p & 0xFF) << 8) | ((p >> 8) & 0xFF));
-            if (localPort == port) {
-                return true;
+    if (dwSize > 0) {
+        std::vector<BYTE> buffer(dwSize);
+        if (GetExtendedTcpTable(buffer.data(), &dwSize, FALSE, AF_INET, TCP_TABLE_OWNER_PID_LISTENER, 0) == NO_ERROR) {
+            auto* table = reinterpret_cast<MIB_TCPTABLE_OWNER_PID*>(buffer.data());
+            for (DWORD i = 0; i < table->dwNumEntries; ++i) {
+                DWORD p = table->table[i].dwLocalPort;
+                int localPort = static_cast<int>(((p & 0xFF) << 8) | ((p >> 8) & 0xFF));
+                if (localPort == port) {
+                    return true;
+                }
+            }
+        }
+    }
+
+    // 2. Check IPv6 TCP listeners (MariaDB / mysqld binds to '::' dual-stack IPv6!)
+    DWORD dwSize6 = 0;
+    GetExtendedTcpTable(NULL, &dwSize6, FALSE, AF_INET6, TCP_TABLE_OWNER_PID_LISTENER, 0);
+    if (dwSize6 > 0) {
+        std::vector<BYTE> buffer6(dwSize6);
+        if (GetExtendedTcpTable(buffer6.data(), &dwSize6, FALSE, AF_INET6, TCP_TABLE_OWNER_PID_LISTENER, 0) == NO_ERROR) {
+            auto* table6 = reinterpret_cast<MIB_TCP6TABLE_OWNER_PID*>(buffer6.data());
+            for (DWORD i = 0; i < table6->dwNumEntries; ++i) {
+                DWORD p = table6->table[i].dwLocalPort;
+                int localPort = static_cast<int>(((p & 0xFF) << 8) | ((p >> 8) & 0xFF));
+                if (localPort == port) {
+                    return true;
+                }
             }
         }
     }
@@ -3491,7 +3522,7 @@ void Window::StartMysqlServer() {
     std::filesystem::path xamppDir = L"C:\\xampp";
 
     if (std::filesystem::exists(mysqldExe) && std::filesystem::exists(myIni)) {
-        std::wstring cmd = L"\"" + mysqldExe.wstring() + L"\" --defaults-file=\"" + myIni.wstring() + L"\" --standalone --console";
+        std::wstring cmd = L"\"" + mysqldExe.wstring() + L"\" --defaults-file=\"" + myIni.wstring() + L"\" --skip-grant-tables --standalone --console";
         std::vector<wchar_t> cmdBuf(cmd.begin(), cmd.end());
         cmdBuf.push_back(L'\0');
 
@@ -3536,8 +3567,14 @@ void Window::StartPmaServer() {
     std::wstring phpIni = L"C:\\Users\\Administrator\\AppData\\Local\\Programs\\PHP\\v8.5\\php.ini";
     std::wstring iniArg = std::filesystem::exists(phpIni) ? (L" -c \"" + phpIni + L"\"") : L"";
 
-    // Bind to 0.0.0.0:8081 so localhost:8081 and 127.0.0.1:8081 both work seamlessly
-    std::wstring cmd = L"\"" + phpExe + L"\"" + iniArg + L" -S 0.0.0.0:8081 -t \"" + pmaDir.wstring() + L"\"";
+    int pmaPort = 8081;
+    try {
+        int parsed = std::stoi(m_dbSettingsModal.GetPmaWebPort());
+        if (parsed > 0 && parsed < 65536) pmaPort = parsed;
+    } catch (...) {}
+
+    // Bind to 0.0.0.0:<pmaPort> so localhost:<pmaPort> and custom hosts work seamlessly
+    std::wstring cmd = L"\"" + phpExe + L"\"" + iniArg + L" -S 0.0.0.0:" + std::to_wstring(pmaPort) + L" -t \"" + pmaDir.wstring() + L"\"";
     std::vector<wchar_t> cmdBuf(cmd.begin(), cmd.end());
     cmdBuf.push_back(L'\0');
 
@@ -3550,10 +3587,10 @@ void Window::StartPmaServer() {
         m_hPmaProcess = pi.hProcess;
         CloseHandle(pi.hThread);
 
-        // Wait up to 1500ms for php.exe to start listening on port 8081
+        // Wait up to 1500ms for php.exe to start listening on pmaPort
         for (int attempt = 0; attempt < 30; ++attempt) {
             Sleep(50);
-            if (IsPortListening(8081)) break;
+            if (IsPortListening(pmaPort)) break;
         }
 
         m_header.SetDatabaseState(ui::DatabaseState::Running);
@@ -3572,6 +3609,12 @@ void Window::StopPmaServer() {
 }
 
 void Window::DoRunPhpApplication(const std::wstring& filePath, const std::wstring& projectRoot) {
+    // 0. Save any dirty open files so edits to config.php / index.php are immediately persisted on disk
+    DoSaveAll();
+
+    // Always ensure MySQL / MariaDB engine is running on port 3306 so PHP apps never fail with 'Database connection failed'
+    StartMysqlServer();
+
     auto& srvCfg = m_header.GetServerDatabaseConfig();
 
     // 1. Check Server (nginx)
@@ -3609,40 +3652,102 @@ void Window::DoRunPhpApplication(const std::wstring& filePath, const std::wstrin
         }
     }
 
-    // 3. Open terminal tab for PHP Server and launch PHP process
+    // 2b. Auto-import database.sql if present in project directory so the schema & tables exist
     std::filesystem::path p(filePath);
     std::wstring fileName = p.filename().wstring();
     std::wstring folder = p.parent_path().wstring();
     if (folder.empty()) folder = projectRoot;
 
-    StartPhpServer(folder, 8080);
+    std::wstring sqlFile = m_dbSettingsModal.GetSqlFileName();
+    if (sqlFile.empty()) sqlFile = L"database.sql";
+    std::filesystem::path sqlPath = std::filesystem::path(folder) / sqlFile;
+    if (!std::filesystem::exists(sqlPath) && !projectRoot.empty()) {
+        sqlPath = std::filesystem::path(projectRoot) / sqlFile;
+    }
+    std::filesystem::path mysqlExe = L"C:\\xampp\\mysql\\bin\\mysql.exe";
+    if (std::filesystem::exists(mysqlExe) && std::filesystem::exists(sqlPath)) {
+        std::wstring importCmd = L"cmd.exe /c \"\"" + mysqlExe.wstring() + L"\" -u root < \"" + sqlPath.wstring() + L"\"\"";
+        std::vector<wchar_t> cmdBuf(importCmd.begin(), importCmd.end());
+        cmdBuf.push_back(L'\0');
+        STARTUPINFOW si{};
+        si.cb = sizeof(si);
+        si.dwFlags = STARTF_USESHOWWINDOW;
+        si.wShowWindow = SW_HIDE;
+        PROCESS_INFORMATION pi{};
+        if (CreateProcessW(NULL, cmdBuf.data(), NULL, NULL, FALSE, CREATE_NO_WINDOW, NULL, NULL, &si, &pi)) {
+            WaitForSingleObject(pi.hProcess, 2500);
+            CloseHandle(pi.hProcess);
+            CloseHandle(pi.hThread);
+        }
+    }
 
-    std::wstring localUrl = L"http://localhost:8080/" + fileName;
-    std::wstring networkUrl = L"http://192.168.1.105:8080/" + fileName;
+    // 3. Open terminal tab for PHP Server and launch PHP process
+    StartPhpServer(folder, 8080);
+    for (int attempt = 0; attempt < 25; ++attempt) {
+        if (IsPortListening(8080)) break;
+        Sleep(40);
+    }
+
+    // If user clicked Run while viewing config.php or db.php, open index.php in browser if index.php exists
+    std::wstring targetFile = fileName;
+    if ((_wcsicmp(fileName.c_str(), L"config.php") == 0 || _wcsicmp(fileName.c_str(), L"db.php") == 0) &&
+        std::filesystem::exists(std::filesystem::path(folder) / L"index.php")) {
+        targetFile = L"index.php";
+    }
+
+    std::wstring cfgHost = m_dbSettingsModal.GetHost();
+    if (cfgHost.empty()) cfgHost = L"localhost";
+
+    std::wstring localUrl = L"http://" + cfgHost + L":8080/" + targetFile;
+    std::wstring networkUrl = L"http://192.168.1.105:8080/" + targetFile;
 
     m_terminal.Open(folder);
     AnimateTerminalOpen();
-    m_terminal.StartLiveServerSession(localUrl, networkUrl, filePath, fileName);
+    m_terminal.StartLiveServerSession(localUrl, networkUrl, filePath, targetFile);
 
-    ActiveLiveServer entry;
-    entry.filePath = filePath;
-    entry.fileName = fileName;
-    entry.rootDir = folder;
-    entry.port = 8080;
-    entry.framework = L"PHP Server";
-    entry.title = L"PHP Server";
-    entry.customUrl = localUrl;
-    entry.progress = 0.05f;
-    entry.progressDurationMs = 2200.0f;
-    entry.elapsedMs = 0.0f;
-    entry.browserOpened = false;
-    entry.isStarting = true;
-    m_activeLiveServers.push_back(std::move(entry));
+    // Reuse existing PHP Server entry or add a new one
+    bool updatedExisting = false;
+    for (auto& srv : m_activeLiveServers) {
+        if (srv.framework == L"PHP Server" || _wcsicmp(srv.rootDir.c_str(), folder.c_str()) == 0) {
+            srv.filePath = filePath;
+            srv.fileName = targetFile;
+            srv.rootDir = folder;
+            srv.port = 8080;
+            srv.framework = L"PHP Server";
+            srv.title = L"PHP Server";
+            srv.customUrl = localUrl;
+            srv.progress = 0.05f;
+            srv.progressDurationMs = 1200.0f;
+            srv.elapsedMs = 0.0f;
+            srv.browserOpened = false;
+            srv.isStarting = true;
+            srv.hasError = false;
+            srv.errorMsg.clear();
+            updatedExisting = true;
+            break;
+        }
+    }
+    if (!updatedExisting) {
+        ActiveLiveServer entry;
+        entry.filePath = filePath;
+        entry.fileName = targetFile;
+        entry.rootDir = folder;
+        entry.port = 8080;
+        entry.framework = L"PHP Server";
+        entry.title = L"PHP Server";
+        entry.customUrl = localUrl;
+        entry.progress = 0.05f;
+        entry.progressDurationMs = 1200.0f;
+        entry.elapsedMs = 0.0f;
+        entry.browserOpened = false;
+        entry.isStarting = true;
+        m_activeLiveServers.push_back(std::move(entry));
+    }
 
     m_isProjectRunning = true;
     m_runningProjectRoot = projectRoot;
     m_header.SetLiveServerRunning(true);
-    m_isTerminalFocused = true;
+    m_isTerminalFocused = false;
 
     SetTimer(m_hwnd, m_animTimerId, 16, nullptr);
     InvalidateRect(m_hwnd, nullptr, FALSE);
@@ -4530,6 +4635,11 @@ void Window::OnPaint() {
         m_dbSettingsModal.Render(m_pRenderTarget.Get(), m_theme, m_config, clientW, clientH);
     }
 
+    // 11. Render First-Time Commit / Publish Repository Centered Modal (VS Code style)
+    if (m_drawer.IsPublishRepoModalOpen()) {
+        m_drawer.RenderPublishRepoModal(m_pRenderTarget.Get(), m_theme, m_config, clientW, clientH);
+    }
+
     HRESULT hr = m_pRenderTarget->EndDraw();
     if (hr == D2DERR_RECREATE_TARGET) {
         DiscardDeviceResources();
@@ -4574,6 +4684,13 @@ LRESULT Window::HandleNCHitTest(POINT screenPt) {
 }
 
 void Window::HandleMouseMove(POINT clientPt, WPARAM wParam) {
+    if (m_drawer.IsPublishRepoModalOpen()) {
+        if (m_drawer.HandlePublishRepoMouseMove(clientPt)) {
+            InvalidateRect(m_hwnd, nullptr, FALSE);
+        }
+        return;
+    }
+
     if (m_dbSettingsModal.IsOpen()) {
         m_dbSettingsModal.OnMouseMove(clientPt);
         InvalidateRect(m_hwnd, nullptr, FALSE);
@@ -5107,6 +5224,13 @@ void Window::HandleMouseMove(POINT clientPt, WPARAM wParam) {
 }
 
 void Window::HandleLButtonDown(POINT clientPt) {
+    if (m_drawer.IsPublishRepoModalOpen()) {
+        if (m_drawer.HandlePublishRepoMouseDown(clientPt)) {
+            InvalidateRect(m_hwnd, nullptr, FALSE);
+            return;
+        }
+    }
+
     // Check Database & phpMyAdmin / Nginx Settings Modal Clicks (Images 3 & 4)
     if (m_dbSettingsModal.IsOpen()) {
         m_dbSettingsModal.HandleClick(clientPt);
@@ -7607,6 +7731,13 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 return 0;
             }
 
+            if (m_drawer.IsPublishRepoModalOpen()) {
+                if (m_drawer.HandlePublishRepoChar(static_cast<wchar_t>(wParam))) {
+                    InvalidateRect(m_hwnd, nullptr, FALSE);
+                }
+                return 0;
+            }
+
             if (m_dbSettingsModal.IsOpen()) {
                 if (m_dbSettingsModal.OnChar(static_cast<wchar_t>(wParam))) {
                     InvalidateRect(m_hwnd, nullptr, FALSE);
@@ -7810,6 +7941,13 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
         }
 
         case WM_KEYDOWN: {
+            if (m_drawer.IsPublishRepoModalOpen()) {
+                if (m_drawer.HandlePublishRepoKeyDown(wParam)) {
+                    InvalidateRect(m_hwnd, nullptr, FALSE);
+                }
+                return 0;
+            }
+
             if (m_dbSettingsModal.IsOpen()) {
                 if (m_dbSettingsModal.OnKeyDown(wParam)) {
                     InvalidateRect(m_hwnd, nullptr, FALSE);

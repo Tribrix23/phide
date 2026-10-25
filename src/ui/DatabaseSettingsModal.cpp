@@ -39,34 +39,37 @@ void DatabaseSettingsModal::Open(DatabaseModalTab initialTab) {
     m_focusedField = DatabaseEditField::None;
     m_caretVisible = true;
 
-    // Check if config.inc.php exists and parse basic values
-    std::filesystem::path pmaCfgPath = GetPhideRoot() / L"include" / L"phide" / L"db" / L"phpMyAdmin" / L"config.inc.php";
-    if (std::filesystem::exists(pmaCfgPath)) {
-        std::wifstream in(pmaCfgPath);
-        std::wstring line;
-        while (std::getline(in, line)) {
-            if (line.find(L"['host']") != std::wstring::npos && line.find(L"'") != std::wstring::npos) {
-                size_t firstQ = line.rfind(L"'");
-                if (firstQ != std::wstring::npos) {
-                    size_t prevQ = line.rfind(L"'", firstQ - 1);
-                    if (prevQ != std::wstring::npos && prevQ < firstQ) {
-                        m_host = line.substr(prevQ + 1, firstQ - prevQ - 1);
+    // Check if config.inc.php exists and parse basic values on first open
+    if (!m_initialized) {
+        m_initialized = true;
+        std::filesystem::path pmaCfgPath = GetPhideRoot() / L"include" / L"phide" / L"db" / L"phpMyAdmin" / L"config.inc.php";
+        if (std::filesystem::exists(pmaCfgPath)) {
+            std::wifstream in(pmaCfgPath);
+            std::wstring line;
+            while (std::getline(in, line)) {
+                if (line.find(L"['host']") != std::wstring::npos && line.find(L"'") != std::wstring::npos) {
+                    size_t firstQ = line.rfind(L"'");
+                    if (firstQ != std::wstring::npos) {
+                        size_t prevQ = line.rfind(L"'", firstQ - 1);
+                        if (prevQ != std::wstring::npos && prevQ < firstQ) {
+                            m_host = line.substr(prevQ + 1, firstQ - prevQ - 1);
+                        }
                     }
-                }
-            } else if (line.find(L"['port']") != std::wstring::npos && line.find(L"'") != std::wstring::npos) {
-                size_t firstQ = line.rfind(L"'");
-                if (firstQ != std::wstring::npos) {
-                    size_t prevQ = line.rfind(L"'", firstQ - 1);
-                    if (prevQ != std::wstring::npos && prevQ < firstQ) {
-                        m_port = line.substr(prevQ + 1, firstQ - prevQ - 1);
+                } else if (line.find(L"['port']") != std::wstring::npos && line.find(L"'") != std::wstring::npos) {
+                    size_t firstQ = line.rfind(L"'");
+                    if (firstQ != std::wstring::npos) {
+                        size_t prevQ = line.rfind(L"'", firstQ - 1);
+                        if (prevQ != std::wstring::npos && prevQ < firstQ) {
+                            m_port = line.substr(prevQ + 1, firstQ - prevQ - 1);
+                        }
                     }
-                }
-            } else if (line.find(L"['user']") != std::wstring::npos && line.find(L"'") != std::wstring::npos) {
-                size_t firstQ = line.rfind(L"'");
-                if (firstQ != std::wstring::npos) {
-                    size_t prevQ = line.rfind(L"'", firstQ - 1);
-                    if (prevQ != std::wstring::npos && prevQ < firstQ) {
-                        m_user = line.substr(prevQ + 1, firstQ - prevQ - 1);
+                } else if (line.find(L"['user']") != std::wstring::npos && line.find(L"'") != std::wstring::npos) {
+                    size_t firstQ = line.rfind(L"'");
+                    if (firstQ != std::wstring::npos) {
+                        size_t prevQ = line.rfind(L"'", firstQ - 1);
+                        if (prevQ != std::wstring::npos && prevQ < firstQ) {
+                            m_user = line.substr(prevQ + 1, firstQ - prevQ - 1);
+                        }
                     }
                 }
             }
@@ -85,6 +88,8 @@ bool DatabaseSettingsModal::OnChar(wchar_t ch) {
         case DatabaseEditField::Pass: target = &m_pass; break;
         case DatabaseEditField::Database: target = &m_defaultDb; break;
         case DatabaseEditField::Charset: target = &m_charset; break;
+        case DatabaseEditField::NginxPort: target = &m_nginxPort; break;
+        case DatabaseEditField::NginxHost: target = &m_nginxHost; break;
         default: break;
     }
     if (!target) return false;
@@ -119,6 +124,8 @@ bool DatabaseSettingsModal::OnKeyDown(WPARAM wParam) {
             case DatabaseEditField::Pass: m_focusedField = DatabaseEditField::Database; break;
             case DatabaseEditField::Database: m_focusedField = DatabaseEditField::Charset; break;
             case DatabaseEditField::Charset: m_focusedField = DatabaseEditField::Host; break;
+            case DatabaseEditField::NginxPort: m_focusedField = DatabaseEditField::NginxHost; break;
+            case DatabaseEditField::NginxHost: m_focusedField = DatabaseEditField::NginxPort; break;
             default: m_focusedField = DatabaseEditField::Host; break;
         }
         return true;
@@ -129,6 +136,14 @@ bool DatabaseSettingsModal::OnKeyDown(WPARAM wParam) {
 void DatabaseSettingsModal::UpdateSnippets() {
     m_pdoSnippet = L"$pdo = new PDO(\"mysql:host=" + m_host + L";port=" + m_port + L";dbname=" + m_defaultDb + L";charset=" + m_charset + L"\", \"" + m_user + L"\", \"" + m_pass + L"\");";
     m_mysqliSnippet = L"$conn = new mysqli(\"" + m_host + L"\", \"" + m_user + L"\", \"" + m_pass + L"\", \"" + m_defaultDb + L"\", " + m_port + L");";
+
+    std::wstring effPmaHost = m_host.empty() ? L"localhost" : m_host;
+    std::wstring effPmaPort = m_pmaWebPort.empty() ? L"8081" : m_pmaWebPort;
+    m_pmaUrl = L"http://" + effPmaHost + L":" + effPmaPort;
+
+    std::wstring effNgxHost = m_nginxHost.empty() ? L"localhost" : m_nginxHost;
+    std::wstring effNgxPort = m_nginxPort.empty() ? L"80" : m_nginxPort;
+    m_nginxUrl = L"http://" + effNgxHost + L":" + effNgxPort;
 }
 
 bool DatabaseSettingsModal::HitTestBounds(POINT pt) const noexcept {
@@ -179,6 +194,13 @@ void DatabaseSettingsModal::HandleClick(POINT pt) noexcept {
         if (PtInRectF(pt, m_rcInputPass)) { m_focusedField = DatabaseEditField::Pass; m_caretVisible = true; return; }
         if (PtInRectF(pt, m_rcInputDb)) { m_focusedField = DatabaseEditField::Database; m_caretVisible = true; return; }
         if (PtInRectF(pt, m_rcInputCharset)) { m_focusedField = DatabaseEditField::Charset; m_caretVisible = true; return; }
+
+        if (PtInRectF(pt, m_rcModalCard)) {
+            m_focusedField = DatabaseEditField::None;
+        }
+    } else {
+        if (PtInRectF(pt, m_rcInputNginxPort)) { m_focusedField = DatabaseEditField::NginxPort; m_caretVisible = true; return; }
+        if (PtInRectF(pt, m_rcInputNginxHost)) { m_focusedField = DatabaseEditField::NginxHost; m_caretVisible = true; return; }
 
         if (PtInRectF(pt, m_rcModalCard)) {
             m_focusedField = DatabaseEditField::None;
@@ -457,7 +479,7 @@ void DatabaseSettingsModal::Render(ID2D1RenderTarget* pRT, Theme& theme, const a
         D2D1_RECT_F rcHeadC = D2D1::RectF(rcSecC.left + config.ScaleF(12.0f), rcSecC.top + config.ScaleF(7.0f), rcSecC.right, rcSecC.top + config.ScaleF(24.0f));
         pRT->DrawText(L"PHPMYADMIN STATUS & ACTIONS", 27, pFmtHint, rcHeadC, pAccentBrush);
 
-        std::wstring pmaStatusStr = m_isPmaRunning ? L"● Status: Running (http://localhost:8081)" : L"● Status: Ready for PHP Run (Auth: config)";
+        std::wstring pmaStatusStr = m_isPmaRunning ? (L"● Status: Running (" + m_pmaUrl + L")") : L"● Status: Ready for PHP Run (Auth: config)";
         D2D1_RECT_F rcStatus = D2D1::RectF(rcSecC.left + config.ScaleF(12.0f), rcSecC.top + config.ScaleF(32.0f), rcSecC.left + config.ScaleF(270.0f), rcSecC.bottom);
         pRT->PushAxisAlignedClip(rcStatus, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
         pRT->DrawText(pmaStatusStr.c_str(), static_cast<UINT32>(pmaStatusStr.size()), pFmtMain, rcStatus, pWhiteBrush);
@@ -518,14 +540,14 @@ void DatabaseSettingsModal::Render(ID2D1RenderTarget* pRT, Theme& theme, const a
         D2D1_RECT_F rcUrl = D2D1::RectF(rcSecN.left + config.ScaleF(10.0f), row1Y, rcSecN.left + config.ScaleF(10.0f) + halfW, row1Y + rowH);
         D2D1_RECT_F rcPort = D2D1::RectF(rcSecN.left + config.ScaleF(18.0f) + halfW, row1Y, rcSecN.right - config.ScaleF(10.0f), row1Y + rowH);
         DrawFieldBadge(L"Local URL", m_nginxUrl, rcUrl, m_rcCopyNginxUrl, DatabaseModalAction::CopyNginxUrl, DatabaseEditField::None, dummyInput);
-        DrawFieldBadge(L"Port", m_nginxPort, rcPort, m_rcCopyNginxPort, DatabaseModalAction::CopyNginxPort, DatabaseEditField::None, dummyInput);
+        DrawFieldBadge(L"Port", m_nginxPort, rcPort, m_rcCopyNginxPort, DatabaseModalAction::CopyNginxPort, DatabaseEditField::NginxPort, m_rcInputNginxPort);
 
         // Row 2: Server Name & FastCGI Upstream
         float row2Y = row1Y + rowH + config.ScaleF(5.0f);
         D2D1_RECT_F rcHost = D2D1::RectF(rcSecN.left + config.ScaleF(10.0f), row2Y, rcSecN.left + config.ScaleF(10.0f) + halfW, row2Y + rowH);
         D2D1_RECT_F rcFastCgi = D2D1::RectF(rcSecN.left + config.ScaleF(18.0f) + halfW, row2Y, rcSecN.right - config.ScaleF(10.0f), row2Y + rowH);
         D2D1_RECT_F dummyBtn;
-        DrawFieldBadge(L"Server Name", m_nginxHost, rcHost, dummyBtn, DatabaseModalAction::None, DatabaseEditField::None, dummyInput);
+        DrawFieldBadge(L"Server Name", m_nginxHost, rcHost, dummyBtn, DatabaseModalAction::None, DatabaseEditField::NginxHost, m_rcInputNginxHost);
         DrawFieldBadge(L"FastCGI PHP", L"127.0.0.1:9000", rcFastCgi, dummyBtn, DatabaseModalAction::None, DatabaseEditField::None, dummyInput);
 
         // Row 3: Config file with copy button

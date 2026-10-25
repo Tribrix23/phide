@@ -834,7 +834,7 @@ void DrawerPanel::RenderExplorerPane(ID2D1RenderTarget* pRT, Theme& theme, const
                     // Determine Git status for Explorer tree item (Files & Folders, Image 1)
                     std::wstring gitStatus;
                     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushGitStatus;
-                    if (m_isGitRepo) {
+                    {
                         std::lock_guard<std::recursive_mutex> lock(m_gitMutex);
                         if (!m_gitChanges.empty()) {
                             std::wstring relItem;
@@ -3553,11 +3553,43 @@ void DrawerPanel::RefreshGitState(bool async, bool showLoading) {
         auto resCheck = RunGitCmd(L"rev-parse --is-inside-work-tree", dir);
         if (!alive || !alive->load()) return;
         if (resCheck.exitCode != 0) {
+            std::vector<GitChangeItem> untrackedChanges;
+            std::error_code ecScan;
+            if (!m_openFolderPath.empty() && std::filesystem::exists(dir, ecScan) && std::filesystem::is_directory(dir, ecScan)) {
+                size_t count = 0;
+                for (auto it = std::filesystem::recursive_directory_iterator(dir, std::filesystem::directory_options::skip_permission_denied, ecScan);
+                     it != std::filesystem::recursive_directory_iterator() && count < 150;
+                     it.increment(ecScan)) {
+                    if (ecScan) { ecScan.clear(); continue; }
+                    if (it->is_directory(ecScan)) {
+                        std::wstring dname = it->path().filename().wstring();
+                        if (dname == L".git" || dname == L"node_modules" || dname == L"vendor" || dname == L"bin" || dname == L"obj" || dname == L"build") {
+                            it.disable_recursion_pending();
+                        }
+                        continue;
+                    }
+                    if (it->is_regular_file(ecScan)) {
+                        std::wstring rel = std::filesystem::relative(it->path(), dir, ecScan).wstring();
+                        if (!rel.empty()) {
+                            for (auto& c : rel) if (c == L'/') c = L'\\';
+                            GitChangeItem item;
+                            item.path = rel;
+                            item.fileName = it->path().filename().wstring();
+                            item.relDir = std::filesystem::path(rel).parent_path().wstring();
+                            item.status = L"U";
+                            item.isStaged = false;
+                            untrackedChanges.push_back(std::move(item));
+                            ++count;
+                        }
+                    }
+                }
+            }
             std::lock_guard<std::recursive_mutex> lock(m_gitMutex);
             m_isGitRepo = false;
-            m_gitChanges.clear();
+            m_gitChanges = std::move(untrackedChanges);
             m_gitCommits.clear();
             if (showLoading) m_isGitLoading = false;
+            if (m_onGitStateChanged) m_onGitStateChanged();
             return;
         }
 
@@ -4051,9 +4083,41 @@ void DrawerPanel::RefreshGitStatusOnly(bool async) {
         auto resCheck = RunGitCmd(L"rev-parse --is-inside-work-tree", dir);
         if (!alive || !alive->load()) return;
         if (resCheck.exitCode != 0) {
+            std::vector<GitChangeItem> untrackedChanges;
+            std::error_code ecScan;
+            if (!m_openFolderPath.empty() && std::filesystem::exists(dir, ecScan) && std::filesystem::is_directory(dir, ecScan)) {
+                size_t count = 0;
+                for (auto it = std::filesystem::recursive_directory_iterator(dir, std::filesystem::directory_options::skip_permission_denied, ecScan);
+                     it != std::filesystem::recursive_directory_iterator() && count < 150;
+                     it.increment(ecScan)) {
+                    if (ecScan) { ecScan.clear(); continue; }
+                    if (it->is_directory(ecScan)) {
+                        std::wstring dname = it->path().filename().wstring();
+                        if (dname == L".git" || dname == L"node_modules" || dname == L"vendor" || dname == L"bin" || dname == L"obj" || dname == L"build") {
+                            it.disable_recursion_pending();
+                        }
+                        continue;
+                    }
+                    if (it->is_regular_file(ecScan)) {
+                        std::wstring rel = std::filesystem::relative(it->path(), dir, ecScan).wstring();
+                        if (!rel.empty()) {
+                            for (auto& c : rel) if (c == L'/') c = L'\\';
+                            GitChangeItem item;
+                            item.path = rel;
+                            item.fileName = it->path().filename().wstring();
+                            item.relDir = std::filesystem::path(rel).parent_path().wstring();
+                            item.status = L"U";
+                            item.isStaged = false;
+                            untrackedChanges.push_back(std::move(item));
+                            ++count;
+                        }
+                    }
+                }
+            }
             std::lock_guard<std::recursive_mutex> lock(m_gitMutex);
             m_isGitRepo = false;
-            m_gitChanges.clear();
+            m_gitChanges = std::move(untrackedChanges);
+            if (m_onGitStateChanged) m_onGitStateChanged();
             return;
         }
 
@@ -4439,7 +4503,6 @@ void DrawerPanel::ComputeGitGraphLanes(std::vector<GitCommitItem>& commits) {
 void DrawerPanel::SetDirtyFiles(const std::vector<std::wstring>& dirtyFilePaths) {
     std::lock_guard<std::recursive_mutex> lock(m_gitMutex);
     m_dirtyFilePaths = dirtyFilePaths;
-    if (!m_isGitRepo) return;
 
     std::wstring dir = m_openFolderPath.empty() ? L"." : m_openFolderPath;
 
@@ -5101,6 +5164,10 @@ bool DrawerPanel::HitTestGit(POINT pt, const app::AppConfig& config,
         // Primary Commit / Sync Changes Button (Image 1 & 5)
         if (pt.x >= m_gitCommitBtnBounds.left && pt.x <= m_gitCommitBtnBounds.right &&
             pt.y >= m_gitCommitBtnBounds.top && pt.y <= m_gitCommitBtnBounds.bottom) {
+            if (!m_isGitRepo || (!m_gitChanges.empty() && m_gitCommits.empty())) {
+                OpenPublishRepoModal();
+                return true;
+            }
             if (!m_gitChanges.empty()) {
                 std::wstring trimmed = m_commitMessage;
                 size_t f = trimmed.find_first_not_of(L" \t\r\n");
@@ -5492,6 +5559,10 @@ void DrawerPanel::HandleGitKeyDown(WPARAM wParam) {
         }
     } else if (wParam == VK_RETURN) {
         if (GetKeyState(VK_CONTROL) & 0x8000) {
+            if (!m_isGitRepo || (!m_gitChanges.empty() && m_gitCommits.empty())) {
+                OpenPublishRepoModal();
+                return;
+            }
             std::wstring trimmed = m_commitMessage;
             size_t f = trimmed.find_first_not_of(L" \t\r\n");
             if (f != std::wstring::npos) {
@@ -5539,22 +5610,6 @@ void DrawerPanel::RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, 
     pRT->FillEllipse(D2D1::Ellipse(D2D1::Point2F(dotMidX + dotOffset, dotY), 1.4f, 1.4f), theme.brushTextMuted.Get());
 
     float curY = headerH + config.ScaleF(38.0f);
-
-    // Non-Git Workspace Fallback
-    if (!m_isGitRepo) {
-        D2D1_RECT_F rcNoGit = D2D1::RectF(
-            railW + paddingX,
-            curY + config.ScaleF(20.0f),
-            railW + currentDrawerW - paddingX,
-            curY + config.ScaleF(100.0f)
-        );
-        const wchar_t* noGitMsg = L"No Git repository detected in the current workspace.\n\nOpen a workspace with a Git repository to view Changes and Graph.";
-        pRT->DrawText(noGitMsg, static_cast<UINT32>(wcslen(noGitMsg)),
-                      theme.fontMenuItem.Get() ? theme.fontMenuItem.Get() : theme.fontMenuShortcut.Get(),
-                      rcNoGit, theme.brushTextMuted.Get());
-        return;
-    }
-
     float secH = config.ScaleF(24.0f);
 
     // Clamp vertical splitter between Changes and Graph with persistence (Complaint 7)
@@ -6846,6 +6901,296 @@ void DrawerPanel::RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, 
                       theme.fontMenuItem.Get() ? theme.fontMenuItem.Get() : theme.fontButtonCenter.Get(),
                       rcTipText, theme.brushTooltipText.Get());
     }
+}
+
+void DrawerPanel::OpenPublishRepoModal() {
+    m_isPublishModalOpen = true;
+    m_publishRepoSelectedChoice = 0; // Default to Private
+    m_publishRepoHoveredChoice = -1;
+    if (m_publishRepoName.empty()) {
+        if (!m_openFolderPath.empty()) {
+            std::filesystem::path p(m_openFolderPath);
+            m_publishRepoName = p.filename().wstring();
+            if (m_publishRepoName.empty() && p.has_parent_path()) {
+                m_publishRepoName = p.parent_path().filename().wstring();
+            }
+        }
+        if (m_publishRepoName.empty() && !m_rootName.empty()) {
+            m_publishRepoName = m_rootName;
+        }
+        if (m_publishRepoName.empty()) {
+            m_publishRepoName = L"my-project";
+        }
+    }
+}
+
+void DrawerPanel::ConfirmPublishRepo(int visibilityChoice) {
+    m_publishedVisibility = (visibilityChoice == 1) ? 1 : 0;
+    m_isPublishModalOpen = false;
+
+    std::wstring dir = m_openFolderPath.empty() ? L"." : m_openFolderPath;
+    std::wstring repoName = m_publishRepoName.empty() ? L"my-project" : m_publishRepoName;
+    std::wstring visStr = (m_publishedVisibility == 0) ? L"private" : L"public";
+
+    std::wstring msg = m_commitMessage;
+    size_t first = msg.find_first_not_of(L" \t\r\n");
+    if (first == std::wstring::npos) {
+        msg = L"Initial commit";
+    } else {
+        msg = msg.substr(first);
+        size_t last = msg.find_last_not_of(L" \t\r\n");
+        if (last != std::wstring::npos) msg = msg.substr(0, last + 1);
+    }
+
+    // Initialize Git repository if not yet initialized
+    auto resCheck = RunGitCmd(L"rev-parse --is-inside-work-tree", dir);
+    if (resCheck.exitCode != 0) {
+        RunGitCmd(L"init", dir);
+    }
+
+    // Ensure local git user config is present so first commit never fails
+    auto resUser = RunGitCmd(L"config user.name", dir);
+    if (resUser.exitCode != 0 || resUser.output.empty()) {
+        RunGitCmd(L"config user.name \"Phide Developer\"", dir);
+    }
+    auto resEmail = RunGitCmd(L"config user.email", dir);
+    if (resEmail.exitCode != 0 || resEmail.output.empty()) {
+        RunGitCmd(L"config user.email \"dev@phide.local\"", dir);
+    }
+
+    RunGitCmd(L"config phide.repoName \"" + repoName + L"\"", dir);
+    RunGitCmd(L"config phide.visibility \"" + visStr + L"\"", dir);
+    RunGitCmd(L"branch -M main", dir);
+    RunGitCmd(L"add -A", dir);
+
+    std::wstring escapedMsg;
+    for (wchar_t c : msg) {
+        if (c == L'"') escapedMsg += L"\\\"";
+        else escapedMsg += c;
+    }
+    RunGitCmd(L"commit -m \"" + escapedMsg + L"\"", dir);
+
+    {
+        std::lock_guard<std::recursive_mutex> lock(m_gitMutex);
+        m_isGitRepo = true;
+        m_commitMessage.clear();
+    }
+    ShowGitNotification(L"✓ Published " + repoName + L" (" + visStr + L")");
+    RefreshGitState(false);
+}
+
+void DrawerPanel::RenderPublishRepoModal(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config, float clientW, float clientH) {
+    if (!m_isPublishModalOpen || !pRT) return;
+
+    // 1. Subtle backdrop dim
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushBackdrop;
+    pRT->CreateSolidColorBrush(D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.35f), &brushBackdrop);
+    if (brushBackdrop) {
+        pRT->FillRectangle(D2D1::RectF(0.0f, 0.0f, clientW, clientH), brushBackdrop.Get());
+    }
+
+    // 2. Centered Top-Center VS Code QuickPick Popup Geometry
+    const float modalW = config.ScaleF(520.0f);
+    const float modalH = config.ScaleF(158.0f);
+    const float left   = (clientW - modalW) * 0.5f;
+    const float top    = config.ScaleF(static_cast<float>(config.headerHeight) + 8.0f);
+
+    m_publishModalBounds = D2D1::RectF(left, top, left + modalW, top + modalH);
+
+    // Drop Shadow
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushShadow;
+    pRT->CreateSolidColorBrush(D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.55f), &brushShadow);
+    if (brushShadow) {
+        D2D1_RECT_F rcShadow = D2D1::RectF(left - 2.0f, top + 3.0f, left + modalW + 2.0f, top + modalH + 6.0f);
+        pRT->FillRoundedRectangle(D2D1::RoundedRect(rcShadow, 7.0f, 7.0f), brushShadow.Get());
+    }
+
+    // Modal Surface
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushModalBg;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushModalBorder;
+    pRT->CreateSolidColorBrush(D2D1::ColorF(0.145f, 0.145f, 0.155f, 0.99f), &brushModalBg);
+    pRT->CreateSolidColorBrush(D2D1::ColorF(0.27f, 0.27f, 0.30f, 1.0f), &brushModalBorder);
+
+    D2D1_ROUNDED_RECT rrcModal = D2D1::RoundedRect(m_publishModalBounds, 6.0f, 6.0f);
+    if (brushModalBg) pRT->FillRoundedRectangle(rrcModal, brushModalBg.Get());
+    if (brushModalBorder) pRT->DrawRoundedRectangle(rrcModal, brushModalBorder.Get(), 1.0f);
+
+    const float padX = config.ScaleF(10.0f);
+    float curY = top + config.ScaleF(8.0f);
+
+    // 3. Top Header Label (Left-aligned)
+    IDWriteTextFormat* pFmtSmall = theme.fontMenuItem.Get() ? theme.fontMenuItem.Get() : theme.fontBody.Get();
+    IDWriteTextFormat* pFmtMain  = theme.fontMenuItem.Get() ? theme.fontMenuItem.Get() : theme.fontBody.Get();
+    D2D1_RECT_F rcHeader = D2D1::RectF(left + padX + 2.0f, curY, left + modalW - padX, curY + config.ScaleF(18.0f));
+    const wchar_t* headerText = L"Repository Name (Press 'Enter' to confirm or 'Escape' to cancel)";
+    pRT->DrawText(headerText, static_cast<UINT32>(wcslen(headerText)), pFmtSmall, rcHeader, theme.brushTextMuted.Get());
+    curY += config.ScaleF(18.0f);
+
+    // 4. Repository Name Input Field
+    const float inputH = config.ScaleF(30.0f);
+    m_publishInputBounds = D2D1::RectF(left + padX, curY, left + modalW - padX, curY + inputH);
+    D2D1_ROUNDED_RECT rrcInput = D2D1::RoundedRect(m_publishInputBounds, 4.0f, 4.0f);
+
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushInputBg;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushFocusBorder;
+    pRT->CreateSolidColorBrush(D2D1::ColorF(0.10f, 0.10f, 0.11f, 1.0f), &brushInputBg);
+    pRT->CreateSolidColorBrush(D2D1::ColorF(0.0f, 0.478f, 0.80f, 1.0f), &brushFocusBorder);
+    if (brushInputBg) pRT->FillRoundedRectangle(rrcInput, brushInputBg.Get());
+    if (brushFocusBorder) pRT->DrawRoundedRectangle(rrcInput, brushFocusBorder.Get(), 1.5f);
+
+    std::wstring displayRepo = m_publishRepoName.empty() ? L"Repository Name" : m_publishRepoName;
+    if (m_gitCaretVisible && !m_publishRepoName.empty()) {
+        displayRepo += L"|";
+    }
+    D2D1_RECT_F rcInputText = D2D1::RectF(
+        m_publishInputBounds.left + config.ScaleF(8.0f),
+        m_publishInputBounds.top + config.ScaleF(5.0f),
+        m_publishInputBounds.right - config.ScaleF(8.0f),
+        m_publishInputBounds.bottom - config.ScaleF(4.0f)
+    );
+    pRT->DrawText(displayRepo.c_str(), static_cast<UINT32>(displayRepo.length()),
+                  pFmtMain, rcInputText,
+                  m_publishRepoName.empty() ? theme.brushTextMuted.Get() : theme.brushTextPrimary.Get());
+
+    curY += inputH + config.ScaleF(8.0f);
+
+    // 5. Two Choices Underneath: Private vs Public Repository (VS Code style)
+    const float rowH = config.ScaleF(40.0f);
+    std::wstring repoTitle = m_publishRepoName.empty() ? L"repository" : m_publishRepoName;
+    const wchar_t* icons[2] = { L"🔒", L"🌐" };
+    std::wstring titles[2] = {
+        L"Publish to GitHub private repository",
+        L"Publish to GitHub public repository"
+    };
+    std::wstring descs[2] = {
+        L"github.com/" + repoTitle + L" (Private — Only visible to you)",
+        L"github.com/" + repoTitle + L" (Public — Visible to everyone)"
+    };
+
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushSelectedRow;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushHoverRow;
+    pRT->CreateSolidColorBrush(D2D1::ColorF(0.02f, 0.22f, 0.37f, 0.90f), &brushSelectedRow);
+    pRT->CreateSolidColorBrush(D2D1::ColorF(0.20f, 0.20f, 0.22f, 0.85f), &brushHoverRow);
+
+    for (int i = 0; i < 2; ++i) {
+        m_publishOptionBounds[i] = D2D1::RectF(
+            left + config.ScaleF(6.0f),
+            curY,
+            left + modalW - config.ScaleF(6.0f),
+            curY + rowH
+        );
+        D2D1_ROUNDED_RECT rrcOpt = D2D1::RoundedRect(m_publishOptionBounds[i], 4.0f, 4.0f);
+        if (m_publishRepoSelectedChoice == i) {
+            if (brushSelectedRow) pRT->FillRoundedRectangle(rrcOpt, brushSelectedRow.Get());
+            if (brushFocusBorder) pRT->DrawRoundedRectangle(rrcOpt, brushFocusBorder.Get(), 1.0f);
+        } else if (m_publishRepoHoveredChoice == i) {
+            if (brushHoverRow) pRT->FillRoundedRectangle(rrcOpt, brushHoverRow.Get());
+        }
+
+        // Icon
+        D2D1_RECT_F rcIcon = D2D1::RectF(
+            m_publishOptionBounds[i].left + config.ScaleF(10.0f),
+            curY + config.ScaleF(8.0f),
+            m_publishOptionBounds[i].left + config.ScaleF(32.0f),
+            curY + rowH - config.ScaleF(4.0f)
+        );
+        pRT->DrawText(icons[i], static_cast<UINT32>(wcslen(icons[i])), pFmtMain, rcIcon, theme.brushTextPrimary.Get());
+
+        // Main Choice Label
+        D2D1_RECT_F rcTitleOpt = D2D1::RectF(
+            m_publishOptionBounds[i].left + config.ScaleF(34.0f),
+            curY + config.ScaleF(3.0f),
+            m_publishOptionBounds[i].right - config.ScaleF(10.0f),
+            curY + config.ScaleF(21.0f)
+        );
+        pRT->DrawText(titles[i].c_str(), static_cast<UINT32>(titles[i].length()),
+                      pFmtMain, rcTitleOpt, theme.brushTextPrimary.Get());
+
+        // Subtitle description
+        D2D1_RECT_F rcDescOpt = D2D1::RectF(
+            m_publishOptionBounds[i].left + config.ScaleF(34.0f),
+            curY + config.ScaleF(20.0f),
+            m_publishOptionBounds[i].right - config.ScaleF(10.0f),
+            curY + rowH - config.ScaleF(2.0f)
+        );
+        pRT->DrawText(descs[i].c_str(), static_cast<UINT32>(descs[i].length()),
+                      pFmtSmall, rcDescOpt, theme.brushTextMuted.Get());
+
+        curY += rowH + config.ScaleF(3.0f);
+    }
+}
+
+bool DrawerPanel::HandlePublishRepoMouseMove(POINT pt) {
+    if (!m_isPublishModalOpen) return false;
+    int oldHover = m_publishRepoHoveredChoice;
+    m_publishRepoHoveredChoice = -1;
+    for (int i = 0; i < 2; ++i) {
+        if (pt.x >= m_publishOptionBounds[i].left && pt.x <= m_publishOptionBounds[i].right &&
+            pt.y >= m_publishOptionBounds[i].top && pt.y <= m_publishOptionBounds[i].bottom) {
+            m_publishRepoHoveredChoice = i;
+            break;
+        }
+    }
+    return oldHover != m_publishRepoHoveredChoice;
+}
+
+bool DrawerPanel::HandlePublishRepoMouseDown(POINT pt) {
+    if (!m_isPublishModalOpen) return false;
+
+    for (int i = 0; i < 2; ++i) {
+        if (pt.x >= m_publishOptionBounds[i].left && pt.x <= m_publishOptionBounds[i].right &&
+            pt.y >= m_publishOptionBounds[i].top && pt.y <= m_publishOptionBounds[i].bottom) {
+            m_publishRepoSelectedChoice = i;
+            ConfirmPublishRepo(i);
+            return true;
+        }
+    }
+
+    if (pt.x >= m_publishModalBounds.left && pt.x <= m_publishModalBounds.right &&
+        pt.y >= m_publishModalBounds.top && pt.y <= m_publishModalBounds.bottom) {
+        return true; // Click inside input box or modal stays focused
+    }
+
+    // Click outside dismisses modal
+    m_isPublishModalOpen = false;
+    return true;
+}
+
+bool DrawerPanel::HandlePublishRepoKeyDown(WPARAM wParam) {
+    if (!m_isPublishModalOpen) return false;
+
+    if (wParam == VK_ESCAPE) {
+        m_isPublishModalOpen = false;
+        return true;
+    }
+    if (wParam == VK_UP) {
+        m_publishRepoSelectedChoice = (m_publishRepoSelectedChoice <= 0) ? 1 : 0;
+        return true;
+    }
+    if (wParam == VK_DOWN || wParam == VK_TAB) {
+        m_publishRepoSelectedChoice = (m_publishRepoSelectedChoice >= 1) ? 0 : 1;
+        return true;
+    }
+    if (wParam == VK_BACK) {
+        if (!m_publishRepoName.empty()) {
+            m_publishRepoName.pop_back();
+        }
+        return true;
+    }
+    if (wParam == VK_RETURN) {
+        ConfirmPublishRepo(m_publishRepoSelectedChoice);
+        return true;
+    }
+    return true;
+}
+
+bool DrawerPanel::HandlePublishRepoChar(wchar_t ch) {
+    if (!m_isPublishModalOpen) return false;
+    if (ch >= 32 && ch != L'/' && ch != L'\\' && ch != L':' && ch != L'*' && ch != L'?' && ch != L'"' && ch != L'<' && ch != L'>' && ch != L'|') {
+        if (ch == L' ') ch = L'-';
+        m_publishRepoName.push_back(ch);
+    }
+    return true;
 }
 
 } // namespace phide::ui

@@ -28,7 +28,9 @@ enum class DatabaseEditField {
     User,
     Pass,
     Database,
-    Charset
+    Charset,
+    NginxPort,
+    NginxHost
 };
 
 enum class DatabaseModalAction {
@@ -112,13 +114,16 @@ public:
     [[nodiscard]] const std::wstring& GetPdoSnippet() const noexcept { return m_pdoSnippet; }
     [[nodiscard]] const std::wstring& GetMysqliSnippet() const noexcept { return m_mysqliSnippet; }
     [[nodiscard]] const std::wstring& GetPmaUrl() const noexcept { return m_pmaUrl; }
+    [[nodiscard]] const std::wstring& GetPmaWebPort() const noexcept { return m_pmaWebPort; }
     [[nodiscard]] const std::wstring& GetNginxUrl() const noexcept { return m_nginxUrl; }
     [[nodiscard]] const std::wstring& GetNginxPort() const noexcept { return m_nginxPort; }
+    [[nodiscard]] const std::wstring& GetNginxHost() const noexcept { return m_nginxHost; }
     [[nodiscard]] const std::wstring& GetPmaConfigPath() const noexcept { return m_pmaConfigFile; }
     [[nodiscard]] const std::wstring& GetNginxConfigPath() const noexcept { return m_nginxConfigFile; }
 
 private:
     bool m_isOpen = false;
+    bool m_initialized = false;
     DatabaseModalTab m_activeTab = DatabaseModalTab::PhpMyAdmin;
 
     // Database parameters (matches config.inc.php and config.php)
@@ -130,6 +135,7 @@ private:
     std::wstring m_charset = L"utf8mb4";
     std::wstring m_authType = L"config (Auto-Login)";
     std::wstring m_blowfishSecret = L"phide_pma_aes256_blowfish_secret_key_32b!";
+    std::wstring m_pmaWebPort = L"8081";
     std::wstring m_pmaUrl = L"http://localhost:8081";
     std::wstring m_pmaConfigFile = L"include\\phide\\db\\phpMyAdmin\\config.inc.php";
 
@@ -183,6 +189,8 @@ private:
     D2D1_RECT_F m_rcCopyNginxUrl{};
     D2D1_RECT_F m_rcCopyNginxPort{};
     D2D1_RECT_F m_rcCopyNginxConfigPath{};
+    D2D1_RECT_F m_rcInputNginxPort{};
+    D2D1_RECT_F m_rcInputNginxHost{};
     D2D1_RECT_F m_rcBtnToggleNginx{};
     D2D1_RECT_F m_rcBtnOpenNginx{};
     D2D1_RECT_F m_rcBtnEditNginx{};

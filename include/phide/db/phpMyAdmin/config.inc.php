@@ -34,6 +34,8 @@ $cfg['Servers'][$i]['AllowNoPassword'] = true;
  */
 $cfg['Servers'][$i]['controluser'] = '';
 $cfg['Servers'][$i]['controlpass'] = '';
+$cfg['Servers'][$i]['pmadb'] = '';
+$cfg['ZeroConf'] = false;
 $cfg['UploadDir'] = '';
 $cfg['SaveDir'] = '';
 $cfg['SendErrorReports'] = 'never';

@@ -2735,13 +2735,16 @@ bool TerminalPanel::OnKeyDown(UINT vk, bool isCtrl, bool isShift) {
     TerminalTab* tab = GetActiveTab();
     if (!tab) return false;
 
-    // Server tabs: typing is locked; allow Ctrl+C to send SIGINT
+    // Server tabs: typing is locked; allow Ctrl+C to send SIGINT, and let other Ctrl shortcuts (e.g. Ctrl+S) pass through to IDE
     if (tab->isServerTab || tab->shellType == TerminalShellType::LiveServer) {
         if (isCtrl && (vk == 'C' || vk == 'c')) {
             tab->SendInput("\x03"); // SIGINT interrupt
             return true;
         }
-        return true; // Ignore all other keys
+        if (isCtrl) {
+            return false; // Let IDE handle Ctrl+S, Ctrl+Shift+S, Ctrl+P, etc.
+        }
+        return true; // Ignore typing keys inside read-only server tab
     }
 
     if (isCtrl && (vk == 'C' || vk == 'c')) {
