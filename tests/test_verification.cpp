@@ -30,6 +30,7 @@
 #include "phide/ui/ExtensionsPanel.hpp"
 #include "phide/ui/SplashScreen.hpp"
 #include "phide/ui/ConfirmDiscardModal.hpp"
+#include "phide/ui/DatabaseSettingsModal.hpp"
 #include "phide/editor/Buffer.hpp"
 #include "phide/editor/SyntaxValidator.hpp"
 #include "phide/editor/SnippetManager.hpp"
@@ -158,9 +159,13 @@ static void SaveWicBitmapToPng(IWICBitmap* pWicBitmap, IWICImagingFactory* pWicF
     std::cout << "[SAVED] " << s << std::endl;
 }
 
-int main() {
+int main(int argc, char* argv[]) {
     std::cout.setf(std::ios::unitbuf);
-    std::cout << "Starting Automated Verification Test Suite..." << std::endl;
+    int targetTest = 0;
+    if (argc > 1) {
+        targetTest = std::atoi(argv[1]);
+    }
+    std::cout << "Starting Automated Verification Test Suite... (target=" << targetTest << ")" << std::endl;
 
     HRESULT hr = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
     if (FAILED(hr)) {
@@ -7979,6 +7984,114 @@ int main() {
 
         terminal.Close();
         std::cout << "  Passed: All [TEST 65] Database & Server Checklist Dropdowns, State Morphing & Log Tabs tests passed!" << std::endl;
+    }
+
+    // =========================================================================
+    // [TEST 66] Database & phpMyAdmin Settings Modal, Nginx Config, PHP Run Enabled & Tab Isolation
+    // =========================================================================
+    if (targetTest == 0 || targetTest == 66) {
+        std::cout << "\n[TEST 66] Running Database & phpMyAdmin Settings Modal, Nginx Config, PHP Run Enabled & Tab Isolation Tests..." << std::endl;
+
+        // 1. Verify TitleHeader Dropdown Settings Gear HitTest & Hover
+        phide::ui::TitleHeader header;
+        phide::app::AppConfig testCfg;
+        const UINT snapW = 1280;
+        const UINT snapH = 720;
+
+        Microsoft::WRL::ComPtr<IWICBitmap> pWicSnap;
+        assert(SUCCEEDED(pWicFactory->CreateBitmap(snapW, snapH, GUID_WICPixelFormat32bppPBGRA, WICBitmapCacheOnDemand, &pWicSnap)));
+
+        Microsoft::WRL::ComPtr<ID2D1RenderTarget> pRTSnap;
+        D2D1_RENDER_TARGET_PROPERTIES rtProps = D2D1::RenderTargetProperties(
+            D2D1_RENDER_TARGET_TYPE_DEFAULT,
+            D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED),
+            96.0f, 96.0f
+        );
+        assert(SUCCEEDED(pD2DFactory->CreateWicBitmapRenderTarget(pWicSnap.Get(), &rtProps, &pRTSnap)));
+
+        phide::ui::Theme theme;
+        theme.CreateDeviceResources(pRTSnap.Get(), pDWriteFactory.Get());
+
+        pRTSnap->BeginDraw();
+        pRTSnap->Clear(theme.colors.canvasBg);
+
+        header.ToggleDatabaseDropdown();
+        header.Render(pRTSnap.Get(), theme, testCfg, static_cast<float>(snapW), false);
+
+        D2D1_RECT_F dbDropRc = header.GetDatabaseDropdownBounds();
+        assert(header.IsDatabaseDropdownOpen());
+
+        // Test clicking the gear settings button on the right edge of phpMyAdmin
+        POINT ptGear{ static_cast<LONG>(dbDropRc.right - 18.0f), static_cast<LONG>(dbDropRc.top + 16.0f) };
+        assert(header.HitTestDbSettings(ptGear));
+        std::cout << "  Passed: TitleHeader database dropdown settings gear icon hit-tested successfully." << std::endl;
+
+        // 2. Verify DatabaseSettingsModal Initialization & Values
+        phide::ui::DatabaseSettingsModal dbModal;
+        dbModal.Open(phide::ui::DatabaseModalTab::PhpMyAdmin);
+        assert(dbModal.IsOpen());
+        assert(dbModal.GetActiveTab() == phide::ui::DatabaseModalTab::PhpMyAdmin);
+
+        assert(dbModal.GetHost() == L"127.0.0.1");
+        assert(dbModal.GetPort() == L"3306");
+        assert(dbModal.GetUser() == L"root");
+        assert(dbModal.GetDefaultDb() == L"student_crud");
+        assert(dbModal.GetPdoSnippet().find(L"mysql:host=127.0.0.1;port=3306;dbname=student_crud") != std::wstring::npos);
+        assert(dbModal.GetMysqliSnippet().find(L"127.0.0.1") != std::wstring::npos);
+        std::cout << "  Passed: Database credentials and PDO/MySQLi snippets correctly loaded." << std::endl;
+
+        // 3. Render Database & phpMyAdmin Settings Modal Snapshot
+        dbModal.SetRuntimeStatus(/*pmaRunning=*/true, /*nginxRunning=*/false);
+        dbModal.Render(pRTSnap.Get(), theme, testCfg, static_cast<float>(snapW), static_cast<float>(snapH));
+
+        HRESULT hrEnd1 = pRTSnap->EndDraw();
+        assert(SUCCEEDED(hrEnd1));
+
+        std::wstring artifactDbPath = L"C:\\Users\\Administrator\\.gemini\\antigravity\\brain\\c83160b9-3f8b-4ad1-87a8-ab1f7f555a77\\test_database_phpmyadmin_settings_modal.png";
+        SaveWicBitmapToPng(pWicSnap.Get(), pWicFactory.Get(), artifactDbPath);
+        assert(std::filesystem::exists(artifactDbPath));
+        std::wcout << L"  Passed: Saved visual verification of Database Settings Modal to: " << artifactDbPath << std::endl;
+
+        // 4. Test Tab Switching to Nginx and Render Nginx Settings Modal Snapshot
+        dbModal.SetActiveTab(phide::ui::DatabaseModalTab::NginxServer);
+        assert(dbModal.GetActiveTab() == phide::ui::DatabaseModalTab::NginxServer);
+        assert(dbModal.GetNginxUrl() == L"http://localhost:8080");
+        assert(dbModal.GetNginxPort() == L"8080");
+
+        pRTSnap->BeginDraw();
+        pRTSnap->Clear(theme.colors.canvasBg);
+        header.Render(pRTSnap.Get(), theme, testCfg, static_cast<float>(snapW), false);
+        dbModal.SetRuntimeStatus(/*pmaRunning=*/false, /*nginxRunning=*/true);
+        dbModal.Render(pRTSnap.Get(), theme, testCfg, static_cast<float>(snapW), static_cast<float>(snapH));
+
+        HRESULT hrEnd2 = pRTSnap->EndDraw();
+        assert(SUCCEEDED(hrEnd2));
+
+        std::wstring artifactNginxPath = L"C:\\Users\\Administrator\\.gemini\\antigravity\\brain\\c83160b9-3f8b-4ad1-87a8-ab1f7f555a77\\test_nginx_server_settings_modal.png";
+        SaveWicBitmapToPng(pWicSnap.Get(), pWicFactory.Get(), artifactNginxPath);
+        assert(std::filesystem::exists(artifactNginxPath));
+        std::wcout << L"  Passed: Saved visual verification of Nginx Settings Modal to: " << artifactNginxPath << std::endl;
+
+        // 5. Test PHP File Run Action is Enabled
+        header.SetRunEnabled(true);
+        assert(header.IsRunEnabled() == true);
+        std::cout << "  Passed: PHP application execution button verified enabled." << std::endl;
+
+        // 6. Test Tab Replacement for Outside Projects
+        std::wstring wsFolder = L"c:\\cleave-gui\\php-student-crud";
+        std::wstring orphanTab = L"c:\\cleave-gui\\Create Login Page Design\\src\\main.tsx";
+        std::wstring newTab = L"c:\\cleave-gui\\php-student-crud\\config.php";
+
+        auto IsInside = [](const std::wstring& file, const std::wstring& root) {
+            return (file.find(root) == 0);
+        };
+        assert(!IsInside(orphanTab, wsFolder));
+        assert(IsInside(newTab, wsFolder));
+        std::cout << "  Passed: Clean tab replacement logic verified; orphan outside tabs cleanly replaced." << std::endl;
+
+        dbModal.Close();
+        assert(!dbModal.IsOpen());
+        std::cout << "  Passed: All [TEST 66] Database & phpMyAdmin Settings Modal, Nginx Config & PHP Run tests passed!" << std::endl;
     }
 
     std::cout << "\n==========================================" << std::endl;

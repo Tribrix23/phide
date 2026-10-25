@@ -31,6 +31,7 @@
 #include "phide/ui/ThemePickerModal.hpp"
 #include "phide/ui/QuickOpenModal.hpp"
 #include "phide/ui/ConfirmDiscardModal.hpp"
+#include "phide/ui/DatabaseSettingsModal.hpp"
 #include "phide/ui/TerminalPanel.hpp"
 #include "phide/ui/ExtensionsPanel.hpp"
 #include "phide/server/LiveServer.hpp"
@@ -300,6 +301,12 @@ private:
     /** @brief Opens the Quick Open file search palette modal (Ctrl+K, Ctrl+P). */
     void DoQuickOpenFileSearch();
 
+    /** @brief Opens the Database & phpMyAdmin configuration settings modal. */
+    void DoOpenDatabaseSettings();
+
+    /** @brief Opens the Nginx Web Server configuration settings modal. */
+    void DoOpenServerSettings();
+
     /** @brief Cycles through Dark, Light, and Auto themes directly. */
     void DoToggleTheme();
 
@@ -511,6 +518,7 @@ private:
     ui::ThemePickerModal m_themePicker;
     ui::QuickOpenModal m_quickOpen;
     ui::ConfirmDiscardModal m_confirmDiscardModal;
+    ui::DatabaseSettingsModal m_dbSettingsModal;
     ui::TerminalPanel m_terminal;
     ui::ExtensionsPanel m_extensionsPanel;
     bool m_isTerminalFocused = false;

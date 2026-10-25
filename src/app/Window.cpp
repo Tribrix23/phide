@@ -695,11 +695,14 @@ void Window::OpenFileDocument(const std::wstring& path, bool isPreview) {
     auto& group = GetActiveGroup();
 
     // 2. Check if current active document can be replaced
-    // VS Code Rule: a tab is replaced ONLY if it is a preview tab AND has NO unsaved edits (!isDirty) AND not a special view.
+    // VS Code Rule: a tab is replaced if it is a preview tab AND has NO unsaved edits (!isDirty) AND not a special view,
+    // OR if the active tab belongs to an old project outside the currently opened workspace directory.
     bool canReplace = (group.activeDocIdx >= 0 && group.activeDocIdx < static_cast<int>(group.docs.size()) &&
-                       group.docs[group.activeDocIdx].isPreview &&
                        !group.docs[group.activeDocIdx].isDirty &&
-                       !group.docs[group.activeDocIdx].isSpecialView);
+                       !group.docs[group.activeDocIdx].isSpecialView &&
+                       (group.docs[group.activeDocIdx].isPreview ||
+                        (!m_drawer.GetOpenFolderPath().empty() &&
+                         !IsFileInDirectory(group.docs[group.activeDocIdx].filePath, m_drawer.GetOpenFolderPath()))));
 
     // Check if file exists on disk, or if it is a deleted file in Git (Complaint 8)
     std::error_code ecExists;
@@ -1338,6 +1341,21 @@ void Window::DoOpenFolderFromPath(const std::wstring& path) {
     m_intelliSense.SetWorkspaceRoot(path);
     m_drawer.RefreshGitState(true);
     StartWorkspaceWatcher(path);
+
+    // Close clean tabs that belong to a previous/different project
+    for (auto& grp : m_editorGroups) {
+        auto it = grp.docs.begin();
+        while (it != grp.docs.end()) {
+            if (!it->isDirty && !it->filePath.empty() && !IsFileInDirectory(it->filePath, path)) {
+                it = grp.docs.erase(it);
+            } else {
+                ++it;
+            }
+        }
+        if (grp.activeDocIdx >= static_cast<int>(grp.docs.size())) {
+            grp.activeDocIdx = static_cast<int>(grp.docs.size()) - 1;
+        }
+    }
 
     // Track in recent paths LRU list (max 6 entries)
     auto it = std::find(m_recentPaths.begin(), m_recentPaths.end(), path);
@@ -2246,6 +2264,24 @@ void Window::DoQuickOpenFileSearch() {
     InvalidateRect(m_hwnd, nullptr, FALSE);
 }
 
+void Window::DoOpenDatabaseSettings() {
+    bool pmaRunning = (m_header.GetDatabaseState() == ui::DatabaseState::Running);
+    bool nginxRunning = (m_header.GetServerState() == ui::ServerState::Running);
+    m_dbSettingsModal.SetRuntimeStatus(pmaRunning, nginxRunning);
+    m_dbSettingsModal.Open(ui::DatabaseModalTab::PhpMyAdmin);
+    m_header.CloseServerDatabaseDropdowns();
+    InvalidateRect(m_hwnd, nullptr, FALSE);
+}
+
+void Window::DoOpenServerSettings() {
+    bool pmaRunning = (m_header.GetDatabaseState() == ui::DatabaseState::Running);
+    bool nginxRunning = (m_header.GetServerState() == ui::ServerState::Running);
+    m_dbSettingsModal.SetRuntimeStatus(pmaRunning, nginxRunning);
+    m_dbSettingsModal.Open(ui::DatabaseModalTab::NginxServer);
+    m_header.CloseServerDatabaseDropdowns();
+    InvalidateRect(m_hwnd, nullptr, FALSE);
+}
+
 void Window::DoShowSearch() {
     m_config.activeRailTab = 1;
     if (!m_config.isDrawerOpen) {
@@ -2374,11 +2410,14 @@ void Window::UpdateExecutionButtonStates() {
     std::wstring ext = p.extension().wstring();
     for (auto& c : ext) c = towlower(c);
 
-    // 1. PHP Check: User explicitly instructed: "and for now leave the php run empty for now"
+    // 1. PHP Application: Fully enabled for single file or project dev server execution
     if (ext == L".php" || ext == L".phtml" || ext == L".php8") {
-        m_header.SetRunEnabled(false);
-        m_header.SetDebugEnabled(false);
-        m_header.SetLiveServerRunning(false);
+        bool isRunning = m_isProjectRunning ||
+                         (m_header.GetServerState() == ui::ServerState::Running) ||
+                         (m_header.GetDatabaseState() == ui::DatabaseState::Running);
+        m_header.SetRunEnabled(true);
+        m_header.SetDebugEnabled(true);
+        m_header.SetLiveServerRunning(isRunning);
         return;
     }
 
@@ -4201,6 +4240,11 @@ void Window::OnPaint() {
         m_confirmDiscardModal.Render(m_pRenderTarget.Get(), m_theme, m_config, clientW, clientH);
     }
 
+    // 10. Render Database & phpMyAdmin / Nginx Server Settings Modal Overlay (Images 3 & 4)
+    if (m_dbSettingsModal.IsOpen()) {
+        m_dbSettingsModal.Render(m_pRenderTarget.Get(), m_theme, m_config, clientW, clientH);
+    }
+
     HRESULT hr = m_pRenderTarget->EndDraw();
     if (hr == D2DERR_RECREATE_TARGET) {
         DiscardDeviceResources();
@@ -4245,6 +4289,12 @@ LRESULT Window::HandleNCHitTest(POINT screenPt) {
 }
 
 void Window::HandleMouseMove(POINT clientPt, WPARAM wParam) {
+    if (m_dbSettingsModal.IsOpen()) {
+        m_dbSettingsModal.OnMouseMove(clientPt);
+        InvalidateRect(m_hwnd, nullptr, FALSE);
+        return;
+    }
+
     if (m_confirmDiscardModal.IsOpen()) {
         if (m_confirmDiscardModal.HandleMouseMove(clientPt)) {
             InvalidateRect(m_hwnd, nullptr, FALSE);
@@ -4658,6 +4708,11 @@ void Window::HandleMouseMove(POINT clientPt, WPARAM wParam) {
     }
     if (m_header.SetHoveredDropdownItem(hoveredDropItem)) needRepaint = true;
 
+    bool hovDbSet = m_header.HitTestDbSettings(clientPt);
+    bool hovSrvSet = m_header.HitTestServerSettings(clientPt);
+    if (m_header.SetHoveredDbSettings(hovDbSet)) needRepaint = true;
+    if (m_header.SetHoveredServerSettings(hovSrvSet)) needRepaint = true;
+
     // Check Extensions right sidebar hover
     if (m_rightSidebarAnimProgress > 0.001f && m_extensionsPanel.IsOpen()) {
         if (m_extensionsPanel.HandleMouseMove(clientPt)) {
@@ -4763,6 +4818,87 @@ void Window::HandleMouseMove(POINT clientPt, WPARAM wParam) {
 }
 
 void Window::HandleLButtonDown(POINT clientPt) {
+    // Check Database & phpMyAdmin / Nginx Settings Modal Clicks (Images 3 & 4)
+    if (m_dbSettingsModal.IsOpen()) {
+        ui::DatabaseModalAction act = m_dbSettingsModal.HitTestAction(clientPt);
+        switch (act) {
+            case ui::DatabaseModalAction::CloseModal:
+                m_dbSettingsModal.Close();
+                break;
+            case ui::DatabaseModalAction::SwitchTabPma:
+                m_dbSettingsModal.SetActiveTab(ui::DatabaseModalTab::PhpMyAdmin);
+                break;
+            case ui::DatabaseModalAction::SwitchTabNginx:
+                m_dbSettingsModal.SetActiveTab(ui::DatabaseModalTab::NginxServer);
+                break;
+            case ui::DatabaseModalAction::CopyHost:
+                SetClipboardText(m_hwnd, m_dbSettingsModal.GetHost());
+                m_dbSettingsModal.SetCopiedFeedback(L"Host ($host)");
+                break;
+            case ui::DatabaseModalAction::CopyPort:
+                SetClipboardText(m_hwnd, m_dbSettingsModal.GetPort());
+                m_dbSettingsModal.SetCopiedFeedback(L"Port");
+                break;
+            case ui::DatabaseModalAction::CopyUser:
+                SetClipboardText(m_hwnd, m_dbSettingsModal.GetUser());
+                m_dbSettingsModal.SetCopiedFeedback(L"User ($user)");
+                break;
+            case ui::DatabaseModalAction::CopyPass:
+                SetClipboardText(m_hwnd, m_dbSettingsModal.GetPass());
+                m_dbSettingsModal.SetCopiedFeedback(L"Password ($pass)");
+                break;
+            case ui::DatabaseModalAction::CopyDb:
+                SetClipboardText(m_hwnd, m_dbSettingsModal.GetDefaultDb());
+                m_dbSettingsModal.SetCopiedFeedback(L"Database Name ($db)");
+                break;
+            case ui::DatabaseModalAction::CopyPdoSnippet:
+                SetClipboardText(m_hwnd, m_dbSettingsModal.GetPdoSnippet());
+                m_dbSettingsModal.SetCopiedFeedback(L"PDO Snippet");
+                break;
+            case ui::DatabaseModalAction::CopyMysqliSnippet:
+                SetClipboardText(m_hwnd, m_dbSettingsModal.GetMysqliSnippet());
+                m_dbSettingsModal.SetCopiedFeedback(L"MySQLi Snippet");
+                break;
+            case ui::DatabaseModalAction::CopyNginxUrl:
+                SetClipboardText(m_hwnd, m_dbSettingsModal.GetNginxUrl());
+                m_dbSettingsModal.SetCopiedFeedback(L"Nginx URL");
+                break;
+            case ui::DatabaseModalAction::CopyNginxPort:
+                SetClipboardText(m_hwnd, m_dbSettingsModal.GetNginxPort());
+                m_dbSettingsModal.SetCopiedFeedback(L"Nginx Port");
+                break;
+            case ui::DatabaseModalAction::CopyNginxConfigPath:
+                SetClipboardText(m_hwnd, m_dbSettingsModal.GetNginxConfigPath());
+                m_dbSettingsModal.SetCopiedFeedback(L"Nginx Config Path");
+                break;
+            case ui::DatabaseModalAction::OpenBrowserPma:
+                ShellExecuteW(nullptr, L"open", m_dbSettingsModal.GetPmaUrl().c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+                break;
+            case ui::DatabaseModalAction::OpenBrowserNginx:
+                ShellExecuteW(nullptr, L"open", m_dbSettingsModal.GetNginxUrl().c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+                break;
+            case ui::DatabaseModalAction::EditPmaConfig: {
+                m_dbSettingsModal.Close();
+                std::filesystem::path fullP = std::filesystem::current_path() / m_dbSettingsModal.GetPmaConfigPath();
+                OpenFileDocument(fullP.wstring(), false);
+                break;
+            }
+            case ui::DatabaseModalAction::EditNginxConfig: {
+                m_dbSettingsModal.Close();
+                std::filesystem::path fullP = std::filesystem::current_path() / m_dbSettingsModal.GetNginxConfigPath();
+                OpenFileDocument(fullP.wstring(), false);
+                break;
+            }
+            case ui::DatabaseModalAction::None:
+                if (!m_dbSettingsModal.HitTestBounds(clientPt)) {
+                    m_dbSettingsModal.Close();
+                }
+                break;
+        }
+        InvalidateRect(m_hwnd, nullptr, FALSE);
+        return;
+    }
+
     // Check Confirm Discard / Restore / Notice Modal Clicks (Images 2, 3, 4, 5)
     if (m_confirmDiscardModal.IsOpen()) {
         bool wasNotice = (m_confirmDiscardModal.GetType() == ui::ConfirmModalType::Notice);
@@ -5592,6 +5728,14 @@ void Window::HandleLButtonDown(POINT clientPt) {
 
     // 1b. Server / Database Dropdowns & Buttons (Image 2)
     if (m_header.IsDatabaseDropdownOpen() || m_header.IsServerDropdownOpen()) {
+        if (m_header.HitTestDbSettings(clientPt)) {
+            DoOpenDatabaseSettings();
+            return;
+        }
+        if (m_header.HitTestServerSettings(clientPt)) {
+            DoOpenServerSettings();
+            return;
+        }
         if (m_header.HandleDropdownClick(clientPt)) {
             InvalidateRect(m_hwnd, nullptr, FALSE);
             return;
@@ -6630,6 +6774,16 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     return TRUE;
                 }
 
+                // 00a. Database & phpMyAdmin / Nginx Server Settings Modal (Images 3 & 4)
+                if (m_dbSettingsModal.IsOpen()) {
+                    if (m_dbSettingsModal.HitTestAction(pt) != ui::DatabaseModalAction::None) {
+                        SetCursor(LoadCursor(nullptr, IDC_HAND));
+                        return TRUE;
+                    }
+                    SetCursor(LoadCursor(nullptr, IDC_ARROW));
+                    return TRUE;
+                }
+
                 // 0a. Quick Open File Search Modal (Image 5)
                 if (m_quickOpen.IsOpen()) {
                     if (m_quickOpen.HitTestInput(pt)) {
@@ -6676,6 +6830,8 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     m_header.HitTestDatabase(pt) ||
                     m_header.HitTestServer(pt) ||
                     m_header.HitTestDropdowns(pt) ||
+                    m_header.HitTestDbSettings(pt) ||
+                    m_header.HitTestServerSettings(pt) ||
                     m_header.HitTestZoomIn(pt) ||
                     m_header.HitTestZoomOut(pt) ||
                     m_header.HitTestZoomReset(pt)) {
@@ -7260,6 +7416,14 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
         }
 
         case WM_KEYDOWN: {
+            if (m_dbSettingsModal.IsOpen()) {
+                if (wParam == VK_ESCAPE) {
+                    m_dbSettingsModal.Close();
+                    InvalidateRect(m_hwnd, nullptr, FALSE);
+                    return 0;
+                }
+            }
+
             if (m_editor.IsRefactorPopupVisible() && wParam != VK_SHIFT && wParam != VK_CONTROL && wParam != VK_MENU) {
                 m_editor.DismissRefactorPopup();
                 InvalidateRect(m_hwnd, nullptr, FALSE);

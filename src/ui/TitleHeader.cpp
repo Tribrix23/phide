@@ -865,7 +865,7 @@ void TitleHeader::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCon
 
     // --- Render Database & Server Checklist Dropdowns on Top (Image 2 & 3: matches sleek dark PopupMenu) ---
     if (m_showDatabaseDropdown) {
-        const float dropW = config.ScaleF(210.0f);
+        const float dropW = config.ScaleF(220.0f);
         const float dropH = config.ScaleF(74.0f);
         const float dropX = (std::max)(10.0f, m_rcDatabase.left);
         const float dropY = m_rcDatabase.bottom + config.ScaleF(4.0f);
@@ -914,8 +914,19 @@ void TitleHeader::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCon
         m_icons.DrawDatabase(pRT, rcMiniDb, pWhiteBrush, 1.2f);
 
         // Database name: phpMyAdmin in pure white (user requirement: "the database color is white the icon and name")
-        D2D1_RECT_F rcLbl1 = D2D1::RectF(dbIcoX + dbIcoS + config.ScaleF(6.0f), dropY + config.ScaleF(4.0f), dropX + dropW - config.ScaleF(8.0f), dropY + config.ScaleF(34.0f));
+        D2D1_RECT_F rcLbl1 = D2D1::RectF(dbIcoX + dbIcoS + config.ScaleF(6.0f), dropY + config.ScaleF(4.0f), dropX + dropW - config.ScaleF(32.0f), dropY + config.ScaleF(34.0f));
         pRT->DrawText(L"phpMyAdmin", 10, pFmt, rcLbl1, pWhiteBrush);
+
+        // Settings gear button on the right edge of phpMyAdmin (Image 4)
+        float setS = config.ScaleF(16.0f);
+        float setX = dropX + dropW - setS - config.ScaleF(10.0f);
+        float setY = dropY + config.ScaleF(11.0f);
+        m_rcDbSettingsBtn = D2D1::RectF(setX - config.ScaleF(4.0f), setY - config.ScaleF(3.0f), setX + setS + config.ScaleF(4.0f), setY + setS + config.ScaleF(3.0f));
+        if (m_hoveredDbSettings && theme.brushMenuHover) {
+            pRT->FillRoundedRectangle(D2D1::RoundedRect(m_rcDbSettingsBtn, 3.5f, 3.5f), theme.brushMenuHover.Get());
+        }
+        D2D1_RECT_F rcIcoSet = D2D1::RectF(setX, setY, setX + setS, setY + setS);
+        m_icons.DrawSettings(pRT, rcIcoSet, m_hoveredDbSettings ? pWhiteBrush : (theme.brushMenuText ? theme.brushMenuText.Get() : pWhiteBrush), 1.2f);
 
         // Separator matching PopupMenu
         float sepY = dropY + config.ScaleF(37.0f);
@@ -951,7 +962,7 @@ void TitleHeader::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCon
     }
 
     if (m_showServerDropdown) {
-        const float dropW = config.ScaleF(200.0f);
+        const float dropW = config.ScaleF(220.0f);
         const float dropH = config.ScaleF(74.0f);
         const float dropX = (std::max)(10.0f, m_rcServer.left);
         const float dropY = m_rcServer.bottom + config.ScaleF(4.0f);
@@ -1000,8 +1011,19 @@ void TitleHeader::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCon
         m_icons.DrawServer(pRT, rcMiniSrv, pWhiteBrush, 1.2f);
 
         // Server label: nginx in pure white
-        D2D1_RECT_F rcLbl1 = D2D1::RectF(srvIcoX + srvIcoS + config.ScaleF(6.0f), dropY + config.ScaleF(4.0f), dropX + dropW - config.ScaleF(8.0f), dropY + config.ScaleF(34.0f));
+        D2D1_RECT_F rcLbl1 = D2D1::RectF(srvIcoX + srvIcoS + config.ScaleF(6.0f), dropY + config.ScaleF(4.0f), dropX + dropW - config.ScaleF(32.0f), dropY + config.ScaleF(34.0f));
         pRT->DrawText(L"nginx", 5, pFmt, rcLbl1, pWhiteBrush);
+
+        // Settings gear button on the right edge of nginx
+        float setS = config.ScaleF(16.0f);
+        float setX = dropX + dropW - setS - config.ScaleF(10.0f);
+        float setY = dropY + config.ScaleF(11.0f);
+        m_rcServerSettingsBtn = D2D1::RectF(setX - config.ScaleF(4.0f), setY - config.ScaleF(3.0f), setX + setS + config.ScaleF(4.0f), setY + setS + config.ScaleF(3.0f));
+        if (m_hoveredServerSettings && theme.brushMenuHover) {
+            pRT->FillRoundedRectangle(D2D1::RoundedRect(m_rcServerSettingsBtn, 3.5f, 3.5f), theme.brushMenuHover.Get());
+        }
+        D2D1_RECT_F rcIcoSet = D2D1::RectF(setX, setY, setX + setS, setY + setS);
+        m_icons.DrawSettings(pRT, rcIcoSet, m_hoveredServerSettings ? pWhiteBrush : (theme.brushMenuText ? theme.brushMenuText.Get() : pWhiteBrush), 1.2f);
 
         // Separator matching PopupMenu
         float sepY = dropY + config.ScaleF(37.0f);
@@ -1178,6 +1200,14 @@ bool TitleHeader::HitTestDropdowns(POINT pt) const noexcept {
     if (m_showDatabaseDropdown && PtInRectF(pt, m_rcDatabaseDropdown)) return true;
     if (m_showServerDropdown && PtInRectF(pt, m_rcServerDropdown)) return true;
     return false;
+}
+
+bool TitleHeader::HitTestDbSettings(POINT pt) const noexcept {
+    return m_showDatabaseDropdown && PtInRectF(pt, m_rcDbSettingsBtn);
+}
+
+bool TitleHeader::HitTestServerSettings(POINT pt) const noexcept {
+    return m_showServerDropdown && PtInRectF(pt, m_rcServerSettingsBtn);
 }
 
 bool TitleHeader::HandleDropdownClick(POINT pt) noexcept {

@@ -269,6 +269,24 @@ public:
     [[nodiscard]] bool IsServerDropdownOpen() const noexcept { return m_showServerDropdown; }
     [[nodiscard]] bool HitTestDropdowns(POINT pt) const noexcept;
     bool HandleDropdownClick(POINT pt) noexcept;
+    [[nodiscard]] bool HitTestDbSettings(POINT pt) const noexcept;
+    [[nodiscard]] bool HitTestServerSettings(POINT pt) const noexcept;
+    bool SetHoveredDbSettings(bool hovered) noexcept {
+        if (m_hoveredDbSettings != hovered) {
+            m_hoveredDbSettings = hovered;
+            return true;
+        }
+        return false;
+    }
+    bool SetHoveredServerSettings(bool hovered) noexcept {
+        if (m_hoveredServerSettings != hovered) {
+            m_hoveredServerSettings = hovered;
+            return true;
+        }
+        return false;
+    }
+    [[nodiscard]] bool IsHoveredDbSettings() const noexcept { return m_hoveredDbSettings; }
+    [[nodiscard]] bool IsHoveredServerSettings() const noexcept { return m_hoveredServerSettings; }
     bool SetHoveredDropdownItem(int item) noexcept {
         if (m_hoveredDropdownItem != item) {
             m_hoveredDropdownItem = item;
@@ -356,6 +374,10 @@ private:
     bool m_showDatabaseDropdown = false;
     bool m_showServerDropdown = false;
     int m_hoveredDropdownItem = -1; // -1=none, 0=item1, 1=item2
+    bool m_hoveredDbSettings = false;
+    bool m_hoveredServerSettings = false;
+    D2D1_RECT_F m_rcDbSettingsBtn{};
+    D2D1_RECT_F m_rcServerSettingsBtn{};
     D2D1_RECT_F m_rcDatabaseDropdown{};
     D2D1_RECT_F m_rcServerDropdown{};
 

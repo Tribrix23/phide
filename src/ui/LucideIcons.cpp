@@ -1292,4 +1292,34 @@ void LucideIcons::DrawLogIcon(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds,
     pRT->DrawLine(D2D1::Point2F(lineLeft, lineY3), D2D1::Point2F(lineRight - 4.5f, lineY3), pBrush, strokeWidth, m_pStrokeStyle.Get());
 }
 
+void LucideIcons::DrawSettings(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, ID2D1Brush* pBrush, float strokeWidth) const {
+    if (!pRT || !pBrush) return;
+    EnsureStrokeStyle(pRT, const_cast<ComPtr<ID2D1StrokeStyle>&>(m_pStrokeStyle));
+
+    const float bw = bounds.right - bounds.left;
+    const float bh = bounds.bottom - bounds.top;
+    const float cx = bounds.left + bw * 0.5f;
+    const float cy = bounds.top + bh * 0.5f;
+    const float s = (std::min)(bw, bh);
+    const float rCenter = s * 0.18f;
+    const float rOuter = s * 0.34f;
+    const float toothLen = s * 0.12f;
+
+    // Center circular hole
+    pRT->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(cx, cy), rCenter, rCenter), pBrush, strokeWidth);
+
+    // 6 cog teeth around outer perimeter
+    for (int i = 0; i < 6; ++i) {
+        float angle = i * (3.14159265f / 3.0f);
+        float cosA = cosf(angle);
+        float sinA = sinf(angle);
+        D2D1_POINT_2F p1 = D2D1::Point2F(cx + (rOuter - toothLen * 0.2f) * cosA, cy + (rOuter - toothLen * 0.2f) * sinA);
+        D2D1_POINT_2F p2 = D2D1::Point2F(cx + (rOuter + toothLen) * cosA, cy + (rOuter + toothLen) * sinA);
+        pRT->DrawLine(p1, p2, pBrush, strokeWidth * 1.6f, m_pStrokeStyle.Get());
+    }
+
+    // Outer gear rim
+    pRT->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(cx, cy), rOuter, rOuter), pBrush, strokeWidth);
+}
+
 } // namespace phide::ui
