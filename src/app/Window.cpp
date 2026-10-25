@@ -16,6 +16,7 @@
 #include <fstream>
 #include <algorithm>
 #include <tlhelp32.h>
+#include <iphlpapi.h>
 
 #pragma comment(lib, "user32.lib")
 #pragma comment(lib, "gdi32.lib")
@@ -24,6 +25,7 @@
 #pragma comment(lib, "dwrite.lib")
 #pragma comment(lib, "comdlg32.lib")
 #pragma comment(lib, "shell32.lib")
+#pragma comment(lib, "iphlpapi.lib")
 
 #ifndef DWMWA_USE_IMMERSIVE_DARK_MODE
 #define DWMWA_USE_IMMERSIVE_DARK_MODE 20
@@ -3361,7 +3363,9 @@ void Window::StartPhpServer(const std::wstring& rootDir, int port) {
     if (!std::filesystem::exists(phpExe)) {
         phpExe = L"php.exe";
     }
-    std::wstring cmd = L"\"" + phpExe + L"\" -S 127.0.0.1:" + std::to_wstring(port) + L" -t \"" + rootDir + L"\"";
+    std::wstring phpIni = L"C:\\Users\\Administrator\\AppData\\Local\\Programs\\PHP\\v8.5\\php.ini";
+    std::wstring iniArg = std::filesystem::exists(phpIni) ? (L" -c \"" + phpIni + L"\"") : L"";
+    std::wstring cmd = L"\"" + phpExe + L"\"" + iniArg + L" -S 0.0.0.0:" + std::to_wstring(port) + L" -t \"" + rootDir + L"\"";
     std::vector<wchar_t> cmdBuf(cmd.begin(), cmd.end());
     cmdBuf.push_back(L'\0');
 
@@ -3442,7 +3446,26 @@ void Window::StopNginxServer() {
     m_header.SetServerState(ui::ServerState::Stopped);
 }
 
+static bool IsPortListening(int port) {
+    DWORD dwSize = 0;
+    GetExtendedTcpTable(NULL, &dwSize, FALSE, AF_INET, TCP_TABLE_OWNER_PID_LISTENER, 0);
+    if (dwSize == 0) return false;
+    std::vector<BYTE> buffer(dwSize);
+    if (GetExtendedTcpTable(buffer.data(), &dwSize, FALSE, AF_INET, TCP_TABLE_OWNER_PID_LISTENER, 0) == NO_ERROR) {
+        auto* table = reinterpret_cast<MIB_TCPTABLE_OWNER_PID*>(buffer.data());
+        for (DWORD i = 0; i < table->dwNumEntries; ++i) {
+            DWORD p = table->table[i].dwLocalPort;
+            int localPort = static_cast<int>(((p & 0xFF) << 8) | ((p >> 8) & 0xFF));
+            if (localPort == port) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
 static bool IsMysqlProcessRunning() {
+    if (IsPortListening(3306)) return true;
     HANDLE hSnap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
     if (hSnap == INVALID_HANDLE_VALUE) return false;
     PROCESSENTRY32W pe{};
@@ -3461,15 +3484,14 @@ static bool IsMysqlProcessRunning() {
 }
 
 void Window::StartMysqlServer() {
-    if (m_hMysqlProcess != nullptr) return;
-    if (IsMysqlProcessRunning()) return;
+    if (IsPortListening(3306)) return;
 
     std::filesystem::path mysqldExe = L"C:\\xampp\\mysql\\bin\\mysqld.exe";
     std::filesystem::path myIni = L"C:\\xampp\\mysql\\bin\\my.ini";
     std::filesystem::path xamppDir = L"C:\\xampp";
 
     if (std::filesystem::exists(mysqldExe) && std::filesystem::exists(myIni)) {
-        std::wstring cmd = L"\"" + mysqldExe.wstring() + L"\" --defaults-file=\"" + myIni.wstring() + L"\" --standalone";
+        std::wstring cmd = L"\"" + mysqldExe.wstring() + L"\" --defaults-file=\"" + myIni.wstring() + L"\" --standalone --console";
         std::vector<wchar_t> cmdBuf(cmd.begin(), cmd.end());
         cmdBuf.push_back(L'\0');
 
@@ -3481,6 +3503,12 @@ void Window::StartMysqlServer() {
         if (CreateProcessW(NULL, cmdBuf.data(), NULL, NULL, FALSE, CREATE_NO_WINDOW, NULL, xamppDir.wstring().c_str(), &si, &pi)) {
             m_hMysqlProcess = pi.hProcess;
             CloseHandle(pi.hThread);
+
+            // Wait up to 3000ms for MySQL to initialize engine and open port 3306
+            for (int attempt = 0; attempt < 60; ++attempt) {
+                Sleep(50);
+                if (IsPortListening(3306)) break;
+            }
         }
     }
 }
@@ -3505,7 +3533,11 @@ void Window::StartPmaServer() {
     if (!std::filesystem::exists(phpExe)) {
         phpExe = L"php.exe";
     }
-    std::wstring cmd = L"\"" + phpExe + L"\" -S 127.0.0.1:8081 -t \"" + pmaDir.wstring() + L"\"";
+    std::wstring phpIni = L"C:\\Users\\Administrator\\AppData\\Local\\Programs\\PHP\\v8.5\\php.ini";
+    std::wstring iniArg = std::filesystem::exists(phpIni) ? (L" -c \"" + phpIni + L"\"") : L"";
+
+    // Bind to 0.0.0.0:8081 so localhost:8081 and 127.0.0.1:8081 both work seamlessly
+    std::wstring cmd = L"\"" + phpExe + L"\"" + iniArg + L" -S 0.0.0.0:8081 -t \"" + pmaDir.wstring() + L"\"";
     std::vector<wchar_t> cmdBuf(cmd.begin(), cmd.end());
     cmdBuf.push_back(L'\0');
 
@@ -3517,6 +3549,13 @@ void Window::StartPmaServer() {
     if (CreateProcessW(NULL, cmdBuf.data(), NULL, NULL, FALSE, CREATE_NO_WINDOW, NULL, pmaDir.wstring().c_str(), &si, &pi)) {
         m_hPmaProcess = pi.hProcess;
         CloseHandle(pi.hThread);
+
+        // Wait up to 1500ms for php.exe to start listening on port 8081
+        for (int attempt = 0; attempt < 30; ++attempt) {
+            Sleep(50);
+            if (IsPortListening(8081)) break;
+        }
+
         m_header.SetDatabaseState(ui::DatabaseState::Running);
     } else {
         m_header.SetDatabaseState(ui::DatabaseState::Failed);

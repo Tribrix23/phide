@@ -457,7 +457,7 @@ void DatabaseSettingsModal::Render(ID2D1RenderTarget* pRT, Theme& theme, const a
         D2D1_RECT_F rcHeadC = D2D1::RectF(rcSecC.left + config.ScaleF(12.0f), rcSecC.top + config.ScaleF(7.0f), rcSecC.right, rcSecC.top + config.ScaleF(24.0f));
         pRT->DrawText(L"PHPMYADMIN STATUS & ACTIONS", 27, pFmtHint, rcHeadC, pAccentBrush);
 
-        std::wstring pmaStatusStr = m_isPmaRunning ? L"● Status: Running (http://127.0.0.1:8081)" : L"● Status: Ready for PHP Run (Auth: config)";
+        std::wstring pmaStatusStr = m_isPmaRunning ? L"● Status: Running (http://localhost:8081)" : L"● Status: Ready for PHP Run (Auth: config)";
         D2D1_RECT_F rcStatus = D2D1::RectF(rcSecC.left + config.ScaleF(12.0f), rcSecC.top + config.ScaleF(32.0f), rcSecC.left + config.ScaleF(270.0f), rcSecC.bottom);
         pRT->PushAxisAlignedClip(rcStatus, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
         pRT->DrawText(pmaStatusStr.c_str(), static_cast<UINT32>(pmaStatusStr.size()), pFmtMain, rcStatus, pWhiteBrush);

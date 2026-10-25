@@ -130,7 +130,7 @@ private:
     std::wstring m_charset = L"utf8mb4";
     std::wstring m_authType = L"config (Auto-Login)";
     std::wstring m_blowfishSecret = L"phide_pma_aes256_blowfish_secret_key_32b!";
-    std::wstring m_pmaUrl = L"http://127.0.0.1:8081";
+    std::wstring m_pmaUrl = L"http://localhost:8081";
     std::wstring m_pmaConfigFile = L"include\\phide\\db\\phpMyAdmin\\config.inc.php";
 
     // Snippets for PHP
