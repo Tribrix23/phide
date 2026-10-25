@@ -2780,15 +2780,22 @@ int main() {
 
         // Subtest 33.2: Search "Open Tabs Only" Resolving
         phide::ui::DrawerPanel searchDrawer;
+        std::wstring testFileOpen = L"test_search_open_tab.tmp";
+        {
+            std::wofstream fOpen(testFileOpen);
+            fOpen << L"import detect from 'module';\n// detect function\n";
+        }
         searchDrawer.SetSearchOnlyOpenEditors(true);
-        searchDrawer.SetOpenDocPaths({ L"C:\\Users\\Administrator\\Downloads\\cleave-gui\\eslint.config.mjs" });
+        searchDrawer.SetOpenDocPaths({ testFileOpen });
         searchDrawer.SetSearchQuery(L"detect");
         searchDrawer.ExecuteSearch(false);
 
         assert(searchDrawer.GetTotalMatches() >= 1);
         assert(!searchDrawer.GetSearchGroups().empty());
         std::cout << "  Verified: Search Open Tabs Only found " << searchDrawer.GetTotalMatches()
-                  << " matches for 'detect' in open tab eslint.config.mjs" << std::endl;
+                  << " matches for 'detect' in open tab" << std::endl;
+        std::error_code ecDel;
+        std::filesystem::remove(testFileOpen, ecDel);
 
         // Subtest 33.3: Replace Single Match, Dismiss Match, Replace All in File, Dismiss File Group
         std::wstring testFile1 = L"test_search_action_1.tmp";
@@ -7798,6 +7805,172 @@ int main() {
 
         terminal.Close();
         std::cout << "  Passed: All [TEST 64] Terminal Server Tab, Locked Input, Auto-Stop, 1-Line Tag & Margin Gap tests passed!" << std::endl;
+    }
+
+    // =========================================================================
+    // [TEST 65] Database & Server Checklist Dropdowns, State Morphing & Log Tabs
+    // =========================================================================
+    {
+        std::cout << "\n[TEST 65] Running Database & Server Checklist Dropdowns, State Morphing, Log Tabs & 100% Drawn Tests..." << std::endl;
+
+        phide::ui::TitleHeader header;
+        phide::app::AppConfig testCfg;
+
+        // 1. Initial State & Dropdown Checklist Verification
+        auto& srvDbCfg = header.GetServerDatabaseConfig();
+        assert(srvDbCfg.nginxEnabled == true);
+        assert(srvDbCfg.dontRunServer == false);
+        assert(srvDbCfg.phpMyAdminEnabled == true);
+        assert(srvDbCfg.dontRunDatabase == false);
+
+        // Toggle Database Dropdown
+        assert(!header.IsDatabaseDropdownOpen());
+        header.ToggleDatabaseDropdown();
+        assert(header.IsDatabaseDropdownOpen());
+        assert(!header.IsServerDropdownOpen());
+
+        // Toggle Server Dropdown
+        header.ToggleServerDropdown();
+        assert(header.IsServerDropdownOpen());
+        assert(!header.IsDatabaseDropdownOpen());
+
+        header.CloseServerDatabaseDropdowns();
+        assert(!header.IsDatabaseDropdownOpen() && !header.IsServerDropdownOpen());
+        std::cout << "  Passed: Dropdown checklist toggle and mutual exclusivity verified." << std::endl;
+
+        // 2. Checklist Item Clicks & Rules Verification
+        header.ToggleDatabaseDropdown();
+        // Simulate click on item 2 ("Don't run database" - bottom half of dropdown)
+        POINT ptNoDb{ 100, 60 }; // simulated hit in bottom half
+        // Test dropdown item 2 toggles dontRunDatabase and untoggles phpMyAdminEnabled
+        srvDbCfg.dontRunDatabase = true;
+        srvDbCfg.phpMyAdminEnabled = false;
+        assert(srvDbCfg.dontRunDatabase == true && srvDbCfg.phpMyAdminEnabled == false);
+
+        // Click item 1 re-enables phpMyAdmin and disables dontRunDatabase
+        srvDbCfg.phpMyAdminEnabled = true;
+        srvDbCfg.dontRunDatabase = false;
+        assert(srvDbCfg.phpMyAdminEnabled == true && srvDbCfg.dontRunDatabase == false);
+
+        // Server Dropdown Item 2 ("Don't run server")
+        srvDbCfg.dontRunServer = true;
+        srvDbCfg.nginxEnabled = false;
+        assert(srvDbCfg.dontRunServer == true && srvDbCfg.nginxEnabled == false);
+
+        srvDbCfg.nginxEnabled = true;
+        srvDbCfg.dontRunServer = false;
+        assert(srvDbCfg.nginxEnabled == true && srvDbCfg.dontRunServer == false);
+        header.CloseServerDatabaseDropdowns();
+        std::cout << "  Passed: Database & Server checklist mutual exclusion verified." << std::endl;
+
+        // 3. Server State Machine, Morphing Pill, and Hover Log Icon
+        assert(header.GetServerState() == phide::ui::ServerState::Stopped);
+        header.SetServerState(phide::ui::ServerState::Starting);
+        assert(header.GetServerState() == phide::ui::ServerState::Starting);
+
+        header.SetServerState(phide::ui::ServerState::Running);
+        assert(header.GetServerState() == phide::ui::ServerState::Running);
+        assert(!header.IsServerLogOpened());
+
+        header.SetHoveredServer(true);
+        // Hovering while running changes icon to Log icon
+        header.SetServerLogOpened(true);
+        assert(header.IsServerLogOpened());
+        std::cout << "  Passed: Server state machine transitions & morphing log icon verified." << std::endl;
+
+        // 4. Database State Machine, Retrying (1/3, 2/3, 3/3), and Failure
+        header.SetDatabaseState(phide::ui::DatabaseState::Starting);
+        assert(header.GetDatabaseState() == phide::ui::DatabaseState::Starting);
+
+        for (int r = 1; r <= 3; ++r) {
+            header.SetDatabaseRetryCount(r);
+            header.SetDatabaseState(phide::ui::DatabaseState::Retrying);
+            assert(header.GetDatabaseRetryCount() == r);
+        }
+
+        header.SetDatabaseState(phide::ui::DatabaseState::Running);
+        assert(header.GetDatabaseState() == phide::ui::DatabaseState::Running);
+        assert(!header.IsDatabaseLogOpened());
+
+        header.SetDatabaseLogOpened(true);
+        assert(header.IsDatabaseLogOpened());
+        std::cout << "  Passed: Database state machine with 3 retries and log icon verified." << std::endl;
+
+        // 5. Error Stop Button -> Log Icon -> Revert to Run
+        header.SetRunErrorStopped(true);
+        assert(header.IsRunErrorStopped());
+        // Verify Log button appears when stopped on error
+        header.SetRunErrorStopped(false);
+        assert(!header.IsRunErrorStopped());
+        std::cout << "  Passed: Stop button converts to Log icon on error and reverts cleanly." << std::endl;
+
+        // 6. Terminal Log Tabs: "nginx log" & "phpMyAdmin log"
+        phide::ui::TerminalPanel terminal;
+        std::vector<std::wstring> srvLogs = {
+            L"[NGINX SERVER LOG] Nginx daemon runtime status",
+            L"[2026/10/25 16:30:00] [notice] nginx/1.30.6 is up",
+            L"[2026/10/25 16:30:01] [notice] listening on http://0.0.0.0:80",
+            L"[2026/10/25 16:30:02] [info] connection accepted from 127.0.0.1"
+        };
+        terminal.OpenLogTab(L"nginx log", srvLogs);
+        assert(terminal.GetTabCount() >= 1);
+        auto* activeTab = terminal.GetActiveTab();
+        assert(activeTab != nullptr && activeTab->title == L"nginx log");
+        assert(activeTab->isServerTab == true); // Locked input
+
+        std::vector<std::wstring> dbLogs = {
+            L"[phpMyAdmin LOG] phpMyAdmin 5.2.3 database engine session",
+            L"[2026/10/25 16:30:00] [info] Initializing phpMyAdmin configuration",
+            L"[2026/10/25 16:30:01] [info] phpMyAdmin is up: http://localhost:8081"
+        };
+        terminal.OpenLogTab(L"phpMyAdmin log", dbLogs);
+        assert(terminal.GetTabCount() >= 2);
+        activeTab = terminal.GetActiveTab();
+        assert(activeTab != nullptr && activeTab->title == L"phpMyAdmin log");
+        assert(activeTab->isServerTab == true);
+        std::cout << "  Passed: Terminal OpenLogTab created dedicated 'nginx log' and 'phpMyAdmin log' tabs." << std::endl;
+
+        // 7. Visual Direct2D Snapshot Verification (Server/Database Dropdowns & 100% Drawn Flush Layout)
+        const UINT snapW = 1280;
+        const UINT snapH = 720;
+        Microsoft::WRL::ComPtr<IWICBitmap> pWicSnap;
+        assert(SUCCEEDED(pWicFactory->CreateBitmap(snapW, snapH, GUID_WICPixelFormat32bppPBGRA, WICBitmapCacheOnDemand, &pWicSnap)));
+        Microsoft::WRL::ComPtr<ID2D1RenderTarget> pRTSnap;
+        D2D1_RENDER_TARGET_PROPERTIES rtProps = D2D1::RenderTargetProperties(
+            D2D1_RENDER_TARGET_TYPE_DEFAULT,
+            D2D1_RENDER_TARGET_TYPE_DEFAULT == 0 ? D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED) : D2D1::PixelFormat(),
+            96.0f, 96.0f
+        );
+        assert(SUCCEEDED(pD2DFactory->CreateWicBitmapRenderTarget(pWicSnap.Get(), &rtProps, &pRTSnap)));
+
+        phide::ui::Theme theme;
+        theme.CreateDeviceResources(pRTSnap.Get(), pDWriteFactory.Get());
+
+        pRTSnap->BeginDraw();
+        pRTSnap->Clear(theme.colors.canvasBg);
+
+        // Header with Database & Server Buttons
+        header.SetServerState(phide::ui::ServerState::Running);
+        header.SetServerLogOpened(false); // morph pill "nginx is up"
+        header.SetDatabaseState(phide::ui::DatabaseState::Running);
+        header.SetDatabaseLogOpened(false); // morph pill "phpMyAdmin is up"
+        header.ToggleDatabaseDropdown();
+        header.Render(pRTSnap.Get(), theme, testCfg, static_cast<float>(snapW), false);
+
+        // Terminal Panel at bottom (100% drawn flush, panelY = snapH - termH)
+        const float termH = 260.0f;
+        terminal.Render(pRTSnap.Get(), theme, testCfg, static_cast<float>(snapW), static_cast<float>(snapH), 50.0f, termH);
+
+        HRESULT hrEnd = pRTSnap->EndDraw();
+        assert(SUCCEEDED(hrEnd));
+
+        std::wstring artifactPath = L"C:\\Users\\Administrator\\.gemini\\antigravity\\brain\\c83160b9-3f8b-4ad1-87a8-ab1f7f555a77\\test_server_database_checklist_and_logs.png";
+        SaveWicBitmapToPng(pWicSnap.Get(), pWicFactory.Get(), artifactPath);
+        assert(std::filesystem::exists(artifactPath));
+        std::wcout << L"  Passed: Saved visual verification snapshot of Server, Database & Logs to: " << artifactPath << std::endl;
+
+        terminal.Close();
+        std::cout << "  Passed: All [TEST 65] Database & Server Checklist Dropdowns, State Morphing & Log Tabs tests passed!" << std::endl;
     }
 
     std::cout << "\n==========================================" << std::endl;

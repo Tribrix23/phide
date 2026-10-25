@@ -1017,8 +1017,8 @@ void TerminalPanel::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppC
         }
     }
 
-    // 2. Top Resizing Splitter (hit-testable drag handle across the margin gap, zero border lines drawn: "gap is space, not a line")
-    m_splitterBounds = D2D1::RectF(panelX, panelY - config.ScaleF(12.0f), panelX + panelW, panelY + config.ScaleF(4.0f));
+    // 2. Top Resizing Splitter (100% drawn flush, centered hit handle)
+    m_splitterBounds = D2D1::RectF(panelX, panelY - config.ScaleF(4.0f), panelX + panelW, panelY + config.ScaleF(4.0f));
 
     // 3. Header Toolbar (Image 1)
     float headerH = config.ScaleF(32.0f);
@@ -2089,6 +2089,59 @@ void TerminalPanel::StartServerSession(const std::wstring& serverTitle, const st
             tab->SendInput(utf8);
         }
     }
+}
+
+void TerminalPanel::OpenLogTab(const std::wstring& logTitle, const std::vector<std::wstring>& logLines) {
+    if (!m_isOpen) {
+        Open(m_defaultWorkingDir);
+    }
+
+    TerminalTab* tab = nullptr;
+    int existingIdx = -1;
+    for (size_t i = 0; i < m_tabs.size(); ++i) {
+        if (m_tabs[i]->title == logTitle) {
+            existingIdx = static_cast<int>(i);
+            break;
+        }
+    }
+
+    if (existingIdx >= 0) {
+        m_activeTabIdx = existingIdx;
+        tab = m_tabs[existingIdx].get();
+        std::lock_guard<std::mutex> lock(tab->bufferMutex);
+        tab->lines.clear();
+    } else {
+        auto newTab = std::make_unique<TerminalTab>();
+        newTab->shellType = TerminalShellType::PowerShell;
+        newTab->title = logTitle;
+        newTab->isServerTab = true; // locked input, read-only process stream
+        newTab->workingDir = m_defaultWorkingDir;
+        newTab->isAlive = false;
+        m_tabs.push_back(std::move(newTab));
+        m_activeTabIdx = static_cast<int>(m_tabs.size() - 1);
+        tab = m_tabs.back().get();
+    }
+
+    if (tab) {
+        std::lock_guard<std::mutex> lock(tab->bufferMutex);
+        for (const auto& lineStr : logLines) {
+            TerminalLine tl;
+            tl.rawText = lineStr;
+            D2D1_COLOR_F color = D2D1::ColorF(0.85f, 0.85f, 0.88f, 1.0f);
+            if (lineStr.find(L"error") != std::wstring::npos || lineStr.find(L"failed") != std::wstring::npos || lineStr.find(L"Error") != std::wstring::npos) {
+                color = D2D1::ColorF(0.95f, 0.35f, 0.35f, 1.0f);
+            } else if (lineStr.find(L"up") != std::wstring::npos || lineStr.find(L"started") != std::wstring::npos || lineStr.find(L"ready") != std::wstring::npos) {
+                color = D2D1::ColorF(0.35f, 0.85f, 0.45f, 1.0f);
+            } else if (lineStr.find(L"Retrying") != std::wstring::npos || lineStr.find(L"warn") != std::wstring::npos) {
+                color = D2D1::ColorF(0.95f, 0.75f, 0.25f, 1.0f);
+            }
+            tl.spans.push_back({ lineStr, color, false });
+            tab->lines.push_back(std::move(tl));
+        }
+        tab->scrollOffsetY = 0.0f;
+        tab->scrollOffsetLines = 0;
+    }
+    if (m_outputCallback) m_outputCallback();
 }
 
 void TerminalPanel::TerminateServerSession(const std::wstring& projectRoot) {

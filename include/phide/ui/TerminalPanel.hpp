@@ -247,6 +247,7 @@ public:
     [[nodiscard]] bool HitTestUrl(POINT pt, std::wstring* outUrl = nullptr) const;
 
     // Live Server and Execution
+    void OpenLogTab(const std::wstring& logTitle, const std::vector<std::wstring>& logLines);
     void StartLiveServerSession(const std::wstring& localUrl, const std::wstring& networkUrl, const std::wstring& filePath = L"", const std::wstring& fileName = L"");
     void StartServerSession(const std::wstring& serverTitle, const std::wstring& command, const std::wstring& workingDir, const std::wstring& projectRoot);
     void TerminateServerSession(const std::wstring& projectRoot);

@@ -205,6 +205,11 @@ void TitleHeader::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCon
         m_execButtons.push_back({ HeaderExecId::Stop,     L"Stop (Shift+F5)",        {} });
         m_execButtons.push_back({ HeaderExecId::Debug,    L"Debug (F5)",             {} });
         m_execButtons.push_back({ HeaderExecId::Terminal, L"Terminal (Ctrl+`)",      {} });
+    } else if (m_isRunErrorStopped) {
+        m_execButtons.push_back({ HeaderExecId::Restart,  L"Restart (Force Retry)",  {} });
+        m_execButtons.push_back({ HeaderExecId::Log,      L"Error Log - Click to view", {} });
+        m_execButtons.push_back({ HeaderExecId::Debug,    L"Debug (F5)",             {} });
+        m_execButtons.push_back({ HeaderExecId::Terminal, L"Terminal (Ctrl+`)",      {} });
     } else {
         m_execButtons.push_back({ HeaderExecId::Run,      L"Run (Ctrl+F5)",          {} });
         m_execButtons.push_back({ HeaderExecId::Debug,    L"Debug (F5)",             {} });
@@ -306,6 +311,208 @@ void TitleHeader::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCon
             rcTip,
             theme.brushTooltipText ? theme.brushTooltipText.Get() : theme.brushTextPrimary.Get()
         );
+    }
+
+    // 3c-1. Web Server (nginx) & Database (phpMyAdmin) Action Buttons with State Morphing (Image 2)
+    // Server button dimensions and morph text
+    float srvW = extBtnW;
+    bool isSrvExpanded = false;
+    std::wstring srvText;
+    if (m_serverState == ServerState::Starting) {
+        srvW = config.ScaleF(118.0f);
+        isSrvExpanded = true;
+        srvText = L"Starting nginx...";
+    } else if (m_serverState == ServerState::Running && !m_serverLogOpened) {
+        srvW = config.ScaleF(110.0f);
+        isSrvExpanded = true;
+        srvText = m_hoveredServer ? L"nginx log" : L"nginx is up";
+    } else if (m_serverState == ServerState::Failed && !m_serverLogOpened) {
+        srvW = config.ScaleF(108.0f);
+        isSrvExpanded = true;
+        srvText = m_hoveredServer ? L"View Log" : L"nginx failed";
+    }
+
+    // Database button dimensions and morph text
+    float dbW = extBtnW;
+    bool isDbExpanded = false;
+    std::wstring dbText;
+    if (m_databaseState == DatabaseState::Starting) {
+        dbW = config.ScaleF(110.0f);
+        isDbExpanded = true;
+        dbText = L"Starting DB...";
+    } else if (m_databaseState == DatabaseState::Retrying) {
+        dbW = config.ScaleF(122.0f);
+        isDbExpanded = true;
+        dbText = L"Retrying... (" + std::to_wstring(m_databaseRetryCount) + L"/3)";
+    } else if (m_databaseState == DatabaseState::Running && !m_databaseLogOpened) {
+        dbW = config.ScaleF(134.0f);
+        isDbExpanded = true;
+        dbText = m_hoveredDatabase ? L"phpMyAdmin log" : L"phpMyAdmin is up";
+    } else if (m_databaseState == DatabaseState::Failed && !m_databaseLogOpened) {
+        dbW = config.ScaleF(108.0f);
+        isDbExpanded = true;
+        dbText = m_hoveredDatabase ? L"View Log" : L"db failed";
+    }
+
+    const float srvBtnX = extBtnX - config.ScaleF(6.0f) - srvW;
+    m_rcServer = D2D1::RectF(srvBtnX, extBtnY, srvBtnX + srvW, extBtnY + extBtnH);
+
+    const float dbBtnX = srvBtnX - config.ScaleF(6.0f) - dbW;
+    m_rcDatabase = D2D1::RectF(dbBtnX, extBtnY, dbBtnX + dbW, extBtnY + extBtnH);
+
+    // --- Render Web Server Button (nginx) ---
+    D2D1_ROUNDED_RECT rrcServer = D2D1::RoundedRect(m_rcServer, 5.0f, 5.0f);
+    if (m_serverState == ServerState::Running && !m_serverLogOpened) {
+        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> bBg, bBdr;
+        pRT->CreateSolidColorBrush(D2D1::ColorF(0.12f, 0.50f, 0.25f, 0.22f), &bBg);
+        pRT->CreateSolidColorBrush(D2D1::ColorF(0.20f, 0.70f, 0.35f, 0.65f), &bBdr);
+        if (bBg) pRT->FillRoundedRectangle(rrcServer, bBg.Get());
+        if (bBdr) pRT->DrawRoundedRectangle(rrcServer, bBdr.Get(), 0.8f);
+    } else if (m_serverState == ServerState::Failed && !m_serverLogOpened) {
+        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> bBg, bBdr;
+        pRT->CreateSolidColorBrush(D2D1::ColorF(0.85f, 0.20f, 0.20f, 0.25f), &bBg);
+        pRT->CreateSolidColorBrush(D2D1::ColorF(0.95f, 0.35f, 0.35f, 0.70f), &bBdr);
+        if (bBg) pRT->FillRoundedRectangle(rrcServer, bBg.Get());
+        if (bBdr) pRT->DrawRoundedRectangle(rrcServer, bBdr.Get(), 0.8f);
+    } else if (m_serverState == ServerState::Starting) {
+        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> bBg, bBdr;
+        pRT->CreateSolidColorBrush(D2D1::ColorF(0.20f, 0.45f, 0.85f, 0.25f), &bBg);
+        pRT->CreateSolidColorBrush(D2D1::ColorF(0.35f, 0.60f, 0.95f, 0.70f), &bBdr);
+        if (bBg) pRT->FillRoundedRectangle(rrcServer, bBg.Get());
+        if (bBdr) pRT->DrawRoundedRectangle(rrcServer, bBdr.Get(), 0.8f);
+    } else if (m_hoveredServer || m_showServerDropdown) {
+        pRT->FillRoundedRectangle(rrcServer, theme.brushItemHover.Get());
+        pRT->DrawRoundedRectangle(rrcServer, theme.brushBorderSubtle.Get(), 0.8f);
+    }
+
+    D2D1_RECT_F rcSrvIcon = D2D1::RectF(srvBtnX, extBtnY, srvBtnX + extBtnW, extBtnY + extBtnH);
+    ID2D1Brush* pSrvBrush = theme.IsDarkMode() ? theme.brushTextWhite.Get() : theme.brushTextPrimary.Get();
+    if (m_serverState == ServerState::Running && !m_serverLogOpened) {
+        pSrvBrush = theme.brushRunGreen ? theme.brushRunGreen.Get() : theme.brushTextWhite.Get();
+    } else if (m_serverState == ServerState::Failed && !m_serverLogOpened) {
+        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> bRed;
+        pRT->CreateSolidColorBrush(D2D1::ColorF(0.95f, 0.35f, 0.35f, 1.0f), &bRed);
+        if (bRed) pSrvBrush = bRed.Get();
+    }
+
+    // Hover on running/failed changes icon to Log icon (per user request!)
+    if ((m_serverState == ServerState::Running || m_serverState == ServerState::Failed) && m_hoveredServer) {
+        m_icons.DrawLogIcon(pRT, rcSrvIcon, pSrvBrush, 1.4f);
+    } else {
+        m_icons.DrawServer(pRT, rcSrvIcon, pSrvBrush, 1.4f);
+    }
+
+    if (isSrvExpanded && !srvText.empty()) {
+        D2D1_RECT_F rcSrvLabel = D2D1::RectF(srvBtnX + extBtnW - config.ScaleF(2.0f), extBtnY, srvBtnX + srvW - config.ScaleF(6.0f), extBtnY + extBtnH);
+        IDWriteTextFormat* pFmt = theme.fontCounterBadge ? theme.fontCounterBadge.Get() : (theme.fontHint ? theme.fontHint.Get() : theme.fontMenuItem.Get());
+        pRT->DrawText(srvText.c_str(), static_cast<UINT32>(srvText.size()), pFmt, rcSrvLabel, pSrvBrush);
+    } else if (m_serverLogOpened && (m_serverState == ServerState::Running || m_serverState == ServerState::Failed)) {
+        float dotX = m_rcServer.right - config.ScaleF(4.0f);
+        float dotY = m_rcServer.top + config.ScaleF(4.0f);
+        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> bDot;
+        D2D1_COLOR_F dotCol = (m_serverState == ServerState::Running) ? D2D1::ColorF(0.25f, 0.85f, 0.40f) : D2D1::ColorF(0.95f, 0.30f, 0.30f);
+        pRT->CreateSolidColorBrush(dotCol, &bDot);
+        if (bDot) pRT->FillEllipse(D2D1::Ellipse(D2D1::Point2F(dotX, dotY), 2.2f, 2.2f), bDot.Get());
+    }
+
+    // --- Render Database Button (phpMyAdmin) ---
+    D2D1_ROUNDED_RECT rrcDatabase = D2D1::RoundedRect(m_rcDatabase, 5.0f, 5.0f);
+    if (m_databaseState == DatabaseState::Running && !m_databaseLogOpened) {
+        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> bBg, bBdr;
+        pRT->CreateSolidColorBrush(D2D1::ColorF(0.12f, 0.50f, 0.25f, 0.22f), &bBg);
+        pRT->CreateSolidColorBrush(D2D1::ColorF(0.20f, 0.70f, 0.35f, 0.65f), &bBdr);
+        if (bBg) pRT->FillRoundedRectangle(rrcDatabase, bBg.Get());
+        if (bBdr) pRT->DrawRoundedRectangle(rrcDatabase, bBdr.Get(), 0.8f);
+    } else if (m_databaseState == DatabaseState::Retrying) {
+        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> bBg, bBdr;
+        pRT->CreateSolidColorBrush(D2D1::ColorF(0.85f, 0.60f, 0.15f, 0.25f), &bBg);
+        pRT->CreateSolidColorBrush(D2D1::ColorF(0.95f, 0.70f, 0.20f, 0.70f), &bBdr);
+        if (bBg) pRT->FillRoundedRectangle(rrcDatabase, bBg.Get());
+        if (bBdr) pRT->DrawRoundedRectangle(rrcDatabase, bBdr.Get(), 0.8f);
+    } else if (m_databaseState == DatabaseState::Failed && !m_databaseLogOpened) {
+        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> bBg, bBdr;
+        pRT->CreateSolidColorBrush(D2D1::ColorF(0.85f, 0.20f, 0.20f, 0.25f), &bBg);
+        pRT->CreateSolidColorBrush(D2D1::ColorF(0.95f, 0.35f, 0.35f, 0.70f), &bBdr);
+        if (bBg) pRT->FillRoundedRectangle(rrcDatabase, bBg.Get());
+        if (bBdr) pRT->DrawRoundedRectangle(rrcDatabase, bBdr.Get(), 0.8f);
+    } else if (m_databaseState == DatabaseState::Starting) {
+        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> bBg, bBdr;
+        pRT->CreateSolidColorBrush(D2D1::ColorF(0.20f, 0.45f, 0.85f, 0.25f), &bBg);
+        pRT->CreateSolidColorBrush(D2D1::ColorF(0.35f, 0.60f, 0.95f, 0.70f), &bBdr);
+        if (bBg) pRT->FillRoundedRectangle(rrcDatabase, bBg.Get());
+        if (bBdr) pRT->DrawRoundedRectangle(rrcDatabase, bBdr.Get(), 0.8f);
+    } else if (m_hoveredDatabase || m_showDatabaseDropdown) {
+        pRT->FillRoundedRectangle(rrcDatabase, theme.brushItemHover.Get());
+        pRT->DrawRoundedRectangle(rrcDatabase, theme.brushBorderSubtle.Get(), 0.8f);
+    }
+
+    D2D1_RECT_F rcDbIcon = D2D1::RectF(dbBtnX, extBtnY, dbBtnX + extBtnW, extBtnY + extBtnH);
+    ID2D1Brush* pDbBrush = theme.IsDarkMode() ? theme.brushTextWhite.Get() : theme.brushTextPrimary.Get();
+    if (m_databaseState == DatabaseState::Running && !m_databaseLogOpened) {
+        pDbBrush = theme.brushRunGreen ? theme.brushRunGreen.Get() : theme.brushTextWhite.Get();
+    } else if (m_databaseState == DatabaseState::Retrying) {
+        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> bAmber;
+        pRT->CreateSolidColorBrush(D2D1::ColorF(0.95f, 0.75f, 0.20f, 1.0f), &bAmber);
+        if (bAmber) pDbBrush = bAmber.Get();
+    } else if (m_databaseState == DatabaseState::Failed && !m_databaseLogOpened) {
+        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> bRed;
+        pRT->CreateSolidColorBrush(D2D1::ColorF(0.95f, 0.35f, 0.35f, 1.0f), &bRed);
+        if (bRed) pDbBrush = bRed.Get();
+    }
+
+    // Hover on running/failed changes icon to Log icon (per user request!)
+    if ((m_databaseState == DatabaseState::Running || m_databaseState == DatabaseState::Failed) && m_hoveredDatabase) {
+        m_icons.DrawLogIcon(pRT, rcDbIcon, pDbBrush, 1.4f);
+    } else {
+        m_icons.DrawDatabase(pRT, rcDbIcon, pDbBrush, 1.4f);
+    }
+
+    if (isDbExpanded && !dbText.empty()) {
+        D2D1_RECT_F rcDbLabel = D2D1::RectF(dbBtnX + extBtnW - config.ScaleF(2.0f), extBtnY, dbBtnX + dbW - config.ScaleF(6.0f), extBtnY + extBtnH);
+        IDWriteTextFormat* pFmt = theme.fontCounterBadge ? theme.fontCounterBadge.Get() : (theme.fontHint ? theme.fontHint.Get() : theme.fontMenuItem.Get());
+        pRT->DrawText(dbText.c_str(), static_cast<UINT32>(dbText.size()), pFmt, rcDbLabel, pDbBrush);
+    } else if (m_databaseLogOpened && (m_databaseState == DatabaseState::Running || m_databaseState == DatabaseState::Failed)) {
+        float dotX = m_rcDatabase.right - config.ScaleF(4.0f);
+        float dotY = m_rcDatabase.top + config.ScaleF(4.0f);
+        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> bDot;
+        D2D1_COLOR_F dotCol = (m_databaseState == DatabaseState::Running) ? D2D1::ColorF(0.25f, 0.85f, 0.40f) : D2D1::ColorF(0.95f, 0.30f, 0.30f);
+        pRT->CreateSolidColorBrush(dotCol, &bDot);
+        if (bDot) pRT->FillEllipse(D2D1::Ellipse(D2D1::Point2F(dotX, dotY), 2.2f, 2.2f), bDot.Get());
+    }
+
+    // Tooltips for Web Server & Database buttons when not expanded
+    if (m_hoveredServer && !isSrvExpanded) {
+        const float tipH    = config.ScaleF(24.0f);
+        const float tipPadX = config.ScaleF(10.0f);
+        const wchar_t* tipText = L"Web Server (nginx)";
+        size_t textLen = wcslen(tipText);
+        float textW    = config.ScaleF(static_cast<float>(textLen * 6.5f + 14.0f));
+        float tipW     = textW + tipPadX * 2.0f;
+        float tipX     = m_rcServer.left + (srvW - tipW) / 2.0f;
+        float tipY     = m_rcServer.bottom + config.ScaleF(6.0f);
+        if (tipX < 10.0f) tipX = 10.0f;
+        D2D1_RECT_F rcTip = D2D1::RectF(tipX, tipY, tipX + tipW, tipY + tipH);
+        D2D1_ROUNDED_RECT rrcTip = D2D1::RoundedRect(rcTip, 4.0f, 4.0f);
+        pRT->FillRoundedRectangle(rrcTip, theme.brushTooltipBg.Get());
+        pRT->DrawRoundedRectangle(rrcTip, theme.brushTooltipBorder.Get(), 1.0f);
+        pRT->DrawText(tipText, static_cast<UINT32>(textLen), theme.fontTooltip ? theme.fontTooltip.Get() : theme.fontHint.Get(), rcTip, theme.brushTooltipText ? theme.brushTooltipText.Get() : theme.brushTextPrimary.Get());
+    }
+
+    if (m_hoveredDatabase && !isDbExpanded) {
+        const float tipH    = config.ScaleF(24.0f);
+        const float tipPadX = config.ScaleF(10.0f);
+        const wchar_t* tipText = L"Database (phpMyAdmin)";
+        size_t textLen = wcslen(tipText);
+        float textW    = config.ScaleF(static_cast<float>(textLen * 6.5f + 14.0f));
+        float tipW     = textW + tipPadX * 2.0f;
+        float tipX     = m_rcDatabase.left + (dbW - tipW) / 2.0f;
+        float tipY     = m_rcDatabase.bottom + config.ScaleF(6.0f);
+        if (tipX < 10.0f) tipX = 10.0f;
+        D2D1_RECT_F rcTip = D2D1::RectF(tipX, tipY, tipX + tipW, tipY + tipH);
+        D2D1_ROUNDED_RECT rrcTip = D2D1::RoundedRect(rcTip, 4.0f, 4.0f);
+        pRT->FillRoundedRectangle(rrcTip, theme.brushTooltipBg.Get());
+        pRT->DrawRoundedRectangle(rrcTip, theme.brushTooltipBorder.Get(), 1.0f);
+        pRT->DrawText(tipText, static_cast<UINT32>(textLen), theme.fontTooltip ? theme.fontTooltip.Get() : theme.fontHint.Get(), rcTip, theme.brushTooltipText ? theme.brushTooltipText.Get() : theme.brushTextPrimary.Get());
     }
 
     D2D1_ROUNDED_RECT rrcZoom = D2D1::RoundedRect(m_rcZoomContainer, 5.0f, 5.0f);
@@ -481,6 +688,17 @@ void TitleHeader::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCon
                 m_icons.DrawTerminal(pRT, btn.bounds, termBrush, 1.4f);
                 break;
             }
+            case HeaderExecId::Log: {
+                if (isHovered) {
+                    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> logHover;
+                    pRT->CreateSolidColorBrush(D2D1::ColorF(0.95f, 0.40f, 0.20f, 0.25f), &logHover);
+                    if (logHover) pRT->FillRoundedRectangle(rrcBtn, logHover.Get());
+                }
+                Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> logBrush;
+                pRT->CreateSolidColorBrush(D2D1::ColorF(0.95f, 0.45f, 0.25f, 1.0f), &logBrush);
+                m_icons.DrawLogIcon(pRT, btn.bounds, logBrush ? logBrush.Get() : theme.brushTextPrimary.Get(), 1.4f);
+                break;
+            }
             default:
                 break;
         }
@@ -641,6 +859,117 @@ void TitleHeader::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCon
     } else {
         m_icons.DrawMinimize(pRT, m_rcMinimize, defaultCaptionBrush, 1.25f);
     }
+
+    // --- Render Database & Server Checklist Dropdowns on Top (Image 2) ---
+    if (m_showDatabaseDropdown) {
+        const float dropW = config.ScaleF(190.0f);
+        const float dropH = config.ScaleF(74.0f);
+        const float dropX = (std::max)(10.0f, m_rcDatabase.left);
+        const float dropY = m_rcDatabase.bottom + config.ScaleF(4.0f);
+        m_rcDatabaseDropdown = D2D1::RectF(dropX, dropY, dropX + dropW, dropY + dropH);
+        D2D1_ROUNDED_RECT rrcDrop = D2D1::RoundedRect(m_rcDatabaseDropdown, 6.0f, 6.0f);
+
+        pRT->FillRoundedRectangle(rrcDrop, theme.brushTooltipBg ? theme.brushTooltipBg.Get() : theme.brushItemHover.Get());
+        pRT->DrawRoundedRectangle(rrcDrop, theme.brushBorderSubtle ? theme.brushBorderSubtle.Get() : theme.brushBorderHover.Get(), 1.0f);
+
+        IDWriteTextFormat* pFmt = theme.fontMenuItem ? theme.fontMenuItem.Get() : theme.fontHint.Get();
+
+        // Item 1: phpMyAdmin
+        bool pmaChecked = m_serverDbConfig.phpMyAdminEnabled && !m_serverDbConfig.dontRunDatabase;
+        float chk1X = dropX + config.ScaleF(12.0f);
+        float chk1Y = dropY + config.ScaleF(11.0f);
+        float chkS  = config.ScaleF(14.0f);
+        D2D1_RECT_F rcChk1 = D2D1::RectF(chk1X, chk1Y, chk1X + chkS, chk1Y + chkS);
+        D2D1_ROUNDED_RECT rrcChk1 = D2D1::RoundedRect(rcChk1, 2.5f, 2.5f);
+        if (pmaChecked) {
+            ID2D1Brush* pAccent = theme.brushBrandAccent ? theme.brushBrandAccent.Get() : theme.brushTextPrimary.Get();
+            pRT->FillRoundedRectangle(rrcChk1, pAccent);
+            ID2D1Brush* pWhite = theme.brushTextWhite ? theme.brushTextWhite.Get() : theme.brushTextPrimary.Get();
+            pRT->DrawLine(D2D1::Point2F(chk1X + 3.0f, chk1Y + 7.0f), D2D1::Point2F(chk1X + 6.0f, chk1Y + 11.0f), pWhite, 1.6f);
+            pRT->DrawLine(D2D1::Point2F(chk1X + 6.0f, chk1Y + 11.0f), D2D1::Point2F(chk1X + 11.5f, chk1Y + 3.5f), pWhite, 1.6f);
+        } else {
+            pRT->DrawRoundedRectangle(rrcChk1, theme.brushBorderHover ? theme.brushBorderHover.Get() : theme.brushBorderSubtle.Get(), 1.0f);
+        }
+        D2D1_RECT_F rcLbl1 = D2D1::RectF(chk1X + chkS + config.ScaleF(8.0f), dropY + config.ScaleF(6.0f), dropX + dropW - config.ScaleF(8.0f), dropY + config.ScaleF(32.0f));
+        pRT->DrawText(L"phpMyAdmin", 10, pFmt, rcLbl1, theme.brushTextPrimary.Get());
+
+        // Separator
+        float sepY = dropY + config.ScaleF(36.0f);
+        pRT->DrawLine(D2D1::Point2F(dropX + 6.0f, sepY), D2D1::Point2F(dropX + dropW - 6.0f, sepY), theme.brushBorderSubtle.Get(), 0.8f);
+
+        // Item 2: Don't run database
+        bool noDbChecked = m_serverDbConfig.dontRunDatabase;
+        float chk2X = dropX + config.ScaleF(12.0f);
+        float chk2Y = dropY + config.ScaleF(46.0f);
+        D2D1_RECT_F rcChk2 = D2D1::RectF(chk2X, chk2Y, chk2X + chkS, chk2Y + chkS);
+        D2D1_ROUNDED_RECT rrcChk2 = D2D1::RoundedRect(rcChk2, 2.5f, 2.5f);
+        if (noDbChecked) {
+            ID2D1Brush* pAccent = theme.brushBrandAccent ? theme.brushBrandAccent.Get() : theme.brushTextPrimary.Get();
+            pRT->FillRoundedRectangle(rrcChk2, pAccent);
+            ID2D1Brush* pWhite = theme.brushTextWhite ? theme.brushTextWhite.Get() : theme.brushTextPrimary.Get();
+            pRT->DrawLine(D2D1::Point2F(chk2X + 3.0f, chk2Y + 7.0f), D2D1::Point2F(chk2X + 6.0f, chk2Y + 11.0f), pWhite, 1.6f);
+            pRT->DrawLine(D2D1::Point2F(chk2X + 6.0f, chk2Y + 11.0f), D2D1::Point2F(chk2X + 11.5f, chk2Y + 3.5f), pWhite, 1.6f);
+        } else {
+            pRT->DrawRoundedRectangle(rrcChk2, theme.brushBorderHover ? theme.brushBorderHover.Get() : theme.brushBorderSubtle.Get(), 1.0f);
+        }
+        D2D1_RECT_F rcLbl2 = D2D1::RectF(chk2X + chkS + config.ScaleF(8.0f), dropY + config.ScaleF(41.0f), dropX + dropW - config.ScaleF(8.0f), dropY + config.ScaleF(68.0f));
+        pRT->DrawText(L"Don't run database", 18, pFmt, rcLbl2, theme.brushTextPrimary.Get());
+    }
+
+    if (m_showServerDropdown) {
+        const float dropW = config.ScaleF(180.0f);
+        const float dropH = config.ScaleF(74.0f);
+        const float dropX = (std::max)(10.0f, m_rcServer.left);
+        const float dropY = m_rcServer.bottom + config.ScaleF(4.0f);
+        m_rcServerDropdown = D2D1::RectF(dropX, dropY, dropX + dropW, dropY + dropH);
+        D2D1_ROUNDED_RECT rrcDrop = D2D1::RoundedRect(m_rcServerDropdown, 6.0f, 6.0f);
+
+        pRT->FillRoundedRectangle(rrcDrop, theme.brushTooltipBg ? theme.brushTooltipBg.Get() : theme.brushItemHover.Get());
+        pRT->DrawRoundedRectangle(rrcDrop, theme.brushBorderSubtle ? theme.brushBorderSubtle.Get() : theme.brushBorderHover.Get(), 1.0f);
+
+        IDWriteTextFormat* pFmt = theme.fontMenuItem ? theme.fontMenuItem.Get() : theme.fontHint.Get();
+
+        // Item 1: nginx
+        bool nginxChecked = m_serverDbConfig.nginxEnabled && !m_serverDbConfig.dontRunServer;
+        float chk1X = dropX + config.ScaleF(12.0f);
+        float chk1Y = dropY + config.ScaleF(11.0f);
+        float chkS  = config.ScaleF(14.0f);
+        D2D1_RECT_F rcChk1 = D2D1::RectF(chk1X, chk1Y, chk1X + chkS, chk1Y + chkS);
+        D2D1_ROUNDED_RECT rrcChk1 = D2D1::RoundedRect(rcChk1, 2.5f, 2.5f);
+        if (nginxChecked) {
+            ID2D1Brush* pAccent = theme.brushBrandAccent ? theme.brushBrandAccent.Get() : theme.brushTextPrimary.Get();
+            pRT->FillRoundedRectangle(rrcChk1, pAccent);
+            ID2D1Brush* pWhite = theme.brushTextWhite ? theme.brushTextWhite.Get() : theme.brushTextPrimary.Get();
+            pRT->DrawLine(D2D1::Point2F(chk1X + 3.0f, chk1Y + 7.0f), D2D1::Point2F(chk1X + 6.0f, chk1Y + 11.0f), pWhite, 1.6f);
+            pRT->DrawLine(D2D1::Point2F(chk1X + 6.0f, chk1Y + 11.0f), D2D1::Point2F(chk1X + 11.5f, chk1Y + 3.5f), pWhite, 1.6f);
+        } else {
+            pRT->DrawRoundedRectangle(rrcChk1, theme.brushBorderHover ? theme.brushBorderHover.Get() : theme.brushBorderSubtle.Get(), 1.0f);
+        }
+        D2D1_RECT_F rcLbl1 = D2D1::RectF(chk1X + chkS + config.ScaleF(8.0f), dropY + config.ScaleF(6.0f), dropX + dropW - config.ScaleF(8.0f), dropY + config.ScaleF(32.0f));
+        pRT->DrawText(L"nginx", 5, pFmt, rcLbl1, theme.brushTextPrimary.Get());
+
+        // Separator
+        float sepY = dropY + config.ScaleF(36.0f);
+        pRT->DrawLine(D2D1::Point2F(dropX + 6.0f, sepY), D2D1::Point2F(dropX + dropW - 6.0f, sepY), theme.brushBorderSubtle.Get(), 0.8f);
+
+        // Item 2: Don't run server
+        bool noSrvChecked = m_serverDbConfig.dontRunServer;
+        float chk2X = dropX + config.ScaleF(12.0f);
+        float chk2Y = dropY + config.ScaleF(46.0f);
+        D2D1_RECT_F rcChk2 = D2D1::RectF(chk2X, chk2Y, chk2X + chkS, chk2Y + chkS);
+        D2D1_ROUNDED_RECT rrcChk2 = D2D1::RoundedRect(rcChk2, 2.5f, 2.5f);
+        if (noSrvChecked) {
+            ID2D1Brush* pAccent = theme.brushBrandAccent ? theme.brushBrandAccent.Get() : theme.brushTextPrimary.Get();
+            pRT->FillRoundedRectangle(rrcChk2, pAccent);
+            ID2D1Brush* pWhite = theme.brushTextWhite ? theme.brushTextWhite.Get() : theme.brushTextPrimary.Get();
+            pRT->DrawLine(D2D1::Point2F(chk2X + 3.0f, chk2Y + 7.0f), D2D1::Point2F(chk2X + 6.0f, chk2Y + 11.0f), pWhite, 1.6f);
+            pRT->DrawLine(D2D1::Point2F(chk2X + 6.0f, chk2Y + 11.0f), D2D1::Point2F(chk2X + 11.5f, chk2Y + 3.5f), pWhite, 1.6f);
+        } else {
+            pRT->DrawRoundedRectangle(rrcChk2, theme.brushBorderHover ? theme.brushBorderHover.Get() : theme.brushBorderSubtle.Get(), 1.0f);
+        }
+        D2D1_RECT_F rcLbl2 = D2D1::RectF(chk2X + chkS + config.ScaleF(8.0f), dropY + config.ScaleF(41.0f), dropX + dropW - config.ScaleF(8.0f), dropY + config.ScaleF(68.0f));
+        pRT->DrawText(L"Don't run server", 16, pFmt, rcLbl2, theme.brushTextPrimary.Get());
+    }
 }
 
 HeaderMenuId TitleHeader::HitTestMenu(POINT pt) const {
@@ -739,16 +1068,96 @@ bool TitleHeader::SetHoveredZoom(int hovered) noexcept {
     return false;
 }
 
+bool TitleHeader::HitTestDatabase(POINT pt) const noexcept {
+    return (pt.x >= m_rcDatabase.left && pt.x <= m_rcDatabase.right &&
+            pt.y >= m_rcDatabase.top && pt.y <= m_rcDatabase.bottom);
+}
+
+bool TitleHeader::HitTestServer(POINT pt) const noexcept {
+    return (pt.x >= m_rcServer.left && pt.x <= m_rcServer.right &&
+            pt.y >= m_rcServer.top && pt.y <= m_rcServer.bottom);
+}
+
+bool TitleHeader::SetHoveredDatabase(bool hovered) noexcept {
+    if (m_hoveredDatabase != hovered) {
+        m_hoveredDatabase = hovered;
+        return true;
+    }
+    return false;
+}
+
+bool TitleHeader::SetHoveredServer(bool hovered) noexcept {
+    if (m_hoveredServer != hovered) {
+        m_hoveredServer = hovered;
+        return true;
+    }
+    return false;
+}
+
+void TitleHeader::ToggleDatabaseDropdown() noexcept {
+    m_showDatabaseDropdown = !m_showDatabaseDropdown;
+    if (m_showDatabaseDropdown) m_showServerDropdown = false;
+}
+
+void TitleHeader::ToggleServerDropdown() noexcept {
+    m_showServerDropdown = !m_showServerDropdown;
+    if (m_showServerDropdown) m_showDatabaseDropdown = false;
+}
+
+void TitleHeader::CloseServerDatabaseDropdowns() noexcept {
+    m_showDatabaseDropdown = false;
+    m_showServerDropdown = false;
+}
+
+bool TitleHeader::HitTestDropdowns(POINT pt) const noexcept {
+    if (m_showDatabaseDropdown && PtInRectF(pt, m_rcDatabaseDropdown)) return true;
+    if (m_showServerDropdown && PtInRectF(pt, m_rcServerDropdown)) return true;
+    return false;
+}
+
+bool TitleHeader::HandleDropdownClick(POINT pt) noexcept {
+    if (m_showDatabaseDropdown && PtInRectF(pt, m_rcDatabaseDropdown)) {
+        float midY = (m_rcDatabaseDropdown.top + m_rcDatabaseDropdown.bottom) * 0.5f;
+        if (pt.y < midY) {
+            // Item 1: phpMyAdmin
+            m_serverDbConfig.phpMyAdminEnabled = !m_serverDbConfig.phpMyAdminEnabled;
+            if (m_serverDbConfig.phpMyAdminEnabled) m_serverDbConfig.dontRunDatabase = false;
+        } else {
+            // Item 2: Don't run database
+            m_serverDbConfig.dontRunDatabase = !m_serverDbConfig.dontRunDatabase;
+            if (m_serverDbConfig.dontRunDatabase) m_serverDbConfig.phpMyAdminEnabled = false;
+        }
+        return true;
+    }
+    if (m_showServerDropdown && PtInRectF(pt, m_rcServerDropdown)) {
+        float midY = (m_rcServerDropdown.top + m_rcServerDropdown.bottom) * 0.5f;
+        if (pt.y < midY) {
+            // Item 1: nginx
+            m_serverDbConfig.nginxEnabled = !m_serverDbConfig.nginxEnabled;
+            if (m_serverDbConfig.nginxEnabled) m_serverDbConfig.dontRunServer = false;
+        } else {
+            // Item 2: Don't run server
+            m_serverDbConfig.dontRunServer = !m_serverDbConfig.dontRunServer;
+            if (m_serverDbConfig.dontRunServer) m_serverDbConfig.nginxEnabled = false;
+        }
+        return true;
+    }
+    return false;
+}
+
 LRESULT TitleHeader::HitTestNCHitTest(POINT pt, const app::AppConfig& config) {
     const float h = config.ScaleF(static_cast<float>(config.headerHeight));
     if (pt.y >= h) return HTCLIENT;
 
-    // If mouse is over any interactive element (menus, exec buttons, split editor, quick open, zoom controls, or caption buttons), return HTCLIENT
+    // If mouse is over any interactive element (menus, exec buttons, split editor, quick open, zoom controls, caption buttons, server/db), return HTCLIENT
     if (HitTestMenu(pt) != HeaderMenuId::None) return HTCLIENT;
     if (HitTestExecButton(pt) != HeaderExecId::None) return HTCLIENT;
     if (HitTestSplitEditor(pt)) return HTCLIENT;
     if (HitTestQuickOpen(pt)) return HTCLIENT;
     if (HitTestExtensions(pt)) return HTCLIENT;
+    if (HitTestDatabase(pt)) return HTCLIENT;
+    if (HitTestServer(pt)) return HTCLIENT;
+    if (HitTestDropdowns(pt)) return HTCLIENT;
     if (HitTestZoomIn(pt) || HitTestZoomOut(pt) || HitTestZoomReset(pt)) return HTCLIENT;
     if (HitTestCaptionButton(pt) != CaptionButtonType::None) return HTCLIENT;
 

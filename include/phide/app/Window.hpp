@@ -434,6 +434,18 @@ private:
     /** @brief Restarts the running Live Server or debugging session. */
     void DoRestartServer();
 
+    /** @brief Opens dedicated realtime Nginx server log tab in terminal. */
+    void DoOpenServerLog();
+
+    /** @brief Opens dedicated realtime phpMyAdmin database log tab in terminal. */
+    void DoOpenDatabaseLog();
+
+    /** @brief Opens process execution failure error report in terminal. */
+    void DoOpenErrorLog();
+
+    /** @brief Launches PHP development server with embedded Nginx and phpMyAdmin orchestration. */
+    void DoRunPhpApplication(const std::wstring& filePath, const std::wstring& projectRoot);
+
     /** @brief Updates enabled/disabled state of Run and Debug buttons based on active file type. */
     void UpdateExecutionButtonStates();
 
@@ -505,6 +517,7 @@ private:
 
     std::unordered_map<std::wstring, ProjectDecision> m_projectDecisionCache;
     std::wstring m_runningProjectRoot;
+    std::wstring m_lastTerminalErrorText;
     ProjectDecision m_runningProjectDecision;
     bool m_isProjectRunning = false;
     void ExecuteDiscardOrRestore(const std::wstring& targetPath, const std::wstring& targetFileName, const std::wstring& targetStatus);

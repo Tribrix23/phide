@@ -1169,4 +1169,127 @@ void LucideIcons::DrawReturnBack(ID2D1RenderTarget* pRT, const D2D1_RECT_F& boun
     }
 }
 
+void LucideIcons::DrawDatabase(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, ID2D1Brush* pBrush, float strokeWidth) const {
+    if (!pRT || !pBrush) return;
+    EnsureStrokeStyle(pRT, const_cast<ComPtr<ID2D1StrokeStyle>&>(m_pStrokeStyle));
+
+    const float bw = bounds.right - bounds.left;
+    const float bh = bounds.bottom - bounds.top;
+    const float cx = bounds.left + bw * 0.5f;
+    const float cy = bounds.top + bh * 0.5f;
+    const float s  = (std::min)(bw, bh) * 0.65f;
+    const float rx = s * 0.48f;
+    const float ry = s * 0.16f;
+    const float topY = cy - s * 0.38f;
+    const float midY = cy + s * 0.02f;
+    const float botY = cy + s * 0.42f;
+
+    // Top full ellipse
+    pRT->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(cx, topY), rx, ry), pBrush, strokeWidth, m_pStrokeStyle.Get());
+
+    // Left and right vertical spine lines
+    pRT->DrawLine(D2D1::Point2F(cx - rx, topY), D2D1::Point2F(cx - rx, botY), pBrush, strokeWidth, m_pStrokeStyle.Get());
+    pRT->DrawLine(D2D1::Point2F(cx + rx, topY), D2D1::Point2F(cx + rx, botY), pBrush, strokeWidth, m_pStrokeStyle.Get());
+
+    // Middle curved arc and bottom curved arc
+    Microsoft::WRL::ComPtr<ID2D1Factory> pFactory;
+    pRT->GetFactory(&pFactory);
+    if (pFactory) {
+        Microsoft::WRL::ComPtr<ID2D1PathGeometry> pPath;
+        if (SUCCEEDED(pFactory->CreatePathGeometry(&pPath)) && pPath) {
+            Microsoft::WRL::ComPtr<ID2D1GeometrySink> pSink;
+            if (SUCCEEDED(pPath->Open(&pSink)) && pSink) {
+                // Middle arc: from (cx - rx, midY) curving down to (cx + rx, midY)
+                pSink->BeginFigure(D2D1::Point2F(cx - rx, midY), D2D1_FIGURE_BEGIN_HOLLOW);
+                pSink->AddArc(D2D1::ArcSegment(
+                    D2D1::Point2F(cx + rx, midY),
+                    D2D1::SizeF(rx, ry),
+                    0.0f,
+                    D2D1_SWEEP_DIRECTION_COUNTER_CLOCKWISE,
+                    D2D1_ARC_SIZE_SMALL
+                ));
+                pSink->EndFigure(D2D1_FIGURE_END_OPEN);
+
+                // Bottom arc: from (cx - rx, botY) curving down to (cx + rx, botY)
+                pSink->BeginFigure(D2D1::Point2F(cx - rx, botY), D2D1_FIGURE_BEGIN_HOLLOW);
+                pSink->AddArc(D2D1::ArcSegment(
+                    D2D1::Point2F(cx + rx, botY),
+                    D2D1::SizeF(rx, ry),
+                    0.0f,
+                    D2D1_SWEEP_DIRECTION_COUNTER_CLOCKWISE,
+                    D2D1_ARC_SIZE_SMALL
+                ));
+                pSink->EndFigure(D2D1_FIGURE_END_OPEN);
+
+                pSink->Close();
+                pRT->DrawGeometry(pPath.Get(), pBrush, strokeWidth, m_pStrokeStyle.Get());
+            }
+        }
+    }
+}
+
+void LucideIcons::DrawServer(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, ID2D1Brush* pBrush, float strokeWidth) const {
+    if (!pRT || !pBrush) return;
+    EnsureStrokeStyle(pRT, const_cast<ComPtr<ID2D1StrokeStyle>&>(m_pStrokeStyle));
+
+    const float bw = bounds.right - bounds.left;
+    const float bh = bounds.bottom - bounds.top;
+    const float cx = bounds.left + bw * 0.5f;
+    const float cy = bounds.top + bh * 0.5f;
+    const float s  = (std::min)(bw, bh) * 0.65f;
+    const float halfW = s * 0.50f;
+    const float chassisH = s * 0.38f;
+    const float gap = s * 0.16f;
+
+    // Top server tray
+    float topY1 = cy - gap * 0.5f - chassisH;
+    float topY2 = cy - gap * 0.5f;
+    D2D1_ROUNDED_RECT rrcTop = D2D1::RoundedRect(D2D1::RectF(cx - halfW, topY1, cx + halfW, topY2), 2.0f, 2.0f);
+    pRT->DrawRoundedRectangle(&rrcTop, pBrush, strokeWidth, m_pStrokeStyle.Get());
+
+    // Top tray status dot & drive line
+    float midTopY = (topY1 + topY2) * 0.5f;
+    pRT->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(cx - halfW + 4.0f, midTopY), 1.0f, 1.0f), pBrush, strokeWidth);
+    pRT->DrawLine(D2D1::Point2F(cx - 1.0f, midTopY), D2D1::Point2F(cx + halfW - 4.0f, midTopY), pBrush, strokeWidth, m_pStrokeStyle.Get());
+
+    // Bottom server tray
+    float botY1 = cy + gap * 0.5f;
+    float botY2 = cy + gap * 0.5f + chassisH;
+    D2D1_ROUNDED_RECT rrcBot = D2D1::RoundedRect(D2D1::RectF(cx - halfW, botY1, cx + halfW, botY2), 2.0f, 2.0f);
+    pRT->DrawRoundedRectangle(&rrcBot, pBrush, strokeWidth, m_pStrokeStyle.Get());
+
+    // Bottom tray status dot & drive line
+    float midBotY = (botY1 + botY2) * 0.5f;
+    pRT->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(cx - halfW + 4.0f, midBotY), 1.0f, 1.0f), pBrush, strokeWidth);
+    pRT->DrawLine(D2D1::Point2F(cx - 1.0f, midBotY), D2D1::Point2F(cx + halfW - 4.0f, midBotY), pBrush, strokeWidth, m_pStrokeStyle.Get());
+}
+
+void LucideIcons::DrawLogIcon(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, ID2D1Brush* pBrush, float strokeWidth) const {
+    if (!pRT || !pBrush) return;
+    EnsureStrokeStyle(pRT, const_cast<ComPtr<ID2D1StrokeStyle>&>(m_pStrokeStyle));
+
+    const float bw = bounds.right - bounds.left;
+    const float bh = bounds.bottom - bounds.top;
+    const float cx = bounds.left + bw * 0.5f;
+    const float cy = bounds.top + bh * 0.5f;
+    const float s  = (std::min)(bw, bh) * 0.65f;
+    const float halfW = s * 0.42f;
+    const float halfH = s * 0.50f;
+
+    // Document outer frame with rounded corners
+    D2D1_ROUNDED_RECT rrcDoc = D2D1::RoundedRect(D2D1::RectF(cx - halfW, cy - halfH, cx + halfW, cy + halfH), 2.0f, 2.0f);
+    pRT->DrawRoundedRectangle(&rrcDoc, pBrush, strokeWidth, m_pStrokeStyle.Get());
+
+    // 3 horizontal log lines inside
+    float lineLeft  = cx - halfW + 3.2f;
+    float lineRight = cx + halfW - 3.2f;
+    float lineY1    = cy - halfH * 0.35f;
+    float lineY2    = cy;
+    float lineY3    = cy + halfH * 0.35f;
+
+    pRT->DrawLine(D2D1::Point2F(lineLeft, lineY1), D2D1::Point2F(lineRight, lineY1), pBrush, strokeWidth, m_pStrokeStyle.Get());
+    pRT->DrawLine(D2D1::Point2F(lineLeft, lineY2), D2D1::Point2F(lineRight - 2.0f, lineY2), pBrush, strokeWidth, m_pStrokeStyle.Get());
+    pRT->DrawLine(D2D1::Point2F(lineLeft, lineY3), D2D1::Point2F(lineRight - 4.5f, lineY3), pBrush, strokeWidth, m_pStrokeStyle.Get());
+}
+
 } // namespace phide::ui

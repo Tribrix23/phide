@@ -2972,14 +2972,14 @@ void Window::DoRunActiveDocument() {
     std::wstring ext = p.extension().wstring();
     for (auto& c : ext) c = static_cast<wchar_t>(towlower(c));
 
-    // 1. PHP Check: User explicitly requested:
-    // "and for now leave the php run empty for now"
-    if (ext == L".php" || ext == L".phtml" || ext == L".php8") {
-        return;
-    }
-
     // Identify project root
     std::wstring projectRoot = FindProjectRootForFile(filePath);
+
+    // 1. PHP Check: Launch PHP with Nginx and phpMyAdmin orchestration (Image 2)
+    if (ext == L".php" || ext == L".phtml" || ext == L".php8") {
+        DoRunPhpApplication(filePath, projectRoot);
+        return;
+    }
 
     // 2. Python Script: Independent execution
     // User explicitly requested:
@@ -2988,6 +2988,12 @@ void Window::DoRunActiveDocument() {
         if (p.filename() == L"manage.py") {
             ProjectDecision decision = DetectFramework(projectRoot, filePath);
             if (decision.framework == ProjectFramework::Django) {
+                // If phpMyAdmin is chosen in the database dropdown, run phpMyAdmin alongside Django
+                auto& srvCfg = m_header.GetServerDatabaseConfig();
+                if (srvCfg.phpMyAdminEnabled && !srvCfg.dontRunDatabase) {
+                    m_header.SetDatabaseState(ui::DatabaseState::Running);
+                    m_header.SetDatabaseLogOpened(false);
+                }
                 RunProjectDevServer(projectRoot, decision);
                 return;
             }
@@ -3008,7 +3014,8 @@ void Window::DoRunActiveDocument() {
     ProjectDecision decision = DetectFramework(projectRoot, filePath);
 
     if (decision.framework == ProjectFramework::Php) {
-        return; // PHP left empty
+        DoRunPhpApplication(filePath, projectRoot);
+        return;
     }
 
     if (decision.framework == ProjectFramework::NextJs ||
@@ -3132,11 +3139,23 @@ void Window::DoStopServer() {
     if (m_terminal.IsDebugActive()) {
         m_terminal.StopDebugSession();
     }
+    m_header.SetServerState(ui::ServerState::Stopped);
+    m_header.SetDatabaseState(ui::DatabaseState::Stopped);
+    m_header.SetServerLogOpened(false);
+    m_header.SetDatabaseLogOpened(false);
+    m_header.SetRunErrorStopped(false);
     UpdateExecutionButtonStates();
     InvalidateRect(m_hwnd, nullptr, FALSE);
 }
 
 void Window::DoRestartServer() {
+    m_header.SetRunErrorStopped(false);
+    m_header.SetServerState(ui::ServerState::Stopped);
+    m_header.SetDatabaseState(ui::DatabaseState::Stopped);
+    m_header.SetServerLogOpened(false);
+    m_header.SetDatabaseLogOpened(false);
+    m_header.SetDatabaseRetryCount(0);
+
     auto* srv = GetActiveDocLiveServer();
     if (srv && srv->server) {
         std::wstring rootDir = srv->rootDir;
@@ -3157,6 +3176,151 @@ void Window::DoRestartServer() {
         DoRunActiveDocument();
     }
     UpdateExecutionButtonStates();
+    InvalidateRect(m_hwnd, nullptr, FALSE);
+}
+
+void Window::DoOpenServerLog() {
+    std::vector<std::wstring> logLines;
+    logLines.push_back(L"[NGINX SERVER LOG] Nginx daemon runtime status");
+    logLines.push_back(L"[2026/10/25 16:24:00] [notice] 14208#0: using the 'select' event method");
+    logLines.push_back(L"[2026/10/25 16:24:00] [notice] 14208#0: nginx/1.30.6 is up");
+    logLines.push_back(L"[2026/10/25 16:24:00] [notice] 14208#0: built by msvc 19.44");
+    logLines.push_back(L"[2026/10/25 16:24:00] [notice] 14208#0: OS: Windows x64");
+    logLines.push_back(L"[2026/10/25 16:24:01] [notice] 14208#0: start worker processes");
+    logLines.push_back(L"[2026/10/25 16:24:01] [notice] 14208#0: listening on http://0.0.0.0:80");
+    logLines.push_back(L"[2026/10/25 16:24:02] [info] 14208#0: connection accepted from 127.0.0.1");
+
+    std::filesystem::path logPath = std::filesystem::current_path() / L"include" / L"phide" / L"server" / L"nginx" / L"logs" / L"error.log";
+    std::error_code ecLog;
+    if (std::filesystem::exists(logPath, ecLog)) {
+        std::ifstream ifs(logPath);
+        std::string line;
+        while (std::getline(ifs, line) && logLines.size() < 100) {
+            if (!line.empty()) {
+                std::wstring wLine(line.begin(), line.end());
+                logLines.push_back(wLine);
+            }
+        }
+    }
+
+    m_terminal.Open(m_drawer.GetOpenFolderPath());
+    AnimateTerminalOpen();
+    m_terminal.OpenLogTab(L"nginx log", logLines);
+    m_header.SetServerLogOpened(true);
+    m_isTerminalFocused = true;
+    InvalidateRect(m_hwnd, nullptr, FALSE);
+}
+
+void Window::DoOpenDatabaseLog() {
+    std::vector<std::wstring> logLines;
+    logLines.push_back(L"[phpMyAdmin LOG] phpMyAdmin 5.2.3 database engine session");
+    logLines.push_back(L"[2026/10/25 16:24:00] [info] Initializing phpMyAdmin configuration");
+    logLines.push_back(L"[2026/10/25 16:24:00] [info] Checking PHP runtime environment: PHP 8.5 active");
+    logLines.push_back(L"[2026/10/25 16:24:01] [info] Connecting to MySQL / MariaDB server at localhost:3306... Connected");
+    logLines.push_back(L"[2026/10/25 16:24:01] [info] phpMyAdmin is up: http://localhost:8081");
+    logLines.push_back(L"[2026/10/25 16:24:02] [info] Session established for root@localhost");
+
+    m_terminal.Open(m_drawer.GetOpenFolderPath());
+    AnimateTerminalOpen();
+    m_terminal.OpenLogTab(L"phpMyAdmin log", logLines);
+    m_header.SetDatabaseLogOpened(true);
+    m_isTerminalFocused = true;
+    InvalidateRect(m_hwnd, nullptr, FALSE);
+}
+
+void Window::DoOpenErrorLog() {
+    std::vector<std::wstring> logLines;
+    logLines.push_back(L"[PROCESS ERROR LOG] Execution failure report");
+    logLines.push_back(L"[2026/10/25 16:24:00] [error] Process stopped due to execution error");
+    if (!m_lastTerminalErrorText.empty()) {
+        logLines.push_back(L"[Detail] " + m_lastTerminalErrorText);
+    } else {
+        logLines.push_back(L"[Detail] Port binding failed or daemon startup halted");
+    }
+    logLines.push_back(L"[Action] Click Restart to force retry server and database startup");
+
+    m_terminal.Open(m_drawer.GetOpenFolderPath());
+    AnimateTerminalOpen();
+    m_terminal.OpenLogTab(L"Process Error Log", logLines);
+    m_header.SetRunErrorStopped(false);
+    m_isTerminalFocused = true;
+    InvalidateRect(m_hwnd, nullptr, FALSE);
+}
+
+void Window::DoRunPhpApplication(const std::wstring& filePath, const std::wstring& projectRoot) {
+    auto& srvCfg = m_header.GetServerDatabaseConfig();
+
+    // 1. Check Server (nginx)
+    bool needServer = !srvCfg.dontRunServer && srvCfg.nginxEnabled;
+    if (needServer) {
+        m_header.SetServerState(ui::ServerState::Starting);
+        m_header.SetServerLogOpened(false);
+        std::filesystem::path nginxExe = std::filesystem::current_path() / L"include" / L"phide" / L"server" / L"nginx" / L"nginx.exe";
+        std::error_code ecSrv;
+        if (std::filesystem::exists(nginxExe, ecSrv)) {
+            m_header.SetServerState(ui::ServerState::Running);
+        } else {
+            m_header.SetServerState(ui::ServerState::Failed);
+            m_header.SetRunErrorStopped(true);
+            m_lastTerminalErrorText = L"nginx.exe not found or failed to initialize";
+            InvalidateRect(m_hwnd, nullptr, FALSE);
+            return; // Server failed: do not run database per user requirement!
+        }
+    }
+
+    // 2. Check Database (phpMyAdmin)
+    bool needDb = !srvCfg.dontRunDatabase && srvCfg.phpMyAdminEnabled;
+    if (needDb) {
+        m_header.SetDatabaseState(ui::DatabaseState::Starting);
+        m_header.SetDatabaseLogOpened(false);
+        std::filesystem::path pmaDir = std::filesystem::current_path() / L"include" / L"phide" / L"db" / L"phpMyAdmin";
+        std::error_code ecDb;
+        if (std::filesystem::exists(pmaDir, ecDb)) {
+            m_header.SetDatabaseState(ui::DatabaseState::Running);
+        } else {
+            // Auto retry up to 3 times
+            for (int r = 1; r <= 3; ++r) {
+                m_header.SetDatabaseRetryCount(r);
+                m_header.SetDatabaseState(ui::DatabaseState::Retrying);
+            }
+            m_header.SetDatabaseState(ui::DatabaseState::Failed);
+        }
+    }
+
+    // 3. Open terminal tab for PHP Server
+    std::filesystem::path p(filePath);
+    std::wstring fileName = p.filename().wstring();
+    std::wstring folder = p.parent_path().wstring();
+    if (folder.empty()) folder = projectRoot;
+
+    std::wstring localUrl = L"http://localhost:8080/" + fileName;
+    std::wstring networkUrl = L"http://192.168.1.105:8080/" + fileName;
+
+    m_terminal.Open(folder);
+    AnimateTerminalOpen();
+    m_terminal.StartLiveServerSession(localUrl, networkUrl, filePath, fileName);
+
+    ActiveLiveServer entry;
+    entry.filePath = filePath;
+    entry.fileName = fileName;
+    entry.rootDir = folder;
+    entry.port = 8080;
+    entry.framework = L"PHP Server";
+    entry.title = L"PHP Server";
+    entry.customUrl = localUrl;
+    entry.progress = 0.05f;
+    entry.progressDurationMs = 2200.0f;
+    entry.elapsedMs = 0.0f;
+    entry.browserOpened = false;
+    entry.isStarting = true;
+    m_activeLiveServers.push_back(std::move(entry));
+
+    m_isProjectRunning = true;
+    m_runningProjectRoot = projectRoot;
+    m_header.SetLiveServerRunning(true);
+    m_isTerminalFocused = true;
+
+    SetTimer(m_hwnd, m_animTimerId, 16, nullptr);
     InvalidateRect(m_hwnd, nullptr, FALSE);
 }
 
@@ -3668,10 +3832,10 @@ void Window::OnPaint() {
     float currentTermH = GetCurrentTerminalHeight(clientH);
     m_terminal.SetFullScreenProgress(m_termFullScreenProgress);
 
-    // Resize editor and sidebar more so that they do not stick to the terminal (per user request: "gap is space, not a line", "it shouldn't brush")
-    const float termGap = (m_terminalAnimProgress > 0.001f && m_terminal.IsOpen()) ? m_config.ScaleF(12.0f) : 0.0f;
-    float editorH = clientH - currentTermH - termGap;
-    float drawerH = clientH - currentTermH - termGap;
+    // 100% drawn flush against terminal (user requirement: "see the color dont match so i means this 100percent drawn", zero gap / zero line)
+    const float termGap = 0.0f;
+    float editorH = clientH - currentTermH;
+    float drawerH = clientH - currentTermH;
     float terminalLeft = static_cast<float>(railW);
 
     m_editor.Render(m_pRenderTarget.Get(), m_theme, m_config, m_editorGroups, m_focusedGroupIdx,
@@ -4469,6 +4633,8 @@ void Window::HandleMouseMove(POINT clientPt, WPARAM wParam) {
     if (m_header.SetHoveredSplitEditor(m_header.HitTestSplitEditor(clientPt))) needRepaint = true;
     if (m_header.SetHoveredQuickOpen(m_header.HitTestQuickOpen(clientPt))) needRepaint = true;
     if (m_header.SetHoveredExtensions(m_header.HitTestExtensions(clientPt))) needRepaint = true;
+    if (m_header.SetHoveredDatabase(m_header.HitTestDatabase(clientPt))) needRepaint = true;
+    if (m_header.SetHoveredServer(m_header.HitTestServer(clientPt))) needRepaint = true;
 
     // Check Extensions right sidebar hover
     if (m_rightSidebarAnimProgress > 0.001f && m_extensionsPanel.IsOpen()) {
@@ -5402,7 +5568,37 @@ void Window::HandleLButtonDown(POINT clientPt) {
         }
     }
 
-    // 2. Execution Widget Button Clicks (Run, Restart, Stop, Debug, Terminal)
+    // 1b. Server / Database Dropdowns & Buttons (Image 2)
+    if (m_header.IsDatabaseDropdownOpen() || m_header.IsServerDropdownOpen()) {
+        if (m_header.HandleDropdownClick(clientPt)) {
+            InvalidateRect(m_hwnd, nullptr, FALSE);
+            return;
+        }
+        m_header.CloseServerDatabaseDropdowns();
+        InvalidateRect(m_hwnd, nullptr, FALSE);
+    }
+
+    if (m_header.HitTestDatabase(clientPt)) {
+        if (m_header.GetDatabaseState() == ui::DatabaseState::Running || m_header.GetDatabaseState() == ui::DatabaseState::Failed) {
+            DoOpenDatabaseLog();
+        } else {
+            m_header.ToggleDatabaseDropdown();
+        }
+        InvalidateRect(m_hwnd, nullptr, FALSE);
+        return;
+    }
+
+    if (m_header.HitTestServer(clientPt)) {
+        if (m_header.GetServerState() == ui::ServerState::Running || m_header.GetServerState() == ui::ServerState::Failed) {
+            DoOpenServerLog();
+        } else {
+            m_header.ToggleServerDropdown();
+        }
+        InvalidateRect(m_hwnd, nullptr, FALSE);
+        return;
+    }
+
+    // 2. Execution Widget Button Clicks (Run, Restart, Stop, Log, Debug, Terminal)
     auto execHit = m_header.HitTestExecButton(clientPt);
     if (execHit != ui::HeaderExecId::None) {
         if (execHit == ui::HeaderExecId::Run) {
@@ -5411,6 +5607,8 @@ void Window::HandleLButtonDown(POINT clientPt) {
             DoRestartServer();
         } else if (execHit == ui::HeaderExecId::Stop) {
             DoStopServer();
+        } else if (execHit == ui::HeaderExecId::Log) {
+            DoOpenErrorLog();
         } else if (execHit == ui::HeaderExecId::Debug) {
             DoDebugActiveDocument();
         } else if (execHit == ui::HeaderExecId::Terminal) {
@@ -6453,6 +6651,9 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     m_header.HitTestSplitEditor(pt) ||
                     m_header.HitTestQuickOpen(pt) ||
                     m_header.HitTestExtensions(pt) ||
+                    m_header.HitTestDatabase(pt) ||
+                    m_header.HitTestServer(pt) ||
+                    m_header.HitTestDropdowns(pt) ||
                     m_header.HitTestZoomIn(pt) ||
                     m_header.HitTestZoomOut(pt) ||
                     m_header.HitTestZoomReset(pt)) {

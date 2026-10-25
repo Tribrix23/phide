@@ -205,6 +205,21 @@ public:
     void DrawMaximize(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, ID2D1Brush* pBrush, bool isZoomed, float strokeWidth = 1.2f) const;
 
     /**
+     * @brief Draws the vector Database cylinder icon.
+     */
+    void DrawDatabase(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, ID2D1Brush* pBrush, float strokeWidth = 1.3f) const;
+
+    /**
+     * @brief Draws the vector Server rack chassis icon.
+     */
+    void DrawServer(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, ID2D1Brush* pBrush, float strokeWidth = 1.3f) const;
+
+    /**
+     * @brief Draws the vector Log document icon with text lines.
+     */
+    void DrawLogIcon(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, ID2D1Brush* pBrush, float strokeWidth = 1.3f) const;
+
+    /**
      * @brief Draws the vector Close caption icon (✕).
      */
     void DrawClose(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, ID2D1Brush* pBrush, float strokeWidth = 1.2f) const;

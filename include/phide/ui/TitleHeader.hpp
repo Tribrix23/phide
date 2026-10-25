@@ -47,7 +47,42 @@ enum class HeaderExecId {
     Terminal = 2,   ///< Terminal toggle (neutral/white text, explicitly not green)
     Restart = 3,    ///< Restart live server / process
     Stop = 4,       ///< Stop live server / process (red square with rounded corners)
-    Extensions = 5  ///< Extensions toggle (2x2 grid icon)
+    Extensions = 5, ///< Extensions toggle (2x2 grid icon)
+    Log = 6         ///< Log icon when stopped on error (per user request!)
+};
+
+/**
+ * @enum ServerState
+ * @brief State of the embedded web server (nginx).
+ */
+enum class ServerState {
+    Stopped = 0,
+    Starting,
+    Running,
+    Failed
+};
+
+/**
+ * @enum DatabaseState
+ * @brief State of the embedded database service (phpMyAdmin).
+ */
+enum class DatabaseState {
+    Stopped = 0,
+    Starting,
+    Retrying,
+    Running,
+    Failed
+};
+
+/**
+ * @struct ServerDatabaseConfig
+ * @brief Dropdown checklist configuration for Server and Database.
+ */
+struct ServerDatabaseConfig {
+    bool nginxEnabled = true;
+    bool dontRunServer = false;
+    bool phpMyAdminEnabled = true;
+    bool dontRunDatabase = false;
 };
 
 /**
@@ -195,6 +230,46 @@ public:
 
     [[nodiscard]] D2D1_RECT_F GetExtensionsBounds() const noexcept { return m_rcExtensions; }
 
+    // Server & Database State Machine & Dropdowns
+    ServerDatabaseConfig& GetServerDatabaseConfig() noexcept { return m_serverDbConfig; }
+    [[nodiscard]] const ServerDatabaseConfig& GetServerDatabaseConfig() const noexcept { return m_serverDbConfig; }
+
+    void SetServerState(ServerState state) noexcept { m_serverState = state; }
+    [[nodiscard]] ServerState GetServerState() const noexcept { return m_serverState; }
+
+    void SetDatabaseState(DatabaseState state) noexcept { m_databaseState = state; }
+    [[nodiscard]] DatabaseState GetDatabaseState() const noexcept { return m_databaseState; }
+
+    void SetDatabaseRetryCount(int count) noexcept { m_databaseRetryCount = count; }
+    [[nodiscard]] int GetDatabaseRetryCount() const noexcept { return m_databaseRetryCount; }
+
+    void SetServerLogOpened(bool opened) noexcept { m_serverLogOpened = opened; }
+    [[nodiscard]] bool IsServerLogOpened() const noexcept { return m_serverLogOpened; }
+
+    void SetDatabaseLogOpened(bool opened) noexcept { m_databaseLogOpened = opened; }
+    [[nodiscard]] bool IsDatabaseLogOpened() const noexcept { return m_databaseLogOpened; }
+
+    void SetRunErrorStopped(bool stopped) noexcept { m_isRunErrorStopped = stopped; }
+    [[nodiscard]] bool IsRunErrorStopped() const noexcept { return m_isRunErrorStopped; }
+
+    [[nodiscard]] D2D1_RECT_F GetDatabaseBounds() const noexcept { return m_rcDatabase; }
+    [[nodiscard]] D2D1_RECT_F GetServerBounds() const noexcept { return m_rcServer; }
+    [[nodiscard]] D2D1_RECT_F GetDatabaseDropdownBounds() const noexcept { return m_rcDatabaseDropdown; }
+    [[nodiscard]] D2D1_RECT_F GetServerDropdownBounds() const noexcept { return m_rcServerDropdown; }
+
+    [[nodiscard]] bool HitTestDatabase(POINT pt) const noexcept;
+    [[nodiscard]] bool HitTestServer(POINT pt) const noexcept;
+    bool SetHoveredDatabase(bool hovered) noexcept;
+    bool SetHoveredServer(bool hovered) noexcept;
+
+    void ToggleDatabaseDropdown() noexcept;
+    void ToggleServerDropdown() noexcept;
+    void CloseServerDatabaseDropdowns() noexcept;
+    [[nodiscard]] bool IsDatabaseDropdownOpen() const noexcept { return m_showDatabaseDropdown; }
+    [[nodiscard]] bool IsServerDropdownOpen() const noexcept { return m_showServerDropdown; }
+    [[nodiscard]] bool HitTestDropdowns(POINT pt) const noexcept;
+    bool HandleDropdownClick(POINT pt) noexcept;
+
     // Zoom In / Zoom Out Controls (Image 3)
     [[nodiscard]] bool HitTestZoomIn(POINT pt) const noexcept;
     [[nodiscard]] bool HitTestZoomOut(POINT pt) const noexcept;
@@ -255,6 +330,25 @@ private:
     D2D1_RECT_F m_rcExtensions{};
     bool m_hoveredExtensions = false;
     bool m_activeExtensions = false;
+
+    // Server & Database State Machine & Dropdown Controls (Image 2)
+    ServerDatabaseConfig m_serverDbConfig;
+    ServerState m_serverState = ServerState::Stopped;
+    DatabaseState m_databaseState = DatabaseState::Stopped;
+    int m_databaseRetryCount = 0;
+    bool m_serverLogOpened = false;
+    bool m_databaseLogOpened = false;
+    bool m_isRunErrorStopped = false;
+
+    D2D1_RECT_F m_rcDatabase{};
+    D2D1_RECT_F m_rcServer{};
+    bool m_hoveredDatabase = false;
+    bool m_hoveredServer = false;
+
+    bool m_showDatabaseDropdown = false;
+    bool m_showServerDropdown = false;
+    D2D1_RECT_F m_rcDatabaseDropdown{};
+    D2D1_RECT_F m_rcServerDropdown{};
 
     // Zoom In / Zoom Out controls widget (Image 3)
     D2D1_RECT_F m_rcZoomContainer{};
