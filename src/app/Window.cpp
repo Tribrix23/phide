@@ -3152,45 +3152,113 @@ Window::ProjectDecision Window::DetectFramework(const std::wstring& rootDir, con
     std::error_code ec;
     std::filesystem::path root(rootDir);
 
-    // Feature Node 1: package.json (Vite, Electron, Next.js, etc.)
-    std::filesystem::path pkgPath = root / L"package.json";
-    if (std::filesystem::exists(pkgPath, ec)) {
-        decision.markerPath = pkgPath.wstring();
-        decision.markerTime = std::filesystem::last_write_time(pkgPath, ec);
+    if (!rootDir.empty() && std::filesystem::exists(root, ec) && std::filesystem::is_directory(root, ec)) {
+        // Feature Node 1: package.json (Vite, Electron, Next.js, etc.)
+        std::filesystem::path pkgPath = root / L"package.json";
+        if (std::filesystem::exists(pkgPath, ec)) {
+            decision.markerPath = pkgPath.wstring();
+            decision.markerTime = std::filesystem::last_write_time(pkgPath, ec);
 
-        std::string pkgContent;
-        {
-            std::ifstream f(pkgPath, std::ios::binary);
-            if (f.is_open()) {
-                std::stringstream buffer;
-                buffer << f.rdbuf();
-                pkgContent = buffer.str();
+            std::string pkgContent;
+            {
+                std::ifstream f(pkgPath, std::ios::binary);
+                if (f.is_open()) {
+                    std::stringstream buffer;
+                    buffer << f.rdbuf();
+                    pkgContent = buffer.str();
+                }
             }
-        }
 
-        auto hasDep = [&](const std::string& name) -> bool {
-            return pkgContent.find("\"" + name + "\"") != std::string::npos;
-        };
+            auto hasDep = [&](const std::string& name) -> bool {
+                return pkgContent.find("\"" + name + "\"") != std::string::npos;
+            };
 
-        // Decision Branch 1A: Electron / Electron-Vite
-        bool hasElectronViteConfig = std::filesystem::exists(root / L"electron.vite.config.ts", ec) ||
-                                     std::filesystem::exists(root / L"electron.vite.config.js", ec) ||
-                                     std::filesystem::exists(root / L"electron.vite.config.mjs", ec);
-        bool hasElectronBuilder = std::filesystem::exists(root / L"electron-builder.yml", ec) ||
-                                  std::filesystem::exists(root / L"electron-builder.json", ec);
-        bool hasElectron = hasDep("electron") || hasDep("electron-vite") || hasElectronViteConfig || hasElectronBuilder;
+            // Decision Branch 1A: Electron / Electron-Vite
+            bool hasElectronViteConfig = std::filesystem::exists(root / L"electron.vite.config.ts", ec) ||
+                                         std::filesystem::exists(root / L"electron.vite.config.js", ec) ||
+                                         std::filesystem::exists(root / L"electron.vite.config.mjs", ec);
+            bool hasElectronBuilder = std::filesystem::exists(root / L"electron-builder.yml", ec) ||
+                                      std::filesystem::exists(root / L"electron-builder.json", ec);
+            bool hasElectron = hasDep("electron") || hasDep("electron-vite") || hasElectronViteConfig || hasElectronBuilder;
 
-        if (hasElectron) {
-            decision.framework = ProjectFramework::Electron;
-            decision.title = L"Electron Server";
-            if (hasElectronViteConfig || hasDep("electron-vite")) {
+            if (hasElectron) {
+                decision.framework = ProjectFramework::Electron;
+                decision.title = L"Electron Server";
+                if (hasElectronViteConfig || hasDep("electron-vite")) {
+                    decision.command = L"npm run dev";
+                } else if (pkgContent.find("\"start\"") != std::string::npos) {
+                    decision.command = L"npm run start";
+                } else if (pkgContent.find("\"dev\"") != std::string::npos) {
+                    decision.command = L"npm run dev";
+                } else {
+                    decision.command = L"npm start";
+                }
+                decision.port = 0;
+                decision.customUrl = L"";
+                m_projectDecisionCache[key] = decision;
+                return decision;
+            }
+
+            // Decision Branch 1B: Next.js
+            bool hasNextConfig = std::filesystem::exists(root / L"next.config.js", ec) ||
+                                 std::filesystem::exists(root / L"next.config.mjs", ec) ||
+                                 std::filesystem::exists(root / L"next.config.ts", ec) ||
+                                 std::filesystem::exists(root / L"next.config.cjs", ec) ||
+                                 std::filesystem::exists(root / L".next", ec);
+            if (hasNextConfig || hasDep("next")) {
+                decision.framework = ProjectFramework::NextJs;
+                decision.title = L"Next.js Server";
+                decision.command = L"npm run dev";
+                decision.port = 3000;
+                decision.customUrl = L"http://localhost:3000";
+                m_projectDecisionCache[key] = decision;
+                return decision;
+            }
+
+            // Decision Branch 1C: Vite
+            bool hasViteConfig = std::filesystem::exists(root / L"vite.config.ts", ec) ||
+                                 std::filesystem::exists(root / L"vite.config.js", ec) ||
+                                 std::filesystem::exists(root / L"vite.config.mjs", ec) ||
+                                 std::filesystem::exists(root / L"vite.config.cjs", ec);
+            if (hasViteConfig || hasDep("vite")) {
+                decision.framework = ProjectFramework::Vite;
+                decision.title = L"Vite Server";
+                decision.command = L"npm run dev";
+                decision.port = 5173;
+                decision.customUrl = L"http://localhost:5173";
+                m_projectDecisionCache[key] = decision;
+                return decision;
+            }
+
+            // Decision Branch 1D: Astro / Nuxt
+            if (std::filesystem::exists(root / L"astro.config.mjs", ec) || std::filesystem::exists(root / L"astro.config.ts", ec) || hasDep("astro")) {
+                decision.framework = ProjectFramework::Vite;
+                decision.title = L"Astro Server";
+                decision.command = L"npm run dev";
+                decision.port = 4321;
+                decision.customUrl = L"http://localhost:4321";
+                m_projectDecisionCache[key] = decision;
+                return decision;
+            }
+            if (std::filesystem::exists(root / L"nuxt.config.ts", ec) || std::filesystem::exists(root / L"nuxt.config.js", ec) || hasDep("nuxt")) {
+                decision.framework = ProjectFramework::Vite;
+                decision.title = L"Nuxt Server";
+                decision.command = L"npm run dev";
+                decision.port = 3000;
+                decision.customUrl = L"http://localhost:3000";
+                m_projectDecisionCache[key] = decision;
+                return decision;
+            }
+
+            // Decision Branch 1E: Generic Node.js with package.json
+            decision.framework = ProjectFramework::NodeScript;
+            decision.title = L"Node.js App";
+            if (pkgContent.find("\"dev\"") != std::string::npos) {
                 decision.command = L"npm run dev";
             } else if (pkgContent.find("\"start\"") != std::string::npos) {
-                decision.command = L"npm run start";
-            } else if (pkgContent.find("\"dev\"") != std::string::npos) {
-                decision.command = L"npm run dev";
-            } else {
                 decision.command = L"npm start";
+            } else {
+                decision.command = L"npm test";
             }
             decision.port = 0;
             decision.customUrl = L"";
@@ -3198,108 +3266,42 @@ Window::ProjectDecision Window::DetectFramework(const std::wstring& rootDir, con
             return decision;
         }
 
-        // Decision Branch 1B: Next.js
-        bool hasNextConfig = std::filesystem::exists(root / L"next.config.js", ec) ||
-                             std::filesystem::exists(root / L"next.config.mjs", ec) ||
-                             std::filesystem::exists(root / L"next.config.ts", ec) ||
-                             std::filesystem::exists(root / L"next.config.cjs", ec) ||
-                             std::filesystem::exists(root / L".next", ec);
-        if (hasNextConfig || hasDep("next")) {
-            decision.framework = ProjectFramework::NextJs;
-            decision.title = L"Next.js Server";
-            decision.command = L"npm run dev";
-            decision.port = 3000;
-            decision.customUrl = L"http://localhost:3000";
+        // Feature Node 2: Django (manage.py)
+        std::filesystem::path managePy = root / L"manage.py";
+        if (std::filesystem::exists(managePy, ec)) {
+            decision.markerPath = managePy.wstring();
+            decision.markerTime = std::filesystem::last_write_time(managePy, ec);
+            decision.framework = ProjectFramework::Django;
+            decision.title = L"Django Server";
+            decision.command = L"python manage.py runserver";
+            decision.port = 8000;
+            decision.customUrl = L"http://127.0.0.1:8000";
             m_projectDecisionCache[key] = decision;
             return decision;
         }
 
-        // Decision Branch 1C: Vite
-        bool hasViteConfig = std::filesystem::exists(root / L"vite.config.ts", ec) ||
-                             std::filesystem::exists(root / L"vite.config.js", ec) ||
-                             std::filesystem::exists(root / L"vite.config.mjs", ec) ||
-                             std::filesystem::exists(root / L"vite.config.cjs", ec);
-        if (hasViteConfig || hasDep("vite")) {
-            decision.framework = ProjectFramework::Vite;
-            decision.title = L"Vite Server";
-            decision.command = L"npm run dev";
-            decision.port = 5173;
-            decision.customUrl = L"http://localhost:5173";
+        // Feature Node 3: PHP Check (composer.json or index.php)
+        std::filesystem::path composerJson = root / L"composer.json";
+        std::filesystem::path indexPhp = root / L"index.php";
+        if (std::filesystem::exists(composerJson, ec) || std::filesystem::exists(indexPhp, ec)) {
+            decision.framework = ProjectFramework::Php;
+            decision.title = L"PHP";
+            decision.command = L"";
             m_projectDecisionCache[key] = decision;
             return decision;
         }
 
-        // Decision Branch 1D: Astro / Nuxt
-        if (std::filesystem::exists(root / L"astro.config.mjs", ec) || std::filesystem::exists(root / L"astro.config.ts", ec) || hasDep("astro")) {
-            decision.framework = ProjectFramework::Vite;
-            decision.title = L"Astro Server";
-            decision.command = L"npm run dev";
-            decision.port = 4321;
-            decision.customUrl = L"http://localhost:4321";
+        // Feature Node 4: Static HTML
+        std::filesystem::path indexHtml = root / L"index.html";
+        if (std::filesystem::exists(indexHtml, ec)) {
+            decision.framework = ProjectFramework::LiveServerHtml;
+            decision.title = L"Live Server";
+            decision.command = L"";
+            decision.port = 5500;
+            decision.customUrl = L"http://127.0.0.1:5500";
             m_projectDecisionCache[key] = decision;
             return decision;
         }
-        if (std::filesystem::exists(root / L"nuxt.config.ts", ec) || std::filesystem::exists(root / L"nuxt.config.js", ec) || hasDep("nuxt")) {
-            decision.framework = ProjectFramework::Vite;
-            decision.title = L"Nuxt Server";
-            decision.command = L"npm run dev";
-            decision.port = 3000;
-            decision.customUrl = L"http://localhost:3000";
-            m_projectDecisionCache[key] = decision;
-            return decision;
-        }
-
-        // Decision Branch 1E: Generic Node.js with package.json
-        decision.framework = ProjectFramework::NodeScript;
-        decision.title = L"Node.js App";
-        if (pkgContent.find("\"dev\"") != std::string::npos) {
-            decision.command = L"npm run dev";
-        } else if (pkgContent.find("\"start\"") != std::string::npos) {
-            decision.command = L"npm start";
-        } else {
-            decision.command = L"npm test";
-        }
-        decision.port = 0;
-        decision.customUrl = L"";
-        m_projectDecisionCache[key] = decision;
-        return decision;
-    }
-
-    // Feature Node 2: Django (manage.py)
-    std::filesystem::path managePy = root / L"manage.py";
-    if (std::filesystem::exists(managePy, ec)) {
-        decision.markerPath = managePy.wstring();
-        decision.markerTime = std::filesystem::last_write_time(managePy, ec);
-        decision.framework = ProjectFramework::Django;
-        decision.title = L"Django Server";
-        decision.command = L"python manage.py runserver";
-        decision.port = 8000;
-        decision.customUrl = L"http://127.0.0.1:8000";
-        m_projectDecisionCache[key] = decision;
-        return decision;
-    }
-
-    // Feature Node 3: PHP Check (composer.json or index.php)
-    std::filesystem::path composerJson = root / L"composer.json";
-    std::filesystem::path indexPhp = root / L"index.php";
-    if (std::filesystem::exists(composerJson, ec) || std::filesystem::exists(indexPhp, ec)) {
-        decision.framework = ProjectFramework::Php;
-        decision.title = L"PHP";
-        decision.command = L"";
-        m_projectDecisionCache[key] = decision;
-        return decision;
-    }
-
-    // Feature Node 4: Static HTML
-    std::filesystem::path indexHtml = root / L"index.html";
-    if (std::filesystem::exists(indexHtml, ec)) {
-        decision.framework = ProjectFramework::LiveServerHtml;
-        decision.title = L"Live Server";
-        decision.command = L"";
-        decision.port = 5500;
-        decision.customUrl = L"http://127.0.0.1:5500";
-        m_projectDecisionCache[key] = decision;
-        return decision;
     }
 
     // Feature Node 5: Standalone single-file fallback based on active file extension

@@ -7089,7 +7089,6 @@ void DrawerPanel::ConfirmPublishRepo(int visibilityChoice) {
         RunGitCmd(L"config user.email \"dev@phide.local\"", dir);
     }
 
-    RunGitCmd(L"branch -M main", dir);
     RunGitCmd(L"add -A", dir);
 
     std::wstring escapedMsg;
@@ -7098,6 +7097,7 @@ void DrawerPanel::ConfirmPublishRepo(int visibilityChoice) {
         else escapedMsg += c;
     }
     RunGitCmd(L"commit -m \"" + escapedMsg + L"\"", dir);
+    RunGitCmd(L"branch -M main", dir);
 
     {
         std::lock_guard<std::recursive_mutex> lock(m_gitMutex);
