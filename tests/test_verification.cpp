@@ -8082,7 +8082,7 @@ run_test_66:
         // 3. Render Database & phpMyAdmin Settings Modal Snapshot with Focused Host Input
         dbModal.SetSqlFileAvailable(L"database.sql");
         dbModal.SetFocusedField(phide::ui::DatabaseEditField::Host);
-        dbModal.SetRuntimeStatus(/*pmaRunning=*/true, /*nginxRunning=*/false, /*supabaseRunning=*/false);
+        dbModal.SetRuntimeStatus(/*pmaRunning=*/true, /*nginxRunning=*/false);
         dbModal.Render(pRTSnap.Get(), theme, testCfg, static_cast<float>(snapW), static_cast<float>(snapH));
 
         HRESULT hrEnd1 = pRTSnap->EndDraw();
@@ -8119,7 +8119,7 @@ run_test_66:
         pRTSnap->BeginDraw();
         pRTSnap->Clear(theme.colors.canvasBg);
         header.Render(pRTSnap.Get(), theme, testCfg, static_cast<float>(snapW), false);
-        dbModal.SetRuntimeStatus(/*pmaRunning=*/false, /*nginxRunning=*/true, /*supabaseRunning=*/false);
+        dbModal.SetRuntimeStatus(/*pmaRunning=*/false, /*nginxRunning=*/true);
         dbModal.Render(pRTSnap.Get(), theme, testCfg, static_cast<float>(snapW), static_cast<float>(snapH));
 
         HRESULT hrEnd2 = pRTSnap->EndDraw();
@@ -8406,7 +8406,7 @@ run_test_67:
 
 run_test_68:
     if (targetTest == 0 || targetTest == 68) {
-        std::cout << "\n[Test 68] Testing Supabase Studio Database Dropdown & Settings Modal..." << std::endl;
+        std::cout << "\n[Test 68] Testing Database (phpMyAdmin) Dropdown & Settings Modal..." << std::endl;
         const UINT snapW = 1200;
         const UINT snapH = 800;
         ComPtr<IWICBitmap> pWicSnap68;
@@ -8421,7 +8421,7 @@ run_test_68:
         phide::app::AppConfig testCfg;
         phide::ui::TitleHeader header;
 
-        // 1. Database Dropdown: 3 items (phpMyAdmin, Supabase Studio, Don't run database)
+        // 1. Database Dropdown: 2 items (phpMyAdmin, Don't run database)
         header.ToggleDatabaseDropdown();
         assert(header.IsDatabaseDropdownOpen());
 
@@ -8432,90 +8432,69 @@ run_test_68:
 
         D2D1_RECT_F dbDropRc = header.GetDatabaseDropdownBounds();
         assert(dbDropRc.right - dbDropRc.left > 200.0f);
-        assert(dbDropRc.bottom - dbDropRc.top >= 100.0f);
+        assert(dbDropRc.bottom - dbDropRc.top >= 70.0f);
 
-        // Test HitTest on Supabase settings gear icon
-        // Gear icon is near the top-right of the second third item
-        float itemH = (dbDropRc.bottom - dbDropRc.top) / 3.0f;
-        POINT ptSupaGear = { static_cast<LONG>(dbDropRc.right - 14.0f), static_cast<LONG>(dbDropRc.top + itemH + itemH * 0.5f) };
-        assert(header.HitTestDbSupabaseSettings(ptSupaGear));
+        // Test HitTest on phpMyAdmin settings gear icon
+        float itemH = (dbDropRc.bottom - dbDropRc.top) * 0.5f;
+        POINT ptPmaGear = { static_cast<LONG>(dbDropRc.right - 14.0f), static_cast<LONG>(dbDropRc.top + itemH * 0.5f) };
+        assert(header.HitTestDbSettings(ptPmaGear));
 
-        // Test selection: Item 2 = Supabase Studio (must automatically unselect phpMyAdmin!)
-        POINT ptPmaItem = { static_cast<LONG>(dbDropRc.left + 20.0f), static_cast<LONG>(dbDropRc.top + 5.0f) };
-        POINT ptSupaItem = { static_cast<LONG>(dbDropRc.left + 20.0f), static_cast<LONG>(dbDropRc.top + itemH + 5.0f) };
-        bool handled = header.HandleDropdownClick(ptSupaItem);
+        // Test selection: Item 2 = Don't run database
+        POINT ptDontRun = { static_cast<LONG>(dbDropRc.left + 20.0f), static_cast<LONG>(dbDropRc.top + itemH + 5.0f) };
+        bool handled = header.HandleDropdownClick(ptDontRun);
         assert(handled);
-        assert(header.GetServerDatabaseConfig().supabaseEnabled == true);
+        assert(header.GetServerDatabaseConfig().dontRunDatabase == true);
         assert(header.GetServerDatabaseConfig().phpMyAdminEnabled == false);
-        assert(header.GetServerDatabaseConfig().dontRunDatabase == false);
 
-        // Test mutual exclusion: Selecting phpMyAdmin must automatically unselect Supabase!
+        // Test selection: Item 1 = phpMyAdmin (unselects dontRunDatabase)
+        POINT ptPmaItem = { static_cast<LONG>(dbDropRc.left + 20.0f), static_cast<LONG>(dbDropRc.top + 5.0f) };
         handled = header.HandleDropdownClick(ptPmaItem);
         assert(handled);
         assert(header.GetServerDatabaseConfig().phpMyAdminEnabled == true);
-        assert(header.GetServerDatabaseConfig().supabaseEnabled == false);
         assert(header.GetServerDatabaseConfig().dontRunDatabase == false);
+        std::cout << "  Passed: Database dropdown 2-item selection verified." << std::endl;
 
-        // Test selection: Item 3 = Don't run database
-        POINT ptDontRun = { static_cast<LONG>(dbDropRc.left + 20.0f), static_cast<LONG>(dbDropRc.top + itemH * 2.0f + 5.0f) };
-        handled = header.HandleDropdownClick(ptDontRun);
-        assert(handled);
-        assert(header.GetServerDatabaseConfig().dontRunDatabase == true);
-        assert(header.GetServerDatabaseConfig().supabaseEnabled == false);
-        assert(header.GetServerDatabaseConfig().phpMyAdminEnabled == false);
-
-        // Test re-enabling Supabase (unselects phpMyAdmin & dontRunDatabase)
-        handled = header.HandleDropdownClick(ptSupaItem);
-        assert(handled);
-        assert(header.GetServerDatabaseConfig().supabaseEnabled == true);
-        assert(header.GetServerDatabaseConfig().phpMyAdminEnabled == false);
-        assert(header.GetServerDatabaseConfig().dontRunDatabase == false);
-        std::cout << "  Passed: Database dropdown mutual exclusion (phpMyAdmin <-> Supabase) verified." << std::endl;
-
-        // Re-render header with Supabase selected & phpMyAdmin unselected
+        // Re-render header with phpMyAdmin active
         pRTSnap68->Clear(theme.colors.canvasBg);
         header.SetDatabaseState(phide::ui::DatabaseState::Running);
         header.Render(pRTSnap68.Get(), theme, testCfg, static_cast<float>(snapW), false);
 
-        // 2. Test DatabaseSettingsModal Supabase tab (phpMyAdmin tab must be hidden!)
+        // 2. Test DatabaseSettingsModal phpMyAdmin & Nginx tabs
         phide::ui::DatabaseSettingsModal dbModal;
-        dbModal.Open(phide::ui::DatabaseModalTab::Supabase);
+        dbModal.Open(phide::ui::DatabaseModalTab::PhpMyAdmin);
         assert(dbModal.IsOpen());
-        assert(dbModal.IsSupabaseSelected());
-        assert(dbModal.GetActiveTab() == phide::ui::DatabaseModalTab::Supabase);
-        assert(dbModal.GetSupabaseUrl() == L"http://localhost:54323");
-        assert(dbModal.GetSupabaseStudioPort() == L"54323");
-        assert(dbModal.GetSupabasePort() == L"5432");
-        assert(!dbModal.GetSupabaseAnonKey().empty());
+        assert(dbModal.GetActiveTab() == phide::ui::DatabaseModalTab::PhpMyAdmin);
+        assert(dbModal.GetHost() == L"localhost");
+        assert(dbModal.GetPort() == L"3306");
+        assert(dbModal.GetUser() == L"root");
 
         // Check client code snippets
-        std::wstring jsSnippet = dbModal.GetSupabaseJsSnippet();
-        std::wstring pySnippet = dbModal.GetSupabasePySnippet();
-        assert(jsSnippet.find(L"createClient") != std::wstring::npos);
-        assert(pySnippet.find(L"create_client") != std::wstring::npos);
-        std::cout << "  Passed: Supabase configuration parameters and client snippets verified." << std::endl;
+        std::wstring pdoSnippet = dbModal.GetPdoSnippet();
+        std::wstring mysqliSnippet = dbModal.GetMysqliSnippet();
+        assert(pdoSnippet.find(L"new PDO") != std::wstring::npos);
+        assert(mysqliSnippet.find(L"new mysqli") != std::wstring::npos);
+        std::cout << "  Passed: phpMyAdmin connection parameters and snippets verified." << std::endl;
 
-        // Render modal in Supabase tab
-        dbModal.SetRuntimeStatus(false, false, true);
-        assert(!dbModal.IsPmaRunning());
-        assert(dbModal.IsSupabaseRunning());
+        // Render modal in phpMyAdmin tab
+        dbModal.SetRuntimeStatus(true, false);
+        assert(dbModal.IsPmaRunning());
         assert(!dbModal.IsNginxRunning());
         dbModal.Render(pRTSnap68.Get(), theme, testCfg, static_cast<float>(snapW), static_cast<float>(snapH));
 
         HRESULT hrEnd68 = pRTSnap68->EndDraw();
         assert(SUCCEEDED(hrEnd68));
 
-        std::wstring artifact68Path = L"C:\\Users\\Administrator\\.gemini\\antigravity\\brain\\c83160b9-3f8b-4ad1-87a8-ab1f7f555a77\\test_supabase_database_dropdown_and_modal.png";
+        std::wstring artifact68Path = L"C:\\Users\\Administrator\\.gemini\\antigravity\\brain\\c83160b9-3f8b-4ad1-87a8-ab1f7f555a77\\test_database_phpmyadmin_settings_modal.png";
         SaveWicBitmapToPng(pWicSnap68.Get(), pWicFactory.Get(), artifact68Path);
         assert(std::filesystem::exists(artifact68Path));
-        std::wcout << L"  Passed: Saved visual verification of Supabase Database Dropdown & Modal to: " << artifact68Path << std::endl;
+        std::wcout << L"  Passed: Saved visual verification of phpMyAdmin Database Dropdown & Modal to: " << artifact68Path << std::endl;
 
-        std::cout << "  Passed: All [TEST 68] Supabase Studio Database Dropdown & Settings Modal tests passed!" << std::endl;
+        std::cout << "  Passed: All [TEST 68] Database Dropdown & phpMyAdmin Settings Modal tests passed!" << std::endl;
     }
 
 run_test_69:
     if (targetTest == 0 || targetTest == 69) {
-        std::cout << "\n[Test 69] Testing Supabase Studio Web Server and Manual Garbage Collection..." << std::endl;
+        std::cout << "\n[Test 69] Testing Manual Garbage Collection and Performance Memory Optimization..." << std::endl;
         const UINT snapW = 1200;
         const UINT snapH = 800;
         ComPtr<IWICBitmap> pWicSnap69;
@@ -8532,7 +8511,7 @@ run_test_69:
         // 1. Test Buffer manual garbage collection & versioning
         phide::editor::Buffer testBuf;
         assert(testBuf.GetVersion() == 0);
-        testBuf.InsertText(L"const { createClient } = require('@supabase/supabase-js');\nconst supabase = createClient('http://localhost:54323', 'anon-key');\n");
+        testBuf.InsertText(L"<?php\n$pdo = new PDO('mysql:host=localhost;dbname=student_crud', 'root', '');\n");
         assert(testBuf.GetVersion() > 0);
         assert(testBuf.GetLineCount() >= 2);
         size_t verBeforeUndo = testBuf.GetVersion();
@@ -8549,85 +8528,26 @@ run_test_69:
         testCanvas.RunGarbageCollection();
         std::cout << "  Passed: EditorCanvas RunGarbageCollection verified." << std::endl;
 
-        // 3. Test Supabase Studio static files & server files exist
-        std::filesystem::path studioPath = std::filesystem::current_path() / L"include" / L"phide" / L"db" / L"supabase" / L"studio";
-        assert(std::filesystem::exists(studioPath / L"index.html"));
-        assert(std::filesystem::exists(studioPath / L"server.js"));
-        assert(std::filesystem::exists(studioPath / L"index.php"));
-        std::cout << "  Passed: Supabase Studio assets (index.html, server.js, index.php) verified." << std::endl;
-
-        // 4. Test launching Supabase Studio server process and querying /health and /rest/v1/
-        std::wstring nodeCmd = L"node.exe \"" + (studioPath / L"server.js").wstring() + L"\" --port 54323";
-        std::vector<wchar_t> cmdBuf(nodeCmd.begin(), nodeCmd.end());
-        cmdBuf.push_back(L'\0');
-
-        STARTUPINFOW si{};
-        si.cb = sizeof(si);
-        si.dwFlags = STARTF_USESHOWWINDOW;
-        si.wShowWindow = SW_HIDE;
-        PROCESS_INFORMATION pi{};
-
-        bool serverStarted = CreateProcessW(NULL, cmdBuf.data(), NULL, NULL, FALSE, CREATE_NO_WINDOW, NULL, studioPath.wstring().c_str(), &si, &pi);
-        assert(serverStarted);
-        CloseHandle(pi.hThread);
-
-        // Wait for port 54323 to respond
-        Sleep(600);
-
-        // Connect via basic TCP client socket
-        WSADATA wsaData;
-        WSAStartup(MAKEWORD(2, 2), &wsaData);
-
-        SOCKET s = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-        assert(s != INVALID_SOCKET);
-
-        sockaddr_in serverAddr{};
-        serverAddr.sin_family = AF_INET;
-        serverAddr.sin_port = htons(54323);
-        inet_pton(AF_INET, "127.0.0.1", &serverAddr.sin_addr);
-
-        int connectRes = connect(s, (sockaddr*)&serverAddr, sizeof(serverAddr));
-        assert(connectRes == 0);
-
-        const char* req = "GET /health HTTP/1.1\r\nHost: localhost:54323\r\nConnection: close\r\n\r\n";
-        send(s, req, (int)strlen(req), 0);
-
-        char recvBuf[2048]{};
-        int bytesRecv = recv(s, recvBuf, sizeof(recvBuf) - 1, 0);
-        assert(bytesRecv > 0);
-        std::string responseStr(recvBuf, bytesRecv);
-        assert(responseStr.find("200 OK") != std::string::npos);
-        assert(responseStr.find("\"status\":\"ok\"") != std::string::npos || responseStr.find("\"studio\":true") != std::string::npos);
-        closesocket(s);
-        WSACleanup();
-
-        std::cout << "  Passed: Supabase Studio HTTP server responded with HTTP 200 OK on port 54323." << std::endl;
-
-        // Cleanly terminate process
-        TerminateProcess(pi.hProcess, 0);
-        CloseHandle(pi.hProcess);
-        std::cout << "  Passed: Supabase Studio server process terminated cleanly." << std::endl;
-
-        // 5. Render Visual Verification Card for Supabase Studio and Garbage Collection
+        // 3. Render Visual Verification Card for Memory Optimization
         pRTSnap69->BeginDraw();
-        pRTSnap69->Clear(D2D1::ColorF(0x121212)); // Supabase Studio Dark Theme
+        pRTSnap69->Clear(D2D1::ColorF(0x18181b));
 
         // Header banner
         D2D1_RECT_F rcHeader = D2D1::RectF(40.0f, 40.0f, snapW - 40.0f, 130.0f);
         pRTSnap69->FillRectangle(rcHeader, theme.brushHeaderBg.Get());
         pRTSnap69->DrawRectangle(rcHeader, theme.brushBorderSubtle.Get());
-        std::wstring hTitle = L"Supabase Studio & Memory Optimization Verification";
+        std::wstring hTitle = L"PHP & MySQL IDE Engine: Clean Stack & Memory Optimization Verification";
         pRTSnap69->DrawText(hTitle.c_str(), static_cast<UINT32>(hTitle.length()), theme.fontMenuItem.Get(), D2D1::RectF(60.0f, 55.0f, snapW - 60.0f, 85.0f), theme.brushTextWhite.Get());
-        std::wstring hSub = L"Standalone Port 54323 HTTP Server, Table Editor, REST API & System-Wide Manual Garbage Collector";
+        std::wstring hSub = L"Streamlined PHP/MySQL Stack, 2-Item Dropdown, & System-Wide Manual Garbage Collector";
         pRTSnap69->DrawText(hSub.c_str(), static_cast<UINT32>(hSub.length()), theme.fontHint.Get(), D2D1::RectF(60.0f, 95.0f, snapW - 60.0f, 120.0f), theme.brushTextMuted.Get());
 
-        // Card 1: Supabase Studio Server Runtime
+        // Card 1: Clean PHP & MySQL Architecture
         D2D1_RECT_F rcCard1 = D2D1::RectF(40.0f, 150.0f, 580.0f, 750.0f);
         pRTSnap69->FillRectangle(rcCard1, theme.brushCanvasBg.Get());
         pRTSnap69->DrawRectangle(rcCard1, theme.brushBorderSubtle.Get());
-        std::wstring c1Title = L"🟢 Supabase Studio Server: ONLINE (Port 54323)";
+        std::wstring c1Title = L"🟢 Clean PHP & MySQL Database Architecture";
         pRTSnap69->DrawText(c1Title.c_str(), static_cast<UINT32>(c1Title.length()), theme.fontMenuItem.Get(), D2D1::RectF(60.0f, 170.0f, 560.0f, 200.0f), theme.brushRunGreen.Get());
-        std::wstring c1Body = L"• Web Dashboard: http://localhost:54323\n• REST v1 Endpoint: http://localhost:54323/rest/v1/\n• PostgreSQL Port: 5432 (Session Active)\n• Authentication: anon-key public simulation\n• HTTP Status: 200 OK (Connection Verified)\n• Auto-spawns background process via node.exe / php.exe\n• TerminateProcess cleanly frees socket on stop/exit";
+        std::wstring c1Body = L"• Database: MySQL / MariaDB (Port 3306)\n• Web Management: phpMyAdmin 5.2.3 (Port 8081)\n• Web Server: Nginx (Port 80)\n• Dropdown: Streamlined 2-item menu (phpMyAdmin, Don't run database)\n• Modal: Clean 2-tab configuration (phpMyAdmin, Nginx)\n• Heavy bloated dependencies completely removed\n• Zero background daemon task leaks";
         pRTSnap69->DrawText(c1Body.c_str(), static_cast<UINT32>(c1Body.length()), theme.fontHint.Get(), D2D1::RectF(60.0f, 220.0f, 560.0f, 500.0f), theme.brushTextPrimary.Get());
 
         // Card 2: Manual Garbage Collection & Performance
@@ -8642,12 +8562,12 @@ run_test_69:
         HRESULT hrEnd69 = pRTSnap69->EndDraw();
         assert(SUCCEEDED(hrEnd69));
 
-        std::wstring artifact69Path = L"C:\\Users\\Administrator\\.gemini\\antigravity\\brain\\c83160b9-3f8b-4ad1-87a8-ab1f7f555a77\\test_supabase_studio_live_server_and_gc.png";
+        std::wstring artifact69Path = L"C:\\Users\\Administrator\\.gemini\\antigravity\\brain\\c83160b9-3f8b-4ad1-87a8-ab1f7f555a77\\test_clean_php_mysql_and_gc.png";
         SaveWicBitmapToPng(pWicSnap69.Get(), pWicFactory.Get(), artifact69Path);
         assert(std::filesystem::exists(artifact69Path));
-        std::wcout << L"  Passed: Saved visual verification of Supabase Studio & GC to: " << artifact69Path << std::endl;
+        std::wcout << L"  Passed: Saved visual verification of clean PHP/MySQL & GC to: " << artifact69Path << std::endl;
 
-        std::cout << "  Passed: All [TEST 69] Supabase Studio Web Server and Manual Garbage Collection tests passed!" << std::endl;
+        std::cout << "  Passed: All [TEST 69] Clean Architecture and Manual Garbage Collection tests passed!" << std::endl;
     }
 
     std::cout << "\n==========================================" << std::endl;

@@ -345,16 +345,8 @@ void TitleHeader::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCon
         isDbExpanded = true;
         dbText = L"Retrying... (" + std::to_wstring(m_databaseRetryCount) + L"/3)";
     } else if (m_databaseState == DatabaseState::Running) {
-        if (m_serverDbConfig.phpMyAdminEnabled && m_serverDbConfig.supabaseEnabled) {
-            dbW = m_hoveredDatabase ? config.ScaleF(190.0f) : config.ScaleF(148.0f);
-            dbText = m_hoveredDatabase ? L"Databases log" : L"Databases are up";
-        } else if (m_serverDbConfig.supabaseEnabled) {
-            dbW = m_hoveredDatabase ? config.ScaleF(182.0f) : config.ScaleF(138.0f);
-            dbText = m_hoveredDatabase ? L"Supabase log" : L"Supabase is up";
-        } else {
-            dbW = m_hoveredDatabase ? config.ScaleF(182.0f) : config.ScaleF(138.0f);
-            dbText = m_hoveredDatabase ? L"phpMyAdmin log" : L"phpMyAdmin is up";
-        }
+        dbW = m_hoveredDatabase ? config.ScaleF(182.0f) : config.ScaleF(138.0f);
+        dbText = m_hoveredDatabase ? L"phpMyAdmin log" : L"phpMyAdmin is up";
         isDbExpanded = true;
     } else if (m_databaseState == DatabaseState::Failed) {
         dbW = m_hoveredDatabase ? config.ScaleF(150.0f) : config.ScaleF(108.0f);
@@ -572,7 +564,7 @@ void TitleHeader::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCon
     if (m_hoveredDatabase && !isDbExpanded) {
         const float tipH    = config.ScaleF(24.0f);
         const float tipPadX = config.ScaleF(10.0f);
-        const wchar_t* tipText = L"Database (phpMyAdmin / Supabase)";
+        const wchar_t* tipText = L"Database (phpMyAdmin)";
         size_t textLen = wcslen(tipText);
         float textW    = config.ScaleF(static_cast<float>(textLen * 6.5f + 14.0f));
         float tipW     = textW + tipPadX * 2.0f;
@@ -934,7 +926,7 @@ void TitleHeader::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCon
     // --- Render Database & Server Checklist Dropdowns on Top (Image 2 & 3: matches sleek dark PopupMenu) ---
     if (m_showDatabaseDropdown) {
         const float dropW = config.ScaleF(240.0f);
-        const float dropH = config.ScaleF(110.0f);
+        const float dropH = config.ScaleF(74.0f);
         const float dropX = (std::max)(10.0f, m_rcDatabase.right - dropW);
         const float dropY = m_rcDatabase.bottom + config.ScaleF(4.0f);
         m_rcDatabaseDropdown = D2D1::RectF(dropX, dropY, dropX + dropW, dropY + dropH);
@@ -999,8 +991,8 @@ void TitleHeader::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCon
         pRT->DrawLine(D2D1::Point2F(dropX + config.ScaleF(10.0f), sep1Y), D2D1::Point2F(dropX + dropW - config.ScaleF(10.0f), sep1Y),
                       theme.brushMenuSeparator ? theme.brushMenuSeparator.Get() : theme.brushBorderSubtle.Get(), 1.0f);
 
-        // Item 2: Supabase Studio
-        bool supChecked = m_serverDbConfig.supabaseEnabled && !m_serverDbConfig.dontRunDatabase;
+        // Item 2: Don't run database
+        bool noDbChecked = m_serverDbConfig.dontRunDatabase;
         bool isItem2Hovered = (m_hoveredDropdownItem == 1);
 
         if (isItem2Hovered && theme.brushMenuHover) {
@@ -1012,60 +1004,16 @@ void TitleHeader::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCon
         float chk2Y = dropY + config.ScaleF(46.0f);
         D2D1_RECT_F rcChk2 = D2D1::RectF(chk2X, chk2Y, chk2X + chkS, chk2Y + chkS);
         D2D1_ROUNDED_RECT rrcChk2 = D2D1::RoundedRect(rcChk2, 3.0f, 3.0f);
-        if (supChecked) {
+        if (noDbChecked) {
             pRT->FillRoundedRectangle(rrcChk2, pAccent);
             pRT->DrawLine(D2D1::Point2F(chk2X + 3.0f, chk2Y + 7.0f), D2D1::Point2F(chk2X + 6.0f, chk2Y + 11.0f), pWhiteBrush, 1.6f);
             pRT->DrawLine(D2D1::Point2F(chk2X + 6.0f, chk2Y + 11.0f), D2D1::Point2F(chk2X + 11.5f, chk2Y + 3.5f), pWhiteBrush, 1.6f);
         } else {
             pRT->DrawRoundedRectangle(rrcChk2, theme.brushMenuBorder ? theme.brushMenuBorder.Get() : theme.brushBorderSubtle.Get(), 1.0f);
         }
-
-        // Database icon for Supabase (pure white)
-        float dbIco2Y = dropY + config.ScaleF(45.0f);
-        D2D1_RECT_F rcMiniDb2 = D2D1::RectF(dbIcoX, dbIco2Y, dbIcoX + dbIcoS, dbIco2Y + dbIcoS);
-        m_icons.DrawDatabase(pRT, rcMiniDb2, pWhiteBrush, 1.2f);
-
-        // Database name: Supabase Studio
-        D2D1_RECT_F rcLbl2 = D2D1::RectF(dbIcoX + dbIcoS + config.ScaleF(6.0f), dropY + config.ScaleF(38.0f), dropX + dropW - config.ScaleF(32.0f), dropY + config.ScaleF(68.0f));
-        pRT->DrawText(L"Supabase Studio", 15, pFmt, rcLbl2, pWhiteBrush);
-
-        // Settings gear button on the right edge of Supabase Studio
-        float setY2 = dropY + config.ScaleF(45.0f);
-        m_rcDbSettingsSupabaseBtn = D2D1::RectF(setX - config.ScaleF(4.0f), setY2 - config.ScaleF(3.0f), setX + setS + config.ScaleF(4.0f), setY2 + setS + config.ScaleF(3.0f));
-        if (m_hoveredDbSettingsSupabase && theme.brushMenuHover) {
-            pRT->FillRoundedRectangle(D2D1::RoundedRect(m_rcDbSettingsSupabaseBtn, 3.5f, 3.5f), theme.brushMenuHover.Get());
-        }
-        D2D1_RECT_F rcIcoSet2 = D2D1::RectF(setX, setY2, setX + setS, setY2 + setS);
-        m_icons.DrawSettings(pRT, rcIcoSet2, m_hoveredDbSettingsSupabase ? pWhiteBrush : (theme.brushMenuText ? theme.brushMenuText.Get() : pWhiteBrush), 1.2f);
-
-        // Separator 2
-        float sep2Y = dropY + config.ScaleF(70.0f);
-        pRT->DrawLine(D2D1::Point2F(dropX + config.ScaleF(10.0f), sep2Y), D2D1::Point2F(dropX + dropW - config.ScaleF(10.0f), sep2Y),
-                      theme.brushMenuSeparator ? theme.brushMenuSeparator.Get() : theme.brushBorderSubtle.Get(), 1.0f);
-
-        // Item 3: Don't run database
-        bool noDbChecked = m_serverDbConfig.dontRunDatabase;
-        bool isItem3Hovered = (m_hoveredDropdownItem == 2);
-
-        if (isItem3Hovered && theme.brushMenuHover) {
-            D2D1_RECT_F rcHover3 = D2D1::RectF(dropX + config.ScaleF(4.0f), dropY + config.ScaleF(72.0f), dropX + dropW - config.ScaleF(4.0f), dropY + config.ScaleF(102.0f));
-            pRT->FillRoundedRectangle(D2D1::RoundedRect(rcHover3, 3.5f, 3.5f), theme.brushMenuHover.Get());
-        }
-
-        float chk3X = dropX + config.ScaleF(12.0f);
-        float chk3Y = dropY + config.ScaleF(80.0f);
-        D2D1_RECT_F rcChk3 = D2D1::RectF(chk3X, chk3Y, chk3X + chkS, chk3Y + chkS);
-        D2D1_ROUNDED_RECT rrcChk3 = D2D1::RoundedRect(rcChk3, 3.0f, 3.0f);
-        if (noDbChecked) {
-            pRT->FillRoundedRectangle(rrcChk3, pAccent);
-            pRT->DrawLine(D2D1::Point2F(chk3X + 3.0f, chk3Y + 7.0f), D2D1::Point2F(chk3X + 6.0f, chk3Y + 11.0f), pWhiteBrush, 1.6f);
-            pRT->DrawLine(D2D1::Point2F(chk3X + 6.0f, chk3Y + 11.0f), D2D1::Point2F(chk3X + 11.5f, chk3Y + 3.5f), pWhiteBrush, 1.6f);
-        } else {
-            pRT->DrawRoundedRectangle(rrcChk3, theme.brushMenuBorder ? theme.brushMenuBorder.Get() : theme.brushBorderSubtle.Get(), 1.0f);
-        }
-        D2D1_RECT_F rcLbl3 = D2D1::RectF(chk3X + chkS + config.ScaleF(10.0f), dropY + config.ScaleF(72.0f), dropX + dropW - config.ScaleF(8.0f), dropY + config.ScaleF(102.0f));
-        ID2D1Brush* lbl3Brush = isItem3Hovered ? pWhiteBrush : (theme.brushMenuText ? theme.brushMenuText.Get() : pWhiteBrush);
-        pRT->DrawText(L"Don't run database", 18, pFmt, rcLbl3, lbl3Brush);
+        D2D1_RECT_F rcLbl2 = D2D1::RectF(chk2X + chkS + config.ScaleF(10.0f), dropY + config.ScaleF(38.0f), dropX + dropW - config.ScaleF(8.0f), dropY + config.ScaleF(68.0f));
+        ID2D1Brush* lbl2Brush = isItem2Hovered ? pWhiteBrush : (theme.brushMenuText ? theme.brushMenuText.Get() : pWhiteBrush);
+        pRT->DrawText(L"Don't run database", 18, pFmt, rcLbl2, lbl2Brush);
     }
 
     if (m_showServerDropdown) {
@@ -1337,10 +1285,6 @@ bool TitleHeader::HitTestDbSettings(POINT pt) const noexcept {
     return m_showDatabaseDropdown && PtInRectF(pt, m_rcDbSettingsBtn);
 }
 
-bool TitleHeader::HitTestDbSupabaseSettings(POINT pt) const noexcept {
-    return m_showDatabaseDropdown && PtInRectF(pt, m_rcDbSettingsSupabaseBtn);
-}
-
 bool TitleHeader::HitTestServerSettings(POINT pt) const noexcept {
     return m_showServerDropdown && PtInRectF(pt, m_rcServerSettingsBtn);
 }
@@ -1349,27 +1293,18 @@ bool TitleHeader::HandleDropdownClick(POINT pt) noexcept {
     if (m_showDatabaseDropdown && PtInRectF(pt, m_rcDatabaseDropdown)) {
         float relY = pt.y - m_rcDatabaseDropdown.top;
         float totalH = m_rcDatabaseDropdown.bottom - m_rcDatabaseDropdown.top;
-        float third = totalH / 3.0f;
-        if (relY < third) {
-            // Item 1: phpMyAdmin (Mutually exclusive with Supabase Studio)
+        float half = totalH * 0.5f;
+        if (relY < half) {
+            // Item 1: phpMyAdmin
             m_serverDbConfig.phpMyAdminEnabled = !m_serverDbConfig.phpMyAdminEnabled;
             if (m_serverDbConfig.phpMyAdminEnabled) {
-                m_serverDbConfig.supabaseEnabled = false;
-                m_serverDbConfig.dontRunDatabase = false;
-            }
-        } else if (relY < third * 2.0f) {
-            // Item 2: Supabase Studio (Mutually exclusive with phpMyAdmin)
-            m_serverDbConfig.supabaseEnabled = !m_serverDbConfig.supabaseEnabled;
-            if (m_serverDbConfig.supabaseEnabled) {
-                m_serverDbConfig.phpMyAdminEnabled = false;
                 m_serverDbConfig.dontRunDatabase = false;
             }
         } else {
-            // Item 3: Don't run database
+            // Item 2: Don't run database
             m_serverDbConfig.dontRunDatabase = !m_serverDbConfig.dontRunDatabase;
             if (m_serverDbConfig.dontRunDatabase) {
                 m_serverDbConfig.phpMyAdminEnabled = false;
-                m_serverDbConfig.supabaseEnabled = false;
             }
         }
         return true;

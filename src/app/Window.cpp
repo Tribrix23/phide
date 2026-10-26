@@ -256,7 +256,6 @@ Window::~Window() {
     StopNginxServer();
     StopPmaServer();
     StopMysqlServer();
-    StopSupabaseServer();
     RunManualGarbageCollection();
     DiscardDeviceResources();
     if (m_hwnd) {
@@ -2344,25 +2343,11 @@ void Window::DoQuickOpenFileSearch() {
 void Window::UpdateDatabaseModalRuntimeStatus() {
     bool pmaRunning = (m_hPmaProcess != nullptr || m_isPmaRunning);
     bool nginxRunning = (m_hNginxProcess != nullptr || m_header.GetServerState() == ui::ServerState::Running);
-    bool supabaseRunning = m_isSupabaseRunning;
-    m_dbSettingsModal.SetRuntimeStatus(pmaRunning, nginxRunning, supabaseRunning);
+    m_dbSettingsModal.SetRuntimeStatus(pmaRunning, nginxRunning);
 }
 
 void Window::DoOpenDatabaseSettings(ui::DatabaseModalTab initialTab) {
     UpdateDatabaseModalRuntimeStatus();
-
-    auto& srvDb = m_header.GetServerDatabaseConfig();
-    // Auto-detect the right initial tab and selected database mode
-    if (initialTab == ui::DatabaseModalTab::Supabase) {
-        m_dbSettingsModal.SetSupabaseSelected(true);
-    } else if (initialTab == ui::DatabaseModalTab::PhpMyAdmin) {
-        if ((m_isSupabaseRunning || srvDb.supabaseEnabled) && !srvDb.phpMyAdminEnabled) {
-            initialTab = ui::DatabaseModalTab::Supabase;
-            m_dbSettingsModal.SetSupabaseSelected(true);
-        } else {
-            m_dbSettingsModal.SetSupabaseSelected(false);
-        }
-    }
 
     std::wstring sqlName;
     auto checkDirForSql = [](const std::filesystem::path& dir) -> std::wstring {
@@ -2400,110 +2385,6 @@ void Window::DoOpenDatabaseSettings(ui::DatabaseModalTab initialTab) {
     InvalidateRect(m_hwnd, nullptr, FALSE);
 }
 
-void Window::StartSupabaseServer() {
-    StopSupabaseServer();
-    StopPmaServer();
-
-    auto& srvDb = m_header.GetServerDatabaseConfig();
-    srvDb.supabaseEnabled = true;
-    srvDb.phpMyAdminEnabled = false;
-    srvDb.dontRunDatabase = false;
-    m_dbSettingsModal.SetSupabaseSelected(true);
-
-    std::filesystem::path studioDir = GetPhideRoot() / L"include" / L"phide" / L"db" / L"supabase" / L"studio";
-    if (!std::filesystem::exists(studioDir)) {
-        studioDir = GetPhideRoot() / L"db" / L"supabase" / L"studio";
-    }
-
-    int supabasePort = 54323;
-    try {
-        int parsed = std::stoi(m_dbSettingsModal.GetSupabaseStudioPort());
-        if (parsed > 0 && parsed < 65536) supabasePort = parsed;
-    } catch (...) {}
-
-    std::filesystem::path serverJs = studioDir / L"server.js";
-    std::wstring cmd;
-    std::wstring workingDir = studioDir.wstring();
-
-    std::wstring nodeExe = L"C:\\Program Files\\nodejs\\node.exe";
-    if (!std::filesystem::exists(nodeExe)) nodeExe = L"node.exe";
-
-    std::wstring phpExe = L"C:\\Users\\Administrator\\AppData\\Local\\Programs\\PHP\\v8.5\\php.exe";
-    if (!std::filesystem::exists(phpExe)) phpExe = L"php.exe";
-
-    bool useNode = std::filesystem::exists(serverJs);
-    if (useNode) {
-        cmd = L"\"" + nodeExe + L"\" \"" + serverJs.wstring() + L"\" --port " + std::to_wstring(supabasePort);
-    } else {
-        cmd = L"\"" + phpExe + L"\" -S 0.0.0.0:" + std::to_wstring(supabasePort) + L" -t \"" + studioDir.wstring() + L"\"";
-    }
-
-    std::vector<wchar_t> cmdBuf(cmd.begin(), cmd.end());
-    cmdBuf.push_back(L'\0');
-
-    STARTUPINFOW si{};
-    si.cb = sizeof(si);
-    si.dwFlags = STARTF_USESHOWWINDOW;
-    si.wShowWindow = SW_HIDE;
-    PROCESS_INFORMATION pi{};
-
-    bool launched = CreateProcessW(NULL, cmdBuf.data(), NULL, NULL, FALSE, CREATE_NO_WINDOW, NULL, workingDir.c_str(), &si, &pi);
-    if (!launched && useNode) {
-        cmd = L"\"" + phpExe + L"\" -S 0.0.0.0:" + std::to_wstring(supabasePort) + L" -t \"" + studioDir.wstring() + L"\"";
-        cmdBuf.assign(cmd.begin(), cmd.end());
-        cmdBuf.push_back(L'\0');
-        launched = CreateProcessW(NULL, cmdBuf.data(), NULL, NULL, FALSE, CREATE_NO_WINDOW, NULL, workingDir.c_str(), &si, &pi);
-    }
-
-    if (launched) {
-        m_hSupabaseProcess = pi.hProcess;
-        m_isSupabaseRunning = true;
-        CloseHandle(pi.hThread);
-
-        for (int attempt = 0; attempt < 30; ++attempt) {
-            Sleep(50);
-            if (IsPortListening(supabasePort)) break;
-        }
-
-        m_dbSettingsModal.SetSupabaseRunning(true);
-        m_header.SetDatabaseState(ui::DatabaseState::Running);
-        m_header.SetDatabaseLogOpened(false);
-        UpdateDatabaseModalRuntimeStatus();
-
-        std::vector<std::wstring> logLines;
-        logLines.push_back(L"[Supabase LOG] Supabase Studio & PostgreSQL engine session");
-        logLines.push_back(L"[info] Initializing Supabase Studio (studio port: " + std::to_wstring(supabasePort) + L", postgres: " + m_dbSettingsModal.GetSupabasePort() + L")...");
-        logLines.push_back(L"[info] REST API endpoint ready: http://localhost:" + std::to_wstring(supabasePort) + L"/rest/v1/");
-        logLines.push_back(L"[info] Supabase Studio is up and listening on http://localhost:" + std::to_wstring(supabasePort));
-        m_terminal.OpenLogTab(L"Supabase log", logLines);
-    } else {
-        m_isSupabaseRunning = false;
-        m_dbSettingsModal.SetSupabaseRunning(false);
-        m_header.SetDatabaseState(ui::DatabaseState::Failed);
-        UpdateDatabaseModalRuntimeStatus();
-
-        std::vector<std::wstring> logLines;
-        logLines.push_back(L"[Supabase ERROR] Failed to start Supabase Studio server process.");
-        logLines.push_back(L"[error] Could not launch node.exe or php.exe for " + studioDir.wstring());
-        m_terminal.OpenLogTab(L"Supabase log", logLines);
-    }
-}
-
-void Window::StopSupabaseServer() {
-    if (m_hSupabaseProcess) {
-        TerminateProcess(m_hSupabaseProcess, 0);
-        CloseHandle(m_hSupabaseProcess);
-        m_hSupabaseProcess = nullptr;
-    }
-    m_isSupabaseRunning = false;
-    m_dbSettingsModal.SetSupabaseRunning(false);
-    bool pmaRunning = (m_hPmaProcess != nullptr || m_isPmaRunning);
-    if (!pmaRunning) {
-        m_header.SetDatabaseState(ui::DatabaseState::Stopped);
-    }
-    UpdateDatabaseModalRuntimeStatus();
-}
-
 void Window::RunManualGarbageCollection() {
     for (auto& group : m_editorGroups) {
         for (auto& doc : group.docs) {
@@ -2523,8 +2404,6 @@ void Window::RunManualGarbageCollection() {
 
 void Window::DoOpenServerSettings() {
     UpdateDatabaseModalRuntimeStatus();
-    auto& srvDb = m_header.GetServerDatabaseConfig();
-    m_dbSettingsModal.SetSupabaseSelected((m_isSupabaseRunning || srvDb.supabaseEnabled) && !srvDb.phpMyAdminEnabled);
     m_dbSettingsModal.Open(ui::DatabaseModalTab::NginxServer);
     m_header.CloseServerDatabaseDropdowns();
     InvalidateRect(m_hwnd, nullptr, FALSE);
@@ -2766,7 +2645,6 @@ void Window::StopAllLiveServers() {
     StopPhpServer();
     StopNginxServer();
     StopPmaServer();
-    StopSupabaseServer();
     for (auto& s : m_activeLiveServers) {
         auto serverToStop = std::move(s.server);
         if (serverToStop) {
@@ -3925,7 +3803,6 @@ void Window::DoStopServer() {
     StopPhpServer();
     StopNginxServer();
     StopPmaServer();
-    StopSupabaseServer();
     m_header.SetServerState(ui::ServerState::Stopped);
     m_header.SetDatabaseState(ui::DatabaseState::Stopped);
     m_header.SetServerLogOpened(false);
@@ -3940,7 +3817,6 @@ void Window::DoRestartServer() {
     StopPhpServer();
     StopNginxServer();
     StopPmaServer();
-    StopSupabaseServer();
     m_header.SetServerState(ui::ServerState::Stopped);
     m_header.SetDatabaseState(ui::DatabaseState::Stopped);
     m_header.SetServerLogOpened(false);
@@ -4009,24 +3885,14 @@ void Window::DoOpenDatabaseLog() {
     m_terminal.Open(m_drawer.GetOpenFolderPath());
     AnimateTerminalOpen();
 
-    auto& srvDb = m_header.GetServerDatabaseConfig();
-    if (m_isSupabaseRunning || m_dbSettingsModal.IsSupabaseRunning() || (srvDb.supabaseEnabled && !m_isPmaRunning)) {
-        std::vector<std::wstring> logLines;
-        logLines.push_back(L"[Supabase LOG] Supabase Studio & PostgreSQL engine session");
-        logLines.push_back(L"[info] Initializing Supabase Studio (studio port: " + m_dbSettingsModal.GetSupabaseStudioPort() + L", postgres: " + m_dbSettingsModal.GetSupabasePort() + L")...");
-        logLines.push_back(L"[info] REST API endpoint ready: " + m_dbSettingsModal.GetSupabaseUrl() + L"/rest/v1/");
-        logLines.push_back(L"[info] Supabase Studio is up and listening on " + m_dbSettingsModal.GetSupabaseUrl());
-        m_terminal.OpenLogTab(L"Supabase log", logLines);
-    } else {
-        std::vector<std::wstring> logLines;
-        logLines.push_back(L"[phpMyAdmin LOG] phpMyAdmin 5.2.3 database engine session");
-        logLines.push_back(L"[2026/10/25 16:24:00] [info] Initializing phpMyAdmin configuration");
-        logLines.push_back(L"[2026/10/25 16:24:00] [info] Checking PHP runtime environment: PHP 8.5 active");
-        logLines.push_back(L"[2026/10/25 16:24:01] [info] Connecting to MySQL / MariaDB server at localhost:3306... Connected");
-        logLines.push_back(L"[2026/10/25 16:24:01] [info] phpMyAdmin is up: http://localhost:8081");
-        logLines.push_back(L"[2026/10/25 16:24:02] [info] Session established for root@localhost");
-        m_terminal.OpenLogTab(L"phpMyAdmin log", logLines);
-    }
+    std::vector<std::wstring> logLines;
+    logLines.push_back(L"[phpMyAdmin LOG] phpMyAdmin 5.2.3 database engine session");
+    logLines.push_back(L"[2026/10/25 16:24:00] [info] Initializing phpMyAdmin configuration");
+    logLines.push_back(L"[2026/10/25 16:24:00] [info] Checking PHP runtime environment: PHP 8.5 active");
+    logLines.push_back(L"[2026/10/25 16:24:01] [info] Connecting to MySQL / MariaDB server at localhost:3306... Connected");
+    logLines.push_back(L"[2026/10/25 16:24:01] [info] phpMyAdmin is up: http://localhost:8081");
+    logLines.push_back(L"[2026/10/25 16:24:02] [info] Session established for root@localhost");
+    m_terminal.OpenLogTab(L"phpMyAdmin log", logLines);
 
     m_header.SetDatabaseLogOpened(true);
     m_isTerminalFocused = true;
@@ -4249,12 +4115,9 @@ void Window::StopMysqlServer() {
 
 void Window::StartPmaServer() {
     StopPmaServer();
-    StopSupabaseServer();
     auto& srvDb = m_header.GetServerDatabaseConfig();
     srvDb.phpMyAdminEnabled = true;
-    srvDb.supabaseEnabled = false;
     srvDb.dontRunDatabase = false;
-    m_dbSettingsModal.SetSupabaseSelected(false);
     StartMysqlServer();
     std::filesystem::path pmaDir = GetPhideRoot() / L"include" / L"phide" / L"db" / L"phpMyAdmin";
     if (!std::filesystem::exists(pmaDir)) {
@@ -4310,9 +4173,7 @@ void Window::StopPmaServer() {
         m_hPmaProcess = nullptr;
     }
     m_isPmaRunning = false;
-    if (!m_isSupabaseRunning) {
-        m_header.SetDatabaseState(ui::DatabaseState::Stopped);
-    }
+    m_header.SetDatabaseState(ui::DatabaseState::Stopped);
     UpdateDatabaseModalRuntimeStatus();
 }
 
@@ -4360,12 +4221,6 @@ void Window::DoRunPhpApplication(const std::wstring& filePath, const std::wstrin
                 m_header.SetDatabaseState(ui::DatabaseState::Failed);
             }
         }
-    }
-
-    // 3. Check Database (Supabase Studio / PostgreSQL)
-    bool needSupabase = !srvCfg.dontRunDatabase && srvCfg.supabaseEnabled;
-    if (needSupabase) {
-        StartSupabaseServer();
     }
 
     // 2b. Auto-import database.sql if present in project directory so the schema & tables exist
@@ -5955,10 +5810,8 @@ void Window::HandleMouseMove(POINT clientPt, WPARAM wParam) {
     if (m_header.SetHoveredDropdownItem(hoveredDropItem)) needRepaint = true;
 
     bool hovDbSet = m_header.HitTestDbSettings(clientPt);
-    bool hovDbSupabaseSet = m_header.HitTestDbSupabaseSettings(clientPt);
     bool hovSrvSet = m_header.HitTestServerSettings(clientPt);
     if (m_header.SetHoveredDbSettings(hovDbSet)) needRepaint = true;
-    if (m_header.SetHoveredDbSettingsSupabase(hovDbSupabaseSet)) needRepaint = true;
     if (m_header.SetHoveredServerSettings(hovSrvSet)) needRepaint = true;
 
     // Check Extensions right sidebar hover
@@ -6084,53 +5937,9 @@ void Window::HandleLButtonDown(POINT clientPt) {
             case ui::DatabaseModalAction::SwitchTabPma:
                 m_dbSettingsModal.SetActiveTab(ui::DatabaseModalTab::PhpMyAdmin);
                 break;
-            case ui::DatabaseModalAction::SwitchTabSupabase:
-                m_dbSettingsModal.SetActiveTab(ui::DatabaseModalTab::Supabase);
-                break;
             case ui::DatabaseModalAction::SwitchTabNginx:
                 m_dbSettingsModal.SetActiveTab(ui::DatabaseModalTab::NginxServer);
                 break;
-            case ui::DatabaseModalAction::CopySupabaseUrl:
-                SetClipboardText(m_hwnd, m_dbSettingsModal.GetSupabaseUrl());
-                m_dbSettingsModal.SetCopiedFeedback(L"Supabase Studio URL");
-                break;
-            case ui::DatabaseModalAction::CopySupabaseAnonKey:
-                SetClipboardText(m_hwnd, m_dbSettingsModal.GetSupabaseAnonKey());
-                m_dbSettingsModal.SetCopiedFeedback(L"Supabase Anon Key");
-                break;
-            case ui::DatabaseModalAction::CopySupabasePort:
-                SetClipboardText(m_hwnd, m_dbSettingsModal.GetSupabasePort());
-                m_dbSettingsModal.SetCopiedFeedback(L"PostgreSQL Port (5432)");
-                break;
-            case ui::DatabaseModalAction::CopySupabaseJsSnippet:
-                SetClipboardText(m_hwnd, m_dbSettingsModal.GetSupabaseJsSnippet());
-                m_dbSettingsModal.SetCopiedFeedback(L"Supabase JS / TS Snippet");
-                break;
-            case ui::DatabaseModalAction::CopySupabasePySnippet:
-                SetClipboardText(m_hwnd, m_dbSettingsModal.GetSupabasePySnippet());
-                m_dbSettingsModal.SetCopiedFeedback(L"Supabase Python Snippet");
-                break;
-            case ui::DatabaseModalAction::ToggleSupabaseRun: {
-                if (m_isSupabaseRunning || m_dbSettingsModal.IsSupabaseRunning()) {
-                    StopSupabaseServer();
-                } else {
-                    StartSupabaseServer();
-                }
-                UpdateDatabaseModalRuntimeStatus();
-                break;
-            }
-            case ui::DatabaseModalAction::OpenBrowserSupabase:
-                if (!m_isSupabaseRunning) {
-                    StartSupabaseServer();
-                    UpdateDatabaseModalRuntimeStatus();
-                }
-                ShellExecuteW(nullptr, L"open", m_dbSettingsModal.GetSupabaseUrl().c_str(), nullptr, nullptr, SW_SHOWNORMAL);
-                break;
-            case ui::DatabaseModalAction::OpenSupabaseFolder: {
-                std::filesystem::path supaPath = GetPhideRoot() / L"include" / L"phide" / L"db" / L"supabase";
-                ShellExecuteW(nullptr, L"open", supaPath.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
-                break;
-            }
             case ui::DatabaseModalAction::CopyHost:
                 SetClipboardText(m_hwnd, m_dbSettingsModal.GetHost());
                 m_dbSettingsModal.SetCopiedFeedback(L"Host ($host)");
@@ -7152,19 +6961,8 @@ void Window::HandleLButtonDown(POINT clientPt) {
         if (m_header.HitTestDbSettings(clientPt)) {
             auto& srvDb = m_header.GetServerDatabaseConfig();
             srvDb.phpMyAdminEnabled = true;
-            srvDb.supabaseEnabled = false;
             srvDb.dontRunDatabase = false;
-            if (m_isSupabaseRunning) StopSupabaseServer();
             DoOpenDatabaseSettings(ui::DatabaseModalTab::PhpMyAdmin);
-            return;
-        }
-        if (m_header.HitTestDbSupabaseSettings(clientPt)) {
-            auto& srvDb = m_header.GetServerDatabaseConfig();
-            srvDb.supabaseEnabled = true;
-            srvDb.phpMyAdminEnabled = false;
-            srvDb.dontRunDatabase = false;
-            if (m_isPmaRunning) StopPmaServer();
-            DoOpenDatabaseSettings(ui::DatabaseModalTab::Supabase);
             return;
         }
         if (m_header.HitTestServerSettings(clientPt)) {
@@ -7173,15 +6971,8 @@ void Window::HandleLButtonDown(POINT clientPt) {
         }
         if (m_header.HandleDropdownClick(clientPt)) {
             auto& srvDb = m_header.GetServerDatabaseConfig();
-            if (srvDb.supabaseEnabled) {
-                m_dbSettingsModal.SetSupabaseSelected(true);
+            if (srvDb.dontRunDatabase) {
                 if (m_isPmaRunning) StopPmaServer();
-            } else if (srvDb.phpMyAdminEnabled) {
-                m_dbSettingsModal.SetSupabaseSelected(false);
-                if (m_isSupabaseRunning) StopSupabaseServer();
-            } else if (srvDb.dontRunDatabase) {
-                if (m_isPmaRunning) StopPmaServer();
-                if (m_isSupabaseRunning) StopSupabaseServer();
             }
             InvalidateRect(m_hwnd, nullptr, FALSE);
             return;
@@ -7192,24 +6983,13 @@ void Window::HandleLButtonDown(POINT clientPt) {
 
     // Check pill settings or browser icon clicks on running server/database (User request: "even if they are running have a setting icon when user hover so they can see and like see the settings and do open in browser")
     if (m_header.HitTestDbPillSettings(clientPt)) {
-        auto& srvDb = m_header.GetServerDatabaseConfig();
-        if ((m_isSupabaseRunning || srvDb.supabaseEnabled) && !srvDb.phpMyAdminEnabled) {
-            DoOpenDatabaseSettings(ui::DatabaseModalTab::Supabase);
-        } else {
-            DoOpenDatabaseSettings(ui::DatabaseModalTab::PhpMyAdmin);
-        }
+        DoOpenDatabaseSettings(ui::DatabaseModalTab::PhpMyAdmin);
         InvalidateRect(m_hwnd, nullptr, FALSE);
         return;
     }
     if (m_header.HitTestDbPillBrowser(clientPt)) {
-        auto& srvDb = m_header.GetServerDatabaseConfig();
-        if ((m_isSupabaseRunning || srvDb.supabaseEnabled) && !srvDb.phpMyAdminEnabled) {
-            if (!m_isSupabaseRunning) StartSupabaseServer();
-            ShellExecuteW(nullptr, L"open", m_dbSettingsModal.GetSupabaseUrl().c_str(), nullptr, nullptr, SW_SHOWNORMAL);
-        } else {
-            if (!m_isPmaRunning) StartPmaServer();
-            ShellExecuteW(nullptr, L"open", m_dbSettingsModal.GetPmaUrl().c_str(), nullptr, nullptr, SW_SHOWNORMAL);
-        }
+        if (!m_isPmaRunning) StartPmaServer();
+        ShellExecuteW(nullptr, L"open", m_dbSettingsModal.GetPmaUrl().c_str(), nullptr, nullptr, SW_SHOWNORMAL);
         InvalidateRect(m_hwnd, nullptr, FALSE);
         return;
     }
@@ -8361,7 +8141,6 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     m_header.HitTestServer(pt) ||
                     m_header.HitTestDropdowns(pt) ||
                     m_header.HitTestDbSettings(pt) ||
-                    m_header.HitTestDbSupabaseSettings(pt) ||
                     m_header.HitTestServerSettings(pt) ||
                     m_header.HitTestDbPillSettings(pt) ||
                     m_header.HitTestDbPillBrowser(pt) ||
