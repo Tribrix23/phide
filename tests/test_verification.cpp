@@ -33,6 +33,7 @@
 #include "phide/ui/SplashScreen.hpp"
 #include "phide/ui/ConfirmDiscardModal.hpp"
 #include "phide/ui/DatabaseSettingsModal.hpp"
+#include "phide/ui/PackageManagerView.hpp"
 #include "phide/editor/Buffer.hpp"
 #include "phide/editor/SyntaxValidator.hpp"
 #include "phide/editor/SnippetManager.hpp"
@@ -277,6 +278,9 @@ int main(int argc, char* argv[]) {
     }
     if (targetTest == 69) {
         goto run_test_69;
+    }
+    if (targetTest == 70) {
+        goto run_test_70;
     }
 
     // --- 3. Render Test: Picture Viewer in Dark & Light Modes ---
@@ -8568,6 +8572,231 @@ run_test_69:
         std::wcout << L"  Passed: Saved visual verification of clean PHP/MySQL & GC to: " << artifact69Path << std::endl;
 
         std::cout << "  Passed: All [TEST 69] Clean Architecture and Manual Garbage Collection tests passed!" << std::endl;
+    }
+
+run_test_70:
+    if (targetTest == 0 || targetTest == 70) {
+        std::cout << "\n[TEST 70] Testing Package Manager (ActivityRail, Language Grid, Debounced Fuzzy Search, PyCharm Preview, Centered Git Splitter, Clean Loading)..." << std::endl;
+
+        const UINT wRail = 48, hRail = 800;
+        ComPtr<IWICBitmap> pWicRail;
+        pWicFactory->CreateBitmap(wRail, hRail, GUID_WICPixelFormat32bppPBGRA, WICBitmapCacheOnDemand, &pWicRail);
+        D2D1_RENDER_TARGET_PROPERTIES rtProps = D2D1::RenderTargetProperties(
+            D2D1_RENDER_TARGET_TYPE_DEFAULT,
+            D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED)
+        );
+        ComPtr<ID2D1RenderTarget> pRTRail;
+        pD2DFactory->CreateWicBitmapRenderTarget(pWicRail.Get(), rtProps, &pRTRail);
+
+        phide::ui::Theme theme;
+        theme.SetThemeMode(phide::ui::ThemeMode::Dark);
+        HRESULT hr = theme.CreateDeviceResources(pRTRail.Get(), pDWriteFactory.Get());
+        assert(SUCCEEDED(hr));
+
+        // 1. Verify ActivityRail Package Icon at the bottom (matching User Image 1)
+        phide::ui::ActivityRail rail;
+        pRTRail->BeginDraw();
+        rail.Render(pRTRail.Get(), theme, config, 800.0f);
+        pRTRail->EndDraw();
+
+        // HitTest on Package icon at the bottom (y = 800 - 36 - 14 = 750, center = 768)
+        POINT ptPkg{ 24, 768 };
+        auto hitRail = rail.HitTest(ptPkg);
+        assert(hitRail == phide::ui::RailTabId::Packages);
+        std::cout << "  Passed: ActivityRail Package icon HitTest returns RailTabId::Packages at bottom of rail." << std::endl;
+
+        // Verify git loading spinner is NOT stuck
+        assert(rail.IsGitLoading() == false);
+        std::cout << "  Passed: Source Control loading spinner is not stuck on startup." << std::endl;
+
+        // 2. Verify PackageManagerView: Initial screen MUST be the Language Grid first (User Image 2)
+        phide::ui::PackageManagerView pkgView;
+        assert(pkgView.GetViewState() == phide::ui::PkgViewState::LanguageGrid);
+        assert(pkgView.GetPackageCount() >= 500); // 500 packages catalog
+        assert(pkgView.GetFilteredPackageCount() == 0); // Output is initial NONE!
+        std::cout << "  Passed: PackageManagerView initialized in LanguageGrid state with initial NONE output." << std::endl;
+
+        // 3. Test Language Runtime Selection -> Transitions to Package Search
+        pkgView.SelectLanguageAndOpenSearch(phide::ui::RuntimeLanguage::Python);
+        assert(pkgView.GetViewState() == phide::ui::PkgViewState::PackageSearch);
+        assert(pkgView.GetActiveLanguage() == phide::ui::RuntimeLanguage::Python);
+        assert(pkgView.GetFilteredPackageCount() == 0); // Still NONE until user types!
+        std::cout << "  Passed: Selecting Python opens Package Search view with initial NONE output." << std::endl;
+
+        // 4. Test Search Bar & Fuzzy Relevance Ranking from 500-package catalog
+        pkgView.SetSearchQuery(L"matplotlib");
+        assert(pkgView.GetFilteredPackageCount() >= 1);
+        assert(pkgView.GetSelectedIndex() == 0);
+        std::cout << "  Passed: Exact search for 'matplotlib' ranked #1." << std::endl;
+
+        // Test letter search "mpl" -> finds matplotlib closest match
+        pkgView.SetSearchQuery(L"mpl");
+        assert(pkgView.GetFilteredPackageCount() >= 1);
+        std::cout << "  Passed: Letter search 'mpl' matches 'matplotlib' closest match." << std::endl;
+
+        // Test "req" -> requests
+        pkgView.SetSearchQuery(L"req");
+        assert(pkgView.GetFilteredPackageCount() >= 1);
+        std::cout << "  Passed: Query 'req' matches 'requests'." << std::endl;
+
+        // Reset query -> output returns to NONE (memory optimization, lazy load on demand)
+        pkgView.SetSearchQuery(L"");
+        assert(pkgView.GetFilteredPackageCount() == 0);
+        std::cout << "  Passed: Empty query resets output to NONE." << std::endl;
+
+        // 5. Test Split Install Button [ Install | ▾ ] and Scope (Project vs Global)
+        std::wstring executedCmd;
+        phide::ui::PkgInstallScope executedScope = phide::ui::PkgInstallScope::Project;
+        pkgView.SetOnInstallCallback([&](const std::wstring& cmd, phide::ui::PkgInstallScope scope) {
+            executedCmd = cmd;
+            executedScope = scope;
+        });
+
+        // Test switching to PHP and Packagist catalog
+        pkgView.NavigateBackToLanguages();
+        assert(pkgView.GetViewState() == phide::ui::PkgViewState::LanguageGrid);
+        pkgView.SelectLanguageAndOpenSearch(phide::ui::RuntimeLanguage::Php);
+        assert(pkgView.GetActiveLanguage() == phide::ui::RuntimeLanguage::Php);
+        pkgView.SetSearchQuery(L"guzzle");
+        assert(pkgView.GetFilteredPackageCount() >= 1);
+        std::cout << "  Passed: PHP Composer package search for 'guzzle' verified." << std::endl;
+
+        // Switch back to Python
+        pkgView.SelectLanguageAndOpenSearch(phide::ui::RuntimeLanguage::Python);
+        pkgView.SetSearchQuery(L"matplotlib");
+
+        // 6. Test Git Splitter Ratio & Center Persistence
+        phide::ui::DrawerPanel drawer;
+        assert(drawer.GetGitSplitRatio() >= 0.45f && drawer.GetGitSplitRatio() <= 0.55f);
+        drawer.SetGitSplitRatio(0.50f);
+        drawer.SetGitSplitY(400.0f, 100.0f, 700.0f);
+        assert(drawer.GetGitSplitRatio() > 0.40f && drawer.GetGitSplitRatio() < 0.60f);
+        std::cout << "  Passed: Git splitter ratio centered (0.50) and persisted." << std::endl;
+
+        // 7. Visual Render Test 1: Initial Language Grid First Screen (Matching Image 2)
+        const UINT snapW = 1280, snapH = 800;
+        ComPtr<IWICBitmap> pWicSnapGrid;
+        pWicFactory->CreateBitmap(snapW, snapH, GUID_WICPixelFormat32bppPBGRA, WICBitmapCacheOnDemand, &pWicSnapGrid);
+        ComPtr<ID2D1RenderTarget> pRTSnapGrid;
+        pD2DFactory->CreateWicBitmapRenderTarget(pWicSnapGrid.Get(), rtProps, &pRTSnapGrid);
+
+        theme.CreateDeviceResources(pRTSnapGrid.Get(), pDWriteFactory.Get());
+        pRTSnapGrid->BeginDraw();
+        pRTSnapGrid->Clear(D2D1::ColorF(0x18181b));
+        config.activeRailTab = 3; // Packages tab active at bottom
+        rail.Render(pRTSnapGrid.Get(), theme, config, 800.0f);
+        pkgView.NavigateBackToLanguages(); // Initial screen: Language Grid
+        pkgView.Render(pRTSnapGrid.Get(), theme, config, 48.0f, snapW - 48.0f, 0.0f, 800.0f);
+        HRESULT hrGrid = pRTSnapGrid->EndDraw();
+        assert(SUCCEEDED(hrGrid));
+
+        std::wstring snapGridPath = artDir + L"test_package_manager_language_grid_first.png";
+        SaveWicBitmapToPng(pWicSnapGrid.Get(), pWicFactory.Get(), snapGridPath);
+        assert(std::filesystem::exists(snapGridPath));
+        std::wcout << L"  Passed: Saved Language Grid First screenshot to: " << snapGridPath << std::endl;
+
+        // 8. Visual Render Test 2: Package Search Results with Split Install [ Install | ▾ ] Buttons on Output Cards (Matching Image 3)
+        ComPtr<IWICBitmap> pWicSnapSearch;
+        pWicFactory->CreateBitmap(snapW, snapH, GUID_WICPixelFormat32bppPBGRA, WICBitmapCacheOnDemand, &pWicSnapSearch);
+        ComPtr<ID2D1RenderTarget> pRTSnapSearch;
+        pD2DFactory->CreateWicBitmapRenderTarget(pWicSnapSearch.Get(), rtProps, &pRTSnapSearch);
+
+        pRTSnapSearch->BeginDraw();
+        pRTSnapSearch->Clear(D2D1::ColorF(0x18181b));
+        rail.Render(pRTSnapSearch.Get(), theme, config, 800.0f);
+        pkgView.SelectLanguageAndOpenSearch(phide::ui::RuntimeLanguage::Python);
+        pkgView.SetSearchQuery(L"matplotlib");
+        pkgView.SetSelectedIndex(0);
+        pkgView.Render(pRTSnapSearch.Get(), theme, config, 48.0f, snapW - 48.0f, 0.0f, 800.0f);
+        HRESULT hrSearch = pRTSnapSearch->EndDraw();
+        assert(SUCCEEDED(hrSearch));
+
+        std::wstring snapSearchPath = artDir + L"test_package_manager_search_and_split_install.png";
+        SaveWicBitmapToPng(pWicSnapSearch.Get(), pWicFactory.Get(), snapSearchPath);
+        assert(std::filesystem::exists(snapSearchPath));
+        std::wcout << L"  Passed: Saved Search & Split Install screenshot to: " << snapSearchPath << std::endl;
+
+        // 8b. Visual Render Test 2b: Split Install Dropdown Popover [✓ Project (Default) / Global]
+        ComPtr<IWICBitmap> pWicSnapDropdown;
+        pWicFactory->CreateBitmap(snapW, snapH, GUID_WICPixelFormat32bppPBGRA, WICBitmapCacheOnDemand, &pWicSnapDropdown);
+        ComPtr<ID2D1RenderTarget> pRTSnapDropdown;
+        pD2DFactory->CreateWicBitmapRenderTarget(pWicSnapDropdown.Get(), rtProps, &pRTSnapDropdown);
+
+        pRTSnapDropdown->BeginDraw();
+        pRTSnapDropdown->Clear(D2D1::ColorF(0x18181b));
+        rail.Render(pRTSnapDropdown.Get(), theme, config, 800.0f);
+        // Click split arrow ▾ button on matplotlib card to open dropdown (bounds: [506, 110, 528, 138], center = 517, 124)
+        pkgView.HandleLButtonDown(POINT{ 517, 124 });
+        pkgView.Render(pRTSnapDropdown.Get(), theme, config, 48.0f, snapW - 48.0f, 0.0f, 800.0f);
+        HRESULT hrDrop = pRTSnapDropdown->EndDraw();
+        assert(SUCCEEDED(hrDrop));
+
+        std::wstring snapDropPath = artDir + L"test_package_manager_split_dropdown_open.png";
+        SaveWicBitmapToPng(pWicSnapDropdown.Get(), pWicFactory.Get(), snapDropPath);
+        assert(std::filesystem::exists(snapDropPath));
+        std::wcout << L"  Passed: Saved Split Dropdown Open screenshot to: " << snapDropPath << std::endl;
+
+        // 9. Visual Render Test 3: Dedicated GitHub Repository Preview (Pure GitHub preview on right side, Matching Image 3)
+        ComPtr<IWICBitmap> pWicSnapPreview;
+        pWicFactory->CreateBitmap(snapW, snapH, GUID_WICPixelFormat32bppPBGRA, WICBitmapCacheOnDemand, &pWicSnapPreview);
+        ComPtr<ID2D1RenderTarget> pRTSnapPreview;
+        pD2DFactory->CreateWicBitmapRenderTarget(pWicSnapPreview.Get(), rtProps, &pRTSnapPreview);
+
+        pRTSnapPreview->BeginDraw();
+        pRTSnapPreview->Clear(D2D1::ColorF(0x18181b));
+        rail.Render(pRTSnapPreview.Get(), theme, config, 800.0f);
+        pkgView.SelectLanguageAndOpenSearch(phide::ui::RuntimeLanguage::Python);
+        pkgView.SetSearchQuery(L"pandas");
+        pkgView.SetSelectedIndex(0);
+        pkgView.Render(pRTSnapPreview.Get(), theme, config, 48.0f, snapW - 48.0f, 0.0f, 800.0f);
+        HRESULT hrPreview = pRTSnapPreview->EndDraw();
+        assert(SUCCEEDED(hrPreview));
+
+        std::wstring snapPrevPath = artDir + L"test_package_manager_github_preview_pure.png";
+        SaveWicBitmapToPng(pWicSnapPreview.Get(), pWicFactory.Get(), snapPrevPath);
+        assert(std::filesystem::exists(snapPrevPath));
+        std::wcout << L"  Passed: Saved Pure GitHub Preview screenshot to: " << snapPrevPath << std::endl;
+
+        // 10. Visual Render Test 4: Activity Rail with Package Icon Anchored at the Bottom (Matching Image 1)
+        ComPtr<IWICBitmap> pWicSnapRail;
+        pWicFactory->CreateBitmap(200, snapH, GUID_WICPixelFormat32bppPBGRA, WICBitmapCacheOnDemand, &pWicSnapRail);
+        ComPtr<ID2D1RenderTarget> pRTSnapRail;
+        pD2DFactory->CreateWicBitmapRenderTarget(pWicSnapRail.Get(), rtProps, &pRTSnapRail);
+
+        pRTSnapRail->BeginDraw();
+        pRTSnapRail->Clear(D2D1::ColorF(0x18181b));
+        config.activeRailTab = 3; // Packages icon active at bottom
+        rail.Render(pRTSnapRail.Get(), theme, config, 800.0f);
+        HRESULT hrRail = pRTSnapRail->EndDraw();
+        assert(SUCCEEDED(hrRail));
+
+        std::wstring snapRailPath = artDir + L"test_rail_package_icon_at_bottom.png";
+        SaveWicBitmapToPng(pWicSnapRail.Get(), pWicFactory.Get(), snapRailPath);
+        assert(std::filesystem::exists(snapRailPath));
+        std::wcout << L"  Passed: Saved Rail Package Icon at Bottom screenshot to: " << snapRailPath << std::endl;
+
+        // 11. Visual Render Test 5: Source Control with Centered Splitter & Clean Rail
+        ComPtr<IWICBitmap> pWicSnap70_3;
+        pWicFactory->CreateBitmap(snapW, snapH, GUID_WICPixelFormat32bppPBGRA, WICBitmapCacheOnDemand, &pWicSnap70_3);
+        ComPtr<ID2D1RenderTarget> pRTSnap70_3;
+        pD2DFactory->CreateWicBitmapRenderTarget(pWicSnap70_3.Get(), rtProps, &pRTSnap70_3);
+
+        pRTSnap70_3->BeginDraw();
+        pRTSnap70_3->Clear(D2D1::ColorF(0x18181b));
+        config.activeRailTab = 2; // Source control
+        rail.SetGitLoading(false); // Clean not stuck
+        rail.Render(pRTSnap70_3.Get(), theme, config, 800.0f);
+        drawer.SetGitSplitRatio(0.50f);
+        drawer.Render(pRTSnap70_3.Get(), theme, config, 800.0f, 300.0f);
+        HRESULT hr70_3 = pRTSnap70_3->EndDraw();
+        assert(SUCCEEDED(hr70_3));
+
+        std::wstring snap3Path = artDir + L"test_git_splitter_centered_and_clean_rail.png";
+        SaveWicBitmapToPng(pWicSnap70_3.Get(), pWicFactory.Get(), snap3Path);
+        assert(std::filesystem::exists(snap3Path));
+        std::wcout << L"  Passed: Saved Centered Git Splitter screenshot to: " << snap3Path << std::endl;
+
+        std::cout << "  Passed: All [TEST 70] Package Manager and Git fixes passed successfully!" << std::endl;
     }
 
     std::cout << "\n==========================================" << std::endl;

@@ -3004,6 +3004,9 @@ bool DrawerPanel::HitTestGitSplitter(POINT pt) const noexcept {
 
 void DrawerPanel::SetGitSplitY(float y, float minY, float maxY) noexcept {
     m_gitSplitY = (std::max)(minY, (std::min)(maxY, y));
+    if (maxY > minY + 20.0f) {
+        m_gitSplitRatio = (std::clamp)((m_gitSplitY - minY) / (maxY - minY), 0.15f, 0.85f);
+    }
 }
 
 bool DrawerPanel::HandleMouseWheel(short delta, int activeRailTab, float mouseY) {
@@ -3492,12 +3495,37 @@ GitCmdResult RunGitCmd(const std::wstring& cmd, const std::wstring& workDir) {
     std::string rawOut;
     char buffer[4096];
     DWORD bytesRead = 0;
-    while (ReadFile(hReadPipe, buffer, sizeof(buffer) - 1, &bytesRead, nullptr) && bytesRead > 0) {
-        rawOut.append(buffer, bytesRead);
+    DWORD startTime = GetTickCount();
+    const DWORD kTimeoutMs = 3500; // 3.5s safety timeout for git CLI queries
+
+    while (true) {
+        DWORD bytesAvail = 0;
+        if (PeekNamedPipe(hReadPipe, nullptr, 0, nullptr, &bytesAvail, nullptr) && bytesAvail > 0) {
+            DWORD toRead = (std::min)(bytesAvail, static_cast<DWORD>(sizeof(buffer) - 1));
+            if (ReadFile(hReadPipe, buffer, toRead, &bytesRead, nullptr) && bytesRead > 0) {
+                rawOut.append(buffer, bytesRead);
+            }
+        }
+
+        DWORD waitRes = WaitForSingleObject(pi.hProcess, 15);
+        if (waitRes == WAIT_OBJECT_0) {
+            // Process finished, drain any remaining bytes
+            while (PeekNamedPipe(hReadPipe, nullptr, 0, nullptr, &bytesAvail, nullptr) && bytesAvail > 0) {
+                DWORD toRead = (std::min)(bytesAvail, static_cast<DWORD>(sizeof(buffer) - 1));
+                if (ReadFile(hReadPipe, buffer, toRead, &bytesRead, nullptr) && bytesRead > 0) {
+                    rawOut.append(buffer, bytesRead);
+                } else break;
+            }
+            break;
+        }
+
+        if (GetTickCount() - startTime > kTimeoutMs) {
+            TerminateProcess(pi.hProcess, 1);
+            break;
+        }
     }
     CloseHandle(hReadPipe);
 
-    WaitForSingleObject(pi.hProcess, 6000);
     DWORD exitCode = 0;
     GetExitCodeProcess(pi.hProcess, &exitCode);
     res.exitCode = static_cast<int>(exitCode);
@@ -5756,11 +5784,15 @@ void DrawerPanel::RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, 
     float minSplitY = curY + config.ScaleF(110.0f);
     float maxSplitY = clientHeight - config.ScaleF(70.0f);
     if (m_gitSplitY <= 0.0f) {
-        m_gitSplitY = curY + (clientHeight - curY) * 0.46f;
-    } else {
-        if (m_gitSplitY < minSplitY) m_gitSplitY = minSplitY;
-        if (m_gitSplitY > maxSplitY) m_gitSplitY = maxSplitY;
+        m_gitSplitY = curY + (clientHeight - curY) * m_gitSplitRatio;
+    } else if (clientHeight > minSplitY + config.ScaleF(50.0f) && m_gitSplitRatio >= 0.15f && m_gitSplitRatio <= 0.85f) {
+        // Re-anchor to user's saved center ratio if window expands or opens
+        float ratioY = curY + (clientHeight - curY) * m_gitSplitRatio;
+        if (m_gitSplitY < minSplitY || m_gitSplitY > maxSplitY) {
+            m_gitSplitY = ratioY;
+        }
     }
+    float effectiveSplitY = (std::clamp)(m_gitSplitY, minSplitY, (std::max)(minSplitY, maxSplitY));
 
     // =========================================================================
     // 3. Section 1: "Changes" & "Staged Changes"
@@ -6006,7 +6038,7 @@ void DrawerPanel::RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, 
 
         // Scrollable List of Staged Changes & Changes (Bounded above draggable splitter)
         float fileListTopY = curY;
-        float fileListBottomY = m_showGraphSection ? (m_gitSplitY - config.ScaleF(4.0f)) : clientHeight;
+        float fileListBottomY = m_showGraphSection ? (effectiveSplitY - config.ScaleF(4.0f)) : clientHeight;
 
         if (fileListBottomY > fileListTopY) {
             D2D1_RECT_F rcChangesClip = D2D1::RectF(railW, fileListTopY, railW + currentDrawerW, fileListBottomY);
@@ -6430,15 +6462,15 @@ void DrawerPanel::RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, 
     // =========================================================================
     if (m_showGraphSection) {
         if (m_showChangesSection) {
-            curY = m_gitSplitY;
+            curY = effectiveSplitY;
 
             // Draw horizontal splitter divider line
             pRT->DrawLine(
-                D2D1::Point2F(railW, m_gitSplitY),
-                D2D1::Point2F(railW + currentDrawerW, m_gitSplitY),
+                D2D1::Point2F(railW, effectiveSplitY),
+                D2D1::Point2F(railW + currentDrawerW, effectiveSplitY),
                 theme.brushBorderSubtle.Get(), 1.0f
             );
-            m_gitSplitterBounds = D2D1::RectF(railW, m_gitSplitY - 4.0f, railW + currentDrawerW, m_gitSplitY + 4.0f);
+            m_gitSplitterBounds = D2D1::RectF(railW, effectiveSplitY - 4.0f, railW + currentDrawerW, effectiveSplitY + 4.0f);
         }
 
         m_gitGraphHeaderBounds = D2D1::RectF(railW, curY, railW + currentDrawerW, curY + secH);

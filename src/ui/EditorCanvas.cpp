@@ -345,6 +345,8 @@ void EditorCanvas::RenderSinglePane(ID2D1RenderTarget* pRT, Theme& theme, const 
     float contentTopY = headerH + tabH + breadcrumbH;
     if (activeDoc.isSpecialView && activeDoc.viewType == L"keybindings") {
         m_keybindingsView.Render(pRT, theme, config, canvasLeft, canvasWidth, contentTopY, clientHeight - contentTopY);
+    } else if (activeDoc.isSpecialView && activeDoc.viewType == L"packages") {
+        m_packageManagerView.Render(pRT, theme, config, canvasLeft, canvasWidth, contentTopY, clientHeight - contentTopY);
     } else if (activeDoc.isImageView) {
         RenderImageView(pRT, theme, config, activeDoc, canvasLeft, canvasWidth, contentTopY, clientHeight);
     } else if (activeDoc.isUnsupportedBinary) {
@@ -603,6 +605,8 @@ void EditorCanvas::RenderTabs(ID2D1RenderTarget* pRT, Theme& theme, const app::A
             } else {
                 m_icons.DrawFileIcon(pRT, theme, iconBounds, FileIconType::Json);
             }
+        } else if (doc.isSpecialView && doc.viewType == L"packages") {
+            m_icons.DrawPackage(pRT, iconBounds, theme.brushBrandAccent ? theme.brushBrandAccent.Get() : theme.brushTextWhite.Get(), 1.4f);
         } else {
             auto setiInfo = theme.GetSetiIcon(title, false, false);
             if (theme.fontSeti && setiInfo.pBrush) {

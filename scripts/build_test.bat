@@ -42,7 +42,10 @@ if %errorlevel% neq 0 exit /b %errorlevel%
 cl /nologo /EHsc /std:c++20 /O2 /W3 /utf-8 /DUNICODE /D_UNICODE /DWIN32_LEAN_AND_MEAN /I include /c src\ui\EditorCanvas.cpp /Fo:bin\EditorCanvas.obj
 if %errorlevel% neq 0 exit /b %errorlevel%
 
+cl /nologo /EHsc /std:c++20 /O2 /W3 /utf-8 /DUNICODE /D_UNICODE /DWIN32_LEAN_AND_MEAN /I include /c src\ui\PackageManagerView.cpp /Fo:bin\PackageManagerView.obj
+if %errorlevel% neq 0 exit /b %errorlevel%
+
 cl /nologo /EHsc /std:c++20 /O2 /W3 /utf-8 /DUNICODE /D_UNICODE /DWIN32_LEAN_AND_MEAN /I include /c tests\test_verification.cpp /Fo:bin\test_verification.obj
 if %errorlevel% neq 0 exit /b %errorlevel%
 
-link /nologo /STACK:16777216 /SUBSYSTEM:CONSOLE /OUT:bin\test_verification.exe bin\test_verification.obj bin\Window.obj bin\Theme.obj bin\LucideIcons.obj bin\TitleHeader.obj bin\PopupMenu.obj bin\ActivityRail.obj bin\DrawerPanel.obj bin\ConfirmDiscardModal.obj bin\DatabaseSettingsModal.obj bin\ColorPickerModal.obj bin\EditorCanvas.obj bin\KeyboardShortcutsView.obj bin\ThemePickerModal.obj bin\QuickOpenModal.obj bin\TerminalPanel.obj bin\ExtensionsPanel.obj bin\SplashScreen.obj bin\Buffer.obj bin\SnippetManager.obj bin\SyntaxValidator.obj bin\IntelliSenseEngine.obj bin\WorkspaceManager.obj bin\LspClient.obj bin\LiveServer.obj user32.lib gdi32.lib dwmapi.lib d2d1.lib dwrite.lib ole32.lib shell32.lib comdlg32.lib advapi32.lib windowscodecs.lib ws2_32.lib winhttp.lib
+link /nologo /STACK:16777216 /SUBSYSTEM:CONSOLE /OUT:bin\test_verification.exe bin\test_verification.obj bin\Window.obj bin\Theme.obj bin\LucideIcons.obj bin\TitleHeader.obj bin\PopupMenu.obj bin\ActivityRail.obj bin\DrawerPanel.obj bin\ConfirmDiscardModal.obj bin\DatabaseSettingsModal.obj bin\ColorPickerModal.obj bin\EditorCanvas.obj bin\KeyboardShortcutsView.obj bin\PackageManagerView.obj bin\ThemePickerModal.obj bin\QuickOpenModal.obj bin\TerminalPanel.obj bin\ExtensionsPanel.obj bin\SplashScreen.obj bin\Buffer.obj bin\SnippetManager.obj bin\SyntaxValidator.obj bin\IntelliSenseEngine.obj bin\WorkspaceManager.obj bin\LspClient.obj bin\LiveServer.obj user32.lib gdi32.lib dwmapi.lib d2d1.lib dwrite.lib ole32.lib shell32.lib comdlg32.lib advapi32.lib windowscodecs.lib ws2_32.lib winhttp.lib

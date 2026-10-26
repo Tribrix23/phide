@@ -121,6 +121,11 @@ public:
     void DrawExtensions(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, ID2D1Brush* pBrush, float strokeWidth = 1.6f) const;
 
     /**
+     * @brief Draws the Lucide Package / Box icon (isometric 3D package, matching PyCharm/VS Code packages).
+     */
+    void DrawPackage(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, ID2D1Brush* pBrush, float strokeWidth = 1.6f) const;
+
+    /**
      * @brief Draws the Lucide Sidebar toggle icon (panel-left).
      */
     void DrawSidebar(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, ID2D1Brush* pBrush, float strokeWidth = 1.4f) const;

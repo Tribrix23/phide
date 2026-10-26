@@ -31,7 +31,8 @@ enum class RailTabId {
     None = -1,
     Files = 0,          ///< Files / Explorer perspective (two overlapping sheets)
     Search = 1,         ///< Search across workspace
-    Git = 2             ///< Source Control (Git)
+    Git = 2,            ///< Source Control (Git)
+    Packages = 3        ///< Package Manager (PyCharm style)
 };
 
 /**

@@ -402,6 +402,7 @@ void Window::SaveSessionState() {
     out << L"  \"isSidebarOpen\": " << (m_config.isDrawerOpen ? L"true" : L"false") << L",\n";
     out << L"  \"activeRailTab\": " << m_config.activeRailTab << L",\n";
     out << L"  \"gitSplitY\": " << m_drawer.GetGitSplitY() << L",\n";
+    out << L"  \"gitSplitRatio\": " << m_drawer.GetGitSplitRatio() << L",\n";
     out << L"  \"themeMode\": " << static_cast<int>(m_theme.GetThemeMode()) << L",\n";
     out << L"  \"activeDocIdx\": " << GetActiveGroup().activeDocIdx << L",\n";
     if (m_drawer.HasOpenFolder()) {
@@ -447,7 +448,8 @@ void Window::LoadSessionState() {
 
     bool isSidebarOpen = true;
     int activeRailTab = 0;
-    float savedGitSplitY = 320.0f;
+    float savedGitSplitY = 380.0f;
+    float savedGitSplitRatio = 0.50f;
     int themeMode = 0;
     int savedActiveDocIdx = -1;
     std::wstring lastOpenFolder;
@@ -473,6 +475,11 @@ void Window::LoadSessionState() {
             auto colon = line.find(L':');
             if (colon != std::wstring::npos) {
                 savedGitSplitY = static_cast<float>(_wtof(line.substr(colon + 1).c_str()));
+            }
+        } else if (line.find(L"\"gitSplitRatio\"") != std::wstring::npos) {
+            auto colon = line.find(L':');
+            if (colon != std::wstring::npos) {
+                savedGitSplitRatio = static_cast<float>(_wtof(line.substr(colon + 1).c_str()));
             }
         } else if (line.find(L"\"themeMode\"") != std::wstring::npos) {
             auto colon = line.find(L':');
@@ -544,6 +551,7 @@ void Window::LoadSessionState() {
         m_config.gitSplitY = savedGitSplitY;
         m_drawer.SetGitSplitY(savedGitSplitY, 100.0f, 2000.0f);
     }
+    m_drawer.SetGitSplitRatio(savedGitSplitRatio);
 
     // Apply restored theme mode with bounds validation (0-19 for all 20 supported themes)
     if (themeMode < 0 || themeMode > 19) {
@@ -4696,6 +4704,16 @@ bool Window::Create(HINSTANCE hInstance, int nCmdShow) {
         }
     });
 
+    // Wire Package Manager Install Package callback to execute in terminal
+    m_editor.GetPackageManagerView().SetOnInstallCallback([this](const std::wstring& cmd, phide::ui::PkgInstallScope scope) {
+        if (!m_terminal.IsOpen()) {
+            std::wstring dir = m_drawer.HasOpenFolder() ? m_drawer.GetOpenFolderPath() : m_workspace.GetRootPath().wstring();
+            m_terminal.Open(dir);
+        }
+        m_terminal.ExecuteCommandLine(cmd);
+        if (m_hwnd) InvalidateRect(m_hwnd, nullptr, FALSE);
+    });
+
     // Restore saved IDE session state (open folder, expanded tree dirs, open file, sidebar open/close state)
     LoadSessionState();
 
@@ -5768,10 +5786,16 @@ void Window::HandleMouseMove(POINT clientPt, WPARAM wParam) {
         }
     }
 
-    // Forward to keyboard shortcuts view if active doc is keybindings
-    if (pActiveDoc && pActiveDoc->isSpecialView && pActiveDoc->viewType == L"keybindings") {
-        if (m_editor.GetKeyboardShortcutsView().HandleMouseMove(clientPt)) {
-            needRepaint = true;
+    // Forward to keyboard shortcuts view or packages view if active doc is special view
+    if (pActiveDoc && pActiveDoc->isSpecialView) {
+        if (pActiveDoc->viewType == L"keybindings") {
+            if (m_editor.GetKeyboardShortcutsView().HandleMouseMove(clientPt)) {
+                needRepaint = true;
+            }
+        } else if (pActiveDoc->viewType == L"packages") {
+            if (m_editor.GetPackageManagerView().HandleMouseMove(clientPt)) {
+                needRepaint = true;
+            }
         }
     }
 
@@ -7270,6 +7294,12 @@ void Window::HandleLButtonDown(POINT clientPt) {
                         InvalidateRect(m_hwnd, nullptr, FALSE);
                         return;
                     }
+                } else if (doc.isSpecialView && doc.viewType == L"packages") {
+                    m_drawer.SetSearchFocus(0);
+                    if (m_editor.GetPackageManagerView().HandleLButtonDown(clientPt)) {
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
+                        return;
+                    }
                 } else if (doc.isMultiFileDiff) {
                     // 1. Collapsible file header clicks in multi-file diff view (Image 4)
                     for (auto& entry : doc.multiFileDiffs) {
@@ -7657,9 +7687,17 @@ void Window::HandleLButtonDown(POINT clientPt) {
     m_drawer.SetSearchFocus(0);
     m_drawer.SetGitCommitBoxFocus(0);
 
-    // 7. Activity Rail Clicks (Files, Search, Git, Debug, Extensions)
+    // 7. Activity Rail Clicks (Files, Search, Git, Debug, Packages)
     auto railHit = m_rail.HitTest(clientPt);
     if (railHit != ui::RailTabId::None) {
+        if (railHit == ui::RailTabId::Packages) {
+            OpenSpecialView(L"packages", L"Packages");
+            UpdateDrawerErrorFiles();
+            SaveSessionState();
+            InvalidateRect(m_hwnd, nullptr, FALSE);
+            return;
+        }
+
         int clickedTab = static_cast<int>(railHit);
         if (m_config.activeRailTab == clickedTab && m_config.isDrawerOpen) {
             ToggleSidebar();
@@ -8510,6 +8548,11 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                         InvalidateRect(m_hwnd, nullptr, FALSE);
                         return 0;
                     }
+                } else if (pDoc->isSpecialView && pDoc->viewType == L"packages") {
+                    if (m_editor.GetPackageManagerView().HandleMouseWheel(delta, static_cast<float>(pt.y))) {
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
+                        return 0;
+                    }
                 } else {
                     bool isShiftDown = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
                     if (isShiftDown) {
@@ -8617,6 +8660,13 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 if (pDoc->isSpecialView && pDoc->viewType == L"keybindings") {
                     if (m_editor.GetKeyboardShortcutsView().IsSearchFocused()) {
                         if (m_editor.GetKeyboardShortcutsView().HandleChar(ch)) {
+                            InvalidateRect(m_hwnd, nullptr, FALSE);
+                            return 0;
+                        }
+                    }
+                } else if (pDoc->isSpecialView && pDoc->viewType == L"packages") {
+                    if (m_editor.GetPackageManagerView().IsSearchFocused()) {
+                        if (m_editor.GetPackageManagerView().HandleChar(ch)) {
                             InvalidateRect(m_hwnd, nullptr, FALSE);
                             return 0;
                         }
@@ -9198,9 +9248,16 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
             }
 
             auto* pDoc = GetActiveDoc();
-            if (pDoc && pDoc->isSpecialView && pDoc->viewType == L"keybindings") {
-                if (m_editor.GetKeyboardShortcutsView().IsSearchFocused()) {
-                    if (m_editor.GetKeyboardShortcutsView().HandleKeyDown(wParam)) {
+            if (pDoc && pDoc->isSpecialView) {
+                if (pDoc->viewType == L"keybindings") {
+                    if (m_editor.GetKeyboardShortcutsView().IsSearchFocused()) {
+                        if (m_editor.GetKeyboardShortcutsView().HandleKeyDown(wParam)) {
+                            InvalidateRect(m_hwnd, nullptr, FALSE);
+                            return 0;
+                        }
+                    }
+                } else if (pDoc->viewType == L"packages") {
+                    if (m_editor.GetPackageManagerView().HandleKeyDown(wParam)) {
                         InvalidateRect(m_hwnd, nullptr, FALSE);
                         return 0;
                     }
@@ -9726,7 +9783,21 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     m_drawer.RefreshGitStatusOnly(true);
                 }
 
-                if (m_drawer.IsGitLoading() || m_drawer.IsGitRefreshing()) {
+                // Spinner badge on Activity Rail only active when explicit git action is loading
+                static ULONGLONG s_gitLoadingStartTime = 0;
+                bool isGitLoading = m_drawer.IsGitLoading();
+                if (isGitLoading) {
+                    if (s_gitLoadingStartTime == 0) s_gitLoadingStartTime = now;
+                    // Watchdog safety timeout: clear stuck loading state after 4 seconds
+                    if (now - s_gitLoadingStartTime > 4000) {
+                        isGitLoading = false;
+                        s_gitLoadingStartTime = 0;
+                    }
+                } else {
+                    s_gitLoadingStartTime = 0;
+                }
+
+                if (isGitLoading) {
                     m_rail.UpdateGitAnim(14.0f);
                     m_drawer.UpdateGitLoadingAnim(14.0f);
                     m_rail.SetGitLoading(true);

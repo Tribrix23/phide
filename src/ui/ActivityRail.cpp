@@ -16,7 +16,10 @@ ActivityRail::ActivityRail() {
     m_items.push_back({ RailTabId::Search, L"Search (Ctrl+Shift+F)",         {} });
 
     // 3. Git icon (directly under Search)
-    m_items.push_back({ RailTabId::Git,    L"Source Control (Ctrl+Shift+G)", {} });
+    m_items.push_back({ RailTabId::Git,      L"Source Control (Ctrl+Shift+G)", {} });
+
+    // 4. Packages icon (directly under Git, matching user's request)
+    m_items.push_back({ RailTabId::Packages, L"Packages",                      {} });
 }
 
 void ActivityRail::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config, float clientHeight) {
@@ -109,7 +112,14 @@ void ActivityRail::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
     const RailItem* hoveredItemPtr = nullptr;
 
     for (auto& item : m_items) {
-        item.bounds = D2D1::RectF(startX, curY, startX + btnSize, curY + btnSize);
+        if (item.id == RailTabId::Packages) {
+            // Anchor Packages at bottom of Activity Rail (matching user's green arrow in Image 1)
+            float botY = clientHeight - btnSize - config.ScaleF(14.0f);
+            item.bounds = D2D1::RectF(startX, botY, startX + btnSize, botY + btnSize);
+        } else {
+            item.bounds = D2D1::RectF(startX, curY, startX + btnSize, curY + btnSize);
+            curY += btnSize + spacing;
+        }
 
         bool isHovered = (m_hoveredTab == item.id);
         bool isActive  = (config.activeRailTab == static_cast<int>(item.id));
@@ -233,11 +243,12 @@ void ActivityRail::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
                                   rrcBadge.rect, theme.brushTextWhite.Get());
                 }
                 break;
+            case RailTabId::Packages:
+                m_lucide.DrawPackage(pRT, item.bounds, iconBrush, 1.6f);
+                break;
             default:
                 break;
         }
-
-        curY += btnSize + spacing;
     }
 
     // 3. Render Customized Floating Tooltip Card for Hovered Icon

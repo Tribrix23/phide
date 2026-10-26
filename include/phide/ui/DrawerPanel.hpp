@@ -216,6 +216,8 @@ public:
     [[nodiscard]] bool HitTestGitSplitter(POINT pt) const noexcept;
     void SetGitSplitY(float y, float minY, float maxY) noexcept;
     [[nodiscard]] float GetGitSplitY() const noexcept { return m_gitSplitY; }
+    [[nodiscard]] float GetGitSplitRatio() const noexcept { return m_gitSplitRatio; }
+    void SetGitSplitRatio(float r) noexcept { if (r >= 0.10f && r <= 0.90f) m_gitSplitRatio = r; }
 
     [[nodiscard]] bool IsGitRepo() const noexcept { return m_isGitRepo; }
     void SetGitRepo(bool isRepo) noexcept { m_isGitRepo = isRepo; }
@@ -785,7 +787,8 @@ private:
     int m_hoveredGitMenuItem = -1;
 
     // Draggable Splitter between Changes and Graph (Image 2 & 3)
-    float m_gitSplitY = 320.0f;
+    float m_gitSplitY = 380.0f;
+    float m_gitSplitRatio = 0.50f; ///< Persistent relative split ratio between Changes & Graph (centered default)
     D2D1_RECT_F m_gitSplitterBounds{};
 
     // View popup menu (Image 3: Repositories, ✓ Changes, ✓ Graph)
