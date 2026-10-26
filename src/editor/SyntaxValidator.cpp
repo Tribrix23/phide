@@ -40,10 +40,13 @@ std::vector<lsp::Diagnostic> SyntaxValidator::Validate(
         return ValidateHtml(buffer, validateScripts, validateStyles);
     }
     if (ext == L".php") {
+        auto phpDiags = ValidatePhp(buffer);
         auto htmlDiags = ValidateHtml(buffer, validateScripts, validateStyles);
-        auto phpDiags = ValidateBracketsAndQuotes(buffer, true);
-        htmlDiags.insert(htmlDiags.end(), phpDiags.begin(), phpDiags.end());
-        return htmlDiags;
+        phpDiags.insert(phpDiags.end(), htmlDiags.begin(), htmlDiags.end());
+        return phpDiags;
+    }
+    if (ext == L".py") {
+        return ValidatePython(buffer);
     }
     if (ext == L".yml" || ext == L".yaml") {
         return ValidateYaml(buffer);
@@ -905,6 +908,278 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidateYaml(const Buffer& buffer)
                 }
             }
         }
+    }
+
+    return diagnostics;
+}
+
+std::vector<lsp::Diagnostic> SyntaxValidator::ValidatePython(const Buffer& buffer) {
+    std::vector<lsp::Diagnostic> diagnostics;
+
+    struct BracketInfo {
+        wchar_t ch;
+        size_t line;
+        size_t col;
+    };
+    std::vector<BracketInfo> bracketStack;
+
+    bool inTripleString = false;
+    wchar_t tripleChar = 0;
+    bool hasSeenTabs = false;
+    bool hasSeenSpaces = false;
+
+    for (size_t l = 0; l < buffer.GetLineCount(); ++l) {
+        const auto& line = buffer.GetLine(l);
+
+        // Check leading indentation
+        size_t indentCol = 0;
+        bool lineHasTab = false;
+        bool lineHasSpace = false;
+        while (indentCol < line.length() && (line[indentCol] == L' ' || line[indentCol] == L'\t')) {
+            if (line[indentCol] == L'\t') lineHasTab = true;
+            if (line[indentCol] == L' ') lineHasSpace = true;
+            indentCol++;
+        }
+
+        if (indentCol < line.length() && line[indentCol] != L'#') {
+            if (lineHasTab && lineHasSpace) {
+                diagnostics.push_back({ l, 0, indentCol, L"Python: Inconsistent indentation (mixed tabs and spaces)", 1 });
+            } else if (lineHasTab) {
+                hasSeenTabs = true;
+                if (hasSeenSpaces) {
+                    diagnostics.push_back({ l, 0, indentCol, L"Python: TabError: inconsistent use of tabs and spaces in indentation", 1 });
+                }
+            } else if (lineHasSpace) {
+                hasSeenSpaces = true;
+                if (hasSeenTabs) {
+                    diagnostics.push_back({ l, 0, indentCol, L"Python: TabError: inconsistent use of tabs and spaces in indentation", 1 });
+                }
+            }
+        }
+
+        bool inString = false;
+        wchar_t strChar = 0;
+        size_t strStart = 0;
+
+        for (size_t c = indentCol; c < line.length(); ++c) {
+            wchar_t ch = line[c];
+
+            if (inTripleString) {
+                if (ch == tripleChar && c + 2 < line.length() && line[c + 1] == tripleChar && line[c + 2] == tripleChar) {
+                    inTripleString = false;
+                    c += 2;
+                }
+                continue;
+            }
+
+            if (inString) {
+                if (ch == L'\\') {
+                    c++;
+                    continue;
+                }
+                if (ch == strChar) {
+                    inString = false;
+                }
+                continue;
+            }
+
+            if ((ch == L'"' || ch == L'\'') && c + 2 < line.length() && line[c + 1] == ch && line[c + 2] == ch) {
+                inTripleString = true;
+                tripleChar = ch;
+                c += 2;
+                continue;
+            }
+
+            if (ch == L'"' || ch == L'\'') {
+                inString = true;
+                strChar = ch;
+                strStart = c;
+                continue;
+            }
+
+            if (ch == L'#') {
+                break;
+            }
+
+            if (ch == L'(' || ch == L'[' || ch == L'{') {
+                bracketStack.push_back({ ch, l, c });
+            } else if (ch == L')' || ch == L']' || ch == L'}') {
+                if (bracketStack.empty()) {
+                    diagnostics.push_back({ l, c, 1, std::wstring(L"Python: Unmatched closing '") + ch + L"'", 1 });
+                } else {
+                    wchar_t expected = (ch == L')') ? L'(' : (ch == L']') ? L'[' : L'{';
+                    if (bracketStack.back().ch != expected) {
+                        diagnostics.push_back({ l, c, 1, std::wstring(L"Python: Mismatched bracket: expected '") + (bracketStack.back().ch == L'(' ? L')' : bracketStack.back().ch == L'[' ? L']' : L'}') + L"' but found '" + ch + L"'", 1 });
+                        bracketStack.pop_back();
+                    } else {
+                        bracketStack.pop_back();
+                    }
+                }
+            }
+        }
+
+        if (inString && !inTripleString) {
+            diagnostics.push_back({ l, strStart, line.length() - strStart, L"Python: EOL while scanning string literal", 1 });
+        }
+
+        if (!inTripleString && indentCol < line.length()) {
+            std::wstring trimmed = line.substr(indentCol);
+            size_t hashP = trimmed.find(L'#');
+            if (hashP != std::wstring::npos) trimmed = trimmed.substr(0, hashP);
+            while (!trimmed.empty() && iswspace(trimmed.back())) trimmed.pop_back();
+
+            static const std::vector<std::wstring> colonKws = {
+                L"def ", L"class ", L"if ", L"elif ", L"else", L"for ", L"while ", L"try", L"except", L"finally", L"with "
+            };
+            for (const auto& kw : colonKws) {
+                if (trimmed == kw || trimmed.rfind(kw, 0) == 0) {
+                    if (bracketStack.empty() && !trimmed.empty() && trimmed.back() != L':') {
+                        diagnostics.push_back({ l, indentCol + trimmed.length() - 1, 1, L"Python: SyntaxError: expected ':' at end of statement", 1 });
+                    }
+                    break;
+                }
+            }
+        }
+    }
+
+    if (inTripleString) {
+        diagnostics.push_back({ buffer.GetLineCount() > 0 ? buffer.GetLineCount() - 1 : 0, 0, 1, L"Python: EOF while scanning triple-quoted string literal", 1 });
+    }
+
+    for (const auto& b : bracketStack) {
+        diagnostics.push_back({ b.line, b.col, 1, std::wstring(L"Python: Unclosed bracket '") + b.ch + L"'", 1 });
+    }
+
+    return diagnostics;
+}
+
+std::vector<lsp::Diagnostic> SyntaxValidator::ValidatePhp(const Buffer& buffer) {
+    std::vector<lsp::Diagnostic> diagnostics;
+
+    struct BracketInfo {
+        wchar_t ch;
+        size_t line;
+        size_t col;
+    };
+    std::vector<BracketInfo> bracketStack;
+
+    bool inPhp = false;
+    bool inBlockComment = false;
+    size_t blockCommentLine = 0;
+    size_t blockCommentCol = 0;
+
+    for (size_t l = 0; l < buffer.GetLineCount(); ++l) {
+        const auto& line = buffer.GetLine(l);
+        bool inDoubleQuote = false;
+        bool inSingleQuote = false;
+        size_t quoteStartCol = 0;
+
+        for (size_t c = 0; c < line.length(); ++c) {
+            wchar_t ch = line[c];
+
+            // Check PHP open/close tags
+            if (!inPhp) {
+                if (c + 4 < line.length() && line.substr(c, 5) == L"<?php") {
+                    inPhp = true;
+                    c += 4;
+                    continue;
+                } else if (c + 2 < line.length() && line.substr(c, 3) == L"<?=") {
+                    inPhp = true;
+                    c += 2;
+                    continue;
+                }
+                continue; // Skip HTML outside PHP tags
+            } else {
+                if (!inDoubleQuote && !inSingleQuote && !inBlockComment) {
+                    if (c + 1 < line.length() && line.substr(c, 2) == L"?>") {
+                        inPhp = false;
+                        c += 1;
+                        continue;
+                    }
+                }
+            }
+
+            // Inside multi-line comment /* ... */
+            if (inBlockComment) {
+                if (ch == L'*' && c + 1 < line.length() && line[c + 1] == L'/') {
+                    inBlockComment = false;
+                    c++;
+                }
+                continue;
+            }
+
+            // Inside string literals
+            if (inDoubleQuote) {
+                if (ch == L'\\') { c++; continue; }
+                if (ch == L'"') { inDoubleQuote = false; }
+                continue;
+            }
+            if (inSingleQuote) {
+                if (ch == L'\\') { c++; continue; }
+                if (ch == L'\'') { inSingleQuote = false; }
+                continue;
+            }
+
+            // Single line comments // or #
+            if ((ch == L'/' && c + 1 < line.length() && line[c + 1] == L'/') || ch == L'#') {
+                break;
+            }
+
+            // Block comment /*
+            if (ch == L'/' && c + 1 < line.length() && line[c + 1] == L'*') {
+                inBlockComment = true;
+                blockCommentLine = l;
+                blockCommentCol = c;
+                c++;
+                continue;
+            }
+
+            // String start
+            if (ch == L'"') {
+                inDoubleQuote = true;
+                quoteStartCol = c;
+                continue;
+            }
+            if (ch == L'\'') {
+                inSingleQuote = true;
+                quoteStartCol = c;
+                continue;
+            }
+
+            // Brackets
+            if (ch == L'{' || ch == L'(' || ch == L'[') {
+                bracketStack.push_back({ ch, l, c });
+            } else if (ch == L'}' || ch == L')' || ch == L']') {
+                if (bracketStack.empty()) {
+                    diagnostics.push_back({ l, c, 1, std::wstring(L"PHP: Unmatched closing '") + ch + L"'", 1 });
+                } else {
+                    wchar_t openCh = bracketStack.back().ch;
+                    bool match = (openCh == L'{' && ch == L'}') ||
+                                 (openCh == L'(' && ch == L')') ||
+                                 (openCh == L'[' && ch == L']');
+                    if (match) {
+                        bracketStack.pop_back();
+                    } else {
+                        diagnostics.push_back({ l, c, 1, std::wstring(L"PHP: Mismatched bracket: expected '") +
+                            (openCh == L'{' ? L'}' : (openCh == L'(' ? L')' : L']')) +
+                            L"', found '" + ch + L"'", 1 });
+                        bracketStack.pop_back();
+                    }
+                }
+            }
+        }
+
+        if (inDoubleQuote || inSingleQuote) {
+            diagnostics.push_back({ l, quoteStartCol, (line.length() > quoteStartCol ? line.length() - quoteStartCol : 1), L"PHP: Unclosed string literal", 1 });
+        }
+    }
+
+    if (inBlockComment) {
+        diagnostics.push_back({ blockCommentLine, blockCommentCol, 2, L"PHP: Unclosed block comment '/*'", 1 });
+    }
+
+    for (const auto& b : bracketStack) {
+        diagnostics.push_back({ b.line, b.col, 1, std::wstring(L"PHP: Unclosed bracket '") + b.ch + L"'", 1 });
     }
 
     return diagnostics;

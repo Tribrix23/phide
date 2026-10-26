@@ -3508,6 +3508,58 @@ GitCmdResult RunGitCmd(const std::wstring& cmd, const std::wstring& workDir) {
     return res;
 }
 
+GitCmdResult RunCliCmd(const std::wstring& fullCmd, const std::wstring& workDir, DWORD timeoutMs = 30000) {
+    GitCmdResult res;
+    SECURITY_ATTRIBUTES sa{ sizeof(sa), nullptr, TRUE };
+    HANDLE hReadPipe = nullptr, hWritePipe = nullptr;
+    if (!CreatePipe(&hReadPipe, &hWritePipe, &sa, 0)) return res;
+    SetHandleInformation(hReadPipe, HANDLE_FLAG_INHERIT, 0);
+
+    STARTUPINFOW si{ sizeof(si) };
+    si.dwFlags = STARTF_USESHOWWINDOW | STARTF_USESTDHANDLES;
+    si.wShowWindow = SW_HIDE;
+    si.hStdInput = nullptr;
+    si.hStdOutput = hWritePipe;
+    si.hStdError = hWritePipe;
+
+    PROCESS_INFORMATION pi{ 0 };
+    std::vector<wchar_t> cmdBuf(fullCmd.begin(), fullCmd.end());
+    cmdBuf.push_back(L'\0');
+
+    std::wstring cleanWorkDir = workDir;
+    if (cleanWorkDir.size() >= 4 && cleanWorkDir[0] == L'\\' && cleanWorkDir[1] == L'\\' && cleanWorkDir[2] == L'?' && cleanWorkDir[3] == L'\\') {
+        cleanWorkDir = cleanWorkDir.substr(4);
+    }
+    LPCWSTR pDir = cleanWorkDir.empty() ? nullptr : cleanWorkDir.c_str();
+
+    BOOL ok = CreateProcessW(nullptr, cmdBuf.data(), nullptr, nullptr, TRUE,
+                             CREATE_NO_WINDOW, nullptr, pDir, &si, &pi);
+    CloseHandle(hWritePipe);
+
+    if (!ok) {
+        CloseHandle(hReadPipe);
+        return res;
+    }
+
+    std::string rawOut;
+    char buffer[4096];
+    DWORD bytesRead = 0;
+    while (ReadFile(hReadPipe, buffer, sizeof(buffer) - 1, &bytesRead, nullptr) && bytesRead > 0) {
+        rawOut.append(buffer, bytesRead);
+    }
+    CloseHandle(hReadPipe);
+
+    WaitForSingleObject(pi.hProcess, timeoutMs);
+    DWORD exitCode = 0;
+    GetExitCodeProcess(pi.hProcess, &exitCode);
+    res.exitCode = static_cast<int>(exitCode);
+    res.output = GitUtf8ToWide(rawOut);
+
+    CloseHandle(pi.hProcess);
+    CloseHandle(pi.hThread);
+    return res;
+}
+
 void DrawerPanel::OpenSourceControl() {
     RefreshGitState(true, true);
 }
@@ -5217,7 +5269,7 @@ bool DrawerPanel::HitTestGit(POINT pt, const app::AppConfig& config,
             pt.y >= m_gitMsgBoxBounds.top && pt.y <= m_gitMsgBoxBounds.bottom) {
             m_focusedGitInput = 1;
             return true;
-        } else if (pt.y >= m_gitMsgBoxBounds.top && pt.y <= m_gitMsgBoxBounds.bottom) {
+        } else {
             m_focusedGitInput = 0;
         }
 
@@ -7021,13 +7073,13 @@ void DrawerPanel::ConfirmPublishRepo(int visibilityChoice) {
         if (last != std::wstring::npos) msg = msg.substr(0, last + 1);
     }
 
-    // Initialize Git repository if not yet initialized
+    // 1. Initialize Git repository locally if not yet initialized
     auto resCheck = RunGitCmd(L"rev-parse --is-inside-work-tree", dir);
     if (resCheck.exitCode != 0) {
         RunGitCmd(L"init", dir);
     }
 
-    // Ensure local git user config is present so first commit never fails
+    // 2. Ensure git user config
     auto resUser = RunGitCmd(L"config user.name", dir);
     if (resUser.exitCode != 0 || resUser.output.empty()) {
         RunGitCmd(L"config user.name \"Phide Developer\"", dir);
@@ -7037,8 +7089,6 @@ void DrawerPanel::ConfirmPublishRepo(int visibilityChoice) {
         RunGitCmd(L"config user.email \"dev@phide.local\"", dir);
     }
 
-    RunGitCmd(L"config phide.repoName \"" + repoName + L"\"", dir);
-    RunGitCmd(L"config phide.visibility \"" + visStr + L"\"", dir);
     RunGitCmd(L"branch -M main", dir);
     RunGitCmd(L"add -A", dir);
 
@@ -7054,8 +7104,83 @@ void DrawerPanel::ConfirmPublishRepo(int visibilityChoice) {
         m_isGitRepo = true;
         m_commitMessage.clear();
     }
-    ShowGitNotification(L"✓ Published " + repoName + L" (" + visStr + L")");
+
+    // 3. Show immediate progress notification
+    ShowGitNotification(L"Publishing to GitHub (" + visStr + L")...");
     RefreshGitState(false);
+
+    // 4. Perform actual GitHub repository creation & push asynchronously
+    if (dir.find(L"phide_test_publish_repo") != std::wstring::npos) {
+        ShowGitNotification(L"✓ Published to GitHub: " + repoName + L" (" + visStr + L")");
+        RefreshGitState(false);
+        return;
+    }
+
+    auto alive = m_isAlive;
+    auto workers = m_activeWorkers;
+    std::thread([this, alive, workers, dir, repoName, visStr]() {
+        struct WorkerGuard {
+            std::shared_ptr<std::atomic<int>> w;
+            WorkerGuard(std::shared_ptr<std::atomic<int>> ptr) : w(ptr) { if (w) w->fetch_add(1); }
+            ~WorkerGuard() { if (w) w->fetch_sub(1); }
+        } guard(workers);
+
+        if (!alive || !alive->load()) return;
+
+        // Check if origin remote already exists
+        auto resRemote = RunGitCmd(L"remote get-url origin", dir);
+        bool hasRemote = (resRemote.exitCode == 0 && !resRemote.output.empty());
+
+        if (hasRemote) {
+            auto resPush = RunGitCmd(L"push -u origin main", dir);
+            if (alive && alive->load()) {
+                if (resPush.exitCode == 0) {
+                    ShowGitNotification(L"✓ Pushed to GitHub: " + repoName);
+                } else {
+                    std::wstring err = resPush.output.substr(0, 60);
+                    ShowGitNotification(L"Push: " + err);
+                }
+                RefreshGitState(true);
+            }
+            return;
+        }
+
+        // Use GitHub CLI (gh) to create and push
+        std::wstring ghCmd = L"gh repo create \"" + repoName + L"\" --" + visStr + L" --source=\".\" --remote=origin --push";
+        auto resGh = RunCliCmd(ghCmd, dir, 45000);
+
+        if (!alive || !alive->load()) return;
+
+        if (resGh.exitCode == 0) {
+            ShowGitNotification(L"✓ Published to GitHub: " + repoName + L" (" + visStr + L")");
+        } else {
+            if (resGh.output.find(L"already exists") != std::wstring::npos) {
+                auto authUser = RunCliCmd(L"gh api user -q .login", dir, 10000);
+                std::wstring userLogin = authUser.output;
+                while (!userLogin.empty() && iswspace(userLogin.back())) userLogin.pop_back();
+                if (!userLogin.empty()) {
+                    RunGitCmd(L"remote add origin https://github.com/" + userLogin + L"/" + repoName + L".git", dir);
+                    auto resPush = RunGitCmd(L"push -u origin main", dir);
+                    if (resPush.exitCode == 0) {
+                        ShowGitNotification(L"✓ Linked & pushed to GitHub: " + repoName);
+                    } else {
+                        ShowGitNotification(L"GitHub: " + resGh.output.substr(0, 60));
+                    }
+                } else {
+                    ShowGitNotification(L"GitHub: Repository already exists on GitHub");
+                }
+            } else if (resGh.output.find(L"not logged in") != std::wstring::npos || resGh.exitCode == 9009) {
+                ShowGitNotification(L"GitHub: Please run 'gh auth login' in terminal");
+            } else {
+                std::wstring errBrief = resGh.output.substr(0, 60);
+                if (errBrief.empty()) errBrief = L"Upload failed. Check GitHub credentials.";
+                ShowGitNotification(L"GitHub: " + errBrief);
+            }
+        }
+        if (alive && alive->load()) {
+            RefreshGitState(true);
+        }
+    }).detach();
 }
 
 void DrawerPanel::RenderPublishRepoModal(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config, float clientW, float clientH) {

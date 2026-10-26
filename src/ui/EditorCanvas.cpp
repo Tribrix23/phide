@@ -2779,6 +2779,12 @@ void EditorCanvas::RenderAutocompletePopup(ID2D1RenderTarget* pRT, Theme& theme,
                 badgeColor = D2D1::ColorF(0.98f, 0.57f, 0.24f); badgeLetter = L"ⓐ"; break;
             case editor::CompletionKind::Snippet:
                 badgeColor = D2D1::ColorF(0.22f, 0.74f, 0.97f); badgeLetter = L"ⓢ"; break;
+            case editor::CompletionKind::Class:
+                badgeColor = D2D1::ColorF(0.95f, 0.65f, 0.20f); badgeLetter = L"ⓒ"; break;
+            case editor::CompletionKind::Constant:
+                badgeColor = D2D1::ColorF(0.40f, 0.75f, 0.95f); badgeLetter = L"ⓒ"; break;
+            case editor::CompletionKind::Module:
+                badgeColor = D2D1::ColorF(0.85f, 0.45f, 0.85f); badgeLetter = L"ⓜ"; break;
             case editor::CompletionKind::Folder:
             case editor::CompletionKind::File:
                 break;

@@ -2639,6 +2639,264 @@ void Window::StopAllLiveServers() {
     UpdateExecutionButtonStates();
 }
 
+static std::wstring FormatCssNative(const std::wstring& src) {
+    std::wstring out;
+    out.reserve(src.length() * 2);
+    int indent = 0;
+    bool inComment = false;
+    bool inString = false;
+    wchar_t strChar = 0;
+    bool needIndent = true;
+
+    auto appendIndent = [&](int lvl) {
+        for (int k = 0; k < lvl; ++k) out += L"    ";
+    };
+
+    size_t i = 0;
+    while (i < src.length()) {
+        wchar_t ch = src[i];
+
+        if (inComment) {
+            out += ch;
+            if (ch == L'*' && i + 1 < src.length() && src[i + 1] == L'/') {
+                out += L'/';
+                i++;
+                inComment = false;
+            }
+            i++;
+            continue;
+        }
+
+        if (inString) {
+            out += ch;
+            if (ch == L'\\' && i + 1 < src.length()) {
+                out += src[i + 1];
+                i += 2;
+                continue;
+            }
+            if (ch == strChar) inString = false;
+            i++;
+            continue;
+        }
+
+        if (ch == L'/' && i + 1 < src.length() && src[i + 1] == L'*') {
+            inComment = true;
+            out += L"/*";
+            i += 2;
+            continue;
+        }
+
+        if (ch == L'"' || ch == L'\'') {
+            inString = true;
+            strChar = ch;
+            if (needIndent) { appendIndent(indent); needIndent = false; }
+            out += ch;
+            i++;
+            continue;
+        }
+
+        if (ch == L'{') {
+            while (!out.empty() && (out.back() == L' ' || out.back() == L'\t')) out.pop_back();
+            out += L" {\n";
+            indent++;
+            needIndent = true;
+            i++;
+            while (i < src.length() && iswspace(src[i])) i++;
+            continue;
+        }
+
+        if (ch == L'}') {
+            while (!out.empty() && (out.back() == L' ' || out.back() == L'\t')) out.pop_back();
+            if (!out.empty() && out.back() != L'\n') out += L'\n';
+            if (indent > 0) indent--;
+            appendIndent(indent);
+            out += L"}\n\n";
+            needIndent = true;
+            i++;
+            while (i < src.length() && iswspace(src[i])) i++;
+            continue;
+        }
+
+        if (ch == L';') {
+            out += L";\n";
+            needIndent = true;
+            i++;
+            while (i < src.length() && iswspace(src[i])) i++;
+            continue;
+        }
+
+        if (ch == L':') {
+            out += L": ";
+            i++;
+            while (i < src.length() && (src[i] == L' ' || src[i] == L'\t')) i++;
+            continue;
+        }
+
+        if (iswspace(ch)) {
+            if (!needIndent && !out.empty() && out.back() != L' ' && out.back() != L'\n') {
+                out += L' ';
+            }
+            i++;
+            continue;
+        }
+
+        if (needIndent) {
+            appendIndent(indent);
+            needIndent = false;
+        }
+        out += ch;
+        i++;
+    }
+
+    while (out.length() >= 2 && out.substr(out.length() - 2) == L"\n\n") out.pop_back();
+    if (!out.empty() && out.back() != L'\n') out += L'\n';
+    return out;
+}
+
+static std::wstring FormatHtmlNative(const std::wstring& src) {
+    std::wstring out;
+    out.reserve(src.length() * 2);
+    int indent = 0;
+    bool inComment = false;
+
+    auto appendIndent = [&](int lvl) {
+        for (int k = 0; k < lvl; ++k) out += L"    ";
+    };
+
+    static const std::unordered_set<std::wstring> voidTags = {
+        L"area", L"base", L"br", L"col", L"embed", L"hr", L"img", L"input",
+        L"link", L"meta", L"param", L"source", L"track", L"wbr", L"!doctype"
+    };
+
+    size_t i = 0;
+    while (i < src.length()) {
+        if (src[i] == L'<' && i + 3 < src.length() && src.substr(i, 4) == L"<!--") {
+            inComment = true;
+            if (!out.empty() && out.back() != L'\n') out += L'\n';
+            appendIndent(indent);
+            out += L"<!--";
+            i += 4;
+            continue;
+        }
+        if (inComment) {
+            out += src[i];
+            if (src[i] == L'-' && i + 2 < src.length() && src.substr(i, 3) == L"-->") {
+                out += L"->";
+                i += 3;
+                inComment = false;
+                out += L'\n';
+                continue;
+            }
+            i++;
+            continue;
+        }
+
+        if (src[i] == L'<') {
+            size_t tagEnd = src.find(L'>', i);
+            if (tagEnd != std::wstring::npos) {
+                std::wstring tagContent = src.substr(i + 1, tagEnd - (i + 1));
+                bool isClosing = (!tagContent.empty() && tagContent[0] == L'/');
+                bool isSelfClosing = (!tagContent.empty() && tagContent.back() == L'/');
+
+                size_t nameStart = isClosing ? 1 : 0;
+                while (nameStart < tagContent.length() && iswspace(tagContent[nameStart])) nameStart++;
+                size_t nameEnd = nameStart;
+                while (nameEnd < tagContent.length() && !iswspace(tagContent[nameEnd]) && tagContent[nameEnd] != L'/') nameEnd++;
+                std::wstring tagName = tagContent.substr(nameStart, nameEnd - nameStart);
+                for (auto& c : tagName) c = static_cast<wchar_t>(towlower(c));
+
+                bool isVoid = (voidTags.count(tagName) > 0 || isSelfClosing);
+
+                if (isClosing) {
+                    if (indent > 0) indent--;
+                    if (!out.empty() && out.back() != L'\n') out += L'\n';
+                    appendIndent(indent);
+                } else {
+                    if (!out.empty() && out.back() != L'\n') out += L'\n';
+                    appendIndent(indent);
+                }
+
+                out += L'<' + tagContent + L'>';
+                i = tagEnd + 1;
+
+                if (!isClosing && !isVoid) {
+                    indent++;
+                }
+
+                while (i < src.length() && (src[i] == L' ' || src[i] == L'\t' || src[i] == L'\r' || src[i] == L'\n')) i++;
+                out += L'\n';
+                continue;
+            }
+        }
+
+        size_t nextTag = src.find(L'<', i);
+        if (nextTag == std::wstring::npos) nextTag = src.length();
+        std::wstring text = src.substr(i, nextTag - i);
+
+        size_t tStart = 0;
+        while (tStart < text.length() && iswspace(text[tStart])) tStart++;
+        size_t tEnd = text.length();
+        while (tEnd > tStart && iswspace(text[tEnd - 1])) tEnd--;
+
+        if (tEnd > tStart) {
+            if (!out.empty() && out.back() != L'\n') out += L'\n';
+            appendIndent(indent);
+            out += text.substr(tStart, tEnd - tStart);
+            out += L'\n';
+        }
+        i = nextTag;
+    }
+
+    if (!out.empty() && out.back() != L'\n') out += L'\n';
+    return out;
+}
+
+static std::wstring FormatBracesNative(const std::wstring& src) {
+    std::wstring out;
+    out.reserve(src.length() * 2);
+    int indent = 0;
+    std::wistringstream iss(src);
+    std::wstring line;
+
+    auto appendIndent = [&](int lvl) {
+        for (int k = 0; k < lvl; ++k) out += L"    ";
+    };
+
+    while (std::getline(iss, line)) {
+        if (!line.empty() && line.back() == L'\r') line.pop_back();
+
+        size_t start = 0;
+        while (start < line.length() && (line[start] == L' ' || line[start] == L'\t')) start++;
+        size_t end = line.length();
+        while (end > start && (line[end - 1] == L' ' || line[end - 1] == L'\t')) end--;
+
+        if (start >= end) {
+            out += L'\n';
+            continue;
+        }
+
+        std::wstring trimmed = line.substr(start, end - start);
+
+        int leadingCloses = 0;
+        for (wchar_t ch : trimmed) {
+            if (ch == L'}') leadingCloses++;
+            else if (!iswspace(ch)) break;
+        }
+
+        int curIndent = indent - leadingCloses;
+        if (curIndent < 0) curIndent = 0;
+
+        appendIndent(curIndent);
+        out += trimmed + L'\n';
+
+        for (wchar_t ch : trimmed) {
+            if (ch == L'{') indent++;
+            else if (ch == L'}') { if (indent > 0) indent--; }
+        }
+    }
+    return out;
+}
+
 void Window::DoFormatDocument() {
     auto* pDoc = GetActiveDoc();
     if (!pDoc || pDoc->isSpecialView) return;
@@ -2707,19 +2965,36 @@ void Window::DoFormatDocument() {
     }
 
     if (!handledByPrettier) {
-        size_t lineCount = pDoc->buffer.GetLineCount();
-        bool modified = false;
-        for (size_t i = 0; i < lineCount; ++i) {
-            std::wstring line = pDoc->buffer.GetLine(i);
-            size_t end = line.find_last_not_of(L" \t\r\n");
-            if (end != std::wstring::npos && end + 1 < line.length()) {
-                pDoc->buffer.SetLine(i, line.substr(0, end + 1));
-                modified = true;
-            }
+        std::wstring rawText = pDoc->buffer.GetText();
+        std::wstring formatted;
+        if (ext == L".css" || ext == L".scss" || ext == L".less") {
+            formatted = FormatCssNative(rawText);
+        } else if (ext == L".html" || ext == L".htm" || ext == L".xml" || ext == L".svg") {
+            formatted = FormatHtmlNative(rawText);
+        } else if (ext == L".js" || ext == L".jsx" || ext == L".ts" || ext == L".tsx" ||
+                   ext == L".php" || ext == L".cpp" || ext == L".c" || ext == L".h" || ext == L".hpp") {
+            formatted = FormatBracesNative(rawText);
         }
-        if (modified) {
+
+        if (!formatted.empty() && formatted != rawText) {
+            pDoc->buffer.SetText(formatted);
             MarkDocumentModified(pDoc);
             InvalidateRect(m_hwnd, nullptr, FALSE);
+        } else {
+            size_t lineCount = pDoc->buffer.GetLineCount();
+            bool modified = false;
+            for (size_t i = 0; i < lineCount; ++i) {
+                std::wstring line = pDoc->buffer.GetLine(i);
+                size_t end = line.find_last_not_of(L" \t\r\n");
+                if (end != std::wstring::npos && end + 1 < line.length()) {
+                    pDoc->buffer.SetLine(i, line.substr(0, end + 1));
+                    modified = true;
+                }
+            }
+            if (modified) {
+                MarkDocumentModified(pDoc);
+                InvalidateRect(m_hwnd, nullptr, FALSE);
+            }
         }
     }
 }
@@ -6683,6 +6958,12 @@ void Window::HandleLButtonDown(POINT clientPt) {
     const int railW = m_config.Scale(m_config.railWidth);
     const int drawerW = static_cast<int>(m_config.Scale(m_config.drawerWidth) * m_drawerAnimProgress);
     const float canvasLeft = static_cast<float>(railW + drawerW);
+
+    // If clicking inside the editor canvas area, unfocus drawer search and git commit inputs immediately
+    if (clientPt.x >= static_cast<LONG>(canvasLeft)) {
+        m_drawer.SetSearchFocus(0);
+        m_drawer.SetGitCommitBoxFocus(0);
+    }
     const float headerH = m_config.ScaleF(static_cast<float>(m_config.headerHeight));
     RECT clientRc;
     GetClientRect(m_hwnd, &clientRc);

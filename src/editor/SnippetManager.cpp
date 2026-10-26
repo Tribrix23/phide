@@ -1488,6 +1488,17 @@ void SnippetManager::LoadDefaults() {
     });
 
     m_snippets.push_back({
+        L"Python Main Entrypoint",
+        L"main",
+        {
+            L"if __name__ == '__main__':",
+            L"    $0"
+        },
+        L"Python main block shortcut",
+        L"py"
+    });
+
+    m_snippets.push_back({
         L"Python Class",
         L"class",
         {
@@ -1496,6 +1507,79 @@ void SnippetManager::LoadDefaults() {
             L"        $0"
         },
         L"Python class definition",
+        L"py"
+    });
+
+    m_snippets.push_back({
+        L"Python Class (Short)",
+        L"cls",
+        {
+            L"class ${1:ClassName}:",
+            L"    def __init__(self$2):",
+            L"        $0"
+        },
+        L"Python class shortcut",
+        L"py"
+    });
+
+    m_snippets.push_back({
+        L"Python Try Except Block",
+        L"tryex",
+        {
+            L"try:",
+            L"    $1",
+            L"except ${2:Exception} as ${3:e}:",
+            L"    print(f\"Error: {${3:e}}\")",
+            L"    $0"
+        },
+        L"Python try-except error handling block",
+        L"py"
+    });
+
+    m_snippets.push_back({
+        L"Python With Open File",
+        L"withopen",
+        {
+            L"with open('${1:filename.txt}', '${2:r}', encoding='utf-8') as f:",
+            L"    ${3:content} = f.read()",
+            L"    $0"
+        },
+        L"Python file context manager open statement",
+        L"py"
+    });
+
+    m_snippets.push_back({
+        L"Python For In Loop",
+        L"forin",
+        {
+            L"for ${1:item} in ${2:items}:",
+            L"    $0"
+        },
+        L"Python for-in sequence loop",
+        L"py"
+    });
+
+    m_snippets.push_back({
+        L"Python List Comprehension",
+        L"lc",
+        { L"[${1:x} for ${1:x} in ${2:iterable}]" },
+        L"Python inline list comprehension",
+        L"py"
+    });
+
+    m_snippets.push_back({
+        L"Python Dict Comprehension",
+        L"dc",
+        { L"{${1:k}: ${2:v} for ${1:k}, ${2:v} in ${3:iterable}}" },
+        L"Python inline dictionary comprehension",
+        L"py"
+    });
+
+    m_snippets.push_back({
+        L"Python Lambda Expression",
+        L"lambda",
+        { L"lambda ${1:x}: ${2:expression}" },
+        L"Python anonymous lambda function",
         L"py"
     });
 
@@ -1513,6 +1597,142 @@ void SnippetManager::LoadDefaults() {
         { L"print($1)" },
         L"Print expression to standard console output in Python",
         L"py"
+    });
+
+    // 6. PHP Snippets
+    m_snippets.push_back({
+        L"PHP Open Tag",
+        L"php",
+        {
+            L"<?php",
+            L"",
+            L"$0"
+        },
+        L"PHP opening tag skeleton",
+        L"php"
+    });
+
+    m_snippets.push_back({
+        L"PHP Echo Statement",
+        L"echo",
+        { L"echo ${1:\\$var};" },
+        L"PHP echo variable statement",
+        L"php"
+    });
+
+    m_snippets.push_back({
+        L"PHP Foreach Loop",
+        L"fore",
+        {
+            L"foreach (${1:\\$items} as ${2:\\$item}) {",
+            L"    $0",
+            L"}"
+        },
+        L"PHP foreach value iteration loop",
+        L"php"
+    });
+
+    m_snippets.push_back({
+        L"PHP Foreach Key Value Loop",
+        L"forek",
+        {
+            L"foreach (${1:\\$items} as ${2:\\$key} => ${3:\\$value}) {",
+            L"    $0",
+            L"}"
+        },
+        L"PHP foreach key => value iteration loop",
+        L"php"
+    });
+
+    m_snippets.push_back({
+        L"PHP Function Declaration",
+        L"fun",
+        {
+            L"function ${1:name}(${2:\\$params}) {",
+            L"    $0",
+            L"}"
+        },
+        L"PHP user-defined function",
+        L"php"
+    });
+
+    m_snippets.push_back({
+        L"PHP Class Definition",
+        L"cls",
+        {
+            L"class ${1:ClassName} {",
+            L"    public function __construct() {",
+            L"        $0",
+            L"    }",
+            L"}"
+        },
+        L"PHP class boilerplate with constructor",
+        L"php"
+    });
+
+    m_snippets.push_back({
+        L"PHP PDO Database Connection",
+        L"pdoconnect",
+        {
+            L"$dsn = 'mysql:host=${1:localhost};dbname=${2:database};charset=utf8mb4';",
+            L"$pdo = new PDO($dsn, '${3:root}', '${4:password}', [",
+            L"    PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,",
+            L"    PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC",
+            L"]);",
+            L"$0"
+        },
+        L"PHP PDO MySQL database connection setup",
+        L"php"
+    });
+
+    m_snippets.push_back({
+        L"PHP PDO Prepared Query",
+        L"query",
+        {
+            L"$stmt = $pdo->prepare(\"${1:SELECT * FROM table WHERE id = ?}\");",
+            L"$stmt->execute([$2]);",
+            L"$rows = $stmt->fetchAll();",
+            L"$0"
+        },
+        L"PHP PDO prepared statement query and fetchAll",
+        L"php"
+    });
+
+    m_snippets.push_back({
+        L"PHP Try Catch Block",
+        L"trycatch",
+        {
+            L"try {",
+            L"    $1",
+            L"} catch (Exception $e) {",
+            L"    echo $e->getMessage();",
+            L"    $0",
+            L"}"
+        },
+        L"PHP try-catch error handling block",
+        L"php"
+    });
+
+    m_snippets.push_back({
+        L"PHP JSON Header and Response",
+        L"json",
+        {
+            L"header('Content-Type: application/json');",
+            L"echo json_encode(${1:\\$data});"
+        },
+        L"PHP JSON API response header and serialization",
+        L"php"
+    });
+
+    m_snippets.push_back({
+        L"PHP Session Start",
+        L"session",
+        {
+            L"session_start();",
+            L"$0"
+        },
+        L"PHP session initialization",
+        L"php"
     });
 }
 

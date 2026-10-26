@@ -18,7 +18,10 @@ enum class CompletionKind {
     Attribute,  ///< ⓐ HTML Attribute
     Snippet,    ///< ⓢ Snippet / Template
     Folder,     ///< 📁 Folder / Directory
-    File        ///< 📄 File
+    File,       ///< 📄 File
+    Class,      ///< ⓒ Class / Type
+    Constant,   ///< ⓒ Constant
+    Module      ///< ⓜ Module / Package
 };
 
 /**
@@ -104,6 +107,8 @@ private:
     void PopulateJavaScriptGlobals();
     void PopulateJavaScriptDomApis();
     void PopulateJavaScriptPrototypeMethods();
+    void PopulatePhpVocabulary();
+    void PopulatePythonVocabulary();
     void PopulateCommonVocabulary();
 
     std::vector<IntelliSenseItem> m_htmlTags;
@@ -114,6 +119,8 @@ private:
     std::vector<IntelliSenseItem> m_jsGlobals;
     std::vector<IntelliSenseItem> m_jsDomApis;
     std::vector<IntelliSenseItem> m_jsPrototypes;
+    std::vector<IntelliSenseItem> m_phpSymbols;
+    std::vector<IntelliSenseItem> m_pySymbols;
     std::vector<IntelliSenseItem> m_commonVocabulary;
     const SnippetManager* m_pSnippetManager = nullptr;
     std::wstring m_workspaceRoot;

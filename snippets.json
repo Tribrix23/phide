@@ -1451,6 +1451,16 @@
         "scope": "py"
     },
 
+    "Python Main Entrypoint": {
+        "prefix": "main",
+        "body": [
+            "if __name__ == '__main__':",
+            "    $0"
+        ],
+        "description": "Python main block shortcut",
+        "scope": "py"
+    },
+
     "Python Class": {
         "prefix": "class",
         "body": [
@@ -1459,6 +1469,78 @@
             "        $0"
         ],
         "description": "Python class definition",
+        "scope": "py"
+    },
+
+    "Python Class (Short)": {
+        "prefix": "cls",
+        "body": [
+            "class ${1:ClassName}:",
+            "    def __init__(self$2):",
+            "        $0"
+        ],
+        "description": "Python class shortcut",
+        "scope": "py"
+    },
+
+    "Python Try Except Block": {
+        "prefix": "tryex",
+        "body": [
+            "try:",
+            "    $1",
+            "except ${2:Exception} as ${3:e}:",
+            "    print(f\"Error: {${3:e}}\")",
+            "    $0"
+        ],
+        "description": "Python try-except error handling block",
+        "scope": "py"
+    },
+
+    "Python With Open File": {
+        "prefix": "withopen",
+        "body": [
+            "with open('${1:filename.txt}', '${2:r}', encoding='utf-8') as f:",
+            "    ${3:content} = f.read()",
+            "    $0"
+        ],
+        "description": "Python file context manager open statement",
+        "scope": "py"
+    },
+
+    "Python For In Loop": {
+        "prefix": "forin",
+        "body": [
+            "for ${1:item} in ${2:items}:",
+            "    $0"
+        ],
+        "description": "Python for-in sequence loop",
+        "scope": "py"
+    },
+
+    "Python List Comprehension": {
+        "prefix": "lc",
+        "body": [
+            "[${1:x} for ${1:x} in ${2:iterable}]"
+        ],
+        "description": "Python inline list comprehension",
+        "scope": "py"
+    },
+
+    "Python Dict Comprehension": {
+        "prefix": "dc",
+        "body": [
+            "{${1:k}: ${2:v} for ${1:k}, ${2:v} in ${3:iterable}}"
+        ],
+        "description": "Python inline dictionary comprehension",
+        "scope": "py"
+    },
+
+    "Python Lambda Expression": {
+        "prefix": "lambda",
+        "body": [
+            "lambda ${1:x}: ${2:expression}"
+        ],
+        "description": "Python anonymous lambda function",
         "scope": "py"
     },
 
@@ -1478,6 +1560,132 @@
         ],
         "description": "Print expression to standard console output in Python",
         "scope": "py"
+    },
+
+    "PHP Open Tag": {
+        "prefix": "php",
+        "body": [
+            "<?php",
+            "",
+            "$0"
+        ],
+        "description": "PHP opening tag skeleton",
+        "scope": "php"
+    },
+
+    "PHP Echo Statement": {
+        "prefix": "echo",
+        "body": [
+            "echo ${1:\\$var};"
+        ],
+        "description": "PHP echo variable statement",
+        "scope": "php"
+    },
+
+    "PHP Foreach Loop": {
+        "prefix": "fore",
+        "body": [
+            "foreach (${1:\\$items} as ${2:\\$item}) {",
+            "    $0",
+            "}"
+        ],
+        "description": "PHP foreach value iteration loop",
+        "scope": "php"
+    },
+
+    "PHP Foreach Key Value Loop": {
+        "prefix": "forek",
+        "body": [
+            "foreach (${1:\\$items} as ${2:\\$key} => ${3:\\$value}) {",
+            "    $0",
+            "}"
+        ],
+        "description": "PHP foreach key => value iteration loop",
+        "scope": "php"
+    },
+
+    "PHP Function Declaration": {
+        "prefix": "fun",
+        "body": [
+            "function ${1:name}(${2:\\$params}) {",
+            "    $0",
+            "}"
+        ],
+        "description": "PHP user-defined function",
+        "scope": "php"
+    },
+
+    "PHP Class Definition": {
+        "prefix": "cls",
+        "body": [
+            "class ${1:ClassName} {",
+            "    public function __construct() {",
+            "        $0",
+            "    }",
+            "}"
+        ],
+        "description": "PHP class boilerplate with constructor",
+        "scope": "php"
+    },
+
+    "PHP PDO Database Connection": {
+        "prefix": "pdoconnect",
+        "body": [
+            "$dsn = 'mysql:host=${1:localhost};dbname=${2:database};charset=utf8mb4';",
+            "$pdo = new PDO($dsn, '${3:root}', '${4:password}', [",
+            "    PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,",
+            "    PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC",
+            "]);",
+            "$0"
+        ],
+        "description": "PHP PDO MySQL database connection setup",
+        "scope": "php"
+    },
+
+    "PHP PDO Prepared Query": {
+        "prefix": "query",
+        "body": [
+            "$stmt = $pdo->prepare(\"${1:SELECT * FROM table WHERE id = ?}\");",
+            "$stmt->execute([$2]);",
+            "$rows = $stmt->fetchAll();",
+            "$0"
+        ],
+        "description": "PHP PDO prepared statement query and fetchAll",
+        "scope": "php"
+    },
+
+    "PHP Try Catch Block": {
+        "prefix": "trycatch",
+        "body": [
+            "try {",
+            "    $1",
+            "} catch (Exception $e) {",
+            "    echo $e->getMessage();",
+            "    $0",
+            "}"
+        ],
+        "description": "PHP try-catch error handling block",
+        "scope": "php"
+    },
+
+    "PHP JSON Header and Response": {
+        "prefix": "json",
+        "body": [
+            "header('Content-Type: application/json');",
+            "echo json_encode(${1:\\$data});"
+        ],
+        "description": "PHP JSON API response header and serialization",
+        "scope": "php"
+    },
+
+    "PHP Session Start": {
+        "prefix": "session",
+        "body": [
+            "session_start();",
+            "$0"
+        ],
+        "description": "PHP session initialization",
+        "scope": "php"
     }
 
 }

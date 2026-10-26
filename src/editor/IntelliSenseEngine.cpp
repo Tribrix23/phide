@@ -17,6 +17,8 @@ IntelliSenseEngine::IntelliSenseEngine() {
     PopulateJavaScriptGlobals();
     PopulateJavaScriptDomApis();
     PopulateJavaScriptPrototypeMethods();
+    PopulatePhpVocabulary();
+    PopulatePythonVocabulary();
     PopulateCommonVocabulary();
 }
 
@@ -755,6 +757,384 @@ void IntelliSenseEngine::PopulateJavaScriptPrototypeMethods() {
         item.kind = CompletionKind::Method;
         item.origin = L"prototype";
         m_jsPrototypes.push_back(std::move(item));
+    }
+}
+
+void IntelliSenseEngine::PopulatePhpVocabulary() {
+    struct PhpDef { const wchar_t* name; const wchar_t* desc; CompletionKind kind; };
+    static const PhpDef phpDefs[] = {
+        // Superglobals
+        { L"$_GET", L"Associative array of variables passed to current script via URL parameters", CompletionKind::Variable },
+        { L"$_POST", L"Associative array of variables passed to current script via HTTP POST", CompletionKind::Variable },
+        { L"$_REQUEST", L"Associative array containing contents of $_GET, $_POST, and $_COOKIE", CompletionKind::Variable },
+        { L"$_SESSION", L"Associative array containing session variables available to current script", CompletionKind::Variable },
+        { L"$_COOKIE", L"Associative array of variables passed to current script via HTTP Cookies", CompletionKind::Variable },
+        { L"$_SERVER", L"Array containing information such as headers, paths, and script locations", CompletionKind::Variable },
+        { L"$_FILES", L"Associative array of items uploaded to the current script via HTTP POST", CompletionKind::Variable },
+        { L"$_ENV", L"Associative array of variables passed to the current script via environment", CompletionKind::Variable },
+        { L"$GLOBALS", L"References all variables available in global scope", CompletionKind::Variable },
+
+        // Keywords & Language constructs
+        { L"echo", L"Outputs one or more strings to the output buffer", CompletionKind::Keyword },
+        { L"print", L"Outputs a string and always returns 1", CompletionKind::Keyword },
+        { L"function", L"Declares a named user-defined function", CompletionKind::Keyword },
+        { L"fn", L"Declares an arrow function (short closure)", CompletionKind::Keyword },
+        { L"class", L"Declares a class definition", CompletionKind::Keyword },
+        { L"interface", L"Declares an object interface", CompletionKind::Keyword },
+        { L"trait", L"Declares a reusable trait mechanism", CompletionKind::Keyword },
+        { L"extends", L"Extends a parent class or interface", CompletionKind::Keyword },
+        { L"implements", L"Specifies interfaces that a class implements", CompletionKind::Keyword },
+        { L"public", L"Public member visibility modifier", CompletionKind::Keyword },
+        { L"private", L"Private member visibility modifier", CompletionKind::Keyword },
+        { L"protected", L"Protected member visibility modifier", CompletionKind::Keyword },
+        { L"static", L"Static member or method modifier", CompletionKind::Keyword },
+        { L"final", L"Prevents child classes from overriding method or extending class", CompletionKind::Keyword },
+        { L"abstract", L"Defines an abstract class or method signature", CompletionKind::Keyword },
+        { L"readonly", L"Readonly property modifier (PHP 8.1+)", CompletionKind::Keyword },
+        { L"return", L"Returns program control and value from function", CompletionKind::Keyword },
+        { L"if", L"Conditional branch statement", CompletionKind::Keyword },
+        { L"else", L"Else fallback conditional branch", CompletionKind::Keyword },
+        { L"elseif", L"Else-if alternative conditional branch", CompletionKind::Keyword },
+        { L"for", L"Counting for-loop statement", CompletionKind::Keyword },
+        { L"foreach", L"Iterates over arrays or Traversable objects", CompletionKind::Keyword },
+        { L"while", L"While loop statement", CompletionKind::Keyword },
+        { L"do", L"Do-while loop statement", CompletionKind::Keyword },
+        { L"switch", L"Switch statement multi-way branch", CompletionKind::Keyword },
+        { L"case", L"Case branch within switch statement", CompletionKind::Keyword },
+        { L"break", L"Terminates current loop or switch", CompletionKind::Keyword },
+        { L"continue", L"Skips to next iteration of loop", CompletionKind::Keyword },
+        { L"default", L"Default branch in switch or match", CompletionKind::Keyword },
+        { L"match", L"Match expression with subject evaluation (PHP 8.0+)", CompletionKind::Keyword },
+        { L"try", L"Try block for exception handling", CompletionKind::Keyword },
+        { L"catch", L"Catch block for exception handling", CompletionKind::Keyword },
+        { L"finally", L"Finally block always executed after try/catch", CompletionKind::Keyword },
+        { L"throw", L"Throws an exception instance", CompletionKind::Keyword },
+        { L"new", L"Instantiates a new class object", CompletionKind::Keyword },
+        { L"clone", L"Creates a shallow copy of an object", CompletionKind::Keyword },
+        { L"yield", L"Yields a value from a generator function", CompletionKind::Keyword },
+        { L"namespace", L"Declares current file namespace", CompletionKind::Keyword },
+        { L"use", L"Imports namespace, class, function, or trait", CompletionKind::Keyword },
+        { L"as", L"Aliases imported symbol or specifies foreach target", CompletionKind::Keyword },
+        { L"global", L"Binds local variable name to global scope", CompletionKind::Keyword },
+        { L"include", L"Includes and evaluates specified file", CompletionKind::Keyword },
+        { L"include_once", L"Includes and evaluates specified file only once", CompletionKind::Keyword },
+        { L"require", L"Requires and evaluates specified file (fatal on error)", CompletionKind::Keyword },
+        { L"require_once", L"Requires specified file only once (fatal on error)", CompletionKind::Keyword },
+        { L"isset", L"Determines if a variable is declared and is different than null", CompletionKind::Function },
+        { L"empty", L"Determines whether a variable is empty", CompletionKind::Function },
+        { L"unset", L"Destroys specified variables", CompletionKind::Function },
+        { L"die", L"Equivalent to exit() - prints message and terminates script", CompletionKind::Function },
+        { L"exit", L"Terminates execution of current script", CompletionKind::Function },
+        { L"list", L"Assigns variables as if they were an array", CompletionKind::Function },
+        { L"array", L"Creates an array data structure", CompletionKind::Function },
+        { L"null", L"Special NULL data type literal", CompletionKind::Keyword },
+        { L"true", L"Boolean TRUE literal", CompletionKind::Keyword },
+        { L"false", L"Boolean FALSE literal", CompletionKind::Keyword },
+
+        // String functions
+        { L"strlen", L"(string $string): int - Returns string length", CompletionKind::Function },
+        { L"strpos", L"(string $haystack, string $needle, int $offset = 0): int|false", CompletionKind::Function },
+        { L"str_replace", L"($search, $replace, $subject, &$count = null) - Replace occurrences", CompletionKind::Function },
+        { L"str_ireplace", L"($search, $replace, $subject) - Case-insensitive string replace", CompletionKind::Function },
+        { L"substr", L"(string $string, int $offset, ?int $length = null): string", CompletionKind::Function },
+        { L"strtolower", L"(string $string): string - Converts string to lowercase", CompletionKind::Function },
+        { L"strtoupper", L"(string $string): string - Converts string to uppercase", CompletionKind::Function },
+        { L"ucfirst", L"(string $string): string - Capitalizes first character", CompletionKind::Function },
+        { L"trim", L"(string $string, string $characters = \" \\n\\r\\t\\v\\x00\"): string", CompletionKind::Function },
+        { L"ltrim", L"(string $string): string - Strips whitespace from beginning", CompletionKind::Function },
+        { L"rtrim", L"(string $string): string - Strips whitespace from end", CompletionKind::Function },
+        { L"explode", L"(string $separator, string $string, int $limit = PHP_INT_MAX): array", CompletionKind::Function },
+        { L"implode", L"(string $separator, array $array): string - Joins array elements", CompletionKind::Function },
+        { L"sprintf", L"(string $format, mixed ...$values): string - Formatted string", CompletionKind::Function },
+        { L"printf", L"(string $format, mixed ...$values): int - Formatted string output", CompletionKind::Function },
+        { L"str_contains", L"(string $haystack, string $needle): bool (PHP 8.0+)", CompletionKind::Function },
+        { L"str_starts_with", L"(string $haystack, string $needle): bool (PHP 8.0+)", CompletionKind::Function },
+        { L"str_ends_with", L"(string $haystack, string $needle): bool (PHP 8.0+)", CompletionKind::Function },
+        { L"strip_tags", L"(string $string, array|string|null $allowed_tags = null): string", CompletionKind::Function },
+        { L"htmlspecialchars", L"(string $string, int $flags = ENT_QUOTES | ENT_SUBSTITUTE): string", CompletionKind::Function },
+        { L"htmlentities", L"(string $string): string - Convert all applicable characters to HTML entities", CompletionKind::Function },
+        { L"urlencode", L"(string $string): string - URL-encodes string", CompletionKind::Function },
+        { L"urldecode", L"(string $string): string - Decodes URL-encoded string", CompletionKind::Function },
+        { L"number_format", L"(float $num, int $decimals = 0, ?string $dec_point = '.', ?string $thousands_sep = ','): string", CompletionKind::Function },
+        { L"preg_match", L"(string $pattern, string $subject, array &$matches = null): int|false", CompletionKind::Function },
+        { L"preg_replace", L"($pattern, $replacement, $subject): string|array|null", CompletionKind::Function },
+        { L"preg_split", L"(string $pattern, string $subject): array|false", CompletionKind::Function },
+
+        // Array functions
+        { L"count", L"(Countable|array $value, int $mode = COUNT_NORMAL): int", CompletionKind::Function },
+        { L"array_push", L"(array &$array, mixed ...$values): int", CompletionKind::Function },
+        { L"array_pop", L"(array &$array): mixed - Pops element off end", CompletionKind::Function },
+        { L"array_shift", L"(array &$array): mixed - Shifts element off beginning", CompletionKind::Function },
+        { L"array_unshift", L"(array &$array, mixed ...$values): int", CompletionKind::Function },
+        { L"array_merge", L"(array ...$arrays): array - Merges one or more arrays", CompletionKind::Function },
+        { L"array_slice", L"(array $array, int $offset, ?int $length = null): array", CompletionKind::Function },
+        { L"array_keys", L"(array $array): array - Return all keys of array", CompletionKind::Function },
+        { L"array_values", L"(array $array): array - Return all values of array", CompletionKind::Function },
+        { L"array_map", L"(?callable $callback, array $array, array ...$arrays): array", CompletionKind::Function },
+        { L"array_filter", L"(array $array, ?callable $callback = null, int $mode = 0): array", CompletionKind::Function },
+        { L"array_reduce", L"(array $array, callable $callback, mixed $initial = null): mixed", CompletionKind::Function },
+        { L"in_array", L"(mixed $needle, array $haystack, bool $strict = false): bool", CompletionKind::Function },
+        { L"array_key_exists", L"(string|int $key, array $array): bool", CompletionKind::Function },
+        { L"sort", L"(array &$array, int $flags = SORT_REGULAR): bool", CompletionKind::Function },
+        { L"asort", L"(array &$array, int $flags = SORT_REGULAR): bool - Sort maintaining index", CompletionKind::Function },
+        { L"ksort", L"(array &$array, int $flags = SORT_REGULAR): bool - Sort by key", CompletionKind::Function },
+        { L"usort", L"(array &$array, callable $callback): bool - User-defined sort", CompletionKind::Function },
+        { L"array_search", L"(mixed $needle, array $haystack, bool $strict = false): int|string|false", CompletionKind::Function },
+        { L"array_unique", L"(array $array, int $flags = SORT_STRING): array", CompletionKind::Function },
+        { L"array_reverse", L"(array $array, bool $preserve_keys = false): array", CompletionKind::Function },
+        { L"array_sum", L"(array $array): int|float - Sum of values in an array", CompletionKind::Function },
+        { L"array_column", L"(array $array, int|string|null $column_key): array", CompletionKind::Function },
+
+        // JSON, Crypto & Hashing
+        { L"json_encode", L"(mixed $value, int $flags = 0, int $depth = 512): string|false", CompletionKind::Function },
+        { L"json_decode", L"(string $json, ?bool $associative = null, int $depth = 512): mixed", CompletionKind::Function },
+        { L"base64_encode", L"(string $string): string - Encodes data with MIME base64", CompletionKind::Function },
+        { L"base64_decode", L"(string $string, bool $strict = false): string|false", CompletionKind::Function },
+        { L"password_hash", L"(string $password, string|int|null $algo, array $options = []): string", CompletionKind::Function },
+        { L"password_verify", L"(string $password, string $hash): bool", CompletionKind::Function },
+        { L"md5", L"(string $string, bool $binary = false): string", CompletionKind::Function },
+        { L"sha1", L"(string $string, bool $binary = false): string", CompletionKind::Function },
+        { L"hash", L"(string $algo, string $data, bool $binary = false): string", CompletionKind::Function },
+        { L"random_int", L"(int $min, int $max): int - Cryptographically secure pseudo-random int", CompletionKind::Function },
+
+        // HTTP, Session & Headers
+        { L"header", L"(string $header, bool $replace = true, int $response_code = 0): void", CompletionKind::Function },
+        { L"http_response_code", L"(int $response_code = 0): int|bool - Get or set response code", CompletionKind::Function },
+        { L"setcookie", L"(string $name, string $value = \"\", array|int $expires_or_options = 0): bool", CompletionKind::Function },
+        { L"session_start", L"(array $options = []): bool - Initialize session data", CompletionKind::Function },
+        { L"session_destroy", L"(): bool - Destroys all data registered to a session", CompletionKind::Function },
+        { L"session_regenerate_id", L"(bool $delete_old_session = false): bool", CompletionKind::Function },
+
+        // Filesystem & IO
+        { L"file_get_contents", L"(string $filename): string|false - Reads entire file into a string", CompletionKind::Function },
+        { L"file_put_contents", L"(string $filename, mixed $data, int $flags = 0): int|false", CompletionKind::Function },
+        { L"file_exists", L"(string $filename): bool - Checks whether a file or directory exists", CompletionKind::Function },
+        { L"is_file", L"(string $filename): bool - Tells whether the filename is a regular file", CompletionKind::Function },
+        { L"is_dir", L"(string $filename): bool - Tells whether the filename is a directory", CompletionKind::Function },
+        { L"mkdir", L"(string $directory, int $permissions = 0777, bool $recursive = false): bool", CompletionKind::Function },
+        { L"unlink", L"(string $filename): bool - Deletes a file", CompletionKind::Function },
+        { L"fopen", L"(string $filename, string $mode): resource|false", CompletionKind::Function },
+        { L"fclose", L"(resource $stream): bool - Closes an open file pointer", CompletionKind::Function },
+        { L"fread", L"(resource $stream, int $length): string|false", CompletionKind::Function },
+        { L"fwrite", L"(resource $stream, string $data): int|false", CompletionKind::Function },
+        { L"feof", L"(resource $stream): bool - Tests for end-of-file on a file pointer", CompletionKind::Function },
+
+        // Database & PDO
+        { L"PDO", L"Represents a connection between PHP and a database server", CompletionKind::Class },
+        { L"PDOStatement", L"Represents a prepared statement and associated result set", CompletionKind::Class },
+        { L"prepare", L"($query, $options = []): PDOStatement|false - Prepares SQL statement", CompletionKind::Method },
+        { L"execute", L"(?array $params = null): bool - Executes a prepared statement", CompletionKind::Method },
+        { L"fetch", L"(int $mode = PDO::FETCH_DEFAULT): mixed - Fetches next row", CompletionKind::Method },
+        { L"fetchAll", L"(int $mode = PDO::FETCH_DEFAULT): array - Fetches all rows", CompletionKind::Method },
+        { L"fetchColumn", L"(int $column = 0): mixed - Returns a single column from next row", CompletionKind::Method },
+        { L"rowCount", L"(): int - Returns the number of rows affected by last SQL statement", CompletionKind::Method },
+        { L"lastInsertId", L"(?string $name = null): string|false - ID of the last inserted row", CompletionKind::Method },
+        { L"beginTransaction", L"(): bool - Initiates a database transaction", CompletionKind::Method },
+        { L"commit", L"(): bool - Commits a transaction", CompletionKind::Method },
+        { L"rollBack", L"(): bool - Rolls back a transaction", CompletionKind::Method },
+
+        // Types & Inspection
+        { L"is_array", L"(mixed $value): bool", CompletionKind::Function },
+        { L"is_string", L"(mixed $value): bool", CompletionKind::Function },
+        { L"is_numeric", L"(mixed $value): bool", CompletionKind::Function },
+        { L"is_int", L"(mixed $value): bool", CompletionKind::Function },
+        { L"is_bool", L"(mixed $value): bool", CompletionKind::Function },
+        { L"is_null", L"(mixed $value): bool", CompletionKind::Function },
+        { L"is_object", L"(mixed $value): bool", CompletionKind::Function },
+        { L"var_dump", L"(mixed $value, mixed ...$values): void - Dumps variable information", CompletionKind::Function },
+        { L"print_r", L"(mixed $value, bool $return = false): string|bool", CompletionKind::Function },
+        { L"intval", L"(mixed $value, int $base = 10): int", CompletionKind::Function },
+        { L"floatval", L"(mixed $value): float", CompletionKind::Function },
+        { L"strval", L"(mixed $value): string", CompletionKind::Function },
+        { L"boolval", L"(mixed $value): bool", CompletionKind::Function },
+
+        // Magic Constants & Methods
+        { L"__DIR__", L"The directory of the file", CompletionKind::Constant },
+        { L"__FILE__", L"The full path and filename of the file", CompletionKind::Constant },
+        { L"__LINE__", L"The current line number of the file", CompletionKind::Constant },
+        { L"__CLASS__", L"The class name as it was declared", CompletionKind::Constant },
+        { L"__METHOD__", L"The class method name", CompletionKind::Constant },
+        { L"__FUNCTION__", L"The function name", CompletionKind::Constant },
+        { L"__construct", L"Class constructor magic method", CompletionKind::Method },
+        { L"__destruct", L"Class destructor magic method", CompletionKind::Method },
+        { L"__toString", L"Magic method called when object is treated as string", CompletionKind::Method }
+    };
+
+    for (const auto& d : phpDefs) {
+        IntelliSenseItem item;
+        item.label = d.name;
+        item.detail = d.desc;
+        item.insertText = d.name;
+        item.kind = d.kind;
+        item.origin = L"php";
+        m_phpSymbols.push_back(std::move(item));
+    }
+}
+
+void IntelliSenseEngine::PopulatePythonVocabulary() {
+    struct PyDef { const wchar_t* name; const wchar_t* desc; CompletionKind kind; };
+    static const PyDef pyDefs[] = {
+        // Keywords
+        { L"def", L"Defines a function or method", CompletionKind::Keyword },
+        { L"class", L"Defines a new class type", CompletionKind::Keyword },
+        { L"self", L"Instance reference convention for methods", CompletionKind::Variable },
+        { L"return", L"Exits a function and returns a value", CompletionKind::Keyword },
+        { L"import", L"Imports modules or packages into current namespace", CompletionKind::Keyword },
+        { L"from", L"Specifies package or module to import specific symbols from", CompletionKind::Keyword },
+        { L"as", L"Assigns an alias identifier to an imported module or exception", CompletionKind::Keyword },
+        { L"if", L"Conditional branch statement", CompletionKind::Keyword },
+        { L"elif", L"Else-if alternative conditional branch", CompletionKind::Keyword },
+        { L"else", L"Else fallback conditional branch", CompletionKind::Keyword },
+        { L"for", L"For loop iterating over sequence or generator", CompletionKind::Keyword },
+        { L"while", L"While loop executing while condition is true", CompletionKind::Keyword },
+        { L"break", L"Terminates current loop immediately", CompletionKind::Keyword },
+        { L"continue", L"Skips to the next iteration of the loop", CompletionKind::Keyword },
+        { L"pass", L"Null operation placeholder statement", CompletionKind::Keyword },
+        { L"try", L"Begins exception handling try block", CompletionKind::Keyword },
+        { L"except", L"Catches and handles specified exception types", CompletionKind::Keyword },
+        { L"finally", L"Block executed unconditionally after try/except", CompletionKind::Keyword },
+        { L"raise", L"Raises an exception instance or re-raises current exception", CompletionKind::Keyword },
+        { L"with", L"Context manager statement with __enter__ and __exit__", CompletionKind::Keyword },
+        { L"async", L"Defines a coroutine function or asynchronous context manager", CompletionKind::Keyword },
+        { L"await", L"Awaits completion of an asynchronous coroutine or task", CompletionKind::Keyword },
+        { L"lambda", L"Defines an anonymous inline lambda function expression", CompletionKind::Keyword },
+        { L"yield", L"Yields a value from a generator function", CompletionKind::Keyword },
+        { L"global", L"Declares variable to reference global module scope", CompletionKind::Keyword },
+        { L"nonlocal", L"Declares variable to reference enclosing non-global scope", CompletionKind::Keyword },
+        { L"assert", L"Tests condition; raises AssertionError if false", CompletionKind::Keyword },
+        { L"del", L"Deletes reference to variable, item, or slice", CompletionKind::Keyword },
+        { L"in", L"Membership test operator or sequence iteration target", CompletionKind::Keyword },
+        { L"is", L"Object identity operator comparing memory references", CompletionKind::Keyword },
+        { L"not", L"Logical NOT boolean inversion operator", CompletionKind::Keyword },
+        { L"and", L"Logical AND short-circuit conjunction operator", CompletionKind::Keyword },
+        { L"or", L"Logical OR short-circuit disjunction operator", CompletionKind::Keyword },
+        { L"True", L"Boolean true singleton literal", CompletionKind::Keyword },
+        { L"False", L"Boolean false singleton literal", CompletionKind::Keyword },
+        { L"None", L"NoneType singleton representing absence of value", CompletionKind::Keyword },
+        { L"match", L"Structural pattern matching statement (Python 3.10+)", CompletionKind::Keyword },
+        { L"case", L"Pattern case arm in match statement (Python 3.10+)", CompletionKind::Keyword },
+
+        // Built-in Functions
+        { L"print", L"print(*values, sep=' ', end='\\n', file=sys.stdout, flush=False)", CompletionKind::Function },
+        { L"len", L"len(s) -> int: Return number of items in container", CompletionKind::Function },
+        { L"range", L"range(stop) or range(start, stop[, step]): Generate arithmetic sequence", CompletionKind::Function },
+        { L"enumerate", L"enumerate(iterable, start=0): Return (index, value) iterator", CompletionKind::Function },
+        { L"zip", L"zip(*iterables, strict=False): Aggregate elements from each iterable", CompletionKind::Function },
+        { L"isinstance", L"isinstance(object, classinfo) -> bool: Check if object is instance", CompletionKind::Function },
+        { L"issubclass", L"issubclass(class, classinfo) -> bool: Check if class is subclass", CompletionKind::Function },
+        { L"type", L"type(object) -> type: Return object's type", CompletionKind::Function },
+        { L"id", L"id(object) -> int: Return identity address of object", CompletionKind::Function },
+        { L"input", L"input(prompt='') -> str: Read line from standard input", CompletionKind::Function },
+        { L"open", L"open(file, mode='r', encoding=None) -> file object", CompletionKind::Function },
+        { L"str", L"str(object='') -> str: Convert to string representation", CompletionKind::Class },
+        { L"int", L"int(x=0, /) or int(x, base=10) -> int: Convert to integer", CompletionKind::Class },
+        { L"float", L"float(x=0) -> float: Convert to floating point number", CompletionKind::Class },
+        { L"bool", L"bool(x=False) -> bool: Returns True or False", CompletionKind::Class },
+        { L"list", L"list(iterable=()) -> new list", CompletionKind::Class },
+        { L"dict", L"dict(**kwargs) or dict(mapping) -> new dictionary", CompletionKind::Class },
+        { L"set", L"set(iterable=()) -> new set", CompletionKind::Class },
+        { L"tuple", L"tuple(iterable=()) -> new tuple", CompletionKind::Class },
+        { L"bytes", L"bytes(iterable_of_ints) -> immutable bytes array", CompletionKind::Class },
+        { L"bytearray", L"bytearray(source) -> mutable byte sequence", CompletionKind::Class },
+        { L"sum", L"sum(iterable, /, start=0): Return sum of elements", CompletionKind::Function },
+        { L"min", L"min(iterable, *[, key, default]): Return smallest item", CompletionKind::Function },
+        { L"max", L"max(iterable, *[, key, default]): Return largest item", CompletionKind::Function },
+        { L"abs", L"abs(x) -> number: Return absolute value", CompletionKind::Function },
+        { L"round", L"round(number, ndigits=None): Round number to precision", CompletionKind::Function },
+        { L"pow", L"pow(base, exp[, mod]): Return base raised to exp", CompletionKind::Function },
+        { L"sorted", L"sorted(iterable, /, *, key=None, reverse=False): Return new sorted list", CompletionKind::Function },
+        { L"reversed", L"reversed(sequence) -> reverse iterator", CompletionKind::Function },
+        { L"map", L"map(func, *iterables) -> map object iterator", CompletionKind::Function },
+        { L"filter", L"filter(function, iterable) -> filter object iterator", CompletionKind::Function },
+        { L"any", L"any(iterable) -> bool: Return True if any element is truthy", CompletionKind::Function },
+        { L"all", L"all(iterable) -> bool: Return True if all elements are truthy", CompletionKind::Function },
+        { L"hasattr", L"hasattr(obj, name) -> bool: True if attribute exists", CompletionKind::Function },
+        { L"getattr", L"getattr(object, name[, default]): Retrieve named attribute", CompletionKind::Function },
+        { L"setattr", L"setattr(object, name, value): Set named attribute", CompletionKind::Function },
+        { L"delattr", L"delattr(object, name): Delete named attribute", CompletionKind::Function },
+        { L"callable", L"callable(object) -> bool: Check if object can be called", CompletionKind::Function },
+        { L"super", L"super([type[, object-or-type]]) -> proxy object delegating to parent", CompletionKind::Function },
+        { L"vars", L"vars([object]) -> dict: Return __dict__ attribute", CompletionKind::Function },
+        { L"dir", L"dir([object]) -> list: List of attributes and methods", CompletionKind::Function },
+        { L"repr", L"repr(object) -> str: Canonical string representation", CompletionKind::Function },
+        { L"iter", L"iter(iterable) -> iterator object", CompletionKind::Function },
+        { L"next", L"next(iterator[, default]): Return next item", CompletionKind::Function },
+        { L"hash", L"hash(object) -> int: Return hash value of object", CompletionKind::Function },
+        { L"format", L"format(value[, format_spec]): Formatted representation", CompletionKind::Function },
+        { L"breakpoint", L"breakpoint(*args, **kws): Drops into debugger (pdb)", CompletionKind::Function },
+
+        // Standard Modules
+        { L"os", L"Miscellaneous operating system interfaces", CompletionKind::Module },
+        { L"sys", L"System-specific parameters and system functions", CompletionKind::Module },
+        { L"json", L"JSON encoder and decoder serializer", CompletionKind::Module },
+        { L"math", L"Mathematical functions and constants", CompletionKind::Module },
+        { L"re", L"Regular expression operations", CompletionKind::Module },
+        { L"datetime", L"Basic date and time types and utilities", CompletionKind::Module },
+        { L"random", L"Generate pseudo-random numbers", CompletionKind::Module },
+        { L"pathlib", L"Object-oriented filesystem paths", CompletionKind::Module },
+        { L"subprocess", L"Subprocess management and process execution", CompletionKind::Module },
+        { L"collections", L"Container datatypes (namedtuple, deque, Counter, defaultdict)", CompletionKind::Module },
+        { L"itertools", L"Functions creating iterators for efficient looping", CompletionKind::Module },
+        { L"functools", L"Higher-order functions and operations on callable objects", CompletionKind::Module },
+        { L"typing", L"Support for type hints (List, Dict, Optional, Union, Any)", CompletionKind::Module },
+        { L"logging", L"Logging facility for Python applications", CompletionKind::Module },
+        { L"time", L"Time access, sleep, and conversions", CompletionKind::Module },
+        { L"threading", L"Thread-based parallelism", CompletionKind::Module },
+        { L"multiprocessing", L"Process-based parallelism", CompletionKind::Module },
+        { L"shutil", L"High-level file and directory operations", CompletionKind::Module },
+        { L"urllib", L"URL handling modules", CompletionKind::Module },
+        { L"requests", L"HTTP library for Python human beings", CompletionKind::Module },
+        { L"sqlite3", L"DB-API 2.0 interface for SQLite databases", CompletionKind::Module },
+        { L"unittest", L"Unit testing framework", CompletionKind::Module },
+        { L"dataclasses", L"Data classes code generator decorator", CompletionKind::Module },
+        { L"uuid", L"UUID objects according to RFC 4122", CompletionKind::Module },
+        { L"copy", L"Shallow and deep copy operations", CompletionKind::Module },
+        { L"io", L"Core tools for working with streams", CompletionKind::Module },
+
+        // Dunder / Magic Methods
+        { L"__init__", L"Constructor method called upon class instantiation", CompletionKind::Method },
+        { L"__str__", L"Informal or nicely printable string representation", CompletionKind::Method },
+        { L"__repr__", L"Official, unambiguous string representation", CompletionKind::Method },
+        { L"__len__", L"Returns length of container for len() function", CompletionKind::Method },
+        { L"__getitem__", L"Subscript indexing operator: self[key]", CompletionKind::Method },
+        { L"__setitem__", L"Subscript assignment operator: self[key] = value", CompletionKind::Method },
+        { L"__delitem__", L"Subscript deletion operator: del self[key]", CompletionKind::Method },
+        { L"__iter__", L"Returns an iterator for for-in loop", CompletionKind::Method },
+        { L"__next__", L"Advances iterator and returns next element", CompletionKind::Method },
+        { L"__enter__", L"Context manager setup invoked by with-statement", CompletionKind::Method },
+        { L"__exit__", L"Context manager teardown invoked by with-statement", CompletionKind::Method },
+        { L"__call__", L"Makes instance callable like a function: obj()", CompletionKind::Method },
+        { L"__eq__", L"Equality operator: self == other", CompletionKind::Method },
+        { L"__ne__", L"Inequality operator: self != other", CompletionKind::Method },
+        { L"__lt__", L"Less-than comparison operator: self < other", CompletionKind::Method },
+        { L"__le__", L"Less-than-or-equal operator: self <= other", CompletionKind::Method },
+        { L"__gt__", L"Greater-than comparison operator: self > other", CompletionKind::Method },
+        { L"__ge__", L"Greater-than-or-equal operator: self >= other", CompletionKind::Method },
+        { L"__name__", L"String representing current module or class name", CompletionKind::Constant },
+        { L"__main__", L"Top-level script environment module name string", CompletionKind::Constant },
+        { L"__doc__", L"Docstring documentation string attached to object", CompletionKind::Property },
+        { L"__file__", L"Path to the file from which module was loaded", CompletionKind::Constant },
+
+        // Type Hinting
+        { L"Any", L"Special type indicating an unconstrained type", CompletionKind::Class },
+        { L"Optional", L"Optional[T] equivalent to Union[T, None]", CompletionKind::Class },
+        { L"Union", L"Union[X, Y] represents either type X or type Y", CompletionKind::Class },
+        { L"List", L"Generic list container type: List[str]", CompletionKind::Class },
+        { L"Dict", L"Generic dictionary type: Dict[str, Any]", CompletionKind::Class },
+        { L"Set", L"Generic set container type: Set[int]", CompletionKind::Class },
+        { L"Tuple", L"Generic tuple container type: Tuple[int, ...]", CompletionKind::Class },
+        { L"Callable", L"Callable[[ArgTypes], ReturnType]", CompletionKind::Class },
+        { L"Literal", L"Constrains value to specific literal value(s)", CompletionKind::Class }
+    };
+
+    for (const auto& d : pyDefs) {
+        IntelliSenseItem item;
+        item.label = d.name;
+        item.detail = d.desc;
+        item.insertText = d.name;
+        item.kind = d.kind;
+        item.origin = L"python";
+        m_pySymbols.push_back(std::move(item));
     }
 }
 
@@ -1646,7 +2026,19 @@ std::vector<IntelliSenseItem> IntelliSenseEngine::QueryCompletions(
         }
     }
 
-    bool isHtml = (ext == L".html" || ext == L".htm" || ext == L".php");
+    bool isPhp = (ext == L".php");
+    bool insidePhp = isPhp;
+    if (isPhp && pDocLines && !pDocLines->empty()) {
+        bool inTag = false;
+        for (const auto& dLine : *pDocLines) {
+            if (dLine.find(L"<?php") != std::wstring::npos || dLine.find(L"<?=") != std::wstring::npos) inTag = true;
+            if (dLine.find(L"?>") != std::wstring::npos) inTag = false;
+            if (&dLine == &currentLine) break;
+        }
+        insidePhp = inTag || (currentLine.find(L"<?") != std::wstring::npos) || (prefix.rfind(L"$", 0) == 0);
+    }
+
+    bool isHtml = (ext == L".html" || ext == L".htm" || (isPhp && !insidePhp));
     bool isCss = (ext == L".css" || ext == L".scss" || ext == L".less");
     bool isJs = (ext == L".js" || ext == L".jsx" || ext == L".ts" || ext == L".tsx" || ext == L".mjs" || ext == L".cjs");
     bool isPy = (ext == L".py");
@@ -1821,14 +2213,17 @@ std::vector<IntelliSenseItem> IntelliSenseEngine::QueryCompletions(
                 }
             }
         }
+    } else if (insidePhp) {
+        for (const auto& phpSym : m_phpSymbols) {
+            IntelliSenseItem it = phpSym;
+            if (prefix.rfind(L"$", 0) == 0 && it.label.rfind(L"$", 0) == 0) {
+                it.score += 400; // Boost superglobals and variables when user types $
+            }
+            rawCandidates.push_back(std::move(it));
+        }
     } else if (isPy) {
-        const wchar_t* pyKeywords[] = {
-            L"def", L"class", L"self", L"return", L"import", L"from", L"if", L"elif", L"else",
-            L"for", L"while", L"try", L"except", L"finally", L"with", L"as", L"async", L"await",
-            L"lambda", L"yield", L"pass", L"break", L"continue", L"None", L"True", L"False"
-        };
-        for (const auto* kw : pyKeywords) {
-            rawCandidates.push_back({ kw, L"Python Keyword", kw, CompletionKind::Keyword, 120, 0, 0, L"keyword" });
+        for (const auto& pySym : m_pySymbols) {
+            rawCandidates.push_back(pySym);
         }
     } else if (ext == L".cpp" || ext == L".h" || ext == L".hpp" || ext == L".c") {
         const wchar_t* cppKeywords[] = {

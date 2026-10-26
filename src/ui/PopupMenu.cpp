@@ -84,7 +84,15 @@ void PopupMenu::OpenEditorContextMenu(float x, float y, const app::AppConfig& co
     // --- Separator ---
     m_items.push_back({ MenuActionId::None, L"", L"", true, false, false, false, {}, {} });
 
-    // 6. Command Palette... (Ctrl+Shift+P)
+    // 6. Format Document (Prettier) (Shift+Alt+F)
+    m_items.push_back({ MenuActionId::CodeFormatDocument, L"Format Document (Prettier)", L"Shift+Alt+F", false, false, false, true, {}, {} });
+    // 7. Format Selection (Ctrl+K Ctrl+F)
+    m_items.push_back({ MenuActionId::CodeFormatSelection, L"Format Selection", L"Ctrl+K Ctrl+F", false, false, false, true, {}, {} });
+
+    // --- Separator ---
+    m_items.push_back({ MenuActionId::None, L"", L"", true, false, false, false, {}, {} });
+
+    // 8. Command Palette... (Ctrl+Shift+P)
     m_items.push_back({ MenuActionId::EditorCommandPalette, L"Command Palette...", L"Ctrl+Shift+P", false, false, false, true, {}, {} });
 
     const float menuW = config.ScaleF(240.0f);
@@ -361,6 +369,14 @@ void PopupMenu::BuildEditMenuItems(bool canUndo, bool canRedo, bool hasSelection
     m_items.push_back({ MenuActionId::EditToggleBlockComment, L"Toggle Block Comment", L"Shift+Alt+A", false, false, false, true, {}, {} });
     // 12. Emmet: Expand Abbreviation (Tab)
     m_items.push_back({ MenuActionId::EditEmmetExpand, L"Emmet: Expand Abbreviation", L"Tab", false, false, false, true, {}, {} });
+
+    // --- Separator ---
+    m_items.push_back({ MenuActionId::None, L"", L"", true, false, false, false, {}, {} });
+
+    // 13. Format Document (Prettier) (Shift+Alt+F)
+    m_items.push_back({ MenuActionId::CodeFormatDocument, L"Format Document (Prettier)", L"Shift+Alt+F", false, false, false, true, {}, {} });
+    // 14. Format Selection (Ctrl+K Ctrl+F)
+    m_items.push_back({ MenuActionId::CodeFormatSelection, L"Format Selection", L"Ctrl+K Ctrl+F", false, false, false, true, {}, {} });
 }
 
 void PopupMenu::Close() {

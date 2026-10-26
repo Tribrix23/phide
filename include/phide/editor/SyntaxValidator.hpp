@@ -55,6 +55,8 @@ private:
         bool validateStyles = true
     );
     static std::vector<lsp::Diagnostic> ValidateYaml(const Buffer& buffer);
+    static std::vector<lsp::Diagnostic> ValidatePython(const Buffer& buffer);
+    static std::vector<lsp::Diagnostic> ValidatePhp(const Buffer& buffer);
 };
 
 } // namespace phide::editor
