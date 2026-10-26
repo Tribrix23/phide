@@ -154,6 +154,25 @@ public:
     [[nodiscard]] bool IsModified() const noexcept { return m_isModified; }
     void SetModified(bool mod) noexcept { m_isModified = mod; }
 
+    [[nodiscard]] uint64_t GetVersion() const noexcept { return m_version; }
+    void IncrementVersion() noexcept { ++m_version; }
+
+    /** @brief Manual Garbage Collector: reclaims vector capacities and trims memory. */
+    void RunGarbageCollection() {
+        m_lines.shrink_to_fit();
+        for (auto& l : m_lines) l.shrink_to_fit();
+        m_undoStack.shrink_to_fit();
+        for (auto& s : m_undoStack) {
+            s.lines.shrink_to_fit();
+            for (auto& l : s.lines) l.shrink_to_fit();
+        }
+        m_redoStack.shrink_to_fit();
+        for (auto& s : m_redoStack) {
+            s.lines.shrink_to_fit();
+            for (auto& l : s.lines) l.shrink_to_fit();
+        }
+    }
+
 private:
     std::vector<std::wstring> m_lines;
     CursorPosition m_cursor{ 0, 0 };
@@ -162,6 +181,7 @@ private:
     std::wstring m_filePath;
     std::wstring m_fileName;
     bool m_isModified = false;
+    uint64_t m_version = 0;
 
     struct BufferSnapshot {
         std::vector<std::wstring> lines;

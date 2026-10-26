@@ -243,6 +243,7 @@ void Buffer::PushUndo() {
         m_undoStack.erase(m_undoStack.begin());
     }
     m_redoStack.clear();
+    ++m_version;
 }
 
 bool Buffer::Undo() {
@@ -253,6 +254,7 @@ bool Buffer::Undo() {
     m_lines = last.lines;
     m_cursor = last.cursor;
     m_isModified = true;
+    ++m_version;
     return true;
 }
 
@@ -264,6 +266,7 @@ bool Buffer::Redo() {
     m_lines = next.lines;
     m_cursor = next.cursor;
     m_isModified = true;
+    ++m_version;
     return true;
 }
 
@@ -428,6 +431,7 @@ void Buffer::Clear() {
     m_lines.push_back(L"");
     m_cursor = { 0, 0 };
     m_isModified = false;
+    ++m_version;
 }
 
 void Buffer::SetLines(const std::vector<std::wstring>& lines) {
@@ -435,12 +439,14 @@ void Buffer::SetLines(const std::vector<std::wstring>& lines) {
     if (m_lines.empty()) m_lines.push_back(L"");
     m_cursor = { 0, 0 };
     m_isModified = false;
+    ++m_version;
 }
 
 void Buffer::SetLine(size_t lineIdx, const std::wstring& text) {
     if (lineIdx < m_lines.size()) {
         m_lines[lineIdx] = text;
         m_isModified = true;
+        ++m_version;
     }
 }
 
@@ -455,6 +461,7 @@ void Buffer::SetText(const std::wstring& text) {
     if (m_lines.empty()) m_lines.push_back(L"");
     m_cursor = { 0, 0 };
     m_isModified = false;
+    ++m_version;
 }
 
 bool Buffer::LoadFromFile(const std::wstring& path) {

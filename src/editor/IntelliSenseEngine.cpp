@@ -19,6 +19,7 @@ IntelliSenseEngine::IntelliSenseEngine() {
     PopulateJavaScriptPrototypeMethods();
     PopulatePhpVocabulary();
     PopulatePythonVocabulary();
+    PopulateReactAndNodeVocabulary();
     PopulateCommonVocabulary();
 }
 
@@ -1138,6 +1139,89 @@ void IntelliSenseEngine::PopulatePythonVocabulary() {
     }
 }
 
+void IntelliSenseEngine::PopulateReactAndNodeVocabulary() {
+    struct ItemDef { const wchar_t* name; const wchar_t* desc; CompletionKind kind; };
+    static const ItemDef items[] = {
+        // 1. React Hooks
+        { L"useState", L"useState<T>(initialState: T | (() => T)): [T, Dispatch<SetStateAction<T>>]", CompletionKind::Function },
+        { L"useEffect", L"useEffect(effect: () => void | (() => void), deps?: DependencyList): void", CompletionKind::Function },
+        { L"useContext", L"useContext<T>(context: Context<T>): T", CompletionKind::Function },
+        { L"useReducer", L"useReducer<R>(reducer: R, initialArg: any, init?: any): [State, Dispatch]", CompletionKind::Function },
+        { L"useCallback", L"useCallback<T extends Function>(callback: T, deps: DependencyList): T", CompletionKind::Function },
+        { L"useMemo", L"useMemo<T>(factory: () => T, deps: DependencyList): T", CompletionKind::Function },
+        { L"useRef", L"useRef<T>(initialValue: T): MutableRefObject<T>", CompletionKind::Function },
+        { L"useImperativeHandle", L"useImperativeHandle<T, R extends T>(ref: Ref<T>, init: () => R, deps?: DependencyList): void", CompletionKind::Function },
+        { L"useLayoutEffect", L"useLayoutEffect(effect: () => void | (() => void), deps?: DependencyList): void", CompletionKind::Function },
+        { L"useId", L"useId(): string (Unique ID generator for accessibility attributes)", CompletionKind::Function },
+        { L"useDeferredValue", L"useDeferredValue<T>(value: T): T (Defers updating a value until urgent renders finish)", CompletionKind::Function },
+        { L"useTransition", L"useTransition(): [boolean, TransitionStartFunction] (Concurrent transition hook)", CompletionKind::Function },
+        { L"useSyncExternalStore", L"useSyncExternalStore<Snapshot>(subscribe, getSnapshot): Snapshot", CompletionKind::Function },
+        { L"useInsertionEffect", L"useInsertionEffect(effect: () => void, deps?: DependencyList): void", CompletionKind::Function },
+
+        // 2. React Core & Top-Level APIs
+        { L"React", L"namespace React: Core library for building interactive user interfaces", CompletionKind::Module },
+        { L"Component", L"class Component<P, S>: React base class for stateful class components", CompletionKind::Class },
+        { L"PureComponent", L"class PureComponent<P, S>: Component with shallow prop and state comparison", CompletionKind::Class },
+        { L"createContext", L"createContext<T>(defaultValue: T): Context<T>", CompletionKind::Function },
+        { L"forwardRef", L"forwardRef<T, P>(render: ForwardRefRenderFunction<T, P>): ForwardRefExoticComponent", CompletionKind::Function },
+        { L"memo", L"memo<P>(Component: ComponentType<P>): MemoExoticComponent (High-order component memoizer)", CompletionKind::Function },
+        { L"lazy", L"lazy<T>(factory: () => Promise<{ default: T }>): LazyExoticComponent (Code splitting loader)", CompletionKind::Function },
+        { L"startTransition", L"startTransition(scope: TransitionFunction): void", CompletionKind::Function },
+        { L"Fragment", L"<Fragment>...</Fragment>: Groups child elements without adding extra DOM nodes", CompletionKind::Class },
+        { L"Suspense", L"<Suspense fallback={<Spinner />}>: Displays fallback UI while children are loading", CompletionKind::Class },
+        { L"StrictMode", L"<StrictMode>: Enables runtime checks and warnings during development", CompletionKind::Class },
+        { L"createRoot", L"createRoot(container: Element): Root (React 18 Concurrent Root client entry)", CompletionKind::Function },
+        { L"hydrateRoot", L"hydrateRoot(container: Element, children: ReactNode): Root (Server-side hydration entry)", CompletionKind::Function },
+        { L"createPortal", L"createPortal(children: ReactNode, container: Element): ReactPortal", CompletionKind::Function },
+
+        // 3. React JSX Element Props & Event Handlers
+        { L"className", L"string: CSS class name for styling React JSX elements", CompletionKind::Property },
+        { L"style", L"CSSProperties: Inline CSS styling object (e.g. style={{ color: 'red' }})", CompletionKind::Property },
+        { L"onClick", L"MouseEventHandler<T>: Triggered when element is clicked", CompletionKind::Property },
+        { L"onChange", L"ChangeEventHandler<T>: Triggered on input value modification", CompletionKind::Property },
+        { L"onSubmit", L"FormEventHandler<T>: Triggered on form submit", CompletionKind::Property },
+        { L"onKeyDown", L"KeyboardEventHandler<T>: Triggered when keyboard key is pressed down", CompletionKind::Property },
+        { L"onKeyUp", L"KeyboardEventHandler<T>: Triggered when keyboard key is released", CompletionKind::Property },
+        { L"onFocus", L"FocusEventHandler<T>: Triggered when element receives focus", CompletionKind::Property },
+        { L"onBlur", L"FocusEventHandler<T>: Triggered when element loses focus", CompletionKind::Property },
+        { L"children", L"ReactNode: Child nodes and elements passed to React component", CompletionKind::Property },
+        { L"key", L"Key: Unique identifier for list items in React diffing and reconciliation", CompletionKind::Property },
+        { L"ref", L"Ref<T>: Reference to DOM element node or mounted component instance", CompletionKind::Property },
+        { L"dangerouslySetInnerHTML", L"{ __html: string }: React replacement for innerHTML", CompletionKind::Property },
+        { L"autoFocus", L"boolean: Automatically focus element on initial render", CompletionKind::Property },
+        { L"disabled", L"boolean: Disables form element input interactions", CompletionKind::Property },
+        { L"readOnly", L"boolean: Prevents modifying input control contents", CompletionKind::Property },
+
+        // 4. Vite & Node.js Vocabulary
+        { L"import.meta.env", L"Vite environment variables container (VITE_APP_*, MODE, DEV, PROD)", CompletionKind::Variable },
+        { L"import.meta.glob", L"import.meta.glob<T>(pattern: string): Record<string, () => Promise<T>> (Vite module globber)", CompletionKind::Function },
+        { L"defineConfig", L"defineConfig(config: UserConfig | Promise<UserConfig>): UserConfig (Vite config helper)", CompletionKind::Function },
+        { L"loadEnv", L"loadEnv(mode: string, envDir: string, prefixes?: string | string[]): Record<string, string>", CompletionKind::Function },
+        { L"process.env", L"NodeJS.ProcessEnv: Global process environment variables object", CompletionKind::Variable },
+        { L"require", L"(id: string) => any: Synchronous CommonJS module loader function", CompletionKind::Function },
+        { L"module.exports", L"any: CommonJS module exports object", CompletionKind::Property },
+        { L"exports", L"any: CommonJS exports shorthand reference", CompletionKind::Variable },
+        { L"__dirname", L"string: Directory path of currently executing CommonJS module", CompletionKind::Variable },
+        { L"__filename", L"string: Absolute file path of currently executing CommonJS module", CompletionKind::Variable },
+        { L"Buffer", L"class Buffer: Node.js binary octet stream buffer class", CompletionKind::Class },
+        { L"path", L"Node.js path module for working with file and directory paths", CompletionKind::Module },
+        { L"fs", L"Node.js file system module for reading and writing files", CompletionKind::Module },
+        { L"http", L"Node.js HTTP server and client network module", CompletionKind::Module },
+        { L"express", L"express(): Express: Fast, unopinionated Node.js web application framework", CompletionKind::Function }
+    };
+
+    for (const auto& item : items) {
+        IntelliSenseItem it;
+        it.label = item.name;
+        it.detail = item.desc;
+        it.insertText = item.name;
+        it.kind = item.kind;
+        it.origin = L"react-node";
+        it.score = 250;
+        m_reactAndNodeVocabulary.push_back(std::move(it));
+    }
+}
+
 void IntelliSenseEngine::PopulateCommonVocabulary() {
     struct WordDef { const wchar_t* word; const wchar_t* desc; CompletionKind kind; };
     WordDef words[] = {
@@ -2168,10 +2252,21 @@ std::vector<IntelliSenseItem> IntelliSenseEngine::QueryCompletions(
         if (afterDot) {
             for (const auto& p : m_jsPrototypes) rawCandidates.push_back(p);
             for (const auto& d : m_jsDomApis) rawCandidates.push_back(d);
+            for (const auto& r : m_reactAndNodeVocabulary) {
+                if (r.kind == CompletionKind::Property || r.kind == CompletionKind::Function || r.kind == CompletionKind::Variable) {
+                    rawCandidates.push_back(r);
+                }
+            }
         } else {
             for (const auto& g : m_jsGlobals) rawCandidates.push_back(g);
             for (const auto& kw : m_jsKeywords) rawCandidates.push_back(kw);
             for (const auto& d : m_jsDomApis) rawCandidates.push_back(d);
+            for (const auto& r : m_reactAndNodeVocabulary) rawCandidates.push_back(r);
+
+            // In React JSX/TSX files, also provide HTML element tags
+            if (ext == L".jsx" || ext == L".tsx") {
+                for (const auto& tag : m_htmlTags) rawCandidates.push_back(tag);
+            }
         }
     } else if (isHtml) {
         // Check context on line: if typing after '<' or in tag

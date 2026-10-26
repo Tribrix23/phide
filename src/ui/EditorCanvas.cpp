@@ -975,20 +975,29 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
     visualLines.reserve(buffer.GetLineCount());
 
     const size_t totalBufLines = buffer.GetLineCount();
-    for (size_t b = 0; b < totalBufLines; ++b) {
-        size_t foldEnd = 0;
-        bool canFold = GetFoldRange(buffer, b, foldEnd);
-        bool isFolded = canFold && (doc.foldedLines.count(b) > 0);
+    if (doc.foldedLines.empty()) {
+        visualLines.resize(totalBufLines);
+        for (size_t b = 0; b < totalBufLines; ++b) {
+            visualLines[b] = { b, false, false, 0 };
+        }
+    } else {
+        for (size_t b = 0; b < totalBufLines; ++b) {
+            size_t foldEnd = 0;
+            bool isFolded = (doc.foldedLines.count(b) > 0);
+            if (isFolded) {
+                GetFoldRange(buffer, b, foldEnd);
+            }
 
-        VisualLine vl;
-        vl.bufferLine = b;
-        vl.isFoldHeader = canFold;
-        vl.isFolded = isFolded;
-        vl.foldEndLine = foldEnd;
-        visualLines.push_back(vl);
+            VisualLine vl;
+            vl.bufferLine = b;
+            vl.isFoldHeader = isFolded;
+            vl.isFolded = isFolded;
+            vl.foldEndLine = foldEnd;
+            visualLines.push_back(vl);
 
-        if (isFolded) {
-            b = foldEnd; // Skip folded child lines!
+            if (isFolded && foldEnd > b) {
+                b = foldEnd; // Skip folded child lines!
+            }
         }
     }
 
@@ -1032,9 +1041,15 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
     D2D1_RECT_F clipCode = D2D1::RectF(canvasLeft + gutterW, topY, codeRight, clientHeight);
     pRT->PushAxisAlignedClip(clipCode, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
 
-    // Analyze rainbow bracket pairs, nesting depths, and active cursor pair
-    auto bracketAnalysis = editor::BracketPairAnalyzer::Analyze(buffer, cursor.line, cursor.col);
-    std::vector<std::vector<const editor::BracketItem*>> bracketsByLine(totalBufLines);
+    // Analyze rainbow bracket pairs, nesting depths, and active cursor pair with caching
+    if (m_cachedBufferVersion != buffer.GetVersion() || m_cachedCursorLine != cursor.line || m_cachedCursorCol != cursor.col) {
+        m_cachedBracketAnalysis = editor::BracketPairAnalyzer::Analyze(buffer, cursor.line, cursor.col);
+        m_cachedBufferVersion = buffer.GetVersion();
+        m_cachedCursorLine = cursor.line;
+        m_cachedCursorCol = cursor.col;
+    }
+    const auto& bracketAnalysis = m_cachedBracketAnalysis;
+    std::unordered_map<size_t, std::vector<const editor::BracketItem*>> bracketsByLine;
     for (const auto& b : bracketAnalysis.brackets) {
         if (b.line < totalBufLines) {
             bracketsByLine[b.line].push_back(&b);
@@ -1249,7 +1264,9 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
         }
 
         // Code Folding Chevron in Gutter (Images 2 & 3)
-        if (vl.isFoldHeader) {
+        size_t foldEnd = 0;
+        bool canFold = vl.isFolded || GetFoldRange(buffer, vl.bufferLine, foldEnd);
+        if (canFold) {
             const float chevronSize = config.ScaleF(12.0f);
             const float chevronX = canvasLeft + gutterW - config.ScaleF(16.0f);
             const float chevronY = lineY + (lineH - chevronSize) / 2.0f;
@@ -1506,12 +1523,15 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
 
                     ID2D1Brush* brush = theme.brushTextPrimary.Get();
                     bool isBracketToken = false;
-                    if (tok.type == editor::TokenType::Operator && tok.length == 1 && vl.bufferLine < bracketsByLine.size()) {
-                        for (const auto* b : bracketsByLine[vl.bufferLine]) {
-                            if (b->col == tok.startCol) {
-                                brush = theme.GetBracketBrush(b->depth);
-                                isBracketToken = true;
-                                break;
+                    if (tok.type == editor::TokenType::Operator && tok.length == 1) {
+                        auto it = bracketsByLine.find(vl.bufferLine);
+                        if (it != bracketsByLine.end()) {
+                            for (const auto* b : it->second) {
+                                if (b->col == tok.startCol) {
+                                    brush = theme.GetBracketBrush(b->depth);
+                                    isBracketToken = true;
+                                    break;
+                                }
                             }
                         }
                     }

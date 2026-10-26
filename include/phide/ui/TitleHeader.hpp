@@ -82,6 +82,7 @@ struct ServerDatabaseConfig {
     bool nginxEnabled = true;
     bool dontRunServer = false;
     bool phpMyAdminEnabled = true;
+    bool supabaseEnabled = false;
     bool dontRunDatabase = false;
 };
 
@@ -270,10 +271,18 @@ public:
     [[nodiscard]] bool HitTestDropdowns(POINT pt) const noexcept;
     bool HandleDropdownClick(POINT pt) noexcept;
     [[nodiscard]] bool HitTestDbSettings(POINT pt) const noexcept;
+    [[nodiscard]] bool HitTestDbSupabaseSettings(POINT pt) const noexcept;
     [[nodiscard]] bool HitTestServerSettings(POINT pt) const noexcept;
     bool SetHoveredDbSettings(bool hovered) noexcept {
         if (m_hoveredDbSettings != hovered) {
             m_hoveredDbSettings = hovered;
+            return true;
+        }
+        return false;
+    }
+    bool SetHoveredDbSettingsSupabase(bool hovered) noexcept {
+        if (m_hoveredDbSettingsSupabase != hovered) {
+            m_hoveredDbSettingsSupabase = hovered;
             return true;
         }
         return false;
@@ -286,6 +295,7 @@ public:
         return false;
     }
     [[nodiscard]] bool IsHoveredDbSettings() const noexcept { return m_hoveredDbSettings; }
+    [[nodiscard]] bool IsHoveredDbSettingsSupabase() const noexcept { return m_hoveredDbSettingsSupabase; }
     [[nodiscard]] bool IsHoveredServerSettings() const noexcept { return m_hoveredServerSettings; }
     bool SetHoveredDropdownItem(int item) noexcept {
         if (m_hoveredDropdownItem != item) {
@@ -402,8 +412,10 @@ private:
     bool m_showServerDropdown = false;
     int m_hoveredDropdownItem = -1; // -1=none, 0=item1, 1=item2
     bool m_hoveredDbSettings = false;
+    bool m_hoveredDbSettingsSupabase = false;
     bool m_hoveredServerSettings = false;
     D2D1_RECT_F m_rcDbSettingsBtn{};
+    D2D1_RECT_F m_rcDbSettingsSupabaseBtn{};
     D2D1_RECT_F m_rcServerSettingsBtn{};
     D2D1_RECT_F m_rcDatabaseDropdown{};
     D2D1_RECT_F m_rcServerDropdown{};

@@ -33,6 +33,11 @@ static inline bool PtInRectF(POINT pt, const D2D1_RECT_F& rc) {
 void DatabaseSettingsModal::Open(DatabaseModalTab initialTab) {
     m_isOpen = true;
     m_activeTab = initialTab;
+    if (initialTab == DatabaseModalTab::Supabase) {
+        m_isSupabaseSelected = true;
+    } else if (initialTab == DatabaseModalTab::PhpMyAdmin) {
+        m_isSupabaseSelected = false;
+    }
     m_copiedField.clear();
     m_copiedTimerTicks = 0;
     m_hoveredAction = DatabaseModalAction::None;
@@ -90,6 +95,9 @@ bool DatabaseSettingsModal::OnChar(wchar_t ch) {
         case DatabaseEditField::Charset: target = &m_charset; break;
         case DatabaseEditField::NginxPort: target = &m_nginxPort; break;
         case DatabaseEditField::NginxHost: target = &m_nginxHost; break;
+        case DatabaseEditField::SupabaseUrl: target = &m_supabaseUrl; break;
+        case DatabaseEditField::SupabaseAnonKey: target = &m_supabaseAnonKey; break;
+        case DatabaseEditField::SupabasePort: target = &m_supabasePort; break;
         default: break;
     }
     if (!target) return false;
@@ -101,7 +109,7 @@ bool DatabaseSettingsModal::OnChar(wchar_t ch) {
             return true;
         }
     } else if (ch >= 32) {
-        if (target->size() < 64) {
+        if (target->size() < 128) {
             target->push_back(ch);
             UpdateSnippets();
             return true;
@@ -126,6 +134,9 @@ bool DatabaseSettingsModal::OnKeyDown(WPARAM wParam) {
             case DatabaseEditField::Charset: m_focusedField = DatabaseEditField::Host; break;
             case DatabaseEditField::NginxPort: m_focusedField = DatabaseEditField::NginxHost; break;
             case DatabaseEditField::NginxHost: m_focusedField = DatabaseEditField::NginxPort; break;
+            case DatabaseEditField::SupabaseUrl: m_focusedField = DatabaseEditField::SupabaseAnonKey; break;
+            case DatabaseEditField::SupabaseAnonKey: m_focusedField = DatabaseEditField::SupabasePort; break;
+            case DatabaseEditField::SupabasePort: m_focusedField = DatabaseEditField::SupabaseUrl; break;
             default: m_focusedField = DatabaseEditField::Host; break;
         }
         return true;
@@ -136,6 +147,8 @@ bool DatabaseSettingsModal::OnKeyDown(WPARAM wParam) {
 void DatabaseSettingsModal::UpdateSnippets() {
     m_pdoSnippet = L"$pdo = new PDO(\"mysql:host=" + m_host + L";port=" + m_port + L";dbname=" + m_defaultDb + L";charset=" + m_charset + L"\", \"" + m_user + L"\", \"" + m_pass + L"\");";
     m_mysqliSnippet = L"$conn = new mysqli(\"" + m_host + L"\", \"" + m_user + L"\", \"" + m_pass + L"\", \"" + m_defaultDb + L"\", " + m_port + L");";
+    m_supabaseJsSnippet = L"import { createClient } from '@supabase/supabase-js';\nconst supabase = createClient('" + m_supabaseUrl + L"', '" + m_supabaseAnonKey + L"');";
+    m_supabasePySnippet = L"from supabase import create_client\nsupabase = create_client('" + m_supabaseUrl + L"', '" + m_supabaseAnonKey + L"')";
 
     std::wstring effPmaHost = m_host.empty() ? L"localhost" : m_host;
     std::wstring effPmaPort = m_pmaWebPort.empty() ? L"8081" : m_pmaWebPort;
@@ -158,7 +171,8 @@ DatabaseModalAction DatabaseSettingsModal::HitTestAction(POINT pt) const noexcep
     if (PtInRectF(pt, m_rcBtnDone)) return DatabaseModalAction::CloseModal;
     if (!m_sqlFileName.empty() && PtInRectF(pt, m_rcBtnImportSql)) return DatabaseModalAction::ImportSql;
 
-    if (PtInRectF(pt, m_rcTabPma)) return DatabaseModalAction::SwitchTabPma;
+    if (!m_isSupabaseSelected && m_rcTabPma.right > m_rcTabPma.left && PtInRectF(pt, m_rcTabPma)) return DatabaseModalAction::SwitchTabPma;
+    if (m_isSupabaseSelected && m_rcTabSupabase.right > m_rcTabSupabase.left && PtInRectF(pt, m_rcTabSupabase)) return DatabaseModalAction::SwitchTabSupabase;
     if (PtInRectF(pt, m_rcTabNginx)) return DatabaseModalAction::SwitchTabNginx;
 
     if (m_activeTab == DatabaseModalTab::PhpMyAdmin) {
@@ -172,6 +186,15 @@ DatabaseModalAction DatabaseSettingsModal::HitTestAction(POINT pt) const noexcep
         if (PtInRectF(pt, m_rcBtnTogglePma)) return DatabaseModalAction::TogglePmaRun;
         if (PtInRectF(pt, m_rcBtnOpenPma)) return DatabaseModalAction::OpenBrowserPma;
         if (PtInRectF(pt, m_rcBtnEditPma)) return DatabaseModalAction::EditPmaConfig;
+    } else if (m_activeTab == DatabaseModalTab::Supabase) {
+        if (PtInRectF(pt, m_rcCopySupabaseUrl)) return DatabaseModalAction::CopySupabaseUrl;
+        if (PtInRectF(pt, m_rcCopySupabaseAnonKey)) return DatabaseModalAction::CopySupabaseAnonKey;
+        if (PtInRectF(pt, m_rcCopySupabasePort)) return DatabaseModalAction::CopySupabasePort;
+        if (PtInRectF(pt, m_rcCopySupabaseJs)) return DatabaseModalAction::CopySupabaseJsSnippet;
+        if (PtInRectF(pt, m_rcCopySupabasePy)) return DatabaseModalAction::CopySupabasePySnippet;
+        if (PtInRectF(pt, m_rcBtnToggleSupabase)) return DatabaseModalAction::ToggleSupabaseRun;
+        if (PtInRectF(pt, m_rcBtnOpenSupabase)) return DatabaseModalAction::OpenBrowserSupabase;
+        if (PtInRectF(pt, m_rcBtnOpenSupabaseFolder)) return DatabaseModalAction::OpenSupabaseFolder;
     } else {
         if (PtInRectF(pt, m_rcCopyNginxUrl)) return DatabaseModalAction::CopyNginxUrl;
         if (PtInRectF(pt, m_rcCopyNginxPort)) return DatabaseModalAction::CopyNginxPort;
@@ -194,6 +217,14 @@ void DatabaseSettingsModal::HandleClick(POINT pt) noexcept {
         if (PtInRectF(pt, m_rcInputPass)) { m_focusedField = DatabaseEditField::Pass; m_caretVisible = true; return; }
         if (PtInRectF(pt, m_rcInputDb)) { m_focusedField = DatabaseEditField::Database; m_caretVisible = true; return; }
         if (PtInRectF(pt, m_rcInputCharset)) { m_focusedField = DatabaseEditField::Charset; m_caretVisible = true; return; }
+
+        if (PtInRectF(pt, m_rcModalCard)) {
+            m_focusedField = DatabaseEditField::None;
+        }
+    } else if (m_activeTab == DatabaseModalTab::Supabase) {
+        if (PtInRectF(pt, m_rcInputSupabaseUrl)) { m_focusedField = DatabaseEditField::SupabaseUrl; m_caretVisible = true; return; }
+        if (PtInRectF(pt, m_rcInputSupabaseAnonKey)) { m_focusedField = DatabaseEditField::SupabaseAnonKey; m_caretVisible = true; return; }
+        if (PtInRectF(pt, m_rcInputSupabasePort)) { m_focusedField = DatabaseEditField::SupabasePort; m_caretVisible = true; return; }
 
         if (PtInRectF(pt, m_rcModalCard)) {
             m_focusedField = DatabaseEditField::None;
@@ -257,7 +288,7 @@ void DatabaseSettingsModal::Render(ID2D1RenderTarget* pRT, Theme& theme, const a
 
     float iconS = config.ScaleF(22.0f);
     D2D1_RECT_F rcHeaderIcon = D2D1::RectF(cardX + padX, topY, cardX + padX + iconS, topY + iconS);
-    if (m_activeTab == DatabaseModalTab::PhpMyAdmin) {
+    if (m_activeTab == DatabaseModalTab::PhpMyAdmin || m_activeTab == DatabaseModalTab::Supabase) {
         m_icons.DrawDatabase(pRT, rcHeaderIcon, pWhiteBrush, 1.4f);
     } else {
         m_icons.DrawServer(pRT, rcHeaderIcon, pWhiteBrush, 1.4f);
@@ -267,14 +298,18 @@ void DatabaseSettingsModal::Render(ID2D1RenderTarget* pRT, Theme& theme, const a
                                      cardX + cardW - config.ScaleF(60.0f), topY + config.ScaleF(22.0f));
     const wchar_t* titleStr = (m_activeTab == DatabaseModalTab::PhpMyAdmin)
         ? L"Database & phpMyAdmin Configuration"
-        : L"Nginx Web Server Configuration";
+        : ((m_activeTab == DatabaseModalTab::Supabase)
+            ? L"Supabase Studio & PostgreSQL Configuration"
+            : L"Nginx Web Server Configuration");
     pRT->DrawText(titleStr, static_cast<UINT32>(wcslen(titleStr)), pFmtTitle, rcTitle, pWhiteBrush);
 
     D2D1_RECT_F rcSubtitle = D2D1::RectF(cardX + padX + iconS + config.ScaleF(10.0f), topY + config.ScaleF(22.0f),
                                         cardX + cardW - config.ScaleF(60.0f), topY + config.ScaleF(40.0f));
     const wchar_t* subStr = (m_activeTab == DatabaseModalTab::PhpMyAdmin)
         ? L"MySQL / MariaDB local credentials, connection strings & phpMyAdmin runtime"
-        : L"Local high-performance Nginx daemon, virtual hosts & reverse proxy parameters";
+        : ((m_activeTab == DatabaseModalTab::Supabase)
+            ? L"PostgreSQL credentials, Supabase Studio, REST API endpoint & client snippets"
+            : L"Local high-performance Nginx daemon, virtual hosts & reverse proxy parameters");
     pRT->DrawText(subStr, static_cast<UINT32>(wcslen(subStr)), pFmtHint, rcSubtitle, pMutedBrush);
 
     // Close button [X]
@@ -286,34 +321,62 @@ void DatabaseSettingsModal::Render(ID2D1RenderTarget* pRT, Theme& theme, const a
     }
     m_icons.DrawClose(pRT, m_rcCloseBtn, isCloseHov ? pWhiteBrush : pMutedBrush, 1.3f);
 
-    // 4. Segmented Tabs: [Database & phpMyAdmin] [Nginx Web Server]
+    // 4. Segmented Tabs: Only show the active/selected database tab (Supabase Studio OR phpMyAdmin) + [Nginx Web Server]
     float tabY = topY + config.ScaleF(48.0f);
-    float tabW = (cardW - padX * 2.0f) * 0.5f;
+    float tabW = (cardW - padX * 2.0f) / 2.0f;
     float tabH = config.ScaleF(32.0f);
 
-    m_rcTabPma = D2D1::RectF(cardX + padX, tabY, cardX + padX + tabW, tabY + tabH);
-    m_rcTabNginx = D2D1::RectF(cardX + padX + tabW, tabY, cardX + cardW - padX, tabY + tabH);
+    if (m_isSupabaseSelected || m_activeTab == DatabaseModalTab::Supabase) {
+        m_rcTabPma = D2D1::RectF(0, 0, 0, 0);
+        m_rcTabSupabase = D2D1::RectF(cardX + padX, tabY, cardX + padX + tabW, tabY + tabH);
+        m_rcTabNginx = D2D1::RectF(cardX + padX + tabW, tabY, cardX + cardW - padX, tabY + tabH);
 
-    D2D1_ROUNDED_RECT rrcTabPma = D2D1::RoundedRect(m_rcTabPma, 4.0f, 4.0f);
-    D2D1_ROUNDED_RECT rrcTabNginx = D2D1::RoundedRect(m_rcTabNginx, 4.0f, 4.0f);
+        D2D1_ROUNDED_RECT rrcTabSupabase = D2D1::RoundedRect(m_rcTabSupabase, 4.0f, 4.0f);
+        D2D1_ROUNDED_RECT rrcTabNginx = D2D1::RoundedRect(m_rcTabNginx, 4.0f, 4.0f);
 
-    if (m_activeTab == DatabaseModalTab::PhpMyAdmin) {
-        if (theme.brushMenuHover) pRT->FillRoundedRectangle(rrcTabPma, theme.brushMenuHover.Get());
-        pRT->DrawRoundedRectangle(rrcTabPma, pAccentBrush, 1.2f);
-        pRT->DrawRoundedRectangle(rrcTabNginx, pBorderBrush, 1.0f);
+        if (m_activeTab == DatabaseModalTab::Supabase) {
+            if (theme.brushMenuHover) pRT->FillRoundedRectangle(rrcTabSupabase, theme.brushMenuHover.Get());
+            pRT->DrawRoundedRectangle(rrcTabSupabase, pAccentBrush, 1.2f);
+            pRT->DrawRoundedRectangle(rrcTabNginx, pBorderBrush, 1.0f);
+        } else {
+            if (theme.brushMenuHover) pRT->FillRoundedRectangle(rrcTabNginx, theme.brushMenuHover.Get());
+            pRT->DrawRoundedRectangle(rrcTabNginx, pAccentBrush, 1.2f);
+            pRT->DrawRoundedRectangle(rrcTabSupabase, pBorderBrush, 1.0f);
+        }
+
+        pRT->DrawText(L"Supabase Studio", 15, pFmtMain,
+                      D2D1::RectF(m_rcTabSupabase.left + config.ScaleF(10.0f), m_rcTabSupabase.top + config.ScaleF(6.0f), m_rcTabSupabase.right, m_rcTabSupabase.bottom),
+                      (m_activeTab == DatabaseModalTab::Supabase) ? pWhiteBrush : pMutedBrush);
+
+        pRT->DrawText(L"Web Server (Nginx)", 18, pFmtMain,
+                      D2D1::RectF(m_rcTabNginx.left + config.ScaleF(10.0f), m_rcTabNginx.top + config.ScaleF(6.0f), m_rcTabNginx.right, m_rcTabNginx.bottom),
+                      (m_activeTab == DatabaseModalTab::NginxServer) ? pWhiteBrush : pMutedBrush);
     } else {
-        if (theme.brushMenuHover) pRT->FillRoundedRectangle(rrcTabNginx, theme.brushMenuHover.Get());
-        pRT->DrawRoundedRectangle(rrcTabNginx, pAccentBrush, 1.2f);
-        pRT->DrawRoundedRectangle(rrcTabPma, pBorderBrush, 1.0f);
+        m_rcTabSupabase = D2D1::RectF(0, 0, 0, 0);
+        m_rcTabPma = D2D1::RectF(cardX + padX, tabY, cardX + padX + tabW, tabY + tabH);
+        m_rcTabNginx = D2D1::RectF(cardX + padX + tabW, tabY, cardX + cardW - padX, tabY + tabH);
+
+        D2D1_ROUNDED_RECT rrcTabPma = D2D1::RoundedRect(m_rcTabPma, 4.0f, 4.0f);
+        D2D1_ROUNDED_RECT rrcTabNginx = D2D1::RoundedRect(m_rcTabNginx, 4.0f, 4.0f);
+
+        if (m_activeTab == DatabaseModalTab::PhpMyAdmin) {
+            if (theme.brushMenuHover) pRT->FillRoundedRectangle(rrcTabPma, theme.brushMenuHover.Get());
+            pRT->DrawRoundedRectangle(rrcTabPma, pAccentBrush, 1.2f);
+            pRT->DrawRoundedRectangle(rrcTabNginx, pBorderBrush, 1.0f);
+        } else {
+            if (theme.brushMenuHover) pRT->FillRoundedRectangle(rrcTabNginx, theme.brushMenuHover.Get());
+            pRT->DrawRoundedRectangle(rrcTabNginx, pAccentBrush, 1.2f);
+            pRT->DrawRoundedRectangle(rrcTabPma, pBorderBrush, 1.0f);
+        }
+
+        pRT->DrawText(L"phpMyAdmin (MySQL)", 19, pFmtMain,
+                      D2D1::RectF(m_rcTabPma.left + config.ScaleF(10.0f), m_rcTabPma.top + config.ScaleF(6.0f), m_rcTabPma.right, m_rcTabPma.bottom),
+                      (m_activeTab == DatabaseModalTab::PhpMyAdmin) ? pWhiteBrush : pMutedBrush);
+
+        pRT->DrawText(L"Web Server (Nginx)", 18, pFmtMain,
+                      D2D1::RectF(m_rcTabNginx.left + config.ScaleF(10.0f), m_rcTabNginx.top + config.ScaleF(6.0f), m_rcTabNginx.right, m_rcTabNginx.bottom),
+                      (m_activeTab == DatabaseModalTab::NginxServer) ? pWhiteBrush : pMutedBrush);
     }
-
-    pRT->DrawText(L"Database & phpMyAdmin (MySQL)", 29, pFmtMain,
-                  D2D1::RectF(m_rcTabPma.left + config.ScaleF(12.0f), m_rcTabPma.top + config.ScaleF(6.0f), m_rcTabPma.right, m_rcTabPma.bottom),
-                  (m_activeTab == DatabaseModalTab::PhpMyAdmin) ? pWhiteBrush : pMutedBrush);
-
-    pRT->DrawText(L"Web Server (Nginx)", 18, pFmtMain,
-                  D2D1::RectF(m_rcTabNginx.left + config.ScaleF(12.0f), m_rcTabNginx.top + config.ScaleF(6.0f), m_rcTabNginx.right, m_rcTabNginx.bottom),
-                  (m_activeTab == DatabaseModalTab::NginxServer) ? pWhiteBrush : pMutedBrush);
 
     float contentY = tabY + tabH + config.ScaleF(16.0f);
 
@@ -522,6 +585,109 @@ void DatabaseSettingsModal::Render(ID2D1RenderTarget* pRT, Theme& theme, const a
         pRT->DrawText(L"Edit config.inc.php", 19, pFmtMain,
                       D2D1::RectF(m_rcBtnEditPma.left + config.ScaleF(12.0f), m_rcBtnEditPma.top + config.ScaleF(6.0f), m_rcBtnEditPma.right, m_rcBtnEditPma.bottom),
                       pWhiteBrush);
+    } else if (m_activeTab == DatabaseModalTab::Supabase) {
+        // Supabase Studio Tab
+        // Section A: Parameters Card
+        float secAW = cardW - padX * 2.0f;
+        float secAH = config.ScaleF(134.0f);
+        D2D1_RECT_F rcSecA = D2D1::RectF(cardX + padX, contentY, cardX + padX + secAW, contentY + secAH);
+        pRT->FillRoundedRectangle(D2D1::RoundedRect(rcSecA, 6.0f, 6.0f), theme.brushDrawerBg ? theme.brushDrawerBg.Get() : theme.brushCanvasBg.Get());
+        pRT->DrawRoundedRectangle(D2D1::RoundedRect(rcSecA, 6.0f, 6.0f), pBorderBrush, 1.0f);
+
+        D2D1_RECT_F rcHeadA = D2D1::RectF(rcSecA.left + config.ScaleF(12.0f), rcSecA.top + config.ScaleF(7.0f), rcSecA.right, rcSecA.top + config.ScaleF(24.0f));
+        pRT->DrawText(L"SUPABASE STUDIO & POSTGRESQL PARAMETERS", 38, pFmtHint, rcHeadA, pAccentBrush);
+
+        float rowH = config.ScaleF(28.0f);
+        float halfW = (secAW - config.ScaleF(28.0f)) * 0.5f;
+
+        // Row 1: Studio URL & Database Port
+        float row1Y = rcSecA.top + config.ScaleF(28.0f);
+        D2D1_RECT_F rcUrl = D2D1::RectF(rcSecA.left + config.ScaleF(10.0f), row1Y, rcSecA.left + config.ScaleF(10.0f) + halfW, row1Y + rowH);
+        D2D1_RECT_F rcPort = D2D1::RectF(rcSecA.left + config.ScaleF(18.0f) + halfW, row1Y, rcSecA.right - config.ScaleF(10.0f), row1Y + rowH);
+        DrawFieldBadge(L"Studio URL", m_supabaseUrl, rcUrl, m_rcCopySupabaseUrl, DatabaseModalAction::CopySupabaseUrl, DatabaseEditField::SupabaseUrl, m_rcInputSupabaseUrl);
+        DrawFieldBadge(L"Port (PG)", m_supabasePort, rcPort, m_rcCopySupabasePort, DatabaseModalAction::CopySupabasePort, DatabaseEditField::SupabasePort, m_rcInputSupabasePort);
+
+        // Row 2: Host & Database User/Password
+        float row2Y = row1Y + rowH + config.ScaleF(5.0f);
+        D2D1_RECT_F rcHost = D2D1::RectF(rcSecA.left + config.ScaleF(10.0f), row2Y, rcSecA.left + config.ScaleF(10.0f) + halfW, row2Y + rowH);
+        D2D1_RECT_F rcUser = D2D1::RectF(rcSecA.left + config.ScaleF(18.0f) + halfW, row2Y, rcSecA.right - config.ScaleF(10.0f), row2Y + rowH);
+        D2D1_RECT_F dummyBtn{};
+        DrawFieldBadge(L"Host", m_supabaseHost, rcHost, dummyBtn, DatabaseModalAction::None, DatabaseEditField::None, dummyInput);
+        DrawFieldBadge(L"User / Pass", m_supabaseUser + L" / " + m_supabasePass, rcUser, dummyBtn, DatabaseModalAction::None, DatabaseEditField::None, dummyInput);
+
+        // Row 3: Anon API Key
+        float row3Y = row2Y + rowH + config.ScaleF(5.0f);
+        D2D1_RECT_F rcKey = D2D1::RectF(rcSecA.left + config.ScaleF(10.0f), row3Y, rcSecA.right - config.ScaleF(10.0f), row3Y + rowH);
+        DrawFieldBadge(L"Anon Key", m_supabaseAnonKey, rcKey, m_rcCopySupabaseAnonKey, DatabaseModalAction::CopySupabaseAnonKey, DatabaseEditField::SupabaseAnonKey, m_rcInputSupabaseAnonKey);
+
+        // Section B: Client Code Snippets (JS/TS & Python)
+        float secBY = rcSecA.bottom + config.ScaleF(10.0f);
+        D2D1_RECT_F rcSecB = D2D1::RectF(cardX + padX, secBY, cardX + cardW - padX, secBY + config.ScaleF(96.0f));
+        pRT->FillRoundedRectangle(D2D1::RoundedRect(rcSecB, 6.0f, 6.0f), theme.brushDrawerBg ? theme.brushDrawerBg.Get() : theme.brushCanvasBg.Get());
+        pRT->DrawRoundedRectangle(D2D1::RoundedRect(rcSecB, 6.0f, 6.0f), pBorderBrush, 1.0f);
+
+        D2D1_RECT_F rcHeadB = D2D1::RectF(rcSecB.left + config.ScaleF(12.0f), rcSecB.top + config.ScaleF(7.0f), rcSecB.right, rcSecB.top + config.ScaleF(24.0f));
+        pRT->DrawText(L"CLIENT CODE SNIPPETS (JAVASCRIPT / PYTHON)", 42, pFmtHint, rcHeadB, pAccentBrush);
+
+        float snipRow1Y = rcSecB.top + config.ScaleF(28.0f);
+        D2D1_RECT_F rcJs = D2D1::RectF(rcSecB.left + config.ScaleF(10.0f), snipRow1Y, rcSecB.right - config.ScaleF(10.0f), snipRow1Y + rowH);
+        DrawFieldBadge(L"JS/TS Client", L"const supabase = createClient('" + m_supabaseUrl + L"', '...');", rcJs, m_rcCopySupabaseJs, DatabaseModalAction::CopySupabaseJsSnippet, DatabaseEditField::None, dummyInput);
+
+        float snipRow2Y = snipRow1Y + rowH + config.ScaleF(5.0f);
+        D2D1_RECT_F rcPy = D2D1::RectF(rcSecB.left + config.ScaleF(10.0f), snipRow2Y, rcSecB.right - config.ScaleF(10.0f), snipRow2Y + rowH);
+        DrawFieldBadge(L"Python Client", L"supabase = create_client('" + m_supabaseUrl + L"', '...')", rcPy, m_rcCopySupabasePy, DatabaseModalAction::CopySupabasePySnippet, DatabaseEditField::None, dummyInput);
+
+        // Section C: Supabase Actions & Studio Launcher Card
+        float secCY = rcSecB.bottom + config.ScaleF(10.0f);
+        D2D1_RECT_F rcSecC = D2D1::RectF(cardX + padX, secCY, cardX + cardW - padX, secCY + config.ScaleF(74.0f));
+        pRT->FillRoundedRectangle(D2D1::RoundedRect(rcSecC, 6.0f, 6.0f), theme.brushDrawerBg ? theme.brushDrawerBg.Get() : theme.brushCanvasBg.Get());
+        pRT->DrawRoundedRectangle(D2D1::RoundedRect(rcSecC, 6.0f, 6.0f), pBorderBrush, 1.0f);
+
+        D2D1_RECT_F rcHeadC = D2D1::RectF(rcSecC.left + config.ScaleF(12.0f), rcSecC.top + config.ScaleF(7.0f), rcSecC.right, rcSecC.top + config.ScaleF(24.0f));
+        pRT->DrawText(L"SUPABASE STATUS & ACTIONS", 25, pFmtHint, rcHeadC, pAccentBrush);
+
+        std::wstring supStatusStr = m_isSupabaseRunning ? (L"● Status: Running (" + m_supabaseUrl + L")") : (L"● Status: Standby / Ready (Port " + m_supabasePort + L")");
+        D2D1_RECT_F rcSupStatus = D2D1::RectF(rcSecC.left + config.ScaleF(12.0f), rcSecC.top + config.ScaleF(32.0f), rcSecC.left + config.ScaleF(270.0f), rcSecC.bottom);
+        pRT->PushAxisAlignedClip(rcSupStatus, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+        pRT->DrawText(supStatusStr.c_str(), static_cast<UINT32>(supStatusStr.size()), pFmtMain, rcSupStatus, pWhiteBrush);
+        pRT->PopAxisAlignedClip();
+
+        float actH = config.ScaleF(30.0f);
+        float btnCY = rcSecC.top + config.ScaleF(28.0f);
+
+        float actDirW = config.ScaleF(145.0f);
+        m_rcBtnOpenSupabaseFolder = D2D1::RectF(rcSecC.right - actDirW - config.ScaleF(6.0f), btnCY, rcSecC.right - config.ScaleF(6.0f), btnCY + actH);
+
+        float actOpenW = config.ScaleF(140.0f);
+        m_rcBtnOpenSupabase = D2D1::RectF(m_rcBtnOpenSupabaseFolder.left - actOpenW - config.ScaleF(8.0f), btnCY, m_rcBtnOpenSupabaseFolder.left - config.ScaleF(8.0f), btnCY + actH);
+
+        float actRunW = config.ScaleF(140.0f);
+        m_rcBtnToggleSupabase = D2D1::RectF(m_rcBtnOpenSupabase.left - actRunW - config.ScaleF(8.0f), btnCY, m_rcBtnOpenSupabase.left - config.ScaleF(8.0f), btnCY + actH);
+
+        bool isToggleSupHov = (m_hoveredAction == DatabaseModalAction::ToggleSupabaseRun);
+        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> bSupRunBg;
+        if (m_isSupabaseRunning) {
+            pRT->CreateSolidColorBrush(isToggleSupHov ? D2D1::ColorF(0.85f, 0.25f, 0.25f, 1.0f) : D2D1::ColorF(0.70f, 0.20f, 0.20f, 0.90f), &bSupRunBg);
+        } else {
+            pRT->CreateSolidColorBrush(isToggleSupHov ? D2D1::ColorF(0.20f, 0.70f, 0.35f, 1.0f) : D2D1::ColorF(0.15f, 0.58f, 0.28f, 0.90f), &bSupRunBg);
+        }
+        if (bSupRunBg) pRT->FillRoundedRectangle(D2D1::RoundedRect(m_rcBtnToggleSupabase, 4.0f, 4.0f), bSupRunBg.Get());
+        const wchar_t* supToggleText = m_isSupabaseRunning ? L"■ Stop Studio" : L"▶ Start Studio";
+        pRT->DrawText(supToggleText, static_cast<UINT32>(wcslen(supToggleText)), pFmtMain,
+                      D2D1::RectF(m_rcBtnToggleSupabase.left + config.ScaleF(16.0f), m_rcBtnToggleSupabase.top + config.ScaleF(6.0f), m_rcBtnToggleSupabase.right, m_rcBtnToggleSupabase.bottom),
+                      pWhiteBrush);
+
+        bool isOpenSupHov = (m_hoveredAction == DatabaseModalAction::OpenBrowserSupabase);
+        pRT->FillRoundedRectangle(D2D1::RoundedRect(m_rcBtnOpenSupabase, 4.0f, 4.0f), isOpenSupHov ? pAccentBrush : (theme.brushBrandAccent ? theme.brushBrandAccent.Get() : pWhiteBrush));
+        pRT->DrawText(L"Open Studio", 11, pFmtMain,
+                      D2D1::RectF(m_rcBtnOpenSupabase.left + config.ScaleF(20.0f), m_rcBtnOpenSupabase.top + config.ScaleF(6.0f), m_rcBtnOpenSupabase.right, m_rcBtnOpenSupabase.bottom),
+                      pWhiteBrush);
+
+        bool isDirHov = (m_hoveredAction == DatabaseModalAction::OpenSupabaseFolder);
+        pRT->FillRoundedRectangle(D2D1::RoundedRect(m_rcBtnOpenSupabaseFolder, 4.0f, 4.0f), isDirHov ? theme.brushMenuHover.Get() : pBorderBrush);
+        pRT->DrawText(L"Open supabase/", 14, pFmtMain,
+                      D2D1::RectF(m_rcBtnOpenSupabaseFolder.left + config.ScaleF(16.0f), m_rcBtnOpenSupabaseFolder.top + config.ScaleF(6.0f), m_rcBtnOpenSupabaseFolder.right, m_rcBtnOpenSupabaseFolder.bottom),
+                      pWhiteBrush);
     } else {
         // Nginx Tab
         // Section A: Parameters Card
@@ -633,7 +799,11 @@ void DatabaseSettingsModal::Render(ID2D1RenderTarget* pRT, Theme& theme, const a
                       D2D1::RectF(cardX + padX, footY + config.ScaleF(6.0f), cardX + cardW - config.ScaleF(120.0f), footY + config.ScaleF(30.0f)),
                       pAccentBrush);
     } else {
-        const wchar_t* hintFooter = L"Paste these connection variables directly into your config.php PDO constructor.";
+        const wchar_t* hintFooter = (m_activeTab == DatabaseModalTab::Supabase)
+            ? L"Use these Supabase Studio URL & Anon Key credentials in your client configuration."
+            : ((m_activeTab == DatabaseModalTab::PhpMyAdmin)
+                ? L"Paste these connection variables directly into your config.php PDO constructor."
+                : L"Configure local Nginx server port, virtual host & reverse proxy parameters.");
         pRT->DrawText(hintFooter, static_cast<UINT32>(wcslen(hintFooter)), pFmtHint,
                       D2D1::RectF(cardX + padX, footY + config.ScaleF(6.0f), cardX + cardW - config.ScaleF(120.0f), footY + config.ScaleF(30.0f)),
                       pMutedBrush);

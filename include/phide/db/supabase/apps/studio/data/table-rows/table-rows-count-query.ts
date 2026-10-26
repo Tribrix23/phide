@@ -1,0 +1,147 @@
+import { getTableRowsCountSql } from '@supabase/pg-meta'
+import { formatPatternMatchFilterValue } from '@supabase/pg-meta/src/query/table-row-query'
+import { QueryClient, useQuery, useQueryClient } from '@tanstack/react-query'
+import { IS_PLATFORM } from 'common'
+
+import { tableRowKeys } from './keys'
+import { parseSupaTable } from '@/components/grid/SupabaseGrid.utils'
+import type { Filter, SupaTable } from '@/components/grid/types'
+import { useConnectionStringForReadOps } from '@/data/read-replicas/replicas-query'
+import { executeSql } from '@/data/sql/execute-sql-mutation'
+import { prefetchTableEditor } from '@/data/table-editor/table-editor-query'
+import { FGA_PERMISSIONS, useAsyncCheckPermissionsV2 } from '@/hooks/misc/useCheckPermissionsV2'
+import { RoleImpersonationState, wrapWithRoleImpersonation } from '@/lib/role-impersonation'
+import { isRoleImpersonationEnabled } from '@/state/role-impersonation-state'
+import { ResponseError, UseCustomQueryOptions } from '@/types'
+
+export type GetTableRowsCountArgs = {
+  table?: SupaTable
+  filters?: Filter[]
+  enforceExactCount?: boolean
+}
+
+export type TableRowsCount = {
+  count?: number
+  is_estimate?: boolean
+}
+
+export type TableRowsCountVariables = Omit<GetTableRowsCountArgs, 'table'> & {
+  queryClient: QueryClient
+  tableId?: number
+  roleImpersonationState?: RoleImpersonationState
+  projectRef?: string
+  connectionString?: string | null
+}
+
+export type TableRowsCountData = TableRowsCount
+export type TableRowsCountError = ResponseError
+
+export async function getTableRowsCount(
+  {
+    queryClient,
+    projectRef,
+    connectionString,
+    tableId,
+    filters,
+    roleImpersonationState,
+    enforceExactCount,
+    isReadOnlyContext = false,
+  }: TableRowsCountVariables & { isReadOnlyContext?: boolean },
+  signal?: AbortSignal
+) {
+  const entity = await prefetchTableEditor(queryClient, {
+    projectRef,
+    connectionString,
+    id: tableId,
+  })
+  if (!entity) {
+    throw new Error('Table not found')
+  }
+
+  const table = parseSupaTable(entity)
+
+  const formattedFilters = filters?.map((x) => ({
+    ...x,
+    value: formatPatternMatchFilterValue(x.value, x.operator),
+  }))
+  const sql = wrapWithRoleImpersonation(
+    getTableRowsCountSql({
+      table,
+      filters: formattedFilters,
+      enforceExactCount,
+      isReadOnlyContext,
+    }),
+    roleImpersonationState
+  )
+  const { result } = await executeSql(
+    {
+      projectRef,
+      connectionString,
+      sql,
+      queryKey: ['table-rows-count', table.id],
+      isRoleImpersonationEnabled: isRoleImpersonationEnabled(roleImpersonationState?.role),
+    },
+    signal
+  )
+
+  return {
+    count: result?.[0]?.count,
+    is_estimate: result?.[0]?.is_estimate ?? false,
+  } as TableRowsCount
+}
+
+export const useTableRowsCountQuery = <TData = TableRowsCountData>(
+  {
+    projectRef,
+    tableId,
+    ...args
+  }: Omit<TableRowsCountVariables, 'queryClient' | 'connectionString'>,
+  {
+    enabled = true,
+    ...options
+  }: UseCustomQueryOptions<TableRowsCountData, TableRowsCountError, TData> = {}
+) => {
+  const queryClient = useQueryClient()
+  const {
+    connectionString,
+    identifier: readReplicaIdentifier,
+    type,
+  } = useConnectionStringForReadOps()
+  const { can: canSQLAdminWrite, isLoading: isPermissionsLoading } = useAsyncCheckPermissionsV2(
+    FGA_PERMISSIONS.PROJECT.DATABASE_WRITE
+  )
+
+  return useQuery<TableRowsCountData, TableRowsCountError, TData>({
+    queryKey: tableRowKeys.tableRowsCount(projectRef, {
+      table: { id: tableId },
+      readReplicaIdentifier,
+      ...args,
+    }),
+    queryFn: ({ signal }) =>
+      getTableRowsCount(
+        {
+          queryClient,
+          projectRef,
+          connectionString,
+          tableId,
+          isReadOnlyContext: type === 'replica' || !canSQLAdminWrite,
+          ...args,
+        },
+        signal
+      ),
+    enabled:
+      enabled &&
+      typeof projectRef !== 'undefined' &&
+      typeof tableId !== 'undefined' &&
+      (!IS_PLATFORM || typeof connectionString !== 'undefined') &&
+      // isReadOnlyContext resolves to `type === 'replica' || !canSQLAdminWrite`: for
+      // read replicas it's already known synchronously, but otherwise it depends on
+      // canSQLAdminWrite, which starts out `false` while permissions are loading.
+      // Firing while that's still in flight would cache a transient
+      // isReadOnlyContext:true (and, on a never-analyzed table,
+      // count:-1/is_estimate:true) for what may actually be a writable user. Wait
+      // for the permission check to settle before firing in that case.
+      (type === 'replica' || !isPermissionsLoading),
+    ...options,
+  })
+}

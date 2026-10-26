@@ -259,6 +259,20 @@ public:
         return (GetTickCount64() < m_gitNotificationExpiry && !m_gitNotificationText.empty());
     }
 
+    [[nodiscard]] bool HasTooManyChangesToast() const noexcept { return m_showTooManyChangesToast; }
+    void SetTooManyChangesToast(bool show, const std::wstring& repoPath = L"") noexcept {
+        if (m_dontShowTooManyChanges && show) return;
+        m_showTooManyChangesToast = show;
+        if (show) m_tooManyChangesRepoPath = repoPath;
+    }
+    void CloseTooManyChangesToast(bool dontShowAgain = false) noexcept {
+        m_showTooManyChangesToast = false;
+        if (dontShowAgain) m_dontShowTooManyChanges = true;
+    }
+    bool HandleToastMouseDown(POINT pt);
+    bool HandleToastMouseMove(POINT pt);
+    void RenderTooManyChangesToast(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config, float clientW, float clientH);
+
     bool IsActionPending(const std::wstring& path) const {
         std::lock_guard<std::recursive_mutex> lock(m_gitMutex);
         auto itAll = m_pendingActionFiles.find(L"*");
@@ -751,6 +765,18 @@ private:
     // Visual notification state (per user request: visual feedback for discard action)
     std::wstring m_gitNotificationText;
     ULONGLONG m_gitNotificationExpiry = 0;
+
+    // Too Many Changes Toast Notification State (Image 3)
+    bool m_showTooManyChangesToast = false;
+    bool m_dontShowTooManyChanges = false;
+    std::wstring m_tooManyChangesRepoPath;
+    D2D1_RECT_F m_toastBounds{};
+    D2D1_RECT_F m_toastOkBounds{};
+    D2D1_RECT_F m_toastDontShowBounds{};
+    D2D1_RECT_F m_toastCloseBounds{};
+    bool m_isToastOkHovered = false;
+    bool m_isToastDontShowHovered = false;
+    bool m_isToastCloseHovered = false;
 
     // Multi-menu state (Header Views, Changes More, Graph More)
     GitMenuType m_activeGitMenu = GitMenuType::None;

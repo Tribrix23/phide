@@ -3642,6 +3642,13 @@ void DrawerPanel::RefreshGitState(bool async, bool showLoading) {
             }
             std::lock_guard<std::recursive_mutex> lock(m_gitMutex);
             m_isGitRepo = false;
+            if (untrackedChanges.size() > 10000) {
+                untrackedChanges.resize(10000);
+                if (!m_dontShowTooManyChanges) {
+                    m_showTooManyChangesToast = true;
+                    m_tooManyChangesRepoPath = dir;
+                }
+            }
             m_gitChanges = std::move(untrackedChanges);
             m_gitCommits.clear();
             if (showLoading) m_isGitLoading = false;
@@ -3945,6 +3952,13 @@ void DrawerPanel::RefreshGitState(bool async, bool showLoading) {
             std::lock_guard<std::recursive_mutex> lock(m_gitMutex);
             m_isGitRepo = true;
             m_gitBranch = branch;
+            if (changes.size() > 10000) {
+                changes.resize(10000);
+                if (!m_dontShowTooManyChanges) {
+                    m_showTooManyChangesToast = true;
+                    m_tooManyChangesRepoPath = dir;
+                }
+            }
             m_gitChanges = std::move(changes);
             m_gitIgnoredSet = std::move(ignoredFiles);
             m_gitCommits = std::move(commits);
@@ -4216,6 +4230,13 @@ void DrawerPanel::RefreshGitStatusOnly(bool async) {
             }
             std::lock_guard<std::recursive_mutex> lock(m_gitMutex);
             m_isGitRepo = false;
+            if (untrackedChanges.size() > 10000) {
+                untrackedChanges.resize(10000);
+                if (!m_dontShowTooManyChanges) {
+                    m_showTooManyChangesToast = true;
+                    m_tooManyChangesRepoPath = dir;
+                }
+            }
             m_gitChanges = std::move(untrackedChanges);
             if (m_onGitStateChanged) m_onGitStateChanged();
             return;
@@ -4459,6 +4480,13 @@ void DrawerPanel::RefreshGitStatusOnly(bool async) {
 
             m_isGitRepo = true;
             m_gitBranch = branch;
+            if (changes.size() > 10000) {
+                changes.resize(10000);
+                if (!m_dontShowTooManyChanges) {
+                    m_showTooManyChangesToast = true;
+                    m_tooManyChangesRepoPath = dir;
+                }
+            }
             m_gitChanges = std::move(changes);
             m_unpushedCommitsCount = unpushedCount;
         }
@@ -6130,6 +6158,23 @@ void DrawerPanel::RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, 
             // B. CHANGES SECTION (Unstaged files)
             // =========================================================
             m_gitChangesHeaderBounds = D2D1::RectF(railW, itemY, railW + currentDrawerW, itemY + secH);
+
+            // Animated VS Code Blue Progress Bar Line under Changes Header (Image 1)
+            if (m_isGitLoading.load() || m_isGitRefreshing.load()) {
+                float lineY = m_gitChangesHeaderBounds.bottom - 2.0f;
+                pRT->DrawLine(D2D1::Point2F(railW, lineY + 1.0f), D2D1::Point2F(railW + currentDrawerW, lineY + 1.0f),
+                              theme.brushBorderSubtle.Get(), 1.0f);
+                float animT = static_cast<float>(GetTickCount64() % 1600) / 1600.0f;
+                float barW = config.ScaleF(75.0f);
+                float barX = railW - barW + animT * (currentDrawerW + barW * 2.0f);
+                float segLeft = (std::max)(railW, barX);
+                float segRight = (std::min)(railW + currentDrawerW, barX + barW);
+                if (segRight > segLeft) {
+                    pRT->FillRectangle(D2D1::RectF(segLeft, lineY, segRight, lineY + config.ScaleF(2.0f)),
+                                       theme.brushBrandAccent.Get());
+                }
+            }
+
             float chevX = railW + config.ScaleF(14.0f);
             float chevY = itemY + secH / 2.0f;
             m_gitChangesChevronBounds = D2D1::RectF(chevX - 6.0f, chevY - 6.0f, chevX + 6.0f, chevY + 6.0f);
@@ -6161,16 +6206,16 @@ void DrawerPanel::RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, 
             m_gitStageAllBounds = D2D1::RectF(rightX - btnW, itemY + 2.0f, rightX, itemY + secH - 2.0f);
             rightX -= (btnW + btnGap);
 
-            // Circular count pill badge [ unstagedCount ]
+            // Circular count pill badge [ unstagedCount ] (Caps at 10000 if >= 10,000)
             if (unstagedCount > 0) {
-                float badgeW = config.ScaleF(18.0f);
+                float badgeW = (unstagedCount >= 10000) ? config.ScaleF(38.0f) : (unstagedCount >= 100 ? config.ScaleF(24.0f) : config.ScaleF(18.0f));
                 float badgeH = config.ScaleF(16.0f);
                 D2D1_ROUNDED_RECT rrcBadge = D2D1::RoundedRect(
                     D2D1::RectF(rightX - badgeW, itemY + (secH - badgeH) / 2.0f, rightX, itemY + (secH + badgeH) / 2.0f),
                     8.0f, 8.0f
                 );
                 pRT->FillRoundedRectangle(rrcBadge, theme.brushItemHover.Get());
-                std::wstring cntStr = std::to_wstring(unstagedCount);
+                std::wstring cntStr = (unstagedCount >= 10000) ? L"10000" : std::to_wstring(unstagedCount);
                 pRT->DrawText(cntStr.c_str(), static_cast<UINT32>(cntStr.length()),
                               theme.fontBadge.Get() ? theme.fontBadge.Get() : theme.fontMenuShortcut.Get(),
                               rrcBadge.rect, theme.brushTextPrimary.Get());
@@ -6218,12 +6263,40 @@ void DrawerPanel::RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, 
                                   theme.fontMenuItem.Get() ? theme.fontMenuItem.Get() : theme.fontMenuShortcut.Get(),
                                   rcNoCh, theme.brushTextMuted.Get());
                 } else {
-                    for (size_t i = 0; i < m_gitChanges.size() && itemY < fileListBottomY; ++i) {
-                        auto& item = m_gitChanges[i];
-                        if (item.isStaged) continue;
+                    std::vector<size_t> unstagedIndices;
+                    unstagedIndices.reserve(m_gitChanges.size());
+                    for (size_t i = 0; i < m_gitChanges.size(); ++i) {
+                        if (!m_gitChanges[i].isStaged) {
+                            unstagedIndices.push_back(i);
+                        }
+                    }
+
+                    float availH = (std::max)(0.0f, fileListBottomY - itemY);
+                    size_t visibleCapacity = static_cast<size_t>(availH / rowH);
+                    if (visibleCapacity < unstagedIndices.size()) {
+                        size_t maxScroll = unstagedIndices.size() - visibleCapacity;
+                        if (m_gitChangesScrollIdx > maxScroll) m_gitChangesScrollIdx = maxScroll;
+                    } else {
+                        m_gitChangesScrollIdx = 0;
+                    }
+
+                    // Scrolled out items above viewport
+                    for (size_t s = 0; s < m_gitChangesScrollIdx && s < unstagedIndices.size(); ++s) {
+                        auto& item = m_gitChanges[unstagedIndices[s]];
+                        item.bounds = D2D1::RectF(0, 0, 0, 0);
+                        item.stageBtnBounds = D2D1::RectF(0, 0, 0, 0);
+                        item.discardBtnBounds = D2D1::RectF(0, 0, 0, 0);
+                    }
+
+                    float listStartY = itemY;
+                    size_t renderedEnd = m_gitChangesScrollIdx;
+
+                    for (size_t s = m_gitChangesScrollIdx; s < unstagedIndices.size() && (itemY + rowH <= fileListBottomY + config.ScaleF(4.0f)); ++s) {
+                        auto& item = m_gitChanges[unstagedIndices[s]];
+                        renderedEnd = s + 1;
 
                         item.bounds = D2D1::RectF(railW, itemY, railW + currentDrawerW, itemY + rowH);
-                        bool isRowHovered = (static_cast<int>(i) == m_hoveredGitChangeIdx);
+                        bool isRowHovered = (static_cast<int>(unstagedIndices[s]) == m_hoveredGitChangeIdx);
                         if (isRowHovered) pRT->FillRectangle(item.bounds, theme.brushItemHover.Get());
 
                         // Seti icon
@@ -6326,6 +6399,25 @@ void DrawerPanel::RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, 
 
                         itemY += rowH;
                     }
+
+                    // Scrolled out items below viewport
+                    for (size_t s = renderedEnd; s < unstagedIndices.size(); ++s) {
+                        auto& item = m_gitChanges[unstagedIndices[s]];
+                        item.bounds = D2D1::RectF(0, 0, 0, 0);
+                        item.stageBtnBounds = D2D1::RectF(0, 0, 0, 0);
+                        item.discardBtnBounds = D2D1::RectF(0, 0, 0, 0);
+                    }
+
+                    // Subtle scrollbar thumb for large change sets (Image 3)
+                    if (unstagedIndices.size() > visibleCapacity && visibleCapacity > 0) {
+                        float sbTrackH = availH;
+                        float thumbH = (std::max)(config.ScaleF(16.0f), sbTrackH * (static_cast<float>(visibleCapacity) / static_cast<float>(unstagedIndices.size())));
+                        float maxScroll = static_cast<float>(unstagedIndices.size() - visibleCapacity);
+                        float thumbY = listStartY + (static_cast<float>(m_gitChangesScrollIdx) / (maxScroll > 0.0f ? maxScroll : 1.0f)) * (sbTrackH - thumbH);
+                        float sbW = config.ScaleF(4.0f);
+                        float sbX = railW + currentDrawerW - sbW - config.ScaleF(2.0f);
+                        pRT->FillRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(sbX, thumbY, sbX + sbW, thumbY + thumbH), 2.0f, 2.0f), theme.brushBorderSubtle.Get());
+                    }
                 }
             }
 
@@ -6350,6 +6442,22 @@ void DrawerPanel::RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, 
         }
 
         m_gitGraphHeaderBounds = D2D1::RectF(railW, curY, railW + currentDrawerW, curY + secH);
+
+        // Animated VS Code Blue Progress Bar Line under Graph Header (Image 1)
+        if (m_isGitLoading.load() || m_isGitRefreshing.load()) {
+            float lineY = m_gitGraphHeaderBounds.bottom - 2.0f;
+            pRT->DrawLine(D2D1::Point2F(railW, lineY + 1.0f), D2D1::Point2F(railW + currentDrawerW, lineY + 1.0f),
+                          theme.brushBorderSubtle.Get(), 1.0f);
+            float animT = static_cast<float>(GetTickCount64() % 1600) / 1600.0f;
+            float barW = config.ScaleF(75.0f);
+            float barX = railW - barW + animT * (currentDrawerW + barW * 2.0f);
+            float segLeft = (std::max)(railW, barX);
+            float segRight = (std::min)(railW + currentDrawerW, barX + barW);
+            if (segRight > segLeft) {
+                pRT->FillRectangle(D2D1::RectF(segLeft, lineY, segRight, lineY + config.ScaleF(2.0f)),
+                                   theme.brushBrandAccent.Get());
+            }
+        }
 
         // Chevron (v or >)
         float chevX = railW + config.ScaleF(14.0f);
@@ -7395,6 +7503,163 @@ bool DrawerPanel::HandlePublishRepoChar(wchar_t ch) {
         m_publishRepoName.push_back(ch);
     }
     return true;
+}
+
+bool DrawerPanel::HandleToastMouseDown(POINT pt) {
+    if (!m_showTooManyChangesToast) return false;
+
+    // Check Close (✕) button
+    if (pt.x >= m_toastCloseBounds.left && pt.x <= m_toastCloseBounds.right &&
+        pt.y >= m_toastCloseBounds.top && pt.y <= m_toastCloseBounds.bottom) {
+        CloseTooManyChangesToast(false);
+        return true;
+    }
+
+    // Check OK button
+    if (pt.x >= m_toastOkBounds.left && pt.x <= m_toastOkBounds.right &&
+        pt.y >= m_toastOkBounds.top && pt.y <= m_toastOkBounds.bottom) {
+        CloseTooManyChangesToast(false);
+        return true;
+    }
+
+    // Check Don't Show Again button
+    if (pt.x >= m_toastDontShowBounds.left && pt.x <= m_toastDontShowBounds.right &&
+        pt.y >= m_toastDontShowBounds.top && pt.y <= m_toastDontShowBounds.bottom) {
+        CloseTooManyChangesToast(true);
+        return true;
+    }
+
+    // Click inside toast card body is absorbed
+    if (pt.x >= m_toastBounds.left && pt.x <= m_toastBounds.right &&
+        pt.y >= m_toastBounds.top && pt.y <= m_toastBounds.bottom) {
+        return true;
+    }
+
+    return false;
+}
+
+bool DrawerPanel::HandleToastMouseMove(POINT pt) {
+    if (!m_showTooManyChangesToast) return false;
+
+    bool prevOk = m_isToastOkHovered;
+    bool prevDont = m_isToastDontShowHovered;
+    bool prevClose = m_isToastCloseHovered;
+
+    m_isToastOkHovered = (pt.x >= m_toastOkBounds.left && pt.x <= m_toastOkBounds.right &&
+                          pt.y >= m_toastOkBounds.top && pt.y <= m_toastOkBounds.bottom);
+    m_isToastDontShowHovered = (pt.x >= m_toastDontShowBounds.left && pt.x <= m_toastDontShowBounds.right &&
+                                pt.y >= m_toastDontShowBounds.top && pt.y <= m_toastDontShowBounds.bottom);
+    m_isToastCloseHovered = (pt.x >= m_toastCloseBounds.left && pt.x <= m_toastCloseBounds.right &&
+                             pt.y >= m_toastCloseBounds.top && pt.y <= m_toastCloseBounds.bottom);
+
+    return (prevOk != m_isToastOkHovered || prevDont != m_isToastDontShowHovered || prevClose != m_isToastCloseHovered);
+}
+
+void DrawerPanel::RenderTooManyChangesToast(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config, float clientW, float clientH) {
+    if (!m_showTooManyChangesToast) return;
+
+    const float toastW = config.ScaleF(470.0f);
+    const float toastH = config.ScaleF(88.0f);
+    const float railW = config.ScaleF(static_cast<float>(config.railWidth));
+    const float statusH = config.ScaleF(24.0f);
+
+    // Position floating toast at the bottom left above the status bar (matching Image 3)
+    float toastX = railW + config.ScaleF(14.0f);
+    float toastY = clientH - statusH - toastH - config.ScaleF(12.0f);
+    if (toastX + toastW > clientW - config.ScaleF(10.0f)) {
+        toastX = (std::max)(config.ScaleF(10.0f), clientW - toastW - config.ScaleF(10.0f));
+    }
+
+    m_toastBounds = D2D1::RectF(toastX, toastY, toastX + toastW, toastY + toastH);
+    D2D1_ROUNDED_RECT rrcToast = D2D1::RoundedRect(m_toastBounds, 4.0f, 4.0f);
+
+    // Dark charcoal card background
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> toastBg;
+    pRT->CreateSolidColorBrush(
+        theme.IsDarkMode() ? D2D1::ColorF(0.12f, 0.13f, 0.16f, 0.98f) : D2D1::ColorF(0.96f, 0.96f, 0.98f, 0.98f),
+        &toastBg
+    );
+    if (toastBg) pRT->FillRoundedRectangle(rrcToast, toastBg.Get());
+
+    // 1px Subtle Border
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> toastBorder;
+    pRT->CreateSolidColorBrush(
+        theme.IsDarkMode() ? D2D1::ColorF(0.24f, 0.26f, 0.32f, 1.0f) : D2D1::ColorF(0.80f, 0.82f, 0.86f, 1.0f),
+        &toastBorder
+    );
+    if (toastBorder) pRT->DrawRoundedRectangle(rrcToast, toastBorder.Get(), 1.0f);
+
+    // 1. Warning Icon ⚠ (Golden Yellow)
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> warnBrush;
+    pRT->CreateSolidColorBrush(D2D1::ColorF(0.96f, 0.65f, 0.14f, 1.0f), &warnBrush);
+    D2D1_RECT_F rcIcon = D2D1::RectF(
+        toastX + config.ScaleF(12.0f),
+        toastY + config.ScaleF(12.0f),
+        toastX + config.ScaleF(32.0f),
+        toastY + config.ScaleF(34.0f)
+    );
+    const wchar_t* warnChar = L"⚠";
+    pRT->DrawText(warnChar, 1,
+                  theme.fontMenuItem.Get() ? theme.fontMenuItem.Get() : theme.fontButtonCenter.Get(),
+                  rcIcon, warnBrush.Get() ? warnBrush.Get() : theme.brushTextPrimary.Get());
+
+    // 2. Top-right Close Button (✕)
+    m_toastCloseBounds = D2D1::RectF(
+        toastX + toastW - config.ScaleF(24.0f),
+        toastY + config.ScaleF(6.0f),
+        toastX + toastW - config.ScaleF(6.0f),
+        toastY + config.ScaleF(24.0f)
+    );
+    if (m_isToastCloseHovered) {
+        pRT->FillRoundedRectangle(D2D1::RoundedRect(m_toastCloseBounds, 3.0f, 3.0f), theme.brushItemHover.Get());
+    }
+    float cx = (m_toastCloseBounds.left + m_toastCloseBounds.right) / 2.0f;
+    float cy = (m_toastCloseBounds.top + m_toastCloseBounds.bottom) / 2.0f;
+    float cr = config.ScaleF(3.5f);
+    pRT->DrawLine(D2D1::Point2F(cx - cr, cy - cr), D2D1::Point2F(cx + cr, cy + cr),
+                  m_isToastCloseHovered ? theme.brushTextWhite.Get() : theme.brushTextMuted.Get(), 1.3f);
+    pRT->DrawLine(D2D1::Point2F(cx + cr, cy - cr), D2D1::Point2F(cx - cr, cy + cr),
+                  m_isToastCloseHovered ? theme.brushTextWhite.Get() : theme.brushTextMuted.Get(), 1.3f);
+
+    // 3. Message Text (Image 3: exact text)
+    D2D1_RECT_F rcMsg = D2D1::RectF(
+        toastX + config.ScaleF(34.0f),
+        toastY + config.ScaleF(10.0f),
+        m_toastCloseBounds.left - config.ScaleF(4.0f),
+        toastY + config.ScaleF(54.0f)
+    );
+    std::wstring repoDisplay = m_tooManyChangesRepoPath.empty() ? L"current directory" : m_tooManyChangesRepoPath;
+    std::wstring fullMsg = L"The git repository at \"" + repoDisplay + L"\" has too many active changes, only a subset of Git features will be enabled.";
+    pRT->DrawText(fullMsg.c_str(), static_cast<UINT32>(fullMsg.length()),
+                  theme.fontMenuItem.Get() ? theme.fontMenuItem.Get() : theme.fontButtonCenter.Get(),
+                  rcMsg, theme.brushTextPrimary.Get());
+
+    // 4. Action Buttons (Right-aligned at bottom of toast card)
+    float btnH = config.ScaleF(22.0f);
+    float btnY = toastY + toastH - btnH - config.ScaleF(8.0f);
+
+    // [ Don't Show Again ]
+    float dontW = config.ScaleF(125.0f);
+    float dontX = toastX + toastW - dontW - config.ScaleF(10.0f);
+    m_toastDontShowBounds = D2D1::RectF(dontX, btnY, dontX + dontW, btnY + btnH);
+    D2D1_ROUNDED_RECT rrcDont = D2D1::RoundedRect(m_toastDontShowBounds, 3.0f, 3.0f);
+    pRT->FillRoundedRectangle(rrcDont, m_isToastDontShowHovered ? theme.brushItemHover.Get() : theme.brushBorderSubtle.Get());
+    pRT->DrawRoundedRectangle(rrcDont, theme.brushBorderSubtle.Get(), 1.0f);
+    const wchar_t* dontText = L"Don't Show Again";
+    pRT->DrawText(dontText, static_cast<UINT32>(wcslen(dontText)),
+                  theme.fontMenuShortcut.Get() ? theme.fontMenuShortcut.Get() : theme.fontButtonCenter.Get(),
+                  m_toastDontShowBounds, theme.brushTextPrimary.Get());
+
+    // [ OK ]
+    float okW = config.ScaleF(48.0f);
+    float okX = dontX - okW - config.ScaleF(8.0f);
+    m_toastOkBounds = D2D1::RectF(okX, btnY, okX + okW, btnY + btnH);
+    D2D1_ROUNDED_RECT rrcOk = D2D1::RoundedRect(m_toastOkBounds, 3.0f, 3.0f);
+    pRT->FillRoundedRectangle(rrcOk, m_isToastOkHovered ? theme.brushItemHover.Get() : (theme.brushBrandAccent ? theme.brushBrandAccent.Get() : theme.brushItemHover.Get()));
+    const wchar_t* okText = L"OK";
+    pRT->DrawText(okText, static_cast<UINT32>(wcslen(okText)),
+                  theme.fontMenuShortcut.Get() ? theme.fontMenuShortcut.Get() : theme.fontButtonCenter.Get(),
+                  m_toastOkBounds, theme.brushTextWhite.Get());
 }
 
 } // namespace phide::ui

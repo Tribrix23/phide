@@ -305,8 +305,11 @@ private:
     /** @brief Opens the Quick Open file search palette modal (Ctrl+K, Ctrl+P). */
     void DoQuickOpenFileSearch();
 
-    /** @brief Opens the Database & phpMyAdmin configuration settings modal. */
-    void DoOpenDatabaseSettings();
+    /** @brief Opens the Database (phpMyAdmin / Supabase) configuration settings modal. */
+    void DoOpenDatabaseSettings(ui::DatabaseModalTab initialTab = ui::DatabaseModalTab::PhpMyAdmin);
+
+    void StartSupabaseServer();
+    void StopSupabaseServer();
 
     /** @brief Opens the Nginx Web Server configuration settings modal. */
     void DoOpenServerSettings();
@@ -560,11 +563,16 @@ private:
     void StopAllLiveServers();
     int GetNextAvailableLiveServerPort() const;
 
-    // Background web server processes (PHP, Nginx, phpMyAdmin, MySQL)
+    // Background web server processes (PHP, Nginx, phpMyAdmin, MySQL, Supabase)
     HANDLE m_hPhpServerProcess = nullptr;
     HANDLE m_hNginxProcess = nullptr;
     HANDLE m_hPmaProcess = nullptr;
     HANDLE m_hMysqlProcess = nullptr;
+    HANDLE m_hSupabaseProcess = nullptr;
+    bool m_isPmaRunning = false;
+    bool m_isSupabaseRunning = false;
+    void UpdateDatabaseModalRuntimeStatus();
+    void RunManualGarbageCollection();
     void StartPhpServer(const std::wstring& rootDir, int port = 8080);
     void StopPhpServer();
     void StartNginxServer();

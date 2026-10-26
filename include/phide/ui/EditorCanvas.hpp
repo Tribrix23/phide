@@ -431,7 +431,23 @@ private:
     };
     std::vector<ColorSwatchHit> m_visibleColorSwatches;
 
+    // Bracket pair analysis caching for ultra-smooth rendering
+    editor::BracketAnalysisResult m_cachedBracketAnalysis;
+    uint64_t m_cachedBufferVersion = static_cast<uint64_t>(-1);
+    size_t m_cachedCursorLine = static_cast<size_t>(-1);
+    size_t m_cachedCursorCol = static_cast<size_t>(-1);
+
 public:
+    void RunGarbageCollection() {
+        m_foldChevrons.shrink_to_fit();
+        m_visibleColorSwatches.shrink_to_fit();
+        m_autocompleteItems.shrink_to_fit();
+        m_cachedBracketAnalysis.brackets.shrink_to_fit();
+        m_cachedBracketAnalysis.pairs.shrink_to_fit();
+        m_cachedBufferVersion = static_cast<uint64_t>(-1);
+        m_cachedCursorLine = static_cast<size_t>(-1);
+        m_cachedCursorCol = static_cast<size_t>(-1);
+    }
     [[nodiscard]] const ColorSwatchHit* HitTestColorSwatch(POINT pt) const;
     [[nodiscard]] const std::vector<ColorSwatchHit>& GetVisibleColorSwatches() const noexcept { return m_visibleColorSwatches; }
 };

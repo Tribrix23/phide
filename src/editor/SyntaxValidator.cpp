@@ -34,7 +34,11 @@ std::vector<lsp::Diagnostic> SyntaxValidator::Validate(
         return ValidateCss(buffer);
     }
     if (ext == L".js" || ext == L".jsx" || ext == L".ts" || ext == L".tsx" || ext == L".mjs" || ext == L".cjs") {
-        return ValidateJavaScript(buffer);
+        auto diags = ValidateJavaScript(buffer);
+        bool isJsx = (ext == L".jsx" || ext == L".tsx");
+        auto reactDiags = ValidateReactAndESLint(buffer, isJsx);
+        diags.insert(diags.end(), reactDiags.begin(), reactDiags.end());
+        return diags;
     }
     if (ext == L".html" || ext == L".htm" || ext == L".xml" || ext == L".svg") {
         return ValidateHtml(buffer, validateScripts, validateStyles);
@@ -1180,6 +1184,205 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidatePhp(const Buffer& buffer) 
 
     for (const auto& b : bracketStack) {
         diagnostics.push_back({ b.line, b.col, 1, std::wstring(L"PHP: Unclosed bracket '") + b.ch + L"'", 1 });
+    }
+
+    return diagnostics;
+}
+
+std::vector<lsp::Diagnostic> SyntaxValidator::ValidateReactAndESLint(const Buffer& buffer, bool isJsx) {
+    std::vector<lsp::Diagnostic> diagnostics;
+    size_t lineCount = buffer.GetLineCount();
+    if (lineCount == 0) return diagnostics;
+
+    static const std::unordered_set<std::wstring> reactHooks = {
+        L"useState", L"useEffect", L"useContext", L"useReducer",
+        L"useCallback", L"useMemo", L"useRef", L"useImperativeHandle",
+        L"useLayoutEffect", L"useId", L"useDeferredValue",
+        L"useTransition", L"useSyncExternalStore", L"useInsertionEffect"
+    };
+
+    int conditionDepth = 0;
+    int loopDepth = 0;
+    std::vector<int> controlStack; // 1 = condition (if/else/switch), 2 = loop (for/while)
+
+    struct JsxTagInfo {
+        std::wstring name;
+        size_t line;
+        size_t col;
+    };
+    std::vector<JsxTagInfo> jsxStack;
+
+    static const std::unordered_set<std::wstring> voidTags = {
+        L"area", L"base", L"br", L"col", L"embed", L"hr", L"img", L"input",
+        L"link", L"meta", L"param", L"source", L"track", L"wbr"
+    };
+
+    for (size_t l = 0; l < lineCount; ++l) {
+        const std::wstring& line = buffer.GetLine(l);
+        if (line.empty()) continue;
+
+        // Skip line comments
+        size_t lineComment = line.find(L"//");
+        std::wstring code = (lineComment != std::wstring::npos) ? line.substr(0, lineComment) : line;
+
+        // Track conditions and loops
+        for (size_t i = 0; i < code.length(); ++i) {
+            if (code[i] == L'{') {
+                std::wstring prefix = code.substr(0, i);
+                size_t pIf = prefix.rfind(L"if");
+                size_t pFor = prefix.rfind(L"for");
+                size_t pWhile = prefix.rfind(L"while");
+                size_t pSwitch = prefix.rfind(L"switch");
+                size_t pElse = prefix.rfind(L"else");
+
+                int type = 0;
+                if (pIf != std::wstring::npos || pElse != std::wstring::npos || pSwitch != std::wstring::npos) {
+                    type = 1;
+                } else if (pFor != std::wstring::npos || pWhile != std::wstring::npos) {
+                    type = 2;
+                }
+                controlStack.push_back(type);
+                if (type == 1) conditionDepth++;
+                else if (type == 2) loopDepth++;
+            } else if (code[i] == L'}') {
+                if (!controlStack.empty()) {
+                    int topType = controlStack.back();
+                    controlStack.pop_back();
+                    if (topType == 1 && conditionDepth > 0) conditionDepth--;
+                    else if (topType == 2 && loopDepth > 0) loopDepth--;
+                }
+            }
+        }
+
+        // 1. React Hook Rules: Cannot call hooks conditionally or inside loops
+        for (const auto& hook : reactHooks) {
+            size_t pos = 0;
+            while ((pos = code.find(hook, pos)) != std::wstring::npos) {
+                bool validBefore = (pos == 0 || (!iswalnum(code[pos - 1]) && code[pos - 1] != L'_' && code[pos - 1] != L'$'));
+                size_t afterIdx = pos + hook.length();
+                bool validAfter = (afterIdx >= code.length() || (!iswalnum(code[afterIdx]) && code[afterIdx] != L'_' && code[afterIdx] != L'$'));
+
+                if (validBefore && validAfter) {
+                    if (conditionDepth > 0 || loopDepth > 0) {
+                        lsp::Diagnostic diag;
+                        diag.line = l;
+                        diag.col = pos;
+                        diag.length = hook.length();
+                        diag.message = L"React Hook \"" + hook + L"\" is called conditionally. React Hooks must be called in the exact same order in every component render. (react-hooks/rules-of-hooks)";
+                        diag.severity = 1; // Error
+                        diagnostics.push_back(std::move(diag));
+                    }
+
+                    if (hook == L"useEffect" || hook == L"useCallback" || hook == L"useMemo") {
+                        size_t callParen = code.find(L'(', afterIdx);
+                        if (callParen != std::wstring::npos) {
+                            size_t closeParen = code.find(L')', callParen);
+                            if (closeParen != std::wstring::npos && code.find(L',', callParen) == std::wstring::npos) {
+                                lsp::Diagnostic diag;
+                                diag.line = l;
+                                diag.col = pos;
+                                diag.length = hook.length();
+                                diag.message = L"React Hook " + hook + L" has no dependency array. It will re-run on every render. (react-hooks/exhaustive-deps)";
+                                diag.severity = 3; // Information
+                                diagnostics.push_back(std::move(diag));
+                            }
+                        }
+                    }
+                }
+                pos += hook.length();
+            }
+        }
+
+        // 2. Direct State Mutation: this.state.x = ...
+        size_t statePos = code.find(L"this.state.");
+        if (statePos != std::wstring::npos) {
+            size_t eqPos = code.find(L'=', statePos + 11);
+            if (eqPos != std::wstring::npos && (eqPos + 1 >= code.length() || code[eqPos + 1] != L'=')) {
+                lsp::Diagnostic diag;
+                diag.line = l;
+                diag.col = statePos;
+                diag.length = (eqPos - statePos + 1);
+                diag.message = L"Do not mutate state directly. Use setState(). (react/no-direct-mutation-state)";
+                diag.severity = 1; // Error
+                diagnostics.push_back(std::move(diag));
+            }
+        }
+
+        // 3. JSX Validation: duplicate props and tag balancing
+        if (isJsx) {
+            size_t p = 0;
+            while (p < code.length()) {
+                if (code[p] == L'<') {
+                    if (p + 1 < code.length() && (code[p + 1] == L'/' || iswalpha(code[p + 1]))) {
+                        size_t tagEnd = code.find(L'>', p);
+                        if (tagEnd != std::wstring::npos) {
+                            std::wstring tagStr = code.substr(p + 1, tagEnd - (p + 1));
+                            bool isClose = (!tagStr.empty() && tagStr[0] == L'/');
+                            bool isSelfClose = (!tagStr.empty() && tagStr.back() == L'/');
+
+                            size_t nStart = isClose ? 1 : 0;
+                            while (nStart < tagStr.length() && iswspace(tagStr[nStart])) nStart++;
+                            size_t nEnd = nStart;
+                            while (nEnd < tagStr.length() && !iswspace(tagStr[nEnd]) && tagStr[nEnd] != L'/') nEnd++;
+                            std::wstring tagName = tagStr.substr(nStart, nEnd - nStart);
+
+                            if (!isClose && !isSelfClose && voidTags.count(tagName) == 0 && !tagName.empty()) {
+                                jsxStack.push_back({ tagName, l, p });
+
+                                std::unordered_set<std::wstring> propNames;
+                                std::wistringstream pss(tagStr.substr(nEnd));
+                                std::wstring token;
+                                while (pss >> token) {
+                                    size_t eqIdx = token.find(L'=');
+                                    std::wstring propName = (eqIdx != std::wstring::npos) ? token.substr(0, eqIdx) : token;
+                                    if (!propName.empty() && iswalpha(propName[0])) {
+                                        if (propNames.count(propName) > 0) {
+                                            lsp::Diagnostic diag;
+                                            diag.line = l;
+                                            diag.col = p;
+                                            diag.length = tagEnd - p + 1;
+                                            diag.message = L"No duplicate props allowed: \"" + propName + L"\" (react/jsx-no-duplicate-props)";
+                                            diag.severity = 2; // Warning
+                                            diagnostics.push_back(std::move(diag));
+                                        } else {
+                                            propNames.insert(propName);
+                                        }
+                                    }
+                                }
+                            } else if (isClose && !tagName.empty()) {
+                                if (!jsxStack.empty()) {
+                                    if (jsxStack.back().name == tagName) {
+                                        jsxStack.pop_back();
+                                    } else {
+                                        lsp::Diagnostic diag;
+                                        diag.line = l;
+                                        diag.col = p;
+                                        diag.length = tagEnd - p + 1;
+                                        diag.message = L"JSX: Expected corresponding JSX closing tag for '<" + jsxStack.back().name + L">' but found '</" + tagName + L">'";
+                                        diag.severity = 1; // Error
+                                        diagnostics.push_back(std::move(diag));
+                                        jsxStack.pop_back();
+                                    }
+                                }
+                            }
+                            p = tagEnd + 1;
+                            continue;
+                        }
+                    }
+                }
+                p++;
+            }
+        }
+    }
+
+    for (const auto& tag : jsxStack) {
+        lsp::Diagnostic diag;
+        diag.line = tag.line;
+        diag.col = tag.col;
+        diag.length = tag.name.length() + 1;
+        diag.message = L"JSX: Unclosed JSX element '<" + tag.name + L">'";
+        diag.severity = 1; // Error
+        diagnostics.push_back(std::move(diag));
     }
 
     return diagnostics;

@@ -95,7 +95,7 @@ void PopupMenu::OpenEditorContextMenu(float x, float y, const app::AppConfig& co
     // 8. Command Palette... (Ctrl+Shift+P)
     m_items.push_back({ MenuActionId::EditorCommandPalette, L"Command Palette...", L"Ctrl+Shift+P", false, false, false, true, {}, {} });
 
-    const float menuW = config.ScaleF(240.0f);
+    const float menuW = config.ScaleF(295.0f);
     LayoutMenu(m_items, x, y, menuW, config, m_mainMenuBounds, clientW, clientH);
 }
 
@@ -108,7 +108,7 @@ void PopupMenu::OpenEditMenu(float x, float y, const app::AppConfig& config,
 
     BuildEditMenuItems(canUndo, canRedo, hasSelection);
 
-    const float menuW = config.ScaleF(240.0f);
+    const float menuW = config.ScaleF(295.0f);
     LayoutMenu(m_items, x, y, menuW, config, m_mainMenuBounds);
 }
 
@@ -200,7 +200,7 @@ void PopupMenu::OpenCodeMenu(float x, float y, const app::AppConfig& config,
     // 4. Imports & Source Actions
     m_items.push_back({ MenuActionId::CodeOrganizeImports,  L"Organize Imports",             L"Shift+Alt+O", false, false, false, hasDoc, {}, {} });
 
-    const float codeMenuW = config.ScaleF(250.0f);
+    const float codeMenuW = config.ScaleF(295.0f);
     LayoutMenu(m_items, x, y, codeMenuW, config, m_mainMenuBounds);
 }
 
@@ -869,11 +869,12 @@ void PopupMenu::RenderMenuPanel(ID2D1RenderTarget* pRT, Theme& theme, const app:
             DrawCheckmark(pRT, item.bounds, glyphBrush);
         }
 
-        // 2. Menu Item Text Label
+        // 2. Menu Item Text Label (generous right margin prevents collision with shortcuts)
+        float labelRightMargin = !item.shortcut.empty() ? config.ScaleF(85.0f) : (item.hasSubmenu ? config.ScaleF(24.0f) : config.ScaleF(14.0f));
         D2D1_RECT_F rcLabel = D2D1::RectF(
             item.bounds.left + config.ScaleF(28.0f),
             item.bounds.top,
-            item.bounds.right - config.ScaleF(60.0f),
+            item.bounds.right - labelRightMargin,
             item.bounds.bottom
         );
         pRT->DrawText(

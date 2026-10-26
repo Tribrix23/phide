@@ -109,6 +109,7 @@ private:
     void PopulateJavaScriptPrototypeMethods();
     void PopulatePhpVocabulary();
     void PopulatePythonVocabulary();
+    void PopulateReactAndNodeVocabulary();
     void PopulateCommonVocabulary();
 
     std::vector<IntelliSenseItem> m_htmlTags;
@@ -121,6 +122,7 @@ private:
     std::vector<IntelliSenseItem> m_jsPrototypes;
     std::vector<IntelliSenseItem> m_phpSymbols;
     std::vector<IntelliSenseItem> m_pySymbols;
+    std::vector<IntelliSenseItem> m_reactAndNodeVocabulary;
     std::vector<IntelliSenseItem> m_commonVocabulary;
     const SnippetManager* m_pSnippetManager = nullptr;
     std::wstring m_workspaceRoot;

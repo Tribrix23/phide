@@ -18,7 +18,8 @@ namespace phide::ui {
 
 enum class DatabaseModalTab {
     PhpMyAdmin = 0,
-    NginxServer = 1
+    Supabase = 1,
+    NginxServer = 2
 };
 
 enum class DatabaseEditField {
@@ -30,7 +31,10 @@ enum class DatabaseEditField {
     Database,
     Charset,
     NginxPort,
-    NginxHost
+    NginxHost,
+    SupabaseUrl,
+    SupabaseAnonKey,
+    SupabasePort
 };
 
 enum class DatabaseModalAction {
@@ -46,13 +50,22 @@ enum class DatabaseModalAction {
     CopyNginxPort,
     CopyNginxConfigPath,
     TogglePmaRun,
+    ToggleSupabaseRun,
     ToggleServerRun,
     OpenBrowserPma,
+    OpenBrowserSupabase,
     OpenBrowserNginx,
     EditPmaConfig,
     EditNginxConfig,
+    OpenSupabaseFolder,
+    CopySupabaseUrl,
+    CopySupabaseAnonKey,
+    CopySupabasePort,
+    CopySupabaseJsSnippet,
+    CopySupabasePySnippet,
     ImportSql,
     SwitchTabPma,
+    SwitchTabSupabase,
     SwitchTabNginx,
     CloseModal
 };
@@ -66,15 +79,27 @@ public:
     void Close() noexcept { m_isOpen = false; }
     [[nodiscard]] bool IsOpen() const noexcept { return m_isOpen; }
 
-    void SetActiveTab(DatabaseModalTab tab) noexcept { m_activeTab = tab; }
+    void SetActiveTab(DatabaseModalTab tab) noexcept {
+        m_activeTab = tab;
+        if (tab == DatabaseModalTab::Supabase) m_isSupabaseSelected = true;
+        else if (tab == DatabaseModalTab::PhpMyAdmin) m_isSupabaseSelected = false;
+    }
     [[nodiscard]] DatabaseModalTab GetActiveTab() const noexcept { return m_activeTab; }
 
-    void SetRuntimeStatus(bool pmaRunning, bool nginxRunning) noexcept {
+    void SetSupabaseSelected(bool selected) noexcept { m_isSupabaseSelected = selected; }
+    [[nodiscard]] bool IsSupabaseSelected() const noexcept { return m_isSupabaseSelected; }
+
+    void SetRuntimeStatus(bool pmaRunning, bool nginxRunning, bool supabaseRunning) noexcept {
         m_isPmaRunning = pmaRunning;
         m_isNginxRunning = nginxRunning;
+        m_isSupabaseRunning = supabaseRunning;
     }
+    void SetPmaRunning(bool running) noexcept { m_isPmaRunning = running; }
+    void SetNginxRunning(bool running) noexcept { m_isNginxRunning = running; }
+    void SetSupabaseRunning(bool running) noexcept { m_isSupabaseRunning = running; }
     [[nodiscard]] bool IsPmaRunning() const noexcept { return m_isPmaRunning; }
     [[nodiscard]] bool IsNginxRunning() const noexcept { return m_isNginxRunning; }
+    [[nodiscard]] bool IsSupabaseRunning() const noexcept { return m_isSupabaseRunning; }
 
     void SetSqlFileAvailable(const std::wstring& sqlFileName) noexcept { m_sqlFileName = sqlFileName; }
     [[nodiscard]] const std::wstring& GetSqlFileName() const noexcept { return m_sqlFileName; }
@@ -121,9 +146,31 @@ public:
     [[nodiscard]] const std::wstring& GetPmaConfigPath() const noexcept { return m_pmaConfigFile; }
     [[nodiscard]] const std::wstring& GetNginxConfigPath() const noexcept { return m_nginxConfigFile; }
 
+    [[nodiscard]] const std::wstring& GetSupabaseUrl() const noexcept { return m_supabaseUrl; }
+    [[nodiscard]] const std::wstring& GetSupabaseAnonKey() const noexcept { return m_supabaseAnonKey; }
+    [[nodiscard]] const std::wstring& GetSupabasePort() const noexcept { return m_supabasePort; }
+    [[nodiscard]] std::wstring GetSupabaseStudioPort() const {
+        size_t colonPos = m_supabaseUrl.rfind(L':');
+        if (colonPos != std::wstring::npos && colonPos > 5) {
+            std::wstring portPart = m_supabaseUrl.substr(colonPos + 1);
+            size_t slashPos = portPart.find(L'/');
+            if (slashPos != std::wstring::npos) portPart = portPart.substr(0, slashPos);
+            if (!portPart.empty()) return portPart;
+        }
+        return m_supabaseStudioPort;
+    }
+    [[nodiscard]] const std::wstring& GetSupabaseHost() const noexcept { return m_supabaseHost; }
+    [[nodiscard]] const std::wstring& GetSupabaseUser() const noexcept { return m_supabaseUser; }
+    [[nodiscard]] const std::wstring& GetSupabasePass() const noexcept { return m_supabasePass; }
+    [[nodiscard]] const std::wstring& GetSupabaseDb() const noexcept { return m_supabaseDb; }
+    [[nodiscard]] const std::wstring& GetSupabaseDir() const noexcept { return m_supabaseDir; }
+    [[nodiscard]] const std::wstring& GetSupabaseJsSnippet() const noexcept { return m_supabaseJsSnippet; }
+    [[nodiscard]] const std::wstring& GetSupabasePySnippet() const noexcept { return m_supabasePySnippet; }
+
 private:
     bool m_isOpen = false;
     bool m_initialized = false;
+    bool m_isSupabaseSelected = false;
     DatabaseModalTab m_activeTab = DatabaseModalTab::PhpMyAdmin;
 
     // Database parameters (matches config.inc.php and config.php)
@@ -142,6 +189,20 @@ private:
     // Snippets for PHP
     std::wstring m_pdoSnippet = L"$pdo = new PDO(\"mysql:host=localhost;port=3306;dbname=student_crud;charset=utf8mb4\", \"root\", \"\");";
     std::wstring m_mysqliSnippet = L"$conn = new mysqli(\"localhost\", \"root\", \"\", \"student_crud\", 3306);";
+
+    // Supabase parameters
+    std::wstring m_supabaseUrl = L"http://localhost:54323";
+    std::wstring m_supabaseAnonKey = L"sb_publishable_nXkt2Y-i1brrrVYmF_mxzw_RMiAd6Ry";
+    std::wstring m_supabaseHost = L"localhost";
+    std::wstring m_supabasePort = L"5432";
+    std::wstring m_supabaseUser = L"postgres";
+    std::wstring m_supabasePass = L"postgres";
+    std::wstring m_supabaseDb = L"postgres";
+    std::wstring m_supabaseStudioPort = L"54323";
+    std::wstring m_supabaseDir = L"include\\phide\\db\\supabase";
+    std::wstring m_supabaseJsSnippet = L"import { createClient } from '@supabase/supabase-js';\nconst supabase = createClient('http://localhost:54323', 'sb_publishable_nXkt2Y-i1brrrVYmF_mxzw_RMiAd6Ry');";
+    std::wstring m_supabasePySnippet = L"from supabase import create_client\nsupabase = create_client('http://localhost:54323', 'sb_publishable_nXkt2Y-i1brrrVYmF_mxzw_RMiAd6Ry')";
+    bool m_isSupabaseRunning = false;
 
     // Nginx parameters
     std::wstring m_nginxUrl = L"http://localhost:80";
@@ -164,6 +225,7 @@ private:
     D2D1_RECT_F m_rcModalCard{};
     D2D1_RECT_F m_rcCloseBtn{};
     D2D1_RECT_F m_rcTabPma{};
+    D2D1_RECT_F m_rcTabSupabase{};
     D2D1_RECT_F m_rcTabNginx{};
 
     // Editable input fields in Section A
@@ -185,6 +247,19 @@ private:
     D2D1_RECT_F m_rcBtnTogglePma{};
     D2D1_RECT_F m_rcBtnOpenPma{};
     D2D1_RECT_F m_rcBtnEditPma{};
+
+    // Supabase interactive elements
+    D2D1_RECT_F m_rcInputSupabaseUrl{};
+    D2D1_RECT_F m_rcInputSupabaseAnonKey{};
+    D2D1_RECT_F m_rcInputSupabasePort{};
+    D2D1_RECT_F m_rcCopySupabaseUrl{};
+    D2D1_RECT_F m_rcCopySupabaseAnonKey{};
+    D2D1_RECT_F m_rcCopySupabasePort{};
+    D2D1_RECT_F m_rcCopySupabaseJs{};
+    D2D1_RECT_F m_rcCopySupabasePy{};
+    D2D1_RECT_F m_rcBtnToggleSupabase{};
+    D2D1_RECT_F m_rcBtnOpenSupabase{};
+    D2D1_RECT_F m_rcBtnOpenSupabaseFolder{};
 
     D2D1_RECT_F m_rcCopyNginxUrl{};
     D2D1_RECT_F m_rcCopyNginxPort{};

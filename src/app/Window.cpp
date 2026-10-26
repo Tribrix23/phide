@@ -34,6 +34,8 @@
 
 namespace phide::app {
 
+static bool IsPortListening(int port);
+
 static void SetClipboardText(HWND hwnd, const std::wstring& text) {
     if (!OpenClipboard(hwnd)) return;
     EmptyClipboard();
@@ -254,6 +256,8 @@ Window::~Window() {
     StopNginxServer();
     StopPmaServer();
     StopMysqlServer();
+    StopSupabaseServer();
+    RunManualGarbageCollection();
     DiscardDeviceResources();
     if (m_hwnd) {
         KillTimer(m_hwnd, m_caretTimerId);
@@ -1373,6 +1377,7 @@ void Window::CloseDocument(int groupIdx, int docIdx) {
     UpdateDrawerDirtyFiles();
     UpdateDrawerErrorFiles();
     SaveSessionState();
+    RunManualGarbageCollection();
     InvalidateRect(m_hwnd, nullptr, FALSE);
 }
 
@@ -1803,6 +1808,7 @@ void Window::DoCloseFolder() {
     m_drawer.RefreshGitState(true);
     UpdateDrawerErrorFiles();
     SaveSessionState();
+    RunManualGarbageCollection();
     InvalidateRect(m_hwnd, nullptr, FALSE);
 }
 
@@ -2335,10 +2341,28 @@ void Window::DoQuickOpenFileSearch() {
     InvalidateRect(m_hwnd, nullptr, FALSE);
 }
 
-void Window::DoOpenDatabaseSettings() {
-    bool pmaRunning = (m_header.GetDatabaseState() == ui::DatabaseState::Running);
-    bool nginxRunning = (m_header.GetServerState() == ui::ServerState::Running);
-    m_dbSettingsModal.SetRuntimeStatus(pmaRunning, nginxRunning);
+void Window::UpdateDatabaseModalRuntimeStatus() {
+    bool pmaRunning = (m_hPmaProcess != nullptr || m_isPmaRunning);
+    bool nginxRunning = (m_hNginxProcess != nullptr || m_header.GetServerState() == ui::ServerState::Running);
+    bool supabaseRunning = m_isSupabaseRunning;
+    m_dbSettingsModal.SetRuntimeStatus(pmaRunning, nginxRunning, supabaseRunning);
+}
+
+void Window::DoOpenDatabaseSettings(ui::DatabaseModalTab initialTab) {
+    UpdateDatabaseModalRuntimeStatus();
+
+    auto& srvDb = m_header.GetServerDatabaseConfig();
+    // Auto-detect the right initial tab and selected database mode
+    if (initialTab == ui::DatabaseModalTab::Supabase) {
+        m_dbSettingsModal.SetSupabaseSelected(true);
+    } else if (initialTab == ui::DatabaseModalTab::PhpMyAdmin) {
+        if ((m_isSupabaseRunning || srvDb.supabaseEnabled) && !srvDb.phpMyAdminEnabled) {
+            initialTab = ui::DatabaseModalTab::Supabase;
+            m_dbSettingsModal.SetSupabaseSelected(true);
+        } else {
+            m_dbSettingsModal.SetSupabaseSelected(false);
+        }
+    }
 
     std::wstring sqlName;
     auto checkDirForSql = [](const std::filesystem::path& dir) -> std::wstring {
@@ -2371,15 +2395,136 @@ void Window::DoOpenDatabaseSettings() {
     }
     m_dbSettingsModal.SetSqlFileAvailable(sqlName);
 
-    m_dbSettingsModal.Open(ui::DatabaseModalTab::PhpMyAdmin);
+    m_dbSettingsModal.Open(initialTab);
     m_header.CloseServerDatabaseDropdowns();
     InvalidateRect(m_hwnd, nullptr, FALSE);
 }
 
+void Window::StartSupabaseServer() {
+    StopSupabaseServer();
+    StopPmaServer();
+
+    auto& srvDb = m_header.GetServerDatabaseConfig();
+    srvDb.supabaseEnabled = true;
+    srvDb.phpMyAdminEnabled = false;
+    srvDb.dontRunDatabase = false;
+    m_dbSettingsModal.SetSupabaseSelected(true);
+
+    std::filesystem::path studioDir = GetPhideRoot() / L"include" / L"phide" / L"db" / L"supabase" / L"studio";
+    if (!std::filesystem::exists(studioDir)) {
+        studioDir = GetPhideRoot() / L"db" / L"supabase" / L"studio";
+    }
+
+    int supabasePort = 54323;
+    try {
+        int parsed = std::stoi(m_dbSettingsModal.GetSupabaseStudioPort());
+        if (parsed > 0 && parsed < 65536) supabasePort = parsed;
+    } catch (...) {}
+
+    std::filesystem::path serverJs = studioDir / L"server.js";
+    std::wstring cmd;
+    std::wstring workingDir = studioDir.wstring();
+
+    std::wstring nodeExe = L"C:\\Program Files\\nodejs\\node.exe";
+    if (!std::filesystem::exists(nodeExe)) nodeExe = L"node.exe";
+
+    std::wstring phpExe = L"C:\\Users\\Administrator\\AppData\\Local\\Programs\\PHP\\v8.5\\php.exe";
+    if (!std::filesystem::exists(phpExe)) phpExe = L"php.exe";
+
+    bool useNode = std::filesystem::exists(serverJs);
+    if (useNode) {
+        cmd = L"\"" + nodeExe + L"\" \"" + serverJs.wstring() + L"\" --port " + std::to_wstring(supabasePort);
+    } else {
+        cmd = L"\"" + phpExe + L"\" -S 0.0.0.0:" + std::to_wstring(supabasePort) + L" -t \"" + studioDir.wstring() + L"\"";
+    }
+
+    std::vector<wchar_t> cmdBuf(cmd.begin(), cmd.end());
+    cmdBuf.push_back(L'\0');
+
+    STARTUPINFOW si{};
+    si.cb = sizeof(si);
+    si.dwFlags = STARTF_USESHOWWINDOW;
+    si.wShowWindow = SW_HIDE;
+    PROCESS_INFORMATION pi{};
+
+    bool launched = CreateProcessW(NULL, cmdBuf.data(), NULL, NULL, FALSE, CREATE_NO_WINDOW, NULL, workingDir.c_str(), &si, &pi);
+    if (!launched && useNode) {
+        cmd = L"\"" + phpExe + L"\" -S 0.0.0.0:" + std::to_wstring(supabasePort) + L" -t \"" + studioDir.wstring() + L"\"";
+        cmdBuf.assign(cmd.begin(), cmd.end());
+        cmdBuf.push_back(L'\0');
+        launched = CreateProcessW(NULL, cmdBuf.data(), NULL, NULL, FALSE, CREATE_NO_WINDOW, NULL, workingDir.c_str(), &si, &pi);
+    }
+
+    if (launched) {
+        m_hSupabaseProcess = pi.hProcess;
+        m_isSupabaseRunning = true;
+        CloseHandle(pi.hThread);
+
+        for (int attempt = 0; attempt < 30; ++attempt) {
+            Sleep(50);
+            if (IsPortListening(supabasePort)) break;
+        }
+
+        m_dbSettingsModal.SetSupabaseRunning(true);
+        m_header.SetDatabaseState(ui::DatabaseState::Running);
+        m_header.SetDatabaseLogOpened(false);
+        UpdateDatabaseModalRuntimeStatus();
+
+        std::vector<std::wstring> logLines;
+        logLines.push_back(L"[Supabase LOG] Supabase Studio & PostgreSQL engine session");
+        logLines.push_back(L"[info] Initializing Supabase Studio (studio port: " + std::to_wstring(supabasePort) + L", postgres: " + m_dbSettingsModal.GetSupabasePort() + L")...");
+        logLines.push_back(L"[info] REST API endpoint ready: http://localhost:" + std::to_wstring(supabasePort) + L"/rest/v1/");
+        logLines.push_back(L"[info] Supabase Studio is up and listening on http://localhost:" + std::to_wstring(supabasePort));
+        m_terminal.OpenLogTab(L"Supabase log", logLines);
+    } else {
+        m_isSupabaseRunning = false;
+        m_dbSettingsModal.SetSupabaseRunning(false);
+        m_header.SetDatabaseState(ui::DatabaseState::Failed);
+        UpdateDatabaseModalRuntimeStatus();
+
+        std::vector<std::wstring> logLines;
+        logLines.push_back(L"[Supabase ERROR] Failed to start Supabase Studio server process.");
+        logLines.push_back(L"[error] Could not launch node.exe or php.exe for " + studioDir.wstring());
+        m_terminal.OpenLogTab(L"Supabase log", logLines);
+    }
+}
+
+void Window::StopSupabaseServer() {
+    if (m_hSupabaseProcess) {
+        TerminateProcess(m_hSupabaseProcess, 0);
+        CloseHandle(m_hSupabaseProcess);
+        m_hSupabaseProcess = nullptr;
+    }
+    m_isSupabaseRunning = false;
+    m_dbSettingsModal.SetSupabaseRunning(false);
+    bool pmaRunning = (m_hPmaProcess != nullptr || m_isPmaRunning);
+    if (!pmaRunning) {
+        m_header.SetDatabaseState(ui::DatabaseState::Stopped);
+    }
+    UpdateDatabaseModalRuntimeStatus();
+}
+
+void Window::RunManualGarbageCollection() {
+    for (auto& group : m_editorGroups) {
+        for (auto& doc : group.docs) {
+            doc.buffer.RunGarbageCollection();
+            doc.diagnostics.shrink_to_fit();
+            doc.inlayHints.shrink_to_fit();
+            doc.breakpoints.shrink_to_fit();
+            doc.originalDiskText.shrink_to_fit();
+        }
+    }
+    m_editor.RunGarbageCollection();
+    m_drawer.ClearSearchResults();
+    m_drawer.RunGarbageCollectionAsync();
+    CoFreeUnusedLibraries();
+    SetProcessWorkingSetSize(GetCurrentProcess(), static_cast<SIZE_T>(-1), static_cast<SIZE_T>(-1));
+}
+
 void Window::DoOpenServerSettings() {
-    bool pmaRunning = (m_header.GetDatabaseState() == ui::DatabaseState::Running);
-    bool nginxRunning = (m_header.GetServerState() == ui::ServerState::Running);
-    m_dbSettingsModal.SetRuntimeStatus(pmaRunning, nginxRunning);
+    UpdateDatabaseModalRuntimeStatus();
+    auto& srvDb = m_header.GetServerDatabaseConfig();
+    m_dbSettingsModal.SetSupabaseSelected((m_isSupabaseRunning || srvDb.supabaseEnabled) && !srvDb.phpMyAdminEnabled);
     m_dbSettingsModal.Open(ui::DatabaseModalTab::NginxServer);
     m_header.CloseServerDatabaseDropdowns();
     InvalidateRect(m_hwnd, nullptr, FALSE);
@@ -2621,6 +2766,7 @@ void Window::StopAllLiveServers() {
     StopPhpServer();
     StopNginxServer();
     StopPmaServer();
+    StopSupabaseServer();
     for (auto& s : m_activeLiveServers) {
         auto serverToStop = std::move(s.server);
         if (serverToStop) {
@@ -2851,6 +2997,150 @@ static std::wstring FormatHtmlNative(const std::wstring& src) {
     return out;
 }
 
+static std::wstring FormatPhpNative(const std::wstring& src) {
+    std::wstring out;
+    out.reserve(src.length() * 2);
+    int indent = 0;
+    std::wistringstream iss(src);
+    std::wstring line;
+
+    auto appendIndent = [&](int lvl) {
+        for (int k = 0; k < lvl; ++k) out += L"    ";
+    };
+
+    static const std::unordered_set<std::wstring> voidTags = {
+        L"area", L"base", L"br", L"col", L"embed", L"hr", L"img", L"input",
+        L"link", L"meta", L"param", L"source", L"track", L"wbr", L"!doctype"
+    };
+
+    bool inPhpBlock = false;
+
+    while (std::getline(iss, line)) {
+        if (!line.empty() && line.back() == L'\r') line.pop_back();
+
+        size_t start = 0;
+        while (start < line.length() && (line[start] == L' ' || line[start] == L'\t')) start++;
+        size_t end = line.length();
+        while (end > start && (line[end - 1] == L' ' || line[end - 1] == L'\t')) end--;
+
+        if (start >= end) {
+            out += L'\n';
+            continue;
+        }
+
+        std::wstring trimmed = line.substr(start, end - start);
+
+        // Determine dedent for closing tags or closing braces on the current line
+        int lineDedent = 0;
+
+        // Check if line starts with closing HTML tag: </...
+        if (trimmed.length() >= 2 && trimmed[0] == L'<' && trimmed[1] == L'/') {
+            lineDedent++;
+        }
+        // Check if line starts with closing brace: }
+        else if (trimmed[0] == L'}') {
+            for (wchar_t ch : trimmed) {
+                if (ch == L'}') lineDedent++;
+                else if (!iswspace(ch)) break;
+            }
+        }
+        // Check if line starts with alternative syntax closing: endif, endforeach, endwhile, endfor, endswitch, else, elseif
+        else {
+            std::wstring lower = trimmed;
+            for (auto& c : lower) c = static_cast<wchar_t>(towlower(c));
+            if (lower.rfind(L"endif", 0) == 0 || lower.rfind(L"endforeach", 0) == 0 ||
+                lower.rfind(L"endwhile", 0) == 0 || lower.rfind(L"endfor", 0) == 0 ||
+                lower.rfind(L"endswitch", 0) == 0 || lower.rfind(L"else", 0) == 0 ||
+                lower.rfind(L"elseif", 0) == 0 || lower.rfind(L"<?php endif", 0) == 0 ||
+                lower.rfind(L"<?php endforeach", 0) == 0 || lower.rfind(L"<?php endwhile", 0) == 0 ||
+                lower.rfind(L"<?php endfor", 0) == 0 || lower.rfind(L"<?php else", 0) == 0 ||
+                lower.rfind(L"<?php elseif", 0) == 0 || lower.rfind(L"<?php }", 0) == 0) {
+                lineDedent++;
+            }
+        }
+
+        int curIndent = indent - lineDedent;
+        if (curIndent < 0) curIndent = 0;
+
+        appendIndent(curIndent);
+        out += trimmed + L'\n';
+
+        // Now compute indent delta for the NEXT line:
+        int delta = 0;
+
+        // Curly braces delta
+        for (wchar_t ch : trimmed) {
+            if (ch == L'{') delta++;
+            else if (ch == L'}') delta--;
+        }
+
+        // Alternative control structures ending with ':'
+        if (trimmed.back() == L':') {
+            std::wstring lower = trimmed;
+            for (auto& c : lower) c = static_cast<wchar_t>(towlower(c));
+            if (lower.find(L"if") != std::wstring::npos || lower.find(L"foreach") != std::wstring::npos ||
+                lower.find(L"while") != std::wstring::npos || lower.find(L"for") != std::wstring::npos ||
+                lower.find(L"else") != std::wstring::npos || lower.find(L"switch") != std::wstring::npos) {
+                delta++;
+            }
+        }
+
+        // HTML tags delta (outside <? ... ?>)
+        size_t pos = 0;
+        while (pos < trimmed.length()) {
+            if (trimmed[pos] == L'<' && pos + 1 < trimmed.length() && trimmed[pos + 1] == L'?') {
+                size_t phpEnd = trimmed.find(L"?>", pos + 2);
+                if (phpEnd != std::wstring::npos) {
+                    pos = phpEnd + 2;
+                    continue;
+                } else {
+                    inPhpBlock = true;
+                    break;
+                }
+            }
+
+            if (trimmed[pos] == L'?' && pos + 1 < trimmed.length() && trimmed[pos + 1] == L'>') {
+                inPhpBlock = false;
+                pos += 2;
+                continue;
+            }
+
+            if (!inPhpBlock && trimmed[pos] == L'<') {
+                size_t tagEnd = trimmed.find(L'>', pos);
+                if (tagEnd != std::wstring::npos) {
+                    std::wstring tagContent = trimmed.substr(pos + 1, tagEnd - (pos + 1));
+                    if (!tagContent.empty()) {
+                        bool isClosing = (tagContent[0] == L'/');
+                        bool isSelfClosing = (tagContent.back() == L'/');
+                        size_t nStart = isClosing ? 1 : 0;
+                        while (nStart < tagContent.length() && iswspace(tagContent[nStart])) nStart++;
+                        size_t nEnd = nStart;
+                        while (nEnd < tagContent.length() && !iswspace(tagContent[nEnd]) && tagContent[nEnd] != L'/') nEnd++;
+                        std::wstring tagName = tagContent.substr(nStart, nEnd - nStart);
+                        for (auto& c : tagName) c = static_cast<wchar_t>(towlower(c));
+
+                        if (!tagName.empty() && voidTags.count(tagName) == 0 && !isSelfClosing && tagName[0] != L'!') {
+                            if (isClosing) {
+                                if (pos > 0) delta--;
+                            } else {
+                                delta++;
+                            }
+                        }
+                    }
+                    pos = tagEnd + 1;
+                    continue;
+                }
+            }
+            pos++;
+        }
+
+        indent += delta;
+        if (indent < 0) indent = 0;
+    }
+
+    return out;
+}
+
 static std::wstring FormatBracesNative(const std::wstring& src) {
     std::wstring out;
     out.reserve(src.length() * 2);
@@ -2914,7 +3204,7 @@ void Window::DoFormatDocument() {
     if (ext == L".css" || ext == L".scss" || ext == L".less" ||
         ext == L".html" || ext == L".htm" || ext == L".js" ||
         ext == L".jsx" || ext == L".ts" || ext == L".tsx" ||
-        ext == L".json" || ext == L".md" || ext == L".php") {
+        ext == L".json" || ext == L".md") {
         
         wchar_t tempPath[MAX_PATH];
         if (GetTempPathW(MAX_PATH, tempPath)) {
@@ -2971,8 +3261,10 @@ void Window::DoFormatDocument() {
             formatted = FormatCssNative(rawText);
         } else if (ext == L".html" || ext == L".htm" || ext == L".xml" || ext == L".svg") {
             formatted = FormatHtmlNative(rawText);
+        } else if (ext == L".php") {
+            formatted = FormatPhpNative(rawText);
         } else if (ext == L".js" || ext == L".jsx" || ext == L".ts" || ext == L".tsx" ||
-                   ext == L".php" || ext == L".cpp" || ext == L".c" || ext == L".h" || ext == L".hpp") {
+                   ext == L".cpp" || ext == L".c" || ext == L".h" || ext == L".hpp") {
             formatted = FormatBracesNative(rawText);
         }
 
@@ -3633,6 +3925,7 @@ void Window::DoStopServer() {
     StopPhpServer();
     StopNginxServer();
     StopPmaServer();
+    StopSupabaseServer();
     m_header.SetServerState(ui::ServerState::Stopped);
     m_header.SetDatabaseState(ui::DatabaseState::Stopped);
     m_header.SetServerLogOpened(false);
@@ -3647,6 +3940,7 @@ void Window::DoRestartServer() {
     StopPhpServer();
     StopNginxServer();
     StopPmaServer();
+    StopSupabaseServer();
     m_header.SetServerState(ui::ServerState::Stopped);
     m_header.SetDatabaseState(ui::DatabaseState::Stopped);
     m_header.SetServerLogOpened(false);
@@ -3712,17 +4006,28 @@ void Window::DoOpenServerLog() {
 }
 
 void Window::DoOpenDatabaseLog() {
-    std::vector<std::wstring> logLines;
-    logLines.push_back(L"[phpMyAdmin LOG] phpMyAdmin 5.2.3 database engine session");
-    logLines.push_back(L"[2026/10/25 16:24:00] [info] Initializing phpMyAdmin configuration");
-    logLines.push_back(L"[2026/10/25 16:24:00] [info] Checking PHP runtime environment: PHP 8.5 active");
-    logLines.push_back(L"[2026/10/25 16:24:01] [info] Connecting to MySQL / MariaDB server at localhost:3306... Connected");
-    logLines.push_back(L"[2026/10/25 16:24:01] [info] phpMyAdmin is up: http://localhost:8081");
-    logLines.push_back(L"[2026/10/25 16:24:02] [info] Session established for root@localhost");
-
     m_terminal.Open(m_drawer.GetOpenFolderPath());
     AnimateTerminalOpen();
-    m_terminal.OpenLogTab(L"phpMyAdmin log", logLines);
+
+    auto& srvDb = m_header.GetServerDatabaseConfig();
+    if (m_isSupabaseRunning || m_dbSettingsModal.IsSupabaseRunning() || (srvDb.supabaseEnabled && !m_isPmaRunning)) {
+        std::vector<std::wstring> logLines;
+        logLines.push_back(L"[Supabase LOG] Supabase Studio & PostgreSQL engine session");
+        logLines.push_back(L"[info] Initializing Supabase Studio (studio port: " + m_dbSettingsModal.GetSupabaseStudioPort() + L", postgres: " + m_dbSettingsModal.GetSupabasePort() + L")...");
+        logLines.push_back(L"[info] REST API endpoint ready: " + m_dbSettingsModal.GetSupabaseUrl() + L"/rest/v1/");
+        logLines.push_back(L"[info] Supabase Studio is up and listening on " + m_dbSettingsModal.GetSupabaseUrl());
+        m_terminal.OpenLogTab(L"Supabase log", logLines);
+    } else {
+        std::vector<std::wstring> logLines;
+        logLines.push_back(L"[phpMyAdmin LOG] phpMyAdmin 5.2.3 database engine session");
+        logLines.push_back(L"[2026/10/25 16:24:00] [info] Initializing phpMyAdmin configuration");
+        logLines.push_back(L"[2026/10/25 16:24:00] [info] Checking PHP runtime environment: PHP 8.5 active");
+        logLines.push_back(L"[2026/10/25 16:24:01] [info] Connecting to MySQL / MariaDB server at localhost:3306... Connected");
+        logLines.push_back(L"[2026/10/25 16:24:01] [info] phpMyAdmin is up: http://localhost:8081");
+        logLines.push_back(L"[2026/10/25 16:24:02] [info] Session established for root@localhost");
+        m_terminal.OpenLogTab(L"phpMyAdmin log", logLines);
+    }
+
     m_header.SetDatabaseLogOpened(true);
     m_isTerminalFocused = true;
     InvalidateRect(m_hwnd, nullptr, FALSE);
@@ -3944,6 +4249,12 @@ void Window::StopMysqlServer() {
 
 void Window::StartPmaServer() {
     StopPmaServer();
+    StopSupabaseServer();
+    auto& srvDb = m_header.GetServerDatabaseConfig();
+    srvDb.phpMyAdminEnabled = true;
+    srvDb.supabaseEnabled = false;
+    srvDb.dontRunDatabase = false;
+    m_dbSettingsModal.SetSupabaseSelected(false);
     StartMysqlServer();
     std::filesystem::path pmaDir = GetPhideRoot() / L"include" / L"phide" / L"db" / L"phpMyAdmin";
     if (!std::filesystem::exists(pmaDir)) {
@@ -3975,6 +4286,7 @@ void Window::StartPmaServer() {
     PROCESS_INFORMATION pi{};
     if (CreateProcessW(NULL, cmdBuf.data(), NULL, NULL, FALSE, CREATE_NO_WINDOW, NULL, pmaDir.wstring().c_str(), &si, &pi)) {
         m_hPmaProcess = pi.hProcess;
+        m_isPmaRunning = true;
         CloseHandle(pi.hThread);
 
         // Wait up to 1500ms for php.exe to start listening on pmaPort
@@ -3985,8 +4297,10 @@ void Window::StartPmaServer() {
 
         m_header.SetDatabaseState(ui::DatabaseState::Running);
     } else {
+        m_isPmaRunning = false;
         m_header.SetDatabaseState(ui::DatabaseState::Failed);
     }
+    UpdateDatabaseModalRuntimeStatus();
 }
 
 void Window::StopPmaServer() {
@@ -3995,17 +4309,23 @@ void Window::StopPmaServer() {
         CloseHandle(m_hPmaProcess);
         m_hPmaProcess = nullptr;
     }
-    m_header.SetDatabaseState(ui::DatabaseState::Stopped);
+    m_isPmaRunning = false;
+    if (!m_isSupabaseRunning) {
+        m_header.SetDatabaseState(ui::DatabaseState::Stopped);
+    }
+    UpdateDatabaseModalRuntimeStatus();
 }
 
 void Window::DoRunPhpApplication(const std::wstring& filePath, const std::wstring& projectRoot) {
     // 0. Save any dirty open files so edits to config.php / index.php are immediately persisted on disk
     DoSaveAll();
 
-    // Always ensure MySQL / MariaDB engine is running on port 3306 so PHP apps never fail with 'Database connection failed'
-    StartMysqlServer();
-
     auto& srvCfg = m_header.GetServerDatabaseConfig();
+
+    // Only start MySQL if phpMyAdmin is enabled and database is not suppressed
+    if (!srvCfg.dontRunDatabase && srvCfg.phpMyAdminEnabled) {
+        StartMysqlServer();
+    }
 
     // 1. Check Server (nginx)
     bool needServer = !srvCfg.dontRunServer && srvCfg.nginxEnabled;
@@ -4042,6 +4362,12 @@ void Window::DoRunPhpApplication(const std::wstring& filePath, const std::wstrin
         }
     }
 
+    // 3. Check Database (Supabase Studio / PostgreSQL)
+    bool needSupabase = !srvCfg.dontRunDatabase && srvCfg.supabaseEnabled;
+    if (needSupabase) {
+        StartSupabaseServer();
+    }
+
     // 2b. Auto-import database.sql if present in project directory so the schema & tables exist
     std::filesystem::path p(filePath);
     std::wstring fileName = p.filename().wstring();
@@ -4055,7 +4381,7 @@ void Window::DoRunPhpApplication(const std::wstring& filePath, const std::wstrin
         sqlPath = std::filesystem::path(projectRoot) / sqlFile;
     }
     std::filesystem::path mysqlExe = L"C:\\xampp\\mysql\\bin\\mysql.exe";
-    if (std::filesystem::exists(mysqlExe) && std::filesystem::exists(sqlPath)) {
+    if (needDb && std::filesystem::exists(mysqlExe) && std::filesystem::exists(sqlPath)) {
         std::wstring importCmd = L"cmd.exe /c \"\"" + mysqlExe.wstring() + L"\" -u root < \"" + sqlPath.wstring() + L"\"\"";
         std::vector<wchar_t> cmdBuf(importCmd.begin(), importCmd.end());
         cmdBuf.push_back(L'\0');
@@ -5068,6 +5394,11 @@ void Window::OnPaint() {
         );
     }
 
+    // 8.5. Render Too Many Changes Notification Toast (Image 3)
+    if (m_drawer.HasTooManyChangesToast()) {
+        m_drawer.RenderTooManyChangesToast(m_pRenderTarget.Get(), m_theme, m_config, clientW, clientH);
+    }
+
     // 9. Render Confirm Discard / Restore Modal Overlay (Images 2 & 3)
     if (m_confirmDiscardModal.IsOpen()) {
         m_confirmDiscardModal.Render(m_pRenderTarget.Get(), m_theme, m_config, clientW, clientH);
@@ -5138,6 +5469,13 @@ void Window::HandleMouseMove(POINT clientPt, WPARAM wParam) {
         m_dbSettingsModal.OnMouseMove(clientPt);
         InvalidateRect(m_hwnd, nullptr, FALSE);
         return;
+    }
+
+    if (m_drawer.HasTooManyChangesToast()) {
+        POINT pt = { clientPt.x, clientPt.y };
+        if (m_drawer.HandleToastMouseMove(pt)) {
+            InvalidateRect(m_hwnd, nullptr, FALSE);
+        }
     }
 
     if (m_confirmDiscardModal.IsOpen()) {
@@ -5602,8 +5940,10 @@ void Window::HandleMouseMove(POINT clientPt, WPARAM wParam) {
     if (m_header.IsDatabaseDropdownOpen()) {
         auto rc = m_header.GetDatabaseDropdownBounds();
         if (clientPt.x >= rc.left && clientPt.x <= rc.right && clientPt.y >= rc.top && clientPt.y <= rc.bottom) {
-            float midY = (rc.top + rc.bottom) * 0.5f;
-            hoveredDropItem = (clientPt.y < midY) ? 0 : 1;
+            float totalH = rc.bottom - rc.top;
+            float third = totalH / 3.0f;
+            float relY = clientPt.y - rc.top;
+            hoveredDropItem = (relY < third) ? 0 : ((relY < third * 2.0f) ? 1 : 2);
         }
     } else if (m_header.IsServerDropdownOpen()) {
         auto rc = m_header.GetServerDropdownBounds();
@@ -5615,8 +5955,10 @@ void Window::HandleMouseMove(POINT clientPt, WPARAM wParam) {
     if (m_header.SetHoveredDropdownItem(hoveredDropItem)) needRepaint = true;
 
     bool hovDbSet = m_header.HitTestDbSettings(clientPt);
+    bool hovDbSupabaseSet = m_header.HitTestDbSupabaseSettings(clientPt);
     bool hovSrvSet = m_header.HitTestServerSettings(clientPt);
     if (m_header.SetHoveredDbSettings(hovDbSet)) needRepaint = true;
+    if (m_header.SetHoveredDbSettingsSupabase(hovDbSupabaseSet)) needRepaint = true;
     if (m_header.SetHoveredServerSettings(hovSrvSet)) needRepaint = true;
 
     // Check Extensions right sidebar hover
@@ -5742,9 +6084,53 @@ void Window::HandleLButtonDown(POINT clientPt) {
             case ui::DatabaseModalAction::SwitchTabPma:
                 m_dbSettingsModal.SetActiveTab(ui::DatabaseModalTab::PhpMyAdmin);
                 break;
+            case ui::DatabaseModalAction::SwitchTabSupabase:
+                m_dbSettingsModal.SetActiveTab(ui::DatabaseModalTab::Supabase);
+                break;
             case ui::DatabaseModalAction::SwitchTabNginx:
                 m_dbSettingsModal.SetActiveTab(ui::DatabaseModalTab::NginxServer);
                 break;
+            case ui::DatabaseModalAction::CopySupabaseUrl:
+                SetClipboardText(m_hwnd, m_dbSettingsModal.GetSupabaseUrl());
+                m_dbSettingsModal.SetCopiedFeedback(L"Supabase Studio URL");
+                break;
+            case ui::DatabaseModalAction::CopySupabaseAnonKey:
+                SetClipboardText(m_hwnd, m_dbSettingsModal.GetSupabaseAnonKey());
+                m_dbSettingsModal.SetCopiedFeedback(L"Supabase Anon Key");
+                break;
+            case ui::DatabaseModalAction::CopySupabasePort:
+                SetClipboardText(m_hwnd, m_dbSettingsModal.GetSupabasePort());
+                m_dbSettingsModal.SetCopiedFeedback(L"PostgreSQL Port (5432)");
+                break;
+            case ui::DatabaseModalAction::CopySupabaseJsSnippet:
+                SetClipboardText(m_hwnd, m_dbSettingsModal.GetSupabaseJsSnippet());
+                m_dbSettingsModal.SetCopiedFeedback(L"Supabase JS / TS Snippet");
+                break;
+            case ui::DatabaseModalAction::CopySupabasePySnippet:
+                SetClipboardText(m_hwnd, m_dbSettingsModal.GetSupabasePySnippet());
+                m_dbSettingsModal.SetCopiedFeedback(L"Supabase Python Snippet");
+                break;
+            case ui::DatabaseModalAction::ToggleSupabaseRun: {
+                if (m_isSupabaseRunning || m_dbSettingsModal.IsSupabaseRunning()) {
+                    StopSupabaseServer();
+                } else {
+                    StartSupabaseServer();
+                }
+                UpdateDatabaseModalRuntimeStatus();
+                break;
+            }
+            case ui::DatabaseModalAction::OpenBrowserSupabase:
+                if (!m_isSupabaseRunning) {
+                    StartSupabaseServer();
+                    UpdateDatabaseModalRuntimeStatus();
+                }
+                ShellExecuteW(nullptr, L"open", m_dbSettingsModal.GetSupabaseUrl().c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+                break;
+            case ui::DatabaseModalAction::OpenSupabaseFolder: {
+                std::filesystem::path supaPath = GetPhideRoot() / L"include" / L"phide" / L"db" / L"supabase";
+                ShellExecuteW(nullptr, L"open", supaPath.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+                break;
+            }
             case ui::DatabaseModalAction::CopyHost:
                 SetClipboardText(m_hwnd, m_dbSettingsModal.GetHost());
                 m_dbSettingsModal.SetCopiedFeedback(L"Host ($host)");
@@ -5786,15 +6172,12 @@ void Window::HandleLButtonDown(POINT clientPt) {
                 m_dbSettingsModal.SetCopiedFeedback(L"Nginx Config Path");
                 break;
             case ui::DatabaseModalAction::TogglePmaRun: {
-                if (m_hPmaProcess != nullptr || m_header.GetDatabaseState() == ui::DatabaseState::Running) {
+                if (m_hPmaProcess != nullptr || m_isPmaRunning) {
                     StopPmaServer();
                 } else {
                     StartPmaServer();
                 }
-                m_dbSettingsModal.SetRuntimeStatus(
-                    m_header.GetDatabaseState() == ui::DatabaseState::Running,
-                    m_header.GetServerState() == ui::ServerState::Running
-                );
+                UpdateDatabaseModalRuntimeStatus();
                 break;
             }
             case ui::DatabaseModalAction::ToggleServerRun: {
@@ -5803,29 +6186,20 @@ void Window::HandleLButtonDown(POINT clientPt) {
                 } else {
                     StartNginxServer();
                 }
-                m_dbSettingsModal.SetRuntimeStatus(
-                    m_header.GetDatabaseState() == ui::DatabaseState::Running,
-                    m_header.GetServerState() == ui::ServerState::Running
-                );
+                UpdateDatabaseModalRuntimeStatus();
                 break;
             }
             case ui::DatabaseModalAction::OpenBrowserPma:
-                if (m_hPmaProcess == nullptr && m_header.GetDatabaseState() != ui::DatabaseState::Running) {
+                if (m_hPmaProcess == nullptr && !m_isPmaRunning) {
                     StartPmaServer();
-                    m_dbSettingsModal.SetRuntimeStatus(
-                        m_header.GetDatabaseState() == ui::DatabaseState::Running,
-                        m_header.GetServerState() == ui::ServerState::Running
-                    );
+                    UpdateDatabaseModalRuntimeStatus();
                 }
                 ShellExecuteW(nullptr, L"open", m_dbSettingsModal.GetPmaUrl().c_str(), nullptr, nullptr, SW_SHOWNORMAL);
                 break;
             case ui::DatabaseModalAction::OpenBrowserNginx:
                 if (m_hNginxProcess == nullptr && m_header.GetServerState() != ui::ServerState::Running) {
                     StartNginxServer();
-                    m_dbSettingsModal.SetRuntimeStatus(
-                        m_header.GetDatabaseState() == ui::DatabaseState::Running,
-                        m_header.GetServerState() == ui::ServerState::Running
-                    );
+                    UpdateDatabaseModalRuntimeStatus();
                 }
                 ShellExecuteW(nullptr, L"open", m_dbSettingsModal.GetNginxUrl().c_str(), nullptr, nullptr, SW_SHOWNORMAL);
                 break;
@@ -5886,6 +6260,15 @@ void Window::HandleLButtonDown(POINT clientPt) {
         }
         InvalidateRect(m_hwnd, nullptr, FALSE);
         return;
+    }
+
+    // Check Too Many Changes Toast Notification Clicks (Image 3)
+    if (m_drawer.HasTooManyChangesToast()) {
+        POINT pt = { clientPt.x, clientPt.y };
+        if (m_drawer.HandleToastMouseDown(pt)) {
+            InvalidateRect(m_hwnd, nullptr, FALSE);
+            return;
+        }
     }
 
     // Check Confirm Discard / Restore / Notice Modal Clicks (Images 2, 3, 4, 5)
@@ -6654,8 +7037,7 @@ void Window::HandleLButtonDown(POINT clientPt) {
                         }
                         break;
                     case ui::MenuActionId::ToolsCleanMemoryCache:
-                        m_drawer.ClearSearchResults();
-                        SetProcessWorkingSetSize(GetCurrentProcess(), (SIZE_T)-1, (SIZE_T)-1);
+                        RunManualGarbageCollection();
                         break;
 
                     // Window Menu Actions (Image 4)
@@ -6768,7 +7150,21 @@ void Window::HandleLButtonDown(POINT clientPt) {
     // 1b. Server / Database Dropdowns & Buttons (Image 2)
     if (m_header.IsDatabaseDropdownOpen() || m_header.IsServerDropdownOpen()) {
         if (m_header.HitTestDbSettings(clientPt)) {
-            DoOpenDatabaseSettings();
+            auto& srvDb = m_header.GetServerDatabaseConfig();
+            srvDb.phpMyAdminEnabled = true;
+            srvDb.supabaseEnabled = false;
+            srvDb.dontRunDatabase = false;
+            if (m_isSupabaseRunning) StopSupabaseServer();
+            DoOpenDatabaseSettings(ui::DatabaseModalTab::PhpMyAdmin);
+            return;
+        }
+        if (m_header.HitTestDbSupabaseSettings(clientPt)) {
+            auto& srvDb = m_header.GetServerDatabaseConfig();
+            srvDb.supabaseEnabled = true;
+            srvDb.phpMyAdminEnabled = false;
+            srvDb.dontRunDatabase = false;
+            if (m_isPmaRunning) StopPmaServer();
+            DoOpenDatabaseSettings(ui::DatabaseModalTab::Supabase);
             return;
         }
         if (m_header.HitTestServerSettings(clientPt)) {
@@ -6776,6 +7172,17 @@ void Window::HandleLButtonDown(POINT clientPt) {
             return;
         }
         if (m_header.HandleDropdownClick(clientPt)) {
+            auto& srvDb = m_header.GetServerDatabaseConfig();
+            if (srvDb.supabaseEnabled) {
+                m_dbSettingsModal.SetSupabaseSelected(true);
+                if (m_isPmaRunning) StopPmaServer();
+            } else if (srvDb.phpMyAdminEnabled) {
+                m_dbSettingsModal.SetSupabaseSelected(false);
+                if (m_isSupabaseRunning) StopSupabaseServer();
+            } else if (srvDb.dontRunDatabase) {
+                if (m_isPmaRunning) StopPmaServer();
+                if (m_isSupabaseRunning) StopSupabaseServer();
+            }
             InvalidateRect(m_hwnd, nullptr, FALSE);
             return;
         }
@@ -6785,12 +7192,24 @@ void Window::HandleLButtonDown(POINT clientPt) {
 
     // Check pill settings or browser icon clicks on running server/database (User request: "even if they are running have a setting icon when user hover so they can see and like see the settings and do open in browser")
     if (m_header.HitTestDbPillSettings(clientPt)) {
-        DoOpenDatabaseSettings();
+        auto& srvDb = m_header.GetServerDatabaseConfig();
+        if ((m_isSupabaseRunning || srvDb.supabaseEnabled) && !srvDb.phpMyAdminEnabled) {
+            DoOpenDatabaseSettings(ui::DatabaseModalTab::Supabase);
+        } else {
+            DoOpenDatabaseSettings(ui::DatabaseModalTab::PhpMyAdmin);
+        }
         InvalidateRect(m_hwnd, nullptr, FALSE);
         return;
     }
     if (m_header.HitTestDbPillBrowser(clientPt)) {
-        ShellExecuteW(nullptr, L"open", m_dbSettingsModal.GetPmaUrl().c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+        auto& srvDb = m_header.GetServerDatabaseConfig();
+        if ((m_isSupabaseRunning || srvDb.supabaseEnabled) && !srvDb.phpMyAdminEnabled) {
+            if (!m_isSupabaseRunning) StartSupabaseServer();
+            ShellExecuteW(nullptr, L"open", m_dbSettingsModal.GetSupabaseUrl().c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+        } else {
+            if (!m_isPmaRunning) StartPmaServer();
+            ShellExecuteW(nullptr, L"open", m_dbSettingsModal.GetPmaUrl().c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+        }
         InvalidateRect(m_hwnd, nullptr, FALSE);
         return;
     }
@@ -7942,7 +8361,12 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     m_header.HitTestServer(pt) ||
                     m_header.HitTestDropdowns(pt) ||
                     m_header.HitTestDbSettings(pt) ||
+                    m_header.HitTestDbSupabaseSettings(pt) ||
                     m_header.HitTestServerSettings(pt) ||
+                    m_header.HitTestDbPillSettings(pt) ||
+                    m_header.HitTestDbPillBrowser(pt) ||
+                    m_header.HitTestSrvPillSettings(pt) ||
+                    m_header.HitTestSrvPillBrowser(pt) ||
                     m_header.HitTestZoomIn(pt) ||
                     m_header.HitTestZoomOut(pt) ||
                     m_header.HitTestZoomReset(pt)) {
@@ -9523,7 +9947,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     m_drawer.RefreshGitStatusOnly(true);
                 }
 
-                if (m_drawer.IsGitLoading()) {
+                if (m_drawer.IsGitLoading() || m_drawer.IsGitRefreshing()) {
                     m_rail.UpdateGitAnim(14.0f);
                     m_drawer.UpdateGitLoadingAnim(14.0f);
                     m_rail.SetGitLoading(true);

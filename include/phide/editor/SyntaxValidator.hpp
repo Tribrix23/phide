@@ -46,6 +46,14 @@ public:
         size_t endLine = static_cast<size_t>(-1)
     );
 
+    /**
+     * @brief Validates React hooks rules, JSX tags matching, duplicate props, and ESLint diagnostics.
+     */
+    static std::vector<lsp::Diagnostic> ValidateReactAndESLint(
+        const Buffer& buffer,
+        bool isJsx = false
+    );
+
 private:
     static std::vector<lsp::Diagnostic> ValidateJson(const Buffer& buffer);
     static std::vector<lsp::Diagnostic> ValidateBracketsAndQuotes(const Buffer& buffer, bool isPhp);
