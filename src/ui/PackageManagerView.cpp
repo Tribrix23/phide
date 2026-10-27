@@ -7,6 +7,7 @@
 
 #include "phide/ui/PackageManagerView.hpp"
 #include <algorithm>
+#include <fstream>
 #include <sstream>
 #include <cwctype>
 #include <filesystem>
@@ -329,210 +330,207 @@ void PackageManagerView::RenderBrandedIcon(ID2D1RenderTarget* pRT, Theme& theme,
     }
 }
 
+std::vector<PackageEntry>& PackageManagerView::GetActivePackageList() {
+    if (m_activeLanguage == RuntimeLanguage::Php) return m_phpPackages;
+    if (m_activeLanguage == RuntimeLanguage::Node) return m_nodePackages;
+    return m_packages;
+}
+
+const std::vector<PackageEntry>& PackageManagerView::GetActivePackageList() const {
+    if (m_activeLanguage == RuntimeLanguage::Php) return m_phpPackages;
+    if (m_activeLanguage == RuntimeLanguage::Node) return m_nodePackages;
+    return m_packages;
+}
+
 void PackageManagerView::InitializeCatalog() {
-    std::lock_guard<std::mutex> lock(m_packageMutex);
-    m_packages.clear();
-    m_phpPackages.clear();
+    {
+        std::lock_guard<std::mutex> lock(m_packageMutex);
+        m_packages.clear();
+        m_phpPackages.clear();
+        m_nodePackages.clear();
+    }
 
-    Populate500PythonPackages();
-    Populate500PhpPackages();
+    // Connect to Supabase to fetch real database packages asynchronously!
+    FetchInitialPackagesFromSupabase(RuntimeLanguage::Python);
+    FetchInitialPackagesFromSupabase(RuntimeLanguage::Php);
+    FetchInitialPackagesFromSupabase(RuntimeLanguage::Node);
 }
 
-void PackageManagerView::Populate500PythonPackages() {
-    // Top 500 popular Python packages (PyPI)
-    struct PkgSeed {
-        const wchar_t* name;
-        const wchar_t* repo;
-        const wchar_t* summary;
-        const wchar_t* ver;
-        const wchar_t* stars;
-        const wchar_t* license;
-        const wchar_t* topics;
-    };
+void PackageManagerView::ParseAndMergeSupabasePackages(const std::string& responseBody, RuntimeLanguage lang) {
+    if (responseBody.empty() || responseBody.front() != '[') return;
 
-    static const PkgSeed seeds[] = {
-        // Core Science & AI
-        { L"matplotlib", L"matplotlib/matplotlib", L"Comprehensive library for creating static, animated, and interactive visualizations in Python.", L"3.9.2", L"20.5k", L"PSF / BSD", L"#visualization #charts #plotting #python" },
-        { L"numpy", L"numpy/numpy", L"The fundamental package for scientific computing with Python multidimensional arrays and matrices.", L"2.1.2", L"27.8k", L"BSD-3-Clause", L"#array #matrix #math #scientific-computing" },
-        { L"pandas", L"pandas-dev/pandas", L"Fast, powerful, flexible and easy to use open source data analysis and manipulation library.", L"2.2.3", L"43.1k", L"BSD-3-Clause", L"#data-science #dataframe #tabular #analysis" },
-        { L"scipy", L"scipy/scipy", L"Fundamental algorithms for scientific computing in Python including optimization, integration, and linear algebra.", L"1.14.1", L"13.1k", L"BSD-3-Clause", L"#mathematics #algorithms #science #optimization" },
-        { L"torch", L"pytorch/pytorch", L"Tensors and dynamic neural networks in Python with strong GPU acceleration and distributed training.", L"2.5.0", L"83.9k", L"BSD-3-Clause", L"#deep-learning #neural-networks #ai #gpu" },
-        { L"tensorflow", L"tensorflow/tensorflow", L"An end-to-end open source machine learning platform for training and inferencing models.", L"2.18.0", L"186k", L"Apache 2.0", L"#machine-learning #deep-learning #tensors #models" },
-        { L"scikit-learn", L"scikit-learn/scikit-learn", L"Simple and efficient tools for predictive data analysis including classification, regression, and clustering.", L"1.5.2", L"59.2k", L"BSD-3-Clause", L"#machine-learning #predictive-modeling #stats" },
-        { L"keras", L"keras-team/keras", L"High-level deep learning API developed for human beings with multi-backend execution.", L"3.6.0", L"61.4k", L"Apache 2.0", L"#deep-learning #neural-networks #api" },
-        { L"seaborn", L"mwaskom/seaborn", L"Statistical data visualization in Python based on matplotlib providing attractive graphics.", L"0.13.2", L"11.8k", L"BSD-3-Clause", L"#data-visualization #statistics #charts" },
-        { L"plotly", L"plotly/plotly.py", L"An interactive, open-source plotting library supporting over 40 unique chart types.", L"5.24.1", L"15.6k", L"MIT", L"#interactive-charts #dashboards #graphs" },
-        { L"polars", L"pola-rs/polars", L"Blazingly fast DataFrames implemented in Rust and backed by Apache Arrow memory.", L"1.11.0", L"31.2k", L"MIT", L"#dataframe #fast #arrow #rust" },
-        { L"dask", L"dask/dask", L"Flexible library for parallel computing in Python that scales analytics workloads.", L"2024.10.0", L"12.3k", L"BSD-3-Clause", L"#distributed #parallel #big-data" },
-        { L"transformers", L"huggingface/transformers", L"State-of-the-art Machine Learning for PyTorch, TensorFlow, and JAX for language and vision.", L"4.46.0", L"134k", L"Apache 2.0", L"#nlp #llm #genai #deep-learning" },
-        { L"huggingface-hub", L"huggingface/huggingface_hub", L"Client library to download, explore, and publish models and datasets to Hugging Face.", L"0.26.1", L"4.8k", L"Apache 2.0", L"#cloud #models #datasets #huggingface" },
-        { L"diffusers", L"huggingface/diffusers", L"State-of-the-art pretrained diffusion models for generating images, audio, and 3D structures.", L"0.30.3", L"25.1k", L"Apache 2.0", L"#diffusion #genai #image-generation" },
-        { L"opencv-python", L"opencv/opencv-python", L"Unofficial pre-built OpenCV packages for Python computer vision and real-time processing.", L"4.10.0", L"6.2k", L"Apache 2.0", L"#computer-vision #cv #image-processing" },
-        { L"pillow", L"python-pillow/Pillow", L"The friendly Python Imaging Library fork providing broad format support and image processing.", L"11.0.0", L"12.3k", L"HPND", L"#image #raster #graphics #pil" },
-        { L"xgboost", L"dmlc/xgboost", L"Scalable, Portable and Distributed Gradient Boosting (GBDT, GBRT or GBM) Library.", L"2.1.2", L"26.1k", L"Apache 2.0", L"#gradient-boosting #tabular #trees" },
-        { L"lightgbm", L"microsoft/LightGBM", L"A fast, distributed, high performance gradient boosting framework based on decision trees.", L"4.5.0", L"16.5k", L"MIT", L"#trees #gradient-boosting #microsoft" },
-        { L"optuna", L"optuna/optuna", L"An open-source hyperparameter optimization framework to automate hyperparameter tuning.", L"4.0.0", L"11.2k", L"MIT", L"#hyperparameter #optimization #tuning" },
-        { L"spacy", L"explosion/spaCy", L"Industrial-strength Natural Language Processing (NLP) with transformer integration.", L"3.8.2", L"29.8k", L"MIT", L"#nlp #tokens #ner #linguistics" },
-        { L"nltk", L"nltk/nltk", L"Natural Language Toolkit for building Python programs to work with human language data.", L"3.9.1", L"13.5k", L"Apache 2.0", L"#nlp #linguistics #text-mining" },
+    bool isPhp = (lang == RuntimeLanguage::Php);
+    bool isNode = (lang == RuntimeLanguage::Node);
+    std::vector<PackageEntry> parsedItems;
 
-        // Web Frameworks & APIs
-        { L"django", L"django/django", L"High-level Python web framework that encourages rapid development and clean, pragmatic design.", L"5.1.2", L"79.4k", L"BSD-3-Clause", L"#web-framework #orm #admin #batteries-included" },
-        { L"flask", L"pallets/flask", L"A lightweight WSGI micro web framework designed to make getting started quick and easy.", L"3.0.3", L"67.5k", L"BSD-3-Clause", L"#microframework #web #rest #wsgi" },
-        { L"fastapi", L"tiangolo/fastapi", L"Modern, fast (high-performance) web framework for building APIs with Python based on type hints.", L"0.115.2", L"76.3k", L"MIT", L"#api #rest #openapi #async" },
-        { L"starlette", L"encode/starlette", L"The little ASGI framework that shines. Ideal for building async web services in Python.", L"0.41.2", L"10.2k", L"BSD-3-Clause", L"#asgi #async #web #router" },
-        { L"uvicorn", L"encode/uvicorn", L"An ASGI web server implementation for Python, powered by uvloop and httptools.", L"0.32.0", L"8.1k", L"BSD-3-Clause", L"#asgi #server #async #uvloop" },
-        { L"gunicorn", L"benoitc/gunicorn", L"Python WSGI HTTP Server for UNIX designed to be fast, stable, and easily configurable.", L"23.0.0", L"9.8k", L"MIT", L"#wsgi #server #production #http" },
-        { L"tornado", L"tornadoweb/tornado", L"Python web framework and asynchronous networking library for non-blocking network I/O.", L"6.4.1", L"21.4k", L"Apache 2.0", L"#async #websockets #server #networking" },
+    size_t pos = 0;
+    while ((pos = responseBody.find('{', pos)) != std::string::npos) {
+        size_t endObj = responseBody.find('}', pos);
+        if (endObj == std::string::npos) break;
+        std::string objStr = responseBody.substr(pos, endObj - pos + 1);
 
-        // Network & HTTP
-        { L"requests", L"psf/requests", L"Elegant and simple HTTP library for Python, built for human beings with connection pooling.", L"2.32.3", L"51.2k", L"Apache 2.0", L"#http #rest #api #client" },
-        { L"httpx", L"encode/httpx", L"A next-generation HTTP client for Python with sync and async APIs, and HTTP/2 support.", L"0.27.2", L"13.6k", L"BSD-3-Clause", L"#http #async #http2 #client" },
-        { L"urllib3", L"urllib3/urllib3", L"Powerful, user-friendly HTTP client for Python with thread safety, connection pooling, and SSL verification.", L"2.2.3", L"3.8k", L"MIT", L"#http #transport #ssl #pooling" },
-        { L"aiohttp", L"aio-libs/aiohttp", L"Asynchronous HTTP Client/Server for asyncio and Python with WebSocket support.", L"3.10.10", L"14.8k", L"Apache 2.0", L"#asyncio #http #websockets #client-server" },
-        { L"websockets", L"python-websockets/websockets", L"An easy-to-use library for building WebSocket servers and clients in Python.", L"13.1", L"5.1k", L"BSD-3-Clause", L"#websockets #realtime #asyncio" },
+        auto extractField = [&](const std::string& fieldName) -> std::wstring {
+            std::string needle = "\"" + fieldName + "\"";
+            size_t fp = objStr.find(needle);
+            if (fp == std::string::npos) return L"";
+            size_t colon = objStr.find(':', fp + needle.length());
+            if (colon == std::string::npos) return L"";
+            size_t valStart = objStr.find_first_not_of(" \t\r\n", colon + 1);
+            if (valStart == std::string::npos) return L"";
+            if (objStr[valStart] == '"') {
+                size_t valEnd = objStr.find('"', valStart + 1);
+                if (valEnd != std::string::npos) {
+                    std::string v = objStr.substr(valStart + 1, valEnd - valStart - 1);
+                    std::wstring wv;
+                    wv.reserve(v.size());
+                    for (char c : v) wv.push_back(static_cast<wchar_t>(c));
+                    return wv;
+                }
+            }
+            return L"";
+        };
 
-        // Database & Storage
-        { L"sqlalchemy", L"sqlalchemy/sqlalchemy", L"The Python SQL Toolkit and Object Relational Mapper for comprehensive enterprise data access.", L"2.0.36", L"9.5k", L"MIT", L"#orm #sql #database #relational" },
-        { L"alembic", L"sqlalchemy/alembic", L"A lightweight database migration tool for usage with the SQLAlchemy Database Toolkit.", L"1.13.3", L"3.2k", L"MIT", L"#migrations #schema #database" },
-        { L"psycopg2-binary", L"psycopg/psycopg2", L"PostgreSQL database adapter for the Python programming language (pre-compiled binary).", L"2.9.10", L"3.1k", L"LGPL", L"#postgresql #postgres #db #adapter" },
-        { L"asyncpg", L"MagicStack/asyncpg", L"A fast PostgreSQL Database Client Library for Python/asyncio.", L"0.30.0", L"6.5k", L"Apache 2.0", L"#postgresql #async #database #performance" },
-        { L"redis", L"redis/redis-py", L"The Python interface to the Redis in-memory data structure store with pub/sub and clustering.", L"5.2.0", L"13.2k", L"MIT", L"#redis #cache #nosql #key-value" },
-        { L"pymongo", L"mongodb/mongo-python-driver", L"The official Python driver for MongoDB database systems.", L"4.10.1", L"4.4k", L"Apache 2.0", L"#mongodb #nosql #driver #documents" },
+        std::wstring name = extractField("name");
+        std::wstring dl = extractField("download");
+        std::wstring gh = extractField("github");
 
-        // CLI, Tools & Utilities
-        { L"click", L"pallets/click", L"Python composable command line interface toolkit for building beautiful terminal CLIs.", L"8.1.7", L"15.8k", L"BSD-3-Clause", L"#cli #terminal #arguments #commands" },
-        { L"rich", L"Textualize/rich", L"Render rich text and beautiful formatting in the terminal including tables, progress bars, and markdown.", L"13.9.4", L"49.2k", L"MIT", L"#terminal #ui #colors #rich-text" },
-        { L"typer", L"tiangolo/typer", L"Typer, build great CLIs. Easy to code, based on Python type hints, powered by Click.", L"0.12.5", L"16.4k", L"MIT", L"#cli #type-hints #terminal #modern" },
-        { L"tqdm", L"tqdm/tqdm", L"A fast, extensible progress bar for Python and CLI iterables.", L"4.66.5", L"28.1k", L"MPL-2.0", L"#progress-bar #iterators #cli" },
-        { L"pydantic", L"pydantic/pydantic", L"Data validation and settings management using Python type hints with Rust performance.", L"2.9.2", L"22.1k", L"MIT", L"#validation #parsing #types #rust" },
-        { L"pyyaml", L"yaml/pyyaml", L"Canonical YAML parser and emitter for the Python programming language.", L"6.0.2", L"2.5k", L"MIT", L"#yaml #parser #configuration" },
-        { L"python-dotenv", L"theskumar/python-dotenv", L"Reads key-value pairs from a .env file and sets them as environment variables.", L"1.0.1", L"7.2k", L"BSD-3-Clause", L"#env #configuration #settings" },
-        { L"boto3", L"boto/boto3", L"The AWS SDK for Python to integrate Python applications with Amazon Web Services.", L"1.35.48", L"9.1k", L"Apache 2.0", L"#aws #cloud #s3 #sdk" },
-        { L"celery", L"celery/celery", L"Distributed task queue with real-time processing and message passing.", L"5.4.0", L"24.5k", L"BSD-3-Clause", L"#task-queue #distributed #async #workers" },
-
-        // Testing & Linting
-        { L"pytest", L"pytest-dev/pytest", L"The pytest framework makes it easy to write small, readable tests, and scales to complex functional testing.", L"8.3.3", L"11.5k", L"MIT", L"#testing #unit-test #fixtures #bdd" },
-        { L"black", L"psf/black", L"The uncompromising Python code formatter. Gives deterministically formatted clean code.", L"24.10.0", L"39.1k", L"MIT", L"#formatter #code-style #pep8" },
-        { L"flake8", L"pycqa/flake8", L"Glued-together tool invoking pyflakes, pycodestyle, and McCabe complexity checker.", L"7.1.1", L"2.8k", L"MIT", L"#linter #pep8 #quality" },
-        { L"mypy", L"python/mypy", L"Optional static typing for Python. Compiles type checks ahead-of-time.", L"1.13.0", L"18.4k", L"MIT", L"#type-checking #types #static-analysis" },
-        { L"ruff", L"astral-sh/ruff", L"An extremely fast Python linter and code formatter written in Rust, replacing Flake8 and Black.", L"0.7.1", L"34.8k", L"MIT", L"#linter #formatter #rust #fast" }
-    };
-
-    // Populate seeds
-    for (const auto& s : seeds) {
-        PackageEntry pe;
-        pe.name = s.name;
-        pe.download = L"pip install " + std::wstring(s.name);
-        pe.github = L"https://github.com/" + std::wstring(s.repo);
-        pe.summary = s.summary;
-        pe.version = s.ver;
-        pe.stars = s.stars;
-        pe.license = s.license;
-        pe.topics = s.topics;
-        m_packages.push_back(std::move(pe));
+        if (!name.empty()) {
+            PackageEntry pe;
+            pe.name = name;
+            if (isPhp) {
+                pe.download = dl.empty() ? (L"composer require " + name) : dl;
+                if (!gh.empty()) {
+                    pe.github = gh;
+                } else if (name.find(L'/') != std::wstring::npos) {
+                    pe.github = L"https://github.com/" + name;
+                } else {
+                    pe.github = L"https://github.com/" + name + L"/" + name;
+                }
+                pe.topics = L"#php #composer #packagist";
+            } else if (isNode) {
+                pe.download = dl.empty() ? (L"npm install " + name) : dl;
+                if (!gh.empty()) {
+                    pe.github = gh;
+                } else if (!name.empty() && name[0] == L'@') {
+                    // E.g. @11ty/eleventy-utils -> https://github.com/11ty/eleventy-utils
+                    pe.github = L"https://github.com/" + name.substr(1);
+                } else {
+                    pe.github = L"https://github.com/npm/" + name;
+                }
+                pe.topics = L"#node #npm #javascript";
+            } else {
+                pe.download = dl.empty() ? (L"pip install " + name) : dl;
+                pe.github = gh.empty() ? (L"https://github.com/pypa/" + name) : gh;
+                pe.topics = L"#python #package";
+            }
+            pe.version = L"";
+            pe.summary = pe.download; // Authentic command directly from database
+            pe.license = L"";
+            pe.stars = L"";
+            pe.isRemote = true;
+            parsedItems.push_back(std::move(pe));
+        }
+        pos = endObj + 1;
     }
 
-    // Auto-synthesize rich ecosystem up to 500 Python packages
-    static const wchar_t* namesList[] = {
-        L"jinja2", L"werkzeug", L"cryptography", L"paramiko", L"greenlet", L"gevent", L"eventlet",
-        L"marshmallow", L"cerberus", L"attrs", L"jsonschema", L"msgpack", L"cffi", L"cython",
-        L"sympy", L"networkx", L"igraph", L"simpy", L"deap", L"joblib", L"numba", L"cupy",
-        L"pyarrow", L"openpyxl", L"xlsxwriter", L"python-docx", L"pypdf", L"pdfminer-six", L"reportlab",
-        L"beautifulsoup4", L"scrapy", L"lxml", L"html5lib", L"selenium", L"playwright", L"mechanize",
-        L"loguru", L"structlog", L"colorama", L"tabulate", L"termcolor", L"blessed", L"textual",
-        L"hypothesis", L"tox", L"nox", L"mock", L"coverage", L"faker", L"factory-boy",
-        L"redis-om", L"peewee", L"tortoise-orm", L"pony", L"databases", L"piccolo", L"prisma",
-        L"zope-interface", L"twisted", L"pyzmq", L"grpcio-tools", L"scapy", L"dpkt", L"dnspython",
-        L"pycryptodome", L"bcrypt", L"argon2-cffi", L"passlib", L"authlib", L"pyjwt", L"oauthlib",
-        L"botocore", L"s3transfer", L"azure-identity", L"azure-core", L"google-cloud-storage", L"google-cloud-bigquery",
-        L"watchdog", L"schedule", L"apscheduler", L"croniter", L"celery-redbeat", L"rq", L"huey",
-        L"bleach", L"mistune", L"markdown", L"markdown-it-py", L"docutils", L"sphinx", L"mkdocs",
-        L"shapely", L"geopandas", L"folium", L"pyproj", L"rasterio", L"fiona", L"geopy",
-        L"soundfile", L"librosa", L"pydub", L"webrtcvad", L"audioread", L"mutagen", L"moviepy",
-        L"gensim", L"fasttext", L"sentence-transformers", L"langchain", L"llama-index", L"chromadb", L"qdrant-client"
-    };
-
-    int extraCount = 1;
-    for (const auto* n : namesList) {
-        PackageEntry pe;
-        pe.name = n;
-        pe.download = L"pip install " + std::wstring(n);
-        pe.github = L"https://github.com/pypa/" + std::wstring(n);
-        pe.summary = std::wstring(n) + L" - Verified open-source package for Python runtime development and high-efficiency automation.";
-        pe.version = L"1." + std::to_wstring(extraCount % 10) + L".0";
-        pe.stars = std::to_wstring((extraCount * 739) % 25000 + 100) + L"★";
-        pe.license = (extraCount % 2 == 0) ? L"MIT" : L"Apache 2.0";
-        pe.topics = L"#python #package #" + std::wstring(n);
-        m_packages.push_back(std::move(pe));
-        ++extraCount;
+    if (!parsedItems.empty()) {
+        std::lock_guard<std::mutex> lock(m_packageMutex);
+        auto& targetList = isPhp ? m_phpPackages : (isNode ? m_nodePackages : m_packages);
+        for (auto& item : parsedItems) {
+            bool exists = false;
+            for (auto& existing : targetList) {
+                if (_wcsicmp(existing.name.c_str(), item.name.c_str()) == 0) {
+                    exists = true;
+                    if (!item.download.empty()) existing.download = item.download;
+                    if (!item.github.empty()) existing.github = item.github;
+                    break;
+                }
+            }
+            if (!exists) {
+                targetList.push_back(std::move(item));
+            }
+        }
     }
 
-    // Multiply up to 500 packages
-    while (m_packages.size() < 500) {
-        std::wstring synthName = L"py-" + std::to_wstring(m_packages.size() + 1);
-        PackageEntry pe;
-        pe.name = synthName;
-        pe.download = L"pip install " + synthName;
-        pe.github = L"https://github.com/python-packages/" + synthName;
-        pe.summary = L"Ecosystem utility " + synthName + L" for enterprise Python workflows, scalable computing, and microservices.";
-        pe.version = L"0." + std::to_wstring(m_packages.size() % 9 + 1) + L".0";
-        pe.stars = std::to_wstring((m_packages.size() * 113) % 9000 + 50) + L"★";
-        pe.license = L"MIT";
-        pe.topics = L"#python #tools";
-        m_packages.push_back(std::move(pe));
+    ApplyFilter();
+    if (m_hwnd) {
+        InvalidateRect(m_hwnd, nullptr, FALSE);
     }
 }
 
-void PackageManagerView::Populate500PhpPackages() {
-    // Top PHP Composer packages (Packagist)
-    struct PhpSeed {
-        const wchar_t* name;
-        const wchar_t* repo;
-        const wchar_t* summary;
-        const wchar_t* ver;
-        const wchar_t* stars;
-        const wchar_t* license;
-    };
+void PackageManagerView::FetchInitialPackagesFromSupabase(RuntimeLanguage lang) {
+    std::thread([this, lang]() {
+        HINTERNET hSession = WinHttpOpen(L"phide-IDE/1.0",
+                                         WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
+                                         WINHTTP_NO_PROXY_NAME,
+                                         WINHTTP_NO_PROXY_BYPASS, 0);
+        if (!hSession) return;
+        WinHttpSetTimeouts(hSession, 4000, 4000, 4000, 4000);
 
-    static const PhpSeed phpSeeds[] = {
-        { L"guzzlehttp/guzzle", L"guzzle/guzzle", L"Guzzle is a PHP HTTP client that makes it easy to send HTTP requests and trivial to integrate with web services.", L"7.9.2", L"23.2k", L"MIT" },
-        { L"laravel/framework", L"laravel/framework", L"The Laravel web framework. Expressive, elegant syntax for web artisans.", L"11.30.0", L"33.5k", L"MIT" },
-        { L"symfony/http-foundation", L"symfony/http-foundation", L"Defines an object-oriented layer for the HTTP specification in PHP applications.", L"7.1.6", L"4.8k", L"MIT" },
-        { L"monolog/monolog", L"Seldaek/monolog", L"Sends your logs to files, sockets, inboxes, databases and various web services.", L"3.7.0", L"20.9k", L"MIT" },
-        { L"nikic/php-parser", L"nikic/PHP-Parser", L"A PHP parser written in PHP to simplify static analysis and code manipulation.", L"5.3.1", L"17.1k", L"BSD-3-Clause" },
-        { L"phpunit/phpunit", L"sebastianbergmann/phpunit", L"The Programmer-oriented testing framework for PHP written by Sebastian Bergmann.", L"11.4.2", L"19.5k", L"BSD-3-Clause" },
-        { L"vlucas/phpdotenv", L"vlucas/phpdotenv", L"Loads environment variables from `.env` to `getenv()`, `$_ENV` and `$_SERVER` automagically.", L"5.6.1", L"13.5k", L"BSD-3-Clause" },
-        { L"nesbot/carbon", L"briannesbitt/Carbon", L"An API extension for DateTime with internationalization, comparisons, and fluent math.", L"3.8.0", L"17.8k", L"MIT" },
-        { L"ramsey/uuid", L"ramsey/uuid", L"A PHP library for generating and working with universally unique identifiers (UUIDs).", L"4.7.6", L"13.1k", L"MIT" },
-        { L"doctrine/orm", L"doctrine/orm", L"The Doctrine Object Relational Mapper for PHP that sits on top of a powerful DBAL.", L"3.3.0", L"9.8k", L"MIT" },
-        { L"league/flysystem", L"thephpleague/flysystem", L"Abstraction for local and remote filesystems like AWS S3, FTP, SFTP, and memory.", L"3.29.0", L"13.4k", L"MIT" },
-        { L"fakerphp/faker", L"FakerPHP/Faker", L"Faker is a PHP library that generates fake data for you for tests and seeding.", L"1.24.1", L"5.8k", L"MIT" },
-        { L"twig/twig", L"twigphp/Twig", L"Twig, the flexible, fast, and secure template language for PHP.", L"3.14.0", L"8.2k", L"BSD-3-Clause" },
-        { L"spatie/laravel-permission", L"spatie/laravel-permission", L"Associate users with permissions and roles easily in your Laravel application.", L"6.9.0", L"12.6k", L"MIT" }
-    };
+        HINTERNET hConnect = WinHttpConnect(hSession, L"lzwtgcbvuoogpzcgujdb.supabase.co",
+                                            INTERNET_DEFAULT_HTTPS_PORT, 0);
+        if (!hConnect) {
+            WinHttpCloseHandle(hSession);
+            return;
+        }
 
-    for (const auto& s : phpSeeds) {
-        PackageEntry pe;
-        pe.name = s.name;
-        pe.download = L"composer require " + std::wstring(s.name);
-        pe.github = L"https://github.com/" + std::wstring(s.repo);
-        pe.summary = s.summary;
-        pe.version = s.ver;
-        pe.stars = s.stars;
-        pe.license = s.license;
-        pe.topics = L"#php #composer #packagist";
-        m_phpPackages.push_back(std::move(pe));
-    }
+        std::wstring table = (lang == RuntimeLanguage::Php) ? L"php_package" : (lang == RuntimeLanguage::Node ? L"node_package" : L"python_package");
+        std::wstring headers = L"apikey: sb_publishable_nXkt2Y-i1brrrVYmF_mxzw_RMiAd6Ry\r\nAuthorization: Bearer sb_publishable_nXkt2Y-i1brrrVYmF_mxzw_RMiAd6Ry\r\nAccept: application/json\r\n";
+
+        // Paginate in chunks of 1000 to stream all packages from database
+        int maxOffset = (lang == RuntimeLanguage::Node) ? 25000 : 5000;
+        for (int offset = 0; offset < maxOffset; offset += 1000) {
+            std::wstring path = L"/rest/v1/" + table + L"?select=name,download,github&limit=1000&offset=" + std::to_wstring(offset);
+
+            HINTERNET hRequest = WinHttpOpenRequest(hConnect, L"GET",
+                                                    path.c_str(),
+                                                    nullptr, WINHTTP_NO_REFERER,
+                                                    WINHTTP_DEFAULT_ACCEPT_TYPES,
+                                                    WINHTTP_FLAG_SECURE);
+            if (!hRequest) break;
+
+            BOOL bSend = WinHttpSendRequest(hRequest, headers.c_str(), static_cast<DWORD>(headers.length()), WINHTTP_NO_REQUEST_DATA, 0, 0, 0);
+            std::string responseBody;
+            if (bSend && WinHttpReceiveResponse(hRequest, nullptr)) {
+                DWORD bytesAvail = 0;
+                while (WinHttpQueryDataAvailable(hRequest, &bytesAvail) && bytesAvail > 0) {
+                    std::vector<char> buf(bytesAvail);
+                    DWORD bytesRead = 0;
+                    if (WinHttpReadData(hRequest, buf.data(), bytesAvail, &bytesRead) && bytesRead > 0) {
+                        responseBody.append(buf.data(), bytesRead);
+                    } else break;
+                }
+            }
+            WinHttpCloseHandle(hRequest);
+
+            if (responseBody.empty() || responseBody == "[]") {
+                break;
+            }
+
+            ParseAndMergeSupabasePackages(responseBody, lang);
+        }
+
+        WinHttpCloseHandle(hConnect);
+        WinHttpCloseHandle(hSession);
+    }).detach();
 }
 
 void PackageManagerView::FetchSupabasePackagesAsync(const std::wstring& query) {
-    if (m_isFetchingRemote.load()) return;
-    m_isFetchingRemote.store(true);
-
+    uint64_t ticket = ++m_searchTicket;
     std::wstring q = query;
-    std::thread([this, q]() {
-        // Query Supabase REST API: https://lzwtgcbvuoogpzcgujdb.supabase.co/rest/v1/python_package?select=name,download,github
-        HINTERNET hSession = WinHttpOpen(L"phide-PackageManager/1.0",
+    RuntimeLanguage lang = m_activeLanguage;
+
+    std::thread([this, ticket, q, lang]() {
+        if (!q.empty()) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            if (ticket != m_searchTicket.load()) {
+                return;
+            }
+        }
+
+        m_isFetchingRemote.store(true);
+
+        HINTERNET hSession = WinHttpOpen(L"phide-IDE/1.0",
                                          WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
                                          WINHTTP_NO_PROXY_NAME,
                                          WINHTTP_NO_PROXY_BYPASS, 0);
@@ -540,6 +538,7 @@ void PackageManagerView::FetchSupabasePackagesAsync(const std::wstring& query) {
             m_isFetchingRemote.store(false);
             return;
         }
+        WinHttpSetTimeouts(hSession, 4000, 4000, 4000, 4000);
 
         HINTERNET hConnect = WinHttpConnect(hSession, L"lzwtgcbvuoogpzcgujdb.supabase.co",
                                             INTERNET_DEFAULT_HTTPS_PORT, 0);
@@ -549,7 +548,8 @@ void PackageManagerView::FetchSupabasePackagesAsync(const std::wstring& query) {
             return;
         }
 
-        std::wstring path = L"/rest/v1/python_package?select=name,download,github&limit=15";
+        std::wstring table = (lang == RuntimeLanguage::Php) ? L"php_package" : (lang == RuntimeLanguage::Node ? L"node_package" : L"python_package");
+        std::wstring path = L"/rest/v1/" + table + L"?select=name,download,github&limit=100";
         if (!q.empty()) {
             path += L"&name=ilike.*" + q + L"*";
         }
@@ -566,17 +566,9 @@ void PackageManagerView::FetchSupabasePackagesAsync(const std::wstring& query) {
             return;
         }
 
-        LPCWSTR headers = L"apikey: sb_publishable_nXkt2Y-i1brrrVYmF_mxzw_RMiAd6Ry\r\n"
-                          L"Authorization: Bearer sb_publishable_nXkt2Y-i1brrrVYmF_mxzw_RMiAd6Ry\r\n"
-                          L"Accept: application/json\r\n";
-
-        BOOL ok = WinHttpSendRequest(hRequest, headers, static_cast<DWORD>(-1L),
-                                     WINHTTP_NO_REQUEST_DATA, 0, 0, 0);
-        if (ok) {
-            ok = WinHttpReceiveResponse(hRequest, nullptr);
-        }
-
-        if (ok) {
+        std::wstring headers = L"apikey: sb_publishable_nXkt2Y-i1brrrVYmF_mxzw_RMiAd6Ry\r\nAuthorization: Bearer sb_publishable_nXkt2Y-i1brrrVYmF_mxzw_RMiAd6Ry\r\nAccept: application/json\r\n";
+        BOOL bSend = WinHttpSendRequest(hRequest, headers.c_str(), static_cast<DWORD>(headers.length()), WINHTTP_NO_REQUEST_DATA, 0, 0, 0);
+        if (bSend && WinHttpReceiveResponse(hRequest, nullptr)) {
             std::string responseBody;
             DWORD bytesAvail = 0;
             while (WinHttpQueryDataAvailable(hRequest, &bytesAvail) && bytesAvail > 0) {
@@ -588,67 +580,13 @@ void PackageManagerView::FetchSupabasePackagesAsync(const std::wstring& query) {
             }
 
             m_remoteFetchSuccess.store(true);
-
-            // Parse returned JSON objects
-            if (!responseBody.empty() && responseBody.front() == '[') {
-                std::vector<PackageEntry> remoteItems;
-                size_t pos = 0;
-                while ((pos = responseBody.find('{', pos)) != std::string::npos) {
-                    size_t endObj = responseBody.find('}', pos);
-                    if (endObj == std::string::npos) break;
-                    std::string objStr = responseBody.substr(pos, endObj - pos + 1);
-
-                    auto extractField = [&](const std::string& fieldName) -> std::wstring {
-                        std::string needle = "\"" + fieldName + "\":\"";
-                        size_t fp = objStr.find(needle);
-                        if (fp != std::string::npos) {
-                            size_t valStart = fp + needle.length();
-                            size_t valEnd = objStr.find('"', valStart);
-                            if (valEnd != std::string::npos) {
-                                std::string v = objStr.substr(valStart, valEnd - valStart);
-                                std::wstring wv;
-                                wv.reserve(v.size());
-                                for (char c : v) wv.push_back(static_cast<wchar_t>(c));
-                                return wv;
-                            }
-                        }
-                        return L"";
-                    };
-
-                    std::wstring name = extractField("name");
-                    std::wstring dl = extractField("download");
-                    std::wstring gh = extractField("github");
-
-                    if (!name.empty()) {
-                        PackageEntry pe;
-                        pe.name = name;
-                        pe.download = dl.empty() ? (L"pip install " + name) : dl;
-                        pe.github = gh.empty() ? (L"https://github.com/" + name + L"/" + name) : gh;
-                        pe.version = L"remote";
-                        pe.summary = L"Package fetched dynamically from Supabase database table.";
-                        pe.license = L"Open Source";
-                        pe.stars = L"Active";
-                        pe.isRemote = true;
-                        remoteItems.push_back(std::move(pe));
-                    }
-                    pos = endObj + 1;
-                }
-
-                if (!remoteItems.empty()) {
-                    std::lock_guard<std::mutex> lock(m_packageMutex);
-                    for (auto it = remoteItems.rbegin(); it != remoteItems.rend(); ++it) {
-                        m_packages.insert(m_packages.begin(), *it);
-                    }
-                }
-            }
+            ParseAndMergeSupabasePackages(responseBody, lang);
         }
 
         WinHttpCloseHandle(hRequest);
         WinHttpCloseHandle(hConnect);
         WinHttpCloseHandle(hSession);
-
         m_isFetchingRemote.store(false);
-        ApplyFilter();
     }).detach();
 }
 
@@ -715,7 +653,7 @@ void PackageManagerView::ApplyFilter() {
         return;
     }
 
-    auto& activeList = (m_activeLanguage == RuntimeLanguage::Php) ? m_phpPackages : m_packages;
+    auto& activeList = GetActivePackageList();
 
     struct ScoredItem {
         size_t index;
@@ -756,7 +694,7 @@ void PackageManagerView::SetSearchQuery(const std::wstring& q) {
 void PackageManagerView::SetSelectedIndex(int idx) {
     if (idx >= 0 && idx < static_cast<int>(m_filteredIndices.size())) {
         m_selectedIndex = idx;
-        const auto& activeList = (m_activeLanguage == RuntimeLanguage::Php) ? m_phpPackages : m_packages;
+        const auto& activeList = GetActivePackageList();
         size_t pkgIdx = m_filteredIndices[idx];
         if (pkgIdx < activeList.size()) {
             NavigateToPackage(activeList[pkgIdx].github);
@@ -779,6 +717,7 @@ void PackageManagerView::SelectLanguageAndOpenSearch(RuntimeLanguage lang) {
     m_viewState = PkgViewState::PackageSearch;
     m_isSearchFocused = true;
     m_searchCaretPos = 0;
+    FetchInitialPackagesFromSupabase(lang);
 }
 
 void PackageManagerView::NavigateBackToLanguages() {
@@ -822,7 +761,7 @@ bool PackageManagerView::HandleMouseMove(POINT clientPt) {
     int prevHovered = m_hoveredIndex;
     m_hoveredIndex = -1;
 
-    auto& activeList = (m_activeLanguage == RuntimeLanguage::Php) ? m_phpPackages : m_packages;
+    auto& activeList = GetActivePackageList();
 
     // Check package item hover
     for (size_t i = m_scrollIndex; i < (std::min)(m_filteredIndices.size(), m_scrollIndex + m_visibleLimit); ++i) {
@@ -908,7 +847,7 @@ LPCWSTR PackageManagerView::GetCursorForPoint(POINT clientPt) const noexcept {
     }
 
     // 5. Output package card items and buttons
-    const auto& activeList = (m_activeLanguage == RuntimeLanguage::Php) ? m_phpPackages : m_packages;
+    const auto& activeList = GetActivePackageList();
     for (size_t i = m_scrollIndex; i < (std::min)(m_filteredIndices.size(), m_scrollIndex + m_visibleLimit); ++i) {
         size_t pkgIdx = m_filteredIndices[i];
         if (pkgIdx >= activeList.size()) continue;
@@ -950,6 +889,14 @@ void PackageManagerView::MarkPackageInstalled(const std::wstring& pkgName, PkgIn
             pkg.isInstalled = (pkg.scope == PkgInstallScope::Project) ? pkg.isInstalledProject : pkg.isInstalledGlobal;
         }
     }
+    for (auto& pkg : m_nodePackages) {
+        if (_wcsicmp(pkg.name.c_str(), pkgName.c_str()) == 0) {
+            pkg.isInstalling = false;
+            if (scope == PkgInstallScope::Project) pkg.isInstalledProject = true;
+            else pkg.isInstalledGlobal = true;
+            pkg.isInstalled = (pkg.scope == PkgInstallScope::Project) ? pkg.isInstalledProject : pkg.isInstalledGlobal;
+        }
+    }
 }
 
 void PackageManagerView::MarkPackageUninstalled(const std::wstring& pkgName, PkgInstallScope scope) {
@@ -963,6 +910,14 @@ void PackageManagerView::MarkPackageUninstalled(const std::wstring& pkgName, Pkg
         }
     }
     for (auto& pkg : m_phpPackages) {
+        if (_wcsicmp(pkg.name.c_str(), pkgName.c_str()) == 0) {
+            pkg.isInstalling = false;
+            if (scope == PkgInstallScope::Project) pkg.isInstalledProject = false;
+            else pkg.isInstalledGlobal = false;
+            pkg.isInstalled = (pkg.scope == PkgInstallScope::Project) ? pkg.isInstalledProject : pkg.isInstalledGlobal;
+        }
+    }
+    for (auto& pkg : m_nodePackages) {
         if (_wcsicmp(pkg.name.c_str(), pkgName.c_str()) == 0) {
             pkg.isInstalling = false;
             if (scope == PkgInstallScope::Project) pkg.isInstalledProject = false;
@@ -1017,6 +972,56 @@ void PackageManagerView::ScanInstalledPackages(const std::wstring& wsFolder) {
         addFromSitePackages(spPath, globalInstalled);
     }
 
+    std::unordered_set<std::wstring> projectPhpInstalled;
+    std::unordered_set<std::wstring> globalPhpInstalled;
+
+    auto addFromComposerVendor = [&](const std::filesystem::path& vDir, std::unordered_set<std::wstring>& outSet) {
+        if (!std::filesystem::exists(vDir, ec) || !std::filesystem::is_directory(vDir, ec)) return;
+        for (const auto& vendorEntry : std::filesystem::directory_iterator(vDir, std::filesystem::directory_options::skip_permission_denied, ec)) {
+            if (vendorEntry.is_directory(ec)) {
+                std::wstring vendorName = vendorEntry.path().filename().wstring();
+                if (vendorName == L"composer" || vendorName == L"bin") continue;
+                for (const auto& pkgEntry : std::filesystem::directory_iterator(vendorEntry.path(), std::filesystem::directory_options::skip_permission_denied, ec)) {
+                    if (pkgEntry.is_directory(ec)) {
+                        std::wstring pkgName = pkgEntry.path().filename().wstring();
+                        std::wstring fullName = vendorName + L"/" + pkgName;
+                        std::transform(fullName.begin(), fullName.end(), fullName.begin(), ::towlower);
+                        outSet.insert(fullName);
+                    }
+                }
+            }
+        }
+    };
+
+    if (!wsFolder.empty()) {
+        addFromComposerVendor(std::filesystem::path(wsFolder) / L"vendor", projectPhpInstalled);
+        std::filesystem::path wsCompJson = std::filesystem::path(wsFolder) / L"composer.json";
+        if (std::filesystem::exists(wsCompJson, ec)) {
+            std::ifstream ifs(wsCompJson);
+            if (ifs.is_open()) {
+                std::stringstream buffer;
+                buffer << ifs.rdbuf();
+                std::string content = buffer.str();
+                for (const auto& p : m_phpPackages) {
+                    std::string narrowName;
+                    narrowName.reserve(p.name.length());
+                    for (wchar_t wc : p.name) narrowName.push_back(static_cast<char>(wc & 0x7F));
+                    if (content.find("\"" + narrowName + "\"") != std::string::npos) {
+                        std::wstring norm = p.name;
+                        std::transform(norm.begin(), norm.end(), norm.begin(), ::towlower);
+                        projectPhpInstalled.insert(norm);
+                    }
+                }
+            }
+        }
+    }
+
+    wchar_t szAppData[MAX_PATH] = { 0 };
+    if (GetEnvironmentVariableW(L"APPDATA", szAppData, MAX_PATH) > 0) {
+        std::filesystem::path gCompVendor = std::filesystem::path(szAppData) / L"Composer" / L"vendor";
+        addFromComposerVendor(gCompVendor, globalPhpInstalled);
+    }
+
     std::lock_guard<std::mutex> lock(m_packageMutex);
     for (auto& pkg : m_packages) {
         std::wstring norm = pkg.name;
@@ -1024,6 +1029,75 @@ void PackageManagerView::ScanInstalledPackages(const std::wstring& wsFolder) {
         std::replace(norm.begin(), norm.end(), L'_', L'-');
         pkg.isInstalledProject = (projectInstalled.count(norm) > 0);
         pkg.isInstalledGlobal = (globalInstalled.count(norm) > 0);
+        pkg.isInstalled = (pkg.scope == PkgInstallScope::Project) ? pkg.isInstalledProject : pkg.isInstalledGlobal;
+    }
+    for (auto& pkg : m_phpPackages) {
+        std::wstring norm = pkg.name;
+        std::transform(norm.begin(), norm.end(), norm.begin(), ::towlower);
+        pkg.isInstalledProject = (projectPhpInstalled.count(norm) > 0);
+        pkg.isInstalledGlobal = (globalPhpInstalled.count(norm) > 0);
+        pkg.isInstalled = (pkg.scope == PkgInstallScope::Project) ? pkg.isInstalledProject : pkg.isInstalledGlobal;
+    }
+
+    std::unordered_set<std::wstring> projectNodeInstalled;
+    std::unordered_set<std::wstring> globalNodeInstalled;
+
+    auto addFromNodeModules = [&](const std::filesystem::path& nmPath, std::unordered_set<std::wstring>& outSet) {
+        if (!std::filesystem::exists(nmPath, ec) || !std::filesystem::is_directory(nmPath, ec)) return;
+        for (const auto& entry : std::filesystem::directory_iterator(nmPath, std::filesystem::directory_options::skip_permission_denied, ec)) {
+            if (entry.is_directory(ec)) {
+                std::wstring dirName = entry.path().filename().wstring();
+                if (!dirName.empty() && dirName[0] == L'@') {
+                    for (const auto& subEntry : std::filesystem::directory_iterator(entry.path(), std::filesystem::directory_options::skip_permission_denied, ec)) {
+                        if (subEntry.is_directory(ec)) {
+                            std::wstring scopedName = dirName + L"/" + subEntry.path().filename().wstring();
+                            std::transform(scopedName.begin(), scopedName.end(), scopedName.begin(), ::towlower);
+                            outSet.insert(scopedName);
+                        }
+                    }
+                } else {
+                    std::transform(dirName.begin(), dirName.end(), dirName.begin(), ::towlower);
+                    outSet.insert(dirName);
+                }
+            }
+        }
+    };
+
+    if (!wsFolder.empty()) {
+        addFromNodeModules(std::filesystem::path(wsFolder) / L"node_modules", projectNodeInstalled);
+        std::filesystem::path pkgJson = std::filesystem::path(wsFolder) / L"package.json";
+        if (std::filesystem::exists(pkgJson, ec)) {
+            std::ifstream ifs(pkgJson);
+            if (ifs.is_open()) {
+                std::stringstream buffer;
+                buffer << ifs.rdbuf();
+                std::string content = buffer.str();
+                for (const auto& p : m_nodePackages) {
+                    std::string narrowName;
+                    narrowName.reserve(p.name.length());
+                    for (wchar_t wc : p.name) narrowName.push_back(static_cast<char>(wc & 0x7F));
+                    if (content.find("\"" + narrowName + "\"") != std::string::npos) {
+                        std::wstring norm = p.name;
+                        std::transform(norm.begin(), norm.end(), norm.begin(), ::towlower);
+                        projectNodeInstalled.insert(norm);
+                    }
+                }
+            }
+        }
+    }
+
+    if (szAppData[0] != 0) {
+        std::filesystem::path gNodeModules = std::filesystem::path(szAppData) / L"npm" / L"node_modules";
+        addFromNodeModules(gNodeModules, globalNodeInstalled);
+    }
+    std::filesystem::path progNode = L"C:\\Program Files\\nodejs\\node_modules";
+    addFromNodeModules(progNode, globalNodeInstalled);
+
+    for (auto& pkg : m_nodePackages) {
+        std::wstring norm = pkg.name;
+        std::transform(norm.begin(), norm.end(), norm.begin(), ::towlower);
+        pkg.isInstalledProject = (projectNodeInstalled.count(norm) > 0);
+        pkg.isInstalledGlobal = (globalNodeInstalled.count(norm) > 0);
         pkg.isInstalled = (pkg.scope == PkgInstallScope::Project) ? pkg.isInstalledProject : pkg.isInstalledGlobal;
     }
 }
@@ -1060,7 +1134,7 @@ bool PackageManagerView::HandleLButtonDown(POINT clientPt) {
     if (m_activeDropdownPkgIdx >= 0) {
         if (mx >= m_rcDropdownProject.left && mx <= m_rcDropdownProject.right &&
             my >= m_rcDropdownProject.top && my <= m_rcDropdownProject.bottom) {
-            auto& activeList = (m_activeLanguage == RuntimeLanguage::Php) ? m_phpPackages : m_packages;
+            auto& activeList = GetActivePackageList();
             if (m_activeDropdownPkgIdx < static_cast<int>(activeList.size())) {
                 activeList[m_activeDropdownPkgIdx].scope = PkgInstallScope::Project;
                 activeList[m_activeDropdownPkgIdx].isInstalled = activeList[m_activeDropdownPkgIdx].isInstalledProject;
@@ -1070,7 +1144,7 @@ bool PackageManagerView::HandleLButtonDown(POINT clientPt) {
         }
         if (mx >= m_rcDropdownGlobal.left && mx <= m_rcDropdownGlobal.right &&
             my >= m_rcDropdownGlobal.top && my <= m_rcDropdownGlobal.bottom) {
-            auto& activeList = (m_activeLanguage == RuntimeLanguage::Php) ? m_phpPackages : m_packages;
+            auto& activeList = GetActivePackageList();
             if (m_activeDropdownPkgIdx < static_cast<int>(activeList.size())) {
                 activeList[m_activeDropdownPkgIdx].scope = PkgInstallScope::Global;
                 activeList[m_activeDropdownPkgIdx].isInstalled = activeList[m_activeDropdownPkgIdx].isInstalledGlobal;
@@ -1104,7 +1178,7 @@ bool PackageManagerView::HandleLButtonDown(POINT clientPt) {
         return true;
     }
 
-    auto& activeList = (m_activeLanguage == RuntimeLanguage::Php) ? m_phpPackages : m_packages;
+    auto& activeList = GetActivePackageList();
 
     // D. Package Card Clicks (Install Button, Split Dropdown Arrow, Select Card)
     for (size_t i = m_scrollIndex; i < (std::min)(m_filteredIndices.size(), m_scrollIndex + m_visibleLimit); ++i) {
@@ -1130,14 +1204,34 @@ bool PackageManagerView::HandleLButtonDown(POINT clientPt) {
                     cmdToRun = (pkg.scope == PkgInstallScope::Global)
                         ? (L"composer global remove " + pkg.name)
                         : (L"composer remove " + pkg.name);
+                } else if (m_activeLanguage == RuntimeLanguage::Node) {
+                    cmdToRun = (pkg.scope == PkgInstallScope::Global)
+                        ? (L"npm uninstall -g " + pkg.name)
+                        : (L"npm uninstall " + pkg.name);
                 } else {
                     cmdToRun = L"pip uninstall -y " + pkg.name;
                 }
             } else {
                 if (m_activeLanguage == RuntimeLanguage::Php) {
-                    cmdToRun = (pkg.scope == PkgInstallScope::Global)
-                        ? (L"composer global require " + pkg.name)
-                        : (L"composer require " + pkg.name);
+                    if (pkg.scope == PkgInstallScope::Global) {
+                        cmdToRun = L"composer global require " + pkg.name;
+                    } else {
+                        if (!pkg.download.empty() && pkg.download.find(L"composer require") != std::wstring::npos) {
+                            cmdToRun = pkg.download;
+                        } else {
+                            cmdToRun = L"composer require " + pkg.name;
+                        }
+                    }
+                } else if (m_activeLanguage == RuntimeLanguage::Node) {
+                    if (pkg.scope == PkgInstallScope::Global) {
+                        cmdToRun = L"npm install -g " + pkg.name;
+                    } else {
+                        if (!pkg.download.empty() && pkg.download.find(L"npm install") != std::wstring::npos) {
+                            cmdToRun = pkg.download;
+                        } else {
+                            cmdToRun = L"npm install " + pkg.name;
+                        }
+                    }
                 } else {
                     cmdToRun = (pkg.scope == PkgInstallScope::Global)
                         ? (L"pip install --user " + pkg.name)
@@ -1218,6 +1312,7 @@ bool PackageManagerView::HandleChar(wchar_t ch) {
         m_searchDebouncePending = true;
         m_visibleLimit = 12; // Reset visible chunk on new query
         ApplyFilter();
+        FetchSupabasePackagesAsync(m_searchQuery);
         return true;
     }
     return false;
@@ -1235,6 +1330,7 @@ bool PackageManagerView::HandleKeyDown(WPARAM key) {
             m_searchDebouncePending = true;
             m_visibleLimit = 12;
             ApplyFilter();
+            FetchSupabasePackagesAsync(m_searchQuery);
             return true;
         }
     } else if (key == VK_DELETE) {
@@ -1244,6 +1340,7 @@ bool PackageManagerView::HandleKeyDown(WPARAM key) {
             m_searchDebouncePending = true;
             m_visibleLimit = 12;
             ApplyFilter();
+            FetchSupabasePackagesAsync(m_searchQuery);
             return true;
         }
     } else if (key == VK_LEFT) {
@@ -1403,7 +1500,8 @@ void PackageManagerView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app:
                   m_rcBackBtn, theme.brushTextPrimary.Get());
 
     // Active Environment Pill
-    std::wstring envPillText = (m_activeLanguage == RuntimeLanguage::Php) ? L"PHP (Composer)" : L"Python (pip)";
+    std::wstring envPillText = (m_activeLanguage == RuntimeLanguage::Php) ? L"PHP (Composer)" :
+                               (m_activeLanguage == RuntimeLanguage::Node ? L"Node.js (npm)" : L"Python (pip)");
     D2D1_RECT_F rcEnvPill = D2D1::RectF(m_rcBackBtn.right + config.ScaleF(10.0f), curY, m_rcBackBtn.right + config.ScaleF(145.0f), curY + config.ScaleF(26.0f));
     D2D1_ROUNDED_RECT rrcEnv = D2D1::RoundedRect(rcEnvPill, 4.0f, 4.0f);
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushEnvBg;
@@ -1441,7 +1539,7 @@ void PackageManagerView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app:
     if (m_searchQuery.empty()) {
         const wchar_t* placeholder = (m_activeLanguage == RuntimeLanguage::Php)
             ? L"Search PHP packages..."
-            : L"Search Python packages...";
+            : (m_activeLanguage == RuntimeLanguage::Node ? L"Search npm packages..." : L"Search Python packages...");
         pRT->DrawText(placeholder, static_cast<UINT32>(wcslen(placeholder)), theme.fontBody.Get(), rcSearchText, theme.brushTextSecondary.Get());
 
         // USER REQUIREMENT: White blinking caret matching mouse click position
@@ -1497,13 +1595,13 @@ void PackageManagerView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app:
     pRT->FillRoundedRectangle(rrcList, theme.brushDrawerBg ? theme.brushDrawerBg.Get() : theme.brushCanvasBg.Get());
     pRT->DrawRoundedRectangle(rrcList, theme.brushBorderSubtle.Get(), 1.0f);
 
-    auto& activeList = (m_activeLanguage == RuntimeLanguage::Php) ? m_phpPackages : m_packages;
+    auto& activeList = GetActivePackageList();
 
     // Initial Output is NONE (User requirement)
     if (m_searchQuery.empty()) {
         D2D1_RECT_F rcEmptyText = D2D1::RectF(m_rcPackageList.left + config.ScaleF(16.0f), m_rcPackageList.top + config.ScaleF(60.0f),
                                              m_rcPackageList.right - config.ScaleF(16.0f), m_rcPackageList.top + config.ScaleF(160.0f));
-        const wchar_t* emptyHint = L"Type to search over 500+ verified packages.";
+        const wchar_t* emptyHint = L"Type to search over 5,000+ packages from database.";
         pRT->DrawText(emptyHint, static_cast<UINT32>(wcslen(emptyHint)), theme.fontHint.Get(), rcEmptyText, theme.brushTextSecondary.Get());
     } else {
         // Render Output List with virtualized chunk size
@@ -1678,7 +1776,8 @@ void PackageManagerView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app:
                                                 m_rcDropdownGlobal.right - config.ScaleF(6.0f), m_rcDropdownGlobal.bottom);
 
             const wchar_t* pText = L"Project (local)";
-            const wchar_t* gText = (m_activeLanguage == RuntimeLanguage::Php) ? L"Global (composer global)" : L"Global (--user)";
+            const wchar_t* gText = (m_activeLanguage == RuntimeLanguage::Php) ? L"Global (composer global)" :
+                                   (m_activeLanguage == RuntimeLanguage::Node ? L"Global (npm -g)" : L"Global (--user)");
 
             pRT->DrawText(pText, static_cast<UINT32>(wcslen(pText)), pMenuFmt, rcProjText, theme.brushTextPrimary.Get());
             pRT->DrawText(gText, static_cast<UINT32>(wcslen(gText)), pMenuFmt, rcGlobText, theme.brushTextPrimary.Get());
@@ -1784,7 +1883,9 @@ void PackageManagerView::RenderGitHubWebPage(ID2D1RenderTarget* pRT, Theme& them
     m_icons.DrawPackage(pRT, rcOcto, bGhText.Get(), 1.6f);
 
     // Repo breadcrumb: owner / repo Public
-    std::wstring owner = (m_activeLanguage == RuntimeLanguage::Php) ? L"packagist" : L"pypa";
+    bool isPhp = (m_activeLanguage == RuntimeLanguage::Php);
+    bool isNode = (m_activeLanguage == RuntimeLanguage::Node);
+    std::wstring owner = isPhp ? L"packagist" : (isNode ? L"npm" : L"pypa");
     std::wstring repo = pkg.name;
     auto slashPos = pkg.github.find(L"github.com/");
     if (slashPos != std::wstring::npos) {
@@ -2043,11 +2144,11 @@ void PackageManagerView::RenderGitHubWebPage(ID2D1RenderTarget* pRT, Theme& them
         std::wstring r;
     };
     Badge badges[] = {
-        { L"pypi", L"v" + pkg.version },
+        { isNode ? L"npm" : (isPhp ? L"packagist" : L"pypi"), L"v" + pkg.version },
         { L"build", L"passing" },
-        { L"downloads", L"15M / month" },
+        { L"downloads", isNode ? L"8.5M / month" : (isPhp ? L"1.2M / month" : L"15M / month") },
         { L"license", pkg.license },
-        { L"python", L"3.9+" }
+        { isNode ? L"node" : (isPhp ? L"php" : L"python"), isNode ? L">=18.0.0" : (isPhp ? L"^8.0" : L"3.9+") }
     };
     float badgeX = rcReadmeCard.left + config.ScaleF(20.0f);
     for (const auto& bg : badges) {
@@ -2106,7 +2207,7 @@ void PackageManagerView::RenderGitHubWebPage(ID2D1RenderTarget* pRT, Theme& them
     sideY += config.ScaleF(56.0f);
 
     // Website Link
-    std::wstring siteUrl = L"🌐  https://" + pkg.name + L".org";
+    std::wstring siteUrl = pkg.github.empty() ? L"🌐  https://github.com" : (L"🌐  " + pkg.github);
     D2D1_RECT_F rcSite = D2D1::RectF(sideX, sideY, sideX + sidebarW, sideY + config.ScaleF(18.0f));
     pRT->DrawText(siteUrl.c_str(), static_cast<UINT32>(siteUrl.length()), pFmtBody, rcSite, bGhLink.Get());
     sideY += config.ScaleF(22.0f);
@@ -2174,7 +2275,9 @@ void PackageManagerView::RenderGitHubWebPage(ID2D1RenderTarget* pRT, Theme& them
 
     const wchar_t* langLegend = (m_activeLanguage == RuntimeLanguage::Php)
         ? L"● PHP 88.4%   ● HTML 9.2%   ● Other 2.4%"
-        : L"● Python 74.2%   ● C++ 21.6%   ● Other 4.2%";
+        : (m_activeLanguage == RuntimeLanguage::Node
+            ? L"● JavaScript 72.8%   ● TypeScript 23.1%   ● Other 4.1%"
+            : L"● Python 74.2%   ● C++ 21.6%   ● Other 4.2%");
     D2D1_RECT_F rcLegend = D2D1::RectF(sideX, sideY, sideX + sidebarW, sideY + config.ScaleF(16.0f));
     pRT->DrawText(langLegend, static_cast<UINT32>(wcslen(langLegend)), theme.fontBadge.Get(), rcLegend, bGhMuted.Get());
 

@@ -252,6 +252,10 @@ public:
     [[nodiscard]] const D2D1_RECT_F& GetGitHeaderMoreBounds() const noexcept { return m_gitHeaderMoreBounds; }
     [[nodiscard]] const std::wstring& GetGitTooltipText() const noexcept { return m_gitTooltipText; }
     [[nodiscard]] bool IsGitTooltipVisible() const noexcept { return m_showGitTooltip; }
+    void ClearGitTooltip() noexcept {
+        m_showGitTooltip = false;
+        m_gitTooltipText.clear();
+    }
     void ShowGitNotification(const std::wstring& msg, ULONGLONG durationMs = 2500) noexcept {
         m_gitNotificationText = msg;
         m_gitNotificationExpiry = GetTickCount64() + durationMs;
@@ -397,6 +401,10 @@ public:
     [[nodiscard]] size_t GetItemCount() const noexcept {
         return m_visibleItems.size();
     }
+
+    [[nodiscard]] bool HasPythonFiles() const noexcept { return m_hasPythonFiles; }
+    [[nodiscard]] bool HasPhpFiles() const noexcept { return m_hasPhpFiles; }
+    [[nodiscard]] bool HasNodeFiles() const noexcept { return m_hasNodeFiles; }
 
     /**
      * @brief Toggles folder open/closed state.
@@ -812,6 +820,7 @@ private:
     int m_hoveredGitChangeIdx = -1;
     int m_hoveredGitCommitIdx = -1;
 
+    void DetectProjectLanguages();
     void RebuildVisibleItems();
     void AddDirectoryChildren(const std::wstring& dirPath, int depth);
     std::wstring GetIconForFile(const std::wstring& filename, bool isDir, bool isExpanded) const;
@@ -819,6 +828,10 @@ private:
     bool m_hasOpenFolder = false;
     std::wstring m_openFolderPath;
     std::wstring m_rootName;
+
+    bool m_hasPythonFiles = false;
+    bool m_hasPhpFiles = false;
+    bool m_hasNodeFiles = false;
 
     std::set<std::wstring> m_expandedDirs;
     std::vector<DrawerTreeItem> m_visibleItems;

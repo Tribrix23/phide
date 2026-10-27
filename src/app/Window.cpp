@@ -4889,6 +4889,34 @@ bool Window::Create(HINSTANCE hInstance, int nCmdShow) {
             } else if (cmd.find(L"pip uninstall") == 0) {
                 std::wstring args = cmd.substr(13);
                 runCmd = L"\"" + pyPath + L"\" -m pip uninstall " + args;
+            } else if (cmd.find(L"composer ") == 0) {
+                wchar_t compFound[MAX_PATH] = { 0 };
+                std::wstring compPath = L"composer";
+                if (SearchPathW(nullptr, L"composer.bat", nullptr, MAX_PATH, compFound, nullptr) > 0) {
+                    compPath = compFound;
+                } else if (SearchPathW(nullptr, L"composer", nullptr, MAX_PATH, compFound, nullptr) > 0) {
+                    compPath = compFound;
+                } else {
+                    wchar_t szLocalApp[MAX_PATH] = { 0 };
+                    if (GetEnvironmentVariableW(L"LOCALAPPDATA", szLocalApp, MAX_PATH) > 0) {
+                        std::filesystem::path p = std::filesystem::path(szLocalApp) / L"Programs" / L"PHP" / L"v8.5" / L"composer.bat";
+                        std::error_code ec;
+                        if (std::filesystem::exists(p, ec)) compPath = p.wstring();
+                    }
+                }
+                runCmd = L"\"" + compPath + L"\" " + cmd.substr(9);
+            } else if (cmd.find(L"npm ") == 0) {
+                wchar_t npmFound[MAX_PATH] = { 0 };
+                std::wstring npmPath = L"npm.cmd";
+                std::error_code ecNpm;
+                if (SearchPathW(nullptr, L"npm.cmd", nullptr, MAX_PATH, npmFound, nullptr) > 0) {
+                    npmPath = npmFound;
+                } else if (SearchPathW(nullptr, L"npm", nullptr, MAX_PATH, npmFound, nullptr) > 0) {
+                    npmPath = npmFound;
+                } else if (std::filesystem::exists(L"C:\\Program Files\\nodejs\\npm.cmd", ecNpm)) {
+                    npmPath = L"C:\\Program Files\\nodejs\\npm.cmd";
+                }
+                runCmd = L"\"" + npmPath + L"\" " + cmd.substr(4);
             }
 
             m_extensionsPanel.UpdateProcessTask(taskTitle, 0.40f, L"Running: " + runCmd);
@@ -6480,6 +6508,7 @@ void Window::HandleLButtonDown(POINT clientPt) {
         if (m_drawer.HitTestGit(clientPt, m_config, openFile, discardedFile, isDiff, openCommitDiff, openUrl,
                                 &promptDiscard, &discardFileName, &discardStatus, &discardCount, &promptEmptyCommit)) {
             if (promptEmptyCommit) {
+                m_drawer.ClearGitTooltip();
                 m_confirmDiscardModal.OpenNotice(
                     L"Commit Message Required",
                     L"Please enter a commit message before committing your changes.",
@@ -6489,6 +6518,7 @@ void Window::HandleLButtonDown(POINT clientPt) {
                 return;
             }
             if (promptDiscard) {
+                m_drawer.ClearGitTooltip();
                 m_confirmDiscardModal.Open(discardedFile, discardFileName, discardStatus, discardCount);
                 InvalidateRect(m_hwnd, nullptr, FALSE);
                 return;
@@ -7888,6 +7918,7 @@ void Window::HandleLButtonDown(POINT clientPt) {
             if (m_drawer.HitTestGit(clientPt, m_config, openFile, discardedFile, isDiff, openCommitDiff, openUrl,
                                     &promptDiscard, &discardFileName, &discardStatus, &discardCount, &promptEmptyCommit)) {
                 if (promptEmptyCommit) {
+                    m_drawer.ClearGitTooltip();
                     m_confirmDiscardModal.OpenNotice(
                         L"Commit Message Required",
                         L"Please enter a commit message before committing your changes.",
@@ -7897,6 +7928,7 @@ void Window::HandleLButtonDown(POINT clientPt) {
                     return;
                 }
                 if (promptDiscard) {
+                    m_drawer.ClearGitTooltip();
                     m_confirmDiscardModal.Open(discardedFile, discardFileName, discardStatus, discardCount);
                     InvalidateRect(m_hwnd, nullptr, FALSE);
                     return;

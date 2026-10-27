@@ -192,9 +192,46 @@ std::wstring DrawerPanel::GetIconForFile(const std::wstring& filename, bool isDi
     return L"\u25AB";
 }
 
+void DrawerPanel::DetectProjectLanguages() {
+    m_hasPythonFiles = false;
+    m_hasPhpFiles = false;
+    m_hasNodeFiles = false;
+    if (!m_hasOpenFolder || m_openFolderPath.empty()) return;
+
+    std::error_code ec;
+    for (std::filesystem::recursive_directory_iterator it(m_openFolderPath, std::filesystem::directory_options::skip_permission_denied, ec), end;
+         it != end && !ec; it.increment(ec)) {
+        if (it->is_directory(ec)) {
+            std::wstring dirName = it->path().filename().wstring();
+            if (dirName == L".git" || dirName == L".vs" || dirName == L"node_modules" ||
+                dirName == L".venv" || dirName == L"venv" || dirName == L"vendor") {
+                it.disable_recursion_pending();
+            }
+            continue;
+        }
+        std::wstring ext = it->path().extension().wstring();
+        std::transform(ext.begin(), ext.end(), ext.begin(), ::towlower);
+        std::wstring fn = it->path().filename().wstring();
+        std::transform(fn.begin(), fn.end(), fn.begin(), ::towlower);
+
+        if (ext == L".py" || fn == L"requirements.txt" || fn == L"pyproject.toml" || fn == L"pipfile") {
+            m_hasPythonFiles = true;
+        }
+        if (ext == L".php" || fn == L"composer.json" || fn == L"composer.lock") {
+            m_hasPhpFiles = true;
+        }
+        if (ext == L".js" || ext == L".ts" || ext == L".jsx" || ext == L".tsx" || fn == L"package.json") {
+            m_hasNodeFiles = true;
+        }
+        if (m_hasPythonFiles && m_hasPhpFiles && m_hasNodeFiles) break;
+    }
+}
+
 void DrawerPanel::RebuildVisibleItems() {
     m_visibleItems.clear();
     if (!m_hasOpenFolder || m_openFolderPath.empty()) return;
+
+    DetectProjectLanguages();
 
     // Root folder item
     DrawerTreeItem rootItem;
@@ -222,78 +259,145 @@ void DrawerPanel::RebuildVisibleItems() {
     m_visibleItems.push_back(extLibItem);
 
     if (extLibItem.isExpanded) {
-        std::wstring pyExePath;
-        std::wstring pyVer;
         std::error_code ecCheck;
 
-        // User requirement: External Libraries displays the Global System Python,
-        // because the local virtual environment (.venv) is already displayed inside the project tree!
-        wchar_t found[MAX_PATH] = { 0 };
-        if (SearchPathW(nullptr, L"python.exe", nullptr, MAX_PATH, found, nullptr) > 0 &&
-            std::wstring(found).find(L"WindowsApps") == std::wstring::npos &&
-            std::filesystem::exists(found, ecCheck)) {
-            pyExePath = found;
-        } else {
-            wchar_t szLocalApp[MAX_PATH] = { 0 };
-            if (GetEnvironmentVariableW(L"LOCALAPPDATA", szLocalApp, MAX_PATH) > 0) {
-                std::filesystem::path pyBase = std::filesystem::path(szLocalApp) / L"Programs" / L"Python";
-                if (std::filesystem::exists(pyBase, ecCheck)) {
-                    for (const auto& entry : std::filesystem::directory_iterator(pyBase, ecCheck)) {
-                        if (entry.is_directory(ecCheck) && std::filesystem::exists(entry.path() / L"python.exe", ecCheck)) {
-                            if (std::filesystem::exists(entry.path() / L"Scripts" / L"pip.exe", ecCheck)) {
-                                pyExePath = (entry.path() / L"python.exe").wstring();
-                                break;
-                            } else if (pyExePath.empty()) {
-                                pyExePath = (entry.path() / L"python.exe").wstring();
+        // 1. Python Global System (Only shown if project has Python files!)
+        if (m_hasPythonFiles) {
+            std::wstring pyExePath;
+            std::wstring pyVer;
+            wchar_t found[MAX_PATH] = { 0 };
+            if (SearchPathW(nullptr, L"python.exe", nullptr, MAX_PATH, found, nullptr) > 0 &&
+                std::wstring(found).find(L"WindowsApps") == std::wstring::npos &&
+                std::filesystem::exists(found, ecCheck)) {
+                pyExePath = found;
+            } else {
+                wchar_t szLocalApp[MAX_PATH] = { 0 };
+                if (GetEnvironmentVariableW(L"LOCALAPPDATA", szLocalApp, MAX_PATH) > 0) {
+                    std::filesystem::path pyBase = std::filesystem::path(szLocalApp) / L"Programs" / L"Python";
+                    if (std::filesystem::exists(pyBase, ecCheck)) {
+                        for (const auto& entry : std::filesystem::directory_iterator(pyBase, ecCheck)) {
+                            if (entry.is_directory(ecCheck) && std::filesystem::exists(entry.path() / L"python.exe", ecCheck)) {
+                                if (std::filesystem::exists(entry.path() / L"Scripts" / L"pip.exe", ecCheck)) {
+                                    pyExePath = (entry.path() / L"python.exe").wstring();
+                                    break;
+                                } else if (pyExePath.empty()) {
+                                    pyExePath = (entry.path() / L"python.exe").wstring();
+                                }
                             }
                         }
                     }
                 }
             }
-        }
-        if (!pyExePath.empty()) {
-            std::wstring dirName = std::filesystem::path(pyExePath).parent_path().filename().wstring();
-            std::wstring verStr;
-            if (dirName.rfind(L"Python-", 0) == 0) {
-                verStr = dirName.substr(7);
-            } else if (dirName.rfind(L"Python", 0) == 0 && dirName.length() >= 8) {
-                verStr = dirName.substr(6, 1) + L"." + dirName.substr(7);
-            }
-            if (!verStr.empty()) {
-                pyVer = L"Python " + verStr + L" (Global System)";
-            } else {
-                pyVer = L"Python (Global System)";
-            }
-        }
-
-        if (!pyExePath.empty()) {
-            std::wstring pyNodePath = L"__EXT_PY__" + pyExePath;
-            DrawerTreeItem pyNode;
-            pyNode.label = pyVer;
-            pyNode.fullPath = pyNodePath;
-            pyNode.depth = 1;
-            pyNode.isFolder = true;
-            pyNode.isExpanded = (m_expandedDirs.count(pyNodePath) > 0);
-            pyNode.iconGlyph = pyNode.isExpanded ? L"\u25BE \u26A1" : L"\u25B8 \u26A1";
-            m_visibleItems.push_back(pyNode);
-
-            if (pyNode.isExpanded) {
-                std::filesystem::path spDir = std::filesystem::path(pyExePath).parent_path() / L"Lib" / L"site-packages";
-                if (!std::filesystem::exists(spDir, ecCheck)) {
-                    spDir = std::filesystem::path(pyExePath).parent_path().parent_path() / L"Lib" / L"site-packages";
+            if (!pyExePath.empty()) {
+                std::wstring dirName = std::filesystem::path(pyExePath).parent_path().filename().wstring();
+                std::wstring verStr;
+                if (dirName.rfind(L"Python-", 0) == 0) {
+                    verStr = dirName.substr(7);
+                } else if (dirName.rfind(L"Python", 0) == 0 && dirName.length() >= 8) {
+                    verStr = dirName.substr(6, 1) + L"." + dirName.substr(7);
                 }
-                if (std::filesystem::exists(spDir, ecCheck)) {
-                    DrawerTreeItem spNode;
-                    spNode.label = L"site-packages";
-                    spNode.fullPath = spDir.wstring();
-                    spNode.depth = 2;
-                    spNode.isFolder = true;
-                    spNode.isExpanded = (m_expandedDirs.count(spDir.wstring()) > 0);
-                    spNode.iconGlyph = spNode.isExpanded ? L"\u25BE \u25A4" : L"\u25B8 \u25A4";
-                    m_visibleItems.push_back(spNode);
+                if (!verStr.empty()) {
+                    pyVer = L"Python " + verStr + L" (Global System)";
+                } else {
+                    pyVer = L"Python (Global System)";
+                }
 
-                    if (spNode.isExpanded) {
-                        AddDirectoryChildren(spDir.wstring(), 3);
+                std::wstring pyNodePath = L"__EXT_PY__" + pyExePath;
+                DrawerTreeItem pyNode;
+                pyNode.label = pyVer;
+                pyNode.fullPath = pyNodePath;
+                pyNode.depth = 1;
+                pyNode.isFolder = true;
+                pyNode.isExpanded = (m_expandedDirs.count(pyNodePath) > 0);
+                pyNode.iconGlyph = pyNode.isExpanded ? L"\u25BE \u26A1" : L"\u25B8 \u26A1";
+                m_visibleItems.push_back(pyNode);
+
+                if (pyNode.isExpanded) {
+                    std::filesystem::path spDir = std::filesystem::path(pyExePath).parent_path() / L"Lib" / L"site-packages";
+                    if (!std::filesystem::exists(spDir, ecCheck)) {
+                        spDir = std::filesystem::path(pyExePath).parent_path().parent_path() / L"Lib" / L"site-packages";
+                    }
+                    if (std::filesystem::exists(spDir, ecCheck)) {
+                        DrawerTreeItem spNode;
+                        spNode.label = L"site-packages";
+                        spNode.fullPath = spDir.wstring();
+                        spNode.depth = 2;
+                        spNode.isFolder = true;
+                        spNode.isExpanded = (m_expandedDirs.count(spDir.wstring()) > 0);
+                        spNode.iconGlyph = spNode.isExpanded ? L"\u25BE \u25A4" : L"\u25B8 \u25A4";
+                        m_visibleItems.push_back(spNode);
+
+                        if (spNode.isExpanded) {
+                            AddDirectoryChildren(spDir.wstring(), 3);
+                        }
+                    }
+                }
+            }
+        }
+
+        // 2. PHP Global System (Only shown if project has PHP files!)
+        if (m_hasPhpFiles) {
+            std::wstring phpExePath;
+            std::wstring phpVer;
+            wchar_t foundPhp[MAX_PATH] = { 0 };
+            if (SearchPathW(nullptr, L"php.exe", nullptr, MAX_PATH, foundPhp, nullptr) > 0 &&
+                std::filesystem::exists(foundPhp, ecCheck)) {
+                phpExePath = foundPhp;
+            } else {
+                wchar_t szLocalApp[MAX_PATH] = { 0 };
+                if (GetEnvironmentVariableW(L"LOCALAPPDATA", szLocalApp, MAX_PATH) > 0) {
+                    std::filesystem::path phpBase = std::filesystem::path(szLocalApp) / L"Programs" / L"PHP";
+                    if (std::filesystem::exists(phpBase, ecCheck)) {
+                        for (const auto& entry : std::filesystem::directory_iterator(phpBase, ecCheck)) {
+                            if (entry.is_directory(ecCheck) && std::filesystem::exists(entry.path() / L"php.exe", ecCheck)) {
+                                phpExePath = (entry.path() / L"php.exe").wstring();
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+            if (!phpExePath.empty()) {
+                std::wstring dirName = std::filesystem::path(phpExePath).parent_path().filename().wstring();
+                std::wstring verStr;
+                if (dirName.rfind(L"v", 0) == 0 || dirName.rfind(L"V", 0) == 0) {
+                    verStr = dirName.substr(1);
+                } else if (dirName.rfind(L"php-", 0) == 0 || dirName.rfind(L"PHP-", 0) == 0) {
+                    verStr = dirName.substr(4);
+                } else if (dirName.rfind(L"php", 0) == 0 || dirName.rfind(L"PHP", 0) == 0) {
+                    verStr = dirName.substr(3);
+                }
+                if (!verStr.empty()) {
+                    phpVer = L"PHP " + verStr + L" (Global System)";
+                } else {
+                    phpVer = L"PHP (Global System)";
+                }
+
+                std::wstring phpNodePath = L"__EXT_PHP__" + phpExePath;
+                DrawerTreeItem phpNode;
+                phpNode.label = phpVer;
+                phpNode.fullPath = phpNodePath;
+                phpNode.depth = 1;
+                phpNode.isFolder = true;
+                phpNode.isExpanded = (m_expandedDirs.count(phpNodePath) > 0);
+                phpNode.iconGlyph = phpNode.isExpanded ? L"\u25BE \u26A1" : L"\u25B8 \u26A1";
+                m_visibleItems.push_back(phpNode);
+
+                if (phpNode.isExpanded) {
+                    std::filesystem::path extDir = std::filesystem::path(phpExePath).parent_path() / L"ext";
+                    if (std::filesystem::exists(extDir, ecCheck)) {
+                        DrawerTreeItem extNode;
+                        extNode.label = L"ext";
+                        extNode.fullPath = extDir.wstring();
+                        extNode.depth = 2;
+                        extNode.isFolder = true;
+                        extNode.isExpanded = (m_expandedDirs.count(extDir.wstring()) > 0);
+                        extNode.iconGlyph = extNode.isExpanded ? L"\u25BE \u25A4" : L"\u25B8 \u25A4";
+                        m_visibleItems.push_back(extNode);
+
+                        if (extNode.isExpanded) {
+                            AddDirectoryChildren(extDir.wstring(), 3);
+                        }
                     }
                 }
             }
@@ -325,6 +429,16 @@ void DrawerPanel::AddDirectoryChildren(const std::wstring& dirPath, int depth) {
 
         bool isDir = entry.is_directory(ec);
         if (isDir) {
+            // User requirement: ".venv shows only on correct files if the file doesnt even have any python file then the .venv of python would not be shown"
+            if ((name == L".venv" || name == L"venv") && !m_hasPythonFiles) {
+                continue;
+            }
+            if ((name == L"vendor") && !m_hasPhpFiles) {
+                continue;
+            }
+            if ((name == L"node_modules") && !m_hasNodeFiles) {
+                continue;
+            }
             folders.push_back({ name, entry.path().wstring(), true });
         } else {
             files.push_back({ name, entry.path().wstring(), false });
@@ -5458,6 +5572,7 @@ bool DrawerPanel::HitTestGit(POINT pt, const app::AppConfig& config,
                     m_focusedGitInput = 1;
                     if (pOutPromptEmptyCommit) {
                         *pOutPromptEmptyCommit = true;
+                        ClearGitTooltip();
                         return true;
                     }
                     m_gitTooltipText = L"Please provide a commit message before committing.";
@@ -7266,26 +7381,55 @@ void DrawerPanel::RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, 
     // =========================================================================
     // 6. Floating Tooltip Rendering (Only when menus are closed)
     // =========================================================================
-    if (m_showGitTooltip && !m_gitTooltipText.empty() && m_activeGitMenu == GitMenuType::None) {
-        float tipPadX = config.ScaleF(8.0f);
-        float tipPadY = config.ScaleF(4.0f);
-        float tipW = (std::min)(config.ScaleF(260.0f), config.ScaleF(static_cast<float>(m_gitTooltipText.length() * 7 + 16)));
-        float tipH = config.ScaleF(m_gitTooltipText.find(L'\n') != std::wstring::npos ? 38.0f : 24.0f);
+    if (m_showGitTooltip && !m_gitTooltipText.empty() && m_activeGitMenu == GitMenuType::None && !m_isPublishModalOpen) {
+        float tipPadX = config.ScaleF(10.0f);
+        float tipPadY = config.ScaleF(5.0f);
+        float measuredW = 0.0f;
+        float measuredH = 0.0f;
+
+        IDWriteTextFormat* pFmt = theme.fontMenuItem.Get() ? theme.fontMenuItem.Get() : theme.fontButtonCenter.Get();
+        if (theme.dwriteFactory && pFmt) {
+            Microsoft::WRL::ComPtr<IDWriteTextLayout> pLayout;
+            if (SUCCEEDED(theme.dwriteFactory->CreateTextLayout(
+                    m_gitTooltipText.c_str(), static_cast<UINT32>(m_gitTooltipText.length()),
+                    pFmt, 1000.0f, 200.0f, &pLayout)) && pLayout) {
+                DWRITE_TEXT_METRICS tm{};
+                if (SUCCEEDED(pLayout->GetMetrics(&tm))) {
+                    measuredW = tm.widthIncludingTrailingWhitespace;
+                    measuredH = tm.height;
+                }
+            }
+        }
+        if (measuredW <= 0.0f) {
+            measuredW = static_cast<float>(m_gitTooltipText.length()) * config.ScaleF(8.0f);
+            measuredH = config.ScaleF(16.0f);
+        }
+
+        float maxDrawerTipW = (std::max)(config.ScaleF(80.0f), currentDrawerW - config.ScaleF(16.0f));
+        float tipW = (std::min)(maxDrawerTipW, measuredW + tipPadX * 2.0f);
+        float tipH = measuredH + tipPadY * 2.0f;
 
         float tipX = m_gitTooltipTarget.left;
-        if (tipX + tipW > railW + currentDrawerW) tipX = railW + currentDrawerW - tipW - 4.0f;
-        float tipY = m_gitTooltipTarget.bottom + config.ScaleF(4.0f);
-        if (tipY + tipH > clientHeight) tipY = m_gitTooltipTarget.top - tipH - config.ScaleF(4.0f);
+        if (tipX + tipW > railW + currentDrawerW - config.ScaleF(6.0f)) {
+            tipX = railW + currentDrawerW - tipW - config.ScaleF(6.0f);
+        }
+        if (tipX < railW + config.ScaleF(6.0f)) {
+            tipX = railW + config.ScaleF(6.0f);
+        }
+
+        float tipY = m_gitTooltipTarget.bottom + config.ScaleF(6.0f);
+        if (tipY + tipH > clientHeight - config.ScaleF(10.0f)) {
+            tipY = m_gitTooltipTarget.top - tipH - config.ScaleF(6.0f);
+        }
 
         D2D1_RECT_F rcTipBox = D2D1::RectF(tipX, tipY, tipX + tipW, tipY + tipH);
-        D2D1_ROUNDED_RECT rrcTip = D2D1::RoundedRect(rcTipBox, 3.5f, 3.5f);
+        D2D1_ROUNDED_RECT rrcTip = D2D1::RoundedRect(rcTipBox, 4.0f, 4.0f);
         pRT->FillRoundedRectangle(rrcTip, theme.brushTooltipBg.Get());
         pRT->DrawRoundedRectangle(rrcTip, theme.brushTooltipBorder.Get(), 1.0f);
 
         D2D1_RECT_F rcTipText = D2D1::RectF(tipX + tipPadX, tipY + tipPadY, tipX + tipW - tipPadX, tipY + tipH - tipPadY);
         pRT->DrawText(m_gitTooltipText.c_str(), static_cast<UINT32>(m_gitTooltipText.length()),
-                      theme.fontMenuItem.Get() ? theme.fontMenuItem.Get() : theme.fontButtonCenter.Get(),
-                      rcTipText, theme.brushTooltipText.Get());
+                      pFmt, rcTipText, theme.brushTooltipText.Get());
     }
 }
 

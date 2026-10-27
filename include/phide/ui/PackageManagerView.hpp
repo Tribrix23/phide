@@ -179,12 +179,17 @@ public:
      * @brief Fetches packages from Supabase remote REST API asynchronously.
      */
     void FetchSupabasePackagesAsync(const std::wstring& query = L"");
+    void FetchInitialPackagesFromSupabase(RuntimeLanguage lang);
+    void ParseAndMergeSupabasePackages(const std::string& responseBody, RuntimeLanguage lang);
 
     [[nodiscard]] size_t GetPackageCount() const noexcept { return m_packages.size(); }
     [[nodiscard]] size_t GetFilteredPackageCount() const noexcept { return m_filteredIndices.size(); }
     [[nodiscard]] const std::vector<size_t>& GetFilteredIndices() const noexcept { return m_filteredIndices; }
     [[nodiscard]] const std::vector<PackageEntry>& GetPackages() const noexcept { return m_packages; }
     [[nodiscard]] const std::vector<PackageEntry>& GetPhpPackages() const noexcept { return m_phpPackages; }
+    [[nodiscard]] const std::vector<PackageEntry>& GetNodePackages() const noexcept { return m_nodePackages; }
+    [[nodiscard]] const D2D1_RECT_F& GetDropdownProjectRect() const noexcept { return m_rcDropdownProject; }
+    [[nodiscard]] const D2D1_RECT_F& GetDropdownGlobalRect() const noexcept { return m_rcDropdownGlobal; }
     [[nodiscard]] int GetSelectedIndex() const noexcept { return m_selectedIndex; }
     void SetSelectedIndex(int idx);
 
@@ -203,13 +208,14 @@ public:
     void HideWebView();
     void NavigateToPackage(const std::wstring& url);
 
+    std::vector<PackageEntry>& GetActivePackageList();
+    [[nodiscard]] const std::vector<PackageEntry>& GetActivePackageList() const;
+
 private:
     void DetectInstalledRuntimes();
     void InitializeCatalog();
     void ApplyFilter();
     int ComputeRelevance(const std::wstring& text, const std::wstring& query) const;
-    void Populate500PythonPackages();
-    void Populate500PhpPackages();
     void LoadAssetBitmaps(ID2D1RenderTarget* pRT);
     void RenderBrandedIcon(ID2D1RenderTarget* pRT, Theme& theme, RuntimeLanguage lang, const D2D1_RECT_F& bounds);
     void RenderGitHubWebPage(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config, const PackageEntry& pkg, const D2D1_RECT_F& bounds);
@@ -245,6 +251,7 @@ private:
     // Package catalog
     std::vector<PackageEntry> m_packages;
     std::vector<PackageEntry> m_phpPackages;
+    std::vector<PackageEntry> m_nodePackages;
     std::vector<size_t> m_filteredIndices;
     int m_selectedIndex = -1;
     int m_hoveredIndex = -1;
@@ -275,6 +282,7 @@ private:
     // Supabase REST API state
     std::atomic<bool> m_isFetchingRemote{ false };
     std::atomic<bool> m_remoteFetchSuccess{ false };
+    std::atomic<uint64_t> m_searchTicket{ 0 };
     std::mutex m_packageMutex;
 
     std::function<void(const std::wstring&, const std::wstring&, PkgInstallScope)> m_onInstallCallback;

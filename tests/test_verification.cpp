@@ -8612,7 +8612,11 @@ run_test_70:
         // 2. Verify PackageManagerView: Initial screen MUST be the Language Grid first (User Image 2)
         phide::ui::PackageManagerView pkgView;
         assert(pkgView.GetViewState() == phide::ui::PkgViewState::LanguageGrid);
-        assert(pkgView.GetPackageCount() >= 500); // 500 packages catalog
+        // Wait up to 5 seconds for background Supabase fetch to stream initial packages from database
+        for (int w = 0; w < 50 && pkgView.GetPackageCount() == 0; ++w) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
+        assert(pkgView.GetPackageCount() > 0); // Real Supabase packages loaded!
         assert(pkgView.GetFilteredPackageCount() == 0); // Output is initial NONE!
         std::cout << "  Passed: PackageManagerView initialized in LanguageGrid state with initial NONE output." << std::endl;
 
@@ -8623,8 +8627,11 @@ run_test_70:
         assert(pkgView.GetFilteredPackageCount() == 0); // Still NONE until user types!
         std::cout << "  Passed: Selecting Python opens Package Search view with initial NONE output." << std::endl;
 
-        // 4. Test Search Bar & Fuzzy Relevance Ranking from 500-package catalog
+        // 4. Test Search Bar & Fuzzy Relevance Ranking from database catalog
         pkgView.SetSearchQuery(L"matplotlib");
+        for (int w = 0; w < 40 && pkgView.GetFilteredPackageCount() == 0; ++w) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
         assert(pkgView.GetFilteredPackageCount() >= 1);
         assert(pkgView.GetSelectedIndex() == 0);
         std::cout << "  Passed: Exact search for 'matplotlib' ranked #1." << std::endl;
@@ -8638,6 +8645,20 @@ run_test_70:
         pkgView.SetSearchQuery(L"req");
         assert(pkgView.GetFilteredPackageCount() >= 1);
         std::cout << "  Passed: Query 'req' matches 'requests'." << std::endl;
+
+        // Test searching for "docker" from Supabase database catalog
+        pkgView.SetSearchQuery(L"docker");
+        for (int w = 0; w < 40 && pkgView.GetFilteredPackageCount() == 0; ++w) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
+        assert(pkgView.GetFilteredPackageCount() >= 1);
+        assert(pkgView.GetSelectedIndex() == 0);
+        size_t firstDockerIdx = pkgView.GetFilteredIndices()[0];
+        const auto& dockerPkg = pkgView.GetPackages()[firstDockerIdx];
+        assert(dockerPkg.name == L"docker");
+        assert(dockerPkg.download == L"pip install docker");
+        assert(dockerPkg.github == L"https://github.com/docker/docker-py");
+        std::cout << "  Passed: Search for 'docker' returned authentic package with 'pip install docker' and 'https://github.com/docker/docker-py'." << std::endl;
 
         // Reset query -> output returns to NONE (memory optimization, lazy load on demand)
         pkgView.SetSearchQuery(L"");
@@ -8660,12 +8681,18 @@ run_test_70:
         pkgView.SelectLanguageAndOpenSearch(phide::ui::RuntimeLanguage::Php);
         assert(pkgView.GetActiveLanguage() == phide::ui::RuntimeLanguage::Php);
         pkgView.SetSearchQuery(L"guzzle");
+        for (int w = 0; w < 40 && pkgView.GetFilteredPackageCount() == 0; ++w) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
         assert(pkgView.GetFilteredPackageCount() >= 1);
         std::cout << "  Passed: PHP Composer package search for 'guzzle' verified." << std::endl;
 
         // Switch back to Python
         pkgView.SelectLanguageAndOpenSearch(phide::ui::RuntimeLanguage::Python);
         pkgView.SetSearchQuery(L"matplotlib");
+        for (int w = 0; w < 40 && pkgView.GetFilteredPackageCount() == 0; ++w) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
 
         // 6. Test Git Splitter Ratio & Center Persistence
         phide::ui::DrawerPanel drawer;
@@ -8737,6 +8764,28 @@ run_test_70:
         SaveWicBitmapToPng(pWicSnapSearch.Get(), pWicFactory.Get(), snapSearchPath);
         assert(std::filesystem::exists(snapSearchPath));
         std::wcout << L"  Passed: Saved Search & Split Install screenshot to: " << snapSearchPath << std::endl;
+
+        // Visual Render Test: Docker package search from Supabase & GitHub Preview
+        ComPtr<IWICBitmap> pWicSnapDocker;
+        pWicFactory->CreateBitmap(snapW, snapH, GUID_WICPixelFormat32bppPBGRA, WICBitmapCacheOnDemand, &pWicSnapDocker);
+        ComPtr<ID2D1RenderTarget> pRTSnapDocker;
+        pD2DFactory->CreateWicBitmapRenderTarget(pWicSnapDocker.Get(), rtProps, &pRTSnapDocker);
+        pRTSnapDocker->BeginDraw();
+        pRTSnapDocker->Clear(D2D1::ColorF(0x18181b));
+        rail.Render(pRTSnapDocker.Get(), theme, config, 800.0f);
+        pkgView.SetSearchQuery(L"docker");
+        pkgView.SetSelectedIndex(0);
+        pkgView.Render(pRTSnapDocker.Get(), theme, config, 48.0f, snapW - 48.0f, 0.0f, 800.0f);
+        HRESULT hrDocker = pRTSnapDocker->EndDraw();
+        assert(SUCCEEDED(hrDocker));
+        std::wstring snapDockerPath = artDir + L"test_package_manager_docker_supabase.png";
+        SaveWicBitmapToPng(pWicSnapDocker.Get(), pWicFactory.Get(), snapDockerPath);
+        assert(std::filesystem::exists(snapDockerPath));
+        std::wcout << L"  Passed: Saved Docker Supabase Search screenshot to: " << snapDockerPath << std::endl;
+
+        // Switch back to matplotlib for dropdown test
+        pkgView.SetSearchQuery(L"matplotlib");
+        pkgView.SetSelectedIndex(0);
 
         // 8b. Visual Render Test 2b: Split Install Dropdown Popover [✓ Project (Default) / Global]
         ComPtr<IWICBitmap> pWicSnapDropdown;
@@ -8913,18 +8962,28 @@ run_test_70:
 
         pkgView.SelectLanguageAndOpenSearch(phide::ui::RuntimeLanguage::Python);
         pkgView.SetSearchQuery(L"matplotlib");
+        for (int w = 0; w < 40 && pkgView.GetFilteredPackageCount() == 0; ++w) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
+        assert(pkgView.GetFilteredPackageCount() > 0);
+
+        // Render so pkg bounds and button rectangles are computed
+        pRTSnapSearch->BeginDraw();
+        pkgView.Render(pRTSnapSearch.Get(), theme, config, 48.0f, snapW - 48.0f, 0.0f, 800.0f);
+        pRTSnapSearch->EndDraw();
+
         POINT ptSearchBox{ 100, 66 };
         LPCWSTR curSearch = pkgView.GetCursorForPoint(ptSearchBox);
         assert(curSearch == IDC_IBEAM);
         std::cout << "  Passed: Search box returns IDC_IBEAM text cursor." << std::endl;
 
         // Find rendered install button position for first result
-        const auto& pkgs = pkgView.GetPackages();
-        assert(!pkgs.empty());
-        POINT ptInstallBtn{ static_cast<LONG>(pkgs[0].rcInstallBtn.left + 5.0f), static_cast<LONG>(pkgs[0].rcInstallBtn.top + 5.0f) };
+        size_t firstMatIdx = pkgView.GetFilteredIndices()[0];
+        const auto& matPkg = pkgView.GetPackages()[firstMatIdx];
+        POINT ptInstallBtn{ static_cast<LONG>(matPkg.rcInstallBtn.left + 5.0f), static_cast<LONG>(matPkg.rcInstallBtn.top + 5.0f) };
         LPCWSTR curInstall = pkgView.GetCursorForPoint(ptInstallBtn);
         assert(curInstall == IDC_HAND);
-        POINT ptArrowBtn{ static_cast<LONG>(pkgs[0].rcSplitArrowBtn.left + 5.0f), static_cast<LONG>(pkgs[0].rcSplitArrowBtn.top + 5.0f) };
+        POINT ptArrowBtn{ static_cast<LONG>(matPkg.rcSplitArrowBtn.left + 5.0f), static_cast<LONG>(matPkg.rcSplitArrowBtn.top + 5.0f) };
         LPCWSTR curArrow = pkgView.GetCursorForPoint(ptArrowBtn);
         assert(curArrow == IDC_HAND);
         std::cout << "  Passed: Install button and Split Arrow return IDC_HAND pointer cursor." << std::endl;
@@ -8932,14 +8991,14 @@ run_test_70:
         // 17. Test Package Installation & Processes HUD Floating Card (User Image 2 & 3)
         // Click install button
         pkgView.HandleLButtonDown(ptInstallBtn);
-        assert(executedPkg == pkgs[0].name);
+        assert(executedPkg == matPkg.name);
         assert(!executedCmd.empty());
         std::wcout << L"  Passed: Clicked install button triggered callback for " << executedPkg << std::endl;
 
         // Mark installed
-        pkgView.MarkPackageInstalled(pkgs[0].name);
-        assert(pkgView.GetPackages()[0].isInstalled);
-        assert(!pkgView.GetPackages()[0].isInstalling);
+        pkgView.MarkPackageInstalled(matPkg.name);
+        assert(pkgView.GetPackages()[firstMatIdx].isInstalled);
+        assert(!pkgView.GetPackages()[firstMatIdx].isInstalling);
         std::cout << "  Passed: Package marked installed successfully." << std::endl;
 
         // Visual Render Test: Installed button turns RED with "Uninstall" text (User Image 2 & 3)
@@ -8960,8 +9019,8 @@ run_test_70:
         // Clicking the button when installed triggers uninstall
         pkgView.HandleLButtonDown(ptInstallBtn);
         assert(executedCmd.find(L"uninstall") != std::wstring::npos);
-        pkgView.MarkPackageUninstalled(pkgs[0].name);
-        assert(!pkgView.GetPackages()[0].isInstalled);
+        pkgView.MarkPackageUninstalled(matPkg.name);
+        assert(!pkgView.GetPackages()[firstMatIdx].isInstalled);
         std::cout << "  Passed: Clicking installed package triggers pip uninstall and changes button back." << std::endl;
 
         // Visual Render Test: PyCharm-style External Libraries and .venv in Explorer Tree (User Image 2)
@@ -8997,6 +9056,9 @@ run_test_70:
             phide::ui::DrawerPanel crudDrawer;
             crudDrawer.OpenFolder(phpCrudPath);
             
+            assert(crudDrawer.HasPhpFiles());
+            assert(!crudDrawer.HasPythonFiles());
+
             bool foundVenvNode = false;
             int extLibIdx = -1;
             for (size_t i = 0; i < crudDrawer.GetTreeItems().size(); ++i) {
@@ -9004,58 +9066,101 @@ run_test_70:
                 if (itm.label == L".venv") foundVenvNode = true;
                 if (itm.label == L"External Libraries") extLibIdx = static_cast<int>(i);
             }
-            assert(foundVenvNode);
-            std::cout << "  Passed: .venv folder visible in Explorer tree for open project." << std::endl;
+            // User requirement: ".venv shows only on correct files if the file doesnt even have any python file then the .venv of python would not be shown"
+            assert(!foundVenvNode);
+            std::cout << "  Passed: .venv is NOT shown in project tree because php-student-crud has no Python files." << std::endl;
 
             if (extLibIdx >= 0) {
                 crudDrawer.ToggleFolder(extLibIdx); // expand External Libraries
-                std::wcout << L"Tree items after ToggleFolder(" << extLibIdx << L"):" << std::endl;
-                for (size_t i = 0; i < crudDrawer.GetTreeItems().size(); ++i) {
-                    std::wcout << L"  [" << i << L"] " << crudDrawer.GetTreeItems()[i].label << L" (path=" << crudDrawer.GetTreeItems()[i].fullPath << L")" << std::endl;
-                }
+                bool foundGlobalPhp = false;
                 bool foundGlobalPy = false;
-                int pyNodeIdx = -1;
+                int phpNodeIdx = -1;
                 for (size_t i = 0; i < crudDrawer.GetTreeItems().size(); ++i) {
                     const auto& itm = crudDrawer.GetTreeItems()[i];
-                    if (itm.label.find(L"Global System") != std::wstring::npos) {
+                    if (itm.label.find(L"PHP") != std::wstring::npos && itm.label.find(L"Global System") != std::wstring::npos) {
+                        foundGlobalPhp = true;
+                        phpNodeIdx = static_cast<int>(i);
+                    }
+                    if (itm.label.find(L"Python") != std::wstring::npos && itm.label.find(L"Global System") != std::wstring::npos) {
                         foundGlobalPy = true;
-                        pyNodeIdx = static_cast<int>(i);
                     }
                 }
-                assert(foundGlobalPy);
-                std::cout << "  Passed: External Libraries shows Global System Python, keeping .venv separate in project tree." << std::endl;
+                assert(foundGlobalPhp);
+                assert(!foundGlobalPy); // Python NOT shown in PHP project without Python files
+                std::cout << "  Passed: External Libraries shows PHP (Global System) and does NOT show Python in PHP-only project." << std::endl;
 
-                if (pyNodeIdx >= 0) {
-                    crudDrawer.ToggleFolder(pyNodeIdx); // expand Global Python
-                    int spIdx = -1;
+                if (phpNodeIdx >= 0) {
+                    crudDrawer.ToggleFolder(phpNodeIdx); // expand PHP
+                    int extDirIdx = -1;
                     for (size_t i = 0; i < crudDrawer.GetTreeItems().size(); ++i) {
-                        if (crudDrawer.GetTreeItems()[i].label == L"site-packages") spIdx = static_cast<int>(i);
+                        if (crudDrawer.GetTreeItems()[i].label == L"ext") extDirIdx = static_cast<int>(i);
                     }
-                    if (spIdx >= 0) {
-                        crudDrawer.ToggleFolder(spIdx); // expand site-packages
-                        bool hasMatplotlib = false;
+                    if (extDirIdx >= 0) {
+                        crudDrawer.ToggleFolder(extDirIdx); // expand ext
+                        bool hasPhpCurl = false;
                         for (const auto& itm : crudDrawer.GetTreeItems()) {
-                            if (itm.label == L"matplotlib") hasMatplotlib = true;
+                            if (itm.label.find(L"php_curl") != std::wstring::npos) hasPhpCurl = true;
                         }
-                        assert(hasMatplotlib);
-                        std::cout << "  Passed: Global System site-packages contains matplotlib package." << std::endl;
+                        assert(hasPhpCurl);
+                        std::cout << "  Passed: PHP (Global System) includes 'ext' extensions folder with php_curl." << std::endl;
                     }
                 }
             }
 
-            // Test PackageManagerView::ScanInstalledPackages
-            pkgView.ScanInstalledPackages(phpCrudPath);
+            // Test Dual Language Project (both Python and PHP)
+            std::filesystem::path dualPath = std::filesystem::path(L"bin") / L"test_dual_proj";
+            std::filesystem::create_directories(dualPath, ecPhp);
+            std::filesystem::create_directories(dualPath / L".venv" / L"Lib" / L"site-packages", ecPhp);
+            {
+                std::ofstream fPy(dualPath / L"script.py"); fPy << "import flask\n";
+                std::ofstream fPhp(dualPath / L"index.php"); fPhp << "<?php echo 'hi';\n";
+            }
+            phide::ui::DrawerPanel dualDrawer;
+            dualDrawer.OpenFolder(dualPath.wstring());
+            assert(dualDrawer.HasPythonFiles());
+            assert(dualDrawer.HasPhpFiles());
+
+            // Both .venv and External Libraries present
+            bool dualHasVenv = false;
+            int dualExtLibIdx = -1;
+            for (size_t i = 0; i < dualDrawer.GetTreeItems().size(); ++i) {
+                if (dualDrawer.GetTreeItems()[i].label == L".venv") dualHasVenv = true;
+                if (dualDrawer.GetTreeItems()[i].label == L"External Libraries") dualExtLibIdx = static_cast<int>(i);
+            }
+            assert(dualHasVenv);
+            assert(dualExtLibIdx >= 0);
+            dualDrawer.ToggleFolder(dualExtLibIdx);
+
+            bool dualHasPy = false, dualHasPhp = false;
+            for (const auto& itm : dualDrawer.GetTreeItems()) {
+                if (itm.label.find(L"Python") != std::wstring::npos && itm.label.find(L"Global System") != std::wstring::npos) dualHasPy = true;
+                if (itm.label.find(L"PHP") != std::wstring::npos && itm.label.find(L"Global System") != std::wstring::npos) dualHasPhp = true;
+            }
+            assert(dualHasPy);
+            assert(dualHasPhp);
+            std::cout << "  Passed: Multi-language project cleanly shows separate collapsible nodes for both Python and PHP in External Libraries." << std::endl;
+            std::filesystem::remove_all(dualPath, ecPhp);
+
+            // Test PackageManagerView::ScanInstalledPackages with project-level .venv
+            pkgView.SelectLanguageAndOpenSearch(phide::ui::RuntimeLanguage::Python);
+            pkgView.SetSearchQuery(L"Flask");
+            for (int w = 0; w < 40 && pkgView.GetFilteredPackageCount() == 0; ++w) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            }
+            std::filesystem::path scopeProj = std::filesystem::path(L"bin") / L"test_scope_proj";
+            std::filesystem::create_directories(scopeProj / L".venv" / L"Lib" / L"site-packages" / L"flask-3.1.3.dist-info", ecPhp);
+            pkgView.ScanInstalledPackages(scopeProj.wstring());
             bool flaskInstalledProject = false;
             bool flaskInstalledGlobal = false;
             bool mplInstalledProject = false;
             bool mplInstalledGlobal = false;
 
             for (const auto& pkg : pkgView.GetPackages()) {
-                if (pkg.name == L"flask") {
+                if (_wcsicmp(pkg.name.c_str(), L"flask") == 0) {
                     flaskInstalledProject = pkg.isInstalledProject;
                     flaskInstalledGlobal = pkg.isInstalledGlobal;
                 }
-                if (pkg.name == L"matplotlib") {
+                if (_wcsicmp(pkg.name.c_str(), L"matplotlib") == 0) {
                     mplInstalledProject = pkg.isInstalledProject;
                     mplInstalledGlobal = pkg.isInstalledGlobal;
                 }
@@ -9065,10 +9170,11 @@ run_test_70:
             assert(!mplInstalledProject);
             assert(mplInstalledGlobal);
             std::cout << "  Passed: PackageManagerView accurately isolates scopes (flask: Project=true, Global=false; matplotlib: Project=false, Global=true)." << std::endl;
+            std::filesystem::remove_all(scopeProj, ecPhp);
 
             // Test Scope Switching for flask: Project (Uninstall) vs Global (Install)
             for (auto& pkg : const_cast<std::vector<phide::ui::PackageEntry>&>(pkgView.GetPackages())) {
-                if (pkg.name == L"flask") {
+                if (_wcsicmp(pkg.name.c_str(), L"flask") == 0) {
                     pkg.scope = phide::ui::PkgInstallScope::Project;
                     pkg.isInstalled = pkg.isInstalledProject;
                     assert(pkg.isInstalled == true);
@@ -9162,6 +9268,228 @@ run_test_70:
         SaveWicBitmapToPng(pWicNoVerGrid.Get(), pWicFactory.Get(), snapNoVerPath);
         assert(std::filesystem::exists(snapNoVerPath));
         std::wcout << L"  Passed: Saved Language Grid (No Versions) snapshot to: " << snapNoVerPath << std::endl;
+
+        // 20. Test PHP Package Manager & 10up/wp_mock with composer require
+        std::cout << "\n  --- Testing PHP Package Manager & 10up/wp_mock with composer require ---" << std::endl;
+        pkgView.SelectLanguageAndOpenSearch(phide::ui::RuntimeLanguage::Php);
+        assert(pkgView.GetActiveLanguage() == phide::ui::RuntimeLanguage::Php);
+        assert(pkgView.GetViewState() == phide::ui::PkgViewState::PackageSearch);
+
+        // Search for wp_mock
+        pkgView.SetSearchQuery(L"wp_mock");
+        for (int w = 0; w < 40 && pkgView.GetFilteredPackageCount() == 0; ++w) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
+        assert(pkgView.GetFilteredPackageCount() > 0);
+
+        const auto& phpPkgs = pkgView.GetPhpPackages();
+        size_t firstPhpFiltered = pkgView.GetFilteredIndices()[0];
+        assert(firstPhpFiltered < phpPkgs.size());
+        const auto& wpMockPkg = phpPkgs[firstPhpFiltered];
+        assert(wpMockPkg.name == L"10up/wp_mock");
+        assert(wpMockPkg.download == L"composer require 10up/wp_mock");
+        std::cout << "  Passed: PHP Package Manager search for 'wp_mock' returned 10up/wp_mock with download 'composer require 10up/wp_mock'." << std::endl;
+
+        // Render PHP Package Manager search results & GitHub Preview snapshot
+        pkgView.SetSelectedIndex(0);
+        ComPtr<IWICBitmap> pWicPhpSnap;
+        pWicFactory->CreateBitmap(snapW, snapH, GUID_WICPixelFormat32bppPBGRA, WICBitmapCacheOnDemand, &pWicPhpSnap);
+        ComPtr<ID2D1RenderTarget> pRTPhpSnap;
+        pD2DFactory->CreateWicBitmapRenderTarget(pWicPhpSnap.Get(), rtProps, &pRTPhpSnap);
+        pRTPhpSnap->BeginDraw();
+        pRTPhpSnap->Clear(D2D1::ColorF(0x18181b));
+        pkgView.Render(pRTPhpSnap.Get(), theme, config, 48.0f, snapW - 48.0f, 0.0f, static_cast<float>(snapH));
+        HRESULT hrPhpSnap = pRTPhpSnap->EndDraw();
+        assert(SUCCEEDED(hrPhpSnap));
+        std::wstring snapPhpPath = artDir + L"test_php_package_manager_wp_mock.png";
+        SaveWicBitmapToPng(pWicPhpSnap.Get(), pWicFactory.Get(), snapPhpPath);
+        assert(std::filesystem::exists(snapPhpPath));
+        std::wcout << L"  Passed: Saved PHP Package Manager snapshot with 10up/wp_mock to: " << snapPhpPath << std::endl;
+
+        // Test clicking Install button for 10up/wp_mock (Project Scope)
+        size_t curPhpIdx = pkgView.GetFilteredIndices()[0];
+        POINT ptPhpInstall{ static_cast<LONG>(pkgView.GetPhpPackages()[curPhpIdx].rcInstallBtn.left + 5.0f), static_cast<LONG>(pkgView.GetPhpPackages()[curPhpIdx].rcInstallBtn.top + 5.0f) };
+        pkgView.HandleLButtonDown(ptPhpInstall);
+        assert(executedPkg == L"10up/wp_mock");
+        assert(executedCmd == L"composer require 10up/wp_mock");
+        assert(executedScope == phide::ui::PkgInstallScope::Project);
+        std::cout << "  Passed: Clicking Install on 10up/wp_mock executes 'composer require 10up/wp_mock' in Project scope." << std::endl;
+
+        // Test Global Scope for PHP Package
+        POINT ptPhpArrow{ static_cast<LONG>(pkgView.GetPhpPackages()[curPhpIdx].rcSplitArrowBtn.left + 5.0f), static_cast<LONG>(pkgView.GetPhpPackages()[curPhpIdx].rcSplitArrowBtn.top + 5.0f) };
+        pkgView.HandleLButtonDown(ptPhpArrow); // open dropdown
+        // Render so dropdown rectangles are positioned
+        pRTPhpSnap->BeginDraw();
+        pkgView.Render(pRTPhpSnap.Get(), theme, config, 48.0f, snapW - 48.0f, 0.0f, static_cast<float>(snapH));
+        pRTPhpSnap->EndDraw();
+
+        // Click Global
+        pkgView.HandleLButtonDown(POINT{ static_cast<LONG>(pkgView.GetDropdownGlobalRect().left + 10.0f), static_cast<LONG>(pkgView.GetDropdownGlobalRect().top + 10.0f) });
+        curPhpIdx = pkgView.GetFilteredIndices()[0];
+        assert(pkgView.GetPhpPackages()[curPhpIdx].scope == phide::ui::PkgInstallScope::Global);
+
+        // Click Install in Global Scope
+        ptPhpInstall = POINT{ static_cast<LONG>(pkgView.GetPhpPackages()[curPhpIdx].rcInstallBtn.left + 5.0f), static_cast<LONG>(pkgView.GetPhpPackages()[curPhpIdx].rcInstallBtn.top + 5.0f) };
+        pkgView.HandleLButtonDown(ptPhpInstall);
+        assert(executedCmd == L"composer global require 10up/wp_mock");
+        assert(executedScope == phide::ui::PkgInstallScope::Global);
+        std::cout << "  Passed: In Global scope, install command is 'composer global require 10up/wp_mock'." << std::endl;
+
+        // Mark installed in Global Scope
+        pkgView.MarkPackageInstalled(L"10up/wp_mock", phide::ui::PkgInstallScope::Global);
+        assert(pkgView.GetPhpPackages()[firstPhpFiltered].isInstalledGlobal);
+        assert(pkgView.GetPhpPackages()[firstPhpFiltered].isInstalled);
+
+        // Click button when installed -> triggers uninstall
+        pkgView.HandleLButtonDown(ptPhpInstall);
+        assert(executedCmd == L"composer global remove 10up/wp_mock");
+        std::cout << "  Passed: Uninstall in Global scope executes 'composer global remove 10up/wp_mock'." << std::endl;
+
+        // Switch back to Project Scope
+        pkgView.HandleLButtonDown(ptPhpArrow);
+        pRTPhpSnap->BeginDraw();
+        pkgView.Render(pRTPhpSnap.Get(), theme, config, 48.0f, snapW - 48.0f, 0.0f, static_cast<float>(snapH));
+        pRTPhpSnap->EndDraw();
+
+        pkgView.HandleLButtonDown(POINT{ static_cast<LONG>(pkgView.GetDropdownProjectRect().left + 10.0f), static_cast<LONG>(pkgView.GetDropdownProjectRect().top + 10.0f) });
+        assert(pkgView.GetPhpPackages()[firstPhpFiltered].scope == phide::ui::PkgInstallScope::Project);
+        assert(!pkgView.GetPhpPackages()[firstPhpFiltered].isInstalled); // Not installed in project yet
+
+        // Test ScanInstalledPackages with composer.json and vendor/
+        std::filesystem::path testCompDir = std::filesystem::path(L"bin") / L"test_composer_proj";
+        std::error_code ecComp;
+        std::filesystem::create_directories(testCompDir / L"vendor" / L"10up" / L"wp_mock", ecComp);
+        {
+            std::ofstream compJson(testCompDir / L"composer.json");
+            compJson << "{\n  \"require\": {\n    \"10up/wp_mock\": \"^1.0\"\n  }\n}\n";
+        }
+        pkgView.ScanInstalledPackages(testCompDir.wstring());
+        assert(pkgView.GetPhpPackages()[firstPhpFiltered].isInstalledProject);
+        std::cout << "  Passed: ScanInstalledPackages detected 10up/wp_mock in workspace vendor/ and composer.json." << std::endl;
+        std::filesystem::remove_all(testCompDir, ecComp);
+
+        // 21. Test Node.js Package Manager & @11ty/eleventy-utils with npm install
+        std::cout << "\n  --- Testing Node.js Package Manager & @11ty/eleventy-utils with npm install ---" << std::endl;
+        pkgView.SelectLanguageAndOpenSearch(phide::ui::RuntimeLanguage::Node);
+        assert(pkgView.GetActiveLanguage() == phide::ui::RuntimeLanguage::Node);
+        assert(pkgView.GetViewState() == phide::ui::PkgViewState::PackageSearch);
+
+        // Search for eleventy-utils
+        pkgView.SetSearchQuery(L"eleventy-utils");
+        for (int w = 0; w < 40 && pkgView.GetFilteredPackageCount() == 0; ++w) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
+        assert(pkgView.GetFilteredPackageCount() > 0);
+
+        const auto& nodePkgs = pkgView.GetNodePackages();
+        size_t firstNodeFiltered = pkgView.GetFilteredIndices()[0];
+        assert(firstNodeFiltered < nodePkgs.size());
+        const auto& eleventyPkg = nodePkgs[firstNodeFiltered];
+        assert(eleventyPkg.name == L"@11ty/eleventy-utils");
+        assert(eleventyPkg.download == L"npm install @11ty/eleventy-utils");
+        assert(eleventyPkg.github == L"https://github.com/11ty/eleventy-utils");
+        std::cout << "  Passed: Node.js Package Manager search for 'eleventy-utils' returned @11ty/eleventy-utils with download 'npm install @11ty/eleventy-utils'." << std::endl;
+
+        // Search for 3dmol from user's database (Image 2 row 20)
+        pkgView.SetSearchQuery(L"3dmol");
+        for (int w = 0; w < 40 && pkgView.GetFilteredPackageCount() == 0; ++w) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
+        assert(pkgView.GetFilteredPackageCount() > 0);
+        size_t molFiltered = pkgView.GetFilteredIndices()[0];
+        const auto& molPkg = nodePkgs[molFiltered];
+        assert(molPkg.name == L"3dmol");
+        assert(molPkg.download == L"npm install 3dmol");
+        assert(molPkg.github == L"https://github.com/3dmol/3Dmol.js");
+        std::cout << "  Passed: Node.js Package Manager search for '3dmol' returned 3dmol with download 'npm install 3dmol'." << std::endl;
+
+        // Switch back to eleventy-utils for install tests
+        pkgView.SetSearchQuery(L"eleventy-utils");
+        for (int w = 0; w < 40 && pkgView.GetFilteredPackageCount() == 0; ++w) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
+        firstNodeFiltered = pkgView.GetFilteredIndices()[0];
+
+        // Render Node.js Package Manager search results & GitHub Preview snapshot
+        pkgView.SetSelectedIndex(0);
+        ComPtr<IWICBitmap> pWicNodeSnap;
+        pWicFactory->CreateBitmap(snapW, snapH, GUID_WICPixelFormat32bppPBGRA, WICBitmapCacheOnDemand, &pWicNodeSnap);
+        ComPtr<ID2D1RenderTarget> pRTNodeSnap;
+        pD2DFactory->CreateWicBitmapRenderTarget(pWicNodeSnap.Get(), rtProps, &pRTNodeSnap);
+        pRTNodeSnap->BeginDraw();
+        pRTNodeSnap->Clear(D2D1::ColorF(0x18181b));
+        pkgView.Render(pRTNodeSnap.Get(), theme, config, 48.0f, snapW - 48.0f, 0.0f, static_cast<float>(snapH));
+        HRESULT hrNodeSnap = pRTNodeSnap->EndDraw();
+        assert(SUCCEEDED(hrNodeSnap));
+        std::wstring snapNodePath = artDir + L"test_node_package_manager_eleventy.png";
+        SaveWicBitmapToPng(pWicNodeSnap.Get(), pWicFactory.Get(), snapNodePath);
+        assert(std::filesystem::exists(snapNodePath));
+        std::wcout << L"  Passed: Saved Node.js Package Manager snapshot with @11ty/eleventy-utils to: " << snapNodePath << std::endl;
+
+        // Test clicking Install button for @11ty/eleventy-utils (Project Scope)
+        size_t cur11tyIdx = pkgView.GetFilteredIndices()[0];
+        POINT ptNodeInstall{ static_cast<LONG>(pkgView.GetNodePackages()[cur11tyIdx].rcInstallBtn.left + 5.0f), static_cast<LONG>(pkgView.GetNodePackages()[cur11tyIdx].rcInstallBtn.top + 5.0f) };
+        pkgView.HandleLButtonDown(ptNodeInstall);
+        assert(executedPkg == L"@11ty/eleventy-utils");
+        assert(executedCmd == L"npm install @11ty/eleventy-utils");
+        assert(executedScope == phide::ui::PkgInstallScope::Project);
+        std::cout << "  Passed: Clicking Install on @11ty/eleventy-utils executes 'npm install @11ty/eleventy-utils' in Project scope." << std::endl;
+
+        // Test Global Scope for Node Package
+        POINT ptNodeArrow{ static_cast<LONG>(pkgView.GetNodePackages()[cur11tyIdx].rcSplitArrowBtn.left + 5.0f), static_cast<LONG>(pkgView.GetNodePackages()[cur11tyIdx].rcSplitArrowBtn.top + 5.0f) };
+        pkgView.HandleLButtonDown(ptNodeArrow); // open dropdown
+        // Render so dropdown rectangles are positioned
+        pRTNodeSnap->BeginDraw();
+        pkgView.Render(pRTNodeSnap.Get(), theme, config, 48.0f, snapW - 48.0f, 0.0f, static_cast<float>(snapH));
+        pRTNodeSnap->EndDraw();
+
+        // Click Global
+        pkgView.HandleLButtonDown(POINT{ static_cast<LONG>(pkgView.GetDropdownGlobalRect().left + 10.0f), static_cast<LONG>(pkgView.GetDropdownGlobalRect().top + 10.0f) });
+        cur11tyIdx = pkgView.GetFilteredIndices()[0];
+        assert(pkgView.GetNodePackages()[cur11tyIdx].scope == phide::ui::PkgInstallScope::Global);
+
+        // Click Install in Global Scope
+        ptNodeInstall = POINT{ static_cast<LONG>(pkgView.GetNodePackages()[cur11tyIdx].rcInstallBtn.left + 5.0f), static_cast<LONG>(pkgView.GetNodePackages()[cur11tyIdx].rcInstallBtn.top + 5.0f) };
+        pkgView.HandleLButtonDown(ptNodeInstall);
+        assert(executedCmd == L"npm install -g @11ty/eleventy-utils");
+        assert(executedScope == phide::ui::PkgInstallScope::Global);
+        std::cout << "  Passed: In Global scope, install command is 'npm install -g @11ty/eleventy-utils'." << std::endl;
+
+        // Mark installed in Global Scope
+        pkgView.MarkPackageInstalled(L"@11ty/eleventy-utils", phide::ui::PkgInstallScope::Global);
+        cur11tyIdx = pkgView.GetFilteredIndices()[0];
+        assert(pkgView.GetNodePackages()[cur11tyIdx].isInstalledGlobal);
+        assert(pkgView.GetNodePackages()[cur11tyIdx].isInstalled);
+
+        // Click button when installed -> triggers uninstall
+        pkgView.HandleLButtonDown(ptNodeInstall);
+        assert(executedCmd == L"npm uninstall -g @11ty/eleventy-utils");
+        std::cout << "  Passed: Uninstall in Global scope executes 'npm uninstall -g @11ty/eleventy-utils'." << std::endl;
+
+        // Switch back to Project Scope
+        ptNodeArrow = POINT{ static_cast<LONG>(pkgView.GetNodePackages()[cur11tyIdx].rcSplitArrowBtn.left + 5.0f), static_cast<LONG>(pkgView.GetNodePackages()[cur11tyIdx].rcSplitArrowBtn.top + 5.0f) };
+        pkgView.HandleLButtonDown(ptNodeArrow);
+        pRTNodeSnap->BeginDraw();
+        pkgView.Render(pRTNodeSnap.Get(), theme, config, 48.0f, snapW - 48.0f, 0.0f, static_cast<float>(snapH));
+        pRTNodeSnap->EndDraw();
+
+        pkgView.HandleLButtonDown(POINT{ static_cast<LONG>(pkgView.GetDropdownProjectRect().left + 10.0f), static_cast<LONG>(pkgView.GetDropdownProjectRect().top + 10.0f) });
+        cur11tyIdx = pkgView.GetFilteredIndices()[0];
+        assert(pkgView.GetNodePackages()[cur11tyIdx].scope == phide::ui::PkgInstallScope::Project);
+        assert(!pkgView.GetNodePackages()[cur11tyIdx].isInstalled); // Not installed in project yet
+
+        // Test ScanInstalledPackages with package.json and node_modules/@11ty/eleventy-utils
+        std::filesystem::path testNodeDir = std::filesystem::path(L"bin") / L"test_node_proj";
+        std::error_code ecNode;
+        std::filesystem::create_directories(testNodeDir / L"node_modules" / L"@11ty" / L"eleventy-utils", ecNode);
+        {
+            std::ofstream pkgJson(testNodeDir / L"package.json");
+            pkgJson << "{\n  \"dependencies\": {\n    \"@11ty/eleventy-utils\": \"^1.0.3\"\n  }\n}\n";
+        }
+        pkgView.ScanInstalledPackages(testNodeDir.wstring());
+        assert(pkgView.GetNodePackages()[firstNodeFiltered].isInstalledProject);
+        std::cout << "  Passed: ScanInstalledPackages detected @11ty/eleventy-utils in workspace node_modules and package.json." << std::endl;
+        std::filesystem::remove_all(testNodeDir, ecNode);
 
         std::cout << "  Passed: All [TEST 70] Package Manager and Git fixes passed successfully!" << std::endl;
     }

@@ -21,8 +21,8 @@ void ConfirmDiscardModal::Render(ID2D1RenderTarget* pRT, Theme& theme, const app
 
     // 2. Card Dimensions and Center Placement
     const bool isNotice = (m_type == ConfirmModalType::Notice);
-    const float cardW = config.ScaleF(470.0f);
-    const float cardH = config.ScaleF(168.0f);
+    const float cardW = config.ScaleF(510.0f);
+    const float cardH = config.ScaleF(185.0f);
     const float cardX = (std::max)(0.0f, (clientW - cardW) * 0.5f);
     const float cardY = (std::max)(0.0f, (clientH - cardH) * 0.5f);
     m_cardBounds = D2D1::RectF(cardX, cardY, cardX + cardW, cardY + cardH);
@@ -135,10 +135,11 @@ void ConfirmDiscardModal::Render(ID2D1RenderTarget* pRT, Theme& theme, const app
         titleText = L"Discard Changes?";
     }
 
-    const float textLeft = iconX + iconSize + config.ScaleF(12.0f);
-    const float textRight = m_closeBtnBounds.left - config.ScaleF(10.0f);
+    const float textLeft = iconX + iconSize + config.ScaleF(14.0f);
+    const float textRight = cardX + cardW - config.ScaleF(24.0f);
+    const float titleRight = m_closeBtnBounds.left - config.ScaleF(10.0f);
 
-    D2D1_RECT_F rcTitle = D2D1::RectF(textLeft, iconY + config.ScaleF(3.0f), textRight, iconY + config.ScaleF(26.0f));
+    D2D1_RECT_F rcTitle = D2D1::RectF(textLeft, iconY + config.ScaleF(3.0f), titleRight, iconY + config.ScaleF(26.0f));
     IDWriteTextFormat* pFmtTitle = theme.fontTitle ? theme.fontTitle.Get() : theme.fontMenuItem.Get();
     ID2D1Brush* textPrimary = theme.IsDarkMode()
         ? (theme.brushTextWhite ? theme.brushTextWhite.Get() : theme.brushTextPrimary.Get())
@@ -165,13 +166,13 @@ void ConfirmDiscardModal::Render(ID2D1RenderTarget* pRT, Theme& theme, const app
     }
 
     IDWriteTextFormat* pFmtBody = theme.fontBody ? theme.fontBody.Get() : pFmtTitle;
-    D2D1_RECT_F rcMainMsg = D2D1::RectF(textLeft, iconY + config.ScaleF(32.0f), textRight, iconY + config.ScaleF(56.0f));
+    D2D1_RECT_F rcMainMsg = D2D1::RectF(textLeft, iconY + config.ScaleF(30.0f), textRight, iconY + config.ScaleF(58.0f));
     if (pFmtBody && textPrimary) {
         pRT->DrawText(mainMsg.c_str(), static_cast<UINT32>(mainMsg.length()), pFmtBody, rcMainMsg, textPrimary);
     }
 
     ID2D1Brush* textMuted = theme.brushTextMuted ? theme.brushTextMuted.Get() : textPrimary;
-    D2D1_RECT_F rcSubMsg = D2D1::RectF(textLeft, iconY + config.ScaleF(56.0f), textRight, iconY + config.ScaleF(78.0f));
+    D2D1_RECT_F rcSubMsg = D2D1::RectF(textLeft, iconY + config.ScaleF(60.0f), textRight, iconY + config.ScaleF(118.0f));
     if (pFmtHint && textMuted) {
         pRT->DrawText(subMsg.c_str(), static_cast<UINT32>(subMsg.length()), pFmtHint, rcSubMsg, textMuted);
     }
