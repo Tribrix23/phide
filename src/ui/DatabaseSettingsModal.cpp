@@ -23,7 +23,7 @@ static std::filesystem::path GetPhideRoot() {
     if (std::filesystem::exists(std::filesystem::current_path() / L"include" / L"phide")) {
         return std::filesystem::current_path();
     }
-    return std::filesystem::path(L"c:\\Users\\Administrator\\Downloads\\studio\\phide");
+    return std::filesystem::current_path();
 }
 
 static inline bool PtInRectF(POINT pt, const D2D1_RECT_F& rc) {

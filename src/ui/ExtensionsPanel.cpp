@@ -118,7 +118,6 @@ static std::wstring ResolveAssetPath(const std::wstring& filename) {
     std::filesystem::path exeDir = std::filesystem::path(exePath).parent_path();
 
     std::vector<std::filesystem::path> candidates = {
-        std::filesystem::path(L"c:\\Users\\Administrator\\Downloads\\studio\\phide\\assets") / filename,
         exeDir / L"assets" / filename,
         exeDir.parent_path() / L"assets" / filename,
         std::filesystem::current_path() / L"assets" / filename,
@@ -325,7 +324,33 @@ void ExtensionsPanel::RefreshPcStatus() {
             };
             std::vector<PyEnvInfo> detectedPythons;
 
-            // 1. Query py.exe -0p to discover all registered Python interpreters on the system
+            auto tryAddPython = [&](const std::wstring& exePath, bool isDef) {
+                if (exePath.empty() || !std::filesystem::exists(exePath)) return;
+                std::error_code ec;
+                std::filesystem::path canonical = std::filesystem::weakly_canonical(exePath, ec);
+                std::wstring normPath = ec ? exePath : canonical.wstring();
+
+                for (auto& dp : detectedPythons) {
+                    std::filesystem::path p1 = std::filesystem::weakly_canonical(dp.path, ec);
+                    if (_wcsicmp(normPath.c_str(), (ec ? dp.path : p1.wstring()).c_str()) == 0) {
+                        if (isDef) dp.isDefault = true;
+                        return;
+                    }
+                }
+
+                std::wstring verOut = RunCmdCapture(L"\"" + normPath + L"\" --version");
+                std::wstring ver;
+                auto vPos = verOut.find(L"Python ");
+                if (vPos != std::wstring::npos) {
+                    ver = verOut.substr(vPos + 7);
+                    while (!ver.empty() && (ver.back() == L'\r' || ver.back() == L'\n' || ver.back() == L' ')) ver.pop_back();
+                }
+                if (!ver.empty()) {
+                    detectedPythons.push_back({ ver, normPath, isDef });
+                }
+            };
+
+            // 1. Query py.exe -0p to discover registered Python interpreters
             std::wstring py0p = RunCmdCapture(L"py.exe -0p");
             if (!py0p.empty()) {
                 std::wstringstream ss(py0p);
@@ -339,63 +364,68 @@ void ExtensionsPanel::RefreshPcStatus() {
                     if (colIdx != std::wstring::npos && colIdx > 0) {
                         std::wstring exePath = line.substr(colIdx - 1);
                         while (!exePath.empty() && (exePath.back() == L' ' || exePath.back() == L'\t' || exePath.back() == L'\r')) exePath.pop_back();
-                        if (std::filesystem::exists(exePath)) {
-                            std::wstring verOut = RunCmdCapture(L"\"" + exePath + L"\" --version");
-                            std::wstring ver;
-                            auto vPos = verOut.find(L"Python ");
-                            if (vPos != std::wstring::npos) {
-                                ver = verOut.substr(vPos + 7);
-                                while (!ver.empty() && (ver.back() == L'\r' || ver.back() == L'\n' || ver.back() == L' ')) ver.pop_back();
-                            }
-                            if (ver.empty()) {
-                                if (exePath.find(L"3.14.7") != std::wstring::npos) ver = L"3.14.7";
-                                else if (exePath.find(L"Python313") != std::wstring::npos) ver = L"3.13.9";
-                                else ver = L"3.14.7";
-                            }
-                            detectedPythons.push_back({ ver, exePath, isDef });
-                        }
+                        tryAddPython(exePath, isDef);
                     }
                 }
             }
 
-            // Ensure all known installation directories are checked and included (e.g. 3.15, 3.14.7, 3.13.9)
-            std::wstring userProfile = _wgetenv(L"USERPROFILE") ? _wgetenv(L"USERPROFILE") : L"";
-            std::vector<std::pair<std::wstring, std::wstring>> candidates = {
-                { L"3.15.1", userProfile + L"\\AppData\\Local\\Programs\\Python\\Python315\\python.exe" },
-                { L"3.14.7", userProfile + L"\\AppData\\Roaming\\Quantix Code\\python-installs\\3.14.7\\python-3.14.7\\python.exe" },
-                { L"3.13.9", userProfile + L"\\AppData\\Local\\Programs\\Python\\Python313\\python.exe" }
+            // 2. Query Windows Registry (PEP 514 standard registrations in HKCU and HKLM)
+            auto scanRegistryPython = [&](HKEY root) {
+                HKEY hPyCore = nullptr;
+                if (RegOpenKeyExW(root, L"Software\\Python\\PythonCore", 0, KEY_READ, &hPyCore) == ERROR_SUCCESS) {
+                    wchar_t subKeyName[256];
+                    DWORD idx = 0;
+                    DWORD nameLen = 256;
+                    while (RegEnumKeyExW(hPyCore, idx++, subKeyName, &nameLen, nullptr, nullptr, nullptr, nullptr) == ERROR_SUCCESS) {
+                        nameLen = 256;
+                        std::wstring subPath = std::wstring(L"Software\\Python\\PythonCore\\") + subKeyName + L"\\InstallPath";
+                        HKEY hInstall = nullptr;
+                        if (RegOpenKeyExW(root, subPath.c_str(), 0, KEY_READ, &hInstall) == ERROR_SUCCESS) {
+                            wchar_t valBuf[MAX_PATH] = { 0 };
+                            DWORD dwType = REG_SZ;
+                            DWORD dwSz = sizeof(valBuf);
+                            if (RegQueryValueExW(hInstall, L"ExecutablePath", nullptr, &dwType, reinterpret_cast<LPBYTE>(valBuf), &dwSz) == ERROR_SUCCESS && valBuf[0] != 0) {
+                                tryAddPython(valBuf, false);
+                            } else {
+                                dwSz = sizeof(valBuf);
+                                if (RegQueryValueExW(hInstall, nullptr, nullptr, &dwType, reinterpret_cast<LPBYTE>(valBuf), &dwSz) == ERROR_SUCCESS && valBuf[0] != 0) {
+                                    std::filesystem::path p(valBuf);
+                                    if (p.filename() != L"python.exe") p /= L"python.exe";
+                                    tryAddPython(p.wstring(), false);
+                                }
+                            }
+                            RegCloseKey(hInstall);
+                        }
+                    }
+                    RegCloseKey(hPyCore);
+                }
             };
-            for (const auto& c : candidates) {
-                if (std::filesystem::exists(c.second)) {
-                    bool alreadyFound = false;
-                    for (const auto& dp : detectedPythons) {
-                        if (_wcsicmp(dp.path.c_str(), c.second.c_str()) == 0 || dp.ver == c.first) {
-                            alreadyFound = true;
-                            break;
+            scanRegistryPython(HKEY_CURRENT_USER);
+            scanRegistryPython(HKEY_LOCAL_MACHINE);
+
+            // 3. Scan user's %LOCALAPPDATA%\Programs\Python directory
+            wchar_t szLocalApp[MAX_PATH] = { 0 };
+            if (GetEnvironmentVariableW(L"LOCALAPPDATA", szLocalApp, MAX_PATH) > 0) {
+                std::filesystem::path pyRoot = std::filesystem::path(szLocalApp) / L"Programs" / L"Python";
+                std::error_code ec;
+                if (std::filesystem::exists(pyRoot, ec)) {
+                    for (const auto& entry : std::filesystem::directory_iterator(pyRoot, ec)) {
+                        if (entry.is_directory()) {
+                            std::filesystem::path cand = entry.path() / L"python.exe";
+                            tryAddPython(cand.wstring(), false);
                         }
                     }
-                    if (!alreadyFound) {
-                        detectedPythons.push_back({ c.first, c.second, false });
-                    }
                 }
             }
 
-            if (detectedPythons.empty()) {
-                wchar_t foundPath[MAX_PATH] = { 0 };
-                if (SearchPathW(nullptr, L"python.exe", nullptr, MAX_PATH, foundPath, nullptr) > 0) {
-                    std::wstring verOut = RunCmdCapture(L"\"" + std::wstring(foundPath) + L"\" --version");
-                    std::wstring ver = L"3.14.7";
-                    auto vPos = verOut.find(L"Python ");
-                    if (vPos != std::wstring::npos) {
-                        ver = verOut.substr(vPos + 7);
-                        while (!ver.empty() && (ver.back() == L'\r' || ver.back() == L'\n' || ver.back() == L' ')) ver.pop_back();
-                    }
-                    detectedPythons.push_back({ ver, foundPath, true });
-                }
+            // 4. Check system PATH via SearchPathW
+            wchar_t foundPath[MAX_PATH] = { 0 };
+            if (SearchPathW(nullptr, L"python.exe", nullptr, MAX_PATH, foundPath, nullptr) > 0) {
+                tryAddPython(foundPath, detectedPythons.empty());
             }
 
+            // Populate environments purely from verified existing executables
             if (!detectedPythons.empty()) {
-                // Ensure default interpreter is first
                 int defIdx = 0;
                 for (size_t i = 0; i < detectedPythons.size(); ++i) {
                     if (detectedPythons[i].isDefault) {
@@ -419,7 +449,7 @@ void ExtensionsPanel::RefreshPcStatus() {
                 envGlobal.isDefault = true;
                 item.environments.push_back(envGlobal);
 
-                // Secondary system environments (e.g. Python 3.13.9)
+                // Secondary system environments (all other detected versions on PC)
                 for (size_t i = 1; i < detectedPythons.size(); ++i) {
                     EnvironmentOption envSec;
                     envSec.name = L"Python " + detectedPythons[i].ver + L" (System PATH)";
@@ -431,25 +461,31 @@ void ExtensionsPanel::RefreshPcStatus() {
             } else {
                 item.isInstalled = false;
                 item.installedVersion.clear();
+                item.installPath.clear();
             }
 
-            // Windows Python Launcher (py.exe)
-            if (std::filesystem::exists(L"C:\\Windows\\py.exe")) {
+            // Windows Python Launcher (py.exe) - only if actually present
+            wchar_t pyLauncher[MAX_PATH] = { 0 };
+            if (SearchPathW(nullptr, L"py.exe", nullptr, MAX_PATH, pyLauncher, nullptr) > 0 ||
+                std::filesystem::exists(L"C:\\Windows\\py.exe")) {
                 EnvironmentOption envLauncher;
                 envLauncher.name = L"Windows Python Launcher (py.exe)";
-                envLauncher.path = L"C:\\Windows\\py.exe";
+                envLauncher.path = (pyLauncher[0] != 0) ? pyLauncher : L"C:\\Windows\\py.exe";
                 envLauncher.type = L"Global Launcher";
                 envLauncher.isDefault = false;
                 item.environments.push_back(envLauncher);
             }
 
-            // Workspace Virtual Environment (.venv)
-            EnvironmentOption envVenv;
-            envVenv.name = L"Workspace Virtual Environment (.venv)";
-            envVenv.path = L".\\.venv\\Scripts\\python.exe";
-            envVenv.type = L"Virtualenv";
-            envVenv.isDefault = false;
-            item.environments.push_back(envVenv);
+            // Workspace Virtual Environment (.venv) - only if actually present
+            std::filesystem::path venvPy = std::filesystem::current_path() / L".venv" / L"Scripts" / L"python.exe";
+            if (std::filesystem::exists(venvPy)) {
+                EnvironmentOption envVenv;
+                envVenv.name = L"Workspace Virtual Environment (.venv)";
+                envVenv.path = venvPy.wstring();
+                envVenv.type = L"Virtualenv";
+                envVenv.isDefault = false;
+                item.environments.push_back(envVenv);
+            }
 
             item.defaultEnvIdx = 0;
 
@@ -473,14 +509,23 @@ void ExtensionsPanel::RefreshPcStatus() {
                     if (end != std::wstring::npos) detectedVer = outVer.substr(p, end - p);
                     else detectedVer = outVer.substr(p);
                 }
-                if (detectedVer.empty()) detectedVer = L"26.3.0";
+                if (detectedVer.empty()) {
+                    std::wstring outVer2 = RunCmdCapture(L"\"" + std::wstring(foundPath) + L"\" --version");
+                    if (!outVer2.empty()) {
+                        size_t p = 0;
+                        while (p < outVer2.size() && (outVer2[p] == L'v' || outVer2[p] == L'V' || outVer2[p] == L' ')) p++;
+                        size_t end = outVer2.find_first_of(L" \r\n", p);
+                        if (end != std::wstring::npos) detectedVer = outVer2.substr(p, end - p);
+                        else detectedVer = outVer2.substr(p);
+                    }
+                }
 
                 item.isInstalled = true;
                 item.installedVersion = detectedVer;
                 item.installPath = foundPath;
 
                 EnvironmentOption envGlobal;
-                envGlobal.name = L"Node.js " + detectedVer + L" (Global System)";
+                envGlobal.name = !detectedVer.empty() ? (L"Node.js " + detectedVer + L" (Global System)") : L"Node.js (Global System)";
                 envGlobal.path = foundPath;
                 envGlobal.type = L"System PATH";
                 envGlobal.isDefault = true;
@@ -489,7 +534,7 @@ void ExtensionsPanel::RefreshPcStatus() {
                 item.isInstalled = false;
                 item.installedVersion.clear();
                 EnvironmentOption envGlobal;
-                envGlobal.name = L"Node.js 26.3.0 (System PATH - Not Installed)";
+                envGlobal.name = L"Node.js (System PATH - Not Installed)";
                 envGlobal.path = L"C:\\Program Files\\nodejs\\node.exe";
                 envGlobal.type = L"System PATH";
                 envGlobal.isDefault = false;
@@ -541,18 +586,22 @@ void ExtensionsPanel::RefreshPcStatus() {
                             detectedVer = outVer.substr(4, sp - 4);
                         }
                     }
-                    if (detectedVer.empty()) detectedVer = L"8.5";
+                    if (detectedVer.empty()) {
+                        std::wstring outVer2 = RunCmdCapture(L"\"" + std::wstring(foundPath) + L"\" -r \"echo PHP_VERSION;\"");
+                        while (!outVer2.empty() && (outVer2.back() == L'\r' || outVer2.back() == L'\n' || outVer2.back() == L' ')) outVer2.pop_back();
+                        if (!outVer2.empty()) detectedVer = outVer2;
+                    }
                 }
                 item.isInstalled = true;
                 item.installedVersion = detectedVer;
                 item.installPath = foundPath;
-                if (item.versions.empty()) {
+                if (item.versions.empty() && !detectedVer.empty()) {
                     item.selectedVersionIdx = 0;
                     item.versions = { L"v" + detectedVer };
                 }
 
                 EnvironmentOption envPath;
-                envPath.name = L"PHP " + detectedVer + L" (Global System)";
+                envPath.name = !detectedVer.empty() ? (L"PHP " + detectedVer + L" (Global System)") : L"PHP (Global System)";
                 envPath.path = foundPath;
                 envPath.type = L"System PATH";
                 envPath.isDefault = true;
@@ -751,9 +800,22 @@ void ExtensionsPanel::CreateWorkspaceVenv(std::function<void(const std::wstring&
             std::filesystem::create_directories(venvDir / "Lib" / "site-packages");
             std::ofstream cfg(venvDir / "pyvenv.cfg");
             if (cfg.is_open()) {
+                std::wstring vOut = RunCmdCapture(L"\"" + pyExe + L"\" --version");
+                std::string vStr;
+                if (vOut.find(L"Python ") != std::wstring::npos) {
+                    std::wstring wVer = vOut.substr(vOut.find(L"Python ") + 7);
+                    while (!wVer.empty() && (wVer.back() == L'\r' || wVer.back() == L'\n' || wVer.back() == L' ')) wVer.pop_back();
+                    if (!wVer.empty()) {
+                        int len = WideCharToMultiByte(CP_UTF8, 0, wVer.c_str(), -1, nullptr, 0, nullptr, nullptr);
+                        if (len > 1) {
+                            vStr.resize(len - 1);
+                            WideCharToMultiByte(CP_UTF8, 0, wVer.c_str(), -1, &vStr[0], len, nullptr, nullptr);
+                        }
+                    }
+                }
                 cfg << "home = " << std::filesystem::path(pyExe).parent_path().string() << "\n";
                 cfg << "include-system-site-packages = false\n";
-                cfg << "version = 3.13.9\n";
+                cfg << "version = " << vStr << "\n";
             }
         }
 
@@ -830,7 +892,7 @@ void ExtensionsPanel::UninstallRuntime(int itemIdx, const std::wstring& version,
                 item.environments.clear();
 
                 EnvironmentOption envGlobal;
-                envGlobal.name = L"Node.js 26.3.0 (System PATH - Not Installed)";
+                envGlobal.name = L"Node.js (System PATH - Not Installed)";
                 envGlobal.path = L"C:\\Program Files\\nodejs\\node.exe";
                 envGlobal.type = L"System PATH";
                 envGlobal.isDefault = true;
@@ -851,7 +913,8 @@ void ExtensionsPanel::UninstallRuntime(int itemIdx, const std::wstring& version,
                 if (szAppData[0] != 0) {
                     targetDir = std::filesystem::path(szAppData) / L"Programs" / L"PHP" / (L"v" + cleanVer);
                 } else {
-                    targetDir = L"C:\\Users\\Administrator\\AppData\\Local\\Programs\\PHP\\v" + cleanVer;
+                    std::wstring userProfile = _wgetenv(L"USERPROFILE") ? _wgetenv(L"USERPROFILE") : L"";
+                    targetDir = std::filesystem::path(userProfile) / L"AppData" / L"Local" / L"Programs" / L"PHP" / (L"v" + cleanVer);
                 }
                 std::error_code ecDel;
                 std::filesystem::remove_all(targetDir, ecDel);
@@ -1090,7 +1153,8 @@ void ExtensionsPanel::InstallRuntime(int itemIdx, const std::wstring& version, s
                     if (szAppData[0] != 0) {
                         targetDir = std::filesystem::path(szAppData) / L"Programs" / (itemId == L"php" ? L"PHP" : itemName) / (L"v" + cleanVer);
                     } else {
-                        targetDir = L"C:\\Users\\Administrator\\AppData\\Local\\Programs\\PHP\\v" + cleanVer;
+                        std::wstring userProfile = _wgetenv(L"USERPROFILE") ? _wgetenv(L"USERPROFILE") : L"";
+                        targetDir = std::filesystem::path(userProfile) / L"AppData" / L"Local" / L"Programs" / (itemId == L"php" ? L"PHP" : itemName) / (L"v" + cleanVer);
                     }
                     std::error_code ecDir;
                     std::filesystem::create_directories(targetDir, ecDir);
@@ -1197,10 +1261,17 @@ void ExtensionsPanel::InstallRuntime(int itemIdx, const std::wstring& version, s
                 } else {
                     // Standard .exe installer (e.g. Python)
                     UpdateProcessTask(taskTitle, 0.85f, L"Executing installer in background...");
-                    std::wstring majorMinor = cleanVer.substr(0, 1) + cleanVer.substr(2, 2);
-                    std::wstring targetDir = L"C:\\Users\\Administrator\\AppData\\Local\\Programs\\Python\\Python" + majorMinor;
+                    wchar_t szAppData[MAX_PATH] = { 0 };
+                    GetEnvironmentVariableW(L"LOCALAPPDATA", szAppData, MAX_PATH);
+                    std::filesystem::path targetDir;
+                    if (szAppData[0] != 0) {
+                        targetDir = std::filesystem::path(szAppData) / L"Programs" / L"Python" / (L"Python" + cleanVer);
+                    } else {
+                        std::wstring userProfile = _wgetenv(L"USERPROFILE") ? _wgetenv(L"USERPROFILE") : L"";
+                        targetDir = std::filesystem::path(userProfile) / L"AppData" / L"Local" / L"Programs" / L"Python" / (L"Python" + cleanVer);
+                    }
 
-                    std::wstring instCmd = L"\"" + installerPath.wstring() + L"\" /passive /norestart PrependPath=1 TargetDir=\"" + targetDir + L"\"";
+                    std::wstring instCmd = L"\"" + installerPath.wstring() + L"\" /passive /norestart PrependPath=1 TargetDir=\"" + targetDir.wstring() + L"\"";
                     std::vector<wchar_t> instBuf(instCmd.begin(), instCmd.end());
                     instBuf.push_back(0);
 
@@ -1215,8 +1286,8 @@ void ExtensionsPanel::InstallRuntime(int itemIdx, const std::wstring& version, s
                         CloseHandle(piInst.hThread);
                     }
 
-                    if (std::filesystem::exists(targetDir + L"\\python.exe")) {
-                        finalExePath = targetDir + L"\\python.exe";
+                    if (std::filesystem::exists(targetDir / L"python.exe")) {
+                        finalExePath = (targetDir / L"python.exe").wstring();
                     }
                 }
             }
@@ -1226,58 +1297,55 @@ void ExtensionsPanel::InstallRuntime(int itemIdx, const std::wstring& version, s
                 wchar_t found[MAX_PATH] = { 0 };
                 if (SearchPathW(nullptr, (itemId + L".exe").c_str(), nullptr, MAX_PATH, found, nullptr) > 0) {
                     finalExePath = found;
-                } else if (itemId == L"python") {
-                    finalExePath = L"C:\\Users\\Administrator\\AppData\\Roaming\\Quantix Code\\python-installs\\3.14.7\\python-3.14.7\\python.exe";
                 }
             }
+
+            // Determine actual detected version from installed binary
+            std::wstring actualVer = cleanVer;
+            if (!finalExePath.empty() && itemId == L"python") {
+                std::wstring verOut = RunCmdCapture(L"\"" + finalExePath + L"\" --version");
+                auto vPos = verOut.find(L"Python ");
+                if (vPos != std::wstring::npos) {
+                    actualVer = verOut.substr(vPos + 7);
+                    while (!actualVer.empty() && (actualVer.back() == L'\r' || actualVer.back() == L'\n' || actualVer.back() == L' ')) actualVer.pop_back();
+                }
+            }
+
+            // Refresh PC status to discover all installed environments on system
+            RefreshPcStatus();
 
             {
                 std::lock_guard<std::mutex> lock(m_itemsMutex);
                 if (itemIdx < static_cast<int>(m_items.size())) {
                     auto& item = m_items[itemIdx];
-
-                    // Demote old Global System entry to (System PATH) so existing installed versions are preserved!
-                    for (auto& env : item.environments) {
-                        if (env.type == L"System PATH") {
-                            auto pos = env.name.find(L"(Global System)");
-                            if (pos != std::wstring::npos) {
-                                env.name.replace(pos, 15, L"(System PATH)");
+                    if (!finalExePath.empty()) {
+                        int matchIdx = -1;
+                        for (size_t e = 0; e < item.environments.size(); ++e) {
+                            if (item.environments[e].name.find(actualVer) != std::wstring::npos ||
+                                item.environments[e].path == finalExePath) {
+                                matchIdx = static_cast<int>(e);
+                                break;
                             }
-                            env.isDefault = false;
                         }
-                    }
-
-                    int matchIdx = -1;
-                    for (size_t e = 0; e < item.environments.size(); ++e) {
-                        if (item.environments[e].name.find(cleanVer) != std::wstring::npos ||
-                            (!finalExePath.empty() && item.environments[e].path == finalExePath)) {
-                            matchIdx = static_cast<int>(e);
-                            break;
+                        if (matchIdx >= 0) {
+                            item.defaultEnvIdx = matchIdx;
+                        } else {
+                            EnvironmentOption envGlobal;
+                            envGlobal.name = item.name + L" " + actualVer + L" (Global System)";
+                            envGlobal.path = finalExePath;
+                            envGlobal.type = L"System PATH";
+                            envGlobal.isDefault = true;
+                            item.environments.insert(item.environments.begin(), envGlobal);
+                            item.defaultEnvIdx = 0;
                         }
-                    }
 
-                    if (matchIdx >= 0) {
-                        item.environments[matchIdx].name = item.name + L" " + cleanVer + L" (Global System)";
-                        item.environments[matchIdx].path = finalExePath;
-                        item.environments[matchIdx].type = L"System PATH";
-                        item.environments[matchIdx].isDefault = true;
-                        item.defaultEnvIdx = matchIdx;
-                    } else {
-                        EnvironmentOption envGlobal;
-                        envGlobal.name = item.name + L" " + cleanVer + L" (Global System)";
-                        envGlobal.path = finalExePath;
-                        envGlobal.type = L"System PATH";
-                        envGlobal.isDefault = true;
-                        item.environments.insert(item.environments.begin(), envGlobal);
-                        item.defaultEnvIdx = 0;
+                        for (size_t e = 0; e < item.environments.size(); ++e) {
+                            item.environments[e].isDefault = (static_cast<int>(e) == item.defaultEnvIdx);
+                        }
+                        item.installPath = finalExePath;
+                        item.installedVersion = actualVer;
+                        item.isInstalled = true;
                     }
-
-                    for (size_t e = 0; e < item.environments.size(); ++e) {
-                        item.environments[e].isDefault = (static_cast<int>(e) == item.defaultEnvIdx);
-                    }
-                    item.installPath = finalExePath;
-                    item.installedVersion = cleanVer;
-                    item.isInstalled = !finalExePath.empty();
                 }
             }
             CompleteProcessTask(taskTitle, isZipArchive
@@ -1915,8 +1983,7 @@ void ExtensionsPanel::RenderDetailView(ID2D1RenderTarget* pRT, Theme& theme, con
         pRT->CreateSolidColorBrush(D2D1::ColorF(0.20f, 0.85f, 0.45f, 0.50f), &greenPillBorder);
         if (greenPillBorder) pRT->DrawRoundedRectangle(rrcStatPill, greenPillBorder.Get(), 0.8f);
 
-        std::wstring displayVer = !item.installedVersion.empty() ? normalizeVer(item.installedVersion) : L"3.13.9";
-        std::wstring statText = L"● Installed (v" + displayVer + L")";
+        std::wstring statText = !item.installedVersion.empty() ? (L"● Installed (v" + normalizeVer(item.installedVersion) + L")") : L"● Installed";
         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> greenText;
         pRT->CreateSolidColorBrush(D2D1::ColorF(0.25f, 0.90f, 0.45f, 1.0f), &greenText);
         if (pFmtHint && greenText) {

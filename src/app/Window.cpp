@@ -66,7 +66,7 @@ static std::filesystem::path GetPhideRoot() {
     if (std::filesystem::exists(std::filesystem::current_path() / L"include" / L"phide")) {
         return std::filesystem::current_path();
     }
-    return std::filesystem::path(L"c:\\Users\\Administrator\\Downloads\\studio\\phide");
+    return std::filesystem::current_path();
 }
 
 static std::wstring GetRelativePath(const std::wstring& fullPath, const std::wstring& basePath) {
@@ -3928,12 +3928,25 @@ void Window::DoOpenErrorLog() {
 
 void Window::StartPhpServer(const std::wstring& rootDir, int port) {
     StopPhpServer();
-    std::wstring phpExe = L"C:\\Users\\Administrator\\AppData\\Local\\Programs\\PHP\\v8.5\\php.exe";
-    if (!std::filesystem::exists(phpExe)) {
-        phpExe = L"php.exe";
+    std::wstring phpExe = L"php.exe";
+    std::wstring phpIni;
+    wchar_t szLocalApp[MAX_PATH] = { 0 };
+    if (GetEnvironmentVariableW(L"LOCALAPPDATA", szLocalApp, MAX_PATH) > 0) {
+        std::filesystem::path phpRoot = std::filesystem::path(szLocalApp) / L"Programs" / L"PHP";
+        std::error_code ec;
+        if (std::filesystem::exists(phpRoot, ec)) {
+            for (const auto& entry : std::filesystem::directory_iterator(phpRoot, ec)) {
+                if (entry.is_directory() && std::filesystem::exists(entry.path() / L"php.exe", ec)) {
+                    phpExe = (entry.path() / L"php.exe").wstring();
+                    if (std::filesystem::exists(entry.path() / L"php.ini", ec)) {
+                        phpIni = (entry.path() / L"php.ini").wstring();
+                    }
+                    break;
+                }
+            }
+        }
     }
-    std::wstring phpIni = L"C:\\Users\\Administrator\\AppData\\Local\\Programs\\PHP\\v8.5\\php.ini";
-    std::wstring iniArg = std::filesystem::exists(phpIni) ? (L" -c \"" + phpIni + L"\"") : L"";
+    std::wstring iniArg = (!phpIni.empty() && std::filesystem::exists(phpIni)) ? (L" -c \"" + phpIni + L"\"") : L"";
 
     std::filesystem::path prependPath = GetPhideRoot() / L"include" / L"phide" / L"server" / L"phide_prepend.php";
     std::filesystem::path appendPath  = GetPhideRoot() / L"include" / L"phide" / L"server" / L"phide_append.php";
@@ -4132,12 +4145,25 @@ void Window::StartPmaServer() {
         m_header.SetDatabaseState(ui::DatabaseState::Failed);
         return;
     }
-    std::wstring phpExe = L"C:\\Users\\Administrator\\AppData\\Local\\Programs\\PHP\\v8.5\\php.exe";
-    if (!std::filesystem::exists(phpExe)) {
-        phpExe = L"php.exe";
+    std::wstring phpExe = L"php.exe";
+    std::wstring phpIni;
+    wchar_t szLocalAppPma[MAX_PATH] = { 0 };
+    if (GetEnvironmentVariableW(L"LOCALAPPDATA", szLocalAppPma, MAX_PATH) > 0) {
+        std::filesystem::path phpRoot = std::filesystem::path(szLocalAppPma) / L"Programs" / L"PHP";
+        std::error_code ec;
+        if (std::filesystem::exists(phpRoot, ec)) {
+            for (const auto& entry : std::filesystem::directory_iterator(phpRoot, ec)) {
+                if (entry.is_directory() && std::filesystem::exists(entry.path() / L"php.exe", ec)) {
+                    phpExe = (entry.path() / L"php.exe").wstring();
+                    if (std::filesystem::exists(entry.path() / L"php.ini", ec)) {
+                        phpIni = (entry.path() / L"php.ini").wstring();
+                    }
+                    break;
+                }
+            }
+        }
     }
-    std::wstring phpIni = L"C:\\Users\\Administrator\\AppData\\Local\\Programs\\PHP\\v8.5\\php.ini";
-    std::wstring iniArg = std::filesystem::exists(phpIni) ? (L" -c \"" + phpIni + L"\"") : L"";
+    std::wstring iniArg = (!phpIni.empty() && std::filesystem::exists(phpIni)) ? (L" -c \"" + phpIni + L"\"") : L"";
 
     int pmaPort = 8081;
     try {

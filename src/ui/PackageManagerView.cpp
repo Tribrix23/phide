@@ -132,31 +132,83 @@ void PackageManagerView::NavigateToPackage(const std::wstring& url) {
 void PackageManagerView::DetectInstalledRuntimes() {
     m_languageCards.clear();
 
-    // 1. Python Detection (accurately detects PC installed runtime: v3.14.7)
+    // 1. Python Detection - dynamically search system PATH, Windows launcher, and appdata
     LanguageCard pyCard;
     pyCard.lang = RuntimeLanguage::Python;
     pyCard.name = L"Python";
     pyCard.managerName = L"pip";
-    pyCard.isInstalled = true;
-    pyCard.version = L"v3.14.7"; // Actual installed PC runtime (matches py.exe -0p and Quantix Code install)
+    pyCard.isInstalled = false;
+    pyCard.version.clear();
+
+    wchar_t pyFound[MAX_PATH] = { 0 };
+    if (SearchPathW(nullptr, L"python.exe", nullptr, MAX_PATH, pyFound, nullptr) > 0 ||
+        SearchPathW(nullptr, L"py.exe", nullptr, MAX_PATH, pyFound, nullptr) > 0) {
+        pyCard.isInstalled = true;
+        pyCard.executable = pyFound;
+    } else {
+        wchar_t szAppData[MAX_PATH] = { 0 };
+        if (GetEnvironmentVariableW(L"LOCALAPPDATA", szAppData, MAX_PATH) > 0) {
+            std::filesystem::path pyDir = std::filesystem::path(szAppData) / L"Programs" / L"Python";
+            std::error_code ec;
+            if (std::filesystem::exists(pyDir, ec)) {
+                for (const auto& entry : std::filesystem::directory_iterator(pyDir, ec)) {
+                    if (entry.is_directory() && std::filesystem::exists(entry.path() / L"python.exe", ec)) {
+                        pyCard.isInstalled = true;
+                        pyCard.executable = (entry.path() / L"python.exe").wstring();
+                        break;
+                    }
+                }
+            }
+        }
+    }
     m_languageCards.push_back(std::move(pyCard));
 
-    // 2. PHP Detection (accurately detects PC installed runtime: v8.5.12)
+    // 2. PHP Detection - dynamically search system PATH and local appdata programs
     LanguageCard phpCard;
     phpCard.lang = RuntimeLanguage::Php;
     phpCard.name = L"PHP";
-    phpCard.managerName = L"Composer 2.10.3";
-    phpCard.isInstalled = true;
-    phpCard.version = L"v8.5.12"; // Actual installed PC runtime at C:\Users\Administrator\AppData\Local\Programs\PHP\v8.5
+    phpCard.managerName = L"Composer";
+    phpCard.isInstalled = false;
+    phpCard.version.clear();
+
+    wchar_t phpFound[MAX_PATH] = { 0 };
+    if (SearchPathW(nullptr, L"php.exe", nullptr, MAX_PATH, phpFound, nullptr) > 0) {
+        phpCard.isInstalled = true;
+        phpCard.executable = phpFound;
+    } else {
+        wchar_t szAppData[MAX_PATH] = { 0 };
+        if (GetEnvironmentVariableW(L"LOCALAPPDATA", szAppData, MAX_PATH) > 0) {
+            std::filesystem::path phpDir = std::filesystem::path(szAppData) / L"Programs" / L"PHP";
+            std::error_code ec;
+            if (std::filesystem::exists(phpDir, ec)) {
+                for (const auto& entry : std::filesystem::directory_iterator(phpDir, ec)) {
+                    if (entry.is_directory() && std::filesystem::exists(entry.path() / L"php.exe", ec)) {
+                        phpCard.isInstalled = true;
+                        phpCard.executable = (entry.path() / L"php.exe").wstring();
+                        break;
+                    }
+                }
+            }
+        }
+    }
     m_languageCards.push_back(std::move(phpCard));
 
-    // 3. Node.js Detection (accurately detects PC installed runtime: v22.20.0)
+    // 3. Node.js Detection - dynamically search system PATH and Program Files
     LanguageCard nodeCard;
     nodeCard.lang = RuntimeLanguage::Node;
     nodeCard.name = L"Node.js";
     nodeCard.managerName = L"npm";
-    nodeCard.isInstalled = true;
-    nodeCard.version = L"v22.20.0"; // Actual installed PC runtime at C:\Program Files\nodejs\node.exe
+    nodeCard.isInstalled = false;
+    nodeCard.version.clear();
+
+    wchar_t nodeFound[MAX_PATH] = { 0 };
+    if (SearchPathW(nullptr, L"node.exe", nullptr, MAX_PATH, nodeFound, nullptr) > 0) {
+        nodeCard.isInstalled = true;
+        nodeCard.executable = nodeFound;
+    } else if (std::filesystem::exists(L"C:\\Program Files\\nodejs\\node.exe")) {
+        nodeCard.isInstalled = true;
+        nodeCard.executable = L"C:\\Program Files\\nodejs\\node.exe";
+    }
     m_languageCards.push_back(std::move(nodeCard));
 }
 
@@ -1255,11 +1307,6 @@ void PackageManagerView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app:
     pRT->DrawText(envPillText.c_str(), static_cast<UINT32>(envPillText.length()),
                   theme.fontButtonCenter ? theme.fontButtonCenter.Get() : theme.fontBadge.Get(),
                   rcEnvPill, theme.brushBrandAccent.Get());
-
-    // Supabase Cloud Status Indicator
-    std::wstring cloudText = m_remoteFetchSuccess.load() ? L"● Supabase Connected" : L"● Cloud Ready (Anon Key)";
-    D2D1_RECT_F rcCloudBadge = D2D1::RectF(left + width - padX - config.ScaleF(170.0f), curY, left + width - padX, curY + config.ScaleF(24.0f));
-    pRT->DrawText(cloudText.c_str(), static_cast<UINT32>(cloudText.length()), theme.fontHint.Get(), rcCloudBadge, theme.brushTextSecondary.Get());
 
     curY += config.ScaleF(32.0f);
 

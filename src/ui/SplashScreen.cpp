@@ -18,7 +18,6 @@ std::wstring SplashScreen::FindSplashImagePath() {
     std::filesystem::path exeDir = std::filesystem::path(exePath).parent_path();
 
     std::vector<std::filesystem::path> candidates = {
-        std::filesystem::path(L"c:\\Users\\Administrator\\Downloads\\studio\\phide\\assets\\splash.jpg"),
         exeDir / L"assets" / L"splash.jpg",
         exeDir.parent_path() / L"assets" / L"splash.jpg",
         std::filesystem::current_path() / L"assets" / L"splash.jpg",
