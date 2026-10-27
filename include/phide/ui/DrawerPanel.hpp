@@ -105,6 +105,7 @@ struct GitCommitFile {
     D2D1_RECT_F bounds{};
 };
 
+
 /**
  * @struct GitCommitItem
  * @brief Represents a commit in the git history tree.
