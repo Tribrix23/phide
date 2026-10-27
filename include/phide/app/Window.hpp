@@ -32,6 +32,8 @@
 #include "phide/ui/ColorPickerModal.hpp"
 #include "phide/ui/QuickOpenModal.hpp"
 #include "phide/ui/ConfirmDiscardModal.hpp"
+#include "phide/ui/GitErrorModal.hpp"
+#include "phide/ui/GitLogManager.hpp"
 #include "phide/ui/DatabaseSettingsModal.hpp"
 #include "phide/ui/TerminalPanel.hpp"
 #include "phide/ui/ExtensionsPanel.hpp"
@@ -326,6 +328,15 @@ private:
     /** @brief Re-opens the most recently closed editor document tab (Ctrl+Shift+T). */
     void DoReopenClosedEditor();
 
+    /** @brief Shows Git error modal dialog on non-zero exit code or fatal error (matching Image 2). */
+    void ShowGitError(const std::wstring& cmd, const std::wstring& output, const std::wstring& repoDir);
+
+    /** @brief Writes command and output to temporary file in .git/ and opens as an editor tab (matching Image 5). */
+    void ShowGitCommandOutput(const std::wstring& cmd, const std::wstring& output, const std::wstring& repoDir);
+
+    /** @brief Opens terminal bottom panel and activates Git real-time command log tab (matching Images 3 & 4). */
+    void OpenGitLogTerminal();
+
     // --- Edit & Clipboard Commands ---
 
     /** @brief Cuts selected text to system clipboard (Ctrl+X). */
@@ -523,6 +534,10 @@ private:
     ui::ColorPickerModal m_colorPicker;
     ui::QuickOpenModal m_quickOpen;
     ui::ConfirmDiscardModal m_confirmDiscardModal;
+    ui::GitErrorModal m_gitErrorModal;
+    struct PendingGitError { std::wstring command; std::wstring output; std::wstring repoDir; };
+    std::mutex m_gitErrorMutex;
+    std::optional<PendingGitError> m_pendingGitError;
     ui::DatabaseSettingsModal m_dbSettingsModal;
     ui::TerminalPanel m_terminal;
     ui::ExtensionsPanel m_extensionsPanel;

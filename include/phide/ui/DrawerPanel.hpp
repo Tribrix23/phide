@@ -327,6 +327,7 @@ public:
                pt.y >= m_commitCardBounds.top && pt.y <= m_commitCardBounds.bottom;
     }
     void SetOnGitStateChanged(std::function<void()> cb) { m_onGitStateChanged = std::move(cb); }
+    void SetOnGitError(std::function<void(const std::wstring& cmd, const std::wstring& output, const std::wstring& repoDir)> cb) { m_onGitError = std::move(cb); }
 
     // --- First-Time Commit / Publish Repository Popup (VS Code Top-Center Modal) ---
     void OpenPublishRepoModal();
@@ -769,6 +770,7 @@ private:
     D2D1_RECT_F m_commitCardGitHubBounds{};
     std::wstring m_commitCardHash;
     std::function<void()> m_onGitStateChanged;
+    std::function<void(const std::wstring& cmd, const std::wstring& output, const std::wstring& repoDir)> m_onGitError;
 
     // Tooltip state
     std::wstring m_gitTooltipText;

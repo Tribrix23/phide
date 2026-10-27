@@ -5,6 +5,7 @@
 
 #include "phide/ui/DrawerPanel.hpp"
 #include "phide/ui/ActivityRail.hpp"
+#include "phide/ui/GitLogManager.hpp"
 #include "phide/editor/Buffer.hpp"
 #include <algorithm>
 #include <iostream>
@@ -3740,6 +3741,9 @@ GitCmdResult RunGitCmd(const std::wstring& cmd, const std::wstring& workDir) {
 
     CloseHandle(pi.hProcess);
     CloseHandle(pi.hThread);
+
+    DWORD durationMs = GetTickCount() - startTime;
+    GitLogManager::Instance().LogCommand(fullCmd, res.exitCode, res.output, durationMs);
     return res;
 }
 
@@ -5309,25 +5313,50 @@ void DrawerPanel::CommitChangesAsync(const std::wstring& message) {
         if (workers) workers->fetch_add(1);
         auto finish = [&]() {
             m_isGitLoading = false;
+            m_isCommitting = false;
             if (workers) workers->fetch_sub(1);
+            if (m_onGitStateChanged) m_onGitStateChanged();
         };
         if (!alive || !alive->load()) { finish(); return; }
         m_isGitLoading = true;
+        m_isCommitting = true;
+        if (m_onGitStateChanged) m_onGitStateChanged();
+
         std::wstring dir = m_openFolderPath.empty() ? L"." : m_openFolderPath;
 
         // Ensure context-aware .gitignore exists
         EnsureContextAwareGitignore(dir);
         RefreshTree();
 
-        RunGitCmd(L"add -A", dir);
+        auto resAdd = RunGitCmd(L"add -A", dir);
         if (!alive || !alive->load()) { finish(); return; }
+        if (resAdd.exitCode != 0) {
+            if (m_onGitError) {
+                m_onGitError(L"git add -A", resAdd.output, dir);
+            }
+            RefreshGitState(false);
+            finish();
+            return;
+        }
+
         std::wstring escapedMsg;
         for (wchar_t c : msg) {
             if (c == L'"') escapedMsg += L"\\\"";
             else escapedMsg += c;
         }
-        RunGitCmd(L"commit -m \"" + escapedMsg + L"\"", dir);
+        std::wstring commitCmd = L"commit -m \"" + escapedMsg + L"\"";
+        auto resCommit = RunGitCmd(commitCmd, dir);
         if (!alive || !alive->load()) { finish(); return; }
+
+        if (resCommit.exitCode != 0 || resCommit.output.find(L"fatal:") != std::wstring::npos || resCommit.output.find(L"error:") != std::wstring::npos) {
+            if (m_onGitError) {
+                m_onGitError(L"git " + commitCmd, resCommit.output, dir);
+            }
+            RefreshGitState(false);
+            finish();
+            return;
+        }
+
         {
             std::lock_guard<std::recursive_mutex> lock(m_gitMutex);
             m_commitMessage.clear();
@@ -5379,12 +5408,16 @@ void DrawerPanel::PushCommitsAsync() {
         auto finish = [&]() {
             m_isGitLoading = false;
             if (workers) workers->fetch_sub(1);
+            if (m_onGitStateChanged) m_onGitStateChanged();
         };
         try {
             if (alive && alive->load()) {
                 m_isGitLoading = true;
                 std::wstring dir = m_openFolderPath.empty() ? L"." : m_openFolderPath;
-                RunGitCmd(L"push", dir);
+                auto res = RunGitCmd(L"push", dir);
+                if (res.exitCode != 0 && m_onGitError) {
+                    m_onGitError(L"git push", res.output, dir);
+                }
                 if (alive && alive->load()) {
                     RefreshGitState(false);
                 }
@@ -5402,12 +5435,16 @@ void DrawerPanel::PullCommitsAsync() {
         auto finish = [&]() {
             m_isGitLoading = false;
             if (workers) workers->fetch_sub(1);
+            if (m_onGitStateChanged) m_onGitStateChanged();
         };
         try {
             if (alive && alive->load()) {
                 m_isGitLoading = true;
                 std::wstring dir = m_openFolderPath.empty() ? L"." : m_openFolderPath;
-                RunGitCmd(L"pull", dir);
+                auto res = RunGitCmd(L"pull", dir);
+                if (res.exitCode != 0 && m_onGitError) {
+                    m_onGitError(L"git pull", res.output, dir);
+                }
                 if (alive && alive->load()) {
                     RefreshGitState(false);
                 }
@@ -6452,6 +6489,56 @@ void DrawerPanel::RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, 
             pRT->DrawLine(D2D1::Point2F(dchX, dchY + 2.0f), D2D1::Point2F(dchX + 3.0f, dchY - 1.5f), theme.brushTextMuted.Get(), 1.4f);
         }
 
+        // Animated "Committing Changes..." popover tooltip badge over Commit button (Image 1)
+        if (m_isCommitting.load()) {
+            float badgeW = config.ScaleF(160.0f);
+            float badgeH = config.ScaleF(26.0f);
+            float badgeCx = (m_gitCommitBtnBounds.left + m_gitCommitBtnBounds.right) * 0.5f;
+            float badgeLeft = badgeCx - badgeW * 0.5f;
+            float badgeRight = badgeCx + badgeW * 0.5f;
+            float badgeBottom = m_gitCommitBtnBounds.top - config.ScaleF(7.0f);
+            float badgeTop = badgeBottom - badgeH;
+            D2D1_ROUNDED_RECT rrcBadge = D2D1::RoundedRect(D2D1::RectF(badgeLeft, badgeTop, badgeRight, badgeBottom), 4.0f, 4.0f);
+
+            Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> popoverBg;
+            Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> popoverBorder;
+            pRT->CreateSolidColorBrush(D2D1::ColorF(0.12f, 0.12f, 0.14f, 0.98f), &popoverBg);
+            pRT->CreateSolidColorBrush(D2D1::ColorF(0.30f, 0.30f, 0.35f, 1.0f), &popoverBorder);
+
+            if (popoverBg) pRT->FillRoundedRectangle(rrcBadge, popoverBg.Get());
+            if (popoverBorder) pRT->DrawRoundedRectangle(rrcBadge, popoverBorder.Get(), 1.0f);
+
+            // Downward pointer arrow
+            float ptrH = config.ScaleF(5.0f);
+            float ptrHalfW = config.ScaleF(5.0f);
+            if (popoverBg) {
+                Microsoft::WRL::ComPtr<ID2D1Factory> pFactory;
+                pRT->GetFactory(&pFactory);
+                Microsoft::WRL::ComPtr<ID2D1PathGeometry> ptrGeo;
+                Microsoft::WRL::ComPtr<ID2D1GeometrySink> sink;
+                if (pFactory && SUCCEEDED(pFactory->CreatePathGeometry(&ptrGeo)) && SUCCEEDED(ptrGeo->Open(&sink))) {
+                    sink->BeginFigure(D2D1::Point2F(badgeCx - ptrHalfW, badgeBottom), D2D1_FIGURE_BEGIN_FILLED);
+                    sink->AddLine(D2D1::Point2F(badgeCx + ptrHalfW, badgeBottom));
+                    sink->AddLine(D2D1::Point2F(badgeCx, badgeBottom + ptrH));
+                    sink->EndFigure(D2D1_FIGURE_END_CLOSED);
+                    sink->Close();
+                    pRT->FillGeometry(ptrGeo.Get(), popoverBg.Get());
+                    if (popoverBorder) pRT->DrawGeometry(ptrGeo.Get(), popoverBorder.Get(), 1.0f);
+                }
+            }
+
+            IDWriteTextFormat* pFmt = theme.fontMenuShortcut ? theme.fontMenuShortcut.Get() : theme.fontButtonCenter.Get();
+            if (pFmt) {
+                DWRITE_TEXT_ALIGNMENT prevAlign = pFmt->GetTextAlignment();
+                DWRITE_PARAGRAPH_ALIGNMENT prevPAlign = pFmt->GetParagraphAlignment();
+                pFmt->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+                pFmt->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+                pRT->DrawText(L"Committing Changes...", 21, pFmt, rrcBadge.rect, theme.brushTextWhite.Get());
+                pFmt->SetTextAlignment(prevAlign);
+                pFmt->SetParagraphAlignment(prevPAlign);
+            }
+        }
+
         curY += commitH + config.ScaleF(8.0f);
 
         // Scrollable List of Staged Changes & Changes (Bounded above draggable splitter)
@@ -6610,7 +6697,7 @@ void DrawerPanel::RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, 
             m_gitChangesHeaderBounds = D2D1::RectF(railW, itemY, railW + currentDrawerW, itemY + secH);
 
             // Animated VS Code Blue Progress Bar Line under Changes Header (Image 1)
-            if (m_isGitLoading.load() || m_isGitRefreshing.load()) {
+            if (m_isGitLoading.load() || m_isGitRefreshing.load() || m_isCommitting.load()) {
                 float lineY = m_gitChangesHeaderBounds.bottom - 2.0f;
                 pRT->DrawLine(D2D1::Point2F(railW, lineY + 1.0f), D2D1::Point2F(railW + currentDrawerW, lineY + 1.0f),
                               theme.brushBorderSubtle.Get(), 1.0f);

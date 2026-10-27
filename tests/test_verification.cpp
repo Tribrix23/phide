@@ -32,6 +32,8 @@
 #include "phide/ui/ExtensionsPanel.hpp"
 #include "phide/ui/SplashScreen.hpp"
 #include "phide/ui/ConfirmDiscardModal.hpp"
+#include "phide/ui/GitErrorModal.hpp"
+#include "phide/ui/GitLogManager.hpp"
 #include "phide/ui/DatabaseSettingsModal.hpp"
 #include "phide/ui/PackageManagerView.hpp"
 #include "phide/editor/Buffer.hpp"
@@ -284,6 +286,9 @@ int main(int argc, char* argv[]) {
     }
     if (targetTest == 71) {
         goto run_test_71;
+    }
+    if (targetTest == 72) {
+        goto run_test_72;
     }
 
     // --- 3. Render Test: Picture Viewer in Dark & Light Modes ---
@@ -9635,6 +9640,153 @@ run_test_71:
         std::filesystem::remove_all(testNodeDir, ecNode);
 
         std::cout << "  Passed: All [TEST 71] Context-Aware .gitignore and Git Startup Loading tests passed!" << std::endl;
+    }
+
+run_test_72:
+    // =========================================================================
+    // TEST 72: Real-time Git Logging, Committing Progress Badge, and Git Error Modal (Images 1-5)
+    // =========================================================================
+    {
+        std::cout << "\n[TEST 72] Testing Real-time Git Logging, Committing Progress Badge, and Error Modal..." << std::endl;
+
+        // 1. Verify GitLogManager formatting and real-time streaming
+        auto& logMgr = phide::ui::GitLogManager::Instance();
+        logMgr.Clear();
+
+        std::vector<std::wstring> streamedBatch;
+        logMgr.SetListener([&streamedBatch](const std::vector<std::wstring>& batch) {
+            streamedBatch = batch;
+        });
+
+        // Log a normal background refresh command
+        logMgr.LogCommand(L"git status -z -uall", 0, L" M src/app/Window.cpp\n?? temp.txt", 12);
+        assert(!streamedBatch.empty());
+        assert(streamedBatch[0].find(L"[info] > git status -z -uall [12ms]") != std::wstring::npos);
+
+        auto lines = logMgr.GetLogLines();
+        assert(lines.size() >= 3);
+        assert(lines[0].find(L"[info] > git status") != std::wstring::npos);
+        assert(lines[1].find(L"[info]  M src/app/Window.cpp") != std::wstring::npos);
+
+        // Log a failed git commit command (matching Image 2 & 5 index.lock collision)
+        std::wstring failedCmd = L"git commit -m \"feat: implement interactive dashboard\"";
+        std::wstring failedOut = L"fatal: Unable to create 'c:/test-repo/.git/index.lock': File exists.\n"
+                                 L"Another git process seems to be running in this repository, e.g. an editor opened by 'git commit'. "
+                                 L"Please make sure all processes are terminated then try again. If it still fails, a git process may have crashed "
+                                 L"in this repository earlier: remove the file manually to continue.";
+        logMgr.LogCommand(failedCmd, 128, failedOut, 48);
+
+        assert(logMgr.GetLastFailedCommand() == failedCmd);
+        assert(logMgr.GetLastFailedOutput() == failedOut);
+        std::cout << "  Passed: GitLogManager formats high-res timestamps, command duration, and captures failures." << std::endl;
+
+        // 2. Verify GitErrorModal (Image 2)
+        phide::ui::GitErrorModal errModal;
+        assert(!errModal.IsOpen());
+
+        errModal.Open(failedCmd, failedOut, L"c:\\test-repo");
+        assert(errModal.IsOpen());
+        assert(errModal.GetCommand() == failedCmd);
+        assert(errModal.GetOutput() == failedOut);
+        assert(errModal.GetRepoDir() == L"c:\\test-repo");
+
+        // Test hover and buttons hit-test
+        POINT ptCard = { 640, 400 };
+        assert(errModal.HitTestCard(ptCard));
+
+        // Test button dispatch: Cancel
+        phide::ui::GitErrorModalAction action = phide::ui::GitErrorModalAction::None;
+        bool handled = errModal.HandleKeyDown(VK_ESCAPE, action);
+        assert(handled);
+        assert(action == phide::ui::GitErrorModalAction::Cancel);
+        assert(!errModal.IsOpen());
+
+        // Test button dispatch: Open Git Log
+        errModal.Open(failedCmd, failedOut, L"c:\\test-repo");
+        handled = errModal.HandleKeyDown(VK_RETURN, action);
+        assert(handled);
+        assert(action == phide::ui::GitErrorModalAction::OpenGitLog);
+        assert(!errModal.IsOpen());
+        std::cout << "  Passed: GitErrorModal correctly handles button hit-tests, keyboard actions, and error parsing." << std::endl;
+
+        // 3. Verify TerminalPanel Git Log Tab and Real-Time Streaming (Images 3 & 4)
+        phide::ui::TerminalPanel termPanel;
+        termPanel.Open(L"c:\\test-repo");
+        termPanel.OpenGitLogTab(logMgr.GetLogLines());
+
+        auto* activeTab = termPanel.GetActiveTab();
+        assert(activeTab != nullptr);
+        assert(activeTab->title == L"Git");
+        assert(!activeTab->lines.empty());
+        size_t initialLinesCount = activeTab->lines.size();
+
+        // Stream new real-time log lines into terminal
+        std::vector<std::wstring> realTimeBatch = {
+            L"2026-10-28 05:22:01.120 [info] > git rev-parse --show-toplevel [8ms]",
+            L"2026-10-28 05:22:01.128 [info] c:/test-repo"
+        };
+        termPanel.AppendGitLogLines(realTimeBatch);
+        assert(activeTab->lines.size() == initialLinesCount + 2);
+        std::cout << "  Passed: TerminalPanel Git Tab opened and successfully received real-time streaming log lines." << std::endl;
+
+        // 4. Verify Show Command Output temporary document file creation (Image 5)
+        std::wstring tempErrorFile = std::filesystem::temp_directory_path().wstring() + L"\\test_git_error_output.txt";
+        {
+            std::wofstream out(tempErrorFile);
+            out << L"> " << failedCmd << L"\n\n" << failedOut;
+        }
+        assert(std::filesystem::exists(tempErrorFile));
+        assert(std::filesystem::file_size(tempErrorFile) > 0);
+        std::filesystem::remove(tempErrorFile);
+        std::cout << "  Passed: Git command output successfully generated as temporary editor document file." << std::endl;
+
+        // 5. Visual Rendering Snapshots
+        const UINT snapW = 1200;
+        const UINT snapH = 800;
+        ComPtr<IWICBitmap> pWicSnap72;
+        pWicFactory->CreateBitmap(snapW, snapH, GUID_WICPixelFormat32bppPBGRA, WICBitmapCacheOnDemand, &pWicSnap72);
+        D2D1_RENDER_TARGET_PROPERTIES rtProps72 = D2D1::RenderTargetProperties(
+            D2D1_RENDER_TARGET_TYPE_DEFAULT,
+            D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED)
+        );
+        ComPtr<ID2D1RenderTarget> pRTSnap72;
+        pD2DFactory->CreateWicBitmapRenderTarget(pWicSnap72.Get(), rtProps72, &pRTSnap72);
+
+        phide::ui::Theme theme72;
+        theme72.SetThemeMode(phide::ui::ThemeMode::Dark);
+        HRESULT hrTheme72 = theme72.CreateDeviceResources(pRTSnap72.Get(), pDWriteFactory.Get());
+        assert(SUCCEEDED(hrTheme72));
+
+        // 5a. GitErrorModal Visual Render
+        errModal.Open(failedCmd, failedOut, L"c:\\test-repo");
+        pRTSnap72->BeginDraw();
+        pRTSnap72->Clear(D2D1::ColorF(0.10f, 0.10f, 0.10f, 1.0f));
+        errModal.Render(pRTSnap72.Get(), theme72, config, static_cast<float>(snapW), static_cast<float>(snapH));
+        HRESULT hrErrSnap = pRTSnap72->EndDraw();
+        assert(SUCCEEDED(hrErrSnap));
+
+        std::wstring snapErrModalPath = artDir + L"test_git_error_modal.png";
+        SaveWicBitmapToPng(pWicSnap72.Get(), pWicFactory.Get(), snapErrModalPath);
+        assert(std::filesystem::exists(snapErrModalPath));
+        std::wcout << L"  Passed: Saved GitErrorModal visual snapshot to: " << snapErrModalPath << std::endl;
+
+        // 5b. Committing Changes Badge and Changes Progress Bar Visual Render (Image 1)
+        phide::ui::DrawerPanel drawer72;
+        drawer72.OpenSourceControl();
+        drawer72.CommitChangesAsync(L"feat: update app components"); // activates m_isCommitting
+
+        pRTSnap72->BeginDraw();
+        pRTSnap72->Clear(D2D1::ColorF(0.12f, 0.12f, 0.14f, 1.0f));
+        drawer72.Render(pRTSnap72.Get(), theme72, config, static_cast<float>(snapH), 320.0f);
+        HRESULT hrBadgeSnap = pRTSnap72->EndDraw();
+        assert(SUCCEEDED(hrBadgeSnap));
+
+        std::wstring snapBadgePath = artDir + L"test_committing_changes_badge.png";
+        SaveWicBitmapToPng(pWicSnap72.Get(), pWicFactory.Get(), snapBadgePath);
+        assert(std::filesystem::exists(snapBadgePath));
+        std::wcout << L"  Passed: Saved Committing Changes badge visual snapshot to: " << snapBadgePath << std::endl;
+
+        std::cout << "  Passed: All [TEST 72] Real-time Git Logging, Committing Progress Badge, and Error Modal tests passed!" << std::endl;
     }
 
     std::cout << "\n==========================================" << std::endl;

@@ -3692,6 +3692,60 @@ void Window::ExecuteDiscardOrRestore(const std::wstring& targetPath, const std::
     InvalidateRect(m_hwnd, nullptr, FALSE);
 }
 
+void Window::ShowGitError(const std::wstring& cmd, const std::wstring& output, const std::wstring& repoDir) {
+    {
+        std::lock_guard<std::mutex> lock(m_gitErrorMutex);
+        m_pendingGitError = { cmd, output, repoDir };
+    }
+    if (m_hwnd) {
+        PostMessageW(m_hwnd, WM_USER + 203, 0, 0);
+    }
+}
+
+void Window::OpenGitLogTerminal() {
+    if (!m_terminal.IsOpen()) {
+        AnimateTerminalOpen();
+    }
+    m_terminal.OpenGitLogTab(ui::GitLogManager::Instance().GetLogLines());
+    if (m_hwnd) InvalidateRect(m_hwnd, nullptr, FALSE);
+}
+
+void Window::ShowGitCommandOutput(const std::wstring& cmd, const std::wstring& output, const std::wstring& repoDir) {
+    // 1. Determine target directory: prefer repoDir/.git if exists, otherwise temp path
+    std::filesystem::path targetDir;
+    if (!repoDir.empty() && std::filesystem::exists(std::filesystem::path(repoDir) / ".git")) {
+        targetDir = std::filesystem::path(repoDir) / ".git";
+    } else {
+        wchar_t sysTemp[MAX_PATH] = { 0 };
+        GetTempPathW(MAX_PATH, sysTemp);
+        targetDir = sysTemp;
+    }
+
+    // 2. Generate filename: git-error-<timestamp>.txt (Image 5)
+    auto now = std::chrono::system_clock::now();
+    auto epochSec = std::chrono::duration_cast<std::chrono::seconds>(now.time_since_epoch()).count();
+    std::wstring fileName = L"git-error-" + std::to_wstring(epochSec) + L".txt";
+    std::filesystem::path filePath = targetDir / fileName;
+
+    // 3. Write content: formatted command line and output
+    std::wstring content = L"> " + cmd + L"\n\n" + output;
+    std::ofstream out(filePath, std::ios::binary);
+    if (out.is_open()) {
+        int len = WideCharToMultiByte(CP_UTF8, 0, content.c_str(), -1, nullptr, 0, nullptr, nullptr);
+        if (len > 0) {
+            std::string u8(len, 0);
+            WideCharToMultiByte(CP_UTF8, 0, content.c_str(), -1, u8.data(), len, nullptr, nullptr);
+            if (!u8.empty() && u8.back() == '\0') u8.pop_back();
+            out.write(u8.data(), u8.size());
+        }
+        out.close();
+    }
+
+    // 4. Open the temporary file in the editor as an active document tab!
+    OpenFileDocument(filePath.wstring(), false);
+    if (m_hwnd) InvalidateRect(m_hwnd, nullptr, FALSE);
+}
+
 void Window::DoRunActiveDocument() {
     auto* pDoc = GetActiveDoc();
     if (!pDoc) return;
@@ -4770,6 +4824,14 @@ bool Window::Create(HINSTANCE hInstance, int nCmdShow) {
         }
     });
 
+    m_drawer.SetOnGitError([this](const std::wstring& cmd, const std::wstring& output, const std::wstring& repoDir) {
+        ShowGitError(cmd, output, repoDir);
+    });
+
+    ui::GitLogManager::Instance().SetListener([this](const std::vector<std::wstring>& newBatch) {
+        m_terminal.AppendGitLogLines(newBatch);
+    });
+
     m_drawer.SetOnRefreshOpenDocs([this]() {
         RefreshOpenDocPathsForSearch();
     });
@@ -5575,6 +5637,11 @@ void Window::OnPaint() {
         m_confirmDiscardModal.Render(m_pRenderTarget.Get(), m_theme, m_config, clientW, clientH);
     }
 
+    // 9.5 Render Git Error Modal Overlay (Image 2)
+    if (m_gitErrorModal.IsOpen()) {
+        m_gitErrorModal.Render(m_pRenderTarget.Get(), m_theme, m_config, clientW, clientH);
+    }
+
     // 10. Render Database & phpMyAdmin / Nginx Server Settings Modal Overlay (Images 3 & 4)
     if (m_dbSettingsModal.IsOpen()) {
         m_dbSettingsModal.Render(m_pRenderTarget.Get(), m_theme, m_config, clientW, clientH);
@@ -5651,6 +5718,13 @@ void Window::HandleMouseMove(POINT clientPt, WPARAM wParam) {
 
     if (m_confirmDiscardModal.IsOpen()) {
         if (m_confirmDiscardModal.HandleMouseMove(clientPt)) {
+            InvalidateRect(m_hwnd, nullptr, FALSE);
+        }
+        return;
+    }
+
+    if (m_gitErrorModal.IsOpen()) {
+        if (m_gitErrorModal.HandleMouseMove(clientPt)) {
             InvalidateRect(m_hwnd, nullptr, FALSE);
         }
         return;
@@ -6416,6 +6490,21 @@ void Window::HandleLButtonDown(POINT clientPt) {
             InvalidateRect(m_hwnd, nullptr, FALSE);
             return;
         }
+    }
+
+    // Check Git Error Modal Clicks (Image 2)
+    if (m_gitErrorModal.IsOpen()) {
+        ui::GitErrorModalAction action = ui::GitErrorModalAction::None;
+        if (m_gitErrorModal.HandleMouseDown(clientPt, action)) {
+            if (action == ui::GitErrorModalAction::OpenGitLog) {
+                OpenGitLogTerminal();
+            } else if (action == ui::GitErrorModalAction::ShowCommandOutput) {
+                ShowGitCommandOutput(m_gitErrorModal.GetCommand(), m_gitErrorModal.GetOutput(), m_gitErrorModal.GetRepoDir());
+            }
+            InvalidateRect(m_hwnd, nullptr, FALSE);
+            return;
+        }
+        return; // Block background interaction while modal is open
     }
 
     // Check Live Server Status Pill Click
@@ -8427,6 +8516,16 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     return TRUE;
                 }
 
+                // 00.1 Git Error Modal (Image 2)
+                if (m_gitErrorModal.IsOpen()) {
+                    if (m_gitErrorModal.HitTestButtons(pt)) {
+                        SetCursor(LoadCursor(nullptr, IDC_HAND));
+                        return TRUE;
+                    }
+                    SetCursor(LoadCursor(nullptr, IDC_ARROW));
+                    return TRUE;
+                }
+
                 // 00a. Database & phpMyAdmin / Nginx Server Settings Modal (Images 3 & 4)
                 if (m_dbSettingsModal.IsOpen()) {
                     if (m_dbSettingsModal.HitTestAction(pt) != ui::DatabaseModalAction::None) {
@@ -9414,6 +9513,21 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 return 0;
             }
 
+            // 0a.1 Git Error Modal keyboard handling (Image 2)
+            if (m_gitErrorModal.IsOpen()) {
+                ui::GitErrorModalAction action = ui::GitErrorModalAction::None;
+                if (m_gitErrorModal.HandleKeyDown(wParam, action)) {
+                    if (action == ui::GitErrorModalAction::OpenGitLog) {
+                        OpenGitLogTerminal();
+                    } else if (action == ui::GitErrorModalAction::ShowCommandOutput) {
+                        ShowGitCommandOutput(m_gitErrorModal.GetCommand(), m_gitErrorModal.GetOutput(), m_gitErrorModal.GetRepoDir());
+                    }
+                    InvalidateRect(m_hwnd, nullptr, FALSE);
+                    return 0;
+                }
+                return 0; // Block background keystrokes while error modal is open
+            }
+
             // 0. Quick Open file search palette (Image 5)
             if (m_quickOpen.IsOpen()) {
                 if (wParam == VK_ESCAPE) {
@@ -10270,6 +10384,22 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
 
         case WM_USER + 202: {
             TriggerDebouncedGitRefresh(1500);
+            return 0;
+        }
+
+        case WM_USER + 203: {
+            PendingGitError err;
+            {
+                std::lock_guard<std::mutex> lock(m_gitErrorMutex);
+                if (m_pendingGitError) {
+                    err = *m_pendingGitError;
+                    m_pendingGitError.reset();
+                }
+            }
+            if (!err.command.empty() || !err.output.empty()) {
+                m_gitErrorModal.Open(err.command, err.output, err.repoDir);
+                InvalidateRect(m_hwnd, nullptr, FALSE);
+            }
             return 0;
         }
 

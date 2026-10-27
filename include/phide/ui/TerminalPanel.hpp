@@ -248,6 +248,8 @@ public:
 
     // Live Server and Execution
     void OpenLogTab(const std::wstring& logTitle, const std::vector<std::wstring>& logLines);
+    void OpenGitLogTab(const std::vector<std::wstring>& logLines);
+    void AppendGitLogLines(const std::vector<std::wstring>& newLines);
     void StartLiveServerSession(const std::wstring& localUrl, const std::wstring& networkUrl, const std::wstring& filePath = L"", const std::wstring& fileName = L"");
     void StartServerSession(const std::wstring& serverTitle, const std::wstring& command, const std::wstring& workingDir, const std::wstring& projectRoot);
     void TerminateServerSession(const std::wstring& projectRoot);
@@ -332,6 +334,7 @@ private:
     float m_heightStart = 0.0f;
 
     std::vector<std::unique_ptr<TerminalTab>> m_tabs;
+    mutable std::mutex m_tabsMutex;
     std::vector<TerminalProfileDef> m_availableProfiles;
     std::function<void()> m_outputCallback;
     int m_activeTabIdx = 0;

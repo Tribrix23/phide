@@ -2096,6 +2096,8 @@ void TerminalPanel::OpenLogTab(const std::wstring& logTitle, const std::vector<s
         Open(m_defaultWorkingDir);
     }
 
+    std::lock_guard<std::mutex> tabsLock(m_tabsMutex);
+
     TerminalTab* tab = nullptr;
     int existingIdx = -1;
     for (size_t i = 0; i < m_tabs.size(); ++i) {
@@ -2128,7 +2130,9 @@ void TerminalPanel::OpenLogTab(const std::wstring& logTitle, const std::vector<s
             TerminalLine tl;
             tl.rawText = lineStr;
             D2D1_COLOR_F color = D2D1::ColorF(0.85f, 0.85f, 0.88f, 1.0f);
-            if (lineStr.find(L"error") != std::wstring::npos || lineStr.find(L"failed") != std::wstring::npos || lineStr.find(L"Error") != std::wstring::npos) {
+            if (lineStr.find(L" [info] >") != std::wstring::npos) {
+                color = D2D1::ColorF(0.40f, 0.80f, 1.0f, 1.0f);
+            } else if (lineStr.find(L"error") != std::wstring::npos || lineStr.find(L"failed") != std::wstring::npos || lineStr.find(L"Error") != std::wstring::npos || lineStr.find(L"fatal:") != std::wstring::npos) {
                 color = D2D1::ColorF(0.95f, 0.35f, 0.35f, 1.0f);
             } else if (lineStr.find(L"up") != std::wstring::npos || lineStr.find(L"started") != std::wstring::npos || lineStr.find(L"ready") != std::wstring::npos) {
                 color = D2D1::ColorF(0.35f, 0.85f, 0.45f, 1.0f);
@@ -2140,6 +2144,43 @@ void TerminalPanel::OpenLogTab(const std::wstring& logTitle, const std::vector<s
         }
         tab->scrollOffsetY = 0.0f;
         tab->scrollOffsetLines = 0;
+    }
+    if (m_outputCallback) m_outputCallback();
+}
+
+void TerminalPanel::OpenGitLogTab(const std::vector<std::wstring>& logLines) {
+    OpenLogTab(L"Git", logLines);
+}
+
+void TerminalPanel::AppendGitLogLines(const std::vector<std::wstring>& newLines) {
+    if (newLines.empty()) return;
+    std::lock_guard<std::mutex> tabsLock(m_tabsMutex);
+    TerminalTab* tab = nullptr;
+    for (auto& t : m_tabs) {
+        if (t && t->title == L"Git") {
+            tab = t.get();
+            break;
+        }
+    }
+    if (!tab) return;
+
+    std::lock_guard<std::mutex> bufferLock(tab->bufferMutex);
+    for (const auto& lineStr : newLines) {
+        TerminalLine tl;
+        tl.rawText = lineStr;
+        D2D1_COLOR_F color = D2D1::ColorF(0.85f, 0.85f, 0.88f, 1.0f);
+        if (lineStr.find(L" [info] >") != std::wstring::npos) {
+            color = D2D1::ColorF(0.40f, 0.80f, 1.0f, 1.0f);
+        } else if (lineStr.find(L"fatal:") != std::wstring::npos || lineStr.find(L"error:") != std::wstring::npos) {
+            color = D2D1::ColorF(0.95f, 0.35f, 0.35f, 1.0f);
+        } else if (lineStr.find(L"warning:") != std::wstring::npos) {
+            color = D2D1::ColorF(0.95f, 0.75f, 0.25f, 1.0f);
+        }
+        tl.spans.push_back({ lineStr, color, false });
+        tab->lines.push_back(std::move(tl));
+    }
+    if (tab->lines.size() > 5000) {
+        tab->lines.erase(tab->lines.begin(), tab->lines.begin() + (tab->lines.size() - 5000));
     }
     if (m_outputCallback) m_outputCallback();
 }
