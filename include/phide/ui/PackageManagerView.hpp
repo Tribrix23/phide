@@ -149,9 +149,19 @@ public:
     /**
      * @brief Sets callback triggered when user clicks "Install Package".
      */
-    void SetOnInstallCallback(std::function<void(const std::wstring&, PkgInstallScope)> cb) {
+    void SetOnInstallCallback(std::function<void(const std::wstring&, const std::wstring&, PkgInstallScope)> cb) {
         m_onInstallCallback = std::move(cb);
     }
+
+    /**
+     * @brief Returns cursor type (e.g. IDC_HAND, IDC_IBEAM, IDC_ARROW) for point.
+     */
+    [[nodiscard]] LPCWSTR GetCursorForPoint(POINT clientPt) const noexcept;
+
+    /**
+     * @brief Marks a package as successfully installed in catalog.
+     */
+    void MarkPackageInstalled(const std::wstring& pkgName);
 
     /**
      * @brief Fetches packages from Supabase remote REST API asynchronously.
@@ -255,7 +265,7 @@ private:
     std::atomic<bool> m_remoteFetchSuccess{ false };
     std::mutex m_packageMutex;
 
-    std::function<void(const std::wstring&, PkgInstallScope)> m_onInstallCallback;
+    std::function<void(const std::wstring&, const std::wstring&, PkgInstallScope)> m_onInstallCallback;
     LucideIcons m_icons;
 };
 

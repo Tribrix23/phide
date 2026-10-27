@@ -358,16 +358,24 @@ void ExtensionsPanel::RefreshPcStatus() {
                 }
             }
 
-            // Fallback checks if py -0p did not find all candidates
-            if (detectedPythons.empty()) {
-                std::wstring userProfile = _wgetenv(L"USERPROFILE") ? _wgetenv(L"USERPROFILE") : L"";
-                std::vector<std::pair<std::wstring, std::wstring>> candidates = {
-                    { L"3.14.7", userProfile + L"\\AppData\\Roaming\\Quantix Code\\python-installs\\3.14.7\\python-3.14.7\\python.exe" },
-                    { L"3.13.9", userProfile + L"\\AppData\\Local\\Programs\\Python\\Python313\\python.exe" }
-                };
-                for (const auto& c : candidates) {
-                    if (std::filesystem::exists(c.second)) {
-                        detectedPythons.push_back({ c.first, c.second, detectedPythons.empty() });
+            // Ensure all known installation directories are checked and included (e.g. 3.15, 3.14.7, 3.13.9)
+            std::wstring userProfile = _wgetenv(L"USERPROFILE") ? _wgetenv(L"USERPROFILE") : L"";
+            std::vector<std::pair<std::wstring, std::wstring>> candidates = {
+                { L"3.15.1", userProfile + L"\\AppData\\Local\\Programs\\Python\\Python315\\python.exe" },
+                { L"3.14.7", userProfile + L"\\AppData\\Roaming\\Quantix Code\\python-installs\\3.14.7\\python-3.14.7\\python.exe" },
+                { L"3.13.9", userProfile + L"\\AppData\\Local\\Programs\\Python\\Python313\\python.exe" }
+            };
+            for (const auto& c : candidates) {
+                if (std::filesystem::exists(c.second)) {
+                    bool alreadyFound = false;
+                    for (const auto& dp : detectedPythons) {
+                        if (_wcsicmp(dp.path.c_str(), c.second.c_str()) == 0 || dp.ver == c.first) {
+                            alreadyFound = true;
+                            break;
+                        }
+                    }
+                    if (!alreadyFound) {
+                        detectedPythons.push_back({ c.first, c.second, false });
                     }
                 }
             }
@@ -1228,23 +1236,32 @@ void ExtensionsPanel::InstallRuntime(int itemIdx, const std::wstring& version, s
                 if (itemIdx < static_cast<int>(m_items.size())) {
                     auto& item = m_items[itemIdx];
 
-                    // REPLACE IN PLACE the Global System environment entry (NO DUPLICATES!)
-                    int globalIdx = -1;
+                    // Demote old Global System entry to (System PATH) so existing installed versions are preserved!
+                    for (auto& env : item.environments) {
+                        if (env.type == L"System PATH") {
+                            auto pos = env.name.find(L"(Global System)");
+                            if (pos != std::wstring::npos) {
+                                env.name.replace(pos, 15, L"(System PATH)");
+                            }
+                            env.isDefault = false;
+                        }
+                    }
+
+                    int matchIdx = -1;
                     for (size_t e = 0; e < item.environments.size(); ++e) {
-                        if (item.environments[e].type == L"System PATH" ||
-                            item.environments[e].name.find(L"Global System") != std::wstring::npos ||
-                            item.environments[e].name.find(L"Not in PATH") != std::wstring::npos ||
-                            item.environments[e].name.find(L"Not Installed") != std::wstring::npos) {
-                            globalIdx = static_cast<int>(e);
+                        if (item.environments[e].name.find(cleanVer) != std::wstring::npos ||
+                            (!finalExePath.empty() && item.environments[e].path == finalExePath)) {
+                            matchIdx = static_cast<int>(e);
                             break;
                         }
                     }
 
-                    if (globalIdx >= 0) {
-                        item.environments[globalIdx].name = item.name + L" " + cleanVer + L" (Global System)";
-                        item.environments[globalIdx].path = finalExePath;
-                        item.environments[globalIdx].type = L"System PATH";
-                        item.environments[globalIdx].isDefault = true;
+                    if (matchIdx >= 0) {
+                        item.environments[matchIdx].name = item.name + L" " + cleanVer + L" (Global System)";
+                        item.environments[matchIdx].path = finalExePath;
+                        item.environments[matchIdx].type = L"System PATH";
+                        item.environments[matchIdx].isDefault = true;
+                        item.defaultEnvIdx = matchIdx;
                     } else {
                         EnvironmentOption envGlobal;
                         envGlobal.name = item.name + L" " + cleanVer + L" (Global System)";
@@ -1252,13 +1269,12 @@ void ExtensionsPanel::InstallRuntime(int itemIdx, const std::wstring& version, s
                         envGlobal.type = L"System PATH";
                         envGlobal.isDefault = true;
                         item.environments.insert(item.environments.begin(), envGlobal);
-                        globalIdx = 0;
+                        item.defaultEnvIdx = 0;
                     }
 
                     for (size_t e = 0; e < item.environments.size(); ++e) {
-                        item.environments[e].isDefault = (static_cast<int>(e) == globalIdx);
+                        item.environments[e].isDefault = (static_cast<int>(e) == item.defaultEnvIdx);
                     }
-                    item.defaultEnvIdx = globalIdx;
                     item.installPath = finalExePath;
                     item.installedVersion = cleanVer;
                     item.isInstalled = !finalExePath.empty();
@@ -2311,9 +2327,35 @@ bool ExtensionsPanel::HitTest(POINT pt) const noexcept {
             pt.y >= m_panelBounds.top && pt.y <= m_panelBounds.bottom);
 }
 
+bool ExtensionsPanel::HitTestProcesses(POINT pt) const noexcept {
+    if (m_processTasks.empty()) return false;
+    return (pt.x >= m_processesCardBounds.left && pt.x <= m_processesCardBounds.right &&
+            pt.y >= m_processesCardBounds.top && pt.y <= m_processesCardBounds.bottom);
+}
+
 bool ExtensionsPanel::HandleMouseMove(POINT pt) noexcept {
-    if (!m_isOpen) return false;
     bool repaint = false;
+
+    // Hover tracking for active Processes card (both List and Detail views, working clickable even if sidebar closed)
+    if (!m_processTasks.empty() && !m_processesMinimized) {
+        bool hovMin = (pt.x >= m_processesMinBtnBounds.left && pt.x <= m_processesMinBtnBounds.right &&
+                       pt.y >= m_processesMinBtnBounds.top && pt.y <= m_processesMinBtnBounds.bottom);
+        if (m_isMinBtnHovered != hovMin) {
+            m_isMinBtnHovered = hovMin;
+            repaint = true;
+        }
+
+        for (auto& task : m_processTasks) {
+            bool hovCancel = (pt.x >= task.cancelBtnBounds.left && pt.x <= task.cancelBtnBounds.right &&
+                              pt.y >= task.cancelBtnBounds.top && pt.y <= task.cancelBtnBounds.bottom);
+            if (task.isCancelHovered != hovCancel) {
+                task.isCancelHovered = hovCancel;
+                repaint = true;
+            }
+        }
+    }
+
+    if (!m_isOpen) return repaint;
 
     if (m_viewMode == ViewMode::List) {
         for (auto& item : m_items) {
@@ -2372,32 +2414,11 @@ bool ExtensionsPanel::HandleMouseMove(POINT pt) noexcept {
         }
     }
 
-    // Hover tracking for active Processes card (both List and Detail views, working clickable)
-    if (!m_processTasks.empty() && !m_processesMinimized) {
-        bool hovMin = (pt.x >= m_processesMinBtnBounds.left && pt.x <= m_processesMinBtnBounds.right &&
-                       pt.y >= m_processesMinBtnBounds.top && pt.y <= m_processesMinBtnBounds.bottom);
-        if (m_isMinBtnHovered != hovMin) {
-            m_isMinBtnHovered = hovMin;
-            repaint = true;
-        }
-
-        for (auto& task : m_processTasks) {
-            bool hovCancel = (pt.x >= task.cancelBtnBounds.left && pt.x <= task.cancelBtnBounds.right &&
-                              pt.y >= task.cancelBtnBounds.top && pt.y <= task.cancelBtnBounds.bottom);
-            if (task.isCancelHovered != hovCancel) {
-                task.isCancelHovered = hovCancel;
-                repaint = true;
-            }
-        }
-    }
-
     return repaint;
 }
 
 bool ExtensionsPanel::HandleLButtonDown(POINT pt, std::function<void(const std::wstring&)> notifyCb) noexcept {
-    if (!m_isOpen) return false;
-
-    // 0. Click on Processes HUD card (Image 2 & Image 3, working clickable)
+    // 0. Click on Processes HUD card (Image 2 & Image 3, working clickable even if sidebar closed)
     if (!m_processTasks.empty() && m_processesCardBounds.right > m_processesCardBounds.left) {
         if (pt.x >= m_processesCardBounds.left && pt.x <= m_processesCardBounds.right &&
             pt.y >= m_processesCardBounds.top && pt.y <= m_processesCardBounds.bottom) {
@@ -2425,6 +2446,8 @@ bool ExtensionsPanel::HandleLButtonDown(POINT pt, std::function<void(const std::
             return true;
         }
     }
+
+    if (!m_isOpen) return false;
 
     if (m_viewMode == ViewMode::List) {
         for (size_t i = 0; i < m_items.size(); ++i) {

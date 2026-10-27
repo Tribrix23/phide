@@ -797,6 +797,95 @@ bool PackageManagerView::HandleMouseMove(POINT clientPt) {
     return needRepaint;
 }
 
+LPCWSTR PackageManagerView::GetCursorForPoint(POINT clientPt) const noexcept {
+    float mx = static_cast<float>(clientPt.x);
+    float my = static_cast<float>(clientPt.y);
+
+    if (m_viewState == PkgViewState::LanguageGrid) {
+        for (const auto& card : m_languageCards) {
+            if (mx >= card.bounds.left && mx <= card.bounds.right &&
+                my >= card.bounds.top && my <= card.bounds.bottom) {
+                return IDC_HAND;
+            }
+        }
+        return IDC_ARROW;
+    }
+
+    // 1. Dropdown items if menu is currently open
+    if (m_activeDropdownPkgIdx >= 0) {
+        if ((mx >= m_rcDropdownProject.left && mx <= m_rcDropdownProject.right &&
+             my >= m_rcDropdownProject.top && my <= m_rcDropdownProject.bottom) ||
+            (mx >= m_rcDropdownGlobal.left && mx <= m_rcDropdownGlobal.right &&
+             my >= m_rcDropdownGlobal.top && my <= m_rcDropdownGlobal.bottom)) {
+            return IDC_HAND;
+        }
+    }
+
+    // 2. Back Button
+    if (mx >= m_rcBackBtn.left && mx <= m_rcBackBtn.right &&
+        my >= m_rcBackBtn.top && my <= m_rcBackBtn.bottom) {
+        return IDC_HAND;
+    }
+
+    // 3. Search Box & Clear Button
+    if (mx >= m_rcClearSearch.left && mx <= m_rcClearSearch.right &&
+        my >= m_rcClearSearch.top && my <= m_rcClearSearch.bottom && !m_searchQuery.empty()) {
+        return IDC_HAND;
+    }
+    if (mx >= m_rcSearchBox.left && mx <= m_rcSearchBox.right &&
+        my >= m_rcSearchBox.top && my <= m_rcSearchBox.bottom) {
+        return IDC_IBEAM;
+    }
+
+    // 4. External link or buttons in GitHub preview
+    if ((mx >= m_rcGithubHeaderLink.left && mx <= m_rcGithubHeaderLink.right &&
+         my >= m_rcGithubHeaderLink.top && my <= m_rcGithubHeaderLink.bottom) ||
+        (mx >= m_rcGithubOpenBtn.left && mx <= m_rcGithubOpenBtn.right &&
+         my >= m_rcGithubOpenBtn.top && my <= m_rcGithubOpenBtn.bottom)) {
+        return IDC_HAND;
+    }
+
+    // 5. Output package card items and buttons
+    const auto& activeList = (m_activeLanguage == RuntimeLanguage::Php) ? m_phpPackages : m_packages;
+    for (size_t i = m_scrollIndex; i < (std::min)(m_filteredIndices.size(), m_scrollIndex + m_visibleLimit); ++i) {
+        size_t pkgIdx = m_filteredIndices[i];
+        if (pkgIdx >= activeList.size()) continue;
+        const auto& pkg = activeList[pkgIdx];
+
+        // Install button or split dropdown arrow -> POINTER (IDC_HAND)
+        if (mx >= pkg.rcInstallBtn.left && mx <= pkg.rcInstallBtn.right &&
+            my >= pkg.rcInstallBtn.top && my <= pkg.rcInstallBtn.bottom) {
+            return IDC_HAND;
+        }
+        if (mx >= pkg.rcSplitArrowBtn.left && mx <= pkg.rcSplitArrowBtn.right &&
+            my >= pkg.rcSplitArrowBtn.top && my <= pkg.rcSplitArrowBtn.bottom) {
+            return IDC_HAND;
+        }
+        if (mx >= pkg.bounds.left && mx <= pkg.bounds.right &&
+            my >= pkg.bounds.top && my <= pkg.bounds.bottom) {
+            return IDC_HAND;
+        }
+    }
+
+    return IDC_ARROW;
+}
+
+void PackageManagerView::MarkPackageInstalled(const std::wstring& pkgName) {
+    std::lock_guard<std::mutex> lock(m_packageMutex);
+    for (auto& pkg : m_packages) {
+        if (_wcsicmp(pkg.name.c_str(), pkgName.c_str()) == 0) {
+            pkg.isInstalling = false;
+            pkg.isInstalled = true;
+        }
+    }
+    for (auto& pkg : m_phpPackages) {
+        if (_wcsicmp(pkg.name.c_str(), pkgName.c_str()) == 0) {
+            pkg.isInstalling = false;
+            pkg.isInstalled = true;
+        }
+    }
+}
+
 bool PackageManagerView::HandleLButtonDown(POINT clientPt) {
     float mx = static_cast<float>(clientPt.x);
     float my = static_cast<float>(clientPt.y);
@@ -900,7 +989,7 @@ bool PackageManagerView::HandleLButtonDown(POINT clientPt) {
             }
             pkg.isInstalling = true;
             if (m_onInstallCallback) {
-                m_onInstallCallback(cmdToRun, pkg.scope);
+                m_onInstallCallback(pkg.name, cmdToRun, pkg.scope);
             }
             return true;
         }
@@ -1115,7 +1204,7 @@ void PackageManagerView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app:
             // Centered Icon Box pedestal (Image 2)
             const float iconBoxSize = config.ScaleF(46.0f);
             const float iconX = cx + (cardW - iconBoxSize) / 2.0f;
-            const float iconY = cy + config.ScaleF(14.0f);
+            const float iconY = cy + (cardH - iconBoxSize - config.ScaleF(28.0f)) / 2.0f;
             D2D1_RECT_F rcIconBox = D2D1::RectF(iconX, iconY, iconX + iconBoxSize, iconY + iconBoxSize);
             D2D1_ROUNDED_RECT rrcIconBox = D2D1::RoundedRect(rcIconBox, 8.0f, 8.0f);
 
@@ -1133,32 +1222,12 @@ void PackageManagerView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app:
             D2D1_RECT_F rcInnerIcon = D2D1::RectF(innerX, innerY, innerX + innerIconSize, innerY + innerIconSize);
             RenderBrandedIcon(pRT, theme, card.lang, rcInnerIcon);
 
-            // Language Name centered below icon
-            float nameY = iconY + iconBoxSize + config.ScaleF(8.0f);
-            D2D1_RECT_F rcName = D2D1::RectF(cx + 4.0f, nameY, cx + cardW - 4.0f, nameY + config.ScaleF(20.0f));
+            // Language Name centered below icon (Version number removed per user requirement)
+            float nameY = iconY + iconBoxSize + config.ScaleF(10.0f);
+            D2D1_RECT_F rcName = D2D1::RectF(cx + 4.0f, nameY, cx + cardW - 4.0f, nameY + config.ScaleF(22.0f));
             pRT->DrawText(card.name.c_str(), static_cast<UINT32>(card.name.length()),
                           theme.fontButtonCenter ? theme.fontButtonCenter.Get() : theme.fontTitle.Get(),
                           rcName, theme.brushTextWhite ? theme.brushTextWhite.Get() : theme.brushTextPrimary.Get());
-
-            // Green Version Pill centered at bottom of card (Image 2)
-            float pillW = config.ScaleF(88.0f);
-            float pillH = config.ScaleF(20.0f);
-            float pillX = cx + (cardW - pillW) / 2.0f;
-            float pillY = cy + cardH - pillH - config.ScaleF(12.0f);
-            D2D1_RECT_F rcPill = D2D1::RectF(pillX, pillY, pillX + pillW, pillY + pillH);
-            D2D1_ROUNDED_RECT rrcPill = D2D1::RoundedRect(rcPill, pillH * 0.5f, pillH * 0.5f);
-
-            Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> pillBg, pillBorder, pillText;
-            pRT->CreateSolidColorBrush(D2D1::ColorF(0.12f, 0.40f, 0.22f, 0.35f), &pillBg);
-            pRT->CreateSolidColorBrush(D2D1::ColorF(0.18f, 0.65f, 0.35f, 0.85f), &pillBorder);
-            pRT->CreateSolidColorBrush(D2D1::ColorF(0.29f, 0.87f, 0.50f, 1.0f), &pillText); // #4ade80
-
-            if (pillBg) pRT->FillRoundedRectangle(rrcPill, pillBg.Get());
-            if (pillBorder) pRT->DrawRoundedRectangle(rrcPill, pillBorder.Get(), 1.0f);
-
-            pRT->DrawText(card.version.c_str(), static_cast<UINT32>(card.version.length()),
-                          theme.fontButtonCenter ? theme.fontButtonCenter.Get() : theme.fontBadge.Get(),
-                          rcPill, pillText.Get());
         }
         return;
     }
@@ -1342,10 +1411,21 @@ void PackageManagerView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app:
             // Split Button: [ Install | ▾ ]
             pkg.rcInstallBtn = D2D1::RectF(btnX, btnY, btnX + btnW - config.ScaleF(22.0f), btnY + btnH);
             D2D1_ROUNDED_RECT rrcInstallBtn = D2D1::RoundedRect(pkg.rcInstallBtn, 3.5f, 3.5f);
-            pRT->FillRoundedRectangle(rrcInstallBtn, theme.brushBrandAccent.Get());
+
+            std::wstring installLabel = (pkg.scope == PkgInstallScope::Global) ? L"Install (G)" : L"Install";
+            Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> btnBrush;
+            if (pkg.isInstalled) {
+                installLabel = L"✓ Installed";
+                pRT->CreateSolidColorBrush(D2D1::ColorF(0.18f, 0.52f, 0.28f, 1.0f), &btnBrush);
+            } else if (pkg.isInstalling) {
+                installLabel = L"Installing...";
+                pRT->CreateSolidColorBrush(D2D1::ColorF(0.0f, 0.38f, 0.72f, 0.85f), &btnBrush);
+            } else {
+                btnBrush = theme.brushBrandAccent;
+            }
+            pRT->FillRoundedRectangle(rrcInstallBtn, btnBrush ? btnBrush.Get() : theme.brushBrandAccent.Get());
 
             // Centered Install text (User requirement)
-            std::wstring installLabel = (pkg.scope == PkgInstallScope::Global) ? L"Install (G)" : L"Install";
             pRT->DrawText(installLabel.c_str(), static_cast<UINT32>(installLabel.length()),
                           theme.fontButtonCenter ? theme.fontButtonCenter.Get() : theme.fontHint.Get(),
                           pkg.rcInstallBtn, theme.brushTextWhite.Get());
@@ -1353,7 +1433,7 @@ void PackageManagerView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app:
             // Split Dropdown Arrow portion ("▾")
             pkg.rcSplitArrowBtn = D2D1::RectF(btnX + btnW - config.ScaleF(22.0f), btnY, btnX + btnW, btnY + btnH);
             D2D1_ROUNDED_RECT rrcArrowBtn = D2D1::RoundedRect(pkg.rcSplitArrowBtn, 3.5f, 3.5f);
-            pRT->FillRoundedRectangle(rrcArrowBtn, theme.brushBrandAccent.Get());
+            pRT->FillRoundedRectangle(rrcArrowBtn, btnBrush ? btnBrush.Get() : theme.brushBrandAccent.Get());
             // Divider line between Install and ▾
             pRT->DrawLine(D2D1::Point2F(pkg.rcSplitArrowBtn.left, btnY + 3.0f),
                           D2D1::Point2F(pkg.rcSplitArrowBtn.left, btnY + btnH - 3.0f),

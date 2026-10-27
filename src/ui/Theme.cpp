@@ -1561,6 +1561,7 @@ Theme::SetiIconInfo Theme::GetSetiIcon(const std::wstring& filename, bool isFold
         if (ext == L".bat" || ext == L".cmd" || ext == L".sh" || ext == L".bash") return { 0xE089, brushSetiShell ? brushSetiShell.Get() : brushIconGreen.Get() };
         if (ext == L".ps1") return { 0xE074, brushSetiShell ? brushSetiShell.Get() : brushIconGreen.Get() };
         if (ext == L".exe" || ext == L".dll" || ext == L".bin" || ext == L".so" || ext == L".obj") return { 0xE088, brushSetiShell ? brushSetiShell.Get() : brushIconGreen.Get() };
+        if (ext == L".sql") return { 0xE022, brushIconOrange ? brushIconOrange.Get() : brushIconBlue.Get() };
         if (ext == L".zip" || ext == L".tar" || ext == L".gz" || ext == L".7z" || ext == L".rar") return { 0xE0A8, brushSetiJson ? brushSetiJson.Get() : brushIconYellow.Get() };
         if (ext == L".lock") return { 0xE05D, brushSetiDefault ? brushSetiDefault.Get() : brushIconGray.Get() };
         if (ext == L".txt" || ext == L".log" || ext == L".ini" || ext == L".conf") return { 0xE023, brushSetiDefault ? brushSetiDefault.Get() : brushIconGray.Get() };

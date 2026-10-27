@@ -6,10 +6,16 @@ if %errorlevel% neq 0 exit /b 1
 cl /nologo /EHsc /std:c++20 /O2 /W3 /utf-8 /DUNICODE /D_UNICODE /DWIN32_LEAN_AND_MEAN /I include /I third_party\webview2\build\native\include /c src\app\Window.cpp /Fo:bin\Window.obj
 if %errorlevel% neq 0 exit /b %errorlevel%
 
+cl /nologo /EHsc /std:c++20 /O2 /W3 /utf-8 /DUNICODE /D_UNICODE /DWIN32_LEAN_AND_MEAN /I include /I third_party\webview2\build\native\include /c src\ui\Theme.cpp /Fo:bin\Theme.obj
+if %errorlevel% neq 0 exit /b %errorlevel%
+
 cl /nologo /EHsc /std:c++20 /O2 /W3 /utf-8 /DUNICODE /D_UNICODE /DWIN32_LEAN_AND_MEAN /I include /I third_party\webview2\build\native\include /c src\ui\LucideIcons.cpp /Fo:bin\LucideIcons.obj
 if %errorlevel% neq 0 exit /b %errorlevel%
 
 cl /nologo /EHsc /std:c++20 /O2 /W3 /utf-8 /DUNICODE /D_UNICODE /DWIN32_LEAN_AND_MEAN /I include /I third_party\webview2\build\native\include /c src\ui\EditorCanvas.cpp /Fo:bin\EditorCanvas.obj
+if %errorlevel% neq 0 exit /b %errorlevel%
+
+cl /nologo /EHsc /std:c++20 /O2 /W3 /utf-8 /DUNICODE /D_UNICODE /DWIN32_LEAN_AND_MEAN /I include /I third_party\webview2\build\native\include /c src\ui\ExtensionsPanel.cpp /Fo:bin\ExtensionsPanel.obj
 if %errorlevel% neq 0 exit /b %errorlevel%
 
 cl /nologo /EHsc /std:c++20 /O2 /W3 /utf-8 /DUNICODE /D_UNICODE /DWIN32_LEAN_AND_MEAN /I include /I third_party\webview2\build\native\include /c src\ui\PackageManagerView.cpp /Fo:bin\PackageManagerView.obj

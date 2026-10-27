@@ -8645,9 +8645,11 @@ run_test_70:
         std::cout << "  Passed: Empty query resets output to NONE." << std::endl;
 
         // 5. Test Split Install Button [ Install | ▾ ] and Scope (Project vs Global)
+        std::wstring executedPkg;
         std::wstring executedCmd;
         phide::ui::PkgInstallScope executedScope = phide::ui::PkgInstallScope::Project;
-        pkgView.SetOnInstallCallback([&](const std::wstring& cmd, phide::ui::PkgInstallScope scope) {
+        pkgView.SetOnInstallCallback([&](const std::wstring& pkgName, const std::wstring& cmd, phide::ui::PkgInstallScope scope) {
+            executedPkg = pkgName;
             executedCmd = cmd;
             executedScope = scope;
         });
@@ -8873,6 +8875,125 @@ run_test_70:
         assert(pkgView.GetSearchQuery() == L"matplotlib");
         assert(pkgView.GetSearchCaretPos() == 2);
         std::cout << "  Passed: Search caret arrow navigation, insertion, and backspace verified." << std::endl;
+
+        // 15. Test .sql Database Icon Mapping (User Image 1)
+        assert(phide::ui::LucideIcons::GetIconTypeForPath(L"database.sql", false, false) == phide::ui::FileIconType::Sql);
+        assert(phide::ui::LucideIcons::GetIconTypeForPath(L"schema.SQL", false, false) == phide::ui::FileIconType::Sql);
+        auto setiSql = theme.GetSetiIcon(L"database.sql", false, false);
+        assert(setiSql.glyph == 0xE022); // Seti db glyph
+        std::cout << "  Passed: .sql mapped to database icon (Lucide Sql & Seti 0xE022 db glyph)." << std::endl;
+
+        // Visual Render Test: .sql tab icon
+        ComPtr<IWICBitmap> pWicSqlTab;
+        pWicFactory->CreateBitmap(600, 100, GUID_WICPixelFormat32bppPBGRA, WICBitmapCacheOnDemand, &pWicSqlTab);
+        ComPtr<ID2D1RenderTarget> pRTSqlTab;
+        pD2DFactory->CreateWicBitmapRenderTarget(pWicSqlTab.Get(), rtProps, &pRTSqlTab);
+        pRTSqlTab->BeginDraw();
+        pRTSqlTab->Clear(D2D1::ColorF(0x1e1e24));
+        std::vector<phide::editor::OpenDocument> sqlDocs;
+        phide::editor::OpenDocument sqlDoc;
+        sqlDoc.fileName = L"database.sql";
+        sqlDoc.filePath = L"c:\\project\\database.sql";
+        sqlDocs.push_back(sqlDoc);
+        float sqlTabScroll = 0.0f, sqlTotalTabW = 0.0f;
+        testCanvas.RenderTabs(pRTSqlTab.Get(), theme, config, 0.0f, 600.0f, 0.0f, sqlDocs, 0, false, true, sqlTabScroll, sqlTotalTabW, 0);
+        HRESULT hrSql = pRTSqlTab->EndDraw();
+        assert(SUCCEEDED(hrSql));
+        std::wstring snapSqlPath = artDir + L"test_sql_database_icon.png";
+        SaveWicBitmapToPng(pWicSqlTab.Get(), pWicFactory.Get(), snapSqlPath);
+        assert(std::filesystem::exists(snapSqlPath));
+        std::wcout << L"  Passed: Saved .sql Database Tab Icon snapshot to: " << snapSqlPath << std::endl;
+
+        // 16. Test Pointer Cursor (IDC_HAND) on Install button and Language Cards (User Image 2)
+        pkgView.NavigateBackToLanguages();
+        POINT ptCard{ 150, 150 };
+        LPCWSTR curCard = pkgView.GetCursorForPoint(ptCard);
+        assert(curCard == IDC_HAND);
+        std::cout << "  Passed: Language Grid card returns IDC_HAND pointer cursor." << std::endl;
+
+        pkgView.SelectLanguageAndOpenSearch(phide::ui::RuntimeLanguage::Python);
+        pkgView.SetSearchQuery(L"matplotlib");
+        POINT ptSearchBox{ 100, 66 };
+        LPCWSTR curSearch = pkgView.GetCursorForPoint(ptSearchBox);
+        assert(curSearch == IDC_IBEAM);
+        std::cout << "  Passed: Search box returns IDC_IBEAM text cursor." << std::endl;
+
+        // Find rendered install button position for first result
+        const auto& pkgs = pkgView.GetPackages();
+        assert(!pkgs.empty());
+        POINT ptInstallBtn{ static_cast<LONG>(pkgs[0].rcInstallBtn.left + 5.0f), static_cast<LONG>(pkgs[0].rcInstallBtn.top + 5.0f) };
+        LPCWSTR curInstall = pkgView.GetCursorForPoint(ptInstallBtn);
+        assert(curInstall == IDC_HAND);
+        POINT ptArrowBtn{ static_cast<LONG>(pkgs[0].rcSplitArrowBtn.left + 5.0f), static_cast<LONG>(pkgs[0].rcSplitArrowBtn.top + 5.0f) };
+        LPCWSTR curArrow = pkgView.GetCursorForPoint(ptArrowBtn);
+        assert(curArrow == IDC_HAND);
+        std::cout << "  Passed: Install button and Split Arrow return IDC_HAND pointer cursor." << std::endl;
+
+        // 17. Test Package Installation & Processes HUD Floating Card (User Image 2 & 3)
+        // Click install button
+        pkgView.HandleLButtonDown(ptInstallBtn);
+        assert(executedPkg == pkgs[0].name);
+        assert(!executedCmd.empty());
+        std::wcout << L"  Passed: Clicked install button triggered callback for " << executedPkg << std::endl;
+
+        // Mark installed
+        pkgView.MarkPackageInstalled(pkgs[0].name);
+        assert(pkgView.GetPackages()[0].isInstalled);
+        assert(!pkgView.GetPackages()[0].isInstalling);
+        std::cout << "  Passed: Package marked installed successfully." << std::endl;
+
+        // Verify ExtensionsPanel Processes HUD
+        phide::ui::ExtensionsPanel extPanel;
+        assert(!extPanel.HasActiveProcesses());
+        extPanel.StartProcessTask(L"Installing package " + executedPkg, executedCmd);
+        assert(extPanel.HasActiveProcesses());
+        assert(extPanel.GetProcessTasks().size() == 1);
+        assert(extPanel.GetProcessTasks()[0].title == L"Installing package " + executedPkg);
+
+        // Visual Render Test: Floating Processes HUD Card
+        ComPtr<IWICBitmap> pWicHud;
+        pWicFactory->CreateBitmap(600, 300, GUID_WICPixelFormat32bppPBGRA, WICBitmapCacheOnDemand, &pWicHud);
+        ComPtr<ID2D1RenderTarget> pRTHud;
+        pD2DFactory->CreateWicBitmapRenderTarget(pWicHud.Get(), rtProps, &pRTHud);
+        pRTHud->BeginDraw();
+        pRTHud->Clear(D2D1::ColorF(0x18181b));
+        extPanel.RenderProcessesCard(pRTHud.Get(), theme, config, 20.0f, 20.0f, 560.0f, 260.0f);
+        HRESULT hrHud = pRTHud->EndDraw();
+        assert(SUCCEEDED(hrHud));
+        std::wstring snapHudPath = artDir + L"test_processes_hud_floating.png";
+        SaveWicBitmapToPng(pWicHud.Get(), pWicFactory.Get(), snapHudPath);
+        assert(std::filesystem::exists(snapHudPath));
+        std::wcout << L"  Passed: Saved Floating Processes HUD Card snapshot to: " << snapHudPath << std::endl;
+
+        // 18. Test Python Versions Preservation (3.15 and 3.14 both present in environments, User Image 4)
+        extPanel.RefreshPcStatus();
+        const auto& items = extPanel.GetItems();
+        assert(!items.empty());
+        assert(items[0].id == L"python");
+        bool has314 = false, has315 = false;
+        for (const auto& env : items[0].environments) {
+            if (env.name.find(L"3.14") != std::wstring::npos || env.path.find(L"3.14") != std::wstring::npos) has314 = true;
+            if (env.name.find(L"3.15") != std::wstring::npos || env.path.find(L"3.15") != std::wstring::npos) has315 = true;
+        }
+        assert(has314);
+        assert(has315);
+        std::cout << "  Passed: Both Python 3.15 and 3.14 environments preserved and active." << std::endl;
+
+        // 19. Visual Render Test: Language Grid with NO version numbers (User Image 5)
+        pkgView.NavigateBackToLanguages();
+        ComPtr<IWICBitmap> pWicNoVerGrid;
+        pWicFactory->CreateBitmap(snapW, snapH, GUID_WICPixelFormat32bppPBGRA, WICBitmapCacheOnDemand, &pWicNoVerGrid);
+        ComPtr<ID2D1RenderTarget> pRTNoVerGrid;
+        pD2DFactory->CreateWicBitmapRenderTarget(pWicNoVerGrid.Get(), rtProps, &pRTNoVerGrid);
+        pRTNoVerGrid->BeginDraw();
+        pRTNoVerGrid->Clear(D2D1::ColorF(0x18181b));
+        pkgView.Render(pRTNoVerGrid.Get(), theme, config, 0.0f, static_cast<float>(snapW), 0.0f, static_cast<float>(snapH));
+        HRESULT hrNoVer = pRTNoVerGrid->EndDraw();
+        assert(SUCCEEDED(hrNoVer));
+        std::wstring snapNoVerPath = artDir + L"test_language_grid_no_versions.png";
+        SaveWicBitmapToPng(pWicNoVerGrid.Get(), pWicFactory.Get(), snapNoVerPath);
+        assert(std::filesystem::exists(snapNoVerPath));
+        std::wcout << L"  Passed: Saved Language Grid (No Versions) snapshot to: " << snapNoVerPath << std::endl;
 
         std::cout << "  Passed: All [TEST 70] Package Manager and Git fixes passed successfully!" << std::endl;
     }

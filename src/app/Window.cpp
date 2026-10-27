@@ -4706,13 +4706,64 @@ bool Window::Create(HINSTANCE hInstance, int nCmdShow) {
 
     // Wire Package Manager HWND for embedded WebView2 and Install Package callback
     m_editor.GetPackageManagerView().SetHwnd(m_hwnd);
-    m_editor.GetPackageManagerView().SetOnInstallCallback([this](const std::wstring& cmd, phide::ui::PkgInstallScope scope) {
-        if (!m_terminal.IsOpen()) {
-            std::wstring dir = m_drawer.HasOpenFolder() ? m_drawer.GetOpenFolderPath() : m_workspace.GetRootPath().wstring();
-            m_terminal.Open(dir);
-        }
-        m_terminal.ExecuteCommandLine(cmd);
+    m_editor.GetPackageManagerView().SetOnInstallCallback([this](const std::wstring& pkgName, const std::wstring& cmd, phide::ui::PkgInstallScope scope) {
+        std::wstring taskTitle = L"Installing package " + pkgName;
+        m_extensionsPanel.StartProcessTask(taskTitle, cmd);
         if (m_hwnd) InvalidateRect(m_hwnd, nullptr, FALSE);
+
+        if (m_terminal.IsOpen()) {
+            m_terminal.ExecuteCommandLine(cmd);
+        }
+
+        std::thread([this, pkgName, cmd, taskTitle]() {
+            // Find appropriate interpreter or tool
+            std::wstring runCmd = cmd;
+            std::wstring pyPath = L"python.exe";
+            for (const auto& item : m_extensionsPanel.GetItems()) {
+                if (item.id == L"python" && !item.environments.empty()) {
+                    for (const auto& env : item.environments) {
+                        if (env.isDefault && std::filesystem::exists(env.path)) {
+                            pyPath = env.path;
+                            break;
+                        }
+                    }
+                }
+            }
+
+            if (cmd.find(L"pip install") == 0) {
+                std::wstring args = cmd.substr(11);
+                runCmd = L"\"" + pyPath + L"\" -m pip install " + args;
+            }
+
+            m_extensionsPanel.UpdateProcessTask(taskTitle, 0.40f, L"Running: " + runCmd);
+            if (m_hwnd) PostMessageW(m_hwnd, WM_PAINT, 0, 0);
+
+            STARTUPINFOW si{};
+            si.cb = sizeof(si);
+            si.dwFlags = STARTF_USESHOWWINDOW;
+            si.wShowWindow = SW_HIDE;
+            PROCESS_INFORMATION pi{};
+
+            std::wstring execCmd = L"cmd.exe /c " + runCmd;
+            std::vector<wchar_t> cmdBuf(execCmd.begin(), execCmd.end());
+            cmdBuf.push_back(0);
+
+            BOOL ok = CreateProcessW(nullptr, cmdBuf.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi);
+            if (ok) {
+                float prog = 0.40f;
+                while (WaitForSingleObject(pi.hProcess, 350) == WAIT_TIMEOUT) {
+                    prog = (std::min)(0.92f, prog + 0.08f);
+                    m_extensionsPanel.UpdateProcessTask(taskTitle, prog, L"Downloading and installing " + pkgName + L"...");
+                    if (m_hwnd) PostMessageW(m_hwnd, WM_PAINT, 0, 0);
+                }
+                CloseHandle(pi.hProcess);
+                CloseHandle(pi.hThread);
+            }
+
+            m_extensionsPanel.CompleteProcessTask(taskTitle, L"Successfully installed " + pkgName);
+            m_editor.GetPackageManagerView().MarkPackageInstalled(pkgName);
+            if (m_hwnd) InvalidateRect(m_hwnd, nullptr, FALSE);
+        }).detach();
     });
 
     // Restore saved IDE session state (open folder, expanded tree dirs, open file, sidebar open/close state)
@@ -4970,6 +5021,13 @@ void Window::OnPaint() {
         m_pRenderTarget->PushAxisAlignedClip(clipRect, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
         m_extensionsPanel.Render(m_pRenderTarget.Get(), m_theme, m_config, rightSidebarX, headerH, fullRightSidebarW, rightSidebarH);
         m_pRenderTarget->PopAxisAlignedClip();
+    } else if (m_extensionsPanel.HasActiveProcesses()) {
+        // Floating Processes HUD Card at bottom-right when right sidebar is closed (Image 3)
+        const float cardW = m_config.ScaleF(340.0f);
+        const float cardX = clientW - cardW - m_config.ScaleF(16.0f);
+        float cardH = (std::max)(50.0f, clientH - headerH - currentTermH);
+        float cardY = headerH;
+        m_extensionsPanel.RenderProcessesCard(m_pRenderTarget.Get(), m_theme, m_config, cardX, cardY, cardW, cardH);
     }
 
     // 3. Integrated Terminal Panel at Bottom (smoothly slides up across workspace and sidebar)
@@ -5840,8 +5898,8 @@ void Window::HandleMouseMove(POINT clientPt, WPARAM wParam) {
     if (m_header.SetHoveredDbSettings(hovDbSet)) needRepaint = true;
     if (m_header.SetHoveredServerSettings(hovSrvSet)) needRepaint = true;
 
-    // Check Extensions right sidebar hover
-    if (m_rightSidebarAnimProgress > 0.001f && m_extensionsPanel.IsOpen()) {
+    // Check Extensions right sidebar or floating processes HUD hover
+    if ((m_rightSidebarAnimProgress > 0.001f && m_extensionsPanel.IsOpen()) || m_extensionsPanel.HasActiveProcesses()) {
         if (m_extensionsPanel.HandleMouseMove(clientPt)) {
             needRepaint = true;
         }
@@ -7173,6 +7231,14 @@ void Window::HandleLButtonDown(POINT clientPt) {
         return;
     }
 
+    // 3e2. Floating Processes HUD Card Clicks (even when right sidebar is closed)
+    if (m_extensionsPanel.HitTestProcesses(clientPt)) {
+        if (m_extensionsPanel.HandleLButtonDown(clientPt)) {
+            InvalidateRect(m_hwnd, nullptr, FALSE);
+            return;
+        }
+    }
+
     // 3f. Extensions Right Sidebar Panel Clicks
     if (m_rightSidebarAnimProgress > 0.001f && m_extensionsPanel.IsOpen() && m_extensionsPanel.HitTest(clientPt)) {
         bool handled = m_extensionsPanel.HandleLButtonDown(clientPt);
@@ -8330,6 +8396,21 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     if (pt.x >= canvasLeft + gutterW && pt.x < clientW - scrollbarW &&
                         pt.y >= topY && pt.y < clientH) {
                         SetCursor(LoadCursor(nullptr, IDC_IBEAM));
+                        return TRUE;
+                    }
+                }
+
+                // Processes HUD card cursor (Images 2 & 3)
+                if (m_extensionsPanel.HitTestProcesses(pt)) {
+                    SetCursor(LoadCursor(nullptr, IDC_HAND));
+                    return TRUE;
+                }
+
+                // Package Manager View cursor handling (Install button, split arrow, cards, inputs)
+                if (pCurDoc && pCurDoc->isSpecialView && pCurDoc->viewType == L"packages") {
+                    LPCWSTR cur = m_editor.GetPackageManagerView().GetCursorForPoint(pt);
+                    if (cur) {
+                        SetCursor(LoadCursor(nullptr, cur));
                         return TRUE;
                     }
                 }

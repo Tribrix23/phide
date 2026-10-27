@@ -701,6 +701,7 @@ FileIconType LucideIcons::GetIconTypeForPath(const std::wstring& filename, bool 
         if (ext == L".yml" || ext == L".yaml") return FileIconType::Yaml;
         if (ext == L".png" || ext == L".jpg" || ext == L".jpeg" || ext == L".svg" || ext == L".gif" || ext == L".ico" || ext == L".webp") return FileIconType::Image;
         if (ext == L".exe" || ext == L".dll" || ext == L".bin" || ext == L".so" || ext == L".obj") return FileIconType::Exe;
+        if (ext == L".sql") return FileIconType::Sql;
     }
 
     return FileIconType::DefaultFile;
@@ -754,6 +755,9 @@ void LucideIcons::DrawFileIcon(ID2D1RenderTarget* pRT, Theme& theme, const D2D1_
             break;
         case FileIconType::Exe:
             DrawFileExe(pRT, bounds, theme.brushIconGreen.Get());
+            break;
+        case FileIconType::Sql:
+            DrawDatabase(pRT, bounds, theme.brushIconOrange ? theme.brushIconOrange.Get() : theme.brushIconBlue.Get(), 1.25f);
             break;
         case FileIconType::DefaultFile:
         default:

@@ -41,6 +41,7 @@ enum class FileIconType {
     Yaml,
     Image,
     Exe,
+    Sql,
     DefaultFile
 };
 

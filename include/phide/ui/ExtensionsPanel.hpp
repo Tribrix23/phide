@@ -156,6 +156,9 @@ public:
     void CompleteProcessTask(const std::wstring& title, const std::wstring& completionMsg);
     void DismissProcessTask(size_t index);
     [[nodiscard]] const std::vector<ProcessTask>& GetProcessTasks() const noexcept { return m_processTasks; }
+    [[nodiscard]] bool HasActiveProcesses() const noexcept { return !m_processTasks.empty(); }
+    [[nodiscard]] bool HitTestProcesses(POINT pt) const noexcept;
+    void RenderProcessesCard(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config, float x, float y, float w, float h);
 
     void CreateWorkspaceVenv(std::function<void(const std::wstring&)> notifyCb = nullptr);
     void UninstallRuntime(int itemIdx, const std::wstring& version, std::function<void(const std::wstring&)> notifyCb = nullptr);
@@ -167,7 +170,6 @@ private:
     void RenderDetailView(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config, float x, float y, float w, float h);
     void RenderBrandedIcon(ID2D1RenderTarget* pRT, Theme& theme, const ExtensionItem& item, const D2D1_RECT_F& bounds);
     void RenderSkeletonLoader(ID2D1RenderTarget* pRT, Theme& theme, const D2D1_RECT_F& bounds);
-    void RenderProcessesCard(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config, float x, float y, float w, float h);
 
     bool m_isOpen = false;
     float m_width = 340.0f;
