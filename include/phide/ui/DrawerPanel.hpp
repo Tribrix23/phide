@@ -120,6 +120,7 @@ struct GitCommitItem {
     std::wstring statSummary;
     std::wstring refNames;
     bool isHead = false;
+    bool isUnpushed = false;
     bool isExpanded = false;
     bool filesLoaded = false;
     int lane = 0;
@@ -600,6 +601,8 @@ public:
     }
     [[nodiscard]] bool IsCommitting() const noexcept { return m_isCommitting.load(); }
     [[nodiscard]] bool IsSyncing() const noexcept { return m_isSyncing.load(); }
+    [[nodiscard]] bool IsCommitEditMsgOpen() const noexcept { return m_isCommitEditMsgOpen; }
+    void SetCommitEditMsgOpen(bool open) noexcept { m_isCommitEditMsgOpen = open; }
 
     // --- Inline Tree Item Rename ---
     /**
@@ -714,6 +717,7 @@ private:
     std::atomic<bool> m_isGitRefreshing{false};
     std::atomic<bool> m_isCommitting{false};
     std::atomic<bool> m_isSyncing{false};
+    bool m_isCommitEditMsgOpen = false;
     bool m_gitCommitBtnPressed = false;
     std::unordered_map<std::wstring, ULONGLONG> m_pendingActionFiles;
     std::wstring m_hoveredGitButton;

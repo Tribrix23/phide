@@ -9709,16 +9709,23 @@ run_test_72:
         assert(!errModal.IsOpen());
         std::cout << "  Passed: GitErrorModal correctly handles button hit-tests, keyboard actions, and error parsing." << std::endl;
 
-        // 3. Verify TerminalPanel Git Log Tab and Real-Time Streaming (Images 3 & 4)
+        // 3. Verify TerminalPanel Git Logs un-Xable tab and real-time streaming (Images 3 & 4)
         phide::ui::TerminalPanel termPanel;
         termPanel.Open(L"c:\\test-repo");
         termPanel.OpenGitLogTab(logMgr.GetLogLines());
 
         auto* activeTab = termPanel.GetActiveTab();
         assert(activeTab != nullptr);
-        assert(activeTab->title == L"Git");
+        assert(activeTab->title == L"Git Logs");
+        assert(activeTab->canClose == false);
         assert(!activeTab->lines.empty());
         size_t initialLinesCount = activeTab->lines.size();
+
+        // Attempt to close un-Xable tab -> MUST be rejected!
+        size_t totalTabsBefore = termPanel.GetTabCount();
+        termPanel.CloseTab(termPanel.GetActiveTabIdx());
+        assert(termPanel.GetTabCount() == totalTabsBefore);
+        std::cout << "  Passed: TerminalPanel 'Git Logs' tab is un-Xable (canClose == false, close ignored)." << std::endl;
 
         // Stream new real-time log lines into terminal
         std::vector<std::wstring> realTimeBatch = {
@@ -9785,6 +9792,36 @@ run_test_72:
         SaveWicBitmapToPng(pWicSnap72.Get(), pWicFactory.Get(), snapBadgePath);
         assert(std::filesystem::exists(snapBadgePath));
         std::wcout << L"  Passed: Saved Committing Changes badge visual snapshot to: " << snapBadgePath << std::endl;
+
+        // 5c. COMMIT_EDITMSG Locked Source Control State Visual Render (Images 4 & 5)
+        drawer72.SetCommitEditMsgOpen(true);
+        assert(drawer72.IsCommitEditMsgOpen());
+        drawer72.HandleGitChar(L'A'); // Should be blocked while locked
+        pRTSnap72->BeginDraw();
+        pRTSnap72->Clear(D2D1::ColorF(0.12f, 0.12f, 0.14f, 1.0f));
+        drawer72.Render(pRTSnap72.Get(), theme72, config, static_cast<float>(snapH), 320.0f);
+        HRESULT hrLockedSnap = pRTSnap72->EndDraw();
+        assert(SUCCEEDED(hrLockedSnap));
+
+        std::wstring snapLockedPath = artDir + L"test_git_commit_editmsg_locked.png";
+        SaveWicBitmapToPng(pWicSnap72.Get(), pWicFactory.Get(), snapLockedPath);
+        assert(std::filesystem::exists(snapLockedPath));
+        std::wcout << L"  Passed: Saved COMMIT_EDITMSG locked state snapshot to: " << snapLockedPath << std::endl;
+        drawer72.SetCommitEditMsgOpen(false);
+
+        // 5d. TerminalPanel Git Logs Un-Xable Tab Visual Render (Images 1 & 3)
+        pRTSnap72->BeginDraw();
+        pRTSnap72->Clear(D2D1::ColorF(0.10f, 0.10f, 0.12f, 1.0f));
+        termPanel.Render(pRTSnap72.Get(), theme72, config, static_cast<float>(snapW), static_cast<float>(snapH), 0.0f);
+        HRESULT hrTermSnap = pRTSnap72->EndDraw();
+        assert(SUCCEEDED(hrTermSnap));
+
+        // Active tab is "Git Logs" and has NO close button (bounds are 0,0,0,0)
+        assert(activeTab->closeBounds.left == 0.0f && activeTab->closeBounds.right == 0.0f);
+        std::wstring snapTermPath = artDir + L"test_git_logs_unxable_tab.png";
+        SaveWicBitmapToPng(pWicSnap72.Get(), pWicFactory.Get(), snapTermPath);
+        assert(std::filesystem::exists(snapTermPath));
+        std::wcout << L"  Passed: Saved Git Logs un-Xable tab visual snapshot to: " << snapTermPath << std::endl;
 
         std::cout << "  Passed: All [TEST 72] Real-time Git Logging, Committing Progress Badge, and Error Modal tests passed!" << std::endl;
     }

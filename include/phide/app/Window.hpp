@@ -256,6 +256,9 @@ private:
     /** @brief Prompts with Open Folder dialog and populates explorer tree (Ctrl+K Ctrl+O). */
     void DoOpenFolder();
 
+    /** @brief Stages changes and opens temporary .git/COMMIT_EDITMSG editor tab when commit has empty message. */
+    void DoOpenCommitEditMsg();
+
     /** @brief Directly opens the given directory path into the sidebar tree. */
     void DoOpenFolderFromPath(const std::wstring& path);
 

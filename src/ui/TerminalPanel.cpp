@@ -1,4 +1,5 @@
 #include "phide/ui/TerminalPanel.hpp"
+#include "phide/ui/GitLogManager.hpp"
 #include <windows.h>
 #include <shellapi.h>
 #include <filesystem>
@@ -350,6 +351,43 @@ void TerminalPanel::Open(const std::wstring& workingDir) {
     if (m_tabs.empty()) {
         NewTab(TerminalShellType::PowerShell, workingDir);
     }
+
+    // Ensure dedicated un-Xable "Git Logs" tab exists (Image 3)
+    bool hasGitLogTab = false;
+    for (auto& t : m_tabs) {
+        if (t && (t->title == L"Git Logs" || t->title == L"Git")) {
+            hasGitLogTab = true;
+            t->title = L"Git Logs";
+            t->canClose = false;
+            break;
+        }
+    }
+    if (!hasGitLogTab) {
+        auto gitTab = std::make_unique<TerminalTab>();
+        gitTab->shellType = TerminalShellType::PowerShell;
+        gitTab->title = L"Git Logs";
+        gitTab->canClose = false;
+        gitTab->isServerTab = true;
+        gitTab->workingDir = m_defaultWorkingDir;
+        gitTab->isAlive = false;
+
+        auto lines = GitLogManager::Instance().GetLogLines();
+        for (const auto& lineStr : lines) {
+            TerminalLine tl;
+            tl.rawText = lineStr;
+            D2D1_COLOR_F color = D2D1::ColorF(0.85f, 0.85f, 0.88f, 1.0f);
+            if (lineStr.find(L" [info] >") != std::wstring::npos) {
+                color = D2D1::ColorF(0.40f, 0.80f, 1.0f, 1.0f);
+            } else if (lineStr.find(L"fatal:") != std::wstring::npos || lineStr.find(L"error:") != std::wstring::npos) {
+                color = D2D1::ColorF(0.95f, 0.35f, 0.35f, 1.0f);
+            } else if (lineStr.find(L"warning:") != std::wstring::npos) {
+                color = D2D1::ColorF(0.95f, 0.75f, 0.25f, 1.0f);
+            }
+            tl.spans.push_back({ lineStr, color, false });
+            gitTab->lines.push_back(std::move(tl));
+        }
+        m_tabs.push_back(std::move(gitTab));
+    }
 }
 
 void TerminalPanel::Close() noexcept {
@@ -391,6 +429,7 @@ void TerminalPanel::NewTab(TerminalShellType shell, const std::wstring& workingD
 
 void TerminalPanel::CloseTab(size_t index) {
     if (index >= m_tabs.size()) return;
+    if (!m_tabs[index]->canClose) return; // Un-Xable tabs cannot be closed
     std::wstring associatedPath = m_tabs[index]->associatedFilePath;
     bool isServer = (m_tabs[index]->shellType == TerminalShellType::LiveServer || m_tabs[index]->isServerTab);
     m_tabs[index]->Terminate();
@@ -1087,22 +1126,26 @@ void TerminalPanel::RenderHeader(ID2D1RenderTarget* pRT, Theme& theme, const app
         }
 
         // Tab Title Text
-        D2D1_RECT_F rcTabText = D2D1::RectF(curX + config.ScaleF(8.0f), tabY, curX + tabW - config.ScaleF(20.0f), tabY + tabH);
+        D2D1_RECT_F rcTabText = D2D1::RectF(curX + config.ScaleF(8.0f), tabY, curX + tabW - (tab->canClose ? config.ScaleF(20.0f) : config.ScaleF(8.0f)), tabY + tabH);
         ID2D1Brush* textBrush = isActive ? theme.brushTextWhite.Get() : theme.brushTextSecondary.Get();
         pRT->DrawText(tab->title.c_str(), static_cast<UINT32>(tab->title.length()),
                       theme.fontMenuItem.Get() ? theme.fontMenuItem.Get() : theme.fontButtonCenter.Get(),
                       rcTabText, textBrush);
 
-        // Close 'x' button on tab
-        float closeX = curX + tabW - config.ScaleF(16.0f);
-        float closeY = tabY + tabH / 2.0f;
-        tab->closeBounds = D2D1::RectF(closeX - config.ScaleF(6.0f), tabY + config.ScaleF(4.0f),
-                                       closeX + config.ScaleF(6.0f), tabY + tabH - config.ScaleF(4.0f));
+        // Close 'x' button on tab (un-Xable if !tab->canClose, e.g. "Git Logs")
+        if (tab->canClose) {
+            float closeX = curX + tabW - config.ScaleF(16.0f);
+            float closeY = tabY + tabH / 2.0f;
+            tab->closeBounds = D2D1::RectF(closeX - config.ScaleF(6.0f), tabY + config.ScaleF(4.0f),
+                                           closeX + config.ScaleF(6.0f), tabY + tabH - config.ScaleF(4.0f));
 
-        float xr = config.ScaleF(3.0f);
-        ID2D1Brush* closeBrush = (static_cast<int>(i) == m_hoveredCloseIdx) ? theme.brushCloseHoverBg.Get() : theme.brushTextMuted.Get();
-        pRT->DrawLine(D2D1::Point2F(closeX - xr, closeY - xr), D2D1::Point2F(closeX + xr, closeY + xr), closeBrush, 1.2f);
-        pRT->DrawLine(D2D1::Point2F(closeX + xr, closeY - xr), D2D1::Point2F(closeX - xr, closeY + xr), closeBrush, 1.2f);
+            float xr = config.ScaleF(3.0f);
+            ID2D1Brush* closeBrush = (static_cast<int>(i) == m_hoveredCloseIdx) ? theme.brushCloseHoverBg.Get() : theme.brushTextMuted.Get();
+            pRT->DrawLine(D2D1::Point2F(closeX - xr, closeY - xr), D2D1::Point2F(closeX + xr, closeY + xr), closeBrush, 1.2f);
+            pRT->DrawLine(D2D1::Point2F(closeX + xr, closeY - xr), D2D1::Point2F(closeX - xr, closeY + xr), closeBrush, 1.2f);
+        } else {
+            tab->closeBounds = D2D1::RectF(0.0f, 0.0f, 0.0f, 0.0f);
+        }
 
         curX += tabW + config.ScaleF(4.0f);
     }
@@ -2101,7 +2144,8 @@ void TerminalPanel::OpenLogTab(const std::wstring& logTitle, const std::vector<s
     TerminalTab* tab = nullptr;
     int existingIdx = -1;
     for (size_t i = 0; i < m_tabs.size(); ++i) {
-        if (m_tabs[i]->title == logTitle) {
+        if (m_tabs[i]->title == logTitle ||
+            ((logTitle == L"Git Logs" || logTitle == L"Git") && (m_tabs[i]->title == L"Git Logs" || m_tabs[i]->title == L"Git"))) {
             existingIdx = static_cast<int>(i);
             break;
         }
@@ -2110,12 +2154,19 @@ void TerminalPanel::OpenLogTab(const std::wstring& logTitle, const std::vector<s
     if (existingIdx >= 0) {
         m_activeTabIdx = existingIdx;
         tab = m_tabs[existingIdx].get();
+        if (logTitle == L"Git Logs" || logTitle == L"Git") {
+            tab->title = L"Git Logs";
+            tab->canClose = false;
+        }
         std::lock_guard<std::mutex> lock(tab->bufferMutex);
         tab->lines.clear();
     } else {
         auto newTab = std::make_unique<TerminalTab>();
         newTab->shellType = TerminalShellType::PowerShell;
-        newTab->title = logTitle;
+        newTab->title = (logTitle == L"Git") ? L"Git Logs" : logTitle;
+        if (newTab->title == L"Git Logs") {
+            newTab->canClose = false;
+        }
         newTab->isServerTab = true; // locked input, read-only process stream
         newTab->workingDir = m_defaultWorkingDir;
         newTab->isAlive = false;
@@ -2149,7 +2200,7 @@ void TerminalPanel::OpenLogTab(const std::wstring& logTitle, const std::vector<s
 }
 
 void TerminalPanel::OpenGitLogTab(const std::vector<std::wstring>& logLines) {
-    OpenLogTab(L"Git", logLines);
+    OpenLogTab(L"Git Logs", logLines);
 }
 
 void TerminalPanel::AppendGitLogLines(const std::vector<std::wstring>& newLines) {
@@ -2157,12 +2208,24 @@ void TerminalPanel::AppendGitLogLines(const std::vector<std::wstring>& newLines)
     std::lock_guard<std::mutex> tabsLock(m_tabsMutex);
     TerminalTab* tab = nullptr;
     for (auto& t : m_tabs) {
-        if (t && t->title == L"Git") {
+        if (t && (t->title == L"Git Logs" || t->title == L"Git")) {
             tab = t.get();
+            tab->title = L"Git Logs";
+            tab->canClose = false;
             break;
         }
     }
-    if (!tab) return;
+    if (!tab) {
+        auto newTab = std::make_unique<TerminalTab>();
+        newTab->shellType = TerminalShellType::PowerShell;
+        newTab->title = L"Git Logs";
+        newTab->canClose = false;
+        newTab->isServerTab = true;
+        newTab->workingDir = m_defaultWorkingDir;
+        newTab->isAlive = false;
+        m_tabs.push_back(std::move(newTab));
+        tab = m_tabs.back().get();
+    }
 
     std::lock_guard<std::mutex> bufferLock(tab->bufferMutex);
     for (const auto& lineStr : newLines) {
@@ -2363,7 +2426,7 @@ bool TerminalPanel::HitTestButtons(POINT pt) const noexcept {
         return true;
     }
     for (const auto& tab : m_tabs) {
-        if (inRect(pt, tab->tabBounds) || inRect(pt, tab->closeBounds)) {
+        if (inRect(pt, tab->tabBounds) || (tab->canClose && inRect(pt, tab->closeBounds))) {
             return true;
         }
         if (tab->splitTab && inRect(pt, tab->splitTab->splitCloseBounds)) {
@@ -2552,7 +2615,7 @@ bool TerminalPanel::OnMouseDown(POINT pt, const app::AppConfig& config, const st
 
     // 12. Check Tabs and Tab Close Buttons
     for (size_t i = 0; i < m_tabs.size(); ++i) {
-        if (inRect(pt, m_tabs[i]->closeBounds)) {
+        if (m_tabs[i]->canClose && inRect(pt, m_tabs[i]->closeBounds)) {
             CloseTab(i);
             return true;
         }
@@ -2622,7 +2685,7 @@ bool TerminalPanel::OnMouseMove(POINT pt, bool isLButtonDown, float clientH) {
         if (inRect(pt, m_tabs[i]->tabBounds)) {
             m_hoveredTabIdx = static_cast<int>(i);
         }
-        if (inRect(pt, m_tabs[i]->closeBounds)) {
+        if (m_tabs[i]->canClose && inRect(pt, m_tabs[i]->closeBounds)) {
             m_hoveredCloseIdx = static_cast<int>(i);
         }
     }

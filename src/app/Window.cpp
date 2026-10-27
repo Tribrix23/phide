@@ -1416,6 +1416,38 @@ void Window::CloseDocument(int groupIdx, int docIdx) {
         m_lastClosedFilePath = group.docs[docIdx].filePath;
     }
 
+    // Hook for temporary COMMIT_EDITMSG tab (Images 4 & 5)
+    std::wstring closingPath = group.docs[docIdx].filePath;
+    if (closingPath.ends_with(L"COMMIT_EDITMSG")) {
+        std::wstring commitMsg;
+        for (const auto& line : group.docs[docIdx].buffer.GetLines()) {
+            size_t start = 0;
+            while (start < line.length() && (line[start] == L' ' || line[start] == L'\t')) {
+                start++;
+            }
+            if (start < line.length() && line[start] == L'#') {
+                continue; // Skip comment lines
+            }
+            std::wstring trimmed = line;
+            while (!trimmed.empty() && (trimmed.back() == L' ' || trimmed.back() == L'\t' || trimmed.back() == L'\r' || trimmed.back() == L'\n')) {
+                trimmed.pop_back();
+            }
+            if (!trimmed.empty()) {
+                if (!commitMsg.empty()) commitMsg += L"\n";
+                commitMsg += trimmed;
+            }
+        }
+
+        m_drawer.SetCommitEditMsgOpen(false);
+
+        if (!commitMsg.empty()) {
+            m_drawer.CommitChangesAsync(commitMsg);
+        } else {
+            // Empty message aborts the commit, but changes REMAIN staged!
+            m_drawer.RefreshGitStatusOnly(false);
+        }
+    }
+
     group.docs.erase(group.docs.begin() + docIdx);
 
     if (group.docs.empty()) {
@@ -3743,6 +3775,113 @@ void Window::ShowGitCommandOutput(const std::wstring& cmd, const std::wstring& o
 
     // 4. Open the temporary file in the editor as an active document tab!
     OpenFileDocument(filePath.wstring(), false);
+    if (m_hwnd) InvalidateRect(m_hwnd, nullptr, FALSE);
+}
+
+void Window::DoOpenCommitEditMsg() {
+    std::wstring repoDir;
+    {
+        std::lock_guard<std::recursive_mutex> lock(m_drawer.GetGitMutex());
+        repoDir = m_drawer.HasOpenFolder() ? m_drawer.GetOpenFolderPath() : m_workspace.GetRootPath().wstring();
+    }
+    if (repoDir.empty()) {
+        repoDir = std::filesystem::current_path().wstring();
+    }
+    if (repoDir.empty()) return;
+
+    // 1. Stage all changes first (`git add -A`)
+    ui::RunGitCmd(L"add -A", repoDir);
+
+    // 2. Query branch name
+    std::wstring branch = m_drawer.GetGitBranch();
+    if (branch.empty()) {
+        auto resBranch = ui::RunGitCmd(L"rev-parse --abbrev-ref HEAD", repoDir);
+        if (resBranch.exitCode == 0 && !resBranch.output.empty()) {
+            branch = resBranch.output;
+            while (!branch.empty() && (branch.back() == L'\r' || branch.back() == L'\n' || branch.back() == L' ')) {
+                branch.pop_back();
+            }
+        }
+    }
+    if (branch.empty()) branch = L"main";
+
+    // 3. Query staged changes: `git diff --cached --name-status`
+    auto resDiff = ui::RunGitCmd(L"diff --cached --name-status", repoDir);
+
+    // 4. Construct COMMIT_EDITMSG content matching Image 4
+    std::wstring editMsgContent =
+        L"\n"
+        L"# Please enter the commit message for your changes. Lines starting\n"
+        L"# with '#' will be ignored, and an empty message aborts the commit.\n"
+        L"#\n"
+        L"# On branch " + branch + L"\n"
+        L"# Changes to be committed:\n";
+
+    if (resDiff.exitCode == 0 && !resDiff.output.empty()) {
+        std::wstringstream ss(resDiff.output);
+        std::wstring line;
+        while (std::getline(ss, line)) {
+            while (!line.empty() && (line.back() == L'\r' || line.back() == L'\n')) line.pop_back();
+            if (line.empty()) continue;
+            wchar_t statusChar = line[0];
+            std::wstring filePath;
+            size_t tabPos = line.find_first_of(L"\t ");
+            if (tabPos != std::wstring::npos) {
+                size_t pathStart = line.find_first_not_of(L"\t ", tabPos);
+                if (pathStart != std::wstring::npos) {
+                    filePath = line.substr(pathStart);
+                }
+            }
+            if (filePath.empty() && line.length() > 2) {
+                filePath = line.substr(2);
+            }
+            std::wstring statusStr = L"modified";
+            if (statusChar == L'A') statusStr = L"new file";
+            else if (statusChar == L'D') statusStr = L"deleted";
+            else if (statusChar == L'R') statusStr = L"renamed";
+            else if (statusChar == L'M') statusStr = L"modified";
+
+            editMsgContent += L"#\t" + statusStr + L":   " + filePath + L"\n";
+        }
+    } else {
+        editMsgContent += L"#\tnone\n";
+    }
+    editMsgContent += L"#\n";
+
+    // 5. Determine path to .git/COMMIT_EDITMSG
+    std::filesystem::path gitDir = std::filesystem::path(repoDir) / L".git";
+    std::error_code ec;
+    if (!std::filesystem::exists(gitDir, ec)) {
+        std::filesystem::create_directories(gitDir, ec);
+    }
+    std::filesystem::path commitEditMsgPath = gitDir / L"COMMIT_EDITMSG";
+
+    // Write file to disk as UTF-8
+    std::ofstream ofs(commitEditMsgPath, std::ios::out | std::ios::trunc | std::ios::binary);
+    if (ofs.is_open()) {
+        int len = WideCharToMultiByte(CP_UTF8, 0, editMsgContent.c_str(), -1, nullptr, 0, nullptr, nullptr);
+        if (len > 0) {
+            std::string u8(len, '\0');
+            WideCharToMultiByte(CP_UTF8, 0, editMsgContent.c_str(), -1, u8.data(), len, nullptr, nullptr);
+            if (!u8.empty() && u8.back() == '\0') u8.pop_back();
+            ofs.write(u8.data(), u8.size());
+        }
+        ofs.close();
+    }
+
+    // 6. Set drawer state: CommitEditMsg open (locks commit message input and greyouts Commit button)
+    m_drawer.SetCommitEditMsgOpen(true);
+    m_drawer.RefreshGitStatusOnly(false);
+
+    // 7. Open file in editor tab
+    OpenFileDocument(commitEditMsgPath.wstring(), false);
+
+    // 8. Place cursor at Line 0, Col 0 so user can type immediately
+    auto* pDoc = GetActiveDoc();
+    if (pDoc) {
+        pDoc->buffer.SetCursor(0, 0);
+    }
+
     if (m_hwnd) InvalidateRect(m_hwnd, nullptr, FALSE);
 }
 
@@ -6606,11 +6745,7 @@ void Window::HandleLButtonDown(POINT clientPt) {
                                 &promptDiscard, &discardFileName, &discardStatus, &discardCount, &promptEmptyCommit)) {
             if (promptEmptyCommit) {
                 m_drawer.ClearGitTooltip();
-                m_confirmDiscardModal.OpenNotice(
-                    L"Commit Message Required",
-                    L"Please enter a commit message before committing your changes.",
-                    L"Git commits require a summary message to record the changes in repository history."
-                );
+                DoOpenCommitEditMsg();
                 InvalidateRect(m_hwnd, nullptr, FALSE);
                 return;
             }
@@ -8016,11 +8151,7 @@ void Window::HandleLButtonDown(POINT clientPt) {
                                     &promptDiscard, &discardFileName, &discardStatus, &discardCount, &promptEmptyCommit)) {
                 if (promptEmptyCommit) {
                     m_drawer.ClearGitTooltip();
-                    m_confirmDiscardModal.OpenNotice(
-                        L"Commit Message Required",
-                        L"Please enter a commit message before committing your changes.",
-                        L"Git commits require a summary message to record the changes in repository history."
-                    );
+                    DoOpenCommitEditMsg();
                     InvalidateRect(m_hwnd, nullptr, FALSE);
                     return;
                 }

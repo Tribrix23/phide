@@ -161,6 +161,7 @@ struct TerminalTab {
     std::wstring workingDir;
     std::wstring associatedFilePath;
     bool isServerTab = false;
+    bool canClose = true;
     bool hasError = false;
     std::wstring lastErrorText;
     std::function<void(const std::wstring&, const std::wstring&)> onErrorCallback;
