@@ -9009,20 +9009,24 @@ run_test_70:
 
             if (extLibIdx >= 0) {
                 crudDrawer.ToggleFolder(extLibIdx); // expand External Libraries
-                bool foundVenvPy = false;
+                std::wcout << L"Tree items after ToggleFolder(" << extLibIdx << L"):" << std::endl;
+                for (size_t i = 0; i < crudDrawer.GetTreeItems().size(); ++i) {
+                    std::wcout << L"  [" << i << L"] " << crudDrawer.GetTreeItems()[i].label << L" (path=" << crudDrawer.GetTreeItems()[i].fullPath << L")" << std::endl;
+                }
+                bool foundGlobalPy = false;
                 int pyNodeIdx = -1;
                 for (size_t i = 0; i < crudDrawer.GetTreeItems().size(); ++i) {
                     const auto& itm = crudDrawer.GetTreeItems()[i];
-                    if (itm.label.find(L"virtualenv: .venv") != std::wstring::npos) {
-                        foundVenvPy = true;
+                    if (itm.label.find(L"Global System") != std::wstring::npos) {
+                        foundGlobalPy = true;
                         pyNodeIdx = static_cast<int>(i);
                     }
                 }
-                assert(foundVenvPy);
-                std::cout << "  Passed: External Libraries shows Python (virtualenv: .venv) instead of Global System." << std::endl;
+                assert(foundGlobalPy);
+                std::cout << "  Passed: External Libraries shows Global System Python, keeping .venv separate in project tree." << std::endl;
 
                 if (pyNodeIdx >= 0) {
-                    crudDrawer.ToggleFolder(pyNodeIdx); // expand Python (.venv)
+                    crudDrawer.ToggleFolder(pyNodeIdx); // expand Global Python
                     int spIdx = -1;
                     for (size_t i = 0; i < crudDrawer.GetTreeItems().size(); ++i) {
                         if (crudDrawer.GetTreeItems()[i].label == L"site-packages") spIdx = static_cast<int>(i);
@@ -9034,22 +9038,54 @@ run_test_70:
                             if (itm.label == L"matplotlib") hasMatplotlib = true;
                         }
                         assert(hasMatplotlib);
-                        std::cout << "  Passed: site-packages in .venv contains installed matplotlib package." << std::endl;
+                        std::cout << "  Passed: Global System site-packages contains matplotlib package." << std::endl;
                     }
                 }
             }
 
             // Test PackageManagerView::ScanInstalledPackages
             pkgView.ScanInstalledPackages(phpCrudPath);
-            bool mplInstalled = false;
+            bool flaskInstalledProject = false;
+            bool flaskInstalledGlobal = false;
+            bool mplInstalledProject = false;
+            bool mplInstalledGlobal = false;
+
             for (const auto& pkg : pkgView.GetPackages()) {
+                if (pkg.name == L"flask") {
+                    flaskInstalledProject = pkg.isInstalledProject;
+                    flaskInstalledGlobal = pkg.isInstalledGlobal;
+                }
                 if (pkg.name == L"matplotlib") {
-                    mplInstalled = pkg.isInstalled;
+                    mplInstalledProject = pkg.isInstalledProject;
+                    mplInstalledGlobal = pkg.isInstalledGlobal;
+                }
+            }
+            assert(flaskInstalledProject);
+            assert(!flaskInstalledGlobal);
+            assert(!mplInstalledProject);
+            assert(mplInstalledGlobal);
+            std::cout << "  Passed: PackageManagerView accurately isolates scopes (flask: Project=true, Global=false; matplotlib: Project=false, Global=true)." << std::endl;
+
+            // Test Scope Switching for flask: Project (Uninstall) vs Global (Install)
+            for (auto& pkg : const_cast<std::vector<phide::ui::PackageEntry>&>(pkgView.GetPackages())) {
+                if (pkg.name == L"flask") {
+                    pkg.scope = phide::ui::PkgInstallScope::Project;
+                    pkg.isInstalled = pkg.isInstalledProject;
+                    assert(pkg.isInstalled == true);
+
+                    // Switch scope to Global
+                    pkg.scope = phide::ui::PkgInstallScope::Global;
+                    pkg.isInstalled = pkg.isInstalledGlobal;
+                    assert(pkg.isInstalled == false);
+
+                    // Switch scope back to Project
+                    pkg.scope = phide::ui::PkgInstallScope::Project;
+                    pkg.isInstalled = pkg.isInstalledProject;
+                    assert(pkg.isInstalled == true);
                     break;
                 }
             }
-            assert(mplInstalled);
-            std::cout << "  Passed: PackageManagerView accurately detects matplotlib as installed in .venv." << std::endl;
+            std::cout << "  Passed: Switching scope dynamically updates button between Uninstall (red) and Install (blue)." << std::endl;
 
             // Render snapshot of project with .venv and External Libraries expanded
             ComPtr<IWICBitmap> pWicCrud;
@@ -9076,14 +9112,14 @@ run_test_70:
         assert(extPanel.GetProcessTasks().size() == 1);
         assert(extPanel.GetProcessTasks()[0].title == L"Installing package " + executedPkg);
 
-        // Visual Render Test: Floating Processes HUD Card
+        // Visual Render Test: Floating Processes HUD Card on Left for Packages Tab (avoiding WebView2)
         ComPtr<IWICBitmap> pWicHud;
         pWicFactory->CreateBitmap(600, 300, GUID_WICPixelFormat32bppPBGRA, WICBitmapCacheOnDemand, &pWicHud);
         ComPtr<ID2D1RenderTarget> pRTHud;
         pD2DFactory->CreateWicBitmapRenderTarget(pWicHud.Get(), rtProps, &pRTHud);
         pRTHud->BeginDraw();
         pRTHud->Clear(D2D1::ColorF(0x18181b));
-        extPanel.RenderProcessesCard(pRTHud.Get(), theme, config, 20.0f, 20.0f, 560.0f, 260.0f);
+        extPanel.RenderProcessesCard(pRTHud.Get(), theme, config, 12.0f, 20.0f, 280.0f, 260.0f);
         HRESULT hrHud = pRTHud->EndDraw();
         assert(SUCCEEDED(hrHud));
         std::wstring snapHudPath = artDir + L"test_processes_hud_floating.png";

@@ -224,67 +224,45 @@ void DrawerPanel::RebuildVisibleItems() {
     if (extLibItem.isExpanded) {
         std::wstring pyExePath;
         std::wstring pyVer;
-        std::filesystem::path venvPy = std::filesystem::path(m_openFolderPath) / L".venv" / L"Scripts" / L"python.exe";
         std::error_code ecCheck;
-        if (std::filesystem::exists(venvPy, ecCheck)) {
-            pyExePath = venvPy.wstring();
-            // Read actual version from pyvenv.cfg if present
-            std::filesystem::path cfgPath = std::filesystem::path(m_openFolderPath) / L".venv" / L"pyvenv.cfg";
-            std::wstring verStr;
-            if (std::filesystem::exists(cfgPath, ecCheck)) {
-                std::wifstream fin(cfgPath);
-                std::wstring line;
-                while (std::getline(fin, line)) {
-                    if (line.rfind(L"version =", 0) == 0 || line.rfind(L"version_info =", 0) == 0) {
-                        auto eq = line.find(L'=');
-                        if (eq != std::wstring::npos) {
-                            verStr = line.substr(eq + 1);
-                            while (!verStr.empty() && (verStr.front() == L' ' || verStr.front() == L'\t')) verStr.erase(verStr.begin());
-                            while (!verStr.empty() && (verStr.back() == L'\r' || verStr.back() == L'\n' || verStr.back() == L' ')) verStr.pop_back();
-                            break;
-                        }
-                    }
-                }
-            }
-            if (!verStr.empty()) {
-                pyVer = L"Python " + verStr + L" (virtualenv: .venv)";
-            } else {
-                pyVer = L"Python (virtualenv: .venv)";
-            }
+
+        // User requirement: External Libraries displays the Global System Python,
+        // because the local virtual environment (.venv) is already displayed inside the project tree!
+        wchar_t found[MAX_PATH] = { 0 };
+        if (SearchPathW(nullptr, L"python.exe", nullptr, MAX_PATH, found, nullptr) > 0 &&
+            std::wstring(found).find(L"WindowsApps") == std::wstring::npos &&
+            std::filesystem::exists(found, ecCheck)) {
+            pyExePath = found;
         } else {
-            // Find system Python dynamically (no hardcoded versions!)
-            wchar_t found[MAX_PATH] = { 0 };
-            if (SearchPathW(nullptr, L"python.exe", nullptr, MAX_PATH, found, nullptr) > 0 &&
-                std::wstring(found).find(L"WindowsApps") == std::wstring::npos &&
-                std::filesystem::exists(found, ecCheck)) {
-                pyExePath = found;
-            } else {
-                wchar_t szLocalApp[MAX_PATH] = { 0 };
-                if (GetEnvironmentVariableW(L"LOCALAPPDATA", szLocalApp, MAX_PATH) > 0) {
-                    std::filesystem::path pyBase = std::filesystem::path(szLocalApp) / L"Programs" / L"Python";
-                    if (std::filesystem::exists(pyBase, ecCheck)) {
-                        for (const auto& entry : std::filesystem::directory_iterator(pyBase, ecCheck)) {
-                            if (entry.is_directory(ecCheck) && std::filesystem::exists(entry.path() / L"python.exe", ecCheck)) {
+            wchar_t szLocalApp[MAX_PATH] = { 0 };
+            if (GetEnvironmentVariableW(L"LOCALAPPDATA", szLocalApp, MAX_PATH) > 0) {
+                std::filesystem::path pyBase = std::filesystem::path(szLocalApp) / L"Programs" / L"Python";
+                if (std::filesystem::exists(pyBase, ecCheck)) {
+                    for (const auto& entry : std::filesystem::directory_iterator(pyBase, ecCheck)) {
+                        if (entry.is_directory(ecCheck) && std::filesystem::exists(entry.path() / L"python.exe", ecCheck)) {
+                            if (std::filesystem::exists(entry.path() / L"Scripts" / L"pip.exe", ecCheck)) {
                                 pyExePath = (entry.path() / L"python.exe").wstring();
                                 break;
+                            } else if (pyExePath.empty()) {
+                                pyExePath = (entry.path() / L"python.exe").wstring();
                             }
                         }
                     }
                 }
             }
-            if (!pyExePath.empty()) {
-                std::wstring dirName = std::filesystem::path(pyExePath).parent_path().filename().wstring();
-                std::wstring verStr;
-                if (dirName.rfind(L"Python-", 0) == 0) {
-                    verStr = dirName.substr(7);
-                } else if (dirName.rfind(L"Python", 0) == 0 && dirName.length() >= 8) {
-                    verStr = dirName.substr(6, 1) + L"." + dirName.substr(7);
-                }
-                if (!verStr.empty()) {
-                    pyVer = L"Python " + verStr + L" (Global System)";
-                } else {
-                    pyVer = L"Python (Global System)";
-                }
+        }
+        if (!pyExePath.empty()) {
+            std::wstring dirName = std::filesystem::path(pyExePath).parent_path().filename().wstring();
+            std::wstring verStr;
+            if (dirName.rfind(L"Python-", 0) == 0) {
+                verStr = dirName.substr(7);
+            } else if (dirName.rfind(L"Python", 0) == 0 && dirName.length() >= 8) {
+                verStr = dirName.substr(6, 1) + L"." + dirName.substr(7);
+            }
+            if (!verStr.empty()) {
+                pyVer = L"Python " + verStr + L" (Global System)";
+            } else {
+                pyVer = L"Python (Global System)";
             }
         }
 
@@ -3762,7 +3740,7 @@ void DrawerPanel::RefreshGitState(bool async, bool showLoading) {
                     if (ecScan) { ecScan.clear(); continue; }
                     if (it->is_directory(ecScan)) {
                         std::wstring dname = it->path().filename().wstring();
-                        if (dname == L".git" || dname == L"node_modules" || dname == L"vendor" || dname == L"bin" || dname == L"obj" || dname == L"build") {
+                        if (dname == L".git" || dname == L".venv" || dname == L"venv" || dname == L"node_modules" || dname == L"vendor" || dname == L"bin" || dname == L"obj" || dname == L"build") {
                             it.disable_recursion_pending();
                         }
                         continue;
@@ -4350,7 +4328,7 @@ void DrawerPanel::RefreshGitStatusOnly(bool async) {
                     if (ecScan) { ecScan.clear(); continue; }
                     if (it->is_directory(ecScan)) {
                         std::wstring dname = it->path().filename().wstring();
-                        if (dname == L".git" || dname == L"node_modules" || dname == L"vendor" || dname == L"bin" || dname == L"obj" || dname == L"build") {
+                        if (dname == L".git" || dname == L".venv" || dname == L"venv" || dname == L"node_modules" || dname == L"vendor" || dname == L"bin" || dname == L"obj" || dname == L"build") {
                             it.disable_recursion_pending();
                         }
                         continue;
@@ -4838,6 +4816,17 @@ void DrawerPanel::StageAllChangesAsync() {
         if (!alive || !alive->load()) { finish(); return; }
         m_isGitLoading = true;
         std::wstring dir = m_openFolderPath.empty() ? L"." : m_openFolderPath;
+
+        // Ensure root .gitignore exists and ignores .venv/
+        std::filesystem::path gitignorePath = std::filesystem::path(dir) / L".gitignore";
+        std::error_code ecGi;
+        if (!std::filesystem::exists(gitignorePath, ecGi)) {
+            std::ofstream gi(gitignorePath);
+            gi << ".venv/\nvenv/\n__pycache__/\n*.py[cod]\nnode_modules/\nvendor/\n.env\n";
+            gi.close();
+            RefreshTree();
+        }
+
         RunGitCmd(L"add -A", dir);
         if (!alive || !alive->load()) { finish(); return; }
         ClearActionPending(L"*");
@@ -5040,6 +5029,17 @@ void DrawerPanel::CommitChangesAsync(const std::wstring& message) {
         if (!alive || !alive->load()) { finish(); return; }
         m_isGitLoading = true;
         std::wstring dir = m_openFolderPath.empty() ? L"." : m_openFolderPath;
+
+        // Ensure root .gitignore exists and ignores .venv/
+        std::filesystem::path gitignorePath = std::filesystem::path(dir) / L".gitignore";
+        std::error_code ecGi;
+        if (!std::filesystem::exists(gitignorePath, ecGi)) {
+            std::ofstream gi(gitignorePath);
+            gi << ".venv/\nvenv/\n__pycache__/\n*.py[cod]\nnode_modules/\nvendor/\n.env\n";
+            gi.close();
+            RefreshTree();
+        }
+
         RunGitCmd(L"add -A", dir);
         if (!alive || !alive->load()) { finish(); return; }
         std::wstring escapedMsg;
@@ -7342,6 +7342,16 @@ void DrawerPanel::ConfirmPublishRepo(int visibilityChoice) {
     auto resEmail = RunGitCmd(L"config user.email", dir);
     if (resEmail.exitCode != 0 || resEmail.output.empty()) {
         RunGitCmd(L"config user.email \"dev@phide.local\"", dir);
+    }
+
+    // Ensure root .gitignore exists and ignores .venv/
+    std::filesystem::path gitignorePath = std::filesystem::path(dir) / L".gitignore";
+    std::error_code ecGi;
+    if (!std::filesystem::exists(gitignorePath, ecGi)) {
+        std::ofstream gi(gitignorePath);
+        gi << ".venv/\nvenv/\n__pycache__/\n*.py[cod]\nnode_modules/\nvendor/\n.env\n";
+        gi.close();
+        RefreshTree();
     }
 
     RunGitCmd(L"add -A", dir);

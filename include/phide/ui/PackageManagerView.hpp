@@ -85,6 +85,8 @@ struct PackageEntry {
     int searchScore = 0;        ///< Computed relevance score
     PkgInstallScope scope = PkgInstallScope::Project;
     bool isInstalled = false;
+    bool isInstalledProject = false;
+    bool isInstalledGlobal = false;
     bool isInstalling = false;
 
     // Card interactive regions
@@ -161,12 +163,12 @@ public:
     /**
      * @brief Marks a package as successfully installed in catalog.
      */
-    void MarkPackageInstalled(const std::wstring& pkgName);
+    void MarkPackageInstalled(const std::wstring& pkgName, PkgInstallScope scope = PkgInstallScope::Project);
 
     /**
      * @brief Marks a package as uninstalled in catalog.
      */
-    void MarkPackageUninstalled(const std::wstring& pkgName);
+    void MarkPackageUninstalled(const std::wstring& pkgName, PkgInstallScope scope = PkgInstallScope::Project);
 
     /**
      * @brief Scans workspace virtual environment and system site-packages to reflect installed status.

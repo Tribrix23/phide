@@ -16,6 +16,8 @@
 #include <filesystem>
 #include <fstream>
 #include <algorithm>
+#include <chrono>
+#include <thread>
 #include <tlhelp32.h>
 #include <iphlpapi.h>
 
@@ -4916,14 +4918,27 @@ bool Window::Create(HINSTANCE hInstance, int nCmdShow) {
 
             if (isUninstall) {
                 m_extensionsPanel.CompleteProcessTask(taskTitle, L"Successfully uninstalled " + pkgName);
-                m_editor.GetPackageManagerView().MarkPackageUninstalled(pkgName);
+                m_editor.GetPackageManagerView().MarkPackageUninstalled(pkgName, scope);
             } else {
                 m_extensionsPanel.CompleteProcessTask(taskTitle, L"Successfully installed " + pkgName);
-                m_editor.GetPackageManagerView().MarkPackageInstalled(pkgName);
+                m_editor.GetPackageManagerView().MarkPackageInstalled(pkgName, scope);
             }
             m_editor.GetPackageManagerView().ScanInstalledPackages(wsFolder);
             m_drawer.RefreshTree();
             if (m_hwnd) InvalidateRect(m_hwnd, nullptr, FALSE);
+
+            // Auto-dismiss completed package process task after 5 seconds so it doesn't linger indefinitely
+            std::thread([this, taskTitle]() {
+                std::this_thread::sleep_for(std::chrono::seconds(5));
+                const auto& tasks = m_extensionsPanel.GetProcessTasks();
+                for (size_t i = 0; i < tasks.size(); ++i) {
+                    if (tasks[i].title == taskTitle && tasks[i].isCompleted) {
+                        m_extensionsPanel.DismissProcessTask(i);
+                        if (m_hwnd) InvalidateRect(m_hwnd, nullptr, FALSE);
+                        break;
+                    }
+                }
+            }).detach();
         }).detach();
     });
 
@@ -5184,12 +5199,37 @@ void Window::OnPaint() {
         m_extensionsPanel.Render(m_pRenderTarget.Get(), m_theme, m_config, rightSidebarX, headerH, fullRightSidebarW, rightSidebarH);
         m_pRenderTarget->PopAxisAlignedClip();
     } else if (m_extensionsPanel.HasActiveProcesses()) {
-        // Floating Processes HUD Card at bottom-right when right sidebar is closed (Image 3)
-        const float cardW = m_config.ScaleF(340.0f);
-        const float cardX = clientW - cardW - m_config.ScaleF(16.0f);
-        float cardH = (std::max)(50.0f, clientH - headerH - currentTermH);
-        float cardY = headerH;
-        m_extensionsPanel.RenderProcessesCard(m_pRenderTarget.Get(), m_theme, m_config, cardX, cardY, cardW, cardH);
+        auto* curDoc = GetActiveDoc();
+        bool isPackagesTab = (curDoc && curDoc->isSpecialView && curDoc->viewType == L"packages");
+
+        bool hasOnlyPackageTasks = true;
+        for (const auto& task : m_extensionsPanel.GetProcessTasks()) {
+            if (task.title.find(L"package") == std::wstring::npos &&
+                task.title.find(L"Package") == std::wstring::npos) {
+                hasOnlyPackageTasks = false;
+                break;
+            }
+        }
+
+        if (isPackagesTab) {
+            // Floating Processes HUD Card on the LEFT side of Packages view (safe from right-side WebView2)
+            const float cardW = m_config.ScaleF(280.0f);
+            const float cardX = canvasLeft + m_config.ScaleF(12.0f);
+            float cardH = (std::max)(50.0f, clientH - headerH - currentTermH);
+            float cardY = headerH;
+            m_extensionsPanel.RenderProcessesCard(m_pRenderTarget.Get(), m_theme, m_config, cardX, cardY, cardW, cardH);
+        } else if (!hasOnlyPackageTasks) {
+            // Floating Processes HUD Card at bottom-right for non-package background processes
+            const float cardW = m_config.ScaleF(340.0f);
+            const float cardX = clientW - cardW - m_config.ScaleF(16.0f);
+            float cardH = (std::max)(50.0f, clientH - headerH - currentTermH);
+            float cardY = headerH;
+            m_extensionsPanel.RenderProcessesCard(m_pRenderTarget.Get(), m_theme, m_config, cardX, cardY, cardW, cardH);
+        } else {
+            m_extensionsPanel.ClearProcessesCardBounds();
+        }
+    } else {
+        m_extensionsPanel.ClearProcessesCardBounds();
     }
 
     // 3. Integrated Terminal Panel at Bottom (smoothly slides up across workspace and sidebar)

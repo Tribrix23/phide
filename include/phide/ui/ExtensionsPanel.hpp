@@ -158,6 +158,7 @@ public:
     [[nodiscard]] const std::vector<ProcessTask>& GetProcessTasks() const noexcept { return m_processTasks; }
     [[nodiscard]] bool HasActiveProcesses() const noexcept { return !m_processTasks.empty(); }
     [[nodiscard]] bool HitTestProcesses(POINT pt) const noexcept;
+    void ClearProcessesCardBounds() noexcept { m_processesCardBounds = D2D1::RectF(0, 0, 0, 0); m_processesMinBtnBounds = D2D1::RectF(0, 0, 0, 0); }
     void RenderProcessesCard(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config, float x, float y, float w, float h);
 
     void CreateWorkspaceVenv(std::function<void(const std::wstring&)> notifyCb = nullptr);

@@ -932,43 +932,52 @@ LPCWSTR PackageManagerView::GetCursorForPoint(POINT clientPt) const noexcept {
     return IDC_ARROW;
 }
 
-void PackageManagerView::MarkPackageInstalled(const std::wstring& pkgName) {
+void PackageManagerView::MarkPackageInstalled(const std::wstring& pkgName, PkgInstallScope scope) {
     std::lock_guard<std::mutex> lock(m_packageMutex);
     for (auto& pkg : m_packages) {
         if (_wcsicmp(pkg.name.c_str(), pkgName.c_str()) == 0) {
             pkg.isInstalling = false;
-            pkg.isInstalled = true;
+            if (scope == PkgInstallScope::Project) pkg.isInstalledProject = true;
+            else pkg.isInstalledGlobal = true;
+            pkg.isInstalled = (pkg.scope == PkgInstallScope::Project) ? pkg.isInstalledProject : pkg.isInstalledGlobal;
         }
     }
     for (auto& pkg : m_phpPackages) {
         if (_wcsicmp(pkg.name.c_str(), pkgName.c_str()) == 0) {
             pkg.isInstalling = false;
-            pkg.isInstalled = true;
+            if (scope == PkgInstallScope::Project) pkg.isInstalledProject = true;
+            else pkg.isInstalledGlobal = true;
+            pkg.isInstalled = (pkg.scope == PkgInstallScope::Project) ? pkg.isInstalledProject : pkg.isInstalledGlobal;
         }
     }
 }
 
-void PackageManagerView::MarkPackageUninstalled(const std::wstring& pkgName) {
+void PackageManagerView::MarkPackageUninstalled(const std::wstring& pkgName, PkgInstallScope scope) {
     std::lock_guard<std::mutex> lock(m_packageMutex);
     for (auto& pkg : m_packages) {
         if (_wcsicmp(pkg.name.c_str(), pkgName.c_str()) == 0) {
             pkg.isInstalling = false;
-            pkg.isInstalled = false;
+            if (scope == PkgInstallScope::Project) pkg.isInstalledProject = false;
+            else pkg.isInstalledGlobal = false;
+            pkg.isInstalled = (pkg.scope == PkgInstallScope::Project) ? pkg.isInstalledProject : pkg.isInstalledGlobal;
         }
     }
     for (auto& pkg : m_phpPackages) {
         if (_wcsicmp(pkg.name.c_str(), pkgName.c_str()) == 0) {
             pkg.isInstalling = false;
-            pkg.isInstalled = false;
+            if (scope == PkgInstallScope::Project) pkg.isInstalledProject = false;
+            else pkg.isInstalledGlobal = false;
+            pkg.isInstalled = (pkg.scope == PkgInstallScope::Project) ? pkg.isInstalledProject : pkg.isInstalledGlobal;
         }
     }
 }
 
 void PackageManagerView::ScanInstalledPackages(const std::wstring& wsFolder) {
-    std::unordered_set<std::wstring> installed;
+    std::unordered_set<std::wstring> projectInstalled;
+    std::unordered_set<std::wstring> globalInstalled;
     std::error_code ec;
 
-    auto addFromSitePackages = [&](const std::filesystem::path& spDir) {
+    auto addFromSitePackages = [&](const std::filesystem::path& spDir, std::unordered_set<std::wstring>& outSet) {
         if (!std::filesystem::exists(spDir, ec) || !std::filesystem::is_directory(spDir, ec)) return;
         for (const auto& entry : std::filesystem::directory_iterator(spDir, std::filesystem::directory_options::skip_permission_denied, ec)) {
             if (entry.is_directory(ec)) {
@@ -979,7 +988,7 @@ void PackageManagerView::ScanInstalledPackages(const std::wstring& wsFolder) {
                 }
                 std::transform(name.begin(), name.end(), name.begin(), ::towlower);
                 std::replace(name.begin(), name.end(), L'_', L'-');
-                installed.insert(name);
+                outSet.insert(name);
             }
         }
     };
@@ -987,20 +996,25 @@ void PackageManagerView::ScanInstalledPackages(const std::wstring& wsFolder) {
     // 1. Check workspace virtualenv site-packages if workspace is provided
     if (!wsFolder.empty()) {
         std::filesystem::path venvSp = std::filesystem::path(wsFolder) / L".venv" / L"Lib" / L"site-packages";
-        addFromSitePackages(venvSp);
+        addFromSitePackages(venvSp, projectInstalled);
     }
 
-    // 2. Also check global python site-packages (from system python or LOCALAPPDATA)
+    // 2. Check global python site-packages (from system python or LOCALAPPDATA)
     wchar_t szLocalApp[MAX_PATH] = { 0 };
     if (GetEnvironmentVariableW(L"LOCALAPPDATA", szLocalApp, MAX_PATH) > 0) {
         std::filesystem::path pyBase = std::filesystem::path(szLocalApp) / L"Programs" / L"Python";
         if (std::filesystem::exists(pyBase, ec)) {
             for (const auto& entry : std::filesystem::directory_iterator(pyBase, ec)) {
                 if (entry.is_directory(ec)) {
-                    addFromSitePackages(entry.path() / L"Lib" / L"site-packages");
+                    addFromSitePackages(entry.path() / L"Lib" / L"site-packages", globalInstalled);
                 }
             }
         }
+    }
+    wchar_t pyFound[MAX_PATH] = { 0 };
+    if (SearchPathW(nullptr, L"python.exe", nullptr, MAX_PATH, pyFound, nullptr) > 0) {
+        std::filesystem::path spPath = std::filesystem::path(pyFound).parent_path() / L"Lib" / L"site-packages";
+        addFromSitePackages(spPath, globalInstalled);
     }
 
     std::lock_guard<std::mutex> lock(m_packageMutex);
@@ -1008,9 +1022,9 @@ void PackageManagerView::ScanInstalledPackages(const std::wstring& wsFolder) {
         std::wstring norm = pkg.name;
         std::transform(norm.begin(), norm.end(), norm.begin(), ::towlower);
         std::replace(norm.begin(), norm.end(), L'_', L'-');
-        if (installed.count(norm) > 0) {
-            pkg.isInstalled = true;
-        }
+        pkg.isInstalledProject = (projectInstalled.count(norm) > 0);
+        pkg.isInstalledGlobal = (globalInstalled.count(norm) > 0);
+        pkg.isInstalled = (pkg.scope == PkgInstallScope::Project) ? pkg.isInstalledProject : pkg.isInstalledGlobal;
     }
 }
 
@@ -1049,6 +1063,7 @@ bool PackageManagerView::HandleLButtonDown(POINT clientPt) {
             auto& activeList = (m_activeLanguage == RuntimeLanguage::Php) ? m_phpPackages : m_packages;
             if (m_activeDropdownPkgIdx < static_cast<int>(activeList.size())) {
                 activeList[m_activeDropdownPkgIdx].scope = PkgInstallScope::Project;
+                activeList[m_activeDropdownPkgIdx].isInstalled = activeList[m_activeDropdownPkgIdx].isInstalledProject;
             }
             m_activeDropdownPkgIdx = -1;
             return true;
@@ -1058,6 +1073,7 @@ bool PackageManagerView::HandleLButtonDown(POINT clientPt) {
             auto& activeList = (m_activeLanguage == RuntimeLanguage::Php) ? m_phpPackages : m_packages;
             if (m_activeDropdownPkgIdx < static_cast<int>(activeList.size())) {
                 activeList[m_activeDropdownPkgIdx].scope = PkgInstallScope::Global;
+                activeList[m_activeDropdownPkgIdx].isInstalled = activeList[m_activeDropdownPkgIdx].isInstalledGlobal;
             }
             m_activeDropdownPkgIdx = -1;
             return true;
@@ -1105,11 +1121,15 @@ bool PackageManagerView::HandleLButtonDown(POINT clientPt) {
         // 2. Main Install / Uninstall Button Click
         if (mx >= pkg.rcInstallBtn.left && mx <= pkg.rcInstallBtn.right &&
             my >= pkg.rcInstallBtn.top && my <= pkg.rcInstallBtn.bottom) {
+            bool isInstalledForCurrentScope = (pkg.scope == PkgInstallScope::Project) ? pkg.isInstalledProject : pkg.isInstalledGlobal;
+            pkg.isInstalled = isInstalledForCurrentScope;
             std::wstring cmdToRun;
             if (pkg.isInstalled) {
                 // User requirement: Clicking button when installed uninstalls package
                 if (m_activeLanguage == RuntimeLanguage::Php) {
-                    cmdToRun = L"composer remove " + pkg.name;
+                    cmdToRun = (pkg.scope == PkgInstallScope::Global)
+                        ? (L"composer global remove " + pkg.name)
+                        : (L"composer remove " + pkg.name);
                 } else {
                     cmdToRun = L"pip uninstall -y " + pkg.name;
                 }
@@ -1544,6 +1564,8 @@ void PackageManagerView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app:
             pkg.rcInstallBtn = D2D1::RectF(btnX, btnY, btnX + btnW - config.ScaleF(22.0f), btnY + btnH);
             D2D1_ROUNDED_RECT rrcInstallBtn = D2D1::RoundedRect(pkg.rcInstallBtn, 3.5f, 3.5f);
 
+            bool isInstalledForScope = (pkg.scope == PkgInstallScope::Project) ? pkg.isInstalledProject : pkg.isInstalledGlobal;
+            pkg.isInstalled = isInstalledForScope;
             std::wstring installLabel = (pkg.scope == PkgInstallScope::Global) ? L"Install (G)" : L"Install";
             Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> btnBrush;
             if (pkg.isInstalled) {
