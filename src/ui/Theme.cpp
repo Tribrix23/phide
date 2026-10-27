@@ -1503,13 +1503,22 @@ void Theme::SetThemeMode(ThemeMode mode) {
 }
 
 Theme::SetiIconInfo Theme::GetSetiIcon(const std::wstring& filename, bool isFolder, bool isExpanded) const {
+    std::wstring lower = filename;
+    for (auto& c : lower) c = towlower(c);
+
     if (isFolder) {
+        if (lower == L".venv" || lower == L"venv" || lower.rfind(L"python", 0) == 0) {
+            return { 0xE079, brushSetiPython ? brushSetiPython.Get() : brushIconBlue.Get() };
+        }
+        if (lower == L"external libraries") {
+            return { 0xE061, brushSetiDefault ? brushSetiDefault.Get() : brushIconGray.Get() };
+        }
+        if (lower == L"site-packages") {
+            return { 0xE055, brushSetiJson ? brushSetiJson.Get() : brushIconYellow.Get() };
+        }
         return { 0xE032, isExpanded ? (brushSetiFolderOpen ? brushSetiFolderOpen.Get() : brushIconFolderOpen.Get())
                                      : (brushSetiFolder ? brushSetiFolder.Get() : brushIconFolder.Get()) };
     }
-
-    std::wstring lower = filename;
-    for (auto& c : lower) c = towlower(c);
 
     // Untitled or new buffer
     if (lower.rfind(L"untitled", 0) == 0) {

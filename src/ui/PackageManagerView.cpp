@@ -10,6 +10,7 @@
 #include <sstream>
 #include <cwctype>
 #include <filesystem>
+#include <unordered_set>
 #include <winhttp.h>
 #include <shellapi.h>
 #include <wincodec.h>
@@ -947,6 +948,72 @@ void PackageManagerView::MarkPackageInstalled(const std::wstring& pkgName) {
     }
 }
 
+void PackageManagerView::MarkPackageUninstalled(const std::wstring& pkgName) {
+    std::lock_guard<std::mutex> lock(m_packageMutex);
+    for (auto& pkg : m_packages) {
+        if (_wcsicmp(pkg.name.c_str(), pkgName.c_str()) == 0) {
+            pkg.isInstalling = false;
+            pkg.isInstalled = false;
+        }
+    }
+    for (auto& pkg : m_phpPackages) {
+        if (_wcsicmp(pkg.name.c_str(), pkgName.c_str()) == 0) {
+            pkg.isInstalling = false;
+            pkg.isInstalled = false;
+        }
+    }
+}
+
+void PackageManagerView::ScanInstalledPackages(const std::wstring& wsFolder) {
+    std::unordered_set<std::wstring> installed;
+    std::error_code ec;
+
+    auto addFromSitePackages = [&](const std::filesystem::path& spDir) {
+        if (!std::filesystem::exists(spDir, ec) || !std::filesystem::is_directory(spDir, ec)) return;
+        for (const auto& entry : std::filesystem::directory_iterator(spDir, std::filesystem::directory_options::skip_permission_denied, ec)) {
+            if (entry.is_directory(ec)) {
+                std::wstring name = entry.path().filename().wstring();
+                auto distPos = name.find(L"-");
+                if (distPos != std::wstring::npos && (name.find(L".dist-info") != std::wstring::npos || name.find(L".egg-info") != std::wstring::npos)) {
+                    name = name.substr(0, distPos);
+                }
+                std::transform(name.begin(), name.end(), name.begin(), ::towlower);
+                std::replace(name.begin(), name.end(), L'_', L'-');
+                installed.insert(name);
+            }
+        }
+    };
+
+    // 1. Check workspace virtualenv site-packages if workspace is provided
+    if (!wsFolder.empty()) {
+        std::filesystem::path venvSp = std::filesystem::path(wsFolder) / L".venv" / L"Lib" / L"site-packages";
+        addFromSitePackages(venvSp);
+    }
+
+    // 2. Also check global python site-packages (from system python or LOCALAPPDATA)
+    wchar_t szLocalApp[MAX_PATH] = { 0 };
+    if (GetEnvironmentVariableW(L"LOCALAPPDATA", szLocalApp, MAX_PATH) > 0) {
+        std::filesystem::path pyBase = std::filesystem::path(szLocalApp) / L"Programs" / L"Python";
+        if (std::filesystem::exists(pyBase, ec)) {
+            for (const auto& entry : std::filesystem::directory_iterator(pyBase, ec)) {
+                if (entry.is_directory(ec)) {
+                    addFromSitePackages(entry.path() / L"Lib" / L"site-packages");
+                }
+            }
+        }
+    }
+
+    std::lock_guard<std::mutex> lock(m_packageMutex);
+    for (auto& pkg : m_packages) {
+        std::wstring norm = pkg.name;
+        std::transform(norm.begin(), norm.end(), norm.begin(), ::towlower);
+        std::replace(norm.begin(), norm.end(), L'_', L'-');
+        if (installed.count(norm) > 0) {
+            pkg.isInstalled = true;
+        }
+    }
+}
+
 bool PackageManagerView::HandleLButtonDown(POINT clientPt) {
     float mx = static_cast<float>(clientPt.x);
     float my = static_cast<float>(clientPt.y);
@@ -1035,18 +1102,27 @@ bool PackageManagerView::HandleLButtonDown(POINT clientPt) {
             return true;
         }
 
-        // 2. Main Install Button Click
+        // 2. Main Install / Uninstall Button Click
         if (mx >= pkg.rcInstallBtn.left && mx <= pkg.rcInstallBtn.right &&
             my >= pkg.rcInstallBtn.top && my <= pkg.rcInstallBtn.bottom) {
             std::wstring cmdToRun;
-            if (m_activeLanguage == RuntimeLanguage::Php) {
-                cmdToRun = (pkg.scope == PkgInstallScope::Global)
-                    ? (L"composer global require " + pkg.name)
-                    : (L"composer require " + pkg.name);
+            if (pkg.isInstalled) {
+                // User requirement: Clicking button when installed uninstalls package
+                if (m_activeLanguage == RuntimeLanguage::Php) {
+                    cmdToRun = L"composer remove " + pkg.name;
+                } else {
+                    cmdToRun = L"pip uninstall -y " + pkg.name;
+                }
             } else {
-                cmdToRun = (pkg.scope == PkgInstallScope::Global)
-                    ? (L"pip install --user " + pkg.name)
-                    : (L"pip install " + pkg.name);
+                if (m_activeLanguage == RuntimeLanguage::Php) {
+                    cmdToRun = (pkg.scope == PkgInstallScope::Global)
+                        ? (L"composer global require " + pkg.name)
+                        : (L"composer require " + pkg.name);
+                } else {
+                    cmdToRun = (pkg.scope == PkgInstallScope::Global)
+                        ? (L"pip install --user " + pkg.name)
+                        : (L"pip install " + pkg.name);
+                }
             }
             pkg.isInstalling = true;
             if (m_onInstallCallback) {
@@ -1471,8 +1547,9 @@ void PackageManagerView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app:
             std::wstring installLabel = (pkg.scope == PkgInstallScope::Global) ? L"Install (G)" : L"Install";
             Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> btnBrush;
             if (pkg.isInstalled) {
-                installLabel = L"✓ Installed";
-                pRT->CreateSolidColorBrush(D2D1::ColorF(0.18f, 0.52f, 0.28f, 1.0f), &btnBrush);
+                // User requirement: "if its installed the button here would change to uninstall and read [red] color"
+                installLabel = pkg.isInstalling ? L"Removing..." : L"Uninstall";
+                pRT->CreateSolidColorBrush(D2D1::ColorF(0.82f, 0.20f, 0.20f, 1.0f), &btnBrush);
             } else if (pkg.isInstalling) {
                 installLabel = L"Installing...";
                 pRT->CreateSolidColorBrush(D2D1::ColorF(0.0f, 0.38f, 0.72f, 0.85f), &btnBrush);

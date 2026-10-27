@@ -36,6 +36,56 @@ namespace phide::app {
 
 static bool IsPortListening(int port);
 
+static std::wstring RunCmdCapture(const std::wstring& cmd) {
+    std::wstring result;
+    HANDLE hRead = nullptr, hWrite = nullptr;
+    SECURITY_ATTRIBUTES sa{ sizeof(sa), nullptr, TRUE };
+    if (!CreatePipe(&hRead, &hWrite, &sa, 0)) return result;
+    SetHandleInformation(hRead, HANDLE_FLAG_INHERIT, 0);
+
+    STARTUPINFOW si{};
+    si.cb = sizeof(si);
+    si.dwFlags = STARTF_USESHOWWINDOW | STARTF_USESTDHANDLES;
+    si.wShowWindow = SW_HIDE;
+    si.hStdOutput = hWrite;
+    si.hStdError = hWrite;
+
+    PROCESS_INFORMATION pi{};
+    std::vector<wchar_t> cmdBuf(cmd.begin(), cmd.end());
+    cmdBuf.push_back(0);
+
+    if (CreateProcessW(nullptr, cmdBuf.data(), nullptr, nullptr, TRUE, CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {
+        CloseHandle(hWrite);
+        hWrite = nullptr;
+
+        char buf[512];
+        DWORD bytesRead = 0;
+        std::string raw;
+        while (ReadFile(hRead, buf, sizeof(buf) - 1, &bytesRead, nullptr) && bytesRead > 0) {
+            buf[bytesRead] = 0;
+            raw.append(buf, bytesRead);
+        }
+        WaitForSingleObject(pi.hProcess, 3000);
+        CloseHandle(pi.hProcess);
+        CloseHandle(pi.hThread);
+
+        if (!raw.empty()) {
+            int len = MultiByteToWideChar(CP_UTF8, 0, raw.c_str(), -1, nullptr, 0);
+            if (len > 0) {
+                result.resize(len);
+                MultiByteToWideChar(CP_UTF8, 0, raw.c_str(), -1, &result[0], len);
+                while (!result.empty() && (result.back() == L'\0' || result.back() == L'\r' || result.back() == L'\n')) {
+                    result.pop_back();
+                }
+            }
+        }
+    } else {
+        CloseHandle(hWrite);
+    }
+    CloseHandle(hRead);
+    return result;
+}
+
 static void SetClipboardText(HWND hwnd, const std::wstring& text) {
     if (!OpenClipboard(hwnd)) return;
     EmptyClipboard();
@@ -572,6 +622,7 @@ void Window::LoadSessionState() {
             m_workspace.OpenWorkspace(lastOpenFolder);
             m_intelliSense.SetWorkspaceRoot(lastOpenFolder);
             m_drawer.RefreshGitState(true);
+            m_editor.GetPackageManagerView().ScanInstalledPackages(lastOpenFolder);
         }
 
         for (const auto& p : openDocPaths) {
@@ -1418,6 +1469,7 @@ void Window::DoOpenFolderFromPath(const std::wstring& path) {
     m_workspace.OpenWorkspace(path);
     m_intelliSense.SetWorkspaceRoot(path);
     m_drawer.RefreshGitState(true);
+    m_editor.GetPackageManagerView().ScanInstalledPackages(path);
     StartWorkspaceWatcher(path);
 
     // Close clean tabs that belong to a previous/different project
@@ -1813,6 +1865,7 @@ void Window::DoCloseEditor() {
 void Window::DoCloseFolder() {
     m_drawer.CloseFolder();
     m_drawer.RefreshGitState(true);
+    m_editor.GetPackageManagerView().ScanInstalledPackages(L"");
     UpdateDrawerErrorFiles();
     SaveSessionState();
     RunManualGarbageCollection();
@@ -4733,7 +4786,8 @@ bool Window::Create(HINSTANCE hInstance, int nCmdShow) {
     // Wire Package Manager HWND for embedded WebView2 and Install Package callback
     m_editor.GetPackageManagerView().SetHwnd(m_hwnd);
     m_editor.GetPackageManagerView().SetOnInstallCallback([this](const std::wstring& pkgName, const std::wstring& cmd, phide::ui::PkgInstallScope scope) {
-        std::wstring taskTitle = L"Installing package " + pkgName;
+        bool isUninstall = (cmd.find(L"uninstall") != std::wstring::npos || cmd.find(L"remove") != std::wstring::npos);
+        std::wstring taskTitle = isUninstall ? (L"Uninstalling package " + pkgName) : (L"Installing package " + pkgName);
         m_extensionsPanel.StartProcessTask(taskTitle, cmd);
         if (m_hwnd) InvalidateRect(m_hwnd, nullptr, FALSE);
 
@@ -4741,9 +4795,8 @@ bool Window::Create(HINSTANCE hInstance, int nCmdShow) {
             m_terminal.ExecuteCommandLine(cmd);
         }
 
-        std::thread([this, pkgName, cmd, taskTitle]() {
+        std::thread([this, pkgName, cmd, taskTitle, scope, isUninstall]() {
             // Find appropriate interpreter or tool
-            std::wstring runCmd = cmd;
             std::wstring pyPath = L"python.exe";
             for (const auto& item : m_extensionsPanel.GetItems()) {
                 if (item.id == L"python" && !item.environments.empty()) {
@@ -4756,9 +4809,84 @@ bool Window::Create(HINSTANCE hInstance, int nCmdShow) {
                 }
             }
 
+            // Determine project workspace directory
+            std::wstring wsFolder = m_drawer.HasOpenFolder() ? m_drawer.GetOpenFolderPath() : std::filesystem::current_path().wstring();
+
+            // For local project installations, ensure workspace .venv exists (PyCharm style)
+            if (scope == phide::ui::PkgInstallScope::Project && (cmd.find(L"pip ") == 0 || cmd.find(L"\" -m pip") != std::wstring::npos)) {
+                std::filesystem::path venvPy = std::filesystem::path(wsFolder) / L".venv" / L"Scripts" / L"python.exe";
+                std::error_code ecVenv;
+                if (!std::filesystem::exists(venvPy, ecVenv) && !isUninstall) {
+                    m_extensionsPanel.UpdateProcessTask(taskTitle, 0.20f, L"Creating workspace virtual environment (.venv)...");
+                    
+                    // Resolve interpreter capable of executing venv
+                    std::wstring venvCreatorPy;
+                    auto testVenv = [](const std::wstring& exe) -> bool {
+                        if (exe.empty()) return false;
+                        std::error_code ec;
+                        if (!std::filesystem::exists(exe, ec)) return false;
+                        if (std::filesystem::exists(std::filesystem::path(exe).parent_path() / L"Lib" / L"venv", ec)) return true;
+                        std::wstring out = RunCmdCapture(L"\"" + exe + L"\" -c \"import venv; print('OK')\"");
+                        return out.find(L"OK") != std::wstring::npos;
+                    };
+
+                    if (testVenv(pyPath)) {
+                        venvCreatorPy = pyPath;
+                    } else {
+                        for (const auto& item : m_extensionsPanel.GetItems()) {
+                            if (item.id == L"python") {
+                                for (const auto& env : item.environments) {
+                                    if (testVenv(env.path)) {
+                                        venvCreatorPy = env.path;
+                                        break;
+                                    }
+                                }
+                            }
+                            if (!venvCreatorPy.empty()) break;
+                        }
+                    }
+                    if (venvCreatorPy.empty()) {
+                        wchar_t pyLauncher[MAX_PATH] = { 0 };
+                        if (SearchPathW(nullptr, L"py.exe", nullptr, MAX_PATH, pyLauncher, nullptr) > 0 ||
+                            std::filesystem::exists(L"C:\\Windows\\py.exe", ecVenv)) {
+                            std::wstring lPath = (pyLauncher[0] != 0) ? pyLauncher : L"C:\\Windows\\py.exe";
+                            if (RunCmdCapture(L"\"" + lPath + L"\" -m venv --help").find(L"usage:") != std::wstring::npos) {
+                                venvCreatorPy = lPath;
+                            }
+                        }
+                    }
+                    if (venvCreatorPy.empty()) {
+                        venvCreatorPy = pyPath;
+                    }
+
+                    std::wstring venvCmd = L"\"" + venvCreatorPy + L"\" -m venv \"" + (std::filesystem::path(wsFolder) / L".venv").wstring() + L"\"";
+                    STARTUPINFOW siV{};
+                    siV.cb = sizeof(siV);
+                    siV.dwFlags = STARTF_USESHOWWINDOW;
+                    siV.wShowWindow = SW_HIDE;
+                    PROCESS_INFORMATION piV{};
+                    std::vector<wchar_t> vBuf(venvCmd.begin(), venvCmd.end());
+                    vBuf.push_back(0);
+                    if (CreateProcessW(nullptr, vBuf.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, wsFolder.c_str(), &siV, &piV)) {
+                        WaitForSingleObject(piV.hProcess, 35000);
+                        CloseHandle(piV.hProcess);
+                        CloseHandle(piV.hThread);
+                    }
+                    m_drawer.RefreshTree();
+                }
+
+                if (std::filesystem::exists(venvPy, ecVenv)) {
+                    pyPath = venvPy.wstring();
+                }
+            }
+
+            std::wstring runCmd = cmd;
             if (cmd.find(L"pip install") == 0) {
                 std::wstring args = cmd.substr(11);
                 runCmd = L"\"" + pyPath + L"\" -m pip install " + args;
+            } else if (cmd.find(L"pip uninstall") == 0) {
+                std::wstring args = cmd.substr(13);
+                runCmd = L"\"" + pyPath + L"\" -m pip uninstall " + args;
             }
 
             m_extensionsPanel.UpdateProcessTask(taskTitle, 0.40f, L"Running: " + runCmd);
@@ -4774,20 +4902,27 @@ bool Window::Create(HINSTANCE hInstance, int nCmdShow) {
             std::vector<wchar_t> cmdBuf(execCmd.begin(), execCmd.end());
             cmdBuf.push_back(0);
 
-            BOOL ok = CreateProcessW(nullptr, cmdBuf.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi);
+            BOOL ok = CreateProcessW(nullptr, cmdBuf.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, wsFolder.c_str(), &si, &pi);
             if (ok) {
                 float prog = 0.40f;
                 while (WaitForSingleObject(pi.hProcess, 350) == WAIT_TIMEOUT) {
                     prog = (std::min)(0.92f, prog + 0.08f);
-                    m_extensionsPanel.UpdateProcessTask(taskTitle, prog, L"Downloading and installing " + pkgName + L"...");
+                    m_extensionsPanel.UpdateProcessTask(taskTitle, prog, (isUninstall ? L"Removing " : L"Downloading and installing ") + pkgName + L"...");
                     if (m_hwnd) PostMessageW(m_hwnd, WM_PAINT, 0, 0);
                 }
                 CloseHandle(pi.hProcess);
                 CloseHandle(pi.hThread);
             }
 
-            m_extensionsPanel.CompleteProcessTask(taskTitle, L"Successfully installed " + pkgName);
-            m_editor.GetPackageManagerView().MarkPackageInstalled(pkgName);
+            if (isUninstall) {
+                m_extensionsPanel.CompleteProcessTask(taskTitle, L"Successfully uninstalled " + pkgName);
+                m_editor.GetPackageManagerView().MarkPackageUninstalled(pkgName);
+            } else {
+                m_extensionsPanel.CompleteProcessTask(taskTitle, L"Successfully installed " + pkgName);
+                m_editor.GetPackageManagerView().MarkPackageInstalled(pkgName);
+            }
+            m_editor.GetPackageManagerView().ScanInstalledPackages(wsFolder);
+            m_drawer.RefreshTree();
             if (m_hwnd) InvalidateRect(m_hwnd, nullptr, FALSE);
         }).detach();
     });
@@ -4799,6 +4934,7 @@ bool Window::Create(HINSTANCE hInstance, int nCmdShow) {
     m_drawer.RefreshGitState(true);
 
     if (m_drawer.HasOpenFolder()) {
+        m_editor.GetPackageManagerView().ScanInstalledPackages(m_drawer.GetOpenFolderPath());
         StartWorkspaceWatcher(m_drawer.GetOpenFolderPath());
     }
 

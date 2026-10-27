@@ -1229,19 +1229,59 @@ void ExtensionsPanel::InstallRuntime(int itemIdx, const std::wstring& version, s
 
         BOOL ok = CreateProcessW(nullptr, cmdBuf.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi);
 
-        const uintmax_t expectedBytes = isZipArchive ? 36306925 : 28761776; // ~34.6 MB for PHP zip, ~28.7 MB for Python exe
+        // Query Content-Length via WinHttp HEAD request to avoid hardcoded MB estimation
+        uintmax_t expectedBytes = 0;
+        URL_COMPONENTSW urlComp{};
+        urlComp.dwStructSize = sizeof(urlComp);
+        wchar_t hostName[256] = { 0 };
+        wchar_t urlPath[2048] = { 0 };
+        urlComp.lpszHostName = hostName;
+        urlComp.dwHostNameLength = 256;
+        urlComp.lpszUrlPath = urlPath;
+        urlComp.dwUrlPathLength = 2048;
+        if (WinHttpCrackUrl(downloadUrl.c_str(), static_cast<DWORD>(downloadUrl.length()), 0, &urlComp)) {
+            HINTERNET hHeadSession = WinHttpOpen(L"phide-Downloader/1.0", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
+            if (hHeadSession) {
+                WinHttpSetTimeouts(hHeadSession, 2500, 2500, 2500, 2500);
+                HINTERNET hHeadConn = WinHttpConnect(hHeadSession, hostName, urlComp.nPort, 0);
+                if (hHeadConn) {
+                    DWORD flags = (urlComp.nScheme == INTERNET_SCHEME_HTTPS) ? WINHTTP_FLAG_SECURE : 0;
+                    HINTERNET hHeadReq = WinHttpOpenRequest(hHeadConn, L"HEAD", urlPath, nullptr, WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES, flags);
+                    if (hHeadReq) {
+                        if (WinHttpSendRequest(hHeadReq, WINHTTP_NO_ADDITIONAL_HEADERS, 0, WINHTTP_NO_REQUEST_DATA, 0, 0, 0) &&
+                            WinHttpReceiveResponse(hHeadReq, nullptr)) {
+                            wchar_t szLen[64] = { 0 };
+                            DWORD dwLenSize = sizeof(szLen);
+                            if (WinHttpQueryHeaders(hHeadReq, WINHTTP_QUERY_CONTENT_LENGTH, WINHTTP_HEADER_NAME_BY_INDEX, szLen, &dwLenSize, WINHTTP_NO_HEADER_INDEX)) {
+                                expectedBytes = _wcstoui64(szLen, nullptr, 10);
+                            }
+                        }
+                        WinHttpCloseHandle(hHeadReq);
+                    }
+                    WinHttpCloseHandle(hHeadConn);
+                }
+                WinHttpCloseHandle(hHeadSession);
+            }
+        }
+
         if (ok) {
             while (WaitForSingleObject(pi.hProcess, 200) == WAIT_TIMEOUT) {
                 std::error_code szEc;
                 if (std::filesystem::exists(installerPath, szEc)) {
                     uintmax_t curSz = std::filesystem::file_size(installerPath, szEc);
                     if (curSz > 0) {
-                        float pct = (std::min)(0.80f, 0.10f + 0.70f * (static_cast<float>(curSz) / static_cast<float>(expectedBytes)));
                         float curMB = static_cast<float>(curSz) / (1024.0f * 1024.0f);
-                        float totMB = static_cast<float>(expectedBytes) / (1024.0f * 1024.0f);
                         wchar_t buf[128];
-                        swprintf_s(buf, isZipArchive ? L"Downloading archive (%.1f MB / %.1f MB)..." : L"Downloading installer (%.1f MB / %.1f MB)...", curMB, totMB);
-                        UpdateProcessTask(taskTitle, pct, buf);
+                        if (expectedBytes > 0) {
+                            uintmax_t totBytes = (std::max)(expectedBytes, curSz);
+                            float totMB = static_cast<float>(totBytes) / (1024.0f * 1024.0f);
+                            float pct = (std::min)(0.80f, 0.10f + 0.70f * (static_cast<float>(curSz) / static_cast<float>(totBytes)));
+                            swprintf_s(buf, isZipArchive ? L"Downloading archive (%.1f MB / %.1f MB)..." : L"Downloading installer (%.1f MB / %.1f MB)...", curMB, totMB);
+                            UpdateProcessTask(taskTitle, pct, buf);
+                        } else {
+                            swprintf_s(buf, isZipArchive ? L"Downloading archive (%.1f MB)..." : L"Downloading installer (%.1f MB)...", curMB);
+                            UpdateProcessTask(taskTitle, 0.40f, buf);
+                        }
                     }
                 }
             }
@@ -1497,7 +1537,7 @@ void ExtensionsPanel::InstallRuntime(int itemIdx, const std::wstring& version, s
                                     }
                                 }
                                 fin.close();
-                                content += "Lib\\site-packages\n";
+                                content += "Lib\nLib\\site-packages\n";
                                 std::ofstream fout(entry.path());
                                 fout << content;
                                 fout.close();
@@ -1505,6 +1545,22 @@ void ExtensionsPanel::InstallRuntime(int itemIdx, const std::wstring& version, s
                             }
                         }
                         std::filesystem::create_directories(targetDir / "Lib" / "site-packages", ecDir);
+                        if (!std::filesystem::exists(targetDir / "Lib" / "venv", ecDir)) {
+                            for (const auto& it : m_items) {
+                                if (it.id == L"python") {
+                                    for (const auto& env : it.environments) {
+                                        std::filesystem::path existingLib = std::filesystem::path(env.path).parent_path() / L"Lib";
+                                        if (std::filesystem::exists(existingLib / L"venv", ecDir)) {
+                                            std::filesystem::copy(existingLib / L"venv", targetDir / "Lib" / "venv", std::filesystem::copy_options::recursive | std::filesystem::copy_options::overwrite_existing, ecDir);
+                                            if (std::filesystem::exists(existingLib / L"ensurepip", ecDir)) {
+                                                std::filesystem::copy(existingLib / L"ensurepip", targetDir / "Lib" / "ensurepip", std::filesystem::copy_options::recursive | std::filesystem::copy_options::overwrite_existing, ecDir);
+                                            }
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+                        }
 
                         // Register PEP 514 in HKCU
                         HKEY hPyCore = nullptr;

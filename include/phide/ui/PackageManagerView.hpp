@@ -164,6 +164,16 @@ public:
     void MarkPackageInstalled(const std::wstring& pkgName);
 
     /**
+     * @brief Marks a package as uninstalled in catalog.
+     */
+    void MarkPackageUninstalled(const std::wstring& pkgName);
+
+    /**
+     * @brief Scans workspace virtual environment and system site-packages to reflect installed status.
+     */
+    void ScanInstalledPackages(const std::wstring& wsFolder = L"");
+
+    /**
      * @brief Fetches packages from Supabase remote REST API asynchronously.
      */
     void FetchSupabasePackagesAsync(const std::wstring& query = L"");

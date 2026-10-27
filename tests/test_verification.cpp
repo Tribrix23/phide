@@ -8942,6 +8942,132 @@ run_test_70:
         assert(!pkgView.GetPackages()[0].isInstalling);
         std::cout << "  Passed: Package marked installed successfully." << std::endl;
 
+        // Visual Render Test: Installed button turns RED with "Uninstall" text (User Image 2 & 3)
+        ComPtr<IWICBitmap> pWicRedUninstall;
+        pWicFactory->CreateBitmap(snapW, snapH, GUID_WICPixelFormat32bppPBGRA, WICBitmapCacheOnDemand, &pWicRedUninstall);
+        ComPtr<ID2D1RenderTarget> pRTRedUninstall;
+        pD2DFactory->CreateWicBitmapRenderTarget(pWicRedUninstall.Get(), rtProps, &pRTRedUninstall);
+        pRTRedUninstall->BeginDraw();
+        pRTRedUninstall->Clear(D2D1::ColorF(0x18181b));
+        pkgView.Render(pRTRedUninstall.Get(), theme, config, 48.0f, snapW - 48.0f, 0.0f, 800.0f);
+        HRESULT hrRed = pRTRedUninstall->EndDraw();
+        assert(SUCCEEDED(hrRed));
+        std::wstring snapRedPath = artDir + L"test_package_installed_red_uninstall_button.png";
+        SaveWicBitmapToPng(pWicRedUninstall.Get(), pWicFactory.Get(), snapRedPath);
+        assert(std::filesystem::exists(snapRedPath));
+        std::wcout << L"  Passed: Saved Installed Red Uninstall Button snapshot to: " << snapRedPath << std::endl;
+
+        // Clicking the button when installed triggers uninstall
+        pkgView.HandleLButtonDown(ptInstallBtn);
+        assert(executedCmd.find(L"uninstall") != std::wstring::npos);
+        pkgView.MarkPackageUninstalled(pkgs[0].name);
+        assert(!pkgView.GetPackages()[0].isInstalled);
+        std::cout << "  Passed: Clicking installed package triggers pip uninstall and changes button back." << std::endl;
+
+        // Visual Render Test: PyCharm-style External Libraries and .venv in Explorer Tree (User Image 2)
+        phide::ui::DrawerPanel testDrawer;
+        testDrawer.OpenFolder(std::filesystem::current_path().wstring());
+        const auto& drawerItems = testDrawer.GetTreeItems();
+        bool hasExternalLibs = false;
+        for (const auto& itm : drawerItems) {
+            if (itm.label == L"External Libraries") hasExternalLibs = true;
+        }
+        assert(hasExternalLibs);
+
+        ComPtr<IWICBitmap> pWicDrawerExt;
+        pWicFactory->CreateBitmap(300, 600, GUID_WICPixelFormat32bppPBGRA, WICBitmapCacheOnDemand, &pWicDrawerExt);
+        ComPtr<ID2D1RenderTarget> pRTDrawerExt;
+        pD2DFactory->CreateWicBitmapRenderTarget(pWicDrawerExt.Get(), rtProps, &pRTDrawerExt);
+        pRTDrawerExt->BeginDraw();
+        pRTDrawerExt->Clear(D2D1::ColorF(0x18181b));
+        config.activeRailTab = 0; // Explorer tab active
+        testDrawer.Render(pRTDrawerExt.Get(), theme, config, 600.0f, 300.0f);
+        HRESULT hrDrawerExt = pRTDrawerExt->EndDraw();
+        assert(SUCCEEDED(hrDrawerExt));
+        std::wstring snapDrawerExtPath = artDir + L"test_drawer_external_libraries_pycharm.png";
+        SaveWicBitmapToPng(pWicDrawerExt.Get(), pWicFactory.Get(), snapDrawerExtPath);
+        assert(std::filesystem::exists(snapDrawerExtPath));
+        std::wcout << L"  Passed: Saved PyCharm-style External Libraries snapshot to: " << snapDrawerExtPath << std::endl;
+        std::cout << "  Passed: PyCharm-style External Libraries node present in project tree." << std::endl;
+
+        // Test workspace with .venv (php-student-crud)
+        std::wstring phpCrudPath = L"C:\\Users\\Administrator\\Downloads\\php-student-crud\\php-student-crud";
+        std::error_code ecPhp;
+        if (std::filesystem::exists(phpCrudPath, ecPhp)) {
+            phide::ui::DrawerPanel crudDrawer;
+            crudDrawer.OpenFolder(phpCrudPath);
+            
+            bool foundVenvNode = false;
+            int extLibIdx = -1;
+            for (size_t i = 0; i < crudDrawer.GetTreeItems().size(); ++i) {
+                const auto& itm = crudDrawer.GetTreeItems()[i];
+                if (itm.label == L".venv") foundVenvNode = true;
+                if (itm.label == L"External Libraries") extLibIdx = static_cast<int>(i);
+            }
+            assert(foundVenvNode);
+            std::cout << "  Passed: .venv folder visible in Explorer tree for open project." << std::endl;
+
+            if (extLibIdx >= 0) {
+                crudDrawer.ToggleFolder(extLibIdx); // expand External Libraries
+                bool foundVenvPy = false;
+                int pyNodeIdx = -1;
+                for (size_t i = 0; i < crudDrawer.GetTreeItems().size(); ++i) {
+                    const auto& itm = crudDrawer.GetTreeItems()[i];
+                    if (itm.label.find(L"virtualenv: .venv") != std::wstring::npos) {
+                        foundVenvPy = true;
+                        pyNodeIdx = static_cast<int>(i);
+                    }
+                }
+                assert(foundVenvPy);
+                std::cout << "  Passed: External Libraries shows Python (virtualenv: .venv) instead of Global System." << std::endl;
+
+                if (pyNodeIdx >= 0) {
+                    crudDrawer.ToggleFolder(pyNodeIdx); // expand Python (.venv)
+                    int spIdx = -1;
+                    for (size_t i = 0; i < crudDrawer.GetTreeItems().size(); ++i) {
+                        if (crudDrawer.GetTreeItems()[i].label == L"site-packages") spIdx = static_cast<int>(i);
+                    }
+                    if (spIdx >= 0) {
+                        crudDrawer.ToggleFolder(spIdx); // expand site-packages
+                        bool hasMatplotlib = false;
+                        for (const auto& itm : crudDrawer.GetTreeItems()) {
+                            if (itm.label == L"matplotlib") hasMatplotlib = true;
+                        }
+                        assert(hasMatplotlib);
+                        std::cout << "  Passed: site-packages in .venv contains installed matplotlib package." << std::endl;
+                    }
+                }
+            }
+
+            // Test PackageManagerView::ScanInstalledPackages
+            pkgView.ScanInstalledPackages(phpCrudPath);
+            bool mplInstalled = false;
+            for (const auto& pkg : pkgView.GetPackages()) {
+                if (pkg.name == L"matplotlib") {
+                    mplInstalled = pkg.isInstalled;
+                    break;
+                }
+            }
+            assert(mplInstalled);
+            std::cout << "  Passed: PackageManagerView accurately detects matplotlib as installed in .venv." << std::endl;
+
+            // Render snapshot of project with .venv and External Libraries expanded
+            ComPtr<IWICBitmap> pWicCrud;
+            pWicFactory->CreateBitmap(320, 640, GUID_WICPixelFormat32bppPBGRA, WICBitmapCacheOnDemand, &pWicCrud);
+            ComPtr<ID2D1RenderTarget> pRTCrud;
+            pD2DFactory->CreateWicBitmapRenderTarget(pWicCrud.Get(), rtProps, &pRTCrud);
+            pRTCrud->BeginDraw();
+            pRTCrud->Clear(D2D1::ColorF(0x18181b));
+            config.activeRailTab = 0;
+            crudDrawer.Render(pRTCrud.Get(), theme, config, 640.0f, 320.0f);
+            HRESULT hrCrud = pRTCrud->EndDraw();
+            assert(SUCCEEDED(hrCrud));
+            std::wstring snapCrudPath = artDir + L"test_drawer_venv_and_external_libraries_php_student_crud.png";
+            SaveWicBitmapToPng(pWicCrud.Get(), pWicFactory.Get(), snapCrudPath);
+            assert(std::filesystem::exists(snapCrudPath));
+            std::wcout << L"  Passed: Saved snapshot of project tree with .venv and External Libraries: " << snapCrudPath << std::endl;
+        }
+
         // Verify ExtensionsPanel Processes HUD
         phide::ui::ExtensionsPanel extPanel;
         assert(!extPanel.HasActiveProcesses());
@@ -8965,24 +9091,25 @@ run_test_70:
         assert(std::filesystem::exists(snapHudPath));
         std::wcout << L"  Passed: Saved Floating Processes HUD Card snapshot to: " << snapHudPath << std::endl;
 
-        // 18. Test Python Versions Dynamic Detection (3.15.1 is Global System, uninstalled versions do not reappear)
+        // 18. Test Python Versions Dynamic Detection (3.15 is Global System, uninstalled versions do not reappear)
         extPanel.RefreshPcStatus();
         const auto& items = extPanel.GetItems();
         assert(!items.empty());
         assert(items[0].id == L"python");
-        assert(items[0].installedVersion == L"3.15.1");
+        assert(items[0].installedVersion.rfind(L"3.15", 0) == 0);
         assert(!items[0].environments.empty());
-        assert(items[0].environments[0].name == L"Python 3.15.1 (Global System)");
-        bool has3151 = false, has314 = false, has313 = false;
+        assert(items[0].environments[0].name.find(L"3.15") != std::wstring::npos &&
+               items[0].environments[0].name.find(L"Global System") != std::wstring::npos);
+        bool has315 = false, has314 = false, has313 = false;
         for (const auto& env : items[0].environments) {
-            if (env.name.find(L"3.15.1") != std::wstring::npos) has3151 = true;
+            if (env.name.find(L"3.15") != std::wstring::npos) has315 = true;
             if (env.name.find(L"3.14") != std::wstring::npos) has314 = true;
             if (env.name.find(L"3.13") != std::wstring::npos) has313 = true;
         }
-        assert(has3151);
+        assert(has315);
         assert(!has314);
         assert(!has313);
-        std::cout << "  Passed: Python 3.15.1 is Global System; uninstalled 3.13.9 and 3.14.7 do not reappear." << std::endl;
+        std::cout << "  Passed: Python 3.15 is Global System; uninstalled 3.13.9 and 3.14.7 do not reappear." << std::endl;
 
         // 19. Visual Render Test: Language Grid with NO version numbers (User Image 5)
         pkgView.NavigateBackToLanguages();

@@ -163,6 +163,9 @@ void DrawerPanel::ToggleFolder(int index) {
 
 std::wstring DrawerPanel::GetIconForFile(const std::wstring& filename, bool isDir, bool isExpanded) const {
     if (isDir) {
+        if (filename == L".venv" || filename == L"venv") {
+            return isExpanded ? L"\u25BE \u26A1" : L"\u25B8 \u26A1";
+        }
         return isExpanded ? L"\u25BE \u25A4" : L"\u25B8 \u25A4";
     }
 
@@ -205,6 +208,118 @@ void DrawerPanel::RebuildVisibleItems() {
 
     if (rootItem.isExpanded) {
         AddDirectoryChildren(m_openFolderPath, 1);
+    }
+
+    // PyCharm-style External Libraries section at the bottom of the project tree
+    std::wstring extLibPath = L"__EXTERNAL_LIBRARIES__";
+    DrawerTreeItem extLibItem;
+    extLibItem.label = L"External Libraries";
+    extLibItem.fullPath = extLibPath;
+    extLibItem.depth = 0;
+    extLibItem.isFolder = true;
+    extLibItem.isExpanded = (m_expandedDirs.count(extLibPath) > 0);
+    extLibItem.iconGlyph = extLibItem.isExpanded ? L"\u25BE \u25A4" : L"\u25B8 \u25A4";
+    m_visibleItems.push_back(extLibItem);
+
+    if (extLibItem.isExpanded) {
+        std::wstring pyExePath;
+        std::wstring pyVer;
+        std::filesystem::path venvPy = std::filesystem::path(m_openFolderPath) / L".venv" / L"Scripts" / L"python.exe";
+        std::error_code ecCheck;
+        if (std::filesystem::exists(venvPy, ecCheck)) {
+            pyExePath = venvPy.wstring();
+            // Read actual version from pyvenv.cfg if present
+            std::filesystem::path cfgPath = std::filesystem::path(m_openFolderPath) / L".venv" / L"pyvenv.cfg";
+            std::wstring verStr;
+            if (std::filesystem::exists(cfgPath, ecCheck)) {
+                std::wifstream fin(cfgPath);
+                std::wstring line;
+                while (std::getline(fin, line)) {
+                    if (line.rfind(L"version =", 0) == 0 || line.rfind(L"version_info =", 0) == 0) {
+                        auto eq = line.find(L'=');
+                        if (eq != std::wstring::npos) {
+                            verStr = line.substr(eq + 1);
+                            while (!verStr.empty() && (verStr.front() == L' ' || verStr.front() == L'\t')) verStr.erase(verStr.begin());
+                            while (!verStr.empty() && (verStr.back() == L'\r' || verStr.back() == L'\n' || verStr.back() == L' ')) verStr.pop_back();
+                            break;
+                        }
+                    }
+                }
+            }
+            if (!verStr.empty()) {
+                pyVer = L"Python " + verStr + L" (virtualenv: .venv)";
+            } else {
+                pyVer = L"Python (virtualenv: .venv)";
+            }
+        } else {
+            // Find system Python dynamically (no hardcoded versions!)
+            wchar_t found[MAX_PATH] = { 0 };
+            if (SearchPathW(nullptr, L"python.exe", nullptr, MAX_PATH, found, nullptr) > 0 &&
+                std::wstring(found).find(L"WindowsApps") == std::wstring::npos &&
+                std::filesystem::exists(found, ecCheck)) {
+                pyExePath = found;
+            } else {
+                wchar_t szLocalApp[MAX_PATH] = { 0 };
+                if (GetEnvironmentVariableW(L"LOCALAPPDATA", szLocalApp, MAX_PATH) > 0) {
+                    std::filesystem::path pyBase = std::filesystem::path(szLocalApp) / L"Programs" / L"Python";
+                    if (std::filesystem::exists(pyBase, ecCheck)) {
+                        for (const auto& entry : std::filesystem::directory_iterator(pyBase, ecCheck)) {
+                            if (entry.is_directory(ecCheck) && std::filesystem::exists(entry.path() / L"python.exe", ecCheck)) {
+                                pyExePath = (entry.path() / L"python.exe").wstring();
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+            if (!pyExePath.empty()) {
+                std::wstring dirName = std::filesystem::path(pyExePath).parent_path().filename().wstring();
+                std::wstring verStr;
+                if (dirName.rfind(L"Python-", 0) == 0) {
+                    verStr = dirName.substr(7);
+                } else if (dirName.rfind(L"Python", 0) == 0 && dirName.length() >= 8) {
+                    verStr = dirName.substr(6, 1) + L"." + dirName.substr(7);
+                }
+                if (!verStr.empty()) {
+                    pyVer = L"Python " + verStr + L" (Global System)";
+                } else {
+                    pyVer = L"Python (Global System)";
+                }
+            }
+        }
+
+        if (!pyExePath.empty()) {
+            std::wstring pyNodePath = L"__EXT_PY__" + pyExePath;
+            DrawerTreeItem pyNode;
+            pyNode.label = pyVer;
+            pyNode.fullPath = pyNodePath;
+            pyNode.depth = 1;
+            pyNode.isFolder = true;
+            pyNode.isExpanded = (m_expandedDirs.count(pyNodePath) > 0);
+            pyNode.iconGlyph = pyNode.isExpanded ? L"\u25BE \u26A1" : L"\u25B8 \u26A1";
+            m_visibleItems.push_back(pyNode);
+
+            if (pyNode.isExpanded) {
+                std::filesystem::path spDir = std::filesystem::path(pyExePath).parent_path() / L"Lib" / L"site-packages";
+                if (!std::filesystem::exists(spDir, ecCheck)) {
+                    spDir = std::filesystem::path(pyExePath).parent_path().parent_path() / L"Lib" / L"site-packages";
+                }
+                if (std::filesystem::exists(spDir, ecCheck)) {
+                    DrawerTreeItem spNode;
+                    spNode.label = L"site-packages";
+                    spNode.fullPath = spDir.wstring();
+                    spNode.depth = 2;
+                    spNode.isFolder = true;
+                    spNode.isExpanded = (m_expandedDirs.count(spDir.wstring()) > 0);
+                    spNode.iconGlyph = spNode.isExpanded ? L"\u25BE \u25A4" : L"\u25B8 \u25A4";
+                    m_visibleItems.push_back(spNode);
+
+                    if (spNode.isExpanded) {
+                        AddDirectoryChildren(spDir.wstring(), 3);
+                    }
+                }
+            }
+        }
     }
 }
 
