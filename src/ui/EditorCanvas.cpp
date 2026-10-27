@@ -328,6 +328,7 @@ void EditorCanvas::RenderSinglePane(ID2D1RenderTarget* pRT, Theme& theme, const 
                                     D2D1_RECT_F* outTrack, D2D1_RECT_F* outThumb,
                                     int* pLastScrolledActiveDocIdx, bool isDraggingTabScroll) {
     if (docs.empty() || docIdx < 0 || docIdx >= static_cast<int>(docs.size())) {
+        m_packageManagerView.HideWebView();
         RenderPlaceholder(pRT, theme, config, canvasLeft, canvasWidth, headerH, clientHeight);
         return;
     }
@@ -344,24 +345,28 @@ void EditorCanvas::RenderSinglePane(ID2D1RenderTarget* pRT, Theme& theme, const 
 
     float contentTopY = headerH + tabH + breadcrumbH;
     if (activeDoc.isSpecialView && activeDoc.viewType == L"keybindings") {
+        m_packageManagerView.HideWebView();
         m_keybindingsView.Render(pRT, theme, config, canvasLeft, canvasWidth, contentTopY, clientHeight - contentTopY);
     } else if (activeDoc.isSpecialView && activeDoc.viewType == L"packages") {
         m_packageManagerView.Render(pRT, theme, config, canvasLeft, canvasWidth, contentTopY, clientHeight - contentTopY);
-    } else if (activeDoc.isImageView) {
-        RenderImageView(pRT, theme, config, activeDoc, canvasLeft, canvasWidth, contentTopY, clientHeight);
-    } else if (activeDoc.isUnsupportedBinary) {
-        RenderUnsupportedBinaryView(pRT, theme, config, activeDoc, canvasLeft, canvasWidth, contentTopY, clientHeight);
-    } else if (activeDoc.isDiffView) {
-        if (activeDoc.isMultiFileDiff) {
-            RenderMultiFileDiffView(pRT, theme, config, activeDoc, canvasLeft, canvasWidth, contentTopY, clientHeight, isPaneFocused);
-        } else if (activeDoc.isDiffBinary) {
-            RenderDiffBinaryView(pRT, theme, config, activeDoc, canvasLeft, canvasWidth, contentTopY, clientHeight);
-        } else {
-            RenderDiffView(pRT, theme, config, activeDoc, canvasLeft, canvasWidth, contentTopY, clientHeight, isPaneFocused);
-        }
     } else {
-        RenderCode(pRT, theme, config, activeDoc, canvasLeft, canvasWidth, contentTopY, clientHeight, isPaneFocused,
-                   highlightQuery, highlightMatchCase, highlightWholeWord, highlightUseRegex, isRenaming);
+        m_packageManagerView.HideWebView();
+        if (activeDoc.isImageView) {
+            RenderImageView(pRT, theme, config, activeDoc, canvasLeft, canvasWidth, contentTopY, clientHeight);
+        } else if (activeDoc.isUnsupportedBinary) {
+            RenderUnsupportedBinaryView(pRT, theme, config, activeDoc, canvasLeft, canvasWidth, contentTopY, clientHeight);
+        } else if (activeDoc.isDiffView) {
+            if (activeDoc.isMultiFileDiff) {
+                RenderMultiFileDiffView(pRT, theme, config, activeDoc, canvasLeft, canvasWidth, contentTopY, clientHeight, isPaneFocused);
+            } else if (activeDoc.isDiffBinary) {
+                RenderDiffBinaryView(pRT, theme, config, activeDoc, canvasLeft, canvasWidth, contentTopY, clientHeight);
+            } else {
+                RenderDiffView(pRT, theme, config, activeDoc, canvasLeft, canvasWidth, contentTopY, clientHeight, isPaneFocused);
+            }
+        } else {
+            RenderCode(pRT, theme, config, activeDoc, canvasLeft, canvasWidth, contentTopY, clientHeight, isPaneFocused,
+                       highlightQuery, highlightMatchCase, highlightWholeWord, highlightUseRegex, isRenaming);
+        }
     }
 }
 
@@ -606,7 +611,7 @@ void EditorCanvas::RenderTabs(ID2D1RenderTarget* pRT, Theme& theme, const app::A
                 m_icons.DrawFileIcon(pRT, theme, iconBounds, FileIconType::Json);
             }
         } else if (doc.isSpecialView && doc.viewType == L"packages") {
-            m_icons.DrawPackage(pRT, iconBounds, theme.brushBrandAccent ? theme.brushBrandAccent.Get() : theme.brushTextWhite.Get(), 1.4f);
+            m_icons.DrawPackage(pRT, iconBounds, theme.brushBrandAccent ? theme.brushBrandAccent.Get() : theme.brushTextWhite.Get(), 1.1f);
         } else {
             auto setiInfo = theme.GetSetiIcon(title, false, false);
             if (theme.fontSeti && setiInfo.pBrush) {

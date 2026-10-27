@@ -4704,7 +4704,8 @@ bool Window::Create(HINSTANCE hInstance, int nCmdShow) {
         }
     });
 
-    // Wire Package Manager Install Package callback to execute in terminal
+    // Wire Package Manager HWND for embedded WebView2 and Install Package callback
+    m_editor.GetPackageManagerView().SetHwnd(m_hwnd);
     m_editor.GetPackageManagerView().SetOnInstallCallback([this](const std::wstring& cmd, phide::ui::PkgInstallScope scope) {
         if (!m_terminal.IsOpen()) {
             std::wstring dir = m_drawer.HasOpenFolder() ? m_drawer.GetOpenFolderPath() : m_workspace.GetRootPath().wstring();
@@ -4832,6 +4833,7 @@ void Window::OnResize(UINT width, UINT height) {
     if (m_pRenderTarget) {
         m_pRenderTarget->Resize(D2D1::SizeU(width, height));
     }
+    m_editor.GetPackageManagerView().UpdateWebViewBounds();
 }
 
 void Window::OnPaint() {

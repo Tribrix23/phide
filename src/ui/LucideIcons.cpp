@@ -328,35 +328,41 @@ void LucideIcons::DrawPackage(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds,
 
     const float bw = bounds.right - bounds.left;
     const float bh = bounds.bottom - bounds.top;
-    const float iconSize = (std::min)(bw, bh) * 0.52f;
+    const float minDim = (std::min)(bw, bh);
+    // In small contexts like editor tabs (16x16), use a generous scale factor so the 3D cube facets are crisp and unmistakable
+    const float scaleFactor = (minDim <= 24.0f) ? 0.88f : 0.60f;
+    const float effStroke = (minDim <= 24.0f) ? 1.15f : strokeWidth;
+    const float iconSize = minDim * scaleFactor;
     const float s = iconSize / 24.0f;
     const float ox = bounds.left + (bw - 24.0f * s) / 2.0f;
     const float oy = bounds.top + (bh - 24.0f * s) / 2.0f;
 
     // Outer hexagon / 3D box profile
     D2D1_POINT_2F pTop      = MapPoint(12.0f, 2.5f, ox, oy, s);
-    D2D1_POINT_2F pTopRight = MapPoint(20.5f, 7.5f, ox, oy, s);
-    D2D1_POINT_2F pBotRight = MapPoint(20.5f, 16.5f, ox, oy, s);
+    D2D1_POINT_2F pTopRight = MapPoint(21.0f, 7.5f, ox, oy, s);
+    D2D1_POINT_2F pBotRight = MapPoint(21.0f, 16.5f, ox, oy, s);
     D2D1_POINT_2F pBot      = MapPoint(12.0f, 21.5f, ox, oy, s);
-    D2D1_POINT_2F pBotLeft  = MapPoint(3.5f, 16.5f, ox, oy, s);
-    D2D1_POINT_2F pTopLeft  = MapPoint(3.5f, 7.5f, ox, oy, s);
+    D2D1_POINT_2F pBotLeft  = MapPoint(3.0f, 16.5f, ox, oy, s);
+    D2D1_POINT_2F pTopLeft  = MapPoint(3.0f, 7.5f, ox, oy, s);
     D2D1_POINT_2F pCenter   = MapPoint(12.0f, 12.0f, ox, oy, s);
 
     // Draw outer boundary
-    pRT->DrawLine(pTop, pTopRight, pBrush, strokeWidth, m_pStrokeStyle.Get());
-    pRT->DrawLine(pTopRight, pBotRight, pBrush, strokeWidth, m_pStrokeStyle.Get());
-    pRT->DrawLine(pBotRight, pBot, pBrush, strokeWidth, m_pStrokeStyle.Get());
-    pRT->DrawLine(pBot, pBotLeft, pBrush, strokeWidth, m_pStrokeStyle.Get());
-    pRT->DrawLine(pBotLeft, pTopLeft, pBrush, strokeWidth, m_pStrokeStyle.Get());
-    pRT->DrawLine(pTopLeft, pTop, pBrush, strokeWidth, m_pStrokeStyle.Get());
+    pRT->DrawLine(pTop, pTopRight, pBrush, effStroke, m_pStrokeStyle.Get());
+    pRT->DrawLine(pTopRight, pBotRight, pBrush, effStroke, m_pStrokeStyle.Get());
+    pRT->DrawLine(pBotRight, pBot, pBrush, effStroke, m_pStrokeStyle.Get());
+    pRT->DrawLine(pBot, pBotLeft, pBrush, effStroke, m_pStrokeStyle.Get());
+    pRT->DrawLine(pBotLeft, pTopLeft, pBrush, effStroke, m_pStrokeStyle.Get());
+    pRT->DrawLine(pTopLeft, pTop, pBrush, effStroke, m_pStrokeStyle.Get());
 
     // Internal 3D edges meeting at center
-    pRT->DrawLine(pCenter, pTopLeft, pBrush, strokeWidth, m_pStrokeStyle.Get());
-    pRT->DrawLine(pCenter, pTopRight, pBrush, strokeWidth, m_pStrokeStyle.Get());
-    pRT->DrawLine(pCenter, pBot, pBrush, strokeWidth, m_pStrokeStyle.Get());
+    pRT->DrawLine(pCenter, pTopLeft, pBrush, effStroke, m_pStrokeStyle.Get());
+    pRT->DrawLine(pCenter, pTopRight, pBrush, effStroke, m_pStrokeStyle.Get());
+    pRT->DrawLine(pCenter, pBot, pBrush, effStroke, m_pStrokeStyle.Get());
 
-    // Parcel tape / top detail line across top face
-    pRT->DrawLine(MapPoint(16.2f, 5.0f, ox, oy, s), MapPoint(7.8f, 9.8f, ox, oy, s), pBrush, strokeWidth * 0.9f, m_pStrokeStyle.Get());
+    // Parcel tape / top detail line across top face (only drawn on larger icons to prevent cluttering 16px tabs)
+    if (minDim > 24.0f) {
+        pRT->DrawLine(MapPoint(16.5f, 5.0f, ox, oy, s), MapPoint(7.5f, 10.0f, ox, oy, s), pBrush, effStroke * 0.9f, m_pStrokeStyle.Get());
+    }
 }
 
 void LucideIcons::DrawSidebar(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, ID2D1Brush* pBrush, float strokeWidth) const {

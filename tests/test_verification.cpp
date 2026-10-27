@@ -8695,6 +8695,26 @@ run_test_70:
         assert(std::filesystem::exists(snapGridPath));
         std::wcout << L"  Passed: Saved Language Grid First screenshot to: " << snapGridPath << std::endl;
 
+        // 7b. Visual Render Test 1b: Search View Initially Empty with Focused Caret "|" (User Requirement)
+        ComPtr<IWICBitmap> pWicSnapEmpty;
+        pWicFactory->CreateBitmap(snapW, snapH, GUID_WICPixelFormat32bppPBGRA, WICBitmapCacheOnDemand, &pWicSnapEmpty);
+        ComPtr<ID2D1RenderTarget> pRTSnapEmpty;
+        pD2DFactory->CreateWicBitmapRenderTarget(pWicSnapEmpty.Get(), rtProps, &pRTSnapEmpty);
+
+        pRTSnapEmpty->BeginDraw();
+        pRTSnapEmpty->Clear(D2D1::ColorF(0x18181b));
+        rail.Render(pRTSnapEmpty.Get(), theme, config, 800.0f);
+        pkgView.SelectLanguageAndOpenSearch(phide::ui::RuntimeLanguage::Python);
+        pkgView.SetSearchQuery(L""); // Initially empty, but focused!
+        pkgView.Render(pRTSnapEmpty.Get(), theme, config, 48.0f, snapW - 48.0f, 0.0f, 800.0f);
+        HRESULT hrEmpty = pRTSnapEmpty->EndDraw();
+        assert(SUCCEEDED(hrEmpty));
+
+        std::wstring snapEmptyPath = artDir + L"test_package_manager_empty_search_with_focus_caret.png";
+        SaveWicBitmapToPng(pWicSnapEmpty.Get(), pWicFactory.Get(), snapEmptyPath);
+        assert(std::filesystem::exists(snapEmptyPath));
+        std::wcout << L"  Passed: Saved Empty Search with Focus Caret screenshot to: " << snapEmptyPath << std::endl;
+
         // 8. Visual Render Test 2: Package Search Results with Split Install [ Install | ▾ ] Buttons on Output Cards (Matching Image 3)
         ComPtr<IWICBitmap> pWicSnapSearch;
         pWicFactory->CreateBitmap(snapW, snapH, GUID_WICPixelFormat32bppPBGRA, WICBitmapCacheOnDemand, &pWicSnapSearch);
@@ -8725,8 +8745,16 @@ run_test_70:
         pRTSnapDropdown->BeginDraw();
         pRTSnapDropdown->Clear(D2D1::ColorF(0x18181b));
         rail.Render(pRTSnapDropdown.Get(), theme, config, 800.0f);
-        // Click split arrow ▾ button on matplotlib card to open dropdown (bounds: [506, 110, 528, 138], center = 517, 124)
-        pkgView.HandleLButtonDown(POINT{ 517, 124 });
+        // Click split arrow ▾ button on matplotlib card to open dropdown
+        const auto& activePkgs = (pkgView.GetActiveLanguage() == phide::ui::RuntimeLanguage::Php) ? pkgView.GetPhpPackages() : pkgView.GetPackages();
+        assert(!activePkgs.empty());
+        size_t firstCardIdx = pkgView.GetFilteredIndices().empty() ? 0 : pkgView.GetFilteredIndices()[0];
+        const auto& targetCard = activePkgs[firstCardIdx];
+        POINT ptDropArrow{
+            static_cast<LONG>((targetCard.rcSplitArrowBtn.left + targetCard.rcSplitArrowBtn.right) * 0.5f),
+            static_cast<LONG>((targetCard.rcSplitArrowBtn.top + targetCard.rcSplitArrowBtn.bottom) * 0.5f)
+        };
+        pkgView.HandleLButtonDown(ptDropArrow);
         pkgView.Render(pRTSnapDropdown.Get(), theme, config, 48.0f, snapW - 48.0f, 0.0f, 800.0f);
         HRESULT hrDrop = pRTSnapDropdown->EndDraw();
         assert(SUCCEEDED(hrDrop));
@@ -8795,6 +8823,56 @@ run_test_70:
         SaveWicBitmapToPng(pWicSnap70_3.Get(), pWicFactory.Get(), snap3Path);
         assert(std::filesystem::exists(snap3Path));
         std::wcout << L"  Passed: Saved Centered Git Splitter screenshot to: " << snap3Path << std::endl;
+
+        // 12. Visual Render Test 6: Editor Tab showing Crisp 3D Package Box Icon (Fixing blue blob, User Image 5)
+        ComPtr<IWICBitmap> pWicSnapTab;
+        pWicFactory->CreateBitmap(600, 100, GUID_WICPixelFormat32bppPBGRA, WICBitmapCacheOnDemand, &pWicSnapTab);
+        ComPtr<ID2D1RenderTarget> pRTSnapTab;
+        pD2DFactory->CreateWicBitmapRenderTarget(pWicSnapTab.Get(), rtProps, &pRTSnapTab);
+        pRTSnapTab->BeginDraw();
+        pRTSnapTab->Clear(D2D1::ColorF(0x1e1e24));
+        phide::ui::EditorCanvas testCanvas;
+        std::vector<phide::editor::OpenDocument> testDocs;
+        phide::editor::OpenDocument pkgDoc;
+        pkgDoc.fileName = L"Packages";
+        pkgDoc.isSpecialView = true;
+        pkgDoc.viewType = L"packages";
+        testDocs.push_back(pkgDoc);
+        phide::editor::OpenDocument mainDoc;
+        mainDoc.fileName = L"main.py";
+        testDocs.push_back(mainDoc);
+        float tabScroll = 0.0f, totalTabW = 0.0f;
+        testCanvas.RenderTabs(pRTSnapTab.Get(), theme, config, 0.0f, 600.0f, 0.0f, testDocs, 0, false, true, tabScroll, totalTabW, 0);
+        HRESULT hrTab = pRTSnapTab->EndDraw();
+        assert(SUCCEEDED(hrTab));
+
+        std::wstring snapTabPath = artDir + L"test_package_tab_icon_sharp.png";
+        SaveWicBitmapToPng(pWicSnapTab.Get(), pWicFactory.Get(), snapTabPath);
+        assert(std::filesystem::exists(snapTabPath));
+        std::wcout << L"  Passed: Saved Crisp 3D Package Tab Icon screenshot to: " << snapTabPath << std::endl;
+
+        // 13. Test Mouse Click hit-testing on search box (User Image 1)
+        pkgView.SelectLanguageAndOpenSearch(phide::ui::RuntimeLanguage::Python);
+        pkgView.SetSearchQuery(L"matplotlib");
+        // Click on search box at offset for character 3 (e.g. 'm-a-t|')
+        // search box left is 48 + 24 = 72, text start is 72 + 30 = 102.
+        // Click at 102 + 3 * 7.5 = 124.5
+        POINT ptClickText{ 125, 66 };
+        pkgView.HandleLButtonDown(ptClickText);
+        assert(pkgView.IsSearchFocused());
+        assert(pkgView.GetSearchCaretPos() == 3);
+        std::cout << "  Passed: Search box click placed caret accurately at character position 3." << std::endl;
+
+        // 14. Test Arrow Left navigation, char insertion, and backspace
+        pkgView.HandleKeyDown(VK_LEFT);
+        assert(pkgView.GetSearchCaretPos() == 2);
+        pkgView.HandleChar(L'X');
+        assert(pkgView.GetSearchQuery() == L"maXtplotlib");
+        assert(pkgView.GetSearchCaretPos() == 3);
+        pkgView.HandleKeyDown(VK_BACK);
+        assert(pkgView.GetSearchQuery() == L"matplotlib");
+        assert(pkgView.GetSearchCaretPos() == 2);
+        std::cout << "  Passed: Search caret arrow navigation, insertion, and backspace verified." << std::endl;
 
         std::cout << "  Passed: All [TEST 70] Package Manager and Git fixes passed successfully!" << std::endl;
     }

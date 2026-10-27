@@ -19,6 +19,10 @@
 #include "phide/ui/Theme.hpp"
 #include "phide/ui/LucideIcons.hpp"
 
+struct ICoreWebView2Environment;
+struct ICoreWebView2Controller;
+struct ICoreWebView2;
+
 namespace phide::ui {
 
 /**
@@ -55,13 +59,13 @@ enum class PkgInstallScope {
  */
 struct LanguageCard {
     RuntimeLanguage lang;
-    std::wstring name;          ///< "Python", "PHP (Composer)", "Node.js (npm)"
-    std::wstring version;       ///< e.g. "3.13", "8.5", "20.x"
+    std::wstring name;          ///< "Python", "PHP", "Node.js"
+    std::wstring version;       ///< "v3.14.7", "v8.5.12", "v22.20.0"
     std::wstring managerName;   ///< "pip", "composer", "npm"
     std::wstring executable;    ///< Path to detected executable
-    bool isInstalled = false;   ///< True if runtime binary detected
+    bool isInstalled = true;
+    bool isHovered = false;
     D2D1_RECT_F bounds{};
-    D2D1_RECT_F browseBtnBounds{};
 };
 
 /**
@@ -96,7 +100,7 @@ struct PackageEntry {
 class PackageManagerView {
 public:
     PackageManagerView();
-    ~PackageManagerView() = default;
+    ~PackageManagerView();
 
     /**
      * @brief Discards Direct2D cached resources on resize/theme change.
@@ -139,6 +143,8 @@ public:
 
     [[nodiscard]] const std::wstring& GetSearchQuery() const noexcept { return m_searchQuery; }
     void SetSearchQuery(const std::wstring& q);
+    [[nodiscard]] size_t GetSearchCaretPos() const noexcept { return m_searchCaretPos; }
+    void SetSearchCaretPos(size_t pos) noexcept { m_searchCaretPos = pos; }
 
     /**
      * @brief Sets callback triggered when user clicks "Install Package".
@@ -154,6 +160,9 @@ public:
 
     [[nodiscard]] size_t GetPackageCount() const noexcept { return m_packages.size(); }
     [[nodiscard]] size_t GetFilteredPackageCount() const noexcept { return m_filteredIndices.size(); }
+    [[nodiscard]] const std::vector<size_t>& GetFilteredIndices() const noexcept { return m_filteredIndices; }
+    [[nodiscard]] const std::vector<PackageEntry>& GetPackages() const noexcept { return m_packages; }
+    [[nodiscard]] const std::vector<PackageEntry>& GetPhpPackages() const noexcept { return m_phpPackages; }
     [[nodiscard]] int GetSelectedIndex() const noexcept { return m_selectedIndex; }
     void SetSelectedIndex(int idx);
 
@@ -166,6 +175,12 @@ public:
     void SelectLanguageAndOpenSearch(RuntimeLanguage lang);
     void NavigateBackToLanguages();
 
+    void SetHwnd(HWND hwnd);
+    void InitWebView2(HWND hwnd);
+    void UpdateWebViewBounds();
+    void HideWebView();
+    void NavigateToPackage(const std::wstring& url);
+
 private:
     void DetectInstalledRuntimes();
     void InitializeCatalog();
@@ -173,6 +188,9 @@ private:
     int ComputeRelevance(const std::wstring& text, const std::wstring& query) const;
     void Populate500PythonPackages();
     void Populate500PhpPackages();
+    void LoadAssetBitmaps(ID2D1RenderTarget* pRT);
+    void RenderBrandedIcon(ID2D1RenderTarget* pRT, Theme& theme, RuntimeLanguage lang, const D2D1_RECT_F& bounds);
+    void RenderGitHubWebPage(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config, const PackageEntry& pkg, const D2D1_RECT_F& bounds);
 
     // View state
     PkgViewState m_viewState = PkgViewState::LanguageGrid; ///< Default initial screen is the Language Grid!
@@ -180,12 +198,27 @@ private:
 
     // Search input state
     std::wstring m_searchQuery;
+    size_t m_searchCaretPos = 0;
     bool m_isSearchFocused = true;
     ULONGLONG m_lastSearchKeystrokeTime = 0;
     bool m_searchDebouncePending = false;
 
+    // WebView2 Live Embedded GitHub Browser
+    HWND m_hwnd = nullptr;
+    Microsoft::WRL::ComPtr<ICoreWebView2Environment> m_webViewEnvironment;
+    Microsoft::WRL::ComPtr<ICoreWebView2Controller> m_webViewController;
+    Microsoft::WRL::ComPtr<ICoreWebView2> m_webView;
+    bool m_webViewInitializing = false;
+    bool m_webViewReady = false;
+    std::wstring m_pendingUrl;
+    std::wstring m_currentLoadedUrl;
+
     // Runtime cards
     std::vector<LanguageCard> m_languageCards;
+    Microsoft::WRL::ComPtr<ID2D1Bitmap> m_bmpPython;
+    Microsoft::WRL::ComPtr<ID2D1Bitmap> m_bmpPhp;
+    Microsoft::WRL::ComPtr<ID2D1Bitmap> m_bmpNode;
+    bool m_bitmapsLoaded = false;
 
     // Package catalog
     std::vector<PackageEntry> m_packages;
@@ -194,7 +227,8 @@ private:
     int m_selectedIndex = -1;
     int m_hoveredIndex = -1;
     size_t m_scrollIndex = 0;
-    size_t m_visibleLimit = 12; ///< Virtualized lazy-loading chunk size
+    size_t m_visibleLimit = 16; ///< Virtualized lazy-loading chunk size
+    float m_previewScrollY = 0.0f;
 
     // Dropdown state for Install | ▾
     int m_activeDropdownPkgIdx = -1;
