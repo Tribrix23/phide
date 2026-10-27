@@ -222,6 +222,9 @@ public:
     [[nodiscard]] bool IsGitRepo() const noexcept { return m_isGitRepo; }
     void SetGitRepo(bool isRepo) noexcept { m_isGitRepo = isRepo; }
     [[nodiscard]] bool IsGitLoading() const noexcept { return m_isGitLoading.load(); }
+    void ClearGitLoading() noexcept { m_isGitLoading.store(false); }
+    static std::string GenerateContextAwareGitignore(const std::wstring& rootDir);
+    static void EnsureContextAwareGitignore(const std::wstring& rootDir);
     [[nodiscard]] bool IsGitRefreshing() const noexcept { return m_isGitRefreshing.load(); }
     [[nodiscard]] std::recursive_mutex& GetGitMutex() const noexcept { return m_gitMutex; }
     void UpdateGitLoadingAnim(float deltaAngle) noexcept { m_gitAnimAngle += deltaAngle; }

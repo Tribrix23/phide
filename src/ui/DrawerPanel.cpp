@@ -3829,7 +3829,7 @@ void DrawerPanel::RefreshGitState(bool async, bool showLoading) {
                 : flag(f), loadingFlag(lf), wasLoading(wl) {}
             ~RefreshFinisher() {
                 flag.store(false);
-                if (wasLoading) loadingFlag.store(false);
+                loadingFlag.store(false);
             }
         } finisher(m_isGitRefreshing, m_isGitLoading, showLoading);
 
@@ -3886,7 +3886,7 @@ void DrawerPanel::RefreshGitState(bool async, bool showLoading) {
             }
             m_gitChanges = std::move(untrackedChanges);
             m_gitCommits.clear();
-            if (showLoading) m_isGitLoading = false;
+            m_isGitLoading = false;
             if (m_onGitStateChanged) m_onGitStateChanged();
             return;
         }
@@ -4198,9 +4198,7 @@ void DrawerPanel::RefreshGitState(bool async, bool showLoading) {
             m_gitIgnoredSet = std::move(ignoredFiles);
             m_gitCommits = std::move(commits);
             m_unpushedCommitsCount = unpushedCount;
-            if (showLoading) {
-                m_isGitLoading = false;
-            }
+            m_isGitLoading = false;
         }
 
         if (!alive || !alive->load()) return;
@@ -4920,26 +4918,196 @@ void DrawerPanel::SetErrorFiles(const std::map<std::wstring, size_t>& errorFiles
     m_errorFiles = errorFiles;
 }
 
+std::string DrawerPanel::GenerateContextAwareGitignore(const std::wstring& rootDir) {
+    if (rootDir.empty()) return "# Environment & OS\n.env\n.DS_Store\nThumbs.db\n";
+    std::error_code ec;
+    std::filesystem::path root(rootDir);
+    if (!std::filesystem::exists(root, ec) || !std::filesystem::is_directory(root, ec)) {
+        return "# Environment & OS\n.env\n.DS_Store\nThumbs.db\n";
+    }
+
+    bool hasPython = false;
+    bool hasPhp = false;
+    bool hasNode = false;
+    bool hasCpp = false;
+    bool hasRust = false;
+    bool hasJava = false;
+    bool hasGo = false;
+
+    // Fast directory scan: bounded depth (max depth 3) and max files (500) to keep it instantaneous (<1ms)
+    size_t scannedCount = 0;
+    const size_t maxScan = 500;
+
+    for (std::filesystem::recursive_directory_iterator it(root, std::filesystem::directory_options::skip_permission_denied, ec), end;
+         it != end && scannedCount < maxScan; it.increment(ec)) {
+        if (ec) { ec.clear(); continue; }
+
+        if (it->is_directory(ec)) {
+            std::wstring dname = it->path().filename().wstring();
+            for (auto& c : dname) c = towlower(c);
+            // Don't recurse into already-known dependency or VCS folders
+            if (dname == L".git" || dname == L".venv" || dname == L"venv" || 
+                dname == L"node_modules" || dname == L"vendor" || dname == L"bin" || 
+                dname == L"obj" || dname == L"build" || dname == L"dist" || 
+                dname == L".idea" || dname == L".vscode" || dname == L"target" || dname == L".gradle") {
+                // If any of these exist, they also indicate the tech stack!
+                if (dname == L".venv" || dname == L"venv") hasPython = true;
+                if (dname == L"vendor") hasPhp = true;
+                if (dname == L"node_modules") hasNode = true;
+                if (dname == L"target") hasRust = true;
+                it.disable_recursion_pending();
+            }
+            if (it.depth() > 3) {
+                it.disable_recursion_pending();
+            }
+            continue;
+        }
+
+        if (it->is_regular_file(ec)) {
+            ++scannedCount;
+            std::wstring fn = it->path().filename().wstring();
+            std::wstring ext = it->path().extension().wstring();
+            for (auto& c : fn) c = towlower(c);
+            for (auto& c : ext) c = towlower(c);
+
+            // Python detection
+            if (ext == L".py" || ext == L".pyw" || ext == L".ipynb" ||
+                fn == L"requirements.txt" || fn == L"pyproject.toml" || fn == L"setup.py" ||
+                fn == L"pipfile" || fn == L"pipfile.lock" || fn == L"environment.yml") {
+                hasPython = true;
+            }
+
+            // PHP detection
+            if (ext == L".php" || ext == L".phtml" || ext == L".php4" || ext == L".php5" || ext == L".php7" ||
+                fn == L"composer.json" || fn == L"composer.lock") {
+                hasPhp = true;
+            }
+
+            // Node / JS / TS detection
+            if (ext == L".js" || ext == L".mjs" || ext == L".cjs" || ext == L".ts" || ext == L".mts" ||
+                ext == L".cts" || ext == L".jsx" || ext == L".tsx" || ext == L".vue" || ext == L".svelte" ||
+                fn == L"package.json" || fn == L"package-lock.json" || fn == L"yarn.lock" || fn == L"pnpm-lock.yaml" ||
+                fn == L"tsconfig.json" || fn == L"vite.config.js" || fn == L"vite.config.ts" || fn == L"next.config.js") {
+                hasNode = true;
+            }
+
+            // C / C++ detection
+            if (ext == L".c" || ext == L".cpp" || ext == L".cc" || ext == L".cxx" || ext == L".h" || ext == L".hpp" ||
+                fn == L"cmakelists.txt" || fn == L"makefile") {
+                hasCpp = true;
+            }
+
+            // Rust detection
+            if (ext == L".rs" || fn == L"cargo.toml" || fn == L"cargo.lock") {
+                hasRust = true;
+            }
+
+            // Java detection
+            if (ext == L".java" || ext == L".kt" || ext == L".kts" || fn == L"pom.xml" || fn == L"build.gradle") {
+                hasJava = true;
+            }
+
+            // Go detection
+            if (ext == L".go" || fn == L"go.mod" || fn == L"go.sum") {
+                hasGo = true;
+            }
+        }
+    }
+
+    std::ostringstream ss;
+
+    // Output relevant sections cleanly
+    if (hasPython) {
+        ss << "# Python\n";
+        ss << ".venv/\n";
+        ss << "venv/\n";
+        ss << "__pycache__/\n";
+        ss << "*.py[cod]\n";
+        ss << "*$py.class\n";
+        ss << ".pytest_cache/\n\n";
+    }
+
+    if (hasNode) {
+        ss << "# Node\n";
+        ss << "node_modules/\n";
+        ss << "npm-debug.log*\n";
+        ss << "yarn-debug.log*\n";
+        ss << "yarn-error.log*\n";
+        ss << "dist/\n\n";
+    }
+
+    if (hasPhp) {
+        ss << "# PHP\n";
+        ss << "vendor/\n";
+        ss << "composer.phar\n\n";
+    }
+
+    if (hasCpp) {
+        ss << "# C / C++\n";
+        ss << "*.obj\n";
+        ss << "*.o\n";
+        ss << "build/\n";
+        ss << "bin/\n";
+        ss << "obj/\n\n";
+    }
+
+    if (hasRust) {
+        ss << "# Rust\n";
+        ss << "target/\n\n";
+    }
+
+    if (hasJava) {
+        ss << "# Java\n";
+        ss << "*.class\n";
+        ss << "target/\n";
+        ss << ".gradle/\n\n";
+    }
+
+    if (hasGo) {
+        ss << "# Go\n";
+        ss << "bin/\n\n";
+    }
+
+    // Always include Environment and System files
+    ss << "# Environment & OS\n";
+    ss << ".env\n";
+    ss << ".DS_Store\n";
+    ss << "Thumbs.db\n";
+
+    return ss.str();
+}
+
+void DrawerPanel::EnsureContextAwareGitignore(const std::wstring& rootDir) {
+    if (rootDir.empty()) return;
+    std::filesystem::path gitignorePath = std::filesystem::path(rootDir) / L".gitignore";
+    std::error_code ecGi;
+    if (!std::filesystem::exists(gitignorePath, ecGi)) {
+        std::string content = GenerateContextAwareGitignore(rootDir);
+        std::ofstream gi(gitignorePath, std::ios::binary);
+        if (gi.is_open()) {
+            gi.write(content.data(), content.size());
+            gi.close();
+        }
+    }
+}
+
 void DrawerPanel::StageAllChangesAsync() {
     SetActionPending(L"*", 5000);
     auto alive = m_isAlive;
     auto workers = m_activeWorkers;
     std::thread([this, alive, workers]() {
         if (workers) workers->fetch_add(1);
-        auto finish = [&]() { if (workers) workers->fetch_sub(1); };
+        auto finish = [&]() {
+            m_isGitLoading = false;
+            if (workers) workers->fetch_sub(1);
+        };
         if (!alive || !alive->load()) { finish(); return; }
         m_isGitLoading = true;
         std::wstring dir = m_openFolderPath.empty() ? L"." : m_openFolderPath;
 
-        // Ensure root .gitignore exists and ignores .venv/
-        std::filesystem::path gitignorePath = std::filesystem::path(dir) / L".gitignore";
-        std::error_code ecGi;
-        if (!std::filesystem::exists(gitignorePath, ecGi)) {
-            std::ofstream gi(gitignorePath);
-            gi << ".venv/\nvenv/\n__pycache__/\n*.py[cod]\nnode_modules/\nvendor/\n.env\n";
-            gi.close();
-            RefreshTree();
-        }
+        // Ensure context-aware .gitignore exists
+        EnsureContextAwareGitignore(dir);
+        RefreshTree();
 
         RunGitCmd(L"add -A", dir);
         if (!alive || !alive->load()) { finish(); return; }
@@ -5139,20 +5307,17 @@ void DrawerPanel::CommitChangesAsync(const std::wstring& message) {
     auto workers = m_activeWorkers;
     std::thread([this, alive, workers, msg]() {
         if (workers) workers->fetch_add(1);
-        auto finish = [&]() { if (workers) workers->fetch_sub(1); };
+        auto finish = [&]() {
+            m_isGitLoading = false;
+            if (workers) workers->fetch_sub(1);
+        };
         if (!alive || !alive->load()) { finish(); return; }
         m_isGitLoading = true;
         std::wstring dir = m_openFolderPath.empty() ? L"." : m_openFolderPath;
 
-        // Ensure root .gitignore exists and ignores .venv/
-        std::filesystem::path gitignorePath = std::filesystem::path(dir) / L".gitignore";
-        std::error_code ecGi;
-        if (!std::filesystem::exists(gitignorePath, ecGi)) {
-            std::ofstream gi(gitignorePath);
-            gi << ".venv/\nvenv/\n__pycache__/\n*.py[cod]\nnode_modules/\nvendor/\n.env\n";
-            gi.close();
-            RefreshTree();
-        }
+        // Ensure context-aware .gitignore exists
+        EnsureContextAwareGitignore(dir);
+        RefreshTree();
 
         RunGitCmd(L"add -A", dir);
         if (!alive || !alive->load()) { finish(); return; }
@@ -5177,7 +5342,10 @@ void DrawerPanel::UncommitLastCommitAsync() {
     auto workers = m_activeWorkers;
     std::thread([this, alive, workers]() {
         if (workers) workers->fetch_add(1);
-        auto finish = [&]() { if (workers) workers->fetch_sub(1); };
+        auto finish = [&]() {
+            m_isGitLoading = false;
+            if (workers) workers->fetch_sub(1);
+        };
         if (!alive || !alive->load()) { finish(); return; }
         m_isGitLoading = true;
         std::wstring dir = m_openFolderPath.empty() ? L"." : m_openFolderPath;
@@ -5208,6 +5376,10 @@ void DrawerPanel::PushCommitsAsync() {
     auto workers = m_activeWorkers;
     std::thread([this, alive, workers]() {
         if (workers) workers->fetch_add(1);
+        auto finish = [&]() {
+            m_isGitLoading = false;
+            if (workers) workers->fetch_sub(1);
+        };
         try {
             if (alive && alive->load()) {
                 m_isGitLoading = true;
@@ -5218,7 +5390,7 @@ void DrawerPanel::PushCommitsAsync() {
                 }
             }
         } catch (...) {}
-        if (workers) workers->fetch_sub(1);
+        finish();
     }).detach();
 }
 
@@ -5227,6 +5399,10 @@ void DrawerPanel::PullCommitsAsync() {
     auto workers = m_activeWorkers;
     std::thread([this, alive, workers]() {
         if (workers) workers->fetch_add(1);
+        auto finish = [&]() {
+            m_isGitLoading = false;
+            if (workers) workers->fetch_sub(1);
+        };
         try {
             if (alive && alive->load()) {
                 m_isGitLoading = true;
@@ -5237,7 +5413,7 @@ void DrawerPanel::PullCommitsAsync() {
                 }
             }
         } catch (...) {}
-        if (workers) workers->fetch_sub(1);
+        finish();
     }).detach();
 }
 
@@ -5246,6 +5422,10 @@ void DrawerPanel::FetchAllRemotesAsync() {
     auto workers = m_activeWorkers;
     std::thread([this, alive, workers]() {
         if (workers) workers->fetch_add(1);
+        auto finish = [&]() {
+            m_isGitLoading = false;
+            if (workers) workers->fetch_sub(1);
+        };
         try {
             if (alive && alive->load()) {
                 m_isGitLoading = true;
@@ -5256,7 +5436,7 @@ void DrawerPanel::FetchAllRemotesAsync() {
                 }
             }
         } catch (...) {}
-        if (workers) workers->fetch_sub(1);
+        finish();
     }).detach();
 }
 
@@ -5265,6 +5445,10 @@ void DrawerPanel::StashChangesAsync() {
     auto workers = m_activeWorkers;
     std::thread([this, alive, workers]() {
         if (workers) workers->fetch_add(1);
+        auto finish = [&]() {
+            m_isGitLoading = false;
+            if (workers) workers->fetch_sub(1);
+        };
         try {
             if (alive && alive->load()) {
                 m_isGitLoading = true;
@@ -5275,7 +5459,7 @@ void DrawerPanel::StashChangesAsync() {
                 }
             }
         } catch (...) {}
-        if (workers) workers->fetch_sub(1);
+        finish();
     }).detach();
 }
 
@@ -5284,6 +5468,10 @@ void DrawerPanel::RunGarbageCollectionAsync() {
     auto workers = m_activeWorkers;
     std::thread([this, alive, workers]() {
         if (workers) workers->fetch_add(1);
+        auto finish = [&]() {
+            m_isGitLoading = false;
+            if (workers) workers->fetch_sub(1);
+        };
         try {
             if (alive && alive->load()) {
                 m_isGitLoading = true;
@@ -5304,7 +5492,7 @@ void DrawerPanel::RunGarbageCollectionAsync() {
                 }
             }
         } catch (...) {}
-        if (workers) workers->fetch_sub(1);
+        finish();
     }).detach();
 }
 
@@ -7488,15 +7676,9 @@ void DrawerPanel::ConfirmPublishRepo(int visibilityChoice) {
         RunGitCmd(L"config user.email \"dev@phide.local\"", dir);
     }
 
-    // Ensure root .gitignore exists and ignores .venv/
-    std::filesystem::path gitignorePath = std::filesystem::path(dir) / L".gitignore";
-    std::error_code ecGi;
-    if (!std::filesystem::exists(gitignorePath, ecGi)) {
-        std::ofstream gi(gitignorePath);
-        gi << ".venv/\nvenv/\n__pycache__/\n*.py[cod]\nnode_modules/\nvendor/\n.env\n";
-        gi.close();
-        RefreshTree();
-    }
+    // Ensure context-aware .gitignore exists
+    EnsureContextAwareGitignore(dir);
+    RefreshTree();
 
     RunGitCmd(L"add -A", dir);
 
@@ -7530,9 +7712,10 @@ void DrawerPanel::ConfirmPublishRepo(int visibilityChoice) {
     std::thread([this, alive, workers, dir, repoName, visStr]() {
         struct WorkerGuard {
             std::shared_ptr<std::atomic<int>> w;
-            WorkerGuard(std::shared_ptr<std::atomic<int>> ptr) : w(ptr) { if (w) w->fetch_add(1); }
-            ~WorkerGuard() { if (w) w->fetch_sub(1); }
-        } guard(workers);
+            std::atomic<bool>& gitLoading;
+            WorkerGuard(std::shared_ptr<std::atomic<int>> ptr, std::atomic<bool>& gl) : w(ptr), gitLoading(gl) { if (w) w->fetch_add(1); }
+            ~WorkerGuard() { gitLoading.store(false); if (w) w->fetch_sub(1); }
+        } guard(workers, m_isGitLoading);
 
         if (!alive || !alive->load()) return;
 

@@ -282,6 +282,9 @@ int main(int argc, char* argv[]) {
     if (targetTest == 70) {
         goto run_test_70;
     }
+    if (targetTest == 71) {
+        goto run_test_71;
+    }
 
     // --- 3. Render Test: Picture Viewer in Dark & Light Modes ---
     std::cout << "[TEST 2] Testing Picture Viewer rendering..." << std::endl;
@@ -9492,6 +9495,146 @@ run_test_70:
         std::filesystem::remove_all(testNodeDir, ecNode);
 
         std::cout << "  Passed: All [TEST 70] Package Manager and Git fixes passed successfully!" << std::endl;
+    }
+
+    // --- 71. Fast Tree-Based Context-Aware .gitignore Generation & Git Startup Loading Spinner Fix ---
+run_test_71:
+    if (targetTest == 0 || targetTest == 71) {
+        std::cout << "\n[TEST 71] Testing Fast Tree Context-Aware .gitignore Generation & Clean Startup Git Loading..." << std::endl;
+
+        // 1. Test ClearGitLoading and loading state management
+        phide::ui::DrawerPanel testDrawer;
+        assert(!testDrawer.IsGitLoading());
+        testDrawer.ClearGitLoading();
+        assert(!testDrawer.IsGitLoading());
+        std::cout << "  Passed: DrawerPanel::ClearGitLoading() guarantees isGitLoading == false." << std::endl;
+
+        // 2. Test Context-Aware .gitignore on pure PHP project (like php-student-crud)
+        std::filesystem::path testPhpDir = std::filesystem::path(L"bin") / L"test_php_crud";
+        std::error_code ecPhp;
+        std::filesystem::remove_all(testPhpDir, ecPhp);
+        std::filesystem::create_directories(testPhpDir / L"app", ecPhp);
+        {
+            std::ofstream f(testPhpDir / L"index.php");
+            f << "<?php echo 'Hello CRUD'; ?>\n";
+        }
+        {
+            std::ofstream f(testPhpDir / L"composer.json");
+            f << "{\n  \"name\": \"student/crud\"\n}\n";
+        }
+
+        std::string phpGi = phide::ui::DrawerPanel::GenerateContextAwareGitignore(testPhpDir.wstring());
+        std::cout << "--- Generated .gitignore for pure PHP project ---\n" << phpGi << "------------------------------------------------" << std::endl;
+        
+        // Assert PHP rules exist
+        assert(phpGi.find("vendor/") != std::string::npos);
+        assert(phpGi.find("composer.phar") != std::string::npos);
+        assert(phpGi.find(".env") != std::string::npos);
+
+        // CRITICAL: MUST NOT contain Python or Node ignores when there are NO Python/Node files!
+        assert(phpGi.find(".venv/") == std::string::npos);
+        assert(phpGi.find("venv/") == std::string::npos);
+        assert(phpGi.find("__pycache__/") == std::string::npos);
+        assert(phpGi.find("*.py[cod]") == std::string::npos);
+        assert(phpGi.find("node_modules/") == std::string::npos);
+        std::cout << "  Passed: Pure PHP project generated ONLY PHP rules with NO .venv/ or node_modules/." << std::endl;
+
+        // 3. Test Context-Aware .gitignore on pure Python project
+        std::filesystem::path testPyDir = std::filesystem::path(L"bin") / L"test_py_proj";
+        std::error_code ecPy;
+        std::filesystem::remove_all(testPyDir, ecPy);
+        std::filesystem::create_directories(testPyDir, ecPy);
+        {
+            std::ofstream f(testPyDir / L"main.py");
+            f << "import flask\n";
+        }
+        {
+            std::ofstream f(testPyDir / L"requirements.txt");
+            f << "flask>=3.0.0\n";
+        }
+
+        std::string pyGi = phide::ui::DrawerPanel::GenerateContextAwareGitignore(testPyDir.wstring());
+        assert(pyGi.find(".venv/") != std::string::npos);
+        assert(pyGi.find("venv/") != std::string::npos);
+        assert(pyGi.find("__pycache__/") != std::string::npos);
+        assert(pyGi.find("*.py[cod]") != std::string::npos);
+        assert(pyGi.find(".env") != std::string::npos);
+        assert(pyGi.find("vendor/") == std::string::npos);
+        assert(pyGi.find("node_modules/") == std::string::npos);
+        std::cout << "  Passed: Pure Python project generated ONLY Python rules with NO vendor/ or node_modules/." << std::endl;
+
+        // 4. Test Context-Aware .gitignore on pure Node project
+        std::filesystem::path testNodeDir = std::filesystem::path(L"bin") / L"test_node_proj71";
+        std::error_code ecNode;
+        std::filesystem::remove_all(testNodeDir, ecNode);
+        std::filesystem::create_directories(testNodeDir, ecNode);
+        {
+            std::ofstream f(testNodeDir / L"index.js");
+            f << "console.log('hello');\n";
+        }
+        {
+            std::ofstream f(testNodeDir / L"package.json");
+            f << "{\n  \"name\": \"my-app\"\n}\n";
+        }
+
+        std::string nodeGi = phide::ui::DrawerPanel::GenerateContextAwareGitignore(testNodeDir.wstring());
+        assert(nodeGi.find("node_modules/") != std::string::npos);
+        assert(nodeGi.find("npm-debug.log*") != std::string::npos);
+        assert(nodeGi.find(".env") != std::string::npos);
+        assert(nodeGi.find(".venv/") == std::string::npos);
+        assert(nodeGi.find("vendor/") == std::string::npos);
+        std::cout << "  Passed: Pure Node project generated ONLY Node rules with NO .venv/ or vendor/." << std::endl;
+
+        // 5. Test EnsureContextAwareGitignore creates the file properly
+        phide::ui::DrawerPanel::EnsureContextAwareGitignore(testPhpDir.wstring());
+        std::filesystem::path createdGitignore = testPhpDir / L".gitignore";
+        assert(std::filesystem::exists(createdGitignore));
+        std::ifstream inGi(createdGitignore);
+        std::string fileContent((std::istreambuf_iterator<char>(inGi)), std::istreambuf_iterator<char>());
+        assert(fileContent == phpGi);
+        std::cout << "  Passed: EnsureContextAwareGitignore created the exact tailored .gitignore on disk." << std::endl;
+
+        // 6. Visual Snapshot of Activity Rail and Explorer Drawer with clean loading state and .gitignore
+        const UINT snapW = 1200;
+        const UINT snapH = 800;
+        ComPtr<IWICBitmap> pWicSnap71;
+        pWicFactory->CreateBitmap(snapW, snapH, GUID_WICPixelFormat32bppPBGRA, WICBitmapCacheOnDemand, &pWicSnap71);
+        D2D1_RENDER_TARGET_PROPERTIES rtProps = D2D1::RenderTargetProperties(
+            D2D1_RENDER_TARGET_TYPE_DEFAULT,
+            D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED)
+        );
+        ComPtr<ID2D1RenderTarget> pRTSnap71;
+        pD2DFactory->CreateWicBitmapRenderTarget(pWicSnap71.Get(), rtProps, &pRTSnap71);
+
+        phide::ui::Theme theme;
+        theme.SetThemeMode(phide::ui::ThemeMode::Dark);
+        HRESULT hrTheme = theme.CreateDeviceResources(pRTSnap71.Get(), pDWriteFactory.Get());
+        assert(SUCCEEDED(hrTheme));
+
+        phide::ui::ActivityRail rail71;
+        phide::ui::DrawerPanel drawer71;
+        rail71.SetGitLoading(false);
+        assert(!rail71.IsGitLoading());
+
+        drawer71.OpenFolder(testPhpDir.wstring());
+        pRTSnap71->BeginDraw();
+        pRTSnap71->Clear(D2D1::ColorF(0x18181b));
+        rail71.Render(pRTSnap71.Get(), theme, config, static_cast<float>(snapH));
+        drawer71.Render(pRTSnap71.Get(), theme, config, static_cast<float>(snapH), 320.0f);
+        HRESULT hr71 = pRTSnap71->EndDraw();
+        assert(SUCCEEDED(hr71));
+
+        std::wstring snap71Path = artDir + L"test_context_aware_gitignore_and_clean_git_loading.png";
+        SaveWicBitmapToPng(pWicSnap71.Get(), pWicFactory.Get(), snap71Path);
+        assert(std::filesystem::exists(snap71Path));
+        std::wcout << L"  Passed: Saved visual verification snapshot to: " << snap71Path << std::endl;
+
+        // Cleanup temp directories
+        std::filesystem::remove_all(testPhpDir, ecPhp);
+        std::filesystem::remove_all(testPyDir, ecPy);
+        std::filesystem::remove_all(testNodeDir, ecNode);
+
+        std::cout << "  Passed: All [TEST 71] Context-Aware .gitignore and Git Startup Loading tests passed!" << std::endl;
     }
 
     std::cout << "\n==========================================" << std::endl;

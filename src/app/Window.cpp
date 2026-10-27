@@ -599,6 +599,8 @@ void Window::LoadSessionState() {
 
     // Always default to Explorer (tab 0) on startup, even if in Source Control prior to exit (User requirement)
     m_config.activeRailTab = 0;
+    m_rail.SetGitLoading(false);
+    m_drawer.ClearGitLoading();
     if (savedGitSplitY > 100.0f) {
         m_config.gitSplitY = savedGitSplitY;
         m_drawer.SetGitSplitY(savedGitSplitY, 100.0f, 2000.0f);
@@ -623,7 +625,9 @@ void Window::LoadSessionState() {
             m_drawer.OpenFolder(lastOpenFolder, &expandedDirs);
             m_workspace.OpenWorkspace(lastOpenFolder);
             m_intelliSense.SetWorkspaceRoot(lastOpenFolder);
-            m_drawer.RefreshGitState(true);
+            m_drawer.ClearGitLoading();
+            m_rail.SetGitLoading(false);
+            m_drawer.RefreshGitState(true, false);
             m_editor.GetPackageManagerView().ScanInstalledPackages(lastOpenFolder);
         }
 
@@ -1470,7 +1474,9 @@ void Window::DoOpenFolderFromPath(const std::wstring& path) {
     m_drawer.OpenFolder(path);
     m_workspace.OpenWorkspace(path);
     m_intelliSense.SetWorkspaceRoot(path);
-    m_drawer.RefreshGitState(true);
+    m_drawer.ClearGitLoading();
+    m_rail.SetGitLoading(false);
+    m_drawer.RefreshGitState(true, false);
     m_editor.GetPackageManagerView().ScanInstalledPackages(path);
     StartWorkspaceWatcher(path);
 
@@ -4973,8 +4979,10 @@ bool Window::Create(HINSTANCE hInstance, int nCmdShow) {
     // Restore saved IDE session state (open folder, expanded tree dirs, open file, sidebar open/close state)
     LoadSessionState();
 
-    // Trigger Source Control to load immediately in background on app startup (User requirement)
-    m_drawer.RefreshGitState(true);
+    // Trigger Source Control to load immediately in background on app startup (User requirement: no stuck spinning animation)
+    m_rail.SetGitLoading(false);
+    m_drawer.ClearGitLoading();
+    m_drawer.RefreshGitState(true, false);
 
     if (m_drawer.HasOpenFolder()) {
         m_editor.GetPackageManagerView().ScanInstalledPackages(m_drawer.GetOpenFolderPath());
@@ -10105,9 +10113,11 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 bool isGitLoading = m_drawer.IsGitLoading();
                 if (isGitLoading) {
                     if (s_gitLoadingStartTime == 0) s_gitLoadingStartTime = now;
-                    // Watchdog safety timeout: clear stuck loading state after 4 seconds
-                    if (now - s_gitLoadingStartTime > 4000) {
+                    // Watchdog safety timeout: clear stuck loading state after 2.5 seconds
+                    if (now - s_gitLoadingStartTime > 2500) {
                         isGitLoading = false;
+                        m_drawer.ClearGitLoading();
+                        m_rail.SetGitLoading(false);
                         s_gitLoadingStartTime = 0;
                     }
                 } else {
