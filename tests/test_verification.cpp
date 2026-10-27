@@ -8965,19 +8965,24 @@ run_test_70:
         assert(std::filesystem::exists(snapHudPath));
         std::wcout << L"  Passed: Saved Floating Processes HUD Card snapshot to: " << snapHudPath << std::endl;
 
-        // 18. Test Python Versions Preservation (3.15 and 3.14 both present in environments, User Image 4)
+        // 18. Test Python Versions Dynamic Detection (3.15.1 is Global System, uninstalled versions do not reappear)
         extPanel.RefreshPcStatus();
         const auto& items = extPanel.GetItems();
         assert(!items.empty());
         assert(items[0].id == L"python");
-        bool has314 = false, has315 = false;
+        assert(items[0].installedVersion == L"3.15.1");
+        assert(!items[0].environments.empty());
+        assert(items[0].environments[0].name == L"Python 3.15.1 (Global System)");
+        bool has3151 = false, has314 = false, has313 = false;
         for (const auto& env : items[0].environments) {
-            if (env.name.find(L"3.14") != std::wstring::npos || env.path.find(L"3.14") != std::wstring::npos) has314 = true;
-            if (env.name.find(L"3.15") != std::wstring::npos || env.path.find(L"3.15") != std::wstring::npos) has315 = true;
+            if (env.name.find(L"3.15.1") != std::wstring::npos) has3151 = true;
+            if (env.name.find(L"3.14") != std::wstring::npos) has314 = true;
+            if (env.name.find(L"3.13") != std::wstring::npos) has313 = true;
         }
-        assert(has314);
-        assert(has315);
-        std::cout << "  Passed: Both Python 3.15 and 3.14 environments preserved and active." << std::endl;
+        assert(has3151);
+        assert(!has314);
+        assert(!has313);
+        std::cout << "  Passed: Python 3.15.1 is Global System; uninstalled 3.13.9 and 3.14.7 do not reappear." << std::endl;
 
         // 19. Visual Render Test: Language Grid with NO version numbers (User Image 5)
         pkgView.NavigateBackToLanguages();

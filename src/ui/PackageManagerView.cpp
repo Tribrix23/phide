@@ -141,8 +141,17 @@ void PackageManagerView::DetectInstalledRuntimes() {
     pyCard.version.clear();
 
     wchar_t pyFound[MAX_PATH] = { 0 };
-    if (SearchPathW(nullptr, L"python.exe", nullptr, MAX_PATH, pyFound, nullptr) > 0 ||
-        SearchPathW(nullptr, L"py.exe", nullptr, MAX_PATH, pyFound, nullptr) > 0) {
+    std::error_code ecPyFound;
+    bool foundValidPy = false;
+    if (SearchPathW(nullptr, L"python.exe", nullptr, MAX_PATH, pyFound, nullptr) > 0 &&
+        std::wstring(pyFound).find(L"WindowsApps") == std::wstring::npos &&
+        std::filesystem::exists(pyFound, ecPyFound) && !ecPyFound) {
+        foundValidPy = true;
+    } else if (SearchPathW(nullptr, L"py.exe", nullptr, MAX_PATH, pyFound, nullptr) > 0 &&
+               std::filesystem::exists(pyFound, ecPyFound) && !ecPyFound) {
+        foundValidPy = true;
+    }
+    if (foundValidPy) {
         pyCard.isInstalled = true;
         pyCard.executable = pyFound;
     } else {

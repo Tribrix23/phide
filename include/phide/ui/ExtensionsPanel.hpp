@@ -90,7 +90,7 @@ public:
     };
 
     ExtensionsPanel();
-    ~ExtensionsPanel() = default;
+    ~ExtensionsPanel();
 
     void Open() noexcept;
     void Close() noexcept { m_isOpen = false; m_showVersionDropdown = false; }
@@ -211,6 +211,8 @@ private:
     bool m_isMinBtnHovered = false;
     float m_processAnimProgress = 0.0f;
     bool m_attemptedSupabaseFetch = false;
+    std::shared_ptr<bool> m_aliveFlag = std::make_shared<bool>(true);
+    std::shared_ptr<std::mutex> m_aliveMutex = std::make_shared<std::mutex>();
     Microsoft::WRL::ComPtr<IDWriteTextFormat> m_pHeaderFormat;
     Microsoft::WRL::ComPtr<IDWriteTextFormat> m_pBoldFormat;
     Microsoft::WRL::ComPtr<IDWriteTextFormat> m_pDescFormat;
