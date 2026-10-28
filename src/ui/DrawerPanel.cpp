@@ -5794,6 +5794,10 @@ bool DrawerPanel::HitTestGit(POINT pt, const app::AppConfig& config,
             if (m_isCommitEditMsgOpen) {
                 return true; // Button disabled and locked while COMMIT_EDITMSG is open
             }
+            if (!IsGitHubLoggedIn()) {
+                OpenGitHubLoginModal();
+                return true;
+            }
             if (!m_isGitRepo || (!m_gitChanges.empty() && m_gitCommits.empty())) {
                 OpenPublishRepoModal();
                 return true;
@@ -6192,6 +6196,10 @@ void DrawerPanel::HandleGitKeyDown(WPARAM wParam) {
         }
     } else if (wParam == VK_RETURN) {
         if (GetKeyState(VK_CONTROL) & 0x8000) {
+            if (!IsGitHubLoggedIn()) {
+                OpenGitHubLoginModal();
+                return;
+            }
             if (!m_isGitRepo || (!m_gitChanges.empty() && m_gitCommits.empty())) {
                 OpenPublishRepoModal();
                 return;
@@ -7726,7 +7734,7 @@ void DrawerPanel::RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, 
     // =========================================================================
     // 6. Floating Tooltip Rendering (Only when menus are closed)
     // =========================================================================
-    if (m_showGitTooltip && !m_gitTooltipText.empty() && m_activeGitMenu == GitMenuType::None && !m_isPublishModalOpen) {
+    if (m_showGitTooltip && !m_gitTooltipText.empty() && m_activeGitMenu == GitMenuType::None && !m_isPublishModalOpen && !m_isGitHubLoginModalOpen) {
         float tipPadX = config.ScaleF(10.0f);
         float tipPadY = config.ScaleF(5.0f);
         float measuredW = 0.0f;
@@ -7800,6 +7808,11 @@ void DrawerPanel::OpenPublishRepoModal() {
 }
 
 void DrawerPanel::ConfirmPublishRepo(int visibilityChoice) {
+    if (!IsGitHubLoggedIn()) {
+        m_isPublishModalOpen = false;
+        OpenGitHubLoginModal();
+        return;
+    }
     m_publishedVisibility = (visibilityChoice == 1) ? 1 : 0;
     m_isPublishModalOpen = false;
 
@@ -8143,6 +8156,239 @@ bool DrawerPanel::HandlePublishRepoChar(wchar_t ch) {
         if (ch == L' ') ch = L'-';
         m_publishRepoName.push_back(ch);
     }
+    return true;
+}
+
+void DrawerPanel::RenderGitHubLoginModal(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config, float clientW, float clientH) {
+    if (!m_isGitHubLoginModalOpen || !pRT) return;
+
+    // 1. Semi-transparent backdrop dim overlay
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushBackdrop;
+    pRT->CreateSolidColorBrush(D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.45f), &brushBackdrop);
+    if (brushBackdrop) {
+        pRT->FillRectangle(D2D1::RectF(0.0f, 0.0f, clientW, clientH), brushBackdrop.Get());
+    }
+
+    // 2. Centered Modal Geometry (Flat Design)
+    const float modalW = config.ScaleF(460.0f);
+    const float modalH = config.ScaleF(190.0f);
+    const float left   = (clientW - modalW) * 0.5f;
+    const float top    = (clientH - modalH) * 0.38f;
+
+    m_gitHubLoginModalBounds = D2D1::RectF(left, top, left + modalW, top + modalH);
+
+    // Subtle drop shadow
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushShadow;
+    pRT->CreateSolidColorBrush(D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.60f), &brushShadow);
+    if (brushShadow) {
+        D2D1_RECT_F rcShadow = D2D1::RectF(left - 3.0f, top + 4.0f, left + modalW + 3.0f, top + modalH + 8.0f);
+        pRT->FillRoundedRectangle(D2D1::RoundedRect(rcShadow, 8.0f, 8.0f), brushShadow.Get());
+    }
+
+    // Flat Modal Card Surface (#1E1E22 with #33333A border)
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushModalBg;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushModalBorder;
+    pRT->CreateSolidColorBrush(D2D1::ColorF(0.12f, 0.12f, 0.14f, 1.0f), &brushModalBg);
+    pRT->CreateSolidColorBrush(D2D1::ColorF(0.24f, 0.24f, 0.28f, 1.0f), &brushModalBorder);
+
+    D2D1_ROUNDED_RECT rrcModal = D2D1::RoundedRect(m_gitHubLoginModalBounds, 6.0f, 6.0f);
+    if (brushModalBg) pRT->FillRoundedRectangle(rrcModal, brushModalBg.Get());
+    if (brushModalBorder) pRT->DrawRoundedRectangle(rrcModal, brushModalBorder.Get(), 1.0f);
+
+    const float padX = config.ScaleF(20.0f);
+    float curY = top + config.ScaleF(16.0f);
+
+    // 3. Header Row: GitHub Icon + Title "Login to GitHub" + Close 'X' Button
+    IDWriteTextFormat* pFmtTitle = theme.fontTitle.Get() ? theme.fontTitle.Get() : theme.fontButtonCenter.Get();
+    IDWriteTextFormat* pFmtBody  = theme.fontMenuItem.Get() ? theme.fontMenuItem.Get() : theme.fontBody.Get();
+
+    // GitHub Brand Icon / Circle Glyph
+    const float iconSize = config.ScaleF(22.0f);
+    D2D1_RECT_F rcIcon = D2D1::RectF(left + padX, curY, left + padX + iconSize, curY + iconSize);
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushIconBg;
+    pRT->CreateSolidColorBrush(D2D1::ColorF(0.20f, 0.20f, 0.24f, 1.0f), &brushIconBg);
+    if (brushIconBg) {
+        pRT->FillRoundedRectangle(D2D1::RoundedRect(rcIcon, 4.0f, 4.0f), brushIconBg.Get());
+    }
+    pRT->DrawText(L"GH", 2, theme.fontHint.Get() ? theme.fontHint.Get() : pFmtBody, rcIcon, theme.brushTextPrimary.Get());
+
+    // Title: "Login to GitHub"
+    D2D1_RECT_F rcTitle = D2D1::RectF(left + padX + iconSize + config.ScaleF(10.0f), curY - config.ScaleF(1.0f), left + modalW - config.ScaleF(40.0f), curY + iconSize + config.ScaleF(4.0f));
+    const wchar_t* titleStr = L"Login to GitHub";
+    pRT->DrawText(titleStr, static_cast<UINT32>(wcslen(titleStr)), pFmtTitle, rcTitle, theme.brushTextPrimary.Get());
+
+    // Close button 'X'
+    const float closeBtnSize = config.ScaleF(22.0f);
+    m_gitHubLoginCloseBtnBounds = D2D1::RectF(
+        left + modalW - padX - closeBtnSize + config.ScaleF(6.0f),
+        curY,
+        left + modalW - padX + config.ScaleF(6.0f),
+        curY + closeBtnSize
+    );
+    if (m_gitHubLoginHoveredBtn == 2) {
+        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushCloseHover;
+        pRT->CreateSolidColorBrush(D2D1::ColorF(0.28f, 0.28f, 0.32f, 1.0f), &brushCloseHover);
+        if (brushCloseHover) {
+            pRT->FillRoundedRectangle(D2D1::RoundedRect(m_gitHubLoginCloseBtnBounds, 3.0f, 3.0f), brushCloseHover.Get());
+        }
+    }
+    pRT->DrawText(L"\x2715", 1, theme.fontButtonCenter.Get() ? theme.fontButtonCenter.Get() : pFmtBody, m_gitHubLoginCloseBtnBounds, theme.brushTextMuted.Get());
+
+    curY += iconSize + config.ScaleF(12.0f);
+
+    // Subtle divider
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushDivider;
+    pRT->CreateSolidColorBrush(D2D1::ColorF(0.20f, 0.20f, 0.24f, 1.0f), &brushDivider);
+    if (brushDivider) {
+        pRT->DrawLine(
+            D2D1::Point2F(left + padX, curY),
+            D2D1::Point2F(left + modalW - padX, curY),
+            brushDivider.Get(),
+            1.0f
+        );
+    }
+
+    curY += config.ScaleF(14.0f);
+
+    // 4. Description Body Text
+    D2D1_RECT_F rcDesc1 = D2D1::RectF(left + padX, curY, left + modalW - padX, curY + config.ScaleF(20.0f));
+    const wchar_t* desc1 = L"You need to log in to your GitHub account before committing.";
+    pRT->DrawText(desc1, static_cast<UINT32>(wcslen(desc1)), pFmtBody, rcDesc1, theme.brushTextPrimary.Get());
+    curY += config.ScaleF(20.0f);
+
+    D2D1_RECT_F rcDesc2 = D2D1::RectF(left + padX, curY, left + modalW - padX, curY + config.ScaleF(18.0f));
+    const wchar_t* desc2 = L"Uncommitted files remain untracked until authentication completes.";
+    pRT->DrawText(desc2, static_cast<UINT32>(wcslen(desc2)), theme.fontHint.Get() ? theme.fontHint.Get() : pFmtBody, rcDesc2, theme.brushTextMuted.Get());
+
+    // 5. Action Buttons (Flat Design): Cancel and Continue
+    const float btnH = config.ScaleF(32.0f);
+    const float btnW = config.ScaleF(95.0f);
+    const float btnY = top + modalH - btnH - config.ScaleF(16.0f);
+
+    // Cancel Button (Flat subtle)
+    m_gitHubLoginCancelBtnBounds = D2D1::RectF(
+        left + modalW - padX - (btnW * 2.0f) - config.ScaleF(10.0f),
+        btnY,
+        left + modalW - padX - btnW - config.ScaleF(10.0f),
+        btnY + btnH
+    );
+    D2D1_ROUNDED_RECT rrcCancel = D2D1::RoundedRect(m_gitHubLoginCancelBtnBounds, 4.0f, 4.0f);
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushCancelBg;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushCancelBorder;
+    if (m_gitHubLoginHoveredBtn == 0) {
+        pRT->CreateSolidColorBrush(D2D1::ColorF(0.25f, 0.25f, 0.28f, 1.0f), &brushCancelBg);
+    } else {
+        pRT->CreateSolidColorBrush(D2D1::ColorF(0.18f, 0.18f, 0.21f, 1.0f), &brushCancelBg);
+    }
+    pRT->CreateSolidColorBrush(D2D1::ColorF(0.30f, 0.30f, 0.35f, 1.0f), &brushCancelBorder);
+    if (brushCancelBg) pRT->FillRoundedRectangle(rrcCancel, brushCancelBg.Get());
+    if (brushCancelBorder) pRT->DrawRoundedRectangle(rrcCancel, brushCancelBorder.Get(), 1.0f);
+
+    const wchar_t* cancelText = L"Cancel";
+    pRT->DrawText(cancelText, static_cast<UINT32>(wcslen(cancelText)),
+                  theme.fontButtonCenter.Get() ? theme.fontButtonCenter.Get() : pFmtBody,
+                  m_gitHubLoginCancelBtnBounds, theme.brushTextPrimary.Get());
+
+    // Continue Button (Primary Flat Blue)
+    m_gitHubLoginContinueBtnBounds = D2D1::RectF(
+        left + modalW - padX - btnW,
+        btnY,
+        left + modalW - padX,
+        btnY + btnH
+    );
+    D2D1_ROUNDED_RECT rrcContinue = D2D1::RoundedRect(m_gitHubLoginContinueBtnBounds, 4.0f, 4.0f);
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushContinueBg;
+    if (m_gitHubLoginHoveredBtn == 1) {
+        pRT->CreateSolidColorBrush(D2D1::ColorF(0.08f, 0.52f, 0.88f, 1.0f), &brushContinueBg);
+    } else {
+        pRT->CreateSolidColorBrush(D2D1::ColorF(0.00f, 0.47f, 0.83f, 1.0f), &brushContinueBg);
+    }
+    if (brushContinueBg) pRT->FillRoundedRectangle(rrcContinue, brushContinueBg.Get());
+
+    const wchar_t* contText = L"Continue";
+    pRT->DrawText(contText, static_cast<UINT32>(wcslen(contText)),
+                  theme.fontButtonCenter.Get() ? theme.fontButtonCenter.Get() : pFmtBody,
+                  m_gitHubLoginContinueBtnBounds, theme.brushTextPrimary.Get());
+}
+
+bool DrawerPanel::HandleGitHubLoginMouseMove(POINT pt) {
+    if (!m_isGitHubLoginModalOpen) return false;
+    int oldHover = m_gitHubLoginHoveredBtn;
+    m_gitHubLoginHoveredBtn = -1;
+
+    if (pt.x >= m_gitHubLoginCancelBtnBounds.left && pt.x <= m_gitHubLoginCancelBtnBounds.right &&
+        pt.y >= m_gitHubLoginCancelBtnBounds.top && pt.y <= m_gitHubLoginCancelBtnBounds.bottom) {
+        m_gitHubLoginHoveredBtn = 0;
+    } else if (pt.x >= m_gitHubLoginContinueBtnBounds.left && pt.x <= m_gitHubLoginContinueBtnBounds.right &&
+               pt.y >= m_gitHubLoginContinueBtnBounds.top && pt.y <= m_gitHubLoginContinueBtnBounds.bottom) {
+        m_gitHubLoginHoveredBtn = 1;
+    } else if (pt.x >= m_gitHubLoginCloseBtnBounds.left && pt.x <= m_gitHubLoginCloseBtnBounds.right &&
+               pt.y >= m_gitHubLoginCloseBtnBounds.top && pt.y <= m_gitHubLoginCloseBtnBounds.bottom) {
+        m_gitHubLoginHoveredBtn = 2;
+    }
+
+    return oldHover != m_gitHubLoginHoveredBtn;
+}
+
+bool DrawerPanel::HandleGitHubLoginMouseDown(POINT pt) {
+    if (!m_isGitHubLoginModalOpen) return false;
+
+    // 1. Cancel Button
+    if (pt.x >= m_gitHubLoginCancelBtnBounds.left && pt.x <= m_gitHubLoginCancelBtnBounds.right &&
+        pt.y >= m_gitHubLoginCancelBtnBounds.top && pt.y <= m_gitHubLoginCancelBtnBounds.bottom) {
+        CloseGitHubLoginModal();
+        return true;
+    }
+
+    // 2. Continue Button
+    if (pt.x >= m_gitHubLoginContinueBtnBounds.left && pt.x <= m_gitHubLoginContinueBtnBounds.right &&
+        pt.y >= m_gitHubLoginContinueBtnBounds.top && pt.y <= m_gitHubLoginContinueBtnBounds.bottom) {
+        CloseGitHubLoginModal();
+        if (m_onRequireGitHubLogin) {
+            m_onRequireGitHubLogin();
+        }
+        return true;
+    }
+
+    // 3. Close 'X' Button
+    if (pt.x >= m_gitHubLoginCloseBtnBounds.left && pt.x <= m_gitHubLoginCloseBtnBounds.right &&
+        pt.y >= m_gitHubLoginCloseBtnBounds.top && pt.y <= m_gitHubLoginCloseBtnBounds.bottom) {
+        CloseGitHubLoginModal();
+        return true;
+    }
+
+    // 4. Click inside modal card (swallow click)
+    if (pt.x >= m_gitHubLoginModalBounds.left && pt.x <= m_gitHubLoginModalBounds.right &&
+        pt.y >= m_gitHubLoginModalBounds.top && pt.y <= m_gitHubLoginModalBounds.bottom) {
+        return true;
+    }
+
+    // 5. Click outside card dismisses modal
+    CloseGitHubLoginModal();
+    return true;
+}
+
+bool DrawerPanel::HandleGitHubLoginKeyDown(WPARAM wParam) {
+    if (!m_isGitHubLoginModalOpen) return false;
+
+    if (wParam == VK_ESCAPE) {
+        CloseGitHubLoginModal();
+        return true;
+    }
+
+    if (wParam == VK_RETURN) {
+        CloseGitHubLoginModal();
+        if (m_onRequireGitHubLogin) {
+            m_onRequireGitHubLogin();
+        }
+        return true;
+    }
+
+    if (wParam == VK_TAB) {
+        m_gitHubLoginHoveredBtn = (m_gitHubLoginHoveredBtn == 1) ? 0 : 1;
+        return true;
+    }
+
     return true;
 }
 

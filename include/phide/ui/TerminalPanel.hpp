@@ -185,6 +185,12 @@ struct TerminalTab {
     std::mutex bufferMutex;
     std::function<void()> onOutput;
 
+    // GitHub CLI Auth Login session state
+    bool isGitHubLoginTab = false;
+    bool gitHubAuthCompleted = false;
+    std::wstring gitHubAuthUser;
+    std::wstring gitHubLoginCode;
+
     // Split Terminal support (Image 4 & 5)
     std::unique_ptr<TerminalTab> splitTab;
     float splitRatio = 0.5f;
@@ -251,6 +257,10 @@ public:
     void OpenLogTab(const std::wstring& logTitle, const std::vector<std::wstring>& logLines);
     void OpenGitLogTab(const std::vector<std::wstring>& logLines);
     void AppendGitLogLines(const std::vector<std::wstring>& newLines);
+    void OpenGitHubLoginTab(const std::wstring& workingDir = L"");
+    void TriggerGitHubLoginEnter();
+    [[nodiscard]] bool IsGitHubLoginActive() const noexcept;
+    void SetOnGitHubAuthSuccess(std::function<void(const std::wstring&)> cb) { m_onGitHubAuthSuccess = std::move(cb); }
     void StartLiveServerSession(const std::wstring& localUrl, const std::wstring& networkUrl, const std::wstring& filePath = L"", const std::wstring& fileName = L"");
     void StartServerSession(const std::wstring& serverTitle, const std::wstring& command, const std::wstring& workingDir, const std::wstring& projectRoot);
     void TerminateServerSession(const std::wstring& projectRoot);
@@ -400,6 +410,7 @@ private:
     mutable std::vector<TerminalUrlHit> m_visibleUrls;
     std::function<void(const std::wstring&)> m_onLiveServerTabClosed;
     std::function<void(const std::wstring&, const std::wstring&)> m_onServerError;
+    std::function<void(const std::wstring&)> m_onGitHubAuthSuccess;
     std::function<void()> m_onMinimize;
     std::function<void(bool)> m_onToggleFullScreen;
     float m_fullScreenProgress = 0.0f;

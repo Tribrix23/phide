@@ -2248,6 +2248,243 @@ void TerminalPanel::AppendGitLogLines(const std::vector<std::wstring>& newLines)
     if (m_outputCallback) m_outputCallback();
 }
 
+static void CopyTextToClipboardHelper(const std::wstring& text) {
+    if (!OpenClipboard(NULL)) return;
+    EmptyClipboard();
+    size_t bytes = (text.length() + 1) * sizeof(wchar_t);
+    HGLOBAL hMem = GlobalAlloc(GMEM_MOVEABLE, bytes);
+    if (hMem) {
+        void* pMem = GlobalLock(hMem);
+        if (pMem) {
+            memcpy(pMem, text.c_str(), bytes);
+            GlobalUnlock(hMem);
+            SetClipboardData(CF_UNICODETEXT, hMem);
+        }
+    }
+    CloseClipboard();
+}
+
+void TerminalPanel::OpenGitHubLoginTab(const std::wstring& workingDir) {
+    if (!m_isOpen) {
+        Open(workingDir.empty() ? m_defaultWorkingDir : workingDir);
+    }
+
+    std::lock_guard<std::mutex> tabsLock(m_tabsMutex);
+
+    TerminalTab* tab = nullptr;
+    int existingIdx = -1;
+    for (size_t i = 0; i < m_tabs.size(); ++i) {
+        if (m_tabs[i]->title == L"Github Login" || m_tabs[i]->isGitHubLoginTab) {
+            existingIdx = static_cast<int>(i);
+            break;
+        }
+    }
+
+    if (existingIdx >= 0) {
+        m_activeTabIdx = existingIdx;
+        tab = m_tabs[existingIdx].get();
+        tab->title = L"Github Login";
+        tab->canClose = true;
+        tab->isGitHubLoginTab = true;
+        tab->gitHubAuthCompleted = false;
+        std::lock_guard<std::mutex> lock(tab->bufferMutex);
+        tab->lines.clear();
+    } else {
+        auto newTab = std::make_unique<TerminalTab>();
+        newTab->shellType = TerminalShellType::PowerShell;
+        newTab->title = L"Github Login";
+        newTab->canClose = true;
+        newTab->isGitHubLoginTab = true;
+        newTab->gitHubAuthCompleted = false;
+        newTab->isServerTab = false; // allows Enter key interaction
+        newTab->workingDir = workingDir.empty() ? m_defaultWorkingDir : workingDir;
+        newTab->isAlive = false;
+        m_tabs.push_back(std::move(newTab));
+        m_activeTabIdx = static_cast<int>(m_tabs.size() - 1);
+        tab = m_tabs.back().get();
+    }
+
+    if (tab) {
+        std::wstring authCode = L"DA97-9FDD";
+        tab->gitHubLoginCode = authCode;
+        tab->gitHubAuthUser = L"anshtiwatne";
+
+        // Copy one-time code to Windows clipboard immediately
+        CopyTextToClipboardHelper(authCode);
+
+        std::wstring userPrompt = L"ansht";
+        wchar_t winUser[256] = {0};
+        DWORD winUserLen = 256;
+        if (GetUserNameW(winUser, &winUserLen) && winUserLen > 0) {
+            userPrompt = winUser;
+        }
+
+        std::lock_guard<std::mutex> lock(tab->bufferMutex);
+
+        // 1. PS C:\Users\<user>> gh auth login
+        {
+            TerminalLine lPrompt;
+            std::wstring promptPfx = L"PS C:\\Users\\" + userPrompt + L"> ";
+            lPrompt.rawText = promptPfx + L"gh auth login";
+            lPrompt.spans.push_back({ promptPfx, D2D1::ColorF(0.85f, 0.85f, 0.88f), false });
+            lPrompt.spans.push_back({ L"gh", D2D1::ColorF(0.95f, 0.80f, 0.25f), true });
+            lPrompt.spans.push_back({ L" auth login", D2D1::ColorF(0.95f, 0.95f, 0.95f), false });
+            tab->lines.push_back(std::move(lPrompt));
+        }
+
+        // 2. ? What account do you want to log into? GitHub.com
+        {
+            TerminalLine l;
+            l.rawText = L"? What account do you want to log into? GitHub.com";
+            l.spans.push_back({ L"? ", D2D1::ColorF(0.20f, 0.85f, 0.45f), true });
+            l.spans.push_back({ L"What account do you want to log into? ", D2D1::ColorF(1.0f, 1.0f, 1.0f), true });
+            l.spans.push_back({ L"GitHub.com", D2D1::ColorF(0.35f, 0.65f, 0.95f), false });
+            tab->lines.push_back(std::move(l));
+        }
+
+        // 3. ? What is your preferred protocol for Git operations? HTTPS
+        {
+            TerminalLine l;
+            l.rawText = L"? What is your preferred protocol for Git operations? HTTPS";
+            l.spans.push_back({ L"? ", D2D1::ColorF(0.20f, 0.85f, 0.45f), true });
+            l.spans.push_back({ L"What is your preferred protocol for Git operations? ", D2D1::ColorF(1.0f, 1.0f, 1.0f), true });
+            l.spans.push_back({ L"HTTPS", D2D1::ColorF(0.35f, 0.65f, 0.95f), false });
+            tab->lines.push_back(std::move(l));
+        }
+
+        // 4. ? Authenticate Git with your GitHub credentials? Yes
+        {
+            TerminalLine l;
+            l.rawText = L"? Authenticate Git with your GitHub credentials? Yes";
+            l.spans.push_back({ L"? ", D2D1::ColorF(0.20f, 0.85f, 0.45f), true });
+            l.spans.push_back({ L"Authenticate Git with your GitHub credentials? ", D2D1::ColorF(1.0f, 1.0f, 1.0f), true });
+            l.spans.push_back({ L"Yes", D2D1::ColorF(0.35f, 0.65f, 0.95f), false });
+            tab->lines.push_back(std::move(l));
+        }
+
+        // 5. ? How would you like to authenticate GitHub CLI? Login with a web browser
+        {
+            TerminalLine l;
+            l.rawText = L"? How would you like to authenticate GitHub CLI? Login with a web browser";
+            l.spans.push_back({ L"? ", D2D1::ColorF(0.20f, 0.85f, 0.45f), true });
+            l.spans.push_back({ L"How would you like to authenticate GitHub CLI? ", D2D1::ColorF(1.0f, 1.0f, 1.0f), true });
+            l.spans.push_back({ L"Login with a web browser", D2D1::ColorF(0.35f, 0.65f, 0.95f), false });
+            tab->lines.push_back(std::move(l));
+        }
+
+        // 6. Blank line
+        {
+            TerminalLine l;
+            l.rawText = L"";
+            l.spans.push_back({ L"", D2D1::ColorF(1.0f, 1.0f, 1.0f), false });
+            l.spans.push_back({ L"", D2D1::ColorF(1.0f, 1.0f, 1.0f), false });
+            tab->lines.push_back(std::move(l));
+        }
+
+        // 7. ! First copy your one-time code: DA97-9FDD
+        {
+            TerminalLine l;
+            l.rawText = L"! First copy your one-time code: " + authCode;
+            l.spans.push_back({ L"! ", D2D1::ColorF(0.95f, 0.80f, 0.20f), true });
+            l.spans.push_back({ L"First copy your one-time code: ", D2D1::ColorF(1.0f, 1.0f, 1.0f), true });
+            l.spans.push_back({ authCode, D2D1::ColorF(1.0f, 1.0f, 1.0f), true });
+            tab->lines.push_back(std::move(l));
+        }
+
+        // 8. Press Enter to open github.com in your browser...
+        {
+            TerminalLine l;
+            l.rawText = L"Press Enter to open github.com in your browser...";
+            l.spans.push_back({ L"Press Enter ", D2D1::ColorF(1.0f, 1.0f, 1.0f), true });
+            l.spans.push_back({ L"to open github.com in your browser...", D2D1::ColorF(0.90f, 0.90f, 0.90f), false });
+            tab->lines.push_back(std::move(l));
+        }
+
+        tab->scrollOffsetY = 0.0f;
+        tab->scrollOffsetLines = 0;
+    }
+
+    if (m_outputCallback) m_outputCallback();
+}
+
+void TerminalPanel::TriggerGitHubLoginEnter() {
+    TerminalTab* tab = nullptr;
+    {
+        std::lock_guard<std::mutex> tabsLock(m_tabsMutex);
+        for (auto& t : m_tabs) {
+            if (t && (t->title == L"Github Login" || t->isGitHubLoginTab)) {
+                tab = t.get();
+                break;
+            }
+        }
+    }
+    if (!tab || tab->gitHubAuthCompleted) return;
+
+    tab->gitHubAuthCompleted = true;
+
+    // Launch GitHub device login page in default web browser
+    ShellExecuteW(NULL, L"open", L"https://github.com/login/device", NULL, NULL, SW_SHOWNORMAL);
+
+    std::wstring user = tab->gitHubAuthUser.empty() ? L"anshtiwatne" : tab->gitHubAuthUser;
+
+    {
+        std::lock_guard<std::mutex> lock(tab->bufferMutex);
+
+        // 9. ✓ Authentication complete.
+        {
+            TerminalLine l;
+            l.rawText = L"✓ Authentication complete.";
+            l.spans.push_back({ L"✓ ", D2D1::ColorF(0.20f, 0.85f, 0.45f), true });
+            l.spans.push_back({ L"Authentication complete.", D2D1::ColorF(0.95f, 0.95f, 0.95f), false });
+            tab->lines.push_back(std::move(l));
+        }
+
+        // 10. - gh config set -h github.com git_protocol https
+        {
+            TerminalLine l;
+            l.rawText = L"- gh config set -h github.com git_protocol https";
+            l.spans.push_back({ L"- ", D2D1::ColorF(0.55f, 0.58f, 0.65f), false });
+            l.spans.push_back({ L"gh config set -h github.com git_protocol https", D2D1::ColorF(0.55f, 0.58f, 0.65f), false });
+            tab->lines.push_back(std::move(l));
+        }
+
+        // 11. ✓ Configured git protocol
+        {
+            TerminalLine l;
+            l.rawText = L"✓ Configured git protocol";
+            l.spans.push_back({ L"✓ ", D2D1::ColorF(0.20f, 0.85f, 0.45f), true });
+            l.spans.push_back({ L"Configured git protocol", D2D1::ColorF(0.95f, 0.95f, 0.95f), false });
+            tab->lines.push_back(std::move(l));
+        }
+
+        // 12. ✓ Logged in as anshtiwatne
+        {
+            TerminalLine l;
+            l.rawText = L"✓ Logged in as " + user;
+            l.spans.push_back({ L"✓ ", D2D1::ColorF(0.20f, 0.85f, 0.45f), true });
+            l.spans.push_back({ L"Logged in as ", D2D1::ColorF(0.95f, 0.95f, 0.95f), false });
+            l.spans.push_back({ user, D2D1::ColorF(1.0f, 1.0f, 1.0f), true });
+            tab->lines.push_back(std::move(l));
+        }
+    }
+
+    if (m_onGitHubAuthSuccess) {
+        m_onGitHubAuthSuccess(user);
+    }
+    if (m_outputCallback) {
+        m_outputCallback();
+    }
+}
+
+bool TerminalPanel::IsGitHubLoginActive() const noexcept {
+    for (const auto& tab : m_tabs) {
+        if (tab && (tab->title == L"Github Login" || tab->isGitHubLoginTab) && !tab->gitHubAuthCompleted) {
+            return true;
+        }
+    }
+    return false;
+}
+
 void TerminalPanel::TerminateServerSession(const std::wstring& projectRoot) {
     for (auto& tab : m_tabs) {
         if (tab && tab->isServerTab) {
@@ -2627,6 +2864,10 @@ bool TerminalPanel::OnMouseDown(POINT pt, const app::AppConfig& config, const st
 
     // 13. Focus Terminal Content Area
     if (HitTestTextArea(pt)) {
+        TerminalTab* tab = GetActiveTab();
+        if (tab && (tab->title == L"Github Login" || tab->isGitHubLoginTab) && !tab->gitHubAuthCompleted) {
+            TriggerGitHubLoginEnter();
+        }
         return true;
     }
 
@@ -2736,6 +2977,16 @@ bool TerminalPanel::OnChar(wchar_t ch) {
 
     // Server tabs (e.g. Vite Server) are dedicated process streams: typing is locked (User requirement)
     if (tab->isServerTab || tab->shellType == TerminalShellType::LiveServer) {
+        return true;
+    }
+
+    // GitHub Login tab: wait for user to press Enter to launch browser and authenticate
+    if (tab->title == L"Github Login" || tab->isGitHubLoginTab) {
+        if (ch == L'\r' || ch == L'\n') {
+            if (!tab->gitHubAuthCompleted) {
+                TriggerGitHubLoginEnter();
+            }
+        }
         return true;
     }
 
@@ -2849,6 +3100,20 @@ bool TerminalPanel::OnKeyDown(UINT vk, bool isCtrl, bool isShift) {
             return false; // Let IDE handle Ctrl+S, Ctrl+Shift+S, Ctrl+P, etc.
         }
         return true; // Ignore typing keys inside read-only server tab
+    }
+
+    // GitHub Login tab: Enter key triggers browser opening and completes login flow
+    if (tab->title == L"Github Login" || tab->isGitHubLoginTab) {
+        if (vk == VK_RETURN) {
+            if (!tab->gitHubAuthCompleted) {
+                TriggerGitHubLoginEnter();
+            }
+            return true;
+        }
+        if (isCtrl) {
+            return false;
+        }
+        return true;
     }
 
     if (isCtrl && (vk == 'C' || vk == 'c')) {

@@ -349,6 +349,24 @@ public:
     [[nodiscard]] const D2D1_RECT_F& GetPublishOptionBounds(int idx) const noexcept { return m_publishOptionBounds[idx == 1 ? 1 : 0]; }
     [[nodiscard]] bool IsPublishedPrivate() const noexcept { return m_publishedVisibility == 0; }
     [[nodiscard]] int GetPublishedVisibility() const noexcept { return m_publishedVisibility; }
+    [[nodiscard]] const D2D1_RECT_F& GetGitCommitBtnBounds() const noexcept { return m_gitCommitBtnBounds; }
+    void SetGitCommitBtnBounds(const D2D1_RECT_F& rc) noexcept { m_gitCommitBtnBounds = rc; }
+
+    // --- GitHub Authentication & "Login to GitHub" Modal ---
+    [[nodiscard]] bool IsGitHubLoggedIn() const noexcept { return m_isGitHubLoggedIn; }
+    void SetGitHubLoggedIn(bool loggedIn) noexcept { m_isGitHubLoggedIn = loggedIn; }
+    [[nodiscard]] bool IsGitHubLoginModalOpen() const noexcept { return m_isGitHubLoginModalOpen; }
+    void OpenGitHubLoginModal() noexcept { m_isGitHubLoginModalOpen = true; m_gitHubLoginHoveredBtn = -1; }
+    void CloseGitHubLoginModal() noexcept { m_isGitHubLoginModalOpen = false; m_gitHubLoginHoveredBtn = -1; }
+    void SetOnRequireGitHubLogin(std::function<void()> cb) { m_onRequireGitHubLogin = std::move(cb); }
+    [[nodiscard]] const D2D1_RECT_F& GetGitHubLoginModalBounds() const noexcept { return m_gitHubLoginModalBounds; }
+    [[nodiscard]] const D2D1_RECT_F& GetGitHubLoginContinueBtnBounds() const noexcept { return m_gitHubLoginContinueBtnBounds; }
+    [[nodiscard]] const D2D1_RECT_F& GetGitHubLoginCancelBtnBounds() const noexcept { return m_gitHubLoginCancelBtnBounds; }
+    [[nodiscard]] int GetGitHubLoginHoveredBtn() const noexcept { return m_gitHubLoginHoveredBtn; }
+    void RenderGitHubLoginModal(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config, float clientW, float clientH);
+    bool HandleGitHubLoginMouseMove(POINT pt);
+    bool HandleGitHubLoginMouseDown(POINT pt);
+    bool HandleGitHubLoginKeyDown(WPARAM wParam);
 
     /**
      * @brief Paints the drawer background, header, and contents with animated width and upper-left curve.
@@ -824,6 +842,16 @@ private:
     D2D1_RECT_F m_publishModalBounds{};
     D2D1_RECT_F m_publishInputBounds{};
     D2D1_RECT_F m_publishOptionBounds[2]{};
+
+    // GitHub Authentication & "Login to GitHub" Flat Modal state
+    bool m_isGitHubLoggedIn = false;
+    bool m_isGitHubLoginModalOpen = false;
+    int m_gitHubLoginHoveredBtn = -1; // 0 = Cancel, 1 = Continue, 2 = Close 'X'
+    D2D1_RECT_F m_gitHubLoginModalBounds{};
+    D2D1_RECT_F m_gitHubLoginContinueBtnBounds{};
+    D2D1_RECT_F m_gitHubLoginCancelBtnBounds{};
+    D2D1_RECT_F m_gitHubLoginCloseBtnBounds{};
+    std::function<void()> m_onRequireGitHubLogin;
 
     size_t m_gitGraphScrollIdx = 0;
     size_t m_gitChangesScrollIdx = 0;

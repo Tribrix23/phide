@@ -5088,6 +5088,24 @@ bool Window::Create(HINSTANCE hInstance, int nCmdShow) {
         ShowGitError(cmd, output, repoDir);
     });
 
+    m_drawer.SetOnRequireGitHubLogin([this]() {
+        std::wstring dir = m_drawer.GetOpenFolderPath();
+        m_terminal.Open(dir);
+        m_terminal.OpenGitHubLoginTab(dir);
+        if (m_hwnd) {
+            InvalidateRect(m_hwnd, nullptr, FALSE);
+        }
+    });
+
+    m_terminal.SetOnGitHubAuthSuccess([this](const std::wstring& username) {
+        m_drawer.SetGitHubLoggedIn(true);
+        m_drawer.RefreshGitState(false);
+        m_drawer.ShowGitNotification(L"✓ Logged in to GitHub as " + username);
+        if (m_hwnd) {
+            InvalidateRect(m_hwnd, nullptr, FALSE);
+        }
+    });
+
     ui::GitLogManager::Instance().SetListener([this](const std::vector<std::wstring>& newBatch) {
         m_terminal.AppendGitLogLines(newBatch);
     });
@@ -5912,6 +5930,11 @@ void Window::OnPaint() {
         m_drawer.RenderPublishRepoModal(m_pRenderTarget.Get(), m_theme, m_config, clientW, clientH);
     }
 
+    // 12. Render "Login to GitHub" Flat Design Modal
+    if (m_drawer.IsGitHubLoginModalOpen()) {
+        m_drawer.RenderGitHubLoginModal(m_pRenderTarget.Get(), m_theme, m_config, clientW, clientH);
+    }
+
     HRESULT hr = m_pRenderTarget->EndDraw();
     if (hr == D2DERR_RECREATE_TARGET) {
         DiscardDeviceResources();
@@ -5956,6 +5979,13 @@ LRESULT Window::HandleNCHitTest(POINT screenPt) {
 }
 
 void Window::HandleMouseMove(POINT clientPt, WPARAM wParam) {
+    if (m_drawer.IsGitHubLoginModalOpen()) {
+        if (m_drawer.HandleGitHubLoginMouseMove(clientPt)) {
+            InvalidateRect(m_hwnd, nullptr, FALSE);
+        }
+        return;
+    }
+
     if (m_drawer.IsPublishRepoModalOpen()) {
         if (m_drawer.HandlePublishRepoMouseMove(clientPt)) {
             InvalidateRect(m_hwnd, nullptr, FALSE);
@@ -6579,6 +6609,13 @@ void Window::HandleMouseMove(POINT clientPt, WPARAM wParam) {
 }
 
 void Window::HandleLButtonDown(POINT clientPt) {
+    if (m_drawer.IsGitHubLoginModalOpen()) {
+        if (m_drawer.HandleGitHubLoginMouseDown(clientPt)) {
+            InvalidateRect(m_hwnd, nullptr, FALSE);
+            return;
+        }
+    }
+
     if (m_drawer.IsPublishRepoModalOpen()) {
         if (m_drawer.HandlePublishRepoMouseDown(clientPt)) {
             InvalidateRect(m_hwnd, nullptr, FALSE);
@@ -9656,6 +9693,13 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
         }
 
         case WM_KEYDOWN: {
+            if (m_drawer.IsGitHubLoginModalOpen()) {
+                if (m_drawer.HandleGitHubLoginKeyDown(wParam)) {
+                    InvalidateRect(m_hwnd, nullptr, FALSE);
+                }
+                return 0;
+            }
+
             if (m_drawer.IsPublishRepoModalOpen()) {
                 if (m_drawer.HandlePublishRepoKeyDown(wParam)) {
                     InvalidateRect(m_hwnd, nullptr, FALSE);

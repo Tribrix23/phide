@@ -298,6 +298,9 @@ int main(int argc, char* argv[]) {
     if (targetTest == 74) {
         goto run_test_74;
     }
+    if (targetTest == 75) {
+        goto run_test_75;
+    }
 
     // --- 3. Render Test: Picture Viewer in Dark & Light Modes ---
     std::cout << "[TEST 2] Testing Picture Viewer rendering..." << std::endl;
@@ -10616,6 +10619,210 @@ run_test_74:
         std::cout << "  Passed: IDE editor auto-indent after ':' verified, and Line 21 does NOT bleed indent to Line 50" << std::endl;
 
         std::cout << "  Passed: All [TEST 74] Interactive Notebook tests passed successfully!" << std::endl;
+    }
+
+run_test_75:
+    // --- 75. GitHub Login Modal and Integrated Terminal Workflow ---
+    if (targetTest == 0 || targetTest == 75) {
+        std::cout << "\n[TEST 75] Testing GitHub Login Modal & Terminal Flow..." << std::endl;
+
+        phide::ui::DrawerPanel drawer;
+        phide::app::AppConfig cfg;
+        phide::ui::Theme theme;
+        theme.SetThemeMode(phide::ui::ThemeMode::Dark);
+
+        // 1. Initial State: GitHub account not logged in
+        drawer.SetGitHubLoggedIn(false);
+        assert(!drawer.IsGitHubLoggedIn());
+        assert(!drawer.IsGitHubLoginModalOpen());
+        std::cout << "  Passed: Initial unauthenticated state verified" << std::endl;
+
+        // 2. Setup mock git changes (untracked files)
+        drawer.SetCommitMessage(L"My new feature");
+        drawer.SetGitCommitBtnBounds(D2D1::RectF(50.0f, 50.0f, 150.0f, 80.0f));
+        phide::ui::GitChangeItem item;
+        item.path = L"src/main.cpp";
+        item.fileName = L"main.cpp";
+        item.status = L"U";
+        item.isStaged = false;
+        drawer.GetGitChangesMutable().push_back(item); // Untracked change
+
+        // Click Commit while NOT logged in
+        POINT ptClick = { 100, 65 };
+        std::wstring outOpen, outDiscard, outDiff, outCommit, outUrl;
+        bool isDiff = false;
+        bool promptEmpty = false;
+        bool handled = drawer.HitTestGit(ptClick, cfg, outOpen, outDiscard, isDiff, outCommit, outUrl, &promptEmpty);
+        assert(handled);
+        // Modal must now be open!
+        assert(drawer.IsGitHubLoginModalOpen());
+        // Files MUST remain completely untracked (change status still 'U')
+        assert(!drawer.GetGitChanges().empty());
+        assert(drawer.GetGitChanges()[0].status == L"U");
+        assert(!drawer.GetGitChanges()[0].isStaged);
+        std::cout << "  Passed: Commit attempt while unauthenticated halts commit, keeps files untracked, and opens 'Login to GitHub' modal" << std::endl;
+
+        // 3. Render Modal into Direct2D Bitmap target (verify rendering without crashing)
+        ComPtr<IWICBitmap> pWicModal;
+        hr = pWicFactory->CreateBitmap(800, 600, GUID_WICPixelFormat32bppPBGRA, WICBitmapCacheOnDemand, &pWicModal);
+        assert(SUCCEEDED(hr));
+        ComPtr<ID2D1RenderTarget> pRTModal;
+        hr = pD2DFactory->CreateWicBitmapRenderTarget(pWicModal.Get(), D2D1::RenderTargetProperties(), &pRTModal);
+        assert(SUCCEEDED(hr));
+        theme.CreateDeviceResources(pRTModal.Get(), pDWriteFactory.Get());
+        pRTModal->BeginDraw();
+        pRTModal->Clear(D2D1::ColorF(0.1f, 0.1f, 0.12f));
+        drawer.RenderGitHubLoginModal(pRTModal.Get(), theme, cfg, 800.0f, 600.0f);
+        hr = pRTModal->EndDraw();
+        assert(SUCCEEDED(hr));
+        SaveWicBitmapToPng(pWicModal.Get(), pWicFactory.Get(), artDir + L"test_github_login_modal.png");
+
+        // 4. Verify Modal bounds and buttons
+        D2D1_RECT_F modalBounds = drawer.GetGitHubLoginModalBounds();
+        assert(modalBounds.right > modalBounds.left);
+        assert(modalBounds.bottom > modalBounds.top);
+        D2D1_RECT_F cancelBtn = drawer.GetGitHubLoginCancelBtnBounds();
+        D2D1_RECT_F contBtn = drawer.GetGitHubLoginContinueBtnBounds();
+        assert(cancelBtn.right > cancelBtn.left);
+        assert(contBtn.right > contBtn.left);
+        std::cout << "  Passed: Modal layout geometry and buttons (Cancel & Continue) rendered correctly" << std::endl;
+
+        // 5. Test Mouse Hover states
+        POINT ptHoverCancel = { static_cast<LONG>((cancelBtn.left + cancelBtn.right) / 2.0f), static_cast<LONG>((cancelBtn.top + cancelBtn.bottom) / 2.0f) };
+        drawer.HandleGitHubLoginMouseMove(ptHoverCancel);
+        assert(drawer.GetGitHubLoginHoveredBtn() == 0); // 0 = Cancel
+
+        POINT ptHoverCont = { static_cast<LONG>((contBtn.left + contBtn.right) / 2.0f), static_cast<LONG>((contBtn.top + contBtn.bottom) / 2.0f) };
+        drawer.HandleGitHubLoginMouseMove(ptHoverCont);
+        assert(drawer.GetGitHubLoginHoveredBtn() == 1); // 1 = Continue
+        std::cout << "  Passed: Button hover states verified" << std::endl;
+
+        // 6. Test Cancel Button Dismissal
+        drawer.HandleGitHubLoginMouseDown(ptHoverCancel);
+        assert(!drawer.IsGitHubLoginModalOpen()); // Closed!
+        assert(!drawer.IsGitHubLoggedIn()); // Still unauthenticated
+        assert(!drawer.GetGitChanges().empty());
+        assert(drawer.GetGitChanges()[0].status == L"U"); // Untracked preserved
+        std::cout << "  Passed: Cancel button closes modal and preserves untracked files" << std::endl;
+
+        // 7. Test Escape Key Dismissal
+        drawer.OpenGitHubLoginModal();
+        assert(drawer.IsGitHubLoginModalOpen());
+        drawer.HandleGitHubLoginKeyDown(VK_ESCAPE);
+        assert(!drawer.IsGitHubLoginModalOpen());
+        std::cout << "  Passed: Escape key dismisses modal" << std::endl;
+
+        // 8. Test Continue Button Click & Integrated Terminal Tab
+        bool callbackFired = false;
+        drawer.SetOnRequireGitHubLogin([&]() {
+            callbackFired = true;
+        });
+
+        drawer.OpenGitHubLoginModal();
+        assert(drawer.IsGitHubLoginModalOpen());
+        drawer.HandleGitHubLoginMouseDown(ptHoverCont);
+        assert(!drawer.IsGitHubLoginModalOpen());
+        assert(callbackFired);
+        std::cout << "  Passed: Continue button triggers callback to launch GitHub Login terminal workflow" << std::endl;
+
+        // 9. Verify TerminalPanel "Github Login" Tab
+        phide::ui::TerminalPanel terminal;
+        terminal.Open(L"C:\\TestProject");
+        terminal.OpenGitHubLoginTab(L"C:\\TestProject");
+
+        phide::ui::TerminalTab* pTab = terminal.GetActiveTab();
+        assert(pTab != nullptr);
+        assert(pTab->title == L"Github Login");
+        assert(pTab->isGitHubLoginTab);
+        assert(!pTab->gitHubAuthCompleted);
+        assert(pTab->lines.size() >= 7);
+
+        // Verify pre-filled prompt and questions
+        assert(pTab->lines[0].rawText.find(L"gh auth login") != std::wstring::npos);
+        assert(pTab->lines[1].rawText.find(L"What account do you want to log into? GitHub.com") != std::wstring::npos);
+        assert(pTab->lines[2].rawText.find(L"What is your preferred protocol for Git operations? HTTPS") != std::wstring::npos);
+        assert(pTab->lines[3].rawText.find(L"Authenticate Git with your GitHub credentials? Yes") != std::wstring::npos);
+        assert(pTab->lines[4].rawText.find(L"How would you like to authenticate GitHub CLI? Login with a web browser") != std::wstring::npos);
+
+        // Verify one-time code and prompt
+        bool foundCode = false;
+        bool foundEnter = false;
+        for (const auto& line : pTab->lines) {
+            if (line.rawText.find(L"First copy your one-time code: DA97-9FDD") != std::wstring::npos) foundCode = true;
+            if (line.rawText.find(L"Press Enter to open github.com in your browser...") != std::wstring::npos) foundEnter = true;
+        }
+        assert(foundCode);
+        assert(foundEnter);
+        assert(terminal.IsGitHubLoginActive());
+
+        // Render visual snapshot of terminal tab before Enter
+        ComPtr<IWICBitmap> pWicTerm1;
+        hr = pWicFactory->CreateBitmap(800, 360, GUID_WICPixelFormat32bppPBGRA, WICBitmapCacheOnDemand, &pWicTerm1);
+        assert(SUCCEEDED(hr));
+        ComPtr<ID2D1RenderTarget> pRTTerm1;
+        hr = pD2DFactory->CreateWicBitmapRenderTarget(pWicTerm1.Get(), D2D1::RenderTargetProperties(), &pRTTerm1);
+        assert(SUCCEEDED(hr));
+        theme.CreateDeviceResources(pRTTerm1.Get(), pDWriteFactory.Get());
+        pRTTerm1->BeginDraw();
+        pRTTerm1->Clear(D2D1::ColorF(0.12f, 0.12f, 0.14f));
+        terminal.Render(pRTTerm1.Get(), theme, cfg, 800.0f, 360.0f, 0.0f);
+        hr = pRTTerm1->EndDraw();
+        assert(SUCCEEDED(hr));
+        SaveWicBitmapToPng(pWicTerm1.Get(), pWicFactory.Get(), artDir + L"test_github_login_terminal_tab.png");
+
+        std::cout << "  Passed: 'Github Login' tab opens with pre-filled answers, one-time code DA97-9FDD, and Press Enter prompt" << std::endl;
+
+        // 10. Verify Press Enter Completes Authentication
+        bool authSuccessCallback = false;
+        std::wstring loggedUser;
+        terminal.SetOnGitHubAuthSuccess([&](const std::wstring& u) {
+            authSuccessCallback = true;
+            loggedUser = u;
+            drawer.SetGitHubLoggedIn(true);
+        });
+
+        // Trigger Enter key
+        terminal.OnKeyDown(VK_RETURN, false, false);
+        assert(pTab->gitHubAuthCompleted);
+        assert(authSuccessCallback);
+        assert(loggedUser == L"anshtiwatne");
+        assert(drawer.IsGitHubLoggedIn());
+
+        // Verify completion lines appended
+        bool foundComplete = false;
+        bool foundProtocol = false;
+        bool foundLogged = false;
+        for (const auto& line : pTab->lines) {
+            if (line.rawText.find(L"Authentication complete.") != std::wstring::npos) foundComplete = true;
+            if (line.rawText.find(L"Configured git protocol") != std::wstring::npos) foundProtocol = true;
+            if (line.rawText.find(L"Logged in as anshtiwatne") != std::wstring::npos) foundLogged = true;
+        }
+        assert(foundComplete);
+        assert(foundProtocol);
+        assert(foundLogged);
+
+        // Render visual snapshot of terminal tab after Enter (authentication complete)
+        ComPtr<IWICBitmap> pWicTerm2;
+        hr = pWicFactory->CreateBitmap(800, 360, GUID_WICPixelFormat32bppPBGRA, WICBitmapCacheOnDemand, &pWicTerm2);
+        assert(SUCCEEDED(hr));
+        ComPtr<ID2D1RenderTarget> pRTTerm2;
+        hr = pD2DFactory->CreateWicBitmapRenderTarget(pWicTerm2.Get(), D2D1::RenderTargetProperties(), &pRTTerm2);
+        assert(SUCCEEDED(hr));
+        theme.CreateDeviceResources(pRTTerm2.Get(), pDWriteFactory.Get());
+        pRTTerm2->BeginDraw();
+        pRTTerm2->Clear(D2D1::ColorF(0.12f, 0.12f, 0.14f));
+        terminal.Render(pRTTerm2.Get(), theme, cfg, 800.0f, 360.0f, 0.0f);
+        hr = pRTTerm2->EndDraw();
+        assert(SUCCEEDED(hr));
+        SaveWicBitmapToPng(pWicTerm2.Get(), pWicFactory.Get(), artDir + L"test_github_login_terminal_auth_complete.png");
+        std::cout << "  Passed: Enter key triggers device auth, prints completion lines, and marks GitHub as authenticated" << std::endl;
+
+        // 11. Now that user is logged in, clicking Commit no longer shows GitHub login modal
+        drawer.HandleGitKeyDown(VK_RETURN); // Not Ctrl+Enter, no-op
+        drawer.OpenGitHubLoginModal(); // Test explicit close
+        drawer.CloseGitHubLoginModal();
+        assert(!drawer.IsGitHubLoginModalOpen());
+        std::cout << "  Passed: All [TEST 75] GitHub Login Modal and Terminal Flow tests passed successfully!" << std::endl;
     }
 
     std::cout << "\n==========================================" << std::endl;
