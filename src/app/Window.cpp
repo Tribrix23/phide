@@ -408,8 +408,8 @@ void Window::StartWorkspaceWatcher(const std::wstring& folderPath) {
             if (waitRes == WAIT_OBJECT_0) {
                 break;
             } else if (waitRes == WAIT_OBJECT_0 + 1) {
-                // Coalesce rapid disk events (debounced quiet period)
-                Sleep(1500);
+                // Coalesce rapid disk events (debounced quiet period: 150ms)
+                Sleep(150);
                 FindNextChangeNotification(hChange);
                 if (self->m_hwnd) {
                     PostMessageW(self->m_hwnd, WM_USER + 202, 0, 0);
@@ -10990,7 +10990,9 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
         }
 
         case WM_USER + 202: {
-            TriggerDebouncedGitRefresh(1500);
+            m_drawer.RefreshTree();
+            m_drawer.RefreshGitStatusOnly(true);
+            InvalidateRect(m_hwnd, nullptr, FALSE);
             return 0;
         }
 

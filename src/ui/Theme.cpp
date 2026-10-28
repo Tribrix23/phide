@@ -1558,6 +1558,7 @@ Theme::SetiIconInfo Theme::GetSetiIcon(const std::wstring& filename, bool isFold
         if (ext == L".md" || ext == L".markdown" || ext == L".mdown") return { 0xE060, brushSetiTs ? brushSetiTs.Get() : brushIconBlue.Get() };
         if (ext == L".html" || ext == L".htm") return { 0xE048, brushSetiHtml ? brushSetiHtml.Get() : brushIconOrange.Get() };
         if (ext == L".css" || ext == L".scss" || ext == L".sass" || ext == L".less") return { 0xE01D, brushSetiCss ? brushSetiCss.Get() : brushIconBlue.Get() };
+        if (ext == L".ipynb") return { 0xE07B, brushSetiPython ? brushSetiPython.Get() : brushIconOrange.Get() };
         if (ext == L".py" || ext == L".pyw") return { 0xE07B, brushSetiPython ? brushSetiPython.Get() : brushIconBlue.Get() };
         if (ext == L".rs") return { 0xE082, brushSetiRust ? brushSetiRust.Get() : brushIconOrange.Get() };
         if (ext == L".go") return { 0xE039, brushSetiTs ? brushSetiTs.Get() : brushIconBlue.Get() };

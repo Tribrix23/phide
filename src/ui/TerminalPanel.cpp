@@ -456,7 +456,13 @@ void TerminalPanel::NewTab(TerminalShellType shell, const std::wstring& workingD
     tab->shellType = shell;
     tab->workingDir = workingDir.empty() ? m_defaultWorkingDir : workingDir;
 
-    size_t count = m_tabs.size() + 1;
+    size_t shellCount = 0;
+    for (const auto& t : m_tabs) {
+        if (t && !t->isServerTab && t->title != L"Git Logs" && !t->isGitHubLoginTab) {
+            shellCount++;
+        }
+    }
+    size_t count = shellCount + 1;
     std::wstring shellName = L"powershell";
     if (shell == TerminalShellType::Cmd) shellName = L"cmd";
     else if (shell == TerminalShellType::GitBash) shellName = L"bash";
@@ -3407,23 +3413,6 @@ bool TerminalPanel::OnChar(wchar_t ch) {
     } else if (ch == L'\b') {
         if (!tab->currentInputLine.empty()) {
             tab->currentInputLine.pop_back();
-        } else {
-            // Delete trailing space/tab from last line if present
-            std::lock_guard<std::mutex> lock(tab->bufferMutex);
-            if (!tab->lines.empty() && !tab->lines.back().rawText.empty()) {
-                wchar_t lastCh = tab->lines.back().rawText.back();
-                if (lastCh == L' ' || lastCh == L'\t') {
-                    tab->lines.back().rawText.pop_back();
-                    if (!tab->lines.back().spans.empty()) {
-                        if (!tab->lines.back().spans.back().text.empty()) {
-                            tab->lines.back().spans.back().text.pop_back();
-                            if (tab->lines.back().spans.back().text.empty()) {
-                                tab->lines.back().spans.pop_back();
-                            }
-                        }
-                    }
-                }
-            }
         }
         return true;
     } else if (ch == L'\t') {

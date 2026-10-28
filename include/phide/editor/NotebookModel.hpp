@@ -43,6 +43,8 @@ struct NotebookCell {
     bool hasError = false;
     int errorLine = -1; // 0-based error line in code cell (-1 if none)
     ULONGLONG lastElapsedMs = 0;
+    float outputScrollY = 0.0f;
+    float outputScrollX = 0.0f;
 
     // Text Selection State
     bool hasSelection = false;
@@ -271,6 +273,130 @@ public:
         isDirty = true;
     }
 
+    static std::string UnescapeJsonString(const std::string& raw) {
+        std::string unescaped;
+        unescaped.reserve(raw.size());
+        for (size_t k = 0; k < raw.size(); ++k) {
+            if (raw[k] == '\\' && k + 1 < raw.size()) {
+                if (raw[k + 1] == 'n') { unescaped += '\n'; k++; }
+                else if (raw[k + 1] == '"') { unescaped += '"'; k++; }
+                else if (raw[k + 1] == '\\') { unescaped += '\\'; k++; }
+                else if (raw[k + 1] == 't') { unescaped += '\t'; k++; }
+                else if (raw[k + 1] == 'r') { unescaped += '\r'; k++; }
+                else if (raw[k + 1] == 'u' && k + 5 < raw.size()) {
+                    std::string hexStr = raw.substr(k + 2, 4);
+                    try {
+                        unsigned int cp = std::stoul(hexStr, nullptr, 16);
+                        if (cp == 0x001b || cp == 0x1b) {
+                            unescaped += '\x1b';
+                        } else if (cp < 128) {
+                            unescaped += static_cast<char>(cp);
+                        } else if (cp <= 0x7FF) {
+                            unescaped += static_cast<char>(0xC0 | ((cp >> 6) & 0x1F));
+                            unescaped += static_cast<char>(0x80 | (cp & 0x3F));
+                        } else {
+                            unescaped += static_cast<char>(0xE0 | ((cp >> 12) & 0x0F));
+                            unescaped += static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
+                            unescaped += static_cast<char>(0x80 | (cp & 0x3F));
+                        }
+                        k += 5;
+                    } catch (...) {
+                        unescaped += raw[k];
+                    }
+                } else {
+                    unescaped += raw[k];
+                }
+            } else {
+                unescaped += raw[k];
+            }
+        }
+        return unescaped;
+    }
+
+    static std::wstring StripAnsi(const std::wstring& s) {
+        std::wstring out;
+        out.reserve(s.size());
+        for (size_t i = 0; i < s.size(); ++i) {
+            if (s[i] == L'\x1b' && i + 1 < s.size() && s[i + 1] == L'[') {
+                i += 2;
+                while (i < s.size() && s[i] != L'm' && s[i] != L'K' && s[i] != L'H' && s[i] != L'J') {
+                    i++;
+                }
+                continue;
+            }
+            if (i + 6 <= s.size() && s.compare(i, 6, L"\\u001b") == 0) {
+                i += 5;
+                if (i + 1 < s.size() && s[i + 1] == L'[') {
+                    i += 2;
+                    while (i < s.size() && s[i] != L'm' && s[i] != L'K' && s[i] != L'H' && s[i] != L'J') {
+                        i++;
+                    }
+                }
+                continue;
+            }
+            out.push_back(s[i]);
+        }
+        return out;
+    }
+
+    static std::wstring ExtractStringOrArray(const std::string& parentStr, size_t keyPos) {
+        size_t colon = parentStr.find(':', keyPos);
+        if (colon == std::string::npos) return L"";
+        size_t firstChar = parentStr.find_first_not_of(" \t\r\n", colon + 1);
+        if (firstChar == std::string::npos) return L"";
+
+        std::string accumulated;
+        if (parentStr[firstChar] == '"') {
+            size_t endQ = firstChar + 1;
+            while (endQ < parentStr.size()) {
+                if (parentStr[endQ] == '"' && parentStr[endQ - 1] != '\\') break;
+                endQ++;
+            }
+            if (endQ < parentStr.size()) {
+                accumulated = UnescapeJsonString(parentStr.substr(firstChar + 1, endQ - firstChar - 1));
+            }
+        } else if (parentStr[firstChar] == '[') {
+            size_t arrEnd = std::string::npos;
+            int depth = 0;
+            bool inStr = false;
+            for (size_t i = firstChar; i < parentStr.size(); ++i) {
+                if (parentStr[i] == '"' && (i == 0 || parentStr[i - 1] != '\\')) {
+                    inStr = !inStr;
+                } else if (!inStr) {
+                    if (parentStr[i] == '[') depth++;
+                    else if (parentStr[i] == ']') {
+                        depth--;
+                        if (depth == 0) { arrEnd = i; break; }
+                    }
+                }
+            }
+            if (arrEnd != std::string::npos) {
+                size_t p = firstChar + 1;
+                while (p < arrEnd) {
+                    size_t s1 = parentStr.find('"', p);
+                    if (s1 == std::string::npos || s1 >= arrEnd) break;
+                    size_t s2 = s1 + 1;
+                    while (s2 < arrEnd) {
+                        if (parentStr[s2] == '"' && parentStr[s2 - 1] != '\\') break;
+                        s2++;
+                    }
+                    if (s2 <= arrEnd) {
+                        accumulated += UnescapeJsonString(parentStr.substr(s1 + 1, s2 - s1 - 1));
+                    }
+                    p = s2 + 1;
+                }
+            }
+        }
+
+        if (accumulated.empty()) return L"";
+        int len = MultiByteToWideChar(CP_UTF8, 0, accumulated.c_str(), -1, nullptr, 0);
+        if (len <= 0) return L"";
+        std::wstring w(len, L'\0');
+        MultiByteToWideChar(CP_UTF8, 0, accumulated.c_str(), -1, w.data(), len);
+        if (!w.empty() && w.back() == L'\0') w.pop_back();
+        return w;
+    }
+
     std::string EscapeJson(const std::string& s) const {
         std::string res;
         for (char c : s) {
@@ -451,62 +577,14 @@ public:
                 cell.language = kernelLanguage;
             }
 
-            // Extract source lines
+            // Extract source lines (supports array or single string)
             size_t srcPos = cellStr.find("\"source\"");
             if (srcPos != std::string::npos) {
-                size_t sArrStart = cellStr.find('[', srcPos);
-                if (sArrStart != std::string::npos) {
-                    size_t sArrEnd = std::string::npos;
-                    int aDepth = 0;
-                    bool aStr = false;
-                    for (size_t k = sArrStart; k < cellStr.size(); ++k) {
-                        if (cellStr[k] == '"' && (k == 0 || cellStr[k - 1] != '\\')) {
-                            aStr = !aStr;
-                        } else if (!aStr) {
-                            if (cellStr[k] == '[') aDepth++;
-                            else if (cellStr[k] == ']') {
-                                aDepth--;
-                                if (aDepth == 0) {
-                                    sArrEnd = k;
-                                    break;
-                                }
-                            }
-                        }
-                    }
-
-                    if (sArrEnd != std::string::npos) {
-                        std::wstring fullSource;
-                        size_t p = sArrStart;
-                        while (p < sArrEnd) {
-                            size_t strStart = cellStr.find('"', p);
-                            if (strStart == std::string::npos || strStart >= sArrEnd) break;
-                            size_t strEnd = strStart + 1;
-                            while (strEnd < sArrEnd) {
-                                if (cellStr[strEnd] == '"' && cellStr[strEnd - 1] != '\\') break;
-                                strEnd++;
-                            }
-                            std::string raw = cellStr.substr(strStart + 1, strEnd - strStart - 1);
-                            std::string unescaped;
-                            for (size_t k = 0; k < raw.size(); ++k) {
-                                if (raw[k] == '\\' && k + 1 < raw.size()) {
-                                    if (raw[k + 1] == 'n') { unescaped += '\n'; k++; }
-                                    else if (raw[k + 1] == '"') { unescaped += '"'; k++; }
-                                    else if (raw[k + 1] == '\\') { unescaped += '\\'; k++; }
-                                    else if (raw[k + 1] == 't') { unescaped += '\t'; k++; }
-                                    else { unescaped += raw[k]; }
-                                } else {
-                                    unescaped += raw[k];
-                                }
-                            }
-                            fullSource += Utf8ToWide(unescaped);
-                            p = strEnd + 1;
-                        }
-                        cell.inputBuffer = Buffer(fullSource);
-                    }
-                }
+                std::wstring srcText = ExtractStringOrArray(cellStr, srcPos);
+                cell.inputBuffer = Buffer(srcText);
             }
 
-            // Extract outputs for code cell
+            // Extract outputs for code cell (supports multiple outputs, Colab streams, error tracebacks, text/plain)
             if (cell.type == NotebookCellType::Code) {
                 size_t outPos = cellStr.find("\"outputs\"");
                 if (outPos != std::string::npos) {
@@ -531,64 +609,75 @@ public:
                         }
 
                         if (outArrEnd != std::string::npos) {
-                            size_t textPos = cellStr.find("\"text\"", outArrStart);
-                            if (textPos != std::string::npos && textPos < outArrEnd) {
-                                size_t tStart = cellStr.find('[', textPos);
-                                if (tStart != std::string::npos) {
-                                    size_t tEnd = std::string::npos;
-                                    int tDepth = 0;
-                                    bool tStr = false;
-                                    for (size_t k = tStart; k < outArrEnd; ++k) {
-                                        if (cellStr[k] == '"' && (k == 0 || cellStr[k - 1] != '\\')) {
-                                            tStr = !tStr;
-                                        } else if (!tStr) {
-                                            if (cellStr[k] == '[') tDepth++;
-                                            else if (cellStr[k] == ']') {
-                                                tDepth--;
-                                                if (tDepth == 0) {
-                                                    tEnd = k;
-                                                    break;
-                                                }
+                            size_t objPos = outArrStart + 1;
+                            while (objPos < outArrEnd) {
+                                size_t oStart = cellStr.find('{', objPos);
+                                if (oStart == std::string::npos || oStart >= outArrEnd) break;
+                                size_t oEnd = oStart;
+                                int bDepth = 0;
+                                bool bStr = false;
+                                for (size_t i = oStart; i < outArrEnd; ++i) {
+                                    if (cellStr[i] == '"' && (i == 0 || cellStr[i - 1] != '\\')) {
+                                        bStr = !bStr;
+                                    } else if (!bStr) {
+                                        if (cellStr[i] == '{') bDepth++;
+                                        else if (cellStr[i] == '}') {
+                                            bDepth--;
+                                            if (bDepth == 0) {
+                                                oEnd = i;
+                                                break;
                                             }
-                                        }
-                                    }
-
-                                    if (tEnd != std::string::npos) {
-                                        std::wstring outText;
-                                        size_t p = tStart;
-                                        while (p < tEnd) {
-                                            size_t s1 = cellStr.find('"', p);
-                                            if (s1 == std::string::npos || s1 >= tEnd) break;
-                                            size_t s2 = s1 + 1;
-                                            while (s2 < tEnd) {
-                                                if (cellStr[s2] == '"' && cellStr[s2 - 1] != '\\') break;
-                                                s2++;
-                                            }
-                                            std::string raw = cellStr.substr(s1 + 1, s2 - s1 - 1);
-                                            std::string unesc;
-                                            for (size_t k = 0; k < raw.size(); ++k) {
-                                                if (raw[k] == '\\' && k + 1 < raw.size()) {
-                                                    if (raw[k + 1] == 'n') { unesc += '\n'; k++; }
-                                                    else if (raw[k + 1] == '"') { unesc += '"'; k++; }
-                                                    else if (raw[k + 1] == '\\') { unesc += '\\'; k++; }
-                                                    else if (raw[k + 1] == 't') { unesc += '\t'; k++; }
-                                                    else { unesc += raw[k]; }
-                                                } else {
-                                                    unesc += raw[k];
-                                                }
-                                            }
-                                            outText += Utf8ToWide(unesc);
-                                            p = s2 + 1;
-                                        }
-                                        if (!outText.empty()) {
-                                            CellOutput co;
-                                            co.streamName = L"stdout";
-                                            co.text = outText;
-                                            cell.outputs.push_back(std::move(co));
-                                            cell.executionCount = nextExecutionCount++;
                                         }
                                     }
                                 }
+                                if (bDepth != 0 || oEnd <= oStart) break;
+
+                                std::string outObjStr = cellStr.substr(oStart, oEnd - oStart + 1);
+                                CellOutput co;
+                                co.streamName = L"stdout";
+
+                                bool isErr = (outObjStr.find("\"output_type\": \"error\"") != std::string::npos ||
+                                              outObjStr.find("\"output_type\":\"error\"") != std::string::npos ||
+                                              outObjStr.find("\"name\": \"stderr\"") != std::string::npos ||
+                                              outObjStr.find("\"name\":\"stderr\"") != std::string::npos);
+                                co.isError = isErr;
+                                if (isErr) {
+                                    co.streamName = L"stderr";
+                                    cell.hasError = true;
+                                }
+
+                                std::wstring outText;
+                                size_t tPos = outObjStr.find("\"text\"");
+                                if (tPos != std::string::npos) {
+                                    outText += ExtractStringOrArray(outObjStr, tPos);
+                                }
+                                size_t tbPos = outObjStr.find("\"traceback\"");
+                                if (tbPos != std::string::npos) {
+                                    std::wstring tb = ExtractStringOrArray(outObjStr, tbPos);
+                                    if (!tb.empty()) {
+                                        if (!outText.empty()) outText += L"\n";
+                                        outText += tb;
+                                    }
+                                }
+                                if (outText.empty()) {
+                                    size_t tpPos = outObjStr.find("\"text/plain\"");
+                                    if (tpPos != std::string::npos) {
+                                        outText = ExtractStringOrArray(outObjStr, tpPos);
+                                    }
+                                }
+
+                                // Strip ANSI color escape codes
+                                outText = StripAnsi(outText);
+
+                                if (!outText.empty()) {
+                                    co.text = outText;
+                                    cell.outputs.push_back(std::move(co));
+                                    if (cell.executionCount <= 0) {
+                                        cell.executionCount = nextExecutionCount++;
+                                    }
+                                }
+
+                                objPos = oEnd + 1;
                             }
                         }
                     }

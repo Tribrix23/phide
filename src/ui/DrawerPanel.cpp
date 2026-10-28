@@ -83,8 +83,8 @@ DrawerPanel::~DrawerPanel() {
         m_isAlive->store(false);
     }
     int spin = 0;
-    while (m_activeWorkers && m_activeWorkers->load() > 0 && spin++ < 60) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    while (m_activeWorkers && m_activeWorkers->load() > 0 && spin++ < 600) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
 }
 
@@ -925,13 +925,22 @@ void DrawerPanel::RenderExplorerPane(ID2D1RenderTarget* pRT, Theme& theme, const
                     cy + config.ScaleF(8.0f)
                 );
                 bool isGitIgnored = IsPathGitIgnored(item.fullPath, item.label);
-                auto setiInfo = theme.GetSetiIcon(item.label, item.isFolder, item.isExpanded);
-                ID2D1Brush* pIconBrush = isGitIgnored ? theme.brushTextMuted.Get() : setiInfo.pBrush;
-                if (theme.fontSeti && pIconBrush) {
-                    pRT->DrawText(&setiInfo.glyph, 1, theme.fontSeti.Get(), iconBounds, pIconBrush);
+                bool isIpynb = (!item.isFolder && item.label.size() >= 6 && 
+                    (_wcsicmp(item.label.c_str() + (item.label.size() - 6), L".ipynb") == 0));
+
+                if (isIpynb) {
+                    m_icons.DrawTerminalNotebook(pRT, iconBounds,
+                        isGitIgnored ? theme.brushTextMuted.Get() :
+                        (theme.brushBrandAccent ? theme.brushBrandAccent.Get() : theme.brushTextWhite.Get()), 1.2f);
                 } else {
-                    auto iconType = LucideIcons::GetIconTypeForPath(item.label, item.isFolder, item.isExpanded);
-                    m_icons.DrawFileIcon(pRT, theme, iconBounds, iconType);
+                    auto setiInfo = theme.GetSetiIcon(item.label, item.isFolder, item.isExpanded);
+                    ID2D1Brush* pIconBrush = isGitIgnored ? theme.brushTextMuted.Get() : setiInfo.pBrush;
+                    if (theme.fontSeti && pIconBrush) {
+                        pRT->DrawText(&setiInfo.glyph, 1, theme.fontSeti.Get(), iconBounds, pIconBrush);
+                    } else {
+                        auto iconType = LucideIcons::GetIconTypeForPath(item.label, item.isFolder, item.isExpanded);
+                        m_icons.DrawFileIcon(pRT, theme, iconBounds, iconType);
+                    }
                 }
 
                 // 4. Draw Item Text Label OR Inline Rename Input Box (VS Code style inline rename)
@@ -2665,9 +2674,9 @@ void DrawerPanel::LaunchAsyncSearch() {
     // Run file traversal in worker thread to prevent freezing the GUI thread!
     auto alive = m_isAlive;
     auto workers = m_activeWorkers;
+    if (workers) workers->fetch_add(1);
     std::thread([this, alive, workers, thisGen, query, rootFolder, matchCase, matchWord, useRegex,
                  searchOnlyOpenEditors, openDocPaths, filesToInclude, filesToExclude, useExcludeSettings]() {
-        if (workers) workers->fetch_add(1);
         auto finish = [&]() { if (workers) workers->fetch_sub(1); };
         if (!alive || !alive->load()) { finish(); return; }
         try {
@@ -2827,14 +2836,16 @@ void DrawerPanel::LaunchAsyncSearch() {
             }
 
             if (isFirstBatch) {
-                std::lock_guard<std::mutex> lock(m_searchMutex);
-                m_pendingSearchGroups.clear();
-                m_pendingTotalMatches = 0;
-                m_searchCandidateFiles.clear();
-                m_searchCandidateFileIndex = 0;
-                m_searchHasMore = false;
-                m_isBatchAppend = false;
-                m_hasPendingResults = true;
+                if (alive && alive->load()) {
+                    std::lock_guard<std::mutex> lock(m_searchMutex);
+                    m_pendingSearchGroups.clear();
+                    m_pendingTotalMatches = 0;
+                    m_searchCandidateFiles.clear();
+                    m_searchCandidateFileIndex = 0;
+                    m_searchHasMore = false;
+                    m_isBatchAppend = false;
+                    m_hasPendingResults = true;
+                }
             }
         } catch (...) {
         }
@@ -2858,8 +2869,8 @@ void DrawerPanel::FetchNextSearchBatch() {
 
     auto alive = m_isAlive;
     auto workers = m_activeWorkers;
+    if (workers) workers->fetch_add(1);
     std::thread([this, alive, workers, thisGen, query, rootFolder, matchCase, matchWord, useRegex]() {
-        if (workers) workers->fetch_add(1);
         auto finish = [&]() { if (workers) workers->fetch_sub(1); };
         if (!alive || !alive->load()) { finish(); return; }
         try {
@@ -2888,12 +2899,15 @@ void DrawerPanel::FetchNextSearchBatch() {
             const size_t BATCH_MATCH_LIMIT = 35;
             const size_t MAX_SCAN_PER_CHUNK = 150;
 
+            if (!alive || !alive->load()) { finish(); return; }
             size_t startIdx = m_searchCandidateFileIndex;
             size_t endIdx = startIdx;
 
             for (; endIdx < m_searchCandidateFiles.size(); ++endIdx) {
+                if (!alive || !alive->load()) { finish(); return; }
                 if (m_searchGeneration.load() != thisGen) {
-                    m_isFetchingMore = false;
+                    if (alive && alive->load()) m_isFetchingMore = false;
+                    finish();
                     return;
                 }
                 if (nextGroups.size() >= BATCH_FILE_LIMIT || batchMatches >= BATCH_MATCH_LIMIT || (endIdx - startIdx) >= MAX_SCAN_PER_CHUNK) {
@@ -2907,7 +2921,7 @@ void DrawerPanel::FetchNextSearchBatch() {
                 }
             }
 
-            if (m_searchGeneration.load() == thisGen) {
+            if (alive && alive->load() && m_searchGeneration.load() == thisGen) {
                 std::lock_guard<std::mutex> lock(m_searchMutex);
                 m_pendingSearchGroups = std::move(nextGroups);
                 m_pendingTotalMatches = batchMatches;
@@ -3662,6 +3676,18 @@ static std::wstring GitUtf8ToWide(const std::string& str) {
 }
 
 static bool CheckGitHubCliAuthStatus() {
+    static std::atomic<int> s_cachedStatus{ -1 }; // -1: uninit, 0: false, 1: true
+    static std::chrono::steady_clock::time_point s_lastCheck{};
+    static std::mutex s_authMutex;
+
+    auto now = std::chrono::steady_clock::now();
+    {
+        std::lock_guard<std::mutex> lock(s_authMutex);
+        if (s_cachedStatus.load() != -1 && std::chrono::duration_cast<std::chrono::seconds>(now - s_lastCheck).count() < 30) {
+            return s_cachedStatus.load() == 1;
+        }
+    }
+
     SECURITY_ATTRIBUTES sa{ sizeof(sa), nullptr, TRUE };
     HANDLE hReadPipe = nullptr, hWritePipe = nullptr;
     if (!CreatePipe(&hReadPipe, &hWritePipe, &sa, 0)) return false;
@@ -3688,7 +3714,7 @@ static bool CheckGitHubCliAuthStatus() {
         return false;
     }
 
-    DWORD waitRes = WaitForSingleObject(pi.hProcess, 1500);
+    DWORD waitRes = WaitForSingleObject(pi.hProcess, 3500);
     DWORD exitCode = 1;
     if (waitRes == WAIT_OBJECT_0) {
         GetExitCodeProcess(pi.hProcess, &exitCode);
@@ -3698,7 +3724,14 @@ static bool CheckGitHubCliAuthStatus() {
     CloseHandle(pi.hProcess);
     CloseHandle(pi.hThread);
     CloseHandle(hReadPipe);
-    return exitCode == 0;
+
+    bool authed = (exitCode == 0);
+    {
+        std::lock_guard<std::mutex> lock(s_authMutex);
+        s_cachedStatus.store(authed ? 1 : 0);
+        s_lastCheck = std::chrono::steady_clock::now();
+    }
+    return authed;
 }
 
 } // anonymous namespace
@@ -3861,6 +3894,9 @@ void DrawerPanel::RefreshGitState(bool async, bool showLoading) {
             // Already a git refresh operation running, drop redundant trigger
             return;
         }
+        if (m_activeWorkers) {
+            m_activeWorkers->fetch_add(1);
+        }
     } else {
         m_isGitRefreshing.store(true);
     }
@@ -3870,23 +3906,26 @@ void DrawerPanel::RefreshGitState(bool async, bool showLoading) {
     auto task = [this, alive, workers, showLoading, async]() {
         struct WorkerGuard {
             std::shared_ptr<std::atomic<int>> w;
-            WorkerGuard(std::shared_ptr<std::atomic<int>> ptr) : w(ptr) { if (w) w->fetch_add(1); }
-            ~WorkerGuard() { if (w) w->fetch_sub(1); }
-        } guard(workers);
+            bool isAsync;
+            WorkerGuard(std::shared_ptr<std::atomic<int>> ptr, bool a) : w(ptr), isAsync(a) {}
+            ~WorkerGuard() { if (isAsync && w) w->fetch_sub(1); }
+        } guard(workers, async);
 
         if (!alive || !alive->load()) return;
 
         struct RefreshFinisher {
             std::atomic<bool>& flag;
             std::atomic<bool>& loadingFlag;
-            bool wasLoading;
-            RefreshFinisher(std::atomic<bool>& f, std::atomic<bool>& lf, bool wl)
-                : flag(f), loadingFlag(lf), wasLoading(wl) {}
+            std::shared_ptr<std::atomic<bool>> alive;
+            RefreshFinisher(std::atomic<bool>& f, std::atomic<bool>& lf, std::shared_ptr<std::atomic<bool>> a)
+                : flag(f), loadingFlag(lf), alive(a) {}
             ~RefreshFinisher() {
-                flag.store(false);
-                loadingFlag.store(false);
+                if (alive && alive->load()) {
+                    flag.store(false);
+                    loadingFlag.store(false);
+                }
             }
-        } finisher(m_isGitRefreshing, m_isGitLoading, showLoading);
+        } finisher(m_isGitRefreshing, m_isGitLoading, alive);
 
         if (!alive || !alive->load()) return;
         if (showLoading) {
@@ -4471,14 +4510,20 @@ void DrawerPanel::DismissSearchGroup(size_t groupIdx) {
 }
 
 void DrawerPanel::RefreshGitStatusOnly(bool async) {
+    if (async) {
+        if (m_activeWorkers) {
+            m_activeWorkers->fetch_add(1);
+        }
+    }
     auto alive = m_isAlive;
     auto workers = m_activeWorkers;
-    auto task = [this, alive, workers]() {
+    auto task = [this, alive, workers, async]() {
         struct WorkerGuard {
             std::shared_ptr<std::atomic<int>> w;
-            WorkerGuard(std::shared_ptr<std::atomic<int>> ptr) : w(ptr) { if (w) w->fetch_add(1); }
-            ~WorkerGuard() { if (w) w->fetch_sub(1); }
-        } guard(workers);
+            bool isAsync;
+            WorkerGuard(std::shared_ptr<std::atomic<int>> ptr, bool a) : w(ptr), isAsync(a) {}
+            ~WorkerGuard() { if (isAsync && w) w->fetch_sub(1); }
+        } guard(workers, async);
 
         if (!alive || !alive->load()) return;
         std::wstring dir = m_openFolderPath.empty() ? L"." : m_openFolderPath;
@@ -5152,10 +5197,12 @@ void DrawerPanel::StageAllChangesAsync() {
     SetActionPending(L"*", 5000);
     auto alive = m_isAlive;
     auto workers = m_activeWorkers;
+    if (workers) workers->fetch_add(1);
     std::thread([this, alive, workers]() {
-        if (workers) workers->fetch_add(1);
         auto finish = [&]() {
-            m_isGitLoading = false;
+            if (alive && alive->load()) {
+                m_isGitLoading = false;
+            }
             if (workers) workers->fetch_sub(1);
         };
         if (!alive || !alive->load()) { finish(); return; }
@@ -5180,9 +5227,14 @@ void DrawerPanel::UnstageAllChangesAsync() {
     SetActionPending(L"*", 5000);
     auto alive = m_isAlive;
     auto workers = m_activeWorkers;
+    if (workers) workers->fetch_add(1);
     std::thread([this, alive, workers]() {
-        if (workers) workers->fetch_add(1);
-        auto finish = [&]() { if (workers) workers->fetch_sub(1); };
+        auto finish = [&]() {
+            if (alive && alive->load()) {
+                m_isGitLoading = false;
+            }
+            if (workers) workers->fetch_sub(1);
+        };
         if (!alive || !alive->load()) { finish(); return; }
         m_isGitLoading = true;
         std::wstring dir = m_openFolderPath.empty() ? L"." : m_openFolderPath;
@@ -5218,8 +5270,8 @@ bool DrawerPanel::DiscardAllChanges() {
 void DrawerPanel::DiscardAllChangesAsync() {
     auto alive = m_isAlive;
     auto workers = m_activeWorkers;
+    if (workers) workers->fetch_add(1);
     std::thread([this, alive, workers]() {
-        if (workers) workers->fetch_add(1);
         if (alive && alive->load()) {
             DiscardAllChanges();
         }
@@ -5231,9 +5283,14 @@ void DrawerPanel::StageFileAsync(const std::wstring& relPath) {
     SetActionPending(relPath, 3000);
     auto alive = m_isAlive;
     auto workers = m_activeWorkers;
+    if (workers) workers->fetch_add(1);
     std::thread([this, alive, workers, relPath]() {
-        if (workers) workers->fetch_add(1);
-        auto finish = [&]() { if (workers) workers->fetch_sub(1); };
+        auto finish = [&]() {
+            if (alive && alive->load()) {
+                m_isGitLoading = false;
+            }
+            if (workers) workers->fetch_sub(1);
+        };
         if (!alive || !alive->load()) { finish(); return; }
         m_isGitLoading = true;
         std::wstring dir = m_openFolderPath.empty() ? L"." : m_openFolderPath;
@@ -5254,9 +5311,14 @@ void DrawerPanel::UnstageFileAsync(const std::wstring& relPath) {
     SetActionPending(relPath, 3000);
     auto alive = m_isAlive;
     auto workers = m_activeWorkers;
+    if (workers) workers->fetch_add(1);
     std::thread([this, alive, workers, relPath]() {
-        if (workers) workers->fetch_add(1);
-        auto finish = [&]() { if (workers) workers->fetch_sub(1); };
+        auto finish = [&]() {
+            if (alive && alive->load()) {
+                m_isGitLoading = false;
+            }
+            if (workers) workers->fetch_sub(1);
+        };
         if (!alive || !alive->load()) { finish(); return; }
         m_isGitLoading = true;
         std::wstring dir = m_openFolderPath.empty() ? L"." : m_openFolderPath;
@@ -5326,8 +5388,8 @@ bool DrawerPanel::DiscardFile(const std::wstring& relPath) {
 void DrawerPanel::DiscardFileAsync(const std::wstring& relPath) {
     auto alive = m_isAlive;
     auto workers = m_activeWorkers;
+    if (workers) workers->fetch_add(1);
     std::thread([this, alive, workers, relPath]() {
-        if (workers) workers->fetch_add(1);
         if (alive && alive->load()) {
             DiscardFile(relPath);
         }
@@ -5362,13 +5424,15 @@ void DrawerPanel::CommitChangesAsync(const std::wstring& message) {
 
     auto alive = m_isAlive;
     auto workers = m_activeWorkers;
+    if (workers) workers->fetch_add(1);
     std::thread([this, alive, workers, msg]() {
-        if (workers) workers->fetch_add(1);
         auto finish = [&]() {
-            m_isGitLoading = false;
-            m_isCommitting = false;
+            if (alive && alive->load()) {
+                m_isGitLoading = false;
+                m_isCommitting = false;
+                if (m_onGitStateChanged) m_onGitStateChanged();
+            }
             if (workers) workers->fetch_sub(1);
-            if (m_onGitStateChanged) m_onGitStateChanged();
         };
         if (!alive || !alive->load()) { finish(); return; }
         m_isGitLoading = true;
@@ -5422,10 +5486,12 @@ void DrawerPanel::CommitChangesAsync(const std::wstring& message) {
 void DrawerPanel::UncommitLastCommitAsync() {
     auto alive = m_isAlive;
     auto workers = m_activeWorkers;
+    if (workers) workers->fetch_add(1);
     std::thread([this, alive, workers]() {
-        if (workers) workers->fetch_add(1);
         auto finish = [&]() {
-            m_isGitLoading = false;
+            if (alive && alive->load()) {
+                m_isGitLoading = false;
+            }
             if (workers) workers->fetch_sub(1);
         };
         if (!alive || !alive->load()) { finish(); return; }
@@ -5456,12 +5522,14 @@ void DrawerPanel::UncommitLastCommitAsync() {
 void DrawerPanel::PushCommitsAsync() {
     auto alive = m_isAlive;
     auto workers = m_activeWorkers;
+    if (workers) workers->fetch_add(1);
     std::thread([this, alive, workers]() {
-        if (workers) workers->fetch_add(1);
         auto finish = [&]() {
-            m_isGitLoading = false;
+            if (alive && alive->load()) {
+                m_isGitLoading = false;
+                if (m_onGitStateChanged) m_onGitStateChanged();
+            }
             if (workers) workers->fetch_sub(1);
-            if (m_onGitStateChanged) m_onGitStateChanged();
         };
         try {
             if (alive && alive->load()) {
@@ -5483,12 +5551,14 @@ void DrawerPanel::PushCommitsAsync() {
 void DrawerPanel::PullCommitsAsync() {
     auto alive = m_isAlive;
     auto workers = m_activeWorkers;
+    if (workers) workers->fetch_add(1);
     std::thread([this, alive, workers]() {
-        if (workers) workers->fetch_add(1);
         auto finish = [&]() {
-            m_isGitLoading = false;
+            if (alive && alive->load()) {
+                m_isGitLoading = false;
+                if (m_onGitStateChanged) m_onGitStateChanged();
+            }
             if (workers) workers->fetch_sub(1);
-            if (m_onGitStateChanged) m_onGitStateChanged();
         };
         try {
             if (alive && alive->load()) {
@@ -5510,10 +5580,12 @@ void DrawerPanel::PullCommitsAsync() {
 void DrawerPanel::FetchAllRemotesAsync() {
     auto alive = m_isAlive;
     auto workers = m_activeWorkers;
+    if (workers) workers->fetch_add(1);
     std::thread([this, alive, workers]() {
-        if (workers) workers->fetch_add(1);
         auto finish = [&]() {
-            m_isGitLoading = false;
+            if (alive && alive->load()) {
+                m_isGitLoading = false;
+            }
             if (workers) workers->fetch_sub(1);
         };
         try {
@@ -5533,10 +5605,12 @@ void DrawerPanel::FetchAllRemotesAsync() {
 void DrawerPanel::StashChangesAsync() {
     auto alive = m_isAlive;
     auto workers = m_activeWorkers;
+    if (workers) workers->fetch_add(1);
     std::thread([this, alive, workers]() {
-        if (workers) workers->fetch_add(1);
         auto finish = [&]() {
-            m_isGitLoading = false;
+            if (alive && alive->load()) {
+                m_isGitLoading = false;
+            }
             if (workers) workers->fetch_sub(1);
         };
         try {
@@ -5556,10 +5630,12 @@ void DrawerPanel::StashChangesAsync() {
 void DrawerPanel::RunGarbageCollectionAsync() {
     auto alive = m_isAlive;
     auto workers = m_activeWorkers;
+    if (workers) workers->fetch_add(1);
     std::thread([this, alive, workers]() {
-        if (workers) workers->fetch_add(1);
         auto finish = [&]() {
-            m_isGitLoading = false;
+            if (alive && alive->load()) {
+                m_isGitLoading = false;
+            }
             if (workers) workers->fetch_sub(1);
         };
         try {
@@ -6024,6 +6100,20 @@ bool DrawerPanel::HitTestGit(POINT pt, const app::AppConfig& config,
             return true;
         }
 
+        // Outgoing Changes click handling in Git Graph (media_1793189109205_99e33179.png)
+        if (m_graphExpanded && !m_gitChanges.empty()) {
+            if (pt.x >= m_gitGraphOutgoingStageAllBounds.left && pt.x <= m_gitGraphOutgoingStageAllBounds.right &&
+                pt.y >= m_gitGraphOutgoingStageAllBounds.top && pt.y <= m_gitGraphOutgoingStageAllBounds.bottom) {
+                StageAllChangesAsync();
+                return true;
+            }
+            if (pt.x >= m_gitGraphOutgoingBounds.left && pt.x <= m_gitGraphOutgoingBounds.right &&
+                pt.y >= m_gitGraphOutgoingBounds.top && pt.y <= m_gitGraphOutgoingBounds.bottom) {
+                m_gitGraphOutgoingExpanded = !m_gitGraphOutgoingExpanded;
+                return true;
+            }
+        }
+
         // Commit Rows & Expanded File Details (Image 2 & 3)
         if (m_graphExpanded) {
             for (size_t i = 0; i < m_gitCommits.size(); ++i) {
@@ -6175,6 +6265,10 @@ bool DrawerPanel::HandleGitMouseMove(POINT pt) {
 
     // Check commit rows and expanded files (Images 2, 3, 5)
     int oldHoverCommit = m_hoveredCommitIdx;
+    bool oldHoverOutgoing = m_hoveredGitGraphOutgoing;
+    m_hoveredGitGraphOutgoing = (m_graphExpanded && !m_gitChanges.empty() &&
+        pt.x >= m_gitGraphOutgoingBounds.left && pt.x <= m_gitGraphOutgoingBounds.right &&
+        pt.y >= m_gitGraphOutgoingBounds.top && pt.y <= m_gitGraphOutgoingBounds.bottom);
     if (m_graphExpanded && !m_showGitTooltip) {
         bool inCard = (m_commitCardBounds.right > m_commitCardBounds.left &&
                        pt.x >= m_commitCardBounds.left && pt.x <= m_commitCardBounds.right &&
@@ -6223,7 +6317,8 @@ bool DrawerPanel::HandleGitMouseMove(POINT pt) {
         }
     }
 
-    return (m_gitTooltipText != oldTip || m_hoveredGitChangeIdx != oldHoverChange || m_hoveredCommitIdx != oldHoverCommit);
+    return (m_gitTooltipText != oldTip || m_hoveredGitChangeIdx != oldHoverChange ||
+            m_hoveredCommitIdx != oldHoverCommit || m_hoveredGitGraphOutgoing != oldHoverOutgoing);
 }
 
 void DrawerPanel::HandleGitChar(wchar_t ch) {
@@ -6728,12 +6823,19 @@ void DrawerPanel::RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, 
                         // Seti icon
                         float iconX = railW + config.ScaleF(14.0f);
                         D2D1_RECT_F rcIcon = D2D1::RectF(iconX, itemY + config.ScaleF(4.0f), iconX + config.ScaleF(16.0f), itemY + rowH - config.ScaleF(4.0f));
-                        auto setiInfo = theme.GetSetiIcon(item.fileName, false, false);
-                        if (theme.fontSeti && setiInfo.pBrush) {
-                            pRT->DrawText(&setiInfo.glyph, 1, theme.fontSeti.Get(), rcIcon, setiInfo.pBrush);
+                        bool isIpynb = (item.fileName.size() >= 6 && 
+                            (_wcsicmp(item.fileName.c_str() + (item.fileName.size() - 6), L".ipynb") == 0));
+                        if (isIpynb) {
+                            m_icons.DrawTerminalNotebook(pRT, rcIcon,
+                                theme.brushBrandAccent ? theme.brushBrandAccent.Get() : theme.brushTextWhite.Get(), 1.2f);
                         } else {
-                            auto iconType = LucideIcons::GetIconTypeForPath(item.fileName, false, false);
-                            m_icons.DrawFileIcon(pRT, theme, rcIcon, iconType);
+                            auto setiInfo = theme.GetSetiIcon(item.fileName, false, false);
+                            if (theme.fontSeti && setiInfo.pBrush) {
+                                pRT->DrawText(&setiInfo.glyph, 1, theme.fontSeti.Get(), rcIcon, setiInfo.pBrush);
+                            } else {
+                                auto iconType = LucideIcons::GetIconTypeForPath(item.fileName, false, false);
+                                m_icons.DrawFileIcon(pRT, theme, rcIcon, iconType);
+                            }
                         }
 
                         // File Name
@@ -6938,12 +7040,19 @@ void DrawerPanel::RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, 
                         // Seti icon
                         float iconX = railW + config.ScaleF(14.0f);
                         D2D1_RECT_F rcIcon = D2D1::RectF(iconX, itemY + config.ScaleF(4.0f), iconX + config.ScaleF(16.0f), itemY + rowH - config.ScaleF(4.0f));
-                        auto setiInfo = theme.GetSetiIcon(item.fileName, false, false);
-                        if (theme.fontSeti && setiInfo.pBrush) {
-                            pRT->DrawText(&setiInfo.glyph, 1, theme.fontSeti.Get(), rcIcon, setiInfo.pBrush);
+                        bool isIpynb = (item.fileName.size() >= 6 && 
+                            (_wcsicmp(item.fileName.c_str() + (item.fileName.size() - 6), L".ipynb") == 0));
+                        if (isIpynb) {
+                            m_icons.DrawTerminalNotebook(pRT, rcIcon,
+                                theme.brushBrandAccent ? theme.brushBrandAccent.Get() : theme.brushTextWhite.Get(), 1.2f);
                         } else {
-                            auto iconType = LucideIcons::GetIconTypeForPath(item.fileName, false, false);
-                            m_icons.DrawFileIcon(pRT, theme, rcIcon, iconType);
+                            auto setiInfo = theme.GetSetiIcon(item.fileName, false, false);
+                            if (theme.fontSeti && setiInfo.pBrush) {
+                                pRT->DrawText(&setiInfo.glyph, 1, theme.fontSeti.Get(), rcIcon, setiInfo.pBrush);
+                            } else {
+                                auto iconType = LucideIcons::GetIconTypeForPath(item.fileName, false, false);
+                                m_icons.DrawFileIcon(pRT, theme, rcIcon, iconType);
+                            }
                         }
 
                         // File Name
@@ -7227,6 +7336,169 @@ void DrawerPanel::RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, 
             const float laneSpacing = config.ScaleF(12.0f);
             const float originTimelineX = railW + config.ScaleF(16.0f);
 
+            // Outgoing Changes root node at top of Git Graph (media_1793189109205_99e33179.png)
+            if (!m_gitChanges.empty() && startIdx == 0 && curY < clientHeight) {
+                m_gitGraphOutgoingBounds = D2D1::RectF(railW, curY, railW + currentDrawerW, curY + rowH);
+                bool isRowHovered = m_hoveredGitGraphOutgoing;
+                if (isRowHovered) {
+                    pRT->FillRectangle(m_gitGraphOutgoingBounds, theme.brushItemHover.Get());
+                }
+
+                float nodeY = curY + rowH / 2.0f;
+                float nodeX = originTimelineX;
+
+                // Vertical connector line down from Outgoing Changes to HEAD commit below
+                pRT->DrawLine(
+                    D2D1::Point2F(nodeX, nodeY),
+                    D2D1::Point2F(nodeX, curY + rowH),
+                    laneBrushes[0].Get(), 1.8f
+                );
+
+                // Distinct double ring / hollow node for uncommitted Outgoing Changes
+                pRT->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(nodeX, nodeY), 4.6f, 4.6f), laneBrushes[0].Get(), 1.6f);
+                pRT->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(nodeX, nodeY), 2.2f, 2.2f), laneBrushes[0].Get(), 1.0f);
+
+                // Chevron expander
+                float chX = railW + config.ScaleF(8.0f);
+                m_gitGraphOutgoingChevronBounds = D2D1::RectF(chX - 4.0f, nodeY - 6.0f, chX + 4.0f, nodeY + 6.0f);
+                if (m_gitGraphOutgoingExpanded) {
+                    pRT->DrawLine(D2D1::Point2F(chX - 2.5f, nodeY - 1.5f), D2D1::Point2F(chX, nodeY + 1.5f), theme.brushTextMuted.Get(), 1.2f);
+                    pRT->DrawLine(D2D1::Point2F(chX, nodeY + 1.5f), D2D1::Point2F(chX + 2.5f, nodeY - 1.5f), theme.brushTextMuted.Get(), 1.2f);
+                } else {
+                    pRT->DrawLine(D2D1::Point2F(chX - 1.5f, nodeY - 2.5f), D2D1::Point2F(chX + 1.5f, nodeY), theme.brushTextMuted.Get(), 1.2f);
+                    pRT->DrawLine(D2D1::Point2F(chX + 1.5f, nodeY), D2D1::Point2F(chX - 1.5f, nodeY + 2.5f), theme.brushTextMuted.Get(), 1.2f);
+                }
+
+                // Stage All icon button [+] on right
+                float btnSize = config.ScaleF(16.0f);
+                float btnRight = railW + currentDrawerW - config.ScaleF(8.0f);
+                float btnLeft = btnRight - btnSize;
+                m_gitGraphOutgoingStageAllBounds = D2D1::RectF(btnLeft, curY + (rowH - btnSize) * 0.5f, btnRight, curY + (rowH + btnSize) * 0.5f);
+                if (isRowHovered) {
+                    D2D1_ROUNDED_RECT rrcStageBtn = D2D1::RoundedRect(m_gitGraphOutgoingStageAllBounds, 3.0f, 3.0f);
+                    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushBtnBg;
+                    pRT->CreateSolidColorBrush(D2D1::ColorF(0.22f, 0.22f, 0.25f, 0.9f), &brushBtnBg);
+                    if (brushBtnBg) pRT->FillRoundedRectangle(rrcStageBtn, brushBtnBg.Get());
+                    D2D1_RECT_F rcBox = D2D1::RectF(btnLeft + 2.0f, curY + (rowH - btnSize) * 0.5f + 2.0f, btnRight - 2.0f, curY + (rowH + btnSize) * 0.5f - 2.0f);
+                    pRT->DrawRectangle(rcBox, theme.brushTextPrimary.Get(), 1.0f);
+                    float midX = (btnLeft + btnRight) * 0.5f;
+                    float midY = curY + rowH * 0.5f;
+                    pRT->DrawLine(D2D1::Point2F(midX, midY - 3.0f), D2D1::Point2F(midX, midY + 3.0f), theme.brushTextPrimary.Get(), 1.2f);
+                    pRT->DrawLine(D2D1::Point2F(midX - 3.0f, midY), D2D1::Point2F(midX + 3.0f, midY), theme.brushTextPrimary.Get(), 1.2f);
+                }
+
+                float textLeft = originTimelineX + (maxLaneVisible + 1) * laneSpacing + config.ScaleF(8.0f);
+
+                // Label: "Outgoing Changes"
+                const wchar_t* outTitle = L"Outgoing Changes";
+                float outTitleW = config.ScaleF(110.0f);
+                D2D1_RECT_F rcOutLabel = D2D1::RectF(textLeft, curY, textLeft + outTitleW, curY + rowH);
+                pRT->DrawText(outTitle, static_cast<UINT32>(wcslen(outTitle)),
+                              theme.fontMenuItem.Get() ? theme.fontMenuItem.Get() : theme.fontButtonCenter.Get(),
+                              rcOutLabel, theme.brushTextPrimary.Get());
+                textLeft += outTitleW + config.ScaleF(4.0f);
+
+                // Branch pill badge (e.g. "main")
+                std::wstring branchBadgeText = m_gitBranch.empty() ? L"main" : m_gitBranch;
+                float bW = config.ScaleF(16.0f) + branchBadgeText.length() * config.ScaleF(6.0f);
+                float bH = config.ScaleF(17.0f);
+                D2D1_ROUNDED_RECT rrcBadge = D2D1::RoundedRect(
+                    D2D1::RectF(textLeft, nodeY - bH / 2.0f, textLeft + bW, nodeY + bH / 2.0f),
+                    3.0f, 3.0f
+                );
+                pRT->FillRoundedRectangle(rrcBadge, brushBranchBadge.Get());
+                pRT->DrawRoundedRectangle(rrcBadge, laneBrushes[0].Get(), 1.0f);
+                pRT->DrawText(branchBadgeText.c_str(), static_cast<UINT32>(branchBadgeText.length()),
+                              theme.fontMenuItem.Get() ? theme.fontMenuItem.Get() : theme.fontButtonCenter.Get(),
+                              D2D1::RectF(textLeft + 3.0f, nodeY - bH / 2.0f, textLeft + bW, nodeY + bH / 2.0f),
+                              laneBrushes[0].Get());
+
+                curY += rowH;
+
+                // Expanded files under Outgoing Changes
+                if (m_gitGraphOutgoingExpanded) {
+                    float fileRowH = config.ScaleF(22.0f);
+                    float fileIndent = originTimelineX + config.ScaleF(10.0f);
+
+                    for (const auto& chg : m_gitChanges) {
+                        if (curY + fileRowH > clientHeight) break;
+
+                        // Vertical timeline connector
+                        pRT->DrawLine(
+                            D2D1::Point2F(nodeX, curY),
+                            D2D1::Point2F(nodeX, curY + fileRowH),
+                            laneBrushes[0].Get(), 1.2f
+                        );
+                        // Small branch connecting timeline to file
+                        pRT->DrawLine(
+                            D2D1::Point2F(nodeX, curY + fileRowH / 2.0f),
+                            D2D1::Point2F(fileIndent, curY + fileRowH / 2.0f),
+                            laneBrushes[0].Get(), 1.0f
+                        );
+
+                        // File icon
+                        D2D1_RECT_F rcFileIcon = D2D1::RectF(
+                            fileIndent + config.ScaleF(4.0f),
+                            curY + config.ScaleF(3.0f),
+                            fileIndent + config.ScaleF(18.0f),
+                            curY + fileRowH - config.ScaleF(3.0f)
+                        );
+                        bool isIpynb = (chg.fileName.size() >= 6 && 
+                            (_wcsicmp(chg.fileName.c_str() + (chg.fileName.size() - 6), L".ipynb") == 0));
+                        if (isIpynb) {
+                            m_icons.DrawTerminalNotebook(pRT, rcFileIcon,
+                                theme.brushBrandAccent ? theme.brushBrandAccent.Get() : theme.brushTextWhite.Get(), 1.2f);
+                        } else {
+                            auto setiInfo = theme.GetSetiIcon(chg.fileName, false, false);
+                            if (theme.fontSeti && setiInfo.pBrush) {
+                                pRT->DrawText(&setiInfo.glyph, 1, theme.fontSeti.Get(), rcFileIcon, setiInfo.pBrush);
+                            } else {
+                                auto iconType = LucideIcons::GetIconTypeForPath(chg.fileName, false, false);
+                                m_icons.DrawFileIcon(pRT, theme, rcFileIcon, iconType);
+                            }
+                        }
+
+                        // File name + directory path in muted font
+                        float nameX = fileIndent + config.ScaleF(22.0f);
+                        D2D1_RECT_F rcFileName = D2D1::RectF(
+                            nameX, curY,
+                            railW + currentDrawerW - config.ScaleF(26.0f),
+                            curY + fileRowH
+                        );
+
+                        std::wstring displayLabel = chg.fileName;
+                        auto slashPos = chg.path.find_last_of(L"/\\");
+                        if (slashPos != std::wstring::npos && slashPos > 0) {
+                            displayLabel += L"  " + chg.path.substr(0, slashPos);
+                        }
+
+                        pRT->DrawText(displayLabel.c_str(), static_cast<UINT32>(displayLabel.length()),
+                                      theme.fontMenuItem.Get() ? theme.fontMenuItem.Get() : theme.fontButtonCenter.Get(),
+                                      rcFileName, theme.brushTextPrimary.Get());
+
+                        // Status badge (M, A, D, U)
+                        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushStatus;
+                        if (chg.status.find(L"M") != std::wstring::npos) {
+                            pRT->CreateSolidColorBrush(D2D1::ColorF(0.898f, 0.753f, 0.482f, 1.0f), &brushStatus);
+                        } else if (chg.status.find(L"D") != std::wstring::npos) {
+                            pRT->CreateSolidColorBrush(D2D1::ColorF(0.878f, 0.424f, 0.459f, 1.0f), &brushStatus);
+                        } else {
+                            pRT->CreateSolidColorBrush(D2D1::ColorF(0.596f, 0.765f, 0.475f, 1.0f), &brushStatus);
+                        }
+                        D2D1_RECT_F rcStatus = D2D1::RectF(
+                            railW + currentDrawerW - config.ScaleF(24.0f), curY,
+                            railW + currentDrawerW - config.ScaleF(8.0f), curY + fileRowH
+                        );
+                        const wchar_t* sChar = chg.status.empty() ? L"M" : chg.status.c_str();
+                        pRT->DrawText(sChar, 1,
+                                      theme.fontButtonCenter.Get() ? theme.fontButtonCenter.Get() : theme.fontMenuItem.Get(),
+                                      rcStatus, brushStatus ? brushStatus.Get() : theme.brushTextPrimary.Get());
+
+                        curY += fileRowH;
+                    }
+                }
+            }
+
             for (size_t i = startIdx; i < m_gitCommits.size() && curY < clientHeight; ++i) {
                 auto& ci = m_gitCommits[i];
                 ci.bounds = D2D1::RectF(railW, curY, railW + currentDrawerW, curY + rowH);
@@ -7255,12 +7527,18 @@ void DrawerPanel::RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, 
                     );
                 }
 
-                // 2. Incoming vertical line from parent commit above
+                // 2. Incoming vertical line from parent commit above or Outgoing Changes
                 if (i > 0) {
                     pRT->DrawLine(
                         D2D1::Point2F(nodeX, curY),
                         D2D1::Point2F(nodeX, nodeY),
                         pCommitBrush, 1.6f
+                    );
+                } else if (!m_gitChanges.empty()) {
+                    pRT->DrawLine(
+                        D2D1::Point2F(nodeX, curY),
+                        D2D1::Point2F(nodeX, nodeY),
+                        laneBrushes[0].Get(), 1.8f
                     );
                 }
 
@@ -7317,16 +7595,17 @@ void DrawerPanel::RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, 
                     pRT->CreateSolidColorBrush(D2D1::ColorF(0.22f, 0.74f, 0.97f, 1.0f), &brushUnpushed);
                 }
 
-                // 4. Commit circle node (distinct hollow Sky-Blue ring for unpushed commits)
-                if (ci.isUnpushed) {
+                // 4. Commit circle node (matching VS Code Git Graph in media_1793189109205_99e33179.png):
+                // For HEAD: Clean hollow blue circle with 2.0f stroke width
+                // For unpushed commits: Hollow sky-blue ring with inner dot
+                // For pushed / remote tracking commits: Solid purple circle
+                if (ci.isHead) {
+                    pRT->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(nodeX, nodeY), 4.6f, 4.6f), laneBrushes[0].Get(), 2.0f);
+                } else if (ci.isUnpushed) {
                     ID2D1Brush* pUnpushedBrush = brushUnpushed ? brushUnpushed.Get() : pCommitBrush;
                     pRT->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(nodeX, nodeY), 4.2f, 4.2f), pUnpushedBrush, 2.0f);
-                    if (ci.isHead) {
-                        pRT->FillEllipse(D2D1::Ellipse(D2D1::Point2F(nodeX, nodeY), 1.8f, 1.8f), pUnpushedBrush);
-                    }
-                } else if (ci.isHead) {
-                    pRT->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(nodeX, nodeY), 4.8f, 4.8f), pCommitBrush, 1.8f);
-                    pRT->FillEllipse(D2D1::Ellipse(D2D1::Point2F(nodeX, nodeY), 2.2f, 2.2f), pCommitBrush);
+                } else if (ci.refNames.find(L"origin/") != std::wstring::npos) {
+                    pRT->FillEllipse(D2D1::Ellipse(D2D1::Point2F(nodeX, nodeY), 3.4f, 3.4f), laneBrushes[6].Get());
                 } else {
                     pRT->FillEllipse(D2D1::Ellipse(D2D1::Point2F(nodeX, nodeY), 3.2f, 3.2f), pCommitBrush);
                 }
@@ -7353,22 +7632,30 @@ void DrawerPanel::RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, 
 
                 float textLeft = originTimelineX + (maxLaneVisible + 1) * laneSpacing + config.ScaleF(8.0f);
 
-                // Branch pill badge (e.g. master + cloud or master + ↑ if unpushed)
+                // Branch pill badge (e.g. main with bullseye ◎ or origin/master with cloud ☁)
                 if (ci.isHead || !ci.refNames.empty() || ci.isUnpushed) {
+                    bool isRemote = (ci.refNames.find(L"origin/") != std::wstring::npos);
                     std::wstring branchBadgeText = L"master";
-                    if (!m_gitBranch.empty()) branchBadgeText = m_gitBranch;
-                    if (ci.isUnpushed) {
+                    if (isRemote) {
+                        size_t oPos = ci.refNames.find(L"origin/");
+                        size_t endP = ci.refNames.find_first_of(L", )", oPos);
+                        branchBadgeText = (endP != std::wstring::npos) ? ci.refNames.substr(oPos, endP - oPos) : ci.refNames.substr(oPos);
+                    } else if (!m_gitBranch.empty()) {
+                        branchBadgeText = m_gitBranch;
+                    }
+                    if (ci.isUnpushed && !ci.isHead) {
                         branchBadgeText += L" ↑";
                     }
+
                     float maxBadgeW = (std::max)(config.ScaleF(32.0f), (btnLeft - config.ScaleF(30.0f)) - textLeft);
-                    float bW = (std::min)(maxBadgeW, config.ScaleF(18.0f) + branchBadgeText.length() * config.ScaleF(6.0f));
+                    float bW = (std::min)(maxBadgeW, config.ScaleF(20.0f) + branchBadgeText.length() * config.ScaleF(6.0f));
                     float bH = config.ScaleF(17.0f);
                     D2D1_ROUNDED_RECT rrcBadge = D2D1::RoundedRect(
                         D2D1::RectF(textLeft, nodeY - bH / 2.0f, textLeft + bW, nodeY + bH / 2.0f),
                         3.0f, 3.0f
                     );
+                    ID2D1Brush* pBadgeOutlineBrush = isRemote ? laneBrushes[6].Get() : laneBrushes[0].Get();
                     pRT->FillRoundedRectangle(rrcBadge, brushBranchBadge.Get());
-                    ID2D1Brush* pBadgeOutlineBrush = ci.isUnpushed ? (brushUnpushed ? brushUnpushed.Get() : pCommitBrush) : pCommitBrush;
                     pRT->DrawRoundedRectangle(rrcBadge, pBadgeOutlineBrush, 1.0f);
 
                     // Badge text
@@ -7377,18 +7664,23 @@ void DrawerPanel::RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, 
                                   D2D1::RectF(textLeft + 3.0f, nodeY - bH / 2.0f, textLeft + bW - 14.0f, nodeY + bH / 2.0f),
                                   pBadgeOutlineBrush);
 
-                    if (ci.isUnpushed) {
-                        // Outgoing arrow icon '↑'
-                        float arrX = textLeft + bW - 7.0f;
-                        pRT->DrawLine(D2D1::Point2F(arrX, nodeY + 3.5f), D2D1::Point2F(arrX, nodeY - 3.5f), pBadgeOutlineBrush, 1.4f);
-                        pRT->DrawLine(D2D1::Point2F(arrX - 2.5f, nodeY - 1.0f), D2D1::Point2F(arrX, nodeY - 3.5f), pBadgeOutlineBrush, 1.4f);
-                        pRT->DrawLine(D2D1::Point2F(arrX + 2.5f, nodeY - 1.0f), D2D1::Point2F(arrX, nodeY - 3.5f), pBadgeOutlineBrush, 1.4f);
-                    } else {
+                    if (isRemote) {
                         // Cloud icon on right edge of pill
                         float cloudX = textLeft + bW - 8.0f;
                         pRT->FillEllipse(D2D1::Ellipse(D2D1::Point2F(cloudX - 3.0f, nodeY + 1.0f), 2.2f, 2.2f), brushCloud.Get());
                         pRT->FillEllipse(D2D1::Ellipse(D2D1::Point2F(cloudX, nodeY - 1.0f), 3.0f, 3.0f), brushCloud.Get());
                         pRT->FillEllipse(D2D1::Ellipse(D2D1::Point2F(cloudX + 3.0f, nodeY + 1.0f), 2.2f, 2.2f), brushCloud.Get());
+                    } else if (ci.isHead) {
+                        // Bullseye / target icon on right edge of HEAD pill
+                        float bullX = textLeft + bW - 8.0f;
+                        pRT->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(bullX, nodeY), 3.2f, 3.2f), pBadgeOutlineBrush, 1.1f);
+                        pRT->FillEllipse(D2D1::Ellipse(D2D1::Point2F(bullX, nodeY), 1.2f, 1.2f), pBadgeOutlineBrush);
+                    } else if (ci.isUnpushed) {
+                        // Outgoing arrow icon '↑'
+                        float arrX = textLeft + bW - 7.0f;
+                        pRT->DrawLine(D2D1::Point2F(arrX, nodeY + 3.5f), D2D1::Point2F(arrX, nodeY - 3.5f), pBadgeOutlineBrush, 1.4f);
+                        pRT->DrawLine(D2D1::Point2F(arrX - 2.5f, nodeY - 1.0f), D2D1::Point2F(arrX, nodeY - 3.5f), pBadgeOutlineBrush, 1.4f);
+                        pRT->DrawLine(D2D1::Point2F(arrX + 2.5f, nodeY - 1.0f), D2D1::Point2F(arrX, nodeY - 3.5f), pBadgeOutlineBrush, 1.4f);
                     }
 
                     textLeft += bW + config.ScaleF(8.0f);
@@ -7458,12 +7750,19 @@ void DrawerPanel::RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, 
                             fileIndent + config.ScaleF(18.0f),
                             curY + fileRowH - config.ScaleF(3.0f)
                         );
-                        auto setiInfo = theme.GetSetiIcon(cf.fileName, false, false);
-                        if (theme.fontSeti && setiInfo.pBrush) {
-                            pRT->DrawText(&setiInfo.glyph, 1, theme.fontSeti.Get(), rcFileIcon, setiInfo.pBrush);
+                        bool isIpynb = (cf.fileName.size() >= 6 && 
+                            (_wcsicmp(cf.fileName.c_str() + (cf.fileName.size() - 6), L".ipynb") == 0));
+                        if (isIpynb) {
+                            m_icons.DrawTerminalNotebook(pRT, rcFileIcon,
+                                theme.brushBrandAccent ? theme.brushBrandAccent.Get() : theme.brushTextWhite.Get(), 1.2f);
                         } else {
-                            auto iconType = LucideIcons::GetIconTypeForPath(cf.fileName, false, false);
-                            m_icons.DrawFileIcon(pRT, theme, rcFileIcon, iconType);
+                            auto setiInfo = theme.GetSetiIcon(cf.fileName, false, false);
+                            if (theme.fontSeti && setiInfo.pBrush) {
+                                pRT->DrawText(&setiInfo.glyph, 1, theme.fontSeti.Get(), rcFileIcon, setiInfo.pBrush);
+                            } else {
+                                auto iconType = LucideIcons::GetIconTypeForPath(cf.fileName, false, false);
+                                m_icons.DrawFileIcon(pRT, theme, rcFileIcon, iconType);
+                            }
                         }
 
                         // File Name
@@ -7937,13 +8236,19 @@ void DrawerPanel::ConfirmPublishRepo(int visibilityChoice) {
 
     auto alive = m_isAlive;
     auto workers = m_activeWorkers;
+    if (workers) workers->fetch_add(1);
     std::thread([this, alive, workers, dir, repoName, visStr]() {
         struct WorkerGuard {
             std::shared_ptr<std::atomic<int>> w;
+            std::shared_ptr<std::atomic<bool>> a;
             std::atomic<bool>& gitLoading;
-            WorkerGuard(std::shared_ptr<std::atomic<int>> ptr, std::atomic<bool>& gl) : w(ptr), gitLoading(gl) { if (w) w->fetch_add(1); }
-            ~WorkerGuard() { gitLoading.store(false); if (w) w->fetch_sub(1); }
-        } guard(workers, m_isGitLoading);
+            WorkerGuard(std::shared_ptr<std::atomic<int>> ptr, std::shared_ptr<std::atomic<bool>> alivePtr, std::atomic<bool>& gl)
+                : w(ptr), a(alivePtr), gitLoading(gl) {}
+            ~WorkerGuard() {
+                if (a && a->load()) gitLoading.store(false);
+                if (w) w->fetch_sub(1);
+            }
+        } guard(workers, alive, m_isGitLoading);
 
         if (!alive || !alive->load()) return;
 

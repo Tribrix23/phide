@@ -122,6 +122,9 @@ public:
     [[nodiscard]] const std::wstring& GetTargetFilePath() const noexcept { return m_filePath; }
     [[nodiscard]] const std::wstring& GetTargetFileName() const noexcept { return m_fileName; }
     [[nodiscard]] const std::wstring& GetTargetStatus() const noexcept { return m_status; }
+    [[nodiscard]] const D2D1_RECT_F& GetConfirmBtnBounds() const noexcept { return m_confirmBtnBounds; }
+    [[nodiscard]] const D2D1_RECT_F& GetCancelBtnBounds() const noexcept { return m_cancelBtnBounds; }
+    [[nodiscard]] const D2D1_RECT_F& GetCardBounds() const noexcept { return m_cardBounds; }
 
     /**
      * @brief Checks if a client point is over any clickable buttons on the modal (Confirm, Cancel, Close).

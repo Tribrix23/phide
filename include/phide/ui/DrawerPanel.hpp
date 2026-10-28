@@ -820,6 +820,13 @@ private:
     D2D1_RECT_F m_gitGraphRefreshBounds{};
     D2D1_RECT_F m_gitGraphMoreBounds{};
 
+    // Outgoing Changes root node state in Git Graph (media_1793189109205_99e33179.png)
+    bool m_gitGraphOutgoingExpanded = true;
+    D2D1_RECT_F m_gitGraphOutgoingBounds{};
+    D2D1_RECT_F m_gitGraphOutgoingChevronBounds{};
+    D2D1_RECT_F m_gitGraphOutgoingStageAllBounds{};
+    bool m_hoveredGitGraphOutgoing = false;
+
     // Commit Card Popup state (Image 5)
     int m_hoveredCommitIdx = -1;
     int m_selectedCommitIdx = -1;

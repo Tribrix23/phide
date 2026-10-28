@@ -793,8 +793,8 @@ bool ExtensionsPanel::SetCustomEnvironment(int itemIdx, const std::wstring& cust
     auto& item = m_items[itemIdx];
 
     std::wstring exePath = customFolder;
-    // Check if the user selected an installation directory (folder)
-    if (std::filesystem::is_directory(customFolder)) {
+    bool hasExe = exePath.ends_with(L".exe") || exePath.ends_with(L".EXE");
+    if (!hasExe) {
         if (item.id == L"python") {
             if (std::filesystem::exists(customFolder + L"\\python.exe")) {
                 exePath = customFolder + L"\\python.exe";

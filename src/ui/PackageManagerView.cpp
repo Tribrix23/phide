@@ -717,7 +717,10 @@ void PackageManagerView::SelectLanguageAndOpenSearch(RuntimeLanguage lang) {
     m_viewState = PkgViewState::PackageSearch;
     m_isSearchFocused = true;
     m_searchCaretPos = 0;
-    FetchInitialPackagesFromSupabase(lang);
+    auto& list = GetActivePackageList();
+    if (list.empty()) {
+        FetchInitialPackagesFromSupabase(lang);
+    }
 }
 
 void PackageManagerView::NavigateBackToLanguages() {

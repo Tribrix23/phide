@@ -394,15 +394,15 @@ void NotebookView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
         size_t lineCount = (std::max)(size_t(1), cell.inputBuffer.GetLineCount());
         float codeH = static_cast<float>(lineCount) * lineH + config.ScaleF(16.0f);
 
-        // Calculate output height (suppressed if no outputs)
+        // Calculate dynamic output height (snug fit for small outputs, capped at 260px with scrolling for large outputs)
         float outputH = 0.0f;
         if (!cell.outputs.empty()) {
             size_t outLines = 0;
             for (const auto& out : cell.outputs) {
                 outLines += std::count(out.text.begin(), out.text.end(), L'\n') + 1;
             }
-            float rawOutH = static_cast<float>(outLines) * config.ScaleF(18.0f) + config.ScaleF(12.0f);
-            outputH = (std::min)(config.ScaleF(300.0f), rawOutH);
+            float rawOutH = static_cast<float>(outLines) * config.ScaleF(18.0f) + config.ScaleF(14.0f);
+            outputH = (std::min)(config.ScaleF(260.0f), (std::max)(config.ScaleF(36.0f), rawOutH));
         }
 
         float cardHeaderH = config.ScaleF(28.0f);
@@ -741,7 +741,7 @@ void NotebookView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
                 }
             }
 
-            // 3.4 Output Area (Colab/Jupyter standard: only displayed when outputs exist)
+            // 3.4 Output Area (Colab/Jupyter standard with dynamic height, overflow clipping, and X/Y scroll)
             if (!cell.outputs.empty()) {
                 float outTop = cell.codeAreaBounds.bottom + config.ScaleF(6.0f);
                 cell.outputAreaBounds = D2D1::RectF(cell.codeAreaBounds.left, outTop, cell.codeAreaBounds.right, outTop + outputH);
@@ -770,21 +770,86 @@ void NotebookView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
                     }
                 }
 
-                // Output text (rendered cleanly without any "stdout" label, Colab/Jupyter standard)
-                const auto& firstOut = cell.outputs[0];
-                D2D1_RECT_F rcOutText = D2D1::RectF(cell.outputAreaBounds.left + config.ScaleF(12.0f),
-                                                   outTop + config.ScaleF(6.0f),
-                                                   cell.outputAreaBounds.right - config.ScaleF(10.0f),
-                                                   cell.outputAreaBounds.bottom - config.ScaleF(4.0f));
+                // Strict Direct2D axis-aligned clipping prevents any text bleeding/overlapping adjacent cells
+                pRT->PushAxisAlignedClip(cell.outputAreaBounds, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
 
-                ID2D1Brush* outTextBrush = theme.brushTextPrimary.Get();
+                float textPadX = config.ScaleF(12.0f);
+                float textPadY = config.ScaleF(6.0f);
+                float outLineH = config.ScaleF(18.0f);
+                float curLineY = outTop + textPadY - cell.outputScrollY;
+
+                float maxLineWidth = 0.0f;
+                size_t totalLines = 0;
+
                 Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushErrText;
-                if (firstOut.isError) {
-                    pRT->CreateSolidColorBrush(D2D1::ColorF(0.95f, 0.38f, 0.38f, 1.0f), &brushErrText);
-                    if (brushErrText) outTextBrush = brushErrText.Get();
+                pRT->CreateSolidColorBrush(D2D1::ColorF(0.95f, 0.38f, 0.38f, 1.0f), &brushErrText);
+
+                for (const auto& out : cell.outputs) {
+                    ID2D1Brush* outTextBrush = out.isError ? (brushErrText ? brushErrText.Get() : theme.brushIconRed.Get())
+                                                          : (theme.brushTextPrimary ? theme.brushTextPrimary.Get() : theme.brushTextWhite.Get());
+
+                    std::wstringstream wss(out.text);
+                    std::wstring line;
+                    while (std::getline(wss, line)) {
+                        float lineW = static_cast<float>(line.length()) * charW;
+                        if (lineW > maxLineWidth) maxLineWidth = lineW;
+                        totalLines++;
+
+                        if (curLineY + outLineH >= outTop && curLineY <= outTop + outputH) {
+                            float drawX = cell.outputAreaBounds.left + textPadX - cell.outputScrollX;
+                            D2D1_RECT_F rcLine = D2D1::RectF(
+                                drawX,
+                                curLineY,
+                                drawX + (std::max)(120.0f, lineW),
+                                curLineY + outLineH
+                            );
+                            pRT->DrawText(line.c_str(), static_cast<UINT32>(line.length()),
+                                          theme.fontCode.Get(), rcLine, outTextBrush);
+                        }
+                        curLineY += outLineH;
+                    }
                 }
-                pRT->DrawText(firstOut.text.c_str(), static_cast<UINT32>(firstOut.text.length()),
-                              theme.fontCode.Get(), rcOutText, outTextBrush ? outTextBrush : theme.brushTextPrimary.Get());
+
+                pRT->PopAxisAlignedClip();
+
+                float totalContentH = static_cast<float>(totalLines) * outLineH + textPadY * 2.0f;
+                float availW = (cell.outputAreaBounds.right - cell.outputAreaBounds.left) - textPadX * 2.0f;
+
+                // 1. Sleek Vertical Scrollbar when output exceeds clamped height
+                if (totalContentH > outputH && outputH > config.ScaleF(30.0f)) {
+                    float sbW = config.ScaleF(4.0f);
+                    float sbX = cell.outputAreaBounds.right - sbW - config.ScaleF(3.0f);
+                    float trackH = outputH - config.ScaleF(8.0f);
+                    float thumbH = (std::max)(config.ScaleF(18.0f), trackH * (outputH / totalContentH));
+                    float maxScrollY = totalContentH - outputH;
+                    float clampedScrollY = (std::max)(0.0f, (std::min)(cell.outputScrollY, maxScrollY));
+                    float thumbY = outTop + config.ScaleF(4.0f) + (clampedScrollY / (maxScrollY > 0.0f ? maxScrollY : 1.0f)) * (trackH - thumbH);
+
+                    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushSbY;
+                    pRT->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.25f), &brushSbY);
+                    if (brushSbY) {
+                        D2D1_ROUNDED_RECT rrcSb = D2D1::RoundedRect(D2D1::RectF(sbX, thumbY, sbX + sbW, thumbY + thumbH), 2.0f, 2.0f);
+                        pRT->FillRoundedRectangle(rrcSb, brushSbY.Get());
+                    }
+                }
+
+                // 2. Sleek Horizontal Scrollbar when long lines exceed width
+                if (maxLineWidth > availW && availW > config.ScaleF(30.0f)) {
+                    float sbH = config.ScaleF(4.0f);
+                    float sbY = cell.outputAreaBounds.bottom - sbH - config.ScaleF(3.0f);
+                    float trackW = availW;
+                    float thumbW = (std::max)(config.ScaleF(24.0f), trackW * (availW / maxLineWidth));
+                    float maxScrollX = maxLineWidth - availW;
+                    float clampedScrollX = (std::max)(0.0f, (std::min)(cell.outputScrollX, maxScrollX));
+                    float thumbX = cell.outputAreaBounds.left + textPadX + (clampedScrollX / (maxScrollX > 0.0f ? maxScrollX : 1.0f)) * (trackW - thumbW);
+
+                    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushSbX;
+                    pRT->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.25f), &brushSbX);
+                    if (brushSbX) {
+                        D2D1_ROUNDED_RECT rrcSbX = D2D1::RoundedRect(D2D1::RectF(thumbX, sbY, thumbX + thumbW, sbY + sbH), 2.0f, 2.0f);
+                        pRT->FillRoundedRectangle(rrcSbX, brushSbX.Get());
+                    }
+                }
             } else {
                 cell.outputAreaBounds = D2D1::RectF(0, 0, 0, 0);
             }
@@ -1203,6 +1268,55 @@ bool NotebookView::HandleLButtonUp(POINT clientPt, editor::OpenDocument& doc, co
 }
 
 bool NotebookView::HandleMouseWheel(short delta, POINT clientPt, editor::OpenDocument& doc, const app::AppConfig& config) {
+    // 1. If mouse is over a cell output area, scroll that output's X or Y
+    if (doc.notebookDoc) {
+        for (auto& cell : doc.notebookDoc->cells) {
+            if (!cell.outputs.empty() &&
+                clientPt.x >= cell.outputAreaBounds.left && clientPt.x <= cell.outputAreaBounds.right &&
+                clientPt.y >= cell.outputAreaBounds.top && clientPt.y <= cell.outputAreaBounds.bottom) {
+
+                size_t outLines = 0;
+                float charW = (m_charWidth > 0.0f) ? m_charWidth : config.ScaleF(7.5f);
+                float maxLineW = 0.0f;
+                for (const auto& out : cell.outputs) {
+                    std::wstringstream ss(out.text);
+                    std::wstring l;
+                    while (std::getline(ss, l)) {
+                        outLines++;
+                        float lw = static_cast<float>(l.length()) * charW;
+                        if (lw > maxLineW) maxLineW = lw;
+                    }
+                }
+                float outLineH = config.ScaleF(18.0f);
+                float totalContentH = static_cast<float>(outLines) * outLineH + config.ScaleF(12.0f);
+                float outputH = cell.outputAreaBounds.bottom - cell.outputAreaBounds.top;
+                float availW = (cell.outputAreaBounds.right - cell.outputAreaBounds.left) - config.ScaleF(24.0f);
+
+                bool isShift = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
+                if (isShift) {
+                    // Horizontal scroll
+                    float maxScrollX = (std::max)(0.0f, maxLineW - availW);
+                    if (maxScrollX > 0.0f) {
+                        float step = config.ScaleF(40.0f);
+                        if (delta > 0) cell.outputScrollX = (std::max)(0.0f, cell.outputScrollX - step);
+                        else cell.outputScrollX = (std::min)(maxScrollX, cell.outputScrollX + step);
+                        return true;
+                    }
+                } else {
+                    // Vertical scroll
+                    float maxScrollY = (std::max)(0.0f, totalContentH - outputH);
+                    if (maxScrollY > 0.0f) {
+                        float step = config.ScaleF(40.0f);
+                        if (delta > 0) cell.outputScrollY = (std::max)(0.0f, cell.outputScrollY - step);
+                        else cell.outputScrollY = (std::min)(maxScrollY, cell.outputScrollY + step);
+                        return true;
+                    }
+                }
+            }
+        }
+    }
+
+    // 2. Otherwise scroll notebook view vertically
     float contentH = (std::max)(1.0f, m_viewHeight - config.ScaleF(40.0f));
     float maxScroll = (std::max)(0.0f, m_totalHeight - contentH + config.ScaleF(40.0f));
     float scrollStep = config.ScaleF(60.0f);
