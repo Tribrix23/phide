@@ -252,6 +252,7 @@ public:
     [[nodiscard]] std::vector<GitChangeItem>& GetGitChangesMutable() noexcept { return m_gitChanges; }
     [[nodiscard]] const std::map<std::wstring, size_t>& GetErrorFiles() const noexcept { return m_errorFiles; }
     [[nodiscard]] const std::vector<GitCommitItem>& GetGitCommits() const noexcept { return m_gitCommits; }
+    [[nodiscard]] std::vector<GitCommitItem>& GetGitCommitsMutable() noexcept { return m_gitCommits; }
     [[nodiscard]] bool IsPathGitIgnored(const std::wstring& fullPath, const std::wstring& label) const;
     [[nodiscard]] const std::wstring& GetGitBranch() const noexcept { return m_gitBranch; }
     [[nodiscard]] const D2D1_RECT_F& GetGitHeaderMoreBounds() const noexcept { return m_gitHeaderMoreBounds; }
@@ -347,14 +348,32 @@ public:
     [[nodiscard]] const D2D1_RECT_F& GetPublishModalBounds() const noexcept { return m_publishModalBounds; }
     [[nodiscard]] const D2D1_RECT_F& GetPublishInputBounds() const noexcept { return m_publishInputBounds; }
     [[nodiscard]] const D2D1_RECT_F& GetPublishOptionBounds(int idx) const noexcept { return m_publishOptionBounds[idx == 1 ? 1 : 0]; }
+    [[nodiscard]] bool HitTestPublishRepoModalButtons(POINT pt) const noexcept {
+        float x = static_cast<float>(pt.x);
+        float y = static_cast<float>(pt.y);
+        for (int i = 0; i < 2; ++i) {
+            if (x >= m_publishOptionBounds[i].left && x <= m_publishOptionBounds[i].right &&
+                y >= m_publishOptionBounds[i].top && y <= m_publishOptionBounds[i].bottom) {
+                return true;
+            }
+        }
+        return false;
+    }
+    [[nodiscard]] bool HitTestPublishRepoModal(POINT pt) const noexcept {
+        float x = static_cast<float>(pt.x);
+        float y = static_cast<float>(pt.y);
+        return x >= m_publishModalBounds.left && x <= m_publishModalBounds.right &&
+               y >= m_publishModalBounds.top && y <= m_publishModalBounds.bottom;
+    }
     [[nodiscard]] bool IsPublishedPrivate() const noexcept { return m_publishedVisibility == 0; }
     [[nodiscard]] int GetPublishedVisibility() const noexcept { return m_publishedVisibility; }
+    [[nodiscard]] const std::wstring& GetLastPublishedCommitMessage() const noexcept { return m_lastPublishedCommitMsg; }
     [[nodiscard]] const D2D1_RECT_F& GetGitCommitBtnBounds() const noexcept { return m_gitCommitBtnBounds; }
     void SetGitCommitBtnBounds(const D2D1_RECT_F& rc) noexcept { m_gitCommitBtnBounds = rc; }
 
     // --- GitHub Authentication & "Login to GitHub" Modal ---
-    [[nodiscard]] bool IsGitHubLoggedIn() const noexcept { return m_isGitHubLoggedIn; }
-    void SetGitHubLoggedIn(bool loggedIn) noexcept { m_isGitHubLoggedIn = loggedIn; }
+    [[nodiscard]] bool IsGitHubLoggedIn() const noexcept;
+    void SetGitHubLoggedIn(bool loggedIn) noexcept { m_isGitHubLoggedIn = loggedIn; m_hasExplicitLoginOverride = true; }
     [[nodiscard]] bool IsGitHubLoginModalOpen() const noexcept { return m_isGitHubLoginModalOpen; }
     void OpenGitHubLoginModal() noexcept { m_isGitHubLoginModalOpen = true; m_gitHubLoginHoveredBtn = -1; }
     void CloseGitHubLoginModal() noexcept { m_isGitHubLoginModalOpen = false; m_gitHubLoginHoveredBtn = -1; }
@@ -362,7 +381,24 @@ public:
     [[nodiscard]] const D2D1_RECT_F& GetGitHubLoginModalBounds() const noexcept { return m_gitHubLoginModalBounds; }
     [[nodiscard]] const D2D1_RECT_F& GetGitHubLoginContinueBtnBounds() const noexcept { return m_gitHubLoginContinueBtnBounds; }
     [[nodiscard]] const D2D1_RECT_F& GetGitHubLoginCancelBtnBounds() const noexcept { return m_gitHubLoginCancelBtnBounds; }
+    [[nodiscard]] const D2D1_RECT_F& GetGitHubLoginCloseBtnBounds() const noexcept { return m_gitHubLoginCloseBtnBounds; }
     [[nodiscard]] int GetGitHubLoginHoveredBtn() const noexcept { return m_gitHubLoginHoveredBtn; }
+    [[nodiscard]] bool HitTestGitHubLoginModalButtons(POINT pt) const noexcept {
+        float x = static_cast<float>(pt.x);
+        float y = static_cast<float>(pt.y);
+        auto inRect = [](const D2D1_RECT_F& r, float px, float py) {
+            return px >= r.left && px <= r.right && py >= r.top && py <= r.bottom;
+        };
+        return inRect(m_gitHubLoginContinueBtnBounds, x, y) ||
+               inRect(m_gitHubLoginCancelBtnBounds, x, y) ||
+               inRect(m_gitHubLoginCloseBtnBounds, x, y);
+    }
+    [[nodiscard]] bool HitTestGitHubLoginModal(POINT pt) const noexcept {
+        float x = static_cast<float>(pt.x);
+        float y = static_cast<float>(pt.y);
+        return x >= m_gitHubLoginModalBounds.left && x <= m_gitHubLoginModalBounds.right &&
+               y >= m_gitHubLoginModalBounds.top && y <= m_gitHubLoginModalBounds.bottom;
+    }
     void RenderGitHubLoginModal(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config, float clientW, float clientH);
     bool HandleGitHubLoginMouseMove(POINT pt);
     bool HandleGitHubLoginMouseDown(POINT pt);
@@ -839,12 +875,14 @@ private:
     int m_publishRepoSelectedChoice = 0; // 0 = Private, 1 = Public
     int m_publishRepoHoveredChoice = -1;
     int m_publishedVisibility = -1; // -1 = Not published yet, 0 = Private, 1 = Public
+    std::wstring m_lastPublishedCommitMsg;
     D2D1_RECT_F m_publishModalBounds{};
     D2D1_RECT_F m_publishInputBounds{};
     D2D1_RECT_F m_publishOptionBounds[2]{};
 
     // GitHub Authentication & "Login to GitHub" Flat Modal state
     bool m_isGitHubLoggedIn = false;
+    bool m_hasExplicitLoginOverride = false;
     bool m_isGitHubLoginModalOpen = false;
     int m_gitHubLoginHoveredBtn = -1; // 0 = Cancel, 1 = Continue, 2 = Close 'X'
     D2D1_RECT_F m_gitHubLoginModalBounds{};

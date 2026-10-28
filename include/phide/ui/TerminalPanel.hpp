@@ -153,6 +153,46 @@ struct TerminalLine {
 };
 
 /**
+ * @brief Terminal buffer text position (0-based line and column).
+ */
+struct TerminalPos {
+    int line = 0;
+    int col = 0;
+    bool operator==(const TerminalPos& o) const noexcept { return line == o.line && col == o.col; }
+    bool operator<(const TerminalPos& o) const noexcept {
+        if (line != o.line) return line < o.line;
+        return col < o.col;
+    }
+    bool operator<=(const TerminalPos& o) const noexcept {
+        return *this < o || *this == o;
+    }
+};
+
+/**
+ * @brief Interactive text selection in terminal panel.
+ */
+struct TerminalSelection {
+    bool active = false;
+    TerminalPos start{};
+    TerminalPos end{};
+
+    bool hasSelection() const noexcept {
+        return active && !(start == end);
+    }
+    TerminalPos getStart() const noexcept {
+        return (start < end) ? start : end;
+    }
+    TerminalPos getEnd() const noexcept {
+        return (start < end) ? end : start;
+    }
+    void clear() noexcept {
+        active = false;
+        start = {};
+        end = {};
+    }
+};
+
+/**
  * @brief Represents an interactive terminal tab session.
  */
 struct TerminalTab {
@@ -184,6 +224,10 @@ struct TerminalTab {
     int historyIndex = -1;
     std::mutex bufferMutex;
     std::function<void()> onOutput;
+
+    // Text selection (hold and drag)
+    TerminalSelection selection;
+    std::wstring GetSelectedText() const;
 
     // GitHub CLI Auth Login session state
     bool isGitHubLoginTab = false;
@@ -303,6 +347,12 @@ public:
     bool OnChar(wchar_t ch);
     bool OnKeyDown(UINT vk, bool isCtrl, bool isShift);
 
+    // Text Selection (Hold and drag)
+    [[nodiscard]] bool HasSelection() const noexcept;
+    [[nodiscard]] std::wstring GetSelectedText() const;
+    void ClearSelection() noexcept;
+    [[nodiscard]] bool IsSelecting() const noexcept { return m_isSelecting; }
+
     void SetWorkingDir(const std::wstring& dir);
     void SetOutputCallback(std::function<void()> cb) {
         m_outputCallback = std::move(cb);
@@ -328,6 +378,12 @@ public:
     void CloseMenus() noexcept { m_showShellMenu = false; m_showOptionsMenu = false; m_showEngineSubmenu = false; }
 
 private:
+    // Text selection state (hold and drag)
+    bool m_isSelecting = false;
+    TerminalPos m_selectionAnchor{};
+    TerminalPos PointToTerminalPos(POINT pt, const app::AppConfig& config, const TerminalTab& tab, float clientH) const;
+    float m_uiScale = 1.0f;
+
     void StartShellProcess(TerminalTab& tab);
     void RenderHeader(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
                       float x, float y, float w, float h, float cornerRadius = 0.0f);

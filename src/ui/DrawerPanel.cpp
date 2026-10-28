@@ -3661,7 +3661,58 @@ static std::wstring GitUtf8ToWide(const std::string& str) {
     return result;
 }
 
+static bool CheckGitHubCliAuthStatus() {
+    SECURITY_ATTRIBUTES sa{ sizeof(sa), nullptr, TRUE };
+    HANDLE hReadPipe = nullptr, hWritePipe = nullptr;
+    if (!CreatePipe(&hReadPipe, &hWritePipe, &sa, 0)) return false;
+    SetHandleInformation(hReadPipe, HANDLE_FLAG_INHERIT, 0);
+
+    STARTUPINFOW si{ sizeof(si) };
+    si.dwFlags = STARTF_USESHOWWINDOW | STARTF_USESTDHANDLES;
+    si.wShowWindow = SW_HIDE;
+    si.hStdInput = nullptr;
+    si.hStdOutput = hWritePipe;
+    si.hStdError = hWritePipe;
+
+    PROCESS_INFORMATION pi{ 0 };
+    std::wstring fullCmd = L"gh auth status";
+    std::vector<wchar_t> cmdBuf(fullCmd.begin(), fullCmd.end());
+    cmdBuf.push_back(L'\0');
+
+    BOOL ok = CreateProcessW(nullptr, cmdBuf.data(), nullptr, nullptr, TRUE,
+                             CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi);
+    CloseHandle(hWritePipe);
+
+    if (!ok) {
+        CloseHandle(hReadPipe);
+        return false;
+    }
+
+    DWORD waitRes = WaitForSingleObject(pi.hProcess, 1500);
+    DWORD exitCode = 1;
+    if (waitRes == WAIT_OBJECT_0) {
+        GetExitCodeProcess(pi.hProcess, &exitCode);
+    } else {
+        TerminateProcess(pi.hProcess, 1);
+    }
+    CloseHandle(pi.hProcess);
+    CloseHandle(pi.hThread);
+    CloseHandle(hReadPipe);
+    return exitCode == 0;
+}
+
 } // anonymous namespace
+
+bool DrawerPanel::IsGitHubLoggedIn() const noexcept {
+    if (m_hasExplicitLoginOverride) {
+        return m_isGitHubLoggedIn;
+    }
+    if (CheckGitHubCliAuthStatus()) {
+        const_cast<DrawerPanel*>(this)->m_isGitHubLoggedIn = true;
+        return true;
+    }
+    return false;
+}
 
 GitCmdResult RunGitCmd(const std::wstring& cmd, const std::wstring& workDir) {
     static std::mutex s_gitCmdMutex;
@@ -5795,10 +5846,12 @@ bool DrawerPanel::HitTestGit(POINT pt, const app::AppConfig& config,
                 return true; // Button disabled and locked while COMMIT_EDITMSG is open
             }
             if (!IsGitHubLoggedIn()) {
+                ShowGitNotification(L"No GitHub account detected. Please log in to GitHub before committing.");
                 OpenGitHubLoginModal();
                 return true;
             }
-            if (!m_isGitRepo || (!m_gitChanges.empty() && m_gitCommits.empty())) {
+            bool isFirstCommit = !m_isGitRepo || (!m_gitChanges.empty() && m_gitCommits.empty());
+            if (isFirstCommit) {
                 OpenPublishRepoModal();
                 return true;
             }
@@ -5807,14 +5860,10 @@ bool DrawerPanel::HitTestGit(POINT pt, const app::AppConfig& config,
                 size_t f = trimmed.find_first_not_of(L" \t\r\n");
                 if (f == std::wstring::npos) {
                     m_focusedGitInput = 1;
-                    if (pOutPromptEmptyCommit) {
-                        *pOutPromptEmptyCommit = true;
-                        ClearGitTooltip();
-                        return true;
-                    }
                     m_gitTooltipText = L"Please provide a commit message before committing.";
                     m_gitTooltipTarget = m_gitMsgBoxBounds;
                     m_showGitTooltip = true;
+                    ShowGitNotification(L"Please provide a commit message before committing.");
                     return true;
                 }
                 CommitChangesAsync(m_commitMessage);
@@ -6197,10 +6246,12 @@ void DrawerPanel::HandleGitKeyDown(WPARAM wParam) {
     } else if (wParam == VK_RETURN) {
         if (GetKeyState(VK_CONTROL) & 0x8000) {
             if (!IsGitHubLoggedIn()) {
+                ShowGitNotification(L"No GitHub account detected. Please log in to GitHub before committing.");
                 OpenGitHubLoginModal();
                 return;
             }
-            if (!m_isGitRepo || (!m_gitChanges.empty() && m_gitCommits.empty())) {
+            bool isFirstCommit = !m_isGitRepo || (!m_gitChanges.empty() && m_gitCommits.empty());
+            if (isFirstCommit) {
                 OpenPublishRepoModal();
                 return;
             }
@@ -6212,6 +6263,7 @@ void DrawerPanel::HandleGitKeyDown(WPARAM wParam) {
                 m_gitTooltipText = L"Please provide a commit message before committing.";
                 m_gitTooltipTarget = m_gitMsgBoxBounds;
                 m_showGitTooltip = true;
+                ShowGitNotification(L"Please provide a commit message before committing.");
             }
         }
     } else if (wParam == VK_ESCAPE) {
@@ -7787,6 +7839,11 @@ void DrawerPanel::RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, 
 }
 
 void DrawerPanel::OpenPublishRepoModal() {
+    if (!IsGitHubLoggedIn()) {
+        ShowGitNotification(L"No GitHub account detected. Please log in to GitHub before committing.");
+        OpenGitHubLoginModal();
+        return;
+    }
     m_isPublishModalOpen = true;
     m_publishRepoSelectedChoice = 0; // Default to Private
     m_publishRepoHoveredChoice = -1;
@@ -7810,6 +7867,7 @@ void DrawerPanel::OpenPublishRepoModal() {
 void DrawerPanel::ConfirmPublishRepo(int visibilityChoice) {
     if (!IsGitHubLoggedIn()) {
         m_isPublishModalOpen = false;
+        ShowGitNotification(L"No GitHub account detected. Please log in to GitHub before committing.");
         OpenGitHubLoginModal();
         return;
     }
@@ -7823,12 +7881,13 @@ void DrawerPanel::ConfirmPublishRepo(int visibilityChoice) {
     std::wstring msg = m_commitMessage;
     size_t first = msg.find_first_not_of(L" \t\r\n");
     if (first == std::wstring::npos) {
-        msg = L"Initial commit";
+        msg = L"First Commit";
     } else {
         msg = msg.substr(first);
         size_t last = msg.find_last_not_of(L" \t\r\n");
         if (last != std::wstring::npos) msg = msg.substr(0, last + 1);
     }
+    m_lastPublishedCommitMsg = msg;
 
     // 1. Initialize Git repository locally if not yet initialized
     auto resCheck = RunGitCmd(L"rev-parse --is-inside-work-tree", dir);
@@ -8097,6 +8156,11 @@ bool DrawerPanel::HandlePublishRepoMouseMove(POINT pt) {
             break;
         }
     }
+    if (m_publishRepoHoveredChoice != -1) {
+        SetCursor(LoadCursor(nullptr, IDC_HAND));
+    } else {
+        SetCursor(LoadCursor(nullptr, IDC_ARROW));
+    }
     return oldHover != m_publishRepoHoveredChoice;
 }
 
@@ -8327,6 +8391,12 @@ bool DrawerPanel::HandleGitHubLoginMouseMove(POINT pt) {
         m_gitHubLoginHoveredBtn = 2;
     }
 
+    if (m_gitHubLoginHoveredBtn != -1) {
+        SetCursor(LoadCursor(nullptr, IDC_HAND));
+    } else {
+        SetCursor(LoadCursor(nullptr, IDC_ARROW));
+    }
+
     return oldHover != m_gitHubLoginHoveredBtn;
 }
 
@@ -8337,6 +8407,7 @@ bool DrawerPanel::HandleGitHubLoginMouseDown(POINT pt) {
     if (pt.x >= m_gitHubLoginCancelBtnBounds.left && pt.x <= m_gitHubLoginCancelBtnBounds.right &&
         pt.y >= m_gitHubLoginCancelBtnBounds.top && pt.y <= m_gitHubLoginCancelBtnBounds.bottom) {
         CloseGitHubLoginModal();
+        ShowGitNotification(L"GitHub login cancelled. Cannot commit without a GitHub account.");
         return true;
     }
 
@@ -8354,6 +8425,7 @@ bool DrawerPanel::HandleGitHubLoginMouseDown(POINT pt) {
     if (pt.x >= m_gitHubLoginCloseBtnBounds.left && pt.x <= m_gitHubLoginCloseBtnBounds.right &&
         pt.y >= m_gitHubLoginCloseBtnBounds.top && pt.y <= m_gitHubLoginCloseBtnBounds.bottom) {
         CloseGitHubLoginModal();
+        ShowGitNotification(L"GitHub login cancelled. Cannot commit without a GitHub account.");
         return true;
     }
 
@@ -8365,6 +8437,7 @@ bool DrawerPanel::HandleGitHubLoginMouseDown(POINT pt) {
 
     // 5. Click outside card dismisses modal
     CloseGitHubLoginModal();
+    ShowGitNotification(L"GitHub login cancelled. Cannot commit without a GitHub account.");
     return true;
 }
 
@@ -8373,6 +8446,7 @@ bool DrawerPanel::HandleGitHubLoginKeyDown(WPARAM wParam) {
 
     if (wParam == VK_ESCAPE) {
         CloseGitHubLoginModal();
+        ShowGitNotification(L"GitHub login cancelled. Cannot commit without a GitHub account.");
         return true;
     }
 

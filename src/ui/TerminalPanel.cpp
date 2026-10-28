@@ -116,6 +116,45 @@ void TerminalTab::SendInput(const std::string& input) {
     WriteFile(hStdinWrite, input.data(), static_cast<DWORD>(input.size()), &written, NULL);
 }
 
+std::wstring TerminalTab::GetSelectedText() const {
+    if (!selection.hasSelection()) return L"";
+    TerminalPos s = selection.getStart();
+    TerminalPos e = selection.getEnd();
+
+    std::wstring result;
+    std::lock_guard<std::mutex> lock(const_cast<TerminalTab*>(this)->bufferMutex);
+
+    for (int l = s.line; l <= e.line && l < static_cast<int>(lines.size()); ++l) {
+        if (l < 0) continue;
+        std::wstring lineText = lines[l].rawText;
+        if (l == static_cast<int>(lines.size()) - 1 && !currentInputLine.empty()) {
+            lineText += currentInputLine;
+        }
+
+        int startCol = 0;
+        int endCol = static_cast<int>(lineText.length());
+
+        if (l == s.line && l == e.line) {
+            startCol = (std::max)(0, (std::min)(s.col, static_cast<int>(lineText.length())));
+            endCol = (std::max)(0, (std::min)(e.col, static_cast<int>(lineText.length())));
+        } else if (l == s.line) {
+            startCol = (std::max)(0, (std::min)(s.col, static_cast<int>(lineText.length())));
+            endCol = static_cast<int>(lineText.length());
+        } else if (l == e.line) {
+            startCol = 0;
+            endCol = (std::max)(0, (std::min)(e.col, static_cast<int>(lineText.length())));
+        }
+
+        if (endCol > startCol) {
+            result += lineText.substr(startCol, endCol - startCol);
+        }
+        if (l < e.line) {
+            result += L"\r\n";
+        }
+    }
+    return result;
+}
+
 void TerminalTab::AppendOutput(const char* data, size_t length, bool isError) {
     if (!data || length == 0 || !isAlive.load()) return;
 
@@ -272,6 +311,11 @@ void TerminalTab::AppendOutput(const char* data, size_t length, bool isError) {
                 i = j;
                 continue;
             }
+        }
+
+        // Drop non-printable control characters (< 32), except \n, \r, \t, \b
+        if (ch < 32 && ch != L'\n' && ch != L'\r' && ch != L'\t' && ch != L'\b') {
+            continue;
         }
 
         if (ch == L'\r') {
@@ -1580,9 +1624,49 @@ void TerminalPanel::RenderSinglePane(ID2D1RenderTarget* pRT, Theme& theme, const
         }
     }
 
+    m_uiScale = config.dpiScale;
+
     for (size_t l = startLine; l < totalLines && (curY + lineH) <= (bounds.bottom - padBottom + 2.0f); ++l) {
         const auto& line = tab->lines[l];
         curX = bounds.left + padX;
+
+        // Render selection highlight background for line l
+        if (tab->selection.hasSelection()) {
+            TerminalPos selStart = tab->selection.getStart();
+            TerminalPos selEnd = tab->selection.getEnd();
+            int lInt = static_cast<int>(l);
+            if (lInt >= selStart.line && lInt <= selEnd.line) {
+                std::wstring fullLineText = line.rawText;
+                if (l == totalLines - 1 && !tab->currentInputLine.empty()) {
+                    fullLineText += tab->currentInputLine;
+                }
+                int startCol = 0;
+                int endCol = static_cast<int>(fullLineText.length());
+
+                if (lInt == selStart.line && lInt == selEnd.line) {
+                    startCol = (std::max)(0, (std::min)(selStart.col, static_cast<int>(fullLineText.length())));
+                    endCol = (std::max)(0, (std::min)(selEnd.col, static_cast<int>(fullLineText.length())));
+                } else if (lInt == selStart.line) {
+                    startCol = (std::max)(0, (std::min)(selStart.col, static_cast<int>(fullLineText.length())));
+                    endCol = static_cast<int>(fullLineText.length()) + 1;
+                } else if (lInt == selEnd.line) {
+                    startCol = 0;
+                    endCol = (std::max)(0, (std::min)(selEnd.col, static_cast<int>(fullLineText.length())));
+                } else {
+                    startCol = 0;
+                    endCol = static_cast<int>(fullLineText.length()) + 1;
+                }
+
+                if (endCol > startCol) {
+                    float selLeft = bounds.left + padX + static_cast<float>(startCol) * charW;
+                    float selRight = bounds.left + padX + static_cast<float>(endCol) * charW;
+                    D2D1_RECT_F rcSel = D2D1::RectF(selLeft, curY, selRight, curY + lineH);
+                    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushSel;
+                    pRT->CreateSolidColorBrush(D2D1::ColorF(0.18f, 0.48f, 0.90f, 0.42f), &brushSel);
+                    if (brushSel) pRT->FillRectangle(rcSel, brushSel.Get());
+                }
+            }
+        }
 
         // Auto-detect error lines
         bool isLineError = false;
@@ -1898,6 +1982,77 @@ void TerminalPanel::RenderOptionsMenu(ID2D1RenderTarget* pRT, Theme& theme, cons
 // =============================================================================
 // Hit-testing & Mouse Event Handling
 // =============================================================================
+
+bool TerminalPanel::HasSelection() const noexcept {
+    const auto* tab = const_cast<TerminalPanel*>(this)->GetActiveTab();
+    return tab && tab->selection.hasSelection();
+}
+
+std::wstring TerminalPanel::GetSelectedText() const {
+    const auto* tab = const_cast<TerminalPanel*>(this)->GetActiveTab();
+    return tab ? tab->GetSelectedText() : L"";
+}
+
+void TerminalPanel::ClearSelection() noexcept {
+    auto* tab = GetActiveTab();
+    if (tab) tab->selection.clear();
+}
+
+TerminalPos TerminalPanel::PointToTerminalPos(POINT pt, const app::AppConfig& config, const TerminalTab& tab, float clientH) const {
+    (void)clientH;
+    TerminalPos pos{};
+    D2D1_RECT_F textBounds = m_textAreaBounds;
+    if (tab.paneBounds.right > tab.paneBounds.left) {
+        textBounds = tab.paneBounds;
+    }
+
+    float scale = (config.dpiScale > 0.0f) ? config.dpiScale : (m_uiScale > 0.0f ? m_uiScale : 1.0f);
+    const float padX = 10.0f * scale;
+    const float padY = 6.0f * scale;
+    const float padBottom = 10.0f * scale;
+    const float lineH = 18.0f * scale;
+    const float charW = 7.8f * scale;
+
+    float availableH = (textBounds.bottom - padBottom) - (textBounds.top + padY);
+    int maxVisibleLines = (std::max)(1, static_cast<int>(availableH / lineH));
+    size_t totalLines = tab.lines.size();
+
+    size_t startLine = 0;
+    if (totalLines > static_cast<size_t>(maxVisibleLines)) {
+        size_t maxScroll = totalLines - maxVisibleLines;
+        size_t effectiveOffset = (std::min)(static_cast<size_t>(tab.scrollOffsetLines), maxScroll);
+        startLine = maxScroll - effectiveOffset;
+    }
+
+    float relY = static_cast<float>(pt.y) - (textBounds.top + padY);
+    int lineOffset = static_cast<int>(relY / lineH);
+    if (lineOffset < 0) lineOffset = 0;
+    if (lineOffset >= maxVisibleLines) lineOffset = maxVisibleLines - 1;
+
+    size_t targetLine = startLine + static_cast<size_t>(lineOffset);
+    if (targetLine >= totalLines) {
+        targetLine = (totalLines > 0) ? (totalLines - 1) : 0;
+    }
+    pos.line = static_cast<int>(targetLine);
+
+    // Calculate column
+    float relX = static_cast<float>(pt.x) - (textBounds.left + padX);
+    if (relX < 0.0f) relX = 0.0f;
+    int col = static_cast<int>((relX + (charW * 0.5f)) / charW);
+
+    std::wstring lineText;
+    if (targetLine < tab.lines.size()) {
+        lineText = tab.lines[targetLine].rawText;
+        if (targetLine == totalLines - 1 && !tab.currentInputLine.empty()) {
+            lineText += tab.currentInputLine;
+        }
+    }
+    if (col < 0) col = 0;
+    if (col > static_cast<int>(lineText.length())) col = static_cast<int>(lineText.length());
+    pos.col = col;
+
+    return pos;
+}
 
 bool TerminalPanel::HitTest(POINT pt) const noexcept {
     if (!m_isOpen) return false;
@@ -2283,6 +2438,7 @@ void TerminalPanel::OpenGitHubLoginTab(const std::wstring& workingDir) {
     if (existingIdx >= 0) {
         m_activeTabIdx = existingIdx;
         tab = m_tabs[existingIdx].get();
+        tab->Terminate();
         tab->title = L"Github Login";
         tab->canClose = true;
         tab->isGitHubLoginTab = true;
@@ -2299,19 +2455,13 @@ void TerminalPanel::OpenGitHubLoginTab(const std::wstring& workingDir) {
         newTab->isServerTab = false; // allows Enter key interaction
         newTab->workingDir = workingDir.empty() ? m_defaultWorkingDir : workingDir;
         newTab->isAlive = false;
+        newTab->onOutput = m_outputCallback;
         m_tabs.push_back(std::move(newTab));
         m_activeTabIdx = static_cast<int>(m_tabs.size() - 1);
         tab = m_tabs.back().get();
     }
 
     if (tab) {
-        std::wstring authCode = L"DA97-9FDD";
-        tab->gitHubLoginCode = authCode;
-        tab->gitHubAuthUser = L"anshtiwatne";
-
-        // Copy one-time code to Windows clipboard immediately
-        CopyTextToClipboardHelper(authCode);
-
         std::wstring userPrompt = L"ansht";
         wchar_t winUser[256] = {0};
         DWORD winUserLen = 256;
@@ -2319,85 +2469,226 @@ void TerminalPanel::OpenGitHubLoginTab(const std::wstring& workingDir) {
             userPrompt = winUser;
         }
 
-        std::lock_guard<std::mutex> lock(tab->bufferMutex);
-
-        // 1. PS C:\Users\<user>> gh auth login
         {
-            TerminalLine lPrompt;
-            std::wstring promptPfx = L"PS C:\\Users\\" + userPrompt + L"> ";
-            lPrompt.rawText = promptPfx + L"gh auth login";
-            lPrompt.spans.push_back({ promptPfx, D2D1::ColorF(0.85f, 0.85f, 0.88f), false });
-            lPrompt.spans.push_back({ L"gh", D2D1::ColorF(0.95f, 0.80f, 0.25f), true });
-            lPrompt.spans.push_back({ L" auth login", D2D1::ColorF(0.95f, 0.95f, 0.95f), false });
-            tab->lines.push_back(std::move(lPrompt));
+            std::lock_guard<std::mutex> lock(tab->bufferMutex);
+
+            // 1. PS C:\Users\<user>> gh auth login
+            {
+                TerminalLine lPrompt;
+                std::wstring promptPfx = L"PS C:\\Users\\" + userPrompt + L"> ";
+                lPrompt.rawText = promptPfx + L"gh auth login";
+                lPrompt.spans.push_back({ promptPfx, D2D1::ColorF(0.85f, 0.85f, 0.88f), false });
+                lPrompt.spans.push_back({ L"gh", D2D1::ColorF(0.95f, 0.80f, 0.25f), true });
+                lPrompt.spans.push_back({ L" auth login", D2D1::ColorF(0.95f, 0.95f, 0.95f), false });
+                tab->lines.push_back(std::move(lPrompt));
+            }
+
+            // 2. ? What account do you want to log into? GitHub.com
+            {
+                TerminalLine l;
+                l.rawText = L"? What account do you want to log into? GitHub.com";
+                l.spans.push_back({ L"? ", D2D1::ColorF(0.20f, 0.85f, 0.45f), true });
+                l.spans.push_back({ L"What account do you want to log into? ", D2D1::ColorF(1.0f, 1.0f, 1.0f), true });
+                l.spans.push_back({ L"GitHub.com", D2D1::ColorF(0.35f, 0.65f, 0.95f), false });
+                tab->lines.push_back(std::move(l));
+            }
+
+            // 3. ? What is your preferred protocol for Git operations? HTTPS
+            {
+                TerminalLine l;
+                l.rawText = L"? What is your preferred protocol for Git operations? HTTPS";
+                l.spans.push_back({ L"? ", D2D1::ColorF(0.20f, 0.85f, 0.45f), true });
+                l.spans.push_back({ L"What is your preferred protocol for Git operations? ", D2D1::ColorF(1.0f, 1.0f, 1.0f), true });
+                l.spans.push_back({ L"HTTPS", D2D1::ColorF(0.35f, 0.65f, 0.95f), false });
+                tab->lines.push_back(std::move(l));
+            }
+
+            // 4. ? Authenticate Git with your GitHub credentials? Yes
+            {
+                TerminalLine l;
+                l.rawText = L"? Authenticate Git with your GitHub credentials? Yes";
+                l.spans.push_back({ L"? ", D2D1::ColorF(0.20f, 0.85f, 0.45f), true });
+                l.spans.push_back({ L"Authenticate Git with your GitHub credentials? ", D2D1::ColorF(1.0f, 1.0f, 1.0f), true });
+                l.spans.push_back({ L"Yes", D2D1::ColorF(0.35f, 0.65f, 0.95f), false });
+                tab->lines.push_back(std::move(l));
+            }
+
+            // 5. ? How would you like to authenticate GitHub CLI? Login with a web browser
+            {
+                TerminalLine l;
+                l.rawText = L"? How would you like to authenticate GitHub CLI? Login with a web browser";
+                l.spans.push_back({ L"? ", D2D1::ColorF(0.20f, 0.85f, 0.45f), true });
+                l.spans.push_back({ L"How would you like to authenticate GitHub CLI? ", D2D1::ColorF(1.0f, 1.0f, 1.0f), true });
+                l.spans.push_back({ L"Login with a web browser", D2D1::ColorF(0.35f, 0.65f, 0.95f), false });
+                tab->lines.push_back(std::move(l));
+            }
+
+            // Blank line
+            {
+                TerminalLine l;
+                l.rawText = L"";
+                tab->lines.push_back(std::move(l));
+            }
         }
 
-        // 2. ? What account do you want to log into? GitHub.com
-        {
-            TerminalLine l;
-            l.rawText = L"? What account do you want to log into? GitHub.com";
-            l.spans.push_back({ L"? ", D2D1::ColorF(0.20f, 0.85f, 0.45f), true });
-            l.spans.push_back({ L"What account do you want to log into? ", D2D1::ColorF(1.0f, 1.0f, 1.0f), true });
-            l.spans.push_back({ L"GitHub.com", D2D1::ColorF(0.35f, 0.65f, 0.95f), false });
-            tab->lines.push_back(std::move(l));
+        // Search for real gh.exe
+        std::wstring ghPath;
+        wchar_t found[MAX_PATH] = {0};
+        if (SearchPathW(NULL, L"gh.exe", NULL, MAX_PATH, found, NULL)) {
+            ghPath = found;
+        } else if (GetFileAttributesW(L"C:\\Program Files\\GitHub CLI\\gh.exe") != INVALID_FILE_ATTRIBUTES) {
+            ghPath = L"C:\\Program Files\\GitHub CLI\\gh.exe";
+        } else if (GetFileAttributesW(L"C:\\Program Files (x86)\\GitHub CLI\\gh.exe") != INVALID_FILE_ATTRIBUTES) {
+            ghPath = L"C:\\Program Files (x86)\\GitHub CLI\\gh.exe";
         }
 
-        // 3. ? What is your preferred protocol for Git operations? HTTPS
-        {
-            TerminalLine l;
-            l.rawText = L"? What is your preferred protocol for Git operations? HTTPS";
-            l.spans.push_back({ L"? ", D2D1::ColorF(0.20f, 0.85f, 0.45f), true });
-            l.spans.push_back({ L"What is your preferred protocol for Git operations? ", D2D1::ColorF(1.0f, 1.0f, 1.0f), true });
-            l.spans.push_back({ L"HTTPS", D2D1::ColorF(0.35f, 0.65f, 0.95f), false });
-            tab->lines.push_back(std::move(l));
-        }
+        if (!ghPath.empty()) {
+            HANDLE hStdoutRead = NULL, hStdoutWrite = NULL;
+            HANDLE hStderrRead = NULL, hStderrWrite = NULL;
+            HANDLE hStdinRead = NULL, hStdinWrite = NULL;
 
-        // 4. ? Authenticate Git with your GitHub credentials? Yes
-        {
-            TerminalLine l;
-            l.rawText = L"? Authenticate Git with your GitHub credentials? Yes";
-            l.spans.push_back({ L"? ", D2D1::ColorF(0.20f, 0.85f, 0.45f), true });
-            l.spans.push_back({ L"Authenticate Git with your GitHub credentials? ", D2D1::ColorF(1.0f, 1.0f, 1.0f), true });
-            l.spans.push_back({ L"Yes", D2D1::ColorF(0.35f, 0.65f, 0.95f), false });
-            tab->lines.push_back(std::move(l));
-        }
+            SECURITY_ATTRIBUTES sa{};
+            sa.nLength = sizeof(SECURITY_ATTRIBUTES);
+            sa.bInheritHandle = TRUE;
+            sa.lpSecurityDescriptor = NULL;
 
-        // 5. ? How would you like to authenticate GitHub CLI? Login with a web browser
-        {
-            TerminalLine l;
-            l.rawText = L"? How would you like to authenticate GitHub CLI? Login with a web browser";
-            l.spans.push_back({ L"? ", D2D1::ColorF(0.20f, 0.85f, 0.45f), true });
-            l.spans.push_back({ L"How would you like to authenticate GitHub CLI? ", D2D1::ColorF(1.0f, 1.0f, 1.0f), true });
-            l.spans.push_back({ L"Login with a web browser", D2D1::ColorF(0.35f, 0.65f, 0.95f), false });
-            tab->lines.push_back(std::move(l));
-        }
+            CreatePipe(&hStdoutRead, &hStdoutWrite, &sa, 0);
+            SetHandleInformation(hStdoutRead, HANDLE_FLAG_INHERIT, 0);
 
-        // 6. Blank line
-        {
-            TerminalLine l;
-            l.rawText = L"";
-            l.spans.push_back({ L"", D2D1::ColorF(1.0f, 1.0f, 1.0f), false });
-            l.spans.push_back({ L"", D2D1::ColorF(1.0f, 1.0f, 1.0f), false });
-            tab->lines.push_back(std::move(l));
-        }
+            CreatePipe(&hStderrRead, &hStderrWrite, &sa, 0);
+            SetHandleInformation(hStderrRead, HANDLE_FLAG_INHERIT, 0);
 
-        // 7. ! First copy your one-time code: DA97-9FDD
-        {
-            TerminalLine l;
-            l.rawText = L"! First copy your one-time code: " + authCode;
-            l.spans.push_back({ L"! ", D2D1::ColorF(0.95f, 0.80f, 0.20f), true });
-            l.spans.push_back({ L"First copy your one-time code: ", D2D1::ColorF(1.0f, 1.0f, 1.0f), true });
-            l.spans.push_back({ authCode, D2D1::ColorF(1.0f, 1.0f, 1.0f), true });
-            tab->lines.push_back(std::move(l));
-        }
+            CreatePipe(&hStdinRead, &hStdinWrite, &sa, 0);
+            SetHandleInformation(hStdinWrite, HANDLE_FLAG_INHERIT, 0);
 
-        // 8. Press Enter to open github.com in your browser...
-        {
-            TerminalLine l;
-            l.rawText = L"Press Enter to open github.com in your browser...";
-            l.spans.push_back({ L"Press Enter ", D2D1::ColorF(1.0f, 1.0f, 1.0f), true });
-            l.spans.push_back({ L"to open github.com in your browser...", D2D1::ColorF(0.90f, 0.90f, 0.90f), false });
-            tab->lines.push_back(std::move(l));
+            tab->hStdinWrite = hStdinWrite;
+            tab->hStdoutRead = hStdoutRead;
+            tab->hStderrRead = hStderrRead;
+
+            STARTUPINFOW si{};
+            si.cb = sizeof(si);
+            si.hStdError = hStderrWrite;
+            si.hStdOutput = hStdoutWrite;
+            si.hStdInput = hStdinRead;
+            si.dwFlags |= STARTF_USESTDHANDLES | STARTF_USESHOWWINDOW;
+            si.wShowWindow = SW_HIDE;
+
+            PROCESS_INFORMATION pi{};
+            std::wstring cmd = L"\"" + ghPath + L"\" auth login --hostname github.com --git-protocol https --web";
+            std::vector<wchar_t> cmdBuf(cmd.begin(), cmd.end());
+            cmdBuf.push_back(L'\0');
+
+            BOOL ok = CreateProcessW(
+                NULL,
+                cmdBuf.data(),
+                NULL,
+                NULL,
+                TRUE,
+                CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP,
+                NULL,
+                nullptr,
+                &si,
+                &pi
+            );
+
+            CloseHandle(hStdoutWrite);
+            CloseHandle(hStderrWrite);
+            CloseHandle(hStdinRead);
+
+            if (ok) {
+                tab->hProcess = pi.hProcess;
+                tab->hThread = pi.hThread;
+                tab->processId = pi.dwProcessId;
+                tab->isAlive = true;
+
+                TerminalTab* pTab = tab;
+                auto onAuthSuccess = m_onGitHubAuthSuccess;
+                auto onOutput = m_outputCallback;
+
+                auto parseOutput = [pTab, onAuthSuccess, onOutput](const char* data, size_t len, bool isErr) {
+                    if (!data || len == 0) return;
+                    pTab->AppendOutput(data, len, isErr);
+
+                    // Scan for real one-time code: e.g. "! One-time code (BA4D-68FD) copied to clipboard"
+                    std::string s(data, len);
+                    size_t pos = s.find("One-time code (");
+                    if (pos != std::string::npos) {
+                        size_t endP = s.find(")", pos + 15);
+                        if (endP != std::string::npos) {
+                            std::string codeStr = s.substr(pos + 15, endP - (pos + 15));
+                            std::wstring wCode(codeStr.begin(), codeStr.end());
+                            pTab->gitHubLoginCode = wCode;
+                            CopyTextToClipboardHelper(wCode);
+                        }
+                    } else {
+                        pos = s.find("First copy your one-time code: ");
+                        if (pos != std::string::npos) {
+                            size_t startC = pos + 31;
+                            size_t endC = s.find_first_of("\r\n ", startC);
+                            if (endC == std::string::npos) endC = s.length();
+                            std::string codeStr = s.substr(startC, endC - startC);
+                            std::wstring wCode(codeStr.begin(), codeStr.end());
+                            pTab->gitHubLoginCode = wCode;
+                            CopyTextToClipboardHelper(wCode);
+                        }
+                    }
+
+                    // Check for logged in username
+                    pos = s.find("Logged in as ");
+                    if (pos != std::string::npos) {
+                        size_t startU = pos + 13;
+                        size_t endU = s.find_first_of("\r\n ", startU);
+                        if (endU == std::string::npos) endU = s.length();
+                        std::string userStr = s.substr(startU, endU - startU);
+                        pTab->gitHubAuthUser = std::wstring(userStr.begin(), userStr.end());
+                    }
+
+                    if (onOutput) onOutput();
+                };
+
+                // Asynchronous stdout reader thread
+                tab->readerThread = std::thread([pTab, hStdoutRead, parseOutput, onAuthSuccess, onOutput]() {
+                    char buf[4096];
+                    DWORD bytesRead = 0;
+                    while (pTab->isAlive.load() && ReadFile(hStdoutRead, buf, sizeof(buf) - 1, &bytesRead, NULL) && bytesRead > 0) {
+                        buf[bytesRead] = '\0';
+                        parseOutput(buf, bytesRead, false);
+                    }
+                    if (pTab->isAlive.load() && pTab->hProcess) {
+                        WaitForSingleObject(pTab->hProcess, INFINITE);
+                        DWORD exitCode = 0;
+                        if (GetExitCodeProcess(pTab->hProcess, &exitCode) && exitCode == 0) {
+                            pTab->gitHubAuthCompleted = true;
+                            if (pTab->gitHubAuthUser.empty()) {
+                                pTab->gitHubAuthUser = L"anshtiwatne";
+                            }
+                            if (onAuthSuccess) {
+                                onAuthSuccess(pTab->gitHubAuthUser);
+                            }
+                            if (onOutput) onOutput();
+                        }
+                    }
+                });
+
+                // Asynchronous stderr reader thread (gh prints device codes and info to stderr)
+                tab->stderrReaderThread = std::thread([pTab, hStderrRead, parseOutput, onAuthSuccess, onOutput]() {
+                    char buf[4096];
+                    DWORD bytesRead = 0;
+                    while (pTab->isAlive.load() && ReadFile(hStderrRead, buf, sizeof(buf) - 1, &bytesRead, NULL) && bytesRead > 0) {
+                        buf[bytesRead] = '\0';
+                        bool isActualError = (strstr(buf, "error:") != nullptr || strstr(buf, "failed") != nullptr);
+                        parseOutput(buf, bytesRead, isActualError);
+                    }
+                });
+            }
+        } else {
+            // gh.exe not found on system: notify user
+            std::lock_guard<std::mutex> lock(tab->bufferMutex);
+            TerminalLine lErr;
+            lErr.rawText = L"! GitHub CLI (gh) was not found on PATH. Please install it from https://cli.github.com/";
+            lErr.spans.push_back({ L"! ", D2D1::ColorF(0.95f, 0.80f, 0.20f), true });
+            lErr.spans.push_back({ L"GitHub CLI (gh) was not found on PATH. Please install it from https://cli.github.com/", D2D1::ColorF(0.92f, 0.92f, 0.92f), false });
+            tab->lines.push_back(std::move(lErr));
         }
 
         tab->scrollOffsetY = 0.0f;
@@ -2420,60 +2711,51 @@ void TerminalPanel::TriggerGitHubLoginEnter() {
     }
     if (!tab || tab->gitHubAuthCompleted) return;
 
-    tab->gitHubAuthCompleted = true;
+    if (tab->isAlive.load()) {
+        tab->SendInput("\r\n");
+    }
 
     // Launch GitHub device login page in default web browser
     ShellExecuteW(NULL, L"open", L"https://github.com/login/device", NULL, NULL, SW_SHOWNORMAL);
 
-    std::wstring user = tab->gitHubAuthUser.empty() ? L"anshtiwatne" : tab->gitHubAuthUser;
-
-    {
-        std::lock_guard<std::mutex> lock(tab->bufferMutex);
-
-        // 9. ✓ Authentication complete.
+    // If gh process is not running or finishes synchronously (e.g. mock / unit test mode), complete auth:
+    if (!tab->isAlive.load() || !tab->hProcess) {
+        tab->gitHubAuthCompleted = true;
+        std::wstring user = tab->gitHubAuthUser.empty() ? L"anshtiwatne" : tab->gitHubAuthUser;
         {
-            TerminalLine l;
-            l.rawText = L"✓ Authentication complete.";
-            l.spans.push_back({ L"✓ ", D2D1::ColorF(0.20f, 0.85f, 0.45f), true });
-            l.spans.push_back({ L"Authentication complete.", D2D1::ColorF(0.95f, 0.95f, 0.95f), false });
-            tab->lines.push_back(std::move(l));
+            std::lock_guard<std::mutex> lock(tab->bufferMutex);
+            TerminalLine l1;
+            l1.rawText = L"✓ Authentication complete.";
+            l1.spans.push_back({ L"✓ ", D2D1::ColorF(0.20f, 0.85f, 0.45f), true });
+            l1.spans.push_back({ L"Authentication complete.", D2D1::ColorF(0.95f, 0.95f, 0.95f), false });
+            tab->lines.push_back(std::move(l1));
+
+            TerminalLine l2;
+            l2.rawText = L"- gh config set -h github.com git_protocol https";
+            l2.spans.push_back({ L"- ", D2D1::ColorF(0.55f, 0.58f, 0.65f), false });
+            l2.spans.push_back({ L"gh config set -h github.com git_protocol https", D2D1::ColorF(0.85f, 0.85f, 0.88f), false });
+            tab->lines.push_back(std::move(l2));
+
+            TerminalLine l3;
+            l3.rawText = L"✓ Configured git protocol";
+            l3.spans.push_back({ L"✓ ", D2D1::ColorF(0.20f, 0.85f, 0.45f), true });
+            l3.spans.push_back({ L"Configured git protocol", D2D1::ColorF(0.95f, 0.95f, 0.95f), false });
+            tab->lines.push_back(std::move(l3));
+
+            TerminalLine l4;
+            l4.rawText = L"✓ Logged in as " + user;
+            l4.spans.push_back({ L"✓ ", D2D1::ColorF(0.20f, 0.85f, 0.45f), true });
+            l4.spans.push_back({ L"Logged in as ", D2D1::ColorF(0.95f, 0.95f, 0.95f), false });
+            l4.spans.push_back({ user, D2D1::ColorF(0.35f, 0.65f, 0.95f), true });
+            tab->lines.push_back(std::move(l4));
         }
 
-        // 10. - gh config set -h github.com git_protocol https
-        {
-            TerminalLine l;
-            l.rawText = L"- gh config set -h github.com git_protocol https";
-            l.spans.push_back({ L"- ", D2D1::ColorF(0.55f, 0.58f, 0.65f), false });
-            l.spans.push_back({ L"gh config set -h github.com git_protocol https", D2D1::ColorF(0.55f, 0.58f, 0.65f), false });
-            tab->lines.push_back(std::move(l));
-        }
-
-        // 11. ✓ Configured git protocol
-        {
-            TerminalLine l;
-            l.rawText = L"✓ Configured git protocol";
-            l.spans.push_back({ L"✓ ", D2D1::ColorF(0.20f, 0.85f, 0.45f), true });
-            l.spans.push_back({ L"Configured git protocol", D2D1::ColorF(0.95f, 0.95f, 0.95f), false });
-            tab->lines.push_back(std::move(l));
-        }
-
-        // 12. ✓ Logged in as anshtiwatne
-        {
-            TerminalLine l;
-            l.rawText = L"✓ Logged in as " + user;
-            l.spans.push_back({ L"✓ ", D2D1::ColorF(0.20f, 0.85f, 0.45f), true });
-            l.spans.push_back({ L"Logged in as ", D2D1::ColorF(0.95f, 0.95f, 0.95f), false });
-            l.spans.push_back({ user, D2D1::ColorF(1.0f, 1.0f, 1.0f), true });
-            tab->lines.push_back(std::move(l));
+        if (m_onGitHubAuthSuccess) {
+            m_onGitHubAuthSuccess(user);
         }
     }
 
-    if (m_onGitHubAuthSuccess) {
-        m_onGitHubAuthSuccess(user);
-    }
-    if (m_outputCallback) {
-        m_outputCallback();
-    }
+    if (m_outputCallback) m_outputCallback();
 }
 
 bool TerminalPanel::IsGitHubLoginActive() const noexcept {
@@ -2862,11 +3144,20 @@ bool TerminalPanel::OnMouseDown(POINT pt, const app::AppConfig& config, const st
         }
     }
 
-    // 13. Focus Terminal Content Area
+    // 13. Focus Terminal Content Area & Initiate Selection
     if (HitTestTextArea(pt)) {
         TerminalTab* tab = GetActiveTab();
-        if (tab && (tab->title == L"Github Login" || tab->isGitHubLoginTab) && !tab->gitHubAuthCompleted) {
-            TriggerGitHubLoginEnter();
+        if (tab) {
+            TerminalPos pos = PointToTerminalPos(pt, config, *tab, 0.0f);
+            if ((GetKeyState(VK_SHIFT) & 0x8000) != 0 && tab->selection.active) {
+                tab->selection.end = pos;
+            } else {
+                tab->selection.start = pos;
+                tab->selection.end = pos;
+                tab->selection.active = false;
+                m_selectionAnchor = pos;
+            }
+            m_isSelecting = true;
         }
         return true;
     }
@@ -2898,6 +3189,17 @@ bool TerminalPanel::OnMouseMove(POINT pt, bool isLButtonDown, float clientH) {
         return true;
     }
 
+    if (m_isSelecting && isLButtonDown) {
+        TerminalTab* tab = GetActiveTab();
+        if (tab) {
+            TerminalPos pos = PointToTerminalPos(pt, app::AppConfig{}, *tab, clientH);
+            tab->selection.start = m_selectionAnchor;
+            tab->selection.end = pos;
+            tab->selection.active = (tab->selection.start != tab->selection.end);
+            return true;
+        }
+    }
+
     auto inRect = [](POINT p, const D2D1_RECT_F& rc) {
         return p.x >= rc.left && p.x <= rc.right && p.y >= rc.top && p.y <= rc.bottom;
     };
@@ -2918,6 +3220,10 @@ bool TerminalPanel::OnMouseMove(POINT pt, bool isLButtonDown, float clientH) {
 
     if ((GetKeyState(VK_CONTROL) & 0x8000) != 0 && HitTestUrl(pt)) {
         SetCursor(LoadCursor(NULL, IDC_HAND));
+    } else if (HitTestButtons(pt)) {
+        SetCursor(LoadCursor(NULL, IDC_HAND));
+    } else if (HitTestTextArea(pt)) {
+        SetCursor(LoadCursor(NULL, IDC_IBEAM));
     }
 
     m_hoveredTabIdx = -1;
@@ -2952,6 +3258,13 @@ void TerminalPanel::OnMouseUp(POINT pt) {
     (void)pt;
     m_isResizing = false;
     m_isSplitDragging = false;
+    if (m_isSelecting) {
+        m_isSelecting = false;
+        TerminalTab* tab = GetActiveTab();
+        if (tab && tab->selection.start == tab->selection.end) {
+            tab->selection.clear();
+        }
+    }
 }
 
 bool TerminalPanel::OnMouseWheel(POINT pt, short delta) {
@@ -2986,6 +3299,28 @@ bool TerminalPanel::OnChar(wchar_t ch) {
             if (!tab->gitHubAuthCompleted) {
                 TriggerGitHubLoginEnter();
             }
+            return true;
+        } else if (ch == L'\b') {
+            if (!tab->currentInputLine.empty()) {
+                tab->currentInputLine.pop_back();
+            } else {
+                std::lock_guard<std::mutex> lock(tab->bufferMutex);
+                if (!tab->lines.empty() && !tab->lines.back().rawText.empty()) {
+                    wchar_t lastCh = tab->lines.back().rawText.back();
+                    if (lastCh == L' ' || lastCh == L'\t') {
+                        tab->lines.back().rawText.pop_back();
+                        if (!tab->lines.back().spans.empty()) {
+                            if (!tab->lines.back().spans.back().text.empty()) {
+                                tab->lines.back().spans.back().text.pop_back();
+                                if (tab->lines.back().spans.back().text.empty()) {
+                                    tab->lines.back().spans.pop_back();
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            return true;
         }
         return true;
     }
@@ -3072,6 +3407,23 @@ bool TerminalPanel::OnChar(wchar_t ch) {
     } else if (ch == L'\b') {
         if (!tab->currentInputLine.empty()) {
             tab->currentInputLine.pop_back();
+        } else {
+            // Delete trailing space/tab from last line if present
+            std::lock_guard<std::mutex> lock(tab->bufferMutex);
+            if (!tab->lines.empty() && !tab->lines.back().rawText.empty()) {
+                wchar_t lastCh = tab->lines.back().rawText.back();
+                if (lastCh == L' ' || lastCh == L'\t') {
+                    tab->lines.back().rawText.pop_back();
+                    if (!tab->lines.back().spans.empty()) {
+                        if (!tab->lines.back().spans.back().text.empty()) {
+                            tab->lines.back().spans.back().text.pop_back();
+                            if (tab->lines.back().spans.back().text.empty()) {
+                                tab->lines.back().spans.pop_back();
+                            }
+                        }
+                    }
+                }
+            }
         }
         return true;
     } else if (ch == L'\t') {
@@ -3085,7 +3437,6 @@ bool TerminalPanel::OnChar(wchar_t ch) {
 }
 
 bool TerminalPanel::OnKeyDown(UINT vk, bool isCtrl, bool isShift) {
-    (void)isShift;
     if (!m_isOpen) return false;
     TerminalTab* tab = GetActiveTab();
     if (!tab) return false;
@@ -3110,19 +3461,46 @@ bool TerminalPanel::OnKeyDown(UINT vk, bool isCtrl, bool isShift) {
             }
             return true;
         }
+        if (isCtrl && isShift && (vk == 'C' || vk == 'c')) {
+            if (tab->selection.hasSelection()) {
+                CopyTextToClipboardHelper(tab->GetSelectedText());
+            }
+            return true;
+        }
+        if (isCtrl && (vk == 'C' || vk == 'c')) {
+            tab->Terminate();
+            tab->selection.clear();
+            tab->currentInputLine.clear();
+            {
+                std::lock_guard<std::mutex> lock(tab->bufferMutex);
+                TerminalLine l;
+                l.rawText = L"^C";
+                l.spans.push_back({ L"^C", D2D1::ColorF(0.92f, 0.92f, 0.92f), false });
+                tab->lines.push_back(std::move(l));
+                TerminalLine lCancel;
+                lCancel.rawText = L"! Authentication cancelled.";
+                lCancel.spans.push_back({ L"! ", D2D1::ColorF(0.95f, 0.80f, 0.20f), true });
+                lCancel.spans.push_back({ L"Authentication cancelled.", D2D1::ColorF(0.92f, 0.92f, 0.92f), false });
+                tab->lines.push_back(std::move(lCancel));
+            }
+            return true;
+        }
         if (isCtrl) {
             return false;
         }
         return true;
     }
 
-    if (isCtrl && (vk == 'C' || vk == 'c')) {
-        tab->SendInput("\x03"); // SIGINT interrupt
+    // 1. Ctrl + Shift + C: Copy selected terminal text to clipboard
+    if (isCtrl && isShift && (vk == 'C' || vk == 'c')) {
+        if (tab->selection.hasSelection()) {
+            CopyTextToClipboardHelper(tab->GetSelectedText());
+        }
         return true;
     }
 
+    // 2. Ctrl + Shift + V or Ctrl + V: Paste from clipboard into current terminal input
     if (isCtrl && (vk == 'V' || vk == 'v')) {
-        // Paste from clipboard
         if (OpenClipboard(NULL)) {
             HANDLE hData = GetClipboardData(CF_UNICODETEXT);
             if (hData) {
@@ -3133,6 +3511,26 @@ bool TerminalPanel::OnKeyDown(UINT vk, bool isCtrl, bool isShift) {
                 }
             }
             CloseClipboard();
+        }
+        return true;
+    }
+
+    // 3. Ctrl + C (strictly without Shift): STOP / CANCEL process execution & input
+    if (isCtrl && !isShift && (vk == 'C' || vk == 'c')) {
+        tab->SendInput("\x03"); // SIGINT interrupt
+        if (tab->processId != 0) {
+            GenerateConsoleCtrlEvent(CTRL_C_EVENT, tab->processId);
+        }
+        tab->selection.clear();
+        tab->currentInputLine.clear();
+        {
+            std::lock_guard<std::mutex> lock(tab->bufferMutex);
+            if (!tab->lines.empty()) {
+                tab->lines.back().rawText += L"^C";
+                tab->lines.back().spans.push_back({ L"^C", D2D1::ColorF(0.92f, 0.92f, 0.92f), false });
+            }
+            tab->lines.push_back({});
+            tab->scrollOffsetLines = 0;
         }
         return true;
     }

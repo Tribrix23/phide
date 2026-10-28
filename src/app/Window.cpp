@@ -749,27 +749,26 @@ void Window::DoNewTextFile() {
 }
 
 void Window::DoNewFile() {
-    wchar_t szFile[MAX_PATH] = { 0 };
-    OPENFILENAMEW ofn = { sizeof(OPENFILENAMEW) };
-    ofn.hwndOwner = m_hwnd;
-    ofn.lpstrFilter = L"Notebook (*.ipynb)\0*.ipynb\0All Files (*.*)\0*.*\0C/C++ Files (*.cpp;*.h;*.hpp)\0*.cpp;*.h;*.hpp\0PHP Files (*.php)\0*.php\0JSON Files (*.json)\0*.json\0Text Files (*.txt)\0*.txt\0";
-    ofn.lpstrFile = szFile;
-    ofn.nMaxFile = MAX_PATH;
-    std::wstring initDir;
     if (m_drawer.HasOpenFolder()) {
-        initDir = m_drawer.GetOpenFolderPath();
-        ofn.lpstrInitialDir = initDir.c_str();
-    }
-    ofn.Flags = OFN_PATHMUSTEXIST | OFN_OVERWRITEPROMPT | OFN_ENABLESIZING;
-
-    if (GetSaveFileNameW(&ofn)) {
-        std::ofstream f(std::filesystem::path{ szFile });
-        f.close();
-        OpenFileDocument(szFile, false);
-        if (m_drawer.HasOpenFolder()) {
-            m_drawer.RefreshTree();
+        m_config.activeRailTab = 0; // Explorer tab
+        m_config.isDrawerOpen = true;
+        std::wstring parentDir = m_drawer.GetOpenFolderPath();
+        auto* pDoc = GetActiveDoc();
+        if (pDoc && !pDoc->filePath.empty()) {
+            std::error_code ec;
+            std::filesystem::path fp(pDoc->filePath);
+            if (std::filesystem::exists(fp, ec)) {
+                std::wstring dir = fp.parent_path().wstring();
+                if (dir.rfind(m_drawer.GetOpenFolderPath(), 0) == 0) {
+                    parentDir = dir;
+                }
+            }
         }
+        m_drawer.StartInlineCreate(parentDir, false);
+        if (m_hwnd) InvalidateRect(m_hwnd, nullptr, FALSE);
+        return;
     }
+    OpenVirtualDocument(L"Untitled-1.txt", L"");
 }
 
 void Window::DoNewWindow() {
@@ -5091,7 +5090,12 @@ bool Window::Create(HINSTANCE hInstance, int nCmdShow) {
     m_drawer.SetOnRequireGitHubLogin([this]() {
         std::wstring dir = m_drawer.GetOpenFolderPath();
         m_terminal.Open(dir);
+        m_terminalAnimProgress = 1.0f;
+        m_targetTerminalProgress = 1.0f;
+        m_isTerminalFocused = true;
+        AnimateTerminalOpen();
         m_terminal.OpenGitHubLoginTab(dir);
+        SetTimer(m_hwnd, m_animTimerId, 16, nullptr);
         if (m_hwnd) {
             InvalidateRect(m_hwnd, nullptr, FALSE);
         }
@@ -8820,6 +8824,26 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     return TRUE;
                 }
 
+                // 00.0 GitHub Login Modal
+                if (m_drawer.IsGitHubLoginModalOpen()) {
+                    if (m_drawer.HitTestGitHubLoginModalButtons(pt)) {
+                        SetCursor(LoadCursor(nullptr, IDC_HAND));
+                        return TRUE;
+                    }
+                    SetCursor(LoadCursor(nullptr, IDC_ARROW));
+                    return TRUE;
+                }
+
+                // 00.01 Publish Repo Modal
+                if (m_drawer.IsPublishRepoModalOpen()) {
+                    if (m_drawer.HitTestPublishRepoModalButtons(pt)) {
+                        SetCursor(LoadCursor(nullptr, IDC_HAND));
+                        return TRUE;
+                    }
+                    SetCursor(LoadCursor(nullptr, IDC_ARROW));
+                    return TRUE;
+                }
+
                 // 00. Confirm Discard / Restore / Notice Modal (Images 2, 3, 4, 5)
                 if (m_confirmDiscardModal.IsOpen()) {
                     if (m_confirmDiscardModal.HitTestButtons(pt)) {
@@ -8986,17 +9010,17 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 }
 
                 // Source Control: Draggable splitter, buttons and inputs (Images 1, 2, 3, 5)
-                if (m_config.activeRailTab == 2 && m_drawerAnimProgress > 0.5f) {
+                if (m_drawer.HitTestGitButtons(pt)) {
+                    SetCursor(LoadCursor(nullptr, IDC_HAND));
+                    return TRUE;
+                }
+                if (m_drawer.HitTestGitInputs(pt)) {
+                    SetCursor(LoadCursor(nullptr, IDC_IBEAM));
+                    return TRUE;
+                }
+                if (m_config.activeRailTab == 2 && m_drawerAnimProgress > 0.001f) {
                     if (m_drawer.HitTestGitSplitter(pt)) {
                         SetCursor(LoadCursor(nullptr, IDC_SIZENS));
-                        return TRUE;
-                    }
-                    if (m_drawer.HitTestGitInputs(pt)) {
-                        SetCursor(LoadCursor(nullptr, IDC_IBEAM));
-                        return TRUE;
-                    }
-                    if (m_drawer.HitTestGitButtons(pt)) {
-                        SetCursor(LoadCursor(nullptr, IDC_HAND));
                         return TRUE;
                     }
                 }
@@ -9887,7 +9911,12 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     return 0;
                 }
                 // When terminal has focus, swallow all editing & navigation keys so editor buffer is untouched
-                if (!(GetKeyState(VK_CONTROL) & 0x8000)) {
+                // Do NOT let Ctrl+C, Ctrl+V, Ctrl+X, Ctrl+A, Ctrl+Z, Ctrl+Y, Tab, Enter, Backspace leak into editor!
+                bool isCtrl = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
+                if (!isCtrl || wParam == 'C' || wParam == 'c' || wParam == 'V' || wParam == 'v' ||
+                    wParam == 'X' || wParam == 'x' || wParam == 'A' || wParam == 'a' ||
+                    wParam == 'Z' || wParam == 'z' || wParam == 'Y' || wParam == 'y' ||
+                    wParam == VK_BACK || wParam == VK_DELETE || wParam == VK_TAB || wParam == VK_RETURN) {
                     return 0;
                 }
             }

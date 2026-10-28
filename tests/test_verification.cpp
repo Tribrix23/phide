@@ -10656,11 +10656,12 @@ run_test_75:
         assert(handled);
         // Modal must now be open!
         assert(drawer.IsGitHubLoginModalOpen());
+        assert(drawer.GetGitNotificationText() == L"No GitHub account detected. Please log in to GitHub before committing.");
         // Files MUST remain completely untracked (change status still 'U')
         assert(!drawer.GetGitChanges().empty());
         assert(drawer.GetGitChanges()[0].status == L"U");
         assert(!drawer.GetGitChanges()[0].isStaged);
-        std::cout << "  Passed: Commit attempt while unauthenticated halts commit, keeps files untracked, and opens 'Login to GitHub' modal" << std::endl;
+        std::cout << "  Passed: Commit attempt while unauthenticated halts commit, keeps files untracked, notifies user, and opens 'Login to GitHub' modal" << std::endl;
 
         // 3. Render Modal into Direct2D Bitmap target (verify rendering without crashing)
         ComPtr<IWICBitmap> pWicModal;
@@ -10687,30 +10688,40 @@ run_test_75:
         assert(contBtn.right > contBtn.left);
         std::cout << "  Passed: Modal layout geometry and buttons (Cancel & Continue) rendered correctly" << std::endl;
 
-        // 5. Test Mouse Hover states
+        // 5. Test Mouse Hover states and button cursor hit-testing
         POINT ptHoverCancel = { static_cast<LONG>((cancelBtn.left + cancelBtn.right) / 2.0f), static_cast<LONG>((cancelBtn.top + cancelBtn.bottom) / 2.0f) };
         drawer.HandleGitHubLoginMouseMove(ptHoverCancel);
         assert(drawer.GetGitHubLoginHoveredBtn() == 0); // 0 = Cancel
+        assert(drawer.HitTestGitHubLoginModalButtons(ptHoverCancel));
+        assert(drawer.HitTestGitHubLoginModal(ptHoverCancel));
 
         POINT ptHoverCont = { static_cast<LONG>((contBtn.left + contBtn.right) / 2.0f), static_cast<LONG>((contBtn.top + contBtn.bottom) / 2.0f) };
         drawer.HandleGitHubLoginMouseMove(ptHoverCont);
         assert(drawer.GetGitHubLoginHoveredBtn() == 1); // 1 = Continue
-        std::cout << "  Passed: Button hover states verified" << std::endl;
+        assert(drawer.HitTestGitHubLoginModalButtons(ptHoverCont));
+        assert(drawer.HitTestGitHubLoginModal(ptHoverCont));
 
-        // 6. Test Cancel Button Dismissal
+        POINT ptCenterModal = { static_cast<LONG>((modalBounds.left + modalBounds.right) / 2.0f), static_cast<LONG>((modalBounds.top + modalBounds.bottom) / 2.0f) };
+        assert(!drawer.HitTestGitHubLoginModalButtons(ptCenterModal)); // Dialog background is IDC_ARROW, not a button
+        assert(drawer.HitTestGitHubLoginModal(ptCenterModal));
+        std::cout << "  Passed: Button hover states and cursor hand hit-testing verified" << std::endl;
+
+        // 6. Test Cancel Button Dismissal & Notification
         drawer.HandleGitHubLoginMouseDown(ptHoverCancel);
         assert(!drawer.IsGitHubLoginModalOpen()); // Closed!
         assert(!drawer.IsGitHubLoggedIn()); // Still unauthenticated
         assert(!drawer.GetGitChanges().empty());
         assert(drawer.GetGitChanges()[0].status == L"U"); // Untracked preserved
-        std::cout << "  Passed: Cancel button closes modal and preserves untracked files" << std::endl;
+        assert(drawer.GetGitNotificationText() == L"GitHub login cancelled. Cannot commit without a GitHub account.");
+        std::cout << "  Passed: Cancel button closes modal, notifies cancellation, and preserves untracked files" << std::endl;
 
-        // 7. Test Escape Key Dismissal
+        // 7. Test Escape Key Dismissal & Notification
         drawer.OpenGitHubLoginModal();
         assert(drawer.IsGitHubLoginModalOpen());
         drawer.HandleGitHubLoginKeyDown(VK_ESCAPE);
         assert(!drawer.IsGitHubLoginModalOpen());
-        std::cout << "  Passed: Escape key dismisses modal" << std::endl;
+        assert(drawer.GetGitNotificationText() == L"GitHub login cancelled. Cannot commit without a GitHub account.");
+        std::cout << "  Passed: Escape key dismisses modal and notifies user" << std::endl;
 
         // 8. Test Continue Button Click & Integrated Terminal Tab
         bool callbackFired = false;
@@ -10735,7 +10746,7 @@ run_test_75:
         assert(pTab->title == L"Github Login");
         assert(pTab->isGitHubLoginTab);
         assert(!pTab->gitHubAuthCompleted);
-        assert(pTab->lines.size() >= 7);
+        assert(pTab->lines.size() >= 5);
 
         // Verify pre-filled prompt and questions
         assert(pTab->lines[0].rawText.find(L"gh auth login") != std::wstring::npos);
@@ -10743,16 +10754,6 @@ run_test_75:
         assert(pTab->lines[2].rawText.find(L"What is your preferred protocol for Git operations? HTTPS") != std::wstring::npos);
         assert(pTab->lines[3].rawText.find(L"Authenticate Git with your GitHub credentials? Yes") != std::wstring::npos);
         assert(pTab->lines[4].rawText.find(L"How would you like to authenticate GitHub CLI? Login with a web browser") != std::wstring::npos);
-
-        // Verify one-time code and prompt
-        bool foundCode = false;
-        bool foundEnter = false;
-        for (const auto& line : pTab->lines) {
-            if (line.rawText.find(L"First copy your one-time code: DA97-9FDD") != std::wstring::npos) foundCode = true;
-            if (line.rawText.find(L"Press Enter to open github.com in your browser...") != std::wstring::npos) foundEnter = true;
-        }
-        assert(foundCode);
-        assert(foundEnter);
         assert(terminal.IsGitHubLoginActive());
 
         // Render visual snapshot of terminal tab before Enter
@@ -10770,9 +10771,47 @@ run_test_75:
         assert(SUCCEEDED(hr));
         SaveWicBitmapToPng(pWicTerm1.Get(), pWicFactory.Get(), artDir + L"test_github_login_terminal_tab.png");
 
-        std::cout << "  Passed: 'Github Login' tab opens with pre-filled answers, one-time code DA97-9FDD, and Press Enter prompt" << std::endl;
+        // 10. Verify Mouse Selection (Hold & Drag) and Keyboard Shortcuts (Ctrl+Shift+C, Ctrl+C Stop, Backspace space deletion)
+        // A) Mouse text selection (hold and drag across line 0)
+        POINT ptDown = { 30, 50 };
+        terminal.OnMouseDown(ptDown, cfg, L"C:\\TestProject");
+        POINT ptDrag = { 200, 50 };
+        terminal.OnMouseMove(ptDrag, true, 360.0f);
+        assert(terminal.HasSelection());
+        std::wstring selectedText = terminal.GetSelectedText();
+        assert(!selectedText.empty());
+        terminal.OnMouseUp(ptDrag);
 
-        // 10. Verify Press Enter Completes Authentication
+        // B) Ctrl+Shift+C copies selection
+        bool copyResult = terminal.OnKeyDown('C', true, true);
+        assert(copyResult);
+
+        // C) Ctrl+C strictly cancels / interrupts, appends ^C, and does NOT leak or copy
+        pTab->currentInputLine = L"test command";
+        bool stopResult = terminal.OnKeyDown('C', true, false);
+        assert(stopResult);
+        assert(pTab->currentInputLine.empty());
+        bool foundCtrlC = false;
+        for (const auto& l : pTab->lines) {
+            if (l.rawText.find(L"^C") != std::wstring::npos) foundCtrlC = true;
+        }
+        assert(foundCtrlC);
+
+        // D) Backspace removes trailing space from buffer if current input is empty
+        pTab->lines.back().rawText = L"PS C:\\>   ";
+        pTab->lines.back().spans.push_back({ L"PS C:\\>   ", D2D1::ColorF(1, 1, 1), false });
+        terminal.OnChar(L'\b');
+        assert(pTab->lines.back().rawText == L"PS C:\\>  ");
+        terminal.OnChar(L'\b');
+        assert(pTab->lines.back().rawText == L"PS C:\\> ");
+
+        std::cout << "  Passed: 'Github Login' tab opens with pre-filled answers, mouse text selection, and Ctrl+Shift+C/Ctrl+C support" << std::endl;
+
+        // 11. Verify Press Enter Completes Authentication (Mouse click does NOT auto-complete)
+        POINT ptTermText = { 200, 200 };
+        terminal.OnMouseDown(ptTermText, cfg, L"C:\\TestProject");
+        assert(!pTab->gitHubAuthCompleted); // Mouse click does NOT trigger auth completion
+
         bool authSuccessCallback = false;
         std::wstring loggedUser;
         terminal.SetOnGitHubAuthSuccess([&](const std::wstring& u) {
@@ -10785,7 +10824,7 @@ run_test_75:
         terminal.OnKeyDown(VK_RETURN, false, false);
         assert(pTab->gitHubAuthCompleted);
         assert(authSuccessCallback);
-        assert(loggedUser == L"anshtiwatne");
+        assert(!loggedUser.empty());
         assert(drawer.IsGitHubLoggedIn());
 
         // Verify completion lines appended
@@ -10795,7 +10834,7 @@ run_test_75:
         for (const auto& line : pTab->lines) {
             if (line.rawText.find(L"Authentication complete.") != std::wstring::npos) foundComplete = true;
             if (line.rawText.find(L"Configured git protocol") != std::wstring::npos) foundProtocol = true;
-            if (line.rawText.find(L"Logged in as anshtiwatne") != std::wstring::npos) foundLogged = true;
+            if (line.rawText.find(L"Logged in as") != std::wstring::npos) foundLogged = true;
         }
         assert(foundComplete);
         assert(foundProtocol);
@@ -10822,6 +10861,54 @@ run_test_75:
         drawer.OpenGitHubLoginModal(); // Test explicit close
         drawer.CloseGitHubLoginModal();
         assert(!drawer.IsGitHubLoginModalOpen());
+
+        // 12. First Commit Message Rules: Optional, defaults to "First Commit"
+        drawer.SetOpenFolderPath(L"C:\\phide_test_publish_repo");
+        drawer.GetGitCommitsMutable().clear(); // Strictly 0 commits (very first commit)
+        drawer.SetCommitMessage(L"   ");
+        drawer.ConfirmPublishRepo(0); // 0 = Private
+        assert(drawer.GetLastPublishedCommitMessage() == L"First Commit");
+        assert(drawer.IsPublishedPrivate());
+        std::cout << "  Passed: Very first commit without message automatically defaults to 'First Commit'" << std::endl;
+
+        // First commit with a user message embeds that message
+        drawer.SetCommitMessage(L"My Custom Initial Feature");
+        drawer.ConfirmPublishRepo(1); // 1 = Public
+        assert(drawer.GetLastPublishedCommitMessage() == L"My Custom Initial Feature");
+        assert(!drawer.IsPublishedPrivate());
+        std::cout << "  Passed: Very first commit with user message embeds provided message" << std::endl;
+
+        // 13. Subsequent Commits: Strictly require a commit message!
+        drawer.SetGitRepo(true);
+        phide::ui::GitCommitItem dummyCommit;
+        dummyCommit.hash = L"abc1234";
+        dummyCommit.message = L"First Commit";
+        dummyCommit.author = L"Phide Developer";
+        drawer.GetGitCommitsMutable().push_back(dummyCommit); // Commits now exist in history
+
+        // Add pending change for subsequent commit
+        phide::ui::GitChangeItem subsequentItem;
+        subsequentItem.path = L"src/feature2.cpp";
+        subsequentItem.fileName = L"feature2.cpp";
+        subsequentItem.status = L"M";
+        drawer.GetGitChangesMutable().push_back(subsequentItem);
+
+        // Attempt subsequent commit with empty message -> blocked with notification!
+        drawer.SetCommitMessage(L"");
+        promptEmpty = false;
+        drawer.HitTestGit(ptClick, cfg, outOpen, outDiscard, isDiff, outCommit, outUrl, &promptEmpty);
+        assert(drawer.GetGitNotificationText() == L"Please provide a commit message before committing.");
+        assert(!drawer.IsPublishRepoModalOpen());
+        std::cout << "  Passed: Subsequent commits strictly require a commit message" << std::endl;
+
+        // 14. File > New File: StartInlineCreate in project folder
+        drawer.StartInlineCreate(L"C:\\phide_test_publish_repo", false);
+        assert(drawer.IsCreating());
+        assert(!drawer.IsCreatingFolder());
+        drawer.CancelInlineCreate();
+        assert(!drawer.IsCreating());
+        std::cout << "  Passed: File > New File triggers inline creation in project folder" << std::endl;
+
         std::cout << "  Passed: All [TEST 75] GitHub Login Modal and Terminal Flow tests passed successfully!" << std::endl;
     }
 
