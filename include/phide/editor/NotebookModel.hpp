@@ -198,10 +198,12 @@ public:
     bool isRunningAll = false;
     bool isDirty = false;
     int nextExecutionCount = 1;
+    float scrollY = 0.0f;
 
     void InitDefaultScratchpad() {
         cells.clear();
         nextExecutionCount = 1;
+        scrollY = 0.0f;
 
         // Exactly one cell with "#Welcome to Phide notebook" as requested by the user
         // Initialized as a Text (Markdown) cell, not a Code cell
@@ -499,13 +501,20 @@ public:
 
     bool LoadFromFile(const std::wstring& path) {
         std::ifstream ifs(path, std::ios::in | std::ios::binary);
-        if (!ifs.is_open()) return false;
+        if (!ifs.is_open()) {
+            InitDefaultScratchpad();
+            return false;
+        }
         std::ostringstream ss;
         ss << ifs.rdbuf();
         ifs.close();
         filePath = path;
         title = std::filesystem::path(path).filename().wstring();
-        return FromJson(ss.str());
+        bool ok = FromJson(ss.str());
+        if (!ok || cells.empty()) {
+            InitDefaultScratchpad();
+        }
+        return ok;
     }
 
     bool FromJson(const std::string& json) {
@@ -637,10 +646,12 @@ public:
                                 co.streamName = L"stdout";
 
                                 bool isErr = (outObjStr.find("\"output_type\": \"error\"") != std::string::npos ||
-                                              outObjStr.find("\"output_type\":\"error\"") != std::string::npos ||
-                                              outObjStr.find("\"name\": \"stderr\"") != std::string::npos ||
-                                              outObjStr.find("\"name\":\"stderr\"") != std::string::npos);
+                                              outObjStr.find("\"output_type\":\"error\"") != std::string::npos);
                                 co.isError = isErr;
+                                if (outObjStr.find("\"name\": \"stderr\"") != std::string::npos ||
+                                    outObjStr.find("\"name\":\"stderr\"") != std::string::npos) {
+                                    co.streamName = L"stderr";
+                                }
                                 if (isErr) {
                                     co.streamName = L"stderr";
                                     cell.hasError = true;

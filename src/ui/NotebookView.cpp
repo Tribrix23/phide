@@ -282,6 +282,10 @@ void NotebookView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
             doc.notebookDoc->LoadFromFile(doc.filePath);
         }
     }
+    if (doc.notebookDoc->cells.empty()) {
+        doc.notebookDoc->InitDefaultScratchpad();
+    }
+    m_scrollY = doc.notebookDoc->scrollY;
 
     auto nb = doc.notebookDoc;
     m_viewHeight = height;
@@ -373,9 +377,91 @@ void NotebookView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
         pRT->DrawLine(D2D1::Point2F(icCX + 1.5f, icCY - hHalf + 4.5f), D2D1::Point2F(icCX + 1.5f, icCY + hHalf - 2.5f), iconBrush, 1.0f);
     }
 
+    // Separator vertical bar beside Trash icon
+    curBtnX += btnSize + config.ScaleF(8.0f);
+    pRT->DrawLine(
+        D2D1::Point2F(curBtnX, btnY + config.ScaleF(4.0f)),
+        D2D1::Point2F(curBtnX, btnY + btnSize - config.ScaleF(4.0f)),
+        theme.brushBorderSubtle.Get(), 1.0f
+    );
+    curBtnX += config.ScaleF(8.0f);
+
+    // [+ Code] Toolbar Button (Crisp vector Code icon < > and label)
+    const float btnCodeW = config.ScaleF(72.0f);
+    m_btnAddCode = D2D1::RectF(curBtnX, btnY, curBtnX + btnCodeW, btnY + btnSize);
+    D2D1_ROUNDED_RECT rrcAddCode = D2D1::RoundedRect(m_btnAddCode, config.ScaleF(4.0f), config.ScaleF(4.0f));
+    if (m_hoveredToolbarBtn == 3) {
+        pRT->FillRoundedRectangle(rrcAddCode, theme.brushItemHover.Get());
+    }
+    pRT->DrawRoundedRectangle(rrcAddCode, theme.brushBorderSubtle.Get(), 1.0f);
+
+    ID2D1Brush* codeTextBrush = (m_hoveredToolbarBtn == 3)
+        ? (theme.brushTextPrimary ? theme.brushTextPrimary.Get() : theme.brushBrandAccent.Get())
+        : (theme.brushTextSecondary ? theme.brushTextSecondary.Get() : theme.brushTextPrimary.Get());
+    if (codeTextBrush) {
+        const float icCodeX = m_btnAddCode.left + config.ScaleF(8.0f);
+        const float icCodeY = (m_btnAddCode.top + m_btnAddCode.bottom) / 2.0f;
+        // <
+        pRT->DrawLine(D2D1::Point2F(icCodeX + config.ScaleF(3.5f), icCodeY - config.ScaleF(3.5f)),
+                      D2D1::Point2F(icCodeX, icCodeY), codeTextBrush, 1.3f);
+        pRT->DrawLine(D2D1::Point2F(icCodeX, icCodeY),
+                      D2D1::Point2F(icCodeX + config.ScaleF(3.5f), icCodeY + config.ScaleF(3.5f)), codeTextBrush, 1.3f);
+        // >
+        pRT->DrawLine(D2D1::Point2F(icCodeX + config.ScaleF(6.5f), icCodeY - config.ScaleF(3.5f)),
+                      D2D1::Point2F(icCodeX + config.ScaleF(10.0f), icCodeY), codeTextBrush, 1.3f);
+        pRT->DrawLine(D2D1::Point2F(icCodeX + config.ScaleF(10.0f), icCodeY),
+                      D2D1::Point2F(icCodeX + config.ScaleF(6.5f), icCodeY + config.ScaleF(3.5f)), codeTextBrush, 1.3f);
+
+        D2D1_RECT_F rcCodeLabel = D2D1::RectF(icCodeX + config.ScaleF(13.0f), btnY, m_btnAddCode.right - config.ScaleF(4.0f), btnY + btnSize);
+        pRT->DrawText(L"+ Code", 6, theme.fontBadge.Get() ? theme.fontBadge.Get() : theme.fontMenuItem.Get(),
+                      rcCodeLabel, codeTextBrush);
+    }
+
+    curBtnX += btnCodeW + config.ScaleF(6.0f);
+
+    // [+ Text] Toolbar Button (Crisp vector Text icon T and label)
+    const float btnTextW = config.ScaleF(68.0f);
+    m_btnAddText = D2D1::RectF(curBtnX, btnY, curBtnX + btnTextW, btnY + btnSize);
+    D2D1_ROUNDED_RECT rrcAddText = D2D1::RoundedRect(m_btnAddText, config.ScaleF(4.0f), config.ScaleF(4.0f));
+    if (m_hoveredToolbarBtn == 4) {
+        pRT->FillRoundedRectangle(rrcAddText, theme.brushItemHover.Get());
+    }
+    pRT->DrawRoundedRectangle(rrcAddText, theme.brushBorderSubtle.Get(), 1.0f);
+
+    ID2D1Brush* textIconBrush = (m_hoveredToolbarBtn == 4)
+        ? (theme.brushTextPrimary ? theme.brushTextPrimary.Get() : theme.brushBrandAccent.Get())
+        : (theme.brushTextSecondary ? theme.brushTextSecondary.Get() : theme.brushTextPrimary.Get());
+    if (textIconBrush) {
+        const float icTextX = m_btnAddText.left + config.ScaleF(8.0f);
+        const float icTextY = (m_btnAddText.top + m_btnAddText.bottom) / 2.0f;
+        // T horizontal bar
+        pRT->DrawLine(D2D1::Point2F(icTextX, icTextY - config.ScaleF(4.0f)),
+                      D2D1::Point2F(icTextX + config.ScaleF(8.0f), icTextY - config.ScaleF(4.0f)), textIconBrush, 1.4f);
+        // T vertical stem
+        pRT->DrawLine(D2D1::Point2F(icTextX + config.ScaleF(4.0f), icTextY - config.ScaleF(4.0f)),
+                      D2D1::Point2F(icTextX + config.ScaleF(4.0f), icTextY + config.ScaleF(4.5f)), textIconBrush, 1.4f);
+
+        D2D1_RECT_F rcTextLabel = D2D1::RectF(icTextX + config.ScaleF(11.0f), btnY, m_btnAddText.right - config.ScaleF(4.0f), btnY + btnSize);
+        pRT->DrawText(L"+ Text", 6, theme.fontBadge.Get() ? theme.fontBadge.Get() : theme.fontMenuItem.Get(),
+                      rcTextLabel, textIconBrush);
+    }
+
     // 3. Render Notebook Cells Area with Scrolling
     const float contentTop = top + toolbarH;
     const float contentH = height - toolbarH;
+
+    // Viewport scroll clamping
+    if (m_totalHeight > 0.0f) {
+        float maxScroll = (std::max)(0.0f, m_totalHeight - contentH + config.ScaleF(40.0f));
+        if (m_scrollY > maxScroll) {
+            m_scrollY = maxScroll;
+            doc.notebookDoc->scrollY = m_scrollY;
+        }
+    }
+    if (m_scrollY < 0.0f) {
+        m_scrollY = 0.0f;
+        doc.notebookDoc->scrollY = 0.0f;
+    }
 
     pRT->PushAxisAlignedClip(D2D1::RectF(left, contentTop, left + width, top + height), D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
 
@@ -971,6 +1057,10 @@ void NotebookView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
         RenderTooltip(pRT, theme, config, m_btnRunAll, tip);
     } else if (m_hoveredToolbarBtn == 2) {
         RenderTooltip(pRT, theme, config, m_btnClearAll, L"Clear All Outputs");
+    } else if (m_hoveredToolbarBtn == 3) {
+        RenderTooltip(pRT, theme, config, m_btnAddCode, L"Add Code Cell (+ Code)");
+    } else if (m_hoveredToolbarBtn == 4) {
+        RenderTooltip(pRT, theme, config, m_btnAddText, L"Add Text / Markdown Cell (+ Text)");
     }
 }
 
@@ -1003,6 +1093,18 @@ bool NotebookView::HandleLButtonDown(POINT clientPt, editor::OpenDocument& doc, 
     }
     if (PointInRect(clientPt, m_btnClearAll)) {
         nb->ClearAllOutputs();
+        if (hwnd) InvalidateRect(hwnd, nullptr, FALSE);
+        return true;
+    }
+    if (PointInRect(clientPt, m_btnAddCode)) {
+        int targetIdx = nb->activeCellIdx >= 0 ? nb->activeCellIdx : static_cast<int>(nb->cells.size()) - 1;
+        nb->AddCell(editor::NotebookCellType::Code, targetIdx);
+        if (hwnd) InvalidateRect(hwnd, nullptr, FALSE);
+        return true;
+    }
+    if (PointInRect(clientPt, m_btnAddText)) {
+        int targetIdx = nb->activeCellIdx >= 0 ? nb->activeCellIdx : static_cast<int>(nb->cells.size()) - 1;
+        nb->AddCell(editor::NotebookCellType::Markdown, targetIdx);
         if (hwnd) InvalidateRect(hwnd, nullptr, FALSE);
         return true;
     }
@@ -1128,6 +1230,7 @@ bool NotebookView::HandleMouseMove(POINT clientPt, editor::OpenDocument& doc, co
         float maxScroll = (std::max)(0.0f, m_totalHeight - contentH + config.ScaleF(40.0f));
         float scrollDelta = (deltaY / contentH) * m_totalHeight;
         m_scrollY = (std::clamp)(m_dragScrollStartOffset + scrollDelta, 0.0f, maxScroll);
+        if (doc.notebookDoc) doc.notebookDoc->scrollY = m_scrollY;
         return true;
     }
 
@@ -1184,6 +1287,8 @@ bool NotebookView::HandleMouseMove(POINT clientPt, editor::OpenDocument& doc, co
     int oldToolbarBtn = m_hoveredToolbarBtn;
     if (PointInRect(clientPt, m_btnRunAll)) m_hoveredToolbarBtn = 1;
     else if (PointInRect(clientPt, m_btnClearAll)) m_hoveredToolbarBtn = 2;
+    else if (PointInRect(clientPt, m_btnAddCode)) m_hoveredToolbarBtn = 3;
+    else if (PointInRect(clientPt, m_btnAddText)) m_hoveredToolbarBtn = 4;
     else m_hoveredToolbarBtn = 0;
 
     int oldCellIdx = m_hoveredCellIdx;
@@ -1325,6 +1430,7 @@ bool NotebookView::HandleMouseWheel(short delta, POINT clientPt, editor::OpenDoc
     } else {
         m_scrollY = (std::min)(maxScroll, m_scrollY + scrollStep);
     }
+    if (doc.notebookDoc) doc.notebookDoc->scrollY = m_scrollY;
     return true;
 }
 
@@ -1660,7 +1766,8 @@ LPCWSTR NotebookView::GetCursorForPoint(POINT pt, const editor::OpenDocument& do
 
     if (m_isDraggingCell) return IDC_SIZEALL;
 
-    if (PointInRect(pt, m_btnRunAll) || PointInRect(pt, m_btnClearAll) || PointInRect(pt, m_scrollThumb)) {
+    if (PointInRect(pt, m_btnRunAll) || PointInRect(pt, m_btnClearAll) ||
+        PointInRect(pt, m_btnAddCode) || PointInRect(pt, m_btnAddText) || PointInRect(pt, m_scrollThumb)) {
         return IDC_HAND;
     }
 

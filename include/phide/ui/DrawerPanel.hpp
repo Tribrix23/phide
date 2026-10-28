@@ -223,7 +223,7 @@ public:
 
     [[nodiscard]] bool IsGitRepo() const noexcept { return m_isGitRepo; }
     void SetGitRepo(bool isRepo) noexcept { m_isGitRepo = isRepo; }
-    [[nodiscard]] bool IsGitLoading() const noexcept { return m_isGitLoading.load(); }
+    [[nodiscard]] bool IsGitLoading() const noexcept { return m_isGitLoading.load() || m_isCommitting.load(); }
     void ClearGitLoading() noexcept { m_isGitLoading.store(false); }
     static std::string GenerateContextAwareGitignore(const std::wstring& rootDir);
     static void EnsureContextAwareGitignore(const std::wstring& rootDir);

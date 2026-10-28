@@ -1493,7 +1493,10 @@ void Window::OpenNotebookView(const std::wstring& filePath) {
 
     if (!filePath.empty()) {
         newDoc.notebookDoc->LoadFromFile(filePath);
+    } else {
+        newDoc.notebookDoc->InitDefaultScratchpad();
     }
+    m_editor.GetNotebookView().SetScrollY(newDoc.notebookDoc->scrollY);
 
     if (canReplace) {
         group.docs[group.activeDocIdx] = std::move(newDoc);

@@ -72,6 +72,9 @@ public:
     void RestartKernel(editor::OpenDocument& doc);
 
     [[nodiscard]] bool IsExecuting() const noexcept { return m_isExecuting.load(); }
+    void SetScrollY(float s) noexcept { m_scrollY = s; }
+    [[nodiscard]] const D2D1_RECT_F& GetBtnAddCode() const noexcept { return m_btnAddCode; }
+    [[nodiscard]] const D2D1_RECT_F& GetBtnAddText() const noexcept { return m_btnAddText; }
 
     /**
      * @brief Hit-tests code area coordinates to obtain line and column with character metrics precision.
@@ -105,7 +108,7 @@ private:
     // Hover state tracking
     int m_hoveredCellIdx = -1;
     int m_hoveredBtn = 0; // 1: Run, 2: Del, 3: Up, 4: Down, 5: ClearOutput, 6: Drag
-    int m_hoveredToolbarBtn = 0; // 1: RunAll, 2: ClearAll
+    int m_hoveredToolbarBtn = 0; // 1: RunAll, 2: ClearAll, 3: AddCode, 4: AddText
     int m_hoveredBottomCellIdx = -1; // Cell index whose bottom border is hovered
     int m_hoveredBottomBtn = 0; // 1: + Code, 2: + Text
 
@@ -119,6 +122,8 @@ private:
     // Toolbar button hit regions (icon-only, minimal)
     D2D1_RECT_F m_btnRunAll{};
     D2D1_RECT_F m_btnClearAll{};
+    D2D1_RECT_F m_btnAddCode{};
+    D2D1_RECT_F m_btnAddText{};
 
     // Background execution engine & sequential queue
     editor::NotebookKernel m_kernel;
