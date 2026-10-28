@@ -4977,11 +4977,11 @@ void DrawerPanel::SetErrorFiles(const std::map<std::wstring, size_t>& errorFiles
 }
 
 std::string DrawerPanel::GenerateContextAwareGitignore(const std::wstring& rootDir) {
-    if (rootDir.empty()) return "# Environment & OS\n.env\n.DS_Store\nThumbs.db\n";
+    if (rootDir.empty()) return "# Environment\n.env\n.env.local\n";
     std::error_code ec;
     std::filesystem::path root(rootDir);
     if (!std::filesystem::exists(root, ec) || !std::filesystem::is_directory(root, ec)) {
-        return "# Environment & OS\n.env\n.DS_Store\nThumbs.db\n";
+        return "# Environment\n.env\n.env.local\n";
     }
 
     bool hasPython = false;
@@ -5126,11 +5126,10 @@ std::string DrawerPanel::GenerateContextAwareGitignore(const std::wstring& rootD
         ss << "bin/\n\n";
     }
 
-    // Always include Environment and System files
-    ss << "# Environment & OS\n";
+    // Environment files
+    ss << "# Environment\n";
     ss << ".env\n";
-    ss << ".DS_Store\n";
-    ss << "Thumbs.db\n";
+    ss << ".env.local\n";
 
     return ss.str();
 }

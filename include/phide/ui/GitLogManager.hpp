@@ -47,6 +47,25 @@ public:
      * @brief Logs a completed git command with its output and execution duration.
      */
     void LogCommand(const std::wstring& cmd, int exitCode, const std::wstring& output, DWORD durationMs) {
+        // Do not spam Git Logs with routine background status polling queries unless they produce an error
+        if (exitCode == 0) {
+            if (cmd.find(L"update-index") != std::wstring::npos ||
+                cmd.find(L"status --porcelain") != std::wstring::npos ||
+                cmd.find(L"diff --name-only") != std::wstring::npos ||
+                cmd.find(L"diff --cached --name-only") != std::wstring::npos ||
+                cmd.find(L"rev-list --count") != std::wstring::npos ||
+                cmd.find(L"rev-parse --is-inside-work-tree") != std::wstring::npos ||
+                cmd.find(L"branch --show-current") != std::wstring::npos ||
+                cmd.find(L"status -sb") != std::wstring::npos ||
+                cmd.find(L"log -n 40") != std::wstring::npos ||
+                cmd.find(L"show HEAD:\"") != std::wstring::npos ||
+                cmd.find(L"show --shortstat") != std::wstring::npos ||
+                cmd.find(L"show --name-status") != std::wstring::npos ||
+                cmd.find(L"ls-files --error-unmatch") != std::wstring::npos) {
+                return;
+            }
+        }
+
         std::lock_guard<std::mutex> lock(m_mutex);
         std::wstring ts = GetCurrentTimestamp();
 
