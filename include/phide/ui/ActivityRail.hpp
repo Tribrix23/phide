@@ -32,7 +32,8 @@ enum class RailTabId {
     Files = 0,          ///< Files / Explorer perspective (two overlapping sheets)
     Search = 1,         ///< Search across workspace
     Git = 2,            ///< Source Control (Git)
-    Packages = 3        ///< Package Manager (PyCharm style)
+    Packages = 3,       ///< Package Manager (PyCharm style)
+    Notebook = 4        ///< Interactive Notebook (Jupyter / Colab)
 };
 
 /**
@@ -93,6 +94,7 @@ public:
     void UpdateGitAnim(float deltaAngle) noexcept { m_gitAnimAngle += deltaAngle; }
     void SetGitBadgeCount(size_t count) noexcept { m_gitBadgeCount = count; }
     [[nodiscard]] size_t GetGitBadgeCount() const noexcept { return m_gitBadgeCount; }
+    [[nodiscard]] const std::vector<RailItem>& GetItems() const noexcept { return m_items; }
 
 private:
     RailTabId m_hoveredTab = RailTabId::None;

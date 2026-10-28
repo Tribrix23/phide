@@ -11,6 +11,7 @@
 #include <wrl/client.h>
 #include "phide/editor/Buffer.hpp"
 #include "phide/lsp/LspClient.hpp"
+#include "phide/editor/NotebookModel.hpp"
 
 namespace phide::editor {
 
@@ -259,6 +260,7 @@ struct OpenDocument {
     std::wstring commitDate;             ///< Commit date
     std::wstring commitMessage;          ///< Full commit message
     std::vector<MultiFileDiffEntry> multiFileDiffs; ///< List of all files changed in this commit
+    std::shared_ptr<NotebookDocument> notebookDoc; ///< Attached interactive notebook model when viewType == L"notebook"
 };
 
 /**

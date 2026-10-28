@@ -1,0 +1,124 @@
+/**
+ * @file NotebookView.hpp
+ * @brief Interactive Jupyter / Colab-style notebook interface with modular code/markdown cells,
+ *        top execution toolbar, syntax highlighting, and background asynchronous execution engine.
+ */
+
+#pragma once
+
+#include <windows.h>
+#include <d2d1.h>
+#include <dwrite.h>
+#include <vector>
+#include <string>
+#include <memory>
+#include <atomic>
+#include <thread>
+#include <mutex>
+#include "phide/app/AppConfig.hpp"
+#include "phide/ui/Theme.hpp"
+#include "phide/ui/LucideIcons.hpp"
+#include "phide/editor/OpenDocument.hpp"
+#include "phide/editor/NotebookModel.hpp"
+
+namespace phide::ui {
+
+/**
+ * @class NotebookView
+ * @brief Dedicated interactive view for Jupyter Notebook documents (.ipynb).
+ */
+class NotebookView {
+public:
+    NotebookView();
+    ~NotebookView();
+
+    /**
+     * @brief Renders the notebook view (toolbar, cells, code editor, and live outputs).
+     */
+    void Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
+                editor::OpenDocument& doc, float left, float width, float top, float height);
+
+    /**
+     * @brief Mouse event handling.
+     */
+    bool HandleLButtonDown(POINT clientPt, editor::OpenDocument& doc, const app::AppConfig& config, HWND hwnd);
+    bool HandleMouseMove(POINT clientPt, editor::OpenDocument& doc, const app::AppConfig& config);
+    bool HandleLButtonUp(POINT clientPt, editor::OpenDocument& doc, const app::AppConfig& config);
+    bool HandleMouseWheel(short delta, POINT clientPt, editor::OpenDocument& doc, const app::AppConfig& config);
+
+    /**
+     * @brief Keyboard event handling.
+     */
+    bool HandleKeyDown(WPARAM wParam, editor::OpenDocument& doc, HWND hwnd);
+    bool HandleChar(wchar_t ch, editor::OpenDocument& doc, HWND hwnd);
+
+    /**
+     * @brief Cursor query for mouse position.
+     */
+    LPCWSTR GetCursorForPoint(POINT pt, const editor::OpenDocument& doc) const;
+
+    /**
+     * @brief Sets workspace folder path for virtualenv auto-detection.
+     */
+    void SetWorkspacePath(const std::wstring& wsPath) { m_workspacePath = wsPath; }
+
+    /**
+     * @brief Cell execution controls.
+     */
+    void RunCell(int cellIdx, editor::OpenDocument& doc, HWND hwnd);
+    void RunAllCells(editor::OpenDocument& doc, HWND hwnd);
+    void StopExecution(editor::OpenDocument& doc);
+    void RestartKernel(editor::OpenDocument& doc);
+
+    [[nodiscard]] bool IsExecuting() const noexcept { return m_isExecuting.load(); }
+
+private:
+    std::wstring m_workspacePath;
+    float m_scrollY = 0.0f;
+    float m_totalHeight = 0.0f;
+    float m_viewHeight = 0.0f;
+    bool m_isDraggingScrollbar = false;
+    float m_dragScrollStartY = 0.0f;
+    float m_dragScrollStartOffset = 0.0f;
+    D2D1_RECT_F m_scrollTrack{};
+    D2D1_RECT_F m_scrollThumb{};
+
+    // Caret blinking
+    ULONGLONG m_lastBlinkTime = 0;
+    bool m_caretVisible = true;
+
+    // Hover state tracking
+    int m_hoveredCellIdx = -1;
+    int m_hoveredBtn = 0; // 1: Run, 2: Del, 3: Up, 4: Down, 5: ClearOutput
+    int m_hoveredToolbarBtn = 0; // 1: RunAll, 2: ClearAll
+    int m_hoveredBottomCellIdx = -1; // Cell index whose bottom border is hovered
+    int m_hoveredBottomBtn = 0; // 1: + Code, 2: + Text
+
+    // Toolbar button hit regions (icon-only, minimal)
+    D2D1_RECT_F m_btnRunAll{};
+    D2D1_RECT_F m_btnClearAll{};
+
+    // Background execution engine & sequential queue
+    std::atomic<bool> m_isExecuting{ false };
+    std::atomic<int> m_executingCellIdx{ -1 };
+    std::atomic<bool> m_shouldStop{ false };
+    std::atomic<bool> m_isQueueRunning{ false };
+    std::atomic<int> m_queueNextCellIdx{ -1 };
+    HANDLE m_hChildProcess = NULL;
+    std::thread m_execThread;
+    std::mutex m_execMutex;
+    float m_spinAngle = 0.0f;
+    ULONGLONG m_lastAnimTick = 0;
+
+    LucideIcons m_icons;
+
+    // Helper utilities
+    void StopExecution_Internal();
+    std::wstring FindPythonExecutable() const;
+    void ExecuteScriptAsync(int cellIdx, const std::wstring& script, const std::wstring& lang,
+                            std::shared_ptr<editor::NotebookDocument> nbDoc, HWND hwnd);
+    void DrawRunMorphButton(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
+                            const D2D1_RECT_F& bounds, bool isExecuting, bool hasError, bool isHovered);
+};
+
+} // namespace phide::ui

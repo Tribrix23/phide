@@ -1597,12 +1597,27 @@ void PackageManagerView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app:
 
     auto& activeList = GetActivePackageList();
 
-    // Initial Output is NONE (User requirement)
+    if (!m_pkgNameFormat && theme.dwriteFactory) {
+        theme.dwriteFactory->CreateTextFormat(
+            L"Segoe UI",
+            nullptr,
+            DWRITE_FONT_WEIGHT_SEMI_BOLD,
+            DWRITE_FONT_STYLE_NORMAL,
+            DWRITE_FONT_STRETCH_NORMAL,
+            12.5f,
+            L"en-US",
+            &m_pkgNameFormat
+        );
+        if (m_pkgNameFormat) {
+            m_pkgNameFormat->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
+            m_pkgNameFormat->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+            m_pkgNameFormat->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+        }
+    }
+
+    // Initial Output is NONE (User requirement: remove placeholder text when search is empty)
     if (m_searchQuery.empty()) {
-        D2D1_RECT_F rcEmptyText = D2D1::RectF(m_rcPackageList.left + config.ScaleF(16.0f), m_rcPackageList.top + config.ScaleF(60.0f),
-                                             m_rcPackageList.right - config.ScaleF(16.0f), m_rcPackageList.top + config.ScaleF(160.0f));
-        const wchar_t* emptyHint = L"Type to search over 5,000+ packages from database.";
-        pRT->DrawText(emptyHint, static_cast<UINT32>(wcslen(emptyHint)), theme.fontHint.Get(), rcEmptyText, theme.brushTextSecondary.Get());
+        // Clean empty state - placeholder text removed per user request
     } else {
         // Render Output List with virtualized chunk size
         pRT->PushAxisAlignedClip(m_rcPackageList, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
@@ -1653,10 +1668,41 @@ void PackageManagerView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app:
             float btnX = pkg.bounds.right - btnW - config.ScaleF(6.0f);
             float btnY = pkg.bounds.top + (itemH - btnH) / 2.0f;
 
-            // Package Name vertically centered on left, NO pip install subtitle (User requirement)
-            D2D1_RECT_F rcItemName = D2D1::RectF(pkg.bounds.left + config.ScaleF(10.0f), pkg.bounds.top + config.ScaleF(10.0f),
-                                                btnX - config.ScaleF(6.0f), pkg.bounds.bottom - config.ScaleF(10.0f));
-            pRT->DrawText(pkg.name.c_str(), static_cast<UINT32>(pkg.name.length()), theme.fontTitle.Get(), rcItemName, theme.brushTextPrimary.Get());
+            // Package Name: LEFT-ALIGNED (LEADING), vertically centered, strictly clipped with ellipsis trimming
+            float nameLeft = pkg.bounds.left + config.ScaleF(12.0f);
+            float nameRight = btnX - config.ScaleF(8.0f);
+            float availNameW = (std::max)(10.0f, nameRight - nameLeft);
+            D2D1_RECT_F rcItemName = D2D1::RectF(nameLeft, pkg.bounds.top, nameRight, pkg.bounds.bottom);
+
+            pRT->PushAxisAlignedClip(rcItemName, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+
+            IDWriteTextFormat* pFmt = m_pkgNameFormat ? m_pkgNameFormat.Get() : (theme.fontMenuItem ? theme.fontMenuItem.Get() : theme.fontBody.Get());
+            bool drawn = false;
+            if (theme.dwriteFactory && pFmt) {
+                Microsoft::WRL::ComPtr<IDWriteTextLayout> pLayout;
+                HRESULT hr = theme.dwriteFactory->CreateTextLayout(
+                    pkg.name.c_str(),
+                    static_cast<UINT32>(pkg.name.length()),
+                    pFmt,
+                    availNameW,
+                    itemH,
+                    &pLayout
+                );
+                if (SUCCEEDED(hr) && pLayout) {
+                    DWRITE_TRIMMING trimming = { DWRITE_TRIMMING_GRANULARITY_CHARACTER, 0, 0 };
+                    Microsoft::WRL::ComPtr<IDWriteInlineObject> pEllipsis;
+                    theme.dwriteFactory->CreateEllipsisTrimmingSign(pFmt, &pEllipsis);
+                    pLayout->SetTrimming(&trimming, pEllipsis.Get());
+                    pLayout->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+                    pRT->DrawTextLayout(D2D1::Point2F(nameLeft, pkg.bounds.top), pLayout.Get(), theme.brushTextPrimary.Get());
+                    drawn = true;
+                }
+            }
+            if (!drawn && pFmt) {
+                pRT->DrawText(pkg.name.c_str(), static_cast<UINT32>(pkg.name.length()), pFmt, rcItemName, theme.brushTextPrimary.Get());
+            }
+
+            pRT->PopAxisAlignedClip();
 
             // Split Button: [ Install | ▾ ]
             pkg.rcInstallBtn = D2D1::RectF(btnX, btnY, btnX + btnW - config.ScaleF(22.0f), btnY + btnH);

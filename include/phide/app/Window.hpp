@@ -217,6 +217,12 @@ private:
     void OpenSpecialView(const std::wstring& viewType, const std::wstring& title);
 
     /**
+     * @brief Opens an interactive Jupyter / Colab-style notebook tab (.ipynb).
+     * @param filePath Optional path to an existing .ipynb file. If empty, creates a new scratchpad notebook.
+     */
+    void OpenNotebookView(const std::wstring& filePath = L"");
+
+    /**
      * @brief Closes the open document at the given group and tab index.
      * Auto-collapses the editor group if it becomes empty and multiple groups exist.
      * @param groupIdx 0-based editor group index.

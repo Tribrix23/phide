@@ -287,6 +287,7 @@ private:
 
     std::function<void(const std::wstring&, const std::wstring&, PkgInstallScope)> m_onInstallCallback;
     LucideIcons m_icons;
+    Microsoft::WRL::ComPtr<IDWriteTextFormat> m_pkgNameFormat;
 };
 
 } // namespace phide::ui

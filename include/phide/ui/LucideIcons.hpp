@@ -127,6 +127,11 @@ public:
     void DrawPackage(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, ID2D1Brush* pBrush, float strokeWidth = 1.6f) const;
 
     /**
+     * @brief Draws the Terminal + Notebook icon (Notebook outline with binding ticks and terminal prompt '>_').
+     */
+    void DrawTerminalNotebook(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, ID2D1Brush* pBrush, float strokeWidth = 1.6f) const;
+
+    /**
      * @brief Draws the Lucide Sidebar toggle icon (panel-left).
      */
     void DrawSidebar(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, ID2D1Brush* pBrush, float strokeWidth = 1.4f) const;

@@ -568,6 +568,38 @@ void LucideIcons::DrawTerminal(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds
     pRT->DrawLine(MapPoint(12.5f, 16.5f, ox, oy, s), MapPoint(19.0f, 16.5f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
 }
 
+void LucideIcons::DrawTerminalNotebook(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, ID2D1Brush* pBrush, float strokeWidth) const {
+    if (!pRT || !pBrush) return;
+    const float bw = bounds.right - bounds.left;
+    const float bh = bounds.bottom - bounds.top;
+    const float iconSize = (std::min)(bw, bh) * 0.54f;
+    const float s = iconSize / 24.0f;
+    const float ox = bounds.left + (bw - 24.0f * s) / 2.0f;
+    const float oy = bounds.top + (bh - 24.0f * s) / 2.0f;
+
+    // 1. Notebook outer page outline
+    D2D1_ROUNDED_RECT page = D2D1::RoundedRect(
+        D2D1::RectF(ox + 4.5f * s, oy + 3.0f * s, ox + 20.5f * s, oy + 21.0f * s),
+        2.5f * s, 2.5f * s
+    );
+    pRT->DrawRoundedRectangle(page, pBrush, strokeWidth, m_pStrokeStyle.Get());
+
+    // 2. Vertical binding margin spine line
+    pRT->DrawLine(MapPoint(7.5f, 3.0f, ox, oy, s), MapPoint(7.5f, 21.0f, ox, oy, s), pBrush, strokeWidth * 0.9f, m_pStrokeStyle.Get());
+
+    // 3. Spiral binding loops on the left edge
+    pRT->DrawLine(MapPoint(2.5f, 7.0f, ox, oy, s), MapPoint(5.0f, 7.0f, ox, oy, s), pBrush, strokeWidth * 0.9f, m_pStrokeStyle.Get());
+    pRT->DrawLine(MapPoint(2.5f, 12.0f, ox, oy, s), MapPoint(5.0f, 12.0f, ox, oy, s), pBrush, strokeWidth * 0.9f, m_pStrokeStyle.Get());
+    pRT->DrawLine(MapPoint(2.5f, 17.0f, ox, oy, s), MapPoint(5.0f, 17.0f, ox, oy, s), pBrush, strokeWidth * 0.9f, m_pStrokeStyle.Get());
+
+    // 4. Terminal prompt inside the notebook: prompt chevron >
+    pRT->DrawLine(MapPoint(10.0f, 9.5f, ox, oy, s), MapPoint(13.0f, 12.0f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+    pRT->DrawLine(MapPoint(13.0f, 12.0f, ox, oy, s), MapPoint(10.0f, 14.5f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+
+    // 5. Terminal cursor underline _
+    pRT->DrawLine(MapPoint(14.5f, 14.5f, ox, oy, s), MapPoint(18.0f, 14.5f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+}
+
 void LucideIcons::DrawWindow(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, ID2D1Brush* pBrush, float strokeWidth) const {
     if (!pRT || !pBrush) return;
     const float bw = bounds.right - bounds.left;

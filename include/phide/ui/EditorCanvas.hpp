@@ -20,6 +20,7 @@
 #include "phide/editor/IntelliSenseEngine.hpp"
 #include "phide/ui/KeyboardShortcutsView.hpp"
 #include "phide/ui/PackageManagerView.hpp"
+#include "phide/ui/NotebookView.hpp"
 
 namespace phide::ui {
 
@@ -198,6 +199,7 @@ public:
      */
     KeyboardShortcutsView& GetKeyboardShortcutsView() noexcept { return m_keybindingsView; }
     PackageManagerView& GetPackageManagerView() noexcept { return m_packageManagerView; }
+    NotebookView& GetNotebookView() noexcept { return m_notebookView; }
 
     [[nodiscard]] float GetLastCaretX() const noexcept { return m_lastCaretX; }
     [[nodiscard]] float GetLastCaretY() const noexcept { return m_lastCaretY; }
@@ -250,6 +252,7 @@ private:
     mutable float m_charWidth = 0.0f;
     KeyboardShortcutsView m_keybindingsView;
     PackageManagerView m_packageManagerView;
+    NotebookView m_notebookView;
 
     // Cached path geometry for workspace container (curved ONLY at upper-left corner when drawer is closed)
     Microsoft::WRL::ComPtr<ID2D1PathGeometry> m_pCanvasGeometry;

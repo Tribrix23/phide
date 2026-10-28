@@ -752,7 +752,7 @@ void Window::DoNewFile() {
     wchar_t szFile[MAX_PATH] = { 0 };
     OPENFILENAMEW ofn = { sizeof(OPENFILENAMEW) };
     ofn.hwndOwner = m_hwnd;
-    ofn.lpstrFilter = L"All Files (*.*)\0*.*\0C/C++ Files (*.cpp;*.h;*.hpp)\0*.cpp;*.h;*.hpp\0PHP Files (*.php)\0*.php\0JSON Files (*.json)\0*.json\0Text Files (*.txt)\0*.txt\0";
+    ofn.lpstrFilter = L"Jupyter Notebook (*.ipynb)\0*.ipynb\0All Files (*.*)\0*.*\0C/C++ Files (*.cpp;*.h;*.hpp)\0*.cpp;*.h;*.hpp\0PHP Files (*.php)\0*.php\0JSON Files (*.json)\0*.json\0Text Files (*.txt)\0*.txt\0";
     ofn.lpstrFile = szFile;
     ofn.nMaxFile = MAX_PATH;
     std::wstring initDir;
@@ -782,7 +782,7 @@ void Window::DoOpenFile() {
     wchar_t szFile[MAX_PATH] = { 0 };
     OPENFILENAMEW ofn = { sizeof(OPENFILENAMEW) };
     ofn.hwndOwner = m_hwnd;
-    ofn.lpstrFilter = L"All Files (*.*)\0*.*\0C/C++ Files (*.cpp;*.h;*.hpp)\0*.cpp;*.h;*.hpp\0PHP Files (*.php)\0*.php\0JSON Files (*.json)\0*.json\0Text Files (*.txt)\0*.txt\0";
+    ofn.lpstrFilter = L"Jupyter Notebook (*.ipynb)\0*.ipynb\0All Files (*.*)\0*.*\0C/C++ Files (*.cpp;*.h;*.hpp)\0*.cpp;*.h;*.hpp\0PHP Files (*.php)\0*.php\0JSON Files (*.json)\0*.json\0Text Files (*.txt)\0*.txt\0";
     ofn.lpstrFile = szFile;
     ofn.nMaxFile = MAX_PATH;
     ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_ENABLESIZING;
@@ -886,6 +886,11 @@ void Window::OpenFileDocument(const std::wstring& path, bool isPreview) {
     if (dotPos != std::wstring::npos) {
         ext = resolvedPath.substr(dotPos);
         for (auto& ch : ext) ch = towlower(ch);
+    }
+
+    if (ext == L".ipynb") {
+        OpenNotebookView(resolvedPath);
+        return;
     }
 
     bool isImage = (ext == L".png" || ext == L".jpg" || ext == L".jpeg" ||
@@ -1407,6 +1412,71 @@ void Window::OpenSpecialView(const std::wstring& viewType, const std::wstring& t
     InvalidateRect(m_hwnd, nullptr, FALSE);
 }
 
+void Window::OpenNotebookView(const std::wstring& filePath) {
+    auto& group = GetActiveGroup();
+
+    // If opening a specific file, check if already open in any group
+    if (!filePath.empty()) {
+        for (size_t g = 0; g < m_editorGroups.size(); ++g) {
+            for (size_t i = 0; i < m_editorGroups[g].docs.size(); ++i) {
+                if (m_editorGroups[g].docs[i].filePath == filePath) {
+                    m_focusedGroupIdx = static_cast<int>(g);
+                    m_editorGroups[g].activeDocIdx = static_cast<int>(i);
+                    InvalidateRect(m_hwnd, nullptr, FALSE);
+                    return;
+                }
+            }
+        }
+    }
+
+    // Determine notebook title
+    std::wstring title = L"Notebook 1.ipynb";
+    if (!filePath.empty()) {
+        title = std::filesystem::path(filePath).filename().wstring();
+    } else {
+        int nbCount = 1;
+        for (const auto& grp : m_editorGroups) {
+            for (const auto& doc : grp.docs) {
+                if (doc.isSpecialView && doc.viewType == L"notebook" && doc.filePath.empty()) {
+                    nbCount++;
+                }
+            }
+        }
+        title = L"Notebook " + std::to_wstring(nbCount) + L".ipynb";
+    }
+
+    std::wstring wsFolder = m_drawer.HasOpenFolder() ? m_drawer.GetOpenFolderPath() : m_workspace.GetRootPath().wstring();
+    m_editor.GetNotebookView().SetWorkspacePath(wsFolder);
+
+    bool canReplace = (group.activeDocIdx >= 0 && group.activeDocIdx < static_cast<int>(group.docs.size()) &&
+                       group.docs[group.activeDocIdx].isPreview &&
+                       !group.docs[group.activeDocIdx].isDirty &&
+                       !group.docs[group.activeDocIdx].isSpecialView);
+
+    editor::OpenDocument newDoc;
+    newDoc.fileName = title;
+    newDoc.filePath = filePath;
+    newDoc.isSpecialView = true;
+    newDoc.viewType = L"notebook";
+    newDoc.isPreview = false;
+    newDoc.isDirty = false;
+    newDoc.notebookDoc = std::make_shared<editor::NotebookDocument>();
+
+    if (!filePath.empty()) {
+        newDoc.notebookDoc->LoadFromFile(filePath);
+    }
+
+    if (canReplace) {
+        group.docs[group.activeDocIdx] = std::move(newDoc);
+    } else {
+        group.docs.push_back(std::move(newDoc));
+        group.activeDocIdx = static_cast<int>(group.docs.size() - 1);
+    }
+
+    SaveSessionState();
+    InvalidateRect(m_hwnd, nullptr, FALSE);
+}
+
 void Window::CloseDocument(int groupIdx, int docIdx) {
     if (groupIdx < 0 || groupIdx >= static_cast<int>(m_editorGroups.size())) return;
     auto& group = m_editorGroups[groupIdx];
@@ -1778,7 +1848,7 @@ void Window::DoSaveFileAs() {
     }
     OPENFILENAMEW ofn = { sizeof(OPENFILENAMEW) };
     ofn.hwndOwner = m_hwnd;
-    ofn.lpstrFilter = L"All Files (*.*)\0*.*\0C/C++ Files (*.cpp;*.h;*.hpp)\0*.cpp;*.h;*.hpp\0PHP Files (*.php)\0*.php\0JSON Files (*.json)\0*.json\0Text Files (*.txt)\0*.txt\0";
+    ofn.lpstrFilter = L"Jupyter Notebook (*.ipynb)\0*.ipynb\0All Files (*.*)\0*.*\0C/C++ Files (*.cpp;*.h;*.hpp)\0*.cpp;*.h;*.hpp\0PHP Files (*.php)\0*.php\0JSON Files (*.json)\0*.json\0Text Files (*.txt)\0*.txt\0";
     ofn.lpstrFile = szFile;
     ofn.nMaxFile = MAX_PATH;
     ofn.Flags = OFN_PATHMUSTEXIST | OFN_OVERWRITEPROMPT | OFN_ENABLESIZING;
@@ -1796,10 +1866,16 @@ void Window::DoSaveAll() {
     for (auto& group : m_editorGroups) {
         for (auto& doc : group.docs) {
             if (doc.isDirty && !doc.filePath.empty()) {
-                doc.buffer.SaveToFile(doc.filePath);
-                doc.isDirty = false;
-                doc.originalDiskText = doc.buffer.GetText();
-                anySaved = true;
+                if (doc.isSpecialView && doc.viewType == L"notebook" && doc.notebookDoc) {
+                    doc.notebookDoc->SaveToFile(doc.filePath);
+                    doc.isDirty = false;
+                    anySaved = true;
+                } else {
+                    doc.buffer.SaveToFile(doc.filePath);
+                    doc.isDirty = false;
+                    doc.originalDiskText = doc.buffer.GetText();
+                    anySaved = true;
+                }
                 SyncDocumentBuffers(&doc);
                 if (doc.filePath == m_snippetManager.GetSnippetsFilePath()) {
                     m_snippetManager.LoadSnippets();
@@ -4619,6 +4695,21 @@ void Window::LoadFileFromPath(const std::wstring& path) {
 void Window::SaveFileToPath(const std::wstring& path) {
     auto* pDoc = GetActiveDoc();
     if (pDoc) {
+        if (pDoc->isSpecialView && pDoc->viewType == L"notebook" && pDoc->notebookDoc) {
+            if (pDoc->notebookDoc->SaveToFile(path)) {
+                pDoc->filePath = path;
+                auto pos = path.find_last_of(L"\\/");
+                pDoc->fileName = (pos != std::wstring::npos) ? path.substr(pos + 1) : path;
+                pDoc->isDirty = false;
+                pDoc->isPreview = false;
+                UpdateDrawerDirtyFiles();
+                m_drawer.RefreshGitStatusOnly(true);
+                UpdateDrawerErrorFiles();
+                SaveSessionState();
+                InvalidateRect(m_hwnd, nullptr, FALSE);
+                return;
+            }
+        }
         if (pDoc->buffer.SaveToFile(path)) {
             pDoc->filePath = path;
             auto pos = path.find_last_of(L"\\/");
@@ -6307,6 +6398,10 @@ void Window::HandleMouseMove(POINT clientPt, WPARAM wParam) {
             if (m_editor.GetPackageManagerView().HandleMouseMove(clientPt)) {
                 needRepaint = true;
             }
+        } else if (pActiveDoc->viewType == L"notebook") {
+            if (m_editor.GetNotebookView().HandleMouseMove(clientPt, *pActiveDoc, m_config)) {
+                needRepaint = true;
+            }
         }
     }
 
@@ -7832,6 +7927,12 @@ void Window::HandleLButtonDown(POINT clientPt) {
                         InvalidateRect(m_hwnd, nullptr, FALSE);
                         return;
                     }
+                } else if (doc.isSpecialView && doc.viewType == L"notebook") {
+                    m_drawer.SetSearchFocus(0);
+                    if (m_editor.GetNotebookView().HandleLButtonDown(clientPt, doc, m_config, m_hwnd)) {
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
+                        return;
+                    }
                 } else if (doc.isMultiFileDiff) {
                     // 1. Collapsible file header clicks in multi-file diff view (Image 4)
                     for (auto& entry : doc.multiFileDiffs) {
@@ -8220,6 +8321,13 @@ void Window::HandleLButtonDown(POINT clientPt) {
     // 7. Activity Rail Clicks (Files, Search, Git, Debug, Packages)
     auto railHit = m_rail.HitTest(clientPt);
     if (railHit != ui::RailTabId::None) {
+        if (railHit == ui::RailTabId::Notebook) {
+            OpenNotebookView();
+            UpdateDrawerErrorFiles();
+            SaveSessionState();
+            InvalidateRect(m_hwnd, nullptr, FALSE);
+            return;
+        }
         if (railHit == ui::RailTabId::Packages) {
             OpenSpecialView(L"packages", L"Packages");
             UpdateDrawerErrorFiles();
@@ -8251,6 +8359,14 @@ void Window::HandleLButtonDown(POINT clientPt) {
 }
 
 void Window::HandleLButtonUp(POINT clientPt) {
+    auto* pActiveDoc = GetActiveDoc();
+    if (pActiveDoc && pActiveDoc->isSpecialView && pActiveDoc->viewType == L"notebook") {
+        if (m_editor.GetNotebookView().HandleLButtonUp(clientPt, *pActiveDoc, m_config)) {
+            InvalidateRect(m_hwnd, nullptr, FALSE);
+            return;
+        }
+    }
+
     if (m_colorPicker.IsOpen()) {
         if (m_colorPicker.HandleLButtonUp(D2D1::Point2F(static_cast<float>(clientPt.x), static_cast<float>(clientPt.y)))) {
             InvalidateRect(m_hwnd, nullptr, FALSE);
@@ -8887,6 +9003,15 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     }
                 }
 
+                // Notebook View cursor handling (toolbar buttons, cell play/delete buttons, code text area)
+                if (pCurDoc && pCurDoc->isSpecialView && pCurDoc->viewType == L"notebook") {
+                    LPCWSTR cur = m_editor.GetNotebookView().GetCursorForPoint(pt, *pCurDoc);
+                    if (cur) {
+                        SetCursor(LoadCursor(nullptr, cur));
+                        return TRUE;
+                    }
+                }
+
                 SetCursor(LoadCursor(nullptr, IDC_ARROW));
                 return TRUE;
             }
@@ -9108,6 +9233,11 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                         InvalidateRect(m_hwnd, nullptr, FALSE);
                         return 0;
                     }
+                } else if (pDoc->isSpecialView && pDoc->viewType == L"notebook") {
+                    if (m_editor.GetNotebookView().HandleMouseWheel(delta, pt, *pDoc, m_config)) {
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
+                        return 0;
+                    }
                 } else {
                     bool isShiftDown = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
                     if (isShiftDown) {
@@ -9225,6 +9355,11 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                             InvalidateRect(m_hwnd, nullptr, FALSE);
                             return 0;
                         }
+                    }
+                } else if (pDoc->isSpecialView && pDoc->viewType == L"notebook") {
+                    if (m_editor.GetNotebookView().HandleChar(ch, *pDoc, m_hwnd)) {
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
+                        return 0;
                     }
                 } else {
                     // Printable characters only (Enter and Tab are cleanly handled in WM_KEYDOWN)
@@ -9831,6 +9966,11 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                         InvalidateRect(m_hwnd, nullptr, FALSE);
                         return 0;
                     }
+                } else if (pDoc->viewType == L"notebook") {
+                    if (m_editor.GetNotebookView().HandleKeyDown(wParam, *pDoc, m_hwnd)) {
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
+                        return 0;
+                    }
                 }
             }
 
@@ -9986,6 +10126,12 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 if (wParam == 'G') {
                     if (shiftDown) {
                         DoShowSourceControl();
+                        return 0;
+                    }
+                }
+                if (wParam == 'J') {
+                    if (shiftDown) {
+                        OpenNotebookView();
                         return 0;
                     }
                 }

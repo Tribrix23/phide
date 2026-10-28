@@ -36,6 +36,8 @@
 #include "phide/ui/GitLogManager.hpp"
 #include "phide/ui/DatabaseSettingsModal.hpp"
 #include "phide/ui/PackageManagerView.hpp"
+#include "phide/ui/NotebookView.hpp"
+#include "phide/editor/NotebookModel.hpp"
 #include "phide/editor/Buffer.hpp"
 #include "phide/editor/SyntaxValidator.hpp"
 #include "phide/editor/SnippetManager.hpp"
@@ -289,6 +291,12 @@ int main(int argc, char* argv[]) {
     }
     if (targetTest == 72) {
         goto run_test_72;
+    }
+    if (targetTest == 73) {
+        goto run_test_73;
+    }
+    if (targetTest == 74) {
+        goto run_test_74;
     }
 
     // --- 3. Render Test: Picture Viewer in Dark & Light Modes ---
@@ -9824,6 +9832,268 @@ run_test_72:
         std::wcout << L"  Passed: Saved Git Logs un-Xable tab visual snapshot to: " << snapTermPath << std::endl;
 
         std::cout << "  Passed: All [TEST 72] Real-time Git Logging, Committing Progress Badge, and Error Modal tests passed!" << std::endl;
+    }
+
+    // =========================================================================
+    // TEST 73: Package Manager Empty State & Non-Overflowing Package Names (Images 1 & 2)
+    // =========================================================================
+    run_test_73:
+    {
+        std::cout << "\n[TEST 73] Testing Package Manager Clean Empty State & Non-Overflowing Package Names..." << std::endl;
+
+        phide::ui::PackageManagerView pkgView;
+        pkgView.SelectLanguageAndOpenSearch(phide::ui::RuntimeLanguage::Php);
+
+        const UINT snapW = 1200;
+        const UINT snapH = 800;
+        ComPtr<IWICBitmap> pWicSnap73;
+        pWicFactory->CreateBitmap(snapW, snapH, GUID_WICPixelFormat32bppPBGRA, WICBitmapCacheOnDemand, &pWicSnap73);
+        D2D1_RENDER_TARGET_PROPERTIES rtProps73 = D2D1::RenderTargetProperties(
+            D2D1_RENDER_TARGET_TYPE_DEFAULT,
+            D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED)
+        );
+        ComPtr<ID2D1RenderTarget> pRTSnap73;
+        pD2DFactory->CreateWicBitmapRenderTarget(pWicSnap73.Get(), rtProps73, &pRTSnap73);
+
+        phide::ui::Theme theme73;
+        theme73.SetThemeMode(phide::ui::ThemeMode::Dark);
+        HRESULT hrTheme73 = theme73.CreateDeviceResources(pRTSnap73.Get(), pDWriteFactory.Get());
+        assert(SUCCEEDED(hrTheme73));
+
+        // 1. Verify Clean Empty Search State (Image 1: Text completely removed)
+        pkgView.SetSearchQuery(L"");
+        pRTSnap73->BeginDraw();
+        pRTSnap73->Clear(D2D1::ColorF(0.11f, 0.11f, 0.13f, 1.0f));
+        pkgView.Render(pRTSnap73.Get(), theme73, config, 0.0f, 40.0f, static_cast<float>(snapW), static_cast<float>(snapH - 40));
+        HRESULT hrEmptySnap = pRTSnap73->EndDraw();
+        assert(SUCCEEDED(hrEmptySnap));
+
+        std::wstring snapEmptyPath = artDir + L"test_package_manager_empty_clean.png";
+        SaveWicBitmapToPng(pWicSnap73.Get(), pWicFactory.Get(), snapEmptyPath);
+        assert(std::filesystem::exists(snapEmptyPath));
+        std::wcout << L"  Passed: Saved clean empty search state visual snapshot to: " << snapEmptyPath << std::endl;
+
+        // 2. Add packages matching user Image 2 and search for "ds"
+        auto& list = pkgView.GetActivePackageList();
+        list.push_back({ L"nyholm/dsn", L"1.2M", L"https://github.com/Nyholm/dsn" });
+        list.push_back({ L"handcraftedinthealps/elasticsearch-dsl", L"3.5M", L"https://github.com/handcraftedinthealps/elasticsearch-dsl" });
+        list.push_back({ L"php-ds/php-ds", L"890K", L"https://github.com/php-ds/php-ds" });
+        list.push_back({ L"ongr/elasticsearch-dsl", L"2.1M", L"https://github.com/ongr-io/ElasticsearchDSL" });
+        list.push_back({ L"nandsiddharth/laravel-paytm-wallet", L"540K", L"https://github.com/nandsiddharth/laravel-paytm-wallet" });
+
+        pkgView.SetSearchQuery(L"ds");
+        assert(!pkgView.GetFilteredIndices().empty());
+
+        pRTSnap73->BeginDraw();
+        pRTSnap73->Clear(D2D1::ColorF(0.11f, 0.11f, 0.13f, 1.0f));
+        pkgView.Render(pRTSnap73.Get(), theme73, config, 0.0f, 40.0f, static_cast<float>(snapW), static_cast<float>(snapH - 40));
+        HRESULT hrSearchSnap = pRTSnap73->EndDraw();
+        assert(SUCCEEDED(hrSearchSnap));
+
+        std::wstring snapSearchPath = artDir + L"test_package_manager_long_names_clean.png";
+        SaveWicBitmapToPng(pWicSnap73.Get(), pWicFactory.Get(), snapSearchPath);
+        assert(std::filesystem::exists(snapSearchPath));
+        std::wcout << L"  Passed: Saved non-overflowing package names visual snapshot to: " << snapSearchPath << std::endl;
+
+        std::cout << "  Passed: All [TEST 73] Package Manager tests passed successfully!" << std::endl;
+    }
+
+run_test_74:
+    // --- 74. Interactive Notebook (Jupyter / Colab) Verification ---
+    if (targetTest == 0 || targetTest == 74) {
+        std::cout << "\n[TEST 74] Testing Interactive Notebook (Jupyter / Colab)..." << std::endl;
+
+        // 1. Verify Activity Rail has Notebook tab directly above Packages
+        phide::ui::ActivityRail rail;
+        phide::ui::Theme theme74;
+        theme74.SetThemeMode(phide::ui::ThemeMode::Dark);
+        phide::app::AppConfig cfg74;
+        cfg74.activeRailTab = static_cast<int>(phide::ui::RailTabId::Notebook);
+
+        const float testClientH = 800.0f;
+        ComPtr<IWICBitmap> pWicRail;
+        pWicFactory->CreateBitmap(48, static_cast<UINT>(testClientH), GUID_WICPixelFormat32bppPBGRA, WICBitmapCacheOnDemand, &pWicRail);
+        ComPtr<ID2D1RenderTarget> pRTRail;
+        pD2DFactory->CreateWicBitmapRenderTarget(pWicRail.Get(), D2D1::RenderTargetProperties(), &pRTRail);
+        theme74.CreateDeviceResources(pRTRail.Get(), pDWriteFactory.Get());
+
+        pRTRail->BeginDraw();
+        rail.Render(pRTRail.Get(), theme74, cfg74, testClientH);
+        HRESULT hrRail = pRTRail->EndDraw();
+        assert(SUCCEEDED(hrRail));
+
+        // Locate Notebook and Packages items in rail
+        const auto& railItems = rail.GetItems();
+        const phide::ui::RailItem* pNotebookItem = nullptr;
+        const phide::ui::RailItem* pPackagesItem = nullptr;
+        for (const auto& item : railItems) {
+            if (item.id == phide::ui::RailTabId::Notebook) pNotebookItem = &item;
+            if (item.id == phide::ui::RailTabId::Packages) pPackagesItem = &item;
+        }
+        assert(pNotebookItem != nullptr);
+        assert(pPackagesItem != nullptr);
+        // Verify Notebook is directly above Packages
+        assert(pNotebookItem->bounds.bottom < pPackagesItem->bounds.top);
+        std::cout << "  Passed: Activity Rail includes Notebook tab positioned above Packages" << std::endl;
+
+        // Verify HitTest on notebook button center
+        POINT ptNotebook = {
+            static_cast<LONG>((pNotebookItem->bounds.left + pNotebookItem->bounds.right) / 2.0f),
+            static_cast<LONG>((pNotebookItem->bounds.top + pNotebookItem->bounds.bottom) / 2.0f)
+        };
+        auto hitId = rail.HitTest(ptNotebook);
+        assert(hitId == phide::ui::RailTabId::Notebook);
+        std::cout << "  Passed: Activity Rail HitTest correctly identifies RailTabId::Notebook" << std::endl;
+
+        // 2. Verify Notebook Document Model (.ipynb v4 compatibility)
+        phide::editor::NotebookDocument nbDoc;
+        // Verify default notebook has exactly 1 cell containing "#Welcome to Phide notebook"
+        assert(nbDoc.cells.size() == 1);
+        assert(nbDoc.cells[0].type == phide::editor::NotebookCellType::Code);
+        assert(nbDoc.cells[0].inputBuffer.GetLine(0) == L"#Welcome to Phide notebook");
+        std::cout << "  Passed: Default notebook initializes with exactly 1 cell containing '#Welcome to Phide notebook'" << std::endl;
+
+        // Add a code cell
+        auto* pNewCell = nbDoc.AddCell(phide::editor::NotebookCellType::Code);
+        assert(pNewCell != nullptr);
+        pNewCell->inputBuffer.SetText(L"x = 42\nprint('Result:', x * 2)");
+
+        // Add cell output
+        phide::editor::CellOutput out;
+        out.streamName = L"stdout";
+        out.text = L"Result: 84\n";
+        out.elapsedMs = 15;
+        pNewCell->outputs.push_back(std::move(out));
+        pNewCell->executionCount = 1;
+
+        // Verify JSON export (.ipynb v4 format)
+        std::string json = nbDoc.ToJson();
+        assert(!json.empty());
+        assert(json.find("\"nbformat\": 4") != std::string::npos);
+        assert(json.find("\"cell_type\": \"code\"") != std::string::npos);
+        assert(json.find("Result: 84") != std::string::npos);
+        std::cout << "  Passed: NotebookDocument serializes to standard Jupyter .ipynb v4 JSON" << std::endl;
+
+        // Test saving to and loading from disk
+        std::wstring testNbPath = artDir + L"test_sample_notebook.ipynb";
+        bool saveOk = nbDoc.SaveToFile(testNbPath);
+        assert(saveOk);
+        assert(std::filesystem::exists(testNbPath));
+
+        phide::editor::NotebookDocument loadedDoc;
+        bool loadOk = loadedDoc.LoadFromFile(testNbPath);
+        assert(loadOk);
+        assert(loadedDoc.cells.size() == nbDoc.cells.size());
+        assert(loadedDoc.cells.back().type == phide::editor::NotebookCellType::Code);
+        assert(!loadedDoc.cells.back().outputs.empty());
+        assert(loadedDoc.cells.back().outputs[0].text.find(L"Result: 84") != std::wstring::npos);
+        std::cout << "  Passed: NotebookDocument successfully saved and reloaded .ipynb file from disk" << std::endl;
+
+        // 3. Verify Interactive NotebookView Direct2D Rendering with Colab/Jupyter Error & Hover Styling
+        const UINT snapW = 1100;
+        const UINT snapH = 800;
+        ComPtr<IWICBitmap> pWicSnap74;
+        pWicFactory->CreateBitmap(snapW, snapH, GUID_WICPixelFormat32bppPBGRA, WICBitmapCacheOnDemand, &pWicSnap74);
+        ComPtr<ID2D1RenderTarget> pRTSnap74;
+        pD2DFactory->CreateWicBitmapRenderTarget(pWicSnap74.Get(), D2D1::RenderTargetProperties(), &pRTSnap74);
+        theme74.CreateDeviceResources(pRTSnap74.Get(), pDWriteFactory.Get());
+
+        phide::ui::NotebookView nbView;
+        phide::editor::OpenDocument doc;
+        doc.isSpecialView = true;
+        doc.viewType = L"notebook";
+        doc.fileName = L"Notebook 1.ipynb";
+        doc.notebookDoc = std::make_shared<phide::editor::NotebookDocument>();
+
+        // Cell 0: Default Welcome cell
+        doc.notebookDoc->cells[0].outputs.push_back({ L"stdout", L"Cell 1 executed successfully!\n", false, 8 });
+        doc.notebookDoc->cells[0].executionCount = 1;
+
+        // Cell 1: Colab Error cell matching user's Image 5
+        auto* cellErr = doc.notebookDoc->AddCell(phide::editor::NotebookCellType::Code);
+        cellErr->inputBuffer.SetText(L"# Define model export path\nprint(\"Exporting model in Q8_0 format...\")\nmodel.save_pretrained_gguf(\"q8_0\")\n");
+        cellErr->hasError = true;
+        cellErr->lastElapsedMs = 420;
+        cellErr->executionCount = 2;
+        cellErr->outputs.push_back({
+            L"stderr",
+            L"NameError                                 Traceback (most recent call last)\n"
+            L"<cell line: 3> in <cell line: 3>()\n"
+            L"----> 3 model.save_pretrained_gguf(\"q8_0\")\n\n"
+            L"NameError: name 'model' is not defined\n",
+            true,
+            420
+        });
+
+        // Cell 2: Third code cell
+        auto* cell3 = doc.notebookDoc->AddCell(phide::editor::NotebookCellType::Code);
+        cell3->inputBuffer.SetText(L"# Third sequential code cell\nprint(\"Completed\")\n");
+
+        // First pass layout so cell bounds are computed
+        pRTSnap74->BeginDraw();
+        pRTSnap74->Clear(D2D1::ColorF(0.11f, 0.11f, 0.13f, 1.0f));
+        nbView.Render(pRTSnap74.Get(), theme74, cfg74, doc, 0.0f, static_cast<float>(snapW), 0.0f, static_cast<float>(snapH));
+
+        // Simulate hover on Cell 0 bottom border to show [+ Code] and [+ Text] pills (Image 3)
+        POINT ptBottomHover = {
+            static_cast<LONG>((doc.notebookDoc->cells[0].bounds.left + doc.notebookDoc->cells[0].bounds.right) / 2.0f),
+            static_cast<LONG>(doc.notebookDoc->cells[0].bounds.bottom)
+        };
+        nbView.HandleMouseMove(ptBottomHover, doc, cfg74);
+
+        // Render second pass with active hover pills visible
+        pRTSnap74->Clear(D2D1::ColorF(0.11f, 0.11f, 0.13f, 1.0f));
+        nbView.Render(pRTSnap74.Get(), theme74, cfg74, doc, 0.0f, static_cast<float>(snapW), 0.0f, static_cast<float>(snapH));
+        HRESULT hrSnap74 = pRTSnap74->EndDraw();
+        assert(SUCCEEDED(hrSnap74));
+
+        std::wstring snapNbPath = artDir + L"test_interactive_notebook_ui.png";
+        SaveWicBitmapToPng(pWicSnap74.Get(), pWicFactory.Get(), snapNbPath);
+        assert(std::filesystem::exists(snapNbPath));
+        std::wcout << L"  Passed: Saved interactive notebook UI snapshot to: " << snapNbPath << std::endl;
+
+        // Render Executing State with Rotating Dashed Spinner Ring (Image 4)
+        doc.notebookDoc->cells[0].isExecuting = true;
+        doc.notebookDoc->cells[0].executionCount = -2;
+        pRTSnap74->BeginDraw();
+        pRTSnap74->Clear(D2D1::ColorF(0.11f, 0.11f, 0.13f, 1.0f));
+        nbView.Render(pRTSnap74.Get(), theme74, cfg74, doc, 0.0f, static_cast<float>(snapW), 0.0f, static_cast<float>(snapH));
+        pRTSnap74->EndDraw();
+        std::wstring snapExecPath = artDir + L"test_interactive_notebook_executing.png";
+        SaveWicBitmapToPng(pWicSnap74.Get(), pWicFactory.Get(), snapExecPath);
+        assert(std::filesystem::exists(snapExecPath));
+        std::wcout << L"  Passed: Saved interactive notebook executing spinner snapshot to: " << snapExecPath << std::endl;
+        doc.notebookDoc->cells[0].isExecuting = false;
+        doc.notebookDoc->cells[0].executionCount = 1;
+
+        // 4. Test Key Interactions: Shift+Enter runs active cell and creates/moves to next cell
+        size_t cellCountBefore = doc.notebookDoc->cells.size();
+        doc.notebookDoc->activeCellIdx = static_cast<int>(cellCountBefore - 1);
+        // Simulate Shift+Enter
+        BYTE keyState[256]{};
+        keyState[VK_SHIFT] = 0x80;
+        SetKeyboardState(keyState);
+        bool handledShiftEnter = nbView.HandleKeyDown(VK_RETURN, doc, nullptr);
+        assert(handledShiftEnter);
+        assert(doc.notebookDoc->cells.size() == cellCountBefore + 1);
+        std::cout << "  Passed: Shift+Enter creates and advances to next code cell" << std::endl;
+
+        // 5. Test Bottom Hover Pill Click creates a new cell
+        size_t cellCountBeforePill = doc.notebookDoc->cells.size();
+        POINT ptAddCodeClick = {
+            static_cast<LONG>((doc.notebookDoc->cells[0].bottomAddCodeBounds.left + doc.notebookDoc->cells[0].bottomAddCodeBounds.right) / 2.0f),
+            static_cast<LONG>((doc.notebookDoc->cells[0].bottomAddCodeBounds.top + doc.notebookDoc->cells[0].bottomAddCodeBounds.bottom) / 2.0f)
+        };
+        bool handledPillClick = nbView.HandleLButtonDown(ptAddCodeClick, doc, cfg74, nullptr);
+        assert(handledPillClick);
+        assert(doc.notebookDoc->cells.size() == cellCountBeforePill + 1);
+        std::cout << "  Passed: Clicking bottom hover [+ Code] pill inserts a new cell at that position" << std::endl;
+
+        // Clean up keyboard state
+        keyState[VK_SHIFT] = 0x00;
+        SetKeyboardState(keyState);
+
+        std::cout << "  Passed: All [TEST 74] Interactive Notebook tests passed successfully!" << std::endl;
     }
 
     std::cout << "\n==========================================" << std::endl;
