@@ -752,7 +752,7 @@ void Window::DoNewFile() {
     wchar_t szFile[MAX_PATH] = { 0 };
     OPENFILENAMEW ofn = { sizeof(OPENFILENAMEW) };
     ofn.hwndOwner = m_hwnd;
-    ofn.lpstrFilter = L"Jupyter Notebook (*.ipynb)\0*.ipynb\0All Files (*.*)\0*.*\0C/C++ Files (*.cpp;*.h;*.hpp)\0*.cpp;*.h;*.hpp\0PHP Files (*.php)\0*.php\0JSON Files (*.json)\0*.json\0Text Files (*.txt)\0*.txt\0";
+    ofn.lpstrFilter = L"Notebook (*.ipynb)\0*.ipynb\0All Files (*.*)\0*.*\0C/C++ Files (*.cpp;*.h;*.hpp)\0*.cpp;*.h;*.hpp\0PHP Files (*.php)\0*.php\0JSON Files (*.json)\0*.json\0Text Files (*.txt)\0*.txt\0";
     ofn.lpstrFile = szFile;
     ofn.nMaxFile = MAX_PATH;
     std::wstring initDir;
@@ -782,7 +782,7 @@ void Window::DoOpenFile() {
     wchar_t szFile[MAX_PATH] = { 0 };
     OPENFILENAMEW ofn = { sizeof(OPENFILENAMEW) };
     ofn.hwndOwner = m_hwnd;
-    ofn.lpstrFilter = L"Jupyter Notebook (*.ipynb)\0*.ipynb\0All Files (*.*)\0*.*\0C/C++ Files (*.cpp;*.h;*.hpp)\0*.cpp;*.h;*.hpp\0PHP Files (*.php)\0*.php\0JSON Files (*.json)\0*.json\0Text Files (*.txt)\0*.txt\0";
+    ofn.lpstrFilter = L"Notebook (*.ipynb)\0*.ipynb\0All Files (*.*)\0*.*\0C/C++ Files (*.cpp;*.h;*.hpp)\0*.cpp;*.h;*.hpp\0PHP Files (*.php)\0*.php\0JSON Files (*.json)\0*.json\0Text Files (*.txt)\0*.txt\0";
     ofn.lpstrFile = szFile;
     ofn.nMaxFile = MAX_PATH;
     ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_ENABLESIZING;
@@ -794,6 +794,26 @@ void Window::DoOpenFile() {
 
 void Window::OpenFileDocument(const std::wstring& path, bool isPreview) {
     if (path.empty()) return;
+
+    std::wstring resolvedPath = path;
+    if (!std::filesystem::exists(resolvedPath) && m_drawer.HasOpenFolder()) {
+        std::wstring candidate = m_drawer.GetOpenFolderPath() + L"\\" + path;
+        if (std::filesystem::exists(candidate)) {
+            resolvedPath = candidate;
+        }
+    }
+
+    // Direct routing for Jupyter Notebook files (.ipynb) to interactive notebook view
+    std::wstring extCheck;
+    auto dotPosCheck = resolvedPath.rfind(L'.');
+    if (dotPosCheck != std::wstring::npos) {
+        extCheck = resolvedPath.substr(dotPosCheck);
+        for (auto& c : extCheck) c = towlower(c);
+    }
+    if (extCheck == L".ipynb") {
+        OpenNotebookView(resolvedPath);
+        return;
+    }
 
     auto PathsMatch = [](const std::wstring& p1, const std::wstring& p2) -> bool {
         if (p1.empty() || p2.empty()) return false;
@@ -821,14 +841,6 @@ void Window::OpenFileDocument(const std::wstring& path, bool isPreview) {
                 InvalidateRect(m_hwnd, nullptr, FALSE);
                 return;
             }
-        }
-    }
-
-    std::wstring resolvedPath = path;
-    if (!std::filesystem::exists(resolvedPath) && m_drawer.HasOpenFolder()) {
-        std::wstring candidate = m_drawer.GetOpenFolderPath() + L"\\" + path;
-        if (std::filesystem::exists(candidate)) {
-            resolvedPath = candidate;
         }
     }
 
@@ -1415,15 +1427,33 @@ void Window::OpenSpecialView(const std::wstring& viewType, const std::wstring& t
 void Window::OpenNotebookView(const std::wstring& filePath) {
     auto& group = GetActiveGroup();
 
+    auto PathsMatch = [](const std::wstring& p1, const std::wstring& p2) -> bool {
+        if (p1.empty() || p2.empty()) return false;
+        std::wstring c1 = p1;
+        std::wstring c2 = p2;
+        for (auto& c : c1) { if (c == L'/') c = L'\\'; c = towlower(c); }
+        for (auto& c : c2) { if (c == L'/') c = L'\\'; c = towlower(c); }
+        if (c1 == c2) return true;
+        if (c1.ends_with(L"\\" + c2) || c2.ends_with(L"\\" + c1)) return true;
+        if (c1.ends_with(c2) || c2.ends_with(c1)) return true;
+        return false;
+    };
+
     // If opening a specific file, check if already open in any group
     if (!filePath.empty()) {
         for (size_t g = 0; g < m_editorGroups.size(); ++g) {
             for (size_t i = 0; i < m_editorGroups[g].docs.size(); ++i) {
-                if (m_editorGroups[g].docs[i].filePath == filePath) {
-                    m_focusedGroupIdx = static_cast<int>(g);
-                    m_editorGroups[g].activeDocIdx = static_cast<int>(i);
-                    InvalidateRect(m_hwnd, nullptr, FALSE);
-                    return;
+                if (PathsMatch(m_editorGroups[g].docs[i].filePath, filePath)) {
+                    if (m_editorGroups[g].docs[i].isSpecialView && m_editorGroups[g].docs[i].viewType == L"notebook") {
+                        m_focusedGroupIdx = static_cast<int>(g);
+                        m_editorGroups[g].activeDocIdx = static_cast<int>(i);
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
+                        return;
+                    } else {
+                        // If previously opened as a plain text file, remove it so it opens as an interactive notebook
+                        m_editorGroups[g].docs.erase(m_editorGroups[g].docs.begin() + i);
+                        break;
+                    }
                 }
             }
         }
@@ -1848,7 +1878,7 @@ void Window::DoSaveFileAs() {
     }
     OPENFILENAMEW ofn = { sizeof(OPENFILENAMEW) };
     ofn.hwndOwner = m_hwnd;
-    ofn.lpstrFilter = L"Jupyter Notebook (*.ipynb)\0*.ipynb\0All Files (*.*)\0*.*\0C/C++ Files (*.cpp;*.h;*.hpp)\0*.cpp;*.h;*.hpp\0PHP Files (*.php)\0*.php\0JSON Files (*.json)\0*.json\0Text Files (*.txt)\0*.txt\0";
+    ofn.lpstrFilter = L"Notebook (*.ipynb)\0*.ipynb\0All Files (*.*)\0*.*\0C/C++ Files (*.cpp;*.h;*.hpp)\0*.cpp;*.h;*.hpp\0PHP Files (*.php)\0*.php\0JSON Files (*.json)\0*.json\0Text Files (*.txt)\0*.txt\0";
     ofn.lpstrFile = szFile;
     ofn.nMaxFile = MAX_PATH;
     ofn.Flags = OFN_PATHMUSTEXIST | OFN_OVERWRITEPROMPT | OFN_ENABLESIZING;

@@ -19,7 +19,7 @@ ActivityRail::ActivityRail() {
     m_items.push_back({ RailTabId::Git,      L"Source Control (Ctrl+Shift+G)", {} });
 
     // 4. Notebook icon (directly above Packages)
-    m_items.push_back({ RailTabId::Notebook, L"Interactive Notebook (Jupyter / Colab) (Ctrl+Shift+J)", {} });
+    m_items.push_back({ RailTabId::Notebook, L"Interactive Notebook (Ctrl+Shift+J)", {} });
 
     // 5. Packages icon (bottom of Activity Rail, matching user's request)
     m_items.push_back({ RailTabId::Packages, L"Packages",                      {} });

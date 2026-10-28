@@ -89,10 +89,17 @@ private:
 
     // Hover state tracking
     int m_hoveredCellIdx = -1;
-    int m_hoveredBtn = 0; // 1: Run, 2: Del, 3: Up, 4: Down, 5: ClearOutput
+    int m_hoveredBtn = 0; // 1: Run, 2: Del, 3: Up, 4: Down, 5: ClearOutput, 6: Drag
     int m_hoveredToolbarBtn = 0; // 1: RunAll, 2: ClearAll
     int m_hoveredBottomCellIdx = -1; // Cell index whose bottom border is hovered
     int m_hoveredBottomBtn = 0; // 1: + Code, 2: + Text
+
+    // Drag & drop cell reorganization
+    bool m_isDraggingCell = false;
+    int m_dragCandidateCellIdx = -1;
+    int m_draggedCellIdx = -1;
+    int m_dropTargetCellIdx = -1;
+    POINT m_dragStartPt{};
 
     // Toolbar button hit regions (icon-only, minimal)
     D2D1_RECT_F m_btnRunAll{};
@@ -119,6 +126,8 @@ private:
                             std::shared_ptr<editor::NotebookDocument> nbDoc, HWND hwnd);
     void DrawRunMorphButton(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
                             const D2D1_RECT_F& bounds, bool isExecuting, bool hasError, bool isHovered);
+    void RenderTooltip(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
+                       const D2D1_RECT_F& targetBounds, const std::wstring& text);
 };
 
 } // namespace phide::ui

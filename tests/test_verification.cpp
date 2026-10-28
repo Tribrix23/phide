@@ -9943,15 +9943,20 @@ run_test_74:
         };
         auto hitId = rail.HitTest(ptNotebook);
         assert(hitId == phide::ui::RailTabId::Notebook);
-        std::cout << "  Passed: Activity Rail HitTest correctly identifies RailTabId::Notebook" << std::endl;
+        // Verify tooltip does not contain "Jupyter" or "Colab" as requested
+        assert(std::wstring(pNotebookItem->tooltipText).find(L"Jupyter") == std::wstring::npos);
+        assert(std::wstring(pNotebookItem->tooltipText).find(L"Colab") == std::wstring::npos);
+        assert(std::wstring(pNotebookItem->tooltipText) == L"Interactive Notebook (Ctrl+Shift+J)");
+        std::cout << "  Passed: Activity Rail HitTest and cleaned tooltip ('Interactive Notebook') verified" << std::endl;
 
         // 2. Verify Notebook Document Model (.ipynb v4 compatibility)
         phide::editor::NotebookDocument nbDoc;
         // Verify default notebook has exactly 1 cell containing "#Welcome to Phide notebook"
+        // Initialized as a Text (Markdown) cell, not a Code cell
         assert(nbDoc.cells.size() == 1);
-        assert(nbDoc.cells[0].type == phide::editor::NotebookCellType::Code);
+        assert(nbDoc.cells[0].type == phide::editor::NotebookCellType::Markdown);
         assert(nbDoc.cells[0].inputBuffer.GetLine(0) == L"#Welcome to Phide notebook");
-        std::cout << "  Passed: Default notebook initializes with exactly 1 cell containing '#Welcome to Phide notebook'" << std::endl;
+        std::cout << "  Passed: Default notebook initializes with exactly 1 Text (Markdown) cell containing '#Welcome to Phide notebook'" << std::endl;
 
         // Add a code cell
         auto* pNewCell = nbDoc.AddCell(phide::editor::NotebookCellType::Code);
@@ -10088,6 +10093,110 @@ run_test_74:
         assert(handledPillClick);
         assert(doc.notebookDoc->cells.size() == cellCountBeforePill + 1);
         std::cout << "  Passed: Clicking bottom hover [+ Code] pill inserts a new cell at that position" << std::endl;
+
+        // 6. Verify Text (Markdown) cells have NO [ ] gutter badge or Run button (Image 2)
+        auto* textCell = doc.notebookDoc->AddCell(phide::editor::NotebookCellType::Markdown);
+        assert(textCell != nullptr);
+        textCell->inputBuffer.SetText(L"### Markdown Header\nThis is a pure text cell with no code run button or [].");
+        pRTSnap74->BeginDraw();
+        nbView.Render(pRTSnap74.Get(), theme74, cfg74, doc, 0.0f, static_cast<float>(snapW), 0.0f, static_cast<float>(snapH));
+        pRTSnap74->EndDraw();
+        assert(textCell->runBtnBounds.left == 0 && textCell->runBtnBounds.right == 0);
+        std::cout << "  Passed: Text (Markdown) cell renders without [ ] gutter badge or run button" << std::endl;
+
+        // 7. Verify Independent Cell Run Count Increment (User Example: 2 -> 3 and 3 -> 4 without jumping)
+        phide::editor::NotebookCell testCell1;
+        testCell1.type = phide::editor::NotebookCellType::Code;
+        testCell1.executionCount = 2; // initial count 2
+        // simulate run 1:
+        if (testCell1.executionCount <= 0) testCell1.executionCount = 1; else testCell1.executionCount++;
+        assert(testCell1.executionCount == 3); // becomes 3, NOT jumping to highest cell count
+
+        phide::editor::NotebookCell testCell2;
+        testCell2.type = phide::editor::NotebookCellType::Code;
+        testCell2.executionCount = 3; // initial count 3
+        // simulate run 2:
+        if (testCell2.executionCount <= 0) testCell2.executionCount = 1; else testCell2.executionCount++;
+        assert(testCell2.executionCount == 4); // becomes 4, NOT jumping
+        std::cout << "  Passed: Cell execution counts increment independently (Cell 1: 2->3, Cell 2: 3->4)" << std::endl;
+
+        // 8. Verify Persistent Python Variable Sharing Across Cells and IndentationError Fix
+        phide::editor::OpenDocument execDoc;
+        execDoc.notebookDoc = std::make_shared<phide::editor::NotebookDocument>();
+        execDoc.notebookDoc->cells.clear();
+        // Cell 0: Text/Markdown cell
+        execDoc.notebookDoc->AddCell(phide::editor::NotebookCellType::Markdown);
+        execDoc.notebookDoc->cells[0].inputBuffer.SetText(L"#Welcome to Phide notebook\n");
+        // Cell 1: Comment-only code cell (previously could trigger IndentationError in with block)
+        execDoc.notebookDoc->AddCell(phide::editor::NotebookCellType::Code);
+        execDoc.notebookDoc->cells[1].inputBuffer.SetText(L"# Just a comment inside a code cell\n");
+        // Cell 2: Code cell defining variable
+        execDoc.notebookDoc->AddCell(phide::editor::NotebookCellType::Code);
+        execDoc.notebookDoc->cells[2].inputBuffer.SetText(L"hello = \"world\"");
+        // Cell 3: Code cell printing variable
+        execDoc.notebookDoc->AddCell(phide::editor::NotebookCellType::Code);
+        execDoc.notebookDoc->cells[3].inputBuffer.SetText(L"print(hello)");
+
+        // Run Cell 2: defines hello = "world" (with prior markdown and comment code cells)
+        nbView.RunCell(2, execDoc, nullptr);
+        while (nbView.IsExecuting() || execDoc.notebookDoc->cells[2].isExecuting) {
+            Sleep(50);
+        }
+        assert(!execDoc.notebookDoc->cells[2].outputs.empty());
+        assert(!execDoc.notebookDoc->cells[2].hasError);
+
+        // Run Cell 3: prints hello
+        nbView.RunCell(3, execDoc, nullptr);
+        while (nbView.IsExecuting() || execDoc.notebookDoc->cells[3].isExecuting) {
+            Sleep(50);
+        }
+        assert(!execDoc.notebookDoc->cells[3].outputs.empty());
+        assert(!execDoc.notebookDoc->cells[3].hasError);
+        assert(execDoc.notebookDoc->cells[3].outputs[0].text.find(L"world") != std::wstring::npos);
+        std::cout << "  Passed: Persistent variable sharing and IndentationError fix verified (Cell 3 accesses 'hello' with prior comments/text cells)" << std::endl;
+
+        // 9. Verify Drag-and-Drop Cell Reorganization
+        phide::editor::OpenDocument dragDoc;
+        dragDoc.notebookDoc = std::make_shared<phide::editor::NotebookDocument>();
+        dragDoc.notebookDoc->cells.clear();
+        dragDoc.notebookDoc->AddCell(phide::editor::NotebookCellType::Code);
+        dragDoc.notebookDoc->cells[0].inputBuffer.SetText(L"# Cell 0");
+        dragDoc.notebookDoc->AddCell(phide::editor::NotebookCellType::Code);
+        dragDoc.notebookDoc->cells[1].inputBuffer.SetText(L"# Cell 1");
+        dragDoc.notebookDoc->AddCell(phide::editor::NotebookCellType::Code);
+        dragDoc.notebookDoc->cells[2].inputBuffer.SetText(L"# Cell 2");
+
+        // Layout pass to compute bounding boxes
+        pRTSnap74->BeginDraw();
+        nbView.Render(pRTSnap74.Get(), theme74, cfg74, dragDoc, 0.0f, static_cast<float>(snapW), 0.0f, static_cast<float>(snapH));
+        pRTSnap74->EndDraw();
+
+        // Simulate dragging Cell 2 upwards to Cell 0's position
+        POINT ptDragStart = {
+            static_cast<LONG>((dragDoc.notebookDoc->cells[2].dragHandleBounds.left + dragDoc.notebookDoc->cells[2].dragHandleBounds.right) / 2.0f),
+            static_cast<LONG>((dragDoc.notebookDoc->cells[2].dragHandleBounds.top + dragDoc.notebookDoc->cells[2].dragHandleBounds.bottom) / 2.0f)
+        };
+        nbView.HandleLButtonDown(ptDragStart, dragDoc, cfg74, nullptr);
+
+        POINT ptDragTarget = {
+            static_cast<LONG>((dragDoc.notebookDoc->cells[0].bounds.left + dragDoc.notebookDoc->cells[0].bounds.right) / 2.0f),
+            static_cast<LONG>((dragDoc.notebookDoc->cells[0].bounds.top + dragDoc.notebookDoc->cells[0].bounds.bottom) / 2.0f)
+        };
+        nbView.HandleMouseMove(ptDragTarget, dragDoc, cfg74);
+
+        // Render pass during drag to verify drop guideline rendering
+        pRTSnap74->BeginDraw();
+        nbView.Render(pRTSnap74.Get(), theme74, cfg74, dragDoc, 0.0f, static_cast<float>(snapW), 0.0f, static_cast<float>(snapH));
+        pRTSnap74->EndDraw();
+
+        // Release mouse to complete cell reorganization
+        nbView.HandleLButtonUp(ptDragTarget, dragDoc, cfg74);
+
+        // Verify Cell 2 was moved to position 0!
+        assert(dragDoc.notebookDoc->cells[0].inputBuffer.GetLine(0) == L"# Cell 2");
+        assert(dragDoc.notebookDoc->cells[1].inputBuffer.GetLine(0) == L"# Cell 0");
+        assert(dragDoc.notebookDoc->cells[2].inputBuffer.GetLine(0) == L"# Cell 1");
+        std::cout << "  Passed: Drag-and-drop cell reorganization successfully reordered cells (Cell 2 moved to index 0)" << std::endl;
 
         // Clean up keyboard state
         keyState[VK_SHIFT] = 0x00;

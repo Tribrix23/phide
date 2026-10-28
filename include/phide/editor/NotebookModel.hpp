@@ -48,6 +48,7 @@ struct NotebookCell {
     D2D1_RECT_F deleteBtnBounds{};
     D2D1_RECT_F moveUpBtnBounds{};
     D2D1_RECT_F moveDownBtnBounds{};
+    D2D1_RECT_F dragHandleBounds{};
     D2D1_RECT_F codeAreaBounds{};
     D2D1_RECT_F outputAreaBounds{};
 
@@ -78,10 +79,11 @@ public:
         nextExecutionCount = 1;
 
         // Exactly one cell with "#Welcome to Phide notebook" as requested by the user
+        // Initialized as a Text (Markdown) cell, not a Code cell
         NotebookCell cell;
-        cell.id = "code-cell-1";
-        cell.type = NotebookCellType::Code;
-        cell.language = L"python";
+        cell.id = "text-cell-1";
+        cell.type = NotebookCellType::Markdown;
+        cell.language = L"markdown";
         cell.inputBuffer = Buffer(L"#Welcome to Phide notebook\n");
         cells.push_back(std::move(cell));
 
