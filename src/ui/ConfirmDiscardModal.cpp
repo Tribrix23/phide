@@ -1,6 +1,6 @@
 /**
  * @file ConfirmDiscardModal.cpp
- * @brief Implementation of the visual confirmation modal for Git discard and restore actions.
+ * @brief Implementation of the visual confirmation modal for Git discard, restore, and delete actions.
  */
 
 #include "phide/ui/ConfirmDiscardModal.hpp"
@@ -21,8 +21,12 @@ void ConfirmDiscardModal::Render(ID2D1RenderTarget* pRT, Theme& theme, const app
 
     // 2. Card Dimensions and Center Placement
     const bool isNotice = (m_type == ConfirmModalType::Notice);
-    const float cardW = config.ScaleF(510.0f);
-    const float cardH = config.ScaleF(185.0f);
+    const bool isDelete = (m_type == ConfirmModalType::DeleteFile || m_type == ConfirmModalType::DeleteFolder);
+    const bool isRestore = (m_type == ConfirmModalType::RestoreFile || m_status == L"D");
+    const bool isDiscardAll = (m_type == ConfirmModalType::DiscardAll || m_status == L"ALL");
+
+    const float cardW = config.ScaleF(540.0f);
+    const float cardH = config.ScaleF(190.0f);
     const float cardX = (std::max)(0.0f, (clientW - cardW) * 0.5f);
     const float cardY = (std::max)(0.0f, (clientH - cardH) * 0.5f);
     m_cardBounds = D2D1::RectF(cardX, cardY, cardX + cardW, cardY + cardH);
@@ -57,7 +61,7 @@ void ConfirmDiscardModal::Render(ID2D1RenderTarget* pRT, Theme& theme, const app
         cardX + cardW - config.ScaleF(10.0f),
         cardY + config.ScaleF(10.0f) + closeBtnSize
     );
-    if (m_isCloseHovered) {
+    if (m_isCloseHovered && !m_isLoading) {
         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> closeHoverBrush;
         pRT->CreateSolidColorBrush(
             theme.IsDarkMode() ? D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.10f) : D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.08f),
@@ -73,9 +77,11 @@ void ConfirmDiscardModal::Render(ID2D1RenderTarget* pRT, Theme& theme, const app
         DWRITE_PARAGRAPH_ALIGNMENT prevPAlign = pFmtHint->GetParagraphAlignment();
         pFmtHint->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
         pFmtHint->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
-        ID2D1Brush* closeTextBrush = m_isCloseHovered
-            ? (theme.brushTextPrimary ? theme.brushTextPrimary.Get() : theme.brushTextWhite.Get())
-            : (theme.brushTextMuted ? theme.brushTextMuted.Get() : theme.brushTextPrimary.Get());
+        ID2D1Brush* closeTextBrush = m_isLoading
+            ? (theme.brushTextMuted ? theme.brushTextMuted.Get() : theme.brushTextPrimary.Get())
+            : (m_isCloseHovered
+                ? (theme.brushTextPrimary ? theme.brushTextPrimary.Get() : theme.brushTextWhite.Get())
+                : (theme.brushTextMuted ? theme.brushTextMuted.Get() : theme.brushTextPrimary.Get()));
         if (closeTextBrush) {
             pRT->DrawText(L"✕", 1, pFmtHint, m_closeBtnBounds, closeTextBrush);
         }
@@ -84,10 +90,6 @@ void ConfirmDiscardModal::Render(ID2D1RenderTarget* pRT, Theme& theme, const app
     }
 
     // 4. Accent Icon and Title Setup
-    bool isRestore = (m_type == ConfirmModalType::RestoreFile || m_status == L"D");
-    bool isDiscardAll = (m_type == ConfirmModalType::DiscardAll || m_status == L"ALL");
-
-    // Icon Circle Badge
     const float iconSize = config.ScaleF(28.0f);
     const float iconX = cardX + config.ScaleF(20.0f);
     const float iconY = cardY + config.ScaleF(20.0f);
@@ -99,6 +101,10 @@ void ConfirmDiscardModal::Render(ID2D1RenderTarget* pRT, Theme& theme, const app
         // Azure Theme for Notices
         pRT->CreateSolidColorBrush(D2D1::ColorF(0.14f, 0.44f, 0.95f, 0.18f), &iconBgBrush);
         pRT->CreateSolidColorBrush(D2D1::ColorF(0.35f, 0.70f, 1.0f, 1.0f), &iconFgBrush);
+    } else if (isDelete) {
+        // Red Theme for Deleting files or folders
+        pRT->CreateSolidColorBrush(D2D1::ColorF(0.92f, 0.20f, 0.20f, 0.18f), &iconBgBrush);
+        pRT->CreateSolidColorBrush(D2D1::ColorF(0.96f, 0.32f, 0.32f, 1.0f), &iconFgBrush);
     } else if (isRestore) {
         // Cyan / Blue Theme for Restore
         pRT->CreateSolidColorBrush(D2D1::ColorF(0.20f, 0.55f, 0.95f, 0.18f), &iconBgBrush);
@@ -117,7 +123,7 @@ void ConfirmDiscardModal::Render(ID2D1RenderTarget* pRT, Theme& theme, const app
         DWRITE_PARAGRAPH_ALIGNMENT prevPAlign = pFmtHint->GetParagraphAlignment();
         pFmtHint->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
         pFmtHint->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
-        const wchar_t* glyph = isNotice ? L"ℹ" : (isRestore ? L"↺" : L"⚠");
+        const wchar_t* glyph = isNotice ? L"ℹ" : (isDelete ? L"⚠" : (isRestore ? L"↺" : L"⚠"));
         pRT->DrawText(glyph, 1, pFmtHint, rcIcon, iconFgBrush.Get());
         pFmtHint->SetTextAlignment(prevAlign);
         pFmtHint->SetParagraphAlignment(prevPAlign);
@@ -127,6 +133,8 @@ void ConfirmDiscardModal::Render(ID2D1RenderTarget* pRT, Theme& theme, const app
     std::wstring titleText;
     if (isNotice) {
         titleText = m_title.empty() ? L"Commit Message Required" : m_title;
+    } else if (isDelete) {
+        titleText = (m_type == ConfirmModalType::DeleteFolder) ? L"Delete Folder?" : L"Delete File?";
     } else if (isRestore) {
         titleText = L"Restore File?";
     } else if (isDiscardAll) {
@@ -154,6 +162,13 @@ void ConfirmDiscardModal::Render(ID2D1RenderTarget* pRT, Theme& theme, const app
     if (isNotice) {
         mainMsg = m_message.empty() ? L"Please enter a commit message before committing your changes." : m_message;
         subMsg = m_subtext.empty() ? L"Git requires a descriptive message to record changes in the repository history." : m_subtext;
+    } else if (isDelete) {
+        mainMsg = L"Are you sure you want to delete '" + m_fileName + L"'?";
+        if (m_type == ConfirmModalType::DeleteFolder) {
+            subMsg = L"This folder and its contents will be permanently deleted. This action cannot be undone.";
+        } else {
+            subMsg = L"This file will be permanently deleted from the project. This action cannot be undone.";
+        }
     } else if (isRestore) {
         mainMsg = L"Are you sure you want to restore '" + m_fileName + L"'?";
         subMsg = L"The file will be restored from the latest Git commit (HEAD).";
@@ -168,13 +183,19 @@ void ConfirmDiscardModal::Render(ID2D1RenderTarget* pRT, Theme& theme, const app
     IDWriteTextFormat* pFmtBody = theme.fontBody ? theme.fontBody.Get() : pFmtTitle;
     D2D1_RECT_F rcMainMsg = D2D1::RectF(textLeft, iconY + config.ScaleF(30.0f), textRight, iconY + config.ScaleF(58.0f));
     if (pFmtBody && textPrimary) {
+        DWRITE_WORD_WRAPPING prevWrapBody = pFmtBody->GetWordWrapping();
+        pFmtBody->SetWordWrapping(DWRITE_WORD_WRAPPING_WRAP);
         pRT->DrawText(mainMsg.c_str(), static_cast<UINT32>(mainMsg.length()), pFmtBody, rcMainMsg, textPrimary);
+        pFmtBody->SetWordWrapping(prevWrapBody);
     }
 
     ID2D1Brush* textMuted = theme.brushTextMuted ? theme.brushTextMuted.Get() : textPrimary;
-    D2D1_RECT_F rcSubMsg = D2D1::RectF(textLeft, iconY + config.ScaleF(60.0f), textRight, iconY + config.ScaleF(118.0f));
+    D2D1_RECT_F rcSubMsg = D2D1::RectF(textLeft, iconY + config.ScaleF(58.0f), textRight, iconY + config.ScaleF(124.0f));
     if (pFmtHint && textMuted) {
+        DWRITE_WORD_WRAPPING prevWrapHint = pFmtHint->GetWordWrapping();
+        pFmtHint->SetWordWrapping(DWRITE_WORD_WRAPPING_WRAP);
         pRT->DrawText(subMsg.c_str(), static_cast<UINT32>(subMsg.length()), pFmtHint, rcSubMsg, textMuted);
+        pFmtHint->SetWordWrapping(prevWrapHint);
     }
 
     // 5. Action Buttons at Bottom Right
@@ -212,9 +233,11 @@ void ConfirmDiscardModal::Render(ID2D1RenderTarget* pRT, Theme& theme, const app
             pFmtBody->SetParagraphAlignment(prevPAlign);
         }
     } else {
-        // Cancel + Primary Action (Discard or Restore)
+        // Cancel + Primary Action (Discard, Restore, or Delete)
         const float cancelBtnW = config.ScaleF(75.0f);
-        float confirmBtnW = isRestore ? config.ScaleF(105.0f) : (isDiscardAll ? config.ScaleF(130.0f) : config.ScaleF(105.0f));
+        float confirmBtnW = isDelete ? config.ScaleF(105.0f) :
+                            (isRestore ? config.ScaleF(122.0f) :
+                            (isDiscardAll ? config.ScaleF(138.0f) : config.ScaleF(122.0f)));
 
         m_confirmBtnBounds = D2D1::RectF(
             cardX + cardW - config.ScaleF(18.0f) - confirmBtnW,
@@ -232,7 +255,7 @@ void ConfirmDiscardModal::Render(ID2D1RenderTarget* pRT, Theme& theme, const app
 
         // Render Cancel Button
         D2D1_ROUNDED_RECT rrcCancel = D2D1::RoundedRect(m_cancelBtnBounds, config.ScaleF(4.0f), config.ScaleF(4.0f));
-        if (m_isCancelHovered) {
+        if (m_isCancelHovered && !m_isLoading) {
             Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> cancelHoverBrush;
             pRT->CreateSolidColorBrush(
                 theme.IsDarkMode() ? D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.08f) : D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.06f),
@@ -242,62 +265,158 @@ void ConfirmDiscardModal::Render(ID2D1RenderTarget* pRT, Theme& theme, const app
         }
         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> cancelBorderBrush;
         pRT->CreateSolidColorBrush(
-            theme.IsDarkMode() ? D2D1::ColorF(0.28f, 0.30f, 0.34f, 1.0f) : D2D1::ColorF(0.78f, 0.80f, 0.84f, 1.0f),
+            m_isLoading
+                ? (theme.IsDarkMode() ? D2D1::ColorF(0.20f, 0.22f, 0.25f, 0.6f) : D2D1::ColorF(0.85f, 0.86f, 0.88f, 0.6f))
+                : (theme.IsDarkMode() ? D2D1::ColorF(0.28f, 0.30f, 0.34f, 1.0f) : D2D1::ColorF(0.78f, 0.80f, 0.84f, 1.0f)),
             &cancelBorderBrush
         );
         if (cancelBorderBrush) pRT->DrawRoundedRectangle(rrcCancel, cancelBorderBrush.Get(), 1.0f);
 
-        if (pFmtBody && textPrimary) {
+        ID2D1Brush* cancelTextBrush = m_isLoading ? theme.brushTextMuted.Get() : textPrimary;
+        if (pFmtBody && cancelTextBrush) {
             DWRITE_TEXT_ALIGNMENT prevAlign = pFmtBody->GetTextAlignment();
             DWRITE_PARAGRAPH_ALIGNMENT prevPAlign = pFmtBody->GetParagraphAlignment();
             pFmtBody->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
             pFmtBody->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
-            pRT->DrawText(L"Cancel", 6, pFmtBody, m_cancelBtnBounds, textPrimary);
+            pRT->DrawText(L"Cancel", 6, pFmtBody, m_cancelBtnBounds, cancelTextBrush);
             pFmtBody->SetTextAlignment(prevAlign);
             pFmtBody->SetParagraphAlignment(prevPAlign);
         }
 
-        // Render Primary Action Button
+        // Render Primary Action Button (Restore, Delete, or Discard)
         D2D1_ROUNDED_RECT rrcConfirm = D2D1::RoundedRect(m_confirmBtnBounds, config.ScaleF(4.0f), config.ScaleF(4.0f));
         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> confirmBgBrush;
         if (isRestore) {
             pRT->CreateSolidColorBrush(
-                m_isConfirmHovered ? D2D1::ColorF(0.20f, 0.56f, 0.98f, 1.0f) : D2D1::ColorF(0.12f, 0.46f, 0.88f, 1.0f),
+                m_isLoading ? D2D1::ColorF(0.09f, 0.34f, 0.65f, 1.0f) :
+                (m_isConfirmHovered ? D2D1::ColorF(0.20f, 0.56f, 0.98f, 1.0f) : D2D1::ColorF(0.12f, 0.46f, 0.88f, 1.0f)),
+                &confirmBgBrush
+            );
+        } else if (isDelete) {
+            pRT->CreateSolidColorBrush(
+                m_isLoading ? D2D1::ColorF(0.60f, 0.14f, 0.14f, 1.0f) :
+                (m_isConfirmHovered ? D2D1::ColorF(0.94f, 0.24f, 0.22f, 1.0f) : D2D1::ColorF(0.82f, 0.18f, 0.18f, 1.0f)),
                 &confirmBgBrush
             );
         } else {
+            // Discard
             pRT->CreateSolidColorBrush(
-                m_isConfirmHovered ? D2D1::ColorF(0.94f, 0.24f, 0.22f, 1.0f) : D2D1::ColorF(0.82f, 0.18f, 0.18f, 1.0f),
+                m_isLoading ? D2D1::ColorF(0.60f, 0.14f, 0.14f, 1.0f) :
+                (m_isConfirmHovered ? D2D1::ColorF(0.94f, 0.24f, 0.22f, 1.0f) : D2D1::ColorF(0.82f, 0.18f, 0.18f, 1.0f)),
                 &confirmBgBrush
             );
         }
         if (confirmBgBrush) pRT->FillRoundedRectangle(rrcConfirm, confirmBgBrush.Get());
 
         std::wstring confirmBtnText;
-        if (isRestore) {
-            confirmBtnText = L"Restore File";
-        } else if (isDiscardAll) {
-            confirmBtnText = L"Discard All Files";
+        if (m_isLoading) {
+            if (isRestore) {
+                confirmBtnText = L"Restoring...";
+            } else if (isDelete) {
+                confirmBtnText = L"Deleting...";
+            } else {
+                confirmBtnText = L"Discarding...";
+            }
         } else {
-            confirmBtnText = L"Discard File";
+            if (isRestore) {
+                confirmBtnText = L"Restore File";
+            } else if (isDelete) {
+                confirmBtnText = L"Delete";
+            } else if (isDiscardAll) {
+                confirmBtnText = L"Discard All Files";
+            } else {
+                confirmBtnText = L"Discard File";
+            }
         }
 
         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> whiteTextBrush;
         pRT->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 1.0f), &whiteTextBrush);
-        if (pFmtBody && whiteTextBrush) {
-            DWRITE_TEXT_ALIGNMENT prevAlign = pFmtBody->GetTextAlignment();
-            DWRITE_PARAGRAPH_ALIGNMENT prevPAlign = pFmtBody->GetParagraphAlignment();
-            pFmtBody->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
-            pFmtBody->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
-            pRT->DrawText(confirmBtnText.c_str(), static_cast<UINT32>(confirmBtnText.length()), pFmtBody, m_confirmBtnBounds, whiteTextBrush.Get());
-            pFmtBody->SetTextAlignment(prevAlign);
-            pFmtBody->SetParagraphAlignment(prevPAlign);
+
+        if (m_isLoading) {
+            // Render animated Direct2D arc spinner inside button
+            const float spinnerRadius = config.ScaleF(5.0f);
+            const float spinnerCenterX = m_confirmBtnBounds.left + config.ScaleF(16.0f);
+            const float spinnerCenterY = (m_confirmBtnBounds.top + m_confirmBtnBounds.bottom) * 0.5f;
+
+            // Track circle
+            Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> trackBrush;
+            pRT->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.25f), &trackBrush);
+            if (trackBrush) {
+                pRT->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(spinnerCenterX, spinnerCenterY), spinnerRadius, spinnerRadius), trackBrush.Get(), 1.5f);
+            }
+
+            // Rotating arc
+            D2D1_MATRIX_3X2_F oldTrans;
+            pRT->GetTransform(&oldTrans);
+            pRT->SetTransform(D2D1::Matrix3x2F::Rotation(m_spinnerAngle, D2D1::Point2F(spinnerCenterX, spinnerCenterY)) * oldTrans);
+
+            Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> arcBrush;
+            pRT->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.95f), &arcBrush);
+            if (arcBrush) {
+                Microsoft::WRL::ComPtr<ID2D1Factory> pFactory;
+                pRT->GetFactory(&pFactory);
+                if (pFactory) {
+                    Microsoft::WRL::ComPtr<ID2D1PathGeometry> pArcGeo;
+                    if (SUCCEEDED(pFactory->CreatePathGeometry(&pArcGeo))) {
+                        Microsoft::WRL::ComPtr<ID2D1GeometrySink> sink;
+                        if (SUCCEEDED(pArcGeo->Open(&sink))) {
+                            sink->BeginFigure(D2D1::Point2F(spinnerCenterX - spinnerRadius, spinnerCenterY), D2D1_FIGURE_BEGIN_HOLLOW);
+                            D2D1_ARC_SEGMENT arc{};
+                            arc.point = D2D1::Point2F(spinnerCenterX, spinnerCenterY - spinnerRadius);
+                            arc.size = D2D1::SizeF(spinnerRadius, spinnerRadius);
+                            arc.sweepDirection = D2D1_SWEEP_DIRECTION_CLOCKWISE;
+                            sink->AddArc(arc);
+                            sink->EndFigure(D2D1_FIGURE_END_OPEN);
+                            sink->Close();
+                            pRT->DrawGeometry(pArcGeo.Get(), arcBrush.Get(), 2.0f);
+                        }
+                    }
+                }
+            }
+            pRT->SetTransform(oldTrans);
+
+            // Text offset to right of spinner
+            D2D1_RECT_F rcText = D2D1::RectF(
+                spinnerCenterX + spinnerRadius + config.ScaleF(6.0f),
+                m_confirmBtnBounds.top,
+                m_confirmBtnBounds.right - config.ScaleF(4.0f),
+                m_confirmBtnBounds.bottom
+            );
+            if (pFmtBody && whiteTextBrush) {
+                DWRITE_TEXT_ALIGNMENT prevAlign = pFmtBody->GetTextAlignment();
+                DWRITE_PARAGRAPH_ALIGNMENT prevPAlign = pFmtBody->GetParagraphAlignment();
+                pFmtBody->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
+                pFmtBody->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+                pRT->DrawText(confirmBtnText.c_str(), static_cast<UINT32>(confirmBtnText.length()), pFmtBody, rcText, whiteTextBrush.Get());
+                pFmtBody->SetTextAlignment(prevAlign);
+                pFmtBody->SetParagraphAlignment(prevPAlign);
+            }
+        } else {
+            // Normal centered text
+            if (pFmtBody && whiteTextBrush) {
+                DWRITE_TEXT_ALIGNMENT prevAlign = pFmtBody->GetTextAlignment();
+                DWRITE_PARAGRAPH_ALIGNMENT prevPAlign = pFmtBody->GetParagraphAlignment();
+                pFmtBody->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+                pFmtBody->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+                pRT->DrawText(confirmBtnText.c_str(), static_cast<UINT32>(confirmBtnText.length()), pFmtBody, m_confirmBtnBounds, whiteTextBrush.Get());
+                pFmtBody->SetTextAlignment(prevAlign);
+                pFmtBody->SetParagraphAlignment(prevPAlign);
+            }
         }
     }
 }
 
 bool ConfirmDiscardModal::HandleMouseMove(POINT pt) noexcept {
     if (!m_isOpen) return false;
+    if (m_isLoading) {
+        if (m_isConfirmHovered || m_isCancelHovered || m_isCloseHovered) {
+            m_isConfirmHovered = false;
+            m_isCancelHovered = false;
+            m_isCloseHovered = false;
+            return true;
+        }
+        return false;
+    }
 
     bool oldConfirm = m_isConfirmHovered;
     bool oldCancel = m_isCancelHovered;
@@ -316,6 +435,11 @@ bool ConfirmDiscardModal::HandleMouseMove(POINT pt) noexcept {
 bool ConfirmDiscardModal::HandleMouseDown(POINT pt, bool& outConfirmed, std::wstring& outPath, std::wstring& outFileName, std::wstring& outStatus) noexcept {
     if (!m_isOpen) return false;
 
+    // Strict idempotency: when loading, completely ignore any clicks to prevent spamming
+    if (m_isLoading) {
+        return true;
+    }
+
     // Check Primary Confirm Button
     if (pt.x >= m_confirmBtnBounds.left && pt.x <= m_confirmBtnBounds.right &&
         pt.y >= m_confirmBtnBounds.top && pt.y <= m_confirmBtnBounds.bottom) {
@@ -323,7 +447,13 @@ bool ConfirmDiscardModal::HandleMouseDown(POINT pt, bool& outConfirmed, std::wst
         outPath = m_filePath;
         outFileName = m_fileName;
         outStatus = m_status;
-        Close();
+        if (m_type == ConfirmModalType::Notice) {
+            Close();
+        } else {
+            // Enter loading state and disable button immediately!
+            m_isLoading = true;
+            m_spinnerAngle = 0.0f;
+        }
         return true;
     }
 
@@ -358,12 +488,22 @@ bool ConfirmDiscardModal::HandleMouseDown(POINT pt, bool& outConfirmed, std::wst
 bool ConfirmDiscardModal::HandleKeyDown(WPARAM wParam, bool& outConfirmed, std::wstring& outPath, std::wstring& outFileName, std::wstring& outStatus) noexcept {
     if (!m_isOpen) return false;
 
+    // Strict idempotency: consume all keys while loading
+    if (m_isLoading) {
+        return true;
+    }
+
     if (wParam == VK_RETURN) {
         outConfirmed = true;
         outPath = m_filePath;
         outFileName = m_fileName;
         outStatus = m_status;
-        Close();
+        if (m_type == ConfirmModalType::Notice) {
+            Close();
+        } else {
+            m_isLoading = true;
+            m_spinnerAngle = 0.0f;
+        }
         return true;
     }
 

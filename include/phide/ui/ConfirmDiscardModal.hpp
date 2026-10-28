@@ -9,6 +9,7 @@
 #include <d2d1.h>
 #include <dwrite.h>
 #include <string>
+#include <filesystem>
 #include "phide/app/AppConfig.hpp"
 #include "phide/ui/Theme.hpp"
 
@@ -22,7 +23,9 @@ enum class ConfirmModalType {
     DiscardFile,
     DiscardAll,
     RestoreFile,
-    Notice
+    Notice,
+    DeleteFile,
+    DeleteFolder
 };
 
 /**
@@ -52,6 +55,8 @@ public:
         m_message.clear();
         m_subtext.clear();
         m_isOpen = true;
+        m_isLoading = false;
+        m_spinnerAngle = 0.0f;
         m_isConfirmHovered = false;
         m_isCancelHovered = false;
         m_isCloseHovered = false;
@@ -70,6 +75,28 @@ public:
         m_status.clear();
         m_changeCount = 0;
         m_isOpen = true;
+        m_isLoading = false;
+        m_spinnerAngle = 0.0f;
+        m_isConfirmHovered = false;
+        m_isCancelHovered = false;
+        m_isCloseHovered = false;
+    }
+
+    /**
+     * @brief Opens the custom flat design delete confirmation dialog for files or folders.
+     */
+    void OpenDelete(const std::wstring& targetPath, bool isFolder) {
+        m_type = isFolder ? ConfirmModalType::DeleteFolder : ConfirmModalType::DeleteFile;
+        m_filePath = targetPath;
+        m_fileName = std::filesystem::path(targetPath).filename().wstring();
+        m_status.clear();
+        m_changeCount = 0;
+        m_title.clear();
+        m_message.clear();
+        m_subtext.clear();
+        m_isOpen = true;
+        m_isLoading = false;
+        m_spinnerAngle = 0.0f;
         m_isConfirmHovered = false;
         m_isCancelHovered = false;
         m_isCloseHovered = false;
@@ -80,12 +107,17 @@ public:
      */
     void Close() noexcept {
         m_isOpen = false;
+        m_isLoading = false;
         m_isConfirmHovered = false;
         m_isCancelHovered = false;
         m_isCloseHovered = false;
     }
 
     [[nodiscard]] bool IsOpen() const noexcept { return m_isOpen; }
+    [[nodiscard]] bool IsLoading() const noexcept { return m_isLoading; }
+    void SetLoading(bool loading) noexcept { m_isLoading = loading; }
+    void UpdateSpinner(float delta = 14.0f) noexcept { m_spinnerAngle += delta; }
+
     [[nodiscard]] ConfirmModalType GetType() const noexcept { return m_type; }
     [[nodiscard]] const std::wstring& GetTargetFilePath() const noexcept { return m_filePath; }
     [[nodiscard]] const std::wstring& GetTargetFileName() const noexcept { return m_fileName; }
@@ -95,7 +127,7 @@ public:
      * @brief Checks if a client point is over any clickable buttons on the modal (Confirm, Cancel, Close).
      */
     [[nodiscard]] bool HitTestButtons(POINT pt) const noexcept {
-        if (!m_isOpen) return false;
+        if (!m_isOpen || m_isLoading) return false;
         auto inRect = [](POINT p, const D2D1_RECT_F& rc) {
             return (p.x >= rc.left && p.x <= rc.right && p.y >= rc.top && p.y <= rc.bottom);
         };
@@ -133,6 +165,8 @@ public:
 
 private:
     bool m_isOpen = false;
+    bool m_isLoading = false;
+    float m_spinnerAngle = 0.0f;
     ConfirmModalType m_type = ConfirmModalType::DiscardFile;
     std::wstring m_filePath;
     std::wstring m_fileName;

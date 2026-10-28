@@ -1423,4 +1423,51 @@ void LucideIcons::DrawExternalLink(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bo
     pRT->DrawLine(MapPoint(20.0f, 4.0f, ox, oy, s), MapPoint(20.0f, 9.0f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
 }
 
+void LucideIcons::DrawGraduationCap(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, ID2D1Brush* pBrush, float strokeWidth) const {
+    if (!pRT || !pBrush) return;
+    EnsureStrokeStyle(pRT, const_cast<ComPtr<ID2D1StrokeStyle>&>(m_pStrokeStyle));
+
+    const float bw = bounds.right - bounds.left;
+    const float bh = bounds.bottom - bounds.top;
+    const float iconSize = (std::min)(bw, bh) * 0.58f;
+    const float s = iconSize / 24.0f;
+    const float ox = bounds.left + (bw - 24.0f * s) / 2.0f;
+    const float oy = bounds.top + (bh - 24.0f * s) / 2.0f;
+
+    // Official Lucide graduation-cap (student hat):
+    // 1. Mortarboard diamond cap top:
+    pRT->DrawLine(MapPoint(2.5f, 10.0f, ox, oy, s), MapPoint(12.0f, 5.0f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+    pRT->DrawLine(MapPoint(12.0f, 5.0f, ox, oy, s), MapPoint(21.5f, 10.0f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+    pRT->DrawLine(MapPoint(21.5f, 10.0f, ox, oy, s), MapPoint(12.0f, 14.5f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+    pRT->DrawLine(MapPoint(12.0f, 14.5f, ox, oy, s), MapPoint(2.5f, 10.0f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+
+    // 2. Head / Cap underside curved band:
+    Microsoft::WRL::ComPtr<ID2D1Factory> pFactory;
+    pRT->GetFactory(&pFactory);
+    if (pFactory) {
+        Microsoft::WRL::ComPtr<ID2D1PathGeometry> pCapGeo;
+        if (SUCCEEDED(pFactory->CreatePathGeometry(&pCapGeo))) {
+            Microsoft::WRL::ComPtr<ID2D1GeometrySink> sink;
+            if (SUCCEEDED(pCapGeo->Open(&sink))) {
+                sink->BeginFigure(MapPoint(6.0f, 12.5f, ox, oy, s), D2D1_FIGURE_BEGIN_HOLLOW);
+                sink->AddLine(MapPoint(6.0f, 15.5f, ox, oy, s));
+                D2D1_ARC_SEGMENT arc{};
+                arc.point = MapPoint(18.0f, 15.5f, ox, oy, s);
+                arc.size = D2D1::SizeF(6.0f * s, 3.2f * s);
+                arc.sweepDirection = D2D1_SWEEP_DIRECTION_CLOCKWISE;
+                sink->AddArc(arc);
+                sink->AddLine(MapPoint(18.0f, 12.5f, ox, oy, s));
+                sink->EndFigure(D2D1_FIGURE_END_OPEN);
+                sink->Close();
+                pRT->DrawGeometry(pCapGeo.Get(), pBrush, strokeWidth, m_pStrokeStyle.Get());
+            }
+        }
+    }
+
+    // 3. Tassel hanging down from right corner
+    pRT->DrawLine(MapPoint(22.0f, 10.2f, ox, oy, s), MapPoint(22.0f, 17.5f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+    // Small tassel knot / bob at the tip
+    pRT->DrawEllipse(D2D1::Ellipse(MapPoint(22.0f, 17.8f, ox, oy, s), 0.8f * s, 0.8f * s), pBrush, strokeWidth * 0.8f);
+}
+
 } // namespace phide::ui

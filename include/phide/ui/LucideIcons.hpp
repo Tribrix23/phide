@@ -132,6 +132,11 @@ public:
     void DrawTerminalNotebook(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, ID2D1Brush* pBrush, float strokeWidth = 1.6f) const;
 
     /**
+     * @brief Draws the Lucide Graduation Cap / Student Hat icon (mortarboard cap with skullcap and tassel 🎓).
+     */
+    void DrawGraduationCap(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, ID2D1Brush* pBrush, float strokeWidth = 1.6f) const;
+
+    /**
      * @brief Draws the Lucide Sidebar toggle icon (panel-left).
      */
     void DrawSidebar(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, ID2D1Brush* pBrush, float strokeWidth = 1.4f) const;

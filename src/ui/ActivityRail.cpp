@@ -18,10 +18,13 @@ ActivityRail::ActivityRail() {
     // 3. Git icon (directly under Search)
     m_items.push_back({ RailTabId::Git,      L"Source Control (Ctrl+Shift+G)", {} });
 
-    // 4. Notebook icon (directly above Packages)
+    // 4. Student Hat icon (directly above Notebook, matching user's green circle)
+    m_items.push_back({ RailTabId::Student,  L"Student Tutorials",                     {} });
+
+    // 5. Notebook icon (directly above Packages)
     m_items.push_back({ RailTabId::Notebook, L"Interactive Notebook (Ctrl+Shift+J)", {} });
 
-    // 5. Packages icon (bottom of Activity Rail, matching user's request)
+    // 6. Packages icon (bottom of Activity Rail, matching user's request)
     m_items.push_back({ RailTabId::Packages, L"Packages",                      {} });
 }
 
@@ -122,6 +125,10 @@ void ActivityRail::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
         } else if (item.id == RailTabId::Notebook) {
             // Anchor Notebook directly above Packages (matching user's red circle)
             float botY = clientHeight - (btnSize * 2.0f) - config.ScaleF(22.0f);
+            item.bounds = D2D1::RectF(startX, botY, startX + btnSize, botY + btnSize);
+        } else if (item.id == RailTabId::Student) {
+            // Anchor Student Hat directly above Notebook (matching user's green circle)
+            float botY = clientHeight - (btnSize * 3.0f) - config.ScaleF(30.0f);
             item.bounds = D2D1::RectF(startX, botY, startX + btnSize, botY + btnSize);
         } else {
             item.bounds = D2D1::RectF(startX, curY, startX + btnSize, curY + btnSize);
@@ -249,6 +256,9 @@ void ActivityRail::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
                                   theme.fontBadge.Get() ? theme.fontBadge.Get() : theme.fontMenuShortcut.Get(),
                                   rrcBadge.rect, theme.brushTextWhite.Get());
                 }
+                break;
+            case RailTabId::Student:
+                m_lucide.DrawGraduationCap(pRT, item.bounds, iconBrush, 1.6f);
                 break;
             case RailTabId::Notebook:
                 m_lucide.DrawTerminalNotebook(pRT, item.bounds, iconBrush, 1.6f);

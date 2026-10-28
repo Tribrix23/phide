@@ -301,6 +301,9 @@ int main(int argc, char* argv[]) {
     if (targetTest == 75) {
         goto run_test_75;
     }
+    if (targetTest == 76) {
+        goto run_test_76;
+    }
 
     // --- 3. Render Test: Picture Viewer in Dark & Light Modes ---
     std::cout << "[TEST 2] Testing Picture Viewer rendering..." << std::endl;
@@ -10910,6 +10913,179 @@ run_test_75:
         std::cout << "  Passed: File > New File triggers inline creation in project folder" << std::endl;
 
         std::cout << "  Passed: All [TEST 75] GitHub Login Modal and Terminal Flow tests passed successfully!" << std::endl;
+    }
+
+run_test_76:
+    // --- 76. Custom Flat Delete Modal, Restore/Delete Loading State & Idempotency ---
+    if (targetTest == 0 || targetTest == 76) {
+        std::cout << "\n[TEST 76] Testing Custom Flat Delete Modal, Loading Animation & Idempotency..." << std::endl;
+
+        phide::ui::ConfirmDiscardModal modal;
+        phide::app::AppConfig cfg;
+        phide::ui::Theme theme;
+        theme.SetThemeMode(phide::ui::ThemeMode::Dark);
+
+        // 1. Initial State
+        assert(!modal.IsOpen());
+        assert(!modal.IsLoading());
+
+        // 2. Open Custom Flat Delete Modal for a file
+        modal.OpenDelete(L"C:\\project\\test.txt", false);
+        assert(modal.IsOpen());
+        assert(!modal.IsLoading());
+        assert(modal.GetType() == phide::ui::ConfirmModalType::DeleteFile);
+        assert(modal.GetTargetFileName() == L"test.txt");
+        assert(modal.GetTargetFilePath() == L"C:\\project\\test.txt");
+        std::cout << "  Passed: Custom flat modal opened for DeleteFile" << std::endl;
+
+        // 3. Open Custom Flat Delete Modal for a folder
+        modal.OpenDelete(L"C:\\project\\src_dir", true);
+        assert(modal.IsOpen());
+        assert(modal.GetType() == phide::ui::ConfirmModalType::DeleteFolder);
+        assert(modal.GetTargetFileName() == L"src_dir");
+        std::cout << "  Passed: Custom flat modal opened for DeleteFolder" << std::endl;
+
+        // 4. Render modal to WIC Bitmap (Dark Mode)
+        const UINT wModal = 800, hModal = 600;
+        ComPtr<IWICBitmap> pWicModal;
+        hr = pWicFactory->CreateBitmap(wModal, hModal, GUID_WICPixelFormat32bppPBGRA, WICBitmapCacheOnDemand, &pWicModal);
+        assert(SUCCEEDED(hr));
+        D2D1_RENDER_TARGET_PROPERTIES rtProps = D2D1::RenderTargetProperties(
+            D2D1_RENDER_TARGET_TYPE_DEFAULT,
+            D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED)
+        );
+        ComPtr<ID2D1RenderTarget> pRTModal;
+        hr = pD2DFactory->CreateWicBitmapRenderTarget(pWicModal.Get(), rtProps, &pRTModal);
+        assert(SUCCEEDED(hr));
+        theme.CreateDeviceResources(pRTModal.Get(), pDWriteFactory.Get());
+
+        pRTModal->BeginDraw();
+        pRTModal->Clear(D2D1::ColorF(0.1f, 0.1f, 0.1f, 1.0f));
+        modal.Render(pRTModal.Get(), theme, cfg, static_cast<float>(wModal), static_cast<float>(hModal));
+        hr = pRTModal->EndDraw();
+        assert(SUCCEEDED(hr));
+        SaveWicBitmapToPng(pWicModal.Get(), pWicFactory.Get(), artDir + L"test_custom_delete_modal_normal.png");
+        std::cout << "  Passed: Rendered normal delete modal" << std::endl;
+
+        // 5. Click Confirm Button -> enters loading state and disables button
+        POINT ptConfirm{ static_cast<LONG>((wModal + 510.0f) * 0.5f - 40.0f), static_cast<LONG>((hModal + 185.0f) * 0.5f - 30.0f) };
+        bool confirmed = false;
+        std::wstring outPath, outFileName, outStatus;
+        assert(modal.HitTestButtons(ptConfirm));
+        bool handled = modal.HandleMouseDown(ptConfirm, confirmed, outPath, outFileName, outStatus);
+        assert(handled);
+        assert(confirmed);
+        assert(modal.IsLoading());
+        std::cout << "  Passed: Clicking confirm entered loading state (IsLoading() == true)" << std::endl;
+
+        // 6. Strict Idempotency: When IsLoading() == true, HitTestButtons returns false and further clicks/keys do NOT re-trigger!
+        assert(!modal.HitTestButtons(ptConfirm));
+        bool spamConfirmed = false;
+        std::wstring spamPath, spamFileName, spamStatus;
+        bool spamHandled = modal.HandleMouseDown(ptConfirm, spamConfirmed, spamPath, spamFileName, spamStatus);
+        assert(spamHandled);
+        assert(!spamConfirmed); // Dropped! Did not confirm again!
+        std::cout << "  Passed: Idempotency enforced - duplicate clicks ignored while loading" << std::endl;
+
+        // Also test keyboard spam (Enter / Escape) while loading
+        bool keyConfirmed = false;
+        std::wstring keyPath, keyFileName, keyStatus;
+        bool keyHandled = modal.HandleKeyDown(VK_RETURN, keyConfirmed, keyPath, keyFileName, keyStatus);
+        assert(keyHandled);
+        assert(!keyConfirmed); // Ignored while loading!
+        std::cout << "  Passed: Keyboard Enter ignored while loading" << std::endl;
+
+        // 7. Render Loading Spinner state
+        modal.UpdateSpinner(45.0f);
+        pRTModal->BeginDraw();
+        pRTModal->Clear(D2D1::ColorF(0.1f, 0.1f, 0.1f, 1.0f));
+        modal.Render(pRTModal.Get(), theme, cfg, static_cast<float>(wModal), static_cast<float>(hModal));
+        hr = pRTModal->EndDraw();
+        assert(SUCCEEDED(hr));
+        SaveWicBitmapToPng(pWicModal.Get(), pWicFactory.Get(), artDir + L"test_custom_delete_modal_loading.png");
+        std::cout << "  Passed: Rendered loading delete modal with animated spinner" << std::endl;
+
+        // 8. Test Restore File modal loading & idempotency
+        modal.Open(L"test.txt", L"test.txt", L"D");
+        assert(modal.IsOpen());
+        assert(!modal.IsLoading());
+        assert(modal.GetType() == phide::ui::ConfirmModalType::RestoreFile);
+
+        // Render normal Restore File modal
+        pRTModal->BeginDraw();
+        pRTModal->Clear(D2D1::ColorF(0.1f, 0.1f, 0.1f, 1.0f));
+        modal.Render(pRTModal.Get(), theme, cfg, static_cast<float>(wModal), static_cast<float>(hModal));
+        hr = pRTModal->EndDraw();
+        assert(SUCCEEDED(hr));
+        SaveWicBitmapToPng(pWicModal.Get(), pWicFactory.Get(), artDir + L"test_restore_file_modal_normal.png");
+
+        // Click Restore File button
+        handled = modal.HandleMouseDown(ptConfirm, confirmed, outPath, outFileName, outStatus);
+        assert(handled);
+        assert(confirmed);
+        assert(modal.IsLoading());
+
+        // Render loading Restore File modal ("Restoring..." with animated spinner)
+        modal.UpdateSpinner(90.0f);
+        pRTModal->BeginDraw();
+        pRTModal->Clear(D2D1::ColorF(0.1f, 0.1f, 0.1f, 1.0f));
+        modal.Render(pRTModal.Get(), theme, cfg, static_cast<float>(wModal), static_cast<float>(hModal));
+        hr = pRTModal->EndDraw();
+        assert(SUCCEEDED(hr));
+        SaveWicBitmapToPng(pWicModal.Get(), pWicFactory.Get(), artDir + L"test_restore_file_modal_loading.png");
+        std::cout << "  Passed: Rendered Restore File modal with 'Restoring...' spinner" << std::endl;
+
+        modal.Close();
+        assert(!modal.IsOpen());
+        assert(!modal.IsLoading());
+
+        // 9. Test ActivityRail Student Hat Icon & Placement directly above Notebook
+        phide::ui::ActivityRail rail76;
+        const auto& railItems = rail76.GetItems();
+        bool foundStudent = false;
+        int studentIdx = -1, notebookIdx = -1, packagesIdx = -1;
+        for (size_t i = 0; i < railItems.size(); ++i) {
+            if (railItems[i].id == phide::ui::RailTabId::Student) {
+                foundStudent = true;
+                studentIdx = static_cast<int>(i);
+            } else if (railItems[i].id == phide::ui::RailTabId::Notebook) {
+                notebookIdx = static_cast<int>(i);
+            } else if (railItems[i].id == phide::ui::RailTabId::Packages) {
+                packagesIdx = static_cast<int>(i);
+            }
+        }
+        assert(foundStudent);
+        assert(studentIdx >= 0 && notebookIdx >= 0 && packagesIdx >= 0);
+        std::cout << "  Passed: ActivityRail contains Student Tab (Student Hat icon)" << std::endl;
+
+        // Render ActivityRail with Student Hat icon
+        const UINT wRail = 48, hRail = 700;
+        ComPtr<IWICBitmap> pWicRail;
+        hr = pWicFactory->CreateBitmap(wRail, hRail, GUID_WICPixelFormat32bppPBGRA, WICBitmapCacheOnDemand, &pWicRail);
+        assert(SUCCEEDED(hr));
+        ComPtr<ID2D1RenderTarget> pRTRail;
+        hr = pD2DFactory->CreateWicBitmapRenderTarget(pWicRail.Get(), rtProps, &pRTRail);
+        assert(SUCCEEDED(hr));
+        theme.CreateDeviceResources(pRTRail.Get(), pDWriteFactory.Get());
+
+        pRTRail->BeginDraw();
+        pRTRail->Clear(D2D1::ColorF(0.08f, 0.08f, 0.09f, 1.0f));
+        rail76.Render(pRTRail.Get(), theme, cfg, static_cast<float>(hRail));
+        hr = pRTRail->EndDraw();
+        assert(SUCCEEDED(hr));
+        SaveWicBitmapToPng(pWicRail.Get(), pWicFactory.Get(), artDir + L"test_activity_rail_student_hat.png");
+
+        // Verify bounding placement: Student Hat must be directly above Notebook, which is directly above Packages
+        const auto& updatedItems = rail76.GetItems();
+        float studentBot = updatedItems[studentIdx].bounds.bottom;
+        float notebookTop = updatedItems[notebookIdx].bounds.top;
+        float notebookBot = updatedItems[notebookIdx].bounds.bottom;
+        float packagesTop = updatedItems[packagesIdx].bounds.top;
+        assert(studentBot <= notebookTop);
+        assert(notebookBot <= packagesTop);
+        std::cout << "  Passed: Student Hat icon is anchored above Notebook and Packages exactly where circled" << std::endl;
+
+        std::cout << "  Passed: All [TEST 76] Custom Flat Delete Modal, Loading Animation & Idempotency tests passed successfully!" << std::endl;
     }
 
     std::cout << "\n==========================================" << std::endl;

@@ -310,6 +310,13 @@ private:
                                     float topY, float clientHeight);
 
     /**
+     * @brief Renders the Student Tutorials & Learning Hub view (Student hat 🎓).
+     */
+    void RenderStudentView(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
+                           editor::OpenDocument& doc, float canvasLeft, float canvasWidth,
+                           float topY, float clientHeight);
+
+    /**
      * @brief Renders placeholder view when a binary/executable file is opened in diff view.
      */
     void RenderDiffBinaryView(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,

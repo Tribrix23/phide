@@ -1658,31 +1658,9 @@ void Window::DoDeleteSelectedExplorerItem() {
     }
     if (targetPath.empty() || !std::filesystem::exists(targetPath)) return;
 
-    std::wstring confirmMsg = L"Are you sure you want to delete '" +
-        std::filesystem::path(targetPath).filename().wstring() + L"'?";
-    if (MessageBoxW(m_hwnd, confirmMsg.c_str(), L"Confirm Delete", MB_YESNO | MB_ICONWARNING) == IDYES) {
-        std::wstring backup;
-        bool isFolder = std::filesystem::is_directory(targetPath);
-        m_explorerUndo.PrepareDelete(targetPath, isFolder, backup);
-        std::error_code ec;
-        std::filesystem::remove_all(targetPath, ec);
-        if (!ec) {
-            m_explorerUndo.PushDelete(targetPath, backup, isFolder);
-        }
-        for (size_t g = 0; g < m_editorGroups.size(); ++g) {
-            for (int i = 0; i < static_cast<int>(m_editorGroups[g].docs.size()); ++i) {
-                if (m_editorGroups[g].docs[i].filePath == targetPath) {
-                    CloseDocument(static_cast<int>(g), i);
-                    break;
-                }
-            }
-        }
-        if (m_selectedExplorerPath == targetPath) m_selectedExplorerPath.clear();
-        m_drawer.RefreshTree();
-        UpdateDrawerDirtyFiles();
-        UpdateDrawerErrorFiles();
-        InvalidateRect(m_hwnd, nullptr, FALSE);
-    }
+    bool isFolder = std::filesystem::is_directory(targetPath);
+    m_confirmDiscardModal.OpenDelete(targetPath, isFolder);
+    InvalidateRect(m_hwnd, nullptr, FALSE);
 }
 
 void Window::DoOpenWorkspaceFromFile() {
@@ -3752,19 +3730,59 @@ void Window::RunProjectDevServer(const std::wstring& projectRoot, const ProjectD
     InvalidateRect(m_hwnd, nullptr, FALSE);
 }
 
+struct DiscardRestoreTaskResult {
+    std::wstring targetPath;
+    std::wstring targetFileName;
+    std::wstring targetStatus;
+};
+
+struct DeleteTaskResult {
+    std::wstring targetPath;
+    bool isFolder = false;
+    bool success = false;
+};
+
 void Window::ExecuteDiscardOrRestore(const std::wstring& targetPath, const std::wstring& targetFileName, const std::wstring& targetStatus) {
+    ExecuteDiscardOrRestoreAsync(targetPath, targetFileName, targetStatus);
+}
+
+void Window::ExecuteDiscardOrRestoreAsync(const std::wstring& targetPath, const std::wstring& targetFileName, const std::wstring& targetStatus) {
+    if (targetPath.empty()) {
+        m_confirmDiscardModal.Close();
+        return;
+    }
+
+    SetTimer(m_hwnd, m_animTimerId, 16, nullptr);
+    HWND hwnd = m_hwnd;
+    std::thread([this, hwnd, targetPath, targetFileName, targetStatus]() {
+        auto tStart = std::chrono::steady_clock::now();
+
+        if (targetPath == L"*" || targetStatus == L"ALL") {
+            m_drawer.DiscardAllChanges();
+        } else {
+            m_drawer.DiscardFile(targetPath);
+        }
+
+        // Ensure smooth visual confirmation of the spinning state
+        auto elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - tStart).count();
+        if (elapsedMs < 150) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(150 - elapsedMs));
+        }
+
+        auto* pRes = new DiscardRestoreTaskResult{ targetPath, targetFileName, targetStatus };
+        PostMessageW(hwnd, WM_USER + 204, 0, reinterpret_cast<LPARAM>(pRes));
+    }).detach();
+}
+
+void Window::FinishDiscardOrRestore(const std::wstring& targetPath, const std::wstring& targetFileName, const std::wstring& targetStatus) {
     if (targetPath.empty()) return;
 
     if (targetPath == L"*" || targetStatus == L"ALL") {
-        m_drawer.DiscardAllChanges();
         m_drawer.ShowGitNotification(L"✓ Discarded all changes");
+    } else if (targetStatus == L"D") {
+        m_drawer.ShowGitNotification(L"✓ Restored " + targetFileName);
     } else {
-        m_drawer.DiscardFile(targetPath);
-        if (targetStatus == L"D") {
-            m_drawer.ShowGitNotification(L"✓ Restored " + targetFileName);
-        } else {
-            m_drawer.ShowGitNotification(L"✓ Discarded " + targetFileName);
-        }
+        m_drawer.ShowGitNotification(L"✓ Discarded " + targetFileName);
     }
 
     auto PathsMatch = [](const std::wstring& p1, const std::wstring& p2) -> bool {
@@ -3826,6 +3844,68 @@ void Window::ExecuteDiscardOrRestore(const std::wstring& targetPath, const std::
     UpdateDrawerDirtyFiles();
     UpdateDrawerErrorFiles();
     m_drawer.RefreshGitStatusOnly(false);
+    InvalidateRect(m_hwnd, nullptr, FALSE);
+}
+
+void Window::ExecuteDeleteAsync(const std::wstring& targetPath, bool isFolder) {
+    if (targetPath.empty()) {
+        m_confirmDiscardModal.Close();
+        return;
+    }
+
+    SetTimer(m_hwnd, m_animTimerId, 16, nullptr);
+    HWND hwnd = m_hwnd;
+    std::thread([this, hwnd, targetPath, isFolder]() {
+        auto tStart = std::chrono::steady_clock::now();
+
+        std::wstring backup;
+        m_explorerUndo.PrepareDelete(targetPath, isFolder, backup);
+        std::error_code ec;
+        std::filesystem::remove_all(targetPath, ec);
+        bool success = !ec;
+        if (success) {
+            m_explorerUndo.PushDelete(targetPath, backup, isFolder);
+        }
+
+        // Ensure smooth visual confirmation of the spinning state
+        auto elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - tStart).count();
+        if (elapsedMs < 150) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(150 - elapsedMs));
+        }
+
+        auto* pRes = new DeleteTaskResult{ targetPath, isFolder, success };
+        PostMessageW(hwnd, WM_USER + 205, 0, reinterpret_cast<LPARAM>(pRes));
+    }).detach();
+}
+
+void Window::FinishDelete(const std::wstring& targetPath, bool isFolder, bool success) {
+    if (targetPath.empty()) return;
+
+    std::wstring fileName = std::filesystem::path(targetPath).filename().wstring();
+    if (success) {
+        m_drawer.ShowGitNotification(L"✓ Deleted " + fileName);
+    } else {
+        m_drawer.ShowGitNotification(L"✕ Failed to delete " + fileName);
+    }
+
+    // Close open documents corresponding to deleted path
+    for (int g = static_cast<int>(m_editorGroups.size()) - 1; g >= 0; --g) {
+        if (g >= static_cast<int>(m_editorGroups.size())) continue;
+        for (int d = static_cast<int>(m_editorGroups[g].docs.size()) - 1; d >= 0; --d) {
+            if (g >= static_cast<int>(m_editorGroups.size())) break;
+            if (d >= static_cast<int>(m_editorGroups[g].docs.size())) continue;
+            const auto& path = m_editorGroups[g].docs[d].filePath;
+            if (path == targetPath || (isFolder && path.starts_with(targetPath + L"\\"))) {
+                CloseDocument(g, d);
+            }
+        }
+    }
+
+    if (m_selectedExplorerPath == targetPath) m_selectedExplorerPath.clear();
+    m_drawer.RefreshTree();
+    UpdateDrawerDirtyFiles();
+    UpdateDrawerErrorFiles();
+    m_drawer.RefreshGitStatusOnly(true);
     InvalidateRect(m_hwnd, nullptr, FALSE);
 }
 
@@ -6781,14 +6861,25 @@ void Window::HandleLButtonDown(POINT clientPt) {
         }
     }
 
-    // Check Confirm Discard / Restore / Notice Modal Clicks (Images 2, 3, 4, 5)
+    // Check Confirm Discard / Restore / Delete / Notice Modal Clicks (Images 2, 3, 4, 5)
     if (m_confirmDiscardModal.IsOpen()) {
+        if (m_confirmDiscardModal.IsLoading()) {
+            return; // strict idempotency: modal action is busy executing
+        }
         bool wasNotice = (m_confirmDiscardModal.GetType() == ui::ConfirmModalType::Notice);
+        auto modalType = m_confirmDiscardModal.GetType();
         bool confirmed = false;
         std::wstring targetPath, targetFileName, targetStatus;
         if (m_confirmDiscardModal.HandleMouseDown(clientPt, confirmed, targetPath, targetFileName, targetStatus)) {
             if (confirmed) {
-                ExecuteDiscardOrRestore(targetPath, targetFileName, targetStatus);
+                if (wasNotice) {
+                    m_confirmDiscardModal.Close();
+                    m_drawer.SetGitCommitBoxFocus(1);
+                } else if (modalType == ui::ConfirmModalType::DeleteFile || modalType == ui::ConfirmModalType::DeleteFolder) {
+                    ExecuteDeleteAsync(targetPath, modalType == ui::ConfirmModalType::DeleteFolder);
+                } else {
+                    ExecuteDiscardOrRestoreAsync(targetPath, targetFileName, targetStatus);
+                }
             } else if (wasNotice) {
                 m_drawer.SetGitCommitBoxFocus(1);
             }
@@ -7331,27 +7422,9 @@ void Window::HandleLButtonDown(POINT clientPt) {
                         break;
                     case ui::MenuActionId::CtxDelete:
                         if (!m_contextTargetPath.empty()) {
-                            std::wstring confirmMsg = L"Are you sure you want to delete '" +
-                                std::filesystem::path(m_contextTargetPath).filename().wstring() + L"'?";
-                            if (MessageBoxW(m_hwnd, confirmMsg.c_str(), L"Confirm Delete", MB_YESNO | MB_ICONWARNING) == IDYES) {
-                                std::wstring backup;
-                                bool isFolder = std::filesystem::is_directory(m_contextTargetPath);
-                                m_explorerUndo.PrepareDelete(m_contextTargetPath, isFolder, backup);
-                                std::error_code ec;
-                                std::filesystem::remove_all(m_contextTargetPath, ec);
-                                if (!ec) {
-                                    m_explorerUndo.PushDelete(m_contextTargetPath, backup, isFolder);
-                                }
-                                for (size_t g = 0; g < m_editorGroups.size(); ++g) {
-                                    for (int i = 0; i < static_cast<int>(m_editorGroups[g].docs.size()); ++i) {
-                                        if (m_editorGroups[g].docs[i].filePath == m_contextTargetPath) {
-                                            CloseDocument(static_cast<int>(g), i);
-                                            break;
-                                        }
-                                    }
-                                }
-                                m_drawer.RefreshTree();
-                            }
+                            bool isFolder = std::filesystem::is_directory(m_contextTargetPath);
+                            m_confirmDiscardModal.OpenDelete(m_contextTargetPath, isFolder);
+                            InvalidateRect(m_hwnd, nullptr, FALSE);
                         }
                         break;
                     case ui::MenuActionId::CtxNewFile: {
@@ -8392,6 +8465,13 @@ void Window::HandleLButtonDown(POINT clientPt) {
     // 7. Activity Rail Clicks (Files, Search, Git, Debug, Packages)
     auto railHit = m_rail.HitTest(clientPt);
     if (railHit != ui::RailTabId::None) {
+        if (railHit == ui::RailTabId::Student) {
+            OpenSpecialView(L"student", L"Student Tutorials");
+            UpdateDrawerErrorFiles();
+            SaveSessionState();
+            InvalidateRect(m_hwnd, nullptr, FALSE);
+            return;
+        }
         if (railHit == ui::RailTabId::Notebook) {
             OpenNotebookView();
             UpdateDrawerErrorFiles();
@@ -8844,8 +8924,12 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     return TRUE;
                 }
 
-                // 00. Confirm Discard / Restore / Notice Modal (Images 2, 3, 4, 5)
+                // 00. Confirm Discard / Restore / Delete / Notice Modal (Images 2, 3, 4, 5)
                 if (m_confirmDiscardModal.IsOpen()) {
+                    if (m_confirmDiscardModal.IsLoading()) {
+                        SetCursor(LoadCursor(nullptr, IDC_WAIT));
+                        return TRUE;
+                    }
                     if (m_confirmDiscardModal.HitTestButtons(pt)) {
                         SetCursor(LoadCursor(nullptr, IDC_HAND));
                         return TRUE;
@@ -9921,14 +10005,25 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 }
             }
 
-            // 0a. Confirm Discard / Restore / Notice modal keyboard handling (Images 2, 3, 4, 5)
+            // 0a. Confirm Discard / Restore / Delete / Notice modal keyboard handling (Images 2, 3, 4, 5)
             if (m_confirmDiscardModal.IsOpen()) {
+                if (m_confirmDiscardModal.IsLoading()) {
+                    return 0; // strict idempotency: modal action is busy executing
+                }
                 bool wasNotice = (m_confirmDiscardModal.GetType() == ui::ConfirmModalType::Notice);
+                auto modalType = m_confirmDiscardModal.GetType();
                 bool confirmed = false;
                 std::wstring targetPath, targetFileName, targetStatus;
                 if (m_confirmDiscardModal.HandleKeyDown(wParam, confirmed, targetPath, targetFileName, targetStatus)) {
                     if (confirmed) {
-                        ExecuteDiscardOrRestore(targetPath, targetFileName, targetStatus);
+                        if (wasNotice) {
+                            m_confirmDiscardModal.Close();
+                            m_drawer.SetGitCommitBoxFocus(1);
+                        } else if (modalType == ui::ConfirmModalType::DeleteFile || modalType == ui::ConfirmModalType::DeleteFolder) {
+                            ExecuteDeleteAsync(targetPath, modalType == ui::ConfirmModalType::DeleteFolder);
+                        } else {
+                            ExecuteDiscardOrRestoreAsync(targetPath, targetFileName, targetStatus);
+                        }
                     } else if (wasNotice) {
                         m_drawer.SetGitCommitBoxFocus(1);
                     }
@@ -10728,15 +10823,6 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     }
                 }
 
-                // Source Control background auto-refresh & animation update
-                // Background polling passes showLoading = false so it NEVER continuously spins the activity rail icon
-                // Uses RefreshGitStatusOnly to avoid reloading or blinking the commit graph!
-                static ULONGLONG s_lastGitPoll = 0;
-                if (m_config.activeRailTab == 2 && m_drawerAnimProgress > 0.5f && (now - s_lastGitPoll > 30000) && !m_drawer.IsGitLoading() && !m_drawer.IsGitRefreshing()) {
-                    s_lastGitPoll = now;
-                    m_drawer.RefreshGitStatusOnly(true);
-                }
-
                 // Spinner badge on Activity Rail only active when explicit git action is loading
                 static ULONGLONG s_gitLoadingStartTime = 0;
                 bool isGitLoading = m_drawer.IsGitLoading();
@@ -10857,6 +10943,12 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     UpdateExecutionButtonStates();
                 }
 
+                // Smoothly animate confirm / restore / delete modal button spinner
+                if (m_confirmDiscardModal.IsOpen() && m_confirmDiscardModal.IsLoading()) {
+                    m_confirmDiscardModal.UpdateSpinner(14.0f);
+                    keepAnimating = true;
+                }
+
                 if (!keepAnimating && !m_isDrawerAnimating && !m_isTerminalAnimating && !m_isTermFullScreenAnimating && !m_isRightSidebarAnimating) {
                     KillTimer(m_hwnd, m_animTimerId);
                 }
@@ -10915,6 +11007,28 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 m_gitErrorModal.Open(err.command, err.output, err.repoDir);
                 InvalidateRect(m_hwnd, nullptr, FALSE);
             }
+            return 0;
+        }
+
+        case WM_USER + 204: {
+            auto* pRes = reinterpret_cast<DiscardRestoreTaskResult*>(lParam);
+            if (pRes) {
+                FinishDiscardOrRestore(pRes->targetPath, pRes->targetFileName, pRes->targetStatus);
+                delete pRes;
+            }
+            m_confirmDiscardModal.Close();
+            InvalidateRect(m_hwnd, nullptr, FALSE);
+            return 0;
+        }
+
+        case WM_USER + 205: {
+            auto* pRes = reinterpret_cast<DeleteTaskResult*>(lParam);
+            if (pRes) {
+                FinishDelete(pRes->targetPath, pRes->isFolder, pRes->success);
+                delete pRes;
+            }
+            m_confirmDiscardModal.Close();
+            InvalidateRect(m_hwnd, nullptr, FALSE);
             return 0;
         }
 

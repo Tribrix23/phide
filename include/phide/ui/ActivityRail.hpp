@@ -33,7 +33,8 @@ enum class RailTabId {
     Search = 1,         ///< Search across workspace
     Git = 2,            ///< Source Control (Git)
     Packages = 3,       ///< Package Manager (PyCharm style)
-    Notebook = 4        ///< Interactive Notebook (Jupyter / Colab)
+    Notebook = 4,       ///< Interactive Notebook (Jupyter / Colab)
+    Student = 5         ///< Student Tutorials & Learning Hub (Student hat / graduation cap 🎓)
 };
 
 /**

@@ -352,6 +352,9 @@ void EditorCanvas::RenderSinglePane(ID2D1RenderTarget* pRT, Theme& theme, const 
     } else if (activeDoc.isSpecialView && activeDoc.viewType == L"notebook") {
         m_packageManagerView.HideWebView();
         m_notebookView.Render(pRT, theme, config, activeDoc, canvasLeft, canvasWidth, contentTopY, clientHeight - contentTopY);
+    } else if (activeDoc.isSpecialView && activeDoc.viewType == L"student") {
+        m_packageManagerView.HideWebView();
+        RenderStudentView(pRT, theme, config, activeDoc, canvasLeft, canvasWidth, contentTopY, clientHeight);
     } else {
         m_packageManagerView.HideWebView();
         if (activeDoc.isImageView) {
@@ -615,6 +618,8 @@ void EditorCanvas::RenderTabs(ID2D1RenderTarget* pRT, Theme& theme, const app::A
             }
         } else if (doc.isSpecialView && doc.viewType == L"packages") {
             m_icons.DrawPackage(pRT, iconBounds, theme.brushBrandAccent ? theme.brushBrandAccent.Get() : theme.brushTextWhite.Get(), 1.1f);
+        } else if (doc.isSpecialView && doc.viewType == L"student") {
+            m_icons.DrawGraduationCap(pRT, iconBounds, theme.brushBrandAccent ? theme.brushBrandAccent.Get() : theme.brushTextWhite.Get(), 1.3f);
         } else if ((doc.isSpecialView && doc.viewType == L"notebook") || doc.filePath.ends_with(L".ipynb")) {
             m_icons.DrawTerminalNotebook(pRT, iconBounds, theme.brushBrandAccent ? theme.brushBrandAccent.Get() : theme.brushTextWhite.Get(), 1.3f);
         } else {
@@ -2481,6 +2486,140 @@ void EditorCanvas::RenderUnsupportedBinaryView(ID2D1RenderTarget* pRT, Theme& th
     pRT->DrawText(btnLabel, static_cast<UINT32>(wcslen(btnLabel)),
                   theme.fontButtonCenter ? theme.fontButtonCenter.Get() : theme.fontBody.Get(),
                   doc.unsupportedActionBtn, theme.brushTextWhite.Get());
+}
+
+/**
+ * @brief Renders the Student Tutorials & Learning Hub view (Student hat 🎓).
+ */
+void EditorCanvas::RenderStudentView(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
+                                     editor::OpenDocument& doc, float canvasLeft, float canvasWidth,
+                                     float topY, float clientHeight) {
+    const float availH = clientHeight - topY;
+    const float centerX = canvasLeft + canvasWidth / 2.0f;
+    const float startY = topY + config.ScaleF(40.0f);
+
+    // 1. Student Hat Icon Badge in center
+    const float badgeSize = config.ScaleF(56.0f);
+    D2D1_RECT_F rcBadge = D2D1::RectF(centerX - badgeSize / 2.0f, startY, centerX + badgeSize / 2.0f, startY + badgeSize);
+    D2D1_ROUNDED_RECT rrcBadge = D2D1::RoundedRect(rcBadge, config.ScaleF(12.0f), config.ScaleF(12.0f));
+
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> badgeBgBrush;
+    pRT->CreateSolidColorBrush(D2D1::ColorF(0.55f, 0.25f, 0.95f, 0.18f), &badgeBgBrush);
+    if (badgeBgBrush) pRT->FillRoundedRectangle(rrcBadge, badgeBgBrush.Get());
+
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> badgeBorderBrush;
+    pRT->CreateSolidColorBrush(D2D1::ColorF(0.65f, 0.35f, 1.0f, 0.60f), &badgeBorderBrush);
+    if (badgeBorderBrush) pRT->DrawRoundedRectangle(rrcBadge, badgeBorderBrush.Get(), 1.2f);
+
+    m_icons.DrawGraduationCap(pRT, rcBadge, theme.brushBrandAccent ? theme.brushBrandAccent.Get() : theme.brushTextWhite.Get(), 2.0f);
+
+    // 2. Title: "Student Tutorials & Learning Hub"
+    const wchar_t* titleStr = L"Student Tutorials & Learning Hub";
+    const float titleW = config.ScaleF(600.0f);
+    const float titleH = config.ScaleF(32.0f);
+    D2D1_RECT_F rcTitle = D2D1::RectF(centerX - titleW / 2.0f, startY + badgeSize + config.ScaleF(16.0f),
+                                     centerX + titleW / 2.0f, startY + badgeSize + config.ScaleF(16.0f) + titleH);
+    IDWriteTextFormat* pFmtTitle = theme.fontTitle ? theme.fontTitle.Get() : theme.fontSectionHeader.Get();
+    if (pFmtTitle) {
+        DWRITE_TEXT_ALIGNMENT oldAlign = pFmtTitle->GetTextAlignment();
+        pFmtTitle->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+        pRT->DrawText(titleStr, static_cast<UINT32>(wcslen(titleStr)), pFmtTitle, rcTitle,
+                      theme.brushTextWhite ? theme.brushTextWhite.Get() : theme.brushTextPrimary.Get());
+        pFmtTitle->SetTextAlignment(oldAlign);
+    }
+
+    // 3. Subtitle
+    const wchar_t* subStr = L"Comprehensive guides, syntax references, and practical development tutorials.";
+    D2D1_RECT_F rcSub = D2D1::RectF(centerX - titleW / 2.0f, rcTitle.bottom + config.ScaleF(4.0f),
+                                   centerX + titleW / 2.0f, rcTitle.bottom + config.ScaleF(28.0f));
+    IDWriteTextFormat* pFmtSub = theme.fontHint ? theme.fontHint.Get() : theme.fontBody.Get();
+    if (pFmtSub) {
+        DWRITE_TEXT_ALIGNMENT oldAlign = pFmtSub->GetTextAlignment();
+        pFmtSub->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+        pRT->DrawText(subStr, static_cast<UINT32>(wcslen(subStr)), pFmtSub, rcSub,
+                      theme.brushTextMuted ? theme.brushTextMuted.Get() : theme.brushTextSecondary.Get());
+        pFmtSub->SetTextAlignment(oldAlign);
+    }
+
+    // 4. Learning Cards Grid (2x2)
+    struct TutorialCard {
+        const wchar_t* title;
+        const wchar_t* desc;
+        const wchar_t* badge;
+    };
+    TutorialCard cards[] = {
+        { L"PHP & Web Development", L"Learn modern PHP 8+, Composer packages, and web app creation with built-in live preview.", L"Web" },
+        { L"Python & Interactive Notebooks", L"Explore data analysis, scripts, and Jupyter notebooks with rich interactive cells.", L"Data" },
+        { L"Git & GitHub Workflows", L"Master staging, commit history, branch management, and GitHub repository synchronization.", L"Git" },
+        { L"Database Studio & SQL", L"Query and manage MySQL, SQLite, and PostgreSQL databases directly inside Phide.", L"DB" }
+    };
+
+    const float cardW = config.ScaleF(320.0f);
+    const float cardH = config.ScaleF(110.0f);
+    const float cardGap = config.ScaleF(16.0f);
+    const float gridStartX = centerX - cardW - cardGap / 2.0f;
+    const float gridStartY = rcSub.bottom + config.ScaleF(30.0f);
+
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> cardBgBrush;
+    pRT->CreateSolidColorBrush(theme.IsDarkMode() ? D2D1::ColorF(0.13f, 0.14f, 0.17f, 0.90f) : D2D1::ColorF(0.96f, 0.97f, 0.98f, 0.95f), &cardBgBrush);
+
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> cardBorderBrush;
+    pRT->CreateSolidColorBrush(theme.IsDarkMode() ? D2D1::ColorF(0.24f, 0.25f, 0.29f, 1.0f) : D2D1::ColorF(0.82f, 0.84f, 0.87f, 1.0f), &cardBorderBrush);
+
+    for (int i = 0; i < 4; ++i) {
+        int col = i % 2;
+        int row = i / 2;
+        float cx = gridStartX + static_cast<float>(col) * (cardW + cardGap);
+        float cy = gridStartY + static_cast<float>(row) * (cardH + cardGap);
+        D2D1_RECT_F rcCard = D2D1::RectF(cx, cy, cx + cardW, cy + cardH);
+        D2D1_ROUNDED_RECT rrcCard = D2D1::RoundedRect(rcCard, config.ScaleF(8.0f), config.ScaleF(8.0f));
+
+        if (cardBgBrush) pRT->FillRoundedRectangle(rrcCard, cardBgBrush.Get());
+        if (cardBorderBrush) pRT->DrawRoundedRectangle(rrcCard, cardBorderBrush.Get(), 1.0f);
+
+        // Card Title
+        D2D1_RECT_F rcCardTitle = D2D1::RectF(cx + config.ScaleF(14.0f), cy + config.ScaleF(14.0f),
+                                             cx + cardW - config.ScaleF(60.0f), cy + config.ScaleF(36.0f));
+        IDWriteTextFormat* pFmtCardTitle = theme.fontSectionHeader ? theme.fontSectionHeader.Get() : theme.fontBody.Get();
+        if (pFmtCardTitle) {
+            DWRITE_TEXT_ALIGNMENT oldAlign = pFmtCardTitle->GetTextAlignment();
+            pFmtCardTitle->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
+            pRT->DrawText(cards[i].title, static_cast<UINT32>(wcslen(cards[i].title)), pFmtCardTitle, rcCardTitle,
+                          theme.brushTextPrimary ? theme.brushTextPrimary.Get() : theme.brushTextWhite.Get());
+            pFmtCardTitle->SetTextAlignment(oldAlign);
+        }
+
+        // Category Badge
+        const float badgeW = config.ScaleF(40.0f);
+        const float badgeH = config.ScaleF(18.0f);
+        D2D1_RECT_F rcCatBadge = D2D1::RectF(cx + cardW - config.ScaleF(14.0f) - badgeW, cy + config.ScaleF(14.0f),
+                                            cx + cardW - config.ScaleF(14.0f), cy + config.ScaleF(14.0f) + badgeH);
+        D2D1_ROUNDED_RECT rrcCatBadge = D2D1::RoundedRect(rcCatBadge, 3.0f, 3.0f);
+        if (badgeBgBrush) pRT->FillRoundedRectangle(rrcCatBadge, badgeBgBrush.Get());
+        IDWriteTextFormat* pFmtBadge = theme.fontBadge ? theme.fontBadge.Get() : theme.fontHint.Get();
+        if (pFmtBadge) {
+            DWRITE_TEXT_ALIGNMENT oldAlign = pFmtBadge->GetTextAlignment();
+            pFmtBadge->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+            pRT->DrawText(cards[i].badge, static_cast<UINT32>(wcslen(cards[i].badge)), pFmtBadge, rcCatBadge,
+                          theme.brushBrandAccent ? theme.brushBrandAccent.Get() : theme.brushTextWhite.Get());
+            pFmtBadge->SetTextAlignment(oldAlign);
+        }
+
+        // Card Description
+        D2D1_RECT_F rcCardDesc = D2D1::RectF(cx + config.ScaleF(14.0f), cy + config.ScaleF(42.0f),
+                                            cx + cardW - config.ScaleF(14.0f), cy + cardH - config.ScaleF(10.0f));
+        IDWriteTextFormat* pFmtCardDesc = theme.fontHint ? theme.fontHint.Get() : theme.fontBody.Get();
+        if (pFmtCardDesc) {
+            DWRITE_TEXT_ALIGNMENT oldAlign = pFmtCardDesc->GetTextAlignment();
+            DWRITE_WORD_WRAPPING oldWrap = pFmtCardDesc->GetWordWrapping();
+            pFmtCardDesc->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
+            pFmtCardDesc->SetWordWrapping(DWRITE_WORD_WRAPPING_WRAP);
+            pRT->DrawText(cards[i].desc, static_cast<UINT32>(wcslen(cards[i].desc)), pFmtCardDesc, rcCardDesc,
+                          theme.brushTextMuted ? theme.brushTextMuted.Get() : theme.brushTextSecondary.Get());
+            pFmtCardDesc->SetTextAlignment(oldAlign);
+            pFmtCardDesc->SetWordWrapping(oldWrap);
+        }
+    }
 }
 
 void EditorCanvas::RenderRefactorPopup(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config, float clientHeight) {

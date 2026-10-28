@@ -554,6 +554,10 @@ private:
     ProjectDecision m_runningProjectDecision;
     bool m_isProjectRunning = false;
     void ExecuteDiscardOrRestore(const std::wstring& targetPath, const std::wstring& targetFileName, const std::wstring& targetStatus);
+    void ExecuteDiscardOrRestoreAsync(const std::wstring& targetPath, const std::wstring& targetFileName, const std::wstring& targetStatus);
+    void FinishDiscardOrRestore(const std::wstring& targetPath, const std::wstring& targetFileName, const std::wstring& targetStatus);
+    void ExecuteDeleteAsync(const std::wstring& targetPath, bool isFolder);
+    void FinishDelete(const std::wstring& targetPath, bool isFolder, bool success);
 
     // Multi-LiveServer Architecture
     struct ActiveLiveServer {
