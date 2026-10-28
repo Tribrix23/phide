@@ -113,6 +113,7 @@ public:
      */
     bool Undo();
     bool Redo();
+    void PushUndo();
 
     /**
      * @brief Checks if there are actions available to undo or redo.
@@ -189,7 +190,6 @@ private:
     };
     std::vector<BufferSnapshot> m_undoStack;
     std::vector<BufferSnapshot> m_redoStack;
-    void PushUndo();
 
     void LoadDefaultSample();
 };

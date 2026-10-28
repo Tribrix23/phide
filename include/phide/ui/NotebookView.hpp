@@ -73,6 +73,14 @@ public:
 
     [[nodiscard]] bool IsExecuting() const noexcept { return m_isExecuting.load(); }
 
+    /**
+     * @brief Hit-tests code area coordinates to obtain line and column with character metrics precision.
+     */
+    bool HitTestCodeArea(const editor::NotebookCell& cell, POINT clientPt, const app::AppConfig& config,
+                         size_t& outLine, size_t& outCol) const;
+    float EnsureCharWidth(Theme& theme, const app::AppConfig& config);
+    std::wstring FindPythonExecutable(const std::wstring& targetFilePath = L"") const;
+
 private:
     std::wstring m_workspacePath;
     float m_scrollY = 0.0f;
@@ -87,6 +95,12 @@ private:
     // Caret blinking
     ULONGLONG m_lastBlinkTime = 0;
     bool m_caretVisible = true;
+
+    // Double click & text selection tracking
+    ULONGLONG m_lastLDownTime = 0;
+    POINT m_lastLDownPt{ 0, 0 };
+    bool m_isSelectingText = false;
+    mutable float m_charWidth = 0.0f;
 
     // Hover state tracking
     int m_hoveredCellIdx = -1;
@@ -116,6 +130,8 @@ private:
     HANDLE m_hChildProcess = NULL;
     std::thread m_execThread;
     std::mutex m_execMutex;
+    std::vector<int> m_cellQueue;
+    std::mutex m_queueMutex;
     float m_spinAngle = 0.0f;
     ULONGLONG m_lastAnimTick = 0;
 
@@ -123,11 +139,10 @@ private:
 
     // Helper utilities
     void StopExecution_Internal();
-    std::wstring FindPythonExecutable() const;
     void ExecuteScriptAsync(int cellIdx, const std::wstring& script, const std::wstring& lang,
                             std::shared_ptr<editor::NotebookDocument> nbDoc, HWND hwnd);
     void DrawRunMorphButton(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
-                            const D2D1_RECT_F& bounds, bool isExecuting, bool hasError, bool isHovered);
+                            const D2D1_RECT_F& bounds, bool isExecuting, bool isQueued, bool hasError, bool isHovered);
     void RenderTooltip(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
                        const D2D1_RECT_F& targetBounds, const std::wstring& text);
 };

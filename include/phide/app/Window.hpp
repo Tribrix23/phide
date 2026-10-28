@@ -107,8 +107,10 @@ public:
     void RunProjectDevServer(const std::wstring& projectRoot, const ProjectDecision& decision);
     static bool IsFileInDirectory(const std::wstring& filePath, const std::wstring& dirPath);
 
-private:
     LRESULT HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam);
+    void OpenVirtualDocument(const std::wstring& name, const std::wstring& content, bool isPreview = false);
+
+private:
 
     HRESULT CreateDeviceIndependentResources();
     HRESULT CreateDeviceResources();
@@ -149,6 +151,7 @@ private:
         return m_editorGroups[idx];
     }
 
+public:
     editor::OpenDocument* GetActiveDoc() noexcept {
         auto& group = GetActiveGroup();
         if (group.activeDocIdx >= 0 && group.activeDocIdx < static_cast<int>(group.docs.size())) {
@@ -165,6 +168,7 @@ private:
         return nullptr;
     }
 
+private:
     /**
      * @brief Checks if there is at least one active document opened in the editor.
      * @return True if a document is open.
@@ -195,14 +199,6 @@ private:
      * @brief Computes diff hunks and line highlights between diffOriginalBuffer and buffer for a document.
      */
     void ComputeDiffHunks(editor::OpenDocument& doc);
-
-    /**
-     * @brief Opens an in-memory virtual document (e.g. Untitled-1).
-     * @param name Display name of the virtual document.
-     * @param content Initial buffer text.
-     * @param isPreview True if opened in preview mode.
-     */
-    void OpenVirtualDocument(const std::wstring& name, const std::wstring& content, bool isPreview = false);
 
     /**
      * @brief Synchronizes buffer contents across all open tabs (normal docs and diff views) matching sourceDoc's filePath.

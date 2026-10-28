@@ -9397,8 +9397,64 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                         if (pDoc->isDiffView && (pDoc->diffActivePane == 0 || pDoc->isDiffRightReadOnly)) {
                             return 0; // Read-only side!
                         }
+                        wchar_t pairClose = 0;
+                        if (ch == L'(') pairClose = L')';
+                        else if (ch == L'[') pairClose = L']';
+                        else if (ch == L'{') pairClose = L'}';
+                        else if (ch == L'"') pairClose = L'"';
+                        else if (ch == L'\'') pairClose = L'\'';
+                        else if (ch == L'`') pairClose = L'`';
+
+                        // 1. Wrap active selection when typing bracket or quote opener
                         if (pDoc->HasSelection()) {
-                            pDoc->DeleteSelection();
+                            if (pairClose != 0) {
+                                std::wstring sel = pDoc->GetSelectedText();
+                                pDoc->DeleteSelection();
+                                std::wstring wrapped = std::wstring(1, ch) + sel + pairClose;
+                                pDoc->buffer.InsertText(wrapped);
+                                MarkDocumentModified(pDoc);
+                                if (pDoc->isDiffView) ComputeDiffHunks(*pDoc);
+                                m_editor.DismissAutocomplete();
+                                m_editor.ClearGhostText();
+                                EnsureCursorVisible();
+                                InvalidateRect(m_hwnd, nullptr, FALSE);
+                                return 0;
+                            } else {
+                                pDoc->DeleteSelection();
+                            }
+                        }
+
+                        // 2. Overtype closing character if cursor is immediately before it
+                        auto cur = pDoc->buffer.GetCursor();
+                        const auto& lines = pDoc->buffer.GetLines();
+                        if (cur.line < lines.size()) {
+                            const auto& line = lines[cur.line];
+                            if (cur.col < line.length() && line[cur.col] == ch) {
+                                if (ch == L')' || ch == L']' || ch == L'}' || ch == L'"' || ch == L'\'' || ch == L'`') {
+                                    pDoc->buffer.MoveCursorRight();
+                                    m_editor.DismissAutocomplete();
+                                    m_editor.ClearGhostText();
+                                    EnsureCursorVisible();
+                                    InvalidateRect(m_hwnd, nullptr, FALSE);
+                                    return 0;
+                                }
+                            }
+                        }
+
+                        // 3. Auto-insert pair and position cursor inside
+                        if (pairClose != 0) {
+                            std::wstring pairStr;
+                            pairStr += ch;
+                            pairStr += pairClose;
+                            pDoc->buffer.InsertText(pairStr);
+                            pDoc->buffer.MoveCursorLeft();
+                            MarkDocumentModified(pDoc);
+                            if (pDoc->isDiffView) ComputeDiffHunks(*pDoc);
+                            m_editor.DismissAutocomplete();
+                            m_editor.ClearGhostText();
+                            EnsureCursorVisible();
+                            InvalidateRect(m_hwnd, nullptr, FALSE);
+                            return 0;
                         }
 
                         // Auto-closing HTML tag on '>' (Image 1: <div> -> <div></div>)
@@ -10281,10 +10337,35 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     if (pDoc->HasSelection()) {
                         pDoc->DeleteSelection();
                     } else if (wParam == VK_BACK) {
-                        pDoc->buffer.Backspace();
+                        auto cur = pDoc->buffer.GetCursor();
+                        const auto& lines = pDoc->buffer.GetLines();
+                        bool isPair = false;
+                        if (cur.line < lines.size()) {
+                            const auto& line = lines[cur.line];
+                            if (cur.col > 0 && cur.col < line.length()) {
+                                wchar_t leftCh = line[cur.col - 1];
+                                wchar_t rightCh = line[cur.col];
+                                if ((leftCh == L'(' && rightCh == L')') ||
+                                    (leftCh == L'[' && rightCh == L']') ||
+                                    (leftCh == L'{' && rightCh == L'}') ||
+                                    (leftCh == L'"' && rightCh == L'"') ||
+                                    (leftCh == L'\'' && rightCh == L'\'') ||
+                                    (leftCh == L'`' && rightCh == L'`')) {
+                                    isPair = true;
+                                }
+                            }
+                        }
+                        if (isPair) {
+                            pDoc->buffer.MoveCursorRight();
+                            pDoc->buffer.Backspace();
+                            pDoc->buffer.Backspace();
+                        } else {
+                            pDoc->buffer.Backspace();
+                        }
                     }
                     MarkDocumentModified(pDoc);
                     if (pDoc->isDiffView) ComputeDiffHunks(*pDoc);
+                    EnsureCursorVisible();
                     InvalidateRect(m_hwnd, nullptr, FALSE);
                     return 0;
                 } else if (wParam == VK_LEFT) {
@@ -10466,6 +10547,10 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                         return 0;
                     }
 
+                    if (pDoc->HasSelection()) {
+                        pDoc->DeleteSelection();
+                    }
+
                     // Check if between opening and closing tags: <div>|</div>
                     auto pos = pDoc->buffer.GetCursor();
                     const auto& lineText = pDoc->buffer.GetLine(pos.line);
@@ -10489,9 +10574,59 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                         InvalidateRect(m_hwnd, nullptr, FALSE);
                         return 0;
                     }
+
+                    // Check if between braces: {|}
+                    if (pos.col > 0 && pos.col < lineText.length() && lineText[pos.col - 1] == L'{' && lineText[pos.col] == L'}') {
+                        size_t indent = 0;
+                        while (indent < lineText.length() && (lineText[indent] == L' ' || lineText[indent] == L'\t')) {
+                            indent++;
+                        }
+                        std::wstring baseIndent = lineText.substr(0, indent);
+                        std::wstring extraIndent = (baseIndent.length() % 2 == 0 && baseIndent.length() % 4 != 0) ? L"  " : L"    ";
+                        pDoc->buffer.InsertChar(L'\n');
+                        for (wchar_t c : baseIndent) pDoc->buffer.InsertChar(c);
+                        for (wchar_t c : extraIndent) pDoc->buffer.InsertChar(c);
+                        size_t targetLine = pos.line + 1;
+                        size_t targetCol = baseIndent.length() + extraIndent.length();
+                        pDoc->buffer.InsertChar(L'\n');
+                        for (wchar_t c : baseIndent) pDoc->buffer.InsertChar(c);
+                        pDoc->buffer.SetCursor(targetLine, targetCol);
+                        MarkDocumentModified(pDoc);
+                        if (pDoc->isDiffView) ComputeDiffHunks(*pDoc);
+                        EnsureCursorVisible();
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
+                        return 0;
+                    }
+
+                    // Auto-indentation based STRICTLY on the current line (pos.line) where Enter is pressed
+                    size_t indent = 0;
+                    while (indent < lineText.length() && (lineText[indent] == L' ' || lineText[indent] == L'\t')) {
+                        indent++;
+                    }
+                    std::wstring baseIndent = lineText.substr(0, indent);
+
+                    // Strictly examine text before cursor on current line (pos.line)
+                    std::wstring textBeforeCursor = (pos.col <= lineText.length()) ? lineText.substr(0, pos.col) : lineText;
+                    size_t endPos = textBeforeCursor.find_last_not_of(L" \t");
+                    bool shouldIndent = false;
+                    if (endPos != std::wstring::npos && (textBeforeCursor[endPos] == L':' || textBeforeCursor[endPos] == L'{')) {
+                        shouldIndent = true;
+                    }
+
+                    std::wstring extraIndent = (baseIndent.length() % 2 == 0 && baseIndent.length() % 4 != 0) ? L"  " : L"    ";
+
                     pDoc->buffer.InsertChar(L'\n');
+                    for (wchar_t c : baseIndent) {
+                        pDoc->buffer.InsertChar(c);
+                    }
+                    if (shouldIndent) {
+                        for (wchar_t c : extraIndent) {
+                            pDoc->buffer.InsertChar(c);
+                        }
+                    }
                     MarkDocumentModified(pDoc);
                     if (pDoc->isDiffView) ComputeDiffHunks(*pDoc);
+                    EnsureCursorVisible();
                     InvalidateRect(m_hwnd, nullptr, FALSE);
                 }
             }

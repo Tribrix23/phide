@@ -43,9 +43,10 @@ public:
     /**
      * @brief Ensures the persistent Python kernel process is running.
      * @param pythonExe Path to the Python executable.
+     * @param workingDir Optional project working directory.
      * @return true if running or successfully launched.
      */
-    bool EnsureStarted(const std::wstring& pythonExe) {
+    bool EnsureStarted(const std::wstring& pythonExe, const std::wstring& workingDir = L"") {
         std::lock_guard<std::mutex> lock(m_mutex);
         if (IsProcessAlive()) {
             return true;
@@ -95,7 +96,9 @@ public:
 
         BOOL ok = CreateProcessW(
             NULL, cmdBuf.data(), NULL, NULL, TRUE,
-            CREATE_NO_WINDOW, NULL, NULL, &si, &pi
+            CREATE_NO_WINDOW, NULL,
+            workingDir.empty() ? NULL : workingDir.c_str(),
+            &si, &pi
         );
 
         CloseHandle(hStdoutWrite);
@@ -108,38 +111,67 @@ public:
         }
 
         CloseHandle(pi.hThread);
-        m_hProcess = pi.hProcess;
-        m_hStdinWrite = hStdinWrite;
-        m_hStdoutRead = hStdoutRead;
+        m_hProcess.store(pi.hProcess);
+        m_hStdinWrite.store(hStdinWrite);
+        m_hStdoutRead.store(hStdoutRead);
         m_isRunning.store(true);
+        m_shouldInterrupt.store(false);
         return true;
     }
 
     /**
      * @brief Executes cell code in the persistent kernel namespace.
      * @param code Wide string containing the Python cell code.
+     * @param pythonExe Path to Python executable.
+     * @param workingDir Optional project working directory.
      * @return KernelExecutionResult containing clean stdout/stderr and exit code.
      */
-    KernelExecutionResult Execute(const std::wstring& code, const std::wstring& pythonExe) {
+    KernelExecutionResult Execute(const std::wstring& code, const std::wstring& pythonExe, const std::wstring& workingDir = L"") {
         KernelExecutionResult res;
         auto startTime = std::chrono::high_resolution_clock::now();
 
-        if (!EnsureStarted(pythonExe)) {
+        // Fast-path: whitespace-only or empty code cells complete instantly in 0 ms
+        bool isWhitespaceOnly = true;
+        for (wchar_t ch : code) {
+            if (!iswspace(ch)) {
+                isWhitespaceOnly = false;
+                break;
+            }
+        }
+        if (isWhitespaceOnly) {
+            res.exitCode = 0;
+            res.hasError = false;
+            res.output = L"";
+            res.elapsedMs = 0;
+            return res;
+        }
+
+        if (!EnsureStarted(pythonExe, workingDir)) {
             res.exitCode = 1;
             res.hasError = true;
             res.output = L"Error: Failed to launch Python kernel process.\n";
             return res;
         }
 
-        std::lock_guard<std::mutex> lock(m_mutex);
+        m_shouldInterrupt.store(false);
         m_isBusy.store(true);
 
         std::string u8Code = WideToUtf8(code);
         std::string b64 = Base64Encode(u8Code);
         std::string line = "EXEC_B64 " + b64 + "\n";
 
+        HANDLE hWrite = m_hStdinWrite.load();
+        if (!hWrite || hWrite == INVALID_HANDLE_VALUE) {
+            m_isBusy.store(false);
+            CleanupProcess();
+            res.exitCode = 1;
+            res.hasError = true;
+            res.output = L"Error: Kernel stdin pipe unavailable.\n";
+            return res;
+        }
+
         DWORD written = 0;
-        if (!WriteFile(m_hStdinWrite, line.data(), static_cast<DWORD>(line.size()), &written, NULL)) {
+        if (!WriteFile(hWrite, line.data(), static_cast<DWORD>(line.size()), &written, NULL)) {
             m_isBusy.store(false);
             CleanupProcess();
             res.exitCode = 1;
@@ -154,10 +186,16 @@ public:
         DWORD bytesRead = 0;
         const std::string sentinelPrefix = "__PHIDE_NB_END__";
 
-        while (true) {
-            BOOL readOk = ReadFile(m_hStdoutRead, buffer, sizeof(buffer) - 1, &bytesRead, NULL);
-            if (!readOk || bytesRead == 0) {
-                // Process terminated unexpectedly
+        HANDLE hRead = m_hStdoutRead.load();
+        while (!m_shouldInterrupt.load() && hRead && hRead != INVALID_HANDLE_VALUE) {
+            BOOL readOk = ReadFile(hRead, buffer, sizeof(buffer) - 1, &bytesRead, NULL);
+            if (!readOk || bytesRead == 0 || m_shouldInterrupt.load()) {
+                // Pipe broken, cancelled, or process terminated
+                if (m_shouldInterrupt.load()) {
+                    rawOutput.clear();
+                    res.hasError = false;
+                    res.exitCode = 0;
+                }
                 CleanupProcess();
                 break;
             }
@@ -204,17 +242,32 @@ public:
     }
 
     /**
-     * @brief Interrupts the currently executing cell by restarting the kernel.
+     * @brief Immediately interrupts execution without locking or freezing the UI thread.
      */
     void Interrupt() {
-        std::lock_guard<std::mutex> lock(m_mutex);
-        CleanupProcess();
+        m_shouldInterrupt.store(true);
+        HANDLE hRead = m_hStdoutRead.load();
+        if (hRead && hRead != INVALID_HANDLE_VALUE) {
+            CancelIoEx(hRead, NULL);
+        }
+        HANDLE hProc = m_hProcess.load();
+        if (hProc && hProc != INVALID_HANDLE_VALUE) {
+            TerminateProcess(hProc, 1);
+        }
+        HANDLE hWrite = m_hStdinWrite.load();
+        if (hWrite && hWrite != INVALID_HANDLE_VALUE) {
+            CloseHandle(hWrite);
+            m_hStdinWrite.store(NULL);
+        }
+        m_isRunning.store(false);
+        m_isBusy.store(false);
     }
 
     /**
      * @brief Restarts the kernel with a clean empty namespace.
      */
     void Restart() {
+        Interrupt();
         std::lock_guard<std::mutex> lock(m_mutex);
         CleanupProcess();
     }
@@ -223,12 +276,15 @@ public:
      * @brief Cleanly shuts down the kernel process.
      */
     void Shutdown() {
-        std::lock_guard<std::mutex> lock(m_mutex);
-        if (m_hStdinWrite && IsProcessAlive()) {
+        HANDLE hWrite = m_hStdinWrite.load();
+        HANDLE hProc = m_hProcess.load();
+        if (hWrite && IsProcessAlive()) {
             DWORD written = 0;
-            WriteFile(m_hStdinWrite, "QUIT\n", 5, &written, NULL);
-            WaitForSingleObject(m_hProcess, 300);
+            WriteFile(hWrite, "QUIT\n", 5, &written, NULL);
+            if (hProc) WaitForSingleObject(hProc, 200);
         }
+        Interrupt();
+        std::lock_guard<std::mutex> lock(m_mutex);
         CleanupProcess();
     }
 
@@ -236,38 +292,41 @@ public:
     [[nodiscard]] bool IsRunning() const noexcept { return m_isRunning.load(); }
 
 private:
-    HANDLE m_hProcess = NULL;
-    HANDLE m_hStdinWrite = NULL;
-    HANDLE m_hStdoutRead = NULL;
+    std::atomic<HANDLE> m_hProcess{ NULL };
+    std::atomic<HANDLE> m_hStdinWrite{ NULL };
+    std::atomic<HANDLE> m_hStdoutRead{ NULL };
     std::mutex m_mutex;
     std::atomic<bool> m_isRunning{ false };
     std::atomic<bool> m_isBusy{ false };
+    std::atomic<bool> m_shouldInterrupt{ false };
     std::wstring m_pythonPath;
 
     bool IsProcessAlive() const {
-        if (!m_hProcess) return false;
+        HANDLE hProc = m_hProcess.load();
+        if (!hProc || hProc == INVALID_HANDLE_VALUE) return false;
         DWORD code = 0;
-        if (GetExitCodeProcess(m_hProcess, &code)) {
+        if (GetExitCodeProcess(hProc, &code)) {
             return (code == STILL_ACTIVE);
         }
         return false;
     }
 
     void CleanupProcess() {
-        if (m_hProcess) {
-            if (IsProcessAlive()) {
-                TerminateProcess(m_hProcess, 0);
+        HANDLE hProc = m_hProcess.exchange(NULL);
+        if (hProc && hProc != INVALID_HANDLE_VALUE) {
+            DWORD code = 0;
+            if (GetExitCodeProcess(hProc, &code) && code == STILL_ACTIVE) {
+                TerminateProcess(hProc, 0);
             }
-            CloseHandle(m_hProcess);
-            m_hProcess = NULL;
+            CloseHandle(hProc);
         }
-        if (m_hStdinWrite) {
-            CloseHandle(m_hStdinWrite);
-            m_hStdinWrite = NULL;
+        HANDLE hWrite = m_hStdinWrite.exchange(NULL);
+        if (hWrite && hWrite != INVALID_HANDLE_VALUE) {
+            CloseHandle(hWrite);
         }
-        if (m_hStdoutRead) {
-            CloseHandle(m_hStdoutRead);
-            m_hStdoutRead = NULL;
+        HANDLE hRead = m_hStdoutRead.exchange(NULL);
+        if (hRead && hRead != INVALID_HANDLE_VALUE) {
+            CloseHandle(hRead);
         }
         m_isRunning.store(false);
         m_isBusy.store(false);
@@ -283,7 +342,26 @@ private:
         if (!ofs.is_open()) return L"";
 
         const char* driverCode = 
-            "import sys, base64, traceback\n\n"
+            "import sys, os, site, base64, traceback\n\n"
+            "# 1. Ensure current working directory and local virtual environments are configured\n"
+            "cwd = os.getcwd()\n"
+            "if cwd and cwd not in sys.path:\n"
+            "    sys.path.insert(0, cwd)\n\n"
+            "# 2. Auto-detect project virtual environments and register site-packages\n"
+            "for vname in ('.venv', 'venv', 'env', '.env'):\n"
+            "    candidate = os.path.join(cwd, vname)\n"
+            "    if os.path.isdir(candidate):\n"
+            "        for sub in ('Lib/site-packages', 'lib/site-packages'):\n"
+            "            sp = os.path.normpath(os.path.join(candidate, sub))\n"
+            "            if os.path.isdir(sp):\n"
+            "                site.addsitedir(sp)\n\n"
+            "# 3. Ensure user global site-packages is available\n"
+            "try:\n"
+            "    usp = site.getusersitepackages()\n"
+            "    if os.path.isdir(usp) and usp not in sys.path:\n"
+            "        site.addsitedir(usp)\n"
+            "except Exception:\n"
+            "    pass\n\n"
             "_ns = {'__name__': '__main__'}\n\n"
             "while True:\n"
             "    try:\n"
@@ -293,16 +371,29 @@ private:
             "        line = line.strip()\n"
             "        if line in ('EXIT', 'QUIT'):\n"
             "            break\n"
-            "        if not line.startswith('EXEC_B64 '):\n"
+            "        if not line.startswith('EXEC_B64'):\n"
             "            continue\n"
-            "        b64_str = line[9:]\n"
-            "        code_str = base64.b64decode(b64_str.encode('ascii')).decode('utf-8', errors='replace')\n\n"
+            "        b64_str = line[8:].strip()\n"
+            "        code_str = ''\n"
+            "        if b64_str:\n"
+            "            try:\n"
+            "                code_str = base64.b64decode(b64_str.encode('ascii')).decode('utf-8', errors='replace')\n"
+            "            except Exception:\n"
+            "                code_str = ''\n\n"
             "        exit_code = 0\n"
             "        try:\n"
-            "            compiled = compile(code_str, '<cell>', 'exec')\n"
-            "            exec(compiled, _ns)\n"
+            "            if code_str.strip():\n"
+            "                compiled = compile(code_str, '<cell>', 'exec')\n"
+            "                exec(compiled, _ns)\n"
             "        except Exception:\n"
-            "            traceback.print_exc()\n"
+            "            etype, evalue, tb = sys.exc_info()\n"
+            "            cur = tb\n"
+            "            while cur is not None and cur.tb_frame.f_code.co_filename != '<cell>':\n"
+            "                cur = cur.tb_next\n"
+            "            if cur is not None:\n"
+            "                traceback.print_exception(etype, evalue, cur)\n"
+            "            else:\n"
+            "                traceback.print_exc()\n"
             "            exit_code = 1\n"
             "        except SystemExit as se:\n"
             "            exit_code = se.code if isinstance(se.code, int) else 1\n\n"

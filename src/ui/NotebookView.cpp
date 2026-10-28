@@ -9,7 +9,107 @@
 #include <sstream>
 #include <algorithm>
 
+namespace {
+void SetClipboardText(const std::wstring& text, HWND hwnd) {
+    if (text.empty()) return;
+    if (OpenClipboard(hwnd)) {
+        EmptyClipboard();
+        size_t bytes = (text.length() + 1) * sizeof(wchar_t);
+        HGLOBAL hMem = GlobalAlloc(GMEM_MOVEABLE, bytes);
+        if (hMem) {
+            void* pMem = GlobalLock(hMem);
+            if (pMem) {
+                memcpy(pMem, text.c_str(), bytes);
+                GlobalUnlock(hMem);
+                SetClipboardData(CF_UNICODETEXT, hMem);
+            }
+        }
+        CloseClipboard();
+    }
+}
+
+std::wstring GetClipboardText(HWND hwnd) {
+    std::wstring result;
+    if (OpenClipboard(hwnd)) {
+        HANDLE hData = GetClipboardData(CF_UNICODETEXT);
+        if (hData) {
+            LPCWSTR pText = static_cast<LPCWSTR>(GlobalLock(hData));
+            if (pText) {
+                result = pText;
+                GlobalUnlock(hData);
+            }
+        }
+        CloseClipboard();
+    }
+    return result;
+}
+} // anonymous namespace
+
 namespace phide::ui {
+
+float NotebookView::EnsureCharWidth(Theme& theme, const app::AppConfig& config) {
+    if (m_charWidth <= 0.0f && theme.dwriteFactory && theme.fontCode) {
+        Microsoft::WRL::ComPtr<IDWriteTextLayout> pLayout;
+        if (SUCCEEDED(theme.dwriteFactory->CreateTextLayout(
+                L"M", 1, theme.fontCode.Get(), 1000.0f, 100.0f, &pLayout))) {
+            DWRITE_TEXT_METRICS tm{};
+            if (SUCCEEDED(pLayout->GetMetrics(&tm))) {
+                m_charWidth = tm.widthIncludingTrailingWhitespace;
+            }
+        }
+    }
+    return (m_charWidth > 0.0f) ? m_charWidth : config.ScaleF(7.8f);
+}
+
+bool NotebookView::HitTestCodeArea(const editor::NotebookCell& cell, POINT clientPt, const app::AppConfig& config,
+                                   size_t& outLine, size_t& outCol) const {
+    const float lineH = config.ScaleF(20.0f);
+    const float lineNumW = config.ScaleF(28.0f);
+    const float textX = cell.codeAreaBounds.left + lineNumW + config.ScaleF(8.0f);
+    float relY = static_cast<float>(clientPt.y) - cell.codeAreaBounds.top - config.ScaleF(6.0f);
+    if (relY < 0.0f) relY = 0.0f;
+
+    size_t totalLines = cell.inputBuffer.GetLineCount();
+    if (totalLines == 0) {
+        outLine = 0;
+        outCol = 0;
+        return true;
+    }
+
+    size_t lineIdx = static_cast<size_t>(relY / lineH);
+    if (lineIdx >= totalLines) {
+        lineIdx = totalLines - 1;
+    }
+
+    const auto& lineStr = cell.inputBuffer.GetLine(lineIdx);
+    float charW = (m_charWidth > 0.0f) ? m_charWidth : config.ScaleF(7.8f);
+
+    float relX = static_cast<float>(clientPt.x) - textX;
+    if (relX <= 0.0f) {
+        outLine = lineIdx;
+        outCol = 0;
+        return true;
+    }
+
+    // Find nearest column boundary
+    size_t col = 0;
+    float bestDiff = 999999.0f;
+    for (size_t c = 0; c <= lineStr.length(); ++c) {
+        float vx = static_cast<float>(c) * charW;
+        float diff = std::abs(relX - vx);
+        if (diff < bestDiff) {
+            bestDiff = diff;
+            col = c;
+        }
+    }
+    if (relX >= static_cast<float>(lineStr.length()) * charW) {
+        col = lineStr.length();
+    }
+
+    outLine = lineIdx;
+    outCol = col;
+    return true;
+}
 
 NotebookView::NotebookView() {
     m_lastBlinkTime = GetTickCount64();
@@ -19,18 +119,18 @@ NotebookView::NotebookView() {
 NotebookView::~NotebookView() {
     StopExecution_Internal();
     if (m_execThread.joinable()) {
-        m_execThread.join();
+        m_execThread.detach();
     }
 }
 
 void NotebookView::DrawRunMorphButton(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
-                                     const D2D1_RECT_F& bounds, bool isExecuting, bool hasError, bool isHovered) {
+                                     const D2D1_RECT_F& bounds, bool isExecuting, bool isQueued, bool hasError, bool isHovered) {
     if (!pRT) return;
     const float cx = (bounds.left + bounds.right) / 2.0f;
     const float cy = (bounds.top + bounds.bottom) / 2.0f;
     const float r = (std::min)(bounds.right - bounds.left, bounds.bottom - bounds.top) / 2.0f;
 
-    if (isExecuting) {
+    if (isExecuting || isQueued) {
         // Inner circle background
         const float innerR = r * 0.72f;
         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushInner;
@@ -48,22 +148,37 @@ void NotebookView::DrawRunMorphButton(ID2D1RenderTarget* pRT, Theme& theme, cons
             pRT->FillRoundedRectangle(D2D1::RoundedRect(sqRc, 1.5f, 1.5f), brushStop.Get());
         }
 
-        // Rotating dashed spinner ring (Image 4)
         const float ringR = r * 0.90f;
         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushSpin;
         pRT->CreateSolidColorBrush(D2D1::ColorF(0.35f, 0.65f, 0.98f, 1.0f), &brushSpin); // Electric cyan/blue spinner
         if (brushSpin) {
-            const int dashCount = 10;
-            const float arcSweep = 360.0f / static_cast<float>(dashCount);
-            const float dashSweep = arcSweep * 0.55f;
-            for (int i = 0; i < dashCount; ++i) {
-                float deg1 = m_spinAngle + static_cast<float>(i) * arcSweep;
-                float deg2 = deg1 + dashSweep;
-                float rad1 = deg1 * 3.14159265f / 180.0f;
-                float rad2 = deg2 * 3.14159265f / 180.0f;
-                D2D1_POINT_2F p1 = D2D1::Point2F(cx + ringR * cosf(rad1), cy + ringR * sinf(rad1));
-                D2D1_POINT_2F p2 = D2D1::Point2F(cx + ringR * cosf(rad2), cy + ringR * sinf(rad2));
-                pRT->DrawLine(p1, p2, brushSpin.Get(), config.ScaleF(1.8f));
+            if (isQueued) {
+                // Dashed line spinner for queued state (Image 3)
+                const int dashCount = 10;
+                const float arcSweep = 360.0f / static_cast<float>(dashCount);
+                const float dashSweep = arcSweep * 0.50f;
+                for (int i = 0; i < dashCount; ++i) {
+                    float deg1 = m_spinAngle + static_cast<float>(i) * arcSweep;
+                    float deg2 = deg1 + dashSweep;
+                    float rad1 = deg1 * 3.14159265f / 180.0f;
+                    float rad2 = deg2 * 3.14159265f / 180.0f;
+                    D2D1_POINT_2F p1 = D2D1::Point2F(cx + ringR * cosf(rad1), cy + ringR * sinf(rad1));
+                    D2D1_POINT_2F p2 = D2D1::Point2F(cx + ringR * cosf(rad2), cy + ringR * sinf(rad2));
+                    pRT->DrawLine(p1, p2, brushSpin.Get(), config.ScaleF(1.8f));
+                }
+            } else {
+                // Connected continuous solid line rotating arc for active execution (Image 1)
+                const int segments = 32;
+                const float sweepAngle = 270.0f;
+                float baseRad = m_spinAngle * 3.14159265f / 180.0f;
+                float sweepRad = sweepAngle * 3.14159265f / 180.0f;
+                for (int s = 0; s < segments; ++s) {
+                    float a1 = baseRad + sweepRad * (static_cast<float>(s) / segments);
+                    float a2 = baseRad + sweepRad * (static_cast<float>(s + 1) / segments);
+                    D2D1_POINT_2F p1 = D2D1::Point2F(cx + ringR * cosf(a1), cy + ringR * sinf(a1));
+                    D2D1_POINT_2F p2 = D2D1::Point2F(cx + ringR * cosf(a2), cy + ringR * sinf(a2));
+                    pRT->DrawLine(p1, p2, brushSpin.Get(), config.ScaleF(2.0f));
+                }
             }
         }
     } else {
@@ -178,8 +293,17 @@ void NotebookView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
         m_lastBlinkTime = now;
     }
 
-    // Animation tick update for spinner
-    if (m_isExecuting.load()) {
+    // Animation tick update for spinner (spin if executing OR if any cell is queued)
+    bool isAnySpinning = m_isExecuting.load();
+    if (!isAnySpinning && nb) {
+        for (const auto& c : nb->cells) {
+            if (c.isQueued || c.isExecuting) {
+                isAnySpinning = true;
+                break;
+            }
+        }
+    }
+    if (isAnySpinning) {
         float dt = static_cast<float>(now - m_lastAnimTick) / 1000.0f;
         m_spinAngle += dt * 360.0f;
         if (m_spinAngle >= 360.0f) m_spinAngle -= 360.0f;
@@ -217,7 +341,7 @@ void NotebookView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
 
     // [▶ / ⏹ Morphing Run All Button]
     m_btnRunAll = D2D1::RectF(curBtnX, btnY, curBtnX + btnSize, btnY + btnSize);
-    DrawRunMorphButton(pRT, theme, config, m_btnRunAll, m_isExecuting.load(), false, m_hoveredToolbarBtn == 1);
+    DrawRunMorphButton(pRT, theme, config, m_btnRunAll, m_isExecuting.load(), false, false, m_hoveredToolbarBtn == 1);
     curBtnX += btnSize + config.ScaleF(10.0f);
 
     // [Clear All Outputs Vector Button]
@@ -270,11 +394,9 @@ void NotebookView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
         size_t lineCount = (std::max)(size_t(1), cell.inputBuffer.GetLineCount());
         float codeH = static_cast<float>(lineCount) * lineH + config.ScaleF(16.0f);
 
-        // Calculate output height
+        // Calculate output height (suppressed if no outputs)
         float outputH = 0.0f;
-        if (cell.isExecuting) {
-            outputH = config.ScaleF(34.0f);
-        } else if (!cell.outputs.empty()) {
+        if (!cell.outputs.empty()) {
             size_t outLines = 0;
             for (const auto& out : cell.outputs) {
                 outLines += std::count(out.text.begin(), out.text.end(), L'\n') + 1;
@@ -284,7 +406,13 @@ void NotebookView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
         }
 
         float cardHeaderH = config.ScaleF(28.0f);
-        float cardH = cardHeaderH + codeH + (outputH > 0.0f ? (outputH + config.ScaleF(8.0f)) : 0.0f) + config.ScaleF(10.0f);
+        float extraGutterH = 0.0f;
+        if (cell.type == editor::NotebookCellType::Code) {
+            if (cell.hasError || (cell.executionCount >= 1 && !cell.isExecuting && !cell.isQueued)) {
+                extraGutterH = config.ScaleF(20.0f);
+            }
+        }
+        float cardH = cardHeaderH + (std::max)(codeH, config.ScaleF(36.0f) + extraGutterH) + (outputH > 0.0f ? (outputH + config.ScaleF(8.0f)) : 0.0f) + config.ScaleF(10.0f);
 
         cell.bounds = D2D1::RectF(cardLeft, curY, cardRight, curY + cardH);
 
@@ -324,7 +452,7 @@ void NotebookView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
             if (isCode) {
                 // [ 1 ] execution badge
                 std::wstring inStr;
-                if (cell.isExecuting || cell.executionCount == -2) {
+                if (cell.isExecuting || cell.isQueued || cell.executionCount == -2) {
                     inStr = L"[*]";
                 } else if (cell.executionCount >= 1) {
                     inStr = L"[" + std::to_wstring(cell.executionCount) + L"]";
@@ -333,13 +461,13 @@ void NotebookView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
                 }
 
                 D2D1_RECT_F rcIn = D2D1::RectF(gutterX + config.ScaleF(8.0f), gutterY, gutterX + gutterW, gutterY + config.ScaleF(16.0f));
-                ID2D1Brush* inBrush = (cell.executionCount >= 1 || cell.isExecuting)
+                ID2D1Brush* inBrush = (cell.executionCount >= 1 || cell.isExecuting || cell.isQueued)
                     ? (theme.brushTextPrimary ? theme.brushTextPrimary.Get() : theme.brushBrandAccent.Get())
                     : (theme.brushLineNumber ? theme.brushLineNumber.Get() : theme.brushTextSecondary.Get());
                 pRT->DrawText(inStr.c_str(), static_cast<UINT32>(inStr.length()),
                               theme.fontBadge.Get() ? theme.fontBadge.Get() : theme.fontCode.Get(), rcIn, inBrush);
 
-                // Error badge: (!) 0s (Image 5)
+                // Error badge: (!) 0s (Image 5) or Success badge: ✓ 0s (Image 2)
                 float runBtnY = gutterY + config.ScaleF(20.0f);
                 if (cell.hasError) {
                     float badgeY = gutterY + config.ScaleF(18.0f);
@@ -365,9 +493,27 @@ void NotebookView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
                                   theme.brushTextSecondary ? theme.brushTextSecondary.Get() : theme.brushLineNumber.Get());
 
                     runBtnY += config.ScaleF(20.0f);
+                } else if (cell.executionCount >= 1 && !cell.isExecuting && !cell.isQueued) {
+                    // Success checkmark ✓ and elapsed time (Image 2)
+                    float badgeY = gutterY + config.ScaleF(18.0f);
+                    float chkX = gutterX + config.ScaleF(12.0f);
+
+                    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushGreen;
+                    pRT->CreateSolidColorBrush(D2D1::ColorF(0.20f, 0.82f, 0.48f, 1.0f), &brushGreen);
+                    D2D1_RECT_F rcCheck = D2D1::RectF(chkX, badgeY, chkX + config.ScaleF(12.0f), badgeY + config.ScaleF(16.0f));
+                    pRT->DrawText(L"\x2713", 1, theme.fontBadge.Get() ? theme.fontBadge.Get() : theme.fontCode.Get(),
+                                  rcCheck, brushGreen ? brushGreen.Get() : theme.brushBrandAccent.Get());
+
+                    std::wstring elapsedStr = std::to_wstring(cell.lastElapsedMs / 1000) + L"s";
+                    D2D1_RECT_F rcElapsed = D2D1::RectF(chkX + config.ScaleF(14.0f), badgeY, gutterX + gutterW, badgeY + config.ScaleF(16.0f));
+                    pRT->DrawText(elapsedStr.c_str(), static_cast<UINT32>(elapsedStr.length()),
+                                  theme.fontBadge.Get() ? theme.fontBadge.Get() : theme.fontCode.Get(), rcElapsed,
+                                  theme.brushTextSecondary ? theme.brushTextSecondary.Get() : theme.brushLineNumber.Get());
+
+                    runBtnY += config.ScaleF(20.0f);
                 }
 
-                // Circular Run Button (Morphing into stop button with dashed ring)
+                // Circular Run Button (Morphing into stop button with solid or dashed spinner)
                 const float runBtnSize = config.ScaleF(26.0f);
                 cell.runBtnBounds = D2D1::RectF(
                     gutterX + config.ScaleF(12.0f),
@@ -377,7 +523,7 @@ void NotebookView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
                 );
 
                 bool isRunHover = (isHovered && m_hoveredBtn == 1);
-                DrawRunMorphButton(pRT, theme, config, cell.runBtnBounds, cell.isExecuting, cell.hasError, isRunHover);
+                DrawRunMorphButton(pRT, theme, config, cell.runBtnBounds, cell.isExecuting, cell.isQueued, cell.hasError, isRunHover);
             } else {
                 cell.runBtnBounds = D2D1::RectF(0, 0, 0, 0);
             }
@@ -448,6 +594,7 @@ void NotebookView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
             const float lineNumW = config.ScaleF(28.0f);
             const auto& lines = cell.inputBuffer.GetLines();
             auto curPos = cell.inputBuffer.GetCursor();
+            const float charW = EnsureCharWidth(theme, config);
 
             for (size_t li = 0; li < lines.size(); ++li) {
                 float lineY = cell.codeAreaBounds.top + config.ScaleF(6.0f) + static_cast<float>(li) * lineH;
@@ -457,11 +604,72 @@ void NotebookView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
                 pRT->DrawText(numStr.c_str(), static_cast<UINT32>(numStr.length()),
                               theme.fontCode.Get(), rcNum, theme.brushLineNumber.Get());
 
-                // Code text line with syntax tokenization via DirectWrite TextLayout
                 float textX = cell.codeAreaBounds.left + lineNumW + config.ScaleF(8.0f);
                 const auto& codeLine = lines[li];
-                auto tokens = cell.inputBuffer.GetTokensForLine(li);
 
+                // 1. Render active text selection background on code line
+                if (cell.HasSelection()) {
+                    size_t sLine = 0, sCol = 0, eLine = 0, eCol = 0;
+                    cell.GetSelectionRange(sLine, sCol, eLine, eCol);
+                    if (li >= sLine && li <= eLine) {
+                        float selX1 = textX;
+                        float selX2 = textX;
+                        if (li == sLine && li == eLine) {
+                            selX1 = textX + static_cast<float>(sCol) * charW;
+                            selX2 = textX + static_cast<float>(eCol) * charW;
+                        } else if (li == sLine) {
+                            selX1 = textX + static_cast<float>(sCol) * charW;
+                            selX2 = textX + static_cast<float>(codeLine.length()) * charW + config.ScaleF(8.0f);
+                        } else if (li == eLine) {
+                            selX1 = textX;
+                            selX2 = textX + static_cast<float>(eCol) * charW;
+                        } else {
+                            selX1 = textX;
+                            selX2 = (std::max)(textX + static_cast<float>(codeLine.length()) * charW + config.ScaleF(8.0f),
+                                               textX + config.ScaleF(24.0f));
+                        }
+
+                        if (selX2 > selX1) {
+                            D2D1_RECT_F rcSel = D2D1::RectF(selX1, lineY + 0.5f, selX2, lineY + lineH - 0.5f);
+                            D2D1_ROUNDED_RECT rrcSel = D2D1::RoundedRect(rcSel, 3.0f, 3.0f);
+                            Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> selBrush;
+                            pRT->CreateSolidColorBrush(D2D1::ColorF(0.18f, 0.42f, 0.75f, 0.45f), &selBrush);
+                            if (selBrush) {
+                                pRT->FillRoundedRectangle(&rrcSel, selBrush.Get());
+                            }
+                        }
+                    }
+                }
+
+                // Matching word occurrences highlight across lines
+                if (!cell.selectedWord.empty() && cell.selectedWord.length() > 1 && !codeLine.empty()) {
+                    size_t wpos = 0;
+                    while ((wpos = codeLine.find(cell.selectedWord, wpos)) != std::wstring::npos) {
+                        bool isCurrentSelection = false;
+                        if (cell.HasSelection()) {
+                            size_t sLine = 0, sCol = 0, eLine = 0, eCol = 0;
+                            cell.GetSelectionRange(sLine, sCol, eLine, eCol);
+                            if (li == sLine && li == eLine && wpos == sCol) {
+                                isCurrentSelection = true;
+                            }
+                        }
+                        if (!isCurrentSelection) {
+                            float wx = textX + static_cast<float>(wpos) * charW;
+                            float ww = static_cast<float>(cell.selectedWord.length()) * charW;
+                            D2D1_RECT_F rcWord = D2D1::RectF(wx - 1.0f, lineY + 1.0f, wx + ww + 1.0f, lineY + lineH - 1.0f);
+                            D2D1_ROUNDED_RECT rrcWord = D2D1::RoundedRect(rcWord, 2.0f, 2.0f);
+                            Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> wordBrush;
+                            pRT->CreateSolidColorBrush(D2D1::ColorF(0.35f, 0.45f, 0.60f, 0.25f), &wordBrush);
+                            if (wordBrush) {
+                                pRT->FillRoundedRectangle(&rrcWord, wordBrush.Get());
+                            }
+                        }
+                        wpos += cell.selectedWord.length();
+                    }
+                }
+
+                // Code text line with syntax tokenization via DirectWrite TextLayout
+                auto tokens = cell.inputBuffer.GetTokensForLine(li);
                 Microsoft::WRL::ComPtr<IDWriteTextLayout> pLineLayout;
                 if (!codeLine.empty() && theme.dwriteFactory && theme.fontCode &&
                     SUCCEEDED(theme.dwriteFactory->CreateTextLayout(
@@ -493,16 +701,36 @@ void NotebookView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
                                   theme.fontCode.Get(), rcLineText, theme.brushTextPrimary.Get());
                 }
 
-                // Render Caret in active cell
-                if (isActive && li == curPos.line && m_caretVisible) {
-                    float charW = config.ScaleF(7.8f);
-                    if (pLineLayout) {
-                        DWRITE_HIT_TEST_METRICS htm{};
-                        float hitX = 0.0f, hitY = 0.0f;
-                        if (SUCCEEDED(pLineLayout->HitTestTextPosition(static_cast<UINT32>(curPos.col), FALSE, &hitX, &hitY, &htm))) {
-                            charW = hitX / (std::max)(1.0f, static_cast<float>(curPos.col));
-                        }
+                // 2. Syntax Error Squiggly Underlines (~~~~) on the error line
+                if (cell.hasError && cell.errorLine >= 0 && li == static_cast<size_t>(cell.errorLine)) {
+                    float errX1 = textX;
+                    size_t firstNonSpace = 0;
+                    while (firstNonSpace < codeLine.length() && iswspace(codeLine[firstNonSpace])) {
+                        firstNonSpace++;
                     }
+                    errX1 += static_cast<float>(firstNonSpace) * charW;
+                    float errX2 = textX + static_cast<float>(codeLine.length()) * charW;
+                    if (errX2 <= errX1) {
+                        errX2 = errX1 + config.ScaleF(24.0f);
+                    }
+                    errX2 = (std::min)(errX2, cell.codeAreaBounds.right - config.ScaleF(8.0f));
+
+                    float waveY = lineY + lineH - config.ScaleF(2.0f);
+                    float waveH = config.ScaleF(2.2f);
+                    float step = config.ScaleF(2.5f);
+
+                    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> pErrBrush;
+                    pRT->CreateSolidColorBrush(D2D1::ColorF(0.95f, 0.25f, 0.25f, 1.0f), &pErrBrush);
+                    ID2D1Brush* brushToUse = pErrBrush ? pErrBrush.Get() : theme.brushIconRed.Get();
+
+                    for (float wx = errX1; wx < errX2; wx += step * 2.0f) {
+                        pRT->DrawLine(D2D1::Point2F(wx, waveY), D2D1::Point2F(wx + step, waveY - waveH), brushToUse, 1.6f);
+                        pRT->DrawLine(D2D1::Point2F(wx + step, waveY - waveH), D2D1::Point2F((std::min)(wx + step * 2.0f, errX2), waveY), brushToUse, 1.6f);
+                    }
+                }
+
+                // 3. Render Caret in active cell with precise charW alignment
+                if (isActive && li == curPos.line && m_caretVisible) {
                     float caretX = textX + static_cast<float>(curPos.col) * charW;
                     pRT->DrawLine(
                         D2D1::Point2F(caretX, lineY + 1.0f),
@@ -513,22 +741,8 @@ void NotebookView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
                 }
             }
 
-            // 3.4 Output Area (Colab style with red traceback styling on error - Image 5)
-            if (cell.isExecuting) {
-                float outTop = cell.codeAreaBounds.bottom + config.ScaleF(6.0f);
-                cell.outputAreaBounds = D2D1::RectF(cell.codeAreaBounds.left, outTop, cell.codeAreaBounds.right, outTop + config.ScaleF(32.0f));
-
-                D2D1_ROUNDED_RECT rrcOut = D2D1::RoundedRect(cell.outputAreaBounds, 4.0f, 4.0f);
-                Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushOutBg;
-                pRT->CreateSolidColorBrush(D2D1::ColorF(0.06f, 0.06f, 0.08f, 1.0f), &brushOutBg);
-                if (brushOutBg) pRT->FillRoundedRectangle(rrcOut, brushOutBg.Get());
-
-                std::wstring execMsg = L"⚙ Running cell in background execution engine...";
-                D2D1_RECT_F rcMsg = D2D1::RectF(cell.outputAreaBounds.left + config.ScaleF(12.0f), outTop + config.ScaleF(7.0f),
-                                               cell.outputAreaBounds.right, cell.outputAreaBounds.bottom);
-                pRT->DrawText(execMsg.c_str(), static_cast<UINT32>(execMsg.length()),
-                              theme.fontMenuItem.Get(), rcMsg, theme.brushTextSecondary.Get());
-            } else if (!cell.outputs.empty()) {
+            // 3.4 Output Area (Colab/Jupyter standard: only displayed when outputs exist)
+            if (!cell.outputs.empty()) {
                 float outTop = cell.codeAreaBounds.bottom + config.ScaleF(6.0f);
                 cell.outputAreaBounds = D2D1::RectF(cell.codeAreaBounds.left, outTop, cell.codeAreaBounds.right, outTop + outputH);
 
@@ -716,6 +930,7 @@ bool NotebookView::HandleLButtonDown(POINT clientPt, editor::OpenDocument& doc, 
     if (PointInRect(clientPt, m_btnRunAll)) {
         if (m_isExecuting.load()) {
             StopExecution(doc);
+            if (hwnd) InvalidateRect(hwnd, nullptr, FALSE);
         } else {
             RunAllCells(doc, hwnd);
         }
@@ -723,6 +938,7 @@ bool NotebookView::HandleLButtonDown(POINT clientPt, editor::OpenDocument& doc, 
     }
     if (PointInRect(clientPt, m_btnClearAll)) {
         nb->ClearAllOutputs();
+        if (hwnd) InvalidateRect(hwnd, nullptr, FALSE);
         return true;
     }
 
@@ -749,10 +965,19 @@ bool NotebookView::HandleLButtonDown(POINT clientPt, editor::OpenDocument& doc, 
         if (PointInRect(clientPt, cell.bounds)) {
             nb->activeCellIdx = static_cast<int>(ci);
 
-            // Run button: morphs into stop if executing
+            // Run button: morphs into stop if executing, or cancels queue if queued
             if (PointInRect(clientPt, cell.runBtnBounds)) {
                 if (cell.isExecuting) {
                     StopExecution(doc);
+                    if (hwnd) InvalidateRect(hwnd, nullptr, FALSE);
+                } else if (cell.isQueued) {
+                    {
+                        std::lock_guard<std::mutex> qLock(m_queueMutex);
+                        m_cellQueue.erase(std::remove(m_cellQueue.begin(), m_cellQueue.end(), static_cast<int>(ci)), m_cellQueue.end());
+                    }
+                    cell.isQueued = false;
+                    cell.executionCount = -1;
+                    if (hwnd) InvalidateRect(hwnd, nullptr, FALSE);
                 } else {
                     RunCell(static_cast<int>(ci), doc, hwnd);
                 }
@@ -774,16 +999,41 @@ bool NotebookView::HandleLButtonDown(POINT clientPt, editor::OpenDocument& doc, 
                 return true;
             }
 
-            // Click inside code area: calculate line and column
+            // Click inside code area: calculate line and column with sub-pixel charW accuracy & double-click word selection
             if (PointInRect(clientPt, cell.codeAreaBounds)) {
-                const float lineH = config.ScaleF(20.0f);
-                const float lineNumW = config.ScaleF(28.0f);
-                float relY = static_cast<float>(clientPt.y) - cell.codeAreaBounds.top - config.ScaleF(6.0f);
-                int targetLine = (std::max)(0, static_cast<int>(relY / lineH));
-                float relX = static_cast<float>(clientPt.x) - cell.codeAreaBounds.left - lineNumW - config.ScaleF(8.0f);
-                int targetCol = (std::max)(0, static_cast<int>(relX / config.ScaleF(7.8f)));
+                size_t targetLine = 0, targetCol = 0;
+                HitTestCodeArea(cell, clientPt, config, targetLine, targetCol);
 
-                cell.inputBuffer.SetCursor(static_cast<size_t>(targetLine), static_cast<size_t>(targetCol));
+                ULONGLONG now = GetTickCount64();
+                int dblTime = static_cast<int>(GetDoubleClickTime());
+                int ddx = abs(clientPt.x - m_lastLDownPt.x);
+                int ddy = abs(clientPt.y - m_lastLDownPt.y);
+                bool isDoubleClick = (now - m_lastLDownTime <= static_cast<ULONGLONG>(dblTime)) && (ddx <= 6 && ddy <= 6);
+                m_lastLDownTime = now;
+                m_lastLDownPt = clientPt;
+
+                if (isDoubleClick) {
+                    cell.SelectWordAt(targetLine, targetCol);
+                    m_caretVisible = true;
+                    m_lastBlinkTime = GetTickCount64();
+                    return true;
+                }
+
+                bool isShift = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
+                if (isShift) {
+                    if (!cell.hasSelection) {
+                        cell.selAnchor = cell.inputBuffer.GetCursor();
+                    }
+                    cell.selEnd = { targetLine, targetCol };
+                    cell.hasSelection = (cell.selAnchor.line != cell.selEnd.line || cell.selAnchor.col != cell.selEnd.col);
+                } else {
+                    cell.ClearSelection();
+                    cell.selAnchor = { targetLine, targetCol };
+                    cell.selEnd = { targetLine, targetCol };
+                }
+                cell.inputBuffer.SetCursor(targetLine, targetCol);
+                m_isSelectingText = true;
+                if (hwnd) SetCapture(hwnd);
                 m_caretVisible = true;
                 m_lastBlinkTime = GetTickCount64();
                 return true;
@@ -814,6 +1064,20 @@ bool NotebookView::HandleMouseMove(POINT clientPt, editor::OpenDocument& doc, co
         float scrollDelta = (deltaY / contentH) * m_totalHeight;
         m_scrollY = (std::clamp)(m_dragScrollStartOffset + scrollDelta, 0.0f, maxScroll);
         return true;
+    }
+
+    // Drag-selection of text across lines and columns
+    if (m_isSelectingText && doc.notebookDoc) {
+        int activeIdx = doc.notebookDoc->activeCellIdx;
+        if (activeIdx >= 0 && activeIdx < static_cast<int>(doc.notebookDoc->cells.size())) {
+            auto& cell = doc.notebookDoc->cells[activeIdx];
+            size_t targetLine = 0, targetCol = 0;
+            HitTestCodeArea(cell, clientPt, config, targetLine, targetCol);
+            cell.selEnd = { targetLine, targetCol };
+            cell.hasSelection = (cell.selAnchor.line != cell.selEnd.line || cell.selAnchor.col != cell.selEnd.col);
+            cell.inputBuffer.SetCursor(targetLine, targetCol);
+            return true;
+        }
     }
 
     // Check if dragging cell should start (> 4px movement)
@@ -905,6 +1169,18 @@ bool NotebookView::HandleLButtonUp(POINT clientPt, editor::OpenDocument& doc, co
         m_isDraggingScrollbar = false;
         return true;
     }
+    if (m_isSelectingText) {
+        m_isSelectingText = false;
+        ReleaseCapture();
+        if (doc.notebookDoc && doc.notebookDoc->activeCellIdx >= 0 &&
+            doc.notebookDoc->activeCellIdx < static_cast<int>(doc.notebookDoc->cells.size())) {
+            auto& cell = doc.notebookDoc->cells[doc.notebookDoc->activeCellIdx];
+            if (cell.selAnchor.line == cell.selEnd.line && cell.selAnchor.col == cell.selEnd.col) {
+                cell.ClearSelection();
+            }
+        }
+        return true;
+    }
     if (m_isDraggingCell) {
         m_isDraggingCell = false;
         ReleaseCapture();
@@ -974,50 +1250,210 @@ bool NotebookView::HandleKeyDown(WPARAM wParam, editor::OpenDocument& doc, HWND 
         return true;
     }
 
+    // Ctrl + Z: Undo / Ctrl + Shift + Z: Redo
+    if (isCtrl && (wParam == 'Z' || wParam == 'z')) {
+        if (isShift) {
+            activeCell.ClearSelection();
+            activeCell.inputBuffer.Redo();
+        } else {
+            activeCell.ClearSelection();
+            activeCell.inputBuffer.Undo();
+        }
+        nb->isDirty = true;
+        return true;
+    }
+
+    // Ctrl + Y: Redo
+    if (isCtrl && (wParam == 'Y' || wParam == 'y')) {
+        activeCell.ClearSelection();
+        activeCell.inputBuffer.Redo();
+        nb->isDirty = true;
+        return true;
+    }
+
+    // Ctrl + A: Select All
+    if (isCtrl && (wParam == 'A' || wParam == 'a')) {
+        size_t lineCount = activeCell.inputBuffer.GetLineCount();
+        if (lineCount > 0) {
+            activeCell.selAnchor = { 0, 0 };
+            size_t lastL = lineCount - 1;
+            size_t lastC = activeCell.inputBuffer.GetLine(lastL).length();
+            activeCell.selEnd = { lastL, lastC };
+            activeCell.hasSelection = true;
+            activeCell.inputBuffer.SetCursor(lastL, lastC);
+        }
+        return true;
+    }
+
+    // Ctrl + C: Copy
+    if (isCtrl && (wParam == 'C' || wParam == 'c')) {
+        if (activeCell.HasSelection()) {
+            SetClipboardText(activeCell.GetSelectedText(), hwnd);
+        }
+        return true;
+    }
+
+    // Ctrl + X: Cut
+    if (isCtrl && (wParam == 'X' || wParam == 'x')) {
+        if (activeCell.HasSelection()) {
+            SetClipboardText(activeCell.GetSelectedText(), hwnd);
+            activeCell.DeleteSelection();
+            nb->isDirty = true;
+        }
+        return true;
+    }
+
+    // Ctrl + V: Paste
+    if (isCtrl && (wParam == 'V' || wParam == 'v')) {
+        std::wstring clip = GetClipboardText(hwnd);
+        if (!clip.empty()) {
+            if (activeCell.HasSelection()) {
+                activeCell.DeleteSelection();
+            }
+            activeCell.inputBuffer.InsertText(clip);
+            nb->isDirty = true;
+        }
+        return true;
+    }
+
     m_caretVisible = true;
     m_lastBlinkTime = GetTickCount64();
 
     switch (wParam) {
-        case VK_RETURN:
-            activeCell.inputBuffer.InsertChar(L'\n');
-            nb->isDirty = true;
-            return true;
-        case VK_BACK:
-            activeCell.inputBuffer.Backspace();
-            nb->isDirty = true;
-            return true;
-        case VK_DELETE: {
+        case VK_RETURN: {
+            if (activeCell.HasSelection()) {
+                activeCell.DeleteSelection();
+            }
             auto cur = activeCell.inputBuffer.GetCursor();
             const auto& lines = activeCell.inputBuffer.GetLines();
+            std::wstring baseIndent;
+            bool shouldIndent = false;
             if (cur.line < lines.size()) {
-                if (cur.col < lines[cur.line].length() || cur.line + 1 < lines.size()) {
-                    activeCell.inputBuffer.MoveCursorRight();
-                    activeCell.inputBuffer.Backspace();
+                const auto& line = lines[cur.line];
+                for (size_t col = 0; col < line.length() && (line[col] == L' ' || line[col] == L'\t'); ++col) {
+                    baseIndent += line[col];
+                }
+
+                // Check if between braces: {|}
+                if (cur.col > 0 && cur.col < line.length() && line[cur.col - 1] == L'{' && line[cur.col] == L'}') {
+                    std::wstring midIndent = baseIndent + L"  ";
+                    std::wstring expandStr = L"\n" + midIndent + L"\n" + baseIndent;
+                    activeCell.inputBuffer.InsertText(expandStr);
+                    activeCell.inputBuffer.SetCursor(cur.line + 1, midIndent.length());
                     nb->isDirty = true;
+                    return true;
+                }
+
+                // Strictly inspect text before cursor on the CURRENT line (cur.line)
+                std::wstring textBeforeCursor = (cur.col <= line.length()) ? line.substr(0, cur.col) : line;
+                size_t endPos = textBeforeCursor.find_last_not_of(L" \t");
+                if (endPos != std::wstring::npos && (textBeforeCursor[endPos] == L':' || textBeforeCursor[endPos] == L'{')) {
+                    shouldIndent = true;
                 }
             }
+            if (shouldIndent) {
+                // Auto-indent next line by 2 spaces relative to base indent (Colab/Jupyter standard)
+                std::wstring indentStr = L"\n" + baseIndent + L"  ";
+                activeCell.inputBuffer.InsertText(indentStr);
+            } else if (!baseIndent.empty()) {
+                std::wstring indentStr = L"\n" + baseIndent;
+                activeCell.inputBuffer.InsertText(indentStr);
+            } else {
+                activeCell.inputBuffer.InsertChar(L'\n');
+            }
+            nb->isDirty = true;
+            return true;
+        }
+        case VK_BACK: {
+            if (activeCell.HasSelection()) {
+                activeCell.DeleteSelection();
+            } else {
+                auto cur = activeCell.inputBuffer.GetCursor();
+                const auto& lines = activeCell.inputBuffer.GetLines();
+                bool isPair = false;
+                if (cur.line < lines.size()) {
+                    const auto& line = lines[cur.line];
+                    if (cur.col > 0 && cur.col < line.length()) {
+                        wchar_t leftCh = line[cur.col - 1];
+                        wchar_t rightCh = line[cur.col];
+                        if ((leftCh == L'(' && rightCh == L')') ||
+                            (leftCh == L'[' && rightCh == L']') ||
+                            (leftCh == L'{' && rightCh == L'}') ||
+                            (leftCh == L'"' && rightCh == L'"') ||
+                            (leftCh == L'\'' && rightCh == L'\'') ||
+                            (leftCh == L'`' && rightCh == L'`')) {
+                            isPair = true;
+                        }
+                    }
+                }
+                if (isPair) {
+                    activeCell.inputBuffer.MoveCursorRight();
+                    activeCell.inputBuffer.Backspace();
+                    activeCell.inputBuffer.Backspace();
+                } else {
+                    activeCell.inputBuffer.Backspace();
+                }
+            }
+            nb->isDirty = true;
+            return true;
+        }
+        case VK_DELETE: {
+            if (activeCell.HasSelection()) {
+                activeCell.DeleteSelection();
+            } else {
+                auto cur = activeCell.inputBuffer.GetCursor();
+                const auto& lines = activeCell.inputBuffer.GetLines();
+                if (cur.line < lines.size()) {
+                    if (cur.col < lines[cur.line].length() || cur.line + 1 < lines.size()) {
+                        activeCell.inputBuffer.MoveCursorRight();
+                        activeCell.inputBuffer.Backspace();
+                    }
+                }
+            }
+            nb->isDirty = true;
             return true;
         }
         case VK_TAB:
-            activeCell.inputBuffer.InsertText(L"    ");
+            if (activeCell.HasSelection()) {
+                activeCell.DeleteSelection();
+            }
+            activeCell.inputBuffer.InsertText(L"  "); // 2 spaces (Colab / Jupyter standard)
             nb->isDirty = true;
             return true;
         case VK_LEFT:
-            activeCell.inputBuffer.MoveCursorLeft();
+            if (activeCell.HasSelection() && !isShift) {
+                size_t sLine = 0, sCol = 0, eLine = 0, eCol = 0;
+                activeCell.GetSelectionRange(sLine, sCol, eLine, eCol);
+                activeCell.ClearSelection();
+                activeCell.inputBuffer.SetCursor(sLine, sCol);
+            } else {
+                activeCell.inputBuffer.MoveCursorLeft();
+            }
             return true;
         case VK_RIGHT:
-            activeCell.inputBuffer.MoveCursorRight();
+            if (activeCell.HasSelection() && !isShift) {
+                size_t sLine = 0, sCol = 0, eLine = 0, eCol = 0;
+                activeCell.GetSelectionRange(sLine, sCol, eLine, eCol);
+                activeCell.ClearSelection();
+                activeCell.inputBuffer.SetCursor(eLine, eCol);
+            } else {
+                activeCell.inputBuffer.MoveCursorRight();
+            }
             return true;
         case VK_UP:
+            if (activeCell.HasSelection() && !isShift) activeCell.ClearSelection();
             activeCell.inputBuffer.MoveCursorUp();
             return true;
         case VK_DOWN:
+            if (activeCell.HasSelection() && !isShift) activeCell.ClearSelection();
             activeCell.inputBuffer.MoveCursorDown();
             return true;
         case VK_HOME:
+            if (activeCell.HasSelection() && !isShift) activeCell.ClearSelection();
             activeCell.inputBuffer.SetCursor(activeCell.inputBuffer.GetCursor().line, 0);
             return true;
         case VK_END: {
+            if (activeCell.HasSelection() && !isShift) activeCell.ClearSelection();
             auto cur = activeCell.inputBuffer.GetCursor();
             if (cur.line < activeCell.inputBuffer.GetLineCount()) {
                 activeCell.inputBuffer.SetCursor(cur.line, activeCell.inputBuffer.GetLine(cur.line).length());
@@ -1039,6 +1475,63 @@ bool NotebookView::HandleChar(wchar_t ch, editor::OpenDocument& doc, HWND hwnd) 
     if (ch < 32 && ch != L'\t') return false;
 
     auto& activeCell = nb->cells[nb->activeCellIdx];
+
+    // Auto-closing bracket/quote pair mapping
+    wchar_t pairClose = 0;
+    if (ch == L'(') pairClose = L')';
+    else if (ch == L'[') pairClose = L']';
+    else if (ch == L'{') pairClose = L'}';
+    else if (ch == L'"') pairClose = L'"';
+    else if (ch == L'\'') pairClose = L'\'';
+    else if (ch == L'`') pairClose = L'`';
+
+    // 1. Wrap active selection when typing bracket/quote opener
+    if (activeCell.HasSelection()) {
+        if (pairClose != 0) {
+            std::wstring sel = activeCell.GetSelectedText();
+            activeCell.DeleteSelection();
+            std::wstring wrapped = std::wstring(1, ch) + sel + pairClose;
+            activeCell.inputBuffer.InsertText(wrapped);
+            nb->isDirty = true;
+            m_caretVisible = true;
+            m_lastBlinkTime = GetTickCount64();
+            return true;
+        } else {
+            activeCell.DeleteSelection();
+        }
+    }
+
+    // 2. Overtype closing character if cursor is immediately before it
+    auto cur = activeCell.inputBuffer.GetCursor();
+    const auto& lines = activeCell.inputBuffer.GetLines();
+    if (cur.line < lines.size()) {
+        const auto& line = lines[cur.line];
+        if (cur.col < line.length() && line[cur.col] == ch) {
+            if (ch == L')' || ch == L']' || ch == L'}' || ch == L'"' || ch == L'\'' || ch == L'`') {
+                // Step over closing character
+                activeCell.inputBuffer.MoveCursorRight();
+                nb->isDirty = true;
+                m_caretVisible = true;
+                m_lastBlinkTime = GetTickCount64();
+                return true;
+            }
+        }
+    }
+
+    // 3. Auto-insert pair and position cursor inside
+    if (pairClose != 0) {
+        std::wstring pairStr;
+        pairStr += ch;
+        pairStr += pairClose;
+        activeCell.inputBuffer.InsertText(pairStr);
+        activeCell.inputBuffer.MoveCursorLeft();
+        nb->isDirty = true;
+        m_caretVisible = true;
+        m_lastBlinkTime = GetTickCount64();
+        return true;
+    }
+
+    // Normal character insertion
     activeCell.inputBuffer.InsertChar(ch);
     nb->isDirty = true;
     m_caretVisible = true;
@@ -1075,29 +1568,100 @@ LPCWSTR NotebookView::GetCursorForPoint(POINT pt, const editor::OpenDocument& do
     return IDC_ARROW;
 }
 
-std::wstring NotebookView::FindPythonExecutable() const {
-    // 0. Dedicated EMSDK Python install check
-    std::wstring emsdkPy = L"C:\\Users\\Administrator\\Downloads\\emsdk\\python\\3.13.3_64bit\\python.exe";
-    if (std::filesystem::exists(emsdkPy)) return emsdkPy;
+std::wstring NotebookView::FindPythonExecutable(const std::wstring& targetFilePath) const {
+    // 1. Check local virtual environments in the notebook's directory or parent directories
+    std::vector<std::wstring> candidateDirs;
 
-    // 1. Check workspace venv
-    if (!m_workspacePath.empty()) {
-        std::wstring venvPy1 = m_workspacePath + L"\\.venv\\Scripts\\python.exe";
-        if (std::filesystem::exists(venvPy1)) return venvPy1;
-        std::wstring venvPy2 = m_workspacePath + L"\\venv\\Scripts\\python.exe";
-        if (std::filesystem::exists(venvPy2)) return venvPy2;
+    if (!targetFilePath.empty()) {
+        try {
+            std::filesystem::path p(targetFilePath);
+            auto cur = p.has_filename() ? p.parent_path() : p;
+            for (int depth = 0; depth < 3 && !cur.empty(); ++depth) {
+                candidateDirs.push_back(cur.wstring());
+                auto parent = cur.parent_path();
+                if (parent == cur) break;
+                cur = parent;
+            }
+        } catch (...) {}
     }
 
-    // 2. Search python.exe on PATH
+    if (!m_workspacePath.empty()) {
+        candidateDirs.push_back(m_workspacePath);
+    }
+
+    // Check candidate directories for common virtual environments (.venv, venv, env, .env)
+    const wchar_t* venvNames[] = { L".venv", L"venv", L"env", L".env" };
+    for (const auto& dir : candidateDirs) {
+        for (const auto* vname : venvNames) {
+            std::wstring vpy = dir + L"\\" + vname + L"\\Scripts\\python.exe";
+            if (std::filesystem::exists(vpy)) {
+                return vpy;
+            }
+        }
+    }
+
+    // 2. Check for Global Python installations (where user pip install packages live)
+    // 2a. Check python.exe on PATH (skipping emsdk if present)
     wchar_t buf[MAX_PATH]{};
+    if (SearchPathW(nullptr, L"python.exe", nullptr, MAX_PATH, buf, nullptr) > 0) {
+        std::wstring pathPy = buf;
+        if (pathPy.find(L"emsdk") == std::wstring::npos && std::filesystem::exists(pathPy)) {
+            return pathPy;
+        }
+    }
+
+    // 2b. Check User Local AppData Python installations (default python.org installer location)
+    wchar_t localApp[MAX_PATH]{};
+    if (GetEnvironmentVariableW(L"LOCALAPPDATA", localApp, MAX_PATH) > 0) {
+        std::wstring pyBase = std::wstring(localApp) + L"\\Programs\\Python";
+        if (std::filesystem::exists(pyBase)) {
+            try {
+                std::wstring highestPy;
+                for (const auto& entry : std::filesystem::directory_iterator(pyBase)) {
+                    if (entry.is_directory()) {
+                        std::wstring cand = entry.path().wstring() + L"\\python.exe";
+                        if (std::filesystem::exists(cand)) {
+                            if (highestPy.empty() || cand > highestPy) {
+                                highestPy = cand;
+                            }
+                        }
+                    }
+                }
+                if (!highestPy.empty()) return highestPy;
+            } catch (...) {}
+        }
+    }
+
+    // 2c. Check C:\Program Files\Python3*\python.exe and C:\Python3*\python.exe
+    const wchar_t* rootCandidates[] = {
+        L"C:\\Program Files\\Python315\\python.exe",
+        L"C:\\Program Files\\Python314\\python.exe",
+        L"C:\\Program Files\\Python313\\python.exe",
+        L"C:\\Program Files\\Python312\\python.exe",
+        L"C:\\Program Files\\Python311\\python.exe",
+        L"C:\\Program Files\\Python310\\python.exe",
+        L"C:\\Python315\\python.exe",
+        L"C:\\Python313\\python.exe",
+        L"C:\\Python312\\python.exe",
+        L"C:\\Python311\\python.exe"
+    };
+    for (const auto* rc : rootCandidates) {
+        if (std::filesystem::exists(rc)) return rc;
+    }
+
+    // 2d. Check py.exe on PATH
+    if (SearchPathW(nullptr, L"py.exe", nullptr, MAX_PATH, buf, nullptr) > 0) {
+        return buf;
+    }
+
+    // 2e. Check PATH python even if it was emsdk
     if (SearchPathW(nullptr, L"python.exe", nullptr, MAX_PATH, buf, nullptr) > 0) {
         return buf;
     }
 
-    // 3. Search py.exe on PATH
-    if (SearchPathW(nullptr, L"py.exe", nullptr, MAX_PATH, buf, nullptr) > 0) {
-        return buf;
-    }
+    // 3. Fallback: dedicated EMSDK Python if present
+    std::wstring emsdkPy = L"C:\\Users\\Administrator\\Downloads\\emsdk\\python\\3.13.3_64bit\\python.exe";
+    if (std::filesystem::exists(emsdkPy)) return emsdkPy;
 
     return L"python";
 }
@@ -1113,19 +1677,91 @@ void NotebookView::RunCell(int cellIdx, editor::OpenDocument& doc, HWND hwnd) {
         return;
     }
 
-    cell.isExecuting = true;
-    cell.outputs.clear();
-    cell.hasError = false;
-    m_isExecuting.store(true);
-    m_executingCellIdx.store(cellIdx);
-    m_shouldStop.store(false);
+    // If another cell is already running, enqueue this cell into the execution queue
+    if (m_isExecuting.load()) {
+        std::lock_guard<std::mutex> qLock(m_queueMutex);
+        if (m_executingCellIdx.load() == cellIdx) {
+            return; // Already actively executing
+        }
+        bool alreadyInQueue = false;
+        for (int q : m_cellQueue) {
+            if (q == cellIdx) {
+                alreadyInQueue = true;
+                break;
+            }
+        }
+        if (!alreadyInQueue) {
+            m_cellQueue.push_back(cellIdx);
+            cell.isQueued = true;
+            cell.isExecuting = false;
+            cell.executionCount = -2; // shows [*] while waiting in queue
+        }
+        nb->isDirty = true;
+        if (hwnd) {
+            InvalidateRect(hwnd, nullptr, FALSE);
+        }
+        return;
+    }
 
     std::wstring code = cell.inputBuffer.GetText();
     std::wstring lang = cell.language;
     auto nbDocPtr = doc.notebookDoc;
 
+    // Fast-path: empty or whitespace-only code cells complete immediately in 0 ms (no freeze)
+    bool isWhitespaceOnly = true;
+    for (wchar_t ch : code) {
+        if (!iswspace(ch)) {
+            isWhitespaceOnly = false;
+            break;
+        }
+    }
+    if (isWhitespaceOnly) {
+        cell.isExecuting = false;
+        cell.isQueued = false;
+        cell.outputs.clear();
+        cell.hasError = false;
+        cell.errorLine = -1;
+        cell.lastElapsedMs = 0;
+        if (cell.executionCount <= 0) {
+            cell.executionCount = 1;
+        } else {
+            cell.executionCount++;
+        }
+        nb->isDirty = true;
+        if (hwnd) {
+            InvalidateRect(hwnd, nullptr, FALSE);
+        }
+
+        // Trigger next queued cell if any
+        int nextCellIdx = -1;
+        {
+            std::lock_guard<std::mutex> qLock(m_queueMutex);
+            while (!m_cellQueue.empty()) {
+                int cand = m_cellQueue.front();
+                m_cellQueue.erase(m_cellQueue.begin());
+                if (cand >= 0 && cand < static_cast<int>(nb->cells.size())) {
+                    nextCellIdx = cand;
+                    break;
+                }
+            }
+        }
+        if (nextCellIdx >= 0) {
+            RunCell(nextCellIdx, doc, hwnd);
+        }
+        return;
+    }
+
+    cell.isExecuting = true;
+    cell.isQueued = false;
+    cell.outputs.clear();
+    cell.hasError = false;
+    cell.errorLine = -1;
+    m_isExecuting.store(true);
+    m_executingCellIdx.store(cellIdx);
+    m_shouldStop.store(false);
+
     if (m_execThread.joinable()) {
-        m_execThread.join();
+        m_execThread.detach(); // Detach old thread so UI thread NEVER blocks!
     }
 
     m_execThread = std::thread([this, cellIdx, code, lang, nbDocPtr, hwnd]() {
@@ -1158,10 +1794,8 @@ void NotebookView::StopExecution(editor::OpenDocument& doc) {
     StopExecution_Internal();
     if (doc.notebookDoc) {
         for (auto& c : doc.notebookDoc->cells) {
-            if (c.isExecuting) {
-                c.isExecuting = false;
-                c.executionCount = -1;
-            }
+            c.isExecuting = false;
+            c.isQueued = false;
         }
     }
 }
@@ -1178,21 +1812,36 @@ void NotebookView::StopExecution_Internal() {
     m_shouldStop.store(true);
     m_isQueueRunning.store(false);
     m_queueNextCellIdx.store(-1);
+    {
+        std::lock_guard<std::mutex> lock(m_queueMutex);
+        m_cellQueue.clear();
+    }
     m_kernel.Interrupt();
+    m_isExecuting.store(false);
+    m_executingCellIdx.store(-1);
     std::lock_guard<std::mutex> lock(m_execMutex);
     if (m_hChildProcess) {
         TerminateProcess(m_hChildProcess, 1);
         CloseHandle(m_hChildProcess);
         m_hChildProcess = NULL;
     }
-    m_isExecuting.store(false);
-    m_executingCellIdx.store(-1);
 }
 
 void NotebookView::ExecuteScriptAsync(int cellIdx, const std::wstring& script, const std::wstring& lang,
                                       std::shared_ptr<editor::NotebookDocument> nbDoc, HWND hwnd) {
-    std::wstring pyExe = FindPythonExecutable();
-    auto kernelResult = m_kernel.Execute(script, pyExe);
+    std::wstring docPath = nbDoc ? nbDoc->filePath : L"";
+    std::wstring pyExe = FindPythonExecutable(docPath);
+    std::wstring workingDir;
+    if (!docPath.empty()) {
+        try {
+            workingDir = std::filesystem::path(docPath).parent_path().wstring();
+        } catch (...) {}
+    }
+    if (workingDir.empty()) {
+        workingDir = m_workspacePath;
+    }
+
+    auto kernelResult = m_kernel.Execute(script, pyExe, workingDir);
 
     bool hasErr = kernelResult.hasError;
     std::wstring capturedOutput = kernelResult.output;
@@ -1202,9 +1851,45 @@ void NotebookView::ExecuteScriptAsync(int cellIdx, const std::wstring& script, c
     if (nbDoc && cellIdx >= 0 && cellIdx < static_cast<int>(nbDoc->cells.size())) {
         auto& cell = nbDoc->cells[cellIdx];
         cell.isExecuting = false;
+        cell.isQueued = false;
         cell.hasError = hasErr;
         cell.lastElapsedMs = elapsedMs;
         cell.outputs.clear();
+
+        int errLine = -1;
+        if (hasErr) {
+            size_t pos = capturedOutput.find(L"File \"<cell>\", line ");
+            if (pos != std::wstring::npos) {
+                size_t numStart = pos + wcslen(L"File \"<cell>\", line ");
+                size_t numEnd = numStart;
+                while (numEnd < capturedOutput.length() && iswdigit(capturedOutput[numEnd])) {
+                    numEnd++;
+                }
+                if (numEnd > numStart) {
+                    try {
+                        int line1 = std::stoi(capturedOutput.substr(numStart, numEnd - numStart));
+                        errLine = line1 - 1;
+                    } catch (...) {}
+                }
+            }
+            if (errLine < 0) {
+                size_t pos2 = capturedOutput.find(L", line ");
+                if (pos2 != std::wstring::npos) {
+                    size_t numStart = pos2 + wcslen(L", line ");
+                    size_t numEnd = numStart;
+                    while (numEnd < capturedOutput.length() && iswdigit(capturedOutput[numEnd])) {
+                        numEnd++;
+                    }
+                    if (numEnd > numStart) {
+                        try {
+                            int line1 = std::stoi(capturedOutput.substr(numStart, numEnd - numStart));
+                            errLine = line1 - 1;
+                        } catch (...) {}
+                    }
+                }
+            }
+        }
+        cell.errorLine = errLine;
 
         // Only add output if there is actual stdout/stderr produced (Jupyter / Colab standard)
         // Assignment cells like s = "hello" produce no output, so the output box is suppressed
@@ -1233,7 +1918,42 @@ void NotebookView::ExecuteScriptAsync(int cellIdx, const std::wstring& script, c
         InvalidateRect(hwnd, nullptr, FALSE);
     }
 
-    // 4. Sequential execution: run 1-by-1 in order from top to bottom
+    // 4. Check if there are user-queued cells waiting to run (dashed spinner queue)
+    int queuedCellIdx = -1;
+    {
+        std::lock_guard<std::mutex> qLock(m_queueMutex);
+        while (!m_cellQueue.empty()) {
+            int cand = m_cellQueue.front();
+            m_cellQueue.erase(m_cellQueue.begin());
+            if (nbDoc && cand >= 0 && cand < static_cast<int>(nbDoc->cells.size())) {
+                queuedCellIdx = cand;
+                break;
+            }
+        }
+    }
+
+    if (queuedCellIdx >= 0 && !m_shouldStop.load() && nbDoc) {
+        auto& nextCell = nbDoc->cells[queuedCellIdx];
+        nextCell.isQueued = false;
+        nextCell.isExecuting = true;
+        nextCell.outputs.clear();
+        nextCell.hasError = false;
+        nextCell.errorLine = -1;
+        m_isExecuting.store(true);
+        m_executingCellIdx.store(queuedCellIdx);
+
+        std::wstring nextCode = nextCell.inputBuffer.GetText();
+        std::wstring nextLang = nextCell.language;
+        std::thread([this, queuedCellIdx, nextCode, nextLang, nbDoc, hwnd]() {
+            ExecuteScriptAsync(queuedCellIdx, nextCode, nextLang, nbDoc, hwnd);
+        }).detach();
+        if (hwnd) {
+            InvalidateRect(hwnd, nullptr, FALSE);
+        }
+        return;
+    }
+
+    // 5. Sequential execution for RunAll: run 1-by-1 in order from top to bottom
     // If execution fails, halt sequential queue immediately (Colab/Jupyter standard)
     if (m_isQueueRunning.load() && !m_shouldStop.load() && !hasErr && nbDoc) {
         int nextIdx = cellIdx + 1;

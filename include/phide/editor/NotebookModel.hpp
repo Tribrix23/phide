@@ -38,9 +38,132 @@ struct NotebookCell {
     Buffer inputBuffer;
     std::vector<CellOutput> outputs;
     bool isExecuting = false;
+    bool isQueued = false;
     bool isOutputCollapsed = false;
     bool hasError = false;
+    int errorLine = -1; // 0-based error line in code cell (-1 if none)
     ULONGLONG lastElapsedMs = 0;
+
+    // Text Selection State
+    bool hasSelection = false;
+    CursorPosition selAnchor{ 0, 0 };
+    CursorPosition selEnd{ 0, 0 };
+    bool isSelecting = false;
+    std::wstring selectedWord;
+
+    [[nodiscard]] bool HasSelection() const noexcept {
+        return hasSelection && (selAnchor.line != selEnd.line || selAnchor.col != selEnd.col);
+    }
+
+    void ClearSelection() noexcept {
+        hasSelection = false;
+        isSelecting = false;
+        selectedWord.clear();
+    }
+
+    void GetSelectionRange(size_t& startLine, size_t& startCol, size_t& endLine, size_t& endCol) const noexcept {
+        if (selAnchor.line < selEnd.line || (selAnchor.line == selEnd.line && selAnchor.col <= selEnd.col)) {
+            startLine = selAnchor.line; startCol = selAnchor.col;
+            endLine = selEnd.line; endCol = selEnd.col;
+        } else {
+            startLine = selEnd.line; startCol = selEnd.col;
+            endLine = selAnchor.line; endCol = selAnchor.col;
+        }
+    }
+
+    [[nodiscard]] std::wstring GetSelectedText() const {
+        if (!HasSelection()) return L"";
+        size_t sLine = 0, sCol = 0, eLine = 0, eCol = 0;
+        GetSelectionRange(sLine, sCol, eLine, eCol);
+        if (sLine == eLine) {
+            const auto& line = inputBuffer.GetLine(sLine);
+            if (sCol < line.length()) {
+                return line.substr(sCol, (std::min)(eCol - sCol, line.length() - sCol));
+            }
+            return L"";
+        }
+        std::wstring result;
+        for (size_t l = sLine; l <= eLine; ++l) {
+            const auto& line = inputBuffer.GetLine(l);
+            if (l == sLine) {
+                if (sCol < line.length()) result += line.substr(sCol);
+            } else if (l == eLine) {
+                if (eCol <= line.length()) result += line.substr(0, eCol);
+                else result += line;
+            } else {
+                result += line;
+            }
+            if (l < eLine) result += L"\n";
+        }
+        return result;
+    }
+
+    void SelectWordAt(size_t lineIdx, size_t colIdx) {
+        if (lineIdx >= inputBuffer.GetLineCount()) return;
+        const auto& line = inputBuffer.GetLine(lineIdx);
+        if (line.empty()) return;
+        if (colIdx >= line.length()) colIdx = line.length() > 0 ? line.length() - 1 : 0;
+
+        auto isWordChar = [](wchar_t ch) {
+            return iswalnum(ch) || ch == L'_' || ch == L'$';
+        };
+
+        if (!isWordChar(line[colIdx])) {
+            return;
+        }
+
+        size_t startCol = colIdx;
+        while (startCol > 0 && isWordChar(line[startCol - 1])) {
+            startCol--;
+        }
+        size_t endCol = colIdx;
+        while (endCol < line.length() && isWordChar(line[endCol])) {
+            endCol++;
+        }
+
+        selAnchor = { lineIdx, startCol };
+        selEnd = { lineIdx, endCol };
+        hasSelection = true;
+        inputBuffer.SetCursor(lineIdx, endCol);
+        selectedWord = line.substr(startCol, endCol - startCol);
+    }
+
+    bool DeleteSelection() {
+        if (!HasSelection()) return false;
+        inputBuffer.PushUndo();
+        size_t sLine = 0, sCol = 0, eLine = 0, eCol = 0;
+        GetSelectionRange(sLine, sCol, eLine, eCol);
+        if (sLine == eLine) {
+            const auto& line = inputBuffer.GetLine(sLine);
+            std::wstring newLine = line.substr(0, sCol);
+            if (eCol < line.length()) {
+                newLine += line.substr(eCol);
+            }
+            inputBuffer.SetLine(sLine, newLine);
+            inputBuffer.SetCursor(sLine, sCol);
+        } else {
+            const auto& startLineText = inputBuffer.GetLine(sLine);
+            const auto& endLineText = inputBuffer.GetLine(eLine);
+            std::wstring merged = startLineText.substr(0, sCol);
+            if (eCol < endLineText.length()) {
+                merged += endLineText.substr(eCol);
+            }
+            std::vector<std::wstring> newLines;
+            for (size_t l = 0; l < inputBuffer.GetLineCount(); ++l) {
+                if (l < sLine) {
+                    newLines.push_back(inputBuffer.GetLine(l));
+                } else if (l == sLine) {
+                    newLines.push_back(merged);
+                } else if (l > eLine) {
+                    newLines.push_back(inputBuffer.GetLine(l));
+                }
+            }
+            inputBuffer.SetLines(newLines);
+            inputBuffer.SetCursor(sLine, sCol);
+        }
+        ClearSelection();
+        return true;
+    }
 
     // Direct2D bounding rectangles updated during layout/render
     D2D1_RECT_F bounds{};

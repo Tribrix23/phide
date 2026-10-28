@@ -33,6 +33,9 @@ if %errorlevel% neq 0 exit /b %errorlevel%
 cl /nologo /EHsc /std:c++20 /O2 /W3 /utf-8 /DUNICODE /D_UNICODE /DWIN32_LEAN_AND_MEAN /I include /I third_party\webview2\build\native\include /c src\ui\TerminalPanel.cpp /Fo:bin\TerminalPanel.obj
 if %errorlevel% neq 0 exit /b %errorlevel%
 
+cl /nologo /EHsc /std:c++20 /O2 /W3 /utf-8 /DUNICODE /D_UNICODE /DWIN32_LEAN_AND_MEAN /I include /I third_party\webview2\build\native\include /c src\editor\Buffer.cpp /Fo:bin\Buffer.obj
+if %errorlevel% neq 0 exit /b %errorlevel%
+
 cl /nologo /EHsc /std:c++20 /O2 /W3 /utf-8 /DUNICODE /D_UNICODE /DWIN32_LEAN_AND_MEAN /I include /I third_party\webview2\build\native\include /c tests\test_verification.cpp /Fo:bin\test_verification.obj
 if %errorlevel% neq 0 exit /b %errorlevel%
 

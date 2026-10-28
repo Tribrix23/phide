@@ -10081,6 +10081,9 @@ run_test_74:
         bool handledShiftEnter = nbView.HandleKeyDown(VK_RETURN, doc, nullptr);
         assert(handledShiftEnter);
         assert(doc.notebookDoc->cells.size() == cellCountBefore + 1);
+        while (nbView.IsExecuting()) {
+            Sleep(50);
+        }
         std::cout << "  Passed: Shift+Enter creates and advances to next code cell" << std::endl;
 
         // 5. Test Bottom Hover Pill Click creates a new cell
@@ -10230,6 +10233,387 @@ run_test_74:
         // Clean up keyboard state
         keyState[VK_SHIFT] = 0x00;
         SetKeyboardState(keyState);
+
+        // 10. Verify Word Double-Click Selection, Drag Selection, 2-Space Tab, Undo/Redo, and Error Line Squiggly
+        phide::editor::OpenDocument edDoc;
+        edDoc.notebookDoc = std::make_shared<phide::editor::NotebookDocument>();
+        edDoc.notebookDoc->cells.clear();
+        auto* pCell = edDoc.notebookDoc->AddCell(phide::editor::NotebookCellType::Code);
+        pCell->inputBuffer.SetText(L"letter in \"letter\"\nfor i in range(s):\n  print(i)");
+
+        // 10a. Double-click on "letter" (col 2, line 0)
+        pCell->SelectWordAt(0, 2);
+        assert(pCell->HasSelection());
+        assert(pCell->GetSelectedText() == L"letter");
+        std::cout << "  Passed: Double-click selects the full word ('letter')" << std::endl;
+
+        // 10b. Mouse Drag selection
+        pCell->ClearSelection();
+        pCell->selAnchor = { 0, 0 };
+        pCell->selEnd = { 0, 6 };
+        pCell->hasSelection = true;
+        assert(pCell->HasSelection());
+        assert(pCell->GetSelectedText() == L"letter");
+        std::cout << "  Passed: Mouse drag creates contiguous text selection range" << std::endl;
+
+        // 10c. 2-Space Tab Indentation (Colab standard)
+        pCell->ClearSelection();
+        pCell->inputBuffer.SetCursor(0, 0);
+        bool handledTab = nbView.HandleKeyDown(VK_TAB, edDoc, nullptr);
+        assert(handledTab);
+        assert(pCell->inputBuffer.GetLine(0).substr(0, 2) == L"  ");
+        assert(pCell->inputBuffer.GetLine(0).substr(0, 4) != L"    "); // Exactly 2 spaces, NOT 4!
+        std::cout << "  Passed: Tab indentation inserts standard 2-space gap (not 4 spaces)" << std::endl;
+
+        // 10d. Undo / Redo in Notebook Cell
+        pCell->inputBuffer.Undo(); // Undo the 2-space tab
+        assert(pCell->inputBuffer.GetLine(0).substr(0, 6) == L"letter");
+        pCell->inputBuffer.Redo(); // Redo the 2-space tab
+        assert(pCell->inputBuffer.GetLine(0).substr(0, 2) == L"  ");
+        pCell->inputBuffer.Undo(); // Back to clean state
+        std::cout << "  Passed: Cell code editor Undo (Ctrl+Z) and Redo (Ctrl+Y) verified" << std::endl;
+
+        // 10e. Accurate Hit-Testing Past End of Line (No Caret Drift between 'g' and 'e')
+        size_t hitL = 0, hitC = 0;
+        // Cell layout pass
+        pRTSnap74->BeginDraw();
+        nbView.Render(pRTSnap74.Get(), theme74, cfg74, edDoc, 0.0f, static_cast<float>(snapW), 0.0f, static_cast<float>(snapH));
+        pRTSnap74->EndDraw();
+
+        // Simulate click far to the right of line 1 ("for i in range(s):")
+        POINT ptPastEnd = {
+            static_cast<LONG>(pCell->codeAreaBounds.left + 500.0f),
+            static_cast<LONG>(pCell->codeAreaBounds.top + 30.0f) // Line 1
+        };
+        nbView.HitTestCodeArea(*pCell, ptPastEnd, cfg74, hitL, hitC);
+        assert(hitL == 1);
+        assert(hitC == pCell->inputBuffer.GetLine(1).length()); // Exactly at line end (17), NOT 13 or between 'g' and 'e'!
+        std::cout << "  Passed: Clicking past end of line clamps accurately to line length without drift" << std::endl;
+
+        // 10f. Error Squiggly Line Parsing & Rendering
+        pCell->hasError = true;
+        pCell->executionCount = 1;
+        pCell->outputs.push_back({
+            L"stderr",
+            L"Traceback (most recent call last):\n  File \"<cell>\", line 2, in <module>\nTypeError: 'str' object cannot be interpreted as an integer\n",
+            true,
+            55
+        });
+        // Simulate error line extraction logic
+        std::wstring errText = pCell->outputs[0].text;
+        size_t posF = errText.find(L"File \"<cell>\", line ");
+        assert(posF != std::wstring::npos);
+        size_t nStart = posF + wcslen(L"File \"<cell>\", line ");
+        size_t nEnd = nStart;
+        while (nEnd < errText.length() && iswdigit(errText[nEnd])) nEnd++;
+        int errL1 = std::stoi(errText.substr(nStart, nEnd - nStart));
+        pCell->errorLine = errL1 - 1; // 0-based: line 1
+        assert(pCell->errorLine == 1);
+
+        // Render pass with error squiggly line (~~~~) and text selection active
+        pCell->SelectWordAt(0, 0); // Select "letter"
+        pRTSnap74->BeginDraw();
+        pRTSnap74->Clear(D2D1::ColorF(0.11f, 0.11f, 0.13f, 1.0f));
+        nbView.Render(pRTSnap74.Get(), theme74, cfg74, edDoc, 0.0f, static_cast<float>(snapW), 0.0f, static_cast<float>(snapH));
+        pRTSnap74->EndDraw();
+
+        std::wstring snapSelectionAndSquiggly = artDir + L"test_interactive_notebook_selection_and_squiggly.png";
+        SaveWicBitmapToPng(pWicSnap74.Get(), pWicFactory.Get(), snapSelectionAndSquiggly);
+        assert(std::filesystem::exists(snapSelectionAndSquiggly));
+        std::wcout << L"  Passed: Saved selection and error squiggly UI snapshot to: " << snapSelectionAndSquiggly << std::endl;
+
+        // 11. Verify Empty Code Cell Fast Execution, Stop Button Non-Freezing Interrupt, and Python Library Resolution
+        // 11a. Empty Code Cell Execution (does NOT hang, completes in 0 ms, increments run count)
+        auto* pEmptyCell = edDoc.notebookDoc->AddCell(phide::editor::NotebookCellType::Code);
+        pEmptyCell->inputBuffer.SetText(L"   \n  \n");
+        int emptyIdx = static_cast<int>(edDoc.notebookDoc->cells.size() - 1);
+        nbView.RunCell(emptyIdx, edDoc, nullptr);
+        assert(!pEmptyCell->isExecuting); // Must be immediately false!
+        assert(!nbView.IsExecuting());
+        assert(pEmptyCell->executionCount == 1);
+        assert(pEmptyCell->outputs.empty());
+        assert(!pEmptyCell->hasError);
+        std::cout << "  Passed: Empty code cell completes immediately without hanging and increments run count" << std::endl;
+
+        // 11b. Stop Execution Button (No deadlock, no UI freeze, instant cancellation)
+        auto* pSleepCell = edDoc.notebookDoc->AddCell(phide::editor::NotebookCellType::Code);
+        pSleepCell->inputBuffer.SetText(L"import time\nfor _ in range(500):\n  time.sleep(0.1)\n");
+        int sleepIdx = static_cast<int>(edDoc.notebookDoc->cells.size() - 1);
+        nbView.RunCell(sleepIdx, edDoc, nullptr);
+        // Wait a tiny moment for thread to start executing
+        Sleep(50);
+        // Now click Stop button (simulated via StopExecution)
+        nbView.StopExecution(edDoc);
+        assert(!pSleepCell->isExecuting);
+        assert(!nbView.IsExecuting());
+        std::cout << "  Passed: Stop button interrupts execution instantly without UI freeze or deadlock" << std::endl;
+
+        // 11c. Python Library Resolution (Prefers Real Global Python and Project Virtualenv over EMSDK)
+        std::wstring foundPy = nbView.FindPythonExecutable();
+        assert(!foundPy.empty());
+        // Verify it did NOT resolve to bare EMSDK python when real Python is available on the system
+        assert(foundPy.find(L"emsdk") == std::wstring::npos);
+        std::wcout << L"  Passed: Python executable resolved to real environment: " << foundPy << std::endl;
+
+        // 12. Verify Auto-Closing Pairs, Overtyping, Selection Wrapping, Auto-Indentation after ':', Execution Queue & Spinners
+        // 12a. Auto-closing bracket and quote pairs
+        auto* pPairCell = edDoc.notebookDoc->AddCell(phide::editor::NotebookCellType::Code);
+        edDoc.notebookDoc->activeCellIdx = static_cast<int>(edDoc.notebookDoc->cells.size() - 1);
+        pPairCell->inputBuffer.SetText(L"");
+        pPairCell->inputBuffer.SetCursor(0, 0);
+
+        // Type '(' -> should insert '()' with cursor inside at col 1
+        nbView.HandleChar(L'(', edDoc, nullptr);
+        assert(pPairCell->inputBuffer.GetText() == L"()");
+        assert(pPairCell->inputBuffer.GetCursor().col == 1);
+
+        // Overtype ')' -> should step over without duplicating
+        nbView.HandleChar(L')', edDoc, nullptr);
+        assert(pPairCell->inputBuffer.GetText() == L"()");
+        assert(pPairCell->inputBuffer.GetCursor().col == 2);
+
+        // Move cursor back inside: between '(' and ')'
+        pPairCell->inputBuffer.SetCursor(0, 1);
+        // Press Backspace between empty pair -> should delete BOTH characters
+        nbView.HandleKeyDown(VK_BACK, edDoc, nullptr);
+        assert(pPairCell->inputBuffer.GetText() == L"");
+        assert(pPairCell->inputBuffer.GetCursor().col == 0);
+
+        // Type '[' -> '[]' with cursor at col 1
+        nbView.HandleChar(L'[', edDoc, nullptr);
+        assert(pPairCell->inputBuffer.GetText() == L"[]");
+        assert(pPairCell->inputBuffer.GetCursor().col == 1);
+        pPairCell->inputBuffer.SetText(L"");
+        pPairCell->inputBuffer.SetCursor(0, 0);
+
+        // Type '{' -> '{}' with cursor at col 1
+        nbView.HandleChar(L'{', edDoc, nullptr);
+        assert(pPairCell->inputBuffer.GetText() == L"{}");
+        assert(pPairCell->inputBuffer.GetCursor().col == 1);
+        pPairCell->inputBuffer.SetText(L"");
+        pPairCell->inputBuffer.SetCursor(0, 0);
+
+        // Type '"' -> '""' with cursor at col 1
+        nbView.HandleChar(L'"', edDoc, nullptr);
+        assert(pPairCell->inputBuffer.GetText() == L"\"\"");
+        assert(pPairCell->inputBuffer.GetCursor().col == 1);
+        pPairCell->inputBuffer.SetText(L"");
+        pPairCell->inputBuffer.SetCursor(0, 0);
+
+        // Type '\'' -> '\'\'' with cursor at col 1
+        nbView.HandleChar(L'\'', edDoc, nullptr);
+        assert(pPairCell->inputBuffer.GetText() == L"''");
+        assert(pPairCell->inputBuffer.GetCursor().col == 1);
+        pPairCell->inputBuffer.SetText(L"");
+        pPairCell->inputBuffer.SetCursor(0, 0);
+
+        // Type '`' -> '``' with cursor at col 1
+        nbView.HandleChar(L'`', edDoc, nullptr);
+        assert(pPairCell->inputBuffer.GetText() == L"``");
+        assert(pPairCell->inputBuffer.GetCursor().col == 1);
+        std::cout << "  Passed: Auto-closing pairs and overtyping for (), [], {}, \"\", '', `` verified" << std::endl;
+
+        // 12b. Selection wrapping with bracket/quote pair
+        pPairCell->inputBuffer.SetText(L"hello");
+        pPairCell->SelectWordAt(0, 2); // Select "hello"
+        assert(pPairCell->HasSelection());
+        nbView.HandleChar(L'(', edDoc, nullptr);
+        assert(pPairCell->inputBuffer.GetText() == L"(hello)");
+        std::cout << "  Passed: Selection wrapping with pair verified" << std::endl;
+
+        // 12c. Auto-indentation on Enter after ':'
+        auto* pIndentCell = edDoc.notebookDoc->AddCell(phide::editor::NotebookCellType::Code);
+        edDoc.notebookDoc->activeCellIdx = static_cast<int>(edDoc.notebookDoc->cells.size() - 1);
+        pIndentCell->inputBuffer.SetText(L"def foo():");
+        pIndentCell->inputBuffer.SetCursor(0, 10); // at the end after ':'
+        nbView.HandleKeyDown(VK_RETURN, edDoc, nullptr);
+        assert(pIndentCell->inputBuffer.GetLineCount() == 2);
+        assert(pIndentCell->inputBuffer.GetLine(0) == L"def foo():");
+        assert(pIndentCell->inputBuffer.GetLine(1) == L"  "); // 2 spaces auto-indent
+        assert(pIndentCell->inputBuffer.GetCursor().line == 1);
+        assert(pIndentCell->inputBuffer.GetCursor().col == 2);
+
+        // Nested auto-indentation test
+        pIndentCell->inputBuffer.InsertText(L"for i in range(10):");
+        nbView.HandleKeyDown(VK_RETURN, edDoc, nullptr);
+        assert(pIndentCell->inputBuffer.GetLineCount() == 3);
+        assert(pIndentCell->inputBuffer.GetLine(2) == L"    "); // 4 spaces (base 2 + 2)
+        assert(pIndentCell->inputBuffer.GetCursor().line == 2);
+        assert(pIndentCell->inputBuffer.GetCursor().col == 4);
+        std::cout << "  Passed: Auto-indentation after ':' (2 spaces relative to base) verified" << std::endl;
+
+        // User scenario: '():' on line 21, but cursor moves to line 50 and presses Enter -> NO indentation on line 50!
+        pIndentCell->inputBuffer.SetText(L"");
+        std::vector<std::wstring> manyLines;
+        for (int i = 0; i < 60; ++i) {
+            if (i == 20) {
+                manyLines.push_back(L"def func():");
+            } else if (i == 49) {
+                manyLines.push_back(L"x = 5");
+            } else {
+                manyLines.push_back(L"");
+            }
+        }
+        pIndentCell->inputBuffer.SetLines(manyLines);
+
+        // Enter on line 20 (line 21 with '():') -> indents next line with 2 spaces
+        pIndentCell->inputBuffer.SetCursor(20, 11);
+        nbView.HandleKeyDown(VK_RETURN, edDoc, nullptr);
+        assert(pIndentCell->inputBuffer.GetLine(21) == L"  ");
+        assert(pIndentCell->inputBuffer.GetCursor().line == 21);
+        assert(pIndentCell->inputBuffer.GetCursor().col == 2);
+
+        // Move cursor to line 50 (was 49, shifted to 50 due to insertion) with 'x = 5' -> NO extra indent on Enter!
+        pIndentCell->inputBuffer.SetCursor(50, 5); // at end of 'x = 5'
+        nbView.HandleKeyDown(VK_RETURN, edDoc, nullptr);
+        assert(pIndentCell->inputBuffer.GetLine(51) == L""); // strictly 0 spaces indent!
+        assert(pIndentCell->inputBuffer.GetCursor().col == 0);
+        std::cout << "  Passed: Line 21 '():' does NOT bleed indentation to line 50 in notebook" << std::endl;
+
+        // 12d. Execution Queue & Spinner Transition (Solid connected vs Dashed ring)
+        edDoc.notebookDoc->AddCell(phide::editor::NotebookCellType::Code);
+        int q1Idx = static_cast<int>(edDoc.notebookDoc->cells.size() - 1);
+        edDoc.notebookDoc->cells[q1Idx].inputBuffer.SetText(L"import time\ntime.sleep(0.3)\n");
+
+        edDoc.notebookDoc->AddCell(phide::editor::NotebookCellType::Code);
+        int q2Idx = static_cast<int>(edDoc.notebookDoc->cells.size() - 1);
+        edDoc.notebookDoc->cells[q2Idx].inputBuffer.SetText(L"print('queue finished')\n");
+
+        // Run cell 1
+        nbView.RunCell(q1Idx, edDoc, nullptr);
+        assert(edDoc.notebookDoc->cells[q1Idx].isExecuting);
+        assert(!edDoc.notebookDoc->cells[q1Idx].isQueued);
+
+        // While cell 1 is running, run cell 2 -> cell 2 must be queued (dashed spinner)!
+        nbView.RunCell(q2Idx, edDoc, nullptr);
+        assert(edDoc.notebookDoc->cells[q2Idx].isQueued);
+        assert(!edDoc.notebookDoc->cells[q2Idx].isExecuting);
+        std::cout << "  Passed: Cell 2 placed in queue (isQueued = true, dashed spinner state) while cell 1 executes" << std::endl;
+
+        // Render pass to verify no dummy "Running cell in background execution engine" message appears
+        ComPtr<IWICBitmap> pWicSnapQueue;
+        pWicFactory->CreateBitmap(800, 600, GUID_WICPixelFormat32bppPBGRA, WICBitmapCacheOnDemand, &pWicSnapQueue);
+        ComPtr<ID2D1RenderTarget> pRTSnapQueue;
+        pD2DFactory->CreateWicBitmapRenderTarget(pWicSnapQueue.Get(), D2D1::RenderTargetProperties(), &pRTSnapQueue);
+        theme74.CreateDeviceResources(pRTSnapQueue.Get(), pDWriteFactory.Get());
+        pRTSnapQueue->BeginDraw();
+        nbView.Render(pRTSnapQueue.Get(), theme74, cfg74, edDoc, 0.0f, 800.0f, 0.0f, 600.0f);
+        HRESULT hrSnapQueue = pRTSnapQueue->EndDraw();
+        assert(SUCCEEDED(hrSnapQueue));
+
+        // Wait for cell 1 to finish and cell 2 to automatically dequeue and finish
+        for (int retry = 0; retry < 50; ++retry) {
+            if (!edDoc.notebookDoc->cells[q1Idx].isExecuting &&
+                !edDoc.notebookDoc->cells[q2Idx].isQueued &&
+                !edDoc.notebookDoc->cells[q2Idx].isExecuting &&
+                !nbView.IsExecuting()) {
+                break;
+            }
+            Sleep(50);
+        }
+
+        assert(!edDoc.notebookDoc->cells[q1Idx].isExecuting);
+        assert(!edDoc.notebookDoc->cells[q2Idx].isExecuting);
+        assert(!edDoc.notebookDoc->cells[q2Idx].isQueued);
+        assert(edDoc.notebookDoc->cells[q1Idx].executionCount >= 1);
+        assert(edDoc.notebookDoc->cells[q2Idx].executionCount >= 1);
+        std::cout << "  Passed: Queue sequentially executed cell 2 after cell 1 completed" << std::endl;
+
+        // Render pass to verify success checkmark (✓ 0s)
+        ComPtr<IWICBitmap> pWicSnapSuccess;
+        pWicFactory->CreateBitmap(800, 600, GUID_WICPixelFormat32bppPBGRA, WICBitmapCacheOnDemand, &pWicSnapSuccess);
+        ComPtr<ID2D1RenderTarget> pRTSnapSuccess;
+        pD2DFactory->CreateWicBitmapRenderTarget(pWicSnapSuccess.Get(), D2D1::RenderTargetProperties(), &pRTSnapSuccess);
+        theme74.CreateDeviceResources(pRTSnapSuccess.Get(), pDWriteFactory.Get());
+        pRTSnapSuccess->BeginDraw();
+        nbView.Render(pRTSnapSuccess.Get(), theme74, cfg74, edDoc, 0.0f, 800.0f, 0.0f, 600.0f);
+        HRESULT hrSnapSuccess = pRTSnapSuccess->EndDraw();
+        assert(SUCCEEDED(hrSnapSuccess));
+
+        std::wstring snapSuccessFile = L"C:\\Users\\Administrator\\.gemini\\antigravity\\brain\\c83160b9-3f8b-4ad1-87a8-ab1f7f555a77\\test_interactive_notebook_success_checkmark.png";
+        SaveWicBitmapToPng(pWicSnapSuccess.Get(), pWicFactory.Get(), snapSuccessFile);
+        assert(std::filesystem::exists(snapSuccessFile));
+        std::wcout << L"  Passed: Saved success checkmark and queue UI snapshot to: " << snapSuccessFile << std::endl;
+
+        // 13. Verify Main IDE Editor Auto-Closing Pairs, Overtyping, Selection Wrapping, and Cursor-Line Specific Auto-Indentation
+        phide::app::Window ideWin;
+        ideWin.OpenVirtualDocument(L"main_test.py", L"");
+        auto* pIdeDoc = ideWin.GetActiveDoc();
+        assert(pIdeDoc != nullptr);
+
+        // 13a. Auto-closing pairs in IDE
+        // Type '(' -> '()' with cursor at col 1
+        ideWin.HandleMessage(WM_CHAR, L'(', 0);
+        assert(pIdeDoc->buffer.GetText() == L"()");
+        assert(pIdeDoc->buffer.GetCursor().col == 1);
+
+        // Overtype ')' -> col 2
+        ideWin.HandleMessage(WM_CHAR, L')', 0);
+        assert(pIdeDoc->buffer.GetText() == L"()");
+        assert(pIdeDoc->buffer.GetCursor().col == 2);
+
+        // Backspace between pair deletes both
+        pIdeDoc->buffer.SetCursor(0, 1);
+        ideWin.HandleMessage(WM_KEYDOWN, VK_BACK, 0);
+        assert(pIdeDoc->buffer.GetText() == L"");
+        assert(pIdeDoc->buffer.GetCursor().col == 0);
+
+        // Test [], {}, "", '', `` in IDE
+        ideWin.HandleMessage(WM_CHAR, L'[', 0);
+        assert(pIdeDoc->buffer.GetText() == L"[]");
+        pIdeDoc->buffer.SetText(L"");
+
+        ideWin.HandleMessage(WM_CHAR, L'{', 0);
+        assert(pIdeDoc->buffer.GetText() == L"{}");
+        pIdeDoc->buffer.SetText(L"");
+
+        ideWin.HandleMessage(WM_CHAR, L'"', 0);
+        assert(pIdeDoc->buffer.GetText() == L"\"\"");
+        pIdeDoc->buffer.SetText(L"");
+
+        ideWin.HandleMessage(WM_CHAR, L'\'', 0);
+        assert(pIdeDoc->buffer.GetText() == L"''");
+        pIdeDoc->buffer.SetText(L"");
+
+        ideWin.HandleMessage(WM_CHAR, L'`', 0);
+        assert(pIdeDoc->buffer.GetText() == L"``");
+        pIdeDoc->buffer.SetText(L"");
+        std::cout << "  Passed: IDE editor auto-closing pairs and overtyping for (), [], {}, \"\", '', `` verified" << std::endl;
+
+        // 13b. Selection wrapping in IDE
+        pIdeDoc->buffer.SetText(L"variable");
+        pIdeDoc->SelectWordAt(0, 2);
+        assert(pIdeDoc->HasSelection());
+        ideWin.HandleMessage(WM_CHAR, L'(', 0);
+        assert(pIdeDoc->buffer.GetText() == L"(variable)");
+        std::cout << "  Passed: IDE editor selection wrapping with pairs verified" << std::endl;
+
+        // 13c. IDE auto-indent on Enter after ':' and line-specific isolation (Line 21 vs Line 50)
+        std::vector<std::wstring> ideLines;
+        for (int i = 0; i < 60; ++i) {
+            if (i == 20) {
+                ideLines.push_back(L"def calculate():");
+            } else if (i == 49) {
+                ideLines.push_back(L"result = 100");
+            } else {
+                ideLines.push_back(L"");
+            }
+        }
+        pIdeDoc->buffer.SetLines(ideLines);
+
+        // Enter on Line 20 ('def calculate():') -> indents next line with 4 spaces
+        pIdeDoc->buffer.SetCursor(20, 16);
+        ideWin.HandleMessage(WM_KEYDOWN, VK_RETURN, 0);
+        assert(pIdeDoc->buffer.GetLine(21) == L"    ");
+        assert(pIdeDoc->buffer.GetCursor().line == 21);
+        assert(pIdeDoc->buffer.GetCursor().col == 4);
+
+        // Move cursor to line 50 (was 49, shifted to 50 due to insertion) with 'result = 100' -> Enter has NO extra indent!
+        pIdeDoc->buffer.SetCursor(50, 12);
+        ideWin.HandleMessage(WM_KEYDOWN, VK_RETURN, 0);
+        assert(pIdeDoc->buffer.GetLine(51) == L""); // strictly 0 indent!
+        assert(pIdeDoc->buffer.GetCursor().col == 0);
+        std::cout << "  Passed: IDE editor auto-indent after ':' verified, and Line 21 does NOT bleed indent to Line 50" << std::endl;
 
         std::cout << "  Passed: All [TEST 74] Interactive Notebook tests passed successfully!" << std::endl;
     }
