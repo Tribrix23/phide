@@ -10120,40 +10120,69 @@ run_test_74:
         assert(testCell2.executionCount == 4); // becomes 4, NOT jumping
         std::cout << "  Passed: Cell execution counts increment independently (Cell 1: 2->3, Cell 2: 3->4)" << std::endl;
 
-        // 8. Verify Persistent Python Variable Sharing Across Cells and IndentationError Fix
+        // 8. Verify Persistent Python Kernel State Across Cells (Jupyter / Colab Execution Model)
         phide::editor::OpenDocument execDoc;
         execDoc.notebookDoc = std::make_shared<phide::editor::NotebookDocument>();
         execDoc.notebookDoc->cells.clear();
         // Cell 0: Text/Markdown cell
         execDoc.notebookDoc->AddCell(phide::editor::NotebookCellType::Markdown);
         execDoc.notebookDoc->cells[0].inputBuffer.SetText(L"#Welcome to Phide notebook\n");
-        // Cell 1: Comment-only code cell (previously could trigger IndentationError in with block)
+        // Cell 1: s = "hello"
         execDoc.notebookDoc->AddCell(phide::editor::NotebookCellType::Code);
-        execDoc.notebookDoc->cells[1].inputBuffer.SetText(L"# Just a comment inside a code cell\n");
-        // Cell 2: Code cell defining variable
+        execDoc.notebookDoc->cells[1].inputBuffer.SetText(L"s = \"hello\"");
+        // Cell 2: print(s)
         execDoc.notebookDoc->AddCell(phide::editor::NotebookCellType::Code);
-        execDoc.notebookDoc->cells[2].inputBuffer.SetText(L"hello = \"world\"");
-        // Cell 3: Code cell printing variable
+        execDoc.notebookDoc->cells[2].inputBuffer.SetText(L"print(s)");
+        // Cell 3: s = "hi"
         execDoc.notebookDoc->AddCell(phide::editor::NotebookCellType::Code);
-        execDoc.notebookDoc->cells[3].inputBuffer.SetText(L"print(hello)");
+        execDoc.notebookDoc->cells[3].inputBuffer.SetText(L"s = \"hi\"");
 
-        // Run Cell 2: defines hello = "world" (with prior markdown and comment code cells)
+        // Run Cell 1: s = "hello" (Assignment: produces no output, so output box is suppressed)
+        nbView.RunCell(1, execDoc, nullptr);
+        while (nbView.IsExecuting() || execDoc.notebookDoc->cells[1].isExecuting) {
+            Sleep(50);
+        }
+        assert(execDoc.notebookDoc->cells[1].outputs.empty()); // No empty output box!
+        assert(!execDoc.notebookDoc->cells[1].hasError);
+        assert(execDoc.notebookDoc->cells[1].executionCount == 1);
+
+        // Run Cell 1 a second time: verify execution count increments to 2!
+        nbView.RunCell(1, execDoc, nullptr);
+        while (nbView.IsExecuting() || execDoc.notebookDoc->cells[1].isExecuting) {
+            Sleep(50);
+        }
+        assert(execDoc.notebookDoc->cells[1].executionCount == 2);
+        std::cout << "  Passed: Assignment cell suppresses empty output box and execution count increments (1 -> 2)" << std::endl;
+
+        // Run Cell 2: print(s) -> prints "hello"
         nbView.RunCell(2, execDoc, nullptr);
         while (nbView.IsExecuting() || execDoc.notebookDoc->cells[2].isExecuting) {
             Sleep(50);
         }
         assert(!execDoc.notebookDoc->cells[2].outputs.empty());
         assert(!execDoc.notebookDoc->cells[2].hasError);
+        assert(execDoc.notebookDoc->cells[2].outputs[0].text.find(L"hello") != std::wstring::npos);
+        assert(execDoc.notebookDoc->cells[2].executionCount == 1);
 
-        // Run Cell 3: prints hello
+        // Run Cell 3: s = "hi" (Updates state in persistent kernel)
         nbView.RunCell(3, execDoc, nullptr);
         while (nbView.IsExecuting() || execDoc.notebookDoc->cells[3].isExecuting) {
             Sleep(50);
         }
-        assert(!execDoc.notebookDoc->cells[3].outputs.empty());
+        assert(execDoc.notebookDoc->cells[3].outputs.empty());
         assert(!execDoc.notebookDoc->cells[3].hasError);
-        assert(execDoc.notebookDoc->cells[3].outputs[0].text.find(L"world") != std::wstring::npos);
-        std::cout << "  Passed: Persistent variable sharing and IndentationError fix verified (Cell 3 accesses 'hello' with prior comments/text cells)" << std::endl;
+        assert(execDoc.notebookDoc->cells[3].executionCount == 1);
+
+        // Re-run Cell 2: print(s) -> Now MUST print "hi" because kernel state is persistent (Jupyter/Colab model!)
+        nbView.RunCell(2, execDoc, nullptr);
+        while (nbView.IsExecuting() || execDoc.notebookDoc->cells[2].isExecuting) {
+            Sleep(50);
+        }
+        assert(!execDoc.notebookDoc->cells[2].outputs.empty());
+        assert(!execDoc.notebookDoc->cells[2].hasError);
+        assert(execDoc.notebookDoc->cells[2].outputs[0].text.find(L"hi") != std::wstring::npos);
+        assert(execDoc.notebookDoc->cells[2].executionCount == 2); // Incremented from 1 to 2!
+        std::cout << "  Passed: Persistent stateful Python kernel verified! Re-running Cell 2 printed 'hi' updated by Cell 3!" << std::endl;
 
         // 9. Verify Drag-and-Drop Cell Reorganization
         phide::editor::OpenDocument dragDoc;

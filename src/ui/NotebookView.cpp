@@ -279,7 +279,7 @@ void NotebookView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
             for (const auto& out : cell.outputs) {
                 outLines += std::count(out.text.begin(), out.text.end(), L'\n') + 1;
             }
-            float rawOutH = static_cast<float>(outLines) * config.ScaleF(18.0f) + config.ScaleF(26.0f);
+            float rawOutH = static_cast<float>(outLines) * config.ScaleF(18.0f) + config.ScaleF(12.0f);
             outputH = (std::min)(config.ScaleF(300.0f), rawOutH);
         }
 
@@ -556,33 +556,19 @@ void NotebookView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
                     }
                 }
 
-                // Output header / status
+                // Output text (rendered cleanly without any "stdout" label, Colab/Jupyter standard)
                 const auto& firstOut = cell.outputs[0];
-                std::wstring outHeader = firstOut.isError ? L"stderr (Error)" : L"stdout";
-                if (firstOut.elapsedMs > 0) {
-                    outHeader += L" (" + std::to_wstring(firstOut.elapsedMs) + L" ms)";
-                }
-
-                D2D1_RECT_F rcHead = D2D1::RectF(cell.outputAreaBounds.left + config.ScaleF(12.0f),
-                                                outTop + config.ScaleF(4.0f),
-                                                cell.outputAreaBounds.right,
-                                                outTop + config.ScaleF(20.0f));
-                Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushHead;
-                if (firstOut.isError) {
-                    pRT->CreateSolidColorBrush(D2D1::ColorF(0.95f, 0.38f, 0.38f, 1.0f), &brushHead);
-                } else {
-                    pRT->CreateSolidColorBrush(D2D1::ColorF(0.35f, 0.85f, 0.55f, 1.0f), &brushHead);
-                }
-                pRT->DrawText(outHeader.c_str(), static_cast<UINT32>(outHeader.length()),
-                              theme.fontBadge.Get() ? theme.fontBadge.Get() : theme.fontCode.Get(), rcHead,
-                              brushHead ? brushHead.Get() : theme.brushTextPrimary.Get());
-
-                // Output text (rendered in red on error)
                 D2D1_RECT_F rcOutText = D2D1::RectF(cell.outputAreaBounds.left + config.ScaleF(12.0f),
-                                                   outTop + config.ScaleF(22.0f),
+                                                   outTop + config.ScaleF(6.0f),
                                                    cell.outputAreaBounds.right - config.ScaleF(10.0f),
                                                    cell.outputAreaBounds.bottom - config.ScaleF(4.0f));
-                ID2D1Brush* outTextBrush = firstOut.isError ? brushHead.Get() : theme.brushTextPrimary.Get();
+
+                ID2D1Brush* outTextBrush = theme.brushTextPrimary.Get();
+                Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushErrText;
+                if (firstOut.isError) {
+                    pRT->CreateSolidColorBrush(D2D1::ColorF(0.95f, 0.38f, 0.38f, 1.0f), &brushErrText);
+                    if (brushErrText) outTextBrush = brushErrText.Get();
+                }
                 pRT->DrawText(firstOut.text.c_str(), static_cast<UINT32>(firstOut.text.length()),
                               theme.fontCode.Get(), rcOutText, outTextBrush ? outTextBrush : theme.brushTextPrimary.Get());
             } else {
@@ -1128,7 +1114,6 @@ void NotebookView::RunCell(int cellIdx, editor::OpenDocument& doc, HWND hwnd) {
     }
 
     cell.isExecuting = true;
-    cell.executionCount = -2; // [*]
     cell.outputs.clear();
     cell.hasError = false;
     m_isExecuting.store(true);
@@ -1183,6 +1168,7 @@ void NotebookView::StopExecution(editor::OpenDocument& doc) {
 
 void NotebookView::RestartKernel(editor::OpenDocument& doc) {
     StopExecution(doc);
+    m_kernel.Restart();
     if (doc.notebookDoc) {
         doc.notebookDoc->ClearAllOutputs();
     }
@@ -1192,6 +1178,7 @@ void NotebookView::StopExecution_Internal() {
     m_shouldStop.store(true);
     m_isQueueRunning.store(false);
     m_queueNextCellIdx.store(-1);
+    m_kernel.Interrupt();
     std::lock_guard<std::mutex> lock(m_execMutex);
     if (m_hChildProcess) {
         TerminateProcess(m_hChildProcess, 1);
@@ -1204,155 +1191,32 @@ void NotebookView::StopExecution_Internal() {
 
 void NotebookView::ExecuteScriptAsync(int cellIdx, const std::wstring& script, const std::wstring& lang,
                                       std::shared_ptr<editor::NotebookDocument> nbDoc, HWND hwnd) {
-    auto startTime = std::chrono::high_resolution_clock::now();
-
-    // 1. Create temporary script file
-    // To support notebook variable and function persistence across cells (e.g. cell 1: hello = "world",
-    // cell 2: print(hello)), all prior code cells (0 to cellIdx - 1) are replayed in the session
-    // with stdout/stderr silenced to os.devnull. Then the target cell runs with full stdout/stderr capture!
-    wchar_t tempPath[MAX_PATH]{};
-    GetTempPathW(MAX_PATH, tempPath);
-    std::wstring scriptFile = std::wstring(tempPath) + L"phide_nb_" + std::to_wstring(GetTickCount64()) + L".py";
-
-    // Write script UTF-8
-    {
-        std::ofstream ofs(scriptFile, std::ios::out | std::ios::binary | std::ios::trunc);
-        if (ofs.is_open()) {
-            std::string fullScript;
-            fullScript += "import sys, os, contextlib\n\n";
-
-            // Replay prior code cells inside a silenced context so variables/functions persist
-            bool hasPriorCode = false;
-            std::string priorCode;
-            if (nbDoc) {
-                for (int i = 0; i < cellIdx; ++i) {
-                    if (i < static_cast<int>(nbDoc->cells.size()) &&
-                        nbDoc->cells[i].type == editor::NotebookCellType::Code) {
-                        std::string cellCode = nbDoc->WideToUtf8(nbDoc->cells[i].inputBuffer.GetText());
-                        if (!cellCode.empty()) {
-                            priorCode += cellCode;
-                            if (priorCode.back() != '\n') priorCode += "\n";
-                            hasPriorCode = true;
-                        }
-                    }
-                }
-            }
-
-            if (hasPriorCode) {
-                fullScript += "try:\n";
-                fullScript += "    with open(os.devnull, 'w') as _null_f, contextlib.redirect_stdout(_null_f), contextlib.redirect_stderr(_null_f):\n";
-                fullScript += "        pass\n";
-                std::istringstream pss(priorCode);
-                std::string line;
-                while (std::getline(pss, line)) {
-                    while (!line.empty() && (line.back() == '\r' || line.back() == '\n')) {
-                        line.pop_back();
-                    }
-                    fullScript += "        " + line + "\n";
-                }
-                fullScript += "except Exception:\n";
-                fullScript += "    pass\n\n";
-            }
-
-            // Target cell code executes directly with live stdout and stderr
-            std::string targetCode = nbDoc ? nbDoc->WideToUtf8(script) : "";
-            fullScript += "# --- Target Cell Execution ---\n";
-            fullScript += targetCode;
-            if (!fullScript.empty() && fullScript.back() != '\n') fullScript += "\n";
-
-            ofs.write(fullScript.data(), fullScript.size());
-            ofs.close();
-        }
-    }
-
-    // 2. Prepare child process with anonymous pipes
     std::wstring pyExe = FindPythonExecutable();
-    std::wstring cmd = L"\"" + pyExe + L"\" -u \"" + scriptFile + L"\"";
+    auto kernelResult = m_kernel.Execute(script, pyExe);
 
-    SECURITY_ATTRIBUTES sa{};
-    sa.nLength = sizeof(sa);
-    sa.bInheritHandle = TRUE;
-
-    HANDLE hStdOutRead = NULL;
-    HANDLE hStdOutWrite = NULL;
-    CreatePipe(&hStdOutRead, &hStdOutWrite, &sa, 0);
-    SetHandleInformation(hStdOutRead, HANDLE_FLAG_INHERIT, 0);
-
-    STARTUPINFOW si{};
-    si.cb = sizeof(si);
-    si.dwFlags |= STARTF_USESTDHANDLES | STARTF_USESHOWWINDOW;
-    si.hStdOutput = hStdOutWrite;
-    si.hStdError = hStdOutWrite;
-    si.wShowWindow = SW_HIDE;
-
-    PROCESS_INFORMATION pi{};
-    std::vector<wchar_t> cmdBuf(cmd.begin(), cmd.end());
-    cmdBuf.push_back(L'\0');
-
-    std::wstring capturedOutput;
-    DWORD exitCode = 0;
-
-    BOOL ok = CreateProcessW(
-        nullptr, cmdBuf.data(),
-        nullptr, nullptr, TRUE,
-        CREATE_NO_WINDOW, nullptr,
-        m_workspacePath.empty() ? nullptr : m_workspacePath.c_str(),
-        &si, &pi
-    );
-
-    CloseHandle(hStdOutWrite); // Close write end in parent
-
-    if (ok) {
-        {
-            std::lock_guard<std::mutex> lock(m_execMutex);
-            m_hChildProcess = pi.hProcess;
-        }
-
-        char buffer[4096];
-        DWORD bytesRead = 0;
-        while (ReadFile(hStdOutRead, buffer, sizeof(buffer) - 1, &bytesRead, nullptr) && bytesRead > 0) {
-            buffer[bytesRead] = '\0';
-            capturedOutput += nbDoc->Utf8ToWide(std::string(buffer, bytesRead));
-        }
-
-        WaitForSingleObject(pi.hProcess, 30000); // 30s timeout
-        GetExitCodeProcess(pi.hProcess, &exitCode);
-
-        {
-            std::lock_guard<std::mutex> lock(m_execMutex);
-            if (m_hChildProcess) {
-                CloseHandle(m_hChildProcess);
-                m_hChildProcess = NULL;
-            }
-        }
-        CloseHandle(pi.hThread);
-    } else {
-        capturedOutput = L"Error: Failed to launch execution engine (" + pyExe + L").\nCheck that Python is installed or active in your virtual environment.";
-        exitCode = 1;
-    }
-
-    CloseHandle(hStdOutRead);
-    std::error_code ecDel;
-    std::filesystem::remove(scriptFile, ecDel);
-
-    auto endTime = std::chrono::high_resolution_clock::now();
-    ULONGLONG elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(endTime - startTime).count();
+    bool hasErr = kernelResult.hasError;
+    std::wstring capturedOutput = kernelResult.output;
+    uint64_t elapsedMs = kernelResult.elapsedMs;
 
     // 3. Update notebook document cell outputs & error state
-    bool hasErr = (exitCode != 0);
     if (nbDoc && cellIdx >= 0 && cellIdx < static_cast<int>(nbDoc->cells.size())) {
         auto& cell = nbDoc->cells[cellIdx];
         cell.isExecuting = false;
         cell.hasError = hasErr;
         cell.lastElapsedMs = elapsedMs;
+        cell.outputs.clear();
 
-        editor::CellOutput out;
-        out.streamName = (exitCode == 0) ? L"stdout" : L"stderr";
-        out.text = capturedOutput.empty() ? L"(Completed with no output)" : capturedOutput;
-        out.isError = hasErr;
-        out.elapsedMs = elapsedMs;
+        // Only add output if there is actual stdout/stderr produced (Jupyter / Colab standard)
+        // Assignment cells like s = "hello" produce no output, so the output box is suppressed
+        if (!capturedOutput.empty()) {
+            editor::CellOutput out;
+            out.streamName = hasErr ? L"stderr" : L"stdout";
+            out.text = capturedOutput;
+            out.isError = hasErr;
+            out.elapsedMs = elapsedMs;
+            cell.outputs.push_back(std::move(out));
+        }
 
-        cell.outputs.push_back(std::move(out));
         // Execution count increment: Each cell increments its own run count by 1 independently
         if (cell.executionCount <= 0) {
             cell.executionCount = 1;
@@ -1380,7 +1244,6 @@ void NotebookView::ExecuteScriptAsync(int cellIdx, const std::wstring& script, c
         if (nextIdx < static_cast<int>(nbDoc->cells.size())) {
             auto& nextCell = nbDoc->cells[nextIdx];
             nextCell.isExecuting = true;
-            nextCell.executionCount = -2;
             nextCell.outputs.clear();
             nextCell.hasError = false;
             m_isExecuting.store(true);

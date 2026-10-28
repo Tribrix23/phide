@@ -20,6 +20,7 @@
 #include "phide/ui/LucideIcons.hpp"
 #include "phide/editor/OpenDocument.hpp"
 #include "phide/editor/NotebookModel.hpp"
+#include "phide/editor/NotebookKernel.hpp"
 
 namespace phide::ui {
 
@@ -106,6 +107,7 @@ private:
     D2D1_RECT_F m_btnClearAll{};
 
     // Background execution engine & sequential queue
+    editor::NotebookKernel m_kernel;
     std::atomic<bool> m_isExecuting{ false };
     std::atomic<int> m_executingCellIdx{ -1 };
     std::atomic<bool> m_shouldStop{ false };
