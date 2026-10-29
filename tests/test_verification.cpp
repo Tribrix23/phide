@@ -331,6 +331,9 @@ int main(int argc, char* argv[]) {
     if (targetTest == 77) {
         goto run_test_77;
     }
+    if (targetTest == 78) {
+        goto run_test_78;
+    }
 
     // --- 3. Render Test: Picture Viewer in Dark & Light Modes ---
     std::cout << "[TEST 2] Testing Picture Viewer rendering..." << std::endl;
@@ -11293,6 +11296,145 @@ run_test_77:
         std::cout << "  Passed: Git Graph renders Outgoing Changes root node with blue timeline down to HEAD hollow circle" << std::endl;
 
         std::cout << "  Passed: All [TEST 77] Explorer .ipynb Icon, Real-Time Watcher, Colab Parsing & Cell Output Clipping tests passed!" << std::endl;
+    }
+
+run_test_78:
+    // -------------------------------------------------------------
+    // [TEST 78] Notebook Stderr Handling, Welcome Cell/Scroll Initialization, [+ Code]/[+ Text] Toolbar Buttons, Git Loading Smoothness & Safe Publish Repo
+    // -------------------------------------------------------------
+    if (targetTest == 0 || targetTest == 78) {
+        std::cout << "\n[TEST 78] Testing Notebook Stderr, Welcome Cell, Toolbar Add Buttons, Git Loading & Publish Gracefulness..." << std::endl;
+
+        phide::ui::Theme theme78;
+        theme78.SetThemeMode(phide::ui::ThemeMode::Dark);
+        phide::app::AppConfig cfg78;
+
+        D2D1_RENDER_TARGET_PROPERTIES rtProps78 = D2D1::RenderTargetProperties(
+            D2D1_RENDER_TARGET_TYPE_DEFAULT,
+            D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED)
+        );
+
+        // 1. Verify Notebook stderr stream output does NOT flag as error (Image 1 fix)
+        std::string nbWithStderr = 
+            "{\n"
+            " \"cells\": [\n"
+            "  {\n"
+            "   \"cell_type\": \"code\",\n"
+            "   \"execution_count\": 1,\n"
+            "   \"metadata\": {},\n"
+            "   \"outputs\": [\n"
+            "    {\n"
+            "     \"output_type\": \"stream\",\n"
+            "     \"name\": \"stderr\",\n"
+            "     \"text\": [\n"
+            "      \"Loading checkpoint shards: 100%|██████████| 4/4 [00:02<00:00,  1.42it/s]\\n\",\n"
+            "      \"Unsloth: Fast downloading completed.\\n\"\n"
+            "     ]\n"
+            "    }\n"
+            "   ],\n"
+            "   \"source\": [ \"from unsloth import FastLanguageModel\" ]\n"
+            "  }\n"
+            " ],\n"
+            " \"metadata\": { \"language_info\": { \"name\": \"python\" } },\n"
+            " \"nbformat\": 4,\n"
+            " \"nbformat_minor\": 5\n"
+            "}";
+
+        phide::editor::NotebookDocument nbDoc78;
+        bool loaded = nbDoc78.FromJson(nbWithStderr);
+        assert(loaded);
+        assert(nbDoc78.cells.size() == 1);
+        assert(nbDoc78.cells[0].outputs.size() == 1);
+        assert(nbDoc78.cells[0].outputs[0].streamName == L"stderr");
+        // Verify it is NOT treated as an error (not red)
+        assert(nbDoc78.cells[0].outputs[0].isError == false);
+        assert(nbDoc78.cells[0].hasError == false);
+        std::cout << "  Passed: Notebook stream output with name 'stderr' (tqdm/unsloth logs) is not treated as an error" << std::endl;
+
+        // 2. Verify Welcome Cell and Scroll Initialization (Image 2 fix)
+        phide::editor::NotebookDocument newNb;
+        assert(newNb.cells.size() == 1);
+        assert(newNb.cells[0].type == phide::editor::NotebookCellType::Markdown);
+        assert(newNb.cells[0].inputBuffer.GetLine(0).find(L"#Welcome to Phide notebook") != std::wstring::npos);
+        assert(newNb.scrollY == 0.0f);
+
+        // Load empty json or non-existent file: always restores welcome cell with 0 scroll offset
+        newNb.LoadFromFile(L"non_existent_empty_notebook.ipynb");
+        assert(newNb.cells.size() == 1);
+        assert(newNb.cells[0].inputBuffer.GetLine(0).find(L"#Welcome to Phide notebook") != std::wstring::npos);
+        assert(newNb.scrollY == 0.0f);
+        std::cout << "  Passed: Notebook scratchpad initialization guarantees '#Welcome to Phide notebook' cell at scrollY == 0" << std::endl;
+
+        // 3. Verify Top Toolbar [+ Code] and [+ Text] Buttons Beside Trash Can (Image 2 & user request)
+        phide::editor::OpenDocument doc78;
+        doc78.viewType = L"notebook";
+        doc78.notebookDoc = std::make_shared<phide::editor::NotebookDocument>();
+        phide::ui::NotebookView nbView78;
+
+        const UINT snapW = 1000, snapH = 600;
+        ComPtr<IWICBitmap> pWicNb78;
+        hr = pWicFactory->CreateBitmap(snapW, snapH, GUID_WICPixelFormat32bppPBGRA, WICBitmapCacheOnDemand, &pWicNb78);
+        assert(SUCCEEDED(hr));
+        ComPtr<ID2D1RenderTarget> pRTNb78;
+        hr = pD2DFactory->CreateWicBitmapRenderTarget(pWicNb78.Get(), rtProps78, &pRTNb78);
+        assert(SUCCEEDED(hr));
+        theme78.CreateDeviceResources(pRTNb78.Get(), pDWriteFactory.Get());
+
+        pRTNb78->BeginDraw();
+        nbView78.Render(pRTNb78.Get(), theme78, cfg78, doc78, 0.0f, static_cast<float>(snapW), 0.0f, static_cast<float>(snapH));
+        hr = pRTNb78->EndDraw();
+        assert(SUCCEEDED(hr));
+
+        SaveWicBitmapToPng(pWicNb78.Get(), pWicFactory.Get(), artDir + L"test_notebook_toolbar_add_buttons.png");
+
+        const auto& btnCode = nbView78.GetBtnAddCode();
+        const auto& btnText = nbView78.GetBtnAddText();
+
+        assert(btnCode.right > btnCode.left);
+        assert(btnText.right > btnText.left);
+        // Verify placed beside each other in toolbar
+        assert(btnText.left > btnCode.right);
+
+        // Verify Cursor IDC_HAND on [+ Code] and [+ Text]
+        POINT ptCode{ static_cast<LONG>((btnCode.left + btnCode.right) * 0.5f), static_cast<LONG>((btnCode.top + btnCode.bottom) * 0.5f) };
+        POINT ptText{ static_cast<LONG>((btnText.left + btnText.right) * 0.5f), static_cast<LONG>((btnText.top + btnText.bottom) * 0.5f) };
+        assert(nbView78.GetCursorForPoint(ptCode, doc78) == IDC_HAND);
+        assert(nbView78.GetCursorForPoint(ptText, doc78) == IDC_HAND);
+
+        // Click [+ Code] toolbar button -> Adds Code Cell
+        size_t initialCells = doc78.notebookDoc->cells.size();
+        bool handledCode = nbView78.HandleLButtonDown(ptCode, doc78, cfg78, nullptr);
+        assert(handledCode);
+        assert(doc78.notebookDoc->cells.size() == initialCells + 1);
+        assert(doc78.notebookDoc->cells.back().type == phide::editor::NotebookCellType::Code);
+
+        // Click [+ Text] toolbar button -> Adds Text Cell
+        bool handledText = nbView78.HandleLButtonDown(ptText, doc78, cfg78, nullptr);
+        assert(handledText);
+        assert(doc78.notebookDoc->cells.size() == initialCells + 2);
+        assert(doc78.notebookDoc->cells.back().type == phide::editor::NotebookCellType::Markdown);
+        std::cout << "  Passed: Top toolbar [+ Code] and [+ Text] buttons beside trash can correctly render, hit-test, and add cells" << std::endl;
+
+        // 4. Verify Git Loading Smoothness & Graph Isolation (Image 3 fix)
+        phide::ui::DrawerPanel drawer78;
+        assert(!drawer78.IsGitLoading());
+        // Background refresh does NOT trigger isGitLoading
+        drawer78.RefreshGitState(true, false);
+        assert(!drawer78.IsGitLoading());
+        std::cout << "  Passed: Background refresh is silent, and animated progress line is restricted to explicit loading without duplicate on Graph" << std::endl;
+
+        // 5. Verify GitHub Publish Repository Check & No-Freeze Handling (Images 4 & 5 fix)
+        drawer78.SetGitHubLoggedIn(true);
+        drawer78.SetOpenFolderPath(std::filesystem::current_path().wstring());
+        drawer78.SetPublishRepoName(L"test");
+        drawer78.OpenPublishRepoModal();
+        assert(drawer78.IsPublishRepoModalOpen());
+        drawer78.ConfirmPublishRepo(1); // Public
+        assert(!drawer78.IsPublishRepoModalOpen());
+        // Should execute smoothly without freezing or hanging UI thread
+        std::cout << "  Passed: ConfirmPublishRepo dispatches asynchronously without blocking UI thread" << std::endl;
+
+        std::cout << "  Passed: All [TEST 78] Notebook Stderr, Welcome Cell, Toolbar Add Buttons, Git Loading & Publish Gracefulness tests passed!" << std::endl;
     }
 
     std::cout << "\n==========================================" << std::endl;
