@@ -2489,36 +2489,56 @@ void EditorCanvas::RenderUnsupportedBinaryView(ID2D1RenderTarget* pRT, Theme& th
 }
 
 /**
- * @brief Renders the Student Tutorials & Learning Hub view (Student hat 🎓).
+ * @brief Renders the Student Tutorials & Learning Hub view (Student hat 🎓) with modern Academy layout.
  */
 void EditorCanvas::RenderStudentView(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
                                      editor::OpenDocument& doc, float canvasLeft, float canvasWidth,
                                      float topY, float clientHeight) {
-    const float availH = clientHeight - topY;
+    if (!pRT) return;
+
     const float centerX = canvasLeft + canvasWidth / 2.0f;
-    const float startY = topY + config.ScaleF(40.0f);
+    const float startY = topY + config.ScaleF(28.0f);
+    const float maxHubW = (std::min)(config.ScaleF(820.0f), (std::max)(config.ScaleF(400.0f), canvasWidth - config.ScaleF(48.0f)));
+    const float hubLeft = centerX - maxHubW / 2.0f;
 
-    // 1. Student Hat Icon Badge in center
-    const float badgeSize = config.ScaleF(56.0f);
-    D2D1_RECT_F rcBadge = D2D1::RectF(centerX - badgeSize / 2.0f, startY, centerX + badgeSize / 2.0f, startY + badgeSize);
-    D2D1_ROUNDED_RECT rrcBadge = D2D1::RoundedRect(rcBadge, config.ScaleF(12.0f), config.ScaleF(12.0f));
+    // 1. Academy Badge & Glowing Emblem
+    const float badgeH = config.ScaleF(28.0f);
+    const float badgeW = config.ScaleF(200.0f);
+    D2D1_RECT_F rcBadge = D2D1::RectF(centerX - badgeW / 2.0f, startY, centerX + badgeW / 2.0f, startY + badgeH);
+    D2D1_ROUNDED_RECT rrcBadge = D2D1::RoundedRect(rcBadge, badgeH / 2.0f, badgeH / 2.0f);
 
-    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> badgeBgBrush;
-    pRT->CreateSolidColorBrush(D2D1::ColorF(0.55f, 0.25f, 0.95f, 0.18f), &badgeBgBrush);
-    if (badgeBgBrush) pRT->FillRoundedRectangle(rrcBadge, badgeBgBrush.Get());
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> badgeGlowBrush;
+    pRT->CreateSolidColorBrush(D2D1::ColorF(0.55f, 0.25f, 0.95f, 0.18f), &badgeGlowBrush);
+    if (badgeGlowBrush) pRT->FillRoundedRectangle(rrcBadge, badgeGlowBrush.Get());
 
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> badgeBorderBrush;
-    pRT->CreateSolidColorBrush(D2D1::ColorF(0.65f, 0.35f, 1.0f, 0.60f), &badgeBorderBrush);
-    if (badgeBorderBrush) pRT->DrawRoundedRectangle(rrcBadge, badgeBorderBrush.Get(), 1.2f);
+    pRT->CreateSolidColorBrush(D2D1::ColorF(0.65f, 0.35f, 1.0f, 0.55f), &badgeBorderBrush);
+    if (badgeBorderBrush) pRT->DrawRoundedRectangle(rrcBadge, badgeBorderBrush.Get(), 1.0f);
 
-    m_icons.DrawGraduationCap(pRT, rcBadge, theme.brushBrandAccent ? theme.brushBrandAccent.Get() : theme.brushTextWhite.Get(), 2.0f);
+    // Graduation cap icon inside badge pill
+    const float iconSize = config.ScaleF(16.0f);
+    D2D1_RECT_F rcIcon = D2D1::RectF(rcBadge.left + config.ScaleF(10.0f), rcBadge.top + (badgeH - iconSize) / 2.0f,
+                                     rcBadge.left + config.ScaleF(10.0f) + iconSize, rcBadge.top + (badgeH + iconSize) / 2.0f);
+    m_icons.DrawGraduationCap(pRT, rcIcon, theme.brushBrandAccent ? theme.brushBrandAccent.Get() : theme.brushTextWhite.Get(), 1.6f);
 
-    // 2. Title: "Student Tutorials & Learning Hub"
-    const wchar_t* titleStr = L"Student Tutorials & Learning Hub";
-    const float titleW = config.ScaleF(600.0f);
-    const float titleH = config.ScaleF(32.0f);
-    D2D1_RECT_F rcTitle = D2D1::RectF(centerX - titleW / 2.0f, startY + badgeSize + config.ScaleF(16.0f),
-                                     centerX + titleW / 2.0f, startY + badgeSize + config.ScaleF(16.0f) + titleH);
+    // Badge text: "PHIDE ACADEMY"
+    const wchar_t* badgeText = L"PHIDE ACADEMY & LABS";
+    D2D1_RECT_F rcBadgeText = D2D1::RectF(rcIcon.right + config.ScaleF(6.0f), rcBadge.top + config.ScaleF(5.0f),
+                                         rcBadge.right - config.ScaleF(10.0f), rcBadge.bottom - config.ScaleF(5.0f));
+    IDWriteTextFormat* pFmtBadge = theme.fontBadge ? theme.fontBadge.Get() : theme.fontHint.Get();
+    if (pFmtBadge) {
+        DWRITE_TEXT_ALIGNMENT oldAlign = pFmtBadge->GetTextAlignment();
+        pFmtBadge->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
+        pRT->DrawText(badgeText, static_cast<UINT32>(wcslen(badgeText)), pFmtBadge, rcBadgeText,
+                      theme.brushBrandAccent ? theme.brushBrandAccent.Get() : theme.brushTextWhite.Get());
+        pFmtBadge->SetTextAlignment(oldAlign);
+    }
+
+    // 2. Main Title: "Student Tutorials & Interactive Academy"
+    const wchar_t* titleStr = L"Student Tutorials & Interactive Academy";
+    const float titleH = config.ScaleF(34.0f);
+    D2D1_RECT_F rcTitle = D2D1::RectF(hubLeft, rcBadge.bottom + config.ScaleF(14.0f),
+                                     hubLeft + maxHubW, rcBadge.bottom + config.ScaleF(14.0f) + titleH);
     IDWriteTextFormat* pFmtTitle = theme.fontTitle ? theme.fontTitle.Get() : theme.fontSectionHeader.Get();
     if (pFmtTitle) {
         DWRITE_TEXT_ALIGNMENT oldAlign = pFmtTitle->GetTextAlignment();
@@ -2529,9 +2549,9 @@ void EditorCanvas::RenderStudentView(ID2D1RenderTarget* pRT, Theme& theme, const
     }
 
     // 3. Subtitle
-    const wchar_t* subStr = L"Comprehensive guides, syntax references, and practical development tutorials.";
-    D2D1_RECT_F rcSub = D2D1::RectF(centerX - titleW / 2.0f, rcTitle.bottom + config.ScaleF(4.0f),
-                                   centerX + titleW / 2.0f, rcTitle.bottom + config.ScaleF(28.0f));
+    const wchar_t* subStr = L"Hands-on interactive guides, code playgrounds, notebooks, and database references.";
+    D2D1_RECT_F rcSub = D2D1::RectF(hubLeft, rcTitle.bottom + config.ScaleF(2.0f),
+                                   hubLeft + maxHubW, rcTitle.bottom + config.ScaleF(24.0f));
     IDWriteTextFormat* pFmtSub = theme.fontHint ? theme.fontHint.Get() : theme.fontBody.Get();
     if (pFmtSub) {
         DWRITE_TEXT_ALIGNMENT oldAlign = pFmtSub->GetTextAlignment();
@@ -2541,45 +2561,118 @@ void EditorCanvas::RenderStudentView(ID2D1RenderTarget* pRT, Theme& theme, const
         pFmtSub->SetTextAlignment(oldAlign);
     }
 
-    // 4. Learning Cards Grid (2x2)
+    // 4. Learning Cards Grid (2x2) with Modern Layout
     struct TutorialCard {
         const wchar_t* title;
+        const wchar_t* tag;
+        const wchar_t* duration;
         const wchar_t* desc;
-        const wchar_t* badge;
+        const wchar_t* actionText;
+        D2D1_COLOR_F accentColor;
     };
     TutorialCard cards[] = {
-        { L"PHP & Web Development", L"Learn modern PHP 8+, Composer packages, and web app creation with built-in live preview.", L"Web" },
-        { L"Python & Interactive Notebooks", L"Explore data analysis, scripts, and Jupyter notebooks with rich interactive cells.", L"Data" },
-        { L"Git & GitHub Workflows", L"Master staging, commit history, branch management, and GitHub repository synchronization.", L"Git" },
-        { L"Database Studio & SQL", L"Query and manage MySQL, SQLite, and PostgreSQL databases directly inside Phide.", L"DB" }
+        {
+            L"PHP 8.2 & Modern Web Development",
+            L"PHP 8.2 • Web Dev",
+            L"⏱ 12 min",
+            L"Master modern PHP 8+, Composer packages, REST APIs, and instant live preview server inside Phide.",
+            L"Start Web Tutorial →",
+            D2D1::ColorF(0.39f, 0.40f, 0.95f, 1.0f) // Electric Indigo
+        },
+        {
+            L"Python, Data Science & Notebooks",
+            L"Python 3 • Jupyter",
+            L"⏱ 15 min",
+            L"Build interactive computational notebooks, mathematical modeling, and AI workflows with rich visual cells.",
+            L"Open Python Notebook →",
+            D2D1::ColorF(0.96f, 0.62f, 0.04f, 1.0f) // Amber / Gold
+        },
+        {
+            L"Git & GitHub Collaborative Workflows",
+            L"Git • Version Control",
+            L"⏱ 10 min",
+            L"Master staging, commit history graphs, smart stashing, and 1-click GitHub repository synchronization.",
+            L"Explore Git Lab →",
+            D2D1::ColorF(0.98f, 0.45f, 0.09f, 1.0f) // Git Coral
+        },
+        {
+            L"Database Studio & SQL Mastery",
+            L"Database • SQL",
+            L"⏱ 8 min",
+            L"Query and manage SQLite, MySQL, and PostgreSQL databases directly inside Phide with table schema inspector.",
+            L"Launch Database Studio →",
+            D2D1::ColorF(0.06f, 0.73f, 0.51f, 1.0f) // Emerald / Cyan
+        }
     };
 
-    const float cardW = config.ScaleF(320.0f);
-    const float cardH = config.ScaleF(110.0f);
     const float cardGap = config.ScaleF(16.0f);
-    const float gridStartX = centerX - cardW - cardGap / 2.0f;
-    const float gridStartY = rcSub.bottom + config.ScaleF(30.0f);
+    const float cardW = (maxHubW - cardGap) / 2.0f;
+    const float cardH = config.ScaleF(138.0f);
+    const float gridStartY = rcSub.bottom + config.ScaleF(24.0f);
 
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> cardBgBrush;
-    pRT->CreateSolidColorBrush(theme.IsDarkMode() ? D2D1::ColorF(0.13f, 0.14f, 0.17f, 0.90f) : D2D1::ColorF(0.96f, 0.97f, 0.98f, 0.95f), &cardBgBrush);
+    pRT->CreateSolidColorBrush(theme.IsDarkMode() ? D2D1::ColorF(0.12f, 0.13f, 0.16f, 0.96f) : D2D1::ColorF(0.96f, 0.97f, 0.99f, 0.96f), &cardBgBrush);
 
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> cardBorderBrush;
-    pRT->CreateSolidColorBrush(theme.IsDarkMode() ? D2D1::ColorF(0.24f, 0.25f, 0.29f, 1.0f) : D2D1::ColorF(0.82f, 0.84f, 0.87f, 1.0f), &cardBorderBrush);
+    pRT->CreateSolidColorBrush(theme.IsDarkMode() ? D2D1::ColorF(0.20f, 0.22f, 0.27f, 1.0f) : D2D1::ColorF(0.84f, 0.86f, 0.89f, 1.0f), &cardBorderBrush);
 
     for (int i = 0; i < 4; ++i) {
         int col = i % 2;
         int row = i / 2;
-        float cx = gridStartX + static_cast<float>(col) * (cardW + cardGap);
+        float cx = hubLeft + static_cast<float>(col) * (cardW + cardGap);
         float cy = gridStartY + static_cast<float>(row) * (cardH + cardGap);
         D2D1_RECT_F rcCard = D2D1::RectF(cx, cy, cx + cardW, cy + cardH);
-        D2D1_ROUNDED_RECT rrcCard = D2D1::RoundedRect(rcCard, config.ScaleF(8.0f), config.ScaleF(8.0f));
+        m_studentCardBounds[i] = rcCard;
+        D2D1_ROUNDED_RECT rrcCard = D2D1::RoundedRect(rcCard, config.ScaleF(10.0f), config.ScaleF(10.0f));
 
         if (cardBgBrush) pRT->FillRoundedRectangle(rrcCard, cardBgBrush.Get());
         if (cardBorderBrush) pRT->DrawRoundedRectangle(rrcCard, cardBorderBrush.Get(), 1.0f);
 
+        // Left Accent Strip
+        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> accentBrush;
+        pRT->CreateSolidColorBrush(cards[i].accentColor, &accentBrush);
+        if (accentBrush) {
+            D2D1_RECT_F rcStrip = D2D1::RectF(cx + config.ScaleF(2.0f), cy + config.ScaleF(12.0f),
+                                              cx + config.ScaleF(5.5f), cy + cardH - config.ScaleF(12.0f));
+            D2D1_ROUNDED_RECT rrcStrip = D2D1::RoundedRect(rcStrip, 2.0f, 2.0f);
+            pRT->FillRoundedRectangle(rrcStrip, accentBrush.Get());
+        }
+
+        // Tag Pill & Duration
+        const float tagPadX = config.ScaleF(16.0f);
+        const float tagTop = cy + config.ScaleF(14.0f);
+        const float tagW = config.ScaleF(120.0f);
+        const float tagH = config.ScaleF(20.0f);
+        D2D1_RECT_F rcTag = D2D1::RectF(cx + tagPadX, tagTop, cx + tagPadX + tagW, tagTop + tagH);
+        D2D1_ROUNDED_RECT rrcTag = D2D1::RoundedRect(rcTag, 4.0f, 4.0f);
+
+        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> tagBgBrush;
+        pRT->CreateSolidColorBrush(D2D1::ColorF(cards[i].accentColor.r, cards[i].accentColor.g, cards[i].accentColor.b, 0.15f), &tagBgBrush);
+        if (tagBgBrush) pRT->FillRoundedRectangle(rrcTag, tagBgBrush.Get());
+
+        if (pFmtBadge && accentBrush) {
+            DWRITE_TEXT_ALIGNMENT oldAlign = pFmtBadge->GetTextAlignment();
+            pFmtBadge->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+            pRT->DrawText(cards[i].tag, static_cast<UINT32>(wcslen(cards[i].tag)), pFmtBadge, rcTag, accentBrush.Get());
+            pFmtBadge->SetTextAlignment(oldAlign);
+        }
+
+        // Duration text on top right
+        D2D1_RECT_F rcDur = D2D1::RectF(cx + cardW - config.ScaleF(90.0f), tagTop + config.ScaleF(2.0f),
+                                       cx + cardW - config.ScaleF(16.0f), tagTop + tagH);
+        IDWriteTextFormat* pFmtDur = theme.fontHint ? theme.fontHint.Get() : theme.fontBody.Get();
+        if (pFmtDur) {
+            DWRITE_TEXT_ALIGNMENT oldAlign = pFmtDur->GetTextAlignment();
+            pFmtDur->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_TRAILING);
+            pRT->DrawText(cards[i].duration, static_cast<UINT32>(wcslen(cards[i].duration)), pFmtDur, rcDur,
+                          theme.brushTextMuted ? theme.brushTextMuted.Get() : theme.brushTextSecondary.Get());
+            pFmtDur->SetTextAlignment(oldAlign);
+        }
+
         // Card Title
-        D2D1_RECT_F rcCardTitle = D2D1::RectF(cx + config.ScaleF(14.0f), cy + config.ScaleF(14.0f),
-                                             cx + cardW - config.ScaleF(60.0f), cy + config.ScaleF(36.0f));
+        const float titleTop = tagTop + tagH + config.ScaleF(8.0f);
+        D2D1_RECT_F rcCardTitle = D2D1::RectF(cx + tagPadX, titleTop,
+                                             cx + cardW - config.ScaleF(16.0f), titleTop + config.ScaleF(22.0f));
         IDWriteTextFormat* pFmtCardTitle = theme.fontSectionHeader ? theme.fontSectionHeader.Get() : theme.fontBody.Get();
         if (pFmtCardTitle) {
             DWRITE_TEXT_ALIGNMENT oldAlign = pFmtCardTitle->GetTextAlignment();
@@ -2589,25 +2682,10 @@ void EditorCanvas::RenderStudentView(ID2D1RenderTarget* pRT, Theme& theme, const
             pFmtCardTitle->SetTextAlignment(oldAlign);
         }
 
-        // Category Badge
-        const float badgeW = config.ScaleF(40.0f);
-        const float badgeH = config.ScaleF(18.0f);
-        D2D1_RECT_F rcCatBadge = D2D1::RectF(cx + cardW - config.ScaleF(14.0f) - badgeW, cy + config.ScaleF(14.0f),
-                                            cx + cardW - config.ScaleF(14.0f), cy + config.ScaleF(14.0f) + badgeH);
-        D2D1_ROUNDED_RECT rrcCatBadge = D2D1::RoundedRect(rcCatBadge, 3.0f, 3.0f);
-        if (badgeBgBrush) pRT->FillRoundedRectangle(rrcCatBadge, badgeBgBrush.Get());
-        IDWriteTextFormat* pFmtBadge = theme.fontBadge ? theme.fontBadge.Get() : theme.fontHint.Get();
-        if (pFmtBadge) {
-            DWRITE_TEXT_ALIGNMENT oldAlign = pFmtBadge->GetTextAlignment();
-            pFmtBadge->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
-            pRT->DrawText(cards[i].badge, static_cast<UINT32>(wcslen(cards[i].badge)), pFmtBadge, rcCatBadge,
-                          theme.brushBrandAccent ? theme.brushBrandAccent.Get() : theme.brushTextWhite.Get());
-            pFmtBadge->SetTextAlignment(oldAlign);
-        }
-
         // Card Description
-        D2D1_RECT_F rcCardDesc = D2D1::RectF(cx + config.ScaleF(14.0f), cy + config.ScaleF(42.0f),
-                                            cx + cardW - config.ScaleF(14.0f), cy + cardH - config.ScaleF(10.0f));
+        const float descTop = rcCardTitle.bottom + config.ScaleF(4.0f);
+        D2D1_RECT_F rcCardDesc = D2D1::RectF(cx + tagPadX, descTop,
+                                            cx + cardW - config.ScaleF(16.0f), descTop + config.ScaleF(34.0f));
         IDWriteTextFormat* pFmtCardDesc = theme.fontHint ? theme.fontHint.Get() : theme.fontBody.Get();
         if (pFmtCardDesc) {
             DWRITE_TEXT_ALIGNMENT oldAlign = pFmtCardDesc->GetTextAlignment();
@@ -2619,7 +2697,114 @@ void EditorCanvas::RenderStudentView(ID2D1RenderTarget* pRT, Theme& theme, const
             pFmtCardDesc->SetTextAlignment(oldAlign);
             pFmtCardDesc->SetWordWrapping(oldWrap);
         }
+
+        // Action Button Pill at bottom
+        const float btnW = config.ScaleF(150.0f);
+        const float btnH = config.ScaleF(24.0f);
+        D2D1_RECT_F rcAction = D2D1::RectF(cx + tagPadX, cy + cardH - btnH - config.ScaleF(10.0f),
+                                          cx + tagPadX + btnW, cy + cardH - config.ScaleF(10.0f));
+        m_studentCardBtnBounds[i] = rcAction;
+        D2D1_ROUNDED_RECT rrcAction = D2D1::RoundedRect(rcAction, 4.0f, 4.0f);
+
+        if (tagBgBrush) pRT->FillRoundedRectangle(rrcAction, tagBgBrush.Get());
+        if (accentBrush) {
+            pRT->DrawRoundedRectangle(rrcAction, accentBrush.Get(), 0.8f);
+            if (pFmtBadge) {
+                DWRITE_TEXT_ALIGNMENT oldAlign = pFmtBadge->GetTextAlignment();
+                pFmtBadge->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+                pRT->DrawText(cards[i].actionText, static_cast<UINT32>(wcslen(cards[i].actionText)), pFmtBadge, rcAction, accentBrush.Get());
+                pFmtBadge->SetTextAlignment(oldAlign);
+            }
+        }
     }
+
+    // 5. Bottom Quick Sandboxes Bar
+    const float sandStartY = gridStartY + cardH * 2.0f + cardGap + config.ScaleF(22.0f);
+    D2D1_RECT_F rcSandBar = D2D1::RectF(hubLeft, sandStartY, hubLeft + maxHubW, sandStartY + config.ScaleF(48.0f));
+    D2D1_ROUNDED_RECT rrcSandBar = D2D1::RoundedRect(rcSandBar, config.ScaleF(8.0f), config.ScaleF(8.0f));
+
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> barBgBrush;
+    pRT->CreateSolidColorBrush(theme.IsDarkMode() ? D2D1::ColorF(0.14f, 0.15f, 0.18f, 0.80f) : D2D1::ColorF(0.93f, 0.94f, 0.97f, 0.80f), &barBgBrush);
+    if (barBgBrush) pRT->FillRoundedRectangle(rrcSandBar, barBgBrush.Get());
+    if (cardBorderBrush) pRT->DrawRoundedRectangle(rrcSandBar, cardBorderBrush.Get(), 1.0f);
+
+    // Label: "⚡ Quick Sandboxes:"
+    const wchar_t* sandLabel = L"⚡ Quick Sandboxes:";
+    D2D1_RECT_F rcSandLabel = D2D1::RectF(hubLeft + config.ScaleF(16.0f), sandStartY + config.ScaleF(14.0f),
+                                         hubLeft + config.ScaleF(160.0f), sandStartY + config.ScaleF(34.0f));
+    IDWriteTextFormat* pFmtLabel = theme.fontSectionHeader ? theme.fontSectionHeader.Get() : theme.fontBody.Get();
+    if (pFmtLabel) {
+        pRT->DrawText(sandLabel, static_cast<UINT32>(wcslen(sandLabel)), pFmtLabel, rcSandLabel,
+                      theme.brushTextPrimary ? theme.brushTextPrimary.Get() : theme.brushTextWhite.Get());
+    }
+
+    // Quick Button 1: [ + New Python Notebook ]
+    const float qBtnH = config.ScaleF(28.0f);
+    float qStartX = rcSandLabel.right + config.ScaleF(10.0f);
+    const float qBtn1W = config.ScaleF(165.0f);
+    m_studentQuickNbBtn = D2D1::RectF(qStartX, sandStartY + config.ScaleF(10.0f), qStartX + qBtn1W, sandStartY + config.ScaleF(10.0f) + qBtnH);
+    D2D1_ROUNDED_RECT rrcQ1 = D2D1::RoundedRect(m_studentQuickNbBtn, 4.0f, 4.0f);
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> qBgBrush;
+    pRT->CreateSolidColorBrush(D2D1::ColorF(0.55f, 0.25f, 0.95f, 0.20f), &qBgBrush);
+    if (qBgBrush) pRT->FillRoundedRectangle(rrcQ1, qBgBrush.Get());
+    if (badgeBorderBrush) pRT->DrawRoundedRectangle(rrcQ1, badgeBorderBrush.Get(), 1.0f);
+    const wchar_t* q1Text = L"+ New Python Notebook";
+    if (pFmtBadge) {
+        DWRITE_TEXT_ALIGNMENT oldAlign = pFmtBadge->GetTextAlignment();
+        pFmtBadge->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+        pRT->DrawText(q1Text, static_cast<UINT32>(wcslen(q1Text)), pFmtBadge, m_studentQuickNbBtn,
+                      theme.brushTextWhite ? theme.brushTextWhite.Get() : theme.brushTextPrimary.Get());
+        pFmtBadge->SetTextAlignment(oldAlign);
+    }
+
+    // Quick Button 2: [ + New Web Scratchpad ]
+    qStartX += qBtn1W + config.ScaleF(12.0f);
+    const float qBtn2W = config.ScaleF(155.0f);
+    m_studentQuickScratchBtn = D2D1::RectF(qStartX, sandStartY + config.ScaleF(10.0f), qStartX + qBtn2W, sandStartY + config.ScaleF(10.0f) + qBtnH);
+    D2D1_ROUNDED_RECT rrcQ2 = D2D1::RoundedRect(m_studentQuickScratchBtn, 4.0f, 4.0f);
+    if (qBgBrush) pRT->FillRoundedRectangle(rrcQ2, qBgBrush.Get());
+    if (badgeBorderBrush) pRT->DrawRoundedRectangle(rrcQ2, badgeBorderBrush.Get(), 1.0f);
+    const wchar_t* q2Text = L"+ New Web Scratchpad";
+    if (pFmtBadge) {
+        DWRITE_TEXT_ALIGNMENT oldAlign = pFmtBadge->GetTextAlignment();
+        pFmtBadge->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+        pRT->DrawText(q2Text, static_cast<UINT32>(wcslen(q2Text)), pFmtBadge, m_studentQuickScratchBtn,
+                      theme.brushTextWhite ? theme.brushTextWhite.Get() : theme.brushTextPrimary.Get());
+        pFmtBadge->SetTextAlignment(oldAlign);
+    }
+
+    // Quick Button 3: [ 🗄️ Database Studio ]
+    qStartX += qBtn2W + config.ScaleF(12.0f);
+    const float qBtn3W = config.ScaleF(150.0f);
+    m_studentQuickDbBtn = D2D1::RectF(qStartX, sandStartY + config.ScaleF(10.0f), qStartX + qBtn3W, sandStartY + config.ScaleF(10.0f) + qBtnH);
+    D2D1_ROUNDED_RECT rrcQ3 = D2D1::RoundedRect(m_studentQuickDbBtn, 4.0f, 4.0f);
+    if (qBgBrush) pRT->FillRoundedRectangle(rrcQ3, qBgBrush.Get());
+    if (badgeBorderBrush) pRT->DrawRoundedRectangle(rrcQ3, badgeBorderBrush.Get(), 1.0f);
+    const wchar_t* q3Text = L"Open Database Studio";
+    if (pFmtBadge) {
+        DWRITE_TEXT_ALIGNMENT oldAlign = pFmtBadge->GetTextAlignment();
+        pFmtBadge->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+        pRT->DrawText(q3Text, static_cast<UINT32>(wcslen(q3Text)), pFmtBadge, m_studentQuickDbBtn,
+                      theme.brushTextWhite ? theme.brushTextWhite.Get() : theme.brushTextPrimary.Get());
+        pFmtBadge->SetTextAlignment(oldAlign);
+    }
+}
+
+int EditorCanvas::HitTestStudentView(POINT pt) const {
+    auto PointInRect = [](POINT p, const D2D1_RECT_F& r) -> bool {
+        return p.x >= r.left && p.x <= r.right && p.y >= r.top && p.y <= r.bottom;
+    };
+
+    if (PointInRect(pt, m_studentQuickNbBtn)) return 10;
+    if (PointInRect(pt, m_studentQuickScratchBtn)) return 11;
+    if (PointInRect(pt, m_studentQuickDbBtn)) return 12;
+
+    for (int i = 0; i < 4; ++i) {
+        if (PointInRect(pt, m_studentCardBtnBounds[i]) || PointInRect(pt, m_studentCardBounds[i])) {
+            return i + 1; // 1: PHP, 2: Python, 3: Git, 4: DB
+        }
+    }
+    return 0;
 }
 
 void EditorCanvas::RenderRefactorPopup(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config, float clientHeight) {

@@ -901,43 +901,83 @@ void NotebookView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
                 float totalContentH = static_cast<float>(totalLines) * outLineH + textPadY * 2.0f;
                 float availW = (cell.outputAreaBounds.right - cell.outputAreaBounds.left) - textPadX * 2.0f;
 
-                // 1. Sleek Vertical Scrollbar when output exceeds clamped height
+                // 1. Sleek Vertical Scrollbar when output exceeds clamped height (Thicker, easy-to-drag, with visual track)
                 if (totalContentH > outputH && outputH > config.ScaleF(30.0f)) {
-                    float sbW = config.ScaleF(4.0f);
+                    float sbW = config.ScaleF(8.0f);
                     float sbX = cell.outputAreaBounds.right - sbW - config.ScaleF(3.0f);
                     float trackH = outputH - config.ScaleF(8.0f);
-                    float thumbH = (std::max)(config.ScaleF(18.0f), trackH * (outputH / totalContentH));
+                    float thumbH = (std::max)(config.ScaleF(24.0f), trackH * (outputH / totalContentH));
                     float maxScrollY = totalContentH - outputH;
                     float clampedScrollY = (std::max)(0.0f, (std::min)(cell.outputScrollY, maxScrollY));
                     float thumbY = outTop + config.ScaleF(4.0f) + (clampedScrollY / (maxScrollY > 0.0f ? maxScrollY : 1.0f)) * (trackH - thumbH);
 
+                    cell.outputVScrollTrackBounds = D2D1::RectF(sbX - config.ScaleF(2.0f), outTop + config.ScaleF(4.0f), sbX + sbW + config.ScaleF(2.0f), outTop + config.ScaleF(4.0f) + trackH);
+                    cell.outputVScrollThumbBounds = D2D1::RectF(sbX, thumbY, sbX + sbW, thumbY + thumbH);
+                    cell.outputMaxScrollY = maxScrollY;
+
+                    // Subtle track background
+                    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushTrackY;
+                    pRT->CreateSolidColorBrush(D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.22f), &brushTrackY);
+                    if (brushTrackY) {
+                        D2D1_ROUNDED_RECT rrcTrack = D2D1::RoundedRect(cell.outputVScrollTrackBounds, sbW / 2.0f, sbW / 2.0f);
+                        pRT->FillRoundedRectangle(rrcTrack, brushTrackY.Get());
+                    }
+
+                    bool isDraggingThis = (m_isDraggingOutputVScroll && m_dragOutputCellIdx == static_cast<int>(ci));
                     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushSbY;
-                    pRT->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.25f), &brushSbY);
+                    pRT->CreateSolidColorBrush(isDraggingThis ? D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.65f) : D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.35f), &brushSbY);
                     if (brushSbY) {
-                        D2D1_ROUNDED_RECT rrcSb = D2D1::RoundedRect(D2D1::RectF(sbX, thumbY, sbX + sbW, thumbY + thumbH), 2.0f, 2.0f);
+                        D2D1_ROUNDED_RECT rrcSb = D2D1::RoundedRect(cell.outputVScrollThumbBounds, sbW / 2.0f, sbW / 2.0f);
                         pRT->FillRoundedRectangle(rrcSb, brushSbY.Get());
                     }
+                } else {
+                    cell.outputVScrollTrackBounds = D2D1::RectF(0, 0, 0, 0);
+                    cell.outputVScrollThumbBounds = D2D1::RectF(0, 0, 0, 0);
+                    cell.outputMaxScrollY = 0.0f;
                 }
 
-                // 2. Sleek Horizontal Scrollbar when long lines exceed width
+                // 2. Sleek Horizontal Scrollbar when long lines exceed width (Thicker, easy-to-drag, with visual track)
                 if (maxLineWidth > availW && availW > config.ScaleF(30.0f)) {
-                    float sbH = config.ScaleF(4.0f);
+                    float sbH = config.ScaleF(8.0f);
                     float sbY = cell.outputAreaBounds.bottom - sbH - config.ScaleF(3.0f);
                     float trackW = availW;
-                    float thumbW = (std::max)(config.ScaleF(24.0f), trackW * (availW / maxLineWidth));
+                    float thumbW = (std::max)(config.ScaleF(28.0f), trackW * (availW / maxLineWidth));
                     float maxScrollX = maxLineWidth - availW;
                     float clampedScrollX = (std::max)(0.0f, (std::min)(cell.outputScrollX, maxScrollX));
                     float thumbX = cell.outputAreaBounds.left + textPadX + (clampedScrollX / (maxScrollX > 0.0f ? maxScrollX : 1.0f)) * (trackW - thumbW);
 
+                    cell.outputHScrollTrackBounds = D2D1::RectF(cell.outputAreaBounds.left + textPadX, sbY - config.ScaleF(2.0f), cell.outputAreaBounds.left + textPadX + trackW, sbY + sbH + config.ScaleF(2.0f));
+                    cell.outputHScrollThumbBounds = D2D1::RectF(thumbX, sbY, thumbX + thumbW, sbY + sbH);
+                    cell.outputMaxScrollX = maxScrollX;
+
+                    // Subtle track background
+                    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushTrackX;
+                    pRT->CreateSolidColorBrush(D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.22f), &brushTrackX);
+                    if (brushTrackX) {
+                        D2D1_ROUNDED_RECT rrcTrackX = D2D1::RoundedRect(cell.outputHScrollTrackBounds, sbH / 2.0f, sbH / 2.0f);
+                        pRT->FillRoundedRectangle(rrcTrackX, brushTrackX.Get());
+                    }
+
+                    bool isDraggingThis = (m_isDraggingOutputHScroll && m_dragOutputCellIdx == static_cast<int>(ci));
                     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushSbX;
-                    pRT->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.25f), &brushSbX);
+                    pRT->CreateSolidColorBrush(isDraggingThis ? D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.65f) : D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.35f), &brushSbX);
                     if (brushSbX) {
-                        D2D1_ROUNDED_RECT rrcSbX = D2D1::RoundedRect(D2D1::RectF(thumbX, sbY, thumbX + thumbW, sbY + sbH), 2.0f, 2.0f);
+                        D2D1_ROUNDED_RECT rrcSbX = D2D1::RoundedRect(cell.outputHScrollThumbBounds, sbH / 2.0f, sbH / 2.0f);
                         pRT->FillRoundedRectangle(rrcSbX, brushSbX.Get());
                     }
+                } else {
+                    cell.outputHScrollTrackBounds = D2D1::RectF(0, 0, 0, 0);
+                    cell.outputHScrollThumbBounds = D2D1::RectF(0, 0, 0, 0);
+                    cell.outputMaxScrollX = 0.0f;
                 }
             } else {
                 cell.outputAreaBounds = D2D1::RectF(0, 0, 0, 0);
+                cell.outputVScrollTrackBounds = D2D1::RectF(0, 0, 0, 0);
+                cell.outputVScrollThumbBounds = D2D1::RectF(0, 0, 0, 0);
+                cell.outputHScrollTrackBounds = D2D1::RectF(0, 0, 0, 0);
+                cell.outputHScrollThumbBounds = D2D1::RectF(0, 0, 0, 0);
+                cell.outputMaxScrollY = 0.0f;
+                cell.outputMaxScrollX = 0.0f;
             }
 
             // 3.5 Bottom border hover: horizontal divider & centered [ + Code ] [ + Text ] pills (Image 3)
@@ -1074,13 +1114,56 @@ bool NotebookView::HandleLButtonDown(POINT clientPt, editor::OpenDocument& doc, 
         m_isDraggingScrollbar = true;
         m_dragScrollStartY = static_cast<float>(clientPt.y);
         m_dragScrollStartOffset = m_scrollY;
+        if (hwnd) SetCapture(hwnd);
         return true;
     }
 
-    // Check Top Toolbar buttons
     auto PointInRect = [](POINT pt, const D2D1_RECT_F& r) -> bool {
         return pt.x >= r.left && pt.x <= r.right && pt.y >= r.top && pt.y <= r.bottom;
     };
+
+    // Check cell output scrollbars (Vertical & Horizontal dragging)
+    for (size_t ci = 0; ci < nb->cells.size(); ++ci) {
+        auto& cell = nb->cells[ci];
+        if (cell.outputMaxScrollY > 0.0f) {
+            if (PointInRect(clientPt, cell.outputVScrollThumbBounds)) {
+                m_isDraggingOutputVScroll = true;
+                m_dragOutputCellIdx = static_cast<int>(ci);
+                m_dragOutputStartPos = static_cast<float>(clientPt.y);
+                m_dragOutputStartOffset = cell.outputScrollY;
+                if (hwnd) SetCapture(hwnd);
+                return true;
+            } else if (PointInRect(clientPt, cell.outputVScrollTrackBounds)) {
+                float step = config.ScaleF(80.0f);
+                if (clientPt.y < cell.outputVScrollThumbBounds.top) {
+                    cell.outputScrollY = (std::max)(0.0f, cell.outputScrollY - step);
+                } else if (clientPt.y > cell.outputVScrollThumbBounds.bottom) {
+                    cell.outputScrollY = (std::min)(cell.outputMaxScrollY, cell.outputScrollY + step);
+                }
+                return true;
+            }
+        }
+        if (cell.outputMaxScrollX > 0.0f) {
+            if (PointInRect(clientPt, cell.outputHScrollThumbBounds)) {
+                m_isDraggingOutputHScroll = true;
+                m_dragOutputCellIdx = static_cast<int>(ci);
+                m_dragOutputStartPos = static_cast<float>(clientPt.x);
+                m_dragOutputStartOffset = cell.outputScrollX;
+                if (hwnd) SetCapture(hwnd);
+                return true;
+            } else if (PointInRect(clientPt, cell.outputHScrollTrackBounds)) {
+                float step = config.ScaleF(80.0f);
+                if (clientPt.x < cell.outputHScrollThumbBounds.left) {
+                    cell.outputScrollX = (std::max)(0.0f, cell.outputScrollX - step);
+                } else if (clientPt.x > cell.outputHScrollThumbBounds.right) {
+                    cell.outputScrollX = (std::min)(cell.outputMaxScrollX, cell.outputScrollX + step);
+                }
+                return true;
+            }
+        }
+    }
+
+    // Check Top Toolbar buttons
 
     if (PointInRect(clientPt, m_btnRunAll)) {
         if (m_isExecuting.load()) {
@@ -1234,6 +1317,28 @@ bool NotebookView::HandleMouseMove(POINT clientPt, editor::OpenDocument& doc, co
         return true;
     }
 
+    if (m_isDraggingOutputVScroll && doc.notebookDoc && m_dragOutputCellIdx >= 0 && m_dragOutputCellIdx < static_cast<int>(doc.notebookDoc->cells.size())) {
+        auto& cell = doc.notebookDoc->cells[m_dragOutputCellIdx];
+        float deltaY = static_cast<float>(clientPt.y) - m_dragOutputStartPos;
+        float trackH = cell.outputVScrollTrackBounds.bottom - cell.outputVScrollTrackBounds.top;
+        float thumbH = cell.outputVScrollThumbBounds.bottom - cell.outputVScrollThumbBounds.top;
+        float scrollable = (std::max)(1.0f, trackH - thumbH);
+        float scrollDelta = (deltaY / scrollable) * cell.outputMaxScrollY;
+        cell.outputScrollY = (std::clamp)(m_dragOutputStartOffset + scrollDelta, 0.0f, cell.outputMaxScrollY);
+        return true;
+    }
+
+    if (m_isDraggingOutputHScroll && doc.notebookDoc && m_dragOutputCellIdx >= 0 && m_dragOutputCellIdx < static_cast<int>(doc.notebookDoc->cells.size())) {
+        auto& cell = doc.notebookDoc->cells[m_dragOutputCellIdx];
+        float deltaX = static_cast<float>(clientPt.x) - m_dragOutputStartPos;
+        float trackW = cell.outputHScrollTrackBounds.right - cell.outputHScrollTrackBounds.left;
+        float thumbW = cell.outputHScrollThumbBounds.right - cell.outputHScrollThumbBounds.left;
+        float scrollable = (std::max)(1.0f, trackW - thumbW);
+        float scrollDelta = (deltaX / scrollable) * cell.outputMaxScrollX;
+        cell.outputScrollX = (std::clamp)(m_dragOutputStartOffset + scrollDelta, 0.0f, cell.outputMaxScrollX);
+        return true;
+    }
+
     // Drag-selection of text across lines and columns
     if (m_isSelectingText && doc.notebookDoc) {
         int activeIdx = doc.notebookDoc->activeCellIdx;
@@ -1337,6 +1442,14 @@ bool NotebookView::HandleMouseMove(POINT clientPt, editor::OpenDocument& doc, co
 bool NotebookView::HandleLButtonUp(POINT clientPt, editor::OpenDocument& doc, const app::AppConfig& config) {
     if (m_isDraggingScrollbar) {
         m_isDraggingScrollbar = false;
+        ReleaseCapture();
+        return true;
+    }
+    if (m_isDraggingOutputVScroll || m_isDraggingOutputHScroll) {
+        m_isDraggingOutputVScroll = false;
+        m_isDraggingOutputHScroll = false;
+        m_dragOutputCellIdx = -1;
+        ReleaseCapture();
         return true;
     }
     if (m_isSelectingText) {
@@ -1403,18 +1516,38 @@ bool NotebookView::HandleMouseWheel(short delta, POINT clientPt, editor::OpenDoc
                     float maxScrollX = (std::max)(0.0f, maxLineW - availW);
                     if (maxScrollX > 0.0f) {
                         float step = config.ScaleF(40.0f);
-                        if (delta > 0) cell.outputScrollX = (std::max)(0.0f, cell.outputScrollX - step);
-                        else cell.outputScrollX = (std::min)(maxScrollX, cell.outputScrollX + step);
-                        return true;
+                        if (delta > 0) {
+                            if (cell.outputScrollX > 0.0f) {
+                                cell.outputScrollX = (std::max)(0.0f, cell.outputScrollX - step);
+                                return true;
+                            }
+                        } else {
+                            if (cell.outputScrollX < maxScrollX) {
+                                cell.outputScrollX = (std::min)(maxScrollX, cell.outputScrollX + step);
+                                return true;
+                            }
+                        }
                     }
                 } else {
-                    // Vertical scroll
+                    // Vertical scroll with scroll chaining:
+                    // If output is already at the top and scrolling UP, or already at the bottom and scrolling DOWN,
+                    // propagate scroll to the whole notebook view!
                     float maxScrollY = (std::max)(0.0f, totalContentH - outputH);
                     if (maxScrollY > 0.0f) {
                         float step = config.ScaleF(40.0f);
-                        if (delta > 0) cell.outputScrollY = (std::max)(0.0f, cell.outputScrollY - step);
-                        else cell.outputScrollY = (std::min)(maxScrollY, cell.outputScrollY + step);
-                        return true;
+                        if (delta > 0) {
+                            if (cell.outputScrollY > 0.0f) {
+                                cell.outputScrollY = (std::max)(0.0f, cell.outputScrollY - step);
+                                return true;
+                            }
+                            // At top (outputScrollY <= 0) -> let scroll propagate to the notebook!
+                        } else {
+                            if (cell.outputScrollY < maxScrollY) {
+                                cell.outputScrollY = (std::min)(maxScrollY, cell.outputScrollY + step);
+                                return true;
+                            }
+                            // At bottom (outputScrollY >= maxScrollY) -> let scroll propagate to the notebook!
+                        }
                     }
                 }
             }
@@ -1766,13 +1899,35 @@ LPCWSTR NotebookView::GetCursorForPoint(POINT pt, const editor::OpenDocument& do
 
     if (m_isDraggingCell) return IDC_SIZEALL;
 
+    // Output and main scrollbar dragging cursors (Vertical ↕, Horizontal ↔)
+    if (m_isDraggingScrollbar || m_isDraggingOutputVScroll) return IDC_SIZENS;
+    if (m_isDraggingOutputHScroll) return IDC_SIZEWE;
+
+    // Main notebook scrollbar thumb & track -> IDC_SIZENS (Vertical double-arrow ↕, Image 4)
+    if (PointInRect(pt, m_scrollThumb) || PointInRect(pt, m_scrollTrack)) {
+        return IDC_SIZENS;
+    }
+
     if (PointInRect(pt, m_btnRunAll) || PointInRect(pt, m_btnClearAll) ||
-        PointInRect(pt, m_btnAddCode) || PointInRect(pt, m_btnAddText) || PointInRect(pt, m_scrollThumb)) {
+        PointInRect(pt, m_btnAddCode) || PointInRect(pt, m_btnAddText)) {
         return IDC_HAND;
     }
 
     if (doc.notebookDoc) {
         for (const auto& cell : doc.notebookDoc->cells) {
+            // Cell output vertical scrollbar -> IDC_SIZENS (Vertical double-arrow ↕, Image 4)
+            if (cell.outputMaxScrollY > 0.0f) {
+                if (PointInRect(pt, cell.outputVScrollThumbBounds) || PointInRect(pt, cell.outputVScrollTrackBounds)) {
+                    return IDC_SIZENS;
+                }
+            }
+            // Cell output horizontal scrollbar -> IDC_SIZEWE (Horizontal double-arrow ↔, Image 4)
+            if (cell.outputMaxScrollX > 0.0f) {
+                if (PointInRect(pt, cell.outputHScrollThumbBounds) || PointInRect(pt, cell.outputHScrollTrackBounds)) {
+                    return IDC_SIZEWE;
+                }
+            }
+
             if (PointInRect(pt, cell.dragHandleBounds)) {
                 return IDC_SIZEALL;
             }

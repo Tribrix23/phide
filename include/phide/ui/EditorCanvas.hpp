@@ -450,7 +450,15 @@ private:
     size_t m_cachedCursorLine = static_cast<size_t>(-1);
     size_t m_cachedCursorCol = static_cast<size_t>(-1);
 
+    // Student Tutorials & Academy Interactive Hit Bounds
+    D2D1_RECT_F m_studentCardBounds[4]{};
+    D2D1_RECT_F m_studentCardBtnBounds[4]{};
+    D2D1_RECT_F m_studentQuickNbBtn{};
+    D2D1_RECT_F m_studentQuickScratchBtn{};
+    D2D1_RECT_F m_studentQuickDbBtn{};
+
 public:
+    [[nodiscard]] int HitTestStudentView(POINT pt) const;
     void RunGarbageCollection() {
         m_foldChevrons.shrink_to_fit();
         m_visibleColorSwatches.shrink_to_fit();

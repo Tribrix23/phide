@@ -177,6 +177,14 @@ struct NotebookCell {
     D2D1_RECT_F codeAreaBounds{};
     D2D1_RECT_F outputAreaBounds{};
 
+    // Cell Output Scrollbars (Vertical & Horizontal)
+    D2D1_RECT_F outputVScrollTrackBounds{};
+    D2D1_RECT_F outputVScrollThumbBounds{};
+    D2D1_RECT_F outputHScrollTrackBounds{};
+    D2D1_RECT_F outputHScrollThumbBounds{};
+    float outputMaxScrollY = 0.0f;
+    float outputMaxScrollX = 0.0f;
+
     // Bottom border hover (+ Code, + Text) pill buttons (Colab style)
     D2D1_RECT_F bottomDividerBounds{};
     D2D1_RECT_F bottomAddCodeBounds{};

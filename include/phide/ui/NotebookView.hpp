@@ -119,6 +119,13 @@ private:
     int m_dropTargetCellIdx = -1;
     POINT m_dragStartPt{};
 
+    // Cell Output Scrollbar Dragging State
+    int m_dragOutputCellIdx = -1;
+    bool m_isDraggingOutputVScroll = false;
+    bool m_isDraggingOutputHScroll = false;
+    float m_dragOutputStartPos = 0.0f;
+    float m_dragOutputStartOffset = 0.0f;
+
     // Toolbar button hit regions (icon-only, minimal)
     D2D1_RECT_F m_btnRunAll{};
     D2D1_RECT_F m_btnClearAll{};

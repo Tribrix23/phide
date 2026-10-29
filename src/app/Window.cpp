@@ -1000,9 +1000,18 @@ void Window::OpenDiffDocument(const std::wstring& relPath, bool isPreview) {
     if (relPath.empty()) return;
     std::wstring dir = m_drawer.GetOpenFolderPath();
     std::wstring fullPath = dir.empty() ? relPath : (dir + L"\\" + relPath);
+    if (relPath.ends_with(L".ipynb") || fullPath.ends_with(L".ipynb")) {
+        OpenNotebookView(fullPath);
+        return;
+    }
     std::wstring fileName = std::filesystem::path(relPath).filename().wstring();
 
     std::wstring headContent = m_drawer.GetGitFileContent(relPath);
+    if (headContent.empty()) {
+        // Untracked or no HEAD revision exists — open in normal editor view!
+        OpenFileDocument(fullPath, isPreview);
+        return;
+    }
 
     auto& group = GetActiveGroup();
 
@@ -1254,7 +1263,7 @@ void Window::ComputeDiffHunks(editor::OpenDocument& doc) {
         return; // Identical
     }
 
-    if (midN > 0 && midM > 0 && (midN * midM <= 2500000)) {
+    if (midN > 0 && midM > 0 && (midN * midM <= 400000) && midN <= 2000 && midM <= 2000) {
         std::vector<int> prev(midM + 1, 0);
         std::vector<int> curr(midM + 1, 0);
         std::vector<std::vector<uint8_t>> dir(midN + 1, std::vector<uint8_t>(midM + 1, 0)); // 1=diag, 2=up, 3=left
@@ -1426,6 +1435,24 @@ void Window::OpenSpecialView(const std::wstring& viewType, const std::wstring& t
 void Window::OpenNotebookView(const std::wstring& filePath) {
     auto& group = GetActiveGroup();
 
+    std::wstring resolvedPath = filePath;
+    if (!resolvedPath.empty()) {
+        std::error_code ec;
+        if (!std::filesystem::exists(resolvedPath, ec) && m_drawer.HasOpenFolder()) {
+            std::wstring cand = m_drawer.GetOpenFolderPath() + L"\\" + filePath;
+            if (std::filesystem::exists(cand, ec)) {
+                resolvedPath = cand;
+            }
+        }
+        try {
+            resolvedPath = std::filesystem::canonical(resolvedPath).wstring();
+        } catch (...) {
+            try {
+                resolvedPath = std::filesystem::absolute(resolvedPath).wstring();
+            } catch (...) {}
+        }
+    }
+
     auto PathsMatch = [](const std::wstring& p1, const std::wstring& p2) -> bool {
         if (p1.empty() || p2.empty()) return false;
         std::wstring c1 = p1;
@@ -1439,10 +1466,10 @@ void Window::OpenNotebookView(const std::wstring& filePath) {
     };
 
     // If opening a specific file, check if already open in any group
-    if (!filePath.empty()) {
+    if (!resolvedPath.empty()) {
         for (size_t g = 0; g < m_editorGroups.size(); ++g) {
             for (size_t i = 0; i < m_editorGroups[g].docs.size(); ++i) {
-                if (PathsMatch(m_editorGroups[g].docs[i].filePath, filePath)) {
+                if (PathsMatch(m_editorGroups[g].docs[i].filePath, resolvedPath)) {
                     if (m_editorGroups[g].docs[i].isSpecialView && m_editorGroups[g].docs[i].viewType == L"notebook") {
                         m_focusedGroupIdx = static_cast<int>(g);
                         m_editorGroups[g].activeDocIdx = static_cast<int>(i);
@@ -1460,8 +1487,8 @@ void Window::OpenNotebookView(const std::wstring& filePath) {
 
     // Determine notebook title
     std::wstring title = L"Notebook 1.ipynb";
-    if (!filePath.empty()) {
-        title = std::filesystem::path(filePath).filename().wstring();
+    if (!resolvedPath.empty()) {
+        title = std::filesystem::path(resolvedPath).filename().wstring();
     } else {
         int nbCount = 1;
         for (const auto& grp : m_editorGroups) {
@@ -1484,15 +1511,15 @@ void Window::OpenNotebookView(const std::wstring& filePath) {
 
     editor::OpenDocument newDoc;
     newDoc.fileName = title;
-    newDoc.filePath = filePath;
+    newDoc.filePath = resolvedPath;
     newDoc.isSpecialView = true;
     newDoc.viewType = L"notebook";
     newDoc.isPreview = false;
     newDoc.isDirty = false;
     newDoc.notebookDoc = std::make_shared<editor::NotebookDocument>();
 
-    if (!filePath.empty()) {
-        newDoc.notebookDoc->LoadFromFile(filePath);
+    if (!resolvedPath.empty()) {
+        newDoc.notebookDoc->LoadFromFile(resolvedPath);
     } else {
         newDoc.notebookDoc->InitDefaultScratchpad();
     }
@@ -7020,6 +7047,8 @@ void Window::HandleLButtonDown(POINT clientPt) {
             }
             if (!openCommitDiff.empty()) {
                 OpenCommitDiffDocument(openCommitDiff, openFile);
+            } else if (openFile.ends_with(L".ipynb")) {
+                OpenNotebookView(openFile);
             } else if (isDiff && !openFile.empty()) {
                 OpenDiffDocument(openFile, false);
             } else if (!openFile.empty()) {
@@ -8080,6 +8109,40 @@ void Window::HandleLButtonDown(POINT clientPt) {
                         InvalidateRect(m_hwnd, nullptr, FALSE);
                         return;
                     }
+                } else if (doc.isSpecialView && doc.viewType == L"student") {
+                    m_drawer.SetSearchFocus(0);
+                    int action = m_editor.HitTestStudentView(clientPt);
+                    if (action == 1) {
+                        DoNewFile();
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
+                        return;
+                    } else if (action == 2) {
+                        OpenNotebookView();
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
+                        return;
+                    } else if (action == 3) {
+                        m_config.activeRailTab = 2;
+                        if (!m_config.isDrawerOpen) ToggleSidebar();
+                        m_drawer.OpenSourceControl();
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
+                        return;
+                    } else if (action == 4) {
+                        DoOpenDatabaseSettings();
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
+                        return;
+                    } else if (action == 10) {
+                        OpenNotebookView();
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
+                        return;
+                    } else if (action == 11) {
+                        DoNewFile();
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
+                        return;
+                    } else if (action == 12) {
+                        DoOpenDatabaseSettings();
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
+                        return;
+                    }
                 } else if (doc.isMultiFileDiff) {
                     // 1. Collapsible file header clicks in multi-file diff view (Image 4)
                     for (auto& entry : doc.multiFileDiffs) {
@@ -8414,6 +8477,8 @@ void Window::HandleLButtonDown(POINT clientPt) {
                 }
                 if (!openCommitDiff.empty()) {
                     OpenCommitDiffDocument(openCommitDiff, openFile);
+                } else if (openFile.ends_with(L".ipynb")) {
+                    OpenNotebookView(openFile);
                 } else if (isDiff && !openFile.empty()) {
                     OpenDiffDocument(openFile, false);
                 } else if (!openFile.empty()) {
@@ -9186,6 +9251,14 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     LPCWSTR cur = m_editor.GetNotebookView().GetCursorForPoint(pt, *pCurDoc);
                     if (cur) {
                         SetCursor(LoadCursor(nullptr, cur));
+                        return TRUE;
+                    }
+                }
+
+                // Student Tutorials & Learning Hub cursor handling
+                if (pCurDoc && pCurDoc->isSpecialView && pCurDoc->viewType == L"student") {
+                    if (m_editor.HitTestStudentView(pt) > 0) {
+                        SetCursor(LoadCursor(nullptr, IDC_HAND));
                         return TRUE;
                     }
                 }

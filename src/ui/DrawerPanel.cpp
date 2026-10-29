@@ -3748,9 +3748,6 @@ bool DrawerPanel::IsGitHubLoggedIn() const noexcept {
 }
 
 GitCmdResult RunGitCmd(const std::wstring& cmd, const std::wstring& workDir) {
-    static std::mutex s_gitCmdMutex;
-    std::lock_guard<std::mutex> cmdLock(s_gitCmdMutex);
-
     GitCmdResult res;
     SECURITY_ATTRIBUTES sa{ sizeof(sa), nullptr, TRUE };
     HANDLE hReadPipe = nullptr, hWritePipe = nullptr;
@@ -5723,6 +5720,7 @@ std::wstring DrawerPanel::GetGitFileContent(const std::wstring& relPath) {
 void DrawerPanel::ComputeGitDiffLines(const std::wstring& relPath, std::set<size_t>& outAdded, std::set<size_t>& outDeleted) {
     outAdded.clear();
     outDeleted.clear();
+    if (relPath.empty() || relPath.ends_with(L".ipynb")) return;
     std::wstring dir = m_openFolderPath.empty() ? L"." : m_openFolderPath;
     std::wstring cleanRel = relPath;
     for (auto& c : cleanRel) if (c == L'\\') c = L'/';
@@ -6098,7 +6096,12 @@ bool DrawerPanel::HitTestGit(POINT pt, const app::AppConfig& config,
                     }
                 }
                 outOpenFile = item.path;
-                outIsDiff = true; // Opens side-by-side diff comparison! (Image 2)
+                // If it is an untracked file (status "U" or "?") or a .ipynb file, do NOT open as diff!
+                if (item.status == L"U" || item.status == L"?" || item.path.ends_with(L".ipynb")) {
+                    outIsDiff = false;
+                } else {
+                    outIsDiff = true; // Opens side-by-side diff comparison!
+                }
                 return true;
             }
         }
