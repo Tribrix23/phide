@@ -6592,6 +6592,10 @@ void Window::HandleMouseMove(POINT clientPt, WPARAM wParam) {
             if (m_editor.GetNotebookView().HandleMouseMove(clientPt, *pActiveDoc, m_config)) {
                 needRepaint = true;
             }
+        } else if (pActiveDoc->viewType == L"student") {
+            if (m_editor.HandleStudentMouseMove(clientPt)) {
+                needRepaint = true;
+            }
         }
     }
 
@@ -8128,7 +8132,48 @@ void Window::HandleLButtonDown(POINT clientPt) {
                 } else if (doc.isSpecialView && doc.viewType == L"student") {
                     m_drawer.SetSearchFocus(0);
                     int action = m_editor.HitTestStudentView(clientPt);
-                    if (action == 1) {
+                    if (action == 50) {
+                        m_editor.SetLearningSearchFocused(true);
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
+                        return;
+                    } else if (action >= 60 && action <= 64) {
+                        m_editor.SetActiveLearningFilter(action - 60);
+                        m_editor.SetLearningSearchFocused(false);
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
+                        return;
+                    } else if (action == 70) {
+                        m_editor.CycleLearningSortOrder();
+                        m_editor.SetLearningSearchFocused(false);
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
+                        return;
+                    } else if (action >= 100) {
+                        m_editor.SetLearningSearchFocused(false);
+                        size_t courseIdx = static_cast<size_t>(action - 100);
+                        if (courseIdx < m_editor.GetLearningCourseCount()) {
+                            const auto& course = m_editor.GetLearningCourse(courseIdx);
+                            if (course.category == L"Python") {
+                                OpenNotebookView();
+                            } else if (course.category == L"JavaScript") {
+                                DoNewFile();
+                                auto* pNewDoc = GetActiveDoc();
+                                if (pNewDoc) {
+                                    pNewDoc->fileName = L"learn_" + course.id + L".js";
+                                    pNewDoc->buffer.SetText(L"// " + course.title + L"\n// " + course.description + L"\n\nconsole.log('Welcome to " + course.title + L"!');\n");
+                                }
+                            } else if (course.category == L"PHP") {
+                                DoNewFile();
+                                auto* pNewDoc = GetActiveDoc();
+                                if (pNewDoc) {
+                                    pNewDoc->fileName = L"learn_" + course.id + L".php";
+                                    pNewDoc->buffer.SetText(L"<?php\n// " + course.title + L"\n// " + course.description + L"\n\necho 'Welcome to " + course.title + L"!\n';\n");
+                                }
+                            } else {
+                                DoNewFile();
+                            }
+                        }
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
+                        return;
+                    } else if (action == 1) {
                         DoNewFile();
                         InvalidateRect(m_hwnd, nullptr, FALSE);
                         return;
@@ -8158,6 +8203,11 @@ void Window::HandleLButtonDown(POINT clientPt) {
                         DoOpenDatabaseSettings();
                         InvalidateRect(m_hwnd, nullptr, FALSE);
                         return;
+                    } else {
+                        if (m_editor.IsLearningSearchFocused()) {
+                            m_editor.SetLearningSearchFocused(false);
+                            InvalidateRect(m_hwnd, nullptr, FALSE);
+                        }
                     }
                 } else if (doc.isMultiFileDiff) {
                     // 1. Collapsible file header clicks in multi-file diff view (Image 4)
@@ -8550,7 +8600,7 @@ void Window::HandleLButtonDown(POINT clientPt) {
     auto railHit = m_rail.HitTest(clientPt);
     if (railHit != ui::RailTabId::None) {
         if (railHit == ui::RailTabId::Student) {
-            OpenSpecialView(L"student", L"Student Tutorials");
+            OpenSpecialView(L"student", L"Learning Hub");
             UpdateDrawerErrorFiles();
             SaveSessionState();
             InvalidateRect(m_hwnd, nullptr, FALSE);
@@ -9273,7 +9323,11 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
 
                 // Student Tutorials & Learning Hub cursor handling
                 if (pCurDoc && pCurDoc->isSpecialView && pCurDoc->viewType == L"student") {
-                    if (m_editor.HitTestStudentView(pt) > 0) {
+                    int hit = m_editor.HitTestStudentView(pt);
+                    if (hit == 50) {
+                        SetCursor(LoadCursor(nullptr, IDC_IBEAM));
+                        return TRUE;
+                    } else if (hit > 0) {
                         SetCursor(LoadCursor(nullptr, IDC_HAND));
                         return TRUE;
                     }
@@ -9505,6 +9559,11 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                         InvalidateRect(m_hwnd, nullptr, FALSE);
                         return 0;
                     }
+                } else if (pDoc->isSpecialView && pDoc->viewType == L"student") {
+                    if (m_editor.HandleStudentMouseWheel(delta)) {
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
+                        return 0;
+                    }
                 } else {
                     bool isShiftDown = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
                     if (isShiftDown) {
@@ -9625,6 +9684,11 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     }
                 } else if (pDoc->isSpecialView && pDoc->viewType == L"notebook") {
                     if (m_editor.GetNotebookView().HandleChar(ch, *pDoc, m_hwnd)) {
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
+                        return 0;
+                    }
+                } else if (pDoc->isSpecialView && pDoc->viewType == L"student") {
+                    if (m_editor.HandleLearningChar(ch)) {
                         InvalidateRect(m_hwnd, nullptr, FALSE);
                         return 0;
                     }
@@ -10318,6 +10382,11 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                         InvalidateRect(m_hwnd, nullptr, FALSE);
                         return 0;
                     }
+                } else if (pDoc->viewType == L"student") {
+                    if (m_editor.HandleLearningKeyDown(wParam)) {
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
+                        return 0;
+                    }
                 }
             }
 
@@ -10897,6 +10966,9 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
         case WM_TIMER: {
             if (wParam == m_caretTimerId) {
                 m_editor.ToggleCaretBlink();
+                if (m_editor.GetNotebookView().IsExecuting()) {
+                    SetTimer(m_hwnd, m_animTimerId, 16, nullptr);
+                }
                 m_drawer.ToggleCaretBlink();
                 if (m_dbSettingsModal.IsOpen()) {
                     m_dbSettingsModal.ToggleCaret();
@@ -11039,6 +11111,11 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 // Smoothly animate confirm / restore / delete modal button spinner
                 if (m_confirmDiscardModal.IsOpen() && m_confirmDiscardModal.IsLoading()) {
                     m_confirmDiscardModal.UpdateSpinner(14.0f);
+                    keepAnimating = true;
+                }
+
+                // Smoothly animate interactive notebook execution spinner (60 FPS buttery smooth)
+                if (m_editor.GetNotebookView().IsExecuting()) {
                     keepAnimating = true;
                 }
 

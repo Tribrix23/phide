@@ -88,6 +88,7 @@ public:
                          size_t& outLine, size_t& outCol) const;
     float EnsureCharWidth(Theme& theme, const app::AppConfig& config);
     std::wstring FindPythonExecutable(const std::wstring& targetFilePath = L"") const;
+    void SubmitCellInput(editor::NotebookCell& cell, HWND hwnd);
 
 private:
     std::wstring m_workspacePath;
@@ -131,6 +132,12 @@ private:
     float m_dragOutputStartPos = 0.0f;
     float m_dragOutputStartOffset = 0.0f;
 
+    // Code Area Horizontal Scrollbar Dragging State
+    int m_dragCodeCellIdx = -1;
+    bool m_isDraggingCodeHScroll = false;
+    float m_dragCodeStartPos = 0.0f;
+    float m_dragCodeStartOffset = 0.0f;
+
     // Toolbar button hit regions (icon-only, minimal)
     D2D1_RECT_F m_btnRunAll{};
     D2D1_RECT_F m_btnClearAll{};
@@ -162,6 +169,9 @@ private:
                             const D2D1_RECT_F& bounds, bool isExecuting, bool isQueued, bool hasError, bool isHovered);
     void RenderTooltip(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
                        const D2D1_RECT_F& targetBounds, const std::wstring& text);
+    bool HitTestOutputArea(const editor::NotebookCell& cell, POINT clientPt, const app::AppConfig& config,
+                           size_t& outLine, size_t& outCol) const;
+    std::vector<std::wstring> GetOutputLines(const editor::NotebookCell& cell) const;
 };
 
 } // namespace phide::ui

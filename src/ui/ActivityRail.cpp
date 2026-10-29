@@ -19,7 +19,7 @@ ActivityRail::ActivityRail() {
     m_items.push_back({ RailTabId::Git,      L"Source Control (Ctrl+Shift+G)", {} });
 
     // 4. Student Hat icon (directly above Notebook, matching user's green circle)
-    m_items.push_back({ RailTabId::Student,  L"Student Tutorials",                     {} });
+    m_items.push_back({ RailTabId::Student,  L"Learning Hub",                          {} });
 
     // 5. Notebook icon (directly above Packages)
     m_items.push_back({ RailTabId::Notebook, L"Interactive Notebook (Ctrl+Shift+J)", {} });

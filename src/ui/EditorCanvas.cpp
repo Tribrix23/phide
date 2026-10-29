@@ -100,6 +100,7 @@ void EditorCanvas::DiscardDeviceResources() {
     m_pWatermarkBitmap.Reset();
     m_pWatermarkBitmapLight.Reset();
     m_pCanvasGeometry.Reset();
+    m_learningHubBitmaps.clear();
     m_charWidth = 0.0f;
     m_cachedLeft = -1.0f;
     m_cachedTop = -1.0f;
@@ -2491,303 +2492,874 @@ void EditorCanvas::RenderUnsupportedBinaryView(ID2D1RenderTarget* pRT, Theme& th
 /**
  * @brief Renders the Student Tutorials & Learning Hub view (Student hat 🎓) with modern Academy layout.
  */
+void EditorCanvas::InitializeLearningCourses() {
+    if (!m_learningCourses.empty()) return;
+
+    // Row 1: Python
+    {
+        LearningCourseDef c;
+        c.id = L"python-1";
+        c.category = L"Python";
+        c.imageFile = L"course-python-1.png";
+        c.creator = L"Koda";
+        c.title = L"Python for Beginners";
+        c.description = L"Learn Python from scratch with simple examples and hands-on exercises.";
+        c.lessons = 24;
+        c.hours = 6;
+        c.difficulty = L"Beginner";
+        c.badgeColor = D2D1::ColorF(0.063f, 0.725f, 0.506f, 1.0f);
+        m_learningCourses.push_back(c);
+    }
+    {
+        LearningCourseDef c;
+        c.id = L"python-2";
+        c.category = L"Python";
+        c.imageFile = L"course-python-2.png";
+        c.creator = L"Koda";
+        c.title = L"DSA with Python";
+        c.description = L"Master data structures and algorithms using Python with step-by-step explanations.";
+        c.lessons = 32;
+        c.hours = 10;
+        c.difficulty = L"Intermediate";
+        c.badgeColor = D2D1::ColorF(0.231f, 0.600f, 0.980f, 1.0f);
+        m_learningCourses.push_back(c);
+    }
+    {
+        LearningCourseDef c;
+        c.id = L"python-3";
+        c.category = L"Python";
+        c.imageFile = L"course-python-3.png";
+        c.creator = L"Koda";
+        c.title = L"Machine Learning with Python";
+        c.description = L"Learn machine learning concepts and build real projects using Python.";
+        c.lessons = 28;
+        c.hours = 12;
+        c.difficulty = L"Intermediate";
+        c.badgeColor = D2D1::ColorF(0.231f, 0.600f, 0.980f, 1.0f);
+        m_learningCourses.push_back(c);
+    }
+    {
+        LearningCourseDef c;
+        c.id = L"python-4";
+        c.category = L"Python";
+        c.imageFile = L"course-python-4.png";
+        c.creator = L"Koda";
+        c.title = L"Introduction to Python";
+        c.description = L"Understand Python syntax, variables, functions, and more with practical examples.";
+        c.lessons = 20;
+        c.hours = 5;
+        c.difficulty = L"Beginner";
+        c.badgeColor = D2D1::ColorF(0.063f, 0.725f, 0.506f, 1.0f);
+        m_learningCourses.push_back(c);
+    }
+
+    // Row 2: JavaScript
+    {
+        LearningCourseDef c;
+        c.id = L"javascript-1";
+        c.category = L"JavaScript";
+        c.imageFile = L"course-javascript-1.png";
+        c.creator = L"Koda";
+        c.title = L"JavaScript Beginner";
+        c.description = L"Learn JavaScript fundamentals with interactive examples.";
+        c.lessons = 26;
+        c.hours = 6;
+        c.difficulty = L"Beginner";
+        c.badgeColor = D2D1::ColorF(0.063f, 0.725f, 0.506f, 1.0f);
+        m_learningCourses.push_back(c);
+    }
+    {
+        LearningCourseDef c;
+        c.id = L"javascript-2";
+        c.category = L"JavaScript";
+        c.imageFile = L"course-javascript-2.png";
+        c.creator = L"Koda";
+        c.title = L"Introduction to JavaScript";
+        c.description = L"Understand the core concepts of JavaScript and how it works in web development.";
+        c.lessons = 24;
+        c.hours = 6;
+        c.difficulty = L"Beginner";
+        c.badgeColor = D2D1::ColorF(0.063f, 0.725f, 0.506f, 1.0f);
+        m_learningCourses.push_back(c);
+    }
+    {
+        LearningCourseDef c;
+        c.id = L"javascript-3";
+        c.category = L"JavaScript";
+        c.imageFile = L"course-javascript-3.png";
+        c.creator = L"Koda";
+        c.title = L"Graphics with JavaScript";
+        c.description = L"Create interactive graphics and visualizations using JavaScript.";
+        c.lessons = 18;
+        c.hours = 5;
+        c.difficulty = L"Intermediate";
+        c.badgeColor = D2D1::ColorF(0.231f, 0.600f, 0.980f, 1.0f);
+        m_learningCourses.push_back(c);
+    }
+    {
+        LearningCourseDef c;
+        c.id = L"javascript-4";
+        c.category = L"JavaScript";
+        c.imageFile = L"course-javascript-4.png";
+        c.creator = L"Koda";
+        c.title = L"Advanced JavaScript";
+        c.description = L"Deep dive into advanced JavaScript concepts, patterns, and real-world applications.";
+        c.lessons = 30;
+        c.hours = 10;
+        c.difficulty = L"Advanced";
+        c.badgeColor = D2D1::ColorF(0.957f, 0.247f, 0.369f, 1.0f);
+        m_learningCourses.push_back(c);
+    }
+
+    // Row 3: PHP
+    {
+        LearningCourseDef c;
+        c.id = L"php-1";
+        c.category = L"PHP";
+        c.imageFile = L"course-php-1.png";
+        c.creator = L"Koda";
+        c.title = L"Beginner PHP";
+        c.description = L"Learn PHP basics and build simple dynamic web applications.";
+        c.lessons = 24;
+        c.hours = 6;
+        c.difficulty = L"Beginner";
+        c.badgeColor = D2D1::ColorF(0.063f, 0.725f, 0.506f, 1.0f);
+        m_learningCourses.push_back(c);
+    }
+    {
+        LearningCourseDef c;
+        c.id = L"php-2";
+        c.category = L"PHP";
+        c.imageFile = L"course-php-2.png";
+        c.creator = L"Koda";
+        c.title = L"Intermediate PHP";
+        c.description = L"Work with databases, sessions, and more advanced PHP features.";
+        c.lessons = 28;
+        c.hours = 8;
+        c.difficulty = L"Intermediate";
+        c.badgeColor = D2D1::ColorF(0.231f, 0.600f, 0.980f, 1.0f);
+        m_learningCourses.push_back(c);
+    }
+    {
+        LearningCourseDef c;
+        c.id = L"php-3";
+        c.category = L"PHP";
+        c.imageFile = L"course-php-3.png";
+        c.creator = L"Koda";
+        c.title = L"Advanced PHP";
+        c.description = L"Master advanced PHP concepts, security, and performance optimization.";
+        c.lessons = 32;
+        c.hours = 12;
+        c.difficulty = L"Advanced";
+        c.badgeColor = D2D1::ColorF(0.957f, 0.247f, 0.369f, 1.0f);
+        m_learningCourses.push_back(c);
+    }
+    {
+        LearningCourseDef c;
+        c.id = L"php-4";
+        c.category = L"PHP";
+        c.imageFile = L"course-php-4.png";
+        c.creator = L"Koda";
+        c.title = L"PHP REST APIs & Microservices";
+        c.description = L"Build robust, production-ready RESTful APIs, JWT auth, and microservices architecture.";
+        c.lessons = 26;
+        c.hours = 8;
+        c.difficulty = L"Intermediate";
+        c.badgeColor = D2D1::ColorF(0.231f, 0.600f, 0.980f, 1.0f);
+        m_learningCourses.push_back(c);
+    }
+}
+
+ID2D1Bitmap* EditorCanvas::GetLearningHubBitmap(ID2D1RenderTarget* pRT, const std::wstring& filename) {
+    if (!pRT || filename.empty()) return nullptr;
+    auto it = m_learningHubBitmaps.find(filename);
+    if (it != m_learningHubBitmaps.end() && it->second) {
+        return it->second.Get();
+    }
+
+    std::vector<std::wstring> candidates = {
+        L"assets/learning-hub-assets/" + filename,
+        L"bin/assets/learning-hub-assets/" + filename,
+        L"../assets/learning-hub-assets/" + filename,
+        L"assets/" + filename,
+        L"bin/assets/" + filename,
+        L"../assets/" + filename,
+        filename
+    };
+
+    wchar_t modPath[MAX_PATH];
+    if (GetModuleFileNameW(nullptr, modPath, MAX_PATH)) {
+        std::filesystem::path exeDir = std::filesystem::path(modPath).parent_path();
+        candidates.push_back((exeDir / L"assets" / L"learning-hub-assets" / filename).wstring());
+        candidates.push_back((exeDir / L".." / L"assets" / L"learning-hub-assets" / filename).wstring());
+        candidates.push_back((exeDir / L"assets" / filename).wstring());
+        candidates.push_back((exeDir / L".." / L"assets" / filename).wstring());
+    }
+
+    std::wstring foundPath = L"";
+    for (const auto& c : candidates) {
+        std::error_code ec;
+        if (std::filesystem::exists(c, ec)) {
+            foundPath = c;
+            break;
+        }
+    }
+    if (foundPath.empty()) return nullptr;
+
+    Microsoft::WRL::ComPtr<IWICImagingFactory> pWicFactory;
+    HRESULT hr = CoCreateInstance(
+        CLSID_WICImagingFactory,
+        nullptr,
+        CLSCTX_INPROC_SERVER,
+        IID_PPV_ARGS(&pWicFactory)
+    );
+    if (FAILED(hr) || !pWicFactory) return nullptr;
+
+    Microsoft::WRL::ComPtr<IWICBitmapDecoder> pDecoder;
+    hr = pWicFactory->CreateDecoderFromFilename(
+        foundPath.c_str(),
+        nullptr,
+        GENERIC_READ,
+        WICDecodeMetadataCacheOnDemand,
+        &pDecoder
+    );
+    if (FAILED(hr) || !pDecoder) return nullptr;
+
+    Microsoft::WRL::ComPtr<IWICBitmapFrameDecode> pFrame;
+    hr = pDecoder->GetFrame(0, &pFrame);
+    if (FAILED(hr) || !pFrame) return nullptr;
+
+    Microsoft::WRL::ComPtr<IWICFormatConverter> pConverter;
+    hr = pWicFactory->CreateFormatConverter(&pConverter);
+    if (FAILED(hr) || !pConverter) return nullptr;
+
+    hr = pConverter->Initialize(
+        pFrame.Get(),
+        GUID_WICPixelFormat32bppPBGRA,
+        WICBitmapDitherTypeNone,
+        nullptr,
+        0.0,
+        WICBitmapPaletteTypeCustom
+    );
+    if (FAILED(hr)) return nullptr;
+
+    Microsoft::WRL::ComPtr<ID2D1Bitmap> pBmp;
+    hr = pRT->CreateBitmapFromWicBitmap(pConverter.Get(), nullptr, &pBmp);
+    if (SUCCEEDED(hr) && pBmp) {
+        m_learningHubBitmaps[filename] = pBmp;
+        return pBmp.Get();
+    }
+    return nullptr;
+}
+
+/**
+ * @brief Renders the Student Tutorials & Learning Hub view (Student hat 🎓) matching the modern Hub design.
+ */
 void EditorCanvas::RenderStudentView(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
                                      editor::OpenDocument& doc, float canvasLeft, float canvasWidth,
                                      float topY, float clientHeight) {
     if (!pRT) return;
 
-    const float centerX = canvasLeft + canvasWidth / 2.0f;
-    const float startY = topY + config.ScaleF(28.0f);
-    const float maxHubW = (std::min)(config.ScaleF(820.0f), (std::max)(config.ScaleF(400.0f), canvasWidth - config.ScaleF(48.0f)));
-    const float hubLeft = centerX - maxHubW / 2.0f;
+    InitializeLearningCourses();
+    m_renderedCourseCards.clear();
 
-    // 1. Academy Badge & Glowing Emblem
-    const float badgeH = config.ScaleF(28.0f);
-    const float badgeW = config.ScaleF(200.0f);
-    D2D1_RECT_F rcBadge = D2D1::RectF(centerX - badgeW / 2.0f, startY, centerX + badgeW / 2.0f, startY + badgeH);
-    D2D1_ROUNDED_RECT rrcBadge = D2D1::RoundedRect(rcBadge, badgeH / 2.0f, badgeH / 2.0f);
+    const float viewW = canvasWidth;
+    const float viewH = clientHeight - topY;
+    if (viewW <= 10.0f || viewH <= 10.0f) return;
 
-    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> badgeGlowBrush;
-    pRT->CreateSolidColorBrush(D2D1::ColorF(0.55f, 0.25f, 0.95f, 0.18f), &badgeGlowBrush);
-    if (badgeGlowBrush) pRT->FillRoundedRectangle(rrcBadge, badgeGlowBrush.Get());
+    D2D1_RECT_F rcClip = D2D1::RectF(canvasLeft, topY, canvasLeft + canvasWidth, clientHeight);
+    pRT->PushAxisAlignedClip(rcClip, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
 
-    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> badgeBorderBrush;
-    pRT->CreateSolidColorBrush(D2D1::ColorF(0.65f, 0.35f, 1.0f, 0.55f), &badgeBorderBrush);
-    if (badgeBorderBrush) pRT->DrawRoundedRectangle(rrcBadge, badgeBorderBrush.Get(), 1.0f);
-
-    // Graduation cap icon inside badge pill
-    const float iconSize = config.ScaleF(16.0f);
-    D2D1_RECT_F rcIcon = D2D1::RectF(rcBadge.left + config.ScaleF(10.0f), rcBadge.top + (badgeH - iconSize) / 2.0f,
-                                     rcBadge.left + config.ScaleF(10.0f) + iconSize, rcBadge.top + (badgeH + iconSize) / 2.0f);
-    m_icons.DrawGraduationCap(pRT, rcIcon, theme.brushBrandAccent ? theme.brushBrandAccent.Get() : theme.brushTextWhite.Get(), 1.6f);
-
-    // Badge text: "PHIDE ACADEMY"
-    const wchar_t* badgeText = L"PHIDE ACADEMY & LABS";
-    D2D1_RECT_F rcBadgeText = D2D1::RectF(rcIcon.right + config.ScaleF(6.0f), rcBadge.top + config.ScaleF(5.0f),
-                                         rcBadge.right - config.ScaleF(10.0f), rcBadge.bottom - config.ScaleF(5.0f));
-    IDWriteTextFormat* pFmtBadge = theme.fontBadge ? theme.fontBadge.Get() : theme.fontHint.Get();
-    if (pFmtBadge) {
-        DWRITE_TEXT_ALIGNMENT oldAlign = pFmtBadge->GetTextAlignment();
-        pFmtBadge->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
-        pRT->DrawText(badgeText, static_cast<UINT32>(wcslen(badgeText)), pFmtBadge, rcBadgeText,
-                      theme.brushBrandAccent ? theme.brushBrandAccent.Get() : theme.brushTextWhite.Get());
-        pFmtBadge->SetTextAlignment(oldAlign);
+    // 1. Deep charcoal-black background matching design (#0A0D12)
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> bgBrush;
+    pRT->CreateSolidColorBrush(D2D1::ColorF(0.040f, 0.052f, 0.070f, 1.0f), &bgBrush);
+    if (bgBrush) {
+        pRT->FillRectangle(rcClip, bgBrush.Get());
     }
 
-    // 2. Main Title: "Student Tutorials & Interactive Academy"
-    const wchar_t* titleStr = L"Student Tutorials & Interactive Academy";
-    const float titleH = config.ScaleF(34.0f);
-    D2D1_RECT_F rcTitle = D2D1::RectF(hubLeft, rcBadge.bottom + config.ScaleF(14.0f),
-                                     hubLeft + maxHubW, rcBadge.bottom + config.ScaleF(14.0f) + titleH);
-    IDWriteTextFormat* pFmtTitle = theme.fontTitle ? theme.fontTitle.Get() : theme.fontSectionHeader.Get();
-    if (pFmtTitle) {
-        DWRITE_TEXT_ALIGNMENT oldAlign = pFmtTitle->GetTextAlignment();
-        pFmtTitle->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
-        pRT->DrawText(titleStr, static_cast<UINT32>(wcslen(titleStr)), pFmtTitle, rcTitle,
-                      theme.brushTextWhite ? theme.brushTextWhite.Get() : theme.brushTextPrimary.Get());
-        pFmtTitle->SetTextAlignment(oldAlign);
+    // DirectWrite Factory for typography
+    Microsoft::WRL::ComPtr<IDWriteFactory> pDWrite;
+    DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED, __uuidof(IDWriteFactory), &pDWrite);
+
+    Microsoft::WRL::ComPtr<IDWriteTextFormat> fmtTitle;
+    Microsoft::WRL::ComPtr<IDWriteTextFormat> fmtSub;
+    Microsoft::WRL::ComPtr<IDWriteTextFormat> fmtSearch;
+    Microsoft::WRL::ComPtr<IDWriteTextFormat> fmtPill;
+    Microsoft::WRL::ComPtr<IDWriteTextFormat> fmtCardKoda;
+    Microsoft::WRL::ComPtr<IDWriteTextFormat> fmtCardTitle;
+    Microsoft::WRL::ComPtr<IDWriteTextFormat> fmtCardDesc;
+    Microsoft::WRL::ComPtr<IDWriteTextFormat> fmtCardMeta;
+    Microsoft::WRL::ComPtr<IDWriteTextFormat> fmtCardBadge;
+
+    if (pDWrite) {
+        pDWrite->CreateTextFormat(L"Segoe UI", nullptr, DWRITE_FONT_WEIGHT_BOLD, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, config.ScaleF(24.0f), L"en-us", &fmtTitle);
+        pDWrite->CreateTextFormat(L"Segoe UI", nullptr, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, config.ScaleF(11.5f), L"en-us", &fmtSub);
+        pDWrite->CreateTextFormat(L"Segoe UI", nullptr, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, config.ScaleF(11.0f), L"en-us", &fmtSearch);
+        pDWrite->CreateTextFormat(L"Segoe UI", nullptr, DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, config.ScaleF(10.5f), L"en-us", &fmtPill);
+        pDWrite->CreateTextFormat(L"Segoe UI", nullptr, DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, config.ScaleF(9.5f), L"en-us", &fmtCardKoda);
+        pDWrite->CreateTextFormat(L"Segoe UI", nullptr, DWRITE_FONT_WEIGHT_BOLD, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, config.ScaleF(11.5f), L"en-us", &fmtCardTitle);
+        pDWrite->CreateTextFormat(L"Segoe UI", nullptr, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, config.ScaleF(9.2f), L"en-us", &fmtCardDesc);
+        pDWrite->CreateTextFormat(L"Segoe UI", nullptr, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, config.ScaleF(9.0f), L"en-us", &fmtCardMeta);
+        pDWrite->CreateTextFormat(L"Segoe UI", nullptr, DWRITE_FONT_WEIGHT_BOLD, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, config.ScaleF(8.5f), L"en-us", &fmtCardBadge);
+
+        if (fmtCardBadge) {
+            fmtCardBadge->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+            fmtCardBadge->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+        }
     }
 
-    // 3. Subtitle
-    const wchar_t* subStr = L"Hands-on interactive guides, code playgrounds, notebooks, and database references.";
-    D2D1_RECT_F rcSub = D2D1::RectF(hubLeft, rcTitle.bottom + config.ScaleF(2.0f),
-                                   hubLeft + maxHubW, rcTitle.bottom + config.ScaleF(24.0f));
-    IDWriteTextFormat* pFmtSub = theme.fontHint ? theme.fontHint.Get() : theme.fontBody.Get();
-    if (pFmtSub) {
-        DWRITE_TEXT_ALIGNMENT oldAlign = pFmtSub->GetTextAlignment();
-        pFmtSub->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
-        pRT->DrawText(subStr, static_cast<UINT32>(wcslen(subStr)), pFmtSub, rcSub,
-                      theme.brushTextMuted ? theme.brushTextMuted.Get() : theme.brushTextSecondary.Get());
-        pFmtSub->SetTextAlignment(oldAlign);
+    // Color Brushes
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushWhite;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushSub;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushMeta;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushCardBg;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushCardBorder;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushCardBorderHover;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushSearchBg;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushSearchBorder;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushSearchBorderActive;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushGreenAccent;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushPillActiveBg;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushPillActiveBorder;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushPillActiveText;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushPillInactiveBg;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushPillInactiveBorder;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushPillInactiveText;
+
+    pRT->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 1.0f), &brushWhite);
+    pRT->CreateSolidColorBrush(D2D1::ColorF(0.55f, 0.62f, 0.70f, 1.0f), &brushSub);
+    pRT->CreateSolidColorBrush(D2D1::ColorF(0.42f, 0.49f, 0.58f, 1.0f), &brushMeta);
+    pRT->CreateSolidColorBrush(D2D1::ColorF(0.067f, 0.086f, 0.122f, 1.0f), &brushCardBg); // #11161F
+    pRT->CreateSolidColorBrush(D2D1::ColorF(0.110f, 0.145f, 0.190f, 1.0f), &brushCardBorder);
+    pRT->CreateSolidColorBrush(D2D1::ColorF(0.180f, 0.240f, 0.320f, 1.0f), &brushCardBorderHover);
+    pRT->CreateSolidColorBrush(D2D1::ColorF(0.070f, 0.090f, 0.120f, 1.0f), &brushSearchBg);
+    pRT->CreateSolidColorBrush(D2D1::ColorF(0.130f, 0.170f, 0.220f, 1.0f), &brushSearchBorder);
+    pRT->CreateSolidColorBrush(D2D1::ColorF(0.063f, 0.725f, 0.506f, 1.0f), &brushSearchBorderActive);
+    pRT->CreateSolidColorBrush(D2D1::ColorF(0.063f, 0.725f, 0.506f, 1.0f), &brushGreenAccent);
+    pRT->CreateSolidColorBrush(D2D1::ColorF(0.043f, 0.188f, 0.137f, 1.0f), &brushPillActiveBg);
+    pRT->CreateSolidColorBrush(D2D1::ColorF(0.063f, 0.725f, 0.506f, 1.0f), &brushPillActiveBorder);
+    pRT->CreateSolidColorBrush(D2D1::ColorF(0.204f, 0.827f, 0.600f, 1.0f), &brushPillActiveText);
+    pRT->CreateSolidColorBrush(D2D1::ColorF(0.067f, 0.086f, 0.122f, 1.0f), &brushPillInactiveBg);
+    pRT->CreateSolidColorBrush(D2D1::ColorF(0.120f, 0.150f, 0.200f, 1.0f), &brushPillInactiveBorder);
+    pRT->CreateSolidColorBrush(D2D1::ColorF(0.55f, 0.62f, 0.70f, 1.0f), &brushPillInactiveText);
+
+    const float padX = config.ScaleF(10.0f);
+    const float bannerTop = topY - m_learningScrollY + config.ScaleF(10.0f);
+    const float bannerH = config.ScaleF(138.0f);
+    const float bannerLeft = canvasLeft + padX;
+    const float bannerRight = canvasLeft + canvasWidth - padX;
+    D2D1_RECT_F rcHeaderBanner = D2D1::RectF(bannerLeft, bannerTop, bannerRight, bannerTop + bannerH);
+
+    // 2. Header Banner: target wide banner with isometric green cubes on right and striped gradient on left
+    ID2D1Bitmap* pBmpBanner = GetLearningHubBitmap(pRT, L"header-banner.png");
+    if (!pBmpBanner) {
+        pBmpBanner = GetLearningHubBitmap(pRT, L"banner-target.png");
+    }
+    if (pBmpBanner) {
+        D2D1_SIZE_F bSize = pBmpBanner->GetSize();
+        // Right cubes have source x: 500..783 (width: 283)
+        float cubesSrcW = 283.0f;
+        float cubesDestW = bannerH * (cubesSrcW / bSize.height);
+        float bannerW = bannerRight - bannerLeft;
+        if (bannerW > cubesDestW + config.ScaleF(80.0f)) {
+            // Draw left background part (0..500)
+            D2D1_RECT_F srcLeft = D2D1::RectF(0.0f, 0.0f, 500.0f, bSize.height);
+            D2D1_RECT_F destLeft = D2D1::RectF(bannerLeft, bannerTop, bannerRight - cubesDestW, bannerTop + bannerH);
+            pRT->DrawBitmap(pBmpBanner, destLeft, 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR, srcLeft);
+
+            // Draw right cubes part (500..bSize.width)
+            D2D1_RECT_F srcRight = D2D1::RectF(500.0f, 0.0f, bSize.width, bSize.height);
+            D2D1_RECT_F destRight = D2D1::RectF(bannerRight - cubesDestW, bannerTop, bannerRight, bannerTop + bannerH);
+            pRT->DrawBitmap(pBmpBanner, destRight, 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR, srcRight);
+        } else {
+            pRT->DrawBitmap(pBmpBanner, rcHeaderBanner, 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
+        }
+    } else {
+        // Fallback right image if header-banner is not present
+        ID2D1Bitmap* pBmpRight = GetLearningHubBitmap(pRT, L"header-right.png");
+        if (pBmpRight) {
+            float bmpW = bannerH * (518.0f / 205.0f);
+            D2D1_RECT_F rcRightImg = D2D1::RectF(bannerRight - bmpW, bannerTop, bannerRight, bannerTop + bannerH);
+            pRT->DrawBitmap(pBmpRight, rcRightImg, 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
+        }
     }
 
-    // 4. Learning Cards Grid (2x2) with Modern Layout
-    struct TutorialCard {
-        const wchar_t* title;
-        const wchar_t* tag;
-        const wchar_t* duration;
-        const wchar_t* desc;
-        const wchar_t* actionText;
-        D2D1_COLOR_F accentColor;
+    // 3. Header Title: "Learning Hub"
+    D2D1_RECT_F rcTitle = D2D1::RectF(bannerLeft + config.ScaleF(18.0f), bannerTop + config.ScaleF(16.0f),
+                                     bannerRight - config.ScaleF(260.0f), bannerTop + config.ScaleF(46.0f));
+    const wchar_t* titleStr = L"Learning Hub";
+    if (fmtTitle && brushWhite) {
+        pRT->DrawText(titleStr, static_cast<UINT32>(wcslen(titleStr)), fmtTitle.Get(), rcTitle, brushWhite.Get());
+    }
+
+    // 4. Header Subtitle
+    D2D1_RECT_F rcSub = D2D1::RectF(bannerLeft + config.ScaleF(18.0f), rcTitle.bottom + config.ScaleF(2.0f),
+                                   bannerRight - config.ScaleF(260.0f), rcTitle.bottom + config.ScaleF(28.0f));
+    const wchar_t* subStr = L"Step-by-step programming courses with hands-on examples, projects, and real-world skills.";
+    if (fmtSub && brushSub) {
+        pRT->DrawText(subStr, static_cast<UINT32>(wcslen(subStr)), fmtSub.Get(), rcSub, brushSub.Get());
+    }
+
+    // 5. Header Search Input Box
+    const float searchW = (std::min)(config.ScaleF(326.0f), bannerRight - bannerLeft - config.ScaleF(36.0f));
+    const float searchH = config.ScaleF(28.0f);
+    D2D1_RECT_F rcSearch = D2D1::RectF(bannerLeft + config.ScaleF(18.0f), bannerTop + config.ScaleF(86.0f),
+                                       bannerLeft + config.ScaleF(18.0f) + searchW, bannerTop + config.ScaleF(86.0f) + searchH);
+    m_learningSearchBounds = rcSearch;
+    D2D1_ROUNDED_RECT rrcSearch = D2D1::RoundedRect(rcSearch, config.ScaleF(5.0f), config.ScaleF(5.0f));
+
+    if (brushSearchBg) pRT->FillRoundedRectangle(rrcSearch, brushSearchBg.Get());
+    ID2D1Brush* pSearchBrd = m_isLearningSearchFocused ? brushSearchBorderActive.Get() :
+                             (m_hoveredLearningSearch ? brushCardBorderHover.Get() : brushSearchBorder.Get());
+    if (pSearchBrd) pRT->DrawRoundedRectangle(rrcSearch, pSearchBrd, 1.0f);
+
+    // Magnifier Search Icon inside input
+    const float searchIconSize = config.ScaleF(12.0f);
+    D2D1_RECT_F rcSearchIcon = D2D1::RectF(rcSearch.left + config.ScaleF(8.0f),
+                                          rcSearch.top + (searchH - searchIconSize) / 2.0f,
+                                          rcSearch.left + config.ScaleF(8.0f) + searchIconSize,
+                                          rcSearch.top + (searchH + searchIconSize) / 2.0f);
+    m_icons.DrawSearch(pRT, rcSearchIcon, brushMeta ? brushMeta.Get() : brushSub.Get(), 1.4f);
+
+    // Search query or placeholder
+    D2D1_RECT_F rcSearchText = D2D1::RectF(rcSearchIcon.right + config.ScaleF(6.0f), rcSearch.top + config.ScaleF(5.0f),
+                                          rcSearch.right - config.ScaleF(8.0f), rcSearch.bottom - config.ScaleF(5.0f));
+    float textWidth = 0.0f;
+    if (fmtSearch) {
+        if (!m_learningSearchQuery.empty()) {
+            pRT->DrawText(m_learningSearchQuery.c_str(), static_cast<UINT32>(m_learningSearchQuery.length()),
+                          fmtSearch.Get(), rcSearchText, brushWhite.Get());
+
+            if (pDWrite) {
+                Microsoft::WRL::ComPtr<IDWriteTextLayout> pLayout;
+                if (SUCCEEDED(pDWrite->CreateTextLayout(
+                    m_learningSearchQuery.c_str(),
+                    static_cast<UINT32>(m_learningSearchQuery.length()),
+                    fmtSearch.Get(),
+                    rcSearchText.right - rcSearchText.left,
+                    rcSearchText.bottom - rcSearchText.top,
+                    &pLayout))) {
+                    DWRITE_TEXT_METRICS metrics;
+                    if (SUCCEEDED(pLayout->GetMetrics(&metrics))) {
+                        textWidth = metrics.widthIncludingTrailingWhitespace;
+                    }
+                }
+            }
+        } else {
+            const wchar_t* placeHolder = L"Search courses, e.g. Python, PHP, JavaScript...";
+            pRT->DrawText(placeHolder, static_cast<UINT32>(wcslen(placeHolder)), fmtSearch.Get(), rcSearchText, brushMeta.Get());
+        }
+    }
+
+    // Natural Blinking Caret when focused
+    if (m_isLearningSearchFocused && m_caretVisible && brushWhite) {
+        float caretX = rcSearchText.left + textWidth + config.ScaleF(1.0f);
+        if (caretX <= rcSearch.right - config.ScaleF(4.0f)) {
+            pRT->DrawLine(D2D1::Point2F(caretX, rcSearch.top + config.ScaleF(5.0f)),
+                          D2D1::Point2F(caretX, rcSearch.bottom - config.ScaleF(5.0f)),
+                          brushWhite.Get(), config.ScaleF(1.2f));
+        }
+    }
+
+    // 6. Filter & Sort Bar
+    const float filterY = bannerTop + bannerH + config.ScaleF(14.0f);
+    const float filterH = config.ScaleF(24.0f);
+
+    struct FilterBtn {
+        const wchar_t* label;
+        float width;
     };
-    TutorialCard cards[] = {
-        {
-            L"PHP 8.2 & Modern Web Development",
-            L"PHP 8.2 • Web Dev",
-            L"⏱ 12 min",
-            L"Master modern PHP 8+, Composer packages, REST APIs, and instant live preview server inside Phide.",
-            L"Start Web Tutorial →",
-            D2D1::ColorF(0.39f, 0.40f, 0.95f, 1.0f) // Electric Indigo
-        },
-        {
-            L"Python, Data Science & Notebooks",
-            L"Python 3 • Jupyter",
-            L"⏱ 15 min",
-            L"Build interactive computational notebooks, mathematical modeling, and AI workflows with rich visual cells.",
-            L"Open Python Notebook →",
-            D2D1::ColorF(0.96f, 0.62f, 0.04f, 1.0f) // Amber / Gold
-        },
-        {
-            L"Git & GitHub Collaborative Workflows",
-            L"Git • Version Control",
-            L"⏱ 10 min",
-            L"Master staging, commit history graphs, smart stashing, and 1-click GitHub repository synchronization.",
-            L"Explore Git Lab →",
-            D2D1::ColorF(0.98f, 0.45f, 0.09f, 1.0f) // Git Coral
-        },
-        {
-            L"Database Studio & SQL Mastery",
-            L"Database • SQL",
-            L"⏱ 8 min",
-            L"Query and manage SQLite, MySQL, and PostgreSQL databases directly inside Phide with table schema inspector.",
-            L"Launch Database Studio →",
-            D2D1::ColorF(0.06f, 0.73f, 0.51f, 1.0f) // Emerald / Cyan
-        }
+    FilterBtn filters[5] = {
+        { L"All", config.ScaleF(46.0f) },
+        { L"Python", config.ScaleF(72.0f) },
+        { L"JavaScript", config.ScaleF(90.0f) },
+        { L"PHP", config.ScaleF(62.0f) },
+        { L"Others", config.ScaleF(64.0f) }
     };
 
-    const float cardGap = config.ScaleF(16.0f);
-    const float cardW = (maxHubW - cardGap) / 2.0f;
-    const float cardH = config.ScaleF(138.0f);
-    const float gridStartY = rcSub.bottom + config.ScaleF(24.0f);
+    float curFilterX = canvasLeft + padX;
+    const float pillGap = config.ScaleF(8.0f);
 
-    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> cardBgBrush;
-    pRT->CreateSolidColorBrush(theme.IsDarkMode() ? D2D1::ColorF(0.12f, 0.13f, 0.16f, 0.96f) : D2D1::ColorF(0.96f, 0.97f, 0.99f, 0.96f), &cardBgBrush);
+    for (int i = 0; i < 5; ++i) {
+        D2D1_RECT_F rcPill = D2D1::RectF(curFilterX, filterY, curFilterX + filters[i].width, filterY + filterH);
+        m_learningFilterBounds[i] = rcPill;
+        D2D1_ROUNDED_RECT rrcPill = D2D1::RoundedRect(rcPill, config.ScaleF(6.0f), config.ScaleF(6.0f));
 
-    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> cardBorderBrush;
-    pRT->CreateSolidColorBrush(theme.IsDarkMode() ? D2D1::ColorF(0.20f, 0.22f, 0.27f, 1.0f) : D2D1::ColorF(0.84f, 0.86f, 0.89f, 1.0f), &cardBorderBrush);
+        bool isActive = (m_learningActiveFilter == i);
+        bool isHover = (m_hoveredLearningFilter == i);
 
-    for (int i = 0; i < 4; ++i) {
-        int col = i % 2;
-        int row = i / 2;
-        float cx = hubLeft + static_cast<float>(col) * (cardW + cardGap);
-        float cy = gridStartY + static_cast<float>(row) * (cardH + cardGap);
-        D2D1_RECT_F rcCard = D2D1::RectF(cx, cy, cx + cardW, cy + cardH);
-        m_studentCardBounds[i] = rcCard;
-        D2D1_ROUNDED_RECT rrcCard = D2D1::RoundedRect(rcCard, config.ScaleF(10.0f), config.ScaleF(10.0f));
+        ID2D1Brush* pPillBg = isActive ? brushPillActiveBg.Get() : (isHover ? brushCardBorderHover.Get() : brushPillInactiveBg.Get());
+        ID2D1Brush* pPillBorder = isActive ? brushPillActiveBorder.Get() : (isHover ? brushCardBorderHover.Get() : brushPillInactiveBorder.Get());
+        ID2D1Brush* pPillText = isActive ? brushPillActiveText.Get() : (isHover ? brushWhite.Get() : brushPillInactiveText.Get());
 
-        if (cardBgBrush) pRT->FillRoundedRectangle(rrcCard, cardBgBrush.Get());
-        if (cardBorderBrush) pRT->DrawRoundedRectangle(rrcCard, cardBorderBrush.Get(), 1.0f);
+        if (pPillBg) pRT->FillRoundedRectangle(rrcPill, pPillBg);
+        if (pPillBorder) pRT->DrawRoundedRectangle(rrcPill, pPillBorder, isActive ? 1.2f : 1.0f);
 
-        // Left Accent Strip
-        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> accentBrush;
-        pRT->CreateSolidColorBrush(cards[i].accentColor, &accentBrush);
-        if (accentBrush) {
-            D2D1_RECT_F rcStrip = D2D1::RectF(cx + config.ScaleF(2.0f), cy + config.ScaleF(12.0f),
-                                              cx + config.ScaleF(5.5f), cy + cardH - config.ScaleF(12.0f));
-            D2D1_ROUNDED_RECT rrcStrip = D2D1::RoundedRect(rcStrip, 2.0f, 2.0f);
-            pRT->FillRoundedRectangle(rrcStrip, accentBrush.Get());
-        }
+        // Icon for category
+        float iconBoxW = config.ScaleF(14.0f);
+        D2D1_RECT_F rcPillIcon = D2D1::RectF(rcPill.left + config.ScaleF(6.0f), rcPill.top + (filterH - iconBoxW) / 2.0f,
+                                            rcPill.left + config.ScaleF(6.0f) + iconBoxW, rcPill.top + (filterH + iconBoxW) / 2.0f);
 
-        // Tag Pill & Duration
-        const float tagPadX = config.ScaleF(16.0f);
-        const float tagTop = cy + config.ScaleF(14.0f);
-        const float tagW = config.ScaleF(120.0f);
-        const float tagH = config.ScaleF(20.0f);
-        D2D1_RECT_F rcTag = D2D1::RectF(cx + tagPadX, tagTop, cx + tagPadX + tagW, tagTop + tagH);
-        D2D1_ROUNDED_RECT rrcTag = D2D1::RoundedRect(rcTag, 4.0f, 4.0f);
-
-        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> tagBgBrush;
-        pRT->CreateSolidColorBrush(D2D1::ColorF(cards[i].accentColor.r, cards[i].accentColor.g, cards[i].accentColor.b, 0.15f), &tagBgBrush);
-        if (tagBgBrush) pRT->FillRoundedRectangle(rrcTag, tagBgBrush.Get());
-
-        if (pFmtBadge && accentBrush) {
-            DWRITE_TEXT_ALIGNMENT oldAlign = pFmtBadge->GetTextAlignment();
-            pFmtBadge->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
-            pRT->DrawText(cards[i].tag, static_cast<UINT32>(wcslen(cards[i].tag)), pFmtBadge, rcTag, accentBrush.Get());
-            pFmtBadge->SetTextAlignment(oldAlign);
-        }
-
-        // Duration text on top right
-        D2D1_RECT_F rcDur = D2D1::RectF(cx + cardW - config.ScaleF(90.0f), tagTop + config.ScaleF(2.0f),
-                                       cx + cardW - config.ScaleF(16.0f), tagTop + tagH);
-        IDWriteTextFormat* pFmtDur = theme.fontHint ? theme.fontHint.Get() : theme.fontBody.Get();
-        if (pFmtDur) {
-            DWRITE_TEXT_ALIGNMENT oldAlign = pFmtDur->GetTextAlignment();
-            pFmtDur->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_TRAILING);
-            pRT->DrawText(cards[i].duration, static_cast<UINT32>(wcslen(cards[i].duration)), pFmtDur, rcDur,
-                          theme.brushTextMuted ? theme.brushTextMuted.Get() : theme.brushTextSecondary.Get());
-            pFmtDur->SetTextAlignment(oldAlign);
-        }
-
-        // Card Title
-        const float titleTop = tagTop + tagH + config.ScaleF(8.0f);
-        D2D1_RECT_F rcCardTitle = D2D1::RectF(cx + tagPadX, titleTop,
-                                             cx + cardW - config.ScaleF(16.0f), titleTop + config.ScaleF(22.0f));
-        IDWriteTextFormat* pFmtCardTitle = theme.fontSectionHeader ? theme.fontSectionHeader.Get() : theme.fontBody.Get();
-        if (pFmtCardTitle) {
-            DWRITE_TEXT_ALIGNMENT oldAlign = pFmtCardTitle->GetTextAlignment();
-            pFmtCardTitle->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
-            pRT->DrawText(cards[i].title, static_cast<UINT32>(wcslen(cards[i].title)), pFmtCardTitle, rcCardTitle,
-                          theme.brushTextPrimary ? theme.brushTextPrimary.Get() : theme.brushTextWhite.Get());
-            pFmtCardTitle->SetTextAlignment(oldAlign);
-        }
-
-        // Card Description
-        const float descTop = rcCardTitle.bottom + config.ScaleF(4.0f);
-        D2D1_RECT_F rcCardDesc = D2D1::RectF(cx + tagPadX, descTop,
-                                            cx + cardW - config.ScaleF(16.0f), descTop + config.ScaleF(34.0f));
-        IDWriteTextFormat* pFmtCardDesc = theme.fontHint ? theme.fontHint.Get() : theme.fontBody.Get();
-        if (pFmtCardDesc) {
-            DWRITE_TEXT_ALIGNMENT oldAlign = pFmtCardDesc->GetTextAlignment();
-            DWRITE_WORD_WRAPPING oldWrap = pFmtCardDesc->GetWordWrapping();
-            pFmtCardDesc->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
-            pFmtCardDesc->SetWordWrapping(DWRITE_WORD_WRAPPING_WRAP);
-            pRT->DrawText(cards[i].desc, static_cast<UINT32>(wcslen(cards[i].desc)), pFmtCardDesc, rcCardDesc,
-                          theme.brushTextMuted ? theme.brushTextMuted.Get() : theme.brushTextSecondary.Get());
-            pFmtCardDesc->SetTextAlignment(oldAlign);
-            pFmtCardDesc->SetWordWrapping(oldWrap);
-        }
-
-        // Action Button Pill at bottom
-        const float btnW = config.ScaleF(150.0f);
-        const float btnH = config.ScaleF(24.0f);
-        D2D1_RECT_F rcAction = D2D1::RectF(cx + tagPadX, cy + cardH - btnH - config.ScaleF(10.0f),
-                                          cx + tagPadX + btnW, cy + cardH - config.ScaleF(10.0f));
-        m_studentCardBtnBounds[i] = rcAction;
-        D2D1_ROUNDED_RECT rrcAction = D2D1::RoundedRect(rcAction, 4.0f, 4.0f);
-
-        if (tagBgBrush) pRT->FillRoundedRectangle(rrcAction, tagBgBrush.Get());
-        if (accentBrush) {
-            pRT->DrawRoundedRectangle(rrcAction, accentBrush.Get(), 0.8f);
-            if (pFmtBadge) {
-                DWRITE_TEXT_ALIGNMENT oldAlign = pFmtBadge->GetTextAlignment();
-                pFmtBadge->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
-                pRT->DrawText(cards[i].actionText, static_cast<UINT32>(wcslen(cards[i].actionText)), pFmtBadge, rcAction, accentBrush.Get());
-                pFmtBadge->SetTextAlignment(oldAlign);
+        if (i == 0) { // All: 2x2 grid
+            float sq = config.ScaleF(4.0f);
+            float g = config.ScaleF(1.5f);
+            float ox = rcPillIcon.left + config.ScaleF(2.0f);
+            float oy = rcPillIcon.top + config.ScaleF(2.0f);
+            if (pPillText) {
+                pRT->FillRectangle(D2D1::RectF(ox, oy, ox + sq, oy + sq), pPillText);
+                pRT->FillRectangle(D2D1::RectF(ox + sq + g, oy, ox + sq * 2.0f + g, oy + sq), pPillText);
+                pRT->FillRectangle(D2D1::RectF(ox, oy + sq + g, ox + sq, oy + sq * 2.0f + g), pPillText);
+                pRT->FillRectangle(D2D1::RectF(ox + sq + g, oy + sq + g, ox + sq * 2.0f + g, oy + sq * 2.0f + g), pPillText);
+            }
+        } else if (i == 1) { // Python: official icon from assets/python.png
+            ID2D1Bitmap* pPyIcon = GetLearningHubBitmap(pRT, L"python.png");
+            if (pPyIcon) {
+                pRT->DrawBitmap(pPyIcon, rcPillIcon, 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
+            }
+        } else if (i == 2) { // JavaScript: official icon from assets/javascript.png
+            ID2D1Bitmap* pJsIcon = GetLearningHubBitmap(pRT, L"javascript.png");
+            if (pJsIcon) {
+                pRT->DrawBitmap(pJsIcon, rcPillIcon, 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
+            }
+        } else if (i == 3) { // PHP: official icon from assets/php.png
+            ID2D1Bitmap* pPhpIcon = GetLearningHubBitmap(pRT, L"php.png");
+            if (pPhpIcon) {
+                pRT->DrawBitmap(pPhpIcon, rcPillIcon, 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
+            }
+        } else if (i == 4) { // Others: 3 dots
+            if (pPillText) {
+                float dotY = (rcPillIcon.top + rcPillIcon.bottom) / 2.0f;
+                float dotR = config.ScaleF(1.2f);
+                pRT->FillEllipse(D2D1::Ellipse(D2D1::Point2F(rcPillIcon.left + config.ScaleF(3.0f), dotY), dotR, dotR), pPillText);
+                pRT->FillEllipse(D2D1::Ellipse(D2D1::Point2F(rcPillIcon.left + config.ScaleF(7.0f), dotY), dotR, dotR), pPillText);
+                pRT->FillEllipse(D2D1::Ellipse(D2D1::Point2F(rcPillIcon.left + config.ScaleF(11.0f), dotY), dotR, dotR), pPillText);
             }
         }
+
+        // Label
+        D2D1_RECT_F rcPillLabel = D2D1::RectF(rcPillIcon.right + config.ScaleF(4.0f), rcPill.top + config.ScaleF(4.0f),
+                                             rcPill.right - config.ScaleF(6.0f), rcPill.bottom - config.ScaleF(4.0f));
+        if (fmtPill && pPillText) {
+            pRT->DrawText(filters[i].label, static_cast<UINT32>(wcslen(filters[i].label)), fmtPill.Get(), rcPillLabel, pPillText);
+        }
+
+        curFilterX += filters[i].width + pillGap;
     }
 
-    // 5. Bottom Quick Sandboxes Bar
-    const float sandStartY = gridStartY + cardH * 2.0f + cardGap + config.ScaleF(22.0f);
-    D2D1_RECT_F rcSandBar = D2D1::RectF(hubLeft, sandStartY, hubLeft + maxHubW, sandStartY + config.ScaleF(48.0f));
-    D2D1_ROUNDED_RECT rrcSandBar = D2D1::RoundedRect(rcSandBar, config.ScaleF(8.0f), config.ScaleF(8.0f));
+    // Sort Dropdown Pill on Right
+    const float sortW = config.ScaleF(112.0f);
+    D2D1_RECT_F rcSort = D2D1::RectF(canvasLeft + canvasWidth - padX - sortW, filterY,
+                                    canvasLeft + canvasWidth - padX, filterY + filterH);
+    m_learningSortBounds = rcSort;
+    D2D1_ROUNDED_RECT rrcSort = D2D1::RoundedRect(rcSort, config.ScaleF(6.0f), config.ScaleF(6.0f));
 
-    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> barBgBrush;
-    pRT->CreateSolidColorBrush(theme.IsDarkMode() ? D2D1::ColorF(0.14f, 0.15f, 0.18f, 0.80f) : D2D1::ColorF(0.93f, 0.94f, 0.97f, 0.80f), &barBgBrush);
-    if (barBgBrush) pRT->FillRoundedRectangle(rrcSandBar, barBgBrush.Get());
-    if (cardBorderBrush) pRT->DrawRoundedRectangle(rrcSandBar, cardBorderBrush.Get(), 1.0f);
+    ID2D1Brush* pSortBg = m_hoveredLearningSort ? brushCardBorderHover.Get() : brushPillInactiveBg.Get();
+    ID2D1Brush* pSortBorder = m_hoveredLearningSort ? brushCardBorderHover.Get() : brushPillInactiveBorder.Get();
+    if (pSortBg) pRT->FillRoundedRectangle(rrcSort, pSortBg);
+    if (pSortBorder) pRT->DrawRoundedRectangle(rrcSort, pSortBorder, 1.0f);
 
-    // Label: "⚡ Quick Sandboxes:"
-    const wchar_t* sandLabel = L"⚡ Quick Sandboxes:";
-    D2D1_RECT_F rcSandLabel = D2D1::RectF(hubLeft + config.ScaleF(16.0f), sandStartY + config.ScaleF(14.0f),
-                                         hubLeft + config.ScaleF(160.0f), sandStartY + config.ScaleF(34.0f));
-    IDWriteTextFormat* pFmtLabel = theme.fontSectionHeader ? theme.fontSectionHeader.Get() : theme.fontBody.Get();
-    if (pFmtLabel) {
-        pRT->DrawText(sandLabel, static_cast<UINT32>(wcslen(sandLabel)), pFmtLabel, rcSandLabel,
-                      theme.brushTextPrimary ? theme.brushTextPrimary.Get() : theme.brushTextWhite.Get());
+    const wchar_t* sortLabel = (m_learningSortOrder == 1) ? L"⇅ Most Lessons ˅" :
+                               (m_learningSortOrder == 2) ? L"⇅ Duration ˅" : L"⇅ Most Popular ˅";
+    D2D1_RECT_F rcSortLabel = D2D1::RectF(rcSort.left + config.ScaleF(6.0f), rcSort.top + config.ScaleF(4.0f),
+                                         rcSort.right - config.ScaleF(6.0f), rcSort.bottom - config.ScaleF(4.0f));
+    if (fmtPill && brushWhite) {
+        DWRITE_TEXT_ALIGNMENT oldAlign = fmtPill->GetTextAlignment();
+        fmtPill->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+        pRT->DrawText(sortLabel, static_cast<UINT32>(wcslen(sortLabel)), fmtPill.Get(), rcSortLabel, brushWhite.Get());
+        fmtPill->SetTextAlignment(oldAlign);
     }
 
-    // Quick Button 1: [ + New Python Notebook ]
-    const float qBtnH = config.ScaleF(28.0f);
-    float qStartX = rcSandLabel.right + config.ScaleF(10.0f);
-    const float qBtn1W = config.ScaleF(165.0f);
-    m_studentQuickNbBtn = D2D1::RectF(qStartX, sandStartY + config.ScaleF(10.0f), qStartX + qBtn1W, sandStartY + config.ScaleF(10.0f) + qBtnH);
-    D2D1_ROUNDED_RECT rrcQ1 = D2D1::RoundedRect(m_studentQuickNbBtn, 4.0f, 4.0f);
-    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> qBgBrush;
-    pRT->CreateSolidColorBrush(D2D1::ColorF(0.55f, 0.25f, 0.95f, 0.20f), &qBgBrush);
-    if (qBgBrush) pRT->FillRoundedRectangle(rrcQ1, qBgBrush.Get());
-    if (badgeBorderBrush) pRT->DrawRoundedRectangle(rrcQ1, badgeBorderBrush.Get(), 1.0f);
-    const wchar_t* q1Text = L"+ New Python Notebook";
-    if (pFmtBadge) {
-        DWRITE_TEXT_ALIGNMENT oldAlign = pFmtBadge->GetTextAlignment();
-        pFmtBadge->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
-        pRT->DrawText(q1Text, static_cast<UINT32>(wcslen(q1Text)), pFmtBadge, m_studentQuickNbBtn,
-                      theme.brushTextWhite ? theme.brushTextWhite.Get() : theme.brushTextPrimary.Get());
-        pFmtBadge->SetTextAlignment(oldAlign);
+    // 7. Course Cards Grid (4 Columns)
+    std::vector<size_t> visibleCourses;
+    for (size_t i = 0; i < m_learningCourses.size(); ++i) {
+        const auto& c = m_learningCourses[i];
+        if (m_learningActiveFilter == 1 && c.category != L"Python") continue;
+        if (m_learningActiveFilter == 2 && c.category != L"JavaScript") continue;
+        if (m_learningActiveFilter == 3 && c.category != L"PHP") continue;
+        if (m_learningActiveFilter == 4 && c.category != L"Others") continue;
+
+        if (!m_learningSearchQuery.empty()) {
+            auto ToLower = [](const std::wstring& s) {
+                std::wstring r = s;
+                for (auto& ch : r) ch = towlower(ch);
+                return r;
+            };
+            std::wstring q = ToLower(m_learningSearchQuery);
+            if (ToLower(c.title).find(q) == std::wstring::npos &&
+                ToLower(c.description).find(q) == std::wstring::npos &&
+                ToLower(c.category).find(q) == std::wstring::npos) {
+                continue;
+            }
+        }
+        visibleCourses.push_back(i);
     }
 
-    // Quick Button 2: [ + New Web Scratchpad ]
-    qStartX += qBtn1W + config.ScaleF(12.0f);
-    const float qBtn2W = config.ScaleF(155.0f);
-    m_studentQuickScratchBtn = D2D1::RectF(qStartX, sandStartY + config.ScaleF(10.0f), qStartX + qBtn2W, sandStartY + config.ScaleF(10.0f) + qBtnH);
-    D2D1_ROUNDED_RECT rrcQ2 = D2D1::RoundedRect(m_studentQuickScratchBtn, 4.0f, 4.0f);
-    if (qBgBrush) pRT->FillRoundedRectangle(rrcQ2, qBgBrush.Get());
-    if (badgeBorderBrush) pRT->DrawRoundedRectangle(rrcQ2, badgeBorderBrush.Get(), 1.0f);
-    const wchar_t* q2Text = L"+ New Web Scratchpad";
-    if (pFmtBadge) {
-        DWRITE_TEXT_ALIGNMENT oldAlign = pFmtBadge->GetTextAlignment();
-        pFmtBadge->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
-        pRT->DrawText(q2Text, static_cast<UINT32>(wcslen(q2Text)), pFmtBadge, m_studentQuickScratchBtn,
-                      theme.brushTextWhite ? theme.brushTextWhite.Get() : theme.brushTextPrimary.Get());
-        pFmtBadge->SetTextAlignment(oldAlign);
+    if (m_learningSortOrder == 1) {
+        std::stable_sort(visibleCourses.begin(), visibleCourses.end(), [&](size_t a, size_t b) {
+            return m_learningCourses[a].lessons > m_learningCourses[b].lessons;
+        });
+    } else if (m_learningSortOrder == 2) {
+        std::stable_sort(visibleCourses.begin(), visibleCourses.end(), [&](size_t a, size_t b) {
+            return m_learningCourses[a].hours > m_learningCourses[b].hours;
+        });
     }
 
-    // Quick Button 3: [ 🗄️ Database Studio ]
-    qStartX += qBtn2W + config.ScaleF(12.0f);
-    const float qBtn3W = config.ScaleF(150.0f);
-    m_studentQuickDbBtn = D2D1::RectF(qStartX, sandStartY + config.ScaleF(10.0f), qStartX + qBtn3W, sandStartY + config.ScaleF(10.0f) + qBtnH);
-    D2D1_ROUNDED_RECT rrcQ3 = D2D1::RoundedRect(m_studentQuickDbBtn, 4.0f, 4.0f);
-    if (qBgBrush) pRT->FillRoundedRectangle(rrcQ3, qBgBrush.Get());
-    if (badgeBorderBrush) pRT->DrawRoundedRectangle(rrcQ3, badgeBorderBrush.Get(), 1.0f);
-    const wchar_t* q3Text = L"Open Database Studio";
-    if (pFmtBadge) {
-        DWRITE_TEXT_ALIGNMENT oldAlign = pFmtBadge->GetTextAlignment();
-        pFmtBadge->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
-        pRT->DrawText(q3Text, static_cast<UINT32>(wcslen(q3Text)), pFmtBadge, m_studentQuickDbBtn,
-                      theme.brushTextWhite ? theme.brushTextWhite.Get() : theme.brushTextPrimary.Get());
-        pFmtBadge->SetTextAlignment(oldAlign);
+    const float gapX = config.ScaleF(8.0f);
+    const float gapY = config.ScaleF(10.0f);
+    const float totalGridW = canvasWidth - padX * 2.0f;
+
+    // Proportional, non-stretching responsive grid (195px base width, 142px base height)
+    int numCols = std::clamp(static_cast<int>((totalGridW + gapX) / (config.ScaleF(195.0f) + gapX)), 2, 8);
+    const float cardW = (totalGridW - gapX * static_cast<float>(numCols - 1)) / static_cast<float>(numCols);
+    const float cardH = cardW * (142.0f / 195.0f);
+    const float cardBannerH = cardH * (62.0f / 142.0f);
+    const float gridStartY = topY - m_learningScrollY + config.ScaleF(182.0f);
+
+    auto DrawBookIcon = [&](const D2D1_RECT_F& r, ID2D1Brush* pBr) {
+        if (!pBr) return;
+        float midX = (r.left + r.right) / 2.0f;
+        float botY = r.bottom - 1.0f;
+        float tY = r.top + 1.0f;
+        pRT->DrawLine(D2D1::Point2F(midX, botY), D2D1::Point2F(r.left, botY + 0.5f), pBr, 1.1f);
+        pRT->DrawLine(D2D1::Point2F(r.left, botY + 0.5f), D2D1::Point2F(r.left, tY + 0.5f), pBr, 1.1f);
+        pRT->DrawLine(D2D1::Point2F(r.left, tY + 0.5f), D2D1::Point2F(midX, tY), pBr, 1.1f);
+        pRT->DrawLine(D2D1::Point2F(midX, tY), D2D1::Point2F(r.right, tY + 0.5f), pBr, 1.1f);
+        pRT->DrawLine(D2D1::Point2F(r.right, tY + 0.5f), D2D1::Point2F(r.right, botY + 0.5f), pBr, 1.1f);
+        pRT->DrawLine(D2D1::Point2F(r.right, botY + 0.5f), D2D1::Point2F(midX, botY), pBr, 1.1f);
+        pRT->DrawLine(D2D1::Point2F(midX, tY), D2D1::Point2F(midX, botY), pBr, 1.1f);
+    };
+
+    auto DrawClockIcon = [&](const D2D1_RECT_F& r, ID2D1Brush* pBr) {
+        if (!pBr) return;
+        float cx = (r.left + r.right) / 2.0f;
+        float cy = (r.top + r.bottom) / 2.0f;
+        float rad = (std::min)(r.right - r.left, r.bottom - r.top) / 2.0f - 0.5f;
+        pRT->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(cx, cy), rad, rad), pBr, 1.1f);
+        pRT->DrawLine(D2D1::Point2F(cx, cy), D2D1::Point2F(cx, cy - rad * 0.55f), pBr, 1.1f);
+        pRT->DrawLine(D2D1::Point2F(cx, cy), D2D1::Point2F(cx + rad * 0.50f, cy), pBr, 1.1f);
+    };
+
+    ID2D1Bitmap* pBmpKodaLogo = GetLearningHubBitmap(pRT, L"header-logo.png");
+
+    for (size_t vIdx = 0; vIdx < visibleCourses.size(); ++vIdx) {
+        size_t origIdx = visibleCourses[vIdx];
+        const auto& course = m_learningCourses[origIdx];
+
+        int col = static_cast<int>(vIdx % numCols);
+        int row = static_cast<int>(vIdx / numCols);
+        float cx = canvasLeft + padX + static_cast<float>(col) * (cardW + gapX);
+        float cy = gridStartY + static_cast<float>(row) * (cardH + gapY);
+
+        D2D1_RECT_F rcCard = D2D1::RectF(cx, cy, cx + cardW, cy + cardH);
+        m_renderedCourseCards.push_back({ origIdx, rcCard });
+
+        // Backward compatibility bounds for the first 4 cards
+        if (origIdx < 4) {
+            m_studentCardBounds[origIdx] = rcCard;
+            m_studentCardBtnBounds[origIdx] = rcCard;
+        }
+
+        bool isHovered = (m_hoveredLearningCard == static_cast<int>(origIdx));
+        D2D1_ROUNDED_RECT rrcCard = D2D1::RoundedRect(rcCard, config.ScaleF(8.0f), config.ScaleF(8.0f));
+
+        if (brushCardBg) pRT->FillRoundedRectangle(rrcCard, brushCardBg.Get());
+        ID2D1Brush* pCBorder = isHovered ? brushCardBorderHover.Get() : brushCardBorder.Get();
+        if (pCBorder) pRT->DrawRoundedRectangle(rrcCard, pCBorder, isHovered ? 1.2f : 1.0f);
+
+        // Top Banner Image
+        D2D1_RECT_F rcBanner = D2D1::RectF(cx + 0.5f, cy + 0.5f, cx + cardW - 0.5f, cy + cardBannerH);
+        ID2D1Bitmap* pBannerBmp = GetLearningHubBitmap(pRT, course.imageFile);
+        if (pBannerBmp) {
+            pRT->DrawBitmap(pBannerBmp, rcBanner, 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
+        }
+
+        // Koda Row
+        const float kodaY = cy + cardBannerH + config.ScaleF(5.0f);
+        const float kodaIconSize = config.ScaleF(10.0f);
+        D2D1_RECT_F rcKodaIcon = D2D1::RectF(cx + config.ScaleF(8.0f), kodaY,
+                                            cx + config.ScaleF(8.0f) + kodaIconSize, kodaY + kodaIconSize);
+        if (pBmpKodaLogo) {
+            pRT->DrawBitmap(pBmpKodaLogo, rcKodaIcon);
+        } else if (brushGreenAccent) {
+            pRT->FillRectangle(rcKodaIcon, brushGreenAccent.Get());
+        }
+
+        D2D1_RECT_F rcKodaText = D2D1::RectF(rcKodaIcon.right + config.ScaleF(3.0f), kodaY - config.ScaleF(1.0f),
+                                            cx + cardW - config.ScaleF(8.0f), kodaY + config.ScaleF(11.0f));
+        if (fmtCardKoda && brushMeta) {
+            pRT->DrawText(course.creator.c_str(), static_cast<UINT32>(course.creator.length()),
+                          fmtCardKoda.Get(), rcKodaText, brushMeta.Get());
+        }
+
+        // Course Title
+        const float titleTop = kodaY + config.ScaleF(12.0f);
+        D2D1_RECT_F rcCourseTitle = D2D1::RectF(cx + config.ScaleF(8.0f), titleTop,
+                                               cx + cardW - config.ScaleF(8.0f), titleTop + config.ScaleF(16.0f));
+        if (fmtCardTitle && brushWhite) {
+            pRT->DrawText(course.title.c_str(), static_cast<UINT32>(course.title.length()),
+                          fmtCardTitle.Get(), rcCourseTitle, brushWhite.Get());
+        }
+
+        // Course Description (2 lines wrapped)
+        const float descTop = titleTop + config.ScaleF(15.0f);
+        D2D1_RECT_F rcCourseDesc = D2D1::RectF(cx + config.ScaleF(8.0f), descTop,
+                                              cx + cardW - config.ScaleF(8.0f), descTop + config.ScaleF(28.0f));
+        if (fmtCardDesc && brushSub) {
+            DWRITE_WORD_WRAPPING oldWrap = fmtCardDesc->GetWordWrapping();
+            fmtCardDesc->SetWordWrapping(DWRITE_WORD_WRAPPING_WRAP);
+            pRT->DrawText(course.description.c_str(), static_cast<UINT32>(course.description.length()),
+                          fmtCardDesc.Get(), rcCourseDesc, brushSub.Get());
+            fmtCardDesc->SetWordWrapping(oldWrap);
+        }
+
+        // Footer Row
+        const float footerTop = cy + cardH - config.ScaleF(18.0f);
+
+        // Book icon & lessons
+        D2D1_RECT_F rcBook = D2D1::RectF(cx + config.ScaleF(8.0f), footerTop + config.ScaleF(2.0f),
+                                         cx + config.ScaleF(17.0f), footerTop + config.ScaleF(11.0f));
+        DrawBookIcon(rcBook, brushMeta.Get());
+
+        std::wstring lessonStr = std::to_wstring(course.lessons) + L" lessons";
+        D2D1_RECT_F rcLessons = D2D1::RectF(rcBook.right + config.ScaleF(3.0f), footerTop,
+                                           rcBook.right + config.ScaleF(56.0f), footerTop + config.ScaleF(14.0f));
+        if (fmtCardMeta && brushMeta) {
+            pRT->DrawText(lessonStr.c_str(), static_cast<UINT32>(lessonStr.length()), fmtCardMeta.Get(), rcLessons, brushMeta.Get());
+        }
+
+        // Clock icon & hours
+        D2D1_RECT_F rcClock = D2D1::RectF(rcLessons.right + config.ScaleF(4.0f), footerTop + config.ScaleF(2.0f),
+                                          rcLessons.right + config.ScaleF(13.0f), footerTop + config.ScaleF(11.0f));
+        DrawClockIcon(rcClock, brushMeta.Get());
+
+        std::wstring hourStr = std::to_wstring(course.hours) + L" hours";
+        D2D1_RECT_F rcHours = D2D1::RectF(rcClock.right + config.ScaleF(3.0f), footerTop,
+                                         rcClock.right + config.ScaleF(44.0f), footerTop + config.ScaleF(14.0f));
+        if (fmtCardMeta && brushMeta) {
+            pRT->DrawText(hourStr.c_str(), static_cast<UINT32>(hourStr.length()), fmtCardMeta.Get(), rcHours, brushMeta.Get());
+        }
+
+        // Difficulty Badge (Right-aligned)
+        const float badgeW = config.ScaleF(56.0f);
+        const float badgeH = config.ScaleF(16.0f);
+        D2D1_RECT_F rcDiffBadge = D2D1::RectF(cx + cardW - config.ScaleF(8.0f) - badgeW, footerTop - config.ScaleF(1.0f),
+                                             cx + cardW - config.ScaleF(8.0f), footerTop - config.ScaleF(1.0f) + badgeH);
+        D2D1_ROUNDED_RECT rrcDiffBadge = D2D1::RoundedRect(rcDiffBadge, badgeH / 2.0f, badgeH / 2.0f);
+
+        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> bBg, bBrd, bTxt;
+        if (course.difficulty == L"Beginner") {
+            pRT->CreateSolidColorBrush(D2D1::ColorF(0.040f, 0.160f, 0.120f, 1.0f), &bBg);
+            pRT->CreateSolidColorBrush(D2D1::ColorF(0.080f, 0.320f, 0.240f, 1.0f), &bBrd);
+            pRT->CreateSolidColorBrush(D2D1::ColorF(0.125f, 0.796f, 0.482f, 1.0f), &bTxt);
+        } else if (course.difficulty == L"Intermediate") {
+            pRT->CreateSolidColorBrush(D2D1::ColorF(0.050f, 0.140f, 0.250f, 1.0f), &bBg);
+            pRT->CreateSolidColorBrush(D2D1::ColorF(0.080f, 0.250f, 0.450f, 1.0f), &bBrd);
+            pRT->CreateSolidColorBrush(D2D1::ColorF(0.231f, 0.600f, 0.980f, 1.0f), &bTxt);
+        } else { // Advanced
+            pRT->CreateSolidColorBrush(D2D1::ColorF(0.200f, 0.080f, 0.090f, 1.0f), &bBg);
+            pRT->CreateSolidColorBrush(D2D1::ColorF(0.380f, 0.120f, 0.140f, 1.0f), &bBrd);
+            pRT->CreateSolidColorBrush(D2D1::ColorF(0.957f, 0.247f, 0.369f, 1.0f), &bTxt);
+        }
+
+        if (bBg) pRT->FillRoundedRectangle(rrcDiffBadge, bBg.Get());
+        if (bBrd) pRT->DrawRoundedRectangle(rrcDiffBadge, bBrd.Get(), 1.0f);
+        if (fmtCardBadge && bTxt) {
+            pRT->DrawText(course.difficulty.c_str(), static_cast<UINT32>(course.difficulty.length()),
+                          fmtCardBadge.Get(), rcDiffBadge, bTxt.Get());
+        }
     }
+
+    // Scroll metrics & Scrollbar
+    int numRows = (static_cast<int>(visibleCourses.size()) + numCols - 1) / numCols;
+    float contentBottom = gridStartY + static_cast<float>(numRows) * (cardH + gapY) + config.ScaleF(24.0f) + m_learningScrollY;
+    float visibleBottom = topY + viewH;
+    m_learningMaxScrollY = (std::max)(0.0f, contentBottom - visibleBottom);
+    if (m_learningScrollY > m_learningMaxScrollY) m_learningScrollY = m_learningMaxScrollY;
+
+    if (m_learningMaxScrollY > 0.0f && brushCardBorderHover) {
+        float trackH = viewH - config.ScaleF(16.0f);
+        float thumbH = (std::max)(config.ScaleF(32.0f), (viewH / contentBottom) * trackH);
+        float thumbY = topY + config.ScaleF(8.0f) + (m_learningScrollY / m_learningMaxScrollY) * (trackH - thumbH);
+        D2D1_RECT_F rcThumb = D2D1::RectF(canvasLeft + canvasWidth - config.ScaleF(6.0f), thumbY,
+                                         canvasLeft + canvasWidth - config.ScaleF(2.0f), thumbY + thumbH);
+        pRT->FillRoundedRectangle(D2D1::RoundedRect(rcThumb, 2.0f, 2.0f), brushCardBorderHover.Get());
+    }
+
+    pRT->PopAxisAlignedClip();
+}
+
+bool EditorCanvas::HandleLearningChar(wchar_t ch) {
+    if (!m_isLearningSearchFocused) return false;
+    if (ch >= 32 && ch != 127) {
+        m_learningSearchQuery.push_back(ch);
+        m_learningScrollY = 0.0f;
+        return true;
+    }
+    return false;
+}
+
+bool EditorCanvas::HandleLearningKeyDown(WPARAM key) {
+    if (!m_isLearningSearchFocused) return false;
+    if (key == VK_BACK) {
+        if (!m_learningSearchQuery.empty()) {
+            m_learningSearchQuery.pop_back();
+            m_learningScrollY = 0.0f;
+            return true;
+        }
+    } else if (key == VK_ESCAPE) {
+        m_learningSearchQuery.clear();
+        m_isLearningSearchFocused = false;
+        m_learningScrollY = 0.0f;
+        return true;
+    }
+    return false;
+}
+
+bool EditorCanvas::HandleStudentMouseMove(POINT pt) {
+    auto PointInRect = [](POINT p, const D2D1_RECT_F& r) -> bool {
+        return p.x >= r.left && p.x <= r.right && p.y >= r.top && p.y <= r.bottom;
+    };
+
+    int oldHoverCard = m_hoveredLearningCard;
+    int oldHoverFilter = m_hoveredLearningFilter;
+    bool oldHoverSearch = m_hoveredLearningSearch;
+    bool oldHoverSort = m_hoveredLearningSort;
+
+    m_hoveredLearningSearch = PointInRect(pt, m_learningSearchBounds);
+    m_hoveredLearningSort = PointInRect(pt, m_learningSortBounds);
+
+    m_hoveredLearningFilter = -1;
+    for (int i = 0; i < 5; ++i) {
+        if (PointInRect(pt, m_learningFilterBounds[i])) {
+            m_hoveredLearningFilter = i;
+            break;
+        }
+    }
+
+    m_hoveredLearningCard = -1;
+    for (const auto& card : m_renderedCourseCards) {
+        if (PointInRect(pt, card.bounds)) {
+            m_hoveredLearningCard = static_cast<int>(card.courseIndex);
+            break;
+        }
+    }
+
+    return (oldHoverCard != m_hoveredLearningCard ||
+            oldHoverFilter != m_hoveredLearningFilter ||
+            oldHoverSearch != m_hoveredLearningSearch ||
+            oldHoverSort != m_hoveredLearningSort);
+}
+
+bool EditorCanvas::HandleStudentMouseWheel(short delta) {
+    if (m_learningMaxScrollY <= 0.0f) return false;
+    float step = 45.0f;
+    float oldScroll = m_learningScrollY;
+    if (delta > 0) {
+        m_learningScrollY = (std::max)(0.0f, m_learningScrollY - step);
+    } else {
+        m_learningScrollY = (std::min)(m_learningMaxScrollY, m_learningScrollY + step);
+    }
+    return (m_learningScrollY != oldScroll);
 }
 
 int EditorCanvas::HitTestStudentView(POINT pt) const {
@@ -2795,16 +3367,40 @@ int EditorCanvas::HitTestStudentView(POINT pt) const {
         return p.x >= r.left && p.x <= r.right && p.y >= r.top && p.y <= r.bottom;
     };
 
+    if (PointInRect(pt, m_learningSearchBounds)) {
+        return 50;
+    }
+
+    for (int i = 0; i < 5; ++i) {
+        if (PointInRect(pt, m_learningFilterBounds[i])) {
+            return 60 + i;
+        }
+    }
+
+    if (PointInRect(pt, m_learningSortBounds)) {
+        return 70;
+    }
+
+    for (const auto& card : m_renderedCourseCards) {
+        if (PointInRect(pt, card.bounds)) {
+            return 100 + static_cast<int>(card.courseIndex);
+        }
+    }
+
+    // Quick sandbox buttons (backward compatibility if needed)
     if (PointInRect(pt, m_studentQuickNbBtn)) return 10;
     if (PointInRect(pt, m_studentQuickScratchBtn)) return 11;
     if (PointInRect(pt, m_studentQuickDbBtn)) return 12;
 
-    for (int i = 0; i < 4; ++i) {
-        if (PointInRect(pt, m_studentCardBtnBounds[i]) || PointInRect(pt, m_studentCardBounds[i])) {
-            return i + 1; // 1: PHP, 2: Python, 3: Git, 4: DB
-        }
+    return -1;
+}
+
+const LearningCourseDef& EditorCanvas::GetLearningCourse(size_t index) const {
+    static LearningCourseDef s_empty{};
+    if (index < m_learningCourses.size()) {
+        return m_learningCourses[index];
     }
-    return 0;
+    return s_empty;
 }
 
 void EditorCanvas::RenderRefactorPopup(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config, float clientHeight) {

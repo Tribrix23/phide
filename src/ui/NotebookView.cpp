@@ -65,7 +65,7 @@ bool NotebookView::HitTestCodeArea(const editor::NotebookCell& cell, POINT clien
                                    size_t& outLine, size_t& outCol) const {
     const float lineH = config.ScaleF(20.0f);
     const float lineNumW = config.ScaleF(28.0f);
-    const float textX = cell.codeAreaBounds.left + lineNumW + config.ScaleF(8.0f);
+    const float textX = cell.codeAreaBounds.left + lineNumW + config.ScaleF(8.0f) - cell.codeScrollX;
     float relY = static_cast<float>(clientPt.y) - cell.codeAreaBounds.top - config.ScaleF(6.0f);
     if (relY < 0.0f) relY = 0.0f;
 
@@ -109,6 +109,66 @@ bool NotebookView::HitTestCodeArea(const editor::NotebookCell& cell, POINT clien
     outLine = lineIdx;
     outCol = col;
     return true;
+}
+
+std::vector<std::wstring> NotebookView::GetOutputLines(const editor::NotebookCell& cell) const {
+    std::vector<std::wstring> lines;
+    for (const auto& out : cell.outputs) {
+        std::wstringstream ss(out.text);
+        std::wstring l;
+        while (std::getline(ss, l)) {
+            lines.push_back(l);
+        }
+    }
+    return lines;
+}
+
+bool NotebookView::HitTestOutputArea(const editor::NotebookCell& cell, POINT clientPt, const app::AppConfig& config,
+                                    size_t& outLine, size_t& outCol) const {
+    auto lines = GetOutputLines(cell);
+    if (lines.empty()) {
+        outLine = 0;
+        outCol = 0;
+        return false;
+    }
+    float outTop = cell.codeAreaBounds.bottom + config.ScaleF(6.0f);
+    float textPadX = config.ScaleF(12.0f);
+    float textPadY = config.ScaleF(6.0f);
+    float outLineH = config.ScaleF(18.0f);
+    float charW = (m_charWidth > 0.0f) ? m_charWidth : config.ScaleF(7.8f);
+
+    float relY = static_cast<float>(clientPt.y) - (outTop + textPadY - cell.outputScrollY);
+    size_t lineIdx = static_cast<size_t>((std::max)(0.0f, relY) / outLineH);
+    if (lineIdx >= lines.size()) lineIdx = lines.size() - 1;
+
+    float drawX = cell.outputAreaBounds.left + textPadX - cell.outputScrollX;
+    float relX = static_cast<float>(clientPt.x) - drawX;
+    size_t col = static_cast<size_t>((std::max)(0.0f, relX / charW + 0.5f));
+    if (col > lines[lineIdx].length()) col = lines[lineIdx].length();
+
+    outLine = lineIdx;
+    outCol = col;
+    return true;
+}
+
+void NotebookView::SubmitCellInput(editor::NotebookCell& cell, HWND hwnd) {
+    if (!cell.isWaitingForInput) return;
+    std::wstring val = cell.inputFieldValue;
+    m_kernel.SendStdin(val + L"\n");
+    std::wstring echo = cell.inputPrompt + val + L"\n";
+    if (cell.outputs.empty()) {
+        editor::CellOutput out;
+        out.streamName = L"stdout";
+        out.text = echo;
+        out.isError = false;
+        cell.outputs.push_back(std::move(out));
+    } else {
+        cell.outputs.back().text += echo;
+    }
+    cell.isWaitingForInput = false;
+    cell.inputFieldValue.clear();
+    cell.isInputFieldFocused = false;
+    if (hwnd) InvalidateRect(hwnd, nullptr, FALSE);
 }
 
 NotebookView::NotebookView() {
@@ -482,10 +542,13 @@ void NotebookView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
 
         // Calculate dynamic output height (snug fit for small outputs, capped at 260px with scrolling for large outputs)
         float outputH = 0.0f;
-        if (!cell.outputs.empty()) {
+        if (!cell.outputs.empty() || cell.isWaitingForInput) {
             size_t outLines = 0;
             for (const auto& out : cell.outputs) {
                 outLines += std::count(out.text.begin(), out.text.end(), L'\n') + 1;
+            }
+            if (cell.isWaitingForInput) {
+                outLines += 2;
             }
             float rawOutH = static_cast<float>(outLines) * config.ScaleF(18.0f) + config.ScaleF(14.0f);
             outputH = (std::min)(config.ScaleF(260.0f), (std::max)(config.ScaleF(36.0f), rawOutH));
@@ -682,6 +745,21 @@ void NotebookView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
             auto curPos = cell.inputBuffer.GetCursor();
             const float charW = EnsureCharWidth(theme, config);
 
+            // Calculate max code width across lines for horizontal scrollbar
+            float maxCodeW = 0.0f;
+            for (const auto& cl : lines) {
+                float lw = static_cast<float>(cl.length()) * charW;
+                if (lw > maxCodeW) maxCodeW = lw;
+            }
+            float availCodeW = (cell.codeAreaBounds.right - config.ScaleF(8.0f)) - (cell.codeAreaBounds.left + lineNumW + config.ScaleF(8.0f));
+            if (availCodeW > 0.0f && maxCodeW > availCodeW) {
+                cell.codeMaxScrollX = maxCodeW - availCodeW + config.ScaleF(24.0f);
+            } else {
+                cell.codeMaxScrollX = 0.0f;
+                cell.codeScrollX = 0.0f;
+            }
+
+            // Draw line numbers first (outside code text clip so they stay crisp and pinned)
             for (size_t li = 0; li < lines.size(); ++li) {
                 float lineY = cell.codeAreaBounds.top + config.ScaleF(6.0f) + static_cast<float>(li) * lineH;
                 D2D1_RECT_F rcNum = D2D1::RectF(cell.codeAreaBounds.left + config.ScaleF(6.0f), lineY,
@@ -689,8 +767,20 @@ void NotebookView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
                 std::wstring numStr = std::to_wstring(li + 1);
                 pRT->DrawText(numStr.c_str(), static_cast<UINT32>(numStr.length()),
                               theme.fontCode.Get(), rcNum, theme.brushLineNumber.Get());
+            }
 
-                float textX = cell.codeAreaBounds.left + lineNumW + config.ScaleF(8.0f);
+            // Push axis-aligned clip for code text area to guarantee NO OVERFLOW OR LEAKING
+            D2D1_RECT_F rcCodeClip = D2D1::RectF(
+                cell.codeAreaBounds.left + lineNumW + config.ScaleF(4.0f),
+                cell.codeAreaBounds.top + config.ScaleF(2.0f),
+                cell.codeAreaBounds.right - config.ScaleF(4.0f),
+                cell.codeAreaBounds.bottom - config.ScaleF(2.0f)
+            );
+            pRT->PushAxisAlignedClip(rcCodeClip, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+
+            for (size_t li = 0; li < lines.size(); ++li) {
+                float lineY = cell.codeAreaBounds.top + config.ScaleF(6.0f) + static_cast<float>(li) * lineH;
+                float textX = cell.codeAreaBounds.left + lineNumW + config.ScaleF(8.0f) - cell.codeScrollX;
                 const auto& codeLine = lines[li];
 
                 // 1. Render active text selection background on code line
@@ -757,11 +847,12 @@ void NotebookView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
                 // Code text line with syntax tokenization via DirectWrite TextLayout
                 auto tokens = cell.inputBuffer.GetTokensForLine(li);
                 Microsoft::WRL::ComPtr<IDWriteTextLayout> pLineLayout;
+                float layoutMaxW = (std::max)(120.0f, static_cast<float>(codeLine.length()) * charW + config.ScaleF(40.0f));
                 if (!codeLine.empty() && theme.dwriteFactory && theme.fontCode &&
                     SUCCEEDED(theme.dwriteFactory->CreateTextLayout(
                         codeLine.c_str(), static_cast<UINT32>(codeLine.length()),
                         theme.fontCode.Get(),
-                        (std::max)(10.0f, cell.codeAreaBounds.right - textX),
+                        layoutMaxW,
                         lineH,
                         &pLineLayout))) {
                     for (const auto& tok : tokens) {
@@ -782,7 +873,7 @@ void NotebookView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
                     }
                     pRT->DrawTextLayout(D2D1::Point2F(textX, lineY), pLineLayout.Get(), theme.brushTextPrimary.Get());
                 } else if (!codeLine.empty()) {
-                    D2D1_RECT_F rcLineText = D2D1::RectF(textX, lineY, cell.codeAreaBounds.right, lineY + lineH);
+                    D2D1_RECT_F rcLineText = D2D1::RectF(textX, lineY, textX + layoutMaxW, lineY + lineH);
                     pRT->DrawText(codeLine.c_str(), static_cast<UINT32>(codeLine.length()),
                                   theme.fontCode.Get(), rcLineText, theme.brushTextPrimary.Get());
                 }
@@ -799,7 +890,6 @@ void NotebookView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
                     if (errX2 <= errX1) {
                         errX2 = errX1 + config.ScaleF(24.0f);
                     }
-                    errX2 = (std::min)(errX2, cell.codeAreaBounds.right - config.ScaleF(8.0f));
 
                     float waveY = lineY + lineH - config.ScaleF(2.0f);
                     float waveH = config.ScaleF(2.2f);
@@ -827,8 +917,39 @@ void NotebookView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
                 }
             }
 
-            // 3.4 Output Area (Colab/Jupyter standard with dynamic height, overflow clipping, and X/Y scroll)
-            if (!cell.outputs.empty()) {
+            pRT->PopAxisAlignedClip();
+
+            // Code box horizontal scrollbar
+            if (cell.codeMaxScrollX > 0.0f && availCodeW > config.ScaleF(40.0f)) {
+                float sbH = config.ScaleF(6.0f);
+                float sbY = cell.codeAreaBounds.bottom - sbH - config.ScaleF(2.0f);
+                float trackX = cell.codeAreaBounds.left + lineNumW + config.ScaleF(8.0f);
+                float trackW = availCodeW;
+                float thumbW = (std::max)(config.ScaleF(28.0f), trackW * (availCodeW / (maxCodeW + availCodeW)));
+                float clampedScrollX = (std::max)(0.0f, (std::min)(cell.codeScrollX, cell.codeMaxScrollX));
+                float thumbX = trackX + (clampedScrollX / cell.codeMaxScrollX) * (trackW - thumbW);
+
+                cell.codeHScrollTrackBounds = D2D1::RectF(trackX, sbY - config.ScaleF(1.0f), trackX + trackW, sbY + sbH + config.ScaleF(1.0f));
+                cell.codeHScrollThumbBounds = D2D1::RectF(thumbX, sbY, thumbX + thumbW, sbY + sbH);
+
+                Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushTrackCode;
+                pRT->CreateSolidColorBrush(D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.18f), &brushTrackCode);
+                if (brushTrackCode) {
+                    pRT->FillRoundedRectangle(D2D1::RoundedRect(cell.codeHScrollTrackBounds, sbH / 2.0f, sbH / 2.0f), brushTrackCode.Get());
+                }
+                bool isDraggingCode = (m_isDraggingCodeHScroll && m_dragCodeCellIdx == static_cast<int>(ci));
+                Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushSbCode;
+                pRT->CreateSolidColorBrush(isDraggingCode ? D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.65f) : D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.35f), &brushSbCode);
+                if (brushSbCode) {
+                    pRT->FillRoundedRectangle(D2D1::RoundedRect(cell.codeHScrollThumbBounds, sbH / 2.0f, sbH / 2.0f), brushSbCode.Get());
+                }
+            } else {
+                cell.codeHScrollTrackBounds = D2D1::RectF(0, 0, 0, 0);
+                cell.codeHScrollThumbBounds = D2D1::RectF(0, 0, 0, 0);
+            }
+
+            // 3.4 Output Area (Colab/Jupyter standard with dynamic height, overflow clipping, X/Y scroll, text selection, and interactive input)
+            if (!cell.outputs.empty() || cell.isWaitingForInput) {
                 float outTop = cell.codeAreaBounds.bottom + config.ScaleF(6.0f);
                 cell.outputAreaBounds = D2D1::RectF(cell.codeAreaBounds.left, outTop, cell.codeAreaBounds.right, outTop + outputH);
 
@@ -870,6 +991,16 @@ void NotebookView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
                 Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushErrText;
                 pRT->CreateSolidColorBrush(D2D1::ColorF(0.95f, 0.38f, 0.38f, 1.0f), &brushErrText);
 
+                Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushSelBg;
+                pRT->CreateSolidColorBrush(D2D1::ColorF(0.18f, 0.42f, 0.75f, 0.45f), &brushSelBg);
+
+                size_t outLineIdx = 0;
+                size_t sL = 0, sC = 0, eL = 0, eC = 0;
+                bool hasSel = cell.HasOutputSelection();
+                if (hasSel) {
+                    cell.GetOutputSelectionRange(sL, sC, eL, eC);
+                }
+
                 for (const auto& out : cell.outputs) {
                     ID2D1Brush* outTextBrush = out.isError ? (brushErrText ? brushErrText.Get() : theme.brushIconRed.Get())
                                                           : (theme.brushTextPrimary ? theme.brushTextPrimary.Get() : theme.brushTextWhite.Get());
@@ -883,6 +1014,30 @@ void NotebookView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
 
                         if (curLineY + outLineH >= outTop && curLineY <= outTop + outputH) {
                             float drawX = cell.outputAreaBounds.left + textPadX - cell.outputScrollX;
+
+                            // Render selection highlight background for this output line if selected
+                            if (hasSel && outLineIdx >= sL && outLineIdx <= eL) {
+                                float selX1 = drawX;
+                                float selX2 = drawX;
+                                if (outLineIdx == sL && outLineIdx == eL) {
+                                    selX1 = drawX + static_cast<float>(sC) * charW;
+                                    selX2 = drawX + static_cast<float>(eC) * charW;
+                                } else if (outLineIdx == sL) {
+                                    selX1 = drawX + static_cast<float>(sC) * charW;
+                                    selX2 = drawX + static_cast<float>(line.length()) * charW + config.ScaleF(4.0f);
+                                } else if (outLineIdx == eL) {
+                                    selX1 = drawX;
+                                    selX2 = drawX + static_cast<float>(eC) * charW;
+                                } else {
+                                    selX1 = drawX;
+                                    selX2 = (std::max)(drawX + static_cast<float>(line.length()) * charW + config.ScaleF(4.0f), drawX + config.ScaleF(24.0f));
+                                }
+                                if (selX2 > selX1 && brushSelBg) {
+                                    D2D1_RECT_F rcSel = D2D1::RectF(selX1, curLineY, selX2, curLineY + outLineH);
+                                    pRT->FillRoundedRectangle(D2D1::RoundedRect(rcSel, 2.0f, 2.0f), brushSelBg.Get());
+                                }
+                            }
+
                             D2D1_RECT_F rcLine = D2D1::RectF(
                                 drawX,
                                 curLineY,
@@ -893,7 +1048,76 @@ void NotebookView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
                                           theme.fontCode.Get(), rcLine, outTextBrush);
                         }
                         curLineY += outLineH;
+                        outLineIdx++;
                     }
+                }
+
+                // Render interactive input box when cell is waiting for input (Colab / Jupyter standard)
+                if (cell.isWaitingForInput) {
+                    float inputRowY = curLineY;
+                    float promptW = static_cast<float>(cell.inputPrompt.length()) * charW;
+                    float drawX = cell.outputAreaBounds.left + textPadX - cell.outputScrollX;
+
+                    // Prompt label (e.g. "number: ")
+                    if (!cell.inputPrompt.empty()) {
+                        D2D1_RECT_F rcPrompt = D2D1::RectF(drawX, inputRowY, drawX + promptW, inputRowY + outLineH);
+                        cell.inputPromptBounds = rcPrompt;
+                        pRT->DrawText(cell.inputPrompt.c_str(), static_cast<UINT32>(cell.inputPrompt.length()),
+                                      theme.fontCode.Get(), rcPrompt,
+                                      theme.brushSyntaxKeyword ? theme.brushSyntaxKeyword.Get() : theme.brushTextPrimary.Get());
+                    }
+
+                    // Input edit box
+                    float fieldX = drawX + promptW + config.ScaleF(6.0f);
+                    float fieldW = (std::max)(config.ScaleF(160.0f), cell.outputAreaBounds.right - fieldX - config.ScaleF(70.0f));
+                    float fieldH = outLineH + config.ScaleF(2.0f);
+                    D2D1_RECT_F rcField = D2D1::RectF(fieldX, inputRowY - config.ScaleF(1.0f), fieldX + fieldW, inputRowY + fieldH - config.ScaleF(1.0f));
+                    cell.inputFieldBounds = rcField;
+
+                    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushFieldBg;
+                    pRT->CreateSolidColorBrush(D2D1::ColorF(0.04f, 0.04f, 0.06f, 0.95f), &brushFieldBg);
+                    if (brushFieldBg) {
+                        pRT->FillRoundedRectangle(D2D1::RoundedRect(rcField, 3.0f, 3.0f), brushFieldBg.Get());
+                    }
+                    ID2D1Brush* fieldBorderBrush = cell.isInputFieldFocused
+                        ? (theme.brushBrandAccent ? theme.brushBrandAccent.Get() : theme.brushTextPrimary.Get())
+                        : theme.brushBorderSubtle.Get();
+                    pRT->DrawRoundedRectangle(D2D1::RoundedRect(rcField, 3.0f, 3.0f), fieldBorderBrush, cell.isInputFieldFocused ? 1.5f : 1.0f);
+
+                    // Text inside input box
+                    float padValX = config.ScaleF(6.0f);
+                    D2D1_RECT_F rcFieldText = D2D1::RectF(rcField.left + padValX, rcField.top + config.ScaleF(1.0f), rcField.right - padValX, rcField.bottom);
+                    if (!cell.inputFieldValue.empty()) {
+                        pRT->DrawText(cell.inputFieldValue.c_str(), static_cast<UINT32>(cell.inputFieldValue.length()),
+                                      theme.fontCode.Get(), rcFieldText, theme.brushTextPrimary.Get());
+                    }
+
+                    // Caret inside input box
+                    if (cell.isInputFieldFocused && m_caretVisible) {
+                        float caretX = rcField.left + padValX + static_cast<float>(cell.inputFieldValue.length()) * charW;
+                        if (caretX < rcField.right - padValX) {
+                            pRT->DrawLine(D2D1::Point2F(caretX, rcField.top + config.ScaleF(2.0f)),
+                                          D2D1::Point2F(caretX, rcField.bottom - config.ScaleF(2.0f)),
+                                          theme.brushTextPrimary.Get(), 1.5f);
+                        }
+                    }
+
+                    // Submit / Enter button
+                    float btnSubX = rcField.right + config.ScaleF(6.0f);
+                    float btnSubW = config.ScaleF(50.0f);
+                    D2D1_RECT_F rcSub = D2D1::RectF(btnSubX, rcField.top, btnSubX + btnSubW, rcField.bottom);
+                    cell.submitBtnBounds = rcSub;
+
+                    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushSubBg;
+                    pRT->CreateSolidColorBrush(D2D1::ColorF(0.18f, 0.42f, 0.75f, 0.85f), &brushSubBg);
+                    if (brushSubBg) {
+                        pRT->FillRoundedRectangle(D2D1::RoundedRect(rcSub, 3.0f, 3.0f), brushSubBg.Get());
+                    }
+                    pRT->DrawText(L"↵ Enter", 7, theme.fontBadge ? theme.fontBadge.Get() : theme.fontCode.Get(),
+                                  rcSub, theme.brushTextWhite ? theme.brushTextWhite.Get() : theme.brushTextPrimary.Get());
+
+                    curLineY += outLineH + config.ScaleF(4.0f);
+                    totalLines += 2;
                 }
 
                 pRT->PopAxisAlignedClip();
@@ -1161,6 +1385,25 @@ bool NotebookView::HandleLButtonDown(POINT clientPt, editor::OpenDocument& doc, 
                 return true;
             }
         }
+        if (cell.codeMaxScrollX > 0.0f) {
+            if (PointInRect(clientPt, cell.codeHScrollThumbBounds)) {
+                m_isDraggingCodeHScroll = true;
+                m_dragCodeCellIdx = static_cast<int>(ci);
+                m_dragCodeStartPos = static_cast<float>(clientPt.x);
+                m_dragCodeStartOffset = cell.codeScrollX;
+                if (hwnd) SetCapture(hwnd);
+                return true;
+            } else if (PointInRect(clientPt, cell.codeHScrollTrackBounds)) {
+                float step = config.ScaleF(80.0f);
+                if (clientPt.x < cell.codeHScrollThumbBounds.left) {
+                    cell.codeScrollX = (std::max)(0.0f, cell.codeScrollX - step);
+                } else if (clientPt.x > cell.codeHScrollThumbBounds.right) {
+                    cell.codeScrollX = (std::min)(cell.codeMaxScrollX, cell.codeScrollX + step);
+                }
+                if (hwnd) InvalidateRect(hwnd, nullptr, FALSE);
+                return true;
+            }
+        }
     }
 
     // Check Top Toolbar buttons
@@ -1289,6 +1532,46 @@ bool NotebookView::HandleLButtonDown(POINT clientPt, editor::OpenDocument& doc, 
                 return true;
             }
 
+            // Interactive input field or submit button click
+            if (cell.isWaitingForInput) {
+                if (PointInRect(clientPt, cell.submitBtnBounds)) {
+                    SubmitCellInput(cell, hwnd);
+                    return true;
+                }
+                if (PointInRect(clientPt, cell.inputFieldBounds) || PointInRect(clientPt, cell.inputPromptBounds)) {
+                    cell.isInputFieldFocused = true;
+                    m_caretVisible = true;
+                    m_lastBlinkTime = GetTickCount64();
+                    if (hwnd) InvalidateRect(hwnd, nullptr, FALSE);
+                    return true;
+                }
+            }
+
+            // Click inside output area: start output text selection
+            if (PointInRect(clientPt, cell.outputAreaBounds)) {
+                size_t outLine = 0, outCol = 0;
+                if (HitTestOutputArea(cell, clientPt, config, outLine, outCol)) {
+                    bool isShift = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
+                    if (isShift && cell.hasOutputSelection) {
+                        cell.outputSelEndLine = outLine;
+                        cell.outputSelEndCol = outCol;
+                        cell.hasOutputSelection = (cell.outputSelAnchorLine != cell.outputSelEndLine ||
+                                                   cell.outputSelAnchorCol != cell.outputSelEndCol);
+                    } else {
+                        cell.ClearOutputSelection();
+                        cell.outputSelAnchorLine = outLine;
+                        cell.outputSelAnchorCol = outCol;
+                        cell.outputSelEndLine = outLine;
+                        cell.outputSelEndCol = outCol;
+                    }
+                    cell.isSelectingOutput = true;
+                    m_dragOutputCellIdx = static_cast<int>(ci);
+                    if (hwnd) SetCapture(hwnd);
+                    if (hwnd) InvalidateRect(hwnd, nullptr, FALSE);
+                    return true;
+                }
+            }
+
             // Drag handle or card header/margin click initiates drag candidate
             if (PointInRect(clientPt, cell.dragHandleBounds) ||
                 (clientPt.y >= cell.bounds.top && clientPt.y <= cell.bounds.top + config.ScaleF(28.0f)) ||
@@ -1339,11 +1622,87 @@ bool NotebookView::HandleMouseMove(POINT clientPt, editor::OpenDocument& doc, co
         return true;
     }
 
-    // Drag-selection of text across lines and columns
+    if (m_isDraggingCodeHScroll && doc.notebookDoc && m_dragCodeCellIdx >= 0 && m_dragCodeCellIdx < static_cast<int>(doc.notebookDoc->cells.size())) {
+        auto& cell = doc.notebookDoc->cells[m_dragCodeCellIdx];
+        float deltaX = static_cast<float>(clientPt.x) - m_dragCodeStartPos;
+        float trackW = cell.codeHScrollTrackBounds.right - cell.codeHScrollTrackBounds.left;
+        float thumbW = cell.codeHScrollThumbBounds.right - cell.codeHScrollThumbBounds.left;
+        float scrollable = (std::max)(1.0f, trackW - thumbW);
+        float scrollDelta = (deltaX / scrollable) * cell.codeMaxScrollX;
+        cell.codeScrollX = (std::clamp)(m_dragCodeStartOffset + scrollDelta, 0.0f, cell.codeMaxScrollX);
+        return true;
+    }
+
+    // Drag-selection in output area with auto-scrolling
+    if (doc.notebookDoc) {
+        for (size_t ci = 0; ci < doc.notebookDoc->cells.size(); ++ci) {
+            auto& cell = doc.notebookDoc->cells[ci];
+            if (cell.isSelectingOutput) {
+                // Auto-scroll output area vertically if mouse drags outside bounds
+                if (clientPt.y < cell.outputAreaBounds.top && cell.outputScrollY > 0.0f) {
+                    cell.outputScrollY = (std::max)(0.0f, cell.outputScrollY - config.ScaleF(16.0f));
+                } else if (clientPt.y > cell.outputAreaBounds.bottom && cell.outputScrollY < cell.outputMaxScrollY) {
+                    cell.outputScrollY = (std::min)(cell.outputMaxScrollY, cell.outputScrollY + config.ScaleF(16.0f));
+                }
+                // Auto-scroll notebook vertically if near window edges
+                if (clientPt.y < config.ScaleF(40.0f) && m_scrollY > 0.0f) {
+                    m_scrollY = (std::max)(0.0f, m_scrollY - config.ScaleF(20.0f));
+                } else if (clientPt.y > m_viewHeight - config.ScaleF(40.0f)) {
+                    m_scrollY += config.ScaleF(20.0f);
+                }
+                // Auto-scroll output horizontally
+                if (clientPt.x < cell.outputAreaBounds.left && cell.outputScrollX > 0.0f) {
+                    cell.outputScrollX = (std::max)(0.0f, cell.outputScrollX - config.ScaleF(20.0f));
+                } else if (clientPt.x > cell.outputAreaBounds.right && cell.outputScrollX < cell.outputMaxScrollX) {
+                    cell.outputScrollX = (std::min)(cell.outputMaxScrollX, cell.outputScrollX + config.ScaleF(20.0f));
+                }
+
+                size_t targetLine = 0, targetCol = 0;
+                if (HitTestOutputArea(cell, clientPt, config, targetLine, targetCol)) {
+                    cell.outputSelEndLine = targetLine;
+                    cell.outputSelEndCol = targetCol;
+                    cell.hasOutputSelection = (cell.outputSelAnchorLine != cell.outputSelEndLine ||
+                                               cell.outputSelAnchorCol != cell.outputSelEndCol);
+
+                    auto outLines = GetOutputLines(cell);
+                    size_t sL = 0, sC = 0, eL = 0, eC = 0;
+                    cell.GetOutputSelectionRange(sL, sC, eL, eC);
+                    std::wstring selText;
+                    for (size_t li = sL; li <= eL && li < outLines.size(); ++li) {
+                        const auto& lStr = outLines[li];
+                        size_t startCol = (li == sL) ? (std::min)(sC, lStr.length()) : 0;
+                        size_t endCol = (li == eL) ? (std::min)(eC, lStr.length()) : lStr.length();
+                        if (endCol > startCol) {
+                            selText += lStr.substr(startCol, endCol - startCol);
+                        }
+                        if (li < eL) selText += L"\n";
+                    }
+                    cell.selectedOutputText = selText;
+                }
+                return true;
+            }
+        }
+    }
+
+    // Drag-selection of text across lines and columns in code editor with auto-scroll
     if (m_isSelectingText && doc.notebookDoc) {
         int activeIdx = doc.notebookDoc->activeCellIdx;
         if (activeIdx >= 0 && activeIdx < static_cast<int>(doc.notebookDoc->cells.size())) {
             auto& cell = doc.notebookDoc->cells[activeIdx];
+
+            // Auto-scroll notebook vertically if dragging outside code box
+            if (clientPt.y < cell.codeAreaBounds.top && m_scrollY > 0.0f) {
+                m_scrollY = (std::max)(0.0f, m_scrollY - config.ScaleF(16.0f));
+            } else if (clientPt.y > cell.codeAreaBounds.bottom) {
+                m_scrollY += config.ScaleF(16.0f);
+            }
+            // Auto-scroll code horizontally if dragging outside code box
+            if (clientPt.x < cell.codeAreaBounds.left + config.ScaleF(36.0f) && cell.codeScrollX > 0.0f) {
+                cell.codeScrollX = (std::max)(0.0f, cell.codeScrollX - config.ScaleF(20.0f));
+            } else if (clientPt.x > cell.codeAreaBounds.right && cell.codeScrollX < cell.codeMaxScrollX) {
+                cell.codeScrollX = (std::min)(cell.codeMaxScrollX, cell.codeScrollX + config.ScaleF(20.0f));
+            }
+
             size_t targetLine = 0, targetCol = 0;
             HitTestCodeArea(cell, clientPt, config, targetLine, targetCol);
             cell.selEnd = { targetLine, targetCol };
@@ -1440,6 +1799,11 @@ bool NotebookView::HandleMouseMove(POINT clientPt, editor::OpenDocument& doc, co
 }
 
 bool NotebookView::HandleLButtonUp(POINT clientPt, editor::OpenDocument& doc, const app::AppConfig& config) {
+    if (doc.notebookDoc) {
+        for (auto& cell : doc.notebookDoc->cells) {
+            cell.isSelectingOutput = false;
+        }
+    }
     if (m_isDraggingScrollbar) {
         m_isDraggingScrollbar = false;
         ReleaseCapture();
@@ -1449,6 +1813,12 @@ bool NotebookView::HandleLButtonUp(POINT clientPt, editor::OpenDocument& doc, co
         m_isDraggingOutputVScroll = false;
         m_isDraggingOutputHScroll = false;
         m_dragOutputCellIdx = -1;
+        ReleaseCapture();
+        return true;
+    }
+    if (m_isDraggingCodeHScroll) {
+        m_isDraggingCodeHScroll = false;
+        m_dragCodeCellIdx = -1;
         ReleaseCapture();
         return true;
     }
@@ -1489,6 +1859,19 @@ bool NotebookView::HandleMouseWheel(short delta, POINT clientPt, editor::OpenDoc
     // 1. If mouse is over a cell output area, scroll that output's X or Y
     if (doc.notebookDoc) {
         for (auto& cell : doc.notebookDoc->cells) {
+            if (clientPt.x >= cell.codeAreaBounds.left && clientPt.x <= cell.codeAreaBounds.right &&
+                clientPt.y >= cell.codeAreaBounds.top && clientPt.y <= cell.codeAreaBounds.bottom) {
+                bool isShift = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
+                if (isShift && cell.codeMaxScrollX > 0.0f) {
+                    float step = config.ScaleF(40.0f);
+                    if (delta > 0) {
+                        cell.codeScrollX = (std::max)(0.0f, cell.codeScrollX - step);
+                    } else {
+                        cell.codeScrollX = (std::min)(cell.codeMaxScrollX, cell.codeScrollX + step);
+                    }
+                    return true;
+                }
+            }
             if (!cell.outputs.empty() &&
                 clientPt.x >= cell.outputAreaBounds.left && clientPt.x <= cell.outputAreaBounds.right &&
                 clientPt.y >= cell.outputAreaBounds.top && clientPt.y <= cell.outputAreaBounds.bottom) {
@@ -1585,6 +1968,31 @@ bool NotebookView::HandleKeyDown(WPARAM wParam, editor::OpenDocument& doc, HWND 
     bool isShift = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
     bool isCtrl  = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
 
+    // Interactive input handling when waiting for input
+    if (activeCell.isWaitingForInput) {
+        if (wParam == VK_RETURN) {
+            SubmitCellInput(activeCell, hwnd);
+            return true;
+        } else if (wParam == VK_BACK) {
+            if (!activeCell.inputFieldValue.empty()) {
+                activeCell.inputFieldValue.pop_back();
+                if (hwnd) InvalidateRect(hwnd, nullptr, FALSE);
+            }
+            return true;
+        } else if (wParam == VK_ESCAPE) {
+            activeCell.isWaitingForInput = false;
+            if (hwnd) InvalidateRect(hwnd, nullptr, FALSE);
+            return true;
+        } else if (isCtrl && (wParam == 'V' || wParam == 'v')) {
+            std::wstring clip = GetClipboardText(hwnd);
+            if (!clip.empty()) {
+                activeCell.inputFieldValue += clip;
+                if (hwnd) InvalidateRect(hwnd, nullptr, FALSE);
+            }
+            return true;
+        }
+    }
+
     // Shift + Enter: Run active cell and advance to next (classic Jupyter shortcut)
     if (wParam == VK_RETURN && isShift) {
         int nextIdx = nb->activeCellIdx + 1;
@@ -1638,10 +2046,14 @@ bool NotebookView::HandleKeyDown(WPARAM wParam, editor::OpenDocument& doc, HWND 
         return true;
     }
 
-    // Ctrl + C: Copy
+    // Ctrl + C: Copy (supports output text selection OR code selection)
     if (isCtrl && (wParam == 'C' || wParam == 'c')) {
-        if (activeCell.HasSelection()) {
+        if (activeCell.HasOutputSelection()) {
+            SetClipboardText(activeCell.selectedOutputText, hwnd);
+            return true;
+        } else if (activeCell.HasSelection()) {
             SetClipboardText(activeCell.GetSelectedText(), hwnd);
+            return true;
         }
         return true;
     }
@@ -1828,6 +2240,16 @@ bool NotebookView::HandleChar(wchar_t ch, editor::OpenDocument& doc, HWND hwnd) 
     if (ch < 32 && ch != L'\t') return false;
 
     auto& activeCell = nb->cells[nb->activeCellIdx];
+    if (activeCell.isWaitingForInput) {
+        if (ch >= 32) {
+            activeCell.inputFieldValue += ch;
+            m_caretVisible = true;
+            m_lastBlinkTime = GetTickCount64();
+            if (hwnd) InvalidateRect(hwnd, nullptr, FALSE);
+            return true;
+        }
+        return false;
+    }
 
     // Auto-closing bracket/quote pair mapping
     wchar_t pairClose = 0;
@@ -1927,16 +2349,25 @@ LPCWSTR NotebookView::GetCursorForPoint(POINT pt, const editor::OpenDocument& do
                     return IDC_SIZEWE;
                 }
             }
+            // Code box horizontal scrollbar -> IDC_SIZEWE
+            if (cell.codeMaxScrollX > 0.0f) {
+                if (PointInRect(pt, cell.codeHScrollThumbBounds) || PointInRect(pt, cell.codeHScrollTrackBounds)) {
+                    return IDC_SIZEWE;
+                }
+            }
 
             if (PointInRect(pt, cell.dragHandleBounds)) {
                 return IDC_SIZEALL;
+            }
+            if (PointInRect(pt, cell.submitBtnBounds)) {
+                return IDC_HAND;
             }
             if (PointInRect(pt, cell.runBtnBounds) || PointInRect(pt, cell.deleteBtnBounds) ||
                 PointInRect(pt, cell.moveUpBtnBounds) || PointInRect(pt, cell.moveDownBtnBounds) ||
                 PointInRect(pt, cell.bottomAddCodeBounds) || PointInRect(pt, cell.bottomAddTextBounds)) {
                 return IDC_HAND;
             }
-            if (PointInRect(pt, cell.codeAreaBounds)) {
+            if (PointInRect(pt, cell.codeAreaBounds) || PointInRect(pt, cell.outputAreaBounds)) {
                 return IDC_IBEAM;
             }
         }
@@ -2136,6 +2567,10 @@ void NotebookView::RunCell(int cellIdx, editor::OpenDocument& doc, HWND hwnd) {
     m_executingCellIdx.store(cellIdx);
     m_shouldStop.store(false);
 
+    if (hwnd) {
+        SetTimer(hwnd, 2, 16, nullptr); // Start 60 FPS animation timer immediately
+    }
+
     if (m_execThread.joinable()) {
         m_execThread.detach(); // Detach old thread so UI thread NEVER blocks!
     }
@@ -2217,7 +2652,32 @@ void NotebookView::ExecuteScriptAsync(int cellIdx, const std::wstring& script, c
         workingDir = m_workspacePath;
     }
 
-    auto kernelResult = m_kernel.Execute(script, pyExe, workingDir);
+    auto onChunk = [nbDoc, cellIdx, hwnd](const std::wstring& chunk, bool isPrompt, const std::wstring& promptText) {
+        if (!nbDoc || cellIdx < 0 || cellIdx >= static_cast<int>(nbDoc->cells.size())) return;
+        auto& cell = nbDoc->cells[cellIdx];
+        if (!chunk.empty()) {
+            if (cell.outputs.empty()) {
+                editor::CellOutput out;
+                out.streamName = L"stdout";
+                out.text = chunk;
+                out.isError = false;
+                cell.outputs.push_back(std::move(out));
+            } else {
+                cell.outputs.back().text += chunk;
+            }
+        }
+        if (isPrompt) {
+            cell.isWaitingForInput = true;
+            cell.inputPrompt = promptText;
+            cell.inputFieldValue = L"";
+            cell.isInputFieldFocused = true;
+        }
+        if (hwnd) {
+            InvalidateRect(hwnd, nullptr, FALSE);
+        }
+    };
+
+    auto kernelResult = m_kernel.Execute(script, pyExe, workingDir, onChunk);
 
     bool hasErr = kernelResult.hasError;
     std::wstring capturedOutput = kernelResult.output;

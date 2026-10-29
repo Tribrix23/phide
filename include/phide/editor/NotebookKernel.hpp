@@ -126,7 +126,8 @@ public:
      * @param workingDir Optional project working directory.
      * @return KernelExecutionResult containing clean stdout/stderr and exit code.
      */
-    KernelExecutionResult Execute(const std::wstring& code, const std::wstring& pythonExe, const std::wstring& workingDir = L"") {
+    KernelExecutionResult Execute(const std::wstring& code, const std::wstring& pythonExe, const std::wstring& workingDir = L"",
+                                  std::function<void(const std::wstring& chunk, bool isPrompt, const std::wstring& promptText)> onOutputChunk = nullptr) {
         KernelExecutionResult res;
         auto startTime = std::chrono::high_resolution_clock::now();
 
@@ -185,12 +186,21 @@ public:
         char buffer[4096];
         DWORD bytesRead = 0;
         const std::string sentinelPrefix = "__PHIDE_NB_END__";
+        const std::string promptPrefix = "__PHIDE_INPUT_PROMPT__";
 
         HANDLE hRead = m_hStdoutRead.load();
         while (!m_shouldInterrupt.load() && hRead && hRead != INVALID_HANDLE_VALUE) {
-            BOOL readOk = ReadFile(hRead, buffer, sizeof(buffer) - 1, &bytesRead, NULL);
+            DWORD avail = 0;
+            if (!PeekNamedPipe(hRead, NULL, 0, NULL, &avail, NULL)) {
+                break;
+            }
+            if (avail == 0) {
+                Sleep(20);
+                continue;
+            }
+
+            BOOL readOk = ReadFile(hRead, buffer, (std::min)(avail, static_cast<DWORD>(sizeof(buffer) - 1)), &bytesRead, NULL);
             if (!readOk || bytesRead == 0 || m_shouldInterrupt.load()) {
-                // Pipe broken, cancelled, or process terminated
                 if (m_shouldInterrupt.load()) {
                     rawOutput.clear();
                     res.hasError = false;
@@ -202,6 +212,25 @@ public:
             buffer[bytesRead] = '\0';
             rawOutput.append(buffer, bytesRead);
 
+            // Check for interactive input() prompt sentinel
+            size_t pPos = rawOutput.find(promptPrefix);
+            if (pPos != std::string::npos) {
+                size_t pEnd = rawOutput.find("__", pPos + promptPrefix.size());
+                if (pEnd != std::string::npos) {
+                    std::string pText = rawOutput.substr(pPos + promptPrefix.size(), pEnd - (pPos + promptPrefix.size()));
+                    std::string displayChunk = rawOutput.substr(0, pPos);
+                    rawOutput.erase(0, pEnd + 2);
+                    if (onOutputChunk) {
+                        onOutputChunk(Utf8ToWide(displayChunk), true, Utf8ToWide(pText));
+                    }
+                }
+            } else if (onOutputChunk && !rawOutput.empty()) {
+                if (rawOutput.find("__PHIDE") == std::string::npos) {
+                    onOutputChunk(Utf8ToWide(rawOutput), false, L"");
+                    rawOutput.clear();
+                }
+            }
+
             size_t sPos = rawOutput.find(sentinelPrefix);
             if (sPos != std::string::npos) {
                 size_t sEnd = rawOutput.find("__", sPos + sentinelPrefix.size());
@@ -212,8 +241,6 @@ public:
                     } catch (...) {
                         res.exitCode = 0;
                     }
-
-                    // Trim everything from the sentinel onwards
                     rawOutput.erase(sPos);
                     break;
                 }
@@ -239,6 +266,14 @@ public:
 
         m_isBusy.store(false);
         return res;
+    }
+
+    bool SendStdin(const std::wstring& text) {
+        HANDLE hWrite = m_hStdinWrite.load();
+        if (!hWrite || hWrite == INVALID_HANDLE_VALUE) return false;
+        std::string u8 = WideToUtf8(text) + "\n";
+        DWORD written = 0;
+        return WriteFile(hWrite, u8.data(), static_cast<DWORD>(u8.size()), &written, NULL) != FALSE;
     }
 
     /**
@@ -362,6 +397,19 @@ private:
             "        site.addsitedir(usp)\n"
             "except Exception:\n"
             "    pass\n\n"
+            "# 4. Interactive input() redirection (Colab/Jupyter standard)\n"
+            "import builtins\n"
+            "def _phide_input(prompt=''):\n"
+            "    p_str = str(prompt) if prompt is not None else ''\n"
+            "    sys.stdout.write(p_str)\n"
+            "    sys.stdout.flush()\n"
+            "    sys.stdout.write(f'\\n__PHIDE_INPUT_PROMPT__{p_str}__\\n')\n"
+            "    sys.stdout.flush()\n"
+            "    inp = sys.stdin.readline()\n"
+            "    if not inp:\n"
+            "        return ''\n"
+            "    return inp.rstrip('\\r\\n')\n"
+            "builtins.input = _phide_input\n\n"
             "_ns = {'__name__': '__main__'}\n\n"
             "while True:\n"
             "    try:\n"

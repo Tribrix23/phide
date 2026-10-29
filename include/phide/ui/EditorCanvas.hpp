@@ -21,8 +21,29 @@
 #include "phide/ui/KeyboardShortcutsView.hpp"
 #include "phide/ui/PackageManagerView.hpp"
 #include "phide/ui/NotebookView.hpp"
+#include <unordered_map>
 
 namespace phide::ui {
+
+/**
+ * @struct LearningCourseDef
+ * @brief Represents a course in the Learning Hub with metadata, tags, and banner asset.
+ */
+struct LearningCourseDef {
+    std::wstring id;
+    std::wstring category; // "Python", "JavaScript", "PHP", "Others"
+    std::wstring imageFile;
+    std::wstring creator = L"Koda";
+    std::wstring title;
+    std::wstring description;
+    int lessons = 24;
+    int hours = 6;
+    std::wstring difficulty = L"Beginner"; // "Beginner", "Intermediate", "Advanced"
+    D2D1_COLOR_F badgeColor{ 0.06f, 0.73f, 0.51f, 1.0f };
+    D2D1_COLOR_F badgeBg{ 0.02f, 0.18f, 0.09f, 0.85f };
+    D2D1_COLOR_F badgeBorder{ 0.06f, 0.73f, 0.51f, 0.45f };
+    D2D1_RECT_F cardBounds{};
+};
 
 /**
  * @class EditorCanvas
@@ -309,12 +330,6 @@ private:
                                     editor::OpenDocument& doc, float canvasLeft, float canvasWidth,
                                     float topY, float clientHeight);
 
-    /**
-     * @brief Renders the Student Tutorials & Learning Hub view (Student hat 🎓).
-     */
-    void RenderStudentView(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
-                           editor::OpenDocument& doc, float canvasLeft, float canvasWidth,
-                           float topY, float clientHeight);
 
     /**
      * @brief Renders placeholder view when a binary/executable file is opened in diff view.
@@ -450,15 +465,62 @@ private:
     size_t m_cachedCursorLine = static_cast<size_t>(-1);
     size_t m_cachedCursorCol = static_cast<size_t>(-1);
 
-    // Student Tutorials & Academy Interactive Hit Bounds
+    // Learning Hub state and bounds
+    std::vector<LearningCourseDef> m_learningCourses;
+    std::unordered_map<std::wstring, Microsoft::WRL::ComPtr<ID2D1Bitmap>> m_learningHubBitmaps;
+    std::wstring m_learningSearchQuery;
+    bool m_isLearningSearchFocused = false;
+    int m_learningActiveFilter = 0; // 0: All, 1: Python, 2: JavaScript, 3: PHP, 4: Others
+    int m_learningSortOrder = 0; // 0: Most Popular, 1: Newest, 2: Lessons
+    float m_learningScrollY = 0.0f;
+    float m_learningMaxScrollY = 0.0f;
+    int m_hoveredLearningCard = -1;
+    int m_hoveredLearningFilter = -1;
+    bool m_hoveredLearningSearch = false;
+    bool m_hoveredLearningSort = false;
+
+    D2D1_RECT_F m_learningSearchBounds{};
+    D2D1_RECT_F m_learningFilterBounds[5]{}; // All, Python, JS, PHP, Others
+    D2D1_RECT_F m_learningSortBounds{};
+
+    // Legacy bounds for backward compatibility
     D2D1_RECT_F m_studentCardBounds[4]{};
     D2D1_RECT_F m_studentCardBtnBounds[4]{};
     D2D1_RECT_F m_studentQuickNbBtn{};
     D2D1_RECT_F m_studentQuickScratchBtn{};
     D2D1_RECT_F m_studentQuickDbBtn{};
 
+    struct RenderedCourseCard {
+        size_t courseIndex = 0;
+        D2D1_RECT_F bounds{};
+    };
+    std::vector<RenderedCourseCard> m_renderedCourseCards;
+
+    void InitializeLearningCourses();
+    ID2D1Bitmap* GetLearningHubBitmap(ID2D1RenderTarget* pRT, const std::wstring& filename);
+
 public:
+    [[nodiscard]] const std::vector<RenderedCourseCard>& GetRenderedCourseCards() const noexcept { return m_renderedCourseCards; }
+    void RenderStudentView(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
+                           editor::OpenDocument& doc, float canvasLeft, float canvasWidth,
+                           float topY, float clientHeight);
+    [[nodiscard]] bool IsLearningSearchFocused() const noexcept { return m_isLearningSearchFocused; }
+    void SetLearningSearchFocused(bool f) noexcept { m_isLearningSearchFocused = f; }
+    void SetActiveLearningFilter(int f) noexcept { m_learningActiveFilter = f; m_learningScrollY = 0.0f; }
+    void CycleLearningSortOrder() noexcept { m_learningSortOrder = (m_learningSortOrder + 1) % 3; }
+    [[nodiscard]] int GetActiveLearningFilter() const noexcept { return m_learningActiveFilter; }
+    [[nodiscard]] int GetLearningSortOrder() const noexcept { return m_learningSortOrder; }
+    [[nodiscard]] const std::wstring& GetLearningSearchQuery() const noexcept { return m_learningSearchQuery; }
+    void SetLearningSearchQuery(const std::wstring& q) { m_learningSearchQuery = q; m_learningScrollY = 0.0f; }
+    bool HandleLearningChar(wchar_t ch);
+    bool HandleLearningKeyDown(WPARAM key);
+    bool HandleStudentMouseMove(POINT pt);
+    bool HandleStudentMouseWheel(short delta);
     [[nodiscard]] int HitTestStudentView(POINT pt) const;
+    [[nodiscard]] const LearningCourseDef& GetLearningCourse(size_t index) const;
+    [[nodiscard]] size_t GetLearningCourseCount() const noexcept { return m_learningCourses.size(); }
+    void ClearLearningHubBitmaps() noexcept { m_learningHubBitmaps.clear(); }
+
     void RunGarbageCollection() {
         m_foldChevrons.shrink_to_fit();
         m_visibleColorSwatches.shrink_to_fit();
@@ -468,6 +530,9 @@ public:
         m_cachedBufferVersion = static_cast<uint64_t>(-1);
         m_cachedCursorLine = static_cast<size_t>(-1);
         m_cachedCursorCol = static_cast<size_t>(-1);
+        m_learningHubBitmaps.clear();
+        m_learningCourses.shrink_to_fit();
+        m_renderedCourseCards.shrink_to_fit();
         m_packageManagerView.RunGarbageCollection();
         m_notebookView.RunGarbageCollection();
     }

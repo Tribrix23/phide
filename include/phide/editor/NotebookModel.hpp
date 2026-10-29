@@ -63,6 +63,26 @@ struct NotebookCell {
         selectedWord.clear();
     }
 
+    [[nodiscard]] bool HasOutputSelection() const noexcept {
+        return hasOutputSelection && (outputSelAnchorLine != outputSelEndLine || outputSelAnchorCol != outputSelEndCol);
+    }
+
+    void ClearOutputSelection() noexcept {
+        hasOutputSelection = false;
+        isSelectingOutput = false;
+        selectedOutputText.clear();
+    }
+
+    void GetOutputSelectionRange(size_t& startLine, size_t& startCol, size_t& endLine, size_t& endCol) const noexcept {
+        if (outputSelAnchorLine < outputSelEndLine || (outputSelAnchorLine == outputSelEndLine && outputSelAnchorCol <= outputSelEndCol)) {
+            startLine = outputSelAnchorLine; startCol = outputSelAnchorCol;
+            endLine = outputSelEndLine; endCol = outputSelEndCol;
+        } else {
+            startLine = outputSelEndLine; startCol = outputSelEndCol;
+            endLine = outputSelAnchorLine; endCol = outputSelAnchorCol;
+        }
+    }
+
     void GetSelectionRange(size_t& startLine, size_t& startCol, size_t& endLine, size_t& endCol) const noexcept {
         if (selAnchor.line < selEnd.line || (selAnchor.line == selEnd.line && selAnchor.col <= selEnd.col)) {
             startLine = selAnchor.line; startCol = selAnchor.col;
@@ -184,6 +204,30 @@ struct NotebookCell {
     D2D1_RECT_F outputHScrollThumbBounds{};
     float outputMaxScrollY = 0.0f;
     float outputMaxScrollX = 0.0f;
+
+    // Code area horizontal scrollbar
+    float codeScrollX = 0.0f;
+    float codeMaxScrollX = 0.0f;
+    D2D1_RECT_F codeHScrollTrackBounds{};
+    D2D1_RECT_F codeHScrollThumbBounds{};
+
+    // Output text selection state
+    bool hasOutputSelection = false;
+    bool isSelectingOutput = false;
+    size_t outputSelAnchorLine = 0;
+    size_t outputSelAnchorCol = 0;
+    size_t outputSelEndLine = 0;
+    size_t outputSelEndCol = 0;
+    std::wstring selectedOutputText;
+
+    // Interactive input() state (Colab / Jupyter standard)
+    bool isWaitingForInput = false;
+    std::wstring inputPrompt;
+    std::wstring inputFieldValue;
+    bool isInputFieldFocused = false;
+    D2D1_RECT_F inputPromptBounds{};
+    D2D1_RECT_F inputFieldBounds{};
+    D2D1_RECT_F submitBtnBounds{};
 
     // Bottom border hover (+ Code, + Text) pill buttons (Colab style)
     D2D1_RECT_F bottomDividerBounds{};
