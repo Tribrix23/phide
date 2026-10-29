@@ -5671,6 +5671,25 @@ void DrawerPanel::StashChangesAsync() {
     }).detach();
 }
 
+void DrawerPanel::RunGarbageCollection() {
+    std::lock_guard<std::recursive_mutex> lock(m_gitMutex);
+    m_gitCommits.shrink_to_fit();
+    for (auto& ci : m_gitCommits) {
+        ci.files.shrink_to_fit();
+        ci.parentLanes.shrink_to_fit();
+        ci.passThroughLanes.shrink_to_fit();
+    }
+    m_gitChanges.shrink_to_fit();
+    m_expandedCommitHashes.clear();
+    m_visibleItems.shrink_to_fit();
+    m_searchGroups.shrink_to_fit();
+    m_pendingSearchGroups.shrink_to_fit();
+    m_searchCandidateFiles.shrink_to_fit();
+    m_openDocPaths.shrink_to_fit();
+    m_dirtyFilePaths.shrink_to_fit();
+    m_gitMenuItems.shrink_to_fit();
+}
+
 void DrawerPanel::RunGarbageCollectionAsync() {
     auto alive = m_isAlive;
     auto workers = m_activeWorkers;
@@ -5690,10 +5709,7 @@ void DrawerPanel::RunGarbageCollectionAsync() {
                 RunGitCmd(L"gc --prune=now --auto", dir);
                 // 2. Perform in-memory IDE garbage collection
                 if (alive && alive->load()) {
-                    std::lock_guard<std::recursive_mutex> lock(m_gitMutex);
-                    m_gitCommits.shrink_to_fit();
-                    m_gitChanges.shrink_to_fit();
-                    m_expandedCommitHashes.clear();
+                    RunGarbageCollection();
                 }
                 // 3. Trim process working set
                 SetProcessWorkingSetSize(GetCurrentProcess(), static_cast<SIZE_T>(-1), static_cast<SIZE_T>(-1));
@@ -6319,6 +6335,11 @@ bool DrawerPanel::HandleGitMouseMove(POINT pt) {
     m_hoveredGitGraphOutgoing = (m_graphExpanded && !m_gitChanges.empty() &&
         pt.x >= m_gitGraphOutgoingBounds.left && pt.x <= m_gitGraphOutgoingBounds.right &&
         pt.y >= m_gitGraphOutgoingBounds.top && pt.y <= m_gitGraphOutgoingBounds.bottom);
+    if (m_hoveredGitGraphOutgoing && !m_showGitTooltip) {
+        m_gitTooltipText = L"Uncommitted changes in working tree";
+        m_gitTooltipTarget = m_gitGraphOutgoingBounds;
+        m_showGitTooltip = true;
+    }
     if (m_graphExpanded && !m_showGitTooltip) {
         bool inCard = (m_commitCardBounds.right > m_commitCardBounds.left &&
                        pt.x >= m_commitCardBounds.left && pt.x <= m_commitCardBounds.right &&
@@ -7370,7 +7391,7 @@ void DrawerPanel::RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, 
             const float laneSpacing = config.ScaleF(12.0f);
             const float originTimelineX = railW + config.ScaleF(16.0f);
 
-            // Outgoing Changes root node at top of Git Graph (media_1793189109205_99e33179.png)
+            // Uncommitted Changes root node at top of Git Graph (Working Tree)
             if (!m_gitChanges.empty() && startIdx == 0 && curY < clientHeight) {
                 m_gitGraphOutgoingBounds = D2D1::RectF(railW, curY, railW + currentDrawerW, curY + rowH);
                 bool isRowHovered = m_hoveredGitGraphOutgoing;
@@ -7381,14 +7402,14 @@ void DrawerPanel::RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, 
                 float nodeY = curY + rowH / 2.0f;
                 float nodeX = originTimelineX;
 
-                // Vertical connector line down from Outgoing Changes to HEAD commit below
+                // Vertical connector line down from Uncommitted Changes to HEAD commit below
                 pRT->DrawLine(
                     D2D1::Point2F(nodeX, nodeY),
                     D2D1::Point2F(nodeX, curY + rowH),
                     laneBrushes[0].Get(), 1.8f
                 );
 
-                // Distinct double ring / hollow node for uncommitted Outgoing Changes
+                // Distinct hollow ring node for uncommitted working tree changes
                 pRT->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(nodeX, nodeY), 4.6f, 4.6f), laneBrushes[0].Get(), 1.6f);
                 pRT->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(nodeX, nodeY), 2.2f, 2.2f), laneBrushes[0].Get(), 1.0f);
 
@@ -7423,9 +7444,9 @@ void DrawerPanel::RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, 
 
                 float textLeft = originTimelineX + (maxLaneVisible + 1) * laneSpacing + config.ScaleF(8.0f);
 
-                // Label: "Outgoing Changes"
-                const wchar_t* outTitle = L"Outgoing Changes";
-                float outTitleW = config.ScaleF(110.0f);
+                // Label: "Uncommitted Changes" (Working Tree)
+                const wchar_t* outTitle = L"Uncommitted Changes";
+                float outTitleW = config.ScaleF(136.0f);
                 D2D1_RECT_F rcOutLabel = D2D1::RectF(textLeft, curY, textLeft + outTitleW, curY + rowH);
                 pRT->DrawText(outTitle, static_cast<UINT32>(wcslen(outTitle)),
                               theme.fontMenuItem.Get() ? theme.fontMenuItem.Get() : theme.fontButtonCenter.Get(),
@@ -7677,18 +7698,22 @@ void DrawerPanel::RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, 
                     } else if (!m_gitBranch.empty()) {
                         branchBadgeText = m_gitBranch;
                     }
-                    if (ci.isUnpushed && !ci.isHead) {
-                        branchBadgeText += L" ↑";
+                    if (ci.isUnpushed) {
+                        if (ci.isHead) {
+                            branchBadgeText += L" ↑ Outgoing";
+                        } else {
+                            branchBadgeText = L"↑ Outgoing";
+                        }
                     }
 
                     float maxBadgeW = (std::max)(config.ScaleF(32.0f), (btnLeft - config.ScaleF(30.0f)) - textLeft);
-                    float bW = (std::min)(maxBadgeW, config.ScaleF(20.0f) + branchBadgeText.length() * config.ScaleF(6.0f));
+                    float bW = (std::min)(maxBadgeW, config.ScaleF(24.0f) + branchBadgeText.length() * config.ScaleF(6.4f));
                     float bH = config.ScaleF(17.0f);
                     D2D1_ROUNDED_RECT rrcBadge = D2D1::RoundedRect(
                         D2D1::RectF(textLeft, nodeY - bH / 2.0f, textLeft + bW, nodeY + bH / 2.0f),
                         3.0f, 3.0f
                     );
-                    ID2D1Brush* pBadgeOutlineBrush = isRemote ? laneBrushes[6].Get() : laneBrushes[0].Get();
+                    ID2D1Brush* pBadgeOutlineBrush = isRemote ? laneBrushes[6].Get() : (ci.isUnpushed ? (brushUnpushed ? brushUnpushed.Get() : laneBrushes[0].Get()) : laneBrushes[0].Get());
                     pRT->FillRoundedRectangle(rrcBadge, brushBranchBadge.Get());
                     pRT->DrawRoundedRectangle(rrcBadge, pBadgeOutlineBrush, 1.0f);
 

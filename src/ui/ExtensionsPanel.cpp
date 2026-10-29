@@ -3056,4 +3056,18 @@ bool ExtensionsPanel::HandleMouseWheel(short delta) noexcept {
     return true;
 }
 
+void ExtensionsPanel::RunGarbageCollection() {
+    std::lock_guard<std::mutex> lock(m_itemsMutex);
+    m_items.shrink_to_fit();
+    for (auto& item : m_items) {
+        item.versions.shrink_to_fit();
+        item.versionDownloads.shrink_to_fit();
+        item.modernTags.shrink_to_fit();
+        item.environments.shrink_to_fit();
+        item.features.shrink_to_fit();
+    }
+    m_versionItemBounds.shrink_to_fit();
+    m_processTasks.shrink_to_fit();
+}
+
 } // namespace phide::ui

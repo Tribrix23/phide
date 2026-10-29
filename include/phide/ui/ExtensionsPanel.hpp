@@ -164,6 +164,7 @@ public:
     void CreateWorkspaceVenv(std::function<void(const std::wstring&)> notifyCb = nullptr);
     void UninstallRuntime(int itemIdx, const std::wstring& version, std::function<void(const std::wstring&)> notifyCb = nullptr);
     void InstallRuntime(int itemIdx, const std::wstring& version, std::function<void(const std::wstring&)> notifyCb = nullptr);
+    void RunGarbageCollection();
 
 private:
     void LoadAssetImages(ID2D1RenderTarget* pRT);

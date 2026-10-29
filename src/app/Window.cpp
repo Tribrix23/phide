@@ -1667,6 +1667,7 @@ void Window::DoOpenFolderFromPath(const std::wstring& path) {
     }
     UpdateDrawerErrorFiles();
     SaveSessionState();
+    RunManualGarbageCollection();
     InvalidateRect(m_hwnd, nullptr, FALSE);
 }
 
@@ -2607,11 +2608,23 @@ void Window::RunManualGarbageCollection() {
             doc.inlayHints.shrink_to_fit();
             doc.breakpoints.shrink_to_fit();
             doc.originalDiskText.shrink_to_fit();
+            if (doc.notebookDoc) {
+                doc.notebookDoc->RunGarbageCollection();
+            }
+            for (auto& mf : doc.multiFileDiffs) {
+                mf.originalBuffer.RunGarbageCollection();
+                mf.workingBuffer.RunGarbageCollection();
+                mf.hunks.shrink_to_fit();
+            }
+            doc.multiFileDiffs.shrink_to_fit();
         }
     }
     m_editor.RunGarbageCollection();
     m_drawer.ClearSearchResults();
+    m_drawer.RunGarbageCollection();
     m_drawer.RunGarbageCollectionAsync();
+    m_terminal.RunGarbageCollection();
+    m_extensionsPanel.RunGarbageCollection();
     CoFreeUnusedLibraries();
     SetProcessWorkingSetSize(GetCurrentProcess(), static_cast<SIZE_T>(-1), static_cast<SIZE_T>(-1));
 }
@@ -5098,6 +5111,9 @@ bool Window::Create(HINSTANCE hInstance, int nCmdShow) {
 
     // Start 50ms Search throttler polling timer
     SetTimer(m_hwnd, m_throttleTimerId, 50, nullptr);
+
+    // Start 60-second periodic idle garbage collection timer
+    SetTimer(m_hwnd, m_gcTimerId, 60000, nullptr);
 
     // Register callback for immediate terminal output repainting
     m_terminal.SetOutputCallback([this]() {
@@ -9842,6 +9858,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 m_header.SetActiveMenu(ui::HeaderMenuId::None);
                 InvalidateRect(m_hwnd, nullptr, FALSE);
             }
+            RunManualGarbageCollection();
             return 0;
         }
 
@@ -11029,6 +11046,8 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     KillTimer(m_hwnd, m_animTimerId);
                 }
                 InvalidateRect(m_hwnd, nullptr, FALSE);
+            } else if (wParam == m_gcTimerId) {
+                RunManualGarbageCollection();
             }
             return 0;
         }

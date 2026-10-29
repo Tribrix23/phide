@@ -2333,4 +2333,34 @@ void PackageManagerView::RenderGitHubWebPage(ID2D1RenderTarget* pRT, Theme& them
     pRT->PopAxisAlignedClip();
 }
 
+void PackageManagerView::RunGarbageCollection() {
+    m_packages.shrink_to_fit();
+    for (auto& p : m_packages) {
+        p.name.shrink_to_fit();
+        p.download.shrink_to_fit();
+        p.github.shrink_to_fit();
+        p.version.shrink_to_fit();
+        p.summary.shrink_to_fit();
+        p.license.shrink_to_fit();
+        p.stars.shrink_to_fit();
+        p.topics.shrink_to_fit();
+    }
+    m_phpPackages.shrink_to_fit();
+    for (auto& p : m_phpPackages) {
+        p.name.shrink_to_fit();
+        p.summary.shrink_to_fit();
+        p.download.shrink_to_fit();
+        p.github.shrink_to_fit();
+    }
+    m_nodePackages.shrink_to_fit();
+    for (auto& p : m_nodePackages) {
+        p.name.shrink_to_fit();
+        p.summary.shrink_to_fit();
+        p.download.shrink_to_fit();
+        p.github.shrink_to_fit();
+    }
+    m_filteredIndices.shrink_to_fit();
+    m_languageCards.shrink_to_fit();
+}
+
 } // namespace phide::ui

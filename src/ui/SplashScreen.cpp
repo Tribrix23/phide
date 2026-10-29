@@ -36,6 +36,34 @@ void SplashScreen::Show(HINSTANCE hInstance, int durationMs) {
         return;
     }
 
+    // Initialize WIC first to query native image aspect ratio and decode bitmap
+    UINT imgW = 1024, imgH = 641;
+    Microsoft::WRL::ComPtr<IWICImagingFactory> pWicFactory;
+    CoCreateInstance(
+        CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER,
+        IID_PPV_ARGS(&pWicFactory)
+    );
+
+    Microsoft::WRL::ComPtr<IWICFormatConverter> pConverter;
+    if (pWicFactory) {
+        Microsoft::WRL::ComPtr<IWICBitmapDecoder> pDecoder;
+        HRESULT hr = pWicFactory->CreateDecoderFromFilename(
+            imgPath.c_str(), nullptr, GENERIC_READ, WICDecodeMetadataCacheOnDemand, &pDecoder
+        );
+        if (SUCCEEDED(hr) && pDecoder) {
+            Microsoft::WRL::ComPtr<IWICBitmapFrameDecode> pFrame;
+            if (SUCCEEDED(pDecoder->GetFrame(0, &pFrame)) && pFrame) {
+                pFrame->GetSize(&imgW, &imgH);
+                if (SUCCEEDED(pWicFactory->CreateFormatConverter(&pConverter)) && pConverter) {
+                    pConverter->Initialize(
+                        pFrame.Get(), GUID_WICPixelFormat32bppPBGRA,
+                        WICBitmapDitherTypeNone, nullptr, 0.0, WICBitmapPaletteTypeCustom
+                    );
+                }
+            }
+        }
+    }
+
     WNDCLASSEXW wc{};
     wc.cbSize = sizeof(WNDCLASSEXW);
     wc.style = CS_HREDRAW | CS_VREDRAW;
@@ -45,10 +73,13 @@ void SplashScreen::Show(HINSTANCE hInstance, int durationMs) {
     wc.lpszClassName = L"PhideSplashScreenClass";
     RegisterClassExW(&wc);
 
+    // Compute pixel-perfect splash window height from actual image aspect ratio (16:10 / 1024x641)
     int screenW = GetSystemMetrics(SM_CXSCREEN);
     int screenH = GetSystemMetrics(SM_CYSCREEN);
-    int splashW = 854;
-    int splashH = 480;
+    int splashW = 820;
+    int splashH = (imgW > 0 && imgH > 0)
+        ? static_cast<int>(splashW * (static_cast<float>(imgH) / static_cast<float>(imgW)))
+        : 512;
     int x = (screenW - splashW) / 2;
     int y = (screenH - splashH) / 2;
 
@@ -63,7 +94,7 @@ void SplashScreen::Show(HINSTANCE hInstance, int durationMs) {
 
     if (!hwnd) return;
 
-    // Initialize WIC and Direct2D to render splash.jpg
+    // Initialize Direct2D to render splash.jpg
     Microsoft::WRL::ComPtr<ID2D1Factory> pD2DFactory;
     D2D1CreateFactory(
         D2D1_FACTORY_TYPE_SINGLE_THREADED,
@@ -82,31 +113,8 @@ void SplashScreen::Show(HINSTANCE hInstance, int durationMs) {
     }
 
     Microsoft::WRL::ComPtr<ID2D1Bitmap> pBitmap;
-    Microsoft::WRL::ComPtr<IWICImagingFactory> pWicFactory;
-    CoCreateInstance(
-        CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER,
-        IID_PPV_ARGS(&pWicFactory)
-    );
-
-    if (pWicFactory && pRT) {
-        Microsoft::WRL::ComPtr<IWICBitmapDecoder> pDecoder;
-        HRESULT hr = pWicFactory->CreateDecoderFromFilename(
-            imgPath.c_str(), nullptr, GENERIC_READ, WICDecodeMetadataCacheOnDemand, &pDecoder
-        );
-        if (SUCCEEDED(hr) && pDecoder) {
-            Microsoft::WRL::ComPtr<IWICBitmapFrameDecode> pFrame;
-            if (SUCCEEDED(pDecoder->GetFrame(0, &pFrame)) && pFrame) {
-                Microsoft::WRL::ComPtr<IWICFormatConverter> pConverter;
-                if (SUCCEEDED(pWicFactory->CreateFormatConverter(&pConverter)) && pConverter) {
-                    if (SUCCEEDED(pConverter->Initialize(
-                        pFrame.Get(), GUID_WICPixelFormat32bppPBGRA,
-                        WICBitmapDitherTypeNone, nullptr, 0.0, WICBitmapPaletteTypeCustom
-                    ))) {
-                        pRT->CreateBitmapFromWicBitmap(pConverter.Get(), nullptr, &pBitmap);
-                    }
-                }
-            }
-        }
+    if (pRT && pConverter) {
+        pRT->CreateBitmapFromWicBitmap(pConverter.Get(), nullptr, &pBitmap);
     }
 
     // Render splash image immediately

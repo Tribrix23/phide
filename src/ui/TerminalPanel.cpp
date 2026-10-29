@@ -373,6 +373,19 @@ void TerminalTab::AppendOutput(const char* data, size_t length, bool isError) {
     }
 }
 
+void TerminalTab::RunGarbageCollection() {
+    std::lock_guard<std::mutex> lock(bufferMutex);
+    lines.shrink_to_fit();
+    for (auto& l : lines) {
+        l.spans.shrink_to_fit();
+        l.rawText.shrink_to_fit();
+    }
+    commandHistory.shrink_to_fit();
+    if (splitTab) {
+        splitTab->RunGarbageCollection();
+    }
+}
+
 // =============================================================================
 // TerminalPanel Implementation
 // =============================================================================
@@ -484,6 +497,7 @@ void TerminalPanel::CloseTab(size_t index) {
     bool isServer = (m_tabs[index]->shellType == TerminalShellType::LiveServer || m_tabs[index]->isServerTab);
     m_tabs[index]->Terminate();
     m_tabs.erase(m_tabs.begin() + index);
+    m_tabs.shrink_to_fit();
 
     if (m_tabs.empty()) {
         m_isOpen = false;
@@ -504,6 +518,7 @@ bool TerminalPanel::CloseTabByAssociatedFile(const std::wstring& filePath) {
             _wcsicmp(m_tabs[i]->associatedFilePath.c_str(), filePath.c_str()) == 0) {
             m_tabs[i]->Terminate();
             m_tabs.erase(m_tabs.begin() + i);
+            m_tabs.shrink_to_fit();
             if (m_tabs.empty()) {
                 m_isOpen = false;
                 m_activeTabIdx = 0;
@@ -521,9 +536,20 @@ void TerminalPanel::CloseAllTabs() {
         if (tab) tab->Terminate();
     }
     m_tabs.clear();
+    m_tabs.shrink_to_fit();
     m_isOpen = false;
     m_activeTabIdx = 0;
     CloseMenus();
+}
+
+void TerminalPanel::RunGarbageCollection() {
+    m_tabs.shrink_to_fit();
+    for (auto& tab : m_tabs) {
+        if (tab) {
+            tab->RunGarbageCollection();
+        }
+    }
+    m_availableProfiles.shrink_to_fit();
 }
 
 void TerminalPanel::SetActiveTabIdx(int idx) noexcept {

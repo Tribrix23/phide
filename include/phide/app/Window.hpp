@@ -646,6 +646,7 @@ private:
     UINT_PTR m_caretTimerId    = 1001;
     UINT_PTR m_animTimerId     = 1002;
     UINT_PTR m_throttleTimerId = 1003; ///< 50ms timer for throttled code search queries
+    UINT_PTR m_gcTimerId       = 1004; ///< 60s periodic idle garbage collection timer
 
     float m_drawerAnimProgress   = 0.0f;
     float m_targetDrawerProgress = 0.0f;

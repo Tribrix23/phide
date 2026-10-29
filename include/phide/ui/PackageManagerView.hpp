@@ -207,6 +207,7 @@ public:
     void UpdateWebViewBounds();
     void HideWebView();
     void NavigateToPackage(const std::wstring& url);
+    void RunGarbageCollection();
 
     std::vector<PackageEntry>& GetActivePackageList();
     [[nodiscard]] const std::vector<PackageEntry>& GetActivePackageList() const;

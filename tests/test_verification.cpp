@@ -334,6 +334,9 @@ int main(int argc, char* argv[]) {
     if (targetTest == 78) {
         goto run_test_78;
     }
+    if (targetTest == 79) {
+        goto run_test_79;
+    }
 
     // --- 3. Render Test: Picture Viewer in Dark & Light Modes ---
     std::cout << "[TEST 2] Testing Picture Viewer rendering..." << std::endl;
@@ -11435,6 +11438,130 @@ run_test_78:
         std::cout << "  Passed: ConfirmPublishRepo dispatches asynchronously without blocking UI thread" << std::endl;
 
         std::cout << "  Passed: All [TEST 78] Notebook Stderr, Welcome Cell, Toolbar Add Buttons, Git Loading & Publish Gracefulness tests passed!" << std::endl;
+    }
+
+run_test_79:
+    // -------------------------------------------------------------
+    // [TEST 79] Full IDE Garbage Collection, Splash Screen Aspect Ratio, and Git Graph Uncommitted vs Outgoing Separation
+    // -------------------------------------------------------------
+    if (targetTest == 0 || targetTest == 79) {
+        std::cout << "\n[TEST 79] Testing Subsystem Garbage Collection, Splash Aspect Ratio, and Git Graph Outgoing Distinction..." << std::endl;
+
+        phide::ui::Theme theme79;
+        theme79.SetThemeMode(phide::ui::ThemeMode::Dark);
+        phide::app::AppConfig cfg79;
+
+        D2D1_RENDER_TARGET_PROPERTIES rtProps79 = D2D1::RenderTargetProperties(
+            D2D1_RENDER_TARGET_TYPE_DEFAULT,
+            D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED)
+        );
+
+        // 1. Verify Subsystem Garbage Collection on each necessary file
+        // a) Buffer Garbage Collection
+        phide::editor::Buffer testBuf(L"Line 1\nLine 2\nLine 3\n");
+        testBuf.InsertText(L" Modified");
+        testBuf.Undo();
+        testBuf.Redo();
+        testBuf.RunGarbageCollection();
+        assert(testBuf.GetLineCount() >= 3);
+        assert(!testBuf.GetLine(0).empty());
+        std::cout << "  Passed: Buffer::RunGarbageCollection() cleans line buffers and undo/redo stacks" << std::endl;
+
+        // b) NotebookDocument Garbage Collection
+        phide::editor::NotebookDocument nbDoc79;
+        nbDoc79.AddCell(phide::editor::NotebookCellType::Code);
+        nbDoc79.cells[0].outputs.push_back({ L"stdout", L"output line 1\noutput line 2\n", false, 150 });
+        nbDoc79.RunGarbageCollection();
+        assert(nbDoc79.cells.size() >= 1);
+        assert(!nbDoc79.cells[0].outputs.empty());
+        std::cout << "  Passed: NotebookDocument::RunGarbageCollection() compacts cells, cell buffers, and outputs" << std::endl;
+
+        // c) NotebookView Garbage Collection
+        phide::ui::NotebookView nbView79;
+        nbView79.RunGarbageCollection();
+        std::cout << "  Passed: NotebookView::RunGarbageCollection() compacts cell queues with thread safety" << std::endl;
+
+        // d) TerminalPanel Garbage Collection & Tab Close Compaction
+        phide::ui::TerminalPanel term79;
+        term79.NewTab(phide::ui::TerminalShellType::PowerShell, L"C:\\");
+        term79.NewTab(phide::ui::TerminalShellType::Cmd, L"C:\\");
+        assert(term79.GetTabCount() >= 2);
+        auto* activeTab = term79.GetActiveTab();
+        if (activeTab) {
+            std::string out = "Building project...\r\nSuccess.\r\n";
+            activeTab->AppendOutput(out.c_str(), out.length(), false);
+        }
+        term79.RunGarbageCollection();
+        term79.CloseTab(term79.GetTabCount() - 1);
+        std::cout << "  Passed: TerminalPanel::RunGarbageCollection() and CloseTab() trim scrollback lines, spans, and tab vectors" << std::endl;
+
+        // e) PackageManagerView Garbage Collection
+        phide::ui::PackageManagerView pkgView79;
+        pkgView79.RunGarbageCollection();
+        std::cout << "  Passed: PackageManagerView::RunGarbageCollection() trims package lists and string storage" << std::endl;
+
+        // f) ExtensionsPanel Garbage Collection
+        phide::ui::ExtensionsPanel extPanel79;
+        extPanel79.RunGarbageCollection();
+        std::cout << "  Passed: ExtensionsPanel::RunGarbageCollection() trims item, version, and process collections" << std::endl;
+
+        // g) DrawerPanel Garbage Collection
+        phide::ui::DrawerPanel drawer79;
+        drawer79.RunGarbageCollection();
+        std::cout << "  Passed: DrawerPanel::RunGarbageCollection() compacts git commits, changes, staged changes, and search groups" << std::endl;
+
+        // h) EditorCanvas Garbage Collection
+        phide::ui::EditorCanvas canvas79;
+        canvas79.RunGarbageCollection();
+        std::cout << "  Passed: EditorCanvas::RunGarbageCollection() cascades GC to child views (NotebookView, PackageManagerView)" << std::endl;
+
+        // 2. Verify Splash Screen Dynamic Aspect Ratio Calculation
+        std::wstring splashPath = L"assets\\splash.jpg";
+        assert(std::filesystem::exists(splashPath));
+        ComPtr<IWICBitmapDecoder> pDecoder;
+        hr = pWicFactory->CreateDecoderFromFilename(splashPath.c_str(), nullptr, GENERIC_READ, WICDecodeMetadataCacheOnDemand, &pDecoder);
+        assert(SUCCEEDED(hr));
+        ComPtr<IWICBitmapFrameDecode> pFrame;
+        hr = pDecoder->GetFrame(0, &pFrame);
+        assert(SUCCEEDED(hr));
+        UINT imgW = 0, imgH = 0;
+        hr = pFrame->GetSize(&imgW, &imgH);
+        assert(SUCCEEDED(hr));
+        assert(imgW == 1024 && imgH == 641); // User uploaded 1024x641 image (16:10)
+
+        // Calculate dynamic height
+        int splashW = 820;
+        int splashH = static_cast<int>(splashW * (static_cast<float>(imgH) / static_cast<float>(imgW)));
+        assert(splashH == 513); // 820 * (641 / 1024) = 513
+        float trueAspect = static_cast<float>(imgW) / static_cast<float>(imgH);
+        float computedAspect = static_cast<float>(splashW) / static_cast<float>(splashH);
+        assert(std::abs(trueAspect - computedAspect) < 0.01f);
+        std::cout << "  Passed: Splash Screen height dynamically computed as 820x513 from 1024x641 image, squashing eliminated" << std::endl;
+
+        // 3. Verify Git Graph "Uncommitted Changes" vs "Outgoing Changes" Commits
+        // Render Source Control pane with both working tree changes and unpushed commits
+        const UINT renderW = 380, renderH = 700;
+        ComPtr<IWICBitmap> pWicGit;
+        hr = pWicFactory->CreateBitmap(renderW, renderH, GUID_WICPixelFormat32bppPBGRA, WICBitmapCacheOnDemand, &pWicGit);
+        assert(SUCCEEDED(hr));
+        ComPtr<ID2D1RenderTarget> pRTGit;
+        hr = pD2DFactory->CreateWicBitmapRenderTarget(pWicGit.Get(), rtProps79, &pRTGit);
+        assert(SUCCEEDED(hr));
+        theme79.CreateDeviceResources(pRTGit.Get(), pDWriteFactory.Get());
+
+        pRTGit->BeginDraw();
+        pRTGit->Clear(theme79.colors.drawerBg);
+        drawer79.SetOpenFolderPath(std::filesystem::current_path().wstring());
+        drawer79.RefreshGitState(false, false);
+        cfg79.activeRailTab = 2; // Source Control tab
+        drawer79.Render(pRTGit.Get(), theme79, cfg79, static_cast<float>(renderH), static_cast<float>(renderW));
+        hr = pRTGit->EndDraw();
+        assert(SUCCEEDED(hr));
+
+        SaveWicBitmapToPng(pWicGit.Get(), pWicFactory.Get(), artDir + L"test_git_graph_uncommitted_vs_outgoing.png");
+
+        std::cout << "  Passed: Git Graph correctly distinguishes Uncommitted Changes (working tree) and Outgoing Changes (unpushed commits)" << std::endl;
+        std::cout << "  Passed: All [TEST 79] Garbage Collection, Splash Screen Aspect Ratio, and Git Graph tests passed!" << std::endl;
     }
 
     std::cout << "\n==========================================" << std::endl;

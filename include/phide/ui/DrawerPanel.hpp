@@ -172,6 +172,7 @@ public:
     void PullCommitsAsync();
     void FetchAllRemotesAsync();
     void StashChangesAsync();
+    void RunGarbageCollection();
     void RunGarbageCollectionAsync();
     void GenerateAiCommitMessage();
     void SetCommitMessage(const std::wstring& msg) {

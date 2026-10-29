@@ -251,6 +251,7 @@ struct TerminalTab {
     void Terminate();
     void SendInput(const std::string& input);
     void AppendOutput(const char* data, size_t length, bool isError = false);
+    void RunGarbageCollection();
 };
 
 /**
@@ -352,6 +353,8 @@ public:
     [[nodiscard]] std::wstring GetSelectedText() const;
     void ClearSelection() noexcept;
     [[nodiscard]] bool IsSelecting() const noexcept { return m_isSelecting; }
+
+    void RunGarbageCollection();
 
     void SetWorkingDir(const std::wstring& dir);
     void SetOutputCallback(std::function<void()> cb) {

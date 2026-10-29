@@ -468,6 +468,8 @@ public:
         m_cachedBufferVersion = static_cast<uint64_t>(-1);
         m_cachedCursorLine = static_cast<size_t>(-1);
         m_cachedCursorCol = static_cast<size_t>(-1);
+        m_packageManagerView.RunGarbageCollection();
+        m_notebookView.RunGarbageCollection();
     }
     [[nodiscard]] const ColorSwatchHit* HitTestColorSwatch(POINT pt) const;
     [[nodiscard]] const std::vector<ColorSwatchHit>& GetVisibleColorSwatches() const noexcept { return m_visibleColorSwatches; }

@@ -76,6 +76,11 @@ public:
     [[nodiscard]] const D2D1_RECT_F& GetBtnAddCode() const noexcept { return m_btnAddCode; }
     [[nodiscard]] const D2D1_RECT_F& GetBtnAddText() const noexcept { return m_btnAddText; }
 
+    void RunGarbageCollection() {
+        std::lock_guard<std::mutex> lock(m_queueMutex);
+        m_cellQueue.shrink_to_fit();
+    }
+
     /**
      * @brief Hit-tests code area coordinates to obtain line and column with character metrics precision.
      */

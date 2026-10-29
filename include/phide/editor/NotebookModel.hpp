@@ -276,11 +276,27 @@ public:
     void ClearAllOutputs() {
         for (auto& c : cells) {
             c.outputs.clear();
+            c.outputs.shrink_to_fit();
             c.executionCount = -1;
             c.isExecuting = false;
         }
         nextExecutionCount = 1;
         isDirty = true;
+    }
+
+    void RunGarbageCollection() {
+        cells.shrink_to_fit();
+        for (auto& c : cells) {
+            c.id.shrink_to_fit();
+            c.language.shrink_to_fit();
+            c.selectedWord.shrink_to_fit();
+            c.inputBuffer.RunGarbageCollection();
+            c.outputs.shrink_to_fit();
+            for (auto& o : c.outputs) {
+                o.streamName.shrink_to_fit();
+                o.text.shrink_to_fit();
+            }
+        }
     }
 
     static std::string UnescapeJsonString(const std::string& raw) {
