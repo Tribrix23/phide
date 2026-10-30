@@ -3113,7 +3113,8 @@ void EditorCanvas::RenderStudentView(ID2D1RenderTarget* pRT, Theme& theme, const
     const float cardW = (totalGridW - gapX * static_cast<float>(numCols - 1)) / static_cast<float>(numCols);
     const float cardH = cardW * (142.0f / 195.0f);
     const float cardBannerH = cardH * (62.0f / 142.0f);
-    const float gridStartY = topY - m_learningScrollY + config.ScaleF(182.0f);
+    const float filterCardGap = config.ScaleF(18.0f);
+    const float gridStartY = filterY + filterH + filterCardGap;
 
     auto DrawBookIcon = [&](const D2D1_RECT_F& r, ID2D1Brush* pBr) {
         if (!pBr) return;

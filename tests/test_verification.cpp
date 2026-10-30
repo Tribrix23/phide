@@ -343,6 +343,9 @@ int main(int argc, char* argv[]) {
     if (targetTest == 81) {
         goto run_test_81;
     }
+    if (targetTest == 82) {
+        goto run_test_82;
+    }
 
     // --- 3. Render Test: Picture Viewer in Dark & Light Modes ---
     std::cout << "[TEST 2] Testing Picture Viewer rendering..." << std::endl;
@@ -11866,6 +11869,126 @@ run_test_81:
         std::cout << "  Passed: All [TEST 81] Notebook Leaking Fix, Interactive input(), and Widescreen Grid tests passed!" << std::endl;
         if (targetTest == 81) {
             std::cout << "Target test 81 finished successfully." << std::endl;
+            return 0;
+        }
+    }
+
+    // --- 82. Learning Hub Buttons-to-Cards Gap & Single Commit Graph Clean Node ---
+run_test_82:
+    if (targetTest == 0 || targetTest == 82) {
+        std::cout << "\n[TEST 82] Testing Learning Hub Gap & Single Commit Graph Node Cleanliness..." << std::endl;
+
+        // 1. Single Commit with Uncommitted Changes: Graph node must be clean standalone circle (no vertical line above)
+        {
+            phide::ui::DrawerPanel drawer82;
+            drawer82.SetGitRepo(true);
+            drawer82.GetGitCommitsMutable().clear();
+
+            phide::ui::GitCommitItem singleCommit;
+            singleCommit.hash = L"abc1234567890";
+            singleCommit.message = L"First Commit";
+            singleCommit.author = L"Koda Dev";
+            singleCommit.relativeTime = L"1 min ago";
+            singleCommit.isHead = true;
+            singleCommit.refNames = L"origin/main";
+            singleCommit.lane = 0;
+            singleCommit.colorIdx = 0;
+            drawer82.GetGitCommitsMutable().push_back(singleCommit);
+
+            // Add uncommitted file to simulate dirty state
+            phide::ui::GitChangeItem chg;
+            chg.path = L".gitignore";
+            chg.fileName = L".gitignore";
+            chg.status = L"M";
+            drawer82.GetGitChangesMutable().push_back(chg);
+
+            const UINT scW = 320, scH = 600;
+            ComPtr<IWICBitmap> pWicSingle;
+            hr = pWicFactory->CreateBitmap(scW, scH, GUID_WICPixelFormat32bppPBGRA, WICBitmapCacheOnDemand, &pWicSingle);
+            assert(SUCCEEDED(hr));
+            D2D1_RENDER_TARGET_PROPERTIES rtPropsSingle = D2D1::RenderTargetProperties(
+                D2D1_RENDER_TARGET_TYPE_DEFAULT,
+                D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED)
+            );
+            ComPtr<ID2D1RenderTarget> pRTSingle;
+            hr = pD2DFactory->CreateWicBitmapRenderTarget(pWicSingle.Get(), rtPropsSingle, &pRTSingle);
+            assert(SUCCEEDED(hr));
+            phide::ui::Theme themeSingle;
+            themeSingle.CreateDeviceResources(pRTSingle.Get(), pDWriteFactory.Get());
+            phide::app::AppConfig cfgSingle;
+            cfgSingle.activeRailTab = 2; // Source Control tab
+
+            pRTSingle->BeginDraw();
+            pRTSingle->Clear(themeSingle.colors.drawerBg);
+            drawer82.Render(pRTSingle.Get(), themeSingle, cfgSingle, static_cast<float>(scH), static_cast<float>(scW));
+            hr = pRTSingle->EndDraw();
+            assert(SUCCEEDED(hr));
+
+            // Verify commit item 0 has no parents and parentLanes is empty
+            const auto& commits = drawer82.GetGitCommits();
+            assert(commits.size() == 1);
+            assert(commits[0].parentLanes.empty());
+            std::cout << "  Passed: Single commit has no parent lanes and rendered cleanly as standalone node" << std::endl;
+
+            SaveWicBitmapToPng(pWicSingle.Get(), pWicFactory.Get(), artDir + L"test_git_graph_single_commit_node_clean.png");
+            std::cout << "  Passed: Saved test_git_graph_single_commit_node_clean.png" << std::endl;
+        }
+
+        // 2. Learning Hub Buttons-to-Cards Gap: Verify zero overlap and distinct separation gap
+        {
+            phide::ui::EditorCanvas editor82;
+            phide::ui::Theme theme82;
+            phide::app::AppConfig cfg82;
+            phide::editor::OpenDocument doc82;
+            doc82.isSpecialView = true;
+            doc82.viewType = L"student";
+            doc82.fileName = L"Learning Hub";
+
+            const UINT lhW = 1280, lhH = 800;
+            ComPtr<IWICBitmap> pWicLH;
+            hr = pWicFactory->CreateBitmap(lhW, lhH, GUID_WICPixelFormat32bppPBGRA, WICBitmapCacheOnDemand, &pWicLH);
+            assert(SUCCEEDED(hr));
+            D2D1_RENDER_TARGET_PROPERTIES rtPropsLH = D2D1::RenderTargetProperties(
+                D2D1_RENDER_TARGET_TYPE_DEFAULT,
+                D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED)
+            );
+            ComPtr<ID2D1RenderTarget> pRTLH;
+            hr = pD2DFactory->CreateWicBitmapRenderTarget(pWicLH.Get(), rtPropsLH, &pRTLH);
+            assert(SUCCEEDED(hr));
+            theme82.CreateDeviceResources(pRTLH.Get(), pDWriteFactory.Get());
+
+            pRTLH->BeginDraw();
+            editor82.RenderStudentView(pRTLH.Get(), theme82, cfg82, doc82, 0.0f, static_cast<float>(lhW), 0.0f, static_cast<float>(lhH));
+            hr = pRTLH->EndDraw();
+            assert(SUCCEEDED(hr));
+
+            const auto* filterBounds = editor82.GetLearningFilterBounds();
+            const auto& sortBounds = editor82.GetLearningSortBounds();
+            const auto& cards = editor82.GetRenderedCourseCards();
+            assert(!cards.empty());
+
+            float firstCardTop = cards[0].bounds.top;
+            float filterBottom = filterBounds[0].bottom;
+            float sortBottom = sortBounds.bottom;
+
+            // Assert positive gap (no overlap, cards start strictly below buttons)
+            assert(firstCardTop > filterBottom);
+            assert(firstCardTop > sortBottom);
+            float actualFilterGap = firstCardTop - filterBottom;
+            float actualSortGap = firstCardTop - sortBottom;
+            assert(actualFilterGap >= 16.0f);
+            assert(actualSortGap >= 16.0f);
+
+            std::cout << "  Passed: Distinct gap between filter buttons and cards (" << actualFilterGap << "px >= 16px)" << std::endl;
+            std::cout << "  Passed: Distinct gap between sort button and cards (" << actualSortGap << "px >= 16px)" << std::endl;
+
+            SaveWicBitmapToPng(pWicLH.Get(), pWicFactory.Get(), artDir + L"test_learning_hub_gap_verified.png");
+            std::cout << "  Passed: Saved test_learning_hub_gap_verified.png" << std::endl;
+        }
+
+        std::cout << "  Passed: All [TEST 82] Learning Hub Gap & Single Commit Graph Clean Node tests passed!" << std::endl;
+        if (targetTest == 82) {
+            std::cout << "Target test 82 finished successfully." << std::endl;
             return 0;
         }
     }

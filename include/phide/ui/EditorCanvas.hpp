@@ -501,6 +501,8 @@ private:
 
 public:
     [[nodiscard]] const std::vector<RenderedCourseCard>& GetRenderedCourseCards() const noexcept { return m_renderedCourseCards; }
+    [[nodiscard]] const D2D1_RECT_F* GetLearningFilterBounds() const noexcept { return m_learningFilterBounds; }
+    [[nodiscard]] const D2D1_RECT_F& GetLearningSortBounds() const noexcept { return m_learningSortBounds; }
     void RenderStudentView(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
                            editor::OpenDocument& doc, float canvasLeft, float canvasWidth,
                            float topY, float clientHeight);

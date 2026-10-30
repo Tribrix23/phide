@@ -7422,18 +7422,26 @@ void DrawerPanel::RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, 
                     );
                 }
 
-                // 2. Incoming vertical line from parent commit above or Outgoing Changes
+                // 2. Incoming vertical line from newer commit above (only if connected)
+                bool hasIncoming = false;
                 if (i > 0) {
+                    for (int pl : m_gitCommits[i - 1].parentLanes) {
+                        if (pl == ci.lane) { hasIncoming = true; break; }
+                    }
+                    if (!hasIncoming) {
+                        for (int pl : m_gitCommits[i - 1].passThroughLanes) {
+                            if (pl == ci.lane) { hasIncoming = true; break; }
+                        }
+                    }
+                } else if (startIdx > 0 && !m_gitCommits.empty()) {
+                    hasIncoming = true;
+                }
+
+                if (hasIncoming) {
                     pRT->DrawLine(
                         D2D1::Point2F(nodeX, curY),
                         D2D1::Point2F(nodeX, nodeY),
                         pCommitBrush, 1.6f
-                    );
-                } else if (!m_gitChanges.empty()) {
-                    pRT->DrawLine(
-                        D2D1::Point2F(nodeX, curY),
-                        D2D1::Point2F(nodeX, nodeY),
-                        laneBrushes[0].Get(), 1.8f
                     );
                 }
 
@@ -7490,19 +7498,22 @@ void DrawerPanel::RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, 
                     pRT->CreateSolidColorBrush(D2D1::ColorF(0.22f, 0.74f, 0.97f, 1.0f), &brushUnpushed);
                 }
 
-                // 4. Commit circle node (matching VS Code Git Graph in media_1793189109205_99e33179.png):
-                // For HEAD: Clean hollow blue circle with 2.0f stroke width
-                // For unpushed commits: Hollow sky-blue ring with inner dot
-                // For pushed / remote tracking commits: Solid purple circle
+                // 4. Commit circle node (matching VS Code Git Graph):
+                // Mask out any background lines so the node interior is completely clean
+                if (theme.brushDrawerBg) {
+                    pRT->FillEllipse(D2D1::Ellipse(D2D1::Point2F(nodeX, nodeY), 5.0f, 5.0f), theme.brushDrawerBg.Get());
+                }
+
                 if (ci.isHead) {
-                    pRT->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(nodeX, nodeY), 4.6f, 4.6f), laneBrushes[0].Get(), 2.0f);
+                    // HEAD commit node: crisp outer ring with solid inner dot
+                    pRT->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(nodeX, nodeY), 4.5f, 4.5f), laneBrushes[ci.colorIdx % 8].Get(), 1.8f);
+                    pRT->FillEllipse(D2D1::Ellipse(D2D1::Point2F(nodeX, nodeY), 2.2f, 2.2f), laneBrushes[ci.colorIdx % 8].Get());
                 } else if (ci.isUnpushed) {
                     ID2D1Brush* pUnpushedBrush = brushUnpushed ? brushUnpushed.Get() : pCommitBrush;
-                    pRT->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(nodeX, nodeY), 4.2f, 4.2f), pUnpushedBrush, 2.0f);
-                } else if (ci.refNames.find(L"origin/") != std::wstring::npos) {
-                    pRT->FillEllipse(D2D1::Ellipse(D2D1::Point2F(nodeX, nodeY), 3.4f, 3.4f), laneBrushes[6].Get());
+                    pRT->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(nodeX, nodeY), 4.2f, 4.2f), pUnpushedBrush, 1.8f);
+                    pRT->FillEllipse(D2D1::Ellipse(D2D1::Point2F(nodeX, nodeY), 2.0f, 2.0f), pUnpushedBrush);
                 } else {
-                    pRT->FillEllipse(D2D1::Ellipse(D2D1::Point2F(nodeX, nodeY), 3.2f, 3.2f), pCommitBrush);
+                    pRT->FillEllipse(D2D1::Ellipse(D2D1::Point2F(nodeX, nodeY), 3.8f, 3.8f), pCommitBrush);
                 }
 
                 // Right-edge Open Changes icon button (Image 3)
