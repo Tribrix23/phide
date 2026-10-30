@@ -9058,7 +9058,7 @@ run_test_70:
         pkgView.NavigateBackToLanguages();
         POINT ptCard{ 150, 150 };
         LPCWSTR curCard = pkgView.GetCursorForPoint(ptCard);
-        assert(curCard == IDC_HAND);
+        assert(curCard == (LPCWSTR)IDC_HAND);
         std::cout << "  Passed: Language Grid card returns IDC_HAND pointer cursor." << std::endl;
 
         pkgView.SelectLanguageAndOpenSearch(phide::ui::RuntimeLanguage::Python);
@@ -9075,7 +9075,7 @@ run_test_70:
 
         POINT ptSearchBox{ 100, 66 };
         LPCWSTR curSearch = pkgView.GetCursorForPoint(ptSearchBox);
-        assert(curSearch == IDC_IBEAM);
+        assert(curSearch == (LPCWSTR)IDC_IBEAM);
         std::cout << "  Passed: Search box returns IDC_IBEAM text cursor." << std::endl;
 
         // Find rendered install button position for first result
@@ -9091,13 +9091,13 @@ run_test_70:
             static_cast<LONG>((matPkg.rcInstallBtn.top + matPkg.rcInstallBtn.bottom) * 0.5f)
         };
         LPCWSTR curInstall = pkgView.GetCursorForPoint(ptInstallBtn);
-        assert(curInstall == IDC_HAND);
+        assert(curInstall == (LPCWSTR)IDC_HAND);
         POINT ptArrowBtn{
             static_cast<LONG>((matPkg.rcSplitArrowBtn.left + matPkg.rcSplitArrowBtn.right) * 0.5f),
             static_cast<LONG>((matPkg.rcSplitArrowBtn.top + matPkg.rcSplitArrowBtn.bottom) * 0.5f)
         };
         LPCWSTR curArrow = pkgView.GetCursorForPoint(ptArrowBtn);
-        assert(curArrow == IDC_HAND);
+        assert(curArrow == (LPCWSTR)IDC_HAND);
         std::cout << "  Passed: Install button and Split Arrow return IDC_HAND pointer cursor." << std::endl;
 
         // 17. Test Package Installation & Processes HUD Floating Card (User Image 2 & 3)
@@ -11413,8 +11413,8 @@ run_test_78:
         // Verify Cursor IDC_HAND on [+ Code] and [+ Text]
         POINT ptCode{ static_cast<LONG>((btnCode.left + btnCode.right) * 0.5f), static_cast<LONG>((btnCode.top + btnCode.bottom) * 0.5f) };
         POINT ptText{ static_cast<LONG>((btnText.left + btnText.right) * 0.5f), static_cast<LONG>((btnText.top + btnText.bottom) * 0.5f) };
-        assert(nbView78.GetCursorForPoint(ptCode, doc78) == IDC_HAND);
-        assert(nbView78.GetCursorForPoint(ptText, doc78) == IDC_HAND);
+        assert(nbView78.GetCursorForPoint(ptCode, doc78) == (LPCWSTR)IDC_HAND);
+        assert(nbView78.GetCursorForPoint(ptText, doc78) == (LPCWSTR)IDC_HAND);
 
         // Click [+ Code] toolbar button -> Adds Code Cell
         size_t initialCells = doc78.notebookDoc->cells.size();
@@ -12022,9 +12022,22 @@ run_test_83:
 
         // Verify Module 0 initial state: unfinished (hollow box)
         assert(!pTree->modules[0].IsAllFinished());
-        std::cout << "  Passed: Course Explorer activated with 6 modules and 24 lessons (Module 0 unfinished)" << std::endl;
+        // Verify Module lessons: lessons 0..2 are reading modules (book icon), lesson 3 is test (flask icon)
+        assert(!pTree->modules[0].lessons[0].IsTest());
+        assert(!pTree->modules[0].lessons[1].IsTest());
+        assert(!pTree->modules[0].lessons[2].IsTest());
+        assert(pTree->modules[0].lessons[3].IsTest());
+        // Verify Module 5 (Projects & Practice): all 4 lessons are tests
+        assert(pTree->modules[5].lessons[0].IsTest());
+        assert(pTree->modules[5].lessons[1].IsTest());
+        assert(pTree->modules[5].lessons[2].IsTest());
+        assert(pTree->modules[5].lessons[3].IsTest());
+        std::cout << "  Passed: Course Explorer lessons have Book icon for modules and Test icon for tests" << std::endl;
 
-        // Render Course Explorer with Hollow White Box
+        phide::app::AppConfig cfg83;
+        cfg83.activeRailTab = 0; // Explorer
+
+        // Render Course Explorer with Hollow White Box & Book/Test icons (no circles)
         const UINT scW = 280, scH = 650;
         ComPtr<IWICBitmap> pWicCourse1;
         hr = pWicFactory->CreateBitmap(scW, scH, GUID_WICPixelFormat32bppPBGRA, WICBitmapCacheOnDemand, &pWicCourse1);
@@ -12038,8 +12051,6 @@ run_test_83:
         assert(SUCCEEDED(hr));
         phide::ui::Theme theme83;
         theme83.CreateDeviceResources(pRTCourse1.Get(), pDWriteFactory.Get());
-        phide::app::AppConfig cfg83;
-        cfg83.activeRailTab = 0; // Explorer
 
         pRTCourse1->BeginDraw();
         pRTCourse1->Clear(theme83.colors.drawerBg);
@@ -12047,8 +12058,29 @@ run_test_83:
         hr = pRTCourse1->EndDraw();
         assert(SUCCEEDED(hr));
 
+        SaveWicBitmapToPng(pWicCourse1.Get(), pWicFactory.Get(), artDir + L"test_course_explorer_book_and_test_icons.png");
         SaveWicBitmapToPng(pWicCourse1.Get(), pWicFactory.Get(), artDir + L"test_course_explorer_hollow_box.png");
-        std::cout << "  Passed: Saved test_course_explorer_hollow_box.png" << std::endl;
+        std::cout << "  Passed: Saved test_course_explorer_book_and_test_icons.png" << std::endl;
+
+        // Verify User CANNOT click to check off lessons or modules
+        bool initialModExpanded = pTree->modules[0].isExpanded;
+        // Clicking box only toggles expansion, never marks finished!
+        POINT ptBox{ static_cast<LONG>((pTree->modules[0].boxBounds.left + pTree->modules[0].boxBounds.right) / 2),
+                     static_cast<LONG>((pTree->modules[0].boxBounds.top + pTree->modules[0].boxBounds.bottom) / 2) };
+        drawer83.HandleCourseExplorerClick(ptBox, cfg83);
+        assert(pTree->modules[0].isExpanded != initialModExpanded);
+        assert(!pTree->modules[0].IsAllFinished());
+        // Re-expand module 0
+        drawer83.HandleCourseExplorerClick(ptBox, cfg83);
+        assert(pTree->modules[0].isExpanded == initialModExpanded);
+
+        // Clicking lesson selects it (isCurrent), but DOES NOT check it off!
+        POINT ptLesson{ static_cast<LONG>((pTree->modules[0].lessons[0].bounds.left + pTree->modules[0].lessons[0].bounds.right) / 2),
+                        static_cast<LONG>((pTree->modules[0].lessons[0].bounds.top + pTree->modules[0].lessons[0].bounds.bottom) / 2) };
+        drawer83.HandleCourseExplorerClick(ptLesson, cfg83);
+        assert(pTree->modules[0].lessons[0].isCurrent);
+        assert(!pTree->modules[0].lessons[0].isFinished); // NOT finished!
+        std::cout << "  Passed: User cannot click module box or lessons to check them off" << std::endl;
 
         // 3. Complete Module 0 (all 4 lessons): Box turns solid green
         for (size_t l = 0; l < pTree->modules[0].lessons.size(); ++l) {
@@ -12102,14 +12134,15 @@ run_test_83:
         assert(drawer83.GetActiveCourseTree()->modules[0].IsAllFinished());
         std::cout << "  Passed: Switching back restores Course Explorer and preserves completed progress" << std::endl;
 
-        // 6. Render Course Tab Surface in EditorCanvas
+        // 6. Render Course Tab in EditorCanvas (standard clean code editor, landing page content removed)
         {
             phide::ui::EditorCanvas editor83;
             phide::editor::OpenDocument courseDoc;
-            courseDoc.isSpecialView = true;
+            courseDoc.isSpecialView = false;
             courseDoc.viewType = L"course";
             courseDoc.fileName = L"Python for Beginners";
             courseDoc.courseId = L"python-1";
+            courseDoc.buffer.SetText(L"# Python for Beginners\n# Interactive Course Workspace\n\nprint(\"Welcome to Python for Beginners!\")\n");
 
             const UINT edW = 1200, edH = 750;
             ComPtr<IWICBitmap> pWicCourseTab;
@@ -12121,12 +12154,15 @@ run_test_83:
             theme83.CreateDeviceResources(pRTCourseTab.Get(), pDWriteFactory.Get());
 
             pRTCourseTab->BeginDraw();
-            editor83.RenderCourseView(pRTCourseTab.Get(), theme83, cfg83, courseDoc, 0.0f, static_cast<float>(edW), 0.0f, static_cast<float>(edH));
+            pRTCourseTab->Clear(theme83.colors.canvasBg);
+            std::vector<phide::editor::OpenDocument> testDocs;
+            testDocs.push_back(courseDoc);
+            editor83.Render(pRTCourseTab.Get(), theme83, cfg83, testDocs, 0, 0.0f, static_cast<float>(edW), static_cast<float>(edH), true, L"", false, false, false, false);
             hr = pRTCourseTab->EndDraw();
             assert(SUCCEEDED(hr));
 
-            SaveWicBitmapToPng(pWicCourseTab.Get(), pWicFactory.Get(), artDir + L"test_course_view_tab_content.png");
-            std::cout << "  Passed: Saved test_course_view_tab_content.png" << std::endl;
+            SaveWicBitmapToPng(pWicCourseTab.Get(), pWicFactory.Get(), artDir + L"test_course_view_tab_content_removed.png");
+            std::cout << "  Passed: Saved test_course_view_tab_content_removed.png" << std::endl;
         }
 
         std::cout << "  Passed: All [TEST 83] Course Explorer Special Sidebar & Tab Revert tests passed!" << std::endl;

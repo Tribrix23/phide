@@ -50,8 +50,20 @@ struct CourseLessonItem {
     std::wstring id;
     std::wstring title;
     bool isFinished = false;
+    bool isCurrent = false;
+    bool isTest = false;
     D2D1_RECT_F bounds{};
     D2D1_RECT_F checkBounds{};
+
+    [[nodiscard]] bool IsTest() const noexcept {
+        return isTest ||
+               title.find(L"Test") != std::wstring::npos ||
+               title.find(L"Quiz") != std::wstring::npos ||
+               title.find(L"Project") != std::wstring::npos ||
+               title.find(L"Exam") != std::wstring::npos ||
+               title.find(L"Assessment") != std::wstring::npos ||
+               title.find(L"Challenge") != std::wstring::npos;
+    }
 };
 
 /**

@@ -1404,7 +1404,7 @@ void Window::OpenVirtualDocument(const std::wstring& name, const std::wstring& c
 void Window::OpenCourseTab(const std::wstring& courseTitle, const std::wstring& courseId) {
     auto& group = GetActiveGroup();
     for (size_t i = 0; i < group.docs.size(); ++i) {
-        if (group.docs[i].isSpecialView && group.docs[i].viewType == L"course" && group.docs[i].fileName == courseTitle) {
+        if (group.docs[i].courseId == courseId || (!group.docs[i].courseId.empty() && group.docs[i].fileName == courseTitle)) {
             group.activeDocIdx = static_cast<int>(i);
             SyncActiveTabWithDrawer();
             m_config.activeRailTab = 0;
@@ -1418,10 +1418,11 @@ void Window::OpenCourseTab(const std::wstring& courseTitle, const std::wstring& 
     newDoc.fileName = courseTitle;
     newDoc.filePath = L"course://" + courseId;
     newDoc.courseId = courseId;
-    newDoc.isSpecialView = true;
+    newDoc.isSpecialView = false;
     newDoc.viewType = L"course";
     newDoc.isPreview = false;
     newDoc.isDirty = false;
+    newDoc.buffer.SetText(L"# " + courseTitle + L"\n# Interactive Course Workspace\n\nprint(\"Welcome to " + courseTitle + L"!\")\n");
 
     group.docs.push_back(std::move(newDoc));
     group.activeDocIdx = static_cast<int>(group.docs.size() - 1);
@@ -1435,7 +1436,7 @@ void Window::OpenCourseTab(const std::wstring& courseTitle, const std::wstring& 
 
 void Window::SyncActiveTabWithDrawer() {
     auto* pDoc = GetActiveDoc();
-    if (pDoc && pDoc->isSpecialView && pDoc->viewType == L"course") {
+    if (pDoc && (!pDoc->courseId.empty() || (pDoc->isSpecialView && pDoc->viewType == L"course"))) {
         m_drawer.SetCourseExplorerMode(true, pDoc->fileName, pDoc->courseId);
     } else {
         m_drawer.SetCourseExplorerMode(false, L"", L"");
@@ -8586,6 +8587,35 @@ void Window::HandleLButtonDown(POINT clientPt) {
         } else {
             if (m_drawer.IsCourseExplorerMode()) {
                 if (m_drawer.HandleCourseExplorerClick(clientPt, m_config)) {
+                    const auto* pTree = m_drawer.GetActiveCourseTree();
+                    if (pTree) {
+                        for (const auto& mod : pTree->modules) {
+                            for (const auto& les : mod.lessons) {
+                                if (les.isCurrent) {
+                                    auto* pDoc = GetActiveDoc();
+                                    if (pDoc && !pDoc->courseId.empty()) {
+                                        std::wstring starterCode;
+                                        if (les.IsTest()) {
+                                            starterCode = L"# " + pTree->courseTitle + L" - Test & Assessment\n"
+                                                          L"# Task: " + les.title + L"\n\n"
+                                                          L"def test_solution():\n"
+                                                          L"    # Write your solution here\n"
+                                                          L"    pass\n\n"
+                                                          L"if __name__ == '__main__':\n"
+                                                          L"    test_solution()\n";
+                                        } else {
+                                            starterCode = L"# " + pTree->courseTitle + L"\n"
+                                                          L"# Lesson: " + les.title + L"\n\n"
+                                                          L"print(\"Hello from " + les.title + L"!\")\n";
+                                        }
+                                        pDoc->buffer.SetText(starterCode);
+                                        pDoc->isDirty = false;
+                                    }
+                                    break;
+                                }
+                            }
+                        }
+                    }
                     InvalidateRect(m_hwnd, nullptr, FALSE);
                     return;
                 }

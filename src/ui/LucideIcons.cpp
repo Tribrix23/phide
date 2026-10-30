@@ -1470,4 +1470,59 @@ void LucideIcons::DrawGraduationCap(ID2D1RenderTarget* pRT, const D2D1_RECT_F& b
     pRT->DrawEllipse(D2D1::Ellipse(MapPoint(22.0f, 17.8f, ox, oy, s), 0.8f * s, 0.8f * s), pBrush, strokeWidth * 0.8f);
 }
 
+void LucideIcons::DrawBook(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, ID2D1Brush* pBrush, float strokeWidth) const {
+    if (!pRT || !pBrush) return;
+    EnsureStrokeStyle(pRT, const_cast<ComPtr<ID2D1StrokeStyle>&>(m_pStrokeStyle));
+
+    const float bw = bounds.right - bounds.left;
+    const float bh = bounds.bottom - bounds.top;
+    const float iconSize = (std::min)(bw, bh) * 0.85f;
+    const float s = iconSize / 24.0f;
+    const float ox = bounds.left + (bw - 24.0f * s) / 2.0f;
+    const float oy = bounds.top + (bh - 24.0f * s) / 2.0f;
+
+    // Center spine
+    pRT->DrawLine(MapPoint(12.0f, 6.5f, ox, oy, s), MapPoint(12.0f, 20.0f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+
+    // Left page:
+    // Top edge: (12, 6.5) -> (3.5, 4.5)
+    pRT->DrawLine(MapPoint(12.0f, 6.5f, ox, oy, s), MapPoint(3.5f, 4.5f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+    // Left outer edge: (3.5, 4.5) -> (3.5, 18.0)
+    pRT->DrawLine(MapPoint(3.5f, 4.5f, ox, oy, s), MapPoint(3.5f, 18.0f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+    // Bottom edge: (3.5, 18.0) -> (12.0, 20.0)
+    pRT->DrawLine(MapPoint(3.5f, 18.0f, ox, oy, s), MapPoint(12.0f, 20.0f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+
+    // Right page:
+    // Top edge: (12, 6.5) -> (20.5, 4.5)
+    pRT->DrawLine(MapPoint(12.0f, 6.5f, ox, oy, s), MapPoint(20.5f, 4.5f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+    // Right outer edge: (20.5, 4.5) -> (20.5, 18.0)
+    pRT->DrawLine(MapPoint(20.5f, 4.5f, ox, oy, s), MapPoint(20.5f, 18.0f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+    // Bottom edge: (20.5, 18.0) -> (12.0, 20.0)
+    pRT->DrawLine(MapPoint(20.5f, 18.0f, ox, oy, s), MapPoint(12.0f, 20.0f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+}
+
+void LucideIcons::DrawTestFlask(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, ID2D1Brush* pBrush, float strokeWidth) const {
+    if (!pRT || !pBrush) return;
+    EnsureStrokeStyle(pRT, const_cast<ComPtr<ID2D1StrokeStyle>&>(m_pStrokeStyle));
+
+    const float bw = bounds.right - bounds.left;
+    const float bh = bounds.bottom - bounds.top;
+    const float iconSize = (std::min)(bw, bh) * 0.85f;
+    const float s = iconSize / 24.0f;
+    const float ox = bounds.left + (bw - 24.0f * s) / 2.0f;
+    const float oy = bounds.top + (bh - 24.0f * s) / 2.0f;
+
+    // Rim: (9.0, 3.0) -> (15.0, 3.0)
+    pRT->DrawLine(MapPoint(9.0f, 3.0f, ox, oy, s), MapPoint(15.0f, 3.0f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+    // Neck: (10.0, 3.0) -> (10.0, 8.5) and (14.0, 3.0) -> (14.0, 8.5)
+    pRT->DrawLine(MapPoint(10.0f, 3.0f, ox, oy, s), MapPoint(10.0f, 8.5f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+    pRT->DrawLine(MapPoint(14.0f, 3.0f, ox, oy, s), MapPoint(14.0f, 8.5f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+    // Body: (10.0, 8.5) -> (5.0, 19.5) -> (19.0, 19.5) -> (14.0, 8.5)
+    pRT->DrawLine(MapPoint(10.0f, 8.5f, ox, oy, s), MapPoint(5.0f, 19.5f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+    pRT->DrawLine(MapPoint(5.0f, 19.5f, ox, oy, s), MapPoint(19.0f, 19.5f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+    pRT->DrawLine(MapPoint(19.0f, 19.5f, ox, oy, s), MapPoint(14.0f, 8.5f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+    // Liquid level line: (7.5, 15.0) -> (16.5, 15.0)
+    pRT->DrawLine(MapPoint(7.5f, 15.0f, ox, oy, s), MapPoint(16.5f, 15.0f, ox, oy, s), pBrush, strokeWidth * 0.9f, m_pStrokeStyle.Get());
+}
+
 } // namespace phide::ui

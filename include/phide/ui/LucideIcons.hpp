@@ -137,6 +137,16 @@ public:
     void DrawGraduationCap(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, ID2D1Brush* pBrush, float strokeWidth = 1.6f) const;
 
     /**
+     * @brief Draws the Lucide Book icon (open book with two pages and center spine).
+     */
+    void DrawBook(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, ID2D1Brush* pBrush, float strokeWidth = 1.3f) const;
+
+    /**
+     * @brief Draws the Lucide Test Flask icon (conical flask with rim, neck, conical body, and liquid line).
+     */
+    void DrawTestFlask(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, ID2D1Brush* pBrush, float strokeWidth = 1.3f) const;
+
+    /**
      * @brief Draws the Lucide Sidebar toggle icon (panel-left).
      */
     void DrawSidebar(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, ID2D1Brush* pBrush, float strokeWidth = 1.4f) const;

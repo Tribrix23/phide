@@ -1,51 +1,10 @@
 @echo off
-set "VCVARS=C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat"
-call "%VCVARS%" >nul
-if %errorlevel% neq 0 (
-    echo Error initializing vcvars64
-    exit /b 1
+set "VCVARS_BAT=C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat"
+if not exist "%VCVARS_BAT%" (
+    set "VCVARS_BAT=C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvars64.bat"
 )
+call "%VCVARS_BAT%"
 
-cl /nologo /EHsc /std:c++20 /O2 /W3 /utf-8 /DUNICODE /D_UNICODE /DWIN32_LEAN_AND_MEAN /I include /c src\ui\LucideIcons.cpp /Fo:bin\LucideIcons.obj
-if %errorlevel% neq 0 exit /b %errorlevel%
+set "SOURCES=tests\test_verification.cpp src\app\Window.cpp src\ui\Theme.cpp src\ui\LucideIcons.cpp src\ui\TitleHeader.cpp src\ui\PopupMenu.cpp src\ui\ActivityRail.cpp src\ui\DrawerPanel.cpp src\ui\ConfirmDiscardModal.cpp src\ui\DatabaseSettingsModal.cpp src\ui\EditorCanvas.cpp src\ui\KeyboardShortcutsView.cpp src\ui\PackageManagerView.cpp src\ui\NotebookView.cpp src\ui\ThemePickerModal.cpp src\ui\ColorPickerModal.cpp src\ui\QuickOpenModal.cpp src\ui\TerminalPanel.cpp src\ui\ExtensionsPanel.cpp src\ui\SplashScreen.cpp src\editor\Buffer.cpp src\editor\SnippetManager.cpp src\editor\SyntaxValidator.cpp src\editor\IntelliSenseEngine.cpp src\workspace\WorkspaceManager.cpp src\lsp\LspClient.cpp src\server\LiveServer.cpp"
 
-cl /nologo /EHsc /std:c++20 /O2 /W3 /utf-8 /DUNICODE /D_UNICODE /DWIN32_LEAN_AND_MEAN /I include /c src\ui\DrawerPanel.cpp /Fo:bin\DrawerPanel.obj
-if %errorlevel% neq 0 exit /b %errorlevel%
-
-cl /nologo /EHsc /std:c++20 /O2 /W3 /utf-8 /DUNICODE /D_UNICODE /DWIN32_LEAN_AND_MEAN /I include /c src\ui\DatabaseSettingsModal.cpp /Fo:bin\DatabaseSettingsModal.obj
-if %errorlevel% neq 0 exit /b %errorlevel%
-
-cl /nologo /EHsc /std:c++20 /O2 /W3 /utf-8 /DUNICODE /D_UNICODE /DWIN32_LEAN_AND_MEAN /I include /c src\ui\TitleHeader.cpp /Fo:bin\TitleHeader.obj
-if %errorlevel% neq 0 exit /b %errorlevel%
-
-cl /nologo /EHsc /std:c++20 /O2 /W3 /utf-8 /DUNICODE /D_UNICODE /DWIN32_LEAN_AND_MEAN /I include /c src\app\Window.cpp /Fo:bin\Window.obj
-if %errorlevel% neq 0 exit /b %errorlevel%
-
-cl /nologo /EHsc /std:c++20 /O2 /W3 /utf-8 /DUNICODE /D_UNICODE /DWIN32_LEAN_AND_MEAN /I include /c src\ui\ActivityRail.cpp /Fo:bin\ActivityRail.obj
-if %errorlevel% neq 0 exit /b %errorlevel%
-
-cl /nologo /EHsc /std:c++20 /O2 /W3 /utf-8 /DUNICODE /D_UNICODE /DWIN32_LEAN_AND_MEAN /I include /c src\ui\PopupMenu.cpp /Fo:bin\PopupMenu.obj
-if %errorlevel% neq 0 exit /b %errorlevel%
-
-cl /nologo /EHsc /std:c++20 /O2 /W3 /utf-8 /DUNICODE /D_UNICODE /DWIN32_LEAN_AND_MEAN /I include /c src\ui\ColorPickerModal.cpp /Fo:bin\ColorPickerModal.obj
-if %errorlevel% neq 0 exit /b %errorlevel%
-
-cl /nologo /EHsc /std:c++20 /O2 /W3 /utf-8 /DUNICODE /D_UNICODE /DWIN32_LEAN_AND_MEAN /I include /c src\editor\SyntaxValidator.cpp /Fo:bin\SyntaxValidator.obj
-if %errorlevel% neq 0 exit /b %errorlevel%
-
-cl /nologo /EHsc /std:c++20 /O2 /W3 /utf-8 /DUNICODE /D_UNICODE /DWIN32_LEAN_AND_MEAN /I include /c src\editor\IntelliSenseEngine.cpp /Fo:bin\IntelliSenseEngine.obj
-if %errorlevel% neq 0 exit /b %errorlevel%
-
-cl /nologo /EHsc /std:c++20 /O2 /W3 /utf-8 /DUNICODE /D_UNICODE /DWIN32_LEAN_AND_MEAN /I include /c src\editor\Buffer.cpp /Fo:bin\Buffer.obj
-if %errorlevel% neq 0 exit /b %errorlevel%
-
-cl /nologo /EHsc /std:c++20 /O2 /W3 /utf-8 /DUNICODE /D_UNICODE /DWIN32_LEAN_AND_MEAN /I include /c src\ui\EditorCanvas.cpp /Fo:bin\EditorCanvas.obj
-if %errorlevel% neq 0 exit /b %errorlevel%
-
-cl /nologo /EHsc /std:c++20 /O2 /W3 /utf-8 /DUNICODE /D_UNICODE /DWIN32_LEAN_AND_MEAN /I include /c src\ui\PackageManagerView.cpp /Fo:bin\PackageManagerView.obj
-if %errorlevel% neq 0 exit /b %errorlevel%
-
-cl /nologo /EHsc /std:c++20 /O2 /W3 /utf-8 /DUNICODE /D_UNICODE /DWIN32_LEAN_AND_MEAN /I include /c tests\test_verification.cpp /Fo:bin\test_verification.obj
-if %errorlevel% neq 0 exit /b %errorlevel%
-
-link /nologo /STACK:16777216 /SUBSYSTEM:CONSOLE /OUT:bin\test_verification.exe bin\test_verification.obj bin\Window.obj bin\Theme.obj bin\LucideIcons.obj bin\TitleHeader.obj bin\PopupMenu.obj bin\ActivityRail.obj bin\DrawerPanel.obj bin\ConfirmDiscardModal.obj bin\DatabaseSettingsModal.obj bin\ColorPickerModal.obj bin\EditorCanvas.obj bin\KeyboardShortcutsView.obj bin\PackageManagerView.obj bin\ThemePickerModal.obj bin\QuickOpenModal.obj bin\TerminalPanel.obj bin\ExtensionsPanel.obj bin\SplashScreen.obj bin\Buffer.obj bin\SnippetManager.obj bin\SyntaxValidator.obj bin\IntelliSenseEngine.obj bin\WorkspaceManager.obj bin\LspClient.obj bin\LiveServer.obj user32.lib gdi32.lib dwmapi.lib d2d1.lib dwrite.lib ole32.lib shell32.lib comdlg32.lib advapi32.lib windowscodecs.lib ws2_32.lib winhttp.lib
+cl.exe /nologo /std:c++20 /EHsc /utf-8 /DUNICODE /D_UNICODE /DWIN32_LEAN_AND_MEAN /I include /I src /I third_party\webview2\build\native\include %SOURCES% /Fe:bin\test_verification.exe /link third_party\webview2\build\native\x64\WebView2LoaderStatic.lib user32.lib gdi32.lib dwmapi.lib d2d1.lib dwrite.lib ole32.lib shell32.lib comdlg32.lib advapi32.lib shlwapi.lib windowscodecs.lib ws2_32.lib winhttp.lib propsys.lib

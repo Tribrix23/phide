@@ -717,7 +717,7 @@ void DrawerPanel::RenderExplorerPane(ID2D1RenderTarget* pRT, Theme& theme, const
                             lesson.bounds = D2D1::RectF(railW + config.ScaleF(14.0f), curY, railW + fullDrawerW - config.ScaleF(4.0f), curY + lessonH);
 
                             bool isHoveredLesson = (m_hoveredCourseModule == static_cast<int>(mIdx) && m_hoveredCourseLesson == static_cast<int>(lIdx));
-                            if (isHoveredLesson) {
+                            if (isHoveredLesson || lesson.isCurrent) {
                                 D2D1_ROUNDED_RECT rrcLes = D2D1::RoundedRect(lesson.bounds, 3.0f, 3.0f);
                                 pRT->FillRoundedRectangle(rrcLes, theme.brushItemHover.Get());
                             }
@@ -730,38 +730,28 @@ void DrawerPanel::RenderExplorerPane(ID2D1RenderTarget* pRT, Theme& theme, const
                             }
 
                             float lcy = curY + lessonH / 2.0f;
-                            float lIconX = railW + config.ScaleF(32.0f);
-                            float lIconR = config.ScaleF(4.5f);
-                            lesson.checkBounds = D2D1::RectF(lIconX - lIconR - 2.0f, lcy - lIconR - 2.0f,
-                                                             lIconX + lIconR + 2.0f, lcy + lIconR + 2.0f);
+                            float lIconX = railW + config.ScaleF(30.0f);
+                            const float iconSize = config.ScaleF(14.0f);
+                            D2D1_RECT_F rcLessonIcon = D2D1::RectF(lIconX, lcy - iconSize * 0.5f, lIconX + iconSize, lcy + iconSize * 0.5f);
+                            lesson.checkBounds = rcLessonIcon;
 
-                            if (lesson.isFinished) {
-                                // Completed lesson: filled green circle with white check
-                                if (brushGreen) {
-                                    pRT->FillEllipse(D2D1::Ellipse(D2D1::Point2F(lIconX, lcy), lIconR, lIconR), brushGreen.Get());
-                                }
-                                if (theme.brushTextWhite) {
-                                    pRT->DrawLine(D2D1::Point2F(lIconX - 2.0f, lcy),
-                                                  D2D1::Point2F(lIconX - 0.5f, lcy + 2.0f),
-                                                  theme.brushTextWhite.Get(), 1.2f);
-                                    pRT->DrawLine(D2D1::Point2F(lIconX - 0.5f, lcy + 2.0f),
-                                                  D2D1::Point2F(lIconX + 2.5f, lcy - 2.0f),
-                                                  theme.brushTextWhite.Get(), 1.2f);
-                                }
+                            ID2D1Brush* pLIconBrush = lesson.isFinished ? (brushGreen ? brushGreen.Get() : theme.brushTextPrimary.Get())
+                                                                        : (theme.brushTextSecondary ? theme.brushTextSecondary.Get() : theme.brushTextMuted.Get());
+
+                            // Instead of circles: show book if it's a module, and test icon if it's a test!
+                            if (lesson.IsTest()) {
+                                m_icons.DrawTestFlask(pRT, rcLessonIcon, pLIconBrush, 1.3f);
                             } else {
-                                // Unfinished lesson: hollow circle
-                                if (theme.brushTextSecondary) {
-                                    pRT->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(lIconX, lcy), lIconR, lIconR),
-                                                     theme.brushTextSecondary.Get(), 1.2f);
-                                }
+                                m_icons.DrawBook(pRT, rcLessonIcon, pLIconBrush, 1.3f);
                             }
 
-                            float lTextX = lIconX + lIconR + config.ScaleF(8.0f);
+                            float lTextX = lIconX + iconSize + config.ScaleF(8.0f);
                             D2D1_RECT_F rcLessonLabel = D2D1::RectF(lTextX, curY + config.ScaleF(1.0f),
                                                                     railW + fullDrawerW - paddingX, curY + lessonH - config.ScaleF(1.0f));
                             if (theme.fontBody) {
                                 pRT->PushAxisAlignedClip(rcLessonLabel, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
-                                ID2D1Brush* pLBrush = lesson.isFinished ? theme.brushTextSecondary.Get() : theme.brushTextPrimary.Get();
+                                ID2D1Brush* pLBrush = lesson.isCurrent ? (theme.brushTextWhite ? theme.brushTextWhite.Get() : theme.brushTextPrimary.Get())
+                                                                       : (lesson.isFinished ? theme.brushTextPrimary.Get() : theme.brushTextSecondary.Get());
                                 pRT->DrawText(lesson.title.c_str(), static_cast<UINT32>(lesson.title.length()),
                                               theme.fontBody.Get(), rcLessonLabel, pLBrush);
                                 pRT->PopAxisAlignedClip();
@@ -9095,16 +9085,9 @@ bool DrawerPanel::HandleCourseExplorerClick(POINT pt, const app::AppConfig& conf
 
     for (size_t mIdx = 0; mIdx < pTree->modules.size(); ++mIdx) {
         auto& mod = pTree->modules[mIdx];
-        // Check if box clicked: toggles all lessons in module
-        if (PointInRect(pt, mod.boxBounds)) {
-            bool allFin = mod.IsAllFinished();
-            for (auto& l : mod.lessons) {
-                l.isFinished = !allFin;
-            }
-            return true;
-        }
-        // Check if chevron or module row clicked
-        if (PointInRect(pt, mod.chevronBounds) || PointInRect(pt, mod.bounds)) {
+        // Module folder click (chevron, box, or row bounds): TOGGLE EXPANSION ONLY (like folder in Explorer)
+        // User CANNOT click the box to check it!
+        if (PointInRect(pt, mod.chevronBounds) || PointInRect(pt, mod.boxBounds) || PointInRect(pt, mod.bounds)) {
             mod.isExpanded = !mod.isExpanded;
             return true;
         }
@@ -9113,7 +9096,13 @@ bool DrawerPanel::HandleCourseExplorerClick(POINT pt, const app::AppConfig& conf
             for (size_t lIdx = 0; lIdx < mod.lessons.size(); ++lIdx) {
                 auto& les = mod.lessons[lIdx];
                 if (PointInRect(pt, les.bounds) || PointInRect(pt, les.checkBounds)) {
-                    les.isFinished = !les.isFinished;
+                    // Mark as current active lesson (user CANNOT click on this to check it!)
+                    for (auto& m : pTree->modules) {
+                        for (auto& l : m.lessons) {
+                            l.isCurrent = false;
+                        }
+                    }
+                    les.isCurrent = true;
                     return true;
                 }
             }
@@ -9137,10 +9126,10 @@ void DrawerPanel::InitializeCourseCurriculum(const std::wstring& courseId, const
             m.title = L"Getting Started";
             m.isExpanded = true;
             m.lessons = {
-                { L"l1_1", L"01. What is Python & Installation", false },
-                { L"l1_2", L"02. Hello World & Your First Script", false },
-                { L"l1_3", L"03. Basic Syntax & Comments", false },
-                { L"l1_4", L"04. Working with Python REPL", false }
+                { L"l1_1", L"01. What is Python & Installation", false, false, false },
+                { L"l1_2", L"02. Hello World & Your First Script", false, false, false },
+                { L"l1_3", L"03. Basic Syntax & Comments", false, false, false },
+                { L"l1_4", L"04. Working with Python REPL", false, false, true } // Test!
             };
             tree.modules.push_back(m);
         }
@@ -9150,10 +9139,10 @@ void DrawerPanel::InitializeCourseCurriculum(const std::wstring& courseId, const
             m.title = L"Variables & Data Types";
             m.isExpanded = true;
             m.lessons = {
-                { L"l2_1", L"01. Numbers & Math Operations", false },
-                { L"l2_2", L"02. Strings & Text Formatting", false },
-                { L"l2_3", L"03. Booleans & Type Casting", false },
-                { L"l2_4", L"04. User Input & Dynamic Typing", false }
+                { L"l2_1", L"01. Numbers & Math Operations", false, false, false },
+                { L"l2_2", L"02. Strings & Text Formatting", false, false, false },
+                { L"l2_3", L"03. Booleans & Type Casting", false, false, false },
+                { L"l2_4", L"04. User Input & Dynamic Typing", false, false, true } // Test!
             };
             tree.modules.push_back(m);
         }
@@ -9163,10 +9152,10 @@ void DrawerPanel::InitializeCourseCurriculum(const std::wstring& courseId, const
             m.title = L"Control Flow & Logic";
             m.isExpanded = false;
             m.lessons = {
-                { L"l3_1", L"01. If, Elif & Else Statements", false },
-                { L"l3_2", L"02. Comparison & Logical Operators", false },
-                { L"l3_3", L"03. While Loops & Break/Continue", false },
-                { L"l3_4", L"04. For Loops & Range Function", false }
+                { L"l3_1", L"01. If, Elif & Else Statements", false, false, false },
+                { L"l3_2", L"02. Comparison & Logical Operators", false, false, false },
+                { L"l3_3", L"03. While Loops & Break/Continue", false, false, false },
+                { L"l3_4", L"04. For Loops & Range Function", false, false, true } // Test!
             };
             tree.modules.push_back(m);
         }
@@ -9176,10 +9165,10 @@ void DrawerPanel::InitializeCourseCurriculum(const std::wstring& courseId, const
             m.title = L"Functions & Modules";
             m.isExpanded = false;
             m.lessons = {
-                { L"l4_1", L"01. Defining & Calling Functions", false },
-                { L"l4_2", L"02. Parameters & Default Arguments", false },
-                { L"l4_3", L"03. Return Values & Tuple Unpacking", false },
-                { L"l4_4", L"04. Importing Standard Modules", false }
+                { L"l4_1", L"01. Defining & Calling Functions", false, false, false },
+                { L"l4_2", L"02. Parameters & Default Arguments", false, false, false },
+                { L"l4_3", L"03. Return Values & Tuple Unpacking", false, false, false },
+                { L"l4_4", L"04. Importing Standard Modules", false, false, true } // Test!
             };
             tree.modules.push_back(m);
         }
@@ -9189,10 +9178,10 @@ void DrawerPanel::InitializeCourseCurriculum(const std::wstring& courseId, const
             m.title = L"Data Structures";
             m.isExpanded = false;
             m.lessons = {
-                { L"l5_1", L"01. Lists & List Methods", false },
-                { L"l5_2", L"02. Tuples & Immutability", false },
-                { L"l5_3", L"03. Dictionaries & Key-Value Pairs", false },
-                { L"l5_4", L"04. Sets & Unique Elements", false }
+                { L"l5_1", L"01. Lists & List Methods", false, false, false },
+                { L"l5_2", L"02. Tuples & Immutability", false, false, false },
+                { L"l5_3", L"03. Dictionaries & Key-Value Pairs", false, false, false },
+                { L"l5_4", L"04. Sets & Unique Elements", false, false, true } // Test!
             };
             tree.modules.push_back(m);
         }
@@ -9202,10 +9191,10 @@ void DrawerPanel::InitializeCourseCurriculum(const std::wstring& courseId, const
             m.title = L"Projects & Practice";
             m.isExpanded = false;
             m.lessons = {
-                { L"l6_1", L"01. Command-Line Calculator", false },
-                { L"l6_2", L"02. Guess the Number Game", false },
-                { L"l6_3", L"03. Interactive Quiz Application", false },
-                { L"l6_4", L"04. Final Certificate Project", false }
+                { L"l6_1", L"01. Command-Line Calculator", false, false, true }, // Test!
+                { L"l6_2", L"02. Guess the Number Game", false, false, true }, // Test!
+                { L"l6_3", L"03. Interactive Quiz Application", false, false, true }, // Test!
+                { L"l6_4", L"04. Final Certificate Project", false, false, true } // Test!
             };
             tree.modules.push_back(m);
         }
@@ -9221,6 +9210,8 @@ void DrawerPanel::InitializeCourseCurriculum(const std::wstring& courseId, const
                 les.id = mod.id + L"_les_" + std::to_wstring(l);
                 les.title = L"Lesson " + std::to_wstring(m) + L"." + std::to_wstring(l);
                 les.isFinished = false;
+                les.isCurrent = false;
+                les.isTest = (l == 3);
                 mod.lessons.push_back(les);
             }
             tree.modules.push_back(mod);

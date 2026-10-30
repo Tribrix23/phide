@@ -356,9 +356,6 @@ void EditorCanvas::RenderSinglePane(ID2D1RenderTarget* pRT, Theme& theme, const 
     } else if (activeDoc.isSpecialView && activeDoc.viewType == L"student") {
         m_packageManagerView.HideWebView();
         RenderStudentView(pRT, theme, config, activeDoc, canvasLeft, canvasWidth, contentTopY, clientHeight);
-    } else if (activeDoc.isSpecialView && activeDoc.viewType == L"course") {
-        m_packageManagerView.HideWebView();
-        RenderCourseView(pRT, theme, config, activeDoc, canvasLeft, canvasWidth, contentTopY, clientHeight);
     } else {
         m_packageManagerView.HideWebView();
         if (activeDoc.isImageView) {
@@ -624,7 +621,7 @@ void EditorCanvas::RenderTabs(ID2D1RenderTarget* pRT, Theme& theme, const app::A
             m_icons.DrawPackage(pRT, iconBounds, theme.brushBrandAccent ? theme.brushBrandAccent.Get() : theme.brushTextWhite.Get(), 1.1f);
         } else if (doc.isSpecialView && doc.viewType == L"student") {
             m_icons.DrawGraduationCap(pRT, iconBounds, theme.brushBrandAccent ? theme.brushBrandAccent.Get() : theme.brushTextWhite.Get(), 1.3f);
-        } else if (doc.isSpecialView && doc.viewType == L"course") {
+        } else if ((doc.isSpecialView && doc.viewType == L"course") || !doc.courseId.empty()) {
             ID2D1Bitmap* pPyIcon = GetLearningHubBitmap(pRT, L"python.png");
             if (pPyIcon && doc.fileName.find(L"Python") != std::wstring::npos) {
                 pRT->DrawBitmap(pPyIcon, iconBounds, 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
