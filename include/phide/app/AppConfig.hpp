@@ -43,6 +43,7 @@ struct AppConfig {
     // --- View and Appearance Settings ---
     bool showMinimap = true;            ///< True if code minimap is rendered on right of editor canvas.
     bool showBreadcrumbs = true;        ///< True if file breadcrumbs hierarchy is visible above editor.
+    bool showLineNumbers = true;        ///< True if line numbers gutter is rendered. Default enabled.
     bool wordWrap = false;              ///< True if word wrap is enabled in editor.
     bool renderWhitespace = false;      ///< True if whitespace dots are rendered.
     bool zenMode = false;               ///< True if Zen Mode (distraction-free full screen) is active.

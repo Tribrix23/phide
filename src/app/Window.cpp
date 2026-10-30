@@ -7366,6 +7366,10 @@ void Window::HandleLButtonDown(POINT clientPt) {
                         break;
 
                     // Editor Layout Submenu Actions (Image 3)
+                    case ui::MenuActionId::ToggleLineNumbers:
+                        m_config.showLineNumbers = !m_config.showLineNumbers;
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
+                        break;
                     case ui::MenuActionId::LayoutSingle:
                         if (m_editorGroups.size() > 1) {
                             if (m_focusedGroupIdx >= 0 && static_cast<size_t>(m_focusedGroupIdx) < m_editorGroups.size()) {
@@ -8236,6 +8240,15 @@ void Window::HandleLButtonDown(POINT clientPt) {
                             m_editor.SetLearningSearchFocused(false);
                             InvalidateRect(m_hwnd, nullptr, FALSE);
                         }
+                    }
+                } else if ((doc.isSpecialView && doc.viewType == L"course") || !doc.courseId.empty()) {
+                    int courseAction = m_editor.HitTestCourseView(clientPt);
+                    if (courseAction == 10) {
+                        m_extensionsPanel.Open();
+                        m_extensionsPanel.SetViewMode(ui::ExtensionsPanel::ViewMode::Detail);
+                        AnimateRightSidebarOpen();
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
+                        return;
                     }
                 } else if (doc.isMultiFileDiff) {
                     // 1. Collapsible file header clicks in multi-file diff view (Image 4)
@@ -9274,6 +9287,15 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     }
                 }
 
+                // Course reading view: "Open Runtimes Panel" button
+                if (pCurDoc && ((pCurDoc->isSpecialView && pCurDoc->viewType == L"course") || !pCurDoc->courseId.empty())) {
+                    const auto& b = m_editor.GetCourseOpenRuntimesBtnBounds();
+                    if (pt.x >= b.left && pt.x <= b.right && pt.y >= b.top && pt.y <= b.bottom) {
+                        SetCursor(LoadCursor(nullptr, IDC_HAND));
+                        return TRUE;
+                    }
+                }
+
                 // Open Folder button in drawer when empty
                 if (!m_drawer.HasOpenFolder() && m_drawer.HitTestOpenFolderButton(pt, m_config)) {
                     SetCursor(LoadCursor(nullptr, IDC_HAND));
@@ -9623,6 +9645,11 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     }
                 } else if (pDoc->isSpecialView && pDoc->viewType == L"student") {
                     if (m_editor.HandleStudentMouseWheel(delta)) {
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
+                        return 0;
+                    }
+                } else if ((pDoc->isSpecialView && pDoc->viewType == L"course") || !pDoc->courseId.empty()) {
+                    if (m_editor.HandleCourseViewWheel(delta)) {
                         InvalidateRect(m_hwnd, nullptr, FALSE);
                         return 0;
                     }

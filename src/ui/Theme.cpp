@@ -445,10 +445,100 @@ HRESULT Theme::CreateDeviceResources(ID2D1RenderTarget* pRT, IDWriteFactory* pDW
         fontCounterBadge->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
     }
 
+    // 12. Gutter Line Numbers Font (12.5px Consolas Monospace Regular, Right-aligned)
+    pDWriteFactory->CreateTextFormat(
+        L"Consolas",
+        nullptr,
+        DWRITE_FONT_WEIGHT_NORMAL,
+        DWRITE_FONT_STYLE_NORMAL,
+        DWRITE_FONT_STRETCH_NORMAL,
+        12.5f,
+        L"en-US",
+        &fontLineNumber
+    );
+    if (fontLineNumber) {
+        fontLineNumber->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_TRAILING);
+        fontLineNumber->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+        fontLineNumber->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+    }
+
+    // 13. Active Line Number Glow Font (12.5px Consolas Monospace Semi-Bold, Right-aligned)
+    pDWriteFactory->CreateTextFormat(
+        L"Consolas",
+        nullptr,
+        DWRITE_FONT_WEIGHT_SEMI_BOLD,
+        DWRITE_FONT_STYLE_NORMAL,
+        DWRITE_FONT_STRETCH_NORMAL,
+        12.5f,
+        L"en-US",
+        &fontLineNumberActive
+    );
+    if (fontLineNumberActive) {
+        fontLineNumberActive->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_TRAILING);
+        fontLineNumberActive->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+        fontLineNumberActive->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+    }
+
+    // 14. Course Title Font (28.0px Segoe UI Bold, Leading-aligned)
+    pDWriteFactory->CreateTextFormat(
+        L"Segoe UI",
+        nullptr,
+        DWRITE_FONT_WEIGHT_BOLD,
+        DWRITE_FONT_STYLE_NORMAL,
+        DWRITE_FONT_STRETCH_NORMAL,
+        28.0f,
+        L"en-US",
+        &fontCourseTitle
+    );
+    if (fontCourseTitle) {
+        fontCourseTitle->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
+        fontCourseTitle->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR);
+        fontCourseTitle->SetWordWrapping(DWRITE_WORD_WRAPPING_WRAP);
+    }
+
+    // 15. Course Section Heading Font (17.0px Segoe UI Semi-Bold, Leading-aligned)
+    pDWriteFactory->CreateTextFormat(
+        L"Segoe UI",
+        nullptr,
+        DWRITE_FONT_WEIGHT_SEMI_BOLD,
+        DWRITE_FONT_STYLE_NORMAL,
+        DWRITE_FONT_STRETCH_NORMAL,
+        17.0f,
+        L"en-US",
+        &fontCourseHeading
+    );
+    if (fontCourseHeading) {
+        fontCourseHeading->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
+        fontCourseHeading->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR);
+        fontCourseHeading->SetWordWrapping(DWRITE_WORD_WRAPPING_WRAP);
+    }
+
+    // 16. Course Body Prose Font (14.5px Segoe UI Regular, Leading-aligned)
+    pDWriteFactory->CreateTextFormat(
+        L"Segoe UI",
+        nullptr,
+        DWRITE_FONT_WEIGHT_NORMAL,
+        DWRITE_FONT_STYLE_NORMAL,
+        DWRITE_FONT_STRETCH_NORMAL,
+        14.5f,
+        L"en-US",
+        &fontCourseBody
+    );
+    if (fontCourseBody) {
+        fontCourseBody->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
+        fontCourseBody->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR);
+        fontCourseBody->SetWordWrapping(DWRITE_WORD_WRAPPING_WRAP);
+    }
+
     return S_OK;
 }
 
 void Theme::DiscardDeviceResources() {
+    fontLineNumber.Reset();
+    fontLineNumberActive.Reset();
+    fontCourseTitle.Reset();
+    fontCourseHeading.Reset();
+    fontCourseBody.Reset();
     fontCounterBadge.Reset();
     fontKeycap.Reset();
     fontTab.Reset();

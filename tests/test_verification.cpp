@@ -349,6 +349,9 @@ int main(int argc, char* argv[]) {
     if (targetTest == 83) {
         goto run_test_83;
     }
+    if (targetTest == 84) {
+        goto run_test_84;
+    }
 
     // --- 3. Render Test: Picture Viewer in Dark & Light Modes ---
     std::cout << "[TEST 2] Testing Picture Viewer rendering..." << std::endl;
@@ -12168,6 +12171,159 @@ run_test_83:
         std::cout << "  Passed: All [TEST 83] Course Explorer Special Sidebar & Tab Revert tests passed!" << std::endl;
         if (targetTest == 83) {
             std::cout << "Target test 83 finished successfully." << std::endl;
+            return 0;
+        }
+    }
+
+    // =========================================================================
+    // [TEST 84] Testing Editor Line Numbers Default Enabled, Gutter Glow, and Flat Course Reading View
+    // =========================================================================
+run_test_84:
+    if (targetTest == 0 || targetTest == 84) {
+        std::cout << "\n[TEST 84] Testing Editor Line Numbers Default Enabled, Gutter Glow & Flat Course Reading View..." << std::endl;
+
+        phide::app::AppConfig cfg84;
+        // 1. Line numbers must be enabled by default
+        assert(cfg84.showLineNumbers == true);
+        std::cout << "  Passed: cfg84.showLineNumbers is true by default" << std::endl;
+
+        // 2. Editor Layout submenu integration in View menu
+        phide::ui::PopupMenu viewMenu;
+        viewMenu.OpenViewMenu(0.0f, 0.0f, cfg84, true, false, false, 1);
+        bool foundLineNumbersInLayout = false;
+        for (const auto& item : viewMenu.GetItems()) {
+            if (item.actionId == phide::ui::MenuActionId::EditorLayoutCascade && item.hasSubmenu) {
+                for (const auto& sub : item.submenuItems) {
+                    if (sub.actionId == phide::ui::MenuActionId::ToggleLineNumbers) {
+                        foundLineNumbersInLayout = true;
+                        assert(sub.label == L"Line Numbers");
+                        assert(sub.isChecked == true);
+                        break;
+                    }
+                }
+            }
+        }
+        assert(foundLineNumbersInLayout);
+        std::cout << "  Passed: View -> Editor Layout contains 'Line Numbers' toggle (checked by default)" << std::endl;
+
+        D2D1_RENDER_TARGET_PROPERTIES rtProps = D2D1::RenderTargetProperties(
+            D2D1_RENDER_TARGET_TYPE_DEFAULT,
+            D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED)
+        );
+
+        // 3. Render Editor Gutter with Line Numbers and Active Line Glow
+        {
+            const UINT edW = 800, edH = 500;
+            ComPtr<IWICBitmap> pWicEditor;
+            hr = pWicFactory->CreateBitmap(edW, edH, GUID_WICPixelFormat32bppPBGRA, WICBitmapCacheOnDemand, &pWicEditor);
+            assert(SUCCEEDED(hr));
+            ComPtr<ID2D1RenderTarget> pRTEditor;
+            hr = pD2DFactory->CreateWicBitmapRenderTarget(pWicEditor.Get(), rtProps, &pRTEditor);
+            assert(SUCCEEDED(hr));
+
+            phide::ui::Theme theme84;
+            theme84.CreateDeviceResources(pRTEditor.Get(), pDWriteFactory.Get());
+            assert(theme84.fontLineNumber != nullptr);
+            assert(theme84.fontLineNumberActive != nullptr);
+
+            phide::ui::EditorCanvas canvas84;
+            phide::editor::OpenDocument testDoc;
+            testDoc.filePath = L"C:\\test\\main.py";
+            testDoc.fileName = L"main.py";
+            testDoc.buffer = phide::editor::Buffer(L"import sys\nimport os\n\ndef greet(name):\n    print(f'Hello {name}')\n\nif __name__ == '__main__':\n    greet('Phide')\n");
+            testDoc.buffer.SetCursor(3, 4); // Line 4 is active line
+
+            pRTEditor->BeginDraw();
+            pRTEditor->Clear(theme84.colors.canvasBg);
+            std::vector<phide::editor::OpenDocument> edDocs;
+            edDocs.push_back(testDoc);
+            canvas84.Render(pRTEditor.Get(), theme84, cfg84, edDocs, 0, 0.0f, static_cast<float>(edW), static_cast<float>(edH), true, L"", false, false, false, false);
+            hr = pRTEditor->EndDraw();
+            assert(SUCCEEDED(hr));
+
+            std::wstring artDir = L"C:\\Users\\Administrator\\.gemini\\antigravity\\brain\\c83160b9-3f8b-4ad1-87a8-ab1f7f555a77\\";
+            SaveWicBitmapToPng(pWicEditor.Get(), pWicFactory.Get(), artDir + L"test_editor_line_numbers_gutter_glow.png");
+            std::cout << "  Passed: Saved test_editor_line_numbers_gutter_glow.png" << std::endl;
+        }
+
+        // 4. Render Flat Course Reading View (Python for Beginners)
+        {
+            const UINT crW = 1000, crH = 850;
+            ComPtr<IWICBitmap> pWicCourse;
+            hr = pWicFactory->CreateBitmap(crW, crH, GUID_WICPixelFormat32bppPBGRA, WICBitmapCacheOnDemand, &pWicCourse);
+            assert(SUCCEEDED(hr));
+            ComPtr<ID2D1RenderTarget> pRTCourse;
+            hr = pD2DFactory->CreateWicBitmapRenderTarget(pWicCourse.Get(), rtProps, &pRTCourse);
+            assert(SUCCEEDED(hr));
+
+            phide::ui::Theme theme84;
+            theme84.CreateDeviceResources(pRTCourse.Get(), pDWriteFactory.Get());
+            assert(theme84.fontCourseTitle != nullptr);
+            assert(theme84.fontCourseHeading != nullptr);
+
+            phide::ui::EditorCanvas canvasCourse;
+            phide::editor::OpenDocument courseDoc;
+            courseDoc.filePath = L"course://python-1";
+            courseDoc.fileName = L"Python for Beginners";
+            courseDoc.courseId = L"python-1";
+            courseDoc.isSpecialView = true;
+            courseDoc.viewType = L"course";
+
+            pRTCourse->BeginDraw();
+            pRTCourse->Clear(theme84.colors.canvasBg);
+            std::vector<phide::editor::OpenDocument> crDocs;
+            crDocs.push_back(courseDoc);
+            canvasCourse.Render(pRTCourse.Get(), theme84, cfg84, crDocs, 0, 0.0f, static_cast<float>(crW), static_cast<float>(crH), true, L"", false, false, false, false);
+            hr = pRTCourse->EndDraw();
+            assert(SUCCEEDED(hr));
+
+            // Test mouse wheel scrolling
+            bool scrolled = canvasCourse.HandleCourseViewWheel(-120);
+            std::cout << "  Passed: HandleCourseViewWheel responded (" << (scrolled ? "true" : "false") << ")" << std::endl;
+
+            std::wstring artDir = L"C:\\Users\\Administrator\\.gemini\\antigravity\\brain\\c83160b9-3f8b-4ad1-87a8-ab1f7f555a77\\";
+            SaveWicBitmapToPng(pWicCourse.Get(), pWicFactory.Get(), artDir + L"test_course_reading_view_flat.png");
+            std::cout << "  Passed: Saved test_course_reading_view_flat.png" << std::endl;
+        }
+
+        // 5. Render Course Explorer Sidebar with Active Lesson Lit Up
+        {
+            const UINT drW = 340, drH = 650;
+            ComPtr<IWICBitmap> pWicDrawer;
+            hr = pWicFactory->CreateBitmap(drW, drH, GUID_WICPixelFormat32bppPBGRA, WICBitmapCacheOnDemand, &pWicDrawer);
+            assert(SUCCEEDED(hr));
+            ComPtr<ID2D1RenderTarget> pRTDrawer;
+            hr = pD2DFactory->CreateWicBitmapRenderTarget(pWicDrawer.Get(), rtProps, &pRTDrawer);
+            assert(SUCCEEDED(hr));
+
+            phide::ui::Theme theme84;
+            theme84.CreateDeviceResources(pRTDrawer.Get(), pDWriteFactory.Get());
+
+            phide::ui::DrawerPanel drawer84;
+            drawer84.SetCourseExplorerMode(true, L"Python for Beginners", L"python-1");
+
+            // Verify that the first lesson is current by default
+            const auto* pTree = drawer84.GetActiveCourseTree();
+            assert(pTree != nullptr);
+            assert(!pTree->modules.empty());
+            assert(!pTree->modules[0].lessons.empty());
+            assert(pTree->modules[0].lessons[0].isCurrent == true);
+            std::cout << "  Passed: First lesson '01. What is Python & Installation' isCurrent == true by default" << std::endl;
+
+            pRTDrawer->BeginDraw();
+            pRTDrawer->Clear(theme84.colors.windowBg);
+            drawer84.Render(pRTDrawer.Get(), theme84, cfg84, static_cast<float>(drH), static_cast<float>(drW));
+            hr = pRTDrawer->EndDraw();
+            assert(SUCCEEDED(hr));
+
+            std::wstring artDir = L"C:\\Users\\Administrator\\.gemini\\antigravity\\brain\\c83160b9-3f8b-4ad1-87a8-ab1f7f555a77\\";
+            SaveWicBitmapToPng(pWicDrawer.Get(), pWicFactory.Get(), artDir + L"test_course_explorer_active_lesson_lit_up.png");
+            std::cout << "  Passed: Saved test_course_explorer_active_lesson_lit_up.png" << std::endl;
+        }
+
+        std::cout << "  Passed: All [TEST 84] Editor Line Numbers, Gutter Glow & Flat Course Reading View tests passed!" << std::endl;
+        if (targetTest == 84) {
+            std::cout << "Target test 84 finished successfully." << std::endl;
             return 0;
         }
     }

@@ -442,6 +442,9 @@ void PopupMenu::BuildViewMenuItems(const app::AppConfig& config, bool isSidebarO
     layoutItem.label = L"Editor Layout";
     layoutItem.hasSubmenu = true;
 
+    layoutItem.submenuItems.push_back({ MenuActionId::ToggleLineNumbers,       L"Line Numbers",               L"",               false, config.showLineNumbers, false, true, {}, {} });
+    // --- Submenu Separator ---
+    layoutItem.submenuItems.push_back({ MenuActionId::None,                    L"",                           L"",               true,  false,                  false, false, {}, {} });
     layoutItem.submenuItems.push_back({ MenuActionId::LayoutSplitUp,           L"Split Up",                   L"Ctrl+K Ctrl+\\", false, false,                  false, true, {}, {} });
     layoutItem.submenuItems.push_back({ MenuActionId::LayoutSplitDown,         L"Split Down",                 L"",               false, false,                  false, true, {}, {} });
     layoutItem.submenuItems.push_back({ MenuActionId::LayoutSplitLeft,         L"Split Left",                 L"",               false, false,                  false, true, {}, {} });

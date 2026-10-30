@@ -495,6 +495,9 @@ private:
         D2D1_RECT_F bounds{};
     };
     std::vector<RenderedCourseCard> m_renderedCourseCards;
+    D2D1_RECT_F m_courseOpenRuntimesBtnBounds{};
+    float m_courseScrollY = 0.0f;
+    float m_courseMaxScrollY = 0.0f;
 
     void InitializeLearningCourses();
     ID2D1Bitmap* GetLearningHubBitmap(ID2D1RenderTarget* pRT, const std::wstring& filename);
@@ -509,6 +512,10 @@ public:
     void RenderCourseView(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
                           editor::OpenDocument& doc, float canvasLeft, float canvasWidth,
                           float topY, float clientHeight);
+    [[nodiscard]] const D2D1_RECT_F& GetCourseOpenRuntimesBtnBounds() const noexcept { return m_courseOpenRuntimesBtnBounds; }
+    [[nodiscard]] int HitTestCourseView(POINT pt) const noexcept;
+    bool HandleCourseViewWheel(short delta) noexcept;
+    void ResetCourseScroll() noexcept { m_courseScrollY = 0.0f; }
     [[nodiscard]] bool IsLearningSearchFocused() const noexcept { return m_isLearningSearchFocused; }
     void SetLearningSearchFocused(bool f) noexcept { m_isLearningSearchFocused = f; }
     void SetActiveLearningFilter(int f) noexcept { m_learningActiveFilter = f; m_learningScrollY = 0.0f; }

@@ -266,6 +266,11 @@ public:
     ComPtr<IDWriteTextFormat> fontTabPreview;    ///< 12px Italic Leading-aligned for preview tabs
     ComPtr<IDWriteTextFormat> fontKeycap;        ///< 11.5px Centered for keycap badges
     ComPtr<IDWriteTextFormat> fontCounterBadge;  ///< 11.0px Semi-Bold Centered for search & count badges
+    ComPtr<IDWriteTextFormat> fontLineNumber;    ///< 12.5px Consolas Regular Right-aligned for gutter numbers
+    ComPtr<IDWriteTextFormat> fontLineNumberActive; ///< 12.5px Consolas Semi-Bold Right-aligned for active line glow
+    ComPtr<IDWriteTextFormat> fontCourseTitle;   ///< 28px Bold for course / reading view headers
+    ComPtr<IDWriteTextFormat> fontCourseHeading; ///< 17px Semi-Bold for course section headings
+    ComPtr<IDWriteTextFormat> fontCourseBody;    ///< 14.5px Regular for course reading prose
 
     struct SetiIconInfo {
         wchar_t glyph = 0xE023;

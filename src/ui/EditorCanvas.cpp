@@ -356,6 +356,9 @@ void EditorCanvas::RenderSinglePane(ID2D1RenderTarget* pRT, Theme& theme, const 
     } else if (activeDoc.isSpecialView && activeDoc.viewType == L"student") {
         m_packageManagerView.HideWebView();
         RenderStudentView(pRT, theme, config, activeDoc, canvasLeft, canvasWidth, contentTopY, clientHeight);
+    } else if ((activeDoc.isSpecialView && activeDoc.viewType == L"course") || !activeDoc.courseId.empty()) {
+        m_packageManagerView.HideWebView();
+        RenderCourseView(pRT, theme, config, activeDoc, canvasLeft, canvasWidth, contentTopY, clientHeight);
     } else {
         m_packageManagerView.HideWebView();
         if (activeDoc.isImageView) {
@@ -955,7 +958,7 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
                               bool highlightUseRegex,
                               bool isRenaming) {
     auto& buffer = doc.buffer;
-    const float gutterW = config.ScaleF(50.0f);
+    const float gutterW = config.showLineNumbers ? config.ScaleF(50.0f) : config.ScaleF(12.0f);
     const float lineH   = config.ScaleF(std::round(config.fontSize * config.lineHeightMultiplier));
 
     if (m_charWidth <= 0.0f && theme.dwriteFactory && theme.fontCode) {
@@ -981,15 +984,17 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
     m_visibleColorSwatches.clear();
 
     // 1. Gutter Background & Divider
-    D2D1_RECT_F rcGutter = D2D1::RectF(canvasLeft, topY, canvasLeft + gutterW, clientHeight);
-    pRT->FillRectangle(rcGutter, theme.brushCanvasBg.Get());
+    if (config.showLineNumbers) {
+        D2D1_RECT_F rcGutter = D2D1::RectF(canvasLeft, topY, canvasLeft + gutterW, clientHeight);
+        pRT->FillRectangle(rcGutter, theme.brushCanvasBg.Get());
 
-    pRT->DrawLine(
-        D2D1::Point2F(canvasLeft + gutterW - 0.5f, topY),
-        D2D1::Point2F(canvasLeft + gutterW - 0.5f, clientHeight),
-        theme.brushBorderSubtle.Get(),
-        1.0f
-    );
+        pRT->DrawLine(
+            D2D1::Point2F(canvasLeft + gutterW - 0.5f, topY),
+            D2D1::Point2F(canvasLeft + gutterW - 0.5f, clientHeight),
+            theme.brushBorderSubtle.Get(),
+            1.0f
+        );
+    }
 
     // Build visual lines layout (folding awareness)
     struct VisualLine {
@@ -1241,84 +1246,6 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
                 pRT->CreateSolidColorBrush(D2D1::ColorF(1.0f, 0.82f, 0.0f, 0.95f), &keyBorder);
                 if (keyFill) pRT->FillRoundedRectangle(&rrcKey, keyFill.Get());
                 if (keyBorder) pRT->DrawRoundedRectangle(&rrcKey, keyBorder.Get(), 1.5f);
-            }
-        }
-
-        // Line Number in Gutter (Right-aligned)
-        bool hasDiagError = false;
-        for (const auto& d : doc.diagnostics) {
-            if (d.line == vl.bufferLine) {
-                hasDiagError = true;
-                break;
-            }
-        }
-        std::wstring lineNumStr = std::to_wstring(vl.bufferLine + 1);
-        D2D1_RECT_F rcNum = D2D1::RectF(
-            canvasLeft + config.ScaleF(4.0f),
-            lineY,
-            canvasLeft + gutterW - config.ScaleF(18.0f),
-            lineY + lineH
-        );
-        ID2D1Brush* numBrush = hasDiagError ? (theme.brushIconRed ? theme.brushIconRed.Get() : theme.brushCloseHoverBg.Get()) :
-            ((isFocused && vl.bufferLine == cursor.line) ? theme.brushTextPrimary.Get() : theme.brushLineNumber.Get());
-        pRT->DrawText(
-            lineNumStr.c_str(),
-            static_cast<UINT32>(lineNumStr.length()),
-            theme.fontMenuShortcut.Get(),
-            rcNum,
-            numBrush
-        );
-
-        // Breakpoint Marker in Gutter (F9 / Debug Menu / Click Gutter)
-        bool hasBreakpoint = (std::find(doc.breakpoints.begin(), doc.breakpoints.end(), vl.bufferLine) != doc.breakpoints.end());
-        if (hasBreakpoint) {
-            float bpX = canvasLeft + config.ScaleF(12.0f);
-            float bpY = lineY + lineH / 2.0f;
-            float bpR = config.ScaleF(4.5f);
-            Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> bpBrush;
-            pRT->CreateSolidColorBrush(D2D1::ColorF(0.92f, 0.25f, 0.25f), &bpBrush);
-            if (bpBrush) {
-                pRT->FillEllipse(D2D1::Ellipse(D2D1::Point2F(bpX, bpY), bpR, bpR), bpBrush.Get());
-            }
-        }
-
-        // Gutter Diagnostic Error Indicator Dot (Image 4)
-        if (hasDiagError && !hasBreakpoint) {
-            float errDotX = canvasLeft + config.ScaleF(8.0f);
-            float errDotY = lineY + lineH / 2.0f;
-            float errDotR = config.ScaleF(2.5f);
-            pRT->FillEllipse(D2D1::Ellipse(D2D1::Point2F(errDotX, errDotY), errDotR, errDotR), theme.brushIconRed ? theme.brushIconRed.Get() : theme.brushCloseHoverBg.Get());
-        }
-
-        // Code Folding Chevron in Gutter (Images 2 & 3)
-        size_t foldEnd = 0;
-        bool canFold = vl.isFolded || GetFoldRange(buffer, vl.bufferLine, foldEnd);
-        if (canFold) {
-            const float chevronSize = config.ScaleF(12.0f);
-            const float chevronX = canvasLeft + gutterW - config.ScaleF(16.0f);
-            const float chevronY = lineY + (lineH - chevronSize) / 2.0f;
-            D2D1_RECT_F rcChevron = D2D1::RectF(chevronX, chevronY, chevronX + chevronSize, chevronY + chevronSize);
-
-            FoldChevronHit hit;
-            hit.bounds = rcChevron;
-            hit.bufferLine = vl.bufferLine;
-            m_foldChevrons.push_back(hit);
-
-            ID2D1Brush* chevronBrush = theme.brushTextMuted.Get();
-            if (vl.isFolded) {
-                // Collapsed: Right Chevron > (Image 3)
-                float cx = rcChevron.left + chevronSize * 0.45f;
-                float cy = rcChevron.top + chevronSize * 0.5f;
-                float cr = config.ScaleF(3.0f);
-                pRT->DrawLine(D2D1::Point2F(cx - cr * 0.6f, cy - cr), D2D1::Point2F(cx + cr * 0.6f, cy), chevronBrush, 1.3f);
-                pRT->DrawLine(D2D1::Point2F(cx + cr * 0.6f, cy), D2D1::Point2F(cx - cr * 0.6f, cy + cr), chevronBrush, 1.3f);
-            } else {
-                // Expanded: Down Chevron v (Image 2)
-                float cx = rcChevron.left + chevronSize * 0.5f;
-                float cy = rcChevron.top + chevronSize * 0.45f;
-                float cr = config.ScaleF(3.0f);
-                pRT->DrawLine(D2D1::Point2F(cx - cr, cy - cr * 0.6f), D2D1::Point2F(cx, cy + cr * 0.6f), chevronBrush, 1.3f);
-                pRT->DrawLine(D2D1::Point2F(cx, cy + cr * 0.6f), D2D1::Point2F(cx + cr, cy - cr * 0.6f), chevronBrush, 1.3f);
             }
         }
 
@@ -1780,6 +1707,130 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
 
 
     pRT->PopAxisAlignedClip();
+
+    // 4b. Gutter Elements (Line Numbers, Glowing Active Line, Breakpoints, Error Dots, Chevrons)
+    if (config.showLineNumbers) {
+        D2D1_RECT_F clipGutter = D2D1::RectF(canvasLeft, topY, canvasLeft + gutterW, clientHeight);
+        pRT->PushAxisAlignedClip(clipGutter, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+
+        // Gutter Background & Subtle Divider Line
+        pRT->FillRectangle(clipGutter, theme.brushCanvasBg.Get());
+        pRT->DrawLine(
+            D2D1::Point2F(canvasLeft + gutterW - 0.5f, topY),
+            D2D1::Point2F(canvasLeft + gutterW - 0.5f, clientHeight),
+            theme.brushBorderSubtle.Get(),
+            1.0f
+        );
+
+        for (size_t v = startV; v < endV; ++v) {
+            const auto& vl = visualLines[v];
+            float lineY = topY + config.ScaleF(6.0f) + (v - doc.scrollLine) * lineH;
+            if (lineY + lineH < topY || lineY > clientHeight) continue;
+
+            // Diff bar in gutter
+            if (doc.isDiffView || doc.isDeletedInGit) {
+                if (doc.isDeletedInGit || doc.diffDeletedLines.count(vl.bufferLine)) {
+                    D2D1_RECT_F rcGutterBar = D2D1::RectF(canvasLeft + gutterW - config.ScaleF(3.0f), lineY, canvasLeft + gutterW, lineY + lineH);
+                    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushRedBar;
+                    pRT->CreateSolidColorBrush(D2D1::ColorF(0.878f, 0.424f, 0.459f, 1.0f), &brushRedBar);
+                    if (brushRedBar) pRT->FillRectangle(rcGutterBar, brushRedBar.Get());
+                } else if (doc.diffAddedLines.count(vl.bufferLine)) {
+                    D2D1_RECT_F rcGutterBar = D2D1::RectF(canvasLeft + gutterW - config.ScaleF(3.0f), lineY, canvasLeft + gutterW, lineY + lineH);
+                    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushGreenBar;
+                    pRT->CreateSolidColorBrush(D2D1::ColorF(0.596f, 0.765f, 0.475f, 1.0f), &brushGreenBar);
+                    if (brushGreenBar) pRT->FillRectangle(rcGutterBar, brushGreenBar.Get());
+                }
+            }
+
+            // Diagnostic error in gutter
+            bool hasDiagError = false;
+            for (const auto& d : doc.diagnostics) {
+                if (d.line == vl.bufferLine) {
+                    hasDiagError = true;
+                    break;
+                }
+            }
+
+            // Line Number in Gutter (Right-aligned, Consolas Monospace)
+            std::wstring lineNumStr = std::to_wstring(vl.bufferLine + 1);
+            D2D1_RECT_F rcNum = D2D1::RectF(
+                canvasLeft + config.ScaleF(4.0f),
+                lineY,
+                canvasLeft + gutterW - config.ScaleF(16.0f),
+                lineY + lineH
+            );
+
+            bool isActiveLine = (isFocused && vl.bufferLine == cursor.line);
+            ID2D1Brush* numBrush = hasDiagError ? (theme.brushIconRed ? theme.brushIconRed.Get() : theme.brushCloseHoverBg.Get()) :
+                (isActiveLine ? (theme.brushTextWhite ? theme.brushTextWhite.Get() : theme.brushTextPrimary.Get()) : theme.brushLineNumber.Get());
+            IDWriteTextFormat* numFormat = isActiveLine ?
+                (theme.fontLineNumberActive ? theme.fontLineNumberActive.Get() : (theme.fontLineNumber ? theme.fontLineNumber.Get() : theme.fontMenuShortcut.Get())) :
+                (theme.fontLineNumber ? theme.fontLineNumber.Get() : theme.fontMenuShortcut.Get());
+
+            pRT->DrawText(
+                lineNumStr.c_str(),
+                static_cast<UINT32>(lineNumStr.length()),
+                numFormat,
+                rcNum,
+                numBrush
+            );
+
+            // Breakpoint Marker in Gutter (F9 / Debug Menu / Click Gutter)
+            bool hasBreakpoint = (std::find(doc.breakpoints.begin(), doc.breakpoints.end(), vl.bufferLine) != doc.breakpoints.end());
+            if (hasBreakpoint) {
+                float bpX = canvasLeft + config.ScaleF(12.0f);
+                float bpY = lineY + lineH / 2.0f;
+                float bpR = config.ScaleF(4.5f);
+                Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> bpBrush;
+                pRT->CreateSolidColorBrush(D2D1::ColorF(0.92f, 0.25f, 0.25f), &bpBrush);
+                if (bpBrush) {
+                    pRT->FillEllipse(D2D1::Ellipse(D2D1::Point2F(bpX, bpY), bpR, bpR), bpBrush.Get());
+                }
+            }
+
+            // Gutter Diagnostic Error Indicator Dot (Image 4)
+            if (hasDiagError && !hasBreakpoint) {
+                float errDotX = canvasLeft + config.ScaleF(8.0f);
+                float errDotY = lineY + lineH / 2.0f;
+                float errDotR = config.ScaleF(2.5f);
+                pRT->FillEllipse(D2D1::Ellipse(D2D1::Point2F(errDotX, errDotY), errDotR, errDotR), theme.brushIconRed ? theme.brushIconRed.Get() : theme.brushCloseHoverBg.Get());
+            }
+
+            // Code Folding Chevron in Gutter (Images 2 & 3)
+            size_t foldEnd = 0;
+            bool canFold = vl.isFolded || GetFoldRange(buffer, vl.bufferLine, foldEnd);
+            if (canFold) {
+                const float chevronSize = config.ScaleF(12.0f);
+                const float chevronX = canvasLeft + gutterW - config.ScaleF(14.0f);
+                const float chevronY = lineY + (lineH - chevronSize) / 2.0f;
+                D2D1_RECT_F rcChevron = D2D1::RectF(chevronX, chevronY, chevronX + chevronSize, chevronY + chevronSize);
+
+                FoldChevronHit hit;
+                hit.bounds = rcChevron;
+                hit.bufferLine = vl.bufferLine;
+                m_foldChevrons.push_back(hit);
+
+                ID2D1Brush* chevronBrush = theme.brushTextMuted.Get();
+                if (vl.isFolded) {
+                    // Collapsed: Right Chevron > (Image 3)
+                    float cx = rcChevron.left + chevronSize * 0.45f;
+                    float cy = rcChevron.top + chevronSize * 0.5f;
+                    float cr = config.ScaleF(3.0f);
+                    pRT->DrawLine(D2D1::Point2F(cx - cr * 0.6f, cy - cr), D2D1::Point2F(cx + cr * 0.6f, cy), chevronBrush, 1.3f);
+                    pRT->DrawLine(D2D1::Point2F(cx + cr * 0.6f, cy), D2D1::Point2F(cx - cr * 0.6f, cy + cr), chevronBrush, 1.3f);
+                } else {
+                    // Expanded: Down Chevron v (Image 2)
+                    float cx = rcChevron.left + chevronSize * 0.5f;
+                    float cy = rcChevron.top + chevronSize * 0.45f;
+                    float cr = config.ScaleF(3.0f);
+                    pRT->DrawLine(D2D1::Point2F(cx - cr, cy - cr * 0.6f), D2D1::Point2F(cx, cy + cr * 0.6f), chevronBrush, 1.3f);
+                    pRT->DrawLine(D2D1::Point2F(cx + cr, cy - cr * 0.6f), D2D1::Point2F(cx, cy - cr * 0.6f), chevronBrush, 1.3f);
+                }
+            }
+        }
+
+        pRT->PopAxisAlignedClip();
+    }
 
     // 5. Code Minimap (Image 5: scaled miniature code preview with syntax highlighting, search ticks, and viewport slider)
     if (config.showMinimap && !doc.isSpecialView && !doc.isImageView && !doc.isUnsupportedBinary) {
@@ -3310,181 +3361,149 @@ void EditorCanvas::RenderCourseView(ID2D1RenderTarget* pRT, Theme& theme, const 
 
     InitializeLearningCourses();
 
-    // Match course details
-    const LearningCourseDef* pFoundCourse = nullptr;
-    for (const auto& c : m_learningCourses) {
-        if (!doc.courseId.empty() && c.id == doc.courseId) {
-            pFoundCourse = &c;
-            break;
-        }
-        if (c.title == doc.fileName) {
-            pFoundCourse = &c;
-            break;
-        }
-    }
-
-    std::wstring courseTitle = doc.fileName.empty() ? L"Python for Beginners" : doc.fileName;
-    std::wstring courseDesc = pFoundCourse ? pFoundCourse->description : L"Learn Python from scratch with simple examples and hands-on exercises.";
-    std::wstring courseDiff = pFoundCourse ? pFoundCourse->difficulty : L"Beginner";
-    int lessonsCount = pFoundCourse ? pFoundCourse->lessons : 24;
-    int hoursCount = pFoundCourse ? pFoundCourse->hours : 6;
-
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushWhite;
-    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushCardBg;
-    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushCardBorder;
-    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushEmerald;
-    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushEmeraldBg;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushProse;
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushMeta;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushScrollbar;
 
     pRT->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 1.0f), &brushWhite);
-    pRT->CreateSolidColorBrush(D2D1::ColorF(0.067f, 0.086f, 0.122f, 0.95f), &brushCardBg);
-    pRT->CreateSolidColorBrush(D2D1::ColorF(0.120f, 0.150f, 0.200f, 1.0f), &brushCardBorder);
-    pRT->CreateSolidColorBrush(D2D1::ColorF(0.063f, 0.725f, 0.506f, 1.0f), &brushEmerald);
-    pRT->CreateSolidColorBrush(D2D1::ColorF(0.020f, 0.180f, 0.090f, 0.85f), &brushEmeraldBg);
-    pRT->CreateSolidColorBrush(D2D1::ColorF(0.55f, 0.62f, 0.70f, 1.0f), &brushMeta);
+    pRT->CreateSolidColorBrush(D2D1::ColorF(0.83f, 0.86f, 0.90f, 1.0f), &brushProse);
+    pRT->CreateSolidColorBrush(D2D1::ColorF(0.55f, 0.60f, 0.68f, 1.0f), &brushMeta);
+    pRT->CreateSolidColorBrush(D2D1::ColorF(0.20f, 0.24f, 0.30f, 1.0f), &brushScrollbar);
 
-    const float padX = config.ScaleF(18.0f);
-    float curY = topY + config.ScaleF(16.0f);
+    const float padX = config.ScaleF(36.0f);
+    float contentW = (std::min)(canvasWidth - padX * 2.0f, config.ScaleF(860.0f));
+    float contentLeft = canvasLeft + padX;
+    float startY = topY + config.ScaleF(28.0f) - m_courseScrollY;
+    float curY = startY;
 
-    // 1. Header Hero Card
-    const float bannerH = config.ScaleF(140.0f);
-    D2D1_RECT_F rcHero = D2D1::RectF(canvasLeft + padX, curY, canvasLeft + canvasWidth - padX, curY + bannerH);
-    D2D1_ROUNDED_RECT rrcHero = D2D1::RoundedRect(rcHero, config.ScaleF(8.0f), config.ScaleF(8.0f));
-    if (brushCardBg) pRT->FillRoundedRectangle(rrcHero, brushCardBg.Get());
-    if (brushCardBorder) pRT->DrawRoundedRectangle(rrcHero, brushCardBorder.Get(), 1.0f);
-
-    // Thumbnail on left
-    float thumbW = config.ScaleF(180.0f);
-    D2D1_RECT_F rcThumb = D2D1::RectF(rcHero.left + config.ScaleF(10.0f), rcHero.top + config.ScaleF(10.0f),
-                                       rcHero.left + thumbW, rcHero.bottom - config.ScaleF(10.0f));
-    ID2D1Bitmap* pBmp = nullptr;
-    if (pFoundCourse && !pFoundCourse->imageFile.empty()) {
-        pBmp = GetLearningHubBitmap(pRT, pFoundCourse->imageFile);
-    }
-    if (!pBmp) {
-        pBmp = GetLearningHubBitmap(pRT, L"course-python-1.png");
-    }
-    if (pBmp) {
-        pRT->DrawBitmap(pBmp, rcThumb, 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
-    }
-
-    // Course Title, Description & Badges on right
-    float infoX = rcHero.left + thumbW + config.ScaleF(16.0f);
-    D2D1_RECT_F rcTitle = D2D1::RectF(infoX, rcHero.top + config.ScaleF(12.0f), rcHero.right - config.ScaleF(160.0f), rcHero.top + config.ScaleF(40.0f));
-    if (theme.fontSectionHeader && brushWhite) {
-        pRT->DrawText(courseTitle.c_str(), static_cast<UINT32>(courseTitle.length()), theme.fontSectionHeader.Get(), rcTitle, brushWhite.Get());
-    }
-
-    D2D1_RECT_F rcDesc = D2D1::RectF(infoX, rcTitle.bottom + config.ScaleF(2.0f), rcHero.right - config.ScaleF(160.0f), rcTitle.bottom + config.ScaleF(38.0f));
-    if (theme.fontBody && brushMeta) {
-        pRT->DrawText(courseDesc.c_str(), static_cast<UINT32>(courseDesc.length()), theme.fontBody.Get(), rcDesc, brushMeta.Get());
-    }
-
-    // Pill Badges: Beginner, 24 lessons, 6 hours
-    float pillY = rcDesc.bottom + config.ScaleF(6.0f);
-    float pillH = config.ScaleF(22.0f);
-    D2D1_RECT_F rcDiff = D2D1::RectF(infoX, pillY, infoX + config.ScaleF(70.0f), pillY + pillH);
-    D2D1_ROUNDED_RECT rrcDiff = D2D1::RoundedRect(rcDiff, 4.0f, 4.0f);
-    if (brushEmeraldBg) pRT->FillRoundedRectangle(rrcDiff, brushEmeraldBg.Get());
-    if (brushEmerald) pRT->DrawRoundedRectangle(rrcDiff, brushEmerald.Get(), 1.0f);
-    IDWriteTextFormat* pSmallFmt = theme.fontMenuShortcut ? theme.fontMenuShortcut.Get() : theme.fontBody.Get();
-    if (pSmallFmt && brushEmerald) {
-        D2D1_RECT_F rcDiffText = D2D1::RectF(rcDiff.left, rcDiff.top + config.ScaleF(3.0f), rcDiff.right, rcDiff.bottom);
-        pRT->DrawText(courseDiff.c_str(), static_cast<UINT32>(courseDiff.length()), pSmallFmt, rcDiffText, brushEmerald.Get());
-    }
-
-    wchar_t szStats[64];
-    swprintf_s(szStats, L"%d lessons • %d hours • By Koda", lessonsCount, hoursCount);
-    D2D1_RECT_F rcStats = D2D1::RectF(rcDiff.right + config.ScaleF(12.0f), pillY + config.ScaleF(3.0f), rcHero.right - config.ScaleF(160.0f), pillY + pillH);
-    if (theme.fontBody && brushMeta) {
-        pRT->DrawText(szStats, static_cast<UINT32>(wcslen(szStats)), theme.fontBody.Get(), rcStats, brushMeta.Get());
-    }
-
-    // "Start Learning" Button on right
-    float btnW = config.ScaleF(135.0f);
-    float btnH = config.ScaleF(36.0f);
-    D2D1_RECT_F rcBtn = D2D1::RectF(rcHero.right - btnW - config.ScaleF(16.0f), rcHero.top + (bannerH - btnH) / 2.0f,
-                                   rcHero.right - config.ScaleF(16.0f), rcHero.top + (bannerH + btnH) / 2.0f);
-    D2D1_ROUNDED_RECT rrcBtn = D2D1::RoundedRect(rcBtn, config.ScaleF(6.0f), config.ScaleF(6.0f));
-    if (brushEmerald) pRT->FillRoundedRectangle(rrcBtn, brushEmerald.Get());
-    const wchar_t* btnLabel = L"▶ Start Learning";
-    if (theme.fontButtonCenter && brushWhite) {
-        pRT->DrawText(btnLabel, static_cast<UINT32>(wcslen(btnLabel)), theme.fontButtonCenter.Get(), rcBtn, brushWhite.Get());
-    }
-
-    curY += bannerH + config.ScaleF(22.0f);
-
-    // 2. Curriculum Section Header
-    D2D1_RECT_F rcSecTitle = D2D1::RectF(canvasLeft + padX, curY, canvasLeft + canvasWidth - padX, curY + config.ScaleF(24.0f));
-    const wchar_t* secTitle = L"Curriculum & Modules";
-    if (theme.fontSectionHeader && brushWhite) {
-        pRT->DrawText(secTitle, static_cast<UINT32>(wcslen(secTitle)), theme.fontSectionHeader.Get(), rcSecTitle, brushWhite.Get());
-    }
-    curY += config.ScaleF(24.0f);
-
-    const wchar_t* secSub = L"Each module acts like a folder in the Explorer sidebar. Unfinished modules show a hollow white box, and turn solid green when completed.";
-    D2D1_RECT_F rcSecSub = D2D1::RectF(canvasLeft + padX, curY, canvasLeft + canvasWidth - padX, curY + config.ScaleF(20.0f));
-    if (theme.fontBody && brushMeta) {
-        pRT->DrawText(secSub, static_cast<UINT32>(wcslen(secSub)), theme.fontBody.Get(), rcSecSub, brushMeta.Get());
-    }
-    curY += config.ScaleF(28.0f);
-
-    // 3. Modules Grid (2 Columns of Module Cards)
-    struct ModDisplay {
-        const wchar_t* title;
-        const wchar_t* desc;
-        int lessons;
-    };
-    ModDisplay displayMods[6] = {
-        { L"Module 1: Getting Started", L"Python installation, IDE setup, running first script, and REPL basics.", 4 },
-        { L"Module 2: Variables & Data Types", L"Numeric operations, string manipulation, booleans, and input.", 4 },
-        { L"Module 3: Control Flow & Logic", L"Conditionals, boolean logic, while loops, and for range iterations.", 4 },
-        { L"Module 4: Functions & Modules", L"Function declarations, arguments, return values, and library imports.", 4 },
-        { L"Module 5: Data Structures", L"Lists, tuples, dictionaries, and set operations with practical examples.", 4 },
-        { L"Module 6: Projects & Practice", L"Build a CLI calculator, guessing game, and interactive quiz app.", 4 }
-    };
-
-    float gridW = canvasWidth - padX * 2.0f;
-    float cardGap = config.ScaleF(12.0f);
-    int cols = (gridW > config.ScaleF(600.0f)) ? 2 : 1;
-    float mCardW = (gridW - cardGap * static_cast<float>(cols - 1)) / static_cast<float>(cols);
-    float mCardH = config.ScaleF(84.0f);
-
-    for (int i = 0; i < 6; ++i) {
-        int r = i / cols;
-        int c = i % cols;
-        float mx = canvasLeft + padX + static_cast<float>(c) * (mCardW + cardGap);
-        float my = curY + static_cast<float>(r) * (mCardH + cardGap);
-
-        if (my + mCardH > topY + clientHeight) break;
-
-        D2D1_RECT_F rcMCard = D2D1::RectF(mx, my, mx + mCardW, my + mCardH);
-        D2D1_ROUNDED_RECT rrcMCard = D2D1::RoundedRect(rcMCard, config.ScaleF(6.0f), config.ScaleF(6.0f));
-        if (brushCardBg) pRT->FillRoundedRectangle(rrcMCard, brushCardBg.Get());
-        if (brushCardBorder) pRT->DrawRoundedRectangle(rrcMCard, brushCardBorder.Get(), 1.0f);
-
-        // Hollow box icon on module card
-        float bx = mx + config.ScaleF(12.0f);
-        float by = my + config.ScaleF(14.0f);
-        float bw = config.ScaleF(14.0f);
-        D2D1_RECT_F rcBox = D2D1::RectF(bx, by, bx + bw, by + bw);
-        if (brushWhite) pRT->DrawRoundedRectangle(D2D1::RoundedRect(rcBox, 2.0f, 2.0f), brushWhite.Get(), 1.4f);
-
-        // Title
-        D2D1_RECT_F rcMTitle = D2D1::RectF(bx + bw + config.ScaleF(10.0f), my + config.ScaleF(12.0f), mx + mCardW - config.ScaleF(12.0f), my + config.ScaleF(32.0f));
-        if (theme.fontBody && brushWhite) {
-            pRT->DrawText(displayMods[i].title, static_cast<UINT32>(wcslen(displayMods[i].title)), theme.fontBody.Get(), rcMTitle, brushWhite.Get());
+    // Helper: Draw Paragraph with dynamic DirectWrite text layout (zero collision, exact height wrap)
+    auto DrawParagraph = [&](const std::wstring& text, IDWriteTextFormat* pFmt, ID2D1Brush* pBrush, float gapAfter = 18.0f) {
+        if (!pFmt || text.empty() || !theme.dwriteFactory) return;
+        Microsoft::WRL::ComPtr<IDWriteTextLayout> pLayout;
+        HRESULT hr = theme.dwriteFactory->CreateTextLayout(
+            text.c_str(), static_cast<UINT32>(text.length()),
+            pFmt, contentW, 10000.0f, &pLayout
+        );
+        if (SUCCEEDED(hr) && pLayout) {
+            DWRITE_TEXT_METRICS tm{};
+            pLayout->GetMetrics(&tm);
+            D2D1_POINT_2F origin = D2D1::Point2F(contentLeft, curY);
+            pRT->DrawTextLayout(origin, pLayout.Get(), pBrush);
+            curY += tm.height + config.ScaleF(gapAfter);
         }
+    };
 
-        // Desc
-        D2D1_RECT_F rcMDesc = D2D1::RectF(bx + bw + config.ScaleF(10.0f), rcMTitle.bottom + config.ScaleF(2.0f), mx + mCardW - config.ScaleF(12.0f), my + mCardH - config.ScaleF(8.0f));
-        IDWriteTextFormat* pDescFmt = theme.fontMenuShortcut ? theme.fontMenuShortcut.Get() : theme.fontBody.Get();
-        if (pDescFmt && brushMeta) {
-            pRT->DrawText(displayMods[i].desc, static_cast<UINT32>(wcslen(displayMods[i].desc)), pDescFmt, rcMDesc, brushMeta.Get());
+    IDWriteTextFormat* pBodyFmt = theme.fontCourseBody ? theme.fontCourseBody.Get() : theme.fontBody.Get();
+    IDWriteTextFormat* pHdFmt = theme.fontCourseHeading ? theme.fontCourseHeading.Get() : theme.fontBody.Get();
+
+    // --- 1. Header: Python Icon + Big Bold Title "What is Python & Installation" ---
+    const float iconSize = config.ScaleF(40.0f);
+    D2D1_RECT_F rcIcon = D2D1::RectF(contentLeft, curY + config.ScaleF(2.0f), contentLeft + iconSize, curY + config.ScaleF(2.0f) + iconSize);
+    ID2D1Bitmap* pPyIcon = GetLearningHubBitmap(pRT, L"python.png");
+    if (pPyIcon) {
+        pRT->DrawBitmap(pPyIcon, rcIcon, 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
+    } else {
+        auto seti = theme.GetSetiIcon(L"main.py", false, false);
+        if (theme.fontSeti && seti.pBrush) {
+            pRT->DrawText(&seti.glyph, 1, theme.fontSeti.Get(), rcIcon, seti.pBrush);
+        } else {
+            m_icons.DrawFileIcon(pRT, theme, rcIcon, FileIconType::DefaultFile);
+        }
+    }
+
+    float titleX = contentLeft + iconSize + config.ScaleF(14.0f);
+    const wchar_t* mainTitle = L"What is Python & Installation";
+    IDWriteTextFormat* pTitleFmt = theme.fontCourseTitle ? theme.fontCourseTitle.Get() : (theme.fontSectionHeader ? theme.fontSectionHeader.Get() : theme.fontBody.Get());
+    if (pTitleFmt && brushWhite && theme.dwriteFactory) {
+        Microsoft::WRL::ComPtr<IDWriteTextLayout> pTitleLayout;
+        theme.dwriteFactory->CreateTextLayout(mainTitle, static_cast<UINT32>(wcslen(mainTitle)), pTitleFmt, contentW - (titleX - contentLeft), 200.0f, &pTitleLayout);
+        if (pTitleLayout) {
+            DWRITE_TEXT_METRICS tm{};
+            pTitleLayout->GetMetrics(&tm);
+            pRT->DrawTextLayout(D2D1::Point2F(titleX, curY), pTitleLayout.Get(), brushWhite.Get());
+            curY += (std::max)(iconSize + config.ScaleF(4.0f), tm.height) + config.ScaleF(26.0f);
+        } else {
+            curY += iconSize + config.ScaleF(26.0f);
+        }
+    } else {
+        curY += iconSize + config.ScaleF(26.0f);
+    }
+
+    // --- 2. Overview & Language Details ---
+    DrawParagraph(
+        L"Python is a high-level, general-purpose programming language known for its simple and readable syntax. It is designed to be easy to learn and use, making it a popular choice for beginners while still being powerful enough for professional development. Python allows you to write clear and concise code, which helps you focus on solving problems rather than dealing with complex syntax rules. It can be used to build a wide range of applications, including web development, data analysis, automation scripts, artificial intelligence, scientific computing, and more. Its large and active community also means that there are many resources, tutorials, and libraries available to help you learn and build projects.",
+        pBodyFmt, brushProse.Get(), 18.0f
+    );
+
+    DrawParagraph(
+        L"Python runs on Windows, macOS, and Linux, and most modern computers can run it without issues.",
+        pBodyFmt, brushProse.Get(), 24.0f
+    );
+
+    // --- 3. Python Interpreter Details & Architecture Overview ---
+    DrawParagraph(
+        L"Python Interpreter & Execution Architecture",
+        pHdFmt, brushWhite.Get(), 12.0f
+    );
+
+    DrawParagraph(
+        L"The default reference implementation of Python is CPython, written in C. When executing a Python program, CPython undergoes a streamlined pipeline from source text to bytecode interpretation:\n"
+        L"• Lexing & Tokenization: The source code (.py) is broken down into lexical tokens.\n"
+        L"• Parsing & AST: The parser constructs an Abstract Syntax Tree (AST) representing the program structure.\n"
+        L"• Bytecode Compilation: The AST is compiled into platform-independent bytecode instructions cached inside __pycache__/*.pyc for rapid startup.\n"
+        L"• Python Virtual Machine (PVM): The PVM evaluation loop reads bytecode opcodes (e.g., LOAD_FAST, BINARY_OP, CALL) and maps them directly to native C execution.\n"
+        L"• Memory Management & GIL: CPython combines immediate reference counting with an automated generational garbage collector (Gen 0, 1, and 2) to eliminate circular references. The Global Interpreter Lock (GIL) synchronizes native threads.",
+        pBodyFmt, brushProse.Get(), 24.0f
+    );
+
+    // --- 4. Installation in Phide ---
+    DrawParagraph(
+        L"How to Install Python in Phide",
+        pHdFmt, brushWhite.Get(), 12.0f
+    );
+
+    DrawParagraph(
+        L"To set up and manage Python environments in Phide, open the Runtimes panel:\n"
+        L"• Step 1: Open Runtimes by clicking the Runtimes icon in the top toolbar or pressing Ctrl+Shift+X.\n"
+        L"• Step 2: Choose Python from the detected environment cards.\n"
+        L"• Step 3: Choose the version you want from the version catalog (e.g., Python v3.15.1 or v3.15.0) and click Install. Phide will automatically configure the interpreter and set up pip.\n"
+        L"• Step 4: You can also choose or create an isolated Workspace Virtual Environment (.venv) directly from the panel for project-specific packages.",
+        pBodyFmt, brushProse.Get(), 30.0f
+    );
+
+    // Reset button bounds (no button)
+    m_courseOpenRuntimesBtnBounds = D2D1::RectF(0.0f, 0.0f, 0.0f, 0.0f);
+
+    // --- 5. Total Height & Scroll Calculation ---
+    float totalContentH = curY + m_courseScrollY - topY;
+    float viewH = clientHeight - topY;
+    m_courseMaxScrollY = (std::max)(0.0f, totalContentH - viewH + config.ScaleF(40.0f));
+
+    // Vertical Scrollbar Indicator
+    if (m_courseMaxScrollY > 0.0f) {
+        float trackH = clientHeight - topY - config.ScaleF(16.0f);
+        float thumbH = (std::max)(config.ScaleF(32.0f), (viewH / totalContentH) * trackH);
+        float thumbY = topY + config.ScaleF(8.0f) + (m_courseScrollY / m_courseMaxScrollY) * (trackH - thumbH);
+        D2D1_RECT_F rcThumb = D2D1::RectF(canvasLeft + canvasWidth - config.ScaleF(6.0f), thumbY,
+                                         canvasLeft + canvasWidth - config.ScaleF(2.0f), thumbY + thumbH);
+        if (brushScrollbar) {
+            pRT->FillRoundedRectangle(D2D1::RoundedRect(rcThumb, 2.0f, 2.0f), brushScrollbar.Get());
         }
     }
 
     pRT->PopAxisAlignedClip();
+}
+
+int EditorCanvas::HitTestCourseView(POINT pt) const noexcept {
+    return 0;
+}
+
+bool EditorCanvas::HandleCourseViewWheel(short delta) noexcept {
+    if (m_courseMaxScrollY <= 0.0f) return false;
+    float scrollAmount = (delta > 0) ? -60.0f : 60.0f;
+    m_courseScrollY = (std::clamp)(m_courseScrollY + scrollAmount, 0.0f, m_courseMaxScrollY);
+    return true;
 }
 
 bool EditorCanvas::HandleLearningChar(wchar_t ch) {

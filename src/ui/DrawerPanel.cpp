@@ -717,7 +717,16 @@ void DrawerPanel::RenderExplorerPane(ID2D1RenderTarget* pRT, Theme& theme, const
                             lesson.bounds = D2D1::RectF(railW + config.ScaleF(14.0f), curY, railW + fullDrawerW - config.ScaleF(4.0f), curY + lessonH);
 
                             bool isHoveredLesson = (m_hoveredCourseModule == static_cast<int>(mIdx) && m_hoveredCourseLesson == static_cast<int>(lIdx));
-                            if (isHoveredLesson || lesson.isCurrent) {
+                            if (lesson.isCurrent) {
+                                D2D1_ROUNDED_RECT rrcLes = D2D1::RoundedRect(lesson.bounds, 3.0f, 3.0f);
+                                pRT->FillRoundedRectangle(rrcLes, theme.brushTreeSelected ? theme.brushTreeSelected.Get() : theme.brushItemActive.Get());
+                                // Prominent active lesson indicator bar
+                                D2D1_RECT_F rcAccent = D2D1::RectF(lesson.bounds.left, lesson.bounds.top + config.ScaleF(1.0f),
+                                                                   lesson.bounds.left + config.ScaleF(3.0f), lesson.bounds.bottom - config.ScaleF(1.0f));
+                                if (theme.brushBrandAccent) {
+                                    pRT->FillRectangle(rcAccent, theme.brushBrandAccent.Get());
+                                }
+                            } else if (isHoveredLesson) {
                                 D2D1_ROUNDED_RECT rrcLes = D2D1::RoundedRect(lesson.bounds, 3.0f, 3.0f);
                                 pRT->FillRoundedRectangle(rrcLes, theme.brushItemHover.Get());
                             }
@@ -735,8 +744,9 @@ void DrawerPanel::RenderExplorerPane(ID2D1RenderTarget* pRT, Theme& theme, const
                             D2D1_RECT_F rcLessonIcon = D2D1::RectF(lIconX, lcy - iconSize * 0.5f, lIconX + iconSize, lcy + iconSize * 0.5f);
                             lesson.checkBounds = rcLessonIcon;
 
-                            ID2D1Brush* pLIconBrush = lesson.isFinished ? (brushGreen ? brushGreen.Get() : theme.brushTextPrimary.Get())
-                                                                        : (theme.brushTextSecondary ? theme.brushTextSecondary.Get() : theme.brushTextMuted.Get());
+                            ID2D1Brush* pLIconBrush = lesson.isCurrent ? (theme.brushTextWhite ? theme.brushTextWhite.Get() : theme.brushTextPrimary.Get())
+                                                                       : (lesson.isFinished ? (brushGreen ? brushGreen.Get() : theme.brushTextPrimary.Get())
+                                                                                            : (theme.brushTextSecondary ? theme.brushTextSecondary.Get() : theme.brushTextMuted.Get()));
 
                             // Instead of circles: show book if it's a module, and test icon if it's a test!
                             if (lesson.IsTest()) {
@@ -9126,7 +9136,7 @@ void DrawerPanel::InitializeCourseCurriculum(const std::wstring& courseId, const
             m.title = L"Getting Started";
             m.isExpanded = true;
             m.lessons = {
-                { L"l1_1", L"01. What is Python & Installation", false, false, false },
+                { L"l1_1", L"01. What is Python & Installation", false, true, false },
                 { L"l1_2", L"02. Hello World & Your First Script", false, false, false },
                 { L"l1_3", L"03. Basic Syntax & Comments", false, false, false },
                 { L"l1_4", L"04. Working with Python REPL", false, false, true } // Test!
@@ -9210,7 +9220,7 @@ void DrawerPanel::InitializeCourseCurriculum(const std::wstring& courseId, const
                 les.id = mod.id + L"_les_" + std::to_wstring(l);
                 les.title = L"Lesson " + std::to_wstring(m) + L"." + std::to_wstring(l);
                 les.isFinished = false;
-                les.isCurrent = false;
+                les.isCurrent = (m == 1 && l == 1);
                 les.isTest = (l == 3);
                 mod.lessons.push_back(les);
             }

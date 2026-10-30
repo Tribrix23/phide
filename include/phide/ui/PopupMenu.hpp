@@ -110,6 +110,7 @@ enum class MenuActionId {
     ResetZoom,
 
     // Editor Layout Submenu Actions (Image 3)
+    ToggleLineNumbers,
     LayoutSplitUp,
     LayoutSplitDown,
     LayoutSplitLeft,
