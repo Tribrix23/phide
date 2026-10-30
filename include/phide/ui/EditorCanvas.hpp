@@ -506,6 +506,9 @@ public:
     void RenderStudentView(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
                            editor::OpenDocument& doc, float canvasLeft, float canvasWidth,
                            float topY, float clientHeight);
+    void RenderCourseView(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
+                          editor::OpenDocument& doc, float canvasLeft, float canvasWidth,
+                          float topY, float clientHeight);
     [[nodiscard]] bool IsLearningSearchFocused() const noexcept { return m_isLearningSearchFocused; }
     void SetLearningSearchFocused(bool f) noexcept { m_isLearningSearchFocused = f; }
     void SetActiveLearningFilter(int f) noexcept { m_learningActiveFilter = f; m_learningScrollY = 0.0f; }

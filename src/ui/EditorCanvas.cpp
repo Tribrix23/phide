@@ -356,6 +356,9 @@ void EditorCanvas::RenderSinglePane(ID2D1RenderTarget* pRT, Theme& theme, const 
     } else if (activeDoc.isSpecialView && activeDoc.viewType == L"student") {
         m_packageManagerView.HideWebView();
         RenderStudentView(pRT, theme, config, activeDoc, canvasLeft, canvasWidth, contentTopY, clientHeight);
+    } else if (activeDoc.isSpecialView && activeDoc.viewType == L"course") {
+        m_packageManagerView.HideWebView();
+        RenderCourseView(pRT, theme, config, activeDoc, canvasLeft, canvasWidth, contentTopY, clientHeight);
     } else {
         m_packageManagerView.HideWebView();
         if (activeDoc.isImageView) {
@@ -621,6 +624,13 @@ void EditorCanvas::RenderTabs(ID2D1RenderTarget* pRT, Theme& theme, const app::A
             m_icons.DrawPackage(pRT, iconBounds, theme.brushBrandAccent ? theme.brushBrandAccent.Get() : theme.brushTextWhite.Get(), 1.1f);
         } else if (doc.isSpecialView && doc.viewType == L"student") {
             m_icons.DrawGraduationCap(pRT, iconBounds, theme.brushBrandAccent ? theme.brushBrandAccent.Get() : theme.brushTextWhite.Get(), 1.3f);
+        } else if (doc.isSpecialView && doc.viewType == L"course") {
+            ID2D1Bitmap* pPyIcon = GetLearningHubBitmap(pRT, L"python.png");
+            if (pPyIcon && doc.fileName.find(L"Python") != std::wstring::npos) {
+                pRT->DrawBitmap(pPyIcon, iconBounds, 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
+            } else {
+                m_icons.DrawGraduationCap(pRT, iconBounds, theme.brushBrandAccent ? theme.brushBrandAccent.Get() : theme.brushTextWhite.Get(), 1.3f);
+            }
         } else if ((doc.isSpecialView && doc.viewType == L"notebook") || doc.filePath.ends_with(L".ipynb")) {
             m_icons.DrawTerminalNotebook(pRT, iconBounds, theme.brushBrandAccent ? theme.brushBrandAccent.Get() : theme.brushTextWhite.Get(), 1.3f);
         } else {
@@ -3284,6 +3294,197 @@ void EditorCanvas::RenderStudentView(ID2D1RenderTarget* pRT, Theme& theme, const
         D2D1_RECT_F rcThumb = D2D1::RectF(canvasLeft + canvasWidth - config.ScaleF(6.0f), thumbY,
                                          canvasLeft + canvasWidth - config.ScaleF(2.0f), thumbY + thumbH);
         pRT->FillRoundedRectangle(D2D1::RoundedRect(rcThumb, 2.0f, 2.0f), brushCardBorderHover.Get());
+    }
+
+    pRT->PopAxisAlignedClip();
+}
+
+void EditorCanvas::RenderCourseView(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
+                                    editor::OpenDocument& doc, float canvasLeft, float canvasWidth,
+                                    float topY, float clientHeight) {
+    if (!pRT) return;
+
+    D2D1_RECT_F rcView = D2D1::RectF(canvasLeft, topY, canvasLeft + canvasWidth, topY + clientHeight);
+    pRT->PushAxisAlignedClip(rcView, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+
+    if (theme.brushCanvasBg) {
+        pRT->FillRectangle(rcView, theme.brushCanvasBg.Get());
+    }
+
+    InitializeLearningCourses();
+
+    // Match course details
+    const LearningCourseDef* pFoundCourse = nullptr;
+    for (const auto& c : m_learningCourses) {
+        if (!doc.courseId.empty() && c.id == doc.courseId) {
+            pFoundCourse = &c;
+            break;
+        }
+        if (c.title == doc.fileName) {
+            pFoundCourse = &c;
+            break;
+        }
+    }
+
+    std::wstring courseTitle = doc.fileName.empty() ? L"Python for Beginners" : doc.fileName;
+    std::wstring courseDesc = pFoundCourse ? pFoundCourse->description : L"Learn Python from scratch with simple examples and hands-on exercises.";
+    std::wstring courseDiff = pFoundCourse ? pFoundCourse->difficulty : L"Beginner";
+    int lessonsCount = pFoundCourse ? pFoundCourse->lessons : 24;
+    int hoursCount = pFoundCourse ? pFoundCourse->hours : 6;
+
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushWhite;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushCardBg;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushCardBorder;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushEmerald;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushEmeraldBg;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushMeta;
+
+    pRT->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 1.0f), &brushWhite);
+    pRT->CreateSolidColorBrush(D2D1::ColorF(0.067f, 0.086f, 0.122f, 0.95f), &brushCardBg);
+    pRT->CreateSolidColorBrush(D2D1::ColorF(0.120f, 0.150f, 0.200f, 1.0f), &brushCardBorder);
+    pRT->CreateSolidColorBrush(D2D1::ColorF(0.063f, 0.725f, 0.506f, 1.0f), &brushEmerald);
+    pRT->CreateSolidColorBrush(D2D1::ColorF(0.020f, 0.180f, 0.090f, 0.85f), &brushEmeraldBg);
+    pRT->CreateSolidColorBrush(D2D1::ColorF(0.55f, 0.62f, 0.70f, 1.0f), &brushMeta);
+
+    const float padX = config.ScaleF(18.0f);
+    float curY = topY + config.ScaleF(16.0f);
+
+    // 1. Header Hero Card
+    const float bannerH = config.ScaleF(140.0f);
+    D2D1_RECT_F rcHero = D2D1::RectF(canvasLeft + padX, curY, canvasLeft + canvasWidth - padX, curY + bannerH);
+    D2D1_ROUNDED_RECT rrcHero = D2D1::RoundedRect(rcHero, config.ScaleF(8.0f), config.ScaleF(8.0f));
+    if (brushCardBg) pRT->FillRoundedRectangle(rrcHero, brushCardBg.Get());
+    if (brushCardBorder) pRT->DrawRoundedRectangle(rrcHero, brushCardBorder.Get(), 1.0f);
+
+    // Thumbnail on left
+    float thumbW = config.ScaleF(180.0f);
+    D2D1_RECT_F rcThumb = D2D1::RectF(rcHero.left + config.ScaleF(10.0f), rcHero.top + config.ScaleF(10.0f),
+                                       rcHero.left + thumbW, rcHero.bottom - config.ScaleF(10.0f));
+    ID2D1Bitmap* pBmp = nullptr;
+    if (pFoundCourse && !pFoundCourse->imageFile.empty()) {
+        pBmp = GetLearningHubBitmap(pRT, pFoundCourse->imageFile);
+    }
+    if (!pBmp) {
+        pBmp = GetLearningHubBitmap(pRT, L"course-python-1.png");
+    }
+    if (pBmp) {
+        pRT->DrawBitmap(pBmp, rcThumb, 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
+    }
+
+    // Course Title, Description & Badges on right
+    float infoX = rcHero.left + thumbW + config.ScaleF(16.0f);
+    D2D1_RECT_F rcTitle = D2D1::RectF(infoX, rcHero.top + config.ScaleF(12.0f), rcHero.right - config.ScaleF(160.0f), rcHero.top + config.ScaleF(40.0f));
+    if (theme.fontSectionHeader && brushWhite) {
+        pRT->DrawText(courseTitle.c_str(), static_cast<UINT32>(courseTitle.length()), theme.fontSectionHeader.Get(), rcTitle, brushWhite.Get());
+    }
+
+    D2D1_RECT_F rcDesc = D2D1::RectF(infoX, rcTitle.bottom + config.ScaleF(2.0f), rcHero.right - config.ScaleF(160.0f), rcTitle.bottom + config.ScaleF(38.0f));
+    if (theme.fontBody && brushMeta) {
+        pRT->DrawText(courseDesc.c_str(), static_cast<UINT32>(courseDesc.length()), theme.fontBody.Get(), rcDesc, brushMeta.Get());
+    }
+
+    // Pill Badges: Beginner, 24 lessons, 6 hours
+    float pillY = rcDesc.bottom + config.ScaleF(6.0f);
+    float pillH = config.ScaleF(22.0f);
+    D2D1_RECT_F rcDiff = D2D1::RectF(infoX, pillY, infoX + config.ScaleF(70.0f), pillY + pillH);
+    D2D1_ROUNDED_RECT rrcDiff = D2D1::RoundedRect(rcDiff, 4.0f, 4.0f);
+    if (brushEmeraldBg) pRT->FillRoundedRectangle(rrcDiff, brushEmeraldBg.Get());
+    if (brushEmerald) pRT->DrawRoundedRectangle(rrcDiff, brushEmerald.Get(), 1.0f);
+    IDWriteTextFormat* pSmallFmt = theme.fontMenuShortcut ? theme.fontMenuShortcut.Get() : theme.fontBody.Get();
+    if (pSmallFmt && brushEmerald) {
+        D2D1_RECT_F rcDiffText = D2D1::RectF(rcDiff.left, rcDiff.top + config.ScaleF(3.0f), rcDiff.right, rcDiff.bottom);
+        pRT->DrawText(courseDiff.c_str(), static_cast<UINT32>(courseDiff.length()), pSmallFmt, rcDiffText, brushEmerald.Get());
+    }
+
+    wchar_t szStats[64];
+    swprintf_s(szStats, L"%d lessons • %d hours • By Koda", lessonsCount, hoursCount);
+    D2D1_RECT_F rcStats = D2D1::RectF(rcDiff.right + config.ScaleF(12.0f), pillY + config.ScaleF(3.0f), rcHero.right - config.ScaleF(160.0f), pillY + pillH);
+    if (theme.fontBody && brushMeta) {
+        pRT->DrawText(szStats, static_cast<UINT32>(wcslen(szStats)), theme.fontBody.Get(), rcStats, brushMeta.Get());
+    }
+
+    // "Start Learning" Button on right
+    float btnW = config.ScaleF(135.0f);
+    float btnH = config.ScaleF(36.0f);
+    D2D1_RECT_F rcBtn = D2D1::RectF(rcHero.right - btnW - config.ScaleF(16.0f), rcHero.top + (bannerH - btnH) / 2.0f,
+                                   rcHero.right - config.ScaleF(16.0f), rcHero.top + (bannerH + btnH) / 2.0f);
+    D2D1_ROUNDED_RECT rrcBtn = D2D1::RoundedRect(rcBtn, config.ScaleF(6.0f), config.ScaleF(6.0f));
+    if (brushEmerald) pRT->FillRoundedRectangle(rrcBtn, brushEmerald.Get());
+    const wchar_t* btnLabel = L"▶ Start Learning";
+    if (theme.fontButtonCenter && brushWhite) {
+        pRT->DrawText(btnLabel, static_cast<UINT32>(wcslen(btnLabel)), theme.fontButtonCenter.Get(), rcBtn, brushWhite.Get());
+    }
+
+    curY += bannerH + config.ScaleF(22.0f);
+
+    // 2. Curriculum Section Header
+    D2D1_RECT_F rcSecTitle = D2D1::RectF(canvasLeft + padX, curY, canvasLeft + canvasWidth - padX, curY + config.ScaleF(24.0f));
+    const wchar_t* secTitle = L"Curriculum & Modules";
+    if (theme.fontSectionHeader && brushWhite) {
+        pRT->DrawText(secTitle, static_cast<UINT32>(wcslen(secTitle)), theme.fontSectionHeader.Get(), rcSecTitle, brushWhite.Get());
+    }
+    curY += config.ScaleF(24.0f);
+
+    const wchar_t* secSub = L"Each module acts like a folder in the Explorer sidebar. Unfinished modules show a hollow white box, and turn solid green when completed.";
+    D2D1_RECT_F rcSecSub = D2D1::RectF(canvasLeft + padX, curY, canvasLeft + canvasWidth - padX, curY + config.ScaleF(20.0f));
+    if (theme.fontBody && brushMeta) {
+        pRT->DrawText(secSub, static_cast<UINT32>(wcslen(secSub)), theme.fontBody.Get(), rcSecSub, brushMeta.Get());
+    }
+    curY += config.ScaleF(28.0f);
+
+    // 3. Modules Grid (2 Columns of Module Cards)
+    struct ModDisplay {
+        const wchar_t* title;
+        const wchar_t* desc;
+        int lessons;
+    };
+    ModDisplay displayMods[6] = {
+        { L"Module 1: Getting Started", L"Python installation, IDE setup, running first script, and REPL basics.", 4 },
+        { L"Module 2: Variables & Data Types", L"Numeric operations, string manipulation, booleans, and input.", 4 },
+        { L"Module 3: Control Flow & Logic", L"Conditionals, boolean logic, while loops, and for range iterations.", 4 },
+        { L"Module 4: Functions & Modules", L"Function declarations, arguments, return values, and library imports.", 4 },
+        { L"Module 5: Data Structures", L"Lists, tuples, dictionaries, and set operations with practical examples.", 4 },
+        { L"Module 6: Projects & Practice", L"Build a CLI calculator, guessing game, and interactive quiz app.", 4 }
+    };
+
+    float gridW = canvasWidth - padX * 2.0f;
+    float cardGap = config.ScaleF(12.0f);
+    int cols = (gridW > config.ScaleF(600.0f)) ? 2 : 1;
+    float mCardW = (gridW - cardGap * static_cast<float>(cols - 1)) / static_cast<float>(cols);
+    float mCardH = config.ScaleF(84.0f);
+
+    for (int i = 0; i < 6; ++i) {
+        int r = i / cols;
+        int c = i % cols;
+        float mx = canvasLeft + padX + static_cast<float>(c) * (mCardW + cardGap);
+        float my = curY + static_cast<float>(r) * (mCardH + cardGap);
+
+        if (my + mCardH > topY + clientHeight) break;
+
+        D2D1_RECT_F rcMCard = D2D1::RectF(mx, my, mx + mCardW, my + mCardH);
+        D2D1_ROUNDED_RECT rrcMCard = D2D1::RoundedRect(rcMCard, config.ScaleF(6.0f), config.ScaleF(6.0f));
+        if (brushCardBg) pRT->FillRoundedRectangle(rrcMCard, brushCardBg.Get());
+        if (brushCardBorder) pRT->DrawRoundedRectangle(rrcMCard, brushCardBorder.Get(), 1.0f);
+
+        // Hollow box icon on module card
+        float bx = mx + config.ScaleF(12.0f);
+        float by = my + config.ScaleF(14.0f);
+        float bw = config.ScaleF(14.0f);
+        D2D1_RECT_F rcBox = D2D1::RectF(bx, by, bx + bw, by + bw);
+        if (brushWhite) pRT->DrawRoundedRectangle(D2D1::RoundedRect(rcBox, 2.0f, 2.0f), brushWhite.Get(), 1.4f);
+
+        // Title
+        D2D1_RECT_F rcMTitle = D2D1::RectF(bx + bw + config.ScaleF(10.0f), my + config.ScaleF(12.0f), mx + mCardW - config.ScaleF(12.0f), my + config.ScaleF(32.0f));
+        if (theme.fontBody && brushWhite) {
+            pRT->DrawText(displayMods[i].title, static_cast<UINT32>(wcslen(displayMods[i].title)), theme.fontBody.Get(), rcMTitle, brushWhite.Get());
+        }
+
+        // Desc
+        D2D1_RECT_F rcMDesc = D2D1::RectF(bx + bw + config.ScaleF(10.0f), rcMTitle.bottom + config.ScaleF(2.0f), mx + mCardW - config.ScaleF(12.0f), my + mCardH - config.ScaleF(8.0f));
+        IDWriteTextFormat* pDescFmt = theme.fontMenuShortcut ? theme.fontMenuShortcut.Get() : theme.fontBody.Get();
+        if (pDescFmt && brushMeta) {
+            pRT->DrawText(displayMods[i].desc, static_cast<UINT32>(wcslen(displayMods[i].desc)), pDescFmt, rcMDesc, brushMeta.Get());
+        }
     }
 
     pRT->PopAxisAlignedClip();

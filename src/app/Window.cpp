@@ -1397,7 +1397,49 @@ void Window::OpenVirtualDocument(const std::wstring& name, const std::wstring& c
         group.docs.push_back(std::move(newDoc));
         group.activeDocIdx = static_cast<int>(group.docs.size() - 1);
     }
+    SyncActiveTabWithDrawer();
     InvalidateRect(m_hwnd, nullptr, FALSE);
+}
+
+void Window::OpenCourseTab(const std::wstring& courseTitle, const std::wstring& courseId) {
+    auto& group = GetActiveGroup();
+    for (size_t i = 0; i < group.docs.size(); ++i) {
+        if (group.docs[i].isSpecialView && group.docs[i].viewType == L"course" && group.docs[i].fileName == courseTitle) {
+            group.activeDocIdx = static_cast<int>(i);
+            SyncActiveTabWithDrawer();
+            m_config.activeRailTab = 0;
+            m_config.isDrawerOpen = true;
+            InvalidateRect(m_hwnd, nullptr, FALSE);
+            return;
+        }
+    }
+
+    editor::OpenDocument newDoc;
+    newDoc.fileName = courseTitle;
+    newDoc.filePath = L"course://" + courseId;
+    newDoc.courseId = courseId;
+    newDoc.isSpecialView = true;
+    newDoc.viewType = L"course";
+    newDoc.isPreview = false;
+    newDoc.isDirty = false;
+
+    group.docs.push_back(std::move(newDoc));
+    group.activeDocIdx = static_cast<int>(group.docs.size() - 1);
+
+    m_config.activeRailTab = 0;
+    m_config.isDrawerOpen = true;
+
+    SyncActiveTabWithDrawer();
+    InvalidateRect(m_hwnd, nullptr, FALSE);
+}
+
+void Window::SyncActiveTabWithDrawer() {
+    auto* pDoc = GetActiveDoc();
+    if (pDoc && pDoc->isSpecialView && pDoc->viewType == L"course") {
+        m_drawer.SetCourseExplorerMode(true, pDoc->fileName, pDoc->courseId);
+    } else {
+        m_drawer.SetCourseExplorerMode(false, L"", L"");
+    }
 }
 
 void Window::OpenSpecialView(const std::wstring& viewType, const std::wstring& title) {
@@ -1429,6 +1471,7 @@ void Window::OpenSpecialView(const std::wstring& viewType, const std::wstring& t
         group.docs.push_back(std::move(newDoc));
         group.activeDocIdx = static_cast<int>(group.docs.size() - 1);
     }
+    SyncActiveTabWithDrawer();
     InvalidateRect(m_hwnd, nullptr, FALSE);
 }
 
@@ -1599,6 +1642,7 @@ void Window::CloseDocument(int groupIdx, int docIdx) {
         }
     }
 
+    SyncActiveTabWithDrawer();
     UpdateDrawerDirtyFiles();
     UpdateDrawerErrorFiles();
     SaveSessionState();
@@ -5692,6 +5736,7 @@ void Window::OnPaint() {
     }
 
     // 2. Render Slide-out Drawer Panel (smoothly morphs and resizes its bottom with terminal)
+    SyncActiveTabWithDrawer();
     if (hasLeftDrawer) {
         m_drawer.Render(m_pRenderTarget.Get(), m_theme, m_config, drawerH, currentDrawerW);
     }
@@ -8085,6 +8130,7 @@ void Window::HandleLButtonDown(POINT clientPt) {
             int tabHitIdx = m_editor.HitTestTab(clientPt, group.docs);
             if (tabHitIdx >= 0) {
                 group.activeDocIdx = tabHitIdx;
+                SyncActiveTabWithDrawer();
                 m_dragTabGroup = targetGroup;
                 m_dragTabIdx = tabHitIdx;
                 m_tabDropTargetGroup = targetGroup;
@@ -8151,27 +8197,8 @@ void Window::HandleLButtonDown(POINT clientPt) {
                         size_t courseIdx = static_cast<size_t>(action - 100);
                         if (courseIdx < m_editor.GetLearningCourseCount()) {
                             const auto& course = m_editor.GetLearningCourse(courseIdx);
-                            if (course.category == L"Python") {
-                                OpenNotebookView();
-                            } else if (course.category == L"JavaScript") {
-                                DoNewFile();
-                                auto* pNewDoc = GetActiveDoc();
-                                if (pNewDoc) {
-                                    pNewDoc->fileName = L"learn_" + course.id + L".js";
-                                    pNewDoc->buffer.SetText(L"// " + course.title + L"\n// " + course.description + L"\n\nconsole.log('Welcome to " + course.title + L"!');\n");
-                                }
-                            } else if (course.category == L"PHP") {
-                                DoNewFile();
-                                auto* pNewDoc = GetActiveDoc();
-                                if (pNewDoc) {
-                                    pNewDoc->fileName = L"learn_" + course.id + L".php";
-                                    pNewDoc->buffer.SetText(L"<?php\n// " + course.title + L"\n// " + course.description + L"\n\necho 'Welcome to " + course.title + L"!\n';\n");
-                                }
-                            } else {
-                                DoNewFile();
-                            }
+                            OpenCourseTab(course.title, course.id);
                         }
-                        InvalidateRect(m_hwnd, nullptr, FALSE);
                         return;
                     } else if (action == 1) {
                         DoNewFile();
@@ -8557,7 +8584,12 @@ void Window::HandleLButtonDown(POINT clientPt) {
                 return;
             }
         } else {
-            if (!m_drawer.HasOpenFolder()) {
+            if (m_drawer.IsCourseExplorerMode()) {
+                if (m_drawer.HandleCourseExplorerClick(clientPt, m_config)) {
+                    InvalidateRect(m_hwnd, nullptr, FALSE);
+                    return;
+                }
+            } else if (!m_drawer.HasOpenFolder()) {
                 if (m_drawer.HitTestOpenFolderButton(clientPt, m_config)) {
                     DoOpenFolder();
                     return;

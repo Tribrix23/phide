@@ -27,7 +27,8 @@ struct OpenDocument {
     bool isDirty = false;        ///< True if document has unsaved edits
     bool isPreview = false;      ///< True if single-clicked and not yet edited/pinned (VS Code preview tab)
     bool isSpecialView = false;  ///< True for Keyboard Shortcuts, settings, etc.
-    std::wstring viewType;       ///< Special view identifier (e.g. L"keybindings")
+    std::wstring viewType;       ///< Special view identifier (e.g. L"keybindings", L"course")
+    std::wstring courseId;       ///< Course identifier for course special views (e.g. L"python-1")
     D2D1_RECT_F tabBounds{};     ///< Screen bounding box of the tab
     D2D1_RECT_F closeBounds{};   ///< Screen bounding box of the tab close button (×)
     D2D1_RECT_F splitTabBounds{};   ///< Screen bounding box of the tab in secondary/right split pane

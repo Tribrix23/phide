@@ -43,6 +43,71 @@ struct DrawerTreeItem {
 };
 
 /**
+ * @struct CourseLessonItem
+ * @brief Represents an individual lesson in the Course Explorer sidebar.
+ */
+struct CourseLessonItem {
+    std::wstring id;
+    std::wstring title;
+    bool isFinished = false;
+    D2D1_RECT_F bounds{};
+    D2D1_RECT_F checkBounds{};
+};
+
+/**
+ * @struct CourseModuleItem
+ * @brief Represents an expandable module folder in the Course Explorer sidebar.
+ * Displays a hollow white box if unfinished, or a complete solid filled green box when all lessons are finished.
+ */
+struct CourseModuleItem {
+    std::wstring id;
+    std::wstring title;
+    bool isExpanded = true;
+    std::vector<CourseLessonItem> lessons;
+    D2D1_RECT_F bounds{};
+    D2D1_RECT_F boxBounds{};
+    D2D1_RECT_F chevronBounds{};
+
+    [[nodiscard]] bool IsAllFinished() const noexcept {
+        if (lessons.empty()) return false;
+        for (const auto& l : lessons) {
+            if (!l.isFinished) return false;
+        }
+        return true;
+    }
+
+    [[nodiscard]] size_t GetFinishedCount() const noexcept {
+        size_t cnt = 0;
+        for (const auto& l : lessons) {
+            if (l.isFinished) cnt++;
+        }
+        return cnt;
+    }
+};
+
+/**
+ * @struct CourseTreeData
+ * @brief Full course curriculum tree for Course Explorer.
+ */
+struct CourseTreeData {
+    std::wstring courseId;
+    std::wstring courseTitle;
+    std::vector<CourseModuleItem> modules;
+
+    [[nodiscard]] size_t GetTotalLessons() const noexcept {
+        size_t total = 0;
+        for (const auto& m : modules) total += m.lessons.size();
+        return total;
+    }
+
+    [[nodiscard]] size_t GetFinishedLessons() const noexcept {
+        size_t fin = 0;
+        for (const auto& m : modules) fin += m.GetFinishedCount();
+        return fin;
+    }
+};
+
+/**
  * @struct SearchMatch
  * @brief Individual matched occurrence inside a source file.
  */
@@ -510,6 +575,18 @@ public:
     void SetOpenFolderPath(const std::wstring& path) noexcept { m_openFolderPath = path; }
     [[nodiscard]] const std::wstring& GetRootName() const noexcept { return m_rootName; }
 
+    // --- Course Explorer Mode ---
+    void SetCourseExplorerMode(bool enable, const std::wstring& title = L"", const std::wstring& courseId = L"");
+    [[nodiscard]] bool IsCourseExplorerMode() const noexcept { return m_isCourseExplorerMode; }
+    [[nodiscard]] const std::wstring& GetActiveCourseTitle() const noexcept { return m_activeCourseTitle; }
+    [[nodiscard]] const std::wstring& GetActiveCourseId() const noexcept { return m_activeCourseId; }
+    [[nodiscard]] const CourseTreeData* GetActiveCourseTree() const noexcept;
+    [[nodiscard]] CourseTreeData* GetActiveCourseTreeMutable() noexcept;
+    void ToggleCourseModule(size_t moduleIdx);
+    void ToggleCourseLesson(size_t moduleIdx, size_t lessonIdx);
+    void SetCourseLessonFinished(size_t moduleIdx, size_t lessonIdx, bool finished);
+    bool HandleCourseExplorerClick(POINT pt, const app::AppConfig& config);
+
     // --- Search Pane Interactions (Image 2) ---
     /**
      * @brief Dispatches mouse click inside the Code Search sidebar pane.
@@ -916,6 +993,17 @@ private:
     bool m_hasPythonFiles = false;
     bool m_hasPhpFiles = false;
     bool m_hasNodeFiles = false;
+
+    // Course Explorer Mode State
+    bool m_isCourseExplorerMode = false;
+    std::wstring m_activeCourseTitle;
+    std::wstring m_activeCourseId;
+    std::map<std::wstring, CourseTreeData> m_courseTrees;
+    size_t m_courseScrollIndex = 0;
+    int m_hoveredCourseModule = -1;
+    int m_hoveredCourseLesson = -1;
+
+    void InitializeCourseCurriculum(const std::wstring& courseId, const std::wstring& courseTitle);
 
     std::set<std::wstring> m_expandedDirs;
     std::vector<DrawerTreeItem> m_visibleItems;

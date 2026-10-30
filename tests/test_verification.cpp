@@ -346,6 +346,9 @@ int main(int argc, char* argv[]) {
     if (targetTest == 82) {
         goto run_test_82;
     }
+    if (targetTest == 83) {
+        goto run_test_83;
+    }
 
     // --- 3. Render Test: Picture Viewer in Dark & Light Modes ---
     std::cout << "[TEST 2] Testing Picture Viewer rendering..." << std::endl;
@@ -11989,6 +11992,146 @@ run_test_82:
         std::cout << "  Passed: All [TEST 82] Learning Hub Gap & Single Commit Graph Clean Node tests passed!" << std::endl;
         if (targetTest == 82) {
             std::cout << "Target test 82 finished successfully." << std::endl;
+            return 0;
+        }
+    }
+
+    // --- 83. Course Explorer: Special Sidebar, Hollow/Green Box Modules & Dynamic Revert ---
+run_test_83:
+    if (targetTest == 0 || targetTest == 83) {
+        std::cout << "\n[TEST 83] Testing Course Explorer Special Sidebar, Hollow/Green Box Modules & Tab Revert..." << std::endl;
+
+        phide::ui::DrawerPanel drawer83;
+        drawer83.OpenFolder(std::filesystem::current_path().wstring());
+        assert(drawer83.HasOpenFolder());
+
+        // 1. Initial State: Normal Workspace Explorer
+        assert(!drawer83.IsCourseExplorerMode());
+        std::wstring normalTitle = L"EXPLORER: " + drawer83.GetRootName();
+        std::cout << "  Passed: Initial drawer is in normal explorer mode (" << std::string(normalTitle.begin(), normalTitle.end()) << ")" << std::endl;
+
+        // 2. Open Course Tab: Switches Explorer to "EXPLORER: Python for Beginners"
+        drawer83.SetCourseExplorerMode(true, L"Python for Beginners", L"python-1");
+        assert(drawer83.IsCourseExplorerMode());
+        assert(drawer83.GetActiveCourseTitle() == L"Python for Beginners");
+
+        const auto* pTree = drawer83.GetActiveCourseTree();
+        assert(pTree != nullptr);
+        assert(pTree->modules.size() == 6);
+        assert(pTree->GetTotalLessons() == 24);
+
+        // Verify Module 0 initial state: unfinished (hollow box)
+        assert(!pTree->modules[0].IsAllFinished());
+        std::cout << "  Passed: Course Explorer activated with 6 modules and 24 lessons (Module 0 unfinished)" << std::endl;
+
+        // Render Course Explorer with Hollow White Box
+        const UINT scW = 280, scH = 650;
+        ComPtr<IWICBitmap> pWicCourse1;
+        hr = pWicFactory->CreateBitmap(scW, scH, GUID_WICPixelFormat32bppPBGRA, WICBitmapCacheOnDemand, &pWicCourse1);
+        assert(SUCCEEDED(hr));
+        D2D1_RENDER_TARGET_PROPERTIES rtProps = D2D1::RenderTargetProperties(
+            D2D1_RENDER_TARGET_TYPE_DEFAULT,
+            D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED)
+        );
+        ComPtr<ID2D1RenderTarget> pRTCourse1;
+        hr = pD2DFactory->CreateWicBitmapRenderTarget(pWicCourse1.Get(), rtProps, &pRTCourse1);
+        assert(SUCCEEDED(hr));
+        phide::ui::Theme theme83;
+        theme83.CreateDeviceResources(pRTCourse1.Get(), pDWriteFactory.Get());
+        phide::app::AppConfig cfg83;
+        cfg83.activeRailTab = 0; // Explorer
+
+        pRTCourse1->BeginDraw();
+        pRTCourse1->Clear(theme83.colors.drawerBg);
+        drawer83.Render(pRTCourse1.Get(), theme83, cfg83, static_cast<float>(scH), static_cast<float>(scW));
+        hr = pRTCourse1->EndDraw();
+        assert(SUCCEEDED(hr));
+
+        SaveWicBitmapToPng(pWicCourse1.Get(), pWicFactory.Get(), artDir + L"test_course_explorer_hollow_box.png");
+        std::cout << "  Passed: Saved test_course_explorer_hollow_box.png" << std::endl;
+
+        // 3. Complete Module 0 (all 4 lessons): Box turns solid green
+        for (size_t l = 0; l < pTree->modules[0].lessons.size(); ++l) {
+            drawer83.SetCourseLessonFinished(0, l, true);
+        }
+        assert(pTree->modules[0].IsAllFinished());
+        std::cout << "  Passed: All lessons in Module 0 marked finished -> Module 0 IsAllFinished() is TRUE" << std::endl;
+
+        ComPtr<IWICBitmap> pWicCourse2;
+        hr = pWicFactory->CreateBitmap(scW, scH, GUID_WICPixelFormat32bppPBGRA, WICBitmapCacheOnDemand, &pWicCourse2);
+        assert(SUCCEEDED(hr));
+        ComPtr<ID2D1RenderTarget> pRTCourse2;
+        hr = pD2DFactory->CreateWicBitmapRenderTarget(pWicCourse2.Get(), rtProps, &pRTCourse2);
+        assert(SUCCEEDED(hr));
+        theme83.CreateDeviceResources(pRTCourse2.Get(), pDWriteFactory.Get());
+
+        pRTCourse2->BeginDraw();
+        pRTCourse2->Clear(theme83.colors.drawerBg);
+        drawer83.Render(pRTCourse2.Get(), theme83, cfg83, static_cast<float>(scH), static_cast<float>(scW));
+        hr = pRTCourse2->EndDraw();
+        assert(SUCCEEDED(hr));
+
+        SaveWicBitmapToPng(pWicCourse2.Get(), pWicFactory.Get(), artDir + L"test_course_explorer_green_filled_box.png");
+        std::cout << "  Passed: Saved test_course_explorer_green_filled_box.png" << std::endl;
+
+        // 4. Switch to other tab: Explorer reverts to normal workspace folder
+        drawer83.SetCourseExplorerMode(false);
+        assert(!drawer83.IsCourseExplorerMode());
+        std::cout << "  Passed: Switching tabs reverts explorer to normal workspace tree" << std::endl;
+
+        ComPtr<IWICBitmap> pWicRevert;
+        hr = pWicFactory->CreateBitmap(scW, scH, GUID_WICPixelFormat32bppPBGRA, WICBitmapCacheOnDemand, &pWicRevert);
+        assert(SUCCEEDED(hr));
+        ComPtr<ID2D1RenderTarget> pRTRevert;
+        hr = pD2DFactory->CreateWicBitmapRenderTarget(pWicRevert.Get(), rtProps, &pRTRevert);
+        assert(SUCCEEDED(hr));
+        theme83.CreateDeviceResources(pRTRevert.Get(), pDWriteFactory.Get());
+
+        pRTRevert->BeginDraw();
+        pRTRevert->Clear(theme83.colors.drawerBg);
+        drawer83.Render(pRTRevert.Get(), theme83, cfg83, static_cast<float>(scH), static_cast<float>(scW));
+        hr = pRTRevert->EndDraw();
+        assert(SUCCEEDED(hr));
+
+        SaveWicBitmapToPng(pWicRevert.Get(), pWicFactory.Get(), artDir + L"test_course_explorer_reverted_to_normal.png");
+        std::cout << "  Passed: Saved test_course_explorer_reverted_to_normal.png" << std::endl;
+
+        // 5. Switch back to special tab: Explorer restores Course Explorer and preserves green finished state
+        drawer83.SetCourseExplorerMode(true, L"Python for Beginners", L"python-1");
+        assert(drawer83.IsCourseExplorerMode());
+        assert(drawer83.GetActiveCourseTree()->modules[0].IsAllFinished());
+        std::cout << "  Passed: Switching back restores Course Explorer and preserves completed progress" << std::endl;
+
+        // 6. Render Course Tab Surface in EditorCanvas
+        {
+            phide::ui::EditorCanvas editor83;
+            phide::editor::OpenDocument courseDoc;
+            courseDoc.isSpecialView = true;
+            courseDoc.viewType = L"course";
+            courseDoc.fileName = L"Python for Beginners";
+            courseDoc.courseId = L"python-1";
+
+            const UINT edW = 1200, edH = 750;
+            ComPtr<IWICBitmap> pWicCourseTab;
+            hr = pWicFactory->CreateBitmap(edW, edH, GUID_WICPixelFormat32bppPBGRA, WICBitmapCacheOnDemand, &pWicCourseTab);
+            assert(SUCCEEDED(hr));
+            ComPtr<ID2D1RenderTarget> pRTCourseTab;
+            hr = pD2DFactory->CreateWicBitmapRenderTarget(pWicCourseTab.Get(), rtProps, &pRTCourseTab);
+            assert(SUCCEEDED(hr));
+            theme83.CreateDeviceResources(pRTCourseTab.Get(), pDWriteFactory.Get());
+
+            pRTCourseTab->BeginDraw();
+            editor83.RenderCourseView(pRTCourseTab.Get(), theme83, cfg83, courseDoc, 0.0f, static_cast<float>(edW), 0.0f, static_cast<float>(edH));
+            hr = pRTCourseTab->EndDraw();
+            assert(SUCCEEDED(hr));
+
+            SaveWicBitmapToPng(pWicCourseTab.Get(), pWicFactory.Get(), artDir + L"test_course_view_tab_content.png");
+            std::cout << "  Passed: Saved test_course_view_tab_content.png" << std::endl;
+        }
+
+        std::cout << "  Passed: All [TEST 83] Course Explorer Special Sidebar & Tab Revert tests passed!" << std::endl;
+        if (targetTest == 83) {
+            std::cout << "Target test 83 finished successfully." << std::endl;
             return 0;
         }
     }

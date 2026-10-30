@@ -211,6 +211,8 @@ private:
      * @param title Title displayed on the tab header.
      */
     void OpenSpecialView(const std::wstring& viewType, const std::wstring& title);
+    void OpenCourseTab(const std::wstring& courseTitle, const std::wstring& courseId);
+    void SyncActiveTabWithDrawer();
 
     /**
      * @brief Opens an interactive Jupyter / Colab-style notebook tab (.ipynb).
