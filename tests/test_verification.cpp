@@ -12248,7 +12248,7 @@ run_test_84:
 
         // 4. Render Flat Course Reading View (Python for Beginners)
         {
-            const UINT crW = 1000, crH = 850;
+            const UINT crW = 1280, crH = 800;
             ComPtr<IWICBitmap> pWicCourse;
             hr = pWicFactory->CreateBitmap(crW, crH, GUID_WICPixelFormat32bppPBGRA, WICBitmapCacheOnDemand, &pWicCourse);
             assert(SUCCEEDED(hr));

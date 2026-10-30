@@ -820,33 +820,39 @@ void EditorCanvas::RenderBreadcrumbs(ID2D1RenderTarget* pRT, Theme& theme, const
                       theme.fontButtonCenter ? theme.fontButtonCenter.Get() : theme.fontBody.Get(), rcErrText, redBrush);
     }
 
-    // Parse segments from doc.filePath (Image 4)
-    std::wstring pathStr = doc.filePath.empty() ? doc.fileName : doc.filePath;
-    for (auto& c : pathStr) {
-        if (c == L'/') c = L'\\';
-    }
-
+    // Parse segments from doc.filePath (Image 4) or course hierarchy
     std::vector<std::wstring> segments;
-    size_t start = 0;
-    while (start < pathStr.length()) {
-        size_t end = pathStr.find(L'\\', start);
-        if (end == std::wstring::npos) end = pathStr.length();
-        if (end > start) {
-            std::wstring seg = pathStr.substr(start, end - start);
-            // Skip Windows drive letter root if present (e.g. C:)
-            if (!(seg.length() == 2 && seg[1] == L':')) {
-                segments.push_back(seg);
-            }
+    if (!doc.courseId.empty() || (doc.isSpecialView && doc.viewType == L"course")) {
+        segments.push_back(doc.fileName.empty() ? L"Python for Beginners" : doc.fileName);
+        segments.push_back(L"Getting Started");
+        segments.push_back(L"01. What is Python & Installation");
+    } else {
+        std::wstring pathStr = doc.filePath.empty() ? doc.fileName : doc.filePath;
+        for (auto& c : pathStr) {
+            if (c == L'/') c = L'\\';
         }
-        start = end + 1;
-    }
 
-    // Keep up to 4 segments for a clean breadcrumb hierarchy
-    if (segments.size() > 4) {
-        segments.erase(segments.begin(), segments.end() - 4);
-    }
-    if (segments.empty()) {
-        segments.push_back(doc.fileName.empty() ? L"Untitled" : doc.fileName);
+        size_t start = 0;
+        while (start < pathStr.length()) {
+            size_t end = pathStr.find(L'\\', start);
+            if (end == std::wstring::npos) end = pathStr.length();
+            if (end > start) {
+                std::wstring seg = pathStr.substr(start, end - start);
+                // Skip Windows drive letter root if present (e.g. C:)
+                if (!(seg.length() == 2 && seg[1] == L':')) {
+                    segments.push_back(seg);
+                }
+            }
+            start = end + 1;
+        }
+
+        // Keep up to 4 segments for a clean breadcrumb hierarchy
+        if (segments.size() > 4) {
+            segments.erase(segments.begin(), segments.end() - 4);
+        }
+        if (segments.empty()) {
+            segments.push_back(doc.fileName.empty() ? L"Untitled" : doc.fileName);
+        }
     }
 
     float curX = canvasLeft + config.ScaleF(14.0f);
@@ -3364,16 +3370,26 @@ void EditorCanvas::RenderCourseView(ID2D1RenderTarget* pRT, Theme& theme, const 
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushWhite;
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushProse;
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushMeta;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushBadgeBg;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushBadgeBorder;
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushScrollbar;
 
     pRT->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 1.0f), &brushWhite);
-    pRT->CreateSolidColorBrush(D2D1::ColorF(0.83f, 0.86f, 0.90f, 1.0f), &brushProse);
-    pRT->CreateSolidColorBrush(D2D1::ColorF(0.55f, 0.60f, 0.68f, 1.0f), &brushMeta);
+    pRT->CreateSolidColorBrush(D2D1::ColorF(0.85f, 0.88f, 0.92f, 1.0f), &brushProse);
+    pRT->CreateSolidColorBrush(D2D1::ColorF(0.60f, 0.65f, 0.72f, 1.0f), &brushMeta);
+    pRT->CreateSolidColorBrush(D2D1::ColorF(0.12f, 0.15f, 0.20f, 1.0f), &brushBadgeBg);
+    pRT->CreateSolidColorBrush(D2D1::ColorF(0.24f, 0.28f, 0.36f, 1.0f), &brushBadgeBorder);
     pRT->CreateSolidColorBrush(D2D1::ColorF(0.20f, 0.24f, 0.30f, 1.0f), &brushScrollbar);
 
-    const float padX = config.ScaleF(36.0f);
-    float contentW = (std::min)(canvasWidth - padX * 2.0f, config.ScaleF(860.0f));
-    float contentLeft = canvasLeft + padX;
+    // Responsive, centered reading layout for wide screens
+    const float minPadX = config.ScaleF(48.0f);
+    float maxContentW = config.ScaleF(960.0f);
+    float availW = canvasWidth - minPadX * 2.0f;
+    float contentW = (availW > maxContentW) ? maxContentW : (std::max)(config.ScaleF(400.0f), availW);
+    float contentLeft = canvasLeft + minPadX;
+    if (availW > maxContentW) {
+        contentLeft = canvasLeft + (canvasWidth - contentW) * 0.5f;
+    }
     float startY = topY + config.ScaleF(28.0f) - m_courseScrollY;
     float curY = startY;
 
@@ -3430,49 +3446,80 @@ void EditorCanvas::RenderCourseView(ID2D1RenderTarget* pRT, Theme& theme, const 
         curY += iconSize + config.ScaleF(26.0f);
     }
 
-    // --- 2. Overview & Language Details ---
+    // --- 2. Overview & Language Philosophy ---
     DrawParagraph(
-        L"Python is a high-level, general-purpose programming language known for its simple and readable syntax. It is designed to be easy to learn and use, making it a popular choice for beginners while still being powerful enough for professional development. Python allows you to write clear and concise code, which helps you focus on solving problems rather than dealing with complex syntax rules. It can be used to build a wide range of applications, including web development, data analysis, automation scripts, artificial intelligence, scientific computing, and more. Its large and active community also means that there are many resources, tutorials, and libraries available to help you learn and build projects.",
-        pBodyFmt, brushProse.Get(), 18.0f
+        L"Python is a modern, high-level, general-purpose programming language celebrated for its simple and readable syntax. Designed around the philosophy that code readability directly amplifies developer velocity, Python emphasizes clean indentation over curly braces or semicolons. This makes it an ideal first language for beginners to pick up, while still offering the depth and power demanded by industry professionals across web development, artificial intelligence, data science, and automated scripting.",
+        pBodyFmt, brushProse.Get(), 16.0f
     );
 
+    // Cross-platform statement connected to runtime execution
     DrawParagraph(
-        L"Python runs on Windows, macOS, and Linux, and most modern computers can run it without issues.",
+        L"Because Python runs cross-platform on Windows, macOS, and Linux, code written on one operating system runs consistently anywhere. When you execute a Python program, you are interacting with an underlying interpreter that processes and executes your instructions step-by-step.",
         pBodyFmt, brushProse.Get(), 24.0f
     );
 
     // --- 3. Python Interpreter Details & Architecture Overview ---
     DrawParagraph(
-        L"Python Interpreter & Execution Architecture",
+        L"01. Python Interpreter & Execution Architecture",
         pHdFmt, brushWhite.Get(), 12.0f
     );
 
     DrawParagraph(
-        L"The default reference implementation of Python is CPython, written in C. When executing a Python program, CPython undergoes a streamlined pipeline from source text to bytecode interpretation:\n"
+        L"The default reference implementation of Python is CPython, written in C. When executing a Python program, CPython processes your code through a streamlined execution pipeline:\n"
         L"• Lexing & Tokenization: The source code (.py) is broken down into lexical tokens.\n"
         L"• Parsing & AST: The parser constructs an Abstract Syntax Tree (AST) representing the program structure.\n"
         L"• Bytecode Compilation: The AST is compiled into platform-independent bytecode instructions cached inside __pycache__/*.pyc for rapid startup.\n"
         L"• Python Virtual Machine (PVM): The PVM evaluation loop reads bytecode opcodes (e.g., LOAD_FAST, BINARY_OP, CALL) and maps them directly to native C execution.\n"
         L"• Memory Management & GIL: CPython combines immediate reference counting with an automated generational garbage collector (Gen 0, 1, and 2) to eliminate circular references. The Global Interpreter Lock (GIL) synchronizes native threads.",
-        pBodyFmt, brushProse.Get(), 24.0f
+        pBodyFmt, brushProse.Get(), 26.0f
     );
 
     // --- 4. Installation in Phide ---
     DrawParagraph(
-        L"How to Install Python in Phide",
+        L"02. How to Install Python in Phide",
         pHdFmt, brushWhite.Get(), 12.0f
     );
 
     DrawParagraph(
-        L"To set up and manage Python environments in Phide, open the Runtimes panel:\n"
-        L"• Step 1: Open Runtimes by clicking the Runtimes icon in the top toolbar or pressing Ctrl+Shift+X.\n"
-        L"• Step 2: Choose Python from the detected environment cards.\n"
-        L"• Step 3: Choose the version you want from the version catalog (e.g., Python v3.15.1 or v3.15.0) and click Install. Phide will automatically configure the interpreter and set up pip.\n"
+        L"With an understanding of Python and how its interpreter operates, the next step is getting Python installed and configured inside Phide. You do not need to download third-party installers or edit system PATH variables manually. Phide features a built-in Runtimes Manager that handles toolchain installation and environment configuration directly inside the editor:",
+        pBodyFmt, brushProse.Get(), 14.0f
+    );
+
+    DrawParagraph(
+        L"• Step 1: Open the Runtimes panel by clicking the Runtimes icon in the top header toolbar or pressing Ctrl+Shift+X:",
+        pBodyFmt, brushProse.Get(), 10.0f
+    );
+
+    // Visual indicator badge showing the exact Runtimes 2x2 grid icon from TitleHeader
+    float badgeW = config.ScaleF(210.0f);
+    float badgeH = config.ScaleF(32.0f);
+    float badgeX = contentLeft + config.ScaleF(16.0f);
+    D2D1_RECT_F rcBadge = D2D1::RectF(badgeX, curY, badgeX + badgeW, curY + badgeH);
+    D2D1_ROUNDED_RECT rrcBadge = D2D1::RoundedRect(rcBadge, config.ScaleF(5.0f), config.ScaleF(5.0f));
+    if (brushBadgeBg) pRT->FillRoundedRectangle(rrcBadge, brushBadgeBg.Get());
+    if (brushBadgeBorder) pRT->DrawRoundedRectangle(rrcBadge, brushBadgeBorder.Get(), 1.0f);
+
+    float iconBoxSize = config.ScaleF(20.0f);
+    D2D1_RECT_F rcIconBox = D2D1::RectF(badgeX + config.ScaleF(8.0f), curY + config.ScaleF(6.0f),
+                                        badgeX + config.ScaleF(8.0f) + iconBoxSize, curY + config.ScaleF(6.0f) + iconBoxSize);
+    m_icons.DrawExtensionsGrid(pRT, rcIconBox, brushWhite ? brushWhite.Get() : theme.brushTextPrimary.Get(), 1.4f);
+
+    D2D1_RECT_F rcLabel = D2D1::RectF(rcIconBox.right + config.ScaleF(8.0f), curY, badgeX + badgeW - config.ScaleF(6.0f), curY + badgeH);
+    IDWriteTextFormat* pBadgeFmt = theme.fontMenuShortcut ? theme.fontMenuShortcut.Get() : theme.fontBody.Get();
+    if (pBadgeFmt && brushWhite) {
+        const wchar_t* szRuntimes = L"Runtimes (Ctrl+Shift+X)";
+        pRT->DrawText(szRuntimes, static_cast<UINT32>(wcslen(szRuntimes)), pBadgeFmt, rcLabel, brushWhite.Get());
+    }
+    curY += badgeH + config.ScaleF(14.0f);
+
+    DrawParagraph(
+        L"• Step 2: In the Runtimes panel, click the Python card (identified with the Python logo) to view detected environments and available version releases.\n"
+        L"• Step 3: Choose your preferred version from the catalog (such as Python v3.15.1 or v3.15.0) and click Install. Phide will automatically configure the interpreter and set up pip.\n"
         L"• Step 4: You can also choose or create an isolated Workspace Virtual Environment (.venv) directly from the panel for project-specific packages.",
         pBodyFmt, brushProse.Get(), 30.0f
     );
 
-    // Reset button bounds (no button)
+    // Reset button bounds (no interactive button)
     m_courseOpenRuntimesBtnBounds = D2D1::RectF(0.0f, 0.0f, 0.0f, 0.0f);
 
     // --- 5. Total Height & Scroll Calculation ---
