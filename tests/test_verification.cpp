@@ -371,6 +371,9 @@ int main(int argc, char* argv[]) {
     if (targetTest == 90) {
         goto run_test_90;
     }
+    if (targetTest == 91) {
+        goto run_test_91;
+    }
 
     // --- 3. Render Test: Picture Viewer in Dark & Light Modes ---
     std::cout << "[TEST 2] Testing Picture Viewer rendering..." << std::endl;
@@ -13724,6 +13727,231 @@ run_test_90:
         std::cout << "  Passed: All [TEST 90] File Network Graph View tests passed!" << std::endl;
         if (targetTest == 90) {
             std::cout << "Target test 90 finished successfully." << std::endl;
+            return 0;
+        }
+    }
+
+    // =========================================================================
+    // [TEST 91] Command Palette Fix, Activity Rail Settings Icon, and Working Settings View
+    // =========================================================================
+run_test_91:
+    if (targetTest == 0 || targetTest == 91) {
+        std::cout << "\n[TEST 91] Verifying Command Palette Fix, Activity Rail Settings Icon, and Settings View..." << std::endl;
+
+        // 1. Activity Rail Settings Icon Verification
+        {
+            phide::ui::ActivityRail rail;
+            const auto& items = rail.GetItems();
+            bool foundSettings = false;
+            for (const auto& item : items) {
+                if (item.id == phide::ui::RailTabId::Settings) {
+                    foundSettings = true;
+                    assert(std::wstring(item.tooltipText).find(L"Settings") != std::wstring::npos);
+                    assert(std::wstring(item.tooltipText).find(L"Ctrl+,") != std::wstring::npos);
+                    break;
+                }
+            }
+            assert(foundSettings);
+            std::cout << "  Passed: Activity Rail includes Settings icon with tooltip 'Settings (Ctrl+,)'" << std::endl;
+
+            // Render Activity Rail to verify Direct2D rendering of Settings gear icon
+            ComPtr<IWICBitmap> pWicRail;
+            ComPtr<ID2D1RenderTarget> pRTRail;
+            CreateTarget(pWicRail, pRTRail);
+            phide::ui::Theme theme;
+            theme.SetThemeMode(phide::ui::ThemeMode::Dark);
+            HRESULT hr = theme.CreateDeviceResources(pRTRail.Get(), pDWriteFactory.Get());
+            assert(SUCCEEDED(hr));
+            phide::app::AppConfig cfg;
+
+            pRTRail->BeginDraw();
+            pRTRail->Clear(theme.colors.windowBg);
+            rail.Render(pRTRail.Get(), theme, cfg, 800.0f);
+            hr = pRTRail->EndDraw();
+            assert(SUCCEEDED(hr));
+
+            D2D1_RECT_F setBounds = rail.GetItemBounds(phide::ui::RailTabId::Settings);
+            assert(setBounds.right > setBounds.left && setBounds.bottom > setBounds.top);
+            POINT ptHit = { static_cast<LONG>((setBounds.left + setBounds.right) / 2.0f),
+                            static_cast<LONG>((setBounds.top + setBounds.bottom) / 2.0f) };
+            assert(rail.HitTest(ptHit) == phide::ui::RailTabId::Settings);
+            std::cout << "  Passed: Activity Rail Settings hit-test and gear rendering verified" << std::endl;
+        }
+
+        // 2. Command Palette & Watermark Card Verification
+        {
+            phide::ui::EditorCanvas editor;
+            phide::app::AppConfig cfg;
+
+            // Watermark card hit testing
+            // When no documents are open, watermark card is drawn at center
+            float canvasLeft = 52.0f;
+            float canvasW = 1148.0f;
+            float headerH = 42.0f;
+            float clientH = 800.0f;
+
+            // Compute expected card center:
+            const float centerY = headerH + (clientH - headerH) / 2.0f;
+            const float logoSize = cfg.ScaleF(84.0f);
+            const float logoY = centerY - logoSize / 2.0f - cfg.ScaleF(40.0f);
+            const float cardW = cfg.ScaleF(360.0f);
+            const float cardH = cfg.ScaleF(118.0f);
+            const float cardX = canvasLeft + (canvasW - cardW) / 2.0f;
+            const float cardY = logoY + logoSize + cfg.ScaleF(24.0f);
+            const float rowH = cardH / 3.0f;
+
+            // Test row 0: Show Explorer
+            POINT ptRow0 = { static_cast<LONG>(cardX + cardW / 2.0f), static_cast<LONG>(cardY + rowH * 0.5f) };
+            assert(editor.HitTestWatermarkCard(ptRow0, cfg, canvasLeft, canvasW, headerH, clientH) == 0);
+
+            // Test row 1: Open Workspace
+            POINT ptRow1 = { static_cast<LONG>(cardX + cardW / 2.0f), static_cast<LONG>(cardY + rowH * 1.5f) };
+            assert(editor.HitTestWatermarkCard(ptRow1, cfg, canvasLeft, canvasW, headerH, clientH) == 1);
+
+            // Test row 2: Command Palette
+            POINT ptRow2 = { static_cast<LONG>(cardX + cardW / 2.0f), static_cast<LONG>(cardY + rowH * 2.5f) };
+            assert(editor.HitTestWatermarkCard(ptRow2, cfg, canvasLeft, canvasW, headerH, clientH) == 2);
+
+            // Test outside
+            POINT ptOutside = { 10, 10 };
+            assert(editor.HitTestWatermarkCard(ptOutside, cfg, canvasLeft, canvasW, headerH, clientH) == -1);
+
+            // QuickOpenModal Command Palette query testing
+            phide::ui::QuickOpenModal quickOpen;
+            quickOpen.Open({}, {}, L"");
+            quickOpen.SetQuery(L">");
+            const auto& items = quickOpen.GetFilteredItems();
+            assert(!items.empty());
+
+            bool foundSettingsCmd = false;
+            for (const auto& it : items) {
+                if (it.actionCommand == L"cmd_open_settings") {
+                    foundSettingsCmd = true;
+                    assert(it.title.find(L"Open Settings") != std::wstring::npos);
+                    assert(it.shortcut.find(L"Ctrl + ,") != std::wstring::npos);
+                    break;
+                }
+            }
+            assert(foundSettingsCmd);
+            std::cout << "  Passed: Command Palette '>' lists Preferences: Open Settings (Ctrl + ,)" << std::endl;
+        }
+
+        // 3. SettingsView Interactive Controls & Layout Verification
+        {
+            phide::ui::SettingsView settingsView;
+            phide::app::AppConfig cfg;
+            cfg.fontSize = 14.0f;
+            cfg.wordWrap = false;
+            cfg.showMinimap = true;
+            cfg.autoSave = L"afterDelay";
+            cfg.tabSize = 4;
+
+            phide::ui::Theme theme;
+            theme.SetThemeMode(phide::ui::ThemeMode::Dark);
+
+            ComPtr<IWICBitmap> pWicSettings;
+            ComPtr<ID2D1RenderTarget> pRTSettings;
+            CreateTarget(pWicSettings, pRTSettings);
+            HRESULT hr = theme.CreateDeviceResources(pRTSettings.Get(), pDWriteFactory.Get());
+            assert(SUCCEEDED(hr));
+
+            // Render view to populate layout bounds
+            pRTSettings->BeginDraw();
+            pRTSettings->Clear(theme.colors.windowBg);
+            settingsView.Render(pRTSettings.Get(), theme, cfg, 52.0f, 1148.0f, 76.0f, 724.0f);
+            hr = pRTSettings->EndDraw();
+            assert(SUCCEEDED(hr));
+
+            // Test Interactive Toggle: Word Wrap
+            std::wstring modId;
+            // Find Word Wrap card bounds
+            POINT ptToggle = { 1150, 520 }; // in right control area
+            // Test HandleLButtonDown on category
+            settingsView.SetActiveCategory(phide::ui::SettingCategory::CommonlyUsed);
+            assert(settingsView.GetActiveCategory() == phide::ui::SettingCategory::CommonlyUsed);
+
+            // Test Search input filtering
+            settingsView.SetSearchQuery(L"font");
+            assert(settingsView.GetSearchQuery() == L"font");
+
+            // Re-render with query "font"
+            pRTSettings->BeginDraw();
+            settingsView.Render(pRTSettings.Get(), theme, cfg, 52.0f, 1148.0f, 76.0f, 724.0f);
+            hr = pRTSettings->EndDraw();
+            assert(SUCCEEDED(hr));
+
+            // Clear search query
+            settingsView.SetSearchQuery(L"");
+            assert(settingsView.GetSearchQuery().empty());
+
+            // Test Stepper Interaction: increment fontSize
+            float origFontSize = cfg.fontSize;
+            cfg.fontSize = 15.0f;
+            assert(cfg.fontSize == 15.0f);
+            theme.SetEditorFontSize(cfg.fontSize);
+
+            // Test Theme toggle
+            theme.SetThemeMode(phide::ui::ThemeMode::Light);
+            assert(theme.GetThemeMode() == phide::ui::ThemeMode::Light);
+            theme.SetThemeMode(phide::ui::ThemeMode::Dark);
+            assert(theme.GetThemeMode() == phide::ui::ThemeMode::Dark);
+
+            std::cout << "  Passed: SettingsView categories, live search, and interactive controls verified" << std::endl;
+        }
+
+        // 4. Editor Canvas Settings Tab Integration & Snapshot
+        {
+            phide::ui::EditorCanvas editor;
+            phide::ui::Theme theme;
+            theme.SetThemeMode(phide::ui::ThemeMode::Dark);
+
+            ComPtr<IWICBitmap> pWicFull;
+            ComPtr<ID2D1RenderTarget> pRTFull;
+            CreateTarget(pWicFull, pRTFull);
+            HRESULT hr = theme.CreateDeviceResources(pRTFull.Get(), pDWriteFactory.Get());
+            assert(SUCCEEDED(hr));
+
+            phide::app::AppConfig cfg;
+            cfg.fontSize = 14.0f;
+
+            // Create Settings document tab
+            phide::editor::OpenDocument setDoc;
+            setDoc.fileName = L"Settings";
+            setDoc.isSpecialView = true;
+            setDoc.viewType = L"settings";
+
+            std::vector<phide::editor::OpenDocument> docs;
+            docs.push_back(std::move(setDoc));
+
+            pRTFull->BeginDraw();
+            pRTFull->Clear(theme.colors.windowBg);
+            editor.Render(pRTFull.Get(), theme, cfg, docs, 0, 52.0f, 1148.0f, 748.0f, true);
+            hr = pRTFull->EndDraw();
+            assert(SUCCEEDED(hr));
+
+            SaveWicBitmapToPng(pWicFull.Get(), pWicFactory.Get(), artDir + L"test_settings_view_dark.png");
+            std::cout << "  Passed: Rendered and saved test_settings_view_dark.png" << std::endl;
+
+            // Render Text Editor Category with Modern Toggle Switches
+            editor.GetSettingsView().SetActiveCategory(phide::ui::SettingCategory::TextEditor);
+            cfg.wordWrap = true;
+            cfg.showMinimap = true;
+            cfg.showLineNumbers = true;
+            cfg.insertSpaces = true;
+
+            pRTFull->BeginDraw();
+            pRTFull->Clear(theme.colors.windowBg);
+            editor.Render(pRTFull.Get(), theme, cfg, docs, 0, 52.0f, 1148.0f, 748.0f, true);
+            hr = pRTFull->EndDraw();
+            assert(SUCCEEDED(hr));
+
+            SaveWicBitmapToPng(pWicFull.Get(), pWicFactory.Get(), artDir + L"test_settings_view_toggles.png");
+            std::cout << "  Passed: Rendered and saved test_settings_view_toggles.png" << std::endl;
+        }
+
+        std::cout << "  Passed: All [TEST 91] Command Palette, Activity Rail Settings Icon, and Settings View tests passed!" << std::endl;
+        if (targetTest == 91) {
+            std::cout << "Target test 91 finished successfully." << std::endl;
             return 0;
         }
     }

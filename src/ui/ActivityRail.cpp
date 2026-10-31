@@ -21,10 +21,13 @@ ActivityRail::ActivityRail() {
     // 4. File network icon directly under horizontal separation line (User prompt: tooltip "File network")
     m_items.push_back({ RailTabId::FileNetwork, L"File network",               {} });
 
-    // 5. Notebook icon (directly above Packages)
+    // 5. Settings icon directly under File network (matching user's green circle)
+    m_items.push_back({ RailTabId::Settings,    L"Settings (Ctrl+,)",          {} });
+
+    // 6. Notebook icon (directly above Packages)
     m_items.push_back({ RailTabId::Notebook, L"Interactive Notebook (Ctrl+Shift+J)", {} });
 
-    // 6. Packages icon (bottom of Activity Rail, matching user's request)
+    // 7. Packages icon (bottom of Activity Rail, matching user's request)
     m_items.push_back({ RailTabId::Packages, L"Packages",                      {} });
 }
 
@@ -282,6 +285,9 @@ void ActivityRail::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
                 break;
             case RailTabId::FileNetwork:
                 m_lucide.DrawFileNetwork(pRT, item.bounds, iconBrush, 1.7f);
+                break;
+            case RailTabId::Settings:
+                m_lucide.DrawSettings(pRT, item.bounds, iconBrush, 1.6f);
                 break;
             default:
                 break;

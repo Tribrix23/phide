@@ -280,6 +280,8 @@ void QuickOpenModal::FilterItems() {
         };
 
         static const std::vector<PaletteCmd> kPaletteCommands = {
+            { L"Preferences: Open Settings", L"Ctrl + ,", L"cmd_open_settings" },
+            { L"Preferences: Open Keyboard Shortcuts", L"Ctrl + K Ctrl + S", L"cmd_shortcuts" },
             { L"File: New Text File", L"Ctrl + N", L"cmd_new_file" },
             { L"File: New Window", L"Ctrl + Shift + N", L"cmd_new_window" },
             { L"File: Open File...", L"Ctrl + O", L"cmd_open_file" },

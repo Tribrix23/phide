@@ -54,6 +54,15 @@ struct AppConfig {
     float lineHeightMultiplier = 1.45f; ///< Line height relative to font size.
     float zoomLevel = 1.0f;             ///< Zoom multiplier (1.0 = 100%).
 
+    // --- Extended Editor & Workbench Settings ---
+    std::wstring fontFamily = L"Consolas";              ///< Editor font family name.
+    int tabSize = 4;                                    ///< Number of spaces per tab.
+    bool insertSpaces = true;                           ///< Insert spaces when pressing Tab.
+    std::wstring autoSave = L"afterDelay";              ///< "off", "afterDelay", "onFocusChange", "onWindowChange"
+    int autoSaveDelay = 1000;                           ///< Delay in ms for autosave afterDelay.
+    std::wstring cursorStyle = L"line";                 ///< "line", "block", "underline"
+    std::wstring renderWhitespaceMode = L"selection";   ///< "none", "boundary", "selection", "trailing", "all"
+
     // --- Floating Prompt Bar Metrics ---
     int promptBarWidth  = 540;  ///< Width of the bottom floating AI prompt pill.
     int promptBarHeight = 44;   ///< Height of the floating prompt pill.

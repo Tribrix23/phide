@@ -36,7 +36,8 @@ enum class RailTabId {
     MoreActions = 6,    ///< Backward compatibility alias for FileNetwork
     Packages = 3,       ///< Package Manager (PyCharm style)
     Notebook = 4,       ///< Interactive Notebook (Jupyter / Colab)
-    Student = 5         ///< Student Tutorials & Learning Hub (Student hat / graduation cap 🎓)
+    Student = 5,        ///< Student Tutorials & Learning Hub (Student hat / graduation cap 🎓)
+    Settings = 7        ///< Settings tab (Lucide gear icon, opens Settings editor tab)
 };
 
 /**

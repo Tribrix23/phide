@@ -22,6 +22,7 @@
 #include "phide/ui/PackageManagerView.hpp"
 #include "phide/ui/NotebookView.hpp"
 #include "phide/ui/GraphView.hpp"
+#include "phide/ui/SettingsView.hpp"
 #include <unordered_map>
 
 namespace phide::ui {
@@ -229,6 +230,17 @@ public:
     PackageManagerView& GetPackageManagerView() noexcept { return m_packageManagerView; }
     NotebookView& GetNotebookView() noexcept { return m_notebookView; }
     GraphView& GetGraphView() noexcept { return m_graphView; }
+    SettingsView& GetSettingsView() noexcept { return m_settingsView; }
+
+    [[nodiscard]] int HitTestWatermarkCard(POINT pt, const app::AppConfig& config, float canvasLeft, float canvasWidth, float headerH, float clientHeight) const;
+    bool SetHoveredWatermarkRow(int row) noexcept {
+        if (m_hoveredWatermarkRow != row) {
+            m_hoveredWatermarkRow = row;
+            return true;
+        }
+        return false;
+    }
+    [[nodiscard]] int GetHoveredWatermarkRow() const noexcept { return m_hoveredWatermarkRow; }
 
     [[nodiscard]] float GetLastCaretX() const noexcept { return m_lastCaretX; }
     [[nodiscard]] float GetLastCaretY() const noexcept { return m_lastCaretY; }
@@ -299,6 +311,8 @@ private:
     PackageManagerView m_packageManagerView;
     NotebookView m_notebookView;
     GraphView m_graphView;
+    SettingsView m_settingsView;
+    int m_hoveredWatermarkRow = -1;
 
     // Cached path geometry for workspace container (curved ONLY at upper-left corner when drawer is closed)
     Microsoft::WRL::ComPtr<ID2D1PathGeometry> m_pCanvasGeometry;

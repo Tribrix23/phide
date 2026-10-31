@@ -519,6 +519,21 @@ void Window::SaveSessionState() {
     out << L"  \"gitSplitY\": " << m_drawer.GetGitSplitY() << L",\n";
     out << L"  \"gitSplitRatio\": " << m_drawer.GetGitSplitRatio() << L",\n";
     out << L"  \"themeMode\": " << static_cast<int>(m_theme.GetThemeMode()) << L",\n";
+    out << L"  \"fontSize\": " << m_config.fontSize << L",\n";
+    out << L"  \"tabSize\": " << m_config.tabSize << L",\n";
+    out << L"  \"fontFamily\": \"" << EscapeJson(m_config.fontFamily) << L"\",\n";
+    out << L"  \"autoSave\": \"" << EscapeJson(m_config.autoSave) << L"\",\n";
+    out << L"  \"autoSaveDelay\": " << m_config.autoSaveDelay << L",\n";
+    out << L"  \"cursorStyle\": \"" << EscapeJson(m_config.cursorStyle) << L"\",\n";
+    out << L"  \"renderWhitespaceMode\": \"" << EscapeJson(m_config.renderWhitespaceMode) << L"\",\n";
+    out << L"  \"renderWhitespace\": " << (m_config.renderWhitespace ? L"true" : L"false") << L",\n";
+    out << L"  \"wordWrap\": " << (m_config.wordWrap ? L"true" : L"false") << L",\n";
+    out << L"  \"showMinimap\": " << (m_config.showMinimap ? L"true" : L"false") << L",\n";
+    out << L"  \"showLineNumbers\": " << (m_config.showLineNumbers ? L"true" : L"false") << L",\n";
+    out << L"  \"showBreadcrumbs\": " << (m_config.showBreadcrumbs ? L"true" : L"false") << L",\n";
+    out << L"  \"showStatusBar\": " << (m_config.showStatusBar ? L"true" : L"false") << L",\n";
+    out << L"  \"insertSpaces\": " << (m_config.insertSpaces ? L"true" : L"false") << L",\n";
+    out << L"  \"isGraphColored\": " << (m_config.isGraphColored ? L"true" : L"false") << L",\n";
     out << L"  \"activeDocIdx\": " << GetActiveGroup().activeDocIdx << L",\n";
     if (m_drawer.HasOpenFolder()) {
         out << L"  \"lastOpenFolderPath\": \"" << EscapeJson(m_drawer.GetOpenFolderPath()) << L"\",\n";
@@ -625,6 +640,70 @@ void Window::LoadSessionState() {
                     if (!cf.empty()) openDocPaths.push_back(cf);
                 }
             }
+        } else if (line.find(L"\"fontSize\"") != std::wstring::npos) {
+            auto colon = line.find(L':');
+            if (colon != std::wstring::npos) {
+                float f = static_cast<float>(_wtof(line.substr(colon + 1).c_str()));
+                if (f >= 8.0f && f <= 36.0f) m_config.fontSize = f;
+            }
+        } else if (line.find(L"\"tabSize\"") != std::wstring::npos) {
+            auto colon = line.find(L':');
+            if (colon != std::wstring::npos) m_config.tabSize = _wtoi(line.substr(colon + 1).c_str());
+        } else if (line.find(L"\"autoSaveDelay\"") != std::wstring::npos) {
+            auto colon = line.find(L':');
+            if (colon != std::wstring::npos) m_config.autoSaveDelay = _wtoi(line.substr(colon + 1).c_str());
+        } else if (line.find(L"\"fontFamily\"") != std::wstring::npos) {
+            auto colon = line.find(L':');
+            if (colon != std::wstring::npos) {
+                auto q1 = line.find(L'"', colon);
+                auto q2 = line.rfind(L'"');
+                if (q1 != std::wstring::npos && q2 != std::wstring::npos && q2 > q1) {
+                    m_config.fontFamily = UnescapeJson(line.substr(q1 + 1, q2 - q1 - 1));
+                }
+            }
+        } else if (line.find(L"\"autoSave\"") != std::wstring::npos) {
+            auto colon = line.find(L':');
+            if (colon != std::wstring::npos) {
+                auto q1 = line.find(L'"', colon);
+                auto q2 = line.rfind(L'"');
+                if (q1 != std::wstring::npos && q2 != std::wstring::npos && q2 > q1) {
+                    m_config.autoSave = UnescapeJson(line.substr(q1 + 1, q2 - q1 - 1));
+                }
+            }
+        } else if (line.find(L"\"cursorStyle\"") != std::wstring::npos) {
+            auto colon = line.find(L':');
+            if (colon != std::wstring::npos) {
+                auto q1 = line.find(L'"', colon);
+                auto q2 = line.rfind(L'"');
+                if (q1 != std::wstring::npos && q2 != std::wstring::npos && q2 > q1) {
+                    m_config.cursorStyle = UnescapeJson(line.substr(q1 + 1, q2 - q1 - 1));
+                }
+            }
+        } else if (line.find(L"\"renderWhitespaceMode\"") != std::wstring::npos) {
+            auto colon = line.find(L':');
+            if (colon != std::wstring::npos) {
+                auto q1 = line.find(L'"', colon);
+                auto q2 = line.rfind(L'"');
+                if (q1 != std::wstring::npos && q2 != std::wstring::npos && q2 > q1) {
+                    m_config.renderWhitespaceMode = UnescapeJson(line.substr(q1 + 1, q2 - q1 - 1));
+                }
+            }
+        } else if (line.find(L"\"renderWhitespace\"") != std::wstring::npos) {
+            m_config.renderWhitespace = (line.find(L"true") != std::wstring::npos);
+        } else if (line.find(L"\"wordWrap\"") != std::wstring::npos) {
+            m_config.wordWrap = (line.find(L"true") != std::wstring::npos);
+        } else if (line.find(L"\"showMinimap\"") != std::wstring::npos) {
+            m_config.showMinimap = (line.find(L"true") != std::wstring::npos);
+        } else if (line.find(L"\"showLineNumbers\"") != std::wstring::npos) {
+            m_config.showLineNumbers = (line.find(L"true") != std::wstring::npos);
+        } else if (line.find(L"\"showBreadcrumbs\"") != std::wstring::npos) {
+            m_config.showBreadcrumbs = (line.find(L"true") != std::wstring::npos);
+        } else if (line.find(L"\"showStatusBar\"") != std::wstring::npos) {
+            m_config.showStatusBar = (line.find(L"true") != std::wstring::npos);
+        } else if (line.find(L"\"insertSpaces\"") != std::wstring::npos) {
+            m_config.insertSpaces = (line.find(L"true") != std::wstring::npos);
+        } else if (line.find(L"\"isGraphColored\"") != std::wstring::npos) {
+            m_config.isGraphColored = (line.find(L"true") != std::wstring::npos);
         } else if (line.find(L"\"openDocs\"") != std::wstring::npos) {
             currentArray = L"openDocs";
         } else if (line.find(L"\"expandedDirs\"") != std::wstring::npos) {
@@ -1926,6 +2005,10 @@ void Window::ExecuteQuickOpenAction(const std::wstring& actionCmd) {
         InvalidateRect(m_hwnd, nullptr, FALSE);
         return;
     }
+    if (actionCmd == L"cmd_open_settings") {
+        DoOpenSettings();
+        return;
+    }
     if (actionCmd == L"cmd_shortcuts") {
         OpenSpecialView(L"keybindings", L"Keyboard Shortcuts");
         InvalidateRect(m_hwnd, nullptr, FALSE);
@@ -2077,23 +2160,12 @@ void Window::DoImportProfile() {
 }
 
 void Window::DoOpenSettings() {
-    OpenVirtualDocument(
-        L"settings.json",
-        L"{\n"
-        L"    // Editor configuration\n"
-        L"    \"editor.fontSize\": 13,\n"
-        L"    \"editor.fontFamily\": \"Consolas, 'Courier New', monospace\",\n"
-        L"    \"editor.tabSize\": 4,\n"
-        L"    \"editor.insertSpaces\": true,\n"
-        L"    \"editor.lineNumbers\": \"on\",\n"
-        L"    \"editor.renderWhitespace\": \"selection\",\n"
-        L"    \"editor.cursorBlinking\": \"smooth\",\n"
-        L"    \"workbench.colorTheme\": \"Default Dark Modern\",\n"
-        L"    \"workbench.iconTheme\": \"vs-seti\",\n"
-        L"    \"files.autoSave\": \"afterDelay\"\n"
-        L"}\n",
-        false
-    );
+    m_drawer.SetSearchFocus(0);
+    m_editor.GetSettingsView().ResetScroll();
+    OpenSpecialView(L"settings", L"Settings");
+    UpdateDrawerErrorFiles();
+    SaveSessionState();
+    InvalidateRect(m_hwnd, nullptr, FALSE);
 }
 
 void Window::DoOpenKeyboardShortcuts() {
@@ -2572,7 +2644,17 @@ void Window::DoRefactor() {
 }
 
 void Window::DoCommandPalette() {
-    DoOpenKeyboardShortcuts();
+    std::vector<std::wstring> openPaths;
+    for (const auto& grp : m_editorGroups) {
+        for (const auto& doc : grp.docs) {
+            if (!doc.filePath.empty() && !doc.isSpecialView && !doc.isUnsupportedBinary) {
+                openPaths.push_back(doc.filePath);
+            }
+        }
+    }
+    m_quickOpen.Open(m_recentPaths, openPaths, m_drawer.GetOpenFolderPath());
+    m_quickOpen.SetQuery(L">");
+    InvalidateRect(m_hwnd, nullptr, FALSE);
 }
 
 void Window::DoZoomIn() {
@@ -7484,6 +7566,22 @@ void Window::HandleMouseMove(POINT clientPt, WPARAM wParam) {
             if (m_editor.GetGraphView().HandleMouseMove(clientPt)) {
                 needRepaint = true;
             }
+        } else if (pActiveDoc->viewType == L"settings") {
+            if (m_editor.GetSettingsView().HandleMouseMove(clientPt)) {
+                needRepaint = true;
+            }
+        }
+    } else {
+        // No active documents -> check watermark cheat-sheet row hover
+        float canvasLeft = (m_config.isDrawerOpen ? m_config.ScaleF(static_cast<float>(m_config.railWidth + m_config.drawerWidth)) : m_config.ScaleF(static_cast<float>(m_config.railWidth)));
+        RECT rcClient{};
+        GetClientRect(m_hwnd, &rcClient);
+        float clientH = static_cast<float>(rcClient.bottom - rcClient.top);
+        float clientW = static_cast<float>(rcClient.right - rcClient.left);
+        float canvasW = clientW - canvasLeft;
+        int wmRow = m_editor.HitTestWatermarkCard(clientPt, m_config, canvasLeft, canvasW, m_config.ScaleF(static_cast<float>(m_config.headerHeight)), clientH);
+        if (m_editor.SetHoveredWatermarkRow(wmRow)) {
+            needRepaint = true;
         }
     }
 
@@ -9106,6 +9204,28 @@ void Window::HandleLButtonDown(POINT clientPt) {
                         InvalidateRect(m_hwnd, nullptr, FALSE);
                         return;
                     }
+                } else if (doc.isSpecialView && doc.viewType == L"settings") {
+                    m_drawer.SetSearchFocus(0);
+                    std::wstring modifiedId;
+                    if (m_editor.GetSettingsView().HandleLButtonDown(clientPt, m_config, m_theme, modifiedId)) {
+                        if (!modifiedId.empty()) {
+                            if (modifiedId == L"editor.fontSize") {
+                                m_config.zoomLevel = m_config.fontSize / 14.0f;
+                                m_theme.SetEditorFontSize(m_config.fontSize);
+                                m_editor.ResetCharWidth();
+                            } else if (modifiedId == L"editor.fontFamily") {
+                                m_theme.SetEditorFontSize(m_config.fontSize);
+                                m_editor.ResetCharWidth();
+                            } else if (modifiedId == L"workbench.colorTheme") {
+                                BOOL dm = m_theme.IsDarkMode() ? TRUE : FALSE;
+                                DwmSetWindowAttribute(m_hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &dm, sizeof(dm));
+                                SetWindowPos(m_hwnd, nullptr, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED);
+                            }
+                            SaveSessionState();
+                        }
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
+                        return;
+                    }
                 } else if (doc.isSpecialView && doc.viewType == L"student") {
                     m_drawer.SetSearchFocus(0);
                     int action = m_editor.HitTestStudentView(clientPt);
@@ -9383,6 +9503,24 @@ void Window::HandleLButtonDown(POINT clientPt) {
                             return;
                         }
                     }
+                }
+            } else {
+                // Watermark cheat-sheet card click when no documents are open
+                float headerH = m_config.ScaleF(static_cast<float>(m_config.headerHeight));
+                RECT rcClient{};
+                GetClientRect(m_hwnd, &rcClient);
+                float clientH = static_cast<float>(rcClient.bottom - rcClient.top);
+                float pLeft = canvasLeft + targetGroup * paneW;
+                int wmHit = m_editor.HitTestWatermarkCard(clientPt, m_config, pLeft, paneW, headerH, clientH);
+                if (wmHit == 0) {
+                    ToggleSidebar();
+                    return;
+                } else if (wmHit == 1) {
+                    DoOpenFolder();
+                    return;
+                } else if (wmHit == 2) {
+                    DoCommandPalette();
+                    return;
                 }
             }
 
@@ -9694,6 +9832,10 @@ void Window::HandleLButtonDown(POINT clientPt) {
             UpdateDrawerErrorFiles();
             SaveSessionState();
             InvalidateRect(m_hwnd, nullptr, FALSE);
+            return;
+        }
+        if (railHit == ui::RailTabId::Settings) {
+            DoOpenSettings();
             return;
         }
 
@@ -10357,6 +10499,12 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     return TRUE;
                 }
 
+                // Watermark cheat-sheet card row hover cursor
+                if (m_editor.GetHoveredWatermarkRow() >= 0) {
+                    SetCursor(LoadCursor(nullptr, IDC_HAND));
+                    return TRUE;
+                }
+
                 // Provide pointer hand cursor over caption buttons, menus, execution buttons, split editor, quick open, extensions, and zoom buttons
                 if (m_header.HitTestCaptionButton(pt) != ui::CaptionButtonType::None ||
                     m_header.HitTestMenu(pt) != ui::HeaderMenuId::None ||
@@ -10812,6 +10960,11 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                         InvalidateRect(m_hwnd, nullptr, FALSE);
                         return 0;
                     }
+                } else if (pDoc->isSpecialView && pDoc->viewType == L"settings") {
+                    if (m_editor.GetSettingsView().HandleMouseWheel(delta)) {
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
+                        return 0;
+                    }
                 } else if ((pDoc->isSpecialView && pDoc->viewType == L"course") || !pDoc->courseId.empty()) {
                     if (m_editor.HandleCourseViewWheel(delta)) {
                         InvalidateRect(m_hwnd, nullptr, FALSE);
@@ -10931,6 +11084,13 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 } else if (pDoc->isSpecialView && pDoc->viewType == L"packages") {
                     if (m_editor.GetPackageManagerView().IsSearchFocused()) {
                         if (m_editor.GetPackageManagerView().HandleChar(ch)) {
+                            InvalidateRect(m_hwnd, nullptr, FALSE);
+                            return 0;
+                        }
+                    }
+                } else if (pDoc->isSpecialView && pDoc->viewType == L"settings") {
+                    if (m_editor.GetSettingsView().IsSearchFocused()) {
+                        if (m_editor.GetSettingsView().HandleChar(ch)) {
                             InvalidateRect(m_hwnd, nullptr, FALSE);
                             return 0;
                         }
@@ -11636,6 +11796,13 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                         InvalidateRect(m_hwnd, nullptr, FALSE);
                         return 0;
                     }
+                } else if (pDoc->viewType == L"settings") {
+                    if (m_editor.GetSettingsView().IsSearchFocused()) {
+                        if (m_editor.GetSettingsView().HandleKeyDown(wParam)) {
+                            InvalidateRect(m_hwnd, nullptr, FALSE);
+                            return 0;
+                        }
+                    }
                 } else if (pDoc->viewType == L"notebook") {
                     if (m_editor.GetNotebookView().HandleKeyDown(wParam, *pDoc, m_hwnd)) {
                         InvalidateRect(m_hwnd, nullptr, FALSE);
@@ -11723,6 +11890,10 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 }
                 if (wParam == 'R' && shiftDown) {
                     DoRefactor();
+                    return 0;
+                }
+                if (wParam == VK_OEM_COMMA && !shiftDown && !altDown) {
+                    DoOpenSettings();
                     return 0;
                 }
                 if (wParam == 'P') {

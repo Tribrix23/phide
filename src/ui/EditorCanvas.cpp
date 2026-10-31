@@ -359,6 +359,9 @@ void EditorCanvas::RenderSinglePane(ID2D1RenderTarget* pRT, Theme& theme, const 
     } else if (activeDoc.isSpecialView && activeDoc.viewType == L"graph") {
         m_packageManagerView.HideWebView();
         m_graphView.Render(pRT, theme, config, canvasLeft, canvasWidth, contentTopY, clientHeight - contentTopY);
+    } else if (activeDoc.isSpecialView && activeDoc.viewType == L"settings") {
+        m_packageManagerView.HideWebView();
+        m_settingsView.Render(pRT, theme, config, canvasLeft, canvasWidth, contentTopY, clientHeight - contentTopY);
     } else if ((activeDoc.isSpecialView && activeDoc.viewType == L"course") || !activeDoc.courseId.empty()) {
         m_packageManagerView.HideWebView();
         RenderCourseView(pRT, theme, config, activeDoc, canvasLeft, canvasWidth, contentTopY, clientHeight);
@@ -440,10 +443,19 @@ void EditorCanvas::RenderPlaceholder(ID2D1RenderTarget* pRT, Theme& theme, const
     const float rowH = cardH / 3.0f;
     const float capH = config.ScaleF(20.0f);
 
+    // Row Hover Highlight
+    if (m_hoveredWatermarkRow >= 0 && m_hoveredWatermarkRow < 3) {
+        float rTop = cardY + m_hoveredWatermarkRow * rowH + 2.0f;
+        float rBot = cardY + (m_hoveredWatermarkRow + 1) * rowH - 2.0f;
+        D2D1_RECT_F rcHover = D2D1::RectF(cardX + 2.0f, rTop, cardX + cardW - 2.0f, rBot);
+        pRT->FillRoundedRectangle(D2D1::RoundedRect(rcHover, 6.0f, 6.0f), theme.brushItemHover.Get());
+    }
+
     // Row 1: Show Explorer  -->  Ctrl + B
     float row1CenterY = cardY + rowH * 0.5f;
     D2D1_RECT_F rcLabel1 = D2D1::RectF(cardX + padX, row1CenterY - config.ScaleF(10.0f), cardX + cardW / 2.0f, row1CenterY + config.ScaleF(10.0f));
-    pRT->DrawText(L"Show Explorer", 13, theme.fontHint.Get(), rcLabel1, theme.brushTextSecondary.Get());
+    pRT->DrawText(L"Show Explorer", 13, theme.fontHint.Get(), rcLabel1,
+                  (m_hoveredWatermarkRow == 0) ? (theme.brushTextWhite ? theme.brushTextWhite.Get() : theme.brushTextPrimary.Get()) : theme.brushTextSecondary.Get());
     float rx1 = cardX + cardW - padX;
     DrawKeycap(pRT, theme, config, L"B", rx1, row1CenterY, capH);
     DrawPlus(pRT, theme, config, rx1, row1CenterY, capH);
@@ -452,7 +464,8 @@ void EditorCanvas::RenderPlaceholder(ID2D1RenderTarget* pRT, Theme& theme, const
     // Row 2: Open Workspace -->  Ctrl + O
     float row2CenterY = cardY + rowH * 1.5f;
     D2D1_RECT_F rcLabel2 = D2D1::RectF(cardX + padX, row2CenterY - config.ScaleF(10.0f), cardX + cardW / 2.0f, row2CenterY + config.ScaleF(10.0f));
-    pRT->DrawText(L"Open Workspace", 14, theme.fontHint.Get(), rcLabel2, theme.brushTextSecondary.Get());
+    pRT->DrawText(L"Open Workspace", 14, theme.fontHint.Get(), rcLabel2,
+                  (m_hoveredWatermarkRow == 1) ? (theme.brushTextWhite ? theme.brushTextWhite.Get() : theme.brushTextPrimary.Get()) : theme.brushTextSecondary.Get());
     float rx2 = cardX + cardW - padX;
     DrawKeycap(pRT, theme, config, L"O", rx2, row2CenterY, capH);
     DrawPlus(pRT, theme, config, rx2, row2CenterY, capH);
@@ -461,13 +474,34 @@ void EditorCanvas::RenderPlaceholder(ID2D1RenderTarget* pRT, Theme& theme, const
     // Row 3: Command Palette --> Ctrl + Shift + P
     float row3CenterY = cardY + rowH * 2.5f;
     D2D1_RECT_F rcLabel3 = D2D1::RectF(cardX + padX, row3CenterY - config.ScaleF(10.0f), cardX + cardW / 2.0f, row3CenterY + config.ScaleF(10.0f));
-    pRT->DrawText(L"Command Palette", 15, theme.fontHint.Get(), rcLabel3, theme.brushTextSecondary.Get());
+    pRT->DrawText(L"Command Palette", 15, theme.fontHint.Get(), rcLabel3,
+                  (m_hoveredWatermarkRow == 2) ? (theme.brushTextWhite ? theme.brushTextWhite.Get() : theme.brushTextPrimary.Get()) : theme.brushTextSecondary.Get());
     float rx3 = cardX + cardW - padX;
     DrawKeycap(pRT, theme, config, L"P", rx3, row3CenterY, capH);
     DrawPlus(pRT, theme, config, rx3, row3CenterY, capH);
     DrawKeycap(pRT, theme, config, L"Shift", rx3, row3CenterY, capH);
     DrawPlus(pRT, theme, config, rx3, row3CenterY, capH);
     DrawKeycap(pRT, theme, config, L"Ctrl", rx3, row3CenterY, capH);
+}
+
+int EditorCanvas::HitTestWatermarkCard(POINT pt, const app::AppConfig& config, float canvasLeft, float canvasWidth, float headerH, float clientHeight) const {
+    const float centerY = headerH + (clientHeight - headerH) / 2.0f;
+    const float logoSize = config.ScaleF(84.0f);
+    const float logoY = centerY - logoSize / 2.0f - config.ScaleF(40.0f);
+    const float cardW = config.ScaleF(360.0f);
+    const float cardH = config.ScaleF(118.0f);
+    const float cardX = canvasLeft + (canvasWidth - cardW) / 2.0f;
+    const float cardY = logoY + logoSize + config.ScaleF(24.0f);
+
+    if (pt.x < cardX || pt.x > cardX + cardW || pt.y < cardY || pt.y > cardY + cardH) {
+        return -1;
+    }
+
+    const float rowH = cardH / 3.0f;
+    float relY = static_cast<float>(pt.y) - cardY;
+    if (relY < rowH) return 0;        // Show Explorer (Ctrl+B)
+    if (relY < rowH * 2.0f) return 1;   // Open Workspace (Ctrl+O)
+    return 2;                          // Command Palette (Ctrl+Shift+P)
 }
 
 void EditorCanvas::RenderTabs(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
@@ -625,6 +659,8 @@ void EditorCanvas::RenderTabs(ID2D1RenderTarget* pRT, Theme& theme, const app::A
             }
         } else if (doc.isSpecialView && doc.viewType == L"graph") {
             m_icons.DrawFileNetwork(pRT, iconBounds, theme.brushBrandAccent ? theme.brushBrandAccent.Get() : theme.brushTextWhite.Get(), 1.2f);
+        } else if (doc.isSpecialView && doc.viewType == L"settings") {
+            m_icons.DrawSettings(pRT, iconBounds, theme.brushBrandAccent ? theme.brushBrandAccent.Get() : theme.brushTextWhite.Get(), 1.2f);
         } else if (doc.isSpecialView && doc.viewType == L"packages") {
             m_icons.DrawPackage(pRT, iconBounds, theme.brushBrandAccent ? theme.brushBrandAccent.Get() : theme.brushTextWhite.Get(), 1.1f);
         } else if (doc.isSpecialView && doc.viewType == L"student") {
@@ -827,7 +863,10 @@ void EditorCanvas::RenderBreadcrumbs(ID2D1RenderTarget* pRT, Theme& theme, const
 
     // Parse segments from doc.filePath (Image 4) or course hierarchy
     std::vector<std::wstring> segments;
-    if (doc.isSpecialView && doc.viewType == L"graph") {
+    if (doc.isSpecialView && doc.viewType == L"settings") {
+        segments.push_back(L"Preferences");
+        segments.push_back(L"Settings");
+    } else if (doc.isSpecialView && doc.viewType == L"graph") {
         segments.push_back(L"File Network");
         segments.push_back(L"Graph view");
     } else if (!doc.courseId.empty() || (doc.isSpecialView && doc.viewType == L"course")) {
