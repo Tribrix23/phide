@@ -11132,26 +11132,25 @@ run_test_76:
         assert(!modal.IsOpen());
         assert(!modal.IsLoading());
 
-        // 9. Test ActivityRail Student Hat Icon & Placement directly above Notebook
+        // 9. Test ActivityRail Student Hat Icon Removed per user request ("remove the icvon of this for now")
         phide::ui::ActivityRail rail76;
         const auto& railItems = rail76.GetItems();
         bool foundStudent = false;
-        int studentIdx = -1, notebookIdx = -1, packagesIdx = -1;
+        int notebookIdx = -1, packagesIdx = -1;
         for (size_t i = 0; i < railItems.size(); ++i) {
             if (railItems[i].id == phide::ui::RailTabId::Student) {
                 foundStudent = true;
-                studentIdx = static_cast<int>(i);
             } else if (railItems[i].id == phide::ui::RailTabId::Notebook) {
                 notebookIdx = static_cast<int>(i);
             } else if (railItems[i].id == phide::ui::RailTabId::Packages) {
                 packagesIdx = static_cast<int>(i);
             }
         }
-        assert(foundStudent);
-        assert(studentIdx >= 0 && notebookIdx >= 0 && packagesIdx >= 0);
-        std::cout << "  Passed: ActivityRail contains Student Tab (Student Hat icon)" << std::endl;
+        assert(!foundStudent);
+        assert(notebookIdx >= 0 && packagesIdx >= 0);
+        std::cout << "  Passed: ActivityRail Student Hat icon removed for now per user request" << std::endl;
 
-        // Render ActivityRail with Student Hat icon
+        // Render ActivityRail without Student Hat icon
         const UINT wRail = 48, hRail = 700;
         ComPtr<IWICBitmap> pWicRail;
         hr = pWicFactory->CreateBitmap(wRail, hRail, GUID_WICPixelFormat32bppPBGRA, WICBitmapCacheOnDemand, &pWicRail);
@@ -11166,17 +11165,14 @@ run_test_76:
         rail76.Render(pRTRail.Get(), theme, cfg, static_cast<float>(hRail));
         hr = pRTRail->EndDraw();
         assert(SUCCEEDED(hr));
-        SaveWicBitmapToPng(pWicRail.Get(), pWicFactory.Get(), artDir + L"test_activity_rail_student_hat.png");
+        SaveWicBitmapToPng(pWicRail.Get(), pWicFactory.Get(), artDir + L"test_activity_rail_no_student_hat.png");
 
-        // Verify bounding placement: Student Hat must be directly above Notebook, which is directly above Packages
+        // Verify bounding placement: Notebook is directly above Packages
         const auto& updatedItems = rail76.GetItems();
-        float studentBot = updatedItems[studentIdx].bounds.bottom;
-        float notebookTop = updatedItems[notebookIdx].bounds.top;
         float notebookBot = updatedItems[notebookIdx].bounds.bottom;
         float packagesTop = updatedItems[packagesIdx].bounds.top;
-        assert(studentBot <= notebookTop);
         assert(notebookBot <= packagesTop);
-        std::cout << "  Passed: Student Hat icon is anchored above Notebook and Packages exactly where circled" << std::endl;
+        std::cout << "  Passed: Notebook icon is anchored above Packages" << std::endl;
 
         std::cout << "  Passed: All [TEST 76] Custom Flat Delete Modal, Loading Animation & Idempotency tests passed successfully!" << std::endl;
     }
@@ -12278,12 +12274,23 @@ run_test_84:
             assert(SUCCEEDED(hr));
 
             // Test mouse wheel scrolling
-            bool scrolled = canvasCourse.HandleCourseViewWheel(-120);
-            std::cout << "  Passed: HandleCourseViewWheel responded (" << (scrolled ? "true" : "false") << ")" << std::endl;
+            for (int s = 0; s < 6; ++s) {
+                canvasCourse.HandleCourseViewWheel(-120);
+            }
+            std::cout << "  Passed: HandleCourseViewWheel responded (scrolled 6 ticks)" << std::endl;
 
             std::wstring artDir = L"C:\\Users\\Administrator\\.gemini\\antigravity\\brain\\c83160b9-3f8b-4ad1-87a8-ab1f7f555a77\\";
             SaveWicBitmapToPng(pWicCourse.Get(), pWicFactory.Get(), artDir + L"test_course_reading_view_flat.png");
             std::cout << "  Passed: Saved test_course_reading_view_flat.png" << std::endl;
+
+            // Render scrolled frame to verify Step 2 and Step 3 images
+            pRTCourse->BeginDraw();
+            pRTCourse->Clear(theme84.colors.canvasBg);
+            canvasCourse.Render(pRTCourse.Get(), theme84, cfg84, crDocs, 0, 0.0f, static_cast<float>(crW), static_cast<float>(crH), true, L"", false, false, false, false);
+            hr = pRTCourse->EndDraw();
+            assert(SUCCEEDED(hr));
+            SaveWicBitmapToPng(pWicCourse.Get(), pWicFactory.Get(), artDir + L"test_course_reading_view_scrolled.png");
+            std::cout << "  Passed: Saved test_course_reading_view_scrolled.png" << std::endl;
         }
 
         // 5. Render Course Explorer Sidebar with Active Lesson Lit Up

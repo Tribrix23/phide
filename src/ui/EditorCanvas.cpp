@@ -3446,24 +3446,19 @@ void EditorCanvas::RenderCourseView(ID2D1RenderTarget* pRT, Theme& theme, const 
         curY += iconSize + config.ScaleF(26.0f);
     }
 
-    // --- 2. Overview & Language Philosophy ---
+    // --- 2. Overview & Naturally Flowing Architecture Description ---
     DrawParagraph(
         L"Python is a modern, high-level, general-purpose programming language celebrated for its simple and readable syntax. Designed around the philosophy that code readability directly amplifies developer velocity, Python emphasizes clean indentation over curly braces or semicolons. This makes it an ideal first language for beginners to pick up, while still offering the depth and power demanded by industry professionals across web development, artificial intelligence, data science, and automated scripting.",
         pBodyFmt, brushProse.Get(), 16.0f
     );
 
-    // Cross-platform statement connected to runtime execution
+    // Cross-platform statement connected directly to interpreter execution
     DrawParagraph(
         L"Because Python runs cross-platform on Windows, macOS, and Linux, code written on one operating system runs consistently anywhere. When you execute a Python program, you are interacting with an underlying interpreter that processes and executes your instructions step-by-step.",
-        pBodyFmt, brushProse.Get(), 24.0f
+        pBodyFmt, brushProse.Get(), 16.0f
     );
 
-    // --- 3. Python Interpreter Details & Architecture Overview ---
-    DrawParagraph(
-        L"01. Python Interpreter & Execution Architecture",
-        pHdFmt, brushWhite.Get(), 12.0f
-    );
-
+    // Streamlined execution pipeline flowing directly from the overview
     DrawParagraph(
         L"The default reference implementation of Python is CPython, written in C. When executing a Python program, CPython processes your code through a streamlined execution pipeline:\n"
         L"• Lexing & Tokenization: The source code (.py) is broken down into lexical tokens.\n"
@@ -3471,50 +3466,90 @@ void EditorCanvas::RenderCourseView(ID2D1RenderTarget* pRT, Theme& theme, const 
         L"• Bytecode Compilation: The AST is compiled into platform-independent bytecode instructions cached inside __pycache__/*.pyc for rapid startup.\n"
         L"• Python Virtual Machine (PVM): The PVM evaluation loop reads bytecode opcodes (e.g., LOAD_FAST, BINARY_OP, CALL) and maps them directly to native C execution.\n"
         L"• Memory Management & GIL: CPython combines immediate reference counting with an automated generational garbage collector (Gen 0, 1, and 2) to eliminate circular references. The Global Interpreter Lock (GIL) synchronizes native threads.",
-        pBodyFmt, brushProse.Get(), 26.0f
+        pBodyFmt, brushProse.Get(), 22.0f
     );
 
-    // --- 4. Installation in Phide ---
-    DrawParagraph(
-        L"02. How to Install Python in Phide",
-        pHdFmt, brushWhite.Get(), 12.0f
-    );
-
+    // Installation in Phide connected seamlessly
     DrawParagraph(
         L"With an understanding of Python and how its interpreter operates, the next step is getting Python installed and configured inside Phide. You do not need to download third-party installers or edit system PATH variables manually. Phide features a built-in Runtimes Manager that handles toolchain installation and environment configuration directly inside the editor:",
-        pBodyFmt, brushProse.Get(), 14.0f
+        pBodyFmt, brushProse.Get(), 16.0f
     );
 
+    // Step 1: Icon placed directly after the words "Runtimes icon"
+    std::wstring s1Prefix = L"• Step 1: Open the Runtimes panel by clicking the Runtimes icon ";
+    std::wstring s1Suffix = L" in the top header toolbar or pressing Ctrl+Shift+X.";
+
+    Microsoft::WRL::ComPtr<IDWriteTextLayout> pLPrefix;
+    if (theme.dwriteFactory) {
+        theme.dwriteFactory->CreateTextLayout(s1Prefix.c_str(), static_cast<UINT32>(s1Prefix.length()), pBodyFmt, contentW, 100.0f, &pLPrefix);
+    }
+    if (pLPrefix) {
+        DWRITE_TEXT_METRICS tmPref{};
+        pLPrefix->GetMetrics(&tmPref);
+        pRT->DrawTextLayout(D2D1::Point2F(contentLeft, curY), pLPrefix.Get(), brushProse.Get());
+
+        // Draw ONLY the icon directly after "Runtimes icon"
+        float iconBoxSize = config.ScaleF(18.0f);
+        float iconX = contentLeft + tmPref.widthIncludingTrailingWhitespace;
+        float iconY = curY + config.ScaleF(1.0f);
+        D2D1_RECT_F rcIconBox = D2D1::RectF(iconX, iconY, iconX + iconBoxSize, iconY + iconBoxSize);
+        D2D1_ROUNDED_RECT rrc = D2D1::RoundedRect(rcIconBox, config.ScaleF(3.0f), config.ScaleF(3.0f));
+        if (brushBadgeBg) pRT->FillRoundedRectangle(rrc, brushBadgeBg.Get());
+        if (brushBadgeBorder) pRT->DrawRoundedRectangle(rrc, brushBadgeBorder.Get(), 1.0f);
+        m_icons.DrawExtensionsGrid(pRT, rcIconBox, brushWhite ? brushWhite.Get() : theme.brushTextPrimary.Get(), 1.3f);
+
+        // Draw suffix right after the icon
+        float suffX = iconX + iconBoxSize + config.ScaleF(4.0f);
+        Microsoft::WRL::ComPtr<IDWriteTextLayout> pLSuffix;
+        theme.dwriteFactory->CreateTextLayout(s1Suffix.c_str(), static_cast<UINT32>(s1Suffix.length()), pBodyFmt, contentW - (suffX - contentLeft), 100.0f, &pLSuffix);
+        if (pLSuffix) {
+            pRT->DrawTextLayout(D2D1::Point2F(suffX, curY), pLSuffix.Get(), brushProse.Get());
+        }
+        curY += (std::max)(tmPref.height, iconBoxSize) + config.ScaleF(16.0f);
+    } else {
+        DrawParagraph(s1Prefix + s1Suffix, pBodyFmt, brushProse.Get(), 16.0f);
+    }
+
+    // Step 2 with picture under it (Image 3: Runtimes panel)
     DrawParagraph(
-        L"• Step 1: Open the Runtimes panel by clicking the Runtimes icon in the top header toolbar or pressing Ctrl+Shift+X:",
+        L"• Step 2: In the Runtimes panel, click the Python card (identified with the Python logo) to view detected environments and available version releases:",
         pBodyFmt, brushProse.Get(), 10.0f
     );
 
-    // Visual indicator badge showing the exact Runtimes 2x2 grid icon from TitleHeader
-    float badgeW = config.ScaleF(210.0f);
-    float badgeH = config.ScaleF(32.0f);
-    float badgeX = contentLeft + config.ScaleF(16.0f);
-    D2D1_RECT_F rcBadge = D2D1::RectF(badgeX, curY, badgeX + badgeW, curY + badgeH);
-    D2D1_ROUNDED_RECT rrcBadge = D2D1::RoundedRect(rcBadge, config.ScaleF(5.0f), config.ScaleF(5.0f));
-    if (brushBadgeBg) pRT->FillRoundedRectangle(rrcBadge, brushBadgeBg.Get());
-    if (brushBadgeBorder) pRT->DrawRoundedRectangle(rrcBadge, brushBadgeBorder.Get(), 1.0f);
-
-    float iconBoxSize = config.ScaleF(20.0f);
-    D2D1_RECT_F rcIconBox = D2D1::RectF(badgeX + config.ScaleF(8.0f), curY + config.ScaleF(6.0f),
-                                        badgeX + config.ScaleF(8.0f) + iconBoxSize, curY + config.ScaleF(6.0f) + iconBoxSize);
-    m_icons.DrawExtensionsGrid(pRT, rcIconBox, brushWhite ? brushWhite.Get() : theme.brushTextPrimary.Get(), 1.4f);
-
-    D2D1_RECT_F rcLabel = D2D1::RectF(rcIconBox.right + config.ScaleF(8.0f), curY, badgeX + badgeW - config.ScaleF(6.0f), curY + badgeH);
-    IDWriteTextFormat* pBadgeFmt = theme.fontMenuShortcut ? theme.fontMenuShortcut.Get() : theme.fontBody.Get();
-    if (pBadgeFmt && brushWhite) {
-        const wchar_t* szRuntimes = L"Runtimes (Ctrl+Shift+X)";
-        pRT->DrawText(szRuntimes, static_cast<UINT32>(wcslen(szRuntimes)), pBadgeFmt, rcLabel, brushWhite.Get());
+    ID2D1Bitmap* pBmpStep2 = GetLearningHubBitmap(pRT, L"step2_runtimes_panel.png");
+    if (pBmpStep2) {
+        D2D1_SIZE_F sz = pBmpStep2->GetSize();
+        float imgW = config.ScaleF(sz.width);
+        float imgH = config.ScaleF(sz.height);
+        D2D1_RECT_F rcImg = D2D1::RectF(contentLeft + config.ScaleF(16.0f), curY,
+                                        contentLeft + config.ScaleF(16.0f) + imgW, curY + imgH);
+        D2D1_ROUNDED_RECT rrc = D2D1::RoundedRect(rcImg, config.ScaleF(6.0f), config.ScaleF(6.0f));
+        if (brushBadgeBorder) pRT->DrawRoundedRectangle(rrc, brushBadgeBorder.Get(), 1.0f);
+        pRT->DrawBitmap(pBmpStep2, rcImg, 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
+        curY += imgH + config.ScaleF(18.0f);
     }
-    curY += badgeH + config.ScaleF(14.0f);
 
+    // Step 3 with picture under it (Image 4: Python install dropdown)
     DrawParagraph(
-        L"• Step 2: In the Runtimes panel, click the Python card (identified with the Python logo) to view detected environments and available version releases.\n"
-        L"• Step 3: Choose your preferred version from the catalog (such as Python v3.15.1 or v3.15.0) and click Install. Phide will automatically configure the interpreter and set up pip.\n"
+        L"• Step 3: Choose your preferred version from the catalog (such as Python v3.15.1 or v3.15.0) and click Install. Phide will automatically configure the interpreter and set up pip:",
+        pBodyFmt, brushProse.Get(), 10.0f
+    );
+
+    ID2D1Bitmap* pBmpStep3 = GetLearningHubBitmap(pRT, L"step3_python_install.png");
+    if (pBmpStep3) {
+        D2D1_SIZE_F sz = pBmpStep3->GetSize();
+        float imgW = config.ScaleF(sz.width * 0.90f);
+        float imgH = config.ScaleF(sz.height * 0.90f);
+        D2D1_RECT_F rcImg = D2D1::RectF(contentLeft + config.ScaleF(16.0f), curY,
+                                        contentLeft + config.ScaleF(16.0f) + imgW, curY + imgH);
+        D2D1_ROUNDED_RECT rrc = D2D1::RoundedRect(rcImg, config.ScaleF(6.0f), config.ScaleF(6.0f));
+        if (brushBadgeBorder) pRT->DrawRoundedRectangle(rrc, brushBadgeBorder.Get(), 1.0f);
+        pRT->DrawBitmap(pBmpStep3, rcImg, 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
+        curY += imgH + config.ScaleF(18.0f);
+    }
+
+    // Step 4
+    DrawParagraph(
         L"• Step 4: You can also choose or create an isolated Workspace Virtual Environment (.venv) directly from the panel for project-specific packages.",
         pBodyFmt, brushProse.Get(), 30.0f
     );
