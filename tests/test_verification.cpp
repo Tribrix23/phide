@@ -13556,6 +13556,104 @@ run_test_90:
                     assert(SUCCEEDED(hr));
                     SaveWicBitmapToPng(pWicGraph.Get(), pWicFactory.Get(), artDir + L"test_php_student_crud_graph.png");
                     std::cout << "  Passed: Saved php-student-crud visual graph snapshot to test_php_student_crud_graph.png" << std::endl;
+
+                    // 6. Verify Node Repositioning Persistence (User request: "what ever position i reposition them it wopuld be save and next i see it it shows there")
+                    if (idxIndex >= 0) {
+                        const float customX = 180.0f;
+                        const float customY = -95.0f;
+                        auto& node = const_cast<phide::ui::GraphNode&>(projGraph.GetNodes()[idxIndex]);
+                        node.x = customX;
+                        node.y = customY;
+                        node.isPinned = true;
+                        node.vx = 0.0f;
+                        node.vy = 0.0f;
+
+                        bool saved = projGraph.SaveLayout();
+                        assert(saved);
+                        std::wstring layoutPath = projGraph.GetLayoutFilePath();
+                        assert(std::filesystem::exists(layoutPath));
+
+                        // Step physics multiple frames: pinned node coordinates must remain LOCKED
+                        for (int f = 0; f < 30; ++f) {
+                            projGraph.UpdateAnimation();
+                        }
+                        assert(projGraph.GetNodes()[idxIndex].x == customX);
+                        assert(projGraph.GetNodes()[idxIndex].y == customY);
+                        std::cout << "  Passed: Repositioned node is locked by physics (no drifting)" << std::endl;
+
+                        // Create a fresh GraphView instance to verify reload persistence
+                        phide::ui::GraphView reloadedGraph;
+                        reloadedGraph.RefreshFromWorkspace(testProj, false);
+                        int reloadedIdx = -1;
+                        for (size_t i = 0; i < reloadedGraph.GetNodes().size(); ++i) {
+                            if (reloadedGraph.GetNodes()[i].label == L"index.php") {
+                                reloadedIdx = static_cast<int>(i);
+                                break;
+                            }
+                        }
+                        assert(reloadedIdx >= 0);
+                        assert(reloadedGraph.GetNodes()[reloadedIdx].isPinned);
+                        assert(std::abs(reloadedGraph.GetNodes()[reloadedIdx].x - customX) < 0.01f);
+                        assert(std::abs(reloadedGraph.GetNodes()[reloadedIdx].y - customY) < 0.01f);
+                        std::cout << "  Passed: Repositioned node position restored on reload from .phide/graph_layout.json" << std::endl;
+                    }
+
+                    // 7. Verify Explorer Drag-and-Drop Moving File Inside & Outside Folders
+                    {
+                        std::filesystem::path tempDir = std::filesystem::temp_directory_path() / L"phide_dnd_test";
+                        std::error_code ec;
+                        std::filesystem::remove_all(tempDir, ec);
+                        std::filesystem::create_directories(tempDir / L"assets", ec);
+
+                        std::filesystem::path srcFile = tempDir / L"test_note.txt";
+                        std::wofstream out(srcFile);
+                        out << L"Sample drag drop file";
+                        out.close();
+
+                        phide::ui::DrawerPanel drawer;
+                        drawer.OpenFolder(tempDir.wstring());
+                        assert(drawer.GetItemCount() > 0);
+
+                        // Move inside folder
+                        std::filesystem::path destFolder = tempDir / L"assets";
+                        std::filesystem::path movedInside = destFolder / L"test_note.txt";
+                        std::filesystem::rename(srcFile, movedInside, ec);
+                        assert(!ec);
+                        assert(std::filesystem::exists(movedInside));
+                        assert(!std::filesystem::exists(srcFile));
+
+                        // Expand target folder so its contents are visible in tree
+                        auto expDirs = drawer.GetExpandedDirs();
+                        expDirs.insert((tempDir / L"assets").wstring());
+                        expDirs.insert(std::filesystem::weakly_canonical(tempDir / L"assets", ec).wstring());
+                        drawer.SetExpandedDirs(expDirs);
+                        drawer.RefreshTree();
+
+                        bool foundInside = false;
+                        for (const auto& item : drawer.GetTreeItems()) {
+                            if (item.label == L"test_note.txt") { foundInside = true; break; }
+                        }
+                        assert(foundInside);
+                        std::cout << "  Passed: File moved inside folder via drag-drop and visible in tree" << std::endl;
+
+                        // Move outside folder back to root
+                        std::filesystem::path movedOutside = tempDir / L"test_note.txt";
+                        std::filesystem::rename(movedInside, movedOutside, ec);
+                        assert(!ec);
+                        assert(std::filesystem::exists(movedOutside));
+                        assert(!std::filesystem::exists(movedInside));
+
+                        drawer.RefreshTree();
+                        bool foundOutside = false;
+                        for (const auto& item : drawer.GetTreeItems()) {
+                            if (item.label == L"test_note.txt" && item.depth == 1) { foundOutside = true; break; }
+                        }
+                        assert(foundOutside);
+                        std::cout << "  Passed: File moved outside folder back to root and visible in tree" << std::endl;
+
+                        drawer.CloseFolder();
+                        std::filesystem::remove_all(tempDir, ec);
+                    }
                 }
             }
 

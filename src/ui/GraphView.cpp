@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <filesystem>
 #include <sstream>
+#include <fstream>
 
 namespace phide::ui {
 
@@ -575,6 +576,7 @@ void GraphView::RefreshFromWorkspace(const std::wstring& rootPath, bool preserve
 
         m_nodes = std::move(updatedNodes);
         ParseFileDependencies();
+        LoadLayout();
 
         if (hasNewNodes) {
             StartBounceAnimation();
@@ -675,8 +677,14 @@ void GraphView::RefreshFromWorkspace(const std::wstring& rootPath, bool preserve
     // 3. Connect nodes based strictly on real references
     ParseFileDependencies();
 
-    // 4. Start Obsidian bouncy intro animation
-    StartIntroAnimation();
+    // 4. Restore saved layout positions if available
+    bool hasSavedLayout = LoadLayout();
+
+    if (!hasSavedLayout && !preserveExistingPositions) {
+        StartIntroAnimation();
+    } else {
+        StartBounceAnimation();
+    }
 }
 
 void GraphView::StepPhysics(float alpha) {
@@ -722,9 +730,14 @@ void GraphView::StepPhysics(float alpha) {
         m_nodes[e.to].vy   -= fy;
     }
 
-    // C. Center gravity & update positions (skip currently dragged node)
+    // C. Center gravity & update positions (skip currently dragged node and pinned nodes)
     for (size_t i = 0; i < m_nodes.size(); ++i) {
         if (static_cast<int>(i) == m_draggedNode) continue;
+        if (m_nodes[i].isPinned) {
+            m_nodes[i].vx = 0.0f;
+            m_nodes[i].vy = 0.0f;
+            continue;
+        }
 
         m_nodes[i].vx -= m_nodes[i].x * centerPull;
         m_nodes[i].vy -= m_nodes[i].y * centerPull;
@@ -926,6 +939,124 @@ std::wstring GraphView::GetStatusString(const app::AppConfig& config) const {
            (config.isGraphColored ? L"Colored" : L"Monochrome");
 }
 
+std::wstring GraphView::GetLayoutFilePath() const {
+    if (!m_currentRootPath.empty()) {
+        std::filesystem::path root(m_currentRootPath);
+        std::filesystem::path phideDir = root / L".phide";
+        return (phideDir / L"graph_layout.json").wstring();
+    }
+    wchar_t* pAppData = nullptr;
+    size_t len = 0;
+    if (_wdupenv_s(&pAppData, &len, L"APPDATA") == 0 && pAppData) {
+        std::filesystem::path dir = std::filesystem::path(pAppData) / L"phide";
+        free(pAppData);
+        return (dir / L"graph_layout_default.json").wstring();
+    }
+    return L"graph_layout.json";
+}
+
+bool GraphView::SaveLayout() {
+    std::wstring path = GetLayoutFilePath();
+    if (path.empty()) return false;
+
+    std::filesystem::path p(path);
+    std::error_code ec;
+    std::filesystem::create_directories(p.parent_path(), ec);
+
+    std::wofstream out(path, std::ios::trunc);
+    if (!out.is_open()) return false;
+
+    out << L"{\n";
+    out << L"  \"zoom\": " << m_zoom << L",\n";
+    out << L"  \"panX\": " << m_panX << L",\n";
+    out << L"  \"panY\": " << m_panY << L",\n";
+    out << L"  \"nodes\": [\n";
+
+    size_t count = 0;
+    for (size_t i = 0; i < m_nodes.size(); ++i) {
+        const auto& n = m_nodes[i];
+        out << L"    { \"id\": \"" << n.label << L"\", \"x\": " << n.x << L", \"y\": " << n.y
+            << L", \"pinned\": " << (n.isPinned ? L"true" : L"false") << L" }";
+        if (++count < m_nodes.size()) out << L",";
+        out << L"\n";
+    }
+
+    out << L"  ]\n";
+    out << L"}\n";
+    return true;
+}
+
+bool GraphView::LoadLayout() {
+    std::wstring path = GetLayoutFilePath();
+    if (path.empty()) return false;
+
+    std::error_code ec;
+    if (!std::filesystem::exists(path, ec)) return false;
+
+    std::wifstream in(path);
+    if (!in.is_open()) return false;
+
+    std::wstring line;
+    bool foundAny = false;
+
+    while (std::getline(in, line)) {
+        size_t first = line.find_first_not_of(L" \t\r\n");
+        if (first == std::wstring::npos) continue;
+        line = line.substr(first);
+
+        if (line.find(L"\"zoom\"") != std::wstring::npos) {
+            auto colon = line.find(L':');
+            if (colon != std::wstring::npos) {
+                float z = static_cast<float>(_wtof(line.substr(colon + 1).c_str()));
+                if (z >= 0.20f && z <= 5.0f) m_zoom = z;
+            }
+        } else if (line.find(L"\"panX\"") != std::wstring::npos) {
+            auto colon = line.find(L':');
+            if (colon != std::wstring::npos) {
+                m_panX = static_cast<float>(_wtof(line.substr(colon + 1).c_str()));
+            }
+        } else if (line.find(L"\"panY\"") != std::wstring::npos) {
+            auto colon = line.find(L':');
+            if (colon != std::wstring::npos) {
+                m_panY = static_cast<float>(_wtof(line.substr(colon + 1).c_str()));
+            }
+        } else if (line.find(L"\"id\"") != std::wstring::npos) {
+            auto q1 = line.find(L'"', line.find(L"\"id\"") + 4);
+            auto q2 = (q1 != std::wstring::npos) ? line.find(L'"', q1 + 1) : std::wstring::npos;
+            if (q1 != std::wstring::npos && q2 != std::wstring::npos) {
+                std::wstring id = line.substr(q1 + 1, q2 - q1 - 1);
+                float x = 0.0f, y = 0.0f;
+                bool pinned = false;
+
+                auto xPos = line.find(L"\"x\":");
+                if (xPos != std::wstring::npos) {
+                    x = static_cast<float>(_wtof(line.substr(xPos + 4).c_str()));
+                }
+                auto yPos = line.find(L"\"y\":");
+                if (yPos != std::wstring::npos) {
+                    y = static_cast<float>(_wtof(line.substr(yPos + 4).c_str()));
+                }
+                if (line.find(L"\"pinned\": true") != std::wstring::npos || line.find(L"\"pinned\":true") != std::wstring::npos) {
+                    pinned = true;
+                }
+
+                for (auto& n : m_nodes) {
+                    if (n.label == id || n.id == id) {
+                        n.x = x;
+                        n.y = y;
+                        n.isPinned = pinned;
+                        n.vx = 0.0f;
+                        n.vy = 0.0f;
+                        foundAny = true;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    return foundAny;
+}
+
 bool GraphView::HandleMouseMove(POINT clientPt) {
     if (m_canvasBounds.right - m_canvasBounds.left < 10.0f) return false;
 
@@ -1020,9 +1151,17 @@ bool GraphView::HandleLButtonUp(POINT clientPt) {
                 m_lastClickedFile = m_nodes[m_draggedNode].id;
             }
         } else {
-            // User finished dragging and arranging a node -> springy bounce settling
+            // User finished dragging and arranging a node -> pin it, persist layout, and start settling
+            if (m_draggedNode < static_cast<int>(m_nodes.size())) {
+                m_nodes[m_draggedNode].isPinned = true;
+                m_nodes[m_draggedNode].vx = 0.0f;
+                m_nodes[m_draggedNode].vy = 0.0f;
+            }
+            SaveLayout();
             StartBounceAnimation();
         }
+    } else if (m_isPanning) {
+        SaveLayout();
     }
 
     m_draggedNode = -1;
@@ -1054,6 +1193,7 @@ bool GraphView::HandleMouseWheel(short delta, POINT clientPt) {
     m_panY = mouseY - midY - wy * newZoom;
     m_zoom = newZoom;
 
+    SaveLayout();
     return true;
 }
 

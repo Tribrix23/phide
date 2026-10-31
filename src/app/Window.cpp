@@ -6154,7 +6154,9 @@ void Window::OnPaint() {
         }
 
         std::wstring dragLabel = m_dragCandidateName;
-        if (m_hasDragDropTarget) {
+        if (m_isDragOverExplorer && m_hasDragDropTarget) {
+            dragLabel += L" (move)";
+        } else if (m_hasDragDropTarget) {
             dragLabel += L" (import)";
         }
         D2D1_RECT_F rcText = D2D1::RectF(ghostX + m_config.ScaleF(26.0f), ghostY + m_config.ScaleF(4.0f), ghostX + badgeW - m_config.ScaleF(6.0f), ghostY + badgeH);
@@ -7155,9 +7157,13 @@ void Window::HandleMouseMove(POINT clientPt, WPARAM wParam) {
         if (!(GetKeyState(VK_LBUTTON) & 0x8000)) {
             m_dragCandidatePath.clear();
             m_dragCandidateName.clear();
+            m_dragCandidateIsFolder = false;
+            m_dragCandidateTreeIdx = -1;
             m_isDraggingExplorerFile = false;
             m_hasDragDropTarget = false;
             m_dragDropTargetGroup = -1;
+            m_isDragOverExplorer = false;
+            m_drawer.ClearExplorerDropTarget();
             ReleaseCapture();
             InvalidateRect(m_hwnd, nullptr, FALSE);
             return;
@@ -7188,10 +7194,63 @@ void Window::HandleMouseMove(POINT clientPt, WPARAM wParam) {
 
             m_hasDragDropTarget = false;
             m_dragDropTargetGroup = -1;
+            m_isDragOverExplorer = false;
+            m_explorerDropTargetIndex = -1;
+            m_explorerDropTargetIsRoot = false;
 
-            if (clientPt.x >= canvasLeft && clientPt.x < clientRc.right &&
-                clientPt.y >= headerH + tabH && clientPt.y < editorH &&
-                canvasWidth > 10.0f && !m_editorGroups.empty()) {
+            // 1. Check if dragging over Explorer drawer to move file/folder
+            if (m_config.isDrawerOpen && m_config.activeRailTab == 0 &&
+                clientPt.x >= railW && clientPt.x < railW + drawerW &&
+                clientPt.y >= headerH && clientPt.y < clientH) {
+                m_isDragOverExplorer = true;
+                int hoverTree = m_drawer.HitTest(clientPt, m_config);
+                std::filesystem::path srcP(m_dragCandidatePath);
+                std::error_code ec;
+
+                if (hoverTree >= 0) {
+                    const auto* pTarget = m_drawer.GetItem(hoverTree);
+                    if (pTarget) {
+                        std::filesystem::path targetP(pTarget->fullPath);
+                        std::filesystem::path destDir = pTarget->isFolder ? targetP : targetP.parent_path();
+
+                        bool isValid = true;
+                        if (srcP == targetP) {
+                            isValid = false; // Cannot drop onto self
+                        } else if (srcP.parent_path() == destDir) {
+                            isValid = false; // Already inside this folder
+                        } else if (m_dragCandidateIsFolder) {
+                            auto rel = std::filesystem::relative(destDir, srcP, ec);
+                            if (!ec && !rel.empty() && rel.wstring().rfind(L"..", 0) != 0) {
+                                isValid = false; // Cannot drop folder into child
+                            }
+                        }
+
+                        if (isValid) {
+                            m_hasDragDropTarget = true;
+                            m_explorerDropTargetIndex = hoverTree;
+                            m_explorerDropTargetIsRoot = (hoverTree == 0 && pTarget->isFolder);
+                            m_drawer.SetExplorerDropTarget(hoverTree, m_explorerDropTargetIsRoot);
+                        } else {
+                            m_drawer.ClearExplorerDropTarget();
+                        }
+                    }
+                } else {
+                    // Over empty space in drawer -> target is root directory
+                    std::filesystem::path rootP(m_drawer.GetOpenFolderPath());
+                    if (!rootP.empty() && srcP.parent_path() != rootP) {
+                        m_hasDragDropTarget = true;
+                        m_explorerDropTargetIsRoot = true;
+                        m_explorerDropTargetIndex = 0;
+                        m_drawer.SetExplorerDropTarget(0, true);
+                    } else {
+                        m_drawer.ClearExplorerDropTarget();
+                    }
+                }
+            } else {
+                m_drawer.ClearExplorerDropTarget();
+                if (clientPt.x >= canvasLeft && clientPt.x < clientRc.right &&
+                    clientPt.y >= headerH + tabH && clientPt.y < editorH &&
+                    canvasWidth > 10.0f && !m_editorGroups.empty()) {
 
                 float paneW = canvasWidth / m_editorGroups.size();
                 for (size_t g = 0; g < m_editorGroups.size(); ++g) {
@@ -7229,6 +7288,7 @@ void Window::HandleMouseMove(POINT clientPt, WPARAM wParam) {
                         break;
                     }
                 }
+            }
             }
 
             InvalidateRect(m_hwnd, nullptr, FALSE);
@@ -9513,22 +9573,21 @@ void Window::HandleLButtonDown(POINT clientPt) {
                     if (pItem) {
                         m_selectedExplorerPath = pItem->fullPath;
                         m_drawer.SetActiveFilePath(pItem->fullPath);
-                        if (pItem->isFolder) {
-                            m_drawer.ToggleFolder(clickedTree);
-                            UpdateDrawerErrorFiles();
-    SaveSessionState();
-                        } else {
-                            // File item clicked: initiate potential drag candidate
-                            m_dragCandidatePath = pItem->fullPath;
-                            m_dragCandidateName = pItem->label;
-                            m_dragStartPt = clientPt;
-                            m_dragCurrentPt = clientPt;
-                            m_isDraggingExplorerFile = false;
-                            m_hasDragDropTarget = false;
-                            m_dragDropTargetGroup = -1;
-                            SetCapture(m_hwnd);
-                            return;
-                        }
+                        // File or Folder item clicked: initiate potential drag candidate to move or open/toggle
+                        m_dragCandidatePath = pItem->fullPath;
+                        m_dragCandidateName = pItem->label;
+                        m_dragCandidateIsFolder = pItem->isFolder;
+                        m_dragCandidateTreeIdx = clickedTree;
+                        m_dragStartPt = clientPt;
+                        m_dragCurrentPt = clientPt;
+                        m_isDraggingExplorerFile = false;
+                        m_hasDragDropTarget = false;
+                        m_dragDropTargetGroup = -1;
+                        m_isDragOverExplorer = false;
+                        m_explorerDropTargetIndex = -1;
+                        m_explorerDropTargetIsRoot = false;
+                        SetCapture(m_hwnd);
+                        return;
                     }
                 }
             }
@@ -9787,9 +9846,86 @@ void Window::HandleLButtonUp(POINT clientPt) {
             const float canvasLeft = static_cast<float>(railW + drawerW);
             const float headerH = m_config.ScaleF(static_cast<float>(m_config.headerHeight));
             const float tabH = m_config.ScaleF(34.0f);
+            const float clientH = static_cast<float>(clientRc.bottom - clientRc.top);
 
-            // Dropped on Tab Bar -> open file as a tab!
-            if (clientPt.x >= canvasLeft && clientPt.y >= headerH && clientPt.y < headerH + tabH) {
+            if (m_config.isDrawerOpen && m_config.activeRailTab == 0 &&
+                clientPt.x >= railW && clientPt.x < railW + drawerW &&
+                clientPt.y >= headerH && clientPt.y < clientH) {
+                // User dropped inside Explorer drawer to move file or folder!
+                int dropIdx = m_drawer.HitTest(clientPt, m_config);
+                std::filesystem::path srcP(m_dragCandidatePath);
+                std::filesystem::path destDir;
+
+                if (dropIdx >= 0) {
+                    const auto* pTarget = m_drawer.GetItem(dropIdx);
+                    if (pTarget) {
+                        destDir = pTarget->isFolder ? std::filesystem::path(pTarget->fullPath)
+                                                    : std::filesystem::path(pTarget->fullPath).parent_path();
+                    }
+                } else {
+                    destDir = std::filesystem::path(m_drawer.GetOpenFolderPath());
+                }
+
+                if (!destDir.empty() && std::filesystem::exists(destDir)) {
+                    std::error_code ec;
+                    std::filesystem::path destP = destDir / srcP.filename();
+
+                    bool canMove = (srcP != destP && srcP.parent_path() != destDir);
+                    if (canMove && m_dragCandidateIsFolder) {
+                        auto rel = std::filesystem::relative(destDir, srcP, ec);
+                        if (!ec && !rel.empty() && rel.wstring().rfind(L"..", 0) != 0) {
+                            canMove = false; // Cannot drop parent folder into child
+                        }
+                    }
+
+                    if (canMove) {
+                        if (std::filesystem::exists(destP, ec)) {
+                            std::wstring msg = L"A file or folder with name '" + srcP.filename().wstring() + L"' already exists in destination.";
+                            MessageBoxW(m_hwnd, msg.c_str(), L"Move Error", MB_OK | MB_ICONWARNING);
+                        } else {
+                            std::filesystem::rename(srcP, destP, ec);
+                            if (ec) {
+                                ec.clear();
+                                std::filesystem::copy(srcP, destP, std::filesystem::copy_options::recursive, ec);
+                                if (!ec) {
+                                    std::filesystem::remove_all(srcP, ec);
+                                }
+                            }
+
+                            if (!ec) {
+                                // 1. Update open tabs pointing to moved file or inside moved folder
+                                for (auto& grp : m_editorGroups) {
+                                    for (auto& doc : grp.docs) {
+                                        if (doc.filePath == srcP.wstring()) {
+                                            doc.filePath = destP.wstring();
+                                            doc.fileName = destP.filename().wstring();
+                                        } else if (m_dragCandidateIsFolder && doc.filePath.rfind(srcP.wstring() + L"\\", 0) == 0) {
+                                            doc.filePath = destP.wstring() + doc.filePath.substr(srcP.wstring().length());
+                                        }
+                                    }
+                                }
+
+                                // 2. Expand destination directory if needed
+                                auto expDirs = m_drawer.GetExpandedDirs();
+                                expDirs.insert(destDir.wstring());
+                                m_drawer.SetExpandedDirs(expDirs);
+
+                                // 3. Refresh file tree and git status
+                                m_drawer.RefreshTree();
+                                m_drawer.SetActiveFilePath(destP.wstring());
+                                m_selectedExplorerPath = destP.wstring();
+                                UpdateDrawerDirtyFiles();
+                                UpdateDrawerErrorFiles();
+                                m_drawer.RefreshGitStatusOnly(true);
+
+                                // 4. Update GraphView with preserved positions
+                                NotifyGraphViewFilesystemChanged();
+                                SaveSessionState();
+                            }
+                        }
+                    }
+                }
+            } else if (clientPt.x >= canvasLeft && clientPt.y >= headerH && clientPt.y < headerH + tabH) {
                 OpenFileDocument(m_dragCandidatePath, false);
             } else if (m_hasDragDropTarget && m_dragDropTargetGroup >= 0) {
                 m_focusedGroupIdx = m_dragDropTargetGroup;
@@ -9852,17 +9988,29 @@ void Window::HandleLButtonUp(POINT clientPt) {
                 }
             }
         } else {
-            // Normal click without drag: preview/open file document!
+            // Normal click without drag: preview/open file or toggle folder!
             m_selectedExplorerPath = m_dragCandidatePath;
             m_explorerHasFocus = true;
-            OpenFileDocument(m_dragCandidatePath, true);
+            if (m_dragCandidateIsFolder) {
+                m_drawer.ToggleFolder(m_dragCandidateTreeIdx);
+                UpdateDrawerErrorFiles();
+                SaveSessionState();
+            } else {
+                OpenFileDocument(m_dragCandidatePath, true);
+            }
         }
 
         m_dragCandidatePath.clear();
         m_dragCandidateName.clear();
+        m_dragCandidateIsFolder = false;
+        m_dragCandidateTreeIdx = -1;
         m_isDraggingExplorerFile = false;
         m_hasDragDropTarget = false;
         m_dragDropTargetGroup = -1;
+        m_isDragOverExplorer = false;
+        m_explorerDropTargetIndex = -1;
+        m_explorerDropTargetIsRoot = false;
+        m_drawer.ClearExplorerDropTarget();
         ReleaseCapture();
         InvalidateRect(m_hwnd, nullptr, FALSE);
         return;
@@ -11417,8 +11565,12 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     m_isDraggingExplorerFile = false;
                     m_dragCandidatePath.clear();
                     m_dragCandidateName.clear();
+                    m_dragCandidateIsFolder = false;
+                    m_dragCandidateTreeIdx = -1;
                     m_hasDragDropTarget = false;
                     m_dragDropTargetGroup = -1;
+                    m_isDragOverExplorer = false;
+                    m_drawer.ClearExplorerDropTarget();
                     ReleaseCapture();
                     InvalidateRect(m_hwnd, nullptr, FALSE);
                     return 0;

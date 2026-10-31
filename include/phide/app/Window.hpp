@@ -679,8 +679,10 @@ private:
         return effectiveMax * m_terminalAnimProgress;
     }
 
-    // Explorer Drag & Drop Import State (Godot / VS Code style)
+    // Explorer Drag & Drop State (Moving files/folders & Editor import)
     bool m_isDraggingExplorerFile = false;
+    bool m_dragCandidateIsFolder = false;
+    int m_dragCandidateTreeIdx = -1;
     std::wstring m_dragCandidatePath;
     std::wstring m_dragCandidateName;
     POINT m_dragStartPt{ 0, 0 };
@@ -689,6 +691,9 @@ private:
     size_t m_dragDropTargetLine = 0;
     size_t m_dragDropTargetCol = 0;
     int m_dragDropTargetGroup = -1;
+    bool m_isDragOverExplorer = false;
+    int m_explorerDropTargetIndex = -1;
+    bool m_explorerDropTargetIsRoot = false;
 
     // Tab Drag & Drop Reordering State (Image 2)
     bool m_isDraggingTab = false;

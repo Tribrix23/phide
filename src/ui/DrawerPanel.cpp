@@ -1031,7 +1031,17 @@ void DrawerPanel::RenderExplorerPane(ID2D1RenderTarget* pRT, Theme& theme, const
                 bool isHovered = (m_hoveredIndex == static_cast<int>(i));
 
                 D2D1_ROUNDED_RECT rrc = D2D1::RoundedRect(item.bounds, 3.5f, 3.5f);
-                if (isActive) {
+                bool isDropTarget = (m_isDragHoverActive && (m_explorerDropTargetIndex == static_cast<int>(i) || (m_explorerDropTargetIsRoot && i == 0)));
+                if (isDropTarget) {
+                    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushDropBg, brushDropBorder;
+                    pRT->CreateSolidColorBrush(
+                        theme.IsDarkMode() ? D2D1::ColorF(0.0f, 0.48f, 0.95f, 0.30f) : D2D1::ColorF(0.0f, 0.48f, 0.95f, 0.22f),
+                        &brushDropBg
+                    );
+                    pRT->CreateSolidColorBrush(D2D1::ColorF(0.15f, 0.60f, 1.0f, 0.95f), &brushDropBorder);
+                    if (brushDropBg) pRT->FillRoundedRectangle(rrc, brushDropBg.Get());
+                    if (brushDropBorder) pRT->DrawRoundedRectangle(rrc, brushDropBorder.Get(), 1.5f);
+                } else if (isActive) {
                     // Active selection highlight bar matching Images 2 & 3
                     if (theme.brushTreeSelected) {
                         pRT->FillRoundedRectangle(rrc, theme.brushTreeSelected.Get());

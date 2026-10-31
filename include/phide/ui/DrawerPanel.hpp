@@ -540,6 +540,20 @@ public:
         return m_visibleItems.size();
     }
 
+    void SetExplorerDropTarget(int targetIndex, bool isRoot) noexcept {
+        m_explorerDropTargetIndex = targetIndex;
+        m_explorerDropTargetIsRoot = isRoot;
+        m_isDragHoverActive = (targetIndex >= 0 || isRoot);
+    }
+    void ClearExplorerDropTarget() noexcept {
+        m_explorerDropTargetIndex = -1;
+        m_explorerDropTargetIsRoot = false;
+        m_isDragHoverActive = false;
+    }
+    [[nodiscard]] int GetExplorerDropTargetIndex() const noexcept { return m_explorerDropTargetIndex; }
+    [[nodiscard]] bool IsExplorerDropTargetRoot() const noexcept { return m_explorerDropTargetIsRoot; }
+    [[nodiscard]] bool IsExplorerDragHoverActive() const noexcept { return m_isDragHoverActive; }
+
     [[nodiscard]] bool HasPythonFiles() const noexcept { return m_hasPythonFiles; }
     [[nodiscard]] bool HasPhpFiles() const noexcept { return m_hasPhpFiles; }
     [[nodiscard]] bool HasNodeFiles() const noexcept { return m_hasNodeFiles; }
@@ -1024,6 +1038,11 @@ private:
     int m_hoveredIndex = -1;
     bool m_hoveredOpenFolderBtn = false;
     D2D1_RECT_F m_rcOpenFolderBtn{};
+
+    // Explorer Drag & Drop Destination Target
+    int m_explorerDropTargetIndex = -1;
+    bool m_explorerDropTargetIsRoot = false;
+    bool m_isDragHoverActive = false;
 
     // Inline Tree Item Rename State
     bool m_isRenaming = false;

@@ -33,6 +33,7 @@ struct GraphNode {
     float vy = 0.0f;          ///< Velocity Y
     float radius = 5.5f;      ///< Node radius in world units
     D2D1_COLOR_F color{};     ///< Accent color in colored mode
+    bool isPinned = false;    ///< True if repositioned by user drag; physics retains exact coordinates
 
     std::vector<size_t> neighbors; ///< Indices of connected neighbor nodes
 };
@@ -62,6 +63,23 @@ public:
      * @param preserveExistingPositions When true (e.g. file watcher/save updates), keeps existing node positions.
      */
     void RefreshFromWorkspace(const std::wstring& rootPath, bool preserveExistingPositions = false);
+
+    /**
+     * @brief Saves node coordinates and pan/zoom state to disk (.phide/graph_layout.json).
+     * @return True if successfully saved.
+     */
+    bool SaveLayout();
+
+    /**
+     * @brief Loads saved node coordinates and pan/zoom state from disk (.phide/graph_layout.json).
+     * @return True if saved positions were found and applied.
+     */
+    bool LoadLayout();
+
+    /**
+     * @brief Returns the layout file path for the current workspace.
+     */
+    [[nodiscard]] std::wstring GetLayoutFilePath() const;
 
     /**
      * @brief Returns the formatted status bar text (e.g. "Graph view • 116% • 9 files • Monochrome").
