@@ -49,6 +49,7 @@ struct AppConfig {
     bool wordWrap = false;              ///< True if word wrap is enabled in editor.
     bool renderWhitespace = false;      ///< True if whitespace dots are rendered.
     bool zenMode = false;               ///< True if Zen Mode (distraction-free full screen) is active.
+    bool isGraphColored = false;        ///< True if file network graph nodes are colored by file type (Default false per user prompt).
     float fontSize = 14.0f;             ///< Editor font size in points.
     float lineHeightMultiplier = 1.45f; ///< Line height relative to font size.
     float zoomLevel = 1.0f;             ///< Zoom multiplier (1.0 = 100%).

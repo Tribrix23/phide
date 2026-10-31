@@ -75,6 +75,7 @@ enum class MenuActionId {
     OpenView,
     AppearanceCascade,
     EditorLayoutCascade,
+    NetworkGraphLayoutCascade,
     Explorer,
     Search,
     SourceControl,
@@ -127,6 +128,9 @@ enum class MenuActionId {
     LayoutTwoRowsRight,
     LayoutTwoColumnsBottom,
     LayoutFlip,
+
+    // Network Graph Layout Submenu Actions
+    GraphToggleColored,
 
     // Explorer Context Menu Actions (Images 4 & 5)
     CtxUndo,

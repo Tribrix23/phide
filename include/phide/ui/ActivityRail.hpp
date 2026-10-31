@@ -32,7 +32,8 @@ enum class RailTabId {
     Files = 0,          ///< Files / Explorer perspective (two overlapping sheets)
     Search = 1,         ///< Search across workspace
     Git = 2,            ///< Source Control (Git)
-    MoreActions = 6,    ///< Three-dot icon ("More Actions") directly under horizontal separation line
+    FileNetwork = 6,    ///< File Network icon with hub and 5 satellite nodes ("File network")
+    MoreActions = 6,    ///< Backward compatibility alias for FileNetwork
     Packages = 3,       ///< Package Manager (PyCharm style)
     Notebook = 4,       ///< Interactive Notebook (Jupyter / Colab)
     Student = 5         ///< Student Tutorials & Learning Hub (Student hat / graduation cap 🎓)

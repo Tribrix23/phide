@@ -1511,6 +1511,10 @@ void Window::OpenSpecialView(const std::wstring& viewType, const std::wstring& t
     for (size_t i = 0; i < group.docs.size(); ++i) {
         if (group.docs[i].isSpecialView && group.docs[i].viewType == viewType) {
             group.activeDocIdx = static_cast<int>(i);
+            if (viewType == L"graph") {
+                m_editor.GetGraphView().StartBounceAnimation();
+                SetTimer(m_hwnd, m_animTimerId, 16, nullptr);
+            }
             InvalidateRect(m_hwnd, nullptr, FALSE);
             return;
         }
@@ -1534,6 +1538,10 @@ void Window::OpenSpecialView(const std::wstring& viewType, const std::wstring& t
     } else {
         group.docs.push_back(std::move(newDoc));
         group.activeDocIdx = static_cast<int>(group.docs.size() - 1);
+    }
+    if (viewType == L"graph") {
+        m_editor.GetGraphView().StartIntroAnimation();
+        SetTimer(m_hwnd, m_animTimerId, 16, nullptr);
     }
     SyncActiveTabWithDrawer();
     InvalidateRect(m_hwnd, nullptr, FALSE);
@@ -7349,6 +7357,10 @@ void Window::HandleMouseMove(POINT clientPt, WPARAM wParam) {
             if (m_editor.HandleStudentMouseMove(clientPt)) {
                 needRepaint = true;
             }
+        } else if (pActiveDoc->viewType == L"graph") {
+            if (m_editor.GetGraphView().HandleMouseMove(clientPt)) {
+                needRepaint = true;
+            }
         }
     }
 
@@ -8120,6 +8132,10 @@ void Window::HandleLButtonDown(POINT clientPt) {
                     // Editor Layout Submenu Actions (Image 3)
                     case ui::MenuActionId::ToggleLineNumbers:
                         m_config.showLineNumbers = !m_config.showLineNumbers;
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
+                        break;
+                    case ui::MenuActionId::GraphToggleColored:
+                        m_config.isGraphColored = !m_config.isGraphColored;
                         InvalidateRect(m_hwnd, nullptr, FALSE);
                         break;
                     case ui::MenuActionId::LayoutSingle:
@@ -8954,6 +8970,12 @@ void Window::HandleLButtonDown(POINT clientPt) {
                         InvalidateRect(m_hwnd, nullptr, FALSE);
                         return;
                     }
+                } else if (doc.isSpecialView && doc.viewType == L"graph") {
+                    m_drawer.SetSearchFocus(0);
+                    if (m_editor.GetGraphView().HandleLButtonDown(clientPt)) {
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
+                        return;
+                    }
                 } else if (doc.isSpecialView && doc.viewType == L"student") {
                     m_drawer.SetSearchFocus(0);
                     int action = m_editor.HitTestStudentView(clientPt);
@@ -9504,9 +9526,12 @@ void Window::HandleLButtonDown(POINT clientPt) {
     // 7. Activity Rail Clicks (Files, Search, Git, Debug, Packages)
     auto railHit = m_rail.HitTest(clientPt);
     if (railHit != ui::RailTabId::None) {
-        if (railHit == ui::RailTabId::MoreActions) {
-            D2D1_RECT_F rcItem = m_rail.GetItemBounds(ui::RailTabId::MoreActions);
-            m_popupMenu.OpenMoreActionsMenu(rcItem.right + m_config.ScaleF(4.0f), rcItem.top, m_config);
+        if (railHit == ui::RailTabId::FileNetwork) {
+            std::wstring folder = m_drawer.GetOpenFolderPath();
+            m_editor.GetGraphView().RefreshFromWorkspace(folder);
+            OpenSpecialView(L"graph", L"Graph view");
+            UpdateDrawerErrorFiles();
+            SaveSessionState();
             InvalidateRect(m_hwnd, nullptr, FALSE);
             return;
         }
@@ -9556,6 +9581,23 @@ void Window::HandleLButtonDown(POINT clientPt) {
 
 void Window::HandleLButtonUp(POINT clientPt) {
     auto* pActiveDoc = GetActiveDoc();
+    if (pActiveDoc && pActiveDoc->isSpecialView && pActiveDoc->viewType == L"graph") {
+        if (m_editor.GetGraphView().HandleLButtonUp(clientPt)) {
+            if (m_editor.GetGraphView().IsAnimating()) {
+                SetTimer(m_hwnd, m_animTimerId, 16, nullptr);
+            }
+            std::wstring clickedFile = m_editor.GetGraphView().GetLastClickedFile();
+            if (!clickedFile.empty()) {
+                m_editor.GetGraphView().ClearLastClickedFile();
+                std::error_code ec;
+                if (std::filesystem::exists(clickedFile, ec) && std::filesystem::is_regular_file(clickedFile, ec)) {
+                    OpenFileDocument(clickedFile);
+                }
+            }
+            InvalidateRect(m_hwnd, nullptr, FALSE);
+            return;
+        }
+    }
     if (pActiveDoc && pActiveDoc->isSpecialView && pActiveDoc->viewType == L"notebook") {
         if (m_editor.GetNotebookView().HandleLButtonUp(clientPt, *pActiveDoc, m_config)) {
             InvalidateRect(m_hwnd, nullptr, FALSE);
@@ -10530,6 +10572,11 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     }
                 } else if (pDoc->isSpecialView && pDoc->viewType == L"student") {
                     if (m_editor.HandleStudentMouseWheel(delta)) {
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
+                        return 0;
+                    }
+                } else if (pDoc->isSpecialView && pDoc->viewType == L"graph") {
+                    if (m_editor.GetGraphView().HandleMouseWheel(delta, pt)) {
                         InvalidateRect(m_hwnd, nullptr, FALSE);
                         return 0;
                     }
@@ -12091,6 +12138,15 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 // Smoothly animate interactive notebook execution spinner (60 FPS buttery smooth)
                 if (m_editor.GetNotebookView().IsExecuting()) {
                     keepAnimating = true;
+                }
+
+                // Smoothly animate Obsidian bouncy file network graph view (60 FPS buttery smooth)
+                auto* pGraphDoc = GetActiveDoc();
+                if (pGraphDoc && pGraphDoc->isSpecialView && pGraphDoc->viewType == L"graph") {
+                    if (m_editor.GetGraphView().IsAnimating()) {
+                        m_editor.GetGraphView().UpdateAnimation();
+                        keepAnimating = true;
+                    }
                 }
 
                 if (!keepAnimating && !m_isDrawerAnimating && !m_isTerminalAnimating && !m_isTermFullScreenAnimating && !m_isRightSidebarAnimating) {

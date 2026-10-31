@@ -484,6 +484,24 @@ void PopupMenu::BuildViewMenuItems(const app::AppConfig& config, bool isSidebarO
 
     m_items.push_back(std::move(layoutItem));
 
+    // 5. Network Graph Layout ▸ (Cascading Submenu per user prompt)
+    PopupMenuItem graphLayoutItem;
+    graphLayoutItem.actionId = MenuActionId::NetworkGraphLayoutCascade;
+    graphLayoutItem.label = L"Network Graph Layout";
+    graphLayoutItem.hasSubmenu = true;
+    graphLayoutItem.submenuItems.push_back({
+        MenuActionId::GraphToggleColored,
+        L"Colored",
+        L"",
+        false,
+        config.isGraphColored,
+        false,
+        true,
+        {},
+        {}
+    });
+    m_items.push_back(std::move(graphLayoutItem));
+
     // --- Separator ---
     m_items.push_back({ MenuActionId::None,           L"",                   L"",             true,  false, false, false, {}, {} });
 

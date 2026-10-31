@@ -37,6 +37,7 @@
 #include "phide/ui/DatabaseSettingsModal.hpp"
 #include "phide/ui/PackageManagerView.hpp"
 #include "phide/ui/NotebookView.hpp"
+#include "phide/ui/GraphView.hpp"
 #include "phide/editor/NotebookModel.hpp"
 #include "phide/editor/Buffer.hpp"
 #include "phide/editor/SyntaxValidator.hpp"
@@ -366,6 +367,9 @@ int main(int argc, char* argv[]) {
     }
     if (targetTest == 89) {
         goto run_test_89;
+    }
+    if (targetTest == 90) {
+        goto run_test_90;
     }
 
     // --- 3. Render Test: Picture Viewer in Dark & Light Modes ---
@@ -13309,6 +13313,175 @@ run_test_89:
         std::cout << "  Passed: All [TEST 89] Dynamic Git Branch, User Icon, Full Author Name, No Bell & Tooltip tests passed!" << std::endl;
         if (targetTest == 89) {
             std::cout << "Target test 89 finished successfully." << std::endl;
+            return 0;
+        }
+    }
+
+    // =========================================================================
+    // [TEST 90] File Network Graph View (Activity Rail Icon, View Menu Submenu with Colored Option,
+    //           Obsidian Graph View, Node Dragging, Zoom Labels)
+    // =========================================================================
+run_test_90:
+    if (targetTest == 0 || targetTest == 90) {
+        std::cout << "\n[TEST 90] Testing File Network Graph View, Activity Rail Icon, View Menu Colored option, Node Dragging..." << std::endl;
+
+        // 1. Verify Activity Rail File Network Icon and Tooltip
+        {
+            phide::ui::ActivityRail rail;
+            phide::app::AppConfig cfg;
+            assert(static_cast<int>(phide::ui::RailTabId::FileNetwork) == 6);
+            std::cout << "  Passed: RailTabId::FileNetwork configured on Activity Rail" << std::endl;
+
+            // Render Activity Rail to verify optical sizing of File Network icon
+            const UINT railW = 50;
+            const UINT railH = 500;
+            ComPtr<IWICBitmap> pWicRail;
+            pWicFactory->CreateBitmap(railW, railH, GUID_WICPixelFormat32bppPBGRA, WICBitmapCacheOnDemand, &pWicRail);
+            assert(pWicRail);
+            D2D1_RENDER_TARGET_PROPERTIES rtProps = D2D1::RenderTargetProperties(
+                D2D1_RENDER_TARGET_TYPE_DEFAULT,
+                D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED)
+            );
+            ComPtr<ID2D1RenderTarget> pRailRT;
+            pD2DFactory->CreateWicBitmapRenderTarget(pWicRail.Get(), rtProps, &pRailRT);
+            assert(pRailRT);
+
+            phide::ui::Theme theme;
+            theme.CreateDeviceResources(pRailRT.Get(), pDWriteFactory.Get());
+
+            pRailRT->BeginDraw();
+            pRailRT->Clear(D2D1::ColorF(0.12f, 0.12f, 0.14f, 1.0f));
+            rail.Render(pRailRT.Get(), theme, cfg, static_cast<float>(railH));
+            HRESULT hr = pRailRT->EndDraw();
+            assert(SUCCEEDED(hr));
+
+            std::wstring artDir = L"C:\\Users\\Administrator\\.gemini\\antigravity\\brain\\c83160b9-3f8b-4ad1-87a8-ab1f7f555a77\\";
+            SaveWicBitmapToPng(pWicRail.Get(), pWicFactory.Get(), artDir + L"test_activity_rail_file_network_icon.png");
+            std::cout << "  Passed: Activity Rail snapshot saved to test_activity_rail_file_network_icon.png" << std::endl;
+        }
+
+        // 2. Verify View Menu: Network Graph Layout > Submenu with Colored Option
+        {
+            phide::ui::PopupMenu popup;
+            phide::app::AppConfig cfg;
+            cfg.isGraphColored = false; // default false per user prompt
+            popup.OpenViewMenu(100.0f, 100.0f, cfg, true, false);
+
+            const auto& items = popup.GetItems();
+            bool foundCascade = false;
+            for (const auto& item : items) {
+                if (item.actionId == phide::ui::MenuActionId::NetworkGraphLayoutCascade) {
+                    foundCascade = true;
+                    assert(item.hasSubmenu);
+                    assert(!item.submenuItems.empty());
+                    assert(item.label == L"Network Graph Layout");
+                    assert(item.submenuItems[0].actionId == phide::ui::MenuActionId::GraphToggleColored);
+                    assert(item.submenuItems[0].label == L"Colored");
+                    assert(item.submenuItems[0].isChecked == false); // Default unchecked!
+                    break;
+                }
+            }
+            assert(foundCascade);
+            std::cout << "  Passed: View menu has 'Network Graph Layout >' with 'Colored' item unchecked by default" << std::endl;
+
+            // Test toggling colored option
+            cfg.isGraphColored = true;
+            phide::ui::PopupMenu popup2;
+            popup2.OpenViewMenu(100.0f, 100.0f, cfg, true, false);
+            const auto& items2 = popup2.GetItems();
+            for (const auto& item : items2) {
+                if (item.actionId == phide::ui::MenuActionId::NetworkGraphLayoutCascade) {
+                    assert(item.submenuItems[0].isChecked == true);
+                    break;
+                }
+            }
+            std::cout << "  Passed: 'Colored' item reflects checked state when enabled" << std::endl;
+        }
+
+        // 3. Verify GraphView Node Population, Edge Connections, Node Dragging, and Zoom
+        {
+            const UINT width = 1200;
+            const UINT height = 750;
+            ComPtr<IWICBitmap> pWicGraph;
+            pWicFactory->CreateBitmap(width, height, GUID_WICPixelFormat32bppPBGRA, WICBitmapCacheOnDemand, &pWicGraph);
+            assert(pWicGraph);
+
+            D2D1_RENDER_TARGET_PROPERTIES rtProps = D2D1::RenderTargetProperties(
+                D2D1_RENDER_TARGET_TYPE_DEFAULT,
+                D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED)
+            );
+            ComPtr<ID2D1RenderTarget> pRT;
+            pD2DFactory->CreateWicBitmapRenderTarget(pWicGraph.Get(), rtProps, &pRT);
+            assert(pRT);
+
+            phide::ui::Theme theme;
+            theme.CreateDeviceResources(pRT.Get(), pDWriteFactory.Get());
+
+            phide::app::AppConfig cfg;
+            cfg.isGraphColored = false; // default monochrome (Image 3)
+
+            phide::ui::GraphView graph;
+            graph.RefreshFromWorkspace(L"");
+            assert(graph.GetNodeCount() > 0);
+            assert(graph.GetEdgeCount() > 0);
+            assert(graph.IsAnimating());
+            std::cout << "  Passed: GraphView populated " << graph.GetNodeCount() << " nodes and " << graph.GetEdgeCount() << " links with organic bouncy intro animation" << std::endl;
+
+            // Step animation frames so it expands into a balanced constellation
+            for (int f = 0; f < 45; ++f) {
+                graph.UpdateAnimation();
+            }
+
+            pRT->BeginDraw();
+            graph.Render(pRT.Get(), theme, cfg, 0.0f, static_cast<float>(width), 0.0f, static_cast<float>(height));
+            HRESULT hr = pRT->EndDraw();
+            assert(SUCCEEDED(hr));
+
+            std::wstring artDir = L"C:\\Users\\Administrator\\.gemini\\antigravity\\brain\\c83160b9-3f8b-4ad1-87a8-ab1f7f555a77\\";
+            SaveWicBitmapToPng(pWicGraph.Get(), pWicFactory.Get(), artDir + L"test_file_network_graph_monochrome.png");
+            std::cout << "  Passed: Monochrome graph snapshot saved to test_file_network_graph_monochrome.png" << std::endl;
+
+            // Test Node Dragging
+            float cx = width * 0.5f;
+            float cy = height * 0.5f;
+            float nx = cx + graph.GetNodes()[0].x * graph.GetZoom();
+            float ny = cy + graph.GetNodes()[0].y * graph.GetZoom();
+            POINT clickPt = { static_cast<LONG>(nx), static_cast<LONG>(ny) };
+            bool hit = graph.HandleLButtonDown(clickPt);
+            assert(hit);
+            assert(graph.GetDraggedNodeIndex() == 0);
+            float oldNodeX = graph.GetNodes()[0].x;
+            POINT dragPt = { static_cast<LONG>(nx + 60), static_cast<LONG>(ny + 40) };
+            bool dragged = graph.HandleMouseMove(dragPt);
+            assert(dragged);
+            assert(graph.GetNodes()[0].x != oldNodeX); // node position updated
+            graph.HandleLButtonUp(dragPt);
+            assert(graph.GetDraggedNodeIndex() == -1);
+            assert(graph.IsAnimating()); // bounce animation active after drag release
+            std::cout << "  Passed: Node dragging interactively moves node position and starts bounce settling" << std::endl;
+
+            // Test Zoom Wheel
+            float oldZoom = graph.GetZoom();
+            graph.HandleMouseWheel(120, clickPt);
+            assert(graph.GetZoom() > oldZoom);
+            graph.HandleMouseWheel(-120, clickPt);
+            std::cout << "  Passed: Mouse wheel zooms graph view centered on cursor" << std::endl;
+
+            // Render Colored Snapshot (Image 4) with transparent labels positioned directly under nodes
+            cfg.isGraphColored = true;
+            graph.SetZoom(1.35f); // Zoom in to show labels
+            pRT->BeginDraw();
+            graph.Render(pRT.Get(), theme, cfg, 0.0f, static_cast<float>(width), 0.0f, static_cast<float>(height));
+            hr = pRT->EndDraw();
+            assert(SUCCEEDED(hr));
+
+            SaveWicBitmapToPng(pWicGraph.Get(), pWicFactory.Get(), artDir + L"test_file_network_graph_colored.png");
+            std::cout << "  Passed: Colored graph snapshot saved to test_file_network_graph_colored.png" << std::endl;
+        }
+
+        std::cout << "  Passed: All [TEST 90] File Network Graph View tests passed!" << std::endl;
+        if (targetTest == 90) {
+            std::cout << "Target test 90 finished successfully." << std::endl;
             return 0;
         }
     }

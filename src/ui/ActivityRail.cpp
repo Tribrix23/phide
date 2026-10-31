@@ -18,8 +18,8 @@ ActivityRail::ActivityRail() {
     // 3. Git icon (directly under Search)
     m_items.push_back({ RailTabId::Git,      L"Source Control (Ctrl+Shift+G)", {} });
 
-    // 4. Three-dot icon ("More Actions") directly under horizontal separation line (matching Image 3)
-    m_items.push_back({ RailTabId::MoreActions, L"More Actions",               {} });
+    // 4. File network icon directly under horizontal separation line (User prompt: tooltip "File network")
+    m_items.push_back({ RailTabId::FileNetwork, L"File network",               {} });
 
     // 5. Notebook icon (directly above Packages)
     m_items.push_back({ RailTabId::Notebook, L"Interactive Notebook (Ctrl+Shift+J)", {} });
@@ -280,8 +280,8 @@ void ActivityRail::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
             case RailTabId::Packages:
                 m_lucide.DrawPackage(pRT, item.bounds, iconBrush, 1.6f);
                 break;
-            case RailTabId::MoreActions:
-                m_lucide.DrawMoreHorizontal(pRT, item.bounds, iconBrush);
+            case RailTabId::FileNetwork:
+                m_lucide.DrawFileNetwork(pRT, item.bounds, iconBrush, 1.7f);
                 break;
             default:
                 break;

@@ -21,6 +21,7 @@
 #include "phide/ui/KeyboardShortcutsView.hpp"
 #include "phide/ui/PackageManagerView.hpp"
 #include "phide/ui/NotebookView.hpp"
+#include "phide/ui/GraphView.hpp"
 #include <unordered_map>
 
 namespace phide::ui {
@@ -227,6 +228,7 @@ public:
     KeyboardShortcutsView& GetKeyboardShortcutsView() noexcept { return m_keybindingsView; }
     PackageManagerView& GetPackageManagerView() noexcept { return m_packageManagerView; }
     NotebookView& GetNotebookView() noexcept { return m_notebookView; }
+    GraphView& GetGraphView() noexcept { return m_graphView; }
 
     [[nodiscard]] float GetLastCaretX() const noexcept { return m_lastCaretX; }
     [[nodiscard]] float GetLastCaretY() const noexcept { return m_lastCaretY; }
@@ -296,6 +298,7 @@ private:
     KeyboardShortcutsView m_keybindingsView;
     PackageManagerView m_packageManagerView;
     NotebookView m_notebookView;
+    GraphView m_graphView;
 
     // Cached path geometry for workspace container (curved ONLY at upper-left corner when drawer is closed)
     Microsoft::WRL::ComPtr<ID2D1PathGeometry> m_pCanvasGeometry;

@@ -356,6 +356,9 @@ void EditorCanvas::RenderSinglePane(ID2D1RenderTarget* pRT, Theme& theme, const 
     } else if (activeDoc.isSpecialView && activeDoc.viewType == L"student") {
         m_packageManagerView.HideWebView();
         RenderStudentView(pRT, theme, config, activeDoc, canvasLeft, canvasWidth, contentTopY, clientHeight);
+    } else if (activeDoc.isSpecialView && activeDoc.viewType == L"graph") {
+        m_packageManagerView.HideWebView();
+        m_graphView.Render(pRT, theme, config, canvasLeft, canvasWidth, contentTopY, clientHeight - contentTopY);
     } else if ((activeDoc.isSpecialView && activeDoc.viewType == L"course") || !activeDoc.courseId.empty()) {
         m_packageManagerView.HideWebView();
         RenderCourseView(pRT, theme, config, activeDoc, canvasLeft, canvasWidth, contentTopY, clientHeight);
@@ -620,6 +623,8 @@ void EditorCanvas::RenderTabs(ID2D1RenderTarget* pRT, Theme& theme, const app::A
             } else {
                 m_icons.DrawFileIcon(pRT, theme, iconBounds, FileIconType::Json);
             }
+        } else if (doc.isSpecialView && doc.viewType == L"graph") {
+            m_icons.DrawFileNetwork(pRT, iconBounds, theme.brushBrandAccent ? theme.brushBrandAccent.Get() : theme.brushTextWhite.Get(), 1.2f);
         } else if (doc.isSpecialView && doc.viewType == L"packages") {
             m_icons.DrawPackage(pRT, iconBounds, theme.brushBrandAccent ? theme.brushBrandAccent.Get() : theme.brushTextWhite.Get(), 1.1f);
         } else if (doc.isSpecialView && doc.viewType == L"student") {
@@ -822,7 +827,10 @@ void EditorCanvas::RenderBreadcrumbs(ID2D1RenderTarget* pRT, Theme& theme, const
 
     // Parse segments from doc.filePath (Image 4) or course hierarchy
     std::vector<std::wstring> segments;
-    if (!doc.courseId.empty() || (doc.isSpecialView && doc.viewType == L"course")) {
+    if (doc.isSpecialView && doc.viewType == L"graph") {
+        segments.push_back(L"File Network");
+        segments.push_back(L"Graph view");
+    } else if (!doc.courseId.empty() || (doc.isSpecialView && doc.viewType == L"course")) {
         segments.push_back(doc.fileName.empty() ? L"Python for Beginners" : doc.fileName);
         segments.push_back(L"Getting Started");
         segments.push_back(L"01. What is Python & Installation");

@@ -274,6 +274,11 @@ public:
      * @brief Draws the vector More Actions icon (horizontal three dots •••).
      */
     void DrawMoreHorizontal(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, ID2D1Brush* pBrush) const;
+
+    /**
+     * @brief Draws the vector File Network icon matching user reference (central hub node with 5 radiating satellite nodes).
+     */
+    void DrawFileNetwork(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, ID2D1Brush* pBrush, float strokeWidth = 1.7f) const;
     void DrawBell(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, ID2D1Brush* pBrush, float strokeWidth = 1.3f) const;
 
     [[nodiscard]] ID2D1StrokeStyle* GetStrokeStyle() const noexcept { return m_pStrokeStyle.Get(); }

@@ -6,6 +6,7 @@
 #include "phide/ui/LucideIcons.hpp"
 #include "phide/ui/Theme.hpp"
 #include <algorithm>
+#include <cmath>
 
 namespace phide::ui {
 
@@ -1535,6 +1536,50 @@ void LucideIcons::DrawMoreHorizontal(ID2D1RenderTarget* pRT, const D2D1_RECT_F& 
     pRT->FillEllipse(D2D1::Ellipse(D2D1::Point2F(cx - spacing, cy), r, r), pBrush);
     pRT->FillEllipse(D2D1::Ellipse(D2D1::Point2F(cx, cy), r, r), pBrush);
     pRT->FillEllipse(D2D1::Ellipse(D2D1::Point2F(cx + spacing, cy), r, r), pBrush);
+}
+
+void LucideIcons::DrawFileNetwork(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, ID2D1Brush* pBrush, float strokeWidth) const {
+    if (!pRT || !pBrush) return;
+    const float bw = bounds.right - bounds.left;
+    const float bh = bounds.bottom - bounds.top;
+    const float minDim = (std::min)(bw, bh);
+    // Optical scale: Activity Rail items (~48px) scale by 0.46f (~22px); Tab icons (~16px) scale by 0.88f (~14px)
+    const float iconSize = (minDim > 28.0f) ? (minDim * 0.46f) : (minDim * 0.88f);
+    const float s = iconSize / 24.0f;
+    const float cx = (bounds.left + bounds.right) * 0.5f;
+    const float cy = (bounds.top + bounds.bottom) * 0.5f;
+
+    const float sw = (minDim > 28.0f) ? (strokeWidth * s * 1.15f) : (strokeWidth * 0.95f);
+    const float rCen = 3.0f * s;
+    const float rSat = 2.0f * s;
+
+    // 5 Satellite nodes matching user reference image
+    const D2D1_POINT_2F satellites[5] = {
+        D2D1::Point2F(cx - 6.2f * s, cy - 6.2f * s), // Top-Left
+        D2D1::Point2F(cx + 3.2f * s, cy - 7.5f * s), // Top-Right
+        D2D1::Point2F(cx + 7.8f * s, cy - 0.5f * s), // Right-Mid
+        D2D1::Point2F(cx + 4.2f * s, cy + 7.5f * s), // Bottom-Right
+        D2D1::Point2F(cx - 6.0f * s, cy + 6.0f * s)  // Bottom-Left
+    };
+
+    // Draw connecting spokes stopping cleanly at circle perimeters
+    for (int i = 0; i < 5; ++i) {
+        float dx = satellites[i].x - cx;
+        float dy = satellites[i].y - cy;
+        float len = std::sqrt(dx * dx + dy * dy);
+        if (len > 0.001f) {
+            float ux = dx / len;
+            float uy = dy / len;
+            D2D1_POINT_2F pStart = D2D1::Point2F(cx + ux * rCen, cy + uy * rCen);
+            D2D1_POINT_2F pEnd = D2D1::Point2F(satellites[i].x - ux * rSat, satellites[i].y - uy * rSat);
+            pRT->DrawLine(pStart, pEnd, pBrush, sw, m_pStrokeStyle.Get());
+        }
+        // Draw satellite circle ring
+        pRT->DrawEllipse(D2D1::Ellipse(satellites[i], rSat, rSat), pBrush, sw, m_pStrokeStyle.Get());
+    }
+
+    // Draw central hub circle ring
+    pRT->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(cx, cy), rCen, rCen), pBrush, sw, m_pStrokeStyle.Get());
 }
 
 void LucideIcons::DrawBell(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, ID2D1Brush* pBrush, float strokeWidth) const {
