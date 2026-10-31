@@ -2658,6 +2658,12 @@ void Window::RefreshOpenDocPathsForSearch() {
     m_drawer.SetOpenDocPaths(openPaths);
 }
 
+void Window::NotifyGraphViewFilesystemChanged() {
+    std::wstring folder = m_drawer.GetOpenFolderPath();
+    m_editor.GetGraphView().RefreshFromWorkspace(folder, /*preserveExistingPositions=*/true);
+    InvalidateRect(m_hwnd, nullptr, FALSE);
+}
+
 void Window::DoQuickOpenFileSearch() {
     std::vector<std::wstring> openPaths;
     for (const auto& grp : m_editorGroups) {
@@ -4062,6 +4068,7 @@ void Window::FinishDelete(const std::wstring& targetPath, bool isFolder, bool su
 
     if (m_selectedExplorerPath == targetPath) m_selectedExplorerPath.clear();
     m_drawer.RefreshTree();
+    NotifyGraphViewFilesystemChanged();
     UpdateDrawerDirtyFiles();
     UpdateDrawerErrorFiles();
     m_drawer.RefreshGitStatusOnly(true);
@@ -4974,6 +4981,7 @@ void Window::SaveFileToPath(const std::wstring& path) {
                 m_drawer.RefreshGitStatusOnly(true);
                 UpdateDrawerErrorFiles();
                 SaveSessionState();
+                NotifyGraphViewFilesystemChanged();
                 InvalidateRect(m_hwnd, nullptr, FALSE);
                 return;
             }
@@ -4997,7 +5005,8 @@ void Window::SaveFileToPath(const std::wstring& path) {
             UpdateDrawerDirtyFiles();
             m_drawer.RefreshGitStatusOnly(true); // Immediate 0ms refresh on Save!
             UpdateDrawerErrorFiles();
-    SaveSessionState();
+            SaveSessionState();
+            NotifyGraphViewFilesystemChanged();
             InvalidateRect(m_hwnd, nullptr, FALSE);
         }
     }
@@ -6726,8 +6735,62 @@ void Window::RenderStatusBar(float clientW, float clientH) {
         m_pRenderTarget->DrawText(displayText.c_str(), static_cast<UINT32>(displayText.length()), pFmt, rcText, textBrush);
     }
 
+    // Graph View Status Pill (Moved from floating canvas HUD to status bar per user requirement: "also can you move this infor inside here")
+    m_rcStatusBarGraphView = {};
+    if (curDoc && curDoc->isSpecialView && curDoc->viewType == L"graph") {
+        std::wstring graphStatus = m_editor.GetGraphView().GetStatusString(m_config);
+        float graphTextW = m_config.ScaleF(160.0f);
+        if (pFmt && m_theme.dwriteFactory) {
+            Microsoft::WRL::ComPtr<IDWriteTextLayout> pLayout;
+            m_theme.dwriteFactory->CreateTextLayout(
+                graphStatus.c_str(),
+                static_cast<UINT32>(graphStatus.length()),
+                pFmt,
+                1000.0f,
+                itemH,
+                &pLayout
+            );
+            if (pLayout) {
+                DWRITE_TEXT_METRICS tm;
+                pLayout->GetMetrics(&tm);
+                graphTextW = tm.widthIncludingTrailingWhitespace;
+            }
+        }
+
+        const float graphIconSize = m_config.ScaleF(14.0f);
+        const float graphPillW = padX + graphIconSize + gap + graphTextW + padX;
+        curRightX -= (graphPillW + m_config.ScaleF(10.0f));
+        m_rcStatusBarGraphView = D2D1::RectF(curRightX, itemY, curRightX + graphPillW, itemY + itemH);
+
+        if (m_isHoveredStatusBarGraphView) {
+            D2D1_ROUNDED_RECT rrc = D2D1::RoundedRect(m_rcStatusBarGraphView, m_config.ScaleF(3.5f), m_config.ScaleF(3.5f));
+            Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> hoverBg;
+            m_pRenderTarget->CreateSolidColorBrush(
+                m_theme.IsDarkMode() ? D2D1::ColorF(0.20f, 0.22f, 0.26f, 0.90f) : D2D1::ColorF(0.88f, 0.90f, 0.94f, 0.90f),
+                &hoverBg
+            );
+            if (hoverBg) m_pRenderTarget->FillRoundedRectangle(rrc, hoverBg.Get());
+        }
+
+        float gIconX = m_rcStatusBarGraphView.left + padX;
+        float gIconYPos = m_rcStatusBarGraphView.top + (itemH - graphIconSize) * 0.5f;
+        D2D1_RECT_F rcGIcon = D2D1::RectF(gIconX, gIconYPos, gIconX + graphIconSize, gIconYPos + graphIconSize);
+        m_rail.GetLucide().DrawFileNetwork(m_pRenderTarget.Get(), rcGIcon, textBrush, 1.2f);
+
+        float gTextX = gIconX + graphIconSize + gap;
+        D2D1_RECT_F rcGText = D2D1::RectF(gTextX, itemY, m_rcStatusBarGraphView.right - padX, itemY + itemH);
+        if (pFmt && textBrush) {
+            m_pRenderTarget->DrawText(graphStatus.c_str(), static_cast<UINT32>(graphStatus.length()), pFmt, rcGText, textBrush);
+        }
+    }
+
     // 4. Floating Tooltips on Hover (User requirement Image 1: "THERE SHOULD BE TOOLN TIP HWEN HOVERED")
-    if (m_isHoveredStatusBarVenvTag) {
+    if (m_isHoveredStatusBarGraphView) {
+        std::wstring tip = L"File Network: " + std::to_wstring(m_editor.GetGraphView().GetNodeCount()) + L" files, " +
+                           std::to_wstring(m_editor.GetGraphView().GetEdgeCount()) + L" connections (" +
+                           (m_config.isGraphColored ? L"Colored - Click to switch to Monochrome" : L"Monochrome - Click to switch to Colored") + L")";
+        RenderFloatingTooltip(m_pRenderTarget.Get(), tip, m_rcStatusBarGraphView, clientW);
+    } else if (m_isHoveredStatusBarVenvTag) {
         std::wstring tip = displayText + L" (Click to manage runtime environment)";
         RenderFloatingTooltip(m_pRenderTarget.Get(), tip, m_rcStatusBarVenvTag, clientW);
     } else if (m_isHoveredStatusBarGitBranch) {
@@ -7508,6 +7571,13 @@ void Window::HandleMouseMove(POINT clientPt, WPARAM wParam) {
                       clientPt.y >= m_rcStatusBarVenvTag.top && clientPt.y <= m_rcStatusBarVenvTag.bottom);
         if (inTag != m_isHoveredStatusBarVenvTag) {
             m_isHoveredStatusBarVenvTag = inTag;
+            needRepaint = true;
+        }
+
+        bool inGraph = (clientPt.x >= m_rcStatusBarGraphView.left && clientPt.x <= m_rcStatusBarGraphView.right &&
+                        clientPt.y >= m_rcStatusBarGraphView.top && clientPt.y <= m_rcStatusBarGraphView.bottom);
+        if (inGraph != m_isHoveredStatusBarGraphView) {
+            m_isHoveredStatusBarGraphView = inGraph;
             needRepaint = true;
         }
 
@@ -9279,6 +9349,7 @@ void Window::HandleLButtonDown(POINT clientPt) {
                     }
                 }
             }
+            NotifyGraphViewFilesystemChanged();
         }
         InvalidateRect(m_hwnd, nullptr, FALSE);
     }
@@ -9300,6 +9371,7 @@ void Window::HandleLButtonDown(POINT clientPt) {
             if (!isFolder) {
                 OpenFileDocument(createdPath, false);
             }
+            NotifyGraphViewFilesystemChanged();
         } else {
             m_drawer.CancelInlineCreate();
         }
@@ -9502,6 +9574,15 @@ void Window::HandleLButtonDown(POINT clientPt) {
                 AnimateRightSidebarOpen();
             }
         }
+        InvalidateRect(m_hwnd, nullptr, FALSE);
+        return;
+    }
+
+    // Status Bar clicks: Graph View status pill toggles colored mode
+    if (m_config.showStatusBar &&
+        clientPt.x >= m_rcStatusBarGraphView.left && clientPt.x <= m_rcStatusBarGraphView.right &&
+        clientPt.y >= m_rcStatusBarGraphView.top && clientPt.y <= m_rcStatusBarGraphView.bottom) {
+        m_config.isGraphColored = !m_config.isGraphColored;
         InvalidateRect(m_hwnd, nullptr, FALSE);
         return;
     }
@@ -10097,6 +10178,8 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     if (static_cast<float>(pt.y) >= (clientH - statusBarH) && static_cast<float>(pt.y) <= clientH) {
                         if ((pt.x >= m_rcStatusBarVenvTag.left && pt.x <= m_rcStatusBarVenvTag.right &&
                              pt.y >= m_rcStatusBarVenvTag.top && pt.y <= m_rcStatusBarVenvTag.bottom) ||
+                            (pt.x >= m_rcStatusBarGraphView.left && pt.x <= m_rcStatusBarGraphView.right &&
+                             pt.y >= m_rcStatusBarGraphView.top && pt.y <= m_rcStatusBarGraphView.bottom) ||
                             (pt.x >= m_rcStatusBarGitBranch.left && pt.x <= m_rcStatusBarGitBranch.right &&
                              pt.y >= m_rcStatusBarGitBranch.top && pt.y <= m_rcStatusBarGitBranch.bottom) ||
                             (pt.x >= m_rcStatusBarGitUser.left && pt.x <= m_rcStatusBarGitUser.right &&
@@ -10356,6 +10439,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
             m_rail.SetHoveredTab(ui::RailTabId::None);
             m_drawer.SetHoveredIndex(-1);
             m_isHoveredStatusBarVenvTag = false;
+            m_isHoveredStatusBarGraphView = false;
             m_isHoveredStatusBarGitBranch = false;
             m_isHoveredStatusBarGitUser = false;
             m_isHoveredStatusBarLnCol = false;
@@ -11266,6 +11350,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                                 }
                             }
                         }
+                        NotifyGraphViewFilesystemChanged();
                     }
                     InvalidateRect(m_hwnd, nullptr, FALSE);
                     return 0;
@@ -11292,6 +11377,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                         if (!isFolder) {
                             OpenFileDocument(createdPath, false);
                         }
+                        NotifyGraphViewFilesystemChanged();
                     }
                     InvalidateRect(m_hwnd, nullptr, FALSE);
                     return 0;
@@ -12193,6 +12279,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
 
         case WM_USER + 202: {
             m_drawer.RefreshTree();
+            NotifyGraphViewFilesystemChanged();
             InvalidateRect(m_hwnd, nullptr, FALSE);
             return 0;
         }

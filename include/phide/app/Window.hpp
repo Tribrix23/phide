@@ -398,6 +398,9 @@ private:
     /** @brief Collects all open document paths across all editor groups and synchronizes with Drawer. */
     void RefreshOpenDocPathsForSearch();
 
+    /** @brief Synchronizes File Network Graph View with filesystem creation, update, rename, delete, move, or save. */
+    void NotifyGraphViewFilesystemChanged();
+
     /** @brief Undoes the most recent Explorer operation (rename, delete, create, move) (Ctrl+Z when explorer active). */
     void DoExplorerUndo();
 
@@ -698,6 +701,9 @@ private:
 
     D2D1_RECT_F m_rcStatusBarVenvTag{};
     bool m_isHoveredStatusBarVenvTag = false;
+
+    D2D1_RECT_F m_rcStatusBarGraphView{};
+    bool m_isHoveredStatusBarGraphView = false;
 
     // Status Bar Git & GitHub Cache and Interactive State
     std::wstring m_cachedGitDir;

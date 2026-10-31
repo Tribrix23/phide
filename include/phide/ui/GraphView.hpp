@@ -59,8 +59,14 @@ public:
     /**
      * @brief Populates graph nodes and edges by scanning the workspace directory.
      * @param rootPath Absolute directory of the current open project.
+     * @param preserveExistingPositions When true (e.g. file watcher/save updates), keeps existing node positions.
      */
-    void RefreshFromWorkspace(const std::wstring& rootPath);
+    void RefreshFromWorkspace(const std::wstring& rootPath, bool preserveExistingPositions = false);
+
+    /**
+     * @brief Returns the formatted status bar text (e.g. "Graph view • 116% • 9 files • Monochrome").
+     */
+    [[nodiscard]] std::wstring GetStatusString(const app::AppConfig& config) const;
 
     /**
      * @brief Renders the Obsidian-styled graph canvas with nodes, edges, labels and HUD.
@@ -163,6 +169,11 @@ private:
 
     // Color palette resolution
     static D2D1_COLOR_F GetExtensionColor(const std::wstring& ext, bool isDir);
+
+    // Dependency analysis
+    void ParseFileDependencies();
+    static std::vector<std::string> ExtractReferencedTargets(const std::string& content, const std::wstring& ext);
+    static bool MatchesCandidate(const std::string& ref, const std::wstring& candLabel, const std::wstring& candRelPath);
 };
 
 } // namespace phide::ui

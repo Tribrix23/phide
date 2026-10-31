@@ -41,25 +41,469 @@ D2D1_COLOR_F GraphView::GetExtensionColor(const std::wstring& ext, bool isDir) {
     return D2D1::ColorF(0.70f, 0.75f, 0.82f, 1.0f); // Lavender Slate
 }
 
-void GraphView::RefreshFromWorkspace(const std::wstring& rootPath) {
-    m_currentRootPath = rootPath;
-    m_nodes.clear();
+std::vector<std::string> GraphView::ExtractReferencedTargets(const std::string& content, const std::wstring& ext) {
+    std::vector<std::string> refs;
+
+    auto addCleanRef = [&refs](std::string raw) {
+        // Strip query parameters (?...) and anchor fragments (#...)
+        auto qPos = raw.find_first_of("?#");
+        if (qPos != std::string::npos) raw.erase(qPos);
+
+        // Normalize backslashes to forward slashes
+        for (char& c : raw) {
+            if (c == '\\') c = '/';
+        }
+
+        // Trim leading and trailing whitespace, quotes, and punctuation
+        while (!raw.empty() && (isspace(static_cast<unsigned char>(raw.front())) || raw.front() == '\'' || raw.front() == '"')) {
+            raw.erase(raw.begin());
+        }
+        while (!raw.empty() && (isspace(static_cast<unsigned char>(raw.back())) || raw.back() == '\'' || raw.back() == '"' || raw.back() == ';')) {
+            raw.pop_back();
+        }
+
+        // Trim leading ./ or /
+        if (raw.rfind("./", 0) == 0) raw.erase(0, 2);
+        else if (raw.rfind("/", 0) == 0) raw.erase(0, 1);
+
+        // Lowercase
+        for (char& c : raw) {
+            c = static_cast<char>(tolower(static_cast<unsigned char>(c)));
+        }
+
+        if (raw.length() >= 2) {
+            refs.push_back(std::move(raw));
+        }
+    };
+
+    // 1. Markdown (.md, .markdown) and Plain Text (.txt, .log):
+    // ONLY explicit Obsidian wiki-links [[target]] or Markdown links [text](target)!
+    // Casual English prose mentions (e.g. "Check config.php credentials") are strictly IGNORED!
+    if (ext == L"md" || ext == L"markdown" || ext == L"txt" || ext == L"log") {
+        // A. Obsidian Wiki-links: [[target]], [[target|alias]], [[target#heading]]
+        size_t pos = 0;
+        while ((pos = content.find("[[", pos)) != std::string::npos) {
+            size_t endPos = content.find("]]", pos + 2);
+            if (endPos == std::string::npos) break;
+
+            std::string link = content.substr(pos + 2, endPos - (pos + 2));
+            auto pipePos = link.find_first_of("|#");
+            if (pipePos != std::string::npos) link.erase(pipePos);
+            addCleanRef(link);
+            pos = endPos + 2;
+        }
+
+        // B. Markdown links: [title](target) or ![img](target)
+        pos = 0;
+        while ((pos = content.find("](", pos)) != std::string::npos) {
+            size_t endPos = content.find(")", pos + 2);
+            if (endPos == std::string::npos) break;
+
+            std::string link = content.substr(pos + 2, endPos - (pos + 2));
+            // Filter out external URLs and mailto
+            if (link.rfind("http://", 0) != 0 && link.rfind("https://", 0) != 0 && link.rfind("mailto:", 0) != 0) {
+                addCleanRef(link);
+            }
+            pos = endPos + 1;
+        }
+
+        return refs;
+    }
+
+    // 2. PHP files (.php, .phtml, .inc):
+    if (ext == L"php" || ext == L"phtml" || ext == L"inc") {
+        // A. require, require_once, include, include_once
+        // Matches e.g. require 'config.php'; or require __DIR__ . '/config.php';
+        const char* const incKws[] = { "require_once", "include_once", "require", "include" };
+        for (const char* kw : incKws) {
+            size_t kwLen = strlen(kw);
+            size_t pos = 0;
+            while ((pos = content.find(kw, pos)) != std::string::npos) {
+                bool validBefore = (pos == 0 || (!isalnum(static_cast<unsigned char>(content[pos - 1])) && content[pos - 1] != '_'));
+                bool validAfter = (pos + kwLen < content.length() && (isspace(static_cast<unsigned char>(content[pos + kwLen])) || content[pos + kwLen] == '('));
+
+                if (validBefore && validAfter) {
+                    size_t stmtEnd = content.find_first_of(";\n\r?>", pos + kwLen);
+                    if (stmtEnd == std::string::npos) stmtEnd = content.length();
+
+                    // Find quoted strings inside statement: '...' or "..."
+                    for (size_t k = pos + kwLen; k < stmtEnd; ++k) {
+                        char q = content[k];
+                        if (q == '\'' || q == '"') {
+                            size_t qEnd = content.find(q, k + 1);
+                            if (qEnd != std::string::npos && qEnd <= stmtEnd) {
+                                std::string lit = content.substr(k + 1, qEnd - (k + 1));
+                                addCleanRef(lit);
+                                k = qEnd;
+                            }
+                        }
+                    }
+                }
+                pos += kwLen;
+            }
+        }
+
+        // B. HTML / View attributes in PHP: href="...", src="...", action="..."
+        const char* const attrs[] = { "href=", "src=", "action=" };
+        for (const char* attr : attrs) {
+            size_t attrLen = strlen(attr);
+            size_t pos = 0;
+            while ((pos = content.find(attr, pos)) != std::string::npos) {
+                size_t valStart = pos + attrLen;
+                if (valStart < content.length() && (content[valStart] == '\'' || content[valStart] == '"')) {
+                    char q = content[valStart];
+                    size_t valEnd = content.find(q, valStart + 1);
+                    if (valEnd != std::string::npos) {
+                        std::string val = content.substr(valStart + 1, valEnd - (valStart + 1));
+                        if (val.rfind("http://", 0) != 0 && val.rfind("https://", 0) != 0 && val.rfind("#", 0) != 0 && val.rfind("javascript:", 0) != 0) {
+                            addCleanRef(val);
+                        }
+                    }
+                }
+                pos += attrLen;
+            }
+        }
+
+        // C. HTTP Navigation / Redirects: header('Location: index.php')
+        size_t locPos = 0;
+        while ((locPos = content.find("Location:", locPos)) != std::string::npos) {
+            size_t targetStart = locPos + 9;
+            while (targetStart < content.length() && isspace(static_cast<unsigned char>(content[targetStart]))) {
+                targetStart++;
+            }
+            size_t targetEnd = content.find_first_of("'\";\r\n", targetStart);
+            if (targetEnd != std::string::npos && targetEnd > targetStart) {
+                std::string redir = content.substr(targetStart, targetEnd - targetStart);
+                if (redir.rfind("http://", 0) != 0 && redir.rfind("https://", 0) != 0) {
+                    addCleanRef(redir);
+                }
+            }
+            locPos += 9;
+        }
+
+        return refs;
+    }
+
+    // 3. JavaScript / TypeScript (.js, .jsx, .ts, .tsx, .mjs, .cjs):
+    if (ext == L"js" || ext == L"jsx" || ext == L"ts" || ext == L"tsx" || ext == L"mjs" || ext == L"cjs") {
+        // A. import ... from '...'
+        size_t pos = 0;
+        while ((pos = content.find("import", pos)) != std::string::npos) {
+            bool validBefore = (pos == 0 || !isalnum(static_cast<unsigned char>(content[pos - 1])));
+            bool validAfter = (pos + 6 < content.length() && (isspace(static_cast<unsigned char>(content[pos + 6])) || content[pos + 6] == '('));
+            if (validBefore && validAfter) {
+                size_t stmtEnd = content.find_first_of(";\n\r", pos + 6);
+                if (stmtEnd == std::string::npos) stmtEnd = content.length();
+
+                size_t lastQ1 = content.find_last_of("'", stmtEnd);
+                size_t lastQ2 = content.find_last_of("\"", stmtEnd);
+                size_t qEnd = (lastQ1 != std::string::npos && lastQ1 > pos) ? lastQ1 : (lastQ2 != std::string::npos && lastQ2 > pos ? lastQ2 : std::string::npos);
+                if (qEnd != std::string::npos) {
+                    char q = content[qEnd];
+                    size_t qStart = content.rfind(q, qEnd - 1);
+                    if (qStart != std::string::npos && qStart >= pos) {
+                        addCleanRef(content.substr(qStart + 1, qEnd - (qStart + 1)));
+                    }
+                }
+            }
+            pos += 6;
+        }
+
+        // B. require('...')
+        pos = 0;
+        while ((pos = content.find("require", pos)) != std::string::npos) {
+            bool validBefore = (pos == 0 || !isalnum(static_cast<unsigned char>(content[pos - 1])));
+            if (validBefore && pos + 7 < content.length()) {
+                size_t pOpen = content.find('(', pos + 7);
+                if (pOpen != std::string::npos && pOpen <= pos + 9) {
+                    size_t pClose = content.find(')', pOpen + 1);
+                    if (pClose != std::string::npos) {
+                        for (size_t k = pOpen + 1; k < pClose; ++k) {
+                            char q = content[k];
+                            if (q == '\'' || q == '"') {
+                                size_t qEnd = content.find(q, k + 1);
+                                if (qEnd != std::string::npos && qEnd <= pClose) {
+                                    addCleanRef(content.substr(k + 1, qEnd - (k + 1)));
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            pos += 7;
+        }
+
+        return refs;
+    }
+
+    // 4. HTML files (.html, .htm):
+    if (ext == L"html" || ext == L"htm") {
+        const char* const attrs[] = { "href=", "src=", "action=" };
+        for (const char* attr : attrs) {
+            size_t attrLen = strlen(attr);
+            size_t pos = 0;
+            while ((pos = content.find(attr, pos)) != std::string::npos) {
+                size_t valStart = pos + attrLen;
+                if (valStart < content.length() && (content[valStart] == '\'' || content[valStart] == '"')) {
+                    char q = content[valStart];
+                    size_t valEnd = content.find(q, valStart + 1);
+                    if (valEnd != std::string::npos) {
+                        std::string val = content.substr(valStart + 1, valEnd - (valStart + 1));
+                        if (val.rfind("http://", 0) != 0 && val.rfind("https://", 0) != 0 && val.rfind("#", 0) != 0 && val.rfind("javascript:", 0) != 0) {
+                            addCleanRef(val);
+                        }
+                    }
+                }
+                pos += attrLen;
+            }
+        }
+        return refs;
+    }
+
+    // 5. CSS files (.css, .scss, .less):
+    if (ext == L"css" || ext == L"scss" || ext == L"less") {
+        size_t pos = 0;
+        while ((pos = content.find("@import", pos)) != std::string::npos) {
+            size_t stmtEnd = content.find_first_of(";\n\r", pos + 7);
+            if (stmtEnd == std::string::npos) stmtEnd = content.length();
+            for (size_t k = pos + 7; k < stmtEnd; ++k) {
+                char q = content[k];
+                if (q == '\'' || q == '"') {
+                    size_t qEnd = content.find(q, k + 1);
+                    if (qEnd != std::string::npos && qEnd <= stmtEnd) {
+                        addCleanRef(content.substr(k + 1, qEnd - (k + 1)));
+                        break;
+                    }
+                }
+            }
+            pos += 7;
+        }
+        return refs;
+    }
+
+    // 6. C/C++ files (.c, .cpp, .cc, .cxx, .h, .hpp, .hxx):
+    if (ext == L"c" || ext == L"cpp" || ext == L"cc" || ext == L"cxx" || ext == L"h" || ext == L"hpp" || ext == L"hxx") {
+        size_t pos = 0;
+        while ((pos = content.find("#include", pos)) != std::string::npos) {
+            size_t rest = pos + 8;
+            while (rest < content.length() && isspace(static_cast<unsigned char>(content[rest]))) {
+                rest++;
+            }
+            if (rest < content.length() && (content[rest] == '"' || content[rest] == '<')) {
+                char closer = (content[rest] == '"') ? '"' : '>';
+                size_t closePos = content.find(closer, rest + 1);
+                if (closePos != std::string::npos) {
+                    addCleanRef(content.substr(rest + 1, closePos - (rest + 1)));
+                }
+            }
+            pos += 8;
+        }
+        return refs;
+    }
+
+    // 7. Python files (.py):
+    if (ext == L"py") {
+        size_t pos = 0;
+        while (pos < content.length()) {
+            size_t lineEnd = content.find_first_of("\r\n", pos);
+            if (lineEnd == std::string::npos) lineEnd = content.length();
+            std::string line = content.substr(pos, lineEnd - pos);
+            size_t startIdx = 0;
+            while (startIdx < line.length() && isspace(static_cast<unsigned char>(line[startIdx]))) startIdx++;
+            if (line.rfind("from ", startIdx) == startIdx) {
+                size_t modStart = startIdx + 5;
+                while (modStart < line.length() && (line[modStart] == '.' || isspace(static_cast<unsigned char>(line[modStart])))) modStart++;
+                size_t modEnd = line.find_first_of(" \t", modStart);
+                if (modEnd != std::string::npos) {
+                    std::string mod = line.substr(modStart, modEnd - modStart);
+                    if (!mod.empty()) addCleanRef(mod + ".py");
+                }
+            } else if (line.rfind("import ", startIdx) == startIdx) {
+                size_t modStart = startIdx + 7;
+                while (modStart < line.length() && isspace(static_cast<unsigned char>(line[modStart]))) modStart++;
+                size_t modEnd = line.find_first_of(" \t,", modStart);
+                if (modEnd == std::string::npos) modEnd = line.length();
+                std::string mod = line.substr(modStart, modEnd - modStart);
+                if (!mod.empty()) addCleanRef(mod + ".py");
+            }
+            pos = lineEnd + 1;
+        }
+        return refs;
+    }
+
+    return refs;
+}
+
+bool GraphView::MatchesCandidate(const std::string& ref, const std::wstring& candLabel, const std::wstring& candRelPath) {
+    if (ref.empty()) return false;
+
+    // Convert candidate label and relative path to lowercase std::string with '/'
+    std::string labelA;
+    labelA.reserve(candLabel.length());
+    for (wchar_t wc : candLabel) {
+        labelA.push_back(static_cast<char>(towlower(wc)));
+    }
+
+    std::string relA;
+    relA.reserve(candRelPath.length());
+    for (wchar_t wc : candRelPath) {
+        wchar_t low = towlower(wc);
+        if (low == L'\\') low = L'/';
+        relA.push_back(static_cast<char>(low));
+    }
+    while (relA.rfind("./", 0) == 0) relA.erase(0, 2);
+    while (relA.rfind("/", 0) == 0) relA.erase(0, 1);
+
+    // Basename of extracted ref
+    std::string refBase = ref;
+    auto lastSlash = refBase.find_last_of('/');
+    if (lastSlash != std::string::npos) {
+        refBase = refBase.substr(lastSlash + 1);
+    }
+
+    // 1. Exact relative path match (e.g. "assets/style.css" == "assets/style.css")
+    if (ref == relA) return true;
+
+    // 2. Exact filename match (e.g. "config.php" == "config.php", "style.css" == "style.css")
+    if (refBase == labelA) return true;
+
+    // 3. Stem match (for JS imports without extension e.g. import './app' or wiki-links [[config]])
+    auto dotCand = labelA.find_last_of('.');
+    std::string candStem = (dotCand != std::string::npos) ? labelA.substr(0, dotCand) : labelA;
+    auto dotRef = refBase.find_last_of('.');
+    std::string refStem = (dotRef != std::string::npos) ? refBase.substr(0, dotRef) : refBase;
+
+    if (refStem.length() >= 2 && refStem == candStem) {
+        return true;
+    }
+
+    return false;
+}
+
+void GraphView::ParseFileDependencies() {
     m_edges.clear();
+    for (auto& n : m_nodes) {
+        n.neighbors.clear();
+    }
+    if (m_nodes.empty()) return;
+
+    auto addEdge = [this](size_t a, size_t b) {
+        if (a >= m_nodes.size() || b >= m_nodes.size() || a == b) return;
+        for (const auto& e : m_edges) {
+            if ((e.from == a && e.to == b) || (e.from == b && e.to == a)) return;
+        }
+        m_edges.push_back({ a, b, 1.0f });
+        m_nodes[a].neighbors.push_back(b);
+        m_nodes[b].neighbors.push_back(a);
+    };
+
+    // If files exist on disk, read contents and parse actual references
+    std::vector<std::string> fileContents(m_nodes.size());
+    std::vector<std::wstring> relativePaths(m_nodes.size());
+
+    std::filesystem::path rootP = m_currentRootPath;
+    std::error_code ec;
+
+    for (size_t i = 0; i < m_nodes.size(); ++i) {
+        const auto& node = m_nodes[i];
+        if (node.isDirectory) continue;
+
+        std::filesystem::path p = node.id;
+        if (std::filesystem::exists(p, ec) && std::filesystem::is_regular_file(p, ec)) {
+            // Compute relative path from workspace root
+            try {
+                if (!rootP.empty() && std::filesystem::exists(rootP, ec)) {
+                    relativePaths[i] = std::filesystem::relative(p, rootP, ec).wstring();
+                }
+            } catch (...) {}
+            if (relativePaths[i].empty()) {
+                relativePaths[i] = node.label;
+            }
+
+            // Read up to 512 KB of file content
+            auto fSize = std::filesystem::file_size(p, ec);
+            if (!ec && fSize > 0 && fSize <= 512 * 1024) {
+                FILE* fp = nullptr;
+                if (_wfopen_s(&fp, p.c_str(), L"rb") == 0 && fp) {
+                    std::string buf(static_cast<size_t>(fSize), '\0');
+                    size_t readBytes = fread(buf.data(), 1, static_cast<size_t>(fSize), fp);
+                    fclose(fp);
+                    buf.resize(readBytes);
+                    fileContents[i] = std::move(buf);
+                }
+            }
+        }
+    }
+
+    bool hasDiskContents = false;
+    if (!m_currentRootPath.empty()) {
+        for (const auto& s : fileContents) {
+            if (!s.empty()) { hasDiskContents = true; break; }
+        }
+    }
+
+    if (hasDiskContents) {
+        // Precision syntax-aware dependency extraction
+        for (size_t i = 0; i < m_nodes.size(); ++i) {
+            if (fileContents[i].empty()) continue;
+            auto targets = ExtractReferencedTargets(fileContents[i], m_nodes[i].ext);
+            for (const auto& target : targets) {
+                for (size_t j = 0; j < m_nodes.size(); ++j) {
+                    if (i == j) continue;
+                    if (MatchesCandidate(target, m_nodes[j].label, relativePaths[j])) {
+                        addEdge(i, j);
+                    }
+                }
+            }
+        }
+    } else {
+        // Fallback sample set: connect only logical code pairs; README, vuln, database, license remain strictly orphan nodes
+        auto findNodeByLabel = [this](const std::wstring& name) -> int {
+            for (size_t idx = 0; idx < m_nodes.size(); ++idx) {
+                if (m_nodes[idx].label == name) return static_cast<int>(idx);
+            }
+            return -1;
+        };
+
+        const std::pair<const wchar_t*, const wchar_t*> sampleLinks[] = {
+            { L"index.php", L"config.php" },
+            { L"index.php", L"action.php" },
+            { L"index.php", L"styles.css" },
+            { L"index.php", L"app.js" },
+            { L"action.php", L"config.php" },
+            { L"routes.php", L"index.php" },
+            { L"db_connect.php", L"config.php" },
+            { L"student.php", L"config.php" },
+            { L"helper.php", L"index.php" }
+        };
+
+        for (const auto& sl : sampleLinks) {
+            int a = findNodeByLabel(sl.first);
+            int b = findNodeByLabel(sl.second);
+            if (a >= 0 && b >= 0) {
+                addEdge(static_cast<size_t>(a), static_cast<size_t>(b));
+            }
+        }
+    }
+}
+
+void GraphView::RefreshFromWorkspace(const std::wstring& rootPath, bool preserveExistingPositions) {
+    if (!rootPath.empty()) {
+        m_currentRootPath = rootPath;
+    }
     m_hoveredNode = -1;
     m_draggedNode = -1;
 
-    std::filesystem::path targetDir = rootPath;
+    std::filesystem::path targetDir = m_currentRootPath;
     std::error_code ec;
-    if (targetDir.empty() || !std::filesystem::exists(targetDir, ec)) {
-        targetDir = std::filesystem::current_path();
-    }
 
     // 1. Scan filesystem for project files (up to 75 files for a balanced, responsive graph)
     const size_t maxFiles = 75;
     std::vector<std::filesystem::path> collected;
 
-    try {
-        if (std::filesystem::exists(targetDir, ec) && std::filesystem::is_directory(targetDir, ec)) {
+    if (!m_currentRootPath.empty() && std::filesystem::exists(targetDir, ec) && std::filesystem::is_directory(targetDir, ec)) {
+        try {
             for (auto const& entry : std::filesystem::recursive_directory_iterator(targetDir, std::filesystem::directory_options::skip_permission_denied, ec)) {
                 if (collected.size() >= maxFiles) break;
                 if (ec) break;
@@ -80,10 +524,67 @@ void GraphView::RefreshFromWorkspace(const std::wstring& rootPath) {
                     collected.push_back(path);
                 }
             }
+        } catch (...) {
+            // Fallback gracefully
         }
-    } catch (...) {
-        // Fallback gracefully
     }
+
+    // If preserveExistingPositions is requested (e.g. from file creation, update, rename, delete, move, or save)
+    if (preserveExistingPositions && !m_nodes.empty() && !collected.empty()) {
+        std::vector<GraphNode> updatedNodes;
+        bool hasNewNodes = false;
+
+        for (const auto& p : collected) {
+            std::wstring pStr = p.wstring();
+            std::wstring fName = p.filename().wstring();
+
+            // Match against existing node
+            auto it = std::find_if(m_nodes.begin(), m_nodes.end(), [&](const GraphNode& gn) {
+                return gn.id == pStr || gn.label == fName;
+            });
+
+            if (it != m_nodes.end()) {
+                GraphNode existing = *it;
+                existing.id = pStr;
+                existing.label = fName;
+                updatedNodes.push_back(existing);
+            } else {
+                // Brand new file created dynamically (e.g. hello.txt)
+                GraphNode n;
+                n.id = pStr;
+                n.label = fName;
+                std::wstring ext = p.extension().wstring();
+                if (!ext.empty() && ext.front() == L'.') ext.erase(0, 1);
+                for (auto& c : ext) c = towlower(c);
+                n.ext = ext;
+                n.isDirectory = false;
+                n.radius = 5.5f;
+                n.color = GetExtensionColor(n.ext, false);
+
+                // Place near center with gentle initial velocity for organic entrance
+                float offset = static_cast<float>((updatedNodes.size() * 41) % 70) - 35.0f;
+                n.x = offset;
+                n.y = offset * 0.75f;
+                n.vx = (offset >= 0 ? 2.2f : -2.2f);
+                n.vy = 2.0f;
+
+                updatedNodes.push_back(n);
+                hasNewNodes = true;
+            }
+        }
+
+        m_nodes = std::move(updatedNodes);
+        ParseFileDependencies();
+
+        if (hasNewNodes) {
+            StartBounceAnimation();
+        }
+        return;
+    }
+
+    // Full fresh initial scan
+    m_nodes.clear();
+    m_edges.clear();
 
     // If directory scan produced very few or no files, create standard representative project network
     if (collected.size() < 4) {
@@ -171,29 +672,8 @@ void GraphView::RefreshFromWorkspace(const std::wstring& rootPath) {
         m_nodes[i].vy = std::sin(theta) * 2.5f;
     }
 
-    // 3. Connect nodes organically based on file types, hubs, and proximity
-    auto addEdge = [this](size_t a, size_t b) {
-        if (a >= m_nodes.size() || b >= m_nodes.size() || a == b) return;
-        for (const auto& e : m_edges) {
-            if ((e.from == a && e.to == b) || (e.from == b && e.to == a)) return;
-        }
-        m_edges.push_back({ a, b, 1.0f });
-        m_nodes[a].neighbors.push_back(b);
-        m_nodes[b].neighbors.push_back(a);
-    };
-
-    // Central hubs (first 3 main nodes) connect to clusters
-    for (size_t i = 1; i < m_nodes.size(); ++i) {
-        size_t hub = (i % 3 == 0) ? 0 : ((i % 3 == 1) ? (m_nodes.size() > 1 ? 1 : 0) : (m_nodes.size() > 2 ? 2 : 0));
-        addEdge(hub, i);
-        // Connect to sequential neighbor to create organic graph webs
-        if (i > 1 && (i % 2 == 0)) {
-            addEdge(i - 1, i);
-        }
-        if (i + 2 < m_nodes.size() && (i % 4 == 0)) {
-            addEdge(i, i + 2);
-        }
-    }
+    // 3. Connect nodes based strictly on real references
+    ParseFileDependencies();
 
     // 4. Start Obsidian bouncy intro animation
     StartIntroAnimation();
@@ -433,35 +913,17 @@ void GraphView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfi
         }
     }
 
-    // 5. Floating HUD Badge (Bottom-Left)
-    {
-        const float hudW = config.ScaleF(280.0f);
-        const float hudH = config.ScaleF(26.0f);
-        const float hudX = left + config.ScaleF(14.0f);
-        const float hudY = top + height - hudH - config.ScaleF(14.0f);
-
-        D2D1_ROUNDED_RECT rrcHud = D2D1::RoundedRect(D2D1::RectF(hudX, hudY, hudX + hudW, hudY + hudH), 5.0f, 5.0f);
-
-        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> hudBg, hudBorder;
-        pRT->CreateSolidColorBrush(theme.IsDarkMode() ? D2D1::ColorF(0.12f, 0.12f, 0.15f, 0.88f) : D2D1::ColorF(0.92f, 0.94f, 0.96f, 0.88f), &hudBg);
-        pRT->CreateSolidColorBrush(theme.brushBorderSubtle ? theme.brushBorderSubtle->GetColor() : D2D1::ColorF(0.25f, 0.25f, 0.28f, 1.0f), &hudBorder);
-
-        if (hudBg) pRT->FillRoundedRectangle(rrcHud, hudBg.Get());
-        if (hudBorder) pRT->DrawRoundedRectangle(rrcHud, hudBorder.Get(), 0.8f);
-
-        int zoomPct = static_cast<int>(m_zoom * 100.0f + 0.5f);
-        std::wstring hudText = L"Graph view • " + std::to_wstring(zoomPct) + L"% • " +
-                               std::to_wstring(m_nodes.size()) + L" files • " +
-                               (isColored ? L"Colored" : L"Monochrome");
-
-        ID2D1Brush* pTextBrush = theme.brushTextSecondary ? theme.brushTextSecondary.Get() : theme.brushTextMuted.Get();
-        if (pFont && pTextBrush) {
-            D2D1_RECT_F rcText = D2D1::RectF(hudX + config.ScaleF(10.0f), hudY, hudX + hudW - config.ScaleF(10.0f), hudY + hudH);
-            pRT->DrawText(hudText.c_str(), static_cast<UINT32>(hudText.length()), pFont, rcText, pTextBrush);
-        }
-    }
+    // Floating HUD badge moved from canvas to status bar per user requirement:
+    // "also can you move this infor inside here" (pointing to bottom status bar)
 
     pRT->PopAxisAlignedClip();
+}
+
+std::wstring GraphView::GetStatusString(const app::AppConfig& config) const {
+    int zoomPct = static_cast<int>(m_zoom * 100.0f + 0.5f);
+    return L"Graph view • " + std::to_wstring(zoomPct) + L"% • " +
+           std::to_wstring(m_nodes.size()) + L" files • " +
+           (config.isGraphColored ? L"Colored" : L"Monochrome");
 }
 
 bool GraphView::HandleMouseMove(POINT clientPt) {

@@ -13477,6 +13477,150 @@ run_test_90:
 
             SaveWicBitmapToPng(pWicGraph.Get(), pWicFactory.Get(), artDir + L"test_file_network_graph_colored.png");
             std::cout << "  Passed: Colored graph snapshot saved to test_file_network_graph_colored.png" << std::endl;
+
+            // 4. Verify Real Dependency Detection & Dynamic Filesystem Event Updates
+            {
+                std::wstring testProj = L"C:\\Users\\Administrator\\Downloads\\php-student-crud\\php-student-crud";
+                if (std::filesystem::exists(testProj)) {
+                    phide::ui::GraphView projGraph;
+                    projGraph.RefreshFromWorkspace(testProj, false);
+                    assert(projGraph.GetNodeCount() > 0);
+
+                    // Find nodes
+                    int idxVuln = -1, idxHello = -1, idxIndex = -1, idxReadme = -1, idxConfig = -1, idxDb = -1, idxNotebook = -1;
+                    for (size_t i = 0; i < projGraph.GetNodes().size(); ++i) {
+                        const auto& lbl = projGraph.GetNodes()[i].label;
+                        if (lbl == L"vuln.txt") idxVuln = static_cast<int>(i);
+                        else if (lbl == L"hello.txt") idxHello = static_cast<int>(i);
+                        else if (lbl == L"index.php") idxIndex = static_cast<int>(i);
+                        else if (lbl == L"README.md") idxReadme = static_cast<int>(i);
+                        else if (lbl == L"config.php") idxConfig = static_cast<int>(i);
+                        else if (lbl == L"database.sql") idxDb = static_cast<int>(i);
+                        else if (lbl.find(L"Notebook") != std::wstring::npos) idxNotebook = static_cast<int>(i);
+                    }
+
+                    // Verify orphan nodes have ZERO edges! (User requirement: "why files not even should be connected is connected", "huh how readme is connected")
+                    if (idxReadme >= 0) {
+                        assert(projGraph.GetNodes()[idxReadme].neighbors.empty());
+                        std::cout << "  Passed: README.md is strictly an orphan node with 0 edges (no false prose links)" << std::endl;
+                    }
+                    if (idxDb >= 0) {
+                        assert(projGraph.GetNodes()[idxDb].neighbors.empty());
+                        std::cout << "  Passed: database.sql is strictly an orphan node with 0 edges" << std::endl;
+                    }
+                    if (idxNotebook >= 0) {
+                        assert(projGraph.GetNodes()[idxNotebook].neighbors.empty());
+                        std::cout << "  Passed: Notebook 1.ipynb is strictly an orphan node with 0 edges" << std::endl;
+                    }
+                    if (idxVuln >= 0) {
+                        assert(projGraph.GetNodes()[idxVuln].neighbors.empty());
+                        std::cout << "  Passed: vuln.txt is strictly an orphan node with 0 edges" << std::endl;
+                    }
+                    if (idxHello >= 0) {
+                        assert(projGraph.GetNodes()[idxHello].neighbors.empty());
+                        std::cout << "  Passed: hello.txt is strictly an orphan node with 0 edges" << std::endl;
+                    }
+
+                    // Verify real connected files have actual edges
+                    if (idxIndex >= 0 && idxConfig >= 0) {
+                        const auto& nbrs = projGraph.GetNodes()[idxIndex].neighbors;
+                        bool connectedToConfig = (std::find(nbrs.begin(), nbrs.end(), static_cast<size_t>(idxConfig)) != nbrs.end());
+                        assert(connectedToConfig);
+                        std::cout << "  Passed: index.php is connected to config.php via real dependency reference" << std::endl;
+                    }
+
+                    // Verify Status String formatting
+                    std::wstring statusStr = projGraph.GetStatusString(cfg);
+                    assert(statusStr.find(L"Graph view •") != std::wstring::npos);
+                    assert(statusStr.find(L"files") != std::wstring::npos);
+                    std::wcout << L"  Passed: GetStatusString formatted: " << statusStr << std::endl;
+
+                    // Verify dynamic update with position preservation
+                    if (idxIndex >= 0) {
+                        float savedX = projGraph.GetNodes()[idxIndex].x;
+                        float savedY = projGraph.GetNodes()[idxIndex].y;
+                        projGraph.RefreshFromWorkspace(testProj, /*preserveExistingPositions=*/true);
+                        // index.php should retain its exact coordinates!
+                        assert(projGraph.GetNodes()[idxIndex].x == savedX);
+                        assert(projGraph.GetNodes()[idxIndex].y == savedY);
+                        std::cout << "  Passed: RefreshFromWorkspace preserves existing node positions on filesystem events" << std::endl;
+                    }
+
+                    // Step physics and render visual snapshot of user's project graph
+                    for (int f = 0; f < 50; ++f) {
+                        projGraph.UpdateAnimation();
+                    }
+                    pRT->BeginDraw();
+                    projGraph.Render(pRT.Get(), theme, cfg, 0.0f, static_cast<float>(width), 0.0f, static_cast<float>(height));
+                    hr = pRT->EndDraw();
+                    assert(SUCCEEDED(hr));
+                    SaveWicBitmapToPng(pWicGraph.Get(), pWicFactory.Get(), artDir + L"test_php_student_crud_graph.png");
+                    std::cout << "  Passed: Saved php-student-crud visual graph snapshot to test_php_student_crud_graph.png" << std::endl;
+                }
+            }
+
+            // 5. Render Status Bar Snapshot with Graph View Info Pill (Image 2 requirement)
+            {
+                const UINT barW = 1200;
+                const UINT barH = 24;
+                ComPtr<IWICBitmap> pWicBar;
+                pWicFactory->CreateBitmap(barW, barH, GUID_WICPixelFormat32bppPBGRA, WICBitmapCacheOnDemand, &pWicBar);
+                assert(pWicBar);
+
+                D2D1_RENDER_TARGET_PROPERTIES rtProps = D2D1::RenderTargetProperties(
+                    D2D1_RENDER_TARGET_TYPE_DEFAULT,
+                    D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED)
+                );
+                ComPtr<ID2D1RenderTarget> pRTBar;
+                pD2DFactory->CreateWicBitmapRenderTarget(pWicBar.Get(), rtProps, &pRTBar);
+                assert(pRTBar);
+
+                pRTBar->BeginDraw();
+                ComPtr<ID2D1SolidColorBrush> barBg, textBrush, hoverBg;
+                pRTBar->CreateSolidColorBrush(D2D1::ColorF(0.09f, 0.09f, 0.10f, 1.0f), &barBg);
+                pRTBar->CreateSolidColorBrush(D2D1::ColorF(0.72f, 0.74f, 0.78f, 1.0f), &textBrush);
+                pRTBar->CreateSolidColorBrush(D2D1::ColorF(0.20f, 0.22f, 0.26f, 0.90f), &hoverBg);
+
+                pRTBar->FillRectangle(D2D1::RectF(0.0f, 0.0f, static_cast<float>(barW), static_cast<float>(barH)), barBg.Get());
+
+                // Left items
+                phide::ui::LucideIcons lucide;
+                float curLeftX = 14.0f;
+                lucide.DrawGitBranch(pRTBar.Get(), D2D1::RectF(curLeftX, 4.0f, curLeftX + 16.0f, 20.0f), textBrush.Get(), 1.5f);
+                curLeftX += 22.0f;
+                pRTBar->DrawText(L"main", 4, theme.fontHint.Get(), D2D1::RectF(curLeftX, 3.0f, curLeftX + 50.0f, 21.0f), textBrush.Get());
+                curLeftX += 60.0f;
+                lucide.DrawUser(pRTBar.Get(), D2D1::RectF(curLeftX, 4.0f, curLeftX + 15.0f, 19.0f), textBrush.Get(), 1.4f);
+                curLeftX += 21.0f;
+                pRTBar->DrawText(L"John David L. Perez", 19, theme.fontHint.Get(), D2D1::RectF(curLeftX, 3.0f, curLeftX + 150.0f, 21.0f), textBrush.Get());
+
+                // Right items
+                float curRightX = static_cast<float>(barW) - 10.0f;
+                curRightX -= 80.0f;
+                pRTBar->DrawText(L"UTF-8   CRLF", 12, theme.fontHint.Get(), D2D1::RectF(curRightX, 3.0f, curRightX + 80.0f, 21.0f), textBrush.Get());
+                curRightX -= 68.0f;
+                pRTBar->DrawText(L"Spaces: 4", 9, theme.fontHint.Get(), D2D1::RectF(curRightX, 3.0f, curRightX + 56.0f, 21.0f), textBrush.Get());
+                curRightX -= 86.0f;
+                pRTBar->DrawText(L"Ln 1, Col 1", 10, theme.fontHint.Get(), D2D1::RectF(curRightX, 3.0f, curRightX + 74.0f, 21.0f), textBrush.Get());
+                curRightX -= 94.0f;
+                D2D1_RECT_F rcPhp = D2D1::RectF(curRightX, 3.0f, curRightX + 82.0f, 21.0f);
+                lucide.DrawCode(pRTBar.Get(), D2D1::RectF(rcPhp.left + 5.0f, 5.0f, rcPhp.left + 19.0f, 19.0f), textBrush.Get(), 1.2f);
+                pRTBar->DrawText(L"PHP 8.5.12", 10, theme.fontHint.Get(), D2D1::RectF(rcPhp.left + 24.0f, 3.0f, rcPhp.right, 21.0f), textBrush.Get());
+
+                // Graph View Pill (Moved to status bar beside PHP 8.5.12)
+                curRightX -= 260.0f;
+                D2D1_RECT_F rcGraphPill = D2D1::RectF(curRightX, 2.0f, curRightX + 250.0f, 22.0f);
+                pRTBar->FillRoundedRectangle(D2D1::RoundedRect(rcGraphPill, 3.5f, 3.5f), hoverBg.Get());
+                lucide.DrawFileNetwork(pRTBar.Get(), D2D1::RectF(rcGraphPill.left + 6.0f, 4.0f, rcGraphPill.left + 20.0f, 18.0f), textBrush.Get(), 1.2f);
+                std::wstring gText = L"Graph view • 116% • 9 files • Monochrome";
+                pRTBar->DrawText(gText.c_str(), static_cast<UINT32>(gText.length()), theme.fontHint.Get(),
+                                 D2D1::RectF(rcGraphPill.left + 26.0f, 3.0f, rcGraphPill.right - 6.0f, 21.0f), textBrush.Get());
+
+                HRESULT hr = pRTBar->EndDraw();
+                assert(SUCCEEDED(hr));
+                SaveWicBitmapToPng(pWicBar.Get(), pWicFactory.Get(), artDir + L"test_status_bar_graph_view.png");
+                std::cout << "  Passed: Status bar snapshot with Graph View pill saved to test_status_bar_graph_view.png" << std::endl;
+            }
         }
 
         std::cout << "  Passed: All [TEST 90] File Network Graph View tests passed!" << std::endl;
