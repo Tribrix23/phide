@@ -26,6 +26,30 @@ static std::wstring FindFontPath(const std::wstring& filename) {
     return L"";
 }
 
+static std::wstring ResolveMonospaceFont(IDWriteFactory* pFactory, const std::wstring& requestedFamily) {
+    if (requestedFamily.empty()) return L"Consolas";
+    if (!pFactory) return requestedFamily;
+
+    Microsoft::WRL::ComPtr<IDWriteFontCollection> pCollection;
+    if (SUCCEEDED(pFactory->GetSystemFontCollection(&pCollection, FALSE)) && pCollection) {
+        UINT32 index = 0;
+        BOOL exists = FALSE;
+        if (SUCCEEDED(pCollection->FindFamilyName(requestedFamily.c_str(), &index, &exists)) && exists) {
+            return requestedFamily;
+        }
+        // Fallback: Check Consolas -> Cascadia Code -> Courier New -> Lucida Console
+        static const wchar_t* fallbacks[] = { L"Consolas", L"Cascadia Code", L"Courier New", L"Lucida Console" };
+        for (const auto* fb : fallbacks) {
+            UINT32 idx = 0;
+            BOOL ex = FALSE;
+            if (SUCCEEDED(pCollection->FindFamilyName(fb, &idx, &ex)) && ex) {
+                return fb;
+            }
+        }
+    }
+    return L"Consolas";
+}
+
 Theme::Theme() = default;
 
 HRESULT Theme::CreateDeviceResources(ID2D1RenderTarget* pRT, IDWriteFactory* pDWriteFactory) {
@@ -241,14 +265,15 @@ HRESULT Theme::CreateDeviceResources(ID2D1RenderTarget* pRT, IDWriteFactory* pDW
         fontBody->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
     }
 
-    // 3a. Monospace Code Font (13px Consolas)
+    // 3a. Monospace Code Font
+    std::wstring chosenFont = ResolveMonospaceFont(pDWriteFactory, m_editorFontFamily);
     pDWriteFactory->CreateTextFormat(
-        L"Consolas",
+        chosenFont.c_str(),
         nullptr,
         DWRITE_FONT_WEIGHT_REGULAR,
         DWRITE_FONT_STYLE_NORMAL,
         DWRITE_FONT_STRETCH_NORMAL,
-        13.0f,
+        (std::max)(6.0f, m_editorFontSize),
         L"en-US",
         &fontCode
     );
@@ -628,16 +653,19 @@ void Theme::DiscardDeviceResources() {
     brushSetiDefault.Reset();
 }
 
-void Theme::SetEditorFontSize(float size) {
+void Theme::SetEditorFont(const std::wstring& family, float size) {
+    if (!family.empty()) m_editorFontFamily = family;
+    if (size > 0.0f) m_editorFontSize = size;
     if (dwriteFactory) {
         fontCode.Reset();
+        std::wstring chosenFont = ResolveMonospaceFont(dwriteFactory.Get(), m_editorFontFamily);
         dwriteFactory->CreateTextFormat(
-            L"Consolas",
+            chosenFont.c_str(),
             nullptr,
             DWRITE_FONT_WEIGHT_REGULAR,
             DWRITE_FONT_STYLE_NORMAL,
             DWRITE_FONT_STRETCH_NORMAL,
-            (std::max)(6.0f, size),
+            (std::max)(6.0f, m_editorFontSize),
             L"en-US",
             &fontCode
         );
@@ -647,6 +675,10 @@ void Theme::SetEditorFontSize(float size) {
             fontCode->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
         }
     }
+}
+
+void Theme::SetEditorFontSize(float size) {
+    SetEditorFont(L"Consolas", size);
 }
 
 /**

@@ -307,6 +307,8 @@ public:
 private:
     bool m_caretVisible = true;
     mutable float m_charWidth = 0.0f;
+    mutable float m_cachedRenderFontSize = 0.0f;
+    mutable std::wstring m_cachedRenderFontFamily;
     KeyboardShortcutsView m_keybindingsView;
     PackageManagerView m_packageManagerView;
     NotebookView m_notebookView;

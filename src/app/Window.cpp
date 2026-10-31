@@ -544,7 +544,9 @@ void Window::SaveSessionState() {
     size_t docCount = 0;
     for (const auto& grp : m_editorGroups) {
         for (const auto& doc : grp.docs) {
-            if (!doc.filePath.empty()) {
+            if (doc.isSpecialView && !doc.viewType.empty()) {
+                out << L"    \"special:" << EscapeJson(doc.viewType) << L"\"" << (++docCount < 100 ? L"," : L"") << L"\n";
+            } else if (!doc.filePath.empty()) {
                 out << L"    \"" << EscapeJson(doc.filePath) << L"\"" << (++docCount < 100 ? L"," : L"") << L"\n";
             }
         }
@@ -659,6 +661,9 @@ void Window::LoadSessionState() {
                 auto q2 = line.rfind(L'"');
                 if (q1 != std::wstring::npos && q2 != std::wstring::npos && q2 > q1) {
                     m_config.fontFamily = UnescapeJson(line.substr(q1 + 1, q2 - q1 - 1));
+                    if (m_config.fontFamily == L"Fira Code") {
+                        m_config.fontFamily = L"Consolas";
+                    }
                 }
             }
         } else if (line.find(L"\"autoSave\"") != std::wstring::npos) {
@@ -755,6 +760,10 @@ void Window::LoadSessionState() {
     }
     m_theme.SetThemeMode(static_cast<ui::ThemeMode>(themeMode));
 
+    // Synchronize editor typography with restored font preferences
+    m_theme.SetEditorFont(m_config.fontFamily, m_config.fontSize);
+    m_editor.ResetCharWidth();
+
     // Check if launched as a freshly clean new window (Ctrl+Shift+N / File > New Window)
     LPCWSTR cmdLine = GetCommandLineW();
     bool isNewWindowClean = (cmdLine && wcsstr(cmdLine, L"--new-window") != nullptr);
@@ -774,7 +783,18 @@ void Window::LoadSessionState() {
         }
 
         for (const auto& p : openDocPaths) {
-            if (!p.empty() && std::filesystem::exists(p, ec)) {
+            if (p.rfind(L"special:", 0) == 0) {
+                std::wstring vType = p.substr(8);
+                if (vType == L"settings") {
+                    OpenSpecialView(L"settings", L"Settings");
+                } else if (vType == L"graph") {
+                    OpenSpecialView(L"graph", L"Graph view");
+                } else if (vType == L"packages") {
+                    OpenSpecialView(L"packages", L"Manage Packages");
+                } else if (vType == L"shortcuts") {
+                    OpenSpecialView(L"shortcuts", L"Keyboard Shortcuts");
+                }
+            } else if (!p.empty() && std::filesystem::exists(p, ec)) {
                 OpenFileDocument(p, false);
             }
         }
@@ -2660,8 +2680,8 @@ void Window::DoCommandPalette() {
 void Window::DoZoomIn() {
     if (m_config.fontSize < 36.0f) {
         m_config.fontSize += 2.0f;
-        m_config.zoomLevel = m_config.fontSize / 14.0f;
-        m_theme.SetEditorFontSize(m_config.fontSize);
+        m_config.zoomLevel = m_config.fontSize / 15.0f;
+        m_theme.SetEditorFont(m_config.fontFamily, m_config.fontSize);
         m_editor.ResetCharWidth();
         InvalidateRect(m_hwnd, nullptr, FALSE);
     }
@@ -2670,17 +2690,17 @@ void Window::DoZoomIn() {
 void Window::DoZoomOut() {
     if (m_config.fontSize > 8.0f) {
         m_config.fontSize -= 2.0f;
-        m_config.zoomLevel = m_config.fontSize / 14.0f;
-        m_theme.SetEditorFontSize(m_config.fontSize);
+        m_config.zoomLevel = m_config.fontSize / 15.0f;
+        m_theme.SetEditorFont(m_config.fontFamily, m_config.fontSize);
         m_editor.ResetCharWidth();
         InvalidateRect(m_hwnd, nullptr, FALSE);
     }
 }
 
 void Window::DoResetZoom() {
-    m_config.fontSize = 14.0f;
+    m_config.fontSize = 15.0f;
     m_config.zoomLevel = 1.0f;
-    m_theme.SetEditorFontSize(m_config.fontSize);
+    m_theme.SetEditorFont(m_config.fontFamily, m_config.fontSize);
     m_editor.ResetCharWidth();
     InvalidateRect(m_hwnd, nullptr, FALSE);
 }
@@ -5755,7 +5775,12 @@ HRESULT Window::CreateDeviceResources() {
     if (FAILED(hr)) return hr;
 
     // Allocate theme GPU brushes and typography formats
-    return m_theme.CreateDeviceResources(m_pRenderTarget.Get(), m_pDWriteFactory.Get());
+    HRESULT hrTheme = m_theme.CreateDeviceResources(m_pRenderTarget.Get(), m_pDWriteFactory.Get());
+    if (SUCCEEDED(hrTheme)) {
+        m_theme.SetEditorFont(m_config.fontFamily, m_config.fontSize);
+        m_editor.ResetCharWidth();
+    }
+    return hrTheme;
 }
 
 void Window::DiscardDeviceResources() {
@@ -9209,17 +9234,10 @@ void Window::HandleLButtonDown(POINT clientPt) {
                     std::wstring modifiedId;
                     if (m_editor.GetSettingsView().HandleLButtonDown(clientPt, m_config, m_theme, modifiedId)) {
                         if (!modifiedId.empty()) {
-                            if (modifiedId == L"editor.fontSize") {
-                                m_config.zoomLevel = m_config.fontSize / 14.0f;
-                                m_theme.SetEditorFontSize(m_config.fontSize);
+                            if (modifiedId == L"editor.fontSize" || modifiedId == L"editor.fontFamily") {
+                                m_config.zoomLevel = m_config.fontSize / 15.0f;
+                                m_theme.SetEditorFont(m_config.fontFamily, m_config.fontSize);
                                 m_editor.ResetCharWidth();
-                            } else if (modifiedId == L"editor.fontFamily") {
-                                m_theme.SetEditorFontSize(m_config.fontSize);
-                                m_editor.ResetCharWidth();
-                            } else if (modifiedId == L"workbench.colorTheme") {
-                                BOOL dm = m_theme.IsDarkMode() ? TRUE : FALSE;
-                                DwmSetWindowAttribute(m_hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &dm, sizeof(dm));
-                                SetWindowPos(m_hwnd, nullptr, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED);
                             }
                             SaveSessionState();
                         }

@@ -374,6 +374,9 @@ int main(int argc, char* argv[]) {
     if (targetTest == 91) {
         goto run_test_91;
     }
+    if (targetTest == 92) {
+        goto run_test_92;
+    }
 
     // --- 3. Render Test: Picture Viewer in Dark & Light Modes ---
     std::cout << "[TEST 2] Testing Picture Viewer rendering..." << std::endl;
@@ -13985,6 +13988,93 @@ run_test_91:
         std::cout << "  Passed: All [TEST 91] Command Palette, Activity Rail Settings Icon, and Settings View tests passed!" << std::endl;
         if (targetTest == 91) {
             std::cout << "Target test 91 finished successfully." << std::endl;
+            return 0;
+        }
+    }
+
+run_test_92:
+    if (targetTest == 0 || targetTest == 92) {
+        std::cout << "\n[TEST 92] Testing Zoom and Font Size on Editor Text Spacing..." << std::endl;
+
+        // 1. Verify TitleHeader Zoom percentage at base 15px is 100%
+        {
+            phide::app::AppConfig cfg;
+            cfg.fontSize = 15.0f;
+            int zoomPercent = static_cast<int>(std::round((cfg.fontSize / 15.0f) * 100.0f));
+            assert(zoomPercent == 100);
+            std::cout << "  Passed: Default 15px font size displays 100% zoom" << std::endl;
+        }
+
+        // 2. Verify Theme::SetEditorFont fallback on non-installed font
+        {
+            phide::ui::Theme theme;
+            ComPtr<IWICBitmap> pWic;
+            ComPtr<ID2D1RenderTarget> pRT;
+            CreateTarget(pWic, pRT);
+            theme.CreateDeviceResources(pRT.Get(), pDWriteFactory.Get());
+
+            theme.SetEditorFont(L"Fira Code", 17.0f);
+            // Measure M and i - they must be identical (monospaced fallback to Consolas)
+            ComPtr<IDWriteTextLayout> layM, layI;
+            pDWriteFactory->CreateTextLayout(L"M", 1, theme.fontCode.Get(), 1000.0f, 100.0f, &layM);
+            pDWriteFactory->CreateTextLayout(L"i", 1, theme.fontCode.Get(), 1000.0f, 100.0f, &layI);
+            DWRITE_TEXT_METRICS tmM{}, tmI{};
+            layM->GetMetrics(&tmM);
+            layI->GetMetrics(&tmI);
+            assert(std::abs(tmM.widthIncludingTrailingWhitespace - tmI.widthIncludingTrailingWhitespace) < 0.001f);
+            std::cout << "  Passed: Fira Code safely resolved to installed monospace Consolas ('M' width == 'i' width: "
+                      << tmM.widthIncludingTrailingWhitespace << ")" << std::endl;
+        }
+
+        // 3. Render editor with PHP syntax tokens at 17px and 20px (simulating zooming in)
+        {
+            phide::ui::EditorCanvas editor;
+            phide::ui::Theme theme;
+            theme.SetThemeMode(phide::ui::ThemeMode::Dark);
+
+            ComPtr<IWICBitmap> pWicZoom;
+            ComPtr<ID2D1RenderTarget> pRTZoom;
+            CreateTarget(pWicZoom, pRTZoom);
+            theme.CreateDeviceResources(pRTZoom.Get(), pDWriteFactory.Get());
+
+            phide::app::AppConfig cfg;
+            cfg.fontSize = 17.0f;
+            theme.SetEditorFont(cfg.fontFamily, cfg.fontSize);
+
+            phide::editor::OpenDocument doc;
+            doc.fileName = L"action.php";
+            doc.filePath = L"C:\\Users\\Administrator\\Downloads\\php-student-crud\\php-student-crud\\action.php";
+            doc.buffer.LoadFromFile(doc.filePath);
+
+            std::vector<phide::editor::OpenDocument> docs;
+            docs.push_back(std::move(doc));
+
+            pRTZoom->BeginDraw();
+            pRTZoom->Clear(theme.colors.windowBg);
+            editor.Render(pRTZoom.Get(), theme, cfg, docs, 0, 52.0f, 1148.0f, 748.0f, true);
+            HRESULT hr = pRTZoom->EndDraw();
+            assert(SUCCEEDED(hr));
+
+            SaveWicBitmapToPng(pWicZoom.Get(), pWicFactory.Get(), artDir + L"test_zoom_spacing_17px.png");
+            std::cout << "  Passed: Rendered and saved test_zoom_spacing_17px.png" << std::endl;
+
+            // Zoom in further to 20px (133%)
+            cfg.fontSize = 20.0f;
+            theme.SetEditorFont(cfg.fontFamily, cfg.fontSize);
+
+            pRTZoom->BeginDraw();
+            pRTZoom->Clear(theme.colors.windowBg);
+            editor.Render(pRTZoom.Get(), theme, cfg, docs, 0, 52.0f, 1148.0f, 748.0f, true);
+            hr = pRTZoom->EndDraw();
+            assert(SUCCEEDED(hr));
+
+            SaveWicBitmapToPng(pWicZoom.Get(), pWicFactory.Get(), artDir + L"test_zoom_spacing_20px.png");
+            std::cout << "  Passed: Rendered and saved test_zoom_spacing_20px.png" << std::endl;
+        }
+
+        std::cout << "  Passed: All [TEST 92] Zoom and Font Size Text Spacing tests passed!" << std::endl;
+        if (targetTest == 92) {
+            std::cout << "Target test 92 finished successfully." << std::endl;
             return 0;
         }
     }

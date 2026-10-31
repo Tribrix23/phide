@@ -615,8 +615,8 @@ void TitleHeader::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCon
     float hw = config.ScaleF(4.0f);
     pRT->DrawLine(D2D1::Point2F(cxOut - hw, cyOut), D2D1::Point2F(cxOut + hw, cyOut), brushZoomGlyph, 1.5f);
 
-    // Zoom percentage text (e.g. 100%)
-    int zoomPercent = static_cast<int>(std::round((config.fontSize / 14.0f) * 100.0f));
+    // Zoom percentage text (e.g. 100% at base 15px default)
+    int zoomPercent = static_cast<int>(std::round((config.fontSize / 15.0f) * 100.0f));
     std::wstring zoomStr = std::to_wstring(zoomPercent) + L"%";
     pRT->DrawText(
         zoomStr.c_str(),

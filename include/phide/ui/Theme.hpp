@@ -145,6 +145,16 @@ public:
     void SetEditorFontSize(float size);
 
     /**
+     * @brief Dynamically updates the editor font typeface and size and recreates fontCode.
+     * @param family Monospace font family name (e.g. Consolas, Cascadia Code, Courier New, Fira Code).
+     * @param size Font size in points.
+     */
+    void SetEditorFont(const std::wstring& family, float size);
+
+    [[nodiscard]] const std::wstring& GetEditorFontFamily() const noexcept { return m_editorFontFamily; }
+    [[nodiscard]] float GetEditorFontSize() const noexcept { return m_editorFontSize; }
+
+    /**
      * @brief Sets the active theme mode and synchronizes all Direct2D brush colors.
      * @param mode Selected ThemeMode (Dark, Light, or Auto which tracks Windows system theme).
      */
@@ -298,6 +308,8 @@ public:
 private:
     ThemeMode m_mode = ThemeMode::Dark;
     bool m_isDarkActive = true;
+    std::wstring m_editorFontFamily = L"Consolas";
+    float m_editorFontSize = 15.0f;
 };
 
 } // namespace phide::ui

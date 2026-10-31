@@ -1102,13 +1102,20 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
     const float gutterW = config.showLineNumbers ? config.ScaleF(50.0f) : config.ScaleF(12.0f);
     const float lineH   = config.ScaleF(std::round(config.fontSize * config.lineHeightMultiplier));
 
+    // Auto-invalidate character width if font size or font family changed
+    if (m_cachedRenderFontSize != config.fontSize || m_cachedRenderFontFamily != config.fontFamily) {
+        m_charWidth = 0.0f;
+        m_cachedRenderFontSize = config.fontSize;
+        m_cachedRenderFontFamily = config.fontFamily;
+    }
+
     if (m_charWidth <= 0.0f && theme.dwriteFactory && theme.fontCode) {
         Microsoft::WRL::ComPtr<IDWriteTextLayout> pLayout;
         if (SUCCEEDED(theme.dwriteFactory->CreateTextLayout(
-                L"M", 1, theme.fontCode.Get(), 1000.0f, 100.0f, &pLayout))) {
+                L"0123456789", 10, theme.fontCode.Get(), 1000.0f, 100.0f, &pLayout))) {
             DWRITE_TEXT_METRICS tm{};
             if (SUCCEEDED(pLayout->GetMetrics(&tm))) {
-                m_charWidth = tm.widthIncludingTrailingWhitespace;
+                m_charWidth = tm.widthIncludingTrailingWhitespace / 10.0f;
             }
         }
     }
@@ -1581,24 +1588,115 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
         }
 
         if (!lineStr.empty()) {
-            // Render whitespace indicators if toggled on in View > Appearance
-            if (config.renderWhitespace) {
+            // Render whitespace indicators based on configured renderWhitespaceMode (none, selection, boundary, trailing, all)
+            std::wstring wsMode = config.renderWhitespaceMode;
+            if (wsMode.empty()) wsMode = config.renderWhitespace ? L"all" : L"none";
+            if (!config.renderWhitespace && wsMode == L"all") wsMode = L"none";
+
+            if (wsMode != L"none") {
+                size_t firstNonWs = lineStr.find_first_not_of(L" \t");
+                size_t lastNonWs  = lineStr.find_last_not_of(L" \t");
+
+                bool hasSel = doc.HasSelection();
+                size_t sLine = 0, sCol = 0, eLine = 0, eCol = 0;
+                if (hasSel) doc.GetSelectionRange(sLine, sCol, eLine, eCol);
+
                 for (size_t col = 0; col < lineStr.length(); ++col) {
                     wchar_t ch = lineStr[col];
-                    if (ch == L' ') {
+                    if (ch != L' ' && ch != L'\t') continue;
+
+                    bool shouldDraw = false;
+                    if (wsMode == L"all") {
+                        shouldDraw = true;
+                    } else if (wsMode == L"trailing") {
+                        shouldDraw = (lastNonWs == std::wstring::npos || col > lastNonWs);
+                    } else if (wsMode == L"boundary") {
+                        if (firstNonWs == std::wstring::npos || col < firstNonWs) {
+                            shouldDraw = true; // Leading indentation
+                        } else if (col > lastNonWs) {
+                            shouldDraw = true; // Trailing whitespace
+                        } else if ((col > 0 && lineStr[col - 1] == L' ') ||
+                                   (col + 1 < lineStr.length() && lineStr[col + 1] == L' ')) {
+                            shouldDraw = true; // 2 or more consecutive spaces
+                        }
+                    } else if (wsMode == L"selection") {
+                        if (hasSel && vl.bufferLine >= sLine && vl.bufferLine <= eLine) {
+                            if (sLine == eLine) {
+                                shouldDraw = (col >= sCol && col < eCol);
+                            } else if (vl.bufferLine == sLine) {
+                                shouldDraw = (col >= sCol);
+                            } else if (vl.bufferLine == eLine) {
+                                shouldDraw = (col < eCol);
+                            } else {
+                                shouldDraw = true;
+                            }
+                        }
+                    }
+
+                    if (shouldDraw) {
                         float dotX = getColVisualX(col) + charW * 0.5f;
                         float dotY = lineY + lineH * 0.5f;
-                        pRT->FillEllipse(D2D1::Ellipse(D2D1::Point2F(dotX, dotY), 1.0f, 1.0f), theme.brushTextMuted.Get());
-                    } else if (ch == L'\t') {
-                        float arrX = getColVisualX(col) + charW * 0.5f;
-                        float arrY = lineY + lineH * 0.5f;
-                        pRT->DrawLine(D2D1::Point2F(arrX - 2.0f, arrY), D2D1::Point2F(arrX + 2.0f, arrY), theme.brushTextMuted.Get(), 1.0f);
+                        if (ch == L' ') {
+                            pRT->FillEllipse(D2D1::Ellipse(D2D1::Point2F(dotX, dotY), 1.2f, 1.2f), theme.brushTextMuted.Get());
+                        } else if (ch == L'\t') {
+                            pRT->DrawLine(D2D1::Point2F(dotX - 2.5f, dotY), D2D1::Point2F(dotX + 2.5f, dotY), theme.brushTextMuted.Get(), 1.0f);
+                        }
                     }
                 }
             }
 
             auto tokens = buffer.GetTokensForLine(vl.bufferLine);
-            if (tokens.empty()) {
+            if (lineColors.empty() && theme.dwriteFactory && theme.fontCode) {
+                // Unified DirectWrite Text Layout for contiguous characters, flawless spacing, ligatures, and zero gaps
+                Microsoft::WRL::ComPtr<IDWriteTextLayout> pLineLayout;
+                float availW = (std::max)(1200.0f, codeRight - (codeLeft - scrollX) + 1000.0f);
+                if (SUCCEEDED(theme.dwriteFactory->CreateTextLayout(
+                        lineStr.c_str(),
+                        static_cast<UINT32>(lineStr.length()),
+                        theme.fontCode.Get(),
+                        availW,
+                        lineH,
+                        &pLineLayout))) {
+                    for (const auto& tok : tokens) {
+                        if (tok.startCol + tok.length > lineStr.length()) continue;
+
+                        ID2D1Brush* brush = theme.brushTextPrimary.Get();
+                        bool isBracketToken = false;
+                        if (tok.type == editor::TokenType::Operator && tok.length == 1) {
+                            auto it = bracketsByLine.find(vl.bufferLine);
+                            if (it != bracketsByLine.end()) {
+                                for (const auto* b : it->second) {
+                                    if (b->col == tok.startCol) {
+                                        brush = theme.GetBracketBrush(b->depth);
+                                        isBracketToken = true;
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+
+                        if (!isBracketToken) {
+                            switch (tok.type) {
+                                case editor::TokenType::Keyword:   brush = theme.brushSyntaxKeyword.Get(); break;
+                                case editor::TokenType::Type:      brush = theme.brushSyntaxType.Get(); break;
+                                case editor::TokenType::String:    brush = theme.brushSyntaxString.Get(); break;
+                                case editor::TokenType::Comment:   brush = theme.brushSyntaxComment.Get(); break;
+                                case editor::TokenType::Number:    brush = theme.brushSyntaxNumber.Get(); break;
+                                case editor::TokenType::Operator:  brush = theme.brushSyntaxOperator.Get(); break;
+                                case editor::TokenType::Tag:       brush = theme.brushSyntaxTag.Get(); break;
+                                case editor::TokenType::Attribute: brush = theme.brushSyntaxAttribute.Get(); break;
+                                default: brush = theme.brushTextPrimary.Get(); break;
+                            }
+                        }
+
+                        DWRITE_TEXT_RANGE range = { static_cast<UINT32>(tok.startCol), static_cast<UINT32>(tok.length) };
+                        pLineLayout->SetDrawingEffect(brush, range);
+                    }
+
+                    pRT->DrawTextLayout(D2D1::Point2F(codeLeft - scrollX, lineY), pLineLayout.Get(), theme.brushTextPrimary.Get());
+                    curCodeEndX = getColVisualX(lineStr.length());
+                }
+            } else if (tokens.empty()) {
                 D2D1_RECT_F rcLine = D2D1::RectF(codeLeft - scrollX, lineY, codeRight, lineY + lineH);
                 pRT->DrawText(
                     lineStr.c_str(),
@@ -1804,12 +1902,35 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
                     ? theme.brushTextWhite.Get()
                     : (theme.brushTextPrimary ? theme.brushTextPrimary.Get() : theme.brushHeaderIcon.Get());
 
-                pRT->DrawLine(
-                    D2D1::Point2F(caretX, caretY + config.ScaleF(2.0f)),
-                    D2D1::Point2F(caretX, caretY + lineH - config.ScaleF(2.0f)),
-                    caretBrush,
-                    2.0f // Crisp 2.0px stroke
-                );
+                const std::wstring& style = config.cursorStyle;
+                if (style == L"block") {
+                    // Full character block cursor with semi-transparent fill and crisp border
+                    D2D1_RECT_F rcBlock = D2D1::RectF(caretX, caretY + config.ScaleF(1.0f), caretX + charW, caretY + lineH - config.ScaleF(1.0f));
+                    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> blockFill;
+                    pRT->CreateSolidColorBrush(
+                        theme.IsDarkMode() ? D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.65f) : D2D1::ColorF(0.12f, 0.12f, 0.12f, 0.65f),
+                        &blockFill
+                    );
+                    pRT->FillRectangle(rcBlock, blockFill ? blockFill.Get() : caretBrush);
+                    pRT->DrawRectangle(rcBlock, caretBrush, 1.0f);
+                } else if (style == L"underline") {
+                    // Horizontal underline cursor at bottom of line
+                    float underY = caretY + lineH - config.ScaleF(2.5f);
+                    pRT->DrawLine(
+                        D2D1::Point2F(caretX, underY),
+                        D2D1::Point2F(caretX + charW, underY),
+                        caretBrush,
+                        2.5f
+                    );
+                } else {
+                    // Default "line": crisp vertical line
+                    pRT->DrawLine(
+                        D2D1::Point2F(caretX, caretY + config.ScaleF(2.0f)),
+                        D2D1::Point2F(caretX, caretY + lineH - config.ScaleF(2.0f)),
+                        caretBrush,
+                        2.0f // Crisp 2.0px stroke
+                    );
+                }
             }
         }
 
@@ -4532,6 +4653,39 @@ void EditorCanvas::RenderSyntaxTokensLine(ID2D1RenderTarget* pRT, Theme& theme, 
     if (lineStr.empty() || codeLeft >= maxRight) return;
 
     auto tokens = buffer.GetTokensForLine(lineIdx);
+    if (theme.dwriteFactory && pCodeFmt) {
+        Microsoft::WRL::ComPtr<IDWriteTextLayout> pLineLayout;
+        float availW = (std::max)(1200.0f, maxRight - codeLeft + 500.0f);
+        if (SUCCEEDED(theme.dwriteFactory->CreateTextLayout(
+                lineStr.c_str(),
+                static_cast<UINT32>(lineStr.length()),
+                pCodeFmt,
+                availW,
+                lineH,
+                &pLineLayout))) {
+            for (const auto& tok : tokens) {
+                if (tok.startCol + tok.length > lineStr.length()) continue;
+                ID2D1Brush* brush = defaultTextBrush ? defaultTextBrush : theme.brushTextPrimary.Get();
+                switch (tok.type) {
+                    case editor::TokenType::Keyword:   brush = theme.brushSyntaxKeyword.Get(); break;
+                    case editor::TokenType::Type:      brush = theme.brushSyntaxType.Get(); break;
+                    case editor::TokenType::String:    brush = theme.brushSyntaxString.Get(); break;
+                    case editor::TokenType::Comment:   brush = theme.brushSyntaxComment.Get(); break;
+                    case editor::TokenType::Number:    brush = theme.brushSyntaxNumber.Get(); break;
+                    case editor::TokenType::Operator:  brush = theme.brushSyntaxOperator.Get(); break;
+                    case editor::TokenType::Tag:       brush = theme.brushSyntaxTag.Get(); break;
+                    case editor::TokenType::Attribute: brush = theme.brushSyntaxAttribute.Get(); break;
+                    default: break;
+                }
+                if (!brush) brush = theme.brushTextPrimary.Get();
+                DWRITE_TEXT_RANGE range = { static_cast<UINT32>(tok.startCol), static_cast<UINT32>(tok.length) };
+                pLineLayout->SetDrawingEffect(brush, range);
+            }
+            pRT->DrawTextLayout(D2D1::Point2F(codeLeft, lineY), pLineLayout.Get(), defaultTextBrush ? defaultTextBrush : theme.brushTextPrimary.Get());
+            return;
+        }
+    }
+
     if (tokens.empty()) {
         D2D1_RECT_F rcLine = D2D1::RectF(codeLeft, lineY, maxRight, lineY + lineH);
         pRT->DrawText(lineStr.c_str(), static_cast<UINT32>(lineStr.length()), pCodeFmt, rcLine,
@@ -4839,11 +4993,27 @@ void EditorCanvas::RenderDiffView(ID2D1RenderTarget* pRT, Theme& theme, const ap
         m_lastCaretX = caretX;
         m_lastCaretY = caretY;
         if (m_caretVisible && caretX < rightX + halfW) {
-            pRT->DrawLine(
-                D2D1::Point2F(caretX, caretY + config.ScaleF(2.0f)),
-                D2D1::Point2F(caretX, caretY + lineH - config.ScaleF(2.0f)),
-                theme.brushTextPrimary.Get(), 1.5f
-            );
+            ID2D1Brush* caretBrush = theme.brushTextPrimary.Get();
+            const std::wstring& style = config.cursorStyle;
+            if (style == L"block") {
+                D2D1_RECT_F rcBlock = D2D1::RectF(caretX, caretY + config.ScaleF(1.0f), caretX + charW, caretY + lineH - config.ScaleF(1.0f));
+                Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> blockFill;
+                pRT->CreateSolidColorBrush(
+                    theme.IsDarkMode() ? D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.65f) : D2D1::ColorF(0.12f, 0.12f, 0.12f, 0.65f),
+                    &blockFill
+                );
+                pRT->FillRectangle(rcBlock, blockFill ? blockFill.Get() : caretBrush);
+                pRT->DrawRectangle(rcBlock, caretBrush, 1.0f);
+            } else if (style == L"underline") {
+                float underY = caretY + lineH - config.ScaleF(2.5f);
+                pRT->DrawLine(D2D1::Point2F(caretX, underY), D2D1::Point2F(caretX + charW, underY), caretBrush, 2.5f);
+            } else {
+                pRT->DrawLine(
+                    D2D1::Point2F(caretX, caretY + config.ScaleF(2.0f)),
+                    D2D1::Point2F(caretX, caretY + lineH - config.ScaleF(2.0f)),
+                    caretBrush, 1.5f
+                );
+            }
         }
     }
 

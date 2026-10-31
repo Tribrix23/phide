@@ -614,15 +614,32 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidateHtml(
     };
 
     bool inComment = false;
+    bool inPhp = false;
 
     for (size_t l = 0; l < buffer.GetLineCount(); ++l) {
         const auto& line = buffer.GetLine(l);
         for (size_t c = 0; c < line.length(); ++c) {
+            // Skip PHP code blocks completely in mixed PHP/HTML templates
+            if (inPhp) {
+                if (c + 1 < line.length() && line[c] == L'?' && line[c + 1] == L'>') {
+                    inPhp = false;
+                    c++;
+                }
+                continue;
+            }
+
             if (inComment) {
                 if (c + 2 < line.length() && line[c] == L'-' && line[c + 1] == L'-' && line[c + 2] == L'>') {
                     inComment = false;
                     c += 2;
                 }
+                continue;
+            }
+
+            // Detect PHP opening tag
+            if (line[c] == L'<' && c + 1 < line.length() && line[c + 1] == L'?') {
+                inPhp = true;
+                c++;
                 continue;
             }
 
@@ -633,6 +650,13 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidateHtml(
             }
 
             if (line[c] == L'<') {
+                // In HTML, a tag bracket MUST be followed by an ASCII letter, '/', or '!'
+                // Comparison operators (e.g. '< 1', '<=', '<<') or standalone '<' are NOT HTML tags!
+                if (c + 1 >= line.length()) continue;
+                wchar_t nextCh = line[c + 1];
+                if (!iswalpha(nextCh) && nextCh != L'/' && nextCh != L'!') {
+                    continue;
+                }
                 size_t tagStartLine = l;
                 size_t tagStartCol = c;
 

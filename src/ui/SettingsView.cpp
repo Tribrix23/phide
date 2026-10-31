@@ -74,7 +74,7 @@ void SettingsView::InitializeSettings() {
         it.category = SettingCategory::TextEditor;
         it.isCommonlyUsed = true;
         it.control = SettingControl::Dropdown;
-        it.options = { L"Consolas", L"Cascadia Code", L"Courier New", L"Fira Code" };
+        it.options = { L"Consolas", L"Cascadia Code", L"Courier New", L"Lucida Console" };
         m_items.push_back(std::move(it));
     }
 
@@ -175,21 +175,7 @@ void SettingsView::InitializeSettings() {
         m_items.push_back(std::move(it));
     }
 
-    // 12. Appearance: Color Theme (Dropdown)
-    {
-        SettingItem it;
-        it.id = L"workbench.colorTheme";
-        it.scope = L"APPEARANCE";
-        it.title = L"Color Theme";
-        it.description = L"Specifies the visual theme mode used across the IDE workbench.";
-        it.category = SettingCategory::Appearance;
-        it.isCommonlyUsed = true;
-        it.control = SettingControl::Dropdown;
-        it.options = { L"Dark Modern", L"Light Modern" };
-        m_items.push_back(std::move(it));
-    }
-
-    // 13. Appearance: Breadcrumbs (Toggle)
+    // 12. Appearance: Breadcrumbs (Toggle)
     {
         SettingItem it;
         it.id = L"workbench.breadcrumbs";
@@ -634,8 +620,6 @@ void SettingsView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
                 valStr = config.renderWhitespaceMode;
             } else if (it.id == L"editor.cursorStyle") {
                 valStr = config.cursorStyle;
-            } else if (it.id == L"workbench.colorTheme") {
-                valStr = (theme.GetThemeMode() == ThemeMode::Dark) ? L"Dark Modern" : L"Light Modern";
             }
 
             bool isOpen = (m_openDropdownItemIdx == static_cast<int>(idx));
@@ -786,7 +770,6 @@ void SettingsView::DrawDropdownPopup(ID2D1RenderTarget* pRT, Theme& theme, const
     else if (item.id == L"editor.fontFamily") curVal = config.fontFamily;
     else if (item.id == L"editor.renderWhitespace") curVal = config.renderWhitespaceMode;
     else if (item.id == L"editor.cursorStyle") curVal = config.cursorStyle;
-    else if (item.id == L"workbench.colorTheme") curVal = (theme.GetThemeMode() == ThemeMode::Dark) ? L"Dark Modern" : L"Light Modern";
 
     const float rowH = config.ScaleF(32.0f);
     const float padY = config.ScaleF(6.0f);
@@ -949,9 +932,6 @@ bool SettingsView::HandleLButtonDown(POINT clientPt, app::AppConfig& config, The
                         config.renderWhitespace = (selectedOpt != L"none");
                     } else if (dropItem.id == L"editor.cursorStyle") {
                         config.cursorStyle = selectedOpt;
-                    } else if (dropItem.id == L"workbench.colorTheme") {
-                        ThemeMode next = (selectedOpt == L"Light Modern") ? ThemeMode::Light : ThemeMode::Dark;
-                        theme.SetThemeMode(next);
                     }
                     outModifiedSettingId = dropItem.id;
                 }
