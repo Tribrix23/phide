@@ -343,17 +343,10 @@ const std::vector<PackageEntry>& PackageManagerView::GetActivePackageList() cons
 }
 
 void PackageManagerView::InitializeCatalog() {
-    {
-        std::lock_guard<std::mutex> lock(m_packageMutex);
-        m_packages.clear();
-        m_phpPackages.clear();
-        m_nodePackages.clear();
-    }
-
-    // Connect to Supabase to fetch real database packages asynchronously!
-    FetchInitialPackagesFromSupabase(RuntimeLanguage::Python);
-    FetchInitialPackagesFromSupabase(RuntimeLanguage::Php);
-    FetchInitialPackagesFromSupabase(RuntimeLanguage::Node);
+    std::lock_guard<std::mutex> lock(m_packageMutex);
+    m_packages.clear();
+    m_phpPackages.clear();
+    m_nodePackages.clear();
 }
 
 void PackageManagerView::ParseAndMergeSupabasePackages(const std::string& responseBody, RuntimeLanguage lang) {
@@ -477,18 +470,15 @@ void PackageManagerView::FetchInitialPackagesFromSupabase(RuntimeLanguage lang) 
         std::wstring table = (lang == RuntimeLanguage::Php) ? L"php_package" : (lang == RuntimeLanguage::Node ? L"node_package" : L"python_package");
         std::wstring headers = L"apikey: sb_publishable_nXkt2Y-i1brrrVYmF_mxzw_RMiAd6Ry\r\nAuthorization: Bearer sb_publishable_nXkt2Y-i1brrrVYmF_mxzw_RMiAd6Ry\r\nAccept: application/json\r\n";
 
-        // Paginate in chunks of 1000 to stream all packages from database
-        int maxOffset = (lang == RuntimeLanguage::Node) ? 25000 : 5000;
-        for (int offset = 0; offset < maxOffset; offset += 1000) {
-            std::wstring path = L"/rest/v1/" + table + L"?select=name,download,github&limit=1000&offset=" + std::to_wstring(offset);
+        // Fetch top initial batch of packages cleanly on demand
+        std::wstring path = L"/rest/v1/" + table + L"?select=name,download,github&limit=100";
 
-            HINTERNET hRequest = WinHttpOpenRequest(hConnect, L"GET",
-                                                    path.c_str(),
-                                                    nullptr, WINHTTP_NO_REFERER,
-                                                    WINHTTP_DEFAULT_ACCEPT_TYPES,
-                                                    WINHTTP_FLAG_SECURE);
-            if (!hRequest) break;
-
+        HINTERNET hRequest = WinHttpOpenRequest(hConnect, L"GET",
+                                                path.c_str(),
+                                                nullptr, WINHTTP_NO_REFERER,
+                                                WINHTTP_DEFAULT_ACCEPT_TYPES,
+                                                WINHTTP_FLAG_SECURE);
+        if (hRequest) {
             BOOL bSend = WinHttpSendRequest(hRequest, headers.c_str(), static_cast<DWORD>(headers.length()), WINHTTP_NO_REQUEST_DATA, 0, 0, 0);
             std::string responseBody;
             if (bSend && WinHttpReceiveResponse(hRequest, nullptr)) {
@@ -503,11 +493,9 @@ void PackageManagerView::FetchInitialPackagesFromSupabase(RuntimeLanguage lang) 
             }
             WinHttpCloseHandle(hRequest);
 
-            if (responseBody.empty() || responseBody == "[]") {
-                break;
+            if (!responseBody.empty() && responseBody != "[]") {
+                ParseAndMergeSupabasePackages(responseBody, lang);
             }
-
-            ParseAndMergeSupabasePackages(responseBody, lang);
         }
 
         WinHttpCloseHandle(hConnect);
@@ -931,6 +919,7 @@ void PackageManagerView::MarkPackageUninstalled(const std::wstring& pkgName, Pkg
 }
 
 void PackageManagerView::ScanInstalledPackages(const std::wstring& wsFolder) {
+    std::lock_guard<std::mutex> lock(m_packageMutex);
     std::unordered_set<std::wstring> projectInstalled;
     std::unordered_set<std::wstring> globalInstalled;
     std::error_code ec;
@@ -1025,7 +1014,6 @@ void PackageManagerView::ScanInstalledPackages(const std::wstring& wsFolder) {
         addFromComposerVendor(gCompVendor, globalPhpInstalled);
     }
 
-    std::lock_guard<std::mutex> lock(m_packageMutex);
     for (auto& pkg : m_packages) {
         std::wstring norm = pkg.name;
         std::transform(norm.begin(), norm.end(), norm.begin(), ::towlower);
@@ -2334,6 +2322,7 @@ void PackageManagerView::RenderGitHubWebPage(ID2D1RenderTarget* pRT, Theme& them
 }
 
 void PackageManagerView::RunGarbageCollection() {
+    std::lock_guard<std::mutex> lock(m_packageMutex);
     m_packages.shrink_to_fit();
     for (auto& p : m_packages) {
         p.name.shrink_to_fit();

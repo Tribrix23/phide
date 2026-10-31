@@ -406,10 +406,21 @@ void EditorCanvas::RenderPlaceholder(ID2D1RenderTarget* pRT, Theme& theme, const
         );
         std::vector<uint8_t> lightBgra(sizeof(g_watermarkLogoBgra));
         for (size_t i = 0; i < sizeof(g_watermarkLogoBgra); i += 4) {
-            lightBgra[i + 0] = 255 - g_watermarkLogoBgra[i + 0]; // B
-            lightBgra[i + 1] = 255 - g_watermarkLogoBgra[i + 1]; // G
-            lightBgra[i + 2] = 255 - g_watermarkLogoBgra[i + 2]; // R
-            lightBgra[i + 3] = g_watermarkLogoBgra[i + 3];       // A
+            uint8_t a = g_watermarkLogoBgra[i + 3];
+            if (a == 0) {
+                lightBgra[i + 0] = 0;
+                lightBgra[i + 1] = 0;
+                lightBgra[i + 2] = 0;
+                lightBgra[i + 3] = 0;
+            } else {
+                uint8_t invR = static_cast<uint8_t>((255 - (g_watermarkLogoBgra[i + 2] * 255 / a)) * a / 255);
+                uint8_t invG = static_cast<uint8_t>((255 - (g_watermarkLogoBgra[i + 1] * 255 / a)) * a / 255);
+                uint8_t invB = static_cast<uint8_t>((255 - (g_watermarkLogoBgra[i + 0] * 255 / a)) * a / 255);
+                lightBgra[i + 0] = invB;
+                lightBgra[i + 1] = invG;
+                lightBgra[i + 2] = invR;
+                lightBgra[i + 3] = a;
+            }
         }
         pRT->CreateBitmap(size, lightBgra.data(), kWatermarkLogoWidth * 4, props, &m_pWatermarkBitmapLight);
     }
