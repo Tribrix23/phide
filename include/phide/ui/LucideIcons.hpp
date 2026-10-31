@@ -112,6 +112,11 @@ public:
     void DrawGitBranch(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, ID2D1Brush* pBrush, float strokeWidth = 1.8f) const;
 
     /**
+     * @brief Draws the vector GitHub Octocat mark inside the specified bounding box.
+     */
+    void DrawGitHub(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, ID2D1Brush* pBrush, float strokeWidth = 1.3f) const;
+
+    /**
      * @brief Draws the Run & Debug icon (play triangle with overlapping bug glyph, matching Image 2).
      */
     void DrawDebug(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, ID2D1Brush* pBrush, float strokeWidth = 1.6f) const;
@@ -259,6 +264,14 @@ public:
      * @brief Draws the vector External Link / Open in Browser icon (↗).
      */
     void DrawExternalLink(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, ID2D1Brush* pBrush, float strokeWidth = 1.3f) const;
+
+    /**
+     * @brief Draws the vector More Actions icon (horizontal three dots •••).
+     */
+    void DrawMoreHorizontal(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, ID2D1Brush* pBrush) const;
+    void DrawBell(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, ID2D1Brush* pBrush, float strokeWidth = 1.3f) const;
+
+    [[nodiscard]] ID2D1StrokeStyle* GetStrokeStyle() const noexcept { return m_pStrokeStyle.Get(); }
 
 private:
     ComPtr<ID2D1StrokeStyle> m_pStrokeStyle;

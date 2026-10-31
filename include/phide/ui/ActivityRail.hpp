@@ -32,6 +32,7 @@ enum class RailTabId {
     Files = 0,          ///< Files / Explorer perspective (two overlapping sheets)
     Search = 1,         ///< Search across workspace
     Git = 2,            ///< Source Control (Git)
+    MoreActions = 6,    ///< Three-dot icon ("More Actions") directly under horizontal separation line
     Packages = 3,       ///< Package Manager (PyCharm style)
     Notebook = 4,       ///< Interactive Notebook (Jupyter / Colab)
     Student = 5         ///< Student Tutorials & Learning Hub (Student hat / graduation cap 🎓)
@@ -96,6 +97,8 @@ public:
     void SetGitBadgeCount(size_t count) noexcept { m_gitBadgeCount = count; }
     [[nodiscard]] size_t GetGitBadgeCount() const noexcept { return m_gitBadgeCount; }
     [[nodiscard]] const std::vector<RailItem>& GetItems() const noexcept { return m_items; }
+    [[nodiscard]] D2D1_RECT_F GetItemBounds(RailTabId id) const noexcept;
+    [[nodiscard]] const LucideIcons& GetLucide() const noexcept { return m_lucide; }
 
 private:
     RailTabId m_hoveredTab = RailTabId::None;

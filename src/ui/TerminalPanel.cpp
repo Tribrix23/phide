@@ -543,6 +543,7 @@ void TerminalPanel::CloseAllTabs() {
 }
 
 void TerminalPanel::RunGarbageCollection() {
+    std::lock_guard<std::recursive_mutex> lock(m_tabsMutex);
     m_tabs.shrink_to_fit();
     for (auto& tab : m_tabs) {
         if (tab) {
@@ -1099,6 +1100,8 @@ std::vector<TerminalSpan> TerminalPanel::FormatTerminalLine(const TerminalLine& 
 void TerminalPanel::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
                            float clientW, float clientH, float leftOffset, float animatedHeight) {
     if (!m_isOpen) return;
+
+    std::lock_guard<std::recursive_mutex> tabsLock(m_tabsMutex);
 
     float panelX = leftOffset;
     const float headerTopH = config.ScaleF(static_cast<float>(config.headerHeight));
@@ -2326,7 +2329,7 @@ void TerminalPanel::OpenLogTab(const std::wstring& logTitle, const std::vector<s
         Open(m_defaultWorkingDir);
     }
 
-    std::lock_guard<std::mutex> tabsLock(m_tabsMutex);
+    std::lock_guard<std::recursive_mutex> tabsLock(m_tabsMutex);
 
     TerminalTab* tab = nullptr;
     int existingIdx = -1;
@@ -2392,7 +2395,7 @@ void TerminalPanel::OpenGitLogTab(const std::vector<std::wstring>& logLines) {
 
 void TerminalPanel::AppendGitLogLines(const std::vector<std::wstring>& newLines) {
     if (newLines.empty()) return;
-    std::lock_guard<std::mutex> tabsLock(m_tabsMutex);
+    std::lock_guard<std::recursive_mutex> tabsLock(m_tabsMutex);
     TerminalTab* tab = nullptr;
     for (auto& t : m_tabs) {
         if (t && (t->title == L"Git Logs" || t->title == L"Git")) {
@@ -2456,7 +2459,7 @@ void TerminalPanel::OpenGitHubLoginTab(const std::wstring& workingDir) {
         Open(workingDir.empty() ? m_defaultWorkingDir : workingDir);
     }
 
-    std::lock_guard<std::mutex> tabsLock(m_tabsMutex);
+    std::lock_guard<std::recursive_mutex> tabsLock(m_tabsMutex);
 
     TerminalTab* tab = nullptr;
     int existingIdx = -1;
@@ -2733,7 +2736,7 @@ void TerminalPanel::OpenGitHubLoginTab(const std::wstring& workingDir) {
 void TerminalPanel::TriggerGitHubLoginEnter() {
     TerminalTab* tab = nullptr;
     {
-        std::lock_guard<std::mutex> tabsLock(m_tabsMutex);
+        std::lock_guard<std::recursive_mutex> tabsLock(m_tabsMutex);
         for (auto& t : m_tabs) {
             if (t && (t->title == L"Github Login" || t->isGitHubLoginTab)) {
                 tab = t.get();

@@ -231,7 +231,14 @@ enum class MenuActionId {
     HelpFacebook,
     HelpWhatsApp,
     HelpDiscord,
-    HelpAbout
+    HelpAbout,
+
+    // More Actions Menu Actions (Activity Rail 3-Dot Dropdown)
+    MoreTraceCode,
+    MoreDependencyGraph,
+    MoreCallHierarchy,
+    MoreCodeMetrics,
+    MoreRunDebug
 };
 
 /**
@@ -345,6 +352,14 @@ public:
      * @brief Opens the Help dropdown menu for the help icon with contact and community links.
      */
     void OpenHelpMenu(float x, float y, const app::AppConfig& config);
+
+    /**
+     * @brief Opens the More Actions dropdown menu on the side of the 3-dot Activity Rail button.
+     * @param x Left coordinate of the anchor (right edge of the activity rail).
+     * @param y Top coordinate of the anchor (top of the 3-dot button).
+     * @param config Application metrics.
+     */
+    void OpenMoreActionsMenu(float x, float y, const app::AppConfig& config);
 
     /**
      * @brief Opens the custom explorer context menu for a file or folder (matching Images 4 & 5).

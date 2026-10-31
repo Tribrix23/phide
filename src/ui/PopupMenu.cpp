@@ -325,6 +325,26 @@ void PopupMenu::OpenHelpMenu(float x, float y, const app::AppConfig& config) {
     LayoutMenu(m_items, x, y, helpMenuW, config, m_mainMenuBounds);
 }
 
+void PopupMenu::OpenMoreActionsMenu(float x, float y, const app::AppConfig& config) {
+    m_isOpen = true;
+    m_hoveredMainIdx = -1;
+    m_activeSubmenuIdx = -1;
+    m_hoveredSubmenuIdx = -1;
+
+    m_items.clear();
+    // Dropdown on its side with entries: Trace code, Dependency Graph, and so on (per user prompt)
+    m_items.push_back({ MenuActionId::MoreTraceCode,       L"Trace Code",       L"",             false, false, false, true, {}, {} });
+    m_items.push_back({ MenuActionId::MoreDependencyGraph, L"Dependency Graph", L"",             false, false, false, true, {}, {} });
+    m_items.push_back({ MenuActionId::None,                L"",                 L"",             true,  false, false, false, {}, {} });
+    m_items.push_back({ MenuActionId::MoreCallHierarchy,   L"Call Hierarchy",   L"Shift+Alt+H",  false, false, false, true, {}, {} });
+    m_items.push_back({ MenuActionId::MoreCodeMetrics,     L"Code Metrics",     L"",             false, false, false, true, {}, {} });
+    m_items.push_back({ MenuActionId::None,                L"",                 L"",             true,  false, false, false, {}, {} });
+    m_items.push_back({ MenuActionId::MoreRunDebug,        L"Run & Debug",      L"Ctrl+Shift+D", false, false, false, true, {}, {} });
+
+    const float moreMenuW = config.ScaleF(200.0f);
+    LayoutMenu(m_items, x, y, moreMenuW, config, m_mainMenuBounds);
+}
+
 void PopupMenu::BuildEditMenuItems(bool canUndo, bool canRedo, bool hasSelection) {
     (void)hasSelection;
     m_items.clear();
@@ -415,7 +435,7 @@ void PopupMenu::BuildViewMenuItems(const app::AppConfig& config, bool isSidebarO
     appearanceItem.submenuItems.push_back({ MenuActionId::ToggleMenuBar,             L"Menu Bar",                     L"",             false, true,                     false, true, {}, {} });
     appearanceItem.submenuItems.push_back({ MenuActionId::TogglePrimarySideBar,      L"Primary Side Bar",             L"Ctrl+B",       false, isSidebarOpen,            false, true, {}, {} });
     appearanceItem.submenuItems.push_back({ MenuActionId::ToggleSecondarySideBar,    L"Secondary Side Bar",           L"",             false, false,                    false, true, {}, {} });
-    appearanceItem.submenuItems.push_back({ MenuActionId::ToggleStatusBar,          L"Status Bar",                   L"",             false, true,                     false, true, {}, {} });
+    appearanceItem.submenuItems.push_back({ MenuActionId::ToggleStatusBar,          L"Status Bar",                   L"",             false, config.showStatusBar,     false, true, {}, {} });
     appearanceItem.submenuItems.push_back({ MenuActionId::TogglePanel,              L"Panel",                        L"Ctrl+J",       false, true,                     false, true, {}, {} });
     // --- Submenu Separator ---
     appearanceItem.submenuItems.push_back({ MenuActionId::MoveSideBarRight,          L"Move Primary Side Bar Right",  L"",             false, false,                    false, true, {}, {} });

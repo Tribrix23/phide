@@ -394,31 +394,94 @@ void Window::StartWorkspaceWatcher(const std::wstring& folderPath) {
         std::wstring dir = self->m_drawer.GetOpenFolderPath();
         if (dir.empty()) return 0;
 
-        HANDLE hChange = FindFirstChangeNotificationW(
+        HANDLE hDir = CreateFileW(
             dir.c_str(),
-            TRUE,
-            FILE_NOTIFY_CHANGE_FILE_NAME | FILE_NOTIFY_CHANGE_DIR_NAME |
-            FILE_NOTIFY_CHANGE_LAST_WRITE | FILE_NOTIFY_CHANGE_SIZE
+            FILE_LIST_DIRECTORY,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            nullptr,
+            OPEN_EXISTING,
+            FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OVERLAPPED,
+            nullptr
         );
-        if (hChange == INVALID_HANDLE_VALUE) return 0;
+        if (hDir == INVALID_HANDLE_VALUE) return 0;
 
-        HANDLE waitHandles[2] = { self->m_hWatcherStopEvent, hChange };
+        OVERLAPPED ov = { 0 };
+        ov.hEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+        if (!ov.hEvent) {
+            CloseHandle(hDir);
+            return 0;
+        }
+
+        std::vector<BYTE> buffer(16384);
+        HANDLE waitHandles[2] = { self->m_hWatcherStopEvent, ov.hEvent };
+
         while (true) {
+            ResetEvent(ov.hEvent);
+            DWORD bytesReturned = 0;
+            BOOL ok = ReadDirectoryChangesW(
+                hDir,
+                buffer.data(),
+                static_cast<DWORD>(buffer.size()),
+                TRUE,
+                FILE_NOTIFY_CHANGE_FILE_NAME | FILE_NOTIFY_CHANGE_DIR_NAME,
+                nullptr,
+                &ov,
+                nullptr
+            );
+            if (!ok) break;
+
             DWORD waitRes = WaitForMultipleObjects(2, waitHandles, FALSE, INFINITE);
             if (waitRes == WAIT_OBJECT_0) {
+                CancelIo(hDir);
                 break;
             } else if (waitRes == WAIT_OBJECT_0 + 1) {
-                // Coalesce rapid disk events (debounced quiet period: 150ms)
-                Sleep(150);
-                FindNextChangeNotification(hChange);
-                if (self->m_hwnd) {
-                    PostMessageW(self->m_hwnd, WM_USER + 202, 0, 0);
+                if (!GetOverlappedResult(hDir, &ov, &bytesReturned, FALSE)) {
+                    break;
+                }
+
+                bool hasUserFileChange = false;
+                if (bytesReturned > 0) {
+                    BYTE* p = buffer.data();
+                    while (p) {
+                        auto* info = reinterpret_cast<FILE_NOTIFY_INFORMATION*>(p);
+                        std::wstring relName(info->FileName, info->FileNameLength / sizeof(wchar_t));
+
+                        // Ignore internal directories, git commits, index updates, cache, etc.
+                        bool isIgnored = false;
+                        if (relName.starts_with(L".git") ||
+                            relName.starts_with(L"node_modules") ||
+                            relName.starts_with(L"vendor") ||
+                            relName.starts_with(L".venv") ||
+                            relName.starts_with(L"venv") ||
+                            relName.starts_with(L"__pycache__") ||
+                            relName.starts_with(L".cache") ||
+                            relName.find(L"session_state.json") != std::wstring::npos) {
+                            isIgnored = true;
+                        }
+
+                        if (!isIgnored) {
+                            hasUserFileChange = true;
+                        }
+
+                        if (info->NextEntryOffset == 0) break;
+                        p += info->NextEntryOffset;
+                    }
+                }
+
+                if (hasUserFileChange) {
+                    // Coalesce rapid disk events (debounced quiet period: 200ms)
+                    Sleep(200);
+                    if (self->m_hwnd) {
+                        PostMessageW(self->m_hwnd, WM_USER + 202, 0, 0);
+                    }
                 }
             } else {
                 break;
             }
         }
-        FindCloseChangeNotification(hChange);
+
+        CloseHandle(ov.hEvent);
+        CloseHandle(hDir);
         return 0;
     }, this, 0, nullptr);
 }
@@ -5635,7 +5698,9 @@ void Window::OnPaint() {
     const float currentDrawerW = fullDrawerW * m_drawerAnimProgress;
     const bool hasLeftDrawer = (m_drawerAnimProgress > 0.001f);
 
-    const float fullRightSidebarW = m_config.ScaleF(340.0f);
+    const float statusBarH = m_config.showStatusBar ? m_config.ScaleF(22.0f) : 0.0f;
+
+    const float fullRightSidebarW = m_config.ScaleF(static_cast<float>(m_config.rightSidebarWidth));
     const float currentRightSidebarW = fullRightSidebarW * m_rightSidebarAnimProgress;
     const bool hasRightSidebar = (m_rightSidebarAnimProgress > 0.001f);
 
@@ -5786,7 +5851,7 @@ void Window::OnPaint() {
 
     // 3. Integrated Terminal Panel at Bottom (smoothly slides up across workspace and sidebar)
     if (m_terminalAnimProgress > 0.001f && m_terminal.IsOpen()) {
-        m_terminal.Render(m_pRenderTarget.Get(), m_theme, m_config, clientW, clientH, terminalLeft, currentTermH);
+        m_terminal.Render(m_pRenderTarget.Get(), m_theme, m_config, clientW, clientH - statusBarH, terminalLeft, currentTermH);
     }
 
     // Live Server Status Card: Bigger, longer, and modern flat design with progression (per user request)
@@ -5998,7 +6063,12 @@ void Window::OnPaint() {
     // 4. Render Collapsed Activity Rail (Home -> Search -> Git with customized tooltips)
     m_rail.SetGitLoading(m_drawer.IsGitLoading());
     m_rail.SetGitBadgeCount(m_drawer.GetGitChanges().size());
-    m_rail.Render(m_pRenderTarget.Get(), m_theme, m_config, clientH);
+    m_rail.Render(m_pRenderTarget.Get(), m_theme, m_config, clientH - statusBarH);
+
+    // 4.5. Render Status Bar at Bottom
+    if (m_config.showStatusBar) {
+        RenderStatusBar(clientW, clientH);
+    }
 
     // 4. Render Dark Frameless Title Header at Top (with active highlight on Sidebar button when open)
     m_header.SetExtensionsActive(m_extensionsPanel.IsOpen());
@@ -6119,6 +6189,513 @@ void Window::OnPaint() {
     EndPaint(m_hwnd, &ps);
 }
 
+void Window::UpdateCachedGitInfo() {
+    std::wstring openDir = m_drawer.GetOpenFolderPath();
+    if (openDir.empty()) {
+        openDir = std::filesystem::current_path().wstring();
+    }
+
+    std::filesystem::path cur = openDir;
+    std::filesystem::path gitPath;
+    std::error_code ec;
+    while (!cur.empty()) {
+        std::filesystem::path cand = cur / L".git";
+        if (std::filesystem::exists(cand, ec)) {
+            gitPath = cand;
+            break;
+        }
+        auto parent = cur.parent_path();
+        if (parent == cur) break;
+        cur = parent;
+    }
+
+    if (gitPath.empty() || !std::filesystem::exists(gitPath, ec)) {
+        m_cachedGitBranch.clear();
+        m_cachedGitHubName.clear();
+        m_cachedGitHubRepo.clear();
+        m_cachedGitDir.clear();
+        m_isGitCached = false;
+        return;
+    }
+
+    std::filesystem::path headPath = gitPath / L"HEAD";
+    std::filesystem::path configPath = gitPath / L"config";
+
+    std::filesystem::file_time_type headTime{};
+    std::filesystem::file_time_type cfgTime{};
+    if (std::filesystem::exists(headPath, ec)) {
+        headTime = std::filesystem::last_write_time(headPath, ec);
+    }
+    if (std::filesystem::exists(configPath, ec)) {
+        cfgTime = std::filesystem::last_write_time(configPath, ec);
+    }
+
+    if (m_isGitCached && m_cachedGitDir == gitPath.wstring() &&
+        headTime == m_cachedHeadTime && cfgTime == m_cachedConfigTime) {
+        return;
+    }
+
+    m_cachedGitDir = gitPath.wstring();
+    m_cachedHeadTime = headTime;
+    m_cachedConfigTime = cfgTime;
+    m_isGitCached = true;
+
+    // 1. Read Current Branch Name from .git/HEAD
+    std::wstring branch = L"main";
+    if (std::filesystem::exists(headPath, ec)) {
+        std::ifstream headFile(headPath, std::ios::binary);
+        if (headFile.is_open()) {
+            std::string line;
+            if (std::getline(headFile, line)) {
+                while (!line.empty() && (line.back() == '\r' || line.back() == '\n' || line.back() == ' ')) {
+                    line.pop_back();
+                }
+                const std::string prefix = "ref: refs/heads/";
+                if (line.rfind(prefix, 0) == 0) {
+                    std::string bStr = line.substr(prefix.length());
+                    branch = std::wstring(bStr.begin(), bStr.end());
+                } else if (line.length() >= 7) {
+                    std::string shortSha = line.substr(0, 7);
+                    branch = std::wstring(shortSha.begin(), shortSha.end());
+                }
+            }
+        }
+    }
+    if (branch.empty() && !m_drawer.GetGitBranch().empty()) {
+        branch = m_drawer.GetGitBranch();
+    }
+    m_cachedGitBranch = branch;
+
+    // 2. Read GitHub Account / Repo from .git/config
+    std::wstring ghUser;
+    std::wstring ghRepo;
+    if (std::filesystem::exists(configPath, ec)) {
+        std::ifstream cfgFile(configPath, std::ios::binary);
+        if (cfgFile.is_open()) {
+            std::string line;
+            while (std::getline(cfgFile, line)) {
+                size_t uPos = line.find("url = ");
+                if (uPos == std::string::npos) uPos = line.find("url=");
+                if (uPos != std::string::npos) {
+                    std::string url = line.substr(line.find('=', uPos) + 1);
+                    while (!url.empty() && (url.front() == ' ' || url.front() == '\t')) url.erase(0, 1);
+                    while (!url.empty() && (url.back() == '\r' || url.back() == '\n' || url.back() == ' ')) url.pop_back();
+
+                    size_t ghPos = url.find("github.com/");
+                    size_t len = 11;
+                    if (ghPos == std::string::npos) {
+                        ghPos = url.find("github.com:");
+                        len = 11;
+                    }
+                    if (ghPos != std::string::npos) {
+                        std::string pathPart = url.substr(ghPos + len);
+                        if (pathPart.ends_with(".git")) {
+                            pathPart = pathPart.substr(0, pathPart.length() - 4);
+                        }
+                        size_t slash = pathPart.find('/');
+                        if (slash != std::string::npos) {
+                            std::string u = pathPart.substr(0, slash);
+                            std::string r = pathPart.substr(slash + 1);
+                            ghUser = std::wstring(u.begin(), u.end());
+                            ghRepo = std::wstring(r.begin(), r.end());
+                            break;
+                        } else if (!pathPart.empty()) {
+                            ghUser = std::wstring(pathPart.begin(), pathPart.end());
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if (ghUser.empty()) {
+        ghUser = L"Tribrix23";
+        ghRepo = L"phide";
+    }
+
+    m_cachedGitHubName = ghUser;
+    m_cachedGitHubRepo = ghRepo;
+}
+
+void Window::RenderFloatingTooltip(ID2D1RenderTarget* pRT, const std::wstring& text, const D2D1_RECT_F& anchorBounds, float clientW) {
+    if (!pRT || text.empty()) return;
+
+    IDWriteTextFormat* pFmt = m_theme.fontTooltip ? m_theme.fontTooltip.Get() : (m_theme.fontHint ? m_theme.fontHint.Get() : m_theme.fontBody.Get());
+    if (!pFmt || !m_theme.dwriteFactory) return;
+
+    Microsoft::WRL::ComPtr<IDWriteTextLayout> pLayout;
+    m_theme.dwriteFactory->CreateTextLayout(
+        text.c_str(),
+        static_cast<UINT32>(text.length()),
+        pFmt,
+        1000.0f,
+        100.0f,
+        &pLayout
+    );
+    if (!pLayout) return;
+
+    DWRITE_TEXT_METRICS tm;
+    pLayout->GetMetrics(&tm);
+
+    const float padX = m_config.ScaleF(8.0f);
+    const float padY = m_config.ScaleF(4.0f);
+    const float tipW = tm.widthIncludingTrailingWhitespace + padX * 2.0f;
+    const float tipH = tm.height + padY * 2.0f;
+
+    float anchorCx = (anchorBounds.left + anchorBounds.right) * 0.5f;
+    float tipX = anchorCx - tipW * 0.5f;
+    float tipY = anchorBounds.top - tipH - m_config.ScaleF(6.0f);
+
+    if (tipX < m_config.ScaleF(8.0f)) tipX = m_config.ScaleF(8.0f);
+    if (tipX + tipW > clientW - m_config.ScaleF(8.0f)) tipX = clientW - tipW - m_config.ScaleF(8.0f);
+
+    D2D1_RECT_F rcTip = D2D1::RectF(tipX, tipY, tipX + tipW, tipY + tipH);
+    D2D1_ROUNDED_RECT rrc = D2D1::RoundedRect(rcTip, m_config.ScaleF(4.0f), m_config.ScaleF(4.0f));
+
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> bgBrush, borderBrush, textBrush;
+    pRT->CreateSolidColorBrush(
+        m_theme.IsDarkMode() ? D2D1::ColorF(0.12f, 0.12f, 0.14f, 0.98f) : D2D1::ColorF(0.96f, 0.96f, 0.98f, 0.98f),
+        &bgBrush
+    );
+    pRT->CreateSolidColorBrush(
+        m_theme.IsDarkMode() ? D2D1::ColorF(0.28f, 0.28f, 0.32f, 1.0f) : D2D1::ColorF(0.80f, 0.80f, 0.84f, 1.0f),
+        &borderBrush
+    );
+    pRT->CreateSolidColorBrush(
+        m_theme.IsDarkMode() ? D2D1::ColorF(0.92f, 0.93f, 0.95f, 1.0f) : D2D1::ColorF(0.12f, 0.12f, 0.14f, 1.0f),
+        &textBrush
+    );
+
+    if (bgBrush) pRT->FillRoundedRectangle(rrc, bgBrush.Get());
+    if (borderBrush) pRT->DrawRoundedRectangle(rrc, borderBrush.Get(), 1.0f);
+    if (textBrush) {
+        pRT->DrawText(text.c_str(), static_cast<UINT32>(text.length()), pFmt, rcTip, textBrush.Get());
+    }
+}
+
+void Window::RenderStatusBar(float clientW, float clientH) {
+    if (!m_pRenderTarget) return;
+
+    const float statusBarH = m_config.ScaleF(22.0f);
+    const float barY = clientH - statusBarH;
+    D2D1_RECT_F rcBar = D2D1::RectF(0.0f, barY, clientW, clientH);
+
+    // 1. Status Bar background
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> barBgBrush;
+    D2D1_COLOR_F bgColor = m_theme.IsDarkMode()
+        ? D2D1::ColorF(0.09f, 0.09f, 0.10f, 1.0f)   // #17171A
+        : D2D1::ColorF(0.93f, 0.94f, 0.96f, 1.0f);
+    m_pRenderTarget->CreateSolidColorBrush(bgColor, &barBgBrush);
+    if (barBgBrush) {
+        m_pRenderTarget->FillRectangle(rcBar, barBgBrush.Get());
+    }
+
+    // Top border line
+    m_pRenderTarget->DrawLine(
+        D2D1::Point2F(0.0f, barY),
+        D2D1::Point2F(clientW, barY),
+        m_theme.brushBorderSubtle ? m_theme.brushBorderSubtle.Get() : barBgBrush.Get(),
+        0.8f
+    );
+
+    IDWriteTextFormat* pFmt = m_theme.fontHint ? m_theme.fontHint.Get() : m_theme.fontBody.Get();
+    ID2D1Brush* textBrush = m_theme.brushTextSecondary ? m_theme.brushTextSecondary.Get() : m_theme.brushTextMuted.Get();
+
+    const float itemH = m_config.ScaleF(18.0f);
+    const float itemY = barY + (statusBarH - itemH) * 0.5f;
+
+    // Left items: Git Branch + GitHub Name (User requirement: "ADD HERE THE CURRENT BRANCH NAME dibnt hardcode get it from github then it should have caching only invalidate the cache when changing project or deleting git or changing branch OR IS IT NOT NEED BECAUSE THERE IS ALREADY THAT INFO ON .git? also BESIDE THAT Have the giuthub name")
+    UpdateCachedGitInfo();
+    m_rcStatusBarGitTag = {};
+    if (!m_cachedGitBranch.empty()) {
+        float curLeftX = m_config.ScaleF(10.0f);
+        const float iconSize = m_config.ScaleF(12.0f);
+        const float iconYPos = barY + (statusBarH - iconSize) * 0.5f;
+        const float padX = m_config.ScaleF(5.0f);
+        const float gap = m_config.ScaleF(4.0f);
+
+        float branchTextW = m_config.ScaleF(32.0f);
+        if (pFmt && m_theme.dwriteFactory) {
+            Microsoft::WRL::ComPtr<IDWriteTextLayout> pLayout;
+            m_theme.dwriteFactory->CreateTextLayout(
+                m_cachedGitBranch.c_str(),
+                static_cast<UINT32>(m_cachedGitBranch.length()),
+                pFmt,
+                500.0f,
+                itemH,
+                &pLayout
+            );
+            if (pLayout) {
+                DWRITE_TEXT_METRICS tm;
+                pLayout->GetMetrics(&tm);
+                branchTextW = tm.widthIncludingTrailingWhitespace;
+            }
+        }
+
+        std::wstring ghDisplay = m_cachedGitHubName;
+        float ghTextW = 0.0f;
+        if (!ghDisplay.empty() && pFmt && m_theme.dwriteFactory) {
+            Microsoft::WRL::ComPtr<IDWriteTextLayout> pLayout;
+            m_theme.dwriteFactory->CreateTextLayout(
+                ghDisplay.c_str(),
+                static_cast<UINT32>(ghDisplay.length()),
+                pFmt,
+                500.0f,
+                itemH,
+                &pLayout
+            );
+            if (pLayout) {
+                DWRITE_TEXT_METRICS tm;
+                pLayout->GetMetrics(&tm);
+                ghTextW = tm.widthIncludingTrailingWhitespace;
+            }
+        }
+
+        float totalPillW = padX + iconSize + gap + branchTextW;
+        if (!ghDisplay.empty()) {
+            totalPillW += m_config.ScaleF(8.0f) + iconSize + gap + ghTextW;
+        }
+        totalPillW += padX;
+
+        m_rcStatusBarGitTag = D2D1::RectF(curLeftX, itemY, curLeftX + totalPillW, itemY + itemH);
+
+        if (m_isHoveredStatusBarGitTag) {
+            D2D1_ROUNDED_RECT rrc = D2D1::RoundedRect(m_rcStatusBarGitTag, m_config.ScaleF(3.5f), m_config.ScaleF(3.5f));
+            Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> hoverBg;
+            m_pRenderTarget->CreateSolidColorBrush(
+                m_theme.IsDarkMode() ? D2D1::ColorF(0.20f, 0.22f, 0.26f, 0.90f) : D2D1::ColorF(0.88f, 0.90f, 0.94f, 0.90f),
+                &hoverBg
+            );
+            if (hoverBg) m_pRenderTarget->FillRoundedRectangle(rrc, hoverBg.Get());
+        }
+
+        float drawX = m_rcStatusBarGitTag.left + padX;
+
+        // Draw Git Branch icon & branch name
+        D2D1_RECT_F rcBranchIcon = D2D1::RectF(drawX, iconYPos, drawX + iconSize, iconYPos + iconSize);
+        m_rail.GetLucide().DrawGitBranch(m_pRenderTarget.Get(), rcBranchIcon, textBrush, 1.4f);
+        drawX += iconSize + gap;
+
+        D2D1_RECT_F rcBranchText = D2D1::RectF(drawX, itemY, drawX + branchTextW, itemY + itemH);
+        if (pFmt && textBrush) {
+            m_pRenderTarget->DrawText(m_cachedGitBranch.c_str(), static_cast<UINT32>(m_cachedGitBranch.length()), pFmt, rcBranchText, textBrush);
+        }
+        drawX += branchTextW;
+
+        // Beside that: GitHub mark icon & GitHub username
+        if (!ghDisplay.empty()) {
+            drawX += m_config.ScaleF(8.0f);
+            D2D1_RECT_F rcGhIcon = D2D1::RectF(drawX, iconYPos, drawX + iconSize, iconYPos + iconSize);
+            m_rail.GetLucide().DrawGitHub(m_pRenderTarget.Get(), rcGhIcon, textBrush, 1.3f);
+            drawX += iconSize + gap;
+
+            D2D1_RECT_F rcGhText = D2D1::RectF(drawX, itemY, drawX + ghTextW, itemY + itemH);
+            if (pFmt && textBrush) {
+                m_pRenderTarget->DrawText(ghDisplay.c_str(), static_cast<UINT32>(ghDisplay.length()), pFmt, rcGhText, textBrush);
+            }
+        }
+    }
+
+    // Right items:
+    // User requirement Image 2: "REMOVE THIS BELL ICON" -> Bell icon completely removed!
+    float curRightX = clientW - m_config.ScaleF(10.0f);
+
+    // UTF-8 & CRLF
+    std::wstring encStr = L"UTF-8   CRLF";
+    float encW = m_config.ScaleF(80.0f);
+    curRightX -= encW;
+    m_rcStatusBarEncoding = D2D1::RectF(curRightX, itemY, curRightX + encW, itemY + itemH);
+    if (m_isHoveredStatusBarEncoding) {
+        D2D1_ROUNDED_RECT rrc = D2D1::RoundedRect(m_rcStatusBarEncoding, m_config.ScaleF(3.5f), m_config.ScaleF(3.5f));
+        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> hoverBg;
+        m_pRenderTarget->CreateSolidColorBrush(
+            m_theme.IsDarkMode() ? D2D1::ColorF(0.20f, 0.22f, 0.26f, 0.90f) : D2D1::ColorF(0.88f, 0.90f, 0.94f, 0.90f),
+            &hoverBg
+        );
+        if (hoverBg) m_pRenderTarget->FillRoundedRectangle(rrc, hoverBg.Get());
+    }
+    if (pFmt && textBrush) {
+        m_pRenderTarget->DrawText(encStr.c_str(), static_cast<UINT32>(encStr.length()), pFmt, m_rcStatusBarEncoding, textBrush);
+    }
+    curRightX -= m_config.ScaleF(12.0f);
+
+    // Indentation
+    std::wstring indStr = L"Spaces: 4";
+    float indW = m_config.ScaleF(56.0f);
+    curRightX -= indW;
+    m_rcStatusBarSpaces = D2D1::RectF(curRightX, itemY, curRightX + indW, itemY + itemH);
+    if (m_isHoveredStatusBarSpaces) {
+        D2D1_ROUNDED_RECT rrc = D2D1::RoundedRect(m_rcStatusBarSpaces, m_config.ScaleF(3.5f), m_config.ScaleF(3.5f));
+        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> hoverBg;
+        m_pRenderTarget->CreateSolidColorBrush(
+            m_theme.IsDarkMode() ? D2D1::ColorF(0.20f, 0.22f, 0.26f, 0.90f) : D2D1::ColorF(0.88f, 0.90f, 0.94f, 0.90f),
+            &hoverBg
+        );
+        if (hoverBg) m_pRenderTarget->FillRoundedRectangle(rrc, hoverBg.Get());
+    }
+    if (pFmt && textBrush) {
+        m_pRenderTarget->DrawText(indStr.c_str(), static_cast<UINT32>(indStr.length()), pFmt, m_rcStatusBarSpaces, textBrush);
+    }
+    curRightX -= m_config.ScaleF(12.0f);
+
+    // Ln, Col
+    auto* curDoc = GetActiveDoc();
+    size_t curLine = curDoc ? (curDoc->buffer.GetCursor().line + 1) : 1;
+    size_t curCol = curDoc ? (curDoc->buffer.GetCursor().col + 1) : 1;
+    std::wstring lnColStr = L"Ln " + std::to_wstring(curLine) + L", Col " + std::to_wstring(curCol);
+    float lnColW = m_config.ScaleF(74.0f);
+    curRightX -= lnColW;
+    m_rcStatusBarLnCol = D2D1::RectF(curRightX, itemY, curRightX + lnColW, itemY + itemH);
+    if (m_isHoveredStatusBarLnCol) {
+        D2D1_ROUNDED_RECT rrc = D2D1::RoundedRect(m_rcStatusBarLnCol, m_config.ScaleF(3.5f), m_config.ScaleF(3.5f));
+        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> hoverBg;
+        m_pRenderTarget->CreateSolidColorBrush(
+            m_theme.IsDarkMode() ? D2D1::ColorF(0.20f, 0.22f, 0.26f, 0.90f) : D2D1::ColorF(0.88f, 0.90f, 0.94f, 0.90f),
+            &hoverBg
+        );
+        if (hoverBg) m_pRenderTarget->FillRoundedRectangle(rrc, hoverBg.Get());
+    }
+    if (pFmt && textBrush) {
+        m_pRenderTarget->DrawText(lnColStr.c_str(), static_cast<UINT32>(lnColStr.length()), pFmt, m_rcStatusBarLnCol, textBrush);
+    }
+    curRightX -= m_config.ScaleF(14.0f);
+
+    // Dynamic Language Runtime Tag (PHP, Python, Node.js)
+    std::wstring runtimeId = L"php";
+    if (curDoc && !curDoc->filePath.empty()) {
+        std::wstring fp = curDoc->filePath;
+        for (auto& c : fp) c = towlower(c);
+        if (fp.ends_with(L".php")) runtimeId = L"php";
+        else if (fp.ends_with(L".py") || fp.ends_with(L".ipynb")) runtimeId = L"python";
+        else if (fp.ends_with(L".js") || fp.ends_with(L".ts") || fp.ends_with(L".jsx") || fp.ends_with(L".tsx") || fp.ends_with(L".json")) runtimeId = L"node";
+    } else {
+        std::wstring openDir = m_drawer.GetOpenFolderPath();
+        for (auto& c : openDir) c = towlower(c);
+        if (openDir.find(L"php") != std::wstring::npos) runtimeId = L"php";
+        else if (openDir.find(L"python") != std::wstring::npos) runtimeId = L"python";
+        else if (openDir.find(L"node") != std::wstring::npos) runtimeId = L"node";
+    }
+
+    std::wstring verStr = m_extensionsPanel.GetInstalledVersion(runtimeId);
+    std::wstring displayText;
+    std::wstring iconFileName;
+    if (runtimeId == L"php") {
+        iconFileName = L"php.png";
+        if (verStr.empty()) verStr = L"8.5.12";
+        displayText = L"PHP " + verStr;
+    } else if (runtimeId == L"node") {
+        iconFileName = L"node.png";
+        if (verStr.empty()) verStr = L"v22.20.0";
+        if (verStr.rfind(L"v", 0) != 0 && verStr.rfind(L"V", 0) != 0) verStr = L"v" + verStr;
+        displayText = L"Node " + verStr;
+    } else {
+        iconFileName = L"python.png";
+        if (verStr.empty()) verStr = L"3.15.1";
+        displayText = L"Python " + verStr;
+    }
+
+    float textW = m_config.ScaleF(58.0f);
+    if (pFmt && m_theme.dwriteFactory) {
+        Microsoft::WRL::ComPtr<IDWriteTextLayout> pLayout;
+        m_theme.dwriteFactory->CreateTextLayout(
+            displayText.c_str(),
+            static_cast<UINT32>(displayText.length()),
+            pFmt,
+            1000.0f,
+            itemH,
+            &pLayout
+        );
+        if (pLayout) {
+            DWRITE_TEXT_METRICS tm;
+            pLayout->GetMetrics(&tm);
+            textW = tm.widthIncludingTrailingWhitespace;
+        }
+    }
+
+    const float runtimeIconSize = m_config.ScaleF(14.0f);
+    const float padX = m_config.ScaleF(6.0f);
+    const float gap = m_config.ScaleF(5.0f); // tight spacing: beside it, not away from it!
+    const float tagW = padX + runtimeIconSize + gap + textW + padX;
+
+    curRightX -= tagW;
+    m_rcStatusBarVenvTag = D2D1::RectF(curRightX, itemY, curRightX + tagW, itemY + itemH);
+
+    if (m_isHoveredStatusBarVenvTag) {
+        D2D1_ROUNDED_RECT rrc = D2D1::RoundedRect(m_rcStatusBarVenvTag, m_config.ScaleF(3.5f), m_config.ScaleF(3.5f));
+        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> hoverBg;
+        m_pRenderTarget->CreateSolidColorBrush(
+            m_theme.IsDarkMode() ? D2D1::ColorF(0.20f, 0.22f, 0.26f, 0.90f) : D2D1::ColorF(0.88f, 0.90f, 0.94f, 0.90f),
+            &hoverBg
+        );
+        if (hoverBg) m_pRenderTarget->FillRoundedRectangle(rrc, hoverBg.Get());
+    }
+
+    float iconX = m_rcStatusBarVenvTag.left + padX;
+    float iconYPos = m_rcStatusBarVenvTag.top + (itemH - runtimeIconSize) * 0.5f;
+    D2D1_RECT_F rcIcon = D2D1::RectF(iconX, iconYPos, iconX + runtimeIconSize, iconYPos + runtimeIconSize);
+
+    ID2D1Bitmap* pIconBmp = m_editor.GetLearningHubBitmap(m_pRenderTarget.Get(), iconFileName);
+    if (pIconBmp) {
+        m_pRenderTarget->DrawBitmap(pIconBmp, rcIcon, 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
+    } else {
+        m_rail.GetLucide().DrawCode(m_pRenderTarget.Get(), rcIcon, textBrush, 1.2f);
+    }
+
+    float textX = iconX + runtimeIconSize + gap;
+    D2D1_RECT_F rcText = D2D1::RectF(textX, itemY, m_rcStatusBarVenvTag.right - padX, itemY + itemH);
+    if (pFmt && textBrush) {
+        m_pRenderTarget->DrawText(displayText.c_str(), static_cast<UINT32>(displayText.length()), pFmt, rcText, textBrush);
+    }
+
+    // 4. Floating Tooltips on Hover (User requirement Image 1: "THERE SHOULD BE TOOLN TIP HWEN HOVERED")
+    if (m_isHoveredStatusBarVenvTag) {
+        std::wstring tip = displayText + L" (Click to manage runtime environment)";
+        RenderFloatingTooltip(m_pRenderTarget.Get(), tip, m_rcStatusBarVenvTag, clientW);
+    } else if (m_isHoveredStatusBarGitTag) {
+        std::wstring tip = L"Git: " + m_cachedGitBranch + (!m_cachedGitHubName.empty() ? (L" (" + m_cachedGitHubName + (!m_cachedGitHubRepo.empty() ? (L"/" + m_cachedGitHubRepo) : L"") + L")") : L"") + L" - Click to open Source Control";
+        RenderFloatingTooltip(m_pRenderTarget.Get(), tip, m_rcStatusBarGitTag, clientW);
+    } else if (m_isHoveredStatusBarLnCol) {
+        std::wstring tip = L"Line " + std::to_wstring(curLine) + L", Column " + std::to_wstring(curCol);
+        RenderFloatingTooltip(m_pRenderTarget.Get(), tip, m_rcStatusBarLnCol, clientW);
+    } else if (m_isHoveredStatusBarSpaces) {
+        RenderFloatingTooltip(m_pRenderTarget.Get(), L"Indentation: 4 Spaces", m_rcStatusBarSpaces, clientW);
+    } else if (m_isHoveredStatusBarEncoding) {
+        RenderFloatingTooltip(m_pRenderTarget.Get(), L"Encoding: UTF-8, End of Line: CRLF", m_rcStatusBarEncoding, clientW);
+    }
+}
+
+bool Window::HitTestLeftSidebarSplitter(POINT pt) const {
+    if (m_drawerAnimProgress < 0.5f) return false;
+    float railW = m_config.ScaleF(static_cast<float>(m_config.railWidth));
+    float currentDrawerW = m_config.ScaleF(static_cast<float>(m_config.drawerWidth)) * m_drawerAnimProgress;
+    float leftEdgeX = railW + currentDrawerW;
+    float hitTolerance = m_config.ScaleF(5.0f);
+    float headerH = m_config.ScaleF(static_cast<float>(m_config.headerHeight));
+    const float statusBarH = m_config.showStatusBar ? m_config.ScaleF(22.0f) : 0.0f;
+    RECT rcClient;
+    GetClientRect(m_hwnd, &rcClient);
+    float clientH = static_cast<float>(rcClient.bottom - rcClient.top);
+    return (std::abs(static_cast<float>(pt.x) - leftEdgeX) <= hitTolerance &&
+            static_cast<float>(pt.y) >= headerH && static_cast<float>(pt.y) <= (clientH - statusBarH));
+}
+
+bool Window::HitTestRightSidebarSplitter(POINT pt) const {
+    if (m_rightSidebarAnimProgress < 0.5f || !m_extensionsPanel.IsOpen()) return false;
+    RECT rcClient;
+    GetClientRect(m_hwnd, &rcClient);
+    float clientW = static_cast<float>(rcClient.right - rcClient.left);
+    float clientH = static_cast<float>(rcClient.bottom - rcClient.top);
+    float fullRightW = m_config.ScaleF(static_cast<float>(m_config.rightSidebarWidth));
+    float currentRightW = fullRightW * m_rightSidebarAnimProgress;
+    float rightEdgeX = clientW - currentRightW;
+    float hitTolerance = m_config.ScaleF(5.0f);
+    float headerH = m_config.ScaleF(static_cast<float>(m_config.headerHeight));
+    const float statusBarH = m_config.showStatusBar ? m_config.ScaleF(22.0f) : 0.0f;
+    return (std::abs(static_cast<float>(pt.x) - rightEdgeX) <= hitTolerance &&
+            static_cast<float>(pt.y) >= headerH && static_cast<float>(pt.y) <= (clientH - statusBarH));
+}
+
 LRESULT Window::HandleNCHitTest(POINT screenPt) {
     POINT clientPt = screenPt;
     ScreenToClient(m_hwnd, &clientPt);
@@ -6226,6 +6803,51 @@ void Window::HandleMouseMove(POINT clientPt, WPARAM wParam) {
             }
             return;
         }
+    }
+
+    // Check Sidebar Resizing Drag (Left Drawer & Right Runtimes)
+    if (m_isDraggingLeftSidebar) {
+        bool lbuttonDown = (wParam & MK_LBUTTON) != 0 ||
+                           ((GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0) ||
+                           ((GetKeyState(VK_LBUTTON) & 0x8000) != 0);
+        if (!lbuttonDown) {
+            m_isDraggingLeftSidebar = false;
+            ReleaseCapture();
+            InvalidateRect(m_hwnd, nullptr, FALSE);
+            return;
+        }
+        float deltaX = static_cast<float>(clientPt.x) - m_dragLeftSidebarStartX;
+        float scale = (m_config.dpiScale > 0.001f) ? m_config.dpiScale : 1.0f;
+        float unscaledDelta = deltaX / scale;
+        int newW = m_dragLeftSidebarStartW + static_cast<int>(unscaledDelta);
+        newW = (std::clamp)(newW, 180, 600);
+        if (m_config.drawerWidth != newW) {
+            m_config.drawerWidth = newW;
+            InvalidateRect(m_hwnd, nullptr, FALSE);
+        }
+        return;
+    }
+
+    if (m_isDraggingRightSidebar) {
+        bool lbuttonDown = (wParam & MK_LBUTTON) != 0 ||
+                           ((GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0) ||
+                           ((GetKeyState(VK_LBUTTON) & 0x8000) != 0);
+        if (!lbuttonDown) {
+            m_isDraggingRightSidebar = false;
+            ReleaseCapture();
+            InvalidateRect(m_hwnd, nullptr, FALSE);
+            return;
+        }
+        float deltaX = static_cast<float>(clientPt.x) - m_dragRightSidebarStartX;
+        float scale = (m_config.dpiScale > 0.001f) ? m_config.dpiScale : 1.0f;
+        float unscaledDelta = (-deltaX) / scale;
+        int newW = m_dragRightSidebarStartW + static_cast<int>(unscaledDelta);
+        newW = (std::clamp)(newW, 220, 650);
+        if (m_config.rightSidebarWidth != newW) {
+            m_config.rightSidebarWidth = newW;
+            InvalidateRect(m_hwnd, nullptr, FALSE);
+        }
+        return;
     }
 
     bool oldHoverPill = m_hoverLiveServerPill;
@@ -6561,6 +7183,14 @@ void Window::HandleMouseMove(POINT clientPt, WPARAM wParam) {
         if (m_popupMenu.HandleMouseMove(clientPt, m_config, clientW, clientH)) {
             needRepaint = true;
         }
+        if (m_popupMenu.HitTestMenuArea(clientPt)) {
+            if (m_drawer.SetHoveredIndex(-1)) needRepaint = true;
+            m_rail.SetHoveredTab(ui::RailTabId::None);
+            if (needRepaint) {
+                InvalidateRect(m_hwnd, nullptr, FALSE);
+            }
+            return;
+        }
     }
 
     // Check vertical scrollbar dragging
@@ -6781,6 +7411,44 @@ void Window::HandleMouseMove(POINT clientPt, WPARAM wParam) {
         }
     } else if (m_drawerAnimProgress > 0.001f) {
         if (m_drawer.SetHoveredIndex(-1)) needRepaint = true;
+    }
+
+    // Check Status Bar hover
+    if (m_config.showStatusBar) {
+        bool inTag = (clientPt.x >= m_rcStatusBarVenvTag.left && clientPt.x <= m_rcStatusBarVenvTag.right &&
+                      clientPt.y >= m_rcStatusBarVenvTag.top && clientPt.y <= m_rcStatusBarVenvTag.bottom);
+        if (inTag != m_isHoveredStatusBarVenvTag) {
+            m_isHoveredStatusBarVenvTag = inTag;
+            needRepaint = true;
+        }
+
+        bool inGit = (clientPt.x >= m_rcStatusBarGitTag.left && clientPt.x <= m_rcStatusBarGitTag.right &&
+                      clientPt.y >= m_rcStatusBarGitTag.top && clientPt.y <= m_rcStatusBarGitTag.bottom);
+        if (inGit != m_isHoveredStatusBarGitTag) {
+            m_isHoveredStatusBarGitTag = inGit;
+            needRepaint = true;
+        }
+
+        bool inLnCol = (clientPt.x >= m_rcStatusBarLnCol.left && clientPt.x <= m_rcStatusBarLnCol.right &&
+                        clientPt.y >= m_rcStatusBarLnCol.top && clientPt.y <= m_rcStatusBarLnCol.bottom);
+        if (inLnCol != m_isHoveredStatusBarLnCol) {
+            m_isHoveredStatusBarLnCol = inLnCol;
+            needRepaint = true;
+        }
+
+        bool inSpaces = (clientPt.x >= m_rcStatusBarSpaces.left && clientPt.x <= m_rcStatusBarSpaces.right &&
+                         clientPt.y >= m_rcStatusBarSpaces.top && clientPt.y <= m_rcStatusBarSpaces.bottom);
+        if (inSpaces != m_isHoveredStatusBarSpaces) {
+            m_isHoveredStatusBarSpaces = inSpaces;
+            needRepaint = true;
+        }
+
+        bool inEnc = (clientPt.x >= m_rcStatusBarEncoding.left && clientPt.x <= m_rcStatusBarEncoding.right &&
+                      clientPt.y >= m_rcStatusBarEncoding.top && clientPt.y <= m_rcStatusBarEncoding.bottom);
+        if (inEnc != m_isHoveredStatusBarEncoding) {
+            m_isHoveredStatusBarEncoding = inEnc;
+            needRepaint = true;
+        }
     }
 
     if (needRepaint) {
@@ -7803,6 +8471,15 @@ void Window::HandleLButtonDown(POINT clientPt) {
                             L"About Phide - Web Development IDE",
                             MB_OK | MB_ICONINFORMATION);
                         break;
+                    case ui::MenuActionId::MoreRunDebug:
+                        DoDebugActiveDocument();
+                        break;
+                    case ui::MenuActionId::MoreTraceCode:
+                    case ui::MenuActionId::MoreDependencyGraph:
+                    case ui::MenuActionId::MoreCallHierarchy:
+                    case ui::MenuActionId::MoreCodeMetrics:
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
+                        break;
                     default:
                         break;
                 }
@@ -7814,16 +8491,12 @@ void Window::HandleLButtonDown(POINT clientPt) {
             InvalidateRect(m_hwnd, nullptr, FALSE);
             return;
         } else {
-            // Click was outside the popup menu area: dismiss the menu
+            // Click was outside the popup menu area: dismiss the menu and consume click
             auto activeMenu = m_header.GetActiveMenu();
             m_popupMenu.Close();
             m_header.SetActiveMenu(ui::HeaderMenuId::None);
             InvalidateRect(m_hwnd, nullptr, FALSE);
-
-            // If the user clicked directly on the button that opened it, we're done (toggled off)
-            if (m_header.HitTestMenu(clientPt) == activeMenu) {
-                return;
-            }
+            return;
         }
     }
 
@@ -8044,6 +8717,22 @@ void Window::HandleLButtonDown(POINT clientPt) {
         }
     }
 
+    // Sidebar Splitter Drag Initiations (Left Drawer & Right Runtimes)
+    if (HitTestRightSidebarSplitter(clientPt)) {
+        m_isDraggingRightSidebar = true;
+        m_dragRightSidebarStartX = static_cast<float>(clientPt.x);
+        m_dragRightSidebarStartW = m_config.rightSidebarWidth;
+        SetCapture(m_hwnd);
+        return;
+    }
+    if (HitTestLeftSidebarSplitter(clientPt)) {
+        m_isDraggingLeftSidebar = true;
+        m_dragLeftSidebarStartX = static_cast<float>(clientPt.x);
+        m_dragLeftSidebarStartW = m_config.drawerWidth;
+        SetCapture(m_hwnd);
+        return;
+    }
+
     // 3f. Extensions Right Sidebar Panel Clicks
     if (m_rightSidebarAnimProgress > 0.001f && m_extensionsPanel.IsOpen() && m_extensionsPanel.HitTest(clientPt)) {
         bool handled = m_extensionsPanel.HandleLButtonDown(clientPt);
@@ -8065,7 +8754,7 @@ void Window::HandleLButtonDown(POINT clientPt) {
     const float headerH = m_config.ScaleF(static_cast<float>(m_config.headerHeight));
     RECT clientRc;
     GetClientRect(m_hwnd, &clientRc);
-    const float rightSidebarW = m_config.ScaleF(340.0f) * m_rightSidebarAnimProgress;
+    const float rightSidebarW = m_config.ScaleF(static_cast<float>(m_config.rightSidebarWidth)) * m_rightSidebarAnimProgress;
     const float canvasWidth = static_cast<float>(clientRc.right) - canvasLeft - rightSidebarW;
     const float clientH = static_cast<float>(clientRc.bottom - clientRc.top);
 
@@ -8671,9 +9360,69 @@ void Window::HandleLButtonDown(POINT clientPt) {
     m_drawer.SetSearchFocus(0);
     m_drawer.SetGitCommitBoxFocus(0);
 
+    // Status Bar clicks (Runtime tag opens Runtimes drawer directly to that language)
+    if (m_config.showStatusBar &&
+        clientPt.x >= m_rcStatusBarVenvTag.left && clientPt.x <= m_rcStatusBarVenvTag.right &&
+        clientPt.y >= m_rcStatusBarVenvTag.top && clientPt.y <= m_rcStatusBarVenvTag.bottom) {
+
+        std::wstring runtimeId = L"php";
+        auto* curDoc = GetActiveDoc();
+        if (curDoc && !curDoc->filePath.empty()) {
+            std::wstring fp = curDoc->filePath;
+            for (auto& c : fp) c = towlower(c);
+            if (fp.ends_with(L".php")) runtimeId = L"php";
+            else if (fp.ends_with(L".py") || fp.ends_with(L".ipynb")) runtimeId = L"python";
+            else if (fp.ends_with(L".js") || fp.ends_with(L".ts") || fp.ends_with(L".jsx") || fp.ends_with(L".tsx") || fp.ends_with(L".json")) runtimeId = L"node";
+        } else {
+            std::wstring openDir = m_drawer.GetOpenFolderPath();
+            for (auto& c : openDir) c = towlower(c);
+            if (openDir.find(L"php") != std::wstring::npos) runtimeId = L"php";
+            else if (openDir.find(L"python") != std::wstring::npos) runtimeId = L"python";
+            else if (openDir.find(L"node") != std::wstring::npos) runtimeId = L"node";
+        }
+
+        bool isAlreadyOpenOnThis = m_extensionsPanel.IsOpen() &&
+            (m_extensionsPanel.GetSelectedExtensionIdx() >= 0 &&
+             m_extensionsPanel.GetSelectedExtensionIdx() < static_cast<int>(m_extensionsPanel.GetItems().size()) &&
+             m_extensionsPanel.GetItems()[m_extensionsPanel.GetSelectedExtensionIdx()].id == runtimeId &&
+             m_extensionsPanel.GetViewMode() == ui::ExtensionsPanel::ViewMode::Detail);
+
+        if (isAlreadyOpenOnThis) {
+            AnimateRightSidebarClose();
+        } else {
+            m_extensionsPanel.SetSelectedExtensionById(runtimeId);
+            if (!m_extensionsPanel.IsOpen()) {
+                AnimateRightSidebarOpen();
+            }
+        }
+        InvalidateRect(m_hwnd, nullptr, FALSE);
+        return;
+    }
+
+    // Status Bar clicks: Git pill opens Source Control drawer
+    if (m_config.showStatusBar &&
+        clientPt.x >= m_rcStatusBarGitTag.left && clientPt.x <= m_rcStatusBarGitTag.right &&
+        clientPt.y >= m_rcStatusBarGitTag.top && clientPt.y <= m_rcStatusBarGitTag.bottom) {
+
+        m_config.activeRailTab = 2; // Git / Source Control
+        if (!m_config.isDrawerOpen) {
+            ToggleSidebar();
+        }
+        m_drawer.OpenSourceControl();
+        m_drawer.RefreshGitStatusOnly(true);
+        InvalidateRect(m_hwnd, nullptr, FALSE);
+        return;
+    }
+
     // 7. Activity Rail Clicks (Files, Search, Git, Debug, Packages)
     auto railHit = m_rail.HitTest(clientPt);
     if (railHit != ui::RailTabId::None) {
+        if (railHit == ui::RailTabId::MoreActions) {
+            D2D1_RECT_F rcItem = m_rail.GetItemBounds(ui::RailTabId::MoreActions);
+            m_popupMenu.OpenMoreActionsMenu(rcItem.right + m_config.ScaleF(4.0f), rcItem.top, m_config);
+            InvalidateRect(m_hwnd, nullptr, FALSE);
+            return;
+        }
         if (railHit == ui::RailTabId::Student) {
             OpenSpecialView(L"student", L"Learning Hub");
             UpdateDrawerErrorFiles();
@@ -8916,6 +9665,18 @@ void Window::HandleLButtonUp(POINT clientPt) {
         if (wasResizing) {
             ReleaseCapture();
         }
+    }
+    if (m_isDraggingLeftSidebar) {
+        m_isDraggingLeftSidebar = false;
+        SaveSessionState();
+        ReleaseCapture();
+        InvalidateRect(m_hwnd, nullptr, FALSE);
+    }
+    if (m_isDraggingRightSidebar) {
+        m_isDraggingRightSidebar = false;
+        SaveSessionState();
+        ReleaseCapture();
+        InvalidateRect(m_hwnd, nullptr, FALSE);
     }
     if (m_isDraggingGitSplitter) {
         m_isDraggingGitSplitter = false;
@@ -9191,6 +9952,32 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     return TRUE;
                 }
 
+                // Sidebar Splitters (Left Drawer & Right Runtimes)
+                if (m_isDraggingLeftSidebar || m_isDraggingRightSidebar ||
+                    HitTestLeftSidebarSplitter(pt) || HitTestRightSidebarSplitter(pt)) {
+                    SetCursor(LoadCursor(nullptr, IDC_SIZEWE));
+                    return TRUE;
+                }
+
+                // Status Bar cursor handling (User requirement: "MAKE SURE THE CURSOR IS DEFAUILT WHEN IN THERE")
+                if (m_config.showStatusBar) {
+                    RECT rcClient;
+                    GetClientRect(m_hwnd, &rcClient);
+                    float clientH = static_cast<float>(rcClient.bottom - rcClient.top);
+                    const float statusBarH = m_config.ScaleF(22.0f);
+                    if (static_cast<float>(pt.y) >= (clientH - statusBarH) && static_cast<float>(pt.y) <= clientH) {
+                        if ((pt.x >= m_rcStatusBarVenvTag.left && pt.x <= m_rcStatusBarVenvTag.right &&
+                             pt.y >= m_rcStatusBarVenvTag.top && pt.y <= m_rcStatusBarVenvTag.bottom) ||
+                            (pt.x >= m_rcStatusBarGitTag.left && pt.x <= m_rcStatusBarGitTag.right &&
+                             pt.y >= m_rcStatusBarGitTag.top && pt.y <= m_rcStatusBarGitTag.bottom)) {
+                            SetCursor(LoadCursor(nullptr, IDC_HAND));
+                            return TRUE;
+                        }
+                        SetCursor(LoadCursor(nullptr, IDC_ARROW));
+                        return TRUE;
+                    }
+                }
+
                 // 0c. Theme Picker Catalog Modal
                 if (m_colorPicker.IsOpen()) {
                     SetCursor(LoadCursor(nullptr, IDC_ARROW));
@@ -9373,9 +10160,12 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     GetClientRect(m_hwnd, &rcClient);
                     float clientW = static_cast<float>(rcClient.right - rcClient.left);
                     float clientH = static_cast<float>(rcClient.bottom - rcClient.top);
+                    const float statusBarH = m_config.showStatusBar ? m_config.ScaleF(22.0f) : 0.0f;
+                    float termH = GetCurrentTerminalHeight(clientH);
+                    float bottomEditorY = clientH - statusBarH - termH;
 
                     if (pt.x >= canvasLeft + gutterW && pt.x < clientW - scrollbarW &&
-                        pt.y >= topY && pt.y < clientH) {
+                        pt.y >= topY && pt.y < bottomEditorY) {
                         SetCursor(LoadCursor(nullptr, IDC_IBEAM));
                         return TRUE;
                     }
@@ -9434,6 +10224,11 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
             m_header.UpdateHoverState(ui::HeaderMenuId::None, ui::CaptionButtonType::None, ui::HeaderExecId::None);
             m_rail.SetHoveredTab(ui::RailTabId::None);
             m_drawer.SetHoveredIndex(-1);
+            m_isHoveredStatusBarVenvTag = false;
+            m_isHoveredStatusBarGitTag = false;
+            m_isHoveredStatusBarLnCol = false;
+            m_isHoveredStatusBarSpaces = false;
+            m_isHoveredStatusBarEncoding = false;
             InvalidateRect(m_hwnd, nullptr, FALSE);
             return 0;
         }
@@ -11252,7 +12047,6 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
 
         case WM_USER + 202: {
             m_drawer.RefreshTree();
-            m_drawer.RefreshGitStatusOnly(true);
             InvalidateRect(m_hwnd, nullptr, FALSE);
             return 0;
         }
@@ -11291,6 +12085,37 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 delete pRes;
             }
             m_confirmDiscardModal.Close();
+            InvalidateRect(m_hwnd, nullptr, FALSE);
+            return 0;
+        }
+
+        case WM_USER + 206: {
+            // Auto-close any working tree diff view whose file no longer has git changes (safely on UI thread)
+            const auto& gitChanges = m_drawer.GetGitChanges();
+            for (int g = static_cast<int>(m_editorGroups.size()) - 1; g >= 0; --g) {
+                if (g >= static_cast<int>(m_editorGroups.size())) continue;
+                for (int d = static_cast<int>(m_editorGroups[g].docs.size()) - 1; d >= 0; --d) {
+                    if (g >= static_cast<int>(m_editorGroups.size())) break;
+                    if (d >= static_cast<int>(m_editorGroups[g].docs.size())) continue;
+                    auto& doc = m_editorGroups[g].docs[d];
+                    if (doc.isDiffView && !doc.isDiffRightReadOnly) {
+                        bool stillHasChanges = false;
+                        for (const auto& item : gitChanges) {
+                            std::wstring cleanDoc = doc.filePath;
+                            for (auto& c : cleanDoc) if (c == L'/') c = L'\\';
+                            std::wstring cleanItem = item.path;
+                            for (auto& c : cleanItem) if (c == L'/') c = L'\\';
+                            if (cleanDoc == cleanItem || cleanDoc.ends_with(cleanItem) || cleanItem.ends_with(cleanDoc)) {
+                                stillHasChanges = true;
+                                break;
+                            }
+                        }
+                        if (!stillHasChanges) {
+                            CloseDocument(g, d);
+                        }
+                    }
+                }
+            }
             InvalidateRect(m_hwnd, nullptr, FALSE);
             return 0;
         }

@@ -5498,7 +5498,6 @@ bool DrawerPanel::DiscardAllChanges() {
         m_dirtyFilePaths.clear();
     }
     ClearActionPending(L"*");
-    RebuildVisibleItems();
     RefreshGitStatusOnly(false);
     m_isGitLoading = false;
     return true;
@@ -5616,7 +5615,6 @@ bool DrawerPanel::DiscardFile(const std::wstring& relPath) {
     }
 
     ClearActionPending(relPath);
-    RebuildVisibleItems();
     RefreshGitStatusOnly(false);
     m_isGitLoading = false;
     return true;
@@ -5930,9 +5928,29 @@ void DrawerPanel::ComputeGitDiffLines(const std::wstring& relPath, std::set<size
     outAdded.clear();
     outDeleted.clear();
     if (relPath.empty() || relPath.ends_with(L".ipynb")) return;
-    std::wstring dir = m_openFolderPath.empty() ? L"." : m_openFolderPath;
+
     std::wstring cleanRel = relPath;
     for (auto& c : cleanRel) if (c == L'\\') c = L'/';
+
+    // Fast check: If the file is not in m_gitChanges, it is 100% clean!
+    // Return immediately with 0ms overhead, completely preventing UI thread freezes.
+    bool hasChange = false;
+    {
+        std::lock_guard<std::recursive_mutex> lock(m_gitMutex);
+        for (const auto& item : m_gitChanges) {
+            std::wstring itemClean = item.path;
+            for (auto& c : itemClean) if (c == L'\\') c = L'/';
+            if (_wcsicmp(itemClean.c_str(), cleanRel.c_str()) == 0) {
+                hasChange = true;
+                break;
+            }
+        }
+    }
+    if (!hasChange) {
+        return;
+    }
+
+    std::wstring dir = m_openFolderPath.empty() ? L"." : m_openFolderPath;
     auto res = RunGitCmd(L"diff -U0 HEAD -- \"" + cleanRel + L"\"", dir);
     if (res.exitCode == 0 && !res.output.empty()) {
         std::wstringstream ss(res.output);

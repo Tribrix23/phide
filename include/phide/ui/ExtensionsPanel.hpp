@@ -139,6 +139,23 @@ public:
     [[nodiscard]] ViewMode GetViewMode() const noexcept { return m_viewMode; }
     void SetViewMode(ViewMode mode) noexcept { m_viewMode = mode; }
     [[nodiscard]] int GetSelectedExtensionIdx() const noexcept { return m_selectedExtensionIdx; }
+    void SetSelectedExtensionById(const std::wstring& id) noexcept {
+        for (size_t i = 0; i < m_items.size(); ++i) {
+            if (m_items[i].id == id) {
+                m_selectedExtensionIdx = static_cast<int>(i);
+                m_viewMode = ViewMode::Detail;
+                return;
+            }
+        }
+    }
+    [[nodiscard]] std::wstring GetInstalledVersion(const std::wstring& id) const {
+        for (const auto& item : m_items) {
+            if (item.id == id && item.isInstalled) {
+                return item.installedVersion;
+            }
+        }
+        return L"";
+    }
     [[nodiscard]] const D2D1_RECT_F& GetBackBtnBounds() const noexcept { return m_backBtnBounds; }
     [[nodiscard]] const D2D1_RECT_F& GetActionBtnBounds() const noexcept { return m_actionBtnBounds; }
     [[nodiscard]] const D2D1_RECT_F& GetDropdownBtnBounds() const noexcept { return m_dropdownBtnBounds; }

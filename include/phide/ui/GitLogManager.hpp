@@ -53,6 +53,7 @@ public:
                 cmd.find(L"status --porcelain") != std::wstring::npos ||
                 cmd.find(L"diff --name-only") != std::wstring::npos ||
                 cmd.find(L"diff --cached --name-only") != std::wstring::npos ||
+                cmd.find(L"diff -U0 HEAD") != std::wstring::npos ||
                 cmd.find(L"rev-list --count") != std::wstring::npos ||
                 cmd.find(L"rev-parse --is-inside-work-tree") != std::wstring::npos ||
                 cmd.find(L"branch --show-current") != std::wstring::npos ||

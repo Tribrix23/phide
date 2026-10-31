@@ -18,8 +18,8 @@ ActivityRail::ActivityRail() {
     // 3. Git icon (directly under Search)
     m_items.push_back({ RailTabId::Git,      L"Source Control (Ctrl+Shift+G)", {} });
 
-    // 4. Student Hat icon (temporarily removed per user request: "remove the icvon of this for now")
-    // m_items.push_back({ RailTabId::Student,  L"Learning Hub",                          {} });
+    // 4. Three-dot icon ("More Actions") directly under horizontal separation line (matching Image 3)
+    m_items.push_back({ RailTabId::MoreActions, L"More Actions",               {} });
 
     // 5. Notebook icon (directly above Packages)
     m_items.push_back({ RailTabId::Notebook, L"Interactive Notebook (Ctrl+Shift+J)", {} });
@@ -126,6 +126,20 @@ void ActivityRail::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
             // Anchor Notebook directly above Packages (matching user's red circle)
             float botY = clientHeight - (btnSize * 2.0f) - config.ScaleF(22.0f);
             item.bounds = D2D1::RectF(startX, botY, startX + btnSize, botY + btnSize);
+        } else if (item.id == RailTabId::MoreActions) {
+            // Separation line on top of the 3 dot icon (white color per user request)
+            curY += config.ScaleF(2.0f);
+            float sepY = curY;
+            ID2D1Brush* pSepBrush = theme.brushTextWhite ? theme.brushTextWhite.Get() : theme.brushBorderSubtle.Get();
+            pRT->DrawLine(
+                D2D1::Point2F(startX + config.ScaleF(4.0f), sepY),
+                D2D1::Point2F(startX + btnSize - config.ScaleF(4.0f), sepY),
+                pSepBrush,
+                1.0f
+            );
+            curY += config.ScaleF(7.0f);
+            item.bounds = D2D1::RectF(startX, curY, startX + btnSize, curY + btnSize);
+            curY += btnSize + spacing;
         } else if (item.id == RailTabId::Student) {
             // Anchor Student Hat directly above Notebook (matching user's green circle)
             float botY = clientHeight - (btnSize * 3.0f) - config.ScaleF(30.0f);
@@ -266,6 +280,9 @@ void ActivityRail::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
             case RailTabId::Packages:
                 m_lucide.DrawPackage(pRT, item.bounds, iconBrush, 1.6f);
                 break;
+            case RailTabId::MoreActions:
+                m_lucide.DrawMoreHorizontal(pRT, item.bounds, iconBrush);
+                break;
             default:
                 break;
         }
@@ -332,6 +349,13 @@ bool ActivityRail::SetHoveredTab(RailTabId hoveredId) {
         return true;
     }
     return false;
+}
+
+D2D1_RECT_F ActivityRail::GetItemBounds(RailTabId id) const noexcept {
+    for (const auto& item : m_items) {
+        if (item.id == id) return item.bounds;
+    }
+    return D2D1::RectF(0.0f, 0.0f, 0.0f, 0.0f);
 }
 
 } // namespace phide::ui

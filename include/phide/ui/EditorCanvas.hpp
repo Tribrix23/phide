@@ -192,6 +192,12 @@ public:
      */
     [[nodiscard]] bool HitTestMinimap(POINT pt, const editor::OpenDocument& doc, bool& outHitSlider) const;
 
+    struct FoldChevronHit {
+        D2D1_RECT_F bounds{};
+        size_t bufferLine = 0;
+    };
+    [[nodiscard]] const std::vector<FoldChevronHit>& GetFoldChevrons() const noexcept { return m_foldChevrons; }
+
     /**
      * @brief Tests if mouse clicked on a code folding chevron in the line number gutter.
      * @param pt Mouse point in client coordinates.
@@ -224,6 +230,22 @@ public:
 
     [[nodiscard]] float GetLastCaretX() const noexcept { return m_lastCaretX; }
     [[nodiscard]] float GetLastCaretY() const noexcept { return m_lastCaretY; }
+
+    /**
+     * @brief Draws the Python virtual environment tag (.venv [3.14.7]) matching Image 2.
+     */
+    void DrawVenvTag(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
+                     const D2D1_RECT_F& bounds, bool isHovered = false);
+
+    /**
+     * @brief Renders the breadcrumbs navigation bar displaying file hierarchy and icon (Image 4).
+     */
+    void RenderBreadcrumbs(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
+                           const editor::OpenDocument& doc, float canvasLeft, float canvasWidth,
+                           float barY, float barHeight);
+
+
+
 
     /**
      * @brief Releases device-dependent Direct2D resources (e.g. path geometries, watermark bitmaps).
@@ -301,12 +323,8 @@ private:
     void RenderPlaceholder(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
                            float canvasLeft, float canvasWidth, float headerH, float clientHeight);
 
-    /**
-     * @brief Renders the breadcrumbs navigation bar displaying file hierarchy and icon (Image 4).
-     */
-    void RenderBreadcrumbs(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
-                           const editor::OpenDocument& doc, float canvasLeft, float canvasWidth,
-                           float barY, float barHeight);
+
+
 
     /**
      * @brief Renders the native picture viewer for images (PNG, JPG, BMP, GIF, ICO, WEBP) matching Image 2.
@@ -444,10 +462,6 @@ private:
     D2D1_POINT_2F m_dragTabPos = { 0.0f, 0.0f };
     std::wstring m_dragTabTitle;
 
-    struct FoldChevronHit {
-        D2D1_RECT_F bounds{};
-        size_t bufferLine = 0;
-    };
     std::vector<FoldChevronHit> m_foldChevrons;
 
     struct ColorSwatchHit {
@@ -500,9 +514,9 @@ private:
     float m_courseMaxScrollY = 0.0f;
 
     void InitializeLearningCourses();
-    ID2D1Bitmap* GetLearningHubBitmap(ID2D1RenderTarget* pRT, const std::wstring& filename);
 
 public:
+    ID2D1Bitmap* GetLearningHubBitmap(ID2D1RenderTarget* pRT, const std::wstring& filename);
     [[nodiscard]] const std::vector<RenderedCourseCard>& GetRenderedCourseCards() const noexcept { return m_renderedCourseCards; }
     [[nodiscard]] const D2D1_RECT_F* GetLearningFilterBounds() const noexcept { return m_learningFilterBounds; }
     [[nodiscard]] const D2D1_RECT_F& GetLearningSortBounds() const noexcept { return m_learningSortBounds; }

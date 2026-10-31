@@ -117,6 +117,7 @@ private:
     void DiscardDeviceResources();
 
     void OnPaint();
+    void RenderStatusBar(float clientW, float clientH);
     void OnResize(UINT width, UINT height);
     void OnDpiChanged(int newDpi, const RECT* pNewRect);
 
@@ -694,6 +695,42 @@ private:
     int m_tabDropTargetIdx = -1;
     POINT m_dragTabStartPt{ 0, 0 };
     POINT m_dragTabCurrentPt{ 0, 0 };
+
+    D2D1_RECT_F m_rcStatusBarVenvTag{};
+    bool m_isHoveredStatusBarVenvTag = false;
+
+    // Status Bar Git & GitHub Cache and Interactive State
+    std::wstring m_cachedGitDir;
+    std::filesystem::file_time_type m_cachedHeadTime{};
+    std::filesystem::file_time_type m_cachedConfigTime{};
+    std::wstring m_cachedGitBranch;
+    std::wstring m_cachedGitHubName;
+    std::wstring m_cachedGitHubRepo;
+    bool m_isGitCached = false;
+    void UpdateCachedGitInfo();
+
+    D2D1_RECT_F m_rcStatusBarGitTag{};
+    bool m_isHoveredStatusBarGitTag = false;
+    D2D1_RECT_F m_rcStatusBarLnCol{};
+    bool m_isHoveredStatusBarLnCol = false;
+    D2D1_RECT_F m_rcStatusBarSpaces{};
+    bool m_isHoveredStatusBarSpaces = false;
+    D2D1_RECT_F m_rcStatusBarEncoding{};
+    bool m_isHoveredStatusBarEncoding = false;
+
+    void RenderFloatingTooltip(ID2D1RenderTarget* pRT, const std::wstring& text, const D2D1_RECT_F& anchorBounds, float clientW);
+
+    // Sidebar Resizing State (Left Explorer & Right Runtimes/Extensions)
+    bool m_isDraggingLeftSidebar = false;
+    float m_dragLeftSidebarStartX = 0.0f;
+    int m_dragLeftSidebarStartW = 280;
+
+    bool m_isDraggingRightSidebar = false;
+    float m_dragRightSidebarStartX = 0.0f;
+    int m_dragRightSidebarStartW = 340;
+
+    bool HitTestLeftSidebarSplitter(POINT pt) const;
+    bool HitTestRightSidebarSplitter(POINT pt) const;
 
     void AnimateTerminalOpen();
     void AnimateTerminalClose();

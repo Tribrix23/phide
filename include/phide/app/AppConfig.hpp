@@ -36,6 +36,7 @@ struct AppConfig {
 
     // --- Drawer Panel Metrics ---
     int drawerWidth   = 280;    ///< Width of the slide-out drawer panel when expanded.
+    int rightSidebarWidth = 340; ///< Width of the right sidebar (Runtimes / Extensions panel) when expanded.
     bool isDrawerOpen = false;  ///< True if the contextual sidebar drawer is expanded; false if collapsed.
     int activeRailTab = 0;      ///< Current active rail tab (Default: 0 = Files / Explorer matching Image 2).
     float gitSplitY   = 320.0f; ///< Vertical splitter position between Changes and Graph.
@@ -44,6 +45,7 @@ struct AppConfig {
     bool showMinimap = true;            ///< True if code minimap is rendered on right of editor canvas.
     bool showBreadcrumbs = true;        ///< True if file breadcrumbs hierarchy is visible above editor.
     bool showLineNumbers = true;        ///< True if line numbers gutter is rendered. Default enabled.
+    bool showStatusBar = true;          ///< True if bottom status bar is rendered. Default enabled.
     bool wordWrap = false;              ///< True if word wrap is enabled in editor.
     bool renderWhitespace = false;      ///< True if whitespace dots are rendered.
     bool zenMode = false;               ///< True if Zen Mode (distraction-free full screen) is active.

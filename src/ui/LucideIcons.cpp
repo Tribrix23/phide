@@ -1525,4 +1525,54 @@ void LucideIcons::DrawTestFlask(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bound
     pRT->DrawLine(MapPoint(7.5f, 15.0f, ox, oy, s), MapPoint(16.5f, 15.0f, ox, oy, s), pBrush, strokeWidth * 0.9f, m_pStrokeStyle.Get());
 }
 
+void LucideIcons::DrawMoreHorizontal(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, ID2D1Brush* pBrush) const {
+    if (!pRT || !pBrush) return;
+    const float cx = (bounds.left + bounds.right) * 0.5f;
+    const float cy = (bounds.top + bounds.bottom) * 0.5f;
+    const float r = 1.9f;
+    const float spacing = 5.2f;
+
+    pRT->FillEllipse(D2D1::Ellipse(D2D1::Point2F(cx - spacing, cy), r, r), pBrush);
+    pRT->FillEllipse(D2D1::Ellipse(D2D1::Point2F(cx, cy), r, r), pBrush);
+    pRT->FillEllipse(D2D1::Ellipse(D2D1::Point2F(cx + spacing, cy), r, r), pBrush);
+}
+
+void LucideIcons::DrawBell(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, ID2D1Brush* pBrush, float strokeWidth) const {
+    if (!pRT || !pBrush) return;
+    const float w = bounds.right - bounds.left;
+    const float h = bounds.bottom - bounds.top;
+    const float s = (std::min)(w, h) / 24.0f;
+    const float ox = bounds.left + (w - 24.0f * s) * 0.5f;
+    const float oy = bounds.top + (h - 24.0f * s) * 0.5f;
+
+    // Top loop: (10.0, 4.0) -> (14.0, 4.0)
+    pRT->DrawLine(MapPoint(10.0f, 4.0f, ox, oy, s), MapPoint(14.0f, 4.0f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+    // Bell body sides
+    pRT->DrawLine(MapPoint(10.0f, 4.0f, ox, oy, s), MapPoint(6.0f, 17.0f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+    pRT->DrawLine(MapPoint(14.0f, 4.0f, ox, oy, s), MapPoint(18.0f, 17.0f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+    // Rim
+    pRT->DrawLine(MapPoint(4.0f, 17.0f, ox, oy, s), MapPoint(20.0f, 17.0f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+    // Clapper at bottom (10.5, 20.0) -> (13.5, 20.0)
+    pRT->DrawLine(MapPoint(10.5f, 20.0f, ox, oy, s), MapPoint(13.5f, 20.0f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+}
+
+void LucideIcons::DrawGitHub(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, ID2D1Brush* pBrush, float strokeWidth) const {
+    if (!pRT || !pBrush) return;
+    const float w = bounds.right - bounds.left;
+    const float h = bounds.bottom - bounds.top;
+    const float s = (std::min)(w, h) / 24.0f;
+    const float ox = bounds.left + (w - 24.0f * s) * 0.5f;
+    const float oy = bounds.top + (h - 24.0f * s) * 0.5f;
+
+    // GitHub Octocat silhouette mark
+    // Circular body outline
+    pRT->DrawEllipse(D2D1::Ellipse(MapPoint(12.0f, 12.0f, ox, oy, s), 8.5f * s, 8.5f * s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+    // Pointed cat ears
+    pRT->DrawLine(MapPoint(8.2f, 6.2f, ox, oy, s), MapPoint(9.4f, 9.2f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+    pRT->DrawLine(MapPoint(15.8f, 6.2f, ox, oy, s), MapPoint(14.6f, 9.2f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+    // Lower chest curve
+    pRT->DrawLine(MapPoint(9.5f, 15.0f, ox, oy, s), MapPoint(12.0f, 17.0f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+    pRT->DrawLine(MapPoint(12.0f, 17.0f, ox, oy, s), MapPoint(14.5f, 15.0f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+}
+
 } // namespace phide::ui

@@ -404,7 +404,7 @@ private:
     float m_heightStart = 0.0f;
 
     std::vector<std::unique_ptr<TerminalTab>> m_tabs;
-    mutable std::mutex m_tabsMutex;
+    mutable std::recursive_mutex m_tabsMutex;
     std::vector<TerminalProfileDef> m_availableProfiles;
     std::function<void()> m_outputCallback;
     int m_activeTabIdx = 0;

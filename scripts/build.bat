@@ -48,7 +48,7 @@ if exist "assets\phide.rc" (
     rc /nologo /fo "bin\phide.res" "assets\phide.rc"
 )
 echo [INFO] Compiling C++20 sources with MSVC cl.exe...
-cl /nologo /EHsc /std:c++20 /O2 /W3 /utf-8 /DUNICODE /D_UNICODE /DWIN32_LEAN_AND_MEAN /I include /I third_party\webview2\build\native\include !SOURCES! /Fe:bin\phide.exe /Fo:bin\ /link /SUBSYSTEM:WINDOWS bin\phide.res third_party\webview2\build\native\x64\WebView2LoaderStatic.lib user32.lib gdi32.lib dwmapi.lib d2d1.lib dwrite.lib ole32.lib shell32.lib comdlg32.lib advapi32.lib windowscodecs.lib ws2_32.lib winhttp.lib
+cl /nologo /EHsc /std:c++20 /O2 /W3 /utf-8 /Zi /FS /DUNICODE /D_UNICODE /DWIN32_LEAN_AND_MEAN /I include /I third_party\webview2\build\native\include !SOURCES! /Fe:bin\phide.exe /Fo:bin\ /link /DEBUG /MAP:bin\phide.map /SUBSYSTEM:WINDOWS bin\phide.res third_party\webview2\build\native\x64\WebView2LoaderStatic.lib user32.lib gdi32.lib dwmapi.lib d2d1.lib dwrite.lib ole32.lib shell32.lib comdlg32.lib advapi32.lib windowscodecs.lib ws2_32.lib winhttp.lib
 
 if %errorlevel% equ 0 (
     echo ======================================================================

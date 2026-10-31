@@ -883,6 +883,94 @@ void EditorCanvas::RenderBreadcrumbs(ID2D1RenderTarget* pRT, Theme& theme, const
     }
 }
 
+void EditorCanvas::DrawVenvTag(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
+                               const D2D1_RECT_F& bounds, bool isHovered) {
+    if (!pRT) return;
+
+    if (isHovered) {
+        D2D1_ROUNDED_RECT rrc = D2D1::RoundedRect(bounds, config.ScaleF(3.5f), config.ScaleF(3.5f));
+        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> hoverBg;
+        pRT->CreateSolidColorBrush(
+            theme.IsDarkMode() ? D2D1::ColorF(0.20f, 0.22f, 0.26f, 0.90f) : D2D1::ColorF(0.88f, 0.90f, 0.94f, 0.90f),
+            &hoverBg
+        );
+        if (hoverBg) pRT->FillRoundedRectangle(rrc, hoverBg.Get());
+    }
+
+    const float bh = bounds.bottom - bounds.top;
+    const float iconSize = config.ScaleF(13.0f);
+    const float iconX = bounds.left + config.ScaleF(3.0f);
+    const float iconY = bounds.top + (bh - iconSize) * 0.5f;
+
+    // 1. Python Two-Tone vector logo
+    float cx = iconX + iconSize * 0.5f;
+    float cy = iconY + iconSize * 0.5f;
+    float r = iconSize * 0.40f;
+
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> bBlue, bYellow, bWhite;
+    pRT->CreateSolidColorBrush(D2D1::ColorF(0.23f, 0.49f, 0.72f), &bBlue);   // #3B7EB8
+    pRT->CreateSolidColorBrush(D2D1::ColorF(1.0f, 0.84f, 0.25f), &bYellow); // #FFD740
+    pRT->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f), &bWhite);
+
+    D2D1_ROUNDED_RECT rrcTop = D2D1::RoundedRect(D2D1::RectF(cx - r, cy - r, cx + r * 0.35f, cy + r * 0.35f), config.ScaleF(2.2f), config.ScaleF(2.2f));
+    D2D1_ROUNDED_RECT rrcBot = D2D1::RoundedRect(D2D1::RectF(cx - r * 0.35f, cy - r * 0.35f, cx + r, cy + r), config.ScaleF(2.2f), config.ScaleF(2.2f));
+    if (bBlue) pRT->FillRoundedRectangle(rrcTop, bBlue.Get());
+    if (bYellow) pRT->FillRoundedRectangle(rrcBot, bYellow.Get());
+
+    // Small eye dots
+    if (bWhite) {
+        float eyeR = config.ScaleF(0.9f);
+        pRT->FillEllipse(D2D1::Ellipse(D2D1::Point2F(cx - r * 0.45f, cy - r * 0.45f), eyeR, eyeR), bWhite.Get());
+        pRT->FillEllipse(D2D1::Ellipse(D2D1::Point2F(cx + r * 0.45f, cy + r * 0.45f), eyeR, eyeR), bWhite.Get());
+    }
+
+    // Subscript 'v' overlay at bottom right of icon (matching Image 2)
+    float vx = iconX + iconSize - config.ScaleF(2.5f);
+    float vy = iconY + iconSize - config.ScaleF(2.0f);
+    float vr = config.ScaleF(2.2f);
+    if (bWhite) {
+        ID2D1StrokeStyle* pStroke = m_icons.GetStrokeStyle();
+        pRT->DrawLine(D2D1::Point2F(vx - vr, vy - vr), D2D1::Point2F(vx, vy), bWhite.Get(), 1.2f, pStroke);
+        pRT->DrawLine(D2D1::Point2F(vx, vy), D2D1::Point2F(vx + vr, vy - vr), bWhite.Get(), 1.2f, pStroke);
+    }
+
+    // 2. Text: .venv [3.14.7] (matching Image 2 exact colors & layout)
+    float textX = iconX + iconSize + config.ScaleF(4.0f);
+    IDWriteTextFormat* pFmt = theme.fontBadge ? theme.fontBadge.Get() : (theme.fontMenuShortcut ? theme.fontMenuShortcut.Get() : theme.fontBody.Get());
+
+    if (pFmt && theme.dwriteFactory) {
+        std::wstring fullStr = L".venv [3.14.7]";
+        Microsoft::WRL::ComPtr<IDWriteTextLayout> pLayout;
+        theme.dwriteFactory->CreateTextLayout(
+            fullStr.c_str(),
+            static_cast<UINT32>(fullStr.length()),
+            pFmt,
+            bounds.right - textX,
+            bh,
+            &pLayout
+        );
+        if (pLayout) {
+            pLayout->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
+            Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> bVenv, bBracket, bVer;
+            pRT->CreateSolidColorBrush(theme.IsDarkMode() ? D2D1::ColorF(0.61f, 0.86f, 0.99f) : D2D1::ColorF(0.06f, 0.39f, 0.61f), &bVenv); // #9CDCFE
+            pRT->CreateSolidColorBrush(theme.IsDarkMode() ? D2D1::ColorF(0.34f, 0.61f, 0.84f) : D2D1::ColorF(0.20f, 0.45f, 0.70f), &bBracket); // #569CD6
+            pRT->CreateSolidColorBrush(theme.IsDarkMode() ? D2D1::ColorF(0.81f, 0.57f, 0.47f) : D2D1::ColorF(0.70f, 0.42f, 0.30f), &bVer); // #CE9178
+
+            DWRITE_TEXT_RANGE rVenv{ 0, 6 };     // ".venv "
+            DWRITE_TEXT_RANGE rB1{ 6, 1 };       // "["
+            DWRITE_TEXT_RANGE rVer{ 7, 6 };      // "3.14.7"
+            DWRITE_TEXT_RANGE rB2{ 13, 1 };      // "]"
+
+            if (bVenv) pLayout->SetDrawingEffect(bVenv.Get(), rVenv);
+            if (bBracket) pLayout->SetDrawingEffect(bBracket.Get(), rB1);
+            if (bVer) pLayout->SetDrawingEffect(bVer.Get(), rVer);
+            if (bBracket) pLayout->SetDrawingEffect(bBracket.Get(), rB2);
+
+            pRT->DrawTextLayout(D2D1::Point2F(textX, bounds.top + (bh - config.ScaleF(14.0f)) * 0.5f), pLayout.Get(), theme.brushTextPrimary.Get());
+        }
+    }
+}
+
 bool EditorCanvas::GetFoldRange(const editor::Buffer& buffer, size_t startLine, size_t& outEndLine) {
     if (startLine >= buffer.GetLineCount()) return false;
     const std::wstring& line = buffer.GetLine(startLine);
@@ -1806,8 +1894,8 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
             size_t foldEnd = 0;
             bool canFold = vl.isFolded || GetFoldRange(buffer, vl.bufferLine, foldEnd);
             if (canFold) {
-                const float chevronSize = config.ScaleF(12.0f);
-                const float chevronX = canvasLeft + gutterW - config.ScaleF(14.0f);
+                const float chevronSize = config.ScaleF(14.0f);
+                const float chevronX = canvasLeft + gutterW - config.ScaleF(15.0f);
                 const float chevronY = lineY + (lineH - chevronSize) / 2.0f;
                 D2D1_RECT_F rcChevron = D2D1::RectF(chevronX, chevronY, chevronX + chevronSize, chevronY + chevronSize);
 
@@ -1816,21 +1904,24 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
                 hit.bufferLine = vl.bufferLine;
                 m_foldChevrons.push_back(hit);
 
-                ID2D1Brush* chevronBrush = theme.brushTextMuted.Get();
+                ID2D1Brush* chevronBrush = isActiveLine
+                    ? (theme.brushTextPrimary ? theme.brushTextPrimary.Get() : theme.brushTextMuted.Get())
+                    : theme.brushTextMuted.Get();
+
+                const float cx = rcChevron.left + chevronSize * 0.5f;
+                const float cy = rcChevron.top + chevronSize * 0.5f;
+                const float cr = config.ScaleF(3.8f);
+
+                ID2D1StrokeStyle* pStroke = m_icons.GetStrokeStyle();
+
                 if (vl.isFolded) {
                     // Collapsed: Right Chevron > (Image 3)
-                    float cx = rcChevron.left + chevronSize * 0.45f;
-                    float cy = rcChevron.top + chevronSize * 0.5f;
-                    float cr = config.ScaleF(3.0f);
-                    pRT->DrawLine(D2D1::Point2F(cx - cr * 0.6f, cy - cr), D2D1::Point2F(cx + cr * 0.6f, cy), chevronBrush, 1.3f);
-                    pRT->DrawLine(D2D1::Point2F(cx + cr * 0.6f, cy), D2D1::Point2F(cx - cr * 0.6f, cy + cr), chevronBrush, 1.3f);
+                    pRT->DrawLine(D2D1::Point2F(cx - cr * 0.55f, cy - cr), D2D1::Point2F(cx + cr * 0.55f, cy), chevronBrush, 1.4f, pStroke);
+                    pRT->DrawLine(D2D1::Point2F(cx + cr * 0.55f, cy), D2D1::Point2F(cx - cr * 0.55f, cy + cr), chevronBrush, 1.4f, pStroke);
                 } else {
-                    // Expanded: Down Chevron v (Image 2)
-                    float cx = rcChevron.left + chevronSize * 0.5f;
-                    float cy = rcChevron.top + chevronSize * 0.45f;
-                    float cr = config.ScaleF(3.0f);
-                    pRT->DrawLine(D2D1::Point2F(cx - cr, cy - cr * 0.6f), D2D1::Point2F(cx, cy + cr * 0.6f), chevronBrush, 1.3f);
-                    pRT->DrawLine(D2D1::Point2F(cx + cr, cy - cr * 0.6f), D2D1::Point2F(cx, cy - cr * 0.6f), chevronBrush, 1.3f);
+                    // Expanded: Down Chevron V (User request: "it should be V")
+                    pRT->DrawLine(D2D1::Point2F(cx - cr, cy - cr * 0.55f), D2D1::Point2F(cx, cy + cr * 0.55f), chevronBrush, 1.4f, pStroke);
+                    pRT->DrawLine(D2D1::Point2F(cx, cy + cr * 0.55f), D2D1::Point2F(cx + cr, cy - cr * 0.55f), chevronBrush, 1.4f, pStroke);
                 }
             }
         }

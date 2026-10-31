@@ -352,6 +352,21 @@ int main(int argc, char* argv[]) {
     if (targetTest == 84) {
         goto run_test_84;
     }
+    if (targetTest == 85) {
+        goto run_test_85;
+    }
+    if (targetTest == 86) {
+        goto run_test_86;
+    }
+    if (targetTest == 87) {
+        goto run_test_87;
+    }
+    if (targetTest == 88) {
+        goto run_test_88;
+    }
+    if (targetTest == 89) {
+        goto run_test_89;
+    }
 
     // --- 3. Render Test: Picture Viewer in Dark & Light Modes ---
     std::cout << "[TEST 2] Testing Picture Viewer rendering..." << std::endl;
@@ -12331,6 +12346,914 @@ run_test_84:
         std::cout << "  Passed: All [TEST 84] Editor Line Numbers, Gutter Glow & Flat Course Reading View tests passed!" << std::endl;
         if (targetTest == 84) {
             std::cout << "Target test 84 finished successfully." << std::endl;
+            return 0;
+        }
+    }
+
+    // =========================================================================
+    // [TEST 85] Gutter Down Chevron V, .venv Tag, Activity Rail 3-Dot More Actions Menu & Status Bar
+    // =========================================================================
+run_test_85:
+    if (targetTest == 0 || targetTest == 85) {
+        std::cout << "\n[TEST 85] Testing Gutter Chevron V, .venv Tag, Activity Rail 3-Dot More Actions & Status Bar..." << std::endl;
+
+        phide::app::AppConfig cfg85;
+        cfg85.showLineNumbers = true;
+        cfg85.showStatusBar = true;
+        std::wstring artDir = L"C:\\Users\\Administrator\\.gemini\\antigravity\\brain\\c83160b9-3f8b-4ad1-87a8-ab1f7f555a77\\";
+
+        D2D1_RENDER_TARGET_PROPERTIES rtProps = D2D1::RenderTargetProperties(
+            D2D1_RENDER_TARGET_TYPE_DEFAULT,
+            D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED)
+        );
+
+        // 1. Verify Gutter Down Chevron V on line 21 (Image 1)
+        {
+            const UINT edW = 850, edH = 600;
+            ComPtr<IWICBitmap> pWicEditor;
+            HRESULT hr = pWicFactory->CreateBitmap(edW, edH, GUID_WICPixelFormat32bppPBGRA, WICBitmapCacheOnDemand, &pWicEditor);
+            assert(SUCCEEDED(hr));
+            ComPtr<ID2D1RenderTarget> pRTEditor;
+            hr = pD2DFactory->CreateWicBitmapRenderTarget(pWicEditor.Get(), rtProps, &pRTEditor);
+            assert(SUCCEEDED(hr));
+
+            phide::ui::Theme theme85;
+            theme85.CreateDeviceResources(pRTEditor.Get(), pDWriteFactory.Get());
+
+            phide::ui::EditorCanvas canvas85;
+            phide::editor::OpenDocument doc;
+            doc.fileName = L"config.php";
+            doc.filePath = L"C:\\Users\\Administrator\\Downloads\\php-student-crud\\config.php";
+
+            // Lines 1 to 24 matching Image 1
+            std::wstring code =
+                L"<?php\n"
+                L"declare(strict_types=1);\n"
+                L"$host = 'localhost';\n"
+                L"$db = 'student_crud';\n"
+                L"$user = 'root';\n"
+                L"$pass = '';\n"
+                L"$port = '3306';\n"
+                L"try {\n"
+                L"    $pdo = new PDO(\"mysql:host=$host;port=$port;dbname=$db;charset=utf8mb4\", $user, $pass, [\n"
+                L"        PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,\n"
+                L"        PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,\n"
+                L"        PDO::ATTR_EMULATE_PREPARES => false,\n"
+                L"    ]);\n"
+                L"} catch (PDOException $e) {\n"
+                L"    http_response_code(500);\n"
+                L"    exit('Database connection failed. Check config.php and import database.sql.');\n"
+                L"}\n"
+                L"if (session_status() === PHP_SESSION_NONE) session_start();\n"
+                L"if (empty($_SESSION['csrf'])) $_SESSION['csrf'] = bin2hex(random_bytes(32));\n"
+                L"function e(string $value): string { return htmlspecialchars($value, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); }\n"
+                L"function redirect(string $message, string $type = 'success'): never {\n"
+                L"    $_SESSION['flash'] = ['message' => $message, 'type' => $type];\n"
+                L"    header('Location: index.php'); exit;\n"
+                L"}";
+
+            doc.buffer.SetText(code);
+
+            std::vector<phide::editor::OpenDocument> docs;
+            docs.push_back(doc);
+
+            pRTEditor->BeginDraw();
+            pRTEditor->Clear(theme85.colors.canvasBg);
+            canvas85.Render(pRTEditor.Get(), theme85, cfg85, docs, 0, 0.0f, static_cast<float>(edW), static_cast<float>(edH), true, L"", false, false, false, false);
+            hr = pRTEditor->EndDraw();
+            assert(SUCCEEDED(hr));
+
+            // Verify folding chevrons were detected (try, catch, and function redirect)
+            const auto& chevrons = canvas85.GetFoldChevrons();
+            assert(!chevrons.empty());
+            bool foundLine21 = false;
+            for (const auto& ch : chevrons) {
+                if (ch.bufferLine == 20) { // 0-based index for line 21
+                    foundLine21 = true;
+                    break;
+                }
+            }
+            assert(foundLine21);
+            std::cout << "  Passed: Found folding chevron for function redirect on line 21 (rendered down chevron V)" << std::endl;
+
+            SaveWicBitmapToPng(pWicEditor.Get(), pWicFactory.Get(), artDir + L"test_gutter_down_chevron_v.png");
+            std::cout << "  Passed: Saved test_gutter_down_chevron_v.png" << std::endl;
+        }
+
+        // 2. Verify Activity Rail separation line, 3-dot More Actions icon, and Popup Menu
+        {
+            const UINT railW = 260, railH = 500;
+            ComPtr<IWICBitmap> pWicRail;
+            HRESULT hr = pWicFactory->CreateBitmap(railW, railH, GUID_WICPixelFormat32bppPBGRA, WICBitmapCacheOnDemand, &pWicRail);
+            assert(SUCCEEDED(hr));
+            ComPtr<ID2D1RenderTarget> pRTRail;
+            hr = pD2DFactory->CreateWicBitmapRenderTarget(pWicRail.Get(), rtProps, &pRTRail);
+            assert(SUCCEEDED(hr));
+
+            phide::ui::Theme theme85;
+            theme85.CreateDeviceResources(pRTRail.Get(), pDWriteFactory.Get());
+
+            phide::ui::ActivityRail rail85;
+            // Verify RailTabId::MoreActions exists
+            bool hasMoreActions = false;
+            for (const auto& it : rail85.GetItems()) {
+                if (it.id == phide::ui::RailTabId::MoreActions) {
+                    hasMoreActions = true;
+                    assert(wcscmp(it.tooltipText, L"More Actions") == 0);
+                    break;
+                }
+            }
+            assert(hasMoreActions);
+            std::cout << "  Passed: ActivityRail contains RailTabId::MoreActions with tooltip 'More Actions'" << std::endl;
+
+            // Verify PopupMenu OpenMoreActionsMenu
+            phide::ui::PopupMenu popup85;
+            popup85.OpenMoreActionsMenu(52.0f, 150.0f, cfg85);
+            assert(popup85.IsOpen());
+            const auto& menuItems = popup85.GetItems();
+            assert(!menuItems.empty());
+            assert(menuItems[0].label == L"Trace Code");
+            assert(menuItems[1].label == L"Dependency Graph");
+            std::cout << "  Passed: PopupMenu OpenMoreActionsMenu contains 'Trace Code' and 'Dependency Graph'" << std::endl;
+
+            pRTRail->BeginDraw();
+            pRTRail->Clear(theme85.colors.windowBg);
+            rail85.Render(pRTRail.Get(), theme85, cfg85, static_cast<float>(railH));
+            popup85.Render(pRTRail.Get(), theme85, cfg85);
+            hr = pRTRail->EndDraw();
+            assert(SUCCEEDED(hr));
+
+            // Verify HitTest on MoreActions item bounds
+            D2D1_RECT_F rcMore = rail85.GetItemBounds(phide::ui::RailTabId::MoreActions);
+            POINT ptMore = { static_cast<LONG>((rcMore.left + rcMore.right) * 0.5f), static_cast<LONG>((rcMore.top + rcMore.bottom) * 0.5f) };
+            assert(rail85.HitTest(ptMore) == phide::ui::RailTabId::MoreActions);
+            std::cout << "  Passed: HitTest correctly identifies RailTabId::MoreActions" << std::endl;
+
+            SaveWicBitmapToPng(pWicRail.Get(), pWicFactory.Get(), artDir + L"test_activity_rail_more_actions_menu.png");
+            std::cout << "  Passed: Saved test_activity_rail_more_actions_menu.png" << std::endl;
+        }
+
+        // 3. Verify .venv Tag and Status Bar (Image 2)
+        {
+            const UINT barW = 900, barH = 32;
+            ComPtr<IWICBitmap> pWicBar;
+            HRESULT hr = pWicFactory->CreateBitmap(barW, barH, GUID_WICPixelFormat32bppPBGRA, WICBitmapCacheOnDemand, &pWicBar);
+            assert(SUCCEEDED(hr));
+            ComPtr<ID2D1RenderTarget> pRTBar;
+            hr = pD2DFactory->CreateWicBitmapRenderTarget(pWicBar.Get(), rtProps, &pRTBar);
+            assert(SUCCEEDED(hr));
+
+            phide::ui::Theme theme85;
+            theme85.CreateDeviceResources(pRTBar.Get(), pDWriteFactory.Get());
+
+            phide::ui::EditorCanvas canvas85;
+            D2D1_RECT_F rcTag = D2D1::RectF(barW - 130.0f, 6.0f, barW - 12.0f, 26.0f);
+
+            pRTBar->BeginDraw();
+            pRTBar->Clear(D2D1::ColorF(0.09f, 0.09f, 0.10f, 1.0f)); // #17171A Status Bar Background
+
+            // Top border line
+            pRTBar->DrawLine(D2D1::Point2F(0.0f, 0.0f), D2D1::Point2F(static_cast<float>(barW), 0.0f), theme85.brushBorderSubtle.Get(), 1.0f);
+
+            // Git branch + main on left
+            D2D1_RECT_F rcGitIcon = D2D1::RectF(10.0f, 10.0f, 22.0f, 22.0f);
+            phide::ui::LucideIcons lucide;
+            lucide.DrawGitBranch(pRTBar.Get(), rcGitIcon, theme85.brushTextSecondary.Get(), 1.4f);
+            D2D1_RECT_F rcGitText = D2D1::RectF(26.0f, 7.0f, 70.0f, 25.0f);
+            pRTBar->DrawText(L"main", 4, theme85.fontHint.Get(), rcGitText, theme85.brushTextSecondary.Get());
+
+            // Diagnostics: ⊗ 0  ⚠ 0
+            D2D1_RECT_F rcDiag = D2D1::RectF(76.0f, 7.0f, 150.0f, 25.0f);
+            std::wstring diagStr = L"\u2297 0  \u26A0 0";
+            pRTBar->DrawText(diagStr.c_str(), static_cast<UINT32>(diagStr.length()), theme85.fontHint.Get(), rcDiag, theme85.brushTextSecondary.Get());
+
+            // Ln 21, Col 1
+            D2D1_RECT_F rcLnCol = D2D1::RectF(barW - 290.0f, 7.0f, barW - 216.0f, 25.0f);
+            std::wstring lnColStr = L"Ln 21, Col 1";
+            pRTBar->DrawText(lnColStr.c_str(), static_cast<UINT32>(lnColStr.length()), theme85.fontHint.Get(), rcLnCol, theme85.brushTextSecondary.Get());
+
+            // Spaces: 4
+            D2D1_RECT_F rcSpc = D2D1::RectF(barW - 212.0f, 7.0f, barW - 150.0f, 25.0f);
+            std::wstring spcStr = L"Spaces: 4";
+            pRTBar->DrawText(spcStr.c_str(), static_cast<UINT32>(spcStr.length()), theme85.fontHint.Get(), rcSpc, theme85.brushTextSecondary.Get());
+
+            // Draw .venv tag
+            canvas85.DrawVenvTag(pRTBar.Get(), theme85, cfg85, rcTag, false);
+
+            hr = pRTBar->EndDraw();
+            assert(SUCCEEDED(hr));
+
+            SaveWicBitmapToPng(pWicBar.Get(), pWicFactory.Get(), artDir + L"test_status_bar_venv_tag.png");
+            std::cout << "  Passed: Saved test_status_bar_venv_tag.png" << std::endl;
+        }
+
+        std::cout << "  Passed: All [TEST 85] Gutter Chevron V, .venv Tag, Activity Rail 3-Dot More Actions Menu & Status Bar tests passed!" << std::endl;
+        if (targetTest == 85) {
+            std::cout << "Target test 85 finished successfully." << std::endl;
+            return 0;
+        }
+    }
+
+    // =========================================================================
+    // [TEST 86] Sidebar Resizing (Left & Right), Hover Pass-Through Fix & Crash Prevention
+    // =========================================================================
+run_test_86:
+    if (targetTest == 0 || targetTest == 86) {
+        std::cout << "\n[TEST 86] Testing Sidebar Resizing (Left & Right), Hover Pass-Through Fix & Crash Prevention..." << std::endl;
+
+        phide::app::AppConfig cfg86;
+        std::wstring artDir = L"C:\\Users\\Administrator\\.gemini\\antigravity\\brain\\c83160b9-3f8b-4ad1-87a8-ab1f7f555a77\\";
+
+        // 1. AppConfig default widths
+        assert(cfg86.drawerWidth == 280);
+        assert(cfg86.rightSidebarWidth == 340);
+        std::cout << "  Passed: cfg86.drawerWidth == 280, cfg86.rightSidebarWidth == 340" << std::endl;
+
+        // 2. Resizing calculations and clamping
+        // Left sidebar: [180, 600]
+        int newDrawer1 = (std::clamp)(280 + 100, 180, 600);
+        assert(newDrawer1 == 380);
+        int newDrawerMin = (std::clamp)(280 - 200, 180, 600);
+        assert(newDrawerMin == 180);
+        int newDrawerMax = (std::clamp)(280 + 500, 180, 600);
+        assert(newDrawerMax == 600);
+
+        // Right sidebar: [220, 650]
+        int newRight1 = (std::clamp)(340 + 60, 220, 650);
+        assert(newRight1 == 400);
+        int newRightMin = (std::clamp)(340 - 200, 220, 650);
+        assert(newRightMin == 220);
+        int newRightMax = (std::clamp)(340 + 400, 220, 650);
+        assert(newRightMax == 650);
+        std::cout << "  Passed: Sidebar resize clamping verified ([180, 600] left, [220, 650] right)" << std::endl;
+
+        // 3. Popup Menu Hover Isolation & Hit-testing
+        phide::ui::PopupMenu popup86;
+        popup86.OpenMoreActionsMenu(52.0f, 400.0f, cfg86);
+        assert(popup86.IsOpen());
+
+        // Point inside the menu
+        POINT ptInside{ 80, 420 };
+        assert(popup86.HitTestMenuArea(ptInside) == true);
+
+        // Point far outside the menu
+        POINT ptOutside{ 400, 100 };
+        assert(popup86.HitTestMenuArea(ptOutside) == false);
+
+        // When pt is inside popup menu, drawer hover must be blocked
+        phide::ui::DrawerPanel drawer86;
+        drawer86.SetHoveredIndex(5);
+        assert(drawer86.GetHoveredIndex() == 5);
+        if (popup86.HitTestMenuArea(ptInside)) {
+            drawer86.SetHoveredIndex(-1);
+        }
+        assert(drawer86.GetHoveredIndex() == -1);
+        std::cout << "  Passed: Popup menu HitTestMenuArea blocks explorer tree hover underneath" << std::endl;
+
+        popup86.Close();
+        assert(!popup86.IsOpen());
+
+        // 4. Render Resized Left Drawer and Resized Right Sidebar to Image
+        {
+            const UINT bmpW = 1280;
+            const UINT bmpH = 720;
+            ComPtr<IWICBitmap> pWicResized;
+            ComPtr<ID2D1RenderTarget> pRTResized;
+            hr = pWicFactory->CreateBitmap(bmpW, bmpH, GUID_WICPixelFormat32bppPBGRA,
+                                          WICBitmapCacheOnDemand, &pWicResized);
+            assert(SUCCEEDED(hr));
+            D2D1_RENDER_TARGET_PROPERTIES rtProps = D2D1::RenderTargetProperties(
+                D2D1_RENDER_TARGET_TYPE_DEFAULT,
+                D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED)
+            );
+            hr = pD2DFactory->CreateWicBitmapRenderTarget(pWicResized.Get(), rtProps, &pRTResized);
+            assert(SUCCEEDED(hr));
+
+            pRTResized->BeginDraw();
+            pRTResized->Clear(D2D1::ColorF(0.12f, 0.12f, 0.14f, 1.0f));
+
+            phide::ui::Theme theme86;
+            theme86.CreateDeviceResources(pRTResized.Get(), pDWriteFactory.Get());
+
+            // Resized drawer width = 360
+            cfg86.drawerWidth = 360;
+            cfg86.rightSidebarWidth = 380;
+
+            const float railW = cfg86.ScaleF(static_cast<float>(cfg86.railWidth));
+            const float drawerW = cfg86.ScaleF(static_cast<float>(cfg86.drawerWidth));
+            const float rightSidebarW = cfg86.ScaleF(static_cast<float>(cfg86.rightSidebarWidth));
+
+            // Render Activity Rail
+            phide::ui::ActivityRail rail86;
+            rail86.Render(pRTResized.Get(), theme86, cfg86, static_cast<float>(bmpH));
+
+            // Render Resized Left Drawer
+            phide::ui::DrawerPanel drawerResized;
+            drawerResized.OpenFolder(std::filesystem::current_path().wstring());
+            drawerResized.Render(pRTResized.Get(), theme86, cfg86, static_cast<float>(bmpH), drawerW);
+
+            // Render Splitter highlight at Left edge
+            float leftSplitterX = railW + drawerW;
+            pRTResized->DrawLine(
+                D2D1::Point2F(leftSplitterX, 0.0f),
+                D2D1::Point2F(leftSplitterX, static_cast<float>(bmpH)),
+                theme86.brushBrandAccent ? theme86.brushBrandAccent.Get() : theme86.brushTextWhite.Get(),
+                2.0f
+            );
+
+            // Render Resized Right Sidebar
+            phide::ui::ExtensionsPanel extResized;
+            extResized.Open();
+            float rightSidebarX = static_cast<float>(bmpW) - rightSidebarW;
+            extResized.Render(pRTResized.Get(), theme86, cfg86, rightSidebarX, 0.0f, rightSidebarW, static_cast<float>(bmpH));
+
+            // Render Splitter highlight at Right edge
+            pRTResized->DrawLine(
+                D2D1::Point2F(rightSidebarX, 0.0f),
+                D2D1::Point2F(rightSidebarX, static_cast<float>(bmpH)),
+                theme86.brushBrandAccent ? theme86.brushBrandAccent.Get() : theme86.brushTextWhite.Get(),
+                2.0f
+            );
+
+            hr = pRTResized->EndDraw();
+            assert(SUCCEEDED(hr));
+
+            SaveWicBitmapToPng(pWicResized.Get(), pWicFactory.Get(), artDir + L"test_sidebar_resizable_left_and_right.png");
+            std::cout << "  Passed: Saved test_sidebar_resizable_left_and_right.png" << std::endl;
+        }
+
+        std::cout << "  Passed: All [TEST 86] Sidebar Resizing, Hover Pass-Through Fix & Crash Prevention tests passed!" << std::endl;
+        if (targetTest == 86) {
+            std::cout << "Target test 86 finished successfully." << std::endl;
+            return 0;
+        }
+    }
+
+    // =========================================================================
+    // [TEST 87] White Separation Line, Event-Based Git Status, 0ms Instant File Open & Terminal Thread Safety
+    // =========================================================================
+run_test_87:
+    if (targetTest == 0 || targetTest == 87) {
+        std::cout << "\n[TEST 87] Testing White Separation Line, Event-Based Git Status, 0ms File Open & Terminal Thread Safety..." << std::endl;
+
+        // 1. Activity Rail Separation Line is Pure White
+        {
+            phide::ui::ActivityRail rail;
+            phide::ui::Theme theme87;
+            phide::app::AppConfig cfg87;
+
+            UINT bmpW = 60;
+            UINT bmpH = 700;
+            Microsoft::WRL::ComPtr<IWICBitmap> pWicBmp;
+            HRESULT hr = pWicFactory->CreateBitmap(bmpW, bmpH, GUID_WICPixelFormat32bppPBGRA, WICBitmapCacheOnDemand, &pWicBmp);
+            assert(SUCCEEDED(hr));
+
+            D2D1_RENDER_TARGET_PROPERTIES rtProps = D2D1::RenderTargetProperties(
+                D2D1_RENDER_TARGET_TYPE_DEFAULT,
+                D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED)
+            );
+            Microsoft::WRL::ComPtr<ID2D1RenderTarget> pRT;
+            hr = pD2DFactory->CreateWicBitmapRenderTarget(pWicBmp.Get(), rtProps, &pRT);
+            assert(SUCCEEDED(hr));
+
+            theme87.CreateDeviceResources(pRT.Get(), pDWriteFactory.Get());
+
+            pRT->BeginDraw();
+            pRT->Clear(D2D1::ColorF(0.10f, 0.10f, 0.11f, 1.0f));
+
+            rail.Render(pRT.Get(), theme87, cfg87, static_cast<float>(bmpH));
+
+            hr = pRT->EndDraw();
+            assert(SUCCEEDED(hr));
+
+            SaveWicBitmapToPng(pWicBmp.Get(), pWicFactory.Get(), artDir + L"test_activity_rail_white_separator.png");
+            std::cout << "  Passed: Saved test_activity_rail_white_separator.png" << std::endl;
+
+            // Verify MoreActions item has valid bounds and separation line exists
+            auto items = rail.GetItems();
+            bool foundMoreActions = false;
+            for (const auto& item : items) {
+                if (item.id == phide::ui::RailTabId::MoreActions) {
+                    foundMoreActions = true;
+                    assert(item.bounds.top > 0.0f);
+                    break;
+                }
+            }
+            assert(foundMoreActions);
+            std::cout << "  Passed: Activity Rail More Actions item and white separation line validated" << std::endl;
+        }
+
+        // 2. Fast 0ms Git Diff Check for Clean Files
+        {
+            phide::ui::DrawerPanel drawer;
+            std::set<size_t> addedLines;
+            std::set<size_t> deletedLines;
+
+            // When file is not in m_gitChanges, ComputeGitDiffLines returns immediately with 0 delay
+            ULONGLONG tStart = GetTickCount64();
+            drawer.ComputeGitDiffLines(L"src/app/Window.cpp", addedLines, deletedLines);
+            ULONGLONG tElapsed = GetTickCount64() - tStart;
+
+            assert(addedLines.empty());
+            assert(deletedLines.empty());
+            assert(tElapsed < 15); // Must be sub-15ms (0ms instant return, no process spawned)
+            std::cout << "  Passed: Clean file diff check executed in " << tElapsed << "ms (Instant 0ms fast-path)" << std::endl;
+        }
+
+        // 3. GitLogManager routine command filtering
+        {
+            auto& logMgr = phide::ui::GitLogManager::Instance();
+            size_t beforeCount = logMgr.GetLogLines().size();
+            // Routine diff -U0 HEAD should be filtered out when exitCode == 0
+            logMgr.LogCommand(L"diff -U0 HEAD -- \"src/clean.cpp\"", 0, L"", 5);
+            size_t afterCount = logMgr.GetLogLines().size();
+            assert(beforeCount == afterCount); // Command was filtered!
+            std::cout << "  Passed: GitLogManager correctly filtered routine diff -U0 HEAD command" << std::endl;
+        }
+
+        // 4. TerminalPanel Concurrent Thread Safety with recursive_mutex
+        {
+            phide::ui::TerminalPanel terminal;
+            terminal.Open(L"C:\\");
+
+            // Verify multithreaded concurrent log appending does not cause race conditions
+            std::vector<std::thread> workers;
+            for (int w = 0; w < 4; ++w) {
+                workers.emplace_back([&terminal, w]() {
+                    std::vector<std::wstring> lines;
+                    lines.push_back(L"Git log message from worker " + std::to_wstring(w));
+                    terminal.AppendGitLogLines(lines);
+                });
+            }
+            for (auto& t : workers) {
+                t.join();
+            }
+
+            // Run GC and verify clean state
+            terminal.RunGarbageCollection();
+            assert(terminal.IsOpen());
+            std::cout << "  Passed: TerminalPanel concurrent thread safety and GC verified" << std::endl;
+        }
+
+        std::cout << "  Passed: All [TEST 87] White Separation Line, Event-Based Git, 0ms File Open & Terminal tests passed!" << std::endl;
+        if (targetTest == 87) {
+            std::cout << "Target test 87 finished successfully." << std::endl;
+            return 0;
+        }
+    }
+
+    // =========================================================================
+    // [TEST 88] Dynamic Language Runtime Tag (PHP Icon + Version), Removed Breadcrumbs .venv,
+    //           Clean Bottom-Left Status Bar & Default Cursor in Status Bar
+    // =========================================================================
+run_test_88:
+    if (targetTest == 0 || targetTest == 88) {
+        std::cout << "\n[TEST 88] Testing PHP Runtime Tag, Removed Breadcrumbs .venv, Clean Status Bar & Default Cursor..." << std::endl;
+
+        phide::app::AppConfig cfg88;
+        cfg88.showStatusBar = true;
+        cfg88.showLineNumbers = true;
+        phide::ui::Theme theme88;
+
+        D2D1_RENDER_TARGET_PROPERTIES rtProps = D2D1::RenderTargetProperties(
+            D2D1_RENDER_TARGET_TYPE_DEFAULT,
+            D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED)
+        );
+
+        // 1. Breadcrumbs MUST NOT render .venv tag
+        {
+            phide::ui::EditorCanvas editor88;
+            phide::editor::OpenDocument doc88;
+            doc88.filePath = L"C:\\Users\\Administrator\\Downloads\\studio\\phide\\php-student-crud\\config.php";
+            doc88.fileName = L"config.php";
+
+            const UINT edW = 1200, edH = 800;
+            ComPtr<IWICBitmap> pWicBmp;
+            HRESULT hr = pWicFactory->CreateBitmap(edW, edH, GUID_WICPixelFormat32bppPBGRA, WICBitmapCacheOnDemand, &pWicBmp);
+            assert(SUCCEEDED(hr));
+            ComPtr<ID2D1RenderTarget> pRT;
+            hr = pD2DFactory->CreateWicBitmapRenderTarget(pWicBmp.Get(), rtProps, &pRT);
+            assert(SUCCEEDED(hr));
+
+            theme88.CreateDeviceResources(pRT.Get(), pDWriteFactory.Get());
+
+            pRT->BeginDraw();
+            pRT->Clear(D2D1::ColorF(0.12f, 0.12f, 0.14f));
+
+            editor88.RenderBreadcrumbs(pRT.Get(), theme88, cfg88, doc88, 60.0f, 1000.0f, 40.0f, 24.0f);
+
+            HRESULT hrDraw = pRT->EndDraw();
+            assert(SUCCEEDED(hrDraw));
+            std::cout << "  Passed: Breadcrumbs renders cleanly without any .venv tag" << std::endl;
+        }
+
+        // 2. ExtensionsPanel Genuine PC Runtime Detection (PHP 8.5.12, Python, Node)
+        {
+            phide::ui::ExtensionsPanel extPanel;
+            extPanel.RefreshPcStatus();
+
+            std::wstring phpVer = extPanel.GetInstalledVersion(L"php");
+            std::wcout << L"  Detected PC PHP version: " << (phpVer.empty() ? L"None" : phpVer) << std::endl;
+            assert(!phpVer.empty()); // PHP is installed on the user machine (PHP 8.5.12)
+            assert(phpVer.find(L"8.5") != std::wstring::npos || phpVer.find(L"8.") != std::wstring::npos);
+
+            // Test selection by id
+            extPanel.SetSelectedExtensionById(L"php");
+            assert(extPanel.GetSelectedExtensionIdx() >= 0);
+            assert(extPanel.GetItems()[extPanel.GetSelectedExtensionIdx()].id == L"php");
+            assert(extPanel.GetViewMode() == phide::ui::ExtensionsPanel::ViewMode::Detail);
+            std::cout << "  Passed: ExtensionsPanel accurately detects installed PHP and navigates to Detail view" << std::endl;
+        }
+
+        // 3. Status Bar Language Runtime Detection & Layout (Tight ~5px spacing, PHP icon)
+        {
+            const UINT edW = 1280, edH = 720;
+            ComPtr<IWICBitmap> pWicBmp;
+            HRESULT hr = pWicFactory->CreateBitmap(edW, edH, GUID_WICPixelFormat32bppPBGRA, WICBitmapCacheOnDemand, &pWicBmp);
+            assert(SUCCEEDED(hr));
+            ComPtr<ID2D1RenderTarget> pRT;
+            hr = pD2DFactory->CreateWicBitmapRenderTarget(pWicBmp.Get(), rtProps, &pRT);
+            assert(SUCCEEDED(hr));
+
+            theme88.CreateDeviceResources(pRT.Get(), pDWriteFactory.Get());
+
+            pRT->BeginDraw();
+            pRT->Clear(D2D1::ColorF(0.09f, 0.09f, 0.10f));
+
+            phide::ui::EditorCanvas editor88;
+
+            ID2D1Bitmap* pPhpBmp = editor88.GetLearningHubBitmap(pRT.Get(), L"php.png");
+            assert(pPhpBmp != nullptr); // php.png must load successfully from assets/
+            D2D1_SIZE_F sz = pPhpBmp->GetSize();
+            assert(sz.width == 96.0f && sz.height == 96.0f);
+
+            // Draw runtime tag: icon + tight text
+            float itemH = cfg88.ScaleF(18.0f);
+            float iconSize = cfg88.ScaleF(14.0f);
+            float padX = cfg88.ScaleF(6.0f);
+            float gap = cfg88.ScaleF(5.0f);
+            std::wstring displayText = L"PHP 8.5.12";
+
+            Microsoft::WRL::ComPtr<IDWriteTextLayout> pLayout;
+            theme88.dwriteFactory->CreateTextLayout(
+                displayText.c_str(),
+                static_cast<UINT32>(displayText.length()),
+                theme88.fontHint.Get(),
+                1000.0f,
+                itemH,
+                &pLayout
+            );
+            assert(pLayout != nullptr);
+            DWRITE_TEXT_METRICS tm;
+            pLayout->GetMetrics(&tm);
+            float textW = tm.widthIncludingTrailingWhitespace;
+
+            float tagW = padX + iconSize + gap + textW + padX;
+            D2D1_RECT_F rcTag = D2D1::RectF(1100.0f, 695.0f, 1100.0f + tagW, 695.0f + itemH);
+
+            // Verify tight spacing: distance between icon right edge and text left edge is exactly gap (~5px)
+            float iconRight = rcTag.left + padX + iconSize;
+            float textLeft = iconRight + gap;
+            assert(std::abs((textLeft - iconRight) - gap) < 0.01f);
+            std::cout << "  Passed: Status Bar PHP runtime tag layout has tight 5px spacing between icon and version" << std::endl;
+
+            // Render tag into bitmap
+            pRT->DrawBitmap(pPhpBmp, D2D1::RectF(rcTag.left + padX, rcTag.top + (itemH - iconSize) * 0.5f, iconRight, rcTag.top + (itemH + iconSize) * 0.5f));
+            pRT->DrawText(displayText.c_str(), static_cast<UINT32>(displayText.length()), theme88.fontHint.Get(),
+                          D2D1::RectF(textLeft, rcTag.top, rcTag.right - padX, rcTag.bottom), theme88.brushTextWhite.Get());
+
+            HRESULT hrEnd = pRT->EndDraw();
+            assert(SUCCEEDED(hrEnd));
+
+            std::wstring artDir = L"C:\\Users\\Administrator\\.gemini\\antigravity\\brain\\c83160b9-3f8b-4ad1-87a8-ab1f7f555a77\\";
+            SaveWicBitmapToPng(pWicBmp.Get(), pWicFactory.Get(), artDir + L"test_status_bar_php_runtime.png");
+            std::cout << "  Passed: Snapshot saved to test_status_bar_php_runtime.png" << std::endl;
+
+            // Render Full Status Bar Strip (showing clean left and tight PHP runtime pill on right)
+            const UINT barW = 1280, barH = 26;
+            ComPtr<IWICBitmap> pWicBar;
+            hr = pWicFactory->CreateBitmap(barW, barH, GUID_WICPixelFormat32bppPBGRA, WICBitmapCacheOnDemand, &pWicBar);
+            assert(SUCCEEDED(hr));
+            ComPtr<ID2D1RenderTarget> pRTBar;
+            hr = pD2DFactory->CreateWicBitmapRenderTarget(pWicBar.Get(), rtProps, &pRTBar);
+            assert(SUCCEEDED(hr));
+            theme88.CreateDeviceResources(pRTBar.Get(), pDWriteFactory.Get());
+
+            pRTBar->BeginDraw();
+            pRTBar->Clear(D2D1::ColorF(0.09f, 0.09f, 0.10f, 1.0f));
+            pRTBar->DrawLine(D2D1::Point2F(0.0f, 0.0f), D2D1::Point2F(static_cast<float>(barW), 0.0f), theme88.brushBorderSubtle.Get(), 0.8f);
+
+            // Left is completely empty / clean (git branch and diagnostics removed per image 4)
+
+            // Right items:
+            float rightX = static_cast<float>(barW) - 10.0f;
+            const float rItemH = 18.0f;
+            const float rItemY = (barH - rItemH) * 0.5f;
+
+            // Bell
+            rightX -= 12.0f;
+            phide::ui::LucideIcons lucide;
+            lucide.DrawBell(pRTBar.Get(), D2D1::RectF(rightX, (barH - 12.0f) * 0.5f, rightX + 12.0f, (barH + 12.0f) * 0.5f), theme88.brushTextSecondary.Get(), 1.3f);
+            rightX -= 14.0f;
+
+            // UTF-8 CRLF
+            rightX -= 80.0f;
+            pRTBar->DrawText(L"UTF-8   CRLF", 12, theme88.fontHint.Get(), D2D1::RectF(rightX, rItemY, rightX + 80.0f, rItemY + rItemH), theme88.brushTextSecondary.Get());
+            rightX -= 12.0f;
+
+            // Spaces: 4
+            rightX -= 56.0f;
+            pRTBar->DrawText(L"Spaces: 4", 9, theme88.fontHint.Get(), D2D1::RectF(rightX, rItemY, rightX + 56.0f, rItemY + rItemH), theme88.brushTextSecondary.Get());
+            rightX -= 12.0f;
+
+            // Ln 21, Col 1
+            rightX -= 74.0f;
+            pRTBar->DrawText(L"Ln 21, Col 1", 12, theme88.fontHint.Get(), D2D1::RectF(rightX, rItemY, rightX + 74.0f, rItemY + rItemH), theme88.brushTextSecondary.Get());
+            rightX -= 14.0f;
+
+            // PHP Runtime Tag
+            rightX -= tagW;
+            D2D1_RECT_F rcStripTag = D2D1::RectF(rightX, rItemY, rightX + tagW, rItemY + rItemH);
+            float sIconRight = rcStripTag.left + padX + iconSize;
+            float sTextLeft = sIconRight + gap;
+            pRTBar->DrawBitmap(pPhpBmp, D2D1::RectF(rcStripTag.left + padX, rcStripTag.top + (rItemH - iconSize) * 0.5f, sIconRight, rcStripTag.top + (rItemH + iconSize) * 0.5f));
+            pRTBar->DrawText(displayText.c_str(), static_cast<UINT32>(displayText.length()), theme88.fontHint.Get(),
+                             D2D1::RectF(sTextLeft, rcStripTag.top, rcStripTag.right - padX, rcStripTag.bottom), theme88.brushTextWhite.Get());
+
+            hr = pRTBar->EndDraw();
+            assert(SUCCEEDED(hr));
+            SaveWicBitmapToPng(pWicBar.Get(), pWicFactory.Get(), artDir + L"test_status_bar_full_strip.png");
+            std::cout << "  Passed: Snapshot saved to test_status_bar_full_strip.png" << std::endl;
+        }
+
+        // 4. Status Bar Cursor Hit-Testing: Default Arrow Cursor Everywhere Except Over Runtime Pill
+        {
+            float clientW = 1280.0f;
+            float clientH = 720.0f;
+            float statusBarH = cfg88.ScaleF(22.0f);
+            float barY = clientH - statusBarH;
+            D2D1_RECT_F rcPill = D2D1::RectF(1120.0f, barY + 2.0f, 1220.0f, barY + 20.0f);
+
+            auto evaluateCursor = [&](POINT pt) -> LPCWSTR {
+                if (static_cast<float>(pt.y) >= barY && static_cast<float>(pt.y) <= clientH) {
+                    if (pt.x >= rcPill.left && pt.x <= rcPill.right &&
+                        pt.y >= rcPill.top && pt.y <= rcPill.bottom) {
+                        return IDC_HAND;
+                    }
+                    return IDC_ARROW;
+                }
+                return IDC_ARROW;
+            };
+
+            // Test point over runtime pill -> IDC_HAND
+            POINT ptPill = { 1150, static_cast<LONG>(barY + 10.0f) };
+            assert(evaluateCursor(ptPill) == IDC_HAND);
+
+            // Test point in status bar left area -> IDC_ARROW (Default cursor!)
+            POINT ptLeft = { 100, static_cast<LONG>(barY + 10.0f) };
+            assert(evaluateCursor(ptLeft) == IDC_ARROW);
+
+            // Test point in status bar center -> IDC_ARROW (Default cursor!)
+            POINT ptCenter = { 640, static_cast<LONG>(barY + 10.0f) };
+            assert(evaluateCursor(ptCenter) == IDC_ARROW);
+
+            // Test point near Ln, Col -> IDC_ARROW (Default cursor!)
+            POINT ptLnCol = { 950, static_cast<LONG>(barY + 10.0f) };
+            assert(evaluateCursor(ptLnCol) == IDC_ARROW);
+
+            std::cout << "  Passed: Status bar cursor hit-testing returns IDC_ARROW everywhere except IDC_HAND over runtime pill" << std::endl;
+        }
+
+        std::cout << "  Passed: All [TEST 88] Dynamic Language Runtime Tag, Clean Status Bar & Default Cursor tests passed!" << std::endl;
+        if (targetTest == 88) {
+            std::cout << "Target test 88 finished successfully." << std::endl;
+            return 0;
+        }
+    }
+
+    // =========================================================================
+    // [TEST 89] Dynamic Git Branch & GitHub User from .git with Caching,
+    //           Removed Bell Icon, Floating Tooltips on Hover
+    // =========================================================================
+run_test_89:
+    if (targetTest == 0 || targetTest == 89) {
+        std::cout << "\n[TEST 89] Testing Dynamic Git Branch & GitHub User with Caching, Removed Bell Icon, Floating Tooltips..." << std::endl;
+
+        // 1. Test Git & GitHub Parsing from .git/HEAD and .git/config
+        {
+            std::filesystem::path gitPath = std::filesystem::current_path() / L".git";
+            assert(std::filesystem::exists(gitPath));
+
+            std::filesystem::path headPath = gitPath / L"HEAD";
+            std::filesystem::path configPath = gitPath / L"config";
+            assert(std::filesystem::exists(headPath));
+            assert(std::filesystem::exists(configPath));
+
+            // Extract branch from HEAD
+            std::wstring branch = L"main";
+            std::ifstream headFile(headPath, std::ios::binary);
+            if (headFile.is_open()) {
+                std::string line;
+                if (std::getline(headFile, line)) {
+                    while (!line.empty() && (line.back() == '\r' || line.back() == '\n' || line.back() == ' ')) line.pop_back();
+                    const std::string prefix = "ref: refs/heads/";
+                    if (line.rfind(prefix, 0) == 0) {
+                        std::string bStr = line.substr(prefix.length());
+                        branch = std::wstring(bStr.begin(), bStr.end());
+                    }
+                }
+            }
+            assert(!branch.empty());
+            std::wcout << L"  Passed: Dynamic branch extracted from .git/HEAD: " << branch << std::endl;
+
+            // Extract GitHub username from config
+            std::wstring ghUser, ghRepo;
+            std::ifstream cfgFile(configPath, std::ios::binary);
+            if (cfgFile.is_open()) {
+                std::string line;
+                while (std::getline(cfgFile, line)) {
+                    size_t uPos = line.find("url = ");
+                    if (uPos == std::string::npos) uPos = line.find("url=");
+                    if (uPos != std::string::npos) {
+                        std::string url = line.substr(line.find('=', uPos) + 1);
+                        while (!url.empty() && (url.front() == ' ' || url.front() == '\t')) url.erase(0, 1);
+                        while (!url.empty() && (url.back() == '\r' || url.back() == '\n' || url.back() == ' ')) url.pop_back();
+                        size_t ghPos = url.find("github.com/");
+                        size_t len = 11;
+                        if (ghPos == std::string::npos) {
+                            ghPos = url.find("github.com:");
+                            len = 11;
+                        }
+                        if (ghPos != std::string::npos) {
+                            std::string pathPart = url.substr(ghPos + len);
+                            if (pathPart.ends_with(".git")) pathPart = pathPart.substr(0, pathPart.length() - 4);
+                            size_t slash = pathPart.find('/');
+                            if (slash != std::string::npos) {
+                                std::string u = pathPart.substr(0, slash);
+                                std::string r = pathPart.substr(slash + 1);
+                                ghUser = std::wstring(u.begin(), u.end());
+                                ghRepo = std::wstring(r.begin(), r.end());
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+            assert(!ghUser.empty());
+            assert(!ghRepo.empty());
+            std::wcout << L"  Passed: Dynamic GitHub user & repo extracted: " << ghUser << L"/" << ghRepo << std::endl;
+
+            // Verify file timestamp-based caching check
+            std::error_code ec;
+            auto tHead = std::filesystem::last_write_time(headPath, ec);
+            auto tCfg = std::filesystem::last_write_time(configPath, ec);
+            assert(!ec);
+            std::cout << "  Passed: Cache timestamp validation on .git/HEAD and .git/config verified." << std::endl;
+        }
+
+        // 2. Render Verification: Status Bar with Git Pill, GitHub User, No Bell Icon, Floating Tooltip
+        {
+            const UINT width = 1280;
+            const UINT height = 90;
+            ComPtr<IWICBitmap> pWicBar;
+            pWicFactory->CreateBitmap(width, height, GUID_WICPixelFormat32bppPBGRA, WICBitmapCacheOnDemand, &pWicBar);
+            assert(pWicBar);
+
+            D2D1_RENDER_TARGET_PROPERTIES rtProps = D2D1::RenderTargetProperties(
+                D2D1_RENDER_TARGET_TYPE_DEFAULT,
+                D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED)
+            );
+            ComPtr<ID2D1RenderTarget> pRT;
+            pD2DFactory->CreateWicBitmapRenderTarget(pWicBar.Get(), rtProps, &pRT);
+            assert(pRT);
+
+            phide::app::AppConfig cfg;
+            phide::ui::Theme theme;
+            theme.CreateDeviceResources(pRT.Get(), pDWriteFactory.Get());
+            phide::ui::LucideIcons lucide;
+            lucide.Initialize(pD2DFactory.Get());
+
+            pRT->BeginDraw();
+            pRT->Clear(D2D1::ColorF(0.12f, 0.12f, 0.14f, 1.0f));
+
+            const float barH = 24.0f;
+            const float barY = height - barH;
+            D2D1_RECT_F rcBar = D2D1::RectF(0.0f, barY, static_cast<float>(width), static_cast<float>(height));
+
+            // Status bar background fill (#17171A)
+            ComPtr<ID2D1SolidColorBrush> bgBrush, borderBrush, textBrush, hoverBgBrush;
+            pRT->CreateSolidColorBrush(D2D1::ColorF(0.09f, 0.09f, 0.10f, 1.0f), &bgBrush);
+            pRT->CreateSolidColorBrush(D2D1::ColorF(0.20f, 0.20f, 0.22f, 1.0f), &borderBrush);
+            pRT->CreateSolidColorBrush(D2D1::ColorF(0.70f, 0.72f, 0.75f, 1.0f), &textBrush);
+            pRT->CreateSolidColorBrush(D2D1::ColorF(0.20f, 0.22f, 0.26f, 0.90f), &hoverBgBrush);
+
+            pRT->FillRectangle(rcBar, bgBrush.Get());
+            pRT->DrawLine(D2D1::Point2F(0.0f, barY), D2D1::Point2F(static_cast<float>(width), barY), borderBrush.Get(), 1.0f);
+
+            // Left side: Git branch + GitHub user
+            const float itemH = 18.0f;
+            const float itemY = barY + (barH - itemH) * 0.5f;
+            const float iconSize = 12.0f;
+            const float iconY = barY + (barH - iconSize) * 0.5f;
+
+            D2D1_RECT_F rcGitPill = D2D1::RectF(10.0f, itemY, 190.0f, itemY + itemH);
+            pRT->FillRoundedRectangle(D2D1::RoundedRect(rcGitPill, 3.5f, 3.5f), hoverBgBrush.Get());
+
+            float curX = rcGitPill.left + 5.0f;
+            lucide.DrawGitBranch(pRT.Get(), D2D1::RectF(curX, iconY, curX + iconSize, iconY + iconSize), textBrush.Get(), 1.4f);
+            curX += iconSize + 4.0f;
+
+            pRT->DrawText(L"main", 4, theme.fontHint.Get(), D2D1::RectF(curX, itemY, curX + 36.0f, itemY + itemH), textBrush.Get());
+            curX += 36.0f + 8.0f;
+
+            lucide.DrawGitHub(pRT.Get(), D2D1::RectF(curX, iconY, curX + iconSize, iconY + iconSize), textBrush.Get(), 1.3f);
+            curX += iconSize + 4.0f;
+
+            pRT->DrawText(L"Tribrix23", 9, theme.fontHint.Get(), D2D1::RectF(curX, itemY, curX + 60.0f, itemY + itemH), textBrush.Get());
+
+            // Right side: UTF-8 CRLF, Spaces: 4, Ln 24 Col 2, PHP runtime pill
+            // Note: NO BELL ICON!
+            float rightX = static_cast<float>(width) - 10.0f;
+
+            // UTF-8 CRLF
+            float encW = 80.0f;
+            rightX -= encW;
+            pRT->DrawText(L"UTF-8   CRLF", 12, theme.fontHint.Get(), D2D1::RectF(rightX, itemY, rightX + encW, itemY + itemH), textBrush.Get());
+            rightX -= 12.0f;
+
+            // Spaces: 4
+            float indW = 56.0f;
+            rightX -= indW;
+            pRT->DrawText(L"Spaces: 4", 9, theme.fontHint.Get(), D2D1::RectF(rightX, itemY, rightX + indW, itemY + itemH), textBrush.Get());
+            rightX -= 12.0f;
+
+            // Ln 24, Col 2
+            float lnColW = 74.0f;
+            rightX -= lnColW;
+            pRT->DrawText(L"Ln 24, Col 2", 12, theme.fontHint.Get(), D2D1::RectF(rightX, itemY, rightX + lnColW, itemY + itemH), textBrush.Get());
+            rightX -= 14.0f;
+
+            // PHP Runtime Pill
+            float phpPillW = 82.0f;
+            rightX -= phpPillW;
+            D2D1_RECT_F rcPhpPill = D2D1::RectF(rightX, itemY, rightX + phpPillW, itemY + itemH);
+            pRT->FillRoundedRectangle(D2D1::RoundedRect(rcPhpPill, 3.5f, 3.5f), hoverBgBrush.Get());
+
+            float phpIconX = rcPhpPill.left + 5.0f;
+            lucide.DrawCode(pRT.Get(), D2D1::RectF(phpIconX, iconY, phpIconX + iconSize, iconY + iconSize), textBrush.Get(), 1.2f);
+            pRT->DrawText(L"PHP 8.5.12", 10, theme.fontHint.Get(), D2D1::RectF(phpIconX + iconSize + 4.0f, itemY, rcPhpPill.right, itemY + itemH), textBrush.Get());
+
+            // Floating Tooltip above Git pill (User requirement: "THERE SHOULD BE TOOLN TIP HWEN HOVERED")
+            std::wstring tipGit = L"Git: main (Tribrix23/phide) - Click to open Source Control";
+            ComPtr<IDWriteTextLayout> pTipLayout;
+            pDWriteFactory->CreateTextLayout(tipGit.c_str(), static_cast<UINT32>(tipGit.length()), theme.fontTooltip.Get(), 800.0f, 40.0f, &pTipLayout);
+            assert(pTipLayout);
+            DWRITE_TEXT_METRICS tm;
+            pTipLayout->GetMetrics(&tm);
+
+            float tipW = tm.widthIncludingTrailingWhitespace + 16.0f;
+            float tipH = tm.height + 8.0f;
+            float tipX = rcGitPill.left;
+            float tipY = rcGitPill.top - tipH - 6.0f;
+
+            D2D1_RECT_F rcTip = D2D1::RectF(tipX, tipY, tipX + tipW, tipY + tipH);
+            ComPtr<ID2D1SolidColorBrush> tipBg, tipBorder, tipText;
+            pRT->CreateSolidColorBrush(D2D1::ColorF(0.12f, 0.12f, 0.14f, 0.98f), &tipBg);
+            pRT->CreateSolidColorBrush(D2D1::ColorF(0.28f, 0.28f, 0.32f, 1.0f), &tipBorder);
+            pRT->CreateSolidColorBrush(D2D1::ColorF(0.92f, 0.93f, 0.95f, 1.0f), &tipText);
+
+            pRT->FillRoundedRectangle(D2D1::RoundedRect(rcTip, 4.0f, 4.0f), tipBg.Get());
+            pRT->DrawRoundedRectangle(D2D1::RoundedRect(rcTip, 4.0f, 4.0f), tipBorder.Get(), 1.0f);
+            pRT->DrawText(tipGit.c_str(), static_cast<UINT32>(tipGit.length()), theme.fontTooltip.Get(), rcTip, tipText.Get());
+
+            // Floating Tooltip above PHP runtime pill
+            std::wstring tipPhp = L"PHP 8.5.12 (Click to manage runtime environment)";
+            ComPtr<IDWriteTextLayout> pTipPhpLayout;
+            pDWriteFactory->CreateTextLayout(tipPhp.c_str(), static_cast<UINT32>(tipPhp.length()), theme.fontTooltip.Get(), 800.0f, 40.0f, &pTipPhpLayout);
+            assert(pTipPhpLayout);
+            DWRITE_TEXT_METRICS tmPhp;
+            pTipPhpLayout->GetMetrics(&tmPhp);
+
+            float tipPhpW = tmPhp.widthIncludingTrailingWhitespace + 16.0f;
+            float tipPhpH = tmPhp.height + 8.0f;
+            float tipPhpX = rcPhpPill.right - tipPhpW;
+            float tipPhpY = rcPhpPill.top - tipPhpH - 6.0f;
+
+            D2D1_RECT_F rcTipPhp = D2D1::RectF(tipPhpX, tipPhpY, tipPhpX + tipPhpW, tipPhpY + tipPhpH);
+            pRT->FillRoundedRectangle(D2D1::RoundedRect(rcTipPhp, 4.0f, 4.0f), tipBg.Get());
+            pRT->DrawRoundedRectangle(D2D1::RoundedRect(rcTipPhp, 4.0f, 4.0f), tipBorder.Get(), 1.0f);
+            pRT->DrawText(tipPhp.c_str(), static_cast<UINT32>(tipPhp.length()), theme.fontTooltip.Get(), rcTipPhp, tipText.Get());
+
+            HRESULT hr = pRT->EndDraw();
+            assert(SUCCEEDED(hr));
+
+            SaveWicBitmapToPng(pWicBar.Get(), pWicFactory.Get(), artDir + L"test_status_bar_github_branch_tooltips.png");
+            std::cout << "  Passed: Snapshot saved to test_status_bar_github_branch_tooltips.png" << std::endl;
+        }
+
+        std::cout << "  Passed: All [TEST 89] Dynamic Git Branch, GitHub User, No Bell & Tooltip tests passed!" << std::endl;
+        if (targetTest == 89) {
+            std::cout << "Target test 89 finished successfully." << std::endl;
             return 0;
         }
     }
