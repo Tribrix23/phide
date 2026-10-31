@@ -13037,9 +13037,11 @@ run_test_88:
     // =========================================================================
 run_test_89:
     if (targetTest == 0 || targetTest == 89) {
-        std::cout << "\n[TEST 89] Testing Dynamic Git Branch & GitHub User with Caching, Removed Bell Icon, Floating Tooltips..." << std::endl;
+        std::cout << "\n[TEST 89] Testing Dynamic Git Branch & Author Name, User Icon, Enlarged Branch Icon..." << std::endl;
 
-        // 1. Test Git & GitHub Parsing from .git/HEAD and .git/config
+        // 1. Test Git & Author Name Parsing from .git/HEAD and .gitconfig
+        std::wstring branch = L"main";
+        std::wstring ghUser, ghRepo, authorName;
         {
             std::filesystem::path gitPath = std::filesystem::current_path() / L".git";
             assert(std::filesystem::exists(gitPath));
@@ -13050,7 +13052,6 @@ run_test_89:
             assert(std::filesystem::exists(configPath));
 
             // Extract branch from HEAD
-            std::wstring branch = L"main";
             std::ifstream headFile(headPath, std::ios::binary);
             if (headFile.is_open()) {
                 std::string line;
@@ -13064,10 +13065,9 @@ run_test_89:
                 }
             }
             assert(!branch.empty());
-            std::wcout << L"  Passed: Dynamic branch extracted from .git/HEAD: " << branch << std::endl;
+            std::wcout << L"  Passed: Dynamic Git branch extracted: " << branch << std::endl;
 
-            // Extract GitHub username from config
-            std::wstring ghUser, ghRepo;
+            // Extract repo name from config
             std::ifstream cfgFile(configPath, std::ios::binary);
             if (cfgFile.is_open()) {
                 std::string line;
@@ -13079,13 +13079,9 @@ run_test_89:
                         while (!url.empty() && (url.front() == ' ' || url.front() == '\t')) url.erase(0, 1);
                         while (!url.empty() && (url.back() == '\r' || url.back() == '\n' || url.back() == ' ')) url.pop_back();
                         size_t ghPos = url.find("github.com/");
-                        size_t len = 11;
-                        if (ghPos == std::string::npos) {
-                            ghPos = url.find("github.com:");
-                            len = 11;
-                        }
+                        if (ghPos == std::string::npos) ghPos = url.find("github.com:");
                         if (ghPos != std::string::npos) {
-                            std::string pathPart = url.substr(ghPos + len);
+                            std::string pathPart = url.substr(ghPos + 11);
                             if (pathPart.ends_with(".git")) pathPart = pathPart.substr(0, pathPart.length() - 4);
                             size_t slash = pathPart.find('/');
                             if (slash != std::string::npos) {
@@ -13099,19 +13095,56 @@ run_test_89:
                     }
                 }
             }
-            assert(!ghUser.empty());
-            assert(!ghRepo.empty());
-            std::wcout << L"  Passed: Dynamic GitHub user & repo extracted: " << ghUser << L"/" << ghRepo << std::endl;
 
-            // Verify file timestamp-based caching check
-            std::error_code ec;
-            auto tHead = std::filesystem::last_write_time(headPath, ec);
-            auto tCfg = std::filesystem::last_write_time(configPath, ec);
-            assert(!ec);
-            std::cout << "  Passed: Cache timestamp validation on .git/HEAD and .git/config verified." << std::endl;
+            // Extract author name from config or global gitconfig
+            auto parseName = [](const std::filesystem::path& p) -> std::wstring {
+                std::error_code ec;
+                if (!std::filesystem::exists(p, ec)) return L"";
+                std::ifstream f(p, std::ios::binary);
+                if (!f.is_open()) return L"";
+                std::string l;
+                bool inUser = false;
+                while (std::getline(f, l)) {
+                    while (!l.empty() && (l.front() == ' ' || l.front() == '\t')) l.erase(0, 1);
+                    while (!l.empty() && (l.back() == '\r' || l.back() == '\n' || l.back() == ' ' || l.back() == '\t')) l.pop_back();
+                    if (l.empty() || l.front() == '#' || l.front() == ';') continue;
+                    if (l.front() == '[') {
+                        inUser = (l.rfind("[user]", 0) == 0 || l.rfind("[user ", 0) == 0);
+                        continue;
+                    }
+                    if (inUser && l.rfind("name", 0) == 0) {
+                        size_t eq = l.find('=');
+                        if (eq != std::string::npos) {
+                            std::string v = l.substr(eq + 1);
+                            while (!v.empty() && (v.front() == ' ' || v.front() == '\t')) v.erase(0, 1);
+                            while (!v.empty() && (v.back() == ' ' || v.back() == '\t')) v.pop_back();
+                            if (!v.empty()) return std::wstring(v.begin(), v.end());
+                        }
+                    }
+                }
+                return L"";
+            };
+
+            authorName = parseName(configPath);
+            if (authorName.empty()) {
+                const wchar_t* up = _wgetenv(L"USERPROFILE");
+                if (up && *up) authorName = parseName(std::filesystem::path(up) / L".gitconfig");
+            }
+            if (authorName.empty()) {
+                const wchar_t* hm = _wgetenv(L"HOME");
+                if (hm && *hm) authorName = parseName(std::filesystem::path(hm) / L".gitconfig");
+            }
+            if (authorName.empty()) {
+                const wchar_t* un = _wgetenv(L"USERNAME");
+                if (un && *un) authorName = un;
+                else if (!ghUser.empty()) authorName = ghUser;
+            }
+
+            assert(!authorName.empty());
+            std::wcout << L"  Passed: Author full name extracted dynamically (no hardcoding): " << authorName << std::endl;
         }
 
-        // 2. Render Verification: Status Bar with Git Pill, GitHub User, No Bell Icon, Floating Tooltip
+        // 2. Render Verification: Status Bar with Enlarged Git Branch Icon, User Icon, and Full Author Name
         {
             const UINT width = 1280;
             const UINT height = 90;
@@ -13150,71 +13183,95 @@ run_test_89:
             pRT->FillRectangle(rcBar, bgBrush.Get());
             pRT->DrawLine(D2D1::Point2F(0.0f, barY), D2D1::Point2F(static_cast<float>(width), barY), borderBrush.Get(), 1.0f);
 
-            // Left side: Git branch + GitHub user
+            // Left side: Enlarged Git Branch Icon + Branch Name + User Icon + Author Name
+            // Shifted right to 32.0f
+            const float curLeftX = 32.0f;
             const float itemH = 18.0f;
             const float itemY = barY + (barH - itemH) * 0.5f;
-            const float iconSize = 12.0f;
-            const float iconY = barY + (barH - iconSize) * 0.5f;
+            const float branchIconSize = 16.0f; // Enlarged from 12.0f
+            const float userIconSize = 15.0f;
+            const float branchIconY = barY + (barH - branchIconSize) * 0.5f;
+            const float userIconY = barY + (barH - userIconSize) * 0.5f;
+            const float padX = 6.0f;
+            const float gap = 5.0f;
+            const float itemSpacing = 12.0f;
 
-            D2D1_RECT_F rcGitPill = D2D1::RectF(10.0f, itemY, 190.0f, itemY + itemH);
-            pRT->FillRoundedRectangle(D2D1::RoundedRect(rcGitPill, 3.5f, 3.5f), hoverBgBrush.Get());
+            // Measure texts
+            float branchW = 32.0f;
+            float userW = 120.0f;
+            ComPtr<IDWriteTextLayout> pBranchLayout, pUserLayout;
+            pDWriteFactory->CreateTextLayout(branch.c_str(), static_cast<UINT32>(branch.length()), theme.fontHint.Get(), 300.0f, itemH, &pBranchLayout);
+            if (pBranchLayout) {
+                DWRITE_TEXT_METRICS m;
+                pBranchLayout->GetMetrics(&m);
+                branchW = m.widthIncludingTrailingWhitespace;
+            }
+            pDWriteFactory->CreateTextLayout(authorName.c_str(), static_cast<UINT32>(authorName.length()), theme.fontHint.Get(), 300.0f, itemH, &pUserLayout);
+            if (pUserLayout) {
+                DWRITE_TEXT_METRICS m;
+                pUserLayout->GetMetrics(&m);
+                userW = m.widthIncludingTrailingWhitespace;
+            }
 
-            float curX = rcGitPill.left + 5.0f;
-            lucide.DrawGitBranch(pRT.Get(), D2D1::RectF(curX, iconY, curX + iconSize, iconY + iconSize), textBrush.Get(), 1.4f);
-            curX += iconSize + 4.0f;
+            const float containerGap = 6.0f;
+            float branchPillW = padX + branchIconSize + gap + branchW + padX;
+            D2D1_RECT_F rcBranchPill = D2D1::RectF(curLeftX, itemY, curLeftX + branchPillW, itemY + itemH);
 
-            pRT->DrawText(L"main", 4, theme.fontHint.Get(), D2D1::RectF(curX, itemY, curX + 36.0f, itemY + itemH), textBrush.Get());
-            curX += 36.0f + 8.0f;
+            float userPillW = padX + userIconSize + gap + userW + padX;
+            float userLeftX = curLeftX + branchPillW + containerGap;
+            D2D1_RECT_F rcUserPill = D2D1::RectF(userLeftX, itemY, userLeftX + userPillW, itemY + itemH);
 
-            lucide.DrawGitHub(pRT.Get(), D2D1::RectF(curX, iconY, curX + iconSize, iconY + iconSize), textBrush.Get(), 1.3f);
-            curX += iconSize + 4.0f;
+            // Container 1: Git Branch (Separate Container)
+            float bX = rcBranchPill.left + padX;
+            lucide.DrawGitBranch(pRT.Get(), D2D1::RectF(bX, branchIconY, bX + branchIconSize, branchIconY + branchIconSize), textBrush.Get(), 1.7f);
+            bX += branchIconSize + gap;
+            pRT->DrawText(branch.c_str(), static_cast<UINT32>(branch.length()), theme.fontHint.Get(), D2D1::RectF(bX, itemY, bX + branchW, itemY + itemH), textBrush.Get());
 
-            pRT->DrawText(L"Tribrix23", 9, theme.fontHint.Get(), D2D1::RectF(curX, itemY, curX + 60.0f, itemY + itemH), textBrush.Get());
+            // Container 2: Git Author / User (Separate Container with hover highlight)
+            pRT->FillRoundedRectangle(D2D1::RoundedRect(rcUserPill, 3.5f, 3.5f), hoverBgBrush.Get());
+            float uX = rcUserPill.left + padX;
+            lucide.DrawUser(pRT.Get(), D2D1::RectF(uX, userIconY, uX + userIconSize, userIconY + userIconSize), textBrush.Get(), 1.4f);
+            uX += userIconSize + gap;
+            pRT->DrawText(authorName.c_str(), static_cast<UINT32>(authorName.length()), theme.fontHint.Get(), D2D1::RectF(uX, itemY, uX + userW, itemY + itemH), textBrush.Get());
 
-            // Right side: UTF-8 CRLF, Spaces: 4, Ln 24 Col 2, PHP runtime pill
-            // Note: NO BELL ICON!
+            // Right side items
             float rightX = static_cast<float>(width) - 10.0f;
-
-            // UTF-8 CRLF
             float encW = 80.0f;
             rightX -= encW;
             pRT->DrawText(L"UTF-8   CRLF", 12, theme.fontHint.Get(), D2D1::RectF(rightX, itemY, rightX + encW, itemY + itemH), textBrush.Get());
             rightX -= 12.0f;
 
-            // Spaces: 4
             float indW = 56.0f;
             rightX -= indW;
             pRT->DrawText(L"Spaces: 4", 9, theme.fontHint.Get(), D2D1::RectF(rightX, itemY, rightX + indW, itemY + itemH), textBrush.Get());
             rightX -= 12.0f;
 
-            // Ln 24, Col 2
             float lnColW = 74.0f;
             rightX -= lnColW;
             pRT->DrawText(L"Ln 24, Col 2", 12, theme.fontHint.Get(), D2D1::RectF(rightX, itemY, rightX + lnColW, itemY + itemH), textBrush.Get());
             rightX -= 14.0f;
 
-            // PHP Runtime Pill
             float phpPillW = 82.0f;
             rightX -= phpPillW;
             D2D1_RECT_F rcPhpPill = D2D1::RectF(rightX, itemY, rightX + phpPillW, itemY + itemH);
             pRT->FillRoundedRectangle(D2D1::RoundedRect(rcPhpPill, 3.5f, 3.5f), hoverBgBrush.Get());
 
             float phpIconX = rcPhpPill.left + 5.0f;
-            lucide.DrawCode(pRT.Get(), D2D1::RectF(phpIconX, iconY, phpIconX + iconSize, iconY + iconSize), textBrush.Get(), 1.2f);
-            pRT->DrawText(L"PHP 8.5.12", 10, theme.fontHint.Get(), D2D1::RectF(phpIconX + iconSize + 4.0f, itemY, rcPhpPill.right, itemY + itemH), textBrush.Get());
+            lucide.DrawCode(pRT.Get(), D2D1::RectF(phpIconX, itemY + 3.0f, phpIconX + 12.0f, itemY + 15.0f), textBrush.Get(), 1.2f);
+            pRT->DrawText(L"PHP 8.5.12", 10, theme.fontHint.Get(), D2D1::RectF(phpIconX + 16.0f, itemY, rcPhpPill.right, itemY + itemH), textBrush.Get());
 
-            // Floating Tooltip above Git pill (User requirement: "THERE SHOULD BE TOOLN TIP HWEN HOVERED")
-            std::wstring tipGit = L"Git: main (Tribrix23/phide) - Click to open Source Control";
+            // Floating Tooltip above Git User pill (Separate Tooltip)
+            std::wstring tipUser = L"Git Author: " + authorName + (ghRepo.empty() ? L"" : L" (" + ghRepo + L")");
             ComPtr<IDWriteTextLayout> pTipLayout;
-            pDWriteFactory->CreateTextLayout(tipGit.c_str(), static_cast<UINT32>(tipGit.length()), theme.fontTooltip.Get(), 800.0f, 40.0f, &pTipLayout);
+            pDWriteFactory->CreateTextLayout(tipUser.c_str(), static_cast<UINT32>(tipUser.length()), theme.fontTooltip.Get(), 800.0f, 40.0f, &pTipLayout);
             assert(pTipLayout);
             DWRITE_TEXT_METRICS tm;
             pTipLayout->GetMetrics(&tm);
 
             float tipW = tm.widthIncludingTrailingWhitespace + 16.0f;
             float tipH = tm.height + 8.0f;
-            float tipX = rcGitPill.left;
-            float tipY = rcGitPill.top - tipH - 6.0f;
+            float tipX = rcUserPill.left;
+            float tipY = rcUserPill.top - tipH - 6.0f;
 
             D2D1_RECT_F rcTip = D2D1::RectF(tipX, tipY, tipX + tipW, tipY + tipH);
             ComPtr<ID2D1SolidColorBrush> tipBg, tipBorder, tipText;
@@ -13224,34 +13281,32 @@ run_test_89:
 
             pRT->FillRoundedRectangle(D2D1::RoundedRect(rcTip, 4.0f, 4.0f), tipBg.Get());
             pRT->DrawRoundedRectangle(D2D1::RoundedRect(rcTip, 4.0f, 4.0f), tipBorder.Get(), 1.0f);
-            pRT->DrawText(tipGit.c_str(), static_cast<UINT32>(tipGit.length()), theme.fontTooltip.Get(), rcTip, tipText.Get());
-
-            // Floating Tooltip above PHP runtime pill
-            std::wstring tipPhp = L"PHP 8.5.12 (Click to manage runtime environment)";
-            ComPtr<IDWriteTextLayout> pTipPhpLayout;
-            pDWriteFactory->CreateTextLayout(tipPhp.c_str(), static_cast<UINT32>(tipPhp.length()), theme.fontTooltip.Get(), 800.0f, 40.0f, &pTipPhpLayout);
-            assert(pTipPhpLayout);
-            DWRITE_TEXT_METRICS tmPhp;
-            pTipPhpLayout->GetMetrics(&tmPhp);
-
-            float tipPhpW = tmPhp.widthIncludingTrailingWhitespace + 16.0f;
-            float tipPhpH = tmPhp.height + 8.0f;
-            float tipPhpX = rcPhpPill.right - tipPhpW;
-            float tipPhpY = rcPhpPill.top - tipPhpH - 6.0f;
-
-            D2D1_RECT_F rcTipPhp = D2D1::RectF(tipPhpX, tipPhpY, tipPhpX + tipPhpW, tipPhpY + tipPhpH);
-            pRT->FillRoundedRectangle(D2D1::RoundedRect(rcTipPhp, 4.0f, 4.0f), tipBg.Get());
-            pRT->DrawRoundedRectangle(D2D1::RoundedRect(rcTipPhp, 4.0f, 4.0f), tipBorder.Get(), 1.0f);
-            pRT->DrawText(tipPhp.c_str(), static_cast<UINT32>(tipPhp.length()), theme.fontTooltip.Get(), rcTipPhp, tipText.Get());
+            pRT->DrawText(tipUser.c_str(), static_cast<UINT32>(tipUser.length()), theme.fontTooltip.Get(), rcTip, tipText.Get());
 
             HRESULT hr = pRT->EndDraw();
             assert(SUCCEEDED(hr));
 
-            SaveWicBitmapToPng(pWicBar.Get(), pWicFactory.Get(), artDir + L"test_status_bar_github_branch_tooltips.png");
-            std::cout << "  Passed: Snapshot saved to test_status_bar_github_branch_tooltips.png" << std::endl;
+            SaveWicBitmapToPng(pWicBar.Get(), pWicFactory.Get(), artDir + L"test_status_bar_user_name_and_icons.png");
+            std::cout << "  Passed: Snapshot saved to test_status_bar_user_name_and_icons.png" << std::endl;
         }
 
-        std::cout << "  Passed: All [TEST 89] Dynamic Git Branch, GitHub User, No Bell & Tooltip tests passed!" << std::endl;
+        // 3. Verify Activity Rail 3-Dot More Actions Menu
+        {
+            phide::ui::PopupMenu popup;
+            phide::app::AppConfig cfg;
+            popup.OpenMoreActionsMenu(50.0f, 200.0f, cfg);
+            const auto& items = popup.GetItems();
+            assert(items.size() == 3);
+            assert(items[0].actionId == phide::ui::MenuActionId::MoreDependencyGraph && items[0].label == L"Dependency Graph");
+            assert(items[1].actionId == phide::ui::MenuActionId::MoreCodeHierarchy && items[1].label == L"Code Hierarchy" && items[1].shortcut == L"Shift+Alt+H");
+            assert(items[2].actionId == phide::ui::MenuActionId::MoreCodeMetrics && items[2].label == L"Code Metrics");
+            for (const auto& item : items) {
+                assert(!item.isSeparator);
+            }
+            std::cout << "  Passed: More Actions menu has Dependency Graph, Code Hierarchy, Code Metrics (Trace Code, Run & Debug and separators removed)" << std::endl;
+        }
+
+        std::cout << "  Passed: All [TEST 89] Dynamic Git Branch, User Icon, Full Author Name, No Bell & Tooltip tests passed!" << std::endl;
         if (targetTest == 89) {
             std::cout << "Target test 89 finished successfully." << std::endl;
             return 0;

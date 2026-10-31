@@ -706,11 +706,14 @@ private:
     std::wstring m_cachedGitBranch;
     std::wstring m_cachedGitHubName;
     std::wstring m_cachedGitHubRepo;
+    std::wstring m_cachedGitUserName;
     bool m_isGitCached = false;
     void UpdateCachedGitInfo();
 
-    D2D1_RECT_F m_rcStatusBarGitTag{};
-    bool m_isHoveredStatusBarGitTag = false;
+    D2D1_RECT_F m_rcStatusBarGitBranch{};
+    bool m_isHoveredStatusBarGitBranch = false;
+    D2D1_RECT_F m_rcStatusBarGitUser{};
+    bool m_isHoveredStatusBarGitUser = false;
     D2D1_RECT_F m_rcStatusBarLnCol{};
     bool m_isHoveredStatusBarLnCol = false;
     D2D1_RECT_F m_rcStatusBarSpaces{};

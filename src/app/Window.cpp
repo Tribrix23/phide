@@ -6213,6 +6213,7 @@ void Window::UpdateCachedGitInfo() {
         m_cachedGitBranch.clear();
         m_cachedGitHubName.clear();
         m_cachedGitHubRepo.clear();
+        m_cachedGitUserName.clear();
         m_cachedGitDir.clear();
         m_isGitCached = false;
         return;
@@ -6316,6 +6317,63 @@ void Window::UpdateCachedGitInfo() {
 
     m_cachedGitHubName = ghUser;
     m_cachedGitHubRepo = ghRepo;
+
+    // 3. Read Git User / Author Name from local .git/config, %USERPROFILE%/.gitconfig, or %HOME%/.gitconfig
+    std::wstring authorName;
+    auto parseUserName = [](const std::filesystem::path& p) -> std::wstring {
+        std::error_code ec;
+        if (!std::filesystem::exists(p, ec)) return L"";
+        std::ifstream file(p, std::ios::binary);
+        if (!file.is_open()) return L"";
+        std::string line;
+        bool inUserSection = false;
+        while (std::getline(file, line)) {
+            while (!line.empty() && (line.front() == ' ' || line.front() == '\t')) line.erase(0, 1);
+            while (!line.empty() && (line.back() == '\r' || line.back() == '\n' || line.back() == ' ' || line.back() == '\t')) line.pop_back();
+            if (line.empty() || line.front() == '#' || line.front() == ';') continue;
+            if (line.front() == '[') {
+                inUserSection = (line.rfind("[user]", 0) == 0 || line.rfind("[user ", 0) == 0);
+                continue;
+            }
+            if (inUserSection) {
+                if (line.rfind("name", 0) == 0) {
+                    size_t eq = line.find('=');
+                    if (eq != std::string::npos) {
+                        std::string val = line.substr(eq + 1);
+                        while (!val.empty() && (val.front() == ' ' || val.front() == '\t')) val.erase(0, 1);
+                        while (!val.empty() && (val.back() == ' ' || val.back() == '\t')) val.pop_back();
+                        if (!val.empty()) {
+                            return std::wstring(val.begin(), val.end());
+                        }
+                    }
+                }
+            }
+        }
+        return L"";
+    };
+
+    authorName = parseUserName(configPath);
+    if (authorName.empty()) {
+        const wchar_t* up = _wgetenv(L"USERPROFILE");
+        if (up && *up) {
+            authorName = parseUserName(std::filesystem::path(up) / L".gitconfig");
+        }
+    }
+    if (authorName.empty()) {
+        const wchar_t* hm = _wgetenv(L"HOME");
+        if (hm && *hm) {
+            authorName = parseUserName(std::filesystem::path(hm) / L".gitconfig");
+        }
+    }
+    if (authorName.empty()) {
+        const wchar_t* un = _wgetenv(L"USERNAME");
+        if (un && *un) {
+            authorName = un;
+        } else if (!m_cachedGitHubName.empty()) {
+            authorName = m_cachedGitHubName;
+        }
+    }
+    m_cachedGitUserName = authorName;
 }
 
 void Window::RenderFloatingTooltip(ID2D1RenderTarget* pRT, const std::wstring& text, const D2D1_RECT_F& anchorBounds, float clientW) {
@@ -6405,15 +6463,19 @@ void Window::RenderStatusBar(float clientW, float clientH) {
     const float itemH = m_config.ScaleF(18.0f);
     const float itemY = barY + (statusBarH - itemH) * 0.5f;
 
-    // Left items: Git Branch + GitHub Name (User requirement: "ADD HERE THE CURRENT BRANCH NAME dibnt hardcode get it from github then it should have caching only invalidate the cache when changing project or deleting git or changing branch OR IS IT NOT NEED BECAUSE THERE IS ALREADY THAT INFO ON .git? also BESIDE THAT Have the giuthub name")
+    // Left items: Git Branch + User Name (Separate containers with independent hover and tooltips per user requirement)
     UpdateCachedGitInfo();
-    m_rcStatusBarGitTag = {};
+    m_rcStatusBarGitBranch = {};
+    m_rcStatusBarGitUser = {};
     if (!m_cachedGitBranch.empty()) {
-        float curLeftX = m_config.ScaleF(10.0f);
-        const float iconSize = m_config.ScaleF(12.0f);
-        const float iconYPos = barY + (statusBarH - iconSize) * 0.5f;
-        const float padX = m_config.ScaleF(5.0f);
-        const float gap = m_config.ScaleF(4.0f);
+        float curLeftX = m_config.ScaleF(32.0f);
+        const float branchIconSize = m_config.ScaleF(16.0f);
+        const float userIconSize = m_config.ScaleF(15.0f);
+        const float branchIconYPos = barY + (statusBarH - branchIconSize) * 0.5f;
+        const float userIconYPos = barY + (statusBarH - userIconSize) * 0.5f;
+        const float padX = m_config.ScaleF(6.0f);
+        const float gap = m_config.ScaleF(5.0f);
+        const float containerGap = m_config.ScaleF(6.0f);
 
         float branchTextW = m_config.ScaleF(32.0f);
         if (pFmt && m_theme.dwriteFactory) {
@@ -6433,35 +6495,12 @@ void Window::RenderStatusBar(float clientW, float clientH) {
             }
         }
 
-        std::wstring ghDisplay = m_cachedGitHubName;
-        float ghTextW = 0.0f;
-        if (!ghDisplay.empty() && pFmt && m_theme.dwriteFactory) {
-            Microsoft::WRL::ComPtr<IDWriteTextLayout> pLayout;
-            m_theme.dwriteFactory->CreateTextLayout(
-                ghDisplay.c_str(),
-                static_cast<UINT32>(ghDisplay.length()),
-                pFmt,
-                500.0f,
-                itemH,
-                &pLayout
-            );
-            if (pLayout) {
-                DWRITE_TEXT_METRICS tm;
-                pLayout->GetMetrics(&tm);
-                ghTextW = tm.widthIncludingTrailingWhitespace;
-            }
-        }
+        // 1. Separate Container for Git Branch
+        float branchPillW = padX + branchIconSize + gap + branchTextW + padX;
+        m_rcStatusBarGitBranch = D2D1::RectF(curLeftX, itemY, curLeftX + branchPillW, itemY + itemH);
 
-        float totalPillW = padX + iconSize + gap + branchTextW;
-        if (!ghDisplay.empty()) {
-            totalPillW += m_config.ScaleF(8.0f) + iconSize + gap + ghTextW;
-        }
-        totalPillW += padX;
-
-        m_rcStatusBarGitTag = D2D1::RectF(curLeftX, itemY, curLeftX + totalPillW, itemY + itemH);
-
-        if (m_isHoveredStatusBarGitTag) {
-            D2D1_ROUNDED_RECT rrc = D2D1::RoundedRect(m_rcStatusBarGitTag, m_config.ScaleF(3.5f), m_config.ScaleF(3.5f));
+        if (m_isHoveredStatusBarGitBranch) {
+            D2D1_ROUNDED_RECT rrc = D2D1::RoundedRect(m_rcStatusBarGitBranch, m_config.ScaleF(3.5f), m_config.ScaleF(3.5f));
             Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> hoverBg;
             m_pRenderTarget->CreateSolidColorBrush(
                 m_theme.IsDarkMode() ? D2D1::ColorF(0.20f, 0.22f, 0.26f, 0.90f) : D2D1::ColorF(0.88f, 0.90f, 0.94f, 0.90f),
@@ -6470,29 +6509,60 @@ void Window::RenderStatusBar(float clientW, float clientH) {
             if (hoverBg) m_pRenderTarget->FillRoundedRectangle(rrc, hoverBg.Get());
         }
 
-        float drawX = m_rcStatusBarGitTag.left + padX;
+        float drawBranchX = m_rcStatusBarGitBranch.left + padX;
+        D2D1_RECT_F rcBranchIcon = D2D1::RectF(drawBranchX, branchIconYPos, drawBranchX + branchIconSize, branchIconYPos + branchIconSize);
+        m_rail.GetLucide().DrawGitBranch(m_pRenderTarget.Get(), rcBranchIcon, textBrush, 1.7f);
+        drawBranchX += branchIconSize + gap;
 
-        // Draw Git Branch icon & branch name
-        D2D1_RECT_F rcBranchIcon = D2D1::RectF(drawX, iconYPos, drawX + iconSize, iconYPos + iconSize);
-        m_rail.GetLucide().DrawGitBranch(m_pRenderTarget.Get(), rcBranchIcon, textBrush, 1.4f);
-        drawX += iconSize + gap;
-
-        D2D1_RECT_F rcBranchText = D2D1::RectF(drawX, itemY, drawX + branchTextW, itemY + itemH);
+        D2D1_RECT_F rcBranchText = D2D1::RectF(drawBranchX, itemY, drawBranchX + branchTextW, itemY + itemH);
         if (pFmt && textBrush) {
             m_pRenderTarget->DrawText(m_cachedGitBranch.c_str(), static_cast<UINT32>(m_cachedGitBranch.length()), pFmt, rcBranchText, textBrush);
         }
-        drawX += branchTextW;
 
-        // Beside that: GitHub mark icon & GitHub username
-        if (!ghDisplay.empty()) {
-            drawX += m_config.ScaleF(8.0f);
-            D2D1_RECT_F rcGhIcon = D2D1::RectF(drawX, iconYPos, drawX + iconSize, iconYPos + iconSize);
-            m_rail.GetLucide().DrawGitHub(m_pRenderTarget.Get(), rcGhIcon, textBrush, 1.3f);
-            drawX += iconSize + gap;
+        curLeftX += branchPillW + containerGap;
 
-            D2D1_RECT_F rcGhText = D2D1::RectF(drawX, itemY, drawX + ghTextW, itemY + itemH);
+        // 2. Separate Container for Git Author / User
+        std::wstring userDisplay = !m_cachedGitUserName.empty() ? m_cachedGitUserName : m_cachedGitHubName;
+        if (!userDisplay.empty()) {
+            float userTextW = 0.0f;
+            if (pFmt && m_theme.dwriteFactory) {
+                Microsoft::WRL::ComPtr<IDWriteTextLayout> pLayout;
+                m_theme.dwriteFactory->CreateTextLayout(
+                    userDisplay.c_str(),
+                    static_cast<UINT32>(userDisplay.length()),
+                    pFmt,
+                    500.0f,
+                    itemH,
+                    &pLayout
+                );
+                if (pLayout) {
+                    DWRITE_TEXT_METRICS tm;
+                    pLayout->GetMetrics(&tm);
+                    userTextW = tm.widthIncludingTrailingWhitespace;
+                }
+            }
+
+            float userPillW = padX + userIconSize + gap + userTextW + padX;
+            m_rcStatusBarGitUser = D2D1::RectF(curLeftX, itemY, curLeftX + userPillW, itemY + itemH);
+
+            if (m_isHoveredStatusBarGitUser) {
+                D2D1_ROUNDED_RECT rrc = D2D1::RoundedRect(m_rcStatusBarGitUser, m_config.ScaleF(3.5f), m_config.ScaleF(3.5f));
+                Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> hoverBg;
+                m_pRenderTarget->CreateSolidColorBrush(
+                    m_theme.IsDarkMode() ? D2D1::ColorF(0.20f, 0.22f, 0.26f, 0.90f) : D2D1::ColorF(0.88f, 0.90f, 0.94f, 0.90f),
+                    &hoverBg
+                );
+                if (hoverBg) m_pRenderTarget->FillRoundedRectangle(rrc, hoverBg.Get());
+            }
+
+            float drawUserX = m_rcStatusBarGitUser.left + padX;
+            D2D1_RECT_F rcUserIcon = D2D1::RectF(drawUserX, userIconYPos, drawUserX + userIconSize, userIconYPos + userIconSize);
+            m_rail.GetLucide().DrawUser(m_pRenderTarget.Get(), rcUserIcon, textBrush, 1.4f);
+            drawUserX += userIconSize + gap;
+
+            D2D1_RECT_F rcUserText = D2D1::RectF(drawUserX, itemY, drawUserX + userTextW, itemY + itemH);
             if (pFmt && textBrush) {
-                m_pRenderTarget->DrawText(ghDisplay.c_str(), static_cast<UINT32>(ghDisplay.length()), pFmt, rcGhText, textBrush);
+                m_pRenderTarget->DrawText(userDisplay.c_str(), static_cast<UINT32>(userDisplay.length()), pFmt, rcUserText, textBrush);
             }
         }
     }
@@ -6652,9 +6722,16 @@ void Window::RenderStatusBar(float clientW, float clientH) {
     if (m_isHoveredStatusBarVenvTag) {
         std::wstring tip = displayText + L" (Click to manage runtime environment)";
         RenderFloatingTooltip(m_pRenderTarget.Get(), tip, m_rcStatusBarVenvTag, clientW);
-    } else if (m_isHoveredStatusBarGitTag) {
-        std::wstring tip = L"Git: " + m_cachedGitBranch + (!m_cachedGitHubName.empty() ? (L" (" + m_cachedGitHubName + (!m_cachedGitHubRepo.empty() ? (L"/" + m_cachedGitHubRepo) : L"") + L")") : L"") + L" - Click to open Source Control";
-        RenderFloatingTooltip(m_pRenderTarget.Get(), tip, m_rcStatusBarGitTag, clientW);
+    } else if (m_isHoveredStatusBarGitBranch) {
+        std::wstring tip = L"Git Branch: " + (m_cachedGitBranch.empty() ? L"main" : m_cachedGitBranch) + L" (Click to open Source Control)";
+        RenderFloatingTooltip(m_pRenderTarget.Get(), tip, m_rcStatusBarGitBranch, clientW);
+    } else if (m_isHoveredStatusBarGitUser) {
+        std::wstring nameDisplay = !m_cachedGitUserName.empty() ? m_cachedGitUserName : m_cachedGitHubName;
+        std::wstring tip = L"Git Author: " + nameDisplay;
+        if (!m_cachedGitHubRepo.empty()) {
+            tip += L" (" + m_cachedGitHubRepo + L")";
+        }
+        RenderFloatingTooltip(m_pRenderTarget.Get(), tip, m_rcStatusBarGitUser, clientW);
     } else if (m_isHoveredStatusBarLnCol) {
         std::wstring tip = L"Line " + std::to_wstring(curLine) + L", Column " + std::to_wstring(curCol);
         RenderFloatingTooltip(m_pRenderTarget.Get(), tip, m_rcStatusBarLnCol, clientW);
@@ -7422,10 +7499,17 @@ void Window::HandleMouseMove(POINT clientPt, WPARAM wParam) {
             needRepaint = true;
         }
 
-        bool inGit = (clientPt.x >= m_rcStatusBarGitTag.left && clientPt.x <= m_rcStatusBarGitTag.right &&
-                      clientPt.y >= m_rcStatusBarGitTag.top && clientPt.y <= m_rcStatusBarGitTag.bottom);
-        if (inGit != m_isHoveredStatusBarGitTag) {
-            m_isHoveredStatusBarGitTag = inGit;
+        bool inGitBranch = (clientPt.x >= m_rcStatusBarGitBranch.left && clientPt.x <= m_rcStatusBarGitBranch.right &&
+                            clientPt.y >= m_rcStatusBarGitBranch.top && clientPt.y <= m_rcStatusBarGitBranch.bottom);
+        if (inGitBranch != m_isHoveredStatusBarGitBranch) {
+            m_isHoveredStatusBarGitBranch = inGitBranch;
+            needRepaint = true;
+        }
+
+        bool inGitUser = (clientPt.x >= m_rcStatusBarGitUser.left && clientPt.x <= m_rcStatusBarGitUser.right &&
+                          clientPt.y >= m_rcStatusBarGitUser.top && clientPt.y <= m_rcStatusBarGitUser.bottom);
+        if (inGitUser != m_isHoveredStatusBarGitUser) {
+            m_isHoveredStatusBarGitUser = inGitUser;
             needRepaint = true;
         }
 
@@ -8477,6 +8561,7 @@ void Window::HandleLButtonDown(POINT clientPt) {
                     case ui::MenuActionId::MoreTraceCode:
                     case ui::MenuActionId::MoreDependencyGraph:
                     case ui::MenuActionId::MoreCallHierarchy:
+                    case ui::MenuActionId::MoreCodeHierarchy:
                     case ui::MenuActionId::MoreCodeMetrics:
                         InvalidateRect(m_hwnd, nullptr, FALSE);
                         break;
@@ -9399,10 +9484,12 @@ void Window::HandleLButtonDown(POINT clientPt) {
         return;
     }
 
-    // Status Bar clicks: Git pill opens Source Control drawer
+    // Status Bar clicks: Git branch or user pill opens Source Control drawer
     if (m_config.showStatusBar &&
-        clientPt.x >= m_rcStatusBarGitTag.left && clientPt.x <= m_rcStatusBarGitTag.right &&
-        clientPt.y >= m_rcStatusBarGitTag.top && clientPt.y <= m_rcStatusBarGitTag.bottom) {
+        ((clientPt.x >= m_rcStatusBarGitBranch.left && clientPt.x <= m_rcStatusBarGitBranch.right &&
+          clientPt.y >= m_rcStatusBarGitBranch.top && clientPt.y <= m_rcStatusBarGitBranch.bottom) ||
+         (clientPt.x >= m_rcStatusBarGitUser.left && clientPt.x <= m_rcStatusBarGitUser.right &&
+          clientPt.y >= m_rcStatusBarGitUser.top && clientPt.y <= m_rcStatusBarGitUser.bottom))) {
 
         m_config.activeRailTab = 2; // Git / Source Control
         if (!m_config.isDrawerOpen) {
@@ -9968,8 +10055,10 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     if (static_cast<float>(pt.y) >= (clientH - statusBarH) && static_cast<float>(pt.y) <= clientH) {
                         if ((pt.x >= m_rcStatusBarVenvTag.left && pt.x <= m_rcStatusBarVenvTag.right &&
                              pt.y >= m_rcStatusBarVenvTag.top && pt.y <= m_rcStatusBarVenvTag.bottom) ||
-                            (pt.x >= m_rcStatusBarGitTag.left && pt.x <= m_rcStatusBarGitTag.right &&
-                             pt.y >= m_rcStatusBarGitTag.top && pt.y <= m_rcStatusBarGitTag.bottom)) {
+                            (pt.x >= m_rcStatusBarGitBranch.left && pt.x <= m_rcStatusBarGitBranch.right &&
+                             pt.y >= m_rcStatusBarGitBranch.top && pt.y <= m_rcStatusBarGitBranch.bottom) ||
+                            (pt.x >= m_rcStatusBarGitUser.left && pt.x <= m_rcStatusBarGitUser.right &&
+                             pt.y >= m_rcStatusBarGitUser.top && pt.y <= m_rcStatusBarGitUser.bottom)) {
                             SetCursor(LoadCursor(nullptr, IDC_HAND));
                             return TRUE;
                         }
@@ -10225,7 +10314,8 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
             m_rail.SetHoveredTab(ui::RailTabId::None);
             m_drawer.SetHoveredIndex(-1);
             m_isHoveredStatusBarVenvTag = false;
-            m_isHoveredStatusBarGitTag = false;
+            m_isHoveredStatusBarGitBranch = false;
+            m_isHoveredStatusBarGitUser = false;
             m_isHoveredStatusBarLnCol = false;
             m_isHoveredStatusBarSpaces = false;
             m_isHoveredStatusBarEncoding = false;

@@ -117,6 +117,11 @@ public:
     void DrawGitHub(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, ID2D1Brush* pBrush, float strokeWidth = 1.3f) const;
 
     /**
+     * @brief Draws the standard Lucide User (account / profile avatar) icon inside the specified bounding box.
+     */
+    void DrawUser(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, ID2D1Brush* pBrush, float strokeWidth = 1.4f) const;
+
+    /**
      * @brief Draws the Run & Debug icon (play triangle with overlapping bug glyph, matching Image 2).
      */
     void DrawDebug(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, ID2D1Brush* pBrush, float strokeWidth = 1.6f) const;

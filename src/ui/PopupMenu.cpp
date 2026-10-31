@@ -332,16 +332,12 @@ void PopupMenu::OpenMoreActionsMenu(float x, float y, const app::AppConfig& conf
     m_hoveredSubmenuIdx = -1;
 
     m_items.clear();
-    // Dropdown on its side with entries: Trace code, Dependency Graph, and so on (per user prompt)
-    m_items.push_back({ MenuActionId::MoreTraceCode,       L"Trace Code",       L"",             false, false, false, true, {}, {} });
-    m_items.push_back({ MenuActionId::MoreDependencyGraph, L"Dependency Graph", L"",             false, false, false, true, {}, {} });
-    m_items.push_back({ MenuActionId::None,                L"",                 L"",             true,  false, false, false, {}, {} });
-    m_items.push_back({ MenuActionId::MoreCallHierarchy,   L"Call Hierarchy",   L"Shift+Alt+H",  false, false, false, true, {}, {} });
-    m_items.push_back({ MenuActionId::MoreCodeMetrics,     L"Code Metrics",     L"",             false, false, false, true, {}, {} });
-    m_items.push_back({ MenuActionId::None,                L"",                 L"",             true,  false, false, false, {}, {} });
-    m_items.push_back({ MenuActionId::MoreRunDebug,        L"Run & Debug",      L"Ctrl+Shift+D", false, false, false, true, {}, {} });
+    // More Actions Menu: Dependency Graph, Code Hierarchy, Code Metrics (Trace Code, Run & Debug and separation lines removed per user request)
+    m_items.push_back({ MenuActionId::MoreDependencyGraph, L"Dependency Graph", L"",            false, false, false, true, {}, {} });
+    m_items.push_back({ MenuActionId::MoreCodeHierarchy,   L"Code Hierarchy",   L"Shift+Alt+H", false, false, false, true, {}, {} });
+    m_items.push_back({ MenuActionId::MoreCodeMetrics,     L"Code Metrics",     L"",            false, false, false, true, {}, {} });
 
-    const float moreMenuW = config.ScaleF(200.0f);
+    const float moreMenuW = config.ScaleF(190.0f);
     LayoutMenu(m_items, x, y, moreMenuW, config, m_mainMenuBounds);
 }
 

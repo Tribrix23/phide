@@ -1575,4 +1575,51 @@ void LucideIcons::DrawGitHub(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, 
     pRT->DrawLine(MapPoint(12.0f, 17.0f, ox, oy, s), MapPoint(14.5f, 15.0f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
 }
 
+void LucideIcons::DrawUser(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, ID2D1Brush* pBrush, float strokeWidth) const {
+    if (!pRT || !pBrush) return;
+    EnsureStrokeStyle(pRT, const_cast<Microsoft::WRL::ComPtr<ID2D1StrokeStyle>&>(m_pStrokeStyle));
+
+    const float w = bounds.right - bounds.left;
+    const float h = bounds.bottom - bounds.top;
+    const float s = (std::min)(w, h) / 24.0f;
+    const float ox = bounds.left + (w - 24.0f * s) * 0.5f;
+    const float oy = bounds.top + (h - 24.0f * s) * 0.5f;
+
+    // 1. User Head (Circle at cx=12, cy=7, radius=4)
+    pRT->DrawEllipse(D2D1::Ellipse(MapPoint(12.0f, 7.0f, ox, oy, s), 4.0f * s, 4.0f * s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+
+    // 2. User Shoulders / Body (Lucide path: M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2)
+    Microsoft::WRL::ComPtr<ID2D1Factory> pFactory;
+    pRT->GetFactory(&pFactory);
+    if (pFactory) {
+        Microsoft::WRL::ComPtr<ID2D1PathGeometry> pPath;
+        if (SUCCEEDED(pFactory->CreatePathGeometry(&pPath)) && pPath) {
+            Microsoft::WRL::ComPtr<ID2D1GeometrySink> pSink;
+            if (SUCCEEDED(pPath->Open(&pSink)) && pSink) {
+                pSink->BeginFigure(MapPoint(5.0f, 21.0f, ox, oy, s), D2D1_FIGURE_BEGIN_HOLLOW);
+                pSink->AddLine(MapPoint(5.0f, 19.0f, ox, oy, s));
+                pSink->AddArc(D2D1::ArcSegment(
+                    MapPoint(9.0f, 15.0f, ox, oy, s),
+                    D2D1::SizeF(4.0f * s, 4.0f * s),
+                    0.0f,
+                    D2D1_SWEEP_DIRECTION_CLOCKWISE,
+                    D2D1_ARC_SIZE_SMALL
+                ));
+                pSink->AddLine(MapPoint(15.0f, 15.0f, ox, oy, s));
+                pSink->AddArc(D2D1::ArcSegment(
+                    MapPoint(19.0f, 19.0f, ox, oy, s),
+                    D2D1::SizeF(4.0f * s, 4.0f * s),
+                    0.0f,
+                    D2D1_SWEEP_DIRECTION_CLOCKWISE,
+                    D2D1_ARC_SIZE_SMALL
+                ));
+                pSink->AddLine(MapPoint(19.0f, 21.0f, ox, oy, s));
+                pSink->EndFigure(D2D1_FIGURE_END_OPEN);
+                pSink->Close();
+                pRT->DrawGeometry(pPath.Get(), pBrush, strokeWidth, m_pStrokeStyle.Get());
+            }
+        }
+    }
+}
+
 } // namespace phide::ui

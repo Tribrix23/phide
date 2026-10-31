@@ -237,6 +237,7 @@ enum class MenuActionId {
     MoreTraceCode,
     MoreDependencyGraph,
     MoreCallHierarchy,
+    MoreCodeHierarchy,
     MoreCodeMetrics,
     MoreRunDebug
 };

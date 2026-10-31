@@ -1162,6 +1162,40 @@ void TerminalPanel::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppC
     }
 
     pRT->PopAxisAlignedClip();
+
+    // 7. Floating Tooltip for Hovered Debug Action
+    // Rendered OUTSIDE panel clip so it floats freely above toolbar over editor canvas without horizontal line clipping artifact (User requirement)
+    if (m_hoveredDebugAction != DebugAction::None) {
+        const wchar_t* tipText = L"";
+        D2D1_RECT_F tipTarget{};
+        switch (m_hoveredDebugAction) {
+            case DebugAction::Continue: tipText = L"Continue (F5)"; tipTarget = m_debugContinueBounds; break;
+            case DebugAction::StepOver: tipText = L"Step Over (F10)"; tipTarget = m_debugStepOverBounds; break;
+            case DebugAction::StepInto: tipText = L"Step Into (F11)"; tipTarget = m_debugStepIntoBounds; break;
+            case DebugAction::StepOut:  tipText = L"Step Out (Shift+F11)"; tipTarget = m_debugStepOutBounds; break;
+            case DebugAction::Restart:  tipText = L"Restart (Ctrl+Shift+F5)"; tipTarget = m_debugRestartBounds; break;
+            case DebugAction::Stop:     tipText = L"Stop (Shift+F5)"; tipTarget = m_debugStopBounds; break;
+            default: break;
+        }
+        if (tipText[0] != L'\0') {
+            size_t tipLen = wcslen(tipText);
+            float textW = config.ScaleF(static_cast<float>(tipLen * 7.0f + 14.0f));
+            float tipH = config.ScaleF(22.0f);
+            float tipW = textW + config.ScaleF(16.0f);
+            float targetW = tipTarget.right - tipTarget.left;
+            float tipX = tipTarget.left + (targetW - tipW) * 0.5f;
+            float tipY = tipTarget.top - tipH - config.ScaleF(4.0f);
+            if (tipY < 2.0f) tipY = tipTarget.bottom + config.ScaleF(4.0f);
+
+            D2D1_ROUNDED_RECT rrcTip = D2D1::RoundedRect(D2D1::RectF(tipX, tipY, tipX + tipW, tipY + tipH), 4.0f, 4.0f);
+            pRT->FillRoundedRectangle(rrcTip, theme.brushTooltipBg ? theme.brushTooltipBg.Get() : theme.brushMenuBg.Get());
+            pRT->DrawRoundedRectangle(rrcTip, theme.brushTooltipBorder ? theme.brushTooltipBorder.Get() : theme.brushMenuBorder.Get(), 0.8f);
+            pRT->DrawText(tipText, static_cast<UINT32>(tipLen),
+                          theme.fontTooltip ? theme.fontTooltip.Get() : theme.fontHint.Get(),
+                          rrcTip.rect,
+                          theme.brushTooltipText ? theme.brushTooltipText.Get() : theme.brushTextPrimary.Get());
+        }
+    }
 }
 
 void TerminalPanel::RenderHeader(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
@@ -1441,38 +1475,6 @@ void TerminalPanel::RenderHeader(ID2D1RenderTarget* pRT, Theme& theme, const app
             pRT->DrawLine(D2D1::Point2F(cx - 3.0f, cy - 4.0f), D2D1::Point2F(cx + 4.0f, cy), contBrush.Get(), 1.5f);
             pRT->DrawLine(D2D1::Point2F(cx + 4.0f, cy), D2D1::Point2F(cx - 3.0f, cy + 4.0f), contBrush.Get(), 1.5f);
             pRT->DrawLine(D2D1::Point2F(cx - 3.0f, cy + 4.0f), D2D1::Point2F(cx - 3.0f, cy - 4.0f), contBrush.Get(), 1.5f);
-        }
-
-        // Floating Tooltip for Hovered Debug Action
-        if (m_hoveredDebugAction != DebugAction::None) {
-            const wchar_t* tipText = L"";
-            D2D1_RECT_F tipTarget{};
-            switch (m_hoveredDebugAction) {
-                case DebugAction::Continue: tipText = L"Continue (F5)"; tipTarget = m_debugContinueBounds; break;
-                case DebugAction::StepOver: tipText = L"Step Over (F10)"; tipTarget = m_debugStepOverBounds; break;
-                case DebugAction::StepInto: tipText = L"Step Into (F11)"; tipTarget = m_debugStepIntoBounds; break;
-                case DebugAction::StepOut: tipText = L"Step Out (Shift+F11)"; tipTarget = m_debugStepOutBounds; break;
-                case DebugAction::Restart: tipText = L"Restart (Ctrl+Shift+F5)"; tipTarget = m_debugRestartBounds; break;
-                case DebugAction::Stop: tipText = L"Stop (Shift+F5)"; tipTarget = m_debugStopBounds; break;
-                default: break;
-            }
-            if (tipText[0] != L'\0') {
-                size_t tipLen = wcslen(tipText);
-                float textW = config.ScaleF(static_cast<float>(tipLen * 7.0f + 14.0f));
-                float tipH = config.ScaleF(22.0f);
-                float tipW = textW + config.ScaleF(16.0f);
-                float tipX = tipTarget.left + (dbgBtnW - tipW) / 2.0f;
-                float tipY = tipTarget.top - tipH - config.ScaleF(4.0f);
-                if (tipY < 2.0f) tipY = tipTarget.bottom + config.ScaleF(4.0f);
-
-                D2D1_ROUNDED_RECT rrcTip = D2D1::RoundedRect(D2D1::RectF(tipX, tipY, tipX + tipW, tipY + tipH), 4.0f, 4.0f);
-                pRT->FillRoundedRectangle(rrcTip, theme.brushTooltipBg ? theme.brushTooltipBg.Get() : theme.brushMenuBg.Get());
-                pRT->DrawRoundedRectangle(rrcTip, theme.brushTooltipBorder ? theme.brushTooltipBorder.Get() : theme.brushMenuBorder.Get(), 0.8f);
-                pRT->DrawText(tipText, static_cast<UINT32>(tipLen),
-                              theme.fontTooltip ? theme.fontTooltip.Get() : theme.fontHint.Get(),
-                              rrcTip.rect,
-                              theme.brushTooltipText ? theme.brushTooltipText.Get() : theme.brushTextPrimary.Get());
-            }
         }
 
         rightX = toolbarLeft - config.ScaleF(6.0f);
