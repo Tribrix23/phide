@@ -23,20 +23,39 @@ void SettingsView::InitializeSettings() {
         it.scope = L"FILES";
         it.title = L"Auto Save";
         it.description = L"Controls auto save of editors that have unsaved changes.";
-        it.category = SettingCategory::CommonlyUsed;
+        it.category = SettingCategory::Files;
+        it.isCommonlyUsed = true;
         it.control = SettingControl::Dropdown;
         it.options = { L"afterDelay", L"onFocusChange", L"onWindowChange", L"off" };
         m_items.push_back(std::move(it));
     }
 
-    // 2. Editor: Font Size (Number Stepper)
+    // 2. Files: Auto Save Delay (Number Stepper)
+    {
+        SettingItem it;
+        it.id = L"files.autoSaveDelay";
+        it.scope = L"FILES";
+        it.title = L"Auto Save Delay";
+        it.description = L"Controls the delay in milliseconds after which an editor is saved automatically.";
+        it.category = SettingCategory::Files;
+        it.isCommonlyUsed = true;
+        it.control = SettingControl::NumberStepper;
+        it.minVal = 200.0f;
+        it.maxVal = 5000.0f;
+        it.stepVal = 200.0f;
+        it.unit = L"ms";
+        m_items.push_back(std::move(it));
+    }
+
+    // 3. Editor: Font Size (Number Stepper)
     {
         SettingItem it;
         it.id = L"editor.fontSize";
         it.scope = L"EDITOR";
         it.title = L"Font Size";
         it.description = L"Controls the font size in pixels for code editors.";
-        it.category = SettingCategory::CommonlyUsed;
+        it.category = SettingCategory::TextEditor;
+        it.isCommonlyUsed = true;
         it.control = SettingControl::NumberStepper;
         it.minVal = 8.0f;
         it.maxVal = 36.0f;
@@ -45,27 +64,29 @@ void SettingsView::InitializeSettings() {
         m_items.push_back(std::move(it));
     }
 
-    // 3. Editor: Font Family (Dropdown / Presets)
+    // 4. Editor: Font Family (Dropdown / Presets)
     {
         SettingItem it;
         it.id = L"editor.fontFamily";
         it.scope = L"EDITOR";
         it.title = L"Font Family";
         it.description = L"Controls the typeface used in the editor buffer.";
-        it.category = SettingCategory::CommonlyUsed;
+        it.category = SettingCategory::TextEditor;
+        it.isCommonlyUsed = true;
         it.control = SettingControl::Dropdown;
         it.options = { L"Consolas", L"Cascadia Code", L"Courier New", L"Fira Code" };
         m_items.push_back(std::move(it));
     }
 
-    // 4. Editor: Tab Size (Number Stepper)
+    // 5. Editor: Tab Size (Number Stepper)
     {
         SettingItem it;
         it.id = L"editor.tabSize";
         it.scope = L"EDITOR";
         it.title = L"Tab Size";
         it.description = L"The number of spaces a tab is equal to.";
-        it.category = SettingCategory::CommonlyUsed;
+        it.category = SettingCategory::TextEditor;
+        it.isCommonlyUsed = true;
         it.control = SettingControl::NumberStepper;
         it.minVal = 2.0f;
         it.maxVal = 8.0f;
@@ -74,70 +95,20 @@ void SettingsView::InitializeSettings() {
         m_items.push_back(std::move(it));
     }
 
-    // 5. Editor: Render Whitespace (Dropdown)
-    {
-        SettingItem it;
-        it.id = L"editor.renderWhitespace";
-        it.scope = L"EDITOR";
-        it.title = L"Render Whitespace";
-        it.description = L"Controls how the editor should render whitespace characters.";
-        it.category = SettingCategory::CommonlyUsed;
-        it.control = SettingControl::Dropdown;
-        it.options = { L"selection", L"boundary", L"trailing", L"all", L"none" };
-        m_items.push_back(std::move(it));
-    }
-
-    // 6. Editor: Cursor Style (Dropdown)
-    {
-        SettingItem it;
-        it.id = L"editor.cursorStyle";
-        it.scope = L"EDITOR";
-        it.title = L"Cursor Style";
-        it.description = L"Controls the cursor style in insert input mode.";
-        it.category = SettingCategory::CommonlyUsed;
-        it.control = SettingControl::Dropdown;
-        it.options = { L"line", L"block", L"underline" };
-        m_items.push_back(std::move(it));
-    }
-
-    // 7. Editor: Word Wrap (Toggle)
+    // 6. Editor: Word Wrap (Toggle)
     {
         SettingItem it;
         it.id = L"editor.wordWrap";
         it.scope = L"EDITOR";
         it.title = L"Word Wrap";
         it.description = L"Controls whether lines wrap to fit within the editor viewport width.";
-        it.category = SettingCategory::CommonlyUsed;
+        it.category = SettingCategory::TextEditor;
+        it.isCommonlyUsed = true;
         it.control = SettingControl::Toggle;
         m_items.push_back(std::move(it));
     }
 
-    // 8. Editor: Insert Spaces (Toggle)
-    {
-        SettingItem it;
-        it.id = L"editor.insertSpaces";
-        it.scope = L"EDITOR";
-        it.title = L"Insert Spaces";
-        it.description = L"Insert spaces when pressing Tab instead of tab character.";
-        it.category = SettingCategory::CommonlyUsed;
-        it.control = SettingControl::Toggle;
-        m_items.push_back(std::move(it));
-    }
-
-    // 9. Workbench: Color Theme (Dropdown)
-    {
-        SettingItem it;
-        it.id = L"workbench.colorTheme";
-        it.scope = L"WORKBENCH";
-        it.title = L"Color Theme";
-        it.description = L"Specifies the visual theme mode used across the IDE workbench.";
-        it.category = SettingCategory::CommonlyUsed;
-        it.control = SettingControl::Dropdown;
-        it.options = { L"Dark Modern", L"Light Modern" };
-        m_items.push_back(std::move(it));
-    }
-
-    // 10. Editor: Line Numbers (Toggle)
+    // 7. Editor: Line Numbers (Toggle)
     {
         SettingItem it;
         it.id = L"editor.lineNumbers";
@@ -145,11 +116,12 @@ void SettingsView::InitializeSettings() {
         it.title = L"Line Numbers";
         it.description = L"Controls the display of line numbers in the editor gutter.";
         it.category = SettingCategory::TextEditor;
+        it.isCommonlyUsed = true;
         it.control = SettingControl::Toggle;
         m_items.push_back(std::move(it));
     }
 
-    // 11. Editor: Minimap (Toggle)
+    // 8. Editor: Minimap (Toggle)
     {
         SettingItem it;
         it.id = L"editor.minimap";
@@ -157,11 +129,67 @@ void SettingsView::InitializeSettings() {
         it.title = L"Minimap";
         it.description = L"Controls whether the code overview minimap is shown on the right.";
         it.category = SettingCategory::TextEditor;
+        it.isCommonlyUsed = true;
         it.control = SettingControl::Toggle;
         m_items.push_back(std::move(it));
     }
 
-    // 12. Appearance: Breadcrumbs (Toggle)
+    // 9. Editor: Render Whitespace (Dropdown)
+    {
+        SettingItem it;
+        it.id = L"editor.renderWhitespace";
+        it.scope = L"EDITOR";
+        it.title = L"Render Whitespace";
+        it.description = L"Controls how the editor should render whitespace characters.";
+        it.category = SettingCategory::TextEditor;
+        it.isCommonlyUsed = true;
+        it.control = SettingControl::Dropdown;
+        it.options = { L"selection", L"boundary", L"trailing", L"all", L"none" };
+        m_items.push_back(std::move(it));
+    }
+
+    // 10. Editor: Cursor Style (Dropdown)
+    {
+        SettingItem it;
+        it.id = L"editor.cursorStyle";
+        it.scope = L"EDITOR";
+        it.title = L"Cursor Style";
+        it.description = L"Controls the cursor style in insert input mode.";
+        it.category = SettingCategory::TextEditor;
+        it.isCommonlyUsed = true;
+        it.control = SettingControl::Dropdown;
+        it.options = { L"line", L"block", L"underline" };
+        m_items.push_back(std::move(it));
+    }
+
+    // 11. Editor: Insert Spaces (Toggle)
+    {
+        SettingItem it;
+        it.id = L"editor.insertSpaces";
+        it.scope = L"EDITOR";
+        it.title = L"Insert Spaces";
+        it.description = L"Insert spaces when pressing Tab instead of tab character.";
+        it.category = SettingCategory::TextEditor;
+        it.isCommonlyUsed = true;
+        it.control = SettingControl::Toggle;
+        m_items.push_back(std::move(it));
+    }
+
+    // 12. Appearance: Color Theme (Dropdown)
+    {
+        SettingItem it;
+        it.id = L"workbench.colorTheme";
+        it.scope = L"APPEARANCE";
+        it.title = L"Color Theme";
+        it.description = L"Specifies the visual theme mode used across the IDE workbench.";
+        it.category = SettingCategory::Appearance;
+        it.isCommonlyUsed = true;
+        it.control = SettingControl::Dropdown;
+        it.options = { L"Dark Modern", L"Light Modern" };
+        m_items.push_back(std::move(it));
+    }
+
+    // 13. Appearance: Breadcrumbs (Toggle)
     {
         SettingItem it;
         it.id = L"workbench.breadcrumbs";
@@ -169,11 +197,12 @@ void SettingsView::InitializeSettings() {
         it.title = L"Breadcrumbs";
         it.description = L"Turn file path navigation breadcrumbs on or off above editor.";
         it.category = SettingCategory::Appearance;
+        it.isCommonlyUsed = true;
         it.control = SettingControl::Toggle;
         m_items.push_back(std::move(it));
     }
 
-    // 13. Appearance: Status Bar (Toggle)
+    // 14. Appearance: Status Bar (Toggle)
     {
         SettingItem it;
         it.id = L"workbench.statusBar";
@@ -181,11 +210,12 @@ void SettingsView::InitializeSettings() {
         it.title = L"Status Bar";
         it.description = L"Controls the visibility of the bottom status bar.";
         it.category = SettingCategory::Appearance;
+        it.isCommonlyUsed = true;
         it.control = SettingControl::Toggle;
         m_items.push_back(std::move(it));
     }
 
-    // 14. Appearance: File Network Graph Colors (Toggle)
+    // 15. Appearance: File Network Graph Colors (Toggle)
     {
         SettingItem it;
         it.id = L"workbench.graphColored";
@@ -193,23 +223,8 @@ void SettingsView::InitializeSettings() {
         it.title = L"Graph Node Colors";
         it.description = L"Colors nodes in the File Network graph view by file extension type.";
         it.category = SettingCategory::Appearance;
+        it.isCommonlyUsed = true;
         it.control = SettingControl::Toggle;
-        m_items.push_back(std::move(it));
-    }
-
-    // 15. Files: Auto Save Delay (Number Stepper)
-    {
-        SettingItem it;
-        it.id = L"files.autoSaveDelay";
-        it.scope = L"FILES";
-        it.title = L"Auto Save Delay";
-        it.description = L"Controls the delay in milliseconds after which an editor is saved automatically.";
-        it.category = SettingCategory::Files;
-        it.control = SettingControl::NumberStepper;
-        it.minVal = 200.0f;
-        it.maxVal = 5000.0f;
-        it.stepVal = 200.0f;
-        it.unit = L"ms";
         m_items.push_back(std::move(it));
     }
 }
@@ -226,8 +241,8 @@ std::vector<size_t> SettingsView::GetFilteredItemIndices() const {
         const auto& it = m_items[i];
 
         // Scope filter
-        if (m_activeScope == 1 && it.scope == L"WORKBENCH") continue;
-        if (m_activeScope == 2 && it.scope == L"APPEARANCE") continue;
+        if (m_activeScope == 1 && it.scope == L"APPEARANCE") continue;
+        if (m_activeScope == 2 && it.scope == L"FILES") continue;
 
         // If search query is non-empty, search across title, description, and id
         if (!qLower.empty()) {
@@ -246,12 +261,9 @@ std::vector<size_t> SettingsView::GetFilteredItemIndices() const {
         } else {
             // Category filter
             if (m_activeCategory == SettingCategory::CommonlyUsed) {
-                if (it.category == SettingCategory::CommonlyUsed) result.push_back(i);
-            } else if (it.category == m_activeCategory || it.category == SettingCategory::CommonlyUsed) {
-                // If specific category is selected, show items matching it
-                if (it.category == m_activeCategory) {
-                    result.push_back(i);
-                }
+                if (it.isCommonlyUsed) result.push_back(i);
+            } else if (it.category == m_activeCategory) {
+                result.push_back(i);
             }
         }
     }
@@ -279,7 +291,7 @@ void SettingsView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
             DWRITE_FONT_WEIGHT_REGULAR,
             DWRITE_FONT_STYLE_NORMAL,
             DWRITE_FONT_STRETCH_NORMAL,
-            config.ScaleF(12.0f),
+            config.ScaleF(12.5f),
             L"en-US",
             &m_pFontDesc
         );
@@ -296,7 +308,7 @@ void SettingsView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
             DWRITE_FONT_WEIGHT_SEMI_BOLD,
             DWRITE_FONT_STYLE_NORMAL,
             DWRITE_FONT_STRETCH_NORMAL,
-            config.ScaleF(13.5f),
+            config.ScaleF(14.0f),
             L"en-US",
             &m_pFontTitle
         );
@@ -336,9 +348,9 @@ void SettingsView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
     pRT->FillRoundedRectangle(rrcIconBox, pBadgeBg);
     pRT->DrawRoundedRectangle(rrcIconBox, theme.brushBorderSubtle.Get(), 1.0f);
 
-    D2D1_RECT_F rcGear = D2D1::RectF(iconBoxX + 6.0f, iconBoxY + 6.0f, iconBoxX + iconBoxSize - 6.0f, iconBoxY + iconBoxSize - 6.0f);
+    D2D1_RECT_F rcGear = D2D1::RectF(iconBoxX + 4.0f, iconBoxY + 4.0f, iconBoxX + iconBoxSize - 4.0f, iconBoxY + iconBoxSize - 4.0f);
     ID2D1Brush* pAccentBrush = theme.brushBrandAccent ? theme.brushBrandAccent.Get() : theme.brushTextWhite.Get();
-    m_icons.DrawSettings(pRT, rcGear, pAccentBrush, 1.6f);
+    m_icons.DrawSettings(pRT, rcGear, pAccentBrush, 1.4f);
 
     // Header Title and Subtitle
     float textX = iconBoxX + iconBoxSize + config.ScaleF(14.0f);
@@ -348,14 +360,14 @@ void SettingsView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
                   theme.fontTitle.Get() ? theme.fontTitle.Get() : theme.fontBody.Get(),
                   rcTitle, theme.brushTextPrimary.Get());
 
-    D2D1_RECT_F rcSub = D2D1::RectF(textX, top + config.ScaleF(40.0f), textX + config.ScaleF(340.0f), top + config.ScaleF(60.0f));
-    const wchar_t* subStr = L"Manage preferences, editor behavior, and workbench appearance";
+    D2D1_RECT_F rcSub = D2D1::RectF(textX, top + config.ScaleF(40.0f), textX + config.ScaleF(360.0f), top + config.ScaleF(60.0f));
+    const wchar_t* subStr = L"Manage preferences, editor behavior, and appearance";
     pRT->DrawText(subStr, static_cast<UINT32>(wcslen(subStr)),
                   theme.fontHint.Get() ? theme.fontHint.Get() : theme.fontBody.Get(),
                   rcSub, theme.brushTextSecondary.Get());
 
     // Search Bar on Right of Header
-    const float searchW = config.ScaleF((std::min)(380.0f, width * 0.45f));
+    const float searchW = config.ScaleF((std::min)(420.0f, width * 0.45f));
     const float searchH = config.ScaleF(34.0f);
     const float searchX = left + width - searchW - config.ScaleF(28.0f);
     const float searchY = top + (headerH - searchH) / 2.0f;
@@ -398,7 +410,35 @@ void SettingsView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
         pRT->DrawLine(D2D1::Point2F(cx - cr, cy + cr), D2D1::Point2F(cx + cr, cy - cr), theme.brushTextSecondary.Get(), 1.4f);
     }
 
-    // 3. Render Left Category Sidebar
+    // Dynamic Blinking Caret (NO hardcoded '|', authentic Direct2D line blinking at 500ms)
+    if (m_isSearchFocused) {
+        bool showCaret = ((GetTickCount64() / 500) % 2 == 0);
+        if (showCaret) {
+            float caretX = rcSearchText.left;
+            if (!m_searchQuery.empty() && theme.dwriteFactory) {
+                Microsoft::WRL::ComPtr<IDWriteTextLayout> pLayout;
+                if (SUCCEEDED(theme.dwriteFactory->CreateTextLayout(
+                    m_searchQuery.c_str(), static_cast<UINT32>(m_searchQuery.length()),
+                    theme.fontBody.Get(), 1000.0f, searchH, &pLayout)) && pLayout) {
+                    DWRITE_TEXT_METRICS tm;
+                    if (SUCCEEDED(pLayout->GetMetrics(&tm))) {
+                        caretX += tm.widthIncludingTrailingWhitespace + 1.0f;
+                    }
+                }
+            } else if (!m_searchQuery.empty()) {
+                caretX += static_cast<float>(m_searchQuery.length()) * config.ScaleF(8.0f);
+            }
+            if (caretX > rcSearchText.right - config.ScaleF(4.0f)) {
+                caretX = rcSearchText.right - config.ScaleF(4.0f);
+            }
+            float caretY1 = rcSearchText.top + config.ScaleF(3.0f);
+            float caretY2 = rcSearchText.bottom - config.ScaleF(3.0f);
+            ID2D1Brush* pCaretBrush = theme.brushTextPrimary ? theme.brushTextPrimary.Get() : pAccentBrush;
+            pRT->DrawLine(D2D1::Point2F(caretX, caretY1), D2D1::Point2F(caretX, caretY2), pCaretBrush, 1.5f);
+        }
+    }
+
+    // 3. Render Left Category Sidebar (Only active categories: Commonly Used, Text Editor, Appearance, Files)
     float bodyTop = top + headerH;
     float bodyH = height - headerH;
     D2D1_RECT_F rcSidebar = D2D1::RectF(left, bodyTop, left + sidebarW, top + height);
@@ -411,7 +451,7 @@ void SettingsView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
         0.8f
     );
 
-    // Sidebar Category Items
+    // Sidebar Category Items (Workbench removed completely as requested)
     struct CatDef {
         SettingCategory cat;
         const wchar_t* name;
@@ -421,16 +461,16 @@ void SettingsView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
         { SettingCategory::CommonlyUsed, L"Commonly Used", L"✦" },
         { SettingCategory::TextEditor,   L"Text Editor",   L"✎" },
         { SettingCategory::Appearance,   L"Appearance",    L"🎨" },
-        { SettingCategory::Files,        L"Files",         L"📁" },
-        { SettingCategory::Workbench,    L"Workbench",     L"⚡" }
+        { SettingCategory::Files,        L"Files",         L"📁" }
     };
+    const size_t kCatCount = sizeof(kCategories) / sizeof(kCategories[0]);
 
     m_categoryBounds.clear();
-    const float catItemH = config.ScaleF(36.0f);
+    const float catItemH = config.ScaleF(38.0f);
     const float catPadX = config.ScaleF(14.0f);
     float curCatY = bodyTop + config.ScaleF(16.0f);
 
-    for (size_t i = 0; i < 5; ++i) {
+    for (size_t i = 0; i < kCatCount; ++i) {
         D2D1_RECT_F rcCat = D2D1::RectF(left + catPadX, curCatY, left + sidebarW - catPadX, curCatY + catItemH);
         m_categoryBounds.push_back(rcCat);
 
@@ -459,9 +499,9 @@ void SettingsView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
         curCatY += catItemH + config.ScaleF(4.0f);
     }
 
-    // 4. Render Right Content Area (Categorized Cards Grid)
-    float contentLeft = left + sidebarW + config.ScaleF(24.0f);
-    float contentW = width - sidebarW - config.ScaleF(48.0f);
+    // 4. Render Right Content Area (Wider Cards Grid filling container gracefully)
+    float contentLeft = left + sidebarW + config.ScaleF(28.0f);
+    float contentW = (std::max)(config.ScaleF(560.0f), width - sidebarW - config.ScaleF(56.0f));
     float contentTop = bodyTop + config.ScaleF(16.0f);
     float contentH = bodyH - config.ScaleF(24.0f);
 
@@ -499,8 +539,9 @@ void SettingsView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
                       theme.fontBody.Get(), rcEmpty, theme.brushTextSecondary.Get());
     }
 
-    const float cardH = config.ScaleF(78.0f);
-    const float cardSpacing = config.ScaleF(10.0f);
+    // Comfortable spacious card height and margin
+    const float cardH = config.ScaleF(86.0f);
+    const float cardSpacing = config.ScaleF(12.0f);
 
     for (size_t idx : filteredIndices) {
         auto& it = m_items[idx];
@@ -520,36 +561,36 @@ void SettingsView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
         pRT->DrawRoundedRectangle(rrcCard, pCardBorder, isCardHovered ? 1.2f : 1.0f);
 
         // Right Control Placement
-        const float ctrlRight = contentLeft + contentW - config.ScaleF(20.0f);
+        const float ctrlRight = contentLeft + contentW - config.ScaleF(24.0f);
         const float ctrlCenterY = cardY + cardH / 2.0f;
 
-        // Scope Tag Badge (e.g. [ EDITOR ] or [ FILES ])
-        float scopeBadgeW = config.ScaleF(static_cast<float>(it.scope.length() * 6.8f + 12.0f));
-        float scopeBadgeH = config.ScaleF(16.0f);
-        D2D1_RECT_F rcScopeBadge = D2D1::RectF(contentLeft + config.ScaleF(18.0f), cardY + config.ScaleF(15.0f),
-                                              contentLeft + config.ScaleF(18.0f) + scopeBadgeW, cardY + config.ScaleF(15.0f) + scopeBadgeH);
-        D2D1_ROUNDED_RECT rrcScope = D2D1::RoundedRect(rcScopeBadge, 3.0f, 3.0f);
+        // Scope Tag Badge (e.g. [ EDITOR ], [ FILES ], [ APPEARANCE ])
+        float scopeBadgeW = config.ScaleF(static_cast<float>(it.scope.length() * 7.0f + 14.0f));
+        float scopeBadgeH = config.ScaleF(18.0f);
+        D2D1_RECT_F rcScopeBadge = D2D1::RectF(contentLeft + config.ScaleF(20.0f), cardY + config.ScaleF(16.0f),
+                                              contentLeft + config.ScaleF(20.0f) + scopeBadgeW, cardY + config.ScaleF(16.0f) + scopeBadgeH);
+        D2D1_ROUNDED_RECT rrcScope = D2D1::RoundedRect(rcScopeBadge, 4.0f, 4.0f);
         pRT->FillRoundedRectangle(rrcScope, theme.brushHomeBadgeBg ? theme.brushHomeBadgeBg.Get() : theme.brushItemHover.Get());
         pRT->DrawText(it.scope.c_str(), static_cast<UINT32>(it.scope.length()),
                       theme.fontBadge.Get() ? theme.fontBadge.Get() : theme.fontHint.Get(),
                       rcScopeBadge, pAccentBrush);
 
         // Setting Title
-        float titleX = rcScopeBadge.right + config.ScaleF(10.0f);
-        D2D1_RECT_F rcTitle = D2D1::RectF(titleX, cardY + config.ScaleF(12.0f), ctrlRight - config.ScaleF(150.0f), cardY + config.ScaleF(34.0f));
+        float titleX = rcScopeBadge.right + config.ScaleF(12.0f);
+        D2D1_RECT_F rcCardTitle = D2D1::RectF(titleX, cardY + config.ScaleF(14.0f), ctrlRight - config.ScaleF(180.0f), cardY + config.ScaleF(36.0f));
         pRT->DrawText(it.title.c_str(), static_cast<UINT32>(it.title.length()),
-                      m_pFontTitle.Get() ? m_pFontTitle.Get() : theme.fontBody.Get(), rcTitle, theme.brushTextPrimary.Get());
+                      m_pFontTitle.Get() ? m_pFontTitle.Get() : theme.fontBody.Get(), rcCardTitle, theme.brushTextPrimary.Get());
 
         // Setting Description
-        D2D1_RECT_F rcDesc = D2D1::RectF(contentLeft + config.ScaleF(18.0f), cardY + config.ScaleF(40.0f),
-                                         ctrlRight - config.ScaleF(150.0f), cardY + cardH - config.ScaleF(12.0f));
+        D2D1_RECT_F rcDesc = D2D1::RectF(contentLeft + config.ScaleF(20.0f), cardY + config.ScaleF(44.0f),
+                                         ctrlRight - config.ScaleF(180.0f), cardY + cardH - config.ScaleF(12.0f));
         pRT->DrawText(it.description.c_str(), static_cast<UINT32>(it.description.length()),
                       m_pFontDesc.Get() ? m_pFontDesc.Get() : theme.fontBody.Get(),
                       rcDesc, theme.brushTextSecondary.Get());
 
         if (it.control == SettingControl::Toggle) {
-            const float toggleW = config.ScaleF(44.0f);
-            const float toggleH = config.ScaleF(24.0f);
+            const float toggleW = config.ScaleF(46.0f);
+            const float toggleH = config.ScaleF(26.0f);
             it.controlBounds = D2D1::RectF(ctrlRight - toggleW, ctrlCenterY - toggleH / 2.0f, ctrlRight, ctrlCenterY + toggleH / 2.0f);
 
             bool isChecked = false;
@@ -563,8 +604,8 @@ void SettingsView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
 
             DrawToggleSwitch(pRT, theme, config, it.controlBounds, isChecked, isCardHovered);
         } else if (it.control == SettingControl::NumberStepper) {
-            const float stepperW = config.ScaleF(118.0f);
-            const float stepperH = config.ScaleF(28.0f);
+            const float stepperW = config.ScaleF(126.0f);
+            const float stepperH = config.ScaleF(30.0f);
             it.controlBounds = D2D1::RectF(ctrlRight - stepperW, ctrlCenterY - stepperH / 2.0f, ctrlRight, ctrlCenterY + stepperH / 2.0f);
 
             std::wstring valStr;
@@ -580,8 +621,8 @@ void SettingsView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
             bool hPlus  = (isCardHovered && m_hoveredControlSubId == "plus");
             DrawStepper(pRT, theme, config, it, valStr, hMinus, hPlus);
         } else if (it.control == SettingControl::Dropdown) {
-            const float dropW = config.ScaleF(140.0f);
-            const float dropH = config.ScaleF(28.0f);
+            const float dropW = config.ScaleF(160.0f);
+            const float dropH = config.ScaleF(32.0f);
             it.controlBounds = D2D1::RectF(ctrlRight - dropW, ctrlCenterY - dropH / 2.0f, ctrlRight, ctrlCenterY + dropH / 2.0f);
 
             std::wstring valStr;
@@ -597,7 +638,8 @@ void SettingsView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
                 valStr = (theme.GetThemeMode() == ThemeMode::Dark) ? L"Dark Modern" : L"Light Modern";
             }
 
-            DrawDropdown(pRT, theme, config, it.controlBounds, valStr, isCardHovered);
+            bool isOpen = (m_openDropdownItemIdx == static_cast<int>(idx));
+            DrawDropdown(pRT, theme, config, it.controlBounds, valStr, isCardHovered, isOpen);
         }
 
         cardY += cardH + cardSpacing;
@@ -618,6 +660,11 @@ void SettingsView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
         float thumbY = rcTrack.top + (m_scrollOffsetY / m_maxScrollOffsetY) * (trackH - thumbH);
         D2D1_RECT_F rcThumb = D2D1::RectF(scrollTrackX, thumbY, scrollTrackX + scrollTrackW, thumbY + thumbH);
         pRT->FillRoundedRectangle(D2D1::RoundedRect(rcThumb, 3.0f, 3.0f), theme.brushTextSecondary.Get());
+    }
+
+    // 6. Draw Open Floating Dropdown Menu (Rendered on top of cards outside clipping)
+    if (m_openDropdownItemIdx >= 0 && m_openDropdownItemIdx < static_cast<int>(m_items.size())) {
+        DrawDropdownPopup(pRT, theme, config);
     }
 }
 
@@ -656,7 +703,7 @@ void SettingsView::DrawToggleSwitch(ID2D1RenderTarget* pRT, Theme& theme, const 
 
 void SettingsView::DrawStepper(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
                                const SettingItem& item, const std::wstring& valStr, bool isHoveredMinus, bool isHoveredPlus) {
-    const float btnW = config.ScaleF(26.0f);
+    const float btnW = config.ScaleF(30.0f);
     const float h = item.controlBounds.bottom - item.controlBounds.top;
 
     auto& itMutable = const_cast<SettingItem&>(item);
@@ -664,16 +711,16 @@ void SettingsView::DrawStepper(ID2D1RenderTarget* pRT, Theme& theme, const app::
     itMutable.plusBounds  = D2D1::RectF(item.controlBounds.right - btnW, item.controlBounds.top, item.controlBounds.right, item.controlBounds.bottom);
 
     // Entire Stepper container frame
-    D2D1_ROUNDED_RECT rrcFrame = D2D1::RoundedRect(item.controlBounds, 5.0f, 5.0f);
+    D2D1_ROUNDED_RECT rrcFrame = D2D1::RoundedRect(item.controlBounds, 6.0f, 6.0f);
     pRT->FillRoundedRectangle(rrcFrame, theme.brushDrawerBg ? theme.brushDrawerBg.Get() : theme.brushItemHover.Get());
     pRT->DrawRoundedRectangle(rrcFrame, theme.brushBorderSubtle.Get(), 1.0f);
 
     // Minus Button
-    D2D1_ROUNDED_RECT rrcMinus = D2D1::RoundedRect(itMutable.minusBounds, 4.0f, 4.0f);
+    D2D1_ROUNDED_RECT rrcMinus = D2D1::RoundedRect(itMutable.minusBounds, 5.0f, 5.0f);
     if (isHoveredMinus) pRT->FillRoundedRectangle(rrcMinus, theme.brushItemHover.Get());
     float mcx = (itMutable.minusBounds.left + itMutable.minusBounds.right) / 2.0f;
     float mcy = (itMutable.minusBounds.top + itMutable.minusBounds.bottom) / 2.0f;
-    pRT->DrawLine(D2D1::Point2F(mcx - 4.0f, mcy), D2D1::Point2F(mcx + 4.0f, mcy), theme.brushTextPrimary.Get(), 1.5f);
+    pRT->DrawLine(D2D1::Point2F(mcx - 4.5f, mcy), D2D1::Point2F(mcx + 4.5f, mcy), theme.brushTextPrimary.Get(), 1.5f);
 
     // Value in center
     D2D1_RECT_F rcVal = D2D1::RectF(itMutable.minusBounds.right, item.controlBounds.top, itMutable.plusBounds.left, item.controlBounds.bottom);
@@ -682,33 +729,128 @@ void SettingsView::DrawStepper(ID2D1RenderTarget* pRT, Theme& theme, const app::
                   rcVal, theme.brushTextPrimary.Get());
 
     // Plus Button
-    D2D1_ROUNDED_RECT rrcPlus = D2D1::RoundedRect(itMutable.plusBounds, 4.0f, 4.0f);
+    D2D1_ROUNDED_RECT rrcPlus = D2D1::RoundedRect(itMutable.plusBounds, 5.0f, 5.0f);
     if (isHoveredPlus) pRT->FillRoundedRectangle(rrcPlus, theme.brushItemHover.Get());
     float pcx = (itMutable.plusBounds.left + itMutable.plusBounds.right) / 2.0f;
     float pcy = (itMutable.plusBounds.top + itMutable.plusBounds.bottom) / 2.0f;
-    pRT->DrawLine(D2D1::Point2F(pcx - 4.0f, pcy), D2D1::Point2F(pcx + 4.0f, pcy), theme.brushTextPrimary.Get(), 1.5f);
-    pRT->DrawLine(D2D1::Point2F(pcx, pcy - 4.0f), D2D1::Point2F(pcx, pcy + 4.0f), theme.brushTextPrimary.Get(), 1.5f);
+    pRT->DrawLine(D2D1::Point2F(pcx - 4.5f, pcy), D2D1::Point2F(pcx + 4.5f, pcy), theme.brushTextPrimary.Get(), 1.5f);
+    pRT->DrawLine(D2D1::Point2F(pcx, pcy - 4.5f), D2D1::Point2F(pcx, pcy + 4.5f), theme.brushTextPrimary.Get(), 1.5f);
 }
 
 void SettingsView::DrawDropdown(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
-                                const D2D1_RECT_F& bounds, const std::wstring& valStr, bool isHovered) {
-    D2D1_ROUNDED_RECT rrc = D2D1::RoundedRect(bounds, 5.0f, 5.0f);
-    pRT->FillRoundedRectangle(rrc, theme.brushDrawerBg ? theme.brushDrawerBg.Get() : theme.brushItemHover.Get());
-    pRT->DrawRoundedRectangle(rrc, isHovered ? (theme.brushBrandAccent ? theme.brushBrandAccent.Get() : theme.brushTextWhite.Get()) : theme.brushBorderSubtle.Get(), 1.0f);
+                                const D2D1_RECT_F& bounds, const std::wstring& valStr, bool isHovered, bool isOpen) {
+    D2D1_ROUNDED_RECT rrc = D2D1::RoundedRect(bounds, 6.0f, 6.0f);
+    ID2D1Brush* pBg = isOpen
+        ? (theme.brushItemHover ? theme.brushItemHover.Get() : theme.brushDrawerBg.Get())
+        : (theme.brushDrawerBg ? theme.brushDrawerBg.Get() : theme.brushItemHover.Get());
+    pRT->FillRoundedRectangle(rrc, pBg);
+
+    ID2D1Brush* pBorder = (isOpen || isHovered)
+        ? (theme.brushBrandAccent ? theme.brushBrandAccent.Get() : theme.brushTextWhite.Get())
+        : theme.brushBorderSubtle.Get();
+    pRT->DrawRoundedRectangle(rrc, pBorder, (isOpen || isHovered) ? 1.4f : 1.0f);
 
     // Selected value text
-    D2D1_RECT_F rcText = D2D1::RectF(bounds.left + config.ScaleF(10.0f), bounds.top, bounds.right - config.ScaleF(24.0f), bounds.bottom);
+    D2D1_RECT_F rcText = D2D1::RectF(bounds.left + config.ScaleF(12.0f), bounds.top, bounds.right - config.ScaleF(28.0f), bounds.bottom);
     pRT->DrawText(valStr.c_str(), static_cast<UINT32>(valStr.length()),
                   theme.fontBody.Get(), rcText, theme.brushTextPrimary.Get());
 
-    // Chevron down glyph ▾
-    float cx = bounds.right - config.ScaleF(14.0f);
+    // Chevron glyph
+    float cx = bounds.right - config.ScaleF(16.0f);
     float cy = (bounds.top + bounds.bottom) / 2.0f;
-    D2D1_POINT_2F p1 = D2D1::Point2F(cx - 3.5f, cy - 2.0f);
-    D2D1_POINT_2F p2 = D2D1::Point2F(cx, cy + 2.0f);
-    D2D1_POINT_2F p3 = D2D1::Point2F(cx + 3.5f, cy - 2.0f);
-    pRT->DrawLine(p1, p2, theme.brushTextSecondary.Get(), 1.4f);
-    pRT->DrawLine(p2, p3, theme.brushTextSecondary.Get(), 1.4f);
+    if (isOpen) {
+        // Chevron pointing up ▲
+        D2D1_POINT_2F p1 = D2D1::Point2F(cx - 3.5f, cy + 2.0f);
+        D2D1_POINT_2F p2 = D2D1::Point2F(cx, cy - 2.5f);
+        D2D1_POINT_2F p3 = D2D1::Point2F(cx + 3.5f, cy + 2.0f);
+        pRT->DrawLine(p1, p2, theme.brushTextPrimary.Get(), 1.5f);
+        pRT->DrawLine(p2, p3, theme.brushTextPrimary.Get(), 1.5f);
+    } else {
+        // Chevron pointing down ▼
+        D2D1_POINT_2F p1 = D2D1::Point2F(cx - 3.5f, cy - 2.5f);
+        D2D1_POINT_2F p2 = D2D1::Point2F(cx, cy + 2.0f);
+        D2D1_POINT_2F p3 = D2D1::Point2F(cx + 3.5f, cy - 2.5f);
+        pRT->DrawLine(p1, p2, theme.brushTextSecondary.Get(), 1.5f);
+        pRT->DrawLine(p2, p3, theme.brushTextSecondary.Get(), 1.5f);
+    }
+}
+
+void SettingsView::DrawDropdownPopup(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config) {
+    if (m_openDropdownItemIdx < 0 || m_openDropdownItemIdx >= static_cast<int>(m_items.size())) return;
+    const auto& item = m_items[m_openDropdownItemIdx];
+    if (item.options.empty()) return;
+
+    // Get current value to display checkmark
+    std::wstring curVal;
+    if (item.id == L"files.autoSave") curVal = config.autoSave;
+    else if (item.id == L"editor.fontFamily") curVal = config.fontFamily;
+    else if (item.id == L"editor.renderWhitespace") curVal = config.renderWhitespaceMode;
+    else if (item.id == L"editor.cursorStyle") curVal = config.cursorStyle;
+    else if (item.id == L"workbench.colorTheme") curVal = (theme.GetThemeMode() == ThemeMode::Dark) ? L"Dark Modern" : L"Light Modern";
+
+    const float rowH = config.ScaleF(32.0f);
+    const float padY = config.ScaleF(6.0f);
+    const float menuH = item.options.size() * rowH + padY * 2.0f;
+    const float menuW = (std::max)(item.controlBounds.right - item.controlBounds.left, config.ScaleF(180.0f));
+
+    // Place menu directly below control button
+    float menuLeft = item.controlBounds.right - menuW;
+    float menuTop  = item.controlBounds.bottom + config.ScaleF(4.0f);
+    // If it would exceed bottom of view, flip above
+    if (menuTop + menuH > m_viewBounds.bottom - config.ScaleF(10.0f)) {
+        menuTop = item.controlBounds.top - menuH - config.ScaleF(4.0f);
+    }
+    m_openDropdownBounds = D2D1::RectF(menuLeft, menuTop, menuLeft + menuW, menuTop + menuH);
+
+    // Drop shadow
+    D2D1_ROUNDED_RECT rrcShadow = D2D1::RoundedRect(
+        D2D1::RectF(menuLeft + 2.0f, menuTop + 3.0f, menuLeft + menuW + 2.0f, menuTop + menuH + 3.0f),
+        8.0f, 8.0f);
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> shadowBrush;
+    pRT->CreateSolidColorBrush(D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.45f), &shadowBrush);
+    if (shadowBrush) pRT->FillRoundedRectangle(rrcShadow, shadowBrush.Get());
+
+    // Menu background
+    D2D1_ROUNDED_RECT rrcMenu = D2D1::RoundedRect(m_openDropdownBounds, 8.0f, 8.0f);
+    ID2D1Brush* pMenuBg = theme.brushMenuBg ? theme.brushMenuBg.Get() :
+                          (theme.brushDrawerBg ? theme.brushDrawerBg.Get() : theme.brushRailBg.Get());
+    pRT->FillRoundedRectangle(rrcMenu, pMenuBg);
+    pRT->DrawRoundedRectangle(rrcMenu, theme.brushMenuBorder ? theme.brushMenuBorder.Get() : theme.brushBorderSubtle.Get(), 1.0f);
+
+    // Options rows
+    float curRowY = menuTop + padY;
+    for (size_t i = 0; i < item.options.size(); ++i) {
+        D2D1_RECT_F rcRow = D2D1::RectF(menuLeft + config.ScaleF(6.0f), curRowY, menuLeft + menuW - config.ScaleF(6.0f), curRowY + rowH);
+        bool isHovered = (m_hoveredDropdownOption == static_cast<int>(i));
+        bool isSelected = (item.options[i] == curVal);
+
+        if (isHovered) {
+            D2D1_ROUNDED_RECT rrcRow = D2D1::RoundedRect(rcRow, 5.0f, 5.0f);
+            pRT->FillRoundedRectangle(rrcRow, theme.brushItemHover.Get());
+        }
+
+        // Checkmark for active selection
+        if (isSelected) {
+            float checkX = rcRow.left + config.ScaleF(12.0f);
+            float checkY = (rcRow.top + rcRow.bottom) / 2.0f;
+            D2D1_POINT_2F p1 = D2D1::Point2F(checkX - 3.5f, checkY);
+            D2D1_POINT_2F p2 = D2D1::Point2F(checkX - 0.5f, checkY + 3.5f);
+            D2D1_POINT_2F p3 = D2D1::Point2F(checkX + 5.0f, checkY - 3.5f);
+            ID2D1Brush* pAccent = theme.brushBrandAccent ? theme.brushBrandAccent.Get() : theme.brushTextWhite.Get();
+            pRT->DrawLine(p1, p2, pAccent, 1.8f);
+            pRT->DrawLine(p2, p3, pAccent, 1.8f);
+        }
+
+        // Option text
+        D2D1_RECT_F rcOptText = D2D1::RectF(rcRow.left + config.ScaleF(26.0f), rcRow.top, rcRow.right - config.ScaleF(8.0f), rcRow.bottom);
+        ID2D1Brush* pTextBrush = isSelected
+            ? (theme.brushTextWhite ? theme.brushTextWhite.Get() : theme.brushTextPrimary.Get())
+            : (isHovered ? (theme.brushTextWhite ? theme.brushTextWhite.Get() : theme.brushTextPrimary.Get()) : theme.brushTextPrimary.Get());
+        pRT->DrawText(item.options[i].c_str(), static_cast<UINT32>(item.options[i].length()),
+                      theme.fontBody.Get(), rcOptText, pTextBrush);
+
+        curRowY += rowH;
+    }
 }
 
 bool SettingsView::HandleMouseMove(POINT clientPt) {
@@ -716,11 +858,30 @@ bool SettingsView::HandleMouseMove(POINT clientPt) {
     int oldCat = m_hoveredCategoryIdx;
     bool oldClear = m_hoveredSearchClear;
     std::string oldCtrlSub = m_hoveredControlSubId;
+    int oldDropOpt = m_hoveredDropdownOption;
 
     m_hoveredCardIdx = -1;
     m_hoveredCategoryIdx = -1;
     m_hoveredSearchClear = false;
     m_hoveredControlSubId.clear();
+    m_hoveredDropdownOption = -1;
+
+    // Check open dropdown popup options hover first
+    if (m_openDropdownItemIdx >= 0 && m_openDropdownItemIdx < static_cast<int>(m_items.size())) {
+        if (clientPt.x >= m_openDropdownBounds.left && clientPt.x <= m_openDropdownBounds.right &&
+            clientPt.y >= m_openDropdownBounds.top && clientPt.y <= m_openDropdownBounds.bottom) {
+            float relY = clientPt.y - (m_openDropdownBounds.top + 6.0f);
+            const float totalH = m_openDropdownBounds.bottom - m_openDropdownBounds.top - 12.0f;
+            const size_t optCount = m_items[m_openDropdownItemIdx].options.size();
+            if (relY >= 0.0f && totalH > 0.0f && optCount > 0) {
+                int opt = static_cast<int>(relY / (totalH / static_cast<float>(optCount)));
+                if (opt >= 0 && opt < static_cast<int>(optCount)) {
+                    m_hoveredDropdownOption = opt;
+                }
+            }
+            return (oldDropOpt != m_hoveredDropdownOption);
+        }
+    }
 
     // Check search clear
     if (m_searchClearBounds.right > m_searchClearBounds.left &&
@@ -762,10 +923,49 @@ bool SettingsView::HandleMouseMove(POINT clientPt) {
     }
 
     return (oldCard != m_hoveredCardIdx || oldCat != m_hoveredCategoryIdx ||
-            oldClear != m_hoveredSearchClear || oldCtrlSub != m_hoveredControlSubId);
+            oldClear != m_hoveredSearchClear || oldCtrlSub != m_hoveredControlSubId ||
+            oldDropOpt != m_hoveredDropdownOption);
 }
 
 bool SettingsView::HandleLButtonDown(POINT clientPt, app::AppConfig& config, Theme& theme, std::wstring& outModifiedSettingId) {
+    // 0. Handle Click inside Open Dropdown Popup
+    if (m_openDropdownItemIdx >= 0 && m_openDropdownItemIdx < static_cast<int>(m_items.size())) {
+        auto& dropItem = m_items[m_openDropdownItemIdx];
+        if (clientPt.x >= m_openDropdownBounds.left && clientPt.x <= m_openDropdownBounds.right &&
+            clientPt.y >= m_openDropdownBounds.top && clientPt.y <= m_openDropdownBounds.bottom) {
+            float relY = clientPt.y - (m_openDropdownBounds.top + 6.0f);
+            const float totalH = m_openDropdownBounds.bottom - m_openDropdownBounds.top - 12.0f;
+            const size_t optCount = dropItem.options.size();
+            if (relY >= 0.0f && totalH > 0.0f && optCount > 0) {
+                int optIdx = static_cast<int>(relY / (totalH / static_cast<float>(optCount)));
+                if (optIdx >= 0 && optIdx < static_cast<int>(optCount)) {
+                    const auto& selectedOpt = dropItem.options[optIdx];
+                    if (dropItem.id == L"files.autoSave") {
+                        config.autoSave = selectedOpt;
+                    } else if (dropItem.id == L"editor.fontFamily") {
+                        config.fontFamily = selectedOpt;
+                    } else if (dropItem.id == L"editor.renderWhitespace") {
+                        config.renderWhitespaceMode = selectedOpt;
+                        config.renderWhitespace = (selectedOpt != L"none");
+                    } else if (dropItem.id == L"editor.cursorStyle") {
+                        config.cursorStyle = selectedOpt;
+                    } else if (dropItem.id == L"workbench.colorTheme") {
+                        ThemeMode next = (selectedOpt == L"Light Modern") ? ThemeMode::Light : ThemeMode::Dark;
+                        theme.SetThemeMode(next);
+                    }
+                    outModifiedSettingId = dropItem.id;
+                }
+            }
+            m_openDropdownItemIdx = -1;
+            m_hoveredDropdownOption = -1;
+            return true;
+        } else {
+            // Click outside closes dropdown
+            m_openDropdownItemIdx = -1;
+            m_hoveredDropdownOption = -1;
+        }
+    }
+
     // 1. Search Box Click
     if (clientPt.x >= m_searchBoxBounds.left && clientPt.x <= m_searchBoxBounds.right &&
         clientPt.y >= m_searchBoxBounds.top && clientPt.y <= m_searchBoxBounds.bottom) {
@@ -801,23 +1001,26 @@ bool SettingsView::HandleLButtonDown(POINT clientPt, app::AppConfig& config, The
 
             // A. Toggle control
             if (it.control == SettingControl::Toggle) {
-                if (it.id == L"editor.wordWrap") {
-                    config.wordWrap = !config.wordWrap;
-                } else if (it.id == L"editor.minimap") {
-                    config.showMinimap = !config.showMinimap;
-                } else if (it.id == L"editor.lineNumbers") {
-                    config.showLineNumbers = !config.showLineNumbers;
-                } else if (it.id == L"editor.insertSpaces") {
-                    config.insertSpaces = !config.insertSpaces;
-                } else if (it.id == L"workbench.breadcrumbs") {
-                    config.showBreadcrumbs = !config.showBreadcrumbs;
-                } else if (it.id == L"workbench.statusBar") {
-                    config.showStatusBar = !config.showStatusBar;
-                } else if (it.id == L"workbench.graphColored") {
-                    config.isGraphColored = !config.isGraphColored;
+                if (clientPt.x >= it.controlBounds.left && clientPt.x <= it.controlBounds.right &&
+                    clientPt.y >= it.controlBounds.top && clientPt.y <= it.controlBounds.bottom) {
+                    if (it.id == L"editor.wordWrap") {
+                        config.wordWrap = !config.wordWrap;
+                    } else if (it.id == L"editor.minimap") {
+                        config.showMinimap = !config.showMinimap;
+                    } else if (it.id == L"editor.lineNumbers") {
+                        config.showLineNumbers = !config.showLineNumbers;
+                    } else if (it.id == L"editor.insertSpaces") {
+                        config.insertSpaces = !config.insertSpaces;
+                    } else if (it.id == L"workbench.breadcrumbs") {
+                        config.showBreadcrumbs = !config.showBreadcrumbs;
+                    } else if (it.id == L"workbench.statusBar") {
+                        config.showStatusBar = !config.showStatusBar;
+                    } else if (it.id == L"workbench.graphColored") {
+                        config.isGraphColored = !config.isGraphColored;
+                    }
+                    outModifiedSettingId = it.id;
+                    return true;
                 }
-                outModifiedSettingId = it.id;
-                return true;
             }
 
             // B. Number Stepper control
@@ -850,35 +1053,16 @@ bool SettingsView::HandleLButtonDown(POINT clientPt, app::AppConfig& config, The
                 }
             }
 
-            // C. Dropdown / Options Cycle control
+            // C. Dropdown Click: Toggle floating popup
             if (it.control == SettingControl::Dropdown) {
                 if (clientPt.x >= it.controlBounds.left && clientPt.x <= it.controlBounds.right &&
                     clientPt.y >= it.controlBounds.top && clientPt.y <= it.controlBounds.bottom) {
-
-                    if (it.id == L"files.autoSave") {
-                        // Cycle options
-                        auto findIt = std::find(it.options.begin(), it.options.end(), config.autoSave);
-                        size_t nextIdx = (findIt != it.options.end()) ? (std::distance(it.options.begin(), findIt) + 1) % it.options.size() : 0;
-                        config.autoSave = it.options[nextIdx];
-                    } else if (it.id == L"editor.fontFamily") {
-                        auto findIt = std::find(it.options.begin(), it.options.end(), config.fontFamily);
-                        size_t nextIdx = (findIt != it.options.end()) ? (std::distance(it.options.begin(), findIt) + 1) % it.options.size() : 0;
-                        config.fontFamily = it.options[nextIdx];
-                    } else if (it.id == L"editor.renderWhitespace") {
-                        auto findIt = std::find(it.options.begin(), it.options.end(), config.renderWhitespaceMode);
-                        size_t nextIdx = (findIt != it.options.end()) ? (std::distance(it.options.begin(), findIt) + 1) % it.options.size() : 0;
-                        config.renderWhitespaceMode = it.options[nextIdx];
-                        config.renderWhitespace = (config.renderWhitespaceMode != L"none");
-                    } else if (it.id == L"editor.cursorStyle") {
-                        auto findIt = std::find(it.options.begin(), it.options.end(), config.cursorStyle);
-                        size_t nextIdx = (findIt != it.options.end()) ? (std::distance(it.options.begin(), findIt) + 1) % it.options.size() : 0;
-                        config.cursorStyle = it.options[nextIdx];
-                    } else if (it.id == L"workbench.colorTheme") {
-                        ThemeMode cur = theme.GetThemeMode();
-                        ThemeMode next = (cur == ThemeMode::Dark) ? ThemeMode::Light : ThemeMode::Dark;
-                        theme.SetThemeMode(next);
+                    if (m_openDropdownItemIdx == static_cast<int>(idx)) {
+                        m_openDropdownItemIdx = -1;
+                    } else {
+                        m_openDropdownItemIdx = static_cast<int>(idx);
                     }
-                    outModifiedSettingId = it.id;
+                    m_hoveredDropdownOption = -1;
                     return true;
                 }
             }
@@ -911,6 +1095,20 @@ bool SettingsView::HandleChar(wchar_t ch) {
 }
 
 bool SettingsView::HandleKeyDown(WPARAM key) {
+    if (key == VK_ESCAPE) {
+        if (m_openDropdownItemIdx >= 0) {
+            m_openDropdownItemIdx = -1;
+            m_hoveredDropdownOption = -1;
+            return true;
+        }
+        if (m_isSearchFocused) {
+            m_searchQuery.clear();
+            m_isSearchFocused = false;
+            m_scrollOffsetY = 0.0f;
+            return true;
+        }
+    }
+
     if (!m_isSearchFocused) return false;
 
     if (key == VK_BACK) {
@@ -919,13 +1117,69 @@ bool SettingsView::HandleKeyDown(WPARAM key) {
             m_scrollOffsetY = 0.0f;
             return true;
         }
-    } else if (key == VK_ESCAPE) {
-        m_searchQuery.clear();
-        m_isSearchFocused = false;
-        m_scrollOffsetY = 0.0f;
-        return true;
     }
     return false;
+}
+
+LPCWSTR SettingsView::GetCursorForPoint(POINT clientPt) const {
+    // 1. If dropdown is open, check dropdown popup menu
+    if (m_openDropdownItemIdx >= 0) {
+        if (clientPt.x >= m_openDropdownBounds.left && clientPt.x <= m_openDropdownBounds.right &&
+            clientPt.y >= m_openDropdownBounds.top && clientPt.y <= m_openDropdownBounds.bottom) {
+            return IDC_HAND;
+        }
+    }
+
+    // 2. Search clear button
+    if (m_searchClearBounds.right > m_searchClearBounds.left &&
+        clientPt.x >= m_searchClearBounds.left && clientPt.x <= m_searchClearBounds.right &&
+        clientPt.y >= m_searchClearBounds.top && clientPt.y <= m_searchClearBounds.bottom) {
+        return IDC_HAND;
+    }
+
+    // 3. Search input box
+    if (clientPt.x >= m_searchBoxBounds.left && clientPt.x <= m_searchBoxBounds.right &&
+        clientPt.y >= m_searchBoxBounds.top && clientPt.y <= m_searchBoxBounds.bottom) {
+        return IDC_IBEAM;
+    }
+
+    // 4. Sidebar categories
+    for (const auto& rc : m_categoryBounds) {
+        if (clientPt.x >= rc.left && clientPt.x <= rc.right &&
+            clientPt.y >= rc.top && clientPt.y <= rc.bottom) {
+            return IDC_HAND;
+        }
+    }
+
+    // 5. Card interactive controls (toggle switch, stepper minus/plus, dropdown pill)
+    auto filtered = GetFilteredItemIndices();
+    for (size_t idx : filtered) {
+        const auto& it = m_items[idx];
+        if (clientPt.x >= it.cardBounds.left && clientPt.x <= it.cardBounds.right &&
+            clientPt.y >= it.cardBounds.top && clientPt.y <= it.cardBounds.bottom) {
+            if (it.control == SettingControl::Toggle) {
+                if (clientPt.x >= it.controlBounds.left && clientPt.x <= it.controlBounds.right &&
+                    clientPt.y >= it.controlBounds.top && clientPt.y <= it.controlBounds.bottom) {
+                    return IDC_HAND;
+                }
+            } else if (it.control == SettingControl::NumberStepper) {
+                if ((clientPt.x >= it.minusBounds.left && clientPt.x <= it.minusBounds.right &&
+                     clientPt.y >= it.minusBounds.top && clientPt.y <= it.minusBounds.bottom) ||
+                    (clientPt.x >= it.plusBounds.left && clientPt.x <= it.plusBounds.right &&
+                     clientPt.y >= it.plusBounds.top && clientPt.y <= it.plusBounds.bottom)) {
+                    return IDC_HAND;
+                }
+            } else if (it.control == SettingControl::Dropdown) {
+                if (clientPt.x >= it.controlBounds.left && clientPt.x <= it.controlBounds.right &&
+                    clientPt.y >= it.controlBounds.top && clientPt.y <= it.controlBounds.bottom) {
+                    return IDC_HAND;
+                }
+            }
+            break;
+        }
+    }
+
+    return nullptr;
 }
 
 } // namespace phide::ui

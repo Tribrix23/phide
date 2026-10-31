@@ -10717,6 +10717,15 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     }
                 }
 
+                // Settings View cursor handling (toggles, steppers, dropdowns, search input, clear button)
+                if (pCurDoc && pCurDoc->isSpecialView && pCurDoc->viewType == L"settings") {
+                    LPCWSTR cur = m_editor.GetSettingsView().GetCursorForPoint(pt);
+                    if (cur) {
+                        SetCursor(LoadCursor(nullptr, cur));
+                        return TRUE;
+                    }
+                }
+
                 SetCursor(LoadCursor(nullptr, IDC_ARROW));
                 return TRUE;
             }

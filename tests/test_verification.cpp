@@ -13896,7 +13896,40 @@ run_test_91:
             theme.SetThemeMode(phide::ui::ThemeMode::Dark);
             assert(theme.GetThemeMode() == phide::ui::ThemeMode::Dark);
 
-            std::cout << "  Passed: SettingsView categories, live search, and interactive controls verified" << std::endl;
+            // Test Cursor Hit-Testing
+            POINT ptSearchBox = { 900, 110 }; // search box region
+            LPCWSTR curSearch = settingsView.GetCursorForPoint(ptSearchBox);
+            assert(curSearch == IDC_IBEAM);
+
+            POINT ptCategory = { 100, 180 }; // first category region [164, 202]
+            LPCWSTR curCat = settingsView.GetCursorForPoint(ptCategory);
+            assert(curCat == IDC_HAND);
+
+            // Test Dropdown Popup Opening and Item Selection
+            POINT ptDropdown = { 1068, 241 }; // Auto Save dropdown button [225, 257]
+            bool handledDropOpen = settingsView.HandleLButtonDown(ptDropdown, cfg, theme, modId);
+            assert(handledDropOpen);
+            assert(settingsView.IsDropdownOpen());
+
+            // Re-render with open dropdown
+            pRTSettings->BeginDraw();
+            settingsView.Render(pRTSettings.Get(), theme, cfg, 52.0f, 1148.0f, 76.0f, 724.0f);
+            hr = pRTSettings->EndDraw();
+            assert(SUCCEEDED(hr));
+            SaveWicBitmapToPng(pWicSettings.Get(), pWicFactory.Get(), artDir + L"test_settings_view_dropdown.png");
+
+            // Cursor over open dropdown menu returns IDC_HAND
+            POINT ptMenuOpt = { 1068, 315 }; // row 1 in open dropdown menu [299, 331]
+            LPCWSTR curMenu = settingsView.GetCursorForPoint(ptMenuOpt);
+            assert(curMenu == IDC_HAND);
+
+            // Click option to select (e.g. onFocusChange)
+            bool handledSelect = settingsView.HandleLButtonDown(ptMenuOpt, cfg, theme, modId);
+            assert(handledSelect);
+            assert(!settingsView.IsDropdownOpen());
+            assert(modId == L"files.autoSave");
+
+            std::cout << "  Passed: SettingsView categories, live search, cursor pointers, and interactive dropdown menu verified" << std::endl;
         }
 
         // 4. Editor Canvas Settings Tab Integration & Snapshot

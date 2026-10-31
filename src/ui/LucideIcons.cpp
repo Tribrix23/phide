@@ -1373,32 +1373,61 @@ void LucideIcons::DrawLogIcon(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds,
 
 void LucideIcons::DrawSettings(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, ID2D1Brush* pBrush, float strokeWidth) const {
     if (!pRT || !pBrush) return;
-    EnsureStrokeStyle(pRT, const_cast<ComPtr<ID2D1StrokeStyle>&>(m_pStrokeStyle));
+    EnsureStrokeStyle(pRT, const_cast<Microsoft::WRL::ComPtr<ID2D1StrokeStyle>&>(m_pStrokeStyle));
 
     const float bw = bounds.right - bounds.left;
     const float bh = bounds.bottom - bounds.top;
-    const float cx = bounds.left + bw * 0.5f;
-    const float cy = bounds.top + bh * 0.5f;
-    const float s = (std::min)(bw, bh);
-    const float rCenter = s * 0.18f;
-    const float rOuter = s * 0.34f;
-    const float toothLen = s * 0.12f;
+    // Match Lucide icon size scale (~52% of container bounds, same as DrawFiles and DrawSearch)
+    const float iconSize = (std::min)(bw, bh) * 0.52f;
+    const float s = iconSize / 24.0f;
+    const float ox = bounds.left + (bw - 24.0f * s) * 0.5f;
+    const float oy = bounds.top + (bh - 24.0f * s) * 0.5f;
+    const float cx = ox + 12.0f * s;
+    const float cy = oy + 12.0f * s;
 
-    // Center circular hole
-    pRT->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(cx, cy), rCenter, rCenter), pBrush, strokeWidth);
+    // 1. Center circular hole (radius = 3.2 on 24x24 canvas, matching Image 4)
+    const float rHole = 3.2f * s;
+    pRT->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(cx, cy), rHole, rHole), pBrush, strokeWidth, m_pStrokeStyle.Get());
 
-    // 6 cog teeth around outer perimeter
-    for (int i = 0; i < 6; ++i) {
-        float angle = i * (3.14159265f / 3.0f);
-        float cosA = cosf(angle);
-        float sinA = sinf(angle);
-        D2D1_POINT_2F p1 = D2D1::Point2F(cx + (rOuter - toothLen * 0.2f) * cosA, cy + (rOuter - toothLen * 0.2f) * sinA);
-        D2D1_POINT_2F p2 = D2D1::Point2F(cx + (rOuter + toothLen) * cosA, cy + (rOuter + toothLen) * sinA);
-        pRT->DrawLine(p1, p2, pBrush, strokeWidth * 1.6f, m_pStrokeStyle.Get());
+    // 2. 6-tooth undulating cog perimeter matching official Lucide icon geometry (Image 4)
+    Microsoft::WRL::ComPtr<ID2D1Factory> pFactory;
+    pRT->GetFactory(&pFactory);
+    if (!pFactory) return;
+
+    Microsoft::WRL::ComPtr<ID2D1PathGeometry> pGearPath;
+    if (FAILED(pFactory->CreatePathGeometry(&pGearPath))) return;
+
+    Microsoft::WRL::ComPtr<ID2D1GeometrySink> pSink;
+    if (FAILED(pGearPath->Open(&pSink))) return;
+
+    // 12 nodes: 6 peaks (r = 9.8s) and 6 valleys (r = 6.4s)
+    // Starting with top tooth at 12 o'clock (angle = -pi/2)
+    const float rPeak = 9.8f * s;
+    const float rValley = 6.4f * s;
+    const float pi = 3.1415926535f;
+
+    D2D1_POINT_2F pts[12];
+    float angles[12];
+    for (int i = 0; i < 12; ++i) {
+        angles[i] = -pi * 0.5f + static_cast<float>(i) * (pi / 6.0f);
+        float r = (i % 2 == 0) ? rPeak : rValley;
+        pts[i] = D2D1::Point2F(cx + r * cosf(angles[i]), cy + r * sinf(angles[i]));
     }
 
-    // Outer gear rim
-    pRT->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(cx, cy), rOuter, rOuter), pBrush, strokeWidth);
+    pSink->BeginFigure(pts[0], D2D1_FIGURE_BEGIN_HOLLOW);
+    for (int i = 0; i < 12; ++i) {
+        int next = (i + 1) % 12;
+        float tLen1 = (i % 2 == 0) ? (1.75f * s) : (1.15f * s);
+        float tLen2 = (next % 2 == 0) ? (1.75f * s) : (1.15f * s);
+        // Tangent unit vector is (-sin(a), cos(a))
+        D2D1_POINT_2F cp1 = D2D1::Point2F(pts[i].x - sinf(angles[i]) * tLen1, pts[i].y + cosf(angles[i]) * tLen1);
+        D2D1_POINT_2F cp2 = D2D1::Point2F(pts[next].x + sinf(angles[next]) * tLen2, pts[next].y - cosf(angles[next]) * tLen2);
+        pSink->AddBezier(D2D1::BezierSegment(cp1, cp2, pts[next]));
+    }
+    pSink->EndFigure(D2D1_FIGURE_END_CLOSED);
+    pSink->Close();
+
+    pRT->DrawGeometry(pGearPath.Get(), pBrush, strokeWidth, m_pStrokeStyle.Get());
 }
 
 void LucideIcons::DrawExternalLink(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, ID2D1Brush* pBrush, float strokeWidth) const {

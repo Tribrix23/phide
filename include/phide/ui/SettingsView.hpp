@@ -26,8 +26,7 @@ enum class SettingCategory {
     CommonlyUsed = 0,
     TextEditor   = 1,
     Appearance   = 2,
-    Files        = 3,
-    Workbench    = 4
+    Files        = 3
 };
 
 /**
@@ -50,7 +49,8 @@ struct SettingItem {
     std::wstring scope;       ///< Tag badge, e.g. "Editor", "Files", "Appearance"
     std::wstring title;       ///< Display name, e.g. "Font Size"
     std::wstring description; ///< Explanatory subtitle
-    SettingCategory category = SettingCategory::CommonlyUsed;
+    SettingCategory category = SettingCategory::TextEditor;
+    bool isCommonlyUsed      = true;
     SettingControl control   = SettingControl::Toggle;
 
     // Dropdown / Preset values
@@ -128,6 +128,15 @@ public:
     void SetActiveCategory(SettingCategory cat) noexcept { m_activeCategory = cat; m_scrollOffsetY = 0.0f; }
     void ResetScroll() noexcept { m_scrollOffsetY = 0.0f; }
 
+    /**
+     * @brief Queries the appropriate Windows mouse cursor for the given client coordinate.
+     * @return IDC_HAND for interactive buttons, steppers, toggles, and dropdowns; IDC_IBEAM for search input; nullptr for default.
+     */
+    [[nodiscard]] LPCWSTR GetCursorForPoint(POINT clientPt) const;
+
+    [[nodiscard]] bool IsDropdownOpen() const noexcept { return m_openDropdownItemIdx >= 0; }
+    void CloseDropdown() noexcept { m_openDropdownItemIdx = -1; m_hoveredDropdownOption = -1; }
+
 private:
     std::vector<SettingItem> m_items;
     SettingCategory m_activeCategory = SettingCategory::CommonlyUsed;
@@ -144,6 +153,11 @@ private:
     int m_hoveredScopeIdx = -1;
     bool m_hoveredSearchClear = false;
     std::string m_hoveredControlSubId; ///< "toggle", "minus", "plus", "dropdown"
+
+    // Dropdown popup state
+    int m_openDropdownItemIdx = -1;
+    D2D1_RECT_F m_openDropdownBounds{};
+    int m_hoveredDropdownOption = -1;
 
     // Layout cache
     D2D1_RECT_F m_viewBounds{};
@@ -164,7 +178,8 @@ private:
     void DrawStepper(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
                      const SettingItem& item, const std::wstring& valStr, bool isHoveredMinus, bool isHoveredPlus);
     void DrawDropdown(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
-                      const D2D1_RECT_F& bounds, const std::wstring& valStr, bool isHovered);
+                      const D2D1_RECT_F& bounds, const std::wstring& valStr, bool isHovered, bool isOpen);
+    void DrawDropdownPopup(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config);
 };
 
 } // namespace phide::ui
