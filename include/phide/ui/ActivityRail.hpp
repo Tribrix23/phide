@@ -32,12 +32,13 @@ enum class RailTabId {
     Files = 0,          ///< Files / Explorer perspective (two overlapping sheets)
     Search = 1,         ///< Search across workspace
     Git = 2,            ///< Source Control (Git)
-    FileNetwork = 6,    ///< File Network icon with hub and 5 satellite nodes ("File network")
-    MoreActions = 6,    ///< Backward compatibility alias for FileNetwork
-    Packages = 3,       ///< Package Manager (PyCharm style)
-    Notebook = 4,       ///< Interactive Notebook (Jupyter / Colab)
-    Student = 5,        ///< Student Tutorials & Learning Hub (Student hat / graduation cap 🎓)
-    Settings = 7        ///< Settings tab (Lucide gear icon, opens Settings editor tab)
+    Extensions = 3,     ///< Extensions (VS Code marketplace)
+    Packages = 4,       ///< Package Manager (PyCharm style)
+    Notebook = 5,       ///< Interactive Notebook (Jupyter / Colab)
+    Student = 6,        ///< Student Tutorials & Learning Hub
+    FileNetwork = 7,    ///< File Network icon with hub and 5 satellite nodes
+    MoreActions = 7,    ///< Backward compatibility alias for FileNetwork
+    Settings = 8        ///< Settings tab
 };
 
 /**

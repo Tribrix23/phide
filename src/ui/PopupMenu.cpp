@@ -444,6 +444,7 @@ void PopupMenu::BuildViewMenuItems(const app::AppConfig& config, bool isSidebarO
     appearanceItem.submenuItems.push_back({ MenuActionId::ToggleBreadcrumbs,         L"Breadcrumbs",                  L"",             false, config.showBreadcrumbs,   false, true, {}, {} });
     appearanceItem.submenuItems.push_back({ MenuActionId::ToggleStickyScroll,        L"Sticky Scroll",                L"",             false, true,                     false, true, {}, {} });
     appearanceItem.submenuItems.push_back({ MenuActionId::ToggleMarkdownPreview,     L"Markdown Preview",             L"Ctrl+Shift+V", false, config.enableMarkdownPreview, false, true, {}, {} });
+    appearanceItem.submenuItems.push_back({ MenuActionId::ToggleCodeLens,            L"CodeLens",                     L"",             false, config.enableCodeLens,         false, true, {}, {} });
     appearanceItem.submenuItems.push_back({ MenuActionId::ToggleRenderWhitespace,    L"Render Whitespace",            L"",             false, config.renderWhitespace,  false, true, {}, {} });
     appearanceItem.submenuItems.push_back({ MenuActionId::ToggleRenderControlChars, L"Render Control Characters",     L"",             false, false,                    false, true, {}, {} });
     // --- Submenu Separator ---

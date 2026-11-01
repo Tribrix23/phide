@@ -214,8 +214,11 @@ private:
     void OpenSpecialView(const std::wstring& viewType, const std::wstring& title);
     void OpenCourseTab(const std::wstring& courseTitle, const std::wstring& courseId);
     void ToggleMarkdownPreview();
+    void ToggleCodeLens();
     void OpenMarkdownPreviewSplit(const std::wstring& path);
     void CloseMarkdownPreviewSplit();
+    void OpenExtensionDetail(const std::wstring& extId);
+    void RunCodeLens(size_t bufferLine, bool isDebug);
     static bool IsMarkdownFile(const std::wstring& path);
     void SyncActiveTabWithDrawer();
 

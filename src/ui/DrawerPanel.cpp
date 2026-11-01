@@ -7,6 +7,7 @@
 #include "phide/ui/ActivityRail.hpp"
 #include "phide/ui/GitLogManager.hpp"
 #include "phide/editor/Buffer.hpp"
+#include <wincodec.h>
 #include <algorithm>
 #include <iostream>
 #include <fstream>
@@ -563,6 +564,8 @@ void DrawerPanel::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCon
             RenderSearchPane(pRT, theme, config, clientHeight, currentDrawerW);
         } else if (config.activeRailTab == 2) {
             RenderSourceControlPane(pRT, theme, config, clientHeight, currentDrawerW);
+        } else if (config.activeRailTab == 3) {
+            RenderExtensionsPane(pRT, theme, config, clientHeight, currentDrawerW);
         } else {
             RenderExplorerPane(pRT, theme, config, clientHeight, currentDrawerW);
         }
@@ -3458,6 +3461,10 @@ bool DrawerPanel::HandleMouseWheel(short delta, int activeRailTab, float mouseY)
             }
             return m_gitGraphScrollIdx != oldScroll;
         }
+    }
+
+    if (activeRailTab == 3) {
+        return HandleExtensionsWheel(delta);
     }
 
     if (activeRailTab == 1) {
@@ -9395,6 +9402,237 @@ void DrawerPanel::InitializeCourseCurriculum(const std::wstring& courseId, const
     }
 
     m_courseTrees[courseId] = tree;
+}
+
+static Microsoft::WRL::ComPtr<ID2D1Bitmap> LoadPngBitmap(ID2D1RenderTarget* pRT, const std::wstring& path) {
+    if (!pRT || path.empty()) return nullptr;
+    std::wstring tryPaths[] = { path, L"bin\\" + path, L"..\\" + path };
+    for (const auto& p : tryPaths) {
+        if (!std::filesystem::exists(p)) continue;
+        Microsoft::WRL::ComPtr<IWICImagingFactory> pWicFactory;
+        if (FAILED(CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&pWicFactory)))) continue;
+        Microsoft::WRL::ComPtr<IWICBitmapDecoder> pDecoder;
+        if (FAILED(pWicFactory->CreateDecoderFromFilename(p.c_str(), nullptr, GENERIC_READ, WICDecodeMetadataCacheOnDemand, &pDecoder))) continue;
+        Microsoft::WRL::ComPtr<IWICBitmapFrameDecode> pFrame;
+        if (FAILED(pDecoder->GetFrame(0, &pFrame))) continue;
+        Microsoft::WRL::ComPtr<IWICFormatConverter> pConverter;
+        if (FAILED(pWicFactory->CreateFormatConverter(&pConverter))) continue;
+        if (FAILED(pConverter->Initialize(pFrame.Get(), GUID_WICPixelFormat32bppPBGRA, WICBitmapDitherTypeNone, nullptr, 0.0, WICBitmapPaletteTypeCustom))) continue;
+        Microsoft::WRL::ComPtr<ID2D1Bitmap> pBitmap;
+        if (SUCCEEDED(pRT->CreateBitmapFromWicBitmap(pConverter.Get(), nullptr, &pBitmap))) {
+            return pBitmap;
+        }
+    }
+    return nullptr;
+}
+
+void DrawerPanel::InitExtensionEntries() {
+    if (m_extensionsInitialized) return;
+    m_extensionsInitialized = true;
+
+    m_extensionEntries.clear();
+
+    ExtensionEntry e1;
+    e1.id = L"dsznajder.es7-react-js-snippets";
+    e1.displayName = L"ES7+ React/Redux/React-Native snippets";
+    e1.publisherDisplayName = L"dsznajder";
+    e1.description = L"Extensions for React, React-Native and Redux in JS/TS with ES7+ syntax. Customizable.";
+    e1.version = L"4.4.3";
+    e1.installsFormatted = L"17.8M";
+    e1.rating = 4.4f;
+    e1.iconPath = L"assets\\extensions\\dsznajder.es7-react-js-snippets\\icon.png";
+    e1.isInstalled = true;
+    e1.isEnabled = true;
+    m_extensionEntries.push_back(std::move(e1));
+
+    ExtensionEntry e2;
+    e2.id = L"bradlc.vscode-tailwindcss";
+    e2.displayName = L"Tailwind CSS IntelliSense";
+    e2.publisherDisplayName = L"Tailwind Labs";
+    e2.description = L"Intelligent Tailwind CSS tooling for VS Code";
+    e2.version = L"0.14.3";
+    e2.installsFormatted = L"17.9M";
+    e2.rating = 4.7f;
+    e2.iconPath = L"assets\\extensions\\bradlc.vscode-tailwindcss\\icon.png";
+    e2.isInstalled = true;
+    e2.isEnabled = true;
+    m_extensionEntries.push_back(std::move(e2));
+
+    ExtensionEntry e3;
+    e3.id = L"redhat.vscode-yaml";
+    e3.displayName = L"YAML";
+    e3.publisherDisplayName = L"Red Hat";
+    e3.description = L"YAML Language Support by Red Hat, with built-in Kubernetes syntax support";
+    e3.version = L"2.1.2";
+    e3.installsFormatted = L"29.8M";
+    e3.rating = 4.3f;
+    e3.iconPath = L"assets\\extensions\\redhat.vscode-yaml\\icon.png";
+    e3.isInstalled = true;
+    e3.isEnabled = true;
+    m_extensionEntries.push_back(std::move(e3));
+
+    ExtensionEntry e4;
+    e4.id = L"eamodio.gitlens";
+    e4.displayName = L"GitLens — Git supercharged";
+    e4.publisherDisplayName = L"GitKraken";
+    e4.description = L"Supercharge Git within VS Code — Visualize code authorship at a glance via Git blame annotations and CodeLens";
+    e4.version = L"2026.10.31";
+    e4.installsFormatted = L"53.6M";
+    e4.rating = 4.5f;
+    e4.iconPath = L"assets\\extensions\\eamodio.gitlens\\icon.png";
+    e4.isInstalled = true;
+    e4.isEnabled = true;
+    m_extensionEntries.push_back(std::move(e4));
+}
+
+void DrawerPanel::RenderExtensionsPane(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config, float clientHeight, float currentDrawerW) {
+    if (!pRT) return;
+    InitExtensionEntries();
+
+    const float headerH = config.ScaleF(static_cast<float>(config.headerHeight));
+    const float railW   = config.ScaleF(static_cast<float>(config.railWidth));
+    const float paddingX = config.ScaleF(16.0f);
+    float curY = headerH + config.ScaleF(14.0f);
+
+    // 1. Pane Header: "EXTENSIONS"
+    const wchar_t* title = L"EXTENSIONS";
+    D2D1_RECT_F rcTitle = D2D1::RectF(railW + paddingX, curY, railW + currentDrawerW - paddingX, curY + config.ScaleF(20.0f));
+    pRT->DrawText(title, static_cast<UINT32>(wcslen(title)),
+                  theme.fontSectionHeader ? theme.fontSectionHeader.Get() : theme.fontTitle.Get(),
+                  rcTitle, theme.brushTextMuted.Get());
+    curY += config.ScaleF(26.0f);
+
+    // 2. Search Box
+    const float searchH = config.ScaleF(28.0f);
+    D2D1_RECT_F rcSearch = D2D1::RectF(railW + paddingX, curY, railW + currentDrawerW - paddingX, curY + searchH);
+    D2D1_ROUNDED_RECT rrcSearch = D2D1::RoundedRect(rcSearch, config.ScaleF(4.0f), config.ScaleF(4.0f));
+    pRT->FillRoundedRectangle(&rrcSearch, theme.brushCanvasBg.Get());
+    pRT->DrawRoundedRectangle(&rrcSearch, theme.brushBorderSubtle.Get(), 1.0f);
+
+    // Magnifying glass icon in search box
+    m_icons.DrawSearch(pRT, D2D1::RectF(rcSearch.left + config.ScaleF(6.0f), rcSearch.top + (searchH - config.ScaleF(14.0f)) * 0.5f,
+                               rcSearch.left + config.ScaleF(20.0f), rcSearch.top + (searchH + config.ScaleF(14.0f)) * 0.5f), theme.brushTextMuted.Get(), 1.2f);
+    const wchar_t* placeholder = L"Search Extensions in Marketplace...";
+    D2D1_RECT_F rcPlaceholder = D2D1::RectF(rcSearch.left + config.ScaleF(24.0f), rcSearch.top, rcSearch.right - config.ScaleF(6.0f), rcSearch.bottom);
+    pRT->DrawText(placeholder, static_cast<UINT32>(wcslen(placeholder)),
+                  theme.fontMenuShortcut ? theme.fontMenuShortcut.Get() : theme.fontHint.Get(),
+                  rcPlaceholder, theme.brushTextMuted.Get());
+    curY += searchH + config.ScaleF(16.0f);
+
+    // 3. Section Header: "INSTALLED (4)"
+    std::wstring installedHeader = L"INSTALLED (" + std::to_wstring(m_extensionEntries.size()) + L")";
+    D2D1_RECT_F rcSecHeader = D2D1::RectF(railW + paddingX, curY, railW + currentDrawerW - paddingX, curY + config.ScaleF(18.0f));
+    pRT->DrawText(installedHeader.c_str(), static_cast<UINT32>(installedHeader.length()),
+                  theme.fontSectionHeader ? theme.fontSectionHeader.Get() : theme.fontTitle.Get(),
+                  rcSecHeader, theme.brushTextPrimary.Get());
+    curY += config.ScaleF(22.0f);
+
+    // 4. Extensions List
+    curY -= m_extensionsScrollY;
+    const float itemH = config.ScaleF(64.0f);
+
+    for (size_t i = 0; i < m_extensionEntries.size(); ++i) {
+        auto& entry = m_extensionEntries[i];
+        if (curY + itemH >= headerH && curY < clientHeight) {
+            D2D1_RECT_F rcItem = D2D1::RectF(railW + config.ScaleF(8.0f), curY, railW + currentDrawerW - config.ScaleF(8.0f), curY + itemH);
+            entry.bounds = rcItem;
+
+            // Hover state
+            bool isHover = (static_cast<int>(i) == m_hoveredExtensionIdx);
+            if (isHover) {
+                D2D1_ROUNDED_RECT rrcHover = D2D1::RoundedRect(rcItem, 4.0f, 4.0f);
+                pRT->FillRoundedRectangle(&rrcHover, theme.brushItemHover.Get());
+            }
+
+            // Extension icon
+            const float iconSize = config.ScaleF(38.0f);
+            float iconX = rcItem.left + config.ScaleF(6.0f);
+            float iconY = curY + (itemH - iconSize) * 0.5f;
+            D2D1_RECT_F rcIcon = D2D1::RectF(iconX, iconY, iconX + iconSize, iconY + iconSize);
+
+            if (!entry.pIconBitmap) {
+                entry.pIconBitmap = LoadPngBitmap(pRT, entry.iconPath);
+            }
+            if (entry.pIconBitmap) {
+                pRT->DrawBitmap(entry.pIconBitmap.Get(), rcIcon);
+            } else {
+                D2D1_ROUNDED_RECT rrcIconBg = D2D1::RoundedRect(rcIcon, 4.0f, 4.0f);
+                pRT->FillRoundedRectangle(&rrcIconBg, theme.brushBorderSubtle.Get());
+                m_icons.DrawExtensionsGrid(pRT, D2D1::RectF(rcIcon.left + 8.0f, rcIcon.top + 8.0f, rcIcon.right - 8.0f, rcIcon.bottom - 8.0f), theme.brushTextMuted.Get(), 1.2f);
+            }
+
+            // Info column
+            float textX = iconX + iconSize + config.ScaleF(10.0f);
+            float textW = rcItem.right - textX - config.ScaleF(28.0f);
+
+            // Title
+            D2D1_RECT_F rcName = D2D1::RectF(textX, curY + config.ScaleF(4.0f), textX + textW, curY + config.ScaleF(22.0f));
+            pRT->DrawText(entry.displayName.c_str(), static_cast<UINT32>(entry.displayName.length()),
+                          theme.fontTitle ? theme.fontTitle.Get() : theme.fontBody.Get(),
+                          rcName, isHover ? theme.brushTextWhite.Get() : theme.brushTextPrimary.Get());
+
+            // Description
+            D2D1_RECT_F rcDesc = D2D1::RectF(textX, curY + config.ScaleF(22.0f), textX + textW, curY + config.ScaleF(40.0f));
+            pRT->DrawText(entry.description.c_str(), static_cast<UINT32>(entry.description.length()),
+                          theme.fontMenuShortcut ? theme.fontMenuShortcut.Get() : theme.fontHint.Get(),
+                          rcDesc, theme.brushTextMuted.Get());
+
+            // Publisher & stats
+            std::wstring footer = entry.publisherDisplayName + L"  •  " + entry.installsFormatted + L"  •  ★ " +
+                                  std::to_wstring(static_cast<int>(entry.rating)) + L"." + std::to_wstring(static_cast<int>(entry.rating * 10) % 10);
+            D2D1_RECT_F rcFoot = D2D1::RectF(textX, curY + config.ScaleF(40.0f), textX + textW, curY + config.ScaleF(58.0f));
+            pRT->DrawText(footer.c_str(), static_cast<UINT32>(footer.length()),
+                          theme.fontMenuShortcut ? theme.fontMenuShortcut.Get() : theme.fontHint.Get(),
+                          rcFoot, theme.brushTextMuted.Get());
+
+            // Gear icon button
+            D2D1_RECT_F rcGear = D2D1::RectF(rcItem.right - config.ScaleF(24.0f), curY + (itemH - config.ScaleF(16.0f)) * 0.5f,
+                                             rcItem.right - config.ScaleF(8.0f), curY + (itemH + config.ScaleF(16.0f)) * 0.5f);
+            entry.gearBounds = rcGear;
+            m_icons.DrawSettings(pRT, rcGear, theme.brushTextMuted.Get(), 1.0f);
+        } else {
+            entry.bounds = D2D1::RectF(0, 0, 0, 0);
+        }
+        curY += itemH + config.ScaleF(4.0f);
+    }
+}
+
+bool DrawerPanel::HitTestExtensions(POINT pt, const app::AppConfig& config, std::wstring& outExtId) {
+    (void)config;
+    for (const auto& e : m_extensionEntries) {
+        if (pt.x >= e.bounds.left && pt.x <= e.bounds.right && pt.y >= e.bounds.top && pt.y <= e.bounds.bottom) {
+            outExtId = e.id;
+            if (m_onOpenExtensionDetail) {
+                m_onOpenExtensionDetail(e.id);
+            }
+            return true;
+        }
+    }
+    return false;
+}
+
+void DrawerPanel::UpdateExtensionsHover(POINT pt) {
+    m_hoveredExtensionIdx = -1;
+    for (size_t i = 0; i < m_extensionEntries.size(); ++i) {
+        const auto& e = m_extensionEntries[i];
+        if (pt.x >= e.bounds.left && pt.x <= e.bounds.right && pt.y >= e.bounds.top && pt.y <= e.bounds.bottom) {
+            m_hoveredExtensionIdx = static_cast<int>(i);
+            break;
+        }
+    }
+}
+
+bool DrawerPanel::HandleExtensionsWheel(short delta) {
+    float oldScroll = m_extensionsScrollY;
+    if (delta > 0) {
+        m_extensionsScrollY -= 40.0f;
+        if (m_extensionsScrollY < 0.0f) m_extensionsScrollY = 0.0f;
+    } else {
+        m_extensionsScrollY += 40.0f;
+        float maxScroll = (std::max)(0.0f, static_cast<float>(m_extensionEntries.size() * 70) - 200.0f);
+        if (m_extensionsScrollY > maxScroll) m_extensionsScrollY = maxScroll;
+    }
+    return m_extensionsScrollY != oldScroll;
 }
 
 } // namespace phide::ui

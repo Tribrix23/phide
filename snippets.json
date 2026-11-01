@@ -1301,6 +1301,65 @@
         "scope": "ts,js,tsx,jsx"
     },
 
+    "React Arrow Function Component with Export (rafce)": {
+        "prefix": "rafce",
+        "body": [
+            "import React from 'react';",
+            "",
+            "const ${1:ComponentName} = () => {",
+            "    return (",
+            "        <div>",
+            "            $0",
+            "        </div>",
+            "    );",
+            "};",
+            "",
+            "export default ${1:ComponentName};"
+        ],
+        "description": "Creates a React Arrow Function Component with ES7 export",
+        "scope": "tsx,jsx,js,ts"
+    },
+
+    "React Function Component with Export (rfce)": {
+        "prefix": "rfce",
+        "body": [
+            "import React from 'react';",
+            "",
+            "function ${1:ComponentName}() {",
+            "    return (",
+            "        <div>",
+            "            $0",
+            "        </div>",
+            "    );",
+            "}",
+            "",
+            "export default ${1:ComponentName};"
+        ],
+        "description": "Creates a React Function Component with ES7 export",
+        "scope": "tsx,jsx,js,ts"
+    },
+
+    "React Class Component with Export (rce)": {
+        "prefix": "rce",
+        "body": [
+            "import React, { Component } from 'react';",
+            "",
+            "export class ${1:ComponentName} extends Component {",
+            "    render() {",
+            "        return (",
+            "            <div>",
+            "                $0",
+            "            </div>",
+            "        );",
+            "    }",
+            "}",
+            "",
+            "export default ${1:ComponentName};"
+        ],
+        "description": "Creates a React Class Component with ES7 export",
+        "scope": "tsx,jsx,js,ts"
+    },
+
     "React Functional Component": {
         "prefix": "rfc",
         "body": [
@@ -1313,10 +1372,103 @@
             "};"
         ],
         "description": "React functional component export",
-        "scope": "tsx,jsx"
+        "scope": "tsx,jsx,js,ts"
     },
 
     "React useState Hook": {
+        "prefix": "useState",
+        "body": [
+            "const [${1:state}, set${1:state}] = useState(${2:initialState});"
+        ],
+        "description": "React useState hook",
+        "scope": "tsx,jsx,ts,js"
+    },
+
+    "React useEffect Hook": {
+        "prefix": "useEffect",
+        "body": [
+            "useEffect(() => {",
+            "    $0",
+            "    return () => {",
+            "        $1",
+            "    };",
+            "}, [${2}]);"
+        ],
+        "description": "React useEffect hook",
+        "scope": "tsx,jsx,ts,js"
+    },
+
+    "React useContext Hook": {
+        "prefix": "useContext",
+        "body": [
+            "const ${1:context} = useContext(${2:contextValue});"
+        ],
+        "description": "React useContext hook",
+        "scope": "tsx,jsx,ts,js"
+    },
+
+    "React useRef Hook": {
+        "prefix": "useRef",
+        "body": [
+            "const ${1:ref} = useRef(${2:initialValue});"
+        ],
+        "description": "React useRef hook",
+        "scope": "tsx,jsx,ts,js"
+    },
+
+    "React useCallback Hook": {
+        "prefix": "useCallback",
+        "body": [
+            "const ${1:memoizedCallback} = useCallback(",
+            "    (${2:params}) => {",
+            "        $0",
+            "    },",
+            "    [${3}],",
+            ");"
+        ],
+        "description": "React useCallback hook",
+        "scope": "tsx,jsx,ts,js"
+    },
+
+    "React useMemo Hook": {
+        "prefix": "useMemo",
+        "body": [
+            "const ${1:memoizedValue} = useMemo(() => {",
+            "    return $0;",
+            "}, [${2}]);"
+        ],
+        "description": "React useMemo hook",
+        "scope": "tsx,jsx,ts,js"
+    },
+
+    "Console Log (clg)": {
+        "prefix": "clg",
+        "body": [
+            "console.log(${1:object});"
+        ],
+        "description": "console.log statement",
+        "scope": "tsx,jsx,ts,js,html"
+    },
+
+    "ES7 Import Module (imp)": {
+        "prefix": "imp",
+        "body": [
+            "import ${2:moduleName} from '${1:module}';"
+        ],
+        "description": "ES7 import statement",
+        "scope": "tsx,jsx,ts,js"
+    },
+
+    "ES7 Export Default (exp)": {
+        "prefix": "exp",
+        "body": [
+            "export default ${1:moduleName};"
+        ],
+        "description": "ES7 export default statement",
+        "scope": "tsx,jsx,ts,js"
+    },
+
+    "React useState Hook (us)": {
         "prefix": "us",
         "body": [
             "const [${1:state}, set${1:state}] = useState($2);"
@@ -1325,7 +1477,7 @@
         "scope": "tsx,jsx,ts,js"
     },
 
-    "React useEffect Hook": {
+    "React useEffect Hook (ue)": {
         "prefix": "ue",
         "body": [
             "useEffect(() => {",

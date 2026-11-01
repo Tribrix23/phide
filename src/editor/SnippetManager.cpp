@@ -1334,6 +1334,68 @@ void SnippetManager::LoadDefaults() {
     });
 
     m_snippets.push_back({
+        L"React Arrow Function Component with Export (rafce)",
+        L"rafce",
+        {
+            L"import React from 'react';",
+            L"",
+            L"const ${1:ComponentName} = () => {",
+            L"    return (",
+            L"        <div>",
+            L"            $0",
+            L"        </div>",
+            L"    );",
+            L"};",
+            L"",
+            L"export default ${1:ComponentName};"
+        },
+        L"Creates a React Arrow Function Component with ES7 export",
+        L"tsx,jsx,js,ts"
+    });
+
+    m_snippets.push_back({
+        L"React Function Component with Export (rfce)",
+        L"rfce",
+        {
+            L"import React from 'react';",
+            L"",
+            L"function ${1:ComponentName}() {",
+            L"    return (",
+            L"        <div>",
+            L"            $0",
+            L"        </div>",
+            L"    );",
+            L"}",
+            L"",
+            L"export default ${1:ComponentName};"
+        },
+        L"Creates a React Function Component with ES7 export",
+        L"tsx,jsx,js,ts"
+    });
+
+    m_snippets.push_back({
+        L"React Class Component with Export (rce)",
+        L"rce",
+        {
+            L"import React, { Component } from 'react';",
+            L"",
+            L"export class ${1:ComponentName} extends Component {",
+            L"    render() {",
+            L"        return (",
+            L"            <div>",
+            L"                $0",
+            L"            </div>",
+            L"        );",
+            L"    }",
+            L"}",
+            L"",
+            L"export default ${1:ComponentName};"
+        },
+        L"Creates a React Class Component with ES7 export",
+        L"tsx,jsx,js,ts"
+    });
+
+    m_snippets.push_back({
         L"React Functional Component",
         L"rfc",
         {
@@ -1346,11 +1408,101 @@ void SnippetManager::LoadDefaults() {
             L"};"
         },
         L"React functional component export",
-        L"tsx,jsx"
+        L"tsx,jsx,js,ts"
     });
 
     m_snippets.push_back({
         L"React useState Hook",
+        L"useState",
+        { L"const [${1:state}, set${1:state}] = useState(${2:initialState});" },
+        L"React useState hook",
+        L"tsx,jsx,ts,js"
+    });
+
+    m_snippets.push_back({
+        L"React useEffect Hook",
+        L"useEffect",
+        {
+            L"useEffect(() => {",
+            L"    $0",
+            L"    return () => {",
+            L"        $1",
+            L"    };",
+            L"}, [${2}]);"
+        },
+        L"React useEffect hook",
+        L"tsx,jsx,ts,js"
+    });
+
+    m_snippets.push_back({
+        L"React useContext Hook",
+        L"useContext",
+        { L"const ${1:context} = useContext(${2:contextValue});" },
+        L"React useContext hook",
+        L"tsx,jsx,ts,js"
+    });
+
+    m_snippets.push_back({
+        L"React useRef Hook",
+        L"useRef",
+        { L"const ${1:ref} = useRef(${2:initialValue});" },
+        L"React useRef hook",
+        L"tsx,jsx,ts,js"
+    });
+
+    m_snippets.push_back({
+        L"React useCallback Hook",
+        L"useCallback",
+        {
+            L"const ${1:memoizedCallback} = useCallback(",
+            L"    (${2:params}) => {",
+            L"        $0",
+            L"    },",
+            L"    [${3}],",
+            L");"
+        },
+        L"React useCallback hook",
+        L"tsx,jsx,ts,js"
+    });
+
+    m_snippets.push_back({
+        L"React useMemo Hook",
+        L"useMemo",
+        {
+            L"const ${1:memoizedValue} = useMemo(() => {",
+            L"    return $0;",
+            L"}, [${2}]);"
+        },
+        L"React useMemo hook",
+        L"tsx,jsx,ts,js"
+    });
+
+    m_snippets.push_back({
+        L"Console Log (clg)",
+        L"clg",
+        { L"console.log(${1:object});" },
+        L"console.log statement",
+        L"tsx,jsx,ts,js,html"
+    });
+
+    m_snippets.push_back({
+        L"ES7 Import Module (imp)",
+        L"imp",
+        { L"import ${2:moduleName} from '${1:module}';" },
+        L"ES7 import statement",
+        L"tsx,jsx,ts,js"
+    });
+
+    m_snippets.push_back({
+        L"ES7 Export Default (exp)",
+        L"exp",
+        { L"export default ${1:moduleName};" },
+        L"ES7 export default statement",
+        L"tsx,jsx,ts,js"
+    });
+
+    m_snippets.push_back({
+        L"React useState Hook (us)",
         L"us",
         { L"const [${1:state}, set${1:state}] = useState($2);" },
         L"React useState hook",
@@ -1358,7 +1510,7 @@ void SnippetManager::LoadDefaults() {
     });
 
     m_snippets.push_back({
-        L"React useEffect Hook",
+        L"React useEffect Hook (ue)",
         L"ue",
         {
             L"useEffect(() => {",

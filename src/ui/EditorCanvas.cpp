@@ -13,6 +13,95 @@
 
 namespace phide::ui {
 
+static bool IsFunctionOrTestLine(const std::wstring& line) {
+    if (line.empty()) return false;
+    size_t start = 0;
+    while (start < line.length() && (line[start] == L' ' || line[start] == L'\t')) {
+        start++;
+    }
+    if (start >= line.length()) return false;
+    std::wstring trimmed = line.substr(start);
+
+    // Skip comment lines
+    if (trimmed.starts_with(L"//") || trimmed.starts_with(L"/*") || trimmed.starts_with(L"*") || trimmed.starts_with(L"#")) {
+        return false;
+    }
+
+    // Test runner macros & functions (Image 1: test("renders learn react link", () => {)
+    if (trimmed.starts_with(L"test(") || trimmed.starts_with(L"test.") ||
+        trimmed.starts_with(L"it(") || trimmed.starts_with(L"it.") ||
+        trimmed.starts_with(L"describe(") || trimmed.starts_with(L"describe.") ||
+        trimmed.starts_with(L"TEST(") || trimmed.starts_with(L"TEST_F(") || trimmed.starts_with(L"TEST_P(")) {
+        return true;
+    }
+
+    // Python functions & tests
+    if (trimmed.starts_with(L"def ") || trimmed.starts_with(L"async def ")) {
+        return true;
+    }
+
+    // Go / Rust
+    if (trimmed.starts_with(L"func ") || trimmed.starts_with(L"fn ")) {
+        return true;
+    }
+
+    // PHP / JS standard functions
+    if (trimmed.starts_with(L"function ") || trimmed.starts_with(L"function* ") ||
+        trimmed.starts_with(L"async function ") || trimmed.starts_with(L"async function* ")) {
+        return true;
+    }
+    if (trimmed.starts_with(L"public function ") || trimmed.starts_with(L"private function ") ||
+        trimmed.starts_with(L"protected function ") || trimmed.starts_with(L"static function ") ||
+        trimmed.starts_with(L"public static function ") || trimmed.starts_with(L"private static function ")) {
+        return true;
+    }
+
+    // JS/TS exports
+    if (trimmed.starts_with(L"export default function") || trimmed.starts_with(L"export function") ||
+        trimmed.starts_with(L"export async function")) {
+        return true;
+    }
+
+    // Arrow functions / React components
+    if ((trimmed.starts_with(L"const ") || trimmed.starts_with(L"let ") || trimmed.starts_with(L"export const ")) &&
+        (trimmed.find(L"=>") != std::wstring::npos) && (trimmed.find(L"(") != std::wstring::npos)) {
+        return true;
+    }
+
+    // C++ / Java / C# methods
+    if ((trimmed.starts_with(L"void ") || trimmed.starts_with(L"bool ") || trimmed.starts_with(L"int ") ||
+         trimmed.starts_with(L"float ") || trimmed.starts_with(L"double ") || trimmed.starts_with(L"auto ") ||
+         trimmed.starts_with(L"std::") || trimmed.starts_with(L"virtual ")) &&
+        (trimmed.find(L"(") != std::wstring::npos) && (trimmed.find(L")") != std::wstring::npos) &&
+        !trimmed.ends_with(L";")) {
+        return true;
+    }
+
+    return false;
+}
+
+static Microsoft::WRL::ComPtr<ID2D1Bitmap> CanvasLoadPngBitmap(ID2D1RenderTarget* pRT, const std::wstring& path) {
+    if (!pRT || path.empty()) return nullptr;
+    std::wstring tryPaths[] = { path, L"bin\\" + path, L"..\\" + path };
+    for (const auto& p : tryPaths) {
+        if (!std::filesystem::exists(p)) continue;
+        Microsoft::WRL::ComPtr<IWICImagingFactory> pWicFactory;
+        if (FAILED(CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&pWicFactory)))) continue;
+        Microsoft::WRL::ComPtr<IWICBitmapDecoder> pDecoder;
+        if (FAILED(pWicFactory->CreateDecoderFromFilename(p.c_str(), nullptr, GENERIC_READ, WICDecodeMetadataCacheOnDemand, &pDecoder))) continue;
+        Microsoft::WRL::ComPtr<IWICBitmapFrameDecode> pFrame;
+        if (FAILED(pDecoder->GetFrame(0, &pFrame))) continue;
+        Microsoft::WRL::ComPtr<IWICFormatConverter> pConverter;
+        if (FAILED(pWicFactory->CreateFormatConverter(&pConverter))) continue;
+        if (FAILED(pConverter->Initialize(pFrame.Get(), GUID_WICPixelFormat32bppPBGRA, WICBitmapDitherTypeNone, nullptr, 0.0, WICBitmapPaletteTypeCustom))) continue;
+        Microsoft::WRL::ComPtr<ID2D1Bitmap> pBitmap;
+        if (SUCCEEDED(pRT->CreateBitmapFromWicBitmap(pConverter.Get(), nullptr, &pBitmap))) {
+            return pBitmap;
+        }
+    }
+    return nullptr;
+}
+
 static void FillUpperLeftRoundedRect(ID2D1RenderTarget* pRT, ID2D1Brush* pBrush,
                                      const D2D1_RECT_F& rc, float radius) {
     if (!pRT || !pBrush) return;
@@ -370,6 +459,9 @@ void EditorCanvas::RenderSinglePane(ID2D1RenderTarget* pRT, Theme& theme, const 
     } else if (activeDoc.isSpecialView && activeDoc.viewType == L"markdown_preview") {
         m_packageManagerView.HideWebView();
         RenderMarkdownPreview(pRT, theme, config, activeDoc, canvasLeft, canvasWidth, contentTopY, clientHeight);
+    } else if (activeDoc.isSpecialView && activeDoc.viewType == L"extension_detail") {
+        m_packageManagerView.HideWebView();
+        RenderExtensionDetail(pRT, theme, config, activeDoc, canvasLeft, canvasWidth, contentTopY, clientHeight);
     } else {
         m_packageManagerView.HideWebView();
         if (activeDoc.isImageView) {
@@ -692,6 +784,8 @@ void EditorCanvas::RenderTabs(ID2D1RenderTarget* pRT, Theme& theme, const app::A
             m_icons.DrawTerminalNotebook(pRT, iconBounds, theme.brushBrandAccent ? theme.brushBrandAccent.Get() : theme.brushTextWhite.Get(), 1.3f);
         } else if (doc.isSpecialView && doc.viewType == L"markdown_preview") {
             m_icons.DrawFileIcon(pRT, theme, iconBounds, FileIconType::Markdown);
+        } else if (doc.isSpecialView && doc.viewType == L"extension_detail") {
+            m_icons.DrawExtensionsGrid(pRT, iconBounds, theme.brushBrandAccent ? theme.brushBrandAccent.Get() : theme.brushTextWhite.Get(), 1.3f);
         } else {
             auto setiInfo = theme.GetSetiIcon(title, false, false);
             if (theme.fontSeti && setiInfo.pBrush) {
@@ -894,6 +988,9 @@ void EditorCanvas::RenderBreadcrumbs(ID2D1RenderTarget* pRT, Theme& theme, const
     } else if (doc.isSpecialView && doc.viewType == L"markdown_preview") {
         segments.push_back(L"Markdown");
         segments.push_back(doc.fileName.empty() ? L"Preview" : doc.fileName);
+    } else if (doc.isSpecialView && doc.viewType == L"extension_detail") {
+        segments.push_back(L"Extensions");
+        segments.push_back(doc.fileName.empty() ? L"Extension" : doc.fileName);
     } else {
         std::wstring pathStr = doc.filePath.empty() ? doc.fileName : doc.filePath;
         for (auto& c : pathStr) {
@@ -1165,40 +1262,46 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
         );
     }
 
-    // Build visual lines layout (folding awareness)
+    // Build visual lines layout (folding awareness & CodeLens virtual lines)
     struct VisualLine {
         size_t bufferLine;
         bool isFoldHeader;
         bool isFolded;
         size_t foldEndLine;
+        bool isCodeLens = false;
     };
     std::vector<VisualLine> visualLines;
-    visualLines.reserve(buffer.GetLineCount());
+    visualLines.reserve(buffer.GetLineCount() * 2);
 
     const size_t totalBufLines = buffer.GetLineCount();
-    if (doc.foldedLines.empty()) {
-        visualLines.resize(totalBufLines);
-        for (size_t b = 0; b < totalBufLines; ++b) {
-            visualLines[b] = { b, false, false, 0 };
+    for (size_t b = 0; b < totalBufLines; ++b) {
+        size_t foldEnd = 0;
+        bool isFolded = (!doc.foldedLines.empty() && doc.foldedLines.count(b) > 0);
+        if (isFolded) {
+            GetFoldRange(buffer, b, foldEnd);
         }
-    } else {
-        for (size_t b = 0; b < totalBufLines; ++b) {
-            size_t foldEnd = 0;
-            bool isFolded = (doc.foldedLines.count(b) > 0);
-            if (isFolded) {
-                GetFoldRange(buffer, b, foldEnd);
-            }
 
-            VisualLine vl;
-            vl.bufferLine = b;
-            vl.isFoldHeader = isFolded;
-            vl.isFolded = isFolded;
-            vl.foldEndLine = foldEnd;
-            visualLines.push_back(vl);
+        // Virtual CodeLens line directly above functions & tests (Image 1: Run | Debug)
+        if (config.enableCodeLens && !doc.isDiffView && IsFunctionOrTestLine(buffer.GetLine(b))) {
+            VisualLine clVl;
+            clVl.bufferLine = b;
+            clVl.isFoldHeader = false;
+            clVl.isFolded = false;
+            clVl.foldEndLine = 0;
+            clVl.isCodeLens = true;
+            visualLines.push_back(clVl);
+        }
 
-            if (isFolded && foldEnd > b) {
-                b = foldEnd; // Skip folded child lines!
-            }
+        VisualLine vl;
+        vl.bufferLine = b;
+        vl.isFoldHeader = isFolded;
+        vl.isFolded = isFolded;
+        vl.foldEndLine = foldEnd;
+        vl.isCodeLens = false;
+        visualLines.push_back(vl);
+
+        if (isFolded && foldEnd > b) {
+            b = foldEnd; // Skip folded child lines!
         }
     }
 
@@ -1214,12 +1317,12 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
     size_t visualCursorIdx = 0;
     bool foundCursorVisual = false;
     for (size_t v = 0; v < visualLines.size(); ++v) {
-        if (visualLines[v].bufferLine == cursor.line) {
+        if (!visualLines[v].isCodeLens && visualLines[v].bufferLine == cursor.line) {
             visualCursorIdx = v;
             foundCursorVisual = true;
             break;
         }
-        if (visualLines[v].isFolded && cursor.line > visualLines[v].bufferLine && cursor.line <= visualLines[v].foldEndLine) {
+        if (!visualLines[v].isCodeLens && visualLines[v].isFolded && cursor.line > visualLines[v].bufferLine && cursor.line <= visualLines[v].foldEndLine) {
             visualCursorIdx = v;
             foundCursorVisual = true;
             break;
@@ -1267,11 +1370,11 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
         bracketAnalysis.activePairIdx < static_cast<int>(bracketAnalysis.pairs.size())) {
         pActivePair = &bracketAnalysis.pairs[bracketAnalysis.activePairIdx];
         for (size_t v = 0; v < visualLines.size(); ++v) {
-            if (visualLines[v].bufferLine == pActivePair->openLine) {
+            if (!visualLines[v].isCodeLens && visualLines[v].bufferLine == pActivePair->openLine) {
                 activeOpenLineY = topY + config.ScaleF(6.0f) + (static_cast<float>(v) - static_cast<float>(doc.scrollLine)) * lineH;
                 hasActiveOpenY = true;
             }
-            if (visualLines[v].bufferLine == pActivePair->closeLine) {
+            if (!visualLines[v].isCodeLens && visualLines[v].bufferLine == pActivePair->closeLine) {
                 activeCloseLineY = topY + config.ScaleF(6.0f) + (static_cast<float>(v) - static_cast<float>(doc.scrollLine)) * lineH;
                 hasActiveCloseY = true;
             }
@@ -1357,11 +1460,82 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
 
     size_t startV = doc.scrollLine;
     size_t endV = (std::min)(visualLines.size(), startV + visibleCount + 2);
+    m_activeCodeLensActions.clear();
 
     for (size_t v = startV; v < endV; ++v) {
         const auto& vl = visualLines[v];
         float lineY = topY + config.ScaleF(6.0f) + (v - doc.scrollLine) * lineH;
         if (lineY + lineH < topY || lineY > clientHeight) continue;
+
+        // CodeLens Virtual Line (Image 1: Run | Debug above function)
+        if (vl.isCodeLens) {
+            const auto& fnLineStr = buffer.GetLine(vl.bufferLine);
+            size_t leadingSpaces = 0;
+            while (leadingSpaces < fnLineStr.length() && (fnLineStr[leadingSpaces] == L' ' || fnLineStr[leadingSpaces] == L'\t')) {
+                leadingSpaces += (fnLineStr[leadingSpaces] == L'\t') ? config.tabSize : 1;
+            }
+            float clX = codeLeft - scrollX + static_cast<float>(leadingSpaces) * charW;
+            if (clX < codeLeft) clX = codeLeft;
+
+            IDWriteTextFormat* clFormat = theme.fontMenuShortcut ? theme.fontMenuShortcut.Get() : theme.fontHint.Get();
+
+            Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushClNormal;
+            Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushClHover;
+            pRT->CreateSolidColorBrush(theme.IsDarkMode() ? D2D1::ColorF(0.58f, 0.60f, 0.64f, 1.0f) : D2D1::ColorF(0.42f, 0.44f, 0.48f, 1.0f), &brushClNormal);
+            pRT->CreateSolidColorBrush(theme.IsDarkMode() ? D2D1::ColorF(0.24f, 0.62f, 0.96f, 1.0f) : D2D1::ColorF(0.06f, 0.45f, 0.85f, 1.0f), &brushClHover);
+
+            // 1. "Run" button
+            const wchar_t* runText = L"Run";
+            float runW = config.ScaleF(26.0f);
+            D2D1_RECT_F rcRun = D2D1::RectF(clX, lineY, clX + runW, lineY + lineH);
+            int runIdx = static_cast<int>(m_activeCodeLensActions.size());
+            bool isRunHovered = (runIdx == m_hoveredCodeLensIdx);
+
+            CodeLensAction runAct;
+            runAct.bufferLine = vl.bufferLine;
+            runAct.isDebug = false;
+            runAct.bounds = rcRun;
+            m_activeCodeLensActions.push_back(runAct);
+
+            pRT->DrawText(runText, static_cast<UINT32>(wcslen(runText)), clFormat, rcRun,
+                          isRunHovered ? brushClHover.Get() : brushClNormal.Get());
+            if (isRunHovered && brushClHover) {
+                pRT->DrawLine(D2D1::Point2F(rcRun.left, lineY + lineH - config.ScaleF(3.0f)),
+                              D2D1::Point2F(rcRun.right - config.ScaleF(4.0f), lineY + lineH - config.ScaleF(3.0f)),
+                              brushClHover.Get(), 1.0f);
+            }
+
+            // Separator " | "
+            clX += runW;
+            const wchar_t* sepText = L" | ";
+            float sepW = config.ScaleF(14.0f);
+            D2D1_RECT_F rcSep = D2D1::RectF(clX, lineY, clX + sepW, lineY + lineH);
+            pRT->DrawText(sepText, static_cast<UINT32>(wcslen(sepText)), clFormat, rcSep, brushClNormal.Get());
+            clX += sepW;
+
+            // 2. "Debug" button
+            const wchar_t* debugText = L"Debug";
+            float debugW = config.ScaleF(38.0f);
+            D2D1_RECT_F rcDebug = D2D1::RectF(clX, lineY, clX + debugW, lineY + lineH);
+            int debugIdx = static_cast<int>(m_activeCodeLensActions.size());
+            bool isDebugHovered = (debugIdx == m_hoveredCodeLensIdx);
+
+            CodeLensAction debugAct;
+            debugAct.bufferLine = vl.bufferLine;
+            debugAct.isDebug = true;
+            debugAct.bounds = rcDebug;
+            m_activeCodeLensActions.push_back(debugAct);
+
+            pRT->DrawText(debugText, static_cast<UINT32>(wcslen(debugText)), clFormat, rcDebug,
+                          isDebugHovered ? brushClHover.Get() : brushClNormal.Get());
+            if (isDebugHovered && brushClHover) {
+                pRT->DrawLine(D2D1::Point2F(rcDebug.left, lineY + lineH - config.ScaleF(3.0f)),
+                              D2D1::Point2F(rcDebug.right - config.ScaleF(4.0f), lineY + lineH - config.ScaleF(3.0f)),
+                              brushClHover.Get(), 1.0f);
+            }
+
+            continue; // Virtual CodeLens line has no code tokens
+        }
 
         // Git Diff Line Highlights (Image 5)
         if (doc.isDiffView || doc.isDeletedInGit) {
@@ -2011,6 +2185,11 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
             float lineY = topY + config.ScaleF(6.0f) + (v - doc.scrollLine) * lineH;
             if (lineY + lineH < topY || lineY > clientHeight) continue;
 
+            if (vl.isCodeLens) {
+                // CodeLens virtual line: gutter remains completely empty, matching VS Code Image 1!
+                continue;
+            }
+
             // Diff bar in gutter
             if (doc.isDiffView || doc.isDeletedInGit) {
                 if (doc.isDeletedInGit || doc.diffDeletedLines.count(vl.bufferLine)) {
@@ -2544,6 +2723,14 @@ bool EditorCanvas::HitTestCodeArea(POINT pt, const app::AppConfig& config, const
         bool canFold = GetFoldRange(buffer, b, foldEnd);
         bool isFolded = canFold && (doc.foldedLines.count(b) > 0);
 
+        if (config.enableCodeLens && !doc.isDiffView && IsFunctionOrTestLine(buffer.GetLine(b))) {
+            if (curVisual == visualSlot) {
+                mappedLine = b;
+                break;
+            }
+            curVisual++;
+        }
+
         if (curVisual == visualSlot) {
             mappedLine = b;
             break;
@@ -2585,6 +2772,23 @@ bool EditorCanvas::HitTestCodeArea(POINT pt, const app::AppConfig& config, const
     outLine = mappedLine;
     outCol  = col;
     return true;
+}
+
+int EditorCanvas::HitTestCodeLens(POINT pt) const noexcept {
+    for (size_t i = 0; i < m_activeCodeLensActions.size(); ++i) {
+        const auto& act = m_activeCodeLensActions[i];
+        if (pt.x >= act.bounds.left && pt.x <= act.bounds.right &&
+            pt.y >= act.bounds.top && pt.y <= act.bounds.bottom) {
+            return static_cast<int>(i);
+        }
+    }
+    return -1;
+}
+
+bool EditorCanvas::UpdateCodeLensHover(POINT pt) {
+    int oldHover = m_hoveredCodeLensIdx;
+    m_hoveredCodeLensIdx = HitTestCodeLens(pt);
+    return m_hoveredCodeLensIdx != oldHover;
 }
 
 void EditorCanvas::RenderImageView(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
@@ -3884,6 +4088,40 @@ bool EditorCanvas::HandleMarkdownPreviewWheel(short delta, editor::OpenDocument&
     return true;
 }
 
+bool EditorCanvas::HandleExtensionDetailWheel(short delta, editor::OpenDocument& doc) noexcept {
+    if (doc.extensionMaxScrollY <= 0.0f) return false;
+    float scrollAmount = (delta > 0) ? -60.0f : 60.0f;
+    doc.extensionScrollY = (std::clamp)(doc.extensionScrollY + scrollAmount, 0.0f, doc.extensionMaxScrollY);
+    return true;
+}
+
+bool EditorCanvas::HandleExtensionDetailClick(POINT pt, editor::OpenDocument& doc) {
+    if (pt.y >= m_lastExtSubTabY && pt.y <= m_lastExtSubTabY + m_lastExtSubTabH) {
+        if (pt.x >= m_lastExtTab0X && pt.x <= m_lastExtTab0X + m_lastExtTab0W) {
+            doc.extensionSubTab = 0;
+            doc.extensionScrollY = 0.0f;
+            return true;
+        }
+        if (pt.x >= m_lastExtTab1X && pt.x <= m_lastExtTab1X + m_lastExtTab1W) {
+            doc.extensionSubTab = 1;
+            doc.extensionScrollY = 0.0f;
+            return true;
+        }
+        if (pt.x >= m_lastExtTab2X && pt.x <= m_lastExtTab2X + m_lastExtTab2W) {
+            doc.extensionSubTab = 2;
+            doc.extensionScrollY = 0.0f;
+            return true;
+        }
+    }
+
+    if (pt.x >= m_lastExtDisableBtn.left && pt.x <= m_lastExtDisableBtn.right &&
+        pt.y >= m_lastExtDisableBtn.top && pt.y <= m_lastExtDisableBtn.bottom) {
+        doc.isDirty = !doc.isDirty; // Toggle enabled state
+        return true;
+    }
+    return false;
+}
+
 void EditorCanvas::RenderMarkdownPreview(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
                                          editor::OpenDocument& doc, float canvasLeft, float canvasWidth,
                                          float topY, float clientHeight) {
@@ -4491,6 +4729,578 @@ void EditorCanvas::RenderMarkdownPreview(ID2D1RenderTarget* pRT, Theme& theme, c
         float thumbRatio = viewportH / totalDrawnHeight;
         float thumbH = (std::max)(config.ScaleF(24.0f), sbTrackH * thumbRatio);
         float scrollFrac = doc.markdownScrollY / doc.markdownMaxScrollY;
+        float thumbY = sbTrackY + scrollFrac * (sbTrackH - thumbH);
+
+        D2D1_ROUNDED_RECT rrcThumb = D2D1::RoundedRect(
+            D2D1::RectF(sbTrackX, thumbY, sbTrackX + sbW, thumbY + thumbH),
+            config.ScaleF(3.5f), config.ScaleF(3.5f));
+
+        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushThumb;
+        pRT->CreateSolidColorBrush(theme.IsDarkMode() ? D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.20f) : D2D1::ColorF(0.12f, 0.16f, 0.24f, 0.25f), &brushThumb);
+        if (brushThumb) pRT->FillRoundedRectangle(&rrcThumb, brushThumb.Get());
+    }
+
+    pRT->PopAxisAlignedClip(); // Pop Viewport Clip
+}
+
+struct ExtDetailMeta {
+    std::wstring id;
+    std::wstring displayName;
+    std::wstring publisher;
+    std::wstring version;
+    std::wstring description;
+    std::wstring installs;
+    float rating = 4.5f;
+    int ratingCount = 85;
+    std::wstring categories;
+    std::wstring published;
+    std::wstring lastReleased;
+    std::wstring repoUrl;
+    std::wstring issuesUrl;
+    std::wstring license;
+};
+
+static ExtDetailMeta GetExtensionMeta(const std::wstring& extId) {
+    if (extId == L"bradlc.vscode-tailwindcss") {
+        return {
+            L"bradlc.vscode-tailwindcss",
+            L"Tailwind CSS IntelliSense",
+            L"Tailwind Labs",
+            L"v0.14.3",
+            L"Intelligent Tailwind CSS tooling for VS Code",
+            L"17,890,210",
+            4.7f,
+            134,
+            L"Linters, Snippets, Other",
+            L"10/24/2019",
+            L"10/29/2026",
+            L"https://github.com/tailwindlabs/tailwindcss-intellisense",
+            L"https://github.com/tailwindlabs/tailwindcss-intellisense/issues",
+            L"MIT"
+        };
+    } else if (extId == L"redhat.vscode-yaml") {
+        return {
+            L"redhat.vscode-yaml",
+            L"YAML",
+            L"Red Hat",
+            L"v2.1.2",
+            L"YAML Language Support by Red Hat, with built-in Kubernetes syntax support",
+            L"29,805,672",
+            4.3f,
+            75,
+            L"Programming Languages, Snippets, Linters, Formatters",
+            L"3/2/2018",
+            L"10/23/2026",
+            L"https://github.com/redhat-developer/vscode-yaml",
+            L"https://github.com/redhat-developer/vscode-yaml/issues",
+            L"MIT"
+        };
+    } else if (extId == L"eamodio.gitlens") {
+        return {
+            L"eamodio.gitlens",
+            L"GitLens — Git supercharged",
+            L"GitKraken",
+            L"v2026.10.31",
+            L"Supercharge Git within VS Code — Visualize code authorship at a glance via Git blame annotations and CodeLens, explore Git repositories, and more",
+            L"53,666,213",
+            4.5f,
+            945,
+            L"SCM Providers",
+            L"6/15/2016",
+            L"10/31/2026",
+            L"https://github.com/gitkraken/vscode-gitlens",
+            L"https://github.com/gitkraken/vscode-gitlens/issues",
+            L"GitLens Non-Commercial Software License"
+        };
+    } else {
+        return {
+            L"dsznajder.es7-react-js-snippets",
+            L"ES7+ React/Redux/React-Native snippets",
+            L"rodrigovallades",
+            L"v4.4.3",
+            L"Extensions for React, React-Native and Redux in JS/TS with ES7+ syntax. Customizable. Built-in integration with prettier.",
+            L"17,854,580",
+            4.4f,
+            85,
+            L"Snippets",
+            L"2/18/2022",
+            L"2/18/2022",
+            L"https://github.com/ults-io/vscode-react-javascript-snippets",
+            L"https://github.com/ults-io/vscode-react-javascript-snippets/issues",
+            L"MIT"
+        };
+    }
+}
+
+void EditorCanvas::RenderExtensionDetail(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
+                                         editor::OpenDocument& doc, float canvasLeft, float canvasWidth,
+                                         float topY, float clientHeight) {
+    if (!pRT) return;
+
+    ExtDetailMeta meta = GetExtensionMeta(doc.extensionId.empty() ? doc.fileName : doc.extensionId);
+    doc.fileName = meta.displayName;
+
+    D2D1_RECT_F rcView = D2D1::RectF(canvasLeft, topY, canvasLeft + canvasWidth, topY + clientHeight);
+    pRT->PushAxisAlignedClip(rcView, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+
+    // Canvas background
+    pRT->FillRectangle(rcView, theme.brushCanvasBg.Get());
+
+    // Load icon bitmap if not yet cached
+    if (!doc.pImageBitmap) {
+        std::wstring iconFile = L"assets\\extensions\\" + meta.id + L"\\icon.png";
+        doc.pImageBitmap = CanvasLoadPngBitmap(pRT, iconFile);
+    }
+
+    // DirectWrite fonts
+    Microsoft::WRL::ComPtr<IDWriteTextFormat> fontH1;
+    Microsoft::WRL::ComPtr<IDWriteTextFormat> fontH2;
+    Microsoft::WRL::ComPtr<IDWriteTextFormat> fontH3;
+    Microsoft::WRL::ComPtr<IDWriteTextFormat> fontCodeBlock;
+
+    if (theme.dwriteFactory) {
+        theme.dwriteFactory->CreateTextFormat(L"Segoe UI", nullptr, DWRITE_FONT_WEIGHT_BOLD, DWRITE_FONT_STYLE_NORMAL,
+            DWRITE_FONT_STRETCH_NORMAL, config.ScaleF(22.0f), L"en-US", &fontH1);
+        theme.dwriteFactory->CreateTextFormat(L"Segoe UI", nullptr, DWRITE_FONT_WEIGHT_BOLD, DWRITE_FONT_STYLE_NORMAL,
+            DWRITE_FONT_STRETCH_NORMAL, config.ScaleF(17.0f), L"en-US", &fontH2);
+        theme.dwriteFactory->CreateTextFormat(L"Segoe UI", nullptr, DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_FONT_STYLE_NORMAL,
+            DWRITE_FONT_STRETCH_NORMAL, config.ScaleF(14.5f), L"en-US", &fontH3);
+        theme.dwriteFactory->CreateTextFormat(L"Consolas", nullptr, DWRITE_FONT_WEIGHT_REGULAR, DWRITE_FONT_STYLE_NORMAL,
+            DWRITE_FONT_STRETCH_NORMAL, config.ScaleF(12.5f), L"en-US", &fontCodeBlock);
+    }
+
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushBlue;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushGold;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushCodeBg;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushCodeBorder;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushTableBorder;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushInputBg;
+    pRT->CreateSolidColorBrush(D2D1::ColorF(0.12f, 0.58f, 0.98f, 1.0f), &brushBlue);
+    pRT->CreateSolidColorBrush(D2D1::ColorF(1.0f, 0.76f, 0.03f, 1.0f), &brushGold);
+    pRT->CreateSolidColorBrush(theme.IsDarkMode() ? D2D1::ColorF(0.11f, 0.12f, 0.14f, 1.0f) : D2D1::ColorF(0.94f, 0.95f, 0.97f, 1.0f), &brushCodeBg);
+    pRT->CreateSolidColorBrush(theme.IsDarkMode() ? D2D1::ColorF(0.22f, 0.24f, 0.28f, 1.0f) : D2D1::ColorF(0.82f, 0.85f, 0.89f, 1.0f), &brushCodeBorder);
+    pRT->CreateSolidColorBrush(theme.IsDarkMode() ? D2D1::ColorF(0.24f, 0.27f, 0.33f, 1.0f) : D2D1::ColorF(0.80f, 0.83f, 0.87f, 1.0f), &brushTableBorder);
+    pRT->CreateSolidColorBrush(theme.IsDarkMode() ? D2D1::ColorF(0.18f, 0.19f, 0.22f, 1.0f) : D2D1::ColorF(0.92f, 0.93f, 0.95f, 1.0f), &brushInputBg);
+
+    const float startY = topY + config.ScaleF(24.0f) - doc.extensionScrollY;
+    float curY = startY;
+    const float contentLeft = canvasLeft + config.ScaleF(32.0f);
+
+    // 1. Header: Icon
+    const float iconSize = config.ScaleF(64.0f);
+    D2D1_RECT_F rcIcon = D2D1::RectF(contentLeft, curY, contentLeft + iconSize, curY + iconSize);
+    if (doc.pImageBitmap) {
+        pRT->DrawBitmap(doc.pImageBitmap.Get(), rcIcon);
+    } else {
+        D2D1_ROUNDED_RECT rrcIcon = D2D1::RoundedRect(rcIcon, 6.0f, 6.0f);
+        if (brushInputBg) pRT->FillRoundedRectangle(&rrcIcon, brushInputBg.Get());
+        m_icons.DrawExtensionsGrid(pRT, D2D1::RectF(rcIcon.left + 12.0f, rcIcon.top + 12.0f, rcIcon.right - 12.0f, rcIcon.bottom - 12.0f), theme.brushTextSecondary.Get(), 1.3f);
+    }
+
+    // 2. Header Info Beside Icon
+    float infoX = contentLeft + iconSize + config.ScaleF(18.0f);
+    float infoW = (std::max)(100.0f, canvasWidth - infoX - config.ScaleF(40.0f));
+
+    // Title
+    D2D1_RECT_F rcTitle = D2D1::RectF(infoX, curY - config.ScaleF(2.0f), infoX + infoW, curY + config.ScaleF(26.0f));
+    pRT->DrawText(meta.displayName.c_str(), static_cast<UINT32>(meta.displayName.length()),
+                  fontH1 ? fontH1.Get() : theme.fontTitle.Get(), rcTitle, theme.brushTextPrimary.Get());
+
+    // ID, Publisher, Verified Badge, Version
+    float metaLineY = curY + config.ScaleF(28.0f);
+    std::wstring metaText = meta.id + L"   " + meta.publisher + L" ";
+    D2D1_RECT_F rcMeta = D2D1::RectF(infoX, metaLineY, infoX + infoW, metaLineY + config.ScaleF(18.0f));
+    pRT->DrawText(metaText.c_str(), static_cast<UINT32>(metaText.length()),
+                  theme.fontMenuShortcut ? theme.fontMenuShortcut.Get() : theme.fontHint.Get(),
+                  rcMeta, theme.brushTextMuted.Get());
+
+    // Verified badge checkmark circle
+    float badgeCx = infoX + static_cast<float>(metaText.length()) * config.ScaleF(6.4f) + config.ScaleF(4.0f);
+    float badgeCy = metaLineY + config.ScaleF(8.0f);
+    if (brushBlue) {
+        pRT->FillEllipse(D2D1::Ellipse(D2D1::Point2F(badgeCx, badgeCy), config.ScaleF(5.5f), config.ScaleF(5.5f)), brushBlue.Get());
+        // White checkmark inside
+        if (theme.brushTextWhite) {
+            pRT->DrawLine(D2D1::Point2F(badgeCx - config.ScaleF(2.5f), badgeCy),
+                          D2D1::Point2F(badgeCx - config.ScaleF(0.5f), badgeCy + config.ScaleF(2.2f)),
+                          theme.brushTextWhite.Get(), 1.2f);
+            pRT->DrawLine(D2D1::Point2F(badgeCx - config.ScaleF(0.5f), badgeCy + config.ScaleF(2.2f)),
+                          D2D1::Point2F(badgeCx + config.ScaleF(2.8f), badgeCy - config.ScaleF(2.0f)),
+                          theme.brushTextWhite.Get(), 1.2f);
+        }
+    }
+
+    // Version
+    std::wstring verText = L"   " + meta.version;
+    D2D1_RECT_F rcVer = D2D1::RectF(badgeCx + config.ScaleF(8.0f), metaLineY, infoX + infoW, metaLineY + config.ScaleF(18.0f));
+    pRT->DrawText(verText.c_str(), static_cast<UINT32>(verText.length()),
+                  theme.fontMenuShortcut ? theme.fontMenuShortcut.Get() : theme.fontHint.Get(),
+                  rcVer, theme.brushTextMuted.Get());
+
+    // Subtitle / Description
+    float descY = curY + config.ScaleF(48.0f);
+    D2D1_RECT_F rcDesc = D2D1::RectF(infoX, descY, infoX + infoW, descY + config.ScaleF(38.0f));
+    pRT->DrawText(meta.description.c_str(), static_cast<UINT32>(meta.description.length()),
+                  theme.fontMenuItem ? theme.fontMenuItem.Get() : theme.fontBody.Get(),
+                  rcDesc, theme.brushTextPrimary.Get());
+
+    // Stats: Rating Stars + Installs
+    float statsY = curY + config.ScaleF(88.0f);
+    std::wstring stars = L"★★★★★";
+    int filledStars = static_cast<int>(std::round(meta.rating));
+    std::wstring starStr;
+    for (int s = 0; s < 5; ++s) starStr += (s < filledStars) ? L"★ " : L"☆ ";
+    starStr += L" (" + std::to_wstring(meta.ratingCount) + L")      ↓ " + meta.installs;
+    D2D1_RECT_F rcStats = D2D1::RectF(infoX, statsY, infoX + infoW, statsY + config.ScaleF(20.0f));
+    pRT->DrawText(starStr.c_str(), static_cast<UINT32>(starStr.length()),
+                  theme.fontMenuShortcut ? theme.fontMenuShortcut.Get() : theme.fontHint.Get(),
+                  rcStats, brushGold ? brushGold.Get() : theme.brushTextPrimary.Get());
+
+    // Action Buttons: Disable, Uninstall
+    float btnY = curY + config.ScaleF(112.0f);
+    m_lastExtDisableBtn = D2D1::RectF(infoX, btnY, infoX + config.ScaleF(72.0f), btnY + config.ScaleF(26.0f));
+    D2D1_ROUNDED_RECT rrcDisable = D2D1::RoundedRect(m_lastExtDisableBtn, 3.0f, 3.0f);
+    if (brushInputBg) pRT->FillRoundedRectangle(&rrcDisable, brushInputBg.Get());
+    pRT->DrawRoundedRectangle(&rrcDisable, theme.brushBorderSubtle.Get(), 1.0f);
+    const wchar_t* disText = doc.isDirty ? L"Enable" : L"Disable";
+    pRT->DrawText(disText, static_cast<UINT32>(wcslen(disText)),
+                  theme.fontButtonCenter ? theme.fontButtonCenter.Get() : theme.fontBody.Get(),
+                  m_lastExtDisableBtn, theme.brushTextPrimary.Get());
+
+    m_lastExtUninstallBtn = D2D1::RectF(infoX + config.ScaleF(80.0f), btnY, infoX + config.ScaleF(165.0f), btnY + config.ScaleF(26.0f));
+    D2D1_ROUNDED_RECT rrcUninstall = D2D1::RoundedRect(m_lastExtUninstallBtn, 3.0f, 3.0f);
+    if (brushInputBg) pRT->FillRoundedRectangle(&rrcUninstall, brushInputBg.Get());
+    pRT->DrawRoundedRectangle(&rrcUninstall, theme.brushBorderSubtle.Get(), 1.0f);
+    const wchar_t* unText = L"Uninstall";
+    pRT->DrawText(unText, static_cast<UINT32>(wcslen(unText)),
+                  theme.fontButtonCenter ? theme.fontButtonCenter.Get() : theme.fontBody.Get(),
+                  m_lastExtUninstallBtn, theme.brushTextPrimary.Get());
+
+    curY += config.ScaleF(150.0f);
+
+    // 3. Subtabs Bar: DETAILS | FEATURE CONTRIBUTIONS | CHANGELOG
+    m_lastExtSubTabY = curY;
+    m_lastExtSubTabH = config.ScaleF(32.0f);
+    m_lastExtTab0X = contentLeft;
+    m_lastExtTab0W = config.ScaleF(70.0f);
+    m_lastExtTab1X = m_lastExtTab0X + m_lastExtTab0W + config.ScaleF(24.0f);
+    m_lastExtTab1W = config.ScaleF(170.0f);
+    m_lastExtTab2X = m_lastExtTab1X + m_lastExtTab1W + config.ScaleF(24.0f);
+    m_lastExtTab2W = config.ScaleF(95.0f);
+
+    pRT->DrawLine(D2D1::Point2F(contentLeft, curY + m_lastExtSubTabH),
+                  D2D1::Point2F(canvasLeft + canvasWidth - config.ScaleF(32.0f), curY + m_lastExtSubTabH),
+                  theme.brushBorderSubtle.Get(), 1.0f);
+
+    // Tab 0: DETAILS
+    D2D1_RECT_F rcTab0 = D2D1::RectF(m_lastExtTab0X, curY, m_lastExtTab0X + m_lastExtTab0W, curY + m_lastExtSubTabH);
+    pRT->DrawText(L"DETAILS", 7, theme.fontButtonCenter ? theme.fontButtonCenter.Get() : theme.fontBody.Get(),
+                  rcTab0, (doc.extensionSubTab == 0) ? (theme.brushBrandAccent ? theme.brushBrandAccent.Get() : theme.brushTextPrimary.Get()) : theme.brushTextMuted.Get());
+    if (doc.extensionSubTab == 0 && theme.brushBrandAccent) {
+        pRT->DrawLine(D2D1::Point2F(m_lastExtTab0X, curY + m_lastExtSubTabH - 1.0f),
+                      D2D1::Point2F(m_lastExtTab0X + m_lastExtTab0W, curY + m_lastExtSubTabH - 1.0f),
+                      theme.brushBrandAccent.Get(), 2.5f);
+    }
+
+    // Tab 1: FEATURE CONTRIBUTIONS
+    D2D1_RECT_F rcTab1 = D2D1::RectF(m_lastExtTab1X, curY, m_lastExtTab1X + m_lastExtTab1W, curY + m_lastExtSubTabH);
+    pRT->DrawText(L"FEATURE CONTRIBUTIONS", 21, theme.fontButtonCenter ? theme.fontButtonCenter.Get() : theme.fontBody.Get(),
+                  rcTab1, (doc.extensionSubTab == 1) ? (theme.brushBrandAccent ? theme.brushBrandAccent.Get() : theme.brushTextPrimary.Get()) : theme.brushTextMuted.Get());
+    if (doc.extensionSubTab == 1 && theme.brushBrandAccent) {
+        pRT->DrawLine(D2D1::Point2F(m_lastExtTab1X, curY + m_lastExtSubTabH - 1.0f),
+                      D2D1::Point2F(m_lastExtTab1X + m_lastExtTab1W, curY + m_lastExtSubTabH - 1.0f),
+                      theme.brushBrandAccent.Get(), 2.5f);
+    }
+
+    // Tab 2: CHANGELOG
+    D2D1_RECT_F rcTab2 = D2D1::RectF(m_lastExtTab2X, curY, m_lastExtTab2X + m_lastExtTab2W, curY + m_lastExtSubTabH);
+    pRT->DrawText(L"CHANGELOG", 9, theme.fontButtonCenter ? theme.fontButtonCenter.Get() : theme.fontBody.Get(),
+                  rcTab2, (doc.extensionSubTab == 2) ? (theme.brushBrandAccent ? theme.brushBrandAccent.Get() : theme.brushTextPrimary.Get()) : theme.brushTextMuted.Get());
+    if (doc.extensionSubTab == 2 && theme.brushBrandAccent) {
+        pRT->DrawLine(D2D1::Point2F(m_lastExtTab2X, curY + m_lastExtSubTabH - 1.0f),
+                      D2D1::Point2F(m_lastExtTab2X + m_lastExtTab2W, curY + m_lastExtSubTabH - 1.0f),
+                      theme.brushBrandAccent.Get(), 2.5f);
+    }
+
+    curY += m_lastExtSubTabH + config.ScaleF(14.0f);
+
+    // 4. Global Enabled Notice Banner
+    D2D1_RECT_F rcBanner = D2D1::RectF(contentLeft, curY, canvasLeft + canvasWidth - config.ScaleF(32.0f), curY + config.ScaleF(30.0f));
+    D2D1_ROUNDED_RECT rrcBanner = D2D1::RoundedRect(rcBanner, 4.0f, 4.0f);
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushBannerBg;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushBannerBorder;
+    pRT->CreateSolidColorBrush(D2D1::ColorF(0.0f, 0.47f, 0.83f, 0.12f), &brushBannerBg);
+    pRT->CreateSolidColorBrush(D2D1::ColorF(0.0f, 0.47f, 0.83f, 0.35f), &brushBannerBorder);
+    if (brushBannerBg) pRT->FillRoundedRectangle(&rrcBanner, brushBannerBg.Get());
+    if (brushBannerBorder) pRT->DrawRoundedRectangle(&rrcBanner, brushBannerBorder.Get(), 1.0f);
+
+    const wchar_t* bannerMsg = L"ⓘ  This extension is enabled globally.";
+    D2D1_RECT_F rcBannerMsg = D2D1::RectF(rcBanner.left + config.ScaleF(12.0f), rcBanner.top, rcBanner.right, rcBanner.bottom);
+    pRT->DrawText(bannerMsg, static_cast<UINT32>(wcslen(bannerMsg)),
+                  theme.fontMenuItem ? theme.fontMenuItem.Get() : theme.fontBody.Get(),
+                  rcBannerMsg, brushBlue ? brushBlue.Get() : theme.brushTextPrimary.Get());
+
+    curY += config.ScaleF(44.0f);
+
+    // 5. Two-Column Layout
+    const float leftColW = (canvasWidth - config.ScaleF(64.0f)) * 0.72f;
+    const float rightColLeft = contentLeft + leftColW + config.ScaleF(28.0f);
+    const float rightColW = (std::max)(100.0f, canvasLeft + canvasWidth - rightColLeft - config.ScaleF(32.0f));
+
+    // Render Right Column: Sidebar Metadata (Categories, Resources, More Info)
+    float sideY = curY;
+    const wchar_t* secCat = L"CATEGORIES";
+    D2D1_RECT_F rcCatSec = D2D1::RectF(rightColLeft, sideY, rightColLeft + rightColW, sideY + config.ScaleF(18.0f));
+    pRT->DrawText(secCat, static_cast<UINT32>(wcslen(secCat)),
+                  theme.fontSectionHeader ? theme.fontSectionHeader.Get() : theme.fontTitle.Get(),
+                  rcCatSec, theme.brushTextMuted.Get());
+    sideY += config.ScaleF(24.0f);
+
+    // Category Pill Badge
+    D2D1_RECT_F rcPill = D2D1::RectF(rightColLeft, sideY, rightColLeft + config.ScaleF(80.0f), sideY + config.ScaleF(22.0f));
+    D2D1_ROUNDED_RECT rrcPill = D2D1::RoundedRect(rcPill, 3.0f, 3.0f);
+    if (brushInputBg) pRT->FillRoundedRectangle(&rrcPill, brushInputBg.Get());
+    pRT->DrawRoundedRectangle(&rrcPill, theme.brushBorderSubtle.Get(), 1.0f);
+    pRT->DrawText(meta.categories.c_str(), static_cast<UINT32>(meta.categories.length()),
+                  theme.fontMenuShortcut ? theme.fontMenuShortcut.Get() : theme.fontHint.Get(),
+                  rcPill, theme.brushTextPrimary.Get());
+    sideY += config.ScaleF(36.0f);
+
+    // Resources
+    const wchar_t* secRes = L"RESOURCES";
+    D2D1_RECT_F rcResSec = D2D1::RectF(rightColLeft, sideY, rightColLeft + rightColW, sideY + config.ScaleF(18.0f));
+    pRT->DrawText(secRes, static_cast<UINT32>(wcslen(secRes)),
+                  theme.fontSectionHeader ? theme.fontSectionHeader.Get() : theme.fontTitle.Get(),
+                  rcResSec, theme.brushTextMuted.Get());
+    sideY += config.ScaleF(24.0f);
+
+    std::wstring links[] = { L"Marketplace", L"Repository", L"Issues", L"License" };
+    for (const auto& l : links) {
+        D2D1_RECT_F rcLink = D2D1::RectF(rightColLeft, sideY, rightColLeft + rightColW, sideY + config.ScaleF(20.0f));
+        pRT->DrawText(l.c_str(), static_cast<UINT32>(l.length()),
+                      theme.fontMenuItem ? theme.fontMenuItem.Get() : theme.fontBody.Get(),
+                      rcLink, brushBlue ? brushBlue.Get() : theme.brushTextPrimary.Get());
+        sideY += config.ScaleF(22.0f);
+    }
+    sideY += config.ScaleF(16.0f);
+
+    // More Info
+    const wchar_t* secInfo = L"MORE INFO";
+    D2D1_RECT_F rcInfoSec = D2D1::RectF(rightColLeft, sideY, rightColLeft + rightColW, sideY + config.ScaleF(18.0f));
+    pRT->DrawText(secInfo, static_cast<UINT32>(wcslen(secInfo)),
+                  theme.fontSectionHeader ? theme.fontSectionHeader.Get() : theme.fontTitle.Get(),
+                  rcInfoSec, theme.brushTextMuted.Get());
+    sideY += config.ScaleF(24.0f);
+
+    std::pair<std::wstring, std::wstring> infoRows[] = {
+        { L"Published", meta.published },
+        { L"Last released", meta.lastReleased },
+        { L"Identifier", meta.id }
+    };
+    for (const auto& row : infoRows) {
+        D2D1_RECT_F rcLbl = D2D1::RectF(rightColLeft, sideY, rightColLeft + rightColW, sideY + config.ScaleF(16.0f));
+        pRT->DrawText(row.first.c_str(), static_cast<UINT32>(row.first.length()),
+                      theme.fontMenuShortcut ? theme.fontMenuShortcut.Get() : theme.fontHint.Get(),
+                      rcLbl, theme.brushTextMuted.Get());
+        sideY += config.ScaleF(16.0f);
+        D2D1_RECT_F rcVal = D2D1::RectF(rightColLeft, sideY, rightColLeft + rightColW, sideY + config.ScaleF(18.0f));
+        pRT->DrawText(row.second.c_str(), static_cast<UINT32>(row.second.length()),
+                      theme.fontMenuItem ? theme.fontMenuItem.Get() : theme.fontBody.Get(),
+                      rcVal, theme.brushTextPrimary.Get());
+        sideY += config.ScaleF(24.0f);
+    }
+
+    // Render Left Column: Markdown content or Feature Contributions
+    if (doc.extensionSubTab == 1) {
+        // Feature contributions view
+        const wchar_t* hContrib = L"Contributed Snippets & IntelliSense Capabilities";
+        D2D1_RECT_F rcContrib = D2D1::RectF(contentLeft, curY, contentLeft + leftColW, curY + config.ScaleF(28.0f));
+        pRT->DrawText(hContrib, static_cast<UINT32>(wcslen(hContrib)),
+                      fontH2 ? fontH2.Get() : theme.fontTitle.Get(), rcContrib, theme.brushTextPrimary.Get());
+        curY += config.ScaleF(34.0f);
+
+        struct ContribRow { std::wstring prefix; std::wstring desc; };
+        std::vector<ContribRow> rows;
+        if (meta.id.find(L"react") != std::wstring::npos) {
+            rows = {
+                { L"rafce", L"React Arrow Function Component with Export" },
+                { L"rfce", L"React Function Component with Export" },
+                { L"rce", L"React Class Component with Export" },
+                { L"rfc", L"React Function Component" },
+                { L"useState", L"React useState Hook snippet" },
+                { L"useEffect", L"React useEffect Hook snippet" },
+                { L"useContext", L"React useContext Hook snippet" },
+                { L"useRef", L"React useRef Hook snippet" },
+                { L"useCallback", L"React useCallback Hook snippet" },
+                { L"useMemo", L"React useMemo Hook snippet" },
+                { L"clg", L"console.log(object)" },
+                { L"imp", L"import moduleName from 'module'" }
+            };
+        } else if (meta.id.find(L"tailwind") != std::wstring::npos) {
+            rows = {
+                { L"tailwindCSS.emmetCompletions", L"Enable Emmet completions within class attributes" },
+                { L"tailwindCSS.includeLanguages", L"Enable Tailwind CSS completions for PHP, HTML, JS, TS, React" },
+                { L"tailwindCSS.validate", L"Lint unknown utility classes and CSS directives" }
+            };
+        } else if (meta.id.find(L"yaml") != std::wstring::npos) {
+            rows = {
+                { L"yaml.schemas", L"Associate JSON/YAML schemas with Kubernetes & docker-compose manifests" },
+                { L"yaml.format.enable", L"Enable or disable default YAML formatter" },
+                { L"yaml.validate", L"Enable YAML syntax validation and linter warnings" }
+            };
+        } else {
+            rows = {
+                { L"gitlens.codeLens.authors.enabled", L"Specifies whether to show author CodeLens above functions" },
+                { L"gitlens.currentLine.enabled", L"Specifies whether to show git blame annotation on current line" },
+                { L"gitlens.views.repositories.enabled", L"Enable Repositories tree view in Source Control" }
+            };
+        }
+
+        // Draw Table Header
+        D2D1_RECT_F rcThPrefix = D2D1::RectF(contentLeft, curY, contentLeft + config.ScaleF(160.0f), curY + config.ScaleF(24.0f));
+        D2D1_RECT_F rcThDesc = D2D1::RectF(contentLeft + config.ScaleF(170.0f), curY, contentLeft + leftColW, curY + config.ScaleF(24.0f));
+        pRT->DrawText(L"Prefix / Setting", 16, theme.fontSectionHeader.Get(), rcThPrefix, theme.brushTextMuted.Get());
+        pRT->DrawText(L"Description", 11, theme.fontSectionHeader.Get(), rcThDesc, theme.brushTextMuted.Get());
+        curY += config.ScaleF(28.0f);
+        pRT->DrawLine(D2D1::Point2F(contentLeft, curY), D2D1::Point2F(contentLeft + leftColW, curY), theme.brushBorderSubtle.Get(), 1.0f);
+        curY += config.ScaleF(8.0f);
+
+        for (const auto& r : rows) {
+            D2D1_RECT_F rcPre = D2D1::RectF(contentLeft, curY, contentLeft + config.ScaleF(160.0f), curY + config.ScaleF(22.0f));
+            D2D1_RECT_F rcD = D2D1::RectF(contentLeft + config.ScaleF(170.0f), curY, contentLeft + leftColW, curY + config.ScaleF(22.0f));
+            pRT->DrawText(r.prefix.c_str(), static_cast<UINT32>(r.prefix.length()),
+                          fontCodeBlock ? fontCodeBlock.Get() : theme.fontCode.Get(), rcPre,
+                          brushBlue ? brushBlue.Get() : theme.brushTextPrimary.Get());
+            pRT->DrawText(r.desc.c_str(), static_cast<UINT32>(r.desc.length()),
+                          theme.fontMenuItem ? theme.fontMenuItem.Get() : theme.fontBody.Get(), rcD,
+                          theme.brushTextPrimary.Get());
+            curY += config.ScaleF(26.0f);
+        }
+    } else {
+        // DETAILS (README.md) or CHANGELOG (CHANGELOG.md)
+        std::wstring mdFilename = (doc.extensionSubTab == 2) ? L"CHANGELOG.md" : L"README.md";
+        std::wstring mdPath = L"assets\\extensions\\" + meta.id + L"\\" + mdFilename;
+        std::wstring mdContent;
+        editor::Buffer tempBuf;
+        if (tempBuf.LoadFromFile(mdPath) || tempBuf.LoadFromFile(L"bin\\" + mdPath)) {
+            mdContent = tempBuf.GetText();
+        }
+
+        if (mdContent.empty()) {
+            mdContent = L"# " + meta.displayName + L"\n\n" + meta.description;
+        }
+
+        std::wstringstream wss(mdContent);
+        std::wstring line;
+        bool inCodeBlock = false;
+        std::vector<std::wstring> codeBlockLines;
+
+        while (std::getline(wss, line)) {
+            if (!line.empty() && line.back() == L'\r') line.pop_back();
+
+            // Code block handling
+            if (line.starts_with(L"```")) {
+                if (inCodeBlock) {
+                    inCodeBlock = false;
+                    const float codeLineH = config.ScaleF(18.0f);
+                    float blockH = static_cast<float>(codeBlockLines.size()) * codeLineH + config.ScaleF(16.0f);
+                    D2D1_RECT_F rcBlock = D2D1::RectF(contentLeft, curY, contentLeft + leftColW, curY + blockH);
+                    D2D1_ROUNDED_RECT rrcBlock = D2D1::RoundedRect(rcBlock, 4.0f, 4.0f);
+                    if (brushCodeBg) pRT->FillRoundedRectangle(&rrcBlock, brushCodeBg.Get());
+                    if (brushCodeBorder) pRT->DrawRoundedRectangle(&rrcBlock, brushCodeBorder.Get(), 1.0f);
+
+                    float cY = curY + config.ScaleF(8.0f);
+                    for (const auto& cl : codeBlockLines) {
+                        D2D1_RECT_F rcCl = D2D1::RectF(contentLeft + config.ScaleF(12.0f), cY, contentLeft + leftColW - config.ScaleF(12.0f), cY + codeLineH);
+                        pRT->DrawText(cl.c_str(), static_cast<UINT32>(cl.length()),
+                                      fontCodeBlock ? fontCodeBlock.Get() : theme.fontCode.Get(), rcCl, theme.brushTextPrimary.Get());
+                        cY += codeLineH;
+                    }
+                    curY += blockH + config.ScaleF(14.0f);
+                    codeBlockLines.clear();
+                } else {
+                    inCodeBlock = true;
+                    codeBlockLines.clear();
+                }
+                continue;
+            }
+
+            if (inCodeBlock) {
+                codeBlockLines.push_back(line);
+                continue;
+            }
+
+            if (line.empty()) {
+                curY += config.ScaleF(8.0f);
+                continue;
+            }
+
+            // Headings
+            if (line.starts_with(L"# ")) {
+                std::wstring hText = line.substr(2);
+                D2D1_RECT_F rcH = D2D1::RectF(contentLeft, curY, contentLeft + leftColW, curY + config.ScaleF(32.0f));
+                pRT->DrawText(hText.c_str(), static_cast<UINT32>(hText.length()), fontH1.Get(), rcH, theme.brushTextPrimary.Get());
+                curY += config.ScaleF(34.0f);
+                pRT->DrawLine(D2D1::Point2F(contentLeft, curY), D2D1::Point2F(contentLeft + leftColW, curY), theme.brushBorderSubtle.Get(), 1.0f);
+                curY += config.ScaleF(10.0f);
+                continue;
+            }
+            if (line.starts_with(L"## ")) {
+                std::wstring hText = line.substr(3);
+                D2D1_RECT_F rcH = D2D1::RectF(contentLeft, curY, contentLeft + leftColW, curY + config.ScaleF(26.0f));
+                pRT->DrawText(hText.c_str(), static_cast<UINT32>(hText.length()), fontH2.Get(), rcH, theme.brushTextPrimary.Get());
+                curY += config.ScaleF(28.0f);
+                pRT->DrawLine(D2D1::Point2F(contentLeft, curY), D2D1::Point2F(contentLeft + leftColW, curY), theme.brushBorderSubtle.Get(), 0.8f);
+                curY += config.ScaleF(8.0f);
+                continue;
+            }
+            if (line.starts_with(L"### ")) {
+                std::wstring hText = line.substr(4);
+                D2D1_RECT_F rcH = D2D1::RectF(contentLeft, curY, contentLeft + leftColW, curY + config.ScaleF(22.0f));
+                pRT->DrawText(hText.c_str(), static_cast<UINT32>(hText.length()), fontH3.Get(), rcH, theme.brushTextPrimary.Get());
+                curY += config.ScaleF(26.0f);
+                continue;
+            }
+
+            // Bullet list item
+            if (line.starts_with(L"- ") || line.starts_with(L"* ")) {
+                std::wstring itemText = line.substr(2);
+                float bulletCx = contentLeft + config.ScaleF(6.0f);
+                float bulletCy = curY + config.ScaleF(9.0f);
+                pRT->FillEllipse(D2D1::Ellipse(D2D1::Point2F(bulletCx, bulletCy), config.ScaleF(2.5f), config.ScaleF(2.5f)), theme.brushTextMuted.Get());
+
+                D2D1_RECT_F rcItem = D2D1::RectF(contentLeft + config.ScaleF(16.0f), curY, contentLeft + leftColW, curY + config.ScaleF(20.0f));
+                pRT->DrawText(itemText.c_str(), static_cast<UINT32>(itemText.length()),
+                              theme.fontMenuItem ? theme.fontMenuItem.Get() : theme.fontBody.Get(), rcItem, theme.brushTextPrimary.Get());
+                curY += config.ScaleF(22.0f);
+                continue;
+            }
+
+            // Regular paragraph line
+            D2D1_RECT_F rcLine = D2D1::RectF(contentLeft, curY, contentLeft + leftColW, curY + config.ScaleF(20.0f));
+            pRT->DrawText(line.c_str(), static_cast<UINT32>(line.length()),
+                          theme.fontMenuItem ? theme.fontMenuItem.Get() : theme.fontBody.Get(), rcLine, theme.brushTextPrimary.Get());
+            curY += config.ScaleF(20.0f);
+        }
+    }
+
+    // Determine total content height
+    float maxColBottom = (std::max)(curY, sideY);
+    float totalDrawnHeight = maxColBottom - startY + config.ScaleF(60.0f);
+    float viewportH = clientHeight - topY;
+    doc.extensionMaxScrollY = (std::max)(0.0f, totalDrawnHeight - viewportH);
+    doc.extensionScrollY = (std::clamp)(doc.extensionScrollY, 0.0f, doc.extensionMaxScrollY);
+
+    // 6. Scrollbar on Right
+    if (doc.extensionMaxScrollY > 0.0f) {
+        float sbW = config.ScaleF(8.0f);
+        float sbTrackH = viewportH;
+        float sbTrackX = canvasLeft + canvasWidth - sbW - config.ScaleF(2.0f);
+        float sbTrackY = topY;
+
+        float thumbRatio = viewportH / totalDrawnHeight;
+        float thumbH = (std::max)(config.ScaleF(24.0f), sbTrackH * thumbRatio);
+        float scrollFrac = doc.extensionScrollY / doc.extensionMaxScrollY;
         float thumbY = sbTrackY + scrollFrac * (sbTrackH - thumbH);
 
         D2D1_ROUNDED_RECT rrcThumb = D2D1::RoundedRect(

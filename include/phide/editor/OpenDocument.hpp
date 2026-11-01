@@ -162,6 +162,10 @@ struct OpenDocument {
     float maxContentWidth = 0.0f;       ///< Maximum content width in pixels across lines
     float markdownScrollY = 0.0f;       ///< Vertical scroll offset in pixels for Markdown Preview
     float markdownMaxScrollY = 0.0f;    ///< Max vertical scroll range in pixels for Markdown Preview
+    std::wstring extensionId;           ///< Identifier for extension details view (e.g. L"dsznajder.es7-react-js-snippets")
+    int extensionSubTab = 0;            ///< 0 = DETAILS, 1 = FEATURES, 2 = CHANGELOG
+    float extensionScrollY = 0.0f;      ///< Vertical scroll offset for Extension Detail view
+    float extensionMaxScrollY = 0.0f;   ///< Max vertical scroll range for Extension Detail view
     D2D1_RECT_F scrollbarTrack{};       ///< Bounding box of the vertical scrollbar track
     D2D1_RECT_F scrollbarThumb{};       ///< Bounding box of the vertical scrollbar thumb
     bool isDraggingScrollbar = false;   ///< True while user is actively dragging the scrollbar thumb

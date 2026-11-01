@@ -1,0 +1,123 @@
+[
+  {
+    "id": "eamodio.gitlens",
+    "displayName": "GitLens \u2014 Git supercharged",
+    "publisher": "eamodio",
+    "publisherDisplayName": "GitKraken",
+    "version": "2026.10.310508",
+    "description": "Supercharge Git within VS Code \u2014 Visualize code authorship at a glance via Git blame annotations and CodeLens, seamlessly navigate and explore Git repositories, gain valuable insights via rich visualizations and powerful comparison commands, and so much more",
+    "installs": 53666213,
+    "rating": 3.3724868297576904,
+    "ratingCount": 945,
+    "lastUpdated": "2026-10-31T09:22:17.557Z",
+    "icon": "icon.png",
+    "categories": [
+      "SCM Providers"
+    ],
+    "tags": [
+      "__web_extension",
+      "annotation",
+      "blame",
+      "git",
+      "gitlens",
+      "keybindings",
+      "log",
+      "multi-root ready"
+    ]
+  },
+  {
+    "id": "redhat.vscode-yaml",
+    "displayName": "YAML",
+    "publisher": "redhat",
+    "publisherDisplayName": "Red Hat",
+    "version": "2.1.2026102308",
+    "description": "YAML Language Support by Red Hat, with built-in Kubernetes syntax support",
+    "installs": 29805672,
+    "rating": 3.493333339691162,
+    "ratingCount": 75,
+    "lastUpdated": "2026-10-23T08:22:11.58Z",
+    "icon": "icon.png",
+    "categories": [
+      "Programming Languages",
+      "Snippets",
+      "Linters",
+      "Formatters"
+    ],
+    "tags": [
+      "__ext_eyaml",
+      "__ext_eyml",
+      "__ext_yaml",
+      "__ext_yml",
+      "__web_extension",
+      "ansible",
+      "autocompletion",
+      "azure-pipelines",
+      "dockercompose",
+      "github-actions-workflow",
+      "home-assistant",
+      "kubernetes",
+      "manifest-yaml",
+      "spring-boot-properties-yaml",
+      "validation",
+      "yaml",
+      "yaml-textmate",
+      "yaml-tmlanguage"
+    ]
+  },
+  {
+    "id": "dsznajder.es7-react-js-snippets",
+    "displayName": "ES7+ React/Redux/React-Native snippets",
+    "publisher": "dsznajder",
+    "publisherDisplayName": "dsznajder",
+    "version": "4.4.3",
+    "description": "Extensions for React, React-Native and Redux in JS/TS with ES7+ syntax. Customizable. Built-in integration with prettier.",
+    "installs": 17854580,
+    "rating": 4.364706039428711,
+    "ratingCount": 85,
+    "lastUpdated": "2022-02-18T13:12:52.393Z",
+    "icon": "icon.png",
+    "categories": [
+      "Snippets"
+    ],
+    "tags": [
+      "__web_extension",
+      "customizable",
+      "javascript",
+      "javascriptReact",
+      "keybindings",
+      "prettier",
+      "react",
+      "react-native",
+      "redux",
+      "snippet",
+      "snippets",
+      "typescript",
+      "typescriptReact"
+    ]
+  },
+  {
+    "id": "bradlc.vscode-tailwindcss",
+    "displayName": "Tailwind CSS IntelliSense",
+    "publisher": "bradlc",
+    "publisherDisplayName": "Tailwind Labs",
+    "version": "0.16.0",
+    "description": "Intelligent Tailwind CSS tooling for VS Code",
+    "installs": 14853301,
+    "rating": 4.474576473236084,
+    "ratingCount": 118,
+    "lastUpdated": "2026-07-17T15:33:07.62Z",
+    "icon": "icon.png",
+    "categories": [
+      "Linters"
+    ],
+    "tags": [
+      "autocomplete",
+      "css",
+      "intellisense",
+      "tailwind",
+      "Tailwind CSS",
+      "tailwindcss",
+      "vscode"
+    ]
+  }
+]

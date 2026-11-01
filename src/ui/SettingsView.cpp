@@ -134,6 +134,19 @@ void SettingsView::InitializeSettings() {
         m_items.push_back(std::move(it));
     }
 
+    // 8b. Editor: CodeLens (Toggle)
+    {
+        SettingItem it;
+        it.id = L"editor.codeLens";
+        it.scope = L"EDITOR";
+        it.title = L"CodeLens";
+        it.description = L"Controls whether the editor shows CodeLens Run and Debug actions above functions and tests.";
+        it.category = SettingCategory::TextEditor;
+        it.isCommonlyUsed = true;
+        it.control = SettingControl::Toggle;
+        m_items.push_back(std::move(it));
+    }
+
     // 9. Editor: Render Whitespace (Dropdown)
     {
         SettingItem it;
@@ -612,6 +625,7 @@ void SettingsView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
             bool isChecked = false;
             if (it.id == L"editor.wordWrap") isChecked = config.wordWrap;
             else if (it.id == L"editor.minimap") isChecked = config.showMinimap;
+            else if (it.id == L"editor.codeLens") isChecked = config.enableCodeLens;
             else if (it.id == L"editor.lineNumbers") isChecked = config.showLineNumbers;
             else if (it.id == L"editor.insertSpaces") isChecked = config.insertSpaces;
             else if (it.id == L"workbench.breadcrumbs") isChecked = config.showBreadcrumbs;
@@ -1035,6 +1049,8 @@ bool SettingsView::HandleLButtonDown(POINT clientPt, app::AppConfig& config, The
                         config.wordWrap = !config.wordWrap;
                     } else if (it.id == L"editor.minimap") {
                         config.showMinimap = !config.showMinimap;
+                    } else if (it.id == L"editor.codeLens") {
+                        config.enableCodeLens = !config.enableCodeLens;
                     } else if (it.id == L"editor.lineNumbers") {
                         config.showLineNumbers = !config.showLineNumbers;
                     } else if (it.id == L"editor.insertSpaces") {

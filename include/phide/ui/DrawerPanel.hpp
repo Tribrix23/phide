@@ -858,10 +858,44 @@ public:
      */
     void ExecuteReplaceAll();
 
+    // --- Extensions Perspective (Activity Rail Item 3) ---
+    struct ExtensionEntry {
+        std::wstring id;
+        std::wstring displayName;
+        std::wstring publisherDisplayName;
+        std::wstring description;
+        std::wstring version;
+        std::wstring installsFormatted;
+        float rating = 4.5f;
+        std::wstring iconPath;
+        bool isInstalled = true;
+        bool isEnabled = true;
+        D2D1_RECT_F bounds{};
+        D2D1_RECT_F gearBounds{};
+        Microsoft::WRL::ComPtr<ID2D1Bitmap> pIconBitmap;
+    };
+
+    void SetOnOpenExtensionDetail(std::function<void(const std::wstring& extId)> cb) {
+        m_onOpenExtensionDetail = std::move(cb);
+    }
+    bool HitTestExtensions(POINT pt, const app::AppConfig& config, std::wstring& outExtId);
+    bool HandleExtensionsWheel(short delta);
+    void UpdateExtensionsHover(POINT pt);
+    [[nodiscard]] const std::vector<ExtensionEntry>& GetExtensionEntries() const noexcept { return m_extensionEntries; }
+
 private:
     void RenderExplorerPane(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config, float clientHeight, float currentDrawerW);
     void RenderSearchPane(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config, float clientHeight, float currentDrawerW);
     void RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config, float clientHeight, float currentDrawerW);
+    void RenderExtensionsPane(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config, float clientHeight, float currentDrawerW);
+    void InitExtensionEntries();
+
+    std::vector<ExtensionEntry> m_extensionEntries;
+    std::wstring m_extensionsSearchQuery;
+    float m_extensionsScrollY = 0.0f;
+    int m_hoveredExtensionIdx = -1;
+    bool m_extensionsInitialized = false;
+    std::function<void(const std::wstring& extId)> m_onOpenExtensionDetail;
 
     // --- Git / Source Control State (Images 2, 3, 4, 5) ---
     bool m_isGitRepo = true;

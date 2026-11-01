@@ -550,6 +550,35 @@ public:
                                editor::OpenDocument& doc, float canvasLeft, float canvasWidth,
                                float topY, float clientHeight);
     bool HandleMarkdownPreviewWheel(short delta, editor::OpenDocument& doc) noexcept;
+
+    void RenderExtensionDetail(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
+                               editor::OpenDocument& doc, float canvasLeft, float canvasWidth,
+                               float topY, float clientHeight);
+    bool HandleExtensionDetailWheel(short delta, editor::OpenDocument& doc) noexcept;
+    bool HandleExtensionDetailClick(POINT pt, editor::OpenDocument& doc);
+    float m_lastExtSubTabY = 0.0f;
+    float m_lastExtSubTabH = 0.0f;
+    float m_lastExtTab0X = 0.0f;
+    float m_lastExtTab0W = 0.0f;
+    float m_lastExtTab1X = 0.0f;
+    float m_lastExtTab1W = 0.0f;
+    float m_lastExtTab2X = 0.0f;
+    float m_lastExtTab2W = 0.0f;
+    D2D1_RECT_F m_lastExtDisableBtn{};
+    D2D1_RECT_F m_lastExtUninstallBtn{};
+
+    struct CodeLensAction {
+        size_t bufferLine = 0;
+        bool isDebug = false;
+        D2D1_RECT_F bounds{};
+    };
+    std::vector<CodeLensAction> m_activeCodeLensActions;
+    int m_hoveredCodeLensIdx = -1;
+
+    [[nodiscard]] int HitTestCodeLens(POINT pt) const noexcept;
+    [[nodiscard]] bool HasHoveredCodeLens() const noexcept { return m_hoveredCodeLensIdx >= 0; }
+    bool UpdateCodeLensHover(POINT pt);
+    [[nodiscard]] const std::vector<CodeLensAction>& GetActiveCodeLensActions() const noexcept { return m_activeCodeLensActions; }
     [[nodiscard]] const D2D1_RECT_F& GetCourseOpenRuntimesBtnBounds() const noexcept { return m_courseOpenRuntimesBtnBounds; }
     [[nodiscard]] int HitTestCourseView(POINT pt) const noexcept;
     bool HandleCourseViewWheel(short delta) noexcept;

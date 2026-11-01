@@ -535,6 +535,7 @@ void Window::SaveSessionState() {
     out << L"  \"insertSpaces\": " << (m_config.insertSpaces ? L"true" : L"false") << L",\n";
     out << L"  \"isGraphColored\": " << (m_config.isGraphColored ? L"true" : L"false") << L",\n";
     out << L"  \"enableMarkdownPreview\": " << (m_config.enableMarkdownPreview ? L"true" : L"false") << L",\n";
+    out << L"  \"enableCodeLens\": " << (m_config.enableCodeLens ? L"true" : L"false") << L",\n";
     out << L"  \"activeDocIdx\": " << GetActiveGroup().activeDocIdx << L",\n";
     if (m_drawer.HasOpenFolder()) {
         out << L"  \"lastOpenFolderPath\": \"" << EscapeJson(m_drawer.GetOpenFolderPath()) << L"\",\n";
@@ -713,6 +714,8 @@ void Window::LoadSessionState() {
             m_config.isGraphColored = (line.find(L"true") != std::wstring::npos);
         } else if (line.find(L"\"enableMarkdownPreview\"") != std::wstring::npos) {
             m_config.enableMarkdownPreview = (line.find(L"true") != std::wstring::npos);
+        } else if (line.find(L"\"enableCodeLens\"") != std::wstring::npos) {
+            m_config.enableCodeLens = (line.find(L"true") != std::wstring::npos);
         } else if (line.find(L"\"openDocs\"") != std::wstring::npos) {
             currentArray = L"openDocs";
         } else if (line.find(L"\"expandedDirs\"") != std::wstring::npos) {
@@ -1843,6 +1846,66 @@ void Window::ToggleMarkdownPreview() {
         CloseMarkdownPreviewSplit();
     }
     SaveSessionState();
+    InvalidateRect(m_hwnd, nullptr, FALSE);
+}
+
+void Window::ToggleCodeLens() {
+    m_config.enableCodeLens = !m_config.enableCodeLens;
+    SaveSessionState();
+    InvalidateRect(m_hwnd, nullptr, FALSE);
+}
+
+void Window::RunCodeLens(size_t bufferLine, bool isDebug) {
+    auto* pDoc = GetActiveDoc();
+    if (pDoc) {
+        pDoc->buffer.SetCursor(bufferLine, 0);
+    }
+    if (isDebug) {
+        DoDebugActiveDocument();
+    } else {
+        DoRunActiveDocument();
+    }
+}
+
+void Window::OpenExtensionDetail(const std::wstring& extId) {
+    if (extId.empty()) return;
+
+    // Check if already open in any group
+    for (int g = 0; g < static_cast<int>(m_editorGroups.size()); ++g) {
+        for (int d = 0; d < static_cast<int>(m_editorGroups[g].docs.size()); ++d) {
+            auto& doc = m_editorGroups[g].docs[d];
+            if (doc.isSpecialView && doc.viewType == L"extension_detail" && doc.extensionId == extId) {
+                m_focusedGroupIdx = g;
+                m_editorGroups[g].activeDocIdx = d;
+                InvalidateRect(m_hwnd, nullptr, FALSE);
+                return;
+            }
+        }
+    }
+
+    editor::OpenDocument doc;
+    doc.isSpecialView = true;
+    doc.viewType = L"extension_detail";
+    doc.extensionId = extId;
+    doc.filePath = extId;
+
+    if (extId.find(L"react") != std::wstring::npos) {
+        doc.fileName = L"Extension: ES7+ React/Redux/React-Native snippets";
+    } else if (extId.find(L"tailwind") != std::wstring::npos) {
+        doc.fileName = L"Extension: Tailwind CSS IntelliSense";
+    } else if (extId.find(L"yaml") != std::wstring::npos) {
+        doc.fileName = L"Extension: YAML";
+    } else if (extId.find(L"gitlens") != std::wstring::npos) {
+        doc.fileName = L"Extension: GitLens — Git supercharged";
+    } else {
+        doc.fileName = L"Extension: " + extId;
+    }
+
+    if (m_editorGroups.empty()) {
+        m_editorGroups.push_back(editor::EditorGroup{});
+    }
+    m_editorGroups[m_focusedGroupIdx].docs.push_back(std::move(doc));
+    m_editorGroups[m_focusedGroupIdx].activeDocIdx = static_cast<int>(m_editorGroups[m_focusedGroupIdx].docs.size()) - 1;
     InvalidateRect(m_hwnd, nullptr, FALSE);
 }
 
@@ -5615,6 +5678,10 @@ bool Window::Create(HINSTANCE hInstance, int nCmdShow) {
         RefreshOpenDocPathsForSearch();
     });
 
+    m_drawer.SetOnOpenExtensionDetail([this](const std::wstring& extId) {
+        OpenExtensionDetail(extId);
+    });
+
     m_drawer.SetOnFilesReplaced([this](const std::vector<std::wstring>& paths) {
         for (const auto& p : paths) {
             for (auto& grp : m_editorGroups) {
@@ -8538,6 +8605,9 @@ void Window::HandleLButtonDown(POINT clientPt) {
                     case ui::MenuActionId::ToggleMarkdownPreview:
                         ToggleMarkdownPreview();
                         break;
+                    case ui::MenuActionId::ToggleCodeLens:
+                        ToggleCodeLens();
+                        break;
                     case ui::MenuActionId::LayoutSingle:
                         if (m_editorGroups.size() > 1) {
                             if (m_focusedGroupIdx >= 0 && static_cast<size_t>(m_focusedGroupIdx) < m_editorGroups.size()) {
@@ -9400,6 +9470,12 @@ void Window::HandleLButtonDown(POINT clientPt) {
                         InvalidateRect(m_hwnd, nullptr, FALSE);
                         return;
                     }
+                } else if (doc.isSpecialView && doc.viewType == L"extension_detail") {
+                    m_drawer.SetSearchFocus(0);
+                    if (m_editor.HandleExtensionDetailClick(clientPt, doc)) {
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
+                        return;
+                    }
                 } else if (doc.isSpecialView && doc.viewType == L"student") {
                     m_drawer.SetSearchFocus(0);
                     int action = m_editor.HitTestStudentView(clientPt);
@@ -9661,6 +9737,17 @@ void Window::HandleLButtonDown(POINT clientPt) {
                             return;
                         }
 
+                        // Check if clicked CodeLens action button (Image 1: Run | Debug)
+                        int lensIdx = m_editor.HitTestCodeLens(clientPt);
+                        if (lensIdx >= 0) {
+                            const auto& actions = m_editor.GetActiveCodeLensActions();
+                            if (lensIdx < static_cast<int>(actions.size())) {
+                                RunCodeLens(actions[lensIdx].bufferLine, actions[lensIdx].isDebug);
+                                InvalidateRect(m_hwnd, nullptr, FALSE);
+                                return;
+                            }
+                        }
+
                         size_t line = 0, col = 0;
                         if (m_editor.HitTestCodeArea(clientPt, m_config, doc, paneCanvasLeft, clientH, line, col)) {
                             doc.buffer.SetCursor(line, col);
@@ -9834,6 +9921,13 @@ void Window::HandleLButtonDown(POINT clientPt) {
                 if (!discardedFile.empty()) {
                     ExecuteDiscardOrRestore(discardedFile, discardedFile, L"M");
                 }
+                InvalidateRect(m_hwnd, nullptr, FALSE);
+                return;
+            }
+        } else if (m_config.activeRailTab == 3) {
+            std::wstring extId;
+            if (m_drawer.HitTestExtensions(clientPt, m_config, extId)) {
+                OpenExtensionDetail(extId);
                 InvalidateRect(m_hwnd, nullptr, FALSE);
                 return;
             }
@@ -10848,6 +10942,11 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     float termH = GetCurrentTerminalHeight(clientH);
                     float bottomEditorY = clientH - statusBarH - termH;
 
+                    if (m_editor.HasHoveredCodeLens()) {
+                        SetCursor(LoadCursor(nullptr, IDC_HAND));
+                        return TRUE;
+                    }
+
                     if (pt.x >= canvasLeft + gutterW && pt.x < clientW - scrollbarW &&
                         pt.y >= topY && pt.y < bottomEditorY) {
                         SetCursor(LoadCursor(nullptr, IDC_IBEAM));
@@ -10908,6 +11007,12 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
 
         case WM_MOUSEMOVE: {
             POINT pt = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+            if (m_editor.UpdateCodeLensHover(pt)) {
+                InvalidateRect(m_hwnd, nullptr, FALSE);
+            }
+            if (m_config.activeRailTab == 3) {
+                m_drawer.UpdateExtensionsHover(pt);
+            }
             HandleMouseMove(pt, wParam);
             return 0;
         }
@@ -11150,6 +11255,11 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     }
                 } else if (pDoc->isSpecialView && pDoc->viewType == L"markdown_preview") {
                     if (m_editor.HandleMarkdownPreviewWheel(delta, *pDoc)) {
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
+                        return 0;
+                    }
+                } else if (pDoc->isSpecialView && pDoc->viewType == L"extension_detail") {
+                    if (m_editor.HandleExtensionDetailWheel(delta, *pDoc)) {
                         InvalidateRect(m_hwnd, nullptr, FALSE);
                         return 0;
                     }
