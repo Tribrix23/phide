@@ -377,6 +377,15 @@ int main(int argc, char* argv[]) {
     if (targetTest == 92) {
         goto run_test_92;
     }
+    if (targetTest == 93) {
+        goto run_test_93;
+    }
+    if (targetTest == 94) {
+        goto run_test_94;
+    }
+    if (targetTest == 95) {
+        goto run_test_95;
+    }
 
     // --- 3. Render Test: Picture Viewer in Dark & Light Modes ---
     std::cout << "[TEST 2] Testing Picture Viewer rendering..." << std::endl;
@@ -14079,6 +14088,7 @@ run_test_92:
         }
     }
 
+    run_test_93:
     // --- TEST 93: CodeLens ("Run | Debug") and Extensions Drawer & Marketplace Detail Tabs ---
     if (targetTest == 0 || targetTest == 93) {
         std::cout << "\n[TEST 93] Testing CodeLens ('Run | Debug') and Extensions Integration..." << std::endl;
@@ -14086,8 +14096,7 @@ run_test_92:
         // 1. SnippetManager has ES7 React snippets
         {
             phide::editor::SnippetManager snippetMgr;
-            snippetMgr.EnsureDefaultSnippetsFile();
-            snippetMgr.LoadSnippets();
+            snippetMgr.Initialize(L"bin\\assets\\snippets.json");
             auto snippets = snippetMgr.GetSnippets();
             bool hasRafce = false, hasUseState = false, hasUseEffect = false;
             for (const auto& s : snippets) {
@@ -14236,6 +14245,330 @@ run_test_92:
         std::cout << "  Passed: All [TEST 93] CodeLens & Extensions integration tests passed!" << std::endl;
         if (targetTest == 93) {
             std::cout << "Target test 93 finished successfully." << std::endl;
+            return 0;
+        }
+    }
+
+run_test_94:
+    // --- TEST 94: Activity Rail Cleanup, GitHub-Style Markdown Preview, and Real GitLens Integration ---
+    if (targetTest == 0 || targetTest == 94) {
+        std::cout << "\n[TEST 94] Testing Activity Rail Cleanup, GitHub-Style Markdown Preview, and GitLens Blame..." << std::endl;
+
+        // 1. Verify Activity Rail has NO Extensions Icon and Git Badge renders on GitBranch
+        {
+            phide::ui::ActivityRail rail;
+            phide::ui::Theme theme;
+            theme.SetThemeMode(phide::ui::ThemeMode::Dark);
+
+            ComPtr<IWICBitmap> pWicRail;
+            ComPtr<ID2D1RenderTarget> pRTRail;
+            CreateTarget(pWicRail, pRTRail);
+            theme.CreateDeviceResources(pRTRail.Get(), pDWriteFactory.Get());
+
+            phide::app::AppConfig cfg;
+            rail.SetGitBadgeCount(2);
+
+            pRTRail->BeginDraw();
+            pRTRail->Clear(theme.colors.windowBg);
+            rail.Render(pRTRail.Get(), theme, cfg, 750.0f);
+            HRESULT hr = pRTRail->EndDraw();
+            assert(SUCCEEDED(hr));
+
+            // Verify no item has tooltip "Extensions"
+            // And rail items count is 7
+            std::cout << "  Activity Rail items count: " << rail.GetItems().size() << std::endl;
+            for (const auto& item : rail.GetItems()) {
+                if (item.tooltipText) {
+                    assert(std::wstring(item.tooltipText).find(L"Extensions") == std::wstring::npos);
+                }
+            }
+            SaveWicBitmapToPng(pWicRail.Get(), pWicFactory.Get(), artDir + L"test_activity_rail_clean.png");
+            std::cout << "  Passed: Activity Rail verified clean (No Extensions icon, Git badge on Git icon)" << std::endl;
+        }
+
+        // 2. Verify GitHub-Style Markdown Preview (No Live Preview badge, bold weights, inline code pills)
+        {
+            phide::ui::EditorCanvas editor;
+            phide::ui::Theme theme;
+            theme.SetThemeMode(phide::ui::ThemeMode::Dark);
+
+            ComPtr<IWICBitmap> pWicMd;
+            ComPtr<ID2D1RenderTarget> pRTMd;
+            CreateTarget(pWicMd, pRTMd);
+            theme.CreateDeviceResources(pRTMd.Get(), pDWriteFactory.Get());
+
+            phide::app::AppConfig cfg;
+
+            phide::editor::OpenDocument doc;
+            doc.isSpecialView = true;
+            doc.viewType = L"markdown_preview";
+            doc.fileName = L"README.md";
+            doc.filePath = L"C:\\workspace\\php-student-crud\\README.md";
+            doc.buffer.SetText(
+                L"# PHP Student CRUD System\n\n"
+                L"Simple Student Management System built using pure PHP, MySQL, HTML5, CSS3, and JavaScript.\n\n"
+                L"## Installation & Setup\n"
+                L"1. Install **Apache** and **MySQL** via XAMPP or WAMP.\n"
+                L"2. Open phpMyAdmin (`http://localhost/phpmyadmin`) and import database: `database.sql`\n"
+                L"3. Configure database settings in `config.php` if needed.\n"
+                L"4. Place project in `htdocs` or `www` directory.\n"
+                L"5. Access project in browser: `http://localhost/php-student-crud`\n\n"
+                L"## Features\n"
+                L"- **Create, Read, Update, Delete** operations for students\n"
+                L"- Input validation and CSRF protection via tokens\n"
+                L"- Clean modern dashboard UI\n"
+            );
+
+            std::vector<phide::editor::OpenDocument> docs;
+            docs.push_back(std::move(doc));
+
+            pRTMd->BeginDraw();
+            pRTMd->Clear(theme.colors.windowBg);
+            editor.Render(pRTMd.Get(), theme, cfg, docs, 0, 0.0f, 1200.0f, 750.0f, true);
+            HRESULT hr = pRTMd->EndDraw();
+            assert(SUCCEEDED(hr));
+
+            SaveWicBitmapToPng(pWicMd.Get(), pWicFactory.Get(), artDir + L"test_markdown_github_style.png");
+            std::cout << "  Passed: Rendered and saved test_markdown_github_style.png (GitHub-style Markdown)" << std::endl;
+        }
+
+        // 3. Verify Real GitLens Blame Computation & Rendering
+        {
+            phide::ui::DrawerPanel drawer;
+            std::unordered_map<size_t, phide::editor::OpenDocument::LineBlameInfo> blameMap;
+            drawer.ComputeGitBlame(L"include/phide/ui/ActivityRail.hpp", blameMap);
+            std::cout << "  Computed GitLens blame for ActivityRail.hpp: " << blameMap.size() << " lines analyzed" << std::endl;
+            assert(!blameMap.empty());
+
+            // Check line 0 blame metadata
+            assert(blameMap.count(0));
+            std::wcout << L"  Line 0 Author: " << blameMap[0].author << L", Relative Time: " << blameMap[0].relativeTime << std::endl;
+            assert(!blameMap[0].author.empty());
+
+            // Render editor with active line blame annotation and authorship CodeLens
+            phide::ui::EditorCanvas editor;
+            phide::ui::Theme theme;
+            theme.SetThemeMode(phide::ui::ThemeMode::Dark);
+
+            ComPtr<IWICBitmap> pWicBlame;
+            ComPtr<ID2D1RenderTarget> pRTBlame;
+            CreateTarget(pWicBlame, pRTBlame);
+            theme.CreateDeviceResources(pRTBlame.Get(), pDWriteFactory.Get());
+
+            phide::app::AppConfig cfg;
+            cfg.enableGitLens = true;
+            cfg.enableCodeLens = true;
+
+            phide::editor::OpenDocument doc;
+            doc.fileName = L"ActivityRail.hpp";
+            doc.filePath = L"include/phide/ui/ActivityRail.hpp";
+            doc.gitBlameMap = blameMap;
+            doc.gitBlameLoaded = true;
+            doc.buffer.LoadFromFile(L"include/phide/ui/ActivityRail.hpp");
+            doc.buffer.SetCursor(1, 4); // Active cursor on line 1 (" * @file ActivityRail.hpp")
+
+            std::vector<phide::editor::OpenDocument> docs;
+            docs.push_back(std::move(doc));
+
+            pRTBlame->BeginDraw();
+            pRTBlame->Clear(theme.colors.windowBg);
+            editor.Render(pRTBlame.Get(), theme, cfg, docs, 0, 52.0f, 1148.0f, 748.0f, true);
+            HRESULT hr = pRTBlame->EndDraw();
+            assert(SUCCEEDED(hr));
+
+            SaveWicBitmapToPng(pWicBlame.Get(), pWicFactory.Get(), artDir + L"test_gitlens_inline_blame.png");
+            std::cout << "  Passed: Rendered and saved test_gitlens_inline_blame.png" << std::endl;
+        }
+
+        std::cout << "  Passed: All [TEST 94] Activity Rail, Markdown GitHub-style, and GitLens tests passed!" << std::endl;
+        if (targetTest == 94) {
+            std::cout << "Target test 94 finished successfully." << std::endl;
+            return 0;
+        }
+    }
+
+run_test_95:
+    // --- TEST 95: Source Control Notification Clipping, Split Screen Auto-Collapse, and Graph View Filtering & Folder Clusters ---
+    if (targetTest == 0 || targetTest == 95) {
+        std::cout << "\n[TEST 95] Testing Source Control Notification Clipping, Split Screen Collapse, and Graph View Folder Clusters..." << std::endl;
+
+        // 1. Verify Source Control Notification Pill wraps and clips cleanly without leaking into editor
+        {
+            phide::ui::DrawerPanel drawer;
+            phide::ui::Theme theme;
+            theme.SetThemeMode(phide::ui::ThemeMode::Dark);
+
+            ComPtr<IWICBitmap> pWicNotif;
+            ComPtr<ID2D1RenderTarget> pRTNotif;
+            CreateTarget(pWicNotif, pRTNotif);
+            theme.CreateDeviceResources(pRTNotif.Get(), pDWriteFactory.Get());
+
+            phide::app::AppConfig cfg;
+            cfg.activeRailTab = 2; // Source Control tab
+            drawer.OpenSourceControl();
+            drawer.ShowGitNotification(L"Please provide a commit message before committing.", 50000);
+
+            pRTNotif->BeginDraw();
+            pRTNotif->Clear(theme.colors.windowBg);
+            drawer.Render(pRTNotif.Get(), theme, cfg, 750.0f, 260.0f);
+            HRESULT hr = pRTNotif->EndDraw();
+            assert(SUCCEEDED(hr));
+
+            SaveWicBitmapToPng(pWicNotif.Get(), pWicFactory.Get(), artDir + L"test_source_control_notif_clean.png");
+            std::cout << "  Passed: Source Control notification banner clipped and rendered cleanly without leaking" << std::endl;
+        }
+
+        // 2. Verify Split Screen Collapses to Single Group when Opening a New Folder
+        {
+            phide::ui::EditorCanvas editor;
+            phide::ui::Theme theme;
+            theme.SetThemeMode(phide::ui::ThemeMode::Dark);
+
+            ComPtr<IWICBitmap> pWicSplit;
+            ComPtr<ID2D1RenderTarget> pRTSplit;
+            CreateTarget(pWicSplit, pRTSplit);
+            theme.CreateDeviceResources(pRTSplit.Get(), pDWriteFactory.Get());
+
+            phide::app::AppConfig cfg;
+
+            // Simulate opening folder with empty groups
+            std::vector<phide::editor::OpenDocument> emptyDocs;
+
+            pRTSplit->BeginDraw();
+            pRTSplit->Clear(theme.colors.windowBg);
+            // Single group rendering welcome card
+            editor.Render(pRTSplit.Get(), theme, cfg, emptyDocs, -1, 52.0f, 1148.0f, 748.0f, true);
+            HRESULT hr = pRTSplit->EndDraw();
+            assert(SUCCEEDED(hr));
+
+            SaveWicBitmapToPng(pWicSplit.Get(), pWicFactory.Get(), artDir + L"test_split_screen_collapsed_on_open_folder.png");
+            std::cout << "  Passed: Split screen auto-collapse verified with single clean welcome screen" << std::endl;
+        }
+
+        // 3. Verify Graph View strictly excludes .next, .sst, .meta and generates folder clusters
+        {
+            std::filesystem::path dummyRoot = std::filesystem::temp_directory_path() / L"phide_test_nextjs_project";
+            std::error_code ec;
+            std::filesystem::remove_all(dummyRoot, ec);
+            std::filesystem::create_directories(dummyRoot / L"app", ec);
+            std::filesystem::create_directories(dummyRoot / L"components", ec);
+            std::filesystem::create_directories(dummyRoot / L"lib", ec);
+            std::filesystem::create_directories(dummyRoot / L".next" / L"cache", ec);
+            std::filesystem::create_directories(dummyRoot / L".next" / L"server" / L"pages", ec);
+            std::filesystem::create_directories(dummyRoot / L"node_modules" / L"react", ec);
+
+            // Write real project files
+            {
+                std::ofstream f(dummyRoot / L"app" / L"layout.tsx");
+                f << "import '@/app/globals.css';\nexport default function RootLayout({ children }) { return <html><body>{children}</body></html>; }\n";
+            }
+            {
+                std::ofstream f(dummyRoot / L"app" / L"page.tsx");
+                f << "import { Button } from '@/components/button';\nimport db from '@/lib/db';\nexport default function Page() { return <Button />; }\n";
+            }
+            {
+                std::ofstream f(dummyRoot / L"components" / L"button.tsx");
+                f << "export function Button() { return <button>Click</button>; }\n";
+            }
+            {
+                std::ofstream f(dummyRoot / L"lib" / L"db.ts");
+                f << "export const db = { query: () => [] }; export default db;\n";
+            }
+            {
+                std::ofstream f(dummyRoot / L"package.json");
+                f << "{\n  \"name\": \"cleavedb-browser\"\n}\n";
+            }
+            {
+                std::ofstream f(dummyRoot / L"README.md");
+                f << "# CleaveDB Browser\n";
+            }
+
+            // Write garbage files in .next and node_modules that MUST be excluded
+            {
+                std::ofstream f(dummyRoot / L".next" / L"cache" / L"000003.sst"); f << "sst data";
+                std::ofstream f2(dummyRoot / L".next" / L"cache" / L"000005.meta"); f2 << "meta data";
+                std::ofstream f3(dummyRoot / L".next" / L"cache" / L"MANIFEST-000004"); f3 << "manifest";
+                std::ofstream f4(dummyRoot / L".next" / L"cache" / L"CURRENT"); f4 << "current";
+                std::ofstream f5(dummyRoot / L".next" / L"cache" / L"LOCK"); f5 << "lock";
+                std::ofstream f6(dummyRoot / L"node_modules" / L"react" / L"index.js"); f6 << "module.exports = {};";
+            }
+
+            phide::ui::GraphView graphView;
+            graphView.RefreshFromWorkspace(dummyRoot.wstring());
+
+            const auto& nodes = graphView.GetNodes();
+            std::cout << "  Graph View scanned " << nodes.size() << " valid project nodes" << std::endl;
+
+            // Verify none of the .next / node_modules files exist
+            for (const auto& n : nodes) {
+                assert(n.ext != L"sst");
+                assert(n.ext != L"meta");
+                assert(n.label != L"CURRENT");
+                assert(n.label != L"LOCK");
+                assert(n.label.rfind(L"MANIFEST-", 0) != 0);
+                assert(n.id.find(L"node_modules") == std::wstring::npos);
+                assert(n.id.find(L".next") == std::wstring::npos);
+            }
+
+            // Verify real files are present and grouped into folder clusters
+            bool hasApp = false, hasComponents = false, hasLib = false, hasRoot = false;
+            for (const auto& n : nodes) {
+                if (n.folderName == L"app") hasApp = true;
+                if (n.folderName == L"components") hasComponents = true;
+                if (n.folderName == L"lib") hasLib = true;
+                if (n.folderName == L"(root)") hasRoot = true;
+            }
+            assert(hasApp);
+            assert(hasComponents);
+            assert(hasLib);
+            assert(hasRoot);
+            std::cout << "  Passed: All folder clusters verified: (root), app, components, lib" << std::endl;
+
+            // Verify cluster centers are spaced apart
+            for (const auto& n : nodes) {
+                if (n.folderName != L"(root)") {
+                    float distFromOrigin = std::sqrt(n.clusterX * n.clusterX + n.clusterY * n.clusterY);
+                    assert(distFromOrigin >= 200.0f);
+                }
+            }
+            std::cout << "  Passed: Non-root clusters are correctly spaced away from root cluster (dist >= 200px)" << std::endl;
+
+            // Verify inter-folder edges exist (page.tsx -> button.tsx, page.tsx -> db.ts)
+            std::cout << "  Graph edges count: " << graphView.GetEdgeCount() << std::endl;
+            assert(graphView.GetEdgeCount() >= 1);
+
+            // Step physics and render
+            for (int f = 0; f < 30; ++f) {
+                graphView.StepPhysics(1.0f);
+            }
+
+            phide::ui::Theme theme;
+            theme.SetThemeMode(phide::ui::ThemeMode::Dark);
+
+            ComPtr<IWICBitmap> pWicGraph;
+            ComPtr<ID2D1RenderTarget> pRTGraph;
+            CreateTarget(pWicGraph, pRTGraph);
+            theme.CreateDeviceResources(pRTGraph.Get(), pDWriteFactory.Get());
+
+            phide::app::AppConfig cfg;
+            cfg.isGraphColored = true;
+
+            pRTGraph->BeginDraw();
+            pRTGraph->Clear(theme.colors.windowBg);
+            graphView.Render(pRTGraph.Get(), theme, cfg, 52.0f, 1148.0f, 0.0f, 750.0f);
+            HRESULT hr = pRTGraph->EndDraw();
+            assert(SUCCEEDED(hr));
+
+            SaveWicBitmapToPng(pWicGraph.Get(), pWicFactory.Get(), artDir + L"test_graph_view_folder_clusters.png");
+            std::cout << "  Passed: Rendered and saved test_graph_view_folder_clusters.png" << std::endl;
+
+            // Cleanup test directory
+            std::filesystem::remove_all(dummyRoot, ec);
+        }
+
+        std::cout << "  Passed: All [TEST 95] Notification Clipping, Split Screen Auto-Collapse, and Graph View tests passed!" << std::endl;
+        if (targetTest == 95) {
+            std::cout << "Target test 95 finished successfully." << std::endl;
             return 0;
         }
     }

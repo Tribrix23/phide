@@ -536,6 +536,7 @@ void Window::SaveSessionState() {
     out << L"  \"isGraphColored\": " << (m_config.isGraphColored ? L"true" : L"false") << L",\n";
     out << L"  \"enableMarkdownPreview\": " << (m_config.enableMarkdownPreview ? L"true" : L"false") << L",\n";
     out << L"  \"enableCodeLens\": " << (m_config.enableCodeLens ? L"true" : L"false") << L",\n";
+    out << L"  \"enableGitLens\": " << (m_config.enableGitLens ? L"true" : L"false") << L",\n";
     out << L"  \"activeDocIdx\": " << GetActiveGroup().activeDocIdx << L",\n";
     if (m_drawer.HasOpenFolder()) {
         out << L"  \"lastOpenFolderPath\": \"" << EscapeJson(m_drawer.GetOpenFolderPath()) << L"\",\n";
@@ -716,6 +717,8 @@ void Window::LoadSessionState() {
             m_config.enableMarkdownPreview = (line.find(L"true") != std::wstring::npos);
         } else if (line.find(L"\"enableCodeLens\"") != std::wstring::npos) {
             m_config.enableCodeLens = (line.find(L"true") != std::wstring::npos);
+        } else if (line.find(L"\"enableGitLens\"") != std::wstring::npos) {
+            m_config.enableGitLens = (line.find(L"true") != std::wstring::npos);
         } else if (line.find(L"\"openDocs\"") != std::wstring::npos) {
             currentArray = L"openDocs";
         } else if (line.find(L"\"expandedDirs\"") != std::wstring::npos) {
@@ -1147,6 +1150,10 @@ void Window::OpenFileDocument(const std::wstring& path, bool isPreview) {
                 } catch (...) {}
             }
             m_drawer.ComputeGitDiffLines(relPath, newDoc.diffAddedLines, newDoc.diffDeletedLines);
+            if (m_config.enableGitLens) {
+                m_drawer.ComputeGitBlame(relPath, newDoc.gitBlameMap);
+                newDoc.gitBlameLoaded = true;
+            }
             // NOTE: Normal files opened from Explorer should NEVER be forced into Diff View!
             // Diff View is strictly reserved for user clicking a diff item from Source Control.
         }
@@ -2046,6 +2053,31 @@ void Window::DoOpenFolderFromPath(const std::wstring& path) {
         }
     }
 
+    // Collapse any empty secondary editor groups so split screen doesn't show duplicate empty welcome screens
+    for (int g = static_cast<int>(m_editorGroups.size()) - 1; g > 0; --g) {
+        if (m_editorGroups[g].docs.empty()) {
+            m_editorGroups.erase(m_editorGroups.begin() + g);
+        }
+    }
+    // If all editor groups became empty, enforce a single clean primary editor pane
+    if (m_editorGroups.size() > 1) {
+        bool allEmpty = true;
+        for (const auto& grp : m_editorGroups) {
+            if (!grp.docs.empty()) {
+                allEmpty = false;
+                break;
+            }
+        }
+        if (allEmpty) {
+            m_editorGroups.resize(1);
+            m_editorGroups[0].docs.clear();
+            m_editorGroups[0].activeDocIdx = -1;
+        }
+    }
+    if (m_focusedGroupIdx >= static_cast<int>(m_editorGroups.size())) {
+        m_focusedGroupIdx = (std::max)(0, static_cast<int>(m_editorGroups.size()) - 1);
+    }
+
     // Track in recent paths LRU list (max 6 entries)
     auto it = std::find(m_recentPaths.begin(), m_recentPaths.end(), path);
     if (it != m_recentPaths.end()) m_recentPaths.erase(it);
@@ -2320,6 +2352,18 @@ void Window::DoSaveAll() {
         m_drawer.RefreshGitStatusOnly(true);
     }
     InvalidateRect(m_hwnd, nullptr, FALSE);
+}
+
+void Window::EnsureGitBlameLoaded(editor::OpenDocument& doc) {
+    if (!m_config.enableGitLens || doc.gitBlameLoaded || doc.filePath.empty() || !m_drawer.IsGitRepo()) return;
+    std::wstring relPath = doc.filePath;
+    if (m_drawer.HasOpenFolder()) {
+        try {
+            relPath = std::filesystem::relative(doc.filePath, m_drawer.GetOpenFolderPath()).wstring();
+        } catch (...) {}
+    }
+    m_drawer.ComputeGitBlame(relPath, doc.gitBlameMap);
+    doc.gitBlameLoaded = true;
 }
 
 void Window::DoExportProfile() {
@@ -6901,6 +6945,57 @@ void Window::RenderStatusBar(float clientW, float clientH) {
             if (pFmt && textBrush) {
                 m_pRenderTarget->DrawText(userDisplay.c_str(), static_cast<UINT32>(userDisplay.length()), pFmt, rcUserText, textBrush);
             }
+            curLeftX += userPillW + containerGap;
+        }
+
+        // 3. GitLens Status Bar Item (Commit info for current line)
+        auto* pActiveDoc = GetActiveDoc();
+        if (pActiveDoc && m_config.enableGitLens) {
+            EnsureGitBlameLoaded(*pActiveDoc);
+            size_t curLine = pActiveDoc->buffer.GetCursor().line;
+            auto itBlame = pActiveDoc->gitBlameMap.find(curLine);
+            if (itBlame != pActiveDoc->gitBlameMap.end()) {
+                const auto& bl = itBlame->second;
+                std::wstring blameBarStr = bl.isUncommitted ? L"Uncommitted changes" : (bl.author + L", " + bl.relativeTime + L" \x2022 " + bl.summary);
+                if (blameBarStr.length() > 45) {
+                    blameBarStr = blameBarStr.substr(0, 42) + L"...";
+                }
+
+                float commitIconSize = m_config.ScaleF(14.0f);
+                float commitIconYPos = barY + (statusBarH - commitIconSize) * 0.5f;
+
+                float blameBarTextW = 0.0f;
+                if (pFmt && m_theme.dwriteFactory) {
+                    Microsoft::WRL::ComPtr<IDWriteTextLayout> pLayout;
+                    m_theme.dwriteFactory->CreateTextLayout(
+                        blameBarStr.c_str(),
+                        static_cast<UINT32>(blameBarStr.length()),
+                        pFmt,
+                        600.0f,
+                        itemH,
+                        &pLayout
+                    );
+                    if (pLayout) {
+                        DWRITE_TEXT_METRICS tm;
+                        pLayout->GetMetrics(&tm);
+                        blameBarTextW = tm.widthIncludingTrailingWhitespace;
+                    }
+                }
+
+                float blamePillW = padX + commitIconSize + gap + blameBarTextW + padX;
+                D2D1_RECT_F rcBlameBar = D2D1::RectF(curLeftX, itemY, curLeftX + blamePillW, itemY + itemH);
+
+                float drawCommitX = rcBlameBar.left + padX;
+                D2D1_RECT_F rcCommitIcon = D2D1::RectF(drawCommitX, commitIconYPos, drawCommitX + commitIconSize, commitIconYPos + commitIconSize);
+                m_rail.GetLucide().DrawGitCommit(m_pRenderTarget.Get(), rcCommitIcon, textBrush, 1.4f);
+                drawCommitX += commitIconSize + gap;
+
+                D2D1_RECT_F rcCommitText = D2D1::RectF(drawCommitX, itemY, drawCommitX + blameBarTextW, itemY + itemH);
+                if (pFmt && textBrush) {
+                    m_pRenderTarget->DrawText(blameBarStr.c_str(), static_cast<UINT32>(blameBarStr.length()), pFmt, rcCommitText, textBrush);
+                }
+                curLeftX += blamePillW + containerGap;
+            }
         }
     }
 
@@ -9924,13 +10019,6 @@ void Window::HandleLButtonDown(POINT clientPt) {
                 InvalidateRect(m_hwnd, nullptr, FALSE);
                 return;
             }
-        } else if (m_config.activeRailTab == 3) {
-            std::wstring extId;
-            if (m_drawer.HitTestExtensions(clientPt, m_config, extId)) {
-                OpenExtensionDetail(extId);
-                InvalidateRect(m_hwnd, nullptr, FALSE);
-                return;
-            }
         } else {
             if (m_drawer.IsCourseExplorerMode()) {
                 if (m_drawer.HandleCourseExplorerClick(clientPt, m_config)) {
@@ -11009,9 +11097,6 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
             POINT pt = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
             if (m_editor.UpdateCodeLensHover(pt)) {
                 InvalidateRect(m_hwnd, nullptr, FALSE);
-            }
-            if (m_config.activeRailTab == 3) {
-                m_drawer.UpdateExtensionsHover(pt);
             }
             HandleMouseMove(pt, wParam);
             return 0;

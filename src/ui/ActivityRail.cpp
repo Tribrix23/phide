@@ -18,9 +18,6 @@ ActivityRail::ActivityRail() {
     // 3. Git icon (directly under Search)
     m_items.push_back({ RailTabId::Git,        L"Source Control (Ctrl+Shift+G)", {} });
 
-    // 4. Extensions icon (matching VS Code)
-    m_items.push_back({ RailTabId::Extensions, L"Extensions (Ctrl+Shift+X)",     {} });
-
     // 4. File network icon directly under horizontal separation line (User prompt: tooltip "File network")
     m_items.push_back({ RailTabId::FileNetwork, L"File network",               {} });
 
@@ -187,9 +184,6 @@ void ActivityRail::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
                 break;
             case RailTabId::Git:
                 m_lucide.DrawGitBranch(pRT, item.bounds, iconBrush, 1.6f);
-                break;
-            case RailTabId::Extensions:
-                m_lucide.DrawExtensionsGrid(pRT, item.bounds, iconBrush, 1.4f);
                 if (m_isGitLoading) {
                     // Render blue circular badge with rotating sync/loading arrows on bottom-right (Image 4)
                     const float badgeCenterX = item.bounds.right - config.ScaleF(7.0f);

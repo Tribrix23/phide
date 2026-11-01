@@ -564,8 +564,6 @@ void DrawerPanel::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCon
             RenderSearchPane(pRT, theme, config, clientHeight, currentDrawerW);
         } else if (config.activeRailTab == 2) {
             RenderSourceControlPane(pRT, theme, config, clientHeight, currentDrawerW);
-        } else if (config.activeRailTab == 3) {
-            RenderExtensionsPane(pRT, theme, config, clientHeight, currentDrawerW);
         } else {
             RenderExplorerPane(pRT, theme, config, clientHeight, currentDrawerW);
         }
@@ -3463,10 +3461,6 @@ bool DrawerPanel::HandleMouseWheel(short delta, int activeRailTab, float mouseY)
         }
     }
 
-    if (activeRailTab == 3) {
-        return HandleExtensionsWheel(delta);
-    }
-
     if (activeRailTab == 1) {
         if (m_searchGroups.empty()) return false;
         size_t oldScroll = m_searchScrollIdx;
@@ -6098,6 +6092,125 @@ void DrawerPanel::ComputeGitDiffLines(const std::wstring& relPath, std::set<size
     }
 }
 
+void DrawerPanel::ComputeGitBlame(const std::wstring& relPath, std::unordered_map<size_t, editor::OpenDocument::LineBlameInfo>& outBlame) {
+    outBlame.clear();
+    if (relPath.empty() || relPath.ends_with(L".ipynb")) return;
+
+    std::wstring cleanRel = relPath;
+    for (auto& c : cleanRel) if (c == L'\\') c = L'/';
+
+    std::wstring dir = m_openFolderPath.empty() ? L"." : m_openFolderPath;
+
+    // Get current user name for "You" replacement
+    std::wstring currentUserName;
+    auto resUser = RunGitCmd(L"config user.name", dir);
+    if (resUser.exitCode == 0 && !resUser.output.empty()) {
+        currentUserName = resUser.output;
+        while (!currentUserName.empty() && (currentUserName.back() == L'\r' || currentUserName.back() == L'\n' || currentUserName.back() == L' '))
+            currentUserName.pop_back();
+    }
+
+    // Run git blame --porcelain
+    auto res = RunGitCmd(L"blame --porcelain -- \"" + cleanRel + L"\"", dir);
+    if (res.exitCode != 0 || res.output.empty()) return;
+
+    struct CommitEntry {
+        std::wstring author;
+        int64_t authorTime = 0;
+        std::wstring summary;
+        bool isUncommitted = false;
+    };
+    std::unordered_map<std::wstring, CommitEntry> commitCache;
+
+    std::wstringstream ss(res.output);
+    std::wstring line;
+    std::wstring curCommit;
+    size_t curFinalLine = 0;
+
+    auto formatRelativeTime = [](int64_t timestamp) -> std::wstring {
+        if (timestamp <= 0) return L"";
+        time_t now = time(nullptr);
+        int64_t diff = static_cast<int64_t>(now - timestamp);
+        if (diff < 0) diff = 0;
+        if (diff < 60) return L"just now";
+        if (diff < 3600) return std::to_wstring(diff / 60) + L" minutes ago";
+        if (diff < 7200) return L"1 hour ago";
+        if (diff < 86400) return std::to_wstring(diff / 3600) + L" hours ago";
+        if (diff < 172800) return L"yesterday";
+        if (diff < 604800) return std::to_wstring(diff / 86400) + L" days ago";
+        if (diff < 1209600) return L"1 week ago";
+        if (diff < 2592000) return std::to_wstring(diff / 604800) + L" weeks ago";
+        if (diff < 5184000) return L"1 month ago";
+        if (diff < 31536000) return std::to_wstring(diff / 2592000) + L" months ago";
+        if (diff < 63072000) return L"1 year ago";
+        return std::to_wstring(diff / 31536000) + L" years ago";
+    };
+
+    while (std::getline(ss, line)) {
+        if (!line.empty() && line.back() == L'\r') line.pop_back();
+        if (line.empty()) continue;
+
+        if (line[0] == L'\t') {
+            // Source line content. Associate curFinalLine with curCommit
+            if (curFinalLine > 0 && !curCommit.empty()) {
+                size_t line0 = curFinalLine - 1;
+                const auto& ce = commitCache[curCommit];
+                editor::OpenDocument::LineBlameInfo info;
+                info.commitHash = curCommit;
+                info.isUncommitted = ce.isUncommitted;
+                if (ce.isUncommitted) {
+                    info.author = L"You";
+                    info.relativeTime = L"Uncommitted changes";
+                    info.summary = L"Uncommitted changes";
+                } else {
+                    info.author = (!currentUserName.empty() && ce.author == currentUserName) ? L"You" : ce.author;
+                    info.relativeTime = formatRelativeTime(ce.authorTime);
+                    info.summary = ce.summary;
+                }
+                outBlame[line0] = info;
+            }
+            continue;
+        }
+
+        // Commit line: <hash> <origLine> <finalLine> [<numLines>]
+        if (line.find(L' ') != std::wstring::npos && (line.length() >= 40 && iswxdigit(line[0]) && iswxdigit(line[1]))) {
+            std::wstringstream lss(line);
+            std::wstring hash;
+            size_t origLine = 0, finalLine = 0;
+            if (lss >> hash >> origLine >> finalLine) {
+                curCommit = hash;
+                curFinalLine = finalLine;
+                if (!commitCache.count(curCommit)) {
+                    CommitEntry ce;
+                    if (hash.rfind(L"0000000", 0) == 0) {
+                        ce.isUncommitted = true;
+                        ce.author = L"You";
+                    }
+                    commitCache[curCommit] = ce;
+                }
+            }
+            continue;
+        }
+
+        // Details for curCommit
+        if (line.rfind(L"author ", 0) == 0) {
+            std::wstring author = line.substr(7);
+            if (author == L"Not Committed Yet") {
+                commitCache[curCommit].isUncommitted = true;
+                commitCache[curCommit].author = L"You";
+            } else {
+                commitCache[curCommit].author = author;
+            }
+        } else if (line.rfind(L"author-time ", 0) == 0) {
+            try {
+                commitCache[curCommit].authorTime = std::stoll(line.substr(12));
+            } catch (...) {}
+        } else if (line.rfind(L"summary ", 0) == 0) {
+            commitCache[curCommit].summary = line.substr(8);
+        }
+    }
+}
+
 void DrawerPanel::GenerateAiCommitMessage() {
     std::lock_guard<std::recursive_mutex> lock(m_gitMutex);
     if (m_gitChanges.empty()) {
@@ -6806,9 +6919,27 @@ void DrawerPanel::RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, 
     // 3. Section 1: "Changes" & "Staged Changes"
     // =========================================================================
     if (m_showChangesSection) {
-        // Visual Notification Pill (e.g. "✓ Discarded <file>")
+        // Visual Notification Pill (e.g. "✓ Discarded <file>" or "✓ Please provide a commit message...")
         if (HasGitNotification()) {
-            float notifH = config.ScaleF(22.0f);
+            std::wstring fullMsg = L"✓ " + m_gitNotificationText;
+            float availTextW = (std::max)(20.0f, currentDrawerW - 2.0f * paddingX - config.ScaleF(16.0f));
+            float notifH = config.ScaleF(24.0f);
+
+            Microsoft::WRL::ComPtr<IDWriteTextLayout> pNotifLayout;
+            if (theme.dwriteFactory && !fullMsg.empty()) {
+                IDWriteTextFormat* pFmt = theme.fontMenuItem.Get() ? theme.fontMenuItem.Get() : theme.fontButtonCenter.Get();
+                if (pFmt && SUCCEEDED(theme.dwriteFactory->CreateTextLayout(
+                        fullMsg.c_str(), static_cast<UINT32>(fullMsg.length()),
+                        pFmt, availTextW, 1000.0f, &pNotifLayout))) {
+                    pNotifLayout->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR);
+                    pNotifLayout->SetWordWrapping(DWRITE_WORD_WRAPPING_WRAP);
+                    DWRITE_TEXT_METRICS tm{};
+                    if (SUCCEEDED(pNotifLayout->GetMetrics(&tm))) {
+                        notifH = (std::max)(config.ScaleF(24.0f), tm.height + config.ScaleF(8.0f));
+                    }
+                }
+            }
+
             D2D1_RECT_F rcNotif = D2D1::RectF(
                 railW + paddingX,
                 curY,
@@ -6830,15 +6961,23 @@ void DrawerPanel::RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, 
             if (brushNotifBorder) pRT->DrawRoundedRectangle(rrcNotif, brushNotifBorder.Get(), 1.0f);
 
             D2D1_RECT_F rcNotifText = D2D1::RectF(
-                rcNotif.left + config.ScaleF(6.0f),
-                rcNotif.top + config.ScaleF(1.0f),
-                rcNotif.right - config.ScaleF(6.0f),
-                rcNotif.bottom - config.ScaleF(1.0f)
+                rcNotif.left + config.ScaleF(7.0f),
+                rcNotif.top + config.ScaleF(4.0f),
+                rcNotif.right - config.ScaleF(7.0f),
+                rcNotif.bottom - config.ScaleF(4.0f)
             );
-            std::wstring fullMsg = L"✓ " + m_gitNotificationText;
-            pRT->DrawText(fullMsg.c_str(), static_cast<UINT32>(fullMsg.length()),
-                          theme.fontMenuItem.Get() ? theme.fontMenuItem.Get() : theme.fontButtonCenter.Get(),
-                          rcNotifText, theme.brushTextPrimary.Get());
+
+            // Clip strictly to rcNotifText so text NEVER leaks outside the notification pill into the editor
+            pRT->PushAxisAlignedClip(rcNotifText, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+            if (pNotifLayout) {
+                pRT->DrawTextLayout(D2D1::Point2F(rcNotifText.left, rcNotifText.top),
+                                    pNotifLayout.Get(), theme.brushTextPrimary.Get());
+            } else {
+                pRT->DrawText(fullMsg.c_str(), static_cast<UINT32>(fullMsg.length()),
+                              theme.fontMenuItem.Get() ? theme.fontMenuItem.Get() : theme.fontButtonCenter.Get(),
+                              rcNotifText, theme.brushTextPrimary.Get(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
+            }
+            pRT->PopAxisAlignedClip();
             curY += notifH + config.ScaleF(6.0f);
         }
 
@@ -9572,17 +9711,17 @@ void DrawerPanel::RenderExtensionsPane(ID2D1RenderTarget* pRT, Theme& theme, con
                           rcName, isHover ? theme.brushTextWhite.Get() : theme.brushTextPrimary.Get());
 
             // Description
-            D2D1_RECT_F rcDesc = D2D1::RectF(textX, curY + config.ScaleF(22.0f), textX + textW, curY + config.ScaleF(40.0f));
+            D2D1_RECT_F rcDesc = D2D1::RectF(textX, curY + config.ScaleF(22.0f), textW > 0 ? textX + textW : textX + 100.0f, curY + config.ScaleF(40.0f));
             pRT->DrawText(entry.description.c_str(), static_cast<UINT32>(entry.description.length()),
-                          theme.fontMenuShortcut ? theme.fontMenuShortcut.Get() : theme.fontHint.Get(),
+                          theme.fontMenuItem ? theme.fontMenuItem.Get() : theme.fontBody.Get(),
                           rcDesc, theme.brushTextMuted.Get());
 
             // Publisher & stats
             std::wstring footer = entry.publisherDisplayName + L"  •  " + entry.installsFormatted + L"  •  ★ " +
                                   std::to_wstring(static_cast<int>(entry.rating)) + L"." + std::to_wstring(static_cast<int>(entry.rating * 10) % 10);
-            D2D1_RECT_F rcFoot = D2D1::RectF(textX, curY + config.ScaleF(40.0f), textX + textW, curY + config.ScaleF(58.0f));
+            D2D1_RECT_F rcFoot = D2D1::RectF(textX, curY + config.ScaleF(40.0f), textW > 0 ? textX + textW : textX + 100.0f, curY + config.ScaleF(58.0f));
             pRT->DrawText(footer.c_str(), static_cast<UINT32>(footer.length()),
-                          theme.fontMenuShortcut ? theme.fontMenuShortcut.Get() : theme.fontHint.Get(),
+                          theme.fontMenuItem ? theme.fontMenuItem.Get() : theme.fontBody.Get(),
                           rcFoot, theme.brushTextMuted.Get());
 
             // Gear icon button

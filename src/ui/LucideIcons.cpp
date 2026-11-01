@@ -206,6 +206,27 @@ void LucideIcons::DrawGitBranch(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bound
     }
 }
 
+void LucideIcons::DrawGitCommit(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, ID2D1Brush* pBrush, float strokeWidth) const {
+    if (!pRT || !pBrush) return;
+
+    const float bw = bounds.right - bounds.left;
+    const float bh = bounds.bottom - bounds.top;
+    const float iconSize = (std::min)(bw, bh) * 0.75f;
+    const float s = iconSize / 24.0f;
+    const float ox = bounds.left + (bw - 24.0f * s) / 2.0f;
+    const float oy = bounds.top + (bh - 24.0f * s) / 2.0f;
+
+    // Center circle at (12, 12), radius 3.5
+    D2D1_ELLIPSE centerCircle = D2D1::Ellipse(MapPoint(12.0f, 12.0f, ox, oy, s), 3.5f * s, 3.5f * s);
+    pRT->DrawEllipse(centerCircle, pBrush, strokeWidth, m_pStrokeStyle.Get());
+
+    // Left line from (3, 12) to (8.5, 12)
+    pRT->DrawLine(MapPoint(3.0f, 12.0f, ox, oy, s), MapPoint(8.5f, 12.0f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+
+    // Right line from (15.5, 12) to (21, 12)
+    pRT->DrawLine(MapPoint(15.5f, 12.0f, ox, oy, s), MapPoint(21.0f, 12.0f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+}
+
 void LucideIcons::DrawFile(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, ID2D1Brush* pBrush, float strokeWidth) const {
     if (!pRT || !pBrush) return;
 

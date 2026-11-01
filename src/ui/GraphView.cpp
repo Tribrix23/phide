@@ -9,6 +9,7 @@
 #include <filesystem>
 #include <sstream>
 #include <fstream>
+#include <unordered_map>
 
 namespace phide::ui {
 
@@ -356,20 +357,38 @@ bool GraphView::MatchesCandidate(const std::string& ref, const std::wstring& can
     while (relA.rfind("./", 0) == 0) relA.erase(0, 2);
     while (relA.rfind("/", 0) == 0) relA.erase(0, 1);
 
+    // Clean reference (strip ./, ../, @/, ~/)
+    std::string cleanRef = ref;
+    for (char& c : cleanRef) {
+        c = static_cast<char>(tolower(static_cast<unsigned char>(c)));
+    }
+    while (cleanRef.rfind("./", 0) == 0) cleanRef.erase(0, 2);
+    while (cleanRef.rfind("../", 0) == 0) cleanRef.erase(0, 3);
+    while (cleanRef.rfind("@/", 0) == 0) cleanRef.erase(0, 2);
+    while (cleanRef.rfind("~/", 0) == 0) cleanRef.erase(0, 2);
+    while (cleanRef.rfind("/", 0) == 0) cleanRef.erase(0, 1);
+
     // Basename of extracted ref
-    std::string refBase = ref;
+    std::string refBase = cleanRef;
     auto lastSlash = refBase.find_last_of('/');
     if (lastSlash != std::string::npos) {
         refBase = refBase.substr(lastSlash + 1);
     }
 
     // 1. Exact relative path match (e.g. "assets/style.css" == "assets/style.css")
-    if (ref == relA) return true;
+    if (cleanRef == relA) return true;
 
-    // 2. Exact filename match (e.g. "config.php" == "config.php", "style.css" == "style.css")
+    // 2. Relative path match without extension (e.g. "components/ui/button" matches "components/ui/button.tsx")
+    if (!cleanRef.empty() && relA.rfind(cleanRef, 0) == 0) {
+        if (relA.length() > cleanRef.length() && relA[cleanRef.length()] == '.') {
+            return true;
+        }
+    }
+
+    // 3. Exact filename match (e.g. "config.php" == "config.php", "style.css" == "style.css")
     if (refBase == labelA) return true;
 
-    // 3. Stem match (for JS imports without extension e.g. import './app' or wiki-links [[config]])
+    // 4. Stem match (for JS imports without extension e.g. import './app' or wiki-links [[config]])
     auto dotCand = labelA.find_last_of('.');
     std::string candStem = (dotCand != std::string::npos) ? labelA.substr(0, dotCand) : labelA;
     auto dotRef = refBase.find_last_of('.');
@@ -499,31 +518,83 @@ void GraphView::RefreshFromWorkspace(const std::wstring& rootPath, bool preserve
     std::filesystem::path targetDir = m_currentRootPath;
     std::error_code ec;
 
-    // 1. Scan filesystem for project files (up to 75 files for a balanced, responsive graph)
-    const size_t maxFiles = 75;
+    // 1. Scan filesystem for project files (up to 250 files for complete project coverage)
+    const size_t maxFiles = 250;
     std::vector<std::filesystem::path> collected;
 
     if (!m_currentRootPath.empty() && std::filesystem::exists(targetDir, ec) && std::filesystem::is_directory(targetDir, ec)) {
         try {
-            for (auto const& entry : std::filesystem::recursive_directory_iterator(targetDir, std::filesystem::directory_options::skip_permission_denied, ec)) {
-                if (collected.size() >= maxFiles) break;
-                if (ec) break;
+            for (auto it = std::filesystem::recursive_directory_iterator(targetDir, std::filesystem::directory_options::skip_permission_denied, ec);
+                 it != std::filesystem::recursive_directory_iterator(); ) {
+                if (ec || collected.size() >= maxFiles) break;
 
+                const auto& entry = *it;
                 const auto& path = entry.path();
-                std::wstring uPath = path.wstring();
-                // Filter out version control, binary build dirs and package caches
-                if (uPath.find(L"\\.git") != std::wstring::npos ||
-                    uPath.find(L"\\node_modules") != std::wstring::npos ||
-                    uPath.find(L"\\vendor") != std::wstring::npos ||
-                    uPath.find(L"\\.vs") != std::wstring::npos ||
-                    uPath.find(L"\\bin") != std::wstring::npos ||
-                    uPath.find(L"\\obj") != std::wstring::npos) {
-                    continue;
+                std::wstring fileName = path.filename().wstring();
+
+                // If this is a directory, skip caches/build outputs immediately without recursing
+                if (entry.is_directory(ec)) {
+                    std::wstring dirLower = fileName;
+                    for (auto& c : dirLower) c = towlower(c);
+                    // Skip hidden dirs (.*) e.g. .next, .git, .phide, .vscode, .impeccable, .cache, .turbo, .idea, .venv
+                    // Skip package managers, builds, targets, caches
+                    if (dirLower.rfind(L".", 0) == 0 ||
+                        dirLower == L"node_modules" || dirLower == L"vendor" ||
+                        dirLower == L"bin" || dirLower == L"obj" ||
+                        dirLower == L"dist" || dirLower == L"build" ||
+                        dirLower == L"out" || dirLower == L"target" ||
+                        dirLower == L"__pycache__" || dirLower == L"coverage" ||
+                        dirLower == L"tmp" || dirLower == L"temp" ||
+                        dirLower == L".next") {
+                        it.disable_recursion_pending();
+                        it.increment(ec);
+                        continue;
+                    }
                 }
 
+                // If regular file, strictly filter out DB logs/sst/meta, maps, locks, binaries
                 if (entry.is_regular_file(ec)) {
-                    collected.push_back(path);
+                    std::wstring ext = path.extension().wstring();
+                    if (!ext.empty() && ext.front() == L'.') ext.erase(0, 1);
+                    for (auto& c : ext) c = towlower(c);
+
+                    std::wstring fLower = fileName;
+                    for (auto& c : fLower) c = towlower(c);
+
+                    bool skipFile = (
+                        ext == L"sst" || ext == L"meta" || ext == L"map" ||
+                        ext == L"tsbuildinfo" || ext == L"lock" || ext == L"pyc" ||
+                        ext == L"exe" || ext == L"dll" || ext == L"obj" ||
+                        ext == L"o" || ext == L"lib" || ext == L"a" ||
+                        ext == L"so" || ext == L"dylib" || ext == L"bin" ||
+                        ext == L"tmp" || ext == L"log" || ext == L"ds_store" ||
+                        ext == L"bak" || ext == L"swp" || ext == L"class" ||
+                        ext == L"jar" || ext == L"wasm" ||
+                        fLower == L"current" || fLower == L"lock" ||
+                        fLower.rfind(L"manifest-", 0) == 0 ||
+                        fLower.rfind(L"log.", 0) == 0 ||
+                        fLower.rfind(L"options-", 0) == 0
+                    );
+
+                    if (!skipFile) {
+                        std::wstring relP = path.wstring();
+                        if (relP.find(L"\\.next") != std::wstring::npos ||
+                            relP.find(L"\\.git") != std::wstring::npos ||
+                            relP.find(L"\\node_modules") != std::wstring::npos ||
+                            relP.find(L"\\.phide") != std::wstring::npos ||
+                            relP.find(L"\\dist") != std::wstring::npos ||
+                            relP.find(L"\\build") != std::wstring::npos ||
+                            relP.find(L"\\out") != std::wstring::npos) {
+                            skipFile = true;
+                        }
+                    }
+
+                    if (!skipFile) {
+                        collected.push_back(path);
+                    }
                 }
+
+                it.increment(ec);
             }
         } catch (...) {
             // Fallback gracefully
@@ -539,6 +610,16 @@ void GraphView::RefreshFromWorkspace(const std::wstring& rootPath, bool preserve
             std::wstring pStr = p.wstring();
             std::wstring fName = p.filename().wstring();
 
+            // Determine folder
+            std::filesystem::path relP = std::filesystem::relative(p, targetDir, ec);
+            std::wstring folder = L"(root)";
+            if (!ec && relP.has_parent_path()) {
+                auto itFirst = relP.begin();
+                if (itFirst != relP.end() && itFirst->wstring() != relP.filename().wstring()) {
+                    folder = itFirst->wstring();
+                }
+            }
+
             // Match against existing node
             auto it = std::find_if(m_nodes.begin(), m_nodes.end(), [&](const GraphNode& gn) {
                 return gn.id == pStr || gn.label == fName;
@@ -548,6 +629,7 @@ void GraphView::RefreshFromWorkspace(const std::wstring& rootPath, bool preserve
                 GraphNode existing = *it;
                 existing.id = pStr;
                 existing.label = fName;
+                existing.folderName = folder;
                 updatedNodes.push_back(existing);
             } else {
                 // Brand new file created dynamically (e.g. hello.txt)
@@ -558,14 +640,26 @@ void GraphView::RefreshFromWorkspace(const std::wstring& rootPath, bool preserve
                 if (!ext.empty() && ext.front() == L'.') ext.erase(0, 1);
                 for (auto& c : ext) c = towlower(c);
                 n.ext = ext;
+                n.folderName = folder;
                 n.isDirectory = false;
                 n.radius = 5.5f;
                 n.color = GetExtensionColor(n.ext, false);
 
-                // Place near center with gentle initial velocity for organic entrance
+                // Match cluster center of existing nodes in the same folder if any
+                float cx = 0.0f, cy = 0.0f;
+                for (const auto& ex : updatedNodes) {
+                    if (ex.folderName == folder) {
+                        cx = ex.clusterX;
+                        cy = ex.clusterY;
+                        break;
+                    }
+                }
+                n.clusterX = cx;
+                n.clusterY = cy;
+
                 float offset = static_cast<float>((updatedNodes.size() * 41) % 70) - 35.0f;
-                n.x = offset;
-                n.y = offset * 0.75f;
+                n.x = cx + offset;
+                n.y = cy + offset * 0.75f;
                 n.vx = (offset >= 0 ? 2.2f : -2.2f);
                 n.vy = 2.0f;
 
@@ -593,34 +687,33 @@ void GraphView::RefreshFromWorkspace(const std::wstring& rootPath, bool preserve
         struct SampleDef {
             const wchar_t* name;
             const wchar_t* ext;
+            const wchar_t* folder;
             bool isDir;
             float rad;
         };
         const SampleDef samples[] = {
-            { L"index.php",       L"php",  false, 7.5f },
-            { L"config.php",      L"php",  false, 7.0f },
-            { L"action.php",      L"php",  false, 6.0f },
-            { L"database.sql",    L"sql",  false, 6.5f },
-            { L"README.md",       L"md",   false, 5.5f },
-            { L"styles.css",      L"css",  false, 5.5f },
-            { L"app.js",          L"js",   false, 6.0f },
-            { L"composer.json",   L"json", false, 5.5f },
-            { L"assets",          L"",     true,  7.0f },
-            { L"logo.png",        L"png",  false, 4.5f },
-            { L"auth.php",        L"php",  false, 6.0f },
-            { L"student.php",     L"php",  false, 6.0f },
-            { L"api.js",          L"js",   false, 5.5f },
-            { L"test.txt",        L"txt",  false, 4.5f },
-            { L".gitignore",      L"git",  false, 4.5f },
-            { L"Notebook.ipynb",  L"json", false, 5.5f },
-            { L"routes.php",      L"php",  false, 6.0f },
-            { L"helper.php",      L"php",  false, 5.0f },
-            { L"main.css",        L"css",  false, 5.0f },
-            { L"db_connect.php",  L"php",  false, 6.0f },
-            { L"schema.sql",      L"sql",  false, 5.5f },
-            { L"install.sh",      L"sh",   false, 4.5f },
-            { L"vuln.txt",        L"txt",  false, 4.5f },
-            { L"license.txt",     L"txt",  false, 4.5f }
+            { L"index.php",       L"php",  L"(root)",   false, 7.5f },
+            { L"config.php",      L"php",  L"(root)",   false, 7.0f },
+            { L"action.php",      L"php",  L"(root)",   false, 6.0f },
+            { L"database.sql",    L"sql",  L"(root)",   false, 6.5f },
+            { L"README.md",       L"md",   L"(root)",   false, 5.5f },
+            { L"composer.json",   L"json", L"(root)",   false, 5.5f },
+            { L"Notebook.ipynb",  L"json", L"(root)",   false, 5.5f },
+            { L".gitignore",      L"git",  L"(root)",   false, 4.5f },
+            { L"styles.css",      L"css",  L"assets",   false, 5.5f },
+            { L"app.js",          L"js",   L"assets",   false, 6.0f },
+            { L"logo.png",        L"png",  L"assets",   false, 4.5f },
+            { L"main.css",        L"css",  L"assets",   false, 5.0f },
+            { L"auth.php",        L"php",  L"auth",     false, 6.0f },
+            { L"student.php",     L"php",  L"auth",     false, 6.0f },
+            { L"helper.php",      L"php",  L"auth",     false, 5.0f },
+            { L"api.js",          L"js",   L"api",      false, 5.5f },
+            { L"routes.php",      L"php",  L"api",      false, 6.0f },
+            { L"db_connect.php",  L"php",  L"api",      false, 6.0f },
+            { L"schema.sql",      L"sql",  L"api",      false, 5.5f },
+            { L"test.txt",        L"txt",  L"docs",     false, 4.5f },
+            { L"vuln.txt",        L"txt",  L"docs",     false, 4.5f },
+            { L"license.txt",     L"txt",  L"docs",     false, 4.5f }
         };
 
         for (const auto& s : samples) {
@@ -628,6 +721,7 @@ void GraphView::RefreshFromWorkspace(const std::wstring& rootPath, bool preserve
             n.id = s.name;
             n.label = s.name;
             n.ext = s.ext;
+            n.folderName = s.folder;
             n.isDirectory = s.isDir;
             n.radius = s.rad;
             n.color = GetExtensionColor(s.ext, s.isDir);
@@ -644,15 +738,28 @@ void GraphView::RefreshFromWorkspace(const std::wstring& rootPath, bool preserve
             n.ext = ext;
             n.isDirectory = false;
 
+            // Determine folder name relative to workspace root
+            std::filesystem::path relP = std::filesystem::relative(p, targetDir, ec);
+            std::wstring folder = L"(root)";
+            if (!ec && relP.has_parent_path()) {
+                auto itFirst = relP.begin();
+                if (itFirst != relP.end() && itFirst->wstring() != relP.filename().wstring()) {
+                    folder = itFirst->wstring();
+                }
+            }
+            n.folderName = folder;
+
             // Main files get larger radius
             std::wstring lowerLabel = n.label;
             for (auto& c : lowerLabel) c = towlower(c);
             if (lowerLabel.find(L"index") != std::wstring::npos ||
                 lowerLabel.find(L"config") != std::wstring::npos ||
                 lowerLabel.find(L"main") != std::wstring::npos ||
-                lowerLabel.find(L"app") != std::wstring::npos) {
+                lowerLabel.find(L"app") != std::wstring::npos ||
+                lowerLabel.find(L"layout") != std::wstring::npos ||
+                lowerLabel.find(L"page") != std::wstring::npos) {
                 n.radius = 7.5f;
-            } else if (ext == L"php" || ext == L"js" || ext == L"sql") {
+            } else if (ext == L"php" || ext == L"js" || ext == L"jsx" || ext == L"ts" || ext == L"tsx" || ext == L"sql") {
                 n.radius = 6.0f;
             } else {
                 n.radius = 5.0f;
@@ -664,14 +771,56 @@ void GraphView::RefreshFromWorkspace(const std::wstring& rootPath, bool preserve
 
     if (m_nodes.empty()) return;
 
-    // 2. Initial compact cluster layout with gentle outward burst (Obsidian intro)
+    // 2. Folder-based cluster layout: place each folder in its own distinct cluster away from the root cluster
+    // Group node indices by their folderName
+    std::vector<std::wstring> folderOrder;
+    std::unordered_map<std::wstring, std::vector<size_t>> folderMap;
+
     for (size_t i = 0; i < m_nodes.size(); ++i) {
-        float r = 12.0f + 25.0f * (static_cast<float>(i) / static_cast<float>((std::max)(size_t(1), m_nodes.size())));
-        float theta = static_cast<float>(i) * 2.39996f; // Golden ratio spiral
-        m_nodes[i].x = r * std::cos(theta);
-        m_nodes[i].y = r * std::sin(theta);
-        m_nodes[i].vx = std::cos(theta) * 2.5f;
-        m_nodes[i].vy = std::sin(theta) * 2.5f;
+        const std::wstring& fName = m_nodes[i].folderName.empty() ? L"(root)" : m_nodes[i].folderName;
+        if (folderMap.find(fName) == folderMap.end()) {
+            if (fName == L"(root)") {
+                folderOrder.insert(folderOrder.begin(), fName);
+            } else {
+                folderOrder.push_back(fName);
+            }
+        }
+        folderMap[fName].push_back(i);
+    }
+
+    // Number of non-root folders
+    size_t nonRootCount = 0;
+    for (const auto& f : folderOrder) {
+        if (f != L"(root)") nonRootCount++;
+    }
+
+    // Compute cluster centers: root stays at center (0, 0), others are positioned outward in an orbit
+    float clusterDist = (std::max)(310.0f, 200.0f + 40.0f * static_cast<float>(nonRootCount));
+    size_t nonRootIdx = 0;
+
+    for (const auto& fName : folderOrder) {
+        float cx = 0.0f;
+        float cy = 0.0f;
+        if (fName != L"(root)" && nonRootCount > 0) {
+            float angle = (2.0f * 3.14159265f * static_cast<float>(nonRootIdx)) / static_cast<float>(nonRootCount) - 1.5707963f;
+            cx = clusterDist * std::cos(angle);
+            cy = clusterDist * std::sin(angle);
+            nonRootIdx++;
+        }
+
+        const auto& indices = folderMap[fName];
+        for (size_t k = 0; k < indices.size(); ++k) {
+            size_t nodeIdx = indices[k];
+            m_nodes[nodeIdx].clusterX = cx;
+            m_nodes[nodeIdx].clusterY = cy;
+
+            float r = 14.0f + 18.0f * (static_cast<float>(k) / static_cast<float>((std::max)(size_t(1), indices.size())));
+            float theta = static_cast<float>(k) * 2.39996f; // Golden ratio spiral within cluster
+            m_nodes[nodeIdx].x = cx + r * std::cos(theta);
+            m_nodes[nodeIdx].y = cy + r * std::sin(theta);
+            m_nodes[nodeIdx].vx = std::cos(theta) * 2.0f;
+            m_nodes[nodeIdx].vy = std::sin(theta) * 2.0f;
+        }
     }
 
     // 3. Connect nodes based strictly on real references
@@ -693,7 +842,7 @@ void GraphView::StepPhysics(float alpha) {
     const float kRepulse   = 2200.0f * (std::max)(0.25f, alpha);
     const float kSpring    = 0.052f * (std::max)(0.25f, alpha);
     const float springLen  = 72.0f;
-    const float centerPull = 0.006f * (std::max)(0.15f, alpha);
+    const float centerPull = 0.010f * (std::max)(0.15f, alpha);
     const float damping    = 0.86f; // Elastic, springy bouncy motion like Obsidian!
 
     // A. Repulsion between all node pairs
@@ -714,13 +863,19 @@ void GraphView::StepPhysics(float alpha) {
         }
     }
 
-    // B. Spring attraction along edges
+    // B. Spring attraction along edges (relaxed across folder clusters to preserve distinct clusters)
     for (const auto& e : m_edges) {
+        if (e.from >= m_nodes.size() || e.to >= m_nodes.size()) continue;
         float dx = m_nodes[e.to].x - m_nodes[e.from].x;
         float dy = m_nodes[e.to].y - m_nodes[e.from].y;
         float dist = std::sqrt(dx * dx + dy * dy + 1.0f);
-        float disp = dist - springLen;
-        float force = kSpring * disp;
+
+        bool isCrossFolder = (m_nodes[e.from].folderName != m_nodes[e.to].folderName);
+        float curSpringLen = isCrossFolder ? 220.0f : springLen;
+        float curK = isCrossFolder ? (kSpring * 0.32f) : kSpring;
+
+        float disp = dist - curSpringLen;
+        float force = curK * disp;
         float fx = (dx / dist) * force;
         float fy = (dy / dist) * force;
 
@@ -730,7 +885,7 @@ void GraphView::StepPhysics(float alpha) {
         m_nodes[e.to].vy   -= fy;
     }
 
-    // C. Center gravity & update positions (skip currently dragged node and pinned nodes)
+    // C. Folder cluster gravity & update positions (skip currently dragged node and pinned nodes)
     for (size_t i = 0; i < m_nodes.size(); ++i) {
         if (static_cast<int>(i) == m_draggedNode) continue;
         if (m_nodes[i].isPinned) {
@@ -739,8 +894,9 @@ void GraphView::StepPhysics(float alpha) {
             continue;
         }
 
-        m_nodes[i].vx -= m_nodes[i].x * centerPull;
-        m_nodes[i].vy -= m_nodes[i].y * centerPull;
+        // Pull gently toward this node's folder cluster center
+        m_nodes[i].vx -= (m_nodes[i].x - m_nodes[i].clusterX) * centerPull;
+        m_nodes[i].vy -= (m_nodes[i].y - m_nodes[i].clusterY) * centerPull;
 
         m_nodes[i].vx *= damping;
         m_nodes[i].vy *= damping;

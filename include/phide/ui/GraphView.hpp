@@ -25,10 +25,13 @@ struct GraphNode {
     std::wstring id;          ///< Unique relative file/folder path
     std::wstring label;       ///< Basename display label (e.g. "config.php")
     std::wstring ext;         ///< Extension in lowercase (e.g. "php", "js", "sql")
+    std::wstring folderName;  ///< Primary folder name (e.g. "app", "components", "(root)")
     bool isDirectory = false;
 
     float x = 0.0f;           ///< World X position
     float y = 0.0f;           ///< World Y position
+    float clusterX = 0.0f;    ///< Folder cluster center X
+    float clusterY = 0.0f;    ///< Folder cluster center Y
     float vx = 0.0f;          ///< Velocity X
     float vy = 0.0f;          ///< Velocity Y
     float radius = 5.5f;      ///< Node radius in world units

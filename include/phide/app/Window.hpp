@@ -301,6 +301,9 @@ private:
     /** @brief Saves all modified/dirty open documents to disk (Ctrl+K S). */
     void DoSaveAll();
 
+    /** @brief Ensures GitLens line-by-line blame metadata is cached for the document. */
+    void EnsureGitBlameLoaded(editor::OpenDocument& doc);
+
     /** @brief Exports user IDE profile settings to a JSON file. */
     void DoExportProfile();
 

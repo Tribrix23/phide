@@ -25,6 +25,7 @@
 #include "phide/app/AppConfig.hpp"
 #include "phide/ui/Theme.hpp"
 #include "phide/ui/LucideIcons.hpp"
+#include "phide/editor/OpenDocument.hpp"
 
 namespace phide::ui {
 
@@ -263,6 +264,7 @@ public:
     [[nodiscard]] std::wstring GetGitFileContent(const std::wstring& relPath);
     [[nodiscard]] std::wstring GetCommitFileContent(const std::wstring& commitHash, const std::wstring& relPath);
     void ComputeGitDiffLines(const std::wstring& relPath, std::set<size_t>& outAdded, std::set<size_t>& outDeleted);
+    void ComputeGitBlame(const std::wstring& relPath, std::unordered_map<size_t, editor::OpenDocument::LineBlameInfo>& outBlame);
     bool HitTestGit(POINT pt, const app::AppConfig& config,
                     std::wstring& outOpenFile,
                     std::wstring& outDiscardedFile,

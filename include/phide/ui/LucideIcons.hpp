@@ -112,6 +112,11 @@ public:
     void DrawGitBranch(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, ID2D1Brush* pBrush, float strokeWidth = 1.8f) const;
 
     /**
+     * @brief Draws the Lucide Git Commit icon inside the specified bounding box.
+     */
+    void DrawGitCommit(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, ID2D1Brush* pBrush, float strokeWidth = 1.6f) const;
+
+    /**
      * @brief Draws the vector GitHub Octocat mark inside the specified bounding box.
      */
     void DrawGitHub(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, ID2D1Brush* pBrush, float strokeWidth = 1.3f) const;

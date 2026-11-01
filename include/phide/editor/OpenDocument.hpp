@@ -7,6 +7,8 @@
 
 #include <string>
 #include <set>
+#include <unordered_map>
+#include <vector>
 #include <d2d1.h>
 #include <wrl/client.h>
 #include "phide/editor/Buffer.hpp"
@@ -36,6 +38,17 @@ struct OpenDocument {
 
     // Breakpoints for Debugging (F9 / Debug Menu)
     std::vector<size_t> breakpoints; ///< 0-based line indices where breakpoints are set
+
+    // GitLens Inline Blame and Authorship State
+    struct LineBlameInfo {
+        std::wstring commitHash;
+        std::wstring author;
+        std::wstring relativeTime;
+        std::wstring summary;
+        bool isUncommitted = false;
+    };
+    std::unordered_map<size_t, LineBlameInfo> gitBlameMap; ///< 0-based buffer line -> LineBlameInfo
+    bool gitBlameLoaded = false;
 
     // Text Selection State (Images 2, 3, 4)
     bool hasSelection = false;          ///< True if text is selected

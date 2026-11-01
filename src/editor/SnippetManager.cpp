@@ -1947,10 +1947,11 @@ void SnippetManager::EnsureDefaultSnippetsFile() {
         if (in.is_open()) {
             std::wstring content((std::istreambuf_iterator<wchar_t>(in)), std::istreambuf_iterator<wchar_t>());
             in.close();
-            // If missing "!" or "picture:webp" or "css:gradient" or file is too small to contain the full expanded catalog
+            // If missing "!" or "picture:webp" or "css:gradient" or "rafce" or file is too small to contain the full expanded catalog
             if (content.find(L"\"prefix\": \"!\"") == std::wstring::npos || 
                 content.find(L"\"prefix\": \"picture:webp\"") == std::wstring::npos ||
                 content.find(L"\"prefix\": \"css:gradient\"") == std::wstring::npos ||
+                content.find(L"\"prefix\": \"rafce\"") == std::wstring::npos ||
                 content.length() < 15000) {
                 needsExport = true;
             }
