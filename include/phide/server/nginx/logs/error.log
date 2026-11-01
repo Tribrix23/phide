@@ -269,3 +269,15 @@
 2026/11/01 17:47:28 [error] 12720#8572: CreateFile() "C:\Users\Administrator\Downloads\studio\phide\include\phide\server\nginx/logs/nginx.pid" failed (2: The system cannot find the file specified)
 2026/11/01 17:53:59 [notice] 34640#27772: signal process started
 2026/11/01 17:53:59 [error] 34640#27772: CreateFile() "C:\Users\Administrator\Downloads\studio\phide\include\phide\server\nginx/logs/nginx.pid" failed (2: The system cannot find the file specified)
+2026/11/01 18:14:10 [notice] 18196#23256: signal process started
+2026/11/01 18:14:10 [error] 18196#23256: CreateFile() "C:\Users\Administrator\Downloads\studio\phide\include\phide\server\nginx/logs/nginx.pid" failed (2: The system cannot find the file specified)
+2026/11/01 18:18:18 [notice] 25044#23272: signal process started
+2026/11/01 18:18:18 [error] 25044#23272: CreateFile() "C:\Users\Administrator\Downloads\studio\phide\include\phide\server\nginx/logs/nginx.pid" failed (2: The system cannot find the file specified)
+2026/11/01 18:24:19 [notice] 20308#33292: signal process started
+2026/11/01 18:24:19 [error] 20308#33292: CreateFile() "C:\Users\Administrator\Downloads\studio\phide\include\phide\server\nginx/logs/nginx.pid" failed (2: The system cannot find the file specified)
+2026/11/01 18:39:25 [notice] 33976#26660: signal process started
+2026/11/01 18:39:25 [error] 33976#26660: CreateFile() "C:\Users\Administrator\Downloads\studio\phide\include\phide\server\nginx/logs/nginx.pid" failed (2: The system cannot find the file specified)
+2026/11/01 18:45:42 [notice] 8748#16104: signal process started
+2026/11/01 18:45:42 [error] 8748#16104: CreateFile() "C:\Users\Administrator\Downloads\studio\phide\include\phide\server\nginx/logs/nginx.pid" failed (2: The system cannot find the file specified)
+2026/11/01 18:55:18 [notice] 25160#19972: signal process started
+2026/11/01 18:55:18 [error] 25160#19972: CreateFile() "C:\Users\Administrator\Downloads\studio\phide\include\phide\server\nginx/logs/nginx.pid" failed (2: The system cannot find the file specified)

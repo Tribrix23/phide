@@ -9,7 +9,9 @@
 #include <filesystem>
 #include <sstream>
 #include <fstream>
+#include <iostream>
 #include <unordered_map>
+#include <unordered_set>
 
 namespace phide::ui {
 
@@ -408,20 +410,31 @@ void GraphView::ParseFileDependencies() {
     }
     if (m_nodes.empty()) return;
 
-    auto addEdge = [this](size_t a, size_t b) {
+    std::unordered_set<uint64_t> edgeSet;
+    edgeSet.reserve(m_nodes.size() * 4);
+
+    auto addEdge = [this, &edgeSet](size_t a, size_t b) {
         if (a >= m_nodes.size() || b >= m_nodes.size() || a == b) return;
-        for (const auto& e : m_edges) {
-            if ((e.from == a && e.to == b) || (e.from == b && e.to == a)) return;
-        }
+        uint64_t key = ((uint64_t)(std::min)(a, b) << 32) | (uint64_t)(std::max)(a, b);
+        if (!edgeSet.insert(key).second) return;
         m_edges.push_back({ a, b, 1.0f });
         m_nodes[a].neighbors.push_back(b);
         m_nodes[b].neighbors.push_back(a);
     };
 
-    // If files exist on disk, read contents and parse actual references
-    std::vector<std::string> fileContents(m_nodes.size());
-    std::vector<std::wstring> relativePaths(m_nodes.size());
+    // Precompute lowercase normalized paths, stems, and labels ONCE for all nodes
+    struct NodeLookupInfo {
+        std::string labelA;
+        std::string relA;
+        std::string stemA;
+    };
+    std::vector<NodeLookupInfo> nodeInfo(m_nodes.size());
+    std::unordered_map<std::string, std::vector<size_t>> byRelExact;
+    std::unordered_map<std::string, std::vector<size_t>> byRelNoExt;
+    std::unordered_map<std::string, std::vector<size_t>> byLabel;
+    std::unordered_map<std::string, std::vector<size_t>> byStem;
 
+    std::vector<std::string> fileContents(m_nodes.size());
     std::filesystem::path rootP = m_currentRootPath;
     std::error_code ec;
 
@@ -429,19 +442,33 @@ void GraphView::ParseFileDependencies() {
         const auto& node = m_nodes[i];
         if (node.isDirectory) continue;
 
+        // Label
+        std::string lA;
+        lA.reserve(node.label.length());
+        for (wchar_t wc : node.label) lA.push_back(static_cast<char>(towlower(wc)));
+        nodeInfo[i].labelA = lA;
+        byLabel[lA].push_back(i);
+
+        // Stem
+        auto dotPos = lA.find_last_of('.');
+        std::string stemA = (dotPos != std::string::npos) ? lA.substr(0, dotPos) : lA;
+        nodeInfo[i].stemA = stemA;
+        if (stemA.length() >= 2) {
+            byStem[stemA].push_back(i);
+        }
+
+        // Relative path
+        std::wstring rW = node.label;
+        std::wstring pStr = node.id;
+        std::wstring rootStr = rootP.wstring();
+        if (!rootStr.empty() && pStr.rfind(rootStr, 0) == 0) {
+            rW = pStr.substr(rootStr.length());
+            while (!rW.empty() && (rW[0] == L'\\' || rW[0] == L'/')) rW.erase(0, 1);
+        }
+
         std::filesystem::path p = node.id;
         if (std::filesystem::exists(p, ec) && std::filesystem::is_regular_file(p, ec)) {
-            // Compute relative path from workspace root
-            try {
-                if (!rootP.empty() && std::filesystem::exists(rootP, ec)) {
-                    relativePaths[i] = std::filesystem::relative(p, rootP, ec).wstring();
-                }
-            } catch (...) {}
-            if (relativePaths[i].empty()) {
-                relativePaths[i] = node.label;
-            }
-
-            // Read up to 512 KB of file content
+            // Read file content up to 512 KB
             auto fSize = std::filesystem::file_size(p, ec);
             if (!ec && fSize > 0 && fSize <= 512 * 1024) {
                 FILE* fp = nullptr;
@@ -454,6 +481,23 @@ void GraphView::ParseFileDependencies() {
                 }
             }
         }
+
+        std::string rA;
+        rA.reserve(rW.length());
+        for (wchar_t wc : rW) {
+            wchar_t low = towlower(wc);
+            if (low == L'\\') low = L'/';
+            rA.push_back(static_cast<char>(low));
+        }
+        while (rA.rfind("./", 0) == 0) rA.erase(0, 2);
+        while (rA.rfind("/", 0) == 0) rA.erase(0, 1);
+        nodeInfo[i].relA = rA;
+        byRelExact[rA].push_back(i);
+
+        auto dotR = rA.find_last_of('.');
+        if (dotR != std::string::npos) {
+            byRelNoExt[rA.substr(0, dotR)].push_back(i);
+        }
     }
 
     bool hasDiskContents = false;
@@ -464,15 +508,50 @@ void GraphView::ParseFileDependencies() {
     }
 
     if (hasDiskContents) {
-        // Precision syntax-aware dependency extraction
         for (size_t i = 0; i < m_nodes.size(); ++i) {
             if (fileContents[i].empty()) continue;
             auto targets = ExtractReferencedTargets(fileContents[i], m_nodes[i].ext);
             for (const auto& target : targets) {
-                for (size_t j = 0; j < m_nodes.size(); ++j) {
-                    if (i == j) continue;
-                    if (MatchesCandidate(target, m_nodes[j].label, relativePaths[j])) {
-                        addEdge(i, j);
+                // Clean reference
+                std::string cleanRef = target;
+                for (char& c : cleanRef) c = static_cast<char>(tolower(static_cast<unsigned char>(c)));
+                while (cleanRef.rfind("./", 0) == 0) cleanRef.erase(0, 2);
+                while (cleanRef.rfind("../", 0) == 0) cleanRef.erase(0, 3);
+                while (cleanRef.rfind("@/", 0) == 0) cleanRef.erase(0, 2);
+                while (cleanRef.rfind("~/", 0) == 0) cleanRef.erase(0, 2);
+                while (cleanRef.rfind("/", 0) == 0) cleanRef.erase(0, 1);
+                if (cleanRef.empty()) continue;
+
+                std::string refBase = cleanRef;
+                auto lastSlash = refBase.find_last_of('/');
+                if (lastSlash != std::string::npos) refBase = refBase.substr(lastSlash + 1);
+
+                auto dotRef = refBase.find_last_of('.');
+                std::string refStem = (dotRef != std::string::npos) ? refBase.substr(0, dotRef) : refBase;
+
+                // 1. Exact relative path
+                auto itRel = byRelExact.find(cleanRef);
+                if (itRel != byRelExact.end()) {
+                    for (size_t cand : itRel->second) addEdge(i, cand);
+                }
+
+                // 2. Relative path without extension
+                auto itNoExt = byRelNoExt.find(cleanRef);
+                if (itNoExt != byRelNoExt.end()) {
+                    for (size_t cand : itNoExt->second) addEdge(i, cand);
+                }
+
+                // 3. Exact filename match
+                auto itLabel = byLabel.find(refBase);
+                if (itLabel != byLabel.end()) {
+                    for (size_t cand : itLabel->second) addEdge(i, cand);
+                }
+
+                // 4. Stem match
+                if (refStem.length() >= 2) {
+                    auto itStem = byStem.find(refStem);
+                    if (itStem != byStem.end()) {
+                        for (size_t cand : itStem->second) addEdge(i, cand);
                     }
                 }
             }
@@ -494,6 +573,7 @@ void GraphView::RefreshFromWorkspace(const std::wstring& rootPath, bool preserve
     const size_t maxFiles = 250;
     std::vector<std::filesystem::path> collected;
 
+    auto tScanStart = std::chrono::high_resolution_clock::now();
     if (!m_currentRootPath.empty() && std::filesystem::exists(targetDir, ec) && std::filesystem::is_directory(targetDir, ec)) {
         try {
             for (auto it = std::filesystem::recursive_directory_iterator(targetDir, std::filesystem::directory_options::skip_permission_denied, ec);
@@ -572,33 +652,41 @@ void GraphView::RefreshFromWorkspace(const std::wstring& rootPath, bool preserve
             // Fallback gracefully
         }
     }
+    auto tScanEnd = std::chrono::high_resolution_clock::now();
+    auto scanMs = std::chrono::duration_cast<std::chrono::milliseconds>(tScanEnd - tScanStart).count();
+    std::cout << "    [GraphView scan: " << scanMs << " ms]" << std::endl;
 
     // If preserveExistingPositions is requested (e.g. from file creation, update, rename, delete, move, or save)
     if (preserveExistingPositions && !m_nodes.empty() && !collected.empty()) {
         std::vector<GraphNode> updatedNodes;
         bool hasNewNodes = false;
+        std::wstring rootStr = targetDir.wstring();
+
+        // O(1) fast lookup for existing nodes
+        std::unordered_map<std::wstring, size_t> existingMap;
+        for (size_t idx = 0; idx < m_nodes.size(); ++idx) {
+            existingMap[m_nodes[idx].id] = idx;
+        }
 
         for (const auto& p : collected) {
             std::wstring pStr = p.wstring();
             std::wstring fName = p.filename().wstring();
 
-            // Determine folder
-            std::filesystem::path relP = std::filesystem::relative(p, targetDir, ec);
+            // Determine folder via fast string prefix slicing (zero disk I/O)
             std::wstring folder = L"(root)";
-            if (!ec && relP.has_parent_path()) {
-                auto itFirst = relP.begin();
-                if (itFirst != relP.end() && itFirst->wstring() != relP.filename().wstring()) {
-                    folder = itFirst->wstring();
+            if (!rootStr.empty() && pStr.rfind(rootStr, 0) == 0) {
+                std::wstring rel = pStr.substr(rootStr.length());
+                while (!rel.empty() && (rel[0] == L'\\' || rel[0] == L'/')) rel.erase(0, 1);
+                auto slashPos = rel.find_first_of(L"\\/");
+                if (slashPos != std::wstring::npos) {
+                    folder = rel.substr(0, slashPos);
                 }
             }
 
             // Match against existing node strictly by unique file path (prevent collapsing duplicate filenames like page.tsx)
-            auto it = std::find_if(m_nodes.begin(), m_nodes.end(), [&](const GraphNode& gn) {
-                return gn.id == pStr;
-            });
-
-            if (it != m_nodes.end()) {
-                GraphNode existing = *it;
+            auto itMap = existingMap.find(pStr);
+            if (itMap != existingMap.end()) {
+                GraphNode existing = m_nodes[itMap->second];
                 existing.id = pStr;
                 existing.label = fName;
                 existing.folderName = folder;
@@ -653,6 +741,7 @@ void GraphView::RefreshFromWorkspace(const std::wstring& rootPath, bool preserve
     // Full fresh initial scan
     m_nodes.clear();
     m_edges.clear();
+    std::wstring rootStr = targetDir.wstring();
 
     // Populate nodes strictly from actual scanned workspace files
     for (const auto& p : collected) {
@@ -665,13 +754,15 @@ void GraphView::RefreshFromWorkspace(const std::wstring& rootPath, bool preserve
         n.ext = ext;
         n.isDirectory = false;
 
-        // Determine folder name relative to workspace root
-        std::filesystem::path relP = std::filesystem::relative(p, targetDir, ec);
+        // Determine folder name relative to workspace root via fast string prefix slicing (zero disk I/O)
         std::wstring folder = L"(root)";
-        if (!ec && relP.has_parent_path()) {
-            auto itFirst = relP.begin();
-            if (itFirst != relP.end() && itFirst->wstring() != relP.filename().wstring()) {
-                folder = itFirst->wstring();
+        std::wstring pStr = n.id;
+        if (!rootStr.empty() && pStr.rfind(rootStr, 0) == 0) {
+            std::wstring rel = pStr.substr(rootStr.length());
+            while (!rel.empty() && (rel[0] == L'\\' || rel[0] == L'/')) rel.erase(0, 1);
+            auto slashPos = rel.find_first_of(L"\\/");
+            if (slashPos != std::wstring::npos) {
+                folder = rel.substr(0, slashPos);
             }
         }
         n.folderName = folder;
@@ -750,7 +841,11 @@ void GraphView::RefreshFromWorkspace(const std::wstring& rootPath, bool preserve
     }
 
     // 3. Connect nodes based strictly on real references
+    auto tDepsStart = std::chrono::high_resolution_clock::now();
     ParseFileDependencies();
+    auto tDepsEnd = std::chrono::high_resolution_clock::now();
+    auto depsMs = std::chrono::duration_cast<std::chrono::milliseconds>(tDepsEnd - tDepsStart).count();
+    std::cout << "    [GraphView timing: collected=" << collected.size() << " files, ParseFileDependencies=" << depsMs << " ms]" << std::endl;
 
     // 4. Restore saved layout positions if available
     bool hasSavedLayout = LoadLayout();

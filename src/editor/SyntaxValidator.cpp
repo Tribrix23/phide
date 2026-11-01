@@ -1357,15 +1357,59 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidateReactAndESLint(const Buffe
                     if (hook == L"useEffect" || hook == L"useCallback" || hook == L"useMemo") {
                         size_t callParen = code.find(L'(', afterIdx);
                         if (callParen != std::wstring::npos) {
-                            size_t closeParen = code.find(L')', callParen);
-                            if (closeParen != std::wstring::npos && code.find(L',', callParen) == std::wstring::npos) {
-                                lsp::Diagnostic diag;
-                                diag.line = l;
-                                diag.col = pos;
-                                diag.length = hook.length();
-                                diag.message = L"React Hook " + hook + L" has no dependency array. It will re-run on every render. (react-hooks/exhaustive-deps)";
-                                diag.severity = 3; // Information
-                                diagnostics.push_back(std::move(diag));
+                            if (hook == L"useEffect" || hook == L"useCallback" || hook == L"useMemo") {
+                                // Multi-line scanner tracking parenDepth from callParen
+                                int parenDepth = 1;
+                                int curBraceDepth = 0;
+                                bool hasCommaAtTopLevel = false;
+                                bool inQ = false;
+                                wchar_t qC = 0;
+
+                                size_t scanL = l;
+                                size_t scanC = callParen + 1;
+                                while (scanL < buffer.GetLineCount() && scanL - l <= 60) {
+                                    const std::wstring& sLine = buffer.GetLine(scanL);
+                                    for (; scanC < sLine.length(); ++scanC) {
+                                        wchar_t sc = sLine[scanC];
+                                        if (inQ) {
+                                            if (sc == L'\\' && scanC + 1 < sLine.length()) {
+                                                scanC++;
+                                            } else if (sc == qC) {
+                                                inQ = false;
+                                            }
+                                        } else {
+                                            if (sc == L'"' || sc == L'\'' || sc == L'`') {
+                                                inQ = true;
+                                                qC = sc;
+                                            } else if (sc == L'(') {
+                                                parenDepth++;
+                                            } else if (sc == L')') {
+                                                parenDepth--;
+                                                if (parenDepth == 0) break;
+                                            } else if (sc == L'{') {
+                                                curBraceDepth++;
+                                            } else if (sc == L'}') {
+                                                if (curBraceDepth > 0) curBraceDepth--;
+                                            } else if (sc == L',' && parenDepth == 1 && curBraceDepth == 0) {
+                                                hasCommaAtTopLevel = true;
+                                                break;
+                                            }
+                                        }
+                                    }
+                                    if (hasCommaAtTopLevel || parenDepth == 0) break;
+                                    scanL++;
+                                    scanC = 0;
+                                }
+
+                                if (parenDepth == 0 && !hasCommaAtTopLevel) {
+                                    lsp::Diagnostic diag;
+                                    diag.line = l;
+                                    diag.col = pos;
+                                    diag.length = hook.length();
+                                    diag.message = L"React Hook " + hook + L" has no dependency array. It will re-run on every render. (react-hooks/exhaustive-deps)";
+                                    diag.severity = 3; // Information
+                                    diagnostics.push_back(std::move(diag));
+                                }
                             }
                         }
                     }
@@ -1401,6 +1445,31 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidateReactAndESLint(const Buffe
             while (p < code.length()) {
                 if (code[p] == L'<') {
                     if (p + 1 < code.length() && (code[p + 1] == L'/' || iswalpha(code[p + 1]))) {
+                        // Check if this '<' is an opening tag or a generic type instantiation (e.g. useRef<any>, useState<T>, Array<string>)
+                        bool isOpening = (code[p + 1] != L'/');
+                        if (isOpening && p > 0) {
+                            size_t prevIdx = p;
+                            while (prevIdx > 0 && iswspace(code[prevIdx - 1])) prevIdx--;
+                            if (prevIdx > 0) {
+                                wchar_t prevCh = code[prevIdx - 1];
+                                if (iswalnum(prevCh) || prevCh == L'_' || prevCh == L'$') {
+                                    // Extract preceding word
+                                    size_t wEnd = prevIdx;
+                                    size_t wStart = wEnd;
+                                    while (wStart > 0 && (iswalnum(code[wStart - 1]) || code[wStart - 1] == L'_' || code[wStart - 1] == L'$')) wStart--;
+                                    std::wstring prevWord = code.substr(wStart, wEnd - wStart);
+                                    static const std::unordered_set<std::wstring> allowedBeforeJsx = {
+                                        L"return", L"yield", L"await", L"case", L"default", L"typeof", L"delete", L"void"
+                                    };
+                                    if (allowedBeforeJsx.find(prevWord) == allowedBeforeJsx.end()) {
+                                        // Generic type parameter or function type argument or less-than, NOT a JSX tag
+                                        p++;
+                                        continue;
+                                    }
+                                }
+                            }
+                        }
+
                         // Safely find the matching '>' across single-line or multi-line JSX tags
                         // without stopping on '>' inside string attributes or expressions
                         size_t tagEndLine = l;
@@ -1443,6 +1512,11 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidateReactAndESLint(const Buffe
                                         tagEndLine = scanLine;
                                         tagEndCol = scan;
                                         break;
+                                    } else if (sc == L'<' && braceDepth == 0) {
+                                        // A new '<' outside of expression brackets means current tag was unclosed or broken!
+                                        // Immediately abort scanning this tag so subsequent tags across lines are not swallowed
+                                        tagEndCol = std::wstring::npos;
+                                        break;
                                     } else {
                                         accumulatedTag += sc;
                                     }
@@ -1454,7 +1528,7 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidateReactAndESLint(const Buffe
                             }
 
                             scanLine++;
-                            if (scanLine < buffer.GetLineCount() && scanLine - l <= 60) {
+                            if (scanLine < buffer.GetLineCount() && scanLine - l <= 25) {
                                 currLineStr = &buffer.GetLine(scanLine);
                                 scanCol = 0;
                                 accumulatedTag += L" ";

@@ -123,6 +123,7 @@ void DrawerPanel::OpenFolder(const std::wstring& folderPath, const std::set<std:
         m_expandedDirs.insert(m_openFolderPath);
     }
 
+    DetectProjectLanguages();
     RebuildVisibleItems();
 }
 
@@ -205,8 +206,10 @@ void DrawerPanel::DetectProjectLanguages() {
          it != end && !ec; it.increment(ec)) {
         if (it->is_directory(ec)) {
             std::wstring dirName = it->path().filename().wstring();
-            if (dirName == L".git" || dirName == L".vs" || dirName == L"node_modules" ||
-                dirName == L".venv" || dirName == L"venv" || dirName == L"vendor") {
+            if (dirName.rfind(L".", 0) == 0 || dirName == L"node_modules" ||
+                dirName == L"vendor" || dirName == L"dist" || dirName == L"build" ||
+                dirName == L"out" || dirName == L"target" || dirName == L"bin" || dirName == L"obj" ||
+                it.depth() >= 2) {
                 it.disable_recursion_pending();
             }
             continue;
@@ -232,8 +235,6 @@ void DrawerPanel::DetectProjectLanguages() {
 void DrawerPanel::RebuildVisibleItems() {
     m_visibleItems.clear();
     if (!m_hasOpenFolder || m_openFolderPath.empty()) return;
-
-    DetectProjectLanguages();
 
     // Root folder item
     DrawerTreeItem rootItem;
@@ -6919,11 +6920,14 @@ void DrawerPanel::RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, 
     // 3. Section 1: "Changes" & "Staged Changes"
     // =========================================================================
     if (m_showChangesSection) {
-        // Visual Notification Pill (e.g. "✓ Discarded <file>" or "✓ Please provide a commit message...")
+        // Visual Notification Pill (e.g. "✓ Discarded <file>" or "⚠ Please provide a commit message...")
         if (HasGitNotification()) {
-            std::wstring fullMsg = L"✓ " + m_gitNotificationText;
+            bool isWarning = (m_gitNotificationText.find(L"Please provide") != std::wstring::npos ||
+                              m_gitNotificationText.find(L"error") != std::wstring::npos ||
+                              m_gitNotificationText.find(L"failed") != std::wstring::npos);
+            std::wstring fullMsg = (isWarning ? L"\u26A0 " : L"\u2713 ") + m_gitNotificationText;
             float availTextW = (std::max)(20.0f, currentDrawerW - 2.0f * paddingX - config.ScaleF(16.0f));
-            float notifH = config.ScaleF(24.0f);
+            float notifH = config.ScaleF(26.0f);
 
             Microsoft::WRL::ComPtr<IDWriteTextLayout> pNotifLayout;
             if (theme.dwriteFactory && !fullMsg.empty()) {
@@ -6935,7 +6939,7 @@ void DrawerPanel::RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, 
                     pNotifLayout->SetWordWrapping(DWRITE_WORD_WRAPPING_WRAP);
                     DWRITE_TEXT_METRICS tm{};
                     if (SUCCEEDED(pNotifLayout->GetMetrics(&tm))) {
-                        notifH = (std::max)(config.ScaleF(24.0f), tm.height + config.ScaleF(8.0f));
+                        notifH = (std::max)(config.ScaleF(26.0f), tm.height + config.ScaleF(10.0f));
                     }
                 }
             }
@@ -6949,22 +6953,33 @@ void DrawerPanel::RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, 
             D2D1_ROUNDED_RECT rrcNotif = D2D1::RoundedRect(rcNotif, 4.0f, 4.0f);
             Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushNotifBg;
             Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushNotifBorder;
-            pRT->CreateSolidColorBrush(
-                theme.IsDarkMode() ? D2D1::ColorF(0.10f, 0.22f, 0.35f, 0.95f) : D2D1::ColorF(0.85f, 0.92f, 1.0f, 0.95f),
-                &brushNotifBg
-            );
-            pRT->CreateSolidColorBrush(
-                theme.brushBrandAccent ? theme.brushBrandAccent->GetColor() : D2D1::ColorF(0.0f, 0.471f, 0.831f, 0.80f),
-                &brushNotifBorder
-            );
+            if (isWarning) {
+                pRT->CreateSolidColorBrush(
+                    theme.IsDarkMode() ? D2D1::ColorF(0.32f, 0.20f, 0.05f, 0.95f) : D2D1::ColorF(1.0f, 0.94f, 0.82f, 0.95f),
+                    &brushNotifBg
+                );
+                pRT->CreateSolidColorBrush(
+                    D2D1::ColorF(0.88f, 0.58f, 0.08f, 0.90f),
+                    &brushNotifBorder
+                );
+            } else {
+                pRT->CreateSolidColorBrush(
+                    theme.IsDarkMode() ? D2D1::ColorF(0.10f, 0.22f, 0.35f, 0.95f) : D2D1::ColorF(0.85f, 0.92f, 1.0f, 0.95f),
+                    &brushNotifBg
+                );
+                pRT->CreateSolidColorBrush(
+                    theme.brushBrandAccent ? theme.brushBrandAccent->GetColor() : D2D1::ColorF(0.0f, 0.471f, 0.831f, 0.80f),
+                    &brushNotifBorder
+                );
+            }
             if (brushNotifBg) pRT->FillRoundedRectangle(rrcNotif, brushNotifBg.Get());
             if (brushNotifBorder) pRT->DrawRoundedRectangle(rrcNotif, brushNotifBorder.Get(), 1.0f);
 
             D2D1_RECT_F rcNotifText = D2D1::RectF(
-                rcNotif.left + config.ScaleF(7.0f),
-                rcNotif.top + config.ScaleF(4.0f),
-                rcNotif.right - config.ScaleF(7.0f),
-                rcNotif.bottom - config.ScaleF(4.0f)
+                rcNotif.left + config.ScaleF(8.0f),
+                rcNotif.top + config.ScaleF(5.0f),
+                rcNotif.right - config.ScaleF(8.0f),
+                rcNotif.bottom - config.ScaleF(5.0f)
             );
 
             // Clip strictly to rcNotifText so text NEVER leaks outside the notification pill into the editor

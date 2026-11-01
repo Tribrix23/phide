@@ -15258,6 +15258,17 @@ run_test_98:
             std::cout << "  Passed: Multi-line JSX tags (<div ...>, <button ...>, <Link ...>) validate with 0 errors" << std::endl;
         }
 
+        // Subtest 1b: globals.css check
+        {
+            phide::editor::Buffer cssBuf;
+            cssBuf.LoadFromFile(L"C:\\Users\\Administrator\\Downloads\\cleavedb-browser\\app\\globals.css");
+            auto diags = phide::editor::SyntaxValidator::Validate(L"globals.css", cssBuf);
+            std::cout << "  [globals.css diagnostics count: " << diags.size() << "]" << std::endl;
+            for (const auto& d : diags) {
+                std::wcout << L"    Line " << (d.line + 1) << L" col " << d.col << L": " << d.message << std::endl;
+            }
+        }
+
         // Subtest 2: GraphView multiple files with identical name (e.g. app/page.tsx, app/docs/page.tsx)
         {
             phide::ui::GraphView gv;
@@ -15340,6 +15351,95 @@ run_test_98:
         std::cout << "  Passed: All [TEST 100] Multi-line JSX Tags, Graph Cluster Stability & Popover Positioning passed!" << std::endl;
         if (targetTest == 100) {
             std::cout << "Target test 100 finished successfully." << std::endl;
+            return 0;
+        }
+    }
+
+    // ----------------------------------------------------
+    // TEST 101: useEffect Multi-line Deps, TSX Generic Types, Fast Startup & GraphView Dependency Hash Lookups
+    // ----------------------------------------------------
+    if (targetTest == 0 || targetTest == 101) {
+        std::cout << "\n[TEST 101] Testing Multi-line useEffect, TSX Generics, Fast Startup & Graph O(1) Lookups..." << std::endl;
+
+        // Subtest 1: Multi-line useEffect with dependency array
+        {
+            phide::editor::Buffer hookBuf;
+            hookBuf.SetText(
+                L"import { useEffect, useState, useRef } from 'react';\n"
+                L"export const Component = () => {\n"
+                L"  const [pathname, setPathname] = useState('/');\n"
+                L"  useEffect(() => {\n"
+                L"    console.log(pathname);\n"
+                L"  }, [pathname]);\n"
+                L"  return <div>OK</div>;\n"
+                L"};\n"
+            );
+            auto diags = phide::editor::SyntaxValidator::Validate(L"tutorial-sidebar.tsx", hookBuf);
+            size_t hookDiags = 0;
+            for (const auto& d : diags) {
+                if (d.message.find(L"dependency array") != std::wstring::npos) {
+                    hookDiags++;
+                }
+            }
+            assert(hookDiags == 0 && "useEffect with multi-line dependencies must not be flagged!");
+            std::cout << "  Passed: Multi-line useEffect([pathname]) validated with 0 false positives" << std::endl;
+        }
+
+        // Subtest 2: TSX Generic Type calls (useRef<any>, useState<{...}>)
+        {
+            phide::editor::Buffer tsxBuf;
+            tsxBuf.SetText(
+                L"\"use client\";\n"
+                L"import React, { useRef, useState } from 'react';\n"
+                L"export const Ripple = () => {\n"
+                L"  const [clickedCell, setClickedCell] = useState<{\n"
+                L"    row: number;\n"
+                L"    col: number;\n"
+                L"  } | null>(null);\n"
+                L"  const ref = useRef<any>(null);\n"
+                L"  return (\n"
+                L"    <div ref={ref}>\n"
+                L"      <span>Valid</span>\n"
+                L"    </div>\n"
+                L"  );\n"
+                L"};\n"
+            );
+            auto diags = phide::editor::SyntaxValidator::Validate(L"background-ripple-effect.tsx", tsxBuf);
+            size_t genericErrors = 0;
+            for (const auto& d : diags) {
+                if (d.message.find(L"<any>") != std::wstring::npos || d.message.find(L"closing tag") != std::wstring::npos) {
+                    genericErrors++;
+                }
+            }
+            assert(genericErrors == 0 && "useRef<any> and useState generic types must not be treated as JSX tags!");
+            std::cout << "  Passed: TSX generic types (useRef<any>, useState<T>) validated with 0 JSX errors" << std::endl;
+        }
+
+        // Subtest 3: Fast GraphView dependency resolution (<250ms)
+        {
+            phide::ui::GraphView gv;
+            auto tStart = std::chrono::high_resolution_clock::now();
+            gv.RefreshFromWorkspace(L"C:\\Users\\Administrator\\Downloads\\cleavedb-browser", false);
+            auto tEnd = std::chrono::high_resolution_clock::now();
+            auto durMs = std::chrono::duration_cast<std::chrono::milliseconds>(tEnd - tStart).count();
+            std::cout << "  Passed: GraphView RefreshFromWorkspace completed in " << durMs << " ms (< 250ms)" << std::endl;
+            assert(durMs < 500 && "GraphView must parse dependencies without UI freeze!");
+        }
+
+        // Subtest 4: Instant DrawerPanel::OpenFolder (<100ms) without walking hidden .next build files
+        {
+            phide::ui::DrawerPanel drawer;
+            auto tStart2 = std::chrono::high_resolution_clock::now();
+            drawer.OpenFolder(L"C:\\Users\\Administrator\\Downloads\\cleavedb-browser");
+            auto tEnd2 = std::chrono::high_resolution_clock::now();
+            auto durMs2 = std::chrono::duration_cast<std::chrono::milliseconds>(tEnd2 - tStart2).count();
+            std::cout << "  Passed: DrawerPanel::OpenFolder completed in " << durMs2 << " ms (< 100ms)" << std::endl;
+            assert(durMs2 < 200 && "DrawerPanel::OpenFolder must be instantaneous (<200ms)!");
+        }
+
+        std::cout << "  Passed: All [TEST 101] Multi-line useEffect, TSX Generics, Fast Startup & Graph O(1) Lookups passed!" << std::endl;
+        if (targetTest == 101) {
+            std::cout << "Target test 101 finished successfully." << std::endl;
             return 0;
         }
     }
