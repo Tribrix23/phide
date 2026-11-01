@@ -213,6 +213,10 @@ private:
      */
     void OpenSpecialView(const std::wstring& viewType, const std::wstring& title);
     void OpenCourseTab(const std::wstring& courseTitle, const std::wstring& courseId);
+    void ToggleMarkdownPreview();
+    void OpenMarkdownPreviewSplit(const std::wstring& path);
+    void CloseMarkdownPreviewSplit();
+    static bool IsMarkdownFile(const std::wstring& path);
     void SyncActiveTabWithDrawer();
 
     /**

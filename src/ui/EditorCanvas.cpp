@@ -176,6 +176,8 @@ void EditorCanvas::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
         }
     }
 
+    m_pCurrentGroups = &groups;
+
     // 1. Fill dark workspace surface (#1E1E1E) with geometry curved ONLY at upper-left
     if (m_pCanvasGeometry) {
         pRT->FillGeometry(m_pCanvasGeometry.Get(), theme.brushCanvasBg.Get());
@@ -365,6 +367,9 @@ void EditorCanvas::RenderSinglePane(ID2D1RenderTarget* pRT, Theme& theme, const 
     } else if ((activeDoc.isSpecialView && activeDoc.viewType == L"course") || !activeDoc.courseId.empty()) {
         m_packageManagerView.HideWebView();
         RenderCourseView(pRT, theme, config, activeDoc, canvasLeft, canvasWidth, contentTopY, clientHeight);
+    } else if (activeDoc.isSpecialView && activeDoc.viewType == L"markdown_preview") {
+        m_packageManagerView.HideWebView();
+        RenderMarkdownPreview(pRT, theme, config, activeDoc, canvasLeft, canvasWidth, contentTopY, clientHeight);
     } else {
         m_packageManagerView.HideWebView();
         if (activeDoc.isImageView) {
@@ -685,6 +690,8 @@ void EditorCanvas::RenderTabs(ID2D1RenderTarget* pRT, Theme& theme, const app::A
             }
         } else if ((doc.isSpecialView && doc.viewType == L"notebook") || doc.filePath.ends_with(L".ipynb")) {
             m_icons.DrawTerminalNotebook(pRT, iconBounds, theme.brushBrandAccent ? theme.brushBrandAccent.Get() : theme.brushTextWhite.Get(), 1.3f);
+        } else if (doc.isSpecialView && doc.viewType == L"markdown_preview") {
+            m_icons.DrawFileIcon(pRT, theme, iconBounds, FileIconType::Markdown);
         } else {
             auto setiInfo = theme.GetSetiIcon(title, false, false);
             if (theme.fontSeti && setiInfo.pBrush) {
@@ -884,6 +891,9 @@ void EditorCanvas::RenderBreadcrumbs(ID2D1RenderTarget* pRT, Theme& theme, const
         segments.push_back(doc.fileName.empty() ? L"Python for Beginners" : doc.fileName);
         segments.push_back(L"Getting Started");
         segments.push_back(L"01. What is Python & Installation");
+    } else if (doc.isSpecialView && doc.viewType == L"markdown_preview") {
+        segments.push_back(L"Markdown");
+        segments.push_back(doc.fileName.empty() ? L"Preview" : doc.fileName);
     } else {
         std::wstring pathStr = doc.filePath.empty() ? doc.fileName : doc.filePath;
         for (auto& c : pathStr) {
@@ -3865,6 +3875,634 @@ bool EditorCanvas::HandleCourseViewWheel(short delta) noexcept {
     float scrollAmount = (delta > 0) ? -60.0f : 60.0f;
     m_courseScrollY = (std::clamp)(m_courseScrollY + scrollAmount, 0.0f, m_courseMaxScrollY);
     return true;
+}
+
+bool EditorCanvas::HandleMarkdownPreviewWheel(short delta, editor::OpenDocument& doc) noexcept {
+    if (doc.markdownMaxScrollY <= 0.0f) return false;
+    float scrollAmount = (delta > 0) ? -60.0f : 60.0f;
+    doc.markdownScrollY = (std::clamp)(doc.markdownScrollY + scrollAmount, 0.0f, doc.markdownMaxScrollY);
+    return true;
+}
+
+void EditorCanvas::RenderMarkdownPreview(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
+                                         editor::OpenDocument& doc, float canvasLeft, float canvasWidth,
+                                         float topY, float clientHeight) {
+    if (!pRT) return;
+
+    D2D1_RECT_F rcView = D2D1::RectF(canvasLeft, topY, canvasLeft + canvasWidth, topY + clientHeight);
+    pRT->PushAxisAlignedClip(rcView, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+
+    D2D1_COLOR_F bgColor = theme.IsDarkMode() ? D2D1::ColorF(0.10f, 0.11f, 0.13f, 1.0f) : D2D1::ColorF(0.985f, 0.988f, 0.992f, 1.0f);
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushBg;
+    pRT->CreateSolidColorBrush(bgColor, &brushBg);
+    if (brushBg) pRT->FillRectangle(rcView, brushBg.Get());
+
+    // 1. Top Preview Toolbar
+    const float tbH = config.ScaleF(34.0f);
+    D2D1_RECT_F rcToolbar = D2D1::RectF(canvasLeft, topY, canvasLeft + canvasWidth, topY + tbH);
+    D2D1_COLOR_F tbBgColor = theme.IsDarkMode() ? D2D1::ColorF(0.13f, 0.14f, 0.17f, 1.0f) : D2D1::ColorF(0.93f, 0.94f, 0.96f, 1.0f);
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushTbBg;
+    pRT->CreateSolidColorBrush(tbBgColor, &brushTbBg);
+    if (brushTbBg) pRT->FillRectangle(rcToolbar, brushTbBg.Get());
+
+    pRT->DrawLine(D2D1::Point2F(canvasLeft, topY + tbH), D2D1::Point2F(canvasLeft + canvasWidth, topY + tbH),
+                  theme.brushBorderSubtle.Get(), 1.0f);
+
+    // Markdown Icon in Toolbar
+    float tbIconX = canvasLeft + config.ScaleF(12.0f);
+    float tbIconY = topY + (tbH - config.ScaleF(16.0f)) * 0.5f;
+    D2D1_RECT_F rcTbIcon = D2D1::RectF(tbIconX, tbIconY, tbIconX + config.ScaleF(16.0f), tbIconY + config.ScaleF(16.0f));
+    m_icons.DrawFileIcon(pRT, theme, rcTbIcon, FileIconType::Markdown);
+
+    // Toolbar Title & Target Filename
+    std::wstring targetName = std::filesystem::path(doc.filePath).filename().wstring();
+    if (targetName.empty()) targetName = L"README.md";
+    std::wstring tbTitle = L"Markdown Preview: " + targetName;
+    float tbTitleX = tbIconX + config.ScaleF(22.0f);
+    D2D1_RECT_F rcTbTitle = D2D1::RectF(tbTitleX, topY, canvasLeft + canvasWidth * 0.65f, topY + tbH);
+    pRT->DrawText(tbTitle.c_str(), static_cast<UINT32>(tbTitle.length()),
+                  theme.fontMenuItem ? theme.fontMenuItem.Get() : theme.fontBody.Get(),
+                  rcTbTitle, theme.brushTextPrimary.Get());
+
+    // Live Sync Badge on the Right of Toolbar (e.g. "● Live Preview")
+    float badgeW = config.ScaleF(92.0f);
+    float badgeH = config.ScaleF(18.0f);
+    float badgeX = canvasLeft + canvasWidth - badgeW - config.ScaleF(16.0f);
+    float badgeY = topY + (tbH - badgeH) * 0.5f;
+    D2D1_ROUNDED_RECT rrcLiveBadge = D2D1::RoundedRect(D2D1::RectF(badgeX, badgeY, badgeX + badgeW, badgeY + badgeH), 4.0f, 4.0f);
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushLiveBg;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushLiveBorder;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushLiveDot;
+    pRT->CreateSolidColorBrush(D2D1::ColorF(0.08f, 0.65f, 0.35f, 0.15f), &brushLiveBg);
+    pRT->CreateSolidColorBrush(D2D1::ColorF(0.08f, 0.65f, 0.35f, 0.40f), &brushLiveBorder);
+    pRT->CreateSolidColorBrush(D2D1::ColorF(0.12f, 0.78f, 0.40f, 1.0f), &brushLiveDot);
+    if (brushLiveBg) pRT->FillRoundedRectangle(&rrcLiveBadge, brushLiveBg.Get());
+    if (brushLiveBorder) pRT->DrawRoundedRectangle(&rrcLiveBadge, brushLiveBorder.Get(), 1.0f);
+
+    float dotCx = badgeX + config.ScaleF(9.0f);
+    float dotCy = badgeY + badgeH * 0.5f;
+    if (brushLiveDot) pRT->FillEllipse(D2D1::Ellipse(D2D1::Point2F(dotCx, dotCy), 3.0f, 3.0f), brushLiveDot.Get());
+
+    const wchar_t* liveText = L"Live Preview";
+    D2D1_RECT_F rcLiveText = D2D1::RectF(dotCx + config.ScaleF(6.0f), badgeY, badgeX + badgeW - 2.0f, badgeY + badgeH);
+    if (brushLiveDot) {
+        pRT->DrawText(liveText, static_cast<UINT32>(wcslen(liveText)),
+                      theme.fontBadge ? theme.fontBadge.Get() : theme.fontMenuShortcut.Get(),
+                      rcLiveText, brushLiveDot.Get());
+    }
+
+    // 2. Fetch Live Text (From open buffer in another split group if available, else disk)
+    std::wstring markdownText;
+    bool foundInBuffer = false;
+    if (m_pCurrentGroups) {
+        for (const auto& grp : *m_pCurrentGroups) {
+            for (const auto& d : grp.docs) {
+                if (!d.isSpecialView && !d.filePath.empty() && !doc.filePath.empty()) {
+                    std::wstring p1 = d.filePath;
+                    std::wstring p2 = doc.filePath;
+                    for (auto& c : p1) { if (c == L'/') c = L'\\'; c = towlower(c); }
+                    for (auto& c : p2) { if (c == L'/') c = L'\\'; c = towlower(c); }
+                    if (p1 == p2 || p1.ends_with(p2) || p2.ends_with(p1)) {
+                        markdownText = d.buffer.GetText();
+                        foundInBuffer = true;
+                        break;
+                    }
+                }
+            }
+            if (foundInBuffer) break;
+        }
+    }
+    if (!foundInBuffer && !doc.filePath.empty()) {
+        editor::Buffer tempBuf;
+        if (tempBuf.LoadFromFile(doc.filePath)) {
+            markdownText = tempBuf.GetText();
+        }
+    }
+
+    // 3. Setup Content Viewport
+    D2D1_RECT_F rcContent = D2D1::RectF(canvasLeft, topY + tbH, canvasLeft + canvasWidth, topY + clientHeight);
+    pRT->PushAxisAlignedClip(rcContent, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+
+    const float padX = config.ScaleF(32.0f);
+    float maxReadingW = config.ScaleF(840.0f);
+    float availW = canvasWidth - padX * 2.0f;
+    float contentW = (availW > maxReadingW) ? maxReadingW : (std::max)(config.ScaleF(280.0f), availW);
+    float contentLeft = canvasLeft + padX;
+    if (availW > maxReadingW) {
+        contentLeft = canvasLeft + (canvasWidth - contentW) * 0.5f;
+    }
+
+    float startY = topY + tbH + config.ScaleF(24.0f) - doc.markdownScrollY;
+    float curY = startY;
+
+    // DirectWrite fonts & theme brushes
+    Microsoft::WRL::ComPtr<IDWriteTextFormat> fontH1;
+    Microsoft::WRL::ComPtr<IDWriteTextFormat> fontH2;
+    Microsoft::WRL::ComPtr<IDWriteTextFormat> fontH3;
+    Microsoft::WRL::ComPtr<IDWriteTextFormat> fontH4;
+    Microsoft::WRL::ComPtr<IDWriteTextFormat> fontCodeBlock;
+
+    if (theme.dwriteFactory) {
+        theme.dwriteFactory->CreateTextFormat(L"Segoe UI", nullptr, DWRITE_FONT_WEIGHT_BOLD, DWRITE_FONT_STYLE_NORMAL,
+            DWRITE_FONT_STRETCH_NORMAL, config.ScaleF(24.0f), L"en-US", &fontH1);
+        theme.dwriteFactory->CreateTextFormat(L"Segoe UI", nullptr, DWRITE_FONT_WEIGHT_BOLD, DWRITE_FONT_STYLE_NORMAL,
+            DWRITE_FONT_STRETCH_NORMAL, config.ScaleF(19.0f), L"en-US", &fontH2);
+        theme.dwriteFactory->CreateTextFormat(L"Segoe UI", nullptr, DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_FONT_STYLE_NORMAL,
+            DWRITE_FONT_STRETCH_NORMAL, config.ScaleF(15.5f), L"en-US", &fontH3);
+        theme.dwriteFactory->CreateTextFormat(L"Segoe UI", nullptr, DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_FONT_STYLE_NORMAL,
+            DWRITE_FONT_STRETCH_NORMAL, config.ScaleF(13.5f), L"en-US", &fontH4);
+        theme.dwriteFactory->CreateTextFormat(L"Consolas", nullptr, DWRITE_FONT_WEIGHT_REGULAR, DWRITE_FONT_STYLE_NORMAL,
+            DWRITE_FONT_STRETCH_NORMAL, config.ScaleF(12.5f), L"en-US", &fontCodeBlock);
+    }
+
+    IDWriteTextFormat* pBodyFmt = theme.fontCourseBody ? theme.fontCourseBody.Get() : theme.fontBody.Get();
+
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushHead;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushProse;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushCodeBg;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushCodeBorder;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushCodeText;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushQuoteBar;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushQuoteBg;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushTableBg;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushTableAlt;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushTableBorder;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushLink;
+
+    if (theme.IsDarkMode()) {
+        pRT->CreateSolidColorBrush(D2D1::ColorF(0.95f, 0.96f, 0.98f, 1.0f), &brushHead);
+        pRT->CreateSolidColorBrush(D2D1::ColorF(0.82f, 0.85f, 0.90f, 1.0f), &brushProse);
+        pRT->CreateSolidColorBrush(D2D1::ColorF(0.08f, 0.09f, 0.11f, 1.0f), &brushCodeBg);
+        pRT->CreateSolidColorBrush(D2D1::ColorF(0.20f, 0.23f, 0.28f, 1.0f), &brushCodeBorder);
+        pRT->CreateSolidColorBrush(D2D1::ColorF(0.90f, 0.92f, 0.96f, 1.0f), &brushCodeText);
+        pRT->CreateSolidColorBrush(D2D1::ColorF(0.35f, 0.45f, 0.65f, 1.0f), &brushQuoteBar);
+        pRT->CreateSolidColorBrush(D2D1::ColorF(0.14f, 0.16f, 0.20f, 0.5f), &brushQuoteBg);
+        pRT->CreateSolidColorBrush(D2D1::ColorF(0.14f, 0.16f, 0.20f, 1.0f), &brushTableBg);
+        pRT->CreateSolidColorBrush(D2D1::ColorF(0.11f, 0.12f, 0.15f, 1.0f), &brushTableAlt);
+        pRT->CreateSolidColorBrush(D2D1::ColorF(0.24f, 0.27f, 0.33f, 1.0f), &brushTableBorder);
+        pRT->CreateSolidColorBrush(D2D1::ColorF(0.35f, 0.65f, 1.0f, 1.0f), &brushLink);
+    } else {
+        pRT->CreateSolidColorBrush(D2D1::ColorF(0.12f, 0.15f, 0.20f, 1.0f), &brushHead);
+        pRT->CreateSolidColorBrush(D2D1::ColorF(0.18f, 0.22f, 0.28f, 1.0f), &brushProse);
+        pRT->CreateSolidColorBrush(D2D1::ColorF(0.94f, 0.95f, 0.97f, 1.0f), &brushCodeBg);
+        pRT->CreateSolidColorBrush(D2D1::ColorF(0.82f, 0.85f, 0.89f, 1.0f), &brushCodeBorder);
+        pRT->CreateSolidColorBrush(D2D1::ColorF(0.15f, 0.18f, 0.22f, 1.0f), &brushCodeText);
+        pRT->CreateSolidColorBrush(D2D1::ColorF(0.20f, 0.50f, 0.85f, 1.0f), &brushQuoteBar);
+        pRT->CreateSolidColorBrush(D2D1::ColorF(0.94f, 0.96f, 0.98f, 0.6f), &brushQuoteBg);
+        pRT->CreateSolidColorBrush(D2D1::ColorF(0.92f, 0.94f, 0.96f, 1.0f), &brushTableBg);
+        pRT->CreateSolidColorBrush(D2D1::ColorF(0.97f, 0.98f, 0.99f, 1.0f), &brushTableAlt);
+        pRT->CreateSolidColorBrush(D2D1::ColorF(0.80f, 0.83f, 0.87f, 1.0f), &brushTableBorder);
+        pRT->CreateSolidColorBrush(D2D1::ColorF(0.05f, 0.45f, 0.85f, 1.0f), &brushLink);
+    }
+
+    if (markdownText.empty()) {
+        std::wstring emptyMsg = L"This markdown file is currently blank.\nStart typing on the left editor to preview your headings, lists, code blocks, and tables live!";
+        if (theme.dwriteFactory && pBodyFmt) {
+            Microsoft::WRL::ComPtr<IDWriteTextLayout> pL;
+            theme.dwriteFactory->CreateTextLayout(emptyMsg.c_str(), static_cast<UINT32>(emptyMsg.length()), pBodyFmt, contentW, 500.0f, &pL);
+            if (pL) {
+                pRT->DrawTextLayout(D2D1::Point2F(contentLeft, curY + config.ScaleF(20.0f)), pL.Get(), theme.brushTextMuted.Get());
+            }
+        }
+    } else {
+        std::wstringstream wss(markdownText);
+        std::wstring line;
+        bool inCodeBlock = false;
+        std::wstring codeBlockLang;
+        std::vector<std::wstring> codeBlockLines;
+        std::vector<std::vector<std::wstring>> tableRows;
+
+        auto FlushTable = [&]() {
+            if (tableRows.empty()) return;
+            size_t numCols = 0;
+            for (const auto& r : tableRows) numCols = (std::max)(numCols, r.size());
+            if (numCols > 0) {
+                float colW = contentW / static_cast<float>(numCols);
+                float rowH = config.ScaleF(28.0f);
+                float tableH = static_cast<float>(tableRows.size()) * rowH;
+
+                D2D1_RECT_F rcTbl = D2D1::RectF(contentLeft, curY, contentLeft + contentW, curY + tableH);
+                pRT->DrawRectangle(rcTbl, brushTableBorder.Get(), 1.0f);
+
+                for (size_t ri = 0; ri < tableRows.size(); ++ri) {
+                    float rY = curY + static_cast<float>(ri) * rowH;
+                    D2D1_RECT_F rcRow = D2D1::RectF(contentLeft, rY, contentLeft + contentW, rY + rowH);
+                    if (ri == 0 && brushTableBg) {
+                        pRT->FillRectangle(rcRow, brushTableBg.Get());
+                    } else if (ri % 2 == 1 && brushTableAlt) {
+                        pRT->FillRectangle(rcRow, brushTableAlt.Get());
+                    }
+                    pRT->DrawLine(D2D1::Point2F(contentLeft, rY + rowH), D2D1::Point2F(contentLeft + contentW, rY + rowH), brushTableBorder.Get(), 1.0f);
+
+                    for (size_t ci = 0; ci < tableRows[ri].size(); ++ci) {
+                        float cX = contentLeft + static_cast<float>(ci) * colW;
+                        if (ci > 0) {
+                            pRT->DrawLine(D2D1::Point2F(cX, rY), D2D1::Point2F(cX, rY + rowH), brushTableBorder.Get(), 1.0f);
+                        }
+                        D2D1_RECT_F rcCell = D2D1::RectF(cX + config.ScaleF(8.0f), rY + config.ScaleF(4.0f),
+                                                         cX + colW - config.ScaleF(8.0f), rY + rowH - config.ScaleF(2.0f));
+                        pRT->DrawText(tableRows[ri][ci].c_str(), static_cast<UINT32>(tableRows[ri][ci].length()),
+                                      (ri == 0 && fontH4) ? fontH4.Get() : pBodyFmt,
+                                      rcCell, (ri == 0) ? brushHead.Get() : brushProse.Get());
+                    }
+                }
+                curY += tableH + config.ScaleF(18.0f);
+            }
+            tableRows.clear();
+        };
+
+        while (std::getline(wss, line)) {
+            while (!line.empty() && (line.back() == L'\r' || line.back() == L'\n')) line.pop_back();
+
+            // 1. Fenced Code Block Handler
+            if (line.rfind(L"```", 0) == 0) {
+                if (!inCodeBlock) {
+                    FlushTable();
+                    inCodeBlock = true;
+                    codeBlockLang = line.substr(3);
+                    while (!codeBlockLang.empty() && (codeBlockLang.front() == L' ' || codeBlockLang.front() == L'\t')) codeBlockLang.erase(0, 1);
+                    for (auto& c : codeBlockLang) c = towupper(c);
+                    codeBlockLines.clear();
+                    continue;
+                } else {
+                    inCodeBlock = false;
+                    // Render the accumulated code block
+                    float lineH = config.ScaleF(18.5f);
+                    float padBlock = config.ScaleF(12.0f);
+                    float blockH = static_cast<float>(codeBlockLines.size()) * lineH + padBlock * 2.0f + config.ScaleF(10.0f);
+
+                    D2D1_RECT_F rcBlock = D2D1::RectF(contentLeft, curY, contentLeft + contentW, curY + blockH);
+                    D2D1_ROUNDED_RECT rrcBlock = D2D1::RoundedRect(rcBlock, config.ScaleF(6.0f), config.ScaleF(6.0f));
+                    if (brushCodeBg) pRT->FillRoundedRectangle(&rrcBlock, brushCodeBg.Get());
+                    if (brushCodeBorder) pRT->DrawRoundedRectangle(&rrcBlock, brushCodeBorder.Get(), 1.0f);
+
+                    // Language Tag in Top Right
+                    if (!codeBlockLang.empty()) {
+                        float langW = static_cast<float>(codeBlockLang.length()) * config.ScaleF(7.5f) + config.ScaleF(16.0f);
+                        float langH = config.ScaleF(18.0f);
+                        D2D1_ROUNDED_RECT rrcLang = D2D1::RoundedRect(
+                            D2D1::RectF(rcBlock.right - langW - config.ScaleF(10.0f), rcBlock.top + config.ScaleF(8.0f),
+                                        rcBlock.right - config.ScaleF(10.0f), rcBlock.top + config.ScaleF(8.0f) + langH),
+                            3.0f, 3.0f);
+                        if (brushCodeBorder) pRT->FillRoundedRectangle(&rrcLang, brushCodeBorder.Get());
+                        pRT->DrawText(codeBlockLang.c_str(), static_cast<UINT32>(codeBlockLang.length()),
+                                      theme.fontBadge ? theme.fontBadge.Get() : theme.fontMenuShortcut.Get(),
+                                      rrcLang.rect, brushCodeText.Get());
+                    }
+
+                    float codeY = curY + padBlock + config.ScaleF(4.0f);
+                    IDWriteTextFormat* pCodeFmt = fontCodeBlock ? fontCodeBlock.Get() : theme.fontCode.Get();
+                    for (const auto& cl : codeBlockLines) {
+                        D2D1_RECT_F rcCodeLine = D2D1::RectF(contentLeft + padBlock, codeY, contentLeft + contentW - padBlock, codeY + lineH);
+                        pRT->DrawText(cl.c_str(), static_cast<UINT32>(cl.length()), pCodeFmt, rcCodeLine, brushCodeText.Get());
+                        codeY += lineH;
+                    }
+                    curY += blockH + config.ScaleF(16.0f);
+                    continue;
+                }
+            }
+
+            if (inCodeBlock) {
+                codeBlockLines.push_back(line);
+                continue;
+            }
+
+            // 2. Table Rows Handler
+            if (line.find(L'|') != std::wstring::npos) {
+                // Check if separator row (e.g. |---|---|)
+                bool isSep = true;
+                for (wchar_t ch : line) {
+                    if (ch != L'|' && ch != L'-' && ch != L':' && ch != L' ' && ch != L'\t') {
+                        isSep = false;
+                        break;
+                    }
+                }
+                if (!isSep) {
+                    std::vector<std::wstring> cells;
+                    size_t s = 0;
+                    while (s < line.length()) {
+                        size_t p = line.find(L'|', s);
+                        if (p == std::wstring::npos) break;
+                        if (p > s) {
+                            std::wstring cell = line.substr(s, p - s);
+                            while (!cell.empty() && (cell.front() == L' ' || cell.front() == L'\t')) cell.erase(0, 1);
+                            while (!cell.empty() && (cell.back() == L' ' || cell.back() == L'\t')) cell.pop_back();
+                            cells.push_back(cell);
+                        }
+                        s = p + 1;
+                    }
+                    if (s < line.length()) {
+                        std::wstring cell = line.substr(s);
+                        while (!cell.empty() && (cell.front() == L' ' || cell.front() == L'\t')) cell.erase(0, 1);
+                        while (!cell.empty() && (cell.back() == L' ' || cell.back() == L'\t')) cell.pop_back();
+                        if (!cell.empty()) cells.push_back(cell);
+                    }
+                    if (!cells.empty()) {
+                        tableRows.push_back(std::move(cells));
+                        continue;
+                    }
+                } else {
+                    continue; // Skip markdown separator row |---|---|
+                }
+            } else {
+                FlushTable();
+            }
+
+            // 3. Horizontal Rule
+            if (line == L"---" || line == L"***" || line == L"___" || line == L"----" || line == L"-----") {
+                curY += config.ScaleF(10.0f);
+                pRT->DrawLine(D2D1::Point2F(contentLeft, curY), D2D1::Point2F(contentLeft + contentW, curY),
+                              theme.brushBorderSubtle.Get(), 1.2f);
+                curY += config.ScaleF(14.0f);
+                continue;
+            }
+
+            // 4. Headings (# H1, ## H2, ### H3, #### H4)
+            if (line.rfind(L"#", 0) == 0) {
+                size_t hCount = 0;
+                while (hCount < line.length() && line[hCount] == L'#') ++hCount;
+                if (hCount <= 6 && hCount < line.length() && (line[hCount] == L' ' || line[hCount] == L'\t')) {
+                    std::wstring hText = line.substr(hCount);
+                    while (!hText.empty() && (hText.front() == L' ' || hText.front() == L'\t')) hText.erase(0, 1);
+
+                    IDWriteTextFormat* pFmt = (hCount == 1) ? fontH1.Get() :
+                                              (hCount == 2) ? fontH2.Get() :
+                                              (hCount == 3) ? fontH3.Get() : fontH4.Get();
+                    if (!pFmt) pFmt = pBodyFmt;
+
+                    Microsoft::WRL::ComPtr<IDWriteTextLayout> pL;
+                    if (theme.dwriteFactory && pFmt) {
+                        theme.dwriteFactory->CreateTextLayout(hText.c_str(), static_cast<UINT32>(hText.length()),
+                                                             pFmt, contentW, 1000.0f, &pL);
+                    }
+                    if (pL) {
+                        DWRITE_TEXT_METRICS tm{};
+                        pL->GetMetrics(&tm);
+                        pRT->DrawTextLayout(D2D1::Point2F(contentLeft, curY), pL.Get(), brushHead.Get());
+                        curY += tm.height + config.ScaleF(4.0f);
+
+                        // H1 and H2 have bottom hairline divider
+                        if (hCount <= 2) {
+                            curY += config.ScaleF(4.0f);
+                            pRT->DrawLine(D2D1::Point2F(contentLeft, curY), D2D1::Point2F(contentLeft + contentW, curY),
+                                          theme.brushBorderSubtle.Get(), 1.0f);
+                            curY += config.ScaleF(8.0f);
+                        } else {
+                            curY += config.ScaleF(6.0f);
+                        }
+                    }
+                    continue;
+                }
+            }
+
+            // 5. Blockquotes and GitHub Callout Alerts (> quote or > [!NOTE])
+            if (line.rfind(L">", 0) == 0) {
+                std::wstring qText = line.substr(1);
+                while (!qText.empty() && (qText.front() == L' ' || qText.front() == L'\t')) qText.erase(0, 1);
+
+                bool isAlert = false;
+                std::wstring alertTitle = L"NOTE";
+                D2D1_COLOR_F alertColor = D2D1::ColorF(0.20f, 0.50f, 0.90f, 1.0f); // Default Blue Note
+
+                if (qText.rfind(L"[!NOTE]", 0) == 0) {
+                    isAlert = true; alertTitle = L"NOTE"; qText = qText.substr(7);
+                } else if (qText.rfind(L"[!TIP]", 0) == 0) {
+                    isAlert = true; alertTitle = L"TIP"; alertColor = D2D1::ColorF(0.12f, 0.70f, 0.35f, 1.0f); qText = qText.substr(6);
+                } else if (qText.rfind(L"[!IMPORTANT]", 0) == 0) {
+                    isAlert = true; alertTitle = L"IMPORTANT"; alertColor = D2D1::ColorF(0.60f, 0.30f, 0.90f, 1.0f); qText = qText.substr(12);
+                } else if (qText.rfind(L"[!WARNING]", 0) == 0) {
+                    isAlert = true; alertTitle = L"WARNING"; alertColor = D2D1::ColorF(0.90f, 0.60f, 0.10f, 1.0f); qText = qText.substr(10);
+                } else if (qText.rfind(L"[!CAUTION]", 0) == 0) {
+                    isAlert = true; alertTitle = L"CAUTION"; alertColor = D2D1::ColorF(0.85f, 0.20f, 0.20f, 1.0f); qText = qText.substr(10);
+                }
+                while (!qText.empty() && (qText.front() == L' ' || qText.front() == L'\t')) qText.erase(0, 1);
+
+                if (isAlert) {
+                    // Render Callout Alert Card
+                    float alertPad = config.ScaleF(12.0f);
+                    Microsoft::WRL::ComPtr<IDWriteTextLayout> pL;
+                    float tmH = config.ScaleF(20.0f);
+                    if (!qText.empty() && theme.dwriteFactory && pBodyFmt) {
+                        theme.dwriteFactory->CreateTextLayout(qText.c_str(), static_cast<UINT32>(qText.length()),
+                                                             pBodyFmt, contentW - alertPad * 2.0f - config.ScaleF(16.0f), 1000.0f, &pL);
+                        if (pL) { DWRITE_TEXT_METRICS tm{}; pL->GetMetrics(&tm); tmH = tm.height; }
+                    }
+                    float cardH = config.ScaleF(24.0f) + tmH + alertPad * 2.0f;
+                    D2D1_RECT_F rcCard = D2D1::RectF(contentLeft, curY, contentLeft + contentW, curY + cardH);
+                    D2D1_ROUNDED_RECT rrcCard = D2D1::RoundedRect(rcCard, config.ScaleF(5.0f), config.ScaleF(5.0f));
+
+                    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushAlert;
+                    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushAlertBg;
+                    pRT->CreateSolidColorBrush(alertColor, &brushAlert);
+                    pRT->CreateSolidColorBrush(D2D1::ColorF(alertColor.r, alertColor.g, alertColor.b, 0.12f), &brushAlertBg);
+
+                    if (brushAlertBg) pRT->FillRoundedRectangle(&rrcCard, brushAlertBg.Get());
+                    pRT->DrawLine(D2D1::Point2F(contentLeft + 2.0f, curY + 2.0f), D2D1::Point2F(contentLeft + 2.0f, curY + cardH - 2.0f),
+                                  brushAlert.Get(), 3.5f);
+
+                    // Badge Title
+                    D2D1_RECT_F rcAlertTitle = D2D1::RectF(contentLeft + alertPad, curY + alertPad, contentLeft + contentW - alertPad, curY + alertPad + config.ScaleF(18.0f));
+                    pRT->DrawText(alertTitle.c_str(), static_cast<UINT32>(alertTitle.length()),
+                                  (fontH4 ? fontH4.Get() : pBodyFmt), rcAlertTitle, brushAlert.Get());
+
+                    if (pL) {
+                        pRT->DrawTextLayout(D2D1::Point2F(contentLeft + alertPad, curY + alertPad + config.ScaleF(20.0f)), pL.Get(), brushProse.Get());
+                    }
+                    curY += cardH + config.ScaleF(14.0f);
+                } else {
+                    // Standard Blockquote
+                    float padQuote = config.ScaleF(14.0f);
+                    Microsoft::WRL::ComPtr<IDWriteTextLayout> pL;
+                    if (theme.dwriteFactory && pBodyFmt) {
+                        theme.dwriteFactory->CreateTextLayout(qText.c_str(), static_cast<UINT32>(qText.length()),
+                                                             pBodyFmt, contentW - padQuote, 1000.0f, &pL);
+                    }
+                    if (pL) {
+                        DWRITE_TEXT_METRICS tm{};
+                        pL->GetMetrics(&tm);
+                        float qH = (std::max)(config.ScaleF(22.0f), tm.height);
+                        pRT->DrawLine(D2D1::Point2F(contentLeft + 2.0f, curY), D2D1::Point2F(contentLeft + 2.0f, curY + qH),
+                                      brushQuoteBar.Get(), 3.0f);
+                        pRT->DrawTextLayout(D2D1::Point2F(contentLeft + padQuote, curY), pL.Get(), brushProse.Get());
+                        curY += qH + config.ScaleF(12.0f);
+                    }
+                }
+                continue;
+            }
+
+            // 6. Task List (- [ ] or - [x])
+            bool isTaskUnchecked = (line.rfind(L"- [ ]", 0) == 0 || line.rfind(L"* [ ]", 0) == 0);
+            bool isTaskChecked   = (line.rfind(L"- [x]", 0) == 0 || line.rfind(L"- [X]", 0) == 0 ||
+                                    line.rfind(L"* [x]", 0) == 0 || line.rfind(L"* [X]", 0) == 0);
+            if (isTaskUnchecked || isTaskChecked) {
+                std::wstring taskText = line.substr(5);
+                while (!taskText.empty() && (taskText.front() == L' ' || taskText.front() == L'\t')) taskText.erase(0, 1);
+
+                float boxSize = config.ScaleF(14.0f);
+                float boxY = curY + config.ScaleF(2.0f);
+                D2D1_ROUNDED_RECT rrcBox = D2D1::RoundedRect(D2D1::RectF(contentLeft, boxY, contentLeft + boxSize, boxY + boxSize), 3.0f, 3.0f);
+                pRT->DrawRoundedRectangle(&rrcBox, brushCodeBorder.Get(), 1.2f);
+
+                if (isTaskChecked) {
+                    if (brushLiveDot) pRT->FillRoundedRectangle(&rrcBox, brushLiveDot.Get());
+                    // White checkmark
+                    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushWhite;
+                    pRT->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 1.0f), &brushWhite);
+                    if (brushWhite) {
+                        pRT->DrawLine(D2D1::Point2F(contentLeft + 3.0f, boxY + 7.0f), D2D1::Point2F(contentLeft + 6.0f, boxY + 10.0f), brushWhite.Get(), 1.5f);
+                        pRT->DrawLine(D2D1::Point2F(contentLeft + 6.0f, boxY + 10.0f), D2D1::Point2F(contentLeft + 11.0f, boxY + 3.5f), brushWhite.Get(), 1.5f);
+                    }
+                }
+
+                float textX = contentLeft + boxSize + config.ScaleF(8.0f);
+                Microsoft::WRL::ComPtr<IDWriteTextLayout> pL;
+                if (theme.dwriteFactory && pBodyFmt) {
+                    theme.dwriteFactory->CreateTextLayout(taskText.c_str(), static_cast<UINT32>(taskText.length()),
+                                                         pBodyFmt, contentW - (textX - contentLeft), 1000.0f, &pL);
+                }
+                if (pL) {
+                    DWRITE_TEXT_METRICS tm{};
+                    pL->GetMetrics(&tm);
+                    pRT->DrawTextLayout(D2D1::Point2F(textX, curY), pL.Get(), isTaskChecked ? theme.brushTextMuted.Get() : brushProse.Get());
+                    curY += (std::max)(boxSize, tm.height) + config.ScaleF(8.0f);
+                } else {
+                    curY += boxSize + config.ScaleF(8.0f);
+                }
+                continue;
+            }
+
+            // 7. Unordered Bullet List (- , * , + )
+            size_t indentSpaces = 0;
+            while (indentSpaces < line.length() && line[indentSpaces] == L' ') ++indentSpaces;
+            std::wstring trimmedLine = line.substr(indentSpaces);
+            if (trimmedLine.rfind(L"- ", 0) == 0 || trimmedLine.rfind(L"* ", 0) == 0 || trimmedLine.rfind(L"+ ", 0) == 0) {
+                std::wstring itemText = trimmedLine.substr(2);
+                while (!itemText.empty() && (itemText.front() == L' ' || itemText.front() == L'\t')) itemText.erase(0, 1);
+
+                float bulletIndent = contentLeft + static_cast<float>(indentSpaces / 2) * config.ScaleF(14.0f);
+                float dotR = config.ScaleF(2.6f);
+                float dotY = curY + config.ScaleF(9.0f);
+                pRT->FillEllipse(D2D1::Ellipse(D2D1::Point2F(bulletIndent + dotR + 1.0f, dotY), dotR, dotR), brushHead.Get());
+
+                float textX = bulletIndent + config.ScaleF(14.0f);
+                Microsoft::WRL::ComPtr<IDWriteTextLayout> pL;
+                if (theme.dwriteFactory && pBodyFmt) {
+                    theme.dwriteFactory->CreateTextLayout(itemText.c_str(), static_cast<UINT32>(itemText.length()),
+                                                         pBodyFmt, contentW - (textX - contentLeft), 1000.0f, &pL);
+                }
+                if (pL) {
+                    DWRITE_TEXT_METRICS tm{};
+                    pL->GetMetrics(&tm);
+                    pRT->DrawTextLayout(D2D1::Point2F(textX, curY), pL.Get(), brushProse.Get());
+                    curY += tm.height + config.ScaleF(6.0f);
+                } else {
+                    curY += config.ScaleF(18.0f);
+                }
+                continue;
+            }
+
+            // 8. Ordered Numbered List (1. , 2. )
+            size_t dotPos = trimmedLine.find(L". ");
+            if (dotPos != std::wstring::npos && dotPos > 0 && dotPos <= 3) {
+                bool allDigits = true;
+                for (size_t di = 0; di < dotPos; ++di) {
+                    if (!iswdigit(trimmedLine[di])) { allDigits = false; break; }
+                }
+                if (allDigits) {
+                    std::wstring numStr = trimmedLine.substr(0, dotPos + 1);
+                    std::wstring itemText = trimmedLine.substr(dotPos + 2);
+                    while (!itemText.empty() && (itemText.front() == L' ' || itemText.front() == L'\t')) itemText.erase(0, 1);
+
+                    float numW = config.ScaleF(20.0f);
+                    D2D1_RECT_F rcNum = D2D1::RectF(contentLeft, curY, contentLeft + numW, curY + config.ScaleF(20.0f));
+                    pRT->DrawText(numStr.c_str(), static_cast<UINT32>(numStr.length()),
+                                  (fontH4 ? fontH4.Get() : pBodyFmt), rcNum, brushLink.Get());
+
+                    float textX = contentLeft + numW + config.ScaleF(4.0f);
+                    Microsoft::WRL::ComPtr<IDWriteTextLayout> pL;
+                    if (theme.dwriteFactory && pBodyFmt) {
+                        theme.dwriteFactory->CreateTextLayout(itemText.c_str(), static_cast<UINT32>(itemText.length()),
+                                                             pBodyFmt, contentW - (textX - contentLeft), 1000.0f, &pL);
+                    }
+                    if (pL) {
+                        DWRITE_TEXT_METRICS tm{};
+                        pL->GetMetrics(&tm);
+                        pRT->DrawTextLayout(D2D1::Point2F(textX, curY), pL.Get(), brushProse.Get());
+                        curY += tm.height + config.ScaleF(6.0f);
+                    } else {
+                        curY += config.ScaleF(18.0f);
+                    }
+                    continue;
+                }
+            }
+
+            // 9. Empty Line (Paragraph Gap)
+            if (trimmedLine.empty()) {
+                curY += config.ScaleF(12.0f);
+                continue;
+            }
+
+            // 10. Standard Paragraph with Inline Formatting
+            Microsoft::WRL::ComPtr<IDWriteTextLayout> pL;
+            if (theme.dwriteFactory && pBodyFmt) {
+                theme.dwriteFactory->CreateTextLayout(trimmedLine.c_str(), static_cast<UINT32>(trimmedLine.length()),
+                                                     pBodyFmt, contentW, 10000.0f, &pL);
+            }
+            if (pL) {
+                // Apply inline styles to bold ranges (**bold**)
+                size_t starPos = 0;
+                while ((starPos = trimmedLine.find(L"**", starPos)) != std::wstring::npos) {
+                    size_t nextStar = trimmedLine.find(L"**", starPos + 2);
+                    if (nextStar != std::wstring::npos) {
+                        DWRITE_TEXT_RANGE rng;
+                        rng.startPosition = static_cast<UINT32>(starPos);
+                        rng.length = static_cast<UINT32>(nextStar + 2 - starPos);
+                        pL->SetFontWeight(DWRITE_FONT_WEIGHT_BOLD, rng);
+                        starPos = nextStar + 2;
+                    } else break;
+                }
+
+                DWRITE_TEXT_METRICS tm{};
+                pL->GetMetrics(&tm);
+                pRT->DrawTextLayout(D2D1::Point2F(contentLeft, curY), pL.Get(), brushProse.Get());
+                curY += tm.height + config.ScaleF(10.0f);
+            } else {
+                curY += config.ScaleF(16.0f);
+            }
+        }
+        FlushTable();
+    }
+
+    pRT->PopAxisAlignedClip(); // Pop Content Viewport Clip
+
+    // 4. Calculate Scroll Bounds
+    float totalDrawnHeight = curY - startY + config.ScaleF(40.0f);
+    float viewportH = clientHeight - tbH;
+    doc.markdownMaxScrollY = (std::max)(0.0f, totalDrawnHeight - viewportH);
+    doc.markdownScrollY = (std::clamp)(doc.markdownScrollY, 0.0f, doc.markdownMaxScrollY);
+
+    // 5. Vertical Scrollbar
+    if (doc.markdownMaxScrollY > 0.0f) {
+        float sbW = config.ScaleF(8.0f);
+        float sbTrackH = viewportH;
+        float sbTrackX = canvasLeft + canvasWidth - sbW - config.ScaleF(2.0f);
+        float sbTrackY = topY + tbH;
+
+        float thumbRatio = viewportH / totalDrawnHeight;
+        float thumbH = (std::max)(config.ScaleF(24.0f), sbTrackH * thumbRatio);
+        float scrollFrac = doc.markdownScrollY / doc.markdownMaxScrollY;
+        float thumbY = sbTrackY + scrollFrac * (sbTrackH - thumbH);
+
+        D2D1_ROUNDED_RECT rrcThumb = D2D1::RoundedRect(
+            D2D1::RectF(sbTrackX, thumbY, sbTrackX + sbW, thumbY + thumbH),
+            config.ScaleF(3.5f), config.ScaleF(3.5f));
+
+        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushThumb;
+        pRT->CreateSolidColorBrush(theme.IsDarkMode() ? D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.20f) : D2D1::ColorF(0.12f, 0.16f, 0.24f, 0.25f), &brushThumb);
+        if (brushThumb) pRT->FillRoundedRectangle(&rrcThumb, brushThumb.Get());
+    }
+
+    pRT->PopAxisAlignedClip(); // Pop Viewport Clip
 }
 
 bool EditorCanvas::HandleLearningChar(wchar_t ch) {

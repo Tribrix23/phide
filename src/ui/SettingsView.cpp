@@ -213,6 +213,19 @@ void SettingsView::InitializeSettings() {
         it.control = SettingControl::Toggle;
         m_items.push_back(std::move(it));
     }
+
+    // 16. Appearance: Markdown Preview (Toggle)
+    {
+        SettingItem it;
+        it.id = L"workbench.markdownPreview";
+        it.scope = L"APPEARANCE";
+        it.title = L"Markdown Preview";
+        it.description = L"Automatically open a side-by-side Markdown preview when viewing a markdown file.";
+        it.category = SettingCategory::Appearance;
+        it.isCommonlyUsed = true;
+        it.control = SettingControl::Toggle;
+        m_items.push_back(std::move(it));
+    }
 }
 
 std::vector<size_t> SettingsView::GetFilteredItemIndices() const {
@@ -604,6 +617,7 @@ void SettingsView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
             else if (it.id == L"workbench.breadcrumbs") isChecked = config.showBreadcrumbs;
             else if (it.id == L"workbench.statusBar") isChecked = config.showStatusBar;
             else if (it.id == L"workbench.graphColored") isChecked = config.isGraphColored;
+            else if (it.id == L"workbench.markdownPreview") isChecked = config.enableMarkdownPreview;
 
             DrawToggleSwitch(pRT, theme, config, it.controlBounds, isChecked, isCardHovered);
         } else if (it.control == SettingControl::NumberStepper) {
@@ -1031,6 +1045,8 @@ bool SettingsView::HandleLButtonDown(POINT clientPt, app::AppConfig& config, The
                         config.showStatusBar = !config.showStatusBar;
                     } else if (it.id == L"workbench.graphColored") {
                         config.isGraphColored = !config.isGraphColored;
+                    } else if (it.id == L"workbench.markdownPreview") {
+                        config.enableMarkdownPreview = !config.enableMarkdownPreview;
                     }
                     outModifiedSettingId = it.id;
                     return true;

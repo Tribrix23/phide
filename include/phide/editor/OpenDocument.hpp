@@ -160,6 +160,8 @@ struct OpenDocument {
     size_t scrollLine = 0;              ///< Top-most visible visual line index
     float scrollOffsetX = 0.0f;         ///< Horizontal scroll offset in pixels
     float maxContentWidth = 0.0f;       ///< Maximum content width in pixels across lines
+    float markdownScrollY = 0.0f;       ///< Vertical scroll offset in pixels for Markdown Preview
+    float markdownMaxScrollY = 0.0f;    ///< Max vertical scroll range in pixels for Markdown Preview
     D2D1_RECT_F scrollbarTrack{};       ///< Bounding box of the vertical scrollbar track
     D2D1_RECT_F scrollbarThumb{};       ///< Bounding box of the vertical scrollbar thumb
     bool isDraggingScrollbar = false;   ///< True while user is actively dragging the scrollbar thumb

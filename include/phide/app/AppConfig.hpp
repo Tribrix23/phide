@@ -46,6 +46,7 @@ struct AppConfig {
     bool showBreadcrumbs = true;        ///< True if file breadcrumbs hierarchy is visible above editor.
     bool showLineNumbers = true;        ///< True if line numbers gutter is rendered. Default enabled.
     bool showStatusBar = true;          ///< True if bottom status bar is rendered. Default enabled.
+    bool enableMarkdownPreview = true;  ///< True if markdown preview split pane is automatically opened when opening a markdown file. Default enabled.
     bool wordWrap = false;              ///< True if word wrap is enabled in editor.
     bool renderWhitespace = false;      ///< True if whitespace dots are rendered.
     bool zenMode = false;               ///< True if Zen Mode (distraction-free full screen) is active.

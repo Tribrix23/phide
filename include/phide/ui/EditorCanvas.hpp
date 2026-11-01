@@ -499,6 +499,7 @@ private:
     size_t m_cachedCursorCol = static_cast<size_t>(-1);
 
     // Learning Hub state and bounds
+    const std::vector<editor::EditorGroup>* m_pCurrentGroups = nullptr;
     std::vector<LearningCourseDef> m_learningCourses;
     std::unordered_map<std::wstring, Microsoft::WRL::ComPtr<ID2D1Bitmap>> m_learningHubBitmaps;
     std::wstring m_learningSearchQuery;
@@ -545,6 +546,10 @@ public:
     void RenderCourseView(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
                           editor::OpenDocument& doc, float canvasLeft, float canvasWidth,
                           float topY, float clientHeight);
+    void RenderMarkdownPreview(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
+                               editor::OpenDocument& doc, float canvasLeft, float canvasWidth,
+                               float topY, float clientHeight);
+    bool HandleMarkdownPreviewWheel(short delta, editor::OpenDocument& doc) noexcept;
     [[nodiscard]] const D2D1_RECT_F& GetCourseOpenRuntimesBtnBounds() const noexcept { return m_courseOpenRuntimesBtnBounds; }
     [[nodiscard]] int HitTestCourseView(POINT pt) const noexcept;
     bool HandleCourseViewWheel(short delta) noexcept;

@@ -534,6 +534,7 @@ void Window::SaveSessionState() {
     out << L"  \"showStatusBar\": " << (m_config.showStatusBar ? L"true" : L"false") << L",\n";
     out << L"  \"insertSpaces\": " << (m_config.insertSpaces ? L"true" : L"false") << L",\n";
     out << L"  \"isGraphColored\": " << (m_config.isGraphColored ? L"true" : L"false") << L",\n";
+    out << L"  \"enableMarkdownPreview\": " << (m_config.enableMarkdownPreview ? L"true" : L"false") << L",\n";
     out << L"  \"activeDocIdx\": " << GetActiveGroup().activeDocIdx << L",\n";
     if (m_drawer.HasOpenFolder()) {
         out << L"  \"lastOpenFolderPath\": \"" << EscapeJson(m_drawer.GetOpenFolderPath()) << L"\",\n";
@@ -545,6 +546,7 @@ void Window::SaveSessionState() {
     for (const auto& grp : m_editorGroups) {
         for (const auto& doc : grp.docs) {
             if (doc.isSpecialView && !doc.viewType.empty()) {
+                if (doc.viewType == L"markdown_preview") continue;
                 out << L"    \"special:" << EscapeJson(doc.viewType) << L"\"" << (++docCount < 100 ? L"," : L"") << L"\n";
             } else if (!doc.filePath.empty()) {
                 out << L"    \"" << EscapeJson(doc.filePath) << L"\"" << (++docCount < 100 ? L"," : L"") << L"\n";
@@ -709,6 +711,8 @@ void Window::LoadSessionState() {
             m_config.insertSpaces = (line.find(L"true") != std::wstring::npos);
         } else if (line.find(L"\"isGraphColored\"") != std::wstring::npos) {
             m_config.isGraphColored = (line.find(L"true") != std::wstring::npos);
+        } else if (line.find(L"\"enableMarkdownPreview\"") != std::wstring::npos) {
+            m_config.enableMarkdownPreview = (line.find(L"true") != std::wstring::npos);
         } else if (line.find(L"\"openDocs\"") != std::wstring::npos) {
             currentArray = L"openDocs";
         } else if (line.find(L"\"expandedDirs\"") != std::wstring::npos) {
@@ -991,14 +995,17 @@ void Window::OpenFileDocument(const std::wstring& path, bool isPreview) {
     // 1. Check if document is already open in ANY editor group
     for (size_t g = 0; g < m_editorGroups.size(); ++g) {
         for (size_t i = 0; i < m_editorGroups[g].docs.size(); ++i) {
-            if (PathsMatch(m_editorGroups[g].docs[i].filePath, path)) {
+            if (m_editorGroups[g].docs[i].viewType != L"markdown_preview" && PathsMatch(m_editorGroups[g].docs[i].filePath, path)) {
                 m_focusedGroupIdx = static_cast<int>(g);
                 m_editorGroups[g].activeDocIdx = static_cast<int>(i);
                 if (!isPreview) {
                     m_editorGroups[g].docs[i].isPreview = false;
                 }
                 UpdateDrawerErrorFiles();
-    SaveSessionState();
+                SaveSessionState();
+                if (m_config.enableMarkdownPreview && IsMarkdownFile(resolvedPath)) {
+                    OpenMarkdownPreviewSplit(resolvedPath);
+                }
                 InvalidateRect(m_hwnd, nullptr, FALSE);
                 return;
             }
@@ -1155,6 +1162,11 @@ void Window::OpenFileDocument(const std::wstring& path, bool isPreview) {
 
     UpdateDrawerErrorFiles();
     SaveSessionState();
+
+    if (m_config.enableMarkdownPreview && IsMarkdownFile(resolvedPath)) {
+        OpenMarkdownPreviewSplit(resolvedPath);
+    }
+
     InvalidateRect(m_hwnd, nullptr, FALSE);
 }
 
@@ -1750,6 +1762,90 @@ void Window::OpenNotebookView(const std::wstring& filePath) {
     InvalidateRect(m_hwnd, nullptr, FALSE);
 }
 
+bool Window::IsMarkdownFile(const std::wstring& path) {
+    if (path.empty()) return false;
+    auto dot = path.rfind(L'.');
+    if (dot == std::wstring::npos) return false;
+    std::wstring ext = path.substr(dot);
+    for (auto& c : ext) c = towlower(c);
+    return (ext == L".md" || ext == L".markdown" || ext == L".mdown" || ext == L".mkdn");
+}
+
+void Window::OpenMarkdownPreviewSplit(const std::wstring& path) {
+    if (path.empty()) return;
+
+    // Ensure we have at least 2 editor groups for split screen
+    if (m_editorGroups.size() == 1) {
+        editor::EditorGroup newGroup;
+        newGroup.activeDocIdx = -1;
+        m_editorGroups.push_back(std::move(newGroup));
+    }
+
+    // Target group is pane 1 (or the other group if already split)
+    size_t targetGroupIdx = (m_focusedGroupIdx == 0) ? 1 : 0;
+    if (targetGroupIdx >= m_editorGroups.size()) {
+        targetGroupIdx = m_editorGroups.size() - 1;
+    }
+
+    auto& targetGroup = m_editorGroups[targetGroupIdx];
+    std::wstring fileName = std::filesystem::path(path).filename().wstring();
+    std::wstring previewTitle = L"Preview " + fileName;
+
+    // Check if target group already has a markdown_preview tab
+    int previewDocIdx = -1;
+    for (size_t i = 0; i < targetGroup.docs.size(); ++i) {
+        if (targetGroup.docs[i].isSpecialView && targetGroup.docs[i].viewType == L"markdown_preview") {
+            previewDocIdx = static_cast<int>(i);
+            break;
+        }
+    }
+
+    if (previewDocIdx >= 0) {
+        targetGroup.docs[previewDocIdx].filePath = path;
+        targetGroup.docs[previewDocIdx].fileName = previewTitle;
+        targetGroup.activeDocIdx = previewDocIdx;
+    } else {
+        editor::OpenDocument previewDoc;
+        previewDoc.fileName = previewTitle;
+        previewDoc.filePath = path;
+        previewDoc.isSpecialView = true;
+        previewDoc.viewType = L"markdown_preview";
+        previewDoc.isPreview = false;
+        previewDoc.isDirty = false;
+        previewDoc.markdownScrollY = 0.0f;
+        previewDoc.markdownMaxScrollY = 0.0f;
+
+        targetGroup.docs.push_back(std::move(previewDoc));
+        targetGroup.activeDocIdx = static_cast<int>(targetGroup.docs.size() - 1);
+    }
+
+    InvalidateRect(m_hwnd, nullptr, FALSE);
+}
+
+void Window::CloseMarkdownPreviewSplit() {
+    for (int g = static_cast<int>(m_editorGroups.size()) - 1; g >= 0; --g) {
+        for (int i = static_cast<int>(m_editorGroups[g].docs.size()) - 1; i >= 0; --i) {
+            if (m_editorGroups[g].docs[i].isSpecialView && m_editorGroups[g].docs[i].viewType == L"markdown_preview") {
+                CloseDocument(g, i);
+            }
+        }
+    }
+}
+
+void Window::ToggleMarkdownPreview() {
+    m_config.enableMarkdownPreview = !m_config.enableMarkdownPreview;
+    if (m_config.enableMarkdownPreview) {
+        auto* curDoc = GetActiveDoc();
+        if (curDoc && !curDoc->filePath.empty() && IsMarkdownFile(curDoc->filePath)) {
+            OpenMarkdownPreviewSplit(curDoc->filePath);
+        }
+    } else {
+        CloseMarkdownPreviewSplit();
+    }
+    SaveSessionState();
+    InvalidateRect(m_hwnd, nullptr, FALSE);
+}
+
 void Window::CloseDocument(int groupIdx, int docIdx) {
     if (groupIdx < 0 || groupIdx >= static_cast<int>(m_editorGroups.size())) return;
     auto& group = m_editorGroups[groupIdx];
@@ -1761,6 +1857,7 @@ void Window::CloseDocument(int groupIdx, int docIdx) {
 
     // Hook for temporary COMMIT_EDITMSG tab (Images 4 & 5)
     std::wstring closingPath = group.docs[docIdx].filePath;
+    bool wasMarkdownSource = (!closingPath.empty() && IsMarkdownFile(closingPath) && !group.docs[docIdx].isSpecialView);
     if (closingPath.ends_with(L"COMMIT_EDITMSG")) {
         std::wstring commitMsg;
         for (const auto& line : group.docs[docIdx].buffer.GetLines()) {
@@ -1818,6 +1915,21 @@ void Window::CloseDocument(int groupIdx, int docIdx) {
     UpdateDrawerErrorFiles();
     SaveSessionState();
     RunManualGarbageCollection();
+
+    // If we closed a markdown source document, also close any matching markdown_preview tab
+    if (wasMarkdownSource) {
+        for (size_t g = 0; g < m_editorGroups.size(); ++g) {
+            for (size_t d = 0; d < m_editorGroups[g].docs.size(); ++d) {
+                if (m_editorGroups[g].docs[d].isSpecialView &&
+                    m_editorGroups[g].docs[d].viewType == L"markdown_preview" &&
+                    _wcsicmp(m_editorGroups[g].docs[d].filePath.c_str(), closingPath.c_str()) == 0) {
+                    CloseDocument(static_cast<int>(g), static_cast<int>(d));
+                    return;
+                }
+            }
+        }
+    }
+
     InvalidateRect(m_hwnd, nullptr, FALSE);
 }
 
@@ -8423,6 +8535,9 @@ void Window::HandleLButtonDown(POINT clientPt) {
                         m_config.isGraphColored = !m_config.isGraphColored;
                         InvalidateRect(m_hwnd, nullptr, FALSE);
                         break;
+                    case ui::MenuActionId::ToggleMarkdownPreview:
+                        ToggleMarkdownPreview();
+                        break;
                     case ui::MenuActionId::LayoutSingle:
                         if (m_editorGroups.size() > 1) {
                             if (m_focusedGroupIdx >= 0 && static_cast<size_t>(m_focusedGroupIdx) < m_editorGroups.size()) {
@@ -9219,6 +9334,15 @@ void Window::HandleLButtonDown(POINT clientPt) {
                 m_dragTabCurrentPt = clientPt;
                 m_isDraggingTab = false;
                 SetCapture(m_hwnd);
+
+                // If user selected a markdown tab in group 0, update or open the preview in group 1 if enabled
+                if (m_config.enableMarkdownPreview && targetGroup == 0) {
+                    const auto& clickedDoc = group.docs[tabHitIdx];
+                    if (!clickedDoc.isSpecialView && !clickedDoc.filePath.empty() && IsMarkdownFile(clickedDoc.filePath)) {
+                        OpenMarkdownPreviewSplit(clickedDoc.filePath);
+                    }
+                }
+
                 InvalidateRect(m_hwnd, nullptr, FALSE);
                 return;
             }
@@ -11024,6 +11148,11 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                         InvalidateRect(m_hwnd, nullptr, FALSE);
                         return 0;
                     }
+                } else if (pDoc->isSpecialView && pDoc->viewType == L"markdown_preview") {
+                    if (m_editor.HandleMarkdownPreviewWheel(delta, *pDoc)) {
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
+                        return 0;
+                    }
                 } else if ((pDoc->isSpecialView && pDoc->viewType == L"course") || !pDoc->courseId.empty()) {
                     if (m_editor.HandleCourseViewWheel(delta)) {
                         InvalidateRect(m_hwnd, nullptr, FALSE);
@@ -11566,6 +11695,13 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 } else {
                     AnimateRightSidebarOpen();
                 }
+                InvalidateRect(m_hwnd, nullptr, FALSE);
+                return 0;
+            }
+
+            // Ctrl+Shift+V Markdown Preview toggle
+            if ((GetKeyState(VK_CONTROL) & 0x8000) != 0 && (GetKeyState(VK_SHIFT) & 0x8000) != 0 && (wParam == 'V' || wParam == 'v')) {
+                ToggleMarkdownPreview();
                 InvalidateRect(m_hwnd, nullptr, FALSE);
                 return 0;
             }

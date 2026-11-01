@@ -104,6 +104,7 @@ enum class MenuActionId {
     ToggleMinimap,
     ToggleBreadcrumbs,
     ToggleStickyScroll,
+    ToggleMarkdownPreview,
     ToggleRenderWhitespace,
     ToggleRenderControlChars,
     ZoomIn,
