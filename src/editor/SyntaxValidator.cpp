@@ -1445,35 +1445,11 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidateReactAndESLint(const Buffe
             while (p < code.length()) {
                 if (code[p] == L'<') {
                     if (p + 1 < code.length() && (code[p + 1] == L'/' || iswalpha(code[p + 1]))) {
-                        // Check if this '<' is an opening tag or a generic type instantiation (e.g. useRef<any>, useState<T>, Array<string>)
-                        bool isOpening = (code[p + 1] != L'/');
-                        if (isOpening && p > 0) {
-                            size_t prevIdx = p;
-                            while (prevIdx > 0 && iswspace(code[prevIdx - 1])) prevIdx--;
-                            if (prevIdx > 0) {
-                                wchar_t prevCh = code[prevIdx - 1];
-                                if (iswalnum(prevCh) || prevCh == L'_' || prevCh == L'$') {
-                                    // Extract preceding word
-                                    size_t wEnd = prevIdx;
-                                    size_t wStart = wEnd;
-                                    while (wStart > 0 && (iswalnum(code[wStart - 1]) || code[wStart - 1] == L'_' || code[wStart - 1] == L'$')) wStart--;
-                                    std::wstring prevWord = code.substr(wStart, wEnd - wStart);
-                                    static const std::unordered_set<std::wstring> allowedBeforeJsx = {
-                                        L"return", L"yield", L"await", L"case", L"default", L"typeof", L"delete", L"void"
-                                    };
-                                    if (allowedBeforeJsx.find(prevWord) == allowedBeforeJsx.end()) {
-                                        // Generic type parameter or function type argument or less-than, NOT a JSX tag
-                                        p++;
-                                        continue;
-                                    }
-                                }
-                            }
-                        }
-
                         // Safely find the matching '>' across single-line or multi-line JSX tags
                         // without stopping on '>' inside string attributes or expressions
                         size_t tagEndLine = l;
                         size_t tagEndCol = std::wstring::npos;
+                        bool abortTag = false;
                         bool inQuote = false;
                         wchar_t qChar = 0;
                         int braceDepth = 0;
@@ -1515,7 +1491,7 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidateReactAndESLint(const Buffe
                                     } else if (sc == L'<' && braceDepth == 0) {
                                         // A new '<' outside of expression brackets means current tag was unclosed or broken!
                                         // Immediately abort scanning this tag so subsequent tags across lines are not swallowed
-                                        tagEndCol = std::wstring::npos;
+                                        abortTag = true;
                                         break;
                                     } else {
                                         accumulatedTag += sc;
@@ -1523,7 +1499,7 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidateReactAndESLint(const Buffe
                                 }
                             }
 
-                            if (tagEndCol != std::wstring::npos) {
+                            if (tagEndCol != std::wstring::npos || abortTag) {
                                 break;
                             }
 
@@ -1549,10 +1525,13 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidateReactAndESLint(const Buffe
                             // A generic type parameter in a call cannot have JSX attributes (e.g. key=, className=, onClick=)
                             bool hasJsxAttrs = (tagStr.find(L'=') != std::wstring::npos);
 
-                            // If tagStr contains type operators or generic syntax (; | & extends as) and has NO attributes, this is a TS generic type parameter
+                            // If tagStr contains type operators or generic syntax (; | & , { [ extends as) and has NO attributes, this is a TS generic type parameter
                             if (!isClose && !hasJsxAttrs && (tagStr.find(L';') != std::wstring::npos ||
                                                              tagStr.find(L'|') != std::wstring::npos ||
                                                              tagStr.find(L'&') != std::wstring::npos ||
+                                                             tagStr.find(L',') != std::wstring::npos ||
+                                                             tagStr.find(L'{') != std::wstring::npos ||
+                                                             tagStr.find(L'[') != std::wstring::npos ||
                                                              tagStr.find(L" extends ") != std::wstring::npos ||
                                                              tagStr.find(L" as ") != std::wstring::npos)) {
                                 if (tagEndLine > l) {

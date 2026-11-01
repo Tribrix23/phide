@@ -95,15 +95,15 @@ static std::vector<SyntaxToken> TokenizeCssLine(const std::wstring& line) {
             continue;
         }
 
-        // 5. Class selector .class-name (including the dot '.')
-        if (line[i] == L'.' && i + 1 < len && (iswalpha(line[i + 1]) || line[i + 1] == L'_' || line[i + 1] == L'-')) {
+        // 5. Class selector .class-name or dot selector '.'
+        if (line[i] == L'.') {
             size_t start = i++;
             while (i < len && (iswalnum(line[i]) || line[i] == L'-' || line[i] == L'_')) ++i;
             tokens.push_back({ TokenType::Tag, start, i - start });
             continue;
         }
 
-        // 6. ID selector #id or Hex color #fff (including the hash '#')
+        // 6. ID selector #id or Hex color #fff or hash selector '#'
         if (line[i] == L'#') {
             size_t start = i++;
             while (i < len && (iswalnum(line[i]) || line[i] == L'-' || line[i] == L'_')) ++i;
@@ -193,7 +193,8 @@ static std::vector<SyntaxToken> TokenizeCssLine(const std::wstring& line) {
 }
 
 std::vector<SyntaxToken> SyntaxLexer::TokenizeLine(const std::wstring& line, const std::wstring& ext) const {
-    if (ext == L".css" || ext == L".scss" || ext == L".less") {
+    if (ext == L".css" || ext == L".scss" || ext == L".less" ||
+        ext == L"css" || ext == L"scss" || ext == L"less") {
         return TokenizeCssLine(line);
     }
 

@@ -395,6 +395,15 @@ int main(int argc, char* argv[]) {
     if (targetTest == 98) {
         goto run_test_98;
     }
+    if (targetTest == 99) {
+        goto run_test_99;
+    }
+    if (targetTest == 100) {
+        goto run_test_100;
+    }
+    if (targetTest == 101) {
+        goto run_test_101;
+    }
 
     // --- 3. Render Test: Picture Viewer in Dark & Light Modes ---
     std::cout << "[TEST 2] Testing Picture Viewer rendering..." << std::endl;
@@ -15088,6 +15097,7 @@ run_test_98:
     // ----------------------------------------------------
     // TEST 99: CSS Modern Properties, JSX Error Isolation & TypeScript Generics
     // ----------------------------------------------------
+run_test_99:
     if (targetTest == 0 || targetTest == 99) {
         std::cout << "\n[TEST 99] Testing CSS Properties, JSX Error Recovery & TS Generics..." << std::endl;
 
@@ -15147,6 +15157,10 @@ run_test_98:
                 L"</footer>\n"
             );
             auto diags = phide::editor::SyntaxValidator::Validate(L"page.tsx", pageBuf);
+            std::cout << "  Subtest 3 diags count: " << diags.size() << std::endl;
+            for (const auto& d : diags) {
+                std::wcout << L"    Line " << d.line << L": " << d.message << std::endl;
+            }
             // Must have exactly 1 error on line 1 (the unclosed span), NOT cascading to footer (line 4)
             bool hasFooterMismatch = false;
             size_t line1Errors = 0;
@@ -15212,6 +15226,7 @@ run_test_98:
     // ----------------------------------------------------
     // TEST 100: Multi-line JSX Tags, GraphView Cluster Stability & Uncovered Popover Gap
     // ----------------------------------------------------
+run_test_100:
     if (targetTest == 0 || targetTest == 100) {
         std::cout << "\n[TEST 100] Testing Multi-line JSX Tags, Graph Cluster Stability & Popover Positioning..." << std::endl;
 
@@ -15358,6 +15373,7 @@ run_test_98:
     // ----------------------------------------------------
     // TEST 101: useEffect Multi-line Deps, TSX Generic Types, Fast Startup & GraphView Dependency Hash Lookups
     // ----------------------------------------------------
+run_test_101:
     if (targetTest == 0 || targetTest == 101) {
         std::cout << "\n[TEST 101] Testing Multi-line useEffect, TSX Generics, Fast Startup & Graph O(1) Lookups..." << std::endl;
 
@@ -15412,7 +15428,43 @@ run_test_98:
                 }
             }
             assert(genericErrors == 0 && "useRef<any> and useState generic types must not be treated as JSX tags!");
-            std::cout << "  Passed: TSX generic types (useRef<any>, useState<T>) validated with 0 JSX errors" << std::endl;
+            phide::editor::Buffer actualPageBuf;
+            actualPageBuf.LoadFromFile(L"C:\\Users\\Administrator\\Downloads\\cleavedb-browser\\app\\page.tsx");
+            auto actualPageDiags = phide::editor::SyntaxValidator::Validate(L"page.tsx", actualPageBuf);
+            std::cout << "  actualPageDiags count: " << actualPageDiags.size() << std::endl;
+            for (const auto& d : actualPageDiags) {
+                std::wcout << L"    Line " << d.line << L": " << d.message << std::endl;
+            }
+            assert(actualPageDiags.size() == 1 && actualPageDiags[0].line == 98 && "page.tsx must isolate the unclosed span on line 98 with 0 false-positive cascading errors!");
+            std::cout << "  Passed: cleavedb-browser/app/page.tsx unclosed span isolated to line 98 without cascading to footer" << std::endl;
+
+            phide::editor::Buffer actualRippleBuf;
+            actualRippleBuf.LoadFromFile(L"C:\\Users\\Administrator\\Downloads\\cleavedb-browser\\components\\ui\\background-ripple-effect.tsx");
+            auto actualRippleDiags = phide::editor::SyntaxValidator::Validate(L"background-ripple-effect.tsx", actualRippleBuf);
+            size_t rippleErrors = 0;
+            for (const auto& d : actualRippleDiags) {
+                if (d.severity == 1) rippleErrors++;
+            }
+            assert(rippleErrors == 0 && "background-ripple-effect.tsx must have 0 false positive JSX errors!");
+            std::cout << "  Passed: cleavedb-browser/components/ui/background-ripple-effect.tsx validated with 0 errors" << std::endl;
+        }
+
+        // Subtest 2.5: globals.css Tailwind validation & CSS . # * vibrant tokenization
+        {
+            phide::editor::Buffer cssBuf;
+            cssBuf.LoadFromFile(L"C:\\Users\\Administrator\\Downloads\\cleavedb-browser\\app\\globals.css");
+            auto diags = phide::editor::SyntaxValidator::Validate(L"globals.css", cssBuf);
+            assert(diags.empty() && "globals.css with Tailwind @theme inline and CSS variables must have 0 diagnostics!");
+            std::cout << "  Passed: globals.css Tailwind @theme inline validated cleanly with 0 false positives" << std::endl;
+
+            phide::editor::SyntaxLexer lexer;
+            auto dotTokens = lexer.TokenizeLine(L".container { color: #fff; }", L".css");
+            assert(!dotTokens.empty() && dotTokens[0].type == phide::editor::TokenType::Tag && "CSS .class must be tokenized as Tag!");
+            auto hashTokens = lexer.TokenizeLine(L"#app { margin: 0; }", L".css");
+            assert(!hashTokens.empty() && hashTokens[0].type == phide::editor::TokenType::Tag && "CSS #id must be tokenized as Tag!");
+            auto starTokens = lexer.TokenizeLine(L"* { box-sizing: border-box; }", L".css");
+            assert(!starTokens.empty() && starTokens[0].type == phide::editor::TokenType::Tag && "CSS * must be tokenized as Tag!");
+            std::cout << "  Passed: CSS '.', '#', '*' selectors correctly tokenized with vibrant syntax styling" << std::endl;
         }
 
         // Subtest 3: Fast GraphView dependency resolution (<250ms)

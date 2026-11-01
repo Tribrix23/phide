@@ -3357,6 +3357,7 @@ void Window::StopLiveServer(const std::wstring& filePath, bool closeTab) {
             break;
         }
     }
+    m_terminal.TerminateServerSession(filePath);
     if (closeTab) {
         m_terminal.CloseTabByAssociatedFile(filePath);
     }
@@ -5644,12 +5645,13 @@ bool Window::Create(HINSTANCE hInstance, int nCmdShow) {
             m_isProjectRunning = false;
             m_runningProjectRoot.clear();
         }
+        m_terminal.TerminateServerSession(filePath);
         StopLiveServer(filePath, /*closeTab=*/false);
         UpdateExecutionButtonStates();
         if (m_hwnd) InvalidateRect(m_hwnd, nullptr, FALSE);
     });
 
-    // Auto-stop server when an error is caught in server tab (per user request: "if its error its automatic stopped")
+    // Auto-stop server when an error is caught in server tab
     m_terminal.SetOnServerError([this](const std::wstring& rootDir, const std::wstring& errorText) {
         for (auto& srv : m_activeLiveServers) {
             if (rootDir.empty() || srv.rootDir == rootDir || srv.filePath == rootDir) {
@@ -5659,11 +5661,16 @@ bool Window::Create(HINSTANCE hInstance, int nCmdShow) {
                 srv.browserOpened = true; // Never redirect on error
             }
         }
-        if (m_isProjectRunning && (rootDir.empty() || m_runningProjectRoot == rootDir || IsFileInDirectory(rootDir, m_runningProjectRoot))) {
-            m_isProjectRunning = false;
-            m_runningProjectRoot.clear();
-            UpdateExecutionButtonStates();
+        // If the server process is still running, keep m_isProjectRunning = true so the user retains
+        // the STOP button to terminate it, rather than falling back to Run/Start while it's still running in background
+        bool isStillAlive = m_terminal.HasActiveServerSession(rootDir);
+        if (!isStillAlive) {
+            if (m_isProjectRunning && (rootDir.empty() || m_runningProjectRoot == rootDir || IsFileInDirectory(rootDir, m_runningProjectRoot))) {
+                m_isProjectRunning = false;
+                m_runningProjectRoot.clear();
+            }
         }
+        UpdateExecutionButtonStates();
         if (m_hwnd) InvalidateRect(m_hwnd, nullptr, FALSE);
     });
 

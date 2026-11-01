@@ -2764,6 +2764,7 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
                         2000.0f,
                         &pMsgLayout))) {
                         pMsgLayout->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR);
+                        pMsgLayout->SetWordWrapping(DWRITE_WORD_WRAPPING_WRAP);
                         DWRITE_TEXT_METRICS tm;
                         if (SUCCEEDED(pMsgLayout->GetMetrics(&tm))) {
                             msgH = tm.height;
@@ -2820,7 +2821,8 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
             pRT->DrawLine(D2D1::Point2F(badgeX - xr, badgeY - xr), D2D1::Point2F(badgeX + xr, badgeY + xr), theme.brushTextWhite.Get(), 1.2f);
             pRT->DrawLine(D2D1::Point2F(badgeX + xr, badgeY - xr), D2D1::Point2F(badgeX - xr, badgeY + xr), theme.brushTextWhite.Get(), 1.2f);
 
-            // Message text - draw layout or text
+            // Message text - draw layout or text with axis-aligned clipping so text NEVER leaks outside card
+            pRT->PushAxisAlignedClip(rcCard, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
             D2D1_POINT_2F ptMsg = D2D1::Point2F(popX + textPadLeft, popY + topPad);
             ID2D1Brush* textBrush = theme.IsDarkMode() ? theme.brushTextWhite.Get() : theme.brushTextPrimary.Get();
             if (pMsgLayout) {
@@ -2838,6 +2840,7 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
                 D2D1_RECT_F rcLoc = D2D1::RectF(ptLoc.x, ptLoc.y, popX + popW - textPadRight, ptLoc.y + locH);
                 pRT->DrawText(locStr.c_str(), static_cast<UINT32>(locStr.length()), theme.fontMenuShortcut.Get(), rcLoc, theme.brushTextMuted.Get());
             }
+            pRT->PopAxisAlignedClip();
         }
     }
 }

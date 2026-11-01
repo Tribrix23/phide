@@ -255,7 +255,7 @@ void TerminalTab::AppendOutput(const char* data, size_t length, bool isError) {
             checkText.find(L"fatal:") != std::wstring::npos
         );
 
-        bool isFatalError = hasErrorKeyword || (isError && !isWarning);
+        bool isFatalError = hasErrorKeyword && !isWarning;
 
         if (isFatalError) {
             hasError = true;

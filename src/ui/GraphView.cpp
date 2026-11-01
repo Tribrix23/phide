@@ -466,19 +466,23 @@ void GraphView::ParseFileDependencies() {
             while (!rW.empty() && (rW[0] == L'\\' || rW[0] == L'/')) rW.erase(0, 1);
         }
 
-        std::filesystem::path p = node.id;
-        if (std::filesystem::exists(p, ec) && std::filesystem::is_regular_file(p, ec)) {
-            // Read file content up to 512 KB
-            auto fSize = std::filesystem::file_size(p, ec);
-            if (!ec && fSize > 0 && fSize <= 512 * 1024) {
-                FILE* fp = nullptr;
-                if (_wfopen_s(&fp, p.c_str(), L"rb") == 0 && fp) {
+        bool isCodeExt = (node.ext == L"js" || node.ext == L"jsx" || node.ext == L"ts" || node.ext == L"tsx" ||
+                          node.ext == L"mjs" || node.ext == L"cjs" || node.ext == L"css" || node.ext == L"scss" ||
+                          node.ext == L"less" || node.ext == L"html" || node.ext == L"htm" || node.ext == L"php" ||
+                          node.ext == L"py" || node.ext == L"json" || node.ext == L"vue" || node.ext == L"svelte");
+        if (isCodeExt) {
+            FILE* fp = nullptr;
+            if (_wfopen_s(&fp, node.id.c_str(), L"rb") == 0 && fp) {
+                _fseeki64(fp, 0, SEEK_END);
+                auto fSize = _ftelli64(fp);
+                _fseeki64(fp, 0, SEEK_SET);
+                if (fSize > 0 && fSize <= 256 * 1024) {
                     std::string buf(static_cast<size_t>(fSize), '\0');
                     size_t readBytes = fread(buf.data(), 1, static_cast<size_t>(fSize), fp);
-                    fclose(fp);
                     buf.resize(readBytes);
                     fileContents[i] = std::move(buf);
                 }
+                fclose(fp);
             }
         }
 
@@ -841,11 +845,7 @@ void GraphView::RefreshFromWorkspace(const std::wstring& rootPath, bool preserve
     }
 
     // 3. Connect nodes based strictly on real references
-    auto tDepsStart = std::chrono::high_resolution_clock::now();
     ParseFileDependencies();
-    auto tDepsEnd = std::chrono::high_resolution_clock::now();
-    auto depsMs = std::chrono::duration_cast<std::chrono::milliseconds>(tDepsEnd - tDepsStart).count();
-    std::cout << "    [GraphView timing: collected=" << collected.size() << " files, ParseFileDependencies=" << depsMs << " ms]" << std::endl;
 
     // 4. Restore saved layout positions if available
     bool hasSavedLayout = LoadLayout();
@@ -1138,14 +1138,7 @@ std::wstring GraphView::GetLayoutFilePath() const {
         std::filesystem::path phideDir = root / L".phide";
         return (phideDir / L"graph_layout.json").wstring();
     }
-    wchar_t* pAppData = nullptr;
-    size_t len = 0;
-    if (_wdupenv_s(&pAppData, &len, L"APPDATA") == 0 && pAppData) {
-        std::filesystem::path dir = std::filesystem::path(pAppData) / L"phide";
-        free(pAppData);
-        return (dir / L"graph_layout_default.json").wstring();
-    }
-    return L"graph_layout.json";
+    return L"";
 }
 
 bool GraphView::SaveLayout() {
@@ -1165,14 +1158,22 @@ bool GraphView::SaveLayout() {
     out << L"  \"panY\": " << m_panY << L",\n";
     out << L"  \"nodes\": [\n";
 
-    std::filesystem::path targetDir = m_currentRootPath;
+    std::wstring rootStr = m_currentRootPath;
+    for (auto& ch : rootStr) { if (ch == L'\\') ch = L'/'; }
+    while (!rootStr.empty() && rootStr.back() == L'/') rootStr.pop_back();
+
     size_t count = 0;
     for (size_t i = 0; i < m_nodes.size(); ++i) {
         const auto& n = m_nodes[i];
-        std::error_code relEc;
-        std::filesystem::path relP = std::filesystem::relative(n.id, targetDir, relEc);
-        std::wstring saveId = (!relEc && !relP.empty()) ? relP.wstring() : n.id;
-        for (auto& ch : saveId) { if (ch == L'\\') ch = L'/'; }
+        std::wstring normId = n.id;
+        for (auto& ch : normId) { if (ch == L'\\') ch = L'/'; }
+
+        std::wstring saveId = normId;
+        if (!rootStr.empty() && normId.rfind(rootStr, 0) == 0) {
+            saveId = normId.substr(rootStr.length());
+            while (!saveId.empty() && saveId.front() == L'/') saveId.erase(0, 1);
+        }
+
         out << L"    { \"id\": \"" << saveId << L"\", \"x\": " << n.x << L", \"y\": " << n.y
             << L", \"pinned\": " << (n.isPinned ? L"true" : L"false") << L" }";
         if (++count < m_nodes.size()) out << L",";
@@ -1193,6 +1194,26 @@ bool GraphView::LoadLayout() {
 
     std::wifstream in(path);
     if (!in.is_open()) return false;
+
+    std::wstring rootStr = m_currentRootPath;
+    for (auto& ch : rootStr) { if (ch == L'\\') ch = L'/'; }
+    while (!rootStr.empty() && rootStr.back() == L'/') rootStr.pop_back();
+
+    // Fast O(1) hash lookup for nodes (zero disk I/O)
+    std::unordered_map<std::wstring, size_t> nodeMap;
+    nodeMap.reserve(m_nodes.size() * 2);
+
+    for (size_t i = 0; i < m_nodes.size(); ++i) {
+        std::wstring normId = m_nodes[i].id;
+        for (auto& ch : normId) { if (ch == L'\\') ch = L'/'; }
+        nodeMap[normId] = i;
+
+        if (!rootStr.empty() && normId.rfind(rootStr, 0) == 0) {
+            std::wstring relId = normId.substr(rootStr.length());
+            while (!relId.empty() && relId.front() == L'/') relId.erase(0, 1);
+            nodeMap[relId] = i;
+        }
+    }
 
     std::wstring line;
     bool foundAny = false;
@@ -1238,27 +1259,18 @@ bool GraphView::LoadLayout() {
                     pinned = true;
                 }
 
-                std::filesystem::path targetDir = m_currentRootPath;
                 std::wstring normId = id;
                 for (auto& ch : normId) { if (ch == L'\\') ch = L'/'; }
 
-                for (auto& n : m_nodes) {
-                    std::error_code relEc;
-                    std::filesystem::path relP = std::filesystem::relative(n.id, targetDir, relEc);
-                    std::wstring nodeRel = (!relEc && !relP.empty()) ? relP.wstring() : n.id;
-                    for (auto& ch : nodeRel) { if (ch == L'\\') ch = L'/'; }
-                    std::wstring normNodeId = n.id;
-                    for (auto& ch : normNodeId) { if (ch == L'\\') ch = L'/'; }
-
-                    if (normNodeId == normId || nodeRel == normId) {
-                        n.x = x;
-                        n.y = y;
-                        n.isPinned = pinned;
-                        n.vx = 0.0f;
-                        n.vy = 0.0f;
-                        foundAny = true;
-                        break;
-                    }
+                auto it = nodeMap.find(normId);
+                if (it != nodeMap.end()) {
+                    auto& n = m_nodes[it->second];
+                    n.x = x;
+                    n.y = y;
+                    n.isPinned = pinned;
+                    n.vx = 0.0f;
+                    n.vy = 0.0f;
+                    foundAny = true;
                 }
             }
         }
