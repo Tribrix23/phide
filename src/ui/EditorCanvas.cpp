@@ -940,9 +940,13 @@ void EditorCanvas::RenderBreadcrumbs(ID2D1RenderTarget* pRT, Theme& theme, const
     );
 
     // Diagnostic error count badge on breadcrumb bar (Image 4) - centered text & vector icon
-    if (!doc.diagnostics.empty()) {
-        std::wstring errBadgeStr = std::to_wstring(doc.diagnostics.size()) +
-            (doc.diagnostics.size() == 1 ? L" error" : L" errors");
+    size_t errorCount = 0;
+    for (const auto& d : doc.diagnostics) {
+        if (d.severity == 1) errorCount++;
+    }
+    if (errorCount > 0) {
+        std::wstring errBadgeStr = std::to_wstring(errorCount) +
+            (errorCount == 1 ? L" error" : L" errors");
         float badgeW = config.ScaleF(80.0f);
         float badgeH = config.ScaleF(18.0f);
         float badgeX = canvasRight - config.ScaleF(95.0f);
@@ -2321,7 +2325,7 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
             // Diagnostic error in gutter
             bool hasDiagError = false;
             for (const auto& d : doc.diagnostics) {
-                if (d.line == vl.bufferLine) {
+                if (d.line == vl.bufferLine && d.severity == 1) {
                     hasDiagError = true;
                     break;
                 }
@@ -2693,26 +2697,122 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
             }
         }
         if (pDiag && pDiag->line >= doc.scrollLine) {
-            float popY = topY + config.ScaleF(6.0f) + (pDiag->line - doc.scrollLine + 1) * lineH + config.ScaleF(2.0f);
-            float popX = codeLeft + config.ScaleF(20.0f);
-            float popW = config.ScaleF(420.0f);
-            float popH = config.ScaleF(46.0f);
-            if (popY + popH > clientHeight - config.ScaleF(10.0f)) {
-                popY = topY + config.ScaleF(6.0f) + (pDiag->line - doc.scrollLine) * lineH - popH - config.ScaleF(2.0f);
+            std::wstring locStr = doc.fileName + L" (" + std::to_wstring(pDiag->line + 1) + L":" + std::to_wstring(pDiag->col + 1) + L")";
+
+            float textPadLeft = config.ScaleF(32.0f);
+            float textPadRight = config.ScaleF(16.0f);
+            float topPad = config.ScaleF(8.0f);
+            float bottomPad = config.ScaleF(8.0f);
+
+            float msgW = config.ScaleF(380.0f);
+            float msgH = config.ScaleF(18.0f);
+            float locW = config.ScaleF(150.0f);
+            float locH = config.ScaleF(14.0f);
+
+            Microsoft::WRL::ComPtr<IDWriteTextLayout> pMsgLayout;
+            if (theme.dwriteFactory && theme.fontBody) {
+                if (SUCCEEDED(theme.dwriteFactory->CreateTextLayout(
+                    pDiag->message.c_str(),
+                    static_cast<UINT32>(pDiag->message.length()),
+                    theme.fontBody.Get(),
+                    10000.0f,
+                    1000.0f,
+                    &pMsgLayout))) {
+                    pMsgLayout->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR);
+                    DWRITE_TEXT_METRICS tm;
+                    if (SUCCEEDED(pMsgLayout->GetMetrics(&tm))) {
+                        msgW = tm.width;
+                        msgH = tm.height;
+                    }
+                }
             }
+
+            Microsoft::WRL::ComPtr<IDWriteTextLayout> pLocLayout;
+            if (theme.dwriteFactory && theme.fontMenuShortcut) {
+                if (SUCCEEDED(theme.dwriteFactory->CreateTextLayout(
+                    locStr.c_str(),
+                    static_cast<UINT32>(locStr.length()),
+                    theme.fontMenuShortcut.Get(),
+                    10000.0f,
+                    1000.0f,
+                    &pLocLayout))) {
+                    pLocLayout->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR);
+                    DWRITE_TEXT_METRICS tm;
+                    if (SUCCEEDED(pLocLayout->GetMetrics(&tm))) {
+                        locW = tm.width;
+                        locH = tm.height;
+                    }
+                }
+            }
+
+            float neededContentW = (std::max)(msgW, locW);
+            float popW = neededContentW + textPadLeft + textPadRight;
+            popW = (std::max)(popW, config.ScaleF(280.0f));
+
+            float maxAvailableW = canvasWidth - config.ScaleF(30.0f);
+            if (popW > maxAvailableW && maxAvailableW > config.ScaleF(200.0f)) {
+                popW = maxAvailableW;
+                // If constrained, recreate message layout with word wrapping
+                if (theme.dwriteFactory && theme.fontBody) {
+                    pMsgLayout.Reset();
+                    float wrapW = popW - textPadLeft - textPadRight;
+                    if (SUCCEEDED(theme.dwriteFactory->CreateTextLayout(
+                        pDiag->message.c_str(),
+                        static_cast<UINT32>(pDiag->message.length()),
+                        theme.fontBody.Get(),
+                        wrapW,
+                        2000.0f,
+                        &pMsgLayout))) {
+                        pMsgLayout->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR);
+                        DWRITE_TEXT_METRICS tm;
+                        if (SUCCEEDED(pMsgLayout->GetMetrics(&tm))) {
+                            msgH = tm.height;
+                        }
+                    }
+                }
+            }
+
+            float popH = topPad + msgH + config.ScaleF(4.0f) + locH + bottomPad;
+
+            // Find target line visual Y using visualLines (takes CodeLens and folding into account)
+            float targetLineY = -1.0f;
+            for (size_t v = doc.scrollLine; v < visualLines.size(); ++v) {
+                if (!visualLines[v].isCodeLens && visualLines[v].bufferLine == pDiag->line) {
+                    targetLineY = topY + config.ScaleF(6.0f) + static_cast<float>(v - doc.scrollLine) * lineH;
+                    break;
+                }
+            }
+
+            if (targetLineY < 0.0f) {
+                targetLineY = topY + config.ScaleF(6.0f);
+            }
+
+            float tokenX = codeLeft + config.ScaleF(12.0f) + static_cast<float>(pDiag->col) * charW - doc.scrollOffsetX;
+            float popX = (std::max)(canvasLeft + config.ScaleF(12.0f), tokenX);
+            if (popX + popW > canvasLeft + canvasWidth - config.ScaleF(12.0f)) {
+                popX = (std::max)(canvasLeft + config.ScaleF(12.0f), canvasLeft + canvasWidth - popW - config.ScaleF(12.0f));
+            }
+
+            // Prefer placing ABOVE the line so the line with the problem is 100% visible
+            float popY = targetLineY - popH - config.ScaleF(4.0f);
+            // If near top of canvas, place BELOW the line with a 4px gap so it never covers the text
+            if (popY < topY + config.ScaleF(4.0f)) {
+                popY = targetLineY + lineH + config.ScaleF(4.0f);
+            }
+
             D2D1_RECT_F rcCard = D2D1::RectF(popX, popY, popX + popW, popY + popH);
             D2D1_ROUNDED_RECT rrcCard = D2D1::RoundedRect(rcCard, 4.0f, 4.0f);
 
             Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> cardBg;
             Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> cardBorder;
-            pRT->CreateSolidColorBrush(theme.IsDarkMode() ? D2D1::ColorF(0.14f, 0.14f, 0.16f, 0.98f) : D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.98f), &cardBg);
+            pRT->CreateSolidColorBrush(theme.IsDarkMode() ? D2D1::ColorF(0.12f, 0.12f, 0.14f, 1.0f) : D2D1::ColorF(1.0f, 1.0f, 1.0f, 1.0f), &cardBg);
             pRT->CreateSolidColorBrush(D2D1::ColorF(0.92f, 0.28f, 0.28f, 1.0f), &cardBorder);
             if (cardBg) pRT->FillRoundedRectangle(&rrcCard, cardBg.Get());
             if (cardBorder) pRT->DrawRoundedRectangle(&rrcCard, cardBorder.Get(), 1.2f);
 
             // Red Error badge circle (x)
-            float badgeX = popX + config.ScaleF(14.0f);
-            float badgeY = popY + config.ScaleF(16.0f);
+            float badgeX = popX + config.ScaleF(15.0f);
+            float badgeY = popY + topPad + (std::min)(msgH, config.ScaleF(18.0f)) / 2.0f;
             pRT->FillEllipse(D2D1::Ellipse(D2D1::Point2F(badgeX, badgeY), config.ScaleF(6.0f), config.ScaleF(6.0f)),
                              theme.brushIconRed ? theme.brushIconRed.Get() : theme.brushCloseHoverBg.Get());
             // Draw 'x' inside badge
@@ -2720,14 +2820,24 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
             pRT->DrawLine(D2D1::Point2F(badgeX - xr, badgeY - xr), D2D1::Point2F(badgeX + xr, badgeY + xr), theme.brushTextWhite.Get(), 1.2f);
             pRT->DrawLine(D2D1::Point2F(badgeX + xr, badgeY - xr), D2D1::Point2F(badgeX - xr, badgeY + xr), theme.brushTextWhite.Get(), 1.2f);
 
-            // Message text
-            D2D1_RECT_F rcMsg = D2D1::RectF(popX + config.ScaleF(26.0f), popY + config.ScaleF(6.0f), popX + popW - config.ScaleF(10.0f), popY + config.ScaleF(24.0f));
-            pRT->DrawText(pDiag->message.c_str(), static_cast<UINT32>(pDiag->message.length()), theme.fontBody.Get(), rcMsg, theme.brushTextPrimary.Get());
+            // Message text - draw layout or text
+            D2D1_POINT_2F ptMsg = D2D1::Point2F(popX + textPadLeft, popY + topPad);
+            ID2D1Brush* textBrush = theme.IsDarkMode() ? theme.brushTextWhite.Get() : theme.brushTextPrimary.Get();
+            if (pMsgLayout) {
+                pRT->DrawTextLayout(ptMsg, pMsgLayout.Get(), textBrush);
+            } else {
+                D2D1_RECT_F rcMsg = D2D1::RectF(ptMsg.x, ptMsg.y, popX + popW - textPadRight, ptMsg.y + msgH);
+                pRT->DrawText(pDiag->message.c_str(), static_cast<UINT32>(pDiag->message.length()), theme.fontBody.Get(), rcMsg, textBrush);
+            }
 
             // Source line/col info
-            std::wstring locStr = doc.fileName + L" (" + std::to_wstring(pDiag->line + 1) + L":" + std::to_wstring(pDiag->col + 1) + L")";
-            D2D1_RECT_F rcLoc = D2D1::RectF(popX + config.ScaleF(26.0f), popY + config.ScaleF(24.0f), popX + popW - config.ScaleF(10.0f), popY + popH - config.ScaleF(4.0f));
-            pRT->DrawText(locStr.c_str(), static_cast<UINT32>(locStr.length()), theme.fontMenuShortcut.Get(), rcLoc, theme.brushTextMuted.Get());
+            D2D1_POINT_2F ptLoc = D2D1::Point2F(popX + textPadLeft, popY + topPad + msgH + config.ScaleF(4.0f));
+            if (pLocLayout) {
+                pRT->DrawTextLayout(ptLoc, pLocLayout.Get(), theme.brushTextMuted.Get());
+            } else {
+                D2D1_RECT_F rcLoc = D2D1::RectF(ptLoc.x, ptLoc.y, popX + popW - textPadRight, ptLoc.y + locH);
+                pRT->DrawText(locStr.c_str(), static_cast<UINT32>(locStr.length()), theme.fontMenuShortcut.Get(), rcLoc, theme.brushTextMuted.Get());
+            }
         }
     }
 }
@@ -2805,6 +2915,64 @@ int EditorCanvas::HitTestFoldChevron(POINT pt) const {
         }
     }
     return -1;
+}
+
+bool EditorCanvas::HitTestGutter(POINT pt, const app::AppConfig& config, const editor::OpenDocument& doc,
+                                 float canvasLeft, float clientHeight, size_t& outLine) const {
+    const float headerH = config.ScaleF(static_cast<float>(config.headerHeight));
+    const float tabH    = config.ScaleF(34.0f);
+    const float breadcrumbH = config.ScaleF(24.0f);
+    const float topY    = headerH + tabH + breadcrumbH;
+    const float gutterW = config.ScaleF(50.0f);
+    const float lineH   = config.ScaleF(std::round(config.fontSize * config.lineHeightMultiplier));
+
+    if (pt.x < canvasLeft || pt.x >= canvasLeft + gutterW || pt.y < topY || pt.y > clientHeight) {
+        return false;
+    }
+
+    float relY = pt.y - (topY + config.ScaleF(6.0f));
+    if (relY < 0.0f || lineH <= 0.0f) {
+        return false;
+    }
+
+    size_t visualSlot = doc.scrollLine + static_cast<size_t>(relY / lineH);
+    const auto& buffer = doc.buffer;
+    size_t totalBufLines = buffer.GetLineCount();
+    size_t curVisual = 0;
+    size_t mappedLine = 0;
+    bool found = false;
+
+    for (size_t b = 0; b < totalBufLines; ++b) {
+        size_t foldEnd = 0;
+        bool canFold = GetFoldRange(buffer, b, foldEnd);
+        bool isFolded = canFold && (doc.foldedLines.count(b) > 0);
+
+        // Virtual CodeLens line directly above functions & tests
+        if (config.enableCodeLens && !doc.isDiffView && IsFunctionOrTestLine(buffer.GetLine(b))) {
+            if (curVisual == visualSlot) {
+                // Click was on the CodeLens header line, not the code line
+                return false;
+            }
+            curVisual++;
+        }
+
+        if (curVisual == visualSlot) {
+            mappedLine = b;
+            found = true;
+            break;
+        }
+        curVisual++;
+        if (isFolded) {
+            b = foldEnd;
+        }
+        mappedLine = b;
+    }
+
+    if (found) {
+        outLine = mappedLine;
+        return true;
+    }
+    return false;
 }
 
 bool EditorCanvas::HitTestCodeArea(POINT pt, const app::AppConfig& config, const editor::OpenDocument& doc,

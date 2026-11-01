@@ -208,6 +208,13 @@ public:
     [[nodiscard]] int HitTestFoldChevron(POINT pt) const;
 
     /**
+     * @brief Tests if mouse clicked inside the editor gutter (e.g. to toggle a breakpoint).
+     * @return True if hit, with outLine populated with the exact 0-based buffer line taking CodeLens and folding into account.
+     */
+    [[nodiscard]] bool HitTestGutter(POINT pt, const app::AppConfig& config, const editor::OpenDocument& doc,
+                                     float canvasLeft, float clientHeight, size_t& outLine) const;
+
+    /**
      * @brief Tests if mouse clicked inside the code area to position cursor.
      */
     bool HitTestCodeArea(POINT pt, const app::AppConfig& config, const editor::OpenDocument& doc,

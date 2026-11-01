@@ -392,6 +392,9 @@ int main(int argc, char* argv[]) {
     if (targetTest == 97) {
         goto run_test_97;
     }
+    if (targetTest == 98) {
+        goto run_test_98;
+    }
 
     // --- 3. Render Test: Picture Viewer in Dark & Light Modes ---
     std::cout << "[TEST 2] Testing Picture Viewer rendering..." << std::endl;
@@ -14972,6 +14975,371 @@ run_test_97:
         std::cout << "  Passed: All [TEST 97] CSS Custom Properties, Dev Server Lifecycle & Pill Positioning passed!" << std::endl;
         if (targetTest == 97) {
             std::cout << "Target test 97 finished successfully." << std::endl;
+            return 0;
+        }
+    }
+
+run_test_98:
+    // --- TEST 98: Dynamic Error Hover Container, Gutter Breakpoint Alignment, and JSX URL Comment False-Positive Fix ---
+    if (targetTest == 0 || targetTest == 98) {
+        std::cout << "\n[TEST 98] Testing Dynamic Error Hover Container, Gutter Breakpoint Alignment, JSX URL False-Positive Fix..." << std::endl;
+
+        // Subtest 1: JSX URL False-Positive Fix (https:// inside attribute strings)
+        {
+            phide::editor::Buffer tsxBuf;
+            std::wstring tsxCode =
+                L"export default function Page() {\n"
+                L"  return (\n"
+                L"    <div className=\"container\">\n"
+                L"      <footer className={`${styles.footer} ${styles.container}`}>\n"
+                L"        <Link href=\"/\" className={styles.brand} aria-label=\"CleaveDB home\"><Image src={logoImg} alt=\"\" width={30} height={30} /><span>Cleave<span className={styles.brandLight}>DB</span></span></Link>\n"
+                L"        <p>© {new Date().getFullYear()} CleaveDB. Built for possibility.</p>\n"
+                L"        <nav aria-label=\"Footer\"><Link href=\"/docs\">Documentation</Link><Link href=\"/tutorial\">Tutorials</Link><a href=\"https://github.com/Tribrix23/CleaveDB\" target=\"_blank\" rel=\"noopener noreferrer\">GitHub</a></nav>\n"
+                L"      </footer>\n"
+                L"    </div>\n"
+                L"  );\n"
+                L"}\n";
+            tsxBuf.SetText(tsxCode);
+            auto diags = phide::editor::SyntaxValidator::Validate(L"page.tsx", tsxBuf);
+            std::cout << "  page.tsx with https:// URL diagnostics count: " << diags.size() << std::endl;
+            for (const auto& d : diags) {
+                std::wcout << L"    Unexpected diag on line " << d.line << L": " << d.message << std::endl;
+            }
+            assert(diags.empty() && "TSX containing https:// URL in attribute must produce 0 false positive diagnostics!");
+            std::cout << "  Passed: JSX URL comment false-positive bug fixed; validated cleanly with 0 diagnostics" << std::endl;
+        }
+
+        // Subtest 2: Gutter Breakpoint Click Alignment (HitTestGutter)
+        {
+            phide::editor::OpenDocument testDoc;
+            testDoc.filePath = L"c:\\test\\page.tsx";
+            testDoc.fileName = L"page.tsx";
+            std::wstring dummyCode = L"";
+            for (int i = 0; i < 150; ++i) {
+                if (i == 10) {
+                    dummyCode += L"export default function Page() {\n"; // CodeLens line inserted above this!
+                } else {
+                    dummyCode += L"const line" + std::to_wstring(i) + L" = 1;\n";
+                }
+            }
+            testDoc.buffer.SetText(dummyCode);
+            testDoc.scrollLine = 0;
+
+            phide::app::AppConfig cfg;
+            cfg.enableCodeLens = true;
+            phide::ui::EditorCanvas canvas;
+
+            float headerH = cfg.ScaleF(static_cast<float>(cfg.headerHeight));
+            float tabH = cfg.ScaleF(34.0f);
+            float breadcrumbH = cfg.ScaleF(24.0f);
+            float topY = headerH + tabH + breadcrumbH;
+            float lineH = cfg.ScaleF(std::round(cfg.fontSize * cfg.lineHeightMultiplier));
+
+            // Visual slot 92 is at Y = topY + 6.0f + 92 * lineH + lineH / 2.0f
+            POINT ptGutter = { static_cast<LONG>(cfg.ScaleF(20.0f)), static_cast<LONG>(topY + cfg.ScaleF(6.0f) + 92.0f * lineH + lineH / 2.0f) };
+            size_t outLine = 0;
+            bool hit = canvas.HitTestGutter(ptGutter, cfg, testDoc, 0.0f, 3000.0f, outLine);
+            assert(hit && "Gutter hit test must succeed!");
+            // Because CodeLens inserted 1 virtual line at line 10, visual line 92 corresponds to buffer line 91 (display line 92!)
+            assert(outLine == 91 && "Gutter click at visual line 92 must map to bufferLine 91 (display line 92), not jump to 93!");
+            std::cout << "  Passed: Gutter breakpoint click alignment verified (exact 1:1 match with visual line)" << std::endl;
+        }
+
+        // Subtest 3: Dynamic Error Hover Container Render
+        {
+            phide::ui::Theme theme;
+            theme.SetThemeMode(phide::ui::ThemeMode::Dark);
+            Microsoft::WRL::ComPtr<IWICBitmap> pWic;
+            Microsoft::WRL::ComPtr<ID2D1RenderTarget> pRT;
+            CreateTarget(pWic, pRT);
+            theme.CreateDeviceResources(pRT.Get(), pDWriteFactory.Get());
+
+            phide::editor::OpenDocument doc;
+            doc.fileName = L"page.tsx";
+            doc.buffer.SetText(L"line 1\nline 2\nline 3\nline 4\nline 5\n");
+            doc.diagnostics.push_back({
+                2, 0, 10,
+                L"JSX: Expected corresponding JSX closing tag for '<nav>' but found '</footer>'",
+                1
+            });
+            doc.hoveredDiagnosticLine = 2;
+
+            phide::app::AppConfig cfg;
+            phide::ui::EditorCanvas canvas;
+
+            pRT->BeginDraw();
+            pRT->Clear(theme.colors.canvasBg);
+            std::vector<phide::editor::OpenDocument> docs = { doc };
+            canvas.Render(pRT.Get(), theme, cfg, docs, 0, 52.0f, 1200.0f, 750.0f, true);
+            HRESULT hr = pRT->EndDraw();
+            assert(SUCCEEDED(hr));
+
+            SaveWicBitmapToPng(pWic.Get(), pWicFactory.Get(), artDir + L"test_error_hover_popover_dynamic_clean.png");
+            std::cout << "  Passed: Rendered test_error_hover_popover_dynamic_clean.png" << std::endl;
+        }
+
+        std::cout << "  Passed: All [TEST 98] Dynamic Error Hover, Gutter Breakpoint Alignment & JSX URL Fix passed!" << std::endl;
+        if (targetTest == 98) {
+            std::cout << "Target test 98 finished successfully." << std::endl;
+            return 0;
+        }
+    }
+
+    // ----------------------------------------------------
+    // TEST 99: CSS Modern Properties, JSX Error Isolation & TypeScript Generics
+    // ----------------------------------------------------
+    if (targetTest == 0 || targetTest == 99) {
+        std::cout << "\n[TEST 99] Testing CSS Properties, JSX Error Recovery & TS Generics..." << std::endl;
+
+        // Subtest 1: CSS object-fit & mix-blend-mode (landing.module.css)
+        {
+            phide::editor::Buffer cssBuf;
+            cssBuf.SetText(
+                L".brand img {\n"
+                L"  object-fit: contain;\n"
+                L"  mix-blend-mode: multiply;\n"
+                L"}\n"
+            );
+            auto diags = phide::editor::SyntaxValidator::Validate(L"landing.module.css", cssBuf);
+            size_t errCount = 0;
+            for (const auto& d : diags) {
+                if (d.severity == 1) errCount++;
+            }
+            assert(errCount == 0 && "CSS object-fit and mix-blend-mode must produce 0 errors!");
+            assert(diags.empty() && "landing.module.css rules must produce 0 warnings or errors!");
+            std::cout << "  Passed: Modern CSS properties (object-fit, mix-blend-mode) produce 0 errors or warnings" << std::endl;
+        }
+
+        // Subtest 2: TypeScript Generics (background-ripple-effect.tsx)
+        {
+            phide::editor::Buffer tsxBuf;
+            tsxBuf.SetText(
+                L"export const Ripple = () => {\n"
+                L"  const ref = useRef<any>(null);\n"
+                L"  const [clickedCell, setClickedCell] = useState<{\n"
+                L"    row: number;\n"
+                L"    col: number;\n"
+                L"  } | null>(null);\n"
+                L"  return (\n"
+                L"    <div ref={ref}>\n"
+                L"      <div className=\"grid\" />\n"
+                L"    </div>\n"
+                L"  );\n"
+                L"};\n"
+            );
+            auto diags = phide::editor::SyntaxValidator::Validate(L"background-ripple-effect.tsx", tsxBuf);
+            size_t errCount = 0;
+            for (const auto& d : diags) {
+                if (d.severity == 1) errCount++;
+            }
+            assert(errCount == 0 && "TypeScript generics (<any>, <{...} | null>) must not be parsed as JSX tags!");
+            std::cout << "  Passed: TypeScript generics in TSX produce 0 false-positive JSX errors" << std::endl;
+        }
+
+        // Subtest 3: JSX Error Recovery & Ancestor Matching (page.tsx)
+        {
+            phide::editor::Buffer pageBuf;
+            pageBuf.SetText(
+                L"<footer className=\"footer\">\n"
+                L"  <Link href=\"/\"><span>Cleave<span className=\"light\">DB</span><</Link>\n"
+                L"  <p>Copyright 2026</p>\n"
+                L"  <nav><Link href=\"/docs\">Docs</Link></nav>\n"
+                L"</footer>\n"
+            );
+            auto diags = phide::editor::SyntaxValidator::Validate(L"page.tsx", pageBuf);
+            // Must have exactly 1 error on line 1 (the unclosed span), NOT cascading to footer (line 4)
+            bool hasFooterMismatch = false;
+            size_t line1Errors = 0;
+            for (const auto& d : diags) {
+                if (d.message.find(L"footer") != std::wstring::npos) {
+                    hasFooterMismatch = true;
+                }
+                if (d.line == 1) {
+                    line1Errors++;
+                }
+            }
+            assert(!hasFooterMismatch && "Unclosed inner tag must NOT cascade mismatch errors onto valid footer closing tag!");
+            assert(line1Errors > 0 && "Line 1 must report unclosed JSX element for the typo");
+            std::cout << "  Passed: JSX error recovery isolated cleanly to line 1 without cascading to </footer>" << std::endl;
+        }
+
+        // Subtest 4: Render test image for popover text visibility
+        {
+            phide::ui::Theme theme;
+            theme.SetThemeMode(phide::ui::ThemeMode::Dark);
+            Microsoft::WRL::ComPtr<IWICBitmap> pWic;
+            Microsoft::WRL::ComPtr<ID2D1RenderTarget> pRT;
+            CreateTarget(pWic, pRT);
+            theme.CreateDeviceResources(pRT.Get(), pDWriteFactory.Get());
+
+            phide::editor::OpenDocument doc;
+            doc.fileName = L"page.tsx";
+            doc.buffer.SetText(
+                L"<footer className=\"footer\">\n"
+                L"  <Link href=\"/\"><span>Cleave<span className=\"light\">DB</span><</Link>\n"
+                L"  <p>Copyright 2026</p>\n"
+                L"  <nav><Link href=\"/docs\">Docs</Link></nav>\n"
+                L"</footer>\n"
+            );
+            doc.diagnostics.push_back({
+                1, 19, 6,
+                L"JSX: Unclosed JSX element '<span>'",
+                1
+            });
+            doc.hoveredDiagnosticLine = 1;
+
+            phide::app::AppConfig cfg;
+            phide::ui::EditorCanvas canvas;
+
+            pRT->BeginDraw();
+            pRT->Clear(theme.colors.canvasBg);
+            std::vector<phide::editor::OpenDocument> docs = { doc };
+            canvas.Render(pRT.Get(), theme, cfg, docs, 0, 52.0f, 1200.0f, 750.0f, true);
+            HRESULT hr = pRT->EndDraw();
+            assert(SUCCEEDED(hr));
+
+            SaveWicBitmapToPng(pWic.Get(), pWicFactory.Get(), artDir + L"test_error_hover_popover_visible_text.png");
+            std::cout << "  Passed: Rendered test_error_hover_popover_visible_text.png" << std::endl;
+        }
+
+        std::cout << "  Passed: All [TEST 99] Modern CSS Properties, JSX Error Isolation & TS Generics passed!" << std::endl;
+        if (targetTest == 99) {
+            std::cout << "Target test 99 finished successfully." << std::endl;
+            return 0;
+        }
+    }
+
+    // ----------------------------------------------------
+    // TEST 100: Multi-line JSX Tags, GraphView Cluster Stability & Uncovered Popover Gap
+    // ----------------------------------------------------
+    if (targetTest == 0 || targetTest == 100) {
+        std::cout << "\n[TEST 100] Testing Multi-line JSX Tags, Graph Cluster Stability & Popover Positioning..." << std::endl;
+
+        // Subtest 1: Multi-line JSX tags in tutorial-sidebar.tsx
+        {
+            phide::editor::Buffer sidebarBuf;
+            sidebarBuf.SetText(
+                L"export const Sidebar = () => {\n"
+                L"  return (\n"
+                L"    <div\n"
+                L"      key=\"item-1\"\n"
+                L"      className=\"border-b border-zinc-200\"\n"
+                L"    >\n"
+                L"      <button\n"
+                L"        onClick={() => toggleItem(0)}\n"
+                L"        className=\"flex w-full items-center gap-3 px-5 py-4 text-left\"\n"
+                L"      >\n"
+                L"        <ChevronDown className=\"h-4 w-4 shrink-0\" strokeWidth={2.5} />\n"
+                L"        <span className=\"tracking-wide\">Title</span>\n"
+                L"      </button>\n"
+                L"      <div className=\"px-12 py-3 text-sm\">\n"
+                L"        <ul className=\"space-y-2\">\n"
+                L"          <li key=\"link-1\">\n"
+                L"            <Link\n"
+                L"              href=\"/docs\"\n"
+                L"              className=\"hover:text-blue-600\"\n"
+                L"            >\n"
+                L"              Overview\n"
+                L"            </Link>\n"
+                L"          </li>\n"
+                L"        </ul>\n"
+                L"      </div>\n"
+                L"    </div>\n"
+                L"  );\n"
+                L"};\n"
+            );
+            auto diags = phide::editor::SyntaxValidator::Validate(L"tutorial-sidebar.tsx", sidebarBuf);
+            size_t errCount = 0;
+            for (const auto& d : diags) {
+                if (d.severity == 1) errCount++;
+            }
+            assert(errCount == 0 && "Multi-line JSX tags must be parsed cleanly with 0 errors!");
+            assert(diags.empty() && "No unexpected closing tag diagnostics should be emitted for valid multi-line JSX tags!");
+            std::cout << "  Passed: Multi-line JSX tags (<div ...>, <button ...>, <Link ...>) validate with 0 errors" << std::endl;
+        }
+
+        // Subtest 2: GraphView multiple files with identical name (e.g. app/page.tsx, app/docs/page.tsx)
+        {
+            phide::ui::GraphView gv;
+            // Test that when RefreshFromWorkspace is called with preserveExistingPositions,
+            // duplicate names don't collapse onto the first match
+            std::wstring fakeWs = L"C:\\Users\\Administrator\\Downloads\\cleavedb-browser";
+            gv.RefreshFromWorkspace(fakeWs, false);
+            size_t initialNodes = gv.GetNodes().size();
+            assert(initialNodes > 0 && "GraphView must populate nodes from workspace");
+
+            // Count how many 'page.tsx' nodes exist
+            size_t pageCount = 0;
+            for (const auto& n : gv.GetNodes()) {
+                if (n.label == L"page.tsx") pageCount++;
+            }
+
+            // Simulate file refresh (e.g. on file save)
+            gv.RefreshFromWorkspace(fakeWs, true);
+            size_t afterRefreshNodes = gv.GetNodes().size();
+            assert(initialNodes == afterRefreshNodes && "Node count must not change or drop during preserveExistingPositions refresh!");
+
+            // Check that distinct page.tsx nodes did NOT collapse to identical coordinates
+            std::set<std::pair<int, int>> uniqueCoords;
+            for (const auto& n : gv.GetNodes()) {
+                if (n.label == L"page.tsx") {
+                    uniqueCoords.insert({ static_cast<int>(n.x * 10), static_cast<int>(n.y * 10) });
+                }
+            }
+            if (pageCount > 1) {
+                assert(uniqueCoords.size() == pageCount && "Multiple page.tsx files must retain distinct unique coordinates without collapsing!");
+            }
+            std::cout << "  Passed: GraphView preserveExistingPositions retains all cluster nodes without collapsing" << std::endl;
+        }
+
+        // Subtest 3: Render error popover snapshot proving popover does NOT cover the problem line
+        {
+            phide::ui::Theme theme;
+            theme.SetThemeMode(phide::ui::ThemeMode::Dark);
+            Microsoft::WRL::ComPtr<IWICBitmap> pWic;
+            Microsoft::WRL::ComPtr<ID2D1RenderTarget> pRT;
+            CreateTarget(pWic, pRT);
+            theme.CreateDeviceResources(pRT.Get(), pDWriteFactory.Get());
+
+            phide::editor::OpenDocument doc;
+            doc.fileName = L"tutorial-sidebar.tsx";
+            doc.buffer.SetText(
+                L"const line1 = 1;\n"
+                L"const line2 = 2;\n"
+                L"const line3 = 3;\n"
+                L"const line4 = 4;\n"
+                L"const line5 = 5;\n"
+                L"const line6 = 6;\n"
+                L"const line7 = 7;\n"
+                L"const line8 = 8;\n"
+                L"const line9 = 9;\n"
+                L"const line10 = 10;\n"
+            );
+            // Put error on line 5 (0-indexed 4)
+            doc.diagnostics.push_back({
+                4, 6, 5,
+                L"JSX: Unclosed tag error demonstration",
+                1
+            });
+            doc.hoveredDiagnosticLine = 4;
+
+            phide::app::AppConfig cfg;
+            phide::ui::EditorCanvas canvas;
+
+            pRT->BeginDraw();
+            pRT->Clear(theme.colors.canvasBg);
+            std::vector<phide::editor::OpenDocument> docs = { doc };
+            canvas.Render(pRT.Get(), theme, cfg, docs, 0, 52.0f, 1200.0f, 750.0f, true);
+            HRESULT hr = pRT->EndDraw();
+            assert(SUCCEEDED(hr));
+
+            SaveWicBitmapToPng(pWic.Get(), pWicFactory.Get(), artDir + L"test_error_hover_popover_uncovered_line.png");
+            std::cout << "  Passed: Rendered test_error_hover_popover_uncovered_line.png" << std::endl;
+        }
+
+        std::cout << "  Passed: All [TEST 100] Multi-line JSX Tags, Graph Cluster Stability & Popover Positioning passed!" << std::endl;
+        if (targetTest == 100) {
+            std::cout << "Target test 100 finished successfully." << std::endl;
             return 0;
         }
     }

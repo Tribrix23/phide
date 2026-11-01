@@ -9,6 +9,7 @@
 #include <cwctype>
 #include <filesystem>
 #include <stack>
+#include <iostream>
 
 namespace phide::editor {
 
@@ -383,6 +384,37 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidateCss(
         // SVG & Masks
         L"fill", L"fill-opacity", L"fill-rule", L"stroke", L"stroke-width", L"stroke-linecap", L"stroke-linejoin", L"stroke-dasharray", L"stroke-dashoffset", L"stroke-opacity",
         L"mask", L"mask-image", L"mask-size", L"mask-repeat", L"mask-position", L"mask-clip",
+        // Object & Media
+        L"object-fit", L"object-position", L"image-rendering", L"image-orientation",
+        // Containment & Intrinsic
+        L"contain-intrinsic-size", L"contain-intrinsic-width", L"contain-intrinsic-height",
+        L"contain-intrinsic-inline-size", L"contain-intrinsic-block-size",
+        // Multi-column
+        L"columns", L"column-count", L"column-width", L"column-rule", L"column-rule-width",
+        L"column-rule-style", L"column-rule-color", L"column-span", L"column-fill",
+        // Font & Typography Extensions
+        L"font-feature-settings", L"font-variation-settings", L"font-synthesis", L"font-kerning",
+        L"font-optical-sizing", L"font-palette", L"font-smooth",
+        L"text-rendering", L"text-orientation", L"text-emphasis", L"text-emphasis-color",
+        L"text-emphasis-style", L"text-emphasis-position", L"text-size-adjust", L"tab-size",
+        L"line-clamp",
+        // Paging & Break
+        L"break-after", L"break-before", L"break-inside", L"page-break-after", L"page-break-before", L"page-break-inside",
+        L"box-decoration-break",
+        // Counters & Quotes
+        L"quotes", L"counter-reset", L"counter-increment", L"counter-set",
+        // Scroll & Animation Timelines
+        L"scroll-timeline", L"scroll-timeline-name", L"scroll-timeline-axis",
+        L"view-timeline", L"view-timeline-name", L"view-timeline-axis", L"timeline-scope",
+        L"animation-timeline", L"animation-range", L"animation-range-start", L"animation-range-end",
+        // Form & Sizing
+        L"field-sizing", L"zoom",
+        // Color & Print Adjustment
+        L"print-color-adjust", L"forced-color-adjust", L"color-interpolation", L"color-interpolation-filters",
+        // SVG & Math
+        L"clip", L"clip-rule", L"stroke-miterlimit", L"math-style", L"math-depth",
+        // CSS Anchoring
+        L"anchor-name", L"position-anchor", L"position-try", L"position-try-options", L"position-try-order", L"position-visibility",
         // Tables & Lists
         L"list-style", L"list-style-type", L"list-style-position", L"list-style-image",
         L"table-layout", L"caption-side", L"empty-cells"
@@ -1248,8 +1280,30 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidateReactAndESLint(const Buffe
         const std::wstring& line = buffer.GetLine(l);
         if (line.empty()) continue;
 
-        // Skip line comments
-        size_t lineComment = line.find(L"//");
+        // Skip line comments, being careful to ignore // inside strings (e.g. "https://...", 'http://...', `http://...`)
+        bool inSingle = false;
+        bool inDouble = false;
+        bool inBacktick = false;
+        size_t lineComment = std::wstring::npos;
+        for (size_t i = 0; i < line.length(); ++i) {
+            wchar_t ch = line[i];
+            if (ch == L'\\' && (inSingle || inDouble || inBacktick)) {
+                i++; // skip escaped character
+                continue;
+            }
+            if (ch == L'\'' && !inDouble && !inBacktick) {
+                inSingle = !inSingle;
+            } else if (ch == L'"' && !inSingle && !inBacktick) {
+                inDouble = !inDouble;
+            } else if (ch == L'`' && !inSingle && !inDouble) {
+                inBacktick = !inBacktick;
+            } else if (!inSingle && !inDouble && !inBacktick) {
+                if (ch == L'/' && i + 1 < line.length() && line[i + 1] == L'/') {
+                    lineComment = i;
+                    break;
+                }
+            }
+        }
         std::wstring code = (lineComment != std::wstring::npos) ? line.substr(0, lineComment) : line;
 
         // Track conditions and loops
@@ -1346,22 +1400,91 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidateReactAndESLint(const Buffe
             size_t p = 0;
             while (p < code.length()) {
                 if (code[p] == L'<') {
-                    // In TS/JS, an opening JSX tag is never immediately glued to an identifier (e.g. useRef<any>, useState<T>)
-                    // Closing tags (</tag>) can naturally follow text without space (e.g. <p>Content</p>)
-                    if (p + 1 < code.length() && code[p + 1] != L'/' && p > 0 && (iswalnum(code[p - 1]) || code[p - 1] == L'_' || code[p - 1] == L'$')) {
-                        p++;
-                        continue;
-                    }
-
                     if (p + 1 < code.length() && (code[p + 1] == L'/' || iswalpha(code[p + 1]))) {
-                        size_t tagEnd = code.find(L'>', p);
-                        if (tagEnd != std::wstring::npos) {
-                            std::wstring tagStr = code.substr(p + 1, tagEnd - (p + 1));
+                        // Safely find the matching '>' across single-line or multi-line JSX tags
+                        // without stopping on '>' inside string attributes or expressions
+                        size_t tagEndLine = l;
+                        size_t tagEndCol = std::wstring::npos;
+                        bool inQuote = false;
+                        wchar_t qChar = 0;
+                        int braceDepth = 0;
+                        std::wstring accumulatedTag = L"";
+
+                        size_t scanLine = l;
+                        size_t scanCol = p + 1;
+                        const std::wstring* currLineStr = &code;
+
+                        while (scanLine < buffer.GetLineCount()) {
+                            for (size_t scan = scanCol; scan < currLineStr->length(); ++scan) {
+                                wchar_t sc = (*currLineStr)[scan];
+                                if (inQuote) {
+                                    if (sc == L'\\' && scan + 1 < currLineStr->length()) {
+                                        accumulatedTag += sc;
+                                        scan++;
+                                        if (scan < currLineStr->length()) accumulatedTag += (*currLineStr)[scan];
+                                    } else if (sc == qChar) {
+                                        inQuote = false;
+                                        accumulatedTag += sc;
+                                    } else {
+                                        accumulatedTag += sc;
+                                    }
+                                } else {
+                                    if (sc == L'"' || sc == L'\'' || sc == L'`') {
+                                        inQuote = true;
+                                        qChar = sc;
+                                        accumulatedTag += sc;
+                                    } else if (sc == L'{') {
+                                        braceDepth++;
+                                        accumulatedTag += sc;
+                                    } else if (sc == L'}') {
+                                        if (braceDepth > 0) braceDepth--;
+                                        accumulatedTag += sc;
+                                    } else if (sc == L'>' && braceDepth == 0) {
+                                        tagEndLine = scanLine;
+                                        tagEndCol = scan;
+                                        break;
+                                    } else {
+                                        accumulatedTag += sc;
+                                    }
+                                }
+                            }
+
+                            if (tagEndCol != std::wstring::npos) {
+                                break;
+                            }
+
+                            scanLine++;
+                            if (scanLine < buffer.GetLineCount() && scanLine - l <= 60) {
+                                currLineStr = &buffer.GetLine(scanLine);
+                                scanCol = 0;
+                                accumulatedTag += L" ";
+                            } else {
+                                break;
+                            }
+                        }
+
+                        if (tagEndCol != std::wstring::npos) {
+                            std::wstring tagStr = accumulatedTag;
+                            size_t tagEnd = tagEndCol;
+                            // Trim trailing whitespace from tagStr
+                            while (!tagStr.empty() && iswspace(tagStr.back())) tagStr.pop_back();
+
                             bool isClose = (!tagStr.empty() && tagStr[0] == L'/');
                             bool isSelfClose = (!tagStr.empty() && tagStr.back() == L'/');
 
-                            // If tagStr contains type operators (; | &) this is a TS generic type parameter (e.g. useState<{...} | null>)
-                            if (!isClose && (tagStr.find(L';') != std::wstring::npos || tagStr.find(L'|') != std::wstring::npos || tagStr.find(L'&') != std::wstring::npos)) {
+                            // A generic type parameter in a call cannot have JSX attributes (e.g. key=, className=, onClick=)
+                            bool hasJsxAttrs = (tagStr.find(L'=') != std::wstring::npos);
+
+                            // If tagStr contains type operators or generic syntax (; | & extends as) and has NO attributes, this is a TS generic type parameter
+                            if (!isClose && !hasJsxAttrs && (tagStr.find(L';') != std::wstring::npos ||
+                                                             tagStr.find(L'|') != std::wstring::npos ||
+                                                             tagStr.find(L'&') != std::wstring::npos ||
+                                                             tagStr.find(L" extends ") != std::wstring::npos ||
+                                                             tagStr.find(L" as ") != std::wstring::npos)) {
+                                if (tagEndLine > l) {
+                                    l = tagEndLine;
+                                    code = buffer.GetLine(l);
+                                }
                                 p = tagEnd + 1;
                                 continue;
                             }
@@ -1373,16 +1496,28 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidateReactAndESLint(const Buffe
                             std::wstring tagName = tagStr.substr(nStart, nEnd - nStart);
 
                             // Skip TypeScript primitive types (e.g. useRef<any>(null), useState<number>)
-                            if (!isClose && tsTypeKeywords.count(tagName) > 0) {
+                            if (!isClose && !hasJsxAttrs && tsTypeKeywords.count(tagName) > 0) {
+                                if (tagEndLine > l) {
+                                    l = tagEndLine;
+                                    code = buffer.GetLine(l);
+                                }
                                 p = tagEnd + 1;
                                 continue;
                             }
 
-                            // Check what follows '>'. If followed by '(' (e.g. fn<T>() or useRef<any>(null)), ';' or ',', it's a generic call
-                            if (!isClose) {
+                            // Check what follows '>'. If followed by '(', ')', ';', ',', '=', '.', or ':' it's a generic call or type annotation
+                            if (!isClose && !hasJsxAttrs) {
                                 size_t nextCharIdx = tagEnd + 1;
-                                while (nextCharIdx < code.length() && iswspace(code[nextCharIdx])) nextCharIdx++;
-                                if (nextCharIdx < code.length() && (code[nextCharIdx] == L'(' || code[nextCharIdx] == L')' || code[nextCharIdx] == L';' || code[nextCharIdx] == L',')) {
+                                const std::wstring& targetLine = (tagEndLine > l) ? buffer.GetLine(tagEndLine) : code;
+                                while (nextCharIdx < targetLine.length() && iswspace(targetLine[nextCharIdx])) nextCharIdx++;
+                                if (nextCharIdx < targetLine.length() && (targetLine[nextCharIdx] == L'(' || targetLine[nextCharIdx] == L')' ||
+                                                                    targetLine[nextCharIdx] == L';' || targetLine[nextCharIdx] == L',' ||
+                                                                    targetLine[nextCharIdx] == L'=' || targetLine[nextCharIdx] == L'.' ||
+                                                                    targetLine[nextCharIdx] == L':')) {
+                                    if (tagEndLine > l) {
+                                        l = tagEndLine;
+                                        code = buffer.GetLine(l);
+                                    }
                                     p = tagEnd + 1;
                                     continue;
                                 }
@@ -1416,19 +1551,58 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidateReactAndESLint(const Buffe
                                     if (jsxStack.back().name == tagName) {
                                         jsxStack.pop_back();
                                     } else {
-                                        lsp::Diagnostic diag;
-                                        diag.line = l;
-                                        diag.col = p;
-                                        diag.length = tagEnd - p + 1;
-                                        diag.message = L"JSX: Expected corresponding JSX closing tag for '<" + jsxStack.back().name + L">' but found '</" + tagName + L">'";
-                                        diag.severity = 1; // Error
-                                        diagnostics.push_back(std::move(diag));
-                                        jsxStack.pop_back();
+                                        // Look backward down jsxStack for a matching ancestor
+                                        auto matchIt = jsxStack.end();
+                                        for (auto it = jsxStack.rbegin(); it != jsxStack.rend(); ++it) {
+                                            if (it->name == tagName) {
+                                                matchIt = (it + 1).base(); // iterator pointing to matching item
+                                                break;
+                                            }
+                                        }
+
+                                        if (matchIt != jsxStack.end()) {
+                                            // Every item above matchIt was never closed! Report them at their opening tag
+                                            for (auto it = matchIt + 1; it != jsxStack.end(); ++it) {
+                                                lsp::Diagnostic diag;
+                                                diag.line = it->line;
+                                                diag.col = it->col;
+                                                diag.length = it->name.length() + 1;
+                                                diag.message = L"JSX: Unclosed JSX element '<" + it->name + L">'";
+                                                diag.severity = 1; // Error
+                                                diagnostics.push_back(std::move(diag));
+                                            }
+                                            // Pop all items from matchIt through the end
+                                            jsxStack.erase(matchIt, jsxStack.end());
+                                        } else {
+                                            // No matching opening tag exists anywhere in the stack; report unexpected closing tag without corrupting stack
+                                            lsp::Diagnostic diag;
+                                            diag.line = l;
+                                            diag.col = p;
+                                            diag.length = tagEnd - p + 1;
+                                            diag.message = L"JSX: Unexpected closing tag '</" + tagName + L">', no matching opening tag found";
+                                            diag.severity = 1; // Error
+                                            diagnostics.push_back(std::move(diag));
+                                        }
                                     }
+                                } else {
+                                    lsp::Diagnostic diag;
+                                    diag.line = l;
+                                    diag.col = p;
+                                    diag.length = tagEnd - p + 1;
+                                    diag.message = L"JSX: Unexpected closing tag '</" + tagName + L">', no matching opening tag found";
+                                    diag.severity = 1; // Error
+                                    diagnostics.push_back(std::move(diag));
                                 }
                             }
-                            p = tagEnd + 1;
-                            continue;
+                            if (tagEndLine > l) {
+                                l = tagEndLine;
+                                code = buffer.GetLine(l);
+                                p = tagEnd + 1;
+                                continue;
+                            } else {
+                                p = tagEnd + 1;
+                                continue;
+                            }
                         }
                     }
                 }

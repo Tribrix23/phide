@@ -592,9 +592,9 @@ void GraphView::RefreshFromWorkspace(const std::wstring& rootPath, bool preserve
                 }
             }
 
-            // Match against existing node
+            // Match against existing node strictly by unique file path (prevent collapsing duplicate filenames like page.tsx)
             auto it = std::find_if(m_nodes.begin(), m_nodes.end(), [&](const GraphNode& gn) {
-                return gn.id == pStr || gn.label == fName;
+                return gn.id == pStr;
             });
 
             if (it != m_nodes.end()) {
@@ -1070,10 +1070,15 @@ bool GraphView::SaveLayout() {
     out << L"  \"panY\": " << m_panY << L",\n";
     out << L"  \"nodes\": [\n";
 
+    std::filesystem::path targetDir = m_currentRootPath;
     size_t count = 0;
     for (size_t i = 0; i < m_nodes.size(); ++i) {
         const auto& n = m_nodes[i];
-        out << L"    { \"id\": \"" << n.label << L"\", \"x\": " << n.x << L", \"y\": " << n.y
+        std::error_code relEc;
+        std::filesystem::path relP = std::filesystem::relative(n.id, targetDir, relEc);
+        std::wstring saveId = (!relEc && !relP.empty()) ? relP.wstring() : n.id;
+        for (auto& ch : saveId) { if (ch == L'\\') ch = L'/'; }
+        out << L"    { \"id\": \"" << saveId << L"\", \"x\": " << n.x << L", \"y\": " << n.y
             << L", \"pinned\": " << (n.isPinned ? L"true" : L"false") << L" }";
         if (++count < m_nodes.size()) out << L",";
         out << L"\n";
@@ -1138,8 +1143,19 @@ bool GraphView::LoadLayout() {
                     pinned = true;
                 }
 
+                std::filesystem::path targetDir = m_currentRootPath;
+                std::wstring normId = id;
+                for (auto& ch : normId) { if (ch == L'\\') ch = L'/'; }
+
                 for (auto& n : m_nodes) {
-                    if (n.label == id || n.id == id) {
+                    std::error_code relEc;
+                    std::filesystem::path relP = std::filesystem::relative(n.id, targetDir, relEc);
+                    std::wstring nodeRel = (!relEc && !relP.empty()) ? relP.wstring() : n.id;
+                    for (auto& ch : nodeRel) { if (ch == L'\\') ch = L'/'; }
+                    std::wstring normNodeId = n.id;
+                    for (auto& ch : normNodeId) { if (ch == L'\\') ch = L'/'; }
+
+                    if (normNodeId == normId || nodeRel == normId) {
                         n.x = x;
                         n.y = y;
                         n.isPinned = pinned;

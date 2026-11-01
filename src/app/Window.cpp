@@ -7846,9 +7846,22 @@ void Window::HandleMouseMove(POINT clientPt, WPARAM wParam) {
             size_t hoverLine = 0, hoverCol = 0;
             if (m_editor.HitTestCodeArea(clientPt, m_config, *pActiveDoc, paneCanvasLeft, clientH, hoverLine, hoverCol)) {
                 for (const auto& d : pActiveDoc->diagnostics) {
-                    if (d.line == hoverLine) {
-                        pActiveDoc->hoveredDiagnosticLine = hoverLine;
-                        break;
+                    if (d.line == hoverLine && d.severity == 1) {
+                        const auto& lineStr = pActiveDoc->buffer.GetLine(hoverLine);
+                        if (hoverCol <= lineStr.length() + 2) {
+                            pActiveDoc->hoveredDiagnosticLine = hoverLine;
+                            break;
+                        }
+                    }
+                }
+            } else {
+                size_t gutterLine = 0;
+                if (m_editor.HitTestGutter(clientPt, m_config, *pActiveDoc, paneCanvasLeft, clientH, gutterLine)) {
+                    for (const auto& d : pActiveDoc->diagnostics) {
+                        if (d.line == gutterLine && d.severity == 1) {
+                            pActiveDoc->hoveredDiagnosticLine = gutterLine;
+                            break;
+                        }
                     }
                 }
             }
@@ -8175,6 +8188,10 @@ void Window::HandleMouseMove(POINT clientPt, WPARAM wParam) {
 }
 
 void Window::HandleLButtonDown(POINT clientPt) {
+    auto* pActiveDoc = GetActiveDoc();
+    if (pActiveDoc && pActiveDoc->hoveredDiagnosticLine != static_cast<size_t>(-1)) {
+        pActiveDoc->hoveredDiagnosticLine = static_cast<size_t>(-1);
+    }
     if (m_drawer.IsGitHubLoginModalOpen()) {
         if (m_drawer.HandleGitHubLoginMouseDown(clientPt)) {
             InvalidateRect(m_hwnd, nullptr, FALSE);
@@ -9866,33 +9883,16 @@ void Window::HandleLButtonDown(POINT clientPt) {
                         }
                     } else {
                         // Check gutter click for breakpoint toggle (Image 4)
-                        const float headerH = m_config.ScaleF(static_cast<float>(m_config.headerHeight));
-                        const float tabH = m_config.ScaleF(34.0f);
-                        const float breadcrumbH = m_config.ScaleF(24.0f);
-                        const float topY = headerH + tabH + breadcrumbH;
-                        const float gutterW = m_config.ScaleF(50.0f);
-                        const float lineH = m_config.ScaleF(std::round(m_config.fontSize * m_config.lineHeightMultiplier));
-                        if (clientPt.x >= paneCanvasLeft && clientPt.x < paneCanvasLeft + gutterW &&
-                            clientPt.y >= topY && clientPt.y <= clientH) {
-                            float relY = clientPt.y - (topY + m_config.ScaleF(6.0f));
-                            if (relY >= 0.0f && lineH > 0.0f) {
-                                size_t visualSlot = doc.scrollLine + static_cast<size_t>(relY / lineH);
-                                size_t totalLines = doc.buffer.GetLineCount();
-                                size_t curVisual = 0;
-                                for (size_t b = 0; b < totalLines; ++b) {
-                                    if (curVisual == visualSlot) {
-                                        auto it = std::find(doc.breakpoints.begin(), doc.breakpoints.end(), b);
-                                        if (it != doc.breakpoints.end()) {
-                                            doc.breakpoints.erase(it);
-                                        } else {
-                                            doc.breakpoints.push_back(b);
-                                        }
-                                        InvalidateRect(m_hwnd, nullptr, FALSE);
-                                        return;
-                                    }
-                                    curVisual++;
-                                }
+                        size_t clickedLine = 0;
+                        if (m_editor.HitTestGutter(clientPt, m_config, doc, paneCanvasLeft, clientH, clickedLine)) {
+                            auto it = std::find(doc.breakpoints.begin(), doc.breakpoints.end(), clickedLine);
+                            if (it != doc.breakpoints.end()) {
+                                doc.breakpoints.erase(it);
+                            } else {
+                                doc.breakpoints.push_back(clickedLine);
                             }
+                            InvalidateRect(m_hwnd, nullptr, FALSE);
+                            return;
                         }
 
                         // Check if clicked an inline Color Preview Swatch (Images 2, 5)
@@ -11825,6 +11825,10 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
         }
 
         case WM_KEYDOWN: {
+            auto* pActDoc = GetActiveDoc();
+            if (pActDoc && pActDoc->hoveredDiagnosticLine != static_cast<size_t>(-1)) {
+                pActDoc->hoveredDiagnosticLine = static_cast<size_t>(-1);
+            }
             if (m_drawer.IsGitHubLoginModalOpen()) {
                 if (m_drawer.HandleGitHubLoginKeyDown(wParam)) {
                     InvalidateRect(m_hwnd, nullptr, FALSE);
