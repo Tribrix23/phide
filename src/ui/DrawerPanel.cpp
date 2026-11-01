@@ -4195,7 +4195,7 @@ void DrawerPanel::RefreshGitState(bool async, bool showLoading) {
                     if (ecScan) { ecScan.clear(); continue; }
                     if (it->is_directory(ecScan)) {
                         std::wstring dname = it->path().filename().wstring();
-                        if (dname == L".git" || dname == L".venv" || dname == L"venv" || dname == L"node_modules" || dname == L"vendor" || dname == L"bin" || dname == L"obj" || dname == L"build") {
+                        if (dname == L".git" || dname == L".phide" || dname == L".venv" || dname == L"venv" || dname == L"node_modules" || dname == L"vendor" || dname == L"bin" || dname == L"obj" || dname == L"build") {
                             it.disable_recursion_pending();
                         }
                         continue;
@@ -4246,7 +4246,7 @@ void DrawerPanel::RefreshGitState(bool async, bool showLoading) {
         // 3. Query working tree changes and git-ignored files
         if (!alive || !alive->load()) return;
         RunGitCmd(L"update-index -q --refresh", dir);
-        auto resStatus = RunGitCmd(L"status --porcelain=v1 --ignored=matching", dir);
+        auto resStatus = RunGitCmd(L"status --porcelain=v1 -uall --ignored=matching", dir);
         auto resDiff = RunGitCmd(L"diff --name-only", dir);
         auto resCached = RunGitCmd(L"diff --cached --name-only", dir);
         std::unordered_set<std::wstring> filesWithRealDiff;
@@ -4280,7 +4280,7 @@ void DrawerPanel::RefreshGitState(bool async, bool showLoading) {
                     while (!igPath.empty() && (igPath.back() == L'\r' || igPath.back() == L'\n' || igPath.back() == L' ')) igPath.pop_back();
                     if (igPath.size() >= 2 && igPath.front() == L'"' && igPath.back() == L'"') igPath = igPath.substr(1, igPath.size() - 2);
                     for (auto& c : igPath) if (c == L'/') c = L'\\';
-                    while (!igPath.empty() && igPath.back() == L'\\') igPath.pop_back();
+                    while (!igPath.empty() && (igPath.back() == L'\\' || igPath.back() == L'/')) igPath.pop_back();
                     if (!igPath.empty()) ignoredFiles.insert(igPath);
                     continue;
                 }
@@ -4304,9 +4304,22 @@ void DrawerPanel::RefreshGitState(bool async, bool showLoading) {
                     for (auto& c : filePath) if (c == L'/') c = L'\\';
                 }
 
+                // Strip any trailing directory slashes
+                while (!filePath.empty() && (filePath.back() == L'\\' || filePath.back() == L'/')) {
+                    filePath.pop_back();
+                }
+                if (filePath.empty()) continue;
+
+                // Never track internal IDE or git directories
+                if (filePath == L".git" || filePath.rfind(L".git\\", 0) == 0 ||
+                    filePath == L".phide" || filePath.rfind(L".phide\\", 0) == 0) {
+                    continue;
+                }
+
                 std::filesystem::path p(filePath);
                 std::wstring baseFileName = p.filename().wstring();
                 std::wstring parentDir = p.parent_path().wstring();
+                if (baseFileName.empty()) continue;
 
                 // 1. Staged change in index
                 if (idxChar != L' ' && idxChar != L'?' && idxChar != L'!') {
@@ -4405,19 +4418,38 @@ void DrawerPanel::RefreshGitState(bool async, bool showLoading) {
             }
         }
 
-        // Incorporate in-memory dirty documents into changes list
+        // Incorporate in-memory dirty documents into changes list (Strictly project files only, no Untitled)
         {
             std::lock_guard<std::recursive_mutex> lock(m_gitMutex);
+            std::wstring normDir = dir;
+            while (!normDir.empty() && (normDir.back() == L'\\' || normDir.back() == L'/')) {
+                normDir.pop_back();
+            }
+            for (auto& c : normDir) if (c == L'/') c = L'\\';
+
             for (const auto& fp : m_dirtyFilePaths) {
-                std::wstring rel = fp;
-                if (!dir.empty() && rel.rfind(dir, 0) == 0) {
-                    rel = rel.substr(dir.length());
-                    while (!rel.empty() && (rel.front() == L'\\' || rel.front() == L'/')) {
-                        rel.erase(0, 1);
-                    }
+                if (fp.empty()) continue;
+                if (fp.rfind(L"Untitled", 0) == 0) continue;
+
+                std::wstring normFP = fp;
+                for (auto& c : normFP) if (c == L'/') c = L'\\';
+
+                // File must reside inside normDir
+                if (normFP.length() <= normDir.length() + 1 ||
+                    _wcsnicmp(normFP.c_str(), normDir.c_str(), normDir.length()) != 0 ||
+                    normFP[normDir.length()] != L'\\') {
+                    continue; // Skip out-of-workspace files
                 }
-                for (auto& c : rel) if (c == L'/') c = L'\\';
-                if (rel.empty()) continue;
+
+                std::wstring rel = normFP.substr(normDir.length() + 1);
+                if (rel.empty() || rel == L".git" || rel.rfind(L".git\\", 0) == 0 ||
+                    rel == L".phide" || rel.rfind(L".phide\\", 0) == 0) {
+                    continue;
+                }
+
+                std::filesystem::path p(rel);
+                std::wstring baseFileName = p.filename().wstring();
+                if (baseFileName.empty()) continue;
 
                 bool exists = false;
                 for (const auto& chg : changes) {
@@ -4429,8 +4461,8 @@ void DrawerPanel::RefreshGitState(bool async, bool showLoading) {
                 if (!exists) {
                     GitChangeItem item;
                     item.path = rel;
-                    item.fileName = std::filesystem::path(rel).filename().wstring();
-                    item.relDir = std::filesystem::path(rel).parent_path().wstring();
+                    item.fileName = baseFileName;
+                    item.relDir = p.parent_path().wstring();
                     item.status = L"M";
                     changes.push_back(std::move(item));
                 }
@@ -4790,7 +4822,7 @@ void DrawerPanel::RefreshGitStatusOnly(bool async) {
                     if (ecScan) { ecScan.clear(); continue; }
                     if (it->is_directory(ecScan)) {
                         std::wstring dname = it->path().filename().wstring();
-                        if (dname == L".git" || dname == L".venv" || dname == L"venv" || dname == L"node_modules" || dname == L"vendor" || dname == L"bin" || dname == L"obj" || dname == L"build") {
+                        if (dname == L".git" || dname == L".phide" || dname == L".venv" || dname == L"venv" || dname == L"node_modules" || dname == L"vendor" || dname == L"bin" || dname == L"obj" || dname == L"build") {
                             it.disable_recursion_pending();
                         }
                         continue;
@@ -4839,7 +4871,7 @@ void DrawerPanel::RefreshGitStatusOnly(bool async) {
         // 3. Query working tree changes and git-ignored files
         if (!alive || !alive->load()) return;
         RunGitCmd(L"update-index -q --refresh", dir);
-        auto resStatus = RunGitCmd(L"status --porcelain=v1 --ignored=matching", dir);
+        auto resStatus = RunGitCmd(L"status --porcelain=v1 -uall --ignored=matching", dir);
         auto resDiff = RunGitCmd(L"diff --name-only", dir);
         auto resCached = RunGitCmd(L"diff --cached --name-only", dir);
         std::unordered_set<std::wstring> filesWithRealDiff;
@@ -4873,7 +4905,7 @@ void DrawerPanel::RefreshGitStatusOnly(bool async) {
                     while (!igPath.empty() && (igPath.back() == L'\r' || igPath.back() == L'\n' || igPath.back() == L' ')) igPath.pop_back();
                     if (igPath.size() >= 2 && igPath.front() == L'"' && igPath.back() == L'"') igPath = igPath.substr(1, igPath.size() - 2);
                     for (auto& c : igPath) if (c == L'/') c = L'\\';
-                    while (!igPath.empty() && igPath.back() == L'\\') igPath.pop_back();
+                    while (!igPath.empty() && (igPath.back() == L'\\' || igPath.back() == L'/')) igPath.pop_back();
                     if (!igPath.empty()) ignoredFiles.insert(igPath);
                     continue;
                 }
@@ -4897,9 +4929,22 @@ void DrawerPanel::RefreshGitStatusOnly(bool async) {
                     for (auto& c : filePath) if (c == L'/') c = L'\\';
                 }
 
+                // Strip any trailing directory slashes
+                while (!filePath.empty() && (filePath.back() == L'\\' || filePath.back() == L'/')) {
+                    filePath.pop_back();
+                }
+                if (filePath.empty()) continue;
+
+                // Never track internal IDE or git directories
+                if (filePath == L".git" || filePath.rfind(L".git\\", 0) == 0 ||
+                    filePath == L".phide" || filePath.rfind(L".phide\\", 0) == 0) {
+                    continue;
+                }
+
                 std::filesystem::path p(filePath);
                 std::wstring baseFileName = p.filename().wstring();
                 std::wstring parentDir = p.parent_path().wstring();
+                if (baseFileName.empty()) continue;
 
                 // 1. Staged change in index
                 if (idxChar != L' ' && idxChar != L'?' && idxChar != L'!') {
@@ -4998,19 +5043,38 @@ void DrawerPanel::RefreshGitStatusOnly(bool async) {
             }
         }
 
-        // Incorporate in-memory dirty documents into changes list
+        // Incorporate in-memory dirty documents into changes list (Strictly project files only, no Untitled)
         {
             std::lock_guard<std::recursive_mutex> lock(m_gitMutex);
+            std::wstring normDir = dir;
+            while (!normDir.empty() && (normDir.back() == L'\\' || normDir.back() == L'/')) {
+                normDir.pop_back();
+            }
+            for (auto& c : normDir) if (c == L'/') c = L'\\';
+
             for (const auto& fp : m_dirtyFilePaths) {
-                std::wstring rel = fp;
-                if (!dir.empty() && rel.rfind(dir, 0) == 0) {
-                    rel = rel.substr(dir.length());
-                    while (!rel.empty() && (rel.front() == L'\\' || rel.front() == L'/')) {
-                        rel.erase(0, 1);
-                    }
+                if (fp.empty()) continue;
+                if (fp.rfind(L"Untitled", 0) == 0) continue;
+
+                std::wstring normFP = fp;
+                for (auto& c : normFP) if (c == L'/') c = L'\\';
+
+                // File must reside inside normDir
+                if (normFP.length() <= normDir.length() + 1 ||
+                    _wcsnicmp(normFP.c_str(), normDir.c_str(), normDir.length()) != 0 ||
+                    normFP[normDir.length()] != L'\\') {
+                    continue; // Skip out-of-workspace files
                 }
-                for (auto& c : rel) if (c == L'/') c = L'\\';
-                if (rel.empty()) continue;
+
+                std::wstring rel = normFP.substr(normDir.length() + 1);
+                if (rel.empty() || rel == L".git" || rel.rfind(L".git\\", 0) == 0 ||
+                    rel == L".phide" || rel.rfind(L".phide\\", 0) == 0) {
+                    continue;
+                }
+
+                std::filesystem::path p(rel);
+                std::wstring baseFileName = p.filename().wstring();
+                if (baseFileName.empty()) continue;
 
                 bool exists = false;
                 for (const auto& chg : changes) {
@@ -5022,8 +5086,8 @@ void DrawerPanel::RefreshGitStatusOnly(bool async) {
                 if (!exists) {
                     GitChangeItem item;
                     item.path = rel;
-                    item.fileName = std::filesystem::path(rel).filename().wstring();
-                    item.relDir = std::filesystem::path(rel).parent_path().wstring();
+                    item.fileName = baseFileName;
+                    item.relDir = p.parent_path().wstring();
                     item.status = L"M";
                     changes.push_back(std::move(item));
                 }
@@ -5225,21 +5289,47 @@ void DrawerPanel::ComputeGitGraphLanes(std::vector<GitCommitItem>& commits) {
 
 void DrawerPanel::SetDirtyFiles(const std::vector<std::wstring>& dirtyFilePaths) {
     std::lock_guard<std::recursive_mutex> lock(m_gitMutex);
-    m_dirtyFilePaths = dirtyFilePaths;
+    m_dirtyFilePaths.clear();
 
-    std::wstring dir = m_openFolderPath.empty() ? L"." : m_openFolderPath;
+    std::wstring dir = m_openFolderPath;
+    while (!dir.empty() && (dir.back() == L'\\' || dir.back() == L'/')) {
+        dir.pop_back();
+    }
+    if (dir.empty()) {
+        return;
+    }
+    std::wstring normDir = dir;
+    for (auto& c : normDir) if (c == L'/') c = L'\\';
+
+    for (const auto& fp : dirtyFilePaths) {
+        if (fp.empty()) continue;
+        if (fp.rfind(L"Untitled", 0) == 0) continue;
+
+        std::wstring normFP = fp;
+        for (auto& c : normFP) if (c == L'/') c = L'\\';
+
+        // Must be located strictly inside the project root folder
+        if (normFP.length() <= normDir.length() + 1 ||
+            _wcsnicmp(normFP.c_str(), normDir.c_str(), normDir.length()) != 0 ||
+            normFP[normDir.length()] != L'\\') {
+            continue;
+        }
+
+        std::wstring rel = normFP.substr(normDir.length() + 1);
+        if (rel.empty() || rel == L".git" || rel.rfind(L".git\\", 0) == 0 ||
+            rel == L".phide" || rel.rfind(L".phide\\", 0) == 0) {
+            continue;
+        }
+
+        m_dirtyFilePaths.push_back(normFP);
+    }
 
     bool changed = false;
     for (const auto& fp : m_dirtyFilePaths) {
-        std::wstring rel = fp;
-        if (!dir.empty() && rel.rfind(dir, 0) == 0) {
-            rel = rel.substr(dir.length());
-            while (!rel.empty() && (rel.front() == L'\\' || rel.front() == L'/')) {
-                rel.erase(0, 1);
-            }
-        }
-        for (auto& c : rel) if (c == L'/') c = L'\\';
-        if (rel.empty()) continue;
+        std::wstring rel = fp.substr(normDir.length() + 1);
+        std::filesystem::path p(rel);
+        std::wstring baseFileName = p.filename().wstring();
+        if (baseFileName.empty()) continue;
 
         bool found = false;
         for (const auto& chg : m_gitChanges) {
@@ -5251,8 +5341,8 @@ void DrawerPanel::SetDirtyFiles(const std::vector<std::wstring>& dirtyFilePaths)
         if (!found) {
             GitChangeItem item;
             item.path = rel;
-            item.fileName = std::filesystem::path(rel).filename().wstring();
-            item.relDir = std::filesystem::path(rel).parent_path().wstring();
+            item.fileName = baseFileName;
+            item.relDir = p.parent_path().wstring();
             item.status = L"M";
             m_gitChanges.push_back(std::move(item));
             changed = true;
@@ -7139,12 +7229,22 @@ void DrawerPanel::RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, 
 
                         // Status letter
                         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushStatus;
-                        if (item.status.find(L"D") != std::wstring::npos) {
-                            pRT->CreateSolidColorBrush(D2D1::ColorF(0.878f, 0.424f, 0.459f, 1.0f), &brushStatus);
-                        } else if (item.status.find(L"A") != std::wstring::npos) {
-                            pRT->CreateSolidColorBrush(D2D1::ColorF(0.596f, 0.765f, 0.475f, 1.0f), &brushStatus);
+                        if (theme.IsDarkMode()) {
+                            if (item.status.find(L"D") != std::wstring::npos) {
+                                pRT->CreateSolidColorBrush(D2D1::ColorF(0.878f, 0.424f, 0.459f, 1.0f), &brushStatus);
+                            } else if (item.status.find(L"A") != std::wstring::npos) {
+                                pRT->CreateSolidColorBrush(D2D1::ColorF(0.596f, 0.765f, 0.475f, 1.0f), &brushStatus);
+                            } else {
+                                pRT->CreateSolidColorBrush(D2D1::ColorF(0.898f, 0.753f, 0.482f, 1.0f), &brushStatus);
+                            }
                         } else {
-                            pRT->CreateSolidColorBrush(D2D1::ColorF(0.898f, 0.753f, 0.482f, 1.0f), &brushStatus);
+                            if (item.status.find(L"D") != std::wstring::npos) {
+                                pRT->CreateSolidColorBrush(D2D1::ColorF(0.86f, 0.15f, 0.15f, 1.0f), &brushStatus);
+                            } else if (item.status.find(L"A") != std::wstring::npos) {
+                                pRT->CreateSolidColorBrush(D2D1::ColorF(0.08f, 0.64f, 0.29f, 1.0f), &brushStatus);
+                            } else {
+                                pRT->CreateSolidColorBrush(D2D1::ColorF(0.70f, 0.32f, 0.04f, 1.0f), &brushStatus);
+                            }
                         }
                         D2D1_RECT_F rcStatus = D2D1::RectF(railW + currentDrawerW - config.ScaleF(24.0f), itemY, railW + currentDrawerW - config.ScaleF(8.0f), itemY + rowH);
                         const wchar_t* statChar = item.status.empty() ? L"M" : item.status.c_str();
@@ -7323,6 +7423,7 @@ void DrawerPanel::RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, 
 
                     for (size_t s = m_gitChangesScrollIdx; s < unstagedIndices.size() && (itemY + rowH <= fileListBottomY + config.ScaleF(4.0f)); ++s) {
                         auto& item = m_gitChanges[unstagedIndices[s]];
+                        if (item.fileName.empty() || item.path.empty()) continue;
                         renderedEnd = s + 1;
 
                         item.bounds = D2D1::RectF(railW, itemY, railW + currentDrawerW, itemY + rowH);
@@ -7364,16 +7465,30 @@ void DrawerPanel::RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, 
 
                         // Status letter
                         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushStatus;
-                        if (isBin) {
-                            pRT->CreateSolidColorBrush(D2D1::ColorF(0.65f, 0.45f, 0.95f, 1.0f), &brushStatus);
-                        } else if (item.status.find(L"D") != std::wstring::npos) {
-                            pRT->CreateSolidColorBrush(D2D1::ColorF(0.878f, 0.424f, 0.459f, 1.0f), &brushStatus);
-                        } else if (item.status.find(L"R") != std::wstring::npos) {
-                            pRT->CreateSolidColorBrush(D2D1::ColorF(0.380f, 0.686f, 0.937f, 1.0f), &brushStatus);
-                        } else if (item.status.find(L"U") != std::wstring::npos || item.status.find(L"A") != std::wstring::npos) {
-                            pRT->CreateSolidColorBrush(D2D1::ColorF(0.596f, 0.765f, 0.475f, 1.0f), &brushStatus);
+                        if (theme.IsDarkMode()) {
+                            if (isBin) {
+                                pRT->CreateSolidColorBrush(D2D1::ColorF(0.65f, 0.45f, 0.95f, 1.0f), &brushStatus);
+                            } else if (item.status.find(L"D") != std::wstring::npos) {
+                                pRT->CreateSolidColorBrush(D2D1::ColorF(0.878f, 0.424f, 0.459f, 1.0f), &brushStatus);
+                            } else if (item.status.find(L"R") != std::wstring::npos) {
+                                pRT->CreateSolidColorBrush(D2D1::ColorF(0.380f, 0.686f, 0.937f, 1.0f), &brushStatus);
+                            } else if (item.status.find(L"U") != std::wstring::npos || item.status.find(L"A") != std::wstring::npos) {
+                                pRT->CreateSolidColorBrush(D2D1::ColorF(0.596f, 0.765f, 0.475f, 1.0f), &brushStatus);
+                            } else {
+                                pRT->CreateSolidColorBrush(D2D1::ColorF(0.898f, 0.753f, 0.482f, 1.0f), &brushStatus);
+                            }
                         } else {
-                            pRT->CreateSolidColorBrush(D2D1::ColorF(0.898f, 0.753f, 0.482f, 1.0f), &brushStatus);
+                            if (isBin) {
+                                pRT->CreateSolidColorBrush(D2D1::ColorF(0.48f, 0.22f, 0.93f, 1.0f), &brushStatus);
+                            } else if (item.status.find(L"D") != std::wstring::npos) {
+                                pRT->CreateSolidColorBrush(D2D1::ColorF(0.86f, 0.15f, 0.15f, 1.0f), &brushStatus);
+                            } else if (item.status.find(L"R") != std::wstring::npos) {
+                                pRT->CreateSolidColorBrush(D2D1::ColorF(0.12f, 0.45f, 0.85f, 1.0f), &brushStatus);
+                            } else if (item.status.find(L"U") != std::wstring::npos || item.status.find(L"A") != std::wstring::npos) {
+                                pRT->CreateSolidColorBrush(D2D1::ColorF(0.08f, 0.64f, 0.29f, 1.0f), &brushStatus);
+                            } else {
+                                pRT->CreateSolidColorBrush(D2D1::ColorF(0.70f, 0.32f, 0.04f, 1.0f), &brushStatus);
+                            }
                         }
 
                         D2D1_RECT_F rcStatus = D2D1::RectF(
@@ -7595,10 +7710,10 @@ void DrawerPanel::RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, 
             }
 
             Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushBranchBadge;
-            pRT->CreateSolidColorBrush(D2D1::ColorF(0.122f, 0.231f, 0.373f, 0.85f), &brushBranchBadge);
+            pRT->CreateSolidColorBrush(theme.IsDarkMode() ? D2D1::ColorF(0.122f, 0.231f, 0.373f, 0.85f) : D2D1::ColorF(0.92f, 0.94f, 0.98f, 1.0f), &brushBranchBadge);
 
             Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushCloud;
-            pRT->CreateSolidColorBrush(D2D1::ColorF(0.741f, 0.576f, 0.976f, 1.0f), &brushCloud);
+            pRT->CreateSolidColorBrush(theme.IsDarkMode() ? D2D1::ColorF(0.741f, 0.576f, 0.976f, 1.0f) : D2D1::ColorF(0.50f, 0.18f, 0.75f, 1.0f), &brushCloud);
 
             size_t startIdx = (std::min)(m_gitGraphScrollIdx, m_gitCommits.empty() ? size_t(0) : m_gitCommits.size() - 1);
 
@@ -7746,7 +7861,7 @@ void DrawerPanel::RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, 
                 if (isHovered || isSelected) {
                     D2D1_ROUNDED_RECT rrcBtn = D2D1::RoundedRect(ci.openChangesBtnBounds, 3.0f, 3.0f);
                     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushBtnBg;
-                    pRT->CreateSolidColorBrush(D2D1::ColorF(0.22f, 0.22f, 0.25f, 0.9f), &brushBtnBg);
+                    pRT->CreateSolidColorBrush(theme.IsDarkMode() ? D2D1::ColorF(0.22f, 0.22f, 0.25f, 0.9f) : D2D1::ColorF(0.88f, 0.90f, 0.94f, 1.0f), &brushBtnBg);
                     pRT->FillRoundedRectangle(rrcBtn, brushBtnBg.Get());
 
                     // File diff outline icon
@@ -7785,7 +7900,18 @@ void DrawerPanel::RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, 
                         D2D1::RectF(textLeft, nodeY - bH / 2.0f, textLeft + bW, nodeY + bH / 2.0f),
                         3.0f, 3.0f
                     );
-                    ID2D1Brush* pBadgeOutlineBrush = isRemote ? laneBrushes[6].Get() : (ci.isUnpushed ? (brushUnpushed ? brushUnpushed.Get() : laneBrushes[0].Get()) : laneBrushes[0].Get());
+                    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> lightBadgeBrush;
+                    ID2D1Brush* pBadgeOutlineBrush = nullptr;
+                    if (theme.IsDarkMode()) {
+                        pBadgeOutlineBrush = isRemote ? laneBrushes[6].Get() : (ci.isUnpushed ? (brushUnpushed ? brushUnpushed.Get() : laneBrushes[0].Get()) : laneBrushes[0].Get());
+                    } else {
+                        if (isRemote) {
+                            pRT->CreateSolidColorBrush(D2D1::ColorF(0.50f, 0.18f, 0.75f, 1.0f), &lightBadgeBrush);
+                        } else {
+                            pRT->CreateSolidColorBrush(D2D1::ColorF(0.12f, 0.38f, 0.78f, 1.0f), &lightBadgeBrush);
+                        }
+                        pBadgeOutlineBrush = lightBadgeBrush.Get();
+                    }
                     pRT->FillRoundedRectangle(rrcBadge, brushBranchBadge.Get());
                     pRT->DrawRoundedRectangle(rrcBadge, pBadgeOutlineBrush, 1.0f);
 
@@ -7917,14 +8043,26 @@ void DrawerPanel::RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, 
                         }
 
                         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushStatus;
-                        if (isBin) {
-                            pRT->CreateSolidColorBrush(D2D1::ColorF(0.65f, 0.45f, 0.95f, 1.0f), &brushStatus);
-                        } else if (cf.status.find(L"M") != std::wstring::npos) {
-                            pRT->CreateSolidColorBrush(D2D1::ColorF(0.898f, 0.753f, 0.482f, 1.0f), &brushStatus);
-                        } else if (cf.status.find(L"D") != std::wstring::npos) {
-                            pRT->CreateSolidColorBrush(D2D1::ColorF(0.878f, 0.424f, 0.459f, 1.0f), &brushStatus);
+                        if (theme.IsDarkMode()) {
+                            if (isBin) {
+                                pRT->CreateSolidColorBrush(D2D1::ColorF(0.65f, 0.45f, 0.95f, 1.0f), &brushStatus);
+                            } else if (cf.status.find(L"M") != std::wstring::npos) {
+                                pRT->CreateSolidColorBrush(D2D1::ColorF(0.898f, 0.753f, 0.482f, 1.0f), &brushStatus);
+                            } else if (cf.status.find(L"D") != std::wstring::npos) {
+                                pRT->CreateSolidColorBrush(D2D1::ColorF(0.878f, 0.424f, 0.459f, 1.0f), &brushStatus);
+                            } else {
+                                pRT->CreateSolidColorBrush(D2D1::ColorF(0.596f, 0.765f, 0.475f, 1.0f), &brushStatus);
+                            }
                         } else {
-                            pRT->CreateSolidColorBrush(D2D1::ColorF(0.596f, 0.765f, 0.475f, 1.0f), &brushStatus);
+                            if (isBin) {
+                                pRT->CreateSolidColorBrush(D2D1::ColorF(0.48f, 0.22f, 0.93f, 1.0f), &brushStatus);
+                            } else if (cf.status.find(L"M") != std::wstring::npos) {
+                                pRT->CreateSolidColorBrush(D2D1::ColorF(0.70f, 0.32f, 0.04f, 1.0f), &brushStatus);
+                            } else if (cf.status.find(L"D") != std::wstring::npos) {
+                                pRT->CreateSolidColorBrush(D2D1::ColorF(0.86f, 0.15f, 0.15f, 1.0f), &brushStatus);
+                            } else {
+                                pRT->CreateSolidColorBrush(D2D1::ColorF(0.08f, 0.64f, 0.29f, 1.0f), &brushStatus);
+                            }
                         }
                         D2D1_RECT_F rcStatus = D2D1::RectF(
                             railW + currentDrawerW - config.ScaleF(24.0f),

@@ -819,13 +819,13 @@ void GraphView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfi
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> edgeBrushNormal;
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> edgeBrushHighlight;
     D2D1_COLOR_F normalEdgeColor = theme.IsDarkMode() ? D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.12f)
-                                                      : D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.10f);
+                                                      : D2D1::ColorF(0.48f, 0.52f, 0.60f, 0.45f);
     D2D1_COLOR_F highlightEdgeColor = theme.IsDarkMode() ? D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.80f)
-                                                         : D2D1::ColorF(0.1f, 0.1f, 0.1f, 0.75f);
+                                                         : D2D1::ColorF(0.10f, 0.12f, 0.18f, 0.90f);
     pRT->CreateSolidColorBrush(normalEdgeColor, &edgeBrushNormal);
     pRT->CreateSolidColorBrush(highlightEdgeColor, &edgeBrushHighlight);
 
-    const float baseEdgeWidth = (std::max)(0.6f, 0.9f * m_zoom);
+    const float baseEdgeWidth = theme.IsDarkMode() ? (std::max)(0.6f, 0.9f * m_zoom) : (std::max)(0.8f, 1.15f * m_zoom);
 
     for (const auto& e : m_edges) {
         if (e.from >= m_nodes.size() || e.to >= m_nodes.size()) continue;
@@ -847,7 +847,7 @@ void GraphView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfi
 
     const bool isColored = config.isGraphColored;
     const D2D1_COLOR_F monoColor = theme.IsDarkMode() ? D2D1::ColorF(0.94f, 0.95f, 0.98f, 1.0f)
-                                                      : D2D1::ColorF(0.20f, 0.22f, 0.26f, 1.0f);
+                                                      : D2D1::ColorF(0.18f, 0.20f, 0.26f, 1.0f);
 
     IDWriteTextFormat* pFont = theme.fontHint ? theme.fontHint.Get() : theme.fontBody.Get();
 
@@ -875,13 +875,13 @@ void GraphView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfi
                 if (nIdx == i) { isNeighbor = true; break; }
             }
             if (!isNeighbor) {
-                c.a = 0.28f;
+                c.a = theme.IsDarkMode() ? 0.28f : 0.45f;
             }
         }
 
         // Draw halo ring on hover or drag
         if ((isHovered || isDragged) && nodeBrush) {
-            D2D1_COLOR_F haloColor = c;
+            D2D1_COLOR_F haloColor = theme.IsDarkMode() ? c : (theme.brushBrandAccent ? D2D1::ColorF(0.40f, 0.35f, 0.75f, 1.0f) : c);
             haloColor.a = 0.35f;
             nodeBrush->SetColor(haloColor);
             pRT->FillEllipse(D2D1::Ellipse(sp, r + 4.5f * m_zoom, r + 4.5f * m_zoom), nodeBrush.Get());
@@ -917,8 +917,14 @@ void GraphView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfi
                 // Positioned right under the node circle
                 float labelY = sp.y + r + 3.0f;
 
-                ID2D1Brush* textBrush = isHovered ? (theme.brushTextWhite ? theme.brushTextWhite.Get() : theme.brushTextPrimary.Get())
-                                                  : (theme.brushTextSecondary ? theme.brushTextSecondary.Get() : theme.brushTextMuted.Get());
+                ID2D1Brush* textBrush = nullptr;
+                if (theme.IsDarkMode()) {
+                    textBrush = isHovered ? (theme.brushTextWhite ? theme.brushTextWhite.Get() : theme.brushTextPrimary.Get())
+                                          : (theme.brushTextSecondary ? theme.brushTextSecondary.Get() : theme.brushTextMuted.Get());
+                } else {
+                    textBrush = isHovered ? (theme.brushBrandAccent ? theme.brushBrandAccent.Get() : theme.brushTextPrimary.Get())
+                                          : theme.brushTextPrimary.Get();
+                }
 
                 // Pure transparent text - NO div / pill background box
                 pRT->DrawTextLayout(D2D1::Point2F(labelX, labelY), pLayout.Get(), textBrush);

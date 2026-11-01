@@ -2257,10 +2257,42 @@ void Window::SyncDocumentBuffers(editor::OpenDocument* sourceDoc) {
 }
 
 void Window::UpdateDrawerDirtyFiles() {
+    std::wstring root = m_drawer.HasOpenFolder() ? m_drawer.GetOpenFolderPath() : L"";
+    if (root.empty()) {
+        m_drawer.SetDirtyFiles({});
+        return;
+    }
+    while (!root.empty() && (root.back() == L'\\' || root.back() == L'/')) {
+        root.pop_back();
+    }
+    std::wstring normRoot = root;
+    for (auto& c : normRoot) if (c == L'/') c = L'\\';
+
     std::vector<std::wstring> dirtyPaths;
     for (const auto& group : m_editorGroups) {
         for (const auto& doc : group.docs) {
-            if (doc.isDirty && !doc.filePath.empty() && !doc.isSpecialView) {
+            // Must have a real file on disk and not be virtual/special/untitled
+            if (doc.filePath.empty() || doc.isSpecialView) continue;
+            if (doc.fileName.rfind(L"Untitled", 0) == 0 || doc.filePath.rfind(L"Untitled", 0) == 0) continue;
+
+            // Must strictly reside inside the workspace project folder
+            std::wstring normPath = doc.filePath;
+            for (auto& c : normPath) if (c == L'/') c = L'\\';
+
+            if (normPath.length() <= normRoot.length() + 1 ||
+                _wcsnicmp(normPath.c_str(), normRoot.c_str(), normRoot.length()) != 0 ||
+                normPath[normRoot.length()] != L'\\') {
+                continue; // Outside project folder, never track in Git
+            }
+
+            // Never track internal IDE or git metadata files
+            std::wstring rel = normPath.substr(normRoot.length() + 1);
+            if (rel == L".git" || rel.rfind(L".git\\", 0) == 0 ||
+                rel == L".phide" || rel.rfind(L".phide\\", 0) == 0) {
+                continue;
+            }
+
+            if (doc.isDirty) {
                 if (doc.isDiffView && doc.diffHunks.empty()) continue;
                 if (!doc.isDiffView && !doc.originalDiskText.empty() && doc.buffer.GetText() == doc.originalDiskText) continue;
                 dirtyPaths.push_back(doc.filePath);
@@ -12292,22 +12324,97 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     pDoc->scrollLine += page;
                     InvalidateRect(m_hwnd, nullptr, FALSE);
                 } else if (wParam == VK_TAB) {
-                    std::wstring ext = L"";
-                    if (!pDoc->filePath.empty()) {
-                        std::filesystem::path p(pDoc->filePath);
-                        ext = p.extension().wstring();
-                    } else if (!pDoc->fileName.empty()) {
-                        std::filesystem::path p(pDoc->fileName);
-                        ext = p.extension().wstring();
-                    }
-                    if (!ext.empty() && ext[0] == L'.') ext = ext.substr(1);
-                    if (!m_snippetManager.TryExpand(pDoc->buffer, ext)) {
-                        // Try expanding Emmet abbreviation next (e.g., div -> <div></div>)
-                        if (!pDoc->buffer.ExpandEmmet()) {
-                            pDoc->buffer.InsertChar(L' ');
-                            pDoc->buffer.InsertChar(L' ');
-                            pDoc->buffer.InsertChar(L' ');
-                            pDoc->buffer.InsertChar(L' ');
+                    bool isShiftPressed = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
+                    int tSize = (m_config.tabSize > 0) ? m_config.tabSize : 4;
+                    std::wstring indentStr = m_config.insertSpaces ? std::wstring(tSize, L' ') : L"\t";
+
+                    if (isShiftPressed) {
+                        // === UNINDENT (Shift+Tab) ===
+                        pDoc->buffer.PushUndo();
+                        if (pDoc->HasSelection()) {
+                            size_t sLine = 0, sCol = 0, eLine = 0, eCol = 0;
+                            pDoc->GetSelectionRange(sLine, sCol, eLine, eCol);
+                            if (eCol == 0 && eLine > sLine) {
+                                eLine--;
+                            }
+                            for (size_t l = sLine; l <= eLine; ++l) {
+                                const std::wstring& line = pDoc->buffer.GetLine(l);
+                                if (line.empty()) continue;
+                                size_t removeCount = 0;
+                                if (line[0] == L'\t') {
+                                    removeCount = 1;
+                                } else {
+                                    while (removeCount < static_cast<size_t>(tSize) && removeCount < line.length() && line[removeCount] == L' ') {
+                                        removeCount++;
+                                    }
+                                }
+                                if (removeCount > 0) {
+                                    pDoc->buffer.SetLine(l, line.substr(removeCount));
+                                }
+                            }
+                            if (pDoc->selAnchor.col >= static_cast<size_t>(tSize)) pDoc->selAnchor.col -= tSize; else pDoc->selAnchor.col = 0;
+                            if (pDoc->selEnd.col >= static_cast<size_t>(tSize)) pDoc->selEnd.col -= tSize; else pDoc->selEnd.col = 0;
+                            auto cur = pDoc->buffer.GetCursor();
+                            if (cur.col >= static_cast<size_t>(tSize)) cur.col -= tSize; else cur.col = 0;
+                            pDoc->buffer.SetCursor(cur.line, cur.col);
+                            pDoc->buffer.IncrementVersion();
+                        } else {
+                            auto cur = pDoc->buffer.GetCursor();
+                            const std::wstring& line = pDoc->buffer.GetLine(cur.line);
+                            if (!line.empty()) {
+                                size_t removeCount = 0;
+                                if (line[0] == L'\t') {
+                                    removeCount = 1;
+                                } else {
+                                    while (removeCount < static_cast<size_t>(tSize) && removeCount < line.length() && line[removeCount] == L' ') {
+                                        removeCount++;
+                                    }
+                                }
+                                if (removeCount > 0) {
+                                    pDoc->buffer.SetLine(cur.line, line.substr(removeCount));
+                                    if (cur.col >= removeCount) cur.col -= removeCount; else cur.col = 0;
+                                    pDoc->buffer.SetCursor(cur.line, cur.col);
+                                    pDoc->buffer.IncrementVersion();
+                                }
+                            }
+                        }
+                    } else {
+                        // === INDENT (Tab) ===
+                        if (pDoc->HasSelection()) {
+                            size_t sLine = 0, sCol = 0, eLine = 0, eCol = 0;
+                            pDoc->GetSelectionRange(sLine, sCol, eLine, eCol);
+                            if (eCol == 0 && eLine > sLine) {
+                                eLine--;
+                            }
+                            pDoc->buffer.PushUndo();
+                            for (size_t l = sLine; l <= eLine; ++l) {
+                                const std::wstring& line = pDoc->buffer.GetLine(l);
+                                pDoc->buffer.SetLine(l, indentStr + line);
+                            }
+                            pDoc->selAnchor.col += indentStr.length();
+                            pDoc->selEnd.col += indentStr.length();
+                            auto cur = pDoc->buffer.GetCursor();
+                            cur.col += indentStr.length();
+                            pDoc->buffer.SetCursor(cur.line, cur.col);
+                            pDoc->buffer.IncrementVersion();
+                        } else {
+                            std::wstring ext = L"";
+                            if (!pDoc->filePath.empty()) {
+                                std::filesystem::path p(pDoc->filePath);
+                                ext = p.extension().wstring();
+                            } else if (!pDoc->fileName.empty()) {
+                                std::filesystem::path p(pDoc->fileName);
+                                ext = p.extension().wstring();
+                            }
+                            if (!ext.empty() && ext[0] == L'.') ext = ext.substr(1);
+                            if (!m_snippetManager.TryExpand(pDoc->buffer, ext)) {
+                                // Try expanding Emmet abbreviation next (e.g., div -> <div></div>)
+                                if (!pDoc->buffer.ExpandEmmet()) {
+                                    for (wchar_t ch : indentStr) {
+                                        pDoc->buffer.InsertChar(ch);
+                                    }
+                                }
+                            }
                         }
                     }
                     MarkDocumentModified(pDoc);
@@ -12338,6 +12445,9 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                         pDoc->DeleteSelection();
                     }
 
+                    int tSize = (m_config.tabSize > 0) ? m_config.tabSize : 4;
+                    std::wstring extraIndent = m_config.insertSpaces ? std::wstring(tSize, L' ') : L"\t";
+
                     // Check if between opening and closing tags: <div>|</div>
                     auto pos = pDoc->buffer.GetCursor();
                     const auto& lineText = pDoc->buffer.GetLine(pos.line);
@@ -12347,7 +12457,6 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                             indent++;
                         }
                         std::wstring baseIndent = lineText.substr(0, indent);
-                        std::wstring extraIndent = L"    ";
                         pDoc->buffer.InsertChar(L'\n');
                         for (wchar_t c : baseIndent) pDoc->buffer.InsertChar(c);
                         for (wchar_t c : extraIndent) pDoc->buffer.InsertChar(c);
@@ -12369,7 +12478,6 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                             indent++;
                         }
                         std::wstring baseIndent = lineText.substr(0, indent);
-                        std::wstring extraIndent = (baseIndent.length() % 2 == 0 && baseIndent.length() % 4 != 0) ? L"  " : L"    ";
                         pDoc->buffer.InsertChar(L'\n');
                         for (wchar_t c : baseIndent) pDoc->buffer.InsertChar(c);
                         for (wchar_t c : extraIndent) pDoc->buffer.InsertChar(c);
@@ -12399,8 +12507,6 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     if (endPos != std::wstring::npos && (textBeforeCursor[endPos] == L':' || textBeforeCursor[endPos] == L'{')) {
                         shouldIndent = true;
                     }
-
-                    std::wstring extraIndent = (baseIndent.length() % 2 == 0 && baseIndent.length() % 4 != 0) ? L"  " : L"    ";
 
                     pDoc->buffer.InsertChar(L'\n');
                     for (wchar_t c : baseIndent) {

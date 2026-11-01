@@ -466,7 +466,7 @@ void EditorCanvas::RenderPlaceholder(ID2D1RenderTarget* pRT, Theme& theme, const
     float row1CenterY = cardY + rowH * 0.5f;
     D2D1_RECT_F rcLabel1 = D2D1::RectF(cardX + padX, row1CenterY - config.ScaleF(10.0f), cardX + cardW / 2.0f, row1CenterY + config.ScaleF(10.0f));
     pRT->DrawText(L"Show Explorer", 13, theme.fontHint.Get(), rcLabel1,
-                  (m_hoveredWatermarkRow == 0) ? (theme.brushTextWhite ? theme.brushTextWhite.Get() : theme.brushTextPrimary.Get()) : theme.brushTextSecondary.Get());
+                  (m_hoveredWatermarkRow == 0) ? (theme.IsDarkMode() ? theme.brushTextWhite.Get() : theme.brushTextPrimary.Get()) : theme.brushTextSecondary.Get());
     float rx1 = cardX + cardW - padX;
     DrawKeycap(pRT, theme, config, L"B", rx1, row1CenterY, capH);
     DrawPlus(pRT, theme, config, rx1, row1CenterY, capH);
@@ -476,7 +476,7 @@ void EditorCanvas::RenderPlaceholder(ID2D1RenderTarget* pRT, Theme& theme, const
     float row2CenterY = cardY + rowH * 1.5f;
     D2D1_RECT_F rcLabel2 = D2D1::RectF(cardX + padX, row2CenterY - config.ScaleF(10.0f), cardX + cardW / 2.0f, row2CenterY + config.ScaleF(10.0f));
     pRT->DrawText(L"Open Workspace", 14, theme.fontHint.Get(), rcLabel2,
-                  (m_hoveredWatermarkRow == 1) ? (theme.brushTextWhite ? theme.brushTextWhite.Get() : theme.brushTextPrimary.Get()) : theme.brushTextSecondary.Get());
+                  (m_hoveredWatermarkRow == 1) ? (theme.IsDarkMode() ? theme.brushTextWhite.Get() : theme.brushTextPrimary.Get()) : theme.brushTextSecondary.Get());
     float rx2 = cardX + cardW - padX;
     DrawKeycap(pRT, theme, config, L"O", rx2, row2CenterY, capH);
     DrawPlus(pRT, theme, config, rx2, row2CenterY, capH);
@@ -486,7 +486,7 @@ void EditorCanvas::RenderPlaceholder(ID2D1RenderTarget* pRT, Theme& theme, const
     float row3CenterY = cardY + rowH * 2.5f;
     D2D1_RECT_F rcLabel3 = D2D1::RectF(cardX + padX, row3CenterY - config.ScaleF(10.0f), cardX + cardW / 2.0f, row3CenterY + config.ScaleF(10.0f));
     pRT->DrawText(L"Command Palette", 15, theme.fontHint.Get(), rcLabel3,
-                  (m_hoveredWatermarkRow == 2) ? (theme.brushTextWhite ? theme.brushTextWhite.Get() : theme.brushTextPrimary.Get()) : theme.brushTextSecondary.Get());
+                  (m_hoveredWatermarkRow == 2) ? (theme.IsDarkMode() ? theme.brushTextWhite.Get() : theme.brushTextPrimary.Get()) : theme.brushTextSecondary.Get());
     float rx3 = cardX + cardW - padX;
     DrawKeycap(pRT, theme, config, L"P", rx3, row3CenterY, capH);
     DrawPlus(pRT, theme, config, rx3, row3CenterY, capH);
@@ -1668,6 +1668,7 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
                         availW,
                         lineH,
                         &pLineLayout))) {
+                    pLineLayout->SetIncrementalTabStop(charW * static_cast<float>(config.tabSize > 0 ? config.tabSize : 4));
                     for (const auto& tok : tokens) {
                         if (tok.startCol + tok.length > lineStr.length()) continue;
 
@@ -2035,7 +2036,7 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
 
             bool isActiveLine = (isFocused && vl.bufferLine == cursor.line);
             ID2D1Brush* numBrush = hasDiagError ? (theme.brushIconRed ? theme.brushIconRed.Get() : theme.brushCloseHoverBg.Get()) :
-                (isActiveLine ? (theme.brushTextWhite ? theme.brushTextWhite.Get() : theme.brushTextPrimary.Get()) : theme.brushLineNumber.Get());
+                (isActiveLine ? (theme.IsDarkMode() ? theme.brushTextWhite.Get() : theme.brushTextPrimary.Get()) : theme.brushLineNumber.Get());
             IDWriteTextFormat* numFormat = isActiveLine ?
                 (theme.fontLineNumberActive ? theme.fontLineNumberActive.Get() : (theme.fontLineNumber ? theme.fontLineNumber.Get() : theme.fontMenuShortcut.Get())) :
                 (theme.fontLineNumber ? theme.fontLineNumber.Get() : theme.fontMenuShortcut.Get());
@@ -2113,7 +2114,7 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
         doc.minimapTrack = D2D1::RectF(canvasRight - minimapW, topY, canvasRight, clientHeight);
 
         // Minimap background with subtle left border
-        D2D1_COLOR_F miniBg = theme.IsDarkMode() ? D2D1::ColorF(0.11f, 0.11f, 0.12f, 0.85f) : D2D1::ColorF(0.96f, 0.96f, 0.97f, 0.85f);
+        D2D1_COLOR_F miniBg = theme.IsDarkMode() ? D2D1::ColorF(0.11f, 0.11f, 0.12f, 0.85f) : D2D1::ColorF(0.965f, 0.970f, 0.980f, 0.95f);
         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> miniBgBrush;
         pRT->CreateSolidColorBrush(miniBg, &miniBgBrush);
         if (miniBgBrush) pRT->FillRectangle(doc.minimapTrack, miniBgBrush.Get());
@@ -2129,9 +2130,10 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
 
         size_t totalLines = buffer.GetLineCount();
         float miniH = (std::max)(10.0f, clientHeight - topY);
-        float stepY = (totalLines * 2.4f > miniH && totalLines > 0) ? (miniH / static_cast<float>(totalLines)) : 2.4f;
-        float microH = (std::max)(0.6f, stepY * 0.85f);
-        float microCharW = (std::max)(0.5f, stepY * 0.7f);
+        float baseLineStep = (std::max)(3.2f, config.ScaleF(3.8f));
+        float stepY = (totalLines * baseLineStep > miniH && totalLines > 0) ? (miniH / static_cast<float>(totalLines)) : baseLineStep;
+        float microH = (std::max)(1.2f, (totalLines * baseLineStep > miniH) ? (stepY * 0.70f) : 2.2f);
+        float microCharW = (std::max)(0.8f, config.ScaleF(1.3f));
 
         // Render micro-lines with syntax colors, selection reflection, and word occurrences
         for (size_t b = 0; b < totalLines; ++b) {
@@ -2226,13 +2228,15 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
                         case editor::TokenType::Attribute: brush = theme.brushSyntaxAttribute.Get(); break;
                         default: brush = theme.brushTextPrimary.Get(); break;
                     }
-                    pRT->FillRectangle(D2D1::RectF(tx, my, tx + tw, my + microH), brush);
+                    D2D1_ROUNDED_RECT rrcTok = D2D1::RoundedRect(D2D1::RectF(tx, my, tx + tw, my + microH), 0.8f, 0.8f);
+                    pRT->FillRoundedRectangle(&rrcTok, brush);
                 }
             } else {
                 float mx = doc.minimapTrack.left + config.ScaleF(5.0f) + static_cast<float>(indent) * microCharW;
                 float tw = (std::min)(doc.minimapTrack.right - mx - 2.0f, static_cast<float>(lineStr.length() - indent) * microCharW);
                 if (tw > 0.5f) {
-                    pRT->FillRectangle(D2D1::RectF(mx, my, mx + tw, my + microH), theme.brushTextMuted.Get());
+                    D2D1_ROUNDED_RECT rrcLine = D2D1::RoundedRect(D2D1::RectF(mx, my, mx + tw, my + microH), 0.8f, 0.8f);
+                    pRT->FillRoundedRectangle(&rrcLine, theme.brushTextMuted.Get());
                 }
             }
 
@@ -2296,8 +2300,13 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> sliderBgBrush;
         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> sliderBorderBrush;
         float sliderAlpha = doc.isDraggingMinimap ? 0.32f : 0.18f;
-        pRT->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, sliderAlpha), &sliderBgBrush);
-        pRT->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, sliderAlpha + 0.22f), &sliderBorderBrush);
+        if (theme.IsDarkMode()) {
+            pRT->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, sliderAlpha), &sliderBgBrush);
+            pRT->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, sliderAlpha + 0.22f), &sliderBorderBrush);
+        } else {
+            pRT->CreateSolidColorBrush(D2D1::ColorF(0.12f, 0.16f, 0.24f, sliderAlpha * 0.75f), &sliderBgBrush);
+            pRT->CreateSolidColorBrush(D2D1::ColorF(0.12f, 0.16f, 0.24f, sliderAlpha + 0.20f), &sliderBorderBrush);
+        }
 
         D2D1_ROUNDED_RECT rrcSlider = D2D1::RoundedRect(doc.minimapSlider, 2.0f, 2.0f);
         if (sliderBgBrush) pRT->FillRoundedRectangle(&rrcSlider, sliderBgBrush.Get());
@@ -4403,7 +4412,7 @@ void EditorCanvas::RenderAutocompletePopup(ID2D1RenderTarget* pRT, Theme& theme,
 
         float actualLabelW = (std::min)(measuredLabelW + config.ScaleF(2.0f), maxLabelAvailW * 0.55f);
         D2D1_RECT_F rcLabel = D2D1::RectF(labelX, itemY + config.ScaleF(2.0f), labelX + actualLabelW, itemY + itemH);
-        ID2D1Brush* textBrush = isSelected ? theme.brushTextWhite.Get() : theme.brushTextPrimary.Get();
+        ID2D1Brush* textBrush = isSelected ? (theme.IsDarkMode() ? theme.brushTextWhite.Get() : theme.brushTextPrimary.Get()) : theme.brushTextPrimary.Get();
 
         // Highlight matched characters within item label
         Microsoft::WRL::ComPtr<IDWriteTextLayout> pTextLayout;

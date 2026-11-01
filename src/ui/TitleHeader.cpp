@@ -479,10 +479,9 @@ void TitleHeader::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCon
     }
 
     D2D1_RECT_F rcDbIcon = D2D1::RectF(dbBtnX, extBtnY, dbBtnX + extBtnW, extBtnY + extBtnH);
-    ID2D1Brush* pDbBrush = theme.brushTextWhite ? theme.brushTextWhite.Get() : theme.brushTextPrimary.Get();
+    ID2D1Brush* pDbBrush = theme.IsDarkMode() ? theme.brushTextWhite.Get() : theme.brushTextPrimary.Get();
     if (m_databaseState == DatabaseState::Running) {
-        // User explicitly specified: "the database color is white the icon and name"
-        pDbBrush = theme.brushTextWhite ? theme.brushTextWhite.Get() : theme.brushTextPrimary.Get();
+        pDbBrush = theme.IsDarkMode() ? theme.brushTextWhite.Get() : theme.brushTextPrimary.Get();
     } else if (m_databaseState == DatabaseState::Retrying) {
         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> bAmber;
         pRT->CreateSolidColorBrush(D2D1::ColorF(0.95f, 0.75f, 0.20f, 1.0f), &bAmber);
@@ -584,9 +583,9 @@ void TitleHeader::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCon
         pRT->DrawRoundedRectangle(rrcZoom, theme.brushBorderSubtle.Get(), 0.8f);
     } else {
         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushZoomBg;
-        pRT->CreateSolidColorBrush(D2D1::ColorF(0.08f, 0.08f, 0.08f, 1.0f), &brushZoomBg);
+        pRT->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.50f), &brushZoomBg);
         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushZoomBorder;
-        pRT->CreateSolidColorBrush(D2D1::ColorF(0.20f, 0.20f, 0.20f, 1.0f), &brushZoomBorder);
+        pRT->CreateSolidColorBrush(D2D1::ColorF(0.65f, 0.55f, 0.78f, 0.75f), &brushZoomBorder);
         if (brushZoomBg) {
             pRT->FillRoundedRectangle(rrcZoom, brushZoomBg.Get());
         }
@@ -596,18 +595,26 @@ void TitleHeader::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCon
     }
 
     // Hover background highlights
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> lightZoomHoverBrush;
+    if (!theme.IsDarkMode()) {
+        pRT->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.85f), &lightZoomHoverBrush);
+    }
+    ID2D1Brush* pZoomHover = theme.IsDarkMode() 
+        ? (theme.brushCaptionHover ? theme.brushCaptionHover.Get() : theme.brushItemHover.Get())
+        : (lightZoomHoverBrush ? lightZoomHoverBrush.Get() : theme.brushItemHover.Get());
+
     if (m_hoveredZoom == 1) { // Zoom Out
         D2D1_ROUNDED_RECT rrcOut = D2D1::RoundedRect(m_rcZoomOut, 4.0f, 4.0f);
-        pRT->FillRoundedRectangle(rrcOut, theme.brushCaptionHover ? theme.brushCaptionHover.Get() : theme.brushItemHover.Get());
+        pRT->FillRoundedRectangle(rrcOut, pZoomHover);
     } else if (m_hoveredZoom == 2) { // Zoom Reset
         D2D1_ROUNDED_RECT rrcReset = D2D1::RoundedRect(m_rcZoomReset, 4.0f, 4.0f);
-        pRT->FillRoundedRectangle(rrcReset, theme.brushCaptionHover ? theme.brushCaptionHover.Get() : theme.brushItemHover.Get());
+        pRT->FillRoundedRectangle(rrcReset, pZoomHover);
     } else if (m_hoveredZoom == 3) { // Zoom In
         D2D1_ROUNDED_RECT rrcIn = D2D1::RoundedRect(m_rcZoomIn, 4.0f, 4.0f);
-        pRT->FillRoundedRectangle(rrcIn, theme.brushCaptionHover ? theme.brushCaptionHover.Get() : theme.brushItemHover.Get());
+        pRT->FillRoundedRectangle(rrcIn, pZoomHover);
     }
 
-    ID2D1Brush* brushZoomGlyph = theme.brushTextWhite ? theme.brushTextWhite.Get() : theme.brushTextPrimary.Get();
+    ID2D1Brush* brushZoomGlyph = theme.IsDarkMode() ? theme.brushTextWhite.Get() : (theme.brushHeaderIcon ? theme.brushHeaderIcon.Get() : theme.brushTextPrimary.Get());
 
     // Minus glyph [-]
     float cxOut = (m_rcZoomOut.left + m_rcZoomOut.right) / 2.0f;
@@ -939,7 +946,7 @@ void TitleHeader::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCon
         pRT->DrawRoundedRectangle(rrcDrop, theme.brushMenuBorder ? theme.brushMenuBorder.Get() : theme.brushBorderSubtle.Get(), 1.0f);
 
         IDWriteTextFormat* pFmt = theme.fontMenuItem ? theme.fontMenuItem.Get() : theme.fontHint.Get();
-        ID2D1Brush* pWhiteBrush = theme.brushTextWhite ? theme.brushTextWhite.Get() : theme.brushTextPrimary.Get();
+        ID2D1Brush* pWhiteBrush = theme.IsDarkMode() ? theme.brushTextWhite.Get() : theme.brushTextPrimary.Get();
         ID2D1Brush* pAccent = theme.brushBrandAccent ? theme.brushBrandAccent.Get() : theme.brushTextPrimary.Get();
         float chkS = config.ScaleF(14.0f);
         float setS = config.ScaleF(16.0f);
@@ -1056,7 +1063,7 @@ void TitleHeader::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCon
             pRT->DrawRoundedRectangle(rrcChk1, theme.brushMenuBorder ? theme.brushMenuBorder.Get() : theme.brushBorderSubtle.Get(), 1.0f);
         }
 
-        ID2D1Brush* pWhiteBrush = theme.brushTextWhite ? theme.brushTextWhite.Get() : theme.brushTextPrimary.Get();
+        ID2D1Brush* pWhiteBrush = theme.IsDarkMode() ? theme.brushTextWhite.Get() : theme.brushTextPrimary.Get();
 
         // Server icon in dropdown (pure white)
         float srvIcoX = chk1X + chkS + config.ScaleF(8.0f);

@@ -88,9 +88,9 @@ void SettingsView::InitializeSettings() {
         it.category = SettingCategory::TextEditor;
         it.isCommonlyUsed = true;
         it.control = SettingControl::NumberStepper;
-        it.minVal = 2.0f;
+        it.minVal = 1.0f;
         it.maxVal = 8.0f;
-        it.stepVal = 2.0f;
+        it.stepVal = 1.0f;
         it.unit = L" spaces";
         m_items.push_back(std::move(it));
     }
@@ -465,7 +465,13 @@ void SettingsView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
 
         D2D1_ROUNDED_RECT rrcCat = D2D1::RoundedRect(rcCat, 6.0f, 6.0f);
         if (isActive) {
-            pRT->FillRoundedRectangle(rrcCat, theme.brushHomeBadgeBg ? theme.brushHomeBadgeBg.Get() : theme.brushItemHover.Get());
+            Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> activeBg;
+            if (theme.IsDarkMode()) {
+                activeBg = theme.brushHomeBadgeBg ? theme.brushHomeBadgeBg : theme.brushItemHover;
+            } else {
+                pRT->CreateSolidColorBrush(D2D1::ColorF(0.90f, 0.92f, 0.97f, 1.0f), &activeBg);
+            }
+            if (activeBg) pRT->FillRoundedRectangle(rrcCat, activeBg.Get());
             // Active left accent indicator bar
             D2D1_RECT_F rcBar = D2D1::RectF(rcCat.left, rcCat.top + config.ScaleF(8.0f), rcCat.left + config.ScaleF(3.5f), rcCat.bottom - config.ScaleF(8.0f));
             pRT->FillRoundedRectangle(D2D1::RoundedRect(rcBar, 2.0f, 2.0f), pAccentBrush);
@@ -477,7 +483,7 @@ void SettingsView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
         D2D1_RECT_F rcCatText = D2D1::RectF(rcCat.left + config.ScaleF(14.0f), rcCat.top, rcCat.right - config.ScaleF(8.0f), rcCat.bottom);
         std::wstring fullLabel = std::wstring(kCategories[i].glyph) + L"  " + kCategories[i].name;
         ID2D1Brush* pTextCol = (isActive || isHovered)
-            ? (theme.brushTextWhite ? theme.brushTextWhite.Get() : theme.brushTextPrimary.Get())
+            ? (theme.IsDarkMode() ? (theme.brushTextWhite ? theme.brushTextWhite.Get() : theme.brushTextPrimary.Get()) : theme.brushTextPrimary.Get())
             : theme.brushTextSecondary.Get();
         pRT->DrawText(fullLabel.c_str(), static_cast<UINT32>(fullLabel.length()),
                       theme.fontBody.Get(), rcCatText, pTextCol);
@@ -539,10 +545,15 @@ void SettingsView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
         D2D1_ROUNDED_RECT rrcCard = D2D1::RoundedRect(it.cardBounds, 8.0f, 8.0f);
 
         // Card Background: tactile modern card
-        ID2D1Brush* pCardBg = theme.brushDrawerBg ? theme.brushDrawerBg.Get() : theme.brushItemHover.Get();
-        pRT->FillRoundedRectangle(rrcCard, pCardBg);
+        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> cardBg;
+        if (theme.IsDarkMode()) {
+            cardBg = theme.brushDrawerBg ? theme.brushDrawerBg : theme.brushItemHover;
+        } else {
+            pRT->CreateSolidColorBrush(isCardHovered ? D2D1::ColorF(0.97f, 0.98f, 1.0f, 1.0f) : D2D1::ColorF(1.0f, 1.0f, 1.0f, 1.0f), &cardBg);
+        }
+        if (cardBg) pRT->FillRoundedRectangle(rrcCard, cardBg.Get());
         ID2D1Brush* pCardBorder = isCardHovered
-            ? (theme.brushBrandAccent ? theme.brushBrandAccent.Get() : theme.brushTextWhite.Get())
+            ? (theme.brushBrandAccent ? theme.brushBrandAccent.Get() : theme.brushBorderHover.Get())
             : theme.brushBorderSubtle.Get();
         pRT->DrawRoundedRectangle(rrcCard, pCardBorder, isCardHovered ? 1.2f : 1.0f);
 
@@ -556,7 +567,13 @@ void SettingsView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
         D2D1_RECT_F rcScopeBadge = D2D1::RectF(contentLeft + config.ScaleF(20.0f), cardY + config.ScaleF(16.0f),
                                               contentLeft + config.ScaleF(20.0f) + scopeBadgeW, cardY + config.ScaleF(16.0f) + scopeBadgeH);
         D2D1_ROUNDED_RECT rrcScope = D2D1::RoundedRect(rcScopeBadge, 4.0f, 4.0f);
-        pRT->FillRoundedRectangle(rrcScope, theme.brushHomeBadgeBg ? theme.brushHomeBadgeBg.Get() : theme.brushItemHover.Get());
+        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> scopeBg;
+        if (theme.IsDarkMode()) {
+            scopeBg = theme.brushHomeBadgeBg ? theme.brushHomeBadgeBg : theme.brushItemHover;
+        } else {
+            pRT->CreateSolidColorBrush(D2D1::ColorF(0.92f, 0.94f, 0.97f, 1.0f), &scopeBg);
+        }
+        if (scopeBg) pRT->FillRoundedRectangle(rrcScope, scopeBg.Get());
         pRT->DrawText(it.scope.c_str(), static_cast<UINT32>(it.scope.length()),
                       theme.fontBadge.Get() ? theme.fontBadge.Get() : theme.fontHint.Get(),
                       rcScopeBadge, pAccentBrush);
@@ -660,18 +677,24 @@ void SettingsView::DrawToggleSwitch(ID2D1RenderTarget* pRT, Theme& theme, const 
 
     D2D1_ROUNDED_RECT rrcPill = D2D1::RoundedRect(bounds, r, r);
 
-    // Pill background: Green/Purple accent when checked, muted grey when unchecked
+    // Pill background: Green accent when checked, clean light gray (or dark charcoal) when unchecked
     if (isChecked) {
         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushActive;
         pRT->CreateSolidColorBrush(D2D1::ColorF(0.18f, 0.72f, 0.45f, 1.0f), &brushActive); // Modern active green
         pRT->FillRoundedRectangle(rrcPill, brushActive ? brushActive.Get() : theme.brushBrandAccent.Get());
     } else {
         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushInactive;
-        pRT->CreateSolidColorBrush(D2D1::ColorF(0.24f, 0.24f, 0.28f, 1.0f), &brushInactive);
+        pRT->CreateSolidColorBrush(
+            theme.IsDarkMode() ? D2D1::ColorF(0.24f, 0.24f, 0.28f, 1.0f) : D2D1::ColorF(0.85f, 0.86f, 0.89f, 1.0f),
+            &brushInactive
+        );
         pRT->FillRoundedRectangle(rrcPill, brushInactive ? brushInactive.Get() : theme.brushItemHover.Get());
     }
 
-    pRT->DrawRoundedRectangle(rrcPill, isHovered ? theme.brushTextWhite.Get() : theme.brushBorderSubtle.Get(), 1.0f);
+    ID2D1Brush* pBorder = isHovered
+        ? (theme.IsDarkMode() ? (theme.brushTextWhite ? theme.brushTextWhite.Get() : theme.brushBorderHover.Get()) : (theme.brushBrandAccent ? theme.brushBrandAccent.Get() : theme.brushBorderHover.Get()))
+        : theme.brushBorderSubtle.Get();
+    pRT->DrawRoundedRectangle(rrcPill, pBorder, 1.0f);
 
     // Sliding Circular Knob
     const float knobPad = config.ScaleF(2.5f);
@@ -683,6 +706,11 @@ void SettingsView::DrawToggleSwitch(ID2D1RenderTarget* pRT, Theme& theme, const 
         D2D1::Ellipse(D2D1::Point2F(knobCenterX, knobCenterY), knobRadius, knobRadius),
         theme.brushTextWhite.Get()
     );
+    if (!theme.IsDarkMode() && !isChecked) {
+        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> knobBorder;
+        pRT->CreateSolidColorBrush(D2D1::ColorF(0.72f, 0.75f, 0.80f, 1.0f), &knobBorder);
+        if (knobBorder) pRT->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(knobCenterX, knobCenterY), knobRadius, knobRadius), knobBorder.Get(), 0.9f);
+    }
 }
 
 void SettingsView::DrawStepper(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
@@ -696,7 +724,13 @@ void SettingsView::DrawStepper(ID2D1RenderTarget* pRT, Theme& theme, const app::
 
     // Entire Stepper container frame
     D2D1_ROUNDED_RECT rrcFrame = D2D1::RoundedRect(item.controlBounds, 6.0f, 6.0f);
-    pRT->FillRoundedRectangle(rrcFrame, theme.brushDrawerBg ? theme.brushDrawerBg.Get() : theme.brushItemHover.Get());
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> frameBg;
+    if (theme.IsDarkMode()) {
+        frameBg = theme.brushDrawerBg ? theme.brushDrawerBg : theme.brushItemHover;
+    } else {
+        pRT->CreateSolidColorBrush(D2D1::ColorF(0.96f, 0.97f, 0.99f, 1.0f), &frameBg);
+    }
+    if (frameBg) pRT->FillRoundedRectangle(rrcFrame, frameBg.Get());
     pRT->DrawRoundedRectangle(rrcFrame, theme.brushBorderSubtle.Get(), 1.0f);
 
     // Minus Button
@@ -706,11 +740,11 @@ void SettingsView::DrawStepper(ID2D1RenderTarget* pRT, Theme& theme, const app::
     float mcy = (itMutable.minusBounds.top + itMutable.minusBounds.bottom) / 2.0f;
     pRT->DrawLine(D2D1::Point2F(mcx - 4.5f, mcy), D2D1::Point2F(mcx + 4.5f, mcy), theme.brushTextPrimary.Get(), 1.5f);
 
-    // Value in center
+    // Value in center (Centered text alignment so number does not crowd buttons)
     D2D1_RECT_F rcVal = D2D1::RectF(itMutable.minusBounds.right, item.controlBounds.top, itMutable.plusBounds.left, item.controlBounds.bottom);
+    IDWriteTextFormat* pStepperFmt = theme.fontButtonCenter ? theme.fontButtonCenter.Get() : (theme.fontMenu ? theme.fontMenu.Get() : theme.fontBody.Get());
     pRT->DrawText(valStr.c_str(), static_cast<UINT32>(valStr.length()),
-                  theme.fontMenuShortcut ? theme.fontMenuShortcut.Get() : theme.fontBody.Get(),
-                  rcVal, theme.brushTextPrimary.Get());
+                  pStepperFmt, rcVal, theme.brushTextPrimary.Get());
 
     // Plus Button
     D2D1_ROUNDED_RECT rrcPlus = D2D1::RoundedRect(itMutable.plusBounds, 5.0f, 5.0f);
@@ -730,7 +764,7 @@ void SettingsView::DrawDropdown(ID2D1RenderTarget* pRT, Theme& theme, const app:
     pRT->FillRoundedRectangle(rrc, pBg);
 
     ID2D1Brush* pBorder = (isOpen || isHovered)
-        ? (theme.brushBrandAccent ? theme.brushBrandAccent.Get() : theme.brushTextWhite.Get())
+        ? (theme.brushBrandAccent ? theme.brushBrandAccent.Get() : theme.brushBorderHover.Get())
         : theme.brushBorderSubtle.Get();
     pRT->DrawRoundedRectangle(rrc, pBorder, (isOpen || isHovered) ? 1.4f : 1.0f);
 
@@ -819,7 +853,7 @@ void SettingsView::DrawDropdownPopup(ID2D1RenderTarget* pRT, Theme& theme, const
             D2D1_POINT_2F p1 = D2D1::Point2F(checkX - 3.5f, checkY);
             D2D1_POINT_2F p2 = D2D1::Point2F(checkX - 0.5f, checkY + 3.5f);
             D2D1_POINT_2F p3 = D2D1::Point2F(checkX + 5.0f, checkY - 3.5f);
-            ID2D1Brush* pAccent = theme.brushBrandAccent ? theme.brushBrandAccent.Get() : theme.brushTextWhite.Get();
+            ID2D1Brush* pAccent = theme.brushBrandAccent ? theme.brushBrandAccent.Get() : (theme.IsDarkMode() ? theme.brushTextWhite.Get() : theme.brushTextPrimary.Get());
             pRT->DrawLine(p1, p2, pAccent, 1.8f);
             pRT->DrawLine(p2, p3, pAccent, 1.8f);
         }
@@ -827,8 +861,8 @@ void SettingsView::DrawDropdownPopup(ID2D1RenderTarget* pRT, Theme& theme, const
         // Option text
         D2D1_RECT_F rcOptText = D2D1::RectF(rcRow.left + config.ScaleF(26.0f), rcRow.top, rcRow.right - config.ScaleF(8.0f), rcRow.bottom);
         ID2D1Brush* pTextBrush = isSelected
-            ? (theme.brushTextWhite ? theme.brushTextWhite.Get() : theme.brushTextPrimary.Get())
-            : (isHovered ? (theme.brushTextWhite ? theme.brushTextWhite.Get() : theme.brushTextPrimary.Get()) : theme.brushTextPrimary.Get());
+            ? (theme.IsDarkMode() ? (theme.brushTextWhite ? theme.brushTextWhite.Get() : theme.brushBrandAccent.Get()) : theme.brushBrandAccent.Get())
+            : (isHovered ? (theme.IsDarkMode() ? (theme.brushTextWhite ? theme.brushTextWhite.Get() : theme.brushTextPrimary.Get()) : theme.brushTextPrimary.Get()) : theme.brushTextPrimary.Get());
         pRT->DrawText(item.options[i].c_str(), static_cast<UINT32>(item.options[i].length()),
                       theme.fontBody.Get(), rcOptText, pTextBrush);
 

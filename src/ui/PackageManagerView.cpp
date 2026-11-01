@@ -1427,12 +1427,12 @@ void PackageManagerView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app:
             Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> cardBg;
             if (card.isHovered) {
                 pRT->CreateSolidColorBrush(
-                    theme.IsDarkMode() ? D2D1::ColorF(0.16f, 0.17f, 0.20f, 1.0f) : D2D1::ColorF(0.90f, 0.92f, 0.95f, 1.0f),
+                    theme.IsDarkMode() ? D2D1::ColorF(0.16f, 0.17f, 0.20f, 1.0f) : D2D1::ColorF(0.96f, 0.97f, 1.0f, 1.0f),
                     &cardBg
                 );
             } else {
                 pRT->CreateSolidColorBrush(
-                    theme.IsDarkMode() ? D2D1::ColorF(0.12f, 0.13f, 0.15f, 1.0f) : D2D1::ColorF(0.95f, 0.95f, 0.97f, 1.0f),
+                    theme.IsDarkMode() ? D2D1::ColorF(0.12f, 0.13f, 0.15f, 1.0f) : D2D1::ColorF(1.0f, 1.0f, 1.0f, 1.0f),
                     &cardBg
                 );
             }
@@ -1440,10 +1440,15 @@ void PackageManagerView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app:
 
             if (card.isHovered) {
                 Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> hoverBorder;
-                pRT->CreateSolidColorBrush(D2D1::ColorF(0.0f, 0.48f, 0.85f, 0.8f), &hoverBorder);
+                pRT->CreateSolidColorBrush(D2D1::ColorF(0.0f, 0.48f, 0.85f, 0.85f), &hoverBorder);
                 if (hoverBorder) pRT->DrawRoundedRectangle(rrcCard, hoverBorder.Get(), 1.4f);
-            } else if (theme.brushBorderSubtle) {
-                pRT->DrawRoundedRectangle(rrcCard, theme.brushBorderSubtle.Get(), 0.9f);
+            } else {
+                Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> cardBorder;
+                pRT->CreateSolidColorBrush(
+                    theme.IsDarkMode() ? D2D1::ColorF(0.22f, 0.24f, 0.28f, 0.7f) : D2D1::ColorF(0.85f, 0.88f, 0.92f, 1.0f),
+                    &cardBorder
+                );
+                if (cardBorder) pRT->DrawRoundedRectangle(rrcCard, cardBorder.Get(), 1.0f);
             }
 
             // Centered Icon Box pedestal (Image 2)
@@ -1455,10 +1460,15 @@ void PackageManagerView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app:
 
             Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> iconBoxBg;
             pRT->CreateSolidColorBrush(
-                theme.IsDarkMode() ? D2D1::ColorF(0.08f, 0.08f, 0.10f, 0.95f) : D2D1::ColorF(0.98f, 0.98f, 1.0f, 0.95f),
+                theme.IsDarkMode() ? D2D1::ColorF(0.08f, 0.08f, 0.10f, 0.95f) : D2D1::ColorF(0.93f, 0.94f, 0.97f, 1.0f),
                 &iconBoxBg
             );
             if (iconBoxBg) pRT->FillRoundedRectangle(rrcIconBox, iconBoxBg.Get());
+            if (!theme.IsDarkMode()) {
+                Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> iconBoxBorder;
+                pRT->CreateSolidColorBrush(D2D1::ColorF(0.84f, 0.86f, 0.90f, 1.0f), &iconBoxBorder);
+                if (iconBoxBorder) pRT->DrawRoundedRectangle(rrcIconBox, iconBoxBorder.Get(), 1.0f);
+            }
 
             // Center branded icon inside icon box
             const float innerIconSize = config.ScaleF(34.0f);
@@ -1470,9 +1480,10 @@ void PackageManagerView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app:
             // Language Name centered below icon (Version number removed per user requirement)
             float nameY = iconY + iconBoxSize + config.ScaleF(10.0f);
             D2D1_RECT_F rcName = D2D1::RectF(cx + 4.0f, nameY, cx + cardW - 4.0f, nameY + config.ScaleF(22.0f));
+            ID2D1Brush* nameBrush = theme.IsDarkMode() ? theme.brushTextWhite.Get() : theme.brushTextPrimary.Get();
             pRT->DrawText(card.name.c_str(), static_cast<UINT32>(card.name.length()),
                           theme.fontButtonCenter ? theme.fontButtonCenter.Get() : theme.fontTitle.Get(),
-                          rcName, theme.brushTextWhite ? theme.brushTextWhite.Get() : theme.brushTextPrimary.Get());
+                          rcName, nameBrush);
         }
         return;
     }
