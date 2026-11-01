@@ -790,6 +790,7 @@ void Window::LoadSessionState() {
             m_rail.SetGitLoading(false);
             m_drawer.RefreshGitState(true, false);
             m_editor.GetPackageManagerView().ScanInstalledPackages(lastOpenFolder);
+            m_editor.GetGraphView().RefreshFromWorkspace(lastOpenFolder);
         }
 
         for (const auto& p : openDocPaths) {
@@ -799,6 +800,10 @@ void Window::LoadSessionState() {
                     OpenSpecialView(L"settings", L"Settings");
                 } else if (vType == L"graph") {
                     OpenSpecialView(L"graph", L"Graph view");
+                    std::wstring wsFolder = !lastOpenFolder.empty() ? lastOpenFolder : m_drawer.GetOpenFolderPath();
+                    if (!wsFolder.empty()) {
+                        m_editor.GetGraphView().RefreshFromWorkspace(wsFolder);
+                    }
                 } else if (vType == L"packages") {
                     OpenSpecialView(L"packages", L"Manage Packages");
                 } else if (vType == L"shortcuts") {
@@ -1633,6 +1638,10 @@ void Window::OpenSpecialView(const std::wstring& viewType, const std::wstring& t
         if (group.docs[i].isSpecialView && group.docs[i].viewType == viewType) {
             group.activeDocIdx = static_cast<int>(i);
             if (viewType == L"graph") {
+                std::wstring wsFolder = m_drawer.GetOpenFolderPath();
+                if (!wsFolder.empty()) {
+                    m_editor.GetGraphView().RefreshFromWorkspace(wsFolder);
+                }
                 m_editor.GetGraphView().StartBounceAnimation();
                 SetTimer(m_hwnd, m_animTimerId, 16, nullptr);
             }
@@ -1661,6 +1670,10 @@ void Window::OpenSpecialView(const std::wstring& viewType, const std::wstring& t
         group.activeDocIdx = static_cast<int>(group.docs.size() - 1);
     }
     if (viewType == L"graph") {
+        std::wstring wsFolder = m_drawer.GetOpenFolderPath();
+        if (!wsFolder.empty()) {
+            m_editor.GetGraphView().RefreshFromWorkspace(wsFolder);
+        }
         m_editor.GetGraphView().StartIntroAnimation();
         SetTimer(m_hwnd, m_animTimerId, 16, nullptr);
     }
@@ -2036,6 +2049,7 @@ void Window::DoOpenFolderFromPath(const std::wstring& path) {
     m_rail.SetGitLoading(false);
     m_drawer.RefreshGitState(true, false);
     m_editor.GetPackageManagerView().ScanInstalledPackages(path);
+    m_editor.GetGraphView().RefreshFromWorkspace(path);
     StartWorkspaceWatcher(path);
 
     // Close clean tabs that belong to a previous/different project
@@ -3261,13 +3275,20 @@ void Window::UpdateExecutionButtonStates() {
 
     // 3. Project Dev Server Running:
     // "if that next js is running then it already running even when i go to another file on that project then the run button is still stop as its a dev run get it"
-    if (m_isProjectRunning && !m_runningProjectRoot.empty()) {
-        if (IsFileInDirectory(pDoc->filePath, m_runningProjectRoot)) {
+    bool serverIsAlive = m_terminal.HasActiveServerSession(m_runningProjectRoot) ||
+                         m_terminal.HasActiveServerSession(L"");
+    if ((m_isProjectRunning || serverIsAlive) && !m_runningProjectRoot.empty()) {
+        if (IsFileInDirectory(pDoc->filePath, m_runningProjectRoot) || pDoc->filePath.empty()) {
             m_header.SetRunEnabled(true);
             m_header.SetDebugEnabled(false);
             m_header.SetLiveServerRunning(true); // Red Square (STOP)!
             return;
         }
+    } else if (serverIsAlive) {
+        m_header.SetRunEnabled(true);
+        m_header.SetDebugEnabled(false);
+        m_header.SetLiveServerRunning(true); // Red Square (STOP)!
+        return;
     }
 
     // 4. HTML Standalone File
@@ -4204,6 +4225,17 @@ Window::ProjectDecision Window::DetectFramework(const std::wstring& rootDir, con
 }
 
 void Window::RunProjectDevServer(const std::wstring& projectRoot, const ProjectDecision& decision) {
+    // 1. Terminate any previous server session for this root to prevent process leaks
+    m_terminal.TerminateServerSession(projectRoot);
+    StopLiveServer(projectRoot, /*closeTab=*/false);
+
+    // 2. If a port is specified (e.g. Next.js 3000), free it from any orphaned background processes
+    if (decision.port > 0) {
+        std::wstring findPortCmd = L"powershell.exe -NoProfile -Command \"Get-NetTCPConnection -LocalPort " +
+            std::to_wstring(decision.port) + L" -ErrorAction SilentlyContinue | ForEach-Object { Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue }\"";
+        _wsystem(findPortCmd.c_str());
+    }
+
     m_isProjectRunning = true;
     m_runningProjectRoot = projectRoot;
     m_runningProjectDecision = decision;
@@ -4739,13 +4771,19 @@ void Window::DoDebugActiveDocument() {
 }
 
 void Window::DoStopServer() {
-    // 1. If project dev server is running, terminate it
-    if (m_isProjectRunning && !m_runningProjectRoot.empty()) {
-        m_isProjectRunning = false;
-        m_terminal.TerminateServerSession(m_runningProjectRoot);
+    // 1. Terminate all project dev server tabs and their process trees
+    m_terminal.TerminateServerSession(m_runningProjectRoot);
+    m_terminal.TerminateServerSession(L"");
+    if (!m_runningProjectRoot.empty()) {
         StopLiveServer(m_runningProjectRoot, /*closeTab=*/false);
-        m_runningProjectRoot.clear();
     }
+    if (m_runningProjectDecision.port > 0) {
+        std::wstring findPortCmd = L"powershell.exe -NoProfile -Command \"Get-NetTCPConnection -LocalPort " +
+            std::to_wstring(m_runningProjectDecision.port) + L" -ErrorAction SilentlyContinue | ForEach-Object { Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue }\"";
+        _wsystem(findPortCmd.c_str());
+    }
+    m_isProjectRunning = false;
+    m_runningProjectRoot.clear();
 
     // 2. If active doc or file-level server is running, stop it
     auto* pDoc = GetActiveDoc();
@@ -5629,6 +5667,28 @@ bool Window::Create(HINSTANCE hInstance, int nCmdShow) {
         if (m_hwnd) InvalidateRect(m_hwnd, nullptr, FALSE);
     });
 
+    // Server successfully listening / ready callback (e.g. Next.js, Vite, Live Server)
+    m_terminal.SetOnServerReady([this](const std::wstring& rootDir) {
+        for (auto& srv : m_activeLiveServers) {
+            if (rootDir.empty() || srv.rootDir == rootDir || srv.filePath == rootDir) {
+                srv.hasError = false;
+                srv.isStarting = false;
+                srv.progress = 1.0f;
+                if (!srv.browserOpened) {
+                    srv.browserOpened = true;
+                    std::wstring localUrl = !srv.customUrl.empty()
+                        ? srv.customUrl
+                        : (srv.server ? srv.server->GetLocalUrl(srv.fileName) : (L"http://localhost:" + std::to_wstring(srv.port > 0 ? srv.port : 3000)));
+                    ShellExecuteW(NULL, L"open", localUrl.c_str(), NULL, NULL, SW_SHOWNORMAL);
+                }
+            }
+        }
+        m_isProjectRunning = true;
+        if (m_runningProjectRoot.empty()) m_runningProjectRoot = rootDir;
+        UpdateExecutionButtonStates();
+        if (m_hwnd) InvalidateRect(m_hwnd, nullptr, FALSE);
+    });
+
     // Animate terminal close when '-' minimize button is clicked in integrated terminal
     m_terminal.SetOnMinimize([this]() {
         m_isTerminalFocused = false;
@@ -6250,11 +6310,12 @@ void Window::OnPaint() {
             (m_config.showMinimap ? minimapW : 0.0f) +
             m_config.ScaleF(16.0f);
         const float cardX = clientW - cardW - rightOffset;
-        float cardY = clientH - cardH - m_config.ScaleF(12.0f);
+        float cardY = clientH - statusBarH - cardH - m_config.ScaleF(10.0f);
         if (m_terminal.IsOpen()) {
             float th = GetCurrentTerminalHeight(clientH);
-            cardY = clientH - th - cardH - m_config.ScaleF(12.0f);
+            cardY = clientH - statusBarH - th - cardH - m_config.ScaleF(10.0f);
         }
+        cardY = (std::max)(cardY, headerH + m_config.ScaleF(10.0f));
         m_liveServerPillBounds = D2D1::RectF(cardX, cardY, cardX + cardW, cardY + cardH);
         D2D1_ROUNDED_RECT rrcCard = D2D1::RoundedRect(m_liveServerPillBounds, m_config.ScaleF(6.0f), m_config.ScaleF(6.0f));
 
@@ -6339,12 +6400,14 @@ void Window::OnPaint() {
         std::wstring portText;
         if (pActiveLiveServer->hasError) {
             portText = L"Failed";
+        } else if (pActiveLiveServer->isStarting) {
+            portText = L"Starting...";
         } else if (pActiveLiveServer->port > 0) {
             portText = L"Port: " + std::to_wstring(pActiveLiveServer->port);
         } else {
-            portText = L"Native";
+            portText = L"Ready";
         }
-        const float portBadgeW = m_config.ScaleF(62.0f);
+        const float portBadgeW = (std::max)(m_config.ScaleF(62.0f), static_cast<float>(portText.length()) * m_config.ScaleF(6.8f) + m_config.ScaleF(14.0f));
         const float portBadgeH = m_config.ScaleF(18.0f);
         const float portBadgeRight = closeBtnLeft - m_config.ScaleF(6.0f);
         const float portBadgeLeft = portBadgeRight - portBadgeW;
@@ -8330,20 +8393,28 @@ void Window::HandleLButtonDown(POINT clientPt) {
         // First check close button 'X' click (per user request: "move the X here so it wont be 2 line")
         if (clientPt.x >= m_liveServerCloseBounds.left && clientPt.x <= m_liveServerCloseBounds.right &&
             clientPt.y >= m_liveServerCloseBounds.top && clientPt.y <= m_liveServerCloseBounds.bottom) {
+            std::wstring rootToStop = pActiveLiveServer->rootDir;
+            std::wstring fileToStop = pActiveLiveServer->filePath;
             pActiveLiveServer->hasError = false;
             pActiveLiveServer->isStarting = false;
             pActiveLiveServer->title.clear();
             pActiveLiveServer->customUrl.clear();
+            m_terminal.TerminateServerSession(rootToStop);
+            StopLiveServer(fileToStop, /*closeTab=*/true);
+            if (m_isProjectRunning && (m_runningProjectRoot == rootToStop || m_runningProjectRoot == fileToStop)) {
+                m_isProjectRunning = false;
+                m_runningProjectRoot.clear();
+                UpdateExecutionButtonStates();
+            }
             for (auto it = m_activeLiveServers.begin(); it != m_activeLiveServers.end(); ++it) {
                 if (&(*it) == pActiveLiveServer) {
-                    if (!it->server || !it->server->IsRunning()) {
-                        m_activeLiveServers.erase(it);
-                    }
+                    m_activeLiveServers.erase(it);
                     break;
                 }
             }
             m_liveServerPillBounds = {};
             m_liveServerCloseBounds = {};
+            UpdateExecutionButtonStates();
             InvalidateRect(m_hwnd, nullptr, FALSE);
             return;
         }

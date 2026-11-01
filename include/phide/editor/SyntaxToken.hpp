@@ -48,9 +48,10 @@ public:
     /**
      * @brief Tokenizes a single line of code into colored spans.
      * @param line Text content of the line.
+     * @param ext File extension in lowercase with leading dot (e.g. ".css", ".js", ".php").
      * @return Vector of SyntaxToken descriptors.
      */
-    std::vector<SyntaxToken> TokenizeLine(const std::wstring& line) const;
+    std::vector<SyntaxToken> TokenizeLine(const std::wstring& line, const std::wstring& ext = L"") const;
 
 private:
     std::unordered_set<std::wstring> m_keywords;

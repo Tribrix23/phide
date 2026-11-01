@@ -477,34 +477,6 @@ void GraphView::ParseFileDependencies() {
                 }
             }
         }
-    } else {
-        // Fallback sample set: connect only logical code pairs; README, vuln, database, license remain strictly orphan nodes
-        auto findNodeByLabel = [this](const std::wstring& name) -> int {
-            for (size_t idx = 0; idx < m_nodes.size(); ++idx) {
-                if (m_nodes[idx].label == name) return static_cast<int>(idx);
-            }
-            return -1;
-        };
-
-        const std::pair<const wchar_t*, const wchar_t*> sampleLinks[] = {
-            { L"index.php", L"config.php" },
-            { L"index.php", L"action.php" },
-            { L"index.php", L"styles.css" },
-            { L"index.php", L"app.js" },
-            { L"action.php", L"config.php" },
-            { L"routes.php", L"index.php" },
-            { L"db_connect.php", L"config.php" },
-            { L"student.php", L"config.php" },
-            { L"helper.php", L"index.php" }
-        };
-
-        for (const auto& sl : sampleLinks) {
-            int a = findNodeByLabel(sl.first);
-            int b = findNodeByLabel(sl.second);
-            if (a >= 0 && b >= 0) {
-                addEdge(static_cast<size_t>(a), static_cast<size_t>(b));
-            }
-        }
     }
 }
 
@@ -682,91 +654,45 @@ void GraphView::RefreshFromWorkspace(const std::wstring& rootPath, bool preserve
     m_nodes.clear();
     m_edges.clear();
 
-    // If directory scan produced very few or no files, create standard representative project network
-    if (collected.size() < 4) {
-        struct SampleDef {
-            const wchar_t* name;
-            const wchar_t* ext;
-            const wchar_t* folder;
-            bool isDir;
-            float rad;
-        };
-        const SampleDef samples[] = {
-            { L"index.php",       L"php",  L"(root)",   false, 7.5f },
-            { L"config.php",      L"php",  L"(root)",   false, 7.0f },
-            { L"action.php",      L"php",  L"(root)",   false, 6.0f },
-            { L"database.sql",    L"sql",  L"(root)",   false, 6.5f },
-            { L"README.md",       L"md",   L"(root)",   false, 5.5f },
-            { L"composer.json",   L"json", L"(root)",   false, 5.5f },
-            { L"Notebook.ipynb",  L"json", L"(root)",   false, 5.5f },
-            { L".gitignore",      L"git",  L"(root)",   false, 4.5f },
-            { L"styles.css",      L"css",  L"assets",   false, 5.5f },
-            { L"app.js",          L"js",   L"assets",   false, 6.0f },
-            { L"logo.png",        L"png",  L"assets",   false, 4.5f },
-            { L"main.css",        L"css",  L"assets",   false, 5.0f },
-            { L"auth.php",        L"php",  L"auth",     false, 6.0f },
-            { L"student.php",     L"php",  L"auth",     false, 6.0f },
-            { L"helper.php",      L"php",  L"auth",     false, 5.0f },
-            { L"api.js",          L"js",   L"api",      false, 5.5f },
-            { L"routes.php",      L"php",  L"api",      false, 6.0f },
-            { L"db_connect.php",  L"php",  L"api",      false, 6.0f },
-            { L"schema.sql",      L"sql",  L"api",      false, 5.5f },
-            { L"test.txt",        L"txt",  L"docs",     false, 4.5f },
-            { L"vuln.txt",        L"txt",  L"docs",     false, 4.5f },
-            { L"license.txt",     L"txt",  L"docs",     false, 4.5f }
-        };
+    // Populate nodes strictly from actual scanned workspace files
+    for (const auto& p : collected) {
+        GraphNode n;
+        n.id = p.wstring();
+        n.label = p.filename().wstring();
+        std::wstring ext = p.extension().wstring();
+        if (!ext.empty() && ext.front() == L'.') ext.erase(0, 1);
+        for (auto& c : ext) c = towlower(c);
+        n.ext = ext;
+        n.isDirectory = false;
 
-        for (const auto& s : samples) {
-            GraphNode n;
-            n.id = s.name;
-            n.label = s.name;
-            n.ext = s.ext;
-            n.folderName = s.folder;
-            n.isDirectory = s.isDir;
-            n.radius = s.rad;
-            n.color = GetExtensionColor(s.ext, s.isDir);
-            m_nodes.push_back(n);
-        }
-    } else {
-        for (const auto& p : collected) {
-            GraphNode n;
-            n.id = p.wstring();
-            n.label = p.filename().wstring();
-            std::wstring ext = p.extension().wstring();
-            if (!ext.empty() && ext.front() == L'.') ext.erase(0, 1);
-            for (auto& c : ext) c = towlower(c);
-            n.ext = ext;
-            n.isDirectory = false;
-
-            // Determine folder name relative to workspace root
-            std::filesystem::path relP = std::filesystem::relative(p, targetDir, ec);
-            std::wstring folder = L"(root)";
-            if (!ec && relP.has_parent_path()) {
-                auto itFirst = relP.begin();
-                if (itFirst != relP.end() && itFirst->wstring() != relP.filename().wstring()) {
-                    folder = itFirst->wstring();
-                }
+        // Determine folder name relative to workspace root
+        std::filesystem::path relP = std::filesystem::relative(p, targetDir, ec);
+        std::wstring folder = L"(root)";
+        if (!ec && relP.has_parent_path()) {
+            auto itFirst = relP.begin();
+            if (itFirst != relP.end() && itFirst->wstring() != relP.filename().wstring()) {
+                folder = itFirst->wstring();
             }
-            n.folderName = folder;
-
-            // Main files get larger radius
-            std::wstring lowerLabel = n.label;
-            for (auto& c : lowerLabel) c = towlower(c);
-            if (lowerLabel.find(L"index") != std::wstring::npos ||
-                lowerLabel.find(L"config") != std::wstring::npos ||
-                lowerLabel.find(L"main") != std::wstring::npos ||
-                lowerLabel.find(L"app") != std::wstring::npos ||
-                lowerLabel.find(L"layout") != std::wstring::npos ||
-                lowerLabel.find(L"page") != std::wstring::npos) {
-                n.radius = 7.5f;
-            } else if (ext == L"php" || ext == L"js" || ext == L"jsx" || ext == L"ts" || ext == L"tsx" || ext == L"sql") {
-                n.radius = 6.0f;
-            } else {
-                n.radius = 5.0f;
-            }
-            n.color = GetExtensionColor(n.ext, false);
-            m_nodes.push_back(n);
         }
+        n.folderName = folder;
+
+        // Main files get larger radius
+        std::wstring lowerLabel = n.label;
+        for (auto& c : lowerLabel) c = towlower(c);
+        if (lowerLabel.find(L"index") != std::wstring::npos ||
+            lowerLabel.find(L"config") != std::wstring::npos ||
+            lowerLabel.find(L"main") != std::wstring::npos ||
+            lowerLabel.find(L"app") != std::wstring::npos ||
+            lowerLabel.find(L"layout") != std::wstring::npos ||
+            lowerLabel.find(L"page") != std::wstring::npos) {
+            n.radius = 7.5f;
+        } else if (ext == L"php" || ext == L"js" || ext == L"jsx" || ext == L"ts" || ext == L"tsx" || ext == L"sql") {
+            n.radius = 6.0f;
+        } else {
+            n.radius = 5.0f;
+        }
+        n.color = GetExtensionColor(n.ext, false);
+        m_nodes.push_back(n);
     }
 
     if (m_nodes.empty()) return;
@@ -963,6 +889,16 @@ void GraphView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfi
     }
 
     pRT->PushAxisAlignedClip(m_canvasBounds, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+
+    if (m_nodes.empty()) {
+        const wchar_t* emptyMsg = L"No project files found. Open a workspace folder to view the project graph.";
+        D2D1_RECT_F rcMsg = D2D1::RectF(left + 20.0f, top + height * 0.45f, left + width - 20.0f, top + height * 0.55f);
+        pRT->DrawText(emptyMsg, static_cast<UINT32>(wcslen(emptyMsg)),
+                      theme.fontHint ? theme.fontHint.Get() : theme.fontBody.Get(),
+                      rcMsg, theme.brushTextMuted.Get());
+        pRT->PopAxisAlignedClip();
+        return;
+    }
 
     const float cx = left + width * 0.5f + m_panX;
     const float cy = top + height * 0.5f + m_panY;

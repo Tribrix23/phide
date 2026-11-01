@@ -43,7 +43,160 @@ SyntaxLexer::SyntaxLexer() {
     };
 }
 
-std::vector<SyntaxToken> SyntaxLexer::TokenizeLine(const std::wstring& line) const {
+static std::vector<SyntaxToken> TokenizeCssLine(const std::wstring& line) {
+    std::vector<SyntaxToken> tokens;
+    if (line.empty()) return tokens;
+
+    size_t i = 0;
+    const size_t len = line.length();
+
+    while (i < len) {
+        if (iswspace(line[i])) {
+            ++i;
+            continue;
+        }
+
+        // 1. Comments /* ... */
+        if (i + 1 < len && line[i] == L'/' && line[i + 1] == L'*') {
+            size_t start = i;
+            auto endPos = line.find(L"*/", i + 2);
+            if (endPos != std::wstring::npos) {
+                i = endPos + 2;
+            } else {
+                i = len;
+            }
+            tokens.push_back({ TokenType::Comment, start, i - start });
+            continue;
+        }
+
+        // 2. Single line comment // (for scss/less)
+        if (i + 1 < len && line[i] == L'/' && line[i + 1] == L'/') {
+            tokens.push_back({ TokenType::Comment, i, len - i });
+            break;
+        }
+
+        // 3. Strings "..." or '...'
+        if (line[i] == L'"' || line[i] == L'\'') {
+            wchar_t quote = line[i];
+            size_t start = i++;
+            while (i < len && line[i] != quote) {
+                if (line[i] == L'\\' && i + 1 < len) i += 2;
+                else ++i;
+            }
+            if (i < len) ++i;
+            tokens.push_back({ TokenType::String, start, i - start });
+            continue;
+        }
+
+        // 4. Universal selector *
+        if (line[i] == L'*') {
+            tokens.push_back({ TokenType::Tag, i, 1 });
+            ++i;
+            continue;
+        }
+
+        // 5. Class selector .class-name (including the dot '.')
+        if (line[i] == L'.' && i + 1 < len && (iswalpha(line[i + 1]) || line[i + 1] == L'_' || line[i + 1] == L'-')) {
+            size_t start = i++;
+            while (i < len && (iswalnum(line[i]) || line[i] == L'-' || line[i] == L'_')) ++i;
+            tokens.push_back({ TokenType::Tag, start, i - start });
+            continue;
+        }
+
+        // 6. ID selector #id or Hex color #fff (including the hash '#')
+        if (line[i] == L'#') {
+            size_t start = i++;
+            while (i < len && (iswalnum(line[i]) || line[i] == L'-' || line[i] == L'_')) ++i;
+            size_t tokenLen = i - start;
+            bool isHex = (tokenLen == 4 || tokenLen == 5 || tokenLen == 7 || tokenLen == 9);
+            if (isHex) {
+                for (size_t k = start + 1; k < i; ++k) {
+                    if (!iswxdigit(line[k])) { isHex = false; break; }
+                }
+            }
+            if (isHex) {
+                tokens.push_back({ TokenType::Number, start, tokenLen });
+            } else {
+                tokens.push_back({ TokenType::Tag, start, tokenLen });
+            }
+            continue;
+        }
+
+        // 7. Pseudo-classes & pseudo-elements: ::before, :hover
+        if (line[i] == L':' && i + 1 < len && (line[i + 1] == L':' || iswalpha(line[i + 1]) || line[i + 1] == L'-')) {
+            size_t start = i;
+            if (line[i + 1] == L':') i += 2;
+            else i += 1;
+            while (i < len && (iswalnum(line[i]) || line[i] == L'-')) ++i;
+            tokens.push_back({ TokenType::Keyword, start, i - start });
+            continue;
+        }
+
+        // 8. At-rules: @keyframes, @media, @import
+        if (line[i] == L'@') {
+            size_t start = i++;
+            while (i < len && (iswalnum(line[i]) || line[i] == L'-')) ++i;
+            tokens.push_back({ TokenType::Keyword, start, i - start });
+            continue;
+        }
+
+        // 9. Numeric literals with optional unit: 100%, 15px, 1.75, 8s, 0
+        if (iswdigit(line[i]) || (line[i] == L'.' && i + 1 < len && iswdigit(line[i + 1]))) {
+            size_t start = i++;
+            while (i < len && (iswalnum(line[i]) || line[i] == L'.' || line[i] == L'%')) ++i;
+            tokens.push_back({ TokenType::Number, start, i - start });
+            continue;
+        }
+
+        // 10. Identifiers (Property names, HTML tag names, CSS functions, values)
+        if (iswalpha(line[i]) || line[i] == L'-' || line[i] == L'_') {
+            size_t start = i++;
+            while (i < len && (iswalnum(line[i]) || line[i] == L'-' || line[i] == L'_')) ++i;
+            std::wstring word = line.substr(start, i - start);
+
+            size_t p = i;
+            while (p < len && iswspace(line[p])) p++;
+
+            if (p < len && line[p] == L'(') {
+                // Function call: var(), clamp(), calc(), url()
+                tokens.push_back({ TokenType::Keyword, start, i - start });
+            } else if (p < len && line[p] == L':') {
+                // CSS property: color:, display:, font-size:, --var:
+                tokens.push_back({ TokenType::Attribute, start, i - start });
+            } else if (word.rfind(L"--", 0) == 0) {
+                // CSS custom property variable reference: --background inside var(--background)
+                tokens.push_back({ TokenType::Attribute, start, i - start });
+            } else {
+                static const std::unordered_set<std::wstring> htmlTags = {
+                    L"div", L"span", L"h1", L"h2", L"h3", L"h4", L"h5", L"h6",
+                    L"p", L"a", L"svg", L"path", L"body", L"html", L"ul", L"ol", L"li",
+                    L"button", L"input", L"form", L"table", L"tr", L"td", L"th",
+                    L"header", L"footer", L"nav", L"section", L"main", L"aside", L"img"
+                };
+                if (htmlTags.count(word) > 0) {
+                    tokens.push_back({ TokenType::Tag, start, i - start });
+                } else if (word == L"important") {
+                    tokens.push_back({ TokenType::Keyword, start, i - start });
+                } else {
+                    tokens.push_back({ TokenType::Default, start, i - start });
+                }
+            }
+            continue;
+        }
+
+        // 11. Operators and punctuation
+        tokens.push_back({ TokenType::Operator, i, 1 });
+        ++i;
+    }
+
+    return tokens;
+}
+
+std::vector<SyntaxToken> SyntaxLexer::TokenizeLine(const std::wstring& line, const std::wstring& ext) const {
+    if (ext == L".css" || ext == L".scss" || ext == L".less") {
+        return TokenizeCssLine(line);
+    }
+
     std::vector<SyntaxToken> tokens;
     if (line.empty()) return tokens;
 
@@ -160,7 +313,7 @@ std::vector<SyntaxToken> SyntaxLexer::TokenizeLine(const std::wstring& line) con
         }
 
         // 6. Single-line Comments (// or #)
-        if ((i + 1 < len && line[i] == L'/' && line[i + 1] == L'/') || (line[i] == L'#')) {
+        if ((i + 1 < len && line[i] == L'/' && line[i + 1] == L'/') || (line[i] == L'#' && (ext == L".py" || ext == L".sh" || ext == L".bash" || ext == L".php" || ext.empty()))) {
             tokens.push_back({ TokenType::Comment, i, len - i });
             break;
         }
@@ -329,9 +482,9 @@ const std::wstring& Buffer::GetLine(size_t lineIdx) const {
     return emptyLine;
 }
 
-std::vector<SyntaxToken> Buffer::GetTokensForLine(size_t lineIdx) const {
+std::vector<SyntaxToken> Buffer::GetTokensForLine(size_t lineIdx, const std::wstring& ext) const {
     if (lineIdx < m_lines.size()) {
-        return m_lexer.TokenizeLine(m_lines[lineIdx]);
+        return m_lexer.TokenizeLine(m_lines[lineIdx], ext);
     }
     return {};
 }

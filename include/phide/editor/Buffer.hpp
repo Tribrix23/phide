@@ -53,9 +53,10 @@ public:
     /**
      * @brief Returns syntax tokens for the given line index.
      * @param lineIdx 0-based line number.
+     * @param ext Optional file extension (e.g. ".css", ".js").
      * @return Vector of SyntaxToken descriptors.
      */
-    [[nodiscard]] std::vector<SyntaxToken> GetTokensForLine(size_t lineIdx) const;
+    [[nodiscard]] std::vector<SyntaxToken> GetTokensForLine(size_t lineIdx, const std::wstring& ext = L"") const;
 
     /**
      * @brief Gets the active cursor position.

@@ -375,7 +375,9 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidateCss(
         // User Interface & Behavior
         L"cursor", L"pointer-events", L"user-select", L"resize", L"appearance",
         L"touch-action", L"overscroll-behavior", L"overscroll-behavior-x", L"overscroll-behavior-y",
-        L"scroll-behavior", L"scroll-margin", L"scroll-padding", L"scroll-snap-type", L"scroll-snap-align",
+        L"scroll-behavior", L"scroll-margin", L"scroll-margin-top", L"scroll-margin-right", L"scroll-margin-bottom", L"scroll-margin-left",
+        L"scroll-margin-inline", L"scroll-margin-block", L"scroll-padding", L"scroll-padding-top", L"scroll-padding-right", L"scroll-padding-bottom", L"scroll-padding-left",
+        L"scroll-padding-inline", L"scroll-padding-block", L"scroll-snap-type", L"scroll-snap-align",
         L"scrollbar-width", L"scrollbar-color", L"scrollbar-gutter",
         L"content", L"will-change", L"all",
         // SVG & Masks
@@ -430,7 +432,7 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidateCss(
             }
 
             // Inside CSS declaration block { ... }
-            if (inBlock && iswalpha(ch)) {
+            if (inBlock && (iswalpha(ch) || (ch == L'-' && c + 1 < line.length() && (line[c + 1] == L'-' || iswalpha(line[c + 1]))))) {
                 size_t propStart = c;
                 while (c < line.length() && (iswalnum(line[c]) || line[c] == L'-' || line[c] == L'_')) {
                     c++;
@@ -440,29 +442,28 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidateCss(
 
                 while (c < line.length() && iswspace(line[c])) c++;
 
-                // Check if this is a selector or nested rule (e.g. '@media ... { .sidebar { ... } }')
-                size_t nextOpenBrace = line.find(L'{', c);
-                size_t nextSemi = line.find(L';', c);
-                size_t nextCloseBrace = line.find(L'}', c);
-                bool isNestedRule = (nextOpenBrace != std::wstring::npos &&
-                                     (nextSemi == std::wstring::npos || nextOpenBrace < nextSemi) &&
-                                     (nextCloseBrace == std::wstring::npos || nextOpenBrace < nextCloseBrace));
+                // Check if this is a selector or nested rule (e.g. '@media ... { .sidebar { ... } }' or 'h2 { ... }')
+                size_t nextOpenBrace = line.find(L'{', propStart);
+                size_t nextSemi = line.find(L';', propStart);
 
-                if (isNestedRule) {
-                    // Do not treat nested selectors as missing colon errors
+                // If line contains an opening brace '{' before any semicolon, it is a selector / block opening, NOT a property declaration
+                if (nextOpenBrace != std::wstring::npos && (nextSemi == std::wstring::npos || nextOpenBrace < nextSemi)) {
+                    c = nextOpenBrace;
                     continue;
                 }
 
                 if (c >= line.length() || line[c] != L':') {
-                    if (c < line.length() && (line[c] == L'{' || line[c] == L',' || line[c] == L';' || line[c] == L'}')) {
-                        // Ignore selector or end of block
-                    } else if (c >= line.length() || (line[c] != L'(' && line[c] != L'.' && line[c] != L'#')) {
+                    // Only flag missing colon if the statement actually ends with a ';' (e.g. 'color red;')
+                    // Never flag selectors or selector lists like 'h2, p {' or '.heading > span'
+                    if (nextSemi != std::wstring::npos && (nextOpenBrace == std::wstring::npos || nextSemi < nextOpenBrace)) {
                         diagnostics.push_back({ l, propStart, propName.length(), L"CSS Syntax Error: Missing colon ':' after property '" + propName + L"'", 1 });
                     }
+                    c = (nextSemi != std::wstring::npos) ? (nextSemi + 1) : line.length();
                 } else {
                     // Colon found! Check if property is known
                     if (propName.rfind(L"--", 0) != 0 && propName.rfind(L"-webkit-", 0) != 0 &&
-                        propName.rfind(L"-moz-", 0) != 0 && propName.rfind(L"-ms-", 0) != 0 && propName.rfind(L"-o-", 0) != 0) {
+                        propName.rfind(L"-moz-", 0) != 0 && propName.rfind(L"-ms-", 0) != 0 && propName.rfind(L"-o-", 0) != 0 &&
+                        propName.rfind(L"scroll-margin", 0) != 0 && propName.rfind(L"scroll-padding", 0) != 0) {
                         if (knownProps.find(propName) == knownProps.end()) {
                             diagnostics.push_back({ l, propStart, propName.length(), L"CSS Linter: Unknown CSS property '" + propName + L"'", 2 });
                         }
@@ -476,19 +477,21 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidateCss(
                     }
                     std::wstring valStr = line.substr(valStart, c - valStart);
 
-                    // Check for invalid hex colors in value
-                    size_t hashPos = 0;
-                    while ((hashPos = valStr.find(L'#', hashPos)) != std::wstring::npos) {
-                        size_t hEnd = hashPos + 1;
-                        while (hEnd < valStr.length() && iswxdigit(valStr[hEnd])) hEnd++;
-                        size_t hLen = hEnd - hashPos - 1;
-                        bool atBoundary = (hEnd >= valStr.length() || iswspace(valStr[hEnd]) ||
-                                           valStr[hEnd] == L';' || valStr[hEnd] == L',' ||
-                                           valStr[hEnd] == L')' || valStr[hEnd] == L'}');
-                        if (atBoundary && hLen > 0 && hLen != 3 && hLen != 4 && hLen != 6 && hLen != 8) {
-                            diagnostics.push_back({ l, valStart + hashPos, hEnd - hashPos, L"CSS Syntax Error: Invalid hex color length in '" + valStr.substr(hashPos, hEnd - hashPos) + L"'", 1 });
+                    // Check for invalid hex colors in value (ignore url(...) fragments)
+                    if (valStr.find(L"url(") == std::wstring::npos) {
+                        size_t hashPos = 0;
+                        while ((hashPos = valStr.find(L'#', hashPos)) != std::wstring::npos) {
+                            size_t hEnd = hashPos + 1;
+                            while (hEnd < valStr.length() && iswxdigit(valStr[hEnd])) hEnd++;
+                            size_t hLen = hEnd - hashPos - 1;
+                            bool atBoundary = (hEnd >= valStr.length() || iswspace(valStr[hEnd]) ||
+                                               valStr[hEnd] == L';' || valStr[hEnd] == L',' ||
+                                               valStr[hEnd] == L')' || valStr[hEnd] == L'}');
+                            if (atBoundary && hLen > 0 && hLen != 3 && hLen != 4 && hLen != 6 && hLen != 8) {
+                                diagnostics.push_back({ l, valStart + hashPos, hEnd - hashPos, L"CSS Syntax Error: Invalid hex color length in '" + valStr.substr(hashPos, hEnd - hashPos) + L"'", 1 });
+                            }
+                            hashPos = (hEnd > hashPos) ? hEnd : (hashPos + 1);
                         }
-                        hashPos = (hEnd > hashPos) ? hEnd : (hashPos + 1);
                     }
                 }
             } else {
@@ -1334,9 +1337,22 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidateReactAndESLint(const Buffe
 
         // 3. JSX Validation: duplicate props and tag balancing
         if (isJsx) {
+            static const std::unordered_set<std::wstring> tsTypeKeywords = {
+                L"any", L"string", L"number", L"boolean", L"unknown", L"never",
+                L"void", L"null", L"undefined", L"object", L"symbol", L"bigint",
+                L"T", L"K", L"V", L"U", L"P", L"R", L"E"
+            };
+
             size_t p = 0;
             while (p < code.length()) {
                 if (code[p] == L'<') {
+                    // In TS/JS, an opening JSX tag is never immediately glued to an identifier (e.g. useRef<any>, useState<T>)
+                    // Closing tags (</tag>) can naturally follow text without space (e.g. <p>Content</p>)
+                    if (p + 1 < code.length() && code[p + 1] != L'/' && p > 0 && (iswalnum(code[p - 1]) || code[p - 1] == L'_' || code[p - 1] == L'$')) {
+                        p++;
+                        continue;
+                    }
+
                     if (p + 1 < code.length() && (code[p + 1] == L'/' || iswalpha(code[p + 1]))) {
                         size_t tagEnd = code.find(L'>', p);
                         if (tagEnd != std::wstring::npos) {
@@ -1344,11 +1360,33 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidateReactAndESLint(const Buffe
                             bool isClose = (!tagStr.empty() && tagStr[0] == L'/');
                             bool isSelfClose = (!tagStr.empty() && tagStr.back() == L'/');
 
+                            // If tagStr contains type operators (; | &) this is a TS generic type parameter (e.g. useState<{...} | null>)
+                            if (!isClose && (tagStr.find(L';') != std::wstring::npos || tagStr.find(L'|') != std::wstring::npos || tagStr.find(L'&') != std::wstring::npos)) {
+                                p = tagEnd + 1;
+                                continue;
+                            }
+
                             size_t nStart = isClose ? 1 : 0;
                             while (nStart < tagStr.length() && iswspace(tagStr[nStart])) nStart++;
                             size_t nEnd = nStart;
                             while (nEnd < tagStr.length() && !iswspace(tagStr[nEnd]) && tagStr[nEnd] != L'/') nEnd++;
                             std::wstring tagName = tagStr.substr(nStart, nEnd - nStart);
+
+                            // Skip TypeScript primitive types (e.g. useRef<any>(null), useState<number>)
+                            if (!isClose && tsTypeKeywords.count(tagName) > 0) {
+                                p = tagEnd + 1;
+                                continue;
+                            }
+
+                            // Check what follows '>'. If followed by '(' (e.g. fn<T>() or useRef<any>(null)), ';' or ',', it's a generic call
+                            if (!isClose) {
+                                size_t nextCharIdx = tagEnd + 1;
+                                while (nextCharIdx < code.length() && iswspace(code[nextCharIdx])) nextCharIdx++;
+                                if (nextCharIdx < code.length() && (code[nextCharIdx] == L'(' || code[nextCharIdx] == L')' || code[nextCharIdx] == L';' || code[nextCharIdx] == L',')) {
+                                    p = tagEnd + 1;
+                                    continue;
+                                }
+                            }
 
                             if (!isClose && !isSelfClose && voidTags.count(tagName) == 0 && !tagName.empty()) {
                                 jsxStack.push_back({ tagName, l, p });

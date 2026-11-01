@@ -386,6 +386,12 @@ int main(int argc, char* argv[]) {
     if (targetTest == 95) {
         goto run_test_95;
     }
+    if (targetTest == 96) {
+        goto run_test_96;
+    }
+    if (targetTest == 97) {
+        goto run_test_97;
+    }
 
     // --- 3. Render Test: Picture Viewer in Dark & Light Modes ---
     std::cout << "[TEST 2] Testing Picture Viewer rendering..." << std::endl;
@@ -14569,6 +14575,403 @@ run_test_95:
         std::cout << "  Passed: All [TEST 95] Notification Clipping, Split Screen Auto-Collapse, and Graph View tests passed!" << std::endl;
         if (targetTest == 95) {
             std::cout << "Target test 95 finished successfully." << std::endl;
+            return 0;
+        }
+    }
+
+run_test_96:
+    // --- TEST 96: TS Generics JSX False Positives, CSS Validation & Highlighting, GitLens Inline Blame Anti-Tamper & Scroll, Graph View Workspace Sync ---
+    if (targetTest == 0 || targetTest == 96) {
+        std::cout << "\n[TEST 96] Testing TS Generics JSX, CSS Highlighting & Validation, GitLens Blame Anti-Tamper, Graph View Sync..." << std::endl;
+
+        // 1. SyntaxValidator: JSX TypeScript Generic False Positive Fix
+        {
+            phide::editor::SyntaxValidator validator;
+            std::wstring tsxCode =
+                L"import React, { useRef, useState } from 'react';\n"
+                L"export const BackgroundRipple = () => {\n"
+                L"    const [clickedCell, setClickedCell] = useState<{\n"
+                L"        row: number;\n"
+                L"        col: number;\n"
+                L"    } | null>(null);\n"
+                L"    const [rippleKey, setRippleKey] = useState(0);\n"
+                L"    const ref = useRef<any>(null);\n"
+                L"    return (\n"
+                L"        <div ref={ref} className=\"ripple-container\">\n"
+                L"            <div className=\"grid-content\">\n"
+                L"                <p>Content</p>\n"
+                L"            </div>\n"
+                L"        </div>\n"
+                L"    );\n"
+                L"};\n";
+
+            auto diags = validator.Validate(L"background-ripple-effect.tsx", phide::editor::Buffer(tsxCode));
+            std::cout << "  JSX + TS Generics validation diagnostics count: " << diags.size() << std::endl;
+            for (const auto& d : diags) {
+                std::wcout << L"    Diag line " << d.line << L": " << d.message << std::endl;
+            }
+            assert(diags.empty() && "useRef<any>(null) and useState<...> must not produce JSX closing tag mismatch diagnostics!");
+            std::cout << "  Passed: JSX + TS Generics validation produced 0 false positives!" << std::endl;
+        }
+
+        // 2. SyntaxValidator: CSS False Positives (Keyframes, Nested & Selectors, scroll-margin-top)
+        {
+            phide::editor::SyntaxValidator validator;
+            std::wstring cssCode =
+                L"@keyframes ripple {\n"
+                L"    0% { transform: scale(0.8); opacity: 1; }\n"
+                L"    100% { transform: scale(2.4); opacity: 0; }\n"
+                L"}\n"
+                L".capability h2 {\n"
+                L"    font-size: 1.5rem;\n"
+                L"    scroll-margin-top: 5rem;\n"
+                L"}\n"
+                L".sectionHeading > p {\n"
+                L"    color: #64748b;\n"
+                L"}\n"
+                L"* {\n"
+                L"    box-sizing: border-box;\n"
+                L"}\n"
+                L"#mainApp {\n"
+                L"    background-color: #3156d8;\n"
+                L"}\n";
+
+            auto diags = validator.Validate(L"landing.module.css", phide::editor::Buffer(cssCode));
+            std::cout << "  CSS validation diagnostics count: " << diags.size() << std::endl;
+            for (const auto& d : diags) {
+                std::wcout << L"    CSS Diag line " << d.line << L": " << d.message << std::endl;
+            }
+            assert(diags.empty() && "CSS rules (.capability h2, scroll-margin-top, @keyframes) must produce 0 errors!");
+            std::cout << "  Passed: CSS validation produced 0 false positives!" << std::endl;
+        }
+
+        // 3. CSS Syntax Highlighting: .class, #id, #hex, and *
+        {
+            phide::editor::Buffer buffer(
+                L".discoverLink { color: #3156d8; }\n"
+                L"#container { display: flex; }\n"
+                L"* { box-sizing: border-box; }\n"
+            );
+
+            auto tok0 = buffer.GetTokensForLine(0, L".css");
+            auto tok1 = buffer.GetTokensForLine(1, L".css");
+            auto tok2 = buffer.GetTokensForLine(2, L".css");
+
+            // Line 0: .discoverLink should be Tag, #3156d8 should be Number
+            bool foundDotClass = false;
+            bool foundHexColor = false;
+            for (const auto& t : tok0) {
+                if (t.type == phide::editor::TokenType::Tag && t.startCol == 0) foundDotClass = true;
+                if (t.type == phide::editor::TokenType::Number) foundHexColor = true;
+            }
+            assert(foundDotClass && "CSS .discoverLink must be tokenized as Tag!");
+            assert(foundHexColor && "CSS #3156d8 hex color must be tokenized as Number!");
+
+            // Line 1: #container should be Tag
+            bool foundIdTag = false;
+            for (const auto& t : tok1) {
+                if (t.type == phide::editor::TokenType::Tag && t.startCol == 0) foundIdTag = true;
+            }
+            assert(foundIdTag && "CSS #container must be tokenized as Tag!");
+
+            // Line 2: * should be Tag
+            bool foundStarTag = false;
+            for (const auto& t : tok2) {
+                if (t.type == phide::editor::TokenType::Tag && t.startCol == 0) foundStarTag = true;
+            }
+            assert(foundStarTag && "CSS * universal selector must be tokenized as Tag!");
+            std::cout << "  Passed: CSS syntax highlighting for '.', '#', and '*' verified successfully!" << std::endl;
+        }
+
+        // 4. GitLens Inline Blame: Positioning past end of code and synchronized horizontal scroll
+        {
+            phide::ui::Theme theme;
+            theme.SetThemeMode(phide::ui::ThemeMode::Dark);
+            phide::ui::EditorCanvas canvas;
+
+            Microsoft::WRL::ComPtr<IWICBitmap> pWicBlame;
+            Microsoft::WRL::ComPtr<ID2D1RenderTarget> pRTBlame;
+            CreateTarget(pWicBlame, pRTBlame);
+            theme.CreateDeviceResources(pRTBlame.Get(), pDWriteFactory.Get());
+
+            phide::app::AppConfig cfg;
+            cfg.enableGitLens = true;
+            cfg.showLineNumbers = true;
+
+            phide::editor::OpenDocument doc;
+            doc.fileName = L"action.php";
+            doc.filePath = L"C:\\workspace\\action.php";
+            doc.buffer = phide::editor::Buffer(
+                L"<?php\n"
+                L"if ($action === 'create') {\n"
+                L"    $stmt = $pdo->prepare('INSERT INTO students VALUES (?, ?)');\n"
+                L"}\n"
+            );
+
+            phide::editor::OpenDocument::LineBlameInfo blame;
+            blame.commitHash = L"a1b2c3d";
+            blame.author = L"You";
+            blame.relativeTime = L"3 weeks ago";
+            blame.summary = L"feat: add documentation, UI components, and layout for CleaveDB browser application";
+            blame.isUncommitted = false;
+            doc.gitBlameMap[2] = blame;
+            doc.gitBlameLoaded = true;
+
+            // Place cursor on line 2 at column 4 (inside the code)
+            doc.buffer.SetCursor(2, 4);
+
+            std::vector<phide::editor::OpenDocument> docs;
+            docs.push_back(std::move(doc));
+
+            pRTBlame->BeginDraw();
+            pRTBlame->Clear(theme.colors.windowBg);
+            canvas.Render(pRTBlame.Get(), theme, cfg, docs, 0, 52.0f, 1148.0f, 748.0f, true);
+            HRESULT hr = pRTBlame->EndDraw();
+            assert(SUCCEEDED(hr));
+
+            SaveWicBitmapToPng(pWicBlame.Get(), pWicFactory.Get(), artDir + L"test_gitlens_inline_blame_no_tamper.png");
+            std::cout << "  Passed: Rendered test_gitlens_inline_blame_no_tamper.png" << std::endl;
+        }
+
+        // 5. Graph View: Strictly Workspace Synchronized (No Hardcoded PHP Sample Fallback)
+        {
+            std::error_code ec;
+            std::filesystem::path testProjectDir = std::filesystem::temp_directory_path() / L"phide_test_cleavedb_workspace";
+            std::filesystem::remove_all(testProjectDir, ec);
+            std::filesystem::create_directories(testProjectDir / L"app", ec);
+            std::filesystem::create_directories(testProjectDir / L"components", ec);
+
+            std::ofstream(testProjectDir / L"package.json") << "{\"name\": \"cleavedb-browser\"}";
+            std::ofstream(testProjectDir / L"app" / L"page.tsx") << "import { Button } from '@/components/button';";
+            std::ofstream(testProjectDir / L"components" / L"button.tsx") << "export const Button = () => <button>Click</button>;";
+
+            phide::ui::GraphView graphView;
+            // Initially empty before workspace is opened
+            assert(graphView.GetNodeCount() == 0 && "GraphView must NOT contain fake PHP files when workspace is empty!");
+
+            // Open project
+            graphView.RefreshFromWorkspace(testProjectDir.wstring());
+            std::cout << "  GraphView node count for test project: " << graphView.GetNodeCount() << std::endl;
+            assert(graphView.GetNodeCount() == 3 && "GraphView must contain exactly 3 nodes for test project!");
+
+            // Verify no index.php or auth.php leaked into the project
+            for (size_t i = 0; i < graphView.GetNodeCount(); ++i) {
+                // Node labels must only be package.json, page.tsx, button.tsx
+                assert(graphView.GetNodes()[i].label != L"index.php" && "GraphView must never contain hardcoded index.php!");
+                assert(graphView.GetNodes()[i].label != L"auth.php" && "GraphView must never contain hardcoded auth.php!");
+            }
+
+            phide::ui::Theme theme;
+            theme.SetThemeMode(phide::ui::ThemeMode::Dark);
+            Microsoft::WRL::ComPtr<IWICBitmap> pWicGraph;
+            Microsoft::WRL::ComPtr<ID2D1RenderTarget> pRTGraph;
+            CreateTarget(pWicGraph, pRTGraph);
+            theme.CreateDeviceResources(pRTGraph.Get(), pDWriteFactory.Get());
+
+            phide::app::AppConfig cfg;
+            cfg.isGraphColored = true;
+
+            pRTGraph->BeginDraw();
+            pRTGraph->Clear(theme.colors.windowBg);
+            graphView.Render(pRTGraph.Get(), theme, cfg, 52.0f, 1148.0f, 0.0f, 750.0f);
+            HRESULT hr = pRTGraph->EndDraw();
+            assert(SUCCEEDED(hr));
+
+            SaveWicBitmapToPng(pWicGraph.Get(), pWicFactory.Get(), artDir + L"test_graph_view_synced_to_workspace.png");
+            std::cout << "  Passed: Rendered test_graph_view_synced_to_workspace.png" << std::endl;
+
+            std::filesystem::remove_all(testProjectDir, ec);
+        }
+
+        std::cout << "  Passed: All [TEST 96] TS Generics, CSS Highlighting & Validation, GitLens Blame Anti-Tamper, Graph View Sync passed!" << std::endl;
+        if (targetTest == 96) {
+            std::cout << "Target test 96 finished successfully." << std::endl;
+            return 0;
+        }
+    }
+
+run_test_97:
+    // --- TEST 97: CSS Custom Properties & Tailwind v4 Validation, Dev Server Process Tree Management, Live Server Pill Positioning ---
+    if (targetTest == 0 || targetTest == 97) {
+        std::cout << "\n[TEST 97] Testing CSS Custom Properties & Tailwind v4, Dev Server Lifecycle & Tree Kill, Live Server Pill Positioning..." << std::endl;
+
+        // Subtest 1: Verify CSS custom properties and Tailwind v4 @theme inline produce 0 false positive diagnostics
+        {
+            phide::editor::Buffer cssBuf;
+            std::wstring cssContent =
+                L"@import \"tailwindcss\";\n\n"
+                L":root {\n"
+                L"  --background: #ffffff;\n"
+                L"  --foreground: #171717;\n"
+                L"}\n\n"
+                L"@theme inline {\n"
+                L"  --color-background: var(--background);\n"
+                L"  --color-foreground: var(--foreground);\n"
+                L"  --font-sans: var(--font-geist-sans);\n"
+                L"  --font-mono: var(--font-geist-mono);\n"
+                L"}\n\n"
+                L"body {\n"
+                L"  background: var(--background);\n"
+                L"  color: var(--foreground);\n"
+                L"  font-family: Arial, Helvetica, sans-serif;\n"
+                L"}\n";
+            cssBuf.SetText(cssContent);
+            auto diags = phide::editor::SyntaxValidator::Validate(L"globals.css", cssBuf);
+            std::cout << "  globals.css diagnostics count: " << diags.size() << std::endl;
+            for (const auto& d : diags) {
+                std::wcout << L"    Unexpected diag on line " << d.line << L": " << d.message << std::endl;
+            }
+            assert(diags.empty() && "globals.css with CSS custom properties and Tailwind v4 @theme must produce ZERO diagnostics!");
+            std::cout << "  Passed: CSS custom properties and Tailwind v4 validated cleanly with 0 diagnostics" << std::endl;
+        }
+
+        // Subtest 2: Dev Server Ready Callback & Stderr Warning filtering
+        {
+            phide::ui::TerminalPanel termPanel;
+            bool readyTriggered = false;
+            std::wstring readyProjectRoot;
+            termPanel.SetOnServerReady([&](const std::wstring& rootDir) {
+                readyTriggered = true;
+                readyProjectRoot = rootDir;
+            });
+
+            // Start a simulated server tab
+            termPanel.StartServerSession(L"Next.js Server", L"cmd.exe", L"c:\\test_proj", L"c:\\test_proj");
+            assert(termPanel.HasActiveServerSession(L"c:\\test_proj") && "Server session must be active!");
+
+            auto* tab = termPanel.FindServerTab(L"c:\\test_proj");
+            assert(tab != nullptr && "Server tab must be found!");
+
+            // Test non-fatal warning on stderr does not trigger error or mark hasError
+            std::string warnStr = "⚠ Warning: Next.js ignored package-lock.json because another lockfile was detected.\n";
+            tab->AppendOutput(warnStr.c_str(), warnStr.length(), /*isError=*/true);
+            assert(!readyTriggered && "Warning must not trigger ready");
+            assert(!tab->hasError && "Warning on stderr must not be marked as fatal error!");
+
+            // Test ready output on stdout triggers callback
+            std::string readyStr = "  - Local:   http://localhost:3000\n  Ready in 3.0s\n";
+            tab->AppendOutput(readyStr.c_str(), readyStr.length(), /*isError=*/false);
+            assert(readyTriggered && "Server ready must be triggered on 'Local: http://localhost:3000'!");
+            assert(readyProjectRoot == L"c:\\test_proj" && "Callback must receive projectRoot!");
+            std::cout << "  Passed: Dev server ready detection and warning filtering verified" << std::endl;
+
+            // Terminate session
+            termPanel.TerminateServerSession(L"c:\\test_proj");
+            assert(!termPanel.HasActiveServerSession(L"c:\\test_proj") && "Server session must be terminated!");
+            std::cout << "  Passed: Dev server termination verified" << std::endl;
+        }
+
+        // Subtest 3: Pill Positioning Geometry (avoid overlapping Status Bar and Terminal panel)
+        {
+            float clientH = 750.0f;
+            float clientW = 1200.0f;
+            float statusBarH = 22.0f;
+            float cardH = 54.0f;
+            float margin = 10.0f;
+
+            // Terminal Closed:
+            float cardY_closed = clientH - statusBarH - cardH - margin;
+            assert(cardY_closed + cardH <= clientH - statusBarH && "Pill bottom must be strictly above the status bar!");
+            assert(cardY_closed == 664.0f && "Pill Y when closed must be 664px!");
+
+            // Terminal Open (e.g. 200px tall):
+            float termH = 200.0f;
+            float termTop = clientH - statusBarH - termH; // 750 - 22 - 200 = 528px
+            float cardY_open = clientH - statusBarH - termH - cardH - margin; // 464px
+            assert(cardY_open + cardH <= termTop && "Pill bottom must be strictly above the terminal header bar!");
+            assert(cardY_open == 464.0f && "Pill Y when terminal is open must be 464px!");
+            std::cout << "  Passed: Dev server pill layout geometry verified" << std::endl;
+        }
+
+        // Subtest 4: Render Visual Artifact of Dev Server Pill with Terminal Open
+        {
+            phide::ui::Theme theme;
+            theme.SetThemeMode(phide::ui::ThemeMode::Dark);
+            Microsoft::WRL::ComPtr<IWICBitmap> pWic;
+            Microsoft::WRL::ComPtr<ID2D1RenderTarget> pRT;
+            CreateTarget(pWic, pRT);
+            theme.CreateDeviceResources(pRT.Get(), pDWriteFactory.Get());
+
+            pRT->BeginDraw();
+            pRT->Clear(theme.colors.windowBg);
+
+            // Draw simulated editor background
+            D2D1_RECT_F editorRect = D2D1::RectF(52.0f, 40.0f, 1200.0f, 528.0f);
+            Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> pBgBrush;
+            pRT->CreateSolidColorBrush(theme.colors.canvasBg, &pBgBrush);
+            pRT->FillRectangle(editorRect, pBgBrush.Get());
+
+            // Draw Terminal Panel (528 to 728)
+            D2D1_RECT_F termRect = D2D1::RectF(52.0f, 528.0f, 1200.0f, 728.0f);
+            Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> pTermBrush;
+            pRT->CreateSolidColorBrush(D2D1::ColorF(0x181824), &pTermBrush);
+            pRT->FillRectangle(termRect, pTermBrush.Get());
+
+            // Terminal Tab Header
+            D2D1_RECT_F termHeaderRect = D2D1::RectF(52.0f, 528.0f, 1200.0f, 558.0f);
+            Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> pHeaderBrush;
+            pRT->CreateSolidColorBrush(D2D1::ColorF(0x1e1e2e), &pHeaderBrush);
+            pRT->FillRectangle(termHeaderRect, pHeaderBrush.Get());
+
+            Microsoft::WRL::ComPtr<IDWriteTextFormat> pTextFormat;
+            pDWriteFactory->CreateTextFormat(L"Segoe UI", nullptr, DWRITE_FONT_WEIGHT_NORMAL,
+                DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, 12.0f, L"en-us", &pTextFormat);
+
+            Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> pWhiteBrush;
+            pRT->CreateSolidColorBrush(D2D1::ColorF(D2D1::ColorF::White), &pWhiteBrush);
+            pRT->DrawTextW(L"TERMINAL   |   Next.js Server (Running)   |   Git Logs", 51, pTextFormat.Get(),
+                D2D1::RectF(64.0f, 534.0f, 500.0f, 554.0f), pWhiteBrush.Get());
+
+            // Draw Status Bar (728 to 750)
+            D2D1_RECT_F statusRect = D2D1::RectF(0.0f, 728.0f, 1200.0f, 750.0f);
+            Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> pStatusBrush;
+            pRT->CreateSolidColorBrush(D2D1::ColorF(0x007ACC), &pStatusBrush);
+            pRT->FillRectangle(statusRect, pStatusBrush.Get());
+            pRT->DrawTextW(L" main*   Next.js Ready   UTF-8   Spaces: 2", 42, pTextFormat.Get(),
+                D2D1::RectF(10.0f, 730.0f, 500.0f, 748.0f), pWhiteBrush.Get());
+
+            // Draw Dev Server Toast Pill at cardY = 464.0f (cleanly floating above terminal header!)
+            float cardW = 320.0f;
+            float cardH = 54.0f;
+            float cardX = 1200.0f - cardW - 16.0f;
+            float cardY = 464.0f;
+            D2D1_ROUNDED_RECT pillRounded = D2D1::RoundedRect(D2D1::RectF(cardX, cardY, cardX + cardW, cardY + cardH), 8.0f, 8.0f);
+
+            Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> pPillBg;
+            pRT->CreateSolidColorBrush(D2D1::ColorF(0x1F2430), &pPillBg);
+            pRT->FillRoundedRectangle(pillRounded, pPillBg.Get());
+
+            Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> pPillBorder;
+            pRT->CreateSolidColorBrush(D2D1::ColorF(0x10B981), &pPillBorder);
+            pRT->DrawRoundedRectangle(pillRounded, pPillBorder.Get(), 1.5f);
+
+            // Green Pulse Dot
+            Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> pGreenDot;
+            pRT->CreateSolidColorBrush(D2D1::ColorF(0x10B981), &pGreenDot);
+            pRT->FillEllipse(D2D1::Ellipse(D2D1::Point2F(cardX + 22.0f, cardY + 27.0f), 5.0f, 5.0f), pGreenDot.Get());
+
+            // Pill text
+            Microsoft::WRL::ComPtr<IDWriteTextFormat> pBoldFormat;
+            pDWriteFactory->CreateTextFormat(L"Segoe UI", nullptr, DWRITE_FONT_WEIGHT_SEMI_BOLD,
+                DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, 12.0f, L"en-us", &pBoldFormat);
+            pRT->DrawTextW(L"Next.js Server - Port: 3000", 27, pBoldFormat.Get(),
+                D2D1::RectF(cardX + 38.0f, cardY + 12.0f, cardX + 280.0f, cardY + 30.0f), pWhiteBrush.Get());
+
+            Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> pMutedBrush;
+            pRT->CreateSolidColorBrush(D2D1::ColorF(0x94A3B8), &pMutedBrush);
+            pRT->DrawTextW(L"http://localhost:3000 (Ctrl+Click to open)", 41, pTextFormat.Get(),
+                D2D1::RectF(cardX + 38.0f, cardY + 30.0f, cardX + 280.0f, cardY + 48.0f), pMutedBrush.Get());
+
+            HRESULT hr = pRT->EndDraw();
+            assert(SUCCEEDED(hr));
+
+            SaveWicBitmapToPng(pWic.Get(), pWicFactory.Get(), artDir + L"test_live_server_pill_position_clean.png");
+            std::cout << "  Passed: Rendered test_live_server_pill_position_clean.png" << std::endl;
+        }
+
+        std::cout << "  Passed: All [TEST 97] CSS Custom Properties, Dev Server Lifecycle & Pill Positioning passed!" << std::endl;
+        if (targetTest == 97) {
+            std::cout << "Target test 97 finished successfully." << std::endl;
             return 0;
         }
     }

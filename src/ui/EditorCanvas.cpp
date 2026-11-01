@@ -1246,6 +1246,14 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
     const float swatchSpan = config.ScaleF(14.0f);
     const float swatchSize = config.ScaleF(10.5f);
 
+    std::wstring docExt;
+    std::wstring pathToExtract = !doc.filePath.empty() ? doc.filePath : doc.fileName;
+    size_t dotPos = pathToExtract.find_last_of(L".");
+    if (dotPos != std::wstring::npos) {
+        docExt = pathToExtract.substr(dotPos);
+        for (auto& c : docExt) c = towlower(c);
+    }
+
     m_foldChevrons.clear();
     m_visibleColorSwatches.clear();
 
@@ -1868,7 +1876,7 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
                 }
             }
 
-            auto tokens = buffer.GetTokensForLine(vl.bufferLine);
+            auto tokens = buffer.GetTokensForLine(vl.bufferLine, docExt);
             if (lineColors.empty() && theme.dwriteFactory && theme.fontCode) {
                 // Unified DirectWrite Text Layout for contiguous characters, flawless spacing, ligatures, and zero gaps
                 Microsoft::WRL::ComPtr<IDWriteTextLayout> pLineLayout;
@@ -2197,19 +2205,62 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
                 const auto& blame = itBlame->second;
                 std::wstring blameText = L"   " + (blame.isUncommitted ? (blame.author + L", Uncommitted changes") : (blame.author + L", " + blame.relativeTime + L" \x2022 " + blame.summary));
 
-                // Position blame annotation past the end of the line text
-                float lineEndX = caretX + config.ScaleF(12.0f);
+                // Accurately measure the visual width of the full line of text
+                float textVisualW = 0.0f;
                 if (cursor.line < buffer.GetLineCount()) {
                     const auto& clText = buffer.GetLine(cursor.line);
-                    float fullLineW = codeLeft - scrollX + static_cast<float>(clText.length()) * charW;
-                    if (fullLineW > lineEndX) lineEndX = fullLineW + config.ScaleF(28.0f);
+                    if (theme.dwriteFactory && theme.fontCode) {
+                        Microsoft::WRL::ComPtr<IDWriteTextLayout> pLineMeasure;
+                        if (SUCCEEDED(theme.dwriteFactory->CreateTextLayout(
+                                clText.c_str(), static_cast<UINT32>(clText.length()),
+                                theme.fontCode.Get(), 20000.0f, lineH, &pLineMeasure))) {
+                            pLineMeasure->SetIncrementalTabStop(charW * static_cast<float>(config.tabSize > 0 ? config.tabSize : 4));
+                            DWRITE_TEXT_METRICS tm{};
+                            if (SUCCEEDED(pLineMeasure->GetMetrics(&tm))) {
+                                textVisualW = tm.widthIncludingTrailingWhitespace;
+                            }
+                        }
+                    }
+                    if (textVisualW <= 0.0f) {
+                        size_t visualCols = 0;
+                        int tabSz = config.tabSize > 0 ? config.tabSize : 4;
+                        for (wchar_t ch : clText) {
+                            if (ch == L'\t') visualCols += tabSz - (visualCols % tabSz);
+                            else visualCols++;
+                        }
+                        textVisualW = static_cast<float>(visualCols) * charW;
+                    }
+                    // Account for inline color swatches if present on this line
+                    size_t swCount = 0;
+                    size_t cpos = 0;
+                    while ((cpos = clText.find(L'#', cpos)) != std::wstring::npos) {
+                        if (cpos + 4 <= clText.length()) swCount++;
+                        cpos++;
+                    }
+                    textVisualW += static_cast<float>(swCount) * config.ScaleF(14.0f);
                 }
-                if (lineEndX < codeLeft + config.ScaleF(32.0f)) lineEndX = codeLeft + config.ScaleF(32.0f);
 
-                float maxBlameRight = codeRight - config.ScaleF(10.0f);
-                if (lineEndX < maxBlameRight - config.ScaleF(40.0f)) {
-                    float blameW = maxBlameRight - lineEndX;
-                    D2D1_RECT_F rcBlame = D2D1::RectF(lineEndX, caretY, maxBlameRight, caretY + lineH);
+                // Place blame strictly in empty space after line text, moving synchronously with horizontal scroll
+                float lineEndX = codeLeft - scrollX + textVisualW + config.ScaleF(32.0f);
+
+                if (lineEndX < codeRight - config.ScaleF(20.0f)) {
+                    // Use leading-aligned fontHint (never trailing-aligned menu shortcut font!)
+                    IDWriteTextFormat* blameFmt = theme.fontHint ? theme.fontHint.Get() : (theme.fontBody ? theme.fontBody.Get() : theme.fontCode.Get());
+
+                    float blameTextW = static_cast<float>(blameText.length()) * charW;
+                    if (theme.dwriteFactory && blameFmt) {
+                        Microsoft::WRL::ComPtr<IDWriteTextLayout> pBlameLayout;
+                        if (SUCCEEDED(theme.dwriteFactory->CreateTextLayout(
+                                blameText.c_str(), static_cast<UINT32>(blameText.length()),
+                                blameFmt, 10000.0f, lineH, &pBlameLayout))) {
+                            DWRITE_TEXT_METRICS btm{};
+                            if (SUCCEEDED(pBlameLayout->GetMetrics(&btm))) {
+                                blameTextW = btm.widthIncludingTrailingWhitespace;
+                            }
+                        }
+                    }
+
+                    D2D1_RECT_F rcBlame = D2D1::RectF(lineEndX, caretY, lineEndX + blameTextW + config.ScaleF(10.0f), caretY + lineH);
 
                     // Muted, subtle italic gray annotation matching GitLens
                     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushBlame;
@@ -2218,7 +2269,6 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
                         &brushBlame
                     );
 
-                    IDWriteTextFormat* blameFmt = theme.fontMenuShortcut ? theme.fontMenuShortcut.Get() : (theme.fontHint ? theme.fontHint.Get() : theme.fontCode.Get());
                     pRT->DrawText(blameText.c_str(), static_cast<UINT32>(blameText.length()),
                                   blameFmt, rcBlame, brushBlame ? brushBlame.Get() : theme.brushTextMuted.Get());
                 }
@@ -2460,7 +2510,7 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
             size_t indent = lineStr.find_first_not_of(L" \t");
             if (indent == std::wstring::npos) continue;
 
-            auto tokens = buffer.GetTokensForLine(b);
+            auto tokens = buffer.GetTokensForLine(b, docExt);
             if (!tokens.empty()) {
                 for (const auto& tok : tokens) {
                     if (tok.startCol + tok.length > lineStr.length()) continue;
@@ -6267,11 +6317,12 @@ void EditorCanvas::RenderSyntaxTokensLine(ID2D1RenderTarget* pRT, Theme& theme, 
                                          const editor::Buffer& buffer, size_t lineIdx,
                                          float codeLeft, float lineY, float maxRight,
                                          float lineH, float charW, IDWriteTextFormat* pCodeFmt,
-                                         ID2D1Brush* defaultTextBrush) {
+                                         ID2D1Brush* defaultTextBrush,
+                                         const std::wstring& ext) {
     std::wstring lineStr = buffer.GetLine(lineIdx);
     if (lineStr.empty() || codeLeft >= maxRight) return;
 
-    auto tokens = buffer.GetTokensForLine(lineIdx);
+    auto tokens = buffer.GetTokensForLine(lineIdx, ext);
     if (theme.dwriteFactory && pCodeFmt) {
         Microsoft::WRL::ComPtr<IDWriteTextLayout> pLineLayout;
         float availW = (std::max)(1200.0f, maxRight - codeLeft + 500.0f);

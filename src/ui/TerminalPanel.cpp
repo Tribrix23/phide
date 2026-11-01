@@ -63,6 +63,7 @@ TerminalTab::~TerminalTab() {
 void TerminalTab::Terminate() {
     isAlive = false;
     onErrorCallback = nullptr;
+    onReadyCallback = nullptr;
     onOutput = nullptr;
     if (splitTab) {
         splitTab->Terminate();
@@ -72,9 +73,14 @@ void TerminalTab::Terminate() {
         CloseHandle(hStdinWrite);
         hStdinWrite = NULL;
     }
+    if (processId != 0) {
+        // Kill the full process tree (PowerShell -> cmd -> node.exe) to prevent orphaned background servers
+        std::wstring killCmd = L"taskkill.exe /F /T /PID " + std::to_wstring(processId) + L" >nul 2>nul";
+        _wsystem(killCmd.c_str());
+    }
     if (hProcess) {
         TerminateProcess(hProcess, 0);
-        WaitForSingleObject(hProcess, 50);
+        WaitForSingleObject(hProcess, 100);
     }
     if (readerThread.joinable()) {
         CancelSynchronousIo(readerThread.native_handle());
@@ -198,22 +204,60 @@ void TerminalTab::AppendOutput(const char* data, size_t length, bool isError) {
     if (isServerTab) {
         std::wstring checkText = wstr;
         for (auto& c : checkText) c = static_cast<wchar_t>(towlower(c));
-        if (isError ||
+
+        // 1. Detect server ready / listening indicators
+        bool isSuccessIndicator = (
+            checkText.find(L"- local:") != std::wstring::npos ||
+            checkText.find(L"ready in ") != std::wstring::npos ||
+            checkText.find(L"ready in") != std::wstring::npos ||
+            checkText.find(L"compiled successfully") != std::wstring::npos ||
+            checkText.find(L"http://localhost:") != std::wstring::npos ||
+            checkText.find(L"http://127.0.0.1:") != std::wstring::npos ||
+            checkText.find(L"server running at") != std::wstring::npos ||
+            checkText.find(L"started on") != std::wstring::npos ||
+            checkText.find(L"listening on") != std::wstring::npos
+        );
+
+        if (isSuccessIndicator) {
+            hasError = false;
+            lastErrorText.clear();
+            if (onReadyCallback) {
+                onReadyCallback(associatedFilePath);
+            }
+        }
+
+        // 2. Distinguish benign warnings from true fatal errors
+        bool isWarning = (
+            checkText.find(L"warning") != std::wstring::npos ||
+            checkText.find(L"warn -") != std::wstring::npos ||
+            checkText.find(L"deprecationwarning") != std::wstring::npos ||
+            checkText.find(L"experimentalwarning") != std::wstring::npos
+        );
+
+        bool hasErrorKeyword = (
             checkText.find(L"error:") != std::wstring::npos ||
             checkText.find(L": error") != std::wstring::npos ||
-            checkText.find(L"error ") != std::wstring::npos ||
             checkText.find(L"[error]") != std::wstring::npos ||
-            checkText.find(L"not recognized as the name of a cmdlet") != std::wstring::npos ||
-            checkText.find(L"not recognized as an internal or external command") != std::wstring::npos ||
-            checkText.find(L"commandnotfoundexception") != std::wstring::npos ||
+            checkText.find(L"syntaxerror") != std::wstring::npos ||
             checkText.find(L"npm err!") != std::wstring::npos ||
             checkText.find(L"npm error") != std::wstring::npos ||
             checkText.find(L"elifecycle") != std::wstring::npos ||
-            checkText.find(L"modulenotfounderror") != std::wstring::npos ||
+            checkText.find(L"eaddrinuse") != std::wstring::npos ||
+            checkText.find(L"address already in use") != std::wstring::npos ||
+            checkText.find(L"another next dev server is already running") != std::wstring::npos ||
+            checkText.find(L"commandnotfoundexception") != std::wstring::npos ||
+            checkText.find(L"not recognized as the name of a cmdlet") != std::wstring::npos ||
+            checkText.find(L"not recognized as an internal or external command") != std::wstring::npos ||
             checkText.find(L"cannot find module") != std::wstring::npos ||
-            checkText.find(L"fatal error") != std::wstring::npos ||
+            checkText.find(L"modulenotfounderror") != std::wstring::npos ||
             checkText.find(L"failed to compile") != std::wstring::npos ||
-            checkText.find(L"syntaxerror") != std::wstring::npos) {
+            checkText.find(L"fatal error:") != std::wstring::npos ||
+            checkText.find(L"fatal:") != std::wstring::npos
+        );
+
+        bool isFatalError = hasErrorKeyword || (isError && !isWarning);
+
+        if (isFatalError) {
             hasError = true;
             if (lastErrorText.empty()) {
                 std::wstring line = wstr;
@@ -2289,6 +2333,7 @@ void TerminalPanel::StartServerSession(const std::wstring& serverTitle, const st
         tab->associatedFilePath = projectRoot;
         tab->workingDir = workingDir.empty() ? m_defaultWorkingDir : workingDir;
         tab->onErrorCallback = m_onServerError;
+        tab->onReadyCallback = m_onServerReady;
         tab->hasError = false;
         tab->lastErrorText.clear();
         std::lock_guard<std::mutex> lock(tab->bufferMutex);
@@ -2305,6 +2350,7 @@ void TerminalPanel::StartServerSession(const std::wstring& serverTitle, const st
         newTab->workingDir = workingDir.empty() ? m_defaultWorkingDir : workingDir;
         newTab->onOutput = m_outputCallback;
         newTab->onErrorCallback = m_onServerError;
+        newTab->onReadyCallback = m_onServerReady;
         newTab->hasError = false;
         newTab->lastErrorText.clear();
         m_tabs.push_back(std::move(newTab));
@@ -2818,6 +2864,22 @@ void TerminalPanel::TerminateServerSession(const std::wstring& projectRoot) {
             }
         }
     }
+}
+
+bool TerminalPanel::HasActiveServerSession(const std::wstring& projectRoot) const {
+    for (const auto& tab : m_tabs) {
+        if (tab && tab->isServerTab) {
+            if (projectRoot.empty() || _wcsicmp(tab->associatedFilePath.c_str(), projectRoot.c_str()) == 0) {
+                if (tab->hProcess) {
+                    DWORD exitCode = 0;
+                    if (GetExitCodeProcess(tab->hProcess, &exitCode) && exitCode == STILL_ACTIVE) {
+                        return true;
+                    }
+                }
+            }
+        }
+    }
+    return false;
 }
 
 bool TerminalPanel::HasServerError(const std::wstring& projectRoot) const {

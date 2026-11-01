@@ -205,6 +205,7 @@ struct TerminalTab {
     bool hasError = false;
     std::wstring lastErrorText;
     std::function<void(const std::wstring&, const std::wstring&)> onErrorCallback;
+    std::function<void(const std::wstring&)> onReadyCallback;
 
     HANDLE hProcess = NULL;
     HANDLE hThread = NULL;
@@ -312,9 +313,11 @@ public:
     [[nodiscard]] bool HasServerError(const std::wstring& projectRoot = L"") const;
     [[nodiscard]] std::wstring GetServerErrorText(const std::wstring& projectRoot = L"") const;
     [[nodiscard]] TerminalTab* FindServerTab(const std::wstring& projectRoot);
+    [[nodiscard]] bool HasActiveServerSession(const std::wstring& projectRoot = L"") const;
     bool CloseTabByAssociatedFile(const std::wstring& filePath);
     void SetOnLiveServerTabClosed(std::function<void(const std::wstring&)> cb) { m_onLiveServerTabClosed = std::move(cb); }
     void SetOnServerError(std::function<void(const std::wstring&, const std::wstring&)> cb) { m_onServerError = std::move(cb); }
+    void SetOnServerReady(std::function<void(const std::wstring&)> cb) { m_onServerReady = std::move(cb); }
     void SetOnMinimize(std::function<void()> cb) { m_onMinimize = std::move(cb); }
     void ExecuteCommandLine(const std::wstring& command);
 
@@ -469,6 +472,7 @@ private:
     mutable std::vector<TerminalUrlHit> m_visibleUrls;
     std::function<void(const std::wstring&)> m_onLiveServerTabClosed;
     std::function<void(const std::wstring&, const std::wstring&)> m_onServerError;
+    std::function<void(const std::wstring&)> m_onServerReady;
     std::function<void(const std::wstring&)> m_onGitHubAuthSuccess;
     std::function<void()> m_onMinimize;
     std::function<void(bool)> m_onToggleFullScreen;

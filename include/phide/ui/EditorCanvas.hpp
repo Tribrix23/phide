@@ -389,7 +389,8 @@ private:
                                 const editor::Buffer& buffer, size_t lineIdx,
                                 float codeLeft, float lineY, float maxRight,
                                 float lineH, float charW, IDWriteTextFormat* pCodeFmt,
-                                ID2D1Brush* defaultTextBrush = nullptr);
+                                ID2D1Brush* defaultTextBrush = nullptr,
+                                const std::wstring& ext = L"");
 
     /**
      * @brief Renders a single editor pane (tabs, breadcrumbs, content).
