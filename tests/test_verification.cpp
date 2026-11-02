@@ -295,6 +295,9 @@ int main(int argc, char* argv[]) {
     if (targetTest == 108) {
         goto run_test_108;
     }
+    if (targetTest == 109) {
+        goto run_test_109;
+    }
 
     if (targetTest == 66) {
         goto run_test_66;
@@ -16361,6 +16364,70 @@ run_test_108:
         std::cout << "  Passed: All [TEST 108] JSX False Positives, Error Isolation & Scrollbar tests passed!" << std::endl;
         if (targetTest == 108) {
             std::cout << "Target test 108 finished." << std::endl;
+            return 0;
+        }
+    }
+
+run_test_109:
+    // [TEST 109] TypeScript Generic / TSX False Positive Elimination & Git Commit URL
+    {
+        std::cout << "\n[TEST 109] Testing TypeScript Generic / TSX False Positive Elimination & Git Commit URL..." << std::endl;
+
+        // Subtest 1: Validate exact tutorial-sidebar.tsx code snippet from Image 1 & 4 produces 0 false positive syntax errors
+        {
+            phide::editor::Buffer buf;
+            buf.SetText(
+                L"\"use client\";\n"
+                L"import React, { useState, useEffect } from \"react\";\n"
+                L"export function TutorialSidebar() {\n"
+                L"  const [items, setItems] = useState<AccordionItem[]>([\n"
+                L"    { title: \"Introduction\", isOpen: false, href: \"/tutorial\", sections: [{ title: \"Overview\", href: \"/tutorial\" }] },\n"
+                L"    {\n"
+                L"      title: \"Storing Documents (POUR)\",\n"
+                L"      isOpen: false,\n"
+                L"      href: \"/tutorial/storing-documents\",\n"
+                L"      sections: [\n"
+                L"        { title: \"Overview\", href: \"/tutorial/storing-documents\" },\n"
+                L"        { title: \"Creating ID\", href: \"/tutorial/storing-documents/creating-id\" }\n"
+                L"      ],\n"
+                L"    },\n"
+                L"    {\n"
+                L"      title: \"Graph & Semantic Search (FIND)\",\n"
+                L"      isOpen: false,\n"
+                L"      href: \"/tutorial/find\",\n"
+                L"      sections: [\n"
+                L"        { title: \"Overview\", href: \"/tutorial/find/overview\" }\n"
+                L"      ],\n"
+                L"    }\n"
+                L"  ]);\n"
+                L"  return (\n"
+                L"    <aside className=\"w-full md:w-72 shrink-0\">\n"
+                L"      <div>Hello</div>\n"
+                L"    </aside>\n"
+                L"  );\n"
+                L"}\n"
+            );
+            auto diags = phide::editor::SyntaxValidator::Validate(L"tutorial-sidebar.tsx", buf);
+            std::cout << "  tutorial-sidebar snippet diagnostics count: " << diags.size() << std::endl;
+            for (const auto& d : diags) {
+                std::wcout << L"    Line " << (d.line + 1) << L": " << d.message << std::endl;
+            }
+            assert(diags.empty());
+            std::cout << "  Passed: tutorial-sidebar.tsx snippet produces 0 syntax errors" << std::endl;
+        }
+
+        // Subtest 2: DrawerPanel GetGitHubRepoUrl in current repo
+        {
+            phide::ui::DrawerPanel drawer;
+            drawer.OpenFolder(std::filesystem::current_path().wstring());
+            std::wstring repoUrl = drawer.GetGitHubRepoUrl();
+            std::wcout << L"  Current repo URL: " << repoUrl << std::endl;
+            std::cout << "  Passed: DrawerPanel::GetGitHubRepoUrl executed successfully" << std::endl;
+        }
+
+        std::cout << "  Passed: All [TEST 109] TSX False Positives & Git URL tests passed!" << std::endl;
+        if (targetTest == 109) {
+            std::cout << "Target test 109 finished." << std::endl;
             return 0;
         }
     }

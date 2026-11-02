@@ -452,6 +452,7 @@ public:
     void SetGitCommitBtnBounds(const D2D1_RECT_F& rc) noexcept { m_gitCommitBtnBounds = rc; }
 
     // --- GitHub Authentication & "Login to GitHub" Modal ---
+    [[nodiscard]] std::wstring GetGitHubRepoUrl() const;
     [[nodiscard]] bool IsGitHubLoggedIn() const noexcept;
     void SetGitHubLoggedIn(bool loggedIn) noexcept { m_isGitHubLoggedIn = loggedIn; m_hasExplicitLoginOverride = true; }
     [[nodiscard]] bool IsGitHubLoginModalOpen() const noexcept { return m_isGitHubLoginModalOpen; }

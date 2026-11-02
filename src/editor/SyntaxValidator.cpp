@@ -561,9 +561,12 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidateJavaScript(
     bool inSingleQuote = false;
     bool inDoubleQuote = false;
 
-    int jsxDepth = 0;
-    bool inJsxTag = false;
-    int jsxExprDepth = 0;
+    std::vector<std::wstring> jsxTagStack;
+    std::vector<size_t> jsxExprBraceLevels;
+    static const std::unordered_set<std::wstring> voidTags = {
+        L"area", L"base", L"br", L"col", L"embed", L"hr", L"img", L"input",
+        L"link", L"meta", L"param", L"source", L"track", L"wbr"
+    };
 
     for (size_t l = startLine; l < endLine; ++l) {
         const auto& line = buffer.GetLine(l);
@@ -623,45 +626,117 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidateJavaScript(
 
             // 4.5 JSX syntax and children text mode handling
             if (isJsx) {
-                if (!inJsxTag && jsxDepth > 0 && jsxExprDepth == 0) {
+                bool inJsxText = !jsxTagStack.empty() && jsxExprBraceLevels.empty();
+                if (inJsxText) {
+                    // Inside JSX text: '{' enters a JavaScript expression
                     if (line[c] == L'{') {
-                        jsxExprDepth = 1;
                         stack.push_back({ L'{', l, c });
+                        jsxExprBraceLevels.push_back(stack.size());
                         continue;
                     }
                     if (line[c] == L'<') {
+                        // Check for closing tag </Tag> or </>
                         if (c + 1 < line.length() && line[c + 1] == L'/') {
-                            size_t closeEnd = line.find(L'>', c + 2);
-                            if (closeEnd != std::wstring::npos) {
-                                if (jsxDepth > 0) jsxDepth--;
-                                c = closeEnd;
+                            size_t gt = line.find(L'>', c + 2);
+                            if (gt != std::wstring::npos) {
+                                std::wstring closeTag;
+                                for (size_t k = c + 2; k < gt; ++k) {
+                                    if (!iswspace(line[k])) closeTag.push_back(towlower(line[k]));
+                                }
+                                if (!jsxTagStack.empty()) {
+                                    if (closeTag.empty() || jsxTagStack.back() == closeTag) {
+                                        jsxTagStack.pop_back();
+                                    } else {
+                                        for (int idx = static_cast<int>(jsxTagStack.size()) - 1; idx >= 0; --idx) {
+                                            if (jsxTagStack[idx] == closeTag) {
+                                                jsxTagStack.erase(jsxTagStack.begin() + idx, jsxTagStack.end());
+                                                break;
+                                            }
+                                        }
+                                    }
+                                }
+                                c = gt;
                                 continue;
                             }
-                        } else if (c + 1 < line.length() && (line[c + 1] == L'>' || iswalpha(line[c + 1]))) {
-                            inJsxTag = true;
+                        } else if (c + 1 < line.length() && line[c + 1] == L'>') {
+                            // Opening fragment <>
+                            jsxTagStack.push_back(L"");
+                            c++;
                             continue;
+                        } else if (c + 1 < line.length() && (iswalpha(line[c + 1]) || line[c + 1] == L'_')) {
+                            size_t gt = line.find(L'>', c + 1);
+                            if (gt != std::wstring::npos) {
+                                size_t tagEnd = c + 1;
+                                while (tagEnd < line.length() && (iswalnum(line[tagEnd]) || line[tagEnd] == L'_' || line[tagEnd] == L'-' || line[tagEnd] == L'.')) {
+                                    tagEnd++;
+                                }
+                                std::wstring tag;
+                                for (size_t k = c + 1; k < tagEnd; ++k) tag.push_back(towlower(line[k]));
+                                bool isSelfClosing = (gt > 0 && line[gt - 1] == L'/') || (voidTags.count(tag) > 0);
+                                if (!isSelfClosing) {
+                                    jsxTagStack.push_back(tag);
+                                }
+                                c = gt;
+                                continue;
+                            }
                         }
                     }
-                    // Characters inside JSX element children outside { ... } are literal JSX text!
+                    // All other characters inside JSX element children (prose, punctuation, &nbsp;) are literal JSX text!
                     continue;
                 }
 
-                if (inJsxTag) {
-                    if (line[c] == L'>') {
-                        inJsxTag = false;
-                        if (c > 0 && line[c - 1] == L'/') {
-                            // Self-closing tag <tag/>
-                        } else {
-                            jsxDepth++;
-                        }
-                        continue;
-                    }
-                } else if (jsxDepth == 0) {
-                    if (line[c] == L'<' && c + 1 < line.length() && (line[c + 1] == L'>' || iswalpha(line[c + 1]))) {
-                        size_t nextGt = line.find(L'>', c + 1);
-                        if (nextGt != std::wstring::npos) {
-                            inJsxTag = true;
+                // In normal JS code: check if '<' starts a JSX element (Fragment or Tag)
+                if (line[c] == L'<') {
+                    // In JS/TS, a JSX tag CANNOT immediately follow an identifier or closing bracket!
+                    int p = static_cast<int>(c) - 1;
+                    while (p >= 0 && iswspace(line[p])) p--;
+                    wchar_t pch = (p >= 0) ? line[p] : L'\0';
+                    bool isPrevIdent = iswalnum(pch) || pch == L'_' || pch == L'$' || pch == L')' || pch == L']';
+
+                    if (!isPrevIdent) {
+                        if (c + 1 < line.length() && line[c + 1] == L'/') {
+                            size_t gt = line.find(L'>', c + 2);
+                            if (gt != std::wstring::npos) {
+                                std::wstring closeTag;
+                                for (size_t k = c + 2; k < gt; ++k) {
+                                    if (!iswspace(line[k])) closeTag.push_back(towlower(line[k]));
+                                }
+                                if (!jsxTagStack.empty()) {
+                                    if (closeTag.empty() || jsxTagStack.back() == closeTag) {
+                                        jsxTagStack.pop_back();
+                                    } else {
+                                        for (int idx = static_cast<int>(jsxTagStack.size()) - 1; idx >= 0; --idx) {
+                                            if (jsxTagStack[idx] == closeTag) {
+                                                jsxTagStack.erase(jsxTagStack.begin() + idx, jsxTagStack.end());
+                                                break;
+                                            }
+                                        }
+                                    }
+                                }
+                                c = gt;
+                                continue;
+                            }
+                        } else if (c + 1 < line.length() && line[c + 1] == L'>') {
+                            // Opening fragment <>
+                            jsxTagStack.push_back(L"");
+                            c++;
                             continue;
+                        } else if (c + 1 < line.length() && (iswalpha(line[c + 1]) || line[c + 1] == L'_')) {
+                            size_t gt = line.find(L'>', c + 1);
+                            if (gt != std::wstring::npos) {
+                                size_t tagEnd = c + 1;
+                                while (tagEnd < line.length() && (iswalnum(line[tagEnd]) || line[tagEnd] == L'_' || line[tagEnd] == L'-' || line[tagEnd] == L'.')) {
+                                    tagEnd++;
+                                }
+                                std::wstring tag;
+                                for (size_t k = c + 1; k < tagEnd; ++k) tag.push_back(towlower(line[k]));
+                                bool isSelfClosing = (gt > 0 && line[gt - 1] == L'/') || (voidTags.count(tag) > 0);
+                                if (!isSelfClosing) {
+                                    jsxTagStack.push_back(tag);
+                                }
+                                c = gt;
+                                continue;
+                            }
                         }
                     }
                 }
@@ -760,8 +835,8 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidateJavaScript(
                 }
                 stack.push_back({ ch, l, c });
             } else if (ch == L')' || ch == L']' || ch == L'}') {
-                if (isJsx && ch == L'}' && jsxExprDepth > 0) {
-                    jsxExprDepth--;
+                if (isJsx && ch == L'}' && !jsxExprBraceLevels.empty() && stack.size() == jsxExprBraceLevels.back()) {
+                    jsxExprBraceLevels.pop_back();
                 }
                 if (!templateStack.empty() && ch == L'}') {
                     if (templateStack.back().braceDepth == 1) {

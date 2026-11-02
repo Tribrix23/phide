@@ -5304,7 +5304,7 @@ void DrawerPanel::LoadCommitFiles(GitCommitItem& ci) {
         ci.filesLoaded = true;
     }
 
-    if (ci.statSummary.empty()) {
+    if (ci.statSummary.empty() || ci.statSummary == L"Loading...") {
         auto resStat = RunGitCmd(L"show --shortstat --format=\"\" " + ci.hash, dir);
         if (resStat.exitCode == 0 && !resStat.output.empty()) {
             std::wstring st = resStat.output;
@@ -5312,8 +5312,35 @@ void DrawerPanel::LoadCommitFiles(GitCommitItem& ci) {
             if (f != std::wstring::npos) st = st.substr(f);
             while (!st.empty() && (st.back() == L'\r' || st.back() == L'\n' || st.back() == L' ')) st.pop_back();
             ci.statSummary = st;
+        } else if (resStat.exitCode == 0) {
+            ci.statSummary = L"0 files changed";
         }
     }
+}
+
+std::wstring DrawerPanel::GetGitHubRepoUrl() const {
+    std::wstring dir = m_openFolderPath.empty() ? L"." : m_openFolderPath;
+    auto res = RunGitCmd(L"config --get remote.origin.url", dir);
+    if (res.exitCode == 0 && !res.output.empty()) {
+        std::wstring url = res.output;
+        while (!url.empty() && (url.front() == L' ' || url.front() == L'\t' || url.front() == L'\r' || url.front() == L'\n')) url.erase(0, 1);
+        while (!url.empty() && (url.back() == L' ' || url.back() == L'\t' || url.back() == L'\r' || url.back() == L'\n')) url.pop_back();
+
+        size_t ghPos = url.find(L"github.com/");
+        size_t len = 11;
+        if (ghPos == std::wstring::npos) {
+            ghPos = url.find(L"github.com:");
+            len = 11;
+        }
+        if (ghPos != std::wstring::npos) {
+            std::wstring pathPart = url.substr(ghPos + len);
+            if (pathPart.ends_with(L".git")) {
+                pathPart = pathPart.substr(0, pathPart.length() - 4);
+            }
+            return L"https://github.com/" + pathPart;
+        }
+    }
+    return L"";
 }
 
 void DrawerPanel::ComputeGitGraphLanes(std::vector<GitCommitItem>& commits) {
@@ -6394,7 +6421,12 @@ bool DrawerPanel::HitTestGit(POINT pt, const app::AppConfig& config,
         }
         if (pt.x >= m_commitCardGitHubBounds.left && pt.x <= m_commitCardGitHubBounds.right &&
             pt.y >= m_commitCardGitHubBounds.top && pt.y <= m_commitCardGitHubBounds.bottom) {
-            outOpenUrl = L"https://github.com/Tribrix23/phide/commit/" + m_commitCardHash;
+            std::wstring repoBase = GetGitHubRepoUrl();
+            if (!repoBase.empty()) {
+                outOpenUrl = repoBase + L"/commit/" + m_commitCardHash;
+            } else {
+                outOpenUrl = L"https://github.com/Tribrix23/phide/commit/" + m_commitCardHash;
+            }
             DismissCommitCard();
             return true;
         }
