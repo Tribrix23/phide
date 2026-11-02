@@ -4663,13 +4663,11 @@ void Window::ShowGitCommandOutput(const std::wstring& cmd, const std::wstring& o
 }
 
 void Window::DoOpenCommitEditMsg() {
+    if (!m_drawer.HasOpenFolder()) return;
     std::wstring repoDir;
     {
         std::lock_guard<std::recursive_mutex> lock(m_drawer.GetGitMutex());
-        repoDir = m_drawer.HasOpenFolder() ? m_drawer.GetOpenFolderPath() : m_workspace.GetRootPath().wstring();
-    }
-    if (repoDir.empty()) {
-        repoDir = std::filesystem::current_path().wstring();
+        repoDir = m_drawer.GetOpenFolderPath();
     }
     if (repoDir.empty()) return;
 
@@ -6686,8 +6684,8 @@ void Window::OnPaint() {
     }
 
     // 4. Render Collapsed Activity Rail (Home -> Search -> Git with customized tooltips)
-    m_rail.SetGitLoading(m_drawer.IsGitLoading());
-    m_rail.SetGitBadgeCount(m_drawer.GetGitChanges().size());
+    m_rail.SetGitLoading(m_drawer.HasOpenFolder() ? m_drawer.IsGitLoading() : false);
+    m_rail.SetGitBadgeCount(m_drawer.HasOpenFolder() ? m_drawer.GetGitChanges().size() : 0);
     m_rail.Render(m_pRenderTarget.Get(), m_theme, m_config, clientH - statusBarH);
 
     // 4.5. Render Status Bar at Bottom
@@ -6817,10 +6815,17 @@ void Window::OnPaint() {
 }
 
 void Window::UpdateCachedGitInfo() {
-    std::wstring openDir = m_drawer.GetOpenFolderPath();
-    if (openDir.empty()) {
-        openDir = std::filesystem::current_path().wstring();
+    if (!m_drawer.HasOpenFolder() || m_drawer.GetOpenFolderPath().empty()) {
+        m_cachedGitBranch.clear();
+        m_cachedGitHubName.clear();
+        m_cachedGitHubRepo.clear();
+        m_cachedGitUserName.clear();
+        m_cachedGitDir.clear();
+        m_isGitCached = false;
+        return;
     }
+
+    std::wstring openDir = m_drawer.GetOpenFolderPath();
 
     std::filesystem::path cur = openDir;
     std::filesystem::path gitPath;
@@ -6935,11 +6940,6 @@ void Window::UpdateCachedGitInfo() {
                 }
             }
         }
-    }
-
-    if (ghUser.empty()) {
-        ghUser = L"Tribrix23";
-        ghRepo = L"phide";
     }
 
     m_cachedGitHubName = ghUser;

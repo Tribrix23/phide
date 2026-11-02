@@ -906,8 +906,8 @@ private:
     std::function<void(const std::wstring& extId)> m_onOpenExtensionDetail;
 
     // --- Git / Source Control State (Images 2, 3, 4, 5) ---
-    bool m_isGitRepo = true;
-    std::wstring m_gitBranch = L"master";
+    bool m_isGitRepo = false;
+    std::wstring m_gitBranch;
     std::vector<GitChangeItem> m_gitChanges;
     std::unordered_set<std::wstring> m_gitIgnoredSet;
     std::vector<GitCommitItem> m_gitCommits;

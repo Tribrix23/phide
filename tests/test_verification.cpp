@@ -298,6 +298,12 @@ int main(int argc, char* argv[]) {
     if (targetTest == 109) {
         goto run_test_109;
     }
+    if (targetTest == 110) {
+        goto run_test_110;
+    }
+    if (targetTest == 111) {
+        goto run_test_111;
+    }
 
     if (targetTest == 66) {
         goto run_test_66;
@@ -1996,6 +2002,7 @@ int main(int argc, char* argv[]) {
 
         // 1. Verify Real Git State in Workspace (No mock/dummy data)
         phide::ui::DrawerPanel gitDrawer;
+        gitDrawer.OpenFolder(std::filesystem::current_path().wstring());
         gitDrawer.RefreshGitState(false); // Synchronous refresh
 
         assert(!gitDrawer.GetGitBranch().empty());
@@ -16433,6 +16440,7 @@ run_test_109:
     }
 
     // ==========================================
+    run_test_110:
     // [TEST 110] Top Header Controls State Machine: Split Editor, Quick Open and Zoom Disabling
     // ==========================================
     if (targetTest == -1 || targetTest == 110) {
@@ -16566,6 +16574,138 @@ run_test_109:
         std::cout << "  Passed: All [TEST 110] Top Header Controls State Machine tests passed!" << std::endl;
         if (targetTest == 110) {
             std::cout << "Target test 110 finished." << std::endl;
+            return 0;
+        }
+    }
+
+run_test_111:
+    // =========================================================================
+    // [TEST 111] SQL Syntax Colorization & No-Project Git State Isolation
+    // =========================================================================
+    if (targetTest == 0 || targetTest == 111) {
+        std::cout << "\n[TEST 111] Running SQL Syntax Lexer & No-Project Git State Tests..." << std::endl;
+
+        // Subtest 1: SQL Syntax Colorization
+        {
+            phide::editor::SyntaxLexer lexer;
+
+            // 1. DDL: CREATE DATABASE IF NOT EXISTS cleavedb;
+            {
+                auto tokens = lexer.TokenizeLine(L"CREATE DATABASE IF NOT EXISTS cleavedb;", L".sql");
+                assert(!tokens.empty());
+                assert(tokens[0].type == phide::editor::TokenType::Keyword); // CREATE
+                assert(tokens[1].type == phide::editor::TokenType::Keyword); // DATABASE
+                assert(tokens[2].type == phide::editor::TokenType::Keyword); // IF
+                assert(tokens[3].type == phide::editor::TokenType::Keyword); // NOT
+                assert(tokens[4].type == phide::editor::TokenType::Keyword); // EXISTS
+                assert(tokens[5].type == phide::editor::TokenType::Default); // cleavedb
+                assert(tokens[6].type == phide::editor::TokenType::Operator); // ;
+            }
+
+            // 2. DDL: id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+            {
+                auto tokens = lexer.TokenizeLine(L"    id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,", L".sql");
+                assert(tokens.size() >= 7);
+                assert(tokens[0].type == phide::editor::TokenType::Default); // id
+                assert(tokens[1].type == phide::editor::TokenType::Type);    // INT
+                assert(tokens[2].type == phide::editor::TokenType::Type);    // UNSIGNED
+                assert(tokens[3].type == phide::editor::TokenType::Keyword); // AUTO_INCREMENT
+                assert(tokens[4].type == phide::editor::TokenType::Keyword); // PRIMARY
+                assert(tokens[5].type == phide::editor::TokenType::Keyword); // KEY
+                assert(tokens[6].type == phide::editor::TokenType::Operator); // ,
+            }
+
+            // 3. Types and Literals: username VARCHAR(30) NOT NULL UNIQUE,
+            {
+                auto tokens = lexer.TokenizeLine(L"    username VARCHAR(30) NOT NULL UNIQUE,", L".sql");
+                assert(tokens.size() >= 8);
+                assert(tokens[0].type == phide::editor::TokenType::Default);  // username
+                assert(tokens[1].type == phide::editor::TokenType::Type);     // VARCHAR
+                assert(tokens[2].type == phide::editor::TokenType::Operator); // (
+                assert(tokens[3].type == phide::editor::TokenType::Number);   // 30
+                assert(tokens[4].type == phide::editor::TokenType::Operator); // )
+                assert(tokens[5].type == phide::editor::TokenType::Keyword);  // NOT
+                assert(tokens[6].type == phide::editor::TokenType::Keyword);  // NULL
+                assert(tokens[7].type == phide::editor::TokenType::Keyword);  // UNIQUE
+            }
+
+            // 4. Default values and strings: role VARCHAR(20) NOT NULL DEFAULT 'user',
+            {
+                auto tokens = lexer.TokenizeLine(L"    role VARCHAR(20) NOT NULL DEFAULT 'user',", L".sql");
+                bool foundString = false;
+                for (const auto& tok : tokens) {
+                    if (tok.type == phide::editor::TokenType::String) {
+                        foundString = true;
+                        break;
+                    }
+                }
+                assert(foundString);
+            }
+
+            // 5. Timestamps and Special Keywords: created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            {
+                auto tokens = lexer.TokenizeLine(L"    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,", L".sql");
+                assert(tokens.size() >= 5);
+                assert(tokens[0].type == phide::editor::TokenType::Default); // created_at
+                assert(tokens[1].type == phide::editor::TokenType::Type);    // TIMESTAMP
+                assert(tokens[2].type == phide::editor::TokenType::Keyword); // DEFAULT
+                assert(tokens[3].type == phide::editor::TokenType::Keyword); // CURRENT_TIMESTAMP
+            }
+
+            // 6. Comments: -- single line and /* block */
+            {
+                auto commentTokens1 = lexer.TokenizeLine(L"-- Initializing CleaveDB tables", L".sql");
+                assert(commentTokens1.size() == 1);
+                assert(commentTokens1[0].type == phide::editor::TokenType::Comment);
+
+                auto commentTokens2 = lexer.TokenizeLine(L"/* Multi-line comment block */", L".sql");
+                assert(commentTokens2.size() == 1);
+                assert(commentTokens2[0].type == phide::editor::TokenType::Comment);
+            }
+
+            // 7. Backtick Identifiers: `users`
+            {
+                auto btTokens = lexer.TokenizeLine(L"SELECT * FROM `users`;", L".sql");
+                bool foundAttr = false;
+                for (const auto& tok : btTokens) {
+                    if (tok.type == phide::editor::TokenType::Attribute) {
+                        foundAttr = true;
+                        break;
+                    }
+                }
+                assert(foundAttr);
+            }
+
+            std::cout << "  Passed: SQL Syntax Lexer tokenizes DDL, types, keywords, numbers, strings, and comments" << std::endl;
+        }
+
+        // Subtest 2: Git State Isolation When No Project Is Open
+        {
+            phide::ui::DrawerPanel drawer;
+            assert(!drawer.HasOpenFolder());
+            assert(drawer.GetOpenFolderPath().empty());
+
+            // Refresh git state with no folder open
+            drawer.RefreshGitState(false);
+
+            // Must NOT track IDE's own files or commits
+            assert(drawer.GetGitChanges().empty());
+            assert(drawer.GetGitCommits().empty());
+            assert(drawer.GetGitBranch().empty());
+            assert(!drawer.IsGitRepo());
+            assert(drawer.GetGitHubRepoUrl().empty());
+
+            // RefreshGitStatusOnly must also remain clean
+            drawer.RefreshGitStatusOnly(false);
+            assert(drawer.GetGitChanges().empty());
+            assert(drawer.GetGitCommits().empty());
+
+            std::cout << "  Passed: No-project git state is completely isolated (0 changes, 0 commits, no branch)" << std::endl;
+        }
+
+        std::cout << "  Passed: All [TEST 111] SQL Syntax & Git Isolation tests passed!" << std::endl;
+        if (targetTest == 111) {
+            std::cout << "Target test 111 finished." << std::endl;
             return 0;
         }
     }

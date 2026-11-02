@@ -192,10 +192,162 @@ static std::vector<SyntaxToken> TokenizeCssLine(const std::wstring& line) {
     return tokens;
 }
 
+static std::vector<SyntaxToken> TokenizeSqlLine(const std::wstring& line) {
+    std::vector<SyntaxToken> tokens;
+    if (line.empty()) return tokens;
+
+    static const std::unordered_set<std::wstring> sqlKeywords = {
+        L"select", L"from", L"where", L"insert", L"into", L"values", L"update", L"set", L"delete",
+        L"create", L"database", L"databases", L"schema", L"schemas", L"table", L"tables", L"view", L"views",
+        L"index", L"indexes", L"trigger", L"triggers", L"procedure", L"procedures", L"function", L"functions",
+        L"alter", L"drop", L"truncate", L"rename", L"add", L"column", L"columns", L"modify", L"change",
+        L"if", L"not", L"exists", L"use", L"default", L"primary", L"key", L"unique", L"foreign", L"references",
+        L"auto_increment", L"cascade", L"check", L"constraint", L"collate", L"character",
+        L"engine", L"charset", L"join", L"inner", L"left", L"right", L"full", L"outer", L"cross", L"natural", L"on", L"using",
+        L"group", L"by", L"order", L"having", L"limit", L"offset", L"union", L"all", L"distinct", L"as",
+        L"and", L"or", L"xor", L"in", L"is", L"null", L"like", L"ilike", L"between", L"case", L"when", L"then", L"else", L"end",
+        L"begin", L"commit", L"rollback", L"transaction", L"savepoint", L"grant", L"revoke",
+        L"show", L"describe", L"desc", L"asc", L"explain", L"pragma", L"declare", L"cursor", L"fetch", L"open", L"close",
+        L"current_date", L"current_time", L"current_timestamp", L"utc_timestamp", L"now", L"count", L"sum", L"avg", L"min", L"max", L"coalesce",
+        L"true", L"false", L"replace", L"with", L"recursive", L"lock", L"unlock", L"temporary", L"temp"
+    };
+
+    static const std::unordered_set<std::wstring> sqlTypes = {
+        L"int", L"integer", L"tinyint", L"smallint", L"mediumint", L"bigint",
+        L"varchar", L"char", L"text", L"tinytext", L"mediumtext", L"longtext",
+        L"blob", L"tinyblob", L"mediumblob", L"longblob",
+        L"decimal", L"numeric", L"float", L"double", L"real", L"fixed",
+        L"boolean", L"bool", L"bit",
+        L"date", L"datetime", L"timestamp", L"time", L"year", L"interval",
+        L"json", L"binary", L"varbinary", L"enum", L"set",
+        L"unsigned", L"signed", L"zerofill", L"uuid", L"bytea", L"nvarchar", L"nchar", L"clob"
+    };
+
+    size_t i = 0;
+    const size_t len = line.length();
+
+    while (i < len) {
+        if (iswspace(line[i])) {
+            ++i;
+            continue;
+        }
+
+        // 1. Single-line comments: -- or #
+        if ((i + 1 < len && line[i] == L'-' && line[i + 1] == L'-') || line[i] == L'#') {
+            tokens.push_back({ TokenType::Comment, i, len - i });
+            break;
+        }
+
+        // 2. Block comments: /* ... */
+        if (i + 1 < len && line[i] == L'/' && line[i + 1] == L'*') {
+            size_t start = i;
+            auto endPos = line.find(L"*/", i + 2);
+            if (endPos != std::wstring::npos) {
+                i = endPos + 2;
+            } else {
+                i = len;
+            }
+            tokens.push_back({ TokenType::Comment, start, i - start });
+            continue;
+        }
+
+        // 3. String literals: '...' or "..." (supports escaping and doubled quotes)
+        if (line[i] == L'\'' || line[i] == L'"') {
+            wchar_t quote = line[i];
+            size_t start = i++;
+            while (i < len) {
+                if (line[i] == L'\\' && i + 1 < len) {
+                    i += 2;
+                } else if (line[i] == quote) {
+                    if (i + 1 < len && line[i + 1] == quote) {
+                        i += 2;
+                    } else {
+                        ++i;
+                        break;
+                    }
+                } else {
+                    ++i;
+                }
+            }
+            tokens.push_back({ TokenType::String, start, i - start });
+            continue;
+        }
+
+        // 4. Quoted Identifiers: `...` or [...]
+        if (line[i] == L'`' || line[i] == L'[') {
+            wchar_t closeChar = (line[i] == L'`') ? L'`' : L']';
+            size_t start = i++;
+            while (i < len && line[i] != closeChar) {
+                if (line[i] == L'\\' && i + 1 < len) i += 2;
+                else ++i;
+            }
+            if (i < len) ++i;
+            tokens.push_back({ TokenType::Attribute, start, i - start });
+            continue;
+        }
+
+        // 5. Numeric literals: integer, decimal, hex (0x...)
+        if (iswdigit(line[i]) || (line[i] == L'.' && i + 1 < len && iswdigit(line[i + 1]))) {
+            size_t start = i++;
+            if (start + 1 < len && line[start] == L'0' && (line[start + 1] == L'x' || line[start + 1] == L'X')) {
+                i = start + 2;
+                while (i < len && iswxdigit(line[i])) ++i;
+            } else {
+                while (i < len && (iswalnum(line[i]) || line[i] == L'.')) ++i;
+            }
+            tokens.push_back({ TokenType::Number, start, i - start });
+            continue;
+        }
+
+        // 6. Identifiers / Keywords / Types
+        if (iswalpha(line[i]) || line[i] == L'_' || line[i] == L'@') {
+            size_t start = i++;
+            while (i < len && (iswalnum(line[i]) || line[i] == L'_' || line[i] == L'$')) ++i;
+            std::wstring word = line.substr(start, i - start);
+
+            std::wstring lowerWord = word;
+            for (auto& c : lowerWord) c = towlower(c);
+
+            if (sqlKeywords.find(lowerWord) != sqlKeywords.end()) {
+                tokens.push_back({ TokenType::Keyword, start, i - start });
+            } else if (sqlTypes.find(lowerWord) != sqlTypes.end()) {
+                tokens.push_back({ TokenType::Type, start, i - start });
+            } else {
+                tokens.push_back({ TokenType::Default, start, i - start });
+            }
+            continue;
+        }
+
+        // 7. Multi-character operators
+        if (i + 1 < len) {
+            std::wstring twoChar = line.substr(i, 2);
+            if (twoChar == L"<=" || twoChar == L">=" || twoChar == L"<>" ||
+                twoChar == L"!=" || twoChar == L":=" || twoChar == L"==" ||
+                twoChar == L"||" || twoChar == L"&&") {
+                tokens.push_back({ TokenType::Operator, i, 2 });
+                i += 2;
+                continue;
+            }
+        }
+
+        // 8. Single-character operators & punctuation
+        tokens.push_back({ TokenType::Operator, i, 1 });
+        ++i;
+    }
+
+    return tokens;
+}
+
 std::vector<SyntaxToken> SyntaxLexer::TokenizeLine(const std::wstring& line, const std::wstring& ext) const {
-    if (ext == L".css" || ext == L".scss" || ext == L".less" ||
-        ext == L"css" || ext == L"scss" || ext == L"less") {
+    std::wstring lowerExt = ext;
+    for (auto& c : lowerExt) c = towlower(c);
+
+    if (lowerExt == L".css" || lowerExt == L".scss" || lowerExt == L".less" ||
+        lowerExt == L"css" || lowerExt == L"scss" || lowerExt == L"less") {
         return TokenizeCssLine(line);
+    }
+    if (lowerExt == L".sql" || lowerExt == L"sql") {
+        return TokenizeSqlLine(line);
     }
 
     std::vector<SyntaxToken> tokens;

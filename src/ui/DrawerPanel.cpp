@@ -4250,6 +4250,18 @@ void DrawerPanel::OpenSourceControl() {
 }
 
 void DrawerPanel::RefreshGitState(bool async, bool showLoading) {
+    if (!m_hasOpenFolder || m_openFolderPath.empty()) {
+        std::lock_guard<std::recursive_mutex> lock(m_gitMutex);
+        m_gitChanges.clear();
+        m_gitCommits.clear();
+        m_gitBranch.clear();
+        m_isGitRepo = false;
+        m_isGitLoading = false;
+        m_isGitRefreshing = false;
+        m_unpushedCommitsCount = 0;
+        return;
+    }
+
     if (async) {
         bool expected = false;
         if (!m_isGitRefreshing.compare_exchange_strong(expected, true)) {
@@ -4904,6 +4916,18 @@ void DrawerPanel::DismissSearchGroup(size_t groupIdx) {
 }
 
 void DrawerPanel::RefreshGitStatusOnly(bool async) {
+    if (!m_hasOpenFolder || m_openFolderPath.empty()) {
+        std::lock_guard<std::recursive_mutex> lock(m_gitMutex);
+        m_gitChanges.clear();
+        m_gitCommits.clear();
+        m_gitBranch.clear();
+        m_isGitRepo = false;
+        m_isGitLoading = false;
+        m_isGitRefreshing = false;
+        m_unpushedCommitsCount = 0;
+        return;
+    }
+
     if (async) {
         if (m_activeWorkers) {
             m_activeWorkers->fetch_add(1);
@@ -5319,7 +5343,8 @@ void DrawerPanel::LoadCommitFiles(GitCommitItem& ci) {
 }
 
 std::wstring DrawerPanel::GetGitHubRepoUrl() const {
-    std::wstring dir = m_openFolderPath.empty() ? L"." : m_openFolderPath;
+    if (!m_hasOpenFolder || m_openFolderPath.empty()) return L"";
+    std::wstring dir = m_openFolderPath;
     auto res = RunGitCmd(L"config --get remote.origin.url", dir);
     if (res.exitCode == 0 && !res.output.empty()) {
         std::wstring url = res.output;
@@ -6425,7 +6450,7 @@ bool DrawerPanel::HitTestGit(POINT pt, const app::AppConfig& config,
             if (!repoBase.empty()) {
                 outOpenUrl = repoBase + L"/commit/" + m_commitCardHash;
             } else {
-                outOpenUrl = L"https://github.com/Tribrix23/phide/commit/" + m_commitCardHash;
+                outOpenUrl.clear();
             }
             DismissCommitCard();
             return true;
@@ -7038,6 +7063,65 @@ void DrawerPanel::RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, 
     const float headerH = config.ScaleF(static_cast<float>(config.headerHeight));
     const float railW   = config.ScaleF(static_cast<float>(config.railWidth));
     const float paddingX = config.ScaleF(14.0f);
+
+    if (!m_hasOpenFolder || m_openFolderPath.empty()) {
+        float curY = headerH + config.ScaleF(10.0f);
+        D2D1_RECT_F rcTitle = D2D1::RectF(
+            railW + paddingX,
+            curY,
+            railW + currentDrawerW - paddingX,
+            curY + config.ScaleF(24.0f)
+        );
+        const wchar_t* titleStr = L"SOURCE CONTROL";
+        pRT->DrawText(titleStr, static_cast<UINT32>(wcslen(titleStr)),
+                      theme.fontSectionHeader ? theme.fontSectionHeader.Get() : theme.fontBody.Get(),
+                      rcTitle, theme.brushTextPrimary.Get());
+
+        curY += config.ScaleF(32.0f);
+
+        D2D1_RECT_F rcSubtitle = D2D1::RectF(
+            railW + paddingX,
+            curY,
+            railW + currentDrawerW - paddingX,
+            curY + config.ScaleF(36.0f)
+        );
+        const wchar_t* subText = L"You have not yet opened a folder.";
+        pRT->DrawText(subText, static_cast<UINT32>(wcslen(subText)),
+                      theme.fontBody.Get(),
+                      rcSubtitle, theme.brushTextSecondary.Get());
+
+        curY += config.ScaleF(46.0f);
+
+        const float btnW = currentDrawerW - paddingX * 2.0f;
+        const float btnH = config.ScaleF(32.0f);
+        m_rcOpenFolderBtn = D2D1::RectF(
+            railW + paddingX,
+            curY,
+            railW + paddingX + btnW,
+            curY + btnH
+        );
+
+        D2D1_ROUNDED_RECT rrc = D2D1::RoundedRect(m_rcOpenFolderBtn, 4.0f, 4.0f);
+        pRT->FillRoundedRectangle(rrc, m_hoveredOpenFolderBtn ? theme.brushItemHover.Get() : theme.brushMenuHover.Get());
+        pRT->DrawRoundedRectangle(rrc, theme.brushMenuHover.Get(), 1.0f);
+
+        const wchar_t* btnLabel = L"Open Folder";
+        pRT->DrawText(btnLabel, static_cast<UINT32>(wcslen(btnLabel)),
+                      theme.fontButtonCenter ? theme.fontButtonCenter.Get() : theme.fontBody.Get(),
+                      m_rcOpenFolderBtn, theme.brushTextWhite.Get());
+
+        m_gitHeaderMoreBounds = {};
+        m_gitChangesHeaderBounds = {};
+        m_gitStagedHeaderBounds = {};
+        m_gitGraphHeaderBounds = {};
+        m_gitMsgBoxBounds = {};
+        m_gitCommitBtnBounds = {};
+        m_gitSplitterBounds = {};
+        m_commitCardBounds = {};
+        m_commitCardGitHubBounds = {};
+        m_commitCardOpenChangesBounds = {};
+        return;
+    }
 
     // 1. Pane Title: "Source Control"
     D2D1_RECT_F rcTitle = D2D1::RectF(
@@ -9950,14 +10034,19 @@ void DrawerPanel::RenderCommitCard(ID2D1RenderTarget* pRT, Theme& theme, const a
                       theme.brushBrandAccent.Get());
 
         // Open on GitHub link
-        float ghLeft = cardLeft + config.ScaleF(84.0f);
-        float ghW = config.ScaleF(110.0f);
-        m_commitCardGitHubBounds = D2D1::RectF(ghLeft, curCardY, ghLeft + ghW, curCardY + btnH);
-        const wchar_t* ghText = L"↗ Open on GitHub";
-        pRT->DrawText(ghText, static_cast<UINT32>(wcslen(ghText)),
-                      pCardFmt,
-                      D2D1::RectF(ghLeft, curCardY + config.ScaleF(3.0f), ghLeft + ghW, curCardY + btnH),
-                      theme.brushBrandAccent.Get());
+        std::wstring repoBase = GetGitHubRepoUrl();
+        if (!repoBase.empty()) {
+            float ghLeft = cardLeft + config.ScaleF(84.0f);
+            float ghW = config.ScaleF(110.0f);
+            m_commitCardGitHubBounds = D2D1::RectF(ghLeft, curCardY, ghLeft + ghW, curCardY + btnH);
+            const wchar_t* ghText = L"↗ Open on GitHub";
+            pRT->DrawText(ghText, static_cast<UINT32>(wcslen(ghText)),
+                          pCardFmt,
+                          D2D1::RectF(ghLeft, curCardY + config.ScaleF(3.0f), ghLeft + ghW, curCardY + btnH),
+                          theme.brushBrandAccent.Get());
+        } else {
+            m_commitCardGitHubBounds = D2D1::RectF(0, 0, 0, 0);
+        }
 
         // Open Changes Button (Right-aligned, matching Image 5 & 3)
         float chW = config.ScaleF(108.0f);
