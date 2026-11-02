@@ -186,10 +186,16 @@ public:
     [[nodiscard]] CaptionButtonType GetHoveredCaption() const noexcept { return m_hoveredCaption; }
     [[nodiscard]] HeaderExecId GetHoveredExec() const noexcept { return m_hoveredExec; }
 
+    void SetSplitEditorEnabled(bool enabled) noexcept {
+        m_splitEditorEnabled = enabled;
+        if (!enabled) m_hoveredSplitEditor = false;
+    }
+    [[nodiscard]] bool IsSplitEditorEnabled() const noexcept { return m_splitEditorEnabled; }
+
     /**
      * @brief Checks if mouse is over the Split Editor button.
      * @param pt Mouse point in client coordinates.
-     * @return True if cursor is over the Split Editor button.
+     * @return True if cursor is over the Split Editor button and it is enabled.
      */
     [[nodiscard]] bool HitTestSplitEditor(POINT pt) const noexcept;
 
@@ -201,10 +207,16 @@ public:
 
     [[nodiscard]] D2D1_RECT_F GetSplitEditorBounds() const noexcept { return m_rcSplitEditor; }
 
+    void SetQuickOpenEnabled(bool enabled) noexcept {
+        m_quickOpenEnabled = enabled;
+        if (!enabled) m_hoveredQuickOpen = false;
+    }
+    [[nodiscard]] bool IsQuickOpenEnabled() const noexcept { return m_quickOpenEnabled; }
+
     /**
      * @brief Checks if mouse is over the Quick Open (magnifying glass) button.
      * @param pt Mouse point in client coordinates.
-     * @return True if cursor is over the Quick Open button.
+     * @return True if cursor is over the Quick Open button and it is enabled.
      */
     [[nodiscard]] bool HitTestQuickOpen(POINT pt) const noexcept;
 
@@ -324,6 +336,12 @@ public:
     [[nodiscard]] bool IsHoveredSrvPillBrowser() const noexcept { return m_hoveredSrvPillBrowser; }
 
     // Zoom In / Zoom Out Controls (Image 3)
+    void SetZoomEnabled(bool enabled) noexcept {
+        m_zoomEnabled = enabled;
+        if (!enabled) m_hoveredZoom = 0;
+    }
+    [[nodiscard]] bool IsZoomEnabled() const noexcept { return m_zoomEnabled; }
+
     [[nodiscard]] bool HitTestZoomIn(POINT pt) const noexcept;
     [[nodiscard]] bool HitTestZoomOut(POINT pt) const noexcept;
     [[nodiscard]] bool HitTestZoomReset(POINT pt) const noexcept;
@@ -374,10 +392,12 @@ private:
     // Split Editor control button (Image 3)
     D2D1_RECT_F m_rcSplitEditor{};
     bool m_hoveredSplitEditor = false;
+    bool m_splitEditorEnabled = true;
 
     // Quick Open (magnifying glass) button (Image 5)
     D2D1_RECT_F m_rcQuickOpen{};
     bool m_hoveredQuickOpen = false;
+    bool m_quickOpenEnabled = true;
 
     // Extensions (2x2 grid) button (Image 2)
     D2D1_RECT_F m_rcExtensions{};
@@ -424,6 +444,7 @@ private:
     D2D1_RECT_F m_rcZoomReset{};
     D2D1_RECT_F m_rcZoomIn{};
     int m_hoveredZoom = 0; // 0=none, 1=out, 2=reset, 3=in
+    bool m_zoomEnabled = true;
 
     // Direct2D Purple Glass Gradient Brush and theme state cache
     Microsoft::WRL::ComPtr<ID2D1LinearGradientBrush> m_pHeaderGradientBrush;

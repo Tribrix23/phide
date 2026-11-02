@@ -887,20 +887,19 @@ void Window::SplitEditor() {
     if (m_editorGroups.size() >= 3) return; // Up to 3 columns
 
     auto* curDoc = GetActiveDoc();
+    if (!curDoc || curDoc->isSpecialView) return; // Disabled on empty editor and special views (Settings, Packages, etc.)
+
     editor::EditorGroup newGroup;
-    if (curDoc) {
-        // Only clone the active file into the new group
-        newGroup.docs.push_back(*curDoc);
-        newGroup.activeDocIdx = 0;
-    } else {
-        newGroup.activeDocIdx = -1;
-    }
+    // Only clone the active file into the new group
+    newGroup.docs.push_back(*curDoc);
+    newGroup.activeDocIdx = 0;
 
     size_t insertIdx = static_cast<size_t>(m_focusedGroupIdx + 1);
     if (insertIdx > m_editorGroups.size()) insertIdx = m_editorGroups.size();
     m_editorGroups.insert(m_editorGroups.begin() + insertIdx, std::move(newGroup));
     m_focusedGroupIdx = static_cast<int>(insertIdx);
 
+    UpdateExecutionButtonStates();
     InvalidateRect(m_hwnd, nullptr, FALSE);
 }
 
@@ -3035,6 +3034,7 @@ void Window::DoCommandPalette() {
 }
 
 void Window::DoZoomIn() {
+    if (!m_drawer.HasOpenFolder()) return; // Disabled when no project is open
     if (m_config.fontSize < 36.0f) {
         m_config.fontSize += 2.0f;
         m_config.zoomLevel = m_config.fontSize / 15.0f;
@@ -3045,6 +3045,7 @@ void Window::DoZoomIn() {
 }
 
 void Window::DoZoomOut() {
+    if (!m_drawer.HasOpenFolder()) return; // Disabled when no project is open
     if (m_config.fontSize > 8.0f) {
         m_config.fontSize -= 2.0f;
         m_config.zoomLevel = m_config.fontSize / 15.0f;
@@ -3055,6 +3056,7 @@ void Window::DoZoomOut() {
 }
 
 void Window::DoResetZoom() {
+    if (!m_drawer.HasOpenFolder()) return; // Disabled when no project is open
     m_config.fontSize = 15.0f;
     m_config.zoomLevel = 1.0f;
     m_theme.SetEditorFont(m_config.fontFamily, m_config.fontSize);
@@ -3124,6 +3126,7 @@ void Window::NotifyGraphViewFilesystemChanged() {
 }
 
 void Window::DoQuickOpenFileSearch() {
+    if (!m_drawer.HasOpenFolder()) return; // Disabled when no project is open
     std::vector<std::wstring> openPaths;
     for (const auto& grp : m_editorGroups) {
         for (const auto& doc : grp.docs) {
@@ -3333,7 +3336,15 @@ void Window::DoCreateTerminal() {
 }
 
 void Window::UpdateExecutionButtonStates() {
+    bool hasProject = m_drawer.HasOpenFolder();
+    m_header.SetQuickOpenEnabled(hasProject);
+    m_header.SetZoomEnabled(hasProject);
+
     auto* pDoc = GetActiveDoc();
+    bool hasActiveEditor = (pDoc != nullptr && !pDoc->isSpecialView && !GetActiveGroup().docs.empty());
+    bool canSplit = hasActiveEditor && (m_editorGroups.size() < 3);
+    m_header.SetSplitEditorEnabled(canSplit);
+
     if (!pDoc || pDoc->isSpecialView) {
         m_header.SetRunEnabled(false);
         m_header.SetDebugEnabled(false);
@@ -8164,6 +8175,8 @@ void Window::HandleMouseMove(POINT clientPt, WPARAM wParam) {
         }
     }
 
+    UpdateExecutionButtonStates();
+
     // Check Header menu, execution buttons, split editor button, zoom buttons, and caption button hover
     auto hoveredMenu = m_header.HitTestMenu(clientPt);
     auto hoveredCaption = m_header.HitTestCaptionButton(clientPt);
@@ -8258,7 +8271,7 @@ void Window::HandleMouseMove(POINT clientPt, WPARAM wParam) {
         } else if (hoveredMenu == ui::HeaderMenuId::Window && m_header.GetActiveMenu() != ui::HeaderMenuId::Window) {
             D2D1_RECT_F rcWindow = m_header.GetMenuItemBounds(ui::HeaderMenuId::Window);
             m_popupMenu.OpenWindowMenu(rcWindow.left, rcWindow.bottom + 2.0f, m_config,
-                                       IsZoomed(m_hwnd), m_config.isDrawerOpen, m_terminal.IsOpen(), HasOpenFile());
+                                       IsZoomed(m_hwnd), m_config.isDrawerOpen, m_terminal.IsOpen(), HasActiveFileEditor());
             m_header.SetActiveMenu(ui::HeaderMenuId::Window);
             needRepaint = true;
         }
@@ -9611,7 +9624,7 @@ void Window::HandleLButtonDown(POINT clientPt) {
         } else if (menuHit == ui::HeaderMenuId::Window) {
             D2D1_RECT_F rcWindow = m_header.GetMenuItemBounds(ui::HeaderMenuId::Window);
             m_popupMenu.OpenWindowMenu(rcWindow.left, rcWindow.bottom + 2.0f, m_config,
-                                       IsZoomed(m_hwnd), m_config.isDrawerOpen, m_terminal.IsOpen(), HasOpenFile());
+                                       IsZoomed(m_hwnd), m_config.isDrawerOpen, m_terminal.IsOpen(), HasActiveFileEditor());
             m_header.SetActiveMenu(ui::HeaderMenuId::Window);
             InvalidateRect(m_hwnd, nullptr, FALSE);
         } else if (menuHit == ui::HeaderMenuId::Help) {

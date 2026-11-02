@@ -1375,6 +1375,120 @@
         "scope": "tsx,jsx,js,ts"
     },
 
+    "React Arrow Function Component (rafc)": {
+        "prefix": "rafc",
+        "body": [
+            "import React from 'react';",
+            "",
+            "export const ${1:ComponentName} = () => {",
+            "    return (",
+            "        <div>",
+            "            $0",
+            "        </div>",
+            "    );",
+            "};"
+        ],
+        "description": "Creates a React Arrow Function Component",
+        "scope": "tsx,jsx,js,ts"
+    },
+
+    "TypeScript React Arrow Function Component with Export (tsrafce)": {
+        "prefix": "tsrafce",
+        "body": [
+            "import React from 'react';",
+            "",
+            "type Props = {};",
+            "",
+            "const ${1:ComponentName} = (props: Props) => {",
+            "    return (",
+            "        <div>",
+            "            $0",
+            "        </div>",
+            "    );",
+            "};",
+            "",
+            "export default ${1:ComponentName};"
+        ],
+        "description": "Creates a TypeScript React Arrow Function Component with Props & Export",
+        "scope": "tsx,jsx,ts,js"
+    },
+
+    "TypeScript React Function Component with Export (tsrfce)": {
+        "prefix": "tsrfce",
+        "body": [
+            "import React from 'react';",
+            "",
+            "type Props = {};",
+            "",
+            "function ${1:ComponentName}({}: Props) {",
+            "    return (",
+            "        <div>",
+            "            $0",
+            "        </div>",
+            "    );",
+            "}",
+            "",
+            "export default ${1:ComponentName};"
+        ],
+        "description": "Creates a TypeScript React Function Component with Props & Export",
+        "scope": "tsx,jsx,ts,js"
+    },
+
+    "TypeScript React Functional Component (tsrfc)": {
+        "prefix": "tsrfc",
+        "body": [
+            "import React from 'react';",
+            "",
+            "type Props = {};",
+            "",
+            "export const ${1:ComponentName} = (props: Props) => {",
+            "    return (",
+            "        <div>",
+            "            $0",
+            "        </div>",
+            "    );",
+            "};"
+        ],
+        "description": "Creates a TypeScript React Functional Component with Props",
+        "scope": "tsx,jsx,ts,js"
+    },
+
+    "TypeScript React Arrow Function Component (tsrafc)": {
+        "prefix": "tsrafc",
+        "body": [
+            "import React from 'react';",
+            "",
+            "type Props = {};",
+            "",
+            "export const ${1:ComponentName} = (props: Props) => {",
+            "    return (",
+            "        <div>",
+            "            $0",
+            "        </div>",
+            "    );",
+            "};"
+        ],
+        "description": "Creates a TypeScript React Arrow Function Component with Props",
+        "scope": "tsx,jsx,ts,js"
+    },
+
+    "React Function Component Export (rfe)": {
+        "prefix": "rfe",
+        "body": [
+            "import React from 'react';",
+            "",
+            "export default function ${1:ComponentName}() {",
+            "    return (",
+            "        <div>",
+            "            $0",
+            "        </div>",
+            "    );",
+            "}"
+        ],
+        "description": "Creates a React Function Component with default export",
+        "scope": "tsx,jsx,js,ts"
+    },
+
     "React useState Hook": {
         "prefix": "useState",
         "body": [

@@ -184,6 +184,11 @@ private:
         return (GetActiveDoc() != nullptr);
     }
 
+    [[nodiscard]] bool HasActiveFileEditor() const noexcept {
+        auto* pDoc = GetActiveDoc();
+        return (pDoc != nullptr && !pDoc->isSpecialView && !GetActiveGroup().docs.empty());
+    }
+
     /**
      * @brief Opens a physical file from disk into the editor tab set.
      * @param path Full filesystem path to the file.

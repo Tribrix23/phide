@@ -578,7 +578,14 @@ void TitleHeader::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCon
     }
 
     D2D1_ROUNDED_RECT rrcZoom = D2D1::RoundedRect(m_rcZoomContainer, 5.0f, 5.0f);
-    if (theme.IsDarkMode()) {
+    if (!m_zoomEnabled) {
+        // Disabled appearance when no project is open
+        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushDisabledBg, brushDisabledBdr;
+        pRT->CreateSolidColorBrush(D2D1::ColorF(theme.IsDarkMode() ? 0.15f : 0.90f, theme.IsDarkMode() ? 0.15f : 0.90f, theme.IsDarkMode() ? 0.15f : 0.90f, 0.25f), &brushDisabledBg);
+        pRT->CreateSolidColorBrush(D2D1::ColorF(0.5f, 0.5f, 0.5f, 0.20f), &brushDisabledBdr);
+        if (brushDisabledBg) pRT->FillRoundedRectangle(rrcZoom, brushDisabledBg.Get());
+        if (brushDisabledBdr) pRT->DrawRoundedRectangle(rrcZoom, brushDisabledBdr.Get(), 0.8f);
+    } else if (theme.IsDarkMode()) {
         pRT->FillRoundedRectangle(rrcZoom, theme.brushItemHover.Get());
         pRT->DrawRoundedRectangle(rrcZoom, theme.brushBorderSubtle.Get(), 0.8f);
     } else {
@@ -594,27 +601,33 @@ void TitleHeader::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCon
         }
     }
 
-    // Hover background highlights
-    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> lightZoomHoverBrush;
-    if (!theme.IsDarkMode()) {
-        pRT->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.85f), &lightZoomHoverBrush);
-    }
-    ID2D1Brush* pZoomHover = theme.IsDarkMode() 
-        ? (theme.brushCaptionHover ? theme.brushCaptionHover.Get() : theme.brushItemHover.Get())
-        : (lightZoomHoverBrush ? lightZoomHoverBrush.Get() : theme.brushItemHover.Get());
+    // Hover background highlights (only when enabled)
+    if (m_zoomEnabled) {
+        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> lightZoomHoverBrush;
+        if (!theme.IsDarkMode()) {
+            pRT->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.85f), &lightZoomHoverBrush);
+        }
+        ID2D1Brush* pZoomHover = theme.IsDarkMode() 
+            ? (theme.brushCaptionHover ? theme.brushCaptionHover.Get() : theme.brushItemHover.Get())
+            : (lightZoomHoverBrush ? lightZoomHoverBrush.Get() : theme.brushItemHover.Get());
 
-    if (m_hoveredZoom == 1) { // Zoom Out
-        D2D1_ROUNDED_RECT rrcOut = D2D1::RoundedRect(m_rcZoomOut, 4.0f, 4.0f);
-        pRT->FillRoundedRectangle(rrcOut, pZoomHover);
-    } else if (m_hoveredZoom == 2) { // Zoom Reset
-        D2D1_ROUNDED_RECT rrcReset = D2D1::RoundedRect(m_rcZoomReset, 4.0f, 4.0f);
-        pRT->FillRoundedRectangle(rrcReset, pZoomHover);
-    } else if (m_hoveredZoom == 3) { // Zoom In
-        D2D1_ROUNDED_RECT rrcIn = D2D1::RoundedRect(m_rcZoomIn, 4.0f, 4.0f);
-        pRT->FillRoundedRectangle(rrcIn, pZoomHover);
+        if (m_hoveredZoom == 1) { // Zoom Out
+            D2D1_ROUNDED_RECT rrcOut = D2D1::RoundedRect(m_rcZoomOut, 4.0f, 4.0f);
+            pRT->FillRoundedRectangle(rrcOut, pZoomHover);
+        } else if (m_hoveredZoom == 2) { // Zoom Reset
+            D2D1_ROUNDED_RECT rrcReset = D2D1::RoundedRect(m_rcZoomReset, 4.0f, 4.0f);
+            pRT->FillRoundedRectangle(rrcReset, pZoomHover);
+        } else if (m_hoveredZoom == 3) { // Zoom In
+            D2D1_ROUNDED_RECT rrcIn = D2D1::RoundedRect(m_rcZoomIn, 4.0f, 4.0f);
+            pRT->FillRoundedRectangle(rrcIn, pZoomHover);
+        }
     }
 
-    ID2D1Brush* brushZoomGlyph = theme.IsDarkMode() ? theme.brushTextWhite.Get() : (theme.brushHeaderIcon ? theme.brushHeaderIcon.Get() : theme.brushTextPrimary.Get());
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushZoomDisabledGlyph;
+    pRT->CreateSolidColorBrush(D2D1::ColorF(0.6f, 0.6f, 0.6f, 0.35f), &brushZoomDisabledGlyph);
+    ID2D1Brush* brushZoomGlyph = !m_zoomEnabled
+        ? (brushZoomDisabledGlyph ? brushZoomDisabledGlyph.Get() : theme.brushTextMuted.Get())
+        : (theme.IsDarkMode() ? theme.brushTextWhite.Get() : (theme.brushHeaderIcon ? theme.brushHeaderIcon.Get() : theme.brushTextPrimary.Get()));
 
     // Minus glyph [-]
     float cxOut = (m_rcZoomOut.left + m_rcZoomOut.right) / 2.0f;
@@ -639,8 +652,8 @@ void TitleHeader::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCon
     pRT->DrawLine(D2D1::Point2F(cxIn - hw, cyIn), D2D1::Point2F(cxIn + hw, cyIn), brushZoomGlyph, 1.5f);
     pRT->DrawLine(D2D1::Point2F(cxIn, cyIn - hw), D2D1::Point2F(cxIn, cyIn + hw), brushZoomGlyph, 1.5f);
 
-    // Floating Tooltip for Hovered Zoom Button
-    if (m_hoveredZoom != 0) {
+    // Floating Tooltip for Hovered Zoom Button (only when enabled)
+    if (m_zoomEnabled && m_hoveredZoom != 0) {
         const wchar_t* tipText = L"";
         D2D1_RECT_F rcTarget = m_rcZoomContainer;
         if (m_hoveredZoom == 1) {
@@ -815,28 +828,33 @@ void TitleHeader::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCon
     m_rcSplitEditor = D2D1::RectF(splitX, splitY, splitX + splitW, splitY + splitH);
 
     D2D1_ROUNDED_RECT rrcSplit = D2D1::RoundedRect(m_rcSplitEditor, 4.0f, 4.0f);
-    if (m_hoveredSplitEditor) {
+    if (m_splitEditorEnabled && m_hoveredSplitEditor) {
         pRT->FillRoundedRectangle(rrcSplit, theme.brushItemHover.Get());
         pRT->DrawRoundedRectangle(rrcSplit, theme.brushBorderSubtle.Get(), 0.8f);
     }
 
     ID2D1Brush* pSplitBrush = theme.IsDarkMode() ? theme.brushTextWhite.Get() : theme.brushTextPrimary.Get();
-    m_icons.DrawSplitEditor(pRT, m_rcSplitEditor, pSplitBrush, 1.3f);
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushDisabled;
+    pRT->CreateSolidColorBrush(D2D1::ColorF(0.6f, 0.6f, 0.6f, 0.35f), &brushDisabled);
+
+    ID2D1Brush* pSplitDrawBrush = m_splitEditorEnabled ? pSplitBrush : (brushDisabled ? brushDisabled.Get() : theme.brushTextMuted.Get());
+    m_icons.DrawSplitEditor(pRT, m_rcSplitEditor, pSplitDrawBrush, 1.3f);
 
     // Magnifying Glass / Quick Open Button right beside Split Editor (Image 5)
     const float quickOpenX = splitX + splitW + config.ScaleF(6.0f);
     m_rcQuickOpen = D2D1::RectF(quickOpenX, splitY, quickOpenX + splitW, splitY + splitH);
 
     D2D1_ROUNDED_RECT rrcQuickOpen = D2D1::RoundedRect(m_rcQuickOpen, 4.0f, 4.0f);
-    if (m_hoveredQuickOpen) {
+    if (m_quickOpenEnabled && m_hoveredQuickOpen) {
         pRT->FillRoundedRectangle(rrcQuickOpen, theme.brushItemHover.Get());
         pRT->DrawRoundedRectangle(rrcQuickOpen, theme.brushBorderSubtle.Get(), 0.8f);
     }
 
-    m_icons.DrawSearch(pRT, m_rcQuickOpen, pSplitBrush, 1.4f);
+    ID2D1Brush* pQuickOpenDrawBrush = m_quickOpenEnabled ? pSplitBrush : (brushDisabled ? brushDisabled.Get() : theme.brushTextMuted.Get());
+    m_icons.DrawSearch(pRT, m_rcQuickOpen, pQuickOpenDrawBrush, 1.4f);
 
-    // Floating Tooltip for Hovered Quick Open Button
-    if (m_hoveredQuickOpen) {
+    // Floating Tooltip for Hovered Quick Open Button (only when enabled)
+    if (m_quickOpenEnabled && m_hoveredQuickOpen) {
         const float tipH    = config.ScaleF(24.0f);
         const float tipPadX = config.ScaleF(10.0f);
         const wchar_t* tipText = L"Go to File... (Ctrl+K, Ctrl+P)";
@@ -865,8 +883,8 @@ void TitleHeader::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCon
         );
     }
 
-    // Floating Tooltip for Hovered Split Editor Button
-    if (m_hoveredSplitEditor) {
+    // Floating Tooltip for Hovered Split Editor Button (only when enabled)
+    if (m_splitEditorEnabled && m_hoveredSplitEditor) {
         const float tipH    = config.ScaleF(24.0f);
         const float tipPadX = config.ScaleF(10.0f);
         const wchar_t* tipText = L"Split Editor Right (Ctrl+\\)";
@@ -1156,11 +1174,13 @@ CaptionButtonType TitleHeader::HitTestCaptionButton(POINT pt) const {
 }
 
 bool TitleHeader::HitTestSplitEditor(POINT pt) const noexcept {
+    if (!m_splitEditorEnabled) return false;
     return (pt.x >= m_rcSplitEditor.left && pt.x <= m_rcSplitEditor.right &&
             pt.y >= m_rcSplitEditor.top && pt.y <= m_rcSplitEditor.bottom);
 }
 
 bool TitleHeader::SetHoveredSplitEditor(bool hovered) noexcept {
+    if (!m_splitEditorEnabled) hovered = false;
     if (m_hoveredSplitEditor != hovered) {
         m_hoveredSplitEditor = hovered;
         return true;
@@ -1169,11 +1189,13 @@ bool TitleHeader::SetHoveredSplitEditor(bool hovered) noexcept {
 }
 
 bool TitleHeader::HitTestQuickOpen(POINT pt) const noexcept {
+    if (!m_quickOpenEnabled) return false;
     return (pt.x >= m_rcQuickOpen.left && pt.x <= m_rcQuickOpen.right &&
             pt.y >= m_rcQuickOpen.top && pt.y <= m_rcQuickOpen.bottom);
 }
 
 bool TitleHeader::SetHoveredQuickOpen(bool hovered) noexcept {
+    if (!m_quickOpenEnabled) hovered = false;
     if (m_hoveredQuickOpen != hovered) {
         m_hoveredQuickOpen = hovered;
         return true;
@@ -1195,21 +1217,25 @@ bool TitleHeader::SetHoveredExtensions(bool hovered) noexcept {
 }
 
 bool TitleHeader::HitTestZoomIn(POINT pt) const noexcept {
+    if (!m_zoomEnabled) return false;
     return (pt.x >= m_rcZoomIn.left && pt.x <= m_rcZoomIn.right &&
             pt.y >= m_rcZoomIn.top && pt.y <= m_rcZoomIn.bottom);
 }
 
 bool TitleHeader::HitTestZoomOut(POINT pt) const noexcept {
+    if (!m_zoomEnabled) return false;
     return (pt.x >= m_rcZoomOut.left && pt.x <= m_rcZoomOut.right &&
             pt.y >= m_rcZoomOut.top && pt.y <= m_rcZoomOut.bottom);
 }
 
 bool TitleHeader::HitTestZoomReset(POINT pt) const noexcept {
+    if (!m_zoomEnabled) return false;
     return (pt.x >= m_rcZoomReset.left && pt.x <= m_rcZoomReset.right &&
             pt.y >= m_rcZoomReset.top && pt.y <= m_rcZoomReset.bottom);
 }
 
 bool TitleHeader::SetHoveredZoom(int hovered) noexcept {
+    if (!m_zoomEnabled) hovered = 0;
     if (m_hoveredZoom != hovered) {
         m_hoveredZoom = hovered;
         return true;
@@ -1339,13 +1365,13 @@ LRESULT TitleHeader::HitTestNCHitTest(POINT pt, const app::AppConfig& config) {
     // If mouse is over any interactive element (menus, exec buttons, split editor, quick open, zoom controls, caption buttons, server/db), return HTCLIENT
     if (HitTestMenu(pt) != HeaderMenuId::None) return HTCLIENT;
     if (HitTestExecButton(pt) != HeaderExecId::None) return HTCLIENT;
-    if (HitTestSplitEditor(pt)) return HTCLIENT;
-    if (HitTestQuickOpen(pt)) return HTCLIENT;
+    if (PtInRectF(pt, m_rcSplitEditor)) return HTCLIENT;
+    if (PtInRectF(pt, m_rcQuickOpen)) return HTCLIENT;
     if (HitTestExtensions(pt)) return HTCLIENT;
     if (HitTestDatabase(pt)) return HTCLIENT;
     if (HitTestServer(pt)) return HTCLIENT;
     if (HitTestDropdowns(pt)) return HTCLIENT;
-    if (HitTestZoomIn(pt) || HitTestZoomOut(pt) || HitTestZoomReset(pt)) return HTCLIENT;
+    if (PtInRectF(pt, m_rcZoomContainer)) return HTCLIENT;
     if (HitTestCaptionButton(pt) != CaptionButtonType::None) return HTCLIENT;
 
     // The remaining empty header area allows dragging the window

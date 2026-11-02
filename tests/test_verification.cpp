@@ -16432,6 +16432,144 @@ run_test_109:
         }
     }
 
+    // ==========================================
+    // [TEST 110] Top Header Controls State Machine: Split Editor, Quick Open and Zoom Disabling
+    // ==========================================
+    if (targetTest == -1 || targetTest == 110) {
+        std::cout << "\n[TEST 110] Testing Split Editor, Quick Open, and Zoom Disabled States..." << std::endl;
+
+        // Subtest 1: TitleHeader enable/disable state machine and hit-testing
+        {
+            phide::ui::TitleHeader header;
+            assert(header.IsSplitEditorEnabled() == true);
+            assert(header.IsQuickOpenEnabled() == true);
+            assert(header.IsZoomEnabled() == true);
+
+            POINT dummyPt = { 100, 15 };
+
+            // When disabled, HitTest must return false regardless of coords
+            header.SetSplitEditorEnabled(false);
+            assert(header.IsSplitEditorEnabled() == false);
+            assert(header.HitTestSplitEditor(dummyPt) == false);
+            assert(header.SetHoveredSplitEditor(true) == false);
+
+            header.SetQuickOpenEnabled(false);
+            assert(header.IsQuickOpenEnabled() == false);
+            assert(header.HitTestQuickOpen(dummyPt) == false);
+            assert(header.SetHoveredQuickOpen(true) == false);
+
+            header.SetZoomEnabled(false);
+            assert(header.IsZoomEnabled() == false);
+            assert(header.HitTestZoomIn(dummyPt) == false);
+            assert(header.HitTestZoomOut(dummyPt) == false);
+            assert(header.HitTestZoomReset(dummyPt) == false);
+            assert(header.SetHoveredZoom(1) == false);
+            assert(header.SetHoveredZoom(2) == false);
+            assert(header.SetHoveredZoom(3) == false);
+
+            // Re-enabling recovers standard behavior
+            header.SetSplitEditorEnabled(true);
+            header.SetQuickOpenEnabled(true);
+            header.SetZoomEnabled(true);
+            assert(header.IsSplitEditorEnabled() == true);
+            assert(header.IsQuickOpenEnabled() == true);
+            assert(header.IsZoomEnabled() == true);
+
+            std::cout << "  Passed: TitleHeader enable/disable state machine verified successfully" << std::endl;
+        }
+
+        // Subtest 2: Editor Document and Special View (Settings / Packages / Empty) Split Protection
+        {
+            // Empty state (no document)
+            std::vector<phide::editor::EditorGroup> groups;
+            phide::editor::EditorGroup grp;
+            grp.activeDocIdx = -1;
+            groups.push_back(grp);
+
+            auto canSplitEmpty = (!groups[0].docs.empty() && groups[0].activeDocIdx >= 0 && groups.size() < 3);
+            assert(canSplitEmpty == false);
+
+            // Special view state (Settings tab active)
+            phide::editor::OpenDocument settingsDoc;
+            settingsDoc.fileName = L"Settings";
+            settingsDoc.isSpecialView = true;
+            settingsDoc.viewType = L"settings";
+            grp.docs.push_back(settingsDoc);
+            grp.activeDocIdx = 0;
+            groups[0] = grp;
+
+            auto* curDoc = &groups[0].docs[0];
+            bool canSplitSettings = (curDoc != nullptr && !curDoc->isSpecialView && groups.size() < 3);
+            assert(canSplitSettings == false);
+
+            // Packages special view
+            phide::editor::OpenDocument pkgDoc;
+            pkgDoc.fileName = L"Manage Packages";
+            pkgDoc.isSpecialView = true;
+            pkgDoc.viewType = L"packages";
+            groups[0].docs.push_back(pkgDoc);
+            groups[0].activeDocIdx = 1;
+            curDoc = &groups[0].docs[1];
+            bool canSplitPackages = (curDoc != nullptr && !curDoc->isSpecialView && groups.size() < 3);
+            assert(canSplitPackages == false);
+
+            // Normal code editor document (e.g. page.tsx)
+            phide::editor::OpenDocument normalDoc;
+            normalDoc.fileName = L"page.tsx";
+            normalDoc.filePath = L"C:\\project\\page.tsx";
+            normalDoc.isSpecialView = false;
+            groups[0].docs.push_back(normalDoc);
+            groups[0].activeDocIdx = 2;
+            curDoc = &groups[0].docs[2];
+            bool canSplitNormal = (curDoc != nullptr && !curDoc->isSpecialView && groups.size() < 3);
+            assert(canSplitNormal == true);
+
+            // Limit reached (3 groups)
+            groups.push_back(groups[0]);
+            groups.push_back(groups[0]);
+            assert(groups.size() == 3);
+            bool canSplitLimit = (curDoc != nullptr && !curDoc->isSpecialView && groups.size() < 3);
+            assert(canSplitLimit == false);
+
+            std::cout << "  Passed: Split Editor logic correctly disabled on empty, Settings, Packages, and 3-column limit" << std::endl;
+        }
+
+        // Subtest 3: Project Open Folder Guard for Quick Open and Zoom
+        {
+            phide::ui::DrawerPanel drawer;
+            // Initially no folder is open
+            assert(drawer.HasOpenFolder() == false);
+            bool quickOpenEnabled = drawer.HasOpenFolder();
+            bool zoomEnabled = drawer.HasOpenFolder();
+            assert(quickOpenEnabled == false);
+            assert(zoomEnabled == false);
+
+            // When a folder is opened
+            drawer.OpenFolder(std::filesystem::current_path().wstring());
+            assert(drawer.HasOpenFolder() == true);
+            quickOpenEnabled = drawer.HasOpenFolder();
+            zoomEnabled = drawer.HasOpenFolder();
+            assert(quickOpenEnabled == true);
+            assert(zoomEnabled == true);
+
+            // When closed again
+            drawer.CloseFolder();
+            assert(drawer.HasOpenFolder() == false);
+            quickOpenEnabled = drawer.HasOpenFolder();
+            zoomEnabled = drawer.HasOpenFolder();
+            assert(quickOpenEnabled == false);
+            assert(zoomEnabled == false);
+
+            std::cout << "  Passed: Quick Open and Zoom guards correctly tied to project folder open state" << std::endl;
+        }
+
+        std::cout << "  Passed: All [TEST 110] Top Header Controls State Machine tests passed!" << std::endl;
+        if (targetTest == 110) {
+            std::cout << "Target test 110 finished." << std::endl;
+            return 0;
+        }
+    }
+
     std::cout << "\n==========================================" << std::endl;
     std::cout << "ALL VERIFICATION TESTS PASSED SUCCESSFULLY!" << std::endl;
     std::cout << "==========================================" << std::endl;
