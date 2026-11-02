@@ -169,6 +169,11 @@ public:
         return nullptr;
     }
 
+    /**
+     * @brief Computes diff hunks and line highlights between diffOriginalBuffer and buffer for a document.
+     */
+    void ComputeDiffHunks(editor::OpenDocument& doc);
+
 private:
     /**
      * @brief Checks if there is at least one active document opened in the editor.
@@ -195,11 +200,6 @@ private:
      * @brief Opens a historical commit diff comparison between parent commit and target commit (Image 5).
      */
     void OpenCommitDiffDocument(const std::wstring& commitHash, const std::wstring& relPath = L"");
-
-    /**
-     * @brief Computes diff hunks and line highlights between diffOriginalBuffer and buffer for a document.
-     */
-    void ComputeDiffHunks(editor::OpenDocument& doc);
 
     /**
      * @brief Synchronizes buffer contents across all open tabs (normal docs and diff views) matching sourceDoc's filePath.

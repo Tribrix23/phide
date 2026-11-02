@@ -57,6 +57,23 @@ struct OpenDocument {
     bool isSelecting = false;           ///< True while user is dragging mouse to select text
     std::wstring selectedWord;          ///< When a word/symbol is double-clicked or selected, the word text for multi-occurrence highlight
 
+    // Multi-Cursor / Next Occurrence Selection (Ctrl+D multi-editing)
+    struct SelectionRange {
+        CursorPosition anchor{ 0, 0 };
+        CursorPosition cursor{ 0, 0 };
+
+        void GetRange(size_t& sLine, size_t& sCol, size_t& eLine, size_t& eCol) const noexcept {
+            if (anchor.line < cursor.line || (anchor.line == cursor.line && anchor.col <= cursor.col)) {
+                sLine = anchor.line; sCol = anchor.col;
+                eLine = cursor.line; eCol = cursor.col;
+            } else {
+                sLine = cursor.line; sCol = cursor.col;
+                eLine = anchor.line; eCol = anchor.col;
+            }
+        }
+    };
+    std::vector<SelectionRange> secondarySelections;
+
     [[nodiscard]] bool HasSelection() const noexcept {
         return hasSelection && (selAnchor.line != selEnd.line || selAnchor.col != selEnd.col);
     }
@@ -65,6 +82,7 @@ struct OpenDocument {
         hasSelection = false;
         isSelecting = false;
         selectedWord.clear();
+        secondarySelections.clear();
     }
 
     void GetSelectionRange(size_t& startLine, size_t& startCol, size_t& endLine, size_t& endCol) const noexcept {
@@ -131,6 +149,84 @@ struct OpenDocument {
         hasSelection = true;
         buffer.SetCursor(lineIdx, endCol);
         selectedWord = line.substr(startCol, endCol - startCol);
+    }
+
+    bool AddNextOccurrence() {
+        if (!HasSelection()) {
+            SelectWordAt(buffer.GetCursor().line, buffer.GetCursor().col);
+            return HasSelection();
+        }
+
+        std::wstring text = GetSelectedText();
+        if (text.empty()) return false;
+
+        size_t searchLine = buffer.GetCursor().line;
+        size_t searchCol = buffer.GetCursor().col;
+        if (!secondarySelections.empty()) {
+            size_t sl, sc, el, ec;
+            secondarySelections.back().GetRange(sl, sc, el, ec);
+            searchLine = el;
+            searchCol = ec;
+        } else {
+            size_t sl, sc, el, ec;
+            GetSelectionRange(sl, sc, el, ec);
+            searchLine = el;
+            searchCol = ec;
+        }
+
+        size_t totalLines = buffer.GetLineCount();
+        bool found = false;
+        size_t foundLine = 0, foundCol = 0;
+
+        // Search from (searchLine, searchCol) to end
+        for (size_t l = searchLine; l < totalLines && !found; ++l) {
+            const auto& line = buffer.GetLine(l);
+            size_t startC = (l == searchLine) ? searchCol : 0;
+            if (startC <= line.length()) {
+                size_t pos = line.find(text, startC);
+                if (pos != std::wstring::npos) {
+                    found = true;
+                    foundLine = l;
+                    foundCol = pos;
+                }
+            }
+        }
+
+        // If not found, wrap around from beginning to searchLine
+        if (!found) {
+            for (size_t l = 0; l <= searchLine && !found; ++l) {
+                const auto& line = buffer.GetLine(l);
+                size_t limit = (l == searchLine) ? searchCol : line.length();
+                size_t pos = line.find(text, 0);
+                while (pos != std::wstring::npos && pos < limit) {
+                    bool alreadySelected = false;
+                    size_t psL, psC, peL, peC;
+                    GetSelectionRange(psL, psC, peL, peC);
+                    if (l == psL && pos == psC) alreadySelected = true;
+                    for (const auto& sec : secondarySelections) {
+                        size_t ssL, ssC, seL, seC;
+                        sec.GetRange(ssL, ssC, seL, seC);
+                        if (l == ssL && pos == ssC) { alreadySelected = true; break; }
+                    }
+                    if (!alreadySelected) {
+                        found = true;
+                        foundLine = l;
+                        foundCol = pos;
+                        break;
+                    }
+                    pos = line.find(text, pos + 1);
+                }
+            }
+        }
+
+        if (found) {
+            SelectionRange newSel;
+            newSel.anchor = { foundLine, foundCol };
+            newSel.cursor = { foundLine, foundCol + text.length() };
+            secondarySelections.push_back(newSel);
+            return true;
+        }
+        return false;
     }
 
     bool DeleteSelection() {

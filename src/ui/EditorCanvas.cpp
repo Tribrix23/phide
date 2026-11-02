@@ -1844,6 +1844,37 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
             }
         }
 
+        // Secondary Text Selections Background (Ctrl+D multi-cursor)
+        for (const auto& sec : doc.secondarySelections) {
+            size_t sLine = 0, sCol = 0, eLine = 0, eCol = 0;
+            sec.GetRange(sLine, sCol, eLine, eCol);
+            if (vl.bufferLine >= sLine && vl.bufferLine <= eLine) {
+                float selX1 = codeLeft - scrollX;
+                float selX2 = codeLeft - scrollX;
+                if (vl.bufferLine == sLine && vl.bufferLine == eLine) {
+                    selX1 = getColVisualX(sCol);
+                    selX2 = getColVisualX(eCol);
+                } else if (vl.bufferLine == sLine) {
+                    selX1 = getColVisualX(sCol);
+                    selX2 = getColVisualX(lineStr.length()) + config.ScaleF(8.0f);
+                } else if (vl.bufferLine == eLine) {
+                    selX1 = codeLeft - scrollX;
+                    selX2 = getColVisualX(eCol);
+                } else {
+                    selX1 = codeLeft - scrollX;
+                    selX2 = (std::max)(getColVisualX(lineStr.length()) + config.ScaleF(8.0f), codeLeft - scrollX + config.ScaleF(24.0f));
+                }
+
+                if (selX2 > selX1) {
+                    D2D1_RECT_F rcSel = D2D1::RectF(selX1, lineY + 0.5f, selX2, lineY + lineH - 0.5f);
+                    D2D1_ROUNDED_RECT rrcSel = D2D1::RoundedRect(rcSel, 4.0f, 4.0f);
+                    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> selBrush;
+                    pRT->CreateSolidColorBrush(D2D1::ColorF(0.15f, 0.38f, 0.68f, 0.48f), &selBrush);
+                    if (selBrush) pRT->FillRoundedRectangle(&rrcSel, selBrush.Get());
+                }
+            }
+        }
+
         // Matching Word Occurrences Highlight across lines (Image 4)
         if (!doc.selectedWord.empty() && doc.selectedWord.length() > 1 && !lineStr.empty()) {
             size_t wpos = 0;
@@ -2285,6 +2316,42 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
             }
         }
 
+        // 4-sec. Secondary Carets (Multi-Cursor Ctrl+D)
+        if (isFocused && !isRenaming && m_caretVisible && !doc.secondarySelections.empty()) {
+            ID2D1Brush* secCaretBrush = theme.IsDarkMode()
+                ? theme.brushTextWhite.Get()
+                : (theme.brushTextPrimary ? theme.brushTextPrimary.Get() : theme.brushHeaderIcon.Get());
+
+            for (const auto& sec : doc.secondarySelections) {
+                size_t secVisualIdx = 0;
+                bool foundSec = false;
+                for (size_t vi = 0; vi < visualLines.size(); ++vi) {
+                    if (!visualLines[vi].isCodeLens && visualLines[vi].bufferLine == sec.cursor.line) {
+                        secVisualIdx = vi;
+                        foundSec = true;
+                        break;
+                    }
+                }
+                if (foundSec && secVisualIdx >= doc.scrollLine) {
+                    float secCaretX = codeLeft - scrollX + sec.cursor.col * charW;
+                    if (sec.cursor.line < buffer.GetLineCount()) {
+                        const auto& sLineStr = buffer.GetLine(sec.cursor.line);
+                        auto sColors = ScanLineColors(sLineStr);
+                        secCaretX = codeLeft - scrollX + GetColumnVisualOffset(sColors, sec.cursor.col, charW, swatchSpan);
+                    }
+                    float secCaretY = topY + config.ScaleF(6.0f) + (secVisualIdx - doc.scrollLine) * lineH;
+                    if (secCaretY >= topY && secCaretY + lineH <= clientHeight) {
+                        pRT->DrawLine(
+                            D2D1::Point2F(secCaretX, secCaretY + config.ScaleF(2.0f)),
+                            D2D1::Point2F(secCaretX, secCaretY + lineH - config.ScaleF(2.0f)),
+                            secCaretBrush,
+                            2.0f
+                        );
+                    }
+                }
+            }
+        }
+
         // 4b. Inline Ghost Text with "Tab to complete" (Image 5)
         std::wstring displayGhost = m_ghostText;
 
@@ -2405,21 +2472,6 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
                 continue;
             }
 
-            // Diff bar in gutter
-            if (doc.isDiffView || doc.isDeletedInGit) {
-                if (doc.isDeletedInGit || doc.diffDeletedLines.count(vl.bufferLine)) {
-                    D2D1_RECT_F rcGutterBar = D2D1::RectF(canvasLeft + gutterW - config.ScaleF(3.0f), lineY, canvasLeft + gutterW, lineY + lineH);
-                    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushRedBar;
-                    pRT->CreateSolidColorBrush(D2D1::ColorF(0.878f, 0.424f, 0.459f, 1.0f), &brushRedBar);
-                    if (brushRedBar) pRT->FillRectangle(rcGutterBar, brushRedBar.Get());
-                } else if (doc.diffAddedLines.count(vl.bufferLine)) {
-                    D2D1_RECT_F rcGutterBar = D2D1::RectF(canvasLeft + gutterW - config.ScaleF(3.0f), lineY, canvasLeft + gutterW, lineY + lineH);
-                    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushGreenBar;
-                    pRT->CreateSolidColorBrush(D2D1::ColorF(0.596f, 0.765f, 0.475f, 1.0f), &brushGreenBar);
-                    if (brushGreenBar) pRT->FillRectangle(rcGutterBar, brushGreenBar.Get());
-                }
-            }
-
             // Diagnostic error in gutter
             bool hasDiagError = false;
             for (const auto& d : doc.diagnostics) {
@@ -2518,19 +2570,18 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
                 float barLeft = barRight - barW;
 
                 if (doc.diffModifiedLines.count(vl.bufferLine)) {
-                    // Blue Bar for Modified line (Image 1)
+                    // Blue Bar for Modified line (Diagonal hatch matching Images 3 & 7)
                     D2D1_RECT_F rcBar = D2D1::RectF(barLeft, lineY, barRight, lineY + lineH);
-                    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> blueBrush;
-                    pRT->CreateSolidColorBrush(D2D1::ColorF(0.0f, 0.478f, 0.800f, 1.0f), &blueBrush);
-                    if (blueBrush) {
-                        pRT->FillRectangle(rcBar, blueBrush.Get());
-                        // Diagonal hatch marks matching Image 1
-                        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> hatchBrush;
-                        pRT->CreateSolidColorBrush(D2D1::ColorF(0.40f, 0.75f, 1.0f, 0.85f), &hatchBrush);
-                        if (hatchBrush) {
-                            for (float hy = lineY; hy < lineY + lineH; hy += config.ScaleF(3.5f)) {
-                                pRT->DrawLine(D2D1::Point2F(barLeft, hy), D2D1::Point2F(barRight, hy + config.ScaleF(2.5f)), hatchBrush.Get(), 1.0f);
-                            }
+                    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> blueBgBrush;
+                    pRT->CreateSolidColorBrush(D2D1::ColorF(0.0f, 0.35f, 0.70f, 0.40f), &blueBgBrush);
+                    if (blueBgBrush) {
+                        pRT->FillRectangle(rcBar, blueBgBrush.Get());
+                    }
+                    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> hatchBrush;
+                    pRT->CreateSolidColorBrush(D2D1::ColorF(0.0f, 0.55f, 1.0f, 1.0f), &hatchBrush);
+                    if (hatchBrush) {
+                        for (float hy = lineY - barW; hy < lineY + lineH; hy += config.ScaleF(3.0f)) {
+                            pRT->DrawLine(D2D1::Point2F(barLeft, hy), D2D1::Point2F(barRight, hy + barW), hatchBrush.Get(), 1.4f);
                         }
                     }
                 } else if (doc.diffAddedLines.count(vl.bufferLine)) {
@@ -6559,105 +6610,156 @@ void EditorCanvas::RenderAutocompletePopup(ID2D1RenderTarget* pRT, Theme& theme,
 
     pRT->PopAxisAlignedClip(); // End footer clip
 
-    // 10. Documentation Sidecar Flyout Card (Images 2 & 3: VS Code Tailwind CSS IntelliSense Card)
+    // 10. Documentation Sidecar Flyout Card (Dynamic width, height, word-wrap, and strict clipping)
     if (m_autocompleteSelectedIdx < m_autocompleteItems.size()) {
         const auto& selItem = m_autocompleteItems[m_autocompleteSelectedIdx];
         if (!selItem.detail.empty() || !selItem.documentation.empty() || selItem.isColor) {
-            float docW = config.ScaleF(280.0f);
-            float docH = (std::min)(popupH, config.ScaleF(110.0f));
-            float docX = popupX + popupW + config.ScaleF(4.0f);
-            if (docX + docW > clientWidth - config.ScaleF(8.0f)) {
-                docX = popupX - docW - config.ScaleF(4.0f);
-            }
-            if (docX >= 0.0f) {
-                float docY = popupY;
-                D2D1_RECT_F rcDoc = D2D1::RectF(docX, docY, docX + docW, docY + docH);
-                D2D1_ROUNDED_RECT rrcDoc = D2D1::RoundedRect(rcDoc, 6.0f, 6.0f);
+            float padX = config.ScaleF(12.0f);
+            float padY = config.ScaleF(10.0f);
 
-                // Elevated drop shadow
-                for (int s = 1; s <= 2; ++s) {
-                    float expand = static_cast<float>(s) * config.ScaleF(1.5f);
-                    D2D1_RECT_F rcDocShadow = D2D1::RectF(
-                        docX - expand, docY - expand * 0.5f + config.ScaleF(2.0f),
-                        docX + docW + expand, docY + docH + expand + config.ScaleF(2.0f)
-                    );
-                    D2D1_ROUNDED_RECT rrcDocShadow = D2D1::RoundedRect(rcDocShadow, 6.0f + expand, 6.0f + expand);
-                    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> shadowBrush;
-                    pRT->CreateSolidColorBrush(D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.08f), &shadowBrush);
-                    if (shadowBrush) pRT->FillRoundedRectangle(rrcDocShadow, shadowBrush.Get());
-                }
+            // Determine whether to place flyout card to the right or left of the autocomplete menu
+            float spaceRight = clientWidth - (popupX + popupW + config.ScaleF(6.0f)) - config.ScaleF(12.0f);
+            float spaceLeft  = popupX - config.ScaleF(16.0f);
+            bool placeOnRight = (spaceRight >= config.ScaleF(280.0f) || spaceRight >= spaceLeft);
+            float maxAvailW = placeOnRight ? spaceRight : spaceLeft;
+            maxAvailW = (std::max)(config.ScaleF(260.0f), (std::min)(maxAvailW, config.ScaleF(560.0f)));
 
-                // Card background & border
-                Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> docBgBrush;
-                pRT->CreateSolidColorBrush(
-                    theme.IsDarkMode() ? D2D1::ColorF(0.12f, 0.12f, 0.14f, 0.98f) : D2D1::ColorF(0.96f, 0.96f, 0.98f, 0.98f),
-                    &docBgBrush
-                );
-                if (docBgBrush) pRT->FillRoundedRectangle(rrcDoc, docBgBrush.Get());
-                pRT->DrawRoundedRectangle(rrcDoc, borderBrush.Get(), 1.0f);
+            float textWrapW = maxAvailW - padX * 2.0f;
 
-                // Content inside card with padding
-                float padX = config.ScaleF(12.0f);
-                float curDocY = docY + config.ScaleF(10.0f);
-
-                // Top: CSS property and value (e.g. "background-color: rgb(239 68 68);")
-                if (!selItem.detail.empty()) {
-                    D2D1_RECT_F rcDetail = D2D1::RectF(docX + padX, curDocY, docX + docW - padX, curDocY + config.ScaleF(22.0f));
-                    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> propBrush;
-                    pRT->CreateSolidColorBrush(
-                        theme.IsDarkMode() ? D2D1::ColorF(0.61f, 0.86f, 1.0f) : D2D1::ColorF(0.0f, 0.40f, 0.80f),
-                        &propBrush
-                    );
-                    pRT->DrawText(
+            // Pre-measure detail layout (signature or CSS property) with word-wrapping
+            Microsoft::WRL::ComPtr<IDWriteTextLayout> pDetailLayout;
+            float detailH = 0.0f;
+            float maxMeasuredW = config.ScaleF(260.0f);
+            if (!selItem.detail.empty() && theme.dwriteFactory && (theme.fontCode || theme.fontBody)) {
+                IDWriteTextFormat* pFmt = theme.fontCode ? theme.fontCode.Get() : theme.fontBody.Get();
+                if (SUCCEEDED(theme.dwriteFactory->CreateTextLayout(
                         selItem.detail.c_str(), static_cast<UINT32>(selItem.detail.length()),
-                        theme.fontCode ? theme.fontCode.Get() : theme.fontBody.Get(),
-                        rcDetail, propBrush ? propBrush.Get() : theme.brushTextPrimary.Get()
-                    );
-                    curDocY += config.ScaleF(26.0f);
-                }
-
-                // Bottom: Color Swatch + Hex value (e.g. "■ #ef4444") matching Images 2 & 3
-                if (selItem.isColor) {
-                    float sW = config.ScaleF(13.0f);
-                    float sH = config.ScaleF(13.0f);
-                    float sY = curDocY + config.ScaleF(2.0f);
-                    D2D1_RECT_F rcDocSwatch = D2D1::RectF(docX + padX, sY, docX + padX + sW, sY + sH);
-                    D2D1_ROUNDED_RECT rrcDocSwatch = D2D1::RoundedRect(rcDocSwatch, 2.0f, 2.0f);
-
-                    uint32_t c = selItem.colorHex;
-                    float r = ((c >> 16) & 0xFF) / 255.0f;
-                    float g = ((c >> 8) & 0xFF) / 255.0f;
-                    float b = (c & 0xFF) / 255.0f;
-
-                    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> docSwatchBrush;
-                    pRT->CreateSolidColorBrush(D2D1::ColorF(r, g, b, 1.0f), &docSwatchBrush);
-                    if (docSwatchBrush) pRT->FillRoundedRectangle(rrcDocSwatch, docSwatchBrush.Get());
-
-                    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> docSwatchBorder;
-                    pRT->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.3f), &docSwatchBorder);
-                    if (docSwatchBorder) pRT->DrawRoundedRectangle(rrcDocSwatch, docSwatchBorder.Get(), 1.0f);
-
-                    std::wstring hexStr = selItem.documentation;
-                    if (hexStr.empty()) {
-                        wchar_t buf[16];
-                        swprintf_s(buf, L"#%06x", c);
-                        hexStr = buf;
+                        pFmt, textWrapW, 2000.0f, &pDetailLayout))) {
+                    pDetailLayout->SetWordWrapping(DWRITE_WORD_WRAPPING_WRAP);
+                    DWRITE_TEXT_METRICS tm;
+                    if (SUCCEEDED(pDetailLayout->GetMetrics(&tm))) {
+                        detailH = tm.height;
+                        maxMeasuredW = (std::max)(maxMeasuredW, tm.width + padX * 2.0f);
                     }
-                    D2D1_RECT_F rcHex = D2D1::RectF(docX + padX + sW + config.ScaleF(8.0f), curDocY, docX + docW - padX, curDocY + config.ScaleF(20.0f));
-                    pRT->DrawText(
-                        hexStr.c_str(), static_cast<UINT32>(hexStr.length()),
-                        theme.fontCode ? theme.fontCode.Get() : theme.fontBody.Get(),
-                        rcHex, theme.brushTextSecondary.Get()
-                    );
-                } else if (!selItem.documentation.empty()) {
-                    D2D1_RECT_F rcDocText = D2D1::RectF(docX + padX, curDocY, docX + docW - padX, docY + docH - config.ScaleF(6.0f));
-                    pRT->DrawText(
-                        selItem.documentation.c_str(), static_cast<UINT32>(selItem.documentation.length()),
-                        theme.fontMenuItem ? theme.fontMenuItem.Get() : theme.fontBody.Get(),
-                        rcDocText, theme.brushTextMuted.Get()
-                    );
                 }
             }
+
+            // Pre-measure documentation layout with word-wrapping
+            Microsoft::WRL::ComPtr<IDWriteTextLayout> pDocLayout;
+            float docTextH = 0.0f;
+            if (!selItem.documentation.empty() && theme.dwriteFactory && (theme.fontMenuItem || theme.fontBody)) {
+                IDWriteTextFormat* pFmt = theme.fontMenuItem ? theme.fontMenuItem.Get() : theme.fontBody.Get();
+                if (SUCCEEDED(theme.dwriteFactory->CreateTextLayout(
+                        selItem.documentation.c_str(), static_cast<UINT32>(selItem.documentation.length()),
+                        pFmt, textWrapW, 2000.0f, &pDocLayout))) {
+                    pDocLayout->SetWordWrapping(DWRITE_WORD_WRAPPING_WRAP);
+                    DWRITE_TEXT_METRICS tm;
+                    if (SUCCEEDED(pDocLayout->GetMetrics(&tm))) {
+                        docTextH = tm.height;
+                        maxMeasuredW = (std::max)(maxMeasuredW, tm.width + padX * 2.0f);
+                    }
+                }
+            }
+
+            float docW = (std::min)(maxAvailW, (std::max)(config.ScaleF(280.0f), maxMeasuredW));
+            float docH = padY * 2.0f;
+            if (pDetailLayout) docH += detailH + config.ScaleF(6.0f);
+            if (selItem.isColor) docH += config.ScaleF(22.0f);
+            if (pDocLayout) docH += docTextH + config.ScaleF(6.0f);
+            docH = (std::min)(docH, clientHeight - config.ScaleF(30.0f));
+
+            float docX = placeOnRight ? (popupX + popupW + config.ScaleF(4.0f)) : (popupX - docW - config.ScaleF(4.0f));
+            if (docX < config.ScaleF(6.0f)) docX = config.ScaleF(6.0f);
+            if (docX + docW > clientWidth - config.ScaleF(6.0f)) docW = clientWidth - docX - config.ScaleF(6.0f);
+
+            float docY = popupY;
+            if (docY + docH > clientHeight - config.ScaleF(10.0f)) {
+                docY = (std::max)(config.ScaleF(35.0f), clientHeight - docH - config.ScaleF(10.0f));
+            }
+
+            D2D1_RECT_F rcDoc = D2D1::RectF(docX, docY, docX + docW, docY + docH);
+            D2D1_ROUNDED_RECT rrcDoc = D2D1::RoundedRect(rcDoc, 6.0f, 6.0f);
+
+            // Elevated drop shadow
+            for (int s = 1; s <= 2; ++s) {
+                float expand = static_cast<float>(s) * config.ScaleF(1.5f);
+                D2D1_RECT_F rcDocShadow = D2D1::RectF(
+                    docX - expand, docY - expand * 0.5f + config.ScaleF(2.0f),
+                    docX + docW + expand, docY + docH + expand + config.ScaleF(2.0f)
+                );
+                D2D1_ROUNDED_RECT rrcDocShadow = D2D1::RoundedRect(rcDocShadow, 6.0f + expand, 6.0f + expand);
+                Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> shadowBrush;
+                pRT->CreateSolidColorBrush(D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.08f), &shadowBrush);
+                if (shadowBrush) pRT->FillRoundedRectangle(rrcDocShadow, shadowBrush.Get());
+            }
+
+            // Card background & border
+            Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> docBgBrush;
+            pRT->CreateSolidColorBrush(
+                theme.IsDarkMode() ? D2D1::ColorF(0.12f, 0.12f, 0.14f, 0.98f) : D2D1::ColorF(0.96f, 0.96f, 0.98f, 0.98f),
+                &docBgBrush
+            );
+            if (docBgBrush) pRT->FillRoundedRectangle(rrcDoc, docBgBrush.Get());
+            pRT->DrawRoundedRectangle(rrcDoc, borderBrush.Get(), 1.0f);
+
+            // Strict clip ensures NO text or swatches leak outside the card
+            pRT->PushAxisAlignedClip(rcDoc, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+
+            float curDocY = docY + padY;
+
+            // Render Detail (signature or CSS rule)
+            if (pDetailLayout) {
+                Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> propBrush;
+                pRT->CreateSolidColorBrush(
+                    theme.IsDarkMode() ? D2D1::ColorF(0.61f, 0.86f, 1.0f) : D2D1::ColorF(0.0f, 0.40f, 0.80f),
+                    &propBrush
+                );
+                pRT->DrawTextLayout(D2D1::Point2F(docX + padX, curDocY), pDetailLayout.Get(), propBrush ? propBrush.Get() : theme.brushTextPrimary.Get());
+                curDocY += detailH + config.ScaleF(6.0f);
+            }
+
+            // Render Color Swatch + Hex value if applicable
+            if (selItem.isColor) {
+                float sW = config.ScaleF(13.0f);
+                float sH = config.ScaleF(13.0f);
+                float sY = curDocY + config.ScaleF(2.0f);
+                D2D1_RECT_F rcDocSwatch = D2D1::RectF(docX + padX, sY, docX + padX + sW, sY + sH);
+                D2D1_ROUNDED_RECT rrcDocSwatch = D2D1::RoundedRect(rcDocSwatch, 2.0f, 2.0f);
+
+                uint32_t c = selItem.colorHex;
+                float r = ((c >> 16) & 0xFF) / 255.0f;
+                float g = ((c >> 8) & 0xFF) / 255.0f;
+                float b = (c & 0xFF) / 255.0f;
+
+                Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> docSwatchBrush;
+                pRT->CreateSolidColorBrush(D2D1::ColorF(r, g, b, 1.0f), &docSwatchBrush);
+                if (docSwatchBrush) pRT->FillRoundedRectangle(rrcDocSwatch, docSwatchBrush.Get());
+
+                Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> docSwatchBorder;
+                pRT->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.3f), &docSwatchBorder);
+                if (docSwatchBorder) pRT->DrawRoundedRectangle(rrcDocSwatch, docSwatchBorder.Get(), 1.0f);
+
+                std::wstring hexStr = selItem.documentation;
+                if (hexStr.empty()) {
+                    wchar_t buf[16];
+                    swprintf_s(buf, L"#%06x", c);
+                    hexStr = buf;
+                }
+                D2D1_RECT_F rcHex = D2D1::RectF(docX + padX + sW + config.ScaleF(8.0f), curDocY, docX + docW - padX, curDocY + config.ScaleF(20.0f));
+                pRT->DrawText(
+                    hexStr.c_str(), static_cast<UINT32>(hexStr.length()),
+                    theme.fontCode ? theme.fontCode.Get() : theme.fontBody.Get(),
+                    rcHex, theme.brushTextSecondary.Get()
+                );
+                curDocY += config.ScaleF(22.0f);
+            }
+
+            // Render Documentation description
+            if (pDocLayout) {
+                pRT->DrawTextLayout(D2D1::Point2F(docX + padX, curDocY), pDocLayout.Get(), theme.brushTextMuted.Get());
+            }
+
+            pRT->PopAxisAlignedClip();
         }
     }
 }

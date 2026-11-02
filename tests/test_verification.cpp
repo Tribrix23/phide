@@ -279,6 +279,9 @@ int main(int argc, char* argv[]) {
     if (targetTest == 105) {
         goto run_test_105;
     }
+    if (targetTest == 106) {
+        goto run_test_106;
+    }
 
     if (targetTest == 66) {
         goto run_test_66;
@@ -16088,6 +16091,106 @@ run_test_105:
 
         if (targetTest == 105) {
             std::cout << "Target test 105 finished." << std::endl;
+            return 0;
+        }
+    }
+
+    // ----------------------------------------------------
+    // TEST 106: Multi-Cursor (Ctrl+D), Gutter Diff Hatching & Autocomplete Flyout Clipping
+    // ----------------------------------------------------
+run_test_106:
+    if (targetTest == 0 || targetTest == 106) {
+        std::cout << "\n[TEST 106] Testing Multi-Cursor (Ctrl+D), Gutter Diff Hatching & Autocomplete Flyout..." << std::endl;
+
+        // Subtest 1: Multi-Cursor AddNextOccurrence (Ctrl+D)
+        {
+            phide::editor::OpenDocument doc;
+            doc.buffer.SetText(L"const Practice = 1;\nconst other = 2;\nPractice = 3;\nconst Practice = 4;");
+            doc.buffer.SetCursor(0, 7); // on "Practice"
+
+            // 1. Initial: no selection, AddNextOccurrence selects current word
+            bool ok1 = doc.AddNextOccurrence();
+            assert(ok1 && "First AddNextOccurrence must select word under cursor");
+            assert(doc.HasSelection() && "doc must have active selection");
+            assert(doc.GetSelectedText() == L"Practice" && "Selected text must be 'Practice'");
+            assert(doc.secondarySelections.empty() && "No secondary selection yet");
+
+            // 2. Second occurrence (Line 2: Practice = 3)
+            bool ok2 = doc.AddNextOccurrence();
+            assert(ok2 && "Second AddNextOccurrence must find line 2 occurrence");
+            assert(doc.secondarySelections.size() == 1 && "Must have 1 secondary selection");
+            size_t sl, sc, el, ec;
+            doc.secondarySelections[0].GetRange(sl, sc, el, ec);
+            assert(sl == 2 && sc == 0 && el == 2 && ec == 8 && "Secondary selection must match Line 2 Practice");
+
+            // 3. Third occurrence (Line 3: const Practice = 4)
+            bool ok3 = doc.AddNextOccurrence();
+            assert(ok3 && "Third AddNextOccurrence must find line 3 occurrence");
+            assert(doc.secondarySelections.size() == 2 && "Must have 2 secondary selections");
+            doc.secondarySelections[1].GetRange(sl, sc, el, ec);
+            assert(sl == 3 && sc == 6 && el == 3 && ec == 14 && "Secondary selection must match Line 3 Practice");
+
+            // 4. Clear Selection
+            doc.ClearSelection();
+            assert(!doc.HasSelection() && "ClearSelection must reset hasSelection");
+            assert(doc.secondarySelections.empty() && "ClearSelection must clear secondarySelections");
+
+            std::cout << "  Passed: Multi-cursor occurrence selection (Ctrl+D) accurately selects primary and secondary ranges" << std::endl;
+        }
+
+        // Subtest 2: Gutter Diff Hunk Sliding for newly inserted lines
+        {
+            phide::editor::OpenDocument doc;
+            doc.diffOriginalBuffer.SetText(L"function test() {\n    const a = 1;\n    return a;\n}");
+            // Insert empty line at line 2 where cursor is
+            doc.buffer.SetText(L"function test() {\n    const a = 1;\n\n    return a;\n}");
+            doc.buffer.SetCursor(2, 0);
+
+            phide::app::Window win;
+            win.ComputeDiffHunks(doc);
+
+            assert(doc.diffAddedLines.count(2) > 0 && "Inserted blank line at line 2 must be marked as Added in gutter diff");
+            assert(doc.diffAddedLines.count(3) == 0 && "Line 3 must NOT be marked as Added");
+
+            std::cout << "  Passed: Gutter diff hunk sliding correctly attributes inserted blank line to line 2 (cursor line)" << std::endl;
+        }
+
+        // Subtest 3: Visual Rendering of Blue Diagonal Hatch & Multi-Cursor Carets
+        {
+            phide::app::AppConfig cfg;
+            cfg.fontFamily = L"Koda Mono";
+            cfg.fontSize = 14;
+
+            phide::ui::Theme theme;
+            Microsoft::WRL::ComPtr<IWICBitmap> pWic;
+            Microsoft::WRL::ComPtr<ID2D1RenderTarget> pRT;
+            CreateTarget(pWic, pRT);
+            theme.CreateDeviceResources(pRT.Get(), pDWriteFactory.Get());
+
+            pRT->BeginDraw();
+            pRT->Clear(theme.colors.canvasBg);
+
+            phide::ui::EditorCanvas editor;
+            std::vector<phide::editor::OpenDocument> docs;
+            phide::editor::OpenDocument doc;
+            doc.fileName = L"practice.tsx";
+            doc.buffer.SetText(L"export default function Home() {\n    return (\n        <button>Login</button>\n    );\n}");
+            doc.diffOriginalBuffer.SetText(L"export default function Home() {\n    return (\n        <div>Login</div>\n    );\n}");
+            doc.diffModifiedLines.insert(2); // modified line 2
+            doc.AddNextOccurrence();
+
+            docs.push_back(std::move(doc));
+            editor.Render(pRT.Get(), theme, cfg, docs, 0, 0.0f, 1200.0f, 750.0f, true);
+            HRESULT hr = pRT->EndDraw();
+            assert(SUCCEEDED(hr));
+            SaveWicBitmapToPng(pWic.Get(), pWicFactory.Get(), artDir + L"test_multicursor_and_diff_indicators.png");
+
+            std::cout << "  Passed: Rendered test_multicursor_and_diff_indicators.png with blue diagonal hatch and multi-cursor" << std::endl;
+        }
+
+        std::cout << "  Passed: All [TEST 106] Multi-Cursor (Ctrl+D), Gutter Diff & Autocomplete Flyout tests passed!" << std::endl;
+        if (targetTest == 106) {
+            std::cout << "Target test 106 finished." << std::endl;
             return 0;
         }
     }

@@ -328,7 +328,14 @@ HRESULT Theme::CreateDeviceResources(ID2D1RenderTarget* pRT, IDWriteFactory* pDW
 
     // 3a. Monospace Code Font (Editor uses Medium Italic for Koda Mono per user preference)
     DWRITE_FONT_STYLE fontStyle = (chosenFont == L"Koda Mono" || chosenFont == L"Phide Mono") ? DWRITE_FONT_STYLE_ITALIC : DWRITE_FONT_STYLE_NORMAL;
-    createFormat(chosenFont.c_str(), collectionToUse, DWRITE_FONT_WEIGHT_MEDIUM, fontStyle, (std::max)(6.0f, m_editorFontSize), &fontCode, L"Consolas");
+    const wchar_t* editorFamily = chosenFont.c_str();
+    if (customFontCollection) {
+        UINT32 medIdx = 0; BOOL medExists = FALSE;
+        if (SUCCEEDED(customFontCollection->FindFamilyName(L"Koda Mono Medium", &medIdx, &medExists)) && medExists) {
+            editorFamily = L"Koda Mono Medium";
+        }
+    }
+    createFormat(editorFamily, collectionToUse, DWRITE_FONT_WEIGHT_MEDIUM, fontStyle, (std::max)(6.0f, m_editorFontSize), &fontCode, L"Consolas");
     if (fontCode) {
         fontCode->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
         fontCode->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
@@ -336,7 +343,7 @@ HRESULT Theme::CreateDeviceResources(ID2D1RenderTarget* pRT, IDWriteFactory* pDW
     }
 
     // 3a-2. Monospace Terminal Font (Terminal uses Medium Normal non-italic for Koda Mono)
-    createFormat(chosenFont.c_str(), collectionToUse, DWRITE_FONT_WEIGHT_MEDIUM, DWRITE_FONT_STYLE_NORMAL, (std::max)(6.0f, m_editorFontSize), &fontTerminal, L"Consolas");
+    createFormat(editorFamily, collectionToUse, DWRITE_FONT_WEIGHT_MEDIUM, DWRITE_FONT_STYLE_NORMAL, (std::max)(6.0f, m_editorFontSize), &fontTerminal, L"Consolas");
     if (fontTerminal) {
         fontTerminal->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
         fontTerminal->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);

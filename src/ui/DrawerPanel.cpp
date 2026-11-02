@@ -1146,12 +1146,13 @@ void DrawerPanel::RenderExplorerPane(ID2D1RenderTarget* pRT, Theme& theme, const
                         isGitIgnored ? theme.brushTextMuted.Get() :
                         (theme.brushBrandAccent ? theme.brushBrandAccent.Get() : theme.brushTextWhite.Get()), 1.2f);
                 } else {
-                    auto setiInfo = theme.GetSetiIcon(item.label, item.isFolder, item.isExpanded);
+                    const std::wstring& effectiveLabel = (m_isRenaming && static_cast<int>(i) == m_renamingItemIdx) ? m_renameText : item.label;
+                    auto setiInfo = theme.GetSetiIcon(effectiveLabel, item.isFolder, item.isExpanded);
                     ID2D1Brush* pIconBrush = isGitIgnored ? theme.brushTextMuted.Get() : setiInfo.pBrush;
                     if (theme.fontSeti && pIconBrush) {
                         pRT->DrawText(&setiInfo.glyph, 1, theme.fontSeti.Get(), iconBounds, pIconBrush);
                     } else {
-                        auto iconType = LucideIcons::GetIconTypeForPath(item.label, item.isFolder, item.isExpanded);
+                        auto iconType = LucideIcons::GetIconTypeForPath(effectiveLabel, item.isFolder, item.isExpanded);
                         m_icons.DrawFileIcon(pRT, theme, iconBounds, iconType);
                     }
                 }

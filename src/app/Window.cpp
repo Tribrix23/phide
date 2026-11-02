@@ -1545,6 +1545,14 @@ void Window::ComputeDiffHunks(editor::OpenDocument& doc) {
                 hunk.rightCount = 0;
                 doc.diffDeletedGutterMarkers.insert(delRightPos);
             } else if (addCount > 0) {
+                // Hunk sliding: If the newly added lines can slide upward because the preceding line in rightBuf matches the last added line
+                // (e.g. inserting an empty line above an existing empty line), and the user's cursor is on or above the insertion point,
+                // slide addStart up so the diff indicator attaches to the user's cursor line!
+                while (addStart > 0 && doc.buffer.GetCursor().line < addStart + addCount &&
+                       rightBuf.GetLine(addStart - 1) == rightBuf.GetLine(addStart + addCount - 1)) {
+                    addStart--;
+                }
+
                 hunk.type = editor::OpenDocument::DiffHunkItem::HunkType::Added;
                 hunk.leftStart = addLeftPos;
                 hunk.leftCount = 0;
@@ -1569,6 +1577,10 @@ void Window::ComputeDiffHunks(editor::OpenDocument& doc) {
             hunk.type = editor::OpenDocument::DiffHunkItem::HunkType::Deleted;
             doc.diffDeletedGutterMarkers.insert(prefix);
         } else {
+            while (prefix > 0 && doc.buffer.GetCursor().line < prefix + midM &&
+                   rightBuf.GetLine(prefix - 1) == rightBuf.GetLine(prefix + midM - 1)) {
+                prefix--;
+            }
             hunk.type = editor::OpenDocument::DiffHunkItem::HunkType::Added;
             for (size_t r = prefix; r < prefix + midM; ++r) doc.diffAddedLines.insert(r);
         }
@@ -5467,6 +5479,23 @@ void Window::SaveFileToPath(const std::wstring& path) {
             pDoc->isDirty = false;
             pDoc->originalDiskText = pDoc->buffer.GetText();
             pDoc->isPreview = false;
+            if (m_drawer.IsGitRepo()) {
+                std::wstring relPath = path;
+                if (m_drawer.HasOpenFolder()) {
+                    try {
+                        relPath = std::filesystem::relative(path, m_drawer.GetOpenFolderPath()).wstring();
+                    } catch (...) {}
+                }
+                std::wstring headContent = m_drawer.GetGitFileContent(relPath);
+                if (!headContent.empty()) {
+                    pDoc->diffOriginalBuffer.SetText(headContent);
+                } else {
+                    pDoc->diffOriginalBuffer.SetText(pDoc->originalDiskText);
+                }
+            } else {
+                pDoc->diffOriginalBuffer.SetText(pDoc->originalDiskText);
+            }
+            ComputeDiffHunks(*pDoc);
             if (path == m_snippetManager.GetSnippetsFilePath()) {
                 m_snippetManager.LoadSnippets();
             }
@@ -8278,8 +8307,13 @@ void Window::HandleMouseMove(POINT clientPt, WPARAM wParam) {
 
 void Window::HandleLButtonDown(POINT clientPt) {
     auto* pActiveDoc = GetActiveDoc();
-    if (pActiveDoc && pActiveDoc->hoveredDiagnosticLine != static_cast<size_t>(-1)) {
-        pActiveDoc->hoveredDiagnosticLine = static_cast<size_t>(-1);
+    if (pActiveDoc) {
+        if (pActiveDoc->hoveredDiagnosticLine != static_cast<size_t>(-1)) {
+            pActiveDoc->hoveredDiagnosticLine = static_cast<size_t>(-1);
+        }
+        if (!pActiveDoc->secondarySelections.empty()) {
+            pActiveDoc->secondarySelections.clear();
+        }
     }
     if (m_drawer.IsGitHubLoginModalOpen()) {
         if (m_drawer.HandleGitHubLoginMouseDown(clientPt)) {
@@ -11660,6 +11694,55 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                         else if (ch == L'\'') pairClose = L'\'';
                         else if (ch == L'`') pairClose = L'`';
 
+                        // Multi-Cursor simultaneous typing (Ctrl+D occurrence editing)
+                        if (!pDoc->secondarySelections.empty()) {
+                            struct SelItem { size_t sLine, sCol, eLine, eCol; bool isPrimary; size_t secIdx; };
+                            std::vector<SelItem> allSels;
+                            if (pDoc->HasSelection()) {
+                                size_t sl, sc, el, ec;
+                                pDoc->GetSelectionRange(sl, sc, el, ec);
+                                allSels.push_back({ sl, sc, el, ec, true, 0 });
+                            } else {
+                                auto c = pDoc->buffer.GetCursor();
+                                allSels.push_back({ c.line, c.col, c.line, c.col, true, 0 });
+                            }
+                            for (size_t si = 0; si < pDoc->secondarySelections.size(); ++si) {
+                                size_t sl, sc, el, ec;
+                                pDoc->secondarySelections[si].GetRange(sl, sc, el, ec);
+                                allSels.push_back({ sl, sc, el, ec, false, si });
+                            }
+                            std::sort(allSels.begin(), allSels.end(), [](const SelItem& a, const SelItem& b) {
+                                if (a.sLine != b.sLine) return a.sLine > b.sLine;
+                                return a.sCol > b.sCol;
+                            });
+
+                            for (const auto& item : allSels) {
+                                if (item.sLine == item.eLine && item.sLine < pDoc->buffer.GetLineCount()) {
+                                    const auto& line = pDoc->buffer.GetLine(item.sLine);
+                                    std::wstring newLine = line.substr(0, item.sCol) + ch;
+                                    if (item.eCol < line.length()) newLine += line.substr(item.eCol);
+                                    pDoc->buffer.SetLine(item.sLine, newLine);
+                                    if (item.isPrimary) {
+                                        pDoc->buffer.SetCursor(item.sLine, item.sCol + 1);
+                                        pDoc->selAnchor = { item.sLine, item.sCol + 1 };
+                                        pDoc->selEnd = { item.sLine, item.sCol + 1 };
+                                    } else {
+                                        pDoc->secondarySelections[item.secIdx].anchor = { item.sLine, item.sCol + 1 };
+                                        pDoc->secondarySelections[item.secIdx].cursor = { item.sLine, item.sCol + 1 };
+                                    }
+                                }
+                            }
+                            pDoc->hasSelection = false;
+                            pDoc->selectedWord.clear();
+                            MarkDocumentModified(pDoc);
+                            if (pDoc->isDiffView) ComputeDiffHunks(*pDoc);
+                            m_editor.DismissAutocomplete();
+                            m_editor.ClearGhostText();
+                            EnsureCursorVisible();
+                            InvalidateRect(m_hwnd, nullptr, FALSE);
+                            return 0;
+                        }
+
                         // 1. Wrap active selection when typing bracket or quote opener
                         if (pDoc->HasSelection()) {
                             if (pairClose != 0) {
@@ -12289,7 +12372,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 }
                 m_drawer.DismissCommitCard();
                 auto* pCurDoc = GetActiveDoc();
-                if (pCurDoc && pCurDoc->HasSelection()) {
+                if (pCurDoc && (pCurDoc->HasSelection() || !pCurDoc->secondarySelections.empty())) {
                     pCurDoc->ClearSelection();
                     InvalidateRect(m_hwnd, nullptr, FALSE);
                     return 0;
@@ -12409,6 +12492,18 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
             if (GetKeyState(VK_CONTROL) & 0x8000) {
                 bool shiftDown = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
                 bool altDown   = (GetKeyState(VK_MENU) & 0x8000) != 0;
+
+                // Ctrl+D: Add Selection To Next Find Match (Multi-Cursor Occurrence Selection)
+                if (wParam == 'D' || wParam == 'd') {
+                    auto* pDoc = GetActiveDoc();
+                    if (pDoc) {
+                        if (pDoc->AddNextOccurrence()) {
+                            EnsureCursorVisible();
+                            InvalidateRect(m_hwnd, nullptr, FALSE);
+                        }
+                    }
+                    return 0;
+                }
 
                 // Zoom In: Ctrl+= / Ctrl++ (VK_OEM_PLUS or VK_ADD)
                 if (wParam == VK_OEM_PLUS || wParam == VK_ADD) {
@@ -12646,7 +12741,65 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 }
 
                 if (wParam == VK_BACK || wParam == VK_DELETE) {
-                    if (pDoc->HasSelection()) {
+                    if (!pDoc->secondarySelections.empty()) {
+                        struct SelItem { size_t sLine, sCol, eLine, eCol; bool isPrimary; size_t secIdx; };
+                        std::vector<SelItem> allSels;
+                        if (pDoc->HasSelection()) {
+                            size_t sl, sc, el, ec;
+                            pDoc->GetSelectionRange(sl, sc, el, ec);
+                            allSels.push_back({ sl, sc, el, ec, true, 0 });
+                        } else {
+                            auto c = pDoc->buffer.GetCursor();
+                            if (wParam == VK_BACK && c.col > 0) {
+                                allSels.push_back({ c.line, c.col - 1, c.line, c.col, true, 0 });
+                            } else if (wParam == VK_DELETE) {
+                                allSels.push_back({ c.line, c.col, c.line, c.col + 1, true, 0 });
+                            }
+                        }
+                        for (size_t si = 0; si < pDoc->secondarySelections.size(); ++si) {
+                            size_t sl, sc, el, ec;
+                            pDoc->secondarySelections[si].GetRange(sl, sc, el, ec);
+                            if (sl != el || sc != ec) {
+                                allSels.push_back({ sl, sc, el, ec, false, si });
+                            } else {
+                                auto c = pDoc->secondarySelections[si].cursor;
+                                if (wParam == VK_BACK && c.col > 0) {
+                                    allSels.push_back({ c.line, c.col - 1, c.line, c.col, false, si });
+                                } else if (wParam == VK_DELETE) {
+                                    allSels.push_back({ c.line, c.col, c.line, c.col + 1, false, si });
+                                }
+                            }
+                        }
+                        std::sort(allSels.begin(), allSels.end(), [](const SelItem& a, const SelItem& b) {
+                            if (a.sLine != b.sLine) return a.sLine > b.sLine;
+                            return a.sCol > b.sCol;
+                        });
+                        for (const auto& item : allSels) {
+                            if (item.sLine == item.eLine && item.sLine < pDoc->buffer.GetLineCount()) {
+                                const auto& line = pDoc->buffer.GetLine(item.sLine);
+                                std::wstring newLine = line.substr(0, item.sCol);
+                                if (item.eCol < line.length()) newLine += line.substr(item.eCol);
+                                pDoc->buffer.SetLine(item.sLine, newLine);
+                                if (item.isPrimary) {
+                                    pDoc->buffer.SetCursor(item.sLine, item.sCol);
+                                    pDoc->selAnchor = { item.sLine, item.sCol };
+                                    pDoc->selEnd = { item.sLine, item.sCol };
+                                } else {
+                                    pDoc->secondarySelections[item.secIdx].anchor = { item.sLine, item.sCol };
+                                    pDoc->secondarySelections[item.secIdx].cursor = { item.sLine, item.sCol };
+                                }
+                            }
+                        }
+                        pDoc->hasSelection = false;
+                        pDoc->selectedWord.clear();
+                        MarkDocumentModified(pDoc);
+                        if (pDoc->isDiffView) ComputeDiffHunks(*pDoc);
+                        m_editor.DismissAutocomplete();
+                        m_editor.ClearGhostText();
+                        EnsureCursorVisible();
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
+                        return 0;
+                    } else if (pDoc->HasSelection()) {
                         pDoc->DeleteSelection();
                     } else if (wParam == VK_BACK) {
                         auto cur = pDoc->buffer.GetCursor();
