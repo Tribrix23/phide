@@ -266,7 +266,8 @@ public:
     ComPtr<IDWriteTextFormat> fontBody;          ///< 13px Regular for UI elements
     ComPtr<IDWriteTextFormat> fontButtonCenter;  ///< 13px Centered for buttons
     ComPtr<IDWriteTextFormat> fontBadge;         ///< 8.5px Bold Centered for file badges (PHP, JS, TS, C++)
-    ComPtr<IDWriteTextFormat> fontCode;          ///< 13px Consolas Monospace for code lines
+    ComPtr<IDWriteTextFormat> fontCode;          ///< 13px Monospace for editor code lines (Medium Italic for Koda Mono)
+    ComPtr<IDWriteTextFormat> fontTerminal;      ///< 13px Monospace for terminal panels (Medium Normal for Koda Mono)
     ComPtr<IDWriteTextFormat> fontSectionHeader; ///< 11px Semi-bold Leading for section titles (EXPLORER)
     ComPtr<IDWriteTextFormat> fontIcon;          ///< 14px Symbol font for glyphs
     ComPtr<IDWriteTextFormat> fontCaption;       ///< 12px Caption button font
@@ -308,7 +309,7 @@ public:
 private:
     ThemeMode m_mode = ThemeMode::Dark;
     bool m_isDarkActive = true;
-    std::wstring m_editorFontFamily = L"Phide Mono";
+    std::wstring m_editorFontFamily = L"Koda Mono";
     float m_editorFontSize = 15.0f;
 };
 

@@ -666,7 +666,7 @@ void Window::LoadSessionState() {
                 if (q1 != std::wstring::npos && q2 != std::wstring::npos && q2 > q1) {
                     m_config.fontFamily = UnescapeJson(line.substr(q1 + 1, q2 - q1 - 1));
                     if (m_config.fontFamily == L"Fira Code" || m_config.fontFamily == L"Consolas" || m_config.fontFamily.empty()) {
-                        m_config.fontFamily = L"Phide Mono";
+                        m_config.fontFamily = L"Koda Mono";
                     }
                 }
             }

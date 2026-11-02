@@ -74,7 +74,7 @@ void SettingsView::InitializeSettings() {
         it.category = SettingCategory::TextEditor;
         it.isCommonlyUsed = true;
         it.control = SettingControl::Dropdown;
-        it.options = { L"Phide Mono", L"Consolas", L"Cascadia Code", L"Courier New", L"Lucida Console" };
+        it.options = { L"Koda Mono", L"Consolas", L"Cascadia Code", L"Courier New", L"Lucida Console" };
         m_items.push_back(std::move(it));
     }
 

@@ -1704,11 +1704,12 @@ void TerminalPanel::RenderSinglePane(ID2D1RenderTarget* pRT, Theme& theme, const
     float curY = bounds.top + padY;
     float curX = bounds.left + padX;
 
-    // DirectWrite character advance width
+    // DirectWrite character advance width using Medium Normal terminal font
     float charW = config.ScaleF(7.8f);
-    if (theme.dwriteFactory && theme.fontCode) {
+    IDWriteTextFormat* termFmt = theme.fontTerminal ? theme.fontTerminal.Get() : theme.fontCode.Get();
+    if (theme.dwriteFactory && termFmt) {
         Microsoft::WRL::ComPtr<IDWriteTextLayout> pLayout;
-        if (SUCCEEDED(theme.dwriteFactory->CreateTextLayout(L"M", 1, theme.fontCode.Get(), 1000.0f, lineH, &pLayout))) {
+        if (SUCCEEDED(theme.dwriteFactory->CreateTextLayout(L"M", 1, termFmt, 1000.0f, lineH, &pLayout))) {
             DWRITE_TEXT_METRICS tm{};
             if (SUCCEEDED(pLayout->GetMetrics(&tm))) {
                 charW = tm.widthIncludingTrailingWhitespace;
@@ -1782,7 +1783,7 @@ void TerminalPanel::RenderSinglePane(ID2D1RenderTarget* pRT, Theme& theme, const
             pRT->CreateSolidColorBrush(span.color, &spanBrush);
             if (spanBrush) {
                 pRT->DrawText(span.text.c_str(), static_cast<UINT32>(span.text.length()),
-                              theme.fontCode.Get(), rcSpan, spanBrush.Get());
+                              termFmt, rcSpan, spanBrush.Get());
             }
 
             // Detect hyperlinks directly within span.text for pixel-perfect Ctrl+Click hitboxes
@@ -1842,7 +1843,7 @@ void TerminalPanel::RenderSinglePane(ID2D1RenderTarget* pRT, Theme& theme, const
                 pRT->CreateSolidColorBrush(span.color, &spanBrush);
                 if (spanBrush) {
                     pRT->DrawText(span.text.c_str(), static_cast<UINT32>(span.text.length()),
-                                  theme.fontCode.Get(), rcSpan, spanBrush.Get());
+                                  termFmt, rcSpan, spanBrush.Get());
                 }
                 curX += spanW;
             }
@@ -1898,7 +1899,7 @@ void TerminalPanel::RenderSinglePane(ID2D1RenderTarget* pRT, Theme& theme, const
         // Prompt glyph "❯"
         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> promptBrush;
         pRT->CreateSolidColorBrush(D2D1::ColorF(0.35f, 0.82f, 0.98f), &promptBrush);
-        pRT->DrawText(L"❯", 1, theme.fontCode.Get(),
+        pRT->DrawText(L"❯", 1, termFmt,
                       D2D1::RectF(rcEval.left + config.ScaleF(10.0f), rcEval.top + config.ScaleF(4.0f),
                                  rcEval.left + config.ScaleF(24.0f), rcEval.bottom),
                       promptBrush.Get());
@@ -1907,12 +1908,12 @@ void TerminalPanel::RenderSinglePane(ID2D1RenderTarget* pRT, Theme& theme, const
         if (tab->currentInputLine.empty()) {
             std::wstring evalPlaceholder = L"Evaluate expression in context (e.g. document.title, location.href, 1 + 1)...";
             pRT->DrawText(evalPlaceholder.c_str(), static_cast<UINT32>(evalPlaceholder.length()),
-                          theme.fontCode.Get(),
+                          termFmt,
                           D2D1::RectF(textStartX, rcEval.top + config.ScaleF(4.0f), rcEval.right - config.ScaleF(10.0f), rcEval.bottom),
                           theme.brushTextMuted.Get());
         } else {
             pRT->DrawText(tab->currentInputLine.c_str(), static_cast<UINT32>(tab->currentInputLine.length()),
-                          theme.fontCode.Get(),
+                          termFmt,
                           D2D1::RectF(textStartX, rcEval.top + config.ScaleF(4.0f), rcEval.right - config.ScaleF(10.0f), rcEval.bottom),
                           theme.brushTextWhite.Get());
 

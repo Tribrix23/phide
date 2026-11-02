@@ -473,14 +473,11 @@ void GraphView::ParseFileDependencies() {
         if (isCodeExt) {
             FILE* fp = nullptr;
             if (_wfopen_s(&fp, node.id.c_str(), L"rb") == 0 && fp) {
-                _fseeki64(fp, 0, SEEK_END);
-                auto fSize = _ftelli64(fp);
-                _fseeki64(fp, 0, SEEK_SET);
-                if (fSize > 0 && fSize <= 256 * 1024) {
-                    std::string buf(static_cast<size_t>(fSize), '\0');
-                    size_t readBytes = fread(buf.data(), 1, static_cast<size_t>(fSize), fp);
-                    buf.resize(readBytes);
-                    fileContents[i] = std::move(buf);
+                // Fast header read: dependencies (imports, requires, links) are at the top of code files
+                char readBuf[16384];
+                size_t readBytes = fread(readBuf, 1, sizeof(readBuf), fp);
+                if (readBytes > 0) {
+                    fileContents[i].assign(readBuf, readBytes);
                 }
                 fclose(fp);
             }
@@ -866,12 +863,12 @@ void GraphView::StepPhysics(float alpha) {
     const float centerPull = 0.010f * (std::max)(0.15f, alpha);
     const float damping    = 0.86f; // Elastic, springy bouncy motion like Obsidian!
 
-    // A. Repulsion between all node pairs
+    // A. Repulsion between all node pairs (softened minimum epsilon prevents explosive cluster scattering)
     for (size_t i = 0; i < m_nodes.size(); ++i) {
         for (size_t j = i + 1; j < m_nodes.size(); ++j) {
             float dx = m_nodes[j].x - m_nodes[i].x;
             float dy = m_nodes[j].y - m_nodes[i].y;
-            float distSq = dx * dx + dy * dy + 80.0f;
+            float distSq = dx * dx + dy * dy + 400.0f;
             float dist = std::sqrt(distSq);
             float force = kRepulse / distSq;
             float fx = (dx / dist) * force;
@@ -921,6 +918,15 @@ void GraphView::StepPhysics(float alpha) {
 
         m_nodes[i].vx *= damping;
         m_nodes[i].vy *= damping;
+
+        // Clamp maximum speed to ensure smooth physics and prevent cluster nodes exploding off-screen
+        float speedSq = m_nodes[i].vx * m_nodes[i].vx + m_nodes[i].vy * m_nodes[i].vy;
+        const float maxSpeed = 7.5f;
+        if (speedSq > maxSpeed * maxSpeed) {
+            float speed = std::sqrt(speedSq);
+            m_nodes[i].vx = (m_nodes[i].vx / speed) * maxSpeed;
+            m_nodes[i].vy = (m_nodes[i].vy / speed) * maxSpeed;
+        }
 
         m_nodes[i].x += m_nodes[i].vx;
         m_nodes[i].y += m_nodes[i].vy;

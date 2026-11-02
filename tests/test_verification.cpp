@@ -15748,10 +15748,16 @@ run_test_103:
             hr = theme.customFontCollection->FindFamilyName(L"Phide Mono", &familyIndex, &familyExists);
             assert(SUCCEEDED(hr) && familyExists && "Phide Mono must be registered in customFontCollection");
 
-            theme.SetEditorFont(L"Phide Mono", 15.0f);
-            assert(theme.fontCode != nullptr && "fontCode must be created with Phide Mono");
-            assert(theme.fontCode->GetFontStyle() == DWRITE_FONT_STYLE_ITALIC && "Phide Mono in editor must use Italic style");
-            std::cout << "  Passed: Phide Mono loaded into customFontCollection and resolved with DWRITE_FONT_STYLE_ITALIC" << std::endl;
+            theme.SetEditorFont(L"Koda Mono", 15.0f);
+            assert(theme.fontCode != nullptr && "fontCode must be created with Koda Mono");
+            assert(theme.fontCode->GetFontStyle() == DWRITE_FONT_STYLE_ITALIC && "Koda Mono in editor must use Italic style");
+            assert(theme.fontCode->GetFontWeight() == DWRITE_FONT_WEIGHT_MEDIUM && "Koda Mono in editor must use Medium weight");
+            assert(theme.fontTerminal != nullptr && "fontTerminal must be created with Koda Mono");
+            assert(theme.fontTerminal->GetFontStyle() == DWRITE_FONT_STYLE_NORMAL && "Koda Mono in terminal must use Normal style");
+            assert(theme.fontTerminal->GetFontWeight() == DWRITE_FONT_WEIGHT_MEDIUM && "Koda Mono in terminal must use Medium weight");
+            assert(theme.fontTooltip != nullptr && "fontTooltip must be created");
+            assert(theme.fontTooltip->GetFontWeight() == DWRITE_FONT_WEIGHT_MEDIUM && "fontTooltip must use Medium weight");
+            std::cout << "  Passed: Koda Mono loaded into customFontCollection, resolved with DWRITE_FONT_WEIGHT_MEDIUM and DWRITE_FONT_STYLE_ITALIC for editor and NORMAL for terminal & UI" << std::endl;
         }
 
         // Subtest 2: OpenDocument diff data structures track Modified, Added, and Deleted markers accurately
@@ -15788,7 +15794,7 @@ run_test_103:
             Microsoft::WRL::ComPtr<ID2D1RenderTarget> pRT;
             CreateTarget(pWic, pRT);
             theme.CreateDeviceResources(pRT.Get(), pDWriteFactory.Get());
-            theme.SetEditorFont(L"Phide Mono", 15.0f);
+            theme.SetEditorFont(L"Koda Mono", 15.0f);
 
             phide::editor::OpenDocument doc;
             doc.fileName = L"IntelliSenseEngine.cpp";
@@ -15811,7 +15817,7 @@ run_test_103:
             doc.diffAddedLines.insert(3);
 
             phide::app::AppConfig cfg;
-            cfg.fontFamily = L"Phide Mono";
+            cfg.fontFamily = L"Koda Mono";
             cfg.showLineNumbers = true;
             cfg.showMinimap = true;
 
@@ -15824,11 +15830,11 @@ run_test_103:
             HRESULT hr = pRT->EndDraw();
             assert(SUCCEEDED(hr) && "Canvas rendering with gutter indicators must succeed");
 
-            SaveWicBitmapToPng(pWic.Get(), pWicFactory.Get(), artDir + L"test_gutter_diff_indicators_and_phide_mono.png");
-            std::cout << "  Passed: Rendered test_gutter_diff_indicators_and_phide_mono.png with Phide Mono Italic & Gutter Indicators" << std::endl;
+            SaveWicBitmapToPng(pWic.Get(), pWicFactory.Get(), artDir + L"test_gutter_diff_indicators_and_koda_mono.png");
+            std::cout << "  Passed: Rendered test_gutter_diff_indicators_and_koda_mono.png with Koda Mono Medium Italic & Gutter Indicators" << std::endl;
         }
 
-        std::cout << "  Passed: All [TEST 103] Gutter Diff Indicators & Phide Mono Italic Default Font passed!" << std::endl;
+        std::cout << "  Passed: All [TEST 103] Gutter Diff Indicators & Koda Mono Medium Italic Default Font passed!" << std::endl;
         if (targetTest == 103) {
             std::cout << "Target test 103 finished successfully." << std::endl;
             return 0;

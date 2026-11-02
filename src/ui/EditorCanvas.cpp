@@ -2318,7 +2318,8 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
         }
 
         // 4c. GitLens Current Line Inline Blame Annotation (e.g. "   You, 2 days ago • Add student CRUD handlers")
-        if (config.enableGitLens && !doc.gitBlameMap.empty()) {
+        // Suppress inline blame when autocomplete popup is active or text is actively selected to prevent overlapping what the user types
+        if (config.enableGitLens && !doc.gitBlameMap.empty() && !IsAutocompleteVisible() && !doc.HasSelection()) {
             auto itBlame = doc.gitBlameMap.find(cursor.line);
             if (itBlame != doc.gitBlameMap.end()) {
                 const auto& blame = itBlame->second;
@@ -2359,8 +2360,8 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
                     textVisualW += static_cast<float>(swCount) * config.ScaleF(14.0f);
                 }
 
-                // Place blame strictly in empty space after line text, moving synchronously with horizontal scroll
-                float lineEndX = codeLeft - scrollX + textVisualW + config.ScaleF(32.0f);
+                // Place blame strictly in empty space after both line text and active cursor, never overlapping code
+                float lineEndX = (std::max)(codeLeft - scrollX + textVisualW, caretX) + config.ScaleF(48.0f);
 
                 if (lineEndX < codeRight - config.ScaleF(20.0f)) {
                     // Use leading-aligned fontHint (never trailing-aligned menu shortcut font!)

@@ -1397,7 +1397,7 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidateReactAndESLint(const Buffe
 
     static const std::unordered_set<std::wstring> voidTags = {
         L"area", L"base", L"br", L"col", L"embed", L"hr", L"img", L"input",
-        L"link", L"meta", L"param", L"source", L"track", L"wbr"
+        L"meta", L"param", L"source", L"track", L"wbr"
     };
 
     for (size_t l = 0; l < lineCount; ++l) {
@@ -1815,13 +1815,13 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidateReactAndESLint(const Buffe
                                 }
                             } else if (isClose && !tagName.empty()) {
                                 if (!jsxStack.empty()) {
-                                    if (jsxStack.back().name == tagName) {
+                                    if (jsxStack.back().name == tagName || _wcsicmp(jsxStack.back().name.c_str(), tagName.c_str()) == 0) {
                                         jsxStack.pop_back();
                                     } else {
                                         // Look backward down jsxStack for a matching ancestor
                                         auto matchIt = jsxStack.end();
                                         for (auto it = jsxStack.rbegin(); it != jsxStack.rend(); ++it) {
-                                            if (it->name == tagName) {
+                                            if (it->name == tagName || _wcsicmp(it->name.c_str(), tagName.c_str()) == 0) {
                                                 matchIt = (it + 1).base(); // iterator pointing to matching item
                                                 break;
                                             }
