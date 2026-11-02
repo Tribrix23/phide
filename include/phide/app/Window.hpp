@@ -44,6 +44,7 @@
 #include "phide/workspace/ExplorerUndoManager.hpp"
 #include "phide/editor/SnippetManager.hpp"
 #include "phide/editor/IntelliSenseEngine.hpp"
+#include "phide/editor/PredictionEngine.hpp"
 #include "phide/editor/SmartImportHelper.hpp"
 #include "phide/lsp/LspClient.hpp"
 
@@ -533,6 +534,7 @@ private:
 
     /** @brief Synchronizes documents with syntax/diagnostic errors into the Explorer drawer (Image 3). */
     void UpdateDrawerErrorFiles();
+    void UpdatePrediction();
 
     /** @brief Commits selected autocomplete item or HTML tag block (Images 1 & 5). */
     void CommitAutocompleteSelection();
@@ -626,6 +628,7 @@ private:
     workspace::ExplorerUndoManager m_explorerUndo;
     editor::SnippetManager m_snippetManager;
     editor::IntelliSenseEngine m_intelliSense;
+    editor::PredictionEngine m_predictionEngine;
     lsp::LspClient m_lsp;
 
     // Filesystem Watcher Handles

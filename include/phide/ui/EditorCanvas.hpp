@@ -18,6 +18,7 @@
 #include "phide/editor/OpenDocument.hpp"
 #include "phide/editor/BracketPairAnalyzer.hpp"
 #include "phide/editor/IntelliSenseEngine.hpp"
+#include "phide/editor/PredictionEngine.hpp"
 #include "phide/ui/KeyboardShortcutsView.hpp"
 #include "phide/ui/PackageManagerView.hpp"
 #include "phide/ui/NotebookView.hpp"
@@ -159,6 +160,16 @@ public:
     [[nodiscard]] const std::wstring& GetGhostText() const noexcept { return m_ghostText; }
     void SetGhostText(const std::wstring& ghost) { m_ghostText = ghost; }
     void ClearGhostText() noexcept { m_ghostText.clear(); }
+
+    // NEXT: In-File & Cross-File Code Prediction (Images 3, 4, 5)
+    void SetPrediction(const editor::CodePrediction& pred) { m_prediction = pred; }
+    void ClearPrediction() noexcept { m_prediction = {}; m_crossFilePillBounds = { 0, 0, 0, 0 }; }
+    [[nodiscard]] const editor::CodePrediction& GetPrediction() const noexcept { return m_prediction; }
+    [[nodiscard]] bool HasPrediction() const noexcept { return m_prediction.isValid; }
+    [[nodiscard]] const D2D1_RECT_F& GetCrossFilePillBounds() const noexcept { return m_crossFilePillBounds; }
+    [[nodiscard]] bool HitTestCrossFilePill(POINT pt) const;
+    void SetCrossFilePillHovered(bool hovered) noexcept { m_crossFilePillHovered = hovered; }
+    [[nodiscard]] bool IsCrossFilePillHovered() const noexcept { return m_crossFilePillHovered; }
 
     /**
      * @brief Toggles caret blink phase.
@@ -493,6 +504,9 @@ private:
     size_t m_autocompleteScrollOffset = 0;
     D2D1_RECT_F m_autocompleteBounds{};
     std::wstring m_ghostText;
+    editor::CodePrediction m_prediction{};
+    D2D1_RECT_F m_crossFilePillBounds{ 0, 0, 0, 0 };
+    bool m_crossFilePillHovered = false;
 
     // Tab Drag & Drop State
     bool m_isDraggingTab = false;

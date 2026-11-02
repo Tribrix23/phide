@@ -237,6 +237,9 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidateBracketsAndQuotes(const Bu
 
             // Check for line comment //
             if (ch == L'/' && c + 1 < line.length() && line[c + 1] == L'/') {
+                if (c > 0 && line[c - 1] == L':') {
+                    continue; // Part of a URL (http://, https://, etc.), NOT a line comment
+                }
                 break; // Ignore rest of line
             }
 
@@ -615,6 +618,12 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidateJavaScript(
 
             // 5. Comments
             if (c + 1 < line.length() && line[c] == L'/' && line[c + 1] == L'/') {
+                if (c > 0 && line[c - 1] == L':') {
+                    continue; // Part of a URL (http://, https://, etc.), NOT a line comment
+                }
+                if (line.find(L"</", c + 2) != std::wstring::npos) {
+                    continue; // Inside JSX text followed by closing tag (e.g. <span>// comment</span>), NOT a JS comment
+                }
                 break; // Single line comment: ignore rest of line
             }
             if (c + 1 < line.length() && line[c] == L'/' && line[c + 1] == L'*') {
@@ -678,6 +687,9 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidateJavaScript(
             // 7. Start of new strings / template literals
             wchar_t ch = line[c];
             if (ch == L'\'') {
+                if (c > 0 && (iswalnum(line[c - 1]) || line[c - 1] == L'_')) {
+                    continue; // Contraction / apostrophe in JSX/HTML text (e.g. isn't, don't, user's), NOT a string literal
+                }
                 inSingleQuote = true;
                 continue;
             }
@@ -1423,6 +1435,12 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidateReactAndESLint(const Buffe
                 inBacktick = !inBacktick;
             } else if (!inSingle && !inDouble && !inBacktick) {
                 if (ch == L'/' && i + 1 < line.length() && line[i + 1] == L'/') {
+                    if (i > 0 && line[i - 1] == L':') {
+                        continue; // Part of a URL like https:// or http://, NOT a line comment
+                    }
+                    if (line.find(L"</", i + 2) != std::wstring::npos) {
+                        continue; // Inside JSX text followed by closing tag (e.g. <span>// comment</span>), NOT a line comment
+                    }
                     lineComment = i;
                     break;
                 }
@@ -1592,7 +1610,7 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidateReactAndESLint(const Buffe
             size_t p = 0;
             while (p < code.length()) {
                 if (code[p] == L'<') {
-                    if (p + 1 < code.length() && (code[p + 1] == L'/' || iswalpha(code[p + 1]))) {
+                    if (p + 1 < code.length() && (code[p + 1] == L'/' || code[p + 1] == L'>' || iswalpha(code[p + 1]))) {
                         // Safely find the matching '>' across single-line or multi-line JSX tags
                         // without stopping on '>' inside string attributes or expressions
                         size_t tagEndLine = l;
@@ -1695,6 +1713,9 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidateReactAndESLint(const Buffe
                             size_t nEnd = nStart;
                             while (nEnd < tagStr.length() && !iswspace(tagStr[nEnd]) && tagStr[nEnd] != L'/') nEnd++;
                             std::wstring tagName = tagStr.substr(nStart, nEnd - nStart);
+                            if (tagName.empty() || tagName == L"/") {
+                                tagName = L"<>";
+                            }
 
                             // Skip TypeScript primitive types (e.g. useRef<any>(null), useState<number>)
                             if (!isClose && !hasJsxAttrs && tsTypeKeywords.count(tagName) > 0) {

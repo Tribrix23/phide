@@ -206,7 +206,13 @@ std::vector<std::string> GraphView::ExtractReferencedTargets(const std::string& 
                     char q = content[qEnd];
                     size_t qStart = content.rfind(q, qEnd - 1);
                     if (qStart != std::string::npos && qStart >= pos) {
-                        addCleanRef(content.substr(qStart + 1, qEnd - (qStart + 1)));
+                        std::string targetRaw = content.substr(qStart + 1, qEnd - (qStart + 1));
+                        bool isLocalRef = (targetRaw.rfind("./", 0) == 0 || targetRaw.rfind("../", 0) == 0 ||
+                                           targetRaw.rfind("@/", 0) == 0 || targetRaw.rfind("~/", 0) == 0 ||
+                                           targetRaw.find('.') != std::string::npos);
+                        if (isLocalRef) {
+                            addCleanRef(targetRaw);
+                        }
                     }
                 }
             }
@@ -227,7 +233,13 @@ std::vector<std::string> GraphView::ExtractReferencedTargets(const std::string& 
                             if (q == '\'' || q == '"') {
                                 size_t qEnd = content.find(q, k + 1);
                                 if (qEnd != std::string::npos && qEnd <= pClose) {
-                                    addCleanRef(content.substr(k + 1, qEnd - (k + 1)));
+                                    std::string targetRaw = content.substr(k + 1, qEnd - (k + 1));
+                                    bool isLocalRef = (targetRaw.rfind("./", 0) == 0 || targetRaw.rfind("../", 0) == 0 ||
+                                                       targetRaw.rfind("@/", 0) == 0 || targetRaw.rfind("~/", 0) == 0 ||
+                                                       targetRaw.find('.') != std::string::npos);
+                                    if (isLocalRef) {
+                                        addCleanRef(targetRaw);
+                                    }
                                     break;
                                 }
                             }
@@ -826,12 +838,14 @@ void GraphView::RefreshFromWorkspace(const std::wstring& rootPath, bool preserve
         }
 
         const auto& indices = folderMap[fName];
+        float clusterScale = std::sqrt(static_cast<float>(indices.size()));
+        float maxClusterR = (std::max)(32.0f, clusterScale * 22.0f);
         for (size_t k = 0; k < indices.size(); ++k) {
             size_t nodeIdx = indices[k];
             m_nodes[nodeIdx].clusterX = cx;
             m_nodes[nodeIdx].clusterY = cy;
 
-            float r = 14.0f + 18.0f * (static_cast<float>(k) / static_cast<float>((std::max)(size_t(1), indices.size())));
+            float r = 14.0f + maxClusterR * (static_cast<float>(k) / static_cast<float>((std::max)(size_t(1), indices.size())));
             float theta = static_cast<float>(k) * 2.39996f; // Golden ratio spiral within cluster
             m_nodes[nodeIdx].x = cx + r * std::cos(theta);
             m_nodes[nodeIdx].y = cy + r * std::sin(theta);
@@ -842,6 +856,13 @@ void GraphView::RefreshFromWorkspace(const std::wstring& rootPath, bool preserve
 
     // 3. Connect nodes based strictly on real references
     ParseFileDependencies();
+
+    for (auto& node : m_nodes) {
+        if (!node.neighbors.empty()) {
+            float extraR = (std::min)(5.5f, std::sqrt(static_cast<float>(node.neighbors.size())) * 0.7f);
+            node.radius = (std::max)(node.radius, 5.0f + extraR);
+        }
+    }
 
     // 4. Restore saved layout positions if available
     bool hasSavedLayout = LoadLayout();
@@ -880,7 +901,7 @@ void GraphView::StepPhysics(float alpha) {
         }
     }
 
-    // B. Spring attraction along edges (relaxed across folder clusters to preserve distinct clusters)
+    // B. Spring attraction along edges with degree normalization (prevents hub nodes from collapsing graph into a cone)
     for (const auto& e : m_edges) {
         if (e.from >= m_nodes.size() || e.to >= m_nodes.size()) continue;
         float dx = m_nodes[e.to].x - m_nodes[e.from].x;
@@ -891,8 +912,17 @@ void GraphView::StepPhysics(float alpha) {
         float curSpringLen = isCrossFolder ? 180.0f : springLen;
         float curK = isCrossFolder ? (kSpring * 0.32f) : kSpring;
 
+        size_t degA = m_nodes[e.from].neighbors.size();
+        size_t degB = m_nodes[e.to].neighbors.size();
+        float degFactor = std::sqrt((std::max)(1.0f, static_cast<float>(degA + degB) * 0.5f));
+
+        size_t maxDeg = (std::max)(degA, degB);
+        if (maxDeg > 12) {
+            curSpringLen += (std::min)(120.0f, static_cast<float>(maxDeg) * 1.2f);
+        }
+
         float disp = dist - curSpringLen;
-        float force = curK * disp;
+        float force = (curK / degFactor) * disp;
         float fx = (dx / dist) * force;
         float fy = (dy / dist) * force;
 

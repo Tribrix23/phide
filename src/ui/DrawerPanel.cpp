@@ -578,6 +578,10 @@ void DrawerPanel::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCon
         }
 
         pRT->PopAxisAlignedClip();
+
+        if (config.activeRailTab == 2) {
+            RenderCommitCard(pRT, theme, config, clientHeight, currentDrawerW);
+        }
     }
 }
 
@@ -1238,14 +1242,19 @@ void DrawerPanel::RenderExplorerPane(ID2D1RenderTarget* pRT, Theme& theme, const
                     bool itemHasError = false;
                     size_t errorCount = 0;
                     if (!item.isFolder) {
+                        std::wstring normItem = item.fullPath;
+                        for (auto& c : normItem) if (c == L'/') c = L'\\';
                         for (const auto& [errPath, count] : m_errorFiles) {
-                            if (count > 0 && (_wcsicmp(errPath.c_str(), item.fullPath.c_str()) == 0 ||
-                                              _wcsicmp(errPath.c_str(), item.label.c_str()) == 0 ||
-                                              errPath.ends_with(L"\\" + item.label) ||
-                                              errPath.ends_with(L"/" + item.label))) {
-                                itemHasError = true;
-                                errorCount = count;
-                                break;
+                            if (count > 0) {
+                                std::wstring normErr = errPath;
+                                for (auto& c : normErr) if (c == L'/') c = L'\\';
+                                if (_wcsicmp(normErr.c_str(), normItem.c_str()) == 0 ||
+                                    (!normErr.empty() && normErr.find(L'\\') == std::wstring::npos &&
+                                     _wcsicmp(normErr.c_str(), item.label.c_str()) == 0)) {
+                                    itemHasError = true;
+                                    errorCount = count;
+                                    break;
+                                }
                             }
                         }
                     } else {
@@ -6803,6 +6812,9 @@ bool DrawerPanel::HandleGitMouseMove(POINT pt) {
         if (hitCommitIdx >= 0) {
             m_hoveredCommitIdx = hitCommitIdx;
             m_commitCardHash = m_gitCommits[hitCommitIdx].hash;
+            if (m_gitCommits[hitCommitIdx].statSummary.empty()) {
+                LoadCommitFiles(m_gitCommits[hitCommitIdx]);
+            }
         } else if (inCard || inBridge) {
             // Keep card alive while hovering inside the card bounds or transitioning from drawer
         } else if (m_selectedCommitIdx >= 0) {
@@ -8264,183 +8276,7 @@ void DrawerPanel::RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, 
         }
     }
 
-    // =========================================================================
-    // 4.5 Floating Commit Details Card (Image 5)
-    // =========================================================================
-    int cardCommitIdx = (m_selectedCommitIdx >= 0) ? m_selectedCommitIdx : m_hoveredCommitIdx;
-    if (m_showGraphSection && cardCommitIdx >= 0 && cardCommitIdx < static_cast<int>(m_gitCommits.size())) {
-        auto& ci = m_gitCommits[cardCommitIdx];
-        m_commitCardHash = ci.hash;
-
-        // 4.5 Floating Commit Details Card OUTSIDE the sidebar drawer (Image 3)
-        float cardW = config.ScaleF(430.0f);
-        float cardH = config.ScaleF(142.0f);
-        float cardLeft = railW + currentDrawerW + config.ScaleF(8.0f);
-        float cardTop = (ci.bounds.top + ci.bounds.bottom) * 0.5f - cardH * 0.5f;
-        float headerH = config.ScaleF(static_cast<float>(config.headerHeight));
-        float minTop = headerH + config.ScaleF(6.0f);
-        float maxTop = clientHeight - cardH - config.ScaleF(6.0f);
-        if (cardTop < minTop) cardTop = minTop;
-        if (cardTop > maxTop) cardTop = (std::max)(minTop, maxTop);
-
-        m_commitCardBounds = D2D1::RectF(cardLeft, cardTop, cardLeft + cardW, cardTop + cardH);
-
-        // Card shadow & background
-        D2D1_ROUNDED_RECT rrcCard = D2D1::RoundedRect(m_commitCardBounds, 6.0f, 6.0f);
-        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushCardBg;
-        pRT->CreateSolidColorBrush(D2D1::ColorF(0.12f, 0.12f, 0.14f, 0.98f), &brushCardBg);
-        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushCardBorder;
-        pRT->CreateSolidColorBrush(D2D1::ColorF(0.28f, 0.28f, 0.32f, 1.0f), &brushCardBorder);
-
-        pRT->FillRoundedRectangle(rrcCard, brushCardBg.Get());
-        pRT->DrawRoundedRectangle(rrcCard, brushCardBorder.Get(), 1.0f);
-
-        // Close '×' button on top-right of commit card (Issue 1)
-        float closeBtnSize = config.ScaleF(18.0f);
-        m_commitCardCloseBounds = D2D1::RectF(
-            cardLeft + cardW - closeBtnSize - config.ScaleF(8.0f),
-            cardTop + config.ScaleF(8.0f),
-            cardLeft + cardW - config.ScaleF(8.0f),
-            cardTop + config.ScaleF(8.0f) + closeBtnSize
-        );
-        float cx = (m_commitCardCloseBounds.left + m_commitCardCloseBounds.right) * 0.5f;
-        float cy = (m_commitCardCloseBounds.top + m_commitCardCloseBounds.bottom) * 0.5f;
-        float cr = config.ScaleF(3.5f);
-        pRT->DrawLine(D2D1::Point2F(cx - cr, cy - cr), D2D1::Point2F(cx + cr, cy + cr), theme.brushTextMuted.Get(), 1.4f);
-        pRT->DrawLine(D2D1::Point2F(cx + cr, cy - cr), D2D1::Point2F(cx - cr, cy + cr), theme.brushTextMuted.Get(), 1.4f);
-
-        // Header: Author Avatar circle + Author Name (bold) + relative time & date (Image 3)
-        float curCardY = cardTop + config.ScaleF(10.0f);
-        float avatarR = config.ScaleF(7.5f);
-        float avatarX = cardLeft + config.ScaleF(16.0f);
-        float avatarY = curCardY + avatarR;
-        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushAvatar;
-        pRT->CreateSolidColorBrush(D2D1::ColorF(0.055f, 0.388f, 0.612f, 1.0f), &brushAvatar);
-        pRT->FillEllipse(D2D1::Ellipse(D2D1::Point2F(avatarX, avatarY), avatarR, avatarR), brushAvatar.Get());
-
-        wchar_t initialChar[2] = { L'C', L'\0' };
-        if (!ci.author.empty()) initialChar[0] = static_cast<wchar_t>(towupper(ci.author[0]));
-        D2D1_RECT_F rcInitial = D2D1::RectF(avatarX - avatarR, avatarY - avatarR, avatarX + avatarR, avatarY + avatarR);
-        pRT->DrawText(initialChar, 1, theme.fontButtonCenter.Get() ? theme.fontButtonCenter.Get() : theme.fontMenuItem.Get(), rcInitial, theme.brushTextWhite.Get());
-
-        IDWriteTextFormat* pCardFmt = theme.fontMenuItem ? theme.fontMenuItem.Get() : theme.fontBody.Get();
-
-        float textStartX = avatarX + avatarR + config.ScaleF(8.0f);
-        std::wstring authorName = ci.author.empty() ? L"Commit" : ci.author;
-        float authorW = static_cast<float>(authorName.length()) * config.ScaleF(7.5f);
-        D2D1_RECT_F rcAuthor = D2D1::RectF(textStartX, curCardY - config.ScaleF(1.0f), textStartX + authorW, curCardY + config.ScaleF(18.0f));
-        pRT->DrawText(authorName.c_str(), static_cast<UINT32>(authorName.length()),
-                      pCardFmt, rcAuthor, theme.brushTextPrimary.Get());
-
-        std::wstring timeLine = ci.relativeTime;
-        if (!ci.dateFormatted.empty()) timeLine += L" (" + ci.dateFormatted + L")";
-        D2D1_RECT_F rcTime = D2D1::RectF(textStartX + authorW + config.ScaleF(8.0f), curCardY, cardLeft + cardW - closeBtnSize - config.ScaleF(10.0f), curCardY + config.ScaleF(18.0f));
-        pRT->DrawText(timeLine.c_str(), static_cast<UINT32>(timeLine.length()),
-                      pCardFmt, rcTime, theme.brushTextMuted.Get());
-
-        curCardY += config.ScaleF(20.0f);
-
-        // Commit message (wrapped, up to 2 lines)
-        if (theme.dwriteFactory && pCardFmt) {
-            Microsoft::WRL::ComPtr<IDWriteTextLayout> pMsgLayout;
-            if (SUCCEEDED(theme.dwriteFactory->CreateTextLayout(ci.message.c_str(), static_cast<UINT32>(ci.message.length()), pCardFmt, cardW - config.ScaleF(28.0f), config.ScaleF(36.0f), &pMsgLayout)) && pMsgLayout) {
-                pMsgLayout->SetWordWrapping(DWRITE_WORD_WRAPPING_WRAP);
-                pRT->DrawTextLayout(D2D1::Point2F(cardLeft + config.ScaleF(14.0f), curCardY), pMsgLayout.Get(), theme.brushTextPrimary.Get());
-            }
-        }
-        curCardY += config.ScaleF(38.0f);
-
-        // Stat line (e.g. 10 files changed, 1174 insertions(+), 83 deletions(-))
-        std::wstring statText = ci.statSummary;
-        if (statText.empty()) {
-            statText = (ci.files.empty() ? L"1 file changed" : (std::to_wstring(ci.files.size()) + L" files changed"));
-        }
-        D2D1_RECT_F rcStat = D2D1::RectF(cardLeft + config.ScaleF(14.0f), curCardY, cardLeft + cardW - config.ScaleF(14.0f), curCardY + config.ScaleF(18.0f));
-
-        // Syntax highlight insertions(+) in green, deletions(-) in red
-        size_t insPos = statText.find(L"insertion");
-        size_t delPos = statText.find(L"deletion");
-        if (insPos != std::wstring::npos || delPos != std::wstring::npos) {
-            float sX = cardLeft + config.ScaleF(14.0f);
-            size_t c1 = statText.find(L',');
-            if (c1 != std::wstring::npos) {
-                std::wstring part1 = statText.substr(0, c1 + 2); // e.g. "10 files changed, "
-                float w1 = static_cast<float>(part1.length()) * config.ScaleF(7.0f);
-                pRT->DrawText(part1.c_str(), static_cast<UINT32>(part1.length()), pCardFmt, D2D1::RectF(sX, curCardY, sX + w1, curCardY + config.ScaleF(18.0f)), theme.brushTextMuted.Get());
-                sX += w1;
-
-                size_t c2 = statText.find(L',', c1 + 1);
-                if (c2 != std::wstring::npos) {
-                    std::wstring part2 = statText.substr(c1 + 2, c2 - (c1 + 2)); // e.g. "1174 insertions(+)"
-                    float w2 = static_cast<float>(part2.length()) * config.ScaleF(7.0f);
-                    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushIns;
-                    pRT->CreateSolidColorBrush(D2D1::ColorF(0.30f, 0.78f, 0.40f, 1.0f), &brushIns);
-                    pRT->DrawText(part2.c_str(), static_cast<UINT32>(part2.length()), pCardFmt, D2D1::RectF(sX, curCardY, sX + w2, curCardY + config.ScaleF(18.0f)), brushIns.Get());
-                    sX += w2;
-
-                    std::wstring commaSep = L", ";
-                    pRT->DrawText(commaSep.c_str(), 2, pCardFmt, D2D1::RectF(sX, curCardY, sX + config.ScaleF(14.0f), curCardY + config.ScaleF(18.0f)), theme.brushTextMuted.Get());
-                    sX += config.ScaleF(14.0f);
-
-                    std::wstring part3 = statText.substr(c2 + 2); // e.g. "83 deletions(-)"
-                    float w3 = static_cast<float>(part3.length()) * config.ScaleF(7.0f);
-                    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushDel;
-                    pRT->CreateSolidColorBrush(D2D1::ColorF(0.92f, 0.35f, 0.35f, 1.0f), &brushDel);
-                    pRT->DrawText(part3.c_str(), static_cast<UINT32>(part3.length()), pCardFmt, D2D1::RectF(sX, curCardY, sX + w3, curCardY + config.ScaleF(18.0f)), brushDel.Get());
-                } else {
-                    std::wstring part2 = statText.substr(c1 + 2);
-                    pRT->DrawText(part2.c_str(), static_cast<UINT32>(part2.length()), pCardFmt, D2D1::RectF(sX, curCardY, cardLeft + cardW - config.ScaleF(14.0f), curCardY + config.ScaleF(18.0f)), theme.brushTextMuted.Get());
-                }
-            } else {
-                pRT->DrawText(statText.c_str(), static_cast<UINT32>(statText.length()), pCardFmt, rcStat, theme.brushTextMuted.Get());
-            }
-        } else {
-            pRT->DrawText(statText.c_str(), static_cast<UINT32>(statText.length()), pCardFmt, rcStat, theme.brushTextMuted.Get());
-        }
-
-        curCardY += config.ScaleF(20.0f);
-
-        // Action buttons row: [hash pill] [↗ Open on GitHub] [Open Changes] (Image 3)
-        float hashW = config.ScaleF(62.0f);
-        float btnH = config.ScaleF(24.0f);
-        D2D1_ROUNDED_RECT rrcHash = D2D1::RoundedRect(
-            D2D1::RectF(cardLeft + config.ScaleF(14.0f), curCardY, cardLeft + config.ScaleF(14.0f) + hashW, curCardY + btnH),
-            3.0f, 3.0f
-        );
-        pRT->FillRoundedRectangle(rrcHash, theme.brushHeaderBg.Get());
-        pRT->DrawRoundedRectangle(rrcHash, brushCardBorder.Get(), 1.0f);
-        std::wstring shortH = ci.hash.substr(0, (ci.hash.length() < 7) ? ci.hash.length() : 7);
-        pRT->DrawText(shortH.c_str(), static_cast<UINT32>(shortH.length()),
-                      pCardFmt,
-                      D2D1::RectF(cardLeft + config.ScaleF(18.0f), curCardY + config.ScaleF(3.0f), cardLeft + config.ScaleF(14.0f) + hashW, curCardY + btnH),
-                      theme.brushBrandAccent.Get());
-
-        // Open on GitHub link
-        float ghLeft = cardLeft + config.ScaleF(84.0f);
-        float ghW = config.ScaleF(110.0f);
-        m_commitCardGitHubBounds = D2D1::RectF(ghLeft, curCardY, ghLeft + ghW, curCardY + btnH);
-        const wchar_t* ghText = L"↗ Open on GitHub";
-        pRT->DrawText(ghText, static_cast<UINT32>(wcslen(ghText)),
-                      pCardFmt,
-                      D2D1::RectF(ghLeft, curCardY + config.ScaleF(3.0f), ghLeft + ghW, curCardY + btnH),
-                      theme.brushBrandAccent.Get());
-
-        // Open Changes Button (Right-aligned, matching Image 5 & 3)
-        float chW = config.ScaleF(108.0f);
-        float chLeft = cardLeft + cardW - chW - config.ScaleF(12.0f);
-        m_commitCardOpenChangesBounds = D2D1::RectF(chLeft, curCardY, chLeft + chW, curCardY + btnH);
-        D2D1_ROUNDED_RECT rrcOpenChanges = D2D1::RoundedRect(m_commitCardOpenChangesBounds, 3.5f, 3.5f);
-        pRT->FillRoundedRectangle(rrcOpenChanges, theme.brushBrandAccent.Get());
-        const wchar_t* ocText = L"Open Changes";
-        pRT->DrawText(ocText, static_cast<UINT32>(wcslen(ocText)),
-                      pCardFmt,
-                      D2D1::RectF(chLeft + config.ScaleF(10.0f), curCardY + config.ScaleF(3.0f), chLeft + chW, curCardY + btnH),
-                      theme.brushTextWhite.Get());
-    } else {
-        m_commitCardBounds = D2D1::RectF(0, 0, 0, 0);
-        m_commitCardOpenChangesBounds = D2D1::RectF(0, 0, 0, 0);
-        m_commitCardGitHubBounds = D2D1::RectF(0, 0, 0, 0);
-    }
+    // Note: Section 4.5 Floating Commit Details Card is rendered unclipped in RenderCommitCard
 
     // =========================================================================
     // 5. Floating Popup Menus (Header Views, Changes More, Graph More)
@@ -9807,5 +9643,190 @@ bool DrawerPanel::HandleExtensionsWheel(short delta) {
     }
     return m_extensionsScrollY != oldScroll;
 }
+
+
+void DrawerPanel::RenderCommitCard(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config, float clientHeight, float currentDrawerW) {
+    if (!pRT || currentDrawerW <= 0.0f) return;
+    const float railW = config.ScaleF(static_cast<float>(config.railWidth));
+
+    // =========================================================================
+    // 4.5 Floating Commit Details Card (Image 5)
+    // =========================================================================
+    int cardCommitIdx = (m_selectedCommitIdx >= 0) ? m_selectedCommitIdx : m_hoveredCommitIdx;
+    if (m_showGraphSection && cardCommitIdx >= 0 && cardCommitIdx < static_cast<int>(m_gitCommits.size())) {
+        auto& ci = m_gitCommits[cardCommitIdx];
+        m_commitCardHash = ci.hash;
+
+        // 4.5 Floating Commit Details Card OUTSIDE the sidebar drawer (Image 3)
+        float cardW = config.ScaleF(430.0f);
+        float cardH = config.ScaleF(142.0f);
+        float cardLeft = railW + currentDrawerW + config.ScaleF(8.0f);
+        float cardTop = (ci.bounds.top + ci.bounds.bottom) * 0.5f - cardH * 0.5f;
+        float headerH = config.ScaleF(static_cast<float>(config.headerHeight));
+        float minTop = headerH + config.ScaleF(6.0f);
+        float maxTop = clientHeight - cardH - config.ScaleF(6.0f);
+        if (cardTop < minTop) cardTop = minTop;
+        if (cardTop > maxTop) cardTop = (std::max)(minTop, maxTop);
+
+        m_commitCardBounds = D2D1::RectF(cardLeft, cardTop, cardLeft + cardW, cardTop + cardH);
+
+        // Card shadow & background
+        D2D1_ROUNDED_RECT rrcCard = D2D1::RoundedRect(m_commitCardBounds, 6.0f, 6.0f);
+        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushCardBg;
+        pRT->CreateSolidColorBrush(D2D1::ColorF(0.12f, 0.12f, 0.14f, 0.98f), &brushCardBg);
+        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushCardBorder;
+        pRT->CreateSolidColorBrush(D2D1::ColorF(0.28f, 0.28f, 0.32f, 1.0f), &brushCardBorder);
+
+        pRT->FillRoundedRectangle(rrcCard, brushCardBg.Get());
+        pRT->DrawRoundedRectangle(rrcCard, brushCardBorder.Get(), 1.0f);
+
+        // Close '×' button on top-right of commit card (Issue 1)
+        float closeBtnSize = config.ScaleF(18.0f);
+        m_commitCardCloseBounds = D2D1::RectF(
+            cardLeft + cardW - closeBtnSize - config.ScaleF(8.0f),
+            cardTop + config.ScaleF(8.0f),
+            cardLeft + cardW - config.ScaleF(8.0f),
+            cardTop + config.ScaleF(8.0f) + closeBtnSize
+        );
+        float cx = (m_commitCardCloseBounds.left + m_commitCardCloseBounds.right) * 0.5f;
+        float cy = (m_commitCardCloseBounds.top + m_commitCardCloseBounds.bottom) * 0.5f;
+        float cr = config.ScaleF(3.5f);
+        pRT->DrawLine(D2D1::Point2F(cx - cr, cy - cr), D2D1::Point2F(cx + cr, cy + cr), theme.brushTextMuted.Get(), 1.4f);
+        pRT->DrawLine(D2D1::Point2F(cx + cr, cy - cr), D2D1::Point2F(cx - cr, cy + cr), theme.brushTextMuted.Get(), 1.4f);
+
+        // Header: Author Avatar circle + Author Name (bold) + relative time & date (Image 3)
+        float curCardY = cardTop + config.ScaleF(10.0f);
+        float avatarR = config.ScaleF(7.5f);
+        float avatarX = cardLeft + config.ScaleF(16.0f);
+        float avatarY = curCardY + avatarR;
+        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushAvatar;
+        pRT->CreateSolidColorBrush(D2D1::ColorF(0.055f, 0.388f, 0.612f, 1.0f), &brushAvatar);
+        pRT->FillEllipse(D2D1::Ellipse(D2D1::Point2F(avatarX, avatarY), avatarR, avatarR), brushAvatar.Get());
+
+        wchar_t initialChar[2] = { L'C', L'\0' };
+        if (!ci.author.empty()) initialChar[0] = static_cast<wchar_t>(towupper(ci.author[0]));
+        D2D1_RECT_F rcInitial = D2D1::RectF(avatarX - avatarR, avatarY - avatarR, avatarX + avatarR, avatarY + avatarR);
+        pRT->DrawText(initialChar, 1, theme.fontButtonCenter.Get() ? theme.fontButtonCenter.Get() : theme.fontMenuItem.Get(), rcInitial, theme.brushTextWhite.Get());
+
+        IDWriteTextFormat* pCardFmt = theme.fontMenuItem ? theme.fontMenuItem.Get() : theme.fontBody.Get();
+
+        float textStartX = avatarX + avatarR + config.ScaleF(8.0f);
+        std::wstring authorName = ci.author.empty() ? L"Commit" : ci.author;
+        float authorW = static_cast<float>(authorName.length()) * config.ScaleF(7.5f);
+        D2D1_RECT_F rcAuthor = D2D1::RectF(textStartX, curCardY - config.ScaleF(1.0f), textStartX + authorW, curCardY + config.ScaleF(18.0f));
+        pRT->DrawText(authorName.c_str(), static_cast<UINT32>(authorName.length()),
+                      pCardFmt, rcAuthor, theme.brushTextPrimary.Get());
+
+        std::wstring timeLine = ci.relativeTime;
+        if (!ci.dateFormatted.empty()) timeLine += L" (" + ci.dateFormatted + L")";
+        D2D1_RECT_F rcTime = D2D1::RectF(textStartX + authorW + config.ScaleF(8.0f), curCardY, cardLeft + cardW - closeBtnSize - config.ScaleF(10.0f), curCardY + config.ScaleF(18.0f));
+        pRT->DrawText(timeLine.c_str(), static_cast<UINT32>(timeLine.length()),
+                      pCardFmt, rcTime, theme.brushTextMuted.Get());
+
+        curCardY += config.ScaleF(20.0f);
+
+        // Commit message (wrapped, up to 2 lines)
+        if (theme.dwriteFactory && pCardFmt) {
+            Microsoft::WRL::ComPtr<IDWriteTextLayout> pMsgLayout;
+            if (SUCCEEDED(theme.dwriteFactory->CreateTextLayout(ci.message.c_str(), static_cast<UINT32>(ci.message.length()), pCardFmt, cardW - config.ScaleF(28.0f), config.ScaleF(36.0f), &pMsgLayout)) && pMsgLayout) {
+                pMsgLayout->SetWordWrapping(DWRITE_WORD_WRAPPING_WRAP);
+                pRT->DrawTextLayout(D2D1::Point2F(cardLeft + config.ScaleF(14.0f), curCardY), pMsgLayout.Get(), theme.brushTextPrimary.Get());
+            }
+        }
+        curCardY += config.ScaleF(38.0f);
+
+        // Stat line (e.g. 10 files changed, 1174 insertions(+), 83 deletions(-))
+        std::wstring statText = ci.statSummary;
+        if (statText.empty()) {
+            statText = (ci.files.empty() ? L"1 file changed" : (std::to_wstring(ci.files.size()) + L" files changed"));
+        }
+        D2D1_RECT_F rcStat = D2D1::RectF(cardLeft + config.ScaleF(14.0f), curCardY, cardLeft + cardW - config.ScaleF(14.0f), curCardY + config.ScaleF(18.0f));
+
+        // Syntax highlight insertions(+) in green, deletions(-) in red
+        size_t insPos = statText.find(L"insertion");
+        size_t delPos = statText.find(L"deletion");
+        if (insPos != std::wstring::npos || delPos != std::wstring::npos) {
+            float sX = cardLeft + config.ScaleF(14.0f);
+            size_t c1 = statText.find(L',');
+            if (c1 != std::wstring::npos) {
+                std::wstring part1 = statText.substr(0, c1 + 2); // e.g. "10 files changed, "
+                float w1 = static_cast<float>(part1.length()) * config.ScaleF(7.0f);
+                pRT->DrawText(part1.c_str(), static_cast<UINT32>(part1.length()), pCardFmt, D2D1::RectF(sX, curCardY, sX + w1, curCardY + config.ScaleF(18.0f)), theme.brushTextMuted.Get());
+                sX += w1;
+
+                size_t c2 = statText.find(L',', c1 + 1);
+                if (c2 != std::wstring::npos) {
+                    std::wstring part2 = statText.substr(c1 + 2, c2 - (c1 + 2)); // e.g. "1174 insertions(+)"
+                    float w2 = static_cast<float>(part2.length()) * config.ScaleF(7.0f);
+                    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushIns;
+                    pRT->CreateSolidColorBrush(D2D1::ColorF(0.30f, 0.78f, 0.40f, 1.0f), &brushIns);
+                    pRT->DrawText(part2.c_str(), static_cast<UINT32>(part2.length()), pCardFmt, D2D1::RectF(sX, curCardY, sX + w2, curCardY + config.ScaleF(18.0f)), brushIns.Get());
+                    sX += w2;
+
+                    std::wstring commaSep = L", ";
+                    pRT->DrawText(commaSep.c_str(), 2, pCardFmt, D2D1::RectF(sX, curCardY, sX + config.ScaleF(14.0f), curCardY + config.ScaleF(18.0f)), theme.brushTextMuted.Get());
+                    sX += config.ScaleF(14.0f);
+
+                    std::wstring part3 = statText.substr(c2 + 2); // e.g. "83 deletions(-)"
+                    float w3 = static_cast<float>(part3.length()) * config.ScaleF(7.0f);
+                    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushDel;
+                    pRT->CreateSolidColorBrush(D2D1::ColorF(0.92f, 0.35f, 0.35f, 1.0f), &brushDel);
+                    pRT->DrawText(part3.c_str(), static_cast<UINT32>(part3.length()), pCardFmt, D2D1::RectF(sX, curCardY, sX + w3, curCardY + config.ScaleF(18.0f)), brushDel.Get());
+                } else {
+                    std::wstring part2 = statText.substr(c1 + 2);
+                    pRT->DrawText(part2.c_str(), static_cast<UINT32>(part2.length()), pCardFmt, D2D1::RectF(sX, curCardY, cardLeft + cardW - config.ScaleF(14.0f), curCardY + config.ScaleF(18.0f)), theme.brushTextMuted.Get());
+                }
+            } else {
+                pRT->DrawText(statText.c_str(), static_cast<UINT32>(statText.length()), pCardFmt, rcStat, theme.brushTextMuted.Get());
+            }
+        } else {
+            pRT->DrawText(statText.c_str(), static_cast<UINT32>(statText.length()), pCardFmt, rcStat, theme.brushTextMuted.Get());
+        }
+
+        curCardY += config.ScaleF(20.0f);
+
+        // Action buttons row: [hash pill] [↗ Open on GitHub] [Open Changes] (Image 3)
+        float hashW = config.ScaleF(62.0f);
+        float btnH = config.ScaleF(24.0f);
+        D2D1_ROUNDED_RECT rrcHash = D2D1::RoundedRect(
+            D2D1::RectF(cardLeft + config.ScaleF(14.0f), curCardY, cardLeft + config.ScaleF(14.0f) + hashW, curCardY + btnH),
+            3.0f, 3.0f
+        );
+        pRT->FillRoundedRectangle(rrcHash, theme.brushHeaderBg.Get());
+        pRT->DrawRoundedRectangle(rrcHash, brushCardBorder.Get(), 1.0f);
+        std::wstring shortH = ci.hash.substr(0, (ci.hash.length() < 7) ? ci.hash.length() : 7);
+        pRT->DrawText(shortH.c_str(), static_cast<UINT32>(shortH.length()),
+                      pCardFmt,
+                      D2D1::RectF(cardLeft + config.ScaleF(18.0f), curCardY + config.ScaleF(3.0f), cardLeft + config.ScaleF(14.0f) + hashW, curCardY + btnH),
+                      theme.brushBrandAccent.Get());
+
+        // Open on GitHub link
+        float ghLeft = cardLeft + config.ScaleF(84.0f);
+        float ghW = config.ScaleF(110.0f);
+        m_commitCardGitHubBounds = D2D1::RectF(ghLeft, curCardY, ghLeft + ghW, curCardY + btnH);
+        const wchar_t* ghText = L"↗ Open on GitHub";
+        pRT->DrawText(ghText, static_cast<UINT32>(wcslen(ghText)),
+                      pCardFmt,
+                      D2D1::RectF(ghLeft, curCardY + config.ScaleF(3.0f), ghLeft + ghW, curCardY + btnH),
+                      theme.brushBrandAccent.Get());
+
+        // Open Changes Button (Right-aligned, matching Image 5 & 3)
+        float chW = config.ScaleF(108.0f);
+        float chLeft = cardLeft + cardW - chW - config.ScaleF(12.0f);
+        m_commitCardOpenChangesBounds = D2D1::RectF(chLeft, curCardY, chLeft + chW, curCardY + btnH);
+        D2D1_ROUNDED_RECT rrcOpenChanges = D2D1::RoundedRect(m_commitCardOpenChangesBounds, 3.5f, 3.5f);
+        pRT->FillRoundedRectangle(rrcOpenChanges, theme.brushBrandAccent.Get());
+        const wchar_t* ocText = L"Open Changes";
+        pRT->DrawText(ocText, static_cast<UINT32>(wcslen(ocText)),
+                      pCardFmt,
+                      D2D1::RectF(chLeft + config.ScaleF(10.0f), curCardY + config.ScaleF(3.0f), chLeft + chW, curCardY + btnH),
+                      theme.brushTextWhite.Get());
+    } else {
+        m_commitCardBounds = D2D1::RectF(0, 0, 0, 0);
+        m_commitCardOpenChangesBounds = D2D1::RectF(0, 0, 0, 0);
+        m_commitCardGitHubBounds = D2D1::RectF(0, 0, 0, 0);
+    }
+}
+
 
 } // namespace phide::ui

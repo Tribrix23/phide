@@ -2384,6 +2384,88 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
             );
         }
 
+        // NEXT: In-File & Cross-File Multi-Line Code Prediction (Images 3, 4, 5)
+        if (isFocused && m_prediction.isValid && m_prediction.line == cursor.line && !IsAutocompleteVisible()) {
+            std::wstring predGhost = m_prediction.ghostText;
+            std::vector<std::wstring> ghostLines;
+            size_t pStart = 0;
+            while (pStart < predGhost.length()) {
+                size_t pEnd = predGhost.find(L'\n', pStart);
+                if (pEnd == std::wstring::npos) {
+                    ghostLines.push_back(predGhost.substr(pStart));
+                    break;
+                }
+                ghostLines.push_back(predGhost.substr(pStart, pEnd - pStart));
+                pStart = pEnd + 1;
+            }
+
+            for (size_t k = 0; k < ghostLines.size(); ++k) {
+                float curY = caretY + static_cast<float>(k) * lineH;
+                if (curY + lineH > clientHeight) break;
+
+                float gX = (k == 0) ? (caretX + config.ScaleF(2.0f)) : (canvasLeft + gutterW + config.ScaleF(18.0f));
+                float gW = static_cast<float>(ghostLines[k].length()) * charW;
+                D2D1_RECT_F rcG = D2D1::RectF(gX, curY, (std::min)(gX + gW, codeRight), curY + lineH);
+
+                pRT->DrawText(
+                    ghostLines[k].c_str(),
+                    static_cast<UINT32>(ghostLines[k].length()),
+                    theme.fontCode ? theme.fontCode.Get() : theme.fontBody.Get(),
+                    rcG,
+                    theme.brushTextMuted.Get()
+                );
+            }
+
+            // Cross-File Floating Pill Button: [ ->| Take to route.ts ] (Image 4)
+            if (m_prediction.isCrossFile && !m_prediction.targetFileName.empty()) {
+                float pillW = config.ScaleF(142.0f);
+                float pillH = config.ScaleF(24.0f);
+                float pillX = caretX + config.ScaleF(8.0f);
+                float pillY = caretY + lineH + config.ScaleF(4.0f);
+                if (pillY + pillH < clientHeight) {
+                    m_crossFilePillBounds = D2D1::RectF(pillX, pillY, pillX + pillW, pillY + pillH);
+                    D2D1_ROUNDED_RECT rrcPill = D2D1::RoundedRect(m_crossFilePillBounds, 4.0f, 4.0f);
+
+                    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> pillBg;
+                    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> pillBorder;
+                    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> pillText;
+                    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> pillGreen;
+
+                    pRT->CreateSolidColorBrush(m_crossFilePillHovered ? D2D1::ColorF(0.18f, 0.22f, 0.26f, 0.98f) : D2D1::ColorF(0.12f, 0.14f, 0.17f, 0.95f), &pillBg);
+                    pRT->CreateSolidColorBrush(D2D1::ColorF(0.24f, 0.32f, 0.38f, 0.9f), &pillBorder);
+                    pRT->CreateSolidColorBrush(D2D1::ColorF(0.92f, 0.94f, 0.96f, 1.0f), &pillText);
+                    pRT->CreateSolidColorBrush(D2D1::ColorF(0.18f, 0.85f, 0.45f, 1.0f), &pillGreen);
+
+                    if (pillBg) pRT->FillRoundedRectangle(rrcPill, pillBg.Get());
+                    if (pillBorder) pRT->DrawRoundedRectangle(rrcPill, pillBorder.Get(), 1.0f);
+
+                    // Green ->| icon symbol inside pill
+                    if (pillGreen) {
+                        float iconX = pillX + config.ScaleF(8.0f);
+                        float iconY = pillY + pillH * 0.5f;
+                        float aLen = config.ScaleF(6.0f);
+                        pRT->DrawLine(D2D1::Point2F(iconX, iconY), D2D1::Point2F(iconX + aLen, iconY), pillGreen.Get(), 1.5f);
+                        pRT->DrawLine(D2D1::Point2F(iconX + aLen - config.ScaleF(2.5f), iconY - config.ScaleF(2.0f)),
+                                      D2D1::Point2F(iconX + aLen, iconY), pillGreen.Get(), 1.5f);
+                        pRT->DrawLine(D2D1::Point2F(iconX + aLen - config.ScaleF(2.5f), iconY + config.ScaleF(2.0f)),
+                                      D2D1::Point2F(iconX + aLen, iconY), pillGreen.Get(), 1.5f);
+                        pRT->DrawLine(D2D1::Point2F(iconX + aLen + config.ScaleF(2.0f), iconY - config.ScaleF(3.5f)),
+                                      D2D1::Point2F(iconX + aLen + config.ScaleF(2.0f), iconY + config.ScaleF(3.5f)), pillGreen.Get(), 1.5f);
+                    }
+
+                    // Pill text
+                    std::wstring label = L"Take to " + m_prediction.targetFileName;
+                    D2D1_RECT_F rcText = D2D1::RectF(pillX + config.ScaleF(22.0f), pillY + config.ScaleF(2.0f), pillX + pillW - config.ScaleF(4.0f), pillY + pillH);
+                    if (pillText && theme.fontCode) {
+                        pRT->DrawText(label.c_str(), static_cast<UINT32>(label.length()),
+                                      theme.fontCode.Get(), rcText, pillText.Get());
+                    }
+                }
+            } else {
+                m_crossFilePillBounds = D2D1::RectF(0, 0, 0, 0);
+            }
+        }
+
         // 4c. GitLens Current Line Inline Blame Annotation (e.g. "   You, 2 days ago • Add student CRUD handlers")
         // Suppress inline blame when autocomplete popup is active or text is actively selected to prevent overlapping what the user types
         if (config.enableGitLens && !doc.gitBlameMap.empty() && !IsAutocompleteVisible() && !doc.HasSelection()) {
@@ -2524,6 +2606,41 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
                 float errDotY = lineY + lineH / 2.0f;
                 float errDotR = config.ScaleF(2.5f);
                 pRT->FillEllipse(D2D1::Ellipse(D2D1::Point2F(errDotX, errDotY), errDotR, errDotR), theme.brushIconRed ? theme.brushIconRed.Get() : theme.brushCloseHoverBg.Get());
+            }
+
+            // NEXT: In-File & Cross-File Prediction Gutter Indicator (Images 3, 4, 5)
+            if (m_prediction.isValid && m_prediction.line == vl.bufferLine) {
+                float barW = config.ScaleF(2.5f);
+                D2D1_RECT_F rcPredBar = D2D1::RectF(canvasLeft + gutterW - barW, lineY, canvasLeft + gutterW, lineY + lineH);
+                Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> predBrush;
+                pRT->CreateSolidColorBrush(D2D1::ColorF(0.18f, 0.85f, 0.45f, 1.0f), &predBrush);
+                if (predBrush) {
+                    pRT->FillRectangle(rcPredBar, predBrush.Get());
+
+                    // Green ->| icon symbol (arrow pointing right with stop bar)
+                    float symX = canvasLeft + config.ScaleF(6.0f);
+                    float symY = lineY + lineH * 0.5f;
+                    float arrowLen = config.ScaleF(6.5f);
+                    float barH = config.ScaleF(4.0f);
+                    pRT->DrawLine(D2D1::Point2F(symX, symY), D2D1::Point2F(symX + arrowLen, symY), predBrush.Get(), 1.6f);
+                    pRT->DrawLine(D2D1::Point2F(symX + arrowLen - config.ScaleF(3.0f), symY - config.ScaleF(2.5f)),
+                                  D2D1::Point2F(symX + arrowLen, symY), predBrush.Get(), 1.6f);
+                    pRT->DrawLine(D2D1::Point2F(symX + arrowLen - config.ScaleF(3.0f), symY + config.ScaleF(2.5f)),
+                                  D2D1::Point2F(symX + arrowLen, symY), predBrush.Get(), 1.6f);
+                    pRT->DrawLine(D2D1::Point2F(symX + arrowLen + config.ScaleF(2.5f), symY - barH),
+                                  D2D1::Point2F(symX + arrowLen + config.ScaleF(2.5f), symY + barH), predBrush.Get(), 1.6f);
+                }
+
+                // Lightbulb icon if triggered from comment/annotation (Image 5)
+                if (m_prediction.hasLightbulb) {
+                    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> bulbBrush;
+                    pRT->CreateSolidColorBrush(D2D1::ColorF(0.98f, 0.78f, 0.15f, 1.0f), &bulbBrush);
+                    if (bulbBrush) {
+                        float bulbX = canvasLeft + config.ScaleF(18.0f);
+                        float bulbY = lineY + lineH * 0.5f;
+                        pRT->FillEllipse(D2D1::Ellipse(D2D1::Point2F(bulbX, bulbY - config.ScaleF(1.0f)), config.ScaleF(3.0f), config.ScaleF(3.0f)), bulbBrush.Get());
+                    }
+                }
             }
 
             // Code Folding Chevron in Gutter (Images 2 & 3)
@@ -7630,6 +7747,12 @@ const EditorCanvas::ColorSwatchHit* EditorCanvas::HitTestColorSwatch(POINT pt) c
         }
     }
     return nullptr;
+}
+
+bool EditorCanvas::HitTestCrossFilePill(POINT pt) const {
+    if (!m_prediction.isValid || !m_prediction.isCrossFile) return false;
+    return (pt.x >= m_crossFilePillBounds.left && pt.x <= m_crossFilePillBounds.right &&
+            pt.y >= m_crossFilePillBounds.top && pt.y <= m_crossFilePillBounds.bottom);
 }
 
 } // namespace phide::ui

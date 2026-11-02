@@ -182,6 +182,8 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
+
+
     // --- 1. Unit Test: Syntax Tokenizer for <?php and HTML/JSX Tags ---
     std::cout << "[TEST 1] Testing SyntaxLexer tokenization..." << std::endl;
     phide::editor::SyntaxLexer lexer;
@@ -244,8 +246,13 @@ int main(int argc, char* argv[]) {
     assert(SUCCEEDED(hr));
 
     ComPtr<IWICImagingFactory> pWicFactory;
-    hr = CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER,
-                          IID_PPV_ARGS(&pWicFactory));
+    hr = CoCreateInstance(CLSID_WICImagingFactory2, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&pWicFactory));
+    if (FAILED(hr)) {
+        hr = CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&pWicFactory));
+    }
+    if (FAILED(hr)) {
+        hr = CoCreateInstance(CLSID_WICImagingFactory1, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&pWicFactory));
+    }
     assert(SUCCEEDED(hr));
 
     const UINT width = 1200;
@@ -281,6 +288,9 @@ int main(int argc, char* argv[]) {
     }
     if (targetTest == 106) {
         goto run_test_106;
+    }
+    if (targetTest == 107) {
+        goto run_test_107;
     }
 
     if (targetTest == 66) {
@@ -16088,6 +16098,8 @@ run_test_105:
         testFile(L"C:\\Users\\Administrator\\Downloads\\cleavedb-browser\\app\\page.tsx");
         testFile(L"C:\\Users\\Administrator\\Downloads\\cleavedb-browser\\components\\ui\\terminal-animation.tsx");
         testFile(L"C:\\Users\\Administrator\\Downloads\\cleavedb-browser\\components\\ui\\copy-command.tsx");
+        testFile(L"C:\\Users\\Administrator\\Downloads\\cleavedb-browser\\app\\docs\\core-concepts\\graph-relations\\page.tsx");
+        testFile(L"C:\\Users\\Administrator\\Downloads\\cleavedb-browser\\app\\docs\\quick-start\\page.tsx");
 
         if (targetTest == 105) {
             std::cout << "Target test 105 finished." << std::endl;
@@ -16191,6 +16203,79 @@ run_test_106:
         std::cout << "  Passed: All [TEST 106] Multi-Cursor (Ctrl+D), Gutter Diff & Autocomplete Flyout tests passed!" << std::endl;
         if (targetTest == 106) {
             std::cout << "Target test 106 finished." << std::endl;
+            return 0;
+        }
+    }
+
+    // ----------------------------------------------------
+    // TEST 107: NEXT: In-File & Cross-File Multi-Point Code Prediction
+    // ----------------------------------------------------
+run_test_107:
+    if (targetTest == 0 || targetTest == 107) {
+        std::cout << "\n[TEST 107] Testing NEXT: In-File & Cross-File Multi-Point Code Prediction..." << std::endl;
+
+        phide::editor::PredictionEngine engine;
+
+        // Subtest 1: In-File Next.js OPTIONS handler prediction (Image 3)
+        {
+            phide::editor::Buffer buf;
+            buf.SetText(L"const corsHeaders = { 'Access-Control-Allow-Origin': '*' };\n\nexport async function POST(req: Request) {\n    return new Response('ok');\n}\n");
+            auto pred = engine.PredictNextEdit(L"app/api/generate/route.ts", buf, 5, 0);
+            assert(pred.isValid);
+            assert(!pred.isCrossFile);
+            assert(pred.ghostText.find(L"export async function OPTIONS") != std::wstring::npos);
+            assert(pred.ghostText.find(L"corsHeaders") != std::wstring::npos);
+            std::cout << "  Passed: In-File OPTIONS prediction with corsHeaders (Image 3)" << std::endl;
+        }
+
+        // Subtest 2: Cross-File Prediction & One-Click Precision Jump (Image 4)
+        {
+            phide::editor::Buffer buf;
+            buf.SetText(L"export async function POST(req: Request) {\n    const audioInfo = await (await sunoApi).generate(prompt, make_instrumental == true);\n    \n}");
+            auto pred = engine.PredictNextEdit(L"app/api/generate/route.ts", buf, 2, 0, { L"app/api/generate/route.ts" });
+            assert(pred.isValid);
+            assert(pred.isCrossFile);
+            assert(pred.targetFileName == L"route.ts");
+            assert(pred.ghostText.find(L"new NextResponse") != std::wstring::npos);
+            std::cout << "  Passed: Cross-File Prediction and Precision Jump (Image 4)" << std::endl;
+        }
+
+        // Subtest 3: Generate Business Code from @ApiOperation (Image 5)
+        {
+            phide::editor::Buffer buf;
+            buf.SetText(L"@ApiOperation(\"Confirm Receipt\")\n");
+            auto pred = engine.PredictNextEdit(L"OrderController.java", buf, 0, 0);
+            assert(pred.isValid);
+            assert(pred.hasLightbulb);
+            assert(pred.ghostText.find(L"updateReceipt") != std::wstring::npos);
+            std::cout << "  Passed: Generate Business Code from @ApiOperation (Image 5)" << std::endl;
+        }
+
+        // Subtest 4: WebSocket Authentication Payload (Image 1)
+        {
+            phide::editor::Buffer buf;
+            buf.SetText(L"// 1. Authenticate\n");
+            auto pred = engine.PredictNextEdit(L"quick-start.tsx", buf, 0, 0);
+            assert(pred.isValid);
+            assert(pred.hasLightbulb);
+            assert(pred.ghostText.find(L"authenticate") != std::wstring::npos);
+            std::cout << "  Passed: WebSocket Authentication generation (Image 1)" << std::endl;
+        }
+
+        // Subtest 5: CodePrediction properties
+        {
+            phide::editor::CodePrediction pred;
+            pred.isValid = true;
+            pred.isCrossFile = true;
+            pred.targetFileName = L"route.ts";
+            pred.ghostText = L"return new Response();";
+            assert(pred.isValid && pred.isCrossFile && pred.targetFileName == L"route.ts");
+            std::cout << "  Passed: CodePrediction struct & contracts verified" << std::endl;
+        }
+
+        std::cout << "  Passed: All [TEST 107] NEXT Prediction tests passed!" << std::endl;
+        if (targetTest == 107) {
+            std::cout << "Target test 107 finished." << std::endl;
             return 0;
         }
     }

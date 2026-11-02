@@ -2592,6 +2592,28 @@ void Window::UpdateDrawerErrorFiles() {
     m_drawer.SetErrorFiles(errorFiles);
 }
 
+void Window::UpdatePrediction() {
+    auto* pDoc = GetActiveDoc();
+    if (!pDoc || pDoc->isSpecialView || pDoc->isImageView || pDoc->isUnsupportedBinary) {
+        m_editor.ClearPrediction();
+        return;
+    }
+    auto cursor = pDoc->buffer.GetCursor();
+    std::vector<std::wstring> openFiles;
+    for (const auto& group : m_editorGroups) {
+        for (const auto& d : group.docs) {
+            if (!d.filePath.empty()) openFiles.push_back(d.filePath);
+        }
+    }
+    std::wstring path = pDoc->filePath.empty() ? pDoc->fileName : pDoc->filePath;
+    auto pred = m_predictionEngine.PredictNextEdit(path, pDoc->buffer, cursor.line, cursor.col, openFiles);
+    if (pred.isValid) {
+        m_editor.SetPrediction(pred);
+    } else {
+        m_editor.ClearPrediction();
+    }
+}
+
 void Window::CommitAutocompleteSelection() {
     const auto* item = m_editor.GetSelectedAutocompleteItem();
     auto* pDoc = GetActiveDoc();
@@ -5705,7 +5727,7 @@ bool Window::Create(HINSTANCE hInstance, int nCmdShow) {
         WS_EX_APPWINDOW,
         wc.lpszClassName,
         L"phide - Web Development IDE",
-        WS_OVERLAPPEDWINDOW | WS_VISIBLE,
+        WS_OVERLAPPEDWINDOW,
         x, y, width, height,
         nullptr, nullptr, hInstance, this
     );
@@ -6191,9 +6213,11 @@ HRESULT Window::CreateDeviceIndependentResources() {
 HRESULT Window::CreateDeviceResources() {
     if (m_pRenderTarget) return S_OK;
 
-    RECT rc;
+    RECT rc{};
     GetClientRect(m_hwnd, &rc);
-    D2D1_SIZE_U size = D2D1::SizeU(rc.right - rc.left, rc.bottom - rc.top);
+    UINT w = (rc.right > rc.left) ? static_cast<UINT>(rc.right - rc.left) : 1u;
+    UINT h = (rc.bottom > rc.top) ? static_cast<UINT>(rc.bottom - rc.top) : 1u;
+    D2D1_SIZE_U size = D2D1::SizeU(w, h);
 
     D2D1_RENDER_TARGET_PROPERTIES rtProps = D2D1::RenderTargetProperties(
         D2D1_RENDER_TARGET_TYPE_DEFAULT,
@@ -6201,7 +6225,7 @@ HRESULT Window::CreateDeviceResources() {
     );
 
     D2D1_HWND_RENDER_TARGET_PROPERTIES hwndProps = D2D1::HwndRenderTargetProperties(
-        m_hwnd, size, D2D1_PRESENT_OPTIONS_RETAIN_CONTENTS
+        m_hwnd, size, D2D1_PRESENT_OPTIONS_NONE
     );
 
     HRESULT hr = m_pD2DFactory->CreateHwndRenderTarget(rtProps, hwndProps, &m_pRenderTarget);
@@ -6209,11 +6233,14 @@ HRESULT Window::CreateDeviceResources() {
 
     // Allocate theme GPU brushes and typography formats
     HRESULT hrTheme = m_theme.CreateDeviceResources(m_pRenderTarget.Get(), m_pDWriteFactory.Get());
-    if (SUCCEEDED(hrTheme)) {
-        m_theme.SetEditorFont(m_config.fontFamily, m_config.fontSize);
-        m_editor.ResetCharWidth();
+    if (FAILED(hrTheme)) {
+        m_pRenderTarget.Reset();
+        return hrTheme;
     }
-    return hrTheme;
+
+    m_theme.SetEditorFont(m_config.fontFamily, m_config.fontSize);
+    m_editor.ResetCharWidth();
+    return S_OK;
 }
 
 void Window::DiscardDeviceResources() {
@@ -6236,10 +6263,13 @@ void Window::OnResize(UINT width, UINT height) {
 }
 
 void Window::OnPaint() {
-    if (FAILED(CreateDeviceResources())) return;
-
     PAINTSTRUCT ps;
     BeginPaint(m_hwnd, &ps);
+
+    if (FAILED(CreateDeviceResources())) {
+        EndPaint(m_hwnd, &ps);
+        return;
+    }
 
     m_pRenderTarget->BeginDraw();
     m_pRenderTarget->Clear(m_theme.colors.windowBg);
@@ -8306,6 +8336,21 @@ void Window::HandleMouseMove(POINT clientPt, WPARAM wParam) {
 }
 
 void Window::HandleLButtonDown(POINT clientPt) {
+    // Check NEXT: Cross-File Prediction Pill Click (Image 4)
+    if (m_editor.HitTestCrossFilePill(clientPt)) {
+        const auto& pred = m_editor.GetPrediction();
+        if (pred.isCrossFile && !pred.targetFilePath.empty()) {
+            OpenFileDocument(pred.targetFilePath, false);
+            auto* pDoc = GetActiveDoc();
+            if (pDoc) {
+                pDoc->buffer.SetCursor(pred.targetLine, 0);
+                m_editor.SetPrediction(pred);
+            }
+            InvalidateRect(m_hwnd, nullptr, FALSE);
+            return;
+        }
+    }
+
     auto* pActiveDoc = GetActiveDoc();
     if (pActiveDoc) {
         if (pActiveDoc->hoveredDiagnosticLine != static_cast<size_t>(-1)) {
@@ -10040,6 +10085,7 @@ void Window::HandleLButtonDown(POINT clientPt) {
                         size_t line = 0, col = 0;
                         if (m_editor.HitTestCodeArea(clientPt, m_config, doc, paneCanvasLeft, clientH, line, col)) {
                             doc.buffer.SetCursor(line, col);
+                            UpdatePrediction();
                             doc.targetHighlightLine = static_cast<size_t>(-1);
                             doc.targetHighlightLen = 0;
                             // Start drag text selection (Images 2, 3, 4)
@@ -11287,6 +11333,11 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
 
         case WM_MOUSEMOVE: {
             POINT pt = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+            bool pillHov = m_editor.HitTestCrossFilePill(pt);
+            if (pillHov != m_editor.IsCrossFilePillHovered()) {
+                m_editor.SetCrossFilePillHovered(pillHov);
+                InvalidateRect(m_hwnd, nullptr, FALSE);
+            }
             if (m_editor.UpdateCodeLensHover(pt)) {
                 InvalidateRect(m_hwnd, nullptr, FALSE);
             }
@@ -11941,10 +11992,12 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                             } else {
                                 m_editor.DismissAutocomplete();
                                 m_editor.ClearGhostText();
+                                UpdatePrediction();
                             }
                         } else {
                             m_editor.DismissAutocomplete();
                             m_editor.ClearGhostText();
+                            UpdatePrediction();
                         }
                         InvalidateRect(m_hwnd, nullptr, FALSE);
                     }
@@ -12030,6 +12083,21 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 InvalidateRect(m_hwnd, nullptr, FALSE);
             }
 
+            // NEXT: Code Prediction Tab-to-complete (Images 3, 4, 5)
+            if (wParam == VK_TAB && m_editor.HasPrediction() && !m_editor.IsAutocompleteVisible()) {
+                auto* pDoc = GetActiveDoc();
+                if (pDoc) {
+                    m_suppressNextChar = true;
+                    const auto& pred = m_editor.GetPrediction();
+                    pDoc->buffer.InsertText(pred.ghostText);
+                    MarkDocumentModified(pDoc);
+                    m_editor.ClearPrediction();
+                    m_editor.ClearGhostText();
+                    InvalidateRect(m_hwnd, nullptr, FALSE);
+                    return 0;
+                }
+            }
+
             // Inline Ghost Text Tab-to-complete (Image 3)
             if (wParam == VK_TAB && !m_editor.GetGhostText().empty() && !m_editor.IsAutocompleteVisible()) {
                 auto* pDoc = GetActiveDoc();
@@ -12049,6 +12117,9 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
             // Autocomplete Popup Navigation & Completion Insertion (Image 5)
             if (m_editor.IsAutocompleteVisible()) {
                 if (wParam == VK_ESCAPE) {
+                    if (m_editor.HasPrediction()) {
+                        m_editor.ClearPrediction();
+                    }
                     m_editor.DismissAutocomplete();
                     InvalidateRect(m_hwnd, nullptr, FALSE);
                     return 0;
