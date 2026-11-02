@@ -34,7 +34,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPWSTR lpCmdLi
     // 3. Show Splash Screen on startup (bypassed if launched as secondary new window via --new-window)
     bool isNewWindow = (lpCmdLine && wcsstr(lpCmdLine, L"--new-window") != nullptr);
     if (!isNewWindow) {
-        phide::ui::SplashScreen::Show(hInstance, 5000);
+        phide::ui::SplashScreen::Show(hInstance, 1200);
     }
 
     // 4. Create Main Application Window

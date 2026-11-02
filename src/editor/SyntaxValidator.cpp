@@ -552,13 +552,16 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidateJavaScript(
     std::vector<Bracket> stack;
 
     bool inBlockComment = false;
+    struct TemplateContext { int braceDepth = 0; };
+    std::vector<TemplateContext> templateStack;
+    bool inSingleQuote = false;
+    bool inDoubleQuote = false;
 
     for (size_t l = startLine; l < endLine; ++l) {
         const auto& line = buffer.GetLine(l);
-        bool inStr = false;
-        wchar_t quoteChar = L'\0';
 
         for (size_t c = 0; c < line.length(); ++c) {
+            // 1. Block comment handling
             if (inBlockComment) {
                 if (c + 1 < line.length() && line[c] == L'*' && line[c + 1] == L'/') {
                     inBlockComment = false;
@@ -567,19 +570,52 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidateJavaScript(
                 continue;
             }
 
-            if (inStr) {
+            // 2. Template literal text mode (when not in an interpolated ${...} expression)
+            if (!templateStack.empty() && templateStack.back().braceDepth == 0) {
                 if (line[c] == L'\\') {
-                    c++;
+                    c++; // skip escaped character inside template literal
                     continue;
                 }
-                if (line[c] == quoteChar) {
-                    inStr = false;
+                if (line[c] == L'`') {
+                    templateStack.pop_back(); // template literal ended
+                    continue;
+                }
+                if (line[c] == L'$' && c + 1 < line.length() && line[c + 1] == L'{') {
+                    // Enter template interpolation ${...}
+                    templateStack.back().braceDepth = 1;
+                    c++; // skip '$'
+                    continue;
                 }
                 continue;
             }
 
+            // 3. Single-quote string literal
+            if (inSingleQuote) {
+                if (line[c] == L'\\') {
+                    c++;
+                    continue;
+                }
+                if (line[c] == L'\'') {
+                    inSingleQuote = false;
+                }
+                continue;
+            }
+
+            // 4. Double-quote string literal
+            if (inDoubleQuote) {
+                if (line[c] == L'\\') {
+                    c++;
+                    continue;
+                }
+                if (line[c] == L'"') {
+                    inDoubleQuote = false;
+                }
+                continue;
+            }
+
+            // 5. Comments
             if (c + 1 < line.length() && line[c] == L'/' && line[c + 1] == L'/') {
-                break;
+                break; // Single line comment: ignore rest of line
             }
             if (c + 1 < line.length() && line[c] == L'/' && line[c + 1] == L'*') {
                 inBlockComment = true;
@@ -587,16 +623,90 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidateJavaScript(
                 continue;
             }
 
+            // 6. Regular expression literal detection (e.g. line.replace(/"([^"]+)":/g, ...))
+            if (line[c] == L'/') {
+                // JSX closing tag '</' or self-closing '/>' is NEVER a regex
+                if (c > 0 && line[c - 1] == L'<') {
+                    continue;
+                }
+                if (c + 1 < line.length() && line[c + 1] == L'>') {
+                    continue;
+                }
+
+                // Determine whether '/' starts a regex literal:
+                wchar_t prevChar = L'\0';
+                for (int p = static_cast<int>(c) - 1; p >= 0; --p) {
+                    if (!iswspace(line[p])) {
+                        prevChar = line[p];
+                        break;
+                    }
+                }
+                bool isRegex = (prevChar == L'\0' ||
+                                prevChar == L'(' || prevChar == L'[' || prevChar == L'{' ||
+                                prevChar == L',' || prevChar == L';' || prevChar == L':' ||
+                                prevChar == L'=' || prevChar == L'!' || prevChar == L'?' ||
+                                prevChar == L'&' || prevChar == L'|' || prevChar == L'+' ||
+                                prevChar == L'-' || prevChar == L'*' || prevChar == L'%' ||
+                                prevChar == L'^' || prevChar == L'~');
+                if (isRegex) {
+                    bool inCharClass = false;
+                    size_t r = c + 1;
+                    for (; r < line.length(); ++r) {
+                        if (line[r] == L'\\') {
+                            r++; // skip escaped char
+                            continue;
+                        }
+                        if (line[r] == L'[' && !inCharClass) {
+                            inCharClass = true;
+                        } else if (line[r] == L']' && inCharClass) {
+                            inCharClass = false;
+                        } else if (line[r] == L'/' && !inCharClass) {
+                            break;
+                        }
+                    }
+                    if (r < line.length() && line[r] == L'/') {
+                        // Regex successfully matched: consume regex and its flags (g, i, m, s, u, y, d, v)
+                        c = r;
+                        while (c + 1 < line.length() && iswalpha(line[c + 1])) {
+                            c++;
+                        }
+                        continue;
+                    }
+                }
+            }
+
+            // 7. Start of new strings / template literals
             wchar_t ch = line[c];
-            if (ch == L'"' || ch == L'\'' || ch == L'`') {
-                inStr = true;
-                quoteChar = ch;
+            if (ch == L'\'') {
+                inSingleQuote = true;
+                continue;
+            }
+            if (ch == L'"') {
+                inDoubleQuote = true;
+                continue;
+            }
+            if (ch == L'`') {
+                templateStack.push_back({ 0 });
                 continue;
             }
 
+            // 8. Bracket parsing and balance verification
             if (ch == L'(' || ch == L'[' || ch == L'{') {
+                if (!templateStack.empty() && ch == L'{') {
+                    templateStack.back().braceDepth++;
+                }
                 stack.push_back({ ch, l, c });
             } else if (ch == L')' || ch == L']' || ch == L'}') {
+                if (!templateStack.empty() && ch == L'}') {
+                    if (templateStack.back().braceDepth == 1) {
+                        // Closing brace of the ${...} interpolation
+                        templateStack.back().braceDepth = 0;
+                        continue;
+                    } else if (templateStack.back().braceDepth > 1) {
+                        templateStack.back().braceDepth--;
+                    }
+                }
+
                 if (stack.empty()) {
                     diagnostics.push_back({ l, c, 1, std::wstring(L"JS Syntax Error: Unexpected closing bracket '") + ch + L"'", 1 });
                 } else {
@@ -611,9 +721,23 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidateJavaScript(
             }
         }
 
-        if (inStr && quoteChar != L'`') {
-            diagnostics.push_back({ l, line.length() > 0 ? line.length() - 1 : 0, 1, L"JS Syntax Error: Unclosed string literal", 1 });
+        // Single and double quotes cannot span across lines in JS unless ended with a backslash
+        if (inSingleQuote) {
+            if (line.empty() || line.back() != L'\\') {
+                diagnostics.push_back({ l, line.length() > 0 ? line.length() - 1 : 0, 1, L"JS Syntax Error: Unclosed string literal", 1 });
+                inSingleQuote = false;
+            }
         }
+        if (inDoubleQuote) {
+            if (line.empty() || line.back() != L'\\') {
+                diagnostics.push_back({ l, line.length() > 0 ? line.length() - 1 : 0, 1, L"JS Syntax Error: Unclosed string literal", 1 });
+                inDoubleQuote = false;
+            }
+        }
+    }
+
+    if (!templateStack.empty()) {
+        diagnostics.push_back({ endLine > 0 ? endLine - 1 : 0, 0, 1, L"JS Syntax Error: Unclosed template literal", 1 });
     }
 
     for (const auto& b : stack) {
@@ -1306,26 +1430,50 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidateReactAndESLint(const Buffe
         }
         std::wstring code = (lineComment != std::wstring::npos) ? line.substr(0, lineComment) : line;
 
-        // Track conditions and loops
-        for (size_t i = 0; i < code.length(); ++i) {
-            if (code[i] == L'{') {
-                std::wstring prefix = code.substr(0, i);
-                size_t pIf = prefix.rfind(L"if");
-                size_t pFor = prefix.rfind(L"for");
-                size_t pWhile = prefix.rfind(L"while");
-                size_t pSwitch = prefix.rfind(L"switch");
-                size_t pElse = prefix.rfind(L"else");
+        // Mask string literals and comments so strings containing '{', '}', 'if', etc. do not trigger false positives
+        std::wstring cleanCode = code;
+        bool inS = false, inD = false, inB = false;
+        for (size_t i = 0; i < cleanCode.length(); ++i) {
+            wchar_t ch = cleanCode[i];
+            if (ch == L'\\' && (inS || inD || inB)) {
+                cleanCode[i] = L' ';
+                if (i + 1 < cleanCode.length()) { cleanCode[i + 1] = L' '; i++; }
+                continue;
+            }
+            if (ch == L'\'' && !inD && !inB) { inS = !inS; cleanCode[i] = L' '; continue; }
+            if (ch == L'"' && !inS && !inB) { inD = !inD; cleanCode[i] = L' '; continue; }
+            if (ch == L'`' && !inS && !inD) { inB = !inB; cleanCode[i] = L' '; continue; }
+            if (inS || inD || inB) {
+                cleanCode[i] = L' ';
+            }
+        }
 
-                int type = 0;
-                if (pIf != std::wstring::npos || pElse != std::wstring::npos || pSwitch != std::wstring::npos) {
-                    type = 1;
-                } else if (pFor != std::wstring::npos || pWhile != std::wstring::npos) {
-                    type = 2;
-                }
+        auto findControlKeyword = [](const std::wstring& str) -> int {
+            auto isWord = [&](size_t idx, const std::wstring& kw) -> bool {
+                if (idx + kw.length() > str.length()) return false;
+                if (str.substr(idx, kw.length()) != kw) return false;
+                bool bOk = (idx == 0 || (!iswalnum(str[idx - 1]) && str[idx - 1] != L'_' && str[idx - 1] != L'$'));
+                size_t aIdx = idx + kw.length();
+                bool aOk = (aIdx >= str.length() || (!iswalnum(str[aIdx]) && str[aIdx] != L'_' && str[aIdx] != L'$'));
+                return bOk && aOk;
+            };
+            for (int p = static_cast<int>(str.length()) - 1; p >= 0; --p) {
+                if (isWord(p, L"if") || isWord(p, L"else") || isWord(p, L"switch")) return 1;
+                if (isWord(p, L"for") || isWord(p, L"while")) return 2;
+                if (str[p] == L';' || isWord(p, L"function") || isWord(p, L"return")) return 0;
+            }
+            return 0;
+        };
+
+        // Track conditions and loops
+        for (size_t i = 0; i < cleanCode.length(); ++i) {
+            if (cleanCode[i] == L'{') {
+                std::wstring prefix = cleanCode.substr(0, i);
+                int type = findControlKeyword(prefix);
                 controlStack.push_back(type);
                 if (type == 1) conditionDepth++;
                 else if (type == 2) loopDepth++;
-            } else if (code[i] == L'}') {
+            } else if (cleanCode[i] == L'}') {
                 if (!controlStack.empty()) {
                     int topType = controlStack.back();
                     controlStack.pop_back();
@@ -1580,12 +1728,78 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidateReactAndESLint(const Buffe
                                 jsxStack.push_back({ tagName, l, p });
 
                                 std::unordered_set<std::wstring> propNames;
-                                std::wistringstream pss(tagStr.substr(nEnd));
-                                std::wstring token;
-                                while (pss >> token) {
-                                    size_t eqIdx = token.find(L'=');
-                                    std::wstring propName = (eqIdx != std::wstring::npos) ? token.substr(0, eqIdx) : token;
-                                    if (!propName.empty() && iswalpha(propName[0])) {
+                                size_t aIdx = nEnd;
+                                while (aIdx < tagStr.length()) {
+                                    while (aIdx < tagStr.length() && iswspace(tagStr[aIdx])) aIdx++;
+                                    if (aIdx >= tagStr.length() || tagStr[aIdx] == L'/' || tagStr[aIdx] == L'>') break;
+
+                                    // Skip spread attributes: {...props}
+                                    if (tagStr[aIdx] == L'{') {
+                                        int depth = 1;
+                                        aIdx++;
+                                        bool inQ = false;
+                                        wchar_t qC = 0;
+                                        while (aIdx < tagStr.length() && depth > 0) {
+                                            wchar_t ch = tagStr[aIdx];
+                                            if (inQ) {
+                                                if (ch == L'\\' && aIdx + 1 < tagStr.length()) aIdx++;
+                                                else if (ch == qC) inQ = false;
+                                            } else {
+                                                if (ch == L'"' || ch == L'\'' || ch == L'`') { inQ = true; qC = ch; }
+                                                else if (ch == L'{') depth++;
+                                                else if (ch == L'}') depth--;
+                                            }
+                                            aIdx++;
+                                        }
+                                        continue;
+                                    }
+
+                                    if (!iswalpha(tagStr[aIdx]) && tagStr[aIdx] != L'_' && tagStr[aIdx] != L'$') {
+                                        aIdx++;
+                                        continue;
+                                    }
+
+                                    size_t nameStart = aIdx;
+                                    while (aIdx < tagStr.length() && (iswalnum(tagStr[aIdx]) || tagStr[aIdx] == L'-' || tagStr[aIdx] == L':' || tagStr[aIdx] == L'_' || tagStr[aIdx] == L'$')) {
+                                        aIdx++;
+                                    }
+                                    std::wstring propName = tagStr.substr(nameStart, aIdx - nameStart);
+
+                                    while (aIdx < tagStr.length() && iswspace(tagStr[aIdx])) aIdx++;
+
+                                    if (aIdx < tagStr.length() && tagStr[aIdx] == L'=') {
+                                        aIdx++;
+                                        while (aIdx < tagStr.length() && iswspace(tagStr[aIdx])) aIdx++;
+                                        if (aIdx < tagStr.length()) {
+                                            if (tagStr[aIdx] == L'"' || tagStr[aIdx] == L'\'' || tagStr[aIdx] == L'`') {
+                                                wchar_t q = tagStr[aIdx++];
+                                                while (aIdx < tagStr.length()) {
+                                                    if (tagStr[aIdx] == L'\\' && aIdx + 1 < tagStr.length()) aIdx += 2;
+                                                    else if (tagStr[aIdx] == q) { aIdx++; break; }
+                                                    else aIdx++;
+                                                }
+                                            } else if (tagStr[aIdx] == L'{') {
+                                                int depth = 1;
+                                                aIdx++;
+                                                bool inQ = false;
+                                                wchar_t qC = 0;
+                                                while (aIdx < tagStr.length() && depth > 0) {
+                                                    wchar_t ch = tagStr[aIdx];
+                                                    if (inQ) {
+                                                        if (ch == L'\\' && aIdx + 1 < tagStr.length()) aIdx++;
+                                                        else if (ch == qC) inQ = false;
+                                                    } else {
+                                                        if (ch == L'"' || ch == L'\'' || ch == L'`') { inQ = true; qC = ch; }
+                                                        else if (ch == L'{') depth++;
+                                                        else if (ch == L'}') depth--;
+                                                    }
+                                                    aIdx++;
+                                                }
+                                            }
+                                        }
+                                    }
+
+                                    if (!propName.empty()) {
                                         if (propNames.count(propName) > 0) {
                                             lsp::Diagnostic diag;
                                             diag.line = l;

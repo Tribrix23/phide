@@ -162,6 +162,8 @@ public:
     [[nodiscard]] const std::wstring& GetLastClickedFile() const noexcept { return m_lastClickedFile; }
     void ClearLastClickedFile() noexcept { m_lastClickedFile.clear(); }
 
+    [[nodiscard]] const std::wstring& GetCurrentRootPath() const noexcept { return m_currentRootPath; }
+
 private:
     std::wstring m_currentRootPath;
     std::vector<GraphNode> m_nodes;

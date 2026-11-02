@@ -74,9 +74,20 @@ void TerminalTab::Terminate() {
         hStdinWrite = NULL;
     }
     if (processId != 0) {
-        // Kill the full process tree (PowerShell -> cmd -> node.exe) to prevent orphaned background servers
-        std::wstring killCmd = L"taskkill.exe /F /T /PID " + std::to_wstring(processId) + L" >nul 2>nul";
-        _wsystem(killCmd.c_str());
+        // Kill the full process tree (PowerShell -> cmd -> node.exe) silently with no popping console window
+        std::wstring killCmd = L"taskkill.exe /F /T /PID " + std::to_wstring(processId);
+        STARTUPINFOW si{};
+        si.cb = sizeof(si);
+        si.dwFlags = STARTF_USESHOWWINDOW;
+        si.wShowWindow = SW_HIDE;
+        PROCESS_INFORMATION pi{};
+        std::vector<wchar_t> cmdBuf(killCmd.begin(), killCmd.end());
+        cmdBuf.push_back(0);
+        if (CreateProcessW(nullptr, cmdBuf.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {
+            WaitForSingleObject(pi.hProcess, 300);
+            CloseHandle(pi.hProcess);
+            CloseHandle(pi.hThread);
+        }
     }
     if (hProcess) {
         TerminateProcess(hProcess, 0);

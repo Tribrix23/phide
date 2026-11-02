@@ -1083,7 +1083,7 @@ void GraphView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfi
         }
 
         // 4. Node Labels ("the namiong shouuldnt have a div color it transparent and it should be under the note itself")
-        const bool showLabel = (m_zoom >= 0.85f) || isHovered || isDragged;
+        const bool showLabel = (m_zoom >= 0.35f) || isHovered || isDragged;
         if (showLabel && pFont && theme.dwriteFactory) {
             Microsoft::WRL::ComPtr<IDWriteTextLayout> pLayout;
             theme.dwriteFactory->CreateTextLayout(

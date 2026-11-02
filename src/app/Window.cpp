@@ -866,11 +866,12 @@ void Window::EnsureCursorVisible() {
 
     auto cursor = pDoc->buffer.GetCursor();
     const float swatchSpan = m_config.ScaleF(14.0f);
-    size_t swBefore = 0;
-    for (const auto& sw : m_editor.GetVisibleColorSwatches()) {
-        if (sw.line == cursor.line && cursor.col >= sw.col) swBefore++;
+    float caretVisualColX = static_cast<float>(cursor.col) * charW;
+    if (cursor.line < pDoc->buffer.GetLineCount()) {
+        const auto& curLineStr = pDoc->buffer.GetLine(cursor.line);
+        auto lineColors = ui::EditorCanvas::ScanLineColors(curLineStr);
+        caretVisualColX = ui::EditorCanvas::GetColumnVisualOffset(lineColors, cursor.col, charW, swatchSpan);
     }
-    float caretVisualColX = static_cast<float>(cursor.col) * charW + static_cast<float>(swBefore) * swatchSpan;
     float caretScreenX = codeLeft - pDoc->scrollOffsetX + caretVisualColX;
 
     if (caretScreenX < codeLeft + m_config.ScaleF(20.0f)) {
@@ -1629,6 +1630,14 @@ void Window::SyncActiveTabWithDrawer() {
         m_drawer.SetCourseExplorerMode(true, pDoc->fileName, pDoc->courseId);
     } else {
         m_drawer.SetCourseExplorerMode(false, L"", L"");
+    }
+
+    if (pDoc && pDoc->isSpecialView && pDoc->viewType == L"graph") {
+        std::wstring wsFolder = m_drawer.GetOpenFolderPath();
+        if (!wsFolder.empty() && m_editor.GetGraphView().GetCurrentRootPath() != wsFolder) {
+            m_editor.GetGraphView().RefreshFromWorkspace(wsFolder);
+            m_editor.GetGraphView().StartBounceAnimation();
+        }
     }
 }
 
@@ -4225,16 +4234,34 @@ Window::ProjectDecision Window::DetectFramework(const std::wstring& rootDir, con
     return decision;
 }
 
+static void CleanupPortProcessesAsync(int port) {
+    if (port <= 0) return;
+    std::thread([port]() {
+        std::wstring findPortCmd = L"powershell.exe -NoProfile -WindowStyle Hidden -Command \"Get-NetTCPConnection -LocalPort " +
+            std::to_wstring(port) + L" -ErrorAction SilentlyContinue | ForEach-Object { Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue }\"";
+        STARTUPINFOW si{};
+        si.cb = sizeof(si);
+        si.dwFlags = STARTF_USESHOWWINDOW;
+        si.wShowWindow = SW_HIDE;
+        PROCESS_INFORMATION pi{};
+        std::vector<wchar_t> cmdBuf(findPortCmd.begin(), findPortCmd.end());
+        cmdBuf.push_back(0);
+        if (CreateProcessW(nullptr, cmdBuf.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {
+            WaitForSingleObject(pi.hProcess, 4000);
+            CloseHandle(pi.hProcess);
+            CloseHandle(pi.hThread);
+        }
+    }).detach();
+}
+
 void Window::RunProjectDevServer(const std::wstring& projectRoot, const ProjectDecision& decision) {
     // 1. Terminate any previous server session for this root to prevent process leaks
     m_terminal.TerminateServerSession(projectRoot);
     StopLiveServer(projectRoot, /*closeTab=*/false);
 
-    // 2. If a port is specified (e.g. Next.js 3000), free it from any orphaned background processes
+    // 2. If a port is specified (e.g. Next.js 3000), free it asynchronously without UI freeze or popping console
     if (decision.port > 0) {
-        std::wstring findPortCmd = L"powershell.exe -NoProfile -Command \"Get-NetTCPConnection -LocalPort " +
-            std::to_wstring(decision.port) + L" -ErrorAction SilentlyContinue | ForEach-Object { Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue }\"";
-        _wsystem(findPortCmd.c_str());
+        CleanupPortProcessesAsync(decision.port);
     }
 
     m_isProjectRunning = true;
@@ -4779,9 +4806,7 @@ void Window::DoStopServer() {
         StopLiveServer(m_runningProjectRoot, /*closeTab=*/false);
     }
     if (m_runningProjectDecision.port > 0) {
-        std::wstring findPortCmd = L"powershell.exe -NoProfile -Command \"Get-NetTCPConnection -LocalPort " +
-            std::to_wstring(m_runningProjectDecision.port) + L" -ErrorAction SilentlyContinue | ForEach-Object { Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue }\"";
-        _wsystem(findPortCmd.c_str());
+        CleanupPortProcessesAsync(m_runningProjectDecision.port);
     }
     m_isProjectRunning = false;
     m_runningProjectRoot.clear();

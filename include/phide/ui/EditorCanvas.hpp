@@ -23,9 +23,23 @@
 #include "phide/ui/NotebookView.hpp"
 #include "phide/ui/GraphView.hpp"
 #include "phide/ui/SettingsView.hpp"
+#include "phide/ui/ColorPickerModal.hpp"
 #include <unordered_map>
 
 namespace phide::ui {
+
+/**
+ * @struct LineColorSpan
+ * @brief Represents a parsed color token (hex, rgb, or Tailwind class) within a line.
+ */
+struct LineColorSpan {
+    size_t col = 0;
+    size_t len = 0;
+    std::wstring colorStr;
+    D2D1_COLOR_F color{ 0.0f, 0.0f, 0.0f, 1.0f };
+    ColorFormat format{ ColorFormat::Hex };
+    bool hasAlpha = false;
+};
 
 /**
  * @struct LearningCourseDef
@@ -625,6 +639,10 @@ public:
     }
     [[nodiscard]] const ColorSwatchHit* HitTestColorSwatch(POINT pt) const;
     [[nodiscard]] const std::vector<ColorSwatchHit>& GetVisibleColorSwatches() const noexcept { return m_visibleColorSwatches; }
+
+    static std::vector<LineColorSpan> ScanLineColors(const std::wstring& lineStr);
+    static size_t CountSwatchesBefore(const std::vector<LineColorSpan>& spans, size_t col);
+    static float GetColumnVisualOffset(const std::vector<LineColorSpan>& spans, size_t col, float charW, float swatchSpan);
 };
 
 } // namespace phide::ui

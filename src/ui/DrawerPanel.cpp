@@ -6923,9 +6923,18 @@ void DrawerPanel::RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, 
         // Visual Notification Pill (e.g. "✓ Discarded <file>" or "⚠ Please provide a commit message...")
         if (HasGitNotification()) {
             bool isWarning = (m_gitNotificationText.find(L"Please provide") != std::wstring::npos ||
+                              m_gitNotificationText.find(L"Please enter") != std::wstring::npos ||
+                              m_gitNotificationText.find(L"No GitHub account") != std::wstring::npos ||
+                              m_gitNotificationText.find(L"cancelled") != std::wstring::npos ||
                               m_gitNotificationText.find(L"error") != std::wstring::npos ||
                               m_gitNotificationText.find(L"failed") != std::wstring::npos);
-            std::wstring fullMsg = (isWarning ? L"\u26A0 " : L"\u2713 ") + m_gitNotificationText;
+            std::wstring iconPrefix = isWarning ? L"\u26A0 " : L"\u2713 ";
+            std::wstring displayMsg = m_gitNotificationText;
+            if (displayMsg.starts_with(L"✓ ") || displayMsg.starts_with(L"⚠ ") ||
+                displayMsg.starts_with(L"\u26A0 ") || displayMsg.starts_with(L"\u2713 ")) {
+                iconPrefix = L"";
+            }
+            std::wstring fullMsg = iconPrefix + displayMsg;
             float availTextW = (std::max)(20.0f, currentDrawerW - 2.0f * paddingX - config.ScaleF(16.0f));
             float notifH = config.ScaleF(26.0f);
 

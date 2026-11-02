@@ -118,33 +118,41 @@ void SplashScreen::Show(HINSTANCE hInstance, int durationMs) {
     }
 
     // Render splash image immediately
-    if (pRT) {
+    if (pRT && pBitmap) {
         pRT->BeginDraw();
         pRT->Clear(D2D1::ColorF(0.02f, 0.03f, 0.05f, 1.0f));
         D2D1_RECT_F rcDest = D2D1::RectF(0.0f, 0.0f, static_cast<float>(splashW), static_cast<float>(splashH));
-        if (pBitmap) {
-            pRT->DrawBitmap(pBitmap.Get(), rcDest, 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
-        }
+        pRT->DrawBitmap(pBitmap.Get(), rcDest, 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
         pRT->EndDraw();
+    } else {
+        // Bitmap failed to decode or render target unavailable: exit immediately without blocking
+        DestroyWindow(hwnd);
+        UnregisterClassW(L"PhideSplashScreenClass", hInstance);
+        return;
     }
 
     UpdateWindow(hwnd);
 
-    // Modal message loop: guaranteed display for the full durationMs (5 seconds)
+    // Modal message loop: dismiss immediately on click, keypress, or timeout
     ULONGLONG start = GetTickCount64();
-    ULONGLONG targetDuration = static_cast<ULONGLONG>(durationMs > 0 ? durationMs : 5000);
+    ULONGLONG targetDuration = static_cast<ULONGLONG>(durationMs > 0 ? durationMs : 1200);
     MSG msg;
 
     while (GetTickCount64() - start < targetDuration) {
         while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
             if (msg.message == WM_QUIT) {
                 PostQuitMessage(static_cast<int>(msg.wParam));
+                targetDuration = 0;
+                break;
+            }
+            if (msg.message == WM_LBUTTONDOWN || msg.message == WM_RBUTTONDOWN || msg.message == WM_KEYDOWN) {
+                targetDuration = 0;
                 break;
             }
             TranslateMessage(&msg);
             DispatchMessageW(&msg);
         }
-        Sleep(20);
+        Sleep(10);
     }
 
     DestroyWindow(hwnd);

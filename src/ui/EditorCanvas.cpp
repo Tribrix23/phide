@@ -6,12 +6,94 @@
 #include "phide/ui/EditorCanvas.hpp"
 #include "phide/ui/WatermarkLogo.hpp"
 #include "phide/ui/ColorPickerModal.hpp"
+#include "phide/editor/TailwindHelper.hpp"
 #include <algorithm>
 #include <wincodec.h>
 #include <filesystem>
 #include <regex>
 
 namespace phide::ui {
+
+std::vector<LineColorSpan> EditorCanvas::ScanLineColors(const std::wstring& lineStr) {
+    std::vector<LineColorSpan> lineColors;
+    size_t scanCIdx = 0;
+    while (scanCIdx < lineStr.length()) {
+        if (lineStr[scanCIdx] == L'#') {
+            size_t hStart = scanCIdx;
+            size_t hEnd = hStart + 1;
+            while (hEnd < lineStr.length() && iswxdigit(lineStr[hEnd])) hEnd++;
+            size_t hLen = hEnd - hStart - 1;
+            if (hLen == 3 || hLen == 4 || hLen == 6 || hLen == 8) {
+                std::wstring colorStr = lineStr.substr(hStart, hEnd - hStart);
+                D2D1_COLOR_F c{};
+                ColorFormat fmt = ColorFormat::Hex;
+                bool hasAlpha = false;
+                if (ColorPickerModal::TryParseColor(colorStr, c, fmt, hasAlpha)) {
+                    lineColors.push_back({ hStart, colorStr.length(), colorStr, c, fmt, hasAlpha });
+                }
+            }
+            scanCIdx = hEnd;
+            continue;
+        }
+        if (lineStr.compare(scanCIdx, 4, L"rgb(") == 0 || lineStr.compare(scanCIdx, 5, L"rgba(") == 0 ||
+            lineStr.compare(scanCIdx, 4, L"hsl(") == 0 || lineStr.compare(scanCIdx, 5, L"hsla(") == 0) {
+            size_t closeParen = lineStr.find(L')', scanCIdx);
+            if (closeParen != std::wstring::npos) {
+                std::wstring colorStr = lineStr.substr(scanCIdx, closeParen - scanCIdx + 1);
+                D2D1_COLOR_F c{};
+                ColorFormat fmt = ColorFormat::Hex;
+                bool hasAlpha = false;
+                if (ColorPickerModal::TryParseColor(colorStr, c, fmt, hasAlpha)) {
+                    lineColors.push_back({ scanCIdx, colorStr.length(), colorStr, c, fmt, hasAlpha });
+                }
+                scanCIdx = closeParen + 1;
+                continue;
+            }
+        }
+
+        // Tailwind CSS Color Class Scanning (e.g. bg-black, bg-green-600, text-white, border-blue-400, dark:bg-black)
+        if (scanCIdx == 0 || (!iswalnum(lineStr[scanCIdx - 1]) && lineStr[scanCIdx - 1] != L'-' && lineStr[scanCIdx - 1] != L':')) {
+            size_t tokEnd = scanCIdx;
+            while (tokEnd < lineStr.length() && (iswalnum(lineStr[tokEnd]) || lineStr[tokEnd] == L'-' || lineStr[tokEnd] == L':' || lineStr[tokEnd] == L'/')) {
+                tokEnd++;
+            }
+            if (tokEnd > scanCIdx) {
+                std::wstring_view word(lineStr.data() + scanCIdx, tokEnd - scanCIdx);
+                size_t colPos = word.rfind(L':');
+                std::wstring_view coreClass = (colPos != std::wstring_view::npos) ? word.substr(colPos + 1) : word;
+                size_t swatchCol = (colPos != std::wstring_view::npos) ? (scanCIdx + colPos + 1) : scanCIdx;
+
+                editor::TailwindColorInfo twInfo;
+                if (editor::TailwindHelper::TryParseClass(coreClass, twInfo)) {
+                    float r = ((twInfo.hex >> 16) & 0xFF) / 255.0f;
+                    float g = ((twInfo.hex >> 8) & 0xFF) / 255.0f;
+                    float b = (twInfo.hex & 0xFF) / 255.0f;
+                    lineColors.push_back({ swatchCol, coreClass.length(), std::wstring(coreClass), D2D1::ColorF(r, g, b, 1.0f), ColorFormat::Hex, false });
+                    scanCIdx = tokEnd;
+                    continue;
+                }
+            }
+        }
+
+        scanCIdx++;
+    }
+    std::sort(lineColors.begin(), lineColors.end(), [](const LineColorSpan& a, const LineColorSpan& b) {
+        return a.col < b.col;
+    });
+    return lineColors;
+}
+
+size_t EditorCanvas::CountSwatchesBefore(const std::vector<LineColorSpan>& spans, size_t col) {
+    size_t count = 0;
+    for (const auto& cs : spans) {
+        if (col >= cs.col) count++;
+    }
+    return count;
+}
+
+float EditorCanvas::GetColumnVisualOffset(const std::vector<LineColorSpan>& spans, size_t col, float charW, float swatchSpan) {
+    return static_cast<float>(col) * charW + static_cast<float>(CountSwatchesBefore(spans, col)) * swatchSpan;
+}
 
 static bool IsFunctionOrTestLine(const std::wstring& line) {
     if (line.empty()) return false;
@@ -27,7 +109,7 @@ static bool IsFunctionOrTestLine(const std::wstring& line) {
         return false;
     }
 
-    // Test runner macros & functions (Image 1: test("renders learn react link", () => {)
+    // 1. Test runner macros & functions (Image 1: test("renders learn react link", () => {)
     if (trimmed.starts_with(L"test(") || trimmed.starts_with(L"test.") ||
         trimmed.starts_with(L"it(") || trimmed.starts_with(L"it.") ||
         trimmed.starts_with(L"describe(") || trimmed.starts_with(L"describe.") ||
@@ -35,20 +117,20 @@ static bool IsFunctionOrTestLine(const std::wstring& line) {
         return true;
     }
 
-    // Python functions & tests
+    // 2. Python functions & tests
     if (trimmed.starts_with(L"def ") || trimmed.starts_with(L"async def ")) {
+        return (start == 0 || trimmed.find(L"def test_") != std::wstring::npos);
+    }
+
+    // 3. Go / Rust (top-level)
+    if (start == 0 && (trimmed.starts_with(L"func ") || trimmed.starts_with(L"fn ") || trimmed.starts_with(L"pub fn "))) {
         return true;
     }
 
-    // Go / Rust
-    if (trimmed.starts_with(L"func ") || trimmed.starts_with(L"fn ")) {
-        return true;
-    }
-
-    // PHP / JS standard functions
+    // 4. PHP / JS standard functions
     if (trimmed.starts_with(L"function ") || trimmed.starts_with(L"function* ") ||
         trimmed.starts_with(L"async function ") || trimmed.starts_with(L"async function* ")) {
-        return true;
+        return (start <= 4);
     }
     if (trimmed.starts_with(L"public function ") || trimmed.starts_with(L"private function ") ||
         trimmed.starts_with(L"protected function ") || trimmed.starts_with(L"static function ") ||
@@ -56,20 +138,36 @@ static bool IsFunctionOrTestLine(const std::wstring& line) {
         return true;
     }
 
-    // JS/TS exports
+    // 5. JS/TS exports (top-level or exported)
     if (trimmed.starts_with(L"export default function") || trimmed.starts_with(L"export function") ||
         trimmed.starts_with(L"export async function")) {
         return true;
     }
 
-    // Arrow functions / React components
-    if ((trimmed.starts_with(L"const ") || trimmed.starts_with(L"let ") || trimmed.starts_with(L"export const ")) &&
-        (trimmed.find(L"=>") != std::wstring::npos) && (trimmed.find(L"(") != std::wstring::npos)) {
-        return true;
+    // 6. Arrow functions / React components (e.g. export const MyComp = () => ... or top-level const MyComp = () => ...)
+    // Must NOT be a timer, interval, or callback variable like setInterval or setTimeout
+    if ((start == 0 || trimmed.starts_with(L"export const ") || trimmed.starts_with(L"export let ")) &&
+        (trimmed.starts_with(L"const ") || trimmed.starts_with(L"let ") || trimmed.starts_with(L"export const ") || trimmed.starts_with(L"export let ")) &&
+        (trimmed.find(L"=>") != std::wstring::npos)) {
+        if (trimmed.find(L"setInterval") == std::wstring::npos &&
+            trimmed.find(L"setTimeout") == std::wstring::npos &&
+            trimmed.find(L"addEventListener") == std::wstring::npos &&
+            trimmed.find(L"subscribe") == std::wstring::npos) {
+            size_t eqPos = trimmed.find(L'=');
+            size_t arrowPos = trimmed.find(L"=>");
+            if (eqPos != std::wstring::npos && arrowPos != std::wstring::npos && eqPos < arrowPos) {
+                // Ensure there is no function call immediately before the arrow callback
+                std::wstring between = trimmed.substr(eqPos + 1, arrowPos - (eqPos + 1));
+                if (between.find(L'(') != std::wstring::npos) {
+                    return true;
+                }
+            }
+        }
     }
 
-    // C++ / Java / C# methods
-    if ((trimmed.starts_with(L"void ") || trimmed.starts_with(L"bool ") || trimmed.starts_with(L"int ") ||
+    // 7. C++ / Java / C# methods
+    if (start <= 4 &&
+        (trimmed.starts_with(L"void ") || trimmed.starts_with(L"bool ") || trimmed.starts_with(L"int ") ||
          trimmed.starts_with(L"float ") || trimmed.starts_with(L"double ") || trimmed.starts_with(L"auto ") ||
          trimmed.starts_with(L"std::") || trimmed.starts_with(L"virtual ")) &&
         (trimmed.find(L"(") != std::wstring::npos) && (trimmed.find(L")") != std::wstring::npos) &&
@@ -1706,61 +1804,13 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
         }
 
         // Discover in-context color tokens on line to compute visual column layout
-        struct LineColorSpan {
-            size_t col;
-            size_t len;
-            std::wstring colorStr;
-            D2D1_COLOR_F color;
-            ColorFormat format;
-            bool hasAlpha;
-        };
-        std::vector<LineColorSpan> lineColors;
-        size_t scanCIdx = 0;
-        while (scanCIdx < lineStr.length()) {
-            if (lineStr[scanCIdx] == L'#') {
-                size_t hStart = scanCIdx;
-                size_t hEnd = hStart + 1;
-                while (hEnd < lineStr.length() && iswxdigit(lineStr[hEnd])) hEnd++;
-                size_t hLen = hEnd - hStart - 1;
-                if (hLen == 3 || hLen == 4 || hLen == 6 || hLen == 8) {
-                    std::wstring colorStr = lineStr.substr(hStart, hEnd - hStart);
-                    D2D1_COLOR_F c{};
-                    ColorFormat fmt = ColorFormat::Hex;
-                    bool hasAlpha = false;
-                    if (ColorPickerModal::TryParseColor(colorStr, c, fmt, hasAlpha)) {
-                        lineColors.push_back({ hStart, colorStr.length(), colorStr, c, fmt, hasAlpha });
-                    }
-                }
-                scanCIdx = hEnd;
-                continue;
-            }
-            if (lineStr.compare(scanCIdx, 4, L"rgb(") == 0 || lineStr.compare(scanCIdx, 5, L"rgba(") == 0 ||
-                lineStr.compare(scanCIdx, 4, L"hsl(") == 0 || lineStr.compare(scanCIdx, 5, L"hsla(") == 0) {
-                size_t closeParen = lineStr.find(L')', scanCIdx);
-                if (closeParen != std::wstring::npos) {
-                    std::wstring colorStr = lineStr.substr(scanCIdx, closeParen - scanCIdx + 1);
-                    D2D1_COLOR_F c{};
-                    ColorFormat fmt = ColorFormat::Hex;
-                    bool hasAlpha = false;
-                    if (ColorPickerModal::TryParseColor(colorStr, c, fmt, hasAlpha)) {
-                        lineColors.push_back({ scanCIdx, colorStr.length(), colorStr, c, fmt, hasAlpha });
-                    }
-                    scanCIdx = closeParen + 1;
-                    continue;
-                }
-            }
-            scanCIdx++;
-        }
+        auto lineColors = ScanLineColors(lineStr);
 
         const float swatchSpan = config.ScaleF(14.0f);
         const float swatchSize = config.ScaleF(10.5f);
 
         auto getColVisualX = [&](size_t col) -> float {
-            size_t swBefore = 0;
-            for (const auto& cs : lineColors) {
-                if (col >= cs.col) swBefore++;
-            }
-            return codeLeft - scrollX + static_cast<float>(col) * charW + static_cast<float>(swBefore) * swatchSpan;
+            return codeLeft - scrollX + GetColumnVisualOffset(lineColors, col, charW, swatchSpan);
         };
 
         // Active Text Selection Background on Code Line (Images 3 & 4)
@@ -1881,55 +1931,133 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
             }
 
             auto tokens = buffer.GetTokensForLine(vl.bufferLine, docExt);
-            if (lineColors.empty() && theme.dwriteFactory && theme.fontCode) {
-                // Unified DirectWrite Text Layout for contiguous characters, flawless spacing, ligatures, and zero gaps
-                Microsoft::WRL::ComPtr<IDWriteTextLayout> pLineLayout;
+            if (theme.dwriteFactory && theme.fontCode) {
                 float availW = (std::max)(1200.0f, codeRight - (codeLeft - scrollX) + 1000.0f);
-                if (SUCCEEDED(theme.dwriteFactory->CreateTextLayout(
-                        lineStr.c_str(),
-                        static_cast<UINT32>(lineStr.length()),
-                        theme.fontCode.Get(),
-                        availW,
-                        lineH,
-                        &pLineLayout))) {
-                    pLineLayout->SetIncrementalTabStop(charW * static_cast<float>(config.tabSize > 0 ? config.tabSize : 4));
-                    for (const auto& tok : tokens) {
-                        if (tok.startCol + tok.length > lineStr.length()) continue;
+                if (lineColors.empty()) {
+                    // Unified DirectWrite Text Layout for contiguous characters, flawless spacing, ligatures, and zero gaps
+                    Microsoft::WRL::ComPtr<IDWriteTextLayout> pLineLayout;
+                    if (SUCCEEDED(theme.dwriteFactory->CreateTextLayout(
+                            lineStr.c_str(),
+                            static_cast<UINT32>(lineStr.length()),
+                            theme.fontCode.Get(),
+                            availW,
+                            lineH,
+                            &pLineLayout))) {
+                        pLineLayout->SetIncrementalTabStop(charW * static_cast<float>(config.tabSize > 0 ? config.tabSize : 4));
+                        for (const auto& tok : tokens) {
+                            if (tok.startCol + tok.length > lineStr.length()) continue;
 
-                        ID2D1Brush* brush = theme.brushTextPrimary.Get();
-                        bool isBracketToken = false;
-                        if (tok.type == editor::TokenType::Operator && tok.length == 1) {
-                            auto it = bracketsByLine.find(vl.bufferLine);
-                            if (it != bracketsByLine.end()) {
-                                for (const auto* b : it->second) {
-                                    if (b->col == tok.startCol) {
-                                        brush = theme.GetBracketBrush(b->depth);
-                                        isBracketToken = true;
-                                        break;
+                            ID2D1Brush* brush = theme.brushTextPrimary.Get();
+                            bool isBracketToken = false;
+                            if (tok.type == editor::TokenType::Operator && tok.length == 1) {
+                                auto it = bracketsByLine.find(vl.bufferLine);
+                                if (it != bracketsByLine.end()) {
+                                    for (const auto* b : it->second) {
+                                        if (b->col == tok.startCol) {
+                                            brush = theme.GetBracketBrush(b->depth);
+                                            isBracketToken = true;
+                                            break;
+                                        }
                                     }
                                 }
                             }
-                        }
 
-                        if (!isBracketToken) {
-                            switch (tok.type) {
-                                case editor::TokenType::Keyword:   brush = theme.brushSyntaxKeyword.Get(); break;
-                                case editor::TokenType::Type:      brush = theme.brushSyntaxType.Get(); break;
-                                case editor::TokenType::String:    brush = theme.brushSyntaxString.Get(); break;
-                                case editor::TokenType::Comment:   brush = theme.brushSyntaxComment.Get(); break;
-                                case editor::TokenType::Number:    brush = theme.brushSyntaxNumber.Get(); break;
-                                case editor::TokenType::Operator:  brush = theme.brushSyntaxOperator.Get(); break;
-                                case editor::TokenType::Tag:       brush = theme.brushSyntaxTag.Get(); break;
-                                case editor::TokenType::Attribute: brush = theme.brushSyntaxAttribute.Get(); break;
-                                default: brush = theme.brushTextPrimary.Get(); break;
+                            if (!isBracketToken) {
+                                switch (tok.type) {
+                                    case editor::TokenType::Keyword:   brush = theme.brushSyntaxKeyword.Get(); break;
+                                    case editor::TokenType::Type:      brush = theme.brushSyntaxType.Get(); break;
+                                    case editor::TokenType::String:    brush = theme.brushSyntaxString.Get(); break;
+                                    case editor::TokenType::Comment:   brush = theme.brushSyntaxComment.Get(); break;
+                                    case editor::TokenType::Number:    brush = theme.brushSyntaxNumber.Get(); break;
+                                    case editor::TokenType::Operator:  brush = theme.brushSyntaxOperator.Get(); break;
+                                    case editor::TokenType::Tag:       brush = theme.brushSyntaxTag.Get(); break;
+                                    case editor::TokenType::Attribute: brush = theme.brushSyntaxAttribute.Get(); break;
+                                    default: brush = theme.brushTextPrimary.Get(); break;
+                                }
                             }
+
+                            DWRITE_TEXT_RANGE range = { static_cast<UINT32>(tok.startCol), static_cast<UINT32>(tok.length) };
+                            pLineLayout->SetDrawingEffect(brush, range);
                         }
 
-                        DWRITE_TEXT_RANGE range = { static_cast<UINT32>(tok.startCol), static_cast<UINT32>(tok.length) };
-                        pLineLayout->SetDrawingEffect(brush, range);
+                        pRT->DrawTextLayout(D2D1::Point2F(codeLeft - scrollX, lineY), pLineLayout.Get(), theme.brushTextPrimary.Get());
+                        curCodeEndX = getColVisualX(lineStr.length());
+                    }
+                } else {
+                    // Divide line into segments between swatches so characters are virtually shifted and never layered or overlapped
+                    std::vector<std::pair<size_t, size_t>> segments;
+                    size_t curSegStart = 0;
+                    for (const auto& cs : lineColors) {
+                        if (cs.col > curSegStart) {
+                            segments.push_back({ curSegStart, cs.col });
+                        }
+                        curSegStart = cs.col;
+                    }
+                    if (curSegStart < lineStr.length()) {
+                        segments.push_back({ curSegStart, lineStr.length() });
                     }
 
-                    pRT->DrawTextLayout(D2D1::Point2F(codeLeft - scrollX, lineY), pLineLayout.Get(), theme.brushTextPrimary.Get());
+                    for (const auto& seg : segments) {
+                        size_t segStart = seg.first;
+                        size_t segEnd = seg.second;
+                        if (segEnd <= segStart) continue;
+
+                        std::wstring segText = lineStr.substr(segStart, segEnd - segStart);
+                        float segVisualX = getColVisualX(segStart);
+
+                        Microsoft::WRL::ComPtr<IDWriteTextLayout> pSegLayout;
+                        if (SUCCEEDED(theme.dwriteFactory->CreateTextLayout(
+                                segText.c_str(),
+                                static_cast<UINT32>(segText.length()),
+                                theme.fontCode.Get(),
+                                availW,
+                                lineH,
+                                &pSegLayout))) {
+                            pSegLayout->SetIncrementalTabStop(charW * static_cast<float>(config.tabSize > 0 ? config.tabSize : 4));
+
+                            for (const auto& tok : tokens) {
+                                size_t tokEnd = tok.startCol + tok.length;
+                                if (tok.startCol >= segEnd || tokEnd <= segStart) continue;
+                                size_t oStart = (std::max)(tok.startCol, segStart);
+                                size_t oEnd = (std::min)(tokEnd, segEnd);
+                                if (oEnd <= oStart) continue;
+
+                                ID2D1Brush* brush = theme.brushTextPrimary.Get();
+                                bool isBracketToken = false;
+                                if (tok.type == editor::TokenType::Operator && tok.length == 1) {
+                                    auto it = bracketsByLine.find(vl.bufferLine);
+                                    if (it != bracketsByLine.end()) {
+                                        for (const auto* b : it->second) {
+                                            if (b->col == tok.startCol) {
+                                                brush = theme.GetBracketBrush(b->depth);
+                                                isBracketToken = true;
+                                                break;
+                                            }
+                                        }
+                                    }
+                                }
+
+                                if (!isBracketToken) {
+                                    switch (tok.type) {
+                                        case editor::TokenType::Keyword:   brush = theme.brushSyntaxKeyword.Get(); break;
+                                        case editor::TokenType::Type:      brush = theme.brushSyntaxType.Get(); break;
+                                        case editor::TokenType::String:    brush = theme.brushSyntaxString.Get(); break;
+                                        case editor::TokenType::Comment:   brush = theme.brushSyntaxComment.Get(); break;
+                                        case editor::TokenType::Number:    brush = theme.brushSyntaxNumber.Get(); break;
+                                        case editor::TokenType::Operator:  brush = theme.brushSyntaxOperator.Get(); break;
+                                        case editor::TokenType::Tag:       brush = theme.brushSyntaxTag.Get(); break;
+                                        case editor::TokenType::Attribute: brush = theme.brushSyntaxAttribute.Get(); break;
+                                        default: brush = theme.brushTextPrimary.Get(); break;
+                                    }
+                                }
+
+                                DWRITE_TEXT_RANGE range = { static_cast<UINT32>(oStart - segStart), static_cast<UINT32>(oEnd - oStart) };
+                                pSegLayout->SetDrawingEffect(brush, range);
+                            }
+
+                            pRT->DrawTextLayout(D2D1::Point2F(segVisualX, lineY), pSegLayout.Get(), theme.brushTextPrimary.Get());
+                        }
+                    }
                     curCodeEndX = getColVisualX(lineStr.length());
                 }
             } else if (tokens.empty()) {
@@ -1994,7 +2122,7 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
         // Render in-context Color Preview Swatches inside dedicated gap (before color code, never replacing characters)
         for (size_t sIdx = 0; sIdx < lineColors.size(); ++sIdx) {
             const auto& cs = lineColors[sIdx];
-            float swatchX = codeLeft - scrollX + static_cast<float>(cs.col) * charW + static_cast<float>(sIdx) * swatchSpan + config.ScaleF(1.0f);
+            float swatchX = codeLeft - scrollX + static_cast<float>(cs.col) * charW + static_cast<float>(sIdx) * swatchSpan + (swatchSpan - swatchSize) / 2.0f;
             float swatchY = lineY + (lineH - swatchSize) / 2.0f;
             if (swatchX >= codeLeft - swatchSize && swatchX + swatchSize < codeRight) {
                 D2D1_RECT_F rcSwatch = D2D1::RectF(swatchX, swatchY, swatchX + swatchSize, swatchY + swatchSize);
@@ -2002,21 +2130,24 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
 
                 if (cs.hasAlpha && cs.color.a < 0.999f) {
                     float half = swatchSize / 2.0f;
-                    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> bChk;
-                    pRT->CreateSolidColorBrush(D2D1::ColorF(0x333333), &bChk);
-                    if (bChk) {
-                        pRT->FillRectangle(D2D1::RectF(swatchX, swatchY, swatchX + half, swatchY + half), bChk.Get());
-                        pRT->FillRectangle(D2D1::RectF(swatchX + half, swatchY + half, swatchX + swatchSize, swatchY + swatchSize), bChk.Get());
-                        bChk->SetColor(D2D1::ColorF(0x888888));
-                        pRT->FillRectangle(D2D1::RectF(swatchX + half, swatchY, swatchX + swatchSize, swatchY + half), bChk.Get());
-                        pRT->FillRectangle(D2D1::RectF(swatchX, swatchY + half, swatchX + half, swatchY + swatchSize), bChk.Get());
+                    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> bWhite;
+                    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> bLightGray;
+                    pRT->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 1.0f), &bWhite);
+                    pRT->CreateSolidColorBrush(D2D1::ColorF(0.82f, 0.82f, 0.82f, 1.0f), &bLightGray);
+                    if (bWhite && bLightGray) {
+                        pRT->FillRectangle(D2D1::RectF(swatchX, swatchY, swatchX + half, swatchY + half), bWhite.Get());
+                        pRT->FillRectangle(D2D1::RectF(swatchX + half, swatchY + half, swatchX + swatchSize, swatchY + swatchSize), bWhite.Get());
+                        pRT->FillRectangle(D2D1::RectF(swatchX + half, swatchY, swatchX + swatchSize, swatchY + half), bLightGray.Get());
+                        pRT->FillRectangle(D2D1::RectF(swatchX, swatchY + half, swatchX + half, swatchY + swatchSize), bLightGray.Get());
                     }
                 }
 
                 Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> bCol;
                 pRT->CreateSolidColorBrush(cs.color, &bCol);
                 if (bCol) pRT->FillRoundedRectangle(rrcSwatch, bCol.Get());
-                pRT->DrawRoundedRectangle(rrcSwatch, theme.brushBorderSubtle.Get(), 1.0f);
+                Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> bBorder;
+                pRT->CreateSolidColorBrush(D2D1::ColorF(0.5f, 0.5f, 0.5f, 0.5f), &bBorder);
+                if (bBorder) pRT->DrawRoundedRectangle(rrcSwatch, bBorder.Get(), 1.0f);
 
                 m_visibleColorSwatches.push_back({ rcSwatch, vl.bufferLine, cs.col, cs.len, cs.colorStr });
             }
@@ -2107,24 +2238,8 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
         float caretX = codeLeft - scrollX + cursor.col * charW;
         if (cursor.line < buffer.GetLineCount()) {
             const auto& curLineStr = buffer.GetLine(cursor.line);
-            size_t swBefore = 0;
-            size_t cIdx = 0;
-            while (cIdx < curLineStr.length() && cIdx <= cursor.col) {
-                if (curLineStr[cIdx] == L'#') {
-                    size_t e = cIdx + 1;
-                    while (e < curLineStr.length() && iswxdigit(curLineStr[e])) e++;
-                    size_t l = e - cIdx - 1;
-                    if (l == 3 || l == 4 || l == 6 || l == 8) {
-                        D2D1_COLOR_F c{}; ColorFormat f; bool a;
-                        if (ColorPickerModal::TryParseColor(curLineStr.substr(cIdx, e - cIdx), c, f, a)) {
-                            if (cursor.col >= cIdx) swBefore++;
-                        }
-                    }
-                    cIdx = e; continue;
-                }
-                cIdx++;
-            }
-            caretX = codeLeft - scrollX + static_cast<float>(cursor.col) * charW + static_cast<float>(swBefore) * swatchSpan;
+            auto curLineColors = ScanLineColors(curLineStr);
+            caretX = codeLeft - scrollX + GetColumnVisualOffset(curLineColors, cursor.col, charW, swatchSpan);
         }
         float caretY = topY + config.ScaleF(6.0f) + (visualCursorIdx - doc.scrollLine) * lineH;
         if (isFocused) {
@@ -3031,14 +3146,11 @@ bool EditorCanvas::HitTestCodeArea(POINT pt, const app::AppConfig& config, const
     float relX = pt.x - (canvasLeft + gutterW + config.ScaleF(12.0f)) + doc.scrollOffsetX;
     if (relX < 0.0f) relX = 0.0f;
 
+    auto lineColors = ScanLineColors(lineStr);
     size_t col = 0;
     float bestDiff = 999999.0f;
     for (size_t c = 0; c <= lineStr.length(); ++c) {
-        size_t swBefore = 0;
-        for (const auto& sw : m_visibleColorSwatches) {
-            if (sw.line == mappedLine && c >= sw.col) swBefore++;
-        }
-        float vx = static_cast<float>(c) * charW + static_cast<float>(swBefore) * swatchSpan;
+        float vx = GetColumnVisualOffset(lineColors, c, charW, swatchSpan);
         float diff = std::abs(relX - vx);
         if (diff < bestDiff) {
             bestDiff = diff;
@@ -6144,7 +6256,27 @@ void EditorCanvas::RenderAutocompletePopup(ID2D1RenderTarget* pRT, Theme& theme,
         }
 
         // Render genuine explorer-style icons for Folders & Files, or badges for symbols (Images 4 & 5)
-        if (item.kind == editor::CompletionKind::Folder) {
+        if (item.kind == editor::CompletionKind::Color) {
+            float swatchW = config.ScaleF(13.0f);
+            float swatchH = config.ScaleF(13.0f);
+            float sX = iconX + (iconSize - swatchW) / 2.0f;
+            float sY = iconY + (iconSize - swatchH) / 2.0f;
+            D2D1_RECT_F rcSwatch = D2D1::RectF(sX, sY, sX + swatchW, sY + swatchH);
+            D2D1_ROUNDED_RECT rrcSwatch = D2D1::RoundedRect(rcSwatch, 2.0f, 2.0f);
+
+            uint32_t c = item.colorHex;
+            float r = ((c >> 16) & 0xFF) / 255.0f;
+            float g = ((c >> 8) & 0xFF) / 255.0f;
+            float b = (c & 0xFF) / 255.0f;
+
+            Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> fillBrush;
+            pRT->CreateSolidColorBrush(D2D1::ColorF(r, g, b, 1.0f), &fillBrush);
+            if (fillBrush) pRT->FillRoundedRectangle(rrcSwatch, fillBrush.Get());
+
+            Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> borderBrush;
+            pRT->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.25f), &borderBrush);
+            if (borderBrush) pRT->DrawRoundedRectangle(rrcSwatch, borderBrush.Get(), 1.0f);
+        } else if (item.kind == editor::CompletionKind::Folder) {
             auto setiInfo = theme.GetSetiIcon(item.label, true, false);
             if (theme.fontSeti && setiInfo.pBrush) {
                 pRT->DrawText(&setiInfo.glyph, 1, theme.fontSeti.Get(), rcIcon, setiInfo.pBrush);
@@ -6350,6 +6482,108 @@ void EditorCanvas::RenderAutocompletePopup(ID2D1RenderTarget* pRT, Theme& theme,
                   rcDots, theme.brushTextMuted.Get());
 
     pRT->PopAxisAlignedClip(); // End footer clip
+
+    // 10. Documentation Sidecar Flyout Card (Images 2 & 3: VS Code Tailwind CSS IntelliSense Card)
+    if (m_autocompleteSelectedIdx < m_autocompleteItems.size()) {
+        const auto& selItem = m_autocompleteItems[m_autocompleteSelectedIdx];
+        if (!selItem.detail.empty() || !selItem.documentation.empty() || selItem.isColor) {
+            float docW = config.ScaleF(280.0f);
+            float docH = (std::min)(popupH, config.ScaleF(110.0f));
+            float docX = popupX + popupW + config.ScaleF(4.0f);
+            if (docX + docW > clientWidth - config.ScaleF(8.0f)) {
+                docX = popupX - docW - config.ScaleF(4.0f);
+            }
+            if (docX >= 0.0f) {
+                float docY = popupY;
+                D2D1_RECT_F rcDoc = D2D1::RectF(docX, docY, docX + docW, docY + docH);
+                D2D1_ROUNDED_RECT rrcDoc = D2D1::RoundedRect(rcDoc, 6.0f, 6.0f);
+
+                // Elevated drop shadow
+                for (int s = 1; s <= 2; ++s) {
+                    float expand = static_cast<float>(s) * config.ScaleF(1.5f);
+                    D2D1_RECT_F rcDocShadow = D2D1::RectF(
+                        docX - expand, docY - expand * 0.5f + config.ScaleF(2.0f),
+                        docX + docW + expand, docY + docH + expand + config.ScaleF(2.0f)
+                    );
+                    D2D1_ROUNDED_RECT rrcDocShadow = D2D1::RoundedRect(rcDocShadow, 6.0f + expand, 6.0f + expand);
+                    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> shadowBrush;
+                    pRT->CreateSolidColorBrush(D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.08f), &shadowBrush);
+                    if (shadowBrush) pRT->FillRoundedRectangle(rrcDocShadow, shadowBrush.Get());
+                }
+
+                // Card background & border
+                Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> docBgBrush;
+                pRT->CreateSolidColorBrush(
+                    theme.IsDarkMode() ? D2D1::ColorF(0.12f, 0.12f, 0.14f, 0.98f) : D2D1::ColorF(0.96f, 0.96f, 0.98f, 0.98f),
+                    &docBgBrush
+                );
+                if (docBgBrush) pRT->FillRoundedRectangle(rrcDoc, docBgBrush.Get());
+                pRT->DrawRoundedRectangle(rrcDoc, borderBrush.Get(), 1.0f);
+
+                // Content inside card with padding
+                float padX = config.ScaleF(12.0f);
+                float curDocY = docY + config.ScaleF(10.0f);
+
+                // Top: CSS property and value (e.g. "background-color: rgb(239 68 68);")
+                if (!selItem.detail.empty()) {
+                    D2D1_RECT_F rcDetail = D2D1::RectF(docX + padX, curDocY, docX + docW - padX, curDocY + config.ScaleF(22.0f));
+                    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> propBrush;
+                    pRT->CreateSolidColorBrush(
+                        theme.IsDarkMode() ? D2D1::ColorF(0.61f, 0.86f, 1.0f) : D2D1::ColorF(0.0f, 0.40f, 0.80f),
+                        &propBrush
+                    );
+                    pRT->DrawText(
+                        selItem.detail.c_str(), static_cast<UINT32>(selItem.detail.length()),
+                        theme.fontCode ? theme.fontCode.Get() : theme.fontBody.Get(),
+                        rcDetail, propBrush ? propBrush.Get() : theme.brushTextPrimary.Get()
+                    );
+                    curDocY += config.ScaleF(26.0f);
+                }
+
+                // Bottom: Color Swatch + Hex value (e.g. "■ #ef4444") matching Images 2 & 3
+                if (selItem.isColor) {
+                    float sW = config.ScaleF(13.0f);
+                    float sH = config.ScaleF(13.0f);
+                    float sY = curDocY + config.ScaleF(2.0f);
+                    D2D1_RECT_F rcDocSwatch = D2D1::RectF(docX + padX, sY, docX + padX + sW, sY + sH);
+                    D2D1_ROUNDED_RECT rrcDocSwatch = D2D1::RoundedRect(rcDocSwatch, 2.0f, 2.0f);
+
+                    uint32_t c = selItem.colorHex;
+                    float r = ((c >> 16) & 0xFF) / 255.0f;
+                    float g = ((c >> 8) & 0xFF) / 255.0f;
+                    float b = (c & 0xFF) / 255.0f;
+
+                    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> docSwatchBrush;
+                    pRT->CreateSolidColorBrush(D2D1::ColorF(r, g, b, 1.0f), &docSwatchBrush);
+                    if (docSwatchBrush) pRT->FillRoundedRectangle(rrcDocSwatch, docSwatchBrush.Get());
+
+                    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> docSwatchBorder;
+                    pRT->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.3f), &docSwatchBorder);
+                    if (docSwatchBorder) pRT->DrawRoundedRectangle(rrcDocSwatch, docSwatchBorder.Get(), 1.0f);
+
+                    std::wstring hexStr = selItem.documentation;
+                    if (hexStr.empty()) {
+                        wchar_t buf[16];
+                        swprintf_s(buf, L"#%06x", c);
+                        hexStr = buf;
+                    }
+                    D2D1_RECT_F rcHex = D2D1::RectF(docX + padX + sW + config.ScaleF(8.0f), curDocY, docX + docW - padX, curDocY + config.ScaleF(20.0f));
+                    pRT->DrawText(
+                        hexStr.c_str(), static_cast<UINT32>(hexStr.length()),
+                        theme.fontCode ? theme.fontCode.Get() : theme.fontBody.Get(),
+                        rcHex, theme.brushTextSecondary.Get()
+                    );
+                } else if (!selItem.documentation.empty()) {
+                    D2D1_RECT_F rcDocText = D2D1::RectF(docX + padX, curDocY, docX + docW - padX, docY + docH - config.ScaleF(6.0f));
+                    pRT->DrawText(
+                        selItem.documentation.c_str(), static_cast<UINT32>(selItem.documentation.length()),
+                        theme.fontMenuItem ? theme.fontMenuItem.Get() : theme.fontBody.Get(),
+                        rcDocText, theme.brushTextMuted.Get()
+                    );
+                }
+            }
+        }
+    }
 }
 
 void EditorCanvas::RenderCanvasThemeEffects(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,

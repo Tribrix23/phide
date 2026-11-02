@@ -21,7 +21,8 @@ enum class CompletionKind {
     File,       ///< 📄 File
     Class,      ///< ⓒ Class / Type
     Constant,   ///< ⓒ Constant
-    Module      ///< ⓜ Module / Package
+    Module,     ///< ⓜ Module / Package
+    Color       ///< ■ Color Swatch
 };
 
 /**
@@ -35,7 +36,10 @@ struct IntelliSenseItem {
     int score = 0;
     size_t matchStart = 0;
     size_t matchLen = 0;
-    std::wstring origin; ///< Provider origin / source (e.g. L"snippets", L"builtins", L"html", L"css")
+    std::wstring origin; ///< Provider origin / source (e.g. L"snippets", L"builtins", L"html", L"css", L"tailwind")
+    std::wstring documentation; ///< Secondary detail / documentation (e.g. hex code or CSS docs)
+    bool isColor = false;
+    uint32_t colorHex = 0;
 };
 
 class SnippetManager;
