@@ -43,7 +43,8 @@ public:
     static std::vector<lsp::Diagnostic> ValidateJavaScript(
         const Buffer& buffer,
         size_t startLine = 0,
-        size_t endLine = static_cast<size_t>(-1)
+        size_t endLine = static_cast<size_t>(-1),
+        bool isJsx = false
     );
 
     /**

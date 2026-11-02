@@ -506,6 +506,10 @@ public:
      * @brief Performs hit-testing on the "Open Folder" button shown when no folder is open.
      */
     bool HitTestOpenFolderButton(POINT pt, const app::AppConfig& config) const;
+    bool HitTestExplorerScrollbar(POINT pt);
+    bool HandleExplorerScrollbarMouseMove(POINT pt);
+    void ReleaseExplorerScrollbarDrag() noexcept { m_isDraggingExplorerScrollbar = false; }
+    [[nodiscard]] bool IsDraggingExplorerScrollbar() const noexcept { return m_isDraggingExplorerScrollbar; }
 
     /**
      * @brief Sets the hovered tree item.
@@ -1071,6 +1075,12 @@ private:
     std::set<std::wstring> m_expandedDirs;
     std::vector<DrawerTreeItem> m_visibleItems;
     size_t m_scrollIndex = 0;           ///< Vertical scroll index for tree items
+    bool m_isDraggingExplorerScrollbar = false;
+    float m_dragScrollStartY = 0.0f;
+    size_t m_dragScrollStartIndex = 0;
+    D2D1_RECT_F m_rcExplorerScrollTrack = { 0.0f, 0.0f, 0.0f, 0.0f };
+    D2D1_RECT_F m_rcExplorerScrollThumb = { 0.0f, 0.0f, 0.0f, 0.0f };
+    bool m_isExplorerScrollHovered = false;
 
     int m_hoveredIndex = -1;
     bool m_hoveredOpenFolderBtn = false;

@@ -10,6 +10,7 @@
 #include "phide/app/Window.hpp"
 #include "phide/editor/SyntaxValidator.hpp"
 #include "phide/ui/PhideLogo.hpp"
+#include "phide/ui/SplashScreen.hpp"
 #include <windowsx.h>
 #include <commdlg.h>
 #include <shobjidl.h>
@@ -1163,8 +1164,25 @@ void Window::OpenFileDocument(const std::wstring& path, bool isPreview) {
             }
             ComputeDiffHunks(newDoc);
             if (m_config.enableGitLens) {
-                m_drawer.ComputeGitBlame(relPath, newDoc.gitBlameMap);
-                newDoc.gitBlameLoaded = true;
+                newDoc.gitBlameLoaded = false;
+                std::wstring blameRel = relPath;
+                std::wstring blameDocPath = resolvedPath;
+                std::thread([this, blameRel, blameDocPath]() {
+                    std::unordered_map<size_t, editor::OpenDocument::LineBlameInfo> blameMap;
+                    m_drawer.ComputeGitBlame(blameRel, blameMap);
+                    for (auto& g : m_editorGroups) {
+                        for (auto& d : g.docs) {
+                            if (d.filePath == blameDocPath) {
+                                d.gitBlameMap = std::move(blameMap);
+                                d.gitBlameLoaded = true;
+                                break;
+                            }
+                        }
+                    }
+                    if (m_hwnd) InvalidateRect(m_hwnd, nullptr, FALSE);
+                }).detach();
+                // Blame loaded asynchronously in background worker thread
+                // Blame loaded asynchronously
             }
         } else {
             newDoc.diffOriginalBuffer.SetText(newDoc.originalDiskText);
@@ -2383,6 +2401,11 @@ void Window::DoSaveFileAs() {
 
 void Window::DoSaveAll() {
     bool anySaved = false;
+    if (m_drawer.IsDraggingExplorerScrollbar()) {
+        m_drawer.ReleaseExplorerScrollbarDrag();
+        ReleaseCapture();
+        InvalidateRect(m_hwnd, nullptr, FALSE);
+    }
     for (auto& group : m_editorGroups) {
         for (auto& doc : group.docs) {
             if (doc.isDirty && !doc.filePath.empty()) {
@@ -6161,6 +6184,7 @@ bool Window::Create(HINSTANCE hInstance, int nCmdShow) {
         ShowWindow(m_hwnd, SW_MAXIMIZE);
     }
     UpdateWindow(m_hwnd);
+    phide::ui::SplashScreen::Dismiss();
 
     // Parse command line arguments for initial folder or file
     int nArgs = 0;
@@ -8254,12 +8278,17 @@ void Window::HandleMouseMove(POINT clientPt, WPARAM wParam) {
 
     if (m_drawerAnimProgress > 0.001f && clientPt.y < effectiveDrawerH) {
         if (m_config.activeRailTab == 0) {
-            if (!m_drawer.HasOpenFolder()) {
-                bool btnHover = m_drawer.HitTestOpenFolderButton(clientPt, m_config);
-                if (m_drawer.SetHoveredOpenFolderBtn(btnHover)) needRepaint = true;
+            if (m_drawer.IsDraggingExplorerScrollbar()) {
+                if (m_drawer.HandleExplorerScrollbarMouseMove(clientPt)) needRepaint = true;
             } else {
-                int hoveredTree = m_drawer.HitTest(clientPt, m_config);
-                if (m_drawer.SetHoveredIndex(hoveredTree)) needRepaint = true;
+                if (m_drawer.HandleExplorerScrollbarMouseMove(clientPt)) needRepaint = true;
+                if (!m_drawer.HasOpenFolder()) {
+                    bool btnHover = m_drawer.HitTestOpenFolderButton(clientPt, m_config);
+                    if (m_drawer.SetHoveredOpenFolderBtn(btnHover)) needRepaint = true;
+                } else {
+                    int hoveredTree = m_drawer.HitTest(clientPt, m_config);
+                    if (m_drawer.SetHoveredIndex(hoveredTree)) needRepaint = true;
+                }
             }
         } else if (m_config.activeRailTab == 1) {
             if (m_drawer.HandleSearchMouseMove(clientPt)) {
@@ -10300,6 +10329,11 @@ void Window::HandleLButtonDown(POINT clientPt) {
                     return;
                 }
             } else {
+                if (m_drawer.HitTestExplorerScrollbar(clientPt)) {
+                    SetCapture(m_hwnd);
+                    InvalidateRect(m_hwnd, nullptr, FALSE);
+                    return;
+                }
                 int clickedTree = m_drawer.HitTest(clientPt, m_config);
                 if (clickedTree >= 0) {
                     m_explorerHasFocus = true;
@@ -13341,7 +13375,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     keepAnimating = true;
                 }
 
-                if (m_rightSidebarAnimProgress > 0.001f || m_extensionsPanel.IsOpen()) {
+                if (m_isRightSidebarAnimating) {
                     m_extensionsPanel.UpdateAnim(16.0f);
                     keepAnimating = true;
                 }

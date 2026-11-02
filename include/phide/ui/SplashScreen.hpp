@@ -19,9 +19,18 @@ public:
     static void Show(HINSTANCE hInstance, int durationMs = 5000);
 
     /**
+     * @brief Dismisses the splash screen window once the main IDE window is created and ready to paint.
+     */
+    static void Dismiss();
+
+    /**
      * @brief Finds the resolved absolute path to assets/splash.jpg.
      */
     static std::wstring FindSplashImagePath();
+
+private:
+    static inline HWND s_hSplash = nullptr;
+    static inline HINSTANCE s_hInstance = nullptr;
 };
 
 } // namespace phide::ui

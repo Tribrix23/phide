@@ -91,6 +91,24 @@ size_t EditorCanvas::CountSwatchesBefore(const std::vector<LineColorSpan>& spans
     return count;
 }
 
+float EditorCanvas::GetColumnVisualOffset(const std::wstring& lineText, const std::vector<LineColorSpan>& spans, size_t col, float charW, float swatchSpan, int tabSize) {
+    float visualCols = 0.0f;
+    for (size_t i = 0; i < col && i < lineText.length(); ++i) {
+        if (lineText[i] == L'\t') {
+            int curColInt = static_cast<int>(visualCols);
+            int spaces = tabSize - (curColInt % (tabSize > 0 ? tabSize : 4));
+            if (spaces <= 0) spaces = (tabSize > 0 ? tabSize : 4);
+            visualCols += static_cast<float>(spaces);
+        } else {
+            visualCols += 1.0f;
+        }
+    }
+    if (col > lineText.length()) {
+        visualCols += static_cast<float>(col - lineText.length());
+    }
+    return visualCols * charW + static_cast<float>(CountSwatchesBefore(spans, col)) * swatchSpan;
+}
+
 float EditorCanvas::GetColumnVisualOffset(const std::vector<LineColorSpan>& spans, size_t col, float charW, float swatchSpan) {
     return static_cast<float>(col) * charW + static_cast<float>(CountSwatchesBefore(spans, col)) * swatchSpan;
 }
@@ -2270,7 +2288,7 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
         if (cursor.line < buffer.GetLineCount()) {
             const auto& curLineStr = buffer.GetLine(cursor.line);
             auto curLineColors = ScanLineColors(curLineStr);
-            caretX = codeLeft - scrollX + GetColumnVisualOffset(curLineColors, cursor.col, charW, swatchSpan);
+            caretX = codeLeft - scrollX + GetColumnVisualOffset(curLineStr, curLineColors, cursor.col, charW, swatchSpan, config.tabSize);
         }
         float caretY = topY + config.ScaleF(6.0f) + (visualCursorIdx - doc.scrollLine) * lineH;
         if (isFocused) {
@@ -2337,7 +2355,7 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
                     if (sec.cursor.line < buffer.GetLineCount()) {
                         const auto& sLineStr = buffer.GetLine(sec.cursor.line);
                         auto sColors = ScanLineColors(sLineStr);
-                        secCaretX = codeLeft - scrollX + GetColumnVisualOffset(sColors, sec.cursor.col, charW, swatchSpan);
+                        secCaretX = codeLeft - scrollX + GetColumnVisualOffset(sLineStr, sColors, sec.cursor.col, charW, swatchSpan, config.tabSize);
                     }
                     float secCaretY = topY + config.ScaleF(6.0f) + (secVisualIdx - doc.scrollLine) * lineH;
                     if (secCaretY >= topY && secCaretY + lineH <= clientHeight) {
@@ -2480,7 +2498,7 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
                     const auto& clText = buffer.GetLine(cursor.line);
                     auto clColors = ScanLineColors(clText);
                     const float swatchSpan = config.ScaleF(14.0f);
-                    textVisualW = GetColumnVisualOffset(clColors, clText.length(), charW, swatchSpan);
+                    textVisualW = GetColumnVisualOffset(clText, clColors, clText.length(), charW, swatchSpan, config.tabSize);
                     if (theme.dwriteFactory && theme.fontCode) {
                         Microsoft::WRL::ComPtr<IDWriteTextLayout> pLineMeasure;
                         if (SUCCEEDED(theme.dwriteFactory->CreateTextLayout(
@@ -2498,6 +2516,9 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
 
                 // Place blame strictly in empty space after both line text and active cursor, never overlapping code
                 float lineEndX = (std::max)(codeLeft - scrollX + textVisualW, caretX) + config.ScaleF(40.0f);
+                if (m_prediction.isValid && m_prediction.line == cursor.line && !m_prediction.ghostText.empty()) {
+                    lineEndX += static_cast<float>(m_prediction.ghostText.length()) * charW + config.ScaleF(24.0f);
+                }
 
                 if (lineEndX < codeRight - config.ScaleF(20.0f)) {
                     IDWriteTextFormat* blameFmt = theme.fontHint ? theme.fontHint.Get() : (theme.fontBody ? theme.fontBody.Get() : theme.fontCode.Get());
@@ -7158,8 +7179,8 @@ void EditorCanvas::RenderDiffView(ID2D1RenderTarget* pRT, Theme& theme, const ap
                   pLabelFmt, rcLeftTitle, theme.brushTextPrimary.Get());
 
     // Left [Read-only] badge
-    float roW = config.ScaleF(68.0f);
-    float roH = config.ScaleF(16.0f);
+    float roW = config.ScaleF(74.0f);
+    float roH = config.ScaleF(18.0f);
     D2D1_ROUNDED_RECT rrcRo = D2D1::RoundedRect(
         D2D1::RectF(dividerX - roW - config.ScaleF(8.0f), topY + (subHeaderH - roH) / 2.0f, dividerX - config.ScaleF(8.0f), topY + (subHeaderH + roH) / 2.0f),
         3.0f, 3.0f
@@ -7181,14 +7202,14 @@ void EditorCanvas::RenderDiffView(ID2D1RenderTarget* pRT, Theme& theme, const ap
 
     // Right [Editable] badge (or Read-only if commit diff)
     const wchar_t* rightBadgeText = doc.isDiffRightReadOnly ? L"Read-only" : L"Editable";
-    float editW = config.ScaleF(doc.isDiffRightReadOnly ? 68.0f : 56.0f);
+    float editW = config.ScaleF(74.0f);
     D2D1_ROUNDED_RECT rrcEdit = D2D1::RoundedRect(
         D2D1::RectF(rightX + halfW - editW - config.ScaleF(8.0f), topY + (subHeaderH - roH) / 2.0f, rightX + halfW - config.ScaleF(8.0f), topY + (subHeaderH + roH) / 2.0f),
         3.0f, 3.0f
     );
     pRT->FillRoundedRectangle(rrcEdit, doc.isDiffRightReadOnly ? brushPillRoBg.Get() : brushPillEditBg.Get());
-    pRT->DrawText(rightBadgeText, static_cast<UINT32>(wcslen(rightBadgeText)), pLabelFmt,
-                  D2D1::RectF(rrcEdit.rect.left + (doc.isDiffRightReadOnly ? 5.0f : 6.0f), rrcEdit.rect.top, rrcEdit.rect.right, rrcEdit.rect.bottom),
+    pRT->DrawText(rightBadgeText, static_cast<UINT32>(wcslen(rightBadgeText)), theme.fontButtonCenter ? theme.fontButtonCenter.Get() : pLabelFmt,
+                  rrcEdit.rect,
                   doc.isDiffRightReadOnly ? theme.brushTextMuted.Get() : theme.brushTextWhite.Get());
 
     // =========================================================================

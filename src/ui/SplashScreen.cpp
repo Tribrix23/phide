@@ -133,30 +133,47 @@ void SplashScreen::Show(HINSTANCE hInstance, int durationMs) {
 
     UpdateWindow(hwnd);
 
-    // Modal message loop: dismiss immediately on click, keypress, or timeout
+    s_hSplash = hwnd;
+    s_hInstance = hInstance;
+
+    // Modal message loop: allow interaction or timeout while keeping window ready
     ULONGLONG start = GetTickCount64();
     ULONGLONG targetDuration = static_cast<ULONGLONG>(durationMs > 0 ? durationMs : 1200);
     MSG msg;
+    bool userCancelled = false;
 
     while (GetTickCount64() - start < targetDuration) {
         while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
             if (msg.message == WM_QUIT) {
                 PostQuitMessage(static_cast<int>(msg.wParam));
-                targetDuration = 0;
+                userCancelled = true;
                 break;
             }
             if (msg.message == WM_LBUTTONDOWN || msg.message == WM_RBUTTONDOWN || msg.message == WM_KEYDOWN) {
-                targetDuration = 0;
+                userCancelled = true;
                 break;
             }
             TranslateMessage(&msg);
             DispatchMessageW(&msg);
         }
+        if (userCancelled) break;
         Sleep(10);
     }
 
-    DestroyWindow(hwnd);
-    UnregisterClassW(L"PhideSplashScreenClass", hInstance);
+    if (userCancelled) {
+        Dismiss();
+    }
+}
+
+void SplashScreen::Dismiss() {
+    if (s_hSplash && IsWindow(s_hSplash)) {
+        DestroyWindow(s_hSplash);
+        s_hSplash = nullptr;
+    }
+    if (s_hInstance) {
+        UnregisterClassW(L"PhideSplashScreenClass", s_hInstance);
+        s_hInstance = nullptr;
+    }
 }
 
 } // namespace phide::ui

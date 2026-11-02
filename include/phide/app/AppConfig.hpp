@@ -35,7 +35,7 @@ struct AppConfig {
     int railBtnSize   = 36;     ///< Width and height of the rail button bounding box.
 
     // --- Drawer Panel Metrics ---
-    int drawerWidth   = 280;    ///< Width of the slide-out drawer panel when expanded.
+    int drawerWidth   = 330;    ///< Width of the slide-out drawer panel when expanded (Default: 330 logical px for generous label breathing room).
     int rightSidebarWidth = 340; ///< Width of the right sidebar (Runtimes / Extensions panel) when expanded.
     bool isDrawerOpen = false;  ///< True if the contextual sidebar drawer is expanded; false if collapsed.
     int activeRailTab = 0;      ///< Current active rail tab (Default: 0 = Files / Explorer matching Image 2).

@@ -35,8 +35,8 @@ std::vector<lsp::Diagnostic> SyntaxValidator::Validate(
         return ValidateCss(buffer);
     }
     if (ext == L".js" || ext == L".jsx" || ext == L".ts" || ext == L".tsx" || ext == L".mjs" || ext == L".cjs") {
-        auto diags = ValidateJavaScript(buffer);
         bool isJsx = (ext == L".jsx" || ext == L".tsx");
+        auto diags = ValidateJavaScript(buffer, 0, static_cast<size_t>(-1), isJsx);
         auto reactDiags = ValidateReactAndESLint(buffer, isJsx);
         diags.insert(diags.end(), reactDiags.begin(), reactDiags.end());
         return diags;
@@ -545,7 +545,8 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidateCss(
 std::vector<lsp::Diagnostic> SyntaxValidator::ValidateJavaScript(
     const Buffer& buffer,
     size_t startLine,
-    size_t endLine
+    size_t endLine,
+    bool isJsx
 ) {
     std::vector<lsp::Diagnostic> diagnostics;
     size_t lineCount = buffer.GetLineCount();
@@ -559,6 +560,10 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidateJavaScript(
     std::vector<TemplateContext> templateStack;
     bool inSingleQuote = false;
     bool inDoubleQuote = false;
+
+    int jsxDepth = 0;
+    bool inJsxTag = false;
+    int jsxExprDepth = 0;
 
     for (size_t l = startLine; l < endLine; ++l) {
         const auto& line = buffer.GetLine(l);
@@ -614,6 +619,52 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidateJavaScript(
                     inDoubleQuote = false;
                 }
                 continue;
+            }
+
+            // 4.5 JSX syntax and children text mode handling
+            if (isJsx) {
+                if (!inJsxTag && jsxDepth > 0 && jsxExprDepth == 0) {
+                    if (line[c] == L'{') {
+                        jsxExprDepth = 1;
+                        stack.push_back({ L'{', l, c });
+                        continue;
+                    }
+                    if (line[c] == L'<') {
+                        if (c + 1 < line.length() && line[c + 1] == L'/') {
+                            size_t closeEnd = line.find(L'>', c + 2);
+                            if (closeEnd != std::wstring::npos) {
+                                if (jsxDepth > 0) jsxDepth--;
+                                c = closeEnd;
+                                continue;
+                            }
+                        } else if (c + 1 < line.length() && (line[c + 1] == L'>' || iswalpha(line[c + 1]))) {
+                            inJsxTag = true;
+                            continue;
+                        }
+                    }
+                    // Characters inside JSX element children outside { ... } are literal JSX text!
+                    continue;
+                }
+
+                if (inJsxTag) {
+                    if (line[c] == L'>') {
+                        inJsxTag = false;
+                        if (c > 0 && line[c - 1] == L'/') {
+                            // Self-closing tag <tag/>
+                        } else {
+                            jsxDepth++;
+                        }
+                        continue;
+                    }
+                } else if (jsxDepth == 0) {
+                    if (line[c] == L'<' && c + 1 < line.length() && (line[c + 1] == L'>' || iswalpha(line[c + 1]))) {
+                        size_t nextGt = line.find(L'>', c + 1);
+                        if (nextGt != std::wstring::npos) {
+                            inJsxTag = true;
+                            continue;
+                        }
+                    }
+                }
             }
 
             // 5. Comments
@@ -709,6 +760,9 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidateJavaScript(
                 }
                 stack.push_back({ ch, l, c });
             } else if (ch == L')' || ch == L']' || ch == L'}') {
+                if (isJsx && ch == L'}' && jsxExprDepth > 0) {
+                    jsxExprDepth--;
+                }
                 if (!templateStack.empty() && ch == L'}') {
                     if (templateStack.back().braceDepth == 1) {
                         // Closing brace of the ${...} interpolation

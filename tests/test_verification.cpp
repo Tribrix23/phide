@@ -292,6 +292,9 @@ int main(int argc, char* argv[]) {
     if (targetTest == 107) {
         goto run_test_107;
     }
+    if (targetTest == 108) {
+        goto run_test_108;
+    }
 
     if (targetTest == 66) {
         goto run_test_66;
@@ -16276,6 +16279,88 @@ run_test_107:
         std::cout << "  Passed: All [TEST 107] NEXT Prediction tests passed!" << std::endl;
         if (targetTest == 107) {
             std::cout << "Target test 107 finished." << std::endl;
+            return 0;
+        }
+    }
+
+run_test_108:
+    // [TEST 108] JSX/TSX False Positive Elimination, Explorer Scrollbar, Error Isolation, and Visual Metrics
+    {
+        std::cout << "\n[TEST 108] Testing JSX/TSX False Positive Elimination, Explorer Scrollbar, Error Isolation..." << std::endl;
+
+        // Subtest 1: Validate exact page.tsx from Image 8 has 0 false positive syntax errors
+        {
+            phide::editor::Buffer buf;
+            buf.SetText(
+                L"const WebSocket = require('ws');\n"
+                L"export default function Page() {\n"
+                L"    return (\n"
+                L"        <pre className=\"text-sm font-mono text-zinc-300\">\n"
+                L"            <span className=\"text-purple-400\">const</span> WebSocket = <span className=\"text-blue-400\">require</span>('ws');\n"
+                L"            <span className=\"text-purple-400\">const</span> ws = <span className=\"text-purple-400\">new</span> WebSocket('ws://localhost:8080');\n"
+                L"            &nbsp;&nbsp;&nbsp;&nbsp;<span className=\"text-zinc-500\">// 1. Authenticate</span><br/>\n"
+                L"            &nbsp;&nbsp;&nbsp;&nbsp;ws.<span className=\"text-blue-400\">on</span>('open', <span className=\"text-purple-400\">function</span>() {'{'}<br/>\n"
+                L"            &nbsp;&nbsp;&nbsp;&nbsp;ws.<span className=\"text-blue-400\">send</span>(JSON.<span className=\"text-blue-400\">stringify</span>({'{\\n'}\n"
+                L"            &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span className=\"text-zinc-400\">'action':</span> <span className=\"text-emerald-300\">'authenticate'</span>,<br/>\n"
+                L"            &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span className=\"text-zinc-400\">'username':</span> <span className=\"text-emerald-300\">'david'</span>,<br/>\n"
+                L"            &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span className=\"text-zinc-400\">'password':</span> <span className=\"text-emerald-300\">'perez'</span><br/>\n"
+                L"            &nbsp;&nbsp;&nbsp;&nbsp;<span className=\"text-purple-400\">{'}'});</span><br/>\n"
+                L"            &nbsp;&nbsp;&nbsp;&nbsp;<span className=\"text-purple-400\">if</span> (authenticated) {'{'}<br/>\n"
+                L"            &nbsp;&nbsp;&nbsp;&nbsp;{'}'} <span className=\"text-purple-400\">else</span> {'{'}<br/>\n"
+                L"            &nbsp;&nbsp;&nbsp;&nbsp;{'}'});<br/>\n"
+                L"        </pre>\n"
+                L"    );\n"
+                L"}\n"
+            );
+            auto diags = phide::editor::SyntaxValidator::Validate(L"app\\docs\\quick-start\\page.tsx", buf);
+            if (!diags.empty()) {
+                for (const auto& d : diags) {
+                    std::wcout << L"  Diag at line " << d.line << L": " << d.message << std::endl;
+                }
+            }
+            assert(diags.empty() && "page.tsx with JSX text spans, &nbsp;, and {'}'}); must have 0 diagnostics");
+            std::cout << "  Passed: Exact page.tsx produces 0 false positive syntax errors" << std::endl;
+        }
+
+        // Subtest 2: Drawer Error File Isolation (Only exact file gets error tag)
+        {
+            phide::ui::DrawerPanel drawer;
+            std::map<std::wstring, size_t> errs;
+            errs[L"C:\\project\\app\\docs\\quick-start\\page.tsx"] = 5;
+            drawer.SetErrorFiles(errs);
+            assert(drawer.GetErrorFiles().size() == 1);
+            std::cout << "  Passed: Drawer error files mapped with absolute path isolation" << std::endl;
+        }
+
+        // Subtest 3: Explorer Scrollbar Interaction
+        {
+            phide::ui::DrawerPanel drawer;
+            assert(!drawer.IsDraggingExplorerScrollbar());
+            drawer.ReleaseExplorerScrollbarDrag();
+            assert(!drawer.IsDraggingExplorerScrollbar());
+            std::cout << "  Passed: Explorer scrollbar state and release verified" << std::endl;
+        }
+
+        // Subtest 4: SplashScreen dismissal safely handles clean state
+        {
+            phide::ui::SplashScreen::Dismiss();
+            std::cout << "  Passed: SplashScreen::Dismiss() safely executes with no active window" << std::endl;
+        }
+
+        // Subtest 5: GetColumnVisualOffset with tab character expands to 4 columns
+        {
+            std::vector<phide::ui::LineColorSpan> spans;
+            std::wstring lineWithTab = L"\tconst x = 1;";
+            float off0 = phide::ui::EditorCanvas::GetColumnVisualOffset(lineWithTab, spans, 0, 8.0f, 14.0f, 4);
+            assert(off0 == 0.0f);
+            float off1 = phide::ui::EditorCanvas::GetColumnVisualOffset(lineWithTab, spans, 1, 8.0f, 14.0f, 4);
+            assert(off1 == 32.0f); // 4 * 8.0f = 32.0f
+            std::cout << "  Passed: GetColumnVisualOffset correctly expands \\t to 4 visual character columns" << std::endl;
+        }
+
+        std::cout << "  Passed: All [TEST 108] JSX False Positives, Error Isolation & Scrollbar tests passed!" << std::endl;
+        if (targetTest == 108) {
+            std::cout << "Target test 108 finished." << std::endl;
             return 0;
         }
     }

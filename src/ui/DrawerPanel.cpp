@@ -1244,13 +1244,23 @@ void DrawerPanel::RenderExplorerPane(ID2D1RenderTarget* pRT, Theme& theme, const
                     if (!item.isFolder) {
                         std::wstring normItem = item.fullPath;
                         for (auto& c : normItem) if (c == L'/') c = L'\\';
+                        if (m_hasOpenFolder && !m_openFolderPath.empty() && (normItem.length() < 2 || normItem[1] != L':')) {
+                            std::wstring base = m_openFolderPath;
+                            for (auto& c : base) if (c == L'/') c = L'\\';
+                            if (!base.empty() && base.back() != L'\\') base += L'\\';
+                            normItem = base + normItem;
+                        }
                         for (const auto& [errPath, count] : m_errorFiles) {
                             if (count > 0) {
                                 std::wstring normErr = errPath;
                                 for (auto& c : normErr) if (c == L'/') c = L'\\';
-                                if (_wcsicmp(normErr.c_str(), normItem.c_str()) == 0 ||
-                                    (!normErr.empty() && normErr.find(L'\\') == std::wstring::npos &&
-                                     _wcsicmp(normErr.c_str(), item.label.c_str()) == 0)) {
+                                if (m_hasOpenFolder && !m_openFolderPath.empty() && (normErr.length() < 2 || normErr[1] != L':')) {
+                                    std::wstring base = m_openFolderPath;
+                                    for (auto& c : base) if (c == L'/') c = L'\\';
+                                    if (!base.empty() && base.back() != L'\\') base += L'\\';
+                                    normErr = base + normErr;
+                                }
+                                if (_wcsicmp(normErr.c_str(), normItem.c_str()) == 0) {
                                     itemHasError = true;
                                     errorCount = count;
                                     break;
@@ -1338,10 +1348,12 @@ void DrawerPanel::RenderExplorerPane(ID2D1RenderTarget* pRT, Theme& theme, const
                         pRT->CreateSolidColorBrush(gitColor, &brushGitStatus);
                     }
 
+                    float maxLabelRight = railW + fullDrawerW - config.ScaleF((itemHasError || !gitStatus.empty()) ? 38.0f : 16.0f);
+                    if (maxLabelRight < labelX + 10.0f) maxLabelRight = labelX + 10.0f;
                     D2D1_RECT_F rcLabel = D2D1::RectF(
                         labelX,
                         curY,
-                        railW + fullDrawerW - config.ScaleF((itemHasError || !gitStatus.empty()) ? 30.0f : 10.0f),
+                        maxLabelRight,
                         curY + itemH
                     );
                     ID2D1Brush* pTextBrush = itemHasError ?
@@ -1355,6 +1367,7 @@ void DrawerPanel::RenderExplorerPane(ID2D1RenderTarget* pRT, Theme& theme, const
                                     (theme.IsDarkMode() ? 
                                         (isHovered ? theme.brushTextWhite.Get() : (item.isFolder ? theme.brushTextWhite.Get() : theme.brushTextPrimary.Get())) :
                                         theme.brushTextPrimary.Get()))));
+                    pRT->PushAxisAlignedClip(rcLabel, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
                     pRT->DrawText(
                         item.label.c_str(),
                         static_cast<UINT32>(item.label.length()),
@@ -1362,6 +1375,7 @@ void DrawerPanel::RenderExplorerPane(ID2D1RenderTarget* pRT, Theme& theme, const
                         rcLabel,
                         pTextBrush
                     );
+                    pRT->PopAxisAlignedClip();
 
                     // Red error indicator badge in explorer tree (Image 3)
                     if (itemHasError) {
@@ -1460,6 +1474,40 @@ void DrawerPanel::RenderExplorerPane(ID2D1RenderTarget* pRT, Theme& theme, const
                               rcPillText, theme.brushTextSecondary.Get());
                 pRT->PopAxisAlignedClip();
             }
+        }
+
+        // Render modern draggable vertical scrollbar for Explorer tree (VS Code style)
+        const float itemH = config.ScaleF(24.0f);
+        const float treeStartY = headerH + config.ScaleF(44.0f);
+        const float treeH = clientHeight - treeStartY;
+        const size_t visibleSlots = (itemH > 0.0f) ? static_cast<size_t>(treeH / itemH) : 10;
+        if (m_visibleItems.size() > visibleSlots && treeH > 30.0f) {
+            float scrollTrackX = railW + fullDrawerW - config.ScaleF(8.0f);
+            float scrollTrackW = config.ScaleF(6.0f);
+            m_rcExplorerScrollTrack = D2D1::RectF(scrollTrackX, treeStartY, scrollTrackX + scrollTrackW, clientHeight - config.ScaleF(4.0f));
+
+            float totalItems = static_cast<float>(m_visibleItems.size());
+            float visRatio = static_cast<float>(visibleSlots) / totalItems;
+            float thumbH = (std::max)(config.ScaleF(24.0f), (m_rcExplorerScrollTrack.bottom - m_rcExplorerScrollTrack.top) * visRatio);
+            float availH = (m_rcExplorerScrollTrack.bottom - m_rcExplorerScrollTrack.top) - thumbH;
+            float scrollRatio = (m_visibleItems.size() > visibleSlots)
+                ? static_cast<float>(m_scrollIndex) / static_cast<float>(m_visibleItems.size() - visibleSlots)
+                : 0.0f;
+            float thumbY = m_rcExplorerScrollTrack.top + scrollRatio * availH;
+
+            m_rcExplorerScrollThumb = D2D1::RectF(scrollTrackX, thumbY, scrollTrackX + scrollTrackW, thumbY + thumbH);
+
+            D2D1_ROUNDED_RECT rrcThumb = D2D1::RoundedRect(m_rcExplorerScrollThumb, 3.0f, 3.0f);
+            Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushThumb;
+            float opacity = (m_isDraggingExplorerScrollbar || m_isExplorerScrollHovered) ? 0.65f : 0.35f;
+            pRT->CreateSolidColorBrush(
+                theme.IsDarkMode() ? D2D1::ColorF(1.0f, 1.0f, 1.0f, opacity) : D2D1::ColorF(0.0f, 0.0f, 0.0f, opacity),
+                &brushThumb
+            );
+            if (brushThumb) pRT->FillRoundedRectangle(rrcThumb, brushThumb.Get());
+        } else {
+            m_rcExplorerScrollTrack = D2D1::RectF(0.0f, 0.0f, 0.0f, 0.0f);
+            m_rcExplorerScrollThumb = D2D1::RectF(0.0f, 0.0f, 0.0f, 0.0f);
         }
     }
 
@@ -2376,6 +2424,52 @@ bool DrawerPanel::HitTestOpenFolderButton(POINT pt, const app::AppConfig& config
                 pt.y >= m_rcOpenFolderBtn.top && pt.y <= m_rcOpenFolderBtn.bottom);
     }
     return false;
+}
+
+bool DrawerPanel::HitTestExplorerScrollbar(POINT pt) {
+    if (m_rcExplorerScrollTrack.right <= m_rcExplorerScrollTrack.left) return false;
+    if (pt.x >= m_rcExplorerScrollTrack.left && pt.x <= m_rcExplorerScrollTrack.right &&
+        pt.y >= m_rcExplorerScrollTrack.top && pt.y <= m_rcExplorerScrollTrack.bottom) {
+        if (pt.y >= m_rcExplorerScrollThumb.top && pt.y <= m_rcExplorerScrollThumb.bottom) {
+            m_isDraggingExplorerScrollbar = true;
+            m_dragScrollStartY = static_cast<float>(pt.y);
+            m_dragScrollStartIndex = m_scrollIndex;
+        } else if (pt.y < m_rcExplorerScrollThumb.top) {
+            if (m_scrollIndex > 5) m_scrollIndex -= 5;
+            else m_scrollIndex = 0;
+        } else {
+            m_scrollIndex += 5;
+        }
+        return true;
+    }
+    return false;
+}
+
+bool DrawerPanel::HandleExplorerScrollbarMouseMove(POINT pt) {
+    if (m_isDraggingExplorerScrollbar) {
+        float trackH = m_rcExplorerScrollTrack.bottom - m_rcExplorerScrollTrack.top;
+        float thumbH = m_rcExplorerScrollThumb.bottom - m_rcExplorerScrollThumb.top;
+        float availH = trackH - thumbH;
+        if (availH > 0.0f && m_visibleItems.size() > 0) {
+            float deltaY = static_cast<float>(pt.y) - m_dragScrollStartY;
+            const float itemH = 24.0f;
+            const size_t visibleSlots = static_cast<size_t>(trackH / itemH);
+            if (m_visibleItems.size() > visibleSlots) {
+                size_t maxScroll = m_visibleItems.size() - visibleSlots;
+                float scrollFraction = deltaY / availH;
+                int deltaItems = static_cast<int>(scrollFraction * static_cast<float>(maxScroll));
+                int newScroll = static_cast<int>(m_dragScrollStartIndex) + deltaItems;
+                if (newScroll < 0) newScroll = 0;
+                if (newScroll > static_cast<int>(maxScroll)) newScroll = static_cast<int>(maxScroll);
+                m_scrollIndex = static_cast<size_t>(newScroll);
+            }
+        }
+        return true;
+    }
+    bool wasHovered = m_isExplorerScrollHovered;
+    m_isExplorerScrollHovered = (pt.x >= m_rcExplorerScrollTrack.left - 2.0f && pt.x <= m_rcExplorerScrollTrack.right + 2.0f &&
+                                 pt.y >= m_rcExplorerScrollTrack.top && pt.y <= m_rcExplorerScrollTrack.bottom);
+    return wasHovered != m_isExplorerScrollHovered;
 }
 
 bool DrawerPanel::HitTestSearch(POINT pt, const app::AppConfig& config, std::wstring& outJumpFile, size_t& outJumpLine, size_t& outMatchCol, size_t& outMatchLen) {
@@ -6813,7 +6907,25 @@ bool DrawerPanel::HandleGitMouseMove(POINT pt) {
             m_hoveredCommitIdx = hitCommitIdx;
             m_commitCardHash = m_gitCommits[hitCommitIdx].hash;
             if (m_gitCommits[hitCommitIdx].statSummary.empty()) {
-                LoadCommitFiles(m_gitCommits[hitCommitIdx]);
+                m_gitCommits[hitCommitIdx].statSummary = L"Loading...";
+                std::wstring cHash = m_gitCommits[hitCommitIdx].hash;
+                std::thread([this, cHash, hitCommitIdx]() {
+                    GitCommitItem itemCopy;
+                    {
+                        std::lock_guard<std::recursive_mutex> lock(m_gitMutex);
+                        if (hitCommitIdx < m_gitCommits.size() && m_gitCommits[hitCommitIdx].hash == cHash) {
+                            itemCopy = m_gitCommits[hitCommitIdx];
+                        } else return;
+                    }
+                    LoadCommitFiles(itemCopy);
+                    {
+                        std::lock_guard<std::recursive_mutex> lock(m_gitMutex);
+                        if (hitCommitIdx < m_gitCommits.size() && m_gitCommits[hitCommitIdx].hash == cHash) {
+                            m_gitCommits[hitCommitIdx] = std::move(itemCopy);
+                        }
+                    }
+                    if (m_onGitStateChanged) m_onGitStateChanged();
+                }).detach();
             }
         } else if (inCard || inBridge) {
             // Keep card alive while hovering inside the card bounds or transitioning from drawer
@@ -9658,7 +9770,7 @@ void DrawerPanel::RenderCommitCard(ID2D1RenderTarget* pRT, Theme& theme, const a
         m_commitCardHash = ci.hash;
 
         // 4.5 Floating Commit Details Card OUTSIDE the sidebar drawer (Image 3)
-        float cardW = config.ScaleF(430.0f);
+        float cardW = config.ScaleF(520.0f);
         float cardH = config.ScaleF(142.0f);
         float cardLeft = railW + currentDrawerW + config.ScaleF(8.0f);
         float cardTop = (ci.bounds.top + ci.bounds.bottom) * 0.5f - cardH * 0.5f;
@@ -9719,9 +9831,14 @@ void DrawerPanel::RenderCommitCard(ID2D1RenderTarget* pRT, Theme& theme, const a
 
         std::wstring timeLine = ci.relativeTime;
         if (!ci.dateFormatted.empty()) timeLine += L" (" + ci.dateFormatted + L")";
-        D2D1_RECT_F rcTime = D2D1::RectF(textStartX + authorW + config.ScaleF(8.0f), curCardY, cardLeft + cardW - closeBtnSize - config.ScaleF(10.0f), curCardY + config.ScaleF(18.0f));
-        pRT->DrawText(timeLine.c_str(), static_cast<UINT32>(timeLine.length()),
-                      pCardFmt, rcTime, theme.brushTextMuted.Get());
+        float timeRight = cardLeft + cardW - closeBtnSize - config.ScaleF(12.0f);
+        D2D1_RECT_F rcTime = D2D1::RectF(textStartX + authorW + config.ScaleF(8.0f), curCardY, timeRight, curCardY + config.ScaleF(18.0f));
+        if (rcTime.right > rcTime.left) {
+            pRT->PushAxisAlignedClip(rcTime, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+            pRT->DrawText(timeLine.c_str(), static_cast<UINT32>(timeLine.length()),
+                          pCardFmt, rcTime, theme.brushTextMuted.Get());
+            pRT->PopAxisAlignedClip();
+        }
 
         curCardY += config.ScaleF(20.0f);
 

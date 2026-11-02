@@ -657,6 +657,7 @@ public:
     static std::vector<LineColorSpan> ScanLineColors(const std::wstring& lineStr);
     static size_t CountSwatchesBefore(const std::vector<LineColorSpan>& spans, size_t col);
     static float GetColumnVisualOffset(const std::vector<LineColorSpan>& spans, size_t col, float charW, float swatchSpan);
+    static float GetColumnVisualOffset(const std::wstring& lineText, const std::vector<LineColorSpan>& spans, size_t col, float charW, float swatchSpan, int tabSize = 4);
 };
 
 } // namespace phide::ui
