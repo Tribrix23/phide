@@ -58,7 +58,7 @@ struct AppConfig {
     float zoomLevel = 1.0f;             ///< Zoom multiplier (1.0 = 100%).
 
     // --- Extended Editor & Workbench Settings ---
-    std::wstring fontFamily = L"Consolas";              ///< Editor font family name.
+    std::wstring fontFamily = L"Phide Mono";           ///< Editor font family name (Default: Phide Mono).
     int tabSize = 4;                                    ///< Number of spaces per tab.
     bool insertSpaces = true;                           ///< Insert spaces when pressing Tab.
     std::wstring autoSave = L"afterDelay";              ///< "off", "afterDelay", "onFocusChange", "onWindowChange"

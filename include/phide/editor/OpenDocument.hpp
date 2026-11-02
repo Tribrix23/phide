@@ -248,7 +248,9 @@ struct OpenDocument {
     std::wstring diffOriginalTitle;      ///< Left pane title (e.g. "LucideIcons.cpp (HEAD)")
     std::wstring diffWorkingTitle;       ///< Right pane title (e.g. "LucideIcons.cpp (Working Tree)")
     std::set<size_t> diffAddedLines;     ///< Right-side line indices (0-based) added relative to HEAD
+    std::set<size_t> diffModifiedLines;  ///< Right-side line indices (0-based) modified relative to HEAD
     std::set<size_t> diffDeletedLines;   ///< Left-side line indices (0-based) where deletions occurred
+    std::set<size_t> diffDeletedGutterMarkers; ///< Right-side line index where a deletion occurred in the gutter
 
     struct DiffHunkItem {
         size_t leftStart = 0;   // 0-based line index in left buffer

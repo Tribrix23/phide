@@ -308,7 +308,7 @@ public:
 private:
     ThemeMode m_mode = ThemeMode::Dark;
     bool m_isDarkActive = true;
-    std::wstring m_editorFontFamily = L"Consolas";
+    std::wstring m_editorFontFamily = L"Phide Mono";
     float m_editorFontSize = 15.0f;
 };
 

@@ -665,8 +665,8 @@ void Window::LoadSessionState() {
                 auto q2 = line.rfind(L'"');
                 if (q1 != std::wstring::npos && q2 != std::wstring::npos && q2 > q1) {
                     m_config.fontFamily = UnescapeJson(line.substr(q1 + 1, q2 - q1 - 1));
-                    if (m_config.fontFamily == L"Fira Code") {
-                        m_config.fontFamily = L"Consolas";
+                    if (m_config.fontFamily == L"Fira Code" || m_config.fontFamily == L"Consolas" || m_config.fontFamily.empty()) {
+                        m_config.fontFamily = L"Phide Mono";
                     }
                 }
             }
@@ -1147,7 +1147,7 @@ void Window::OpenFileDocument(const std::wstring& path, bool isPreview) {
         newDoc.buffer.LoadFromFile(resolvedPath);
         newDoc.originalDiskText = newDoc.buffer.GetText();
 
-        // Compute Git diff highlights against HEAD if inside a git repository (Image 5)
+        // Compute Git diff highlights against HEAD if inside a git repository (Images 1, 2, 3)
         if (m_drawer.IsGitRepo()) {
             std::wstring relPath = resolvedPath;
             if (m_drawer.HasOpenFolder()) {
@@ -1155,13 +1155,20 @@ void Window::OpenFileDocument(const std::wstring& path, bool isPreview) {
                     relPath = std::filesystem::relative(resolvedPath, m_drawer.GetOpenFolderPath()).wstring();
                 } catch (...) {}
             }
-            m_drawer.ComputeGitDiffLines(relPath, newDoc.diffAddedLines, newDoc.diffDeletedLines);
+            std::wstring headContent = m_drawer.GetGitFileContent(relPath);
+            if (!headContent.empty()) {
+                newDoc.diffOriginalBuffer.SetText(headContent);
+            } else {
+                newDoc.diffOriginalBuffer.SetText(newDoc.originalDiskText);
+            }
+            ComputeDiffHunks(newDoc);
             if (m_config.enableGitLens) {
                 m_drawer.ComputeGitBlame(relPath, newDoc.gitBlameMap);
                 newDoc.gitBlameLoaded = true;
             }
-            // NOTE: Normal files opened from Explorer should NEVER be forced into Diff View!
-            // Diff View is strictly reserved for user clicking a diff item from Source Control.
+        } else {
+            newDoc.diffOriginalBuffer.SetText(newDoc.originalDiskText);
+            ComputeDiffHunks(newDoc);
         }
 
         if (!newDoc.isSpecialView && !newDoc.isImageView && !newDoc.isUnsupportedBinary) {
@@ -1422,6 +1429,8 @@ void Window::ComputeDiffHunks(editor::OpenDocument& doc) {
     doc.diffHunks.clear();
     doc.diffAddedLines.clear();
     doc.diffDeletedLines.clear();
+    doc.diffModifiedLines.clear();
+    doc.diffDeletedGutterMarkers.clear();
 
     const auto& leftBuf = doc.diffOriginalBuffer;
     const auto& rightBuf = doc.buffer;
@@ -1515,7 +1524,6 @@ void Window::ComputeDiffHunks(editor::OpenDocument& doc) {
                     addStart = edits[idx].rightLine;
                     addLeftPos = edits[idx].leftLine;
                 }
-                doc.diffAddedLines.insert(edits[idx].rightLine);
                 addCount++;
                 idx++;
             }
@@ -1526,18 +1534,25 @@ void Window::ComputeDiffHunks(editor::OpenDocument& doc) {
                 hunk.leftCount = delCount;
                 hunk.rightStart = addStart;
                 hunk.rightCount = addCount;
+                for (size_t r = addStart; r < addStart + addCount; ++r) {
+                    doc.diffModifiedLines.insert(r);
+                }
             } else if (delCount > 0) {
                 hunk.type = editor::OpenDocument::DiffHunkItem::HunkType::Deleted;
                 hunk.leftStart = delStart;
                 hunk.leftCount = delCount;
                 hunk.rightStart = delRightPos;
                 hunk.rightCount = 0;
+                doc.diffDeletedGutterMarkers.insert(delRightPos);
             } else if (addCount > 0) {
                 hunk.type = editor::OpenDocument::DiffHunkItem::HunkType::Added;
                 hunk.leftStart = addLeftPos;
                 hunk.leftCount = 0;
                 hunk.rightStart = addStart;
                 hunk.rightCount = addCount;
+                for (size_t r = addStart; r < addStart + addCount; ++r) {
+                    doc.diffAddedLines.insert(r);
+                }
             }
             doc.diffHunks.push_back(hunk);
         }
@@ -1547,12 +1562,18 @@ void Window::ComputeDiffHunks(editor::OpenDocument& doc) {
         hunk.leftCount = midN;
         hunk.rightStart = prefix;
         hunk.rightCount = midM;
-        if (midN > 0 && midM > 0) hunk.type = editor::OpenDocument::DiffHunkItem::HunkType::Modified;
-        else if (midN > 0) hunk.type = editor::OpenDocument::DiffHunkItem::HunkType::Deleted;
-        else hunk.type = editor::OpenDocument::DiffHunkItem::HunkType::Added;
+        if (midN > 0 && midM > 0) {
+            hunk.type = editor::OpenDocument::DiffHunkItem::HunkType::Modified;
+            for (size_t r = prefix; r < prefix + midM; ++r) doc.diffModifiedLines.insert(r);
+        } else if (midN > 0) {
+            hunk.type = editor::OpenDocument::DiffHunkItem::HunkType::Deleted;
+            doc.diffDeletedGutterMarkers.insert(prefix);
+        } else {
+            hunk.type = editor::OpenDocument::DiffHunkItem::HunkType::Added;
+            for (size_t r = prefix; r < prefix + midM; ++r) doc.diffAddedLines.insert(r);
+        }
 
         for (size_t l = prefix; l < prefix + midN; ++l) doc.diffDeletedLines.insert(l);
-        for (size_t r = prefix; r < prefix + midM; ++r) doc.diffAddedLines.insert(r);
         doc.diffHunks.push_back(hunk);
     }
 }
@@ -2722,10 +2743,15 @@ void Window::MarkDocumentModified(editor::OpenDocument* pDoc) {
     pDoc->diagnostics = editor::SyntaxValidator::Validate(pDoc->filePath.empty() ? pDoc->fileName : pDoc->filePath, pDoc->buffer);
     UpdateDrawerErrorFiles();
 
+    // Ensure diffOriginalBuffer has baseline text for real-time gutter diff change tracking
+    if (pDoc->diffOriginalBuffer.GetLineCount() == 0 && !pDoc->originalDiskText.empty()) {
+        pDoc->diffOriginalBuffer.SetText(pDoc->originalDiskText);
+    }
+    ComputeDiffHunks(*pDoc);
+
     // Check if document content has reverted to match pristine disk text or HEAD
     bool isActuallyDirty = true;
     if (pDoc->isDiffView) {
-        ComputeDiffHunks(*pDoc);
         if (pDoc->diffHunks.empty()) {
             isActuallyDirty = false;
         }

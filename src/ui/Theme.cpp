@@ -14,20 +14,30 @@ static std::wstring FindFontPath(const std::wstring& filename) {
     GetModuleFileNameW(nullptr, exePath, MAX_PATH);
     std::filesystem::path exeDir = std::filesystem::path(exePath).parent_path();
 
-    std::filesystem::path cand1 = exeDir / L"assets" / L"fonts" / filename;
-    if (std::filesystem::exists(cand1)) return cand1.wstring();
+    static const wchar_t* subdirs[] = { L"font", L"fonts" };
+    for (const auto* sub : subdirs) {
+        std::filesystem::path cand1 = exeDir / L"assets" / sub / filename;
+        if (std::filesystem::exists(cand1)) return cand1.wstring();
 
-    std::filesystem::path cand2 = exeDir.parent_path() / L"assets" / L"fonts" / filename;
-    if (std::filesystem::exists(cand2)) return cand2.wstring();
+        std::filesystem::path cand2 = exeDir.parent_path() / L"assets" / sub / filename;
+        if (std::filesystem::exists(cand2)) return cand2.wstring();
 
-    std::filesystem::path cand3 = std::filesystem::current_path() / L"assets" / L"fonts" / filename;
-    if (std::filesystem::exists(cand3)) return cand3.wstring();
+        std::filesystem::path cand3 = std::filesystem::current_path() / L"assets" / sub / filename;
+        if (std::filesystem::exists(cand3)) return cand3.wstring();
+    }
 
     return L"";
 }
 
-static std::wstring ResolveMonospaceFont(IDWriteFactory* pFactory, const std::wstring& requestedFamily) {
-    if (requestedFamily.empty()) return L"Consolas";
+static std::wstring ResolveMonospaceFont(IDWriteFactory* pFactory, const std::wstring& requestedFamily, IDWriteFontCollection* pCustomCollection = nullptr) {
+    if (requestedFamily.empty() || requestedFamily == L"Phide Mono") return L"Phide Mono";
+    if (pCustomCollection) {
+        UINT32 index = 0;
+        BOOL exists = FALSE;
+        if (SUCCEEDED(pCustomCollection->FindFamilyName(requestedFamily.c_str(), &index, &exists)) && exists) {
+            return requestedFamily;
+        }
+    }
     if (!pFactory) return requestedFamily;
 
     Microsoft::WRL::ComPtr<IDWriteFontCollection> pCollection;
@@ -37,8 +47,8 @@ static std::wstring ResolveMonospaceFont(IDWriteFactory* pFactory, const std::ws
         if (SUCCEEDED(pCollection->FindFamilyName(requestedFamily.c_str(), &index, &exists)) && exists) {
             return requestedFamily;
         }
-        // Fallback: Check Consolas -> Cascadia Code -> Courier New -> Lucida Console
-        static const wchar_t* fallbacks[] = { L"Consolas", L"Cascadia Code", L"Courier New", L"Lucida Console" };
+        // Fallback: Check Phide Mono -> Consolas -> Cascadia Code -> Courier New -> Lucida Console
+        static const wchar_t* fallbacks[] = { L"Phide Mono", L"Consolas", L"Cascadia Code", L"Courier New", L"Lucida Console" };
         for (const auto* fb : fallbacks) {
             UINT32 idx = 0;
             BOOL ex = FALSE;
@@ -47,7 +57,7 @@ static std::wstring ResolveMonospaceFont(IDWriteFactory* pFactory, const std::ws
             }
         }
     }
-    return L"Consolas";
+    return L"Phide Mono";
 }
 
 Theme::Theme() = default;
@@ -140,25 +150,45 @@ HRESULT Theme::CreateDeviceResources(ID2D1RenderTarget* pRT, IDWriteFactory* pDW
     pRT->CreateSolidColorBrush(D2D1::ColorF(0.550f, 0.680f, 0.810f, 1.0f), &brushSetiFolderOpen);
     pRT->CreateSolidColorBrush(D2D1::ColorF(0.620f, 0.620f, 0.620f, 1.0f), &brushSetiDefault);
 
-    // Load Official VS Code Seti Font into DirectWrite Custom Font Collection
-    std::wstring setiPath = FindFontPath(L"seti.ttf");
-    if (!setiPath.empty()) {
-        ComPtr<IDWriteFactory3> dwriteFactory3;
-        if (SUCCEEDED(pDWriteFactory->QueryInterface(__uuidof(IDWriteFactory3), (void**)&dwriteFactory3))) {
-            ComPtr<IDWriteFontFile> pFontFile;
-            if (SUCCEEDED(pDWriteFactory->CreateFontFileReference(setiPath.c_str(), nullptr, &pFontFile))) {
-                ComPtr<IDWriteFontFaceReference> pFaceRef;
-                if (SUCCEEDED(dwriteFactory3->CreateFontFaceReference(pFontFile.Get(), 0, DWRITE_FONT_SIMULATIONS_NONE, &pFaceRef))) {
-                    ComPtr<IDWriteFontSetBuilder> pBuilder;
-                    if (SUCCEEDED(dwriteFactory3->CreateFontSetBuilder(&pBuilder))) {
+    // Load Official VS Code Seti Font and Phide Mono Fonts into DirectWrite Custom Font Collection
+    static const std::vector<std::wstring> fontFiles = {
+        L"seti.ttf",
+        L"PhideMono-Regular.ttf",
+        L"PhideMono-Italic.ttf",
+        L"PhideMono-Bold.ttf",
+        L"PhideMono-BoldItalic.ttf",
+        L"PhideMono-Medium.ttf",
+        L"PhideMono-MediumItalic.ttf",
+        L"PhideMono-SemiBold.ttf",
+        L"PhideMono-SemiBoldItalic.ttf"
+    };
+
+    ComPtr<IDWriteFactory3> dwriteFactory3;
+    ComPtr<IDWriteFontSetBuilder> pBuilder;
+    if (SUCCEEDED(pDWriteFactory->QueryInterface(__uuidof(IDWriteFactory3), (void**)&dwriteFactory3))) {
+        dwriteFactory3->CreateFontSetBuilder(&pBuilder);
+    }
+
+    for (const auto& fn : fontFiles) {
+        std::wstring fpath = FindFontPath(fn);
+        if (!fpath.empty()) {
+            AddFontResourceExW(fpath.c_str(), FR_PRIVATE, nullptr);
+            if (dwriteFactory3 && pBuilder) {
+                ComPtr<IDWriteFontFile> pFontFile;
+                if (SUCCEEDED(pDWriteFactory->CreateFontFileReference(fpath.c_str(), nullptr, &pFontFile))) {
+                    ComPtr<IDWriteFontFaceReference> pFaceRef;
+                    if (SUCCEEDED(dwriteFactory3->CreateFontFaceReference(pFontFile.Get(), 0, DWRITE_FONT_SIMULATIONS_NONE, &pFaceRef))) {
                         pBuilder->AddFontFaceReference(pFaceRef.Get());
-                        ComPtr<IDWriteFontSet> pFontSet;
-                        if (SUCCEEDED(pBuilder->CreateFontSet(&pFontSet))) {
-                            dwriteFactory3->CreateFontCollectionFromFontSet(pFontSet.Get(), &customFontCollection);
-                        }
                     }
                 }
             }
+        }
+    }
+
+    if (dwriteFactory3 && pBuilder) {
+        ComPtr<IDWriteFontSet> pFontSet;
+        if (SUCCEEDED(pBuilder->CreateFontSet(&pFontSet))) {
+            dwriteFactory3->CreateFontCollectionFromFontSet(pFontSet.Get(), &customFontCollection);
         }
     }
 
@@ -266,12 +296,21 @@ HRESULT Theme::CreateDeviceResources(ID2D1RenderTarget* pRT, IDWriteFactory* pDW
     }
 
     // 3a. Monospace Code Font
-    std::wstring chosenFont = ResolveMonospaceFont(pDWriteFactory, m_editorFontFamily);
+    std::wstring chosenFont = ResolveMonospaceFont(pDWriteFactory, m_editorFontFamily, customFontCollection.Get());
+    IDWriteFontCollection* collectionToUse = nullptr;
+    if (customFontCollection) {
+        UINT32 index = 0;
+        BOOL exists = FALSE;
+        if (SUCCEEDED(customFontCollection->FindFamilyName(chosenFont.c_str(), &index, &exists)) && exists) {
+            collectionToUse = customFontCollection.Get();
+        }
+    }
+    DWRITE_FONT_STYLE fontStyle = (chosenFont == L"Phide Mono") ? DWRITE_FONT_STYLE_ITALIC : DWRITE_FONT_STYLE_NORMAL;
     pDWriteFactory->CreateTextFormat(
         chosenFont.c_str(),
-        nullptr,
+        collectionToUse,
         DWRITE_FONT_WEIGHT_REGULAR,
-        DWRITE_FONT_STYLE_NORMAL,
+        fontStyle,
         DWRITE_FONT_STRETCH_NORMAL,
         (std::max)(6.0f, m_editorFontSize),
         L"en-US",
@@ -658,12 +697,21 @@ void Theme::SetEditorFont(const std::wstring& family, float size) {
     if (size > 0.0f) m_editorFontSize = size;
     if (dwriteFactory) {
         fontCode.Reset();
-        std::wstring chosenFont = ResolveMonospaceFont(dwriteFactory.Get(), m_editorFontFamily);
+        std::wstring chosenFont = ResolveMonospaceFont(dwriteFactory.Get(), m_editorFontFamily, customFontCollection.Get());
+        IDWriteFontCollection* collectionToUse = nullptr;
+        if (customFontCollection) {
+            UINT32 index = 0;
+            BOOL exists = FALSE;
+            if (SUCCEEDED(customFontCollection->FindFamilyName(chosenFont.c_str(), &index, &exists)) && exists) {
+                collectionToUse = customFontCollection.Get();
+            }
+        }
+        DWRITE_FONT_STYLE fontStyle = (chosenFont == L"Phide Mono") ? DWRITE_FONT_STYLE_ITALIC : DWRITE_FONT_STYLE_NORMAL;
         dwriteFactory->CreateTextFormat(
             chosenFont.c_str(),
-            nullptr,
+            collectionToUse,
             DWRITE_FONT_WEIGHT_REGULAR,
-            DWRITE_FONT_STYLE_NORMAL,
+            fontStyle,
             DWRITE_FONT_STRETCH_NORMAL,
             (std::max)(6.0f, m_editorFontSize),
             L"en-US",
@@ -678,7 +726,7 @@ void Theme::SetEditorFont(const std::wstring& family, float size) {
 }
 
 void Theme::SetEditorFontSize(float size) {
-    SetEditorFont(L"Consolas", size);
+    SetEditorFont(m_editorFontFamily, size);
 }
 
 /**

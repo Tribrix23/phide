@@ -2525,6 +2525,80 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
                     pRT->DrawLine(D2D1::Point2F(cx, cy + cr * 0.55f), D2D1::Point2F(cx + cr, cy - cr * 0.55f), chevronBrush, 1.4f, pStroke);
                 }
             }
+            // Gutter Diff Change Indicators (Images 1, 2, 3)
+            // Blue Bar = Modified line (Image 1)
+            // Green Bar = Added line (Image 3)
+            // Red Marker = Deleted line(s) marker (Image 2)
+            if (!doc.isDiffView) {
+                float barW = config.ScaleF(3.0f);
+                float barRight = canvasLeft + gutterW;
+                float barLeft = barRight - barW;
+
+                if (doc.diffModifiedLines.count(vl.bufferLine)) {
+                    // Blue Bar for Modified line (Image 1)
+                    D2D1_RECT_F rcBar = D2D1::RectF(barLeft, lineY, barRight, lineY + lineH);
+                    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> blueBrush;
+                    pRT->CreateSolidColorBrush(D2D1::ColorF(0.0f, 0.478f, 0.800f, 1.0f), &blueBrush);
+                    if (blueBrush) {
+                        pRT->FillRectangle(rcBar, blueBrush.Get());
+                        // Diagonal hatch marks matching Image 1
+                        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> hatchBrush;
+                        pRT->CreateSolidColorBrush(D2D1::ColorF(0.40f, 0.75f, 1.0f, 0.85f), &hatchBrush);
+                        if (hatchBrush) {
+                            for (float hy = lineY; hy < lineY + lineH; hy += config.ScaleF(3.5f)) {
+                                pRT->DrawLine(D2D1::Point2F(barLeft, hy), D2D1::Point2F(barRight, hy + config.ScaleF(2.5f)), hatchBrush.Get(), 1.0f);
+                            }
+                        }
+                    }
+                } else if (doc.diffAddedLines.count(vl.bufferLine)) {
+                    // Green Bar for Added line (Image 3)
+                    D2D1_RECT_F rcBar = D2D1::RectF(barLeft, lineY, barRight, lineY + lineH);
+                    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> greenBrush;
+                    pRT->CreateSolidColorBrush(D2D1::ColorF(0.18f, 0.75f, 0.38f, 1.0f), &greenBrush);
+                    if (greenBrush) {
+                        pRT->FillRectangle(rcBar, greenBrush.Get());
+                    }
+                }
+
+                if (doc.diffDeletedGutterMarkers.count(vl.bufferLine)) {
+                    // Red indicator marker for Deleted lines (Image 2)
+                    float markerH = config.ScaleF(6.0f);
+                    float markerW = config.ScaleF(4.0f);
+                    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushDel;
+                    pRT->CreateSolidColorBrush(D2D1::ColorF(0.92f, 0.25f, 0.25f, 1.0f), &brushDel);
+                    if (brushDel) {
+                        Microsoft::WRL::ComPtr<ID2D1Factory> pD2DFactory;
+                        pRT->GetFactory(&pD2DFactory);
+                        Microsoft::WRL::ComPtr<ID2D1PathGeometry> pathGeom;
+                        if (pD2DFactory && SUCCEEDED(pD2DFactory->CreatePathGeometry(&pathGeom))) {
+                            Microsoft::WRL::ComPtr<ID2D1GeometrySink> sink;
+                            if (SUCCEEDED(pathGeom->Open(&sink))) {
+                                sink->BeginFigure(D2D1::Point2F(barRight - markerW, lineY - markerH * 0.5f), D2D1_FIGURE_BEGIN_FILLED);
+                                sink->AddLine(D2D1::Point2F(barRight, lineY));
+                                sink->AddLine(D2D1::Point2F(barRight - markerW, lineY + markerH * 0.5f));
+                                sink->EndFigure(D2D1_FIGURE_END_CLOSED);
+                                sink->Close();
+                                pRT->FillGeometry(pathGeom.Get(), brushDel.Get());
+                            }
+                        } else {
+                            D2D1_RECT_F rcDel = D2D1::RectF(barRight - markerW, lineY - markerH * 0.5f, barRight, lineY + markerH * 0.5f);
+                            pRT->FillRectangle(rcDel, brushDel.Get());
+                        }
+                    }
+                }
+
+                if (vl.bufferLine + 1 == buffer.GetLineCount() && doc.diffDeletedGutterMarkers.count(buffer.GetLineCount())) {
+                    float markerH = config.ScaleF(6.0f);
+                    float markerW = config.ScaleF(4.0f);
+                    float endLineY = lineY + lineH;
+                    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushDel;
+                    pRT->CreateSolidColorBrush(D2D1::ColorF(0.92f, 0.25f, 0.25f, 1.0f), &brushDel);
+                    if (brushDel) {
+                        D2D1_RECT_F rcDel = D2D1::RectF(barRight - markerW, endLineY - markerH * 0.5f, barRight, endLineY + markerH * 0.5f);
+                        pRT->FillRectangle(rcDel, brushDel.Get());
+                    }
+                }
+            }
         }
 
         pRT->PopAxisAlignedClip();
@@ -2624,6 +2698,25 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
                 }
             }
 
+            // Minimap Diff Gutter Indicators
+            if (!doc.isDiffView) {
+                if (doc.diffModifiedLines.count(b)) {
+                    D2D1_RECT_F rcDiffMini = D2D1::RectF(doc.minimapTrack.left, my, doc.minimapTrack.left + config.ScaleF(2.5f), my + (std::max)(microH, stepY));
+                    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> blueMini;
+                    pRT->CreateSolidColorBrush(D2D1::ColorF(0.0f, 0.478f, 0.800f, 0.95f), &blueMini);
+                    if (blueMini) pRT->FillRectangle(rcDiffMini, blueMini.Get());
+                } else if (doc.diffAddedLines.count(b)) {
+                    D2D1_RECT_F rcDiffMini = D2D1::RectF(doc.minimapTrack.left, my, doc.minimapTrack.left + config.ScaleF(2.5f), my + (std::max)(microH, stepY));
+                    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> greenMini;
+                    pRT->CreateSolidColorBrush(D2D1::ColorF(0.18f, 0.75f, 0.38f, 0.95f), &greenMini);
+                    if (greenMini) pRT->FillRectangle(rcDiffMini, greenMini.Get());
+                } else if (doc.diffDeletedGutterMarkers.count(b)) {
+                    D2D1_RECT_F rcDiffMini = D2D1::RectF(doc.minimapTrack.left, my - 1.0f, doc.minimapTrack.left + config.ScaleF(3.0f), my + 1.0f);
+                    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> redMini;
+                    pRT->CreateSolidColorBrush(D2D1::ColorF(0.92f, 0.25f, 0.25f, 0.95f), &redMini);
+                    if (redMini) pRT->FillRectangle(rcDiffMini, redMini.Get());
+                }
+            }
             if (lineStr.empty()) continue;
 
             size_t indent = lineStr.find_first_not_of(L" \t");

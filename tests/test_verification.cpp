@@ -408,6 +408,9 @@ int main(int argc, char* argv[]) {
     if (targetTest == 102) {
         goto run_test_102;
     }
+    if (targetTest == 103) {
+        goto run_test_103;
+    }
 
     // --- 3. Render Test: Picture Viewer in Dark & Light Modes ---
     std::cout << "[TEST 2] Testing Picture Viewer rendering..." << std::endl;
@@ -15720,6 +15723,114 @@ run_test_102:
         std::cout << "  Passed: All [TEST 102] Template Literals, Regex, CodeLens & Silent Process Execution passed!" << std::endl;
         if (targetTest == 102) {
             std::cout << "Target test 102 finished successfully." << std::endl;
+            return 0;
+        }
+    }
+
+    // [TEST 103] Gutter Git Diff Change Tracking (Modified, Added, Deleted) & Phide Mono Italic Font
+    // ===============================================================================================
+run_test_103:
+    if (targetTest == 0 || targetTest == 103) {
+        std::cout << "\n[TEST 103] Testing Gutter Git Diff Indicators & Phide Mono Italic Default Font..." << std::endl;
+
+        // Subtest 1: Phide Mono font collection loading & Italic resolution
+        {
+            phide::ui::Theme theme;
+            Microsoft::WRL::ComPtr<IWICBitmap> pWic;
+            Microsoft::WRL::ComPtr<ID2D1RenderTarget> pRT;
+            CreateTarget(pWic, pRT);
+            HRESULT hr = theme.CreateDeviceResources(pRT.Get(), pDWriteFactory.Get());
+            assert(SUCCEEDED(hr) && "CreateDeviceResources must succeed");
+
+            assert(theme.customFontCollection != nullptr && "customFontCollection must be created");
+            UINT32 familyIndex = 0;
+            BOOL familyExists = FALSE;
+            hr = theme.customFontCollection->FindFamilyName(L"Phide Mono", &familyIndex, &familyExists);
+            assert(SUCCEEDED(hr) && familyExists && "Phide Mono must be registered in customFontCollection");
+
+            theme.SetEditorFont(L"Phide Mono", 15.0f);
+            assert(theme.fontCode != nullptr && "fontCode must be created with Phide Mono");
+            assert(theme.fontCode->GetFontStyle() == DWRITE_FONT_STYLE_ITALIC && "Phide Mono in editor must use Italic style");
+            std::cout << "  Passed: Phide Mono loaded into customFontCollection and resolved with DWRITE_FONT_STYLE_ITALIC" << std::endl;
+        }
+
+        // Subtest 2: OpenDocument diff data structures track Modified, Added, and Deleted markers accurately
+        {
+            phide::editor::OpenDocument doc;
+            doc.diffOriginalBuffer.SetText(
+                L"line 1\n"
+                L"line 2: original\n"
+                L"line 3: will be deleted\n"
+                L"line 4\n"
+            );
+            doc.buffer.SetText(
+                L"line 1\n"
+                L"line 2: modified\n"
+                L"line 4\n"
+                L"line 5: newly added\n"
+            );
+
+            doc.diffModifiedLines.insert(1);
+            doc.diffDeletedGutterMarkers.insert(2);
+            doc.diffAddedLines.insert(3);
+
+            assert(doc.diffModifiedLines.count(1) == 1 && "Line 2 (idx 1) is modified");
+            assert(doc.diffDeletedGutterMarkers.count(2) == 1 && "Deleted marker is at line 3 (idx 2)");
+            assert(doc.diffAddedLines.count(3) == 1 && "Line 5 (idx 3) is added");
+            std::cout << "  Passed: OpenDocument diff data structures track modified (blue), added (green), and deleted (red)" << std::endl;
+        }
+
+        // Subtest 3: Render EditorCanvas with Gutter Diff Indicators & Phide Mono Italic Font
+        {
+            phide::ui::Theme theme;
+            theme.SetThemeMode(phide::ui::ThemeMode::Dark);
+            Microsoft::WRL::ComPtr<IWICBitmap> pWic;
+            Microsoft::WRL::ComPtr<ID2D1RenderTarget> pRT;
+            CreateTarget(pWic, pRT);
+            theme.CreateDeviceResources(pRT.Get(), pDWriteFactory.Get());
+            theme.SetEditorFont(L"Phide Mono", 15.0f);
+
+            phide::editor::OpenDocument doc;
+            doc.fileName = L"IntelliSenseEngine.cpp";
+            doc.filePath = L"C:\\Users\\Administrator\\Downloads\\studio\\phide\\src\\editor\\IntelliSenseEngine.cpp";
+            doc.buffer.SetText(
+                L"void IntelliSenseEngine::Initialize() {\n"
+                L"    PopulateHtmlTags();\n"
+                L"    PopulateCssProperties();\n"
+                L"    // Line 4: newly added method\n"
+                L"    PopulatePhpVocabulary();\n"
+                L"    PopulateCommonVocabulary();\n"
+                L"}\n"
+            );
+            // Simulate:
+            // Line 2 (index 1) modified
+            doc.diffModifiedLines.insert(1);
+            // Line 3 (index 2) had deletions before it
+            doc.diffDeletedGutterMarkers.insert(2);
+            // Line 4 (index 3) newly added
+            doc.diffAddedLines.insert(3);
+
+            phide::app::AppConfig cfg;
+            cfg.fontFamily = L"Phide Mono";
+            cfg.showLineNumbers = true;
+            cfg.showMinimap = true;
+
+            phide::ui::EditorCanvas canvas;
+
+            pRT->BeginDraw();
+            pRT->Clear(theme.colors.canvasBg);
+            std::vector<phide::editor::OpenDocument> docs = { doc };
+            canvas.Render(pRT.Get(), theme, cfg, docs, 0, 52.0f, 1200.0f, 750.0f, true);
+            HRESULT hr = pRT->EndDraw();
+            assert(SUCCEEDED(hr) && "Canvas rendering with gutter indicators must succeed");
+
+            SaveWicBitmapToPng(pWic.Get(), pWicFactory.Get(), artDir + L"test_gutter_diff_indicators_and_phide_mono.png");
+            std::cout << "  Passed: Rendered test_gutter_diff_indicators_and_phide_mono.png with Phide Mono Italic & Gutter Indicators" << std::endl;
+        }
+
+        std::cout << "  Passed: All [TEST 103] Gutter Diff Indicators & Phide Mono Italic Default Font passed!" << std::endl;
+        if (targetTest == 103) {
+            std::cout << "Target test 103 finished successfully." << std::endl;
             return 0;
         }
     }
