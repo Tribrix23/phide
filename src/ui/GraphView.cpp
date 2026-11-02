@@ -731,8 +731,7 @@ void GraphView::RefreshFromWorkspace(const std::wstring& rootPath, bool preserve
 
         m_nodes = std::move(updatedNodes);
         ParseFileDependencies();
-        LoadLayout();
-
+        // Do not reload layout from disk on dynamic filesystem changes as that would reset user's manual dragging/panning
         if (hasNewNodes) {
             StartBounceAnimation();
         }
@@ -857,20 +856,20 @@ void GraphView::RefreshFromWorkspace(const std::wstring& rootPath, bool preserve
 void GraphView::StepPhysics(float alpha) {
     if (m_nodes.size() < 2) return;
 
-    const float kRepulse   = 2200.0f * (std::max)(0.25f, alpha);
-    const float kSpring    = 0.052f * (std::max)(0.25f, alpha);
-    const float springLen  = 72.0f;
-    const float centerPull = 0.010f * (std::max)(0.15f, alpha);
-    const float damping    = 0.86f; // Elastic, springy bouncy motion like Obsidian!
+    const float kRepulse   = 750.0f * (std::max)(0.20f, alpha);
+    const float kSpring    = 0.045f * (std::max)(0.20f, alpha);
+    const float springLen  = 65.0f;
+    const float centerPull = 0.012f * (std::max)(0.15f, alpha);
+    const float damping    = 0.85f; // Smooth, elastic motion without explosive scattering
 
     // A. Repulsion between all node pairs (softened minimum epsilon prevents explosive cluster scattering)
     for (size_t i = 0; i < m_nodes.size(); ++i) {
         for (size_t j = i + 1; j < m_nodes.size(); ++j) {
             float dx = m_nodes[j].x - m_nodes[i].x;
             float dy = m_nodes[j].y - m_nodes[i].y;
-            float distSq = dx * dx + dy * dy + 400.0f;
+            float distSq = dx * dx + dy * dy + 1600.0f; // Softened radius prevents explosive repulsion spikes
             float dist = std::sqrt(distSq);
-            float force = kRepulse / distSq;
+            float force = (std::min)(kRepulse / distSq, 2.0f); // Clamped maximum force per pair
             float fx = (dx / dist) * force;
             float fy = (dy / dist) * force;
 
@@ -889,7 +888,7 @@ void GraphView::StepPhysics(float alpha) {
         float dist = std::sqrt(dx * dx + dy * dy + 1.0f);
 
         bool isCrossFolder = (m_nodes[e.from].folderName != m_nodes[e.to].folderName);
-        float curSpringLen = isCrossFolder ? 220.0f : springLen;
+        float curSpringLen = isCrossFolder ? 180.0f : springLen;
         float curK = isCrossFolder ? (kSpring * 0.32f) : kSpring;
 
         float disp = dist - curSpringLen;
@@ -921,7 +920,7 @@ void GraphView::StepPhysics(float alpha) {
 
         // Clamp maximum speed to ensure smooth physics and prevent cluster nodes exploding off-screen
         float speedSq = m_nodes[i].vx * m_nodes[i].vx + m_nodes[i].vy * m_nodes[i].vy;
-        const float maxSpeed = 7.5f;
+        const float maxSpeed = 4.5f;
         if (speedSq > maxSpeed * maxSpeed) {
             float speed = std::sqrt(speedSq);
             m_nodes[i].vx = (m_nodes[i].vx / speed) * maxSpeed;
@@ -930,6 +929,11 @@ void GraphView::StepPhysics(float alpha) {
 
         m_nodes[i].x += m_nodes[i].vx;
         m_nodes[i].y += m_nodes[i].vy;
+
+        // Ensure nodes stay within bounded simulation space so clusters never explode off-screen
+        const float maxCoord = 2200.0f;
+        m_nodes[i].x = (std::clamp)(m_nodes[i].x, -maxCoord, maxCoord);
+        m_nodes[i].y = (std::clamp)(m_nodes[i].y, -maxCoord, maxCoord);
     }
 }
 
@@ -1091,20 +1095,23 @@ void GraphView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfi
         // 4. Node Labels ("the namiong shouuldnt have a div color it transparent and it should be under the note itself")
         const bool showLabel = (m_zoom >= 0.35f) || isHovered || isDragged;
         if (showLabel && pFont && theme.dwriteFactory) {
-            Microsoft::WRL::ComPtr<IDWriteTextLayout> pLayout;
-            theme.dwriteFactory->CreateTextLayout(
-                node.label.c_str(),
-                static_cast<UINT32>(node.label.length()),
-                pFont,
-                240.0f,
-                30.0f,
-                &pLayout
-            );
+            auto& mutableNode = m_nodes[i];
+            if (!mutableNode.pTextLayout) {
+                Microsoft::WRL::ComPtr<IDWriteTextLayout> pLayout;
+                if (SUCCEEDED(theme.dwriteFactory->CreateTextLayout(
+                        mutableNode.label.c_str(),
+                        static_cast<UINT32>(mutableNode.label.length()),
+                        pFont,
+                        240.0f,
+                        30.0f,
+                        &pLayout))) {
+                    pLayout->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+                    pLayout->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+                    mutableNode.pTextLayout = pLayout;
+                }
+            }
 
-            if (pLayout) {
-                pLayout->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
-                pLayout->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
-
+            if (mutableNode.pTextLayout) {
                 // Centered horizontally directly beneath the node (NO horizontal offset/gap)
                 float labelX = sp.x - 120.0f;
                 // Positioned right under the node circle
@@ -1120,7 +1127,7 @@ void GraphView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfi
                 }
 
                 // Pure transparent text - NO div / pill background box
-                pRT->DrawTextLayout(D2D1::Point2F(labelX, labelY), pLayout.Get(), textBrush);
+                pRT->DrawTextLayout(D2D1::Point2F(labelX, labelY), mutableNode.pTextLayout.Get(), textBrush);
             }
         }
     }

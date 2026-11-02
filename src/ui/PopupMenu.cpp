@@ -864,7 +864,16 @@ void PopupMenu::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfi
 void PopupMenu::RenderMenuPanel(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
                                const std::vector<PopupMenuItem>& items, const D2D1_RECT_F& menuBounds,
                                int hoveredIdx, int activeSubmenuParentIdx) {
-    // Dropdown Panel Background with Rounded Corners (5px)
+    // Dropdown Panel Shadow for depth and clear separation from underlying windows (Image 9)
+    D2D1_ROUNDED_RECT rrcShadow = D2D1::RoundedRect(
+        D2D1::RectF(menuBounds.left - 2.0f, menuBounds.top + 2.0f, menuBounds.right + 2.0f, menuBounds.bottom + 6.0f),
+        7.0f, 7.0f
+    );
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> shadowBrush;
+    pRT->CreateSolidColorBrush(D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.60f), &shadowBrush);
+    if (shadowBrush) pRT->FillRoundedRectangle(rrcShadow, shadowBrush.Get());
+
+    // Dropdown Panel Background with Rounded Corners (5px) - fully opaque, never transparent
     D2D1_ROUNDED_RECT rrc = D2D1::RoundedRect(menuBounds, 5.0f, 5.0f);
     pRT->FillRoundedRectangle(rrc, theme.brushMenuBg.Get());
 

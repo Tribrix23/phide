@@ -39,6 +39,7 @@ struct GraphNode {
     bool isPinned = false;    ///< True if repositioned by user drag; physics retains exact coordinates
 
     std::vector<size_t> neighbors; ///< Indices of connected neighbor nodes
+    Microsoft::WRL::ComPtr<IDWriteTextLayout> pTextLayout; ///< Cached DirectWrite text layout
 };
 
 /**

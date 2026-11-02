@@ -2329,6 +2329,9 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
                 float textVisualW = 0.0f;
                 if (cursor.line < buffer.GetLineCount()) {
                     const auto& clText = buffer.GetLine(cursor.line);
+                    auto clColors = ScanLineColors(clText);
+                    const float swatchSpan = config.ScaleF(14.0f);
+                    textVisualW = GetColumnVisualOffset(clColors, clText.length(), charW, swatchSpan);
                     if (theme.dwriteFactory && theme.fontCode) {
                         Microsoft::WRL::ComPtr<IDWriteTextLayout> pLineMeasure;
                         if (SUCCEEDED(theme.dwriteFactory->CreateTextLayout(
@@ -2337,50 +2340,18 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
                             pLineMeasure->SetIncrementalTabStop(charW * static_cast<float>(config.tabSize > 0 ? config.tabSize : 4));
                             DWRITE_TEXT_METRICS tm{};
                             if (SUCCEEDED(pLineMeasure->GetMetrics(&tm))) {
-                                textVisualW = tm.widthIncludingTrailingWhitespace;
+                                float dwW = tm.widthIncludingTrailingWhitespace + static_cast<float>(clColors.size()) * swatchSpan;
+                                textVisualW = (std::max)(textVisualW, dwW);
                             }
                         }
                     }
-                    if (textVisualW <= 0.0f) {
-                        size_t visualCols = 0;
-                        int tabSz = config.tabSize > 0 ? config.tabSize : 4;
-                        for (wchar_t ch : clText) {
-                            if (ch == L'\t') visualCols += tabSz - (visualCols % tabSz);
-                            else visualCols++;
-                        }
-                        textVisualW = static_cast<float>(visualCols) * charW;
-                    }
-                    // Account for inline color swatches if present on this line
-                    size_t swCount = 0;
-                    size_t cpos = 0;
-                    while ((cpos = clText.find(L'#', cpos)) != std::wstring::npos) {
-                        if (cpos + 4 <= clText.length()) swCount++;
-                        cpos++;
-                    }
-                    textVisualW += static_cast<float>(swCount) * config.ScaleF(14.0f);
                 }
 
                 // Place blame strictly in empty space after both line text and active cursor, never overlapping code
-                float lineEndX = (std::max)(codeLeft - scrollX + textVisualW, caretX) + config.ScaleF(48.0f);
+                float lineEndX = (std::max)(codeLeft - scrollX + textVisualW, caretX) + config.ScaleF(40.0f);
 
                 if (lineEndX < codeRight - config.ScaleF(20.0f)) {
-                    // Use leading-aligned fontHint (never trailing-aligned menu shortcut font!)
                     IDWriteTextFormat* blameFmt = theme.fontHint ? theme.fontHint.Get() : (theme.fontBody ? theme.fontBody.Get() : theme.fontCode.Get());
-
-                    float blameTextW = static_cast<float>(blameText.length()) * charW;
-                    if (theme.dwriteFactory && blameFmt) {
-                        Microsoft::WRL::ComPtr<IDWriteTextLayout> pBlameLayout;
-                        if (SUCCEEDED(theme.dwriteFactory->CreateTextLayout(
-                                blameText.c_str(), static_cast<UINT32>(blameText.length()),
-                                blameFmt, 10000.0f, lineH, &pBlameLayout))) {
-                            DWRITE_TEXT_METRICS btm{};
-                            if (SUCCEEDED(pBlameLayout->GetMetrics(&btm))) {
-                                blameTextW = btm.widthIncludingTrailingWhitespace;
-                            }
-                        }
-                    }
-
-                    D2D1_RECT_F rcBlame = D2D1::RectF(lineEndX, caretY, lineEndX + blameTextW + config.ScaleF(10.0f), caretY + lineH);
 
                     // Muted, subtle italic gray annotation matching GitLens
                     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushBlame;
@@ -2389,8 +2360,19 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
                         &brushBlame
                     );
 
-                    pRT->DrawText(blameText.c_str(), static_cast<UINT32>(blameText.length()),
-                                  blameFmt, rcBlame, brushBlame ? brushBlame.Get() : theme.brushTextMuted.Get());
+                    if (theme.dwriteFactory && blameFmt) {
+                        Microsoft::WRL::ComPtr<IDWriteTextLayout> pBlameLayout;
+                        if (SUCCEEDED(theme.dwriteFactory->CreateTextLayout(
+                                blameText.c_str(), static_cast<UINT32>(blameText.length()),
+                                blameFmt, 10000.0f, lineH, &pBlameLayout))) {
+                            pBlameLayout->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
+                            pRT->DrawTextLayout(D2D1::Point2F(lineEndX, caretY), pBlameLayout.Get(), brushBlame ? brushBlame.Get() : theme.brushTextMuted.Get());
+                        }
+                    } else {
+                        D2D1_RECT_F rcBlame = D2D1::RectF(lineEndX, caretY, codeRight, caretY + lineH);
+                        pRT->DrawText(blameText.c_str(), static_cast<UINT32>(blameText.length()),
+                                      blameFmt, rcBlame, brushBlame ? brushBlame.Get() : theme.brushTextMuted.Get());
+                    }
                 }
             }
         }
@@ -3003,11 +2985,11 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
                 popX = (std::max)(canvasLeft + config.ScaleF(12.0f), canvasLeft + canvasWidth - popW - config.ScaleF(12.0f));
             }
 
-            // Prefer placing ABOVE the line so the line with the problem is 100% visible
-            float popY = targetLineY - popH - config.ScaleF(4.0f);
-            // If near top of canvas, place BELOW the line with a 4px gap so it never covers the text
-            if (popY < topY + config.ScaleF(4.0f)) {
-                popY = targetLineY + lineH + config.ScaleF(4.0f);
+            // Place popover BELOW the line by default so preceding code, opening tags, and matching brackets are NEVER obscured
+            float popY = targetLineY + lineH + config.ScaleF(4.0f);
+            // Only if placed below would overflow canvas bottom, place ABOVE the line
+            if (popY + popH > clientHeight - config.ScaleF(12.0f)) {
+                popY = targetLineY - popH - config.ScaleF(4.0f);
             }
 
             D2D1_RECT_F rcCard = D2D1::RectF(popX, popY, popX + popW, popY + popH);

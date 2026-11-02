@@ -2,11 +2,35 @@
 #include "phide/ui/GitLogManager.hpp"
 #include <windows.h>
 #include <shellapi.h>
+#include <tlhelp32.h>
 #include <filesystem>
 #include <sstream>
 #include <algorithm>
 
 namespace phide::ui {
+
+// Native Win32 Process Tree Termination: pure API, ZERO taskkill.exe / powershell.exe, ZERO popping console windows!
+static void KillProcessTree(DWORD rootPid) {
+    if (rootPid == 0) return;
+    HANDLE hSnap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (hSnap != INVALID_HANDLE_VALUE) {
+        PROCESSENTRY32W pe{};
+        pe.dwSize = sizeof(pe);
+        if (Process32FirstW(hSnap, &pe)) {
+            do {
+                if (pe.th32ParentProcessID == rootPid) {
+                    KillProcessTree(pe.th32ProcessID);
+                }
+            } while (Process32NextW(hSnap, &pe));
+        }
+        CloseHandle(hSnap);
+    }
+    HANDLE hProc = OpenProcess(PROCESS_TERMINATE, FALSE, rootPid);
+    if (hProc) {
+        TerminateProcess(hProc, 0);
+        CloseHandle(hProc);
+    }
+}
 
 static void FillUpperLeftRoundedRect(ID2D1RenderTarget* pRT, ID2D1Brush* pBrush,
                                      const D2D1_RECT_F& rc, float radius) {
@@ -73,42 +97,6 @@ void TerminalTab::Terminate() {
         CloseHandle(hStdinWrite);
         hStdinWrite = NULL;
     }
-    if (processId != 0) {
-        // Kill the full process tree (PowerShell -> cmd -> node.exe) silently with no popping console window
-        std::wstring killCmd = L"taskkill.exe /F /T /PID " + std::to_wstring(processId);
-        STARTUPINFOW si{};
-        si.cb = sizeof(si);
-        si.dwFlags = STARTF_USESHOWWINDOW;
-        si.wShowWindow = SW_HIDE;
-        PROCESS_INFORMATION pi{};
-        std::vector<wchar_t> cmdBuf(killCmd.begin(), killCmd.end());
-        cmdBuf.push_back(0);
-        if (CreateProcessW(nullptr, cmdBuf.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {
-            WaitForSingleObject(pi.hProcess, 300);
-            CloseHandle(pi.hProcess);
-            CloseHandle(pi.hThread);
-        }
-    }
-    if (hProcess) {
-        TerminateProcess(hProcess, 0);
-        WaitForSingleObject(hProcess, 100);
-    }
-    if (readerThread.joinable()) {
-        CancelSynchronousIo(readerThread.native_handle());
-        if (hStdoutRead) {
-            CloseHandle(hStdoutRead);
-            hStdoutRead = NULL;
-        }
-        readerThread.join();
-    }
-    if (stderrReaderThread.joinable()) {
-        CancelSynchronousIo(stderrReaderThread.native_handle());
-        if (hStderrRead) {
-            CloseHandle(hStderrRead);
-            hStderrRead = NULL;
-        }
-        stderrReaderThread.join();
-    }
     if (hStdoutRead) {
         CloseHandle(hStdoutRead);
         hStdoutRead = NULL;
@@ -117,13 +105,27 @@ void TerminalTab::Terminate() {
         CloseHandle(hStderrRead);
         hStderrRead = NULL;
     }
+    if (processId != 0) {
+        // Kill the full process tree (shell -> cmd -> node.exe) silently via pure Win32 API
+        KillProcessTree(processId);
+        processId = 0;
+    }
     if (hProcess) {
+        TerminateProcess(hProcess, 0);
         CloseHandle(hProcess);
         hProcess = NULL;
     }
     if (hThread) {
         CloseHandle(hThread);
         hThread = NULL;
+    }
+    if (readerThread.joinable()) {
+        CancelSynchronousIo(readerThread.native_handle());
+        readerThread.detach(); // Asynchronously detach so UI thread NEVER freezes on join
+    }
+    if (stderrReaderThread.joinable()) {
+        CancelSynchronousIo(stderrReaderThread.native_handle());
+        stderrReaderThread.detach(); // Asynchronously detach so UI thread NEVER freezes on join
     }
 }
 
@@ -1271,79 +1273,89 @@ void TerminalPanel::RenderHeader(ID2D1RenderTarget* pRT, Theme& theme, const app
                   rcTitle, theme.brushTextPrimary.Get());
     curX += config.ScaleF(68.0f);
 
-    // Tabs List: "Local x", "Local (2) x"
-    for (size_t i = 0; i < m_tabs.size(); ++i) {
-        auto& tab = m_tabs[i];
-        bool isActive = (static_cast<int>(i) == m_activeTabIdx);
-        bool isHover = (static_cast<int>(i) == m_hoveredTabIdx);
-
-        float tabW = config.ScaleF(static_cast<float>(tab->title.length() * 7 + 36));
-        float tabH = config.ScaleF(24.0f);
-        float tabY = y + (h - tabH) / 2.0f;
-
-        tab->tabBounds = D2D1::RectF(curX, tabY, curX + tabW, tabY + tabH);
-        D2D1_ROUNDED_RECT rrcTab = D2D1::RoundedRect(tab->tabBounds, 3.5f, 3.5f);
-
-        if (isActive) {
-            // Active Tab: Darker rounded pill background (Image 1)
-            Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> activePillBg;
-            pRT->CreateSolidColorBrush(theme.IsDarkMode() ? D2D1::ColorF(0.12f, 0.22f, 0.36f, 1.0f) : D2D1::ColorF(0.85f, 0.90f, 0.98f, 1.0f), &activePillBg);
-            if (activePillBg) pRT->FillRoundedRectangle(rrcTab, activePillBg.Get());
-        } else if (isHover) {
-            pRT->FillRoundedRectangle(rrcTab, theme.brushItemHover.Get());
-        }
-
-        // Tab Title Text
-        D2D1_RECT_F rcTabText = D2D1::RectF(curX + config.ScaleF(8.0f), tabY, curX + tabW - (tab->canClose ? config.ScaleF(20.0f) : config.ScaleF(8.0f)), tabY + tabH);
-        ID2D1Brush* textBrush = isActive ? theme.brushTextWhite.Get() : theme.brushTextSecondary.Get();
-        pRT->DrawText(tab->title.c_str(), static_cast<UINT32>(tab->title.length()),
-                      theme.fontMenuItem.Get() ? theme.fontMenuItem.Get() : theme.fontButtonCenter.Get(),
-                      rcTabText, textBrush);
-
-        // Close 'x' button on tab (un-Xable if !tab->canClose, e.g. "Git Logs")
-        if (tab->canClose) {
-            float closeX = curX + tabW - config.ScaleF(16.0f);
-            float closeY = tabY + tabH / 2.0f;
-            tab->closeBounds = D2D1::RectF(closeX - config.ScaleF(6.0f), tabY + config.ScaleF(4.0f),
-                                           closeX + config.ScaleF(6.0f), tabY + tabH - config.ScaleF(4.0f));
-
-            float xr = config.ScaleF(3.0f);
-            ID2D1Brush* closeBrush = (static_cast<int>(i) == m_hoveredCloseIdx) ? theme.brushCloseHoverBg.Get() : theme.brushTextMuted.Get();
-            pRT->DrawLine(D2D1::Point2F(closeX - xr, closeY - xr), D2D1::Point2F(closeX + xr, closeY + xr), closeBrush, 1.2f);
-            pRT->DrawLine(D2D1::Point2F(closeX + xr, closeY - xr), D2D1::Point2F(closeX - xr, closeY + xr), closeBrush, 1.2f);
-        } else {
-            tab->closeBounds = D2D1::RectF(0.0f, 0.0f, 0.0f, 0.0f);
-        }
-
-        curX += tabW + config.ScaleF(4.0f);
-    }
-
-    // '+' Button (New tab)
     float btnSize = config.ScaleF(20.0f);
     float btnY = y + (h - btnSize) / 2.0f;
-    m_newTabBtnBounds = D2D1::RectF(curX, btnY, curX + btnSize, btnY + btnSize);
-    if (m_hoverNewTab) {
-        D2D1_ROUNDED_RECT rrc = D2D1::RoundedRect(m_newTabBtnBounds, 3.0f, 3.0f);
-        pRT->FillRoundedRectangle(rrc, theme.brushItemHover.Get());
-    }
-    float ncx = curX + btnSize / 2.0f;
-    float ncy = btnY + btnSize / 2.0f;
     float nr = config.ScaleF(4.0f);
-    pRT->DrawLine(D2D1::Point2F(ncx - nr, ncy), D2D1::Point2F(ncx + nr, ncy), theme.brushTextPrimary.Get(), 1.4f);
-    pRT->DrawLine(D2D1::Point2F(ncx, ncy - nr), D2D1::Point2F(ncx, ncy + nr), theme.brushTextPrimary.Get(), 1.4f);
-    curX += btnSize + config.ScaleF(2.0f);
 
-    // 'v' Chevron Dropdown Button (Image 2)
-    m_shellDropdownBtnBounds = D2D1::RectF(curX, btnY, curX + btnSize, btnY + btnSize);
-    if (m_hoverShellDropdown || m_showShellMenu) {
-        D2D1_ROUNDED_RECT rrc = D2D1::RoundedRect(m_shellDropdownBtnBounds, 3.0f, 3.0f);
-        pRT->FillRoundedRectangle(rrc, theme.brushItemHover.Get());
+    if (m_showToolbar) {
+        // Tabs List: "Local x", "Local (2) x"
+        for (size_t i = 0; i < m_tabs.size(); ++i) {
+            auto& tab = m_tabs[i];
+            bool isActive = (static_cast<int>(i) == m_activeTabIdx);
+            bool isHover = (static_cast<int>(i) == m_hoveredTabIdx);
+
+            float tabW = config.ScaleF(static_cast<float>(tab->title.length() * 7 + 36));
+            float tabH = config.ScaleF(24.0f);
+            float tabY = y + (h - tabH) / 2.0f;
+
+            tab->tabBounds = D2D1::RectF(curX, tabY, curX + tabW, tabY + tabH);
+            D2D1_ROUNDED_RECT rrcTab = D2D1::RoundedRect(tab->tabBounds, 3.5f, 3.5f);
+
+            if (isActive) {
+                // Active Tab: Darker rounded pill background (Image 1)
+                Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> activePillBg;
+                pRT->CreateSolidColorBrush(theme.IsDarkMode() ? D2D1::ColorF(0.12f, 0.22f, 0.36f, 1.0f) : D2D1::ColorF(0.85f, 0.90f, 0.98f, 1.0f), &activePillBg);
+                if (activePillBg) pRT->FillRoundedRectangle(rrcTab, activePillBg.Get());
+            } else if (isHover) {
+                pRT->FillRoundedRectangle(rrcTab, theme.brushItemHover.Get());
+            }
+
+            // Tab Title Text
+            D2D1_RECT_F rcTabText = D2D1::RectF(curX + config.ScaleF(8.0f), tabY, curX + tabW - (tab->canClose ? config.ScaleF(20.0f) : config.ScaleF(8.0f)), tabY + tabH);
+            ID2D1Brush* textBrush = isActive ? theme.brushTextWhite.Get() : theme.brushTextSecondary.Get();
+            pRT->DrawText(tab->title.c_str(), static_cast<UINT32>(tab->title.length()),
+                          theme.fontMenuItem.Get() ? theme.fontMenuItem.Get() : theme.fontButtonCenter.Get(),
+                          rcTabText, textBrush);
+
+            // Close 'x' button on tab (un-Xable if !tab->canClose, e.g. "Git Logs")
+            if (tab->canClose) {
+                float closeX = curX + tabW - config.ScaleF(16.0f);
+                float closeY = tabY + tabH / 2.0f;
+                tab->closeBounds = D2D1::RectF(closeX - config.ScaleF(6.0f), tabY + config.ScaleF(4.0f),
+                                               closeX + config.ScaleF(6.0f), tabY + tabH - config.ScaleF(4.0f));
+
+                float xr = config.ScaleF(3.0f);
+                ID2D1Brush* closeBrush = (static_cast<int>(i) == m_hoveredCloseIdx) ? theme.brushCloseHoverBg.Get() : theme.brushTextMuted.Get();
+                pRT->DrawLine(D2D1::Point2F(closeX - xr, closeY - xr), D2D1::Point2F(closeX + xr, closeY + xr), closeBrush, 1.2f);
+                pRT->DrawLine(D2D1::Point2F(closeX + xr, closeY - xr), D2D1::Point2F(closeX - xr, closeY + xr), closeBrush, 1.2f);
+            } else {
+                tab->closeBounds = D2D1::RectF(0.0f, 0.0f, 0.0f, 0.0f);
+            }
+
+            curX += tabW + config.ScaleF(4.0f);
+        }
+
+        // '+' Button (New tab)
+        m_newTabBtnBounds = D2D1::RectF(curX, btnY, curX + btnSize, btnY + btnSize);
+        if (m_hoverNewTab) {
+            D2D1_ROUNDED_RECT rrc = D2D1::RoundedRect(m_newTabBtnBounds, 3.0f, 3.0f);
+            pRT->FillRoundedRectangle(rrc, theme.brushItemHover.Get());
+        }
+        float ncx = curX + btnSize / 2.0f;
+        float ncy = btnY + btnSize / 2.0f;
+        pRT->DrawLine(D2D1::Point2F(ncx - nr, ncy), D2D1::Point2F(ncx + nr, ncy), theme.brushTextPrimary.Get(), 1.4f);
+        pRT->DrawLine(D2D1::Point2F(ncx, ncy - nr), D2D1::Point2F(ncx, ncy + nr), theme.brushTextPrimary.Get(), 1.4f);
+        curX += btnSize + config.ScaleF(2.0f);
+
+        // 'v' Chevron Dropdown Button (Image 2)
+        m_shellDropdownBtnBounds = D2D1::RectF(curX, btnY, curX + btnSize, btnY + btnSize);
+        if (m_hoverShellDropdown || m_showShellMenu) {
+            D2D1_ROUNDED_RECT rrc = D2D1::RoundedRect(m_shellDropdownBtnBounds, 3.0f, 3.0f);
+            pRT->FillRoundedRectangle(rrc, theme.brushItemHover.Get());
+        }
+        float scx = curX + btnSize / 2.0f;
+        float scy = btnY + btnSize / 2.0f;
+        float sr = config.ScaleF(3.0f);
+        pRT->DrawLine(D2D1::Point2F(scx - sr, scy - sr * 0.5f), D2D1::Point2F(scx, scy + sr * 0.7f), theme.brushTextSecondary.Get(), 1.3f);
+        pRT->DrawLine(D2D1::Point2F(scx, scy + sr * 0.7f), D2D1::Point2F(scx + sr, scy - sr * 0.5f), theme.brushTextSecondary.Get(), 1.3f);
+    } else {
+        m_newTabBtnBounds = D2D1::RectF(0.0f, 0.0f, 0.0f, 0.0f);
+        m_shellDropdownBtnBounds = D2D1::RectF(0.0f, 0.0f, 0.0f, 0.0f);
+        for (auto& tab : m_tabs) {
+            tab->tabBounds = D2D1::RectF(0.0f, 0.0f, 0.0f, 0.0f);
+            tab->closeBounds = D2D1::RectF(0.0f, 0.0f, 0.0f, 0.0f);
+        }
     }
-    float scx = curX + btnSize / 2.0f;
-    float scy = btnY + btnSize / 2.0f;
-    float sr = config.ScaleF(3.0f);
-    pRT->DrawLine(D2D1::Point2F(scx - sr, scy - sr * 0.5f), D2D1::Point2F(scx, scy + sr * 0.7f), theme.brushTextSecondary.Get(), 1.3f);
-    pRT->DrawLine(D2D1::Point2F(scx, scy + sr * 0.7f), D2D1::Point2F(scx + sr, scy - sr * 0.5f), theme.brushTextSecondary.Get(), 1.3f);
 
     // =========================================================================
     // Right Controls: '...' (Options) and '-' (Minimize)
@@ -1976,11 +1988,37 @@ void TerminalPanel::RenderShellMenu(ID2D1RenderTarget* pRT, Theme& theme, const 
 // =============================================================================
 
 void TerminalPanel::RenderOptionsMenu(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config) {
-    float menuW = config.ScaleF(160.0f);
-    float menuH = config.ScaleF(230.0f);
+    float menuW = config.ScaleF(185.0f);
+    float itemH = config.ScaleF(22.0f);
+    float sepH = config.ScaleF(6.0f);
+
+    struct MenuItemDef {
+        int id;
+        std::wstring title;
+        bool hasSubmenu;
+        bool isSep;
+    };
+    std::vector<MenuItemDef> items = {
+        { 0, L"Terminal Engine", true, false },
+        { 1, L"⚙ Settings", false, false },
+        { -1, L"", false, true },
+        { 3, L"Close All", false, false },
+        { 4, m_showToolbar ? L"✓ Show Toolbar" : L"  Show Toolbar", false, false },
+        { 5, IsActiveTabSplit() ? L"Ungroup Tabs" : L"Group Tabs", false, false },
+        { 6, L"View Mode", true, false },
+        { 7, L"Move to", true, false },
+        { 8, L"Resize", true, false },
+        { -1, L"", false, true },
+        { 10, L"Remove from Sidebar", false, false }
+    };
+
+    float menuH = config.ScaleF(8.0f);
+    for (const auto& it : items) {
+        menuH += it.isSep ? sepH : itemH;
+    }
+
     float menuX = m_optionsBtnBounds.right - menuW;
     float menuY = m_optionsBtnBounds.bottom + config.ScaleF(2.0f);
-
     m_optionsMenuBounds = D2D1::RectF(menuX, menuY, menuX + menuW, menuY + menuH);
     D2D1_ROUNDED_RECT rrcMenu = D2D1::RoundedRect(m_optionsMenuBounds, 4.0f, 4.0f);
 
@@ -1989,46 +2027,29 @@ void TerminalPanel::RenderOptionsMenu(ID2D1RenderTarget* pRT, Theme& theme, cons
     if (menuBgBrush) pRT->FillRoundedRectangle(rrcMenu, menuBgBrush.Get());
     pRT->DrawRoundedRectangle(rrcMenu, theme.brushBorderSubtle.Get(), 1.0f);
 
-    struct MenuItemDef {
-        const wchar_t* title;
-        bool hasSubmenu;
-        bool isSep;
-    };
-    MenuItemDef items[] = {
-        { L"Terminal Engine", true, false },
-        { L"⚙ Settings", false, false },
-        { L"", false, true },
-        { L"Close All", false, false },
-        { L"✓ Show Toolbar", false, false },
-        { L"Group Tabs", false, false },
-        { L"View Mode", true, false },
-        { L"Move to", true, false },
-        { L"Resize", true, false },
-        { L"", false, true },
-        { L"Remove from Sidebar", false, false }
-    };
-
+    m_optionsItemBounds.assign(items.size(), D2D1::RectF(0, 0, 0, 0));
     float itemY = menuY + config.ScaleF(4.0f);
-    float itemH = config.ScaleF(20.0f);
 
-    for (int i = 0; i < 11; ++i) {
+    for (size_t i = 0; i < items.size(); ++i) {
         if (items[i].isSep) {
-            pRT->DrawLine(D2D1::Point2F(menuX + 6.0f, itemY + itemH / 2.0f),
-                          D2D1::Point2F(menuX + menuW - 6.0f, itemY + itemH / 2.0f),
+            pRT->DrawLine(D2D1::Point2F(menuX + 6.0f, itemY + sepH / 2.0f),
+                          D2D1::Point2F(menuX + menuW - 6.0f, itemY + sepH / 2.0f),
                           theme.brushBorderSubtle.Get(), 1.0f);
-            itemY += config.ScaleF(6.0f);
+            itemY += sepH;
             continue;
         }
 
         D2D1_RECT_F rcItem = D2D1::RectF(menuX + 4.0f, itemY, menuX + menuW - 4.0f, itemY + itemH);
-        if (i == m_hoveredOptionsMenuItem) {
+        m_optionsItemBounds[i] = rcItem;
+
+        if (static_cast<int>(i) == m_hoveredOptionsMenuItem) {
             D2D1_ROUNDED_RECT rrcItem = D2D1::RoundedRect(rcItem, 3.0f, 3.0f);
             pRT->FillRoundedRectangle(rrcItem, theme.brushBrandAccent.Get());
         }
 
-        D2D1_RECT_F rcText = D2D1::RectF(menuX + config.ScaleF(12.0f), itemY, menuX + menuW - 20.0f, itemY + itemH);
-        ID2D1Brush* brush = (i == m_hoveredOptionsMenuItem) ? theme.brushTextWhite.Get() : theme.brushTextPrimary.Get();
-        pRT->DrawText(items[i].title, static_cast<UINT32>(wcslen(items[i].title)),
+        D2D1_RECT_F rcText = D2D1::RectF(menuX + config.ScaleF(12.0f), itemY, menuX + menuW - config.ScaleF(20.0f), itemY + itemH);
+        ID2D1Brush* brush = (static_cast<int>(i) == m_hoveredOptionsMenuItem) ? theme.brushTextWhite.Get() : theme.brushTextPrimary.Get();
+        pRT->DrawText(items[i].title.c_str(), static_cast<UINT32>(items[i].title.length()),
                       theme.fontMenuItem.Get() ? theme.fontMenuItem.Get() : theme.fontButtonCenter.Get(),
                       rcText, brush);
 
@@ -2043,32 +2064,101 @@ void TerminalPanel::RenderOptionsMenu(ID2D1RenderTarget* pRT, Theme& theme, cons
         itemY += itemH;
     }
 
-    // Engine Submenu (Image 4): "✓ Reworked 2025", "Classic"
-    if (m_showEngineSubmenu || m_hoveredOptionsMenuItem == 0) {
-        float subW = config.ScaleF(130.0f);
-        float subH = config.ScaleF(56.0f);
+    // Helper lambda to draw any submenu
+    auto drawSubmenu = [&](const std::vector<std::wstring>& subItems,
+                           float parentItemTop,
+                           float subW,
+                           D2D1_RECT_F& outSubBounds,
+                           std::vector<D2D1_RECT_F>& outItemBounds,
+                           int hoveredIdx,
+                           int sepIndex = -1) {
+        float totalSubH = config.ScaleF(8.0f) + itemH * static_cast<float>(subItems.size()) + (sepIndex >= 0 ? sepH : 0.0f);
         float subX = menuX - subW - config.ScaleF(2.0f);
-        float subY = menuY + config.ScaleF(4.0f);
+        float subY = parentItemTop;
+        if (subY + totalSubH > m_panelBounds.bottom) {
+            subY = (std::max)(m_panelBounds.top + config.ScaleF(4.0f), m_panelBounds.bottom - totalSubH - config.ScaleF(4.0f));
+        }
 
-        m_engineSubmenuBounds = D2D1::RectF(subX, subY, subX + subW, subY + subH);
-        D2D1_ROUNDED_RECT rrcSub = D2D1::RoundedRect(m_engineSubmenuBounds, 4.0f, 4.0f);
+        outSubBounds = D2D1::RectF(subX, subY, subX + subW, subY + totalSubH);
+        D2D1_ROUNDED_RECT rrcSub = D2D1::RoundedRect(outSubBounds, 4.0f, 4.0f);
         if (menuBgBrush) pRT->FillRoundedRectangle(rrcSub, menuBgBrush.Get());
         pRT->DrawRoundedRectangle(rrcSub, theme.brushBorderSubtle.Get(), 1.0f);
 
-        const wchar_t* subItems[] = { L"✓ Reworked 2025", L"  Classic" };
-        float subItemY = subY + config.ScaleF(4.0f);
-        for (int s = 0; s < 2; ++s) {
-            D2D1_RECT_F rcSubItem = D2D1::RectF(subX + 4.0f, subItemY, subX + subW - 4.0f, subItemY + itemH);
-            if (s == m_hoveredEngineSubmenuItem) {
+        outItemBounds.assign(subItems.size(), D2D1::RectF(0, 0, 0, 0));
+        float sy = subY + config.ScaleF(4.0f);
+
+        for (size_t s = 0; s < subItems.size(); ++s) {
+            if (static_cast<int>(s) == sepIndex) {
+                pRT->DrawLine(D2D1::Point2F(subX + 6.0f, sy + sepH / 2.0f),
+                              D2D1::Point2F(subX + subW - 6.0f, sy + sepH / 2.0f),
+                              theme.brushBorderSubtle.Get(), 1.0f);
+                sy += sepH;
+            }
+
+            D2D1_RECT_F rcSubItem = D2D1::RectF(subX + 4.0f, sy, subX + subW - 4.0f, sy + itemH);
+            outItemBounds[s] = rcSubItem;
+
+            if (static_cast<int>(s) == hoveredIdx) {
                 D2D1_ROUNDED_RECT rrc = D2D1::RoundedRect(rcSubItem, 3.0f, 3.0f);
                 pRT->FillRoundedRectangle(rrc, theme.brushBrandAccent.Get());
             }
-            ID2D1Brush* subBrush = (s == m_hoveredEngineSubmenuItem) ? theme.brushTextWhite.Get() : theme.brushTextPrimary.Get();
-            pRT->DrawText(subItems[s], static_cast<UINT32>(wcslen(subItems[s])),
+
+            ID2D1Brush* subBrush = (static_cast<int>(s) == hoveredIdx) ? theme.brushTextWhite.Get() : theme.brushTextPrimary.Get();
+            D2D1_RECT_F rcSubText = D2D1::RectF(subX + config.ScaleF(10.0f), sy, subX + subW - config.ScaleF(8.0f), sy + itemH);
+            pRT->DrawText(subItems[s].c_str(), static_cast<UINT32>(subItems[s].length()),
                           theme.fontMenuItem.Get() ? theme.fontMenuItem.Get() : theme.fontButtonCenter.Get(),
-                          rcSubItem, subBrush);
-            subItemY += itemH;
+                          rcSubText, subBrush);
+            sy += itemH;
         }
+    };
+
+    // 1. Terminal Engine Submenu (Item 0)
+    if (m_showEngineSubmenu || m_hoveredOptionsMenuItem == 0) {
+        std::vector<std::wstring> engineItems = {
+            (m_defaultShellProfile == 0 ? L"✓ PowerShell" : L"  PowerShell"),
+            (m_defaultShellProfile == 1 ? L"✓ Command Prompt" : L"  Command Prompt"),
+            (m_defaultShellProfile == 2 ? L"✓ Git Bash" : L"  Git Bash"),
+            (m_defaultShellProfile == 3 ? L"✓ Node.js REPL" : L"  Node.js REPL"),
+            (m_defaultShellProfile == 4 ? L"✓ Python" : L"  Python"),
+            (m_engineType == 0 ? L"✓ Modern 2026 Engine" : L"  Modern 2026 Engine"),
+            (m_engineType == 1 ? L"✓ Classic PTY Engine" : L"  Classic PTY Engine")
+        };
+        drawSubmenu(engineItems, m_optionsItemBounds[0].top, config.ScaleF(175.0f),
+                    m_engineSubmenuBounds, m_engineSubmenuItemBounds, m_hoveredEngineSubmenuItem, 5);
+    }
+
+    // 2. View Mode Submenu (Item 6)
+    if (m_showViewModeSubmenu || m_hoveredOptionsMenuItem == 6) {
+        std::vector<std::wstring> viewItems = {
+            (!m_isFullScreen && m_height >= config.ScaleF(220.0f) ? L"✓ Standard (Docked)" : L"  Standard (Docked)"),
+            (m_isFullScreen ? L"✓ Maximized" : L"  Maximized"),
+            (!m_isFullScreen && m_height < config.ScaleF(220.0f) ? L"✓ Compact" : L"  Compact")
+        };
+        drawSubmenu(viewItems, m_optionsItemBounds[6].top, config.ScaleF(160.0f),
+                    m_viewModeSubmenuBounds, m_viewModeSubmenuItemBounds, m_hoveredViewModeSubmenuItem);
+    }
+
+    // 3. Move to Submenu (Item 7)
+    if (m_showMoveToSubmenu || m_hoveredOptionsMenuItem == 7) {
+        std::vector<std::wstring> moveItems = {
+            (m_dockPosition == 0 ? L"✓ Panel (Bottom)" : L"  Panel (Bottom)"),
+            (m_dockPosition == 1 ? L"✓ Editor Area" : L"  Editor Area"),
+            (m_dockPosition == 2 ? L"✓ Right Side" : L"  Right Side")
+        };
+        drawSubmenu(moveItems, m_optionsItemBounds[7].top, config.ScaleF(150.0f),
+                    m_moveToSubmenuBounds, m_moveToSubmenuItemBounds, m_hoveredMoveToSubmenuItem);
+    }
+
+    // 4. Resize Submenu (Item 8)
+    if (m_showResizeSubmenu || m_hoveredOptionsMenuItem == 8) {
+        std::vector<std::wstring> resizeItems = {
+            L"Default Height (360px)",
+            L"Increase Height (+60px)",
+            L"Decrease Height (-60px)",
+            (m_isFullScreen ? L"Restore Height" : L"Maximize")
+        };
+        drawSubmenu(resizeItems, m_optionsItemBounds[8].top, config.ScaleF(175.0f),
+                    m_resizeSubmenuBounds, m_resizeSubmenuItemBounds, m_hoveredResizeSubmenuItem);
     }
 }
 
@@ -3066,6 +3156,9 @@ bool TerminalPanel::HitTestButtons(POINT pt) const noexcept {
     if (m_showShellMenu && inRect(pt, m_shellMenuBounds)) return true;
     if (m_showOptionsMenu && inRect(pt, m_optionsMenuBounds)) return true;
     if (m_showEngineSubmenu && inRect(pt, m_engineSubmenuBounds)) return true;
+    if (m_showViewModeSubmenu && inRect(pt, m_viewModeSubmenuBounds)) return true;
+    if (m_showMoveToSubmenu && inRect(pt, m_moveToSubmenuBounds)) return true;
+    if (m_showResizeSubmenu && inRect(pt, m_resizeSubmenuBounds)) return true;
     return false;
 }
 
@@ -3177,30 +3270,156 @@ bool TerminalPanel::OnMouseDown(POINT pt, const app::AppConfig& config, const st
         }
     }
 
-    // 7. Check Options Menu Items (Image 4)
+    // 7. Check Options Menu and Submenus (Image 4)
     if (m_showOptionsMenu) {
-        if (inRect(pt, m_optionsMenuBounds)) {
-            float relY = pt.y - (m_optionsMenuBounds.top + 4.0f);
-            float itemH = 20.0f;
-            int idx = static_cast<int>(relY / itemH);
-            if (idx == 0) {
-                m_showEngineSubmenu = !m_showEngineSubmenu;
-                return true;
-            } else if (idx == 3) {
-                CloseAllTabs();
-            } else if (idx == 10) {
-                Close();
+        // A. Check Engine Submenu
+        if (m_showEngineSubmenu && inRect(pt, m_engineSubmenuBounds)) {
+            for (size_t s = 0; s < m_engineSubmenuItemBounds.size(); ++s) {
+                if (inRect(pt, m_engineSubmenuItemBounds[s])) {
+                    if (s == 0) { m_defaultShellProfile = 0; NewTab(TerminalShellType::PowerShell, workingDir); }
+                    else if (s == 1) { m_defaultShellProfile = 1; NewTab(TerminalShellType::Cmd, workingDir); }
+                    else if (s == 2) { m_defaultShellProfile = 2; NewTab(TerminalShellType::GitBash, workingDir); }
+                    else if (s == 3) { m_defaultShellProfile = 3; NewTab(TerminalShellType::Node, workingDir); }
+                    else if (s == 4) { m_defaultShellProfile = 4; NewTab(TerminalShellType::Python, workingDir); }
+                    else if (s == 5) { m_engineType = 0; }
+                    else if (s == 6) { m_engineType = 1; }
+                    break;
+                }
             }
             m_showOptionsMenu = false;
             m_showEngineSubmenu = false;
             return true;
-        } else if (m_showEngineSubmenu && inRect(pt, m_engineSubmenuBounds)) {
-            m_showEngineSubmenu = false;
+        }
+
+        // B. Check View Mode Submenu
+        if (m_showViewModeSubmenu && inRect(pt, m_viewModeSubmenuBounds)) {
+            for (size_t s = 0; s < m_viewModeSubmenuItemBounds.size(); ++s) {
+                if (inRect(pt, m_viewModeSubmenuItemBounds[s])) {
+                    if (s == 0) {
+                        // Standard (Docked 360px)
+                        if (m_isFullScreen) ToggleFullScreen();
+                        SetHeight(config.ScaleF(360.0f));
+                    } else if (s == 1) {
+                        // Maximized
+                        if (!m_isFullScreen) ToggleFullScreen();
+                    } else if (s == 2) {
+                        // Compact (160px)
+                        if (m_isFullScreen) ToggleFullScreen();
+                        SetHeight(config.ScaleF(160.0f));
+                    }
+                    break;
+                }
+            }
             m_showOptionsMenu = false;
+            m_showViewModeSubmenu = false;
+            return true;
+        }
+
+        // C. Check Move To Submenu
+        if (m_showMoveToSubmenu && inRect(pt, m_moveToSubmenuBounds)) {
+            for (size_t s = 0; s < m_moveToSubmenuItemBounds.size(); ++s) {
+                if (inRect(pt, m_moveToSubmenuItemBounds[s])) {
+                    m_dockPosition = static_cast<int>(s);
+                    if (m_onMoveToPosition) m_onMoveToPosition(m_dockPosition);
+                    break;
+                }
+            }
+            m_showOptionsMenu = false;
+            m_showMoveToSubmenu = false;
+            return true;
+        }
+
+        // D. Check Resize Submenu
+        if (m_showResizeSubmenu && inRect(pt, m_resizeSubmenuBounds)) {
+            for (size_t s = 0; s < m_resizeSubmenuItemBounds.size(); ++s) {
+                if (inRect(pt, m_resizeSubmenuItemBounds[s])) {
+                    if (s == 0) {
+                        // Default Height (360px)
+                        if (m_isFullScreen) ToggleFullScreen();
+                        SetHeight(config.ScaleF(360.0f));
+                    } else if (s == 1) {
+                        // Increase Height (+60px)
+                        SetHeight(m_height + config.ScaleF(60.0f));
+                    } else if (s == 2) {
+                        // Decrease Height (-60px)
+                        SetHeight(m_height - config.ScaleF(60.0f));
+                    } else if (s == 3) {
+                        // Maximize / Restore
+                        ToggleFullScreen();
+                    }
+                    break;
+                }
+            }
+            m_showOptionsMenu = false;
+            m_showResizeSubmenu = false;
+            return true;
+        }
+
+        // E. Check Main Options Menu Items
+        if (inRect(pt, m_optionsMenuBounds)) {
+            for (size_t i = 0; i < m_optionsItemBounds.size(); ++i) {
+                if (inRect(pt, m_optionsItemBounds[i])) {
+                    if (i == 0) {
+                        // Terminal Engine >
+                        m_showEngineSubmenu = !m_showEngineSubmenu;
+                        m_showViewModeSubmenu = false;
+                        m_showMoveToSubmenu = false;
+                        m_showResizeSubmenu = false;
+                        return true;
+                    } else if (i == 1) {
+                        // Settings
+                        if (m_onOpenSettings) m_onOpenSettings();
+                    } else if (i == 3) {
+                        // Close All
+                        CloseAllTabs();
+                    } else if (i == 4) {
+                        // Show Toolbar
+                        m_showToolbar = !m_showToolbar;
+                    } else if (i == 5) {
+                        // Group Tabs / Split
+                        SplitActiveTab();
+                    } else if (i == 6) {
+                        // View Mode >
+                        m_showViewModeSubmenu = !m_showViewModeSubmenu;
+                        m_showEngineSubmenu = false;
+                        m_showMoveToSubmenu = false;
+                        m_showResizeSubmenu = false;
+                        return true;
+                    } else if (i == 7) {
+                        // Move to >
+                        m_showMoveToSubmenu = !m_showMoveToSubmenu;
+                        m_showEngineSubmenu = false;
+                        m_showViewModeSubmenu = false;
+                        m_showResizeSubmenu = false;
+                        return true;
+                    } else if (i == 8) {
+                        // Resize >
+                        m_showResizeSubmenu = !m_showResizeSubmenu;
+                        m_showEngineSubmenu = false;
+                        m_showViewModeSubmenu = false;
+                        m_showMoveToSubmenu = false;
+                        return true;
+                    } else if (i == 10) {
+                        // Remove from Sidebar
+                        Close();
+                        if (m_onMinimize) m_onMinimize();
+                    }
+                    break;
+                }
+            }
+            m_showOptionsMenu = false;
+            m_showEngineSubmenu = false;
+            m_showViewModeSubmenu = false;
+            m_showMoveToSubmenu = false;
+            m_showResizeSubmenu = false;
             return true;
         } else {
+            // Click outside options menu
             m_showOptionsMenu = false;
             m_showEngineSubmenu = false;
+            m_showViewModeSubmenu = false;
+            m_showMoveToSubmenu = false;
+            m_showResizeSubmenu = false;
         }
     }
 
@@ -3355,11 +3574,86 @@ bool TerminalPanel::OnMouseMove(POINT pt, bool isLButtonDown, float clientH) {
         m_hoveredShellMenuItem = -1;
     }
 
-    if (m_showOptionsMenu && inRect(pt, m_optionsMenuBounds)) {
-        float relY = pt.y - (m_optionsMenuBounds.top + 4.0f);
-        m_hoveredOptionsMenuItem = static_cast<int>(relY / 20.0f);
+    if (m_showOptionsMenu) {
+        if (inRect(pt, m_optionsMenuBounds)) {
+            m_hoveredOptionsMenuItem = -1;
+            for (size_t i = 0; i < m_optionsItemBounds.size(); ++i) {
+                if (inRect(pt, m_optionsItemBounds[i])) {
+                    m_hoveredOptionsMenuItem = static_cast<int>(i);
+                    if (i == 0) {
+                        m_showEngineSubmenu = true;
+                        m_showViewModeSubmenu = false;
+                        m_showMoveToSubmenu = false;
+                        m_showResizeSubmenu = false;
+                    } else if (i == 6) {
+                        m_showViewModeSubmenu = true;
+                        m_showEngineSubmenu = false;
+                        m_showMoveToSubmenu = false;
+                        m_showResizeSubmenu = false;
+                    } else if (i == 7) {
+                        m_showMoveToSubmenu = true;
+                        m_showEngineSubmenu = false;
+                        m_showViewModeSubmenu = false;
+                        m_showResizeSubmenu = false;
+                    } else if (i == 8) {
+                        m_showResizeSubmenu = true;
+                        m_showEngineSubmenu = false;
+                        m_showViewModeSubmenu = false;
+                        m_showMoveToSubmenu = false;
+                    }
+                    break;
+                }
+            }
+        } else if (!m_showEngineSubmenu && !m_showViewModeSubmenu && !m_showMoveToSubmenu && !m_showResizeSubmenu) {
+            m_hoveredOptionsMenuItem = -1;
+        }
+
+        // Submenu hover tracking
+        m_hoveredEngineSubmenuItem = -1;
+        if (m_showEngineSubmenu && inRect(pt, m_engineSubmenuBounds)) {
+            for (size_t s = 0; s < m_engineSubmenuItemBounds.size(); ++s) {
+                if (inRect(pt, m_engineSubmenuItemBounds[s])) {
+                    m_hoveredEngineSubmenuItem = static_cast<int>(s);
+                    break;
+                }
+            }
+        }
+
+        m_hoveredViewModeSubmenuItem = -1;
+        if (m_showViewModeSubmenu && inRect(pt, m_viewModeSubmenuBounds)) {
+            for (size_t s = 0; s < m_viewModeSubmenuItemBounds.size(); ++s) {
+                if (inRect(pt, m_viewModeSubmenuItemBounds[s])) {
+                    m_hoveredViewModeSubmenuItem = static_cast<int>(s);
+                    break;
+                }
+            }
+        }
+
+        m_hoveredMoveToSubmenuItem = -1;
+        if (m_showMoveToSubmenu && inRect(pt, m_moveToSubmenuBounds)) {
+            for (size_t s = 0; s < m_moveToSubmenuItemBounds.size(); ++s) {
+                if (inRect(pt, m_moveToSubmenuItemBounds[s])) {
+                    m_hoveredMoveToSubmenuItem = static_cast<int>(s);
+                    break;
+                }
+            }
+        }
+
+        m_hoveredResizeSubmenuItem = -1;
+        if (m_showResizeSubmenu && inRect(pt, m_resizeSubmenuBounds)) {
+            for (size_t s = 0; s < m_resizeSubmenuItemBounds.size(); ++s) {
+                if (inRect(pt, m_resizeSubmenuItemBounds[s])) {
+                    m_hoveredResizeSubmenuItem = static_cast<int>(s);
+                    break;
+                }
+            }
+        }
     } else {
         m_hoveredOptionsMenuItem = -1;
+        m_hoveredEngineSubmenuItem = -1;
+        m_hoveredViewModeSubmenuItem = -1;
+        m_hoveredMoveToSubmenuItem = -1;
+        m_hoveredResizeSubmenuItem = -1;
     }
 
     return false;

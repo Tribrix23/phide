@@ -745,8 +745,9 @@ FileIconType LucideIcons::GetIconTypeForPath(const std::wstring& filename, bool 
         if (ext == L".php" || ext == L".phtml") return FileIconType::Php;
         if (ext == L".cpp" || ext == L".cxx" || ext == L".cc" || ext == L".c") return FileIconType::Cpp;
         if (ext == L".hpp" || ext == L".hxx" || ext == L".hh" || ext == L".h") return FileIconType::Header;
-        if (ext == L".js" || ext == L".mjs" || ext == L".cjs" || ext == L".jsx") return FileIconType::Js;
-        if (ext == L".ts" || ext == L".tsx") return FileIconType::Ts;
+        if (ext == L".jsx" || ext == L".tsx") return FileIconType::React;
+        if (ext == L".js" || ext == L".mjs" || ext == L".cjs") return FileIconType::Js;
+        if (ext == L".ts") return FileIconType::Ts;
         if (ext == L".json" || ext == L".jsonc") return FileIconType::Json;
         if (ext == L".md" || ext == L".markdown" || ext == L".mdown") return FileIconType::Markdown;
         if (ext == L".html" || ext == L".htm") return FileIconType::Html;
@@ -785,6 +786,9 @@ void LucideIcons::DrawFileIcon(ID2D1RenderTarget* pRT, Theme& theme, const D2D1_
             break;
         case FileIconType::Ts:
             DrawFileTs(pRT, bounds, theme.brushIconBlue.Get());
+            break;
+        case FileIconType::React:
+            DrawFileReact(pRT, bounds, theme.brushSetiReact ? theme.brushSetiReact.Get() : theme.brushIconBlue.Get());
             break;
         case FileIconType::Json:
             DrawFileJson(pRT, bounds, theme.brushIconYellow.Get());
@@ -924,6 +928,31 @@ void LucideIcons::DrawFileTs(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, 
     pRT->DrawLine(MapPoint(14.5f, 8.5f, ox, oy, s), MapPoint(19.0f, 12.0f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
     pRT->DrawLine(MapPoint(19.0f, 12.0f, ox, oy, s), MapPoint(18.5f, 17.5f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
     pRT->DrawLine(MapPoint(18.5f, 17.5f, ox, oy, s), MapPoint(14.5f, 18.0f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+}
+
+void LucideIcons::DrawFileReact(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, ID2D1Brush* pBrush, float strokeWidth) const {
+    if (!pRT || !pBrush) return;
+    EnsureStrokeStyle(pRT, const_cast<ComPtr<ID2D1StrokeStyle>&>(m_pStrokeStyle));
+
+    const float bw = bounds.right - bounds.left;
+    const float bh = bounds.bottom - bounds.top;
+    const float cx = bounds.left + bw * 0.5f;
+    const float cy = bounds.top + bh * 0.5f;
+    const float rNucleus = (std::min)(bw, bh) * 0.12f;
+    const float rx = (std::min)(bw, bh) * 0.42f;
+    const float ry = (std::min)(bw, bh) * 0.16f;
+
+    // Center nucleus
+    pRT->FillEllipse(D2D1::Ellipse(D2D1::Point2F(cx, cy), rNucleus, rNucleus), pBrush);
+
+    // 3 orbital rings rotated at 0, 60, and 120 degrees
+    D2D1::Matrix3x2F oldTransform;
+    pRT->GetTransform(&oldTransform);
+    for (float angle : { 0.0f, 60.0f, 120.0f }) {
+        pRT->SetTransform(D2D1::Matrix3x2F::Rotation(angle, D2D1::Point2F(cx, cy)) * oldTransform);
+        pRT->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(cx, cy), rx, ry), pBrush, strokeWidth, m_pStrokeStyle.Get());
+    }
+    pRT->SetTransform(oldTransform);
 }
 
 void LucideIcons::DrawFileCpp(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, ID2D1Brush* pBrush, float strokeWidth) const {

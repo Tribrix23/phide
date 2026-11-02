@@ -62,9 +62,10 @@ public:
      * @brief Attempts to expand a snippet matching the prefix before the active cursor.
      * @param buffer Active text buffer to modify.
      * @param fileExt Lowercase file extension without dot (e.g. "cpp", "ts", "py").
+     * @param filename Optional active document filename used to derive dynamic names (e.g. PascalCase React component names).
      * @return True if a snippet was matched and successfully expanded.
      */
-    bool TryExpand(Buffer& buffer, const std::wstring& fileExt);
+    bool TryExpand(Buffer& buffer, const std::wstring& fileExt, const std::wstring& filename = L"");
 
     /**
      * @brief Finds a snippet matching the exact prefix and file scope.
@@ -73,8 +74,14 @@ public:
 
     /**
      * @brief Expands the given snippet into the buffer, replacing prefixLen chars.
+     * @param filename Optional active document filename to replace ComponentName / $TM_FILENAME_BASE.
      */
-    bool ExpandSnippet(const Snippet& snippet, Buffer& buffer, size_t prefixLen);
+    bool ExpandSnippet(const Snippet& snippet, Buffer& buffer, size_t prefixLen, const std::wstring& filename = L"");
+
+    /**
+     * @brief Derives a clean PascalCase component name from a filename (e.g. "practice.tsx" -> "Practice", "user-card.tsx" -> "UserCard").
+     */
+    [[nodiscard]] static std::wstring DeriveComponentName(const std::wstring& filename);
 
     /**
      * @brief Checks whether the snippet scope matches the given file extension.

@@ -325,8 +325,8 @@ std::vector<SyntaxToken> SyntaxLexer::TokenizeLine(const std::wstring& line, con
             break;
         }
 
-        // 8. String literals ("..." or '...')
-        if (line[i] == L'"' || line[i] == L'\'') {
+        // 8. String literals ("..." or '...' or `...`)
+        if (line[i] == L'"' || line[i] == L'\'' || line[i] == L'`') {
             wchar_t quote = line[i];
             size_t start = i++;
             while (i < len && line[i] != quote) {

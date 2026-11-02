@@ -319,6 +319,13 @@ public:
     void SetOnServerError(std::function<void(const std::wstring&, const std::wstring&)> cb) { m_onServerError = std::move(cb); }
     void SetOnServerReady(std::function<void(const std::wstring&)> cb) { m_onServerReady = std::move(cb); }
     void SetOnMinimize(std::function<void()> cb) { m_onMinimize = std::move(cb); }
+    void SetOnOpenSettings(std::function<void()> cb) { m_onOpenSettings = std::move(cb); }
+    void SetOnMoveToPosition(std::function<void(int)> cb) { m_onMoveToPosition = std::move(cb); }
+    [[nodiscard]] bool IsToolbarVisible() const noexcept { return m_showToolbar; }
+    void SetToolbarVisible(bool v) noexcept { m_showToolbar = v; }
+    [[nodiscard]] const std::vector<D2D1_RECT_F>& GetOptionsItemBounds() const noexcept { return m_optionsItemBounds; }
+    [[nodiscard]] const std::vector<D2D1_RECT_F>& GetResizeSubmenuItemBounds() const noexcept { return m_resizeSubmenuItemBounds; }
+    [[nodiscard]] D2D1_RECT_F GetOptionsBtnBounds() const noexcept { return m_optionsBtnBounds; }
     void ExecuteCommandLine(const std::wstring& command);
 
     // Debug Session Management (Same layout as terminal, fully functional)
@@ -454,8 +461,31 @@ private:
     D2D1_RECT_F m_engineSubmenuBounds{};
     int m_hoveredEngineSubmenuItem = -1;
 
-    int m_engineType = 0; // 0 = Reworked 2025, 1 = Classic
+    bool m_showViewModeSubmenu = false;
+    D2D1_RECT_F m_viewModeSubmenuBounds{};
+    int m_hoveredViewModeSubmenuItem = -1;
+
+    bool m_showMoveToSubmenu = false;
+    D2D1_RECT_F m_moveToSubmenuBounds{};
+    int m_hoveredMoveToSubmenuItem = -1;
+
+    bool m_showResizeSubmenu = false;
+    D2D1_RECT_F m_resizeSubmenuBounds{};
+    int m_hoveredResizeSubmenuItem = -1;
+
+    std::vector<D2D1_RECT_F> m_optionsItemBounds;
+    std::vector<D2D1_RECT_F> m_engineSubmenuItemBounds;
+    std::vector<D2D1_RECT_F> m_viewModeSubmenuItemBounds;
+    std::vector<D2D1_RECT_F> m_moveToSubmenuItemBounds;
+    std::vector<D2D1_RECT_F> m_resizeSubmenuItemBounds;
+
+    int m_defaultShellProfile = 0; // 0 = PowerShell, 1 = Cmd, 2 = GitBash, 3 = Node, 4 = Python
+    int m_dockPosition = 0;        // 0 = Bottom (Panel), 1 = Editor Area, 2 = Right Side
+    int m_engineType = 0;          // 0 = Modern 2026, 1 = Classic PTY
     bool m_showToolbar = true;
+
+    std::function<void()> m_onOpenSettings;
+    std::function<void(int)> m_onMoveToPosition;
 
     // Debugging controls & state
     bool m_isDebugActive = false;

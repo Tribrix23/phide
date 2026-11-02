@@ -88,7 +88,7 @@ struct ThemeColors {
     D2D1_COLOR_F tooltipText     = D2D1::ColorF(0.08f, 0.08f, 0.08f, 1.0f);     // Black text in darkmode
 
     // Dropdown / Popup Menu Colors
-    D2D1_COLOR_F menuBg          = D2D1::ColorF(0.122f, 0.122f, 0.122f, 0.98f); // #1F1F1F
+    D2D1_COLOR_F menuBg          = D2D1::ColorF(0.122f, 0.122f, 0.122f, 1.0f);  // #1F1F1F (100% Opaque)
     D2D1_COLOR_F menuBorder      = D2D1::ColorF(0.271f, 0.271f, 0.271f, 1.0f);  // #454545
     D2D1_COLOR_F menuSeparator   = D2D1::ColorF(0.235f, 0.235f, 0.235f, 1.0f);  // #3C3C3C
     D2D1_COLOR_F menuHover       = D2D1::ColorF(0.0f, 0.471f, 0.831f, 1.0f);   // #0078D4 (VS Code Selection Blue)
@@ -240,6 +240,7 @@ public:
     ComPtr<ID2D1SolidColorBrush> brushSetiPhp;       ///< PHP (#777BB4 / #8892BF)
     ComPtr<ID2D1SolidColorBrush> brushSetiJs;        ///< JavaScript (#F7DF1E)
     ComPtr<ID2D1SolidColorBrush> brushSetiTs;        ///< TypeScript (#519ABA)
+    ComPtr<ID2D1SolidColorBrush> brushSetiReact;     ///< React JSX / TSX (#61DAFB / #00D8FF)
     ComPtr<ID2D1SolidColorBrush> brushSetiCpp;       ///< C / C++ (#519ABA)
     ComPtr<ID2D1SolidColorBrush> brushSetiJson;      ///< JSON (#CBCB41)
     ComPtr<ID2D1SolidColorBrush> brushSetiHtml;      ///< HTML5 (#E34C26)

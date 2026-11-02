@@ -266,31 +266,37 @@ void DrawerPanel::RebuildVisibleItems() {
 
         // 1. Python Global System (Only shown if project has Python files!)
         if (m_hasPythonFiles) {
+            static std::wstring s_cachedPyExePath;
+            static bool s_hasCheckedPy = false;
             std::wstring pyExePath;
             std::wstring pyVer;
-            wchar_t found[MAX_PATH] = { 0 };
-            if (SearchPathW(nullptr, L"python.exe", nullptr, MAX_PATH, found, nullptr) > 0 &&
-                std::wstring(found).find(L"WindowsApps") == std::wstring::npos &&
-                std::filesystem::exists(found, ecCheck)) {
-                pyExePath = found;
-            } else {
-                wchar_t szLocalApp[MAX_PATH] = { 0 };
-                if (GetEnvironmentVariableW(L"LOCALAPPDATA", szLocalApp, MAX_PATH) > 0) {
-                    std::filesystem::path pyBase = std::filesystem::path(szLocalApp) / L"Programs" / L"Python";
-                    if (std::filesystem::exists(pyBase, ecCheck)) {
-                        for (const auto& entry : std::filesystem::directory_iterator(pyBase, ecCheck)) {
-                            if (entry.is_directory(ecCheck) && std::filesystem::exists(entry.path() / L"python.exe", ecCheck)) {
-                                if (std::filesystem::exists(entry.path() / L"Scripts" / L"pip.exe", ecCheck)) {
-                                    pyExePath = (entry.path() / L"python.exe").wstring();
-                                    break;
-                                } else if (pyExePath.empty()) {
-                                    pyExePath = (entry.path() / L"python.exe").wstring();
+            if (!s_hasCheckedPy) {
+                s_hasCheckedPy = true;
+                wchar_t found[MAX_PATH] = { 0 };
+                if (SearchPathW(nullptr, L"python.exe", nullptr, MAX_PATH, found, nullptr) > 0 &&
+                    std::wstring(found).find(L"WindowsApps") == std::wstring::npos &&
+                    std::filesystem::exists(found, ecCheck)) {
+                    s_cachedPyExePath = found;
+                } else {
+                    wchar_t szLocalApp[MAX_PATH] = { 0 };
+                    if (GetEnvironmentVariableW(L"LOCALAPPDATA", szLocalApp, MAX_PATH) > 0) {
+                        std::filesystem::path pyBase = std::filesystem::path(szLocalApp) / L"Programs" / L"Python";
+                        if (std::filesystem::exists(pyBase, ecCheck)) {
+                            for (const auto& entry : std::filesystem::directory_iterator(pyBase, ecCheck)) {
+                                if (entry.is_directory(ecCheck) && std::filesystem::exists(entry.path() / L"python.exe", ecCheck)) {
+                                    if (std::filesystem::exists(entry.path() / L"Scripts" / L"pip.exe", ecCheck)) {
+                                        s_cachedPyExePath = (entry.path() / L"python.exe").wstring();
+                                        break;
+                                    } else if (s_cachedPyExePath.empty()) {
+                                        s_cachedPyExePath = (entry.path() / L"python.exe").wstring();
+                                    }
                                 }
                             }
                         }
                     }
                 }
             }
+            pyExePath = s_cachedPyExePath;
             if (!pyExePath.empty()) {
                 std::wstring dirName = std::filesystem::path(pyExePath).parent_path().filename().wstring();
                 std::wstring verStr;
@@ -466,7 +472,9 @@ void DrawerPanel::AddDirectoryChildren(const std::wstring& dirPath, int depth) {
         m_visibleItems.push_back(item);
 
         if (item.isExpanded) {
-            AddDirectoryChildren(f.fullPath, depth + 1);
+            if (depth < 12) {
+                AddDirectoryChildren(f.fullPath, depth + 1);
+            }
         }
     }
 
@@ -1396,8 +1404,9 @@ void DrawerPanel::RenderExplorerPane(ID2D1RenderTarget* pRT, Theme& theme, const
                 drawCreateRow();
             }
 
-            // Draw floating path pill card below input box (Images 2 & 3)
-            if (m_isCreating && m_rcCreateBox.right > m_rcCreateBox.left) {
+            // Draw floating path pill card below input box ONLY when creating nested subpaths (e.g. "sub/file.ts")
+            bool hasSubpath = (m_createText.find(L'/') != std::wstring::npos || m_createText.find(L'\\') != std::wstring::npos);
+            if (m_isCreating && hasSubpath && m_rcCreateBox.right > m_rcCreateBox.left) {
                 std::wstring displayPath = m_createParentDir;
                 if (!displayPath.empty() && displayPath.back() != L'\\' && displayPath.back() != L'/') {
                     displayPath += L"\\";

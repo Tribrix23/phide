@@ -1412,6 +1412,126 @@ void SnippetManager::LoadDefaults() {
     });
 
     m_snippets.push_back({
+        L"React Arrow Function Component (rafc)",
+        L"rafc",
+        {
+            L"import React from 'react';",
+            L"",
+            L"export const ${1:ComponentName} = () => {",
+            L"    return (",
+            L"        <div>",
+            L"            $0",
+            L"        </div>",
+            L"    );",
+            L"};"
+        },
+        L"Creates a React Arrow Function Component",
+        L"tsx,jsx,js,ts"
+    });
+
+    m_snippets.push_back({
+        L"TypeScript React Arrow Function Component with Export (tsrafce)",
+        L"tsrafce",
+        {
+            L"import React from 'react';",
+            L"",
+            L"type Props = {};",
+            L"",
+            L"const ${1:ComponentName} = (props: Props) => {",
+            L"    return (",
+            L"        <div>",
+            L"            $0",
+            L"        </div>",
+            L"    );",
+            L"};",
+            L"",
+            L"export default ${1:ComponentName};"
+        },
+        L"Creates a TypeScript React Arrow Function Component with Props & Export",
+        L"tsx,jsx,ts,js"
+    });
+
+    m_snippets.push_back({
+        L"TypeScript React Function Component with Export (tsrfce)",
+        L"tsrfce",
+        {
+            L"import React from 'react';",
+            L"",
+            L"type Props = {};",
+            L"",
+            L"function ${1:ComponentName}({}: Props) {",
+            L"    return (",
+            L"        <div>",
+            L"            $0",
+            L"        </div>",
+            L"    );",
+            L"}",
+            L"",
+            L"export default ${1:ComponentName};"
+        },
+        L"Creates a TypeScript React Function Component with Props & Export",
+        L"tsx,jsx,ts,js"
+    });
+
+    m_snippets.push_back({
+        L"TypeScript React Functional Component (tsrfc)",
+        L"tsrfc",
+        {
+            L"import React from 'react';",
+            L"",
+            L"type Props = {};",
+            L"",
+            L"export const ${1:ComponentName} = (props: Props) => {",
+            L"    return (",
+            L"        <div>",
+            L"            $0",
+            L"        </div>",
+            L"    );",
+            L"};"
+        },
+        L"Creates a TypeScript React Functional Component with Props",
+        L"tsx,jsx,ts,js"
+    });
+
+    m_snippets.push_back({
+        L"TypeScript React Arrow Function Component (tsrafc)",
+        L"tsrafc",
+        {
+            L"import React from 'react';",
+            L"",
+            L"type Props = {};",
+            L"",
+            L"export const ${1:ComponentName} = (props: Props) => {",
+            L"    return (",
+            L"        <div>",
+            L"            $0",
+            L"        </div>",
+            L"    );",
+            L"};"
+        },
+        L"Creates a TypeScript React Arrow Function Component with Props",
+        L"tsx,jsx,ts,js"
+    });
+
+    m_snippets.push_back({
+        L"React Function Component Export (rfe)",
+        L"rfe",
+        {
+            L"import React from 'react';",
+            L"",
+            L"export default function ${1:ComponentName}() {",
+            L"    return (",
+            L"        <div>",
+            L"            $0",
+            L"        </div>",
+            L"    );",
+            L"}"
+        },
+        L"Creates a React Function Component with default export",
+        L"tsx,jsx,js,ts"
+    });
+
+    m_snippets.push_back({
         L"React useState Hook",
         L"useState",
         { L"const [${1:state}, set${1:state}] = useState(${2:initialState});" },
@@ -2133,12 +2253,44 @@ const Snippet* SnippetManager::FindSnippetByPrefix(const std::wstring& prefix, c
     return nullptr;
 }
 
-bool SnippetManager::ExpandSnippet(const Snippet& snippet, Buffer& buffer, size_t prefixLen) {
+std::wstring SnippetManager::DeriveComponentName(const std::wstring& filename) {
+    if (filename.empty()) return L"ComponentName";
+    size_t lastSlash = filename.find_last_of(L"\\/");
+    std::wstring base = (lastSlash != std::wstring::npos) ? filename.substr(lastSlash + 1) : filename;
+    size_t dot = base.find_last_of(L'.');
+    if (dot != std::wstring::npos) base = base.substr(0, dot);
+    if (base.empty()) return L"ComponentName";
+
+    // If filename starts with "untitled", keep generic ComponentName
+    std::wstring lower = base;
+    for (auto& c : lower) c = towlower(c);
+    if (lower.rfind(L"untitled", 0) == 0) return L"ComponentName";
+
+    // Convert to PascalCase (e.g. "practice" -> "Practice", "user-card" -> "UserCard", "landing_hero" -> "LandingHero")
+    std::wstring result;
+    bool capitalizeNext = true;
+    for (wchar_t ch : base) {
+        if (ch == L'-' || ch == L'_' || ch == L' ' || ch == L'.') {
+            capitalizeNext = true;
+        } else if (iswalnum(ch)) {
+            if (capitalizeNext) {
+                result += static_cast<wchar_t>(towupper(ch));
+                capitalizeNext = false;
+            } else {
+                result += ch;
+            }
+        }
+    }
+    return result.empty() ? L"ComponentName" : result;
+}
+
+bool SnippetManager::ExpandSnippet(const Snippet& snippet, Buffer& buffer, size_t prefixLen, const std::wstring& filename) {
     std::vector<std::wstring> processedLines;
     int targetCursorLineOffset = -1;
     int targetCursorCol = -1;
     bool foundPlaceholder1 = false;
     bool foundPlaceholder0 = false;
+    std::wstring compName = DeriveComponentName(filename);
 
     for (size_t lIdx = 0; lIdx < snippet.body.size(); ++lIdx) {
         std::wstring raw = snippet.body[lIdx];
@@ -2147,12 +2299,22 @@ bool SnippetManager::ExpandSnippet(const Snippet& snippet, Buffer& buffer, size_
         for (size_t c = 0; c < raw.length(); ++c) {
             if (raw[c] == L'$') {
                 if (c + 1 < raw.length() && raw[c + 1] == L'{') {
+                    // Check for ${TM_FILENAME_BASE} or ${TM_FILENAME}
+                    if (raw.substr(c, 19) == L"${TM_FILENAME_BASE}") {
+                        clean += compName;
+                        c += 18;
+                        continue;
+                    }
                     // ${1:name}
                     size_t colon = raw.find(L':', c + 2);
                     size_t close = raw.find(L'}', c + 2);
                     if (colon != std::wstring::npos && close != std::wstring::npos && colon < close) {
                         std::wstring defVal = raw.substr(colon + 1, close - colon - 1);
-                        if (!foundPlaceholder1) {
+                        if ((defVal == L"ComponentName" || defVal.find(L"ComponentName") != std::wstring::npos) &&
+                            !compName.empty() && compName != L"ComponentName") {
+                            defVal = compName;
+                        }
+                        if (!foundPlaceholder1 && !foundPlaceholder0) {
                             targetCursorLineOffset = static_cast<int>(lIdx);
                             targetCursorCol = static_cast<int>(clean.length());
                             foundPlaceholder1 = true;
@@ -2161,8 +2323,12 @@ bool SnippetManager::ExpandSnippet(const Snippet& snippet, Buffer& buffer, size_
                         c = close;
                         continue;
                     }
+                } else if (raw.substr(c, 17) == L"$TM_FILENAME_BASE") {
+                    clean += compName;
+                    c += 16;
+                    continue;
                 } else if (c + 1 < raw.length() && raw[c + 1] == L'1') {
-                    if (!foundPlaceholder1) {
+                    if (!foundPlaceholder1 && !foundPlaceholder0) {
                         targetCursorLineOffset = static_cast<int>(lIdx);
                         targetCursorCol = static_cast<int>(clean.length());
                         foundPlaceholder1 = true;
@@ -2170,11 +2336,10 @@ bool SnippetManager::ExpandSnippet(const Snippet& snippet, Buffer& buffer, size_
                     c++; // skip 1
                     continue;
                 } else if (c + 1 < raw.length() && raw[c + 1] == L'0') {
-                    if (!foundPlaceholder0 && !foundPlaceholder1) {
-                        targetCursorLineOffset = static_cast<int>(lIdx);
-                        targetCursorCol = static_cast<int>(clean.length());
-                        foundPlaceholder0 = true;
-                    }
+                    // $0 is the final exit position; always preferred if present
+                    targetCursorLineOffset = static_cast<int>(lIdx);
+                    targetCursorCol = static_cast<int>(clean.length());
+                    foundPlaceholder0 = true;
                     c++; // skip 0
                     continue;
                 } else if (c + 1 < raw.length() && iswdigit(raw[c + 1])) {
@@ -2190,7 +2355,7 @@ bool SnippetManager::ExpandSnippet(const Snippet& snippet, Buffer& buffer, size_
     return buffer.ReplacePrefixWithSnippet(prefixLen, processedLines, targetCursorLineOffset, targetCursorCol);
 }
 
-bool SnippetManager::TryExpand(Buffer& buffer, const std::wstring& fileExt) {
+bool SnippetManager::TryExpand(Buffer& buffer, const std::wstring& fileExt, const std::wstring& filename) {
     auto cursor = buffer.GetCursor();
     std::wstring line = buffer.GetLine(cursor.line);
     if (cursor.col == 0 || line.empty()) return false;
@@ -2210,7 +2375,7 @@ bool SnippetManager::TryExpand(Buffer& buffer, const std::wstring& fileExt) {
     const Snippet* pMatch = FindSnippetByPrefix(prefix, fileExt);
     if (!pMatch) return false;
 
-    return ExpandSnippet(*pMatch, buffer, prefix.length());
+    return ExpandSnippet(*pMatch, buffer, prefix.length(), filename);
 }
 
 } // namespace phide::editor

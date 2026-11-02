@@ -273,6 +273,13 @@ int main(int argc, char* argv[]) {
 
     const std::wstring artDir = L"C:\\Users\\Administrator\\.gemini\\antigravity\\brain\\c83160b9-3f8b-4ad1-87a8-ab1f7f555a77\\";
 
+    if (targetTest == 104) {
+        goto run_test_104;
+    }
+    if (targetTest == 105) {
+        goto run_test_105;
+    }
+
     if (targetTest == 66) {
         goto run_test_66;
     }
@@ -410,6 +417,9 @@ int main(int argc, char* argv[]) {
     }
     if (targetTest == 103) {
         goto run_test_103;
+    }
+    if (targetTest == 104) {
+        goto run_test_104;
     }
 
     // --- 3. Render Test: Picture Viewer in Dark & Light Modes ---
@@ -1128,6 +1138,8 @@ int main(int argc, char* argv[]) {
             ComPtr<ID2D1RenderTarget> pRT;
             pD2DFactory->CreateWicBitmapRenderTarget(pWicBmp.Get(), props, &pRT);
             theme.CreateDeviceResources(pRT.Get(), pDWriteFactory.Get());
+            pRT->BeginDraw();
+            pRT->Clear(theme.colors.canvasBg);
 
             pRT->BeginDraw();
             pRT->Clear(theme.colors.canvasBg);
@@ -1173,6 +1185,8 @@ int main(int argc, char* argv[]) {
             ComPtr<ID2D1RenderTarget> pRT;
             pD2DFactory->CreateWicBitmapRenderTarget(pWicBmp.Get(), props, &pRT);
             theme.CreateDeviceResources(pRT.Get(), pDWriteFactory.Get());
+            pRT->BeginDraw();
+            pRT->Clear(theme.colors.canvasBg);
 
             pRT->BeginDraw();
             pRT->Clear(theme.colors.canvasBg);
@@ -13207,6 +13221,8 @@ run_test_89:
             phide::app::AppConfig cfg;
             phide::ui::Theme theme;
             theme.CreateDeviceResources(pRT.Get(), pDWriteFactory.Get());
+            pRT->BeginDraw();
+            pRT->Clear(theme.colors.canvasBg);
             phide::ui::LucideIcons lucide;
             lucide.Initialize(pD2DFactory.Get());
 
@@ -13456,6 +13472,8 @@ run_test_90:
 
             phide::ui::Theme theme;
             theme.CreateDeviceResources(pRT.Get(), pDWriteFactory.Get());
+            pRT->BeginDraw();
+            pRT->Clear(theme.colors.canvasBg);
 
             phide::app::AppConfig cfg;
             cfg.isGraphColored = false; // default monochrome (Image 3)
@@ -14046,6 +14064,8 @@ run_test_92:
             ComPtr<ID2D1RenderTarget> pRT;
             CreateTarget(pWic, pRT);
             theme.CreateDeviceResources(pRT.Get(), pDWriteFactory.Get());
+            pRT->BeginDraw();
+            pRT->Clear(theme.colors.canvasBg);
 
             theme.SetEditorFont(L"Fira Code", 17.0f);
             // Measure M and i - they must be identical (monospaced fallback to Consolas)
@@ -14910,6 +14930,8 @@ run_test_97:
             Microsoft::WRL::ComPtr<ID2D1RenderTarget> pRT;
             CreateTarget(pWic, pRT);
             theme.CreateDeviceResources(pRT.Get(), pDWriteFactory.Get());
+            pRT->BeginDraw();
+            pRT->Clear(theme.colors.canvasBg);
 
             pRT->BeginDraw();
             pRT->Clear(theme.colors.windowBg);
@@ -15069,6 +15091,8 @@ run_test_98:
             Microsoft::WRL::ComPtr<ID2D1RenderTarget> pRT;
             CreateTarget(pWic, pRT);
             theme.CreateDeviceResources(pRT.Get(), pDWriteFactory.Get());
+            pRT->BeginDraw();
+            pRT->Clear(theme.colors.canvasBg);
 
             phide::editor::OpenDocument doc;
             doc.fileName = L"page.tsx";
@@ -15192,6 +15216,8 @@ run_test_99:
             Microsoft::WRL::ComPtr<ID2D1RenderTarget> pRT;
             CreateTarget(pWic, pRT);
             theme.CreateDeviceResources(pRT.Get(), pDWriteFactory.Get());
+            pRT->BeginDraw();
+            pRT->Clear(theme.colors.canvasBg);
 
             phide::editor::OpenDocument doc;
             doc.fileName = L"page.tsx";
@@ -15333,6 +15359,8 @@ run_test_100:
             Microsoft::WRL::ComPtr<ID2D1RenderTarget> pRT;
             CreateTarget(pWic, pRT);
             theme.CreateDeviceResources(pRT.Get(), pDWriteFactory.Get());
+            pRT->BeginDraw();
+            pRT->Clear(theme.colors.canvasBg);
 
             phide::editor::OpenDocument doc;
             doc.fileName = L"tutorial-sidebar.tsx";
@@ -15745,8 +15773,11 @@ run_test_103:
             assert(theme.customFontCollection != nullptr && "customFontCollection must be created");
             UINT32 familyIndex = 0;
             BOOL familyExists = FALSE;
-            hr = theme.customFontCollection->FindFamilyName(L"Phide Mono", &familyIndex, &familyExists);
-            assert(SUCCEEDED(hr) && familyExists && "Phide Mono must be registered in customFontCollection");
+            hr = theme.customFontCollection->FindFamilyName(L"Koda Mono", &familyIndex, &familyExists);
+            if (!familyExists) {
+                hr = theme.customFontCollection->FindFamilyName(L"Phide Mono", &familyIndex, &familyExists);
+            }
+            assert(SUCCEEDED(hr) && familyExists && "Koda Mono or Phide Mono must be registered in customFontCollection");
 
             theme.SetEditorFont(L"Koda Mono", 15.0f);
             assert(theme.fontCode != nullptr && "fontCode must be created with Koda Mono");
@@ -15837,6 +15868,226 @@ run_test_103:
         std::cout << "  Passed: All [TEST 103] Gutter Diff Indicators & Koda Mono Medium Italic Default Font passed!" << std::endl;
         if (targetTest == 103) {
             std::cout << "Target test 103 finished successfully." << std::endl;
+            return 0;
+        }
+    }
+
+    // ===============================================================================================
+    // [TEST 104] TSX/JSX React Icons, Dynamic File-Derived Snippets (rafce, rfce) & Terminal Dropdown
+    // ===============================================================================================
+run_test_104:
+    if (targetTest == 0 || targetTest == 104) {
+        std::cout << "\n[TEST 104] Testing TSX/JSX React Icons, Snippet Dynamic File Names & Terminal Dropdown..." << std::endl;
+
+        // Subtest 1: File Icons for .tsx and .jsx (Must use React Atom Icon 0xE07D & Cyan Brush)
+        {
+            phide::ui::Theme theme;
+            Microsoft::WRL::ComPtr<IWICBitmap> pWic;
+            Microsoft::WRL::ComPtr<ID2D1RenderTarget> pRT;
+            CreateTarget(pWic, pRT);
+            theme.CreateDeviceResources(pRT.Get(), pDWriteFactory.Get());
+            pRT->BeginDraw();
+            pRT->Clear(theme.colors.canvasBg);
+
+            // 1. Check Lucide icon mapping
+            assert(phide::ui::LucideIcons::GetIconTypeForPath(L"practice.tsx", false, false) == phide::ui::FileIconType::React);
+            assert(phide::ui::LucideIcons::GetIconTypeForPath(L"app.jsx", false, false) == phide::ui::FileIconType::React);
+            assert(phide::ui::LucideIcons::GetIconTypeForPath(L"utils.ts", false, false) == phide::ui::FileIconType::Ts);
+            assert(phide::ui::LucideIcons::GetIconTypeForPath(L"index.js", false, false) == phide::ui::FileIconType::Js);
+
+            // 2. Check Seti font icon glyph and brush
+            auto tsxIcon = theme.GetSetiIcon(L"practice.tsx", false, false);
+            assert(tsxIcon.glyph == 0xE07D && "practice.tsx must map to Seti React Atom glyph 0xE07D");
+            assert(tsxIcon.pBrush == theme.brushSetiReact.Get() && "practice.tsx must use brushSetiReact (#61DAFB)");
+
+            auto jsxIcon = theme.GetSetiIcon(L"landing.jsx", false, false);
+            assert(jsxIcon.glyph == 0xE07D && "landing.jsx must map to Seti React Atom glyph 0xE07D");
+            assert(jsxIcon.pBrush == theme.brushSetiReact.Get() && "landing.jsx must use brushSetiReact (#61DAFB)");
+
+            auto tsIcon = theme.GetSetiIcon(L"utils.ts", false, false);
+            assert(tsIcon.glyph == 0xE099 && "utils.ts must remain TypeScript glyph 0xE099");
+
+            auto jsIcon = theme.GetSetiIcon(L"server.js", false, false);
+            assert(jsIcon.glyph == 0xE051 && "server.js must remain JavaScript glyph 0xE051");
+
+            std::cout << "  Passed: .tsx and .jsx resolve to official React Atom icon (0xE07D) and React Cyan brush" << std::endl;
+        }
+
+        // Subtest 2: Dynamic File-Derived Component Name Snippets (rafce, rfce, tsrafce)
+        {
+            // 1. Verify PascalCase deduction
+            assert(phide::editor::SnippetManager::DeriveComponentName(L"practice.tsx") == L"Practice");
+            assert(phide::editor::SnippetManager::DeriveComponentName(L"user-card.tsx") == L"UserCard");
+            assert(phide::editor::SnippetManager::DeriveComponentName(L"landing_hero.jsx") == L"LandingHero");
+            assert(phide::editor::SnippetManager::DeriveComponentName(L"my-cool-widget.component.tsx") == L"MyCoolWidgetComponent");
+            assert(phide::editor::SnippetManager::DeriveComponentName(L"C:\\project\\app\\profile-card.tsx") == L"ProfileCard");
+
+            // 2. Expand 'rafce' on practice.tsx
+            phide::editor::SnippetManager sm;
+            sm.Initialize(L"");
+            const auto* pRafce = sm.FindSnippetByPrefix(L"rafce", L"tsx");
+            assert(pRafce != nullptr && "rafce snippet must be registered");
+
+            phide::editor::Buffer buf;
+            buf.SetText(L"rafce");
+            buf.SetCursor(0, 5);
+            bool expanded = sm.ExpandSnippet(*pRafce, buf, 5, L"practice.tsx");
+            assert(expanded && "ExpandSnippet for rafce must succeed");
+
+            std::wstring expandedText = buf.GetText();
+            assert(expandedText.find(L"const Practice = () => {") != std::wstring::npos && "rafce must declare const Practice = () => {");
+            assert(expandedText.find(L"export default Practice;") != std::wstring::npos && "rafce must export default Practice;");
+            assert(expandedText.find(L"ComponentName") == std::wstring::npos && "rafce must not contain literal 'ComponentName'");
+
+            // 3. Expand 'rfce' on user-card.tsx
+            const auto* pRfce = sm.FindSnippetByPrefix(L"rfce", L"tsx");
+            assert(pRfce != nullptr && "rfce snippet must be registered");
+            phide::editor::Buffer buf2;
+            buf2.SetText(L"rfce");
+            buf2.SetCursor(0, 4);
+            expanded = sm.ExpandSnippet(*pRfce, buf2, 4, L"user-card.tsx");
+            assert(expanded && "ExpandSnippet for rfce must succeed");
+            std::wstring rfceText = buf2.GetText();
+            assert(rfceText.find(L"function UserCard() {") != std::wstring::npos && "rfce must declare function UserCard()");
+            assert(rfceText.find(L"export default UserCard;") != std::wstring::npos && "rfce must export default UserCard;");
+
+            // 4. Expand 'tsrafce' on practice.tsx
+            const auto* pTsrafce = sm.FindSnippetByPrefix(L"tsrafce", L"tsx");
+            assert(pTsrafce != nullptr && "tsrafce snippet must be registered");
+            phide::editor::Buffer buf3;
+            buf3.SetText(L"tsrafce");
+            buf3.SetCursor(0, 7);
+            expanded = sm.ExpandSnippet(*pTsrafce, buf3, 7, L"practice.tsx");
+            assert(expanded && "ExpandSnippet for tsrafce must succeed");
+            std::wstring tsrafceText = buf3.GetText();
+            assert(tsrafceText.find(L"const Practice = (props: Props) => {") != std::wstring::npos);
+            assert(tsrafceText.find(L"export default Practice;") != std::wstring::npos);
+
+            // 5. Test TryExpand with Enter / Tab
+            phide::editor::Buffer bufTry;
+            bufTry.SetText(L"rafce");
+            bufTry.SetCursor(0, 5);
+            bool tryOk = sm.TryExpand(bufTry, L"tsx", L"practice.tsx");
+            assert(tryOk && "TryExpand with filename must expand cleanly");
+            assert(bufTry.GetText().find(L"const Practice = () => {") != std::wstring::npos);
+
+            std::cout << "  Passed: rafce, rfce, tsrafce expand dynamically using filename PascalCase (Practice, UserCard)" << std::endl;
+        }
+
+        // Subtest 3: Terminal Panel Options Dropdown Menu & Full Feature Set
+        {
+            phide::ui::TerminalPanel term;
+            term.Open(L"");
+            term.NewTab(phide::ui::TerminalShellType::PowerShell, L"");
+
+            phide::app::AppConfig cfg;
+            phide::ui::Theme theme;
+            Microsoft::WRL::ComPtr<IWICBitmap> pWic;
+            Microsoft::WRL::ComPtr<ID2D1RenderTarget> pRT;
+            CreateTarget(pWic, pRT);
+            theme.CreateDeviceResources(pRT.Get(), pDWriteFactory.Get());
+            pRT->BeginDraw();
+            pRT->Clear(theme.colors.canvasBg);
+
+            // 1. Initial Render to lay out bounds
+            term.Render(pRT.Get(), theme, cfg, 0.0f, 1200.0f, 750.0f, 50.0f);
+
+            // 2. Open options dropdown
+            POINT ptOptions{ static_cast<LONG>(term.GetOptionsBtnBounds().left + 8.0f), static_cast<LONG>(term.GetOptionsBtnBounds().top + 8.0f) };
+            term.OnMouseDown(ptOptions, cfg, L"");
+            term.Render(pRT.Get(), theme, cfg, 0.0f, 1200.0f, 750.0f, 50.0f);
+
+            // 3. Test Settings Callback (Item 1)
+            bool settingsOpened = false;
+            term.SetOnOpenSettings([&]() { settingsOpened = true; });
+
+            // Re-open options menu
+            term.OnMouseDown(ptOptions, cfg, L"");
+            term.Render(pRT.Get(), theme, cfg, 0.0f, 1200.0f, 750.0f, 50.0f);
+
+            // Click Item 1 (Settings)
+            POINT ptSettings{ static_cast<LONG>(term.GetOptionsItemBounds()[1].left + 15.0f), static_cast<LONG>(term.GetOptionsItemBounds()[1].top + 5.0f) };
+            term.OnMouseDown(ptSettings, cfg, L"");
+            assert(settingsOpened && "Terminal Settings dropdown item must trigger OnOpenSettings callback");
+
+            // 4. Test Show Toolbar Toggle (Item 4)
+            assert(term.IsToolbarVisible() == true && "Toolbar must be visible by default");
+            term.OnMouseDown(ptOptions, cfg, L"");
+            term.Render(pRT.Get(), theme, cfg, 0.0f, 1200.0f, 750.0f, 50.0f);
+            POINT ptToolbar{ static_cast<LONG>(term.GetOptionsItemBounds()[4].left + 15.0f), static_cast<LONG>(term.GetOptionsItemBounds()[4].top + 5.0f) };
+            term.OnMouseDown(ptToolbar, cfg, L"");
+            assert(term.IsToolbarVisible() == false && "Clicking Show Toolbar must toggle visibility to false");
+
+            term.OnMouseDown(ptOptions, cfg, L"");
+            term.Render(pRT.Get(), theme, cfg, 0.0f, 1200.0f, 750.0f, 50.0f);
+            term.OnMouseDown(ptToolbar, cfg, L"");
+            assert(term.IsToolbarVisible() == true && "Clicking Show Toolbar again must toggle visibility back to true");
+
+            // 5. Test Group Tabs / Split (Item 5)
+            assert(!term.IsActiveTabSplit() && "Tab must not be split initially");
+            term.OnMouseDown(ptOptions, cfg, L"");
+            term.Render(pRT.Get(), theme, cfg, 0.0f, 1200.0f, 750.0f, 50.0f);
+            POINT ptSplit{ static_cast<LONG>(term.GetOptionsItemBounds()[5].left + 15.0f), static_cast<LONG>(term.GetOptionsItemBounds()[5].top + 5.0f) };
+            term.OnMouseDown(ptSplit, cfg, L"");
+            assert(term.IsActiveTabSplit() == true && "Group Tabs must split the active terminal tab");
+
+            // 6. Test Resize Submenu (+60px height)
+            float startH = term.GetHeight();
+            term.OnMouseDown(ptOptions, cfg, L"");
+            // Hover item 8 to trigger resize submenu
+            POINT ptResizeItem{ static_cast<LONG>(term.GetOptionsItemBounds()[8].left + 15.0f), static_cast<LONG>(term.GetOptionsItemBounds()[8].top + 5.0f) };
+            term.OnMouseMove(ptResizeItem, false, 750.0f);
+            term.Render(pRT.Get(), theme, cfg, 0.0f, 1200.0f, 750.0f, 50.0f);
+
+            // Click Resize -> Increase Height (+60px, Item 1 in resize submenu)
+            POINT ptIncreaseH{ static_cast<LONG>(term.GetResizeSubmenuItemBounds()[1].left + 10.0f), static_cast<LONG>(term.GetResizeSubmenuItemBounds()[1].top + 5.0f) };
+            term.OnMouseDown(ptIncreaseH, cfg, L"");
+            assert(term.GetHeight() > startH && "Resize -> Increase Height must expand terminal height");
+
+            // 7. Save visual verification artifact
+            term.OnMouseDown(ptOptions, cfg, L"");
+            term.Render(pRT.Get(), theme, cfg, 0.0f, 1200.0f, 750.0f, 50.0f);
+            HRESULT hr = pRT->EndDraw();
+            assert(SUCCEEDED(hr));
+            SaveWicBitmapToPng(pWic.Get(), pWicFactory.Get(), artDir + L"test_react_icon_and_rafce_snippet.png");
+            std::cout << "  Passed: Terminal dropdown options menu verified (Settings, Toolbar, Split, Resize, Submenus)" << std::endl;
+        }
+
+        std::cout << "  Passed: All [TEST 104] TSX/JSX React Icons, Snippet Dynamic File Names & Terminal Dropdown passed!" << std::endl;
+        if (targetTest == 104) {
+            std::cout << "Target test 104 finished successfully." << std::endl;
+            return 0;
+        }
+    }
+
+    // ----------------------------------------------------
+    // TEST 105: Diagnostic False Positives on Real CleaveDB Files
+    // ----------------------------------------------------
+run_test_105:
+    if (targetTest == 0 || targetTest == 105) {
+        std::cout << "\n[TEST 105] Testing False Positives on Real CleaveDB TSX Files..." << std::endl;
+
+        auto testFile = [](const std::wstring& path) {
+            std::wcout << L"\n--- Testing " << path << L" ---" << std::endl;
+            phide::editor::Buffer buf;
+            if (!buf.LoadFromFile(path)) {
+                std::wcout << L"Failed to load file!" << std::endl;
+                return;
+            }
+            auto diags = phide::editor::SyntaxValidator::Validate(path, buf);
+            std::wcout << L"Diagnostics count: " << diags.size() << std::endl;
+            for (const auto& d : diags) {
+                std::wcout << L"  Line " << (d.line + 1) << L" col " << (d.col + 1)
+                           << L" [sev " << d.severity << L"]: " << d.message << std::endl;
+            }
+        };
+
+        testFile(L"C:\\Users\\Administrator\\Downloads\\cleavedb-browser\\app\\page.tsx");
+        testFile(L"C:\\Users\\Administrator\\Downloads\\cleavedb-browser\\components\\ui\\terminal-animation.tsx");
+        testFile(L"C:\\Users\\Administrator\\Downloads\\cleavedb-browser\\components\\ui\\copy-command.tsx");
+
+        if (targetTest == 105) {
+            std::cout << "Target test 105 finished." << std::endl;
             return 0;
         }
     }

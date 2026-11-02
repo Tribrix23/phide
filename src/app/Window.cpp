@@ -1669,10 +1669,10 @@ void Window::OpenSpecialView(const std::wstring& viewType, const std::wstring& t
             group.activeDocIdx = static_cast<int>(i);
             if (viewType == L"graph") {
                 std::wstring wsFolder = m_drawer.GetOpenFolderPath();
-                if (!wsFolder.empty()) {
+                if (!wsFolder.empty() && m_editor.GetGraphView().GetCurrentRootPath() != wsFolder) {
                     m_editor.GetGraphView().RefreshFromWorkspace(wsFolder);
+                    m_editor.GetGraphView().StartIntroAnimation();
                 }
-                m_editor.GetGraphView().StartBounceAnimation();
                 SetTimer(m_hwnd, m_animTimerId, 16, nullptr);
             }
             InvalidateRect(m_hwnd, nullptr, FALSE);
@@ -2638,7 +2638,7 @@ void Window::CommitAutocompleteSelection() {
 
         const auto* pSnip = m_snippetManager.FindSnippetByPrefix(item->label, ext);
         if (pSnip) {
-            m_snippetManager.ExpandSnippet(*pSnip, pDoc->buffer, prefix.length());
+            m_snippetManager.ExpandSnippet(*pSnip, pDoc->buffer, prefix.length(), pDoc->fileName.empty() ? pDoc->filePath : pDoc->fileName);
             MarkDocumentModified(pDoc);
             m_editor.DismissAutocomplete();
             m_editor.ClearGhostText();
@@ -4260,22 +4260,48 @@ Window::ProjectDecision Window::DetectFramework(const std::wstring& rootDir, con
     return decision;
 }
 
+static void KillProcessTree(DWORD rootPid) {
+    if (rootPid == 0) return;
+    HANDLE hSnap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (hSnap != INVALID_HANDLE_VALUE) {
+        PROCESSENTRY32W pe{};
+        pe.dwSize = sizeof(pe);
+        if (Process32FirstW(hSnap, &pe)) {
+            do {
+                if (pe.th32ParentProcessID == rootPid) {
+                    KillProcessTree(pe.th32ProcessID);
+                }
+            } while (Process32NextW(hSnap, &pe));
+        }
+        CloseHandle(hSnap);
+    }
+    HANDLE hProc = OpenProcess(PROCESS_TERMINATE, FALSE, rootPid);
+    if (hProc) {
+        TerminateProcess(hProc, 0);
+        CloseHandle(hProc);
+    }
+}
+
 static void CleanupPortProcessesAsync(int port) {
     if (port <= 0) return;
     std::thread([port]() {
-        std::wstring findPortCmd = L"powershell.exe -NoProfile -WindowStyle Hidden -Command \"Get-NetTCPConnection -LocalPort " +
-            std::to_wstring(port) + L" -ErrorAction SilentlyContinue | ForEach-Object { Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue }\"";
-        STARTUPINFOW si{};
-        si.cb = sizeof(si);
-        si.dwFlags = STARTF_USESHOWWINDOW;
-        si.wShowWindow = SW_HIDE;
-        PROCESS_INFORMATION pi{};
-        std::vector<wchar_t> cmdBuf(findPortCmd.begin(), findPortCmd.end());
-        cmdBuf.push_back(0);
-        if (CreateProcessW(nullptr, cmdBuf.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {
-            WaitForSingleObject(pi.hProcess, 4000);
-            CloseHandle(pi.hProcess);
-            CloseHandle(pi.hThread);
+        // Pure Win32 TCP listener inspection & kill: ZERO powershell.exe, ZERO popping console windows!
+        DWORD dwSize = 0;
+        GetExtendedTcpTable(NULL, &dwSize, FALSE, AF_INET, TCP_TABLE_OWNER_PID_ALL, 0);
+        if (dwSize > 0) {
+            std::vector<BYTE> buffer(dwSize);
+            if (GetExtendedTcpTable(buffer.data(), &dwSize, FALSE, AF_INET, TCP_TABLE_OWNER_PID_ALL, 0) == NO_ERROR) {
+                auto* table = reinterpret_cast<MIB_TCPTABLE_OWNER_PID*>(buffer.data());
+                DWORD netPort = htons(static_cast<u_short>(port));
+                for (DWORD i = 0; i < table->dwNumEntries; ++i) {
+                    if (table->table[i].dwLocalPort == netPort || table->table[i].dwLocalPort == static_cast<DWORD>(port)) {
+                        DWORD pid = table->table[i].dwOwningPid;
+                        if (pid > 4 && pid != GetCurrentProcessId()) {
+                            KillProcessTree(pid);
+                        }
+                    }
+                }
+            }
         }
     }).detach();
 }
@@ -5751,6 +5777,11 @@ bool Window::Create(HINSTANCE hInstance, int nCmdShow) {
     m_terminal.SetOnMinimize([this]() {
         m_isTerminalFocused = false;
         AnimateTerminalClose();
+    });
+
+    m_terminal.SetOnOpenSettings([this]() {
+        DoOpenSettings();
+        if (m_hwnd) InvalidateRect(m_hwnd, nullptr, FALSE);
     });
 
     // Animate terminal maximize / restore smoothly (User requirement)
@@ -10290,8 +10321,6 @@ void Window::HandleLButtonDown(POINT clientPt) {
     auto railHit = m_rail.HitTest(clientPt);
     if (railHit != ui::RailTabId::None) {
         if (railHit == ui::RailTabId::FileNetwork) {
-            std::wstring folder = m_drawer.GetOpenFolderPath();
-            m_editor.GetGraphView().RefreshFromWorkspace(folder);
             OpenSpecialView(L"graph", L"Graph view");
             UpdateDrawerErrorFiles();
             SaveSessionState();
@@ -12871,7 +12900,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                                 ext = p.extension().wstring();
                             }
                             if (!ext.empty() && ext[0] == L'.') ext = ext.substr(1);
-                            if (!m_snippetManager.TryExpand(pDoc->buffer, ext)) {
+                            if (!m_snippetManager.TryExpand(pDoc->buffer, ext, pDoc->fileName.empty() ? pDoc->filePath : pDoc->fileName)) {
                                 // Try expanding Emmet abbreviation next (e.g., div -> <div></div>)
                                 if (!pDoc->buffer.ExpandEmmet()) {
                                     for (wchar_t ch : indentStr) {
@@ -12896,7 +12925,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     if (!ext.empty() && ext[0] == L'.') ext = ext.substr(1);
 
                     // Check if current prefix can expand as a snippet on Enter (e.g. typing "log" or "!" and hitting Enter)
-                    if (m_snippetManager.TryExpand(pDoc->buffer, ext)) {
+                    if (m_snippetManager.TryExpand(pDoc->buffer, ext, pDoc->fileName.empty() ? pDoc->filePath : pDoc->fileName)) {
                         MarkDocumentModified(pDoc);
                         if (pDoc->isDiffView) ComputeDiffHunks(*pDoc);
                         m_editor.DismissAutocomplete();

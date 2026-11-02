@@ -30,7 +30,19 @@ static std::wstring FindFontPath(const std::wstring& filename) {
 }
 
 static std::wstring ResolveMonospaceFont(IDWriteFactory* pFactory, const std::wstring& requestedFamily, IDWriteFontCollection* pCustomCollection = nullptr) {
-    if (requestedFamily.empty() || requestedFamily == L"Koda Mono" || requestedFamily == L"Phide Mono") return L"Phide Mono";
+    if (requestedFamily.empty() || requestedFamily == L"Koda Mono" || requestedFamily == L"Phide Mono") {
+        if (pCustomCollection) {
+            UINT32 index = 0;
+            BOOL exists = FALSE;
+            if (SUCCEEDED(pCustomCollection->FindFamilyName(L"Koda Mono", &index, &exists)) && exists) {
+                return L"Koda Mono";
+            }
+            if (SUCCEEDED(pCustomCollection->FindFamilyName(L"Phide Mono", &index, &exists)) && exists) {
+                return L"Phide Mono";
+            }
+        }
+        return L"Koda Mono";
+    }
     if (pCustomCollection) {
         UINT32 index = 0;
         BOOL exists = FALSE;
@@ -48,7 +60,7 @@ static std::wstring ResolveMonospaceFont(IDWriteFactory* pFactory, const std::ws
             return requestedFamily;
         }
         // Fallback: Check Phide Mono -> Consolas -> Cascadia Code -> Courier New -> Lucida Console
-        static const wchar_t* fallbacks[] = { L"Phide Mono", L"Consolas", L"Cascadia Code", L"Courier New", L"Lucida Console" };
+        static const wchar_t* fallbacks[] = { L"Koda Mono", L"Phide Mono", L"Consolas", L"Cascadia Code", L"Courier New", L"Lucida Console" };
         for (const auto* fb : fallbacks) {
             UINT32 idx = 0;
             BOOL ex = FALSE;
@@ -135,6 +147,7 @@ HRESULT Theme::CreateDeviceResources(ID2D1RenderTarget* pRT, IDWriteFactory* pDW
     pRT->CreateSolidColorBrush(D2D1::ColorF(0.533f, 0.572f, 0.749f, 1.0f), &brushSetiPhp);
     pRT->CreateSolidColorBrush(D2D1::ColorF(0.968f, 0.874f, 0.117f, 1.0f), &brushSetiJs);
     pRT->CreateSolidColorBrush(D2D1::ColorF(0.318f, 0.604f, 0.729f, 1.0f), &brushSetiTs);
+    pRT->CreateSolidColorBrush(D2D1::ColorF(0.380f, 0.855f, 0.984f, 1.0f), &brushSetiReact);
     pRT->CreateSolidColorBrush(D2D1::ColorF(0.318f, 0.604f, 0.729f, 1.0f), &brushSetiCpp);
     pRT->CreateSolidColorBrush(D2D1::ColorF(0.796f, 0.796f, 0.255f, 1.0f), &brushSetiJson);
     pRT->CreateSolidColorBrush(D2D1::ColorF(0.890f, 0.298f, 0.149f, 1.0f), &brushSetiHtml);
@@ -153,6 +166,14 @@ HRESULT Theme::CreateDeviceResources(ID2D1RenderTarget* pRT, IDWriteFactory* pDW
     // Load Official VS Code Seti Font and Phide Mono Fonts into DirectWrite Custom Font Collection
     static const std::vector<std::wstring> fontFiles = {
         L"seti.ttf",
+        L"KodaMono-Regular.ttf",
+        L"KodaMono-Italic.ttf",
+        L"KodaMono-Bold.ttf",
+        L"KodaMono-BoldItalic.ttf",
+        L"KodaMono-Medium.ttf",
+        L"KodaMono-MediumItalic.ttf",
+        L"KodaMono-SemiBold.ttf",
+        L"KodaMono-SemiBoldItalic.ttf",
         L"PhideMono-Regular.ttf",
         L"PhideMono-Italic.ttf",
         L"PhideMono-Bold.ttf",
@@ -224,7 +245,10 @@ HRESULT Theme::CreateDeviceResources(ID2D1RenderTarget* pRT, IDWriteFactory* pDW
         }
         UINT32 uiIdx = 0;
         BOOL uiExists = FALSE;
-        if (SUCCEEDED(customFontCollection->FindFamilyName(L"Phide Mono", &uiIdx, &uiExists)) && uiExists) {
+        if (SUCCEEDED(customFontCollection->FindFamilyName(L"Koda Mono", &uiIdx, &uiExists)) && uiExists) {
+            uiFontFamily = L"Koda Mono";
+            uiCollection = customFontCollection.Get();
+        } else if (SUCCEEDED(customFontCollection->FindFamilyName(L"Phide Mono", &uiIdx, &uiExists)) && uiExists) {
             uiFontFamily = L"Phide Mono";
             uiCollection = customFontCollection.Get();
         }
@@ -303,7 +327,7 @@ HRESULT Theme::CreateDeviceResources(ID2D1RenderTarget* pRT, IDWriteFactory* pDW
     }
 
     // 3a. Monospace Code Font (Editor uses Medium Italic for Koda Mono per user preference)
-    DWRITE_FONT_STYLE fontStyle = (chosenFont == L"Phide Mono") ? DWRITE_FONT_STYLE_ITALIC : DWRITE_FONT_STYLE_NORMAL;
+    DWRITE_FONT_STYLE fontStyle = (chosenFont == L"Koda Mono" || chosenFont == L"Phide Mono") ? DWRITE_FONT_STYLE_ITALIC : DWRITE_FONT_STYLE_NORMAL;
     createFormat(chosenFont.c_str(), collectionToUse, DWRITE_FONT_WEIGHT_MEDIUM, fontStyle, (std::max)(6.0f, m_editorFontSize), &fontCode, L"Consolas");
     if (fontCode) {
         fontCode->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
@@ -580,6 +604,7 @@ void Theme::DiscardDeviceResources() {
     brushSetiPhp.Reset();
     brushSetiJs.Reset();
     brushSetiTs.Reset();
+    brushSetiReact.Reset();
     brushSetiCpp.Reset();
     brushSetiJson.Reset();
     brushSetiHtml.Reset();
@@ -611,7 +636,7 @@ void Theme::SetEditorFont(const std::wstring& family, float size) {
                 collectionToUse = customFontCollection.Get();
             }
         }
-        DWRITE_FONT_STYLE fontStyle = (chosenFont == L"Phide Mono") ? DWRITE_FONT_STYLE_ITALIC : DWRITE_FONT_STYLE_NORMAL;
+        DWRITE_FONT_STYLE fontStyle = (chosenFont == L"Koda Mono" || chosenFont == L"Phide Mono") ? DWRITE_FONT_STYLE_ITALIC : DWRITE_FONT_STYLE_NORMAL;
         dwriteFactory->CreateTextFormat(
             chosenFont.c_str(),
             collectionToUse,
@@ -713,7 +738,7 @@ void Theme::SetThemeMode(ThemeMode mode) {
         colors.tooltipBg       = D2D1::ColorF(0.12f, 0.12f, 0.14f, 0.98f);
         colors.tooltipBorder   = D2D1::ColorF(0.30f, 0.30f, 0.34f, 1.0f);
         colors.tooltipText     = D2D1::ColorF(1.0f, 1.0f, 1.0f, 1.0f);
-        colors.menuBg          = D2D1::ColorF(0.98f, 0.985f, 0.99f, 0.98f);
+        colors.menuBg          = D2D1::ColorF(0.98f, 0.985f, 0.99f, 1.0f);
         colors.menuBorder      = D2D1::ColorF(0.82f, 0.85f, 0.89f, 1.0f);
         colors.menuSeparator   = D2D1::ColorF(0.88f, 0.90f, 0.93f, 1.0f);
         colors.menuHover       = D2D1::ColorF(0.0f, 0.471f, 0.831f, 1.0f);
@@ -758,7 +783,7 @@ void Theme::SetThemeMode(ThemeMode mode) {
         colors.tooltipBg       = D2D1::ColorF(0.039f, 0.098f, 0.184f, 0.98f);
         colors.tooltipBorder   = D2D1::ColorF(0.0f, 0.898f, 1.0f, 0.80f);
         colors.tooltipText     = D2D1::ColorF(0.878f, 0.984f, 0.988f, 1.0f);
-        colors.menuBg          = D2D1::ColorF(0.024f, 0.071f, 0.125f, 0.98f);
+        colors.menuBg          = D2D1::ColorF(0.024f, 0.071f, 0.125f, 1.0f);
         colors.menuBorder      = D2D1::ColorF(0.055f, 0.165f, 0.278f, 1.0f);
         colors.menuSeparator   = D2D1::ColorF(0.055f, 0.165f, 0.278f, 1.0f);
         colors.menuHover       = D2D1::ColorF(0.0f, 0.706f, 0.847f, 1.0f);
@@ -803,7 +828,7 @@ void Theme::SetThemeMode(ThemeMode mode) {
         colors.tooltipBg       = D2D1::ColorF(0.024f, 0.157f, 0.149f, 0.98f);
         colors.tooltipBorder   = D2D1::ColorF(0.114f, 0.914f, 0.714f, 0.80f);
         colors.tooltipText     = D2D1::ColorF(0.878f, 0.949f, 0.945f, 1.0f);
-        colors.menuBg          = D2D1::ColorF(0.008f, 0.102f, 0.098f, 0.98f);
+        colors.menuBg          = D2D1::ColorF(0.008f, 0.102f, 0.098f, 1.0f);
         colors.menuBorder      = D2D1::ColorF(0.043f, 0.235f, 0.224f, 1.0f);
         colors.menuSeparator   = D2D1::ColorF(0.043f, 0.235f, 0.224f, 1.0f);
         colors.menuHover       = D2D1::ColorF(0.0f, 0.706f, 0.847f, 1.0f);
@@ -848,7 +873,7 @@ void Theme::SetThemeMode(ThemeMode mode) {
         colors.tooltipBg       = D2D1::ColorF(0.075f, 0.035f, 0.122f, 0.98f);
         colors.tooltipBorder   = D2D1::ColorF(0.616f, 0.306f, 0.867f, 0.80f);
         colors.tooltipText     = D2D1::ColorF(0.953f, 0.910f, 1.0f, 1.0f);
-        colors.menuBg          = D2D1::ColorF(0.063f, 0.027f, 0.102f, 0.98f);
+        colors.menuBg          = D2D1::ColorF(0.063f, 0.027f, 0.102f, 1.0f);
         colors.menuBorder      = D2D1::ColorF(0.196f, 0.078f, 0.310f, 1.0f);
         colors.menuSeparator   = D2D1::ColorF(0.196f, 0.078f, 0.310f, 1.0f);
         colors.menuHover       = D2D1::ColorF(0.482f, 0.173f, 0.749f, 1.0f); // #7B2CBF
@@ -893,7 +918,7 @@ void Theme::SetThemeMode(ThemeMode mode) {
         colors.tooltipBg       = D2D1::ColorF(0.153f, 0.157f, 0.133f, 0.98f);
         colors.tooltipBorder   = D2D1::ColorF(0.976f, 0.149f, 0.447f, 0.80f);
         colors.tooltipText     = D2D1::ColorF(0.973f, 0.973f, 0.949f, 1.0f);
-        colors.menuBg          = D2D1::ColorF(0.098f, 0.102f, 0.090f, 0.98f);
+        colors.menuBg          = D2D1::ColorF(0.098f, 0.102f, 0.090f, 1.0f);
         colors.menuBorder      = D2D1::ColorF(0.243f, 0.239f, 0.196f, 1.0f);
         colors.menuSeparator   = D2D1::ColorF(0.243f, 0.239f, 0.196f, 1.0f);
         colors.menuHover       = D2D1::ColorF(0.976f, 0.149f, 0.447f, 1.0f);
@@ -938,7 +963,7 @@ void Theme::SetThemeMode(ThemeMode mode) {
         colors.tooltipBg       = D2D1::ColorF(0.157f, 0.165f, 0.212f, 0.98f);
         colors.tooltipBorder   = D2D1::ColorF(0.741f, 0.576f, 0.976f, 0.80f);
         colors.tooltipText     = D2D1::ColorF(0.973f, 0.973f, 0.949f, 1.0f);
-        colors.menuBg          = D2D1::ColorF(0.129f, 0.133f, 0.173f, 0.98f);
+        colors.menuBg          = D2D1::ColorF(0.129f, 0.133f, 0.173f, 1.0f);
         colors.menuBorder      = D2D1::ColorF(0.267f, 0.278f, 0.353f, 1.0f);
         colors.menuSeparator   = D2D1::ColorF(0.267f, 0.278f, 0.353f, 1.0f);
         colors.menuHover       = D2D1::ColorF(0.741f, 0.576f, 0.976f, 1.0f);
@@ -983,7 +1008,7 @@ void Theme::SetThemeMode(ThemeMode mode) {
         colors.tooltipBg       = D2D1::ColorF(0.180f, 0.204f, 0.251f, 0.98f);
         colors.tooltipBorder   = D2D1::ColorF(0.533f, 0.753f, 0.816f, 0.80f);
         colors.tooltipText     = D2D1::ColorF(0.925f, 0.937f, 0.957f, 1.0f);
-        colors.menuBg          = D2D1::ColorF(0.141f, 0.161f, 0.200f, 0.98f);
+        colors.menuBg          = D2D1::ColorF(0.141f, 0.161f, 0.200f, 1.0f);
         colors.menuBorder      = D2D1::ColorF(0.298f, 0.337f, 0.416f, 1.0f);
         colors.menuSeparator   = D2D1::ColorF(0.298f, 0.337f, 0.416f, 1.0f);
         colors.menuHover       = D2D1::ColorF(0.533f, 0.753f, 0.816f, 1.0f);
@@ -1028,7 +1053,7 @@ void Theme::SetThemeMode(ThemeMode mode) {
         colors.tooltipBg       = D2D1::ColorF(0.000f, 0.169f, 0.212f, 0.98f);
         colors.tooltipBorder   = D2D1::ColorF(0.149f, 0.545f, 0.824f, 0.80f);
         colors.tooltipText     = D2D1::ColorF(0.992f, 0.965f, 0.890f, 1.0f);
-        colors.menuBg          = D2D1::ColorF(0.027f, 0.212f, 0.259f, 0.98f);
+        colors.menuBg          = D2D1::ColorF(0.027f, 0.212f, 0.259f, 1.0f);
         colors.menuBorder      = D2D1::ColorF(0.345f, 0.431f, 0.459f, 1.0f);
         colors.menuSeparator   = D2D1::ColorF(0.345f, 0.431f, 0.459f, 1.0f);
         colors.menuHover       = D2D1::ColorF(0.149f, 0.545f, 0.824f, 1.0f);
@@ -1073,7 +1098,7 @@ void Theme::SetThemeMode(ThemeMode mode) {
         colors.tooltipBg       = D2D1::ColorF(0.051f, 0.067f, 0.090f, 0.98f);
         colors.tooltipBorder   = D2D1::ColorF(0.345f, 0.651f, 1.000f, 0.80f);
         colors.tooltipText     = D2D1::ColorF(0.788f, 0.820f, 0.851f, 1.0f);
-        colors.menuBg          = D2D1::ColorF(0.086f, 0.106f, 0.133f, 0.98f);
+        colors.menuBg          = D2D1::ColorF(0.086f, 0.106f, 0.133f, 1.0f);
         colors.menuBorder      = D2D1::ColorF(0.188f, 0.212f, 0.239f, 1.0f);
         colors.menuSeparator   = D2D1::ColorF(0.188f, 0.212f, 0.239f, 1.0f);
         colors.menuHover       = D2D1::ColorF(0.345f, 0.651f, 1.000f, 1.0f);
@@ -1118,7 +1143,7 @@ void Theme::SetThemeMode(ThemeMode mode) {
         colors.tooltipBg       = D2D1::ColorF(0.157f, 0.173f, 0.204f, 0.98f);
         colors.tooltipBorder   = D2D1::ColorF(0.380f, 0.686f, 0.937f, 0.80f);
         colors.tooltipText     = D2D1::ColorF(0.671f, 0.698f, 0.749f, 1.0f);
-        colors.menuBg          = D2D1::ColorF(0.129f, 0.145f, 0.169f, 0.98f);
+        colors.menuBg          = D2D1::ColorF(0.129f, 0.145f, 0.169f, 1.0f);
         colors.menuBorder      = D2D1::ColorF(0.243f, 0.271f, 0.318f, 1.0f);
         colors.menuSeparator   = D2D1::ColorF(0.243f, 0.271f, 0.318f, 1.0f);
         colors.menuHover       = D2D1::ColorF(0.380f, 0.686f, 0.937f, 1.0f);
@@ -1163,7 +1188,7 @@ void Theme::SetThemeMode(ThemeMode mode) {
         colors.tooltipBg       = D2D1::ColorF(0.149f, 0.137f, 0.208f, 0.98f);
         colors.tooltipBorder   = D2D1::ColorF(1.000f, 0.494f, 0.859f, 0.80f);
         colors.tooltipText     = D2D1::ColorF(1.000f, 0.494f, 0.859f, 1.0f);
-        colors.menuBg          = D2D1::ColorF(0.141f, 0.106f, 0.184f, 0.98f);
+        colors.menuBg          = D2D1::ColorF(0.141f, 0.106f, 0.184f, 1.0f);
         colors.menuBorder      = D2D1::ColorF(0.204f, 0.161f, 0.310f, 1.0f);
         colors.menuSeparator   = D2D1::ColorF(0.204f, 0.161f, 0.310f, 1.0f);
         colors.menuHover       = D2D1::ColorF(1.000f, 0.494f, 0.859f, 1.0f);
@@ -1208,7 +1233,7 @@ void Theme::SetThemeMode(ThemeMode mode) {
         colors.tooltipBg       = D2D1::ColorF(0.071f, 0.027f, 0.133f, 0.98f);
         colors.tooltipBorder   = D2D1::ColorF(1.000f, 0.165f, 0.522f, 0.80f);
         colors.tooltipText     = D2D1::ColorF(0.996f, 0.906f, 0.996f, 1.0f);
-        colors.menuBg          = D2D1::ColorF(0.055f, 0.020f, 0.106f, 0.98f);
+        colors.menuBg          = D2D1::ColorF(0.055f, 0.020f, 0.106f, 1.0f);
         colors.menuBorder      = D2D1::ColorF(0.227f, 0.067f, 0.345f, 1.0f);
         colors.menuSeparator   = D2D1::ColorF(0.227f, 0.067f, 0.345f, 1.0f);
         colors.menuHover       = D2D1::ColorF(1.000f, 0.165f, 0.522f, 1.0f);
@@ -1253,7 +1278,7 @@ void Theme::SetThemeMode(ThemeMode mode) {
         colors.tooltipBg       = D2D1::ColorF(0.035f, 0.039f, 0.078f, 0.98f);
         colors.tooltipBorder   = D2D1::ColorF(0.545f, 0.361f, 0.965f, 0.80f);
         colors.tooltipText     = D2D1::ColorF(0.886f, 0.910f, 0.941f, 1.0f);
-        colors.menuBg          = D2D1::ColorF(0.027f, 0.031f, 0.063f, 0.98f);
+        colors.menuBg          = D2D1::ColorF(0.027f, 0.031f, 0.063f, 1.0f);
         colors.menuBorder      = D2D1::ColorF(0.118f, 0.133f, 0.251f, 1.0f);
         colors.menuSeparator   = D2D1::ColorF(0.118f, 0.133f, 0.251f, 1.0f);
         colors.menuHover       = D2D1::ColorF(0.545f, 0.361f, 0.965f, 1.0f);
@@ -1298,7 +1323,7 @@ void Theme::SetThemeMode(ThemeMode mode) {
         colors.tooltipBg       = D2D1::ColorF(0.012f, 0.031f, 0.016f, 0.98f);
         colors.tooltipBorder   = D2D1::ColorF(0.000f, 1.000f, 0.400f, 0.80f);
         colors.tooltipText     = D2D1::ColorF(0.800f, 1.000f, 0.867f, 1.0f);
-        colors.menuBg          = D2D1::ColorF(0.008f, 0.020f, 0.012f, 0.98f);
+        colors.menuBg          = D2D1::ColorF(0.008f, 0.020f, 0.012f, 1.0f);
         colors.menuBorder      = D2D1::ColorF(0.051f, 0.165f, 0.071f, 1.0f);
         colors.menuSeparator   = D2D1::ColorF(0.051f, 0.165f, 0.071f, 1.0f);
         colors.menuHover       = D2D1::ColorF(0.000f, 1.000f, 0.400f, 1.0f);
@@ -1343,7 +1368,7 @@ void Theme::SetThemeMode(ThemeMode mode) {
         colors.tooltipBg       = D2D1::ColorF(0.031f, 0.075f, 0.102f, 0.98f);
         colors.tooltipBorder   = D2D1::ColorF(0.176f, 0.831f, 0.749f, 0.80f);
         colors.tooltipText     = D2D1::ColorF(0.902f, 1.000f, 0.980f, 1.0f);
-        colors.menuBg          = D2D1::ColorF(0.024f, 0.059f, 0.078f, 0.98f);
+        colors.menuBg          = D2D1::ColorF(0.024f, 0.059f, 0.078f, 1.0f);
         colors.menuBorder      = D2D1::ColorF(0.078f, 0.196f, 0.259f, 1.0f);
         colors.menuSeparator   = D2D1::ColorF(0.078f, 0.196f, 0.259f, 1.0f);
         colors.menuHover       = D2D1::ColorF(0.176f, 0.831f, 0.749f, 1.0f);
@@ -1388,7 +1413,7 @@ void Theme::SetThemeMode(ThemeMode mode) {
         colors.tooltipBg       = D2D1::ColorF(0.078f, 0.063f, 0.102f, 0.98f);
         colors.tooltipBorder   = D2D1::ColorF(1.000f, 0.369f, 0.494f, 0.80f);
         colors.tooltipText     = D2D1::ColorF(1.000f, 0.945f, 0.949f, 1.0f);
-        colors.menuBg          = D2D1::ColorF(0.059f, 0.047f, 0.078f, 0.98f);
+        colors.menuBg          = D2D1::ColorF(0.059f, 0.047f, 0.078f, 1.0f);
         colors.menuBorder      = D2D1::ColorF(0.200f, 0.133f, 0.267f, 1.0f);
         colors.menuSeparator   = D2D1::ColorF(0.200f, 0.133f, 0.267f, 1.0f);
         colors.menuHover       = D2D1::ColorF(1.000f, 0.369f, 0.494f, 1.0f);
@@ -1433,7 +1458,7 @@ void Theme::SetThemeMode(ThemeMode mode) {
         colors.tooltipBg       = D2D1::ColorF(0.031f, 0.078f, 0.055f, 0.98f);
         colors.tooltipBorder   = D2D1::ColorF(0.063f, 0.725f, 0.506f, 0.80f);
         colors.tooltipText     = D2D1::ColorF(0.925f, 0.992f, 0.961f, 1.0f);
-        colors.menuBg          = D2D1::ColorF(0.024f, 0.059f, 0.039f, 0.98f);
+        colors.menuBg          = D2D1::ColorF(0.024f, 0.059f, 0.039f, 1.0f);
         colors.menuBorder      = D2D1::ColorF(0.086f, 0.220f, 0.157f, 1.0f);
         colors.menuSeparator   = D2D1::ColorF(0.086f, 0.220f, 0.157f, 1.0f);
         colors.menuHover       = D2D1::ColorF(0.063f, 0.725f, 0.506f, 1.0f);
@@ -1478,7 +1503,7 @@ void Theme::SetThemeMode(ThemeMode mode) {
         colors.tooltipBg       = D2D1::ColorF(0.098f, 0.090f, 0.141f, 0.98f);
         colors.tooltipBorder   = D2D1::ColorF(0.922f, 0.435f, 0.573f, 0.80f);
         colors.tooltipText     = D2D1::ColorF(0.878f, 0.871f, 0.957f, 1.0f);
-        colors.menuBg          = D2D1::ColorF(0.082f, 0.075f, 0.118f, 0.98f);
+        colors.menuBg          = D2D1::ColorF(0.082f, 0.075f, 0.118f, 1.0f);
         colors.menuBorder      = D2D1::ColorF(0.149f, 0.137f, 0.227f, 1.0f);
         colors.menuSeparator   = D2D1::ColorF(0.149f, 0.137f, 0.227f, 1.0f);
         colors.menuHover       = D2D1::ColorF(0.922f, 0.435f, 0.573f, 1.0f);
@@ -1523,7 +1548,7 @@ void Theme::SetThemeMode(ThemeMode mode) {
         colors.tooltipBg       = D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.98f);
         colors.tooltipBorder   = D2D1::ColorF(0.78f, 0.78f, 0.82f, 1.0f);
         colors.tooltipText     = D2D1::ColorF(0.08f, 0.08f, 0.08f, 1.0f);
-        colors.menuBg          = D2D1::ColorF(0.122f, 0.122f, 0.122f, 0.98f);
+        colors.menuBg          = D2D1::ColorF(0.122f, 0.122f, 0.122f, 1.0f);
         colors.menuBorder      = D2D1::ColorF(0.271f, 0.271f, 0.271f, 1.0f);
         colors.menuSeparator   = D2D1::ColorF(0.235f, 0.235f, 0.235f, 1.0f);
         colors.menuHover       = D2D1::ColorF(0.0f, 0.471f, 0.831f, 1.0f);
@@ -1640,8 +1665,9 @@ Theme::SetiIconInfo Theme::GetSetiIcon(const std::wstring& filename, bool isFold
     if (dot != std::wstring::npos) {
         std::wstring ext = lower.substr(dot);
         if (ext == L".php" || ext == L".phtml") return { 0xE070, brushSetiPhp ? brushSetiPhp.Get() : brushIconPurple.Get() };
-        if (ext == L".js" || ext == L".mjs" || ext == L".cjs" || ext == L".jsx") return { 0xE051, brushSetiJs ? brushSetiJs.Get() : brushIconYellow.Get() };
-        if (ext == L".ts" || ext == L".tsx") return { 0xE099, brushSetiTs ? brushSetiTs.Get() : brushIconBlue.Get() };
+        if (ext == L".jsx" || ext == L".tsx") return { 0xE07D, brushSetiReact ? brushSetiReact.Get() : (brushSetiTs ? brushSetiTs.Get() : brushIconBlue.Get()) };
+        if (ext == L".js" || ext == L".mjs" || ext == L".cjs") return { 0xE051, brushSetiJs ? brushSetiJs.Get() : brushIconYellow.Get() };
+        if (ext == L".ts") return { 0xE099, brushSetiTs ? brushSetiTs.Get() : brushIconBlue.Get() };
         if (ext == L".cpp" || ext == L".cc" || ext == L".cxx" || ext == L".hpp" || ext == L".hxx" || ext == L".hh") return { 0xE01A, brushSetiCpp ? brushSetiCpp.Get() : brushIconBlue.Get() };
         if (ext == L".c" || ext == L".h") return { 0xE00C, brushSetiCpp ? brushSetiCpp.Get() : brushIconBlue.Get() };
         if (ext == L".cs") return { 0xE00B, brushSetiShell ? brushSetiShell.Get() : brushIconGreen.Get() };
