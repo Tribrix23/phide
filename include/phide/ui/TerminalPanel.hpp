@@ -219,6 +219,7 @@ struct TerminalTab {
 
     std::vector<TerminalLine> lines;
     std::wstring currentInputLine;
+    int inputCursorCol = 0;
     float scrollOffsetY = 0.0f;
     int scrollOffsetLines = 0;
     std::vector<std::wstring> commandHistory;

@@ -745,8 +745,8 @@ public:
                                     }
                                 }
 
-                                // Strip ANSI color escape codes
-                                outText = StripAnsi(outText);
+                                // Preserve ANSI color escape codes for rich terminal & Colab rendering
+                                // (StripAnsi is applied for text clipboard selection and measurement)
 
                                 if (!outText.empty()) {
                                     co.text = outText;

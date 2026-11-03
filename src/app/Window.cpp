@@ -992,15 +992,21 @@ void Window::OpenFileDocument(const std::wstring& path, bool isPreview) {
         return;
     }
 
-    auto PathsMatch = [](const std::wstring& p1, const std::wstring& p2) -> bool {
+    auto PathsMatch = [this](const std::wstring& p1, const std::wstring& p2) -> bool {
         if (p1.empty() || p2.empty()) return false;
         std::wstring c1 = p1;
         std::wstring c2 = p2;
         for (auto& c : c1) { if (c == L'/') c = L'\\'; c = towlower(c); }
         for (auto& c : c2) { if (c == L'/') c = L'\\'; c = towlower(c); }
         if (c1 == c2) return true;
-        if (c1.ends_with(L"\\" + c2) || c2.ends_with(L"\\" + c1)) return true;
-        if (c1.ends_with(c2) || c2.ends_with(c1)) return true;
+        if (m_drawer.HasOpenFolder() && !m_drawer.GetOpenFolderPath().empty()) {
+            std::wstring root = m_drawer.GetOpenFolderPath();
+            for (auto& c : root) { if (c == L'/') c = L'\\'; c = towlower(c); }
+            if (!root.empty() && root.back() != L'\\') root += L'\\';
+            std::wstring full1 = (c1.length() >= 2 && (c1[1] == L':' || (c1[0] == L'\\' && c1[1] == L'\\'))) ? c1 : (root + c1);
+            std::wstring full2 = (c2.length() >= 2 && (c2[1] == L':' || (c2[0] == L'\\' && c2[1] == L'\\'))) ? c2 : (root + c2);
+            if (full1 == full2) return true;
+        }
         return false;
     };
 
@@ -1761,15 +1767,21 @@ void Window::OpenNotebookView(const std::wstring& filePath) {
         }
     }
 
-    auto PathsMatch = [](const std::wstring& p1, const std::wstring& p2) -> bool {
+    auto PathsMatch = [this](const std::wstring& p1, const std::wstring& p2) -> bool {
         if (p1.empty() || p2.empty()) return false;
         std::wstring c1 = p1;
         std::wstring c2 = p2;
         for (auto& c : c1) { if (c == L'/') c = L'\\'; c = towlower(c); }
         for (auto& c : c2) { if (c == L'/') c = L'\\'; c = towlower(c); }
         if (c1 == c2) return true;
-        if (c1.ends_with(L"\\" + c2) || c2.ends_with(L"\\" + c1)) return true;
-        if (c1.ends_with(c2) || c2.ends_with(c1)) return true;
+        if (m_drawer.HasOpenFolder() && !m_drawer.GetOpenFolderPath().empty()) {
+            std::wstring root = m_drawer.GetOpenFolderPath();
+            for (auto& c : root) { if (c == L'/') c = L'\\'; c = towlower(c); }
+            if (!root.empty() && root.back() != L'\\') root += L'\\';
+            std::wstring full1 = (c1.length() >= 2 && (c1[1] == L':' || (c1[0] == L'\\' && c1[1] == L'\\'))) ? c1 : (root + c1);
+            std::wstring full2 = (c2.length() >= 2 && (c2[1] == L':' || (c2[0] == L'\\' && c2[1] == L'\\'))) ? c2 : (root + c2);
+            if (full1 == full2) return true;
+        }
         return false;
     };
 
@@ -4483,7 +4495,7 @@ void Window::FinishDiscardOrRestore(const std::wstring& targetPath, const std::w
         m_drawer.ShowGitNotification(L"✓ Discarded " + targetFileName);
     }
 
-    auto PathsMatch = [](const std::wstring& p1, const std::wstring& p2) -> bool {
+    auto PathsMatch = [this](const std::wstring& p1, const std::wstring& p2) -> bool {
         if (p1.empty() || p2.empty()) return false;
         if (p2 == L"*") return true;
         std::wstring c1 = p1;
@@ -4491,8 +4503,14 @@ void Window::FinishDiscardOrRestore(const std::wstring& targetPath, const std::w
         for (auto& c : c1) { if (c == L'/') c = L'\\'; c = static_cast<wchar_t>(towlower(c)); }
         for (auto& c : c2) { if (c == L'/') c = L'\\'; c = static_cast<wchar_t>(towlower(c)); }
         if (c1 == c2) return true;
-        if (c1.ends_with(L"\\" + c2) || c2.ends_with(L"\\" + c1)) return true;
-        if (c1.ends_with(c2) || c2.ends_with(c1)) return true;
+        if (m_drawer.HasOpenFolder() && !m_drawer.GetOpenFolderPath().empty()) {
+            std::wstring root = m_drawer.GetOpenFolderPath();
+            for (auto& c : root) { if (c == L'/') c = L'\\'; c = static_cast<wchar_t>(towlower(c)); }
+            if (!root.empty() && root.back() != L'\\') root += L'\\';
+            std::wstring full1 = (c1.length() >= 2 && (c1[1] == L':' || (c1[0] == L'\\' && c1[1] == L'\\'))) ? c1 : (root + c1);
+            std::wstring full2 = (c2.length() >= 2 && (c2[1] == L':' || (c2[0] == L'\\' && c2[1] == L'\\'))) ? c2 : (root + c2);
+            if (full1 == full2) return true;
+        }
         return false;
     };
 
@@ -6187,13 +6205,31 @@ bool Window::Create(HINSTANCE hInstance, int nCmdShow) {
         const int winH = 750;
         const int winX = (screenW - winW) / 2;
         const int winY = (screenH - winH) / 2;
-        SetWindowPos(m_hwnd, nullptr, winX, winY, winW, winH, SWP_NOZORDER | SWP_FRAMECHANGED | SWP_SHOWWINDOW);
+        SetWindowPos(m_hwnd, HWND_TOP, winX, winY, winW, winH, SWP_FRAMECHANGED | SWP_SHOWWINDOW);
         ShowWindow(m_hwnd, SW_SHOWNORMAL);
     } else {
+        SetWindowPos(m_hwnd, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
         ShowWindow(m_hwnd, SW_MAXIMIZE);
     }
     UpdateWindow(m_hwnd);
+
     phide::ui::SplashScreen::Dismiss();
+
+    // Force window to foreground and give it active keyboard focus (prevents window being buried behind terminal/other apps)
+    HWND hFore = GetForegroundWindow();
+    DWORD foreThread = hFore ? GetWindowThreadProcessId(hFore, nullptr) : 0;
+    DWORD appThread = GetCurrentThreadId();
+    if (foreThread != 0 && foreThread != appThread) {
+        AttachThreadInput(foreThread, appThread, TRUE);
+        BringWindowToTop(m_hwnd);
+        SetForegroundWindow(m_hwnd);
+        AttachThreadInput(foreThread, appThread, FALSE);
+    } else {
+        BringWindowToTop(m_hwnd);
+        SetForegroundWindow(m_hwnd);
+    }
+    SetActiveWindow(m_hwnd);
+    SetFocus(m_hwnd);
 
     // Parse command line arguments for initial folder or file
     int nArgs = 0;
@@ -6806,12 +6842,262 @@ void Window::OnPaint() {
         m_drawer.RenderGitHubLoginModal(m_pRenderTarget.Get(), m_theme, m_config, clientW, clientH);
     }
 
+    // 13. Render Git Branch Switcher Dropdown (Status Bar Popup)
+    if (m_showBranchDropdown) {
+        RenderBranchDropdown(m_pRenderTarget.Get(), clientW, clientH);
+    }
+
     HRESULT hr = m_pRenderTarget->EndDraw();
     if (hr == D2DERR_RECREATE_TARGET) {
         DiscardDeviceResources();
     }
 
     EndPaint(m_hwnd, &ps);
+}
+
+void Window::ToggleBranchDropdown() {
+    if (m_showBranchDropdown) {
+        CloseBranchDropdown();
+        return;
+    }
+    m_branchList = m_drawer.GetGitBranches();
+    if (m_branchList.empty()) {
+        std::wstring curBranch = m_drawer.GetGitBranch();
+        if (curBranch.empty()) curBranch = m_cachedGitBranch;
+        if (!curBranch.empty()) {
+            m_branchList.push_back({ curBranch, true });
+        }
+    }
+    m_showBranchDropdown = true;
+    m_hoveredBranchIdx = -1;
+    InvalidateRect(m_hwnd, nullptr, FALSE);
+}
+
+void Window::CloseBranchDropdown() {
+    if (m_showBranchDropdown) {
+        m_showBranchDropdown = false;
+        m_hoveredBranchIdx = -1;
+        m_rcBranchDropdown = {};
+        InvalidateRect(m_hwnd, nullptr, FALSE);
+    }
+}
+
+void Window::RenderBranchDropdown(ID2D1RenderTarget* pRT, float clientWidth, float clientHeight) {
+    if (!m_showBranchDropdown || !pRT) return;
+    const auto& config = m_config;
+    auto& theme = m_theme;
+
+    const float headerH = config.ScaleF(32.0f);
+    const float itemH = config.ScaleF(28.0f);
+    const float padX = config.ScaleF(12.0f);
+    const float minW = config.ScaleF(250.0f);
+
+    float maxTextW = minW;
+    IDWriteTextFormat* pFmt = theme.fontMenuItem ? theme.fontMenuItem.Get() : theme.fontBody.Get();
+
+    for (const auto& [bName, isCurr] : m_branchList) {
+        float w = static_cast<float>(bName.length()) * config.ScaleF(8.0f) + config.ScaleF(80.0f);
+        if (w > maxTextW) maxTextW = w;
+    }
+    const float menuW = (std::min)(maxTextW, config.ScaleF(360.0f));
+    const float listH = static_cast<float>(m_branchList.size()) * itemH;
+    const float totalH = headerH + config.ScaleF(6.0f) + listH + config.ScaleF(6.0f);
+
+    // Anchor popover directly above m_rcStatusBarGitBranch
+    float menuLeft = m_rcStatusBarGitBranch.left;
+    if (menuLeft + menuW > clientWidth - config.ScaleF(8.0f)) {
+        menuLeft = clientWidth - menuW - config.ScaleF(8.0f);
+    }
+    if (menuLeft < config.ScaleF(8.0f)) menuLeft = config.ScaleF(8.0f);
+
+    float menuBottom = (m_rcStatusBarGitBranch.top > config.ScaleF(30.0f))
+        ? (m_rcStatusBarGitBranch.top - config.ScaleF(4.0f))
+        : (clientHeight - config.ScaleF(28.0f));
+    float menuTop = menuBottom - totalH;
+    if (menuTop < config.ScaleF(30.0f)) menuTop = config.ScaleF(30.0f);
+
+    m_rcBranchDropdown = D2D1::RectF(menuLeft, menuTop, menuLeft + menuW, menuBottom);
+    D2D1_ROUNDED_RECT rrc = D2D1::RoundedRect(m_rcBranchDropdown, config.ScaleF(6.0f), config.ScaleF(6.0f));
+
+    // Shadow & Background
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushBg, brushBorder, brushHeaderBg;
+    pRT->CreateSolidColorBrush(
+        theme.IsDarkMode() ? D2D1::ColorF(0.12f, 0.13f, 0.16f, 0.98f) : D2D1::ColorF(0.98f, 0.98f, 0.99f, 0.98f),
+        &brushBg
+    );
+    pRT->CreateSolidColorBrush(
+        theme.IsDarkMode() ? D2D1::ColorF(0.25f, 0.27f, 0.32f, 1.0f) : D2D1::ColorF(0.82f, 0.84f, 0.88f, 1.0f),
+        &brushBorder
+    );
+    pRT->CreateSolidColorBrush(
+        theme.IsDarkMode() ? D2D1::ColorF(0.15f, 0.16f, 0.20f, 1.0f) : D2D1::ColorF(0.93f, 0.94f, 0.96f, 1.0f),
+        &brushHeaderBg
+    );
+
+    pRT->FillRoundedRectangle(rrc, brushBg.Get());
+    pRT->DrawRoundedRectangle(rrc, brushBorder.Get(), 1.0f);
+
+    ID2D1Brush* pAccent = theme.brushBrandAccent ? theme.brushBrandAccent.Get() : brushBorder.Get();
+    ID2D1Brush* pItemHover = theme.brushItemHover ? theme.brushItemHover.Get() : brushBorder.Get();
+    ID2D1Brush* pTextPri = theme.brushTextPrimary ? theme.brushTextPrimary.Get() : brushBorder.Get();
+    ID2D1Brush* pTextSec = theme.brushTextSecondary ? theme.brushTextSecondary.Get() : brushBorder.Get();
+    ID2D1Brush* pTextMut = theme.brushTextMuted ? theme.brushTextMuted.Get() : brushBorder.Get();
+    ID2D1Brush* pTextWhite = theme.brushTextWhite ? theme.brushTextWhite.Get() : pTextPri;
+
+    // Header: Icon + "Select Branch" + Branch Count badge
+    D2D1_RECT_F rcHeader = D2D1::RectF(menuLeft + 1.0f, menuTop + 1.0f, menuLeft + menuW - 1.0f, menuTop + headerH);
+    D2D1_ROUNDED_RECT rrcHeader = D2D1::RoundedRect(rcHeader, config.ScaleF(5.0f), config.ScaleF(5.0f));
+    pRT->FillRoundedRectangle(rrcHeader, brushHeaderBg.Get());
+
+    float iconSize = config.ScaleF(14.0f);
+    D2D1_RECT_F rcBranchIcon = D2D1::RectF(menuLeft + padX, menuTop + (headerH - iconSize) * 0.5f,
+                                          menuLeft + padX + iconSize, menuTop + (headerH + iconSize) * 0.5f);
+    m_rail.GetLucide().DrawGitBranch(pRT, rcBranchIcon, pAccent, 1.5f);
+
+    D2D1_RECT_F rcHeaderText = D2D1::RectF(menuLeft + padX + iconSize + config.ScaleF(6.0f), menuTop,
+                                          menuLeft + menuW - config.ScaleF(40.0f), menuTop + headerH);
+    const wchar_t* titleStr = L"Switch Branch";
+    pRT->DrawText(titleStr, static_cast<UINT32>(wcslen(titleStr)),
+                  theme.fontTitle ? theme.fontTitle.Get() : pFmt,
+                  rcHeaderText, pTextPri);
+
+    // Branch count badge
+    std::wstring countStr = std::to_wstring(m_branchList.size());
+    float countBadgeW = config.ScaleF(18.0f + (countStr.length() > 1 ? 6.0f : 0.0f));
+    float countBadgeH = config.ScaleF(16.0f);
+    float badgeRight = menuLeft + menuW - padX;
+    float badgeTop = menuTop + (headerH - countBadgeH) * 0.5f;
+    D2D1_RECT_F rcCount = D2D1::RectF(badgeRight - countBadgeW, badgeTop, badgeRight, badgeTop + countBadgeH);
+    D2D1_ROUNDED_RECT rrcCount = D2D1::RoundedRect(rcCount, config.ScaleF(4.0f), config.ScaleF(4.0f));
+    pRT->FillRoundedRectangle(rrcCount, pItemHover);
+    pRT->DrawText(countStr.c_str(), static_cast<UINT32>(countStr.length()),
+                  theme.fontButtonCenter ? theme.fontButtonCenter.Get() : pFmt,
+                  rcCount, pTextSec);
+
+    // Header divider line
+    pRT->DrawLine(D2D1::Point2F(menuLeft, menuTop + headerH), D2D1::Point2F(menuLeft + menuW, menuTop + headerH), brushBorder.Get(), 1.0f);
+
+    // List of branches
+    float itemY = menuTop + headerH + config.ScaleF(4.0f);
+    for (size_t i = 0; i < m_branchList.size(); ++i) {
+        const auto& [bName, isCurr] = m_branchList[i];
+        D2D1_RECT_F rcRow = D2D1::RectF(menuLeft + config.ScaleF(4.0f), itemY, menuLeft + menuW - config.ScaleF(4.0f), itemY + itemH);
+        bool isHovered = (m_hoveredBranchIdx == static_cast<int>(i));
+
+        if (isHovered) {
+            D2D1_ROUNDED_RECT rrcRow = D2D1::RoundedRect(rcRow, config.ScaleF(4.0f), config.ScaleF(4.0f));
+            pRT->FillRoundedRectangle(rrcRow, pItemHover);
+        }
+
+        // Active checkmark or branch icon
+        float iconX = rcRow.left + config.ScaleF(8.0f);
+        float iconY = itemY + (itemH - config.ScaleF(12.0f)) * 0.5f;
+        if (isCurr) {
+            const wchar_t* chk = L"✓";
+            D2D1_RECT_F rcChk = D2D1::RectF(iconX, itemY, iconX + config.ScaleF(14.0f), itemY + itemH);
+            pRT->DrawText(chk, 1, pFmt, rcChk, pAccent);
+        } else {
+            D2D1_RECT_F rcBi = D2D1::RectF(iconX, iconY, iconX + config.ScaleF(12.0f), iconY + config.ScaleF(12.0f));
+            m_rail.GetLucide().DrawGitBranch(pRT, rcBi, pTextMut, 1.2f);
+        }
+
+        // Branch name
+        float textX = iconX + config.ScaleF(18.0f);
+        float textRight = isCurr ? (rcRow.right - config.ScaleF(56.0f)) : (rcRow.right - config.ScaleF(8.0f));
+        D2D1_RECT_F rcText = D2D1::RectF(textX, itemY + config.ScaleF(1.0f), textRight, itemY + itemH);
+        ID2D1Brush* nameBrush = isCurr
+            ? pTextWhite
+            : (isHovered ? pTextWhite : pTextSec);
+
+        pRT->PushAxisAlignedClip(rcText, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+        pRT->DrawText(bName.c_str(), static_cast<UINT32>(bName.length()), pFmt, rcText, nameBrush);
+        pRT->PopAxisAlignedClip();
+
+        // "current" badge on the active branch
+        if (isCurr) {
+            float badgeW = config.ScaleF(46.0f);
+            float badgeH = config.ScaleF(16.0f);
+            float bRight = rcRow.right - config.ScaleF(6.0f);
+            float bTop = itemY + (itemH - badgeH) * 0.5f;
+            D2D1_RECT_F rcCurrent = D2D1::RectF(bRight - badgeW, bTop, bRight, bTop + badgeH);
+            D2D1_ROUNDED_RECT rrcCurrent = D2D1::RoundedRect(rcCurrent, config.ScaleF(3.0f), config.ScaleF(3.0f));
+            Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> currBg;
+            pRT->CreateSolidColorBrush(D2D1::ColorF(0.0f, 0.48f, 0.95f, 0.20f), &currBg);
+            if (currBg) pRT->FillRoundedRectangle(rrcCurrent, currBg.Get());
+            const wchar_t* curLabel = L"current";
+            pRT->DrawText(curLabel, static_cast<UINT32>(wcslen(curLabel)),
+                          theme.fontButtonCenter ? theme.fontButtonCenter.Get() : pFmt,
+                          rcCurrent, pAccent);
+        }
+
+        itemY += itemH;
+    }
+}
+
+bool Window::HandleBranchDropdownMouseMove(POINT pt) {
+    if (!m_showBranchDropdown) return false;
+    if (pt.x < m_rcBranchDropdown.left || pt.x > m_rcBranchDropdown.right ||
+        pt.y < m_rcBranchDropdown.top || pt.y > m_rcBranchDropdown.bottom) {
+        if (m_hoveredBranchIdx != -1) {
+            m_hoveredBranchIdx = -1;
+            InvalidateRect(m_hwnd, nullptr, FALSE);
+        }
+        return false;
+    }
+
+    const float headerH = m_config.ScaleF(32.0f);
+    const float itemH = m_config.ScaleF(28.0f);
+    float listTop = m_rcBranchDropdown.top + headerH + m_config.ScaleF(4.0f);
+
+    int newHover = -1;
+    if (pt.y >= listTop) {
+        int idx = static_cast<int>((pt.y - listTop) / itemH);
+        if (idx >= 0 && idx < static_cast<int>(m_branchList.size())) {
+            newHover = idx;
+        }
+    }
+
+    if (m_hoveredBranchIdx != newHover) {
+        m_hoveredBranchIdx = newHover;
+        InvalidateRect(m_hwnd, nullptr, FALSE);
+    }
+    return true;
+}
+
+bool Window::HandleBranchDropdownMouseDown(POINT pt) {
+    if (!m_showBranchDropdown) return false;
+
+    // Check if clicked inside dropdown
+    if (pt.x >= m_rcBranchDropdown.left && pt.x <= m_rcBranchDropdown.right &&
+        pt.y >= m_rcBranchDropdown.top && pt.y <= m_rcBranchDropdown.bottom) {
+
+        const float headerH = m_config.ScaleF(32.0f);
+        const float itemH = m_config.ScaleF(28.0f);
+        float listTop = m_rcBranchDropdown.top + headerH + m_config.ScaleF(4.0f);
+
+        if (pt.y >= listTop) {
+            int idx = static_cast<int>((pt.y - listTop) / itemH);
+            if (idx >= 0 && idx < static_cast<int>(m_branchList.size())) {
+                const auto& [bName, isCurr] = m_branchList[idx];
+                if (!isCurr) {
+                    std::wstring err;
+                    bool ok = m_drawer.CheckoutGitBranch(bName, err);
+                    if (!ok && !err.empty()) {
+                        MessageBoxW(m_hwnd, err.c_str(), L"Git Checkout Error", MB_OK | MB_ICONWARNING);
+                    }
+                    m_isGitCached = false;
+                    UpdateCachedGitInfo();
+                }
+                CloseBranchDropdown();
+                return true;
+            }
+        }
+        return true; // Click inside header absorbs click
+    }
+
+    // Clicked outside dropdown: close it!
+    CloseBranchDropdown();
+    return false;
 }
 
 void Window::UpdateCachedGitInfo() {
@@ -7541,6 +7827,9 @@ LRESULT Window::HandleNCHitTest(POINT screenPt) {
 }
 
 void Window::HandleMouseMove(POINT clientPt, WPARAM wParam) {
+    if (m_showBranchDropdown) {
+        HandleBranchDropdownMouseMove(clientPt);
+    }
     if (m_drawer.IsGitHubLoginModalOpen()) {
         if (m_drawer.HandleGitHubLoginMouseMove(clientPt)) {
             InvalidateRect(m_hwnd, nullptr, FALSE);
@@ -8378,6 +8667,12 @@ void Window::HandleMouseMove(POINT clientPt, WPARAM wParam) {
 }
 
 void Window::HandleLButtonDown(POINT clientPt) {
+    if (m_showBranchDropdown) {
+        if (HandleBranchDropdownMouseDown(clientPt)) {
+            return;
+        }
+    }
+
     // Check NEXT: Cross-File Prediction Pill Click (Image 4)
     if (m_editor.HitTestCrossFilePill(clientPt)) {
         const auto& pred = m_editor.GetPrediction();
@@ -9637,27 +9932,27 @@ void Window::HandleLButtonDown(POINT clientPt) {
     }
 
     // 3b. Split Editor Button Click (splits editor up to 3 columns)
-    if (m_header.HitTestSplitEditor(clientPt)) {
+    if (m_header.HitTestSplitEditor(clientPt) && m_header.IsSplitEditorEnabled()) {
         SplitEditor();
         return;
     }
 
     // 3c. Quick Open Magnifying Button Click (Image 5)
-    if (m_header.HitTestQuickOpen(clientPt)) {
+    if (m_header.HitTestQuickOpen(clientPt) && m_header.IsQuickOpenEnabled()) {
         DoQuickOpenFileSearch();
         return;
     }
 
     // 3d. Editor Zoom In / Zoom Out Widget Click (Image 3)
-    if (m_header.HitTestZoomOut(clientPt)) {
+    if (m_header.HitTestZoomOut(clientPt) && m_header.IsZoomEnabled()) {
         DoZoomOut();
         return;
     }
-    if (m_header.HitTestZoomReset(clientPt)) {
+    if (m_header.HitTestZoomReset(clientPt) && m_header.IsZoomEnabled()) {
         DoResetZoom();
         return;
     }
-    if (m_header.HitTestZoomIn(clientPt)) {
+    if (m_header.HitTestZoomIn(clientPt) && m_header.IsZoomEnabled()) {
         DoZoomIn();
         return;
     }
@@ -10427,12 +10722,17 @@ void Window::HandleLButtonDown(POINT clientPt) {
         return;
     }
 
-    // Status Bar clicks: Git branch or user pill opens Source Control drawer
+    // Status Bar clicks: Git branch toggles Branch Switcher Dropdown (real git checkout)
     if (m_config.showStatusBar &&
-        ((clientPt.x >= m_rcStatusBarGitBranch.left && clientPt.x <= m_rcStatusBarGitBranch.right &&
-          clientPt.y >= m_rcStatusBarGitBranch.top && clientPt.y <= m_rcStatusBarGitBranch.bottom) ||
-         (clientPt.x >= m_rcStatusBarGitUser.left && clientPt.x <= m_rcStatusBarGitUser.right &&
-          clientPt.y >= m_rcStatusBarGitUser.top && clientPt.y <= m_rcStatusBarGitUser.bottom))) {
+        (clientPt.x >= m_rcStatusBarGitBranch.left && clientPt.x <= m_rcStatusBarGitBranch.right &&
+         clientPt.y >= m_rcStatusBarGitBranch.top && clientPt.y <= m_rcStatusBarGitBranch.bottom)) {
+        ToggleBranchDropdown();
+        return;
+    }
+
+    if (m_config.showStatusBar &&
+        (clientPt.x >= m_rcStatusBarGitUser.left && clientPt.x <= m_rcStatusBarGitUser.right &&
+         clientPt.y >= m_rcStatusBarGitUser.top && clientPt.y <= m_rcStatusBarGitUser.bottom)) {
 
         m_config.activeRailTab = 2; // Git / Source Control
         if (!m_config.isDrawerOpen) {
@@ -12474,6 +12774,10 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
             }
 
             if (wParam == VK_ESCAPE) {
+                if (m_showBranchDropdown) {
+                    CloseBranchDropdown();
+                    return 0;
+                }
                 if (m_isDraggingExplorerFile) {
                     m_isDraggingExplorerFile = false;
                     m_dragCandidatePath.clear();

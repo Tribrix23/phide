@@ -169,7 +169,7 @@ struct GitCmdResult {
     std::wstring output;
 };
 
-GitCmdResult RunGitCmd(const std::wstring& cmd, const std::wstring& workDir);
+GitCmdResult RunGitCmd(const std::wstring& cmd, const std::wstring& workDir, bool retryOnLock = true);
 
 /**
  * @struct GitCommitFile
@@ -209,6 +209,7 @@ struct GitCommitItem {
     D2D1_RECT_F bounds{};
     D2D1_RECT_F chevronBounds{};
     D2D1_RECT_F openChangesBtnBounds{};
+    std::wstring authorEmail = L"";
 };
 
 /**
@@ -335,6 +336,8 @@ public:
     [[nodiscard]] std::vector<GitCommitItem>& GetGitCommitsMutable() noexcept { return m_gitCommits; }
     [[nodiscard]] bool IsPathGitIgnored(const std::wstring& fullPath, const std::wstring& label) const;
     [[nodiscard]] const std::wstring& GetGitBranch() const noexcept { return m_gitBranch; }
+    [[nodiscard]] std::vector<std::pair<std::wstring, bool>> GetGitBranches();
+    bool CheckoutGitBranch(const std::wstring& branch, std::wstring& outError);
     [[nodiscard]] const D2D1_RECT_F& GetGitHeaderMoreBounds() const noexcept { return m_gitHeaderMoreBounds; }
     [[nodiscard]] const std::wstring& GetGitTooltipText() const noexcept { return m_gitTooltipText; }
     [[nodiscard]] bool IsGitTooltipVisible() const noexcept { return m_showGitTooltip; }
@@ -981,6 +984,9 @@ private:
     D2D1_RECT_F m_commitCardOpenChangesBounds{};
     D2D1_RECT_F m_commitCardGitHubBounds{};
     std::wstring m_commitCardHash;
+    std::unordered_map<std::wstring, Microsoft::WRL::ComPtr<ID2D1Bitmap>> m_avatarBitmaps;
+    std::set<std::wstring> m_downloadingAvatars;
+    ID2D1Bitmap* GetOrFetchAvatar(ID2D1RenderTarget* pRT, Theme& theme, const GitCommitItem& ci);
     std::function<void()> m_onGitStateChanged;
     std::function<void(const std::wstring& cmd, const std::wstring& output, const std::wstring& repoDir)> m_onGitError;
 

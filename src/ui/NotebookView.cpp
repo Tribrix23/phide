@@ -43,6 +43,166 @@ std::wstring GetClipboardText(HWND hwnd) {
     }
     return result;
 }
+
+struct NotebookOutputSpan {
+    std::wstring text;
+    D2D1_COLOR_F color;
+    bool bold = false;
+};
+
+std::vector<NotebookOutputSpan> ParseNotebookOutputLine(
+    const std::wstring& rawLine,
+    D2D1_COLOR_F defaultColor,
+    bool isCellError
+) {
+    // 1. Check for ANSI escape sequences (\x1b[)
+    if (rawLine.find(L"\x1b[") != std::wstring::npos) {
+        std::vector<NotebookOutputSpan> spans;
+        D2D1_COLOR_F curColor = isCellError ? D2D1::ColorF(0.95f, 0.35f, 0.35f, 1.0f) : defaultColor;
+        bool bold = false;
+        std::wstring curText;
+        size_t i = 0;
+
+        while (i < rawLine.length()) {
+            if (rawLine[i] == L'\x1b' && i + 1 < rawLine.length() && rawLine[i + 1] == L'[') {
+                size_t j = i + 2;
+                while (j < rawLine.length() && (rawLine[j] < 0x40 || rawLine[j] > 0x7E)) {
+                    j++;
+                }
+                if (j < rawLine.length()) {
+                    wchar_t cmd = rawLine[j];
+                    std::wstring seq = rawLine.substr(i + 2, j - (i + 2));
+
+                    if (!curText.empty()) {
+                        spans.push_back({ curText, curColor, bold });
+                        curText.clear();
+                    }
+
+                    if (cmd == L'm') {
+                        std::wstringstream sss(seq.empty() ? L"0" : seq);
+                        std::wstring codeStr;
+                        while (std::getline(sss, codeStr, L';')) {
+                            int code = 0;
+                            try { if (!codeStr.empty()) code = std::stoi(codeStr); } catch (...) {}
+                            if (code == 0) {
+                                curColor = defaultColor;
+                                bold = false;
+                            } else if (code == 1) {
+                                bold = true;
+                            } else if (code == 22) {
+                                bold = false;
+                            } else if (code == 30) {
+                                curColor = D2D1::ColorF(0.25f, 0.25f, 0.28f, 1.0f);
+                            } else if (code == 31 || code == 91) {
+                                curColor = D2D1::ColorF(0.95f, 0.35f, 0.35f, 1.0f); // Bright Red
+                            } else if (code == 32 || code == 92) {
+                                curColor = D2D1::ColorF(0.35f, 0.82f, 0.45f, 1.0f); // Bright Green
+                            } else if (code == 33 || code == 93) {
+                                curColor = D2D1::ColorF(0.95f, 0.80f, 0.25f, 1.0f); // Yellow
+                            } else if (code == 34 || code == 94) {
+                                curColor = D2D1::ColorF(0.38f, 0.68f, 0.98f, 1.0f); // Blue
+                            } else if (code == 35 || code == 95) {
+                                curColor = D2D1::ColorF(0.82f, 0.50f, 0.90f, 1.0f); // Magenta
+                            } else if (code == 36 || code == 96) {
+                                curColor = D2D1::ColorF(0.30f, 0.80f, 0.88f, 1.0f); // Cyan
+                            } else if (code == 37 || code == 97) {
+                                curColor = D2D1::ColorF(0.95f, 0.95f, 0.95f, 1.0f); // White
+                            } else if (code == 90) {
+                                curColor = D2D1::ColorF(0.55f, 0.58f, 0.62f, 1.0f); // Gray
+                            } else if (code == 39) {
+                                curColor = defaultColor;
+                            }
+                        }
+                    } else if (cmd == L'K') {
+                        spans.clear();
+                        curText.clear();
+                    }
+
+                    i = j + 1;
+                    continue;
+                }
+            }
+
+            if (rawLine[i] != L'\r' && rawLine[i] != L'\n') {
+                curText += rawLine[i];
+            }
+            i++;
+        }
+
+        if (!curText.empty()) {
+            spans.push_back({ curText, curColor, bold });
+        }
+        return spans;
+    }
+
+    // 2. Colab-style Semantic Highlighting for plain text outputs (pip, errors, warnings)
+    std::wstring clean = rawLine;
+    while (!clean.empty() && (clean.back() == L'\r' || clean.back() == L'\n')) {
+        clean.pop_back();
+    }
+
+    if (clean.rfind(L"Requirement already satisfied:", 0) == 0) {
+        std::wstring prefix = L"Requirement already satisfied:";
+        std::wstring rest = clean.substr(prefix.length());
+        std::vector<NotebookOutputSpan> spans;
+        spans.push_back({ prefix, D2D1::ColorF(0.35f, 0.82f, 0.45f, 1.0f), true });
+        size_t inPos = rest.find(L" in ");
+        if (inPos != std::wstring::npos) {
+            spans.push_back({ rest.substr(0, inPos), D2D1::ColorF(0.38f, 0.68f, 0.98f, 1.0f), false });
+            spans.push_back({ rest.substr(inPos), D2D1::ColorF(0.58f, 0.62f, 0.66f, 1.0f), false });
+        } else {
+            spans.push_back({ rest, defaultColor, false });
+        }
+        return spans;
+    }
+
+    if (clean.rfind(L"Successfully installed", 0) == 0) {
+        std::wstring prefix = L"Successfully installed";
+        std::vector<NotebookOutputSpan> spans;
+        spans.push_back({ prefix, D2D1::ColorF(0.35f, 0.82f, 0.45f, 1.0f), true });
+        spans.push_back({ clean.substr(prefix.length()), D2D1::ColorF(0.30f, 0.80f, 0.88f, 1.0f), false });
+        return spans;
+    }
+
+    if (clean.rfind(L"Collecting ", 0) == 0) {
+        std::vector<NotebookOutputSpan> spans;
+        spans.push_back({ L"Collecting", D2D1::ColorF(0.38f, 0.68f, 0.98f, 1.0f), true });
+        spans.push_back({ clean.substr(10), defaultColor, false });
+        return spans;
+    }
+
+    if (clean.find(L"Downloading ") != std::wstring::npos) {
+        size_t pos = clean.find(L"Downloading ");
+        std::vector<NotebookOutputSpan> spans;
+        if (pos > 0) {
+            spans.push_back({ clean.substr(0, pos), defaultColor, false });
+        }
+        spans.push_back({ L"Downloading", D2D1::ColorF(0.38f, 0.68f, 0.98f, 1.0f), true });
+        spans.push_back({ clean.substr(pos + 11), defaultColor, false });
+        return spans;
+    }
+
+    if (clean.find(L"Using cached ") != std::wstring::npos) {
+        size_t pos = clean.find(L"Using cached ");
+        std::vector<NotebookOutputSpan> spans;
+        if (pos > 0) {
+            spans.push_back({ clean.substr(0, pos), defaultColor, false });
+        }
+        spans.push_back({ L"Using cached", D2D1::ColorF(0.35f, 0.82f, 0.45f, 1.0f), false });
+        spans.push_back({ clean.substr(pos + 12), defaultColor, false });
+        return spans;
+    }
+
+    if (clean.rfind(L"ERROR:", 0) == 0 || clean.rfind(L"Error:", 0) == 0 || isCellError) {
+        return { { clean, D2D1::ColorF(0.95f, 0.35f, 0.35f, 1.0f), true } };
+    }
+
+    if (clean.rfind(L"WARNING:", 0) == 0 || clean.rfind(L"Warning:", 0) == 0) {
+        return { { clean, D2D1::ColorF(0.95f, 0.80f, 0.25f, 1.0f), true } };
+    }
+
+    return { { clean, defaultColor, false } };
+}
 } // anonymous namespace
 
 namespace phide::ui {
@@ -114,7 +274,7 @@ bool NotebookView::HitTestCodeArea(const editor::NotebookCell& cell, POINT clien
 std::vector<std::wstring> NotebookView::GetOutputLines(const editor::NotebookCell& cell) const {
     std::vector<std::wstring> lines;
     for (const auto& out : cell.outputs) {
-        std::wstringstream ss(out.text);
+        std::wstringstream ss(editor::NotebookDocument::StripAnsi(out.text));
         std::wstring l;
         while (std::getline(ss, l)) {
             lines.push_back(l);
@@ -977,12 +1137,40 @@ void NotebookView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
                     }
                 }
 
-                // Strict Direct2D axis-aligned clipping prevents any text bleeding/overlapping adjacent cells
-                pRT->PushAxisAlignedClip(cell.outputAreaBounds, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
-
                 float textPadX = config.ScaleF(12.0f);
                 float textPadY = config.ScaleF(6.0f);
                 float outLineH = config.ScaleF(18.0f);
+                float availW = (cell.outputAreaBounds.right - cell.outputAreaBounds.left) - textPadX * 2.0f;
+
+                // Precompute line count and max line width to reserve scrollbar gutters
+                size_t estLines = 0;
+                float estMaxW = 0.0f;
+                for (const auto& out : cell.outputs) {
+                    std::wstringstream wssPre(out.text);
+                    std::wstring lPre;
+                    while (std::getline(wssPre, lPre)) {
+                        estLines++;
+                        size_t vLen = editor::NotebookDocument::StripAnsi(lPre).length();
+                        float lw = static_cast<float>(vLen) * charW;
+                        if (lw > estMaxW) estMaxW = lw;
+                    }
+                }
+                if (cell.isWaitingForInput) estLines += 2;
+
+                float estContentH = static_cast<float>(estLines) * outLineH + textPadY * 2.0f;
+                bool hasVScroll = (estContentH > outputH && outputH > config.ScaleF(30.0f));
+                bool hasHScroll = (estMaxW > availW && availW > config.ScaleF(30.0f));
+
+                // Strict Direct2D axis-aligned clipping with scrollbar gutter reservation so text never leaks onto scrollbars
+                D2D1_RECT_F textClip = cell.outputAreaBounds;
+                if (hasVScroll) {
+                    textClip.right -= config.ScaleF(15.0f); // Reserve right gutter for vertical scrollbar
+                }
+                if (hasHScroll) {
+                    textClip.bottom -= config.ScaleF(15.0f); // Reserve bottom gutter for horizontal scrollbar
+                }
+                pRT->PushAxisAlignedClip(textClip, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+
                 float curLineY = outTop + textPadY - cell.outputScrollY;
 
                 float maxLineWidth = 0.0f;
@@ -1002,13 +1190,17 @@ void NotebookView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
                 }
 
                 for (const auto& out : cell.outputs) {
-                    ID2D1Brush* outTextBrush = out.isError ? (brushErrText ? brushErrText.Get() : theme.brushIconRed.Get())
-                                                          : (theme.brushTextPrimary ? theme.brushTextPrimary.Get() : theme.brushTextWhite.Get());
+                    D2D1_COLOR_F defColor = out.isError ? D2D1::ColorF(0.95f, 0.38f, 0.38f, 1.0f)
+                                                        : (theme.brushTextPrimary ? theme.brushTextPrimary->GetColor() : D2D1::ColorF(0.92f, 0.92f, 0.92f, 1.0f));
 
                     std::wstringstream wss(out.text);
-                    std::wstring line;
-                    while (std::getline(wss, line)) {
-                        float lineW = static_cast<float>(line.length()) * charW;
+                    std::wstring rawLine;
+                    while (std::getline(wss, rawLine)) {
+                        auto spans = ParseNotebookOutputLine(rawLine, defColor, out.isError);
+
+                        size_t visibleLen = 0;
+                        for (const auto& sp : spans) visibleLen += sp.text.length();
+                        float lineW = static_cast<float>(visibleLen) * charW;
                         if (lineW > maxLineWidth) maxLineWidth = lineW;
                         totalLines++;
 
@@ -1024,13 +1216,13 @@ void NotebookView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
                                     selX2 = drawX + static_cast<float>(eC) * charW;
                                 } else if (outLineIdx == sL) {
                                     selX1 = drawX + static_cast<float>(sC) * charW;
-                                    selX2 = drawX + static_cast<float>(line.length()) * charW + config.ScaleF(4.0f);
+                                    selX2 = drawX + static_cast<float>(visibleLen) * charW + config.ScaleF(4.0f);
                                 } else if (outLineIdx == eL) {
                                     selX1 = drawX;
                                     selX2 = drawX + static_cast<float>(eC) * charW;
                                 } else {
                                     selX1 = drawX;
-                                    selX2 = (std::max)(drawX + static_cast<float>(line.length()) * charW + config.ScaleF(4.0f), drawX + config.ScaleF(24.0f));
+                                    selX2 = (std::max)(drawX + static_cast<float>(visibleLen) * charW + config.ScaleF(4.0f), drawX + config.ScaleF(24.0f));
                                 }
                                 if (selX2 > selX1 && brushSelBg) {
                                     D2D1_RECT_F rcSel = D2D1::RectF(selX1, curLineY, selX2, curLineY + outLineH);
@@ -1038,14 +1230,25 @@ void NotebookView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
                                 }
                             }
 
-                            D2D1_RECT_F rcLine = D2D1::RectF(
-                                drawX,
-                                curLineY,
-                                drawX + (std::max)(120.0f, lineW),
-                                curLineY + outLineH
-                            );
-                            pRT->DrawText(line.c_str(), static_cast<UINT32>(line.length()),
-                                          theme.fontCode.Get(), rcLine, outTextBrush);
+                            // Render colored spans across the line
+                            float spanX = drawX;
+                            for (const auto& sp : spans) {
+                                if (sp.text.empty()) continue;
+                                float spanW = static_cast<float>(sp.text.length()) * charW;
+                                D2D1_RECT_F rcSpan = D2D1::RectF(
+                                    spanX,
+                                    curLineY,
+                                    spanX + spanW + config.ScaleF(4.0f),
+                                    curLineY + outLineH
+                                );
+                                Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> spanBrush;
+                                pRT->CreateSolidColorBrush(sp.color, &spanBrush);
+                                if (spanBrush) {
+                                    pRT->DrawText(sp.text.c_str(), static_cast<UINT32>(sp.text.length()),
+                                                  theme.fontCode.Get(), rcSpan, spanBrush.Get());
+                                }
+                                spanX += spanW;
+                            }
                         }
                         curLineY += outLineH;
                         outLineIdx++;
@@ -1123,13 +1326,17 @@ void NotebookView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
                 pRT->PopAxisAlignedClip();
 
                 float totalContentH = static_cast<float>(totalLines) * outLineH + textPadY * 2.0f;
-                float availW = (cell.outputAreaBounds.right - cell.outputAreaBounds.left) - textPadX * 2.0f;
+                bool actualHScroll = (maxLineWidth > availW && availW > config.ScaleF(30.0f));
+                if (actualHScroll) {
+                    totalContentH += config.ScaleF(14.0f); // Space for horizontal scrollbar at bottom
+                }
+                bool actualVScroll = (totalContentH > outputH && outputH > config.ScaleF(30.0f));
 
                 // 1. Sleek Vertical Scrollbar when output exceeds clamped height (Thicker, easy-to-drag, with visual track)
-                if (totalContentH > outputH && outputH > config.ScaleF(30.0f)) {
+                if (actualVScroll) {
                     float sbW = config.ScaleF(8.0f);
                     float sbX = cell.outputAreaBounds.right - sbW - config.ScaleF(3.0f);
-                    float trackH = outputH - config.ScaleF(8.0f);
+                    float trackH = outputH - config.ScaleF(8.0f) - (actualHScroll ? config.ScaleF(12.0f) : 0.0f);
                     float thumbH = (std::max)(config.ScaleF(24.0f), trackH * (outputH / totalContentH));
                     float maxScrollY = totalContentH - outputH;
                     float clampedScrollY = (std::max)(0.0f, (std::min)(cell.outputScrollY, maxScrollY));
@@ -1164,7 +1371,7 @@ void NotebookView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
                 if (maxLineWidth > availW && availW > config.ScaleF(30.0f)) {
                     float sbH = config.ScaleF(8.0f);
                     float sbY = cell.outputAreaBounds.bottom - sbH - config.ScaleF(3.0f);
-                    float trackW = availW;
+                    float trackW = availW - (actualVScroll ? config.ScaleF(12.0f) : 0.0f);
                     float thumbW = (std::max)(config.ScaleF(28.0f), trackW * (availW / maxLineWidth));
                     float maxScrollX = maxLineWidth - availW;
                     float clampedScrollX = (std::max)(0.0f, (std::min)(cell.outputScrollX, maxScrollX));

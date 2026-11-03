@@ -59,6 +59,11 @@ public:
     LPCWSTR GetCursorForPoint(POINT pt, const editor::OpenDocument& doc) const;
 
     /**
+     * @brief Retrieves cleaned, visible output lines for a notebook cell (ANSI stripped).
+     */
+    std::vector<std::wstring> GetOutputLines(const editor::NotebookCell& cell) const;
+
+    /**
      * @brief Sets workspace folder path for virtualenv auto-detection.
      */
     void SetWorkspacePath(const std::wstring& wsPath) { m_workspacePath = wsPath; }
@@ -171,7 +176,6 @@ private:
                        const D2D1_RECT_F& targetBounds, const std::wstring& text);
     bool HitTestOutputArea(const editor::NotebookCell& cell, POINT clientPt, const app::AppConfig& config,
                            size_t& outLine, size_t& outCol) const;
-    std::vector<std::wstring> GetOutputLines(const editor::NotebookCell& cell) const;
 };
 
 } // namespace phide::ui

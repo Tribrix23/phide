@@ -8,6 +8,8 @@
 #include "phide/ui/GitLogManager.hpp"
 #include "phide/editor/Buffer.hpp"
 #include <wincodec.h>
+#include <urlmon.h>
+#include <shlobj.h>
 #include <algorithm>
 #include <iostream>
 #include <fstream>
@@ -1268,13 +1270,26 @@ void DrawerPanel::RenderExplorerPane(ID2D1RenderTarget* pRT, Theme& theme, const
                             }
                         }
                     } else {
+                        std::wstring normFolder = item.fullPath;
+                        for (auto& c : normFolder) if (c == L'/') c = L'\\';
+                        if (m_hasOpenFolder && !m_openFolderPath.empty() && (normFolder.length() < 2 || normFolder[1] != L':')) {
+                            std::wstring base = m_openFolderPath;
+                            for (auto& c : base) if (c == L'/') c = L'\\';
+                            if (!base.empty() && base.back() != L'\\') base += L'\\';
+                            normFolder = base + normFolder;
+                        }
+                        if (!normFolder.empty() && normFolder.back() != L'\\') normFolder += L'\\';
+
                         for (const auto& [errPath, count] : m_errorFiles) {
                             if (count > 0) {
-                                std::wstring normFolder = item.fullPath;
-                                for (auto& c : normFolder) if (c == L'/') c = L'\\';
-                                if (!normFolder.empty() && normFolder.back() != L'\\') normFolder += L'\\';
                                 std::wstring normErr = errPath;
                                 for (auto& c : normErr) if (c == L'/') c = L'\\';
+                                if (m_hasOpenFolder && !m_openFolderPath.empty() && (normErr.length() < 2 || normErr[1] != L':')) {
+                                    std::wstring base = m_openFolderPath;
+                                    for (auto& c : base) if (c == L'/') c = L'\\';
+                                    if (!base.empty() && base.back() != L'\\') base += L'\\';
+                                    normErr = base + normErr;
+                                }
                                 if (_wcsnicmp(normErr.c_str(), normFolder.c_str(), normFolder.length()) == 0) {
                                     itemHasError = true;
                                     errorCount += count;
@@ -1304,9 +1319,7 @@ void DrawerPanel::RenderExplorerPane(ID2D1RenderTarget* pRT, Theme& theme, const
                                 for (const auto& chg : m_gitChanges) {
                                     std::wstring normChg = chg.path;
                                     for (auto& c : normChg) if (c == L'/') c = L'\\';
-                                    if (_wcsicmp(normChg.c_str(), relItem.c_str()) == 0 ||
-                                        normChg.ends_with(L"\\" + item.label) ||
-                                        _wcsicmp(normChg.c_str(), item.label.c_str()) == 0) {
+                                    if (_wcsicmp(normChg.c_str(), relItem.c_str()) == 0) {
                                         gitStatus = chg.status.empty() ? L"M" : chg.status;
                                         break;
                                     }
@@ -1348,7 +1361,7 @@ void DrawerPanel::RenderExplorerPane(ID2D1RenderTarget* pRT, Theme& theme, const
                         pRT->CreateSolidColorBrush(gitColor, &brushGitStatus);
                     }
 
-                    float maxLabelRight = railW + fullDrawerW - config.ScaleF((itemHasError || !gitStatus.empty()) ? 38.0f : 16.0f);
+                    float maxLabelRight = railW + fullDrawerW - config.ScaleF((itemHasError || !gitStatus.empty()) ? 42.0f : 16.0f);
                     if (maxLabelRight < labelX + 10.0f) maxLabelRight = labelX + 10.0f;
                     D2D1_RECT_F rcLabel = D2D1::RectF(
                         labelX,
@@ -4065,7 +4078,7 @@ bool DrawerPanel::IsGitHubLoggedIn() const noexcept {
     return false;
 }
 
-GitCmdResult RunGitCmd(const std::wstring& cmd, const std::wstring& workDir) {
+GitCmdResult RunGitCmd(const std::wstring& cmd, const std::wstring& workDir, bool retryOnLock) {
     GitCmdResult res;
     SECURITY_ATTRIBUTES sa{ sizeof(sa), nullptr, TRUE };
     HANDLE hReadPipe = nullptr, hWritePipe = nullptr;
@@ -4154,6 +4167,28 @@ GitCmdResult RunGitCmd(const std::wstring& cmd, const std::wstring& workDir) {
 
     DWORD durationMs = GetTickCount() - startTime;
     GitLogManager::Instance().LogCommand(fullCmd, res.exitCode, res.output, durationMs);
+
+    // If git failed due to a stale index.lock file (e.g. from an earlier crashed process),
+    // automatically attempt to remove the stale lock file and retry once.
+    if (res.exitCode != 0 && retryOnLock && !cleanWorkDir.empty() && res.output.find(L"index.lock") != std::wstring::npos) {
+        std::error_code ec;
+        std::filesystem::path cur = cleanWorkDir;
+        for (int depth = 0; depth < 5; ++depth) {
+            std::filesystem::path lockPath = cur / ".git" / "index.lock";
+            if (std::filesystem::exists(lockPath, ec)) {
+                if (std::filesystem::remove(lockPath, ec)) {
+                    GitLogManager::Instance().LogCommand(L"[Auto-Recovery] Removed stale .git/index.lock at " + lockPath.wstring(), 0, L"Success", 0);
+                    return RunGitCmd(cmd, workDir, false);
+                }
+            }
+            if (cur.has_parent_path() && cur.parent_path() != cur) {
+                cur = cur.parent_path();
+            } else {
+                break;
+            }
+        }
+    }
+
     return res;
 }
 
@@ -4606,7 +4641,7 @@ void DrawerPanel::RefreshGitState(bool async, bool showLoading) {
         }
 
         // 4. Query commit history graph with formatted date
-        auto resLog = RunGitCmd(L"log -n 40 --pretty=format:\"%h|%p|%s|%an|%ar|%d|%ad\" --date=format:\"%B %d, %Y at %I:%M %p\"", dir);
+        auto resLog = RunGitCmd(L"log -n 40 --pretty=format:\"%h|%p|%s|%an|%ar|%d|%ad|%ae\" --date=format:\"%B %d, %Y at %I:%M %p\"", dir);
         std::vector<GitCommitItem> commits;
         if (resLog.exitCode == 0) {
             std::wstringstream ss(resLog.output);
@@ -4635,6 +4670,7 @@ void DrawerPanel::RefreshGitState(bool async, bool showLoading) {
                     ci.relativeTime = tokens.size() > 4 ? tokens[4] : L"";
                     ci.refNames = tokens.size() > 5 ? tokens[5] : L"";
                     ci.dateFormatted = tokens.size() > 6 ? tokens[6] : L"";
+                    ci.authorEmail = tokens.size() > 7 ? tokens[7] : L"";
                     ci.isHead = firstCommit || (ci.refNames.find(L"HEAD") != std::wstring::npos);
                     firstCommit = false;
 
@@ -5366,6 +5402,153 @@ std::wstring DrawerPanel::GetGitHubRepoUrl() const {
         }
     }
     return L"";
+}
+
+std::vector<std::pair<std::wstring, bool>> DrawerPanel::GetGitBranches() {
+    std::vector<std::pair<std::wstring, bool>> branches;
+    if (!m_hasOpenFolder || m_openFolderPath.empty()) return branches;
+    std::wstring dir = m_openFolderPath;
+    auto res = RunGitCmd(L"branch --list --no-color", dir);
+    if (res.exitCode == 0 && !res.output.empty()) {
+        std::wstringstream ss(res.output);
+        std::wstring line;
+        while (std::getline(ss, line)) {
+            while (!line.empty() && (line.back() == L'\r' || line.back() == L'\n' || line.back() == L' ' || line.back() == L'\t')) {
+                line.pop_back();
+            }
+            if (line.empty()) continue;
+            bool isCurrent = false;
+            size_t start = 0;
+            if (line.size() >= 2 && line[0] == L'*' && line[1] == L' ') {
+                isCurrent = true;
+                start = 2;
+            } else {
+                while (start < line.size() && (line[start] == L' ' || line[start] == L'\t')) {
+                    start++;
+                }
+            }
+            std::wstring branchName = line.substr(start);
+            if (!branchName.empty()) {
+                branches.push_back({ branchName, isCurrent });
+            }
+        }
+    }
+    return branches;
+}
+
+bool DrawerPanel::CheckoutGitBranch(const std::wstring& branch, std::wstring& outError) {
+    if (!m_hasOpenFolder || m_openFolderPath.empty()) {
+        outError = L"No folder open.";
+        return false;
+    }
+    std::wstring dir = m_openFolderPath;
+    auto res = RunGitCmd(L"checkout " + branch, dir);
+    if (res.exitCode == 0) {
+        m_gitBranch = branch;
+        RefreshGitState(false, false);
+        return true;
+    } else {
+        outError = res.output.empty() ? L"Failed to checkout branch." : res.output;
+        return false;
+    }
+}
+
+ID2D1Bitmap* DrawerPanel::GetOrFetchAvatar(ID2D1RenderTarget* pRT, Theme& theme, const GitCommitItem& ci) {
+    if (!pRT) return nullptr;
+
+    // 1. Determine GitHub username from commit author / email / repo origin
+    std::wstring username;
+    if (!ci.authorEmail.empty()) {
+        auto atPos = ci.authorEmail.find(L'@');
+        if (atPos != std::wstring::npos) {
+            std::wstring domain = ci.authorEmail.substr(atPos + 1);
+            if (domain == L"users.noreply.github.com") {
+                std::wstring userPart = ci.authorEmail.substr(0, atPos);
+                auto plusPos = userPart.find(L'+');
+                username = (plusPos != std::wstring::npos) ? userPart.substr(plusPos + 1) : userPart;
+            } else {
+                username = ci.authorEmail.substr(0, atPos);
+            }
+        }
+    }
+
+    std::wstring repoUrl = GetGitHubRepoUrl();
+    if (!repoUrl.empty()) {
+        size_t ghPos = repoUrl.find(L"github.com/");
+        if (ghPos != std::wstring::npos) {
+            std::wstring rest = repoUrl.substr(ghPos + 11);
+            size_t slashPos = rest.find(L'/');
+            if (slashPos != std::wstring::npos) {
+                std::wstring repoOwner = rest.substr(0, slashPos);
+                if (username.empty() || _wcsicmp(username.c_str(), repoOwner.c_str()) == 0) {
+                    username = repoOwner;
+                }
+            }
+        }
+    }
+
+    if (username.empty()) {
+        for (wchar_t c : ci.author) {
+            if (iswalnum(c) || c == L'-' || c == L'_') username.push_back(c);
+        }
+    }
+
+    if (username.empty()) return nullptr;
+
+    // 2. Check in-memory bitmap cache
+    auto it = m_avatarBitmaps.find(username);
+    if (it != m_avatarBitmaps.end() && it->second) {
+        return it->second.Get();
+    }
+
+    // 3. Locate disk cache path: %LOCALAPPDATA%\phide\avatars\<username>.png
+    wchar_t localApp[MAX_PATH] = {0};
+    if (SUCCEEDED(SHGetFolderPathW(NULL, CSIDL_LOCAL_APPDATA, NULL, 0, localApp))) {
+        std::wstring phideDir = std::wstring(localApp) + L"\\phide";
+        CreateDirectoryW(phideDir.c_str(), NULL);
+        std::wstring avatarDir = phideDir + L"\\avatars";
+        CreateDirectoryW(avatarDir.c_str(), NULL);
+
+        std::wstring avatarPath = avatarDir + L"\\" + username + L".png";
+
+        // Also check scratch/avatar.png if local cache not yet copied
+        if (!std::filesystem::exists(avatarPath)) {
+            if (std::filesystem::exists(L"scratch/avatar.png")) {
+                std::error_code ec;
+                std::filesystem::copy_file(L"scratch/avatar.png", avatarPath, std::filesystem::copy_options::overwrite_existing, ec);
+            }
+        }
+
+        if (std::filesystem::exists(avatarPath)) {
+            Microsoft::WRL::ComPtr<IWICImagingFactory> pWicFactory;
+            if (SUCCEEDED(CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&pWicFactory)))) {
+                Microsoft::WRL::ComPtr<IWICBitmapDecoder> pDecoder;
+                if (SUCCEEDED(pWicFactory->CreateDecoderFromFilename(avatarPath.c_str(), NULL, GENERIC_READ, WICDecodeMetadataCacheOnDemand, &pDecoder))) {
+                    Microsoft::WRL::ComPtr<IWICBitmapFrameDecode> pFrame;
+                    if (SUCCEEDED(pDecoder->GetFrame(0, &pFrame))) {
+                        Microsoft::WRL::ComPtr<IWICFormatConverter> pConverter;
+                        if (SUCCEEDED(pWicFactory->CreateFormatConverter(&pConverter))) {
+                            if (SUCCEEDED(pConverter->Initialize(pFrame.Get(), GUID_WICPixelFormat32bppPBGRA, WICBitmapDitherTypeNone, NULL, 0.0f, WICBitmapPaletteTypeCustom))) {
+                                Microsoft::WRL::ComPtr<ID2D1Bitmap> pBmp;
+                                if (SUCCEEDED(pRT->CreateBitmapFromWicBitmap(pConverter.Get(), NULL, &pBmp))) {
+                                    m_avatarBitmaps[username] = pBmp;
+                                    return pBmp.Get();
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        } else if (m_downloadingAvatars.find(username) == m_downloadingAvatars.end()) {
+            m_downloadingAvatars.insert(username);
+            std::wstring url = L"https://github.com/" + username + L".png";
+            std::thread([url, avatarPath]() {
+                URLDownloadToFileW(NULL, url.c_str(), avatarPath.c_str(), 0, NULL);
+            }).detach();
+        }
+    }
+
+    return nullptr;
 }
 
 void DrawerPanel::ComputeGitGraphLanes(std::vector<GitCommitItem>& commits) {
@@ -8516,36 +8699,38 @@ void DrawerPanel::RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, 
 
         if (m_activeGitMenu == GitMenuType::ChangesMore) {
             anchor = m_gitChangesMoreBounds;
-            menuW = config.ScaleF(190.0f);
             m_gitMenuItems.push_back({ 10, L"✓  Stage All Changes" });
             m_gitMenuItems.push_back({ 11, L"🔄 Discard All Changes" });
             m_gitMenuItems.push_back({ 13, L"↩  Undo Last Commit" });
             m_gitMenuItems.push_back({ 12, L"📦 Stash Changes" });
             m_gitMenuItems.push_back({ 0,  L"", false, true }); // separator
-            m_gitMenuItems.push_back({ 24, L"🧹 Run Garbage Collection" });
             m_gitMenuItems.push_back({ 14, L"🔄 Refresh Status" });
         } else if (m_activeGitMenu == GitMenuType::GraphMore) {
             anchor = m_gitGraphMoreBounds;
-            menuW = config.ScaleF(190.0f);
             m_gitMenuItems.push_back({ 13, L"↩  Undo Last Commit" });
             m_gitMenuItems.push_back({ 20, L"🔄 Refresh Graph" });
             m_gitMenuItems.push_back({ 21, L"↑  Push Commits" });
             m_gitMenuItems.push_back({ 22, L"↓  Pull Commits" });
             m_gitMenuItems.push_back({ 23, L"☁  Fetch All Remotes" });
-            m_gitMenuItems.push_back({ 0,  L"", false, true }); // separator
-            m_gitMenuItems.push_back({ 24, L"🧹 Run Garbage Collection" });
         } else {
             // Header Views
             anchor = m_gitHeaderMoreBounds;
-            menuW = config.ScaleF(180.0f);
             m_gitMenuItems.push_back({ 1, L"Repositories", true }); // header
             m_gitMenuItems.push_back({ 2, m_showChangesSection ? L"✓  Changes" : L"    Changes", false, false, m_showChangesSection });
             m_gitMenuItems.push_back({ 3, m_showGraphSection ? L"✓  Graph" : L"    Graph", false, false, m_showGraphSection });
             m_gitMenuItems.push_back({ 0, L"", false, true }); // separator
             m_gitMenuItems.push_back({ 13, L"↩  Undo Last Commit" });
-            m_gitMenuItems.push_back({ 24, L"🧹 Run Garbage Collection" });
             m_gitMenuItems.push_back({ 5, L"🔄 Refresh All" });
         }
+
+        // Dynamically calculate menu width based on item content so text never leaks
+        float maxItemTextW = config.ScaleF(160.0f);
+        for (const auto& itm : m_gitMenuItems) {
+            if (itm.isSeparator) continue;
+            float tw = static_cast<float>(itm.label.length()) * config.ScaleF(8.0f) + config.ScaleF(38.0f);
+            if (tw > maxItemTextW) maxItemTextW = tw;
+        }
+        menuW = maxItemTextW;
 
         float itemH = config.ScaleF(24.0f);
         float menuH = config.ScaleF(8.0f);
@@ -8553,9 +8738,15 @@ void DrawerPanel::RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, 
             menuH += itm.isSeparator ? config.ScaleF(6.0f) : itemH;
         }
 
-        float menuRight = (std::min)(anchor.right, railW + currentDrawerW - config.ScaleF(4.0f));
+        float menuRight = anchor.right;
+        if (menuRight > railW + currentDrawerW - config.ScaleF(4.0f)) {
+            menuRight = railW + currentDrawerW - config.ScaleF(4.0f);
+        }
         float menuLeft = menuRight - menuW;
-        if (menuLeft < railW + config.ScaleF(4.0f)) menuLeft = railW + config.ScaleF(4.0f);
+        if (menuLeft < railW + config.ScaleF(4.0f)) {
+            menuLeft = railW + config.ScaleF(4.0f);
+            menuRight = menuLeft + menuW;
+        }
         float menuTop = anchor.bottom + config.ScaleF(2.0f);
         if (menuTop + menuH > clientHeight) menuTop = anchor.top - menuH - config.ScaleF(2.0f);
 
@@ -9924,17 +10115,26 @@ void DrawerPanel::RenderCommitCard(ID2D1RenderTarget* pRT, Theme& theme, const a
 
         // Header: Author Avatar circle + Author Name (bold) + relative time & date (Image 3)
         float curCardY = cardTop + config.ScaleF(10.0f);
-        float avatarR = config.ScaleF(7.5f);
-        float avatarX = cardLeft + config.ScaleF(16.0f);
+        float avatarR = config.ScaleF(8.5f);
+        float avatarX = cardLeft + config.ScaleF(18.0f);
         float avatarY = curCardY + avatarR;
-        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushAvatar;
-        pRT->CreateSolidColorBrush(D2D1::ColorF(0.055f, 0.388f, 0.612f, 1.0f), &brushAvatar);
-        pRT->FillEllipse(D2D1::Ellipse(D2D1::Point2F(avatarX, avatarY), avatarR, avatarR), brushAvatar.Get());
+        D2D1_RECT_F rcAvatar = D2D1::RectF(avatarX - avatarR, avatarY - avatarR, avatarX + avatarR, avatarY + avatarR);
 
-        wchar_t initialChar[2] = { L'C', L'\0' };
-        if (!ci.author.empty()) initialChar[0] = static_cast<wchar_t>(towupper(ci.author[0]));
-        D2D1_RECT_F rcInitial = D2D1::RectF(avatarX - avatarR, avatarY - avatarR, avatarX + avatarR, avatarY + avatarR);
-        pRT->DrawText(initialChar, 1, theme.fontButtonCenter.Get() ? theme.fontButtonCenter.Get() : theme.fontMenuItem.Get(), rcInitial, theme.brushTextWhite.Get());
+        ID2D1Bitmap* pAvatar = GetOrFetchAvatar(pRT, theme, ci);
+        if (pAvatar) {
+            pRT->PushAxisAlignedClip(rcAvatar, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+            pRT->DrawBitmap(pAvatar, rcAvatar);
+            pRT->PopAxisAlignedClip();
+            pRT->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(avatarX, avatarY), avatarR, avatarR), brushCardBorder.Get(), 1.0f);
+        } else {
+            Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushAvatar;
+            pRT->CreateSolidColorBrush(D2D1::ColorF(0.055f, 0.388f, 0.612f, 1.0f), &brushAvatar);
+            pRT->FillEllipse(D2D1::Ellipse(D2D1::Point2F(avatarX, avatarY), avatarR, avatarR), brushAvatar.Get());
+
+            wchar_t initialChar[2] = { L'C', L'\0' };
+            if (!ci.author.empty()) initialChar[0] = static_cast<wchar_t>(towupper(ci.author[0]));
+            pRT->DrawText(initialChar, 1, theme.fontButtonCenter.Get() ? theme.fontButtonCenter.Get() : theme.fontMenuItem.Get(), rcAvatar, theme.brushTextWhite.Get());
+        }
 
         IDWriteTextFormat* pCardFmt = theme.fontMenuItem ? theme.fontMenuItem.Get() : theme.fontBody.Get();
 

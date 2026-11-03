@@ -175,6 +175,18 @@ public:
      */
     void ComputeDiffHunks(editor::OpenDocument& doc);
 
+    // Git Branch Switcher Dropdown (Status bar popup)
+    ui::DrawerPanel& GetDrawer() noexcept { return m_drawer; }
+    ui::Theme& GetTheme() noexcept { return m_theme; }
+    void ToggleBranchDropdown();
+    void CloseBranchDropdown();
+    void RenderBranchDropdown(ID2D1RenderTarget* pRT, float clientWidth, float clientHeight);
+    bool IsBranchDropdownOpen() const noexcept { return m_showBranchDropdown; }
+    const std::vector<std::pair<std::wstring, bool>>& GetBranchList() const noexcept { return m_branchList; }
+    bool HandleBranchDropdownMouseDown(POINT pt);
+    bool HandleBranchDropdownMouseMove(POINT pt);
+    void SetStatusBarGitBranchBounds(const D2D1_RECT_F& r) noexcept { m_rcStatusBarGitBranch = r; }
+
 private:
     /**
      * @brief Checks if there is at least one active document opened in the editor.
@@ -749,6 +761,12 @@ private:
     bool m_isHoveredStatusBarSpaces = false;
     D2D1_RECT_F m_rcStatusBarEncoding{};
     bool m_isHoveredStatusBarEncoding = false;
+
+    // Git Branch Switcher Dropdown (Status bar popup)
+    bool m_showBranchDropdown = false;
+    std::vector<std::pair<std::wstring, bool>> m_branchList;
+    int m_hoveredBranchIdx = -1;
+    D2D1_RECT_F m_rcBranchDropdown{};
 
     void RenderFloatingTooltip(ID2D1RenderTarget* pRT, const std::wstring& text, const D2D1_RECT_F& anchorBounds, float clientW);
 

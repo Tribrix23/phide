@@ -2708,19 +2708,12 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
                 float barLeft = barRight - barW;
 
                 if (doc.diffModifiedLines.count(vl.bufferLine)) {
-                    // Blue Bar for Modified line (Diagonal hatch matching Images 3 & 7)
+                    // Blue Bar for Modified line (Solid clean VS Code accent blue bar)
                     D2D1_RECT_F rcBar = D2D1::RectF(barLeft, lineY, barRight, lineY + lineH);
-                    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> blueBgBrush;
-                    pRT->CreateSolidColorBrush(D2D1::ColorF(0.0f, 0.35f, 0.70f, 0.40f), &blueBgBrush);
-                    if (blueBgBrush) {
-                        pRT->FillRectangle(rcBar, blueBgBrush.Get());
-                    }
-                    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> hatchBrush;
-                    pRT->CreateSolidColorBrush(D2D1::ColorF(0.0f, 0.55f, 1.0f, 1.0f), &hatchBrush);
-                    if (hatchBrush) {
-                        for (float hy = lineY - barW; hy < lineY + lineH; hy += config.ScaleF(3.0f)) {
-                            pRT->DrawLine(D2D1::Point2F(barLeft, hy), D2D1::Point2F(barRight, hy + barW), hatchBrush.Get(), 1.4f);
-                        }
+                    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> blueBrush;
+                    pRT->CreateSolidColorBrush(D2D1::ColorF(0.0f, 0.48f, 1.0f, 1.0f), &blueBrush);
+                    if (blueBrush) {
+                        pRT->FillRectangle(rcBar, blueBrush.Get());
                     }
                 } else if (doc.diffAddedLines.count(vl.bufferLine)) {
                     // Green Bar for Added line (Image 3)

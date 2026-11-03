@@ -450,6 +450,24 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidateCss(
             }
 
             wchar_t ch = line[c];
+
+            // Skip string literals "..." or '...'
+            if (ch == L'"' || ch == L'\'') {
+                wchar_t quote = ch;
+                c++;
+                while (c < line.length()) {
+                    if (line[c] == L'\\') {
+                        c += 2;
+                    } else if (line[c] == quote) {
+                        c++;
+                        break;
+                    } else {
+                        c++;
+                    }
+                }
+                continue;
+            }
+
             if (ch == L'{') {
                 braceStack.push_back({ l, c });
                 inBlock = true;
@@ -475,60 +493,93 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidateCss(
                 std::wstring propName = line.substr(propStart, c - propStart);
                 for (auto& k : propName) k = static_cast<wchar_t>(towlower(k));
 
-                while (c < line.length() && iswspace(line[c])) c++;
+                // Find the first delimiter among '{', '}', ';' following this property name (skipping strings)
+                size_t dIdx = c;
+                wchar_t firstDelim = L'\0';
+                size_t firstDelimPos = std::wstring::npos;
+                while (dIdx < line.length()) {
+                    wchar_t dc = line[dIdx];
+                    if (dc == L'"' || dc == L'\'') {
+                        wchar_t dq = dc;
+                        dIdx++;
+                        while (dIdx < line.length()) {
+                            if (line[dIdx] == L'\\') {
+                                dIdx += 2;
+                            } else if (line[dIdx] == dq) {
+                                dIdx++;
+                                break;
+                            } else {
+                                dIdx++;
+                            }
+                        }
+                        continue;
+                    }
+                    if (dc == L'{' || dc == L'}' || dc == L';') {
+                        firstDelim = dc;
+                        firstDelimPos = dIdx;
+                        break;
+                    }
+                    dIdx++;
+                }
 
-                // Check if this is a selector or nested rule (e.g. '@media ... { .sidebar { ... } }' or 'h2 { ... }')
-                size_t nextOpenBrace = line.find(L'{', propStart);
-                size_t nextSemi = line.find(L';', propStart);
-
-                // If line contains an opening brace '{' before any semicolon, it is a selector / block opening, NOT a property declaration
-                if (nextOpenBrace != std::wstring::npos && (nextSemi == std::wstring::npos || nextOpenBrace < nextSemi)) {
-                    c = nextOpenBrace;
+                // If the first delimiter is '{', this is a nested selector or nested rule (e.g. '@media ... {' or '.nested {')
+                if (firstDelim == L'{') {
+                    c = firstDelimPos;
                     continue;
                 }
 
+                while (c < line.length() && iswspace(line[c])) c++;
+
                 if (c >= line.length() || line[c] != L':') {
-                    // Only flag missing colon if the statement actually ends with a ';' (e.g. 'color red;')
-                    // Never flag selectors or selector lists like 'h2, p {' or '.heading > span'
-                    if (nextSemi != std::wstring::npos && (nextOpenBrace == std::wstring::npos || nextSemi < nextOpenBrace)) {
+                    // Only flag missing colon if the statement actually ends with a ';'
+                    if (firstDelim == L';') {
                         diagnostics.push_back({ l, propStart, propName.length(), L"CSS Syntax Error: Missing colon ':' after property '" + propName + L"'", 1 });
+                        c = firstDelimPos + 1;
+                    } else {
+                        c = propStart + 1;
                     }
-                    c = (nextSemi != std::wstring::npos) ? (nextSemi + 1) : line.length();
-                } else {
-                    // Colon found! Check if property is known
-                    if (propName.rfind(L"--", 0) != 0 && propName.rfind(L"-webkit-", 0) != 0 &&
-                        propName.rfind(L"-moz-", 0) != 0 && propName.rfind(L"-ms-", 0) != 0 && propName.rfind(L"-o-", 0) != 0 &&
-                        propName.rfind(L"scroll-margin", 0) != 0 && propName.rfind(L"scroll-padding", 0) != 0) {
-                        if (knownProps.find(propName) == knownProps.end()) {
-                            diagnostics.push_back({ l, propStart, propName.length(), L"CSS Linter: Unknown CSS property '" + propName + L"'", 2 });
-                        }
-                    }
-                    c++; // skip ':'
+                    continue;
+                }
 
-                    // Scan value until ';' or '}'
-                    size_t valStart = c;
-                    while (c < line.length() && line[c] != L';' && line[c] != L'}') {
-                        c++;
-                    }
-                    std::wstring valStr = line.substr(valStart, c - valStart);
-
-                    // Check for invalid hex colors in value (ignore url(...) fragments)
-                    if (valStr.find(L"url(") == std::wstring::npos) {
-                        size_t hashPos = 0;
-                        while ((hashPos = valStr.find(L'#', hashPos)) != std::wstring::npos) {
-                            size_t hEnd = hashPos + 1;
-                            while (hEnd < valStr.length() && iswxdigit(valStr[hEnd])) hEnd++;
-                            size_t hLen = hEnd - hashPos - 1;
-                            bool atBoundary = (hEnd >= valStr.length() || iswspace(valStr[hEnd]) ||
-                                               valStr[hEnd] == L';' || valStr[hEnd] == L',' ||
-                                               valStr[hEnd] == L')' || valStr[hEnd] == L'}');
-                            if (atBoundary && hLen > 0 && hLen != 3 && hLen != 4 && hLen != 6 && hLen != 8) {
-                                diagnostics.push_back({ l, valStart + hashPos, hEnd - hashPos, L"CSS Syntax Error: Invalid hex color length in '" + valStr.substr(hashPos, hEnd - hashPos) + L"'", 1 });
-                            }
-                            hashPos = (hEnd > hashPos) ? hEnd : (hashPos + 1);
-                        }
+                // Colon found! Check if property is known
+                if (propName.rfind(L"--", 0) != 0 && propName.rfind(L"-webkit-", 0) != 0 &&
+                    propName.rfind(L"-moz-", 0) != 0 && propName.rfind(L"-ms-", 0) != 0 && propName.rfind(L"-o-", 0) != 0 &&
+                    propName.rfind(L"scroll-margin", 0) != 0 && propName.rfind(L"scroll-padding", 0) != 0) {
+                    if (knownProps.find(propName) == knownProps.end()) {
+                        diagnostics.push_back({ l, propStart, propName.length(), L"CSS Linter: Unknown CSS property '" + propName + L"'", 2 });
                     }
                 }
+                c++; // skip ':'
+
+                // Scan value until ';' or '}'
+                size_t valStart = c;
+                while (c < line.length() && line[c] != L';' && line[c] != L'}') {
+                    c++;
+                }
+                std::wstring valStr = line.substr(valStart, c - valStart);
+
+                // Check for invalid hex colors in value (ignore url(...) fragments)
+                if (valStr.find(L"url(") == std::wstring::npos) {
+                    size_t hashPos = 0;
+                    while ((hashPos = valStr.find(L'#', hashPos)) != std::wstring::npos) {
+                        size_t hEnd = hashPos + 1;
+                        while (hEnd < valStr.length() && iswxdigit(valStr[hEnd])) hEnd++;
+                        size_t hLen = hEnd - hashPos - 1;
+                        bool atBoundary = (hEnd >= valStr.length() || iswspace(valStr[hEnd]) ||
+                                           valStr[hEnd] == L';' || valStr[hEnd] == L',' ||
+                                           valStr[hEnd] == L')' || valStr[hEnd] == L'}');
+                        if (atBoundary && hLen > 0 && hLen != 3 && hLen != 4 && hLen != 6 && hLen != 8) {
+                            diagnostics.push_back({ l, valStart + hashPos, hEnd - hashPos, L"CSS Syntax Error: Invalid hex color length in '" + valStr.substr(hashPos, hEnd - hashPos) + L"'", 1 });
+                        }
+                        hashPos = (hEnd > hashPos) ? hEnd : (hashPos + 1);
+                    }
+                }
+
+                if (c < line.length() && line[c] == L';') {
+                    c++;
+                }
+                // NOTE: If line[c] == L'}', we do not consume it here, allowing the outer loop to process the block close
+                continue;
             } else {
                 c++;
             }

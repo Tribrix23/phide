@@ -84,8 +84,8 @@ public:
         }
 
         // Initialize default card bounds centered on standard 1280x800 display
-        const float cardW = 560.0f;
-        const float cardH = 200.0f;
+        const float cardW = 620.0f;
+        const float cardH = 220.0f;
         const float cardX = (1280.0f - cardW) * 0.5f;
         const float cardY = (800.0f - cardH) * 0.5f;
         m_cardBounds = D2D1::RectF(cardX, cardY, cardX + cardW, cardY + cardH);
@@ -149,11 +149,13 @@ public:
         }
 
         // 2. Card Placement
-        const float cardW = config.ScaleF(560.0f);
-        const float cardH = config.ScaleF(200.0f);
+        const float cardW = config.ScaleF(620.0f);
+        const float cardH = config.ScaleF(220.0f);
         const float cardX = (std::max)(0.0f, (clientW - cardW) * 0.5f);
         const float cardY = (std::max)(0.0f, (clientH - cardH) * 0.5f);
         m_cardBounds = D2D1::RectF(cardX, cardY, cardX + cardW, cardY + cardH);
+
+        pRT->PushAxisAlignedClip(m_cardBounds, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
 
         D2D1_ROUNDED_RECT rrcCard = D2D1::RoundedRect(m_cardBounds, config.ScaleF(8.0f), config.ScaleF(8.0f));
 
@@ -235,22 +237,34 @@ public:
             ? (theme.brushTextWhite ? theme.brushTextWhite.Get() : theme.brushTextPrimary.Get())
             : theme.brushTextPrimary.Get();
 
-        D2D1_RECT_F rcTitle = D2D1::RectF(textLeft, cardY + config.ScaleF(24.0f), textRight, cardY + config.ScaleF(50.0f));
+        D2D1_RECT_F rcTitle = D2D1::RectF(textLeft, cardY + config.ScaleF(20.0f), textRight, cardY + config.ScaleF(64.0f));
         if (pFmtTitle && textPrimary) {
+            DWRITE_TEXT_ALIGNMENT prevAlign = pFmtTitle->GetTextAlignment();
+            DWRITE_WORD_WRAPPING prevWrap = pFmtTitle->GetWordWrapping();
+            pFmtTitle->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
+            pFmtTitle->SetWordWrapping(DWRITE_WORD_WRAPPING_WRAP);
             pRT->DrawText(m_title.c_str(), static_cast<UINT32>(m_title.length()), pFmtTitle, rcTitle, textPrimary);
+            pFmtTitle->SetTextAlignment(prevAlign);
+            pFmtTitle->SetWordWrapping(prevWrap);
         }
 
         // Secondary Details Body Text (Muted, multi-line)
-        IDWriteTextFormat* pFmtBody = theme.fontMenuShortcut ? theme.fontMenuShortcut.Get() : pFmtHint;
+        const float btnH = config.ScaleF(28.0f);
+        IDWriteTextFormat* pFmtBody = theme.fontBody ? theme.fontBody.Get() : (theme.fontHint ? theme.fontHint.Get() : pFmtHint);
         ID2D1Brush* textMuted = theme.brushTextMuted ? theme.brushTextMuted.Get() : textPrimary;
-        D2D1_RECT_F rcDetails = D2D1::RectF(textLeft, cardY + config.ScaleF(54.0f), textRight, cardY + config.ScaleF(134.0f));
+        D2D1_RECT_F rcDetails = D2D1::RectF(textLeft, cardY + config.ScaleF(68.0f), textRight, cardY + cardH - btnH - config.ScaleF(28.0f));
         if (pFmtBody && textMuted) {
+            DWRITE_TEXT_ALIGNMENT prevAlign = pFmtBody->GetTextAlignment();
+            DWRITE_WORD_WRAPPING prevWrap = pFmtBody->GetWordWrapping();
+            pFmtBody->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
+            pFmtBody->SetWordWrapping(DWRITE_WORD_WRAPPING_WRAP);
             pRT->DrawText(m_details.c_str(), static_cast<UINT32>(m_details.length()), pFmtBody, rcDetails, textMuted);
+            pFmtBody->SetTextAlignment(prevAlign);
+            pFmtBody->SetWordWrapping(prevWrap);
         }
 
         // 6. Action Buttons at Bottom Right (Image 2)
         // [ Open Git Log ]  [ Show Command Output ]  [ Cancel ]
-        const float btnH = config.ScaleF(28.0f);
         const float btnY = cardY + cardH - btnH - config.ScaleF(18.0f);
         const float gap = config.ScaleF(8.0f);
         float curRight = cardX + cardW - config.ScaleF(20.0f);
@@ -350,6 +364,8 @@ public:
                 pFmtBtn->SetParagraphAlignment(prevPAlign);
             }
         }
+
+        pRT->PopAxisAlignedClip();
     }
 
     bool HandleMouseMove(POINT pt) noexcept {

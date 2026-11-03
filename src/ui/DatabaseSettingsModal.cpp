@@ -404,26 +404,29 @@ void DatabaseSettingsModal::Render(ID2D1RenderTarget* pRT, Theme& theme, const a
         pRT->FillRoundedRectangle(D2D1::RoundedRect(rcSecC, 6.0f, 6.0f), theme.brushDrawerBg ? theme.brushDrawerBg.Get() : theme.brushCanvasBg.Get());
         pRT->DrawRoundedRectangle(D2D1::RoundedRect(rcSecC, 6.0f, 6.0f), pBorderBrush, 1.0f);
 
-        D2D1_RECT_F rcHeadC = D2D1::RectF(rcSecC.left + config.ScaleF(12.0f), rcSecC.top + config.ScaleF(7.0f), rcSecC.right, rcSecC.top + config.ScaleF(24.0f));
-        pRT->DrawText(L"PHPMYADMIN STATUS & ACTIONS", 27, pFmtHint, rcHeadC, pAccentBrush);
+        D2D1_RECT_F rcHeadC = D2D1::RectF(rcSecC.left + config.ScaleF(12.0f), rcSecC.top + config.ScaleF(7.0f), rcSecC.left + config.ScaleF(240.0f), rcSecC.top + config.ScaleF(24.0f));
+        pRT->DrawText(L"PHPMYADMIN ACTIONS", 18, pFmtHint, rcHeadC, pAccentBrush);
 
-        std::wstring pmaStatusStr = m_isPmaRunning ? (L"● Status: Running (" + m_pmaUrl + L")") : (L"● Status: Standby / Ready (Port " + m_pmaWebPort + L")");
-        D2D1_RECT_F rcPmaStatus = D2D1::RectF(rcSecC.left + config.ScaleF(12.0f), rcSecC.top + config.ScaleF(32.0f), rcSecC.left + config.ScaleF(270.0f), rcSecC.bottom);
+        // Status indicator badge in top right of section C
+        std::wstring pmaStatusStr = m_isPmaRunning ? (L"● Running (" + m_pmaUrl + L")") : (L"● Standby / Ready (Port " + m_pmaWebPort + L")");
+        D2D1_RECT_F rcPmaStatus = D2D1::RectF(rcSecC.left + config.ScaleF(230.0f), rcSecC.top + config.ScaleF(6.0f), rcSecC.right - config.ScaleF(12.0f), rcSecC.top + config.ScaleF(24.0f));
         pRT->PushAxisAlignedClip(rcPmaStatus, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
-        pRT->DrawText(pmaStatusStr.c_str(), static_cast<UINT32>(pmaStatusStr.size()), pFmtMain, rcPmaStatus, pWhiteBrush);
+        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> bStatusColor;
+        pRT->CreateSolidColorBrush(m_isPmaRunning ? D2D1::ColorF(0.35f, 0.85f, 0.45f, 1.0f) : D2D1::ColorF(0.55f, 0.60f, 0.68f, 1.0f), &bStatusColor);
+        pRT->DrawText(pmaStatusStr.c_str(), static_cast<UINT32>(pmaStatusStr.size()), pFmtHint, rcPmaStatus, bStatusColor ? bStatusColor.Get() : pWhiteBrush);
         pRT->PopAxisAlignedClip();
 
         float actH = config.ScaleF(30.0f);
-        float btnCY = rcSecC.top + config.ScaleF(28.0f);
+        float btnCY = rcSecC.top + config.ScaleF(30.0f);
 
-        float actEditW = config.ScaleF(145.0f);
-        m_rcBtnEditPma = D2D1::RectF(rcSecC.right - actEditW - config.ScaleF(6.0f), btnCY, rcSecC.right - config.ScaleF(6.0f), btnCY + actH);
+        float actRunW = config.ScaleF(110.0f);
+        m_rcBtnTogglePma = D2D1::RectF(rcSecC.left + config.ScaleF(12.0f), btnCY, rcSecC.left + config.ScaleF(12.0f) + actRunW, btnCY + actH);
 
         float actOpenW = config.ScaleF(150.0f);
-        m_rcBtnOpenPma = D2D1::RectF(m_rcBtnEditPma.left - actOpenW - config.ScaleF(8.0f), btnCY, m_rcBtnEditPma.left - config.ScaleF(8.0f), btnCY + actH);
+        m_rcBtnOpenPma = D2D1::RectF(m_rcBtnTogglePma.right + config.ScaleF(10.0f), btnCY, m_rcBtnTogglePma.right + config.ScaleF(10.0f) + actOpenW, btnCY + actH);
 
-        float actRunW = config.ScaleF(130.0f);
-        m_rcBtnTogglePma = D2D1::RectF(m_rcBtnOpenPma.left - actRunW - config.ScaleF(8.0f), btnCY, m_rcBtnOpenPma.left - config.ScaleF(8.0f), btnCY + actH);
+        float actEditW = config.ScaleF(160.0f);
+        m_rcBtnEditPma = D2D1::RectF(m_rcBtnOpenPma.right + config.ScaleF(10.0f), btnCY, m_rcBtnOpenPma.right + config.ScaleF(10.0f) + actEditW, btnCY + actH);
 
         bool isToggleHov = (m_hoveredAction == DatabaseModalAction::TogglePmaRun);
         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> bRunBg;
@@ -435,19 +438,19 @@ void DatabaseSettingsModal::Render(ID2D1RenderTarget* pRT, Theme& theme, const a
         if (bRunBg) pRT->FillRoundedRectangle(D2D1::RoundedRect(m_rcBtnTogglePma, 4.0f, 4.0f), bRunBg.Get());
         const wchar_t* toggleText = m_isPmaRunning ? L"■ Stop PMA" : L"▶ Start PMA";
         pRT->DrawText(toggleText, static_cast<UINT32>(wcslen(toggleText)), pFmtMain,
-                      D2D1::RectF(m_rcBtnTogglePma.left + config.ScaleF(18.0f), m_rcBtnTogglePma.top + config.ScaleF(6.0f), m_rcBtnTogglePma.right, m_rcBtnTogglePma.bottom),
+                      D2D1::RectF(m_rcBtnTogglePma.left + config.ScaleF(12.0f), m_rcBtnTogglePma.top + config.ScaleF(6.0f), m_rcBtnTogglePma.right, m_rcBtnTogglePma.bottom),
                       pWhiteBrush);
 
         bool isOpenHov = (m_hoveredAction == DatabaseModalAction::OpenBrowserPma);
         pRT->FillRoundedRectangle(D2D1::RoundedRect(m_rcBtnOpenPma, 4.0f, 4.0f), isOpenHov ? pAccentBrush : (theme.brushBrandAccent ? theme.brushBrandAccent.Get() : pWhiteBrush));
         pRT->DrawText(L"Open phpMyAdmin", 15, pFmtMain,
-                      D2D1::RectF(m_rcBtnOpenPma.left + config.ScaleF(14.0f), m_rcBtnOpenPma.top + config.ScaleF(6.0f), m_rcBtnOpenPma.right, m_rcBtnOpenPma.bottom),
+                      D2D1::RectF(m_rcBtnOpenPma.left + config.ScaleF(10.0f), m_rcBtnOpenPma.top + config.ScaleF(6.0f), m_rcBtnOpenPma.right, m_rcBtnOpenPma.bottom),
                       pWhiteBrush);
 
         bool isEditHov = (m_hoveredAction == DatabaseModalAction::EditPmaConfig);
         pRT->FillRoundedRectangle(D2D1::RoundedRect(m_rcBtnEditPma, 4.0f, 4.0f), isEditHov ? theme.brushMenuHover.Get() : pBorderBrush);
         pRT->DrawText(L"Edit config.inc.php", 18, pFmtMain,
-                      D2D1::RectF(m_rcBtnEditPma.left + config.ScaleF(10.0f), m_rcBtnEditPma.top + config.ScaleF(6.0f), m_rcBtnEditPma.right, m_rcBtnEditPma.bottom),
+                      D2D1::RectF(m_rcBtnEditPma.left + config.ScaleF(8.0f), m_rcBtnEditPma.top + config.ScaleF(6.0f), m_rcBtnEditPma.right, m_rcBtnEditPma.bottom),
                       pWhiteBrush);
     } else {
         // Nginx Tab
@@ -485,23 +488,23 @@ void DatabaseSettingsModal::Render(ID2D1RenderTarget* pRT, Theme& theme, const a
         D2D1_RECT_F rcHeadB = D2D1::RectF(rcSecB.left + config.ScaleF(12.0f), rcSecB.top + config.ScaleF(7.0f), rcSecB.right, rcSecB.top + config.ScaleF(24.0f));
         pRT->DrawText(L"NGINX SERVER STATUS & ACTIONS", 29, pFmtHint, rcHeadB, pAccentBrush);
 
-        std::wstring ngxStatusStr = m_isNginxRunning ? (L"● Status: Running (" + m_nginxUrl + L")") : L"● Status: Stopped / Ready";
-        D2D1_RECT_F rcNgxStatus = D2D1::RectF(rcSecB.left + config.ScaleF(12.0f), rcSecB.top + config.ScaleF(32.0f), rcSecB.left + config.ScaleF(270.0f), rcSecB.bottom);
-        pRT->PushAxisAlignedClip(rcNgxStatus, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
-        pRT->DrawText(ngxStatusStr.c_str(), static_cast<UINT32>(ngxStatusStr.size()), pFmtMain, rcNgxStatus, pWhiteBrush);
-        pRT->PopAxisAlignedClip();
-
         float actH = config.ScaleF(30.0f);
         float btnCY = rcSecB.top + config.ScaleF(28.0f);
 
-        float actEditW = config.ScaleF(145.0f);
+        float actEditW = config.ScaleF(130.0f);
         m_rcBtnEditNginx = D2D1::RectF(rcSecB.right - actEditW - config.ScaleF(6.0f), btnCY, rcSecB.right - config.ScaleF(6.0f), btnCY + actH);
 
-        float actOpenW = config.ScaleF(140.0f);
-        m_rcBtnOpenNginx = D2D1::RectF(m_rcBtnEditNginx.left - actOpenW - config.ScaleF(8.0f), btnCY, m_rcBtnEditNginx.left - config.ScaleF(8.0f), btnCY + actH);
+        float actOpenW = config.ScaleF(130.0f);
+        m_rcBtnOpenNginx = D2D1::RectF(m_rcBtnEditNginx.left - actOpenW - config.ScaleF(6.0f), btnCY, m_rcBtnEditNginx.left - config.ScaleF(6.0f), btnCY + actH);
 
-        float actRunW = config.ScaleF(130.0f);
-        m_rcBtnToggleNginx = D2D1::RectF(m_rcBtnOpenNginx.left - actRunW - config.ScaleF(8.0f), btnCY, m_rcBtnOpenNginx.left - config.ScaleF(8.0f), btnCY + actH);
+        float actRunW = config.ScaleF(96.0f);
+        m_rcBtnToggleNginx = D2D1::RectF(m_rcBtnOpenNginx.left - actRunW - config.ScaleF(6.0f), btnCY, m_rcBtnOpenNginx.left - config.ScaleF(6.0f), btnCY + actH);
+
+        std::wstring ngxStatusStr = m_isNginxRunning ? (L"● Status: Running (" + m_nginxUrl + L")") : L"● Status: Stopped / Ready";
+        D2D1_RECT_F rcNgxStatus = D2D1::RectF(rcSecB.left + config.ScaleF(12.0f), btnCY + config.ScaleF(5.0f), m_rcBtnToggleNginx.left - config.ScaleF(8.0f), btnCY + actH);
+        pRT->PushAxisAlignedClip(rcNgxStatus, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+        pRT->DrawText(ngxStatusStr.c_str(), static_cast<UINT32>(ngxStatusStr.size()), pFmtMain, rcNgxStatus, pWhiteBrush);
+        pRT->PopAxisAlignedClip();
 
         bool isToggleHov = (m_hoveredAction == DatabaseModalAction::ToggleServerRun);
         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> bRunBg;
@@ -513,19 +516,19 @@ void DatabaseSettingsModal::Render(ID2D1RenderTarget* pRT, Theme& theme, const a
         if (bRunBg) pRT->FillRoundedRectangle(D2D1::RoundedRect(m_rcBtnToggleNginx, 4.0f, 4.0f), bRunBg.Get());
         const wchar_t* toggleText = m_isNginxRunning ? L"■ Stop Server" : L"▶ Start Server";
         pRT->DrawText(toggleText, static_cast<UINT32>(wcslen(toggleText)), pFmtMain,
-                      D2D1::RectF(m_rcBtnToggleNginx.left + config.ScaleF(14.0f), m_rcBtnToggleNginx.top + config.ScaleF(6.0f), m_rcBtnToggleNginx.right, m_rcBtnToggleNginx.bottom),
+                      D2D1::RectF(m_rcBtnToggleNginx.left + config.ScaleF(10.0f), m_rcBtnToggleNginx.top + config.ScaleF(6.0f), m_rcBtnToggleNginx.right, m_rcBtnToggleNginx.bottom),
                       pWhiteBrush);
 
         bool isOpenHov = (m_hoveredAction == DatabaseModalAction::OpenBrowserNginx);
         pRT->FillRoundedRectangle(D2D1::RoundedRect(m_rcBtnOpenNginx, 4.0f, 4.0f), isOpenHov ? pAccentBrush : (theme.brushBrandAccent ? theme.brushBrandAccent.Get() : pWhiteBrush));
         pRT->DrawText(L"Open Localhost", 14, pFmtMain,
-                      D2D1::RectF(m_rcBtnOpenNginx.left + config.ScaleF(14.0f), m_rcBtnOpenNginx.top + config.ScaleF(6.0f), m_rcBtnOpenNginx.right, m_rcBtnOpenNginx.bottom),
+                      D2D1::RectF(m_rcBtnOpenNginx.left + config.ScaleF(12.0f), m_rcBtnOpenNginx.top + config.ScaleF(6.0f), m_rcBtnOpenNginx.right, m_rcBtnOpenNginx.bottom),
                       pWhiteBrush);
 
         bool isEditHov = (m_hoveredAction == DatabaseModalAction::EditNginxConfig);
         pRT->FillRoundedRectangle(D2D1::RoundedRect(m_rcBtnEditNginx, 4.0f, 4.0f), isEditHov ? theme.brushMenuHover.Get() : pBorderBrush);
         pRT->DrawText(L"Edit nginx.conf", 15, pFmtMain,
-                      D2D1::RectF(m_rcBtnEditNginx.left + config.ScaleF(18.0f), m_rcBtnEditNginx.top + config.ScaleF(6.0f), m_rcBtnEditNginx.right, m_rcBtnEditNginx.bottom),
+                      D2D1::RectF(m_rcBtnEditNginx.left + config.ScaleF(12.0f), m_rcBtnEditNginx.top + config.ScaleF(6.0f), m_rcBtnEditNginx.right, m_rcBtnEditNginx.bottom),
                       pWhiteBrush);
     }
 

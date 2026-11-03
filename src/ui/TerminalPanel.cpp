@@ -1865,9 +1865,11 @@ void TerminalPanel::RenderSinglePane(ID2D1RenderTarget* pRT, Theme& theme, const
         if (isFocused && l == totalLines - 1) {
             bool blinkOn = ((GetTickCount64() / 500) % 2 == 0);
             if (blinkOn) {
+                int safeCursorCol = (std::max)(0, (std::min)(tab->inputCursorCol, static_cast<int>(tab->currentInputLine.length())));
+                float caretX = curX - static_cast<float>(static_cast<int>(tab->currentInputLine.length()) - safeCursorCol) * charW;
                 float cursorW = config.ScaleF(7.5f);
                 float cursorH = lineH - config.ScaleF(2.0f);
-                D2D1_RECT_F rcCursor = D2D1::RectF(curX, curY + 1.0f, curX + cursorW, curY + 1.0f + cursorH);
+                D2D1_RECT_F rcCursor = D2D1::RectF(caretX, curY + 1.0f, caretX + cursorW, curY + 1.0f + cursorH);
                 pRT->FillRectangle(rcCursor, theme.brushTextPrimary.Get());
             }
         }
@@ -1930,7 +1932,8 @@ void TerminalPanel::RenderSinglePane(ID2D1RenderTarget* pRT, Theme& theme, const
                           theme.brushTextWhite.Get());
 
             // Blinking caret
-            float caretX = textStartX + static_cast<float>(tab->currentInputLine.length()) * charW;
+            int safeCursorCol = (std::max)(0, (std::min)(tab->inputCursorCol, static_cast<int>(tab->currentInputLine.length())));
+            float caretX = textStartX + static_cast<float>(safeCursorCol) * charW;
             pRT->FillRectangle(D2D1::RectF(caretX, rcEval.top + config.ScaleF(5.0f), caretX + 1.6f, rcEval.bottom - config.ScaleF(5.0f)),
                                theme.brushTextPrimary.Get());
         }
@@ -3736,7 +3739,8 @@ bool TerminalPanel::OnChar(wchar_t ch) {
         while (!trimmed.empty() && (trimmed.back() == L' ' || trimmed.back() == L'\t')) trimmed.pop_back();
         std::wstring lower = trimmed;
         for (auto& c : lower) c = towlower(c);
-        if (lower == L"cls" || lower == L"clear" || lower == L"clear-host") {
+        bool isClearCmd = (lower == L"cls" || lower == L"clear" || lower == L"clear-host");
+        if (isClearCmd) {
             std::lock_guard<std::mutex> lock(tab->bufferMutex);
             tab->lines.clear();
             tab->lines.push_back({});
@@ -3796,29 +3800,62 @@ bool TerminalPanel::OnChar(wchar_t ch) {
         }
 
         // Convert currentInputLine to UTF-8 and send complete line + newline to process
-        int utf8Len = WideCharToMultiByte(CP_UTF8, 0, tab->currentInputLine.c_str(), -1, NULL, 0, NULL, NULL);
-        if (utf8Len > 1) {
-            std::string utf8(utf8Len - 1, '\0');
-            WideCharToMultiByte(CP_UTF8, 0, tab->currentInputLine.c_str(), -1, &utf8[0], utf8Len, NULL, NULL);
-            utf8 += "\r\n";
-            tab->SendInput(utf8);
+        if (!isClearCmd) {
+            int utf8Len = WideCharToMultiByte(CP_UTF8, 0, tab->currentInputLine.c_str(), -1, NULL, 0, NULL, NULL);
+            if (utf8Len > 1) {
+                std::string utf8(utf8Len - 1, '\0');
+                WideCharToMultiByte(CP_UTF8, 0, tab->currentInputLine.c_str(), -1, &utf8[0], utf8Len, NULL, NULL);
+                utf8 += "\r\n";
+                tab->SendInput(utf8);
+            } else {
+                tab->SendInput("\r\n");
+            }
         } else {
             tab->SendInput("\r\n");
         }
 
         tab->currentInputLine.clear();
+        tab->inputCursorCol = 0;
         tab->scrollOffsetLines = 0; // pin back to bottom
         return true;
     } else if (ch == L'\b') {
-        if (!tab->currentInputLine.empty()) {
-            tab->currentInputLine.pop_back();
+        if (tab->inputCursorCol > 0 && tab->inputCursorCol <= static_cast<int>(tab->currentInputLine.length())) {
+            tab->currentInputLine.erase(tab->inputCursorCol - 1, 1);
+            tab->inputCursorCol--;
+        } else if (tab->inputCursorCol == 0 && tab->currentInputLine.empty()) {
+            std::lock_guard<std::mutex> lock(tab->bufferMutex);
+            if (!tab->lines.empty() && !tab->lines.back().rawText.empty()) {
+                if (tab->lines.back().rawText.ends_with(L"[D")) {
+                    tab->lines.back().rawText.pop_back();
+                    tab->lines.back().rawText.pop_back();
+                    if (!tab->lines.back().spans.empty()) {
+                        auto& sp = tab->lines.back().spans.back();
+                        if (sp.text.ends_with(L"[D")) {
+                            sp.text.pop_back();
+                            sp.text.pop_back();
+                        }
+                    }
+                }
+            }
         }
         return true;
     } else if (ch == L'\t') {
-        tab->currentInputLine += L"    ";
+        if (tab->inputCursorCol >= 0 && tab->inputCursorCol <= static_cast<int>(tab->currentInputLine.length())) {
+            tab->currentInputLine.insert(tab->inputCursorCol, L"    ");
+            tab->inputCursorCol += 4;
+        } else {
+            tab->currentInputLine += L"    ";
+            tab->inputCursorCol = static_cast<int>(tab->currentInputLine.length());
+        }
         return true;
     } else if (ch >= 32) {
-        tab->currentInputLine += ch;
+        if (tab->inputCursorCol >= 0 && tab->inputCursorCol <= static_cast<int>(tab->currentInputLine.length())) {
+            tab->currentInputLine.insert(tab->inputCursorCol, 1, ch);
+            tab->inputCursorCol++;
+        } else {
+            tab->currentInputLine += ch;
+            tab->inputCursorCol = static_cast<int>(tab->currentInputLine.length());
+        }
         return true;
     }
     return true;
@@ -3894,7 +3931,14 @@ bool TerminalPanel::OnKeyDown(UINT vk, bool isCtrl, bool isShift) {
             if (hData) {
                 LPCWSTR pText = static_cast<LPCWSTR>(GlobalLock(hData));
                 if (pText) {
-                    tab->currentInputLine += pText;
+                    std::wstring pasted(pText);
+                    if (tab->inputCursorCol >= 0 && tab->inputCursorCol <= static_cast<int>(tab->currentInputLine.length())) {
+                        tab->currentInputLine.insert(tab->inputCursorCol, pasted);
+                        tab->inputCursorCol += static_cast<int>(pasted.length());
+                    } else {
+                        tab->currentInputLine += pasted;
+                        tab->inputCursorCol = static_cast<int>(tab->currentInputLine.length());
+                    }
                     GlobalUnlock(hData);
                 }
             }
@@ -3911,6 +3955,7 @@ bool TerminalPanel::OnKeyDown(UINT vk, bool isCtrl, bool isShift) {
         }
         tab->selection.clear();
         tab->currentInputLine.clear();
+        tab->inputCursorCol = 0;
         {
             std::lock_guard<std::mutex> lock(tab->bufferMutex);
             if (!tab->lines.empty()) {
@@ -3930,19 +3975,25 @@ bool TerminalPanel::OnKeyDown(UINT vk, bool isCtrl, bool isShift) {
     } else if (vk == VK_TAB) {
         return true; // Swallowed so editor buffer never sees VK_TAB; WM_CHAR handles terminal tab
     } else if (vk == VK_DELETE) {
-        tab->SendInput("\x1b[3~");
+        if (tab->inputCursorCol >= 0 && tab->inputCursorCol < static_cast<int>(tab->currentInputLine.length())) {
+            tab->currentInputLine.erase(tab->inputCursorCol, 1);
+        }
         return true;
     } else if (vk == VK_LEFT) {
-        tab->SendInput("\x1b[D");
+        if (tab->inputCursorCol > 0) {
+            tab->inputCursorCol--;
+        }
         return true;
     } else if (vk == VK_RIGHT) {
-        tab->SendInput("\x1b[C");
+        if (tab->inputCursorCol < static_cast<int>(tab->currentInputLine.length())) {
+            tab->inputCursorCol++;
+        }
         return true;
     } else if (vk == VK_HOME) {
-        tab->SendInput("\x1b[H");
+        tab->inputCursorCol = 0;
         return true;
     } else if (vk == VK_END) {
-        tab->SendInput("\x1b[F");
+        tab->inputCursorCol = static_cast<int>(tab->currentInputLine.length());
         return true;
     } else if (vk == VK_UP) {
         if (!tab->commandHistory.empty()) {
@@ -3953,6 +4004,7 @@ bool TerminalPanel::OnKeyDown(UINT vk, bool isCtrl, bool isShift) {
             }
             if (tab->historyIndex >= 0 && tab->historyIndex < static_cast<int>(tab->commandHistory.size())) {
                 tab->currentInputLine = tab->commandHistory[tab->historyIndex];
+                tab->inputCursorCol = static_cast<int>(tab->currentInputLine.length());
             }
         }
         return true;
@@ -3961,9 +4013,11 @@ bool TerminalPanel::OnKeyDown(UINT vk, bool isCtrl, bool isShift) {
             if (tab->historyIndex + 1 < static_cast<int>(tab->commandHistory.size())) {
                 tab->historyIndex++;
                 tab->currentInputLine = tab->commandHistory[tab->historyIndex];
+                tab->inputCursorCol = static_cast<int>(tab->currentInputLine.length());
             } else {
                 tab->historyIndex = -1;
                 tab->currentInputLine.clear();
+                tab->inputCursorCol = 0;
             }
         }
         return true;

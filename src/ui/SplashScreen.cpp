@@ -160,9 +160,7 @@ void SplashScreen::Show(HINSTANCE hInstance, int durationMs) {
         Sleep(10);
     }
 
-    if (userCancelled) {
-        Dismiss();
-    }
+    Dismiss();
 }
 
 void SplashScreen::Dismiss() {

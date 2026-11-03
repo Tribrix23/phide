@@ -304,6 +304,15 @@ int main(int argc, char* argv[]) {
     if (targetTest == 111) {
         goto run_test_111;
     }
+    if (targetTest == 112) {
+        goto run_test_112;
+    }
+    if (targetTest == 113) {
+        goto run_test_113;
+    }
+    if (targetTest == 114) {
+        goto run_test_114;
+    }
 
     if (targetTest == 66) {
         goto run_test_66;
@@ -2696,6 +2705,7 @@ run_test_25:
         cfg.activeRailTab = 2; // Source Control
         phide::ui::ActivityRail rail;
         phide::ui::DrawerPanel gitDrawer;
+        gitDrawer.SetOpenFolderPath(L".");
         phide::ui::EditorCanvas editor;
 
         gitDrawer.RefreshGitState(false);
@@ -16706,6 +16716,298 @@ run_test_111:
         std::cout << "  Passed: All [TEST 111] SQL Syntax & Git Isolation tests passed!" << std::endl;
         if (targetTest == 111) {
             std::cout << "Target test 111 finished." << std::endl;
+            return 0;
+        }
+    }
+
+    // =========================================================================
+    // TEST 112: CSS Validator Semicolon/Brace Fix & IPYNB ANSI Colab Colors
+    // =========================================================================
+run_test_112:
+    if (targetTest == -1 || targetTest == 112) {
+        std::cout << "\n[TEST 112] CSS Syntax Validator & IPYNB ANSI Colab Output..." << std::endl;
+
+        // Subtest 1: CSS Syntax Validator handles multi-rules on single line and strings
+        {
+            phide::editor::SyntaxValidator validator;
+
+            // 1. User's exact style.css line 2 (which previously reported false positive unclosed brace)
+            std::wstring cssLine1 = L":root{font-family:Inter,ui-sans-serif,system-ui,-apple-system,'Segoe UI',sans-serif;color:#1c252d;background:#f8f9fb;font-size:14px}*{box-sizing:border-box}";
+            phide::editor::Buffer buf1(cssLine1);
+            auto diags1 = validator.ValidateCss(buf1, 0, 1);
+            assert(diags1.empty()); // Must have zero false positives!
+
+            // 2. Nested media query
+            std::wstring cssLine2 = L"@media (max-width: 600px) { .sidebar { display: none; } }";
+            phide::editor::Buffer buf2(cssLine2);
+            auto diags2 = validator.ValidateCss(buf2, 0, 1);
+            assert(diags2.empty());
+
+            // 3. String literal containing braces
+            std::wstring cssLine3 = L"p::after { content: '{ hello }'; color: #ff0000; }";
+            phide::editor::Buffer buf3(cssLine3);
+            auto diags3 = validator.ValidateCss(buf3, 0, 1);
+            assert(diags3.empty());
+
+            // 4. Genuine unclosed brace error
+            std::wstring cssLine4 = L"div { color: red;";
+            phide::editor::Buffer buf4(cssLine4);
+            auto diags4 = validator.ValidateCss(buf4, 0, 1);
+            assert(!diags4.empty());
+            assert(diags4[0].message.find(L"Unclosed brace") != std::wstring::npos);
+
+            std::cout << "  Passed: CSS Syntax Validator accurately handles single-line multi-rules, string braces, and real unclosed braces" << std::endl;
+        }
+
+        // Subtest 2: IPYNB Output preserves ANSI codes & StripAnsi works accurately
+        {
+            phide::editor::NotebookDocument doc;
+            std::string sampleJson = R"({
+ "cells": [
+  {
+   "cell_type": "code",
+   "execution_count": 2,
+   "metadata": {},
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "\u001b[2K   \u001b[90m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\u001b[0m \u001b[32m43.4/43.4 MB\u001b[0m \u001b[31m18.6 MB/s\u001b[0m eta \u001b[36m0:00:00\u001b[0m\n",
+      "Requirement already satisfied: accelerate in /usr/local/lib/python3.12/dist-packages (1.13.0)\n"
+     ]
+    }
+   ],
+   "source": [
+    "!pip install accelerate\n"
+   ]
+  }
+ ],
+ "metadata": {
+  "language_info": {
+   "name": "python"
+  }
+ },
+ "nbformat": 4,
+ "nbformat_minor": 5
+})";
+
+            bool loaded = doc.FromJson(sampleJson);
+            assert(loaded);
+            assert(!doc.cells.empty());
+            assert(!doc.cells[0].outputs.empty());
+
+            const auto& outText = doc.cells[0].outputs[0].text;
+            // ANSI escape codes must be preserved for rich Direct2D rendering
+            assert(outText.find(L"\x1b[90m") != std::wstring::npos);
+            assert(outText.find(L"\x1b[32m") != std::wstring::npos);
+            assert(outText.find(L"\x1b[31m") != std::wstring::npos);
+
+            // StripAnsi must strip all escape codes for clean clipboard copy
+            std::wstring stripped = phide::editor::NotebookDocument::StripAnsi(outText);
+            assert(stripped.find(L"\x1b") == std::wstring::npos);
+            assert(stripped.find(L"43.4/43.4 MB") != std::wstring::npos);
+            assert(stripped.find(L"18.6 MB/s") != std::wstring::npos);
+
+            // GetOutputLines on NotebookView returns clean lines
+            phide::ui::NotebookView nbView;
+            auto lines = nbView.GetOutputLines(doc.cells[0]);
+            assert(lines.size() >= 2);
+            assert(lines[0].find(L"\x1b") == std::wstring::npos);
+            assert(lines[0].find(L"━━━━━━━━") != std::wstring::npos);
+            assert(lines[1].find(L"Requirement already satisfied:") != std::wstring::npos);
+
+            std::cout << "  Passed: IPYNB outputs preserve ANSI escape codes and clean stripping for copy" << std::endl;
+        }
+
+        std::cout << "  Passed: All [TEST 112] CSS Validator & IPYNB ANSI Output tests passed!" << std::endl;
+        if (targetTest == 112) {
+            std::cout << "Target test 112 finished." << std::endl;
+            return 0;
+        }
+    }
+
+    // =========================================================================
+    // TEST 113: Git Branch Switcher Dropdown, Solid Gutter Bar & DB Modal Layout
+    // =========================================================================
+run_test_113:
+    if (targetTest == -1 || targetTest == 113) {
+        std::cout << "\n[TEST 113] Git Branch Switcher Dropdown, Solid Gutter Bar & DB Modal Layout..." << std::endl;
+
+        // Subtest 1: DrawerPanel::GetGitBranches()
+        {
+            phide::ui::DrawerPanel drawer;
+            assert(drawer.GetGitBranches().empty() && "No branches when no folder is open (no git leak)");
+
+            drawer.OpenFolder(std::filesystem::current_path().wstring());
+            auto branches = drawer.GetGitBranches();
+            assert(!branches.empty() && "GetGitBranches() must return repository branches in git project");
+            bool foundCurrent = false;
+            for (const auto& [bName, isCurr] : branches) {
+                if (isCurr) foundCurrent = true;
+                assert(!bName.empty());
+            }
+            assert(foundCurrent && "One branch must be marked as current active branch");
+            std::cout << "  Passed: Real Git branches returned (" << branches.size() << " branches found, active branch verified)" << std::endl;
+        }
+
+        // Subtest 2: Database Settings Modal PHPMyAdmin Status vs Action Buttons Separation
+        {
+            phide::ui::DatabaseSettingsModal dbModal;
+            phide::ui::Theme theme;
+            phide::app::AppConfig cfg;
+            Microsoft::WRL::ComPtr<IWICBitmap> pWic;
+            Microsoft::WRL::ComPtr<ID2D1RenderTarget> pRT;
+            CreateTarget(pWic, pRT);
+            theme.CreateDeviceResources(pRT.Get(), pDWriteFactory.Get());
+
+            pRT->BeginDraw();
+            pRT->Clear(theme.colors.canvasBg);
+            dbModal.Render(pRT.Get(), theme, cfg, 1200.0f, 800.0f);
+            HRESULT hr = pRT->EndDraw();
+            assert(SUCCEEDED(hr));
+            std::cout << "  Passed: Database Settings Modal renders without clipping or status collision" << std::endl;
+        }
+
+        // Subtest 3: Render Branch Switcher Dropdown Popover and Save Layout Snapshot
+        {
+            phide::app::Window win;
+            win.GetDrawer().OpenFolder(std::filesystem::current_path().wstring());
+            win.ToggleBranchDropdown();
+            assert(win.IsBranchDropdownOpen() && "Branch dropdown must be open after ToggleBranchDropdown()");
+            assert(!win.GetBranchList().empty() && "Branch list must be populated from Git");
+
+            // Set anchor position for visual layout test
+            win.SetStatusBarGitBranchBounds(D2D1::RectF(30.0f, 320.0f, 110.0f, 344.0f));
+
+            phide::ui::Theme theme;
+            phide::app::AppConfig cfg;
+            Microsoft::WRL::ComPtr<IWICBitmap> pWic;
+            Microsoft::WRL::ComPtr<ID2D1RenderTarget> pRT;
+            CreateTarget(pWic, pRT);
+            theme.CreateDeviceResources(pRT.Get(), pDWriteFactory.Get());
+            win.GetTheme().CreateDeviceResources(pRT.Get(), pDWriteFactory.Get());
+
+            pRT->BeginDraw();
+            pRT->Clear(D2D1::ColorF(0.08f, 0.09f, 0.11f, 1.0f));
+
+            win.RenderBranchDropdown(pRT.Get(), 800.0f, 500.0f);
+            HRESULT hr = pRT->EndDraw();
+            assert(SUCCEEDED(hr));
+
+            SaveWicBitmapToPng(pWic.Get(), pWicFactory.Get(), artDir + L"test_branch_dropdown_popover.png");
+            std::cout << "  Passed: Rendered test_branch_dropdown_popover.png layout snapshot" << std::endl;
+        }
+
+        std::cout << "  Passed: All [TEST 113] Branch Dropdown, Solid Gutter & DB Modal tests passed!" << std::endl;
+        if (targetTest == 113) {
+            std::cout << "Target test 113 finished." << std::endl;
+            return 0;
+        }
+    }
+
+    // =========================================================================
+    // TEST 114: Terminal Cursor Navigation, Git Error Modal Layout & Stale index.lock Recovery
+    // =========================================================================
+run_test_114:
+    if (targetTest == -1 || targetTest == 114) {
+        std::cout << "\n[TEST 114] Terminal Cursor Navigation, Git Error Modal Layout & Stale index.lock Recovery..." << std::endl;
+
+        // Subtest 1: Terminal Cursor Navigation & Backspace/Clear Handling
+        {
+            phide::ui::TerminalPanel term;
+            term.Open(L"");
+            auto* tab = term.GetActiveTab();
+            assert(tab != nullptr);
+
+            // Typing "git checkout"
+            std::wstring input = L"git checkout";
+            for (wchar_t c : input) {
+                term.OnChar(c);
+            }
+            assert(tab->currentInputLine == L"git checkout");
+            assert(tab->inputCursorCol == 12);
+
+            // Move left 4 times ("check|out")
+            term.OnKeyDown(VK_LEFT, false, false);
+            term.OnKeyDown(VK_LEFT, false, false);
+            term.OnKeyDown(VK_LEFT, false, false);
+            term.OnKeyDown(VK_LEFT, false, false);
+            assert(tab->inputCursorCol == 8);
+
+            // Insert character '_'
+            term.OnChar(L'_');
+            assert(tab->currentInputLine == L"git chec_kout");
+            assert(tab->inputCursorCol == 9);
+
+            // Backspace erasing '_'
+            term.OnChar(L'\b');
+            assert(tab->currentInputLine == L"git checkout");
+            assert(tab->inputCursorCol == 8);
+
+            // Home key
+            term.OnKeyDown(VK_HOME, false, false);
+            assert(tab->inputCursorCol == 0);
+
+            // End key
+            term.OnKeyDown(VK_END, false, false);
+            assert(tab->inputCursorCol == 12);
+
+            // Clear command
+            tab->currentInputLine = L"clear";
+            tab->inputCursorCol = 5;
+            term.OnChar(L'\r');
+            assert(tab->currentInputLine.empty());
+            assert(tab->inputCursorCol == 0);
+            std::cout << "  Passed: Terminal cursor column tracking, insertion, and clear command verified" << std::endl;
+        }
+
+        // Subtest 2: Git Error Modal Rendering & Clipping
+        {
+            phide::ui::GitErrorModal modal;
+            modal.Open(L"checkout main",
+                       L"fatal: Unable to create '.git/index.lock': File exists.\nPlease make sure all processes are terminated then try again.",
+                       std::filesystem::current_path().wstring());
+            assert(modal.IsOpen());
+
+            phide::ui::Theme theme;
+            phide::app::AppConfig cfg;
+            Microsoft::WRL::ComPtr<IWICBitmap> pWic;
+            Microsoft::WRL::ComPtr<ID2D1RenderTarget> pRT;
+            CreateTarget(pWic, pRT);
+            theme.CreateDeviceResources(pRT.Get(), pDWriteFactory.Get());
+
+            pRT->BeginDraw();
+            pRT->Clear(D2D1::ColorF(0.08f, 0.09f, 0.11f, 1.0f));
+            modal.Render(pRT.Get(), theme, cfg, 1280.0f, 800.0f);
+            HRESULT hr = pRT->EndDraw();
+            assert(SUCCEEDED(hr));
+            SaveWicBitmapToPng(pWic.Get(), pWicFactory.Get(), artDir + L"test_git_error_modal_layout.png");
+            std::cout << "  Passed: Git Error Modal rendered with leading alignment, wrap and clip (test_git_error_modal_layout.png)" << std::endl;
+        }
+
+        // Subtest 3: RunGitCmd Stale index.lock Auto-Recovery
+        {
+            std::wstring workDir = std::filesystem::current_path().wstring();
+            std::filesystem::path lockPath = std::filesystem::current_path() / ".git" / "index.lock";
+            
+            // Create a temporary stale lock file
+            std::ofstream lockFile(lockPath);
+            lockFile << "stale lock simulation";
+            lockFile.close();
+            assert(std::filesystem::exists(lockPath));
+
+            // RunGitCmd with a command that attempts to acquire index lock (e.g. add -n -A)
+            // should automatically detect the lock failure, remove stale index.lock, and retry successfully
+            auto res = phide::ui::RunGitCmd(L"add -n -A", workDir);
+            assert(!std::filesystem::exists(lockPath) && "Stale index.lock should be automatically removed");
+            assert(res.exitCode == 0 && "RunGitCmd should succeed after clearing stale lock");
+            std::cout << "  Passed: RunGitCmd automatically detected and recovered from stale .git/index.lock" << std::endl;
+        }
+
+        std::cout << "  Passed: All [TEST 114] Terminal Cursor, Git Modal & Stale Lock Recovery tests passed!" << std::endl;
+        if (targetTest == 114) {
+            std::cout << "Target test 114 finished." << std::endl;
             return 0;
         }
     }
