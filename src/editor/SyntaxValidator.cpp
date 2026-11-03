@@ -1307,16 +1307,28 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidatePython(const Buffer& buffe
     bool hasSeenTabs = false;
     bool hasSeenSpaces = false;
 
+    std::vector<size_t> indentStack = { 0 };
+    bool expectIndent = false;
+    size_t colonLine = 0;
+    bool inExplicitContinuation = false;
+
     for (size_t l = 0; l < buffer.GetLineCount(); ++l) {
         const auto& line = buffer.GetLine(l);
 
-        // Check leading indentation
+        // Check leading indentation and calculate visual indentation
         size_t indentCol = 0;
+        size_t visualIndent = 0;
         bool lineHasTab = false;
         bool lineHasSpace = false;
-        while (indentCol < line.length() && (line[indentCol] == L' ' || line[indentCol] == L'\t')) {
-            if (line[indentCol] == L'\t') lineHasTab = true;
-            if (line[indentCol] == L' ') lineHasSpace = true;
+        while (indentCol < line.length() && (line[indentCol] == L' ' || line[indentCol] == L'	')) {
+            if (line[indentCol] == L'	') {
+                lineHasTab = true;
+                visualIndent = (visualIndent / 8 + 1) * 8;
+            }
+            if (line[indentCol] == L' ') {
+                lineHasSpace = true;
+                visualIndent++;
+            }
             indentCol++;
         }
 
@@ -1336,9 +1348,13 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidatePython(const Buffer& buffe
             }
         }
 
+        bool startedInTripleString = inTripleString;
+        bool startedInBracket = !bracketStack.empty();
+
         bool inString = false;
         wchar_t strChar = 0;
         size_t strStart = 0;
+        size_t commentCol = std::wstring::npos;
 
         for (size_t c = indentCol; c < line.length(); ++c) {
             wchar_t ch = line[c];
@@ -1377,6 +1393,7 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidatePython(const Buffer& buffe
             }
 
             if (ch == L'#') {
+                commentCol = c;
                 break;
             }
 
@@ -1401,24 +1418,70 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidatePython(const Buffer& buffe
             diagnostics.push_back({ l, strStart, line.length() - strStart, L"Python: EOL while scanning string literal", 1 });
         }
 
-        if (!inTripleString && indentCol < line.length()) {
-            std::wstring trimmed = line.substr(indentCol);
-            size_t hashP = trimmed.find(L'#');
-            if (hashP != std::wstring::npos) trimmed = trimmed.substr(0, hashP);
-            while (!trimmed.empty() && iswspace(trimmed.back())) trimmed.pop_back();
+        std::wstring codePart = (commentCol != std::wstring::npos) ? line.substr(0, commentCol) : line;
+        size_t codeStart = 0;
+        while (codeStart < codePart.length() && (codePart[codeStart] == L' ' || codePart[codeStart] == L'	')) {
+            codeStart++;
+        }
+        std::wstring trimmed = (codeStart < codePart.length()) ? codePart.substr(codeStart) : L"";
+        while (!trimmed.empty() && iswspace(trimmed.back())) {
+            trimmed.pop_back();
+        }
 
+        // Indentation validation (Python PEP 8 / official Python syntax rules)
+        if (!startedInTripleString && !inExplicitContinuation && !startedInBracket && !trimmed.empty()) {
+            if (expectIndent) {
+                if (visualIndent <= indentStack.back()) {
+                    diagnostics.push_back({ l, 0, (std::max)(line.length(), 1ULL), L"Python: IndentationError: expected an indented block", 1 });
+                    expectIndent = false;
+                } else {
+                    indentStack.push_back(visualIndent);
+                    expectIndent = false;
+                }
+            } else {
+                if (visualIndent > indentStack.back()) {
+                    diagnostics.push_back({ l, 0, (std::max)(line.length(), 1ULL), L"Python: IndentationError: unexpected indent", 1 });
+                } else if (visualIndent < indentStack.back()) {
+                    while (!indentStack.empty() && indentStack.back() > visualIndent) {
+                        indentStack.pop_back();
+                    }
+                    if (indentStack.empty() || indentStack.back() != visualIndent) {
+                        diagnostics.push_back({ l, 0, (std::max)(indentCol, 1ULL), L"Python: IndentationError: unindent does not match any outer indentation level", 1 });
+                        indentStack.push_back(visualIndent);
+                    }
+                }
+            }
+        }
+
+        if (!inTripleString && bracketStack.empty() && !trimmed.empty()) {
             static const std::vector<std::wstring> colonKws = {
-                L"def ", L"class ", L"if ", L"elif ", L"else", L"for ", L"while ", L"try", L"except", L"finally", L"with "
+                L"def ", L"class ", L"if ", L"elif ", L"else", L"for ", L"while ", L"try", L"except", L"finally", L"with ",
+                L"async def ", L"async for ", L"async with ", L"match ", L"case "
             };
             for (const auto& kw : colonKws) {
                 if (trimmed == kw || trimmed.rfind(kw, 0) == 0) {
-                    if (bracketStack.empty() && !trimmed.empty() && trimmed.back() != L':') {
+                    if (trimmed.back() != L':') {
                         diagnostics.push_back({ l, indentCol + trimmed.length() - 1, 1, L"Python: SyntaxError: expected ':' at end of statement", 1 });
                     }
                     break;
                 }
             }
+
+            if (trimmed.back() == L':') {
+                expectIndent = true;
+                colonLine = l;
+            }
         }
+
+        if (!inTripleString && bracketStack.empty() && !trimmed.empty() && trimmed.back() == L'\\') {
+            inExplicitContinuation = true;
+        } else if (bracketStack.empty()) {
+            inExplicitContinuation = false;
+        }
+    }
+
+    if (expectIndent) {
+        diagnostics.push_back({ colonLine, 0, (std::max)(buffer.GetLine(colonLine).length(), 1ULL), L"Python: IndentationError: expected an indented block", 1 });
     }
 
     if (inTripleString) {

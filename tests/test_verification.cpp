@@ -17020,6 +17020,103 @@ run_test_114:
         }
     }
 
+    // TEST 115: Real-time Python Indentation Validation & Error Squiggly Diagnostic Underlines
+    if (targetTest == -1 || targetTest == 115) {
+        std::cout << "\n[TEST 115] Testing Python Indentation Validation & Error Squiggly Diagnostics..." << std::endl;
+
+        // Subtest 1: Unexpected indent (User's exact reproduction case)
+        {
+            phide::editor::Buffer pyBuf;
+            pyBuf.SetText(L"print(\"Hello world\")\n    sdsds\n");
+            auto diags = phide::editor::SyntaxValidator::Validate(L"main.py", pyBuf);
+            assert(!diags.empty());
+            bool foundUnexpected = false;
+            for (const auto& d : diags) {
+                if (d.line == 1 && d.message.find(L"unexpected indent") != std::wstring::npos) {
+                    foundUnexpected = true;
+                    assert(d.severity == 1); // Error severity triggers red squiggly wave line!
+                }
+            }
+            assert(foundUnexpected);
+            std::cout << "  Passed: Unexpected indent on line 2 flagged with red error diagnostic." << std::endl;
+        }
+
+        // Subtest 2: Valid indented function suite (Zero false positives)
+        {
+            phide::editor::Buffer pyBuf;
+            pyBuf.SetText(L"def foo():\n    pass\n\nx = 1\n");
+            auto diags = phide::editor::SyntaxValidator::Validate(L"main.py", pyBuf);
+            assert(diags.empty());
+            std::cout << "  Passed: Standard indented Python code produces 0 diagnostics." << std::endl;
+        }
+
+        // Subtest 3: Expected an indented block
+        {
+            phide::editor::Buffer pyBuf;
+            pyBuf.SetText(L"def foo():\nx = 1\n");
+            auto diags = phide::editor::SyntaxValidator::Validate(L"main.py", pyBuf);
+            assert(!diags.empty());
+            bool foundExpected = false;
+            for (const auto& d : diags) {
+                if (d.message.find(L"expected an indented block") != std::wstring::npos) {
+                    foundExpected = true;
+                }
+            }
+            assert(foundExpected);
+            std::cout << "  Passed: Missing indented block detected after compound statement." << std::endl;
+        }
+
+        // Subtest 4: Multiline lists, triple strings, and comments (Zero false positives)
+        {
+            phide::editor::Buffer pyBuf;
+            pyBuf.SetText(
+                L"# Top comment\n"
+                L"my_list = [\n"
+                L"    1,\n"
+                L"    2,\n"
+                L"    3\n"
+                L"]\n"
+                L"msg = \"\"\"\n"
+                L"hello\n"
+                L"    world\n"
+                L"\"\"\"\n"
+                L"def bar():\n"
+                L"    # Internal comment\n"
+                L"    return my_list\n"
+            );
+            auto diags = phide::editor::SyntaxValidator::Validate(L"main.py", pyBuf);
+            assert(diags.empty());
+            std::cout << "  Passed: Triple-quoted strings, bracketed expressions, and comments produce 0 false positives." << std::endl;
+        }
+
+        // Subtest 5: Unindent does not match any outer indentation level
+        {
+            phide::editor::Buffer pyBuf;
+            pyBuf.SetText(
+                L"def foo():\n"
+                L"    if True:\n"
+                L"        pass\n"
+                L"  x = 1\n"
+            );
+            auto diags = phide::editor::SyntaxValidator::Validate(L"main.py", pyBuf);
+            assert(!diags.empty());
+            bool foundUnindentMismatch = false;
+            for (const auto& d : diags) {
+                if (d.line == 3 && d.message.find(L"unindent does not match") != std::wstring::npos) {
+                    foundUnindentMismatch = true;
+                }
+            }
+            assert(foundUnindentMismatch);
+            std::cout << "  Passed: Mismatched unindent detected accurately." << std::endl;
+        }
+
+        std::cout << "  Passed: All [TEST 115] Python Indentation Validation tests passed!" << std::endl;
+        if (targetTest == 115) {
+            std::cout << "Target test 115 finished." << std::endl;
+            return 0;
+        }
+    }
+
     std::cout << "\n==========================================" << std::endl;
     std::cout << "ALL VERIFICATION TESTS PASSED SUCCESSFULLY!" << std::endl;
     std::cout << "==========================================" << std::endl;
