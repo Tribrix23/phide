@@ -313,6 +313,12 @@ int main(int argc, char* argv[]) {
     if (targetTest == 114) {
         goto run_test_114;
     }
+    if (targetTest == 115) {
+        goto run_test_115;
+    }
+    if (targetTest == 116) {
+        goto run_test_116;
+    }
 
     if (targetTest == 66) {
         goto run_test_66;
@@ -17021,6 +17027,7 @@ run_test_114:
     }
 
     // TEST 115: Real-time Python Indentation Validation & Error Squiggly Diagnostic Underlines
+run_test_115:
     if (targetTest == -1 || targetTest == 115) {
         std::cout << "\n[TEST 115] Testing Python Indentation Validation & Error Squiggly Diagnostics..." << std::endl;
 
@@ -17118,6 +17125,7 @@ run_test_114:
     }
 
     // TEST 116: Real-time Python Missing Variable & Typo Detection and Terminal Execution Error Interception
+run_test_116:
     if (targetTest == -1 || targetTest == 116) {
         std::cout << "\n[TEST 116] Testing Python Missing Variable Detection & Terminal Error Interception..." << std::endl;
 
@@ -17181,7 +17189,27 @@ run_test_114:
                 "NameError: name 'prnat' is not defined. Did you mean: 'print'?\n";
             activeTab->AppendOutput(traceback.c_str(), traceback.length(), true);
             assert(callbackFired);
+
+            // Subtest 3b: Subsequent successful execution must NOT re-emit error from scrollback history
+            bool clearCallbackFired = false;
+            term.SetOnClearRuntimeErrors([&]() {
+                clearCallbackFired = true;
+            });
+            callbackFired = false;
+            term.ExecuteCommandLine(L"python -u \"C:\\Users\\Administrator\\Downloads\\test\\main.py\"");
+            assert(clearCallbackFired); // ExecuteCommandLine immediately cleared prior runtime errors!
+
+            clearCallbackFired = false;
+            callbackFired = false;
+            std::string nextSuccessfulRun =
+                "Hello world\n"
+                "hello\n"
+                "PS C:\\Users\\Administrator\\Downloads\\test> ";
+            activeTab->AppendOutput(nextSuccessfulRun.c_str(), nextSuccessfulRun.length(), false);
+            assert(!callbackFired); // Error callback MUST NOT re-fire on stale history!
+            assert(clearCallbackFired); // Clear runtime errors callback MUST fire on successful prompt return!
             std::cout << "  Passed: Terminal execution traceback intercepted and mapped to file, line 2, and token 'prnat'." << std::endl;
+            std::cout << "  Passed: Subsequent successful run does NOT re-trigger stale history errors and clears runtime errors." << std::endl;
         }
 
         // Subtest 4: SettingsView includes Python Linter extension settings

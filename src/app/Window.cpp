@@ -2808,6 +2808,9 @@ void Window::CommitAutocompleteSelection() {
 void Window::MarkDocumentModified(editor::OpenDocument* pDoc) {
     if (!pDoc || pDoc->isSpecialView) return;
     pDoc->isPreview = false;
+    std::erase_if(pDoc->diagnostics, [](const lsp::Diagnostic& d) {
+        return d.message.find(L"Runtime:") != std::wstring::npos;
+    });
     pDoc->diagnostics = editor::SyntaxValidator::Validate(pDoc->filePath.empty() ? pDoc->fileName : pDoc->filePath, pDoc->buffer);
     UpdateDrawerErrorFiles();
 
@@ -4830,6 +4833,8 @@ void Window::DoRunActiveDocument() {
                 });
             }
         }
+        UpdateDrawerErrorFiles();
+        if (m_hwnd) InvalidateRect(m_hwnd, nullptr, FALSE);
 
         // Code Runner: Save file before run if modified
         if (m_config.codeRunnerSaveFileBeforeRun) {
@@ -5947,7 +5952,30 @@ bool Window::Create(HINSTANCE hInstance, int nCmdShow) {
             }
             if (foundDoc) break;
         }
-        if (foundDoc && m_hwnd) InvalidateRect(m_hwnd, nullptr, FALSE);
+        if (foundDoc) {
+            UpdateDrawerErrorFiles();
+            if (m_hwnd) InvalidateRect(m_hwnd, nullptr, FALSE);
+        }
+    });
+
+    // Clear runtime errors whenever terminal starts a new command or command succeeds
+    m_terminal.SetOnClearRuntimeErrors([this]() {
+        bool hadRuntime = false;
+        for (auto& group : m_editorGroups) {
+            for (auto& doc : group.docs) {
+                size_t szBefore = doc.diagnostics.size();
+                std::erase_if(doc.diagnostics, [](const lsp::Diagnostic& d) {
+                    return d.message.find(L"Runtime:") != std::wstring::npos;
+                });
+                if (doc.diagnostics.size() != szBefore) {
+                    hadRuntime = true;
+                }
+            }
+        }
+        if (hadRuntime) {
+            UpdateDrawerErrorFiles();
+            if (m_hwnd) InvalidateRect(m_hwnd, nullptr, FALSE);
+        }
     });
 
     // Server successfully listening / ready callback (e.g. Next.js, Vite, Live Server)

@@ -423,13 +423,34 @@ void TerminalTab::AppendOutput(const char* data, size_t length, bool isError) {
     if (lines.size() > 2000) {
         size_t excess = lines.size() - 2000;
         lines.erase(lines.begin(), lines.begin() + excess);
+        if (lastScannedLineIdx >= excess) {
+            lastScannedLineIdx -= excess;
+        } else {
+            lastScannedLineIdx = 0;
+        }
     }
 
     // Real-time Runtime Execution Error & Traceback Interception (Python, Node.js, PHP)
     if (onExecutionError && !lines.empty()) {
-        size_t scanStart = (lines.size() > 25) ? lines.size() - 25 : 0;
+        size_t scanStart = lastScannedLineIdx;
+        if (scanStart >= lines.size()) {
+            scanStart = lines.size() > 0 ? lines.size() - 1 : 0;
+        }
         for (size_t li = scanStart; li < lines.size(); ++li) {
             const std::wstring& raw = lines[li].rawText;
+
+            // Check if a shell prompt arrived (e.g. "PS C:\...>", "$", ">")
+            bool isPrompt = (raw.find(L"PS ") != std::wstring::npos && raw.find(L">") != std::wstring::npos) ||
+                            (!raw.empty() && (raw.back() == L'>' || raw.back() == L'$')) ||
+                            raw.find(L"> ") != std::wstring::npos;
+            if (isPrompt) {
+                pendingErrorFile.clear();
+                pendingErrorLine = 0;
+                pendingErrorToken.clear();
+                if (!hadExecutionErrorInCurrentCommand && onClearRuntimeErrors) {
+                    onClearRuntimeErrors();
+                }
+            }
 
             // 1. Python Traceback: File "...", line X
             size_t fp = raw.find(L"File \"");
@@ -450,15 +471,28 @@ void TerminalTab::AppendOutput(const char* data, size_t length, bool isError) {
                     }
                 }
             } else if (pendingErrorLine > 0 && !raw.empty()) {
-                if ((raw[0] == L' ' || raw[0] == L'\t') && raw.find(L"Error:") == std::wstring::npos && raw.find(L"Exception:") == std::wstring::npos) {
+                if ((raw[0] == L' ' || raw[0] == L'\t') && raw.find(L"Error:") == std::wstring::npos && raw.find(L"Exception:") == std::wstring::npos && raw.find(L"error:") == std::wstring::npos) {
                     size_t ts = 0;
                     while (ts < raw.length() && (raw[ts] == L' ' || raw[ts] == L'\t')) ts++;
-                    pendingErrorToken = raw.substr(ts);
-                    while (!pendingErrorToken.empty() && iswspace(pendingErrorToken.back())) pendingErrorToken.pop_back();
+                    std::wstring candidate = raw.substr(ts);
+                    while (!candidate.empty() && iswspace(candidate.back())) candidate.pop_back();
+
+                    // Check if candidate is caret/tilde underline line (e.g. ^^^^^^^^^^)
+                    bool isCaretOnly = true;
+                    for (wchar_t ch : candidate) {
+                        if (ch != L'^' && ch != L'~' && ch != L' ' && ch != L'\t') {
+                            isCaretOnly = false;
+                            break;
+                        }
+                    }
+                    if (!isCaretOnly && !candidate.empty()) {
+                        pendingErrorToken = candidate;
+                    }
                 } else if (raw.find(L"Error:") != std::wstring::npos || raw.find(L"Exception:") != std::wstring::npos || raw.find(L"error:") != std::wstring::npos) {
                     if (onExecutionError) {
                         onExecutionError(pendingErrorFile, pendingErrorLine, raw, pendingErrorToken);
                     }
+                    hadExecutionErrorInCurrentCommand = true;
                     pendingErrorFile.clear();
                     pendingErrorLine = 0;
                     pendingErrorToken.clear();
@@ -481,6 +515,7 @@ void TerminalTab::AppendOutput(const char* data, size_t length, bool isError) {
                             if (onExecutionError) {
                                 onExecutionError(phpFile, phpLine, phpErr, L"");
                             }
+                            hadExecutionErrorInCurrentCommand = true;
                         }
                     }
                 }
@@ -499,12 +534,14 @@ void TerminalTab::AppendOutput(const char* data, size_t length, bool isError) {
                             try { jsLine = std::stoi(raw.substr(colon2 + 1, colon1 - colon2 - 1)); } catch (...) {}
                             if (jsLine > 0 && onExecutionError) {
                                 onExecutionError(jsFile, jsLine, raw.substr(0, atPos), L"");
+                                hadExecutionErrorInCurrentCommand = true;
                             }
                         }
                     }
                 }
             }
         }
+        lastScannedLineIdx = lines.size() > 0 ? lines.size() - 1 : 0;
     }
 
     if (onOutput) {
@@ -624,6 +661,7 @@ void TerminalPanel::NewTab(TerminalShellType shell, const std::wstring& workingD
     tab->title = std::to_wstring(count) + L": " + shellName;
     tab->onOutput = m_outputCallback;
     tab->onExecutionError = m_onExecutionError;
+    tab->onClearRuntimeErrors = m_onClearRuntimeErrors;
 
     StartShellProcess(*tab);
     m_tabs.push_back(std::move(tab));
@@ -740,6 +778,7 @@ void TerminalPanel::SplitActiveTab(std::optional<TerminalShellType> shell) {
     split->title = primary->title + L" (split: " + shellName + L")";
     split->onOutput = m_outputCallback;
     split->onExecutionError = m_onExecutionError;
+    split->onClearRuntimeErrors = m_onClearRuntimeErrors;
 
     StartShellProcess(*split);
     primary->splitTab = std::move(split);
@@ -2509,6 +2548,15 @@ void TerminalPanel::ExecuteCommandLine(const std::wstring& command) {
     }
     if (!tab) return;
 
+    tab->lastScannedLineIdx = tab->lines.size();
+    tab->hadExecutionErrorInCurrentCommand = false;
+    tab->pendingErrorFile.clear();
+    tab->pendingErrorLine = 0;
+    tab->pendingErrorToken.clear();
+    if (m_onClearRuntimeErrors) {
+        m_onClearRuntimeErrors();
+    }
+
     int utf8Len = WideCharToMultiByte(CP_UTF8, 0, command.c_str(), -1, NULL, 0, NULL, NULL);
     if (utf8Len > 1) {
         std::string utf8(utf8Len - 1, '\0');
@@ -3902,6 +3950,15 @@ bool TerminalPanel::OnChar(wchar_t ch) {
         }
 
         // Convert currentInputLine to UTF-8 and send complete line + newline to process
+        tab->lastScannedLineIdx = tab->lines.size();
+        tab->hadExecutionErrorInCurrentCommand = false;
+        tab->pendingErrorFile.clear();
+        tab->pendingErrorLine = 0;
+        tab->pendingErrorToken.clear();
+        if (m_onClearRuntimeErrors) {
+            m_onClearRuntimeErrors();
+        }
+
         if (!isClearCmd) {
             int utf8Len = WideCharToMultiByte(CP_UTF8, 0, tab->currentInputLine.c_str(), -1, NULL, 0, NULL, NULL);
             if (utf8Len > 1) {

@@ -207,6 +207,9 @@ struct TerminalTab {
     std::function<void(const std::wstring&, const std::wstring&)> onErrorCallback;
     std::function<void(const std::wstring&)> onReadyCallback;
     std::function<void(const std::wstring& filePath, int lineNum, const std::wstring& errorMsg, const std::wstring& token)> onExecutionError;
+    std::function<void()> onClearRuntimeErrors;
+    size_t lastScannedLineIdx = 0;
+    bool hadExecutionErrorInCurrentCommand = false;
     std::wstring pendingErrorFile;
     int pendingErrorLine = 0;
     std::wstring pendingErrorToken;
@@ -328,6 +331,15 @@ public:
             if (t) {
                 t->onExecutionError = m_onExecutionError;
                 if (t->splitTab) t->splitTab->onExecutionError = m_onExecutionError;
+            }
+        }
+    }
+    void SetOnClearRuntimeErrors(std::function<void()> cb) {
+        m_onClearRuntimeErrors = std::move(cb);
+        for (auto& t : m_tabs) {
+            if (t) {
+                t->onClearRuntimeErrors = m_onClearRuntimeErrors;
+                if (t->splitTab) t->splitTab->onClearRuntimeErrors = m_onClearRuntimeErrors;
             }
         }
     }
@@ -517,6 +529,7 @@ private:
     std::function<void(const std::wstring&)> m_onLiveServerTabClosed;
     std::function<void(const std::wstring&, const std::wstring&)> m_onServerError;
     std::function<void(const std::wstring&, int, const std::wstring&, const std::wstring&)> m_onExecutionError;
+    std::function<void()> m_onClearRuntimeErrors;
     std::function<void(const std::wstring&)> m_onServerReady;
     std::function<void(const std::wstring&)> m_onGitHubAuthSuccess;
     std::function<void()> m_onMinimize;
