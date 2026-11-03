@@ -4822,11 +4822,26 @@ void Window::DoRunActiveDocument() {
             }
         }
 
+        // Code Runner: Save file before run if modified
+        if (m_config.codeRunnerSaveFileBeforeRun) {
+            auto* pDoc = GetActiveDoc();
+            if (pDoc && pDoc->buffer.IsModified() && !pDoc->filePath.empty()) {
+                SaveFileToPath(pDoc->filePath);
+            }
+        }
+
         std::wstring runDir = p.parent_path().wstring();
         if (runDir.empty()) runDir = projectRoot;
         m_terminal.Open(runDir);
         AnimateTerminalOpen();
-        m_terminal.ExecuteCommandLine(L"python \"" + filePath + L"\"");
+
+        if (m_config.codeRunnerClearPreviousOutput) {
+            m_terminal.ExecuteCommandLine(L"cls");
+        }
+
+        std::wstring executor = m_config.codeRunnerExecutorPython;
+        if (executor.empty()) executor = L"python -u";
+        m_terminal.ExecuteCommandLine(executor + L" \"" + filePath + L"\"");
         m_isTerminalFocused = true;
         UpdateExecutionButtonStates();
         InvalidateRect(m_hwnd, nullptr, FALSE);
@@ -8673,6 +8688,14 @@ void Window::HandleLButtonDown(POINT clientPt) {
         }
     }
 
+    // Status Bar clicks: Git branch toggles Branch Switcher Dropdown (works reliably whether sidebar is open or closed)
+    if (m_config.showStatusBar &&
+        (clientPt.x >= m_rcStatusBarGitBranch.left && clientPt.x <= m_rcStatusBarGitBranch.right &&
+         clientPt.y >= m_rcStatusBarGitBranch.top && clientPt.y <= m_rcStatusBarGitBranch.bottom)) {
+        ToggleBranchDropdown();
+        return;
+    }
+
     // Check NEXT: Cross-File Prediction Pill Click (Image 4)
     if (m_editor.HitTestCrossFilePill(clientPt)) {
         const auto& pred = m_editor.GetPrediction();
@@ -10016,9 +10039,11 @@ void Window::HandleLButtonDown(POINT clientPt) {
     const float rightSidebarW = m_config.ScaleF(static_cast<float>(m_config.rightSidebarWidth)) * m_rightSidebarAnimProgress;
     const float canvasWidth = static_cast<float>(clientRc.right) - canvasLeft - rightSidebarW;
     const float clientH = static_cast<float>(clientRc.bottom - clientRc.top);
+    const float statusBarH = m_config.ScaleF(22.0f);
+    const float barY = clientH - statusBarH;
 
     // 4. Editor Canvas Clicks (Multi-Editor Groups aware)
-    if (clientPt.x >= canvasLeft && clientPt.y >= headerH && !m_editorGroups.empty() && canvasWidth > 10.0f) {
+    if (clientPt.x >= canvasLeft && clientPt.y >= headerH && (clientPt.y < barY || !m_config.showStatusBar) && !m_editorGroups.empty() && canvasWidth > 10.0f) {
         m_explorerHasFocus = false;
         // Clear drawer search focus whenever user clicks anywhere inside the editor canvas
         m_drawer.SetSearchFocus(0);

@@ -608,7 +608,10 @@ public:
 
     [[nodiscard]] bool HasOpenFolder() const noexcept { return m_hasOpenFolder; }
     [[nodiscard]] const std::wstring& GetOpenFolderPath() const noexcept { return m_openFolderPath; }
-    void SetOpenFolderPath(const std::wstring& path) noexcept { m_openFolderPath = path; }
+    void SetOpenFolderPath(const std::wstring& path) noexcept { 
+        m_openFolderPath = path; 
+        m_hasOpenFolder = !path.empty();
+    }
     [[nodiscard]] const std::wstring& GetRootName() const noexcept { return m_rootName; }
 
     // --- Course Explorer Mode ---
@@ -987,6 +990,8 @@ private:
     std::unordered_map<std::wstring, Microsoft::WRL::ComPtr<ID2D1Bitmap>> m_avatarBitmaps;
     std::set<std::wstring> m_downloadingAvatars;
     ID2D1Bitmap* GetOrFetchAvatar(ID2D1RenderTarget* pRT, Theme& theme, const GitCommitItem& ci);
+    std::unordered_map<std::wstring, Microsoft::WRL::ComPtr<ID2D1Bitmap>> m_assetBitmaps;
+    ID2D1Bitmap* GetAssetBitmap(ID2D1RenderTarget* pRT, const std::wstring& filename);
     std::function<void()> m_onGitStateChanged;
     std::function<void(const std::wstring& cmd, const std::wstring& output, const std::wstring& repoDir)> m_onGitError;
 

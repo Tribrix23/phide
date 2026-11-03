@@ -862,15 +862,17 @@ void EditorCanvas::RenderTabs(ID2D1RenderTarget* pRT, Theme& theme, const app::A
             );
         }
 
-        // Icon
+        // Icon (18px)
         const float iconPadX = (tabCurve > 0.0f) ? config.ScaleF(14.0f) : config.ScaleF(10.0f);
         const float iconX = rcTab.left + iconPadX;
         const float iconCenterY = headerH + tabH / 2.0f;
+        const float iconSz = config.ScaleF(18.0f);
+        const float iconHalf = iconSz * 0.5f;
         D2D1_RECT_F iconBounds = D2D1::RectF(
             iconX,
-            iconCenterY - config.ScaleF(8.0f),
-            iconX + config.ScaleF(16.0f),
-            iconCenterY + config.ScaleF(8.0f)
+            iconCenterY - iconHalf,
+            iconX + iconSz,
+            iconCenterY + iconHalf
         );
 
         if (doc.isSpecialView && doc.viewType == L"keybindings") {
@@ -902,6 +904,16 @@ void EditorCanvas::RenderTabs(ID2D1RenderTarget* pRT, Theme& theme, const app::A
             m_icons.DrawFileIcon(pRT, theme, iconBounds, FileIconType::Markdown);
         } else if (doc.isSpecialView && doc.viewType == L"extension_detail") {
             m_icons.DrawExtensionsGrid(pRT, iconBounds, theme.brushBrandAccent ? theme.brushBrandAccent.Get() : theme.brushTextWhite.Get(), 1.3f);
+        } else if (doc.filePath.ends_with(L".py") || doc.filePath.ends_with(L".pyw") || title.ends_with(L".py")) {
+            ID2D1Bitmap* pPyIcon = GetLearningHubBitmap(pRT, L"python.png");
+            if (pPyIcon) {
+                pRT->DrawBitmap(pPyIcon, iconBounds, 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
+            } else {
+                auto setiInfo = theme.GetSetiIcon(title, false, false);
+                if (theme.fontSeti && setiInfo.pBrush) {
+                    pRT->DrawText(&setiInfo.glyph, 1, theme.fontSeti.Get(), iconBounds, setiInfo.pBrush);
+                }
+            }
         } else {
             auto setiInfo = theme.GetSetiIcon(title, false, false);
             if (theme.fontSeti && setiInfo.pBrush) {
@@ -913,7 +925,7 @@ void EditorCanvas::RenderTabs(ID2D1RenderTarget* pRT, Theme& theme, const app::A
         }
 
         // Title: preview tabs use fontTabPreview (italic), pinned tabs use fontTab (regular)
-        float textStartX = rcTab.left + ((tabCurve > 0.0f) ? config.ScaleF(34.0f) : config.ScaleF(30.0f));
+        float textStartX = rcTab.left + ((tabCurve > 0.0f) ? config.ScaleF(36.0f) : config.ScaleF(32.0f));
         float textMaxW   = (std::max)(10.0f, rcTab.right - config.ScaleF(36.0f) - textStartX);
         D2D1_RECT_F rcTitle = D2D1::RectF(
             textStartX,

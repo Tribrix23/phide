@@ -26,7 +26,8 @@ enum class SettingCategory {
     CommonlyUsed = 0,
     TextEditor   = 1,
     Appearance   = 2,
-    Files        = 3
+    Files        = 3,
+    Extensions   = 4
 };
 
 /**

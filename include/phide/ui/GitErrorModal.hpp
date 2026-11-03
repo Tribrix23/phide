@@ -80,7 +80,11 @@ public:
         }
 
         if (m_details.empty()) {
-            m_details = L"Another git process seems to be running in this repository, e.g. an editor opened by 'git commit'. Please make sure all processes are terminated then try again. If it still fails, a git process may have crashed in this repository earlier: remove the file manually to continue.";
+            if (output.find(L"index.lock") != std::wstring::npos || output.find(L"Another git process") != std::wstring::npos) {
+                m_details = L"Another git process seems to be running in this repository, e.g. an editor opened by 'git commit'. Please make sure all processes are terminated then try again. If it still fails, a git process may have crashed in this repository earlier: remove the file manually to continue.";
+            } else {
+                m_details = L"The Git operation failed. Click 'Show Command Output' or 'Open Git Log' to review the full command output.";
+            }
         }
 
         // Initialize default card bounds centered on standard 1280x800 display

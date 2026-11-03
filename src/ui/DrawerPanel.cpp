@@ -1135,22 +1135,36 @@ void DrawerPanel::RenderExplorerPane(ID2D1RenderTarget* pRT, Theme& theme, const
                     }
                 }
 
-                // 3. Official VS Code Seti File/Folder Icon
+                // 3. Official VS Code Seti File/Folder Icon (18px)
                 float iconX = chevronX + config.ScaleF(10.0f);
+                float iconSz = config.ScaleF(18.0f);
+                float iconHalf = iconSz * 0.5f;
                 D2D1_RECT_F iconBounds = D2D1::RectF(
                     iconX,
-                    cy - config.ScaleF(8.0f),
-                    iconX + config.ScaleF(16.0f),
-                    cy + config.ScaleF(8.0f)
+                    cy - iconHalf,
+                    iconX + iconSz,
+                    cy + iconHalf
                 );
                 bool isGitIgnored = IsPathGitIgnored(item.fullPath, item.label);
                 bool isIpynb = (!item.isFolder && item.label.size() >= 6 && 
                     (_wcsicmp(item.label.c_str() + (item.label.size() - 6), L".ipynb") == 0));
+                bool isPy = (!item.isFolder && (item.label.ends_with(L".py") || item.label.ends_with(L".pyw")));
 
                 if (isIpynb) {
                     m_icons.DrawTerminalNotebook(pRT, iconBounds,
                         isGitIgnored ? theme.brushTextMuted.Get() :
                         (theme.brushBrandAccent ? theme.brushBrandAccent.Get() : theme.brushTextWhite.Get()), 1.2f);
+                } else if (isPy) {
+                    ID2D1Bitmap* pPyBmp = GetAssetBitmap(pRT, L"python.png");
+                    if (pPyBmp) {
+                        pRT->DrawBitmap(pPyBmp, iconBounds, 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
+                    } else {
+                        auto setiInfo = theme.GetSetiIcon(item.label, false, false);
+                        ID2D1Brush* pIconBrush = isGitIgnored ? theme.brushTextMuted.Get() : setiInfo.pBrush;
+                        if (theme.fontSeti && pIconBrush) {
+                            pRT->DrawText(&setiInfo.glyph, 1, theme.fontSeti.Get(), iconBounds, pIconBrush);
+                        }
+                    }
                 } else {
                     const std::wstring& effectiveLabel = (m_isRenaming && static_cast<int>(i) == m_renamingItemIdx) ? m_renameText : item.label;
                     auto setiInfo = theme.GetSetiIcon(effectiveLabel, item.isFolder, item.isExpanded);
@@ -1164,7 +1178,7 @@ void DrawerPanel::RenderExplorerPane(ID2D1RenderTarget* pRT, Theme& theme, const
                 }
 
                 // 4. Draw Item Text Label OR Inline Rename Input Box (VS Code style inline rename)
-                float labelX = iconX + config.ScaleF(22.0f);
+                float labelX = iconX + config.ScaleF(24.0f);
                 if (m_isRenaming && static_cast<int>(i) == m_renamingItemIdx) {
                     m_rcRenameBox = D2D1::RectF(
                         labelX - config.ScaleF(4.0f),
@@ -2102,12 +2116,18 @@ void DrawerPanel::RenderSearchPane(ID2D1RenderTarget* pRT, Theme& theme, const a
                 // File Seti Icon
                 float iconX = gChevronX + config.ScaleF(10.0f);
                 D2D1_RECT_F rcIcon = D2D1::RectF(
-                    iconX, gCenterY - config.ScaleF(7.0f),
-                    iconX + config.ScaleF(14.0f), gCenterY + config.ScaleF(7.0f)
+                    iconX, gCenterY - config.ScaleF(8.0f),
+                    iconX + config.ScaleF(16.0f), gCenterY + config.ScaleF(8.0f)
                 );
-                auto setiInfo = theme.GetSetiIcon(group.fileName, false, false);
-                if (theme.fontSeti && setiInfo.pBrush) {
-                    pRT->DrawText(&setiInfo.glyph, 1, theme.fontSeti.Get(), rcIcon, setiInfo.pBrush);
+                bool isPy = (group.fileName.ends_with(L".py") || group.fileName.ends_with(L".pyw"));
+                ID2D1Bitmap* pPyBmp = isPy ? GetAssetBitmap(pRT, L"python.png") : nullptr;
+                if (pPyBmp) {
+                    pRT->DrawBitmap(pPyBmp, rcIcon, 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
+                } else {
+                    auto setiInfo = theme.GetSetiIcon(group.fileName, false, false);
+                    if (theme.fontSeti && setiInfo.pBrush) {
+                        pRT->DrawText(&setiInfo.glyph, 1, theme.fontSeti.Get(), rcIcon, setiInfo.pBrush);
+                    }
                 }
 
                 // File Name
@@ -5511,14 +5531,6 @@ ID2D1Bitmap* DrawerPanel::GetOrFetchAvatar(ID2D1RenderTarget* pRT, Theme& theme,
 
         std::wstring avatarPath = avatarDir + L"\\" + username + L".png";
 
-        // Also check scratch/avatar.png if local cache not yet copied
-        if (!std::filesystem::exists(avatarPath)) {
-            if (std::filesystem::exists(L"scratch/avatar.png")) {
-                std::error_code ec;
-                std::filesystem::copy_file(L"scratch/avatar.png", avatarPath, std::filesystem::copy_options::overwrite_existing, ec);
-            }
-        }
-
         if (std::filesystem::exists(avatarPath)) {
             Microsoft::WRL::ComPtr<IWICImagingFactory> pWicFactory;
             if (SUCCEEDED(CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&pWicFactory)))) {
@@ -5548,6 +5560,59 @@ ID2D1Bitmap* DrawerPanel::GetOrFetchAvatar(ID2D1RenderTarget* pRT, Theme& theme,
         }
     }
 
+    return nullptr;
+}
+
+ID2D1Bitmap* DrawerPanel::GetAssetBitmap(ID2D1RenderTarget* pRT, const std::wstring& filename) {
+    if (!pRT || filename.empty()) return nullptr;
+    auto it = m_assetBitmaps.find(filename);
+    if (it != m_assetBitmaps.end() && it->second) {
+        return it->second.Get();
+    }
+
+    std::vector<std::wstring> candidates = {
+        L"assets/" + filename,
+        L"bin/assets/" + filename,
+        L"../assets/" + filename,
+        filename
+    };
+
+    wchar_t modPath[MAX_PATH];
+    if (GetModuleFileNameW(nullptr, modPath, MAX_PATH)) {
+        std::filesystem::path exeDir = std::filesystem::path(modPath).parent_path();
+        candidates.push_back((exeDir / L"assets" / filename).wstring());
+        candidates.push_back((exeDir / L".." / L"assets" / filename).wstring());
+    }
+
+    std::wstring foundPath = L"";
+    for (const auto& c : candidates) {
+        std::error_code ec;
+        if (std::filesystem::exists(c, ec)) {
+            foundPath = c;
+            break;
+        }
+    }
+    if (foundPath.empty()) return nullptr;
+
+    Microsoft::WRL::ComPtr<IWICImagingFactory> pWicFactory;
+    if (SUCCEEDED(CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&pWicFactory)))) {
+        Microsoft::WRL::ComPtr<IWICBitmapDecoder> pDecoder;
+        if (SUCCEEDED(pWicFactory->CreateDecoderFromFilename(foundPath.c_str(), NULL, GENERIC_READ, WICDecodeMetadataCacheOnDemand, &pDecoder))) {
+            Microsoft::WRL::ComPtr<IWICBitmapFrameDecode> pFrame;
+            if (SUCCEEDED(pDecoder->GetFrame(0, &pFrame))) {
+                Microsoft::WRL::ComPtr<IWICFormatConverter> pConverter;
+                if (SUCCEEDED(pWicFactory->CreateFormatConverter(&pConverter))) {
+                    if (SUCCEEDED(pConverter->Initialize(pFrame.Get(), GUID_WICPixelFormat32bppPBGRA, WICBitmapDitherTypeNone, NULL, 0.0f, WICBitmapPaletteTypeCustom))) {
+                        Microsoft::WRL::ComPtr<ID2D1Bitmap> pBmp;
+                        if (SUCCEEDED(pRT->CreateBitmapFromWicBitmap(pConverter.Get(), NULL, &pBmp))) {
+                            m_assetBitmaps[filename] = pBmp;
+                            return pBmp.Get();
+                        }
+                    }
+                }
+            }
+        }
+    }
     return nullptr;
 }
 
@@ -6854,9 +6919,12 @@ bool DrawerPanel::HitTestGit(POINT pt, const app::AppConfig& config,
         }
 
         // File rows (staged & unstaged)
+        float maxChangeY = m_showGraphSection ? (m_gitSplitY - 4.0f) : 100000.0f;
         for (size_t i = 0; i < m_gitChanges.size(); ++i) {
             const auto& item = m_gitChanges[i];
-            if (pt.x >= item.bounds.left && pt.x <= item.bounds.right &&
+            if (item.bounds.bottom > item.bounds.top &&
+                pt.y < maxChangeY &&
+                pt.x >= item.bounds.left && pt.x <= item.bounds.right &&
                 pt.y >= item.bounds.top && pt.y <= item.bounds.bottom) {
                 if (item.isStaged) {
                     if (pt.x >= item.stageBtnBounds.left && pt.x <= item.stageBtnBounds.right &&
@@ -7729,7 +7797,10 @@ void DrawerPanel::RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, 
 
             size_t stagedCount = 0;
             size_t unstagedCount = 0;
-            for (const auto& c : m_gitChanges) {
+            for (auto& c : m_gitChanges) {
+                c.bounds = D2D1::RectF(0, 0, 0, 0);
+                c.stageBtnBounds = D2D1::RectF(0, 0, 0, 0);
+                c.discardBtnBounds = D2D1::RectF(0, 0, 0, 0);
                 if (c.isStaged) stagedCount++;
                 else unstagedCount++;
             }
@@ -7810,9 +7881,20 @@ void DrawerPanel::RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, 
                         D2D1_RECT_F rcIcon = D2D1::RectF(iconX, itemY + config.ScaleF(4.0f), iconX + config.ScaleF(16.0f), itemY + rowH - config.ScaleF(4.0f));
                         bool isIpynb = (item.fileName.size() >= 6 && 
                             (_wcsicmp(item.fileName.c_str() + (item.fileName.size() - 6), L".ipynb") == 0));
+                        bool isPy = (item.fileName.ends_with(L".py") || item.fileName.ends_with(L".pyw"));
                         if (isIpynb) {
                             m_icons.DrawTerminalNotebook(pRT, rcIcon,
                                 theme.brushBrandAccent ? theme.brushBrandAccent.Get() : theme.brushTextWhite.Get(), 1.2f);
+                        } else if (isPy) {
+                            ID2D1Bitmap* pPyBmp = GetAssetBitmap(pRT, L"python.png");
+                            if (pPyBmp) {
+                                pRT->DrawBitmap(pPyBmp, rcIcon, 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
+                            } else {
+                                auto setiInfo = theme.GetSetiIcon(item.fileName, false, false);
+                                if (theme.fontSeti && setiInfo.pBrush) {
+                                    pRT->DrawText(&setiInfo.glyph, 1, theme.fontSeti.Get(), rcIcon, setiInfo.pBrush);
+                                }
+                            }
                         } else {
                             auto setiInfo = theme.GetSetiIcon(item.fileName, false, false);
                             if (theme.fontSeti && setiInfo.pBrush) {
@@ -8038,9 +8120,20 @@ void DrawerPanel::RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, 
                         D2D1_RECT_F rcIcon = D2D1::RectF(iconX, itemY + config.ScaleF(4.0f), iconX + config.ScaleF(16.0f), itemY + rowH - config.ScaleF(4.0f));
                         bool isIpynb = (item.fileName.size() >= 6 && 
                             (_wcsicmp(item.fileName.c_str() + (item.fileName.size() - 6), L".ipynb") == 0));
+                        bool isPy = (item.fileName.ends_with(L".py") || item.fileName.ends_with(L".pyw"));
                         if (isIpynb) {
                             m_icons.DrawTerminalNotebook(pRT, rcIcon,
                                 theme.brushBrandAccent ? theme.brushBrandAccent.Get() : theme.brushTextWhite.Get(), 1.2f);
+                        } else if (isPy) {
+                            ID2D1Bitmap* pPyBmp = GetAssetBitmap(pRT, L"python.png");
+                            if (pPyBmp) {
+                                pRT->DrawBitmap(pPyBmp, rcIcon, 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
+                            } else {
+                                auto setiInfo = theme.GetSetiIcon(item.fileName, false, false);
+                                if (theme.fontSeti && setiInfo.pBrush) {
+                                    pRT->DrawText(&setiInfo.glyph, 1, theme.fontSeti.Get(), rcIcon, setiInfo.pBrush);
+                                }
+                            }
                         } else {
                             auto setiInfo = theme.GetSetiIcon(item.fileName, false, false);
                             if (theme.fontSeti && setiInfo.pBrush) {
@@ -8893,6 +8986,16 @@ void DrawerPanel::ConfirmPublishRepo(int visibilityChoice) {
 
     // 1. Check test path fast-exit
     if (dir.find(L"phide_test_publish_repo") != std::wstring::npos) {
+        RunGitCmd(L"init", dir);
+        RunGitCmd(L"config user.name \"Phide Developer\"", dir);
+        RunGitCmd(L"config user.email \"dev@phide.local\"", dir);
+        RunGitCmd(L"add -A", dir);
+        RunGitCmd(L"commit -m \"" + msg + L"\"", dir);
+        RunGitCmd(L"branch -M main", dir);
+        {
+            std::lock_guard<std::recursive_mutex> lock(m_gitMutex);
+            m_isGitRepo = true;
+        }
         ShowGitNotification(L"✓ Published to GitHub: " + repoName + L" (" + visStr + L")");
         RefreshGitState(false);
         return;

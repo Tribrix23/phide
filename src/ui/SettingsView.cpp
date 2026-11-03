@@ -239,6 +239,59 @@ void SettingsView::InitializeSettings() {
         it.control = SettingControl::Toggle;
         m_items.push_back(std::move(it));
     }
+
+    // 17. Code Runner: Python Executor (Dropdown)
+    {
+        SettingItem it;
+        it.id = L"code-runner.executorMap.python";
+        it.scope = L"CODE RUNNER";
+        it.title = L"Python Executor";
+        it.description = L"Command used to execute Python files (e.g. 'python -u' for unbuffered real-time output).";
+        it.category = SettingCategory::Extensions;
+        it.isCommonlyUsed = true;
+        it.control = SettingControl::Dropdown;
+        it.options = { L"python -u", L"python", L"py -u", L"python3 -u" };
+        m_items.push_back(std::move(it));
+    }
+
+    // 18. Code Runner: Run In Terminal (Toggle)
+    {
+        SettingItem it;
+        it.id = L"code-runner.runInTerminal";
+        it.scope = L"CODE RUNNER";
+        it.title = L"Run In Terminal";
+        it.description = L"Whether to run code directly inside the integrated interactive terminal.";
+        it.category = SettingCategory::Extensions;
+        it.isCommonlyUsed = true;
+        it.control = SettingControl::Toggle;
+        m_items.push_back(std::move(it));
+    }
+
+    // 19. Code Runner: Save File Before Run (Toggle)
+    {
+        SettingItem it;
+        it.id = L"code-runner.saveFileBeforeRun";
+        it.scope = L"CODE RUNNER";
+        it.title = L"Save File Before Run";
+        it.description = L"Whether to automatically save the active document before running.";
+        it.category = SettingCategory::Extensions;
+        it.isCommonlyUsed = true;
+        it.control = SettingControl::Toggle;
+        m_items.push_back(std::move(it));
+    }
+
+    // 20. Code Runner: Clear Previous Output (Toggle)
+    {
+        SettingItem it;
+        it.id = L"code-runner.clearPreviousOutput";
+        it.scope = L"CODE RUNNER";
+        it.title = L"Clear Previous Output";
+        it.description = L"Whether to clear previous terminal output before executing code.";
+        it.category = SettingCategory::Extensions;
+        it.isCommonlyUsed = false;
+        it.control = SettingControl::Toggle;
+        m_items.push_back(std::move(it));
+    }
 }
 
 std::vector<size_t> SettingsView::GetFilteredItemIndices() const {
@@ -473,7 +526,8 @@ void SettingsView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
         { SettingCategory::CommonlyUsed, L"Commonly Used", L"✦" },
         { SettingCategory::TextEditor,   L"Text Editor",   L"✎" },
         { SettingCategory::Appearance,   L"Appearance",    L"🎨" },
-        { SettingCategory::Files,        L"Files",         L"📁" }
+        { SettingCategory::Files,        L"Files",         L"📁" },
+        { SettingCategory::Extensions,   L"Extensions",    L"🧩" }
     };
     const size_t kCatCount = sizeof(kCategories) / sizeof(kCategories[0]);
 
@@ -632,6 +686,9 @@ void SettingsView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
             else if (it.id == L"workbench.statusBar") isChecked = config.showStatusBar;
             else if (it.id == L"workbench.graphColored") isChecked = config.isGraphColored;
             else if (it.id == L"workbench.markdownPreview") isChecked = config.enableMarkdownPreview;
+            else if (it.id == L"code-runner.runInTerminal") isChecked = config.codeRunnerRunInTerminal;
+            else if (it.id == L"code-runner.saveFileBeforeRun") isChecked = config.codeRunnerSaveFileBeforeRun;
+            else if (it.id == L"code-runner.clearPreviousOutput") isChecked = config.codeRunnerClearPreviousOutput;
 
             DrawToggleSwitch(pRT, theme, config, it.controlBounds, isChecked, isCardHovered);
         } else if (it.control == SettingControl::NumberStepper) {
@@ -665,6 +722,8 @@ void SettingsView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
                 valStr = config.renderWhitespaceMode;
             } else if (it.id == L"editor.cursorStyle") {
                 valStr = config.cursorStyle;
+            } else if (it.id == L"code-runner.executorMap.python") {
+                valStr = config.codeRunnerExecutorPython;
             }
 
             bool isOpen = (m_openDropdownItemIdx == static_cast<int>(idx));
@@ -832,6 +891,7 @@ void SettingsView::DrawDropdownPopup(ID2D1RenderTarget* pRT, Theme& theme, const
     else if (item.id == L"editor.fontFamily") curVal = config.fontFamily;
     else if (item.id == L"editor.renderWhitespace") curVal = config.renderWhitespaceMode;
     else if (item.id == L"editor.cursorStyle") curVal = config.cursorStyle;
+    else if (item.id == L"code-runner.executorMap.python") curVal = config.codeRunnerExecutorPython;
 
     const float rowH = config.ScaleF(32.0f);
     const float padY = config.ScaleF(6.0f);
@@ -994,6 +1054,8 @@ bool SettingsView::HandleLButtonDown(POINT clientPt, app::AppConfig& config, The
                         config.renderWhitespace = (selectedOpt != L"none");
                     } else if (dropItem.id == L"editor.cursorStyle") {
                         config.cursorStyle = selectedOpt;
+                    } else if (dropItem.id == L"code-runner.executorMap.python") {
+                        config.codeRunnerExecutorPython = selectedOpt;
                     }
                     outModifiedSettingId = dropItem.id;
                 }
@@ -1063,6 +1125,12 @@ bool SettingsView::HandleLButtonDown(POINT clientPt, app::AppConfig& config, The
                         config.isGraphColored = !config.isGraphColored;
                     } else if (it.id == L"workbench.markdownPreview") {
                         config.enableMarkdownPreview = !config.enableMarkdownPreview;
+                    } else if (it.id == L"code-runner.runInTerminal") {
+                        config.codeRunnerRunInTerminal = !config.codeRunnerRunInTerminal;
+                    } else if (it.id == L"code-runner.saveFileBeforeRun") {
+                        config.codeRunnerSaveFileBeforeRun = !config.codeRunnerSaveFileBeforeRun;
+                    } else if (it.id == L"code-runner.clearPreviousOutput") {
+                        config.codeRunnerClearPreviousOutput = !config.codeRunnerClearPreviousOutput;
                     }
                     outModifiedSettingId = it.id;
                     return true;

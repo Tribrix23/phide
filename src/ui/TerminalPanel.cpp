@@ -2401,10 +2401,28 @@ void TerminalPanel::ExecuteCommandLine(const std::wstring& command) {
     if (!m_isOpen) {
         Open(m_defaultWorkingDir);
     }
-    if (m_tabs.empty()) {
-        NewTab(TerminalShellType::PowerShell, m_defaultWorkingDir);
+
+    // Ensure we send command to an interactive shell tab (not Git Logs, not server tab, not login tab)
+    TerminalTab* tab = nullptr;
+    TerminalTab* current = GetActiveTab();
+    if (current && !current->isServerTab && current->title != L"Git Logs" && !current->isGitHubLoginTab) {
+        tab = current;
+    } else {
+        // Look for any existing interactive shell tab
+        for (size_t i = 0; i < m_tabs.size(); ++i) {
+            auto* t = m_tabs[i].get();
+            if (t && !t->isServerTab && t->title != L"Git Logs" && !t->isGitHubLoginTab) {
+                m_activeTabIdx = static_cast<int>(i);
+                tab = t;
+                break;
+            }
+        }
     }
-    TerminalTab* tab = GetActiveTab();
+
+    if (!tab) {
+        NewTab(TerminalShellType::PowerShell, m_defaultWorkingDir);
+        tab = GetActiveTab();
+    }
     if (!tab) return;
 
     int utf8Len = WideCharToMultiByte(CP_UTF8, 0, command.c_str(), -1, NULL, 0, NULL, NULL);

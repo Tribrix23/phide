@@ -66,6 +66,12 @@ struct AppConfig {
     std::wstring cursorStyle = L"line";                 ///< "line", "block", "underline"
     std::wstring renderWhitespaceMode = L"selection";   ///< "none", "boundary", "selection", "trailing", "all"
 
+    // --- Code Runner Extension Settings ---
+    std::wstring codeRunnerExecutorPython = L"python -u"; ///< Executor for Python files
+    bool codeRunnerRunInTerminal = true;                  ///< Run code in integrated terminal
+    bool codeRunnerClearPreviousOutput = false;           ///< Clear previous output before running
+    bool codeRunnerSaveFileBeforeRun = true;              ///< Save file before running
+
     // --- Floating Prompt Bar Metrics ---
     int promptBarWidth  = 540;  ///< Width of the bottom floating AI prompt pill.
     int promptBarHeight = 44;   ///< Height of the floating prompt pill.
