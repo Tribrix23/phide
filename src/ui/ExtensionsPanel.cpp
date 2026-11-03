@@ -681,6 +681,20 @@ void ExtensionsPanel::RefreshPcStatus() {
                         }
                     }
                 }
+                if (len == 0) {
+                    wchar_t exePath[MAX_PATH] = { 0 };
+                    GetModuleFileNameW(nullptr, exePath, MAX_PATH);
+                    std::filesystem::path exeDir = std::filesystem::path(exePath).parent_path();
+                    std::filesystem::path bundled = exeDir / L"runtimes" / L"php" / L"php.exe";
+                    if (!std::filesystem::exists(bundled, ecDir)) {
+                        bundled = exeDir.parent_path() / L"runtimes" / L"php" / L"php.exe";
+                    }
+                    if (std::filesystem::exists(bundled, ecDir)) {
+                        len = static_cast<DWORD>(bundled.wstring().length());
+                        wcsncpy_s(foundPath, bundled.wstring().c_str(), MAX_PATH);
+                        detectedVer = L"8.5";
+                    }
+                }
             }
             if (len > 0) {
                 if (detectedVer.empty()) {

@@ -1,0 +1,31 @@
+{
+  "id": "dsznajder.es7-react-js-snippets",
+  "displayName": "ES7+ React/Redux/React-Native snippets",
+  "publisher": "dsznajder",
+  "publisherDisplayName": "dsznajder",
+  "version": "4.4.3",
+  "description": "Extensions for React, React-Native and Redux in JS/TS with ES7+ syntax. Customizable. Built-in integration with prettier.",
+  "installs": 17854580,
+  "rating": 4.364706039428711,
+  "ratingCount": 85,
+  "lastUpdated": "2022-02-18T13:12:52.393Z",
+  "icon": "icon.png",
+  "categories": [
+    "Snippets"
+  ],
+  "tags": [
+    "__web_extension",
+    "customizable",
+    "javascript",
+    "javascriptReact",
+    "keybindings",
+    "prettier",
+    "react",
+    "react-native",
+    "redux",
+    "snippet",
+    "snippets",
+    "typescript",
+    "typescriptReact"
+  ]
+}

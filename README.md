@@ -64,3 +64,18 @@ Open PowerShell or Command Prompt in the repository root:
 # Launch the IDE
 .\scripts\run.bat
 ```
+
+---
+
+## Standalone Offline Installer
+
+To build the all-in-one standalone Windows installer that bundles all runtimes, web servers, and database engines with zero internet dependencies:
+
+```powershell
+.\installer\build_installer.bat
+```
+
+The self-contained installer will be generated at:
+`installer\output\phide-Setup-x64.exe`
+
+Users can run `phide-Setup-x64.exe` on any clean Windows machine without needing to download anything (PHP, Composer, MySQL, Nginx, phpMyAdmin, and all font/extension assets are bundled out of the box).

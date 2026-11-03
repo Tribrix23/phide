@@ -5133,6 +5133,14 @@ void Window::StartPhpServer(const std::wstring& rootDir, int port) {
             }
         }
     }
+    // Also check bundled runtime in runtimes\php
+    std::filesystem::path bundledPhp = GetPhideRoot() / L"runtimes" / L"php" / L"php.exe";
+    if (std::filesystem::exists(bundledPhp)) {
+        phpExe = bundledPhp.wstring();
+        if (std::filesystem::exists(GetPhideRoot() / L"runtimes" / L"php" / L"php.ini")) {
+            phpIni = (GetPhideRoot() / L"runtimes" / L"php" / L"php.ini").wstring();
+        }
+    }
     std::wstring iniArg = (!phpIni.empty() && std::filesystem::exists(phpIni)) ? (L" -c \"" + phpIni + L"\"") : L"";
 
     std::filesystem::path prependPath = GetPhideRoot() / L"include" / L"phide" / L"server" / L"phide_prepend.php";
@@ -5286,12 +5294,36 @@ static bool IsMysqlProcessRunning() {
 void Window::StartMysqlServer() {
     if (IsPortListening(3306)) return;
 
-    std::filesystem::path mysqldExe = L"C:\\xampp\\mysql\\bin\\mysqld.exe";
-    std::filesystem::path myIni = L"C:\\xampp\\mysql\\bin\\my.ini";
-    std::filesystem::path xamppDir = L"C:\\xampp";
+    std::filesystem::path mysqldExe;
+    std::filesystem::path myIni;
+    std::filesystem::path mysqlDir;
 
-    if (std::filesystem::exists(mysqldExe) && std::filesystem::exists(myIni)) {
-        std::wstring cmd = L"\"" + mysqldExe.wstring() + L"\" --defaults-file=\"" + myIni.wstring() + L"\" --skip-grant-tables --standalone --console";
+    std::filesystem::path bundledMysql = GetPhideRoot() / L"runtimes" / L"mysql";
+    if (std::filesystem::exists(bundledMysql / L"bin" / L"mysqld.exe")) {
+        mysqldExe = bundledMysql / L"bin" / L"mysqld.exe";
+        myIni = bundledMysql / L"bin" / L"my.ini";
+        mysqlDir = bundledMysql;
+    } else if (std::filesystem::exists(L"C:\\xampp\\mysql\\bin\\mysqld.exe")) {
+        mysqldExe = L"C:\\xampp\\mysql\\bin\\mysqld.exe";
+        myIni = L"C:\\xampp\\mysql\\bin\\my.ini";
+        mysqlDir = L"C:\\xampp\\mysql";
+    }
+
+    if (!mysqldExe.empty() && std::filesystem::exists(mysqldExe)) {
+        std::wstring cmd = L"\"" + mysqldExe.wstring() + L"\"";
+        if (std::filesystem::exists(myIni)) {
+            cmd += L" --defaults-file=\"" + myIni.wstring() + L"\"";
+        }
+        cmd += L" --skip-grant-tables --standalone --console";
+        if (!mysqlDir.empty()) {
+            std::filesystem::path dataDir = mysqlDir / L"data";
+            if (std::filesystem::exists(dataDir)) {
+                cmd += L" --datadir=\"" + dataDir.wstring() + L"\"";
+                cmd += L" --innodb-data-home-dir=\"" + dataDir.wstring() + L"\"";
+                cmd += L" --innodb-log-group-home-dir=\"" + dataDir.wstring() + L"\"";
+            }
+            cmd += L" --basedir=\"" + mysqlDir.wstring() + L"\"";
+        }
         std::vector<wchar_t> cmdBuf(cmd.begin(), cmd.end());
         cmdBuf.push_back(L'\0');
 
@@ -5300,7 +5332,7 @@ void Window::StartMysqlServer() {
         si.dwFlags = STARTF_USESHOWWINDOW;
         si.wShowWindow = SW_HIDE;
         PROCESS_INFORMATION pi{};
-        if (CreateProcessW(NULL, cmdBuf.data(), NULL, NULL, FALSE, CREATE_NO_WINDOW, NULL, xamppDir.wstring().c_str(), &si, &pi)) {
+        if (CreateProcessW(NULL, cmdBuf.data(), NULL, NULL, FALSE, CREATE_NO_WINDOW, NULL, mysqlDir.wstring().c_str(), &si, &pi)) {
             m_hMysqlProcess = pi.hProcess;
             CloseHandle(pi.hThread);
 
@@ -5348,6 +5380,14 @@ void Window::StartPmaServer() {
                     break;
                 }
             }
+        }
+    }
+    // Also check bundled runtime in runtimes\php
+    std::filesystem::path bundledPhp = GetPhideRoot() / L"runtimes" / L"php" / L"php.exe";
+    if (std::filesystem::exists(bundledPhp)) {
+        phpExe = bundledPhp.wstring();
+        if (std::filesystem::exists(GetPhideRoot() / L"runtimes" / L"php" / L"php.ini")) {
+            phpIni = (GetPhideRoot() / L"runtimes" / L"php" / L"php.ini").wstring();
         }
     }
     std::wstring iniArg = (!phpIni.empty() && std::filesystem::exists(phpIni)) ? (L" -c \"" + phpIni + L"\"") : L"";
@@ -5456,7 +5496,10 @@ void Window::DoRunPhpApplication(const std::wstring& filePath, const std::wstrin
     if (!std::filesystem::exists(sqlPath) && !projectRoot.empty()) {
         sqlPath = std::filesystem::path(projectRoot) / sqlFile;
     }
-    std::filesystem::path mysqlExe = L"C:\\xampp\\mysql\\bin\\mysql.exe";
+    std::filesystem::path mysqlExe = GetPhideRoot() / L"runtimes" / L"mysql" / L"bin" / L"mysql.exe";
+    if (!std::filesystem::exists(mysqlExe)) {
+        mysqlExe = L"C:\\xampp\\mysql\\bin\\mysql.exe";
+    }
     if (needDb && std::filesystem::exists(mysqlExe) && std::filesystem::exists(sqlPath)) {
         std::wstring importCmd = L"cmd.exe /c \"\"" + mysqlExe.wstring() + L"\" -u root < \"" + sqlPath.wstring() + L"\"\"";
         std::vector<wchar_t> cmdBuf(importCmd.begin(), importCmd.end());
@@ -8962,7 +9005,10 @@ void Window::HandleLButtonDown(POINT clientPt) {
                 } else if (!activeDocPath.empty() && std::filesystem::exists(std::filesystem::path(activeDocPath).parent_path() / sqlFile)) {
                     sqlPath = std::filesystem::path(activeDocPath).parent_path() / sqlFile;
                 }
-                std::filesystem::path mysqlExe = L"C:\\xampp\\mysql\\bin\\mysql.exe";
+                std::filesystem::path mysqlExe = GetPhideRoot() / L"runtimes" / L"mysql" / L"bin" / L"mysql.exe";
+    if (!std::filesystem::exists(mysqlExe)) {
+        mysqlExe = L"C:\\xampp\\mysql\\bin\\mysql.exe";
+    }
                 if (std::filesystem::exists(mysqlExe) && !sqlPath.empty()) {
                     std::wstring cmd = L"cmd.exe /c \"\"" + mysqlExe.wstring() + L"\" -u root < \"" + sqlPath.wstring() + L"\"\"";
                     std::vector<wchar_t> cmdBuf(cmd.begin(), cmd.end());

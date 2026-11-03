@@ -1,0 +1,1957 @@
+{
+    // User Code Snippets for phide IDE
+    // Each snippet is defined under a snippet name and has a prefix, body, description, and scope.
+    // Use $1, $2 for tab stops, $0 for final cursor position, and ${1:label} for placeholders.
+
+    "HTML5 Boilerplate Template (!)": {
+        "prefix": "!",
+        "body": [
+            "<!DOCTYPE html>",
+            "<html lang=\"en\">",
+            "<head>",
+            "    <meta charset=\"UTF-8\">",
+            "    <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">",
+            "    <title>${1:Document}</title>",
+            "</head>",
+            "<body>",
+            "    $0",
+            "</body>",
+            "</html>"
+        ],
+        "description": "Complete HTML5 boilerplate skeleton with DOCTYPE, meta charset, viewport, title, and body",
+        "scope": "html,htm,php"
+    },
+
+    "HTML5 Boilerplate (html:5)": {
+        "prefix": "html:5",
+        "body": [
+            "<!DOCTYPE html>",
+            "<html lang=\"en\">",
+            "<head>",
+            "    <meta charset=\"UTF-8\">",
+            "    <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">",
+            "    <title>${1:Document}</title>",
+            "</head>",
+            "<body>",
+            "    $0",
+            "</body>",
+            "</html>"
+        ],
+        "description": "Complete HTML5 boilerplate skeleton with DOCTYPE, meta charset, viewport, title, and body",
+        "scope": "html,htm,php"
+    },
+
+    "Link External CSS Stylesheet": {
+        "prefix": "link:css",
+        "body": [
+            "<link rel=\"stylesheet\" href=\"${1:style.css}\" />"
+        ],
+        "description": "Link external stylesheet link element",
+        "scope": "html,htm,php"
+    },
+
+    "External JavaScript Script Tag": {
+        "prefix": "script:src",
+        "body": [
+            "<script src=\"${1:app.js}\"></script>"
+        ],
+        "description": "Include external JavaScript source script element",
+        "scope": "html,htm,php"
+    },
+
+    "Meta Viewport Tag": {
+        "prefix": "meta:vp",
+        "body": [
+            "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\" />"
+        ],
+        "description": "Responsive viewport meta tag",
+        "scope": "html,htm,php"
+    },
+
+    "Meta Charset UTF-8": {
+        "prefix": "meta:utf",
+        "body": [
+            "<meta charset=\"UTF-8\" />"
+        ],
+        "description": "Standard UTF-8 encoding meta tag",
+        "scope": "html,htm,php"
+    },
+
+    "Anchor Hyperlink": {
+        "prefix": "a",
+        "body": [
+            "<a href=\"${1:#}\">${2:Link}</a>"
+        ],
+        "description": "HTML anchor hyperlink tag",
+        "scope": "html,htm,php"
+    },
+
+    "Image Element": {
+        "prefix": "img",
+        "body": [
+            "<img src=\"${1:image.png}\" alt=\"${2:description}\" />"
+        ],
+        "description": "HTML image tag with src and alt",
+        "scope": "html,htm,php"
+    },
+
+    "Button Element": {
+        "prefix": "btn",
+        "body": [
+            "<button type=\"${1:button}\">${2:Click}</button>"
+        ],
+        "description": "HTML button element with type and text",
+        "scope": "html,htm,php"
+    },
+
+    "Form Post Element": {
+        "prefix": "form:post",
+        "body": [
+            "<form action=\"${1:#}\" method=\"post\">",
+            "    $0",
+            "</form>"
+        ],
+        "description": "HTML form element with POST action",
+        "scope": "html,htm,php"
+    },
+
+    "Input Text Field": {
+        "prefix": "input:text",
+        "body": [
+            "<input type=\"text\" name=\"${1:name}\" placeholder=\"${2:Enter text...}\" />"
+        ],
+        "description": "HTML text input field",
+        "scope": "html,htm,php"
+    },
+
+    "Input Password Field": {
+        "prefix": "input:password",
+        "body": [
+            "<input type=\"password\" name=\"${1:password}\" />"
+        ],
+        "description": "HTML password input field",
+        "scope": "html,htm,php"
+    },
+
+    "Input Email Field": {
+        "prefix": "input:email",
+        "body": [
+            "<input type=\"email\" name=\"${1:email}\" placeholder=\"${2:name@example.com}\" />"
+        ],
+        "description": "HTML email input field",
+        "scope": "html,htm,php"
+    },
+
+    "Input Submit Button": {
+        "prefix": "input:submit",
+        "body": [
+            "<input type=\"submit\" value=\"${1:Submit}\" />"
+        ],
+        "description": "HTML form submit button",
+        "scope": "html,htm,php"
+    },
+
+    "HTML Table Structure": {
+        "prefix": "table",
+        "body": [
+            "<table>",
+            "    <thead>",
+            "        <tr>",
+            "            <th>${1:Header}</th>",
+            "        </tr>",
+            "    </thead>",
+            "    <tbody>",
+            "        <tr>",
+            "            <td>$0</td>",
+            "        </tr>",
+            "    </tbody>",
+            "</table>"
+        ],
+        "description": "Complete HTML table skeleton structure",
+        "scope": "html,htm,php"
+    },
+
+    "Unordered List with Item": {
+        "prefix": "ul>li",
+        "body": [
+            "<ul>",
+            "    <li>$0</li>",
+            "</ul>"
+        ],
+        "description": "HTML unordered list with list item",
+        "scope": "html,htm,php"
+    },
+
+    "Ordered List with Item": {
+        "prefix": "ol>li",
+        "body": [
+            "<ol>",
+            "    <li>$0</li>",
+            "</ol>"
+        ],
+        "description": "HTML ordered list with list item",
+        "scope": "html,htm,php"
+    },
+
+    "Container Div Element": {
+        "prefix": "div:container",
+        "body": [
+            "<div class=\"${1:container}\">",
+            "    $0",
+            "</div>"
+        ],
+        "description": "HTML div container element",
+        "scope": "html,htm,php"
+    },
+
+    "Embedded Style Block": {
+        "prefix": "style",
+        "body": [
+            "<style>",
+            "    $0",
+            "</style>"
+        ],
+        "description": "HTML embedded CSS style block",
+        "scope": "html,htm,php"
+    },
+
+    "Embedded Script Block": {
+        "prefix": "script",
+        "body": [
+            "<script>",
+            "    $0",
+            "</script>"
+        ],
+        "description": "HTML embedded JavaScript script block",
+        "scope": "html,htm,php"
+    },
+
+    "Favicon Link": {
+        "prefix": "link:favicon",
+        "body": [
+            "<link rel=\"icon\" type=\"image/x-icon\" href=\"${1:favicon.ico}\">"
+        ],
+        "description": "HTML link favicon tag",
+        "scope": "html,htm,php"
+    },
+
+    "Google Fonts Link Preconnect": {
+        "prefix": "link:font",
+        "body": [
+            "<link rel=\"preconnect\" href=\"https://fonts.googleapis.com\">",
+            "<link rel=\"preconnect\" href=\"https://fonts.gstatic.com\" crossorigin>",
+            "<link href=\"${1:https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap}\" rel=\"stylesheet\">"
+        ],
+        "description": "Google Fonts preconnect and stylesheet link tags",
+        "scope": "html,htm,php"
+    },
+
+    "Canonical Link": {
+        "prefix": "link:canonical",
+        "body": [
+            "<link rel=\"canonical\" href=\"${1:https://example.com/}\" />"
+        ],
+        "description": "SEO canonical URL link tag",
+        "scope": "html,htm,php"
+    },
+
+    "ES Module Script Tag": {
+        "prefix": "script:module",
+        "body": [
+            "<script type=\"module\" src=\"${1:main.js}\"></script>"
+        ],
+        "description": "JavaScript ES module script tag",
+        "scope": "html,htm,php"
+    },
+
+    "DOM Ready Script Block": {
+        "prefix": "script:inline",
+        "body": [
+            "<script>",
+            "    document.addEventListener('DOMContentLoaded', () => {",
+            "        $0",
+            "    });",
+            "</script>"
+        ],
+        "description": "Inline script block with DOMContentLoaded event listener",
+        "scope": "html,htm,php"
+    },
+
+    "Meta Description Tag": {
+        "prefix": "meta:desc",
+        "body": [
+            "<meta name=\"description\" content=\"${1:Page description here}\" />"
+        ],
+        "description": "SEO meta description tag",
+        "scope": "html,htm,php"
+    },
+
+    "OpenGraph Social Meta Tags": {
+        "prefix": "meta:og",
+        "body": [
+            "<meta property=\"og:title\" content=\"${1:Title}\" />",
+            "<meta property=\"og:description\" content=\"${2:Description}\" />",
+            "<meta property=\"og:image\" content=\"${3:https://example.com/og-image.png}\" />",
+            "<meta property=\"og:url\" content=\"${4:https://example.com/}\" />",
+            "<meta property=\"og:type\" content=\"website\" />"
+        ],
+        "description": "OpenGraph metadata tags for social sharing previews",
+        "scope": "html,htm,php"
+    },
+
+    "Twitter Card Meta Tags": {
+        "prefix": "meta:twitter",
+        "body": [
+            "<meta name=\"twitter:card\" content=\"summary_large_image\" />",
+            "<meta name=\"twitter:title\" content=\"${1:Title}\" />",
+            "<meta name=\"twitter:description\" content=\"${2:Description}\" />",
+            "<meta name=\"twitter:image\" content=\"${3:https://example.com/og-image.png}\" />"
+        ],
+        "description": "Twitter Card metadata tags",
+        "scope": "html,htm,php"
+    },
+
+    "Theme Color Meta Tag": {
+        "prefix": "meta:theme",
+        "body": [
+            "<meta name=\"theme-color\" content=\"${1:#0f172a}\" />"
+        ],
+        "description": "Browser mobile theme color meta tag",
+        "scope": "html,htm,php"
+    },
+
+    "Form GET Method": {
+        "prefix": "form:get",
+        "body": [
+            "<form action=\"${1:#}\" method=\"get\">",
+            "    $0",
+            "</form>"
+        ],
+        "description": "HTML form element with GET method",
+        "scope": "html,htm,php"
+    },
+
+    "Form Multipart File Upload": {
+        "prefix": "form:upload",
+        "body": [
+            "<form action=\"${1:#}\" method=\"post\" enctype=\"multipart/form-data\">",
+            "    <input type=\"file\" name=\"${2:file}\" />",
+            "    <button type=\"submit\">${3:Upload}</button>",
+            "</form>"
+        ],
+        "description": "HTML form with multipart file upload support",
+        "scope": "html,htm,php"
+    },
+
+    "Input Number Field": {
+        "prefix": "input:number",
+        "body": [
+            "<input type=\"number\" name=\"${1:quantity}\" min=\"${2:1}\" max=\"${3:100}\" value=\"${4:1}\" />"
+        ],
+        "description": "HTML numeric input field with min and max bounds",
+        "scope": "html,htm,php"
+    },
+
+    "Input Telephone Field": {
+        "prefix": "input:tel",
+        "body": [
+            "<input type=\"tel\" name=\"${1:phone}\" placeholder=\"${2:+1 (555) 000-0000}\" autocomplete=\"tel\" />"
+        ],
+        "description": "HTML telephone number input field",
+        "scope": "html,htm,php"
+    },
+
+    "Input URL Field": {
+        "prefix": "input:url",
+        "body": [
+            "<input type=\"url\" name=\"${1:url}\" placeholder=\"${2:https://example.com}\" />"
+        ],
+        "description": "HTML URL input field",
+        "scope": "html,htm,php"
+    },
+
+    "Input Search Field": {
+        "prefix": "input:search",
+        "body": [
+            "<input type=\"search\" name=\"${1:q}\" placeholder=\"${2:Search...}\" />"
+        ],
+        "description": "HTML search query input field",
+        "scope": "html,htm,php"
+    },
+
+    "Input Date Field": {
+        "prefix": "input:date",
+        "body": [
+            "<input type=\"date\" name=\"${1:date}\" />"
+        ],
+        "description": "HTML date picker input field",
+        "scope": "html,htm,php"
+    },
+
+    "Input Time Field": {
+        "prefix": "input:time",
+        "body": [
+            "<input type=\"time\" name=\"${1:time}\" />"
+        ],
+        "description": "HTML time picker input field",
+        "scope": "html,htm,php"
+    },
+
+    "Input Color Picker Field": {
+        "prefix": "input:color",
+        "body": [
+            "<input type=\"color\" name=\"${1:color}\" value=\"${2:#3b82f6}\" />"
+        ],
+        "description": "HTML color picker input field",
+        "scope": "html,htm,php"
+    },
+
+    "Input Range Slider Field": {
+        "prefix": "input:range",
+        "body": [
+            "<input type=\"range\" name=\"${1:range}\" min=\"${2:0}\" max=\"${3:100}\" value=\"${4:50}\" />"
+        ],
+        "description": "HTML range slider input field",
+        "scope": "html,htm,php"
+    },
+
+    "Input Checkbox with Label": {
+        "prefix": "input:checkbox",
+        "body": [
+            "<label><input type=\"checkbox\" name=\"${1:remember}\" value=\"${2:1}\" /> ${3:Remember me}</label>"
+        ],
+        "description": "HTML checkbox with wrapping label",
+        "scope": "html,htm,php"
+    },
+
+    "Input Radio Button with Label": {
+        "prefix": "input:radio",
+        "body": [
+            "<label><input type=\"radio\" name=\"${1:option}\" value=\"${2:val}\" checked /> ${3:Option}</label>"
+        ],
+        "description": "HTML radio button with wrapping label",
+        "scope": "html,htm,php"
+    },
+
+    "Input File Picker": {
+        "prefix": "input:file",
+        "body": [
+            "<input type=\"file\" name=\"${1:attachment}\" accept=\"${2:image/*}\" />"
+        ],
+        "description": "HTML file chooser input field",
+        "scope": "html,htm,php"
+    },
+
+    "Input Hidden Field": {
+        "prefix": "input:hidden",
+        "body": [
+            "<input type=\"hidden\" name=\"${1:token}\" value=\"${2:value}\" />"
+        ],
+        "description": "HTML hidden input field",
+        "scope": "html,htm,php"
+    },
+
+    "Input Reset Button": {
+        "prefix": "input:reset",
+        "body": [
+            "<input type=\"reset\" value=\"${1:Reset}\" />"
+        ],
+        "description": "HTML form reset button",
+        "scope": "html,htm,php"
+    },
+
+    "Textarea Multi-line Control": {
+        "prefix": "textarea:full",
+        "body": [
+            "<textarea name=\"${1:message}\" rows=\"${2:4}\" cols=\"${3:50}\" placeholder=\"${4:Enter your message...}\"></textarea>"
+        ],
+        "description": "HTML multi-line textarea input with rows and cols",
+        "scope": "html,htm,php"
+    },
+
+    "Select Dropdown with Options": {
+        "prefix": "select:options",
+        "body": [
+            "<select name=\"${1:selectName}\" id=\"${1:selectName}\">",
+            "    <option value=\"\">${2:Select an option...}</option>",
+            "    <option value=\"${3:val1}\">${4:Option 1}</option>",
+            "    <option value=\"${5:val2}\">${6:Option 2}</option>",
+            "</select>"
+        ],
+        "description": "HTML select dropdown list with placeholder and option elements",
+        "scope": "html,htm,php"
+    },
+
+    "Input with Datalist Autocomplete": {
+        "prefix": "datalist:options",
+        "body": [
+            "<input list=\"${1:suggestions}\" name=\"${2:item}\" placeholder=\"${3:Choose or type...}\" />",
+            "<datalist id=\"${1:suggestions}\">",
+            "    <option value=\"${4:Choice 1}\">",
+            "    <option value=\"${5:Choice 2}\">",
+            "    <option value=\"${6:Choice 3}\">",
+            "</datalist>"
+        ],
+        "description": "HTML datalist autocomplete suggestion component",
+        "scope": "html,htm,php"
+    },
+
+    "Submit Button Element": {
+        "prefix": "btn:submit",
+        "body": [
+            "<button type=\"submit\" class=\"${1:btn btn-primary}\">${2:Submit}</button>"
+        ],
+        "description": "HTML form submit button",
+        "scope": "html,htm,php"
+    },
+
+    "Reset Button Element": {
+        "prefix": "btn:reset",
+        "body": [
+            "<button type=\"reset\" class=\"${1:btn btn-secondary}\">${2:Reset}</button>"
+        ],
+        "description": "HTML form reset button",
+        "scope": "html,htm,php"
+    },
+
+    "Navigation Bar Component": {
+        "prefix": "nav:bar",
+        "body": [
+            "<nav class=\"navbar\">",
+            "    <div class=\"nav-brand\"><a href=\"${1:#}\">${2:Brand}</a></div>",
+            "    <ul class=\"nav-links\">",
+            "        <li><a href=\"${3:#}\">${4:Home}</a></li>",
+            "        <li><a href=\"${5:#}\">${6:About}</a></li>",
+            "        <li><a href=\"${7:#}\">${8:Contact}</a></li>",
+            "    </ul>",
+            "</nav>"
+        ],
+        "description": "Complete responsive navigation bar component",
+        "scope": "html,htm,php"
+    },
+
+    "Header Hero Section": {
+        "prefix": "header:hero",
+        "body": [
+            "<header class=\"hero-section\">",
+            "    <h1>${1:Welcome to Our Platform}</h1>",
+            "    <p class=\"hero-lead\">${2:Build fast, modern, and high-performance web applications.}</p>",
+            "    <div class=\"hero-actions\">",
+            "        <a href=\"${3:#}\" class=\"btn btn-primary\">${4:Get Started}</a>",
+            "        <a href=\"${5:#}\" class=\"btn btn-outline\">${6:Learn More}</a>",
+            "    </div>",
+            "</header>"
+        ],
+        "description": "Hero header landing banner section",
+        "scope": "html,htm,php"
+    },
+
+    "Footer Copyright Section": {
+        "prefix": "footer:copy",
+        "body": [
+            "<footer class=\"site-footer\">",
+            "    <p>&copy; ${1:2026} ${2:Your Name or Company}. All rights reserved.</p>",
+            "</footer>"
+        ],
+        "description": "Standard copyright page footer",
+        "scope": "html,htm,php"
+    },
+
+    "Main Document Content Wrapper": {
+        "prefix": "main:content",
+        "body": [
+            "<main role=\"main\" class=\"container mx-auto px-4 py-8\">",
+            "    $0",
+            "</main>"
+        ],
+        "description": "HTML5 main landmark wrapper",
+        "scope": "html,htm,php"
+    },
+
+    "Section with Heading Container": {
+        "prefix": "section:card",
+        "body": [
+            "<section class=\"py-12\">",
+            "    <div class=\"container\">",
+            "        <h2 class=\"text-2xl font-bold mb-4\">${1:Section Title}</h2>",
+            "        <p class=\"text-gray-600 mb-6\">${2:Section subtitle or introduction.}</p>",
+            "        $0",
+            "    </div>",
+            "</section>"
+        ],
+        "description": "Semantic section block with container",
+        "scope": "html,htm,php"
+    },
+
+    "Blog Article Post Component": {
+        "prefix": "article:post",
+        "body": [
+            "<article class=\"post\">",
+            "    <header class=\"post-header\">",
+            "        <h1>${1:Article Title}</h1>",
+            "        <div class=\"post-meta\">",
+            "            <span>By <a href=\"${2:#}\">${3:Author}</a></span>",
+            "            <time datetime=\"${4:2026-01-01}\">${5:Jan 1, 2026}</time>",
+            "        </div>",
+            "    </header>",
+            "    <div class=\"post-content\">",
+            "        <p>$0</p>",
+            "    </div>",
+            "</article>"
+        ],
+        "description": "Complete blog article post markup",
+        "scope": "html,htm,php"
+    },
+
+    "Sidebar Aside Component": {
+        "prefix": "aside:sidebar",
+        "body": [
+            "<aside class=\"sidebar\" aria-label=\"${1:Sidebar}\">",
+            "    <div class=\"widget\">",
+            "        <h3>${2:Related Topics}</h3>",
+            "        <ul>",
+            "            <li><a href=\"${3:#}\">${4:Topic 1}</a></li>",
+            "            <li><a href=\"${5:#}\">${6:Topic 2}</a></li>",
+            "        </ul>",
+            "    </div>",
+            "</aside>"
+        ],
+        "description": "Semantic aside sidebar component",
+        "scope": "html,htm,php"
+    },
+
+    "Figure with Caption": {
+        "prefix": "figure:img",
+        "body": [
+            "<figure>",
+            "    <img src=\"${1:image.jpg}\" alt=\"${2:Description}\" />",
+            "    <figcaption>${3:Caption describing the image}</figcaption>",
+            "</figure>"
+        ],
+        "description": "HTML figure with nested image and figcaption",
+        "scope": "html,htm,php"
+    },
+
+    "Responsive Picture with WebP Fallback": {
+        "prefix": "picture:webp",
+        "body": [
+            "<picture>",
+            "    <source srcset=\"${1:image.webp}\" type=\"image/webp\">",
+            "    <source srcset=\"${2:image.jpg}\" type=\"image/jpeg\">",
+            "    <img src=\"${2:image.jpg}\" alt=\"${3:Description}\" loading=\"lazy\">",
+            "</picture>"
+        ],
+        "description": "Responsive picture element with WebP next-gen format support",
+        "scope": "html,htm,php"
+    },
+
+    "HTML5 Video Player": {
+        "prefix": "video:controls",
+        "body": [
+            "<video src=\"${1:video.mp4}\" controls poster=\"${2:poster.jpg}\" width=\"${3:640}\" height=\"${4:360}\">",
+            "    <track kind=\"subtitles\" src=\"${5:subtitles.vtt}\" srclang=\"en\" label=\"English\">",
+            "    Your browser does not support the video tag.",
+            "</video>"
+        ],
+        "description": "HTML5 video player element with controls and subtitles",
+        "scope": "html,htm,php"
+    },
+
+    "HTML5 Audio Player": {
+        "prefix": "audio:controls",
+        "body": [
+            "<audio controls src=\"${1:audio.mp3}\">",
+            "    Your browser does not support the audio element.",
+            "</audio>"
+        ],
+        "description": "HTML5 audio player element with controls",
+        "scope": "html,htm,php"
+    },
+
+    "HTML5 Native Dialog Modal": {
+        "prefix": "dialog:modal",
+        "body": [
+            "<dialog id=\"${1:myDialog}\" class=\"dialog-modal\">",
+            "    <form method=\"dialog\">",
+            "        <h2>${2:Dialog Title}</h2>",
+            "        <p>${3:Dialog body text content goes here.}</p>",
+            "        <button value=\"cancel\">${4:Cancel}</button>",
+            "        <button value=\"confirm\" class=\"btn-primary\">${5:Confirm}</button>",
+            "    </form>",
+            "</dialog>"
+        ],
+        "description": "HTML5 native dialog modal element with form method dialog",
+        "scope": "html,htm,php"
+    },
+
+    "Details Accordion Disclosure": {
+        "prefix": "details:summary",
+        "body": [
+            "<details>",
+            "    <summary>${1:Click to reveal details}</summary>",
+            "    <p>${2:Hidden details content that unfolds on user click.}</p>",
+            "</details>"
+        ],
+        "description": "HTML5 collapsible details and summary disclosure widget",
+        "scope": "html,htm,php"
+    },
+
+    "SVG Feather/Lucide Icon Template": {
+        "prefix": "svg:icon",
+        "body": [
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"${1:24}\" height=\"${1:24}\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\">",
+            "    $0",
+            "</svg>"
+        ],
+        "description": "SVG vector icon template container",
+        "scope": "html,htm,php"
+    },
+
+    "Canvas 2D Context Setup": {
+        "prefix": "canvas:2d",
+        "body": [
+            "<canvas id=\"${1:myCanvas}\" width=\"${2:600}\" height=\"${3:400}\"></canvas>",
+            "<script>",
+            "    const canvas = document.getElementById('${1:myCanvas}');",
+            "    const ctx = canvas.getContext('2d');",
+            "    $0",
+            "</script>"
+        ],
+        "description": "HTML5 canvas element with 2D rendering context boilerplate",
+        "scope": "html,htm,php"
+    },
+
+    "Definition Description List": {
+        "prefix": "dl:terms",
+        "body": [
+            "<dl>",
+            "    <dt>${1:Term 1}</dt>",
+            "    <dd>${2:Definition of term 1}</dd>",
+            "    <dt>${3:Term 2}</dt>",
+            "    <dd>${4:Definition of term 2}</dd>",
+            "</dl>"
+        ],
+        "description": "HTML definition list with terms and descriptions",
+        "scope": "html,htm,php"
+    },
+
+    "Table Striped with Thead and Tbody": {
+        "prefix": "table:striped",
+        "body": [
+            "<table class=\"table table-striped\">",
+            "    <thead>",
+            "        <tr>",
+            "            <th>${1:#}</th>",
+            "            <th>${2:Name}</th>",
+            "            <th>${3:Email}</th>",
+            "            <th>${4:Status}</th>",
+            "        </tr>",
+            "    </thead>",
+            "    <tbody>",
+            "        <tr>",
+            "            <td>1</td>",
+            "            <td>${5:John Doe}</td>",
+            "            <td>${6:john@example.com}</td>",
+            "            <td><span class=\"badge badge-success\">${7:Active}</span></td>",
+            "        </tr>",
+            "    </tbody>",
+            "</table>"
+        ],
+        "description": "Complete formatted table component with headers, rows and badges",
+        "scope": "html,htm,php"
+    },
+
+    "Card Component": {
+        "prefix": "div:card",
+        "body": [
+            "<div class=\"card\">",
+            "    <div class=\"card-header\">",
+            "        <h3 class=\"card-title\">${1:Card Title}</h3>",
+            "    </div>",
+            "    <div class=\"card-body\">",
+            "        <p>${2:Card description text and details.}</p>",
+            "    </div>",
+            "    <div class=\"card-footer\">",
+            "        <button class=\"btn btn-primary\">${3:Action}</button>",
+            "    </div>",
+            "</div>"
+        ],
+        "description": "Standard UI card container with header, body and footer",
+        "scope": "html,htm,php"
+    },
+
+    "CSS Grid Container": {
+        "prefix": "div:grid",
+        "body": [
+            "<div class=\"grid grid-cols-${1:3} gap-6\">",
+            "    <div class=\"col-item\">$0</div>",
+            "    <div class=\"col-item\"></div>",
+            "    <div class=\"col-item\"></div>",
+            "</div>"
+        ],
+        "description": "Responsive CSS grid layout container",
+        "scope": "html,htm,php"
+    },
+
+    "CSS Flexbox Row Container": {
+        "prefix": "div:flex",
+        "body": [
+            "<div class=\"flex items-center justify-between\">",
+            "    <div>$1</div>",
+            "    <div>$0</div>",
+            "</div>"
+        ],
+        "description": "Flexbox row layout with space-between alignment",
+        "scope": "html,htm,php"
+    },
+
+    "Badge Status Pill": {
+        "prefix": "div:badge",
+        "body": [
+            "<span class=\"badge badge-${1:primary}\">${2:New}</span>"
+        ],
+        "description": "UI status badge pill component",
+        "scope": "html,htm,php"
+    },
+
+    "Alert Notification Box": {
+        "prefix": "div:alert",
+        "body": [
+            "<div class=\"alert alert-${1:info}\" role=\"alert\">",
+            "    <strong>${2:Notice:}</strong> ${3:Operation completed successfully.}",
+            "</div>"
+        ],
+        "description": "Accessible alert notification component",
+        "scope": "html,htm,php"
+    },
+
+    "Breadcrumb Navigation Component": {
+        "prefix": "div:breadcrumb",
+        "body": [
+            "<nav aria-label=\"Breadcrumb\">",
+            "    <ol class=\"breadcrumb\">",
+            "        <li><a href=\"${1:/}\">Home</a></li>",
+            "        <li><a href=\"${2:/section}\">${3:Section}</a></li>",
+            "        <li aria-current=\"page\">${4:Current Page}</li>",
+            "    </ol>",
+            "</nav>"
+        ],
+        "description": "Accessible breadcrumb trail navigation component",
+        "scope": "html,htm,php"
+    },
+
+    "Iframe Embedded Frame": {
+        "prefix": "iframe:embed",
+        "body": [
+            "<iframe src=\"${1:https://example.com}\" width=\"${2:100%}\" height=\"${3:450}\" style=\"border:0;\" allowfullscreen=\"\" loading=\"lazy\"></iframe>"
+        ],
+        "description": "Responsive embedded iframe element",
+        "scope": "html,htm,php"
+    },
+
+    "Flexbox Center Alignment": {
+        "prefix": "flexcenter",
+        "body": [
+            "display: flex;",
+            "justify-content: center;",
+            "align-items: center;"
+        ],
+        "description": "CSS flexbox centering layout",
+        "scope": "css,scss,less,html"
+    },
+
+    "Flexbox Column Layout": {
+        "prefix": "flexcol",
+        "body": [
+            "display: flex;",
+            "flex-direction: column;",
+            "gap: ${1:12px};"
+        ],
+        "description": "CSS flexbox vertical column layout",
+        "scope": "css,scss,less,html"
+    },
+
+    "CSS Grid Columns Layout": {
+        "prefix": "grid",
+        "body": [
+            "display: grid;",
+            "grid-template-columns: repeat(${1:3}, 1fr);",
+            "gap: ${2:16px};"
+        ],
+        "description": "CSS grid responsive columns layout",
+        "scope": "css,scss,less,html"
+    },
+
+    "Universal CSS Reset": {
+        "prefix": "reset",
+        "body": [
+            "*, *::before, *::after {",
+            "    box-sizing: border-box;",
+            "    margin: 0;",
+            "    padding: 0;",
+            "}"
+        ],
+        "description": "Universal CSS box-sizing and margin reset",
+        "scope": "css,scss,less,html"
+    },
+
+    "CSS Media Query": {
+        "prefix": "media",
+        "body": [
+            "@media (max-width: ${1:768px}) {",
+            "    $0",
+            "}"
+        ],
+        "description": "CSS responsive media query",
+        "scope": "css,scss,less,html"
+    },
+
+    "CSS Animation Keyframes": {
+        "prefix": "keyframes",
+        "body": [
+            "@keyframes ${1:fadeIn} {",
+            "    from { opacity: 0; }",
+            "    to   { opacity: 1; }",
+            "}"
+        ],
+        "description": "CSS keyframe animation definition",
+        "scope": "css,scss,less,html"
+    },
+
+    "Glassmorphism Card Effect": {
+        "prefix": "glass",
+        "body": [
+            "background: rgba(255, 255, 255, 0.08);",
+            "backdrop-filter: blur(12px);",
+            "border: 1px solid rgba(255, 255, 255, 0.15);",
+            "border-radius: 8px;"
+        ],
+        "description": "Modern glassmorphism translucent card styling",
+        "scope": "css,scss,less,html"
+    },
+
+    "CSS Custom Properties Root Variables": {
+        "prefix": ":root",
+        "body": [
+            ":root {",
+            "    --primary: ${1:#3b82f6};",
+            "    --background: ${2:#0f172a};",
+            "    --text: ${3:#f8fafc};",
+            "    --radius: ${4:8px};",
+            "}"
+        ],
+        "description": "CSS custom variables declarations in :root selector",
+        "scope": "css,scss,less,html"
+    },
+
+    "CSS Custom Properties Root Variables": {
+        "prefix": "root",
+        "body": [
+            ":root {",
+            "    --primary: ${1:#3b82f6};",
+            "    --background: ${2:#0f172a};",
+            "    --text: ${3:#f8fafc};",
+            "    --radius: ${4:8px};",
+            "}"
+        ],
+        "description": "CSS custom variables declarations in :root selector",
+        "scope": "css,scss,less,html"
+    },
+
+    "CSS Responsive Auto-fit Grid": {
+        "prefix": "grid:auto",
+        "body": [
+            "display: grid;",
+            "grid-template-columns: repeat(auto-fit, minmax(${1:250px}, 1fr));",
+            "gap: ${2:1.5rem};"
+        ],
+        "description": "Responsive auto-fit CSS grid template",
+        "scope": "css,scss,less,html"
+    },
+
+    "Modern Drop Shadow": {
+        "prefix": "shadow",
+        "body": [
+            "box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -4px rgba(0, 0, 0, 0.1);"
+        ],
+        "description": "Modern layered box shadow",
+        "scope": "css,scss,less,html"
+    },
+
+    "Linear Gradient Background": {
+        "prefix": "gradient",
+        "body": [
+            "background: linear-gradient(${1:135deg}, ${2:#3b82f6} 0%, ${3:#8b5cf6} 100%);"
+        ],
+        "description": "CSS linear gradient background",
+        "scope": "css,scss,less,html"
+    },
+
+    "CSS Card Container Styling": {
+        "prefix": "card",
+        "body": [
+            "background: ${1:#ffffff};",
+            "border: 1px solid ${2:#e2e8f0};",
+            "border-radius: ${3:8px};",
+            "padding: ${4:1.5rem};",
+            "box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);"
+        ],
+        "description": "Complete CSS card component styling rules",
+        "scope": "css,scss,less,html"
+    },
+
+    "CSS Interactive Button": {
+        "prefix": "btn",
+        "body": [
+            "display: inline-flex;",
+            "align-items: center;",
+            "justify-content: center;",
+            "padding: 0.5rem 1rem;",
+            "border-radius: 6px;",
+            "font-weight: 500;",
+            "cursor: pointer;",
+            "transition: all 0.2s ease;"
+        ],
+        "description": "Modern flexible button component styling",
+        "scope": "css,scss,less,html"
+    },
+
+    "Absolute Centering Transform": {
+        "prefix": "center:abs",
+        "body": [
+            "position: absolute;",
+            "top: 50%;",
+            "left: 50%;",
+            "transform: translate(-50%, -50%);"
+        ],
+        "description": "Exact centering using absolute positioning and translate",
+        "scope": "css,scss,less,html"
+    },
+
+    "Single-line Text Truncation Ellipsis": {
+        "prefix": "truncate",
+        "body": [
+            "white-space: nowrap;",
+            "overflow: hidden;",
+            "text-overflow: ellipsis;"
+        ],
+        "description": "CSS single-line ellipsis text truncation",
+        "scope": "css,scss,less,html"
+    },
+
+    "Multi-line Text Line Clamp": {
+        "prefix": "clamp",
+        "body": [
+            "display: -webkit-box;",
+            "-webkit-line-clamp: ${1:3};",
+            "-webkit-box-orient: vertical;",
+            "overflow: hidden;"
+        ],
+        "description": "Multi-line text clamping with ellipsis",
+        "scope": "css,scss,less,html"
+    },
+
+    "Smooth Page Scroll Behavior": {
+        "prefix": "scroll",
+        "body": [
+            "scroll-behavior: smooth;"
+        ],
+        "description": "Smooth scrolling behavior for html root",
+        "scope": "css,scss,less,html"
+    },
+
+    "Dark Mode Prefers Color Scheme": {
+        "prefix": "dark",
+        "body": [
+            "@media (prefers-color-scheme: dark) {",
+            "    $0",
+            "}"
+        ],
+        "description": "Media query for user dark color scheme preference",
+        "scope": "css,scss,less,html"
+    },
+
+    "Custom Webkit Scrollbar Styling": {
+        "prefix": "scrollbar",
+        "body": [
+            "::-webkit-scrollbar {",
+            "    width: ${1:8px};",
+            "}",
+            "::-webkit-scrollbar-track {",
+            "    background: ${2:#f1f5f9};",
+            "}",
+            "::-webkit-scrollbar-thumb {",
+            "    background: ${3:#cbd5e1};",
+            "    border-radius: 4px;",
+            "}"
+        ],
+        "description": "Custom scrollbar track and thumb styling",
+        "scope": "css,scss,less,html"
+    },
+
+    "Smooth Transition Declaration": {
+        "prefix": "transition",
+        "body": [
+            "transition: ${1:all} ${2:0.3s} ${3:ease};"
+        ],
+        "description": "CSS transition timing shorthand",
+        "scope": "css,scss,less,html"
+    },
+
+    "Aspect Ratio Box": {
+        "prefix": "aspect",
+        "body": [
+            "aspect-ratio: ${1:16 / 9};"
+        ],
+        "description": "Modern CSS aspect-ratio declaration",
+        "scope": "css,scss,less,html"
+    },
+
+    "Console Log (JS/TS/HTML)": {
+        "prefix": "log",
+        "body": [
+            "console.log($1);"
+        ],
+        "description": "Log output to developer console",
+        "scope": "html,htm,js,ts,jsx,tsx,php"
+    },
+
+    "Console Log (clg)": {
+        "prefix": "clg",
+        "body": [
+            "console.log($1);"
+        ],
+        "description": "Log output to developer console",
+        "scope": "ts,js,tsx,jsx,html,htm,php"
+    },
+
+    "Console Error": {
+        "prefix": "cerr",
+        "body": [
+            "console.error($1);"
+        ],
+        "description": "Log error diagnostic to developer console",
+        "scope": "ts,js,tsx,jsx,html"
+    },
+
+    "Console Warn": {
+        "prefix": "cwarn",
+        "body": [
+            "console.warn($1);"
+        ],
+        "description": "Log warning alert to developer console",
+        "scope": "ts,js,tsx,jsx,html"
+    },
+
+    "Console Table": {
+        "prefix": "ctable",
+        "body": [
+            "console.table($1);"
+        ],
+        "description": "Log tabular dataset to developer console",
+        "scope": "ts,js,tsx,jsx,html"
+    },
+
+    "Arrow Function": {
+        "prefix": "afn",
+        "body": [
+            "const ${1:name} = ($2) => {",
+            "    $0",
+            "};"
+        ],
+        "description": "ES6 Arrow Function declaration",
+        "scope": "ts,js,tsx,jsx,html"
+    },
+
+    "Standard Function": {
+        "prefix": "fn",
+        "body": [
+            "function ${1:name}($2) {",
+            "    $0",
+            "}"
+        ],
+        "description": "Standard function declaration",
+        "scope": "ts,js,tsx,jsx,html"
+    },
+
+    "Async Function": {
+        "prefix": "asyncfn",
+        "body": [
+            "async function ${1:name}($2) {",
+            "    $0",
+            "}"
+        ],
+        "description": "Asynchronous function declaration",
+        "scope": "ts,js,tsx,jsx,html"
+    },
+
+    "New Promise": {
+        "prefix": "prom",
+        "body": [
+            "new Promise((resolve, reject) => {",
+            "    $0",
+            "});"
+        ],
+        "description": "Construct new ES6 Promise",
+        "scope": "ts,js,tsx,jsx,html"
+    },
+
+    "Fetch API Request": {
+        "prefix": "fetch",
+        "body": [
+            "fetch('${1:url}')",
+            "    .then(res => res.json())",
+            "    .then(data => {",
+            "        $0",
+            "    });"
+        ],
+        "description": "Standard fetch JSON request promise chain",
+        "scope": "ts,js,tsx,jsx,html"
+    },
+
+    "Try Catch Block": {
+        "prefix": "trycatch",
+        "body": [
+            "try {",
+            "    $1",
+            "} catch (error) {",
+            "    console.error(error);",
+            "    $0",
+            "}"
+        ],
+        "description": "Try Catch error handling block",
+        "scope": "ts,js,tsx,jsx,html"
+    },
+
+    "For Loop (JS)": {
+        "prefix": "fori",
+        "body": [
+            "for (let ${1:i} = 0; ${1:i} < ${2:array}.length; ${1:i}++) {",
+            "    $0",
+            "}"
+        ],
+        "description": "Standard indexed for loop",
+        "scope": "ts,js,tsx,jsx,html"
+    },
+
+    "For Of Loop (JS)": {
+        "prefix": "forof",
+        "body": [
+            "for (const ${1:item} of ${2:iterable}) {",
+            "    $0",
+            "}"
+        ],
+        "description": "ES6 for..of iterable loop",
+        "scope": "ts,js,tsx,jsx,html"
+    },
+
+    "Add Event Listener": {
+        "prefix": "ael",
+        "body": [
+            "${1:element}.addEventListener('${2:click}', (e) => {",
+            "    $0",
+            "});"
+        ],
+        "description": "DOM addEventListener callback binding",
+        "scope": "ts,js,tsx,jsx,html"
+    },
+
+    "Document Query Selector": {
+        "prefix": "qs",
+        "body": [
+            "document.querySelector('${1:selector}')"
+        ],
+        "description": "Query single DOM element",
+        "scope": "ts,js,tsx,jsx,html"
+    },
+
+    "Document Query Selector All": {
+        "prefix": "qsa",
+        "body": [
+            "document.querySelectorAll('${1:selector}')"
+        ],
+        "description": "Query all matching DOM elements",
+        "scope": "ts,js,tsx,jsx,html"
+    },
+
+    "Import Statement": {
+        "prefix": "imp",
+        "body": [
+            "import { $1 } from '$2';"
+        ],
+        "description": "ES6 import statement",
+        "scope": "ts,js,tsx,jsx"
+    },
+
+    "CommonJS Require": {
+        "prefix": "req",
+        "body": [
+            "const $1 = require('$2');"
+        ],
+        "description": "CommonJS module require statement",
+        "scope": "ts,js"
+    },
+
+    "Export Default": {
+        "prefix": "ed",
+        "body": [
+            "export default $1;"
+        ],
+        "description": "ES6 export default statement",
+        "scope": "ts,js,tsx,jsx"
+    },
+
+    "React Arrow Function Component with Export (rafce)": {
+        "prefix": "rafce",
+        "body": [
+            "import React from 'react';",
+            "",
+            "const ${1:ComponentName} = () => {",
+            "    return (",
+            "        <div>",
+            "            $0",
+            "        </div>",
+            "    );",
+            "};",
+            "",
+            "export default ${1:ComponentName};"
+        ],
+        "description": "Creates a React Arrow Function Component with ES7 export",
+        "scope": "tsx,jsx,js,ts"
+    },
+
+    "React Function Component with Export (rfce)": {
+        "prefix": "rfce",
+        "body": [
+            "import React from 'react';",
+            "",
+            "function ${1:ComponentName}() {",
+            "    return (",
+            "        <div>",
+            "            $0",
+            "        </div>",
+            "    );",
+            "}",
+            "",
+            "export default ${1:ComponentName};"
+        ],
+        "description": "Creates a React Function Component with ES7 export",
+        "scope": "tsx,jsx,js,ts"
+    },
+
+    "React Class Component with Export (rce)": {
+        "prefix": "rce",
+        "body": [
+            "import React, { Component } from 'react';",
+            "",
+            "export class ${1:ComponentName} extends Component {",
+            "    render() {",
+            "        return (",
+            "            <div>",
+            "                $0",
+            "            </div>",
+            "        );",
+            "    }",
+            "}",
+            "",
+            "export default ${1:ComponentName};"
+        ],
+        "description": "Creates a React Class Component with ES7 export",
+        "scope": "tsx,jsx,js,ts"
+    },
+
+    "React Functional Component": {
+        "prefix": "rfc",
+        "body": [
+            "export const ${1:ComponentName} = () => {",
+            "    return (",
+            "        <div>",
+            "            $0",
+            "        </div>",
+            "    );",
+            "};"
+        ],
+        "description": "React functional component export",
+        "scope": "tsx,jsx,js,ts"
+    },
+
+    "React Arrow Function Component (rafc)": {
+        "prefix": "rafc",
+        "body": [
+            "import React from 'react';",
+            "",
+            "export const ${1:ComponentName} = () => {",
+            "    return (",
+            "        <div>",
+            "            $0",
+            "        </div>",
+            "    );",
+            "};"
+        ],
+        "description": "Creates a React Arrow Function Component",
+        "scope": "tsx,jsx,js,ts"
+    },
+
+    "TypeScript React Arrow Function Component with Export (tsrafce)": {
+        "prefix": "tsrafce",
+        "body": [
+            "import React from 'react';",
+            "",
+            "type Props = {};",
+            "",
+            "const ${1:ComponentName} = (props: Props) => {",
+            "    return (",
+            "        <div>",
+            "            $0",
+            "        </div>",
+            "    );",
+            "};",
+            "",
+            "export default ${1:ComponentName};"
+        ],
+        "description": "Creates a TypeScript React Arrow Function Component with Props & Export",
+        "scope": "tsx,jsx,ts,js"
+    },
+
+    "TypeScript React Function Component with Export (tsrfce)": {
+        "prefix": "tsrfce",
+        "body": [
+            "import React from 'react';",
+            "",
+            "type Props = {};",
+            "",
+            "function ${1:ComponentName}({}: Props) {",
+            "    return (",
+            "        <div>",
+            "            $0",
+            "        </div>",
+            "    );",
+            "}",
+            "",
+            "export default ${1:ComponentName};"
+        ],
+        "description": "Creates a TypeScript React Function Component with Props & Export",
+        "scope": "tsx,jsx,ts,js"
+    },
+
+    "TypeScript React Functional Component (tsrfc)": {
+        "prefix": "tsrfc",
+        "body": [
+            "import React from 'react';",
+            "",
+            "type Props = {};",
+            "",
+            "export const ${1:ComponentName} = (props: Props) => {",
+            "    return (",
+            "        <div>",
+            "            $0",
+            "        </div>",
+            "    );",
+            "};"
+        ],
+        "description": "Creates a TypeScript React Functional Component with Props",
+        "scope": "tsx,jsx,ts,js"
+    },
+
+    "TypeScript React Arrow Function Component (tsrafc)": {
+        "prefix": "tsrafc",
+        "body": [
+            "import React from 'react';",
+            "",
+            "type Props = {};",
+            "",
+            "export const ${1:ComponentName} = (props: Props) => {",
+            "    return (",
+            "        <div>",
+            "            $0",
+            "        </div>",
+            "    );",
+            "};"
+        ],
+        "description": "Creates a TypeScript React Arrow Function Component with Props",
+        "scope": "tsx,jsx,ts,js"
+    },
+
+    "React Function Component Export (rfe)": {
+        "prefix": "rfe",
+        "body": [
+            "import React from 'react';",
+            "",
+            "export default function ${1:ComponentName}() {",
+            "    return (",
+            "        <div>",
+            "            $0",
+            "        </div>",
+            "    );",
+            "}"
+        ],
+        "description": "Creates a React Function Component with default export",
+        "scope": "tsx,jsx,js,ts"
+    },
+
+    "React useState Hook": {
+        "prefix": "useState",
+        "body": [
+            "const [${1:state}, set${1:state}] = useState(${2:initialState});"
+        ],
+        "description": "React useState hook",
+        "scope": "tsx,jsx,ts,js"
+    },
+
+    "React useEffect Hook": {
+        "prefix": "useEffect",
+        "body": [
+            "useEffect(() => {",
+            "    $0",
+            "    return () => {",
+            "        $1",
+            "    };",
+            "}, [${2}]);"
+        ],
+        "description": "React useEffect hook",
+        "scope": "tsx,jsx,ts,js"
+    },
+
+    "React useContext Hook": {
+        "prefix": "useContext",
+        "body": [
+            "const ${1:context} = useContext(${2:contextValue});"
+        ],
+        "description": "React useContext hook",
+        "scope": "tsx,jsx,ts,js"
+    },
+
+    "React useRef Hook": {
+        "prefix": "useRef",
+        "body": [
+            "const ${1:ref} = useRef(${2:initialValue});"
+        ],
+        "description": "React useRef hook",
+        "scope": "tsx,jsx,ts,js"
+    },
+
+    "React useCallback Hook": {
+        "prefix": "useCallback",
+        "body": [
+            "const ${1:memoizedCallback} = useCallback(",
+            "    (${2:params}) => {",
+            "        $0",
+            "    },",
+            "    [${3}],",
+            ");"
+        ],
+        "description": "React useCallback hook",
+        "scope": "tsx,jsx,ts,js"
+    },
+
+    "React useMemo Hook": {
+        "prefix": "useMemo",
+        "body": [
+            "const ${1:memoizedValue} = useMemo(() => {",
+            "    return $0;",
+            "}, [${2}]);"
+        ],
+        "description": "React useMemo hook",
+        "scope": "tsx,jsx,ts,js"
+    },
+
+    "Console Log (clg)": {
+        "prefix": "clg",
+        "body": [
+            "console.log(${1:object});"
+        ],
+        "description": "console.log statement",
+        "scope": "tsx,jsx,ts,js,html"
+    },
+
+    "ES7 Import Module (imp)": {
+        "prefix": "imp",
+        "body": [
+            "import ${2:moduleName} from '${1:module}';"
+        ],
+        "description": "ES7 import statement",
+        "scope": "tsx,jsx,ts,js"
+    },
+
+    "ES7 Export Default (exp)": {
+        "prefix": "exp",
+        "body": [
+            "export default ${1:moduleName};"
+        ],
+        "description": "ES7 export default statement",
+        "scope": "tsx,jsx,ts,js"
+    },
+
+    "React useState Hook (us)": {
+        "prefix": "us",
+        "body": [
+            "const [${1:state}, set${1:state}] = useState($2);"
+        ],
+        "description": "React useState hook",
+        "scope": "tsx,jsx,ts,js"
+    },
+
+    "React useEffect Hook (ue)": {
+        "prefix": "ue",
+        "body": [
+            "useEffect(() => {",
+            "    $0",
+            "}, []);"
+        ],
+        "description": "React useEffect hook",
+        "scope": "tsx,jsx,ts,js"
+    },
+
+    "Include Header": {
+        "prefix": "inc",
+        "body": [
+            "#include <$1>"
+        ],
+        "description": "Include standard library header",
+        "scope": "cpp,hpp,c,h,cc,cxx"
+    },
+
+    "Include Local Header": {
+        "prefix": "incl",
+        "body": [
+            "#include \"$1\""
+        ],
+        "description": "Include project local header",
+        "scope": "cpp,hpp,c,h,cc,cxx"
+    },
+
+    "Main Function": {
+        "prefix": "main",
+        "body": [
+            "int main(int argc, char* argv[]) {",
+            "    $0",
+            "    return 0;",
+            "}"
+        ],
+        "description": "Standard main entry function",
+        "scope": "cpp,c,cc,cxx"
+    },
+
+    "Print to Console (C++ log)": {
+        "prefix": "log",
+        "body": [
+            "std::cout << \"$1\" << std::endl;"
+        ],
+        "description": "Log output to console in C++",
+        "scope": "cpp,hpp,c,h,cc,cxx"
+    },
+
+    "Print to Console (C++ cout)": {
+        "prefix": "cout",
+        "body": [
+            "std::cout << $1 << std::endl;"
+        ],
+        "description": "Print expression to standard console output",
+        "scope": "cpp,hpp,c,h,cc,cxx"
+    },
+
+    "For Loop (C++)": {
+        "prefix": "fori",
+        "body": [
+            "for (size_t ${1:i} = 0; ${1:i} < ${2:count}; ++${1:i}) {",
+            "    $0",
+            "}"
+        ],
+        "description": "Standard indexed for loop",
+        "scope": "cpp,c,cc,cxx"
+    },
+
+    "Class Definition": {
+        "prefix": "class",
+        "body": [
+            "class ${1:MyClass} {",
+            "public:",
+            "    ${1:MyClass}();",
+            "    virtual ~${1:MyClass}();",
+            "private:",
+            "    $0",
+            "};"
+        ],
+        "description": "C++ Class boilerplate",
+        "scope": "cpp,hpp,cc,h"
+    },
+
+    "Struct Definition": {
+        "prefix": "struct",
+        "body": [
+            "struct ${1:MyStruct} {",
+            "    $0",
+            "};"
+        ],
+        "description": "C++ Struct boilerplate",
+        "scope": "cpp,hpp,cc,h"
+    },
+
+    "Std Vector Declaration": {
+        "prefix": "vec",
+        "body": [
+            "std::vector<${1:int}> ${2:items};"
+        ],
+        "description": "Standard vector container declaration",
+        "scope": "cpp,hpp,cc,h"
+    },
+
+    "Python Function": {
+        "prefix": "def",
+        "body": [
+            "def ${1:function_name}($2):",
+            "    \"\"\"$3\"\"\"",
+            "    $0"
+        ],
+        "description": "Python function definition",
+        "scope": "py"
+    },
+
+    "Python If Main": {
+        "prefix": "ifmain",
+        "body": [
+            "if __name__ == '__main__':",
+            "    $0"
+        ],
+        "description": "Python entrypoint boilerplate",
+        "scope": "py"
+    },
+
+    "Python Main Entrypoint": {
+        "prefix": "main",
+        "body": [
+            "if __name__ == '__main__':",
+            "    $0"
+        ],
+        "description": "Python main block shortcut",
+        "scope": "py"
+    },
+
+    "Python Class": {
+        "prefix": "class",
+        "body": [
+            "class ${1:ClassName}:",
+            "    def __init__(self$2):",
+            "        $0"
+        ],
+        "description": "Python class definition",
+        "scope": "py"
+    },
+
+    "Python Class (Short)": {
+        "prefix": "cls",
+        "body": [
+            "class ${1:ClassName}:",
+            "    def __init__(self$2):",
+            "        $0"
+        ],
+        "description": "Python class shortcut",
+        "scope": "py"
+    },
+
+    "Python Try Except Block": {
+        "prefix": "tryex",
+        "body": [
+            "try:",
+            "    $1",
+            "except ${2:Exception} as ${3:e}:",
+            "    print(f\"Error: {${3:e}}\")",
+            "    $0"
+        ],
+        "description": "Python try-except error handling block",
+        "scope": "py"
+    },
+
+    "Python With Open File": {
+        "prefix": "withopen",
+        "body": [
+            "with open('${1:filename.txt}', '${2:r}', encoding='utf-8') as f:",
+            "    ${3:content} = f.read()",
+            "    $0"
+        ],
+        "description": "Python file context manager open statement",
+        "scope": "py"
+    },
+
+    "Python For In Loop": {
+        "prefix": "forin",
+        "body": [
+            "for ${1:item} in ${2:items}:",
+            "    $0"
+        ],
+        "description": "Python for-in sequence loop",
+        "scope": "py"
+    },
+
+    "Python List Comprehension": {
+        "prefix": "lc",
+        "body": [
+            "[${1:x} for ${1:x} in ${2:iterable}]"
+        ],
+        "description": "Python inline list comprehension",
+        "scope": "py"
+    },
+
+    "Python Dict Comprehension": {
+        "prefix": "dc",
+        "body": [
+            "{${1:k}: ${2:v} for ${1:k}, ${2:v} in ${3:iterable}}"
+        ],
+        "description": "Python inline dictionary comprehension",
+        "scope": "py"
+    },
+
+    "Python Lambda Expression": {
+        "prefix": "lambda",
+        "body": [
+            "lambda ${1:x}: ${2:expression}"
+        ],
+        "description": "Python anonymous lambda function",
+        "scope": "py"
+    },
+
+    "Python Print": {
+        "prefix": "print",
+        "body": [
+            "print($1)"
+        ],
+        "description": "Python print statement",
+        "scope": "py"
+    },
+
+    "Print to Console (Python)": {
+        "prefix": "log",
+        "body": [
+            "print($1)"
+        ],
+        "description": "Print expression to standard console output in Python",
+        "scope": "py"
+    },
+
+    "PHP Open Tag": {
+        "prefix": "php",
+        "body": [
+            "<?php",
+            "",
+            "$0"
+        ],
+        "description": "PHP opening tag skeleton",
+        "scope": "php"
+    },
+
+    "PHP Echo Statement": {
+        "prefix": "echo",
+        "body": [
+            "echo ${1:\\$var};"
+        ],
+        "description": "PHP echo variable statement",
+        "scope": "php"
+    },
+
+    "PHP Foreach Loop": {
+        "prefix": "fore",
+        "body": [
+            "foreach (${1:\\$items} as ${2:\\$item}) {",
+            "    $0",
+            "}"
+        ],
+        "description": "PHP foreach value iteration loop",
+        "scope": "php"
+    },
+
+    "PHP Foreach Key Value Loop": {
+        "prefix": "forek",
+        "body": [
+            "foreach (${1:\\$items} as ${2:\\$key} => ${3:\\$value}) {",
+            "    $0",
+            "}"
+        ],
+        "description": "PHP foreach key => value iteration loop",
+        "scope": "php"
+    },
+
+    "PHP Function Declaration": {
+        "prefix": "fun",
+        "body": [
+            "function ${1:name}(${2:\\$params}) {",
+            "    $0",
+            "}"
+        ],
+        "description": "PHP user-defined function",
+        "scope": "php"
+    },
+
+    "PHP Class Definition": {
+        "prefix": "cls",
+        "body": [
+            "class ${1:ClassName} {",
+            "    public function __construct() {",
+            "        $0",
+            "    }",
+            "}"
+        ],
+        "description": "PHP class boilerplate with constructor",
+        "scope": "php"
+    },
+
+    "PHP PDO Database Connection": {
+        "prefix": "pdoconnect",
+        "body": [
+            "$dsn = 'mysql:host=${1:localhost};dbname=${2:database};charset=utf8mb4';",
+            "$pdo = new PDO($dsn, '${3:root}', '${4:password}', [",
+            "    PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,",
+            "    PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC",
+            "]);",
+            "$0"
+        ],
+        "description": "PHP PDO MySQL database connection setup",
+        "scope": "php"
+    },
+
+    "PHP PDO Prepared Query": {
+        "prefix": "query",
+        "body": [
+            "$stmt = $pdo->prepare(\"${1:SELECT * FROM table WHERE id = ?}\");",
+            "$stmt->execute([$2]);",
+            "$rows = $stmt->fetchAll();",
+            "$0"
+        ],
+        "description": "PHP PDO prepared statement query and fetchAll",
+        "scope": "php"
+    },
+
+    "PHP Try Catch Block": {
+        "prefix": "trycatch",
+        "body": [
+            "try {",
+            "    $1",
+            "} catch (Exception $e) {",
+            "    echo $e->getMessage();",
+            "    $0",
+            "}"
+        ],
+        "description": "PHP try-catch error handling block",
+        "scope": "php"
+    },
+
+    "PHP JSON Header and Response": {
+        "prefix": "json",
+        "body": [
+            "header('Content-Type: application/json');",
+            "echo json_encode(${1:\\$data});"
+        ],
+        "description": "PHP JSON API response header and serialization",
+        "scope": "php"
+    },
+
+    "PHP Session Start": {
+        "prefix": "session",
+        "body": [
+            "session_start();",
+            "$0"
+        ],
+        "description": "PHP session initialization",
+        "scope": "php"
+    }
+
+}

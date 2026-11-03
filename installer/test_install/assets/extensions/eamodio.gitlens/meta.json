@@ -1,0 +1,26 @@
+{
+  "id": "eamodio.gitlens",
+  "displayName": "GitLens \u2014 Git supercharged",
+  "publisher": "eamodio",
+  "publisherDisplayName": "GitKraken",
+  "version": "2026.10.310508",
+  "description": "Supercharge Git within VS Code \u2014 Visualize code authorship at a glance via Git blame annotations and CodeLens, seamlessly navigate and explore Git repositories, gain valuable insights via rich visualizations and powerful comparison commands, and so much more",
+  "installs": 53666213,
+  "rating": 3.3724868297576904,
+  "ratingCount": 945,
+  "lastUpdated": "2026-10-31T09:22:17.557Z",
+  "icon": "icon.png",
+  "categories": [
+    "SCM Providers"
+  ],
+  "tags": [
+    "__web_extension",
+    "annotation",
+    "blame",
+    "git",
+    "gitlens",
+    "keybindings",
+    "log",
+    "multi-root ready"
+  ]
+}

@@ -201,6 +201,19 @@ void PackageManagerView::DetectInstalledRuntimes() {
                 }
             }
         }
+        if (!phpCard.isInstalled) {
+            wchar_t exePath[MAX_PATH] = { 0 };
+            GetModuleFileNameW(nullptr, exePath, MAX_PATH);
+            std::filesystem::path exeDir = std::filesystem::path(exePath).parent_path();
+            std::filesystem::path bundled = exeDir / L"runtimes" / L"php" / L"php.exe";
+            if (!std::filesystem::exists(bundled)) {
+                bundled = exeDir.parent_path() / L"runtimes" / L"php" / L"php.exe";
+            }
+            if (std::filesystem::exists(bundled)) {
+                phpCard.isInstalled = true;
+                phpCard.executable = bundled.wstring();
+            }
+        }
     }
     m_languageCards.push_back(std::move(phpCard));
 

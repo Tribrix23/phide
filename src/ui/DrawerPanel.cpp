@@ -368,6 +368,19 @@ void DrawerPanel::RebuildVisibleItems() {
                     }
                 }
             }
+            if (phpExePath.empty()) {
+                wchar_t exePath[MAX_PATH] = { 0 };
+                if (GetModuleFileNameW(nullptr, exePath, MAX_PATH)) {
+                    std::filesystem::path exeDir = std::filesystem::path(exePath).parent_path();
+                    std::filesystem::path bundled = exeDir / L"runtimes" / L"php" / L"php.exe";
+                    if (!std::filesystem::exists(bundled, ecCheck)) {
+                        bundled = exeDir.parent_path() / L"runtimes" / L"php" / L"php.exe";
+                    }
+                    if (std::filesystem::exists(bundled, ecCheck)) {
+                        phpExePath = bundled.wstring();
+                    }
+                }
+            }
             if (!phpExePath.empty()) {
                 std::wstring dirName = std::filesystem::path(phpExePath).parent_path().filename().wstring();
                 std::wstring verStr;

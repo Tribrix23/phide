@@ -1,6 +1,8 @@
 # Build Artifacts
 bin/
 build/
+installer/payload/
+installer/output/
 *.obj
 *.exe
 *.pdb
