@@ -1292,6 +1292,28 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidateYaml(const Buffer& buffer)
     return diagnostics;
 }
 
+static size_t CalculateLevenshtein(const std::wstring& s1, const std::wstring& s2) {
+    const size_t m = s1.length();
+    const size_t n = s2.length();
+    if (m == 0) return n;
+    if (n == 0) return m;
+    if (std::abs(static_cast<long long>(m) - static_cast<long long>(n)) > 3) return 99;
+
+    std::vector<size_t> v0(n + 1);
+    std::vector<size_t> v1(n + 1);
+    for (size_t i = 0; i <= n; ++i) v0[i] = i;
+
+    for (size_t i = 0; i < m; ++i) {
+        v1[0] = i + 1;
+        for (size_t j = 0; j < n; ++j) {
+            size_t cost = (towlower(s1[i]) == towlower(s2[j])) ? 0 : 1;
+            v1[j + 1] = (std::min)({ v1[j] + 1, v0[j + 1] + 1, v0[j] + cost });
+        }
+        v0 = v1;
+    }
+    return v0[n];
+}
+
 std::vector<lsp::Diagnostic> SyntaxValidator::ValidatePython(const Buffer& buffer) {
     std::vector<lsp::Diagnostic> diagnostics;
 
@@ -1490,6 +1512,371 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidatePython(const Buffer& buffe
 
     for (const auto& b : bracketStack) {
         diagnostics.push_back({ b.line, b.col, 1, std::wstring(L"Python: Unclosed bracket '") + b.ch + L"'", 1 });
+    }
+
+    // -------------------------------------------------------------
+    // Real-time Python Scope & Undefined Variable Analysis (PEP 8 / Flake8 F821 / NameError)
+    // -------------------------------------------------------------
+    static const std::unordered_set<std::wstring> pyBuiltins = {
+        L"abs", L"aiter", L"all", L"anext", L"any", L"ascii", L"bin", L"bool", L"breakpoint",
+        L"bytearray", L"bytes", L"callable", L"chr", L"classmethod", L"compile", L"complex",
+        L"delattr", L"dict", L"dir", L"divmod", L"enumerate", L"eval", L"exec", L"filter",
+        L"float", L"format", L"frozenset", L"getattr", L"globals", L"hasattr", L"hash", L"help",
+        L"hex", L"id", L"input", L"int", L"isinstance", L"issubclass", L"iter", L"len", L"list",
+        L"locals", L"map", L"max", L"memoryview", L"min", L"next", L"object", L"oct", L"open",
+        L"ord", L"pow", L"print", L"property", L"range", L"repr", L"reversed", L"round", L"set",
+        L"setattr", L"slice", L"sorted", L"staticmethod", L"str", L"sum", L"super", L"tuple",
+        L"type", L"vars", L"zip", L"__import__",
+        L"True", L"False", L"None", L"Ellipsis", L"NotImplemented",
+        L"__name__", L"__file__", L"__doc__", L"__package__", L"__annotations__", L"__builtins__",
+        L"__debug__", L"__dict__", L"__class__", L"self", L"cls",
+        L"BaseException", L"Exception", L"ArithmeticError", L"BufferError", L"LookupError",
+        L"AssertionError", L"AttributeError", L"EOFError", L"FloatingPointError", L"GeneratorExit",
+        L"ImportError", L"ModuleNotFoundError", L"IndexError", L"KeyError", L"KeyboardInterrupt",
+        L"MemoryError", L"NameError", L"NotImplementedError", L"OSError", L"OverflowError",
+        L"RecursionError", L"ReferenceError", L"RuntimeError", L"StopIteration", L"StopAsyncIteration",
+        L"SyntaxError", L"IndentationError", L"TabError", L"SystemError", L"SystemExit", L"TypeError",
+        L"UnboundLocalError", L"UnicodeError", L"UnicodeEncodeError", L"UnicodeDecodeError",
+        L"UnicodeTranslateError", L"ValueError", L"ZeroDivisionError", L"EnvironmentError",
+        L"IOError", L"WindowsError", L"BlockingIOError", L"ChildProcessError", L"ConnectionError",
+        L"BrokenPipeError", L"ConnectionAbortedError", L"ConnectionRefusedError", L"ConnectionResetError",
+        L"FileExistsError", L"FileNotFoundError", L"InterruptedError", L"IsADirectoryError",
+        L"NotADirectoryError", L"PermissionError", L"ProcessLookupError", L"TimeoutError",
+        L"Warning", L"UserWarning", L"DeprecationWarning", L"PendingDeprecationWarning",
+        L"SyntaxWarning", L"RuntimeWarning", L"FutureWarning", L"ImportWarning", L"UnicodeWarning",
+        L"BytesWarning", L"ResourceWarning"
+    };
+
+    static const std::unordered_set<std::wstring> pyKeywords = {
+        L"and", L"as", L"assert", L"async", L"await", L"break", L"case", L"class", L"continue",
+        L"def", L"del", L"elif", L"else", L"except", L"finally", L"for", L"from", L"global",
+        L"if", L"import", L"in", L"is", L"lambda", L"match", L"nonlocal", L"not", L"or",
+        L"pass", L"raise", L"return", L"try", L"while", L"with", L"yield"
+    };
+
+    std::unordered_set<std::wstring> definedSymbols;
+    bool hasStarImport = false;
+
+    auto isIdentChar = [](wchar_t c) {
+        return iswalnum(c) || c == L'_';
+    };
+    auto isIdentStart = [](wchar_t c) {
+        return iswalpha(c) || c == L'_';
+    };
+
+    // Pass 1: Collect defined symbols across the entire document
+    for (size_t l = 0; l < buffer.GetLineCount(); ++l) {
+        const auto& line = buffer.GetLine(l);
+        std::wstring code = line;
+        bool inStr = false;
+        wchar_t qChar = 0;
+        for (size_t i = 0; i < code.length(); ++i) {
+            wchar_t ch = code[i];
+            if (!inStr && (ch == L'"' || ch == L'\'')) {
+                inStr = true;
+                qChar = ch;
+            } else if (inStr && ch == qChar && (i == 0 || code[i - 1] != L'\\')) {
+                inStr = false;
+            } else if (!inStr && ch == L'#') {
+                code = code.substr(0, i);
+                break;
+            }
+        }
+        size_t start = 0;
+        while (start < code.length() && (code[start] == L' ' || code[start] == L'\t')) start++;
+        std::wstring trimmedCode = code.substr(start);
+        if (trimmedCode.empty()) continue;
+
+        if (trimmedCode.rfind(L"from ", 0) == 0) {
+            size_t impPos = trimmedCode.find(L" import ");
+            if (impPos != std::wstring::npos) {
+                std::wstring impPart = trimmedCode.substr(impPos + 8);
+                if (impPart.find(L'*') != std::wstring::npos) {
+                    hasStarImport = true;
+                } else {
+                    size_t p = 0;
+                    while (p < impPart.length()) {
+                        while (p < impPart.length() && (impPart[p] == L' ' || impPart[p] == L',' || impPart[p] == L'(' || impPart[p] == L')')) p++;
+                        if (p >= impPart.length()) break;
+                        size_t tokenStart = p;
+                        while (p < impPart.length() && isIdentChar(impPart[p])) p++;
+                        std::wstring sym = impPart.substr(tokenStart, p - tokenStart);
+                        while (p < impPart.length() && impPart[p] == L' ') p++;
+                        if (p + 3 <= impPart.length() && impPart.substr(p, 3) == L"as ") {
+                            p += 3;
+                            while (p < impPart.length() && impPart[p] == L' ') p++;
+                            size_t aliasStart = p;
+                            while (p < impPart.length() && isIdentChar(impPart[p])) p++;
+                            sym = impPart.substr(aliasStart, p - aliasStart);
+                        }
+                        if (!sym.empty() && pyKeywords.find(sym) == pyKeywords.end()) {
+                            definedSymbols.insert(sym);
+                        }
+                    }
+                }
+            }
+            continue;
+        }
+
+        if (trimmedCode.rfind(L"import ", 0) == 0) {
+            std::wstring impPart = trimmedCode.substr(7);
+            size_t p = 0;
+            while (p < impPart.length()) {
+                while (p < impPart.length() && (impPart[p] == L' ' || impPart[p] == L',')) p++;
+                if (p >= impPart.length()) break;
+                size_t tokenStart = p;
+                while (p < impPart.length() && (isIdentChar(impPart[p]) || impPart[p] == L'.')) p++;
+                std::wstring mod = impPart.substr(tokenStart, p - tokenStart);
+                size_t dot = mod.find(L'.');
+                std::wstring baseMod = (dot != std::wstring::npos) ? mod.substr(0, dot) : mod;
+
+                while (p < impPart.length() && impPart[p] == L' ') p++;
+                if (p + 3 <= impPart.length() && impPart.substr(p, 3) == L"as ") {
+                    p += 3;
+                    while (p < impPart.length() && impPart[p] == L' ') p++;
+                    size_t aliasStart = p;
+                    while (p < impPart.length() && isIdentChar(impPart[p])) p++;
+                    baseMod = impPart.substr(aliasStart, p - aliasStart);
+                }
+                if (!baseMod.empty()) {
+                    definedSymbols.insert(baseMod);
+                }
+            }
+            continue;
+        }
+
+        if (trimmedCode.rfind(L"def ", 0) == 0 || trimmedCode.rfind(L"async def ", 0) == 0) {
+            size_t defOffset = (trimmedCode.rfind(L"async def ", 0) == 0) ? 10 : 4;
+            size_t p = defOffset;
+            while (p < trimmedCode.length() && trimmedCode[p] == L' ') p++;
+            size_t fnStart = p;
+            while (p < trimmedCode.length() && isIdentChar(trimmedCode[p])) p++;
+            if (p > fnStart) {
+                definedSymbols.insert(trimmedCode.substr(fnStart, p - fnStart));
+            }
+            size_t openP = trimmedCode.find(L'(', p);
+            size_t closeP = trimmedCode.rfind(L')');
+            if (openP != std::wstring::npos && closeP != std::wstring::npos && closeP > openP) {
+                std::wstring params = trimmedCode.substr(openP + 1, closeP - openP - 1);
+                size_t pp = 0;
+                while (pp < params.length()) {
+                    while (pp < params.length() && (params[pp] == L' ' || params[pp] == L'*' || params[pp] == L'/')) pp++;
+                    if (pp >= params.length()) break;
+                    if (isIdentStart(params[pp])) {
+                        size_t pStart = pp;
+                        while (pp < params.length() && isIdentChar(params[pp])) pp++;
+                        std::wstring paramName = params.substr(pStart, pp - pStart);
+                        if (!paramName.empty() && pyKeywords.find(paramName) == pyKeywords.end()) {
+                            definedSymbols.insert(paramName);
+                        }
+                    }
+                    while (pp < params.length() && params[pp] != L',') pp++;
+                    if (pp < params.length() && params[pp] == L',') pp++;
+                }
+            }
+            continue;
+        }
+
+        if (trimmedCode.rfind(L"class ", 0) == 0) {
+            size_t p = 6;
+            while (p < trimmedCode.length() && trimmedCode[p] == L' ') p++;
+            size_t clStart = p;
+            while (p < trimmedCode.length() && isIdentChar(trimmedCode[p])) p++;
+            if (p > clStart) {
+                definedSymbols.insert(trimmedCode.substr(clStart, p - clStart));
+            }
+            continue;
+        }
+
+        if (trimmedCode.rfind(L"for ", 0) == 0 || trimmedCode.rfind(L"async for ", 0) == 0) {
+            size_t forOffset = (trimmedCode.rfind(L"async for ", 0) == 0) ? 10 : 4;
+            size_t inPos = trimmedCode.find(L" in ", forOffset);
+            if (inPos != std::wstring::npos) {
+                std::wstring varsPart = trimmedCode.substr(forOffset, inPos - forOffset);
+                size_t vp = 0;
+                while (vp < varsPart.length()) {
+                    while (vp < varsPart.length() && !isIdentStart(varsPart[vp])) vp++;
+                    if (vp >= varsPart.length()) break;
+                    size_t vStart = vp;
+                    while (vp < varsPart.length() && isIdentChar(varsPart[vp])) vp++;
+                    std::wstring vName = varsPart.substr(vStart, vp - vStart);
+                    if (!vName.empty() && pyKeywords.find(vName) == pyKeywords.end()) {
+                        definedSymbols.insert(vName);
+                    }
+                }
+            }
+            continue;
+        }
+
+        size_t asPos = trimmedCode.find(L" as ");
+        if (asPos != std::wstring::npos && (trimmedCode.rfind(L"with ", 0) == 0 || trimmedCode.rfind(L"async with ", 0) == 0 || trimmedCode.rfind(L"except ", 0) == 0)) {
+            size_t p = asPos + 4;
+            while (p < trimmedCode.length() && trimmedCode[p] == L' ') p++;
+            size_t varStart = p;
+            while (p < trimmedCode.length() && isIdentChar(trimmedCode[p])) p++;
+            if (p > varStart) {
+                std::wstring asVar = trimmedCode.substr(varStart, p - varStart);
+                if (!asVar.empty() && pyKeywords.find(asVar) == pyKeywords.end()) {
+                    definedSymbols.insert(asVar);
+                }
+            }
+        }
+
+        size_t eqPos = std::wstring::npos;
+        int bDepth = 0;
+        for (size_t i = 0; i < code.length(); ++i) {
+            wchar_t c = code[i];
+            if (c == L'(' || c == L'[' || c == L'{') bDepth++;
+            else if (c == L')' || c == L']' || c == L'}') { if (bDepth > 0) bDepth--; }
+            else if (bDepth == 0 && c == L'=') {
+                if (i + 1 < code.length() && code[i + 1] == L'=') { i++; continue; }
+                if (i > 0 && (code[i - 1] == L'!' || code[i - 1] == L'<' || code[i - 1] == L'>')) continue;
+                eqPos = i;
+                break;
+            }
+        }
+        if (eqPos != std::wstring::npos) {
+            std::wstring lhs = code.substr(0, eqPos);
+            while (!lhs.empty() && (lhs.back() == L'+' || lhs.back() == L'-' || lhs.back() == L'*' || lhs.back() == L'/' || lhs.back() == L':' || iswspace(lhs.back()))) {
+                lhs.pop_back();
+            }
+            size_t lp = 0;
+            while (lp < lhs.length()) {
+                while (lp < lhs.length() && !isIdentStart(lhs[lp])) lp++;
+                if (lp >= lhs.length()) break;
+                bool isAttr = (lp > 0 && lhs[lp - 1] == L'.');
+                size_t idStart = lp;
+                while (lp < lhs.length() && isIdentChar(lhs[lp])) lp++;
+                std::wstring idName = lhs.substr(idStart, lp - idStart);
+                if (!isAttr && !idName.empty() && pyKeywords.find(idName) == pyKeywords.end()) {
+                    definedSymbols.insert(idName);
+                }
+            }
+        }
+    }
+
+    // Pass 2: Detect undefined names and typos
+    if (!hasStarImport) {
+        bool inTripleStr = false;
+        wchar_t tChar = 0;
+        for (size_t l = 0; l < buffer.GetLineCount(); ++l) {
+            const auto& line = buffer.GetLine(l);
+            bool inSingleStr = false;
+            wchar_t sChar = 0;
+            size_t c = 0;
+            int parenDepth = 0;
+
+            while (c < line.length()) {
+                wchar_t ch = line[c];
+
+                if (inTripleStr) {
+                    if (ch == tChar && c + 2 < line.length() && line[c + 1] == tChar && line[c + 2] == tChar) {
+                        inTripleStr = false;
+                        c += 3;
+                    } else {
+                        c++;
+                    }
+                    continue;
+                }
+
+                if (inSingleStr) {
+                    if (ch == L'\\') { c += 2; continue; }
+                    if (ch == sChar) inSingleStr = false;
+                    c++;
+                    continue;
+                }
+
+                if ((ch == L'"' || ch == L'\'') && c + 2 < line.length() && line[c + 1] == ch && line[c + 2] == ch) {
+                    inTripleStr = true;
+                    tChar = ch;
+                    c += 3;
+                    continue;
+                }
+                if (ch == L'"' || ch == L'\'') {
+                    inSingleStr = true;
+                    sChar = ch;
+                    c++;
+                    continue;
+                }
+
+                if (ch == L'#') {
+                    break;
+                }
+
+                if (ch == L'(' || ch == L'[' || ch == L'{') { parenDepth++; c++; continue; }
+                if (ch == L')' || ch == L']' || ch == L'}') { if (parenDepth > 0) parenDepth--; c++; continue; }
+
+                if (isIdentStart(ch)) {
+                    bool isAttr = false;
+                    size_t backP = c;
+                    while (backP > 0 && (line[backP - 1] == L' ' || line[backP - 1] == L'\t')) backP--;
+                    if (backP > 0 && line[backP - 1] == L'.') {
+                        isAttr = true;
+                    }
+
+                    size_t tokenStart = c;
+                    while (c < line.length() && isIdentChar(line[c])) c++;
+                    std::wstring sym = line.substr(tokenStart, c - tokenStart);
+
+                    if (isAttr) {
+                        continue;
+                    }
+
+                    if (parenDepth > 0) {
+                        size_t nextP = c;
+                        while (nextP < line.length() && (line[nextP] == L' ' || line[nextP] == L'\t')) nextP++;
+                        if (nextP < line.length() && line[nextP] == L'=' && (nextP + 1 >= line.length() || line[nextP + 1] != L'=')) {
+                            continue;
+                        }
+                    }
+
+                    if (parenDepth == 0) {
+                        size_t nextP = c;
+                        while (nextP < line.length() && (line[nextP] == L' ' || line[nextP] == L'\t')) nextP++;
+                        if (nextP < line.length() && line[nextP] == L'=' && (nextP + 1 >= line.length() || line[nextP + 1] != L'=')) {
+                            continue;
+                        }
+                        if (nextP + 1 < line.length() && (line[nextP] == L'+' || line[nextP] == L'-' || line[nextP] == L'*' || line[nextP] == L'/') && line[nextP + 1] == L'=') {
+                            continue;
+                        }
+                    }
+
+                    if (pyKeywords.find(sym) != pyKeywords.end() ||
+                        pyBuiltins.find(sym) != pyBuiltins.end() ||
+                        definedSymbols.find(sym) != definedSymbols.end()) {
+                        continue;
+                    }
+
+                    std::wstring bestMatch;
+                    size_t bestDist = 3;
+
+                    for (const auto& candidate : pyBuiltins) {
+                        size_t d = CalculateLevenshtein(sym, candidate);
+                        if (d < bestDist) {
+                            bestDist = d;
+                            bestMatch = candidate;
+                        }
+                    }
+                    for (const auto& candidate : definedSymbols) {
+                        size_t d = CalculateLevenshtein(sym, candidate);
+                        if (d < bestDist) {
+                            bestDist = d;
+                            bestMatch = candidate;
+                        }
+                    }
+
+                    std::wstring msg = L"Python: NameError: name '" + sym + L"' is not defined";
+                    if (!bestMatch.empty() && bestDist <= 2) {
+                        msg += L". Did you mean: '" + bestMatch + L"'?";
+                    }
+
+                    diagnostics.push_back({ l, tokenStart, sym.length(), msg, 1 });
+                    continue;
+                }
+
+                c++;
+            }
+        }
     }
 
     return diagnostics;

@@ -206,6 +206,10 @@ struct TerminalTab {
     std::wstring lastErrorText;
     std::function<void(const std::wstring&, const std::wstring&)> onErrorCallback;
     std::function<void(const std::wstring&)> onReadyCallback;
+    std::function<void(const std::wstring& filePath, int lineNum, const std::wstring& errorMsg, const std::wstring& token)> onExecutionError;
+    std::wstring pendingErrorFile;
+    int pendingErrorLine = 0;
+    std::wstring pendingErrorToken;
 
     HANDLE hProcess = NULL;
     HANDLE hThread = NULL;
@@ -318,6 +322,15 @@ public:
     bool CloseTabByAssociatedFile(const std::wstring& filePath);
     void SetOnLiveServerTabClosed(std::function<void(const std::wstring&)> cb) { m_onLiveServerTabClosed = std::move(cb); }
     void SetOnServerError(std::function<void(const std::wstring&, const std::wstring&)> cb) { m_onServerError = std::move(cb); }
+    void SetOnExecutionError(std::function<void(const std::wstring&, int, const std::wstring&, const std::wstring&)> cb) {
+        m_onExecutionError = std::move(cb);
+        for (auto& t : m_tabs) {
+            if (t) {
+                t->onExecutionError = m_onExecutionError;
+                if (t->splitTab) t->splitTab->onExecutionError = m_onExecutionError;
+            }
+        }
+    }
     void SetOnServerReady(std::function<void(const std::wstring&)> cb) { m_onServerReady = std::move(cb); }
     void SetOnMinimize(std::function<void()> cb) { m_onMinimize = std::move(cb); }
     void SetOnOpenSettings(std::function<void()> cb) { m_onOpenSettings = std::move(cb); }
@@ -503,6 +516,7 @@ private:
     mutable std::vector<TerminalUrlHit> m_visibleUrls;
     std::function<void(const std::wstring&)> m_onLiveServerTabClosed;
     std::function<void(const std::wstring&, const std::wstring&)> m_onServerError;
+    std::function<void(const std::wstring&, int, const std::wstring&, const std::wstring&)> m_onExecutionError;
     std::function<void(const std::wstring&)> m_onServerReady;
     std::function<void(const std::wstring&)> m_onGitHubAuthSuccess;
     std::function<void()> m_onMinimize;

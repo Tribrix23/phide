@@ -292,6 +292,59 @@ void SettingsView::InitializeSettings() {
         it.control = SettingControl::Toggle;
         m_items.push_back(std::move(it));
     }
+
+    // 21. Python Linter: Enable Linting (Toggle)
+    {
+        SettingItem it;
+        it.id = L"python.linting.enabled";
+        it.scope = L"PYTHON LINTER (FLAKE8 / RUFF)";
+        it.title = L"Enable Python Linting";
+        it.description = L"Whether to enable real-time Python syntax and variable linting in the editor.";
+        it.category = SettingCategory::Extensions;
+        it.isCommonlyUsed = true;
+        it.control = SettingControl::Toggle;
+        m_items.push_back(std::move(it));
+    }
+
+    // 22. Python Linter: Check Undefined Variables (Toggle)
+    {
+        SettingItem it;
+        it.id = L"python.linting.undefinedVariableCheck";
+        it.scope = L"PYTHON LINTER (FLAKE8 / RUFF)";
+        it.title = L"Check Undefined Variables";
+        it.description = L"Whether to flag missing variables, undefined names, and typo suggestions (NameError / Flake8 F821) immediately in the editor.";
+        it.category = SettingCategory::Extensions;
+        it.isCommonlyUsed = true;
+        it.control = SettingControl::Toggle;
+        m_items.push_back(std::move(it));
+    }
+
+    // 23. Python Linter: Highlight Terminal Execution Errors (Toggle)
+    {
+        SettingItem it;
+        it.id = L"python.terminal.highlightErrorsInEditor";
+        it.scope = L"PYTHON LINTER (FLAKE8 / RUFF)";
+        it.title = L"Highlight Terminal Execution Errors";
+        it.description = L"Whether to automatically underline execution errors and tracebacks from the terminal directly on the editor line.";
+        it.category = SettingCategory::Extensions;
+        it.isCommonlyUsed = true;
+        it.control = SettingControl::Toggle;
+        m_items.push_back(std::move(it));
+    }
+
+    // 24. Python Linter: Engine (Dropdown)
+    {
+        SettingItem it;
+        it.id = L"python.linting.linter";
+        it.scope = L"PYTHON LINTER (FLAKE8 / RUFF)";
+        it.title = L"Python Linter Engine";
+        it.description = L"Linter engine used for real-time diagnostics (e.g. built-in AST/Flake8, Flake8 CLI, or Ruff).";
+        it.category = SettingCategory::Extensions;
+        it.isCommonlyUsed = true;
+        it.control = SettingControl::Dropdown;
+        it.options = { L"builtin (ast/flake8)", L"flake8", L"ruff" };
+        m_items.push_back(std::move(it));
+    }
 }
 
 std::vector<size_t> SettingsView::GetFilteredItemIndices() const {
@@ -689,6 +742,9 @@ void SettingsView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
             else if (it.id == L"code-runner.runInTerminal") isChecked = config.codeRunnerRunInTerminal;
             else if (it.id == L"code-runner.saveFileBeforeRun") isChecked = config.codeRunnerSaveFileBeforeRun;
             else if (it.id == L"code-runner.clearPreviousOutput") isChecked = config.codeRunnerClearPreviousOutput;
+            else if (it.id == L"python.linting.enabled") isChecked = config.pythonLintingEnabled;
+            else if (it.id == L"python.linting.undefinedVariableCheck") isChecked = config.pythonCheckUndefinedVariables;
+            else if (it.id == L"python.terminal.highlightErrorsInEditor") isChecked = config.pythonHighlightTerminalErrors;
 
             DrawToggleSwitch(pRT, theme, config, it.controlBounds, isChecked, isCardHovered);
         } else if (it.control == SettingControl::NumberStepper) {
@@ -724,6 +780,8 @@ void SettingsView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
                 valStr = config.cursorStyle;
             } else if (it.id == L"code-runner.executorMap.python") {
                 valStr = config.codeRunnerExecutorPython;
+            } else if (it.id == L"python.linting.linter") {
+                valStr = config.pythonLinter;
             }
 
             bool isOpen = (m_openDropdownItemIdx == static_cast<int>(idx));
@@ -892,6 +950,7 @@ void SettingsView::DrawDropdownPopup(ID2D1RenderTarget* pRT, Theme& theme, const
     else if (item.id == L"editor.renderWhitespace") curVal = config.renderWhitespaceMode;
     else if (item.id == L"editor.cursorStyle") curVal = config.cursorStyle;
     else if (item.id == L"code-runner.executorMap.python") curVal = config.codeRunnerExecutorPython;
+    else if (item.id == L"python.linting.linter") curVal = config.pythonLinter;
 
     const float rowH = config.ScaleF(32.0f);
     const float padY = config.ScaleF(6.0f);
@@ -1056,6 +1115,8 @@ bool SettingsView::HandleLButtonDown(POINT clientPt, app::AppConfig& config, The
                         config.cursorStyle = selectedOpt;
                     } else if (dropItem.id == L"code-runner.executorMap.python") {
                         config.codeRunnerExecutorPython = selectedOpt;
+                    } else if (dropItem.id == L"python.linting.linter") {
+                        config.pythonLinter = selectedOpt;
                     }
                     outModifiedSettingId = dropItem.id;
                 }
@@ -1131,6 +1192,12 @@ bool SettingsView::HandleLButtonDown(POINT clientPt, app::AppConfig& config, The
                         config.codeRunnerSaveFileBeforeRun = !config.codeRunnerSaveFileBeforeRun;
                     } else if (it.id == L"code-runner.clearPreviousOutput") {
                         config.codeRunnerClearPreviousOutput = !config.codeRunnerClearPreviousOutput;
+                    } else if (it.id == L"python.linting.enabled") {
+                        config.pythonLintingEnabled = !config.pythonLintingEnabled;
+                    } else if (it.id == L"python.linting.undefinedVariableCheck") {
+                        config.pythonCheckUndefinedVariables = !config.pythonCheckUndefinedVariables;
+                    } else if (it.id == L"python.terminal.highlightErrorsInEditor") {
+                        config.pythonHighlightTerminalErrors = !config.pythonHighlightTerminalErrors;
                     }
                     outModifiedSettingId = it.id;
                     return true;

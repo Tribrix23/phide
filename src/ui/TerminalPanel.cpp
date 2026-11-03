@@ -425,6 +425,88 @@ void TerminalTab::AppendOutput(const char* data, size_t length, bool isError) {
         lines.erase(lines.begin(), lines.begin() + excess);
     }
 
+    // Real-time Runtime Execution Error & Traceback Interception (Python, Node.js, PHP)
+    if (onExecutionError && !lines.empty()) {
+        size_t scanStart = (lines.size() > 25) ? lines.size() - 25 : 0;
+        for (size_t li = scanStart; li < lines.size(); ++li) {
+            const std::wstring& raw = lines[li].rawText;
+
+            // 1. Python Traceback: File "...", line X
+            size_t fp = raw.find(L"File \"");
+            if (fp != std::wstring::npos) {
+                size_t fStart = fp + 6;
+                size_t fEnd = raw.find(L"\"", fStart);
+                if (fEnd != std::wstring::npos) {
+                    size_t lp = raw.find(L", line ", fEnd);
+                    if (lp != std::wstring::npos) {
+                        size_t numStart = lp + 7;
+                        size_t numEnd = numStart;
+                        while (numEnd < raw.length() && iswdigit(raw[numEnd])) numEnd++;
+                        if (numEnd > numStart) {
+                            pendingErrorFile = raw.substr(fStart, fEnd - fStart);
+                            try { pendingErrorLine = std::stoi(raw.substr(numStart, numEnd - numStart)); } catch (...) {}
+                            pendingErrorToken.clear();
+                        }
+                    }
+                }
+            } else if (pendingErrorLine > 0 && !raw.empty()) {
+                if ((raw[0] == L' ' || raw[0] == L'\t') && raw.find(L"Error:") == std::wstring::npos && raw.find(L"Exception:") == std::wstring::npos) {
+                    size_t ts = 0;
+                    while (ts < raw.length() && (raw[ts] == L' ' || raw[ts] == L'\t')) ts++;
+                    pendingErrorToken = raw.substr(ts);
+                    while (!pendingErrorToken.empty() && iswspace(pendingErrorToken.back())) pendingErrorToken.pop_back();
+                } else if (raw.find(L"Error:") != std::wstring::npos || raw.find(L"Exception:") != std::wstring::npos || raw.find(L"error:") != std::wstring::npos) {
+                    if (onExecutionError) {
+                        onExecutionError(pendingErrorFile, pendingErrorLine, raw, pendingErrorToken);
+                    }
+                    pendingErrorFile.clear();
+                    pendingErrorLine = 0;
+                    pendingErrorToken.clear();
+                }
+            }
+
+            // 2. PHP Error: Fatal error: ... in C:\... on line X (or :X)
+            if (raw.find(L"Fatal error:") != std::wstring::npos || raw.find(L"Parse error:") != std::wstring::npos) {
+                size_t inPos = raw.find(L" in ");
+                if (inPos != std::wstring::npos) {
+                    size_t onLinePos = raw.find(L" on line ", inPos);
+                    if (onLinePos != std::wstring::npos) {
+                        std::wstring phpFile = raw.substr(inPos + 4, onLinePos - (inPos + 4));
+                        size_t nStart = onLinePos + 9;
+                        size_t nEnd = nStart;
+                        while (nEnd < raw.length() && iswdigit(raw[nEnd])) nEnd++;
+                        if (nEnd > nStart) {
+                            int phpLine = std::stoi(raw.substr(nStart, nEnd - nStart));
+                            std::wstring phpErr = raw.substr(0, inPos);
+                            if (onExecutionError) {
+                                onExecutionError(phpFile, phpLine, phpErr, L"");
+                            }
+                        }
+                    }
+                }
+            }
+
+            // 3. Node.js Error: at ... (path:line:col) or ReferenceError / TypeError
+            if (raw.find(L"ReferenceError:") != std::wstring::npos || raw.find(L"TypeError:") != std::wstring::npos || raw.find(L"SyntaxError:") != std::wstring::npos) {
+                size_t atPos = raw.find(L" (");
+                if (atPos != std::wstring::npos) {
+                    size_t colon1 = raw.rfind(L':');
+                    if (colon1 != std::wstring::npos) {
+                        size_t colon2 = raw.rfind(L':', colon1 - 1);
+                        if (colon2 != std::wstring::npos && colon2 > atPos + 2) {
+                            std::wstring jsFile = raw.substr(atPos + 2, colon2 - (atPos + 2));
+                            int jsLine = 0;
+                            try { jsLine = std::stoi(raw.substr(colon2 + 1, colon1 - colon2 - 1)); } catch (...) {}
+                            if (jsLine > 0 && onExecutionError) {
+                                onExecutionError(jsFile, jsLine, raw.substr(0, atPos), L"");
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     if (onOutput) {
         onOutput();
     }
@@ -541,6 +623,7 @@ void TerminalPanel::NewTab(TerminalShellType shell, const std::wstring& workingD
 
     tab->title = std::to_wstring(count) + L": " + shellName;
     tab->onOutput = m_outputCallback;
+    tab->onExecutionError = m_onExecutionError;
 
     StartShellProcess(*tab);
     m_tabs.push_back(std::move(tab));
@@ -656,6 +739,7 @@ void TerminalPanel::SplitActiveTab(std::optional<TerminalShellType> shell) {
     else if (splitShell == TerminalShellType::Python) shellName = L"python";
     split->title = primary->title + L" (split: " + shellName + L")";
     split->onOutput = m_outputCallback;
+    split->onExecutionError = m_onExecutionError;
 
     StartShellProcess(*split);
     primary->splitTab = std::move(split);

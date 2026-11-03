@@ -128,6 +128,7 @@ public:
     [[nodiscard]] SettingCategory GetActiveCategory() const noexcept { return m_activeCategory; }
     void SetActiveCategory(SettingCategory cat) noexcept { m_activeCategory = cat; m_scrollOffsetY = 0.0f; }
     void ResetScroll() noexcept { m_scrollOffsetY = 0.0f; }
+    [[nodiscard]] const std::vector<SettingItem>& GetItems() const noexcept { return m_items; }
 
     /**
      * @brief Queries the appropriate Windows mouse cursor for the given client coordinate.

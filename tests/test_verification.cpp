@@ -17117,6 +17117,97 @@ run_test_114:
         }
     }
 
+    // TEST 116: Real-time Python Missing Variable & Typo Detection and Terminal Execution Error Interception
+    if (targetTest == -1 || targetTest == 116) {
+        std::cout << "\n[TEST 116] Testing Python Missing Variable Detection & Terminal Error Interception..." << std::endl;
+
+        // Subtest 1: Real-time undefined variable / typo detection in editor (User reproduction case)
+        {
+            phide::editor::Buffer pyBuf;
+            pyBuf.SetText(L"print(\"Hello world\")\nprnat\n");
+            auto diags = phide::editor::SyntaxValidator::Validate(L"main.py", pyBuf);
+            assert(!diags.empty());
+            bool foundPrnat = false;
+            for (const auto& d : diags) {
+                if (d.line == 1 && d.message.find(L"prnat") != std::wstring::npos) {
+                    assert(d.message.find(L"Did you mean: 'print'?") != std::wstring::npos);
+                    assert(d.severity == 1);
+                    foundPrnat = true;
+                }
+            }
+            assert(foundPrnat);
+            std::cout << "  Passed: 'prnat' flagged immediately on line 2 with suggestion 'Did you mean: \'print\'?'." << std::endl;
+        }
+
+        // Subtest 2: Valid variables, imports, and parameters produce ZERO diagnostics
+        {
+            phide::editor::Buffer pyBuf;
+            pyBuf.SetText(
+                L"import os\n"
+                L"x = 10\n"
+                L"def foo(arg):\n"
+                L"    return arg + x\n"
+                L"print(foo(5))\n"
+                L"print(os.path.join(\"a\", \"b\"))\n"
+            );
+            auto diags = phide::editor::SyntaxValidator::Validate(L"main.py", pyBuf);
+            assert(diags.empty());
+            std::cout << "  Passed: Legitimate variables, functions, and imports produce 0 diagnostics." << std::endl;
+        }
+
+        // Subtest 3: Terminal traceback error parsing and document error binding
+        {
+            std::wstring testErrorFile = L"C:\\Users\\Administrator\\Downloads\\test\\main.py";
+            int testErrorLine = 2;
+            std::wstring testToken = L"prnat";
+
+            bool callbackFired = false;
+            phide::ui::TerminalPanel term;
+            term.SetOnExecutionError([&](const std::wstring& file, int line, const std::wstring& msg, const std::wstring& tok) {
+                callbackFired = true;
+                assert(file == testErrorFile);
+                assert(line == testErrorLine);
+                assert(tok == testToken);
+                assert(msg.find(L"NameError") != std::wstring::npos);
+            });
+            term.Open(L"C:\\Users\\Administrator\\Downloads\\test");
+            auto* activeTab = term.GetActiveTab();
+            assert(activeTab != nullptr);
+
+            std::string traceback =
+                "Traceback (most recent call last):\n"
+                "  File \"C:\\Users\\Administrator\\Downloads\\test\\main.py\", line 2, in <module>\n"
+                "    prnat\n"
+                "NameError: name 'prnat' is not defined. Did you mean: 'print'?\n";
+            activeTab->AppendOutput(traceback.c_str(), traceback.length(), true);
+            assert(callbackFired);
+            std::cout << "  Passed: Terminal execution traceback intercepted and mapped to file, line 2, and token 'prnat'." << std::endl;
+        }
+
+        // Subtest 4: SettingsView includes Python Linter extension settings
+        {
+            phide::ui::SettingsView sv;
+            bool hasLintingEnabled = false;
+            bool hasUndefCheck = false;
+            bool hasHighlightTerminal = false;
+            for (const auto& it : sv.GetItems()) {
+                if (it.id == L"python.linting.enabled") hasLintingEnabled = true;
+                if (it.id == L"python.linting.undefinedVariableCheck") hasUndefCheck = true;
+                if (it.id == L"python.terminal.highlightErrorsInEditor") hasHighlightTerminal = true;
+            }
+            assert(hasLintingEnabled);
+            assert(hasUndefCheck);
+            assert(hasHighlightTerminal);
+            std::cout << "  Passed: SettingsView contains full Python Linter and Terminal Error settings." << std::endl;
+        }
+
+        std::cout << "  Passed: All [TEST 116] Python Missing Variables & Terminal Error tests passed!" << std::endl;
+        if (targetTest == 116) {
+            std::cout << "Target test 116 finished." << std::endl;
+            return 0;
+        }
+    }
+
     std::cout << "\n==========================================" << std::endl;
     std::cout << "ALL VERIFICATION TESTS PASSED SUCCESSFULLY!" << std::endl;
     std::cout << "==========================================" << std::endl;

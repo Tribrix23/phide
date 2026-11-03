@@ -72,6 +72,12 @@ struct AppConfig {
     bool codeRunnerClearPreviousOutput = false;           ///< Clear previous output before running
     bool codeRunnerSaveFileBeforeRun = true;              ///< Save file before running
 
+    // --- Python Language & Linter Extension Settings (Flake8 / Ruff / Pylance / AST) ---
+    bool pythonLintingEnabled = true;                     ///< Real-time Python syntax & undefined variable linter
+    bool pythonCheckUndefinedVariables = true;            ///< Flag missing variables and undefined symbols (F821 / NameError)
+    bool pythonHighlightTerminalErrors = true;            ///< Auto-highlight execution errors & tracebacks from terminal on the editor line
+    std::wstring pythonLinter = L"builtin (ast/flake8)";  ///< Active linter engine (builtin, flake8, ruff)
+
     // --- Floating Prompt Bar Metrics ---
     int promptBarWidth  = 540;  ///< Width of the bottom floating AI prompt pill.
     int promptBarHeight = 44;   ///< Height of the floating prompt pill.

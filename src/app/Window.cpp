@@ -4822,6 +4822,15 @@ void Window::DoRunActiveDocument() {
             }
         }
 
+        // Clear previous runtime errors for this file
+        for (auto& group : m_editorGroups) {
+            for (auto& doc : group.docs) {
+                std::erase_if(doc.diagnostics, [](const lsp::Diagnostic& d) {
+                    return d.message.find(L"Runtime:") != std::wstring::npos;
+                });
+            }
+        }
+
         // Code Runner: Save file before run if modified
         if (m_config.codeRunnerSaveFileBeforeRun) {
             auto* pDoc = GetActiveDoc();
@@ -5844,6 +5853,7 @@ bool Window::Create(HINSTANCE hInstance, int nCmdShow) {
         if (m_hwnd) InvalidateRect(m_hwnd, nullptr, FALSE);
     });
 
+
     // Auto-stop server when an error is caught in server tab
     m_terminal.SetOnServerError([this](const std::wstring& rootDir, const std::wstring& errorText) {
         for (auto& srv : m_activeLiveServers) {
@@ -5867,6 +5877,79 @@ bool Window::Create(HINSTANCE hInstance, int nCmdShow) {
         if (m_hwnd) InvalidateRect(m_hwnd, nullptr, FALSE);
     });
 
+    // Intercept runtime execution errors and tracebacks from terminal and flag them on editor line
+    m_terminal.SetOnExecutionError([this](const std::wstring& filePath, int lineNum, const std::wstring& errorMsg, const std::wstring& token) {
+        if (!m_config.pythonHighlightTerminalErrors || lineNum <= 0) return;
+        size_t errLine0 = static_cast<size_t>(lineNum - 1);
+
+        std::wstring normPath = filePath;
+        for (auto& c : normPath) { if (c == L'/') c = L'\\'; }
+
+        bool foundDoc = false;
+        for (auto& group : m_editorGroups) {
+            for (auto& doc : group.docs) {
+                std::wstring docNorm = doc.filePath;
+                for (auto& c : docNorm) { if (c == L'/') c = L'\\'; }
+
+                bool matches = false;
+                if (!normPath.empty() && !docNorm.empty()) {
+                    if (_wcsicmp(normPath.c_str(), docNorm.c_str()) == 0 ||
+                        docNorm.ends_with(normPath) || normPath.ends_with(docNorm)) {
+                        matches = true;
+                    }
+                }
+                if (!matches && !normPath.empty()) {
+                    std::filesystem::path pErr(normPath);
+                    std::filesystem::path pDoc(doc.filePath.empty() ? doc.fileName : doc.filePath);
+                    if (_wcsicmp(pErr.filename().c_str(), pDoc.filename().c_str()) == 0) {
+                        matches = true;
+                    }
+                }
+
+                if (matches) {
+                    // Clear any existing runtime error for this line
+                    std::erase_if(doc.diagnostics, [errLine0](const lsp::Diagnostic& d) {
+                        return d.line == errLine0 && d.message.find(L"Runtime:") != std::wstring::npos;
+                    });
+
+                    lsp::Diagnostic diag;
+                    diag.line = errLine0;
+                    diag.col = 0;
+                    diag.length = 1;
+                    diag.severity = 1; // Error severity: red squiggly wave line!
+                    diag.message = L"Runtime: " + errorMsg;
+
+                    if (errLine0 < doc.buffer.GetLineCount()) {
+                        const auto& lineStr = doc.buffer.GetLine(errLine0);
+                        if (!token.empty()) {
+                            size_t pos = lineStr.find(token);
+                            if (pos != std::wstring::npos) {
+                                diag.col = pos;
+                                diag.length = token.length();
+                            } else {
+                                size_t indent = 0;
+                                while (indent < lineStr.length() && (lineStr[indent] == L' ' || lineStr[indent] == L'\t')) indent++;
+                                diag.col = indent;
+                                diag.length = (std::max)(lineStr.length() - indent, 1ULL);
+                            }
+                        } else {
+                            size_t indent = 0;
+                            while (indent < lineStr.length() && (lineStr[indent] == L' ' || lineStr[indent] == L'\t')) indent++;
+                            diag.col = indent;
+                            diag.length = (std::max)(lineStr.length() - indent, 1ULL);
+                        }
+                    }
+
+                    doc.diagnostics.push_back(diag);
+                    foundDoc = true;
+                    break;
+                }
+            }
+            if (foundDoc) break;
+        }
+        if (foundDoc && m_hwnd) InvalidateRect(m_hwnd, nullptr, FALSE);
+    });
+
     // Server successfully listening / ready callback (e.g. Next.js, Vite, Live Server)
     m_terminal.SetOnServerReady([this](const std::wstring& rootDir) {
         for (auto& srv : m_activeLiveServers) {
@@ -5888,6 +5971,7 @@ bool Window::Create(HINSTANCE hInstance, int nCmdShow) {
         UpdateExecutionButtonStates();
         if (m_hwnd) InvalidateRect(m_hwnd, nullptr, FALSE);
     });
+
 
     // Animate terminal close when '-' minimize button is clicked in integrated terminal
     m_terminal.SetOnMinimize([this]() {
