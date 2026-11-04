@@ -2875,9 +2875,14 @@ void Window::DoCut() {
         if (pDoc->HasSelection()) {
             pDoc->DeleteSelection();
         } else {
-            pDoc->buffer.Backspace();
+            pDoc->buffer.DeleteLine(pDoc->buffer.GetCursor().line);
         }
+        m_editor.DismissAutocomplete();
+        m_editor.ClearGhostText();
+        m_editor.ClearPrediction();
+        EnsureCursorVisible();
         MarkDocumentModified(pDoc);
+        if (pDoc->isDiffView) ComputeDiffHunks(*pDoc);
         InvalidateRect(m_hwnd, nullptr, FALSE);
     }
 }
@@ -2890,7 +2895,7 @@ void Window::DoCopy() {
             textToCopy = pDoc->GetSelectedText();
         } else {
             auto cursor = pDoc->buffer.GetCursor();
-            textToCopy = pDoc->buffer.GetLine(cursor.line);
+            textToCopy = pDoc->buffer.GetLine(cursor.line) + L"\r\n";
         }
         if (!textToCopy.empty() && OpenClipboard(m_hwnd)) {
             EmptyClipboard();
@@ -2924,7 +2929,9 @@ void Window::DoPaste() {
                         pDoc->DeleteSelection();
                     }
                     pDoc->buffer.InsertText(clip);
+                    EnsureCursorVisible();
                     MarkDocumentModified(pDoc);
+                    if (pDoc->isDiffView) ComputeDiffHunks(*pDoc);
                     InvalidateRect(m_hwnd, nullptr, FALSE);
                     return;
                 }
@@ -2938,7 +2945,13 @@ void Window::DoUndo() {
     auto* pDoc = GetActiveDoc();
     if (pDoc && !pDoc->isSpecialView) {
         if (pDoc->buffer.Undo()) {
+            pDoc->ClearSelection();
+            m_editor.DismissAutocomplete();
+            m_editor.ClearGhostText();
+            m_editor.ClearPrediction();
+            EnsureCursorVisible();
             MarkDocumentModified(pDoc);
+            if (pDoc->isDiffView) ComputeDiffHunks(*pDoc);
             InvalidateRect(m_hwnd, nullptr, FALSE);
         }
     }
@@ -2948,7 +2961,13 @@ void Window::DoRedo() {
     auto* pDoc = GetActiveDoc();
     if (pDoc && !pDoc->isSpecialView) {
         if (pDoc->buffer.Redo()) {
+            pDoc->ClearSelection();
+            m_editor.DismissAutocomplete();
+            m_editor.ClearGhostText();
+            m_editor.ClearPrediction();
+            EnsureCursorVisible();
             MarkDocumentModified(pDoc);
+            if (pDoc->isDiffView) ComputeDiffHunks(*pDoc);
             InvalidateRect(m_hwnd, nullptr, FALSE);
         }
     }
@@ -12290,8 +12309,11 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                         else if (ch == L'\'') pairClose = L'\'';
                         else if (ch == L'`') pairClose = L'`';
 
+                        m_explorerHasFocus = false;
+
                         // Multi-Cursor simultaneous typing (Ctrl+D occurrence editing)
                         if (!pDoc->secondarySelections.empty()) {
+                            pDoc->buffer.PushUndo();
                             struct SelItem { size_t sLine, sCol, eLine, eCol; bool isPrimary; size_t secIdx; };
                             std::vector<SelItem> allSels;
                             if (pDoc->HasSelection()) {
@@ -12424,11 +12446,8 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                                     };
 
                                     if (!tagName.empty() && voidTags.count(tagLower) == 0) {
-                                        pDoc->buffer.InsertChar(L'>');
                                         std::wstring closeTag = L"</" + tagName + L">";
-                                        for (wchar_t c : closeTag) {
-                                            pDoc->buffer.InsertChar(c);
-                                        }
+                                        pDoc->buffer.InsertText(L">" + closeTag);
                                         auto cur = pDoc->buffer.GetCursor();
                                         pDoc->buffer.SetCursor(cur.line, cur.col - closeTag.length());
                                         MarkDocumentModified(pDoc);
@@ -12493,9 +12512,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                                 }
 
                                 if (!targetTag.empty()) {
-                                    pDoc->buffer.InsertChar(L'/');
-                                    std::wstring completeClose = targetTag + L">";
-                                    for (wchar_t c : completeClose) pDoc->buffer.InsertChar(c);
+                                    pDoc->buffer.InsertText(L"/" + targetTag + L">");
                                     MarkDocumentModified(pDoc);
                                     if (pDoc->isDiffView) ComputeDiffHunks(*pDoc);
                                     m_editor.DismissAutocomplete();
@@ -12636,9 +12653,11 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     m_suppressNextChar = true;
                     const auto& pred = m_editor.GetPrediction();
                     pDoc->buffer.InsertText(pred.ghostText);
+                    EnsureCursorVisible();
                     MarkDocumentModified(pDoc);
                     m_editor.ClearPrediction();
                     m_editor.ClearGhostText();
+                    UpdatePrediction();
                     InvalidateRect(m_hwnd, nullptr, FALSE);
                     return 0;
                 }
@@ -12649,12 +12668,12 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 auto* pDoc = GetActiveDoc();
                 if (pDoc) {
                     m_suppressNextChar = true;
-                    const std::wstring& ghost = m_editor.GetGhostText();
-                    for (wchar_t c : ghost) {
-                        pDoc->buffer.InsertChar(c);
-                    }
+                    std::wstring ghost = m_editor.GetGhostText();
+                    pDoc->buffer.InsertText(ghost);
+                    EnsureCursorVisible();
                     MarkDocumentModified(pDoc);
                     m_editor.ClearGhostText();
+                    UpdatePrediction();
                     InvalidateRect(m_hwnd, nullptr, FALSE);
                     return 0;
                 }
@@ -13274,38 +13293,34 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                         InvalidateRect(m_hwnd, nullptr, FALSE);
                         return 0;
                     }
-                    POINT pt;
-                    GetCursorPos(&pt);
-                    ScreenToClient(m_hwnd, &pt);
-                    const float railW = m_config.ScaleF(48.0f);
-                    const float drawerW = m_config.ScaleF(260.0f) * m_drawerAnimProgress;
-                    bool isOverDrawer = (pt.x >= railW && pt.x < railW + drawerW);
-                    if (isOverDrawer || m_drawer.IsRenaming()) {
+                    if (m_drawer.IsRenaming() || (m_explorerHasFocus && (!pDoc || pDoc->isSpecialView))) {
                         if (shiftDown) {
                             DoExplorerRedo();
                         } else {
                             DoExplorerUndo();
                         }
-                    } else {
+                    } else if (pDoc && !pDoc->isSpecialView) {
                         if (shiftDown) {
                             DoRedo();
                         } else {
                             DoUndo();
                         }
+                    } else if (m_explorerHasFocus) {
+                        if (shiftDown) {
+                            DoExplorerRedo();
+                        } else {
+                            DoExplorerUndo();
+                        }
                     }
                     return 0;
                 }
                 if (wParam == 'Y') {
-                    POINT pt;
-                    GetCursorPos(&pt);
-                    ScreenToClient(m_hwnd, &pt);
-                    const float railW = m_config.ScaleF(48.0f);
-                    const float drawerW = m_config.ScaleF(260.0f) * m_drawerAnimProgress;
-                    bool isOverDrawer = (pt.x >= railW && pt.x < railW + drawerW);
-                    if (isOverDrawer || m_drawer.IsRenaming()) {
+                    if (m_drawer.IsRenaming() || (m_explorerHasFocus && (!pDoc || pDoc->isSpecialView))) {
                         DoExplorerRedo();
-                    } else {
+                    } else if (pDoc && !pDoc->isSpecialView) {
                         DoRedo();
+                    } else if (m_explorerHasFocus) {
+                        DoExplorerRedo();
                     }
                     return 0;
                 }
@@ -13326,6 +13341,19 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     return 0;
                 }
                 if (wParam == 'K') {
+                    if (shiftDown && pDoc && !pDoc->isSpecialView) {
+                        // Ctrl+Shift+K: Delete entire line (undoable)
+                        pDoc->buffer.DeleteLine(pDoc->buffer.GetCursor().line);
+                        pDoc->ClearSelection();
+                        m_editor.DismissAutocomplete();
+                        m_editor.ClearGhostText();
+                        m_editor.ClearPrediction();
+                        EnsureCursorVisible();
+                        MarkDocumentModified(pDoc);
+                        if (pDoc->isDiffView) ComputeDiffHunks(*pDoc);
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
+                        return 0;
+                    }
                     m_chordCtrlK = true;
                     DoQuickOpenFileSearch();
                     return 0;
@@ -13362,7 +13390,9 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 }
 
                 if (wParam == VK_BACK || wParam == VK_DELETE) {
+                    m_explorerHasFocus = false;
                     if (!pDoc->secondarySelections.empty()) {
+                        pDoc->buffer.PushUndo();
                         struct SelItem { size_t sLine, sCol, eLine, eCol; bool isPrimary; size_t secIdx; };
                         std::vector<SelItem> allSels;
                         if (pDoc->HasSelection()) {
@@ -13422,6 +13452,9 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                         return 0;
                     } else if (pDoc->HasSelection()) {
                         pDoc->DeleteSelection();
+                        m_editor.ClearGhostText();
+                        m_editor.ClearPrediction();
+                        m_editor.DismissAutocomplete();
                     } else if (wParam == VK_BACK) {
                         auto cur = pDoc->buffer.GetCursor();
                         const auto& lines = pDoc->buffer.GetLines();
@@ -13442,9 +13475,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                             }
                         }
                         if (isPair) {
-                            pDoc->buffer.MoveCursorRight();
-                            pDoc->buffer.Backspace();
-                            pDoc->buffer.Backspace();
+                            pDoc->buffer.DeleteRange(cur.line, cur.col - 1, cur.line, cur.col + 1);
                         } else {
                             pDoc->buffer.Backspace();
                         }
@@ -13461,6 +13492,11 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                                 m_editor.DismissAutocomplete();
                             }
                         }
+                    } else if (wParam == VK_DELETE) {
+                        pDoc->buffer.DeleteForward();
+                        m_editor.ClearGhostText();
+                        m_editor.ClearPrediction();
+                        m_editor.DismissAutocomplete();
                     }
                     MarkDocumentModified(pDoc);
                     if (pDoc->isDiffView) ComputeDiffHunks(*pDoc);
@@ -13690,9 +13726,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                             if (!m_snippetManager.TryExpand(pDoc->buffer, ext, pDoc->fileName.empty() ? pDoc->filePath : pDoc->fileName)) {
                                 // Try expanding Emmet abbreviation next (e.g., div -> <div></div>)
                                 if (!pDoc->buffer.ExpandEmmet()) {
-                                    for (wchar_t ch : indentStr) {
-                                        pDoc->buffer.InsertChar(ch);
-                                    }
+                                    pDoc->buffer.InsertText(indentStr);
                                 }
                             }
                         }
@@ -13701,6 +13735,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     if (pDoc->isDiffView) ComputeDiffHunks(*pDoc);
                     InvalidateRect(m_hwnd, nullptr, FALSE);
                 } else if (wParam == VK_RETURN) {
+                    m_explorerHasFocus = false;
                     std::wstring ext = L"";
                     if (!pDoc->filePath.empty()) {
                         std::filesystem::path p(pDoc->filePath);
@@ -13717,6 +13752,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                         if (pDoc->isDiffView) ComputeDiffHunks(*pDoc);
                         m_editor.DismissAutocomplete();
                         m_editor.ClearGhostText();
+                        UpdatePrediction();
                         InvalidateRect(m_hwnd, nullptr, FALSE);
                         return 0;
                     }
@@ -13737,16 +13773,14 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                             indent++;
                         }
                         std::wstring baseIndent = lineText.substr(0, indent);
-                        pDoc->buffer.InsertChar(L'\n');
-                        for (wchar_t c : baseIndent) pDoc->buffer.InsertChar(c);
-                        for (wchar_t c : extraIndent) pDoc->buffer.InsertChar(c);
+                        std::wstring expandBlock = L"\n" + baseIndent + extraIndent + L"\n" + baseIndent;
+                        pDoc->buffer.InsertText(expandBlock);
                         size_t targetLine = pos.line + 1;
                         size_t targetCol = baseIndent.length() + extraIndent.length();
-                        pDoc->buffer.InsertChar(L'\n');
-                        for (wchar_t c : baseIndent) pDoc->buffer.InsertChar(c);
                         pDoc->buffer.SetCursor(targetLine, targetCol);
                         MarkDocumentModified(pDoc);
                         if (pDoc->isDiffView) ComputeDiffHunks(*pDoc);
+                        UpdatePrediction();
                         InvalidateRect(m_hwnd, nullptr, FALSE);
                         return 0;
                     }
@@ -13758,17 +13792,15 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                             indent++;
                         }
                         std::wstring baseIndent = lineText.substr(0, indent);
-                        pDoc->buffer.InsertChar(L'\n');
-                        for (wchar_t c : baseIndent) pDoc->buffer.InsertChar(c);
-                        for (wchar_t c : extraIndent) pDoc->buffer.InsertChar(c);
+                        std::wstring expandBlock = L"\n" + baseIndent + extraIndent + L"\n" + baseIndent;
+                        pDoc->buffer.InsertText(expandBlock);
                         size_t targetLine = pos.line + 1;
                         size_t targetCol = baseIndent.length() + extraIndent.length();
-                        pDoc->buffer.InsertChar(L'\n');
-                        for (wchar_t c : baseIndent) pDoc->buffer.InsertChar(c);
                         pDoc->buffer.SetCursor(targetLine, targetCol);
                         MarkDocumentModified(pDoc);
                         if (pDoc->isDiffView) ComputeDiffHunks(*pDoc);
                         EnsureCursorVisible();
+                        UpdatePrediction();
                         InvalidateRect(m_hwnd, nullptr, FALSE);
                         return 0;
                     }
@@ -13788,18 +13820,12 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                         shouldIndent = true;
                     }
 
-                    pDoc->buffer.InsertChar(L'\n');
-                    for (wchar_t c : baseIndent) {
-                        pDoc->buffer.InsertChar(c);
-                    }
-                    if (shouldIndent) {
-                        for (wchar_t c : extraIndent) {
-                            pDoc->buffer.InsertChar(c);
-                        }
-                    }
+                    std::wstring newlineAndIndent = L"\n" + baseIndent + (shouldIndent ? extraIndent : L"");
+                    pDoc->buffer.InsertText(newlineAndIndent);
                     MarkDocumentModified(pDoc);
                     if (pDoc->isDiffView) ComputeDiffHunks(*pDoc);
                     EnsureCursorVisible();
+                    UpdatePrediction();
                     InvalidateRect(m_hwnd, nullptr, FALSE);
                 }
             }

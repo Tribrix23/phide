@@ -2429,6 +2429,14 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
                 pStart = pEnd + 1;
             }
 
+            size_t badgeLineIdx = 0;
+            for (size_t k = 0; k < ghostLines.size(); ++k) {
+                if (!ghostLines[k].empty()) {
+                    badgeLineIdx = k;
+                    break;
+                }
+            }
+
             for (size_t k = 0; k < ghostLines.size(); ++k) {
                 float curY = caretY + static_cast<float>(k) * lineH;
                 if (curY + lineH > clientHeight) break;
@@ -2444,6 +2452,50 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
                     rcG,
                     theme.brushTextMuted.Get()
                 );
+
+                // Zed-Style [tab Accept] Pill Badge next to the first non-empty predicted line (Screenshot 2)
+                if (k == badgeLineIdx && !m_prediction.isCrossFile) {
+                    float badgeX = gX + gW + config.ScaleF(12.0f);
+                    float badgeH = config.ScaleF(20.0f);
+                    float badgeW = config.ScaleF(86.0f);
+                    float badgeY = curY + (lineH - badgeH) * 0.5f;
+                    if (badgeX + badgeW < codeRight) {
+                        D2D1_RECT_F rcBadge = D2D1::RectF(badgeX, badgeY, badgeX + badgeW, badgeY + badgeH);
+                        D2D1_ROUNDED_RECT rrcBadge = D2D1::RoundedRect(rcBadge, config.ScaleF(4.0f), config.ScaleF(4.0f));
+
+                        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brBadgeBg;
+                        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brBadgeBorder;
+                        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brKeyBg;
+                        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brBadgeText;
+
+                        pRT->CreateSolidColorBrush(D2D1::ColorF(0.16f, 0.19f, 0.24f, 0.96f), &brBadgeBg);
+                        pRT->CreateSolidColorBrush(D2D1::ColorF(0.30f, 0.36f, 0.45f, 0.90f), &brBadgeBorder);
+                        pRT->CreateSolidColorBrush(D2D1::ColorF(0.22f, 0.26f, 0.33f, 0.95f), &brKeyBg);
+                        pRT->CreateSolidColorBrush(D2D1::ColorF(0.88f, 0.91f, 0.96f, 1.0f), &brBadgeText);
+
+                        if (brBadgeBg) pRT->FillRoundedRectangle(rrcBadge, brBadgeBg.Get());
+                        if (brBadgeBorder) pRT->DrawRoundedRectangle(rrcBadge, brBadgeBorder.Get(), 1.0f);
+
+                        D2D1_RECT_F rcKey = D2D1::RectF(
+                            badgeX + config.ScaleF(4.0f),
+                            badgeY + config.ScaleF(3.0f),
+                            badgeX + config.ScaleF(30.0f),
+                            badgeY + badgeH - config.ScaleF(3.0f)
+                        );
+                        if (brKeyBg) {
+                            pRT->FillRoundedRectangle(D2D1::RoundedRect(rcKey, config.ScaleF(3.0f), config.ScaleF(3.0f)), brKeyBg.Get());
+                        }
+                        if (brBadgeText) {
+                            IDWriteTextFormat* badgeFont = theme.fontCode ? theme.fontCode.Get() : theme.fontBody.Get();
+                            pRT->DrawText(L"tab", 3, badgeFont,
+                                D2D1::RectF(rcKey.left + config.ScaleF(4.0f), badgeY + config.ScaleF(2.0f), rcKey.right, badgeY + badgeH),
+                                theme.brushTextMuted.Get());
+                            pRT->DrawText(L"Accept", 6, badgeFont,
+                                D2D1::RectF(rcKey.right + config.ScaleF(6.0f), badgeY + config.ScaleF(2.0f), badgeX + badgeW - config.ScaleF(4.0f), badgeY + badgeH),
+                                brBadgeText.Get());
+                        }
+                    }
+                }
             }
 
             // Cross-File Floating Pill Button: [ ->| Take to route.ts ] (Image 4)

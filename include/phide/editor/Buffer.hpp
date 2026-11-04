@@ -80,6 +80,21 @@ public:
     void Backspace();
 
     /**
+     * @brief Deletes the character at the cursor (Delete key).
+     */
+    void DeleteForward();
+
+    /**
+     * @brief Deletes an entire line at lineIdx in a single undoable operation.
+     */
+    void DeleteLine(size_t lineIdx);
+
+    /**
+     * @brief Deletes the text range [sLine:sCol, eLine:eCol] in a single undoable operation.
+     */
+    void DeleteRange(size_t sLine, size_t sCol, size_t eLine, size_t eCol);
+
+    /**
      * @brief Navigates cursor up, down, left, right.
      */
     void MoveCursorLeft();

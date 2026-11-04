@@ -81,13 +81,21 @@ def main():
     vsc_keywords = parse_ts_entries(globals_ts, "keywords")
     vsc_funcs = parse_ts_entries(funcs_ts, "globalfunctions")
 
-    stub_docs = parse_phpstorm_stub_docs([
+    stub_docs_json = BASE_DIR / "stub_docs.json"
+    stub_files = [
         BASE_DIR / "stub_PDO.php",
         BASE_DIR / "stub_mysqli.php",
         BASE_DIR / "stub_Core_c.php",
         BASE_DIR / "stub_date_c.php",
         BASE_DIR / "stub_SPL_c1.php",
-    ])
+    ]
+    if any(sf.exists() for sf in stub_files):
+        stub_docs = parse_phpstorm_stub_docs(stub_files)
+        stub_docs_json.write_text(json.dumps(stub_docs, indent=2, ensure_ascii=False), encoding="utf-8")
+    elif stub_docs_json.exists():
+        stub_docs = json.loads(stub_docs_json.read_text(encoding="utf-8"))
+    else:
+        stub_docs = {}
 
     refl = json.loads(refl_json.read_text(encoding="utf-8"))
 

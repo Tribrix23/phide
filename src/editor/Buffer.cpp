@@ -598,8 +598,12 @@ Buffer::Buffer(const std::wstring& initialContent) {
 }
 
 void Buffer::PushUndo() {
+    if (!m_undoStack.empty() && m_undoStack.back().lines == m_lines) {
+        m_undoStack.back().cursor = m_cursor;
+        return;
+    }
     m_undoStack.push_back({ m_lines, m_cursor });
-    if (m_undoStack.size() > 100) {
+    if (m_undoStack.size() > 2500) {
         m_undoStack.erase(m_undoStack.begin());
     }
     m_redoStack.clear();
@@ -837,11 +841,13 @@ void Buffer::InsertChar(wchar_t ch) {
 
 void Buffer::Backspace() {
     if (m_lines.empty()) return;
-    PushUndo();
     if (m_cursor.line >= m_lines.size()) m_cursor.line = m_lines.size() - 1;
+    if (m_cursor.col == 0 && m_cursor.line == 0) return;
 
+    PushUndo();
     auto& line = m_lines[m_cursor.line];
     if (m_cursor.col > 0) {
+        if (m_cursor.col > line.length()) m_cursor.col = line.length();
         line.erase(m_cursor.col - 1, 1);
         m_cursor.col--;
         m_isModified = true;
@@ -854,6 +860,73 @@ void Buffer::Backspace() {
         m_cursor.col = prevLen;
         m_isModified = true;
     }
+    ++m_version;
+}
+
+void Buffer::DeleteForward() {
+    if (m_lines.empty()) return;
+    if (m_cursor.line >= m_lines.size()) m_cursor.line = m_lines.size() - 1;
+
+    auto& line = m_lines[m_cursor.line];
+    if (m_cursor.col > line.length()) m_cursor.col = line.length();
+    if (m_cursor.col == line.length() && m_cursor.line + 1 >= m_lines.size()) return;
+
+    PushUndo();
+    if (m_cursor.col < line.length()) {
+        line.erase(m_cursor.col, 1);
+        m_isModified = true;
+    } else if (m_cursor.line + 1 < m_lines.size()) {
+        line += m_lines[m_cursor.line + 1];
+        m_lines.erase(m_lines.begin() + m_cursor.line + 1);
+        m_isModified = true;
+    }
+    ++m_version;
+}
+
+void Buffer::DeleteLine(size_t lineIdx) {
+    if (m_lines.empty() || lineIdx >= m_lines.size()) return;
+    PushUndo();
+    if (m_lines.size() == 1) {
+        m_lines[0].clear();
+        m_cursor = { 0, 0 };
+    } else {
+        m_lines.erase(m_lines.begin() + lineIdx);
+        if (m_cursor.line >= m_lines.size()) {
+            m_cursor.line = m_lines.size() - 1;
+        }
+        if (m_cursor.col > m_lines[m_cursor.line].length()) {
+            m_cursor.col = m_lines[m_cursor.line].length();
+        }
+    }
+    m_isModified = true;
+    ++m_version;
+}
+
+void Buffer::DeleteRange(size_t sLine, size_t sCol, size_t eLine, size_t eCol) {
+    if (m_lines.empty()) return;
+    if (sLine >= m_lines.size()) sLine = m_lines.size() - 1;
+    if (eLine >= m_lines.size()) eLine = m_lines.size() - 1;
+    if (sLine > eLine || (sLine == eLine && sCol >= eCol)) return;
+
+    PushUndo();
+    if (sLine == eLine) {
+        auto& line = m_lines[sLine];
+        if (sCol > line.length()) sCol = line.length();
+        if (eCol > line.length()) eCol = line.length();
+        line.erase(sCol, eCol - sCol);
+    } else {
+        const auto& startLineText = m_lines[sLine];
+        const auto& endLineText = m_lines[eLine];
+        size_t safeSCol = (std::min)(sCol, startLineText.length());
+        size_t safeECol = (std::min)(eCol, endLineText.length());
+        std::wstring merged = startLineText.substr(0, safeSCol) + endLineText.substr(safeECol);
+        m_lines[sLine] = std::move(merged);
+        m_lines.erase(m_lines.begin() + sLine + 1, m_lines.begin() + eLine + 1);
+        if (m_lines.empty()) m_lines.push_back(L"");
+    }
+    m_cursor = { sLine, (std::min)(sCol, m_lines[sLine].length()) };
+    m_isModified = true;
+    ++m_version;
 }
 
 void Buffer::MoveCursorLeft() {

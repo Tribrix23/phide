@@ -1,5 +1,7 @@
 #include "phide/editor/IntelliSenseEngine.hpp"
 #include "phide/editor/PhpIntelliSenseData.hpp"
+#include "phide/editor/PythonIntelliSenseData.hpp"
+#include "phide/editor/ReactIntelliSenseData.hpp"
 #include "phide/editor/SnippetManager.hpp"
 #include "phide/editor/TailwindHelper.hpp"
 #include <algorithm>
@@ -770,226 +772,25 @@ void IntelliSenseEngine::PopulatePhpVocabulary() {
 }
 
 void IntelliSenseEngine::PopulatePythonVocabulary() {
-    struct PyDef { const wchar_t* name; const wchar_t* desc; CompletionKind kind; };
-    static const PyDef pyDefs[] = {
-        // Keywords
-        { L"def", L"Defines a function or method", CompletionKind::Keyword },
-        { L"class", L"Defines a new class type", CompletionKind::Keyword },
-        { L"self", L"Instance reference convention for methods", CompletionKind::Variable },
-        { L"return", L"Exits a function and returns a value", CompletionKind::Keyword },
-        { L"import", L"Imports modules or packages into current namespace", CompletionKind::Keyword },
-        { L"from", L"Specifies package or module to import specific symbols from", CompletionKind::Keyword },
-        { L"as", L"Assigns an alias identifier to an imported module or exception", CompletionKind::Keyword },
-        { L"if", L"Conditional branch statement", CompletionKind::Keyword },
-        { L"elif", L"Else-if alternative conditional branch", CompletionKind::Keyword },
-        { L"else", L"Else fallback conditional branch", CompletionKind::Keyword },
-        { L"for", L"For loop iterating over sequence or generator", CompletionKind::Keyword },
-        { L"while", L"While loop executing while condition is true", CompletionKind::Keyword },
-        { L"break", L"Terminates current loop immediately", CompletionKind::Keyword },
-        { L"continue", L"Skips to the next iteration of the loop", CompletionKind::Keyword },
-        { L"pass", L"Null operation placeholder statement", CompletionKind::Keyword },
-        { L"try", L"Begins exception handling try block", CompletionKind::Keyword },
-        { L"except", L"Catches and handles specified exception types", CompletionKind::Keyword },
-        { L"finally", L"Block executed unconditionally after try/except", CompletionKind::Keyword },
-        { L"raise", L"Raises an exception instance or re-raises current exception", CompletionKind::Keyword },
-        { L"with", L"Context manager statement with __enter__ and __exit__", CompletionKind::Keyword },
-        { L"async", L"Defines a coroutine function or asynchronous context manager", CompletionKind::Keyword },
-        { L"await", L"Awaits completion of an asynchronous coroutine or task", CompletionKind::Keyword },
-        { L"lambda", L"Defines an anonymous inline lambda function expression", CompletionKind::Keyword },
-        { L"yield", L"Yields a value from a generator function", CompletionKind::Keyword },
-        { L"global", L"Declares variable to reference global module scope", CompletionKind::Keyword },
-        { L"nonlocal", L"Declares variable to reference enclosing non-global scope", CompletionKind::Keyword },
-        { L"assert", L"Tests condition; raises AssertionError if false", CompletionKind::Keyword },
-        { L"del", L"Deletes reference to variable, item, or slice", CompletionKind::Keyword },
-        { L"in", L"Membership test operator or sequence iteration target", CompletionKind::Keyword },
-        { L"is", L"Object identity operator comparing memory references", CompletionKind::Keyword },
-        { L"not", L"Logical NOT boolean inversion operator", CompletionKind::Keyword },
-        { L"and", L"Logical AND short-circuit conjunction operator", CompletionKind::Keyword },
-        { L"or", L"Logical OR short-circuit disjunction operator", CompletionKind::Keyword },
-        { L"True", L"Boolean true singleton literal", CompletionKind::Keyword },
-        { L"False", L"Boolean false singleton literal", CompletionKind::Keyword },
-        { L"None", L"NoneType singleton representing absence of value", CompletionKind::Keyword },
-        { L"match", L"Structural pattern matching statement (Python 3.10+)", CompletionKind::Keyword },
-        { L"case", L"Pattern case arm in match statement (Python 3.10+)", CompletionKind::Keyword },
-
-        // Built-in Functions
-        { L"print", L"print(*values, sep=' ', end='\\n', file=sys.stdout, flush=False)", CompletionKind::Function },
-        { L"len", L"len(s) -> int: Return number of items in container", CompletionKind::Function },
-        { L"range", L"range(stop) or range(start, stop[, step]): Generate arithmetic sequence", CompletionKind::Function },
-        { L"enumerate", L"enumerate(iterable, start=0): Return (index, value) iterator", CompletionKind::Function },
-        { L"zip", L"zip(*iterables, strict=False): Aggregate elements from each iterable", CompletionKind::Function },
-        { L"isinstance", L"isinstance(object, classinfo) -> bool: Check if object is instance", CompletionKind::Function },
-        { L"issubclass", L"issubclass(class, classinfo) -> bool: Check if class is subclass", CompletionKind::Function },
-        { L"type", L"type(object) -> type: Return object's type", CompletionKind::Function },
-        { L"id", L"id(object) -> int: Return identity address of object", CompletionKind::Function },
-        { L"input", L"input(prompt='') -> str: Read line from standard input", CompletionKind::Function },
-        { L"open", L"open(file, mode='r', encoding=None) -> file object", CompletionKind::Function },
-        { L"str", L"str(object='') -> str: Convert to string representation", CompletionKind::Class },
-        { L"int", L"int(x=0, /) or int(x, base=10) -> int: Convert to integer", CompletionKind::Class },
-        { L"float", L"float(x=0) -> float: Convert to floating point number", CompletionKind::Class },
-        { L"bool", L"bool(x=False) -> bool: Returns True or False", CompletionKind::Class },
-        { L"list", L"list(iterable=()) -> new list", CompletionKind::Class },
-        { L"dict", L"dict(**kwargs) or dict(mapping) -> new dictionary", CompletionKind::Class },
-        { L"set", L"set(iterable=()) -> new set", CompletionKind::Class },
-        { L"tuple", L"tuple(iterable=()) -> new tuple", CompletionKind::Class },
-        { L"bytes", L"bytes(iterable_of_ints) -> immutable bytes array", CompletionKind::Class },
-        { L"bytearray", L"bytearray(source) -> mutable byte sequence", CompletionKind::Class },
-        { L"sum", L"sum(iterable, /, start=0): Return sum of elements", CompletionKind::Function },
-        { L"min", L"min(iterable, *[, key, default]): Return smallest item", CompletionKind::Function },
-        { L"max", L"max(iterable, *[, key, default]): Return largest item", CompletionKind::Function },
-        { L"abs", L"abs(x) -> number: Return absolute value", CompletionKind::Function },
-        { L"round", L"round(number, ndigits=None): Round number to precision", CompletionKind::Function },
-        { L"pow", L"pow(base, exp[, mod]): Return base raised to exp", CompletionKind::Function },
-        { L"sorted", L"sorted(iterable, /, *, key=None, reverse=False): Return new sorted list", CompletionKind::Function },
-        { L"reversed", L"reversed(sequence) -> reverse iterator", CompletionKind::Function },
-        { L"map", L"map(func, *iterables) -> map object iterator", CompletionKind::Function },
-        { L"filter", L"filter(function, iterable) -> filter object iterator", CompletionKind::Function },
-        { L"any", L"any(iterable) -> bool: Return True if any element is truthy", CompletionKind::Function },
-        { L"all", L"all(iterable) -> bool: Return True if all elements are truthy", CompletionKind::Function },
-        { L"hasattr", L"hasattr(obj, name) -> bool: True if attribute exists", CompletionKind::Function },
-        { L"getattr", L"getattr(object, name[, default]): Retrieve named attribute", CompletionKind::Function },
-        { L"setattr", L"setattr(object, name, value): Set named attribute", CompletionKind::Function },
-        { L"delattr", L"delattr(object, name): Delete named attribute", CompletionKind::Function },
-        { L"callable", L"callable(object) -> bool: Check if object can be called", CompletionKind::Function },
-        { L"super", L"super([type[, object-or-type]]) -> proxy object delegating to parent", CompletionKind::Function },
-        { L"vars", L"vars([object]) -> dict: Return __dict__ attribute", CompletionKind::Function },
-        { L"dir", L"dir([object]) -> list: List of attributes and methods", CompletionKind::Function },
-        { L"repr", L"repr(object) -> str: Canonical string representation", CompletionKind::Function },
-        { L"iter", L"iter(iterable) -> iterator object", CompletionKind::Function },
-        { L"next", L"next(iterator[, default]): Return next item", CompletionKind::Function },
-        { L"hash", L"hash(object) -> int: Return hash value of object", CompletionKind::Function },
-        { L"format", L"format(value[, format_spec]): Formatted representation", CompletionKind::Function },
-        { L"breakpoint", L"breakpoint(*args, **kws): Drops into debugger (pdb)", CompletionKind::Function },
-
-        // Standard Modules
-        { L"os", L"Miscellaneous operating system interfaces", CompletionKind::Module },
-        { L"sys", L"System-specific parameters and system functions", CompletionKind::Module },
-        { L"json", L"JSON encoder and decoder serializer", CompletionKind::Module },
-        { L"math", L"Mathematical functions and constants", CompletionKind::Module },
-        { L"re", L"Regular expression operations", CompletionKind::Module },
-        { L"datetime", L"Basic date and time types and utilities", CompletionKind::Module },
-        { L"random", L"Generate pseudo-random numbers", CompletionKind::Module },
-        { L"pathlib", L"Object-oriented filesystem paths", CompletionKind::Module },
-        { L"subprocess", L"Subprocess management and process execution", CompletionKind::Module },
-        { L"collections", L"Container datatypes (namedtuple, deque, Counter, defaultdict)", CompletionKind::Module },
-        { L"itertools", L"Functions creating iterators for efficient looping", CompletionKind::Module },
-        { L"functools", L"Higher-order functions and operations on callable objects", CompletionKind::Module },
-        { L"typing", L"Support for type hints (List, Dict, Optional, Union, Any)", CompletionKind::Module },
-        { L"logging", L"Logging facility for Python applications", CompletionKind::Module },
-        { L"time", L"Time access, sleep, and conversions", CompletionKind::Module },
-        { L"threading", L"Thread-based parallelism", CompletionKind::Module },
-        { L"multiprocessing", L"Process-based parallelism", CompletionKind::Module },
-        { L"shutil", L"High-level file and directory operations", CompletionKind::Module },
-        { L"urllib", L"URL handling modules", CompletionKind::Module },
-        { L"requests", L"HTTP library for Python human beings", CompletionKind::Module },
-        { L"sqlite3", L"DB-API 2.0 interface for SQLite databases", CompletionKind::Module },
-        { L"unittest", L"Unit testing framework", CompletionKind::Module },
-        { L"dataclasses", L"Data classes code generator decorator", CompletionKind::Module },
-        { L"uuid", L"UUID objects according to RFC 4122", CompletionKind::Module },
-        { L"copy", L"Shallow and deep copy operations", CompletionKind::Module },
-        { L"io", L"Core tools for working with streams", CompletionKind::Module },
-
-        // Dunder / Magic Methods
-        { L"__init__", L"Constructor method called upon class instantiation", CompletionKind::Method },
-        { L"__str__", L"Informal or nicely printable string representation", CompletionKind::Method },
-        { L"__repr__", L"Official, unambiguous string representation", CompletionKind::Method },
-        { L"__len__", L"Returns length of container for len() function", CompletionKind::Method },
-        { L"__getitem__", L"Subscript indexing operator: self[key]", CompletionKind::Method },
-        { L"__setitem__", L"Subscript assignment operator: self[key] = value", CompletionKind::Method },
-        { L"__delitem__", L"Subscript deletion operator: del self[key]", CompletionKind::Method },
-        { L"__iter__", L"Returns an iterator for for-in loop", CompletionKind::Method },
-        { L"__next__", L"Advances iterator and returns next element", CompletionKind::Method },
-        { L"__enter__", L"Context manager setup invoked by with-statement", CompletionKind::Method },
-        { L"__exit__", L"Context manager teardown invoked by with-statement", CompletionKind::Method },
-        { L"__call__", L"Makes instance callable like a function: obj()", CompletionKind::Method },
-        { L"__eq__", L"Equality operator: self == other", CompletionKind::Method },
-        { L"__ne__", L"Inequality operator: self != other", CompletionKind::Method },
-        { L"__lt__", L"Less-than comparison operator: self < other", CompletionKind::Method },
-        { L"__le__", L"Less-than-or-equal operator: self <= other", CompletionKind::Method },
-        { L"__gt__", L"Greater-than comparison operator: self > other", CompletionKind::Method },
-        { L"__ge__", L"Greater-than-or-equal operator: self >= other", CompletionKind::Method },
-        { L"__name__", L"String representing current module or class name", CompletionKind::Constant },
-        { L"__main__", L"Top-level script environment module name string", CompletionKind::Constant },
-        { L"__doc__", L"Docstring documentation string attached to object", CompletionKind::Property },
-        { L"__file__", L"Path to the file from which module was loaded", CompletionKind::Constant },
-
-        // Type Hinting
-        { L"Any", L"Special type indicating an unconstrained type", CompletionKind::Class },
-        { L"Optional", L"Optional[T] equivalent to Union[T, None]", CompletionKind::Class },
-        { L"Union", L"Union[X, Y] represents either type X or type Y", CompletionKind::Class },
-        { L"List", L"Generic list container type: List[str]", CompletionKind::Class },
-        { L"Dict", L"Generic dictionary type: Dict[str, Any]", CompletionKind::Class },
-        { L"Set", L"Generic set container type: Set[int]", CompletionKind::Class },
-        { L"Tuple", L"Generic tuple container type: Tuple[int, ...]", CompletionKind::Class },
-        { L"Callable", L"Callable[[ArgTypes], ReturnType]", CompletionKind::Class },
-        { L"Literal", L"Constrains value to specific literal value(s)", CompletionKind::Class }
-    };
-
-    for (const auto& d : pyDefs) {
-        IntelliSenseItem item;
-        item.label = d.name;
-        item.detail = d.desc;
-        item.insertText = d.name;
-        item.kind = d.kind;
-        item.origin = L"python";
-        m_pySymbols.push_back(std::move(item));
+    m_pySymbols.clear();
+    const auto& globalPy = GetPythonGlobalSymbols();
+    m_pySymbols.reserve(globalPy.size());
+    for (const auto& item : globalPy) {
+        m_pySymbols.push_back(item);
     }
 }
 
 void IntelliSenseEngine::PopulateReactAndNodeVocabulary() {
+    m_reactAndNodeVocabulary.clear();
+    const auto& reactSyms = GetReactGlobalSymbols();
+    m_reactAndNodeVocabulary.reserve(reactSyms.size() + 50);
+    for (const auto& item : reactSyms) {
+        m_reactAndNodeVocabulary.push_back(item);
+    }
+
     struct ItemDef { const wchar_t* name; const wchar_t* desc; CompletionKind kind; };
     static const ItemDef items[] = {
-        // 1. React Hooks
-        { L"useState", L"useState<T>(initialState: T | (() => T)): [T, Dispatch<SetStateAction<T>>]", CompletionKind::Function },
-        { L"useEffect", L"useEffect(effect: () => void | (() => void), deps?: DependencyList): void", CompletionKind::Function },
-        { L"useContext", L"useContext<T>(context: Context<T>): T", CompletionKind::Function },
-        { L"useReducer", L"useReducer<R>(reducer: R, initialArg: any, init?: any): [State, Dispatch]", CompletionKind::Function },
-        { L"useCallback", L"useCallback<T extends Function>(callback: T, deps: DependencyList): T", CompletionKind::Function },
-        { L"useMemo", L"useMemo<T>(factory: () => T, deps: DependencyList): T", CompletionKind::Function },
-        { L"useRef", L"useRef<T>(initialValue: T): MutableRefObject<T>", CompletionKind::Function },
-        { L"useImperativeHandle", L"useImperativeHandle<T, R extends T>(ref: Ref<T>, init: () => R, deps?: DependencyList): void", CompletionKind::Function },
-        { L"useLayoutEffect", L"useLayoutEffect(effect: () => void | (() => void), deps?: DependencyList): void", CompletionKind::Function },
-        { L"useId", L"useId(): string (Unique ID generator for accessibility attributes)", CompletionKind::Function },
-        { L"useDeferredValue", L"useDeferredValue<T>(value: T): T (Defers updating a value until urgent renders finish)", CompletionKind::Function },
-        { L"useTransition", L"useTransition(): [boolean, TransitionStartFunction] (Concurrent transition hook)", CompletionKind::Function },
-        { L"useSyncExternalStore", L"useSyncExternalStore<Snapshot>(subscribe, getSnapshot): Snapshot", CompletionKind::Function },
-        { L"useInsertionEffect", L"useInsertionEffect(effect: () => void, deps?: DependencyList): void", CompletionKind::Function },
-
-        // 2. React Core & Top-Level APIs
-        { L"React", L"namespace React: Core library for building interactive user interfaces", CompletionKind::Module },
-        { L"Component", L"class Component<P, S>: React base class for stateful class components", CompletionKind::Class },
-        { L"PureComponent", L"class PureComponent<P, S>: Component with shallow prop and state comparison", CompletionKind::Class },
-        { L"createContext", L"createContext<T>(defaultValue: T): Context<T>", CompletionKind::Function },
-        { L"forwardRef", L"forwardRef<T, P>(render: ForwardRefRenderFunction<T, P>): ForwardRefExoticComponent", CompletionKind::Function },
-        { L"memo", L"memo<P>(Component: ComponentType<P>): MemoExoticComponent (High-order component memoizer)", CompletionKind::Function },
-        { L"lazy", L"lazy<T>(factory: () => Promise<{ default: T }>): LazyExoticComponent (Code splitting loader)", CompletionKind::Function },
-        { L"startTransition", L"startTransition(scope: TransitionFunction): void", CompletionKind::Function },
-        { L"Fragment", L"<Fragment>...</Fragment>: Groups child elements without adding extra DOM nodes", CompletionKind::Class },
-        { L"Suspense", L"<Suspense fallback={<Spinner />}>: Displays fallback UI while children are loading", CompletionKind::Class },
-        { L"StrictMode", L"<StrictMode>: Enables runtime checks and warnings during development", CompletionKind::Class },
-        { L"createRoot", L"createRoot(container: Element): Root (React 18 Concurrent Root client entry)", CompletionKind::Function },
-        { L"hydrateRoot", L"hydrateRoot(container: Element, children: ReactNode): Root (Server-side hydration entry)", CompletionKind::Function },
-        { L"createPortal", L"createPortal(children: ReactNode, container: Element): ReactPortal", CompletionKind::Function },
-
-        // 3. React JSX Element Props & Event Handlers
-        { L"className", L"string: CSS class name for styling React JSX elements", CompletionKind::Property },
-        { L"style", L"CSSProperties: Inline CSS styling object (e.g. style={{ color: 'red' }})", CompletionKind::Property },
-        { L"onClick", L"MouseEventHandler<T>: Triggered when element is clicked", CompletionKind::Property },
-        { L"onChange", L"ChangeEventHandler<T>: Triggered on input value modification", CompletionKind::Property },
-        { L"onSubmit", L"FormEventHandler<T>: Triggered on form submit", CompletionKind::Property },
-        { L"onKeyDown", L"KeyboardEventHandler<T>: Triggered when keyboard key is pressed down", CompletionKind::Property },
-        { L"onKeyUp", L"KeyboardEventHandler<T>: Triggered when keyboard key is released", CompletionKind::Property },
-        { L"onFocus", L"FocusEventHandler<T>: Triggered when element receives focus", CompletionKind::Property },
-        { L"onBlur", L"FocusEventHandler<T>: Triggered when element loses focus", CompletionKind::Property },
-        { L"children", L"ReactNode: Child nodes and elements passed to React component", CompletionKind::Property },
-        { L"key", L"Key: Unique identifier for list items in React diffing and reconciliation", CompletionKind::Property },
-        { L"ref", L"Ref<T>: Reference to DOM element node or mounted component instance", CompletionKind::Property },
-        { L"dangerouslySetInnerHTML", L"{ __html: string }: React replacement for innerHTML", CompletionKind::Property },
-        { L"autoFocus", L"boolean: Automatically focus element on initial render", CompletionKind::Property },
-        { L"disabled", L"boolean: Disables form element input interactions", CompletionKind::Property },
-        { L"readOnly", L"boolean: Prevents modifying input control contents", CompletionKind::Property },
-
-        // 4. Vite & Node.js Vocabulary
+        // Vite & Node.js Vocabulary
         { L"import.meta.env", L"Vite environment variables container (VITE_APP_*, MODE, DEV, PROD)", CompletionKind::Variable },
         { L"import.meta.glob", L"import.meta.glob<T>(pattern: string): Record<string, () => Promise<T>> (Vite module globber)", CompletionKind::Function },
         { L"defineConfig", L"defineConfig(config: UserConfig | Promise<UserConfig>): UserConfig (Vite config helper)", CompletionKind::Function },
@@ -2295,8 +2096,24 @@ std::vector<IntelliSenseItem> IntelliSenseEngine::QueryCompletions(
             }
         }
     } else if (isPy) {
-        for (const auto& pySym : m_pySymbols) {
-            rawCandidates.push_back(pySym);
+        if (afterDot) {
+            size_t dotPos = (cursorCol > prefix.length() && cursorCol > 0) ? cursorCol - prefix.length() - 1 : std::wstring::npos;
+            if (dotPos != std::wstring::npos) {
+                size_t modEnd = dotPos;
+                size_t modStart = modEnd;
+                while (modStart > 0 && (iswalnum(currentLine[modStart - 1]) || currentLine[modStart - 1] == L'_')) {
+                    modStart--;
+                }
+                std::wstring modName = currentLine.substr(modStart, modEnd - modStart);
+                auto modMembers = QueryPythonModuleMembers(modName);
+                for (auto& mm : modMembers) {
+                    rawCandidates.push_back(std::move(mm));
+                }
+            }
+        } else {
+            for (const auto& pySym : m_pySymbols) {
+                rawCandidates.push_back(pySym);
+            }
         }
     } else if (ext == L".cpp" || ext == L".h" || ext == L".hpp" || ext == L".c") {
         const wchar_t* cppKeywords[] = {

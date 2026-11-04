@@ -233,34 +233,7 @@ struct OpenDocument {
         if (!HasSelection()) return false;
         size_t sLine, sCol, eLine, eCol;
         GetSelectionRange(sLine, sCol, eLine, eCol);
-        if (sLine == eLine) {
-            const auto& line = buffer.GetLine(sLine);
-            std::wstring newLine = line.substr(0, sCol);
-            if (eCol < line.length()) {
-                newLine += line.substr(eCol);
-            }
-            buffer.SetLine(sLine, newLine);
-            buffer.SetCursor(sLine, sCol);
-        } else {
-            const auto& startLineText = buffer.GetLine(sLine);
-            const auto& endLineText = buffer.GetLine(eLine);
-            std::wstring merged = startLineText.substr(0, sCol);
-            if (eCol < endLineText.length()) {
-                merged += endLineText.substr(eCol);
-            }
-            std::vector<std::wstring> newLines;
-            for (size_t l = 0; l < buffer.GetLineCount(); ++l) {
-                if (l < sLine) {
-                    newLines.push_back(buffer.GetLine(l));
-                } else if (l == sLine) {
-                    newLines.push_back(merged);
-                } else if (l > eLine) {
-                    newLines.push_back(buffer.GetLine(l));
-                }
-            }
-            buffer.SetLines(newLines);
-            buffer.SetCursor(sLine, sCol);
-        }
+        buffer.DeleteRange(sLine, sCol, eLine, eCol);
         ClearSelection();
         return true;
     }
