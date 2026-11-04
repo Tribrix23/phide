@@ -2509,10 +2509,13 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
 
                 // Zed-Style [tab Accept] Pill Badge next to the first non-empty predicted line (Screenshot 2)
                 if (k == badgeLineIdx && !m_prediction.isCrossFile) {
-                    float badgeX = gX + gW + config.ScaleF(12.0f);
+                    float badgeX = gX + gW + config.ScaleF(10.0f);
                     float badgeH = config.ScaleF(20.0f);
-                    float badgeW = config.ScaleF(86.0f);
+                    float keyW   = config.ScaleF(28.0f);
+                    float keyH   = config.ScaleF(15.0f);
+                    float badgeW = keyW + config.ScaleF(56.0f);
                     float badgeY = curY + (lineH - badgeH) * 0.5f;
+
                     if (badgeX + badgeW < codeRight) {
                         D2D1_RECT_F rcBadge = D2D1::RectF(badgeX, badgeY, badgeX + badgeW, badgeY + badgeH);
                         D2D1_ROUNDED_RECT rrcBadge = D2D1::RoundedRect(rcBadge, config.ScaleF(4.0f), config.ScaleF(4.0f));
@@ -2520,33 +2523,42 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
                         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brBadgeBg;
                         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brBadgeBorder;
                         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brKeyBg;
-                        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brBadgeText;
+                        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brKeyBorder;
+                        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brKeyText;
+                        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brAcceptText;
 
-                        pRT->CreateSolidColorBrush(D2D1::ColorF(0.16f, 0.19f, 0.24f, 0.96f), &brBadgeBg);
-                        pRT->CreateSolidColorBrush(D2D1::ColorF(0.30f, 0.36f, 0.45f, 0.90f), &brBadgeBorder);
-                        pRT->CreateSolidColorBrush(D2D1::ColorF(0.22f, 0.26f, 0.33f, 0.95f), &brKeyBg);
-                        pRT->CreateSolidColorBrush(D2D1::ColorF(0.88f, 0.91f, 0.96f, 1.0f), &brBadgeText);
+                        pRT->CreateSolidColorBrush(D2D1::ColorF(0.12f, 0.14f, 0.18f, 0.95f), &brBadgeBg);
+                        pRT->CreateSolidColorBrush(D2D1::ColorF(0.24f, 0.28f, 0.36f, 0.85f), &brBadgeBorder);
+                        pRT->CreateSolidColorBrush(D2D1::ColorF(0.20f, 0.24f, 0.32f, 0.98f), &brKeyBg);
+                        pRT->CreateSolidColorBrush(D2D1::ColorF(0.34f, 0.40f, 0.52f, 0.90f), &brKeyBorder);
+                        pRT->CreateSolidColorBrush(D2D1::ColorF(0.85f, 0.89f, 0.95f, 1.0f), &brKeyText);
+                        pRT->CreateSolidColorBrush(D2D1::ColorF(0.95f, 0.97f, 1.0f, 1.0f), &brAcceptText);
 
                         if (brBadgeBg) pRT->FillRoundedRectangle(rrcBadge, brBadgeBg.Get());
                         if (brBadgeBorder) pRT->DrawRoundedRectangle(rrcBadge, brBadgeBorder.Get(), 1.0f);
 
-                        D2D1_RECT_F rcKey = D2D1::RectF(
-                            badgeX + config.ScaleF(4.0f),
-                            badgeY + config.ScaleF(3.0f),
-                            badgeX + config.ScaleF(30.0f),
-                            badgeY + badgeH - config.ScaleF(3.0f)
-                        );
-                        if (brKeyBg) {
-                            pRT->FillRoundedRectangle(D2D1::RoundedRect(rcKey, config.ScaleF(3.0f), config.ScaleF(3.0f)), brKeyBg.Get());
+                        // Physical keycap button for "tab"
+                        float keyX = badgeX + config.ScaleF(3.0f);
+                        float keyY = badgeY + (badgeH - keyH) * 0.5f;
+                        D2D1_RECT_F rcKey = D2D1::RectF(keyX, keyY, keyX + keyW, keyY + keyH);
+                        D2D1_ROUNDED_RECT rrcKey = D2D1::RoundedRect(rcKey, config.ScaleF(3.0f), config.ScaleF(3.0f));
+
+                        if (brKeyBg) pRT->FillRoundedRectangle(rrcKey, brKeyBg.Get());
+                        if (brKeyBorder) pRT->DrawRoundedRectangle(rrcKey, brKeyBorder.Get(), 1.0f);
+
+                        // Centered, non-italic keycap text
+                        IDWriteTextFormat* kFmt = theme.fontKeycap ? theme.fontKeycap.Get() :
+                            (theme.fontMenuShortcut ? theme.fontMenuShortcut.Get() : theme.fontBody.Get());
+                        if (kFmt && brKeyText) {
+                            pRT->DrawText(L"tab", 3, kFmt, rcKey, brKeyText.Get());
                         }
-                        if (brBadgeText) {
-                            IDWriteTextFormat* badgeFont = theme.fontCode ? theme.fontCode.Get() : theme.fontBody.Get();
-                            pRT->DrawText(L"tab", 3, badgeFont,
-                                D2D1::RectF(rcKey.left + config.ScaleF(4.0f), badgeY + config.ScaleF(2.0f), rcKey.right, badgeY + badgeH),
-                                theme.brushTextMuted.Get());
-                            pRT->DrawText(L"Accept", 6, badgeFont,
-                                D2D1::RectF(rcKey.right + config.ScaleF(6.0f), badgeY + config.ScaleF(2.0f), badgeX + badgeW - config.ScaleF(4.0f), badgeY + badgeH),
-                                brBadgeText.Get());
+
+                        // Clean non-italic "Accept" label
+                        IDWriteTextFormat* aFmt = theme.fontMenu ? theme.fontMenu.Get() : theme.fontBody.Get();
+                        float acceptX = keyX + keyW + config.ScaleF(6.0f);
+                        D2D1_RECT_F rcAccept = D2D1::RectF(acceptX, badgeY + config.ScaleF(1.0f), badgeX + badgeW - config.ScaleF(4.0f), badgeY + badgeH);
+                        if (aFmt && brAcceptText) {
+                            pRT->DrawText(L"Accept", 6, aFmt, rcAccept, brAcceptText.Get());
                         }
                     }
                 }

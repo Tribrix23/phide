@@ -26,6 +26,8 @@ def clean_snippet_body(body_lines) -> str:
         line = re.sub(r"\$\{\d+\|([^,|]+)[^}]*\}", r"\1", line)
         line = re.sub(r"\$\{?[A-Za-z0-9_]+\}?", "", line)
         line = line.replace("\\$", "$").replace("\t", "    ")
+        # Replace confusing placeholder 'fname' with clean 'name'
+        line = re.sub(r"\bdef fname\(", "def name(", line)
         cleaned.append(line)
     return "\n".join(cleaned).strip("\r\n")
 
@@ -65,6 +67,9 @@ def main():
     sources = [
         (REPO_ROOT / "vendor" / "vscode-php-intellisense" / "php.code-snippets", "php"),
         (BASE_DIR / "friendly_php.json", "php"),
+        (BASE_DIR / "cstrap_python_base.json", "py"),
+        (BASE_DIR / "cstrap_python_comprehension.json", "py"),
+        (BASE_DIR / "cstrap_python_unittest.json", "py"),
         (BASE_DIR / "friendly_python.json", "py"),
         (BASE_DIR / "friendly_cpp.json", "cpp"),
         (BASE_DIR / "friendly_rust.json", "rs"),

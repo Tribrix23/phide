@@ -524,36 +524,133 @@ CodePrediction PredictionEngine::PredictComponentOrMethod(
         // 2a. if __name__ == '__main__':
         if (trimmedCur == L"if" || trimmedCur == L"if _" || trimmedCur.starts_with(L"if __name")) {
             std::wstring mainGuard = L"if __name__ == \"__main__\":\n" + indent + L"    main()";
-            CodePrediction pred;
-            pred.isValid = true;
-            pred.line = line;
-            pred.col = col;
-            pred.displaySummary = L"Zed Edit Prediction: if __name__ == '__main__':";
-            if (mainGuard.starts_with(trimmedCur)) {
-                pred.ghostText = mainGuard.substr(trimmedCur.length());
-            } else {
-                pred.ghostText = mainGuard;
+            std::wstring fullGuard = indent + mainGuard;
+            if (fullGuard.starts_with(curLine) && fullGuard.length() > curLine.length()) {
+                CodePrediction pred;
+                pred.isValid = true;
+                pred.line = line;
+                pred.col = col;
+                pred.displaySummary = L"Zed Edit Prediction: if __name__ == '__main__':";
+                pred.ghostText = fullGuard.substr(curLine.length());
+                return pred;
             }
-            return pred;
         }
 
         // 2b. try: -> except Exception as e:
         if (line > 0 && TrimStr(buffer.GetLine(line - 1)) == L"try:" && (trimmedCur.empty() || trimmedCur == L"except")) {
             std::wstring tryExcept = L"except Exception as e:\n" + indent + L"    print(f\"Error: {e}\")\n" + indent + L"    raise";
+            std::wstring fullExcept = indent + tryExcept;
             CodePrediction pred;
             pred.isValid = true;
             pred.line = line;
             pred.col = col;
             pred.displaySummary = L"Zed Edit Prediction: except Exception as e:";
-            if (!trimmedCur.empty() && tryExcept.starts_with(trimmedCur)) {
-                pred.ghostText = tryExcept.substr(trimmedCur.length());
-            } else if (trimmedCur.empty()) {
+            if (fullExcept.starts_with(curLine)) {
+                pred.ghostText = fullExcept.substr(curLine.length());
+            } else {
                 pred.ghostText = tryExcept;
             }
             return pred;
         }
 
-        // 2c. FastAPI / Flask route handler: @app.get("/...") or @app.post("/...")
+        // 2c. Python Function & Dunder Magic Method Prediction
+        // (Handles: def __init__, def __or__, def __str__, def any_func, async def)
+        if (trimmedCur == L"def" || trimmedCur.starts_with(L"def ") ||
+            trimmedCur == L"async def" || trimmedCur.starts_with(L"async def ") ||
+            trimmedCur.starts_with(L"__")) {
+
+            bool isAsync = trimmedCur.starts_with(L"async ");
+            std::wstring prefix = isAsync ? L"async def " : L"def ";
+
+            std::wstring fnPart;
+            if (trimmedCur.starts_with(prefix)) {
+                fnPart = trimmedCur.substr(prefix.length());
+            } else if (trimmedCur.starts_with(L"__")) {
+                fnPart = trimmedCur;
+            }
+
+            bool inClass = (!indent.empty());
+
+            struct DunderMethod {
+                const wchar_t* name;
+                const wchar_t* params;
+                const wchar_t* summary;
+            };
+
+            static const DunderMethod kDunders[] = {
+                { L"__init__", L"(self):\n    pass", L"Constructor: def __init__(self)" },
+                { L"__new__", L"(cls, *args, **kwargs):\n    return super().__new__(cls)", L"Allocator: def __new__(cls, ...)" },
+                { L"__str__", L"(self) -> str:\n    return f\"{self.__class__.__name__}()\"", L"String: def __str__(self)" },
+                { L"__repr__", L"(self) -> str:\n    return f\"{self.__class__.__name__}()\"", L"Repr: def __repr__(self)" },
+                { L"__len__", L"(self) -> int:\n    return len(self._items)", L"Length: def __len__(self)" },
+                { L"__getitem__", L"(self, key):\n    return self._items[key]", L"Get item: def __getitem__(self, key)" },
+                { L"__setitem__", L"(self, key, value):\n    self._items[key] = value", L"Set item: def __setitem__(self, key, value)" },
+                { L"__delitem__", L"(self, key):\n    del self._items[key]", L"Delete item: def __delitem__(self, key)" },
+                { L"__iter__", L"(self):\n    return iter(self._items)", L"Iterator: def __iter__(self)" },
+                { L"__next__", L"(self):\n    raise StopIteration", L"Next: def __next__(self)" },
+                { L"__enter__", L"(self):\n    return self", L"Context enter: def __enter__(self)" },
+                { L"__exit__", L"(self, exc_type, exc_val, exc_tb):\n    return False", L"Context exit: def __exit__(...)" },
+                { L"__call__", L"(self, *args, **kwargs):\n    pass", L"Callable: def __call__(self, ...)" },
+                { L"__or__", L"(self, other):\n    return NotImplemented", L"Bitwise OR: def __or__(self, other)" },
+                { L"__and__", L"(self, other):\n    return NotImplemented", L"Bitwise AND: def __and__(self, other)" },
+                { L"__xor__", L"(self, other):\n    return NotImplemented", L"Bitwise XOR: def __xor__(self, other)" },
+                { L"__eq__", L"(self, other) -> bool:\n    if not isinstance(other, self.__class__): return False\n    return self.__dict__ == other.__dict__", L"Equality: def __eq__(self, other)" },
+                { L"__ne__", L"(self, other) -> bool:\n    return not self.__eq__(other)", L"Inequality: def __ne__(self, other)" },
+                { L"__lt__", L"(self, other) -> bool:\n    return self._value < other._value", L"Less than: def __lt__(self, other)" },
+                { L"__gt__", L"(self, other) -> bool:\n    return self._value > other._value", L"Greater than: def __gt__(self, other)" },
+                { L"__le__", L"(self, other) -> bool:\n    return self._value <= other._value", L"Less equal: def __le__(self, other)" },
+                { L"__ge__", L"(self, other) -> bool:\n    return self._value >= other._value", L"Greater equal: def __ge__(self, other)" },
+                { L"__add__", L"(self, other):\n    return self._value + other", L"Addition: def __add__(self, other)" },
+                { L"__sub__", L"(self, other):\n    return self._value - other", L"Subtraction: def __sub__(self, other)" },
+                { L"__mul__", L"(self, other):\n    return self._value * other", L"Multiplication: def __mul__(self, other)" },
+                { L"__truediv__", L"(self, other):\n    return self._value / other", L"Division: def __truediv__(self, other)" },
+                { L"__floordiv__", L"(self, other):\n    return self._value // other", L"Floor div: def __floordiv__(self, other)" },
+                { L"__mod__", L"(self, other):\n    return self._value % other", L"Modulo: def __mod__(self, other)" },
+                { L"__pow__", L"(self, other):\n    return self._value ** other", L"Power: def __pow__(self, other)" },
+                { L"__contains__", L"(self, item) -> bool:\n    return item in self._items", L"Contains: def __contains__(self, item)" },
+                { L"__bool__", L"(self) -> bool:\n    return True", L"Boolean: def __bool__(self)" },
+                { L"__hash__", L"(self) -> int:\n    return hash(self._id)", L"Hash: def __hash__(self)" },
+                { L"__post_init__", L"(self):\n    pass", L"Post init: def __post_init__(self)" },
+                { L"__getattr__", L"(self, name):\n    return super().__getattr__(name)", L"Getattr: def __getattr__(self, name)" },
+                { L"__setattr__", L"(self, name, value):\n    super().__setattr__(name, value)", L"Setattr: def __setattr__(self, name, value)" },
+                { L"__aenter__", L"(self):\n    return self", L"Async enter: async def __aenter__(self)" },
+                { L"__aexit__", L"(self, exc_type, exc_val, exc_tb):\n    return False", L"Async exit: async def __aexit__(...)" },
+            };
+
+            for (const auto& d : kDunders) {
+                if (fnPart.starts_with(L"__") && std::wstring(d.name).starts_with(fnPart)) {
+                    std::wstring expansion = prefix + d.name + d.params;
+                    std::wstring indentedExp = ApplyIndentToMultiline(expansion, indent, true);
+                    if (indentedExp.starts_with(curLine) && indentedExp.length() > curLine.length()) {
+                        CodePrediction pred;
+                        pred.isValid = true;
+                        pred.line = line;
+                        pred.col = col;
+                        pred.displaySummary = d.summary;
+                        pred.ghostText = indentedExp.substr(curLine.length());
+                        return pred;
+                    }
+                }
+            }
+
+            // General function signature: def name():\n    pass
+            if (!fnPart.empty() && fnPart != L"__") {
+                std::wstring suffix = inClass ? L"(self):\n    pass" : L"():\n    pass";
+                std::wstring expansion = prefix + fnPart + suffix;
+                std::wstring indentedExp = ApplyIndentToMultiline(expansion, indent, true);
+                if (indentedExp.starts_with(curLine) && indentedExp.length() > curLine.length()) {
+                    CodePrediction pred;
+                    pred.isValid = true;
+                    pred.line = line;
+                    pred.col = col;
+                    pred.displaySummary = L"Function: " + prefix + fnPart;
+                    pred.ghostText = indentedExp.substr(curLine.length());
+                    return pred;
+                }
+            }
+        }
+
+        // 2d. FastAPI / Flask route handler: @app.get("/...") or @app.post("/...")
         if (line > 0) {
             const std::wstring& prev = TrimStr(buffer.GetLine(line - 1));
             std::wregex routeRe(L"@(?:app|router)\\.(get|post|put|delete)\\s*\\(\\s*[\"']([^\"']+)[\"']");
@@ -569,14 +666,15 @@ CodePrediction PredictionEngine::PredictComponentOrMethod(
                     if (fnName.empty()) fnName = L"root";
                 }
                 std::wstring handler = L"async def " + fnName + L"():\n" + indent + L"    return {\"status\": \"ok\"}";
+                std::wstring fullHandler = indent + handler;
                 CodePrediction pred;
                 pred.isValid = true;
                 pred.line = line;
                 pred.col = col;
                 pred.displaySummary = L"Zed Edit Prediction: async def " + fnName;
-                if (!trimmedCur.empty() && handler.starts_with(trimmedCur)) {
-                    pred.ghostText = handler.substr(trimmedCur.length());
-                } else if (trimmedCur.empty()) {
+                if (fullHandler.starts_with(curLine)) {
+                    pred.ghostText = fullHandler.substr(curLine.length());
+                } else {
                     pred.ghostText = handler;
                 }
                 return pred;
@@ -796,16 +894,29 @@ CodePrediction PredictionEngine::PredictComponentOrMethod(
             const auto& tpl = kZedPredictionTemplates[i];
             if (!IsLangCompatible(lang, tpl.lang)) continue;
             std::wstring trig(tpl.trigger);
-            if (trimmedCur == trig || (trig.length() >= 3 && trimmedCur.length() >= 2 && trig.starts_with(trimmedCur))) {
-                std::wstring exp(tpl.expansion);
-                std::wstring indentedExp = ApplyIndentToMultiline(exp, indent, false);
-                if (indentedExp.starts_with(trimmedCur) && indentedExp.length() > trimmedCur.length()) {
+            std::wstring exp(tpl.expansion);
+            std::wstring indentedExp = ApplyIndentToMultiline(exp, indent, true);
+
+            // Exact match with curLine or prefix match
+            if (indentedExp.starts_with(curLine) && indentedExp.length() > curLine.length()) {
+                CodePrediction pred;
+                pred.isValid = true;
+                pred.line = line;
+                pred.col = col;
+                pred.displaySummary = tpl.summary;
+                pred.ghostText = indentedExp.substr(curLine.length());
+                return pred;
+            }
+
+            // Trigger match e.g. typing "cl" matching "class"
+            if (trig.starts_with(trimmedCur) && trig.length() >= 2) {
+                if (indentedExp.starts_with(indent + trig) && indentedExp.length() > curLine.length()) {
                     CodePrediction pred;
                     pred.isValid = true;
                     pred.line = line;
                     pred.col = col;
                     pred.displaySummary = tpl.summary;
-                    pred.ghostText = indentedExp.substr(trimmedCur.length());
+                    pred.ghostText = indentedExp.substr(curLine.length());
                     return pred;
                 }
             }
