@@ -155,7 +155,7 @@ public:
     /**
      * @brief Expands Emmet-style HTML tag abbreviation at cursor (e.g. div -> <div></div>).
      */
-    bool ExpandEmmet();
+    bool ExpandEmmet(const std::wstring& fileExt = L"");
 
     /**
      * @brief Replaces prefix before cursor with snippet body lines, preserving indentation.

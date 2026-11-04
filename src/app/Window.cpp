@@ -3325,7 +3325,16 @@ void Window::DoToggleBlockComment() {
 void Window::DoEmmetExpand() {
     auto* pDoc = GetActiveDoc();
     if (pDoc && !pDoc->isSpecialView) {
-        if (pDoc->buffer.ExpandEmmet()) {
+        std::wstring ext;
+        if (!pDoc->filePath.empty()) {
+            std::filesystem::path p(pDoc->filePath);
+            ext = p.extension().wstring();
+        } else if (!pDoc->fileName.empty()) {
+            std::filesystem::path p(pDoc->fileName);
+            ext = p.extension().wstring();
+        }
+        if (!ext.empty() && ext[0] == L'.') ext = ext.substr(1);
+        if (pDoc->buffer.ExpandEmmet(ext)) {
             MarkDocumentModified(pDoc);
             InvalidateRect(m_hwnd, nullptr, FALSE);
         }
@@ -13725,7 +13734,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                             if (!ext.empty() && ext[0] == L'.') ext = ext.substr(1);
                             if (!m_snippetManager.TryExpand(pDoc->buffer, ext, pDoc->fileName.empty() ? pDoc->filePath : pDoc->fileName)) {
                                 // Try expanding Emmet abbreviation next (e.g., div -> <div></div>)
-                                if (!pDoc->buffer.ExpandEmmet()) {
+                                if (!pDoc->buffer.ExpandEmmet(ext)) {
                                     pDoc->buffer.InsertText(indentStr);
                                 }
                             }

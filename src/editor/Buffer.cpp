@@ -4,6 +4,7 @@
  */
 
 #include "phide/editor/Buffer.hpp"
+#include "phide/editor/EmmetEngine.hpp"
 #include <windows.h>
 #include <cwctype>
 #include <algorithm>
@@ -1133,39 +1134,124 @@ void Buffer::ToggleBlockComment() {
     m_isModified = true;
 }
 
-bool Buffer::ExpandEmmet() {
+bool Buffer::ExpandEmmet(const std::wstring& fileExt) {
     if (m_lines.empty()) return false;
     if (m_cursor.line >= m_lines.size()) m_cursor.line = m_lines.size() - 1;
     auto& line = m_lines[m_cursor.line];
     if (m_cursor.col == 0 || line.empty()) return false;
 
-    size_t startCol = m_cursor.col;
-    while (startCol > 0 && iswalnum(line[startCol - 1])) {
-        --startCol;
+    std::wstring ext = fileExt;
+    if (ext.empty() && !m_filePath.empty()) {
+        std::filesystem::path p(m_filePath);
+        ext = p.extension().wstring();
+        if (!ext.empty() && ext[0] == L'.') ext = ext.substr(1);
     }
-    if (startCol == m_cursor.col) return false;
 
-    std::wstring tag = line.substr(startCol, m_cursor.col - startCol);
-    static const std::unordered_set<std::wstring> knownTags = {
-        L"div", L"span", L"p", L"a", L"button", L"input", L"form", L"ul", L"ol", L"li",
-        L"header", L"footer", L"nav", L"section", L"article", L"h1", L"h2", L"h3", L"h4",
-        L"h5", L"h6", L"table", L"tr", L"td", L"th", L"main", L"label", L"select", L"option"
-    };
+    bool isCss = (ext == L"css" || ext == L"scss" || ext == L"less");
 
-    if (knownTags.count(tag)) {
-        PushUndo();
-        std::wstring expansion;
-        if (tag == L"input") {
-            expansion = L"<input type=\"text\" />";
-        } else {
-            expansion = L"<" + tag + L"></" + tag + L">";
+    size_t startCol = 0;
+    std::wstring abbr = EmmetEngine::ExtractAbbreviation(line, m_cursor.col, isCss, &startCol);
+    if (abbr.empty() || !EmmetEngine::IsEmmetAbbreviation(abbr, isCss)) {
+        return false;
+    }
+
+    // Determine current line indentation
+    size_t indentLen = 0;
+    while (indentLen < startCol && (line[indentLen] == L' ' || line[indentLen] == L'\t')) {
+        indentLen++;
+    }
+    std::wstring lineIndent = line.substr(0, indentLen);
+    std::wstring indentUnit = L"    "; // 4 spaces default
+
+    size_t cursorOffset = std::wstring::npos;
+    std::wstring expansion = EmmetEngine::Expand(abbr, indentUnit, lineIndent, isCss, &cursorOffset);
+    if (expansion.empty()) {
+        return false;
+    }
+
+    PushUndo();
+
+    // Split expansion into lines
+    std::vector<std::wstring> expLines;
+    {
+        std::wstringstream ss(expansion);
+        std::wstring l;
+        while (std::getline(ss, l)) {
+            if (!l.empty() && l.back() == L'\r') l.pop_back();
+            expLines.push_back(l);
         }
-        line.replace(startCol, tag.length(), expansion);
-        m_cursor.col = startCol + tag.length() + 2;
-        m_isModified = true;
-        return true;
     }
-    return false;
+    if (expLines.empty()) expLines.push_back(expansion);
+
+    std::wstring suffix = line.substr(m_cursor.col);
+
+    if (expLines.size() == 1) {
+        std::wstring rep = expLines[0];
+        if (!lineIndent.empty() && rep.rfind(lineIndent, 0) == 0) {
+            rep = rep.substr(lineIndent.length());
+        }
+        line = line.substr(0, startCol) + rep + suffix;
+        if (cursorOffset != std::wstring::npos && cursorOffset <= expLines[0].length()) {
+            size_t relOffset = cursorOffset;
+            if (!lineIndent.empty() && relOffset >= lineIndent.length()) {
+                relOffset -= lineIndent.length();
+            }
+            m_cursor.col = startCol + relOffset;
+        } else {
+            m_cursor.col = startCol + rep.length();
+        }
+    } else {
+        std::wstring repFirst = expLines[0];
+        if (!lineIndent.empty() && repFirst.rfind(lineIndent, 0) == 0) {
+            repFirst = repFirst.substr(lineIndent.length());
+        }
+        line = line.substr(0, startCol) + repFirst;
+
+        size_t baseLine = m_cursor.line;
+        for (size_t i = 1; i < expLines.size(); ++i) {
+            std::wstring nextLine = expLines[i];
+            if (i == expLines.size() - 1) {
+                nextLine += suffix;
+            }
+            m_lines.insert(m_lines.begin() + baseLine + i, nextLine);
+        }
+
+        if (cursorOffset != std::wstring::npos) {
+            size_t running = 0;
+            size_t targetLine = 0;
+            size_t targetCol = 0;
+            bool found = false;
+            for (size_t i = 0; i < expLines.size(); ++i) {
+                size_t lLen = expLines[i].length() + 1;
+                if (cursorOffset <= running + lLen) {
+                    targetLine = i;
+                    targetCol = cursorOffset - running;
+                    found = true;
+                    break;
+                }
+                running += lLen;
+            }
+            if (found) {
+                m_cursor.line = baseLine + targetLine;
+                if (targetLine == 0) {
+                    size_t relCol = targetCol;
+                    if (!lineIndent.empty() && relCol >= lineIndent.length()) relCol -= lineIndent.length();
+                    m_cursor.col = startCol + relCol;
+                } else {
+                    m_cursor.col = targetCol;
+                }
+            } else {
+                m_cursor.line = baseLine + expLines.size() - 1;
+                m_cursor.col = expLines.back().length();
+            }
+        } else {
+            m_cursor.line = baseLine + expLines.size() - 1;
+            m_cursor.col = expLines.back().length();
+        }
+    }
+
+    m_isModified = true;
+    return true;
 }
 
 bool Buffer::ReplacePrefixWithSnippet(size_t prefixLen, const std::vector<std::wstring>& bodyLines, int targetCursorLineOffset, int targetCursorCol) {

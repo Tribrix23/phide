@@ -2,6 +2,8 @@
 #include "phide/editor/PhpIntelliSenseData.hpp"
 #include "phide/editor/PythonIntelliSenseData.hpp"
 #include "phide/editor/ReactIntelliSenseData.hpp"
+#include "phide/editor/WebIntelliSenseData.hpp"
+#include "phide/editor/EmmetEngine.hpp"
 #include "phide/editor/SnippetManager.hpp"
 #include "phide/editor/TailwindHelper.hpp"
 #include <algorithm>
@@ -29,6 +31,11 @@ IntelliSenseEngine::IntelliSenseEngine() {
 }
 
 void IntelliSenseEngine::PopulateHtmlTags() {
+    const auto& officialTags = WebIntelliSenseData::GetHtmlTags();
+    if (!officialTags.empty()) {
+        m_htmlTags = officialTags;
+        return;
+    }
     // Standard HTML5 tags (all 120+ elements)
     struct TagDef { const wchar_t* name; const wchar_t* desc; };
     TagDef tags[] = {
@@ -158,6 +165,11 @@ void IntelliSenseEngine::PopulateHtmlTags() {
 }
 
 void IntelliSenseEngine::PopulateHtmlAttributes() {
+    const auto& officialAttrs = WebIntelliSenseData::GetHtmlGlobalAttributes();
+    if (!officialAttrs.empty()) {
+        m_htmlAttributes = officialAttrs;
+        return;
+    }
     struct AttrDef { const wchar_t* name; const wchar_t* desc; };
     AttrDef attrs[] = {
         // Core & Global Attributes
@@ -353,6 +365,11 @@ void IntelliSenseEngine::PopulateHtmlAttributes() {
 }
 
 void IntelliSenseEngine::PopulateCssProperties() {
+    const auto& officialProps = WebIntelliSenseData::GetCssProperties();
+    if (!officialProps.empty()) {
+        m_cssProperties = officialProps;
+        return;
+    }
     struct PropDef { const wchar_t* name; const wchar_t* desc; };
     static const PropDef cssProps[] = {
         // Layout & Display
@@ -508,6 +525,13 @@ void IntelliSenseEngine::PopulateCssProperties() {
 }
 
 void IntelliSenseEngine::PopulateCssValues() {
+    const auto& officialVals = WebIntelliSenseData::GetCssValues();
+    if (!officialVals.empty()) {
+        m_cssValues = officialVals;
+        const auto& pseudo = WebIntelliSenseData::GetCssPseudo();
+        m_cssValues.insert(m_cssValues.end(), pseudo.begin(), pseudo.end());
+        return;
+    }
     struct ValDef { const wchar_t* name; const wchar_t* desc; };
     static const ValDef cssVals[] = {
         // Display values
@@ -599,6 +623,11 @@ void IntelliSenseEngine::PopulateJavaScriptKeywords() {
 }
 
 void IntelliSenseEngine::PopulateJavaScriptGlobals() {
+    const auto& officialGlobals = WebIntelliSenseData::GetJavaScriptGlobals();
+    if (!officialGlobals.empty()) {
+        m_jsGlobals = officialGlobals;
+        return;
+    }
     struct GlobalDef { const wchar_t* name; const wchar_t* desc; };
     GlobalDef globals[] = {
         { L"document", L"DOM Document object interface for page structure" },
@@ -648,6 +677,11 @@ void IntelliSenseEngine::PopulateJavaScriptGlobals() {
 }
 
 void IntelliSenseEngine::PopulateJavaScriptDomApis() {
+    const auto& officialDom = WebIntelliSenseData::GetJavaScriptDomMethods();
+    if (!officialDom.empty()) {
+        m_jsDomApis = officialDom;
+        return;
+    }
     struct DomDef { const wchar_t* name; const wchar_t* signature; CompletionKind kind; };
     DomDef doms[] = {
         { L"getElementById", L"(elementId: string): HTMLElement | null", CompletionKind::Method },
@@ -697,6 +731,11 @@ void IntelliSenseEngine::PopulateJavaScriptDomApis() {
 }
 
 void IntelliSenseEngine::PopulateJavaScriptPrototypeMethods() {
+    const auto& officialProto = WebIntelliSenseData::GetJavaScriptPrototypeMethods();
+    if (!officialProto.empty()) {
+        m_jsPrototypes = officialProto;
+        return;
+    }
     struct ProtoDef { const wchar_t* name; const wchar_t* sig; };
     ProtoDef protos[] = {
         // Array methods
@@ -1062,192 +1101,11 @@ void IntelliSenseEngine::PopulateCommonVocabulary() {
 }
 
 std::wstring IntelliSenseEngine::ExtractEmmetPrefix(const std::wstring& line, size_t cursorCol) {
-    if (line.empty() || cursorCol == 0) return L"";
-    size_t col = (std::min)(cursorCol, line.length());
-    size_t start = col;
-    while (start > 0) {
-        wchar_t c = line[start - 1];
-        if (c == L' ' || c == L'\t' || c == L'<' || c == L';' || c == L'\"' || c == L'\'') {
-            break;
-        }
-        if (c == L'>') {
-            // '>' can be child operator in Emmet like ul>li, but if preceded by '/' or tag close '</tag>', stop
-            if (start >= 2 && line[start - 2] == L'/') {
-                break;
-            }
-        }
-        start--;
-    }
-    while (start < col && (line[start] == L'>' || line[start] == L' ' || line[start] == L'\t')) {
-        start++;
-    }
-    if (start >= col) return L"";
-    return line.substr(start, col - start);
+    return EmmetEngine::ExtractAbbreviation(line, cursorCol, false, nullptr);
 }
 
 std::wstring IntelliSenseEngine::ExpandEmmet(const std::wstring& abbr) {
-    if (abbr.empty()) return L"";
-
-    // Quick syntax validation: must look like an Emmet expression
-    bool hasEmmetSyntax = (abbr.find_first_of(L">*+^$") != std::wstring::npos) ||
-                          (abbr.find(L'.') != std::wstring::npos && abbr.length() > 2) ||
-                          (abbr.find(L'#') != std::wstring::npos && abbr.length() > 2);
-    if (!hasEmmetSyntax) return L"";
-
-    struct Node {
-        std::wstring tag = L"div";
-        std::wstring id;
-        std::vector<std::wstring> classes;
-        std::wstring text;
-        int count = 1;
-        std::vector<Node> children;
-    };
-
-    auto parseSingle = [](const std::wstring& s) -> Node {
-        Node n;
-        size_t len = s.length();
-        if (len == 0) return n;
-
-        // Check multiplier *N at end
-        size_t star = s.rfind(L'*');
-        if (star != std::wstring::npos && star + 1 < len) {
-            bool allDig = true;
-            for (size_t d = star + 1; d < len; ++d) {
-                if (!iswdigit(s[d])) { allDig = false; break; }
-            }
-            if (allDig) {
-                n.count = (std::max)(1, _wtoi(s.substr(star + 1).c_str()));
-                len = star;
-            }
-        }
-
-        size_t tagEnd = 0;
-        while (tagEnd < len && s[tagEnd] != L'.' && s[tagEnd] != L'#' && s[tagEnd] != L'{') {
-            tagEnd++;
-        }
-        if (tagEnd > 0) {
-            n.tag = s.substr(0, tagEnd);
-        } else {
-            n.tag = L"div";
-        }
-
-        size_t i = tagEnd;
-        while (i < len) {
-            if (s[i] == L'#') {
-                i++;
-                size_t idEnd = i;
-                while (idEnd < len && s[idEnd] != L'.' && s[idEnd] != L'#' && s[idEnd] != L'{') idEnd++;
-                n.id = s.substr(i, idEnd - i);
-                i = idEnd;
-            } else if (s[i] == L'.') {
-                i++;
-                size_t clsEnd = i;
-                while (clsEnd < len && s[clsEnd] != L'.' && s[clsEnd] != L'#' && s[clsEnd] != L'{') clsEnd++;
-                n.classes.push_back(s.substr(i, clsEnd - i));
-                i = clsEnd;
-            } else if (s[i] == L'{') {
-                i++;
-                size_t txtEnd = s.find(L'}', i);
-                if (txtEnd != std::wstring::npos && txtEnd <= len) {
-                    n.text = s.substr(i, txtEnd - i);
-                    i = txtEnd + 1;
-                } else {
-                    n.text = s.substr(i, len - i);
-                    break;
-                }
-            } else {
-                i++;
-            }
-        }
-        return n;
-    };
-
-    // Parse hierarchy by splitting along '>'
-    std::vector<std::wstring> levels;
-    size_t prev = 0;
-    for (size_t i = 0; i < abbr.length(); ++i) {
-        if (abbr[i] == L'>') {
-            levels.push_back(abbr.substr(prev, i - prev));
-            prev = i + 1;
-        }
-    }
-    levels.push_back(abbr.substr(prev));
-    if (levels.empty()) return L"";
-
-    // Build tree
-    std::function<Node(size_t)> buildTree = [&](size_t idx) -> Node {
-        Node curr = parseSingle(levels[idx]);
-        if (idx + 1 < levels.size()) {
-            curr.children.push_back(buildTree(idx + 1));
-        }
-        return curr;
-    };
-
-    Node root = buildTree(0);
-
-    // Render tree with indentation and $ numbering replacement
-    auto isVoidTag = [](const std::wstring& t) {
-        return t == L"img" || t == L"input" || t == L"br" || t == L"hr" || t == L"meta" || t == L"link" || t == L"source";
-    };
-
-    auto replaceNum = [](const std::wstring& inStr, int num) -> std::wstring {
-        std::wstring out = inStr;
-        std::wstring numStr = std::to_wstring(num);
-        size_t pos = 0;
-        while ((pos = out.find(L'$', pos)) != std::wstring::npos) {
-            out.replace(pos, 1, numStr);
-            pos += numStr.length();
-        }
-        return out;
-    };
-
-    std::wstring result;
-    std::function<void(const Node&, int, int)> render = [&](const Node& n, int depth, int num) {
-        std::wstring indent(depth * 4, L' ');
-        result += indent + L"<" + n.tag;
-        if (!n.id.empty()) {
-            result += L" id=\"" + replaceNum(n.id, num) + L"\"";
-        }
-        if (!n.classes.empty()) {
-            result += L" class=\"";
-            for (size_t c = 0; c < n.classes.size(); ++c) {
-                if (c > 0) result += L" ";
-                result += replaceNum(n.classes[c], num);
-            }
-            result += L"\"";
-        }
-
-        if (isVoidTag(n.tag)) {
-            result += L" />\n";
-            return;
-        }
-
-        result += L">";
-        if (!n.text.empty()) {
-            result += replaceNum(n.text, num);
-        }
-
-        if (!n.children.empty()) {
-            result += L"\n";
-            for (const auto& child : n.children) {
-                for (int k = 1; k <= child.count; ++k) {
-                    render(child, depth + 1, k);
-                }
-            }
-            result += indent;
-        }
-
-        result += L"</" + n.tag + L">\n";
-    };
-
-    for (int k = 1; k <= root.count; ++k) {
-        render(root, 0, k);
-    }
-
-    if (!result.empty() && result.back() == L'\n') {
-        result.pop_back();
-    }
-    return result;
+    return EmmetEngine::Expand(abbr, L"    ", L"", false, nullptr);
 }
 
 std::wstring IntelliSenseEngine::ExtractQueryPrefix(const std::wstring& line, size_t cursorCol) {
@@ -1902,6 +1760,22 @@ std::vector<IntelliSenseItem> IntelliSenseEngine::QueryCompletions(
         } else {
             for (const auto& p : m_cssProperties) rawCandidates.push_back(p);
 
+            // Check for CSS Emmet abbreviation
+            std::wstring cssEmmet = EmmetEngine::ExtractAbbreviation(currentLine, cursorCol, true, nullptr);
+            if (!cssEmmet.empty() && EmmetEngine::IsEmmetAbbreviation(cssEmmet, true)) {
+                std::wstring expandedCss = EmmetEngine::ExpandCss(cssEmmet);
+                if (!expandedCss.empty()) {
+                    IntelliSenseItem cItem;
+                    cItem.label = cssEmmet;
+                    cItem.detail = L"CSS Emmet\n" + expandedCss;
+                    cItem.insertText = expandedCss;
+                    cItem.kind = CompletionKind::Snippet;
+                    cItem.origin = L"emmet";
+                    cItem.score = 4000;
+                    rawCandidates.push_back(std::move(cItem));
+                }
+            }
+
             // Standard CSS Pseudo-Classes & Pseudo-Elements
             static const struct PseudoDef { const wchar_t* name; const wchar_t* desc; } cssPseudos[] = {
                 { L":root", L"Matches the document root element (usually <html>). Primary selector for declaring global CSS variables." },
@@ -2005,9 +1879,9 @@ std::vector<IntelliSenseItem> IntelliSenseEngine::QueryCompletions(
                 rawCandidates.push_back(std::move(it));
             }
 
-            // 2. Check for Emmet Abbreviation (Image 4: ul>li*3>span.hello$)
+            // 2. Check for Emmet Abbreviation
             std::wstring emmetPrefix = ExtractEmmetPrefix(currentLine, cursorCol);
-            if (!emmetPrefix.empty() && emmetPrefix.length() >= 3) {
+            if (!emmetPrefix.empty() && EmmetEngine::IsEmmetAbbreviation(emmetPrefix, false)) {
                 std::wstring expanded = ExpandEmmet(emmetPrefix);
                 if (!expanded.empty()) {
                     IntelliSenseItem eItem;
@@ -2016,7 +1890,7 @@ std::vector<IntelliSenseItem> IntelliSenseEngine::QueryCompletions(
                     eItem.insertText = expanded;
                     eItem.kind = CompletionKind::Snippet;
                     eItem.origin = L"emmet";
-                    eItem.score = 3500; // Highest priority at top of list!
+                    eItem.score = 4000; // Highest priority at top of list!
                     rawCandidates.push_back(std::move(eItem));
                 }
             }
