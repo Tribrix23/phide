@@ -84,6 +84,17 @@ CodePrediction PredictionEngine::PredictNextEdit(
     size_t cursorCol,
     const std::vector<std::wstring>& openFiles
 ) {
+    if (cursorLine < buffer.GetLineCount()) {
+        const std::wstring& curL = buffer.GetLine(cursorLine);
+        // Do not generate ghost text predictions if there is non-whitespace code after caret on same line
+        if (cursorCol < curL.length()) {
+            bool hasCodeAfter = false;
+            for (size_t c = cursorCol; c < curL.length(); ++c) {
+                if (!iswspace(curL[c])) { hasCodeAfter = true; break; }
+            }
+            if (hasCodeAfter) return {};
+        }
+    }
     if (buffer.GetLineCount() == 0) return {};
 
     // 1. Comment-driven generation

@@ -11,4 +11,9 @@ namespace phide::editor {
  */
 const std::vector<IntelliSenseItem>& GetReactGlobalSymbols();
 
+/**
+ * @brief Retrieves the compiled official React JSX attributes (e.g. className, style, onClick, etc.).
+ */
+const std::vector<IntelliSenseItem>& GetReactJsxAttributes();
+
 } // namespace phide::editor

@@ -9,6 +9,35 @@
 
 namespace phide::ui {
 
+static D2D1_COLOR_F AdaptTerminalColorForLight(D2D1_COLOR_F c) {
+    // If color is very light / white / near white (e.g. > 0.70f gray/white)
+    if (c.r > 0.70f && c.g > 0.70f && c.b > 0.70f) {
+        return D2D1::ColorF(0.08f, 0.10f, 0.14f, 1.0f); // Rich dark charcoal
+    }
+    // If color is washed-out yellow (e.g. command names like python -u ...)
+    if (c.r > 0.80f && c.g > 0.65f && c.b < 0.45f) {
+        return D2D1::ColorF(0.58f, 0.32f, 0.00f, 1.0f); // Rich deep amber bronze
+    }
+    // If color is cyan / light blue (e.g. PowerShell path)
+    if (c.b > 0.75f && c.g > 0.60f && c.r < 0.50f) {
+        return D2D1::ColorF(0.00f, 0.35f, 0.72f, 1.0f); // Rich deep royal blue
+    }
+    // If color is bright lime / light green
+    if (c.g > 0.70f && c.r < 0.50f) {
+        return D2D1::ColorF(0.02f, 0.48f, 0.22f, 1.0f); // Deep emerald green
+    }
+    // If color is bright light magenta
+    if (c.r > 0.70f && c.b > 0.70f && c.g < 0.60f) {
+        return D2D1::ColorF(0.52f, 0.12f, 0.62f, 1.0f); // Deep rich purple
+    }
+    // If color is bright light red
+    if (c.r > 0.85f && c.g < 0.45f && c.b < 0.45f) {
+        return D2D1::ColorF(0.78f, 0.12f, 0.12f, 1.0f); // Deep crimson red
+    }
+    return c;
+}
+
+
 // Native Win32 Process Tree Termination: pure API, ZERO taskkill.exe / powershell.exe, ZERO popping console windows!
 static void KillProcessTree(DWORD rootPid) {
     if (rootPid == 0) return;
@@ -1417,7 +1446,7 @@ void TerminalPanel::RenderHeader(ID2D1RenderTarget* pRT, Theme& theme, const app
             if (isActive) {
                 // Active Tab: Darker rounded pill background (Image 1)
                 Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> activePillBg;
-                pRT->CreateSolidColorBrush(theme.IsDarkMode() ? D2D1::ColorF(0.12f, 0.22f, 0.36f, 1.0f) : D2D1::ColorF(0.85f, 0.90f, 0.98f, 1.0f), &activePillBg);
+                pRT->CreateSolidColorBrush(theme.IsDarkMode() ? D2D1::ColorF(0.12f, 0.22f, 0.36f, 1.0f) : D2D1::ColorF(0.000f, 0.400f, 0.850f, 1.0f), &activePillBg);
                 if (activePillBg) pRT->FillRoundedRectangle(rrcTab, activePillBg.Get());
             } else if (isHover) {
                 pRT->FillRoundedRectangle(rrcTab, theme.brushItemHover.Get());
@@ -1914,8 +1943,9 @@ void TerminalPanel::RenderSinglePane(ID2D1RenderTarget* pRT, Theme& theme, const
             float spanW = static_cast<float>(span.text.length()) * charW;
             D2D1_RECT_F rcSpan = D2D1::RectF(curX, curY, curX + spanW + 50.0f, curY + lineH);
 
+            D2D1_COLOR_F drawColor = theme.IsDarkMode() ? span.color : AdaptTerminalColorForLight(span.color);
             Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> spanBrush;
-            pRT->CreateSolidColorBrush(span.color, &spanBrush);
+            pRT->CreateSolidColorBrush(drawColor, &spanBrush);
             if (spanBrush) {
                 pRT->DrawText(span.text.c_str(), static_cast<UINT32>(span.text.length()),
                               termFmt, rcSpan, spanBrush.Get());
@@ -1974,8 +2004,9 @@ void TerminalPanel::RenderSinglePane(ID2D1RenderTarget* pRT, Theme& theme, const
             for (const auto& span : inputSpans) {
                 float spanW = static_cast<float>(span.text.length()) * charW;
                 D2D1_RECT_F rcSpan = D2D1::RectF(curX, curY, curX + spanW + 50.0f, curY + lineH);
+                D2D1_COLOR_F drawColor = theme.IsDarkMode() ? span.color : AdaptTerminalColorForLight(span.color);
                 Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> spanBrush;
-                pRT->CreateSolidColorBrush(span.color, &spanBrush);
+                pRT->CreateSolidColorBrush(drawColor, &spanBrush);
                 if (spanBrush) {
                     pRT->DrawText(span.text.c_str(), static_cast<UINT32>(span.text.length()),
                                   termFmt, rcSpan, spanBrush.Get());

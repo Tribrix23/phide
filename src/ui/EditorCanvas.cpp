@@ -2527,12 +2527,12 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
                         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brKeyText;
                         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brAcceptText;
 
-                        pRT->CreateSolidColorBrush(D2D1::ColorF(0.12f, 0.14f, 0.18f, 0.95f), &brBadgeBg);
-                        pRT->CreateSolidColorBrush(D2D1::ColorF(0.24f, 0.28f, 0.36f, 0.85f), &brBadgeBorder);
-                        pRT->CreateSolidColorBrush(D2D1::ColorF(0.20f, 0.24f, 0.32f, 0.98f), &brKeyBg);
-                        pRT->CreateSolidColorBrush(D2D1::ColorF(0.34f, 0.40f, 0.52f, 0.90f), &brKeyBorder);
-                        pRT->CreateSolidColorBrush(D2D1::ColorF(0.85f, 0.89f, 0.95f, 1.0f), &brKeyText);
-                        pRT->CreateSolidColorBrush(D2D1::ColorF(0.95f, 0.97f, 1.0f, 1.0f), &brAcceptText);
+                        pRT->CreateSolidColorBrush(theme.IsDarkMode() ? D2D1::ColorF(0.12f, 0.14f, 0.18f, 0.95f) : D2D1::ColorF(0.92f, 0.94f, 0.97f, 0.98f), &brBadgeBg);
+                        pRT->CreateSolidColorBrush(theme.IsDarkMode() ? D2D1::ColorF(0.24f, 0.28f, 0.36f, 0.85f) : D2D1::ColorF(0.78f, 0.82f, 0.88f, 0.90f), &brBadgeBorder);
+                        pRT->CreateSolidColorBrush(theme.IsDarkMode() ? D2D1::ColorF(0.20f, 0.24f, 0.32f, 0.98f) : D2D1::ColorF(1.0f, 1.0f, 1.0f, 1.0f), &brKeyBg);
+                        pRT->CreateSolidColorBrush(theme.IsDarkMode() ? D2D1::ColorF(0.34f, 0.40f, 0.52f, 0.90f) : D2D1::ColorF(0.75f, 0.79f, 0.85f, 0.95f), &brKeyBorder);
+                        pRT->CreateSolidColorBrush(theme.IsDarkMode() ? D2D1::ColorF(0.85f, 0.89f, 0.95f, 1.0f) : D2D1::ColorF(0.10f, 0.12f, 0.16f, 1.0f), &brKeyText);
+                        pRT->CreateSolidColorBrush(theme.IsDarkMode() ? D2D1::ColorF(0.95f, 0.97f, 1.0f, 1.0f) : D2D1::ColorF(0.15f, 0.18f, 0.25f, 1.0f), &brAcceptText);
 
                         if (brBadgeBg) pRT->FillRoundedRectangle(rrcBadge, brBadgeBg.Get());
                         if (brBadgeBorder) pRT->DrawRoundedRectangle(rrcBadge, brBadgeBorder.Get(), 1.0f);
@@ -3322,8 +3322,8 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
 
             Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> cardBg;
             Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> cardBorder;
-            pRT->CreateSolidColorBrush(theme.IsDarkMode() ? D2D1::ColorF(0.12f, 0.12f, 0.14f, 1.0f) : D2D1::ColorF(1.0f, 1.0f, 1.0f, 1.0f), &cardBg);
-            pRT->CreateSolidColorBrush(D2D1::ColorF(0.92f, 0.28f, 0.28f, 1.0f), &cardBorder);
+            pRT->CreateSolidColorBrush(theme.IsDarkMode() ? D2D1::ColorF(0.12f, 0.12f, 0.14f, 1.0f) : D2D1::ColorF(1.0f, 0.96f, 0.96f, 0.98f), &cardBg);
+            pRT->CreateSolidColorBrush(theme.IsDarkMode() ? D2D1::ColorF(0.92f, 0.28f, 0.28f, 1.0f) : D2D1::ColorF(0.90f, 0.40f, 0.40f, 1.0f), &cardBorder);
             if (cardBg) pRT->FillRoundedRectangle(&rrcCard, cardBg.Get());
             if (cardBorder) pRT->DrawRoundedRectangle(&rrcCard, cardBorder.Get(), 1.2f);
 
@@ -6819,7 +6819,7 @@ void EditorCanvas::RenderAutocompletePopup(ID2D1RenderTarget* pRT, Theme& theme,
                 pTextLayout->SetFontWeight(DWRITE_FONT_WEIGHT_BOLD, matchRange);
                 Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> hlBrush;
                 if (isSelected) {
-                    pRT->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f), &hlBrush); // crisp bold white on selection
+                    pRT->CreateSolidColorBrush(theme.IsDarkMode() ? D2D1::ColorF(1.0f, 1.0f, 1.0f) : D2D1::ColorF(0.00f, 0.30f, 0.75f), &hlBrush);
                 } else {
                     pRT->CreateSolidColorBrush(theme.IsDarkMode() ? D2D1::ColorF(0.22f, 0.62f, 1.0f) : D2D1::ColorF(0.0f, 0.45f, 0.88f), &hlBrush); // subtle VS Code blue
                 }
@@ -6919,7 +6919,8 @@ void EditorCanvas::RenderAutocompletePopup(ID2D1RenderTarget* pRT, Theme& theme,
     // 10. Documentation Sidecar Flyout Card (Dynamic width, height, word-wrap, and strict clipping)
     if (m_autocompleteSelectedIdx < m_autocompleteItems.size()) {
         const auto& selItem = m_autocompleteItems[m_autocompleteSelectedIdx];
-        if (!selItem.detail.empty() || !selItem.documentation.empty() || selItem.isColor) {
+        bool hasRichDoc = !selItem.documentation.empty() || selItem.isColor || (selItem.detail.length() > 38 || selItem.detail.find(L'\n') != std::wstring::npos);
+        if (hasRichDoc) {
             float padX = config.ScaleF(12.0f);
             float padY = config.ScaleF(10.0f);
 

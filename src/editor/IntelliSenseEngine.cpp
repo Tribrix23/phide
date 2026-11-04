@@ -1611,6 +1611,7 @@ std::vector<IntelliSenseItem> IntelliSenseEngine::QueryCompletions(
 
     bool isHtml = (ext == L".html" || ext == L".htm" || (isPhp && !insidePhp));
     bool isCss = (ext == L".css" || ext == L".scss" || ext == L".less");
+    bool insideTagAttr = false;
     bool isJs = (ext == L".js" || ext == L".jsx" || ext == L".ts" || ext == L".tsx" || ext == L".mjs" || ext == L".cjs");
     bool isPy = (ext == L".py");
 
@@ -1845,14 +1846,45 @@ std::vector<IntelliSenseItem> IntelliSenseEngine::QueryCompletions(
                 }
             }
         } else {
-            for (const auto& g : m_jsGlobals) rawCandidates.push_back(g);
-            for (const auto& kw : m_jsKeywords) rawCandidates.push_back(kw);
-            for (const auto& d : m_jsDomApis) rawCandidates.push_back(d);
-            for (const auto& r : m_reactAndNodeVocabulary) rawCandidates.push_back(r);
+            bool isJsx = (ext == L".jsx" || ext == L".tsx" || (isJs && (currentLine.find(L"<") != std::wstring::npos)));
+            size_t lastOpenTag = currentLine.rfind(L'<', cursorCol > 0 ? cursorCol - 1 : 0);
+            size_t lastCloseTag = currentLine.rfind(L'>', cursorCol > 0 ? cursorCol - 1 : 0);
+            bool insideTag = isJsx && (lastOpenTag != std::wstring::npos && (lastCloseTag == std::wstring::npos || lastOpenTag > lastCloseTag));
 
-            // In React JSX/TSX files, also provide HTML element tags
-            if (ext == L".jsx" || ext == L".tsx") {
-                for (const auto& tag : m_htmlTags) rawCandidates.push_back(tag);
+            if (insideTag) {
+                size_t spaceAfterOpen = currentLine.find_first_of(L" \t", lastOpenTag);
+                if (spaceAfterOpen == std::wstring::npos || cursorCol <= spaceAfterOpen) {
+                    // Tag name inside JSX: <div, <Button, etc.
+                    for (const auto& tag : m_htmlTags) rawCandidates.push_back(tag);
+                    for (const auto& r : m_reactAndNodeVocabulary) {
+                        if (r.kind == CompletionKind::Class || r.kind == CompletionKind::Function) {
+                            rawCandidates.push_back(r);
+                        }
+                    }
+                } else {
+                    // Inside JSX Tag Attributes: e.g. <div class|
+                    // 1. Propose all React JSX Attributes from @types/react (with className at score 4500!)
+                    const auto& jsxAttrs = GetReactJsxAttributes();
+                    for (const auto& attr : jsxAttrs) {
+                        rawCandidates.push_back(attr);
+                    }
+                    // 2. Also propose standard HTML attributes (excluding HTML 'class', which is invalid in React)
+                    for (const auto& attr : m_htmlAttributes) {
+                        if (attr.label == L"class") continue;
+                        rawCandidates.push_back(attr);
+                    }
+                    insideTagAttr = true;
+                }
+            } else {
+                for (const auto& g : m_jsGlobals) rawCandidates.push_back(g);
+                for (const auto& kw : m_jsKeywords) rawCandidates.push_back(kw);
+                for (const auto& d : m_jsDomApis) rawCandidates.push_back(d);
+                for (const auto& r : m_reactAndNodeVocabulary) rawCandidates.push_back(r);
+
+                // In React JSX/TSX files, also provide HTML element tags
+                if (ext == L".jsx" || ext == L".tsx") {
+                    for (const auto& tag : m_htmlTags) rawCandidates.push_back(tag);
+                }
             }
         }
     } else if (isHtml) {
@@ -2014,7 +2046,7 @@ std::vector<IntelliSenseItem> IntelliSenseEngine::QueryCompletions(
 
     // Common web and programming vocabulary (properties, tags, methods, identifiers)
     // Keep CSS and PHP code completions strictly scoped and clean
-    if (!isCss && !insideStyle && !insidePhp) {
+    if (!isCss && !insideStyle && !insidePhp && !insideTagAttr) {
         for (const auto& v : m_commonVocabulary) {
             rawCandidates.push_back(v);
         }
