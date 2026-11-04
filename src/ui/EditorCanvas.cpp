@@ -1403,15 +1403,35 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
     }
 
     // Build visual lines layout (folding awareness & CodeLens virtual lines)
+    auto cursor = buffer.GetCursor();
+
     struct VisualLine {
         size_t bufferLine;
         bool isFoldHeader;
         bool isFolded;
         size_t foldEndLine;
         bool isCodeLens = false;
+        bool isPredictionVirtual = false;
+        size_t predictionLineIndex = 0;
     };
     std::vector<VisualLine> visualLines;
     visualLines.reserve(buffer.GetLineCount() * 2);
+
+    // Pre-calculate multi-line prediction ghost lines if active (Zed-style virtual space)
+    std::vector<std::wstring> predGhostLines;
+    if (isFocused && m_prediction.isValid && m_prediction.line == cursor.line && !IsAutocompleteVisible()) {
+        const std::wstring& predGhost = m_prediction.ghostText;
+        size_t pStart = 0;
+        while (pStart < predGhost.length()) {
+            size_t pEnd = predGhost.find(L'\n', pStart);
+            if (pEnd == std::wstring::npos) {
+                predGhostLines.push_back(predGhost.substr(pStart));
+                break;
+            }
+            predGhostLines.push_back(predGhost.substr(pStart, pEnd - pStart));
+            pStart = pEnd + 1;
+        }
+    }
 
     const size_t totalBufLines = buffer.GetLineCount();
     for (size_t b = 0; b < totalBufLines; ++b) {
@@ -1429,6 +1449,8 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
             clVl.isFolded = false;
             clVl.foldEndLine = 0;
             clVl.isCodeLens = true;
+            clVl.isPredictionVirtual = false;
+            clVl.predictionLineIndex = 0;
             visualLines.push_back(clVl);
         }
 
@@ -1438,7 +1460,24 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
         vl.isFolded = isFolded;
         vl.foldEndLine = foldEnd;
         vl.isCodeLens = false;
+        vl.isPredictionVirtual = false;
+        vl.predictionLineIndex = 0;
         visualLines.push_back(vl);
+
+        // If this line has multi-line prediction continuation, insert virtual lines (Zed-style virtual space)
+        if (b == cursor.line && predGhostLines.size() > 1) {
+            for (size_t k = 1; k < predGhostLines.size(); ++k) {
+                VisualLine pVl;
+                pVl.bufferLine = b;
+                pVl.isFoldHeader = false;
+                pVl.isFolded = false;
+                pVl.foldEndLine = 0;
+                pVl.isCodeLens = false;
+                pVl.isPredictionVirtual = true;
+                pVl.predictionLineIndex = k;
+                visualLines.push_back(pVl);
+            }
+        }
 
         if (isFolded && foldEnd > b) {
             b = foldEnd; // Skip folded child lines!
@@ -1453,16 +1492,16 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
     }
 
     // 2. Current Line Highlight - Rendered if focused or has search target line
-    auto cursor = buffer.GetCursor();
+    cursor = buffer.GetCursor();
     size_t visualCursorIdx = 0;
     bool foundCursorVisual = false;
     for (size_t v = 0; v < visualLines.size(); ++v) {
-        if (!visualLines[v].isCodeLens && visualLines[v].bufferLine == cursor.line) {
+        if (!visualLines[v].isCodeLens && !visualLines[v].isPredictionVirtual && visualLines[v].bufferLine == cursor.line) {
             visualCursorIdx = v;
             foundCursorVisual = true;
             break;
         }
-        if (!visualLines[v].isCodeLens && visualLines[v].isFolded && cursor.line > visualLines[v].bufferLine && cursor.line <= visualLines[v].foldEndLine) {
+        if (!visualLines[v].isCodeLens && !visualLines[v].isPredictionVirtual && visualLines[v].isFolded && cursor.line > visualLines[v].bufferLine && cursor.line <= visualLines[v].foldEndLine) {
             visualCursorIdx = v;
             foundCursorVisual = true;
             break;
@@ -1510,11 +1549,11 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
         bracketAnalysis.activePairIdx < static_cast<int>(bracketAnalysis.pairs.size())) {
         pActivePair = &bracketAnalysis.pairs[bracketAnalysis.activePairIdx];
         for (size_t v = 0; v < visualLines.size(); ++v) {
-            if (!visualLines[v].isCodeLens && visualLines[v].bufferLine == pActivePair->openLine) {
+            if (!visualLines[v].isCodeLens && !visualLines[v].isPredictionVirtual && visualLines[v].bufferLine == pActivePair->openLine) {
                 activeOpenLineY = topY + config.ScaleF(6.0f) + (static_cast<float>(v) - static_cast<float>(doc.scrollLine)) * lineH;
                 hasActiveOpenY = true;
             }
-            if (!visualLines[v].isCodeLens && visualLines[v].bufferLine == pActivePair->closeLine) {
+            if (!visualLines[v].isCodeLens && !visualLines[v].isPredictionVirtual && visualLines[v].bufferLine == pActivePair->closeLine) {
                 activeCloseLineY = topY + config.ScaleF(6.0f) + (static_cast<float>(v) - static_cast<float>(doc.scrollLine)) * lineH;
                 hasActiveCloseY = true;
             }
@@ -1703,6 +1742,16 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
             }
 
             continue; // Virtual CodeLens line has no code tokens
+        }
+
+        // Virtual prediction continuation line (Zed-style virtual space)
+        if (vl.isPredictionVirtual) {
+            // Subtle, sleek translucent background tint for prediction area
+            D2D1_RECT_F rcPredLine = D2D1::RectF(canvasLeft + gutterW, lineY, codeRight, lineY + lineH);
+            Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushPredBg;
+            pRT->CreateSolidColorBrush(D2D1::ColorF(0.12f, 0.18f, 0.22f, 0.22f), &brushPredBg);
+            if (brushPredBg) pRT->FillRectangle(rcPredLine, brushPredBg.Get());
+            continue; // Virtual prediction line has no buffer tokens
         }
 
         // Git Diff Line Highlights (Image 5)
@@ -2356,7 +2405,7 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
                 size_t secVisualIdx = 0;
                 bool foundSec = false;
                 for (size_t vi = 0; vi < visualLines.size(); ++vi) {
-                    if (!visualLines[vi].isCodeLens && visualLines[vi].bufferLine == sec.cursor.line) {
+                    if (!visualLines[vi].isCodeLens && !visualLines[vi].isPredictionVirtual && visualLines[vi].bufferLine == sec.cursor.line) {
                         secVisualIdx = vi;
                         foundSec = true;
                         break;
@@ -2441,13 +2490,18 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
                 float curY = caretY + static_cast<float>(k) * lineH;
                 if (curY + lineH > clientHeight) break;
 
-                float gX = (k == 0) ? (caretX + config.ScaleF(2.0f)) : (canvasLeft + gutterW + config.ScaleF(18.0f));
-                float gW = static_cast<float>(ghostLines[k].length()) * charW;
+                float gX = (k == 0) ? (caretX + config.ScaleF(2.0f)) : (codeLeft - scrollX);
+                std::wstring dispGhostLine;
+                for (wchar_t ch : ghostLines[k]) {
+                    if (ch == L'\t') dispGhostLine.append(config.tabSize > 0 ? config.tabSize : 4, L' ');
+                    else dispGhostLine.push_back(ch);
+                }
+                float gW = static_cast<float>(dispGhostLine.length()) * charW;
                 D2D1_RECT_F rcG = D2D1::RectF(gX, curY, (std::min)(gX + gW, codeRight), curY + lineH);
 
                 pRT->DrawText(
-                    ghostLines[k].c_str(),
-                    static_cast<UINT32>(ghostLines[k].length()),
+                    dispGhostLine.c_str(),
+                    static_cast<UINT32>(dispGhostLine.length()),
                     theme.fontCode ? theme.fontCode.Get() : theme.fontBody.Get(),
                     rcG,
                     theme.brushTextMuted.Get()
@@ -2503,7 +2557,7 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
                 float pillW = config.ScaleF(142.0f);
                 float pillH = config.ScaleF(24.0f);
                 float pillX = caretX + config.ScaleF(8.0f);
-                float pillY = caretY + lineH + config.ScaleF(4.0f);
+                float pillY = caretY + static_cast<float>(ghostLines.size()) * lineH + config.ScaleF(4.0f);
                 if (pillY + pillH < clientHeight) {
                     m_crossFilePillBounds = D2D1::RectF(pillX, pillY, pillX + pillW, pillY + pillH);
                     D2D1_ROUNDED_RECT rrcPill = D2D1::RoundedRect(m_crossFilePillBounds, 4.0f, 4.0f);
@@ -2636,6 +2690,19 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
 
             if (vl.isCodeLens) {
                 // CodeLens virtual line: gutter remains completely empty, matching VS Code Image 1!
+                continue;
+            }
+
+            if (vl.isPredictionVirtual) {
+                // Virtual prediction continuation line: keep gutter number blank (Zed-style virtual space)
+                // Render green vertical accent bar along gutter right border
+                float barW = config.ScaleF(2.5f);
+                D2D1_RECT_F rcPredBar = D2D1::RectF(canvasLeft + gutterW - barW, lineY, canvasLeft + gutterW, lineY + lineH);
+                Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> predBrush;
+                pRT->CreateSolidColorBrush(D2D1::ColorF(0.18f, 0.85f, 0.45f, 0.95f), &predBrush);
+                if (predBrush) {
+                    pRT->FillRectangle(rcPredBar, predBrush.Get());
+                }
                 continue;
             }
 
@@ -3215,7 +3282,7 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
             // Find target line visual Y using visualLines (takes CodeLens and folding into account)
             float targetLineY = -1.0f;
             for (size_t v = doc.scrollLine; v < visualLines.size(); ++v) {
-                if (!visualLines[v].isCodeLens && visualLines[v].bufferLine == pDiag->line) {
+                if (!visualLines[v].isCodeLens && !visualLines[v].isPredictionVirtual && visualLines[v].bufferLine == pDiag->line) {
                     targetLineY = topY + config.ScaleF(6.0f) + static_cast<float>(v - doc.scrollLine) * lineH;
                     break;
                 }
@@ -3402,6 +3469,22 @@ bool EditorCanvas::HitTestGutter(POINT pt, const app::AppConfig& config, const e
             break;
         }
         curVisual++;
+
+        // Virtual prediction continuation lines (Zed-style virtual space)
+        if (m_prediction.isValid && m_prediction.line == b && !m_prediction.ghostText.empty() && !IsAutocompleteVisible()) {
+            size_t pLines = 0;
+            for (wchar_t ch : m_prediction.ghostText) {
+                if (ch == L'\n') pLines++;
+            }
+            if (pLines > 0) {
+                if (visualSlot >= curVisual && visualSlot < curVisual + pLines) {
+                    // Click was in gutter of a virtual prediction line
+                    return false;
+                }
+                curVisual += pLines;
+            }
+        }
+
         if (isFolded) {
             b = foldEnd;
         }
@@ -3457,6 +3540,22 @@ bool EditorCanvas::HitTestCodeArea(POINT pt, const app::AppConfig& config, const
             break;
         }
         curVisual++;
+
+        // Virtual prediction continuation lines (Zed-style virtual space)
+        if (m_prediction.isValid && m_prediction.line == b && !m_prediction.ghostText.empty() && !IsAutocompleteVisible()) {
+            size_t pLines = 0;
+            for (wchar_t ch : m_prediction.ghostText) {
+                if (ch == L'\n') pLines++;
+            }
+            if (pLines > 0) {
+                if (visualSlot >= curVisual && visualSlot < curVisual + pLines) {
+                    // Click was on one of the virtual prediction lines
+                    mappedLine = b;
+                    break;
+                }
+                curVisual += pLines;
+            }
+        }
         if (isFolded) {
             b = foldEnd;
         }
