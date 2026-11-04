@@ -2711,7 +2711,7 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
                 float barW = config.ScaleF(2.5f);
                 D2D1_RECT_F rcPredBar = D2D1::RectF(canvasLeft + gutterW - barW, lineY, canvasLeft + gutterW, lineY + lineH);
                 Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> predBrush;
-                pRT->CreateSolidColorBrush(D2D1::ColorF(0.18f, 0.85f, 0.45f, 0.95f), &predBrush);
+                pRT->CreateSolidColorBrush(theme.IsDarkMode() ? D2D1::ColorF(0.18f, 0.85f, 0.45f, 0.95f) : D2D1::ColorF(0.08f, 0.60f, 0.25f, 0.95f), &predBrush);
                 if (predBrush) {
                     pRT->FillRectangle(rcPredBar, predBrush.Get());
                 }
@@ -2777,7 +2777,7 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
                 float barW = config.ScaleF(2.5f);
                 D2D1_RECT_F rcPredBar = D2D1::RectF(canvasLeft + gutterW - barW, lineY, canvasLeft + gutterW, lineY + lineH);
                 Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> predBrush;
-                pRT->CreateSolidColorBrush(D2D1::ColorF(0.18f, 0.85f, 0.45f, 1.0f), &predBrush);
+                pRT->CreateSolidColorBrush(theme.IsDarkMode() ? D2D1::ColorF(0.18f, 0.85f, 0.45f, 1.0f) : D2D1::ColorF(0.08f, 0.60f, 0.25f, 1.0f), &predBrush);
                 if (predBrush) {
                     pRT->FillRectangle(rcPredBar, predBrush.Get());
 

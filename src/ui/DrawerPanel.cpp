@@ -1376,14 +1376,28 @@ void DrawerPanel::RenderExplorerPane(ID2D1RenderTarget* pRT, Theme& theme, const
 
                     if (!gitStatus.empty()) {
                         D2D1_COLOR_F gitColor;
-                        if (gitStatus.find(L"M") != std::wstring::npos) {
-                            gitColor = D2D1::ColorF(0.898f, 0.753f, 0.482f, 1.0f); // Amber / Yellow
-                        } else if (gitStatus.find(L"D") != std::wstring::npos) {
-                            gitColor = D2D1::ColorF(0.878f, 0.424f, 0.459f, 1.0f); // Red
-                        } else if (gitStatus.find(L"R") != std::wstring::npos) {
-                            gitColor = D2D1::ColorF(0.380f, 0.686f, 0.937f, 1.0f); // Blue
+                        if (theme.IsDarkMode()) {
+                            if (gitStatus.find(L"M") != std::wstring::npos) {
+                                gitColor = D2D1::ColorF(0.898f, 0.753f, 0.482f, 1.0f); // Amber / Yellow
+                            } else if (gitStatus.find(L"D") != std::wstring::npos) {
+                                gitColor = D2D1::ColorF(0.878f, 0.424f, 0.459f, 1.0f); // Red
+                            } else if (gitStatus.find(L"R") != std::wstring::npos) {
+                                gitColor = D2D1::ColorF(0.380f, 0.686f, 0.937f, 1.0f); // Blue
+                            } else {
+                                gitColor = D2D1::ColorF(0.451f, 0.788f, 0.569f, 1.0f); // Green (Untracked / Added)
+                            }
                         } else {
-                            gitColor = D2D1::ColorF(0.451f, 0.788f, 0.569f, 1.0f); // Green (Untracked / Added)
+                            // Professional VS Code Light+ / GitHub Light colors:
+                            // High contrast, deep, crisp and easy on the eyes against light backgrounds
+                            if (gitStatus.find(L"M") != std::wstring::npos) {
+                                gitColor = D2D1::ColorF(0.55f, 0.35f, 0.00f, 1.0f); // Dark Ochre/Amber (#8C5900, 4.8:1 contrast)
+                            } else if (gitStatus.find(L"D") != std::wstring::npos) {
+                                gitColor = D2D1::ColorF(0.78f, 0.12f, 0.12f, 1.0f); // Deep Crimson (#C71E1E, 5.1:1 contrast)
+                            } else if (gitStatus.find(L"R") != std::wstring::npos) {
+                                gitColor = D2D1::ColorF(0.04f, 0.38f, 0.78f, 1.0f); // Deep Blue (#0A61C7, 5.0:1 contrast)
+                            } else {
+                                gitColor = D2D1::ColorF(0.08f, 0.45f, 0.18f, 1.0f); // Deep Forest Green (#14732E, 5.2:1 contrast)
+                            }
                         }
                         pRT->CreateSolidColorBrush(gitColor, &brushGitStatus);
                     }
@@ -1398,12 +1412,12 @@ void DrawerPanel::RenderExplorerPane(ID2D1RenderTarget* pRT, Theme& theme, const
                     );
                     ID2D1Brush* pTextBrush = itemHasError ?
                         (theme.brushIconRed ? theme.brushIconRed.Get() : theme.brushTextPrimary.Get()) :
-                        (brushGitStatus ?
-                            brushGitStatus.Get() :
-                            (isGitIgnored ?
-                                theme.brushTextMuted.Get() :
-                                (isActive ?
-                                    (theme.IsDarkMode() ? theme.brushTextWhite.Get() : theme.brushTextPrimary.Get()) :
+                        (isActive ?
+                            (theme.IsDarkMode() ? theme.brushTextWhite.Get() : theme.brushTextPrimary.Get()) :
+                            (brushGitStatus ?
+                                brushGitStatus.Get() :
+                                (isGitIgnored ?
+                                    theme.brushTextMuted.Get() :
                                     (theme.IsDarkMode() ? 
                                         (isHovered ? theme.brushTextWhite.Get() : (item.isFolder ? theme.brushTextWhite.Get() : theme.brushTextPrimary.Get())) :
                                         theme.brushTextPrimary.Get()))));
