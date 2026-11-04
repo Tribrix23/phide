@@ -121,9 +121,7 @@ bool DatabaseSettingsModal::OnKeyDown(WPARAM wParam) {
             case DatabaseEditField::Host: m_focusedField = DatabaseEditField::Port; break;
             case DatabaseEditField::Port: m_focusedField = DatabaseEditField::User; break;
             case DatabaseEditField::User: m_focusedField = DatabaseEditField::Pass; break;
-            case DatabaseEditField::Pass: m_focusedField = DatabaseEditField::Database; break;
-            case DatabaseEditField::Database: m_focusedField = DatabaseEditField::Charset; break;
-            case DatabaseEditField::Charset: m_focusedField = DatabaseEditField::Host; break;
+            case DatabaseEditField::Pass: m_focusedField = DatabaseEditField::Host; break;
             case DatabaseEditField::NginxPort: m_focusedField = DatabaseEditField::NginxHost; break;
             case DatabaseEditField::NginxHost: m_focusedField = DatabaseEditField::NginxPort; break;
             default: m_focusedField = DatabaseEditField::Host; break;
@@ -134,8 +132,8 @@ bool DatabaseSettingsModal::OnKeyDown(WPARAM wParam) {
 }
 
 void DatabaseSettingsModal::UpdateSnippets() {
-    m_pdoSnippet = L"$pdo = new PDO(\"mysql:host=" + m_host + L";port=" + m_port + L";dbname=" + m_defaultDb + L";charset=" + m_charset + L"\", \"" + m_user + L"\", \"" + m_pass + L"\");";
-    m_mysqliSnippet = L"$conn = new mysqli(\"" + m_host + L"\", \"" + m_user + L"\", \"" + m_pass + L"\", \"" + m_defaultDb + L"\", " + m_port + L");";
+    m_pdoSnippet = L"$pdo = new PDO(\"mysql:host=" + m_host + L";port=" + m_port + L";dbname=$dbname;charset=utf8mb4\", \"" + m_user + L"\", \"" + m_pass + L"\");";
+    m_mysqliSnippet = L"$conn = new mysqli(\"" + m_host + L"\", \"" + m_user + L"\", \"" + m_pass + L"\", $dbname, " + m_port + L");";
 
     std::wstring effPmaHost = m_host.empty() ? L"localhost" : m_host;
     std::wstring effPmaPort = m_pmaWebPort.empty() ? L"8081" : m_pmaWebPort;
@@ -349,8 +347,8 @@ void DatabaseSettingsModal::Render(ID2D1RenderTarget* pRT, Theme& theme, const a
     };
 
     if (m_activeTab == DatabaseModalTab::PhpMyAdmin) {
-        // Section A: Parameters Card (Host, Port, User, Pass, Db, Charset)
-        D2D1_RECT_F rcSecA = D2D1::RectF(cardX + padX, contentY, cardX + cardW - padX, contentY + config.ScaleF(144.0f));
+        // Section A: Parameters Card (Host, Port, User, Pass)
+        D2D1_RECT_F rcSecA = D2D1::RectF(cardX + padX, contentY, cardX + cardW - padX, contentY + config.ScaleF(112.0f));
         pRT->FillRoundedRectangle(D2D1::RoundedRect(rcSecA, 6.0f, 6.0f), theme.brushDrawerBg ? theme.brushDrawerBg.Get() : theme.brushCanvasBg.Get());
         pRT->DrawRoundedRectangle(D2D1::RoundedRect(rcSecA, 6.0f, 6.0f), pBorderBrush, 1.0f);
 
@@ -374,12 +372,9 @@ void DatabaseSettingsModal::Render(ID2D1RenderTarget* pRT, Theme& theme, const a
         DrawFieldBadge(L"User", m_user, rcUser, m_rcCopyUser, DatabaseModalAction::CopyUser, DatabaseEditField::User, m_rcInputUser);
         DrawFieldBadge(L"Password", m_pass.empty() ? L"(empty)" : m_pass, rcPass, m_rcCopyPass, DatabaseModalAction::CopyPass, DatabaseEditField::Pass, m_rcInputPass);
 
-        // Row 3: Database & Charset
-        float row3Y = row2Y + rowH + config.ScaleF(5.0f);
-        D2D1_RECT_F rcDb = D2D1::RectF(rcSecA.left + config.ScaleF(10.0f), row3Y, rcSecA.left + config.ScaleF(10.0f) + halfW, row3Y + rowH);
-        D2D1_RECT_F rcCharset = D2D1::RectF(rcSecA.left + config.ScaleF(18.0f) + halfW, row3Y, rcSecA.right - config.ScaleF(10.0f), row3Y + rowH);
-        DrawFieldBadge(L"Database", m_defaultDb, rcDb, m_rcCopyDb, DatabaseModalAction::CopyDb, DatabaseEditField::Database, m_rcInputDb);
-        DrawFieldBadge(L"Charset", m_charset, rcCharset, dummyInput, DatabaseModalAction::None, DatabaseEditField::Charset, m_rcInputCharset);
+        m_rcCopyDb = D2D1::RectF(0, 0, 0, 0);
+        m_rcInputDb = D2D1::RectF(0, 0, 0, 0);
+        m_rcInputCharset = D2D1::RectF(0, 0, 0, 0);
 
         // Section B: Snippets Card (PDO & MySQLi)
         float secBY = rcSecA.bottom + config.ScaleF(10.0f);

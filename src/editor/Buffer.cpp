@@ -33,13 +33,23 @@ SyntaxLexer::SyntaxLexer() {
         L"this", L"self", L"parent", L"delete", L"sizeof", L"typedef"
     };
 
-    // Common Primitive & Standard Types
+    // Common Primitive & Standard Types + Built-in PHP/JS Classes
     m_types = {
         L"string", L"int", L"bool", L"float", L"void", L"array",
         L"object", L"mixed", L"iterable", L"callable", L"never",
         L"std::string", L"std::wstring", L"std::vector", L"std::map", L"std::set",
         L"uint32_t", L"uint64_t", L"size_t", L"int32_t", L"int64_t", L"double",
-        L"char", L"wchar_t"
+        L"char", L"wchar_t",
+        L"PDO", L"PDOStatement", L"PDOException", L"Exception", L"Error",
+        L"Throwable", L"ErrorException", L"RuntimeException", L"InvalidArgumentException",
+        L"LogicException", L"OutOfBoundsException", L"UnexpectedValueException",
+        L"JsonException", L"DateTime", L"DateTimeImmutable", L"DateTimeZone",
+        L"DateInterval", L"DatePeriod", L"mysqli", L"mysqli_stmt", L"mysqli_result",
+        L"mysqli_sql_exception", L"stdClass", L"Closure", L"Generator", L"Fiber",
+        L"WeakMap", L"WeakReference", L"ArrayObject", L"ArrayIterator",
+        L"DirectoryIterator", L"RecursiveDirectoryIterator", L"RecursiveIteratorIterator",
+        L"FilesystemIterator", L"SplFileInfo", L"SplFileObject", L"ReflectionClass",
+        L"ReflectionMethod", L"ReflectionProperty", L"DOMDocument", L"SimpleXMLElement"
     };
 }
 
@@ -477,16 +487,32 @@ std::vector<SyntaxToken> SyntaxLexer::TokenizeLine(const std::wstring& line, con
             break;
         }
 
-        // 8. String literals ("..." or '...' or `...`)
+        // 8. String literals ("..." or '...' or `...`) with PHP "$var" interpolation highlighting
         if (line[i] == L'"' || line[i] == L'\'' || line[i] == L'`') {
             wchar_t quote = line[i];
-            size_t start = i++;
+            bool allowVarInterp = (quote == L'"' && (lowerExt == L".php" || lowerExt == L"php" || lowerExt.empty()));
+            size_t segStart = i++;
             while (i < len && line[i] != quote) {
-                if (line[i] == L'\\' && i + 1 < len) i += 2;
-                else ++i;
+                if (line[i] == L'\\' && i + 1 < len) {
+                    i += 2;
+                    continue;
+                }
+                if (allowVarInterp && line[i] == L'$' && i + 1 < len && (iswalpha(line[i + 1]) || line[i + 1] == L'_')) {
+                    if (i > segStart) {
+                        tokens.push_back({ TokenType::String, segStart, i - segStart });
+                    }
+                    size_t varStart = i++;
+                    while (i < len && (iswalnum(line[i]) || line[i] == L'_')) ++i;
+                    tokens.push_back({ TokenType::Attribute, varStart, i - varStart });
+                    segStart = i;
+                    continue;
+                }
+                ++i;
             }
             if (i < len) ++i; // Consume closing quote
-            tokens.push_back({ TokenType::String, start, i - start });
+            if (i > segStart) {
+                tokens.push_back({ TokenType::String, segStart, i - segStart });
+            }
             continue;
         }
 
@@ -498,18 +524,46 @@ std::vector<SyntaxToken> SyntaxLexer::TokenizeLine(const std::wstring& line, con
             continue;
         }
 
-        // 10. Identifiers, Keywords, and Variables (e.g., $workspace, class, echo)
+        // 10. Identifiers, Keywords, Classes, Constants, Functions, and PHP $Variables
         if (iswalpha(line[i]) || line[i] == L'_' || line[i] == L'$') {
             size_t start = i++;
-            while (i < len && (iswalnum(line[i]) || line[i] == L'_' || line[i] == L':')) ++i;
+            while (i < len && (iswalnum(line[i]) || line[i] == L'_')) ++i;
 
             std::wstring word = line.substr(start, i - start);
-            // Strip leading '$' for keyword test if PHP variable
-            std::wstring lookup = (word[0] == L'$') ? word.substr(1) : word;
+            if (word[0] == L'$') {
+                // PHP Variable ($host, $pdo, $_SERVER, $_POST, etc.) -> VS Code Variable Light Blue (#9CDCFE / TokenType::Attribute)
+                if (word == L"$this") {
+                    tokens.push_back({ TokenType::Keyword, start, i - start });
+                } else {
+                    tokens.push_back({ TokenType::Attribute, start, i - start });
+                }
+                continue;
+            }
 
-            if (m_keywords.find(lookup) != m_keywords.end()) {
+            // Check if followed by '(' (function or method call)
+            size_t nextNonSpace = i;
+            while (nextNonSpace < len && (line[nextNonSpace] == L' ' || line[nextNonSpace] == L'\t')) ++nextNonSpace;
+            bool isCall = (nextNonSpace < len && line[nextNonSpace] == L'(');
+            bool isScopeClass = (i + 1 < len && line[i] == L':' && line[i + 1] == L':');
+
+            // Check if ALL_CAPS constant (e.g. ATTR_ERRMODE, FILTER_VALIDATE_EMAIL, ENT_QUOTES, __DIR__)
+            bool isAllCaps = (word.length() >= 2);
+            bool hasAlpha = false;
+            for (wchar_t wc : word) {
+                if (iswlower(wc)) { isAllCaps = false; break; }
+                if (iswupper(wc)) hasAlpha = true;
+            }
+            if (!hasAlpha) isAllCaps = false;
+
+            if (m_keywords.find(word) != m_keywords.end()) {
                 tokens.push_back({ TokenType::Keyword, start, i - start });
-            } else if (m_types.find(lookup) != m_types.end()) {
+            } else if (m_types.find(word) != m_types.end() || isScopeClass) {
+                tokens.push_back({ TokenType::Type, start, i - start });
+            } else if (isAllCaps) {
+                tokens.push_back({ TokenType::Tag, start, i - start });
+            } else if (isCall) {
+                tokens.push_back({ TokenType::Type, start, i - start });
+            } else if (!word.empty() && iswupper(word[0])) {
                 tokens.push_back({ TokenType::Type, start, i - start });
             } else {
                 tokens.push_back({ TokenType::Default, start, i - start });
@@ -636,10 +690,118 @@ const std::wstring& Buffer::GetLine(size_t lineIdx) const {
 }
 
 std::vector<SyntaxToken> Buffer::GetTokensForLine(size_t lineIdx, const std::wstring& ext) const {
-    if (lineIdx < m_lines.size()) {
-        return m_lexer.TokenizeLine(m_lines[lineIdx], ext);
+    if (lineIdx >= m_lines.size()) {
+        return {};
     }
-    return {};
+
+    bool isPhp = (ext == L".php");
+    bool inBlockComment = false;
+    wchar_t inMultiLineQuote = 0;
+
+    // Track multi-line block comments (/* ... */) and PHP multi-line string literals across preceding lines
+    for (size_t l = 0; l < lineIdx; ++l) {
+        const auto& prevLine = m_lines[l];
+        size_t len = prevLine.length();
+        for (size_t i = 0; i < len; ++i) {
+            wchar_t c = prevLine[i];
+            if (inBlockComment) {
+                if (c == L'*' && i + 1 < len && prevLine[i + 1] == L'/') {
+                    inBlockComment = false;
+                    ++i;
+                }
+            } else if (inMultiLineQuote != 0) {
+                if (c == L'\\' && i + 1 < len) {
+                    ++i;
+                } else if (c == inMultiLineQuote) {
+                    inMultiLineQuote = 0;
+                }
+            } else {
+                if (c == L'/' && i + 1 < len && prevLine[i + 1] == L'/') {
+                    break; // Single-line comment
+                }
+                if (isPhp && c == L'#' && (i + 1 >= len || prevLine[i + 1] != L'[')) {
+                    break; // PHP # comment
+                }
+                if (c == L'/' && i + 1 < len && prevLine[i + 1] == L'*') {
+                    inBlockComment = true;
+                    ++i;
+                } else if (isPhp && (c == L'"' || c == L'\'')) {
+                    inMultiLineQuote = c;
+                }
+            }
+        }
+    }
+
+    const auto& line = m_lines[lineIdx];
+    size_t len = line.length();
+    if (len == 0) return {};
+
+    if (inBlockComment) {
+        size_t closePos = line.find(L"*/");
+        if (closePos == std::wstring::npos) {
+            return { { TokenType::Comment, 0, len } };
+        }
+        size_t afterComment = closePos + 2;
+        std::vector<SyntaxToken> tokens;
+        tokens.push_back({ TokenType::Comment, 0, afterComment });
+        if (afterComment < len) {
+            auto rest = m_lexer.TokenizeLine(line.substr(afterComment), ext);
+            for (auto& t : rest) {
+                t.startCol += afterComment;
+                tokens.push_back(t);
+            }
+        }
+        return tokens;
+    }
+
+    if (inMultiLineQuote != 0) {
+        std::vector<SyntaxToken> tokens;
+        size_t segStart = 0;
+        size_t i = 0;
+        bool closed = false;
+        while (i < len) {
+            if (line[i] == L'\\' && i + 1 < len) {
+                i += 2;
+                continue;
+            }
+            if (isPhp && inMultiLineQuote == L'"' && line[i] == L'$' && i + 1 < len && (iswalpha(line[i + 1]) || line[i + 1] == L'_')) {
+                if (i > segStart) {
+                    tokens.push_back({ TokenType::String, segStart, i - segStart });
+                }
+                size_t varStart = i;
+                ++i;
+                while (i < len && (iswalnum(line[i]) || line[i] == L'_')) {
+                    ++i;
+                }
+                tokens.push_back({ TokenType::Attribute, varStart, i - varStart });
+                segStart = i;
+                continue;
+            }
+            if (line[i] == inMultiLineQuote) {
+                ++i;
+                tokens.push_back({ TokenType::String, segStart, i - segStart });
+                closed = true;
+                break;
+            }
+            ++i;
+        }
+        if (!closed) {
+            if (len > segStart) {
+                tokens.push_back({ TokenType::String, segStart, len - segStart });
+            }
+            return tokens;
+        }
+        if (i < len) {
+            auto rest = m_lexer.TokenizeLine(line.substr(i), ext);
+            for (auto& t : rest) {
+                t.startCol += i;
+                tokens.push_back(t);
+            }
+        }
+        return tokens;
+    }
+
+    return m_lexer.TokenizeLine(line, ext);
 }
 
 void Buffer::SetCursor(size_t line, size_t col) {
@@ -758,7 +920,11 @@ void Buffer::SetLine(size_t lineIdx, const std::wstring& text) {
 
 void Buffer::SetText(const std::wstring& text) {
     m_lines.clear();
-    std::wistringstream ss(text);
+    std::wstring cleanText = text;
+    if (!cleanText.empty() && cleanText[0] == 0xFEFF) {
+        cleanText.erase(0, 1);
+    }
+    std::wistringstream ss(cleanText);
     std::wstring line;
     while (std::getline(ss, line)) {
         if (!line.empty() && line.back() == L'\r') line.pop_back();
@@ -777,6 +943,14 @@ bool Buffer::LoadFromFile(const std::wstring& path) {
     std::stringstream buffer;
     buffer << file.rdbuf();
     std::string bytes = buffer.str();
+
+    // Strip UTF-8 BOM (EF BB BF) if present so PHP header() calls never fail due to BOM output
+    if (bytes.size() >= 3 &&
+        static_cast<unsigned char>(bytes[0]) == 0xEF &&
+        static_cast<unsigned char>(bytes[1]) == 0xBB &&
+        static_cast<unsigned char>(bytes[2]) == 0xBF) {
+        bytes.erase(0, 3);
+    }
 
     // Convert UTF-8 to wstring
     std::wstring wide;

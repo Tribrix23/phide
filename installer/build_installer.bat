@@ -17,8 +17,9 @@ if not defined MAKENSIS_EXE (
     if !errorlevel! equ 0 set "MAKENSIS_EXE=makensis.exe"
 )
 
+if not defined MAKENSIS_EXE if exist "%LOCALAPPDATA%\Programs\NSIS\makensis.exe" set "MAKENSIS_EXE=%LOCALAPPDATA%\Programs\NSIS\makensis.exe"
 if not defined MAKENSIS_EXE (
-    echo [ERROR] NSIS compiler (makensis.exe) was not found!
+    echo [ERROR] NSIS compiler makensis.exe was not found!
     echo Please install NSIS: winget install NSIS.NSIS
     exit /b 1
 )

@@ -1,9 +1,11 @@
 #include "phide/editor/IntelliSenseEngine.hpp"
+#include "phide/editor/PhpIntelliSenseData.hpp"
 #include "phide/editor/SnippetManager.hpp"
 #include "phide/editor/TailwindHelper.hpp"
 #include <algorithm>
 #include <cwctype>
 #include <filesystem>
+#include <fstream>
 #include <functional>
 #include <unordered_set>
 
@@ -763,214 +765,8 @@ void IntelliSenseEngine::PopulateJavaScriptPrototypeMethods() {
 }
 
 void IntelliSenseEngine::PopulatePhpVocabulary() {
-    struct PhpDef { const wchar_t* name; const wchar_t* desc; CompletionKind kind; };
-    static const PhpDef phpDefs[] = {
-        // Superglobals
-        { L"$_GET", L"Associative array of variables passed to current script via URL parameters", CompletionKind::Variable },
-        { L"$_POST", L"Associative array of variables passed to current script via HTTP POST", CompletionKind::Variable },
-        { L"$_REQUEST", L"Associative array containing contents of $_GET, $_POST, and $_COOKIE", CompletionKind::Variable },
-        { L"$_SESSION", L"Associative array containing session variables available to current script", CompletionKind::Variable },
-        { L"$_COOKIE", L"Associative array of variables passed to current script via HTTP Cookies", CompletionKind::Variable },
-        { L"$_SERVER", L"Array containing information such as headers, paths, and script locations", CompletionKind::Variable },
-        { L"$_FILES", L"Associative array of items uploaded to the current script via HTTP POST", CompletionKind::Variable },
-        { L"$_ENV", L"Associative array of variables passed to the current script via environment", CompletionKind::Variable },
-        { L"$GLOBALS", L"References all variables available in global scope", CompletionKind::Variable },
-
-        // Keywords & Language constructs
-        { L"echo", L"Outputs one or more strings to the output buffer", CompletionKind::Keyword },
-        { L"print", L"Outputs a string and always returns 1", CompletionKind::Keyword },
-        { L"function", L"Declares a named user-defined function", CompletionKind::Keyword },
-        { L"fn", L"Declares an arrow function (short closure)", CompletionKind::Keyword },
-        { L"class", L"Declares a class definition", CompletionKind::Keyword },
-        { L"interface", L"Declares an object interface", CompletionKind::Keyword },
-        { L"trait", L"Declares a reusable trait mechanism", CompletionKind::Keyword },
-        { L"extends", L"Extends a parent class or interface", CompletionKind::Keyword },
-        { L"implements", L"Specifies interfaces that a class implements", CompletionKind::Keyword },
-        { L"public", L"Public member visibility modifier", CompletionKind::Keyword },
-        { L"private", L"Private member visibility modifier", CompletionKind::Keyword },
-        { L"protected", L"Protected member visibility modifier", CompletionKind::Keyword },
-        { L"static", L"Static member or method modifier", CompletionKind::Keyword },
-        { L"final", L"Prevents child classes from overriding method or extending class", CompletionKind::Keyword },
-        { L"abstract", L"Defines an abstract class or method signature", CompletionKind::Keyword },
-        { L"readonly", L"Readonly property modifier (PHP 8.1+)", CompletionKind::Keyword },
-        { L"return", L"Returns program control and value from function", CompletionKind::Keyword },
-        { L"if", L"Conditional branch statement", CompletionKind::Keyword },
-        { L"else", L"Else fallback conditional branch", CompletionKind::Keyword },
-        { L"elseif", L"Else-if alternative conditional branch", CompletionKind::Keyword },
-        { L"for", L"Counting for-loop statement", CompletionKind::Keyword },
-        { L"foreach", L"Iterates over arrays or Traversable objects", CompletionKind::Keyword },
-        { L"while", L"While loop statement", CompletionKind::Keyword },
-        { L"do", L"Do-while loop statement", CompletionKind::Keyword },
-        { L"switch", L"Switch statement multi-way branch", CompletionKind::Keyword },
-        { L"case", L"Case branch within switch statement", CompletionKind::Keyword },
-        { L"break", L"Terminates current loop or switch", CompletionKind::Keyword },
-        { L"continue", L"Skips to next iteration of loop", CompletionKind::Keyword },
-        { L"default", L"Default branch in switch or match", CompletionKind::Keyword },
-        { L"match", L"Match expression with subject evaluation (PHP 8.0+)", CompletionKind::Keyword },
-        { L"try", L"Try block for exception handling", CompletionKind::Keyword },
-        { L"catch", L"Catch block for exception handling", CompletionKind::Keyword },
-        { L"finally", L"Finally block always executed after try/catch", CompletionKind::Keyword },
-        { L"throw", L"Throws an exception instance", CompletionKind::Keyword },
-        { L"new", L"Instantiates a new class object", CompletionKind::Keyword },
-        { L"clone", L"Creates a shallow copy of an object", CompletionKind::Keyword },
-        { L"yield", L"Yields a value from a generator function", CompletionKind::Keyword },
-        { L"namespace", L"Declares current file namespace", CompletionKind::Keyword },
-        { L"use", L"Imports namespace, class, function, or trait", CompletionKind::Keyword },
-        { L"as", L"Aliases imported symbol or specifies foreach target", CompletionKind::Keyword },
-        { L"global", L"Binds local variable name to global scope", CompletionKind::Keyword },
-        { L"include", L"Includes and evaluates specified file", CompletionKind::Keyword },
-        { L"include_once", L"Includes and evaluates specified file only once", CompletionKind::Keyword },
-        { L"require", L"Requires and evaluates specified file (fatal on error)", CompletionKind::Keyword },
-        { L"require_once", L"Requires specified file only once (fatal on error)", CompletionKind::Keyword },
-        { L"isset", L"Determines if a variable is declared and is different than null", CompletionKind::Function },
-        { L"empty", L"Determines whether a variable is empty", CompletionKind::Function },
-        { L"unset", L"Destroys specified variables", CompletionKind::Function },
-        { L"die", L"Equivalent to exit() - prints message and terminates script", CompletionKind::Function },
-        { L"exit", L"Terminates execution of current script", CompletionKind::Function },
-        { L"list", L"Assigns variables as if they were an array", CompletionKind::Function },
-        { L"array", L"Creates an array data structure", CompletionKind::Function },
-        { L"null", L"Special NULL data type literal", CompletionKind::Keyword },
-        { L"true", L"Boolean TRUE literal", CompletionKind::Keyword },
-        { L"false", L"Boolean FALSE literal", CompletionKind::Keyword },
-
-        // String functions
-        { L"strlen", L"(string $string): int - Returns string length", CompletionKind::Function },
-        { L"strpos", L"(string $haystack, string $needle, int $offset = 0): int|false", CompletionKind::Function },
-        { L"str_replace", L"($search, $replace, $subject, &$count = null) - Replace occurrences", CompletionKind::Function },
-        { L"str_ireplace", L"($search, $replace, $subject) - Case-insensitive string replace", CompletionKind::Function },
-        { L"substr", L"(string $string, int $offset, ?int $length = null): string", CompletionKind::Function },
-        { L"strtolower", L"(string $string): string - Converts string to lowercase", CompletionKind::Function },
-        { L"strtoupper", L"(string $string): string - Converts string to uppercase", CompletionKind::Function },
-        { L"ucfirst", L"(string $string): string - Capitalizes first character", CompletionKind::Function },
-        { L"trim", L"(string $string, string $characters = \" \\n\\r\\t\\v\\x00\"): string", CompletionKind::Function },
-        { L"ltrim", L"(string $string): string - Strips whitespace from beginning", CompletionKind::Function },
-        { L"rtrim", L"(string $string): string - Strips whitespace from end", CompletionKind::Function },
-        { L"explode", L"(string $separator, string $string, int $limit = PHP_INT_MAX): array", CompletionKind::Function },
-        { L"implode", L"(string $separator, array $array): string - Joins array elements", CompletionKind::Function },
-        { L"sprintf", L"(string $format, mixed ...$values): string - Formatted string", CompletionKind::Function },
-        { L"printf", L"(string $format, mixed ...$values): int - Formatted string output", CompletionKind::Function },
-        { L"str_contains", L"(string $haystack, string $needle): bool (PHP 8.0+)", CompletionKind::Function },
-        { L"str_starts_with", L"(string $haystack, string $needle): bool (PHP 8.0+)", CompletionKind::Function },
-        { L"str_ends_with", L"(string $haystack, string $needle): bool (PHP 8.0+)", CompletionKind::Function },
-        { L"strip_tags", L"(string $string, array|string|null $allowed_tags = null): string", CompletionKind::Function },
-        { L"htmlspecialchars", L"(string $string, int $flags = ENT_QUOTES | ENT_SUBSTITUTE): string", CompletionKind::Function },
-        { L"htmlentities", L"(string $string): string - Convert all applicable characters to HTML entities", CompletionKind::Function },
-        { L"urlencode", L"(string $string): string - URL-encodes string", CompletionKind::Function },
-        { L"urldecode", L"(string $string): string - Decodes URL-encoded string", CompletionKind::Function },
-        { L"number_format", L"(float $num, int $decimals = 0, ?string $dec_point = '.', ?string $thousands_sep = ','): string", CompletionKind::Function },
-        { L"preg_match", L"(string $pattern, string $subject, array &$matches = null): int|false", CompletionKind::Function },
-        { L"preg_replace", L"($pattern, $replacement, $subject): string|array|null", CompletionKind::Function },
-        { L"preg_split", L"(string $pattern, string $subject): array|false", CompletionKind::Function },
-
-        // Array functions
-        { L"count", L"(Countable|array $value, int $mode = COUNT_NORMAL): int", CompletionKind::Function },
-        { L"array_push", L"(array &$array, mixed ...$values): int", CompletionKind::Function },
-        { L"array_pop", L"(array &$array): mixed - Pops element off end", CompletionKind::Function },
-        { L"array_shift", L"(array &$array): mixed - Shifts element off beginning", CompletionKind::Function },
-        { L"array_unshift", L"(array &$array, mixed ...$values): int", CompletionKind::Function },
-        { L"array_merge", L"(array ...$arrays): array - Merges one or more arrays", CompletionKind::Function },
-        { L"array_slice", L"(array $array, int $offset, ?int $length = null): array", CompletionKind::Function },
-        { L"array_keys", L"(array $array): array - Return all keys of array", CompletionKind::Function },
-        { L"array_values", L"(array $array): array - Return all values of array", CompletionKind::Function },
-        { L"array_map", L"(?callable $callback, array $array, array ...$arrays): array", CompletionKind::Function },
-        { L"array_filter", L"(array $array, ?callable $callback = null, int $mode = 0): array", CompletionKind::Function },
-        { L"array_reduce", L"(array $array, callable $callback, mixed $initial = null): mixed", CompletionKind::Function },
-        { L"in_array", L"(mixed $needle, array $haystack, bool $strict = false): bool", CompletionKind::Function },
-        { L"array_key_exists", L"(string|int $key, array $array): bool", CompletionKind::Function },
-        { L"sort", L"(array &$array, int $flags = SORT_REGULAR): bool", CompletionKind::Function },
-        { L"asort", L"(array &$array, int $flags = SORT_REGULAR): bool - Sort maintaining index", CompletionKind::Function },
-        { L"ksort", L"(array &$array, int $flags = SORT_REGULAR): bool - Sort by key", CompletionKind::Function },
-        { L"usort", L"(array &$array, callable $callback): bool - User-defined sort", CompletionKind::Function },
-        { L"array_search", L"(mixed $needle, array $haystack, bool $strict = false): int|string|false", CompletionKind::Function },
-        { L"array_unique", L"(array $array, int $flags = SORT_STRING): array", CompletionKind::Function },
-        { L"array_reverse", L"(array $array, bool $preserve_keys = false): array", CompletionKind::Function },
-        { L"array_sum", L"(array $array): int|float - Sum of values in an array", CompletionKind::Function },
-        { L"array_column", L"(array $array, int|string|null $column_key): array", CompletionKind::Function },
-
-        // JSON, Crypto & Hashing
-        { L"json_encode", L"(mixed $value, int $flags = 0, int $depth = 512): string|false", CompletionKind::Function },
-        { L"json_decode", L"(string $json, ?bool $associative = null, int $depth = 512): mixed", CompletionKind::Function },
-        { L"base64_encode", L"(string $string): string - Encodes data with MIME base64", CompletionKind::Function },
-        { L"base64_decode", L"(string $string, bool $strict = false): string|false", CompletionKind::Function },
-        { L"password_hash", L"(string $password, string|int|null $algo, array $options = []): string", CompletionKind::Function },
-        { L"password_verify", L"(string $password, string $hash): bool", CompletionKind::Function },
-        { L"md5", L"(string $string, bool $binary = false): string", CompletionKind::Function },
-        { L"sha1", L"(string $string, bool $binary = false): string", CompletionKind::Function },
-        { L"hash", L"(string $algo, string $data, bool $binary = false): string", CompletionKind::Function },
-        { L"random_int", L"(int $min, int $max): int - Cryptographically secure pseudo-random int", CompletionKind::Function },
-
-        // HTTP, Session & Headers
-        { L"header", L"(string $header, bool $replace = true, int $response_code = 0): void", CompletionKind::Function },
-        { L"http_response_code", L"(int $response_code = 0): int|bool - Get or set response code", CompletionKind::Function },
-        { L"setcookie", L"(string $name, string $value = \"\", array|int $expires_or_options = 0): bool", CompletionKind::Function },
-        { L"session_start", L"(array $options = []): bool - Initialize session data", CompletionKind::Function },
-        { L"session_destroy", L"(): bool - Destroys all data registered to a session", CompletionKind::Function },
-        { L"session_regenerate_id", L"(bool $delete_old_session = false): bool", CompletionKind::Function },
-
-        // Filesystem & IO
-        { L"file_get_contents", L"(string $filename): string|false - Reads entire file into a string", CompletionKind::Function },
-        { L"file_put_contents", L"(string $filename, mixed $data, int $flags = 0): int|false", CompletionKind::Function },
-        { L"file_exists", L"(string $filename): bool - Checks whether a file or directory exists", CompletionKind::Function },
-        { L"is_file", L"(string $filename): bool - Tells whether the filename is a regular file", CompletionKind::Function },
-        { L"is_dir", L"(string $filename): bool - Tells whether the filename is a directory", CompletionKind::Function },
-        { L"mkdir", L"(string $directory, int $permissions = 0777, bool $recursive = false): bool", CompletionKind::Function },
-        { L"unlink", L"(string $filename): bool - Deletes a file", CompletionKind::Function },
-        { L"fopen", L"(string $filename, string $mode): resource|false", CompletionKind::Function },
-        { L"fclose", L"(resource $stream): bool - Closes an open file pointer", CompletionKind::Function },
-        { L"fread", L"(resource $stream, int $length): string|false", CompletionKind::Function },
-        { L"fwrite", L"(resource $stream, string $data): int|false", CompletionKind::Function },
-        { L"feof", L"(resource $stream): bool - Tests for end-of-file on a file pointer", CompletionKind::Function },
-
-        // Database & PDO
-        { L"PDO", L"Represents a connection between PHP and a database server", CompletionKind::Class },
-        { L"PDOStatement", L"Represents a prepared statement and associated result set", CompletionKind::Class },
-        { L"prepare", L"($query, $options = []): PDOStatement|false - Prepares SQL statement", CompletionKind::Method },
-        { L"execute", L"(?array $params = null): bool - Executes a prepared statement", CompletionKind::Method },
-        { L"fetch", L"(int $mode = PDO::FETCH_DEFAULT): mixed - Fetches next row", CompletionKind::Method },
-        { L"fetchAll", L"(int $mode = PDO::FETCH_DEFAULT): array - Fetches all rows", CompletionKind::Method },
-        { L"fetchColumn", L"(int $column = 0): mixed - Returns a single column from next row", CompletionKind::Method },
-        { L"rowCount", L"(): int - Returns the number of rows affected by last SQL statement", CompletionKind::Method },
-        { L"lastInsertId", L"(?string $name = null): string|false - ID of the last inserted row", CompletionKind::Method },
-        { L"beginTransaction", L"(): bool - Initiates a database transaction", CompletionKind::Method },
-        { L"commit", L"(): bool - Commits a transaction", CompletionKind::Method },
-        { L"rollBack", L"(): bool - Rolls back a transaction", CompletionKind::Method },
-
-        // Types & Inspection
-        { L"is_array", L"(mixed $value): bool", CompletionKind::Function },
-        { L"is_string", L"(mixed $value): bool", CompletionKind::Function },
-        { L"is_numeric", L"(mixed $value): bool", CompletionKind::Function },
-        { L"is_int", L"(mixed $value): bool", CompletionKind::Function },
-        { L"is_bool", L"(mixed $value): bool", CompletionKind::Function },
-        { L"is_null", L"(mixed $value): bool", CompletionKind::Function },
-        { L"is_object", L"(mixed $value): bool", CompletionKind::Function },
-        { L"var_dump", L"(mixed $value, mixed ...$values): void - Dumps variable information", CompletionKind::Function },
-        { L"print_r", L"(mixed $value, bool $return = false): string|bool", CompletionKind::Function },
-        { L"intval", L"(mixed $value, int $base = 10): int", CompletionKind::Function },
-        { L"floatval", L"(mixed $value): float", CompletionKind::Function },
-        { L"strval", L"(mixed $value): string", CompletionKind::Function },
-        { L"boolval", L"(mixed $value): bool", CompletionKind::Function },
-
-        // Magic Constants & Methods
-        { L"__DIR__", L"The directory of the file", CompletionKind::Constant },
-        { L"__FILE__", L"The full path and filename of the file", CompletionKind::Constant },
-        { L"__LINE__", L"The current line number of the file", CompletionKind::Constant },
-        { L"__CLASS__", L"The class name as it was declared", CompletionKind::Constant },
-        { L"__METHOD__", L"The class method name", CompletionKind::Constant },
-        { L"__FUNCTION__", L"The function name", CompletionKind::Constant },
-        { L"__construct", L"Class constructor magic method", CompletionKind::Method },
-        { L"__destruct", L"Class destructor magic method", CompletionKind::Method },
-        { L"__toString", L"Magic method called when object is treated as string", CompletionKind::Method }
-    };
-
-    for (const auto& d : phpDefs) {
-        IntelliSenseItem item;
-        item.label = d.name;
-        item.detail = d.desc;
-        item.insertText = d.name;
-        item.kind = d.kind;
-        item.origin = L"php";
-        m_phpSymbols.push_back(std::move(item));
-    }
+    m_phpSymbols.clear();
+    PopulateBuiltInPhpIntelliSense(m_phpSymbols);
 }
 
 void IntelliSenseEngine::PopulatePythonVocabulary() {
@@ -1659,7 +1455,13 @@ std::wstring IntelliSenseEngine::ExtractQueryPrefix(const std::wstring& line, si
     size_t start = col;
     while (start > 0) {
         wchar_t c = line[start - 1];
-        if (iswalnum(c) || c == L'_' || c == L'$' || c == L'-' || c == L'!' || c == L':') {
+        if (c == L':') {
+            // Stop at '::' (PHP/C++ scope resolution operator) so "PDO::ATTR_ERR" extracts "ATTR_ERR"
+            if ((start >= 2 && line[start - 2] == L':') || (start < line.length() && line[start] == L':')) {
+                break;
+            }
+            start--;
+        } else if (iswalnum(c) || c == L'_' || c == L'$' || c == L'-' || c == L'!') {
             start--;
         } else {
             break;
@@ -1701,6 +1503,20 @@ std::vector<IntelliSenseItem> IntelliSenseEngine::ExtractDocumentSymbols(
             if (q > p) return val.substr(p, q - p);
             return L"object";
         }
+        if (val.find(L"->prepare(") != std::wstring::npos || val.find(L"->query(") != std::wstring::npos) {
+            return L"PDOStatement";
+        }
+        if (val.find(L"->fetchAll(") != std::wstring::npos || val.find(L"->fetch(") != std::wstring::npos) {
+            return L"array";
+        }
+        if (val.rfind(L"trim(", 0) == 0 || val.rfind(L"htmlspecialchars(", 0) == 0 ||
+            val.rfind(L"strtolower(", 0) == 0 || val.rfind(L"strtoupper(", 0) == 0 ||
+            val.rfind(L"substr(", 0) == 0 || val.rfind(L"str_replace(", 0) == 0) {
+            return L"string";
+        }
+        if (val.rfind(L"count(", 0) == 0 || val.rfind(L"intval(", 0) == 0 || val.rfind(L"strlen(", 0) == 0) {
+            return L"int";
+        }
         size_t startIdx = (val[0] == L'-' || val[0] == L'+') ? 1 : 0;
         if (startIdx < val.length() && iswdigit(val[startIdx])) {
             if (val.find(L'.') != std::wstring::npos) return L"float";
@@ -1716,7 +1532,7 @@ std::vector<IntelliSenseItem> IntelliSenseEngine::ExtractDocumentSymbols(
             continue;
         }
 
-        // 1. PHP style variables: $port = 3306;
+        // 1. PHP style variables: $port = 3306; or catch (PDOException $e)
         size_t pDollar = 0;
         while ((pDollar = line.find(L'$', pDollar)) != std::wstring::npos) {
             size_t pStart = pDollar + 1;
@@ -1727,6 +1543,14 @@ std::vector<IntelliSenseItem> IntelliSenseEngine::ExtractDocumentSymbols(
                 }
                 std::wstring varName = line.substr(pStart, pEnd - pStart);
                 std::wstring fullVar = L"$" + varName;
+
+                // Skip superglobals so we don't duplicate them with generic "Variable" detail
+                if (fullVar == L"$_GET" || fullVar == L"$_POST" || fullVar == L"$_REQUEST" ||
+                    fullVar == L"$_SESSION" || fullVar == L"$_COOKIE" || fullVar == L"$_SERVER" ||
+                    fullVar == L"$_FILES" || fullVar == L"$_ENV" || fullVar == L"$GLOBALS" || fullVar == L"$this") {
+                    pDollar = pEnd;
+                    continue;
+                }
 
                 std::wstring inferredType;
                 size_t pEq = line.find(L'=', pEnd);
@@ -1740,6 +1564,20 @@ std::vector<IntelliSenseItem> IntelliSenseEngine::ExtractDocumentSymbols(
                         rightSide = trim(rightSide);
                         inferredType = inferTypeFromVal(rightSide);
                     }
+                } else if (pDollar >= 2) {
+                    // Check for typed parameter or catch (PDOException $e)
+                    size_t tEnd = pDollar;
+                    while (tEnd > 0 && iswspace(line[tEnd - 1])) tEnd--;
+                    size_t tStart = tEnd;
+                    while (tStart > 0 && (iswalnum(line[tStart - 1]) || line[tStart - 1] == L'_' || line[tStart - 1] == L'\\' || line[tStart - 1] == L'?')) tStart--;
+                    if (tEnd > tStart) {
+                        std::wstring candidateType = line.substr(tStart, tEnd - tStart);
+                        if (candidateType != L"as" && candidateType != L"echo" && candidateType != L"print" &&
+                            candidateType != L"return" && candidateType != L"global" && candidateType != L"static" &&
+                            candidateType != L"new" && candidateType != L"throw" && candidateType != L"unset") {
+                            inferredType = candidateType;
+                        }
+                    }
                 }
 
                 std::wstring detailStr = inferredType.empty() ? L"Variable" : (L"Variable (" + inferredType + L")");
@@ -1750,11 +1588,19 @@ std::vector<IntelliSenseItem> IntelliSenseEngine::ExtractDocumentSymbols(
                     item.detail = detailStr;
                     item.insertText = fullVar;
                     item.kind = CompletionKind::Variable;
-                    item.score = 550;
+                    item.score = 650;
                     item.origin = L"variable";
                     results.push_back(std::move(item));
+                } else if (!inferredType.empty()) {
+                    // Upgrade existing variable entry if we later found a concrete type
+                    for (auto& existing : results) {
+                        if (existing.label == fullVar && existing.detail == L"Variable") {
+                            existing.detail = detailStr;
+                            break;
+                        }
+                    }
                 }
-                if (seenVars.insert(varName).second) {
+                if (fileExt != L".php" && seenVars.insert(varName).second) {
                     IntelliSenseItem item;
                     item.label = varName;
                     item.detail = detailStr;
@@ -2092,25 +1938,6 @@ std::vector<IntelliSenseItem> IntelliSenseEngine::QueryCompletions(
     std::wstring prefixLower = prefix;
     for (auto& c : prefixLower) c = static_cast<wchar_t>(towlower(c));
 
-    std::vector<IntelliSenseItem> rawCandidates;
-
-    // 0. Include matching user & built-in snippets (Image 3 request: "like you know ! in vs code create html template")
-    std::wstring extNoDot = ext.empty() ? L"" : (ext[0] == L'.' ? ext.substr(1) : ext);
-    if (m_pSnippetManager) {
-        for (const auto& snip : m_pSnippetManager->GetSnippets()) {
-            if (SnippetManager::MatchesScope(snip.scope, extNoDot)) {
-                IntelliSenseItem sItem;
-                sItem.label = snip.prefix;
-                sItem.detail = snip.name + (snip.description.empty() ? L"" : (L" - " + snip.description));
-                sItem.insertText = snip.prefix;
-                sItem.kind = CompletionKind::Snippet;
-                sItem.origin = L"snippets";
-                sItem.score = 600; // Baseline high snippet score so user shortcuts appear prominently
-                rawCandidates.push_back(std::move(sItem));
-            }
-        }
-    }
-
     bool isPhp = (ext == L".php");
     bool insidePhp = isPhp;
     if (isPhp && pDocLines && !pDocLines->empty()) {
@@ -2127,6 +1954,46 @@ std::vector<IntelliSenseItem> IntelliSenseEngine::QueryCompletions(
     bool isCss = (ext == L".css" || ext == L".scss" || ext == L".less");
     bool isJs = (ext == L".js" || ext == L".jsx" || ext == L".ts" || ext == L".tsx" || ext == L".mjs" || ext == L".cjs");
     bool isPy = (ext == L".py");
+
+    // Detect contextual triggers before prefix (e.g. ::, ->, ., <, $_SERVER["..."])
+    size_t beforePos = (cursorCol >= prefix.length()) ? (cursorCol - prefix.length()) : 0;
+    bool afterDoubleColon = (beforePos >= 2 && currentLine[beforePos - 1] == L':' && currentLine[beforePos - 2] == L':');
+    bool afterArrow       = (beforePos >= 2 && currentLine[beforePos - 1] == L'>' && currentLine[beforePos - 2] == L'-');
+    bool afterDot         = (beforePos >= 1 && currentLine[beforePos - 1] == L'.');
+    bool afterOpenAngle   = (beforePos >= 1 && currentLine[beforePos - 1] == L'<');
+
+    bool insideServerKey = false;
+    if (insidePhp && quotePos != std::wstring::npos && quotePos < cursorCol) {
+        std::wstring beforeQ = currentLine.substr(0, quotePos);
+        if (beforeQ.find(L"$_SERVER[") != std::wstring::npos) {
+            insideServerKey = true;
+        }
+    }
+
+    // If prefix is empty and cursor is NOT at an explicit member/tag/key trigger, do not dump unfiltered completions!
+    if (prefixLower.empty() && !afterDoubleColon && !afterArrow && !afterDot && !afterOpenAngle && !insideServerKey) {
+        return {};
+    }
+
+    std::vector<IntelliSenseItem> rawCandidates;
+
+    // 0. Include matching user & built-in snippets (exclude HTML markup snippets when inside <?php ... ?> code)
+    std::wstring extNoDot = ext.empty() ? L"" : (ext[0] == L'.' ? ext.substr(1) : ext);
+    if (m_pSnippetManager && !afterDoubleColon && !afterArrow && !afterDot && !insideServerKey) {
+        for (const auto& snip : m_pSnippetManager->GetSnippets()) {
+            if (insidePhp && snip.scope != L"php") continue;
+            if (SnippetManager::MatchesScope(snip.scope, extNoDot)) {
+                IntelliSenseItem sItem;
+                sItem.label = snip.prefix;
+                sItem.detail = snip.name + (snip.description.empty() ? L"" : (L" - " + snip.description));
+                sItem.insertText = snip.prefix;
+                sItem.kind = CompletionKind::Snippet;
+                sItem.origin = L"snippets";
+                sItem.score = 600;
+                rawCandidates.push_back(std::move(sItem));
+            }
+        }
+    }
 
     // Detect contextual block (embedded <style> or <script>) in HTML/PHP files
     bool insideStyle = isCss;
@@ -2151,6 +2018,50 @@ std::vector<IntelliSenseItem> IntelliSenseEngine::QueryCompletions(
                 if (dLine.find(L"</style>") != std::wstring::npos) insideStyle = false;
                 if (dLine.find(L"<script") != std::wstring::npos) insideScript = true;
                 if (dLine.find(L"</script>") != std::wstring::npos) insideScript = false;
+            }
+        }
+    }
+
+    // Collect document & workspace symbols first so we know variable types (e.g. $pdo -> PDO, $stmt -> PDOStatement)
+    std::vector<IntelliSenseItem> workspaceVarSymbols;
+    if (pDocLines && !pDocLines->empty()) {
+        auto docSymbols = ExtractDocumentSymbols(*pDocLines, ext);
+        for (auto& sym : docSymbols) {
+            workspaceVarSymbols.push_back(std::move(sym));
+        }
+    }
+    if (isPhp) {
+        std::error_code ec;
+        std::filesystem::path scanDir;
+        if (!fileName.empty()) {
+            std::filesystem::path fp(fileName);
+            if (fp.has_parent_path() && std::filesystem::exists(fp.parent_path(), ec)) {
+                scanDir = fp.parent_path();
+            }
+        }
+        if (scanDir.empty() && !m_workspaceRoot.empty() && std::filesystem::exists(m_workspaceRoot, ec)) {
+            scanDir = std::filesystem::path(m_workspaceRoot);
+        }
+        if (!scanDir.empty() && std::filesystem::is_directory(scanDir, ec)) {
+            int filesScanned = 0;
+            for (std::filesystem::directory_iterator it(scanDir, ec); !ec && it != std::filesystem::directory_iterator() && filesScanned < 12; it.increment(ec)) {
+                if (!it->is_regular_file(ec)) continue;
+                auto p = it->path();
+                if (p.extension() != L".php") continue;
+                if (!fileName.empty() && std::filesystem::equivalent(p, std::filesystem::path(fileName), ec)) continue;
+                std::ifstream ifs(p, std::ios::binary);
+                if (!ifs) continue;
+                filesScanned++;
+                std::vector<std::wstring> peerLines;
+                std::string u8Line;
+                while (std::getline(ifs, u8Line) && peerLines.size() < 400) {
+                    std::wstring wLine(u8Line.begin(), u8Line.end());
+                    peerLines.push_back(std::move(wLine));
+                }
+                auto peerSyms = ExtractDocumentSymbols(peerLines, L".php");
+                for (auto& sym : peerSyms) {
+                    workspaceVarSymbols.push_back(std::move(sym));
+                }
             }
         }
     }
@@ -2310,12 +2221,78 @@ std::vector<IntelliSenseItem> IntelliSenseEngine::QueryCompletions(
             }
         }
     } else if (insidePhp) {
-        for (const auto& phpSym : m_phpSymbols) {
-            IntelliSenseItem it = phpSym;
-            if (prefix.rfind(L"$", 0) == 0 && it.label.rfind(L"$", 0) == 0) {
-                it.score += 400; // Boost superglobals and variables when user types $
+        if (insideServerKey) {
+            static const struct SrvKey { const wchar_t* key; const wchar_t* desc; } srvKeys[] = {
+                { L"REQUEST_METHOD", L"Request method used to access the page (e.g. 'GET', 'POST', 'PUT', 'DELETE')" },
+                { L"REQUEST_URI", L"The URI which was given in order to access this page (e.g. '/index.php?id=1')" },
+                { L"HTTP_HOST", L"Contents of the Host: header from the current request" },
+                { L"SERVER_NAME", L"The name of the server host under which the current script is executing" },
+                { L"SERVER_PORT", L"The port on the server machine being used by the web server for communication" },
+                { L"SCRIPT_NAME", L"Contains the current script's path" },
+                { L"DOCUMENT_ROOT", L"The document root directory under which the current script is executing" },
+                { L"REMOTE_ADDR", L"The IP address from which the user is viewing the current page" },
+                { L"HTTP_USER_AGENT", L"Contents of the User-Agent: header from the current request" },
+                { L"HTTP_REFERER", L"The address of the page (if any) which referred the user agent to the current page" },
+                { L"QUERY_STRING", L"The query string, if any, via which the page was accessed" },
+                { L"HTTPS", L"Set to a non-empty value if the script was queried through the HTTPS protocol" },
+                { L"PHP_SELF", L"The filename of the currently executing script, relative to the document root" },
+                { L"CONTENT_TYPE", L"Content-Type header of the HTTP request" }
+            };
+            for (const auto& sk : srvKeys) {
+                IntelliSenseItem it;
+                it.label = sk.key;
+                it.detail = sk.desc;
+                it.insertText = sk.key;
+                it.kind = CompletionKind::Constant;
+                it.score = 1500;
+                it.origin = L"php";
+                rawCandidates.push_back(std::move(it));
             }
-            rawCandidates.push_back(std::move(it));
+        } else if (afterDoubleColon) {
+            // Extract class name before '::' (e.g. "PDO", "DateTime", "ReflectionClass")
+            size_t clsEnd = beforePos - 2;
+            size_t clsStart = clsEnd;
+            while (clsStart > 0 && (iswalnum(currentLine[clsStart - 1]) || currentLine[clsStart - 1] == L'_' || currentLine[clsStart - 1] == L'\\')) {
+                clsStart--;
+            }
+            std::wstring className = currentLine.substr(clsStart, clsEnd - clsStart);
+            if (!className.empty() && className[0] == L'\\') className = className.substr(1);
+            auto staticMembers = QueryPhpClassStaticMembers(className);
+            for (auto& sm : staticMembers) {
+                rawCandidates.push_back(std::move(sm));
+            }
+        } else if (afterArrow) {
+            // Extract receiver variable before '->' (e.g. "$pdo", "$stmt", "$e") and infer its class
+            size_t varEnd = beforePos - 2;
+            size_t varStart = varEnd;
+            while (varStart > 0 && (iswalnum(currentLine[varStart - 1]) || currentLine[varStart - 1] == L'_' || currentLine[varStart - 1] == L'$')) {
+                varStart--;
+            }
+            std::wstring receiverVar = currentLine.substr(varStart, varEnd - varStart);
+            std::wstring receiverClass;
+            for (const auto& sym : workspaceVarSymbols) {
+                if (sym.label == receiverVar) {
+                    // Extract class from "Variable (ClassName)"
+                    size_t lp = sym.detail.find(L'(');
+                    size_t rp = sym.detail.find(L')');
+                    if (lp != std::wstring::npos && rp != std::wstring::npos && rp > lp + 1) {
+                        receiverClass = sym.detail.substr(lp + 1, rp - lp - 1);
+                        break;
+                    }
+                }
+            }
+            auto instanceMethods = QueryPhpClassInstanceMethods(receiverClass);
+            for (auto& im : instanceMethods) {
+                rawCandidates.push_back(std::move(im));
+            }
+        } else {
+            for (const auto& phpSym : m_phpSymbols) {
+                IntelliSenseItem it = phpSym;
+                if (prefix.rfind(L"$", 0) == 0 && it.label.rfind(L"$", 0) == 0) {
+                    it.score += 400; // Boost superglobals and variables when user types $
+                }
+                rawCandidates.push_back(std::move(it));
+            }
         }
     } else if (isPy) {
         for (const auto& pySym : m_pySymbols) {
@@ -2334,34 +2311,39 @@ std::vector<IntelliSenseItem> IntelliSenseEngine::QueryCompletions(
         }
     }
 
-    // Dynamic Document Variables & Typed Symbols (Image 3 request: "when i type port as variable then when i go to another line the port same case is in the intelisense... saying its variable if like another lang that they specifies then it say datatype and variable")
-    if (pDocLines && !pDocLines->empty()) {
-        auto docSymbols = ExtractDocumentSymbols(*pDocLines, ext);
-        for (auto& sym : docSymbols) {
+    // Dynamic Document & Workspace Variables
+    if (!afterDoubleColon && !afterArrow && !insideServerKey) {
+        for (auto& sym : workspaceVarSymbols) {
+            if (prefix.rfind(L"$", 0) == 0 && sym.label.rfind(L"$", 0) == 0) {
+                sym.score += 450;
+            }
             rawCandidates.push_back(std::move(sym));
         }
     }
 
     // Common web and programming vocabulary (properties, tags, methods, identifiers)
-    // In CSS files, keep completion list clean and strictly scoped to CSS
-    if (!isCss && !insideStyle) {
+    // Keep CSS and PHP code completions strictly scoped and clean
+    if (!isCss && !insideStyle && !insidePhp) {
         for (const auto& v : m_commonVocabulary) {
             rawCandidates.push_back(v);
         }
     }
 
-    // Tailwind CSS IntelliSense completions (bradlc.vscode-tailwindcss: all 22 colors x 11 shades + black/white + utilities)
-    static const auto allTailwindCandidates = TailwindHelper::GetAllCandidates();
-    for (const auto& tw : allTailwindCandidates) {
-        IntelliSenseItem item;
-        item.label = tw.name;
-        item.detail = tw.detail;
-        item.documentation = tw.doc;
-        item.isColor = tw.isColor;
-        item.colorHex = tw.hex;
-        item.kind = tw.isColor ? CompletionKind::Color : CompletionKind::Snippet;
-        item.origin = L"tailwind";
-        rawCandidates.push_back(std::move(item));
+    // Tailwind CSS IntelliSense completions (only in HTML/JSX or inside class="..." strings)
+    bool insideClassAttr = (currentLine.find(L"class=") != std::wstring::npos || currentLine.find(L"className=") != std::wstring::npos);
+    if (!insidePhp || insideClassAttr) {
+        static const auto allTailwindCandidates = TailwindHelper::GetAllCandidates();
+        for (const auto& tw : allTailwindCandidates) {
+            IntelliSenseItem item;
+            item.label = tw.name;
+            item.detail = tw.detail;
+            item.documentation = tw.doc;
+            item.isColor = tw.isColor;
+            item.colorHex = tw.hex;
+            item.kind = tw.isColor ? CompletionKind::Color : CompletionKind::Snippet;
+            item.origin = L"tailwind";
+            rawCandidates.push_back(std::move(item));
+        }
     }
 
     // Matching & Scoring Engine: Exact prefix (1000), Boundary match (750), Substring match (100)
@@ -2396,9 +2378,9 @@ std::vector<IntelliSenseItem> IntelliSenseEngine::QueryCompletions(
             seenLabels.insert(item.label);
             matches.push_back(std::move(scored));
         } else if (p != std::wstring::npos) {
-            // Check if this match starts at a word or delimiter boundary (':', '-', '_', '.', '>')
+            // Check if this match starts at a word or delimiter boundary (':', '-', '_', '.', '>', '$')
             wchar_t prevChar = candLower[p - 1];
-            bool isBoundary = (prevChar == L':' || prevChar == L'-' || prevChar == L'_' || prevChar == L'.' || prevChar == L' ' || prevChar == L'>');
+            bool isBoundary = (prevChar == L':' || prevChar == L'-' || prevChar == L'_' || prevChar == L'.' || prevChar == L' ' || prevChar == L'>' || prevChar == L'$');
 
             if (isSnippet) {
                 // Snippets MUST only match at prefix start (p == 0) or at a delimiter boundary (e.g. typing "bread" matches "div:breadcrumb")!

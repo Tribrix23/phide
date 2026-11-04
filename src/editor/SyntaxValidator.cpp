@@ -968,8 +968,8 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidateHtml(
     bool inPhp = false;
 
     for (size_t l = 0; l < buffer.GetLineCount(); ++l) {
-        const auto& line = buffer.GetLine(l);
-        for (size_t c = 0; c < line.length(); ++c) {
+        for (size_t c = 0; l < buffer.GetLineCount() && c < buffer.GetLine(l).length(); ++c) {
+            const auto& line = buffer.GetLine(l);
             // Skip PHP code blocks completely in mixed PHP/HTML templates
             if (inPhp) {
                 if (c + 1 < line.length() && line[c] == L'?' && line[c + 1] == L'>') {
@@ -1017,6 +1017,7 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidateHtml(
                 size_t endCol = 0;
                 bool inQuotes = false;
                 wchar_t quoteChar = L'\0';
+                bool inTagPhp = false;
 
                 size_t curScanL = l;
                 size_t curScanC = c + 1;
@@ -1025,6 +1026,18 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidateHtml(
                     const auto& scanText = buffer.GetLine(curScanL);
                     for (size_t k = curScanC; k < scanText.length(); ++k) {
                         wchar_t ch = scanText[k];
+                        if (inTagPhp) {
+                            if (ch == L'?' && k + 1 < scanText.length() && scanText[k + 1] == L'>') {
+                                inTagPhp = false;
+                                k++;
+                            }
+                            continue;
+                        }
+                        if (ch == L'<' && k + 1 < scanText.length() && scanText[k + 1] == L'?') {
+                            inTagPhp = true;
+                            k++;
+                            continue;
+                        }
                         if (inQuotes) {
                             if (ch == quoteChar) inQuotes = false;
                         } else {
@@ -1897,11 +1910,14 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidatePhp(const Buffer& buffer) 
     size_t blockCommentLine = 0;
     size_t blockCommentCol = 0;
 
+    // In PHP, single-quoted and double-quoted string literals validly span multiple lines!
+    bool inDoubleQuote = false;
+    bool inSingleQuote = false;
+    size_t quoteStartLine = 0;
+    size_t quoteStartCol = 0;
+
     for (size_t l = 0; l < buffer.GetLineCount(); ++l) {
         const auto& line = buffer.GetLine(l);
-        bool inDoubleQuote = false;
-        bool inSingleQuote = false;
-        size_t quoteStartCol = 0;
 
         for (size_t c = 0; c < line.length(); ++c) {
             wchar_t ch = line[c];
@@ -1937,7 +1953,7 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidatePhp(const Buffer& buffer) 
                 continue;
             }
 
-            // Inside string literals
+            // Inside string literals (can span multiple lines in PHP)
             if (inDoubleQuote) {
                 if (ch == L'\\') { c++; continue; }
                 if (ch == L'"') { inDoubleQuote = false; }
@@ -1949,8 +1965,9 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidatePhp(const Buffer& buffer) 
                 continue;
             }
 
-            // Single line comments // or #
-            if ((ch == L'/' && c + 1 < line.length() && line[c + 1] == L'/') || ch == L'#') {
+            // Single line comments // or # (ignoring #[...] PHP 8 attributes)
+            if ((ch == L'/' && c + 1 < line.length() && line[c + 1] == L'/') ||
+                (ch == L'#' && !(c + 1 < line.length() && line[c + 1] == L'['))) {
                 break;
             }
 
@@ -1966,11 +1983,13 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidatePhp(const Buffer& buffer) 
             // String start
             if (ch == L'"') {
                 inDoubleQuote = true;
+                quoteStartLine = l;
                 quoteStartCol = c;
                 continue;
             }
             if (ch == L'\'') {
                 inSingleQuote = true;
+                quoteStartLine = l;
                 quoteStartCol = c;
                 continue;
             }
@@ -1997,10 +2016,12 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidatePhp(const Buffer& buffer) 
                 }
             }
         }
+    }
 
-        if (inDoubleQuote || inSingleQuote) {
-            diagnostics.push_back({ l, quoteStartCol, (line.length() > quoteStartCol ? line.length() - quoteStartCol : 1), L"PHP: Unclosed string literal", 1 });
-        }
+    if (inDoubleQuote || inSingleQuote) {
+        const auto& qLine = buffer.GetLine(quoteStartLine);
+        size_t len = (qLine.length() > quoteStartCol) ? (qLine.length() - quoteStartCol) : 1;
+        diagnostics.push_back({ quoteStartLine, quoteStartCol, len, L"PHP: Unclosed string literal", 1 });
     }
 
     if (inBlockComment) {

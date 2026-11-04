@@ -2793,7 +2793,22 @@ void Window::CommitAutocompleteSelection() {
         for (size_t i = 0; i < prefix.length(); ++i) {
             pDoc->buffer.Backspace();
         }
-        const std::wstring& toInsert = !item->insertText.empty() ? item->insertText : item->label;
+        std::wstring toInsert = !item->insertText.empty() ? item->insertText : item->label;
+        // Avoid duplicating leading '$' or 'ClassName::' if already present right before prefix
+        auto curBefore = pDoc->buffer.GetCursor();
+        const auto& curLineText = pDoc->buffer.GetLine(curBefore.line);
+        if (!toInsert.empty() && toInsert[0] == L'$' && curBefore.col > 0 && curLineText[curBefore.col - 1] == L'$') {
+            toInsert = toInsert.substr(1);
+        } else {
+            size_t dColon = toInsert.find(L"::");
+            if (dColon != std::wstring::npos) {
+                std::wstring classPrefix = toInsert.substr(0, dColon + 2);
+                if (curBefore.col >= classPrefix.length() &&
+                    _wcsnicmp(curLineText.c_str() + curBefore.col - classPrefix.length(), classPrefix.c_str(), classPrefix.length()) == 0) {
+                    toInsert = toInsert.substr(dColon + 2);
+                }
+            }
+        }
         for (wchar_t c : toInsert) {
             pDoc->buffer.InsertChar(c);
         }
@@ -5145,7 +5160,7 @@ void Window::StartPhpServer(const std::wstring& rootDir, int port) {
 
     std::filesystem::path prependPath = GetPhideRoot() / L"include" / L"phide" / L"server" / L"phide_prepend.php";
     std::filesystem::path appendPath  = GetPhideRoot() / L"include" / L"phide" / L"server" / L"phide_append.php";
-    std::wstring liveReloadArgs = L" -d opcache.enable=0 -d output_buffering=Off";
+    std::wstring liveReloadArgs = L" -d opcache.enable=0 -d output_buffering=4096";
     if (std::filesystem::exists(prependPath) && std::filesystem::exists(appendPath)) {
         std::wstring prepFwd = prependPath.wstring();
         std::wstring appFwd  = appendPath.wstring();
@@ -12498,8 +12513,8 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                             ComputeDiffHunks(*pDoc);
                         }
 
-                        // Query massive HTML5 / JavaScript / Python / Path IntelliSense & Snippets (Images 2 & 5)
-                        if (iswalnum(ch) || ch == L'!' || ch == L'@' || ch == L'#' || ch == L'-' || ch == L'.' || ch == L'<' || ch == L':' || ch == L'$' || ch == L'_' || ch == L'/' || ch == L'\\' || ch == L'"' || ch == L'\'') {
+                        // Query massive HTML5 / JavaScript / Python / PHP / Path IntelliSense & Snippets
+                        if (iswalnum(ch) || ch == L'!' || ch == L'@' || ch == L'#' || ch == L'-' || ch == L'.' || ch == L'<' || ch == L'>' || ch == L':' || ch == L'$' || ch == L'_' || ch == L'/' || ch == L'\\' || ch == L'"' || ch == L'\'') {
                             auto pos = pDoc->buffer.GetCursor();
                             const auto& lineText = pDoc->buffer.GetLine(pos.line);
                             std::wstring docTarget = pDoc->filePath.empty() ? pDoc->fileName : pDoc->filePath;
@@ -12509,15 +12524,16 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                             auto items = m_intelliSense.QueryCompletions(docTarget, lineText, pos.col, pDoc ? &pDoc->buffer.GetLines() : nullptr);
                             if (!items.empty()) {
                                 m_editor.ShowAutocomplete(items);
-                                if (items[0].kind == editor::CompletionKind::Folder || items[0].kind == editor::CompletionKind::File) {
-                                    m_editor.ClearGhostText();
+                                std::wstring prefix = editor::IntelliSenseEngine::ExtractQueryPrefix(lineText, pos.col);
+                                const std::wstring& topLabel = items[0].label;
+                                if (items[0].kind != editor::CompletionKind::Folder &&
+                                    items[0].kind != editor::CompletionKind::File &&
+                                    !prefix.empty() &&
+                                    topLabel.length() > prefix.length() &&
+                                    _wcsnicmp(topLabel.c_str(), prefix.c_str(), prefix.length()) == 0) {
+                                    m_editor.SetGhostText(topLabel.substr(prefix.length()));
                                 } else {
-                                    std::wstring prefix = editor::IntelliSenseEngine::ExtractQueryPrefix(lineText, pos.col);
-                                    std::wstring ghost = items[0].label;
-                                    if (!prefix.empty() && ghost.rfind(prefix, 0) == 0) {
-                                        ghost = ghost.substr(prefix.length());
-                                    }
-                                    m_editor.SetGhostText(ghost);
+                                    m_editor.ClearGhostText();
                                 }
                             } else {
                                 m_editor.DismissAutocomplete();
@@ -13431,6 +13447,19 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                             pDoc->buffer.Backspace();
                         } else {
                             pDoc->buffer.Backspace();
+                        }
+                        m_editor.ClearGhostText();
+                        m_editor.ClearPrediction();
+                        if (m_editor.IsAutocompleteVisible()) {
+                            auto pos = pDoc->buffer.GetCursor();
+                            const auto& lineText = pDoc->buffer.GetLine(pos.line);
+                            std::wstring docTarget = pDoc->filePath.empty() ? pDoc->fileName : pDoc->filePath;
+                            auto items = m_intelliSense.QueryCompletions(docTarget, lineText, pos.col, &pDoc->buffer.GetLines());
+                            if (!items.empty()) {
+                                m_editor.ShowAutocomplete(items);
+                            } else {
+                                m_editor.DismissAutocomplete();
+                            }
                         }
                     }
                     MarkDocumentModified(pDoc);
