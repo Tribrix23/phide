@@ -2649,22 +2649,42 @@ void Window::UpdatePrediction() {
 }
 
 void Window::CommitAutocompleteSelection() {
-    const auto* item = m_editor.GetSelectedAutocompleteItem();
+    const auto* rawItem = m_editor.GetSelectedAutocompleteItem();
     auto* pDoc = GetActiveDoc();
-    if (!item || !pDoc) {
+    if (!rawItem || !pDoc) {
         m_editor.DismissAutocomplete();
         m_editor.ClearGhostText();
         return;
     }
+
+    editor::IntelliSenseItem selectedItem = *rawItem;
+    const auto* item = &selectedItem;
 
     m_suppressNextChar = true;
     auto pos = pDoc->buffer.GetCursor();
     const auto& lineText = pDoc->buffer.GetLine(pos.line);
     std::wstring prefix = editor::IntelliSenseEngine::ExtractQueryPrefix(lineText, pos.col);
 
-    // Check if completing a file or directory path (Images 2 & 3)
+    // 0a. Completing an NPM package name inside quotes (e.g. from 'luc|' -> from 'lucide-react')
+    if (item->origin == L"npm-module") {
+        size_t lastQuote = lineText.find_last_of(L"\"'`", pos.col > 0 ? pos.col - 1 : 0);
+        size_t charsToDel = (lastQuote != std::wstring::npos && pos.col > lastQuote) ? (pos.col - lastQuote - 1) : prefix.length();
+        for (size_t i = 0; i < charsToDel; ++i) {
+            pDoc->buffer.Backspace();
+        }
+        for (wchar_t c : item->insertText) {
+            pDoc->buffer.InsertChar(c);
+        }
+        MarkDocumentModified(pDoc);
+        m_editor.DismissAutocomplete();
+        m_editor.ClearGhostText();
+        InvalidateRect(m_hwnd, nullptr, FALSE);
+        return;
+    }
+
+    // 0b. Check if completing a file or directory path (Images 2 & 3)
     if (item->origin == L"path" || item->kind == editor::CompletionKind::Folder || item->kind == editor::CompletionKind::File) {
-        size_t lastSep = lineText.find_last_of(L"/\\\"'", pos.col > 0 ? pos.col - 1 : 0);
+        size_t lastSep = lineText.find_last_of(L"/\\\"'`", pos.col > 0 ? pos.col - 1 : 0);
         size_t charsToDel = (lastSep != std::wstring::npos && pos.col > lastSep) ? (pos.col - lastSep - 1) : 0;
         for (size_t i = 0; i < charsToDel; ++i) {
             pDoc->buffer.Backspace();
@@ -2679,7 +2699,7 @@ void Window::CommitAutocompleteSelection() {
             auto newPos = pDoc->buffer.GetCursor();
             const auto& newLine = pDoc->buffer.GetLine(newPos.line);
             std::wstring docTarget = pDoc->filePath.empty() ? pDoc->fileName : pDoc->filePath;
-            if (m_intelliSense.GetWorkspaceRoot().empty() && m_drawer.HasOpenFolder()) {
+            if (m_drawer.HasOpenFolder()) {
                 m_intelliSense.SetWorkspaceRoot(m_drawer.GetOpenFolderPath());
             }
             auto subItems = m_intelliSense.QueryCompletions(docTarget, newLine, newPos.col, pDoc ? &pDoc->buffer.GetLines() : nullptr);
@@ -2697,16 +2717,27 @@ void Window::CommitAutocompleteSelection() {
         return;
     }
 
-    // Check if user is completing a snippet (e.g. "!", "html:5", "clg", "flexcenter")
-    if (item->kind == editor::CompletionKind::Snippet) {
+    // Check if user is completing an Emmet abbreviation or a snippet (e.g. "div.hello", "!", "html:5", "clg")
+    if (item->origin == L"emmet" || item->kind == editor::CompletionKind::Snippet) {
         std::wstring ext;
-        auto dotPos = pDoc->fileName.rfind(L'.');
-        if (dotPos != std::wstring::npos) ext = pDoc->fileName.substr(dotPos + 1);
+        std::wstring fn = pDoc->fileName.empty() ? pDoc->filePath : pDoc->fileName;
+        auto dotPos = fn.rfind(L'.');
+        if (dotPos != std::wstring::npos) ext = fn.substr(dotPos + 1);
         for (auto& c : ext) c = towlower(c);
+
+        if (item->origin == L"emmet") {
+            if (pDoc->buffer.ExpandEmmet(ext)) {
+                MarkDocumentModified(pDoc);
+                m_editor.DismissAutocomplete();
+                m_editor.ClearGhostText();
+                InvalidateRect(m_hwnd, nullptr, FALSE);
+                return;
+            }
+        }
 
         const auto* pSnip = m_snippetManager.FindSnippetByPrefix(item->label, ext);
         if (pSnip) {
-            m_snippetManager.ExpandSnippet(*pSnip, pDoc->buffer, prefix.length(), pDoc->fileName.empty() ? pDoc->filePath : pDoc->fileName);
+            m_snippetManager.ExpandSnippet(*pSnip, pDoc->buffer, prefix.length(), fn);
             MarkDocumentModified(pDoc);
             m_editor.DismissAutocomplete();
             m_editor.ClearGhostText();
@@ -2715,7 +2746,7 @@ void Window::CommitAutocompleteSelection() {
         }
     }
 
-    // Check if user is completing an HTML tag (e.g. typed "<div", "</main", or "div")
+    // Check if user is completing an HTML tag or JSX Component tag (e.g. typed "<div", "<Camera", "</main", or "div")
     bool isTagKind = (item->kind == editor::CompletionKind::Tag);
     size_t prefixStart = (pos.col >= prefix.length()) ? (pos.col - prefix.length()) : 0;
     bool hasClosingAngle = (prefixStart >= 2 && lineText[prefixStart - 1] == L'/' && lineText[prefixStart - 2] == L'<');
@@ -2729,6 +2760,7 @@ void Window::CommitAutocompleteSelection() {
     std::wstring tagLower = item->label;
     for (auto& c : tagLower) c = towlower(c);
     bool isVoid = (voidTags.count(tagLower) > 0);
+    bool isReactComponentTag = hasLeadingAngle && !item->label.empty() && iswupper(item->label[0]);
 
     if (isTagKind || hasLeadingAngle || hasClosingAngle) {
         // Tag completion
@@ -2742,7 +2774,12 @@ void Window::CommitAutocompleteSelection() {
             for (wchar_t c : closePart) pDoc->buffer.InsertChar(c);
         } else if (hasLeadingAngle) {
             // Already has '<'. Complete after '<'
-            if (isVoid) {
+            if (isReactComponentTag) {
+                std::wstring toInsert = item->label + L" />";
+                for (wchar_t c : toInsert) pDoc->buffer.InsertChar(c);
+                auto cPos = pDoc->buffer.GetCursor();
+                if (cPos.col >= 2) pDoc->buffer.SetCursor(cPos.line, cPos.col - 2);
+            } else if (isVoid) {
                 std::wstring toInsert;
                 if (tagLower == L"img") {
                     toInsert = L"img src=\"\" alt=\"\" />";
@@ -2789,7 +2826,7 @@ void Window::CommitAutocompleteSelection() {
             }
         }
     } else {
-        // Normal completion (method, property, keyword, etc.)
+        // Normal completion (method, property, keyword, JSX attribute, etc.)
         for (size_t i = 0; i < prefix.length(); ++i) {
             pDoc->buffer.Backspace();
         }
@@ -2809,8 +2846,77 @@ void Window::CommitAutocompleteSelection() {
                 }
             }
         }
+
+        // Handle `$0` cursor placeholder in insertText (e.g. `className="$0"`, `onClick={$0}`)
+        size_t dollarZero = toInsert.find(L"$0");
+        if (dollarZero != std::wstring::npos) {
+            toInsert.erase(dollarZero, 2);
+        }
         for (wchar_t c : toInsert) {
             pDoc->buffer.InsertChar(c);
+        }
+        if (dollarZero != std::wstring::npos) {
+            size_t charsAfterCursor = toInsert.length() - dollarZero;
+            auto afterPos = pDoc->buffer.GetCursor();
+            if (afterPos.col >= charsAfterCursor) {
+                pDoc->buffer.SetCursor(afterPos.line, afterPos.col - charsAfterCursor);
+            }
+        }
+    }
+
+    // Auto-import support: if the completed symbol came from an installed NPM library or workspace file
+    // (`documentation == L"auto-import:<moduleSpec>"`), ensure it is imported at the top of the file!
+    if (item->documentation.rfind(L"auto-import:", 0) == 0) {
+        std::wstring modSpec = item->documentation.substr(12);
+        std::wstring symName = item->label;
+        const auto& curLineNow = pDoc->buffer.GetLine(pDoc->buffer.GetCursor().line);
+        bool onImportLine = (curLineNow.find(L"import ") != std::wstring::npos && curLineNow.find(L"from") != std::wstring::npos);
+        if (!modSpec.empty() && !symName.empty() && !onImportLine) {
+            bool alreadyImported = false;
+            size_t existingModImportLine = std::wstring::npos;
+            size_t lastImportLine = std::wstring::npos;
+            const auto& allLines = pDoc->buffer.GetLines();
+            for (size_t l = 0; l < allLines.size() && l < 60; ++l) {
+                const auto& ln = allLines[l];
+                if (ln.find(L"import ") != std::wstring::npos) {
+                    lastImportLine = l;
+                    if (ln.find(L"'" + modSpec + L"'") != std::wstring::npos ||
+                        ln.find(L"\"" + modSpec + L"\"") != std::wstring::npos) {
+                        existingModImportLine = l;
+                        size_t sp = ln.find(symName);
+                        while (sp != std::wstring::npos) {
+                            bool leftOk = (sp == 0 || (!iswalnum(ln[sp - 1]) && ln[sp - 1] != L'_'));
+                            size_t ep = sp + symName.length();
+                            bool rightOk = (ep >= ln.length() || (!iswalnum(ln[ep]) && ln[ep] != L'_'));
+                            if (leftOk && rightOk) {
+                                alreadyImported = true;
+                                break;
+                            }
+                            sp = ln.find(symName, ep);
+                        }
+                    }
+                }
+            }
+
+            if (!alreadyImported) {
+                if (existingModImportLine != std::wstring::npos) {
+                    std::wstring impLn = pDoc->buffer.GetLine(existingModImportLine);
+                    size_t closeB = impLn.find(L'}');
+                    if (closeB != std::wstring::npos) {
+                        size_t insertAt = closeB;
+                        while (insertAt > 0 && iswspace(impLn[insertAt - 1])) insertAt--;
+                        std::wstring updatedLn = impLn.substr(0, insertAt) + L", " + symName + impLn.substr(insertAt);
+                        pDoc->buffer.SetLine(existingModImportLine, updatedLn);
+                    }
+                } else {
+                    auto curNow = pDoc->buffer.GetCursor();
+                    size_t targetLine = (lastImportLine != std::wstring::npos) ? (lastImportLine + 1) : 0;
+                    std::wstring newImportStmt = L"import { " + symName + L" } from '" + modSpec + L"';\n";
+                    pDoc->buffer.SetCursor(targetLine, 0);
+                    pDoc->buffer.InsertText(newImportStmt);
+                    pDoc->buffer.SetCursor(curNow.line + 1, curNow.col);
+                }
+            }
         }
     }
 
@@ -12540,11 +12646,11 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                         }
 
                         // Query massive HTML5 / JavaScript / Python / PHP / Path IntelliSense & Snippets
-                        if (iswalnum(ch) || ch == L'!' || ch == L'@' || ch == L'#' || ch == L'-' || ch == L'.' || ch == L'<' || ch == L'>' || ch == L':' || ch == L'$' || ch == L'_' || ch == L'/' || ch == L'\\' || ch == L'"' || ch == L'\'') {
+                        if (iswalnum(ch) || ch == L'!' || ch == L'@' || ch == L'#' || ch == L'-' || ch == L'.' || ch == L'<' || ch == L'>' || ch == L':' || ch == L'$' || ch == L'_' || ch == L'/' || ch == L'\\' || ch == L'"' || ch == L'\'' || ch == L'`' || ch == L'{' || ch == L',' || ch == L' ') {
                             auto pos = pDoc->buffer.GetCursor();
                             const auto& lineText = pDoc->buffer.GetLine(pos.line);
                             std::wstring docTarget = pDoc->filePath.empty() ? pDoc->fileName : pDoc->filePath;
-                            if (m_intelliSense.GetWorkspaceRoot().empty() && m_drawer.HasOpenFolder()) {
+                            if (m_drawer.HasOpenFolder()) {
                                 m_intelliSense.SetWorkspaceRoot(m_drawer.GetOpenFolderPath());
                             }
                             auto items = m_intelliSense.QueryCompletions(docTarget, lineText, pos.col, pDoc ? &pDoc->buffer.GetLines() : nullptr);
@@ -12554,6 +12660,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                                 const std::wstring& topLabel = items[0].label;
                                 if (items[0].kind != editor::CompletionKind::Folder &&
                                     items[0].kind != editor::CompletionKind::File &&
+                                    items[0].origin != L"npm-module" &&
                                     !prefix.empty() &&
                                     topLabel.length() > prefix.length() &&
                                     _wcsnicmp(topLabel.c_str(), prefix.c_str(), prefix.length()) == 0) {
@@ -12721,7 +12828,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     auto pos = pDoc->buffer.GetCursor();
                     const auto& lineText = pDoc->buffer.GetLine(pos.line);
                     std::wstring docTarget = pDoc->filePath.empty() ? pDoc->fileName : pDoc->filePath;
-                    if (m_intelliSense.GetWorkspaceRoot().empty() && m_drawer.HasOpenFolder()) {
+                    if (m_drawer.HasOpenFolder()) {
                         m_intelliSense.SetWorkspaceRoot(m_drawer.GetOpenFolderPath());
                     }
                     auto items = m_intelliSense.QueryCompletions(docTarget, lineText, pos.col, pDoc ? &pDoc->buffer.GetLines() : nullptr);

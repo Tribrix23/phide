@@ -11,6 +11,7 @@
 #include <filesystem>
 #include <fstream>
 #include <functional>
+#include <unordered_map>
 #include <unordered_set>
 
 namespace phide::editor {
@@ -1418,26 +1419,636 @@ std::vector<IntelliSenseItem> IntelliSenseEngine::ExtractDocumentSymbols(
     return results;
 }
 
+namespace {
+
+struct NpmPackageCacheEntry {
+    std::filesystem::file_time_type pkgJsonMtime{};
+    std::filesystem::file_time_type nodeModulesMtime{};
+    std::vector<std::pair<std::wstring, std::wstring>> packages; // { name, version/detail }
+};
+
+struct ModuleExportsCacheEntry {
+    std::filesystem::file_time_type fileMtime{};
+    std::vector<IntelliSenseItem> exports;
+};
+
+static std::unordered_map<std::wstring, NpmPackageCacheEntry> g_npmPackageCache;
+static std::unordered_map<std::wstring, ModuleExportsCacheEntry> g_moduleExportsCache;
+
+static std::wstring TrimWs(const std::wstring& s) {
+    size_t start = 0;
+    while (start < s.length() && iswspace(s[start])) start++;
+    size_t end = s.length();
+    while (end > start && iswspace(s[end - 1])) end--;
+    return s.substr(start, end - start);
+}
+
+static bool IsJsIdentChar(wchar_t c) {
+    return iswalnum(c) || c == L'_' || c == L'$';
+}
+
+static bool IsValidJsIdent(const std::wstring& s) {
+    if (s.empty()) return false;
+    if (!(iswalpha(s[0]) || s[0] == L'_' || s[0] == L'$')) return false;
+    for (size_t i = 1; i < s.length(); ++i) {
+        if (!IsJsIdentChar(s[i])) return false;
+    }
+    return true;
+}
+
+static std::filesystem::path ResolveBaseDir(const std::wstring& fileName, const std::wstring& workspaceRoot) {
+    std::error_code ec;
+    if (!fileName.empty()) {
+        std::filesystem::path docPath(fileName);
+        if (std::filesystem::exists(docPath, ec) && !std::filesystem::is_directory(docPath, ec)) {
+            return docPath.parent_path();
+        } else if (docPath.has_parent_path() && std::filesystem::exists(docPath.parent_path(), ec)) {
+            return docPath.parent_path();
+        }
+    }
+    if (!workspaceRoot.empty() && std::filesystem::exists(workspaceRoot, ec)) {
+        return std::filesystem::path(workspaceRoot);
+    }
+    return std::filesystem::current_path(ec);
+}
+
+static std::filesystem::path FindProjectRoot(const std::filesystem::path& baseDir, const std::wstring& workspaceRoot) {
+    std::error_code ec;
+    std::filesystem::path cur = baseDir;
+    for (int depth = 0; depth < 7 && !cur.empty(); ++depth) {
+        if (std::filesystem::exists(cur / L"package.json", ec) ||
+            std::filesystem::exists(cur / L"node_modules", ec) ||
+            std::filesystem::exists(cur / L"composer.json", ec) ||
+            std::filesystem::exists(cur / L"pyproject.toml", ec) ||
+            std::filesystem::exists(cur / L".venv", ec)) {
+            return cur;
+        }
+        auto parent = cur.parent_path();
+        if (parent == cur) break;
+        cur = parent;
+    }
+    if (!workspaceRoot.empty() && std::filesystem::exists(workspaceRoot, ec)) {
+        return std::filesystem::path(workspaceRoot);
+    }
+    return baseDir;
+}
+
+static std::string ReadFileUtf8Bounded(const std::filesystem::path& p, size_t maxBytes = 2500000) {
+    std::ifstream ifs(p, std::ios::binary);
+    if (!ifs) return {};
+    ifs.seekg(0, std::ios::end);
+    std::streamoff sz = ifs.tellg();
+    if (sz <= 0) return {};
+    size_t toRead = static_cast<size_t>((std::min)(static_cast<std::streamoff>(maxBytes), sz));
+    std::string buf(toRead, '\0');
+    ifs.seekg(0, std::ios::beg);
+    ifs.read(buf.data(), static_cast<std::streamsize>(toRead));
+    return buf;
+}
+
+static std::wstring Utf8ToWideAsciiFast(const std::string& s) {
+    std::wstring w;
+    w.reserve(s.size());
+    for (unsigned char c : s) {
+        if (c < 128) w.push_back(static_cast<wchar_t>(c));
+    }
+    return w;
+}
+
+// Dynamically discovers all installed NPM packages from package.json and node_modules/
+static const std::vector<std::pair<std::wstring, std::wstring>>& GetInstalledNpmPackages(const std::filesystem::path& projectRoot) {
+    std::error_code ec;
+    std::wstring key = projectRoot.wstring();
+    auto pkgJsonPath = projectRoot / L"package.json";
+    auto nodeModulesPath = projectRoot / L"node_modules";
+
+    auto pkgMtime = std::filesystem::exists(pkgJsonPath, ec) ? std::filesystem::last_write_time(pkgJsonPath, ec) : std::filesystem::file_time_type{};
+    auto nmMtime = std::filesystem::exists(nodeModulesPath, ec) ? std::filesystem::last_write_time(nodeModulesPath, ec) : std::filesystem::file_time_type{};
+
+    auto it = g_npmPackageCache.find(key);
+    if (it != g_npmPackageCache.end() && it->second.pkgJsonMtime == pkgMtime && it->second.nodeModulesMtime == nmMtime) {
+        return it->second.packages;
+    }
+
+    NpmPackageCacheEntry entry;
+    entry.pkgJsonMtime = pkgMtime;
+    entry.nodeModulesMtime = nmMtime;
+    std::unordered_map<std::wstring, std::wstring> foundMap;
+
+    // 1. Parse dependencies, devDependencies, peerDependencies from package.json
+    if (std::filesystem::exists(pkgJsonPath, ec)) {
+        std::wstring content = Utf8ToWideAsciiFast(ReadFileUtf8Bounded(pkgJsonPath, 262144));
+        static const wchar_t* sections[] = { L"\"dependencies\"", L"\"devDependencies\"", L"\"peerDependencies\"" };
+        for (const auto* sec : sections) {
+            size_t secPos = content.find(sec);
+            if (secPos == std::wstring::npos) continue;
+            size_t openBrace = content.find(L'{', secPos);
+            if (openBrace == std::wstring::npos) continue;
+            size_t closeBrace = content.find(L'}', openBrace);
+            if (closeBrace == std::wstring::npos) continue;
+            std::wstring block = content.substr(openBrace + 1, closeBrace - openBrace - 1);
+            size_t pos = 0;
+            while (pos < block.length()) {
+                size_t q1 = block.find(L'"', pos);
+                if (q1 == std::wstring::npos) break;
+                size_t q2 = block.find(L'"', q1 + 1);
+                if (q2 == std::wstring::npos) break;
+                std::wstring pkgName = block.substr(q1 + 1, q2 - q1 - 1);
+                size_t colon = block.find(L':', q2 + 1);
+                if (colon == std::wstring::npos) break;
+                size_t vq1 = block.find(L'"', colon + 1);
+                if (vq1 == std::wstring::npos) break;
+                size_t vq2 = block.find(L'"', vq1 + 1);
+                if (vq2 == std::wstring::npos) break;
+                std::wstring ver = block.substr(vq1 + 1, vq2 - vq1 - 1);
+                if (!pkgName.empty() && pkgName.rfind(L"@types/", 0) != 0) {
+                    foundMap[pkgName] = L"NPM Package (" + ver + L")";
+                }
+                pos = vq2 + 1;
+            }
+        }
+    }
+
+    // 2. Scan node_modules/ directory for any installed packages (including scoped @org/pkg)
+    if (std::filesystem::exists(nodeModulesPath, ec) && std::filesystem::is_directory(nodeModulesPath, ec)) {
+        for (std::filesystem::directory_iterator dit(nodeModulesPath, ec); !ec && dit != std::filesystem::directory_iterator(); dit.increment(ec)) {
+            if (!dit->is_directory(ec)) continue;
+            std::wstring dname = dit->path().filename().wstring();
+            if (dname.empty() || dname[0] == L'.') continue;
+            if (dname == L"@types") {
+                for (std::filesystem::directory_iterator tit(dit->path(), ec); !ec && tit != std::filesystem::directory_iterator(); tit.increment(ec)) {
+                    if (!tit->is_directory(ec)) continue;
+                    std::wstring tname = tit->path().filename().wstring();
+                    if (tname.empty() || tname[0] == L'.') continue;
+                    size_t dunder = tname.find(L"__");
+                    if (dunder != std::wstring::npos) {
+                        tname = L"@" + tname.substr(0, dunder) + L"/" + tname.substr(dunder + 2);
+                    }
+                    if (foundMap.find(tname) == foundMap.end()) {
+                        foundMap[tname] = L"NPM Package (@types)";
+                    }
+                }
+            } else if (dname[0] == L'@') {
+                for (std::filesystem::directory_iterator sit(dit->path(), ec); !ec && sit != std::filesystem::directory_iterator(); sit.increment(ec)) {
+                    if (!sit->is_directory(ec)) continue;
+                    std::wstring sname = sit->path().filename().wstring();
+                    if (sname.empty() || sname[0] == L'.') continue;
+                    std::wstring scoped = dname + L"/" + sname;
+                    if (foundMap.find(scoped) == foundMap.end()) {
+                        foundMap[scoped] = L"NPM Package (node_modules)";
+                    }
+                }
+            } else {
+                if (foundMap.find(dname) == foundMap.end()) {
+                    foundMap[dname] = L"NPM Package (node_modules)";
+                }
+            }
+        }
+    }
+
+    for (auto& kv : foundMap) {
+        entry.packages.push_back(std::move(kv));
+    }
+    std::sort(entry.packages.begin(), entry.packages.end(), [](const auto& a, const auto& b) {
+        return a.first < b.first;
+    });
+
+    auto& stored = g_npmPackageCache[key];
+    stored = std::move(entry);
+    return stored.packages;
+}
+
+// Extracts JSON string property value for key (e.g. "types", "typings", "module", "main")
+static std::wstring ExtractJsonFieldValue(const std::wstring& json, const std::wstring& fieldName) {
+    std::wstring needle = L"\"" + fieldName + L"\"";
+    size_t pos = 0;
+    while ((pos = json.find(needle, pos)) != std::wstring::npos) {
+        size_t colon = json.find(L':', pos + needle.length());
+        if (colon != std::wstring::npos) {
+            size_t p = colon + 1;
+            while (p < json.length() && iswspace(json[p])) p++;
+            if (p < json.length() && json[p] == L'"') {
+                size_t qEnd = json.find(L'"', p + 1);
+                if (qEnd != std::wstring::npos) {
+                    return json.substr(p + 1, qEnd - p - 1);
+                }
+            }
+        }
+        pos += needle.length();
+    }
+    return L"";
+}
+
+// Resolves a module specifier (relative path "./foo" or NPM package "lucide-react") to its .d.ts or .js/.jsx/.ts/.tsx entry file
+static std::filesystem::path ResolveModuleEntryFile(
+    const std::wstring& moduleSpec,
+    const std::filesystem::path& baseDir,
+    const std::filesystem::path& projectRoot
+) {
+    std::error_code ec;
+    if (moduleSpec.empty()) return {};
+
+    auto tryResolveFileWithExts = [&](const std::filesystem::path& target) -> std::filesystem::path {
+        if (std::filesystem::exists(target, ec) && std::filesystem::is_regular_file(target, ec)) {
+            return target;
+        }
+        static const wchar_t* exts[] = { L".d.ts", L".ts", L".tsx", L".js", L".jsx", L".mjs", L".cjs" };
+        for (const auto* ext : exts) {
+            std::filesystem::path cand = target;
+            cand += ext;
+            if (std::filesystem::exists(cand, ec) && std::filesystem::is_regular_file(cand, ec)) {
+                return cand;
+            }
+        }
+        if (std::filesystem::exists(target, ec) && std::filesystem::is_directory(target, ec)) {
+            static const wchar_t* idxFiles[] = {
+                L"index.d.ts", L"index.ts", L"index.tsx", L"index.js", L"index.jsx", L"index.mjs"
+            };
+            for (const auto* idx : idxFiles) {
+                auto cand = target / idx;
+                if (std::filesystem::exists(cand, ec) && std::filesystem::is_regular_file(cand, ec)) {
+                    return cand;
+                }
+            }
+        }
+        return {};
+    };
+
+    // Case A: Relative or absolute file path in workspace (./foo, ../bar, /baz)
+    if (moduleSpec[0] == L'.' || moduleSpec[0] == L'/') {
+        std::filesystem::path relTarget = (moduleSpec[0] == L'/')
+            ? (projectRoot / moduleSpec.substr(1))
+            : (baseDir / moduleSpec);
+        return tryResolveFileWithExts(relTarget.lexically_normal());
+    }
+
+    // Case B: NPM package in node_modules/ (or @types/)
+    std::vector<std::filesystem::path> pkgDirs;
+    std::filesystem::path cur = baseDir;
+    for (int d = 0; d < 7 && !cur.empty(); ++d) {
+        auto nm = cur / L"node_modules";
+        if (std::filesystem::exists(nm, ec)) {
+            pkgDirs.push_back(nm / moduleSpec);
+            std::wstring typesName = moduleSpec;
+            if (!typesName.empty() && typesName[0] == L'@') {
+                size_t slash = typesName.find(L'/');
+                if (slash != std::wstring::npos) {
+                    typesName = typesName.substr(1, slash - 1) + L"__" + typesName.substr(slash + 1);
+                }
+            }
+            pkgDirs.push_back(nm / L"@types" / typesName);
+        }
+        auto parent = cur.parent_path();
+        if (parent == cur) break;
+        cur = parent;
+    }
+    if (!projectRoot.empty()) {
+        pkgDirs.push_back(projectRoot / L"node_modules" / moduleSpec);
+        std::wstring typesName = moduleSpec;
+        if (!typesName.empty() && typesName[0] == L'@') {
+            size_t slash = typesName.find(L'/');
+            if (slash != std::wstring::npos) {
+                typesName = typesName.substr(1, slash - 1) + L"__" + typesName.substr(slash + 1);
+            }
+        }
+        pkgDirs.push_back(projectRoot / L"node_modules" / L"@types" / typesName);
+    }
+
+    for (const auto& pkgDir : pkgDirs) {
+        if (!std::filesystem::exists(pkgDir, ec)) continue;
+        if (std::filesystem::is_regular_file(pkgDir, ec)) return pkgDir;
+
+        auto pkgJson = pkgDir / L"package.json";
+        if (std::filesystem::exists(pkgJson, ec)) {
+            std::wstring json = Utf8ToWideAsciiFast(ReadFileUtf8Bounded(pkgJson, 131072));
+
+            // 1. Check "types" and "typings"
+            for (const auto* f : { L"types", L"typings" }) {
+                std::wstring val = ExtractJsonFieldValue(json, f);
+                if (!val.empty()) {
+                    auto resolved = tryResolveFileWithExts((pkgDir / val).lexically_normal());
+                    if (!resolved.empty()) return resolved;
+                }
+            }
+
+            // 2. Scan for any ".d.ts" referenced in package.json (e.g. exports["."].types = "./dist/lucide-react.d.ts")
+            size_t dtsPos = json.find(L".d.ts\"");
+            if (dtsPos == std::wstring::npos) dtsPos = json.find(L".d.mts\"");
+            if (dtsPos != std::wstring::npos) {
+                size_t qStart = json.rfind(L'"', dtsPos);
+                size_t qEnd = json.find(L'"', dtsPos);
+                if (qStart != std::wstring::npos && qEnd != std::wstring::npos && qEnd > qStart) {
+                    std::wstring relDts = json.substr(qStart + 1, qEnd - qStart - 1);
+                    auto resolved = tryResolveFileWithExts((pkgDir / relDts).lexically_normal());
+                    if (!resolved.empty()) return resolved;
+                }
+            }
+
+            // 3. Check index.d.ts or dist/*.d.ts before falling back to JS bundle
+            std::wstring shortName = pkgDir.filename().wstring();
+            for (const auto& candRel : {
+                std::wstring(L"index.d.ts"),
+                L"dist/" + shortName + L".d.ts",
+                std::wstring(L"dist/index.d.ts"),
+                std::wstring(L"dist/esm/index.d.ts"),
+                std::wstring(L"dist/cjs/index.d.ts")
+            }) {
+                auto cand = pkgDir / candRel;
+                if (std::filesystem::exists(cand, ec) && std::filesystem::is_regular_file(cand, ec)) {
+                    return cand;
+                }
+            }
+
+            // 4. Fallback to "module" or "main" JS/MJS entry
+            for (const auto* f : { L"module", L"main" }) {
+                std::wstring val = ExtractJsonFieldValue(json, f);
+                if (!val.empty()) {
+                    auto resolved = tryResolveFileWithExts((pkgDir / val).lexically_normal());
+                    if (!resolved.empty()) return resolved;
+                }
+            }
+        }
+
+        auto resolvedIdx = tryResolveFileWithExts(pkgDir);
+        if (!resolvedIdx.empty()) return resolvedIdx;
+    }
+
+    return {};
+}
+
+// Dynamically parses all exported symbols (components, icons, functions, classes, types, constants) from a .d.ts / .js / .jsx / .ts / .tsx file
+static std::vector<IntelliSenseItem> ParseModuleExportsFromFile(
+    const std::filesystem::path& entryFile,
+    const std::wstring& moduleLabel,
+    const std::filesystem::path& projectRoot,
+    int depth = 0
+) {
+    std::error_code ec;
+    if (entryFile.empty() || !std::filesystem::exists(entryFile, ec) || depth > 2) return {};
+
+    std::wstring cacheKey = entryFile.wstring();
+    auto mtime = std::filesystem::last_write_time(entryFile, ec);
+    if (depth == 0) {
+        auto it = g_moduleExportsCache.find(cacheKey);
+        if (it != g_moduleExportsCache.end() && it->second.fileMtime == mtime) {
+            return it->second.exports;
+        }
+    }
+
+    std::string rawU8 = ReadFileUtf8Bounded(entryFile, 2500000);
+    if (rawU8.empty()) return {};
+
+    // Strip block comments /* ... */ and line comments // ... while preserving newlines
+    std::wstring clean;
+    clean.reserve(rawU8.size());
+    for (size_t i = 0; i < rawU8.size(); ++i) {
+        char c = rawU8[i];
+        if (c == '/' && i + 1 < rawU8.size() && rawU8[i + 1] == '*') {
+            i += 2;
+            while (i + 1 < rawU8.size() && !(rawU8[i] == '*' && rawU8[i + 1] == '/')) {
+                if (rawU8[i] == '\n') clean.push_back(L'\n');
+                i++;
+            }
+            i++; // skip '/'
+        } else if (c == '/' && i + 1 < rawU8.size() && rawU8[i + 1] == '/') {
+            i += 2;
+            while (i < rawU8.size() && rawU8[i] != '\n') i++;
+            clean.push_back(L'\n');
+        } else if (static_cast<unsigned char>(c) < 128) {
+            clean.push_back(static_cast<wchar_t>(c));
+        }
+    }
+
+    // Map of top-level declared identifier -> { CompletionKind, detailHint }
+    std::unordered_map<std::wstring, std::pair<CompletionKind, std::wstring>> declKinds;
+    std::vector<IntelliSenseItem> exports;
+    std::unordered_set<std::wstring> seenExports;
+
+    auto inferKindForIdent = [&](const std::wstring& ident, CompletionKind fallbackKind) -> std::pair<CompletionKind, std::wstring> {
+        auto it = declKinds.find(ident);
+        if (it != declKinds.end()) return it->second;
+        if (!ident.empty() && iswupper(ident[0])) {
+            return { CompletionKind::Class, L"Component / Type from '" + moduleLabel + L"'" };
+        }
+        return { fallbackKind, L"Export from '" + moduleLabel + L"'" };
+    };
+
+    auto addExport = [&](const std::wstring& ident, CompletionKind kind, const std::wstring& detailOverride = L"") {
+        if (!IsValidJsIdent(ident) || ident == L"default" || ident == L"type" || ident == L"from") return;
+        if (!seenExports.insert(ident).second) return;
+        auto [resolvedKind, resolvedDetail] = inferKindForIdent(ident, kind);
+        IntelliSenseItem item;
+        item.label = ident;
+        item.detail = detailOverride.empty() ? resolvedDetail : detailOverride;
+        item.insertText = ident;
+        item.kind = resolvedKind;
+        item.score = (!ident.empty() && iswupper(ident[0])) ? 950 : 900;
+        item.origin = L"module";
+        item.documentation = L"auto-import:" + moduleLabel;
+        exports.push_back(std::move(item));
+    };
+
+    // Pass 1: Line-by-line scan for declarations, direct exports, and export * from '...'
+    std::vector<std::wstring> wildcardReexports;
+    size_t lineStart = 0;
+    while (lineStart < clean.length()) {
+        size_t lineEnd = clean.find(L'\n', lineStart);
+        if (lineEnd == std::wstring::npos) lineEnd = clean.length();
+        std::wstring line = TrimWs(clean.substr(lineStart, lineEnd - lineStart));
+        lineStart = lineEnd + 1;
+        if (line.empty()) continue;
+
+        bool isExported = false;
+        if (line.rfind(L"export ", 0) == 0) {
+            isExported = true;
+            line = TrimWs(line.substr(7));
+            if (line.rfind(L"default ", 0) == 0) {
+                line = TrimWs(line.substr(8));
+            }
+        }
+        if (line.rfind(L"declare ", 0) == 0) {
+            line = TrimWs(line.substr(8));
+        }
+
+        // Check declaration keywords
+        struct DeclRule { const wchar_t* kw; CompletionKind kind; const wchar_t* label; };
+        static const DeclRule rules[] = {
+            { L"function ",   CompletionKind::Function, L"Function" },
+            { L"function*",  CompletionKind::Function, L"Generator" },
+            { L"class ",      CompletionKind::Class,    L"Class" },
+            { L"interface ",  CompletionKind::Class,    L"Interface" },
+            { L"type ",       CompletionKind::Class,    L"Type" },
+            { L"enum ",       CompletionKind::Class,    L"Enum" },
+            { L"const enum ", CompletionKind::Class,    L"Enum" },
+            { L"const ",      CompletionKind::Variable, L"Const" },
+            { L"let ",        CompletionKind::Variable, L"Variable" },
+            { L"var ",        CompletionKind::Variable, L"Variable" }
+        };
+
+        for (const auto& r : rules) {
+            size_t kwLen = std::wcslen(r.kw);
+            if (line.rfind(r.kw, 0) == 0) {
+                size_t p = kwLen;
+                while (p < line.length() && iswspace(line[p])) p++;
+                size_t idEnd = p;
+                while (idEnd < line.length() && IsJsIdentChar(line[idEnd])) idEnd++;
+                if (idEnd > p) {
+                    std::wstring ident = line.substr(p, idEnd - p);
+                    CompletionKind k = r.kind;
+                    std::wstring desc = std::wstring(r.label) + L" from '" + moduleLabel + L"'";
+                    if (k == CompletionKind::Variable) {
+                        if (line.find(L"ForwardRefExoticComponent") != std::wstring::npos ||
+                            line.find(L"React.FC") != std::wstring::npos ||
+                            line.find(L"ComponentType") != std::wstring::npos ||
+                            line.find(L"LucideIcon") != std::wstring::npos ||
+                            (!ident.empty() && iswupper(ident[0]))) {
+                            k = CompletionKind::Class;
+                            desc = L"Component from '" + moduleLabel + L"'";
+                        } else if (line.find(L"=>") != std::wstring::npos || line.find(L": (") != std::wstring::npos) {
+                            k = CompletionKind::Function;
+                            desc = L"Function from '" + moduleLabel + L"'";
+                        }
+                    }
+                    declKinds[ident] = { k, desc };
+                    if (isExported) {
+                        addExport(ident, k, desc);
+                    }
+                }
+                break;
+            }
+        }
+
+        // Check `export * from './...'`
+        if (isExported && line.rfind(L"*", 0) == 0) {
+            size_t fromPos = line.find(L"from");
+            if (fromPos != std::wstring::npos) {
+                size_t q1 = line.find_first_of(L"\"'", fromPos + 4);
+                if (q1 != std::wstring::npos) {
+                    wchar_t qCh = line[q1];
+                    size_t q2 = line.find(qCh, q1 + 1);
+                    if (q2 != std::wstring::npos && q2 > q1 + 1) {
+                        wildcardReexports.push_back(line.substr(q1 + 1, q2 - q1 - 1));
+                    }
+                }
+            }
+        }
+    }
+
+    // Pass 2: Scan multi-line `export { ... }` and `export type { ... }` blocks across the entire file
+    size_t searchPos = 0;
+    while ((searchPos = clean.find(L"export", searchPos)) != std::wstring::npos) {
+        if (searchPos > 0 && IsJsIdentChar(clean[searchPos - 1])) {
+            searchPos += 6;
+            continue;
+        }
+        size_t p = searchPos + 6;
+        while (p < clean.length() && iswspace(clean[p])) p++;
+        bool isTypeExport = false;
+        if (clean.compare(p, 4, L"type") == 0 && p + 4 < clean.length() && (iswspace(clean[p + 4]) || clean[p + 4] == L'{')) {
+            isTypeExport = true;
+            p += 4;
+            while (p < clean.length() && iswspace(clean[p])) p++;
+        }
+        if (p < clean.length() && clean[p] == L'{') {
+            size_t closeBrace = clean.find(L'}', p + 1);
+            if (closeBrace != std::wstring::npos) {
+                std::wstring inside = clean.substr(p + 1, closeBrace - p - 1);
+                size_t itemStart = 0;
+                while (itemStart < inside.length()) {
+                    size_t comma = inside.find(L',', itemStart);
+                    if (comma == std::wstring::npos) comma = inside.length();
+                    std::wstring token = TrimWs(inside.substr(itemStart, comma - itemStart));
+                    itemStart = comma + 1;
+                    if (token.empty()) continue;
+
+                    if (token.rfind(L"type ", 0) == 0) {
+                        token = TrimWs(token.substr(5));
+                    }
+
+                    std::wstring origName = token;
+                    std::wstring exportedName = token;
+                    size_t asPos = token.find(L" as ");
+                    if (asPos == std::wstring::npos) asPos = token.find(L"\tas ");
+                    if (asPos != std::wstring::npos) {
+                        origName = TrimWs(token.substr(0, asPos));
+                        exportedName = TrimWs(token.substr(asPos + 4));
+                    }
+
+                    if (exportedName == L"default") {
+                        if (IsValidJsIdent(origName) && origName != L"default") {
+                            addExport(origName, isTypeExport ? CompletionKind::Class : CompletionKind::Function);
+                        }
+                    } else if (IsValidJsIdent(exportedName)) {
+                        CompletionKind k = isTypeExport ? CompletionKind::Class : CompletionKind::Function;
+                        std::wstring detailStr;
+                        auto origIt = declKinds.find(origName);
+                        if (origIt != declKinds.end()) {
+                            k = origIt->second.first;
+                            detailStr = origIt->second.second;
+                        } else if (!exportedName.empty() && iswupper(exportedName[0])) {
+                            k = CompletionKind::Class;
+                            detailStr = L"Component / Icon from '" + moduleLabel + L"'";
+                        }
+                        addExport(exportedName, k, detailStr);
+                    }
+                }
+                searchPos = closeBrace + 1;
+                continue;
+            }
+        }
+        searchPos += 6;
+    }
+
+    // Pass 3: Follow `export * from './...'` re-exports (up to 40 submodules)
+    if (depth < 2 && !wildcardReexports.empty()) {
+        std::filesystem::path entryDir = entryFile.parent_path();
+        size_t followed = 0;
+        for (const auto& subSpec : wildcardReexports) {
+            if (++followed > 40) break;
+            auto subFile = ResolveModuleEntryFile(subSpec, entryDir, projectRoot);
+            if (!subFile.empty() && subFile != entryFile) {
+                auto subItems = ParseModuleExportsFromFile(subFile, moduleLabel, projectRoot, depth + 1);
+                for (auto& si : subItems) {
+                    if (seenExports.insert(si.label).second) {
+                        exports.push_back(std::move(si));
+                    }
+                }
+            }
+        }
+    }
+
+    if (depth == 0) {
+        ModuleExportsCacheEntry ce;
+        ce.fileMtime = mtime;
+        ce.exports = exports;
+        g_moduleExportsCache[cacheKey] = std::move(ce);
+    }
+    return exports;
+}
+
+} // namespace
+
 std::vector<IntelliSenseItem> IntelliSenseEngine::QueryCompletions(
     const std::wstring& fileName,
     const std::wstring& currentLine,
     size_t cursorCol,
     const std::vector<std::wstring>* pDocLines
 ) const {
-    // 0. Check if cursor is in a File / Folder Path context (Images 2 & 3)
-    // E.g.: <a href="./", <script src="./", import ... from "./", require("./"), preload("./"), url("./"), etc.
+    std::filesystem::path baseDir = ResolveBaseDir(fileName, m_workspaceRoot);
+    std::filesystem::path projectRoot = FindProjectRoot(baseDir, m_workspaceRoot);
+
+    // 0. Check if cursor is in a File / Folder Path or Module Specifier context
+    // Supports quoted strings ("./", './', `./`, from "lucide-react") AND unquoted ./ or ../ typed directly!
     size_t lastDouble = currentLine.rfind(L'"', cursorCol > 0 ? cursorCol - 1 : 0);
     size_t lastSingle = currentLine.rfind(L'\'', cursorCol > 0 ? cursorCol - 1 : 0);
+    size_t lastBacktick = currentLine.rfind(L'`', cursorCol > 0 ? cursorCol - 1 : 0);
     size_t quotePos = std::wstring::npos;
-    if (lastDouble != std::wstring::npos && lastSingle != std::wstring::npos) {
-        quotePos = (std::max)(lastDouble, lastSingle);
-    } else if (lastDouble != std::wstring::npos) {
-        quotePos = lastDouble;
-    } else if (lastSingle != std::wstring::npos) {
-        quotePos = lastSingle;
-    }
+    if (lastDouble != std::wstring::npos) quotePos = lastDouble;
+    if (lastSingle != std::wstring::npos && (quotePos == std::wstring::npos || lastSingle > quotePos)) quotePos = lastSingle;
+    if (lastBacktick != std::wstring::npos && (quotePos == std::wstring::npos || lastBacktick > quotePos)) quotePos = lastBacktick;
 
     bool isPathContext = false;
+    bool isModuleSpecifierContext = false;
     std::wstring pathTyped;
     if (quotePos != std::wstring::npos && quotePos < cursorCol) {
         std::wstring insideQuote = currentLine.substr(quotePos + 1, cursorCol - (quotePos + 1));
@@ -1447,8 +2058,11 @@ std::vector<IntelliSenseItem> IntelliSenseEngine::QueryCompletions(
         bool isAttrOrImport = false;
         static const std::vector<std::wstring> triggers = {
             L"href=", L"src=", L"action=", L"poster=", L"data=", L"content=",
-            L"from", L"require(", L"import(", L"import", L"include", L"url(",
-            L"preload(", L"load(", L"open("
+            L"from", L"require(", L"import(", L"import", L"include", L"include_once",
+            L"require", L"require_once", L"url(", L"preload(", L"load(", L"open("
+        };
+        static const std::vector<std::wstring> moduleTriggers = {
+            L"from", L"require(", L"import(", L"import"
         };
         for (const auto& trig : triggers) {
             if (beforeQuote.length() >= trig.length()) {
@@ -1456,6 +2070,12 @@ std::vector<IntelliSenseItem> IntelliSenseEngine::QueryCompletions(
                 for (auto& c : tail) c = static_cast<wchar_t>(towlower(c));
                 if (tail == trig) {
                     isAttrOrImport = true;
+                    for (const auto& mtrig : moduleTriggers) {
+                        if (tail == mtrig) {
+                            isModuleSpecifierContext = true;
+                            break;
+                        }
+                    }
                     break;
                 }
             }
@@ -1472,29 +2092,89 @@ std::vector<IntelliSenseItem> IntelliSenseEngine::QueryCompletions(
             isPathContext = true;
             pathTyped = insideQuote;
         }
+    } else if (cursorCol >= 2) {
+        // Check for unquoted ./ or ../ path reference typed directly in the buffer
+        size_t tokenStart = cursorCol;
+        while (tokenStart > 0) {
+            wchar_t c = currentLine[tokenStart - 1];
+            if (iswalnum(c) || c == L'.' || c == L'/' || c == L'\\' || c == L'_' || c == L'-') {
+                tokenStart--;
+            } else {
+                break;
+            }
+        }
+        std::wstring rawToken = currentLine.substr(tokenStart, cursorCol - tokenStart);
+        if (rawToken.rfind(L"./", 0) == 0 || rawToken.rfind(L"../", 0) == 0 ||
+            rawToken.rfind(L".\\", 0) == 0 || rawToken.rfind(L"..\\", 0) == 0) {
+            isPathContext = true;
+            pathTyped = rawToken;
+        }
     }
 
     if (isPathContext) {
-        std::filesystem::path baseDir;
         std::error_code ec;
-        if (!fileName.empty()) {
-            std::filesystem::path docPath(fileName);
-            if (std::filesystem::exists(docPath, ec) && !std::filesystem::is_directory(docPath, ec)) {
-                baseDir = docPath.parent_path();
-            } else if (docPath.has_parent_path()) {
-                baseDir = docPath.parent_path();
-            }
-        }
-        if (baseDir.empty() && !m_workspaceRoot.empty() && std::filesystem::exists(m_workspaceRoot, ec)) {
-            baseDir = std::filesystem::path(m_workspaceRoot);
-        }
-        if (baseDir.empty()) {
-            baseDir = std::filesystem::current_path(ec);
-        }
-
         std::wstring normPath = pathTyped;
         for (auto& ch : normPath) {
             if (ch == L'\\') ch = L'/';
+        }
+
+        std::vector<IntelliSenseItem> pathItems;
+
+        // If inside `import ... from '|'` or `require('|')` and NOT starting with `.` or `/`,
+        // dynamically suggest all installed NPM packages from package.json & node_modules!
+        bool startsWithDotOrSlash = (!normPath.empty() && (normPath[0] == L'.' || normPath[0] == L'/'));
+        if (isModuleSpecifierContext && !startsWithDotOrSlash) {
+            std::wstring modQueryLower = normPath;
+            for (auto& c : modQueryLower) c = static_cast<wchar_t>(towlower(c));
+
+            const auto& npmPkgs = GetInstalledNpmPackages(projectRoot);
+            for (const auto& [pkgName, pkgDetail] : npmPkgs) {
+                std::wstring pkgLower = pkgName;
+                for (auto& c : pkgLower) c = static_cast<wchar_t>(towlower(c));
+
+                int score = 0;
+                size_t matchStart = 0;
+                size_t matchLen = 0;
+                if (modQueryLower.empty()) {
+                    score = 2200;
+                } else {
+                    size_t p = pkgLower.find(modQueryLower);
+                    if (p == 0) {
+                        score = 3000 - static_cast<int>(pkgName.length());
+                        matchStart = 0;
+                        matchLen = normPath.length();
+                    } else if (p != std::wstring::npos) {
+                        score = 2400 - static_cast<int>(p * 10 + pkgName.length());
+                        matchStart = p;
+                        matchLen = normPath.length();
+                    } else {
+                        continue;
+                    }
+                }
+
+                IntelliSenseItem mi;
+                mi.label = pkgName;
+                mi.detail = pkgDetail;
+                mi.insertText = pkgName;
+                mi.kind = CompletionKind::Module;
+                mi.score = score;
+                mi.matchStart = matchStart;
+                mi.matchLen = matchLen;
+                mi.origin = L"npm-module";
+                pathItems.push_back(std::move(mi));
+            }
+
+            // Also offer "./" and "../" shortcuts when starting a module specifier
+            if (modQueryLower.empty()) {
+                IntelliSenseItem curDirItem;
+                curDirItem.label = L"./";
+                curDirItem.detail = L"Current Directory";
+                curDirItem.insertText = L"./";
+                curDirItem.kind = CompletionKind::Folder;
+                curDirItem.score = 2100;
+                curDirItem.origin = L"path";
+                pathItems.push_back(std::move(curDirItem));
+            }
         }
 
         std::wstring dirPart;
@@ -1516,7 +2196,7 @@ std::vector<IntelliSenseItem> IntelliSenseEngine::QueryCompletions(
                 searchDir = baseDir / dirPart.substr(2);
             } else if (dirPart.rfind(L"/", 0) == 0) {
                 if (!m_workspaceRoot.empty()) searchDir = std::filesystem::path(m_workspaceRoot) / dirPart.substr(1);
-                else searchDir = baseDir / dirPart.substr(1);
+                else searchDir = projectRoot / dirPart.substr(1);
             } else {
                 searchDir = baseDir / dirPart;
             }
@@ -1526,7 +2206,6 @@ std::vector<IntelliSenseItem> IntelliSenseEngine::QueryCompletions(
         std::wstring filePrefixLower = filePrefix;
         for (auto& c : filePrefixLower) c = static_cast<wchar_t>(towlower(c));
 
-        std::vector<IntelliSenseItem> pathItems;
         if (std::filesystem::exists(searchDir, ec) && std::filesystem::is_directory(searchDir, ec)) {
             for (std::filesystem::directory_iterator it(searchDir, ec); !ec && it != std::filesystem::directory_iterator(); it.increment(ec)) {
                 if (ec) break;
@@ -1548,15 +2227,15 @@ std::vector<IntelliSenseItem> IntelliSenseEngine::QueryCompletions(
                 size_t matchLen = 0;
 
                 if (filePrefixLower.empty()) {
-                    score = isDir ? 1200 : 1000;
+                    score = isDir ? 1500 : 1300;
                 } else {
                     size_t p = candLower.find(filePrefixLower);
                     if (p == 0) {
-                        score = (isDir ? 2000 : 1800) - static_cast<int>(candName.length());
+                        score = (isDir ? 2500 : 2300) - static_cast<int>(candName.length());
                         matchStart = 0;
                         matchLen = filePrefix.length();
                     } else if (p != std::wstring::npos) {
-                        score = (isDir ? 1500 : 1300) - static_cast<int>(p * 10 + candName.length());
+                        score = (isDir ? 1800 : 1600) - static_cast<int>(p * 10 + candName.length());
                         matchStart = p;
                         matchLen = filePrefix.length();
                     } else {
@@ -1566,7 +2245,7 @@ std::vector<IntelliSenseItem> IntelliSenseEngine::QueryCompletions(
 
                 IntelliSenseItem pi;
                 pi.label = candName;
-                pi.detail = isDir ? L"Folder" : L"File";
+                pi.detail = isDir ? (L"Folder (" + searchDir.filename().wstring() + L")") : (L"File (" + searchDir.filename().wstring() + L")");
                 pi.insertText = candName;
                 pi.kind = isDir ? CompletionKind::Folder : CompletionKind::File;
                 pi.score = score;
@@ -1577,12 +2256,12 @@ std::vector<IntelliSenseItem> IntelliSenseEngine::QueryCompletions(
             }
         }
 
-        // Return EXCLUSIVELY path items in path context (no HTML snippets/tags polluting href="./"!)
+        // Return EXCLUSIVELY path/module items in path context
         std::sort(pathItems.begin(), pathItems.end(), [](const IntelliSenseItem& a, const IntelliSenseItem& b) {
             if (a.score != b.score) return a.score > b.score;
             return a.label < b.label;
         });
-        if (pathItems.size() > 50) pathItems.resize(50);
+        if (pathItems.size() > 60) pathItems.resize(60);
         return pathItems;
     }
 
@@ -1630,8 +2309,34 @@ std::vector<IntelliSenseItem> IntelliSenseEngine::QueryCompletions(
         }
     }
 
-    // If prefix is empty and cursor is NOT at an explicit member/tag/key trigger, do not dump unfiltered completions!
-    if (prefixLower.empty() && !afterDoubleColon && !afterArrow && !afterDot && !afterOpenAngle && !insideServerKey) {
+    // Detect if cursor is inside an ES `import { ... | ... } from 'module'` statement
+    bool insideJsImportClause = false;
+    std::wstring importLineModuleSpec;
+    if (isJs) {
+        std::wstring trimmedLine = TrimWs(currentLine);
+        if (trimmedLine.rfind(L"import ", 0) == 0 || trimmedLine.rfind(L"export ", 0) == 0) {
+            size_t fromIdx = currentLine.find(L"from");
+            if (fromIdx != std::wstring::npos && cursorCol <= fromIdx) {
+                insideJsImportClause = true;
+                size_t q1 = currentLine.find_first_of(L"\"'`", fromIdx + 4);
+                if (q1 != std::wstring::npos) {
+                    wchar_t qCh = currentLine[q1];
+                    size_t q2 = currentLine.find(qCh, q1 + 1);
+                    if (q2 != std::wstring::npos && q2 > q1 + 1) {
+                        importLineModuleSpec = currentLine.substr(q1 + 1, q2 - q1 - 1);
+                    }
+                }
+            } else if (currentLine.find(L'{') != std::wstring::npos && cursorCol > currentLine.find(L'{')) {
+                size_t closeB = currentLine.find(L'}');
+                if (closeB == std::wstring::npos || cursorCol <= closeB) {
+                    insideJsImportClause = true;
+                }
+            }
+        }
+    }
+
+    // If prefix is empty and cursor is NOT at an explicit member/tag/key/import trigger, do not dump unfiltered completions!
+    if (prefixLower.empty() && !afterDoubleColon && !afterArrow && !afterDot && !afterOpenAngle && !insideServerKey && !insideJsImportClause) {
         return {};
     }
 
@@ -1834,56 +2539,250 @@ std::vector<IntelliSenseItem> IntelliSenseEngine::QueryCompletions(
             }
         }
     } else if (insideScript) {
-        size_t dotPos = (cursorCol > prefix.length() && cursorCol > 0) ? cursorCol - prefix.length() - 1 : std::wstring::npos;
-        bool afterDot = (dotPos != std::wstring::npos && dotPos < currentLine.length() && currentLine[dotPos] == L'.');
+        // 1. Parse all `import ... from '...'` lines in the current document to know imported symbols & namespaces
+        std::unordered_map<std::wstring, std::wstring> jsModuleNamespaces; // e.g. Icons -> lucide-react, React -> react
+        std::vector<IntelliSenseItem> importedDocSymbols;
+        if (pDocLines && !pDocLines->empty()) {
+            for (const auto& dLine : *pDocLines) {
+                std::wstring tLine = TrimWs(dLine);
+                if (tLine.rfind(L"import ", 0) != 0) continue;
+                size_t fromIdx = tLine.find(L"from");
+                if (fromIdx == std::wstring::npos) continue;
+                size_t q1 = tLine.find_first_of(L"\"'`", fromIdx + 4);
+                if (q1 == std::wstring::npos) continue;
+                wchar_t qCh = tLine[q1];
+                size_t q2 = tLine.find(qCh, q1 + 1);
+                if (q2 == std::wstring::npos || q2 <= q1 + 1) continue;
+                std::wstring modSpec = tLine.substr(q1 + 1, q2 - q1 - 1);
 
-        if (afterDot) {
-            for (const auto& p : m_jsPrototypes) rawCandidates.push_back(p);
-            for (const auto& d : m_jsDomApis) rawCandidates.push_back(d);
-            for (const auto& r : m_reactAndNodeVocabulary) {
-                if (r.kind == CompletionKind::Property || r.kind == CompletionKind::Function || r.kind == CompletionKind::Variable) {
-                    rawCandidates.push_back(r);
+                std::wstring clause = TrimWs(tLine.substr(7, fromIdx - 7));
+                if (clause.rfind(L"type ", 0) == 0) clause = TrimWs(clause.substr(5));
+
+                // Check namespace import: `* as Ns`
+                size_t starAs = clause.find(L"* as ");
+                if (starAs != std::wstring::npos) {
+                    size_t nsStart = starAs + 5;
+                    while (nsStart < clause.length() && iswspace(clause[nsStart])) nsStart++;
+                    size_t nsEnd = nsStart;
+                    while (nsEnd < clause.length() && IsJsIdentChar(clause[nsEnd])) nsEnd++;
+                    if (nsEnd > nsStart) {
+                        std::wstring nsIdent = clause.substr(nsStart, nsEnd - nsStart);
+                        jsModuleNamespaces[nsIdent] = modSpec;
+                        IntelliSenseItem nsItem;
+                        nsItem.label = nsIdent;
+                        nsItem.detail = L"Namespace import from '" + modSpec + L"'";
+                        nsItem.insertText = nsIdent;
+                        nsItem.kind = CompletionKind::Module;
+                        nsItem.score = 1350;
+                        nsItem.origin = L"import";
+                        importedDocSymbols.push_back(std::move(nsItem));
+                    }
                 }
-            }
-        } else {
-            bool isJsx = (ext == L".jsx" || ext == L".tsx" || (isJs && (currentLine.find(L"<") != std::wstring::npos)));
-            size_t lastOpenTag = currentLine.rfind(L'<', cursorCol > 0 ? cursorCol - 1 : 0);
-            size_t lastCloseTag = currentLine.rfind(L'>', cursorCol > 0 ? cursorCol - 1 : 0);
-            bool insideTag = isJsx && (lastOpenTag != std::wstring::npos && (lastCloseTag == std::wstring::npos || lastOpenTag > lastCloseTag));
 
-            if (insideTag) {
-                size_t spaceAfterOpen = currentLine.find_first_of(L" \t", lastOpenTag);
-                if (spaceAfterOpen == std::wstring::npos || cursorCol <= spaceAfterOpen) {
-                    // Tag name inside JSX: <div, <Button, etc.
-                    for (const auto& tag : m_htmlTags) rawCandidates.push_back(tag);
-                    for (const auto& r : m_reactAndNodeVocabulary) {
-                        if (r.kind == CompletionKind::Class || r.kind == CompletionKind::Function) {
-                            rawCandidates.push_back(r);
+                // Check named imports: `{ A, B as C }`
+                size_t ob = clause.find(L'{');
+                size_t cb = clause.find(L'}', ob != std::wstring::npos ? ob : 0);
+                if (ob != std::wstring::npos && cb != std::wstring::npos && cb > ob) {
+                    std::wstring inside = clause.substr(ob + 1, cb - ob - 1);
+                    size_t pos = 0;
+                    while (pos < inside.length()) {
+                        size_t comma = inside.find(L',', pos);
+                        if (comma == std::wstring::npos) comma = inside.length();
+                        std::wstring tok = TrimWs(inside.substr(pos, comma - pos));
+                        pos = comma + 1;
+                        if (tok.rfind(L"type ", 0) == 0) tok = TrimWs(tok.substr(5));
+                        size_t asP = tok.find(L" as ");
+                        if (asP != std::wstring::npos) tok = TrimWs(tok.substr(asP + 4));
+                        if (IsValidJsIdent(tok)) {
+                            bool isComp = !tok.empty() && iswupper(tok[0]);
+                            IntelliSenseItem impItem;
+                            impItem.label = tok;
+                            impItem.detail = (isComp ? L"Component / Type from '" : L"Imported from '") + modSpec + L"'";
+                            impItem.insertText = tok;
+                            impItem.kind = isComp ? CompletionKind::Class : CompletionKind::Function;
+                            impItem.score = 1400;
+                            impItem.origin = L"import";
+                            importedDocSymbols.push_back(std::move(impItem));
                         }
                     }
-                } else {
-                    // Inside JSX Tag Attributes: e.g. <div class|
-                    // 1. Propose all React JSX Attributes from @types/react (with className at score 4500!)
-                    const auto& jsxAttrs = GetReactJsxAttributes();
-                    for (const auto& attr : jsxAttrs) {
-                        rawCandidates.push_back(attr);
+                }
+
+                // Check default import before '{' or ','
+                std::wstring beforeBrace = (ob != std::wstring::npos) ? TrimWs(clause.substr(0, ob)) : clause;
+                if (!beforeBrace.empty() && beforeBrace.back() == L',') {
+                    beforeBrace.pop_back();
+                    beforeBrace = TrimWs(beforeBrace);
+                }
+                if (IsValidJsIdent(beforeBrace)) {
+                    jsModuleNamespaces[beforeBrace] = modSpec;
+                    bool isComp = !beforeBrace.empty() && iswupper(beforeBrace[0]);
+                    IntelliSenseItem defItem;
+                    defItem.label = beforeBrace;
+                    defItem.detail = L"Default import from '" + modSpec + L"'";
+                    defItem.insertText = beforeBrace;
+                    defItem.kind = isComp ? CompletionKind::Class : CompletionKind::Module;
+                    defItem.score = 1400;
+                    defItem.origin = L"import";
+                    importedDocSymbols.push_back(std::move(defItem));
+                }
+            }
+        }
+
+        // Helper to gather dynamic exports from installed NPM dependencies (package.json) and workspace files
+        auto collectDynamicProjectExports = [&](std::vector<IntelliSenseItem>& outList, bool onlyComponentsAndFunctions) {
+            // A) Installed packages from package.json / node_modules (prioritize direct dependencies in package.json)
+            const auto& npmPkgs = GetInstalledNpmPackages(projectRoot);
+            size_t pkgCount = 0;
+            for (const auto& [pkgName, pkgDetail] : npmPkgs) {
+                // Prioritize direct dependencies (which have version numbers) and non-@types packages
+                bool isDirectDep = (pkgDetail.find(L"node_modules") == std::wstring::npos && pkgDetail.find(L"@types") == std::wstring::npos);
+                if (!isDirectDep && npmPkgs.size() > 35) continue;
+                if (++pkgCount > 35) break;
+                auto entryFile = ResolveModuleEntryFile(pkgName, baseDir, projectRoot);
+                if (!entryFile.empty()) {
+                    auto modExps = ParseModuleExportsFromFile(entryFile, pkgName, projectRoot);
+                    for (auto& exp : modExps) {
+                        if (onlyComponentsAndFunctions && exp.kind != CompletionKind::Class && exp.kind != CompletionKind::Function) {
+                            continue;
+                        }
+                        outList.push_back(std::move(exp));
                     }
-                    // 2. Also propose standard HTML attributes (excluding HTML 'class', which is invalid in React)
-                    for (const auto& attr : m_htmlAttributes) {
-                        if (attr.label == L"class") continue;
-                        rawCandidates.push_back(attr);
+                }
+            }
+
+            // B) Peer workspace files (.js, .jsx, .ts, .tsx) in baseDir and immediate subfolders (e.g. ./components, ./utils)
+            std::error_code ec;
+            int wsFilesScanned = 0;
+            auto scanDirForExports = [&](const std::filesystem::path& dirToScan, const std::wstring& relPrefix) {
+                if (!std::filesystem::exists(dirToScan, ec) || !std::filesystem::is_directory(dirToScan, ec)) return;
+                for (std::filesystem::directory_iterator it(dirToScan, ec); !ec && it != std::filesystem::directory_iterator() && wsFilesScanned < 30; it.increment(ec)) {
+                    if (it->is_regular_file(ec)) {
+                        auto p = it->path();
+                        std::wstring fext = p.extension().wstring();
+                        for (auto& c : fext) c = static_cast<wchar_t>(towlower(c));
+                        if (fext != L".js" && fext != L".jsx" && fext != L".ts" && fext != L".tsx" && fext != L".mjs") continue;
+                        if (!fileName.empty() && std::filesystem::equivalent(p, std::filesystem::path(fileName), ec)) continue;
+                        wsFilesScanned++;
+                        std::wstring stem = p.stem().wstring();
+                        std::wstring relSpec = relPrefix + stem;
+                        auto fileExps = ParseModuleExportsFromFile(p, relSpec, projectRoot);
+                        for (auto& exp : fileExps) {
+                            if (onlyComponentsAndFunctions && exp.kind != CompletionKind::Class && exp.kind != CompletionKind::Function) {
+                                continue;
+                            }
+                            exp.score += 120; // Boost local workspace exports
+                            outList.push_back(std::move(exp));
+                        }
                     }
-                    insideTagAttr = true;
+                }
+            };
+            scanDirForExports(baseDir, L"./");
+            if (std::filesystem::exists(baseDir, ec) && std::filesystem::is_directory(baseDir, ec)) {
+                for (std::filesystem::directory_iterator dit(baseDir, ec); !ec && dit != std::filesystem::directory_iterator() && wsFilesScanned < 30; dit.increment(ec)) {
+                    if (!dit->is_directory(ec)) continue;
+                    std::wstring dname = dit->path().filename().wstring();
+                    if (dname.empty() || dname[0] == L'.' || dname == L"node_modules" || dname == L"dist" || dname == L"build") continue;
+                    scanDirForExports(dit->path(), L"./" + dname + L"/");
+                }
+            }
+        };
+
+        // 2. If cursor is inside `import { ... | ... } from 'moduleSpec'`, suggest exports from that module EXCLUSIVELY!
+        if (insideJsImportClause) {
+            rawCandidates.clear();
+            if (!importLineModuleSpec.empty()) {
+                auto entryFile = ResolveModuleEntryFile(importLineModuleSpec, baseDir, projectRoot);
+                if (!entryFile.empty()) {
+                    auto modExps = ParseModuleExportsFromFile(entryFile, importLineModuleSpec, projectRoot);
+                    for (auto& exp : modExps) {
+                        exp.score += 1500;
+                        exp.documentation.clear(); // Already on the import line, no need to auto-insert another import line
+                        rawCandidates.push_back(std::move(exp));
+                    }
                 }
             } else {
-                for (const auto& g : m_jsGlobals) rawCandidates.push_back(g);
-                for (const auto& kw : m_jsKeywords) rawCandidates.push_back(kw);
-                for (const auto& d : m_jsDomApis) rawCandidates.push_back(d);
-                for (const auto& r : m_reactAndNodeVocabulary) rawCandidates.push_back(r);
+                // User typed `import { Cam|` before typing `from '...'`: suggest exports across all installed packages & workspace files!
+                collectDynamicProjectExports(rawCandidates, false);
+            }
+            insideTagAttr = true; // Suppress generic vocabulary from polluting import { ... }
+        } else {
+            size_t dotPos = (cursorCol > prefix.length() && cursorCol > 0) ? cursorCol - prefix.length() - 1 : std::wstring::npos;
+            bool afterDot = (dotPos != std::wstring::npos && dotPos < currentLine.length() && currentLine[dotPos] == L'.');
 
-                // In React JSX/TSX files, also provide HTML element tags
-                if (ext == L".jsx" || ext == L".tsx") {
-                    for (const auto& tag : m_htmlTags) rawCandidates.push_back(tag);
+            if (afterDot) {
+                // Check if receiver before '.' is an imported module namespace (e.g. `Icons.` or `React.`)
+                size_t recEnd = dotPos;
+                size_t recStart = recEnd;
+                while (recStart > 0 && IsJsIdentChar(currentLine[recStart - 1])) recStart--;
+                std::wstring receiver = currentLine.substr(recStart, recEnd - recStart);
+                auto nsIt = jsModuleNamespaces.find(receiver);
+                if (nsIt != jsModuleNamespaces.end()) {
+                    auto entryFile = ResolveModuleEntryFile(nsIt->second, baseDir, projectRoot);
+                    if (!entryFile.empty()) {
+                        auto modExps = ParseModuleExportsFromFile(entryFile, nsIt->second, projectRoot);
+                        for (auto& exp : modExps) {
+                            exp.score += 1200;
+                            exp.documentation.clear();
+                            rawCandidates.push_back(std::move(exp));
+                        }
+                    }
+                }
+
+                for (const auto& p : m_jsPrototypes) rawCandidates.push_back(p);
+                for (const auto& d : m_jsDomApis) rawCandidates.push_back(d);
+                for (const auto& r : m_reactAndNodeVocabulary) {
+                    if (r.kind == CompletionKind::Property || r.kind == CompletionKind::Function || r.kind == CompletionKind::Variable) {
+                        rawCandidates.push_back(r);
+                    }
+                }
+            } else {
+                bool isJsx = (ext == L".jsx" || ext == L".tsx" || (isJs && (currentLine.find(L"<") != std::wstring::npos)));
+                size_t lastOpenTag = currentLine.rfind(L'<', cursorCol > 0 ? cursorCol - 1 : 0);
+                size_t lastCloseTag = currentLine.rfind(L'>', cursorCol > 0 ? cursorCol - 1 : 0);
+                bool insideTag = isJsx && (lastOpenTag != std::wstring::npos && (lastCloseTag == std::wstring::npos || lastOpenTag > lastCloseTag));
+
+                if (insideTag) {
+                    size_t spaceAfterOpen = currentLine.find_first_of(L" \t", lastOpenTag);
+                    if (spaceAfterOpen == std::wstring::npos || cursorCol <= spaceAfterOpen) {
+                        // Tag name inside JSX: <div, <Camera, <Button, etc.
+                        for (const auto& imp : importedDocSymbols) {
+                            if (imp.kind == CompletionKind::Class || imp.kind == CompletionKind::Function) {
+                                rawCandidates.push_back(imp);
+                            }
+                        }
+                        collectDynamicProjectExports(rawCandidates, true);
+                        for (const auto& tag : m_htmlTags) rawCandidates.push_back(tag);
+                        for (const auto& r : m_reactAndNodeVocabulary) {
+                            if (r.kind == CompletionKind::Class || r.kind == CompletionKind::Function) {
+                                rawCandidates.push_back(r);
+                            }
+                        }
+                    } else {
+                        // Inside JSX Tag Attributes: e.g. <div class|
+                        // 1. Propose all React JSX Attributes from @types/react (with className at score 4500!)
+                        const auto& jsxAttrs = GetReactJsxAttributes();
+                        for (const auto& attr : jsxAttrs) {
+                            rawCandidates.push_back(attr);
+                        }
+                        // 2. Also propose standard HTML attributes (excluding HTML 'class', which is invalid in React)
+                        for (const auto& attr : m_htmlAttributes) {
+                            if (attr.label == L"class") continue;
+                            rawCandidates.push_back(attr);
+                        }
+                        insideTagAttr = true;
+                    }
+                } else {
+                    for (const auto& imp : importedDocSymbols) rawCandidates.push_back(imp);
+                    collectDynamicProjectExports(rawCandidates, false);
+                    for (const auto& g : m_jsGlobals) rawCandidates.push_back(g);
+                    for (const auto& kw : m_jsKeywords) rawCandidates.push_back(kw);
+                    for (const auto& d : m_jsDomApis) rawCandidates.push_back(d);
+                    for (const auto& r : m_reactAndNodeVocabulary) rawCandidates.push_back(r);
+
+                    // In React JSX/TSX files, also provide HTML element tags
+                    if (ext == L".jsx" || ext == L".tsx") {
+                        for (const auto& tag : m_htmlTags) rawCandidates.push_back(tag);
+                    }
                 }
             }
         }
@@ -2002,6 +2901,39 @@ std::vector<IntelliSenseItem> IntelliSenseEngine::QueryCompletions(
             }
         }
     } else if (isPy) {
+        auto scanPyFileExports = [&](const std::filesystem::path& pyFile, const std::wstring& modLabel, std::vector<IntelliSenseItem>& outItems) {
+            std::string raw = ReadFileUtf8Bounded(pyFile, 262144);
+            if (raw.empty()) return;
+            std::wstring content = Utf8ToWideAsciiFast(raw);
+            size_t ls = 0;
+            while (ls < content.length()) {
+                size_t le = content.find(L'\n', ls);
+                if (le == std::wstring::npos) le = content.length();
+                std::wstring ln = content.substr(ls, le - ls);
+                ls = le + 1;
+                if (ln.rfind(L"def ", 0) == 0 || ln.rfind(L"async def ", 0) == 0) {
+                    size_t p = (ln.rfind(L"async ", 0) == 0) ? 10 : 4;
+                    while (p < ln.length() && iswspace(ln[p])) p++;
+                    size_t e = p;
+                    while (e < ln.length() && (iswalnum(ln[e]) || ln[e] == L'_')) e++;
+                    if (e > p && ln[p] != L'_') {
+                        std::wstring fn = ln.substr(p, e - p);
+                        outItems.push_back({ fn, L"Function in " + modLabel, fn, CompletionKind::Function, 1100, 0, 0, L"python" });
+                    }
+                } else if (ln.rfind(L"class ", 0) == 0) {
+                    size_t p = 6;
+                    while (p < ln.length() && iswspace(ln[p])) p++;
+                    size_t e = p;
+                    while (e < ln.length() && (iswalnum(ln[e]) || ln[e] == L'_')) e++;
+                    if (e > p && ln[p] != L'_') {
+                        std::wstring cn = ln.substr(p, e - p);
+                        outItems.push_back({ cn, L"Class in " + modLabel, cn, CompletionKind::Class, 1150, 0, 0, L"python" });
+                    }
+                }
+            }
+        };
+
+        std::error_code ec;
         if (afterDot) {
             size_t dotPos = (cursorCol > prefix.length() && cursorCol > 0) ? cursorCol - prefix.length() - 1 : std::wstring::npos;
             if (dotPos != std::wstring::npos) {
@@ -2015,10 +2947,50 @@ std::vector<IntelliSenseItem> IntelliSenseEngine::QueryCompletions(
                 for (auto& mm : modMembers) {
                     rawCandidates.push_back(std::move(mm));
                 }
+                // Also check workspace <modName>.py or .venv/Lib/site-packages/<modName>/__init__.py
+                auto localPy = baseDir / (modName + L".py");
+                if (std::filesystem::exists(localPy, ec)) {
+                    scanPyFileExports(localPy, modName + L".py", rawCandidates);
+                } else {
+                    for (const auto* venvDir : { L".venv", L"venv", L"env" }) {
+                        auto initPy = projectRoot / venvDir / L"Lib" / L"site-packages" / modName / L"__init__.py";
+                        if (std::filesystem::exists(initPy, ec)) {
+                            scanPyFileExports(initPy, modName, rawCandidates);
+                            break;
+                        }
+                    }
+                }
             }
         } else {
             for (const auto& pySym : m_pySymbols) {
                 rawCandidates.push_back(pySym);
+            }
+            // Dynamically add peer .py modules & functions/classes in workspace and installed .venv packages
+            if (std::filesystem::exists(baseDir, ec) && std::filesystem::is_directory(baseDir, ec)) {
+                int pyScanned = 0;
+                for (std::filesystem::directory_iterator it(baseDir, ec); !ec && it != std::filesystem::directory_iterator() && pyScanned < 20; it.increment(ec)) {
+                    if (!it->is_regular_file(ec)) continue;
+                    auto p = it->path();
+                    if (p.extension() != L".py") continue;
+                    if (!fileName.empty() && std::filesystem::equivalent(p, std::filesystem::path(fileName), ec)) continue;
+                    pyScanned++;
+                    std::wstring stem = p.stem().wstring();
+                    rawCandidates.push_back({ stem, L"Workspace Python Module (" + p.filename().wstring() + L")", stem, CompletionKind::Module, 950, 0, 0, L"python" });
+                    scanPyFileExports(p, p.filename().wstring(), rawCandidates);
+                }
+            }
+            for (const auto* venvDir : { L".venv", L"venv", L"env" }) {
+                auto sp = projectRoot / venvDir / L"Lib" / L"site-packages";
+                if (std::filesystem::exists(sp, ec) && std::filesystem::is_directory(sp, ec)) {
+                    for (std::filesystem::directory_iterator it(sp, ec); !ec && it != std::filesystem::directory_iterator(); it.increment(ec)) {
+                        if (!it->is_directory(ec)) continue;
+                        std::wstring dname = it->path().filename().wstring();
+                        if (dname.empty() || dname[0] == L'_' || dname[0] == L'.') continue;
+                        if (dname.find(L".dist-info") != std::wstring::npos || dname.find(L".egg-info") != std::wstring::npos) continue;
+                        rawCandidates.push_back({ dname, L"Installed Package (" + std::wstring(venvDir) + L")", dname, CompletionKind::Module, 920, 0, 0, L"python" });
+                    }
+                    break;
+                }
             }
         }
     } else if (ext == L".cpp" || ext == L".h" || ext == L".hpp" || ext == L".c") {
@@ -2035,7 +3007,7 @@ std::vector<IntelliSenseItem> IntelliSenseEngine::QueryCompletions(
     }
 
     // Dynamic Document & Workspace Variables
-    if (!afterDoubleColon && !afterArrow && !insideServerKey) {
+    if (!afterDoubleColon && !afterArrow && !insideServerKey && !insideJsImportClause) {
         for (auto& sym : workspaceVarSymbols) {
             if (prefix.rfind(L"$", 0) == 0 && sym.label.rfind(L"$", 0) == 0) {
                 sym.score += 450;
@@ -2046,15 +3018,15 @@ std::vector<IntelliSenseItem> IntelliSenseEngine::QueryCompletions(
 
     // Common web and programming vocabulary (properties, tags, methods, identifiers)
     // Keep CSS and PHP code completions strictly scoped and clean
-    if (!isCss && !insideStyle && !insidePhp && !insideTagAttr) {
+    if (!isCss && !insideStyle && !insidePhp && !insideTagAttr && !insideJsImportClause) {
         for (const auto& v : m_commonVocabulary) {
             rawCandidates.push_back(v);
         }
     }
 
-    // Tailwind CSS IntelliSense completions (only in HTML/JSX or inside class="..." strings)
+    // Tailwind CSS IntelliSense completions (only in HTML/JSX class/className attributes or HTML markup)
     bool insideClassAttr = (currentLine.find(L"class=") != std::wstring::npos || currentLine.find(L"className=") != std::wstring::npos);
-    if (!insidePhp || insideClassAttr) {
+    if ((isHtml || insideClassAttr) && !insidePhp && !insideJsImportClause) {
         static const auto allTailwindCandidates = TailwindHelper::GetAllCandidates();
         for (const auto& tw : allTailwindCandidates) {
             IntelliSenseItem item;
