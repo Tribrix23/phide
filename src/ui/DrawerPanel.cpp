@@ -7,6 +7,7 @@
 #include "phide/ui/ActivityRail.hpp"
 #include "phide/ui/GitLogManager.hpp"
 #include "phide/editor/Buffer.hpp"
+#include "phide/editor/SemanticCommitEngine.hpp"
 #include <wincodec.h>
 #include <urlmon.h>
 #include <shlobj.h>
@@ -6669,31 +6670,21 @@ void DrawerPanel::GenerateAiCommitMessage() {
         return;
     }
 
-    bool hasUi = false;
-    bool hasTests = false;
-    bool hasDocs = false;
-    std::wstring mainFileName;
+    std::wstring dir = m_openFolderPath.empty() ? L"." : m_openFolderPath;
+    auto resDiff = RunGitCmd(L"diff -U1", dir);
+    std::wstring diffOutput = resDiff.output;
+    if (diffOutput.empty()) {
+        auto resCached = RunGitCmd(L"diff --cached -U1", dir);
+        diffOutput = resCached.output;
+    }
 
+    std::vector<editor::GitChangeInfo> changeInfos;
+    changeInfos.reserve(m_gitChanges.size());
     for (const auto& c : m_gitChanges) {
-        if (mainFileName.empty()) mainFileName = c.fileName;
-        std::wstring p = c.path;
-        for (auto& ch : p) ch = towlower(ch);
-        if (p.find(L"ui") != std::wstring::npos || p.find(L"theme") != std::wstring::npos || p.find(L"panel") != std::wstring::npos) hasUi = true;
-        if (p.find(L"test") != std::wstring::npos) hasTests = true;
-        if (p.find(L".md") != std::wstring::npos || p.find(L"doc") != std::wstring::npos) hasDocs = true;
+        changeInfos.push_back({ c.path, c.fileName, c.status });
     }
 
-    if (hasUi) {
-        m_commitMessage = L"feat(ui): update source control panel and user interface";
-    } else if (hasTests) {
-        m_commitMessage = L"test: add verification tests for source control";
-    } else if (hasDocs) {
-        m_commitMessage = L"docs: update documentation and specifications";
-    } else if (!mainFileName.empty()) {
-        m_commitMessage = L"feat: update " + mainFileName;
-    } else {
-        m_commitMessage = L"chore: update workspace files";
-    }
+    m_commitMessage = editor::SemanticCommitEngine::Generate(changeInfos, diffOutput);
     m_gitCaretPos = m_commitMessage.length();
     ClearGitSelection();
 }
@@ -7197,7 +7188,7 @@ bool DrawerPanel::HandleGitMouseMove(POINT pt, bool isLButtonDown, Theme* pTheme
     else if (checkBtn(m_gitStageAllBounds, L"Stage All Changes (+)")) { m_hoveredGitButton = L"stageAll"; }
     else if (checkBtn(m_gitDiscardAllBounds, L"Discard All Changes (🔄)")) { m_hoveredGitButton = L"discardAll"; }
     else if (checkBtn(m_gitChangesMoreBounds, L"More Actions...")) {}
-    else if (checkBtn(m_gitGenerateAiBounds, L"Generate Commit Message with AI")) {}
+    else if (checkBtn(m_gitGenerateAiBounds, L"Generate Commit Message from Changes")) {}
     else if (m_gitSyncBtnBounds.right > m_gitSyncBtnBounds.left &&
              pt.x >= m_gitSyncBtnBounds.left && pt.x <= m_gitSyncBtnBounds.right &&
              pt.y >= m_gitSyncBtnBounds.top && pt.y <= m_gitSyncBtnBounds.bottom) {

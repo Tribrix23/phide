@@ -41,6 +41,7 @@
 #include "phide/editor/NotebookModel.hpp"
 #include "phide/editor/Buffer.hpp"
 #include "phide/editor/SyntaxValidator.hpp"
+#include "phide/editor/SemanticCommitEngine.hpp"
 #include "phide/editor/SnippetManager.hpp"
 #include "phide/editor/BracketPairAnalyzer.hpp"
 #include "phide/editor/TailwindHelper.hpp"
@@ -8613,6 +8614,57 @@ run_test_67:
         }
         assert(hasViteEnv);
         std::cout << "  Passed: React hooks and Vite/Node environment completions recognized in IntelliSense." << std::endl;
+
+        // B2. Test Native Semantic Commit Engine (Deterministic Conventional Commits)
+        {
+            std::vector<phide::editor::GitChangeInfo> testChanges = {
+                { L"test.jsx", L"test.jsx", L"M" }
+            };
+            std::wstring testDiff = 
+                L"diff --git a/test.jsx b/test.jsx\n"
+                L"--- a/test.jsx\n"
+                L"+++ b/test.jsx\n"
+                L"@@ -3,3 +3,6 @@\n"
+                L" const Test = () => {\n"
+                L"-    return (<div></div>);\n"
+                L"+   return(\n"
+                L"+   <>\n"
+                L"+   </>\n"
+                L"+   )\n"
+                L" };\n";
+            std::wstring commitMsg = phide::editor::SemanticCommitEngine::Generate(testChanges, testDiff);
+            assert(commitMsg == L"feat(Test): update JSX render return in Test component" && "Must accurately synthesize JSX return message");
+
+            // Test PHP DB access
+            std::vector<phide::editor::GitChangeInfo> phpChanges = {
+                { L"db.php", L"db.php", L"M" }
+            };
+            std::wstring phpDiff =
+                L"diff --git a/db.php b/db.php\n"
+                L"--- a/db.php\n"
+                L"+++ b/db.php\n"
+                L"@@ -2,2 +2,4 @@\n"
+                L"+function get_db_connection() {\n"
+                L"+    return new PDO('mysql:host=localhost;dbname=test', 'root', '');\n"
+                L"+}\n";
+            std::wstring phpMsg = phide::editor::SemanticCommitEngine::Generate(phpChanges, phpDiff);
+            assert(phpMsg == L"feat(get_db_connection): update database queries and data access in db.php");
+
+            // Test package.json dependency
+            std::vector<phide::editor::GitChangeInfo> pkgChanges = {
+                { L"package.json", L"package.json", L"M" }
+            };
+            std::wstring pkgDiff =
+                L"diff --git a/package.json b/package.json\n"
+                L"--- a/package.json\n"
+                L"+++ b/package.json\n"
+                L"@@ -5,1 +5,2 @@\n"
+                L"+    \"lucide-react\": \"^0.344.0\",\n";
+            std::wstring pkgMsg = phide::editor::SemanticCommitEngine::Generate(pkgChanges, pkgDiff);
+            assert(pkgMsg == L"chore(deps): add lucide-react dependency");
+
+            std::cout << "  Passed: SemanticCommitEngine synthesizes accurate conventional commit messages without LLM." << std::endl;
+        }
 
         // C. Test ActivityRail 10K Badge & Too Many Changes Toast
         phide::ui::ActivityRail testRail;
