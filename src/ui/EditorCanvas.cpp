@@ -5663,13 +5663,13 @@ struct ExtDetailMeta {
 };
 
 static ExtDetailMeta GetExtensionMeta(const std::wstring& extId) {
-    if (extId == L"bradlc.vscode-tailwindcss") {
+    if (extId == L"phide.tailwindcss" || extId == L"bradlc.vscode-tailwindcss") {
         return {
-            L"bradlc.vscode-tailwindcss",
+            L"phide.tailwindcss",
             L"Tailwind CSS IntelliSense",
             L"Tailwind Labs",
             L"v0.14.3",
-            L"Intelligent Tailwind CSS tooling for VS Code",
+            L"Intelligent Tailwind CSS tooling for web development",
             L"17,890,210",
             4.7f,
             134,
@@ -5680,9 +5680,9 @@ static ExtDetailMeta GetExtensionMeta(const std::wstring& extId) {
             L"https://github.com/tailwindlabs/tailwindcss-intellisense/issues",
             L"MIT"
         };
-    } else if (extId == L"redhat.vscode-yaml") {
+    } else if (extId == L"phide.yaml" || extId == L"redhat.vscode-yaml") {
         return {
-            L"redhat.vscode-yaml",
+            L"phide.yaml",
             L"YAML",
             L"Red Hat",
             L"v2.1.2",
@@ -5693,30 +5693,47 @@ static ExtDetailMeta GetExtensionMeta(const std::wstring& extId) {
             L"Programming Languages, Snippets, Linters, Formatters",
             L"3/2/2018",
             L"10/23/2026",
-            L"https://github.com/redhat-developer/vscode-yaml",
-            L"https://github.com/redhat-developer/vscode-yaml/issues",
+            L"https://github.com/redhat-developer/yaml-language-server",
+            L"https://github.com/redhat-developer/yaml-language-server/issues",
             L"MIT"
         };
-    } else if (extId == L"eamodio.gitlens") {
+    } else if (extId == L"phide.gitlens" || extId == L"eamodio.gitlens") {
         return {
-            L"eamodio.gitlens",
+            L"phide.gitlens",
             L"GitLens — Git supercharged",
             L"GitKraken",
             L"v2026.10.31",
-            L"Supercharge Git within VS Code — Visualize code authorship at a glance via Git blame annotations and CodeLens, explore Git repositories, and more",
+            L"Supercharge Git — Visualize code authorship at a glance via Git blame annotations and CodeLens, explore Git repositories, and more",
             L"53,666,213",
             4.5f,
             945,
             L"SCM Providers",
             L"6/15/2016",
             L"10/31/2026",
-            L"https://github.com/gitkraken/vscode-gitlens",
-            L"https://github.com/gitkraken/vscode-gitlens/issues",
+            L"https://github.com/gitkraken/gitlens",
+            L"https://github.com/gitkraken/gitlens/issues",
             L"GitLens Non-Commercial Software License"
+        };
+    } else if (extId == L"phide.code-runner" || extId == L"formulahendry.code-runner") {
+        return {
+            L"phide.code-runner",
+            L"Code Runner",
+            L"Jun Han",
+            L"v0.12.2",
+            L"Run code snippet or code file for multiple languages: Python, C, C++, Java, JavaScript, PHP, Go, Rust, and more.",
+            L"26,500,000",
+            4.52f,
+            1150,
+            L"Programming Languages, Other",
+            L"1/1/2016",
+            L"4/5/2024",
+            L"https://github.com/formulahendry/code-runner",
+            L"https://github.com/formulahendry/code-runner/issues",
+            L"MIT"
         };
     } else {
         return {
-            L"dsznajder.es7-react-js-snippets",
+            L"phide.react-snippets",
             L"ES7+ React/Redux/React-Native snippets",
             L"rodrigovallades",
             L"v4.4.3",
@@ -5727,8 +5744,8 @@ static ExtDetailMeta GetExtensionMeta(const std::wstring& extId) {
             L"Snippets",
             L"2/18/2022",
             L"2/18/2022",
-            L"https://github.com/ults-io/vscode-react-javascript-snippets",
-            L"https://github.com/ults-io/vscode-react-javascript-snippets/issues",
+            L"https://github.com/ults-io/react-javascript-snippets",
+            L"https://github.com/ults-io/react-javascript-snippets/issues",
             L"MIT"
         };
     }

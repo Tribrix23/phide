@@ -1,11 +1,11 @@
 [
     {
-        "id":  "eamodio.gitlens",
+        "id":  "phide.gitlens",
         "displayName":  "GitLens — Git supercharged",
         "publisher":  "eamodio",
         "publisherDisplayName":  "GitKraken",
         "version":  "2026.10.310508",
-        "description":  "Supercharge Git within VS Code — Visualize code authorship at a glance via Git blame annotations and CodeLens, seamlessly navigate and explore Git repositories, gain valuable insights via rich visualizations and powerful comparison commands, and so much more",
+        "description":  "Supercharge Git within phide — Visualize code authorship at a glance via Git blame annotations and CodeLens, seamlessly navigate and explore Git repositories, gain valuable insights via rich visualizations and powerful comparison commands, and so much more",
         "installs":  53666213,
         "rating":  3.3724868297576904,
         "ratingCount":  945,
@@ -26,7 +26,7 @@
                  ]
     },
     {
-        "id":  "redhat.vscode-yaml",
+        "id":  "phide.yaml",
         "displayName":  "YAML",
         "publisher":  "redhat",
         "publisherDisplayName":  "Red Hat",
@@ -65,7 +65,7 @@
                  ]
     },
     {
-        "id":  "dsznajder.es7-react-js-snippets",
+        "id":  "phide.react-snippets",
         "displayName":  "ES7+ React/Redux/React-Native snippets",
         "publisher":  "dsznajder",
         "publisherDisplayName":  "dsznajder",
@@ -96,12 +96,12 @@
                  ]
     },
     {
-        "id":  "bradlc.vscode-tailwindcss",
+        "id":  "phide.tailwindcss",
         "displayName":  "Tailwind CSS IntelliSense",
         "publisher":  "bradlc",
         "publisherDisplayName":  "Tailwind Labs",
         "version":  "0.16.0",
-        "description":  "Intelligent Tailwind CSS tooling for VS Code",
+        "description":  "Intelligent Tailwind CSS tooling for phide",
         "installs":  14853301,
         "rating":  4.474576473236084,
         "ratingCount":  118,
@@ -117,11 +117,11 @@
                      "tailwind",
                      "Tailwind CSS",
                      "tailwindcss",
-                     "vscode"
+                     "phide"
                  ]
     },
     {
-        "id":  "formulahendry.code-runner",
+        "id":  "phide.code-runner",
         "installs":  26500000,
         "lastUpdated":  "2024-04-05T09:23:00.000Z",
         "categories":  [

@@ -6694,6 +6694,8 @@ void DrawerPanel::GenerateAiCommitMessage() {
     } else {
         m_commitMessage = L"chore: update workspace files";
     }
+    m_gitCaretPos = m_commitMessage.length();
+    ClearGitSelection();
 }
 
 bool DrawerPanel::HitTestGit(POINT pt, const app::AppConfig& config,
@@ -6860,6 +6862,7 @@ bool DrawerPanel::HitTestGit(POINT pt, const app::AppConfig& config,
             return true;
         } else {
             m_focusedGitInput = 0;
+            ClearGitSelection();
         }
 
         // Secondary Sync Changes Button (when both changes and unpushed commits exist)
@@ -7139,7 +7142,19 @@ bool DrawerPanel::HitTestGit(POINT pt, const app::AppConfig& config,
     return false;
 }
 
-bool DrawerPanel::HandleGitMouseMove(POINT pt) {
+bool DrawerPanel::HandleGitMouseMove(POINT pt, bool isLButtonDown, Theme* pTheme, const app::AppConfig* pConfig) {
+    if (m_isCommitEditMsgOpen) return false;
+
+    if (m_isGitSelecting && isLButtonDown && m_focusedGitInput == 1 && pTheme && pConfig) {
+        size_t pos = HitTestGitCommitMsgPos(pt, *pTheme, *pConfig);
+        if (pos != m_gitCaretPos || m_gitSelEnd != static_cast<int>(pos)) {
+            m_gitCaretPos = pos;
+            m_gitSelEnd = static_cast<int>(pos);
+            m_gitCaretVisible = true;
+            return true;
+        }
+    }
+
     std::wstring oldTip = m_gitTooltipText;
     int oldHoverChange = m_hoveredGitChangeIdx;
     m_hoveredGitChangeIdx = -1;
@@ -7336,33 +7351,382 @@ bool DrawerPanel::HandleGitMouseMove(POINT pt) {
             m_hoveredCommitIdx != oldHoverCommit || m_hoveredGitGraphOutgoing != oldHoverOutgoing);
 }
 
+void DrawerPanel::DeleteGitSelection() {
+    if (HasGitSelection()) {
+        auto [selMin, selMax] = GetGitSelectionRange();
+        if (selMax > selMin && selMin <= m_commitMessage.length()) {
+            m_commitMessage.erase(selMin, selMax - selMin);
+            m_gitCaretPos = selMin;
+        }
+        ClearGitSelection();
+    }
+}
+
+void DrawerPanel::CopyGitSelectionToClipboard(HWND hwnd) {
+    if (!HasGitSelection()) return;
+    auto [selMin, selMax] = GetGitSelectionRange();
+    if (selMax <= selMin) return;
+    std::wstring text = m_commitMessage.substr(selMin, selMax - selMin);
+    if (text.empty()) return;
+
+    if (!OpenClipboard(hwnd ? hwnd : GetActiveWindow())) return;
+    EmptyClipboard();
+    size_t bytes = (text.length() + 1) * sizeof(wchar_t);
+    HGLOBAL hGlob = GlobalAlloc(GMEM_MOVEABLE, bytes);
+    if (hGlob) {
+        void* pData = GlobalLock(hGlob);
+        if (pData) {
+            memcpy(pData, text.c_str(), bytes);
+            GlobalUnlock(hGlob);
+            SetClipboardData(CF_UNICODETEXT, hGlob);
+        }
+    }
+    CloseClipboard();
+}
+
+void DrawerPanel::PasteFromClipboardToGit(HWND hwnd) {
+    if (!OpenClipboard(hwnd ? hwnd : GetActiveWindow())) return;
+    HANDLE hData = GetClipboardData(CF_UNICODETEXT);
+    if (hData) {
+        const wchar_t* pText = static_cast<const wchar_t*>(GlobalLock(hData));
+        if (pText) {
+            std::wstring pasted(pText);
+            GlobalUnlock(hData);
+            if (!pasted.empty()) {
+                std::wstring clean;
+                clean.reserve(pasted.length());
+                for (size_t i = 0; i < pasted.length(); ++i) {
+                    if (pasted[i] == L'\r') {
+                        if (i + 1 < pasted.length() && pasted[i + 1] == L'\n') continue;
+                        clean.push_back(L'\n');
+                    } else {
+                        clean.push_back(pasted[i]);
+                    }
+                }
+                if (HasGitSelection()) {
+                    DeleteGitSelection();
+                }
+                if (m_gitCaretPos > m_commitMessage.length()) {
+                    m_gitCaretPos = m_commitMessage.length();
+                }
+                m_commitMessage.insert(m_gitCaretPos, clean);
+                m_gitCaretPos += clean.length();
+                ClearGitSelection();
+            }
+        }
+    }
+    CloseClipboard();
+}
+
+size_t DrawerPanel::HitTestGitCommitMsgPos(POINT pt, Theme& theme, const app::AppConfig& config) {
+    if (m_commitMessage.empty() || !theme.dwriteFactory) {
+        return 0;
+    }
+    float btnSize = config.ScaleF(22.0f);
+    D2D1_RECT_F rcMsgText = D2D1::RectF(
+        m_gitMsgBoxBounds.left + config.ScaleF(8.0f),
+        m_gitMsgBoxBounds.top + config.ScaleF(5.0f),
+        m_gitGenerateAiBounds.left - config.ScaleF(4.0f),
+        m_gitMsgBoxBounds.bottom - config.ScaleF(5.0f)
+    );
+    float textW = (std::max)(10.0f, rcMsgText.right - rcMsgText.left);
+
+    std::wstring layoutStr = m_commitMessage;
+    if (!layoutStr.empty() && layoutStr.back() == L'\n') {
+        layoutStr += L" ";
+    }
+
+    Microsoft::WRL::ComPtr<IDWriteTextLayout> pLayout;
+    if (FAILED(theme.dwriteFactory->CreateTextLayout(
+            layoutStr.c_str(), static_cast<UINT32>(layoutStr.length()),
+            theme.fontMenuItem.Get() ? theme.fontMenuItem.Get() : theme.fontButtonCenter.Get(),
+            textW, 10000.0f, &pLayout))) {
+        return m_commitMessage.length();
+    }
+    pLayout->SetWordWrapping(DWRITE_WORD_WRAPPING_WRAP);
+
+    float relX = static_cast<float>(pt.x) - rcMsgText.left;
+    float relY = static_cast<float>(pt.y) - rcMsgText.top + m_gitMsgScrollY;
+
+    BOOL isTrailingHit = FALSE;
+    BOOL isInside = FALSE;
+    DWRITE_HIT_TEST_METRICS htm{};
+    if (SUCCEEDED(pLayout->HitTestPoint(relX, relY, &isTrailingHit, &isInside, &htm))) {
+        size_t pos = htm.textPosition + (isTrailingHit ? htm.length : 0);
+        return (std::min)(pos, m_commitMessage.length());
+    }
+    return m_commitMessage.length();
+}
+
+bool DrawerPanel::HandleGitMouseDown(POINT pt, bool isShift, Theme& theme, const app::AppConfig& config) {
+    if (m_isCommitEditMsgOpen) return false;
+    if (pt.x >= m_gitMsgBoxBounds.left && pt.x <= m_gitMsgBoxBounds.right &&
+        pt.y >= m_gitMsgBoxBounds.top && pt.y <= m_gitMsgBoxBounds.bottom) {
+        if (pt.x >= m_gitGenerateAiBounds.left && pt.x <= m_gitGenerateAiBounds.right &&
+            pt.y >= m_gitGenerateAiBounds.top && pt.y <= m_gitGenerateAiBounds.bottom) {
+            return false;
+        }
+        m_focusedGitInput = 1;
+        size_t pos = HitTestGitCommitMsgPos(pt, theme, config);
+        if (isShift) {
+            if (m_gitSelStart == -1) m_gitSelStart = static_cast<int>(m_gitCaretPos);
+            m_gitCaretPos = pos;
+            m_gitSelEnd = static_cast<int>(m_gitCaretPos);
+        } else {
+            m_gitCaretPos = pos;
+            m_gitSelStart = static_cast<int>(pos);
+            m_gitSelEnd = static_cast<int>(pos);
+            m_isGitSelecting = true;
+        }
+        m_gitCaretVisible = true;
+        return true;
+    }
+    return false;
+}
+
+bool DrawerPanel::HandleGitMouseUp(POINT pt) {
+    (void)pt;
+    if (m_isGitSelecting) {
+        m_isGitSelecting = false;
+        if (m_gitSelStart == m_gitSelEnd) {
+            ClearGitSelection();
+        }
+        return true;
+    }
+    return false;
+}
+
 void DrawerPanel::HandleGitChar(wchar_t ch) {
     if (m_isCommitEditMsgOpen) return;
     if (m_focusedGitInput != 1) return;
     if (ch >= 32) {
-        m_commitMessage.push_back(ch);
+        if (HasGitSelection()) {
+            DeleteGitSelection();
+        }
+        if (m_gitCaretPos > m_commitMessage.length()) {
+            m_gitCaretPos = m_commitMessage.length();
+        }
+        m_commitMessage.insert(m_gitCaretPos, 1, ch);
+        m_gitCaretPos++;
+        ClearGitSelection();
+        m_gitCaretVisible = true;
     }
 }
 
-void DrawerPanel::HandleGitKeyDown(WPARAM wParam) {
-    if (m_isCommitEditMsgOpen) return;
-    if (m_focusedGitInput != 1) return;
+static size_t GitFindPrevWordPos(const std::wstring& str, size_t pos) {
+    if (pos == 0 || str.empty()) return 0;
+    size_t i = (std::min)(pos, str.length());
+    while (i > 0 && iswspace(str[i - 1])) --i;
+    while (i > 0 && !iswspace(str[i - 1])) --i;
+    return i;
+}
+
+static size_t GitFindNextWordPos(const std::wstring& str, size_t pos) {
+    if (pos >= str.length() || str.empty()) return str.length();
+    size_t i = pos;
+    while (i < str.length() && !iswspace(str[i])) ++i;
+    while (i < str.length() && iswspace(str[i])) ++i;
+    return i;
+}
+
+bool DrawerPanel::HandleGitKeyDown(WPARAM wParam, HWND hwnd) {
+    if (m_isCommitEditMsgOpen) return false;
+    if (m_focusedGitInput != 1) return false;
+
+    bool isCtrl = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
+    bool isShift = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
+
+    if (m_gitCaretPos > m_commitMessage.length()) {
+        m_gitCaretPos = m_commitMessage.length();
+    }
+
+    size_t curLineStart = 0;
+    if (m_gitCaretPos > 0) {
+        size_t lastNl = m_commitMessage.rfind(L'\n', m_gitCaretPos - 1);
+        if (lastNl != std::wstring::npos) {
+            curLineStart = lastNl + 1;
+        }
+    }
+    size_t curCol = (m_gitCaretPos >= curLineStart) ? (m_gitCaretPos - curLineStart) : 0;
 
     if (wParam == VK_BACK) {
-        if (!m_commitMessage.empty()) {
-            m_commitMessage.pop_back();
+        if (HasGitSelection()) {
+            DeleteGitSelection();
+        } else if (m_gitCaretPos > 0 && !m_commitMessage.empty()) {
+            if (isCtrl) {
+                size_t prevPos = GitFindPrevWordPos(m_commitMessage, m_gitCaretPos);
+                m_commitMessage.erase(prevPos, m_gitCaretPos - prevPos);
+                m_gitCaretPos = prevPos;
+            } else {
+                m_commitMessage.erase(m_gitCaretPos - 1, 1);
+                m_gitCaretPos--;
+            }
         }
+        m_gitCaretVisible = true;
+        return true;
+    } else if (wParam == VK_DELETE) {
+        if (HasGitSelection()) {
+            DeleteGitSelection();
+        } else if (m_gitCaretPos < m_commitMessage.length()) {
+            if (isCtrl) {
+                size_t nextPos = GitFindNextWordPos(m_commitMessage, m_gitCaretPos);
+                m_commitMessage.erase(m_gitCaretPos, nextPos - m_gitCaretPos);
+            } else {
+                m_commitMessage.erase(m_gitCaretPos, 1);
+            }
+        }
+        m_gitCaretVisible = true;
+        return true;
+    } else if (wParam == VK_LEFT) {
+        size_t oldPos = m_gitCaretPos;
+        if (isShift) {
+            if (m_gitSelStart == -1) m_gitSelStart = static_cast<int>(oldPos);
+            if (isCtrl) {
+                m_gitCaretPos = GitFindPrevWordPos(m_commitMessage, m_gitCaretPos);
+            } else if (m_gitCaretPos > 0) {
+                m_gitCaretPos--;
+            }
+            m_gitSelEnd = static_cast<int>(m_gitCaretPos);
+        } else {
+            if (HasGitSelection()) {
+                auto [sMin, sMax] = GetGitSelectionRange();
+                m_gitCaretPos = sMin;
+                ClearGitSelection();
+            } else {
+                if (isCtrl) {
+                    m_gitCaretPos = GitFindPrevWordPos(m_commitMessage, m_gitCaretPos);
+                } else if (m_gitCaretPos > 0) {
+                    m_gitCaretPos--;
+                }
+            }
+        }
+        m_gitCaretVisible = true;
+        return true;
+    } else if (wParam == VK_RIGHT) {
+        size_t oldPos = m_gitCaretPos;
+        if (isShift) {
+            if (m_gitSelStart == -1) m_gitSelStart = static_cast<int>(oldPos);
+            if (isCtrl) {
+                m_gitCaretPos = GitFindNextWordPos(m_commitMessage, m_gitCaretPos);
+            } else if (m_gitCaretPos < m_commitMessage.length()) {
+                m_gitCaretPos++;
+            }
+            m_gitSelEnd = static_cast<int>(m_gitCaretPos);
+        } else {
+            if (HasGitSelection()) {
+                auto [sMin, sMax] = GetGitSelectionRange();
+                m_gitCaretPos = sMax;
+                ClearGitSelection();
+            } else {
+                if (isCtrl) {
+                    m_gitCaretPos = GitFindNextWordPos(m_commitMessage, m_gitCaretPos);
+                } else if (m_gitCaretPos < m_commitMessage.length()) {
+                    m_gitCaretPos++;
+                }
+            }
+        }
+        m_gitCaretVisible = true;
+        return true;
+    } else if (wParam == VK_UP) {
+        size_t oldPos = m_gitCaretPos;
+        if (curLineStart == 0) {
+            m_gitCaretPos = 0;
+        } else {
+            size_t prevLineEnd = curLineStart - 1;
+            size_t prevLineStart = 0;
+            if (prevLineEnd > 0) {
+                size_t prevLastNl = m_commitMessage.rfind(L'\n', prevLineEnd - 1);
+                if (prevLastNl != std::wstring::npos) {
+                    prevLineStart = prevLastNl + 1;
+                }
+            }
+            size_t prevLineLen = prevLineEnd - prevLineStart;
+            m_gitCaretPos = prevLineStart + (std::min)(curCol, prevLineLen);
+        }
+        if (isShift) {
+            if (m_gitSelStart == -1) m_gitSelStart = static_cast<int>(oldPos);
+            m_gitSelEnd = static_cast<int>(m_gitCaretPos);
+        } else {
+            ClearGitSelection();
+        }
+        m_gitCaretVisible = true;
+        return true;
+    } else if (wParam == VK_DOWN) {
+        size_t oldPos = m_gitCaretPos;
+        size_t nextNl = m_commitMessage.find(L'\n', m_gitCaretPos);
+        if (nextNl == std::wstring::npos) {
+            m_gitCaretPos = m_commitMessage.length();
+        } else {
+            size_t nextLineStart = nextNl + 1;
+            size_t nextLineEnd = m_commitMessage.find(L'\n', nextLineStart);
+            if (nextLineEnd == std::wstring::npos) nextLineEnd = m_commitMessage.length();
+            size_t nextLineLen = nextLineEnd - nextLineStart;
+            m_gitCaretPos = nextLineStart + (std::min)(curCol, nextLineLen);
+        }
+        if (isShift) {
+            if (m_gitSelStart == -1) m_gitSelStart = static_cast<int>(oldPos);
+            m_gitSelEnd = static_cast<int>(m_gitCaretPos);
+        } else {
+            ClearGitSelection();
+        }
+        m_gitCaretVisible = true;
+        return true;
+    } else if (wParam == VK_HOME) {
+        size_t oldPos = m_gitCaretPos;
+        m_gitCaretPos = isCtrl ? 0 : curLineStart;
+        if (isShift) {
+            if (m_gitSelStart == -1) m_gitSelStart = static_cast<int>(oldPos);
+            m_gitSelEnd = static_cast<int>(m_gitCaretPos);
+        } else {
+            ClearGitSelection();
+        }
+        m_gitCaretVisible = true;
+        return true;
+    } else if (wParam == VK_END) {
+        size_t oldPos = m_gitCaretPos;
+        if (isCtrl) {
+            m_gitCaretPos = m_commitMessage.length();
+        } else {
+            size_t nextNl = m_commitMessage.find(L'\n', m_gitCaretPos);
+            m_gitCaretPos = (nextNl != std::wstring::npos) ? nextNl : m_commitMessage.length();
+        }
+        if (isShift) {
+            if (m_gitSelStart == -1) m_gitSelStart = static_cast<int>(oldPos);
+            m_gitSelEnd = static_cast<int>(m_gitCaretPos);
+        } else {
+            ClearGitSelection();
+        }
+        m_gitCaretVisible = true;
+        return true;
+    } else if (isCtrl && (wParam == 'A' || wParam == 'a')) {
+        m_gitSelStart = 0;
+        m_gitSelEnd = static_cast<int>(m_commitMessage.length());
+        m_gitCaretPos = m_commitMessage.length();
+        m_gitCaretVisible = true;
+        return true;
+    } else if (isCtrl && (wParam == 'C' || wParam == 'c')) {
+        CopyGitSelectionToClipboard(hwnd);
+        return true;
+    } else if (isCtrl && (wParam == 'X' || wParam == 'x')) {
+        CopyGitSelectionToClipboard(hwnd);
+        DeleteGitSelection();
+        m_gitCaretVisible = true;
+        return true;
+    } else if (isCtrl && (wParam == 'V' || wParam == 'v')) {
+        PasteFromClipboardToGit(hwnd);
+        m_gitCaretVisible = true;
+        return true;
     } else if (wParam == VK_RETURN) {
-        if (GetKeyState(VK_CONTROL) & 0x8000) {
+        if (isCtrl) {
             if (!IsGitHubLoggedIn()) {
                 ShowGitNotification(L"No GitHub account detected. Please log in to GitHub before committing.");
                 OpenGitHubLoginModal();
-                return;
+                return true;
             }
             bool isFirstCommit = !m_isGitRepo || (!m_gitChanges.empty() && m_gitCommits.empty());
             if (isFirstCommit) {
                 OpenPublishRepoModal();
-                return;
+                return true;
             }
             std::wstring trimmed = m_commitMessage;
             size_t f = trimmed.find_first_not_of(L" \t\r\n");
@@ -7374,10 +7738,25 @@ void DrawerPanel::HandleGitKeyDown(WPARAM wParam) {
                 m_showGitTooltip = true;
                 ShowGitNotification(L"Please provide a commit message before committing.");
             }
+        } else {
+            if (HasGitSelection()) {
+                DeleteGitSelection();
+            }
+            if (m_gitCaretPos > m_commitMessage.length()) {
+                m_gitCaretPos = m_commitMessage.length();
+            }
+            m_commitMessage.insert(m_gitCaretPos, 1, L'\n');
+            m_gitCaretPos++;
+            ClearGitSelection();
+            m_gitCaretVisible = true;
         }
+        return true;
     } else if (wParam == VK_ESCAPE) {
         m_focusedGitInput = 0;
+        ClearGitSelection();
+        return true;
     }
+    return false;
 }
 
 void DrawerPanel::DrawButtonSpinner(ID2D1RenderTarget* pRT, const D2D1_RECT_F& btnBounds, const std::wstring& labelText, Theme& theme, const app::AppConfig& config) {
@@ -7688,8 +8067,38 @@ void DrawerPanel::RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, 
             curY += notifH + config.ScaleF(6.0f);
         }
 
-        // Commit Message Input Box (Always accessible at top of Source Control)
-        float msgH = config.ScaleF(28.0f);
+        // 1. Calculate Dynamic Height of Commit Message Input Box based on text and newlines
+        float minMsgH = config.ScaleF(28.0f);
+        float maxMsgH = config.ScaleF(140.0f);
+        float btnSize = config.ScaleF(22.0f);
+        float boxW = (railW + currentDrawerW - paddingX) - (railW + paddingX);
+        float textContentW = (std::max)(50.0f, boxW - config.ScaleF(16.0f) - btnSize - config.ScaleF(4.0f));
+
+        float measuredH = minMsgH;
+        if (theme.dwriteFactory) {
+            std::wstring measureStr = m_commitMessage;
+            if (measureStr.empty()) {
+                measureStr = L"Message";
+            } else if (measureStr.back() == L'\n') {
+                measureStr += L" "; // Ensures trailing empty newline is counted in height
+            }
+
+            Microsoft::WRL::ComPtr<IDWriteTextLayout> pMeasureLayout;
+            if (SUCCEEDED(theme.dwriteFactory->CreateTextLayout(
+                    measureStr.c_str(), static_cast<UINT32>(measureStr.length()),
+                    theme.fontMenuItem.Get() ? theme.fontMenuItem.Get() : theme.fontButtonCenter.Get(),
+                    textContentW, 10000.0f, &pMeasureLayout))) {
+                pMeasureLayout->SetWordWrapping(DWRITE_WORD_WRAPPING_WRAP);
+                DWRITE_TEXT_METRICS tm{};
+                if (SUCCEEDED(pMeasureLayout->GetMetrics(&tm))) {
+                    measuredH = tm.height + config.ScaleF(10.0f);
+                }
+            }
+        }
+
+        float msgH = (std::max)(minMsgH, (std::min)(measuredH, maxMsgH));
+        m_gitMsgBoxCalculatedHeight = msgH;
+
         m_gitMsgBoxBounds = D2D1::RectF(
             railW + paddingX,
             curY,
@@ -7706,13 +8115,12 @@ void DrawerPanel::RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, 
             pRT->DrawRoundedRectangle(rrcMsg, theme.brushBorderSubtle.Get(), 1.0f);
         }
 
-        // AI Commit Message Sparkle Button (compact square with ✦ sparkle icon)
-        float btnSize = config.ScaleF(22.0f);
+        // AI Commit Message Sparkle Button (pinned to top-right of the input box)
         m_gitGenerateAiBounds = D2D1::RectF(
             m_gitMsgBoxBounds.right - btnSize - config.ScaleF(3.0f),
-            m_gitMsgBoxBounds.top + (msgH - btnSize) / 2.0f,
+            m_gitMsgBoxBounds.top + config.ScaleF(3.0f),
             m_gitMsgBoxBounds.right - config.ScaleF(3.0f),
-            m_gitMsgBoxBounds.top + (msgH - btnSize) / 2.0f + btnSize
+            m_gitMsgBoxBounds.top + config.ScaleF(3.0f) + btnSize
         );
         D2D1_ROUNDED_RECT rrcGen = D2D1::RoundedRect(m_gitGenerateAiBounds, 3.0f, 3.0f);
         pRT->FillRoundedRectangle(rrcGen, theme.brushBrandAccent.Get());
@@ -7741,33 +8149,15 @@ void DrawerPanel::RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, 
             }
         }
 
-        // Message text or placeholder (LEFT-ALIGNED with strict clipping & horizontal scrolling)
+        // Message text or placeholder (Multi-line with selection and caret)
         D2D1_RECT_F rcMsgText = D2D1::RectF(
             m_gitMsgBoxBounds.left + config.ScaleF(8.0f),
-            m_gitMsgBoxBounds.top,
-            m_gitGenerateAiBounds.left - config.ScaleF(6.0f),
-            m_gitMsgBoxBounds.bottom
+            m_gitMsgBoxBounds.top + config.ScaleF(5.0f),
+            m_gitGenerateAiBounds.left - config.ScaleF(4.0f),
+            m_gitMsgBoxBounds.bottom - config.ScaleF(5.0f)
         );
-        float availW = (std::max)(10.0f, rcMsgText.right - rcMsgText.left);
-        float msgTextWidth = 0.0f;
-
-        if (theme.dwriteFactory && !m_commitMessage.empty()) {
-            Microsoft::WRL::ComPtr<IDWriteTextLayout> pLayout;
-            if (SUCCEEDED(theme.dwriteFactory->CreateTextLayout(
-                    m_commitMessage.c_str(), static_cast<UINT32>(m_commitMessage.length()),
-                    theme.fontMenuItem.Get() ? theme.fontMenuItem.Get() : theme.fontButtonCenter.Get(),
-                    10000.0f, msgH, &pLayout))) {
-                DWRITE_TEXT_METRICS tm{};
-                if (SUCCEEDED(pLayout->GetMetrics(&tm))) {
-                    msgTextWidth = tm.width;
-                }
-            }
-        }
-
-        float scrollX = 0.0f;
-        if (msgTextWidth > (availW - config.ScaleF(4.0f))) {
-            scrollX = msgTextWidth - (availW - config.ScaleF(4.0f));
-        }
+        float visibleW = (std::max)(10.0f, rcMsgText.right - rcMsgText.left);
+        float visibleH = (std::max)(10.0f, rcMsgText.bottom - rcMsgText.top);
 
         // Clip strictly to rcMsgText so overflowing text NEVER leaks outside the box
         pRT->PushAxisAlignedClip(rcMsgText, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
@@ -7782,26 +8172,91 @@ void DrawerPanel::RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, 
             pRT->DrawText(phStr, static_cast<UINT32>(wcslen(phStr)),
                           theme.fontMenuItem.Get() ? theme.fontMenuItem.Get() : theme.fontButtonCenter.Get(),
                           rcMsgText, theme.brushTextMuted.Get());
-        } else {
-            D2D1_RECT_F rcScrolled = D2D1::RectF(
-                rcMsgText.left - scrollX,
-                rcMsgText.top,
-                rcMsgText.left - scrollX + (std::max)(availW, msgTextWidth + 20.0f),
-                rcMsgText.bottom
-            );
-            pRT->DrawText(m_commitMessage.c_str(), static_cast<UINT32>(m_commitMessage.length()),
-                          theme.fontMenuItem.Get() ? theme.fontMenuItem.Get() : theme.fontButtonCenter.Get(),
-                          rcScrolled, theme.brushTextPrimary.Get());
-        }
+            if (m_focusedGitInput == 1 && m_gitCaretVisible) {
+                float caretX = rcMsgText.left + 1.0f;
+                float caretTop = rcMsgText.top;
+                float caretBottom = caretTop + config.ScaleF(16.0f);
+                pRT->DrawLine(D2D1::Point2F(caretX, caretTop), D2D1::Point2F(caretX, caretBottom), theme.brushTextPrimary.Get(), 1.5f);
+            }
+        } else if (theme.dwriteFactory) {
+            std::wstring layoutStr = m_commitMessage;
+            if (layoutStr.back() == L'\n') {
+                layoutStr += L" "; // Ensures trailing empty newline produces a line for caret
+            }
 
-        // Blinking Caret '|' in Commit Message Box (Image 1)
-        if (!m_isCommitEditMsgOpen && m_focusedGitInput == 1 && m_gitCaretVisible) {
-            float caretX = rcMsgText.left - scrollX + msgTextWidth + 1.0f;
-            pRT->DrawLine(
-                D2D1::Point2F(caretX, m_gitMsgBoxBounds.top + config.ScaleF(5.0f)),
-                D2D1::Point2F(caretX, m_gitMsgBoxBounds.bottom - config.ScaleF(5.0f)),
-                theme.brushTextPrimary.Get(), 1.5f
-            );
+            Microsoft::WRL::ComPtr<IDWriteTextLayout> pLayout;
+            if (SUCCEEDED(theme.dwriteFactory->CreateTextLayout(
+                    layoutStr.c_str(), static_cast<UINT32>(layoutStr.length()),
+                    theme.fontMenuItem.Get() ? theme.fontMenuItem.Get() : theme.fontButtonCenter.Get(),
+                    visibleW, 10000.0f, &pLayout))) {
+                pLayout->SetWordWrapping(DWRITE_WORD_WRAPPING_WRAP);
+
+                // Clamp caret position
+                if (m_gitCaretPos > m_commitMessage.length()) {
+                    m_gitCaretPos = m_commitMessage.length();
+                }
+
+                // Caret metrics and position
+                DWRITE_HIT_TEST_METRICS carethtm{};
+                FLOAT caretRelX = 0, caretRelY = 0;
+                pLayout->HitTestTextPosition(static_cast<UINT32>(m_gitCaretPos), FALSE, &caretRelX, &caretRelY, &carethtm);
+
+                DWRITE_TEXT_METRICS tm{};
+                pLayout->GetMetrics(&tm);
+
+                // Auto-scroll vertically if content exceeds visible box height
+                if (caretRelY - m_gitMsgScrollY < 0.0f) {
+                    m_gitMsgScrollY = caretRelY;
+                } else if (caretRelY + carethtm.height - m_gitMsgScrollY > visibleH) {
+                    m_gitMsgScrollY = caretRelY + carethtm.height - visibleH;
+                }
+                float maxScrollY = (std::max)(0.0f, tm.height - visibleH);
+                if (m_gitMsgScrollY > maxScrollY) m_gitMsgScrollY = maxScrollY;
+                if (m_gitMsgScrollY < 0.0f) m_gitMsgScrollY = 0.0f;
+
+                float textOriginX = rcMsgText.left;
+                float textOriginY = rcMsgText.top - m_gitMsgScrollY;
+
+                // Selection Highlight Rectangles
+                if (HasGitSelection()) {
+                    auto [selMin, selMax] = GetGitSelectionRange();
+                    if (selMax > selMin) {
+                        DWRITE_HIT_TEST_METRICS hitRanges[32];
+                        UINT32 actualCount = 0;
+                        if (SUCCEEDED(pLayout->HitTestTextRange(
+                                static_cast<UINT32>(selMin), static_cast<UINT32>(selMax - selMin),
+                                0.0f, 0.0f, hitRanges, 32, &actualCount))) {
+                            Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushSel;
+                            pRT->CreateSolidColorBrush(D2D1::ColorF(0.0f, 0.471f, 0.831f, 0.40f), &brushSel);
+                            ID2D1Brush* pSelBrush = brushSel ? brushSel.Get() : theme.brushTreeSelected.Get();
+                            for (UINT32 i = 0; i < actualCount; ++i) {
+                                D2D1_RECT_F selRc = D2D1::RectF(
+                                    textOriginX + hitRanges[i].left,
+                                    textOriginY + hitRanges[i].top,
+                                    textOriginX + hitRanges[i].left + hitRanges[i].width,
+                                    textOriginY + hitRanges[i].top + hitRanges[i].height
+                                );
+                                pRT->FillRectangle(selRc, pSelBrush);
+                            }
+                        }
+                    }
+                }
+
+                // Render Text Layout
+                pRT->DrawTextLayout(D2D1::Point2F(textOriginX, textOriginY), pLayout.Get(), theme.brushTextPrimary.Get());
+
+                // Blinking Caret
+                if (!m_isCommitEditMsgOpen && m_focusedGitInput == 1 && m_gitCaretVisible) {
+                    float caretX = textOriginX + caretRelX;
+                    float caretTop = textOriginY + caretRelY;
+                    float caretBottom = caretTop + carethtm.height;
+                    pRT->DrawLine(
+                        D2D1::Point2F(caretX, caretTop),
+                        D2D1::Point2F(caretX, caretBottom),
+                        theme.brushTextPrimary.Get(), 1.5f
+                    );
+                }
+            }
         }
 
         pRT->PopAxisAlignedClip();
@@ -10217,53 +10672,53 @@ void DrawerPanel::InitExtensionEntries() {
     m_extensionEntries.clear();
 
     ExtensionEntry e1;
-    e1.id = L"dsznajder.es7-react-js-snippets";
+    e1.id = L"phide.react-snippets";
     e1.displayName = L"ES7+ React/Redux/React-Native snippets";
-    e1.publisherDisplayName = L"dsznajder";
+    e1.publisherDisplayName = L"rodrigovallades";
     e1.description = L"Extensions for React, React-Native and Redux in JS/TS with ES7+ syntax. Customizable.";
     e1.version = L"4.4.3";
     e1.installsFormatted = L"17.8M";
     e1.rating = 4.4f;
-    e1.iconPath = L"assets\\extensions\\dsznajder.es7-react-js-snippets\\icon.png";
+    e1.iconPath = L"assets\\extensions\\phide.react-snippets\\icon.png";
     e1.isInstalled = true;
     e1.isEnabled = true;
     m_extensionEntries.push_back(std::move(e1));
 
     ExtensionEntry e2;
-    e2.id = L"bradlc.vscode-tailwindcss";
+    e2.id = L"phide.tailwindcss";
     e2.displayName = L"Tailwind CSS IntelliSense";
     e2.publisherDisplayName = L"Tailwind Labs";
-    e2.description = L"Intelligent Tailwind CSS tooling for VS Code";
+    e2.description = L"Intelligent Tailwind CSS tooling for web development";
     e2.version = L"0.14.3";
     e2.installsFormatted = L"17.9M";
     e2.rating = 4.7f;
-    e2.iconPath = L"assets\\extensions\\bradlc.vscode-tailwindcss\\icon.png";
+    e2.iconPath = L"assets\\extensions\\phide.tailwindcss\\icon.png";
     e2.isInstalled = true;
     e2.isEnabled = true;
     m_extensionEntries.push_back(std::move(e2));
 
     ExtensionEntry e3;
-    e3.id = L"redhat.vscode-yaml";
+    e3.id = L"phide.yaml";
     e3.displayName = L"YAML";
     e3.publisherDisplayName = L"Red Hat";
     e3.description = L"YAML Language Support by Red Hat, with built-in Kubernetes syntax support";
     e3.version = L"2.1.2";
     e3.installsFormatted = L"29.8M";
     e3.rating = 4.3f;
-    e3.iconPath = L"assets\\extensions\\redhat.vscode-yaml\\icon.png";
+    e3.iconPath = L"assets\\extensions\\phide.yaml\\icon.png";
     e3.isInstalled = true;
     e3.isEnabled = true;
     m_extensionEntries.push_back(std::move(e3));
 
     ExtensionEntry e4;
-    e4.id = L"eamodio.gitlens";
+    e4.id = L"phide.gitlens";
     e4.displayName = L"GitLens — Git supercharged";
     e4.publisherDisplayName = L"GitKraken";
-    e4.description = L"Supercharge Git within VS Code — Visualize code authorship at a glance via Git blame annotations and CodeLens";
+    e4.description = L"Supercharge Git — Visualize code authorship at a glance via Git blame annotations and CodeLens";
     e4.version = L"2026.10.31";
     e4.installsFormatted = L"53.6M";
     e4.rating = 4.5f;
-    e4.iconPath = L"assets\\extensions\\eamodio.gitlens\\icon.png";
+    e4.iconPath = L"assets\\extensions\\phide.gitlens\\icon.png";
     e4.isInstalled = true;
     e4.isEnabled = true;
     m_extensionEntries.push_back(std::move(e4));

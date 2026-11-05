@@ -1,0 +1,24 @@
+{
+  "id": "phide.code-runner",
+  "displayName": "Code Runner",
+  "publisher": "formulahendry",
+  "publisherDisplayName": "Jun Han",
+  "version": "0.12.2",
+  "description": "Run code snippet or code file for multiple languages: Python, C, C++, Java, JavaScript, PHP, Go, Rust, and more.",
+  "installs": 26500000,
+  "rating": 4.52,
+  "ratingCount": 1150,
+  "lastUpdated": "2024-04-05T09:23:00.000Z",
+  "icon": "icon.png",
+  "categories": [
+    "Programming Languages",
+    "Other"
+  ],
+  "tags": [
+    "code runner",
+    "run",
+    "python",
+    "runner",
+    "terminal"
+  ]
+}

@@ -8927,7 +8927,7 @@ void Window::HandleMouseMove(POINT clientPt, WPARAM wParam) {
                 const float headerH = m_config.ScaleF(static_cast<float>(m_config.headerHeight));
                 m_drawer.SetGitSplitY(static_cast<float>(clientPt.y), headerH + 110.0f, effectiveDrawerH - 70.0f);
                 needRepaint = true;
-            } else if (m_drawer.HandleGitMouseMove(clientPt)) {
+            } else if (m_drawer.HandleGitMouseMove(clientPt, (wParam & MK_LBUTTON) != 0, &m_theme, &m_config)) {
                 needRepaint = true;
             }
         }
@@ -10887,6 +10887,12 @@ void Window::HandleLButtonDown(POINT clientPt) {
                 return;
             }
         } else if (m_config.activeRailTab == 2) {
+            // Check commit message input box focus & drag selection
+            if (m_drawer.HandleGitMouseDown(clientPt, (GetKeyState(VK_SHIFT) & 0x8000) != 0, m_theme, m_config)) {
+                SetCapture(m_hwnd);
+                InvalidateRect(m_hwnd, nullptr, FALSE);
+                return;
+            }
             // Check vertical splitter drag between Changes and Graph (Image 2 & 3)
             if (m_drawer.HitTestGitSplitter(clientPt)) {
                 m_isDraggingGitSplitter = true;
@@ -11463,6 +11469,10 @@ void Window::HandleLButtonUp(POINT clientPt) {
         m_config.gitSplitY = m_drawer.GetGitSplitY();
         UpdateDrawerErrorFiles();
     SaveSessionState();
+        ReleaseCapture();
+        InvalidateRect(m_hwnd, nullptr, FALSE);
+    }
+    if (m_drawer.HandleGitMouseUp(clientPt)) {
         ReleaseCapture();
         InvalidateRect(m_hwnd, nullptr, FALSE);
     }
@@ -13173,8 +13183,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
 
             // 1b. If Git commit message in drawer is focused, navigation keys route to Git input
             if (m_config.activeRailTab == 2 && m_drawerAnimProgress > 0.001f && m_drawer.IsGitCommitBoxFocused()) {
-                if (wParam == VK_BACK || wParam == VK_ESCAPE || wParam == VK_RETURN) {
-                    m_drawer.HandleGitKeyDown(wParam);
+                if (m_drawer.HandleGitKeyDown(wParam, m_hwnd)) {
                     InvalidateRect(m_hwnd, nullptr, FALSE);
                     return 0;
                 }

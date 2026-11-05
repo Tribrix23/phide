@@ -10250,7 +10250,7 @@ void PopulateBuiltInPhpIntelliSense(std::vector<IntelliSenseItem>& outSymbols) {
             case 5: item.kind = CompletionKind::Constant; item.score = 430; break;
             default: item.kind = CompletionKind::Function; item.score = 350; break;
         }
-        item.origin = L"vscode-php";
+        item.origin = L"builtin-php";
         outSymbols.push_back(std::move(item));
     }
 }
@@ -10269,7 +10269,7 @@ std::vector<IntelliSenseItem> QueryPhpClassStaticMembers(const std::wstring& cla
                 item.insertText = cc.memberName;
                 item.kind = CompletionKind::Constant;
                 item.score = 1800;
-                item.origin = L"vscode-php";
+                item.origin = L"builtin-php";
                 results.push_back(std::move(item));
             }
         }
@@ -10284,7 +10284,7 @@ std::vector<IntelliSenseItem> QueryPhpClassStaticMembers(const std::wstring& cla
                 item.insertText = cm.methodName;
                 item.kind = CompletionKind::Method;
                 item.score = 1750;
-                item.origin = L"vscode-php";
+                item.origin = L"builtin-php";
                 results.push_back(std::move(item));
             }
         }
@@ -10308,7 +10308,7 @@ std::vector<IntelliSenseItem> QueryPhpClassInstanceMethods(const std::wstring& r
                     item.insertText = cm.methodName;
                     item.kind = CompletionKind::Method;
                     item.score = 2000;
-                    item.origin = L"vscode-php";
+                    item.origin = L"builtin-php";
                     results.push_back(std::move(item));
                 }
             }
@@ -10329,7 +10329,7 @@ std::vector<IntelliSenseItem> QueryPhpClassInstanceMethods(const std::wstring& r
                     item.insertText = cm.methodName;
                     item.kind = CompletionKind::Method;
                     item.score = hasReceiver ? 1400 : 1700;
-                    item.origin = L"vscode-php";
+                    item.origin = L"builtin-php";
                     results.push_back(std::move(item));
                 }
             }
@@ -10345,7 +10345,7 @@ std::vector<IntelliSenseItem> QueryPhpClassInstanceMethods(const std::wstring& r
             item.insertText = cm.methodName;
             item.kind = CompletionKind::Method;
             item.score = 1200;
-            item.origin = L"vscode-php";
+            item.origin = L"builtin-php";
             results.push_back(std::move(item));
         }
     }

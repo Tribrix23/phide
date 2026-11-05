@@ -257,6 +257,8 @@ public:
     void SetCommitMessage(const std::wstring& msg) {
         std::lock_guard<std::recursive_mutex> lock(m_gitMutex);
         m_commitMessage = msg;
+        m_gitCaretPos = m_commitMessage.length();
+        ClearGitSelection();
     }
     [[nodiscard]] std::wstring GetCommitMessage() const {
         std::lock_guard<std::recursive_mutex> lock(m_gitMutex);
@@ -292,9 +294,31 @@ public:
     }
     void LoadCommitFiles(GitCommitItem& ci);
     static void ComputeGitGraphLanes(std::vector<GitCommitItem>& commits);
-    bool HandleGitMouseMove(POINT pt);
+    bool HandleGitMouseMove(POINT pt, bool isLButtonDown = false, Theme* pTheme = nullptr, const app::AppConfig* pConfig = nullptr);
+    bool HandleGitMouseDown(POINT pt, bool isShift, Theme& theme, const app::AppConfig& config);
+    bool HandleGitMouseUp(POINT pt);
     void HandleGitChar(wchar_t ch);
-    void HandleGitKeyDown(WPARAM wParam);
+    bool HandleGitKeyDown(WPARAM wParam, HWND hwnd = nullptr);
+    size_t HitTestGitCommitMsgPos(POINT pt, Theme& theme, const app::AppConfig& config);
+
+    [[nodiscard]] bool HasGitSelection() const noexcept {
+        return m_gitSelStart >= 0 && m_gitSelEnd >= 0 && m_gitSelStart != m_gitSelEnd;
+    }
+    [[nodiscard]] std::pair<size_t, size_t> GetGitSelectionRange() const noexcept {
+        if (!HasGitSelection()) return { m_gitCaretPos, m_gitCaretPos };
+        size_t s = static_cast<size_t>((std::max)(0, (std::min)(m_gitSelStart, m_gitSelEnd)));
+        size_t e = static_cast<size_t>((std::max)(0, (std::max)(m_gitSelStart, m_gitSelEnd)));
+        size_t len = m_commitMessage.length();
+        return { (std::min)(s, len), (std::min)(e, len) };
+    }
+    void ClearGitSelection() noexcept {
+        m_gitSelStart = -1;
+        m_gitSelEnd = -1;
+        m_isGitSelecting = false;
+    }
+    void DeleteGitSelection();
+    void CopyGitSelectionToClipboard(HWND hwnd);
+    void PasteFromClipboardToGit(HWND hwnd);
 
     [[nodiscard]] bool HitTestGitSplitter(POINT pt) const noexcept;
     void SetGitSplitY(float y, float minY, float maxY) noexcept;
@@ -945,6 +969,12 @@ private:
     bool m_gitAutoRefresh = true;
 
     std::wstring m_commitMessage;
+    size_t m_gitCaretPos = 0;
+    int m_gitSelStart = -1;
+    int m_gitSelEnd = -1;
+    bool m_isGitSelecting = false;
+    float m_gitMsgScrollY = 0.0f;
+    float m_gitMsgBoxCalculatedHeight = 28.0f;
     int m_focusedGitInput = 0; // 0 = none, 1 = commit message input box
     bool m_gitCaretVisible = true;
     int m_unpushedCommitsCount = 0;
