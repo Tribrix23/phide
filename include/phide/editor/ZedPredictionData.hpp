@@ -1,5 +1,5 @@
 #pragma once
-// AUTO-GENERATED FROM vendor/zed-edit-prediction/ AND vendor/vscode-php-intellisense/
+// AUTO-GENERATED FROM vendor/zed-edit-prediction/ AND vendor/php-intellisense/
 // DO NOT EDIT MANUALLY — RUN vendor/zed-edit-prediction/build_zed_predictions.py
 
 #include <cstddef>

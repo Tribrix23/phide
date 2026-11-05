@@ -5663,7 +5663,24 @@ struct ExtDetailMeta {
 };
 
 static ExtDetailMeta GetExtensionMeta(const std::wstring& extId) {
-    if (extId == L"phide.tailwindcss" || extId == L"bradlc.vscode-tailwindcss") {
+    if (extId == L"phide.eslint" || extId == L"eslint") {
+        return {
+            L"phide.eslint",
+            L"ESLint",
+            L"phide",
+            L"v3.0.34",
+            L"Integrates ESLint JavaScript, TypeScript, JSX, and TSX linting into phide.",
+            L"37,245,000",
+            4.62f,
+            1820,
+            L"Linters, Programming Languages",
+            L"11/12/2015",
+            L"10/30/2026",
+            L"https://github.com/phide-ide/eslint",
+            L"https://github.com/phide-ide/eslint/issues",
+            L"MIT"
+        };
+    } else if (extId == L"phide.tailwindcss") {
         return {
             L"phide.tailwindcss",
             L"Tailwind CSS IntelliSense",
@@ -5680,7 +5697,7 @@ static ExtDetailMeta GetExtensionMeta(const std::wstring& extId) {
             L"https://github.com/tailwindlabs/tailwindcss-intellisense/issues",
             L"MIT"
         };
-    } else if (extId == L"phide.yaml" || extId == L"redhat.vscode-yaml") {
+    } else if (extId == L"phide.yaml") {
         return {
             L"phide.yaml",
             L"YAML",
@@ -6064,6 +6081,14 @@ void EditorCanvas::RenderExtensionDetail(ID2D1RenderTarget* pRT, Theme& theme, c
                 { L"useMemo", L"React useMemo Hook snippet" },
                 { L"clg", L"console.log(object)" },
                 { L"imp", L"import moduleName from 'module'" }
+            };
+        } else if (meta.id.find(L"eslint") != std::wstring::npos) {
+            rows = {
+                { L"eslint.enable", L"Enable or disable ESLint for JS, TS, JSX, and TSX files" },
+                { L"eslint.format.enable", L"Enables ESLint as a code formatter" },
+                { L"eslint.run", L"Run linter onType or onSave" },
+                { L"eslint.autoFixOnSave", L"Automatically fix auto-fixable problems on Save" },
+                { L"eslint.lintTask.enable", L"Enable whole workspace linting task" }
             };
         } else if (meta.id.find(L"tailwind") != std::wstring::npos) {
             rows = {

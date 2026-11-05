@@ -10744,6 +10744,32 @@ void DrawerPanel::InitExtensionEntries() {
     e4.isInstalled = true;
     e4.isEnabled = true;
     m_extensionEntries.push_back(std::move(e4));
+
+    ExtensionEntry e5;
+    e5.id = L"phide.eslint";
+    e5.displayName = L"ESLint";
+    e5.publisherDisplayName = L"phide";
+    e5.description = L"Integrates ESLint JavaScript, TypeScript, JSX, and TSX linting into phide";
+    e5.version = L"3.0.34";
+    e5.installsFormatted = L"37.2M";
+    e5.rating = 4.6f;
+    e5.iconPath = L"assets\\extensions\\phide.eslint\\icon.png";
+    e5.isInstalled = true;
+    e5.isEnabled = true;
+    m_extensionEntries.push_back(std::move(e5));
+
+    ExtensionEntry e6;
+    e6.id = L"phide.code-runner";
+    e6.displayName = L"Code Runner";
+    e6.publisherDisplayName = L"formulahendry";
+    e6.description = L"Run code snippet or code file for multiple languages";
+    e6.version = L"0.12.2";
+    e6.installsFormatted = L"26.5M";
+    e6.rating = 4.5f;
+    e6.iconPath = L"assets\\extensions\\phide.code-runner\\icon.png";
+    e6.isInstalled = true;
+    e6.isEnabled = true;
+    m_extensionEntries.push_back(std::move(e6));
 }
 
 void DrawerPanel::RenderExtensionsPane(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config, float clientHeight, float currentDrawerW) {

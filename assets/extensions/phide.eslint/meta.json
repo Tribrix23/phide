@@ -1,0 +1,27 @@
+{
+  "id": "phide.eslint",
+  "displayName": "ESLint",
+  "publisher": "phide",
+  "publisherDisplayName": "phide",
+  "version": "3.0.34",
+  "description": "Integrates ESLint JavaScript, TypeScript, JSX, and TSX linting into phide.",
+  "installs": 37245000,
+  "rating": 4.62,
+  "ratingCount": 1820,
+  "lastUpdated": "2026-10-30T10:00:00.000Z",
+  "icon": "icon.png",
+  "categories": [
+    "Linters",
+    "Programming Languages"
+  ],
+  "tags": [
+    "eslint",
+    "javascript",
+    "typescript",
+    "react",
+    "jsx",
+    "tsx",
+    "linter",
+    "phide"
+  ]
+}

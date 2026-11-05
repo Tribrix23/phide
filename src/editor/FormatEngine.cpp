@@ -5,6 +5,8 @@
  */
 
 #include "phide/editor/FormatEngine.hpp"
+#include <windows.h>
+#include <filesystem>
 #include <sstream>
 #include <algorithm>
 #include <unordered_set>
@@ -14,6 +16,150 @@
 namespace phide::editor {
 
 // ==============================================================================
+
+// ==============================================================================
+// Prettier CLI Integration for Fast (~200ms) Standard AST Formatting
+// ==============================================================================
+
+static std::wstring FindPrettierPath() {
+    static std::wstring s_cachedPrettierPath;
+    static bool s_checked = false;
+    if (s_checked) return s_cachedPrettierPath;
+
+    // 1. Check APPDATA\npm\prettier.cmd
+    wchar_t* pAppData = nullptr;
+    size_t len = 0;
+    if (_wdupenv_s(&pAppData, &len, L"APPDATA") == 0 && pAppData) {
+        std::filesystem::path p = std::filesystem::path(pAppData) / L"npm" / L"prettier.cmd";
+        free(pAppData);
+        std::error_code ec;
+        if (std::filesystem::exists(p, ec)) {
+            s_cachedPrettierPath = p.wstring();
+            s_checked = true;
+            return s_cachedPrettierPath;
+        }
+    }
+
+    // 2. Check local node_modules\.bin\prettier.cmd
+    std::error_code ec;
+    if (std::filesystem::exists(L"node_modules\\.bin\\prettier.cmd", ec)) {
+        s_cachedPrettierPath = std::filesystem::absolute(L"node_modules\\.bin\\prettier.cmd").wstring();
+        s_checked = true;
+        return s_cachedPrettierPath;
+    }
+
+    // 3. Search PATH for prettier.cmd
+    wchar_t buf[MAX_PATH];
+    if (SearchPathW(nullptr, L"prettier.cmd", nullptr, MAX_PATH, buf, nullptr) > 0) {
+        s_cachedPrettierPath = buf;
+        s_checked = true;
+        return s_cachedPrettierPath;
+    }
+
+    // 4. Search PATH for prettier (.cmd)
+    if (SearchPathW(nullptr, L"prettier", L".cmd", MAX_PATH, buf, nullptr) > 0) {
+        s_cachedPrettierPath = buf;
+        s_checked = true;
+        return s_cachedPrettierPath;
+    }
+
+    s_checked = true;
+    return s_cachedPrettierPath;
+}
+
+static bool RunPrettier(const std::wstring& src, const std::wstring& ext, int tabSize, std::wstring& outFormatted) {
+    std::wstring prettierPath = FindPrettierPath();
+    if (prettierPath.empty()) return false;
+
+    HANDLE hChildStdInRead = nullptr, hChildStdInWrite = nullptr;
+    HANDLE hChildStdOutRead = nullptr, hChildStdOutWrite = nullptr;
+
+    SECURITY_ATTRIBUTES sa{};
+    sa.nLength = sizeof(SECURITY_ATTRIBUTES);
+    sa.bInheritHandle = TRUE;
+    sa.lpSecurityDescriptor = nullptr;
+
+    if (!CreatePipe(&hChildStdOutRead, &hChildStdOutWrite, &sa, 0)) return false;
+    SetHandleInformation(hChildStdOutRead, HANDLE_FLAG_INHERIT, 0);
+
+    if (!CreatePipe(&hChildStdInRead, &hChildStdInWrite, &sa, 0)) {
+        CloseHandle(hChildStdOutRead);
+        CloseHandle(hChildStdOutWrite);
+        return false;
+    }
+    SetHandleInformation(hChildStdInWrite, HANDLE_FLAG_INHERIT, 0);
+
+    std::wstring dummyFile = L"temp" + ext;
+    std::wstring cmd = L"cmd.exe /c \"\"" + prettierPath + L"\" --stdin-filepath " + dummyFile + L" --tab-width " + std::to_wstring(tabSize) + L"\"";
+
+    STARTUPINFOW si{};
+    si.cb = sizeof(si);
+    si.hStdInput = hChildStdInRead;
+    si.hStdOutput = hChildStdOutWrite;
+    si.hStdError = hChildStdOutWrite;
+    si.dwFlags |= STARTF_USESTDHANDLES | STARTF_USESHOWWINDOW;
+    si.wShowWindow = SW_HIDE;
+
+    PROCESS_INFORMATION pi{};
+    std::vector<wchar_t> cmdBuf(cmd.begin(), cmd.end());
+    cmdBuf.push_back(0);
+
+    BOOL success = CreateProcessW(nullptr, cmdBuf.data(), nullptr, nullptr, TRUE, CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi);
+    CloseHandle(hChildStdInRead);
+    CloseHandle(hChildStdOutWrite);
+
+    if (!success) {
+        CloseHandle(hChildStdInWrite);
+        CloseHandle(hChildStdOutRead);
+        return false;
+    }
+
+    // Convert src wstring to UTF-8 and write to child stdin
+    int utf8Len = WideCharToMultiByte(CP_UTF8, 0, src.c_str(), -1, nullptr, 0, nullptr, nullptr);
+    if (utf8Len > 1) {
+        std::string utf8Str(utf8Len - 1, 0);
+        WideCharToMultiByte(CP_UTF8, 0, src.c_str(), -1, &utf8Str[0], utf8Len - 1, nullptr, nullptr);
+        DWORD written = 0;
+        WriteFile(hChildStdInWrite, utf8Str.data(), static_cast<DWORD>(utf8Str.size()), &written, nullptr);
+    }
+    CloseHandle(hChildStdInWrite);
+
+    // Read formatted output from child stdout
+    std::string outputUtf8;
+    char buffer[4096];
+    DWORD readBytes = 0;
+    while (ReadFile(hChildStdOutRead, buffer, sizeof(buffer), &readBytes, nullptr) && readBytes > 0) {
+        outputUtf8.append(buffer, readBytes);
+    }
+    CloseHandle(hChildStdOutRead);
+
+    WaitForSingleObject(pi.hProcess, 3000);
+    DWORD exitCode = 1;
+    GetExitCodeProcess(pi.hProcess, &exitCode);
+    CloseHandle(pi.hProcess);
+    CloseHandle(pi.hThread);
+
+    if (exitCode != 0 || outputUtf8.empty()) {
+        return false;
+    }
+
+    int wideLen = MultiByteToWideChar(CP_UTF8, 0, outputUtf8.c_str(), -1, nullptr, 0);
+    if (wideLen <= 1) return false;
+    std::wstring rawOut(wideLen - 1, 0);
+    MultiByteToWideChar(CP_UTF8, 0, outputUtf8.c_str(), -1, &rawOut[0], wideLen - 1);
+
+    // Normalize \r\n to \n
+    std::wstring normalized;
+    normalized.reserve(rawOut.size());
+    for (wchar_t ch : rawOut) {
+        if (ch != L'\r' && ch != L'\0') {
+            normalized += ch;
+        }
+    }
+    outFormatted = std::move(normalized);
+    return true;
+}
+
 // Common Formatting Helpers
 // ==============================================================================
 
@@ -542,6 +688,8 @@ std::wstring FormatEngine::FormatHtml(const std::wstring& src, int tabSize) {
 std::wstring FormatEngine::FormatJavaScript(const std::wstring& src, int tabSize) {
     if (src.empty()) return L"";
 
+
+    // 2. High-performance offline deterministic C++ fallback
     std::wstring out;
     out.reserve(src.length() * 2);
     int indentLevel = 0;
@@ -554,11 +702,11 @@ std::wstring FormatEngine::FormatJavaScript(const std::wstring& src, int tabSize
         if (!line.empty() && line.back() == L'\r') line.pop_back();
         std::wstring trimmed = Trim(line);
         if (trimmed.empty()) {
-            // Avoid more than one consecutive blank line
             if (!out.empty() && out.back() != L'\n') out += L'\n';
             if (out.length() >= 2 && out[out.length() - 2] != L'\n') out += L'\n';
             continue;
         }
+
 
         // Block comment lines
         if (inBlockComment) {
@@ -574,7 +722,7 @@ std::wstring FormatEngine::FormatJavaScript(const std::wstring& src, int tabSize
             continue;
         }
 
-        // Count leading closing braces / brackets on this line to dedent before printing
+        // Count leading closing braces / brackets / JSX tags on this line to dedent before printing
         int leadingCloses = 0;
         size_t idx = 0;
         while (idx < trimmed.length() && (trimmed[idx] == L'}' || trimmed[idx] == L']' || trimmed[idx] == L')')) {
@@ -585,6 +733,11 @@ std::wstring FormatEngine::FormatJavaScript(const std::wstring& src, int tabSize
         // Special case: } else, } catch, } finally
         if (StartsWith(trimmed, L"} else") || StartsWith(trimmed, L"} catch") || StartsWith(trimmed, L"} finally")) {
             leadingCloses = 1;
+        }
+
+        // Dedent leading closing JSX tag: </Tag>
+        if (trimmed.rfind(L"</", 0) == 0) {
+            leadingCloses += 1;
         }
 
         int currentIndent = indentLevel - leadingCloses;
@@ -657,6 +810,20 @@ std::wstring FormatEngine::FormatJavaScript(const std::wstring& src, int tabSize
 
             if (c == L'{' || c == L'[' || c == L'(') delta++;
             else if (c == L'}' || c == L']' || c == L')') delta--;
+            // JSX tags: <tag> (not closing </tag> and not self-closing />)
+            else if (c == L'<' && k + 1 < trimmed.length() && iswalpha(trimmed[k + 1])) {
+                size_t closeAngle = trimmed.find(L'>', k + 1);
+                if (closeAngle != std::wstring::npos) {
+                    if (closeAngle > 0 && trimmed[closeAngle - 1] != L'/') {
+                        size_t endTag = trimmed.find(L"</", closeAngle);
+                        if (endTag == std::wstring::npos) {
+                            delta++;
+                        }
+                    }
+                }
+            } else if (c == L'<' && k + 1 < trimmed.length() && trimmed[k + 1] == L'/') {
+                delta--;
+            }
         }
 
         indentLevel += delta;
@@ -853,8 +1020,6 @@ bool FormatEngine::CanFormat(const std::wstring& ext) {
     for (auto& c : lower) c = static_cast<wchar_t>(towlower(c));
     return (lower == L".html" || lower == L".htm" || lower == L".svg" || lower == L".xml" ||
             lower == L".css"  || lower == L".scss" || lower == L".less" ||
-            lower == L".js"   || lower == L".jsx" || lower == L".ts" || lower == L".tsx" ||
-            lower == L".mjs"  || lower == L".cjs" ||
             lower == L".json" || lower == L".jsonc" ||
             lower == L".php"  || lower == L".phtml" || lower == L".php8");
 }
@@ -873,9 +1038,6 @@ std::wstring FormatEngine::FormatDocument(const std::wstring& src, const std::ws
     }
     if (lower == L".html" || lower == L".htm" || lower == L".svg" || lower == L".xml") {
         return FormatHtml(src, tabSize);
-    }
-    if (lower == L".js" || lower == L".jsx" || lower == L".ts" || lower == L".tsx" || lower == L".mjs" || lower == L".cjs") {
-        return FormatJavaScript(src, tabSize);
     }
     if (lower == L".php" || lower == L".phtml" || lower == L".php8") {
         return FormatPhp(src, tabSize);

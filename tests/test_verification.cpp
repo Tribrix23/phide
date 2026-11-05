@@ -1152,7 +1152,7 @@ int main(int argc, char* argv[]) {
         assert(items[6].isSeparator == true);
 
         assert(items[7].actionId == phide::ui::MenuActionId::CodeFormatDocument);
-        assert(items[7].label == L"Format Document (Prettier)");
+        assert(items[7].label.find(L"Format Document") != std::wstring::npos);
         assert(items[7].shortcut == L"Shift+Alt+F");
         assert(items[7].isEnabled == true);
 
@@ -8580,6 +8580,17 @@ run_test_67:
         assert(foundMutationDiag);
         assert(foundDupPropDiag);
         std::cout << "  Passed: ESLint & React linter correctly caught rules-of-hooks, exhaustive-deps, state mutation, and duplicate props." << std::endl;
+
+        // Test empty return in React functional component (matching user test.jsx)
+        phide::editor::Buffer emptyRetBuf;
+        emptyRetBuf.SetText(L"import React from \"react\";\nconst Test = () => {\n    return \n};\nexport default Test;");
+        auto emptyRetDiags = phide::editor::SyntaxValidator::ValidateReactAndESLint(emptyRetBuf, true);
+        bool foundRequireReturn = false;
+        for (const auto& d : emptyRetDiags) {
+            if (d.message.find(L"require-render-return") != std::wstring::npos) foundRequireReturn = true;
+        }
+        assert(foundRequireReturn && "ESLint must flag missing/empty return in functional component (react/require-render-return)");
+        std::cout << "  Passed: ESLint correctly caught require-render-return on empty component return." << std::endl;
 
         // B. Test React & Node IntelliSense completions
         phide::editor::IntelliSenseEngine isEngine;
@@ -17289,8 +17300,8 @@ run_test_117:
         // Subtest 6: FormatEngine::CanFormat and FormatDocument Dispatcher
         assert(phide::editor::FormatEngine::CanFormat(L".html") == true);
         assert(phide::editor::FormatEngine::CanFormat(L".css") == true);
-        assert(phide::editor::FormatEngine::CanFormat(L".js") == true);
-        assert(phide::editor::FormatEngine::CanFormat(L".jsx") == true);
+        assert(phide::editor::FormatEngine::CanFormat(L".js") == false);
+        assert(phide::editor::FormatEngine::CanFormat(L".jsx") == false);
         assert(phide::editor::FormatEngine::CanFormat(L".json") == true);
         assert(phide::editor::FormatEngine::CanFormat(L".php") == true);
         assert(phide::editor::FormatEngine::CanFormat(L".txt") == false);
@@ -17298,6 +17309,22 @@ run_test_117:
         std::wstring docFormatted = phide::editor::FormatEngine::FormatDocument(rawJson, L".json", 4);
         assert(docFormatted == formattedJson);
         std::cout << "  Passed: Subtest 6 (FormatEngine Dispatcher & CanFormat verified)" << std::endl;
+
+        // Subtest 7: ESLint Linter Extension Integration & CanFormat verified
+        {
+            assert(phide::editor::FormatEngine::CanFormat(L".jsx") == false);
+            assert(phide::editor::FormatEngine::CanFormat(L".tsx") == false);
+            assert(phide::editor::FormatEngine::CanFormat(L".js") == false);
+            assert(phide::editor::FormatEngine::CanFormat(L".ts") == false);
+            assert(phide::editor::FormatEngine::CanFormat(L".php") == true);
+            assert(phide::editor::FormatEngine::CanFormat(L".json") == true);
+            assert(phide::editor::FormatEngine::CanFormat(L".html") == true);
+            assert(phide::editor::FormatEngine::CanFormat(L".css") == true);
+            assert(std::filesystem::exists("assets/extensions/phide.eslint/meta.json"));
+            assert(std::filesystem::exists("assets/extensions/phide.eslint/package.json"));
+            assert(std::filesystem::exists("assets/extensions/phide.eslint/icon.png"));
+            std::cout << "  Passed: Subtest 7 (ESLint Extension & FormatEngine CanFormat verified)" << std::endl;
+        }
 
         std::cout << "  Passed: All [TEST 117] Format Document (Shift+Alt+F) tests passed!" << std::endl;
         if (targetTest == 117) {

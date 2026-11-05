@@ -2051,6 +2051,15 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidateReactAndESLint(const Buffe
     int loopDepth = 0;
     std::vector<int> controlStack; // 1 = condition (if/else/switch), 2 = loop (for/while)
 
+    struct ComponentState {
+        std::wstring name;
+        size_t declLine = 0;
+        int braceDepth = 0;
+        bool hasReturn = false;
+        bool hasReturnedValue = false;
+    };
+    std::vector<ComponentState> componentStack;
+
     struct JsxTagInfo {
         std::wstring name;
         size_t line;
@@ -2134,7 +2143,26 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidateReactAndESLint(const Buffe
             return 0;
         };
 
-        // Track conditions and loops
+        // 0. Component Declaration Detection: const Comp = () => { or function Comp() {
+        if (cleanCode.find(L"const ") != std::wstring::npos || cleanCode.find(L"function ") != std::wstring::npos ||
+            cleanCode.find(L"let ") != std::wstring::npos || cleanCode.find(L"export ") != std::wstring::npos) {
+            if (cleanCode.find(L"=>") != std::wstring::npos || cleanCode.find(L"function") != std::wstring::npos) {
+                std::wistringstream wss(cleanCode);
+                std::wstring token;
+                while (wss >> token) {
+                    while (!token.empty() && (token.front() == L'(' || token.front() == L'{' || token.front() == L'=' || token.front() == L':' || token.front() == L';')) token.erase(0, 1);
+                    while (!token.empty() && (token.back() == L'(' || token.back() == L'{' || token.back() == L'=' || token.back() == L':' || token.back() == L';')) token.pop_back();
+                    if (!token.empty() && iswupper(token[0]) && iswalpha(token[0])) {
+                        if (token != L"React" && token != L"Component" && token != L"PureComponent" && token != L"Fragment") {
+                            componentStack.push_back({ token, l, 0, false, false });
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
+        // Track conditions, loops, and component scopes
         for (size_t i = 0; i < cleanCode.length(); ++i) {
             if (cleanCode[i] == L'{') {
                 std::wstring prefix = cleanCode.substr(0, i);
@@ -2142,6 +2170,9 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidateReactAndESLint(const Buffe
                 controlStack.push_back(type);
                 if (type == 1) conditionDepth++;
                 else if (type == 2) loopDepth++;
+                if (!componentStack.empty()) {
+                    componentStack.back().braceDepth++;
+                }
             } else if (cleanCode[i] == L'}') {
                 if (!controlStack.empty()) {
                     int topType = controlStack.back();
@@ -2149,7 +2180,106 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidateReactAndESLint(const Buffe
                     if (topType == 1 && conditionDepth > 0) conditionDepth--;
                     else if (topType == 2 && loopDepth > 0) loopDepth--;
                 }
+                if (!componentStack.empty()) {
+                    componentStack.back().braceDepth--;
+                    if (componentStack.back().braceDepth <= 0) {
+                        auto comp = componentStack.back();
+                        componentStack.pop_back();
+                        if (!comp.hasReturn || !comp.hasReturnedValue) {
+                            lsp::Diagnostic diag;
+                            diag.line = l;
+                            diag.col = i;
+                            diag.length = 1;
+                            diag.message = L"Component '" + comp.name + L"' must return a valid React element, JSX, or null. (react/require-render-return)";
+                            diag.severity = 1; // Error
+                            diagnostics.push_back(std::move(diag));
+                        }
+                    }
+                }
             }
+        }
+
+        // Return Statement Analysis: check for missing return expression in components & missing semicolons
+        size_t retPos = 0;
+        while ((retPos = cleanCode.find(L"return", retPos)) != std::wstring::npos) {
+            bool validBefore = (retPos == 0 || (!iswalnum(cleanCode[retPos - 1]) && cleanCode[retPos - 1] != L'_' && cleanCode[retPos - 1] != L'$'));
+            size_t afterIdx = retPos + 6;
+            bool validAfter = (afterIdx >= cleanCode.length() || (!iswalnum(cleanCode[afterIdx]) && cleanCode[afterIdx] != L'_' && cleanCode[afterIdx] != L'$'));
+
+            if (validBefore && validAfter) {
+                if (!componentStack.empty()) {
+                    componentStack.back().hasReturn = true;
+                }
+
+                std::wstring afterReturn = cleanCode.substr(afterIdx);
+                size_t s = 0;
+                while (s < afterReturn.length() && (afterReturn[s] == L' ' || afterReturn[s] == L'	')) s++;
+                afterReturn = afterReturn.substr(s);
+
+                bool hasSemi = false;
+                if (!afterReturn.empty() && afterReturn.back() == L';') {
+                    hasSemi = true;
+                    afterReturn.pop_back();
+                    while (!afterReturn.empty() && (afterReturn.back() == L' ' || afterReturn.back() == L'	')) afterReturn.pop_back();
+                }
+
+                bool hasValOnSameLine = !afterReturn.empty();
+                bool multilineContinuation = afterReturn.ends_with(L"(") || afterReturn.ends_with(L"{") || afterReturn.ends_with(L"[");
+
+                bool hasValOnNextLine = false;
+                if (!hasValOnSameLine) {
+                    for (size_t nl = l + 1; nl < lineCount; ++nl) {
+                        const std::wstring& nLine = buffer.GetLine(nl);
+                        size_t ns = 0;
+                        while (ns < nLine.length() && (nLine[ns] == L' ' || nLine[ns] == L'	')) ns++;
+                        if (ns >= nLine.length()) continue;
+                        if (nLine.substr(ns, 2) == L"//" || nLine.substr(ns, 2) == L"/*") continue;
+                        if (nLine[ns] == L'}' || nLine[ns] == L')') {
+                            hasValOnNextLine = false;
+                        } else {
+                            hasValOnNextLine = true;
+                            multilineContinuation = true;
+                        }
+                        break;
+                    }
+                }
+
+                if (hasValOnSameLine || hasValOnNextLine) {
+                    if (!componentStack.empty()) {
+                        componentStack.back().hasReturnedValue = true;
+                    }
+                } else {
+                    std::wstring compName = componentStack.empty() ? L"Component" : componentStack.back().name;
+                    lsp::Diagnostic diag;
+                    diag.line = l;
+                    diag.col = retPos;
+                    diag.length = 6;
+                    diag.message = L"Component '" + compName + L"' must return a valid React element, JSX, or null. (react/require-render-return)";
+                    diag.severity = 1; // Error
+                    diagnostics.push_back(std::move(diag));
+
+                    if (!hasSemi) {
+                        lsp::Diagnostic semiDiag;
+                        semiDiag.line = l;
+                        semiDiag.col = retPos + 6;
+                        semiDiag.length = 1;
+                        semiDiag.message = L"Missing semicolon. (semi)";
+                        semiDiag.severity = 2; // Warning
+                        diagnostics.push_back(std::move(semiDiag));
+                    }
+                }
+
+                if (hasValOnSameLine && !hasSemi && !multilineContinuation) {
+                    lsp::Diagnostic semiDiag;
+                    semiDiag.line = l;
+                    semiDiag.col = cleanCode.length();
+                    semiDiag.length = 1;
+                    semiDiag.message = L"Missing semicolon. (semi)";
+                    semiDiag.severity = 2; // Warning
+                    diagnostics.push_back(std::move(semiDiag));
+                }
+            }
+            retPos += 6;
         }
 
         // 1. React Hook Rules: Cannot call hooks conditionally or inside loops
