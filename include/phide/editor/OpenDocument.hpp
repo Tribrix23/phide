@@ -341,6 +341,7 @@ struct OpenDocument {
         Buffer originalBuffer;           // Parent commit content
         Buffer workingBuffer;            // Commit content
         std::set<size_t> addedLines;
+        std::set<size_t> modifiedLines;
         std::set<size_t> deletedLines;
         std::vector<DiffHunkItem> hunks;
         D2D1_RECT_F headerBounds{};      // Clickable file header banner

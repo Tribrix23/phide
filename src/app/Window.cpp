@@ -1415,6 +1415,7 @@ void Window::OpenCommitDiffDocument(const std::wstring& commitHash, const std::w
                 tempDoc.buffer.SetText(rightContent);
                 ComputeDiffHunks(tempDoc);
                 entry.addedLines = std::move(tempDoc.diffAddedLines);
+                entry.modifiedLines = std::move(tempDoc.diffModifiedLines);
                 entry.deletedLines = std::move(tempDoc.diffDeletedLines);
                 entry.hunks = std::move(tempDoc.diffHunks);
             }
@@ -1489,107 +1490,126 @@ void Window::ComputeDiffHunks(editor::OpenDocument& doc) {
         return; // Identical
     }
 
-    if (midN > 0 && midM > 0 && (midN * midM <= 400000) && midN <= 2000 && midM <= 2000) {
-        std::vector<int> prev(midM + 1, 0);
-        std::vector<int> curr(midM + 1, 0);
-        std::vector<std::vector<uint8_t>> dir(midN + 1, std::vector<uint8_t>(midM + 1, 0)); // 1=diag, 2=up, 3=left
+    if (midN == 0 && midM > 0) {
+        // Pure addition
+        size_t addStart = prefix;
+        while (addStart > 0 && doc.buffer.GetCursor().line < addStart + midM &&
+               rightBuf.GetLine(addStart - 1) == rightBuf.GetLine(addStart + midM - 1)) {
+            addStart--;
+        }
+        editor::OpenDocument::DiffHunkItem hunk;
+        hunk.type = editor::OpenDocument::DiffHunkItem::HunkType::Added;
+        hunk.leftStart = prefix;
+        hunk.leftCount = 0;
+        hunk.rightStart = addStart;
+        hunk.rightCount = midM;
+        for (size_t r = addStart; r < addStart + midM; ++r) {
+            doc.diffAddedLines.insert(r);
+        }
+        doc.diffHunks.push_back(hunk);
+        return;
+    }
 
+    if (midN > 0 && midM == 0) {
+        // Pure deletion
+        editor::OpenDocument::DiffHunkItem hunk;
+        hunk.type = editor::OpenDocument::DiffHunkItem::HunkType::Deleted;
+        hunk.leftStart = prefix;
+        hunk.leftCount = midN;
+        hunk.rightStart = prefix;
+        hunk.rightCount = 0;
+        for (size_t l = prefix; l < prefix + midN; ++l) {
+            doc.diffDeletedLines.insert(l);
+        }
+        doc.diffDeletedGutterMarkers.insert(prefix);
+        doc.diffHunks.push_back(hunk);
+        return;
+    }
+
+    if (midN > 0 && midM > 0 && (midN * midM <= 400000) && midN <= 2000 && midM <= 2000) {
+        std::vector<std::vector<int>> dp(midN + 1, std::vector<int>(midM + 1, 0));
         for (size_t i = 1; i <= midN; ++i) {
             for (size_t j = 1; j <= midM; ++j) {
                 if (leftBuf.GetLine(prefix + i - 1) == rightBuf.GetLine(prefix + j - 1)) {
-                    curr[j] = prev[j - 1] + 1;
-                    dir[i][j] = 1;
-                } else if (prev[j] >= curr[j - 1]) {
-                    curr[j] = prev[j];
-                    dir[i][j] = 2; // up (deleted from left)
+                    dp[i][j] = dp[i - 1][j - 1] + 1;
                 } else {
-                    curr[j] = curr[j - 1];
-                    dir[i][j] = 3; // left (added to right)
+                    dp[i][j] = (std::max)(dp[i - 1][j], dp[i][j - 1]);
                 }
             }
-            prev = curr;
         }
 
         size_t i = midN, j = midM;
-        struct DiffEditOp { int type; size_t leftLine; size_t rightLine; };
-        std::vector<DiffEditOp> edits; // (-1 = deleted, +1 = added)
-        while (i > 0 || j > 0) {
-            if (i > 0 && j > 0 && dir[i][j] == 1) {
+        std::vector<std::pair<size_t, size_t>> matched;
+        while (i > 0 && j > 0) {
+            if (leftBuf.GetLine(prefix + i - 1) == rightBuf.GetLine(prefix + j - 1)) {
+                matched.push_back({ prefix + i - 1, prefix + j - 1 });
                 i--;
                 j--;
-            } else if (i > 0 && (j == 0 || dir[i][j] == 2)) {
-                edits.push_back({ -1, prefix + i - 1, prefix + j });
+            } else if (dp[i - 1][j] >= dp[i][j - 1]) {
                 i--;
             } else {
-                edits.push_back({ 1, prefix + i, prefix + j - 1 });
                 j--;
             }
         }
-        std::reverse(edits.begin(), edits.end());
+        std::reverse(matched.begin(), matched.end());
 
-        size_t idx = 0;
-        while (idx < edits.size()) {
-            editor::OpenDocument::DiffHunkItem hunk;
-            size_t delCount = 0;
-            size_t addCount = 0;
-            size_t delStart = 0;
-            size_t addStart = 0;
-            size_t delRightPos = 0;
-            size_t addLeftPos = 0;
+        size_t curL = prefix;
+        size_t curR = prefix;
+        std::vector<std::pair<size_t, size_t>> boundaries = matched;
+        boundaries.push_back({ N - suffix, M - suffix });
 
-            while (idx < edits.size() && edits[idx].type == -1) {
-                if (delCount == 0) {
-                    delStart = edits[idx].leftLine;
-                    delRightPos = edits[idx].rightLine;
-                }
-                doc.diffDeletedLines.insert(edits[idx].leftLine);
-                delCount++;
-                idx++;
-            }
-            while (idx < edits.size() && edits[idx].type == 1) {
-                if (addCount == 0) {
-                    addStart = edits[idx].rightLine;
-                    addLeftPos = edits[idx].leftLine;
-                }
-                addCount++;
-                idx++;
-            }
+        for (const auto& boundary : boundaries) {
+            size_t nextL = boundary.first;
+            size_t nextR = boundary.second;
 
-            if (delCount > 0 && addCount > 0) {
-                hunk.type = editor::OpenDocument::DiffHunkItem::HunkType::Modified;
-                hunk.leftStart = delStart;
+            size_t delCount = nextL - curL;
+            size_t addCount = nextR - curR;
+
+            if (delCount > 0 || addCount > 0) {
+                editor::OpenDocument::DiffHunkItem hunk;
+                hunk.leftStart = curL;
                 hunk.leftCount = delCount;
-                hunk.rightStart = addStart;
+                hunk.rightStart = curR;
                 hunk.rightCount = addCount;
-                for (size_t r = addStart; r < addStart + addCount; ++r) {
-                    doc.diffModifiedLines.insert(r);
-                }
-            } else if (delCount > 0) {
-                hunk.type = editor::OpenDocument::DiffHunkItem::HunkType::Deleted;
-                hunk.leftStart = delStart;
-                hunk.leftCount = delCount;
-                hunk.rightStart = delRightPos;
-                hunk.rightCount = 0;
-                doc.diffDeletedGutterMarkers.insert(delRightPos);
-            } else if (addCount > 0) {
-                // Hunk sliding: If the newly added lines can slide upward because the preceding line in rightBuf matches the last added line
-                // (e.g. inserting an empty line above an existing empty line), and the user's cursor is on or above the insertion point,
-                // slide addStart up so the diff indicator attaches to the user's cursor line!
-                while (addStart > 0 && doc.buffer.GetCursor().line < addStart + addCount &&
-                       rightBuf.GetLine(addStart - 1) == rightBuf.GetLine(addStart + addCount - 1)) {
-                    addStart--;
-                }
 
-                hunk.type = editor::OpenDocument::DiffHunkItem::HunkType::Added;
-                hunk.leftStart = addLeftPos;
-                hunk.leftCount = 0;
-                hunk.rightStart = addStart;
-                hunk.rightCount = addCount;
-                for (size_t r = addStart; r < addStart + addCount; ++r) {
-                    doc.diffAddedLines.insert(r);
+                if (delCount > 0 && addCount > 0) {
+                    hunk.type = editor::OpenDocument::DiffHunkItem::HunkType::Modified;
+                    for (size_t l = curL; l < curL + delCount; ++l) {
+                        doc.diffDeletedLines.insert(l);
+                    }
+                    size_t modLimit = (std::min)(delCount, addCount);
+                    for (size_t r = curR; r < curR + modLimit; ++r) {
+                        doc.diffModifiedLines.insert(r);
+                    }
+                    for (size_t r = curR + modLimit; r < curR + addCount; ++r) {
+                        doc.diffAddedLines.insert(r);
+                    }
+                    if (delCount > addCount) {
+                        doc.diffDeletedGutterMarkers.insert(curR + addCount);
+                    }
+                } else if (delCount > 0) {
+                    hunk.type = editor::OpenDocument::DiffHunkItem::HunkType::Deleted;
+                    for (size_t l = curL; l < curL + delCount; ++l) {
+                        doc.diffDeletedLines.insert(l);
+                    }
+                    doc.diffDeletedGutterMarkers.insert(curR);
+                } else if (addCount > 0) {
+                    size_t actualAddStart = curR;
+                    while (actualAddStart > 0 && doc.buffer.GetCursor().line < actualAddStart + addCount &&
+                           rightBuf.GetLine(actualAddStart - 1) == rightBuf.GetLine(actualAddStart + addCount - 1)) {
+                        actualAddStart--;
+                    }
+                    hunk.rightStart = actualAddStart;
+                    hunk.type = editor::OpenDocument::DiffHunkItem::HunkType::Added;
+                    for (size_t r = actualAddStart; r < actualAddStart + addCount; ++r) {
+                        doc.diffAddedLines.insert(r);
+                    }
                 }
+                doc.diffHunks.push_back(hunk);
             }
-            doc.diffHunks.push_back(hunk);
+
+            curL = nextL + 1;
+            curR = nextR + 1;
         }
     } else {
         editor::OpenDocument::DiffHunkItem hunk;
@@ -1599,17 +1619,22 @@ void Window::ComputeDiffHunks(editor::OpenDocument& doc) {
         hunk.rightCount = midM;
         if (midN > 0 && midM > 0) {
             hunk.type = editor::OpenDocument::DiffHunkItem::HunkType::Modified;
-            for (size_t r = prefix; r < prefix + midM; ++r) doc.diffModifiedLines.insert(r);
+            size_t modLimit = (std::min)(midN, midM);
+            for (size_t r = prefix; r < prefix + modLimit; ++r) doc.diffModifiedLines.insert(r);
+            for (size_t r = prefix + modLimit; r < prefix + midM; ++r) doc.diffAddedLines.insert(r);
+            if (midN > midM) doc.diffDeletedGutterMarkers.insert(prefix + midM);
         } else if (midN > 0) {
             hunk.type = editor::OpenDocument::DiffHunkItem::HunkType::Deleted;
             doc.diffDeletedGutterMarkers.insert(prefix);
         } else {
-            while (prefix > 0 && doc.buffer.GetCursor().line < prefix + midM &&
-                   rightBuf.GetLine(prefix - 1) == rightBuf.GetLine(prefix + midM - 1)) {
-                prefix--;
+            size_t actualAddStart = prefix;
+            while (actualAddStart > 0 && doc.buffer.GetCursor().line < actualAddStart + midM &&
+                   rightBuf.GetLine(actualAddStart - 1) == rightBuf.GetLine(actualAddStart + midM - 1)) {
+                actualAddStart--;
             }
+            hunk.rightStart = actualAddStart;
             hunk.type = editor::OpenDocument::DiffHunkItem::HunkType::Added;
-            for (size_t r = prefix; r < prefix + midM; ++r) doc.diffAddedLines.insert(r);
+            for (size_t r = actualAddStart; r < actualAddStart + midM; ++r) doc.diffAddedLines.insert(r);
         }
 
         for (size_t l = prefix; l < prefix + midN; ++l) doc.diffDeletedLines.insert(l);

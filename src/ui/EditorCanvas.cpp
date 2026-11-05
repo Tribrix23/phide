@@ -1767,7 +1767,7 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
                 Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushRedBar;
                 pRT->CreateSolidColorBrush(D2D1::ColorF(0.878f, 0.424f, 0.459f, 1.0f), &brushRedBar);
                 pRT->FillRectangle(rcGutterBar, brushRedBar.Get());
-            } else if (doc.diffAddedLines.count(vl.bufferLine)) {
+            } else if (doc.diffAddedLines.count(vl.bufferLine) || doc.diffModifiedLines.count(vl.bufferLine)) {
                 // Green background for added lines
                 D2D1_RECT_F rcDiffLine = D2D1::RectF(canvasLeft + gutterW, lineY, codeRight, lineY + lineH);
                 Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushDiffGreen;
@@ -7548,7 +7548,7 @@ void EditorCanvas::RenderDiffView(ID2D1RenderTarget* pRT, Theme& theme, const ap
             pRT->FillRectangle(rcActive, theme.brushCurrentLineBg.Get());
         }
 
-        bool isChanged = doc.diffAddedLines.count(v) > 0;
+        bool isChanged = (doc.diffAddedLines.count(v) > 0 || doc.diffModifiedLines.count(v) > 0);
         if (isChanged) {
             // Full line green background
             D2D1_RECT_F rcLine = D2D1::RectF(rightX + gutterW, lineY, rightX + halfW, lineY + lineH);
@@ -7874,14 +7874,14 @@ void EditorCanvas::RenderMultiFileDiffView(ID2D1RenderTarget* pRT, Theme& theme,
                 while (l < maxLines) {
                     // Check for consecutive unchanged lines to show hidden lines banner (Image 4)
                     bool isLeftDel = (l < nLeft && entry.deletedLines.contains(l));
-                    bool isRightAdd = (l < nRight && entry.addedLines.contains(l));
+                    bool isRightAdd = (l < nRight && (entry.addedLines.contains(l) || entry.modifiedLines.contains(l)));
 
                     if (!isLeftDel && !isRightAdd) {
                         size_t unchangedCount = 0;
                         size_t peek = l;
                         while (peek < maxLines) {
                             bool pd = (peek < nLeft && entry.deletedLines.contains(peek));
-                            bool pa = (peek < nRight && entry.addedLines.contains(peek));
+                            bool pa = (peek < nRight && (entry.addedLines.contains(peek) || entry.modifiedLines.contains(peek)));
                             if (pd || pa) break;
                             unchangedCount++;
                             peek++;

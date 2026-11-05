@@ -16219,6 +16219,36 @@ run_test_106:
             std::cout << "  Passed: Gutter diff hunk sliding correctly attributes inserted blank line to line 2 (cursor line)" << std::endl;
         }
 
+        // Subtest 2b: Accurate Diff Hunks & Working Tree Hunk Matching for Modified JSX
+        {
+            phide::editor::OpenDocument doc;
+            doc.diffOriginalBuffer.SetText(L"import React from 'react';\n\nconst Test = () => {\n    return (<div></div>);\n};\n\nexport default Test;");
+            doc.buffer.SetText(L"import React from \"react\";\n\nconst Test = () => {\n   return(\n   <>\n   </>\n   )\n};\n\nexport default Test;");
+
+            phide::app::Window win;
+            win.ComputeDiffHunks(doc);
+
+            assert(doc.diffHunks.size() == 2 && "Must have exactly 2 hunks");
+            assert(doc.diffHunks[0].type == phide::editor::OpenDocument::DiffHunkItem::HunkType::Modified);
+            assert(doc.diffHunks[0].leftStart == 0 && doc.diffHunks[0].leftCount == 1);
+            assert(doc.diffHunks[0].rightStart == 0 && doc.diffHunks[0].rightCount == 1);
+
+            assert(doc.diffHunks[1].type == phide::editor::OpenDocument::DiffHunkItem::HunkType::Modified);
+            assert(doc.diffHunks[1].leftStart == 3 && doc.diffHunks[1].leftCount == 1);
+            assert(doc.diffHunks[1].rightStart == 3 && doc.diffHunks[1].rightCount == 4);
+
+            assert(doc.diffDeletedLines.count(0) > 0);
+            assert(doc.diffDeletedLines.count(3) > 0);
+            assert(doc.diffModifiedLines.count(0) > 0);
+            assert(doc.diffModifiedLines.count(3) > 0);
+            assert(doc.diffAddedLines.count(4) > 0);
+            assert(doc.diffAddedLines.count(5) > 0);
+            assert(doc.diffAddedLines.count(6) > 0);
+            assert(doc.diffDeletedGutterMarkers.empty() && "No phantom deleted markers at line 7");
+
+            std::cout << "  Passed: Accurate Diff Hunks correctly identifies JSX return replacement without phantom deletion" << std::endl;
+        }
+
         // Subtest 3: Visual Rendering of Blue Diagonal Hatch & Multi-Cursor Carets
         {
             phide::app::AppConfig cfg;
