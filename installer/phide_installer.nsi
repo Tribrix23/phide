@@ -172,7 +172,21 @@ Section "MainSection" SEC01
 
     ; 1. Install all staged offline files (IDE, Runtimes, Servers, Assets)
     DetailPrint "Extracting Phide 2026.a and bundled offline runtimes..."
+    ; Preserve existing user databases across installer updates
+    ${If} ${FileExists} "$INSTDIR\runtimes\mysql\data\ibdata1"
+        DetailPrint "Existing user databases detected, preserving user databases across update..."
+        CreateDirectory "$INSTDIR\runtimes\mysql\__data_preserve"
+        CopyFiles /SILENT "$INSTDIR\runtimes\mysql\data\*" "$INSTDIR\runtimes\mysql\__data_preserve"
+    ${EndIf}
+
     File /r "payload\*"
+
+    ; Restore preserved user databases if this was an update
+    ${If} ${FileExists} "$INSTDIR\runtimes\mysql\__data_preserve\ibdata1"
+        DetailPrint "Restoring preserved user databases..."
+        CopyFiles /SILENT "$INSTDIR\runtimes\mysql\__data_preserve\*" "$INSTDIR\runtimes\mysql\data"
+        RMDir /r "$INSTDIR\runtimes\mysql\__data_preserve"
+    ${EndIf}
 
     ; 1b. Configure runtime permissions so standard user can run MySQL and Nginx without elevation
     DetailPrint "Configuring offline runtime permissions..."

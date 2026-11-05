@@ -12,7 +12,7 @@ Write-Host "====================================================================
 if (Test-Path $payload) {
     Remove-Item -Recurse -Force $payload
 }
-New-Item -ItemType Directory -Path "$payload\assets", "$payload\include\phide", "$payload\runtimes\php", "$payload\runtimes\mysql\bin", "$payload\runtimes\mysql\data", "$payload\runtimes\mysql\share" -Force | Out-Null
+New-Item -ItemType Directory -Path "$payload\assets", "$payload\include\phide", "$payload\runtimes\php", "$payload\runtimes\mysql\bin", "$payload\runtimes\mysql\data", "$payload\runtimes\mysql\initial_data", "$payload\runtimes\mysql\share" -Force | Out-Null
 
 # 2. Copy main application files
 Write-Host "[1/6] Staging phide.exe and snippets..."
@@ -58,16 +58,17 @@ if (Test-Path $phpSource) {
 Write-Host "[5/6] Staging bundled MariaDB / MySQL runtime and user databases..."
 $mysqlSource = "C:\xampp\mysql"
 if (Test-Path $mysqlSource) {
-    Copy-Item "$mysqlSource\bin\mysqld.exe", "$mysqlSource\bin\mysql.exe", "$mysqlSource\bin\*.dll" "$payload\runtimes\mysql\bin\" -Force
+    Copy-Item "$mysqlSource\bin\mysqld.exe", "$mysqlSource\bin\mysql.exe", "$mysqlSource\bin\mysqladmin.exe", "$mysqlSource\bin\*.dll" "$payload\runtimes\mysql\bin\" -Force
     Copy-Item "$mysqlSource\share\*" "$payload\runtimes\mysql\share\" -Recurse -Force
     
-    # Copy full database directory (including user databases auth, crud, student_crud, public, phpmyadmin, mysql, etc.)
+    # Copy full database directory (including user databases auth, crud, student_crud, public, phpmyadmin, mysql, user_test, user_sd, etc.)
     # Exclude transient files: mysql.pid, ibtmp1, *.log, *.dmp, *.err
     $excludeItems = @("mysql.pid", "ibtmp1", "mysql_error.log", "mysqld.dmp")
     Get-ChildItem -Path "$mysqlSource\data" | Where-Object { 
         $excludeItems -notcontains $_.Name -and $_.Extension -ne ".err" -and $_.Extension -ne ".dmp"
     } | ForEach-Object {
         Copy-Item -Path $_.FullName -Destination "$payload\runtimes\mysql\data\" -Recurse -Force
+        Copy-Item -Path $_.FullName -Destination "$payload\runtimes\mysql\initial_data\" -Recurse -Force
     }
     
     # Create clean, portable my.ini WITHOUT BOM

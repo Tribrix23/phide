@@ -7444,9 +7444,11 @@ size_t DrawerPanel::HitTestGitCommitMsgPos(POINT pt, Theme& theme, const app::Ap
         return m_commitMessage.length();
     }
     pLayout->SetWordWrapping(DWRITE_WORD_WRAPPING_WRAP);
+    pLayout->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR);
+    pLayout->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
 
-    float relX = static_cast<float>(pt.x) - rcMsgText.left;
-    float relY = static_cast<float>(pt.y) - rcMsgText.top + m_gitMsgScrollY;
+    float relX = static_cast<float>(pt.x) - (rcMsgText.left + 1.0f);
+    float relY = static_cast<float>(pt.y) - (rcMsgText.top + config.ScaleF(1.0f)) + m_gitMsgScrollY;
 
     BOOL isTrailingHit = FALSE;
     BOOL isInside = FALSE;
@@ -8089,6 +8091,8 @@ void DrawerPanel::RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, 
                     theme.fontMenuItem.Get() ? theme.fontMenuItem.Get() : theme.fontButtonCenter.Get(),
                     textContentW, 10000.0f, &pMeasureLayout))) {
                 pMeasureLayout->SetWordWrapping(DWRITE_WORD_WRAPPING_WRAP);
+                pMeasureLayout->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR);
+                pMeasureLayout->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
                 DWRITE_TEXT_METRICS tm{};
                 if (SUCCEEDED(pMeasureLayout->GetMetrics(&tm))) {
                     measuredH = tm.height + config.ScaleF(10.0f);
@@ -8174,13 +8178,13 @@ void DrawerPanel::RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, 
                           rcMsgText, theme.brushTextMuted.Get());
             if (m_focusedGitInput == 1 && m_gitCaretVisible) {
                 float caretX = rcMsgText.left + 1.0f;
-                float caretTop = rcMsgText.top;
-                float caretBottom = caretTop + config.ScaleF(16.0f);
+                float caretTop = rcMsgText.top + config.ScaleF(1.0f);
+                float caretBottom = caretTop + config.ScaleF(15.0f);
                 pRT->DrawLine(D2D1::Point2F(caretX, caretTop), D2D1::Point2F(caretX, caretBottom), theme.brushTextPrimary.Get(), 1.5f);
             }
         } else if (theme.dwriteFactory) {
             std::wstring layoutStr = m_commitMessage;
-            if (layoutStr.back() == L'\n') {
+            if (!layoutStr.empty() && layoutStr.back() == L'\n') {
                 layoutStr += L" "; // Ensures trailing empty newline produces a line for caret
             }
 
@@ -8190,6 +8194,8 @@ void DrawerPanel::RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, 
                     theme.fontMenuItem.Get() ? theme.fontMenuItem.Get() : theme.fontButtonCenter.Get(),
                     visibleW, 10000.0f, &pLayout))) {
                 pLayout->SetWordWrapping(DWRITE_WORD_WRAPPING_WRAP);
+                pLayout->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR);
+                pLayout->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
 
                 // Clamp caret position
                 if (m_gitCaretPos > m_commitMessage.length()) {
@@ -8204,6 +8210,9 @@ void DrawerPanel::RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, 
                 DWRITE_TEXT_METRICS tm{};
                 pLayout->GetMetrics(&tm);
 
+                float textOriginX = rcMsgText.left + 1.0f;
+                float textOriginY = rcMsgText.top + config.ScaleF(1.0f) - m_gitMsgScrollY;
+
                 // Auto-scroll vertically if content exceeds visible box height
                 if (caretRelY - m_gitMsgScrollY < 0.0f) {
                     m_gitMsgScrollY = caretRelY;
@@ -8214,8 +8223,7 @@ void DrawerPanel::RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, 
                 if (m_gitMsgScrollY > maxScrollY) m_gitMsgScrollY = maxScrollY;
                 if (m_gitMsgScrollY < 0.0f) m_gitMsgScrollY = 0.0f;
 
-                float textOriginX = rcMsgText.left;
-                float textOriginY = rcMsgText.top - m_gitMsgScrollY;
+                textOriginY = rcMsgText.top + config.ScaleF(1.0f) - m_gitMsgScrollY;
 
                 // Selection Highlight Rectangles
                 if (HasGitSelection()) {
@@ -8249,7 +8257,7 @@ void DrawerPanel::RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, 
                 if (!m_isCommitEditMsgOpen && m_focusedGitInput == 1 && m_gitCaretVisible) {
                     float caretX = textOriginX + caretRelX;
                     float caretTop = textOriginY + caretRelY;
-                    float caretBottom = caretTop + carethtm.height;
+                    float caretBottom = caretTop + (carethtm.height > 0.0f ? carethtm.height : config.ScaleF(15.0f));
                     pRT->DrawLine(
                         D2D1::Point2F(caretX, caretTop),
                         D2D1::Point2F(caretX, caretBottom),
@@ -9878,9 +9886,6 @@ void DrawerPanel::RenderPublishRepoModal(ID2D1RenderTarget* pRT, Theme& theme, c
     if (brushFocusBorder) pRT->DrawRoundedRectangle(rrcInput, brushFocusBorder.Get(), 1.5f);
 
     std::wstring displayRepo = m_publishRepoName.empty() ? L"Repository Name" : m_publishRepoName;
-    if (m_gitCaretVisible && !m_publishRepoName.empty()) {
-        displayRepo += L"|";
-    }
     D2D1_RECT_F rcInputText = D2D1::RectF(
         m_publishInputBounds.left + config.ScaleF(8.0f),
         m_publishInputBounds.top + config.ScaleF(5.0f),
@@ -9890,6 +9895,23 @@ void DrawerPanel::RenderPublishRepoModal(ID2D1RenderTarget* pRT, Theme& theme, c
     pRT->DrawText(displayRepo.c_str(), static_cast<UINT32>(displayRepo.length()),
                   pFmtMain, rcInputText,
                   m_publishRepoName.empty() ? theme.brushTextMuted.Get() : theme.brushTextPrimary.Get());
+    if (m_gitCaretVisible && theme.dwriteFactory) {
+        float caretX = rcInputText.left;
+        if (!m_publishRepoName.empty()) {
+            Microsoft::WRL::ComPtr<IDWriteTextLayout> pPubLayout;
+            if (SUCCEEDED(theme.dwriteFactory->CreateTextLayout(
+                    m_publishRepoName.c_str(), static_cast<UINT32>(m_publishRepoName.length()),
+                    pFmtMain, 2000.0f, 100.0f, &pPubLayout))) {
+                DWRITE_TEXT_METRICS tmPub{};
+                if (SUCCEEDED(pPubLayout->GetMetrics(&tmPub))) {
+                    caretX += tmPub.widthIncludingTrailingWhitespace;
+                }
+            }
+        }
+        float caretTop = rcInputText.top + config.ScaleF(2.0f);
+        float caretBottom = rcInputText.bottom - config.ScaleF(2.0f);
+        pRT->DrawLine(D2D1::Point2F(caretX, caretTop), D2D1::Point2F(caretX, caretBottom), theme.brushTextPrimary.Get(), 1.5f);
+    }
 
     curY += inputH + config.ScaleF(8.0f);
 

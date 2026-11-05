@@ -5452,6 +5452,11 @@ void Window::StartMysqlServer() {
         mysqldExe = bundledMysql / L"bin" / L"mysqld.exe";
         myIni = bundledMysql / L"bin" / L"my.ini";
         mysqlDir = bundledMysql;
+    } else if (std::filesystem::exists(GetPhideRoot() / L"installer" / L"test_install" / L"runtimes" / L"mysql" / L"bin" / L"mysqld.exe")) {
+        bundledMysql = GetPhideRoot() / L"installer" / L"test_install" / L"runtimes" / L"mysql";
+        mysqldExe = bundledMysql / L"bin" / L"mysqld.exe";
+        myIni = bundledMysql / L"bin" / L"my.ini";
+        mysqlDir = bundledMysql;
     } else if (std::filesystem::exists(L"C:\\xampp\\mysql\\bin\\mysqld.exe")) {
         mysqldExe = L"C:\\xampp\\mysql\\bin\\mysqld.exe";
         myIni = L"C:\\xampp\\mysql\\bin\\my.ini";
@@ -5459,6 +5464,10 @@ void Window::StartMysqlServer() {
     }
 
     if (!mysqldExe.empty() && std::filesystem::exists(mysqldExe)) {
+        if (!mysqlDir.empty() && !std::filesystem::exists(mysqlDir / L"data") && std::filesystem::exists(mysqlDir / L"initial_data")) {
+            std::error_code ec;
+            std::filesystem::copy(mysqlDir / L"initial_data", mysqlDir / L"data", std::filesystem::copy_options::recursive, ec);
+        }
         std::wstring cmd = L"\"" + mysqldExe.wstring() + L"\"";
         if (std::filesystem::exists(myIni)) {
             cmd += L" --defaults-file=\"" + myIni.wstring() + L"\"";
@@ -5496,6 +5505,39 @@ void Window::StartMysqlServer() {
 
 void Window::StopMysqlServer() {
     if (m_hMysqlProcess) {
+        // Attempt clean, graceful shutdown via mysqladmin so InnoDB buffers flush and tables are safely closed
+        std::filesystem::path bundledMysql = GetPhideRoot() / L"runtimes" / L"mysql";
+        std::filesystem::path adminExe;
+        if (std::filesystem::exists(bundledMysql / L"bin" / L"mysqladmin.exe")) {
+            adminExe = bundledMysql / L"bin" / L"mysqladmin.exe";
+        } else if (std::filesystem::exists(GetPhideRoot() / L"installer" / L"test_install" / L"runtimes" / L"mysql" / L"bin" / L"mysqladmin.exe")) {
+            adminExe = GetPhideRoot() / L"installer" / L"test_install" / L"runtimes" / L"mysql" / L"bin" / L"mysqladmin.exe";
+        } else if (std::filesystem::exists(L"C:\\xampp\\mysql\\bin\\mysqladmin.exe")) {
+            adminExe = L"C:\\xampp\\mysql\\bin\\mysqladmin.exe";
+        }
+
+        if (!adminExe.empty() && std::filesystem::exists(adminExe)) {
+            std::wstring cmd = L"\"" + adminExe.wstring() + L"\" -u root shutdown";
+            std::vector<wchar_t> cmdBuf(cmd.begin(), cmd.end());
+            cmdBuf.push_back(L'\0');
+
+            STARTUPINFOW si{};
+            si.cb = sizeof(si);
+            si.dwFlags = STARTF_USESHOWWINDOW;
+            si.wShowWindow = SW_HIDE;
+            PROCESS_INFORMATION pi{};
+            if (CreateProcessW(NULL, cmdBuf.data(), NULL, NULL, FALSE, CREATE_NO_WINDOW, NULL, NULL, &si, &pi)) {
+                CloseHandle(pi.hThread);
+                DWORD waitRes = WaitForSingleObject(m_hMysqlProcess, 1500);
+                CloseHandle(pi.hProcess);
+                if (waitRes == WAIT_OBJECT_0) {
+                    CloseHandle(m_hMysqlProcess);
+                    m_hMysqlProcess = nullptr;
+                    return;
+                }
+            }
+        }
+
         TerminateProcess(m_hMysqlProcess, 0);
         CloseHandle(m_hMysqlProcess);
         m_hMysqlProcess = nullptr;
