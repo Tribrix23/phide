@@ -46,6 +46,7 @@
 #include "phide/editor/TailwindHelper.hpp"
 #include "phide/editor/OpenDocument.hpp"
 #include "phide/editor/SmartImportHelper.hpp"
+#include "phide/editor/FormatEngine.hpp"
 #include "phide/workspace/WorkspaceManager.hpp"
 #include "phide/workspace/ExplorerUndoManager.hpp"
 #include "phide/server/LiveServer.hpp"
@@ -318,6 +319,9 @@ int main(int argc, char* argv[]) {
     }
     if (targetTest == 116) {
         goto run_test_116;
+    }
+    if (targetTest == 117) {
+        goto run_test_117;
     }
 
     if (targetTest == 66) {
@@ -17232,6 +17236,72 @@ run_test_116:
         std::cout << "  Passed: All [TEST 116] Python Missing Variables & Terminal Error tests passed!" << std::endl;
         if (targetTest == 116) {
             std::cout << "Target test 116 finished." << std::endl;
+            return 0;
+        }
+    }
+
+run_test_117:
+    {
+        std::cout << "\n[TEST 117] Testing Native FormatEngine for HTML, CSS, JavaScript, JSON, and PHP..." << std::endl;
+
+        // Subtest 1: JSON Formatting
+        std::wstring rawJson = L"{\"name\":\"phide\",\"version\":\"1.0.0\",\"scripts\":{\"build\":\"scripts\\\\build.bat\"},\"keywords\":[\"ide\",\"php\",\"react\"]}";
+        std::wstring formattedJson = phide::editor::FormatEngine::FormatJson(rawJson, 4);
+        assert(formattedJson.find(L"\"name\": \"phide\",\n") != std::wstring::npos);
+        assert(formattedJson.find(L"\"scripts\": {\n        \"build\": \"scripts\\\\build.bat\"\n    },\n") != std::wstring::npos);
+        assert(formattedJson.find(L"\"keywords\": [\n        \"ide\",\n        \"php\",\n        \"react\"\n    ]\n") != std::wstring::npos);
+        std::cout << "  Passed: Subtest 1 (JSON canonical formatting)" << std::endl;
+
+        // Subtest 2: CSS Formatting
+        std::wstring rawCss = L".btn{color:#fff;background-color:#007acc;margin:0;}@media(min-width:768px){.btn{padding:8px 16px;}}";
+        std::wstring formattedCss = phide::editor::FormatEngine::FormatCss(rawCss, 4);
+        assert(formattedCss.find(L".btn {\n    color: #fff;\n    background-color: #007acc;\n    margin: 0;\n}") != std::wstring::npos);
+        assert(formattedCss.find(L"padding: 8px 16px;") != std::wstring::npos);
+        assert(formattedCss.find(L".btn {\n        padding: 8px 16px;\n    }\n}") != std::wstring::npos);
+        std::cout << "  Passed: Subtest 2 (CSS rule blocks & media queries formatting)" << std::endl;
+
+        // Subtest 3: HTML Formatting
+        std::wstring rawHtml = L"<!DOCTYPE html><html><head><title>Phide App</title></head><body><div class=\"container\"><h1>Hello</h1><input type=\"text\"></div></body></html>";
+        std::wstring formattedHtml = phide::editor::FormatEngine::FormatHtml(rawHtml, 4);
+        assert(formattedHtml.find(L"<!DOCTYPE html>\n") != std::wstring::npos);
+        assert(formattedHtml.find(L"<html>\n") != std::wstring::npos);
+        assert(formattedHtml.find(L"<head>\n") != std::wstring::npos);
+        assert(formattedHtml.find(L"<div class=\"container\">\n") != std::wstring::npos);
+        assert(formattedHtml.find(L"<input type=\"text\">\n") != std::wstring::npos);
+        std::cout << "  Passed: Subtest 3 (HTML document structure & tag indentation)" << std::endl;
+
+        // Subtest 4: JavaScript & JSX Formatting
+        std::wstring rawJs = L"const App = () => {\nconst [count, setCount] = useState(0);\nreturn (<div className=\"app\"><h1>Count: {count}</h1></div>);\n};";
+        std::wstring formattedJs = phide::editor::FormatEngine::FormatJavaScript(rawJs, 4);
+        assert(formattedJs.find(L"const App = () => {\n") != std::wstring::npos);
+        assert(formattedJs.find(L"<div className=\"app\">") != std::wstring::npos);
+        std::cout << "  Passed: Subtest 4 (JavaScript & React JSX formatting)" << std::endl;
+
+        // Subtest 5: PHP Formatting (PSR-12 standard)
+        std::wstring rawPhp = L"<?php\nnamespace App;\nclass DB {\npublic function connect(): PDO {\n$pdo = new PDO('mysql:host=localhost;dbname=test', 'root', '', [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]);\nreturn $pdo;\n}\n}";
+        std::wstring formattedPhp = phide::editor::FormatEngine::FormatPhp(rawPhp, 4);
+        assert(formattedPhp.find(L"<?php\n") != std::wstring::npos);
+        assert(formattedPhp.find(L"namespace App;\n") != std::wstring::npos);
+        assert(formattedPhp.find(L"class DB {\n") != std::wstring::npos);
+        assert(formattedPhp.find(L"=>") != std::wstring::npos);
+        std::cout << "  Passed: Subtest 5 (PHP PSR-12 class, method & PDO array formatting)" << std::endl;
+
+        // Subtest 6: FormatEngine::CanFormat and FormatDocument Dispatcher
+        assert(phide::editor::FormatEngine::CanFormat(L".html") == true);
+        assert(phide::editor::FormatEngine::CanFormat(L".css") == true);
+        assert(phide::editor::FormatEngine::CanFormat(L".js") == true);
+        assert(phide::editor::FormatEngine::CanFormat(L".jsx") == true);
+        assert(phide::editor::FormatEngine::CanFormat(L".json") == true);
+        assert(phide::editor::FormatEngine::CanFormat(L".php") == true);
+        assert(phide::editor::FormatEngine::CanFormat(L".txt") == false);
+
+        std::wstring docFormatted = phide::editor::FormatEngine::FormatDocument(rawJson, L".json", 4);
+        assert(docFormatted == formattedJson);
+        std::cout << "  Passed: Subtest 6 (FormatEngine Dispatcher & CanFormat verified)" << std::endl;
+
+        std::cout << "  Passed: All [TEST 117] Format Document (Shift+Alt+F) tests passed!" << std::endl;
+        if (targetTest == 117) {
+            std::cout << "Target test 117 finished." << std::endl;
             return 0;
         }
     }

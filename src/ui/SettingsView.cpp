@@ -134,6 +134,19 @@ void SettingsView::InitializeSettings() {
         m_items.push_back(std::move(it));
     }
 
+    // 8b. Editor: Format On Save (Toggle)
+    {
+        SettingItem it;
+        it.id = L"editor.formatOnSave";
+        it.scope = L"EDITOR";
+        it.title = L"Format On Save";
+        it.description = L"Automatically format document (HTML, CSS, JS, JSON, PHP) on save (Shift+Alt+F).";
+        it.category = SettingCategory::TextEditor;
+        it.isCommonlyUsed = true;
+        it.control = SettingControl::Toggle;
+        m_items.push_back(std::move(it));
+    }
+
     // 8b. Editor: CodeLens (Toggle)
     {
         SettingItem it;
@@ -735,6 +748,7 @@ void SettingsView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
             else if (it.id == L"editor.codeLens") isChecked = config.enableCodeLens;
             else if (it.id == L"editor.lineNumbers") isChecked = config.showLineNumbers;
             else if (it.id == L"editor.insertSpaces") isChecked = config.insertSpaces;
+            else if (it.id == L"editor.formatOnSave") isChecked = config.formatOnSave;
             else if (it.id == L"workbench.breadcrumbs") isChecked = config.showBreadcrumbs;
             else if (it.id == L"workbench.statusBar") isChecked = config.showStatusBar;
             else if (it.id == L"workbench.graphColored") isChecked = config.isGraphColored;
@@ -1178,6 +1192,8 @@ bool SettingsView::HandleLButtonDown(POINT clientPt, app::AppConfig& config, The
                         config.showLineNumbers = !config.showLineNumbers;
                     } else if (it.id == L"editor.insertSpaces") {
                         config.insertSpaces = !config.insertSpaces;
+                    } else if (it.id == L"editor.formatOnSave") {
+                        config.formatOnSave = !config.formatOnSave;
                     } else if (it.id == L"workbench.breadcrumbs") {
                         config.showBreadcrumbs = !config.showBreadcrumbs;
                     } else if (it.id == L"workbench.statusBar") {

@@ -9,6 +9,7 @@
 
 #include "phide/app/Window.hpp"
 #include "phide/editor/SyntaxValidator.hpp"
+#include "phide/editor/FormatEngine.hpp"
 #include "phide/ui/PhideLogo.hpp"
 #include "phide/ui/SplashScreen.hpp"
 #include <windowsx.h>
@@ -534,6 +535,7 @@ void Window::SaveSessionState() {
     out << L"  \"showBreadcrumbs\": " << (m_config.showBreadcrumbs ? L"true" : L"false") << L",\n";
     out << L"  \"showStatusBar\": " << (m_config.showStatusBar ? L"true" : L"false") << L",\n";
     out << L"  \"insertSpaces\": " << (m_config.insertSpaces ? L"true" : L"false") << L",\n";
+    out << L"  \"formatOnSave\": " << (m_config.formatOnSave ? L"true" : L"false") << L",\n";
     out << L"  \"isGraphColored\": " << (m_config.isGraphColored ? L"true" : L"false") << L",\n";
     out << L"  \"enableMarkdownPreview\": " << (m_config.enableMarkdownPreview ? L"true" : L"false") << L",\n";
     out << L"  \"enableCodeLens\": " << (m_config.enableCodeLens ? L"true" : L"false") << L",\n";
@@ -712,6 +714,8 @@ void Window::LoadSessionState() {
             m_config.showStatusBar = (line.find(L"true") != std::wstring::npos);
         } else if (line.find(L"\"insertSpaces\"") != std::wstring::npos) {
             m_config.insertSpaces = (line.find(L"true") != std::wstring::npos);
+        } else if (line.find(L"\"formatOnSave\"") != std::wstring::npos) {
+            m_config.formatOnSave = (line.find(L"true") != std::wstring::npos);
         } else if (line.find(L"\"isGraphColored\"") != std::wstring::npos) {
             m_config.isGraphColored = (line.find(L"true") != std::wstring::npos);
         } else if (line.find(L"\"enableMarkdownPreview\"") != std::wstring::npos) {
@@ -2425,6 +2429,19 @@ void Window::DoSaveAll() {
                     doc.isDirty = false;
                     anySaved = true;
                 } else {
+                    if (m_config.formatOnSave && !doc.isSpecialView && !doc.isDiffView) {
+                        std::wstring ext = std::filesystem::path(doc.filePath).extension().wstring();
+                        for (auto& c : ext) c = static_cast<wchar_t>(towlower(c));
+                        if (editor::FormatEngine::CanFormat(ext)) {
+                            int tabSize = (m_config.tabSize > 0) ? m_config.tabSize : 4;
+                            std::wstring rawText = doc.buffer.GetText();
+                            std::wstring formatted = editor::FormatEngine::FormatDocument(rawText, ext, tabSize);
+                            if (!formatted.empty() && formatted != rawText) {
+                                doc.buffer.PushUndo();
+                                doc.buffer.SetText(formatted);
+                            }
+                        }
+                    }
                     doc.buffer.SaveToFile(doc.filePath);
                     doc.isDirty = false;
                     doc.originalDiskText = doc.buffer.GetText();
@@ -4056,11 +4073,10 @@ static std::wstring FormatBracesNative(const std::wstring& src) {
     return out;
 }
 
-void Window::DoFormatDocument() {
+void Window::DoFormatDocument(bool showFeedback) {
     auto* pDoc = GetActiveDoc();
-    if (!pDoc || pDoc->isSpecialView) return;
+    if (!pDoc || pDoc->isSpecialView || pDoc->isDiffView) return;
 
-    // Check if Prettier can format this document (HTML, CSS, JS, TS, JSON, Markdown, PHP)
     std::wstring ext;
     if (!pDoc->filePath.empty()) {
         ext = std::filesystem::path(pDoc->filePath).extension().wstring();
@@ -4069,93 +4085,43 @@ void Window::DoFormatDocument() {
     }
     for (auto& c : ext) c = static_cast<wchar_t>(towlower(c));
 
-    bool handledByPrettier = false;
-    if (ext == L".css" || ext == L".scss" || ext == L".less" ||
-        ext == L".html" || ext == L".htm" || ext == L".js" ||
-        ext == L".jsx" || ext == L".ts" || ext == L".tsx" ||
-        ext == L".json" || ext == L".md") {
-        
-        wchar_t tempPath[MAX_PATH];
-        if (GetTempPathW(MAX_PATH, tempPath)) {
-            std::wstring tempFile = std::wstring(tempPath) + L"phide_fmt_" + std::to_wstring(GetCurrentProcessId()) + ext;
-            std::string textUtf8;
-            std::wstring docText = pDoc->buffer.GetText();
-            int uLen = WideCharToMultiByte(CP_UTF8, 0, docText.c_str(), -1, nullptr, 0, nullptr, nullptr);
-            if (uLen > 0) {
-                textUtf8.resize(uLen - 1);
-                WideCharToMultiByte(CP_UTF8, 0, docText.c_str(), -1, &textUtf8[0], uLen - 1, nullptr, nullptr);
-            }
-            std::ofstream ofs(std::filesystem::path(tempFile), std::ios::binary);
-            if (ofs) {
-                ofs.write(textUtf8.data(), textUtf8.size());
-                ofs.close();
+    std::wstring rawText = pDoc->buffer.GetText();
+    if (rawText.empty()) return;
 
-                std::wstring cmd = L"cmd.exe /c prettier --write \"" + tempFile + L"\"";
-                STARTUPINFOW si = { sizeof(si) };
-                si.dwFlags |= STARTF_USESHOWWINDOW;
-                si.wShowWindow = SW_HIDE;
-                PROCESS_INFORMATION pi = { 0 };
-                if (CreateProcessW(nullptr, &cmd[0], nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {
-                    WaitForSingleObject(pi.hProcess, 4000);
-                    CloseHandle(pi.hProcess);
-                    CloseHandle(pi.hThread);
+    int tabSize = (m_config.tabSize > 0) ? m_config.tabSize : 4;
+    std::wstring formatted = editor::FormatEngine::FormatDocument(rawText, ext, tabSize);
 
-                    std::ifstream ifs(std::filesystem::path(tempFile), std::ios::binary);
-                    if (ifs) {
-                        std::string formattedStr((std::istreambuf_iterator<char>(ifs)), std::istreambuf_iterator<char>());
-                        ifs.close();
-                        if (!formattedStr.empty() && formattedStr != textUtf8) {
-                            int wLen = MultiByteToWideChar(CP_UTF8, 0, formattedStr.c_str(), -1, nullptr, 0);
-                            if (wLen > 0) {
-                                std::wstring formattedW(wLen - 1, 0);
-                                MultiByteToWideChar(CP_UTF8, 0, formattedStr.c_str(), -1, &formattedW[0], wLen - 1);
-                                pDoc->buffer.SetText(formattedW);
-                                MarkDocumentModified(pDoc);
-                                handledByPrettier = true;
-                                InvalidateRect(m_hwnd, nullptr, FALSE);
-                            }
-                        }
-                    }
-                }
-                std::error_code ec;
-                std::filesystem::remove(std::filesystem::path(tempFile), ec);
+    if (!formatted.empty() && formatted != rawText) {
+        pDoc->buffer.PushUndo();
+
+        auto curPos = pDoc->buffer.GetCursor();
+        size_t origLine = curPos.line;
+        size_t origCol = curPos.col;
+
+        pDoc->buffer.SetText(formatted);
+
+        size_t newLineCount = pDoc->buffer.GetLineCount();
+        size_t clampedLine = (std::min)(origLine, newLineCount > 0 ? newLineCount - 1 : 0);
+        size_t lineLen = pDoc->buffer.GetLine(clampedLine).length();
+        size_t clampedCol = (std::min)(origCol, lineLen);
+        pDoc->buffer.SetCursor(clampedLine, clampedCol);
+
+        MarkDocumentModified(pDoc);
+        InvalidateRect(m_hwnd, nullptr, FALSE);
+    } else {
+        size_t lineCount = pDoc->buffer.GetLineCount();
+        bool modified = false;
+        for (size_t i = 0; i < lineCount; ++i) {
+            std::wstring line = pDoc->buffer.GetLine(i);
+            size_t end = line.find_last_not_of(L" \t\r\n");
+            if (end != std::wstring::npos && end + 1 < line.length()) {
+                pDoc->buffer.SetLine(i, line.substr(0, end + 1));
+                modified = true;
             }
         }
-    }
-
-    if (!handledByPrettier) {
-        std::wstring rawText = pDoc->buffer.GetText();
-        std::wstring formatted;
-        if (ext == L".css" || ext == L".scss" || ext == L".less") {
-            formatted = FormatCssNative(rawText);
-        } else if (ext == L".html" || ext == L".htm" || ext == L".xml" || ext == L".svg") {
-            formatted = FormatHtmlNative(rawText);
-        } else if (ext == L".php") {
-            formatted = FormatPhpNative(rawText);
-        } else if (ext == L".js" || ext == L".jsx" || ext == L".ts" || ext == L".tsx" ||
-                   ext == L".cpp" || ext == L".c" || ext == L".h" || ext == L".hpp") {
-            formatted = FormatBracesNative(rawText);
-        }
-
-        if (!formatted.empty() && formatted != rawText) {
-            pDoc->buffer.SetText(formatted);
+        if (modified) {
             MarkDocumentModified(pDoc);
             InvalidateRect(m_hwnd, nullptr, FALSE);
-        } else {
-            size_t lineCount = pDoc->buffer.GetLineCount();
-            bool modified = false;
-            for (size_t i = 0; i < lineCount; ++i) {
-                std::wstring line = pDoc->buffer.GetLine(i);
-                size_t end = line.find_last_not_of(L" \t\r\n");
-                if (end != std::wstring::npos && end + 1 < line.length()) {
-                    pDoc->buffer.SetLine(i, line.substr(0, end + 1));
-                    modified = true;
-                }
-            }
-            if (modified) {
-                MarkDocumentModified(pDoc);
-                InvalidateRect(m_hwnd, nullptr, FALSE);
-            }
         }
     }
 }
@@ -5800,6 +5766,29 @@ void Window::SaveFileToPath(const std::wstring& path) {
                 NotifyGraphViewFilesystemChanged();
                 InvalidateRect(m_hwnd, nullptr, FALSE);
                 return;
+            }
+        }
+        // Format Document on Save (Shift+Alt+F integrated formatting for HTML, CSS, JS, JSON, PHP)
+        if (m_config.formatOnSave && !pDoc->isSpecialView && !pDoc->isDiffView) {
+            std::wstring ext = std::filesystem::path(path).extension().wstring();
+            for (auto& c : ext) c = static_cast<wchar_t>(towlower(c));
+            if (editor::FormatEngine::CanFormat(ext)) {
+                int tabSize = (m_config.tabSize > 0) ? m_config.tabSize : 4;
+                std::wstring rawText = pDoc->buffer.GetText();
+                std::wstring formatted = editor::FormatEngine::FormatDocument(rawText, ext, tabSize);
+                if (!formatted.empty() && formatted != rawText) {
+                    pDoc->buffer.PushUndo();
+                    auto curPos = pDoc->buffer.GetCursor();
+                    size_t origLine = curPos.line;
+                    size_t origCol = curPos.col;
+                    pDoc->buffer.SetText(formatted);
+                    size_t newLineCount = pDoc->buffer.GetLineCount();
+                    size_t clampedLine = (std::min)(origLine, newLineCount > 0 ? newLineCount - 1 : 0);
+                    size_t lineLen = pDoc->buffer.GetLine(clampedLine).length();
+                    size_t clampedCol = (std::min)(origCol, lineLen);
+                    pDoc->buffer.SetCursor(clampedLine, clampedCol);
+                    MarkDocumentModified(pDoc);
+                }
             }
         }
         if (pDoc->buffer.SaveToFile(path)) {
@@ -13278,8 +13267,8 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
             }
 
             // Shift+Alt+F: Format Document
-            if ((GetKeyState(VK_SHIFT) & 0x8000) && (GetKeyState(VK_MENU) & 0x8000) && wParam == 'F') {
-                DoFormatDocument();
+            if ((GetKeyState(VK_SHIFT) & 0x8000) && (GetKeyState(VK_MENU) & 0x8000) && (wParam == 'F' || wParam == 'f')) {
+                DoFormatDocument(true);
                 return 0;
             }
 

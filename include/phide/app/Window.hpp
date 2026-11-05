@@ -409,7 +409,7 @@ private:
     void DoEmmetExpand();
 
     /** @brief Formats active document (Shift+Alt+F). */
-    void DoFormatDocument();
+    void DoFormatDocument(bool showFeedback = true);
 
     /** @brief Formats selected code range (Ctrl+K Ctrl+F). */
     void DoFormatSelection();
