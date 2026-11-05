@@ -7322,7 +7322,7 @@ void Window::RenderBranchDropdown(ID2D1RenderTarget* pRT, float clientWidth, flo
 
         // Branch name
         float textX = iconX + config.ScaleF(18.0f);
-        float textRight = isCurr ? (rcRow.right - config.ScaleF(56.0f)) : (rcRow.right - config.ScaleF(8.0f));
+        float textRight = isCurr ? (rcRow.right - config.ScaleF(68.0f)) : (rcRow.right - config.ScaleF(8.0f));
         D2D1_RECT_F rcText = D2D1::RectF(textX, itemY + config.ScaleF(1.0f), textRight, itemY + itemH);
         ID2D1Brush* nameBrush = isCurr
             ? pTextWhite
@@ -7332,21 +7332,28 @@ void Window::RenderBranchDropdown(ID2D1RenderTarget* pRT, float clientWidth, flo
         pRT->DrawText(bName.c_str(), static_cast<UINT32>(bName.length()), pFmt, rcText, nameBrush);
         pRT->PopAxisAlignedClip();
 
-        // "current" badge on the active branch
+        // "current" badge on the active branch (neatly contained pill badge, never leaks out)
         if (isCurr) {
-            float badgeW = config.ScaleF(46.0f);
-            float badgeH = config.ScaleF(16.0f);
-            float bRight = rcRow.right - config.ScaleF(6.0f);
+            float badgeW = config.ScaleF(56.0f);
+            float badgeH = config.ScaleF(18.0f);
+            float bRight = rcRow.right - config.ScaleF(8.0f);
             float bTop = itemY + (itemH - badgeH) * 0.5f;
             D2D1_RECT_F rcCurrent = D2D1::RectF(bRight - badgeW, bTop, bRight, bTop + badgeH);
-            D2D1_ROUNDED_RECT rrcCurrent = D2D1::RoundedRect(rcCurrent, config.ScaleF(3.0f), config.ScaleF(3.0f));
+            D2D1_ROUNDED_RECT rrcCurrent = D2D1::RoundedRect(rcCurrent, config.ScaleF(4.0f), config.ScaleF(4.0f));
             Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> currBg;
-            pRT->CreateSolidColorBrush(D2D1::ColorF(0.0f, 0.48f, 0.95f, 0.20f), &currBg);
+            Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> currBorder;
+            pRT->CreateSolidColorBrush(D2D1::ColorF(theme.colors.brandAccent.r, theme.colors.brandAccent.g, theme.colors.brandAccent.b, 0.20f), &currBg);
+            pRT->CreateSolidColorBrush(D2D1::ColorF(theme.colors.brandAccent.r, theme.colors.brandAccent.g, theme.colors.brandAccent.b, 0.45f), &currBorder);
             if (currBg) pRT->FillRoundedRectangle(rrcCurrent, currBg.Get());
+            if (currBorder) pRT->DrawRoundedRectangle(rrcCurrent, currBorder.Get(), 1.0f);
+
+            pRT->PushAxisAlignedClip(rcCurrent, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
             const wchar_t* curLabel = L"current";
+            IDWriteTextFormat* pBadgeFmt = theme.fontCounterBadge ? theme.fontCounterBadge.Get() : (theme.fontBadge ? theme.fontBadge.Get() : pFmt);
             pRT->DrawText(curLabel, static_cast<UINT32>(wcslen(curLabel)),
-                          theme.fontButtonCenter ? theme.fontButtonCenter.Get() : pFmt,
+                          pBadgeFmt,
                           rcCurrent, pAccent);
+            pRT->PopAxisAlignedClip();
         }
 
         itemY += itemH;
@@ -13973,13 +13980,13 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     }
                 }
 
-                // Spinner badge on Activity Rail only active when explicit git action is loading
+                // Spinner badge on Activity Rail and buttons only active when explicit git action is loading
                 static ULONGLONG s_gitLoadingStartTime = 0;
                 bool isGitLoading = m_drawer.IsGitLoading();
                 if (isGitLoading) {
                     if (s_gitLoadingStartTime == 0) s_gitLoadingStartTime = now;
-                    // Watchdog safety timeout: clear stuck loading state after 2.5 seconds
-                    if (now - s_gitLoadingStartTime > 2500) {
+                    // Watchdog safety timeout: clear stuck loading state after 30 seconds
+                    if (now - s_gitLoadingStartTime > 30000) {
                         isGitLoading = false;
                         m_drawer.ClearGitLoading();
                         m_rail.SetGitLoading(false);
@@ -13990,10 +13997,8 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 }
 
                 if (isGitLoading) {
-                    m_rail.UpdateGitAnim(14.0f);
-                    m_drawer.UpdateGitLoadingAnim(14.0f);
                     m_rail.SetGitLoading(true);
-                    InvalidateRect(m_hwnd, nullptr, FALSE);
+                    SetTimer(m_hwnd, m_animTimerId, 16, nullptr);
                 } else {
                     m_rail.SetGitLoading(false);
                 }
@@ -14096,6 +14101,13 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 // Smoothly animate confirm / restore / delete modal button spinner
                 if (m_confirmDiscardModal.IsOpen() && m_confirmDiscardModal.IsLoading()) {
                     m_confirmDiscardModal.UpdateSpinner(14.0f);
+                    keepAnimating = true;
+                }
+
+                // Smoothly animate git loading spinners on buttons and activity rail (60 FPS buttery smooth)
+                if (m_drawer.IsGitLoading()) {
+                    m_drawer.UpdateGitLoadingAnim(8.0f);
+                    m_rail.UpdateGitAnim(8.0f);
                     keepAnimating = true;
                 }
 

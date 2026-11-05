@@ -6304,6 +6304,7 @@ void DrawerPanel::PushCommitsAsync() {
         auto finish = [&]() {
             if (alive && alive->load()) {
                 m_isGitLoading = false;
+                m_isSyncing = false;
                 if (m_onGitStateChanged) m_onGitStateChanged();
             }
             if (workers) workers->fetch_sub(1);
@@ -6311,6 +6312,8 @@ void DrawerPanel::PushCommitsAsync() {
         try {
             if (alive && alive->load()) {
                 m_isGitLoading = true;
+                m_isSyncing = true;
+                if (m_onGitStateChanged) m_onGitStateChanged();
                 std::wstring dir = m_openFolderPath.empty() ? L"." : m_openFolderPath;
                 auto res = RunGitCmd(L"push", dir);
                 if (res.exitCode != 0 && m_onGitError) {
@@ -6333,6 +6336,7 @@ void DrawerPanel::PullCommitsAsync() {
         auto finish = [&]() {
             if (alive && alive->load()) {
                 m_isGitLoading = false;
+                m_isSyncing = false;
                 if (m_onGitStateChanged) m_onGitStateChanged();
             }
             if (workers) workers->fetch_sub(1);
@@ -6340,6 +6344,8 @@ void DrawerPanel::PullCommitsAsync() {
         try {
             if (alive && alive->load()) {
                 m_isGitLoading = true;
+                m_isSyncing = true;
+                if (m_onGitStateChanged) m_onGitStateChanged();
                 std::wstring dir = m_openFolderPath.empty() ? L"." : m_openFolderPath;
                 auto res = RunGitCmd(L"pull", dir);
                 if (res.exitCode != 0 && m_onGitError) {
@@ -6362,12 +6368,16 @@ void DrawerPanel::FetchAllRemotesAsync() {
         auto finish = [&]() {
             if (alive && alive->load()) {
                 m_isGitLoading = false;
+                m_isSyncing = false;
+                if (m_onGitStateChanged) m_onGitStateChanged();
             }
             if (workers) workers->fetch_sub(1);
         };
         try {
             if (alive && alive->load()) {
                 m_isGitLoading = true;
+                m_isSyncing = true;
+                if (m_onGitStateChanged) m_onGitStateChanged();
                 std::wstring dir = m_openFolderPath.empty() ? L"." : m_openFolderPath;
                 RunGitCmd(L"fetch --all", dir);
                 if (alive && alive->load()) {
@@ -6852,9 +6862,23 @@ bool DrawerPanel::HitTestGit(POINT pt, const app::AppConfig& config,
             m_focusedGitInput = 0;
         }
 
+        // Secondary Sync Changes Button (when both changes and unpushed commits exist)
+        if (m_gitSyncBtnBounds.right > m_gitSyncBtnBounds.left &&
+            pt.x >= m_gitSyncBtnBounds.left && pt.x <= m_gitSyncBtnBounds.right &&
+            pt.y >= m_gitSyncBtnBounds.top && pt.y <= m_gitSyncBtnBounds.bottom) {
+            if (m_isCommitting.load() || m_isSyncing.load() || m_isGitLoading.load()) {
+                return true; // Ignore repeated clicks while loading (prevent spam click)
+            }
+            PushCommitsAsync();
+            return true;
+        }
+
         // Primary Commit / Sync Changes Button (Image 1 & 5)
         if (pt.x >= m_gitCommitBtnBounds.left && pt.x <= m_gitCommitBtnBounds.right &&
             pt.y >= m_gitCommitBtnBounds.top && pt.y <= m_gitCommitBtnBounds.bottom) {
+            if (m_isCommitting.load() || m_isSyncing.load() || m_isGitLoading.load()) {
+                return true; // Ignore repeated clicks while loading (prevent spam click)
+            }
             if (m_isCommitEditMsgOpen) {
                 return true; // Button disabled and locked while COMMIT_EDITMSG is open
             }
@@ -7027,6 +7051,9 @@ bool DrawerPanel::HitTestGit(POINT pt, const app::AppConfig& config,
         }
         if (pt.x >= m_gitGraphPushBounds.left && pt.x <= m_gitGraphPushBounds.right &&
             pt.y >= m_gitGraphPushBounds.top && pt.y <= m_gitGraphPushBounds.bottom) {
+            if (m_isCommitting.load() || m_isSyncing.load() || m_isGitLoading.load()) {
+                return true; // Ignore repeated clicks while loading (prevent spam click)
+            }
             PushCommitsAsync();
             return true;
         }
@@ -7156,8 +7183,24 @@ bool DrawerPanel::HandleGitMouseMove(POINT pt) {
     else if (checkBtn(m_gitDiscardAllBounds, L"Discard All Changes (🔄)")) { m_hoveredGitButton = L"discardAll"; }
     else if (checkBtn(m_gitChangesMoreBounds, L"More Actions...")) {}
     else if (checkBtn(m_gitGenerateAiBounds, L"Generate Commit Message with AI")) {}
+    else if (m_gitSyncBtnBounds.right > m_gitSyncBtnBounds.left &&
+             pt.x >= m_gitSyncBtnBounds.left && pt.x <= m_gitSyncBtnBounds.right &&
+             pt.y >= m_gitSyncBtnBounds.top && pt.y <= m_gitSyncBtnBounds.bottom) {
+        if (m_isSyncing.load()) {
+            m_gitTooltipText = L"Syncing changes in progress...";
+        } else {
+            m_gitTooltipText = L"Sync Changes: Push " + std::to_wstring(m_unpushedCommitsCount) + L" commit(s) to remote";
+        }
+        m_gitTooltipTarget = m_gitSyncBtnBounds;
+        m_showGitTooltip = true;
+    }
     else if (pt.x >= m_gitCommitBtnBounds.left && pt.x <= m_gitCommitBtnBounds.right &&
              pt.y >= m_gitCommitBtnBounds.top && pt.y <= m_gitCommitBtnBounds.bottom) {
+        if (m_isCommitting.load()) {
+            m_gitTooltipText = L"Committing changes in progress...";
+        } else if (m_isSyncing.load()) {
+            m_gitTooltipText = L"Syncing changes in progress...";
+        } else
         if (!m_gitChanges.empty()) {
             m_gitTooltipText = L"Commit Changes (Ctrl+Enter)";
         } else if (m_unpushedCommitsCount > 0) {
@@ -7337,6 +7380,117 @@ void DrawerPanel::HandleGitKeyDown(WPARAM wParam) {
     }
 }
 
+void DrawerPanel::DrawButtonSpinner(ID2D1RenderTarget* pRT, const D2D1_RECT_F& btnBounds, const std::wstring& labelText, Theme& theme, const app::AppConfig& config) {
+    if (!pRT) return;
+
+    // 1. Draw button background: disabled state that retains color but is blurred/translucent (alpha 0.50f)
+    // with a soft muted border so the user clearly sees it is disabled and in progress
+    D2D1_ROUNDED_RECT rrc = D2D1::RoundedRect(btnBounds, 4.0f, 4.0f);
+
+    // Dark base backing for contrast
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> baseBg;
+    pRT->CreateSolidColorBrush(D2D1::ColorF(0.12f, 0.12f, 0.14f, 0.70f), &baseBg);
+    if (baseBg) pRT->FillRoundedRectangle(rrc, baseBg.Get());
+
+    // Layered translucent brand accent (blue) with frosted/blurred 0.50 opacity
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> disabledAccentBg;
+    pRT->CreateSolidColorBrush(
+        D2D1::ColorF(theme.colors.brandAccent.r, theme.colors.brandAccent.g, theme.colors.brandAccent.b, 0.50f),
+        &disabledAccentBg
+    );
+    if (disabledAccentBg) pRT->FillRoundedRectangle(rrc, disabledAccentBg.Get());
+
+    // Soft translucent accent border
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> disabledBorder;
+    pRT->CreateSolidColorBrush(
+        D2D1::ColorF(theme.colors.brandAccent.r, theme.colors.brandAccent.g, theme.colors.brandAccent.b, 0.35f),
+        &disabledBorder
+    );
+    if (disabledBorder) pRT->DrawRoundedRectangle(rrc, disabledBorder.Get(), 1.0f);
+
+    // 2. Compute spinner dimensions and position
+    float btnH = btnBounds.bottom - btnBounds.top;
+    float spinnerR = config.ScaleF(5.5f);
+    float spinnerCy = (btnBounds.top + btnBounds.bottom) * 0.5f;
+
+    // Measure text to center (spinner + gap + text) nicely inside the button
+    IDWriteTextFormat* pFmt = theme.fontButtonCenter.Get() ? theme.fontButtonCenter.Get() : theme.fontMenuItem.Get();
+    float textW = 0.0f;
+    if (pFmt && theme.dwriteFactory) {
+        Microsoft::WRL::ComPtr<IDWriteTextLayout> pLayout;
+        if (SUCCEEDED(theme.dwriteFactory->CreateTextLayout(
+                labelText.c_str(), static_cast<UINT32>(labelText.length()),
+                pFmt, 1000.0f, btnH, &pLayout))) {
+            DWRITE_TEXT_METRICS tm{};
+            if (SUCCEEDED(pLayout->GetMetrics(&tm))) {
+                textW = tm.width;
+            }
+        }
+    }
+
+    float gap = config.ScaleF(8.0f);
+    float totalW = (spinnerR * 2.0f) + gap + textW;
+    float startX = (btnBounds.left + btnBounds.right - totalW) * 0.5f;
+    if (startX < btnBounds.left + config.ScaleF(8.0f)) {
+        startX = btnBounds.left + config.ScaleF(8.0f);
+    }
+    float spinnerCx = startX + spinnerR;
+    float textLeft = spinnerCx + spinnerR + gap;
+
+    // 3. Faint track circle (360 degrees, white with 0.20 alpha)
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> trackBrush;
+    pRT->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.20f), &trackBrush);
+    if (trackBrush) {
+        pRT->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(spinnerCx, spinnerCy), spinnerR, spinnerR),
+                         trackBrush.Get(), 1.5f);
+    }
+
+    // 4. Rotating 270-degree arc spinner
+    D2D1_MATRIX_3X2_F oldTrans;
+    pRT->GetTransform(&oldTrans);
+    pRT->SetTransform(D2D1::Matrix3x2F::Rotation(m_gitAnimAngle, D2D1::Point2F(spinnerCx, spinnerCy)) * oldTrans);
+
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> arcBrush;
+    pRT->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.90f), &arcBrush);
+    if (arcBrush) {
+        Microsoft::WRL::ComPtr<ID2D1Factory> pFactory;
+        pRT->GetFactory(&pFactory);
+        if (pFactory) {
+            Microsoft::WRL::ComPtr<ID2D1PathGeometry> pArcGeo;
+            if (SUCCEEDED(pFactory->CreatePathGeometry(&pArcGeo))) {
+                Microsoft::WRL::ComPtr<ID2D1GeometrySink> sink;
+                if (SUCCEEDED(pArcGeo->Open(&sink))) {
+                    sink->BeginFigure(D2D1::Point2F(spinnerCx - spinnerR, spinnerCy), D2D1_FIGURE_BEGIN_HOLLOW);
+                    D2D1_ARC_SEGMENT arc{};
+                    arc.point = D2D1::Point2F(spinnerCx, spinnerCy - spinnerR);
+                    arc.size = D2D1::SizeF(spinnerR, spinnerR);
+                    arc.sweepDirection = D2D1_SWEEP_DIRECTION_CLOCKWISE;
+                    sink->AddArc(arc);
+                    sink->EndFigure(D2D1_FIGURE_END_OPEN);
+                    sink->Close();
+                    pRT->DrawGeometry(pArcGeo.Get(), arcBrush.Get(), 2.0f);
+                }
+            }
+        }
+    }
+    pRT->SetTransform(oldTrans);
+
+    // 5. Draw label text in soft white (alpha 0.85f)
+    if (pFmt) {
+        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> textBrush;
+        pRT->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.85f), &textBrush);
+        D2D1_RECT_F rcText = D2D1::RectF(textLeft, btnBounds.top, btnBounds.right - config.ScaleF(4.0f), btnBounds.bottom);
+        DWRITE_TEXT_ALIGNMENT prevAlign = pFmt->GetTextAlignment();
+        DWRITE_PARAGRAPH_ALIGNMENT prevPAlign = pFmt->GetParagraphAlignment();
+        pFmt->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
+        pFmt->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+        pRT->DrawText(labelText.c_str(), static_cast<UINT32>(labelText.length()),
+                      pFmt, rcText, textBrush ? textBrush.Get() : theme.brushTextWhite.Get());
+        pFmt->SetTextAlignment(prevAlign);
+        pFmt->SetParagraphAlignment(prevPAlign);
+    }
+}
+
 void DrawerPanel::RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config, float clientHeight, float currentDrawerW) {
     const float headerH = config.ScaleF(static_cast<float>(config.headerHeight));
     const float railW   = config.ScaleF(static_cast<float>(config.railWidth));
@@ -7394,6 +7548,7 @@ void DrawerPanel::RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, 
         m_gitGraphHeaderBounds = {};
         m_gitMsgBoxBounds = {};
         m_gitCommitBtnBounds = {};
+        m_gitSyncBtnBounds = {};
         m_gitSplitterBounds = {};
         m_commitCardBounds = {};
         m_commitCardGitHubBounds = {};
@@ -7665,8 +7820,14 @@ void DrawerPanel::RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, 
 
         bool hasChanges = !m_gitChanges.empty();
         bool hasUnpushed = (m_unpushedCommitsCount > 0);
+        bool isCommitting = m_isCommitting.load();
+        bool isSyncing = m_isSyncing.load();
 
-        if (m_isCommitEditMsgOpen) {
+        if (isCommitting) {
+            // Loading Spinner State for Commit Button (clearly disabled, blurred/translucent color)
+            DrawButtonSpinner(pRT, m_gitCommitBtnBounds, L"Committing...", theme, config);
+            m_gitSyncBtnBounds = {};
+        } else if (m_isCommitEditMsgOpen) {
             // Disabled Muted Commit Button while waiting for COMMIT_EDITMSG
             Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushDisabled;
             pRT->CreateSolidColorBrush(D2D1::ColorF(0.22f, 0.22f, 0.22f, 0.6f), &brushDisabled);
@@ -7690,6 +7851,7 @@ void DrawerPanel::RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, 
             float dchY = curY + commitH / 2.0f;
             pRT->DrawLine(D2D1::Point2F(dchX - 3.0f, dchY - 1.5f), D2D1::Point2F(dchX, dchY + 2.0f), theme.brushTextMuted.Get(), 1.4f);
             pRT->DrawLine(D2D1::Point2F(dchX, dchY + 2.0f), D2D1::Point2F(dchX + 3.0f, dchY - 1.5f), theme.brushTextMuted.Get(), 1.4f);
+            m_gitSyncBtnBounds = {};
         } else if (hasChanges) {
             // Active Commit Button (Blue)
             pRT->FillRoundedRectangle(rrcCommit, theme.brushBrandAccent.Get());
@@ -7713,31 +7875,60 @@ void DrawerPanel::RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, 
             float dchY = curY + commitH / 2.0f;
             pRT->DrawLine(D2D1::Point2F(dchX - 3.0f, dchY - 1.5f), D2D1::Point2F(dchX, dchY + 2.0f), theme.brushTextWhite.Get(), 1.4f);
             pRT->DrawLine(D2D1::Point2F(dchX, dchY + 2.0f), D2D1::Point2F(dchX + 3.0f, dchY - 1.5f), theme.brushTextWhite.Get(), 1.4f);
+
+            if (hasUnpushed) {
+                // Secondary Sync Changes Button below Commit button
+                curY += commitH + config.ScaleF(6.0f);
+                m_gitSyncBtnBounds = D2D1::RectF(
+                    railW + paddingX,
+                    curY,
+                    railW + currentDrawerW - paddingX,
+                    curY + commitH
+                );
+                if (isSyncing) {
+                    DrawButtonSpinner(pRT, m_gitSyncBtnBounds, L"Syncing Changes...", theme, config);
+                } else {
+                    D2D1_ROUNDED_RECT rrcSync = D2D1::RoundedRect(m_gitSyncBtnBounds, 4.0f, 4.0f);
+                    pRT->FillRoundedRectangle(rrcSync, theme.brushBrandAccent.Get());
+                    std::wstring syncText = L"🔄 Sync Changes " + std::to_wstring(m_unpushedCommitsCount);
+                    pRT->DrawText(syncText.c_str(), static_cast<UINT32>(syncText.length()),
+                                  theme.fontButtonCenter.Get() ? theme.fontButtonCenter.Get() : theme.fontMenuItem.Get(),
+                                  m_gitSyncBtnBounds, theme.brushTextWhite.Get());
+                }
+            } else {
+                m_gitSyncBtnBounds = {};
+            }
         } else if (hasUnpushed) {
-            // Active Sync Changes Button (Blue, with unpushed count matching Image 5)
-            pRT->FillRoundedRectangle(rrcCommit, theme.brushBrandAccent.Get());
+            // Primary Sync Changes Button (when 0 changes and > 0 unpushed commits)
+            m_gitSyncBtnBounds = m_gitCommitBtnBounds;
+            if (isSyncing) {
+                DrawButtonSpinner(pRT, m_gitCommitBtnBounds, L"Syncing Changes...", theme, config);
+            } else {
+                pRT->FillRoundedRectangle(rrcCommit, theme.brushBrandAccent.Get());
 
-            D2D1_RECT_F rcSyncLabel = D2D1::RectF(
-                m_gitCommitBtnBounds.left,
-                curY,
-                m_gitCommitBtnBounds.right - config.ScaleF(26.0f),
-                curY + commitH
-            );
-            std::wstring syncText = L"🔄 Sync Changes " + std::to_wstring(m_unpushedCommitsCount);
-            pRT->DrawText(syncText.c_str(), static_cast<UINT32>(syncText.length()),
-                          theme.fontButtonCenter.Get() ? theme.fontButtonCenter.Get() : theme.fontMenuItem.Get(),
-                          rcSyncLabel, theme.brushTextWhite.Get());
+                D2D1_RECT_F rcSyncLabel = D2D1::RectF(
+                    m_gitCommitBtnBounds.left,
+                    curY,
+                    m_gitCommitBtnBounds.right - config.ScaleF(26.0f),
+                    curY + commitH
+                );
+                std::wstring syncText = L"🔄 Sync Changes " + std::to_wstring(m_unpushedCommitsCount);
+                pRT->DrawText(syncText.c_str(), static_cast<UINT32>(syncText.length()),
+                              theme.fontButtonCenter.Get() ? theme.fontButtonCenter.Get() : theme.fontMenuItem.Get(),
+                              rcSyncLabel, theme.brushTextWhite.Get());
 
-            // Vertical divider and chevron dropdown
-            float divX = m_gitCommitBtnBounds.right - config.ScaleF(26.0f);
-            pRT->DrawLine(D2D1::Point2F(divX, curY + 4.0f), D2D1::Point2F(divX, curY + commitH - 4.0f),
-                          theme.brushBorderSubtle.Get(), 1.0f);
-            float dchX = (divX + m_gitCommitBtnBounds.right) / 2.0f;
-            float dchY = curY + commitH / 2.0f;
-            pRT->DrawLine(D2D1::Point2F(dchX - 3.0f, dchY - 1.5f), D2D1::Point2F(dchX, dchY + 2.0f), theme.brushTextWhite.Get(), 1.4f);
-            pRT->DrawLine(D2D1::Point2F(dchX, dchY + 2.0f), D2D1::Point2F(dchX + 3.0f, dchY - 1.5f), theme.brushTextWhite.Get(), 1.4f);
+                // Vertical divider and chevron dropdown
+                float divX = m_gitCommitBtnBounds.right - config.ScaleF(26.0f);
+                pRT->DrawLine(D2D1::Point2F(divX, curY + 4.0f), D2D1::Point2F(divX, curY + commitH - 4.0f),
+                              theme.brushBorderSubtle.Get(), 1.0f);
+                float dchX = (divX + m_gitCommitBtnBounds.right) / 2.0f;
+                float dchY = curY + commitH / 2.0f;
+                pRT->DrawLine(D2D1::Point2F(dchX - 3.0f, dchY - 1.5f), D2D1::Point2F(dchX, dchY + 2.0f), theme.brushTextWhite.Get(), 1.4f);
+                pRT->DrawLine(D2D1::Point2F(dchX, dchY + 2.0f), D2D1::Point2F(dchX + 3.0f, dchY - 1.5f), theme.brushTextWhite.Get(), 1.4f);
+            }
         } else {
             // Disabled Muted Commit Button (0 changes and 0 unpushed commits)
+            m_gitSyncBtnBounds = {};
             Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushDisabled;
             pRT->CreateSolidColorBrush(D2D1::ColorF(0.22f, 0.22f, 0.22f, 0.6f), &brushDisabled);
             pRT->FillRoundedRectangle(rrcCommit, brushDisabled.Get() ? brushDisabled.Get() : theme.brushBorderSubtle.Get());
@@ -8365,10 +8556,45 @@ void DrawerPanel::RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, 
         rightX -= (tbW + tbGap);
         float gpx = (m_gitGraphPushBounds.left + m_gitGraphPushBounds.right) / 2.0f;
         float gpy = (m_gitGraphPushBounds.top + m_gitGraphPushBounds.bottom) / 2.0f;
-        pRT->DrawLine(D2D1::Point2F(gpx, gpy + 4.0f), D2D1::Point2F(gpx, gpy - 4.0f), theme.brushTextMuted.Get(), 1.3f);
-        pRT->DrawLine(D2D1::Point2F(gpx - 3.0f, gpy - 1.0f), D2D1::Point2F(gpx, gpy - 4.0f), theme.brushTextMuted.Get(), 1.3f);
-        pRT->DrawLine(D2D1::Point2F(gpx + 3.0f, gpy - 1.0f), D2D1::Point2F(gpx, gpy - 4.0f), theme.brushTextMuted.Get(), 1.3f);
-        pRT->DrawLine(D2D1::Point2F(gpx - 4.0f, gpy + 4.5f), D2D1::Point2F(gpx + 4.0f, gpy + 4.5f), theme.brushTextMuted.Get(), 1.3f);
+        if (m_isSyncing.load()) {
+            float sR = config.ScaleF(4.5f);
+            Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> trackBrush;
+            pRT->CreateSolidColorBrush(D2D1::ColorF(theme.colors.textMuted.r, theme.colors.textMuted.g, theme.colors.textMuted.b, 0.3f), &trackBrush);
+            if (trackBrush) {
+                pRT->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(gpx, gpy), sR, sR), trackBrush.Get(), 1.2f);
+            }
+            D2D1_MATRIX_3X2_F oldTrans;
+            pRT->GetTransform(&oldTrans);
+            pRT->SetTransform(D2D1::Matrix3x2F::Rotation(m_gitAnimAngle, D2D1::Point2F(gpx, gpy)) * oldTrans);
+            ID2D1Brush* arcBrush = theme.brushBrandAccent.Get();
+            if (arcBrush) {
+                Microsoft::WRL::ComPtr<ID2D1Factory> pFactory;
+                pRT->GetFactory(&pFactory);
+                if (pFactory) {
+                    Microsoft::WRL::ComPtr<ID2D1PathGeometry> pArcGeo;
+                    if (SUCCEEDED(pFactory->CreatePathGeometry(&pArcGeo))) {
+                        Microsoft::WRL::ComPtr<ID2D1GeometrySink> sink;
+                        if (SUCCEEDED(pArcGeo->Open(&sink))) {
+                            sink->BeginFigure(D2D1::Point2F(gpx - sR, gpy), D2D1_FIGURE_BEGIN_HOLLOW);
+                            D2D1_ARC_SEGMENT arc{};
+                            arc.point = D2D1::Point2F(gpx, gpy - sR);
+                            arc.size = D2D1::SizeF(sR, sR);
+                            arc.sweepDirection = D2D1_SWEEP_DIRECTION_CLOCKWISE;
+                            sink->AddArc(arc);
+                            sink->EndFigure(D2D1_FIGURE_END_OPEN);
+                            sink->Close();
+                            pRT->DrawGeometry(pArcGeo.Get(), arcBrush, 1.6f);
+                        }
+                    }
+                }
+            }
+            pRT->SetTransform(oldTrans);
+        } else {
+            pRT->DrawLine(D2D1::Point2F(gpx, gpy + 4.0f), D2D1::Point2F(gpx, gpy - 4.0f), theme.brushTextMuted.Get(), 1.3f);
+            pRT->DrawLine(D2D1::Point2F(gpx - 3.0f, gpy - 1.0f), D2D1::Point2F(gpx, gpy - 4.0f), theme.brushTextMuted.Get(), 1.3f);
+            pRT->DrawLine(D2D1::Point2F(gpx + 3.0f, gpy - 1.0f), D2D1::Point2F(gpx, gpy - 4.0f), theme.brushTextMuted.Get(), 1.3f);
+            pRT->DrawLine(D2D1::Point2F(gpx - 4.0f, gpy + 4.5f), D2D1::Point2F(gpx + 4.0f, gpy + 4.5f), theme.brushTextMuted.Get(), 1.3f);
+        }
 
         // ⑃ Merge
         m_gitGraphMergeBounds = D2D1::RectF(rightX - tbW, curY + 2.0f, rightX, curY + secH - 2.0f);

@@ -7405,6 +7405,7 @@ void EditorCanvas::RenderDiffView(ID2D1RenderTarget* pRT, Theme& theme, const ap
     Microsoft::WRL::ComPtr<ID2D1Factory> pFactory;
     pRT->GetFactory(&pFactory);
 
+    pRT->PushAxisAlignedClip(rcDivider, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
     for (const auto& hunk : doc.diffHunks) {
         float yLStart = codeTopY + (static_cast<float>(hunk.leftStart) - static_cast<float>(doc.scrollLine)) * lineH;
         float yLEnd = yLStart + static_cast<float>(hunk.leftCount) * lineH;
@@ -7441,6 +7442,7 @@ void EditorCanvas::RenderDiffView(ID2D1RenderTarget* pRT, Theme& theme, const ap
             }
         }
     }
+    pRT->PopAxisAlignedClip();
 
     // =========================================================================
     // 4. Left Pane (Original / HEAD - Read Only)

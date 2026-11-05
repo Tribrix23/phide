@@ -304,8 +304,8 @@ public:
 
     [[nodiscard]] bool IsGitRepo() const noexcept { return m_isGitRepo; }
     void SetGitRepo(bool isRepo) noexcept { m_isGitRepo = isRepo; }
-    [[nodiscard]] bool IsGitLoading() const noexcept { return m_isGitLoading.load() || m_isCommitting.load(); }
-    void ClearGitLoading() noexcept { m_isGitLoading.store(false); }
+    [[nodiscard]] bool IsGitLoading() const noexcept { return m_isGitLoading.load() || m_isCommitting.load() || m_isSyncing.load(); }
+    void ClearGitLoading() noexcept { m_isGitLoading.store(false); m_isCommitting.store(false); m_isSyncing.store(false); }
     static std::string GenerateContextAwareGitignore(const std::wstring& rootDir);
     static void EnsureContextAwareGitignore(const std::wstring& rootDir);
     [[nodiscard]] bool IsGitRefreshing() const noexcept { return m_isGitRefreshing.load(); }
@@ -453,6 +453,8 @@ public:
     [[nodiscard]] const std::wstring& GetLastPublishedCommitMessage() const noexcept { return m_lastPublishedCommitMsg; }
     [[nodiscard]] const D2D1_RECT_F& GetGitCommitBtnBounds() const noexcept { return m_gitCommitBtnBounds; }
     void SetGitCommitBtnBounds(const D2D1_RECT_F& rc) noexcept { m_gitCommitBtnBounds = rc; }
+    [[nodiscard]] const D2D1_RECT_F& GetGitSyncBtnBounds() const noexcept { return m_gitSyncBtnBounds; }
+    void SetGitSyncBtnBounds(const D2D1_RECT_F& rc) noexcept { m_gitSyncBtnBounds = rc; }
 
     // --- GitHub Authentication & "Login to GitHub" Modal ---
     [[nodiscard]] std::wstring GetGitHubRepoUrl() const;
@@ -757,7 +759,10 @@ public:
         for (const auto& item : m_gitChanges) {
             if (inRect(pt, item.discardBtnBounds) || inRect(pt, item.stageBtnBounds)) return true;
         }
-        return inRect(pt, m_gitCommitBtnBounds) || inRect(pt, m_gitCommitDropdownBounds) ||
+        bool loading = IsGitLoading();
+        bool hitAction = (!loading && (inRect(pt, m_gitCommitBtnBounds) || inRect(pt, m_gitSyncBtnBounds) ||
+                                       inRect(pt, m_gitCommitDropdownBounds) || inRect(pt, m_gitGraphPushBounds)));
+        return hitAction ||
                inRect(pt, m_gitGenerateAiBounds) || inRect(pt, m_gitStageAllBounds) ||
                inRect(pt, m_gitDiscardAllBounds) || inRect(pt, m_gitChangesChevronBounds) ||
                inRect(pt, m_gitChangesMoreBounds) || inRect(pt, m_gitHeaderMoreBounds) ||
@@ -901,6 +906,7 @@ private:
     void RenderSearchPane(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config, float clientHeight, float currentDrawerW);
     void RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config, float clientHeight, float currentDrawerW);
     void RenderCommitCard(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config, float clientHeight, float currentDrawerW);
+    void DrawButtonSpinner(ID2D1RenderTarget* pRT, const D2D1_RECT_F& btnBounds, const std::wstring& labelText, Theme& theme, const app::AppConfig& config);
     void RenderExtensionsPane(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config, float clientHeight, float currentDrawerW);
     void InitExtensionEntries();
 
@@ -960,6 +966,7 @@ private:
     D2D1_RECT_F m_gitMsgBoxBounds{};
     D2D1_RECT_F m_gitGenerateAiBounds{};
     D2D1_RECT_F m_gitCommitBtnBounds{};
+    D2D1_RECT_F m_gitSyncBtnBounds{};
     D2D1_RECT_F m_gitCommitDropdownBounds{};
 
     D2D1_RECT_F m_gitGraphHeaderBounds{};
