@@ -40,7 +40,7 @@ SetCompressor /SOLID lzma
 
 ; Welcome Page Texts
 !define MUI_WELCOMEPAGE_TITLE "Welcome to Phide 2026.a Setup"
-!define MUI_WELCOMEPAGE_TEXT "Setup will guide you through the installation of Phide 2026.a (Direct2D Native Desktop IDE).$\r$\n$\r$\nAll development runtimes and dependencies (PHP 8.5, Composer, MariaDB/MySQL, and Nginx) are completely bundled offline—no secondary downloads or internet connections are required.$\r$\n$\r$\nClick Next to continue."
+!define MUI_WELCOMEPAGE_TEXT "Setup will guide you through the installation of Phide 2026.a (Direct2D Native Desktop IDE).$\r$\n$\r$\nAll development runtimes and dependencies (PHP 8.5, Composer, MariaDB/MySQL, and Nginx) are completely bundled offline - no secondary downloads or internet connections are required.$\r$\n$\r$\nClick Next to continue."
 
 ; Directory Page Texts
 !define MUI_DIRECTORYPAGE_TEXT_TOP "Setup will install Phide 2026.a in the following folder. To install in a different folder, click Browse and select another folder. Click Next to continue."

@@ -4175,7 +4175,15 @@ GitCmdResult RunGitCmd(const std::wstring& cmd, const std::wstring& workDir, boo
     char buffer[4096];
     DWORD bytesRead = 0;
     DWORD startTime = GetTickCount();
-    const DWORD kTimeoutMs = 3500; // 3.5s safety timeout for git CLI queries
+    DWORD timeoutMs = 4000;
+    std::wstring lowerCmd = cmd;
+    for (auto& c : lowerCmd) c = towlower(c);
+    if (lowerCmd.find(L"push") != std::wstring::npos ||
+        lowerCmd.find(L"pull") != std::wstring::npos ||
+        lowerCmd.find(L"fetch") != std::wstring::npos ||
+        lowerCmd.find(L"clone") != std::wstring::npos) {
+        timeoutMs = 60000; // 60s timeout for remote network operations (push/pull/fetch/clone)
+    }
 
     while (true) {
         DWORD bytesAvail = 0;
@@ -4198,7 +4206,7 @@ GitCmdResult RunGitCmd(const std::wstring& cmd, const std::wstring& workDir, boo
             break;
         }
 
-        if (GetTickCount() - startTime > kTimeoutMs) {
+        if (GetTickCount() - startTime > timeoutMs) {
             TerminateProcess(pi.hProcess, 1);
             break;
         }
@@ -6317,6 +6325,9 @@ void DrawerPanel::PushCommitsAsync() {
                 if (m_onGitStateChanged) m_onGitStateChanged();
                 std::wstring dir = m_openFolderPath.empty() ? L"." : m_openFolderPath;
                 auto res = RunGitCmd(L"push", dir);
+                if (res.exitCode != 0 && res.output.find(L"--set-upstream") != std::wstring::npos) {
+                    res = RunGitCmd(L"push -u origin HEAD", dir);
+                }
                 if (res.exitCode != 0 && m_onGitError) {
                     m_onGitError(L"git push", res.output, dir);
                 }

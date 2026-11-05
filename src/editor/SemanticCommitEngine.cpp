@@ -77,19 +77,24 @@ std::wstring SemanticCommitEngine::Generate(const std::vector<GitChangeInfo>& ch
         std::wsmatch match;
         if (std::regex_search(scanLine, match, symRegex) && match.size() > 1) {
             std::wstring found = match[1].str();
-            if (found != L"React" && found != L"useState" && found != L"useEffect" &&
+            if (found.length() > 1 &&
+                found != L"React" && found != L"useState" && found != L"useEffect" &&
                 found != L"useCallback" && found != L"useMemo" && found != L"useRef" &&
-                found != L"require" && found != L"import" && found != L"export") {
+                found != L"require" && found != L"import" && found != L"export" &&
+                found != L"default" && found != L"function" && found != L"class") {
                 symbol = found;
                 break;
             }
         }
     }
 
-    if (symbol.empty()) {
+    if (symbol.empty() || symbol.length() <= 1) {
         symbol = baseName;
     }
     std::wstring scope = symbol;
+    if (scope.length() <= 1) {
+        scope = baseName;
+    }
 
     // 2. Dependency updates (package.json / composer.json)
     if (fileName == L"package.json" || fileName == L"composer.json" || fileName == L"package-lock.json") {

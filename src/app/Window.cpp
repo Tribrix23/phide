@@ -3403,7 +3403,6 @@ void Window::RunManualGarbageCollection() {
     m_editor.RunGarbageCollection();
     m_drawer.ClearSearchResults();
     m_drawer.RunGarbageCollection();
-    m_drawer.RunGarbageCollectionAsync();
     m_terminal.RunGarbageCollection();
     m_extensionsPanel.RunGarbageCollection();
     CoFreeUnusedLibraries();
@@ -4788,15 +4787,11 @@ void Window::OpenGitLogTerminal() {
 }
 
 void Window::ShowGitCommandOutput(const std::wstring& cmd, const std::wstring& output, const std::wstring& repoDir) {
-    // 1. Determine target directory: prefer repoDir/.git if exists, otherwise temp path
-    std::filesystem::path targetDir;
-    if (!repoDir.empty() && std::filesystem::exists(std::filesystem::path(repoDir) / ".git")) {
-        targetDir = std::filesystem::path(repoDir) / ".git";
-    } else {
-        wchar_t sysTemp[MAX_PATH] = { 0 };
-        GetTempPathW(MAX_PATH, sysTemp);
-        targetDir = sysTemp;
-    }
+    (void)repoDir;
+    // 1. Determine target directory: use system temp directory to avoid polluting .git and prevent invalid git blame queries
+    wchar_t sysTemp[MAX_PATH] = { 0 };
+    GetTempPathW(MAX_PATH, sysTemp);
+    std::filesystem::path targetDir = sysTemp;
 
     // 2. Generate filename: git-error-<timestamp>.txt (Image 5)
     auto now = std::chrono::system_clock::now();
