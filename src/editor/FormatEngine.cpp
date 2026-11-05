@@ -26,13 +26,28 @@ static std::wstring FindPrettierPath() {
     static bool s_checked = false;
     if (s_checked) return s_cachedPrettierPath;
 
-    // 1. Check APPDATA\npm\prettier.cmd
+    std::error_code ec;
+
+    // 1. Check bundled phide.prettier extension
+    std::filesystem::path bundledPath = L"assets\\extensions\\phide.prettier\\node_modules\\prettier\\bin\\prettier.cjs";
+    if (std::filesystem::exists(bundledPath, ec)) {
+        s_cachedPrettierPath = std::filesystem::absolute(bundledPath).wstring();
+        s_checked = true;
+        return s_cachedPrettierPath;
+    }
+    bundledPath = L"bin\\assets\\extensions\\phide.prettier\\node_modules\\prettier\\bin\\prettier.cjs";
+    if (std::filesystem::exists(bundledPath, ec)) {
+        s_cachedPrettierPath = std::filesystem::absolute(bundledPath).wstring();
+        s_checked = true;
+        return s_cachedPrettierPath;
+    }
+
+    // 2. Check APPDATA\npm\prettier.cmd
     wchar_t* pAppData = nullptr;
     size_t len = 0;
     if (_wdupenv_s(&pAppData, &len, L"APPDATA") == 0 && pAppData) {
         std::filesystem::path p = std::filesystem::path(pAppData) / L"npm" / L"prettier.cmd";
         free(pAppData);
-        std::error_code ec;
         if (std::filesystem::exists(p, ec)) {
             s_cachedPrettierPath = p.wstring();
             s_checked = true;
@@ -40,15 +55,14 @@ static std::wstring FindPrettierPath() {
         }
     }
 
-    // 2. Check local node_modules\.bin\prettier.cmd
-    std::error_code ec;
+    // 3. Check local node_modules\.bin\prettier.cmd
     if (std::filesystem::exists(L"node_modules\\.bin\\prettier.cmd", ec)) {
         s_cachedPrettierPath = std::filesystem::absolute(L"node_modules\\.bin\\prettier.cmd").wstring();
         s_checked = true;
         return s_cachedPrettierPath;
     }
 
-    // 3. Search PATH for prettier.cmd
+    // 4. Search PATH for prettier.cmd
     wchar_t buf[MAX_PATH];
     if (SearchPathW(nullptr, L"prettier.cmd", nullptr, MAX_PATH, buf, nullptr) > 0) {
         s_cachedPrettierPath = buf;
@@ -56,7 +70,7 @@ static std::wstring FindPrettierPath() {
         return s_cachedPrettierPath;
     }
 
-    // 4. Search PATH for prettier (.cmd)
+    // 5. Search PATH for prettier (.cmd)
     if (SearchPathW(nullptr, L"prettier", L".cmd", MAX_PATH, buf, nullptr) > 0) {
         s_cachedPrettierPath = buf;
         s_checked = true;
@@ -90,7 +104,13 @@ static bool RunPrettier(const std::wstring& src, const std::wstring& ext, int ta
     SetHandleInformation(hChildStdInWrite, HANDLE_FLAG_INHERIT, 0);
 
     std::wstring dummyFile = L"temp" + ext;
-    std::wstring cmd = L"cmd.exe /c \"\"" + prettierPath + L"\" --stdin-filepath " + dummyFile + L" --tab-width " + std::to_wstring(tabSize) + L"\"";
+    std::wstring cmd;
+    bool isScript = (prettierPath.length() >= 4 && (prettierPath.substr(prettierPath.length() - 4) == L".cjs" || prettierPath.substr(prettierPath.length() - 3) == L".js"));
+    if (isScript) {
+        cmd = L"node.exe \"" + prettierPath + L"\" --stdin-filepath " + dummyFile + L" --tab-width " + std::to_wstring(tabSize);
+    } else {
+        cmd = L"cmd.exe /c \"\"" + prettierPath + L"\" --stdin-filepath " + dummyFile + L" --tab-width " + std::to_wstring(tabSize) + L"\"";
+    }
 
     STARTUPINFOW si{};
     si.cb = sizeof(si);
@@ -205,633 +225,55 @@ static bool EndsWith(const std::wstring& str, const std::wstring& suffix) {
 }
 
 // ==============================================================================
-// 1. JSON Formatter
+// 1. JSON Formatter (via Prettier)
 // ==============================================================================
 
 std::wstring FormatEngine::FormatJson(const std::wstring& src, int tabSize) {
     if (src.empty()) return L"";
-
-    std::wstring out;
-    out.reserve(src.length() * 2);
-
-    int indentLevel = 0;
-    bool inString = false;
-    bool inLineComment = false;
-    bool inBlockComment = false;
-    bool escapeNext = false;
-    bool needNewlineIndent = false;
-
-    auto appendIndent = [&]() {
-        out += MakeIndent(indentLevel, tabSize);
-    };
-
-    size_t i = 0;
-    const size_t len = src.length();
-
-    while (i < len) {
-        wchar_t ch = src[i];
-
-        // 1. Single-line comment handling (JSONC)
-        if (inLineComment) {
-            out += ch;
-            if (ch == L'\n') {
-                inLineComment = false;
-                appendIndent();
-            }
-            i++;
-            continue;
-        }
-
-        // 2. Block comment handling (JSONC)
-        if (inBlockComment) {
-            out += ch;
-            if (ch == L'*' && i + 1 < len && src[i + 1] == L'/') {
-                out += L'/';
-                i += 2;
-                inBlockComment = false;
-                continue;
-            }
-            i++;
-            continue;
-        }
-
-        // 3. String literal handling (preserve exact string contents & escapes)
-        if (inString) {
-            out += ch;
-            if (escapeNext) {
-                escapeNext = false;
-            } else if (ch == L'\\') {
-                escapeNext = true;
-            } else if (ch == L'"') {
-                inString = false;
-            }
-            i++;
-            continue;
-        }
-
-        // Check for comment start
-        if (ch == L'/' && i + 1 < len) {
-            if (src[i + 1] == L'/') {
-                inLineComment = true;
-                out += L"//";
-                i += 2;
-                continue;
-            } else if (src[i + 1] == L'*') {
-                inBlockComment = true;
-                out += L"/*";
-                i += 2;
-                continue;
-            }
-        }
-
-        // Check for string start
-        if (ch == L'"') {
-            if (needNewlineIndent) {
-                out += L'\n';
-                appendIndent();
-                needNewlineIndent = false;
-            }
-            inString = true;
-            escapeNext = false;
-            out += ch;
-            i++;
-            continue;
-        }
-
-        // Whitespace outside strings is ignored in raw stream
-        if (iswspace(ch)) {
-            i++;
-            continue;
-        }
-
-        if (needNewlineIndent) {
-            out += L'\n';
-            appendIndent();
-            needNewlineIndent = false;
-        }
-
-        if (ch == L'{' || ch == L'[') {
-            // Check if empty structure: {} or []
-            size_t nextIdx = i + 1;
-            while (nextIdx < len && iswspace(src[nextIdx])) nextIdx++;
-            wchar_t closing = (ch == L'{') ? L'}' : L']';
-            if (nextIdx < len && src[nextIdx] == closing) {
-                out += ch;
-                out += closing;
-                i = nextIdx + 1;
-                continue;
-            }
-
-            out += ch;
-            indentLevel++;
-            needNewlineIndent = true;
-            i++;
-            continue;
-        }
-
-        if (ch == L'}' || ch == L']') {
-            if (indentLevel > 0) indentLevel--;
-            if (!out.empty() && out.back() != L'\n') {
-                out += L'\n';
-            }
-            appendIndent();
-            out += ch;
-            i++;
-            continue;
-        }
-
-        if (ch == L',') {
-            out += L',';
-            needNewlineIndent = true;
-            i++;
-            continue;
-        }
-
-        if (ch == L':') {
-            out += L": ";
-            i++;
-            continue;
-        }
-
-        // Literals (numbers, true, false, null)
-        out += ch;
-        i++;
+    std::wstring formatted;
+    if (RunPrettier(src, L".json", tabSize, formatted) && !formatted.empty()) {
+        return formatted;
     }
-
-    if (!out.empty() && out.back() != L'\n') {
-        out += L'\n';
-    }
-    return out;
+    return src;
 }
 
 // ==============================================================================
-// 2. CSS Formatter
+// 2. CSS Formatter (via Prettier)
 // ==============================================================================
 
 std::wstring FormatEngine::FormatCss(const std::wstring& src, int tabSize) {
     if (src.empty()) return L"";
-
-    std::wstring out;
-    out.reserve(src.length() * 2);
-
-    int indentLevel = 0;
-    bool inComment = false;
-    bool inString = false;
-    wchar_t stringDelimiter = 0;
-    bool needIndent = true;
-
-    auto appendIndent = [&]() {
-        out += MakeIndent(indentLevel, tabSize);
-    };
-
-    size_t i = 0;
-    const size_t len = src.length();
-
-    while (i < len) {
-        wchar_t ch = src[i];
-
-        // 1. Comment handling
-        if (inComment) {
-            out += ch;
-            if (ch == L'*' && i + 1 < len && src[i + 1] == L'/') {
-                out += L'/';
-                i += 2;
-                inComment = false;
-                out += L'\n';
-                needIndent = true;
-                continue;
-            }
-            i++;
-            continue;
-        }
-
-        // 2. String literal handling
-        if (inString) {
-            out += ch;
-            if (ch == L'\\' && i + 1 < len) {
-                out += src[i + 1];
-                i += 2;
-                continue;
-            }
-            if (ch == stringDelimiter) {
-                inString = false;
-            }
-            i++;
-            continue;
-        }
-
-        // Comment start
-        if (ch == L'/' && i + 1 < len && src[i + 1] == L'*') {
-            inComment = true;
-            if (needIndent) {
-                appendIndent();
-                needIndent = false;
-            }
-            out += L"/*";
-            i += 2;
-            continue;
-        }
-
-        // String start
-        if (ch == L'"' || ch == L'\'') {
-            inString = true;
-            stringDelimiter = ch;
-            if (needIndent) {
-                appendIndent();
-                needIndent = false;
-            }
-            out += ch;
-            i++;
-            continue;
-        }
-
-        // Open brace: start of rule block or media query
-        if (ch == L'{') {
-            while (!out.empty() && (out.back() == L' ' || out.back() == L'\t')) out.pop_back();
-            out += L" {\n";
-            indentLevel++;
-            needIndent = true;
-            i++;
-            while (i < len && iswspace(src[i])) i++;
-            continue;
-        }
-
-        // Close brace: end of rule block
-        if (ch == L'}') {
-            while (!out.empty() && (out.back() == L' ' || out.back() == L'\t')) out.pop_back();
-            if (!out.empty() && out.back() != L'\n') out += L'\n';
-            if (indentLevel > 0) indentLevel--;
-            appendIndent();
-            out += L"}\n";
-            if (indentLevel == 0) out += L'\n'; // Blank line between top-level rule blocks
-            needIndent = true;
-            i++;
-            while (i < len && iswspace(src[i])) i++;
-            continue;
-        }
-
-        // Semicolon: end of property declaration
-        if (ch == L';') {
-            out += L";\n";
-            needIndent = true;
-            i++;
-            while (i < len && iswspace(src[i])) i++;
-            continue;
-        }
-
-        // Colon: separator between property and value
-        if (ch == L':') {
-            out += L": ";
-            i++;
-            while (i < len && (src[i] == L' ' || src[i] == L'\t')) i++;
-            continue;
-        }
-
-        // Comma in selector lists
-        if (ch == L',') {
-            out += L",\n";
-            needIndent = true;
-            i++;
-            while (i < len && (src[i] == L' ' || src[i] == L'\t')) i++;
-            continue;
-        }
-
-        // Whitespace collapsing
-        if (iswspace(ch)) {
-            if (!needIndent && !out.empty() && out.back() != L' ' && out.back() != L'\n') {
-                out += L' ';
-            }
-            i++;
-            continue;
-        }
-
-        if (needIndent) {
-            appendIndent();
-            needIndent = false;
-        }
-        out += ch;
-        i++;
+    std::wstring formatted;
+    if (RunPrettier(src, L".css", tabSize, formatted) && !formatted.empty()) {
+        return formatted;
     }
-
-    // Clean up excessive trailing blank lines
-    while (out.length() >= 2 && out.substr(out.length() - 2) == L"\n\n") {
-        out.pop_back();
-    }
-    if (!out.empty() && out.back() != L'\n') {
-        out += L'\n';
-    }
-    return out;
+    return src;
 }
 
 // ==============================================================================
-// 3. HTML Formatter
+// 3. HTML Formatter (via Prettier)
 // ==============================================================================
 
 std::wstring FormatEngine::FormatHtml(const std::wstring& src, int tabSize) {
     if (src.empty()) return L"";
-
-    static const std::unordered_set<std::wstring> voidTags = {
-        L"area", L"base", L"br", L"col", L"embed", L"hr", L"img", L"input",
-        L"link", L"meta", L"param", L"source", L"track", L"wbr", L"!doctype"
-    };
-
-    std::wstring out;
-    out.reserve(src.length() * 2);
-    int indentLevel = 0;
-    bool inComment = false;
-
-    auto appendIndent = [&]() {
-        out += MakeIndent(indentLevel, tabSize);
-    };
-
-    size_t i = 0;
-    const size_t len = src.length();
-
-    while (i < len) {
-        // 1. HTML Comment: <!-- ... -->
-        if (!inComment && ch_starts(src, i, L"<!--")) {
-            inComment = true;
-            if (!out.empty() && out.back() != L'\n') out += L'\n';
-            appendIndent();
-            out += L"<!--";
-            i += 4;
-            continue;
-        }
-        if (inComment) {
-            out += src[i];
-            if (ch_starts(src, i, L"-->")) {
-                out += L"->";
-                i += 3;
-                inComment = false;
-                out += L'\n';
-                continue;
-            }
-            i++;
-            continue;
-        }
-
-        // 2. Embedded PHP block: <?php ... ?> or <?= ... ?>
-        if (ch_starts(src, i, L"<?")) {
-            size_t phpEnd = src.find(L"?>", i + 2);
-            if (phpEnd != std::wstring::npos) {
-                std::wstring phpBlock = src.substr(i, (phpEnd + 2) - i);
-                if (!out.empty() && out.back() != L'\n') out += L'\n';
-                appendIndent();
-                out += Trim(phpBlock) + L'\n';
-                i = phpEnd + 2;
-                while (i < len && (src[i] == L'\r' || src[i] == L'\n' || src[i] == L' ' || src[i] == L'\t')) i++;
-                continue;
-            }
-        }
-
-        // 3. HTML Tag
-        if (src[i] == L'<') {
-            size_t tagEnd = src.find(L'>', i);
-            if (tagEnd != std::wstring::npos) {
-                std::wstring tagContent = src.substr(i + 1, tagEnd - (i + 1));
-                std::wstring tagContentTrimmed = Trim(tagContent);
-                bool isClosing = (!tagContentTrimmed.empty() && tagContentTrimmed[0] == L'/');
-                bool isSelfClosing = (!tagContentTrimmed.empty() && tagContentTrimmed.back() == L'/');
-
-                size_t nameStart = isClosing ? 1 : 0;
-                while (nameStart < tagContentTrimmed.length() && iswspace(tagContentTrimmed[nameStart])) nameStart++;
-                size_t nameEnd = nameStart;
-                while (nameEnd < tagContentTrimmed.length() && !iswspace(tagContentTrimmed[nameEnd]) && tagContentTrimmed[nameEnd] != L'/') {
-                    nameEnd++;
-                }
-                std::wstring tagName = tagContentTrimmed.substr(nameStart, nameEnd - nameStart);
-                for (auto& c : tagName) c = static_cast<wchar_t>(towlower(c));
-
-                bool isVoid = (voidTags.count(tagName) > 0 || isSelfClosing);
-
-                if (isClosing) {
-                    if (indentLevel > 0) indentLevel--;
-                    if (!out.empty() && out.back() != L'\n') out += L'\n';
-                    appendIndent();
-                } else {
-                    if (!out.empty() && out.back() != L'\n') out += L'\n';
-                    appendIndent();
-                }
-
-                out += L'<' + tagContentTrimmed + L">\n";
-                i = tagEnd + 1;
-
-                // Special handling for <style> and <script> contents
-                if (!isClosing && !isVoid) {
-                    if (tagName == L"style") {
-                        size_t styleEnd = src.find(L"</style>", i);
-                        if (styleEnd == std::wstring::npos) styleEnd = src.find(L"</STYLE>", i);
-                        if (styleEnd != std::wstring::npos) {
-                            std::wstring cssContent = src.substr(i, styleEnd - i);
-                            std::wstring formattedCss = FormatCss(cssContent, tabSize);
-                            std::wistringstream ss(formattedCss);
-                            std::wstring cssLine;
-                            while (std::getline(ss, cssLine)) {
-                                if (!cssLine.empty() && cssLine.back() == L'\r') cssLine.pop_back();
-                                std::wstring trimmedLine = Trim(cssLine);
-                                if (!trimmedLine.empty()) {
-                                    out += MakeIndent(indentLevel + 1, tabSize) + trimmedLine + L'\n';
-                                }
-                            }
-                            i = styleEnd;
-                            continue;
-                        }
-                    } else if (tagName == L"script") {
-                        size_t scriptEnd = src.find(L"</script>", i);
-                        if (scriptEnd == std::wstring::npos) scriptEnd = src.find(L"</SCRIPT>", i);
-                        if (scriptEnd != std::wstring::npos) {
-                            std::wstring jsContent = src.substr(i, scriptEnd - i);
-                            std::wstring formattedJs = FormatJavaScript(jsContent, tabSize);
-                            std::wistringstream ss(formattedJs);
-                            std::wstring jsLine;
-                            while (std::getline(ss, jsLine)) {
-                                if (!jsLine.empty() && jsLine.back() == L'\r') jsLine.pop_back();
-                                std::wstring trimmedLine = Trim(jsLine);
-                                if (!trimmedLine.empty()) {
-                                    out += MakeIndent(indentLevel + 1, tabSize) + trimmedLine + L'\n';
-                                }
-                            }
-                            i = scriptEnd;
-                            continue;
-                        }
-                    }
-
-                    indentLevel++;
-                }
-
-                while (i < len && (src[i] == L' ' || src[i] == L'\t' || src[i] == L'\r' || src[i] == L'\n')) i++;
-                continue;
-            }
-        }
-
-        // 4. Text content between tags
-        size_t nextTag = src.find(L'<', i);
-        if (nextTag == std::wstring::npos) nextTag = len;
-        std::wstring text = Trim(src.substr(i, nextTag - i));
-
-        if (!text.empty()) {
-            if (!out.empty() && out.back() != L'\n') out += L'\n';
-            appendIndent();
-            out += text + L'\n';
-        }
-        i = nextTag;
+    std::wstring formatted;
+    if (RunPrettier(src, L".html", tabSize, formatted) && !formatted.empty()) {
+        return formatted;
     }
-
-    if (!out.empty() && out.back() != L'\n') out += L'\n';
-    return out;
+    return src;
 }
 
 // ==============================================================================
-// 4. JavaScript / TypeScript / JSX Formatter
+// 4. JavaScript / TypeScript / JSX Formatter (via Prettier)
 // ==============================================================================
 
 std::wstring FormatEngine::FormatJavaScript(const std::wstring& src, int tabSize) {
     if (src.empty()) return L"";
-
-
-    // 2. High-performance offline deterministic C++ fallback
-    std::wstring out;
-    out.reserve(src.length() * 2);
-    int indentLevel = 0;
-    std::wistringstream iss(src);
-    std::wstring line;
-
-    bool inBlockComment = false;
-
-    while (std::getline(iss, line)) {
-        if (!line.empty() && line.back() == L'\r') line.pop_back();
-        std::wstring trimmed = Trim(line);
-        if (trimmed.empty()) {
-            if (!out.empty() && out.back() != L'\n') out += L'\n';
-            if (out.length() >= 2 && out[out.length() - 2] != L'\n') out += L'\n';
-            continue;
-        }
-
-
-        // Block comment lines
-        if (inBlockComment) {
-            out += MakeIndent(indentLevel, tabSize) + trimmed + L'\n';
-            if (trimmed.find(L"*/") != std::wstring::npos) {
-                inBlockComment = false;
-            }
-            continue;
-        }
-        if (StartsWith(trimmed, L"/*") && trimmed.find(L"*/") == std::wstring::npos) {
-            inBlockComment = true;
-            out += MakeIndent(indentLevel, tabSize) + trimmed + L'\n';
-            continue;
-        }
-
-        // Count leading closing braces / brackets / JSX tags on this line to dedent before printing
-        int leadingCloses = 0;
-        size_t idx = 0;
-        while (idx < trimmed.length() && (trimmed[idx] == L'}' || trimmed[idx] == L']' || trimmed[idx] == L')')) {
-            leadingCloses++;
-            idx++;
-        }
-
-        // Special case: } else, } catch, } finally
-        if (StartsWith(trimmed, L"} else") || StartsWith(trimmed, L"} catch") || StartsWith(trimmed, L"} finally")) {
-            leadingCloses = 1;
-        }
-
-        // Dedent leading closing JSX tag: </Tag>
-        if (trimmed.rfind(L"</", 0) == 0) {
-            leadingCloses += 1;
-        }
-
-        int currentIndent = indentLevel - leadingCloses;
-        if (currentIndent < 0) currentIndent = 0;
-
-        // Apply clean operator spacing to the trimmed line (outside strings)
-        std::wstring spacedLine;
-        spacedLine.reserve(trimmed.length() * 2);
-        bool inStr = false;
-        wchar_t strDelim = 0;
-        for (size_t k = 0; k < trimmed.length(); ++k) {
-            wchar_t c = trimmed[k];
-            if (inStr) {
-                spacedLine += c;
-                if (c == L'\\' && k + 1 < trimmed.length()) {
-                    spacedLine += trimmed[k + 1];
-                    k++;
-                    continue;
-                }
-                if (c == strDelim) inStr = false;
-                continue;
-            }
-            if (c == L'\'' || c == L'"' || c == L'`') {
-                inStr = true;
-                strDelim = c;
-                spacedLine += c;
-                continue;
-            }
-            // Add clean space after comma if followed by non-space
-            if (c == L',') {
-                spacedLine += c;
-                if (k + 1 < trimmed.length() && trimmed[k + 1] != L' ' && trimmed[k + 1] != L'\t') {
-                    spacedLine += L' ';
-                }
-                continue;
-            }
-            // Colon in object literals or type annotations: "key: value"
-            if (c == L':') {
-                spacedLine += c;
-                if (k + 1 < trimmed.length() && trimmed[k + 1] != L' ' && trimmed[k + 1] != L'\t' && trimmed[k + 1] != L':') {
-                    spacedLine += L' ';
-                }
-                continue;
-            }
-            spacedLine += c;
-        }
-
-        out += MakeIndent(currentIndent, tabSize) + spacedLine + L'\n';
-
-        // Compute indent delta for subsequent lines
-        bool inQuotes = false;
-        wchar_t qChar = 0;
-        int delta = 0;
-
-        for (size_t k = 0; k < trimmed.length(); ++k) {
-            wchar_t c = trimmed[k];
-            if (inQuotes) {
-                if (c == L'\\' && k + 1 < trimmed.length()) { k++; continue; }
-                if (c == qChar) inQuotes = false;
-                continue;
-            }
-            if (c == L'\'' || c == L'"' || c == L'`') {
-                inQuotes = true;
-                qChar = c;
-                continue;
-            }
-            if (c == L'/' && k + 1 < trimmed.length() && trimmed[k + 1] == L'/') {
-                break; // Line comment ignores remainder of line
-            }
-
-            if (c == L'{' || c == L'[' || c == L'(') delta++;
-            else if (c == L'}' || c == L']' || c == L')') delta--;
-            // JSX tags: <tag> (not closing </tag> and not self-closing />)
-            else if (c == L'<' && k + 1 < trimmed.length() && iswalpha(trimmed[k + 1])) {
-                size_t closeAngle = trimmed.find(L'>', k + 1);
-                if (closeAngle != std::wstring::npos) {
-                    if (closeAngle > 0 && trimmed[closeAngle - 1] != L'/') {
-                        size_t endTag = trimmed.find(L"</", closeAngle);
-                        if (endTag == std::wstring::npos) {
-                            delta++;
-                        }
-                    }
-                }
-            } else if (c == L'<' && k + 1 < trimmed.length() && trimmed[k + 1] == L'/') {
-                delta--;
-            }
-        }
-
-        indentLevel += delta;
-        if (indentLevel < 0) indentLevel = 0;
+    std::wstring formatted;
+    if (RunPrettier(src, L".jsx", tabSize, formatted) && !formatted.empty()) {
+        return formatted;
     }
-
-    if (!out.empty() && out.back() != L'\n') out += L'\n';
-    return out;
+    return src;
 }
 
 // ==============================================================================
@@ -1018,9 +460,13 @@ std::wstring FormatEngine::FormatPhp(const std::wstring& src, int tabSize) {
 bool FormatEngine::CanFormat(const std::wstring& ext) {
     std::wstring lower = ext;
     for (auto& c : lower) c = static_cast<wchar_t>(towlower(c));
-    return (lower == L".html" || lower == L".htm" || lower == L".svg" || lower == L".xml" ||
+    return (lower == L".js"   || lower == L".jsx"  || lower == L".mjs"  || lower == L".cjs" ||
+            lower == L".ts"   || lower == L".tsx"  || lower == L".mts"  || lower == L".cts" ||
+            lower == L".html" || lower == L".htm"  || lower == L".vue"  || lower == L".svelte" ||
             lower == L".css"  || lower == L".scss" || lower == L".less" ||
-            lower == L".json" || lower == L".jsonc" ||
+            lower == L".json" || lower == L".jsonc"|| lower == L".json5"||
+            lower == L".yaml" || lower == L".yml"  || lower == L".md"   || lower == L".markdown" ||
+            lower == L".graphql" || lower == L".gql" ||
             lower == L".php"  || lower == L".phtml" || lower == L".php8");
 }
 
@@ -1030,15 +476,13 @@ std::wstring FormatEngine::FormatDocument(const std::wstring& src, const std::ws
     std::wstring lower = ext;
     for (auto& c : lower) c = static_cast<wchar_t>(towlower(c));
 
-    if (lower == L".json" || lower == L".jsonc") {
-        return FormatJson(src, tabSize);
+    // 1. Try Prettier via bundled phide.prettier extension or system Prettier
+    std::wstring formatted;
+    if (RunPrettier(src, lower, tabSize, formatted) && !formatted.empty()) {
+        return formatted;
     }
-    if (lower == L".css" || lower == L".scss" || lower == L".less") {
-        return FormatCss(src, tabSize);
-    }
-    if (lower == L".html" || lower == L".htm" || lower == L".svg" || lower == L".xml") {
-        return FormatHtml(src, tabSize);
-    }
+
+    // 2. Fall back to native PSR-12 formatter for PHP files if Prettier is not handling PHP
     if (lower == L".php" || lower == L".phtml" || lower == L".php8") {
         return FormatPhp(src, tabSize);
     }

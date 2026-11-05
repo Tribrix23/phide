@@ -10761,6 +10761,19 @@ void DrawerPanel::InitExtensionEntries() {
     e6.isInstalled = true;
     e6.isEnabled = true;
     m_extensionEntries.push_back(std::move(e6));
+
+    ExtensionEntry e7;
+    e7.id = L"phide.prettier";
+    e7.displayName = L"Prettier";
+    e7.publisherDisplayName = L"phide";
+    e7.description = L"Code formatter using Prettier for HTML, CSS, JavaScript, TypeScript, JSX, and JSON";
+    e7.version = L"12.4.0";
+    e7.installsFormatted = L"48.9M";
+    e7.rating = 4.7f;
+    e7.iconPath = L"assets\\extensions\\phide.prettier\\icon.png";
+    e7.isInstalled = true;
+    e7.isEnabled = true;
+    m_extensionEntries.push_back(std::move(e7));
 }
 
 void DrawerPanel::RenderExtensionsPane(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config, float clientHeight, float currentDrawerW) {

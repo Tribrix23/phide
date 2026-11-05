@@ -5663,7 +5663,24 @@ struct ExtDetailMeta {
 };
 
 static ExtDetailMeta GetExtensionMeta(const std::wstring& extId) {
-    if (extId == L"phide.eslint" || extId == L"eslint") {
+    if (extId == L"phide.prettier" || extId == L"prettier") {
+        return {
+            L"phide.prettier",
+            L"Prettier - Code formatter",
+            L"phide",
+            L"v12.4.0",
+            L"Code formatter using Prettier for HTML, CSS, JavaScript, TypeScript, JSX, and JSON.",
+            L"48,920,000",
+            4.65f,
+            4210,
+            L"Formatters",
+            L"01/15/2017",
+            L"11/01/2026",
+            L"https://github.com/phide-ide/prettier",
+            L"https://github.com/phide-ide/prettier/issues",
+            L"MIT"
+        };
+    } else if (extId == L"phide.eslint" || extId == L"eslint") {
         return {
             L"phide.eslint",
             L"ESLint",
@@ -6081,6 +6098,14 @@ void EditorCanvas::RenderExtensionDetail(ID2D1RenderTarget* pRT, Theme& theme, c
                 { L"useMemo", L"React useMemo Hook snippet" },
                 { L"clg", L"console.log(object)" },
                 { L"imp", L"import moduleName from 'module'" }
+            };
+        } else if (meta.id.find(L"prettier") != std::wstring::npos) {
+            rows = {
+                { L"prettier.enable", L"Enable or disable Prettier formatter for active documents" },
+                { L"prettier.singleQuote", L"Use single quotes instead of double quotes" },
+                { L"prettier.semi", L"Print semicolons at the ends of statements" },
+                { L"prettier.tabWidth", L"Specify the number of spaces per indentation-level" },
+                { L"prettier.trailingComma", L"Print trailing commas wherever possible (none|es5|all)" }
             };
         } else if (meta.id.find(L"eslint") != std::wstring::npos) {
             rows = {

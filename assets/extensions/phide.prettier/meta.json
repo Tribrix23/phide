@@ -1,0 +1,29 @@
+{
+  "id": "phide.prettier",
+  "displayName": "Prettier - Code formatter",
+  "publisher": "phide",
+  "publisherDisplayName": "phide",
+  "version": "12.4.0",
+  "description": "Code formatter using Prettier for HTML, CSS, JavaScript, TypeScript, JSX, TSX, JSON, and more in phide.",
+  "installs": 48920000,
+  "rating": 4.65,
+  "ratingCount": 4210,
+  "lastUpdated": "2026-11-01T10:00:00.000Z",
+  "icon": "icon.png",
+  "categories": [
+    "Formatters"
+  ],
+  "tags": [
+    "prettier",
+    "formatter",
+    "javascript",
+    "typescript",
+    "react",
+    "jsx",
+    "tsx",
+    "html",
+    "css",
+    "json",
+    "phide"
+  ]
+}
