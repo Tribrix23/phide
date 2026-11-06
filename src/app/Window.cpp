@@ -3641,7 +3641,7 @@ void Window::UpdateExecutionButtonStates() {
                          (m_header.GetServerState() == ui::ServerState::Running) ||
                          (m_header.GetDatabaseState() == ui::DatabaseState::Running);
         m_header.SetRunEnabled(true);
-        m_header.SetDebugEnabled(true);
+        m_header.SetDebugEnabled(false);
         m_header.SetLiveServerRunning(isRunning);
         return;
     }
@@ -3685,7 +3685,7 @@ void Window::UpdateExecutionButtonStates() {
     // 5. Executable file types for Run: .js, .mjs, .cjs, .ts, .jsx, .tsx, etc.
     bool isJsTs = (ext == L".js" || ext == L".mjs" || ext == L".cjs" || ext == L".ts" || ext == L".jsx" || ext == L".tsx" || ext == L".json" || ext == L".yaml" || ext == L".yml");
     bool canRun = isJsTs;
-    bool canDebug = isJsTs;
+    bool canDebug = (ui::TerminalPanel::SelectDebugBackendForFile(pDoc->filePath) != ui::DebugBackend::None);
 
     m_header.SetRunEnabled(canRun);
     m_header.SetDebugEnabled(canDebug);
@@ -5161,13 +5161,47 @@ void Window::DoDebugActiveDocument() {
     auto* pDoc = GetActiveDoc();
     if (!pDoc) return;
 
+    // Save modified buffer before starting debugger so disk matches active editor lines
+    if (m_config.codeRunnerSaveFileBeforeRun && pDoc->buffer.IsModified() && !pDoc->filePath.empty()) {
+        SaveFileToPath(pDoc->filePath);
+    }
+
+    // Clear any stale paused line highlights across open documents
+    for (auto& group : m_editorGroups) {
+        for (auto& doc : group.docs) {
+            doc.debugPausedLine = static_cast<size_t>(-1);
+        }
+    }
+
     std::wstring folder = std::filesystem::path(pDoc->filePath).parent_path().wstring();
     if (folder.empty() && m_drawer.HasOpenFolder()) folder = m_drawer.GetOpenFolderPath();
     if (folder.empty()) folder = m_workspace.GetRootPath();
 
+    // Resolve Python interpreter: workspace .venv first, then configured executor, then python.exe
+    std::wstring pythonExe = L"python.exe";
+    std::wstring wsRoot = m_drawer.HasOpenFolder() ? m_drawer.GetOpenFolderPath() : folder;
+    if (!wsRoot.empty()) {
+        std::error_code ec;
+        std::filesystem::path venvPy = std::filesystem::path(wsRoot) / L".venv" / L"Scripts" / L"python.exe";
+        if (std::filesystem::exists(venvPy, ec)) {
+            pythonExe = venvPy.wstring();
+        }
+    }
+    if (pythonExe == L"python.exe" && !m_config.codeRunnerExecutorPython.empty()) {
+        std::wstring cfgPy = m_config.codeRunnerExecutorPython;
+        size_t flagPos = cfgPy.find(L" -");
+        if (flagPos != std::wstring::npos) {
+            cfgPy = cfgPy.substr(0, flagPos);
+        }
+        while (!cfgPy.empty() && cfgPy.back() == L' ') cfgPy.pop_back();
+        if (!cfgPy.empty()) {
+            pythonExe = cfgPy;
+        }
+    }
+
     m_terminal.Open(folder);
     AnimateTerminalOpen();
-    m_terminal.StartDebugSession(pDoc->filePath, folder);
+    m_terminal.StartDebugSession(pDoc->filePath, folder, pDoc->breakpoints, pythonExe);
     m_isTerminalFocused = true;
     InvalidateRect(m_hwnd, nullptr, FALSE);
 }
@@ -6294,6 +6328,55 @@ bool Window::Create(HINSTANCE hInstance, int nCmdShow) {
             if (m_hwnd) InvalidateRect(m_hwnd, nullptr, FALSE);
         }
     });
+
+        // Clear debug paused line whenever debugger continues or terminates
+        m_terminal.SetOnDebugResumed([this]() {
+            for (auto& group : m_editorGroups) {
+                for (auto& doc : group.docs) {
+                    doc.debugPausedLine = static_cast<size_t>(-1);
+                }
+            }
+            if (m_hwnd) InvalidateRect(m_hwnd, nullptr, FALSE);
+        });
+
+        m_terminal.SetOnDebugEnded([this]() {
+            for (auto& group : m_editorGroups) {
+                for (auto& doc : group.docs) {
+                    doc.debugPausedLine = static_cast<size_t>(-1);
+                }
+            }
+            UpdateExecutionButtonStates();
+            if (m_hwnd) InvalidateRect(m_hwnd, nullptr, FALSE);
+        });
+
+        m_terminal.SetOnDebugPaused([this](const std::wstring& filePath, int lineNum1) {
+            if (lineNum1 <= 0) return;
+            size_t line0 = static_cast<size_t>(lineNum1 - 1);
+            std::wstring normPath = filePath;
+            for (auto& c : normPath) { if (c == L'/') c = L'\\'; }
+            std::filesystem::path pTarget(normPath);
+
+            for (auto& group : m_editorGroups) {
+                for (auto& doc : group.docs) {
+                    doc.debugPausedLine = static_cast<size_t>(-1);
+                    std::wstring docNorm = doc.filePath.empty() ? doc.fileName : doc.filePath;
+                    for (auto& c : docNorm) { if (c == L'/') c = L'\\'; }
+                    std::filesystem::path pDoc(docNorm);
+
+                    if (_wcsicmp(normPath.c_str(), docNorm.c_str()) == 0 ||
+                        (!pTarget.filename().empty() && _wcsicmp(pTarget.filename().c_str(), pDoc.filename().c_str()) == 0)) {
+                        doc.debugPausedLine = line0;
+                        if (line0 < doc.buffer.GetLineCount()) {
+                            doc.buffer.SetCursor(line0, 0);
+                            if (line0 < doc.scrollLine || line0 > doc.scrollLine + 18) {
+                                doc.scrollLine = (line0 > 5) ? (line0 - 5) : 0;
+                            }
+                        }
+                    }
+                }
+            }
+            if (m_hwnd) InvalidateRect(m_hwnd, nullptr, FALSE);
+        });
 
     // Server successfully listening / ready callback (e.g. Next.js, Vite, Live Server)
     m_terminal.SetOnServerReady([this](const std::wstring& rootDir) {
@@ -9683,10 +9766,15 @@ bool Window::HandlePopupMenuClick(POINT clientPt) {
                         if (pDoc && !pDoc->isSpecialView) {
                             size_t curLine = pDoc->buffer.GetCursor().line;
                             auto it = std::find(pDoc->breakpoints.begin(), pDoc->breakpoints.end(), curLine);
+                            bool added = false;
                             if (it != pDoc->breakpoints.end()) {
                                 pDoc->breakpoints.erase(it);
                             } else {
                                 pDoc->breakpoints.push_back(curLine);
+                                added = true;
+                            }
+                            if (m_terminal.IsDebugActive()) {
+                                m_terminal.SyncBreakpoint(pDoc->filePath, curLine, added);
                             }
                         }
                         break;
@@ -11014,10 +11102,15 @@ void Window::HandleLButtonDown(POINT clientPt) {
                         size_t clickedLine = 0;
                         if (m_editor.HitTestGutter(clientPt, m_config, doc, paneCanvasLeft, clientH, clickedLine)) {
                             auto it = std::find(doc.breakpoints.begin(), doc.breakpoints.end(), clickedLine);
+                            bool added = false;
                             if (it != doc.breakpoints.end()) {
                                 doc.breakpoints.erase(it);
                             } else {
                                 doc.breakpoints.push_back(clickedLine);
+                                added = true;
+                            }
+                            if (m_terminal.IsDebugActive()) {
+                                m_terminal.SyncBreakpoint(doc.filePath, clickedLine, added);
                             }
                             InvalidateRect(m_hwnd, nullptr, FALSE);
                             return;
@@ -13021,6 +13114,11 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
         }
 
         case WM_SYSKEYDOWN: {
+            if (wParam == VK_F10 && m_terminal.IsDebugActive()) {
+                m_terminal.TriggerDebugAction(ui::DebugAction::StepOver);
+                InvalidateRect(m_hwnd, nullptr, FALSE);
+                return 0;
+            }
             if (wParam == 'Z') {
                 DoToggleWordWrap();
                 return 0;
@@ -13195,10 +13293,15 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 if (pDoc && !pDoc->isSpecialView) {
                     size_t curLine = pDoc->buffer.GetCursor().line;
                     auto it = std::find(pDoc->breakpoints.begin(), pDoc->breakpoints.end(), curLine);
+                    bool added = false;
                     if (it != pDoc->breakpoints.end()) {
                         pDoc->breakpoints.erase(it);
                     } else {
                         pDoc->breakpoints.push_back(curLine);
+                        added = true;
+                    }
+                    if (m_terminal.IsDebugActive()) {
+                        m_terminal.SyncBreakpoint(pDoc->filePath, curLine, added);
                     }
                     InvalidateRect(m_hwnd, nullptr, FALSE);
                     return 0;

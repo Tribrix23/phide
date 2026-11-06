@@ -38,6 +38,7 @@ struct OpenDocument {
 
     // Breakpoints for Debugging (F9 / Debug Menu)
     std::vector<size_t> breakpoints; ///< 0-based line indices where breakpoints are set
+    size_t debugPausedLine = static_cast<size_t>(-1); ///< 0-based line where debugger is currently paused (-1 if not paused)
 
     // GitLens Inline Blame and Authorship State
     struct LineBlameInfo {

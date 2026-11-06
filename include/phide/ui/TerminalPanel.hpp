@@ -45,6 +45,15 @@ enum class DebugAction {
 };
 
 /**
+ * @brief Identifies the active debugger engine backend.
+ */
+enum class DebugBackend {
+    None,
+    Node,
+    Pdb
+};
+
+/**
  * @brief Bounding box and target for clickable hyperlinks (e.g. http://localhost:5500).
  */
 struct TerminalUrlHit {
@@ -208,6 +217,11 @@ struct TerminalTab {
     std::function<void(const std::wstring&)> onReadyCallback;
     std::function<void(const std::wstring& filePath, int lineNum, const std::wstring& errorMsg, const std::wstring& token)> onExecutionError;
     std::function<void()> onClearRuntimeErrors;
+    std::function<void(const std::wstring& filePath, int lineNum)> onDebugPaused;
+    std::function<void()> onDebugResumed;
+    std::function<void()> onDebugEnded;
+    bool isIdleDebugConsole = false;
+    DebugBackend debugBackend = DebugBackend::None;
     size_t lastScannedLineIdx = 0;
     bool hadExecutionErrorInCurrentCommand = false;
     std::wstring pendingErrorFile;
@@ -356,12 +370,23 @@ public:
     void ExecuteCommandLine(const std::wstring& command);
 
     // Debug Session Management (Same layout as terminal, fully functional)
-    void StartDebugSession(const std::wstring& filePath, const std::wstring& workingDir);
+    void StartDebugSession(const std::wstring& filePath, const std::wstring& workingDir,
+                           const std::vector<size_t>& breakpoints = {},
+                           const std::wstring& pythonExe = L"");
+    void SyncBreakpoint(const std::wstring& filePath, size_t line0, bool added);
     void ShowDebugConsole();
     void TriggerDebugAction(DebugAction action);
     void StopDebugSession();
     [[nodiscard]] bool IsDebugActive() const noexcept { return m_isDebugActive; }
+    [[nodiscard]] DebugBackend GetDebugBackend() const noexcept { return m_debugBackend; }
+    [[nodiscard]] static DebugBackend SelectDebugBackendForFile(const std::wstring& filePath) noexcept;
+    [[nodiscard]] static std::string GetDebugActionCommand(DebugBackend backend, DebugAction action);
+    [[nodiscard]] static std::vector<std::string> BuildBreakpointCommands(DebugBackend backend, const std::wstring& filePath, const std::vector<size_t>& breakpoints);
+    [[nodiscard]] static bool ParseDebugPausedLine(const std::wstring& line, DebugBackend backend, std::wstring& outFile, int& outLine1Based);
     [[nodiscard]] DebugAction HitTestDebugButtons(POINT pt) const noexcept;
+    void SetOnDebugPaused(std::function<void(const std::wstring&, int)> cb) { m_onDebugPaused = std::move(cb); }
+    void SetOnDebugResumed(std::function<void()> cb) { m_onDebugResumed = std::move(cb); }
+    void SetOnDebugEnded(std::function<void()> cb) { m_onDebugEnded = std::move(cb); }
 
     // Direct2D Rendering
     void Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
@@ -543,7 +568,15 @@ private:
 
     // Debugging controls & state
     bool m_isDebugActive = false;
+    DebugBackend m_debugBackend = DebugBackend::None;
     std::wstring m_debugTargetFile;
+    std::wstring m_debugWorkingDir;
+    std::vector<size_t> m_pendingBreakpoints;
+    std::wstring m_debugPythonExe;
+    std::atomic<bool> m_debugProcessEnded{false};
+    std::function<void(const std::wstring&, int)> m_onDebugPaused;
+    std::function<void()> m_onDebugResumed;
+    std::function<void()> m_onDebugEnded;
     D2D1_RECT_F m_debugContinueBounds{};
     D2D1_RECT_F m_debugStepOverBounds{};
     D2D1_RECT_F m_debugStepIntoBounds{};

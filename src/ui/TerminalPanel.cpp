@@ -232,15 +232,35 @@ void TerminalTab::AppendOutput(const char* data, size_t length, bool isError) {
 
     // Clean up internal Node inspector CLI prompt artifacts for professional Debug Console (Image 3)
     if (shellType == TerminalShellType::DebugConsole) {
-        if (wstr == L"<\r\n" || wstr == L"<\n" || wstr == L"< " ||
-            wstr.find(L"Waiting for the debugger to disconnect") != std::wstring::npos ||
-            wstr.find(L"For help, see:") != std::wstring::npos ||
-            wstr == L"debug>\r\n" || wstr == L"debug>\n" || wstr == L"debug> ") {
+        std::wstring filtered;
+        filtered.reserve(wstr.length());
+        size_t pos = 0;
+        while (pos < wstr.length()) {
+            size_t nl = wstr.find(L'\n', pos);
+            std::wstring line = (nl == std::wstring::npos) ? wstr.substr(pos) : wstr.substr(pos, nl - pos + 1);
+            pos = (nl == std::wstring::npos) ? wstr.length() : nl + 1;
+
+            std::wstring trimmed = line;
+            while (!trimmed.empty() && (trimmed.back() == L'\r' || trimmed.back() == L'\n' || trimmed.back() == L' ')) {
+                trimmed.pop_back();
+            }
+            if (trimmed == L"<" || trimmed == L"debug>" ||
+                trimmed.find(L"Waiting for the debugger to disconnect") != std::wstring::npos ||
+                trimmed.find(L"For help, see:") != std::wstring::npos) {
+                continue;
+            }
+            if (line.rfind(L"debug> ", 0) == 0) {
+                line = line.substr(7);
+            }
+            if (line.rfind(L"< ", 0) == 0) {
+                line = line.substr(2);
+            }
+            filtered += line;
+        }
+        if (filtered.empty()) {
             return;
         }
-        if (wstr.rfind(L"< ", 0) == 0) {
-            wstr = wstr.substr(2);
-        }
+        wstr = std::move(filtered);
     }
 
     if (isServerTab) {
@@ -456,6 +476,23 @@ void TerminalTab::AppendOutput(const char* data, size_t length, bool isError) {
             lastScannedLineIdx -= excess;
         } else {
             lastScannedLineIdx = 0;
+        }
+    }
+
+    // Real-time Debugger Paused Location Interception (pdb & node inspect)
+    if (shellType == TerminalShellType::DebugConsole && onDebugPaused && !lines.empty()) {
+        size_t dbgStart = lastScannedLineIdx;
+        if (dbgStart >= lines.size()) {
+            dbgStart = lines.size() > 0 ? lines.size() - 1 : 0;
+        }
+        for (size_t li = dbgStart; li < lines.size(); ++li) {
+            std::wstring pausedFile;
+            int pausedLine1 = 0;
+            if (TerminalPanel::ParseDebugPausedLine(lines[li].rawText, debugBackend, pausedFile, pausedLine1)) {
+                onDebugPaused(pausedFile, pausedLine1);
+            } else if (lines[li].rawText.find(L"The program finished") != std::wstring::npos) {
+                if (onDebugResumed) onDebugResumed();
+            }
         }
     }
 
@@ -877,11 +914,19 @@ void TerminalPanel::StartShellProcess(TerminalTab& tab) {
     } else if (tab.shellType == TerminalShellType::Python) {
         cmd = L"python.exe -i";
     } else if (tab.shellType == TerminalShellType::DebugConsole) {
-        std::filesystem::path p(m_debugTargetFile);
-        std::wstring ext = p.extension().wstring();
-        for (auto& c : ext) c = towlower(c);
-        if (ext == L".py") {
-            cmd = L"python.exe -m pdb \"" + m_debugTargetFile + L"\"";
+        if (tab.isIdleDebugConsole || tab.debugBackend == DebugBackend::None) {
+            CloseHandle(hStdoutWrite);
+            CloseHandle(hStderrWrite);
+            CloseHandle(hStdinRead);
+            tab.isAlive = false;
+            return;
+        }
+        if (tab.debugBackend == DebugBackend::Pdb) {
+            std::wstring pyExe = m_debugPythonExe.empty() ? L"python.exe" : m_debugPythonExe;
+            if (pyExe.find(L' ') != std::wstring::npos && pyExe.front() != L'"') {
+                pyExe = L"\"" + pyExe + L"\"";
+            }
+            cmd = pyExe + L" -u -m pdb \"" + m_debugTargetFile + L"\"";
         } else {
             std::wstring nodeExe = L"node.exe";
             if (std::filesystem::exists(L"C:\\Program Files\\nodejs\\node.exe")) {
@@ -889,7 +934,11 @@ void TerminalPanel::StartShellProcess(TerminalTab& tab) {
             } else if (std::filesystem::exists(L"C:\\Program Files (x86)\\nodejs\\node.exe")) {
                 nodeExe = L"\"C:\\Program Files (x86)\\nodejs\\node.exe\"";
             }
-            cmd = nodeExe + L" inspect \"" + m_debugTargetFile + L"\"";
+            std::filesystem::path p(m_debugTargetFile);
+            std::wstring ext = p.extension().wstring();
+            for (auto& c : ext) c = towlower(c);
+            std::wstring extraFlags = (ext == L".ts") ? L" --experimental-strip-types" : L"";
+            cmd = nodeExe + extraFlags + L" inspect --port=0 \"" + m_debugTargetFile + L"\"";
         }
     } else if (tab.shellType == TerminalShellType::LiveServer) {
         CloseHandle(hStdoutWrite);
@@ -950,6 +999,11 @@ void TerminalPanel::StartShellProcess(TerminalTab& tab) {
                 buffer[bytesRead] = '\0';
                 pTab->AppendOutput(buffer, bytesRead, false);
             }
+            if (pTab->shellType == TerminalShellType::DebugConsole) {
+                if (pTab->onDebugEnded) {
+                    pTab->onDebugEnded();
+                }
+            }
             if (pTab->isAlive.load() && pTab->isServerTab && pTab->hProcess) {
                 WaitForSingleObject(pTab->hProcess, 100);
                 DWORD exitCode = 0;
@@ -972,6 +1026,11 @@ void TerminalPanel::StartShellProcess(TerminalTab& tab) {
             while (pTab->isAlive.load() && ReadFile(hStderrRead, buffer, sizeof(buffer) - 1, &bytesRead, NULL) && bytesRead > 0) {
                 buffer[bytesRead] = '\0';
                 pTab->AppendOutput(buffer, bytesRead, true);
+            }
+            if (pTab->shellType == TerminalShellType::DebugConsole) {
+                if (pTab->onDebugEnded) {
+                    pTab->onDebugEnded();
+                }
             }
             if (pTab->isAlive.load() && pTab->isServerTab && pTab->hProcess) {
                 WaitForSingleObject(pTab->hProcess, 100);
@@ -1308,6 +1367,10 @@ std::vector<TerminalSpan> TerminalPanel::FormatTerminalLine(const TerminalLine& 
 
 void TerminalPanel::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
                            float clientW, float clientH, float leftOffset, float animatedHeight) {
+    if (m_debugProcessEnded.exchange(false)) {
+        m_isDebugActive = false;
+        if (m_onDebugEnded) m_onDebugEnded();
+    }
     if (!m_isOpen) return;
 
     std::lock_guard<std::recursive_mutex> tabsLock(m_tabsMutex);
@@ -1414,6 +1477,10 @@ void TerminalPanel::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppC
 
 void TerminalPanel::RenderBounds(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
                                  const D2D1_RECT_F& bounds, float clientH, bool isRightDocked) {
+    if (m_debugProcessEnded.exchange(false)) {
+        m_isDebugActive = false;
+        if (m_onDebugEnded) m_onDebugEnded();
+    }
     if (!m_isOpen) return;
 
     std::lock_guard<std::recursive_mutex> tabsLock(m_tabsMutex);
@@ -3304,12 +3371,169 @@ TerminalTab* TerminalPanel::FindServerTab(const std::wstring& projectRoot) {
     return nullptr;
 }
 
-void TerminalPanel::StartDebugSession(const std::wstring& filePath, const std::wstring& workingDir) {
+DebugBackend TerminalPanel::SelectDebugBackendForFile(const std::wstring& filePath) noexcept {
+    if (filePath.empty()) return DebugBackend::None;
+    std::filesystem::path p(filePath);
+    std::wstring ext = p.extension().wstring();
+    for (auto& c : ext) c = static_cast<wchar_t>(towlower(c));
+    if (ext == L".py" || ext == L".pyw") {
+        return DebugBackend::Pdb;
+    }
+    if (ext == L".js" || ext == L".mjs" || ext == L".cjs" || ext == L".ts") {
+        return DebugBackend::Node;
+    }
+    return DebugBackend::None;
+}
+
+std::string TerminalPanel::GetDebugActionCommand(DebugBackend backend, DebugAction action) {
+    switch (action) {
+    case DebugAction::Continue:
+        return "c\r\n";
+    case DebugAction::StepOver:
+        return "n\r\n";
+    case DebugAction::StepInto:
+        return "s\r\n";
+    case DebugAction::StepOut:
+        return (backend == DebugBackend::Pdb) ? "r\r\n" : "o\r\n";
+    case DebugAction::Restart:
+        return "restart\r\n";
+    case DebugAction::Stop:
+        return (backend == DebugBackend::Pdb) ? "q\r\n" : ".exit\r\n";
+    default:
+        return "";
+    }
+}
+
+std::vector<std::string> TerminalPanel::BuildBreakpointCommands(DebugBackend backend,
+                                                                const std::wstring& filePath,
+                                                                const std::vector<size_t>& breakpoints) {
+    std::vector<std::string> cmds;
+    if (backend == DebugBackend::None || filePath.empty()) return cmds;
+
+    auto toUtf8 = [](const std::wstring& w) -> std::string {
+        if (w.empty()) return "";
+        int len = WideCharToMultiByte(CP_UTF8, 0, w.c_str(), -1, NULL, 0, NULL, NULL);
+        if (len <= 1) return "";
+        std::string s(len - 1, '\0');
+        WideCharToMultiByte(CP_UTF8, 0, w.c_str(), -1, &s[0], len, NULL, NULL);
+        return s;
+    };
+
+    if (backend == DebugBackend::Pdb) {
+        std::error_code ec;
+        std::filesystem::path absPath = std::filesystem::absolute(filePath, ec);
+        std::wstring target = ec ? filePath : absPath.wstring();
+        std::string u8Target = toUtf8(target);
+        for (size_t bp0 : breakpoints) {
+            cmds.push_back("b " + u8Target + ":" + std::to_string(bp0 + 1) + "\r\n");
+        }
+        cmds.push_back("c\r\n");
+    } else if (backend == DebugBackend::Node) {
+        std::filesystem::path p(filePath);
+        std::wstring baseName = p.filename().wstring();
+        std::string u8Base = toUtf8(baseName);
+        std::string escaped;
+        for (char c : u8Base) {
+            if (c == '\'' || c == '\\') escaped.push_back('\\');
+            escaped.push_back(c);
+        }
+        for (size_t bp0 : breakpoints) {
+            cmds.push_back("sb('" + escaped + "', " + std::to_string(bp0 + 1) + ")\r\n");
+        }
+        cmds.push_back("c\r\n");
+    }
+    return cmds;
+}
+
+bool TerminalPanel::ParseDebugPausedLine(const std::wstring& line, DebugBackend backend,
+                                         std::wstring& outFile, int& outLine1Based) {
+    outFile.clear();
+    outLine1Based = 0;
+    if (line.empty()) return false;
+
+    std::wstring s = line;
+    while (!s.empty() && (s.front() == L' ' || s.front() == L'\t')) s.erase(s.begin());
+    while (!s.empty() && (s.back() == L'\r' || s.back() == L'\n' || s.back() == L' ')) s.pop_back();
+
+    // Pdb pattern: "> c:\path\to\file.py(12)func_name()" or "(Pdb) > c:\path\to\file.py(12)<module>()"
+    if (backend == DebugBackend::Pdb || backend == DebugBackend::None) {
+        size_t gtPos = s.find(L"> ");
+        if (gtPos != std::wstring::npos && (gtPos == 0 || s.rfind(L"(Pdb)", 0) == 0)) {
+            size_t pathStart = gtPos + 2;
+            size_t closeParen = s.rfind(L')');
+            if (closeParen != std::wstring::npos && closeParen > pathStart) {
+                // Find the (digits) right before function name
+                size_t openParen = std::wstring::npos;
+                size_t numEnd = 0;
+                for (size_t i = pathStart; i < s.length(); ++i) {
+                    if (s[i] == L'(' && i + 1 < s.length() && iswdigit(s[i + 1])) {
+                        size_t j = i + 1;
+                        while (j < s.length() && iswdigit(s[j])) j++;
+                        if (j < s.length() && s[j] == L')') {
+                            openParen = i;
+                            numEnd = j;
+                        }
+                    }
+                }
+                if (openParen != std::wstring::npos && openParen > pathStart) {
+                    std::wstring candidateFile = s.substr(pathStart, openParen - pathStart);
+                    if (candidateFile != L"<string>" && candidateFile != L"<stdin>") {
+                        try {
+                            int ln = std::stoi(s.substr(openParen + 1, numEnd - (openParen + 1)));
+                            if (ln > 0) {
+                                outFile = candidateFile;
+                                outLine1Based = ln;
+                                return true;
+                            }
+                        } catch (...) {}
+                    }
+                }
+            }
+        }
+    }
+
+    // Node inspect pattern: "break in file.js:12" or "break in start (file.js:12)"
+    if (backend == DebugBackend::Node || backend == DebugBackend::None) {
+        size_t brkPos = s.find(L"break in ");
+        if (brkPos != std::wstring::npos) {
+            std::wstring rest = s.substr(brkPos + 9);
+            if (!rest.empty() && rest.back() == L')') {
+                size_t lp = rest.rfind(L'(');
+                if (lp != std::wstring::npos) {
+                    rest = rest.substr(lp + 1, rest.length() - lp - 2);
+                }
+            }
+            size_t colonPos = rest.rfind(L':');
+            if (colonPos != std::wstring::npos && colonPos > 0 && colonPos + 1 < rest.length()) {
+                bool allDigits = true;
+                for (size_t i = colonPos + 1; i < rest.length(); ++i) {
+                    if (!iswdigit(rest[i])) {
+                        allDigits = false;
+                        break;
+                    }
+                }
+                if (allDigits) {
+                    try {
+                        int ln = std::stoi(rest.substr(colonPos + 1));
+                        if (ln > 0) {
+                            outFile = rest.substr(0, colonPos);
+                            outLine1Based = ln;
+                            return true;
+                        }
+                    } catch (...) {}
+                }
+            }
+        }
+    }
+
+    return false;
+}
+
+void TerminalPanel::StartDebugSession(const std::wstring& filePath, const std::wstring& workingDir,
+                                      const std::vector<size_t>& breakpoints, const std::wstring& pythonExe) {
     if (!m_isOpen) {
         Open(workingDir);
     }
-    m_isDebugActive = true;
-    m_debugTargetFile = filePath;
 
     // Terminate existing debug console tab if open
     for (size_t i = 0; i < m_tabs.size(); ++i) {
@@ -3319,40 +3543,132 @@ void TerminalPanel::StartDebugSession(const std::wstring& filePath, const std::w
         }
     }
 
+    m_debugProcessEnded.store(false);
+    m_debugTargetFile = filePath;
+    m_debugWorkingDir = workingDir.empty() ? m_defaultWorkingDir : workingDir;
+    m_pendingBreakpoints = breakpoints;
+    m_debugPythonExe = pythonExe;
+    m_debugBackend = SelectDebugBackendForFile(filePath);
+
     auto debugTab = std::make_unique<TerminalTab>();
     debugTab->shellType = TerminalShellType::DebugConsole;
     debugTab->title = L"🐞 Debug Console";
-    debugTab->workingDir = workingDir.empty() ? m_defaultWorkingDir : workingDir;
+    debugTab->workingDir = m_debugWorkingDir;
+    debugTab->associatedFilePath = filePath;
+    debugTab->debugBackend = m_debugBackend;
     debugTab->onOutput = m_outputCallback;
+    debugTab->onExecutionError = m_onExecutionError;
+    debugTab->onClearRuntimeErrors = m_onClearRuntimeErrors;
+    debugTab->onDebugPaused = m_onDebugPaused;
+    debugTab->onDebugResumed = m_onDebugResumed;
+    debugTab->onDebugEnded = [this]() {
+        m_debugProcessEnded.store(true);
+        if (m_outputCallback) m_outputCallback();
+    };
+
+    if (m_debugBackend == DebugBackend::None) {
+        m_isDebugActive = true;
+        debugTab->isIdleDebugConsole = true;
+        std::filesystem::path p(filePath);
+        std::wstring ext = p.extension().wstring();
+        {
+            std::lock_guard<std::mutex> lock(debugTab->bufferMutex);
+            TerminalLine l0;
+            if (filePath.empty()) {
+                l0.rawText = L"● [Debugger] Debug Console ready. Press F5 on a Python (.py) or JavaScript/TypeScript (.js/.ts) file to start debugging.";
+                l0.spans.push_back({ L"● [Debugger] ", D2D1::ColorF(0.20f, 0.85f, 0.55f), true });
+                l0.spans.push_back({ L"Debug Console ready. Press F5 on a Python (.py) or JavaScript/TypeScript (.js/.ts) file to start debugging.", D2D1::ColorF(0.85f, 0.88f, 0.92f), false });
+            } else {
+                std::wstring msg = L"Interactive CLI debugging is supported for Python (pdb) and Node.js (V8 Inspector). File: " + p.filename().wstring();
+                l0.rawText = L"● [Debugger] " + msg;
+                l0.spans.push_back({ L"● [Debugger] ", D2D1::ColorF(0.95f, 0.75f, 0.25f), true });
+                l0.spans.push_back({ msg, D2D1::ColorF(0.85f, 0.88f, 0.92f), false });
+            }
+            debugTab->lines.push_back(std::move(l0));
+        }
+        StartShellProcess(*debugTab);
+        m_tabs.push_back(std::move(debugTab));
+        m_activeTabIdx = static_cast<int>(m_tabs.size() - 1);
+        if (m_outputCallback) m_outputCallback();
+        return;
+    }
+
+    m_isDebugActive = true;
+    std::filesystem::path p(filePath);
+    std::wstring backendName = (m_debugBackend == DebugBackend::Pdb) ? L"Python pdb" : L"Node.js V8 Inspector";
+    std::wstring bpSummary = std::to_wstring(breakpoints.size()) + (breakpoints.size() == 1 ? L" breakpoint" : L" breakpoints");
 
     {
         std::lock_guard<std::mutex> lock(debugTab->bufferMutex);
         TerminalLine l0;
-        l0.rawText = L"● [Debugger] Starting session for " + filePath;
+        std::wstring infoText = backendName + L" · " + bpSummary + L" · " + p.filename().wstring();
+        l0.rawText = L"● [Debugger] " + infoText;
         l0.spans.push_back({ L"● [Debugger] ", D2D1::ColorF(0.20f, 0.85f, 0.55f), true });
-        l0.spans.push_back({ L"Starting session for " + filePath, D2D1::ColorF(0.92f, 0.92f, 0.92f), false });
+        l0.spans.push_back({ infoText, D2D1::ColorF(0.92f, 0.92f, 0.92f), false });
         debugTab->lines.push_back(std::move(l0));
-
-        TerminalLine l1;
-        l1.rawText = L"ℹ [V8 Inspector] Debugger listening on ws://127.0.0.1:9229 (Chrome DevTools Protocol)";
-        l1.spans.push_back({ L"ℹ [V8 Inspector] ", D2D1::ColorF(0.35f, 0.75f, 1.0f), true });
-        l1.spans.push_back({ L"Debugger listening on ", D2D1::ColorF(0.80f, 0.80f, 0.80f), false });
-        l1.spans.push_back({ L"ws://127.0.0.1:9229", D2D1::ColorF(0.35f, 0.82f, 0.98f), true });
-        l1.spans.push_back({ L" (Chrome DevTools Protocol)", D2D1::ColorF(0.55f, 0.60f, 0.68f), false });
-        debugTab->lines.push_back(std::move(l1));
-
-        TerminalLine l2;
-        l2.rawText = L"✔ [Runtime] Connected. Breakpoints active. Type expressions below to evaluate.";
-        l2.spans.push_back({ L"✔ [Runtime] ", D2D1::ColorF(0.30f, 0.85f, 0.45f), true });
-        l2.spans.push_back({ L"Connected. Breakpoints active. Type expressions below to evaluate in context.", D2D1::ColorF(0.75f, 0.78f, 0.82f), false });
-        debugTab->lines.push_back(std::move(l2));
     }
 
     StartShellProcess(*debugTab);
+
+    // Inject active editor breakpoints and auto-continue to first breakpoint (or program completion)
+    if (debugTab->isAlive.load()) {
+        auto cmds = BuildBreakpointCommands(m_debugBackend, filePath, breakpoints);
+        for (const auto& cmdStr : cmds) {
+            debugTab->SendInput(cmdStr);
+        }
+    }
+
     m_tabs.push_back(std::move(debugTab));
     m_activeTabIdx = static_cast<int>(m_tabs.size() - 1);
 
     if (m_outputCallback) m_outputCallback();
+}
+
+void TerminalPanel::SyncBreakpoint(const std::wstring& filePath, size_t line0, bool added) {
+    if (!m_isDebugActive || m_debugBackend == DebugBackend::None) return;
+    TerminalTab* tab = nullptr;
+    for (auto& t : m_tabs) {
+        if (t && t->shellType == TerminalShellType::DebugConsole) {
+            tab = t.get();
+            break;
+        }
+    }
+    if (!tab || !tab->isAlive.load()) return;
+
+    // Update pending list for restarts
+    auto it = std::find(m_pendingBreakpoints.begin(), m_pendingBreakpoints.end(), line0);
+    if (added) {
+        if (it == m_pendingBreakpoints.end()) m_pendingBreakpoints.push_back(line0);
+    } else {
+        if (it != m_pendingBreakpoints.end()) m_pendingBreakpoints.erase(it);
+    }
+
+    auto toUtf8 = [](const std::wstring& w) -> std::string {
+        if (w.empty()) return "";
+        int len = WideCharToMultiByte(CP_UTF8, 0, w.c_str(), -1, NULL, 0, NULL, NULL);
+        if (len <= 1) return "";
+        std::string s(len - 1, '\0');
+        WideCharToMultiByte(CP_UTF8, 0, w.c_str(), -1, &s[0], len, NULL, NULL);
+        return s;
+    };
+
+    if (m_debugBackend == DebugBackend::Pdb) {
+        std::error_code ec;
+        std::filesystem::path absPath = std::filesystem::absolute(filePath, ec);
+        std::string u8Target = toUtf8(ec ? filePath : absPath.wstring());
+        std::string cmd = (added ? "b " : "cl ") + u8Target + ":" + std::to_string(line0 + 1) + "\r\n";
+        tab->SendInput(cmd);
+    } else if (m_debugBackend == DebugBackend::Node) {
+        std::filesystem::path p(filePath);
+        std::string u8Base = toUtf8(p.filename().wstring());
+        std::string escaped;
+        for (char c : u8Base) {
+            if (c == '\'' || c == '\\') escaped.push_back('\\');
+            escaped.push_back(c);
+        }
+        std::string cmd = (added ? "sb('" : "cb('") + escaped + "', " + std::to_string(line0 + 1) + ")\r\n";
+        tab->SendInput(cmd);
+    }
 }
 
 void TerminalPanel::ShowDebugConsole() {
@@ -3366,11 +3682,42 @@ void TerminalPanel::ShowDebugConsole() {
             return;
         }
     }
-    StartDebugSession(L"Debug Console", m_defaultWorkingDir);
+    // Create an idle Debug Console tab without spawning a bogus node inspect process
+    auto debugTab = std::make_unique<TerminalTab>();
+    debugTab->shellType = TerminalShellType::DebugConsole;
+    debugTab->title = L"🐞 Debug Console";
+    debugTab->workingDir = m_defaultWorkingDir;
+    debugTab->isIdleDebugConsole = true;
+    debugTab->debugBackend = DebugBackend::None;
+    debugTab->onOutput = m_outputCallback;
+    {
+        std::lock_guard<std::mutex> lock(debugTab->bufferMutex);
+        TerminalLine l0;
+        l0.rawText = L"● [Debugger] Debug Console ready. Press F5 to start a debugging session.";
+        l0.spans.push_back({ L"● [Debugger] ", D2D1::ColorF(0.20f, 0.85f, 0.55f), true });
+        l0.spans.push_back({ L"Debug Console ready. Press F5 to start a debugging session.", D2D1::ColorF(0.85f, 0.88f, 0.92f), false });
+        debugTab->lines.push_back(std::move(l0));
+    }
+    StartShellProcess(*debugTab);
+    m_tabs.push_back(std::move(debugTab));
+    m_activeTabIdx = static_cast<int>(m_tabs.size() - 1);
+    if (m_outputCallback) m_outputCallback();
 }
 
 void TerminalPanel::TriggerDebugAction(DebugAction action) {
     if (!m_isDebugActive) return;
+    if (action == DebugAction::Stop) {
+        StopDebugSession();
+        return;
+    }
+    if (action == DebugAction::Restart) {
+        if (m_onDebugResumed) m_onDebugResumed();
+        if (!m_debugTargetFile.empty() && m_debugBackend != DebugBackend::None) {
+            StartDebugSession(m_debugTargetFile, m_debugWorkingDir, m_pendingBreakpoints, m_debugPythonExe);
+            return;
+        }
+    }
+
     TerminalTab* tab = nullptr;
     for (auto& t : m_tabs) {
         if (t && t->shellType == TerminalShellType::DebugConsole) {
@@ -3378,43 +3725,37 @@ void TerminalPanel::TriggerDebugAction(DebugAction action) {
             break;
         }
     }
-    if (!tab && m_activeTabIdx >= 0 && m_activeTabIdx < static_cast<int>(m_tabs.size())) {
-        tab = m_tabs[m_activeTabIdx].get();
-    }
     if (!tab) return;
 
-    switch (action) {
-    case DebugAction::Continue:
-        tab->SendInput("c\r\n");
-        break;
-    case DebugAction::StepOver:
-        tab->SendInput("n\r\n");
-        break;
-    case DebugAction::StepInto:
-        tab->SendInput("s\r\n");
-        break;
-    case DebugAction::StepOut:
-        tab->SendInput("o\r\n");
-        break;
-    case DebugAction::Restart:
-        tab->SendInput("restart\r\n");
-        break;
-    case DebugAction::Stop:
-        StopDebugSession();
-        break;
-    default:
-        break;
+    if (m_onDebugResumed) {
+        m_onDebugResumed();
+    }
+
+    std::string cmd = GetDebugActionCommand(m_debugBackend, action);
+    if (!cmd.empty()) {
+        tab->SendInput(cmd);
     }
 }
 
 void TerminalPanel::StopDebugSession() {
     m_isDebugActive = false;
+    m_debugProcessEnded.store(false);
+    if (m_onDebugEnded) {
+        m_onDebugEnded();
+    }
     for (auto& tab : m_tabs) {
         if (tab && tab->shellType == TerminalShellType::DebugConsole) {
-            tab->SendInput(".exit\r\n");
+            if (tab->isAlive.load() && tab->hProcess) {
+                std::string quitCmd = GetDebugActionCommand(tab->debugBackend, DebugAction::Stop);
+                if (!quitCmd.empty()) {
+                    tab->SendInput(quitCmd);
+                }
+                WaitForSingleObject(tab->hProcess, 150);
+            }
             tab->Terminate();
         }
     }
+    m_debugBackend = DebugBackend::None;
     if (m_outputCallback) m_outputCallback();
 }
 

@@ -17619,6 +17619,97 @@ run_test_118:
         }
     }
 
+    // --- TEST 119: Debugger Backend Selection, Breakpoint Injection, Action Mapping & Paused Line Parsing ---
+    if (targetTest == 0 || targetTest == 119) {
+        std::cout << "\n[TEST 119] Testing Debugger Backend Selection, Breakpoints, Step Actions & Paused Line Parsing..." << std::endl;
+
+        using phide::ui::TerminalPanel;
+        using phide::ui::DebugBackend;
+        using phide::ui::DebugAction;
+
+        // 1. Backend selection per file extension
+        assert(TerminalPanel::SelectDebugBackendForFile(L"main.py") == DebugBackend::Pdb);
+        assert(TerminalPanel::SelectDebugBackendForFile(L"script.PYW") == DebugBackend::Pdb);
+        assert(TerminalPanel::SelectDebugBackendForFile(L"app.js") == DebugBackend::Node);
+        assert(TerminalPanel::SelectDebugBackendForFile(L"server.mjs") == DebugBackend::Node);
+        assert(TerminalPanel::SelectDebugBackendForFile(L"index.ts") == DebugBackend::Node);
+        assert(TerminalPanel::SelectDebugBackendForFile(L"index.php") == DebugBackend::None);
+        assert(TerminalPanel::SelectDebugBackendForFile(L"package.json") == DebugBackend::None);
+        assert(TerminalPanel::SelectDebugBackendForFile(L"config.yaml") == DebugBackend::None);
+        assert(TerminalPanel::SelectDebugBackendForFile(L"index.html") == DebugBackend::None);
+        std::cout << "  Verified: SelectDebugBackendForFile accurately maps .py->Pdb, .js/.ts->Node, .php/.json/.html->None" << std::endl;
+
+        // 2. Action -> Command mapping (including pdb StepOut = "r\r\n" and Stop = "q\r\n")
+        assert(TerminalPanel::GetDebugActionCommand(DebugBackend::Pdb, DebugAction::Continue) == "c\r\n");
+        assert(TerminalPanel::GetDebugActionCommand(DebugBackend::Pdb, DebugAction::StepOver) == "n\r\n");
+        assert(TerminalPanel::GetDebugActionCommand(DebugBackend::Pdb, DebugAction::StepInto) == "s\r\n");
+        assert(TerminalPanel::GetDebugActionCommand(DebugBackend::Pdb, DebugAction::StepOut) == "r\r\n");
+        assert(TerminalPanel::GetDebugActionCommand(DebugBackend::Pdb, DebugAction::Stop) == "q\r\n");
+
+        assert(TerminalPanel::GetDebugActionCommand(DebugBackend::Node, DebugAction::StepOut) == "o\r\n");
+        assert(TerminalPanel::GetDebugActionCommand(DebugBackend::Node, DebugAction::Stop) == ".exit\r\n");
+        std::cout << "  Verified: GetDebugActionCommand dispatches backend-specific step & quit commands" << std::endl;
+
+        // 3. Breakpoint command generation (0-based -> 1-based + trailing continue)
+        {
+            std::vector<size_t> bps = { 0, 4, 11 };
+            auto pdbCmds = TerminalPanel::BuildBreakpointCommands(DebugBackend::Pdb, L"C:\\proj\\main.py", bps);
+            assert(pdbCmds.size() == 4);
+            assert(pdbCmds[0] == "b C:\\proj\\main.py:1\r\n");
+            assert(pdbCmds[1] == "b C:\\proj\\main.py:5\r\n");
+            assert(pdbCmds[2] == "b C:\\proj\\main.py:12\r\n");
+            assert(pdbCmds[3] == "c\r\n");
+
+            auto nodeCmds = TerminalPanel::BuildBreakpointCommands(DebugBackend::Node, L"C:\\proj\\server.js", bps);
+            assert(nodeCmds.size() == 4);
+            assert(nodeCmds[0] == "sb('server.js', 1)\r\n");
+            assert(nodeCmds[1] == "sb('server.js', 5)\r\n");
+            assert(nodeCmds[2] == "sb('server.js', 12)\r\n");
+            assert(nodeCmds[3] == "c\r\n");
+        }
+        std::cout << "  Verified: BuildBreakpointCommands converts 0-based lines to 1-based debugger commands and appends continue" << std::endl;
+
+        // 4. Paused line output parsing for Pdb and Node inspect
+        {
+            std::wstring f;
+            int ln = 0;
+            assert(TerminalPanel::ParseDebugPausedLine(L"> c:\\users\\dev\\app.py(15)calculate()", DebugBackend::Pdb, f, ln));
+            assert(f == L"c:\\users\\dev\\app.py" && ln == 15);
+
+            assert(TerminalPanel::ParseDebugPausedLine(L"(Pdb) > c:\\users\\dev\\app.py(7)<module>()", DebugBackend::Pdb, f, ln));
+            assert(f == L"c:\\users\\dev\\app.py" && ln == 7);
+
+            assert(TerminalPanel::ParseDebugPausedLine(L"break in index.js:23", DebugBackend::Node, f, ln));
+            assert(f == L"index.js" && ln == 23);
+
+            assert(TerminalPanel::ParseDebugPausedLine(L"break in main (C:\\proj\\index.js:42)", DebugBackend::Node, f, ln));
+            assert(f == L"C:\\proj\\index.js" && ln == 42);
+
+            assert(!TerminalPanel::ParseDebugPausedLine(L"normal console output", DebugBackend::Pdb, f, ln));
+        }
+        std::cout << "  Verified: ParseDebugPausedLine extracts file path and 1-based line number from pdb and node inspect" << std::endl;
+
+        // 5. ShowDebugConsole idle behavior (no bogus process spawned)
+        {
+            TerminalPanel tp;
+            tp.ShowDebugConsole();
+            assert(tp.IsOpen());
+            assert(!tp.IsDebugActive());
+            auto* tab = tp.GetActiveTab();
+            assert(tab != nullptr);
+            assert(tab->shellType == phide::ui::TerminalShellType::DebugConsole);
+            assert(tab->isIdleDebugConsole);
+            assert(!tab->isAlive.load());
+            tp.Close();
+        }
+        std::cout << "  Verified: ShowDebugConsole opens an idle console tab without launching a bogus process" << std::endl;
+
+        if (targetTest == 119) {
+            std::cout << "Target test 119 finished." << std::endl;
+            return 0;
+        }
+    }
+
     std::cout << "\n==========================================" << std::endl;
     std::cout << "ALL VERIFICATION TESTS PASSED SUCCESSFULLY!" << std::endl;
     std::cout << "==========================================" << std::endl;

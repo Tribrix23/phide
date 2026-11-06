@@ -1794,6 +1794,20 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
             }
         }
 
+        // Debugger Paused Line Highlight Banner
+        if (vl.bufferLine == doc.debugPausedLine) {
+            D2D1_RECT_F rcPausedLine = D2D1::RectF(canvasLeft + gutterW, lineY, codeRight, lineY + lineH);
+            Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushPausedBg;
+            Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushPausedBorder;
+            pRT->CreateSolidColorBrush(D2D1::ColorF(0.95f, 0.78f, 0.18f, 0.22f), &brushPausedBg);
+            pRT->CreateSolidColorBrush(D2D1::ColorF(0.95f, 0.78f, 0.18f, 0.85f), &brushPausedBorder);
+            if (brushPausedBg) pRT->FillRectangle(rcPausedLine, brushPausedBg.Get());
+            if (brushPausedBorder) {
+                pRT->DrawLine(D2D1::Point2F(rcPausedLine.left, rcPausedLine.top), D2D1::Point2F(rcPausedLine.right, rcPausedLine.top), brushPausedBorder.Get(), 1.2f);
+                pRT->DrawLine(D2D1::Point2F(rcPausedLine.left, rcPausedLine.bottom), D2D1::Point2F(rcPausedLine.right, rcPausedLine.bottom), brushPausedBorder.Get(), 1.2f);
+            }
+        }
+
         // Target Line / Search Jump Highlight Banner (Image 1)
         if (vl.bufferLine == doc.targetHighlightLine) {
             D2D1_RECT_F rcTargetLine = D2D1::RectF(canvasLeft + gutterW, lineY, codeRight, lineY + lineH);
@@ -2805,6 +2819,34 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
                 pRT->CreateSolidColorBrush(D2D1::ColorF(0.92f, 0.25f, 0.25f), &bpBrush);
                 if (bpBrush) {
                     pRT->FillEllipse(D2D1::Ellipse(D2D1::Point2F(bpX, bpY), bpR, bpR), bpBrush.Get());
+                }
+            }
+
+            // Debugger Paused Execution Arrow in Gutter
+            if (vl.bufferLine == doc.debugPausedLine) {
+                float arX = canvasLeft + config.ScaleF(8.0f);
+                float arY = lineY + lineH / 2.0f;
+                float arW = config.ScaleF(9.0f);
+                float arH = config.ScaleF(4.5f);
+                Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> arBrush;
+                pRT->CreateSolidColorBrush(D2D1::ColorF(0.98f, 0.82f, 0.18f), &arBrush);
+                if (arBrush) {
+                    Microsoft::WRL::ComPtr<ID2D1Factory> pD2DFactory;
+                    pRT->GetFactory(&pD2DFactory);
+                    Microsoft::WRL::ComPtr<ID2D1PathGeometry> pPath;
+                    if (pD2DFactory && SUCCEEDED(pD2DFactory->CreatePathGeometry(&pPath))) {
+                        Microsoft::WRL::ComPtr<ID2D1GeometrySink> pSink;
+                        if (SUCCEEDED(pPath->Open(&pSink))) {
+                            pSink->BeginFigure(D2D1::Point2F(arX, arY - arH), D2D1_FIGURE_BEGIN_FILLED);
+                            pSink->AddLine(D2D1::Point2F(arX + arW * 0.55f, arY - arH));
+                            pSink->AddLine(D2D1::Point2F(arX + arW, arY));
+                            pSink->AddLine(D2D1::Point2F(arX + arW * 0.55f, arY + arH));
+                            pSink->AddLine(D2D1::Point2F(arX, arY + arH));
+                            pSink->EndFigure(D2D1_FIGURE_END_CLOSED);
+                            pSink->Close();
+                            pRT->FillGeometry(pPath.Get(), arBrush.Get());
+                        }
+                    }
                 }
             }
 
