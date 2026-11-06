@@ -9,6 +9,7 @@
 
 #include "phide/app/Window.hpp"
 #include "phide/editor/SyntaxValidator.hpp"
+#include "phide/editor/PythonEnvironment.hpp"
 #include "phide/editor/FormatEngine.hpp"
 #include "phide/ui/PhideLogo.hpp"
 #include "phide/ui/SplashScreen.hpp"
@@ -1158,26 +1159,34 @@ void Window::OpenFileDocument(const std::wstring& path, bool isPreview) {
         newDoc.originalDiskText = newDoc.buffer.GetText();
 
         // Compute Git diff highlights against HEAD if inside a git repository (Images 1, 2, 3)
-        if (m_drawer.IsGitRepo()) {
-            std::wstring relPath = resolvedPath;
-            if (m_drawer.HasOpenFolder()) {
-                try {
-                    relPath = std::filesystem::relative(resolvedPath, m_drawer.GetOpenFolderPath()).wstring();
-                } catch (...) {}
-            }
+        bool isInsideOpenRepo = false;
+        std::wstring relPath = resolvedPath;
+        if (m_drawer.IsGitRepo() && m_drawer.HasOpenFolder()) {
+            try {
+                std::error_code relEc;
+                auto rel = std::filesystem::relative(resolvedPath, m_drawer.GetOpenFolderPath(), relEc);
+                if (!relEc && !rel.empty() && rel.wstring().rfind(L"..", 0) != 0) {
+                    relPath = rel.wstring();
+                    isInsideOpenRepo = true;
+                }
+            } catch (...) {}
+        }
+        if (isInsideOpenRepo && newDoc.buffer.GetLineCount() <= 5000) {
             std::wstring headContent = m_drawer.GetGitFileContent(relPath);
             if (!headContent.empty()) {
                 newDoc.diffOriginalBuffer.SetText(headContent);
             } else {
-                newDoc.diffOriginalBuffer.SetText(newDoc.originalDiskText);
+                newDoc.diffOriginalBuffer.SetLines(newDoc.buffer.GetLines());
             }
             ComputeDiffHunks(newDoc);
             if (m_config.enableGitLens) {
                 newDoc.gitBlameLoaded = false;
             }
         } else {
-            newDoc.diffOriginalBuffer.SetText(newDoc.originalDiskText);
-            ComputeDiffHunks(newDoc);
+            newDoc.diffOriginalBuffer.SetLines(newDoc.buffer.GetLines());
+            newDoc.diffAddedLines.clear();
+            newDoc.diffModifiedLines.clear();
+            newDoc.diffDeletedGutterMarkers.clear();
         }
 
         if (!newDoc.isSpecialView && !newDoc.isImageView && !newDoc.isUnsupportedBinary) {
@@ -6656,6 +6665,7 @@ bool Window::Create(HINSTANCE hInstance, int nCmdShow) {
                 m_extensionsPanel.CompleteProcessTask(taskTitle, (isUninstall ? L"Failed to uninstall " : L"Failed to install ") + pkgName);
                 m_editor.GetPackageManagerView().MarkPackageUninstalled(pkgName, scope);
             }
+            editor::pyenv::InvalidateCaches();
             m_editor.GetPackageManagerView().ScanInstalledPackages(wsFolder);
             m_drawer.RefreshTree();
             if (m_hwnd) InvalidateRect(m_hwnd, nullptr, FALSE);
@@ -6908,15 +6918,20 @@ void Window::OnPaint() {
     m_terminal.SetFullScreenProgress(m_termFullScreenProgress);
 
     // Apply margin gap when terminal is open (user requirement: "make the height of the sidebar and editory misus it a bit when the terminal is open")
-    const float termGap = (m_terminalAnimProgress > 0.001f && m_terminal.IsOpen()) ? m_config.ScaleF(8.0f) : 0.0f;
-    float editorH = clientH - currentTermH - termGap;
-    float drawerH = clientH - currentTermH - termGap;
+    const float termGap = (m_terminalAnimProgress > 0.001f && m_terminal.IsOpen()) ? (m_config.ScaleF(8.0f) * (1.0f - m_termFullScreenProgress)) : 0.0f;
+    float editorH = clientH - statusBarH - currentTermH - termGap;
+    float drawerH = clientH - statusBarH - currentTermH - termGap;
     float terminalLeft = static_cast<float>(railW);
 
-    m_editor.Render(m_pRenderTarget.Get(), m_theme, m_config, m_editorGroups, m_focusedGroupIdx,
-                    canvasLeft, canvasWidth, editorH, hasLeftDrawer,
-                    searchHL, hlMatchCase, hlWholeWord, hlUseRegex,
-                    suppressEditorCaret);
+    if (editorH > headerH + 2.0f) {
+        D2D1_RECT_F editorClip = D2D1::RectF(canvasLeft, headerH, canvasLeft + canvasWidth, editorH);
+        m_pRenderTarget->PushAxisAlignedClip(editorClip, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+        m_editor.Render(m_pRenderTarget.Get(), m_theme, m_config, m_editorGroups, m_focusedGroupIdx,
+                        canvasLeft, canvasWidth, editorH, hasLeftDrawer,
+                        searchHL, hlMatchCase, hlWholeWord, hlUseRegex,
+                        suppressEditorCaret);
+        m_pRenderTarget->PopAxisAlignedClip();
+    }
 
     // 1b. Render Explorer Drag-and-Drop Insertion Caret / Target Indicator
     if (m_isDraggingExplorerFile && m_hasDragDropTarget && m_dragDropTargetGroup >= 0 &&
@@ -6961,8 +6976,11 @@ void Window::OnPaint() {
 
     // 2. Render Slide-out Drawer Panel (smoothly morphs and resizes its bottom with terminal)
     SyncActiveTabWithDrawer();
-    if (hasLeftDrawer) {
+    if (hasLeftDrawer && drawerH > headerH + 2.0f) {
+        D2D1_RECT_F drawerClip = D2D1::RectF(static_cast<float>(railW), headerH, static_cast<float>(railW) + currentDrawerW, drawerH);
+        m_pRenderTarget->PushAxisAlignedClip(drawerClip, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
         m_drawer.Render(m_pRenderTarget.Get(), m_theme, m_config, drawerH, currentDrawerW);
+        m_pRenderTarget->PopAxisAlignedClip();
     }
 
     // 2b. Render Extensions Right Sidebar Panel (smoothly slides in from right with zero content squishing!)

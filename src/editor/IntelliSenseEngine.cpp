@@ -1,6 +1,7 @@
 #include "phide/editor/IntelliSenseEngine.hpp"
 #include "phide/editor/PhpIntelliSenseData.hpp"
 #include "phide/editor/PythonIntelliSenseData.hpp"
+#include "phide/editor/PythonEnvironment.hpp"
 #include "phide/editor/ReactIntelliSenseData.hpp"
 #include "phide/editor/WebIntelliSenseData.hpp"
 #include "phide/editor/EmmetEngine.hpp"
@@ -2293,6 +2294,8 @@ std::vector<IntelliSenseItem> IntelliSenseEngine::QueryCompletions(
     bool insideTagAttr = false;
     bool isJs = (ext == L".js" || ext == L".jsx" || ext == L".ts" || ext == L".tsx" || ext == L".mjs" || ext == L".cjs");
     bool isPy = (ext == L".py");
+    bool pyExclusive = false;                        // Python import/member context: show ONLY these items
+    std::vector<IntelliSenseItem> pyExclusiveItems;
 
     // Detect contextual triggers before prefix (e.g. ::, ->, ., <, $_SERVER["..."])
     size_t beforePos = (cursorCol >= prefix.length()) ? (cursorCol - prefix.length()) : 0;
@@ -2336,7 +2339,9 @@ std::vector<IntelliSenseItem> IntelliSenseEngine::QueryCompletions(
     }
 
     // If prefix is empty and cursor is NOT at an explicit member/tag/key/import trigger, do not dump unfiltered completions!
-    if (prefixLower.empty() && !afterDoubleColon && !afterArrow && !afterDot && !afterOpenAngle && !insideServerKey && !insideJsImportClause) {
+    bool pyImportTrigger = isPy && (TrimWs(currentLine).rfind(L"import ", 0) == 0 || TrimWs(currentLine).rfind(L"from ", 0) == 0)
+                           && cursorCol > 0 && cursorCol <= currentLine.length() && currentLine[cursorCol - 1] == L' ';
+    if (prefixLower.empty() && !afterDoubleColon && !afterArrow && !afterDot && !afterOpenAngle && !insideServerKey && !insideJsImportClause && !pyImportTrigger) {
         return {};
     }
 
@@ -2914,12 +2919,35 @@ std::vector<IntelliSenseItem> IntelliSenseEngine::QueryCompletions(
             std::string raw = ReadFileUtf8Bounded(pyFile, 262144);
             if (raw.empty()) return;
             std::wstring content = Utf8ToWideAsciiFast(raw);
+            std::unordered_set<std::wstring> seenNames;
             size_t ls = 0;
+            bool inAllList = false;
             while (ls < content.length()) {
                 size_t le = content.find(L'\n', ls);
                 if (le == std::wstring::npos) le = content.length();
                 std::wstring ln = content.substr(ls, le - ls);
                 ls = le + 1;
+                std::wstring tln = TrimWs(ln);
+                if (tln.rfind(L"__all__", 0) == 0) inAllList = true;
+                if (inAllList) {
+                    size_t q = 0;
+                    while (q < tln.length()) {
+                        wchar_t qc = tln[q];
+                        if (qc == L'\'' || qc == L'"') {
+                            size_t qe = tln.find(qc, q + 1);
+                            if (qe != std::wstring::npos && qe > q + 1) {
+                                std::wstring sym = tln.substr(q + 1, qe - q - 1);
+                                if (!sym.empty() && sym[0] != L'_' && seenNames.insert(sym).second) {
+                                    outItems.push_back({ sym, L"Export in " + modLabel, sym, CompletionKind::Function, 1120, 0, 0, L"python" });
+                                }
+                                q = qe + 1;
+                                continue;
+                            }
+                        }
+                        q++;
+                    }
+                    if (tln.find(L']') != std::wstring::npos) inAllList = false;
+                }
                 if (ln.rfind(L"def ", 0) == 0 || ln.rfind(L"async def ", 0) == 0) {
                     size_t p = (ln.rfind(L"async ", 0) == 0) ? 10 : 4;
                     while (p < ln.length() && iswspace(ln[p])) p++;
@@ -2927,7 +2955,9 @@ std::vector<IntelliSenseItem> IntelliSenseEngine::QueryCompletions(
                     while (e < ln.length() && (iswalnum(ln[e]) || ln[e] == L'_')) e++;
                     if (e > p && ln[p] != L'_') {
                         std::wstring fn = ln.substr(p, e - p);
-                        outItems.push_back({ fn, L"Function in " + modLabel, fn, CompletionKind::Function, 1100, 0, 0, L"python" });
+                        if (seenNames.insert(fn).second) {
+                            outItems.push_back({ fn, L"Function in " + modLabel, fn, CompletionKind::Function, 1100, 0, 0, L"python" });
+                        }
                     }
                 } else if (ln.rfind(L"class ", 0) == 0) {
                     size_t p = 6;
@@ -2936,7 +2966,21 @@ std::vector<IntelliSenseItem> IntelliSenseEngine::QueryCompletions(
                     while (e < ln.length() && (iswalnum(ln[e]) || ln[e] == L'_')) e++;
                     if (e > p && ln[p] != L'_') {
                         std::wstring cn = ln.substr(p, e - p);
-                        outItems.push_back({ cn, L"Class in " + modLabel, cn, CompletionKind::Class, 1150, 0, 0, L"python" });
+                        if (seenNames.insert(cn).second) {
+                            outItems.push_back({ cn, L"Class in " + modLabel, cn, CompletionKind::Class, 1150, 0, 0, L"python" });
+                        }
+                    }
+                } else if (!ln.empty() && iswalpha(ln[0])) {
+                    // Top-level variable / callable stub annotation in .pyi (e.g. `randint: ...` or `uniform = ...`)
+                    size_t e = 0;
+                    while (e < ln.length() && (iswalnum(ln[e]) || ln[e] == L'_')) e++;
+                    size_t after = e;
+                    while (after < ln.length() && (ln[after] == L' ' || ln[after] == L'\t')) after++;
+                    if (after < ln.length() && (ln[after] == L':' || ln[after] == L'=')) {
+                        std::wstring vn = ln.substr(0, e);
+                        if (vn != L"import" && vn != L"from" && vn != L"type" && seenNames.insert(vn).second) {
+                            outItems.push_back({ vn, modLabel + L"." + vn, vn, CompletionKind::Function, 1090, 0, 0, L"python" });
+                        }
                     }
                 }
             }
@@ -2944,108 +2988,212 @@ std::vector<IntelliSenseItem> IntelliSenseEngine::QueryCompletions(
 
         std::error_code ec;
 
-        // Parse Python import aliases from document (e.g. `import numpy as np`, `import pandas as pd`, `import matplotlib.pyplot as plt`)
-        std::unordered_map<std::wstring, std::wstring> pyAliases;
-        if (pDocLines && !pDocLines->empty()) {
+        // ---------------------------------------------------------------------------------
+        // 1. Names imported by THIS document (alias -> dotted module). Nothing is hardcoded:
+        //    import numpy as np        -> np  : numpy
+        //    import os.path            -> os  : os
+        //    from pkg import mod as m  -> m   : pkg.mod
+        // ---------------------------------------------------------------------------------
+        std::unordered_map<std::wstring, std::wstring> pyImports;
+        auto splitCommaList = [](const std::wstring& s) {
+            std::vector<std::wstring> parts;
+            size_t a = 0;
+            while (a <= s.size()) {
+                size_t b = s.find(L',', a);
+                if (b == std::wstring::npos) b = s.size();
+                std::wstring part = TrimWs(s.substr(a, b - a));
+                if (!part.empty()) parts.push_back(part);
+                a = b + 1;
+            }
+            return parts;
+        };
+        if (pDocLines) {
             for (const auto& dLine : *pDocLines) {
-                std::wstring tLine = TrimWs(dLine);
-                if (tLine.rfind(L"import ", 0) == 0) {
-                    size_t asPos = tLine.find(L" as ");
-                    if (asPos != std::wstring::npos) {
-                        std::wstring modPart = TrimWs(tLine.substr(7, asPos - 7));
-                        std::wstring aliasPart = TrimWs(tLine.substr(asPos + 4));
-                        if (!modPart.empty() && !aliasPart.empty()) {
-                            pyAliases[aliasPart] = modPart;
+                std::wstring t = TrimWs(dLine);
+                size_t hashPos = t.find(L'#');
+                if (hashPos != std::wstring::npos) t = TrimWs(t.substr(0, hashPos));
+                if (t.rfind(L"import ", 0) == 0) {
+                    for (const auto& part : splitCommaList(t.substr(7))) {
+                        size_t asPos = part.find(L" as ");
+                        if (asPos != std::wstring::npos) {
+                            pyImports[TrimWs(part.substr(asPos + 4))] = TrimWs(part.substr(0, asPos));
+                        } else {
+                            std::wstring top = part.substr(0, part.find(L'.'));
+                            pyImports[top] = top;
                         }
                     }
+                } else if (t.rfind(L"from ", 0) == 0) {
+                    size_t ip = t.find(L" import ");
+                    if (ip == std::wstring::npos) continue;
+                    std::wstring base = TrimWs(t.substr(5, ip - 5));
+                    if (base.empty() || base[0] == L'.') continue; // relative imports are resolved from workspace files
+                    std::wstring names = t.substr(ip + 8);
+                    names.erase(std::remove(names.begin(), names.end(), L'('), names.end());
+                    names.erase(std::remove(names.begin(), names.end(), L')'), names.end());
+                    for (const auto& part : splitCommaList(names)) {
+                        if (part == L"*") continue;
+                        size_t asPos = part.find(L" as ");
+                        std::wstring orig = (asPos != std::wstring::npos) ? TrimWs(part.substr(0, asPos)) : part;
+                        std::wstring alias = (asPos != std::wstring::npos) ? TrimWs(part.substr(asPos + 4)) : part;
+                        pyImports[alias] = base + L"." + orig;
+                    }
                 }
+            }
+            // Proactively pre-warm background module introspection for every imported module
+            // while the user is editing the file, so typing `alias.` is an instant O(1) cache hit!
+            for (const auto& [alias, targetMod] : pyImports) {
+                pyenv::PrefetchModule(projectRoot, targetMod);
             }
         }
 
-        // Collect all site-packages directories (project .venv + External Libraries from system Python)
-        std::vector<std::pair<std::filesystem::path, std::wstring>> allSitePackages;
-        for (const auto* venvDir : { L".venv", L"venv", L"env" }) {
-            auto sp = projectRoot / venvDir / L"Lib" / L"site-packages";
-            if (std::filesystem::exists(sp, ec) && std::filesystem::is_directory(sp, ec)) {
-                allSitePackages.push_back({ sp, std::wstring(venvDir) });
-            }
-        }
-        const wchar_t* pLocalApp = _wgetenv(L"LOCALAPPDATA");
-        if (pLocalApp) {
-            std::filesystem::path pyBase = std::filesystem::path(pLocalApp) / L"Programs" / L"Python";
-            if (std::filesystem::exists(pyBase, ec)) {
-                for (const auto& entry : std::filesystem::directory_iterator(pyBase, ec)) {
-                    if (entry.is_directory(ec)) {
-                        auto gSp = entry.path() / L"Lib" / L"site-packages";
-                        if (std::filesystem::exists(gSp, ec)) {
-                            allSitePackages.push_back({ gSp, L"Python 3.15 Global System" });
-                        }
-                    }
-                }
-            }
-        }
-        const wchar_t* pEnvPath = _wgetenv(L"PATH");
-        if (pEnvPath) {
-            std::wstring pathStr = pEnvPath;
-            size_t ps = 0;
-            while (ps < pathStr.length()) {
-                size_t pe = pathStr.find(L';', ps);
-                if (pe == std::wstring::npos) pe = pathStr.length();
-                std::wstring part = pathStr.substr(ps, pe - ps);
-                ps = pe + 1;
-                if (!part.empty()) {
-                    std::filesystem::path pyCand = std::filesystem::path(part) / L"python.exe";
-                    if (std::filesystem::exists(pyCand, ec)) {
-                        auto gSp = pyCand.parent_path() / L"Lib" / L"site-packages";
-                        if (std::filesystem::exists(gSp, ec)) {
-                            allSitePackages.push_back({ gSp, L"Global Python" });
-                            break;
-                        }
-                    }
-                }
+        // ---------------------------------------------------------------------------------
+        // 2. Context: are we typing a module name (`import x` / `from x`), a name after
+        //    `from x import`, or an attribute after `alias.` ?
+        // ---------------------------------------------------------------------------------
+        std::wstring lineBeforeCursor = currentLine.substr(0, (std::min)(cursorCol, currentLine.length()));
+        std::wstring trimmedBefore = TrimWs(lineBeforeCursor);
+        if (!lineBeforeCursor.empty() && iswspace(lineBeforeCursor.back())) trimmedBefore += L" ";
+        bool pyModuleNameCtx = false;
+        bool pyAliasNameCtx = false;     // `import numpy as n|` -> user is inventing a name, suggest nothing
+        std::wstring pyFromModule;       // `from X import |`
+        if (trimmedBefore.rfind(L"import ", 0) == 0) {
+            std::wstring lastPart = trimmedBefore.substr(trimmedBefore.rfind(L',') == std::wstring::npos ? 7 : trimmedBefore.rfind(L',') + 1);
+            if (lastPart.find(L" as ") != std::wstring::npos) pyAliasNameCtx = true;
+            else pyModuleNameCtx = true;
+        } else if (trimmedBefore.rfind(L"from ", 0) == 0) {
+            size_t ip = trimmedBefore.find(L" import ");
+            if (ip == std::wstring::npos) {
+                pyModuleNameCtx = true;
+            } else {
+                std::wstring lastPart = trimmedBefore.substr(ip + 8);
+                size_t lastComma = lastPart.rfind(L',');
+                if (lastComma != std::wstring::npos) lastPart = lastPart.substr(lastComma + 1);
+                if (lastPart.find(L" as ") != std::wstring::npos) pyAliasNameCtx = true;
+                else pyFromModule = TrimWs(trimmedBefore.substr(5, ip - 5));
             }
         }
 
-        if (afterDot) {
-            size_t dotPos = (cursorCol > prefix.length() && cursorCol > 0) ? cursorCol - prefix.length() - 1 : std::wstring::npos;
-            if (dotPos != std::wstring::npos) {
-                size_t modEnd = dotPos;
-                size_t modStart = modEnd;
-                while (modStart > 0 && (iswalnum(currentLine[modStart - 1]) || currentLine[modStart - 1] == L'_')) {
-                    modStart--;
+        // Dotted chain right before the prefix, e.g. "np.linalg." -> "np.linalg"
+        std::wstring pyChain;
+        if (afterDot && beforePos >= 1) {
+            size_t chainEnd = beforePos - 1; // position of the '.'
+            size_t chainStart = chainEnd;
+            while (chainStart > 0 && (iswalnum(currentLine[chainStart - 1]) || currentLine[chainStart - 1] == L'_' || currentLine[chainStart - 1] == L'.')) {
+                chainStart--;
+            }
+            pyChain = currentLine.substr(chainStart, chainEnd - chainStart);
+        }
+
+        auto describeSource = [](const pyenv::ModuleEntry& m) -> std::wstring {
+            switch (m.source) {
+                case pyenv::PackageSource::ProjectEnv: return L"Installed package \u00B7 " + m.label;
+                case pyenv::PackageSource::StdLib:     return L"Standard library \u00B7 " + m.label;
+                default:                               return L"External Library \u00B7 " + m.label;
+            }
+        };
+        auto memberToItem = [](const pyenv::ModuleMember& m, const std::wstring& owner) {
+            IntelliSenseItem it;
+            it.label = m.name;
+            it.insertText = m.name;
+            it.origin = L"python";
+            it.score = 1200;
+            switch (m.kind) {
+                case L'm': it.kind = CompletionKind::Module;   it.detail = L"module \u00B7 " + owner; break;
+                case L'c': it.kind = CompletionKind::Class;    it.detail = L"class " + m.name + m.signature + L" \u00B7 " + owner; break;
+                case L'f': it.kind = CompletionKind::Function; it.detail = m.name + m.signature + L" \u00B7 " + owner; break;
+                default:   it.kind = CompletionKind::Variable; it.detail = owner + L"." + m.name; break;
+            }
+            return it;
+        };
+        // Static fallback while the interpreter introspection is still running: parse .pyi stub and .py source files
+        auto scanModuleSource = [&](const std::wstring& dotted, std::vector<IntelliSenseItem>& outItems) {
+            std::filesystem::path rel;
+            for (const auto& seg : splitCommaList([&] { std::wstring d = dotted; std::replace(d.begin(), d.end(), L'.', L','); return d; }())) rel /= seg;
+            std::vector<std::filesystem::path> roots = { baseDir, projectRoot };
+            for (const auto& sp : pyenv::GetSearchPaths(projectRoot)) roots.push_back(sp.path);
+            for (const auto& r : roots) {
+                bool foundAny = false;
+                auto initPyi = r / rel / L"__init__.pyi";
+                if (std::filesystem::exists(initPyi, ec)) { scanPyFileExports(initPyi, dotted, outItems); foundAny = true; }
+                auto initPy = r / rel / L"__init__.py";
+                if (std::filesystem::exists(initPy, ec)) { scanPyFileExports(initPy, dotted, outItems); foundAny = true; }
+                auto modPyi = r / rel;
+                modPyi += L".pyi";
+                if (std::filesystem::exists(modPyi, ec)) { scanPyFileExports(modPyi, dotted, outItems); foundAny = true; }
+                auto modPy = r / rel;
+                modPy += L".py";
+                if (std::filesystem::exists(modPy, ec)) { scanPyFileExports(modPy, dotted, outItems); foundAny = true; }
+                if (foundAny) return;
+            }
+        };
+        auto addModuleMembers = [&](const std::wstring& dotted, std::vector<IntelliSenseItem>& outItems) {
+            std::vector<pyenv::ModuleMember> members;
+            if (pyenv::GetModuleMembers(projectRoot, dotted, members)) {
+                for (const auto& m : members) outItems.push_back(memberToItem(m, dotted));
+            } else {
+                for (auto& mm : QueryPythonModuleMembers(dotted)) outItems.push_back(std::move(mm));
+                scanModuleSource(dotted, outItems);
+            }
+            for (const auto& sub : pyenv::ListSubModules(projectRoot, dotted)) {
+                outItems.push_back({ sub.name, L"module \u00B7 " + dotted, sub.name, CompletionKind::Module, 1150, 0, 0, L"python" });
+            }
+        };
+
+        if (pyAliasNameCtx) {
+            pyExclusive = true; // naming an alias: no suggestions
+        } else if (pyModuleNameCtx) {
+            pyExclusive = true;
+            if (!pyChain.empty()) {
+                // `import numpy.li|` -> sub-packages of numpy
+                for (const auto& sub : pyenv::ListSubModules(projectRoot, pyChain)) {
+                    pyExclusiveItems.push_back({ sub.name, L"module \u00B7 " + pyChain, sub.name, CompletionKind::Module, 1300, 0, 0, L"python" });
                 }
-                std::wstring modName = currentLine.substr(modStart, modEnd - modStart);
-                if (pyAliases.count(modName)) {
-                    modName = pyAliases[modName];
-                }
-                auto modMembers = QueryPythonModuleMembers(modName);
-                for (auto& mm : modMembers) {
-                    rawCandidates.push_back(std::move(mm));
-                }
-                // Also check workspace <modName>.py or in allSitePackages
-                auto localPy = baseDir / (modName + L".py");
-                if (std::filesystem::exists(localPy, ec)) {
-                    scanPyFileExports(localPy, modName + L".py", rawCandidates);
-                } else {
-                    for (const auto& [sp, origin] : allSitePackages) {
-                        auto initPy = sp / modName / L"__init__.py";
-                        if (std::filesystem::exists(initPy, ec)) {
-                            scanPyFileExports(initPy, modName, rawCandidates);
-                            break;
-                        }
-                        auto singlePy = sp / (modName + L".py");
-                        if (std::filesystem::exists(singlePy, ec)) {
-                            scanPyFileExports(singlePy, modName, rawCandidates);
-                            break;
-                        }
+                scanModuleSource(pyChain, pyExclusiveItems);
+            } else {
+                // Workspace modules first (files next to the current file and local packages)
+                if (std::filesystem::is_directory(baseDir, ec)) {
+                    for (std::filesystem::directory_iterator it(baseDir, ec); !ec && it != std::filesystem::directory_iterator(); it.increment(ec)) {
+                        auto p = it->path();
+                        std::wstring stem;
+                        if (it->is_regular_file(ec) && p.extension() == L".py") stem = p.stem().wstring();
+                        else if (it->is_directory(ec) && std::filesystem::exists(p / L"__init__.py", ec)) stem = p.filename().wstring();
+                        if (stem.empty() || (!fileName.empty() && std::filesystem::equivalent(p, std::filesystem::path(fileName), ec))) continue;
+                        pyExclusiveItems.push_back({ stem, L"Workspace module", stem, CompletionKind::Module, 1400, 0, 0, L"python" });
                     }
                 }
+                for (const auto& m : pyenv::ListTopLevelModules(projectRoot)) {
+                    int score = (m.source == pyenv::PackageSource::ProjectEnv) ? 1350 : (m.source == pyenv::PackageSource::External ? 1300 : 1250);
+                    pyExclusiveItems.push_back({ m.name, describeSource(m), m.name, CompletionKind::Module, score, 0, 0, L"python" });
+                }
+            }
+        } else if (!pyFromModule.empty()) {
+            // `from numpy import ar|` -> real members of numpy
+            pyExclusive = true;
+            addModuleMembers(pyFromModule, pyExclusiveItems);
+        } else if (afterDot) {
+            std::wstring firstSeg = pyChain.substr(0, pyChain.find(L'.'));
+            auto imp = pyImports.find(firstSeg);
+            if (imp != pyImports.end()) {
+                // `np.` / `np.linalg.` -> members of the module the alias points to
+                std::wstring dotted = imp->second + pyChain.substr(firstSeg.length());
+                pyExclusive = true;
+                addModuleMembers(dotted, pyExclusiveItems);
+            } else {
+                // Not an imported module (e.g. a local object): keep the generic member vocabulary
+                std::wstring lastSeg = pyChain.substr(pyChain.rfind(L'.') == std::wstring::npos ? 0 : pyChain.rfind(L'.') + 1);
+                for (auto& mm : QueryPythonModuleMembers(lastSeg)) rawCandidates.push_back(std::move(mm));
+                auto localPy = baseDir / (lastSeg + L".py");
+                if (std::filesystem::exists(localPy, ec)) scanPyFileExports(localPy, lastSeg + L".py", rawCandidates);
             }
         } else {
             for (const auto& pySym : m_pySymbols) {
                 rawCandidates.push_back(pySym);
             }
-            // Dynamically add peer .py modules & functions/classes in workspace
+            // Names this document imported (np, pd, os, ...) are real identifiers in scope
+            for (const auto& [alias, target] : pyImports) {
+                rawCandidates.push_back({ alias, L"import " + target + (alias != target ? L" as " + alias : L""), alias, CompletionKind::Module, 1250, 0, 0, L"python" });
+            }
+            // Peer .py modules & their functions/classes in the workspace
             if (std::filesystem::exists(baseDir, ec) && std::filesystem::is_directory(baseDir, ec)) {
                 int pyScanned = 0;
                 for (std::filesystem::directory_iterator it(baseDir, ec); !ec && it != std::filesystem::directory_iterator() && pyScanned < 20; it.increment(ec)) {
@@ -3057,29 +3205,6 @@ std::vector<IntelliSenseItem> IntelliSenseEngine::QueryCompletions(
                     std::wstring stem = p.stem().wstring();
                     rawCandidates.push_back({ stem, L"Workspace Python Module (" + p.filename().wstring() + L")", stem, CompletionKind::Module, 950, 0, 0, L"python" });
                     scanPyFileExports(p, p.filename().wstring(), rawCandidates);
-                }
-            }
-
-            // Dynamically add installed packages and modules from .venv AND External Libraries (PyCharm / IDE style)
-            bool isImportLine = (currentLine.find(L"import ") != std::wstring::npos || currentLine.find(L"from ") != std::wstring::npos);
-            std::unordered_set<std::wstring> seenPackages;
-            for (const auto& [sp, origin] : allSitePackages) {
-                if (!std::filesystem::exists(sp, ec) || !std::filesystem::is_directory(sp, ec)) continue;
-                for (std::filesystem::directory_iterator it(sp, ec); !ec && it != std::filesystem::directory_iterator(); it.increment(ec)) {
-                    std::wstring dname;
-                    if (it->is_directory(ec)) {
-                        dname = it->path().filename().wstring();
-                    } else if (it->is_regular_file(ec) && it->path().extension() == L".py") {
-                        dname = it->path().stem().wstring();
-                    } else {
-                        continue;
-                    }
-                    if (dname.empty() || dname[0] == L'_' || dname[0] == L'.') continue;
-                    if (dname.find(L".dist-info") != std::wstring::npos || dname.find(L".egg-info") != std::wstring::npos || dname.find(L".libs") != std::wstring::npos) continue;
-                    if (seenPackages.insert(dname).second) {
-                        int score = isImportLine ? 1300 : 920;
-                        rawCandidates.push_back({ dname, L"External Library (" + origin + L")", dname, CompletionKind::Module, score, 0, 0, L"python" });
-                    }
                 }
             }
         }
@@ -3129,6 +3254,10 @@ std::vector<IntelliSenseItem> IntelliSenseEngine::QueryCompletions(
             item.origin = L"tailwind";
             rawCandidates.push_back(std::move(item));
         }
+    }
+
+    if (pyExclusive) {
+        rawCandidates = std::move(pyExclusiveItems);
     }
 
     // Matching & Scoring Engine: Exact prefix (1000), Boundary match (750), Substring match (100)

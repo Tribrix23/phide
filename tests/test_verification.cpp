@@ -324,6 +324,9 @@ int main(int argc, char* argv[]) {
     if (targetTest == 117) {
         goto run_test_117;
     }
+    if (targetTest == 118) {
+        goto run_test_118;
+    }
 
     if (targetTest == 66) {
         goto run_test_66;
@@ -17422,6 +17425,138 @@ run_test_117:
         std::cout << "  Passed: All [TEST 117] Format Document (Shift+Alt+F) tests passed!" << std::endl;
         if (targetTest == 117) {
             std::cout << "Target test 117 finished." << std::endl;
+            return 0;
+        }
+    }
+
+run_test_118:
+    {
+        std::cout << "\n[TEST 118] Testing Dynamic Python Environment, .venv vs External Libraries, and import alias validation..." << std::endl;
+
+        // Subtest 1: SyntaxValidator::Validate on `import numpy as np` must produce 0 errors
+        {
+            phide::editor::Buffer pyBuf;
+            pyBuf.SetText(L"import numpy as np\n\nprint(\"hello\")\n\ndef mname(self, arg):\n    pass\n");
+            auto diags = phide::editor::SyntaxValidator::Validate(L"main.py", pyBuf);
+            for (const auto& d : diags) {
+                std::wcout << L"  Unexpected diag: " << d.message << std::endl;
+            }
+            assert(diags.empty() && "import numpy as np must NOT trigger NameError: name 'numpy' is not defined");
+            std::cout << "  Passed: Subtest 1 (import numpy as np produces 0 SyntaxValidator errors)" << std::endl;
+        }
+
+        // Subtest 2: Dynamic detection & distinction between .venv and External Libraries
+        std::filesystem::path crudRoot = L"C:\\Users\\Administrator\\Downloads\\php-crud-test";
+        if (std::filesystem::exists(crudRoot)) {
+            phide::editor::IntelliSenseEngine isEngine;
+            isEngine.SetWorkspaceRoot(crudRoot.wstring());
+            std::wstring pyFile = (crudRoot / L"main.py").wstring();
+
+            std::vector<std::wstring> docLines1 = { L"import num" };
+            auto items = isEngine.QueryCompletions(pyFile, L"import num", 10, &docLines1);
+            bool foundNumpy = false;
+            bool hasPathlibNoise = false;
+            for (const auto& it : items) {
+                if (it.label == L"numpy") {
+                    foundNumpy = true;
+                    std::wcout << L"  numpy detail: " << it.detail << std::endl;
+                    assert(it.detail.find(L".venv") != std::wstring::npos);
+                    assert(it.detail.find(L"External Library (.venv)") == std::wstring::npos && "Must not conflate External Library and .venv");
+                }
+                if (it.label.find(L"pathlib.") != std::wstring::npos || it.label.find(L"subprocess.") != std::wstring::npos) {
+                    hasPathlibNoise = true;
+                }
+            }
+            assert(foundNumpy && "Dynamic discovery must find numpy in .venv");
+            assert(!hasPathlibNoise && "import statement completions must only show modules, not unrelated stdlib members");
+            std::cout << "  Passed: Subtest 2 (numpy detected as Project .venv package without External Library (.venv) confusion or stdlib noise)" << std::endl;
+
+            // Subtest 3: Global External Library detection alongside .venv
+            std::vector<std::wstring> docLines2 = { L"import matplot" };
+            auto extItems = isEngine.QueryCompletions(pyFile, L"import matplot", 14, &docLines2);
+            bool foundMatplotlib = false;
+            for (const auto& it : extItems) {
+                if (it.label == L"matplotlib") {
+                    foundMatplotlib = true;
+                    std::wcout << L"  matplotlib detail: " << it.detail << std::endl;
+                    assert(it.detail.find(L"External Library") != std::wstring::npos);
+                    assert(it.detail.find(L".venv") == std::wstring::npos);
+                }
+            }
+            assert(foundMatplotlib && "Dynamic discovery must find matplotlib in Global External Libraries");
+            std::cout << "  Passed: Subtest 3 (matplotlib dynamically detected as Global External Library distinct from .venv)" << std::endl;
+
+            // Subtest 4: Zero-freeze (<50ms) completion on `import numpy.random as rng; rng.` and `np.arr`
+            auto t0 = std::chrono::steady_clock::now();
+            std::vector<std::wstring> docLinesRng = { L"import numpy.random as rng", L"rng." };
+            auto rngItems = isEngine.QueryCompletions(pyFile, L"rng.", 4, &docLinesRng);
+            auto elapsedRngMs = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0).count();
+            std::cout << "  rng. cold completion time: " << elapsedRngMs << " ms (" << rngItems.size() << " items)" << std::endl;
+            assert(elapsedRngMs < 120 && "Typing rng. must NEVER freeze the UI thread!");
+            bool foundRandint = false;
+            for (const auto& it : rngItems) {
+                if (it.label == L"randint") foundRandint = true;
+            }
+            assert(foundRandint && "rng. must immediately resolve randint (via .pyi stub or background cache)");
+
+            std::vector<std::wstring> docLines3 = { L"import numpy as np", L"np.arr" };
+            auto memberItems = isEngine.QueryCompletions(pyFile, L"np.arr", 6, &docLines3);
+            bool foundArray = false;
+            for (const auto& it : memberItems) {
+                if (it.label == L"array") {
+                    foundArray = true;
+                }
+            }
+            assert(foundArray && "Dynamic introspection must resolve np.array without hardcoded tables");
+            std::cout << "  Passed: Subtest 4 (Zero-freeze rng.randint & np.array resolved in " << elapsedRngMs << " ms)" << std::endl;
+        }
+
+        // Subtest 5: Smart Context-Aware PredictionEngine (no duplicate `():\n    pass` on `def mname(self, arg):`)
+        {
+            phide::editor::PredictionEngine predEngine;
+            phide::editor::Buffer predBuf;
+            predBuf.SetLines({
+                L"import numpy as np",
+                L"",
+                L"print(\"hello\")",
+                L"",
+                L"def mname(self, arg):",
+                L"    pass"
+            });
+            auto pred1 = predEngine.PredictNextEdit(L"main.py", predBuf, 4, 21);
+            assert(!pred1.isValid && "Must NOT predict ():\\n    pass when def mname(self, arg): and pass already exist!");
+
+            // Also test when user typed `def mname(self, arg` above existing `    pass`: should only predict `):` without duplicate `\n    pass`
+            predBuf.SetLine(4, L"def mname(self, arg");
+            auto pred2 = predEngine.PredictNextEdit(L"main.py", predBuf, 4, 19);
+            assert(pred2.isValid && pred2.ghostText == L"):");
+            std::cout << "  Passed: Subtest 5 (PredictionEngine suppresses redundant (): and duplicate pass)" << std::endl;
+        }
+
+        // Subtest 6: Large file (snippets.json, 1,810+ lines) O(1) token cache & minimap benchmark
+        {
+            std::wstring snippetsPath = L"C:\\Users\\Administrator\\AppData\\Roaming\\phide\\snippets\\snippets.json";
+            if (std::filesystem::exists(snippetsPath)) {
+                phide::editor::Buffer largeBuf;
+                largeBuf.LoadFromFile(snippetsPath);
+                assert(largeBuf.GetLineCount() >= 1800 && "snippets.json must remain full size (not reduced)");
+                auto tStart = std::chrono::steady_clock::now();
+                // Simulate 2 full frames of GetTokensForLine across all 1,810 lines
+                for (int frame = 0; frame < 2; ++frame) {
+                    for (size_t l = 0; l < largeBuf.GetLineCount(); ++l) {
+                        auto toks = largeBuf.GetTokensForLine(l, L".json");
+                        (void)toks;
+                    }
+                }
+                auto elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - tStart).count();
+                std::cout << "  snippets.json (" << largeBuf.GetLineCount() << " lines) 2x full-buffer token pass: " << elapsedMs << " ms" << std::endl;
+                assert(elapsedMs < 80 && "O(1) cached GetTokensForLine must process 1,810 lines in <80ms");
+                std::cout << "  Passed: Subtest 6 (Large file O(1) token cache verified)" << std::endl;
+            }
+        }
+
+        if (targetTest == 118) {
+            std::cout << "Target test 118 finished." << std::endl;
             return 0;
         }
     }

@@ -699,68 +699,84 @@ std::vector<SyntaxToken> Buffer::GetTokensForLine(size_t lineIdx, const std::wst
         return {};
     }
 
-    bool isPhp = (ext == L".php");
-    bool inBlockComment = false;
-    wchar_t inMultiLineQuote = 0;
+    const bool isPhp = (ext == L".php");
 
-    // Track multi-line block comments (/* ... */) and PHP multi-line string literals across preceding lines
-    for (size_t l = 0; l < lineIdx; ++l) {
-        const auto& prevLine = m_lines[l];
-        size_t len = prevLine.length();
-        for (size_t i = 0; i < len; ++i) {
-            wchar_t c = prevLine[i];
-            if (inBlockComment) {
-                if (c == L'*' && i + 1 < len && prevLine[i + 1] == L'/') {
-                    inBlockComment = false;
-                    ++i;
-                }
-            } else if (inMultiLineQuote != 0) {
-                if (c == L'\\' && i + 1 < len) {
-                    ++i;
-                } else if (c == inMultiLineQuote) {
-                    inMultiLineQuote = 0;
-                }
-            } else {
-                if (c == L'/' && i + 1 < len && prevLine[i + 1] == L'/') {
-                    break; // Single-line comment
-                }
-                if (isPhp && c == L'#' && (i + 1 >= len || prevLine[i + 1] != L'[')) {
-                    break; // PHP # comment
-                }
-                if (c == L'/' && i + 1 < len && prevLine[i + 1] == L'*') {
-                    inBlockComment = true;
-                    ++i;
-                } else if (isPhp && (c == L'"' || c == L'\'')) {
-                    inMultiLineQuote = c;
+    // Recompute per-line entry states in a single O(N) pass ONLY when buffer version or extension changes
+    if (m_cachedTokenVersion != m_version || m_cachedTokenExt != ext || m_lineEntryStates.size() != m_lines.size()) {
+        m_cachedTokenVersion = m_version;
+        m_cachedTokenExt = ext;
+        m_tokenCache.clear();
+        m_lineEntryStates.assign(m_lines.size(), 0);
+
+        bool inBlock = false;
+        wchar_t inQuote = 0;
+        for (size_t l = 0; l < m_lines.size(); ++l) {
+            m_lineEntryStates[l] = inBlock ? 1 : (inQuote == L'"' ? 2 : (inQuote == L'\'' ? 3 : 0));
+            const auto& prevLine = m_lines[l];
+            size_t len = prevLine.length();
+            for (size_t i = 0; i < len; ++i) {
+                wchar_t c = prevLine[i];
+                if (inBlock) {
+                    if (c == L'*' && i + 1 < len && prevLine[i + 1] == L'/') {
+                        inBlock = false;
+                        ++i;
+                    }
+                } else if (inQuote != 0) {
+                    if (c == L'\\' && i + 1 < len) {
+                        ++i;
+                    } else if (c == inQuote) {
+                        inQuote = 0;
+                    }
+                } else {
+                    if (c == L'/' && i + 1 < len && prevLine[i + 1] == L'/') {
+                        break; // Single-line comment
+                    }
+                    if (isPhp && c == L'#' && (i + 1 >= len || prevLine[i + 1] != L'[')) {
+                        break; // PHP # comment
+                    }
+                    if (c == L'/' && i + 1 < len && prevLine[i + 1] == L'*') {
+                        inBlock = true;
+                        ++i;
+                    } else if (isPhp && (c == L'"' || c == L'\'')) {
+                        inQuote = c;
+                    }
                 }
             }
         }
     }
+
+    auto cacheIt = m_tokenCache.find(lineIdx);
+    if (cacheIt != m_tokenCache.end()) {
+        return cacheIt->second;
+    }
+
+    const uint8_t entryState = m_lineEntryStates[lineIdx];
+    const bool inBlockComment = (entryState == 1);
+    const wchar_t inMultiLineQuote = (entryState == 2) ? L'"' : ((entryState == 3) ? L'\'' : 0);
 
     const auto& line = m_lines[lineIdx];
     size_t len = line.length();
-    if (len == 0) return {};
+    if (len == 0) {
+        return {};
+    }
 
+    std::vector<SyntaxToken> resultTokens;
     if (inBlockComment) {
         size_t closePos = line.find(L"*/");
         if (closePos == std::wstring::npos) {
-            return { { TokenType::Comment, 0, len } };
-        }
-        size_t afterComment = closePos + 2;
-        std::vector<SyntaxToken> tokens;
-        tokens.push_back({ TokenType::Comment, 0, afterComment });
-        if (afterComment < len) {
-            auto rest = m_lexer.TokenizeLine(line.substr(afterComment), ext);
-            for (auto& t : rest) {
-                t.startCol += afterComment;
-                tokens.push_back(t);
+            resultTokens = { { TokenType::Comment, 0, len } };
+        } else {
+            size_t afterComment = closePos + 2;
+            resultTokens.push_back({ TokenType::Comment, 0, afterComment });
+            if (afterComment < len) {
+                auto rest = m_lexer.TokenizeLine(line.substr(afterComment), ext);
+                for (auto& t : rest) {
+                    t.startCol += afterComment;
+                    resultTokens.push_back(t);
+                }
             }
         }
-        return tokens;
-    }
-
-    if (inMultiLineQuote != 0) {
-        std::vector<SyntaxToken> tokens;
+    } else if (inMultiLineQuote != 0) {
         size_t segStart = 0;
         size_t i = 0;
         bool closed = false;
@@ -771,20 +787,20 @@ std::vector<SyntaxToken> Buffer::GetTokensForLine(size_t lineIdx, const std::wst
             }
             if (isPhp && inMultiLineQuote == L'"' && line[i] == L'$' && i + 1 < len && (iswalpha(line[i + 1]) || line[i + 1] == L'_')) {
                 if (i > segStart) {
-                    tokens.push_back({ TokenType::String, segStart, i - segStart });
+                    resultTokens.push_back({ TokenType::String, segStart, i - segStart });
                 }
                 size_t varStart = i;
                 ++i;
                 while (i < len && (iswalnum(line[i]) || line[i] == L'_')) {
                     ++i;
                 }
-                tokens.push_back({ TokenType::Attribute, varStart, i - varStart });
+                resultTokens.push_back({ TokenType::Attribute, varStart, i - varStart });
                 segStart = i;
                 continue;
             }
             if (line[i] == inMultiLineQuote) {
                 ++i;
-                tokens.push_back({ TokenType::String, segStart, i - segStart });
+                resultTokens.push_back({ TokenType::String, segStart, i - segStart });
                 closed = true;
                 break;
             }
@@ -792,21 +808,21 @@ std::vector<SyntaxToken> Buffer::GetTokensForLine(size_t lineIdx, const std::wst
         }
         if (!closed) {
             if (len > segStart) {
-                tokens.push_back({ TokenType::String, segStart, len - segStart });
+                resultTokens.push_back({ TokenType::String, segStart, len - segStart });
             }
-            return tokens;
-        }
-        if (i < len) {
+        } else if (i < len) {
             auto rest = m_lexer.TokenizeLine(line.substr(i), ext);
             for (auto& t : rest) {
                 t.startCol += i;
-                tokens.push_back(t);
+                resultTokens.push_back(t);
             }
         }
-        return tokens;
+    } else {
+        resultTokens = m_lexer.TokenizeLine(line, ext);
     }
 
-    return m_lexer.TokenizeLine(line, ext);
+    m_tokenCache.emplace(lineIdx, resultTokens);
+    return resultTokens;
 }
 
 void Buffer::SetCursor(size_t line, size_t col) {

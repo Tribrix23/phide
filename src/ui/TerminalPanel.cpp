@@ -1322,6 +1322,11 @@ void TerminalPanel::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppC
     float panelH = (animatedHeight >= 0.0f) ? animatedHeight : maxH;
     if (panelH <= 0.0f) return;
     float panelY = clientH - panelH;
+    if (panelY < headerTopH) {
+        panelH -= (headerTopH - panelY);
+        panelY = headerTopH;
+    }
+    if (panelH <= 0.0f) return;
     float panelW = clientW - leftOffset;
 
     m_panelBounds = D2D1::RectF(panelX, panelY, panelX + panelW, panelY + panelH);
@@ -3522,20 +3527,6 @@ bool TerminalPanel::OnMouseDown(POINT pt, const app::AppConfig& config, const st
         return true;
     }
 
-    // 5. Check Pane Focus Selection
-    if (m_activeTabIdx >= 0 && m_activeTabIdx < static_cast<int>(m_tabs.size())) {
-        auto& primary = m_tabs[m_activeTabIdx];
-        if (primary && primary->splitTab) {
-            if (inRect(pt, primary->paneBounds)) {
-                primary->activeSplitIndex = 0;
-                return true;
-            } else if (inRect(pt, primary->splitTab->paneBounds)) {
-                primary->activeSplitIndex = 1;
-                return true;
-            }
-        }
-    }
-
     // 6. Check Shell Menu Items (Image 2)
     if (m_showShellMenu) {
         if (inRect(pt, m_shellMenuBounds)) {
@@ -3726,6 +3717,18 @@ bool TerminalPanel::OnMouseDown(POINT pt, const app::AppConfig& config, const st
         } else {
             // Click outside options menu
             CloseMenus();
+        }
+    }
+
+    // 5. Check Pane Focus Selection (Checked AFTER floating menus so menu clicks inside split panes aren't swallowed!)
+    if (m_activeTabIdx >= 0 && m_activeTabIdx < static_cast<int>(m_tabs.size())) {
+        auto& primary = m_tabs[m_activeTabIdx];
+        if (primary && primary->splitTab) {
+            if (inRect(pt, primary->paneBounds)) {
+                primary->activeSplitIndex = 0;
+            } else if (inRect(pt, primary->splitTab->paneBounds)) {
+                primary->activeSplitIndex = 1;
+            }
         }
     }
 

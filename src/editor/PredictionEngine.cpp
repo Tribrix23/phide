@@ -628,9 +628,39 @@ CodePrediction PredictionEngine::PredictComponentOrMethod(
                 { L"__aexit__", L"(self, exc_type, exc_val, exc_tb):\n    return False", L"Async exit: async def __aexit__(...)" },
             };
 
+            // Check if there is already an indented body below this line
+            bool hasBodyBelow = false;
+            for (size_t k = line + 1; k < (std::min)(line + 4, buffer.GetLineCount()); ++k) {
+                std::wstring nextTrimmed = TrimStr(buffer.GetLine(k));
+                if (nextTrimmed.empty()) continue;
+                if (LeadingIndent(buffer.GetLine(k)).length() > indent.length()) {
+                    hasBodyBelow = true;
+                }
+                break;
+            }
+
+            // If the current line is already a complete function header ending in ':', do not predict duplicate signature/body
+            if (trimmedCur.back() == L':' || fnPart.find(L"):") != std::wstring::npos) {
+                if (!hasBodyBelow && (trimmedCur.back() == L':')) {
+                    CodePrediction pred;
+                    pred.isValid = true;
+                    pred.line = line;
+                    pred.col = col;
+                    pred.displaySummary = L"Body: pass";
+                    pred.ghostText = L"\n" + indent + L"    pass";
+                    return pred;
+                }
+                return {};
+            }
+
             for (const auto& d : kDunders) {
                 if (fnPart.starts_with(L"__") && std::wstring(d.name).starts_with(fnPart)) {
-                    std::wstring expansion = prefix + d.name + d.params;
+                    std::wstring paramsStr = d.params;
+                    if (hasBodyBelow) {
+                        size_t nlPos = paramsStr.find(L'\n');
+                        if (nlPos != std::wstring::npos) paramsStr = paramsStr.substr(0, nlPos);
+                    }
+                    std::wstring expansion = prefix + d.name + paramsStr;
                     std::wstring indentedExp = ApplyIndentToMultiline(expansion, indent, true);
                     if (indentedExp.starts_with(curLine) && indentedExp.length() > curLine.length()) {
                         CodePrediction pred;
@@ -646,8 +676,22 @@ CodePrediction PredictionEngine::PredictComponentOrMethod(
 
             // General function signature: def name():\n    pass
             if (!fnPart.empty() && fnPart != L"__") {
-                std::wstring suffix = inClass ? L"(self):\n    pass" : L"():\n    pass";
-                std::wstring expansion = prefix + fnPart + suffix;
+                std::wstring expansion;
+                if (fnPart.find(L'(') != std::wstring::npos) {
+                    if (fnPart.find(L')') != std::wstring::npos) {
+                        expansion = prefix + fnPart + (hasBodyBelow ? L":" : L":\n    pass");
+                    } else {
+                        expansion = prefix + fnPart + (hasBodyBelow ? L"):" : L"):\n    pass");
+                    }
+                } else {
+                    std::wstring suffix;
+                    if (hasBodyBelow) {
+                        suffix = inClass ? L"(self):" : L"():";
+                    } else {
+                        suffix = inClass ? L"(self):\n    pass" : L"():\n    pass";
+                    }
+                    expansion = prefix + fnPart + suffix;
+                }
                 std::wstring indentedExp = ApplyIndentToMultiline(expansion, indent, true);
                 if (indentedExp.starts_with(curLine) && indentedExp.length() > curLine.length()) {
                     CodePrediction pred;
@@ -910,25 +954,55 @@ CodePrediction PredictionEngine::PredictComponentOrMethod(
 
             // Exact match with curLine or prefix match
             if (indentedExp.starts_with(curLine) && indentedExp.length() > curLine.length()) {
-                CodePrediction pred;
-                pred.isValid = true;
-                pred.line = line;
-                pred.col = col;
-                pred.displaySummary = tpl.summary;
-                pred.ghostText = indentedExp.substr(curLine.length());
-                return pred;
-            }
-
-            // Trigger match e.g. typing "cl" matching "class"
-            if (trig.starts_with(trimmedCur) && trig.length() >= 2) {
-                if (indentedExp.starts_with(indent + trig) && indentedExp.length() > curLine.length()) {
+                std::wstring ghost = indentedExp.substr(curLine.length());
+                if (line + 1 < buffer.GetLineCount()) {
+                    size_t nl = ghost.find(L'\n');
+                    if (nl != std::wstring::npos) {
+                        std::wstring nextBufTrim = TrimStr(buffer.GetLine(line + 1));
+                        std::wstring secondLine = ghost.substr(nl + 1);
+                        size_t nl2 = secondLine.find(L'\n');
+                        if (nl2 != std::wstring::npos) secondLine = secondLine.substr(0, nl2);
+                        if (!nextBufTrim.empty() && TrimStr(secondLine) == nextBufTrim) {
+                            ghost = ghost.substr(0, nl);
+                        }
+                    }
+                }
+                if (!ghost.empty()) {
                     CodePrediction pred;
                     pred.isValid = true;
                     pred.line = line;
                     pred.col = col;
                     pred.displaySummary = tpl.summary;
-                    pred.ghostText = indentedExp.substr(curLine.length());
+                    pred.ghostText = ghost;
                     return pred;
+                }
+            }
+
+            // Trigger match e.g. typing "cl" matching "class"
+            if (trig.starts_with(trimmedCur) && trig.length() >= 2) {
+                if (indentedExp.starts_with(indent + trig) && indentedExp.length() > curLine.length()) {
+                    std::wstring ghost = indentedExp.substr(curLine.length());
+                    if (line + 1 < buffer.GetLineCount()) {
+                        size_t nl = ghost.find(L'\n');
+                        if (nl != std::wstring::npos) {
+                            std::wstring nextBufTrim = TrimStr(buffer.GetLine(line + 1));
+                            std::wstring secondLine = ghost.substr(nl + 1);
+                            size_t nl2 = secondLine.find(L'\n');
+                            if (nl2 != std::wstring::npos) secondLine = secondLine.substr(0, nl2);
+                            if (!nextBufTrim.empty() && TrimStr(secondLine) == nextBufTrim) {
+                                ghost = ghost.substr(0, nl);
+                            }
+                        }
+                    }
+                    if (!ghost.empty()) {
+                        CodePrediction pred;
+                        pred.isValid = true;
+                        pred.line = line;
+                        pred.col = col;
+                        pred.displaySummary = tpl.summary;
+                        pred.ghostText = ghost;
+                        return pred;
+                    }
                 }
             }
         }

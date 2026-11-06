@@ -5,7 +5,9 @@
 
 #pragma once
 
+#include <cstdint>
 #include <string>
+#include <unordered_map>
 #include <vector>
 #include "phide/editor/SyntaxToken.hpp"
 
@@ -188,6 +190,8 @@ public:
             s.lines.shrink_to_fit();
             for (auto& l : s.lines) l.shrink_to_fit();
         }
+        m_tokenCache.clear();
+        m_lineEntryStates.shrink_to_fit();
     }
 
 private:
@@ -199,6 +203,12 @@ private:
     std::wstring m_fileName;
     bool m_isModified = false;
     uint64_t m_version = 0;
+
+    // O(1) version-tracked per-line state and syntax token cache for large files
+    mutable uint64_t m_cachedTokenVersion = UINT64_MAX;
+    mutable std::wstring m_cachedTokenExt;
+    mutable std::vector<uint8_t> m_lineEntryStates; // 0 = normal, 1 = blockComment, 2 = doubleQuote, 3 = singleQuote
+    mutable std::unordered_map<size_t, std::vector<SyntaxToken>> m_tokenCache;
 
     struct BufferSnapshot {
         std::vector<std::wstring> lines;

@@ -1603,6 +1603,18 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidatePython(const Buffer& buffe
         if (trimmedCode.rfind(L"from ", 0) == 0) {
             size_t impPos = trimmedCode.find(L" import ");
             if (impPos != std::wstring::npos) {
+                std::wstring fromMod = trimmedCode.substr(5, impPos - 5);
+                size_t fm = 0;
+                while (fm < fromMod.length()) {
+                    while (fm < fromMod.length() && !isIdentStart(fromMod[fm])) fm++;
+                    if (fm >= fromMod.length()) break;
+                    size_t fStart = fm;
+                    while (fm < fromMod.length() && isIdentChar(fromMod[fm])) fm++;
+                    std::wstring mTok = fromMod.substr(fStart, fm - fStart);
+                    if (!mTok.empty() && pyKeywords.find(mTok) == pyKeywords.end()) {
+                        definedSymbols.insert(mTok);
+                    }
+                }
                 std::wstring impPart = trimmedCode.substr(impPos + 8);
                 if (impPart.find(L'*') != std::wstring::npos) {
                     hasStarImport = true;
@@ -1615,16 +1627,19 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidatePython(const Buffer& buffe
                         while (p < impPart.length() && isIdentChar(impPart[p])) p++;
                         if (p == tokenStart) { p++; continue; }
                         std::wstring sym = impPart.substr(tokenStart, p - tokenStart);
+                        if (!sym.empty() && pyKeywords.find(sym) == pyKeywords.end()) {
+                            definedSymbols.insert(sym);
+                        }
                         while (p < impPart.length() && impPart[p] == L' ') p++;
                         if (p + 3 <= impPart.length() && impPart.substr(p, 3) == L"as ") {
                             p += 3;
                             while (p < impPart.length() && impPart[p] == L' ') p++;
                             size_t aliasStart = p;
                             while (p < impPart.length() && isIdentChar(impPart[p])) p++;
-                            sym = impPart.substr(aliasStart, p - aliasStart);
-                        }
-                        if (!sym.empty() && pyKeywords.find(sym) == pyKeywords.end()) {
-                            definedSymbols.insert(sym);
+                            std::wstring aliasSym = impPart.substr(aliasStart, p - aliasStart);
+                            if (!aliasSym.empty() && pyKeywords.find(aliasSym) == pyKeywords.end()) {
+                                definedSymbols.insert(aliasSym);
+                            }
                         }
                     }
                 }
@@ -1644,6 +1659,9 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidatePython(const Buffer& buffe
                 std::wstring mod = impPart.substr(tokenStart, p - tokenStart);
                 size_t dot = mod.find(L'.');
                 std::wstring baseMod = (dot != std::wstring::npos) ? mod.substr(0, dot) : mod;
+                if (!baseMod.empty() && pyKeywords.find(baseMod) == pyKeywords.end()) {
+                    definedSymbols.insert(baseMod);
+                }
 
                 while (p < impPart.length() && impPart[p] == L' ') p++;
                 if (p + 3 <= impPart.length() && impPart.substr(p, 3) == L"as ") {
@@ -1651,10 +1669,10 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidatePython(const Buffer& buffe
                     while (p < impPart.length() && impPart[p] == L' ') p++;
                     size_t aliasStart = p;
                     while (p < impPart.length() && isIdentChar(impPart[p])) p++;
-                    baseMod = impPart.substr(aliasStart, p - aliasStart);
-                }
-                if (!baseMod.empty()) {
-                    definedSymbols.insert(baseMod);
+                    std::wstring aliasMod = impPart.substr(aliasStart, p - aliasStart);
+                    if (!aliasMod.empty() && pyKeywords.find(aliasMod) == pyKeywords.end()) {
+                        definedSymbols.insert(aliasMod);
+                    }
                 }
             }
             continue;
@@ -1776,6 +1794,15 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidatePython(const Buffer& buffe
         wchar_t tChar = 0;
         for (size_t l = 0; l < buffer.GetLineCount(); ++l) {
             const auto& line = buffer.GetLine(l);
+            if (!inTripleStr) {
+                size_t ls = 0;
+                while (ls < line.length() && (line[ls] == L' ' || line[ls] == L'\t')) ls++;
+                std::wstring trimmedLine = line.substr(ls);
+                if (trimmedLine.rfind(L"import ", 0) == 0 || trimmedLine == L"import" ||
+                    trimmedLine.rfind(L"from ", 0) == 0 || trimmedLine == L"from") {
+                    continue;
+                }
+            }
             bool inSingleStr = false;
             wchar_t sChar = 0;
             size_t c = 0;

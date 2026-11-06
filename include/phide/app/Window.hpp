@@ -713,8 +713,9 @@ private:
         if (!m_terminal.IsOpen() && !m_isTerminalAnimating) return 0.0f;
         if (m_terminal.GetDockPosition() != 0) return 0.0f;
         const float headerH = m_config.ScaleF(static_cast<float>(m_config.headerHeight));
+        const float statusBarH = m_config.showStatusBar ? m_config.ScaleF(22.0f) : 0.0f;
         float normalH = m_terminal.GetHeight();
-        float fullH = (std::max)(normalH, clientH - headerH);
+        float fullH = (std::max)(normalH, clientH - headerH - statusBarH);
         float effectiveMax = normalH + (fullH - normalH) * m_termFullScreenProgress;
         return effectiveMax * m_terminalAnimProgress;
     }
