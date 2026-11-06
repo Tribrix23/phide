@@ -2795,6 +2795,9 @@ const std::vector<IntelliSenseItem>& WebIntelliSenseData::GetJavaScriptGlobals()
 
 const std::vector<IntelliSenseItem>& WebIntelliSenseData::GetJavaScriptDomMethods() {
     static const std::vector<IntelliSenseItem> s_methods = {
+        { L"addEventListener", L"addEventListener(type: string, listener: EventListenerOrEventListenerObject, options?: boolean | AddEventListenerOptions): void", L"addEventListener()", CompletionKind::Method, 100, 0, 0, L"dom", L"Sets up a function that will be called whenever the specified event is delivered to the target." },
+        { L"removeEventListener", L"removeEventListener(type: string, listener: EventListenerOrEventListenerObject, options?: boolean | EventListenerOptions): void", L"removeEventListener()", CompletionKind::Method, 100, 0, 0, L"dom", L"Removes an event listener previously registered with addEventListener()." },
+        { L"dispatchEvent", L"dispatchEvent(event: Event): boolean", L"dispatchEvent()", CompletionKind::Method, 100, 0, 0, L"dom", L"Dispatches an Event at the specified EventTarget, synchronously invoking affected EventListeners." },
         { L"querySelector", L"querySelector(selectors: string): Element | null", L"querySelector()", CompletionKind::Method, 100, 0, 0, L"dom", L"Returns the first element that is a descendant of node that matches selectors." },
         { L"querySelectorAll", L"querySelectorAll(selectors: string): NodeListOf<Element>", L"querySelectorAll()", CompletionKind::Method, 100, 0, 0, L"dom", L"Returns all element descendants of node that match selectors." },
         { L"getElementById", L"getElementById(elementId: string): HTMLElement | null", L"getElementById()", CompletionKind::Method, 100, 0, 0, L"dom", L"Returns a reference to the element by its ID." },

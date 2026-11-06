@@ -636,6 +636,11 @@ public:
     [[nodiscard]] size_t GetLearningCourseCount() const noexcept { return m_learningCourses.size(); }
     void ClearLearningHubBitmaps() noexcept { m_learningHubBitmaps.clear(); }
 
+    std::function<void(ID2D1RenderTarget*, float, float, float, float)> m_onRenderTerminalInEditor;
+    void SetOnRenderTerminalInEditor(std::function<void(ID2D1RenderTarget*, float, float, float, float)> cb) {
+        m_onRenderTerminalInEditor = std::move(cb);
+    }
+
     void RunGarbageCollection() {
         m_foldChevrons.shrink_to_fit();
         m_visibleColorSwatches.shrink_to_fit();

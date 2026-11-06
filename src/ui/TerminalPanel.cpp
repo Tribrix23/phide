@@ -1360,17 +1360,17 @@ void TerminalPanel::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppC
         RenderContent(pRT, theme, config, panelX, contentY, panelW, contentH);
     }
 
-    // 5. Shell Dropdown Menu (Image 2)
+    pRT->PopAxisAlignedClip();
+
+    // 5. Shell Dropdown Menu (Image 2) - Rendered outside panel clip so it floats freely
     if (m_showShellMenu) {
         RenderShellMenu(pRT, theme, config);
     }
 
-    // 6. Options Dropdown Menu (Image 4)
+    // 6. Options Dropdown Menu (Image 4) - Rendered outside panel clip so it floats freely
     if (m_showOptionsMenu) {
-        RenderOptionsMenu(pRT, theme, config);
+        RenderOptionsMenu(pRT, theme, config, clientH);
     }
-
-    pRT->PopAxisAlignedClip();
 
     // 7. Floating Tooltip for Hovered Debug Action
     // Rendered OUTSIDE panel clip so it floats freely above toolbar over editor canvas without horizontal line clipping artifact (User requirement)
@@ -1404,6 +1404,65 @@ void TerminalPanel::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppC
                           rrcTip.rect,
                           theme.brushTooltipText ? theme.brushTooltipText.Get() : theme.brushTextPrimary.Get());
         }
+    }
+}
+
+void TerminalPanel::RenderBounds(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
+                                 const D2D1_RECT_F& bounds, float clientH, bool isRightDocked) {
+    if (!m_isOpen) return;
+
+    std::lock_guard<std::recursive_mutex> tabsLock(m_tabsMutex);
+
+    float panelX = bounds.left;
+    float panelY = bounds.top;
+    float panelW = bounds.right - bounds.left;
+    float panelH = bounds.bottom - bounds.top;
+    if (panelW <= 0.0f || panelH <= 0.0f) return;
+
+    m_panelBounds = bounds;
+
+    pRT->PushAxisAlignedClip(m_panelBounds, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+
+    // 1. Panel Background
+    D2D1_COLOR_F bgColor = theme.IsDarkMode() ? D2D1::ColorF(0.08f, 0.08f, 0.09f, 1.0f) : D2D1::ColorF(0.96f, 0.96f, 0.97f, 1.0f);
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> bgBrush;
+    pRT->CreateSolidColorBrush(bgColor, &bgBrush);
+    if (bgBrush) {
+        pRT->FillRectangle(m_panelBounds, bgBrush.Get());
+    }
+
+    // 2. Splitter
+    if (isRightDocked) {
+        // Vertical splitter on left edge
+        m_splitterBounds = D2D1::RectF(panelX - config.ScaleF(4.0f), panelY, panelX + config.ScaleF(4.0f), panelY + panelH);
+        if (theme.brushBorderSubtle) {
+            pRT->DrawLine(D2D1::Point2F(panelX, panelY), D2D1::Point2F(panelX, panelY + panelH), theme.brushBorderSubtle.Get(), 1.0f);
+        }
+    } else {
+        m_splitterBounds = D2D1::RectF(0, 0, 0, 0);
+    }
+
+    // 3. Header Toolbar
+    float headerH = config.ScaleF(32.0f);
+    m_headerBounds = D2D1::RectF(panelX, panelY + config.ScaleF(2.0f), panelX + panelW, panelY + headerH);
+    RenderHeader(pRT, theme, config, panelX, panelY + config.ScaleF(2.0f), panelW, headerH - config.ScaleF(2.0f), 0.0f);
+
+    // 4. Terminal Content Area
+    float contentY = panelY + headerH;
+    float contentH = panelH - headerH;
+    m_textAreaBounds = D2D1::RectF(panelX, contentY, panelX + panelW, panelY + panelH);
+    if (contentH > 5.0f) {
+        RenderContent(pRT, theme, config, panelX, contentY, panelW, contentH);
+    }
+
+    pRT->PopAxisAlignedClip();
+
+    // 5. Popups & Shell/Options Menus drawn outside clip bounds
+    if (m_showShellMenu) {
+        RenderShellMenu(pRT, theme, config);
+    }
+    if (m_showOptionsMenu) {
+        RenderOptionsMenu(pRT, theme, config, clientH);
     }
 }
 
@@ -2144,7 +2203,7 @@ void TerminalPanel::RenderShellMenu(ID2D1RenderTarget* pRT, Theme& theme, const 
 // Options Dropdown Menu (Image 4)
 // =============================================================================
 
-void TerminalPanel::RenderOptionsMenu(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config) {
+void TerminalPanel::RenderOptionsMenu(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config, float clientH) {
     float menuW = config.ScaleF(185.0f);
     float itemH = config.ScaleF(22.0f);
     float sepH = config.ScaleF(6.0f);
@@ -2176,6 +2235,13 @@ void TerminalPanel::RenderOptionsMenu(ID2D1RenderTarget* pRT, Theme& theme, cons
 
     float menuX = m_optionsBtnBounds.right - menuW;
     float menuY = m_optionsBtnBounds.bottom + config.ScaleF(2.0f);
+    if (clientH > 0.0f && menuY + menuH > clientH - config.ScaleF(24.0f)) {
+        if (m_optionsBtnBounds.top - menuH >= config.ScaleF(32.0f)) {
+            menuY = m_optionsBtnBounds.top - menuH - config.ScaleF(2.0f);
+        } else {
+            menuY = (std::max)(config.ScaleF(36.0f), clientH - config.ScaleF(24.0f) - menuH - config.ScaleF(4.0f));
+        }
+    }
     m_optionsMenuBounds = D2D1::RectF(menuX, menuY, menuX + menuW, menuY + menuH);
     D2D1_ROUNDED_RECT rrcMenu = D2D1::RoundedRect(m_optionsMenuBounds, 4.0f, 4.0f);
 
@@ -2231,9 +2297,14 @@ void TerminalPanel::RenderOptionsMenu(ID2D1RenderTarget* pRT, Theme& theme, cons
                            int sepIndex = -1) {
         float totalSubH = config.ScaleF(8.0f) + itemH * static_cast<float>(subItems.size()) + (sepIndex >= 0 ? sepH : 0.0f);
         float subX = menuX - subW - config.ScaleF(2.0f);
+        if (subX < config.ScaleF(4.0f)) subX = menuX + menuW + config.ScaleF(2.0f);
         float subY = parentItemTop;
-        if (subY + totalSubH > m_panelBounds.bottom) {
-            subY = (std::max)(m_panelBounds.top + config.ScaleF(4.0f), m_panelBounds.bottom - totalSubH - config.ScaleF(4.0f));
+        float maxBottom = (clientH > 0.0f) ? (clientH - config.ScaleF(24.0f)) : m_panelBounds.bottom;
+        if (subY + totalSubH > maxBottom) {
+            subY = (std::max)(config.ScaleF(36.0f), maxBottom - totalSubH - config.ScaleF(4.0f));
+        }
+        if (subY < config.ScaleF(4.0f)) {
+            subY = config.ScaleF(4.0f);
         }
 
         outSubBounds = D2D1::RectF(subX, subY, subX + subW, subY + totalSubH);
@@ -2394,14 +2465,41 @@ TerminalPos TerminalPanel::PointToTerminalPos(POINT pt, const app::AppConfig& co
     return pos;
 }
 
+bool TerminalPanel::HitTestMenuArea(POINT pt) const noexcept {
+    if (!m_isOpen) return false;
+    auto inRect = [](POINT p, const D2D1_RECT_F& rc) {
+        return p.x >= rc.left && p.x <= rc.right && p.y >= rc.top && p.y <= rc.bottom;
+    };
+    if (m_showShellMenu && inRect(pt, m_shellMenuBounds)) return true;
+    if (m_showOptionsMenu) {
+        if (inRect(pt, m_optionsMenuBounds)) return true;
+        if ((m_showEngineSubmenu || m_hoveredOptionsMenuItem == 0) && inRect(pt, m_engineSubmenuBounds)) return true;
+        if ((m_showViewModeSubmenu || m_hoveredOptionsMenuItem == 6) && inRect(pt, m_viewModeSubmenuBounds)) return true;
+        if ((m_showMoveToSubmenu || m_hoveredOptionsMenuItem == 7) && inRect(pt, m_moveToSubmenuBounds)) return true;
+        if ((m_showResizeSubmenu || m_hoveredOptionsMenuItem == 8) && inRect(pt, m_resizeSubmenuBounds)) return true;
+    }
+    return false;
+}
+
 bool TerminalPanel::HitTest(POINT pt) const noexcept {
     if (!m_isOpen) return false;
+    if (HitTestMenuArea(pt)) return true;
+    if (HitTestButtons(pt)) return true;
     return pt.x >= m_panelBounds.left && pt.x <= m_panelBounds.right &&
            pt.y >= m_panelBounds.top && pt.y <= m_panelBounds.bottom;
 }
 
 bool TerminalPanel::HitTestSplitter(POINT pt) const noexcept {
     if (!m_isOpen) return false;
+    if (m_dockPosition == 1) return false; // Editor area: no resize splitter
+    if (m_dockPosition == 2) {
+        // Right side: vertical splitter
+        return pt.x >= static_cast<LONG>(m_splitterBounds.left - 4.0f) &&
+               pt.x <= static_cast<LONG>(m_splitterBounds.right + 4.0f) &&
+               pt.y >= static_cast<LONG>(m_splitterBounds.top) &&
+               pt.y <= static_cast<LONG>(m_splitterBounds.bottom);
+    }
+    if (m_isFullScreen) return false;
     return pt.x >= m_splitterBounds.left && pt.x <= m_splitterBounds.right &&
            pt.y >= m_splitterBounds.top - 2 && pt.y <= m_splitterBounds.bottom + 2;
 }
@@ -3337,12 +3435,7 @@ bool TerminalPanel::HitTestButtons(POINT pt) const noexcept {
             return true;
         }
     }
-    if (m_showShellMenu && inRect(pt, m_shellMenuBounds)) return true;
-    if (m_showOptionsMenu && inRect(pt, m_optionsMenuBounds)) return true;
-    if (m_showEngineSubmenu && inRect(pt, m_engineSubmenuBounds)) return true;
-    if (m_showViewModeSubmenu && inRect(pt, m_viewModeSubmenuBounds)) return true;
-    if (m_showMoveToSubmenu && inRect(pt, m_moveToSubmenuBounds)) return true;
-    if (m_showResizeSubmenu && inRect(pt, m_resizeSubmenuBounds)) return true;
+    if (HitTestMenuArea(pt)) return true;
     return false;
 }
 
@@ -3394,8 +3487,13 @@ bool TerminalPanel::OnMouseDown(POINT pt, const app::AppConfig& config, const st
     // 1. Check Splitter Resize
     if (HitTestSplitter(pt)) {
         m_isResizing = true;
-        m_dragStartY = static_cast<float>(pt.y);
-        m_heightStart = m_height;
+        if (m_dockPosition == 2) {
+            m_dragStartX = static_cast<float>(pt.x);
+            m_widthStart = m_rightWidth;
+        } else {
+            m_dragStartY = static_cast<float>(pt.y);
+            m_heightStart = m_height;
+        }
         return true;
     }
 
@@ -3457,9 +3555,9 @@ bool TerminalPanel::OnMouseDown(POINT pt, const app::AppConfig& config, const st
     // 7. Check Options Menu and Submenus (Image 4)
     if (m_showOptionsMenu) {
         // A. Check Engine Submenu
-        if (m_showEngineSubmenu && inRect(pt, m_engineSubmenuBounds)) {
+        if ((m_showEngineSubmenu || m_hoveredOptionsMenuItem == 0) && inRect(pt, m_engineSubmenuBounds)) {
             for (size_t s = 0; s < m_engineSubmenuItemBounds.size(); ++s) {
-                if (inRect(pt, m_engineSubmenuItemBounds[s])) {
+                if (inRect(pt, m_engineSubmenuItemBounds[s]) || (pt.y >= m_engineSubmenuItemBounds[s].top && pt.y <= m_engineSubmenuItemBounds[s].bottom)) {
                     if (s == 0) { m_defaultShellProfile = 0; NewTab(TerminalShellType::PowerShell, workingDir); }
                     else if (s == 1) { m_defaultShellProfile = 1; NewTab(TerminalShellType::Cmd, workingDir); }
                     else if (s == 2) { m_defaultShellProfile = 2; NewTab(TerminalShellType::GitBash, workingDir); }
@@ -3470,140 +3568,164 @@ bool TerminalPanel::OnMouseDown(POINT pt, const app::AppConfig& config, const st
                     break;
                 }
             }
-            m_showOptionsMenu = false;
-            m_showEngineSubmenu = false;
+            CloseMenus();
             return true;
         }
 
         // B. Check View Mode Submenu
-        if (m_showViewModeSubmenu && inRect(pt, m_viewModeSubmenuBounds)) {
+        if ((m_showViewModeSubmenu || m_hoveredOptionsMenuItem == 6) && inRect(pt, m_viewModeSubmenuBounds)) {
             for (size_t s = 0; s < m_viewModeSubmenuItemBounds.size(); ++s) {
-                if (inRect(pt, m_viewModeSubmenuItemBounds[s])) {
+                if (inRect(pt, m_viewModeSubmenuItemBounds[s]) || (pt.y >= m_viewModeSubmenuItemBounds[s].top && pt.y <= m_viewModeSubmenuItemBounds[s].bottom)) {
                     if (s == 0) {
                         // Standard (Docked 360px)
-                        if (m_isFullScreen) ToggleFullScreen();
+                        if (m_isFullScreen) {
+                            ToggleFullScreen();
+                            if (m_onToggleFullScreen) m_onToggleFullScreen(m_isFullScreen);
+                        }
                         SetHeight(config.ScaleF(360.0f));
                     } else if (s == 1) {
                         // Maximized
-                        if (!m_isFullScreen) ToggleFullScreen();
+                        if (!m_isFullScreen) {
+                            ToggleFullScreen();
+                            if (m_onToggleFullScreen) m_onToggleFullScreen(m_isFullScreen);
+                        }
                     } else if (s == 2) {
                         // Compact (160px)
-                        if (m_isFullScreen) ToggleFullScreen();
+                        if (m_isFullScreen) {
+                            ToggleFullScreen();
+                            if (m_onToggleFullScreen) m_onToggleFullScreen(m_isFullScreen);
+                        }
                         SetHeight(config.ScaleF(160.0f));
                     }
                     break;
                 }
             }
-            m_showOptionsMenu = false;
-            m_showViewModeSubmenu = false;
+            CloseMenus();
             return true;
         }
 
         // C. Check Move To Submenu
-        if (m_showMoveToSubmenu && inRect(pt, m_moveToSubmenuBounds)) {
+        if ((m_showMoveToSubmenu || m_hoveredOptionsMenuItem == 7) && inRect(pt, m_moveToSubmenuBounds)) {
             for (size_t s = 0; s < m_moveToSubmenuItemBounds.size(); ++s) {
-                if (inRect(pt, m_moveToSubmenuItemBounds[s])) {
+                if (inRect(pt, m_moveToSubmenuItemBounds[s]) || (pt.y >= m_moveToSubmenuItemBounds[s].top && pt.y <= m_moveToSubmenuItemBounds[s].bottom)) {
                     m_dockPosition = static_cast<int>(s);
                     if (m_onMoveToPosition) m_onMoveToPosition(m_dockPosition);
                     break;
                 }
             }
-            m_showOptionsMenu = false;
-            m_showMoveToSubmenu = false;
+            CloseMenus();
             return true;
         }
 
         // D. Check Resize Submenu
-        if (m_showResizeSubmenu && inRect(pt, m_resizeSubmenuBounds)) {
+        if ((m_showResizeSubmenu || m_hoveredOptionsMenuItem == 8) && inRect(pt, m_resizeSubmenuBounds)) {
             for (size_t s = 0; s < m_resizeSubmenuItemBounds.size(); ++s) {
-                if (inRect(pt, m_resizeSubmenuItemBounds[s])) {
+                if (inRect(pt, m_resizeSubmenuItemBounds[s]) || (pt.y >= m_resizeSubmenuItemBounds[s].top && pt.y <= m_resizeSubmenuItemBounds[s].bottom)) {
                     if (s == 0) {
                         // Default Height (360px)
-                        if (m_isFullScreen) ToggleFullScreen();
+                        if (m_isFullScreen) {
+                            ToggleFullScreen();
+                            if (m_onToggleFullScreen) m_onToggleFullScreen(m_isFullScreen);
+                        }
                         SetHeight(config.ScaleF(360.0f));
                     } else if (s == 1) {
                         // Increase Height (+60px)
+                        if (m_isFullScreen) {
+                            ToggleFullScreen();
+                            if (m_onToggleFullScreen) m_onToggleFullScreen(m_isFullScreen);
+                        }
                         SetHeight(m_height + config.ScaleF(60.0f));
                     } else if (s == 2) {
                         // Decrease Height (-60px)
+                        if (m_isFullScreen) {
+                            ToggleFullScreen();
+                            if (m_onToggleFullScreen) m_onToggleFullScreen(m_isFullScreen);
+                        }
                         SetHeight(m_height - config.ScaleF(60.0f));
                     } else if (s == 3) {
                         // Maximize / Restore
                         ToggleFullScreen();
+                        if (m_onToggleFullScreen) m_onToggleFullScreen(m_isFullScreen);
                     }
                     break;
                 }
             }
-            m_showOptionsMenu = false;
-            m_showResizeSubmenu = false;
+            CloseMenus();
             return true;
         }
 
         // E. Check Main Options Menu Items
         if (inRect(pt, m_optionsMenuBounds)) {
             for (size_t i = 0; i < m_optionsItemBounds.size(); ++i) {
-                if (inRect(pt, m_optionsItemBounds[i])) {
+                if (inRect(pt, m_optionsItemBounds[i]) || (pt.y >= m_optionsItemBounds[i].top && pt.y <= m_optionsItemBounds[i].bottom)) {
                     if (i == 0) {
                         // Terminal Engine >
-                        m_showEngineSubmenu = !m_showEngineSubmenu;
+                        m_showEngineSubmenu = true;
                         m_showViewModeSubmenu = false;
                         m_showMoveToSubmenu = false;
                         m_showResizeSubmenu = false;
+                        m_hoveredOptionsMenuItem = 0;
                         return true;
                     } else if (i == 1) {
                         // Settings
+                        CloseMenus();
                         if (m_onOpenSettings) m_onOpenSettings();
+                        return true;
                     } else if (i == 3) {
                         // Close All
+                        CloseMenus();
                         CloseAllTabs();
+                        if (m_onMinimize) m_onMinimize();
+                        return true;
                     } else if (i == 4) {
                         // Show Toolbar
                         m_showToolbar = !m_showToolbar;
+                        CloseMenus();
+                        return true;
                     } else if (i == 5) {
                         // Group Tabs / Split
+                        CloseMenus();
                         SplitActiveTab();
+                        return true;
                     } else if (i == 6) {
                         // View Mode >
-                        m_showViewModeSubmenu = !m_showViewModeSubmenu;
+                        m_showViewModeSubmenu = true;
                         m_showEngineSubmenu = false;
                         m_showMoveToSubmenu = false;
                         m_showResizeSubmenu = false;
+                        m_hoveredOptionsMenuItem = 6;
                         return true;
                     } else if (i == 7) {
                         // Move to >
-                        m_showMoveToSubmenu = !m_showMoveToSubmenu;
+                        m_showMoveToSubmenu = true;
                         m_showEngineSubmenu = false;
                         m_showViewModeSubmenu = false;
                         m_showResizeSubmenu = false;
+                        m_hoveredOptionsMenuItem = 7;
                         return true;
                     } else if (i == 8) {
                         // Resize >
-                        m_showResizeSubmenu = !m_showResizeSubmenu;
+                        m_showResizeSubmenu = true;
                         m_showEngineSubmenu = false;
                         m_showViewModeSubmenu = false;
                         m_showMoveToSubmenu = false;
+                        m_hoveredOptionsMenuItem = 8;
                         return true;
                     } else if (i == 10) {
                         // Remove from Sidebar
+                        CloseMenus();
                         Close();
                         if (m_onMinimize) m_onMinimize();
+                        return true;
                     }
                     break;
                 }
             }
-            m_showOptionsMenu = false;
-            m_showEngineSubmenu = false;
-            m_showViewModeSubmenu = false;
-            m_showMoveToSubmenu = false;
-            m_showResizeSubmenu = false;
+            CloseMenus();
             return true;
         } else {
             // Click outside options menu
-            m_showOptionsMenu = false;
-            m_showEngineSubmenu = false;
-            m_showViewModeSubmenu = false;
-            m_showMoveToSubmenu = false;
-            m_showResizeSubmenu = false;
+            CloseMenus();
         }
     }
 
@@ -3683,8 +3805,13 @@ bool TerminalPanel::OnMouseMove(POINT pt, bool isLButtonDown, float clientH) {
     if (!m_isOpen) return false;
 
     if (m_isResizing && isLButtonDown) {
-        float deltaY = m_dragStartY - static_cast<float>(pt.y);
-        SetHeight(m_heightStart + deltaY);
+        if (m_dockPosition == 2) {
+            float deltaX = m_dragStartX - static_cast<float>(pt.x);
+            m_rightWidth = (std::clamp)(m_widthStart + deltaX, 260.0f, 900.0f);
+        } else {
+            float deltaY = m_dragStartY - static_cast<float>(pt.y);
+            SetHeight(m_heightStart + deltaY);
+        }
         return true;
     }
 
@@ -3762,7 +3889,7 @@ bool TerminalPanel::OnMouseMove(POINT pt, bool isLButtonDown, float clientH) {
         if (inRect(pt, m_optionsMenuBounds)) {
             m_hoveredOptionsMenuItem = -1;
             for (size_t i = 0; i < m_optionsItemBounds.size(); ++i) {
-                if (inRect(pt, m_optionsItemBounds[i])) {
+                if (inRect(pt, m_optionsItemBounds[i]) || (pt.y >= m_optionsItemBounds[i].top && pt.y <= m_optionsItemBounds[i].bottom && pt.x >= m_optionsMenuBounds.left && pt.x <= m_optionsMenuBounds.right)) {
                     m_hoveredOptionsMenuItem = static_cast<int>(i);
                     if (i == 0) {
                         m_showEngineSubmenu = true;
@@ -3794,9 +3921,9 @@ bool TerminalPanel::OnMouseMove(POINT pt, bool isLButtonDown, float clientH) {
 
         // Submenu hover tracking
         m_hoveredEngineSubmenuItem = -1;
-        if (m_showEngineSubmenu && inRect(pt, m_engineSubmenuBounds)) {
+        if ((m_showEngineSubmenu || m_hoveredOptionsMenuItem == 0) && inRect(pt, m_engineSubmenuBounds)) {
             for (size_t s = 0; s < m_engineSubmenuItemBounds.size(); ++s) {
-                if (inRect(pt, m_engineSubmenuItemBounds[s])) {
+                if (inRect(pt, m_engineSubmenuItemBounds[s]) || (pt.y >= m_engineSubmenuItemBounds[s].top && pt.y <= m_engineSubmenuItemBounds[s].bottom)) {
                     m_hoveredEngineSubmenuItem = static_cast<int>(s);
                     break;
                 }
@@ -3804,9 +3931,9 @@ bool TerminalPanel::OnMouseMove(POINT pt, bool isLButtonDown, float clientH) {
         }
 
         m_hoveredViewModeSubmenuItem = -1;
-        if (m_showViewModeSubmenu && inRect(pt, m_viewModeSubmenuBounds)) {
+        if ((m_showViewModeSubmenu || m_hoveredOptionsMenuItem == 6) && inRect(pt, m_viewModeSubmenuBounds)) {
             for (size_t s = 0; s < m_viewModeSubmenuItemBounds.size(); ++s) {
-                if (inRect(pt, m_viewModeSubmenuItemBounds[s])) {
+                if (inRect(pt, m_viewModeSubmenuItemBounds[s]) || (pt.y >= m_viewModeSubmenuItemBounds[s].top && pt.y <= m_viewModeSubmenuItemBounds[s].bottom)) {
                     m_hoveredViewModeSubmenuItem = static_cast<int>(s);
                     break;
                 }
@@ -3814,9 +3941,9 @@ bool TerminalPanel::OnMouseMove(POINT pt, bool isLButtonDown, float clientH) {
         }
 
         m_hoveredMoveToSubmenuItem = -1;
-        if (m_showMoveToSubmenu && inRect(pt, m_moveToSubmenuBounds)) {
+        if ((m_showMoveToSubmenu || m_hoveredOptionsMenuItem == 7) && inRect(pt, m_moveToSubmenuBounds)) {
             for (size_t s = 0; s < m_moveToSubmenuItemBounds.size(); ++s) {
-                if (inRect(pt, m_moveToSubmenuItemBounds[s])) {
+                if (inRect(pt, m_moveToSubmenuItemBounds[s]) || (pt.y >= m_moveToSubmenuItemBounds[s].top && pt.y <= m_moveToSubmenuItemBounds[s].bottom)) {
                     m_hoveredMoveToSubmenuItem = static_cast<int>(s);
                     break;
                 }
@@ -3824,13 +3951,18 @@ bool TerminalPanel::OnMouseMove(POINT pt, bool isLButtonDown, float clientH) {
         }
 
         m_hoveredResizeSubmenuItem = -1;
-        if (m_showResizeSubmenu && inRect(pt, m_resizeSubmenuBounds)) {
+        if ((m_showResizeSubmenu || m_hoveredOptionsMenuItem == 8) && inRect(pt, m_resizeSubmenuBounds)) {
             for (size_t s = 0; s < m_resizeSubmenuItemBounds.size(); ++s) {
-                if (inRect(pt, m_resizeSubmenuItemBounds[s])) {
+                if (inRect(pt, m_resizeSubmenuItemBounds[s]) || (pt.y >= m_resizeSubmenuItemBounds[s].top && pt.y <= m_resizeSubmenuItemBounds[s].bottom)) {
                     m_hoveredResizeSubmenuItem = static_cast<int>(s);
                     break;
                 }
             }
+        }
+
+        if (HitTestMenuArea(pt)) {
+            SetCursor(LoadCursor(NULL, IDC_HAND));
+            return true;
         }
     } else {
         m_hoveredOptionsMenuItem = -1;
@@ -3838,6 +3970,11 @@ bool TerminalPanel::OnMouseMove(POINT pt, bool isLButtonDown, float clientH) {
         m_hoveredViewModeSubmenuItem = -1;
         m_hoveredMoveToSubmenuItem = -1;
         m_hoveredResizeSubmenuItem = -1;
+    }
+
+    if (m_showShellMenu && inRect(pt, m_shellMenuBounds)) {
+        SetCursor(LoadCursor(NULL, IDC_HAND));
+        return true;
     }
 
     return false;

@@ -132,8 +132,9 @@ bool DatabaseSettingsModal::OnKeyDown(WPARAM wParam) {
 }
 
 void DatabaseSettingsModal::UpdateSnippets() {
-    m_pdoSnippet = L"$pdo = new PDO(\"mysql:host=" + m_host + L";port=" + m_port + L";dbname=$dbname;charset=utf8mb4\", \"" + m_user + L"\", \"" + m_pass + L"\");";
-    m_mysqliSnippet = L"$conn = new mysqli(\"" + m_host + L"\", \"" + m_user + L"\", \"" + m_pass + L"\", $dbname, " + m_port + L");";
+    std::wstring dbName = m_defaultDb.empty() ? L"student_crud" : m_defaultDb;
+    m_pdoSnippet = L"$pdo = new PDO(\"mysql:host=" + m_host + L";port=" + m_port + L";dbname=" + dbName + L";charset=utf8mb4\", \"" + m_user + L"\", \"" + m_pass + L"\");";
+    m_mysqliSnippet = L"$conn = new mysqli(\"" + m_host + L"\", \"" + m_user + L"\", \"" + m_pass + L"\", \"" + dbName + L"\", " + m_port + L");";
 
     std::wstring effPmaHost = m_host.empty() ? L"localhost" : m_host;
     std::wstring effPmaPort = m_pmaWebPort.empty() ? L"8081" : m_pmaWebPort;

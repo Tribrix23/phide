@@ -279,6 +279,7 @@ public:
     void Close() noexcept;
     void Toggle(const std::wstring& workingDir);
     [[nodiscard]] bool IsOpen() const noexcept { return m_isOpen; }
+    void SetIsOpen(bool open) noexcept { m_isOpen = open; }
 
     [[nodiscard]] float GetHeight() const noexcept { return m_height; }
     void SetHeight(float h) noexcept;
@@ -365,6 +366,13 @@ public:
     // Direct2D Rendering
     void Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
                 float clientW, float clientH, float leftOffset, float animatedHeight = -1.0f);
+    void RenderBounds(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
+                      const D2D1_RECT_F& bounds, float clientH, bool isRightDocked = false);
+
+    [[nodiscard]] float GetRightWidth() const noexcept { return m_rightWidth; }
+    void SetRightWidth(float w) noexcept { m_rightWidth = w; }
+    [[nodiscard]] int GetDockPosition() const noexcept { return m_dockPosition; }
+    void SetDockPosition(int pos) noexcept { m_dockPosition = pos; }
 
     // Hit-testing & Mouse Event Handling
     [[nodiscard]] bool HitTest(POINT pt) const noexcept;
@@ -414,7 +422,24 @@ public:
     [[nodiscard]] const std::vector<TerminalProfileDef>& GetAvailableProfiles() const noexcept { return m_availableProfiles; }
     [[nodiscard]] bool IsShellMenuOpen() const noexcept { return m_showShellMenu; }
     [[nodiscard]] bool IsOptionsMenuOpen() const noexcept { return m_showOptionsMenu; }
-    void CloseMenus() noexcept { m_showShellMenu = false; m_showOptionsMenu = false; m_showEngineSubmenu = false; }
+    [[nodiscard]] bool HasOpenMenu() const noexcept {
+        return m_showShellMenu || m_showOptionsMenu || m_showEngineSubmenu ||
+               m_showViewModeSubmenu || m_showMoveToSubmenu || m_showResizeSubmenu;
+    }
+    [[nodiscard]] bool HitTestMenuArea(POINT pt) const noexcept;
+    void CloseMenus() noexcept {
+        m_showShellMenu = false;
+        m_showOptionsMenu = false;
+        m_showEngineSubmenu = false;
+        m_showViewModeSubmenu = false;
+        m_showMoveToSubmenu = false;
+        m_showResizeSubmenu = false;
+        m_hoveredOptionsMenuItem = -1;
+        m_hoveredEngineSubmenuItem = -1;
+        m_hoveredViewModeSubmenuItem = -1;
+        m_hoveredMoveToSubmenuItem = -1;
+        m_hoveredResizeSubmenuItem = -1;
+    }
 
 private:
     // Text selection state (hold and drag)
@@ -431,7 +456,7 @@ private:
     void RenderSinglePane(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
                           TerminalTab* tab, const D2D1_RECT_F& bounds, bool isFocused);
     void RenderShellMenu(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config);
-    void RenderOptionsMenu(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config);
+    void RenderOptionsMenu(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config, float clientH = 0.0f);
 
     bool m_isOpen = false;
     float m_height = 360.0f; // Taller default height matching Image 1
@@ -507,6 +532,9 @@ private:
 
     int m_defaultShellProfile = 0; // 0 = PowerShell, 1 = Cmd, 2 = GitBash, 3 = Node, 4 = Python
     int m_dockPosition = 0;        // 0 = Bottom (Panel), 1 = Editor Area, 2 = Right Side
+    float m_rightWidth = 480.0f;   // Width when docked to Right Side
+    float m_widthStart = 480.0f;
+    float m_dragStartX = 0.0f;
     int m_engineType = 0;          // 0 = Modern 2026, 1 = Classic PTY
     bool m_showToolbar = true;
 

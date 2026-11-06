@@ -940,16 +940,28 @@ void PackageManagerView::ScanInstalledPackages(const std::wstring& wsFolder) {
     auto addFromSitePackages = [&](const std::filesystem::path& spDir, std::unordered_set<std::wstring>& outSet) {
         if (!std::filesystem::exists(spDir, ec) || !std::filesystem::is_directory(spDir, ec)) return;
         for (const auto& entry : std::filesystem::directory_iterator(spDir, std::filesystem::directory_options::skip_permission_denied, ec)) {
-            if (entry.is_directory(ec)) {
-                std::wstring name = entry.path().filename().wstring();
-                auto distPos = name.find(L"-");
-                if (distPos != std::wstring::npos && (name.find(L".dist-info") != std::wstring::npos || name.find(L".egg-info") != std::wstring::npos)) {
-                    name = name.substr(0, distPos);
+            std::wstring name = entry.path().filename().wstring();
+            if (entry.is_regular_file(ec)) {
+                if (entry.path().extension() == L".py") {
+                    name = entry.path().stem().wstring();
+                } else {
+                    continue;
                 }
-                std::transform(name.begin(), name.end(), name.begin(), ::towlower);
-                std::replace(name.begin(), name.end(), L'_', L'-');
-                outSet.insert(name);
+            } else if (!entry.is_directory(ec)) {
+                continue;
             }
+            auto distPos = name.find(L"-");
+            if (distPos != std::wstring::npos && (name.find(L".dist-info") != std::wstring::npos || name.find(L".egg-info") != std::wstring::npos)) {
+                name = name.substr(0, distPos);
+            }
+            std::transform(name.begin(), name.end(), name.begin(), ::towlower);
+            outSet.insert(name);
+            std::wstring dashName = name;
+            std::replace(dashName.begin(), dashName.end(), L'_', L'-');
+            outSet.insert(dashName);
+            std::wstring underName = name;
+            std::replace(underName.begin(), underName.end(), L'-', L'_');
+            outSet.insert(underName);
         }
     };
 
@@ -1190,7 +1202,7 @@ bool PackageManagerView::HandleLButtonDown(POINT clientPt) {
         auto& pkg = activeList[pkgIdx];
 
         // 1. Split Dropdown Arrow Click ("▾")
-        if (mx >= pkg.rcSplitArrowBtn.left && mx <= pkg.rcSplitArrowBtn.right &&
+        if (!pkg.isInstalling && mx >= pkg.rcSplitArrowBtn.left && mx <= pkg.rcSplitArrowBtn.right &&
             my >= pkg.rcSplitArrowBtn.top && my <= pkg.rcSplitArrowBtn.bottom) {
             m_activeDropdownPkgIdx = (m_activeDropdownPkgIdx == static_cast<int>(pkgIdx)) ? -1 : static_cast<int>(pkgIdx);
             return true;
@@ -1199,6 +1211,7 @@ bool PackageManagerView::HandleLButtonDown(POINT clientPt) {
         // 2. Main Install / Uninstall Button Click
         if (mx >= pkg.rcInstallBtn.left && mx <= pkg.rcInstallBtn.right &&
             my >= pkg.rcInstallBtn.top && my <= pkg.rcInstallBtn.bottom) {
+            if (pkg.isInstalling) return true; // Already running install/uninstall, ignore duplicate click
             bool isInstalledForCurrentScope = (pkg.scope == PkgInstallScope::Project) ? pkg.isInstalledProject : pkg.isInstalledGlobal;
             pkg.isInstalled = isInstalledForCurrentScope;
             std::wstring cmdToRun;
@@ -1677,8 +1690,8 @@ void PackageManagerView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app:
                 pRT->DrawRoundedRectangle(rrcItem, theme.brushBorderSubtle.Get(), 1.0f);
             }
 
-            // Install Button bounds on right of card
-            const float btnW = config.ScaleF(88.0f);
+            // Install Button bounds on right of card (wide enough to comfortably fit "Installing..." without leaking)
+            const float btnW = config.ScaleF(110.0f);
             const float btnH = config.ScaleF(24.0f);
             float btnX = pkg.bounds.right - btnW - config.ScaleF(6.0f);
             float btnY = pkg.bounds.top + (itemH - btnH) / 2.0f;
@@ -1719,10 +1732,6 @@ void PackageManagerView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app:
 
             pRT->PopAxisAlignedClip();
 
-            // Split Button: [ Install | ▾ ]
-            pkg.rcInstallBtn = D2D1::RectF(btnX, btnY, btnX + btnW - config.ScaleF(22.0f), btnY + btnH);
-            D2D1_ROUNDED_RECT rrcInstallBtn = D2D1::RoundedRect(pkg.rcInstallBtn, 3.5f, 3.5f);
-
             bool isInstalledForScope = (pkg.scope == PkgInstallScope::Project) ? pkg.isInstalledProject : pkg.isInstalledGlobal;
             pkg.isInstalled = isInstalledForScope;
             std::wstring installLabel = (pkg.scope == PkgInstallScope::Global) ? L"Install (G)" : L"Install";
@@ -1737,23 +1746,44 @@ void PackageManagerView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app:
             } else {
                 btnBrush = theme.brushBrandAccent;
             }
-            pRT->FillRoundedRectangle(rrcInstallBtn, btnBrush ? btnBrush.Get() : theme.brushBrandAccent.Get());
 
-            // Centered Install text (User requirement)
-            pRT->DrawText(installLabel.c_str(), static_cast<UINT32>(installLabel.length()),
-                          theme.fontButtonCenter ? theme.fontButtonCenter.Get() : theme.fontHint.Get(),
-                          pkg.rcInstallBtn, theme.brushTextWhite.Get());
+            if (pkg.isInstalling) {
+                // When actively installing/removing, occupy full button width without split dropdown arrow (no leak!)
+                pkg.rcInstallBtn = D2D1::RectF(btnX, btnY, btnX + btnW, btnY + btnH);
+                pkg.rcSplitArrowBtn = D2D1::RectF(0.0f, 0.0f, 0.0f, 0.0f);
+                D2D1_ROUNDED_RECT rrcInstallBtn = D2D1::RoundedRect(pkg.rcInstallBtn, 3.5f, 3.5f);
+                pRT->FillRoundedRectangle(rrcInstallBtn, btnBrush ? btnBrush.Get() : theme.brushBrandAccent.Get());
 
-            // Split Dropdown Arrow portion ("▾")
-            pkg.rcSplitArrowBtn = D2D1::RectF(btnX + btnW - config.ScaleF(22.0f), btnY, btnX + btnW, btnY + btnH);
-            D2D1_ROUNDED_RECT rrcArrowBtn = D2D1::RoundedRect(pkg.rcSplitArrowBtn, 3.5f, 3.5f);
-            pRT->FillRoundedRectangle(rrcArrowBtn, btnBrush ? btnBrush.Get() : theme.brushBrandAccent.Get());
-            // Divider line between Install and ▾
-            pRT->DrawLine(D2D1::Point2F(pkg.rcSplitArrowBtn.left, btnY + 3.0f),
-                          D2D1::Point2F(pkg.rcSplitArrowBtn.left, btnY + btnH - 3.0f),
-                          theme.brushBorderSubtle.Get(), 1.0f);
-            pRT->DrawText(L"▾", 1, theme.fontButtonCenter ? theme.fontButtonCenter.Get() : theme.fontBadge.Get(),
-                          pkg.rcSplitArrowBtn, theme.brushTextWhite.Get());
+                pRT->PushAxisAlignedClip(pkg.rcInstallBtn, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+                pRT->DrawText(installLabel.c_str(), static_cast<UINT32>(installLabel.length()),
+                              theme.fontButtonCenter ? theme.fontButtonCenter.Get() : theme.fontHint.Get(),
+                              pkg.rcInstallBtn, theme.brushTextWhite.Get());
+                pRT->PopAxisAlignedClip();
+            } else {
+                // Split Button: [ Install | ▾ ]
+                const float splitArrowW = config.ScaleF(22.0f);
+                pkg.rcInstallBtn = D2D1::RectF(btnX, btnY, btnX + btnW - splitArrowW, btnY + btnH);
+                pkg.rcSplitArrowBtn = D2D1::RectF(btnX + btnW - splitArrowW, btnY, btnX + btnW, btnY + btnH);
+
+                D2D1_ROUNDED_RECT rrcInstallBtn = D2D1::RoundedRect(pkg.rcInstallBtn, 3.5f, 3.5f);
+                pRT->FillRoundedRectangle(rrcInstallBtn, btnBrush ? btnBrush.Get() : theme.brushBrandAccent.Get());
+
+                pRT->PushAxisAlignedClip(pkg.rcInstallBtn, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+                pRT->DrawText(installLabel.c_str(), static_cast<UINT32>(installLabel.length()),
+                              theme.fontButtonCenter ? theme.fontButtonCenter.Get() : theme.fontHint.Get(),
+                              pkg.rcInstallBtn, theme.brushTextWhite.Get());
+                pRT->PopAxisAlignedClip();
+
+                // Split Dropdown Arrow portion ("▾")
+                D2D1_ROUNDED_RECT rrcArrowBtn = D2D1::RoundedRect(pkg.rcSplitArrowBtn, 3.5f, 3.5f);
+                pRT->FillRoundedRectangle(rrcArrowBtn, btnBrush ? btnBrush.Get() : theme.brushBrandAccent.Get());
+                // Divider line between Install and ▾
+                pRT->DrawLine(D2D1::Point2F(pkg.rcSplitArrowBtn.left, btnY + 3.0f),
+                              D2D1::Point2F(pkg.rcSplitArrowBtn.left, btnY + btnH - 3.0f),
+                              theme.brushBorderSubtle.Get(), 1.0f);
+                pRT->DrawText(L"▾", 1, theme.fontButtonCenter ? theme.fontButtonCenter.Get() : theme.fontBadge.Get(),
+                              pkg.rcSplitArrowBtn, theme.brushTextWhite.Get());
+            }
 
             itemY += itemH + config.ScaleF(5.0f);
         }

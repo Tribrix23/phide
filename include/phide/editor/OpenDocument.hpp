@@ -353,6 +353,20 @@ struct OpenDocument {
     std::wstring commitMessage;          ///< Full commit message
     std::vector<MultiFileDiffEntry> multiFileDiffs; ///< List of all files changed in this commit
     std::shared_ptr<NotebookDocument> notebookDoc; ///< Attached interactive notebook model when viewType == L"notebook"
+
+    // CSS Peek Hover Info (Image 1)
+    struct CssPeekInfo {
+        bool active = false;
+        std::wstring selector;
+        std::vector<std::wstring> lines;
+        size_t targetLine = 0;
+        size_t targetCol = 0;
+        D2D1_RECT_F anchorRect{};
+    } cssPeek;
+
+    // Import Cost annotations cache (line index -> annotation text e.g. "   71.7 KB (gzipped: 25.9 KB)")
+    std::unordered_map<size_t, std::wstring> importCostMap;
+    bool importCostCalculated = false;
 };
 
 /**

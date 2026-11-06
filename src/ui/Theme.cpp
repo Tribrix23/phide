@@ -724,7 +724,7 @@ void Theme::SetThemeMode(ThemeMode mode) {
 
     if (!m_isDarkActive) {
         // Light Theme Colors (Modern, high-contrast, cohesive light IDE palette)
-        colors.windowBg        = D2D1::ColorF(0.930f, 0.935f, 0.948f, 1.0f); // #EDEFF2 Clean sleek shell frame
+        colors.windowBg        = D2D1::ColorF(0.948f, 0.952f, 0.962f, 1.0f); // #F2F3F6 Seamless with headerBg
         colors.canvasBg        = D2D1::ColorF(1.0f, 1.0f, 1.0f, 1.0f);       // #FFFFFF Crisp white editor
         colors.headerBg        = D2D1::ColorF(0.948f, 0.952f, 0.962f, 1.0f); // #F2F3F6 Refined title bar
         colors.railBg          = D2D1::ColorF(0.925f, 0.932f, 0.945f, 1.0f); // #ECEEF1 Sleek activity rail

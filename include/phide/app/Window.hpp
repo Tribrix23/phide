@@ -126,6 +126,7 @@ private:
     LRESULT HandleNCHitTest(POINT screenPt);
     void HandleMouseMove(POINT clientPt, WPARAM wParam = 0);
     void HandleLButtonDown(POINT clientPt);
+    bool HandlePopupMenuClick(POINT clientPt);
     void HandleLButtonUp(POINT clientPt);
     void HandleRButtonDown(POINT clientPt);
 
@@ -273,6 +274,12 @@ private:
 
     /** @brief Creates a new empty untitled text file document (Ctrl+N). */
     void DoNewTextFile();
+
+    void UpdateCssPeekHover(POINT clientPt);
+    std::vector<std::wstring> FindCssDefinition(const std::wstring& selector, const std::wstring& currentFilePath);
+    static std::vector<std::wstring> SearchCssInText(const std::wstring& selector, const std::wstring& cssText);
+    void CalculateImportCosts(editor::OpenDocument& doc);
+    bool TryAutoRenameMatchingTag(editor::OpenDocument* pDoc, size_t editLine, const std::wstring& oldLineText);
 
     /** @brief Creates a new custom file prompt / untitled file (Ctrl+Alt+N). */
     void DoNewFile();
@@ -700,8 +707,11 @@ private:
     float m_targetRightSidebarProgress = 0.0f;
     bool  m_isRightSidebarAnimating    = false;
 
+    void CloseTerminalEditorTab();
+
     [[nodiscard]] float GetCurrentTerminalHeight(float clientH) const noexcept {
         if (!m_terminal.IsOpen() && !m_isTerminalAnimating) return 0.0f;
+        if (m_terminal.GetDockPosition() != 0) return 0.0f;
         const float headerH = m_config.ScaleF(static_cast<float>(m_config.headerHeight));
         float normalH = m_terminal.GetHeight();
         float fullH = (std::max)(normalH, clientH - headerH);

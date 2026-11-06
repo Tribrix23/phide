@@ -625,7 +625,7 @@ void RenderNode(
 
     bool isVoid = EmmetEngine::IsVoidTag(tag);
     if (isVoid) {
-        out += L">\n";
+        out += L" />\n";
         return;
     }
 
@@ -707,6 +707,8 @@ std::wstring EmmetEngine::Expand(
 
     // Standard specific tags with aliases
     static const std::unordered_map<std::wstring, std::wstring> s_aliases = {
+        { L"input", L"input[type=\"text\"]" },
+        { L"inp", L"input[type=\"text\"]" },
         { L"input:text", L"input[type=\"text\" name=\"\" id=\"\"]" },
         { L"input:password", L"input[type=\"password\" name=\"\" id=\"\"]" },
         { L"input:email", L"input[type=\"email\" name=\"\" id=\"\"]" },

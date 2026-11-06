@@ -1613,6 +1613,7 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidatePython(const Buffer& buffe
                         if (p >= impPart.length()) break;
                         size_t tokenStart = p;
                         while (p < impPart.length() && isIdentChar(impPart[p])) p++;
+                        if (p == tokenStart) { p++; continue; }
                         std::wstring sym = impPart.substr(tokenStart, p - tokenStart);
                         while (p < impPart.length() && impPart[p] == L' ') p++;
                         if (p + 3 <= impPart.length() && impPart.substr(p, 3) == L"as ") {
@@ -1639,6 +1640,7 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidatePython(const Buffer& buffe
                 if (p >= impPart.length()) break;
                 size_t tokenStart = p;
                 while (p < impPart.length() && (isIdentChar(impPart[p]) || impPart[p] == L'.')) p++;
+                if (p == tokenStart) { p++; continue; }
                 std::wstring mod = impPart.substr(tokenStart, p - tokenStart);
                 size_t dot = mod.find(L'.');
                 std::wstring baseMod = (dot != std::wstring::npos) ? mod.substr(0, dot) : mod;

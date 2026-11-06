@@ -557,6 +557,11 @@ void EditorCanvas::RenderSinglePane(ID2D1RenderTarget* pRT, Theme& theme, const 
         m_keybindingsView.Render(pRT, theme, config, canvasLeft, canvasWidth, contentTopY, clientHeight - contentTopY);
     } else if (activeDoc.isSpecialView && activeDoc.viewType == L"packages") {
         m_packageManagerView.Render(pRT, theme, config, canvasLeft, canvasWidth, contentTopY, clientHeight - contentTopY);
+    } else if (activeDoc.isSpecialView && activeDoc.viewType == L"terminal") {
+        m_packageManagerView.HideWebView();
+        if (m_onRenderTerminalInEditor) {
+            m_onRenderTerminalInEditor(pRT, canvasLeft, contentTopY, canvasWidth, clientHeight - contentTopY);
+        }
     } else if (activeDoc.isSpecialView && activeDoc.viewType == L"notebook") {
         m_packageManagerView.HideWebView();
         m_notebookView.Render(pRT, theme, config, activeDoc, canvasLeft, canvasWidth, contentTopY, clientHeight - contentTopY);
@@ -883,6 +888,8 @@ void EditorCanvas::RenderTabs(ID2D1RenderTarget* pRT, Theme& theme, const app::A
             } else {
                 m_icons.DrawFileIcon(pRT, theme, iconBounds, FileIconType::Json);
             }
+        } else if (doc.isSpecialView && doc.viewType == L"terminal") {
+            m_icons.DrawTerminal(pRT, iconBounds, theme.brushBrandAccent ? theme.brushBrandAccent.Get() : theme.brushTextWhite.Get(), 1.3f);
         } else if (doc.isSpecialView && doc.viewType == L"graph") {
             m_icons.DrawFileNetwork(pRT, iconBounds, theme.brushBrandAccent ? theme.brushBrandAccent.Get() : theme.brushTextWhite.Get(), 1.2f);
         } else if (doc.isSpecialView && doc.viewType == L"settings") {
@@ -1107,7 +1114,10 @@ void EditorCanvas::RenderBreadcrumbs(ID2D1RenderTarget* pRT, Theme& theme, const
 
     // Parse segments from doc.filePath (Image 4) or course hierarchy
     std::vector<std::wstring> segments;
-    if (doc.isSpecialView && doc.viewType == L"settings") {
+    if (doc.isSpecialView && doc.viewType == L"terminal") {
+        segments.push_back(L"Integrated Terminal");
+        segments.push_back(doc.fileName.empty() ? L"Terminal" : doc.fileName);
+    } else if (doc.isSpecialView && doc.viewType == L"settings") {
         segments.push_back(L"Preferences");
         segments.push_back(L"Settings");
     } else if (doc.isSpecialView && doc.viewType == L"graph") {
@@ -2341,6 +2351,36 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
                 }
             }
         }
+
+        // Import Cost Inline Annotations (Image 2)
+        if (!doc.importCostMap.empty()) {
+            auto itCost = doc.importCostMap.find(vl.bufferLine);
+            if (itCost != doc.importCostMap.end()) {
+                const std::wstring& costText = itCost->second;
+                D2D1_COLOR_F costColor = D2D1::ColorF(0.45f, 0.79f, 0.57f, 0.88f); // Soft green matching Image 2
+                if (costText.find(L"MB") != std::wstring::npos) {
+                    costColor = D2D1::ColorF(0.88f, 0.42f, 0.46f, 0.9f);
+                } else {
+                    size_t kbPos = costText.find(L" KB");
+                    if (kbPos != std::wstring::npos) {
+                        size_t numStart = costText.rfind(L' ', kbPos - 1);
+                        if (numStart != std::wstring::npos) {
+                            float kbVal = static_cast<float>(_wtof(costText.substr(numStart + 1, kbPos - numStart - 1).c_str()));
+                            if (kbVal >= 100.0f) costColor = D2D1::ColorF(0.88f, 0.42f, 0.46f, 0.9f);
+                            else if (kbVal >= 50.0f) costColor = D2D1::ColorF(0.90f, 0.75f, 0.48f, 0.9f);
+                        }
+                    }
+                }
+                Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushCost;
+                pRT->CreateSolidColorBrush(costColor, &brushCost);
+                IDWriteTextFormat* costFmt = theme.fontHint ? theme.fontHint.Get() : theme.fontCode.Get();
+                if (costFmt && brushCost) {
+                    float costTextX = curCodeEndX + config.ScaleF(16.0f);
+                    D2D1_RECT_F rcCost = D2D1::RectF(costTextX, lineY, codeRight, lineY + lineH);
+                    pRT->DrawText(costText.c_str(), static_cast<UINT32>(costText.length()), costFmt, rcCost, brushCost.Get());
+                }
+            }
+        }
     }
 
     // 4. Blinking Caret (Image 5: High-contrast in both Dark and Light modes!) - Only in focused group
@@ -2613,6 +2653,7 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
                 m_crossFilePillBounds = D2D1::RectF(0, 0, 0, 0);
             }
         }
+
 
         // 4c. GitLens Current Line Inline Blame Annotation (e.g. "   You, 2 days ago • Add student CRUD handlers")
         // Suppress inline blame when autocomplete popup is active or text is actively selected to prevent overlapping what the user types
@@ -3201,6 +3242,72 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
     } else {
         doc.hScrollbarTrack = D2D1::RectF(0.0f, 0.0f, 0.0f, 0.0f);
         doc.hScrollbarThumb = D2D1::RectF(0.0f, 0.0f, 0.0f, 0.0f);
+    }
+
+    // 7b. CSS Peek Hover Definition Popover (Image 1)
+    if (doc.cssPeek.active && !doc.cssPeek.lines.empty()) {
+        float popW = config.ScaleF(280.0f);
+        float peekLineH = config.ScaleF(18.0f);
+        float popH = config.ScaleF(16.0f) + doc.cssPeek.lines.size() * peekLineH;
+
+        float lineY = topY + config.ScaleF(6.0f) + (static_cast<float>(doc.cssPeek.targetLine) - static_cast<float>(doc.scrollLine)) * lineH;
+        float wordX = canvasLeft + gutterW + config.ScaleF(10.0f) + static_cast<float>(doc.cssPeek.targetCol) * charW;
+
+        float popX = (std::max)(canvasLeft + gutterW + config.ScaleF(4.0f), (std::min)(wordX, canvasLeft + canvasWidth - popW - config.ScaleF(10.0f)));
+        float popY = lineY - popH - config.ScaleF(6.0f);
+        if (popY < topY + config.ScaleF(4.0f)) {
+            popY = lineY + lineH + config.ScaleF(6.0f);
+        }
+
+        D2D1_ROUNDED_RECT rrcPop = D2D1::RoundedRect(D2D1::RectF(popX, popY, popX + popW, popY + popH), config.ScaleF(4.0f), config.ScaleF(4.0f));
+
+        D2D1_COLOR_F popBg = theme.IsDarkMode() ? D2D1::ColorF(0.12f, 0.12f, 0.14f, 0.98f) : D2D1::ColorF(0.97f, 0.97f, 0.98f, 0.98f);
+        D2D1_COLOR_F popBorder = theme.IsDarkMode() ? D2D1::ColorF(0.24f, 0.24f, 0.27f, 1.0f) : D2D1::ColorF(0.80f, 0.80f, 0.83f, 1.0f);
+
+        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushPopBg;
+        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushPopBorder;
+        pRT->CreateSolidColorBrush(popBg, &brushPopBg);
+        pRT->CreateSolidColorBrush(popBorder, &brushPopBorder);
+
+        if (brushPopBg) pRT->FillRoundedRectangle(rrcPop, brushPopBg.Get());
+        if (brushPopBorder) pRT->DrawRoundedRectangle(rrcPop, brushPopBorder.Get(), 1.0f);
+
+        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushSelector;
+        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushProperty;
+        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushVal;
+        pRT->CreateSolidColorBrush(D2D1::ColorF(0.90f, 0.75f, 0.48f, 1.0f), &brushSelector);
+        pRT->CreateSolidColorBrush(D2D1::ColorF(0.38f, 0.69f, 0.94f, 1.0f), &brushProperty);
+        pRT->CreateSolidColorBrush(D2D1::ColorF(0.75f, 0.43f, 0.31f, 1.0f), &brushVal);
+
+        IDWriteTextFormat* pPeekFmt = theme.fontCode ? theme.fontCode.Get() : theme.fontBody.Get();
+
+        float curRowY = popY + config.ScaleF(8.0f);
+        float textPadX = popX + config.ScaleF(12.0f);
+
+        for (size_t rowIdx = 0; rowIdx < doc.cssPeek.lines.size(); ++rowIdx) {
+            const auto& lineText = doc.cssPeek.lines[rowIdx];
+            Microsoft::WRL::ComPtr<IDWriteTextLayout> pLayout;
+            if (theme.dwriteFactory && SUCCEEDED(theme.dwriteFactory->CreateTextLayout(
+                    lineText.c_str(), static_cast<UINT32>(lineText.length()), pPeekFmt, popW - config.ScaleF(20.0f), peekLineH, &pLayout))) {
+
+                if (rowIdx == 0) {
+                    DWRITE_TEXT_RANGE allRange = { 0, static_cast<UINT32>(lineText.length()) };
+                    if (brushSelector) pLayout->SetDrawingEffect(brushSelector.Get(), allRange);
+                } else if (lineText.find(L':') != std::wstring::npos) {
+                    size_t colonPos = lineText.find(L':');
+                    DWRITE_TEXT_RANGE propRange = { 0, static_cast<UINT32>(colonPos + 1) };
+                    DWRITE_TEXT_RANGE valRange = { static_cast<UINT32>(colonPos + 1), static_cast<UINT32>(lineText.length() - colonPos - 1) };
+                    if (brushProperty) pLayout->SetDrawingEffect(brushProperty.Get(), propRange);
+                    if (brushVal) pLayout->SetDrawingEffect(brushVal.Get(), valRange);
+                }
+                pRT->DrawTextLayout(D2D1::Point2F(textPadX, curRowY), pLayout.Get(), theme.brushTextPrimary ? theme.brushTextPrimary.Get() : theme.brushTextSecondary.Get());
+            } else {
+                D2D1_RECT_F rcRow = D2D1::RectF(textPadX, curRowY, popX + popW - config.ScaleF(8.0f), curRowY + peekLineH);
+                pRT->DrawText(lineText.c_str(), static_cast<UINT32>(lineText.length()), pPeekFmt, rcRow,
+                              theme.brushTextPrimary ? theme.brushTextPrimary.Get() : theme.brushTextSecondary.Get());
+            }
+            curRowY += peekLineH;
+        }
     }
 
     // 7. Diagnostic Error Hover Popover (VS Code / Antigravity style)
