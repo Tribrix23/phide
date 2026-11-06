@@ -6,6 +6,7 @@
 
 #include "phide/editor/PredictionEngine.hpp"
 #include "phide/editor/ZedPredictionData.hpp"
+#include "phide/editor/AdaptiveCodeEngine.hpp"
 #include <algorithm>
 #include <cwctype>
 #include <regex>
@@ -86,16 +87,100 @@ CodePrediction PredictionEngine::PredictNextEdit(
 ) {
     if (cursorLine < buffer.GetLineCount()) {
         const std::wstring& curL = buffer.GetLine(cursorLine);
-        // Do not generate ghost text predictions if there is non-whitespace code after caret on same line
+        // Do not generate ghost text predictions if there is non-whitespace code after caret on same line,
+        // UNLESS caret is positioned immediately before an enclosing closing delimiter (e.g. "" or '')
         if (cursorCol < curL.length()) {
             bool hasCodeAfter = false;
+            size_t firstNonWs = curL.length();
             for (size_t c = cursorCol; c < curL.length(); ++c) {
-                if (!iswspace(curL[c])) { hasCodeAfter = true; break; }
+                if (!iswspace(curL[c])) {
+                    hasCodeAfter = true;
+                    firstNonWs = c;
+                    break;
+                }
             }
-            if (hasCodeAfter) return {};
+            if (hasCodeAfter) {
+                bool isEnclosingCloseDelimiter = false;
+                if (firstNonWs < curL.length()) {
+                    wchar_t closeCh = curL[firstNonWs];
+                    if (closeCh == L'"' || closeCh == L'\'' || closeCh == L'`') {
+                        size_t qCount = 0;
+                        for (size_t c = 0; c < cursorCol; ++c) {
+                            if (curL[c] == closeCh && (c == 0 || curL[c - 1] != L'\\')) {
+                                qCount++;
+                            }
+                        }
+                        if ((qCount % 2) == 1) {
+                            bool moreCodeAfter = false;
+                            for (size_t c = firstNonWs + 1; c < curL.length(); ++c) {
+                                if (!iswspace(curL[c])) { moreCodeAfter = true; break; }
+                            }
+                            if (!moreCodeAfter) {
+                                isEnclosingCloseDelimiter = true;
+                            }
+                        }
+                    } else if (closeCh == L')' || closeCh == L']' || closeCh == L'}') {
+                        wchar_t openCh = (closeCh == L')') ? L'(' : ((closeCh == L']') ? L'[' : L'{');
+                        int depth = 0;
+                        for (size_t c = 0; c < cursorCol; ++c) {
+                            if (curL[c] == openCh) depth++;
+                            else if (curL[c] == closeCh) depth--;
+                        }
+                        if (depth > 0) {
+                            bool moreCodeAfter = false;
+                            for (size_t c = firstNonWs + 1; c < curL.length(); ++c) {
+                                if (!iswspace(curL[c])) { moreCodeAfter = true; break; }
+                            }
+                            if (!moreCodeAfter) {
+                                isEnclosingCloseDelimiter = true;
+                            }
+                        }
+                    }
+                }
+                if (!isEnclosingCloseDelimiter) {
+                    return {};
+                }
+            }
         }
     }
     if (buffer.GetLineCount() == 0) return {};
+
+    // 0. Pattern Induction & Adaptive Learning from live buffer and user coding habits (0ms freeze)
+    auto bufferPatternPred = PredictFromBufferPatterns(filePath, buffer, cursorLine, cursorCol);
+    if (bufferPatternPred.isValid) return bufferPatternPred;
+
+    // 0b. Adaptive User Habit Prediction (Learned overtime from user coding habits with 0ms freeze)
+    if (m_pAdaptive && cursorLine < buffer.GetLineCount()) {
+        const std::wstring& curL = buffer.GetLine(cursorLine);
+        if (cursorCol > 0 && cursorCol <= curL.length()) {
+            wchar_t prevChar = curL[cursorCol - 1];
+            // Do not predict inside tokens after closing brackets or quotes (e.g. print(n)| -> no 'n')
+            if (prevChar != L')' && prevChar != L']' && prevChar != L'}' && prevChar != L'"' && prevChar != L'\'' && prevChar != L';' && prevChar != L',') {
+                size_t tokenEnd = cursorCol;
+                while (tokenEnd > 0 && iswspace(curL[tokenEnd - 1])) tokenEnd--;
+                size_t tokenStart = tokenEnd;
+                while (tokenStart > 0 && (iswalnum(curL[tokenStart - 1]) || curL[tokenStart - 1] == L'_' || curL[tokenStart - 1] == L'>' || curL[tokenStart - 1] == L':')) {
+                    tokenStart--;
+                }
+                if (tokenStart < tokenEnd) {
+                    std::wstring token = curL.substr(tokenStart, tokenEnd - tokenStart);
+                    std::wstring lang = DetectLangTag(filePath, buffer);
+                    float conf = 0.0f;
+                    std::wstring nextTok = m_pAdaptive->PredictNextToken(token, lang, conf);
+                    if (!nextTok.empty() && nextTok != token && conf >= 0.70f) {
+                        CodePrediction pred;
+                        pred.isValid = true;
+                        pred.line = cursorLine;
+                        pred.col = cursorCol;
+                        pred.ghostText = nextTok;
+                        pred.displaySummary = L"Adaptive Habit (" + std::to_wstring(static_cast<int>(conf * 100)) + L"%)";
+                        pred.hasLightbulb = true;
+                        return pred;
+                    }
+                }
+            }
+        }
+    }
 
     // 1. Comment-driven generation
     auto commentPred = PredictFromComments(filePath, buffer, cursorLine, cursorCol);
@@ -112,6 +197,388 @@ CodePrediction PredictionEngine::PredictNextEdit(
     // 4. Zed-Style AST / Struct / Class / PHP / Python / React / JS / TS Next-Edit Prediction
     auto compPred = PredictComponentOrMethod(filePath, buffer, cursorLine, cursorCol);
     if (compPred.isValid) return compPred;
+
+    return {};
+}
+
+CodePrediction PredictionEngine::PredictFromBufferPatterns(
+    const std::wstring& filePath,
+    const Buffer& buffer,
+    size_t cursorLine,
+    size_t cursorCol
+) {
+    if (buffer.GetLineCount() == 0 || cursorLine >= buffer.GetLineCount()) return {};
+
+    const std::wstring& curL = buffer.GetLine(cursorLine);
+    std::wstring lang = DetectLangTag(filePath, buffer);
+
+    // Helper: Parse an assignment from a line string: e.g. "cs = \"hello world\"" or "let x = 'abc'"
+    auto parseAssignmentLine = [](const std::wstring& line, std::wstring& outVar, std::wstring& outVal, wchar_t& outQuote, bool& outHasQuotes) -> bool {
+        outVar.clear();
+        outVal.clear();
+        outQuote = L'"';
+        outHasQuotes = false;
+
+        size_t eqPos = std::wstring::npos;
+        for (size_t i = 0; i < line.length(); ++i) {
+            if (line[i] == L'=') {
+                if (i > 0 && (line[i-1] == L'=' || line[i-1] == L'!' || line[i-1] == L'<' || line[i-1] == L'>' ||
+                              line[i-1] == L'+' || line[i-1] == L'-' || line[i-1] == L'*' || line[i-1] == L'/' ||
+                              line[i-1] == L'%' || line[i-1] == L'&' || line[i-1] == L'|' || line[i-1] == L'^')) {
+                    continue;
+                }
+                if (i + 1 < line.length() && line[i+1] == L'=') {
+                    continue;
+                }
+                eqPos = i;
+                break;
+            }
+        }
+        if (eqPos == std::wstring::npos) return false;
+
+        std::wstring lhs = TrimStr(line.substr(0, eqPos));
+        size_t colonPos = lhs.find(L':');
+        if (colonPos != std::wstring::npos) lhs = TrimStr(lhs.substr(0, colonPos));
+
+        if (lhs.rfind(L"const ", 0) == 0) lhs = TrimStr(lhs.substr(6));
+        else if (lhs.rfind(L"let ", 0) == 0) lhs = TrimStr(lhs.substr(4));
+        else if (lhs.rfind(L"var ", 0) == 0) lhs = TrimStr(lhs.substr(4));
+        else if (lhs.rfind(L"auto ", 0) == 0) lhs = TrimStr(lhs.substr(5));
+
+        if (lhs.empty()) return false;
+        for (wchar_t c : lhs) {
+            if (!iswalnum(c) && c != L'_' && c != L'$') return false;
+        }
+        outVar = lhs;
+
+        std::wstring rhs = TrimStr(line.substr(eqPos + 1));
+        if (rhs.empty()) return true;
+
+        if (rhs.front() == L'"' || rhs.front() == L'\'' || rhs.front() == L'`') {
+            outQuote = rhs.front();
+            size_t endQ = rhs.rfind(outQuote);
+            if (endQ > 0) {
+                outVal = rhs.substr(1, endQ - 1);
+                outHasQuotes = true;
+            } else {
+                outVal = rhs.substr(1);
+            }
+        } else {
+            outVal = rhs;
+        }
+        return true;
+    };
+
+    auto containsWholeWord = [](const std::wstring& haystack, const std::wstring& word) -> bool {
+        if (word.empty() || haystack.empty()) return false;
+        size_t pos = 0;
+        while ((pos = haystack.find(word, pos)) != std::wstring::npos) {
+            bool leftOk = (pos == 0) || (!iswalnum(haystack[pos - 1]) && haystack[pos - 1] != L'_' && haystack[pos - 1] != L'$');
+            size_t endPos = pos + word.length();
+            bool rightOk = (endPos >= haystack.length()) || (!iswalnum(haystack[endPos]) && haystack[endPos] != L'_' && haystack[endPos] != L'$');
+            if (leftOk && rightOk) return true;
+            pos++;
+        }
+        return false;
+    };
+
+    auto replaceWholeWord = [](const std::wstring& haystack, const std::wstring& word, const std::wstring& rep) -> std::wstring {
+        if (word.empty() || haystack.empty()) return haystack;
+        std::wstring result;
+        size_t pos = 0;
+        size_t lastPos = 0;
+        while ((pos = haystack.find(word, lastPos)) != std::wstring::npos) {
+            bool leftOk = (pos == 0) || (!iswalnum(haystack[pos - 1]) && haystack[pos - 1] != L'_' && haystack[pos - 1] != L'$');
+            size_t endPos = pos + word.length();
+            bool rightOk = (endPos >= haystack.length()) || (!iswalnum(haystack[endPos]) && haystack[endPos] != L'_' && haystack[endPos] != L'$');
+            if (leftOk && rightOk) {
+                result += haystack.substr(lastPos, pos - lastPos);
+                result += rep;
+                lastPos = endPos;
+            } else {
+                result += haystack.substr(lastPos, pos - lastPos + 1);
+                lastPos = pos + 1;
+            }
+        }
+        result += haystack.substr(lastPos);
+        return result;
+    };
+
+    // 1. Analyze current line at caret
+    std::wstring curPrefix = (cursorCol <= curL.length()) ? curL.substr(0, cursorCol) : curL;
+    size_t eqIdx = std::wstring::npos;
+    for (size_t i = 0; i < curPrefix.length(); ++i) {
+        if (curPrefix[i] == L'=') {
+            if (i > 0 && (curPrefix[i-1] == L'=' || curPrefix[i-1] == L'!' || curPrefix[i-1] == L'<' || curPrefix[i-1] == L'>' ||
+                          curPrefix[i-1] == L'+' || curPrefix[i-1] == L'-' || curPrefix[i-1] == L'*' || curPrefix[i-1] == L'/' ||
+                          curPrefix[i-1] == L'%' || curPrefix[i-1] == L'&' || curPrefix[i-1] == L'|' || curPrefix[i-1] == L'^')) {
+                continue;
+            }
+            if (i + 1 < curPrefix.length() && curPrefix[i+1] == L'=') {
+                continue;
+            }
+            eqIdx = i;
+            break;
+        }
+    }
+
+    bool isCurrentLineAssignment = false;
+    std::wstring currentVar;
+    wchar_t currentQuote = L'"';
+    std::wstring typedPrefix;
+    bool isInsideQuotes = false;
+    bool hasClosingQuote = false;
+    size_t replaceCharCount = 0;
+
+    if (eqIdx != std::wstring::npos) {
+        std::wstring lhs = TrimStr(curPrefix.substr(0, eqIdx));
+        size_t colonPos = lhs.find(L':');
+        if (colonPos != std::wstring::npos) lhs = TrimStr(lhs.substr(0, colonPos));
+        if (lhs.rfind(L"const ", 0) == 0) lhs = TrimStr(lhs.substr(6));
+        else if (lhs.rfind(L"let ", 0) == 0) lhs = TrimStr(lhs.substr(4));
+        else if (lhs.rfind(L"var ", 0) == 0) lhs = TrimStr(lhs.substr(4));
+        else if (lhs.rfind(L"auto ", 0) == 0) lhs = TrimStr(lhs.substr(5));
+
+        bool validIdent = !lhs.empty();
+        for (wchar_t c : lhs) {
+            if (!iswalnum(c) && c != L'_' && c != L'$') { validIdent = false; break; }
+        }
+
+        if (validIdent) {
+            currentVar = lhs;
+            isCurrentLineAssignment = true;
+
+            std::wstring rhsPart = curPrefix.substr(eqIdx + 1);
+            wchar_t activeQuote = L'\0';
+            size_t quoteStartInRhs = std::wstring::npos;
+            for (size_t i = 0; i < rhsPart.length(); ++i) {
+                wchar_t c = rhsPart[i];
+                if (activeQuote != L'\0') {
+                    if (c == L'\\') { i++; continue; }
+                    if (c == activeQuote) { activeQuote = L'\0'; quoteStartInRhs = std::wstring::npos; }
+                } else {
+                    if (c == L'"' || c == L'\'' || c == L'`') {
+                        activeQuote = c;
+                        quoteStartInRhs = i;
+                    }
+                }
+            }
+
+            isInsideQuotes = (activeQuote != L'\0');
+            if (isInsideQuotes) {
+                currentQuote = activeQuote;
+                typedPrefix = rhsPart.substr(quoteStartInRhs + 1);
+                for (size_t c = cursorCol; c < curL.length(); ++c) {
+                    if (!iswspace(curL[c])) {
+                        if (curL[c] == currentQuote) {
+                            hasClosingQuote = true;
+                            replaceCharCount = 1;
+                        }
+                        break;
+                    }
+                }
+            } else {
+                std::wstring trimmedRhs = TrimStr(rhsPart);
+                if (!trimmedRhs.empty()) {
+                    // Caret is after an unquoted expression (e.g. `cs = hello|`)
+                    // The user typed an identifier or expression without quotes.
+                    // Excel AutoComplete rule: Never append string literal completions to unquoted values!
+                    return {};
+                }
+            }
+        }
+    }
+
+    // 2. Scan previous lines for assignments and templates (Excel AutoComplete local column/buffer rule)
+    struct PastAssn {
+        size_t lineIdx = 0;
+        std::wstring var;
+        std::wstring val;
+        wchar_t quote = L'"';
+    };
+    std::vector<PastAssn> pastList;
+    std::unordered_map<std::wstring, size_t> strFreq;
+    std::vector<std::wstring> strRecency;
+    std::unordered_map<wchar_t, size_t> quoteFreq;
+
+    size_t scanStart = (cursorLine > 300) ? (cursorLine - 300) : 0;
+    for (size_t l = scanStart; l < cursorLine; ++l) {
+        std::wstring pVar, pVal;
+        wchar_t pQuote = L'"';
+        bool pHasQuotes = false;
+        if (parseAssignmentLine(buffer.GetLine(l), pVar, pVal, pQuote, pHasQuotes) && pHasQuotes && !pVal.empty()) {
+            pastList.push_back({ l, pVar, pVal, pQuote });
+            quoteFreq[pQuote]++;
+            if (isInsideQuotes) {
+                if (typedPrefix.empty() || pVal.rfind(typedPrefix, 0) == 0) {
+                    strFreq[pVal]++;
+                    strRecency.push_back(pVal);
+                }
+            } else {
+                strFreq[pVal]++;
+                strRecency.push_back(pVal);
+            }
+        }
+    }
+
+    std::wstring candidateStr;
+    size_t bestFreq = 0;
+    for (const auto& [s, freq] : strFreq) {
+        if (freq > bestFreq) {
+            bestFreq = freq;
+            candidateStr = s;
+        }
+    }
+    if (bestFreq == 1 && !strRecency.empty()) {
+        candidateStr = strRecency.back();
+    }
+
+    // Excel AutoComplete condition:
+    // If prefix was typed, bestFreq >= 1 is valid (explicit prefix match).
+    // If prefix is empty, requires repetition in the buffer (bestFreq >= 2) or immediately preceding pattern.
+    if (!typedPrefix.empty()) {
+        if (bestFreq == 0) candidateStr.clear();
+    } else {
+        if (bestFreq < 2 && (pastList.empty() || pastList.back().val != candidateStr)) {
+            candidateStr.clear();
+        }
+    }
+
+    if (candidateStr.empty() && !isCurrentLineAssignment) return {};
+
+    // 3. Extract follow-up statement templates
+    std::unordered_map<std::wstring, size_t> templateCounts;
+    std::unordered_map<size_t, size_t> blankCounts;
+    for (const auto& past : pastList) {
+        size_t nextL = past.lineIdx + 1;
+        size_t blanks = 0;
+        while (nextL < cursorLine && TrimStr(buffer.GetLine(nextL)).empty()) {
+            blanks++;
+            nextL++;
+        }
+        if (nextL < cursorLine) {
+            std::wstring followLine = buffer.GetLine(nextL);
+            std::wstring followTrim = TrimStr(followLine);
+            if (containsWholeWord(followTrim, past.var)) {
+                std::wstring tpl = replaceWholeWord(followTrim, past.var, L"$VAR");
+                templateCounts[tpl]++;
+                blankCounts[blanks]++;
+            }
+        }
+    }
+
+    std::wstring bestTemplate;
+    size_t bestTplCount = 0;
+    for (const auto& [tpl, cnt] : templateCounts) {
+        if (cnt > bestTplCount) {
+            bestTplCount = cnt;
+            bestTemplate = tpl;
+        }
+    }
+
+    size_t bestBlanks = 1;
+    size_t bestBlankCount = 0;
+    for (const auto& [b, cnt] : blankCounts) {
+        if (cnt > bestBlankCount) {
+            bestBlankCount = cnt;
+            bestBlanks = b;
+        }
+    }
+
+    // Adaptively record in background engine
+    if (m_pAdaptive && !candidateStr.empty() && !bestTemplate.empty()) {
+        m_pAdaptive->RecordAssignmentPattern(candidateStr, bestTemplate, lang);
+    }
+
+    // 4. Synthesize prediction
+    if (isCurrentLineAssignment && !candidateStr.empty()) {
+        std::wstring lineGhost;
+        if (isInsideQuotes) {
+            if (typedPrefix.length() < candidateStr.length()) {
+                lineGhost = candidateStr.substr(typedPrefix.length());
+            }
+            lineGhost += currentQuote;
+        } else {
+            // Caret is at `cs = |` without quotes: include BOTH opening and closing quotes!
+            wchar_t qChar = (quoteFreq[L'\''] > quoteFreq[L'"']) ? L'\'' : L'"';
+            lineGhost = std::wstring(1, qChar) + candidateStr + qChar;
+            replaceCharCount = 0;
+        }
+
+        std::wstring multilineGhost = lineGhost;
+        if (!bestTemplate.empty()) {
+            std::wstring instantiated = replaceWholeWord(bestTemplate, L"$VAR", currentVar);
+            std::wstring instTrim = TrimStr(instantiated);
+
+            // Lookahead guard: do NOT predict follow-up statement if already present below!
+            bool alreadyBelow = false;
+            size_t lookaheadLimit = (std::min)(cursorLine + 6, buffer.GetLineCount());
+            for (size_t nextL = cursorLine + 1; nextL < lookaheadLimit; ++nextL) {
+                std::wstring nextTrim = TrimStr(buffer.GetLine(nextL));
+                if (nextTrim == instTrim || containsWholeWord(nextTrim, currentVar)) {
+                    alreadyBelow = true;
+                    break;
+                }
+            }
+
+            if (!alreadyBelow) {
+                std::wstring indent = LeadingIndent(curL);
+                std::wstring sep = std::wstring(bestBlanks + 1, L'\n');
+                multilineGhost += sep + indent + instantiated;
+            }
+        }
+
+        CodePrediction pred;
+        pred.isValid = true;
+        pred.line = cursorLine;
+        pred.col = cursorCol;
+        pred.ghostText = multilineGhost;
+        pred.replaceCharCount = replaceCharCount;
+        pred.displaySummary = L"Adaptive Habit: " + currentVar + L" = \"" + candidateStr + L"\"";
+        pred.hasLightbulb = true;
+        return pred;
+    }
+
+    // Caret on empty line following an assignment
+    if (TrimStr(curL).empty() && !bestTemplate.empty() && !pastList.empty()) {
+        const auto& lastPast = pastList.back();
+        if (cursorLine > lastPast.lineIdx && cursorLine <= lastPast.lineIdx + 3) {
+            std::wstring instantiated = replaceWholeWord(bestTemplate, L"$VAR", lastPast.var);
+            std::wstring instTrim = TrimStr(instantiated);
+
+            // Guard 1: Check if already written on any line between lastPast.lineIdx and cursorLine
+            bool alreadyDoneAbove = false;
+            for (size_t l = lastPast.lineIdx + 1; l < cursorLine; ++l) {
+                if (TrimStr(buffer.GetLine(l)) == instTrim) {
+                    alreadyDoneAbove = true;
+                    break;
+                }
+            }
+            if (alreadyDoneAbove) return {};
+
+            // Guard 2: Check if already written on any line below cursorLine
+            bool alreadyDoneBelow = false;
+            size_t belowLimit = (std::min)(cursorLine + 4, buffer.GetLineCount());
+            for (size_t l = cursorLine + 1; l < belowLimit; ++l) {
+                if (TrimStr(buffer.GetLine(l)) == instTrim) {
+                    alreadyDoneBelow = true;
+                    break;
+                }
+            }
+            if (alreadyDoneBelow) return {};
+
+            std::wstring indent = LeadingIndent(buffer.GetLine(lastPast.lineIdx));
+            CodePrediction pred;
+            pred.isValid = true;
+            pred.line = cursorLine;
+            pred.col = cursorCol;
+            pred.ghostText = indent + instantiated;
+            pred.replaceCharCount = 0;
+            pred.displaySummary = L"Adaptive Habit: " + instantiated;
+            pred.hasLightbulb = true;
+            return pred;
+        }
+    }
 
     return {};
 }

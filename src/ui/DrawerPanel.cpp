@@ -126,6 +126,7 @@ void DrawerPanel::OpenFolder(const std::wstring& folderPath, const std::set<std:
         m_expandedDirs.insert(m_openFolderPath);
     }
 
+    m_ignoreEngine.LoadWorkspaceIgnoreFiles(m_openFolderPath);
     DetectProjectLanguages();
     RebuildVisibleItems();
 }
@@ -139,6 +140,7 @@ void DrawerPanel::SetExpandedDirs(const std::set<std::wstring>& dirs) {
 }
 
 void DrawerPanel::CloseFolder() {
+    m_ignoreEngine.Clear();
     m_hasOpenFolder = false;
     m_openFolderPath.clear();
     m_rootName.clear();
@@ -147,8 +149,17 @@ void DrawerPanel::CloseFolder() {
     m_hoveredIndex = -1;
 }
 
+void DrawerPanel::ReloadIgnoreFiles() {
+    if (m_hasOpenFolder && !m_openFolderPath.empty()) {
+        m_ignoreEngine.LoadWorkspaceIgnoreFiles(m_openFolderPath);
+    }
+}
+
 void DrawerPanel::RefreshTree() {
     if (m_hasOpenFolder) {
+        if (!m_openFolderPath.empty()) {
+            m_ignoreEngine.LoadWorkspaceIgnoreFiles(m_openFolderPath);
+        }
         RebuildVisibleItems();
     }
 }
@@ -1159,7 +1170,7 @@ void DrawerPanel::RenderExplorerPane(ID2D1RenderTarget* pRT, Theme& theme, const
                     iconX + iconSz,
                     cy + iconHalf
                 );
-                bool isGitIgnored = IsPathGitIgnored(item.fullPath, item.label);
+                bool isGitIgnored = IsPathIgnored(item.fullPath, item.label, item.isFolder);
                 bool isIpynb = (!item.isFolder && item.label.size() >= 6 && 
                     (_wcsicmp(item.label.c_str() + (item.label.size() - 6), L".ipynb") == 0));
                 bool isPy = (!item.isFolder && (item.label.ends_with(L".py") || item.label.ends_with(L".pyw")));
@@ -3118,6 +3129,9 @@ void DrawerPanel::LaunchAsyncSearch() {
                     if (entry.is_directory(ec)) {
                         bool excludeDir = false;
                         if (useExcludeSettings) {
+                            if (m_ignoreEngine.IsIgnored(entry.path().wstring(), filename, true)) {
+                                excludeDir = true;
+                            }
                             std::wstring lowerDir = filename;
                             for (auto& c : lowerDir) c = towlower(c);
                             if (lowerDir == L"node_modules" || lowerDir == L"build" || lowerDir == L"bin" ||
@@ -3143,6 +3157,8 @@ void DrawerPanel::LaunchAsyncSearch() {
                     }
 
                     if (!entry.is_regular_file(ec)) continue;
+
+                    if (useExcludeSettings && m_ignoreEngine.IsIgnored(entry.path().wstring(), filename, false)) continue;
 
                     auto fstr = entry.path().wstring();
                     if (!filesToInclude.empty() && !MatchesPatternList(filename, fstr, filesToInclude)) continue;
@@ -3396,6 +3412,9 @@ void DrawerPanel::ExecuteSearch(bool async) {
             if (entry.is_directory(ec)) {
                 bool excludeDir = false;
                 if (m_useExcludeSettings) {
+                    if (m_ignoreEngine.IsIgnored(entry.path().wstring(), filename, true)) {
+                        excludeDir = true;
+                    }
                     std::wstring lowerDir = filename;
                     for (auto& c : lowerDir) c = towlower(c);
                     if (lowerDir == L"node_modules" || lowerDir == L"build" || lowerDir == L"bin" ||
@@ -3421,6 +3440,8 @@ void DrawerPanel::ExecuteSearch(bool async) {
             }
 
             if (!entry.is_regular_file(ec)) continue;
+
+            if (m_useExcludeSettings && m_ignoreEngine.IsIgnored(entry.path().wstring(), filename, false)) continue;
 
             auto fstr = entry.path().wstring();
             if (!m_filesToInclude.empty() && !MatchesPatternList(filename, fstr, m_filesToInclude)) continue;
@@ -4788,6 +4809,7 @@ void DrawerPanel::RefreshGitState(bool async, bool showLoading) {
             }
             m_gitChanges = std::move(changes);
             m_gitIgnoredSet = std::move(ignoredFiles);
+            m_ignoreEngine.SetGitIgnoredSet(m_gitIgnoredSet);
             for (size_t i = 0; i < commits.size(); ++i) {
                 commits[i].isUnpushed = (i < static_cast<size_t>(unpushedCount));
             }
@@ -4809,11 +4831,18 @@ void DrawerPanel::RefreshGitState(bool async, bool showLoading) {
     }
 }
 
-bool DrawerPanel::IsPathGitIgnored(const std::wstring& fullPath, const std::wstring& label) const {
+bool DrawerPanel::IsPathIgnored(const std::wstring& fullPath, const std::wstring& label, bool isFolder) const {
     if (label == L".git" || _wcsicmp(label.c_str(), L".git") == 0) return true;
-    if (label.ends_with(L".obj") || label.ends_with(L".pdb") || label.ends_with(L".exe")) {
+    if (label == L".vs" || _wcsicmp(label.c_str(), L".vs") == 0) return true;
+    if (!isFolder && (label.ends_with(L".obj") || label.ends_with(L".pdb") || label.ends_with(L".exe"))) {
         return true;
     }
+
+    // Check multi-file ignore engine (.gitignore, .dockerignore, .npmignore, .eslintignore, etc.)
+    if (m_ignoreEngine.IsIgnored(fullPath, label, isFolder)) {
+        return true;
+    }
+
     std::lock_guard<std::recursive_mutex> lock(m_gitMutex);
     if (m_gitIgnoredSet.empty()) return false;
 
@@ -4838,6 +4867,10 @@ bool DrawerPanel::IsPathGitIgnored(const std::wstring& fullPath, const std::wstr
         sep = relItem.find(L'\\', sep + 1);
     }
     return false;
+}
+
+bool DrawerPanel::IsPathGitIgnored(const std::wstring& fullPath, const std::wstring& label) const {
+    return IsPathIgnored(fullPath, label, false);
 }
 
 
@@ -5366,6 +5399,8 @@ void DrawerPanel::RefreshGitStatusOnly(bool async) {
                 }
             }
             m_gitChanges = std::move(changes);
+            m_gitIgnoredSet = std::move(ignoredFiles);
+            m_ignoreEngine.SetGitIgnoredSet(m_gitIgnoredSet);
             m_unpushedCommitsCount = unpushedCount;
         }
 

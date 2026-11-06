@@ -43,6 +43,7 @@ struct IntelliSenseItem {
 };
 
 class SnippetManager;
+class AdaptiveCodeEngine;
 
 /**
  * @brief Massive complete HTML5 and JavaScript/TypeScript IntelliSense knowledge engine.
@@ -56,6 +57,21 @@ public:
      */
     void SetSnippetManager(const SnippetManager* pSnippets) noexcept {
         m_pSnippetManager = pSnippets;
+    }
+
+    /**
+     * @brief Attaches AdaptiveCodeEngine for personalized learning and scoring.
+     */
+    void SetAdaptiveEngine(AdaptiveCodeEngine* pAdaptive) noexcept {
+        m_pAdaptiveEngine = pAdaptive;
+    }
+
+    [[nodiscard]] const AdaptiveCodeEngine* GetAdaptiveEngine() const noexcept {
+        return m_pAdaptiveEngine;
+    }
+
+    [[nodiscard]] AdaptiveCodeEngine* GetAdaptiveEngine() noexcept {
+        return m_pAdaptiveEngine;
     }
 
     /**
@@ -129,6 +145,7 @@ private:
     std::vector<IntelliSenseItem> m_reactAndNodeVocabulary;
     std::vector<IntelliSenseItem> m_commonVocabulary;
     const SnippetManager* m_pSnippetManager = nullptr;
+    AdaptiveCodeEngine* m_pAdaptiveEngine = nullptr;
     std::wstring m_workspaceRoot;
 };
 

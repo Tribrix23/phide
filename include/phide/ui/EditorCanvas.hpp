@@ -142,7 +142,8 @@ public:
 
     // Autocomplete / IntelliSense Popup State (Image 5)
     void ShowAutocomplete(const std::vector<editor::IntelliSenseItem>& items, size_t selectedIndex = 0);
-    void DismissAutocomplete() noexcept { m_showAutocomplete = false; }
+    void DismissAutocomplete() noexcept { m_showAutocomplete = false; m_autocompleteNavigated = false; }
+    [[nodiscard]] bool IsAutocompleteNavigated() const noexcept { return m_autocompleteNavigated; }
     [[nodiscard]] bool IsAutocompleteVisible() const noexcept { return m_showAutocomplete && !m_autocompleteItems.empty(); }
     [[nodiscard]] size_t GetAutocompleteSelectedIndex() const noexcept { return m_autocompleteSelectedIdx; }
     void SetAutocompleteSelectedIndex(size_t idx) noexcept;
@@ -499,6 +500,7 @@ private:
     float m_lastCaretY = 0.0f;
 
     bool m_showAutocomplete = false;
+    bool m_autocompleteNavigated = false;
     std::vector<editor::IntelliSenseItem> m_autocompleteItems;
     size_t m_autocompleteSelectedIdx = 0;
     size_t m_autocompleteScrollOffset = 0;

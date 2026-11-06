@@ -45,6 +45,7 @@
 #include "phide/editor/SnippetManager.hpp"
 #include "phide/editor/IntelliSenseEngine.hpp"
 #include "phide/editor/PredictionEngine.hpp"
+#include "phide/editor/AdaptiveCodeEngine.hpp"
 #include "phide/editor/SmartImportHelper.hpp"
 #include "phide/lsp/LspClient.hpp"
 
@@ -653,6 +654,7 @@ private:
     editor::SnippetManager m_snippetManager;
     editor::IntelliSenseEngine m_intelliSense;
     editor::PredictionEngine m_predictionEngine;
+    editor::AdaptiveCodeEngine m_adaptiveEngine;
     lsp::LspClient m_lsp;
 
     // Filesystem Watcher Handles

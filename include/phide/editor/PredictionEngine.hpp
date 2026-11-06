@@ -9,6 +9,8 @@
 
 namespace phide::editor {
 
+class AdaptiveCodeEngine;
+
 /**
  * @brief NEXT: In-File & Cross-File Multi-Point Code Prediction struct.
  */
@@ -23,6 +25,7 @@ struct CodePrediction {
     std::wstring targetFileName;  ///< Display filename (e.g. "route.ts")
     size_t targetLine = 0;        ///< Target line index to jump to
     bool hasLightbulb = false;    ///< Show lightbulb in gutter
+    size_t replaceCharCount = 0;  ///< Number of characters at/after caret to overwrite upon Tab acceptance (e.g. 1 for enclosing closing quote)
 };
 
 /**
@@ -36,6 +39,10 @@ public:
 
     void SetWorkspaceRoot(const std::wstring& root) { m_workspaceRoot = root; }
     [[nodiscard]] const std::wstring& GetWorkspaceRoot() const noexcept { return m_workspaceRoot; }
+
+    void SetAdaptiveEngine(AdaptiveCodeEngine* pAdaptive) noexcept { m_pAdaptive = pAdaptive; }
+    [[nodiscard]] const AdaptiveCodeEngine* GetAdaptiveEngine() const noexcept { return m_pAdaptive; }
+    [[nodiscard]] AdaptiveCodeEngine* GetAdaptiveEngine() noexcept { return m_pAdaptive; }
 
     /**
      * @brief Predict the next edit block at or near the given cursor position.
@@ -56,7 +63,9 @@ public:
 
 private:
     std::wstring m_workspaceRoot;
+    AdaptiveCodeEngine* m_pAdaptive = nullptr;
 
+    CodePrediction PredictFromBufferPatterns(const std::wstring& filePath, const Buffer& buffer, size_t line, size_t col);
     CodePrediction PredictApiRouteHandlers(const std::wstring& filePath, const Buffer& buffer, size_t line, size_t col);
     CodePrediction PredictFromComments(const std::wstring& filePath, const Buffer& buffer, size_t line, size_t col);
     CodePrediction PredictCrossFile(const std::wstring& filePath, const Buffer& buffer, size_t line, size_t col, const std::vector<std::wstring>& openFiles);

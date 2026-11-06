@@ -114,6 +114,14 @@ struct ThemeColors {
     D2D1_COLOR_F bracket1        = D2D1::ColorF(0.776f, 0.471f, 0.867f, 1.0f);  // #C678DD (Purple / Orchid)
     D2D1_COLOR_F bracket2        = D2D1::ColorF(1.000f, 0.843f, 0.000f, 1.0f);  // #FFD700 (Warm Yellow / Gold)
     D2D1_COLOR_F bracket3        = D2D1::ColorF(0.000f, 0.898f, 1.000f, 1.0f);  // #00E5FF (Electric Cyan / Sky Blue)
+
+    // Better Comments & Interactive TODO Palettes
+    D2D1_COLOR_F commentAlert    = D2D1::ColorF(1.000f, 0.333f, 0.333f, 1.0f);  // #FF5555 Bright Red (!, ERROR)
+    D2D1_COLOR_F commentWarning  = D2D1::ColorF(1.000f, 0.800f, 0.000f, 1.0f);  // #FFCC00 Bright Yellow (WARNING, WARN)
+    D2D1_COLOR_F commentTodo     = D2D1::ColorF(1.000f, 0.600f, 0.000f, 1.0f);  // #FF9900 Bright Orange (TODO, [ ])
+    D2D1_COLOR_F commentQuestion = D2D1::ColorF(0.275f, 0.627f, 1.000f, 1.0f);  // #46A0FF Sky Blue (?)
+    D2D1_COLOR_F commentImportant= D2D1::ColorF(0.380f, 0.840f, 0.455f, 1.0f);  // #61D674 Mint Green (*)
+    D2D1_COLOR_F commentDone     = D2D1::ColorF(0.494f, 0.518f, 0.557f, 1.0f);  // #7E848E Muted Grey ([x], completed)
 };
 
 /**
@@ -224,6 +232,14 @@ public:
     ComPtr<ID2D1SolidColorBrush> brushBracket1; // Purple
     ComPtr<ID2D1SolidColorBrush> brushBracket2; // Yellow
     ComPtr<ID2D1SolidColorBrush> brushBracket3; // Cyan/Blue
+
+    // Better Comments & Interactive TODO Brushes
+    ComPtr<ID2D1SolidColorBrush> brushCommentAlert;
+    ComPtr<ID2D1SolidColorBrush> brushCommentWarning;
+    ComPtr<ID2D1SolidColorBrush> brushCommentTodo;
+    ComPtr<ID2D1SolidColorBrush> brushCommentQuestion;
+    ComPtr<ID2D1SolidColorBrush> brushCommentImportant;
+    ComPtr<ID2D1SolidColorBrush> brushCommentDone;
 
     // Colorful File & Folder Tree Icon Brushes
     ComPtr<ID2D1SolidColorBrush> brushIconBlue;

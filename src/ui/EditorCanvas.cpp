@@ -2526,7 +2526,7 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
             }
         }
 
-        if (!isAtEndOfLine) {
+        if (!isAtEndOfLine || (m_prediction.isValid && m_prediction.line == cursor.line)) {
             displayGhost.clear();
         }
 
@@ -2579,6 +2579,12 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
                 }
                 float gW = static_cast<float>(dispGhostLine.length()) * charW;
                 D2D1_RECT_F rcG = D2D1::RectF(gX, curY, (std::min)(gX + gW, codeRight), curY + lineH);
+
+                if (k == 0 && m_prediction.replaceCharCount > 0) {
+                    float coverW = static_cast<float>(m_prediction.replaceCharCount) * charW + config.ScaleF(2.0f);
+                    D2D1_RECT_F rcCover = D2D1::RectF(caretX, curY, (std::min)(caretX + coverW, codeRight), curY + lineH);
+                    if (theme.brushCanvasBg) pRT->FillRectangle(rcCover, theme.brushCanvasBg.Get());
+                }
 
                 pRT->DrawText(
                     dispGhostLine.c_str(),
@@ -6805,6 +6811,7 @@ void EditorCanvas::ShowAutocomplete(const std::vector<editor::IntelliSenseItem>&
     m_autocompleteItems = items;
     m_autocompleteSelectedIdx = (selectedIndex < items.size()) ? selectedIndex : 0;
     m_showAutocomplete = !items.empty();
+    m_autocompleteNavigated = false;
 }
 
 bool EditorCanvas::HandleAutocompleteMouseWheel(short delta) noexcept {
@@ -6822,6 +6829,7 @@ bool EditorCanvas::HandleAutocompleteMouseWheel(short delta) noexcept {
 }
 
 void EditorCanvas::SetAutocompleteSelectedIndex(size_t idx) noexcept {
+    m_autocompleteNavigated = true;
     if (idx < m_autocompleteItems.size()) {
         m_autocompleteSelectedIdx = idx;
         const size_t maxVisible = 8;
@@ -6834,6 +6842,7 @@ void EditorCanvas::SetAutocompleteSelectedIndex(size_t idx) noexcept {
 }
 
 void EditorCanvas::SelectNextAutocomplete() noexcept {
+    m_autocompleteNavigated = true;
     if (m_autocompleteItems.empty()) return;
     m_autocompleteSelectedIdx = (m_autocompleteSelectedIdx + 1) % m_autocompleteItems.size();
     const size_t maxVisible = 8;
@@ -6845,6 +6854,7 @@ void EditorCanvas::SelectNextAutocomplete() noexcept {
 }
 
 void EditorCanvas::SelectPrevAutocomplete() noexcept {
+    m_autocompleteNavigated = true;
     if (m_autocompleteItems.empty()) return;
     if (m_autocompleteSelectedIdx == 0) {
         m_autocompleteSelectedIdx = m_autocompleteItems.size() - 1;

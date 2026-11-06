@@ -792,6 +792,7 @@ void Window::LoadSessionState() {
             m_drawer.OpenFolder(lastOpenFolder, &expandedDirs);
             m_workspace.OpenWorkspace(lastOpenFolder);
             m_intelliSense.SetWorkspaceRoot(lastOpenFolder);
+            m_adaptiveEngine.LoadProfile(lastOpenFolder + L"\\.phide\\user_adaptive_profile.json");
             m_drawer.ClearGitLoading();
             m_rail.SetGitLoading(false);
             m_drawer.RefreshGitState(true, false);
@@ -2155,6 +2156,7 @@ void Window::DoOpenFolderFromPath(const std::wstring& path) {
     m_drawer.OpenFolder(path);
     m_workspace.OpenWorkspace(path);
     m_intelliSense.SetWorkspaceRoot(path);
+    m_adaptiveEngine.LoadProfile(path + L"\\.phide\\user_adaptive_profile.json");
     m_drawer.ClearGitLoading();
     m_rail.SetGitLoading(false);
     m_drawer.RefreshGitState(true, false);
@@ -2745,6 +2747,14 @@ void Window::CommitAutocompleteSelection() {
 
     editor::IntelliSenseItem selectedItem = *rawItem;
     const auto* item = &selectedItem;
+
+    // Adaptively learn user's chosen symbol and sequence transition (0ms freeze)
+    std::wstring docExt;
+    std::wstring fn = pDoc->fileName.empty() ? pDoc->filePath : pDoc->fileName;
+    auto dotPos = fn.rfind(L'.');
+    if (dotPos != std::wstring::npos) docExt = fn.substr(dotPos + 1);
+    for (auto& c : docExt) c = towlower(c);
+    m_adaptiveEngine.RecordSymbolUsage(item->label, docExt);
 
     m_suppressNextChar = true;
     auto pos = pDoc->buffer.GetCursor();
@@ -5968,6 +5978,19 @@ void Window::SaveFileToPath(const std::wstring& path) {
             if (path == m_snippetManager.GetSnippetsFilePath()) {
                 m_snippetManager.LoadSnippets();
             }
+            std::filesystem::path savedPath(path);
+            if (workspace::IgnoreEngine::IsSupportedIgnoreFileName(savedPath.filename().wstring())) {
+                m_drawer.ReloadIgnoreFiles();
+                m_drawer.RefreshTree();
+            }
+            std::wstring docExt = savedPath.extension().wstring();
+            for (auto& c : docExt) c = towlower(c);
+            for (size_t l = 0; l < pDoc->buffer.GetLineCount() && l < 60; ++l) {
+                m_adaptiveEngine.RecordLineStyle(pDoc->buffer.GetLine(l), docExt);
+            }
+            if (m_drawer.HasOpenFolder()) {
+                m_adaptiveEngine.SaveProfileAsync(m_drawer.GetOpenFolderPath() + L"\\.phide\\user_adaptive_profile.json");
+            }
             SyncDocumentBuffers(pDoc);
             UpdateDrawerDirtyFiles();
             m_drawer.RefreshGitStatusOnly(true); // Immediate 0ms refresh on Save!
@@ -6489,9 +6512,11 @@ bool Window::Create(HINSTANCE hInstance, int nCmdShow) {
         m_terminal.RenderBounds(pRT, m_theme, m_config, D2D1::RectF(x, y, x + w, y + h), clientH, false);
     });
 
-    // Initialize user snippets engine
+    // Initialize user snippets engine and adaptive learning engine
     m_snippetManager.Initialize(GetSnippetsConfigPath());
     m_intelliSense.SetSnippetManager(&m_snippetManager);
+    m_intelliSense.SetAdaptiveEngine(&m_adaptiveEngine);
+    m_predictionEngine.SetAdaptiveEngine(&m_adaptiveEngine);
 
     // Detect installed PC environment runtimes (Python, Node.js, PHP)
     m_extensionsPanel.RefreshPcStatus();
@@ -12937,6 +12962,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                                     m_editor.DismissAutocomplete();
                                     m_editor.ClearGhostText();
                                     EnsureCursorVisible();
+                                    UpdatePrediction();
                                     InvalidateRect(m_hwnd, nullptr, FALSE);
                                     return 0;
                                 }
@@ -12955,6 +12981,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                             m_editor.DismissAutocomplete();
                             m_editor.ClearGhostText();
                             EnsureCursorVisible();
+                            UpdatePrediction();
                             InvalidateRect(m_hwnd, nullptr, FALSE);
                             return 0;
                         }
@@ -13208,6 +13235,12 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 if (pDoc) {
                     m_suppressNextChar = true;
                     const auto& pred = m_editor.GetPrediction();
+                    pDoc->buffer.PushUndo();
+                    if (pred.replaceCharCount > 0) {
+                        for (size_t r = 0; r < pred.replaceCharCount; ++r) {
+                            pDoc->buffer.DeleteForward();
+                        }
+                    }
                     pDoc->buffer.InsertText(pred.ghostText);
                     EnsureCursorVisible();
                     MarkDocumentModified(pDoc);
@@ -13255,9 +13288,18 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     InvalidateRect(m_hwnd, nullptr, FALSE);
                     return 0;
                 }
-                if (wParam == VK_RETURN || wParam == VK_TAB) {
+                if (wParam == VK_TAB) {
                     CommitAutocompleteSelection();
                     return 0;
+                }
+                if (wParam == VK_RETURN) {
+                    if (m_editor.IsAutocompleteNavigated()) {
+                        CommitAutocompleteSelection();
+                        return 0;
+                    } else {
+                        m_editor.DismissAutocomplete();
+                        m_editor.ClearGhostText();
+                    }
                 }
             }
 
@@ -14060,7 +14102,10 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                                 m_editor.ShowAutocomplete(items);
                             } else {
                                 m_editor.DismissAutocomplete();
+                                UpdatePrediction();
                             }
+                        } else {
+                            UpdatePrediction();
                         }
                     } else if (wParam == VK_DELETE) {
                         std::wstring oldLineBeforeDel = pDoc->buffer.GetLine(pDoc->buffer.GetCursor().line);
@@ -14071,6 +14116,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                         m_editor.ClearGhostText();
                         m_editor.ClearPrediction();
                         m_editor.DismissAutocomplete();
+                        UpdatePrediction();
                     }
                     MarkDocumentModified(pDoc);
                     if (pDoc->isDiffView) ComputeDiffHunks(*pDoc);
@@ -14093,6 +14139,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                         pDoc->selectedWord = pDoc->GetSelectedText();
                     }
                     EnsureCursorVisible();
+                    UpdatePrediction();
                     InvalidateRect(m_hwnd, nullptr, FALSE);
                 } else if (wParam == VK_RIGHT) {
                     bool isShift = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
@@ -14110,6 +14157,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                         pDoc->selectedWord = pDoc->GetSelectedText();
                     }
                     EnsureCursorVisible();
+                    UpdatePrediction();
                     InvalidateRect(m_hwnd, nullptr, FALSE);
                 } else if (wParam == VK_HOME) {
                     bool isShift = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
@@ -14128,6 +14176,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                         pDoc->selectedWord = pDoc->GetSelectedText();
                     }
                     EnsureCursorVisible();
+                    UpdatePrediction();
                     InvalidateRect(m_hwnd, nullptr, FALSE);
                 } else if (wParam == VK_END) {
                     bool isShift = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
@@ -14147,6 +14196,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                         pDoc->selectedWord = pDoc->GetSelectedText();
                     }
                     EnsureCursorVisible();
+                    UpdatePrediction();
                     InvalidateRect(m_hwnd, nullptr, FALSE);
                 } else if (wParam == VK_UP) {
                     bool isShift = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
@@ -14168,6 +14218,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                         pDoc->scrollLine = curLine;
                     }
                     EnsureCursorVisible();
+                    UpdatePrediction();
                     InvalidateRect(m_hwnd, nullptr, FALSE);
                 } else if (wParam == VK_DOWN) {
                     bool isShift = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
@@ -14193,6 +14244,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                         pDoc->scrollLine = (curLine + 4 > visibleLines) ? (curLine + 4 - visibleLines) : 0;
                     }
                     EnsureCursorVisible();
+                    UpdatePrediction();
                     InvalidateRect(m_hwnd, nullptr, FALSE);
                 } else if (wParam == VK_PRIOR) { // Page Up
                     RECT rc;

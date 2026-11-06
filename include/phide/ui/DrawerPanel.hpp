@@ -26,6 +26,7 @@
 #include "phide/ui/Theme.hpp"
 #include "phide/ui/LucideIcons.hpp"
 #include "phide/editor/OpenDocument.hpp"
+#include "phide/workspace/IgnoreEngine.hpp"
 
 namespace phide::ui {
 
@@ -359,6 +360,10 @@ public:
     [[nodiscard]] const std::vector<GitCommitItem>& GetGitCommits() const noexcept { return m_gitCommits; }
     [[nodiscard]] std::vector<GitCommitItem>& GetGitCommitsMutable() noexcept { return m_gitCommits; }
     [[nodiscard]] bool IsPathGitIgnored(const std::wstring& fullPath, const std::wstring& label) const;
+    [[nodiscard]] bool IsPathIgnored(const std::wstring& fullPath, const std::wstring& label, bool isFolder) const;
+    [[nodiscard]] const workspace::IgnoreEngine& GetIgnoreEngine() const noexcept { return m_ignoreEngine; }
+    workspace::IgnoreEngine& GetIgnoreEngine() noexcept { return m_ignoreEngine; }
+    void ReloadIgnoreFiles();
     [[nodiscard]] const std::wstring& GetGitBranch() const noexcept { return m_gitBranch; }
     [[nodiscard]] std::vector<std::pair<std::wstring, bool>> GetGitBranches();
     bool CheckoutGitBranch(const std::wstring& branch, std::wstring& outError);
@@ -942,6 +947,7 @@ private:
     std::function<void(const std::wstring& extId)> m_onOpenExtensionDetail;
 
     // --- Git / Source Control State (Images 2, 3, 4, 5) ---
+    workspace::IgnoreEngine m_ignoreEngine;
     bool m_isGitRepo = false;
     std::wstring m_gitBranch;
     std::vector<GitChangeItem> m_gitChanges;

@@ -7,6 +7,7 @@
 #include "phide/editor/EmmetEngine.hpp"
 #include "phide/editor/SnippetManager.hpp"
 #include "phide/editor/TailwindHelper.hpp"
+#include "phide/editor/AdaptiveCodeEngine.hpp"
 #include <algorithm>
 #include <cwctype>
 #include <filesystem>
@@ -2720,7 +2721,15 @@ std::vector<IntelliSenseItem> IntelliSenseEngine::QueryCompletions(
     isInsideQuotes = (activeQuote != L'\0');
 
     std::wstring enclosingAttrName;
-    if (isInsideQuotes && openQuotePos != std::wstring::npos) {
+    bool insideHtmlTag = false;
+    if (isHtml || isJs || isPhp) {
+        size_t openTag = currentLine.rfind(L'<', openQuotePos);
+        size_t closeTag = currentLine.rfind(L'>', openQuotePos);
+        if (openTag != std::wstring::npos && (closeTag == std::wstring::npos || openTag > closeTag)) {
+            insideHtmlTag = true;
+        }
+    }
+    if (insideHtmlTag && isInsideQuotes && openQuotePos != std::wstring::npos) {
         size_t eqPos = openQuotePos;
         while (eqPos > 0 && iswspace(currentLine[eqPos - 1])) eqPos--;
         if (eqPos > 0 && currentLine[eqPos - 1] == L'=') {
@@ -2741,6 +2750,16 @@ std::vector<IntelliSenseItem> IntelliSenseEngine::QueryCompletions(
     bool isClassAttrContext = (isInsideQuotes && (enclosingAttrName == L"class" || enclosingAttrName == L"classname"));
     bool isIdAttrContext = (isInsideQuotes && enclosingAttrName == L"id");
     bool quoteAttrTrigger = isInsideQuotes && !enclosingAttrName.empty();
+
+    // If typing inside quotes and NOT inside an HTML tag attribute, PHP server key, JS import, or file path prefix:
+    if (isInsideQuotes && !insideHtmlTag && !insideServerKey && !insideJsImportClause) {
+        bool isPathPrefix = (!prefix.empty() && (prefix[0] == L'.' || prefix[0] == L'/' || prefix[0] == L'\\'));
+        bool isImportLine = (currentLine.find(L"import ") != std::wstring::npos || currentLine.find(L"require(") != std::wstring::npos || currentLine.find(L"include") != std::wstring::npos);
+        if (!isPathPrefix && !isImportLine) {
+            // General string literal in source code: Do not pop up code completions or HTML attributes!
+            return {};
+        }
+    }
 
     // If prefix is empty and cursor is NOT at an explicit member/tag/key/import/attribute trigger, do not dump unfiltered completions!
     bool pyImportTrigger = isPy && (TrimWs(currentLine).rfind(L"import ", 0) == 0 || TrimWs(currentLine).rfind(L"from ", 0) == 0)
@@ -3939,8 +3958,8 @@ std::vector<IntelliSenseItem> IntelliSenseEngine::QueryCompletions(
     }
 
     // Common web and programming vocabulary (properties, tags, methods, identifiers)
-    // Keep CSS and PHP code completions strictly scoped and clean
-    if (!isCss && !insideStyle && !insidePhp && !insideTagAttr && !insideJsImportClause) {
+    // Keep CSS, Python, C++, and PHP code completions strictly scoped and clean
+    if (!isCss && !insideStyle && !insidePhp && !insideTagAttr && !insideJsImportClause && !isPy && !isInsideQuotes && ext != L".cpp" && ext != L".h" && ext != L".hpp" && ext != L".c") {
         for (const auto& v : m_commonVocabulary) {
             rawCandidates.push_back(v);
         }
@@ -4065,6 +4084,13 @@ std::vector<IntelliSenseItem> IntelliSenseEngine::QueryCompletions(
                     matches.push_back(std::move(scored));
                 }
             }
+        }
+    }
+
+    // Apply user adaptive learning boost (habits learned overtime without freezing/memory bloat)
+    if (m_pAdaptiveEngine) {
+        for (auto& item : matches) {
+            item.score += m_pAdaptiveEngine->GetAdaptiveScoreBonus(item.label, ext);
         }
     }
 
