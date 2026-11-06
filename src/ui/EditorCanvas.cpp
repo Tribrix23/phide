@@ -2370,7 +2370,10 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
         }
 
         // Import Cost Inline Annotations (Image 2)
-        if (!doc.importCostMap.empty()) {
+        // When the user's cursor is on this active line and GitLens inline blame is enabled,
+        // hide the import cost annotation on this line so GitLens blame renders at its natural position with zero overlap!
+        bool isCursorOnThisLine = (isFocused && vl.bufferLine == cursor.line && config.enableGitLens && !doc.gitBlameMap.empty());
+        if (!doc.importCostMap.empty() && !isCursorOnThisLine) {
             auto itCost = doc.importCostMap.find(vl.bufferLine);
             if (itCost != doc.importCostMap.end()) {
                 const std::wstring& costText = itCost->second;
@@ -2720,33 +2723,10 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
                     }
                 }
 
-                // Place blame strictly in empty space after both line text and active cursor, never overlapping code
+                // Place blame strictly in empty space after both line text and active cursor, at its natural standard position
                 float lineEndX = (std::max)(codeLeft - scrollX + textVisualW, caretX) + config.ScaleF(40.0f);
                 if (m_prediction.isValid && m_prediction.line == cursor.line && !m_prediction.ghostText.empty()) {
                     lineEndX += static_cast<float>(m_prediction.ghostText.length()) * charW + config.ScaleF(24.0f);
-                }
-
-                // If this line has an Import Cost inline annotation, offset lineEndX past the cost text so they NEVER overlap
-                if (!doc.importCostMap.empty()) {
-                    auto itCost = doc.importCostMap.find(cursor.line);
-                    if (itCost != doc.importCostMap.end()) {
-                        const std::wstring& costStr = itCost->second;
-                        float costW = static_cast<float>(costStr.length()) * charW * 0.95f;
-                        IDWriteTextFormat* costFmt = theme.fontHint ? theme.fontHint.Get() : theme.fontCode.Get();
-                        if (theme.dwriteFactory && costFmt) {
-                            Microsoft::WRL::ComPtr<IDWriteTextLayout> pCostLayout;
-                            if (SUCCEEDED(theme.dwriteFactory->CreateTextLayout(
-                                    costStr.c_str(), static_cast<UINT32>(costStr.length()),
-                                    costFmt, 5000.0f, lineH, &pCostLayout))) {
-                                DWRITE_TEXT_METRICS tm{};
-                                if (SUCCEEDED(pCostLayout->GetMetrics(&tm))) {
-                                    costW = tm.widthIncludingTrailingWhitespace;
-                                }
-                            }
-                        }
-                        float costEndX = (codeLeft - scrollX + textVisualW) + config.ScaleF(16.0f) + costW;
-                        lineEndX = (std::max)(lineEndX, costEndX + config.ScaleF(28.0f));
-                    }
                 }
 
                 // Available horizontal width before reaching the minimap/scrollbar boundary
@@ -3371,11 +3351,38 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
         doc.hScrollbarThumb = D2D1::RectF(0.0f, 0.0f, 0.0f, 0.0f);
     }
 
-    // 7b. CSS Peek Hover Definition Popover (Image 1)
+    // 7b. CSS Peek Hover Definition Popover (Image 1 & Image 2: Dynamic auto-sizing container)
     if (doc.cssPeek.active && !doc.cssPeek.lines.empty()) {
-        float popW = config.ScaleF(280.0f);
+        IDWriteTextFormat* pPeekFmt = theme.fontCode ? theme.fontCode.Get() : theme.fontBody.Get();
         float peekLineH = config.ScaleF(18.0f);
         float popH = config.ScaleF(16.0f) + doc.cssPeek.lines.size() * peekLineH;
+
+        // Dynamically compute popW to fit the longest line in the CSS definition with comfortable padding
+        float maxTextW = config.ScaleF(160.0f);
+        if (theme.dwriteFactory && pPeekFmt) {
+            for (const auto& lineText : doc.cssPeek.lines) {
+                if (lineText.empty()) continue;
+                Microsoft::WRL::ComPtr<IDWriteTextLayout> pMeasure;
+                if (SUCCEEDED(theme.dwriteFactory->CreateTextLayout(
+                        lineText.c_str(), static_cast<UINT32>(lineText.length()),
+                        pPeekFmt, 10000.0f, peekLineH, &pMeasure))) {
+                    DWRITE_TEXT_METRICS tm{};
+                    if (SUCCEEDED(pMeasure->GetMetrics(&tm))) {
+                        maxTextW = (std::max)(maxTextW, tm.widthIncludingTrailingWhitespace);
+                    }
+                }
+            }
+        } else {
+            for (const auto& lineText : doc.cssPeek.lines) {
+                float approxW = static_cast<float>(lineText.length()) * charW;
+                maxTextW = (std::max)(maxTextW, approxW);
+            }
+        }
+
+        // Add 28px horizontal padding (14px left, 14px right)
+        float popW = maxTextW + config.ScaleF(28.0f);
+        float maxAllowedW = canvasWidth - config.ScaleF(40.0f);
+        if (popW > maxAllowedW) popW = (std::max)(config.ScaleF(200.0f), maxAllowedW);
 
         float lineY = topY + config.ScaleF(6.0f) + (static_cast<float>(doc.cssPeek.targetLine) - static_cast<float>(doc.scrollLine)) * lineH;
         float wordX = canvasLeft + gutterW + config.ScaleF(10.0f) + static_cast<float>(doc.cssPeek.targetCol) * charW;
@@ -3399,6 +3406,9 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
         if (brushPopBg) pRT->FillRoundedRectangle(rrcPop, brushPopBg.Get());
         if (brushPopBorder) pRT->DrawRoundedRectangle(rrcPop, brushPopBorder.Get(), 1.0f);
 
+        // Clip text rendering strictly to the rounded rect bounds to ensure zero visual text leaking
+        pRT->PushAxisAlignedClip(rrcPop.rect, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+
         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushSelector;
         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushProperty;
         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushVal;
@@ -3406,17 +3416,16 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
         pRT->CreateSolidColorBrush(D2D1::ColorF(0.38f, 0.69f, 0.94f, 1.0f), &brushProperty);
         pRT->CreateSolidColorBrush(D2D1::ColorF(0.75f, 0.43f, 0.31f, 1.0f), &brushVal);
 
-        IDWriteTextFormat* pPeekFmt = theme.fontCode ? theme.fontCode.Get() : theme.fontBody.Get();
-
         float curRowY = popY + config.ScaleF(8.0f);
-        float textPadX = popX + config.ScaleF(12.0f);
+        float textPadX = popX + config.ScaleF(14.0f);
+        float textLayoutW = popW - config.ScaleF(24.0f);
 
         for (size_t rowIdx = 0; rowIdx < doc.cssPeek.lines.size(); ++rowIdx) {
             const auto& lineText = doc.cssPeek.lines[rowIdx];
             Microsoft::WRL::ComPtr<IDWriteTextLayout> pLayout;
             if (theme.dwriteFactory && SUCCEEDED(theme.dwriteFactory->CreateTextLayout(
-                    lineText.c_str(), static_cast<UINT32>(lineText.length()), pPeekFmt, popW - config.ScaleF(20.0f), peekLineH, &pLayout))) {
-
+                    lineText.c_str(), static_cast<UINT32>(lineText.length()), pPeekFmt, textLayoutW, peekLineH, &pLayout))) {
+                pLayout->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
                 if (rowIdx == 0) {
                     DWRITE_TEXT_RANGE allRange = { 0, static_cast<UINT32>(lineText.length()) };
                     if (brushSelector) pLayout->SetDrawingEffect(brushSelector.Get(), allRange);
@@ -3435,6 +3444,8 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
             }
             curRowY += peekLineH;
         }
+
+        pRT->PopAxisAlignedClip();
     }
 
     // 7. Diagnostic Error Hover Popover (VS Code / Antigravity style)

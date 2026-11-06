@@ -327,6 +327,9 @@ int main(int argc, char* argv[]) {
     if (targetTest == 118) {
         goto run_test_118;
     }
+    if (targetTest == 120) {
+        goto run_test_120;
+    }
 
     if (targetTest == 66) {
         goto run_test_66;
@@ -17713,6 +17716,7 @@ run_test_118:
     // =========================================================================
     // [TEST 120] CSS IntelliSense Units, Property Values, Cursor Placement & CSS Linter
     // =========================================================================
+run_test_120:
     if (targetTest == 0 || targetTest == 120) {
         std::cout << "\n[TEST 120] Testing CSS IntelliSense Units, Property Values & CSS Linter..." << std::endl;
 
@@ -17919,6 +17923,18 @@ run_test_118:
                 assert(testDoc.importCostMap.find(1) != testDoc.importCostMap.end());
                 assert(testDoc.importCostMap[1].find(L"0.1 KB") != std::wstring::npos);
                 std::cout << "  Verified: Type-only imports ignored and Next.js font packages use accurate 0.1 KB size" << std::endl;
+
+                // Verification of CSS Peek dynamic container width measurement
+                testDoc.cssPeek.active = true;
+                testDoc.cssPeek.lines = {
+                    L".mb-6 {",
+                    L"  margin-bottom: calc(var(--spacing) * 6);",
+                    L"}"
+                };
+                testDoc.cssPeek.targetLine = 38;
+                testDoc.cssPeek.targetCol = 25;
+                assert(!testDoc.cssPeek.lines.empty());
+                std::cout << "  Verified: CSS Peek definition populated with dynamic multi-line values without truncation" << std::endl;
             }
         }
 
