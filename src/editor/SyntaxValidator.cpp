@@ -897,7 +897,31 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidateJavaScript(
                             c++;
                             continue;
                         } else if (c + 1 < line.length() && (iswalpha(line[c + 1]) || line[c + 1] == L'_')) {
-                            size_t gt = line.find(L'>', c + 1);
+                            // Find the matching '>' of the JSX opening tag, properly ignoring quotes, expression braces, and '=>'
+                            size_t gt = std::wstring::npos;
+                            bool inQ = false;
+                            wchar_t qC = L'\0';
+                            int bDepth = 0;
+                            for (size_t k = c + 1; k < line.length(); ++k) {
+                                wchar_t kc = line[k];
+                                if (inQ) {
+                                    if (kc == L'\\' && k + 1 < line.length()) { k++; continue; }
+                                    if (kc == qC) inQ = false;
+                                } else {
+                                    if (kc == L'"' || kc == L'\'' || kc == L'`') {
+                                        inQ = true;
+                                        qC = kc;
+                                    } else if (kc == L'{') {
+                                        bDepth++;
+                                    } else if (kc == L'}') {
+                                        if (bDepth > 0) bDepth--;
+                                    } else if (kc == L'>' && bDepth == 0) {
+                                        if (k > 0 && line[k - 1] == L'=') continue; // Ignore arrow function '=>'
+                                        gt = k;
+                                        break;
+                                    }
+                                }
+                            }
                             if (gt != std::wstring::npos) {
                                 size_t tagEnd = c + 1;
                                 while (tagEnd < line.length() && (iswalnum(line[tagEnd]) || line[tagEnd] == L'_' || line[tagEnd] == L'-' || line[tagEnd] == L'.')) {
@@ -955,7 +979,31 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidateJavaScript(
                             c++;
                             continue;
                         } else if (c + 1 < line.length() && (iswalpha(line[c + 1]) || line[c + 1] == L'_')) {
-                            size_t gt = line.find(L'>', c + 1);
+                            // Find the matching '>' of the JSX opening tag, properly ignoring quotes, expression braces, and '=>'
+                            size_t gt = std::wstring::npos;
+                            bool inQ = false;
+                            wchar_t qC = L'\0';
+                            int bDepth = 0;
+                            for (size_t k = c + 1; k < line.length(); ++k) {
+                                wchar_t kc = line[k];
+                                if (inQ) {
+                                    if (kc == L'\\' && k + 1 < line.length()) { k++; continue; }
+                                    if (kc == qC) inQ = false;
+                                } else {
+                                    if (kc == L'"' || kc == L'\'' || kc == L'`') {
+                                        inQ = true;
+                                        qC = kc;
+                                    } else if (kc == L'{') {
+                                        bDepth++;
+                                    } else if (kc == L'}') {
+                                        if (bDepth > 0) bDepth--;
+                                    } else if (kc == L'>' && bDepth == 0) {
+                                        if (k > 0 && line[k - 1] == L'=') continue; // Ignore arrow function '=>'
+                                        gt = k;
+                                        break;
+                                    }
+                                }
+                            }
                             if (gt != std::wstring::npos) {
                                 size_t tagEnd = c + 1;
                                 while (tagEnd < line.length() && (iswalnum(line[tagEnd]) || line[tagEnd] == L'_' || line[tagEnd] == L'-' || line[tagEnd] == L'.')) {
@@ -1068,9 +1116,6 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidateJavaScript(
                 }
                 stack.push_back({ ch, l, c });
             } else if (ch == L')' || ch == L']' || ch == L'}') {
-                if (isJsx && ch == L'}' && !jsxExprBraceLevels.empty() && stack.size() == jsxExprBraceLevels.back()) {
-                    jsxExprBraceLevels.pop_back();
-                }
                 if (!templateStack.empty() && ch == L'}') {
                     if (templateStack.back().braceDepth == 1) {
                         // Closing brace of the ${...} interpolation
@@ -1080,6 +1125,9 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidateJavaScript(
                         templateStack.back().braceDepth--;
                     }
                 }
+                if (isJsx && ch == L'}' && !jsxExprBraceLevels.empty() && stack.size() == jsxExprBraceLevels.back()) {
+                    jsxExprBraceLevels.pop_back();
+                }
 
                 if (stack.empty()) {
                     diagnostics.push_back({ l, c, 1, std::wstring(L"JS Syntax Error: Unexpected closing bracket '") + ch + L"'", 1 });
@@ -1088,7 +1136,7 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidateJavaScript(
                     if (ch == expected) {
                         stack.pop_back();
                     } else {
-                        diagnostics.push_back({ l, c, 1, std::wstring(L"JS Syntax Error: Mismatched bracket: expected '") + expected + L"' but found '" + ch + L"'", 1 });
+                        diagnostics.push_back({ l, c, 1, std::wstring(L"JS Syntax Error: Mismatched bracket: expected '") + expected + L"' (opened at line " + std::to_wstring(stack.back().line + 1) + L":" + std::to_wstring(stack.back().col) + L") but found '" + ch + L"'", 1 });
                         stack.pop_back();
                     }
                 }
@@ -2266,6 +2314,8 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidateReactAndESLint(const Buffe
         std::wstring name;
         size_t declLine = 0;
         int braceDepth = 0;
+        int parenDepth = 0;
+        bool hasOpenedBody = false;
         bool hasReturn = false;
         bool hasReturnedValue = false;
     };
@@ -2354,20 +2404,32 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidateReactAndESLint(const Buffe
             return 0;
         };
 
-        // 0. Component Declaration Detection: const Comp = () => { or function Comp() {
-        if (cleanCode.find(L"const ") != std::wstring::npos || cleanCode.find(L"function ") != std::wstring::npos ||
-            cleanCode.find(L"let ") != std::wstring::npos || cleanCode.find(L"export ") != std::wstring::npos) {
-            if (cleanCode.find(L"=>") != std::wstring::npos || cleanCode.find(L"function") != std::wstring::npos) {
-                std::wistringstream wss(cleanCode);
-                std::wstring token;
-                while (wss >> token) {
-                    while (!token.empty() && (token.front() == L'(' || token.front() == L'{' || token.front() == L'=' || token.front() == L':' || token.front() == L';')) token.erase(0, 1);
-                    while (!token.empty() && (token.back() == L'(' || token.back() == L'{' || token.back() == L'=' || token.back() == L':' || token.back() == L';')) token.pop_back();
-                    if (!token.empty() && iswupper(token[0]) && iswalpha(token[0])) {
-                        if (token != L"React" && token != L"Component" && token != L"PureComponent" && token != L"Fragment") {
-                            componentStack.push_back({ token, l, 0, false, false });
-                            break;
-                        }
+        // 0. Component Declaration Detection: accurate identification of function Comp() or const Comp = ...
+        size_t fnPos = cleanCode.find(L"function ");
+        if (fnPos != std::wstring::npos) {
+            size_t nameStart = fnPos + 9;
+            while (nameStart < cleanCode.length() && iswspace(cleanCode[nameStart])) nameStart++;
+            size_t nameEnd = nameStart;
+            while (nameEnd < cleanCode.length() && (iswalnum(cleanCode[nameEnd]) || cleanCode[nameEnd] == L'_' || cleanCode[nameEnd] == L'$')) nameEnd++;
+            if (nameEnd > nameStart) {
+                std::wstring compName = cleanCode.substr(nameStart, nameEnd - nameStart);
+                if (iswupper(compName[0]) && compName != L"React" && compName != L"Component" && compName != L"PureComponent" && compName != L"Fragment") {
+                    componentStack.push_back({ compName, l, 0, 0, false, false, false });
+                }
+            }
+        } else if ((cleanCode.find(L"const ") != std::wstring::npos || cleanCode.find(L"let ") != std::wstring::npos || cleanCode.find(L"export ") != std::wstring::npos) &&
+                   cleanCode.find(L"=>") != std::wstring::npos) {
+            size_t varPos = cleanCode.find(L"const ");
+            if (varPos == std::wstring::npos) varPos = cleanCode.find(L"let ");
+            if (varPos != std::wstring::npos) {
+                size_t nameStart = varPos + (cleanCode.substr(varPos, 4) == L"let " ? 4 : 6);
+                while (nameStart < cleanCode.length() && iswspace(cleanCode[nameStart])) nameStart++;
+                size_t nameEnd = nameStart;
+                while (nameEnd < cleanCode.length() && (iswalnum(cleanCode[nameEnd]) || cleanCode[nameEnd] == L'_' || cleanCode[nameEnd] == L'$')) nameEnd++;
+                if (nameEnd > nameStart) {
+                    std::wstring compName = cleanCode.substr(nameStart, nameEnd - nameStart);
+                    if (iswupper(compName[0]) && compName != L"React" && compName != L"Component" && compName != L"PureComponent" && compName != L"Fragment") {
+                        componentStack.push_back({ compName, l, 0, 0, false, false, false });
                     }
                 }
             }
@@ -2375,16 +2437,33 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidateReactAndESLint(const Buffe
 
         // Track conditions, loops, and component scopes
         for (size_t i = 0; i < cleanCode.length(); ++i) {
-            if (cleanCode[i] == L'{') {
+            wchar_t cChar = cleanCode[i];
+            if (cChar == L'(') {
+                if (!componentStack.empty() && !componentStack.back().hasOpenedBody) {
+                    componentStack.back().parenDepth++;
+                }
+            } else if (cChar == L')') {
+                if (!componentStack.empty() && !componentStack.back().hasOpenedBody) {
+                    if (componentStack.back().parenDepth > 0) componentStack.back().parenDepth--;
+                }
+            } else if (cChar == L'{') {
                 std::wstring prefix = cleanCode.substr(0, i);
                 int type = findControlKeyword(prefix);
                 controlStack.push_back(type);
                 if (type == 1) conditionDepth++;
                 else if (type == 2) loopDepth++;
                 if (!componentStack.empty()) {
-                    componentStack.back().braceDepth++;
+                    auto& comp = componentStack.back();
+                    if (!comp.hasOpenedBody) {
+                        if (comp.parenDepth == 0) {
+                            comp.hasOpenedBody = true;
+                            comp.braceDepth = 1;
+                        }
+                    } else {
+                        comp.braceDepth++;
+                    }
                 }
-            } else if (cleanCode[i] == L'}') {
+            } else if (cChar == L'}') {
                 if (!controlStack.empty()) {
                     int topType = controlStack.back();
                     controlStack.pop_back();
@@ -2392,18 +2471,21 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidateReactAndESLint(const Buffe
                     else if (topType == 2 && loopDepth > 0) loopDepth--;
                 }
                 if (!componentStack.empty()) {
-                    componentStack.back().braceDepth--;
-                    if (componentStack.back().braceDepth <= 0) {
-                        auto comp = componentStack.back();
-                        componentStack.pop_back();
-                        if (!comp.hasReturn || !comp.hasReturnedValue) {
-                            lsp::Diagnostic diag;
-                            diag.line = l;
-                            diag.col = i;
-                            diag.length = 1;
-                            diag.message = L"Component '" + comp.name + L"' must return a valid React element, JSX, or null. (react/require-render-return)";
-                            diag.severity = 1; // Error
-                            diagnostics.push_back(std::move(diag));
+                    auto& comp = componentStack.back();
+                    if (comp.hasOpenedBody) {
+                        comp.braceDepth--;
+                        if (comp.braceDepth <= 0) {
+                            auto finishedComp = comp;
+                            componentStack.pop_back();
+                            if (!finishedComp.hasReturn || !finishedComp.hasReturnedValue) {
+                                lsp::Diagnostic diag;
+                                diag.line = l;
+                                diag.col = i;
+                                diag.length = 1;
+                                diag.message = L"Component '" + finishedComp.name + L"' must return a valid React element, JSX, or null. (react/require-render-return)";
+                                diag.severity = 1; // Error
+                                diagnostics.push_back(std::move(diag));
+                            }
                         }
                     }
                 }
@@ -2427,7 +2509,8 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidateReactAndESLint(const Buffe
                 while (s < afterReturn.length() && (afterReturn[s] == L' ' || afterReturn[s] == L'	')) s++;
                 afterReturn = afterReturn.substr(s);
 
-                bool hasSemi = false;
+                size_t lastNonWs = code.find_last_not_of(L" \t\r\n");
+                bool hasSemi = (lastNonWs != std::wstring::npos && code[lastNonWs] == L';');
                 if (!afterReturn.empty() && afterReturn.back() == L';') {
                     hasSemi = true;
                     afterReturn.pop_back();
@@ -2596,12 +2679,21 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidateReactAndESLint(const Buffe
             static const std::unordered_set<std::wstring> tsTypeKeywords = {
                 L"any", L"string", L"number", L"boolean", L"unknown", L"never",
                 L"void", L"null", L"undefined", L"object", L"symbol", L"bigint",
+                L"typeof", L"keyof", L"readonly", L"infer", L"unique",
                 L"T", L"K", L"V", L"U", L"P", L"R", L"E"
             };
 
             size_t p = 0;
             while (p < code.length()) {
                 if (code[p] == L'<') {
+                    // In JS/TSX, an opening JSX tag outside JSX children cannot immediately follow an identifier or dollar sign without whitespace.
+                    // e.g. `useRef<...>`, `ReturnType<...>`, `LayoutProps<...>`, `KeyboardEvent<...>` are generics!
+                    // But inside JSX children, text can precede a tag (e.g. `<span>Cleave<span className=...>DB</span></span>`).
+                    if (jsxStack.empty() && p + 1 < code.length() && code[p + 1] != L'/' && p > 0 && (iswalnum(code[p - 1]) || code[p - 1] == L'_' || code[p - 1] == L'$')) {
+                        p++;
+                        continue;
+                    }
+
                     if (p + 1 < code.length() && (code[p + 1] == L'/' || code[p + 1] == L'>' || iswalpha(code[p + 1]))) {
                         // Safely find the matching '>' across single-line or multi-line JSX tags
                         // without stopping on '>' inside string attributes or expressions
@@ -2643,6 +2735,10 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidateReactAndESLint(const Buffe
                                         if (braceDepth > 0) braceDepth--;
                                         accumulatedTag += sc;
                                     } else if (sc == L'>' && braceDepth == 0) {
+                                        if (scan > 0 && (*currLineStr)[scan - 1] == L'=') {
+                                            accumulatedTag += sc; // Arrow function '=>' inside attribute, not closing tag!
+                                            continue;
+                                        }
                                         tagEndLine = scanLine;
                                         tagEndCol = scan;
                                         break;
@@ -2683,13 +2779,15 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidateReactAndESLint(const Buffe
                             // A generic type parameter in a call cannot have JSX attributes (e.g. key=, className=, onClick=)
                             bool hasJsxAttrs = (tagStr.find(L'=') != std::wstring::npos);
 
-                            // If tagStr contains type operators or generic syntax (; | & , { [ extends as) and has NO attributes, this is a TS generic type parameter
+                            // If tagStr contains type operators or generic syntax (; | & , { [ typeof keyof extends as) and has NO attributes, this is a TS generic type parameter
                             if (!isClose && !hasJsxAttrs && (tagStr.find(L';') != std::wstring::npos ||
                                                              tagStr.find(L'|') != std::wstring::npos ||
                                                              tagStr.find(L'&') != std::wstring::npos ||
                                                              tagStr.find(L',') != std::wstring::npos ||
                                                              tagStr.find(L'{') != std::wstring::npos ||
                                                              tagStr.find(L'[') != std::wstring::npos ||
+                                                             tagStr.find(L"typeof ") != std::wstring::npos ||
+                                                             tagStr.find(L"keyof ") != std::wstring::npos ||
                                                              tagStr.find(L" extends ") != std::wstring::npos ||
                                                              tagStr.find(L" as ") != std::wstring::npos)) {
                                 if (tagEndLine > l) {

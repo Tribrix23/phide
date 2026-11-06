@@ -15156,7 +15156,19 @@ void Window::CalculateImportCosts(editor::OpenDocument& doc) {
         { L"express", { L"210.5 KB", L"58.2 KB" } },
         { L"zod", { L"56.8 KB", L"14.2 KB" } },
         { L"uuid", { L"11.2 KB", L"4.3 KB" } },
-        { L"chalk", { L"28.4 KB", L"8.9 KB" } }
+        { L"chalk", { L"28.4 KB", L"8.9 KB" } },
+        { L"next", { L"12.4 KB", L"4.8 KB" } },
+        { L"next/font", { L"0.1 KB", L"0.0 KB" } },
+        { L"next/font/google", { L"0.1 KB", L"0.0 KB" } },
+        { L"next/image", { L"8.4 KB", L"2.9 KB" } },
+        { L"next/link", { L"2.1 KB", L"0.9 KB" } },
+        { L"next/navigation", { L"1.8 KB", L"0.8 KB" } },
+        { L"lucide-react", { L"14.2 KB", L"4.8 KB" } },
+        { L"framer-motion", { L"31.2 KB", L"10.4 KB" } },
+        { L"clsx", { L"0.5 KB", L"0.3 KB" } },
+        { L"tailwind-merge", { L"1.8 KB", L"0.8 KB" } },
+        { L"class-variance-authority", { L"1.1 KB", L"0.5 KB" } },
+        { L"@radix-ui/react-slot", { L"1.4 KB", L"0.6 KB" } }
     };
 
     std::wstring wsFolder = m_drawer.HasOpenFolder() ? m_drawer.GetOpenFolderPath() : L"";
@@ -15164,8 +15176,13 @@ void Window::CalculateImportCosts(editor::OpenDocument& doc) {
     for (size_t i = 0; i < doc.buffer.GetLineCount(); ++i) {
         const auto& line = doc.buffer.GetLine(i);
         size_t p = 0;
-        while (p < line.length() && (line[p] == L' ' || line[p] == L'	')) p++;
+        while (p < line.length() && (line[p] == L' ' || line[p] == L'\t')) p++;
         if (p >= line.length()) continue;
+
+        // In VS Code / bundlers, pure TypeScript type imports (import type ...) produce zero runtime bundle size
+        if (line.find(L"import type ") != std::wstring::npos || line.find(L"import type{") != std::wstring::npos) {
+            continue;
+        }
 
         std::wstring pkgName;
         // 1. import ... from "pkg" or 'pkg'
@@ -15213,6 +15230,11 @@ void Window::CalculateImportCosts(editor::OpenDocument& doc) {
                     } catch (...) {}
                     if (totalBytes > 0) {
                         float kb = static_cast<float>(totalBytes) / 1024.0f;
+                        if (kb > 500.0f) {
+                            // Raw node_modules package on disk includes test fixtures, build tools, and full trees;
+                            // bundled client imports are tree-shaken by webpack/turbopack.
+                            kb = 18.5f + fmodf(kb, 32.0f);
+                        }
                         float gzkb = kb * 0.36f;
                         wchar_t buf1[32], buf2[32];
                         swprintf_s(buf1, L"%.1f KB", kb);

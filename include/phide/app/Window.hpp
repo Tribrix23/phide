@@ -175,6 +175,7 @@ public:
      * @brief Computes diff hunks and line highlights between diffOriginalBuffer and buffer for a document.
      */
     void ComputeDiffHunks(editor::OpenDocument& doc);
+    void CalculateImportCosts(editor::OpenDocument& doc);
 
     // Git Branch Switcher Dropdown (Status bar popup)
     ui::DrawerPanel& GetDrawer() noexcept { return m_drawer; }
@@ -278,7 +279,6 @@ private:
     void UpdateCssPeekHover(POINT clientPt);
     std::vector<std::wstring> FindCssDefinition(const std::wstring& selector, const std::wstring& currentFilePath);
     static std::vector<std::wstring> SearchCssInText(const std::wstring& selector, const std::wstring& cssText);
-    void CalculateImportCosts(editor::OpenDocument& doc);
     bool TryAutoRenameMatchingTag(editor::OpenDocument* pDoc, size_t editLine, const std::wstring& oldLineText);
 
     /** @brief Creates a new custom file prompt / untitled file (Ctrl+Alt+N). */

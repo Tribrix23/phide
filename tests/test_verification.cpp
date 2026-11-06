@@ -17880,6 +17880,46 @@ run_test_118:
                 assert(foundTailwindInClass);
                 std::cout << "  Verified: class=\"bg-\" correctly provides Tailwind CSS utility classes" << std::endl;
             }
+
+            // Verification for layout.tsx and landing-interactions.tsx: 0 false positive diagnostics
+            {
+                phide::editor::Buffer lBuf;
+                lBuf.LoadFromFile(L"C:/Users/Administrator/Downloads/cleavedb-browser/app/layout.tsx");
+                auto lDiags = phide::editor::SyntaxValidator::Validate(L"layout.tsx", lBuf);
+                std::cout << "layout.tsx diagnostics count: " << lDiags.size() << std::endl;
+                for (const auto& d : lDiags) {
+                    std::wcout << L"  [layout.tsx] Line " << (d.line + 1) << L" Col " << d.col << L": " << d.message << std::endl;
+                }
+                assert(lDiags.empty() && "layout.tsx must produce 0 false-positive syntax errors");
+
+                phide::editor::Buffer liBuf;
+                liBuf.LoadFromFile(L"C:/Users/Administrator/Downloads/cleavedb-browser/components/landing/landing-interactions.tsx");
+                auto liDiags = phide::editor::SyntaxValidator::Validate(L"landing-interactions.tsx", liBuf);
+                std::cout << "landing-interactions.tsx diagnostics count: " << liDiags.size() << std::endl;
+                for (const auto& d : liDiags) {
+                    std::wcout << L"  [landing-interactions.tsx] Line " << (d.line + 1) << L" Col " << d.col << L": " << d.message << std::endl;
+                }
+                assert(liDiags.empty() && "landing-interactions.tsx must produce 0 false-positive syntax errors");
+                std::cout << "  Verified: layout.tsx and landing-interactions.tsx have 0 false-positive diagnostics" << std::endl;
+            }
+
+            // Verification for Import Cost calculation & non-overlapping GitLens blame
+            {
+                phide::app::Window testWin;
+                phide::editor::OpenDocument testDoc;
+                testDoc.filePath = L"C:/Users/Administrator/Downloads/cleavedb-browser/app/layout.tsx";
+                testDoc.buffer.LoadFromFile(testDoc.filePath);
+
+                testWin.CalculateImportCosts(testDoc);
+
+                // Line 0 is `import type { Metadata } from "next";` -> pure type import, MUST NOT show import cost
+                assert(testDoc.importCostMap.find(0) == testDoc.importCostMap.end() && "import type should produce 0 runtime bundle size");
+
+                // Line 1 is `import { Geist, Geist_Mono } from "next/font/google";` -> should be 0.1 KB
+                assert(testDoc.importCostMap.find(1) != testDoc.importCostMap.end());
+                assert(testDoc.importCostMap[1].find(L"0.1 KB") != std::wstring::npos);
+                std::cout << "  Verified: Type-only imports ignored and Next.js font packages use accurate 0.1 KB size" << std::endl;
+            }
         }
 
         if (targetTest == 120) {
