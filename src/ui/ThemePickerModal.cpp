@@ -580,19 +580,19 @@ void ThemePickerModal::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::A
                 break;
             case ThemeMode::Purple:
                 DrawGenericPreview(pRT, config, rcBox,
-                    D2D1::ColorF(0.075f, 0.035f, 0.122f, 1.0f), // canvas #13091F
-                    D2D1::ColorF(0.118f, 0.047f, 0.188f, 1.0f), // header #1E0C30
-                    D2D1::ColorF(0.063f, 0.027f, 0.102f, 1.0f), // drawer #10071A
-                    D2D1::ColorF(0.063f, 0.027f, 0.102f, 1.0f), // tabBar
-                    D2D1::ColorF(0.075f, 0.035f, 0.122f, 1.0f), // tabActive
-                    D2D1::ColorF(0.616f, 0.306f, 0.867f, 1.0f), // accent #9D4EDD
-                    D2D1::ColorF(0.953f, 0.910f, 1.0f, 1.0f),   // text #F3E8FF
-                    D2D1::ColorF(0.878f, 0.667f, 1.0f, 1.0f),   // kw #E0AAFF
-                    D2D1::ColorF(1.0f, 0.439f, 0.651f, 1.0f),   // type #FF70A6
-                    D2D1::ColorF(1.0f, 0.718f, 0.012f, 1.0f),   // str #FFB703
-                    D2D1::ColorF(0.427f, 0.349f, 0.478f, 1.0f), // comment #6D597A
-                    D2D1::ColorF(0.450f, 0.320f, 0.550f, 1.0f), // lineNum #6B4F82
-                    D2D1::ColorF(0.196f, 0.078f, 0.310f, 1.0f)  // border #32144F
+                    D2D1::ColorF(0.082f, 0.051f, 0.141f, 1.0f), // canvas #150D24
+                    D2D1::ColorF(0.114f, 0.075f, 0.176f, 1.0f), // header #1D132D
+                    D2D1::ColorF(0.071f, 0.039f, 0.122f, 1.0f), // drawer #120A1F
+                    D2D1::ColorF(0.071f, 0.039f, 0.122f, 1.0f), // tabBar
+                    D2D1::ColorF(0.082f, 0.051f, 0.141f, 1.0f), // tabActive
+                    D2D1::ColorF(0.659f, 0.333f, 0.969f, 1.0f), // accent #A855F7
+                    D2D1::ColorF(0.961f, 0.933f, 1.000f, 1.0f), // text #F5EEFF
+                    D2D1::ColorF(0.753f, 0.518f, 0.988f, 1.0f), // kw #C084FC
+                    D2D1::ColorF(0.220f, 0.741f, 0.973f, 1.0f), // type #38BDF8
+                    D2D1::ColorF(0.957f, 0.447f, 0.714f, 1.0f), // str #F472B6
+                    D2D1::ColorF(0.431f, 0.365f, 0.529f, 1.0f), // comment #6E5D87
+                    D2D1::ColorF(0.475f, 0.392f, 0.600f, 1.0f), // lineNum #796499
+                    D2D1::ColorF(0.165f, 0.102f, 0.251f, 1.0f)  // border #2A1A40
                 );
                 break;
             case ThemeMode::Cyan:

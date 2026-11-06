@@ -275,6 +275,8 @@ public:
     PopupMenu();
     ~PopupMenu() = default;
 
+    [[nodiscard]] float CalculateOptimalMenuWidth(const std::vector<PopupMenuItem>& items, const app::AppConfig& config, float minW = 0.0f) const;
+
     /**
      * @brief Opens the View dropdown menu at the specified anchor point.
      * @param x Left coordinate of the anchor.

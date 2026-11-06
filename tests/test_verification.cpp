@@ -17555,6 +17555,64 @@ run_test_118:
             }
         }
 
+        // Subtest 7: Menu Text Layering & Optimal Width Computation
+        {
+            phide::ui::PopupMenu menu;
+            phide::app::AppConfig cfg;
+            std::vector<phide::ui::PopupMenuItem> prefSubmenu = {
+                { phide::ui::MenuActionId::None, L"Settings",           L"Ctrl+,",        false, false, false, true, {}, {} },
+                { phide::ui::MenuActionId::None, L"Keyboard Shortcuts", L"Ctrl+K Ctrl+S", false, false, false, true, {}, {} },
+                { phide::ui::MenuActionId::None, L"User Snippets",      L"",              false, false, false, true, {}, {} },
+                { phide::ui::MenuActionId::None, L"",                   L"",              false, false, true,  true, {}, {} },
+                { phide::ui::MenuActionId::None, L"Theme",              L"Ctrl+K Ctrl+T", false, false, false, true, {}, {} }
+            };
+
+            float optimalW = menu.CalculateOptimalMenuWidth(prefSubmenu, cfg, cfg.ScaleF(265.0f));
+            std::cout << "  Calculated Preferences Submenu Width: " << optimalW << " px" << std::endl;
+            assert(optimalW >= 290.0f && "Preferences submenu width must expand to >= 290px to prevent text layering");
+
+            // Verify strict column separation between label and shortcut for "Keyboard Shortcuts"
+            const auto& item = prefSubmenu[1]; // Keyboard Shortcuts
+            float shortcutRightPad = item.hasSubmenu ? cfg.ScaleF(24.0f) : cfg.ScaleF(14.0f);
+            float shortcutW = static_cast<float>(item.shortcut.length()) * cfg.ScaleF(7.4f) + cfg.ScaleF(8.0f);
+            float labelRight = optimalW - shortcutRightPad - (shortcutW + cfg.ScaleF(18.0f));
+            float shortcutLeft = optimalW - shortcutW - shortcutRightPad;
+
+            assert(labelRight < shortcutLeft && "labelRight must be strictly less than shortcutLeft");
+            assert(shortcutLeft - labelRight >= cfg.ScaleF(18.0f) && "There must be at least an 18px safety gap between label and shortcut");
+            float labelWidth = static_cast<float>(item.label.length()) * cfg.ScaleF(7.8f);
+            float labelSpace = labelRight - cfg.ScaleF(28.0f);
+            assert(labelSpace >= labelWidth && "Label must comfortably fit without clipping or overlapping shortcut");
+            std::cout << "  Passed: Subtest 7 (Menu text layering prevented & optimal width calculated)" << std::endl;
+        }
+
+        // Subtest 8: Deep Purple Theme Overhaul Verification
+        {
+            phide::ui::Theme purpleTheme;
+            purpleTheme.SetThemeMode(phide::ui::ThemeMode::Purple);
+            const auto& c = purpleTheme.colors;
+
+            // Verify atmospheric obsidian-violet frame (#1D132D)
+            assert(fabs(c.windowBg.r - 0.114f) < 0.01f && fabs(c.windowBg.g - 0.075f) < 0.01f && fabs(c.windowBg.b - 0.176f) < 0.01f);
+            assert(fabs(c.headerBg.r - 0.114f) < 0.01f && fabs(c.headerBg.g - 0.075f) < 0.01f && fabs(c.headerBg.b - 0.176f) < 0.01f);
+
+            // Verify velvet purple canvas (#150D24)
+            assert(fabs(c.canvasBg.r - 0.082f) < 0.01f && fabs(c.canvasBg.g - 0.051f) < 0.01f && fabs(c.canvasBg.b - 0.141f) < 0.01f);
+
+            // Verify modern menu styling (#1A112C bg, #6D28D9 hover)
+            assert(fabs(c.menuBg.r - 0.102f) < 0.01f && fabs(c.menuBg.g - 0.067f) < 0.01f && fabs(c.menuBg.b - 0.173f) < 0.01f);
+            assert(fabs(c.menuHover.r - 0.427f) < 0.01f && fabs(c.menuHover.g - 0.157f) < 0.01f && fabs(c.menuHover.b - 0.851f) < 0.01f);
+
+            // Verify crystal syntax colors (Electric lilac #C084FC, Sky Cyan #38BDF8, Warm Rose #F472B6, Sunbeam Gold #FBBF24)
+            assert(fabs(c.syntaxKeyword.r - 0.753f) < 0.01f && fabs(c.syntaxKeyword.g - 0.518f) < 0.01f && fabs(c.syntaxKeyword.b - 0.988f) < 0.01f);
+            assert(fabs(c.syntaxType.r - 0.220f) < 0.01f && fabs(c.syntaxType.g - 0.741f) < 0.01f && fabs(c.syntaxType.b - 0.973f) < 0.01f);
+            assert(fabs(c.syntaxString.r - 0.957f) < 0.01f && fabs(c.syntaxString.g - 0.447f) < 0.01f && fabs(c.syntaxString.b - 0.714f) < 0.01f);
+            assert(fabs(c.syntaxNumber.r - 0.984f) < 0.01f && fabs(c.syntaxNumber.g - 0.749f) < 0.01f && fabs(c.syntaxNumber.b - 0.141f) < 0.01f);
+            assert(fabs(c.lineNumber.r - 0.475f) < 0.01f && fabs(c.lineNumber.g - 0.392f) < 0.01f && fabs(c.lineNumber.b - 0.600f) < 0.01f);
+
+            std::cout << "  Passed: Subtest 8 (Deep Purple overhaul palette verified)" << std::endl;
+        }
+
         if (targetTest == 118) {
             std::cout << "Target test 118 finished." << std::endl;
             return 0;

@@ -14,6 +14,24 @@ static bool PtInRectF(POINT pt, const D2D1_RECT_F& rc) {
 
 PopupMenu::PopupMenu() = default;
 
+float PopupMenu::CalculateOptimalMenuWidth(const std::vector<PopupMenuItem>& items, const app::AppConfig& config, float minW) const {
+    float maxW = minW > 0.0f ? minW : config.ScaleF(240.0f);
+    for (const auto& item : items) {
+        if (item.isSeparator) continue;
+        float itemW = config.ScaleF(28.0f); // Left margin for checkmarks / icons
+        itemW += static_cast<float>(item.label.length()) * config.ScaleF(7.8f);
+        if (!item.shortcut.empty()) {
+            itemW += config.ScaleF(28.0f) + static_cast<float>(item.shortcut.length()) * config.ScaleF(7.4f);
+        }
+        if (item.hasSubmenu) {
+            itemW += config.ScaleF(26.0f);
+        }
+        itemW += config.ScaleF(16.0f);
+        if (itemW > maxW) maxW = itemW;
+    }
+    return maxW;
+}
+
 void PopupMenu::OpenViewMenu(float x, float y, const app::AppConfig& config,
                              bool isSidebarOpen, bool isZoomed, bool wordWrap, size_t groupCount) {
     m_isOpen = true;
@@ -23,7 +41,7 @@ void PopupMenu::OpenViewMenu(float x, float y, const app::AppConfig& config,
 
     BuildViewMenuItems(config, isSidebarOpen, isZoomed, wordWrap, groupCount);
 
-    const float menuW = config.ScaleF(230.0f);
+    const float menuW = CalculateOptimalMenuWidth(m_items, config, config.ScaleF(230.0f));
     LayoutMenu(m_items, x, y, menuW, config, m_mainMenuBounds);
 }
 
@@ -37,7 +55,7 @@ void PopupMenu::OpenFileMenu(float x, float y, const app::AppConfig& config, boo
 
     BuildFileMenuItems(autoSave, hasOpenFile, isDirty, hasOpenFolder, recentItems);
 
-    const float menuW = config.ScaleF(245.0f);
+    const float menuW = CalculateOptimalMenuWidth(m_items, config, config.ScaleF(255.0f));
     LayoutMenu(m_items, x, y, menuW, config, m_mainMenuBounds);
 }
 
@@ -52,7 +70,7 @@ void PopupMenu::OpenContextMenu(float x, float y, bool isFolder, const std::wstr
 
     BuildContextMenuItems(isFolder, targetPath, rootFolder, canPaste, canUndo, canRedo);
 
-    const float menuW = config.ScaleF(240.0f);
+    const float menuW = CalculateOptimalMenuWidth(m_items, config, config.ScaleF(240.0f));
     LayoutMenu(m_items, x, y, menuW, config, m_mainMenuBounds, clientW, clientH);
 }
 
@@ -95,7 +113,7 @@ void PopupMenu::OpenEditorContextMenu(float x, float y, const app::AppConfig& co
     // 8. Command Palette... (Ctrl+Shift+P)
     m_items.push_back({ MenuActionId::EditorCommandPalette, L"Command Palette...", L"Ctrl+Shift+P", false, false, false, true, {}, {} });
 
-    const float menuW = config.ScaleF(295.0f);
+    const float menuW = CalculateOptimalMenuWidth(m_items, config, config.ScaleF(295.0f));
     LayoutMenu(m_items, x, y, menuW, config, m_mainMenuBounds, clientW, clientH);
 }
 
@@ -200,7 +218,7 @@ void PopupMenu::OpenCodeMenu(float x, float y, const app::AppConfig& config,
     // 4. Imports & Source Actions
     m_items.push_back({ MenuActionId::CodeOrganizeImports,  L"Organize Imports",             L"Shift+Alt+O", false, false, false, hasDoc, {}, {} });
 
-    const float codeMenuW = config.ScaleF(295.0f);
+    const float codeMenuW = CalculateOptimalMenuWidth(m_items, config, config.ScaleF(295.0f));
     LayoutMenu(m_items, x, y, codeMenuW, config, m_mainMenuBounds);
 }
 
@@ -248,7 +266,7 @@ void PopupMenu::OpenToolsMenu(float x, float y, const app::AppConfig& config,
     // 5. Diagnostics & Memory Cache
     m_items.push_back({ MenuActionId::ToolsCleanMemoryCache,    L"Clean Memory Cache & Run GC",   L"",             false, false, false, true, {}, {} });
 
-    const float toolsMenuW = config.ScaleF(265.0f);
+    const float toolsMenuW = CalculateOptimalMenuWidth(m_items, config, config.ScaleF(285.0f));
     LayoutMenu(m_items, x, y, toolsMenuW, config, m_mainMenuBounds);
 }
 
@@ -290,7 +308,7 @@ void PopupMenu::OpenWindowMenu(float x, float y, const app::AppConfig& config,
     m_items.push_back({ MenuActionId::WindowSplitEditor,        L"Split Editor Right",         L"Ctrl+\\",        false, false, false, hasDoc, {}, {} });
     m_items.push_back({ MenuActionId::WindowCloseEditor,        L"Close Active Editor",        L"Ctrl+W",         false, false, false, hasDoc, {}, {} });
 
-    const float windowMenuW = config.ScaleF(270.0f);
+    const float windowMenuW = CalculateOptimalMenuWidth(m_items, config, config.ScaleF(270.0f));
     LayoutMenu(m_items, x, y, windowMenuW, config, m_mainMenuBounds);
 }
 
@@ -321,7 +339,7 @@ void PopupMenu::OpenHelpMenu(float x, float y, const app::AppConfig& config) {
     // 3. About
     m_items.push_back({ MenuActionId::HelpAbout,              L"About Phide - Web Development IDE", L"",           false, false, false, true, {}, {} });
 
-    const float helpMenuW = config.ScaleF(280.0f);
+    const float helpMenuW = CalculateOptimalMenuWidth(m_items, config, config.ScaleF(280.0f));
     LayoutMenu(m_items, x, y, helpMenuW, config, m_mainMenuBounds);
 }
 
@@ -337,7 +355,7 @@ void PopupMenu::OpenMoreActionsMenu(float x, float y, const app::AppConfig& conf
     m_items.push_back({ MenuActionId::MoreCodeHierarchy,   L"Code Hierarchy",   L"Shift+Alt+H", false, false, false, true, {}, {} });
     m_items.push_back({ MenuActionId::MoreCodeMetrics,     L"Code Metrics",     L"",            false, false, false, true, {}, {} });
 
-    const float moreMenuW = config.ScaleF(190.0f);
+    const float moreMenuW = CalculateOptimalMenuWidth(m_items, config, config.ScaleF(190.0f));
     LayoutMenu(m_items, x, y, moreMenuW, config, m_mainMenuBounds);
 }
 
@@ -819,7 +837,7 @@ void PopupMenu::LayoutSubmenu(int parentItemIdx, const app::AppConfig& config, f
     }
 
     m_activeSubmenuIdx = parentItemIdx;
-    const float subW = config.ScaleF(245.0f);
+    const float subW = CalculateOptimalMenuWidth(parent.submenuItems, config, config.ScaleF(265.0f));
     float subX = m_mainMenuBounds.right - config.ScaleF(2.0f);
     float subY = parent.bounds.top - config.ScaleF(4.0f);
 
@@ -917,12 +935,21 @@ void PopupMenu::RenderMenuPanel(ID2D1RenderTarget* pRT, Theme& theme, const app:
             DrawCheckmark(pRT, item.bounds, glyphBrush);
         }
 
-        // 2. Menu Item Text Label (generous right margin prevents collision with shortcuts)
-        float labelRightMargin = !item.shortcut.empty() ? config.ScaleF(85.0f) : (item.hasSubmenu ? config.ScaleF(24.0f) : config.ScaleF(14.0f));
+        // 2. Strictly separate columns for Label and Shortcut to guarantee ZERO text layering/overlap
+        float shortcutRightPad = item.hasSubmenu ? config.ScaleF(24.0f) : config.ScaleF(14.0f);
+        float shortcutW = 0.0f;
+        if (!item.shortcut.empty()) {
+            shortcutW = static_cast<float>(item.shortcut.length()) * config.ScaleF(7.4f) + config.ScaleF(8.0f);
+        }
+
+        float labelRight = item.bounds.right - shortcutRightPad;
+        if (shortcutW > 0.0f) {
+            labelRight -= (shortcutW + config.ScaleF(18.0f));
+        }
         D2D1_RECT_F rcLabel = D2D1::RectF(
             item.bounds.left + config.ScaleF(28.0f),
             item.bounds.top,
-            item.bounds.right - labelRightMargin,
+            labelRight,
             item.bounds.bottom
         );
         pRT->DrawText(
@@ -933,12 +960,12 @@ void PopupMenu::RenderMenuPanel(ID2D1RenderTarget* pRT, Theme& theme, const app:
             textBrush
         );
 
-        // 3. Right-Aligned Keyboard Shortcut
+        // 3. Right-Aligned Keyboard Shortcut (bounded within its own dedicated column to the right)
         if (!item.shortcut.empty()) {
             D2D1_RECT_F rcShortcut = D2D1::RectF(
-                item.bounds.left + config.ScaleF(60.0f),
+                item.bounds.right - shortcutW - shortcutRightPad,
                 item.bounds.top,
-                item.bounds.right - (item.hasSubmenu ? config.ScaleF(24.0f) : config.ScaleF(14.0f)),
+                item.bounds.right - shortcutRightPad,
                 item.bounds.bottom
             );
             pRT->DrawText(
