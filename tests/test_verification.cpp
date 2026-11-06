@@ -17816,6 +17816,70 @@ run_test_118:
             auto validDiags = phide::editor::SyntaxValidator::Validate(L"style.css", validCssBuf);
             assert(validDiags.empty());
             std::cout << "  Verified: Valid CSS produces 0 false-positive diagnostics" << std::endl;
+
+            // 6. Test HTML element ID completions vs Tailwind class completions:
+            //    Typing `id="bg"` should ONLY offer element IDs (bg-overlay, bg-image, etc.)
+            //    and must NEVER propose Tailwind utility classes (bg-top, bg-black, bg-auto, etc.)
+            {
+                std::vector<std::wstring> htmlDoc = {
+                    L"<!DOCTYPE html>",
+                    L"<html>",
+                    L"<head>",
+                    L"    <link rel=\"stylesheet\" href=\"style.css\" />",
+                    L"</head>",
+                    L"<body>",
+                    L"    <main class=\"hello\" id=\"bg\"><div class=\"card\">",
+                    L"    </div></main>",
+                    L"</body>",
+                    L"</html>"
+                };
+                // Cursor in id="bg" on line 6: "<main class=\"hello\" id=\"bg\"><div class=\"card\">"
+                std::wstring testLine = htmlDoc[6];
+                size_t idBgPos = testLine.find(L"id=\"bg\"");
+                assert(idBgPos != std::wstring::npos);
+                size_t cursorInIdBg = idBgPos + 6; // after "bg", before closing quote
+
+                auto idCompletions = engine.QueryCompletions(L"test.html", testLine, cursorInIdBg, &htmlDoc);
+                assert(!idCompletions.empty());
+
+                bool foundTailwindInId = false;
+                bool foundHtmlAttrInId = false;
+                bool foundSemanticId = false;
+                for (const auto& item : idCompletions) {
+                    if (item.origin == L"tailwind") {
+                        foundTailwindInId = true;
+                    }
+                    if (item.label == L"bg-top" || item.label == L"bg-black" || item.label == L"bg-auto" || item.label == L"bg-cover") {
+                        foundTailwindInId = true;
+                    }
+                    if (item.label == L"background" || item.label == L"bgcolor") {
+                        foundHtmlAttrInId = true;
+                    }
+                    if (item.label == L"bg-overlay" || item.label == L"bg-image" || item.label == L"bg-canvas" || item.label == L"bg-video") {
+                        foundSemanticId = true;
+                    }
+                }
+                assert(!foundTailwindInId);
+                assert(!foundHtmlAttrInId);
+                assert(foundSemanticId);
+                std::cout << "  Verified: id=\"bg\" provides HTML element IDs and NEVER leaks Tailwind classes or HTML attributes" << std::endl;
+
+                // Conversely, typing inside class="bg-" DOES provide Tailwind utility classes!
+                std::wstring classLine = L"<div class=\"bg-\">";
+                size_t cursorInClass = classLine.find(L"bg-") + 3;
+                auto classCompletions = engine.QueryCompletions(L"test.html", classLine, cursorInClass, &htmlDoc);
+                assert(!classCompletions.empty());
+
+                bool foundTailwindInClass = false;
+                for (const auto& item : classCompletions) {
+                    if (item.origin == L"tailwind" && (item.label == L"bg-black" || item.label == L"bg-top" || item.label == L"bg-cover")) {
+                        foundTailwindInClass = true;
+                        break;
+                    }
+                }
+                assert(foundTailwindInClass);
+                std::cout << "  Verified: class=\"bg-\" correctly provides Tailwind CSS utility classes" << std::endl;
+            }
         }
 
         if (targetTest == 120) {

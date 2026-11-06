@@ -2034,6 +2034,356 @@ static std::vector<IntelliSenseItem> ParseModuleExportsFromFile(
     return exports;
 }
 
+static void ProvideIdCompletions(
+    std::vector<IntelliSenseItem>& outCandidates,
+    const std::vector<std::wstring>* pDocLines,
+    const std::filesystem::path& baseDir,
+    const std::filesystem::path& projectRoot
+) {
+    std::unordered_set<std::wstring> seenIds;
+
+    auto addId = [&](const std::wstring& idStr, const std::wstring& detail, int score = 1600) {
+        if (idStr.empty()) return;
+        if (seenIds.insert(idStr).second) {
+            IntelliSenseItem it;
+            it.label = idStr;
+            it.detail = detail;
+            it.insertText = idStr;
+            it.kind = CompletionKind::Variable;
+            it.origin = L"html-id";
+            it.score = score;
+            outCandidates.push_back(std::move(it));
+        }
+    };
+
+    // 1. Scan current document lines for existing id="..." or id='...' declarations and CSS #id selectors
+    if (pDocLines) {
+        for (const auto& line : *pDocLines) {
+            // Find id="..." or id='...'
+            size_t idPos = 0;
+            while ((idPos = line.find(L"id=", idPos)) != std::wstring::npos) {
+                size_t qPos = idPos + 3;
+                while (qPos < line.length() && iswspace(line[qPos])) qPos++;
+                if (qPos < line.length() && (line[qPos] == L'"' || line[qPos] == L'\'')) {
+                    wchar_t qChar = line[qPos];
+                    size_t qEnd = line.find(qChar, qPos + 1);
+                    if (qEnd != std::wstring::npos && qEnd > qPos + 1) {
+                        std::wstring idVal = line.substr(qPos + 1, qEnd - qPos - 1);
+                        addId(idVal, L"Element ID (from document)", 1700);
+                    }
+                }
+                idPos += 3;
+            }
+
+            // Find #ident CSS selectors
+            size_t hashPos = 0;
+            while ((hashPos = line.find(L'#', hashPos)) != std::wstring::npos) {
+                bool isSelectorStart = (hashPos == 0 || iswspace(line[hashPos - 1]) || line[hashPos - 1] == L',' || line[hashPos - 1] == L'>' || line[hashPos - 1] == L'+' || line[hashPos - 1] == L'~');
+                if (isSelectorStart && hashPos + 1 < line.length() && (iswalpha(line[hashPos + 1]) || line[hashPos + 1] == L'_')) {
+                    size_t idEnd = hashPos + 1;
+                    while (idEnd < line.length() && (iswalnum(line[idEnd]) || line[idEnd] == L'-' || line[idEnd] == L'_')) idEnd++;
+                    std::wstring idVal = line.substr(hashPos + 1, idEnd - hashPos - 1);
+                    addId(idVal, L"CSS ID Selector (#" + idVal + L")", 1800);
+                    hashPos = idEnd;
+                    continue;
+                }
+                hashPos++;
+            }
+        }
+    }
+
+    // 2. Scan peer .css files in baseDir or projectRoot for CSS #id selectors
+    std::error_code ec;
+    std::vector<std::filesystem::path> searchDirs;
+    if (!baseDir.empty() && std::filesystem::exists(baseDir, ec)) searchDirs.push_back(baseDir);
+    if (!projectRoot.empty() && projectRoot != baseDir && std::filesystem::exists(projectRoot, ec)) searchDirs.push_back(projectRoot);
+
+    for (const auto& sDir : searchDirs) {
+        int scanned = 0;
+        for (std::filesystem::directory_iterator it(sDir, ec); !ec && it != std::filesystem::directory_iterator() && scanned < 10; it.increment(ec)) {
+            if (!it->is_regular_file(ec)) continue;
+            auto p = it->path();
+            if (p.extension() != L".css") continue;
+            scanned++;
+            std::ifstream ifs(p, std::ios::binary);
+            if (!ifs) continue;
+            std::string u8Line;
+            size_t lineCount = 0;
+            while (std::getline(ifs, u8Line) && lineCount++ < 300) {
+                std::wstring wLine(u8Line.begin(), u8Line.end());
+                size_t hashPos = 0;
+                while ((hashPos = wLine.find(L'#', hashPos)) != std::wstring::npos) {
+                    bool isSelectorStart = (hashPos == 0 || iswspace(wLine[hashPos - 1]) || wLine[hashPos - 1] == L',' || wLine[hashPos - 1] == L'>' || wLine[hashPos - 1] == L'+' || wLine[hashPos - 1] == L'~');
+                    if (isSelectorStart && hashPos + 1 < wLine.length() && (iswalpha(wLine[hashPos + 1]) || wLine[hashPos + 1] == L'_')) {
+                        size_t idEnd = hashPos + 1;
+                        while (idEnd < wLine.length() && (iswalnum(wLine[idEnd]) || wLine[idEnd] == L'-' || wLine[idEnd] == L'_')) idEnd++;
+                        std::wstring idVal = wLine.substr(hashPos + 1, idEnd - hashPos - 1);
+                        addId(idVal, L"CSS ID Selector (#" + idVal + L") from " + p.filename().wstring(), 1850);
+                        hashPos = idEnd;
+                        continue;
+                    }
+                    hashPos++;
+                }
+            }
+        }
+    }
+
+    // 3. Standard semantic element IDs matching web conventions
+    static const struct SemanticIdDef { const wchar_t* name; const wchar_t* desc; } s_semanticIds[] = {
+        { L"app", L"Root application mount container" },
+        { L"root", L"Root application mount element" },
+        { L"main", L"Primary content container" },
+        { L"main-content", L"Primary page content section" },
+        { L"content", L"Main body content area" },
+        { L"header", L"Page or site top header section" },
+        { L"footer", L"Page or site bottom footer section" },
+        { L"navbar", L"Navigation bar container" },
+        { L"nav", L"Primary navigation container" },
+        { L"sidebar", L"Sidebar navigation or drawer panel" },
+        { L"sidebar-nav", L"Sidebar navigation links menu" },
+        { L"container", L"Centered layout wrapper container" },
+        { L"wrapper", L"Outer document or component wrapper" },
+        { L"modal", L"Modal popup dialog container" },
+        { L"dialog", L"Accessible modal dialog element" },
+        { L"backdrop", L"Modal or drawer overlay backdrop" },
+        { L"card", L"Content card container" },
+        { L"banner", L"Hero or promotional header banner" },
+        { L"hero", L"Hero section container" },
+        { L"logo", L"Brand logo image or link container" },
+        { L"menu", L"Navigation dropdown or context menu" },
+        { L"search", L"Search bar input form container" },
+        { L"toolbar", L"Interactive controls action toolbar" },
+        { L"panel", L"Collapsible or fixed content panel" },
+        { L"form", L"Primary submission form" },
+        { L"title", L"Main heading title element" },
+        { L"heading", L"Section title or heading wrapper" },
+        { L"btn-submit", L"Primary form submit action button" },
+        { L"btn-close", L"Modal or panel close button" },
+        { L"bg-overlay", L"Background overlay container" },
+        { L"bg-image", L"Background image element" },
+        { L"bg-video", L"Background video element" },
+        { L"bg-canvas", L"Background animated canvas" },
+        { L"bg-container", L"Background wrapper container" },
+        { L"table-data", L"Main data table container" },
+        { L"list-items", L"Dynamic list items container" }
+    };
+    for (const auto& sid : s_semanticIds) {
+        addId(sid.name, std::wstring(L"Semantic ID — ") + sid.desc, 1400);
+    }
+}
+
+static void ProvideClassCompletions(
+    std::vector<IntelliSenseItem>& outCandidates,
+    const std::vector<std::wstring>* pDocLines,
+    const std::filesystem::path& baseDir,
+    const std::filesystem::path& projectRoot
+) {
+    std::unordered_set<std::wstring> seenClasses;
+
+    auto addClass = [&](const std::wstring& clsStr, const std::wstring& detail, int score = 2600) {
+        if (clsStr.empty()) return;
+        if (seenClasses.insert(clsStr).second) {
+            IntelliSenseItem it;
+            it.label = clsStr;
+            it.detail = detail;
+            it.insertText = clsStr;
+            it.kind = CompletionKind::Class;
+            it.origin = L"css-class";
+            it.score = score;
+            outCandidates.push_back(std::move(it));
+        }
+    };
+
+    // 1. Scan current document lines for class="..." and CSS .class selectors
+    if (pDocLines) {
+        for (const auto& line : *pDocLines) {
+            size_t cPos = 0;
+            while ((cPos = line.find(L"class=", cPos)) != std::wstring::npos) {
+                size_t qPos = cPos + 6;
+                while (qPos < line.length() && iswspace(line[qPos])) qPos++;
+                if (qPos < line.length() && (line[qPos] == L'"' || line[qPos] == L'\'')) {
+                    wchar_t qChar = line[qPos];
+                    size_t qEnd = line.find(qChar, qPos + 1);
+                    if (qEnd != std::wstring::npos && qEnd > qPos + 1) {
+                        std::wstring classesStr = line.substr(qPos + 1, qEnd - qPos - 1);
+                        size_t ws = 0;
+                        while (ws < classesStr.length()) {
+                            while (ws < classesStr.length() && iswspace(classesStr[ws])) ws++;
+                            size_t we = ws;
+                            while (we < classesStr.length() && !iswspace(classesStr[we])) we++;
+                            if (we > ws) {
+                                addClass(classesStr.substr(ws, we - ws), L"CSS Class (from document)", 2400);
+                            }
+                            ws = we;
+                        }
+                    }
+                }
+                cPos += 6;
+            }
+
+            // Find .class selectors
+            size_t dotPos = 0;
+            while ((dotPos = line.find(L'.', dotPos)) != std::wstring::npos) {
+                bool isSelectorStart = (dotPos == 0 || iswspace(line[dotPos - 1]) || line[dotPos - 1] == L',' || line[dotPos - 1] == L'>' || line[dotPos - 1] == L'+' || line[dotPos - 1] == L'~');
+                if (isSelectorStart && dotPos + 1 < line.length() && (iswalpha(line[dotPos + 1]) || line[dotPos + 1] == L'_')) {
+                    size_t cEnd = dotPos + 1;
+                    while (cEnd < line.length() && (iswalnum(line[cEnd]) || line[cEnd] == L'-' || line[cEnd] == L'_')) cEnd++;
+                    std::wstring clsVal = line.substr(dotPos + 1, cEnd - dotPos - 1);
+                    addClass(clsVal, L"CSS Class (." + clsVal + L")", 2700);
+                    dotPos = cEnd;
+                    continue;
+                }
+                dotPos++;
+            }
+        }
+    }
+
+    // 2. Scan peer .css files in baseDir or projectRoot (e.g. style.css)
+    std::error_code ec;
+    std::vector<std::filesystem::path> searchDirs;
+    if (!baseDir.empty() && std::filesystem::exists(baseDir, ec)) searchDirs.push_back(baseDir);
+    if (!projectRoot.empty() && projectRoot != baseDir && std::filesystem::exists(projectRoot, ec)) searchDirs.push_back(projectRoot);
+
+    for (const auto& sDir : searchDirs) {
+        int scanned = 0;
+        for (std::filesystem::directory_iterator it(sDir, ec); !ec && it != std::filesystem::directory_iterator() && scanned < 10; it.increment(ec)) {
+            if (!it->is_regular_file(ec)) continue;
+            auto p = it->path();
+            if (p.extension() != L".css") continue;
+            scanned++;
+            std::ifstream ifs(p, std::ios::binary);
+            if (!ifs) continue;
+            std::string u8Line;
+            size_t lineCount = 0;
+            while (std::getline(ifs, u8Line) && lineCount++ < 300) {
+                std::wstring wLine(u8Line.begin(), u8Line.end());
+                size_t dotPos = 0;
+                while ((dotPos = wLine.find(L'.', dotPos)) != std::wstring::npos) {
+                    bool isSelectorStart = (dotPos == 0 || iswspace(wLine[dotPos - 1]) || wLine[dotPos - 1] == L',' || wLine[dotPos - 1] == L'>' || wLine[dotPos - 1] == L'+' || wLine[dotPos - 1] == L'~');
+                    if (isSelectorStart && dotPos + 1 < wLine.length() && (iswalpha(wLine[dotPos + 1]) || wLine[dotPos + 1] == L'_')) {
+                        size_t cEnd = dotPos + 1;
+                        while (cEnd < wLine.length() && (iswalnum(wLine[cEnd]) || wLine[cEnd] == L'-' || wLine[cEnd] == L'_')) cEnd++;
+                        std::wstring clsVal = wLine.substr(dotPos + 1, cEnd - dotPos - 1);
+                        addClass(clsVal, L"CSS Class (." + clsVal + L") from " + p.filename().wstring(), 2800);
+                        dotPos = cEnd;
+                        continue;
+                    }
+                    dotPos++;
+                }
+            }
+        }
+    }
+}
+
+static void ProvideHtmlTypeCompletions(std::vector<IntelliSenseItem>& outCandidates) {
+    static const struct TypeDef { const wchar_t* val; const wchar_t* desc; } s_types[] = {
+        { L"text", L"Single-line text input control" },
+        { L"password", L"Obscured single-line text input control" },
+        { L"email", L"Input control for editing an email address" },
+        { L"number", L"Input control for entering a numeric value" },
+        { L"checkbox", L"Two-state checkbox toggle control" },
+        { L"radio", L"Radio button option within a radio group" },
+        { L"submit", L"Button that submits form data" },
+        { L"button", L"Generic clickable button with no default behavior" },
+        { L"reset", L"Button that resets form inputs to default values" },
+        { L"file", L"Control that lets the user select one or more files" },
+        { L"hidden", L"Hidden form input value not displayed to the user" },
+        { L"date", L"Input control for entering a calendar date" },
+        { L"time", L"Input control for entering a time value" },
+        { L"datetime-local", L"Input control for entering a date and time without timezone" },
+        { L"month", L"Input control for entering a month and year" },
+        { L"week", L"Input control for entering a week and year" },
+        { L"color", L"Color picker control" },
+        { L"range", L"Slider range input control" },
+        { L"search", L"Single-line text input control formatted for search queries" },
+        { L"tel", L"Input control for entering a telephone number" },
+        { L"url", L"Input control for entering a web URL" },
+        { L"image", L"Graphical submit button referencing an image source" },
+        { L"module", L"JavaScript ES module script execution type" },
+        { L"text/css", L"Standard CSS stylesheet MIME type" },
+        { L"text/javascript", L"Standard JavaScript MIME type" },
+        { L"application/json", L"JSON data format MIME type" }
+    };
+    for (const auto& td : s_types) {
+        IntelliSenseItem it;
+        it.label = td.val;
+        it.detail = std::wstring(L"Type — ") + td.desc;
+        it.insertText = td.val;
+        it.kind = CompletionKind::Constant;
+        it.origin = L"html";
+        it.score = 1600;
+        outCandidates.push_back(std::move(it));
+    }
+}
+
+static void ProvideHtmlRelCompletions(std::vector<IntelliSenseItem>& outCandidates) {
+    static const struct RelDef { const wchar_t* val; const wchar_t* desc; } s_rels[] = {
+        { L"stylesheet", L"Imports an external CSS stylesheet into the document" },
+        { L"icon", L"Specifies site favicon icon resource" },
+        { L"apple-touch-icon", L"Icon for Apple iOS home screen bookmarks" },
+        { L"shortcut icon", L"Legacy shortcut icon format" },
+        { L"preload", L"Forces browser to download and cache resource high priority" },
+        { L"prefetch", L"Suggests browser fetch resource in idle time for future navigation" },
+        { L"preconnect", L"Initiates an early connection (DNS lookup, TCP, TLS handshake)" },
+        { L"dns-prefetch", L"Resolves DNS domain name in background before link is clicked" },
+        { L"modulepreload", L"Preemptively fetches and parses ES module scripts" },
+        { L"manifest", L"Web application manifest file (.webmanifest or manifest.json)" },
+        { L"alternate", L"Alternate representation of the current document (e.g. RSS, print)" },
+        { L"author", L"Links to author information for the current document" },
+        { L"canonical", L"Specifies preferred canonical URL for search engine indexing" },
+        { L"license", L"Links to the copyright license governing the document" },
+        { L"noopener", L"Instructs browser to open link without granting window.opener access" },
+        { L"noreferrer", L"Prevents browser from sending HTTP Referer header to target page" }
+    };
+    for (const auto& rd : s_rels) {
+        IntelliSenseItem it;
+        it.label = rd.val;
+        it.detail = std::wstring(L"Rel — ") + rd.desc;
+        it.insertText = rd.val;
+        it.kind = CompletionKind::Constant;
+        it.origin = L"html";
+        it.score = 1600;
+        outCandidates.push_back(std::move(it));
+    }
+}
+
+static void ProvideHtmlTargetCompletions(std::vector<IntelliSenseItem>& outCandidates) {
+    static const struct TargetDef { const wchar_t* val; const wchar_t* desc; } s_targets[] = {
+        { L"_blank", L"Opens the linked document in a new tab or window" },
+        { L"_self", L"Opens the linked document in the same browsing frame (default)" },
+        { L"_parent", L"Opens the linked document in the parent browsing frame" },
+        { L"_top", L"Opens the linked document in the full body of the current window" }
+    };
+    for (const auto& td : s_targets) {
+        IntelliSenseItem it;
+        it.label = td.val;
+        it.detail = std::wstring(L"Target — ") + td.desc;
+        it.insertText = td.val;
+        it.kind = CompletionKind::Constant;
+        it.origin = L"html";
+        it.score = 1600;
+        outCandidates.push_back(std::move(it));
+    }
+}
+
+static void ProvideHtmlMethodCompletions(std::vector<IntelliSenseItem>& outCandidates) {
+    static const struct MethodDef { const wchar_t* val; const wchar_t* desc; } s_methods[] = {
+        { L"get", L"HTTP GET: Appends form data to the URL as query parameters" },
+        { L"post", L"HTTP POST: Sends form data in the HTTP request transaction body" },
+        { L"dialog", L"Submits the form to close an enclosing <dialog> element without sending a network request" }
+    };
+    for (const auto& md : s_methods) {
+        IntelliSenseItem it;
+        it.label = md.val;
+        it.detail = std::wstring(L"Method — ") + md.desc;
+        it.insertText = md.val;
+        it.kind = CompletionKind::Constant;
+        it.origin = L"html";
+        it.score = 1600;
+        outCandidates.push_back(std::move(it));
+    }
+}
+
 } // namespace
 
 std::vector<IntelliSenseItem> IntelliSenseEngine::QueryCompletions(
@@ -2345,10 +2695,57 @@ std::vector<IntelliSenseItem> IntelliSenseEngine::QueryCompletions(
         }
     }
 
-    // If prefix is empty and cursor is NOT at an explicit member/tag/key/import trigger, do not dump unfiltered completions!
+    // Parse inline quotes and HTML/JSX attribute context on the current line
+    bool isInsideQuotes = false;
+    wchar_t activeQuote = L'\0';
+    size_t openQuotePos = std::wstring::npos;
+    for (size_t i = 0; i < cursorCol && i < currentLine.length(); ++i) {
+        wchar_t c = currentLine[i];
+        if (activeQuote != L'\0') {
+            if (c == L'\\') {
+                i++; // skip escaped char
+                continue;
+            }
+            if (c == activeQuote) {
+                activeQuote = L'\0';
+                openQuotePos = std::wstring::npos;
+            }
+        } else {
+            if (c == L'"' || c == L'\'' || (c == L'`' && isJs)) {
+                activeQuote = c;
+                openQuotePos = i;
+            }
+        }
+    }
+    isInsideQuotes = (activeQuote != L'\0');
+
+    std::wstring enclosingAttrName;
+    if (isInsideQuotes && openQuotePos != std::wstring::npos) {
+        size_t eqPos = openQuotePos;
+        while (eqPos > 0 && iswspace(currentLine[eqPos - 1])) eqPos--;
+        if (eqPos > 0 && currentLine[eqPos - 1] == L'=') {
+            eqPos--; // skip '='
+            while (eqPos > 0 && iswspace(currentLine[eqPos - 1])) eqPos--;
+            size_t nameEnd = eqPos;
+            size_t nameStart = nameEnd;
+            while (nameStart > 0 && (iswalnum(currentLine[nameStart - 1]) || currentLine[nameStart - 1] == L'-' || currentLine[nameStart - 1] == L'_' || currentLine[nameStart - 1] == L':')) {
+                nameStart--;
+            }
+            if (nameEnd > nameStart) {
+                enclosingAttrName = currentLine.substr(nameStart, nameEnd - nameStart);
+                for (auto& chA : enclosingAttrName) chA = static_cast<wchar_t>(towlower(chA));
+            }
+        }
+    }
+
+    bool isClassAttrContext = (isInsideQuotes && (enclosingAttrName == L"class" || enclosingAttrName == L"classname"));
+    bool isIdAttrContext = (isInsideQuotes && enclosingAttrName == L"id");
+    bool quoteAttrTrigger = isInsideQuotes && !enclosingAttrName.empty();
+
+    // If prefix is empty and cursor is NOT at an explicit member/tag/key/import/attribute trigger, do not dump unfiltered completions!
     bool pyImportTrigger = isPy && (TrimWs(currentLine).rfind(L"import ", 0) == 0 || TrimWs(currentLine).rfind(L"from ", 0) == 0)
                            && cursorCol > 0 && cursorCol <= currentLine.length() && currentLine[cursorCol - 1] == L' ';
-    if (prefixLower.empty() && !afterDoubleColon && !afterArrow && !afterDot && !afterOpenAngle && !insideServerKey && !insideJsImportClause && !pyImportTrigger) {
+    if (prefixLower.empty() && !afterDoubleColon && !afterArrow && !afterDot && !afterOpenAngle && !insideServerKey && !insideJsImportClause && !pyImportTrigger && !quoteAttrTrigger) {
         return {};
     }
 
@@ -2373,8 +2770,8 @@ std::vector<IntelliSenseItem> IntelliSenseEngine::QueryCompletions(
     }
 
     // Detect contextual block (embedded <style> or <script>) in HTML/PHP files
-    bool insideStyle = isCss;
-    bool insideScript = isJs;
+    bool insideStyle = isCss || (enclosingAttrName == L"style");
+    bool insideScript = isJs || (enclosingAttrName.rfind(L"on", 0) == 0 && enclosingAttrName.length() > 2);
 
     if (isHtml) {
         // Check if cursor line has inline style="..." or on*="..." attributes
@@ -3050,8 +3447,8 @@ std::vector<IntelliSenseItem> IntelliSenseEngine::QueryCompletions(
                                 rawCandidates.push_back(r);
                             }
                         }
-                    } else {
-                        // Inside JSX Tag Attributes: e.g. <div class|
+                    } else if (!isInsideQuotes) {
+                        // Inside JSX Tag Attributes (attribute name context): e.g. <div class|
                         // 1. Propose all React JSX Attributes from @types/react (with className at score 4500!)
                         const auto& jsxAttrs = GetReactJsxAttributes();
                         for (const auto& attr : jsxAttrs) {
@@ -3063,6 +3460,14 @@ std::vector<IntelliSenseItem> IntelliSenseEngine::QueryCompletions(
                             rawCandidates.push_back(attr);
                         }
                         insideTagAttr = true;
+                    } else {
+                        // Inside JSX Attribute Value: e.g. <div className="|" or <div id="|"
+                        insideTagAttr = true;
+                        if (isIdAttrContext) {
+                            ProvideIdCompletions(rawCandidates, pDocLines, baseDir, projectRoot);
+                        } else if (isClassAttrContext) {
+                            ProvideClassCompletions(rawCandidates, pDocLines, baseDir, projectRoot);
+                        }
                     }
                 } else {
                     for (const auto& imp : importedDocSymbols) rawCandidates.push_back(imp);
@@ -3095,11 +3500,25 @@ std::vector<IntelliSenseItem> IntelliSenseEngine::QueryCompletions(
                     it.score += 1200;
                     rawCandidates.push_back(std::move(it));
                 }
-            } else {
+            } else if (!isInsideQuotes) {
                 for (const auto& attr : m_htmlAttributes) {
                     IntelliSenseItem it = attr;
                     it.score += 1000;
                     rawCandidates.push_back(std::move(it));
+                }
+            } else {
+                if (isIdAttrContext) {
+                    ProvideIdCompletions(rawCandidates, pDocLines, baseDir, projectRoot);
+                } else if (isClassAttrContext) {
+                    ProvideClassCompletions(rawCandidates, pDocLines, baseDir, projectRoot);
+                } else if (enclosingAttrName == L"type") {
+                    ProvideHtmlTypeCompletions(rawCandidates);
+                } else if (enclosingAttrName == L"rel") {
+                    ProvideHtmlRelCompletions(rawCandidates);
+                } else if (enclosingAttrName == L"target") {
+                    ProvideHtmlTargetCompletions(rawCandidates);
+                } else if (enclosingAttrName == L"method") {
+                    ProvideHtmlMethodCompletions(rawCandidates);
                 }
             }
         } else {
@@ -3510,7 +3929,7 @@ std::vector<IntelliSenseItem> IntelliSenseEngine::QueryCompletions(
     }
 
     // Dynamic Document & Workspace Variables
-    if (!afterDoubleColon && !afterArrow && !insideServerKey && !insideJsImportClause) {
+    if (!afterDoubleColon && !afterArrow && !insideServerKey && !insideJsImportClause && !insideTagAttr) {
         for (auto& sym : workspaceVarSymbols) {
             if (prefix.rfind(L"$", 0) == 0 && sym.label.rfind(L"$", 0) == 0) {
                 sym.score += 450;
@@ -3527,9 +3946,9 @@ std::vector<IntelliSenseItem> IntelliSenseEngine::QueryCompletions(
         }
     }
 
-    // Tailwind CSS IntelliSense completions (only in HTML/JSX class/className attributes or HTML markup)
-    bool insideClassAttr = (currentLine.find(L"class=") != std::wstring::npos || currentLine.find(L"className=") != std::wstring::npos);
-    if ((isHtml || insideClassAttr) && !insidePhp && !insideJsImportClause) {
+    // Tailwind CSS IntelliSense completions: ONLY inside class="..." / className="..." attributes or CSS @apply
+    bool isCssApplyContext = (insideStyle && currentLine.find(L"@apply") != std::wstring::npos);
+    if ((isClassAttrContext || isCssApplyContext) && !insidePhp && !insideJsImportClause) {
         static const auto allTailwindCandidates = TailwindHelper::GetAllCandidates();
         for (const auto& tw : allTailwindCandidates) {
             IntelliSenseItem item;
@@ -3540,6 +3959,7 @@ std::vector<IntelliSenseItem> IntelliSenseEngine::QueryCompletions(
             item.colorHex = tw.hex;
             item.kind = tw.isColor ? CompletionKind::Color : CompletionKind::Snippet;
             item.origin = L"tailwind";
+            item.score = 2500;
             rawCandidates.push_back(std::move(item));
         }
     }
