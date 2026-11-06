@@ -2943,7 +2943,24 @@ void Window::CommitAutocompleteSelection() {
             }
         }
 
-        // Handle `$0` cursor placeholder in insertText (e.g. `className="$0"`, `onClick={$0}`)
+        // Handle CSS property completion (e.g. `width: ;` -> `width: $0;`) so cursor sits before `;`
+        if (toInsert.ends_with(L": ;") && toInsert.find(L"$0") == std::wstring::npos) {
+            size_t lookCol = curBefore.col;
+            while (lookCol < curLineText.length() && (curLineText[lookCol] == L' ' || curLineText[lookCol] == L'\t')) {
+                lookCol++;
+            }
+            if (lookCol < curLineText.length() && curLineText[lookCol] == L':') {
+                // Line already has `: ...` after the property name; only insert the property name itself
+                toInsert = toInsert.substr(0, toInsert.length() - 3);
+            } else if (lookCol < curLineText.length() && curLineText[lookCol] == L';') {
+                // Line already has `;` after cursor; don't duplicate `;`
+                toInsert = toInsert.substr(0, toInsert.length() - 1) + L"$0";
+            } else {
+                toInsert = toInsert.substr(0, toInsert.length() - 1) + L"$0;";
+            }
+        }
+
+        // Handle `$0` cursor placeholder in insertText (e.g. `className="$0"`, `onClick={$0}`, `width: $0;`)
         size_t dollarZero = toInsert.find(L"$0");
         if (dollarZero != std::wstring::npos) {
             toInsert.erase(dollarZero, 2);

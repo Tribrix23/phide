@@ -1122,7 +1122,14 @@ std::wstring IntelliSenseEngine::ExtractQueryPrefix(const std::wstring& line, si
                 break;
             }
             start--;
-        } else if (iswalnum(c) || c == L'_' || c == L'$' || c == L'-' || c == L'!') {
+        } else if (c == L'.') {
+            // Allow decimal point inside numeric CSS values (e.g. "1.5" or "1.5rem"), but stop at member access "."
+            if (start >= 2 && iswdigit(line[start - 2])) {
+                start--;
+            } else {
+                break;
+            }
+        } else if (iswalnum(c) || c == L'_' || c == L'$' || c == L'-' || c == L'!' || c == L'%') {
             start--;
         } else {
             break;
@@ -2467,7 +2474,288 @@ std::vector<IntelliSenseItem> IntelliSenseEngine::QueryCompletions(
         bool typingValue = insideBraces && (lastColon != std::wstring::npos && (lastSemi == std::wstring::npos || lastColon > lastSemi) && colonPrecededByIdent);
 
         if (typingValue) {
-            for (const auto& v : m_cssValues) rawCandidates.push_back(v);
+            // Extract property name before ':'
+            size_t propEnd = lastColon;
+            while (propEnd > 0 && iswspace(currentLine[propEnd - 1])) propEnd--;
+            size_t propStart = propEnd;
+            while (propStart > 0 && (iswalnum(currentLine[propStart - 1]) || currentLine[propStart - 1] == L'-' || currentLine[propStart - 1] == L'_')) {
+                propStart--;
+            }
+            std::wstring propName = currentLine.substr(propStart, propEnd - propStart);
+            for (auto& chP : propName) chP = static_cast<wchar_t>(towlower(chP));
+
+            // Check if the user is typing a numeric CSS value (e.g. `20`, `1.5`, `-10`, `20p`, `100%`)
+            bool isNumericPrefix = false;
+            std::wstring numPart;
+            std::wstring unitPart;
+            if (!prefix.empty()) {
+                size_t idx = 0;
+                if (prefix[idx] == L'-' || prefix[idx] == L'+') idx++;
+                size_t digitStart = idx;
+                bool hasDigit = false;
+                while (idx < prefix.length() && iswdigit(prefix[idx])) {
+                    hasDigit = true;
+                    idx++;
+                }
+                if (idx < prefix.length() && prefix[idx] == L'.') {
+                    idx++;
+                    while (idx < prefix.length() && iswdigit(prefix[idx])) {
+                        hasDigit = true;
+                        idx++;
+                    }
+                }
+                if (hasDigit && idx > digitStart) {
+                    numPart = prefix.substr(0, idx);
+                    unitPart = prefix.substr(idx);
+                    bool validUnitChars = true;
+                    for (wchar_t uc : unitPart) {
+                        if (!iswalpha(uc) && uc != L'%') {
+                            validUnitChars = false;
+                            break;
+                        }
+                    }
+                    if (validUnitChars) {
+                        isNumericPrefix = true;
+                    }
+                }
+            }
+
+            if (isNumericPrefix) {
+                // Exclusively return CSS unit completions for the typed number (no unrelated identifier or U+... matches)
+                pyExclusive = true;
+                struct CssUnitDef {
+                    const wchar_t* unit;
+                    const wchar_t* desc;
+                    int category; // 0 = length/sizing, 1 = grid flex, 2 = angle, 3 = time, 4 = resolution
+                };
+                static const CssUnitDef s_units[] = {
+                    { L"px",    L"Pixels (1px = 1/96th of 1in)", 0 },
+                    { L"rem",   L"Root em (relative to root <html> font-size)", 0 },
+                    { L"em",    L"Relative to the font-size of the element", 0 },
+                    { L"%",     L"Percentage relative to the parent element", 0 },
+                    { L"vh",    L"Viewport height (1% of viewport height)", 0 },
+                    { L"vw",    L"Viewport width (1% of viewport width)", 0 },
+                    { L"dvh",   L"Dynamic viewport height (1% of dynamic viewport height)", 0 },
+                    { L"dvw",   L"Dynamic viewport width (1% of dynamic viewport width)", 0 },
+                    { L"svh",   L"Small viewport height (1% of small viewport height)", 0 },
+                    { L"svw",   L"Small viewport width (1% of small viewport width)", 0 },
+                    { L"lvh",   L"Large viewport height (1% of large viewport height)", 0 },
+                    { L"lvw",   L"Large viewport width (1% of large viewport width)", 0 },
+                    { L"vmin",  L"Viewport minimum (1% of smaller viewport dimension)", 0 },
+                    { L"vmax",  L"Viewport maximum (1% of larger viewport dimension)", 0 },
+                    { L"ch",    L"Width of the '0' (zero) glyph in the element's font", 0 },
+                    { L"ex",    L"x-height of the element's font", 0 },
+                    { L"lh",    L"Line height of the element", 0 },
+                    { L"rlh",   L"Root line height of the <html> element", 0 },
+                    { L"cqw",   L"1% of a query container's width", 0 },
+                    { L"cqh",   L"1% of a query container's height", 0 },
+                    { L"cqi",   L"1% of a query container's inline size", 0 },
+                    { L"cqb",   L"1% of a query container's block size", 0 },
+                    { L"fr",    L"Flexible fraction of available space in grid layout", 1 },
+                    { L"pt",    L"Points (1pt = 1/72nd of 1in)", 0 },
+                    { L"cm",    L"Centimeters", 0 },
+                    { L"mm",    L"Millimeters", 0 },
+                    { L"in",    L"Inches (1in = 96px = 2.54cm)", 0 },
+                    { L"pc",    L"Picas (1pc = 12pt)", 0 },
+                    { L"s",     L"Seconds (time duration/delay)", 3 },
+                    { L"ms",    L"Milliseconds (1000ms = 1s)", 3 },
+                    { L"deg",   L"Degrees (full circle = 360deg)", 2 },
+                    { L"rad",   L"Radians (full circle = 2π rad)", 2 },
+                    { L"turn",  L"Turns (full circle = 1turn)", 2 },
+                    { L"grad",  L"Gradians (full circle = 400grad)", 2 },
+                    { L"dpi",   L"Dots per inch (screen/print resolution)", 4 },
+                    { L"dppx",  L"Dots per px unit (1dppx = 96dpi)", 4 }
+                };
+
+                bool isTimeProp = (propName.find(L"duration") != std::wstring::npos ||
+                                   propName.find(L"delay") != std::wstring::npos ||
+                                   propName == L"transition" || propName == L"animation");
+                bool isAngleProp = (propName == L"rotate" || propName == L"transform" ||
+                                    propName.find(L"skew") != std::wstring::npos ||
+                                    propName == L"hue-rotate" || propName == L"offset-rotate");
+                bool isGridProp = (propName.find(L"grid") != std::wstring::npos);
+
+                // For font-weight, offer standard numeric weights (100..900) if matching
+                if (propName == L"font-weight" || propName == L"font") {
+                    static const struct WeightDef { const wchar_t* w; const wchar_t* d; } s_weights[] = {
+                        { L"100", L"Thin (Hairline) font weight" },
+                        { L"200", L"Extra Light (Ultra Light) font weight" },
+                        { L"300", L"Light font weight" },
+                        { L"400", L"Normal (Regular) font weight" },
+                        { L"500", L"Medium font weight" },
+                        { L"600", L"Semi Bold (Demi Bold) font weight" },
+                        { L"700", L"Bold font weight" },
+                        { L"800", L"Extra Bold (Ultra Bold) font weight" },
+                        { L"900", L"Black (Heavy) font weight" }
+                    };
+                    for (int wi = 0; wi < 9; ++wi) {
+                        IntelliSenseItem wItem;
+                        wItem.label = s_weights[wi].w;
+                        wItem.detail = s_weights[wi].d;
+                        wItem.insertText = s_weights[wi].w;
+                        wItem.kind = CompletionKind::Constant;
+                        wItem.score = 2600 - wi * 5;
+                        wItem.origin = L"css";
+                        pyExclusiveItems.push_back(std::move(wItem));
+                    }
+                }
+
+                int rank = 0;
+                for (const auto& u : s_units) {
+                    int baseScore = 2400 - rank * 8;
+                    if (isTimeProp && u.category == 3) baseScore += 400;
+                    else if (isAngleProp && u.category == 2) baseScore += 400;
+                    else if (isGridProp && u.category == 1) baseScore += 350;
+                    else if (!isTimeProp && !isAngleProp && (u.category == 2 || u.category == 3 || u.category == 4)) {
+                        baseScore -= 300;
+                    }
+
+                    std::wstring fullVal = numPart + u.unit;
+                    IntelliSenseItem uItem;
+                    uItem.label = fullVal;
+                    uItem.detail = std::wstring(L"CSS Unit — ") + u.desc;
+                    uItem.insertText = fullVal;
+                    uItem.kind = CompletionKind::Constant;
+                    uItem.score = baseScore;
+                    uItem.origin = L"css";
+                    pyExclusiveItems.push_back(std::move(uItem));
+                    rank++;
+                }
+            } else {
+                // Curated property-specific CSS values & functions prioritized above generic values
+                struct PropValDef { const wchar_t* val; const wchar_t* desc; const wchar_t* insert; };
+                auto addPropVal = [&](const wchar_t* val, const wchar_t* desc, int bonus = 600, const wchar_t* customInsert = nullptr) {
+                    IntelliSenseItem it;
+                    it.label = val;
+                    it.detail = desc;
+                    it.insertText = customInsert ? customInsert : val;
+                    it.kind = ( std::wcschr(val, L'(') != nullptr ) ? CompletionKind::Function : CompletionKind::Constant;
+                    it.score = 1200 + bonus;
+                    it.origin = L"css";
+                    rawCandidates.push_back(std::move(it));
+                };
+
+                // Sizing & Dimension properties (width, height, min/max-width/height, flex-basis, inline-size, block-size)
+                if (propName == L"width" || propName == L"height" ||
+                    propName == L"min-width" || propName == L"max-width" ||
+                    propName == L"min-height" || propName == L"max-height" ||
+                    propName == L"inline-size" || propName == L"block-size" ||
+                    propName == L"min-inline-size" || propName == L"max-inline-size" ||
+                    propName == L"min-block-size" || propName == L"max-block-size" ||
+                    propName == L"flex-basis") {
+                    addPropVal(L"auto", L"Browser calculates and selects the dimension automatically", 700);
+                    addPropVal(L"100%", L"Full size of parent containing block", 690);
+                    addPropVal(L"fit-content", L"Uses available space, but never more than max-content", 680);
+                    addPropVal(L"max-content", L"Intrinsic preferred dimension without wrapping", 670);
+                    addPropVal(L"min-content", L"Intrinsic minimum dimension without overflowing", 660);
+                    addPropVal(L"100vw", L"100% of the viewport width", 650);
+                    addPropVal(L"100vh", L"100% of the viewport height", 645);
+                    addPropVal(L"100dvh", L"100% of the dynamic viewport height", 640);
+                    addPropVal(L"calc()", L"Performs mathematical calculations on CSS values", 635, L"calc($0)");
+                    addPropVal(L"clamp()", L"Clamps a value between a minimum and maximum bound: clamp(min, val, max)", 630, L"clamp($0)");
+                    addPropVal(L"min()", L"Uses the smallest value from a comma-separated list of expressions", 625, L"min($0)");
+                    addPropVal(L"max()", L"Uses the largest value from a comma-separated list of expressions", 620, L"max($0)");
+                    addPropVal(L"var()", L"Inserts the value of a CSS custom property (--variable)", 615, L"var(--$0)");
+                    if (propName.rfind(L"max-", 0) == 0) {
+                        addPropVal(L"none", L"No maximum size limit applied", 695);
+                    }
+                } else if (propName == L"display") {
+                    addPropVal(L"flex", L"Block-level flex container", 700);
+                    addPropVal(L"grid", L"Block-level grid container", 695);
+                    addPropVal(L"block", L"Block-level element box", 690);
+                    addPropVal(L"inline-block", L"Inline-level block container", 685);
+                    addPropVal(L"inline-flex", L"Inline-level flex container", 680);
+                    addPropVal(L"inline-grid", L"Inline-level grid container", 675);
+                    addPropVal(L"inline", L"Inline element box", 670);
+                    addPropVal(L"none", L"Hides element and removes it from document layout", 665);
+                    addPropVal(L"contents", L"Element box is replaced by its children in layout", 660);
+                    addPropVal(L"flow-root", L"Block container that establishes a new block formatting context", 655);
+                    addPropVal(L"table", L"Behaves like an HTML <table> element", 650);
+                } else if (propName == L"position") {
+                    addPropVal(L"relative", L"Positioned relative to its normal flow position", 700);
+                    addPropVal(L"absolute", L"Positioned relative to its nearest positioned ancestor", 695);
+                    addPropVal(L"fixed", L"Positioned relative to the viewport", 690);
+                    addPropVal(L"sticky", L"Toggles between relative and fixed depending on scroll position", 685);
+                    addPropVal(L"static", L"Default normal document flow positioning", 680);
+                } else if (propName == L"flex-direction") {
+                    addPropVal(L"row", L"Main axis runs horizontally left-to-right", 700);
+                    addPropVal(L"column", L"Main axis runs vertically top-to-bottom", 695);
+                    addPropVal(L"row-reverse", L"Main axis runs horizontally right-to-left", 690);
+                    addPropVal(L"column-reverse", L"Main axis runs vertically bottom-to-top", 685);
+                } else if (propName == L"flex-wrap") {
+                    addPropVal(L"nowrap", L"Flex items are laid out in a single line", 700);
+                    addPropVal(L"wrap", L"Flex items wrap onto multiple lines", 695);
+                    addPropVal(L"wrap-reverse", L"Flex items wrap onto multiple lines in reverse order", 690);
+                } else if (propName == L"justify-content" || propName == L"align-content" || propName == L"place-content") {
+                    addPropVal(L"center", L"Pack items around the center", 700);
+                    addPropVal(L"space-between", L"Distribute items evenly; first at start, last at end", 695);
+                    addPropVal(L"space-around", L"Distribute items evenly with half-size space on ends", 690);
+                    addPropVal(L"space-evenly", L"Distribute items evenly with equal space around them", 685);
+                    addPropVal(L"flex-start", L"Pack flex items from the start", 680);
+                    addPropVal(L"flex-end", L"Pack flex items from the end", 675);
+                    addPropVal(L"start", L"Pack items from the writing-mode start edge", 670);
+                    addPropVal(L"end", L"Pack items from the writing-mode end edge", 665);
+                    addPropVal(L"stretch", L"Stretch auto-sized items to fill the container", 660);
+                } else if (propName == L"align-items" || propName == L"align-self" || propName == L"justify-items" || propName == L"justify-self" || propName == L"place-items" || propName == L"place-self") {
+                    addPropVal(L"center", L"Centers items along the axis", 700);
+                    addPropVal(L"stretch", L"Stretches items to fill the container", 695);
+                    addPropVal(L"flex-start", L"Aligns items to the start of the cross axis", 690);
+                    addPropVal(L"flex-end", L"Aligns items to the end of the cross axis", 685);
+                    addPropVal(L"start", L"Aligns items to the start edge", 680);
+                    addPropVal(L"end", L"Aligns items to the end edge", 675);
+                    addPropVal(L"baseline", L"Aligns items along their text baselines", 670);
+                } else if (propName == L"box-sizing") {
+                    addPropVal(L"border-box", L"Width and height include content, padding, and border", 700);
+                    addPropVal(L"content-box", L"Width and height apply only to the content box", 695);
+                } else if (propName == L"overflow" || propName == L"overflow-x" || propName == L"overflow-y") {
+                    addPropVal(L"hidden", L"Overflow content is clipped with no scrollbars", 700);
+                    addPropVal(L"auto", L"Displays scrollbars only when content overflows", 695);
+                    addPropVal(L"scroll", L"Always displays scrollbars for overflow", 690);
+                    addPropVal(L"visible", L"Overflow content renders outside the element box", 685);
+                    addPropVal(L"clip", L"Clips overflow at the overflow clip edge without scrolling", 680);
+                } else if (propName == L"cursor") {
+                    addPropVal(L"pointer", L"Hand pointer indicating a clickable link/button", 700);
+                    addPropVal(L"default", L"Platform default arrow cursor", 695);
+                    addPropVal(L"not-allowed", L"Indicates the requested action will not be executed", 690);
+                    addPropVal(L"grab", L"Indicates an item can be grabbed/dragged", 685);
+                    addPropVal(L"grabbing", L"Indicates an item is currently being grabbed", 680);
+                    addPropVal(L"text", L"I-beam cursor indicating selectable text", 675);
+                    addPropVal(L"wait", L"Indicates the program is busy", 670);
+                    addPropVal(L"crosshair", L"Crosshair cursor", 665);
+                    addPropVal(L"move", L"Indicates something is to be moved", 660);
+                    addPropVal(L"none", L"No cursor is rendered", 655);
+                } else if (propName == L"text-align") {
+                    addPropVal(L"center", L"Centers inline content", 700);
+                    addPropVal(L"left", L"Aligns inline content to the left edge", 695);
+                    addPropVal(L"right", L"Aligns inline content to the right edge", 690);
+                    addPropVal(L"justify", L"Spaces inline content to line up left and right edges", 685);
+                    addPropVal(L"start", L"Aligns to start edge of writing mode", 680);
+                    addPropVal(L"end", L"Aligns to end edge of writing mode", 675);
+                } else if (propName == L"font-weight") {
+                    addPropVal(L"bold", L"Bold font weight (700)", 700);
+                    addPropVal(L"normal", L"Normal font weight (400)", 695);
+                    addPropVal(L"600", L"Semi-Bold font weight", 690);
+                    addPropVal(L"500", L"Medium font weight", 685);
+                    addPropVal(L"700", L"Bold font weight", 680);
+                    addPropVal(L"300", L"Light font weight", 675);
+                    addPropVal(L"800", L"Extra-Bold font weight", 670);
+                    addPropVal(L"900", L"Black font weight", 665);
+                    addPropVal(L"bolder", L"One relative weight heavier than parent", 660);
+                    addPropVal(L"lighter", L"One relative weight lighter than parent", 655);
+                } else if (propName == L"object-fit") {
+                    addPropVal(L"cover", L"Scales to fill container while preserving aspect ratio (clips excess)", 700);
+                    addPropVal(L"contain", L"Scales to fit inside container while preserving aspect ratio", 695);
+                    addPropVal(L"fill", L"Stretches to fill container (may distort aspect ratio)", 690);
+                    addPropVal(L"none", L"Replaced content is not resized", 685);
+                    addPropVal(L"scale-down", L"Sizes as if none or contain were specified, whichever is smaller", 680);
+                } else {
+                    // Common CSS functions & global keywords useful for any property
+                    addPropVal(L"var()", L"Inserts the value of a CSS custom property (--variable)", 400, L"var(--$0)");
+                    addPropVal(L"calc()", L"Performs mathematical calculations on CSS values", 390, L"calc($0)");
+                }
+
+                for (const auto& v : m_cssValues) rawCandidates.push_back(v);
+            }
         } else {
             for (const auto& p : m_cssProperties) rawCandidates.push_back(p);
 

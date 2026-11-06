@@ -17710,6 +17710,120 @@ run_test_118:
         }
     }
 
+    // =========================================================================
+    // [TEST 120] CSS IntelliSense Units, Property Values, Cursor Placement & CSS Linter
+    // =========================================================================
+    if (targetTest == 0 || targetTest == 120) {
+        std::cout << "\n[TEST 120] Testing CSS IntelliSense Units, Property Values & CSS Linter..." << std::endl;
+
+        phide::editor::IntelliSenseEngine engine;
+
+        // 1. Typing a numeric CSS value (e.g. `width: 20;`) returns unit completions (`20px`, `20rem`, `20em`, `20%`, etc.)
+        //    and NEVER returns `U+...` unicode range items or OpenType feature tags!
+        {
+            std::vector<std::wstring> cssLines = {
+                L".hello{",
+                L"    height: 20px;",
+                L"    width: 20;",
+                L"}"
+            };
+            // Cursor is at col 13 (right after `20` and before `;`)
+            auto items = engine.QueryCompletions(L"style.css", cssLines[2], 13, &cssLines);
+            assert(!items.empty());
+            assert(items[0].label == L"20px");
+            assert(items[1].label == L"20rem");
+            assert(items[2].label == L"20em");
+            assert(items[3].label == L"20%");
+
+            bool hasVh = false, hasVw = false;
+            for (const auto& it : items) {
+                if (it.label == L"20vh") hasVh = true;
+                if (it.label == L"20vw") hasVw = true;
+                // Ensure zero U+... unicode ranges or quoted OpenType tags pollute CSS numeric completions
+                assert(it.label.rfind(L"U+", 0) != 0);
+                assert(it.label.rfind(L"\"", 0) != 0);
+            }
+            assert(hasVh && hasVw);
+            std::cout << "  Verified: Typing 'width: 20' suggests 20px, 20rem, 20em, 20%, 20vh, 20vw with zero U+... pollution" << std::endl;
+        }
+
+        // 2. Typing partial unit (e.g. `width: 20r`) filters to `20rem`, `20rlh`, `20rad`
+        {
+            std::vector<std::wstring> cssLines = {
+                L".hello {",
+                L"    width: 20r;",
+                L"}"
+            };
+            auto items = engine.QueryCompletions(L"style.css", cssLines[1], 14, &cssLines);
+            assert(!items.empty());
+            assert(items[0].label == L"20rem");
+            std::cout << "  Verified: Typing 'width: 20r' filters unit completions to '20rem' at #1" << std::endl;
+        }
+
+        // 3. Property-specific keyword/function completions (e.g. `width: a` -> `auto`, `display: f` -> `flex`)
+        {
+            std::vector<std::wstring> cssLines = {
+                L".hello {",
+                L"    width: a;",
+                L"    display: f;",
+                L"}"
+            };
+            auto widthItems = engine.QueryCompletions(L"style.css", cssLines[1], 12, &cssLines);
+            assert(!widthItems.empty());
+            assert(widthItems[0].label == L"auto");
+
+            auto dispItems = engine.QueryCompletions(L"style.css", cssLines[2], 14, &cssLines);
+            assert(!dispItems.empty());
+            assert(dispItems[0].label == L"flex");
+            std::cout << "  Verified: Property-aware CSS value suggestions rank 'auto' (#1 for width) and 'flex' (#1 for display)" << std::endl;
+        }
+
+        // 4. CSS Linter detects empty property value (`width: ;`), unknown units (`20abc`), and missing semicolons
+        {
+            phide::editor::Buffer cssBuf;
+            cssBuf.SetText(
+                L".hello{\n"
+                L"    height: 20px;\n"
+                L"    width: ;\n"
+                L"}\n"
+            );
+            auto diags = phide::editor::SyntaxValidator::Validate(L"style.css", cssBuf);
+            bool foundEmptyValErr = false;
+            for (const auto& d : diags) {
+                if (d.line == 2 && d.severity == 1 && d.message.find(L"Property value expected") != std::wstring::npos) {
+                    foundEmptyValErr = true;
+                }
+            }
+            assert(foundEmptyValErr);
+            std::cout << "  Verified: CSS Linter reports severity-1 Error on 'width: ;' (empty property value)" << std::endl;
+
+            // Unknown unit check (`20xyz`)
+            phide::editor::Buffer badUnitBuf;
+            badUnitBuf.SetText(L".box {\n    width: 20xyz;\n}\n");
+            auto unitDiags = phide::editor::SyntaxValidator::Validate(L"style.css", badUnitBuf);
+            bool foundUnitErr = false;
+            for (const auto& d : unitDiags) {
+                if (d.line == 1 && d.severity == 1 && d.message.find(L"Unknown CSS unit 'xyz'") != std::wstring::npos) {
+                    foundUnitErr = true;
+                }
+            }
+            assert(foundUnitErr);
+            std::cout << "  Verified: CSS Linter catches invalid numeric unit '20xyz'" << std::endl;
+
+            // Valid CSS produces 0 diagnostics
+            phide::editor::Buffer validCssBuf;
+            validCssBuf.SetText(L".hello {\n    height: 20px;\n    width: 20rem;\n    display: flex;\n}\n");
+            auto validDiags = phide::editor::SyntaxValidator::Validate(L"style.css", validCssBuf);
+            assert(validDiags.empty());
+            std::cout << "  Verified: Valid CSS produces 0 false-positive diagnostics" << std::endl;
+        }
+
+        if (targetTest == 120) {
+            std::cout << "Target test 120 finished." << std::endl;
+            return 0;
+        }
+    }
+
     std::cout << "\n==========================================" << std::endl;
     std::cout << "ALL VERIFICATION TESTS PASSED SUCCESSFULLY!" << std::endl;
     std::cout << "==========================================" << std::endl;

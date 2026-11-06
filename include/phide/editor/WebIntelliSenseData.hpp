@@ -1,7 +1,6 @@
 /**
  * @file WebIntelliSenseData.hpp
- * @brief Authoritative official Microsoft VS Code HTML, CSS, and JavaScript/DOM IntelliSense definitions.
- * Auto-generated from web-custom-data, emmet, and TypeScript lib.dom.d.ts.
+ * @brief Standard W3C HTML, CSS, and JavaScript/DOM IntelliSense definitions.
  */
 
 #pragma once

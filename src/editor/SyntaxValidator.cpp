@@ -4,6 +4,7 @@
  */
 
 #include "phide/editor/SyntaxValidator.hpp"
+#include "phide/editor/WebIntelliSenseData.hpp"
 #include <algorithm>
 #include <cctype>
 #include <cwctype>
@@ -542,13 +543,24 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidateCss(
                 }
 
                 // Colon found! Check if property is known
+                static const std::unordered_set<std::wstring> webDataProps = []() {
+                    std::unordered_set<std::wstring> s;
+                    for (const auto& item : WebIntelliSenseData::GetCssProperties()) {
+                        std::wstring lower = item.label;
+                        for (auto& chL : lower) chL = static_cast<wchar_t>(towlower(chL));
+                        s.insert(std::move(lower));
+                    }
+                    return s;
+                }();
+
                 if (propName.rfind(L"--", 0) != 0 && propName.rfind(L"-webkit-", 0) != 0 &&
                     propName.rfind(L"-moz-", 0) != 0 && propName.rfind(L"-ms-", 0) != 0 && propName.rfind(L"-o-", 0) != 0 &&
                     propName.rfind(L"scroll-margin", 0) != 0 && propName.rfind(L"scroll-padding", 0) != 0) {
-                    if (knownProps.find(propName) == knownProps.end()) {
+                    if (knownProps.find(propName) == knownProps.end() && webDataProps.find(propName) == webDataProps.end()) {
                         diagnostics.push_back({ l, propStart, propName.length(), L"CSS Linter: Unknown CSS property '" + propName + L"'", 2 });
                     }
                 }
+                size_t colonCol = c;
                 c++; // skip ':'
 
                 // Scan value until ';' or '}'
@@ -557,6 +569,176 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidateCss(
                     c++;
                 }
                 std::wstring valStr = line.substr(valStart, c - valStart);
+
+                // Strip inline /* ... */ comments from value before checking emptiness & tokens
+                std::wstring cleanVal;
+                cleanVal.reserve(valStr.length());
+                for (size_t vi = 0; vi < valStr.length();) {
+                    if (vi + 1 < valStr.length() && valStr[vi] == L'/' && valStr[vi + 1] == L'*') {
+                        size_t endCmt = valStr.find(L"*/", vi + 2);
+                        if (endCmt != std::wstring::npos) {
+                            cleanVal.append(endCmt + 2 - vi, L' ');
+                            vi = endCmt + 2;
+                        } else {
+                            cleanVal.append(valStr.length() - vi, L' ');
+                            break;
+                        }
+                    } else {
+                        cleanVal.push_back(valStr[vi]);
+                        vi++;
+                    }
+                }
+
+                std::wstring trimmedVal = cleanVal;
+                while (!trimmedVal.empty() && iswspace(trimmedVal.front())) trimmedVal.erase(trimmedVal.begin());
+                while (!trimmedVal.empty() && iswspace(trimmedVal.back())) trimmedVal.pop_back();
+
+                // 1. Check for empty property value (e.g. `width: ;`, `width:;`, or `width:` with no continuation)
+                if (trimmedVal.empty()) {
+                    bool continuesOnNextLine = false;
+                    if (c >= line.length() && l + 1 < endLine) {
+                        std::wstring nextLn = buffer.GetLine(l + 1);
+                        size_t ns = 0;
+                        while (ns < nextLn.length() && iswspace(nextLn[ns])) ns++;
+                        if (ns < nextLn.length() && nextLn[ns] != L'}' && nextLn[ns] != L';') {
+                            size_t nextColon = nextLn.find(L':', ns);
+                            size_t nextParen = nextLn.find(L'(', ns);
+                            if (nextColon == std::wstring::npos || (nextParen != std::wstring::npos && nextParen < nextColon)) {
+                                continuesOnNextLine = true;
+                            }
+                        }
+                    }
+                    if (!continuesOnNextLine) {
+                        size_t endCol = (c < line.length() && line[c] == L';') ? (c + 1) : c;
+                        size_t errLen = (endCol > propStart) ? (endCol - propStart) : (colonCol - propStart + 1);
+                        diagnostics.push_back({ l, propStart, errLen, L"CSS Syntax Error: Property value expected for '" + propName + L"'", 1 });
+                    }
+                } else {
+                    // 2. Check for unbalanced parentheses in value (e.g. `calc(100% - 20px;`)
+                    int parenDepth = 0;
+                    size_t firstOpenParen = 0;
+                    bool inValQuote = false;
+                    wchar_t valQuoteCh = 0;
+                    for (size_t vi = 0; vi < cleanVal.length(); ++vi) {
+                        wchar_t vc = cleanVal[vi];
+                        if (inValQuote) {
+                            if (vc == L'\\') { vi++; continue; }
+                            if (vc == valQuoteCh) inValQuote = false;
+                            continue;
+                        }
+                        if (vc == L'"' || vc == L'\'') {
+                            inValQuote = true;
+                            valQuoteCh = vc;
+                            continue;
+                        }
+                        if (vc == L'(') {
+                            if (parenDepth == 0) firstOpenParen = vi;
+                            parenDepth++;
+                        } else if (vc == L')') {
+                            if (parenDepth == 0) {
+                                diagnostics.push_back({ l, valStart + vi, 1, L"CSS Syntax Error: Unmatched closing parenthesis ')' in property value", 1 });
+                            } else {
+                                parenDepth--;
+                            }
+                        }
+                    }
+                    if (parenDepth > 0 && (c < line.length() && (line[c] == L';' || line[c] == L'}'))) {
+                        diagnostics.push_back({ l, valStart + firstOpenParen, 1, L"CSS Syntax Error: Unclosed parenthesis '(' in property value", 1 });
+                    }
+
+                    // 3. Check for unknown/invalid CSS units on numeric dimensions (e.g. `20abc`)
+                    static const std::unordered_set<std::wstring> validCssUnits = {
+                        L"%", L"px", L"em", L"rem", L"vh", L"vw", L"vmin", L"vmax", L"vi", L"vb",
+                        L"svh", L"svw", L"svmin", L"svmax", L"svi", L"svb",
+                        L"lvh", L"lvw", L"lvmin", L"lvmax", L"lvi", L"lvb",
+                        L"dvh", L"dvw", L"dvmin", L"dvmax", L"dvi", L"dvb",
+                        L"ch", L"ex", L"cap", L"ic", L"lh", L"rlh",
+                        L"cm", L"mm", L"q", L"in", L"pc", L"pt",
+                        L"deg", L"grad", L"rad", L"turn",
+                        L"s", L"ms", L"hz", L"khz",
+                        L"dpi", L"dpcm", L"dppx", L"x",
+                        L"fr", L"cqw", L"cqh", L"cqi", L"cqb", L"cqmin", L"cqmax",
+                        L"n" // e.g. 2n+1 in nth-child
+                    };
+                    if (cleanVal.find(L"url(") == std::wstring::npos && propName != L"unicode-range" &&
+                        propName != L"grid-area" && propName != L"grid-column" && propName != L"grid-row" &&
+                        propName != L"font-family" && propName != L"animation" && propName != L"animation-name") {
+                        bool inQ = false;
+                        wchar_t qC = 0;
+                        for (size_t vi = 0; vi < cleanVal.length();) {
+                            wchar_t vc = cleanVal[vi];
+                            if (inQ) {
+                                if (vc == L'\\') { vi += 2; continue; }
+                                if (vc == qC) inQ = false;
+                                vi++;
+                                continue;
+                            }
+                            if (vc == L'"' || vc == L'\'') {
+                                inQ = true;
+                                qC = vc;
+                                vi++;
+                                continue;
+                            }
+                            if (vc == L'#') {
+                                vi++;
+                                while (vi < cleanVal.length() && (iswalnum(cleanVal[vi]) || cleanVal[vi] == L'-' || cleanVal[vi] == L'_')) vi++;
+                                continue;
+                            }
+                            bool prevIsIdent = (vi > 0 && (iswalpha(cleanVal[vi - 1]) || cleanVal[vi - 1] == L'-' || cleanVal[vi - 1] == L'_' || cleanVal[vi - 1] == L'#'));
+                            if (!prevIsIdent && iswdigit(vc)) {
+                                size_t numStart = vi;
+                                while (vi < cleanVal.length() && iswdigit(cleanVal[vi])) vi++;
+                                if (vi < cleanVal.length() && cleanVal[vi] == L'.') {
+                                    vi++;
+                                    while (vi < cleanVal.length() && iswdigit(cleanVal[vi])) vi++;
+                                }
+                                size_t unitStart = vi;
+                                while (vi < cleanVal.length() && (iswalpha(cleanVal[vi]) || cleanVal[vi] == L'%')) {
+                                    vi++;
+                                }
+                                if (vi > unitStart) {
+                                    std::wstring unitStr = cleanVal.substr(unitStart, vi - unitStart);
+                                    for (auto& cu : unitStr) cu = static_cast<wchar_t>(towlower(cu));
+                                    if (validCssUnits.find(unitStr) == validCssUnits.end()) {
+                                        diagnostics.push_back({ l, valStart + numStart, vi - numStart,
+                                            L"CSS Syntax Error: Unknown CSS unit '" + unitStr + L"'", 1 });
+                                    }
+                                }
+                                continue;
+                            }
+                            vi++;
+                        }
+                    }
+
+                    // 4. Check for missing semicolon at end of single-line declaration when followed by another property
+                    if (c >= line.length() && !trimmedVal.empty()) {
+                        wchar_t lastCh = trimmedVal.back();
+                        if (lastCh != L',' && lastCh != L'{' && lastCh != L'(' && lastCh != L'+' && lastCh != L'-' && lastCh != L'*' && lastCh != L'/') {
+                            for (size_t nl = l + 1; nl < endLine; ++nl) {
+                                std::wstring nextLn = buffer.GetLine(nl);
+                                size_t ns = 0;
+                                while (ns < nextLn.length() && iswspace(nextLn[ns])) ns++;
+                                if (ns >= nextLn.length()) continue;
+                                if (ns + 1 < nextLn.length() && nextLn[ns] == L'/' && nextLn[ns + 1] == L'*') break;
+                                if (iswalpha(nextLn[ns]) || (nextLn[ns] == L'-' && ns + 1 < nextLn.length() && (nextLn[ns + 1] == L'-' || iswalpha(nextLn[ns + 1])))) {
+                                    size_t np = ns;
+                                    while (np < nextLn.length() && (iswalnum(nextLn[np]) || nextLn[np] == L'-' || nextLn[np] == L'_')) np++;
+                                    while (np < nextLn.length() && iswspace(nextLn[np])) np++;
+                                    if (np < nextLn.length() && nextLn[np] == L':') {
+                                        size_t nextBrace = nextLn.find(L'{', np);
+                                        if (nextBrace == std::wstring::npos) {
+                                            size_t endNonWs = line.length();
+                                            while (endNonWs > valStart && iswspace(line[endNonWs - 1])) endNonWs--;
+                                            size_t colMark = (endNonWs > 0) ? (endNonWs - 1) : colonCol;
+                                            diagnostics.push_back({ l, colMark, 1, L"CSS Syntax Error: Missing semicolon ';' at end of declaration", 1 });
+                                        }
+                                    }
+                                }
+                                break;
+                            }
+                        }
+                    }
+                }
 
                 // Check for invalid hex colors in value (ignore url(...) fragments)
                 if (valStr.find(L"url(") == std::wstring::npos) {
