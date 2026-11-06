@@ -2397,12 +2397,14 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
                 if (costFmt && brushCost) {
                     float costTextX = curCodeEndX + config.ScaleF(16.0f);
                     float availCostW = codeRight - costTextX - config.ScaleF(8.0f);
-                    if (availCostW >= config.ScaleF(30.0f)) {
+                    if (availCostW >= config.ScaleF(30.0f) && costTextX + config.ScaleF(500.0f) >= codeLeft) {
                         if (theme.dwriteFactory) {
                             Microsoft::WRL::ComPtr<IDWriteTextLayout> pCostLayout;
                             if (SUCCEEDED(theme.dwriteFactory->CreateTextLayout(
                                     costText.c_str(), static_cast<UINT32>(costText.length()),
                                     costFmt, availCostW, lineH, &pCostLayout))) {
+                                pCostLayout->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
+                                pCostLayout->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
                                 pCostLayout->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
                                 DWRITE_TRIMMING trimming = { DWRITE_TRIMMING_GRANULARITY_CHARACTER, 0, 0 };
                                 Microsoft::WRL::ComPtr<IDWriteInlineObject> inlineEllipsis;
@@ -2412,8 +2414,9 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
                                 pRT->DrawTextLayout(D2D1::Point2F(costTextX, lineY), pCostLayout.Get(), brushCost.Get());
                             }
                         } else {
-                            D2D1_RECT_F rcCost = D2D1::RectF(costTextX, lineY, codeRight, lineY + lineH);
-                            pRT->DrawText(costText.c_str(), static_cast<UINT32>(costText.length()), costFmt, rcCost, brushCost.Get());
+                            D2D1_RECT_F rcCost = D2D1::RectF(costTextX, lineY, costTextX + availCostW, lineY + lineH);
+                            IDWriteTextFormat* drawFmt = theme.fontCode ? theme.fontCode.Get() : costFmt;
+                            pRT->DrawText(costText.c_str(), static_cast<UINT32>(costText.length()), drawFmt, rcCost, brushCost.Get());
                         }
                     }
                 }
