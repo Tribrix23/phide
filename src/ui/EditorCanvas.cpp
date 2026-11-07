@@ -14,6 +14,120 @@
 
 namespace phide::ui {
 
+enum class BetterCommentType {
+    Normal,
+    Alert,       // Red (#FF5555) - starts with '!' or contains ERROR, FIXME, BUG
+    Warning,     // Yellow (#FFCC00) - starts with '^' or contains WARNING, WARN
+    Question,    // Sky Blue (#46A0FF) - starts with '?'
+    Important,   // Mint Green (#61D674) - starts with '*'
+    Todo,        // Orange (#FF9900) - contains TODO or '[ ]'
+    Done         // Grey (#7E848E) - contains '[x]' or '[X]', with strikethrough
+};
+
+struct BetterCommentInfo {
+    BetterCommentType type = BetterCommentType::Normal;
+    bool hasCheckbox = false;
+    bool isChecked = false;
+    size_t checkboxCol = std::wstring::npos;
+    size_t checkboxLen = 0;
+};
+
+static BetterCommentInfo ClassifyBetterComment(const std::wstring& lineStr, size_t startCol, size_t length) {
+    BetterCommentInfo info;
+    if (startCol >= lineStr.length() || length == 0) return info;
+    size_t endCol = (std::min)(lineStr.length(), startCol + length);
+    std::wstring comment = lineStr.substr(startCol, endCol - startCol);
+
+    size_t p = 0;
+    if (comment.rfind(L"<!--", 0) == 0) p = 4;
+    else if (comment.rfind(L"//", 0) == 0 || comment.rfind(L"/*", 0) == 0 || comment.rfind(L"--", 0) == 0) p = 2;
+    else if (!comment.empty() && (comment[0] == L'#' || comment[0] == L';')) p = 1;
+
+    while (p < comment.length() && (comment[p] == L' ' || comment[p] == L'\t')) p++;
+
+    // 1. Check for checkbox items: [x] or [X] (Done)
+    size_t xPos = comment.find(L"[x]");
+    if (xPos == std::wstring::npos) xPos = comment.find(L"[X]");
+    if (xPos != std::wstring::npos) {
+        info.type = BetterCommentType::Done;
+        info.hasCheckbox = true;
+        info.isChecked = true;
+        info.checkboxCol = startCol + xPos;
+        info.checkboxLen = 3;
+        return info;
+    }
+
+    // 2. Check for empty checkbox items: [ ] (3 chars)
+    size_t emptyPos = comment.find(L"[ ]");
+    if (emptyPos != std::wstring::npos) {
+        info.type = BetterCommentType::Todo;
+        info.hasCheckbox = true;
+        info.isChecked = false;
+        info.checkboxCol = startCol + emptyPos;
+        info.checkboxLen = 3;
+        return info;
+    }
+
+    // 3. Check for tight empty checkbox items: [] (2 chars)
+    size_t tightEmptyPos = comment.find(L"[]");
+    if (tightEmptyPos != std::wstring::npos) {
+        info.type = BetterCommentType::Todo;
+        info.hasCheckbox = true;
+        info.isChecked = false;
+        info.checkboxCol = startCol + tightEmptyPos;
+        info.checkboxLen = 2;
+        return info;
+    }
+
+    // 4. Check for TODO (without brackets) -> highlight in Todo orange, but NO checkbox overlay on top of letters!
+    std::wstring upperComment = comment;
+    for (auto& ch : upperComment) ch = towupper(ch);
+    size_t todoPos = upperComment.find(L"TODO");
+    if (todoPos != std::wstring::npos) {
+        info.type = BetterCommentType::Todo;
+        info.hasCheckbox = false;
+        return info;
+    }
+
+    // 4. Alert: Starts with '!' or contains ERROR, FIXME, BUG
+    if (p < comment.length() && comment[p] == L'!') {
+        info.type = BetterCommentType::Alert;
+        return info;
+    }
+    if (upperComment.find(L"ERROR") != std::wstring::npos ||
+        upperComment.find(L"FIXME") != std::wstring::npos ||
+        upperComment.find(L"BUG") != std::wstring::npos) {
+        info.type = BetterCommentType::Alert;
+        return info;
+    }
+
+    // 5. Warning: Starts with '^' or contains WARNING, WARN
+    if (p < comment.length() && comment[p] == L'^') {
+        info.type = BetterCommentType::Warning;
+        return info;
+    }
+    if (upperComment.find(L"WARNING") != std::wstring::npos ||
+        upperComment.find(L"WARN") != std::wstring::npos) {
+        info.type = BetterCommentType::Warning;
+        return info;
+    }
+
+    // 6. Question: Starts with '?'
+    if (p < comment.length() && comment[p] == L'?') {
+        info.type = BetterCommentType::Question;
+        return info;
+    }
+
+    // 7. Important: Starts with '*'
+    if (p < comment.length() && comment[p] == L'*') {
+        info.type = BetterCommentType::Important;
+        return info;
+    }
+
+    return info;
+}
+
+
 std::vector<LineColorSpan> EditorCanvas::ScanLineColors(const std::wstring& lineStr) {
     std::vector<LineColorSpan> lineColors;
     size_t scanCIdx = 0;
@@ -1398,6 +1512,7 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
 
     m_foldChevrons.clear();
     m_visibleColorSwatches.clear();
+    m_visibleTodoCheckboxes.clear();
 
     // 1. Gutter Background & Divider
     if (config.showLineNumbers) {
@@ -2104,7 +2219,19 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
                                     case editor::TokenType::Keyword:   brush = theme.brushSyntaxKeyword.Get(); break;
                                     case editor::TokenType::Type:      brush = theme.brushSyntaxType.Get(); break;
                                     case editor::TokenType::String:    brush = theme.brushSyntaxString.Get(); break;
-                                    case editor::TokenType::Comment:   brush = theme.brushSyntaxComment.Get(); break;
+                                    case editor::TokenType::Comment: {
+                                    auto cInfo = ClassifyBetterComment(lineStr, tok.startCol, tok.length);
+                                    switch (cInfo.type) {
+                                        case BetterCommentType::Alert:     brush = theme.brushCommentAlert.Get(); break;
+                                        case BetterCommentType::Warning:   brush = theme.brushCommentWarning.Get(); break;
+                                        case BetterCommentType::Todo:      brush = theme.brushCommentTodo.Get(); break;
+                                        case BetterCommentType::Question:  brush = theme.brushCommentQuestion.Get(); break;
+                                        case BetterCommentType::Important: brush = theme.brushCommentImportant.Get(); break;
+                                        case BetterCommentType::Done:      brush = theme.brushCommentDone.Get(); break;
+                                        default:                           brush = theme.brushSyntaxComment.Get(); break;
+                                    }
+                                    break;
+                                }
                                     case editor::TokenType::Number:    brush = theme.brushSyntaxNumber.Get(); break;
                                     case editor::TokenType::Operator:  brush = theme.brushSyntaxOperator.Get(); break;
                                     case editor::TokenType::Tag:       brush = theme.brushSyntaxTag.Get(); break;
@@ -2179,7 +2306,19 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
                                         case editor::TokenType::Keyword:   brush = theme.brushSyntaxKeyword.Get(); break;
                                         case editor::TokenType::Type:      brush = theme.brushSyntaxType.Get(); break;
                                         case editor::TokenType::String:    brush = theme.brushSyntaxString.Get(); break;
-                                        case editor::TokenType::Comment:   brush = theme.brushSyntaxComment.Get(); break;
+                                        case editor::TokenType::Comment: {
+                                    auto cInfo = ClassifyBetterComment(lineStr, tok.startCol, tok.length);
+                                    switch (cInfo.type) {
+                                        case BetterCommentType::Alert:     brush = theme.brushCommentAlert.Get(); break;
+                                        case BetterCommentType::Warning:   brush = theme.brushCommentWarning.Get(); break;
+                                        case BetterCommentType::Todo:      brush = theme.brushCommentTodo.Get(); break;
+                                        case BetterCommentType::Question:  brush = theme.brushCommentQuestion.Get(); break;
+                                        case BetterCommentType::Important: brush = theme.brushCommentImportant.Get(); break;
+                                        case BetterCommentType::Done:      brush = theme.brushCommentDone.Get(); break;
+                                        default:                           brush = theme.brushSyntaxComment.Get(); break;
+                                    }
+                                    break;
+                                }
                                         case editor::TokenType::Number:    brush = theme.brushSyntaxNumber.Get(); break;
                                         case editor::TokenType::Operator:  brush = theme.brushSyntaxOperator.Get(); break;
                                         case editor::TokenType::Tag:       brush = theme.brushSyntaxTag.Get(); break;
@@ -2235,7 +2374,19 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
                             case editor::TokenType::Keyword:   brush = theme.brushSyntaxKeyword.Get(); break;
                             case editor::TokenType::Type:      brush = theme.brushSyntaxType.Get(); break;
                             case editor::TokenType::String:    brush = theme.brushSyntaxString.Get(); break;
-                            case editor::TokenType::Comment:   brush = theme.brushSyntaxComment.Get(); break;
+                            case editor::TokenType::Comment: {
+                                    auto cInfo = ClassifyBetterComment(lineStr, tok.startCol, tok.length);
+                                    switch (cInfo.type) {
+                                        case BetterCommentType::Alert:     brush = theme.brushCommentAlert.Get(); break;
+                                        case BetterCommentType::Warning:   brush = theme.brushCommentWarning.Get(); break;
+                                        case BetterCommentType::Todo:      brush = theme.brushCommentTodo.Get(); break;
+                                        case BetterCommentType::Question:  brush = theme.brushCommentQuestion.Get(); break;
+                                        case BetterCommentType::Important: brush = theme.brushCommentImportant.Get(); break;
+                                        case BetterCommentType::Done:      brush = theme.brushCommentDone.Get(); break;
+                                        default:                           brush = theme.brushSyntaxComment.Get(); break;
+                                    }
+                                    break;
+                                }
                             case editor::TokenType::Number:    brush = theme.brushSyntaxNumber.Get(); break;
                             case editor::TokenType::Operator:  brush = theme.brushSyntaxOperator.Get(); break;
                             case editor::TokenType::Tag:       brush = theme.brushSyntaxTag.Get(); break;
@@ -2252,6 +2403,69 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
                         brush
                     );
                     curCodeEndX = (std::max)(curCodeEndX, tokenX + tokenW);
+                }
+            }
+
+            // Render Interactive TODO Checkboxes and Strikethrough for Comments
+            bool isCurrentLine = (isFocused && vl.bufferLine == doc.buffer.GetCursor().line);
+            ID2D1Brush* bgBrush = isCurrentLine ? theme.brushCurrentLineBg.Get() : theme.brushCanvasBg.Get();
+
+            for (const auto& tok : tokens) {
+                if (tok.type == editor::TokenType::Comment) {
+                    auto cInfo = ClassifyBetterComment(lineStr, tok.startCol, tok.length);
+                    if (cInfo.hasCheckbox && cInfo.checkboxLen > 0) {
+                        float startX = getColVisualX(cInfo.checkboxCol);
+                        float endX = getColVisualX(cInfo.checkboxCol + cInfo.checkboxLen);
+                        float spanW = endX - startX;
+
+                        // 1. Completely erase the text characters of [ ] or [x] from the surface to prevent layering
+                        D2D1_RECT_F rcErase = D2D1::RectF(startX - 1.0f, lineY, endX + 1.0f, lineY + lineH);
+                        pRT->FillRectangle(rcErase, bgBrush);
+
+                        // 2. Center the checkbox widget cleanly inside the erased span
+                        float boxSize = (std::min)(lineH * 0.62f, config.ScaleF(13.0f));
+                        float boxX = startX + (spanW - boxSize) * 0.5f;
+                        float boxY = lineY + (lineH - boxSize) * 0.5f;
+                        D2D1_RECT_F rcBox = D2D1::RectF(boxX, boxY, boxX + boxSize, boxY + boxSize);
+                        D2D1_ROUNDED_RECT rrcBox = D2D1::RoundedRect(rcBox, 2.5f, 2.5f);
+
+                        if (cInfo.isChecked) {
+                            pRT->FillRoundedRectangle(rrcBox, theme.brushCommentDone.Get());
+                            pRT->DrawRoundedRectangle(rrcBox, theme.brushCommentDone.Get(), 1.0f);
+
+                            // Draw crisp white checkmark inside
+                            float cy = rcBox.top + boxSize * 0.5f;
+                            float p1x = rcBox.left + boxSize * 0.22f;
+                            float p1y = cy + boxSize * 0.04f;
+                            float p2x = rcBox.left + boxSize * 0.42f;
+                            float p2y = cy + boxSize * 0.26f;
+                            float p3x = rcBox.left + boxSize * 0.78f;
+                            float p3y = cy - boxSize * 0.24f;
+                            pRT->DrawLine(D2D1::Point2F(p1x, p1y), D2D1::Point2F(p2x, p2y), theme.brushTextWhite.Get(), 1.8f);
+                            pRT->DrawLine(D2D1::Point2F(p2x, p2y), D2D1::Point2F(p3x, p3y), theme.brushTextWhite.Get(), 1.8f);
+                        } else {
+                            pRT->FillRoundedRectangle(rrcBox, bgBrush);
+                            pRT->DrawRoundedRectangle(rrcBox, theme.brushCommentTodo.Get(), 1.5f);
+                        }
+
+                        // Register the entire span for click hit-testing
+                        m_visibleTodoCheckboxes.push_back({ D2D1::RectF(startX - 2.0f, lineY, endX + 2.0f, lineY + lineH), vl.bufferLine, cInfo.isChecked });
+
+                        if (cInfo.isChecked) {
+                            // Strikethrough ONLY the text after the checkbox!
+                            float strikeStartX = endX + config.ScaleF(2.0f);
+                            float strikeEndX = getColVisualX(tok.startCol + tok.length);
+                            if (strikeEndX > strikeStartX) {
+                                float midY = lineY + lineH * 0.5f;
+                                pRT->DrawLine(D2D1::Point2F(strikeStartX, midY), D2D1::Point2F(strikeEndX, midY), theme.brushCommentDone.Get(), config.ScaleF(1.2f));
+                            }
+                        }
+                    } else if (cInfo.type == BetterCommentType::Done) {
+                        float strikeStartX = getColVisualX(tok.startCol);
+                        float strikeEndX = getColVisualX(tok.startCol + tok.length);
+                        float midY = lineY + lineH * 0.5f;
+                        pRT->DrawLine(D2D1::Point2F(strikeStartX, midY), D2D1::Point2F(strikeEndX, midY), theme.brushCommentDone.Get(), config.ScaleF(1.2f));
+                    }
                 }
             }
         }
@@ -3236,7 +3450,19 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
                         case editor::TokenType::Keyword:   brush = theme.brushSyntaxKeyword.Get(); break;
                         case editor::TokenType::Type:      brush = theme.brushSyntaxType.Get(); break;
                         case editor::TokenType::String:    brush = theme.brushSyntaxString.Get(); break;
-                        case editor::TokenType::Comment:   brush = theme.brushSyntaxComment.Get(); break;
+                        case editor::TokenType::Comment: {
+                                    auto cInfo = ClassifyBetterComment(lineStr, tok.startCol, tok.length);
+                                    switch (cInfo.type) {
+                                        case BetterCommentType::Alert:     brush = theme.brushCommentAlert.Get(); break;
+                                        case BetterCommentType::Warning:   brush = theme.brushCommentWarning.Get(); break;
+                                        case BetterCommentType::Todo:      brush = theme.brushCommentTodo.Get(); break;
+                                        case BetterCommentType::Question:  brush = theme.brushCommentQuestion.Get(); break;
+                                        case BetterCommentType::Important: brush = theme.brushCommentImportant.Get(); break;
+                                        case BetterCommentType::Done:      brush = theme.brushCommentDone.Get(); break;
+                                        default:                           brush = theme.brushSyntaxComment.Get(); break;
+                                    }
+                                    break;
+                                }
                         case editor::TokenType::Number:    brush = theme.brushSyntaxNumber.Get(); break;
                         case editor::TokenType::Operator:  brush = theme.brushSyntaxOperator.Get(); break;
                         case editor::TokenType::Tag:       brush = theme.brushSyntaxTag.Get(); break;
@@ -7583,7 +7809,19 @@ void EditorCanvas::RenderSyntaxTokensLine(ID2D1RenderTarget* pRT, Theme& theme, 
                     case editor::TokenType::Keyword:   brush = theme.brushSyntaxKeyword.Get(); break;
                     case editor::TokenType::Type:      brush = theme.brushSyntaxType.Get(); break;
                     case editor::TokenType::String:    brush = theme.brushSyntaxString.Get(); break;
-                    case editor::TokenType::Comment:   brush = theme.brushSyntaxComment.Get(); break;
+                    case editor::TokenType::Comment: {
+                                    auto cInfo = ClassifyBetterComment(lineStr, tok.startCol, tok.length);
+                                    switch (cInfo.type) {
+                                        case BetterCommentType::Alert:     brush = theme.brushCommentAlert.Get(); break;
+                                        case BetterCommentType::Warning:   brush = theme.brushCommentWarning.Get(); break;
+                                        case BetterCommentType::Todo:      brush = theme.brushCommentTodo.Get(); break;
+                                        case BetterCommentType::Question:  brush = theme.brushCommentQuestion.Get(); break;
+                                        case BetterCommentType::Important: brush = theme.brushCommentImportant.Get(); break;
+                                        case BetterCommentType::Done:      brush = theme.brushCommentDone.Get(); break;
+                                        default:                           brush = theme.brushSyntaxComment.Get(); break;
+                                    }
+                                    break;
+                                }
                     case editor::TokenType::Number:    brush = theme.brushSyntaxNumber.Get(); break;
                     case editor::TokenType::Operator:  brush = theme.brushSyntaxOperator.Get(); break;
                     case editor::TokenType::Tag:       brush = theme.brushSyntaxTag.Get(); break;
@@ -7619,7 +7857,19 @@ void EditorCanvas::RenderSyntaxTokensLine(ID2D1RenderTarget* pRT, Theme& theme, 
             case editor::TokenType::Keyword:   brush = theme.brushSyntaxKeyword.Get(); break;
             case editor::TokenType::Type:      brush = theme.brushSyntaxType.Get(); break;
             case editor::TokenType::String:    brush = theme.brushSyntaxString.Get(); break;
-            case editor::TokenType::Comment:   brush = theme.brushSyntaxComment.Get(); break;
+            case editor::TokenType::Comment: {
+                                    auto cInfo = ClassifyBetterComment(lineStr, tok.startCol, tok.length);
+                                    switch (cInfo.type) {
+                                        case BetterCommentType::Alert:     brush = theme.brushCommentAlert.Get(); break;
+                                        case BetterCommentType::Warning:   brush = theme.brushCommentWarning.Get(); break;
+                                        case BetterCommentType::Todo:      brush = theme.brushCommentTodo.Get(); break;
+                                        case BetterCommentType::Question:  brush = theme.brushCommentQuestion.Get(); break;
+                                        case BetterCommentType::Important: brush = theme.brushCommentImportant.Get(); break;
+                                        case BetterCommentType::Done:      brush = theme.brushCommentDone.Get(); break;
+                                        default:                           brush = theme.brushSyntaxComment.Get(); break;
+                                    }
+                                    break;
+                                }
             case editor::TokenType::Number:    brush = theme.brushSyntaxNumber.Get(); break;
             case editor::TokenType::Operator:  brush = theme.brushSyntaxOperator.Get(); break;
             case editor::TokenType::Tag:       brush = theme.brushSyntaxTag.Get(); break;
@@ -8298,6 +8548,20 @@ bool EditorCanvas::HitTestCrossFilePill(POINT pt) const {
     if (!m_prediction.isValid || !m_prediction.isCrossFile) return false;
     return (pt.x >= m_crossFilePillBounds.left && pt.x <= m_crossFilePillBounds.right &&
             pt.y >= m_crossFilePillBounds.top && pt.y <= m_crossFilePillBounds.bottom);
+}
+
+
+bool EditorCanvas::HitTestTodoCheckbox(POINT pt, TodoCheckboxHit& outHit) const noexcept {
+    float x = static_cast<float>(pt.x);
+    float y = static_cast<float>(pt.y);
+    for (const auto& cb : m_visibleTodoCheckboxes) {
+        if (x >= cb.bounds.left - 4.0f && x <= cb.bounds.right + 4.0f &&
+            y >= cb.bounds.top - 4.0f && y <= cb.bounds.bottom + 4.0f) {
+            outHit = cb;
+            return true;
+        }
+    }
+    return false;
 }
 
 } // namespace phide::ui

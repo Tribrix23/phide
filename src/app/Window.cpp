@@ -11166,6 +11166,40 @@ void Window::HandleLButtonDown(POINT clientPt) {
                             return;
                         }
 
+                        // Check if clicked an interactive TODO Checkbox
+                        ui::EditorCanvas::TodoCheckboxHit todoHit;
+                        if (m_editor.HitTestTodoCheckbox(clientPt, todoHit)) {
+                            if (todoHit.line < doc.buffer.GetLineCount()) {
+                                std::wstring lineStr = doc.buffer.GetLine(todoHit.line);
+                                std::wstring newLineStr = lineStr;
+                                size_t xPos = lineStr.find(L"[x]");
+                                if (xPos == std::wstring::npos) xPos = lineStr.find(L"[X]");
+                                size_t emptyPos = lineStr.find(L"[ ]");
+                                size_t tightPos = lineStr.find(L"[]");
+                                size_t todoPos = lineStr.find(L"TODO");
+                                if (todoPos == std::wstring::npos) todoPos = lineStr.find(L"todo");
+
+                                if (xPos != std::wstring::npos) {
+                                    newLineStr.replace(xPos, 3, L"[ ]");
+                                } else if (emptyPos != std::wstring::npos) {
+                                    newLineStr.replace(emptyPos, 3, L"[x]");
+                                } else if (tightPos != std::wstring::npos) {
+                                    newLineStr.replace(tightPos, 2, L"[x]");
+                                } else if (todoPos != std::wstring::npos) {
+                                    newLineStr.insert(todoPos, L"[x] ");
+                                }
+
+                                if (newLineStr != lineStr) {
+                                    doc.buffer.PushUndo();
+                                    doc.buffer.SetLine(todoHit.line, newLineStr);
+                                    doc.isDirty = true;
+                                    UpdatePrediction();
+                                    InvalidateRect(m_hwnd, nullptr, FALSE);
+                                    return;
+                                }
+                            }
+                        }
+
                         // Check if clicked CodeLens action button (Image 1: Run | Debug)
                         int lensIdx = m_editor.HitTestCodeLens(clientPt);
                         if (lensIdx >= 0) {
@@ -12404,6 +12438,12 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                         return TRUE;
                     }
 
+                    ui::EditorCanvas::TodoCheckboxHit todoCursorHit;
+                    if (m_editor.HitTestTodoCheckbox(pt, todoCursorHit)) {
+                        SetCursor(LoadCursor(nullptr, IDC_HAND));
+                        return TRUE;
+                    }
+
                     if (pt.x >= canvasLeft + gutterW && pt.x < clientW - scrollbarW &&
                         pt.y >= topY && pt.y < bottomEditorY) {
                         SetCursor(LoadCursor(nullptr, IDC_IBEAM));
@@ -13100,6 +13140,34 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                         size_t editLineBeforeChar = pDoc->buffer.GetCursor().line;
                         pDoc->buffer.InsertChar(ch);
                         TryAutoRenameMatchingTag(pDoc, editLineBeforeChar, oldLineBeforeChar);
+
+                        // Auto-convert TODO in comments to [ ] TODO
+                        if (ch == L' ' || ch == L':') {
+                            auto curPos = pDoc->buffer.GetCursor();
+                            if (curPos.line < pDoc->buffer.GetLineCount()) {
+                                const auto& curLText = pDoc->buffer.GetLine(curPos.line);
+                                size_t cPos = curLText.find(L"//");
+                                if (cPos == std::wstring::npos) cPos = curLText.find(L"#");
+                                if (cPos != std::wstring::npos && curPos.col > cPos) {
+                                    std::wstring commentSub = curLText.substr(cPos);
+                                    if (commentSub.find(L"[ ]") == std::wstring::npos &&
+                                        commentSub.find(L"[x]") == std::wstring::npos &&
+                                        commentSub.find(L"[X]") == std::wstring::npos &&
+                                        commentSub.find(L"[]") == std::wstring::npos) {
+                                        size_t todoIdx = curLText.find(L"TODO", cPos);
+                                        if (todoIdx == std::wstring::npos) todoIdx = curLText.find(L"todo", cPos);
+                                        if (todoIdx != std::wstring::npos && curPos.col >= todoIdx + 4) {
+                                            bool hasBracketBefore = (todoIdx >= 4 && curLText.substr(todoIdx - 4, 4) == L"[ ] ");
+                                            if (!hasBracketBefore) {
+                                                std::wstring newLine = curLText.substr(0, todoIdx) + L"[ ] " + curLText.substr(todoIdx);
+                                                pDoc->buffer.SetLine(curPos.line, newLine);
+                                                pDoc->buffer.SetCursor(curPos.line, curPos.col + 4);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
                         UpdateCssPeekHover(POINT{ -1, -1 });
                         EnsureCursorVisible();
                         MarkDocumentModified(pDoc);

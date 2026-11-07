@@ -132,6 +132,14 @@ HRESULT Theme::CreateDeviceResources(ID2D1RenderTarget* pRT, IDWriteFactory* pDW
     pRT->CreateSolidColorBrush(colors.bracket2, &brushBracket2);
     pRT->CreateSolidColorBrush(colors.bracket3, &brushBracket3);
 
+    // Better Comments & Interactive TODO Brushes
+    pRT->CreateSolidColorBrush(colors.commentAlert, &brushCommentAlert);
+    pRT->CreateSolidColorBrush(colors.commentWarning, &brushCommentWarning);
+    pRT->CreateSolidColorBrush(colors.commentTodo, &brushCommentTodo);
+    pRT->CreateSolidColorBrush(colors.commentQuestion, &brushCommentQuestion);
+    pRT->CreateSolidColorBrush(colors.commentImportant, &brushCommentImportant);
+    pRT->CreateSolidColorBrush(colors.commentDone, &brushCommentDone);
+
     // Tree & File Type Icon Brushes (Seti/Material palette matching Image 5)
     pRT->CreateSolidColorBrush(D2D1::ColorF(0.0f, 0.596f, 1.0f, 1.0f), &brushIconBlue);
     pRT->CreateSolidColorBrush(D2D1::ColorF(0.533f, 0.572f, 0.749f, 1.0f), &brushIconPurple);
@@ -592,6 +600,12 @@ void Theme::DiscardDeviceResources() {
     brushBracket1.Reset();
     brushBracket2.Reset();
     brushBracket3.Reset();
+    brushCommentAlert.Reset();
+    brushCommentWarning.Reset();
+    brushCommentTodo.Reset();
+    brushCommentQuestion.Reset();
+    brushCommentImportant.Reset();
+    brushCommentDone.Reset();
     dwriteFactory.Reset();
     fontButtonCenter.Reset();
     fontBadge.Reset();
@@ -1623,6 +1637,12 @@ void Theme::SetThemeMode(ThemeMode mode) {
     if (brushBracket1) brushBracket1->SetColor(colors.bracket1);
     if (brushBracket2) brushBracket2->SetColor(colors.bracket2);
     if (brushBracket3) brushBracket3->SetColor(colors.bracket3);
+    if (brushCommentAlert) brushCommentAlert->SetColor(colors.commentAlert);
+    if (brushCommentWarning) brushCommentWarning->SetColor(colors.commentWarning);
+    if (brushCommentTodo) brushCommentTodo->SetColor(colors.commentTodo);
+    if (brushCommentQuestion) brushCommentQuestion->SetColor(colors.commentQuestion);
+    if (brushCommentImportant) brushCommentImportant->SetColor(colors.commentImportant);
+    if (brushCommentDone) brushCommentDone->SetColor(colors.commentDone);
 }
 
 Theme::SetiIconInfo Theme::GetSetiIcon(const std::wstring& filename, bool isFolder, bool isExpanded) const {

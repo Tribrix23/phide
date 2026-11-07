@@ -201,6 +201,160 @@ CodePrediction PredictionEngine::PredictNextEdit(
     return {};
 }
 
+struct PastAssn {
+    size_t lineIdx = 0;
+    std::wstring var;
+    std::wstring val;
+    wchar_t quote = L'"';
+};
+
+static bool DetectVariableSeries(
+    const std::vector<PastAssn>& pastList,
+    std::wstring& outNextVar,
+    std::wstring& outNextVal,
+    wchar_t& outQuote
+) {
+    if (pastList.size() < 2) return false;
+    size_t count = pastList.size();
+
+    // 1. Single-letter arithmetic progression (e.g. n, o, p, q, r, s -> t, u, v)
+    {
+        size_t matchLen = 1;
+        while (matchLen < count && matchLen < 26) {
+            size_t idxCurr = count - matchLen;
+            size_t idxPrev = idxCurr - 1;
+            const auto& vCurr = pastList[idxCurr].var;
+            const auto& vPrev = pastList[idxPrev].var;
+            if (vCurr.length() == 1 && vPrev.length() == 1) {
+                wchar_t cCurr = vCurr[0];
+                wchar_t cPrev = vPrev[0];
+                if (((cCurr >= L'a' && cCurr <= L'z' && cPrev >= L'a' && cPrev <= L'z') ||
+                     (cCurr >= L'A' && cCurr <= L'Z' && cPrev >= L'A' && cPrev <= L'Z')) &&
+                    (cCurr - cPrev == 1)) {
+                    matchLen++;
+                    continue;
+                }
+            }
+            break;
+        }
+
+        if (matchLen >= 2) {
+            wchar_t lastChar = pastList.back().var[0];
+            wchar_t nextChar = lastChar + 1;
+            if ((lastChar >= L'a' && nextChar <= L'z') || (lastChar >= L'A' && nextChar <= L'Z')) {
+                outNextVar = std::wstring(1, nextChar);
+                outNextVal = pastList.back().val;
+                outQuote = pastList.back().quote;
+                return true;
+            }
+        }
+    }
+
+    // 2. Alphanumeric / numbered suffix progression (e.g. item1, item2, item3 -> item4; data01, data02 -> data03)
+    {
+        auto splitSuffixNumber = [](const std::wstring& s, std::wstring& outPrefix, long long& outNum, size_t& outDigits) -> bool {
+            if (s.empty()) return false;
+            size_t i = s.length();
+            while (i > 0 && iswdigit(s[i - 1])) {
+                i--;
+            }
+            if (i == s.length() || i == 0) return false;
+            outPrefix = s.substr(0, i);
+            std::wstring numStr = s.substr(i);
+            outDigits = numStr.length();
+            try {
+                outNum = std::stoll(numStr);
+                return true;
+            } catch (...) {
+                return false;
+            }
+        };
+
+        std::wstring lastPrefix;
+        long long lastNum = 0;
+        size_t lastDigits = 0;
+        if (splitSuffixNumber(pastList.back().var, lastPrefix, lastNum, lastDigits)) {
+            size_t matchLen = 1;
+            long long expectedDelta = 0;
+            long long currNum = lastNum;
+            while (matchLen < count && matchLen < 30) {
+                size_t idxCurr = count - matchLen;
+                size_t idxPrev = idxCurr - 1;
+                std::wstring prevPrefix;
+                long long prevNum = 0;
+                size_t prevDigits = 0;
+                if (splitSuffixNumber(pastList[idxPrev].var, prevPrefix, prevNum, prevDigits) &&
+                    prevPrefix == lastPrefix) {
+                    long long diff = currNum - prevNum;
+                    if (matchLen == 1) {
+                        expectedDelta = diff;
+                        if (expectedDelta <= 0) break;
+                        matchLen++;
+                        currNum = prevNum;
+                        continue;
+                    } else if (currNum - prevNum == expectedDelta) {
+                        matchLen++;
+                        currNum = prevNum;
+                        continue;
+                    }
+                }
+                break;
+            }
+
+            if (matchLen >= 2 && expectedDelta > 0) {
+                long long nextNum = lastNum + expectedDelta;
+                std::wstring numStr = std::to_wstring(nextNum);
+                if (numStr.length() < lastDigits) {
+                    numStr = std::wstring(lastDigits - numStr.length(), L'0') + numStr;
+                }
+                outNextVar = lastPrefix + numStr;
+                outNextVal = pastList.back().val;
+                outQuote = pastList.back().quote;
+                return true;
+            }
+        }
+    }
+
+    // 3. Prefix + single letter progression (e.g. test_a, test_b, test_c -> test_d)
+    {
+        const auto& lastVar = pastList.back().var;
+        if (lastVar.length() >= 2 && iswalpha(lastVar.back())) {
+            std::wstring prefix = lastVar.substr(0, lastVar.length() - 1);
+            size_t matchLen = 1;
+            while (matchLen < count && matchLen < 26) {
+                size_t idxCurr = count - matchLen;
+                size_t idxPrev = idxCurr - 1;
+                const auto& vCurr = pastList[idxCurr].var;
+                const auto& vPrev = pastList[idxPrev].var;
+                if (vCurr.length() == lastVar.length() && vPrev.length() == lastVar.length() &&
+                    vCurr.rfind(prefix, 0) == 0 && vPrev.rfind(prefix, 0) == 0) {
+                    wchar_t cCurr = vCurr.back();
+                    wchar_t cPrev = vPrev.back();
+                    if (((cCurr >= L'a' && cCurr <= L'z' && cPrev >= L'a' && cPrev <= L'z') ||
+                         (cCurr >= L'A' && cCurr <= L'Z' && cPrev >= L'A' && cPrev <= L'Z')) &&
+                        (cCurr - cPrev == 1)) {
+                        matchLen++;
+                        continue;
+                    }
+                }
+                break;
+            }
+
+            if (matchLen >= 2) {
+                wchar_t nextChar = lastVar.back() + 1;
+                if ((lastVar.back() >= L'a' && nextChar <= L'z') || (lastVar.back() >= L'A' && nextChar <= L'Z')) {
+                    outNextVar = prefix + nextChar;
+                    outNextVal = pastList.back().val;
+                    outQuote = pastList.back().quote;
+                    return true;
+                }
+            }
+        }
+    }
+
+    return false;
+}
+
 CodePrediction PredictionEngine::PredictFromBufferPatterns(
     const std::wstring& filePath,
     const Buffer& buffer,
@@ -390,12 +544,6 @@ CodePrediction PredictionEngine::PredictFromBufferPatterns(
     }
 
     // 2. Scan previous lines for assignments and templates (Excel AutoComplete local column/buffer rule)
-    struct PastAssn {
-        size_t lineIdx = 0;
-        std::wstring var;
-        std::wstring val;
-        wchar_t quote = L'"';
-    };
     std::vector<PastAssn> pastList;
     std::unordered_map<std::wstring, size_t> strFreq;
     std::vector<std::wstring> strRecency;
@@ -488,6 +636,146 @@ CodePrediction PredictionEngine::PredictFromBufferPatterns(
     // Adaptively record in background engine
     if (m_pAdaptive && !candidateStr.empty() && !bestTemplate.empty()) {
         m_pAdaptive->RecordAssignmentPattern(candidateStr, bestTemplate, lang);
+    }
+
+    // 3.5 Check for Series / Arithmetic Progression in Variables (e.g. n, o, p, q, r, s -> t, u, v)
+    std::wstring seriesNextVar;
+    std::wstring seriesNextVal;
+    wchar_t seriesQuote = L'"';
+    if (DetectVariableSeries(pastList, seriesNextVar, seriesNextVal, seriesQuote)) {
+        std::wstring lastAssnLine = buffer.GetLine(pastList.back().lineIdx);
+        bool seriesSpacesAroundEq = true;
+        if (lastAssnLine.find(pastList.back().var + L" = ") != std::wstring::npos) {
+            seriesSpacesAroundEq = true;
+        } else if (lastAssnLine.find(pastList.back().var + L"=") != std::wstring::npos) {
+            seriesSpacesAroundEq = false;
+        }
+
+        std::wstring nextAssnStr = seriesNextVar + (seriesSpacesAroundEq ? L" = " : L"=") + 
+                                   (seriesQuote != L'\0' ? std::wstring(1, seriesQuote) : L"") + 
+                                   seriesNextVal + 
+                                   (seriesQuote != L'\0' ? std::wstring(1, seriesQuote) : L"");
+        std::wstring nextFollowStr = !bestTemplate.empty() ? replaceWholeWord(bestTemplate, L"$VAR", seriesNextVar) : L"";
+        std::wstring seriesIndent = LeadingIndent(buffer.GetLine(pastList.back().lineIdx));
+
+        // Lookahead guard: ensure seriesNextVar isn't already declared/used on lines below
+        bool seriesVarAlreadyBelow = false;
+        size_t lookaheadSeries = (std::min)(cursorLine + 10, buffer.GetLineCount());
+        for (size_t l = cursorLine + 1; l < lookaheadSeries; ++l) {
+            if (containsWholeWord(buffer.GetLine(l), seriesNextVar)) {
+                seriesVarAlreadyBelow = true;
+                break;
+            }
+        }
+
+        if (!seriesVarAlreadyBelow) {
+            std::wstring trimmedPfx = TrimStr(curPrefix);
+
+            // Case A: User typed seriesNextVar (e.g. typing 't')
+            if (trimmedPfx == seriesNextVar) {
+                std::wstring ghost = (seriesSpacesAroundEq ? L" = " : L"=") + 
+                                     (seriesQuote != L'\0' ? std::wstring(1, seriesQuote) : L"") + 
+                                     seriesNextVal + 
+                                     (seriesQuote != L'\0' ? std::wstring(1, seriesQuote) : L"") +
+                                     (!nextFollowStr.empty() ? (L"\n" + seriesIndent + nextFollowStr) : L"");
+                CodePrediction pred;
+                pred.isValid = true;
+                pred.line = cursorLine;
+                pred.col = cursorCol;
+                pred.ghostText = ghost;
+                pred.replaceCharCount = 0;
+                pred.displaySummary = L"Series Habit: " + nextAssnStr;
+                pred.hasLightbulb = true;
+                return pred;
+            }
+            // Case B: User typed 't=' or 't ='
+            if (trimmedPfx == seriesNextVar + L"=" || trimmedPfx == seriesNextVar + L" =") {
+                std::wstring ghost = (seriesSpacesAroundEq && trimmedPfx.back() == L'=' ? L" " : L"") + 
+                                     (seriesQuote != L'\0' ? std::wstring(1, seriesQuote) : L"") + 
+                                     seriesNextVal + 
+                                     (seriesQuote != L'\0' ? std::wstring(1, seriesQuote) : L"") +
+                                     (!nextFollowStr.empty() ? (L"\n" + seriesIndent + nextFollowStr) : L"");
+                CodePrediction pred;
+                pred.isValid = true;
+                pred.line = cursorLine;
+                pred.col = cursorCol;
+                pred.ghostText = ghost;
+                pred.replaceCharCount = 0;
+                pred.displaySummary = L"Series Habit: " + nextAssnStr;
+                pred.hasLightbulb = true;
+                return pred;
+            }
+            // Case C: User is in the middle of assigning seriesNextVar (e.g. t = " |)
+            if (isCurrentLineAssignment && currentVar == seriesNextVar) {
+                std::wstring ghost;
+                if (isInsideQuotes) {
+                    if (typedPrefix.length() < seriesNextVal.length()) {
+                        ghost = seriesNextVal.substr(typedPrefix.length());
+                    }
+                    ghost += seriesQuote;
+                } else {
+                    wchar_t qChar = (seriesQuote != L'\0') ? seriesQuote : L'"';
+                    ghost = std::wstring(1, qChar) + seriesNextVal + qChar;
+                }
+                if (!nextFollowStr.empty()) {
+                    ghost += L"\n" + seriesIndent + nextFollowStr;
+                }
+                CodePrediction pred;
+                pred.isValid = true;
+                pred.line = cursorLine;
+                pred.col = cursorCol;
+                pred.ghostText = ghost;
+                pred.replaceCharCount = replaceCharCount;
+                pred.displaySummary = L"Series Habit: " + nextAssnStr;
+                pred.hasLightbulb = true;
+                return pred;
+            }
+            // Case D: User is at the end of the last block (e.g. at line 23 'print(s)|')
+            std::wstring lastFollow = !bestTemplate.empty() ? replaceWholeWord(bestTemplate, L"$VAR", pastList.back().var) : L"";
+            bool atEndOfLastBlock = (cursorLine == pastList.back().lineIdx + 1 &&
+                                     (!lastFollow.empty() && TrimStr(curL) == TrimStr(lastFollow)));
+            if (!atEndOfLastBlock && cursorLine >= pastList.back().lineIdx) {
+                if (containsWholeWord(curL, pastList.back().var) && 
+                    (cursorCol >= curL.length() || cursorCol >= curL.find(pastList.back().var))) {
+                    atEndOfLastBlock = true;
+                }
+            }
+            if (atEndOfLastBlock) {
+                std::wstring ghost = std::wstring(bestBlanks + 1, L'\n') + seriesIndent + nextAssnStr + 
+                                     (!nextFollowStr.empty() ? (L"\n" + seriesIndent + nextFollowStr) : L"");
+                CodePrediction pred;
+                pred.isValid = true;
+                pred.line = cursorLine;
+                pred.col = cursorCol;
+                pred.ghostText = ghost;
+                pred.replaceCharCount = 0;
+                pred.displaySummary = L"Series Habit: " + nextAssnStr;
+                pred.hasLightbulb = true;
+                return pred;
+            }
+            // Case E: User is on an empty line following the last block
+            if (TrimStr(curL).empty()) {
+                std::wstring ghost;
+                if (cursorLine == pastList.back().lineIdx + 2) {
+                    ghost = std::wstring(bestBlanks, L'\n') + seriesIndent + nextAssnStr + 
+                            (!nextFollowStr.empty() ? (L"\n" + seriesIndent + nextFollowStr) : L"");
+                } else if (cursorLine > pastList.back().lineIdx + 2) {
+                    ghost = seriesIndent + nextAssnStr + 
+                            (!nextFollowStr.empty() ? (L"\n" + seriesIndent + nextFollowStr) : L"");
+                }
+                if (!ghost.empty()) {
+                    CodePrediction pred;
+                    pred.isValid = true;
+                    pred.line = cursorLine;
+                    pred.col = cursorCol;
+                    pred.ghostText = ghost;
+                    pred.replaceCharCount = 0;
+                    pred.displaySummary = L"Series Habit: " + nextAssnStr;
+                    pred.hasLightbulb = true;
+                    return pred;
+                }
+            }
+        }
     }
 
     // 4. Synthesize prediction

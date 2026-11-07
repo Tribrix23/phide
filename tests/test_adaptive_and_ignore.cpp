@@ -294,6 +294,132 @@ void TestPredictionPatternLearning() {
     std::cout << "  -> ALL PredictionEngine Pattern Learning tests passed successfully!\n";
 }
 
+void TestSeriesProgressionPrediction() {
+    std::cout << "[TEST] Running Series Progression Prediction Tests (n, o, p, q, r, s -> t, u, v)...\n";
+    PredictionEngine engine;
+
+    std::wstring seriesContent =
+        L"import numpy.random as rng\n"
+        L"\n"
+        L"numbers = rng.randint(5, 100, size=10)\n"
+        L"print(numbers)\n"
+        L"\n"
+        L"n = \"hi\"\n"
+        L"print(n)\n"
+        L"\n"
+        L"o=\"hi\"\n"
+        L"print(o)\n"
+        L"\n"
+        L"p=\"hi\"\n"
+        L"print(p)\n"
+        L"\n"
+        L"q=\"hi\"\n"
+        L"print(q)\n"
+        L"\n"
+        L"r=\"hi\"\n"
+        L"print(r)\n"
+        L"\n"
+        L"s=\"hi\"\n"
+        L"print(s)";
+
+    Buffer buffer(seriesContent);
+    size_t lastLine = buffer.GetLineCount() - 1;
+    size_t colAtEnd = buffer.GetLine(lastLine).length();
+
+    // Test 1: Ghost prediction at the end of 'print(s)'
+    auto predEnd = engine.PredictNextEdit(L"main.py", buffer, lastLine, colAtEnd);
+    assert(predEnd.isValid);
+    assert(predEnd.ghostText.find(L"t=\"hi\"") != std::wstring::npos || predEnd.ghostText.find(L"t = \"hi\"") != std::wstring::npos);
+    assert(predEnd.ghostText.find(L"print(t)") != std::wstring::npos);
+    std::cout << "  -> PASS: Ghost prediction for 't' at end of 'print(s)' successfully generated:\n";
+    std::wcout << L"     Ghost text: " << predEnd.ghostText << L"\n";
+
+    // Test 2: Typing 't' on empty line after print(s)
+    std::wstring contentWithT = seriesContent + L"\n\nt";
+    Buffer bufferT(contentWithT);
+    size_t lineT = bufferT.GetLineCount() - 1;
+    auto predT = engine.PredictNextEdit(L"main.py", bufferT, lineT, 1);
+    assert(predT.isValid);
+    assert(predT.ghostText.find(L"\"hi\"") != std::wstring::npos);
+    assert(predT.ghostText.find(L"print(t)") != std::wstring::npos);
+    std::cout << "  -> PASS: Typing 't' correctly completes '=\"hi\"\\nprint(t)'!\n";
+
+    // Test 3: Series progression to 'u' after 't' block is added
+    std::wstring contentWithTBlock = seriesContent + L"\n\nt=\"hi\"\nprint(t)";
+    Buffer bufferU(contentWithTBlock);
+    size_t lineU = bufferU.GetLineCount() - 1;
+    auto predU = engine.PredictNextEdit(L"main.py", bufferU, lineU, bufferU.GetLine(lineU).length());
+    assert(predU.isValid);
+    assert(predU.ghostText.find(L"u=\"hi\"") != std::wstring::npos || predU.ghostText.find(L"u = \"hi\"") != std::wstring::npos);
+    assert(predU.ghostText.find(L"print(u)") != std::wstring::npos);
+    std::cout << "  -> PASS: Ghost prediction for 'u' after 't' block successfully generated!\n";
+
+    // Test 4: Series progression to 'v' after 'u' block is added
+    std::wstring contentWithUBlock = contentWithTBlock + L"\n\nu=\"hi\"\nprint(u)";
+    Buffer bufferV(contentWithUBlock);
+    size_t lineV = bufferV.GetLineCount() - 1;
+    auto predV = engine.PredictNextEdit(L"main.py", bufferV, lineV, bufferV.GetLine(lineV).length());
+    assert(predV.isValid);
+    assert(predV.ghostText.find(L"v=\"hi\"") != std::wstring::npos || predV.ghostText.find(L"v = \"hi\"") != std::wstring::npos);
+    assert(predV.ghostText.find(L"print(v)") != std::wstring::npos);
+    std::cout << "  -> PASS: Ghost prediction for 'v' after 'u' block successfully generated!\n";
+
+    // Test 5: Numbered suffix progression (item1, item2, item3 -> item4)
+    std::wstring numberedContent =
+        L"item1 = \"test\"\n"
+        L"print(item1)\n"
+        L"item2 = \"test\"\n"
+        L"print(item2)\n"
+        L"item3 = \"test\"\n"
+        L"print(item3)";
+    Buffer bufferNum(numberedContent);
+    size_t lineNum = bufferNum.GetLineCount() - 1;
+    auto predNum = engine.PredictNextEdit(L"main.py", bufferNum, lineNum, bufferNum.GetLine(lineNum).length());
+    assert(predNum.isValid);
+    assert(predNum.ghostText.find(L"item4") != std::wstring::npos);
+    std::cout << "  -> PASS: Numbered progression (item1, item2, item3 -> item4) successfully generated!\n";
+
+    std::cout << "  -> ALL Series Progression Tests Passed Successfully!\n";
+}
+
+void TestTodoCheckboxToggle() {
+    std::cout << "[TEST] Running Interactive TODO Checkbox Toggle Tests...\n";
+    std::wstring todoContent =
+        L"# TODO buy groceries\n"
+        L"# [ ] implement unit tests\n"
+        L"# [x] done task\n";
+    Buffer buffer(todoContent);
+
+    // 1. Toggle plain TODO -> [x] TODO
+    std::wstring l0 = buffer.GetLine(0);
+    size_t todoPos = l0.find(L"TODO");
+    assert(todoPos != std::wstring::npos);
+    l0.insert(todoPos, L"[x] ");
+    buffer.SetLine(0, l0);
+    assert(buffer.GetLine(0) == L"# [x] TODO buy groceries");
+    std::cout << "  -> PASS: '# TODO' toggled to '# [x] TODO'\n";
+
+    // 2. Toggle [ ] -> [x]
+    std::wstring l1 = buffer.GetLine(1);
+    size_t emptyPos = l1.find(L"[ ]");
+    assert(emptyPos != std::wstring::npos);
+    l1.replace(emptyPos, 3, L"[x]");
+    buffer.SetLine(1, l1);
+    assert(buffer.GetLine(1) == L"# [x] implement unit tests");
+    std::cout << "  -> PASS: '# [ ]' toggled to '# [x]'\n";
+
+    // 3. Toggle [x] -> [ ]
+    std::wstring l2 = buffer.GetLine(2);
+    size_t xPos = l2.find(L"[x]");
+    assert(xPos != std::wstring::npos);
+    l2.replace(xPos, 3, L"[ ]");
+    buffer.SetLine(2, l2);
+    assert(buffer.GetLine(2) == L"# [ ] done task");
+    std::cout << "  -> PASS: '# [x]' toggled to '# [ ]'\n";
+
+    std::cout << "  -> ALL Interactive TODO Checkbox Toggle Tests Passed Successfully!\n";
+}
+
 int main() {
     std::cout << "========================================================\n";
     std::cout << "  Running Phide Multi-Ignore & Adaptive Engine Tests   \n";
@@ -304,6 +430,10 @@ int main() {
     TestAdaptiveCodeEngine();
     std::cout << "--------------------------------------------------------\n";
     TestPredictionPatternLearning();
+    std::cout << "--------------------------------------------------------\n";
+    TestSeriesProgressionPrediction();
+    std::cout << "--------------------------------------------------------\n";
+    TestTodoCheckboxToggle();
     std::cout << "========================================================\n";
     std::cout << "  ALL VERIFICATION TESTS COMPLETED SUCCESSFULLY!        \n";
     std::cout << "========================================================\n";

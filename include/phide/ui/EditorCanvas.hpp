@@ -68,6 +68,11 @@ struct LearningCourseDef {
  */
 class EditorCanvas {
 public:
+    struct TodoCheckboxHit {
+        D2D1_RECT_F bounds{};
+        size_t line = 0;
+        bool isChecked = false;
+    };
     EditorCanvas();
     ~EditorCanvas() = default;
 
@@ -509,6 +514,7 @@ private:
     editor::CodePrediction m_prediction{};
     D2D1_RECT_F m_crossFilePillBounds{ 0, 0, 0, 0 };
     bool m_crossFilePillHovered = false;
+    std::vector<TodoCheckboxHit> m_visibleTodoCheckboxes;
 
     // Tab Drag & Drop State
     bool m_isDraggingTab = false;
@@ -646,6 +652,7 @@ public:
     void RunGarbageCollection() {
         m_foldChevrons.shrink_to_fit();
         m_visibleColorSwatches.shrink_to_fit();
+        m_visibleTodoCheckboxes.shrink_to_fit();
         m_autocompleteItems.shrink_to_fit();
         m_cachedBracketAnalysis.brackets.shrink_to_fit();
         m_cachedBracketAnalysis.pairs.shrink_to_fit();
@@ -659,6 +666,10 @@ public:
         m_notebookView.RunGarbageCollection();
     }
     [[nodiscard]] const ColorSwatchHit* HitTestColorSwatch(POINT pt) const;
+
+
+    [[nodiscard]] bool HitTestTodoCheckbox(POINT pt, TodoCheckboxHit& outHit) const noexcept;
+    [[nodiscard]] const std::vector<TodoCheckboxHit>& GetVisibleTodoCheckboxes() const noexcept { return m_visibleTodoCheckboxes; }
     [[nodiscard]] const std::vector<ColorSwatchHit>& GetVisibleColorSwatches() const noexcept { return m_visibleColorSwatches; }
 
     static std::vector<LineColorSpan> ScanLineColors(const std::wstring& lineStr);
