@@ -1746,4 +1746,43 @@ void LucideIcons::DrawUser(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, ID
     }
 }
 
+void LucideIcons::DrawApi(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, ID2D1Brush* pBrush, float strokeWidth) const {
+    if (!pRT || !pBrush) return;
+    EnsureStrokeStyle(pRT, const_cast<Microsoft::WRL::ComPtr<ID2D1StrokeStyle>&>(m_pStrokeStyle));
+
+    const float bw = bounds.right - bounds.left;
+    const float bh = bounds.bottom - bounds.top;
+    const float iconSize = (std::min)(bw, bh) * 0.54f;
+    const float s = iconSize / 24.0f;
+    const float ox = bounds.left + (bw - 24.0f * s) * 0.5f;
+    const float oy = bounds.top + (bh - 24.0f * s) * 0.5f;
+
+    // 1. Outer rounded chip / badge container (matching Lucide style)
+    D2D1_RECT_F rcBadge = D2D1::RectF(ox + 2.0f * s, oy + 5.0f * s, ox + 22.0f * s, oy + 19.0f * s);
+    D2D1_ROUNDED_RECT rrcBadge = D2D1::RoundedRect(rcBadge, 3.5f * s, 3.5f * s);
+    pRT->DrawRoundedRectangle(rrcBadge, pBrush, strokeWidth, m_pStrokeStyle.Get());
+
+    // 2. Left & right connector interface pins
+    pRT->DrawLine(MapPoint(0.5f, 12.0f, ox, oy, s), MapPoint(2.0f, 12.0f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+    pRT->DrawLine(MapPoint(22.0f, 12.0f, ox, oy, s), MapPoint(23.5f, 12.0f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+
+    // 3. Letter 'A' (x: 4.6 to 8.4, y: 8.5 to 15.5)
+    pRT->DrawLine(MapPoint(4.6f, 15.5f, ox, oy, s), MapPoint(6.5f, 8.5f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+    pRT->DrawLine(MapPoint(6.5f, 8.5f, ox, oy, s), MapPoint(8.4f, 15.5f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+    pRT->DrawLine(MapPoint(5.4f, 13.0f, ox, oy, s), MapPoint(7.6f, 13.0f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+
+    // 4. Letter 'P' (x: 10.5 to 14.3, y: 8.5 to 15.5)
+    pRT->DrawLine(MapPoint(10.5f, 8.5f, ox, oy, s), MapPoint(10.5f, 15.5f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+    pRT->DrawLine(MapPoint(10.5f, 8.5f, ox, oy, s), MapPoint(13.2f, 8.5f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+    pRT->DrawLine(MapPoint(13.2f, 8.5f, ox, oy, s), MapPoint(14.3f, 9.6f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+    pRT->DrawLine(MapPoint(14.3f, 9.6f, ox, oy, s), MapPoint(14.3f, 10.9f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+    pRT->DrawLine(MapPoint(14.3f, 10.9f, ox, oy, s), MapPoint(13.2f, 12.0f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+    pRT->DrawLine(MapPoint(13.2f, 12.0f, ox, oy, s), MapPoint(10.5f, 12.0f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+
+    // 5. Letter 'I' (x: 16.8 to 19.4, y: 8.5 to 15.5)
+    pRT->DrawLine(MapPoint(16.8f, 8.5f, ox, oy, s), MapPoint(19.4f, 8.5f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+    pRT->DrawLine(MapPoint(18.1f, 8.5f, ox, oy, s), MapPoint(18.1f, 15.5f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+    pRT->DrawLine(MapPoint(16.8f, 15.5f, ox, oy, s), MapPoint(19.4f, 15.5f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+}
+
 } // namespace phide::ui

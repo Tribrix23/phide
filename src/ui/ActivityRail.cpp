@@ -21,7 +21,10 @@ ActivityRail::ActivityRail() {
     // 4. File network icon directly under horizontal separation line (User prompt: tooltip "File network")
     m_items.push_back({ RailTabId::FileNetwork, L"File network",               {} });
 
-    // 5. Settings icon directly under File network (matching user's green circle)
+    // 5. API icon directly above Settings (User requirement: "above the settings button add a api icon that when click create another tab on editor a blank one")
+    m_items.push_back({ RailTabId::Api,         L"API (New Tab)",              {} });
+
+    // 6. Settings icon directly under API (matching user's request)
     m_items.push_back({ RailTabId::Settings,    L"Settings (Ctrl+,)",          {} });
 
     // 6. Notebook icon (directly above Packages)
@@ -285,6 +288,9 @@ void ActivityRail::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
                 break;
             case RailTabId::FileNetwork:
                 m_lucide.DrawFileNetwork(pRT, item.bounds, iconBrush, 1.7f);
+                break;
+            case RailTabId::Api:
+                m_lucide.DrawApi(pRT, item.bounds, iconBrush, 1.4f);
                 break;
             case RailTabId::Settings:
                 m_lucide.DrawSettings(pRT, item.bounds, iconBrush, 1.6f);

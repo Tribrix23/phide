@@ -268,6 +268,11 @@ public:
     void DrawClose(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, ID2D1Brush* pBrush, float strokeWidth = 1.2f) const;
 
     /**
+     * @brief Draws the vector API icon (chip/badge with rounded frame and centered API letterforms).
+     */
+    void DrawApi(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, ID2D1Brush* pBrush, float strokeWidth = 1.4f) const;
+
+    /**
      * @brief Draws the vector Settings gear icon (cog).
      */
     void DrawSettings(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, ID2D1Brush* pBrush, float strokeWidth = 1.2f) const;

@@ -11583,6 +11583,10 @@ void Window::HandleLButtonDown(POINT clientPt) {
             InvalidateRect(m_hwnd, nullptr, FALSE);
             return;
         }
+        if (railHit == ui::RailTabId::Api) {
+            DoNewTextFile();
+            return;
+        }
         if (railHit == ui::RailTabId::Settings) {
             DoOpenSettings();
             return;

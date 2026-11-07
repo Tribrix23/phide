@@ -37,6 +37,7 @@ enum class RailTabId {
     Student = 6,        ///< Student Tutorials & Learning Hub
     FileNetwork = 7,    ///< File Network icon with hub and 5 satellite nodes
     MoreActions = 7,    ///< Backward compatibility alias for FileNetwork
+    Api = 9,            ///< API action button (creates a new blank editor tab)
     Settings = 8        ///< Settings tab
 };
 
