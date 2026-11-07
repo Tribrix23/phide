@@ -9147,7 +9147,7 @@ void Window::HandleMouseMove(POINT clientPt, WPARAM wParam) {
                 needRepaint = true;
             }
         } else if (pActiveDoc->viewType == L"api") {
-            if (m_editor.GetApiTesterView().HandleMouseMove(clientPt)) {
+            if (m_editor.GetApiTesterView().HandleMouseMove(clientPt, m_config, m_theme)) {
                 needRepaint = true;
             }
         }

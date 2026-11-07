@@ -81,7 +81,8 @@ enum class ApiBodyType {
     None,
     RawJson,
     FormData,
-    UrlEncoded
+    UrlEncoded,
+    GraphQL
 };
 
 enum class ApiResponseTab {
@@ -118,6 +119,7 @@ struct ApiResponseData {
 };
 
 struct ApiRequestSession {
+    std::wstring name;
     HttpMethod method = HttpMethod::Get;
     std::wstring url;
     ApiRequestTab activeReqTab = ApiRequestTab::Params;
@@ -143,6 +145,13 @@ struct ApiRequestSession {
     std::vector<ApiKeyValueItem> formData;
     std::vector<ApiKeyValueItem> urlEncoded;
 
+    // GraphQL
+    std::wstring graphqlQuery = L"query {\n  \n}";
+    std::wstring graphqlVariables = L"{\n  \n}";
+    size_t graphqlQueryCaret = 0;
+    size_t graphqlVarsCaret = 0;
+    float graphqlSplitRatio = 0.60f;
+
     // Settings
     bool verifySsl = false;
     bool followRedirects = true;
@@ -152,7 +161,9 @@ struct ApiRequestSession {
     ApiResponseData response;
     bool isSending = false;
     float reqScrollY = 0.0f;
+    float reqScrollX = 0.0f;
     float respScrollY = 0.0f;
+    float respScrollX = 0.0f;
     ApiResponseTab activeRespTab = ApiResponseTab::Body;
 
     // Carets
@@ -165,6 +176,9 @@ enum class ApiFocusField {
     None,
     Url,
     Body,
+    GraphqlQuery,
+    GraphqlVars,
+    ResponseBody,
     ParamKey,
     ParamVal,
     ParamDesc,
@@ -200,7 +214,7 @@ public:
     void Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
                 float x, float w, float y, float h);
 
-    bool HandleMouseMove(POINT clientPt);
+    bool HandleMouseMove(POINT clientPt, const app::AppConfig& config, Theme& theme);
     bool HandleLButtonDown(POINT clientPt, const app::AppConfig& config, Theme& theme);
     bool HandleLButtonUp(POINT clientPt);
     bool HandleMouseWheel(short delta, float mouseY);
@@ -211,6 +225,9 @@ public:
     std::wstring GetActiveRequestDisplay() const;
 
     void AddNewSession();
+    void CloseSession(size_t index);
+    void SaveSessionsToDisk();
+    void LoadSessionsFromDisk();
     void SendCurrentRequest();
 
 private:
@@ -231,6 +248,7 @@ private:
     void SelectHeaderSuggestion(size_t index);
 
     // Helpers for rendering sub-components
+    void RenderSessionTabBar(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config, float x, float y, float w, float h);
     void RenderUrlBar(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config, float x, float y, float w);
     void RenderMethodDropdown(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config);
     void RenderAuthDropdown(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config);
@@ -244,6 +262,7 @@ private:
                              const wchar_t* addBtnLabel);
     void RenderAuthTab(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config, float x, float y, float w, float h);
     void RenderBodyTab(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config, float x, float y, float w, float h);
+    void RenderGraphqlBody(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config, float x, float y, float w, float h);
     void RenderSettingsTab(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config, float x, float y, float w, float h);
     void RenderResponseSection(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config, float x, float y, float w, float h);
 
@@ -254,6 +273,15 @@ private:
 
     std::vector<ApiRequestSession> m_sessions;
     size_t m_activeSessionIdx = 0;
+
+    // Session tabs targets
+    struct SessionTabTarget {
+        size_t index = 0;
+        D2D1_RECT_F tabRc{};
+        D2D1_RECT_F closeRc{};
+    };
+    std::vector<SessionTabTarget> m_sessionTabTargets;
+    D2D1_RECT_F m_rcAddSessionBtn{};
 
     // Layout metrics & hit targets
     float m_viewX = 0.0f;
@@ -296,12 +324,15 @@ private:
     // Body format selector bounds
     std::vector<std::pair<ApiBodyType, D2D1_RECT_F>> m_bodyFormatTabs;
     D2D1_RECT_F m_rcBodyEditor{};
+    D2D1_RECT_F m_rcGraphqlQuery{};
+    D2D1_RECT_F m_rcGraphqlVars{};
 
     // Response tabs bounds
     std::vector<std::pair<ApiResponseTab, D2D1_RECT_F>> m_respNavTabs;
     D2D1_RECT_F m_rcCopyBtn{};
     D2D1_RECT_F m_rcClearBtn{};
     D2D1_RECT_F m_rcAddRowBtn{};
+    D2D1_RECT_F m_rcResponseBodyArea{};
 
     // Header Autocomplete Dropdown state
     bool m_isHeaderSuggestOpen = false;
@@ -311,10 +342,19 @@ private:
     std::vector<std::wstring> m_headerSuggestions;
     int m_headerSuggestHoverIdx = -1;
 
-    // Selection state (Ctrl+A / Selection range)
+    // Selection & Mouse Drag state (Ctrl+A / Selection range)
     bool m_hasSelection = false;
     size_t m_selStart = 0;
     size_t m_selEnd = 0;
+    size_t m_selAnchor = 0;
+    bool m_isMouseSelecting = false;
+
+    // Response selection state
+    bool m_hasRespSelection = false;
+    size_t m_respSelStart = 0;
+    size_t m_respSelEnd = 0;
+    size_t m_respSelAnchor = 0;
+    bool m_isRespSelecting = false;
 
     // Active Focus & Caret state
     ApiFocusField m_focusedField = ApiFocusField::Url;
