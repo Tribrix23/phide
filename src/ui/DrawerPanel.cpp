@@ -6885,8 +6885,10 @@ bool DrawerPanel::HitTestGit(POINT pt, const app::AppConfig& config,
         // AI Generate Commit Message button (compact sparkle icon)
         if (pt.x >= m_gitGenerateAiBounds.left && pt.x <= m_gitGenerateAiBounds.right &&
             pt.y >= m_gitGenerateAiBounds.top && pt.y <= m_gitGenerateAiBounds.bottom) {
-            GenerateAiCommitMessage();
-            m_focusedGitInput = 1;
+            if (!m_gitChanges.empty()) {
+                GenerateAiCommitMessage();
+                m_focusedGitInput = 1;
+            }
             return true;
         }
 
@@ -7234,7 +7236,7 @@ bool DrawerPanel::HandleGitMouseMove(POINT pt, bool isLButtonDown, Theme* pTheme
     else if (checkBtn(m_gitStageAllBounds, L"Stage All Changes (+)")) { m_hoveredGitButton = L"stageAll"; }
     else if (checkBtn(m_gitDiscardAllBounds, L"Discard All Changes (🔄)")) { m_hoveredGitButton = L"discardAll"; }
     else if (checkBtn(m_gitChangesMoreBounds, L"More Actions...")) {}
-    else if (checkBtn(m_gitGenerateAiBounds, L"Generate Commit Message from Changes")) {}
+    else if (checkBtn(m_gitGenerateAiBounds, m_gitChanges.empty() ? L"Generate Commit Message (No changes detected)" : L"Generate Commit Message from Changes")) {}
     else if (m_gitSyncBtnBounds.right > m_gitSyncBtnBounds.left &&
              pt.x >= m_gitSyncBtnBounds.left && pt.x <= m_gitSyncBtnBounds.right &&
              pt.y >= m_gitSyncBtnBounds.top && pt.y <= m_gitSyncBtnBounds.bottom) {
@@ -8164,9 +8166,24 @@ void DrawerPanel::RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, 
             m_gitMsgBoxBounds.top + config.ScaleF(3.0f) + btnSize
         );
         D2D1_ROUNDED_RECT rrcGen = D2D1::RoundedRect(m_gitGenerateAiBounds, 3.0f, 3.0f);
-        pRT->FillRoundedRectangle(rrcGen, theme.brushBrandAccent.Get());
+        
+        bool hasChangesForAi = !m_gitChanges.empty();
+        if (hasChangesForAi) {
+            pRT->FillRoundedRectangle(rrcGen, theme.brushBrandAccent.Get());
+        } else {
+            // Disabled but STILL HAS COLOR: muted translucent brand blue
+            D2D1_COLOR_F disabledBlue = theme.colors.brandAccent;
+            disabledBlue.a = 0.38f;
+            Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> bDisabledBlue;
+            pRT->CreateSolidColorBrush(disabledBlue, &bDisabledBlue);
+            if (bDisabledBlue) {
+                pRT->FillRoundedRectangle(rrcGen, bDisabledBlue.Get());
+            } else {
+                pRT->FillRoundedRectangle(rrcGen, theme.brushBrandAccent.Get());
+            }
+        }
 
-        // Vector 4-pointed Sparkle (✦) icon in crisp white
+        // Vector 4-pointed Sparkle (✦) icon
         float scx = (m_gitGenerateAiBounds.left + m_gitGenerateAiBounds.right) / 2.0f;
         float scy = (m_gitGenerateAiBounds.top + m_gitGenerateAiBounds.bottom) / 2.0f;
         float sr = config.ScaleF(5.0f);
@@ -8186,7 +8203,17 @@ void DrawerPanel::RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, 
                 sink->AddLine(D2D1::Point2F(scx - sr * 0.28f, scy - sr * 0.28f));
                 sink->EndFigure(D2D1_FIGURE_END_CLOSED);
                 sink->Close();
-                pRT->FillGeometry(pSparkle.Get(), theme.brushTextWhite.Get());
+                if (hasChangesForAi) {
+                    pRT->FillGeometry(pSparkle.Get(), theme.brushTextWhite.Get());
+                } else {
+                    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> bDisabledIcon;
+                    pRT->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.45f), &bDisabledIcon);
+                    if (bDisabledIcon) {
+                        pRT->FillGeometry(pSparkle.Get(), bDisabledIcon.Get());
+                    } else {
+                        pRT->FillGeometry(pSparkle.Get(), theme.brushTextMuted.Get());
+                    }
+                }
             }
         }
 

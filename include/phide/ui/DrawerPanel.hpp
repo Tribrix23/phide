@@ -792,7 +792,7 @@ public:
         bool hitAction = (!loading && (inRect(pt, m_gitCommitBtnBounds) || inRect(pt, m_gitSyncBtnBounds) ||
                                        inRect(pt, m_gitCommitDropdownBounds) || inRect(pt, m_gitGraphPushBounds)));
         return hitAction ||
-               inRect(pt, m_gitGenerateAiBounds) || inRect(pt, m_gitStageAllBounds) ||
+               (!m_gitChanges.empty() && inRect(pt, m_gitGenerateAiBounds)) || inRect(pt, m_gitStageAllBounds) ||
                inRect(pt, m_gitDiscardAllBounds) || inRect(pt, m_gitChangesChevronBounds) ||
                inRect(pt, m_gitChangesMoreBounds) || inRect(pt, m_gitHeaderMoreBounds) ||
                inRect(pt, m_gitStagedChevronBounds) || inRect(pt, m_gitUnstageAllBounds) ||
