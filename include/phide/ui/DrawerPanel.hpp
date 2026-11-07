@@ -369,7 +369,8 @@ public:
     bool CheckoutGitBranch(const std::wstring& branch, std::wstring& outError);
     [[nodiscard]] const D2D1_RECT_F& GetGitHeaderMoreBounds() const noexcept { return m_gitHeaderMoreBounds; }
     [[nodiscard]] const std::wstring& GetGitTooltipText() const noexcept { return m_gitTooltipText; }
-    [[nodiscard]] bool IsGitTooltipVisible() const noexcept { return m_showGitTooltip; }
+    [[nodiscard]] bool IsGitTooltipVisible() const noexcept { return m_showGitTooltip && !m_gitTooltipText.empty(); }
+    void RenderGitTooltip(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config, float clientW, float clientH);
     void ClearGitTooltip() noexcept {
         m_showGitTooltip = false;
         m_gitTooltipText.clear();

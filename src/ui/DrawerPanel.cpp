@@ -9660,62 +9660,87 @@ void DrawerPanel::RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, 
         }
     }
 
-    // =========================================================================
-    // 6. Floating Tooltip Rendering (Only when menus are closed)
-    // =========================================================================
-    if (m_showGitTooltip && !m_gitTooltipText.empty() && m_activeGitMenu == GitMenuType::None && !m_isPublishModalOpen && !m_isGitHubLoginModalOpen) {
-        float tipPadX = config.ScaleF(10.0f);
-        float tipPadY = config.ScaleF(5.0f);
-        float measuredW = 0.0f;
-        float measuredH = 0.0f;
+}
 
-        IDWriteTextFormat* pFmt = theme.fontMenuItem.Get() ? theme.fontMenuItem.Get() : theme.fontButtonCenter.Get();
-        if (theme.dwriteFactory && pFmt) {
-            Microsoft::WRL::ComPtr<IDWriteTextLayout> pLayout;
-            if (SUCCEEDED(theme.dwriteFactory->CreateTextLayout(
-                    m_gitTooltipText.c_str(), static_cast<UINT32>(m_gitTooltipText.length()),
-                    pFmt, 1000.0f, 200.0f, &pLayout)) && pLayout) {
-                DWRITE_TEXT_METRICS tm{};
-                if (SUCCEEDED(pLayout->GetMetrics(&tm))) {
-                    measuredW = tm.widthIncludingTrailingWhitespace;
-                    measuredH = tm.height;
-                }
+void DrawerPanel::RenderGitTooltip(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config, float clientW, float clientH) {
+    if (!config.isDrawerOpen || !m_showGitTooltip || m_gitTooltipText.empty() ||
+        m_activeGitMenu != GitMenuType::None || m_isPublishModalOpen || m_isGitHubLoginModalOpen) {
+        return;
+    }
+    if (!pRT) return;
+
+    float tipPadX = config.ScaleF(10.0f);
+    float tipPadY = config.ScaleF(5.0f);
+    float measuredW = 0.0f;
+    float measuredH = 0.0f;
+
+    IDWriteTextFormat* pFmt = theme.fontTooltip.Get() ? theme.fontTooltip.Get() :
+                              (theme.fontMenuItem.Get() ? theme.fontMenuItem.Get() : theme.fontButtonCenter.Get());
+    if (theme.dwriteFactory && pFmt) {
+        Microsoft::WRL::ComPtr<IDWriteTextLayout> pLayout;
+        if (SUCCEEDED(theme.dwriteFactory->CreateTextLayout(
+                m_gitTooltipText.c_str(), static_cast<UINT32>(m_gitTooltipText.length()),
+                pFmt, 1000.0f, 200.0f, &pLayout)) && pLayout) {
+            DWRITE_TEXT_METRICS tm{};
+            if (SUCCEEDED(pLayout->GetMetrics(&tm))) {
+                measuredW = tm.widthIncludingTrailingWhitespace;
+                measuredH = tm.height;
             }
         }
-        if (measuredW <= 0.0f) {
-            measuredW = static_cast<float>(m_gitTooltipText.length()) * config.ScaleF(8.0f);
-            measuredH = config.ScaleF(16.0f);
-        }
-
-        float clientWidth = pRT ? pRT->GetSize().width : (railW + currentDrawerW + config.ScaleF(400.0f));
-        float maxTipW = clientWidth - config.ScaleF(20.0f);
-        float tipW = (std::min)(maxTipW, measuredW + tipPadX * 2.0f);
-        float tipH = measuredH + tipPadY * 2.0f;
-
-        float tipX = m_gitTooltipTarget.left;
-        if (tipX + tipW > clientWidth - config.ScaleF(10.0f)) {
-            tipX = clientWidth - tipW - config.ScaleF(10.0f);
-        }
-        if (tipX < config.ScaleF(6.0f)) {
-            tipX = config.ScaleF(6.0f);
-        }
-
-        float tipY = m_gitTooltipTarget.bottom + config.ScaleF(6.0f);
-        if (tipY + tipH > clientHeight - config.ScaleF(10.0f)) {
-            tipY = m_gitTooltipTarget.top - tipH - config.ScaleF(6.0f);
-        }
-
-        D2D1_RECT_F rcTipBox = D2D1::RectF(tipX, tipY, tipX + tipW, tipY + tipH);
-        D2D1_ROUNDED_RECT rrcTip = D2D1::RoundedRect(rcTipBox, 4.0f, 4.0f);
-        pRT->FillRoundedRectangle(rrcTip, theme.brushTooltipBg.Get());
-        pRT->DrawRoundedRectangle(rrcTip, theme.brushTooltipBorder.Get(), 1.0f);
-
-        D2D1_RECT_F rcTipText = D2D1::RectF(tipX + tipPadX, tipY + tipPadY, tipX + tipW - tipPadX, tipY + tipH - tipPadY);
-        pRT->PushAxisAlignedClip(rcTipText, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
-        pRT->DrawText(m_gitTooltipText.c_str(), static_cast<UINT32>(m_gitTooltipText.length()),
-                      pFmt, rcTipText, theme.brushTooltipText.Get());
-        pRT->PopAxisAlignedClip();
     }
+    if (measuredW <= 0.0f) {
+        measuredW = static_cast<float>(m_gitTooltipText.length()) * config.ScaleF(8.0f);
+        measuredH = config.ScaleF(16.0f);
+    }
+
+    float maxTipW = clientW - config.ScaleF(20.0f);
+    float tipW = (std::min)(maxTipW, measuredW + tipPadX * 2.0f);
+    float tipH = (std::max)(config.ScaleF(22.0f), measuredH + tipPadY * 2.0f);
+
+    float railW = static_cast<float>(config.railWidth);
+    float currentDrawerW = config.ScaleF(static_cast<float>(config.drawerWidth));
+    float drawerRight = railW + currentDrawerW;
+
+    // Smart positioning:
+    // If placing at target.left causes tooltip to exceed drawer right edge, align to target.right - tipW so it expands LEFTWARD!
+    float tipX = m_gitTooltipTarget.left;
+    if (tipX + tipW > drawerRight - config.ScaleF(6.0f)) {
+        tipX = m_gitTooltipTarget.right - tipW;
+    }
+    // If aligning right pushes it past the left rail, push it back right
+    if (tipX < railW + config.ScaleF(6.0f)) {
+        tipX = railW + config.ScaleF(6.0f);
+    }
+    // Clamp to window client right edge
+    if (tipX + tipW > clientW - config.ScaleF(10.0f)) {
+        tipX = clientW - tipW - config.ScaleF(10.0f);
+    }
+
+    float tipY = m_gitTooltipTarget.bottom + config.ScaleF(6.0f);
+    if (tipY + tipH > clientH - config.ScaleF(10.0f)) {
+        tipY = m_gitTooltipTarget.top - tipH - config.ScaleF(6.0f);
+    }
+
+    D2D1_RECT_F rcTipBox = D2D1::RectF(tipX, tipY, tipX + tipW, tipY + tipH);
+    D2D1_ROUNDED_RECT rrcTip = D2D1::RoundedRect(rcTipBox, 4.0f, 4.0f);
+
+    // Subtle drop shadow for floating popover
+    D2D1_ROUNDED_RECT rrcShadow = D2D1::RoundedRect(
+        D2D1::RectF(tipX + 1.5f, tipY + 2.0f, tipX + tipW + 1.5f, tipY + tipH + 2.0f),
+        4.0f, 4.0f);
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> bShadow;
+    pRT->CreateSolidColorBrush(D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.35f), &bShadow);
+    if (bShadow) pRT->FillRoundedRectangle(rrcShadow, bShadow.Get());
+
+    pRT->FillRoundedRectangle(rrcTip, theme.brushTooltipBg.Get());
+    pRT->DrawRoundedRectangle(rrcTip, theme.brushTooltipBorder.Get(), 1.0f);
+
+    D2D1_RECT_F rcTipText = D2D1::RectF(tipX + tipPadX, tipY, tipX + tipW - tipPadX, tipY + tipH);
+    pRT->PushAxisAlignedClip(rcTipText, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+    ID2D1Brush* pTxtBrush = theme.brushTooltipText ? theme.brushTooltipText.Get() : theme.brushTextPrimary.Get();
+    pRT->DrawText(m_gitTooltipText.c_str(), static_cast<UINT32>(m_gitTooltipText.length()),
+                  pFmt, rcTipText, pTxtBrush);
+    pRT->PopAxisAlignedClip();
 }
 
 void DrawerPanel::OpenPublishRepoModal() {

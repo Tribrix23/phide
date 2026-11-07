@@ -2242,8 +2242,19 @@ void ExtensionsPanel::RenderDetailView(ID2D1RenderTarget* pRT, Theme& theme, con
     curY += backBtnSize + config.ScaleF(16.0f);
 
     // 2. HERO ROW: Icon on the LEFT, and Title + Subtitle + Status on its RIGHT
-    const float iconBoxSize = config.ScaleF(60.0f);
-    D2D1_RECT_F rcIconBox = D2D1::RectF(x + padX, curY, x + padX + iconBoxSize, curY + iconBoxSize);
+    const float heroIconSize = config.ScaleF(64.0f);
+    const float nameH = config.ScaleF(24.0f);
+    const float pubH  = config.ScaleF(18.0f);
+    const float statPillH = config.ScaleF(22.0f);
+    const float statPillW = config.ScaleF(134.0f);
+
+    const float pubY = curY + nameH + config.ScaleF(3.0f);
+    const float statPillY = pubY + pubH + config.ScaleF(6.0f);
+    const float heroTotalH = (statPillY + statPillH) - curY;
+
+    // Center icon box vertically relative to text block
+    float iconTopY = curY + ((heroTotalH > heroIconSize) ? (heroTotalH - heroIconSize) * 0.5f : 0.0f);
+    D2D1_RECT_F rcIconBox = D2D1::RectF(x + padX, iconTopY, x + padX + heroIconSize, iconTopY + heroIconSize);
     D2D1_ROUNDED_RECT rrcIconBox = D2D1::RoundedRect(rcIconBox, 10.0f, 10.0f);
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> iconBoxBg;
     pRT->CreateSolidColorBrush(
@@ -2257,7 +2268,7 @@ void ExtensionsPanel::RenderDetailView(ID2D1RenderTarget* pRT, Theme& theme, con
     RenderBrandedIcon(pRT, theme, item, D2D1::RectF(rcIconBox.left + 6.0f, rcIconBox.top + 6.0f, rcIconBox.right - 6.0f, rcIconBox.bottom - 6.0f));
 
     // Right side column
-    const float rightX = x + padX + iconBoxSize + config.ScaleF(14.0f);
+    const float rightX = x + padX + heroIconSize + config.ScaleF(14.0f);
     const float rightW = (x + w - padX) - rightX;
 
     // Ensure title and subtitle formats are strictly LEFT-ALIGNED (User requirement: "align this to left")
@@ -2266,21 +2277,22 @@ void ExtensionsPanel::RenderDetailView(ID2D1RenderTarget* pRT, Theme& theme, con
     if (pFmtHint) pFmtHint->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
 
     // 2a. Extension Name (Large bold, strictly LEFT-ALIGNED)
-    D2D1_RECT_F rcName = D2D1::RectF(rightX, curY - config.ScaleF(1.0f), rightX + rightW, curY + config.ScaleF(21.0f));
+    D2D1_RECT_F rcName = D2D1::RectF(rightX, curY, rightX + rightW, curY + nameH);
     if (pFmtTitle && pTxtBrush) {
+        pRT->PushAxisAlignedClip(rcName, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
         pRT->DrawText(item.name.c_str(), static_cast<UINT32>(item.name.size()), pFmtTitle, rcName, pTxtBrush);
+        pRT->PopAxisAlignedClip();
     }
 
-    // 2b. Publisher / Ecosystem subtitle (strictly LEFT-ALIGNED)
-    D2D1_RECT_F rcPub = D2D1::RectF(rightX, curY + config.ScaleF(21.0f), rightX + rightW, curY + config.ScaleF(36.0f));
+    // 2b. Publisher / Ecosystem subtitle (strictly LEFT-ALIGNED with clipping so it never leaks)
+    D2D1_RECT_F rcPub = D2D1::RectF(rightX, pubY, rightX + rightW, pubY + pubH);
     if (pFmtHint && pMutedBrush) {
+        pRT->PushAxisAlignedClip(rcPub, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
         pRT->DrawText(item.publisher.c_str(), static_cast<UINT32>(item.publisher.size()), pFmtHint, rcPub, pMutedBrush);
+        pRT->PopAxisAlignedClip();
     }
 
-    // 2c. Status Pill Badge (strictly LEFT-ALIGNED at rightX)
-    float statPillW = config.ScaleF(126.0f);
-    float statPillH = config.ScaleF(20.0f);
-    float statPillY = curY + config.ScaleF(39.0f);
+    // 2c. Status Pill Badge (strictly LEFT-ALIGNED at rightX, cleanly separated from publisher)
     D2D1_RECT_F rcStatPill = D2D1::RectF(rightX, statPillY, rightX + statPillW, statPillY + statPillH);
     D2D1_ROUNDED_RECT rrcStatPill = D2D1::RoundedRect(rcStatPill, statPillH * 0.5f, statPillH * 0.5f);
 
@@ -2299,6 +2311,7 @@ void ExtensionsPanel::RenderDetailView(ID2D1RenderTarget* pRT, Theme& theme, con
         }
     }
 
+    D2D1_RECT_F rcPillText = D2D1::RectF(rcStatPill.left, rcStatPill.top + config.ScaleF(2.0f), rcStatPill.right, rcStatPill.bottom);
     if (hasInstalledEnv) {
         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> greenPillBg;
         pRT->CreateSolidColorBrush(D2D1::ColorF(0.12f, 0.40f, 0.22f, 0.35f), &greenPillBg);
@@ -2326,7 +2339,7 @@ void ExtensionsPanel::RenderDetailView(ID2D1RenderTarget* pRT, Theme& theme, con
         pRT->CreateSolidColorBrush(D2D1::ColorF(0.25f, 0.90f, 0.45f, 1.0f), &greenText);
         if (pFmtHint && greenText) {
             pFmtHint->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
-            pRT->DrawText(statText.c_str(), static_cast<UINT32>(statText.size()), pFmtHint, rcStatPill, greenText.Get());
+            pRT->DrawText(statText.c_str(), static_cast<UINT32>(statText.size()), pFmtHint, rcPillText, greenText.Get());
             pFmtHint->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
         }
     } else {
@@ -2336,13 +2349,13 @@ void ExtensionsPanel::RenderDetailView(ID2D1RenderTarget* pRT, Theme& theme, con
 
         if (pFmtHint && pMutedBrush) {
             pFmtHint->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
-            pRT->DrawText(L"○ Not Installed", 15, pFmtHint, rcStatPill, pMutedBrush);
+            pRT->DrawText(L"○ Not Installed", 15, pFmtHint, rcPillText, pMutedBrush);
             pFmtHint->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
         }
     }
 
     // GENEROUS SPACING: 20px breathing room between Hero Row and Action Buttons! (NO STICKING!)
-    curY += iconBoxSize + config.ScaleF(20.0f);
+    curY += (std::max)(heroIconSize, heroTotalH) + config.ScaleF(20.0f);
 
     // 3. ACTION BAR: Prominent Install/Uninstall Button + Version Dropdown Button
     const float btnH = config.ScaleF(32.0f);

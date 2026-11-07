@@ -7501,6 +7501,11 @@ void Window::OnPaint() {
         RenderBranchDropdown(m_pRenderTarget.Get(), clientW, clientH);
     }
 
+    // 14. Render Floating Git Tooltip (on top of all panes so it can never be clipped)
+    if (m_drawer.IsGitTooltipVisible()) {
+        m_drawer.RenderGitTooltip(m_pRenderTarget.Get(), m_theme, m_config, clientW, clientH);
+    }
+
     HRESULT hr = m_pRenderTarget->EndDraw();
     if (hr == D2DERR_RECREATE_TARGET) {
         DiscardDeviceResources();
