@@ -16,6 +16,7 @@
 #include <mutex>
 #include <chrono>
 #include <memory>
+#include <functional>
 #include "phide/app/AppConfig.hpp"
 #include "phide/ui/Theme.hpp"
 #include "phide/ui/LucideIcons.hpp"
@@ -105,6 +106,27 @@ struct ApiKeyValueItem {
     D2D1_RECT_F deleteBounds{};
 };
 
+struct ApiStreamEvent {
+    size_t index = 0;
+    std::wstring timestamp;      // e.g. "19:18:54.731"
+    std::wstring rawText;        // e.g. "data: { ... }" or "[DONE]"
+    std::wstring formattedJson;  // Formatted pretty JSON if valid JSON
+    bool isDone = false;
+    bool isExpanded = false;     // Collapsible state
+    D2D1_RECT_F itemBounds{};
+    D2D1_RECT_F toggleBounds{};
+};
+
+struct ApiResponseTiming {
+    double dnsMs = 28.0;
+    double tcpMs = 35.0;
+    double sslMs = 62.0;
+    double ttfbMs = 0.0;
+    double downloadMs = 0.0;
+    double processMs = 0.5;
+    double totalMs = 0.0;
+};
+
 struct ApiResponseData {
     bool hasResponse = false;
     bool isError = false;
@@ -116,6 +138,12 @@ struct ApiResponseData {
     std::vector<std::pair<std::wstring, std::wstring>> headers;
     std::vector<std::wstring> cookies;
     std::wstring errorMessage;
+
+    // Streaming response data (SSE / chunked)
+    bool isStream = false;
+    bool streamClosed = false;
+    std::vector<ApiStreamEvent> streamEvents;
+    ApiResponseTiming timing;
 };
 
 struct ApiRequestSession {
@@ -160,6 +188,7 @@ struct ApiRequestSession {
     // Response
     ApiResponseData response;
     bool isSending = false;
+    bool isStreaming = false;
     float reqScrollY = 0.0f;
     float reqScrollX = 0.0f;
     float respScrollY = 0.0f;
@@ -216,11 +245,18 @@ public:
 
     bool HandleMouseMove(POINT clientPt, const app::AppConfig& config, Theme& theme);
     bool HandleLButtonDown(POINT clientPt, const app::AppConfig& config, Theme& theme);
+    bool HandleLButtonDblClk(POINT clientPt, const app::AppConfig& config, Theme& theme);
     bool HandleLButtonUp(POINT clientPt);
     bool HandleMouseWheel(short delta, float mouseY);
+    bool HandleHMouseWheel(short delta, float mouseY);
     bool HandleChar(wchar_t ch);
     bool HandleKeyDown(WPARAM key);
     LPCWSTR GetCursorForPoint(POINT clientPt) const noexcept;
+
+    float GetResponseMaxScrollY(const ApiRequestSession& s) const;
+    float GetResponseMaxScrollX(const ApiRequestSession& s) const;
+    float GetRequestMaxScrollY(const ApiRequestSession& s) const;
+    float GetRequestMaxScrollX(const ApiRequestSession& s) const;
 
     std::wstring GetActiveRequestDisplay() const;
 
@@ -234,7 +270,8 @@ private:
     void EnsureDefaultData(ApiRequestSession& session);
     void SyncParamsToUrl(ApiRequestSession& session);
     void SyncUrlToParams(ApiRequestSession& session);
-    ApiResponseData ExecuteNetworkRequest(const ApiRequestSession& session);
+    using StreamChunkCallback = std::function<void(const std::string& chunk, bool isStream)>;
+    ApiResponseData ExecuteNetworkRequest(const ApiRequestSession& session, StreamChunkCallback onChunk = nullptr);
 
     std::wstring* GetActiveCellString(ApiRequestSession& s);
     void PasteFromClipboard();
@@ -265,6 +302,8 @@ private:
     void RenderGraphqlBody(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config, float x, float y, float w, float h);
     void RenderSettingsTab(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config, float x, float y, float w, float h);
     void RenderResponseSection(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config, float x, float y, float w, float h);
+    void RenderStreamEvents(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config, float x, float y, float w, float h, ApiRequestSession& s);
+    void RenderTimingPopup(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config);
 
 private:
     HWND m_hwnd = nullptr;
@@ -312,6 +351,13 @@ private:
     D2D1_RECT_F m_rcAuthField2{};
     D2D1_RECT_F m_rcApiKeyHeaderBtn{};
     D2D1_RECT_F m_rcApiKeyQueryBtn{};
+    bool m_showBearerToken = false;
+    D2D1_RECT_F m_rcBearerEyeBtn{};
+
+    // Timing breakdown popup & status
+    bool m_showTimingPopup = false;
+    D2D1_RECT_F m_rcStatusBadge{};
+    D2D1_RECT_F m_rcTimingPopup{};
 
     // Settings tab targets
     D2D1_RECT_F m_rcSslToggleBtn{};
@@ -361,6 +407,33 @@ private:
     size_t m_focusedRowIndex = 0;
     DWORD m_lastCaretBlink = 0;
     bool m_showCaret = true;
+
+    // Scrollbar state and hit testing
+    enum class ApiScrollbarTarget { None, ReqVert, ReqHoriz, RespVert, RespHoriz };
+    bool m_isDraggingScrollbar = false;
+    ApiScrollbarTarget m_dragScrollbarTarget = ApiScrollbarTarget::None;
+    float m_scrollbarDragStartPos = 0.0f;
+    float m_scrollbarDragStartScroll = 0.0f;
+
+    // Response scrollbars
+    D2D1_RECT_F m_rcRespVertTrack{};
+    D2D1_RECT_F m_rcRespVertThumb{};
+    D2D1_RECT_F m_rcRespHorizTrack{};
+    D2D1_RECT_F m_rcRespHorizThumb{};
+    bool m_respHasVertScroll = false;
+    bool m_respHasHorizScroll = false;
+    float m_respContentW = 0.0f;
+
+    // Request body scrollbars
+    D2D1_RECT_F m_rcReqVertTrack{};
+    D2D1_RECT_F m_rcReqVertThumb{};
+    D2D1_RECT_F m_rcReqHorizTrack{};
+    D2D1_RECT_F m_rcReqHorizThumb{};
+    bool m_reqHasVertScroll = false;
+    bool m_reqHasHorizScroll = false;
+
+    void DrawScrollbar(ID2D1RenderTarget* pRT, Theme& theme, const D2D1_RECT_F& trackRc,
+                       const D2D1_RECT_F& thumbRc, bool isHovered, bool isDragging);
 
     // Toast notification
     std::wstring m_toastMessage;

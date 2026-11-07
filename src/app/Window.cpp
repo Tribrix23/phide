@@ -12631,7 +12631,12 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
 
                     if (group.activeDocIdx >= 0 && group.activeDocIdx < static_cast<int>(group.docs.size())) {
                         auto& doc = group.docs[group.activeDocIdx];
-                        if (!doc.isSpecialView && !doc.isImageView && !doc.isUnsupportedBinary) {
+                        if (doc.isSpecialView && doc.viewType == L"api") {
+                            if (m_editor.GetApiTesterView().HandleLButtonDblClk(clientPt, m_config, m_theme)) {
+                                InvalidateRect(m_hwnd, nullptr, FALSE);
+                                return 0;
+                            }
+                        } else if (!doc.isSpecialView && !doc.isImageView && !doc.isUnsupportedBinary) {
                             float paneCanvasLeft = canvasLeft + targetGroup * paneW;
                             size_t line = 0, col = 0;
                             if (m_editor.HitTestCodeArea(clientPt, m_config, doc, paneCanvasLeft, clientH, line, col)) {
@@ -12847,6 +12852,14 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
         case WM_MOUSEHWHEEL: {
             short delta = GET_WHEEL_DELTA_WPARAM(wParam);
             auto* pDoc = GetActiveDoc();
+            if (pDoc && pDoc->isSpecialView && pDoc->viewType == L"api") {
+                POINT pt = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+                ScreenToClient(m_hwnd, &pt);
+                if (m_editor.GetApiTesterView().HandleHMouseWheel(delta, static_cast<float>(pt.y))) {
+                    InvalidateRect(m_hwnd, nullptr, FALSE);
+                    return 0;
+                }
+            }
             if (pDoc && !pDoc->isSpecialView) {
                 float hDelta = (delta > 0) ? 60.0f : -60.0f;
                 float maxScrollX = (std::max)(0.0f, pDoc->maxContentWidth);
