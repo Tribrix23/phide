@@ -10905,6 +10905,11 @@ void Window::HandleLButtonDown(POINT clientPt) {
                                 m_config.zoomLevel = m_config.fontSize / 15.0f;
                                 m_theme.SetEditorFont(m_config.fontFamily, m_config.fontSize);
                                 m_editor.ResetCharWidth();
+                            } else if (modifiedId == L"workbench.colorTheme") {
+                                BOOL dm = m_theme.IsDarkMode() ? TRUE : FALSE;
+                                DwmSetWindowAttribute(m_hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &dm, sizeof(dm));
+                                SetWindowPos(m_hwnd, nullptr, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED);
+                                UpdateDrawerErrorFiles();
                             }
                             SaveSessionState();
                         }

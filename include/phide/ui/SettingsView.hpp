@@ -52,6 +52,7 @@ struct SettingItem {
     std::wstring description; ///< Explanatory subtitle
     SettingCategory category = SettingCategory::TextEditor;
     bool isCommonlyUsed      = true;
+    bool isAppearance        = false; ///< Surfaces in the Appearance settings tab
     SettingControl control   = SettingControl::Toggle;
 
     // Dropdown / Preset values

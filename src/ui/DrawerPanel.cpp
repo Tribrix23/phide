@@ -6888,6 +6888,8 @@ bool DrawerPanel::HitTestGit(POINT pt, const app::AppConfig& config,
             if (!m_gitChanges.empty()) {
                 GenerateAiCommitMessage();
                 m_focusedGitInput = 1;
+            } else {
+                ShowGitNotification(L"No changes detected to generate a commit message.");
             }
             return true;
         }
@@ -9685,16 +9687,17 @@ void DrawerPanel::RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, 
             measuredH = config.ScaleF(16.0f);
         }
 
-        float maxDrawerTipW = (std::max)(config.ScaleF(80.0f), currentDrawerW - config.ScaleF(16.0f));
-        float tipW = (std::min)(maxDrawerTipW, measuredW + tipPadX * 2.0f);
+        float clientWidth = pRT ? pRT->GetSize().width : (railW + currentDrawerW + config.ScaleF(400.0f));
+        float maxTipW = clientWidth - config.ScaleF(20.0f);
+        float tipW = (std::min)(maxTipW, measuredW + tipPadX * 2.0f);
         float tipH = measuredH + tipPadY * 2.0f;
 
         float tipX = m_gitTooltipTarget.left;
-        if (tipX + tipW > railW + currentDrawerW - config.ScaleF(6.0f)) {
-            tipX = railW + currentDrawerW - tipW - config.ScaleF(6.0f);
+        if (tipX + tipW > clientWidth - config.ScaleF(10.0f)) {
+            tipX = clientWidth - tipW - config.ScaleF(10.0f);
         }
-        if (tipX < railW + config.ScaleF(6.0f)) {
-            tipX = railW + config.ScaleF(6.0f);
+        if (tipX < config.ScaleF(6.0f)) {
+            tipX = config.ScaleF(6.0f);
         }
 
         float tipY = m_gitTooltipTarget.bottom + config.ScaleF(6.0f);
@@ -9708,8 +9711,10 @@ void DrawerPanel::RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, 
         pRT->DrawRoundedRectangle(rrcTip, theme.brushTooltipBorder.Get(), 1.0f);
 
         D2D1_RECT_F rcTipText = D2D1::RectF(tipX + tipPadX, tipY + tipPadY, tipX + tipW - tipPadX, tipY + tipH - tipPadY);
+        pRT->PushAxisAlignedClip(rcTipText, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
         pRT->DrawText(m_gitTooltipText.c_str(), static_cast<UINT32>(m_gitTooltipText.length()),
                       pFmt, rcTipText, theme.brushTooltipText.Get());
+        pRT->PopAxisAlignedClip();
     }
 }
 

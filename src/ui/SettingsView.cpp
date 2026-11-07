@@ -9,6 +9,55 @@
 
 namespace phide::ui {
 
+static std::wstring ThemeModeToDisplayName(ThemeMode mode) {
+    switch (mode) {
+        case ThemeMode::Dark:              return L"Dark Mode";
+        case ThemeMode::Light:             return L"Light Mode";
+        case ThemeMode::Auto:              return L"Auto (System)";
+        case ThemeMode::Purple:            return L"Deep Purple";
+        case ThemeMode::Cyan:              return L"Cyan Cyber";
+        case ThemeMode::Turquoise:         return L"Turquoise Teal";
+        case ThemeMode::Monokai:           return L"Monokai Pro";
+        case ThemeMode::Dracula:           return L"Dracula";
+        case ThemeMode::Nord:              return L"Nord Arctic";
+        case ThemeMode::Solarized:         return L"Solarized Dark";
+        case ThemeMode::GitHubDark:        return L"GitHub Dark";
+        case ThemeMode::OneDark:           return L"One Dark Pro";
+        case ThemeMode::SynthWave:         return L"SynthWave '84";
+        case ThemeMode::RetroGrid80s:      return L"Retro Grid '80s";
+        case ThemeMode::CosmicStarfield:   return L"Cosmic Starfield";
+        case ThemeMode::MatrixDigitalRain: return L"Matrix Rain";
+        case ThemeMode::AuroraBorealis:    return L"Aurora Borealis";
+        case ThemeMode::SunsetGlow:        return L"Sunset Glow";
+        case ThemeMode::EmeraldForest:     return L"Emerald Forest";
+        case ThemeMode::RosePine:          return L"Rosé Pine";
+        default:                           return L"Dark Mode";
+    }
+}
+
+static ThemeMode DisplayNameToThemeMode(const std::wstring& name) {
+    if (name == L"Light Mode")             return ThemeMode::Light;
+    if (name == L"Auto (System)")          return ThemeMode::Auto;
+    if (name == L"Deep Purple")            return ThemeMode::Purple;
+    if (name == L"Cyan Cyber")             return ThemeMode::Cyan;
+    if (name == L"Turquoise Teal")         return ThemeMode::Turquoise;
+    if (name == L"Monokai Pro")            return ThemeMode::Monokai;
+    if (name == L"Dracula")                return ThemeMode::Dracula;
+    if (name == L"Nord Arctic")            return ThemeMode::Nord;
+    if (name == L"Solarized Dark")         return ThemeMode::Solarized;
+    if (name == L"GitHub Dark")            return ThemeMode::GitHubDark;
+    if (name == L"One Dark Pro")           return ThemeMode::OneDark;
+    if (name == L"SynthWave '84")          return ThemeMode::SynthWave;
+    if (name == L"Retro Grid '80s")        return ThemeMode::RetroGrid80s;
+    if (name == L"Cosmic Starfield")       return ThemeMode::CosmicStarfield;
+    if (name == L"Matrix Rain")            return ThemeMode::MatrixDigitalRain;
+    if (name == L"Aurora Borealis")        return ThemeMode::AuroraBorealis;
+    if (name == L"Sunset Glow")            return ThemeMode::SunsetGlow;
+    if (name == L"Emerald Forest")         return ThemeMode::EmeraldForest;
+    if (name == L"Rosé Pine")              return ThemeMode::RosePine;
+    return ThemeMode::Dark;
+}
+
 SettingsView::SettingsView() {
     InitializeSettings();
 }
@@ -56,6 +105,7 @@ void SettingsView::InitializeSettings() {
         it.description = L"Controls the font size in pixels for code editors.";
         it.category = SettingCategory::TextEditor;
         it.isCommonlyUsed = true;
+        it.isAppearance = true;
         it.control = SettingControl::NumberStepper;
         it.minVal = 8.0f;
         it.maxVal = 36.0f;
@@ -73,6 +123,7 @@ void SettingsView::InitializeSettings() {
         it.description = L"Controls the typeface used in the editor buffer.";
         it.category = SettingCategory::TextEditor;
         it.isCommonlyUsed = true;
+        it.isAppearance = true;
         it.control = SettingControl::Dropdown;
         it.options = { L"Koda Mono", L"Consolas", L"Cascadia Code", L"Courier New", L"Lucida Console" };
         m_items.push_back(std::move(it));
@@ -117,6 +168,7 @@ void SettingsView::InitializeSettings() {
         it.description = L"Controls the display of line numbers in the editor gutter.";
         it.category = SettingCategory::TextEditor;
         it.isCommonlyUsed = true;
+        it.isAppearance = true;
         it.control = SettingControl::Toggle;
         m_items.push_back(std::move(it));
     }
@@ -130,6 +182,7 @@ void SettingsView::InitializeSettings() {
         it.description = L"Controls whether the code overview minimap is shown on the right.";
         it.category = SettingCategory::TextEditor;
         it.isCommonlyUsed = true;
+        it.isAppearance = true;
         it.control = SettingControl::Toggle;
         m_items.push_back(std::move(it));
     }
@@ -156,6 +209,7 @@ void SettingsView::InitializeSettings() {
         it.description = L"Controls whether the editor shows CodeLens Run and Debug actions above functions and tests.";
         it.category = SettingCategory::TextEditor;
         it.isCommonlyUsed = true;
+        it.isAppearance = true;
         it.control = SettingControl::Toggle;
         m_items.push_back(std::move(it));
     }
@@ -169,6 +223,7 @@ void SettingsView::InitializeSettings() {
         it.description = L"Controls how the editor should render whitespace characters.";
         it.category = SettingCategory::TextEditor;
         it.isCommonlyUsed = true;
+        it.isAppearance = true;
         it.control = SettingControl::Dropdown;
         it.options = { L"selection", L"boundary", L"trailing", L"all", L"none" };
         m_items.push_back(std::move(it));
@@ -183,6 +238,7 @@ void SettingsView::InitializeSettings() {
         it.description = L"Controls the cursor style in insert input mode.";
         it.category = SettingCategory::TextEditor;
         it.isCommonlyUsed = true;
+        it.isAppearance = true;
         it.control = SettingControl::Dropdown;
         it.options = { L"line", L"block", L"underline" };
         m_items.push_back(std::move(it));
@@ -201,7 +257,57 @@ void SettingsView::InitializeSettings() {
         m_items.push_back(std::move(it));
     }
 
-    // 12. Appearance: Breadcrumbs (Toggle)
+    // 12. Appearance: Color Theme (Dropdown)
+    {
+        SettingItem it;
+        it.id = L"workbench.colorTheme";
+        it.scope = L"APPEARANCE";
+        it.title = L"Color Theme";
+        it.description = L"Specifies the visual color theme used across the editor, sidebar, and workbench UI.";
+        it.category = SettingCategory::Appearance;
+        it.isCommonlyUsed = true;
+        it.isAppearance = true;
+        it.control = SettingControl::Dropdown;
+        it.options = {
+            L"Dark Mode",
+            L"Light Mode",
+            L"Auto (System)",
+            L"Deep Purple",
+            L"Cyan Cyber",
+            L"Turquoise Teal",
+            L"Monokai Pro",
+            L"Dracula",
+            L"Nord Arctic",
+            L"Solarized Dark",
+            L"GitHub Dark",
+            L"One Dark Pro",
+            L"SynthWave '84",
+            L"Retro Grid '80s",
+            L"Cosmic Starfield",
+            L"Matrix Rain",
+            L"Aurora Borealis",
+            L"Sunset Glow",
+            L"Emerald Forest",
+            L"Rosé Pine"
+        };
+        m_items.push_back(std::move(it));
+    }
+
+    // 12b. Appearance: GitLens Inline Blame (Toggle)
+    {
+        SettingItem it;
+        it.id = L"editor.gitLens";
+        it.scope = L"APPEARANCE";
+        it.title = L"GitLens Inline Blame";
+        it.description = L"Controls whether inline git authorship and commit blame annotations are shown on the active line.";
+        it.category = SettingCategory::Appearance;
+        it.isCommonlyUsed = true;
+        it.isAppearance = true;
+        it.control = SettingControl::Toggle;
+        m_items.push_back(std::move(it));
+    }
+
+    // 13. Appearance: Breadcrumbs (Toggle)
     {
         SettingItem it;
         it.id = L"workbench.breadcrumbs";
@@ -210,6 +316,7 @@ void SettingsView::InitializeSettings() {
         it.description = L"Turn file path navigation breadcrumbs on or off above editor.";
         it.category = SettingCategory::Appearance;
         it.isCommonlyUsed = true;
+        it.isAppearance = true;
         it.control = SettingControl::Toggle;
         m_items.push_back(std::move(it));
     }
@@ -223,6 +330,7 @@ void SettingsView::InitializeSettings() {
         it.description = L"Controls the visibility of the bottom status bar.";
         it.category = SettingCategory::Appearance;
         it.isCommonlyUsed = true;
+        it.isAppearance = true;
         it.control = SettingControl::Toggle;
         m_items.push_back(std::move(it));
     }
@@ -236,6 +344,7 @@ void SettingsView::InitializeSettings() {
         it.description = L"Colors nodes in the File Network graph view by file extension type.";
         it.category = SettingCategory::Appearance;
         it.isCommonlyUsed = true;
+        it.isAppearance = true;
         it.control = SettingControl::Toggle;
         m_items.push_back(std::move(it));
     }
@@ -249,6 +358,21 @@ void SettingsView::InitializeSettings() {
         it.description = L"Automatically open a side-by-side Markdown preview when viewing a markdown file.";
         it.category = SettingCategory::Appearance;
         it.isCommonlyUsed = true;
+        it.isAppearance = true;
+        it.control = SettingControl::Toggle;
+        m_items.push_back(std::move(it));
+    }
+
+    // 16b. Appearance: Zen Mode (Toggle)
+    {
+        SettingItem it;
+        it.id = L"workbench.zenMode";
+        it.scope = L"APPEARANCE";
+        it.title = L"Zen Mode";
+        it.description = L"Distraction-free fullscreen presentation mode hiding sidebars, activity rails, and status bars.";
+        it.category = SettingCategory::Appearance;
+        it.isCommonlyUsed = false;
+        it.isAppearance = true;
         it.control = SettingControl::Toggle;
         m_items.push_back(std::move(it));
     }
@@ -393,7 +517,7 @@ std::vector<size_t> SettingsView::GetFilteredItemIndices() const {
             // Category filter
             if (m_activeCategory == SettingCategory::CommonlyUsed) {
                 if (it.isCommonlyUsed) result.push_back(i);
-            } else if (it.category == m_activeCategory) {
+            } else if (it.category == m_activeCategory || (m_activeCategory == SettingCategory::Appearance && it.isAppearance)) {
                 result.push_back(i);
             }
         }
@@ -724,15 +848,23 @@ void SettingsView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
                       theme.fontBadge.Get() ? theme.fontBadge.Get() : theme.fontHint.Get(),
                       rcScopeBadge, pAccentBrush);
 
+        // Setting Title & Description with reserve space for controls
+        float ctrlReserveW = config.ScaleF(180.0f);
+        if (it.control == SettingControl::Dropdown) {
+            if (it.id == L"python.linting.linter" || it.id == L"workbench.colorTheme" || it.id == L"editor.fontFamily") {
+                ctrlReserveW = config.ScaleF(250.0f);
+            }
+        }
+
         // Setting Title
         float titleX = rcScopeBadge.right + config.ScaleF(12.0f);
-        D2D1_RECT_F rcCardTitle = D2D1::RectF(titleX, cardY + config.ScaleF(14.0f), ctrlRight - config.ScaleF(180.0f), cardY + config.ScaleF(36.0f));
+        D2D1_RECT_F rcCardTitle = D2D1::RectF(titleX, cardY + config.ScaleF(14.0f), ctrlRight - ctrlReserveW, cardY + config.ScaleF(36.0f));
         pRT->DrawText(it.title.c_str(), static_cast<UINT32>(it.title.length()),
                       m_pFontTitle.Get() ? m_pFontTitle.Get() : theme.fontBody.Get(), rcCardTitle, theme.brushTextPrimary.Get());
 
         // Setting Description
         D2D1_RECT_F rcDesc = D2D1::RectF(contentLeft + config.ScaleF(20.0f), cardY + config.ScaleF(44.0f),
-                                         ctrlRight - config.ScaleF(180.0f), cardY + cardH - config.ScaleF(12.0f));
+                                         ctrlRight - ctrlReserveW, cardY + cardH - config.ScaleF(12.0f));
         pRT->DrawText(it.description.c_str(), static_cast<UINT32>(it.description.length()),
                       m_pFontDesc.Get() ? m_pFontDesc.Get() : theme.fontBody.Get(),
                       rcDesc, theme.brushTextSecondary.Get());
@@ -753,6 +885,8 @@ void SettingsView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
             else if (it.id == L"workbench.statusBar") isChecked = config.showStatusBar;
             else if (it.id == L"workbench.graphColored") isChecked = config.isGraphColored;
             else if (it.id == L"workbench.markdownPreview") isChecked = config.enableMarkdownPreview;
+            else if (it.id == L"editor.gitLens") isChecked = config.enableGitLens;
+            else if (it.id == L"workbench.zenMode") isChecked = config.zenMode;
             else if (it.id == L"code-runner.runInTerminal") isChecked = config.codeRunnerRunInTerminal;
             else if (it.id == L"code-runner.saveFileBeforeRun") isChecked = config.codeRunnerSaveFileBeforeRun;
             else if (it.id == L"code-runner.clearPreviousOutput") isChecked = config.codeRunnerClearPreviousOutput;
@@ -779,7 +913,10 @@ void SettingsView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
             bool hPlus  = (isCardHovered && m_hoveredControlSubId == "plus");
             DrawStepper(pRT, theme, config, it, valStr, hMinus, hPlus);
         } else if (it.control == SettingControl::Dropdown) {
-            const float dropW = config.ScaleF(160.0f);
+            float dropW = config.ScaleF(170.0f);
+            if (it.id == L"python.linting.linter" || it.id == L"workbench.colorTheme" || it.id == L"editor.fontFamily") {
+                dropW = config.ScaleF(230.0f);
+            }
             const float dropH = config.ScaleF(32.0f);
             it.controlBounds = D2D1::RectF(ctrlRight - dropW, ctrlCenterY - dropH / 2.0f, ctrlRight, ctrlCenterY + dropH / 2.0f);
 
@@ -796,6 +933,8 @@ void SettingsView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
                 valStr = config.codeRunnerExecutorPython;
             } else if (it.id == L"python.linting.linter") {
                 valStr = config.pythonLinter;
+            } else if (it.id == L"workbench.colorTheme") {
+                valStr = ThemeModeToDisplayName(theme.GetThemeMode());
             }
 
             bool isOpen = (m_openDropdownItemIdx == static_cast<int>(idx));
@@ -927,10 +1066,12 @@ void SettingsView::DrawDropdown(ID2D1RenderTarget* pRT, Theme& theme, const app:
         : theme.brushBorderSubtle.Get();
     pRT->DrawRoundedRectangle(rrc, pBorder, (isOpen || isHovered) ? 1.4f : 1.0f);
 
-    // Selected value text
+    // Selected value text with clipping so it never leaks
     D2D1_RECT_F rcText = D2D1::RectF(bounds.left + config.ScaleF(12.0f), bounds.top, bounds.right - config.ScaleF(28.0f), bounds.bottom);
+    pRT->PushAxisAlignedClip(rcText, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
     pRT->DrawText(valStr.c_str(), static_cast<UINT32>(valStr.length()),
                   theme.fontBody.Get(), rcText, theme.brushTextPrimary.Get());
+    pRT->PopAxisAlignedClip();
 
     // Chevron glyph
     float cx = bounds.right - config.ScaleF(16.0f);
@@ -965,11 +1106,14 @@ void SettingsView::DrawDropdownPopup(ID2D1RenderTarget* pRT, Theme& theme, const
     else if (item.id == L"editor.cursorStyle") curVal = config.cursorStyle;
     else if (item.id == L"code-runner.executorMap.python") curVal = config.codeRunnerExecutorPython;
     else if (item.id == L"python.linting.linter") curVal = config.pythonLinter;
+    else if (item.id == L"workbench.colorTheme") curVal = ThemeModeToDisplayName(theme.GetThemeMode());
 
     const float rowH = config.ScaleF(32.0f);
     const float padY = config.ScaleF(6.0f);
     const float menuH = item.options.size() * rowH + padY * 2.0f;
-    const float menuW = (std::max)(item.controlBounds.right - item.controlBounds.left, config.ScaleF(180.0f));
+    const float minW = (item.id == L"python.linting.linter" || item.id == L"workbench.colorTheme" || item.id == L"editor.fontFamily")
+                       ? config.ScaleF(230.0f) : config.ScaleF(180.0f);
+    const float menuW = (std::max)(item.controlBounds.right - item.controlBounds.left, minW);
 
     // Place menu directly below control button
     float menuLeft = item.controlBounds.right - menuW;
@@ -1019,13 +1163,15 @@ void SettingsView::DrawDropdownPopup(ID2D1RenderTarget* pRT, Theme& theme, const
             pRT->DrawLine(p2, p3, pAccent, 1.8f);
         }
 
-        // Option text
+        // Option text with clipping
         D2D1_RECT_F rcOptText = D2D1::RectF(rcRow.left + config.ScaleF(26.0f), rcRow.top, rcRow.right - config.ScaleF(8.0f), rcRow.bottom);
+        pRT->PushAxisAlignedClip(rcOptText, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
         ID2D1Brush* pTextBrush = isSelected
             ? (theme.IsDarkMode() ? (theme.brushTextWhite ? theme.brushTextWhite.Get() : theme.brushBrandAccent.Get()) : theme.brushBrandAccent.Get())
             : (isHovered ? (theme.IsDarkMode() ? (theme.brushTextWhite ? theme.brushTextWhite.Get() : theme.brushTextPrimary.Get()) : theme.brushTextPrimary.Get()) : theme.brushTextPrimary.Get());
         pRT->DrawText(item.options[i].c_str(), static_cast<UINT32>(item.options[i].length()),
                       theme.fontBody.Get(), rcOptText, pTextBrush);
+        pRT->PopAxisAlignedClip();
 
         curRowY += rowH;
     }
@@ -1131,6 +1277,8 @@ bool SettingsView::HandleLButtonDown(POINT clientPt, app::AppConfig& config, The
                         config.codeRunnerExecutorPython = selectedOpt;
                     } else if (dropItem.id == L"python.linting.linter") {
                         config.pythonLinter = selectedOpt;
+                    } else if (dropItem.id == L"workbench.colorTheme") {
+                        theme.SetThemeMode(DisplayNameToThemeMode(selectedOpt));
                     }
                     outModifiedSettingId = dropItem.id;
                 }
@@ -1214,6 +1362,10 @@ bool SettingsView::HandleLButtonDown(POINT clientPt, app::AppConfig& config, The
                         config.pythonCheckUndefinedVariables = !config.pythonCheckUndefinedVariables;
                     } else if (it.id == L"python.terminal.highlightErrorsInEditor") {
                         config.pythonHighlightTerminalErrors = !config.pythonHighlightTerminalErrors;
+                    } else if (it.id == L"editor.gitLens") {
+                        config.enableGitLens = !config.enableGitLens;
+                    } else if (it.id == L"workbench.zenMode") {
+                        config.zenMode = !config.zenMode;
                     }
                     outModifiedSettingId = it.id;
                     return true;
