@@ -503,17 +503,36 @@ float ApiTesterView::GetResponseMaxScrollY(const ApiRequestSession& s) const {
 float ApiTesterView::GetResponseMaxScrollX(const ApiRequestSession& s) const {
     float maxContentW = 0.0f;
     if (s.activeRespTab == ApiResponseTab::Body) {
-        size_t start = 0;
-        size_t maxLen = 0;
-        while (start < s.response.body.length()) {
-            size_t nl = s.response.body.find(L'\n', start);
-            size_t len = (nl == std::wstring::npos) ? (s.response.body.length() - start) : (nl - start);
-            if (len > maxLen) maxLen = len;
-            if (nl == std::wstring::npos) break;
-            start = nl + 1;
+        if (s.response.isStream && !s.response.streamEvents.empty()) {
+            float maxLineW = 0.0f;
+            for (const auto& ev : s.response.streamEvents) {
+                if (ev.isExpanded) {
+                    const std::wstring& text = (!ev.formattedJson.empty()) ? ev.formattedJson : ev.rawText;
+                    size_t start = 0;
+                    while (start < text.length()) {
+                        size_t nl = text.find(L'\n', start);
+                        size_t len = (nl == std::wstring::npos) ? (text.length() - start) : (nl - start);
+                        float lineW = static_cast<float>(len) * 8.5f + 80.0f;
+                        if (lineW > maxLineW) maxLineW = lineW;
+                        if (nl == std::wstring::npos) break;
+                        start = nl + 1;
+                    }
+                }
+            }
+            maxContentW = maxLineW;
+        } else {
+            size_t start = 0;
+            size_t maxLen = 0;
+            while (start < s.response.body.length()) {
+                size_t nl = s.response.body.find(L'\n', start);
+                size_t len = (nl == std::wstring::npos) ? (s.response.body.length() - start) : (nl - start);
+                if (len > maxLen) maxLen = len;
+                if (nl == std::wstring::npos) break;
+                start = nl + 1;
+            }
+            float gutterW = 40.0f;
+            maxContentW = static_cast<float>(maxLen) * 8.5f + gutterW + 80.0f;
         }
-        float gutterW = 40.0f;
-        maxContentW = static_cast<float>(maxLen) * 8.5f + gutterW + 80.0f;
     } else if (s.activeRespTab == ApiResponseTab::Headers) {
         size_t maxValLen = 0;
         for (const auto& hdr : s.response.headers) {
@@ -2314,6 +2333,54 @@ void ApiTesterView::RenderKeyValueTable(ID2D1RenderTarget* pRT, Theme& theme, co
     pRT->PopAxisAlignedClip();
 }
 
+static void DrawEyeIcon(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, ID2D1Brush* pBrush, bool isHidden) {
+    if (!pRT || !pBrush) return;
+    float bw = bounds.right - bounds.left;
+    float bh = bounds.bottom - bounds.top;
+    float sz = (std::min)(bw, bh) * 0.52f;
+    float s = sz / 24.0f;
+    float cx = bounds.left + bw * 0.5f;
+    float cy = bounds.top + bh * 0.5f;
+    float ox = cx - 12.0f * s;
+    float oy = cy - 12.0f * s;
+
+    // Pupil
+    pRT->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(cx, cy), 2.8f * s, 2.8f * s), pBrush, 1.4f);
+
+    // Eye outline path
+    Microsoft::WRL::ComPtr<ID2D1Factory> pFactory;
+    pRT->GetFactory(&pFactory);
+    if (pFactory) {
+        Microsoft::WRL::ComPtr<ID2D1PathGeometry> path;
+        if (SUCCEEDED(pFactory->CreatePathGeometry(&path))) {
+            Microsoft::WRL::ComPtr<ID2D1GeometrySink> sink;
+            if (SUCCEEDED(path->Open(&sink))) {
+                sink->BeginFigure(D2D1::Point2F(ox + 2.0f * s, oy + 12.0f * s), D2D1_FIGURE_BEGIN_HOLLOW);
+                sink->AddBezier(D2D1::BezierSegment(
+                    D2D1::Point2F(ox + 6.0f * s, oy + 5.5f * s),
+                    D2D1::Point2F(ox + 18.0f * s, oy + 5.5f * s),
+                    D2D1::Point2F(ox + 22.0f * s, oy + 12.0f * s)
+                ));
+                sink->AddBezier(D2D1::BezierSegment(
+                    D2D1::Point2F(ox + 18.0f * s, oy + 18.5f * s),
+                    D2D1::Point2F(ox + 6.0f * s, oy + 18.5f * s),
+                    D2D1::Point2F(ox + 2.0f * s, oy + 12.0f * s)
+                ));
+                sink->EndFigure(D2D1_FIGURE_END_OPEN);
+                sink->Close();
+                pRT->DrawGeometry(path.Get(), pBrush, 1.4f);
+            }
+        }
+    }
+
+    if (isHidden) {
+        // Diagonal strike-through slash (Classic Lucide EyeOff)
+        pRT->DrawLine(D2D1::Point2F(ox + 3.5f * s, oy + 3.5f * s),
+                      D2D1::Point2F(ox + 20.5f * s, oy + 20.5f * s),
+                      pBrush, 1.5f);
+    }
+}
+
 // -----------------------------------------------------------------------------
 // Authorization Tab
 // -----------------------------------------------------------------------------
@@ -2399,9 +2466,9 @@ void ApiTesterView::RenderAuthTab(ID2D1RenderTarget* pRT, Theme& theme, const ap
         D2D1_ROUNDED_RECT rrcEye = D2D1::RoundedRect(m_rcBearerEyeBtn, 4.0f, 4.0f);
         pRT->FillRoundedRectangle(rrcEye, eyeHov ? theme.brushItemHover.Get() : theme.brushMenuBg.Get());
         pRT->DrawRoundedRectangle(rrcEye, eyeHov ? theme.brushBrandAccent.Get() : theme.brushBorderSubtle.Get(), 1.0f);
-        const wchar_t* eyeIcon = m_showBearerToken ? L"Ø" : L"👁";
-        pRT->DrawText(eyeIcon, static_cast<UINT32>(wcslen(eyeIcon)), theme.fontButtonCenter.Get(), m_rcBearerEyeBtn,
-                      eyeHov ? theme.brushTextWhite.Get() : theme.brushTextSecondary.Get());
+        DrawEyeIcon(pRT, m_rcBearerEyeBtn,
+                    eyeHov ? theme.brushTextWhite.Get() : theme.brushTextSecondary.Get(),
+                    !m_showBearerToken);
 
         // Helper explanation text
         float helpY = curY + config.ScaleF(36.0f);
@@ -3182,6 +3249,8 @@ void ApiTesterView::RenderResponseSection(ID2D1RenderTarget* pRT, Theme& theme, 
     // Scrollbars for Response section (Visible, draggable, high-contrast)
     float maxScrollY = GetResponseMaxScrollY(s);
     float maxScrollX = GetResponseMaxScrollX(s);
+    if (s.respScrollY > maxScrollY) s.respScrollY = maxScrollY;
+    if (s.respScrollX > maxScrollX) s.respScrollX = maxScrollX;
     m_respHasVertScroll = (maxScrollY > 0.0f);
     m_respHasHorizScroll = (maxScrollX > 0.0f);
 
@@ -3332,33 +3401,42 @@ void ApiTesterView::RenderStreamEvents(ID2D1RenderTarget* pRT, Theme& theme, con
             pRT->DrawText(L"↓", 1, theme.fontKeycap.Get(), rcArr, arrowBrush.Get());
 
             // Timestamp (e.g. 19:18:54.731)
-            D2D1_RECT_F rcTime = D2D1::RectF(rcRow.left + config.ScaleF(40.0f), curY, rcRow.left + config.ScaleF(130.0f), curY + rowH);
+            D2D1_RECT_F rcTime = D2D1::RectF(rcRow.left + config.ScaleF(40.0f), curY, rcRow.left + config.ScaleF(134.0f), curY + rowH);
             pRT->DrawText(ev.timestamp.c_str(), static_cast<UINT32>(ev.timestamp.length()),
                           theme.fontHint.Get(), rcTime, theme.brushTextMuted.Get());
 
-            // Event payload or [DONE] badge
-            float previewX = rcRow.left + config.ScaleF(136.0f) - s.respScrollX;
-            if (ev.isDone) {
-                float badgeW = config.ScaleF(56.0f);
-                float badgeH = config.ScaleF(20.0f);
-                D2D1_RECT_F rcDone = D2D1::RectF(previewX, curY + (rowH - badgeH) * 0.5f, previewX + badgeW, curY + (rowH + badgeH) * 0.5f);
-                D2D1_ROUNDED_RECT rrcDone = D2D1::RoundedRect(rcDone, 3.0f, 3.0f);
-                if (donePillBg) pRT->FillRoundedRectangle(rrcDone, donePillBg.Get());
-                pRT->DrawRoundedRectangle(rrcDone, theme.brushBorderSubtle.Get(), 1.0f);
-                pRT->DrawText(L"[DONE]", 6, theme.fontKeycap.Get(), rcDone, theme.brushBrandAccent.Get());
-            } else {
-                std::wstring preview = ev.rawText;
-                if (preview.length() > 90) preview = preview.substr(0, 87) + L"...";
-                D2D1_RECT_F rcPreview = D2D1::RectF(previewX, curY, previewX + 10000.0f, curY + rowH);
-                pRT->DrawText(preview.c_str(), static_cast<UINT32>(preview.length()),
-                              theme.fontTab.Get(), rcPreview, theme.brushTextSecondary.Get());
-            }
-
             // Index badge on the far right
             std::wstring idxStr = L"#" + std::to_wstring(ev.index);
-            D2D1_RECT_F rcIdx = D2D1::RectF(rcRow.right - config.ScaleF(44.0f), curY, rcRow.right - config.ScaleF(8.0f), curY + rowH);
+            float idxW = config.ScaleF(46.0f);
+            D2D1_RECT_F rcIdx = D2D1::RectF(rcRow.right - idxW, curY, rcRow.right - config.ScaleF(6.0f), curY + rowH);
             pRT->DrawText(idxStr.c_str(), static_cast<UINT32>(idxStr.length()),
                           theme.fontKeycap.Get(), rcIdx, theme.brushTextMuted.Get());
+
+            // Event payload or [DONE] badge in the middle (clipped to prevent any overlap)
+            float previewLeft = rcRow.left + config.ScaleF(138.0f);
+            float previewRight = rcRow.right - idxW - config.ScaleF(10.0f);
+            if (previewRight > previewLeft) {
+                D2D1_RECT_F rcPreviewArea = D2D1::RectF(previewLeft, curY, previewRight, curY + rowH);
+                pRT->PushAxisAlignedClip(rcPreviewArea, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+
+                if (ev.isDone) {
+                    float badgeW = config.ScaleF(56.0f);
+                    float badgeH = config.ScaleF(20.0f);
+                    D2D1_RECT_F rcDone = D2D1::RectF(previewLeft, curY + (rowH - badgeH) * 0.5f, previewLeft + badgeW, curY + (rowH + badgeH) * 0.5f);
+                    D2D1_ROUNDED_RECT rrcDone = D2D1::RoundedRect(rcDone, 3.0f, 3.0f);
+                    if (donePillBg) pRT->FillRoundedRectangle(rrcDone, donePillBg.Get());
+                    pRT->DrawRoundedRectangle(rrcDone, theme.brushBorderSubtle.Get(), 1.0f);
+                    pRT->DrawText(L"[DONE]", 6, theme.fontKeycap.Get(), rcDone, theme.brushBrandAccent.Get());
+                } else {
+                    std::wstring preview = ev.rawText;
+                    for (auto& ch : preview) { if (ch == L'\n' || ch == L'\r') ch = L' '; }
+                    pRT->DrawText(preview.c_str(), static_cast<UINT32>(preview.length()),
+                                  theme.fontTab.Get(), rcPreviewArea, theme.brushTextSecondary.Get(),
+                                  D2D1_DRAW_TEXT_OPTIONS_CLIP);
+                }
+
+                pRT->PopAxisAlignedClip();
+            }
         }
 
         curY += rowH + config.ScaleF(2.0f);
@@ -3389,19 +3467,31 @@ void ApiTesterView::RenderStreamEvents(ID2D1RenderTarget* pRT, Theme& theme, con
                 pRT->DrawLine(D2D1::Point2F(rcBox.left + gutterW, rcBox.top), D2D1::Point2F(rcBox.left + gutterW, rcBox.bottom),
                               theme.brushBorderSubtle.Get(), 1.0f);
 
-                float lY = rcBox.top + innerPadY;
-                float lX = rcBox.left + gutterW + config.ScaleF(8.0f) - s.respScrollX;
+                // Code area with its own clipping so horizontal scrolling stays inside the code box
+                D2D1_RECT_F rcCodeArea = D2D1::RectF(rcBox.left + gutterW + config.ScaleF(6.0f), rcBox.top, rcBox.right - config.ScaleF(6.0f), rcBox.bottom);
+                pRT->PushAxisAlignedClip(rcCodeArea, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
 
+                float lY = rcBox.top + innerPadY;
+                float lX = rcCodeArea.left - s.respScrollX;
+
+                for (size_t li = 0; li < lines.size(); ++li) {
+                    if (lY + lineH > listY && lY < y + h) {
+                        DrawSyntaxHighlightedJsonLine(pRT, theme, lines[li], lX, lY, 10000.0f, lineH,
+                                                      brushProp.Get(), brushStr.Get(), brushNum.Get(),
+                                                      brushBool.Get(), brushPunct.Get(), brushMuted.Get());
+                    }
+                    lY += lineH;
+                }
+                pRT->PopAxisAlignedClip();
+
+                // Draw line numbers over the gutter (gutter is fixed, doesn't scroll)
+                lY = rcBox.top + innerPadY;
                 for (size_t li = 0; li < lines.size(); ++li) {
                     if (lY + lineH > listY && lY < y + h) {
                         std::wstring lnStr = std::to_wstring(li + 1);
                         D2D1_RECT_F rcNum = D2D1::RectF(rcBox.left, lY, rcBox.left + gutterW - config.ScaleF(4.0f), lY + lineH);
                         pRT->DrawText(lnStr.c_str(), static_cast<UINT32>(lnStr.length()),
                                       theme.fontLineNumber.Get(), rcNum, theme.brushLineNumber.Get());
-
-                        DrawSyntaxHighlightedJsonLine(pRT, theme, lines[li], lX, lY, 10000.0f, lineH,
-                                                      brushProp.Get(), brushStr.Get(), brushNum.Get(),
-                                                      brushBool.Get(), brushPunct.Get(), brushMuted.Get());
                     }
                     lY += lineH;
                 }
@@ -3434,7 +3524,7 @@ void ApiTesterView::RenderTimingPopup(ID2D1RenderTarget* pRT, Theme& theme, cons
 
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> cardBg;
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> borderBrush;
-    pRT->CreateSolidColorBrush(D2D1::ColorF(0.10f, 0.10f, 0.13f, 0.98f), &cardBg);
+    pRT->CreateSolidColorBrush(D2D1::ColorF(0.11f, 0.11f, 0.14f, 1.0f), &cardBg);
     pRT->CreateSolidColorBrush(D2D1::ColorF(0.28f, 0.28f, 0.35f, 1.0f), &borderBrush);
 
     if (cardBg) pRT->FillRoundedRectangle(rrcCard, cardBg.Get());
@@ -3443,11 +3533,13 @@ void ApiTesterView::RenderTimingPopup(ID2D1RenderTarget* pRT, Theme& theme, cons
     float curY = cardY + config.ScaleF(12.0f);
     float padX = config.ScaleF(14.0f);
 
-    // Title
-    std::wstring title = L"Response Time Breakdown";
-    D2D1_RECT_F rcTitle = D2D1::RectF(cardX + padX, curY, cardX + cardW - padX, curY + config.ScaleF(18.0f));
+    // Title on the left
+    std::wstring title = L"Response Time";
+    float totW = config.ScaleF(95.0f);
+    D2D1_RECT_F rcTitle = D2D1::RectF(cardX + padX, curY, cardX + cardW - padX - totW, curY + config.ScaleF(18.0f));
     pRT->DrawText(title.c_str(), static_cast<UINT32>(title.length()),
-                  theme.fontKeycap.Get(), rcTitle, theme.brushTextWhite.Get());
+                  theme.fontKeycap.Get(), rcTitle, theme.brushTextWhite.Get(),
+                  D2D1_DRAW_TEXT_OPTIONS_CLIP);
 
     wchar_t szTot[64];
     if (s.response.timeMs >= 1000.0) {
@@ -3455,9 +3547,9 @@ void ApiTesterView::RenderTimingPopup(ID2D1RenderTarget* pRT, Theme& theme, cons
     } else {
         swprintf_s(szTot, L"Total: %.1f ms", s.response.timeMs);
     }
-    D2D1_RECT_F rcTot = D2D1::RectF(cardX + padX, curY, cardX + cardW - padX, curY + config.ScaleF(18.0f));
+    D2D1_RECT_F rcTot = D2D1::RectF(cardX + cardW - padX - totW, curY, cardX + cardW - padX, curY + config.ScaleF(18.0f));
     pRT->DrawText(szTot, static_cast<UINT32>(wcslen(szTot)),
-                  theme.fontKeycap.Get(), rcTot, theme.brushBrandAccent.Get());
+                  theme.fontButtonCenter.Get(), rcTot, theme.brushBrandAccent.Get());
 
     curY += config.ScaleF(24.0f);
     pRT->DrawLine(D2D1::Point2F(cardX + padX, curY), D2D1::Point2F(cardX + cardW - padX, curY),
@@ -4435,43 +4527,10 @@ bool ApiTesterView::HandleMouseWheel(short delta, float mouseY) {
     }
 
     if (mouseY > m_rcSplitter.bottom) {
-        // Calculate bounded height for active response tab
-        float totalH = 0.0f;
-        if (s.activeRespTab == ApiResponseTab::Body) {
-            size_t lineCount = 1;
-            for (wchar_t ch : s.response.body) if (ch == L'\n') lineCount++;
-            totalH = static_cast<float>(lineCount) * 18.0f + 30.0f;
-        } else if (s.activeRespTab == ApiResponseTab::Headers) {
-            totalH = static_cast<float>(s.response.headers.size()) * 24.0f + 30.0f;
-        } else if (s.activeRespTab == ApiResponseTab::Cookies) {
-            totalH = static_cast<float>(s.response.cookies.size()) * 24.0f + 30.0f;
-        }
-
-        float maxScroll = (std::max)(0.0f, totalH - m_respContentH);
+        float maxScroll = GetResponseMaxScrollY(s);
         s.respScrollY = (std::max)(0.0f, (std::min)(maxScroll, s.respScrollY + deltaVal));
     } else {
-        // Calculate bounded height for active request tab
-        float totalH = 0.0f;
-        if (s.activeReqTab == ApiRequestTab::Body && s.bodyType == ApiBodyType::RawJson) {
-            size_t lineCount = 1;
-            for (wchar_t ch : s.bodyText) if (ch == L'\n') lineCount++;
-            totalH = static_cast<float>(lineCount) * 19.0f + 30.0f;
-        } else if (s.activeReqTab == ApiRequestTab::Body && s.bodyType == ApiBodyType::GraphQL) {
-            size_t qLines = 1, vLines = 1;
-            for (wchar_t ch : s.graphqlQuery) if (ch == L'\n') qLines++;
-            for (wchar_t ch : s.graphqlVariables) if (ch == L'\n') vLines++;
-            totalH = static_cast<float>((std::max)(qLines, vLines)) * 18.0f + 50.0f;
-        } else if (s.activeReqTab == ApiRequestTab::Params) {
-            totalH = static_cast<float>(s.params.size()) * 30.0f + 70.0f;
-        } else if (s.activeReqTab == ApiRequestTab::Headers) {
-            totalH = static_cast<float>(s.headers.size()) * 30.0f + 70.0f;
-        } else if (s.activeReqTab == ApiRequestTab::Body && s.bodyType == ApiBodyType::FormData) {
-            totalH = static_cast<float>(s.formData.size()) * 30.0f + 70.0f;
-        } else if (s.activeReqTab == ApiRequestTab::Body && s.bodyType == ApiBodyType::UrlEncoded) {
-            totalH = static_cast<float>(s.urlEncoded.size()) * 30.0f + 70.0f;
-        }
-
-        float maxScroll = (std::max)(0.0f, totalH - m_subContentH);
+        float maxScroll = GetRequestMaxScrollY(s);
         s.reqScrollY = (std::max)(0.0f, (std::min)(maxScroll, s.reqScrollY + deltaVal));
     }
     return true;
