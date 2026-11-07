@@ -15,7 +15,68 @@
 namespace phide::ui {
 
 // =============================================================================
-// Helpers: JSON Pretty Formatter, UTF-8, Base64, URL Encode
+// DirectWrite Caret Measurement & Selection Helpers
+// =============================================================================
+static float MeasureCaretX(IDWriteFactory* pFactory, IDWriteTextFormat* pFormat,
+                           const std::wstring& text, size_t caretPos,
+                           float maxWidth = 10000.0f, float maxHeight = 100.0f) {
+    if (!pFactory || !pFormat || text.empty() || caretPos == 0) return 0.0f;
+    size_t c = (std::min)(caretPos, text.length());
+    Microsoft::WRL::ComPtr<IDWriteTextLayout> pLayout;
+    if (SUCCEEDED(pFactory->CreateTextLayout(text.c_str(), static_cast<UINT32>(text.length()),
+                                            pFormat, maxWidth, maxHeight, &pLayout))) {
+        FLOAT hx = 0.0f, hy = 0.0f;
+        DWRITE_HIT_TEST_METRICS htm{};
+        if (SUCCEEDED(pLayout->HitTestTextPosition(static_cast<UINT32>(c), FALSE, &hx, &hy, &htm))) {
+            return hx;
+        }
+    }
+    return 0.0f;
+}
+
+static size_t HitTestCaretIndex(IDWriteFactory* pFactory, IDWriteTextFormat* pFormat,
+                                const std::wstring& text, float clickX, float clickY = 0.0f,
+                                float maxWidth = 10000.0f, float maxHeight = 100.0f) {
+    if (!pFactory || !pFormat || text.empty()) return 0;
+    Microsoft::WRL::ComPtr<IDWriteTextLayout> pLayout;
+    if (SUCCEEDED(pFactory->CreateTextLayout(text.c_str(), static_cast<UINT32>(text.length()),
+                                            pFormat, maxWidth, maxHeight, &pLayout))) {
+        BOOL isTrailing = FALSE, isInside = FALSE;
+        DWRITE_HIT_TEST_METRICS htm{};
+        if (SUCCEEDED(pLayout->HitTestPoint(clickX, clickY, &isTrailing, &isInside, &htm))) {
+            return isTrailing ? (htm.textPosition + htm.length) : htm.textPosition;
+        }
+    }
+    return text.length();
+}
+
+static void DrawTextSelection(ID2D1RenderTarget* pRT, ID2D1Brush* pBrush, IDWriteFactory* pFactory,
+                              IDWriteTextFormat* pFormat, const std::wstring& text,
+                              size_t selStart, size_t selEnd, float left, float top,
+                              float maxWidth = 10000.0f, float maxHeight = 100.0f) {
+    if (!pRT || !pBrush || !pFactory || !pFormat || text.empty() || selStart == selEnd) return;
+    size_t minS = (std::min)(selStart, selEnd);
+    size_t maxS = (std::min)((std::max)(selStart, selEnd), text.length());
+    if (minS >= maxS) return;
+
+    Microsoft::WRL::ComPtr<IDWriteTextLayout> pLayout;
+    if (SUCCEEDED(pFactory->CreateTextLayout(text.c_str(), static_cast<UINT32>(text.length()),
+                                            pFormat, maxWidth, maxHeight, &pLayout))) {
+        DWRITE_HIT_TEST_METRICS htm[32];
+        UINT32 actualCount = 0;
+        if (SUCCEEDED(pLayout->HitTestTextRange(static_cast<UINT32>(minS), static_cast<UINT32>(maxS - minS),
+                                                0.0f, 0.0f, htm, 32, &actualCount))) {
+            for (UINT32 i = 0; i < actualCount; ++i) {
+                D2D1_RECT_F rc = D2D1::RectF(left + htm[i].left, top + htm[i].top,
+                                             left + htm[i].left + htm[i].width, top + htm[i].top + htm[i].height);
+                pRT->FillRectangle(rc, pBrush);
+            }
+        }
+    }
+}
+
+// =============================================================================
+// JSON Formatter Helper
 // =============================================================================
 static std::wstring FormatJsonPretty(const std::wstring& json) {
     std::wstring result;
@@ -141,6 +202,57 @@ static bool PtInRectF(POINT pt, const D2D1_RECT_F& rc) noexcept {
     return pt.x >= rc.left && pt.x <= rc.right && pt.y >= rc.top && pt.y <= rc.bottom;
 }
 
+static bool CaseInsensitiveFind(const std::wstring& str, const std::wstring& query) {
+    if (query.empty()) return true;
+    if (query.length() > str.length()) return false;
+    auto it = std::search(
+        str.begin(), str.end(),
+        query.begin(), query.end(),
+        [](wchar_t ch1, wchar_t ch2) { return towlower(ch1) == towlower(ch2); }
+    );
+    return it != str.end();
+}
+
+// Standard HTTP Header Catalog
+static const wchar_t* const kStandardHeaderKeys[] = {
+    L"Accept",
+    L"Accept-Charset",
+    L"Accept-Encoding",
+    L"Accept-Language",
+    L"Access-Control-Allow-Headers",
+    L"Access-Control-Allow-Methods",
+    L"Access-Control-Allow-Origin",
+    L"Access-Control-Request-Headers",
+    L"Access-Control-Request-Method",
+    L"Authorization",
+    L"Cache-Control",
+    L"Connection",
+    L"Content-Disposition",
+    L"Content-Encoding",
+    L"Content-Language",
+    L"Content-Length",
+    L"Content-Type",
+    L"Cookie",
+    L"DNT",
+    L"Host",
+    L"If-Match",
+    L"If-Modified-Since",
+    L"If-None-Match",
+    L"Origin",
+    L"Pragma",
+    L"Range",
+    L"Referer",
+    L"Sec-Fetch-Dest",
+    L"Sec-Fetch-Mode",
+    L"Sec-Fetch-Site",
+    L"User-Agent",
+    L"X-API-Key",
+    L"X-CSRF-Token",
+    L"X-Forwarded-For",
+    L"X-Forwarded-Proto",
+    L"X-Requested-With"
+};
+
 // =============================================================================
 // ApiTesterView Constructor & Setup
 // =============================================================================
@@ -221,10 +333,8 @@ void ApiTesterView::SyncParamsToUrl(ApiRequestSession& session) {
 }
 
 void ApiTesterView::SyncUrlToParams(ApiRequestSession& session) {
-    // Keep disabled rows or description if keys match, otherwise rebuild from URL query
     auto qPos = session.url.find(L'?');
     if (qPos == std::wstring::npos) {
-        // Keep only disabled rows or reset to single blank row
         std::vector<ApiKeyValueItem> kept;
         for (const auto& p : session.params) {
             if (!p.enabled && (!p.key.empty() || !p.value.empty())) {
@@ -257,7 +367,6 @@ void ApiTesterView::SyncUrlToParams(ApiRequestSession& session) {
         start = nextAmp + 1;
     }
 
-    // Preserve any disabled params
     for (const auto& p : session.params) {
         if (!p.enabled && (!p.key.empty() || !p.value.empty())) {
             newParams.push_back(p);
@@ -271,12 +380,98 @@ void ApiTesterView::SyncUrlToParams(ApiRequestSession& session) {
 }
 
 // =============================================================================
+// Header Autocomplete Dropdown Logic
+// =============================================================================
+void ApiTesterView::UpdateHeaderSuggestions(const std::wstring& currentText) {
+    m_headerSuggestions.clear();
+    m_headerSuggestHoverIdx = -1;
+
+    if (m_isHeaderKeySuggest) {
+        if (currentText.empty()) {
+            m_headerSuggestions = {
+                L"Accept", L"Authorization", L"Cache-Control", L"Content-Type",
+                L"Cookie", L"Origin", L"User-Agent", L"X-API-Key"
+            };
+        } else {
+            for (const wchar_t* k : kStandardHeaderKeys) {
+                if (CaseInsensitiveFind(k, currentText)) {
+                    m_headerSuggestions.push_back(k);
+                    if (m_headerSuggestions.size() >= 12) break;
+                }
+            }
+        }
+    } else {
+        auto& s = m_sessions[m_activeSessionIdx];
+        std::wstring currentKey;
+        if (m_headerSuggestRow < s.headers.size()) {
+            currentKey = s.headers[m_headerSuggestRow].key;
+        }
+
+        std::vector<std::wstring> pool;
+        if (CaseInsensitiveFind(currentKey, L"content-type") || CaseInsensitiveFind(currentKey, L"accept")) {
+            pool = {
+                L"application/json",
+                L"application/x-www-form-urlencoded",
+                L"multipart/form-data",
+                L"text/plain",
+                L"text/html",
+                L"application/xml",
+                L"application/javascript",
+                L"application/octet-stream",
+                L"*/*"
+            };
+        } else if (CaseInsensitiveFind(currentKey, L"authorization")) {
+            pool = { L"Bearer ", L"Basic ", L"Token " };
+        } else if (CaseInsensitiveFind(currentKey, L"encoding")) {
+            pool = { L"gzip, deflate, br", L"gzip", L"deflate", L"br" };
+        } else if (CaseInsensitiveFind(currentKey, L"cache")) {
+            pool = { L"no-cache", L"no-store", L"max-age=0", L"must-revalidate" };
+        } else if (CaseInsensitiveFind(currentKey, L"connection")) {
+            pool = { L"keep-alive", L"close" };
+        } else if (CaseInsensitiveFind(currentKey, L"agent")) {
+            pool = { L"Phide-ApiClient/1.0", L"Mozilla/5.0 (Windows NT 10.0; Win64; x64)" };
+        } else {
+            pool = { L"application/json", L"*/*", L"no-cache", L"keep-alive" };
+        }
+
+        for (const auto& item : pool) {
+            if (currentText.empty() || CaseInsensitiveFind(item, currentText)) {
+                m_headerSuggestions.push_back(item);
+            }
+        }
+    }
+
+    m_isHeaderSuggestOpen = !m_headerSuggestions.empty();
+}
+
+void ApiTesterView::SelectHeaderSuggestion(size_t index) {
+    if (index >= m_headerSuggestions.size()) return;
+    auto& s = m_sessions[m_activeSessionIdx];
+    if (m_headerSuggestRow >= s.headers.size()) return;
+
+    std::wstring selected = m_headerSuggestions[index];
+    if (m_isHeaderKeySuggest) {
+        s.headers[m_headerSuggestRow].key = selected;
+        // Advance to Value cell and open Value suggestions immediately!
+        m_focusedField = ApiFocusField::HeaderVal;
+        s.cellCaret = s.headers[m_headerSuggestRow].value.length();
+        m_isHeaderKeySuggest = false;
+        UpdateHeaderSuggestions(s.headers[m_headerSuggestRow].value);
+    } else {
+        s.headers[m_headerSuggestRow].value = selected;
+        s.cellCaret = selected.length();
+        m_isHeaderSuggestOpen = false;
+    }
+    ClearSelection();
+    if (m_hwnd) InvalidateRect(m_hwnd, nullptr, FALSE);
+}
+
+// =============================================================================
 // Production-Ready Asynchronous WinHTTP Engine
 // =============================================================================
 ApiResponseData ApiTesterView::ExecuteNetworkRequest(const ApiRequestSession& session) {
     ApiResponseData resp;
 
-    // Trim whitespace from URL
     std::wstring rawUrl = session.url;
     while (!rawUrl.empty() && (rawUrl.front() == L' ' || rawUrl.front() == L'\t')) rawUrl.erase(rawUrl.begin());
     while (!rawUrl.empty() && (rawUrl.back() == L' ' || rawUrl.back() == L'\t')) rawUrl.pop_back();
@@ -287,7 +482,6 @@ ApiResponseData ApiTesterView::ExecuteNetworkRequest(const ApiRequestSession& se
         return resp;
     }
 
-    // Default to https:// (or http:// for localhost / 127.0.0.1) if no scheme specified
     std::wstring targetUrl = rawUrl;
     if (targetUrl.find(L"://") == std::wstring::npos) {
         if (targetUrl.starts_with(L"localhost") || targetUrl.starts_with(L"127.0.0.1") || targetUrl.starts_with(L"0.0.0.0")) {
@@ -297,7 +491,6 @@ ApiResponseData ApiTesterView::ExecuteNetworkRequest(const ApiRequestSession& se
         }
     }
 
-    // Append API Key to query string if configured for Query Params
     if (session.authType == ApiAuthType::ApiKey && !session.apiKeyInHeader && !session.apiKeyName.empty()) {
         wchar_t sep = (targetUrl.find(L'?') == std::wstring::npos) ? L'?' : L'&';
         targetUrl += sep + session.apiKeyName + L"=" + session.apiKeyValue;
@@ -362,7 +555,6 @@ ApiResponseData ApiTesterView::ExecuteNetworkRequest(const ApiRequestSession& se
         return resp;
     }
 
-    // SSL Verification setting
     if ((reqFlags & WINHTTP_FLAG_SECURE) && !session.verifySsl) {
         DWORD secFlags = SECURITY_FLAG_IGNORE_UNKNOWN_CA |
                          SECURITY_FLAG_IGNORE_CERT_DATE_INVALID |
@@ -371,7 +563,6 @@ ApiResponseData ApiTesterView::ExecuteNetworkRequest(const ApiRequestSession& se
         WinHttpSetOption(hRequest, WINHTTP_OPTION_SECURITY_FLAGS, &secFlags, sizeof(secFlags));
     }
 
-    // Redirect policy setting
     DWORD redirectPolicy = session.followRedirects ? WINHTTP_OPTION_REDIRECT_POLICY_ALWAYS : WINHTTP_OPTION_REDIRECT_POLICY_NEVER;
     WinHttpSetOption(hRequest, WINHTTP_OPTION_REDIRECT_POLICY, &redirectPolicy, sizeof(redirectPolicy));
 
@@ -527,7 +718,6 @@ ApiResponseData ApiTesterView::ExecuteNetworkRequest(const ApiRequestSession& se
     resp.sizeBytes = bodyRaw.size();
     resp.body = Utf8ToWide(bodyRaw);
 
-    // Format JSON response automatically for readability
     bool isJsonResponse = false;
     for (const auto& h : resp.headers) {
         if (_wcsicmp(h.first.c_str(), L"content-type") == 0 &&
@@ -579,6 +769,180 @@ void ApiTesterView::SendCurrentRequest() {
 }
 
 // =============================================================================
+// Selection & Clipboard Helpers
+// =============================================================================
+void ApiTesterView::ClearSelection() noexcept {
+    m_hasSelection = false;
+    m_selStart = 0;
+    m_selEnd = 0;
+}
+
+std::wstring* ApiTesterView::GetActiveCellString(ApiRequestSession& s) {
+    switch (m_focusedField) {
+        case ApiFocusField::ParamKey:   return (m_focusedRowIndex < s.params.size()) ? &s.params[m_focusedRowIndex].key : nullptr;
+        case ApiFocusField::ParamVal:   return (m_focusedRowIndex < s.params.size()) ? &s.params[m_focusedRowIndex].value : nullptr;
+        case ApiFocusField::ParamDesc:  return (m_focusedRowIndex < s.params.size()) ? &s.params[m_focusedRowIndex].description : nullptr;
+        case ApiFocusField::HeaderKey:  return (m_focusedRowIndex < s.headers.size()) ? &s.headers[m_focusedRowIndex].key : nullptr;
+        case ApiFocusField::HeaderVal:  return (m_focusedRowIndex < s.headers.size()) ? &s.headers[m_focusedRowIndex].value : nullptr;
+        case ApiFocusField::HeaderDesc: return (m_focusedRowIndex < s.headers.size()) ? &s.headers[m_focusedRowIndex].description : nullptr;
+        case ApiFocusField::FormKey:    return (m_focusedRowIndex < s.formData.size()) ? &s.formData[m_focusedRowIndex].key : nullptr;
+        case ApiFocusField::FormVal:    return (m_focusedRowIndex < s.formData.size()) ? &s.formData[m_focusedRowIndex].value : nullptr;
+        case ApiFocusField::FormDesc:   return (m_focusedRowIndex < s.formData.size()) ? &s.formData[m_focusedRowIndex].description : nullptr;
+        case ApiFocusField::UrlEncKey:  return (m_focusedRowIndex < s.urlEncoded.size()) ? &s.urlEncoded[m_focusedRowIndex].key : nullptr;
+        case ApiFocusField::UrlEncVal:  return (m_focusedRowIndex < s.urlEncoded.size()) ? &s.urlEncoded[m_focusedRowIndex].value : nullptr;
+        case ApiFocusField::UrlEncDesc: return (m_focusedRowIndex < s.urlEncoded.size()) ? &s.urlEncoded[m_focusedRowIndex].description : nullptr;
+        case ApiFocusField::AuthToken:  return &s.bearerToken;
+        case ApiFocusField::ApiKeyName: return &s.apiKeyName;
+        case ApiFocusField::ApiKeyValue:return &s.apiKeyValue;
+        case ApiFocusField::AuthUser:   return &s.basicUser;
+        case ApiFocusField::AuthPass:   return &s.basicPass;
+        case ApiFocusField::SettingsTimeout: return &s.timeoutMsStr;
+        default: return nullptr;
+    }
+}
+
+void ApiTesterView::DeleteSelectedRange(ApiRequestSession& s) {
+    if (!m_hasSelection) return;
+    size_t minS = (std::min)(m_selStart, m_selEnd);
+    size_t maxS = (std::max)(m_selStart, m_selEnd);
+    size_t len = maxS - minS;
+    if (len == 0) {
+        ClearSelection();
+        return;
+    }
+
+    if (m_focusedField == ApiFocusField::Url) {
+        if (minS < s.url.length()) {
+            s.url.erase(minS, len);
+            s.urlCaret = minS;
+            SyncUrlToParams(s);
+        }
+    } else if (m_focusedField == ApiFocusField::Body) {
+        if (minS < s.bodyText.length()) {
+            s.bodyText.erase(minS, len);
+            s.bodyCaret = minS;
+        }
+    } else if (std::wstring* pCell = GetActiveCellString(s)) {
+        if (minS < pCell->length()) {
+            pCell->erase(minS, len);
+            s.cellCaret = minS;
+            if (m_focusedField == ApiFocusField::ParamKey || m_focusedField == ApiFocusField::ParamVal) {
+                SyncParamsToUrl(s);
+            }
+        }
+    }
+    ClearSelection();
+}
+
+std::wstring ApiTesterView::GetSelectedText(const ApiRequestSession& s) const {
+    if (!m_hasSelection) return L"";
+    size_t minS = (std::min)(m_selStart, m_selEnd);
+    size_t maxS = (std::max)(m_selStart, m_selEnd);
+    if (minS >= maxS) return L"";
+
+    if (m_focusedField == ApiFocusField::Url) {
+        if (minS < s.url.length()) return s.url.substr(minS, maxS - minS);
+    } else if (m_focusedField == ApiFocusField::Body) {
+        if (minS < s.bodyText.length()) return s.bodyText.substr(minS, maxS - minS);
+    } else {
+        // Table cell or auth
+        auto* mutableThis = const_cast<ApiTesterView*>(this);
+        auto* mutableSession = const_cast<ApiRequestSession*>(&s);
+        if (std::wstring* pCell = mutableThis->GetActiveCellString(*mutableSession)) {
+            if (minS < pCell->length()) return pCell->substr(minS, maxS - minS);
+        }
+    }
+    return L"";
+}
+
+void ApiTesterView::PasteFromClipboard() {
+    if (!m_hwnd || !OpenClipboard(m_hwnd)) return;
+    std::wstring clipText;
+    HANDLE hData = GetClipboardData(CF_UNICODETEXT);
+    if (hData) {
+        const wchar_t* pStr = static_cast<const wchar_t*>(GlobalLock(hData));
+        if (pStr) {
+            clipText = pStr;
+            GlobalUnlock(hData);
+        }
+    }
+    CloseClipboard();
+    if (clipText.empty()) return;
+
+    clipText.erase(std::remove(clipText.begin(), clipText.end(), L'\r'), clipText.end());
+
+    auto& s = m_sessions[m_activeSessionIdx];
+    if (m_hasSelection) {
+        DeleteSelectedRange(s);
+    }
+
+    if (m_focusedField == ApiFocusField::Url) {
+        std::replace(clipText.begin(), clipText.end(), L'\n', L' ');
+        size_t pos = (std::min)(s.urlCaret, s.url.length());
+        s.url.insert(pos, clipText);
+        s.urlCaret = pos + clipText.length();
+        SyncUrlToParams(s);
+    } else if (m_focusedField == ApiFocusField::Body) {
+        size_t pos = (std::min)(s.bodyCaret, s.bodyText.length());
+        s.bodyText.insert(pos, clipText);
+        s.bodyCaret = pos + clipText.length();
+    } else if (std::wstring* pCell = GetActiveCellString(s)) {
+        std::replace(clipText.begin(), clipText.end(), L'\n', L' ');
+        size_t pos = (std::min)(s.cellCaret, pCell->length());
+        pCell->insert(pos, clipText);
+        s.cellCaret = pos + clipText.length();
+        if (m_focusedField == ApiFocusField::ParamKey || m_focusedField == ApiFocusField::ParamVal) {
+            SyncParamsToUrl(s);
+        } else if (m_focusedField == ApiFocusField::HeaderKey || m_focusedField == ApiFocusField::HeaderVal) {
+            UpdateHeaderSuggestions(*pCell);
+        }
+    }
+}
+
+void ApiTesterView::CopyResponseToClipboard() {
+    auto& s = m_sessions[m_activeSessionIdx];
+    std::wstring textToCopy;
+    if (s.response.hasResponse) {
+        if (s.activeRespTab == ApiResponseTab::Headers) {
+            for (const auto& h : s.response.headers) {
+                textToCopy += h.first + L": " + h.second + L"\r\n";
+            }
+        } else if (s.activeRespTab == ApiResponseTab::Cookies) {
+            for (const auto& c : s.response.cookies) {
+                textToCopy += c + L"\r\n";
+            }
+        } else {
+            textToCopy = s.response.body;
+        }
+    } else if (s.response.isError) {
+        textToCopy = s.response.errorMessage;
+    }
+
+    if (textToCopy.empty()) {
+        m_toastMessage = L"Nothing to copy yet";
+        m_toastExpiry = GetTickCount() + 1500;
+        return;
+    }
+
+    if (m_hwnd && OpenClipboard(m_hwnd)) {
+        EmptyClipboard();
+        size_t bytes = (textToCopy.length() + 1) * sizeof(wchar_t);
+        HGLOBAL hGlobal = GlobalAlloc(GMEM_MOVEABLE, bytes);
+        if (hGlobal) {
+            void* pMem = GlobalLock(hGlobal);
+            if (pMem) {
+                memcpy(pMem, textToCopy.c_str(), bytes);
+                GlobalUnlock(hGlobal);
+                SetClipboardData(CF_UNICODETEXT, hGlobal);
+            }
+        }
+        CloseClipboard();
+        m_toastMessage = L"✓ Copied to clipboard!";
+        m_toastExpiry = GetTickCount() + 2000;
+    }
+}
+
+// =============================================================================
 // Rendering Pipeline
 // =============================================================================
 void ApiTesterView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
@@ -612,7 +976,6 @@ void ApiTesterView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppC
     float padX = config.ScaleF(16.0f);
     float curY = y + config.ScaleF(12.0f);
 
-    // Calculate Request vs Response Pane heights via Splitter
     float availH = (y + h) - curY - config.ScaleF(12.0f);
     float minPaneH = config.ScaleF(170.0f);
     float reqPaneH = (std::max)(minPaneH, (std::min)(availH - minPaneH, availH * m_splitRatio));
@@ -639,8 +1002,8 @@ void ApiTesterView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppC
     reqContentY += config.ScaleF(32.0f);
 
     // 1c. Request Sub-Nav Content
-    float subContentH = rcReqPane.bottom - reqContentY - config.ScaleF(10.0f);
-    RenderSubNavContent(pRT, theme, config, reqContentX, reqContentY, reqContentW, subContentH);
+    m_subContentH = rcReqPane.bottom - reqContentY - config.ScaleF(10.0f);
+    RenderSubNavContent(pRT, theme, config, reqContentX, reqContentY, reqContentW, m_subContentH);
 
     // 2. Resizable Horizontal Splitter
     float splitterY = curY + reqPaneH;
@@ -666,12 +1029,16 @@ void ApiTesterView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppC
     if (cardBg) pRT->FillRoundedRectangle(rrcRespPane, cardBg.Get());
     pRT->DrawRoundedRectangle(rrcRespPane, theme.brushBorderSubtle.Get(), 1.0f);
 
+    m_respContentH = respPaneH - config.ScaleF(20.0f);
     RenderResponseSection(pRT, theme, config, rcRespPane.left + config.ScaleF(12.0f),
                           rcRespPane.top + config.ScaleF(10.0f),
                           (rcRespPane.right - rcRespPane.left) - config.ScaleF(24.0f),
-                          respPaneH - config.ScaleF(20.0f));
+                          m_respContentH);
 
-    // 4. Floating Dropdowns (Rendered on top of all containers)
+    // 4. Floating Autocomplete & Dropdowns (Rendered on top of all containers)
+    if (m_isHeaderSuggestOpen) {
+        RenderHeaderSuggestions(pRT, theme, config);
+    }
     if (m_isMethodDropdownOpen) {
         RenderMethodDropdown(pRT, theme, config);
     }
@@ -742,6 +1109,12 @@ void ApiTesterView::RenderUrlBar(ID2D1RenderTarget* pRT, Theme& theme, const app
                                        urlX + urlW - config.ScaleF(12.0f), y + barH - config.ScaleF(5.0f));
     pRT->PushAxisAlignedClip(rcUrlText, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
 
+    if (isUrlFocused && m_hasSelection) {
+        DrawTextSelection(pRT, theme.brushTreeSelected.Get(), theme.dwriteFactory.Get(),
+                          theme.fontTab.Get(), s.url, m_selStart, m_selEnd,
+                          rcUrlText.left, rcUrlText.top, rcUrlText.right - rcUrlText.left, rcUrlText.bottom - rcUrlText.top);
+    }
+
     if (s.url.empty()) {
         const wchar_t* hint = L"Enter request URL (e.g. https://example.com/api/v1/items)";
         pRT->DrawText(hint, static_cast<UINT32>(wcslen(hint)),
@@ -751,13 +1124,15 @@ void ApiTesterView::RenderUrlBar(ID2D1RenderTarget* pRT, Theme& theme, const app
                       theme.fontTab.Get(), rcUrlText, theme.brushTextPrimary.Get());
     }
 
+    // Exact DirectWrite Caret Calculation (Zero guessing, crisp white cursor)
     if (isUrlFocused && m_showCaret) {
-        float charW = config.ScaleF(7.4f);
-        float caretX = rcUrlText.left + static_cast<float>((std::min)(s.urlCaret, s.url.length())) * charW;
-        caretX = (std::min)(caretX, rcUrlText.right - 2.0f);
-        pRT->DrawLine(D2D1::Point2F(caretX, rcUrlText.top + 2.0f),
-                      D2D1::Point2F(caretX, rcUrlText.bottom - 2.0f),
-                      theme.brushBrandAccent.Get(), 1.6f);
+        float exactCaretX = rcUrlText.left + MeasureCaretX(theme.dwriteFactory.Get(), theme.fontTab.Get(),
+                                                           s.url, s.urlCaret,
+                                                           rcUrlText.right - rcUrlText.left, rcUrlText.bottom - rcUrlText.top);
+        exactCaretX = (std::min)(exactCaretX, rcUrlText.right - 2.0f);
+        pRT->DrawLine(D2D1::Point2F(exactCaretX, rcUrlText.top + 2.0f),
+                      D2D1::Point2F(exactCaretX, rcUrlText.bottom - 2.0f),
+                      theme.brushTextWhite.Get(), 1.5f);
     }
     pRT->PopAxisAlignedClip();
 
@@ -831,6 +1206,39 @@ void ApiTesterView::RenderMethodDropdown(ID2D1RenderTarget* pRT, Theme& theme, c
             pRT->DrawText(mStr, static_cast<UINT32>(wcslen(mStr)),
                           theme.fontKeycap.Get(), rcLabel, mTxt.Get());
         }
+        curY += itemH;
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Floating Header Autocomplete Dropdown
+// -----------------------------------------------------------------------------
+void ApiTesterView::RenderHeaderSuggestions(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config) {
+    if (m_headerSuggestions.empty()) return;
+
+    float itemH = config.ScaleF(26.0f);
+    size_t displayCount = (std::min)(m_headerSuggestions.size(), static_cast<size_t>(8));
+    float dropH = static_cast<float>(displayCount) * itemH + config.ScaleF(8.0f);
+    m_rcHeaderSuggest.bottom = m_rcHeaderSuggest.top + dropH;
+
+    D2D1_ROUNDED_RECT rrcDrop = D2D1::RoundedRect(m_rcHeaderSuggest, 6.0f, 6.0f);
+    pRT->FillRoundedRectangle(rrcDrop, theme.brushMenuBg.Get());
+    pRT->DrawRoundedRectangle(rrcDrop, theme.brushMenuBorder.Get(), 1.0f);
+
+    float curY = m_rcHeaderSuggest.top + config.ScaleF(4.0f);
+    for (size_t i = 0; i < displayCount; ++i) {
+        D2D1_RECT_F rcRow = D2D1::RectF(m_rcHeaderSuggest.left + config.ScaleF(4.0f), curY,
+                                       m_rcHeaderSuggest.right - config.ScaleF(4.0f), curY + itemH);
+        bool isHovered = PtInRectF(m_mousePt, rcRow) || (static_cast<int>(i) == m_headerSuggestHoverIdx);
+        if (isHovered) {
+            pRT->FillRoundedRectangle(D2D1::RoundedRect(rcRow, 4.0f, 4.0f), theme.brushItemHover.Get());
+        }
+
+        D2D1_RECT_F rcTxt = D2D1::RectF(rcRow.left + config.ScaleF(8.0f), rcRow.top + 2.0f,
+                                       rcRow.right - config.ScaleF(8.0f), rcRow.bottom - 2.0f);
+        pRT->DrawText(m_headerSuggestions[i].c_str(), static_cast<UINT32>(m_headerSuggestions[i].length()),
+                      theme.fontMenuItem.Get(), rcTxt,
+                      isHovered ? theme.brushTextWhite.Get() : theme.brushTextPrimary.Get());
         curY += itemH;
     }
 }
@@ -947,7 +1355,7 @@ void ApiTesterView::RenderSubNavContent(ID2D1RenderTarget* pRT, Theme& theme, co
 }
 
 // -----------------------------------------------------------------------------
-// Reusable Interactive Key-Value-Description Table (Params, Headers, FormData, UrlEncoded)
+// Reusable Interactive Key-Value-Description Table
 // -----------------------------------------------------------------------------
 void ApiTesterView::RenderKeyValueTable(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
                                         float x, float y, float w, float h,
@@ -981,13 +1389,13 @@ void ApiTesterView::RenderKeyValueTable(ID2D1RenderTarget* pRT, Theme& theme, co
                   D2D1::RectF(x + checkColW + colKeyW + colValW + config.ScaleF(6.0f), hdrY, x + w - delColW, hdrY + hdrH),
                   theme.brushTextMuted.Get());
 
-    // Clipping region for scrollable table rows
     D2D1_RECT_F rcTableArea = D2D1::RectF(x, y + hdrH, x + w, y + h);
     pRT->PushAxisAlignedClip(rcTableArea, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
 
     float curY = y + hdrH + config.ScaleF(2.0f) - s.reqScrollY;
 
-    auto drawCellInput = [&](const D2D1_RECT_F& bounds, const std::wstring& text, const wchar_t* placeholder, bool isFocused, bool isEnabled) {
+    auto drawCellInput = [&](const D2D1_RECT_F& bounds, const std::wstring& text,
+                             const wchar_t* placeholder, bool isFocused, bool isEnabled) {
         D2D1_ROUNDED_RECT rrcCell = D2D1::RoundedRect(bounds, 4.0f, 4.0f);
         pRT->FillRoundedRectangle(rrcCell, theme.brushMenuBg.Get());
         pRT->DrawRoundedRectangle(rrcCell, isFocused ? theme.brushBrandAccent.Get() : theme.brushBorderSubtle.Get(),
@@ -996,6 +1404,12 @@ void ApiTesterView::RenderKeyValueTable(ID2D1RenderTarget* pRT, Theme& theme, co
         D2D1_RECT_F rcTxt = D2D1::RectF(bounds.left + config.ScaleF(8.0f), bounds.top + config.ScaleF(3.0f),
                                         bounds.right - config.ScaleF(6.0f), bounds.bottom - config.ScaleF(3.0f));
         pRT->PushAxisAlignedClip(rcTxt, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+
+        if (isFocused && m_hasSelection) {
+            DrawTextSelection(pRT, theme.brushTreeSelected.Get(), theme.dwriteFactory.Get(),
+                              theme.fontTab.Get(), text, m_selStart, m_selEnd,
+                              rcTxt.left, rcTxt.top, rcTxt.right - rcTxt.left, rcTxt.bottom - rcTxt.top);
+        }
 
         if (text.empty()) {
             pRT->DrawText(placeholder, static_cast<UINT32>(wcslen(placeholder)),
@@ -1006,13 +1420,15 @@ void ApiTesterView::RenderKeyValueTable(ID2D1RenderTarget* pRT, Theme& theme, co
                           isEnabled ? theme.brushTextPrimary.Get() : theme.brushTextMuted.Get());
         }
 
+        // Exact DirectWrite Caret Calculation (White cursor, zero gap)
         if (isFocused && m_showCaret) {
-            float charW = config.ScaleF(7.2f);
-            size_t cPos = (std::min)(s.cellCaret, text.length());
-            float caretX = (std::min)(rcTxt.left + static_cast<float>(cPos) * charW, rcTxt.right - 2.0f);
-            pRT->DrawLine(D2D1::Point2F(caretX, rcTxt.top + 2.0f),
-                          D2D1::Point2F(caretX, rcTxt.bottom - 2.0f),
-                          theme.brushBrandAccent.Get(), 1.5f);
+            float exactCaretX = rcTxt.left + MeasureCaretX(theme.dwriteFactory.Get(), theme.fontTab.Get(),
+                                                           text, s.cellCaret,
+                                                           rcTxt.right - rcTxt.left, rcTxt.bottom - rcTxt.top);
+            exactCaretX = (std::min)(exactCaretX, rcTxt.right - 2.0f);
+            pRT->DrawLine(D2D1::Point2F(exactCaretX, rcTxt.top + 2.0f),
+                          D2D1::Point2F(exactCaretX, rcTxt.bottom - 2.0f),
+                          theme.brushTextWhite.Get(), 1.5f);
         }
         pRT->PopAxisAlignedClip();
     };
@@ -1108,7 +1524,8 @@ void ApiTesterView::RenderAuthTab(ID2D1RenderTarget* pRT, Theme& theme, const ap
 
     curY += config.ScaleF(40.0f);
 
-    auto drawInputBox = [&](const D2D1_RECT_F& rcBox, const std::wstring& val, const wchar_t* hint, bool isFocused, bool maskPassword = false) {
+    auto drawInputBox = [&](const D2D1_RECT_F& rcBox, const std::wstring& val,
+                             const wchar_t* hint, bool isFocused, bool maskPassword = false) {
         D2D1_ROUNDED_RECT rrc = D2D1::RoundedRect(rcBox, 5.0f, 5.0f);
         pRT->FillRoundedRectangle(rrc, theme.brushMenuBg.Get());
         pRT->DrawRoundedRectangle(rrc, isFocused ? theme.brushBrandAccent.Get() : theme.brushBorderSubtle.Get(),
@@ -1119,6 +1536,13 @@ void ApiTesterView::RenderAuthTab(ID2D1RenderTarget* pRT, Theme& theme, const ap
         pRT->PushAxisAlignedClip(rcTxt, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
 
         std::wstring disp = maskPassword ? std::wstring(val.length(), L'•') : val;
+
+        if (isFocused && m_hasSelection) {
+            DrawTextSelection(pRT, theme.brushTreeSelected.Get(), theme.dwriteFactory.Get(),
+                              theme.fontTab.Get(), disp, m_selStart, m_selEnd,
+                              rcTxt.left, rcTxt.top, rcTxt.right - rcTxt.left, rcTxt.bottom - rcTxt.top);
+        }
+
         if (disp.empty()) {
             pRT->DrawText(hint, static_cast<UINT32>(wcslen(hint)), theme.fontHint.Get(), rcTxt, theme.brushTextMuted.Get());
         } else {
@@ -1126,12 +1550,13 @@ void ApiTesterView::RenderAuthTab(ID2D1RenderTarget* pRT, Theme& theme, const ap
         }
 
         if (isFocused && m_showCaret) {
-            float charW = config.ScaleF(7.2f);
-            size_t cPos = (std::min)(s.cellCaret, disp.length());
-            float caretX = (std::min)(rcTxt.left + static_cast<float>(cPos) * charW, rcTxt.right - 2.0f);
-            pRT->DrawLine(D2D1::Point2F(caretX, rcTxt.top + 2.0f),
-                          D2D1::Point2F(caretX, rcTxt.bottom - 2.0f),
-                          theme.brushBrandAccent.Get(), 1.5f);
+            float exactCaretX = rcTxt.left + MeasureCaretX(theme.dwriteFactory.Get(), theme.fontTab.Get(),
+                                                           disp, s.cellCaret,
+                                                           rcTxt.right - rcTxt.left, rcTxt.bottom - rcTxt.top);
+            exactCaretX = (std::min)(exactCaretX, rcTxt.right - 2.0f);
+            pRT->DrawLine(D2D1::Point2F(exactCaretX, rcTxt.top + 2.0f),
+                          D2D1::Point2F(exactCaretX, rcTxt.bottom - 2.0f),
+                          theme.brushTextWhite.Get(), 1.5f);
         }
         pRT->PopAxisAlignedClip();
     };
@@ -1149,7 +1574,6 @@ void ApiTesterView::RenderAuthTab(ID2D1RenderTarget* pRT, Theme& theme, const ap
         m_rcAuthField1 = D2D1::RectF(x + config.ScaleF(100.0f), curY, x + config.ScaleF(360.0f), curY + config.ScaleF(30.0f));
         drawInputBox(m_rcAuthField1, s.apiKeyName, L"Header / Param Name (e.g. X-API-Key)", m_focusedField == ApiFocusField::ApiKeyName);
 
-        // Add to: Header / Query Params selector
         pRT->DrawText(L"Add to:", 7, theme.fontKeycap.Get(),
                       D2D1::RectF(x + config.ScaleF(380.0f), curY, x + config.ScaleF(440.0f), curY + config.ScaleF(30.0f)),
                       theme.brushTextSecondary.Get());
@@ -1314,7 +1738,6 @@ void ApiTesterView::RenderBodyTab(ID2D1RenderTarget* pRT, Theme& theme, const ap
         pRT->DrawText(L"Enter raw JSON payload (e.g. {\"key\": \"value\"})", 46,
                       theme.fontHint.Get(), rcHint, theme.brushTextMuted.Get());
     } else {
-        // Split lines preserving trailing newline
         std::vector<std::wstring> lines;
         size_t start = 0;
         while (start <= s.bodyText.length()) {
@@ -1328,7 +1751,6 @@ void ApiTesterView::RenderBodyTab(ID2D1RenderTarget* pRT, Theme& theme, const ap
         }
         if (lines.empty()) lines.push_back(L"");
 
-        // Determine caret line and column
         size_t caretPos = (std::min)(s.bodyCaret, s.bodyText.length());
         size_t caretLine = 0;
         size_t caretCol = 0;
@@ -1342,7 +1764,13 @@ void ApiTesterView::RenderBodyTab(ID2D1RenderTarget* pRT, Theme& theme, const ap
             accum += lines[i].length() + 1;
         }
 
+        size_t selMin = (std::min)(m_selStart, m_selEnd);
+        size_t selMax = (std::max)(m_selStart, m_selEnd);
+        size_t lineStartPos = 0;
+
         for (size_t i = 0; i < lines.size(); ++i) {
+            size_t lineEndPos = lineStartPos + lines[i].length();
+
             if (lineY + lineH > editorY && lineY < editorY + editorH) {
                 std::wstring numStr = std::to_wstring(i + 1);
                 D2D1_RECT_F rcNum = D2D1::RectF(x, lineY, x + gutterW - config.ScaleF(6.0f), lineY + lineH);
@@ -1350,19 +1778,32 @@ void ApiTesterView::RenderBodyTab(ID2D1RenderTarget* pRT, Theme& theme, const ap
                               theme.fontLineNumber.Get(), rcNum, theme.brushLineNumber.Get());
 
                 D2D1_RECT_F rcCode = D2D1::RectF(textX, lineY, x + w - config.ScaleF(10.0f), lineY + lineH);
+
+                // Selection highlight across this line
+                if (isBodyFocused && m_hasSelection && selMax > lineStartPos && selMin < lineEndPos) {
+                    size_t sInLine = (selMin > lineStartPos) ? (selMin - lineStartPos) : 0;
+                    size_t eInLine = (selMax < lineEndPos) ? (selMax - lineStartPos) : lines[i].length();
+                    DrawTextSelection(pRT, theme.brushTreeSelected.Get(), theme.dwriteFactory.Get(),
+                                      theme.fontCode.Get(), lines[i], sInLine, eInLine,
+                                      rcCode.left, rcCode.top, rcCode.right - rcCode.left, lineH);
+                }
+
                 if (!lines[i].empty()) {
                     pRT->DrawText(lines[i].c_str(), static_cast<UINT32>(lines[i].length()),
                                   theme.fontCode.Get(), rcCode, theme.brushTextPrimary.Get());
                 }
 
+                // Exact DirectWrite Caret Calculation (White cursor, zero gap)
                 if (isBodyFocused && m_showCaret && i == caretLine) {
-                    float charW = config.ScaleF(7.8f);
-                    float cxPos = textX + static_cast<float>(caretCol) * charW;
-                    pRT->DrawLine(D2D1::Point2F(cxPos, lineY + 2.0f),
-                                  D2D1::Point2F(cxPos, lineY + lineH - 2.0f),
-                                  theme.brushBrandAccent.Get(), 1.6f);
+                    float exactCaretX = textX + MeasureCaretX(theme.dwriteFactory.Get(), theme.fontCode.Get(),
+                                                             lines[i], caretCol,
+                                                             rcCode.right - rcCode.left, lineH);
+                    pRT->DrawLine(D2D1::Point2F(exactCaretX, lineY + 2.0f),
+                                  D2D1::Point2F(exactCaretX, lineY + lineH - 2.0f),
+                                  theme.brushTextWhite.Get(), 1.5f);
                 }
             }
+            lineStartPos = lineEndPos + 1;
             lineY += lineH;
         }
     }
@@ -1421,10 +1862,12 @@ void ApiTesterView::RenderSettingsTab(ID2D1RenderTarget* pRT, Theme& theme, cons
     pRT->DrawText(s.timeoutMsStr.c_str(), static_cast<UINT32>(s.timeoutMsStr.length()),
                   theme.fontTab.Get(), rcTimeTxt, theme.brushTextPrimary.Get());
     if (isTimeFoc && m_showCaret) {
-        float caretX = rcTimeTxt.left + static_cast<float>(s.timeoutMsStr.length()) * config.ScaleF(7.2f);
-        pRT->DrawLine(D2D1::Point2F(caretX, rcTimeTxt.top + 2.0f),
-                      D2D1::Point2F(caretX, rcTimeTxt.bottom - 2.0f),
-                      theme.brushBrandAccent.Get(), 1.5f);
+        float exactCaretX = rcTimeTxt.left + MeasureCaretX(theme.dwriteFactory.Get(), theme.fontTab.Get(),
+                                                           s.timeoutMsStr, s.cellCaret,
+                                                           rcTimeTxt.right - rcTimeTxt.left, rcTimeTxt.bottom - rcTimeTxt.top);
+        pRT->DrawLine(D2D1::Point2F(exactCaretX, rcTimeTxt.top + 2.0f),
+                      D2D1::Point2F(exactCaretX, rcTimeTxt.bottom - 2.0f),
+                      theme.brushTextWhite.Get(), 1.5f);
     }
 }
 
@@ -1462,7 +1905,6 @@ void ApiTesterView::RenderResponseSection(ID2D1RenderTarget* pRT, Theme& theme, 
         if (statBrush) pRT->DrawText(statStr.c_str(), static_cast<UINT32>(statStr.length()),
                                      theme.fontButtonCenter.Get(), rcStat, statBrush.Get());
 
-        // Latency
         wchar_t szTime[32];
         if (s.response.timeMs >= 1000.0) {
             swprintf_s(szTime, L"%.2f s", s.response.timeMs / 1000.0);
@@ -1472,7 +1914,6 @@ void ApiTesterView::RenderResponseSection(ID2D1RenderTarget* pRT, Theme& theme, 
         D2D1_RECT_F rcTime = D2D1::RectF(x + statW + config.ScaleF(14.0f), y, x + statW + config.ScaleF(100.0f), y + topBarH);
         pRT->DrawText(szTime, static_cast<UINT32>(wcslen(szTime)), theme.fontTab.Get(), rcTime, theme.brushTextSecondary.Get());
 
-        // Payload Size
         wchar_t szSize[32];
         if (s.response.sizeBytes >= 1024 * 1024) {
             swprintf_s(szSize, L"%.2f MB", static_cast<double>(s.response.sizeBytes) / (1024.0 * 1024.0));
@@ -1492,7 +1933,7 @@ void ApiTesterView::RenderResponseSection(ID2D1RenderTarget* pRT, Theme& theme, 
         pRT->DrawText(L"Response", 8, theme.fontTab.Get(), rcWait, theme.brushTextSecondary.Get());
     }
 
-    // 2. Copy Response & Clear Buttons on top right (with solid backgrounds, hover states, and strict clipping)
+    // 2. Copy Response & Clear Buttons on top right
     float btnH = topBarH - config.ScaleF(2.0f);
     m_rcClearBtn = D2D1::RectF(x + w - clearW, y, x + w, y + btnH);
     m_rcCopyBtn  = D2D1::RectF(m_rcClearBtn.left - btnGap - copyW, y, m_rcClearBtn.left - btnGap, y + btnH);
@@ -1500,7 +1941,6 @@ void ApiTesterView::RenderResponseSection(ID2D1RenderTarget* pRT, Theme& theme, 
     bool clearHov = PtInRectF(m_mousePt, m_rcClearBtn);
     bool copyHov  = PtInRectF(m_mousePt, m_rcCopyBtn);
 
-    // Render Clear Button (with distinct background color)
     {
         D2D1_ROUNDED_RECT rrcClear = D2D1::RoundedRect(m_rcClearBtn, 5.0f, 5.0f);
         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> clearBg;
@@ -1515,7 +1955,6 @@ void ApiTesterView::RenderResponseSection(ID2D1RenderTarget* pRT, Theme& theme, 
         pRT->PopAxisAlignedClip();
     }
 
-    // Render Copy Response Button (with background color and vector copy icon + non-leaking text)
     {
         D2D1_ROUNDED_RECT rrcCopy = D2D1::RoundedRect(m_rcCopyBtn, 5.0f, 5.0f);
         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> copyBg;
@@ -1526,7 +1965,6 @@ void ApiTesterView::RenderResponseSection(ID2D1RenderTarget* pRT, Theme& theme, 
         pRT->DrawRoundedRectangle(rrcCopy, copyHov ? theme.brushBrandAccent.Get() : theme.brushBorderSubtle.Get(), 1.0f);
 
         pRT->PushAxisAlignedClip(m_rcCopyBtn, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
-        // Crisp vector copy icon on left side of button
         float icX = m_rcCopyBtn.left + config.ScaleF(10.0f);
         float icY = (m_rcCopyBtn.top + m_rcCopyBtn.bottom) * 0.5f - config.ScaleF(5.5f);
         float icS = config.ScaleF(8.0f);
@@ -1695,13 +2133,37 @@ bool ApiTesterView::HandleMouseMove(POINT pt) {
         }
         return true;
     }
+
+    if (m_isHeaderSuggestOpen && PtInRectF(pt, m_rcHeaderSuggest)) {
+        float itemH = 26.0f;
+        int idx = static_cast<int>((pt.y - (m_rcHeaderSuggest.top + 4.0f)) / itemH);
+        if (idx >= 0 && idx < static_cast<int>(m_headerSuggestions.size())) {
+            m_headerSuggestHoverIdx = idx;
+            return true;
+        }
+    }
+
     return changed;
 }
 
-bool ApiTesterView::HandleLButtonDown(POINT pt, const app::AppConfig& config) {
+bool ApiTesterView::HandleLButtonDown(POINT pt, const app::AppConfig& config, Theme& theme) {
     std::lock_guard<std::mutex> lock(m_mutex);
     if (m_sessions.empty()) AddNewSession();
     auto& s = m_sessions[m_activeSessionIdx];
+
+    // 0. If Header Autocomplete Dropdown Open
+    if (m_isHeaderSuggestOpen) {
+        if (PtInRectF(pt, m_rcHeaderSuggest)) {
+            float itemH = config.ScaleF(26.0f);
+            int idx = static_cast<int>((pt.y - (m_rcHeaderSuggest.top + config.ScaleF(4.0f))) / itemH);
+            if (idx >= 0 && idx < static_cast<int>(m_headerSuggestions.size())) {
+                SelectHeaderSuggestion(static_cast<size_t>(idx));
+                return true;
+            }
+        }
+        m_isHeaderSuggestOpen = false;
+        // Don't return here if clicking another control
+    }
 
     // 1. If Method Dropdown Open
     if (m_isMethodDropdownOpen) {
@@ -1749,6 +2211,7 @@ bool ApiTesterView::HandleLButtonDown(POINT pt, const app::AppConfig& config) {
     if (PtInRectF(pt, m_rcMethodBtn)) {
         m_isMethodDropdownOpen = !m_isMethodDropdownOpen;
         m_isAuthDropdownOpen = false;
+        m_isHeaderSuggestOpen = false;
         return true;
     }
 
@@ -1758,12 +2221,16 @@ bool ApiTesterView::HandleLButtonDown(POINT pt, const app::AppConfig& config) {
         return true;
     }
 
-    // 6. URL Box
+    // 6. URL Box Click (Hit testing with DirectWrite)
     if (PtInRectF(pt, m_rcUrlBox)) {
         m_focusedField = ApiFocusField::Url;
+        ClearSelection();
         float relX = (std::max)(0.0f, pt.x - (m_rcUrlBox.left + config.ScaleF(12.0f)));
-        size_t pos = static_cast<size_t>((relX / config.ScaleF(7.4f)) + 0.4f);
-        s.urlCaret = (std::min)(pos, s.url.length());
+        float relY = (std::max)(0.0f, pt.y - (m_rcUrlBox.top + config.ScaleF(7.0f)));
+        s.urlCaret = HitTestCaretIndex(theme.dwriteFactory.Get(), theme.fontTab.Get(),
+                                      s.url, relX, relY,
+                                      (m_rcUrlBox.right - m_rcUrlBox.left) - config.ScaleF(24.0f),
+                                      (m_rcUrlBox.bottom - m_rcUrlBox.top));
         m_showCaret = true;
         m_lastCaretBlink = GetTickCount();
         return true;
@@ -1775,6 +2242,8 @@ bool ApiTesterView::HandleLButtonDown(POINT pt, const app::AppConfig& config) {
             s.activeReqTab = tab;
             s.reqScrollY = 0.0f;
             m_focusedField = ApiFocusField::None;
+            m_isHeaderSuggestOpen = false;
+            ClearSelection();
             return true;
         }
     }
@@ -1806,14 +2275,22 @@ bool ApiTesterView::HandleLButtonDown(POINT pt, const app::AppConfig& config) {
     // Helper for Key-Value-Description Table clicks
     auto handleTableClicks = [&](std::vector<ApiKeyValueItem>& rows,
                                  ApiFocusField keyF, ApiFocusField valF, ApiFocusField descF,
-                                 bool syncUrl) -> bool {
+                                 bool isHeaderTable, bool syncUrl) -> bool {
         if (PtInRectF(pt, m_rcAddRowBtn)) {
             rows.push_back({ true, L"", L"", L"" });
             m_focusedField = keyF;
             m_focusedRowIndex = rows.size() - 1;
             s.cellCaret = 0;
+            ClearSelection();
             m_showCaret = true;
             m_lastCaretBlink = GetTickCount();
+            if (isHeaderTable) {
+                m_isHeaderKeySuggest = true;
+                m_headerSuggestRow = m_focusedRowIndex;
+                m_rcHeaderSuggest = D2D1::RectF(rows.back().keyBounds.left, rows.back().keyBounds.bottom + 2.0f,
+                                               rows.back().keyBounds.left + 220.0f, rows.back().keyBounds.bottom + 180.0f);
+                UpdateHeaderSuggestions(L"");
+            }
             return true;
         }
         for (size_t i = 0; i < rows.size(); ++i) {
@@ -1830,32 +2307,62 @@ bool ApiTesterView::HandleLButtonDown(POINT pt, const app::AppConfig& config) {
                     rows.erase(rows.begin() + i);
                 }
                 m_focusedField = ApiFocusField::None;
+                m_isHeaderSuggestOpen = false;
+                ClearSelection();
                 if (syncUrl) SyncParamsToUrl(s);
                 return true;
             }
             if (PtInRectF(pt, r.keyBounds)) {
                 m_focusedField = keyF;
                 m_focusedRowIndex = i;
+                ClearSelection();
                 float relX = (std::max)(0.0f, pt.x - (r.keyBounds.left + config.ScaleF(8.0f)));
-                s.cellCaret = (std::min)(static_cast<size_t>((relX / config.ScaleF(7.2f)) + 0.4f), r.key.length());
+                s.cellCaret = HitTestCaretIndex(theme.dwriteFactory.Get(), theme.fontTab.Get(),
+                                                r.key, relX, 0.0f,
+                                                r.keyBounds.right - r.keyBounds.left, r.keyBounds.bottom - r.keyBounds.top);
                 m_showCaret = true;
                 m_lastCaretBlink = GetTickCount();
+
+                if (isHeaderTable) {
+                    m_isHeaderKeySuggest = true;
+                    m_headerSuggestRow = i;
+                    m_rcHeaderSuggest = D2D1::RectF(r.keyBounds.left, r.keyBounds.bottom + 2.0f,
+                                                   r.keyBounds.left + (std::max)(220.0f, r.keyBounds.right - r.keyBounds.left),
+                                                   r.keyBounds.bottom + 180.0f);
+                    UpdateHeaderSuggestions(r.key);
+                }
                 return true;
             }
             if (PtInRectF(pt, r.valBounds)) {
                 m_focusedField = valF;
                 m_focusedRowIndex = i;
+                ClearSelection();
                 float relX = (std::max)(0.0f, pt.x - (r.valBounds.left + config.ScaleF(8.0f)));
-                s.cellCaret = (std::min)(static_cast<size_t>((relX / config.ScaleF(7.2f)) + 0.4f), r.value.length());
+                s.cellCaret = HitTestCaretIndex(theme.dwriteFactory.Get(), theme.fontTab.Get(),
+                                                r.value, relX, 0.0f,
+                                                r.valBounds.right - r.valBounds.left, r.valBounds.bottom - r.valBounds.top);
                 m_showCaret = true;
                 m_lastCaretBlink = GetTickCount();
+
+                if (isHeaderTable) {
+                    m_isHeaderKeySuggest = false;
+                    m_headerSuggestRow = i;
+                    m_rcHeaderSuggest = D2D1::RectF(r.valBounds.left, r.valBounds.bottom + 2.0f,
+                                                   r.valBounds.left + (std::max)(240.0f, r.valBounds.right - r.valBounds.left),
+                                                   r.valBounds.bottom + 180.0f);
+                    UpdateHeaderSuggestions(r.value);
+                }
                 return true;
             }
             if (PtInRectF(pt, r.descBounds)) {
                 m_focusedField = descF;
                 m_focusedRowIndex = i;
+                m_isHeaderSuggestOpen = false;
+                ClearSelection();
                 float relX = (std::max)(0.0f, pt.x - (r.descBounds.left + config.ScaleF(8.0f)));
-                s.cellCaret = (std::min)(static_cast<size_t>((relX / config.ScaleF(7.2f)) + 0.4f), r.description.length());
+                s.cellCaret = HitTestCaretIndex(theme.dwriteFactory.Get(), theme.fontTab.Get(),
+                                                r.description, relX, 0.0f,
+                                                r.descBounds.right - r.descBounds.left, r.descBounds.bottom - r.descBounds.top);
                 m_showCaret = true;
                 m_lastCaretBlink = GetTickCount();
                 return true;
@@ -1866,11 +2373,11 @@ bool ApiTesterView::HandleLButtonDown(POINT pt, const app::AppConfig& config) {
 
     // 11. Active Sub-Tab Specific Interactions
     if (s.activeReqTab == ApiRequestTab::Params) {
-        if (handleTableClicks(s.params, ApiFocusField::ParamKey, ApiFocusField::ParamVal, ApiFocusField::ParamDesc, true)) {
+        if (handleTableClicks(s.params, ApiFocusField::ParamKey, ApiFocusField::ParamVal, ApiFocusField::ParamDesc, false, true)) {
             return true;
         }
     } else if (s.activeReqTab == ApiRequestTab::Headers) {
-        if (handleTableClicks(s.headers, ApiFocusField::HeaderKey, ApiFocusField::HeaderVal, ApiFocusField::HeaderDesc, false)) {
+        if (handleTableClicks(s.headers, ApiFocusField::HeaderKey, ApiFocusField::HeaderVal, ApiFocusField::HeaderDesc, true, false)) {
             return true;
         }
     } else if (s.activeReqTab == ApiRequestTab::Auth) {
@@ -1881,20 +2388,26 @@ bool ApiTesterView::HandleLButtonDown(POINT pt, const app::AppConfig& config) {
         }
         if (s.authType == ApiAuthType::BearerToken && PtInRectF(pt, m_rcAuthField1)) {
             m_focusedField = ApiFocusField::AuthToken;
-            s.cellCaret = s.bearerToken.length();
+            ClearSelection();
+            float relX = (std::max)(0.0f, pt.x - (m_rcAuthField1.left + config.ScaleF(10.0f)));
+            s.cellCaret = HitTestCaretIndex(theme.dwriteFactory.Get(), theme.fontTab.Get(), s.bearerToken, relX);
             m_showCaret = true;
             return true;
         }
         if (s.authType == ApiAuthType::ApiKey) {
             if (PtInRectF(pt, m_rcAuthField1)) {
                 m_focusedField = ApiFocusField::ApiKeyName;
-                s.cellCaret = s.apiKeyName.length();
+                ClearSelection();
+                float relX = (std::max)(0.0f, pt.x - (m_rcAuthField1.left + config.ScaleF(10.0f)));
+                s.cellCaret = HitTestCaretIndex(theme.dwriteFactory.Get(), theme.fontTab.Get(), s.apiKeyName, relX);
                 m_showCaret = true;
                 return true;
             }
             if (PtInRectF(pt, m_rcAuthField2)) {
                 m_focusedField = ApiFocusField::ApiKeyValue;
-                s.cellCaret = s.apiKeyValue.length();
+                ClearSelection();
+                float relX = (std::max)(0.0f, pt.x - (m_rcAuthField2.left + config.ScaleF(10.0f)));
+                s.cellCaret = HitTestCaretIndex(theme.dwriteFactory.Get(), theme.fontTab.Get(), s.apiKeyValue, relX);
                 m_showCaret = true;
                 return true;
             }
@@ -1910,13 +2423,17 @@ bool ApiTesterView::HandleLButtonDown(POINT pt, const app::AppConfig& config) {
         if (s.authType == ApiAuthType::BasicAuth) {
             if (PtInRectF(pt, m_rcAuthField1)) {
                 m_focusedField = ApiFocusField::AuthUser;
-                s.cellCaret = s.basicUser.length();
+                ClearSelection();
+                float relX = (std::max)(0.0f, pt.x - (m_rcAuthField1.left + config.ScaleF(10.0f)));
+                s.cellCaret = HitTestCaretIndex(theme.dwriteFactory.Get(), theme.fontTab.Get(), s.basicUser, relX);
                 m_showCaret = true;
                 return true;
             }
             if (PtInRectF(pt, m_rcAuthField2)) {
                 m_focusedField = ApiFocusField::AuthPass;
-                s.cellCaret = s.basicPass.length();
+                ClearSelection();
+                float relX = (std::max)(0.0f, pt.x - (m_rcAuthField2.left + config.ScaleF(10.0f)));
+                s.cellCaret = HitTestCaretIndex(theme.dwriteFactory.Get(), theme.fontTab.Get(), s.basicPass, relX);
                 m_showCaret = true;
                 return true;
             }
@@ -1927,20 +2444,22 @@ bool ApiTesterView::HandleLButtonDown(POINT pt, const app::AppConfig& config) {
                 s.bodyType = bType;
                 s.reqScrollY = 0.0f;
                 m_focusedField = (bType == ApiBodyType::RawJson) ? ApiFocusField::Body : ApiFocusField::None;
+                ClearSelection();
                 return true;
             }
         }
         if (s.bodyType == ApiBodyType::FormData) {
-            if (handleTableClicks(s.formData, ApiFocusField::FormKey, ApiFocusField::FormVal, ApiFocusField::FormDesc, false)) {
+            if (handleTableClicks(s.formData, ApiFocusField::FormKey, ApiFocusField::FormVal, ApiFocusField::FormDesc, false, false)) {
                 return true;
             }
         } else if (s.bodyType == ApiBodyType::UrlEncoded) {
-            if (handleTableClicks(s.urlEncoded, ApiFocusField::UrlEncKey, ApiFocusField::UrlEncVal, ApiFocusField::UrlEncDesc, false)) {
+            if (handleTableClicks(s.urlEncoded, ApiFocusField::UrlEncKey, ApiFocusField::UrlEncVal, ApiFocusField::UrlEncDesc, false, false)) {
                 return true;
             }
         } else if (s.bodyType == ApiBodyType::RawJson && PtInRectF(pt, m_rcBodyEditor)) {
             m_focusedField = ApiFocusField::Body;
-            // Calculate clicked line and column in body editor
+            ClearSelection();
+
             float gutterW = config.ScaleF(38.0f);
             float lineH = config.ScaleF(19.0f);
             float textX = m_rcBodyEditor.left + gutterW + config.ScaleF(10.0f);
@@ -1948,7 +2467,6 @@ bool ApiTesterView::HandleLButtonDown(POINT pt, const app::AppConfig& config) {
             float relX = (std::max)(0.0f, pt.x - textX);
 
             size_t targetLine = static_cast<size_t>(relY / lineH);
-            size_t targetCol = static_cast<size_t>((relX / config.ScaleF(7.8f)) + 0.4f);
 
             size_t curLine = 0;
             size_t lineStart = 0;
@@ -1963,7 +2481,12 @@ bool ApiTesterView::HandleLButtonDown(POINT pt, const app::AppConfig& config) {
             }
             size_t lineEnd = s.bodyText.find(L'\n', lineStart);
             if (lineEnd == std::wstring::npos) lineEnd = s.bodyText.length();
-            s.bodyCaret = (std::min)(lineStart + targetCol, lineEnd);
+
+            std::wstring clickedLine = s.bodyText.substr(lineStart, lineEnd - lineStart);
+            size_t colHit = HitTestCaretIndex(theme.dwriteFactory.Get(), theme.fontCode.Get(),
+                                              clickedLine, relX, 0.0f,
+                                              (m_rcBodyEditor.right - textX), lineH);
+            s.bodyCaret = lineStart + colHit;
             m_showCaret = true;
             m_lastCaretBlink = GetTickCount();
             return true;
@@ -1979,13 +2502,16 @@ bool ApiTesterView::HandleLButtonDown(POINT pt, const app::AppConfig& config) {
         }
         if (PtInRectF(pt, m_rcTimeoutInput)) {
             m_focusedField = ApiFocusField::SettingsTimeout;
-            s.cellCaret = s.timeoutMsStr.length();
+            ClearSelection();
+            float relX = (std::max)(0.0f, pt.x - (m_rcTimeoutInput.left + config.ScaleF(8.0f)));
+            s.cellCaret = HitTestCaretIndex(theme.dwriteFactory.Get(), theme.fontTab.Get(), s.timeoutMsStr, relX);
             m_showCaret = true;
             return true;
         }
     }
 
     m_focusedField = ApiFocusField::None;
+    ClearSelection();
     return true;
 }
 
@@ -1998,6 +2524,9 @@ bool ApiTesterView::HandleLButtonUp(POINT pt) {
     return false;
 }
 
+// -----------------------------------------------------------------------------
+// Mouse Wheel - Bounded Scrolling (Eliminates Infinite Scrolling)
+// -----------------------------------------------------------------------------
 bool ApiTesterView::HandleMouseWheel(short delta, float mouseY) {
     std::lock_guard<std::mutex> lock(m_mutex);
     if (m_sessions.empty()) return false;
@@ -2006,135 +2535,59 @@ bool ApiTesterView::HandleMouseWheel(short delta, float mouseY) {
     float deltaVal = (delta > 0) ? -scrollStep : scrollStep;
 
     if (mouseY > m_rcSplitter.bottom) {
-        s.respScrollY = (std::max)(0.0f, s.respScrollY + deltaVal);
+        // Calculate bounded height for active response tab
+        float totalH = 0.0f;
+        if (s.activeRespTab == ApiResponseTab::Body) {
+            size_t lineCount = 1;
+            for (wchar_t ch : s.response.body) if (ch == L'\n') lineCount++;
+            totalH = static_cast<float>(lineCount) * 18.0f + 30.0f;
+        } else if (s.activeRespTab == ApiResponseTab::Headers) {
+            totalH = static_cast<float>(s.response.headers.size()) * 24.0f + 30.0f;
+        } else if (s.activeRespTab == ApiResponseTab::Cookies) {
+            totalH = static_cast<float>(s.response.cookies.size()) * 24.0f + 30.0f;
+        }
+
+        float maxScroll = (std::max)(0.0f, totalH - m_respContentH);
+        s.respScrollY = (std::max)(0.0f, (std::min)(maxScroll, s.respScrollY + deltaVal));
     } else {
-        s.reqScrollY = (std::max)(0.0f, s.reqScrollY + deltaVal);
+        // Calculate bounded height for active request tab
+        float totalH = 0.0f;
+        if (s.activeReqTab == ApiRequestTab::Body && s.bodyType == ApiBodyType::RawJson) {
+            size_t lineCount = 1;
+            for (wchar_t ch : s.bodyText) if (ch == L'\n') lineCount++;
+            totalH = static_cast<float>(lineCount) * 19.0f + 30.0f;
+        } else if (s.activeReqTab == ApiRequestTab::Params) {
+            totalH = static_cast<float>(s.params.size()) * 30.0f + 70.0f;
+        } else if (s.activeReqTab == ApiRequestTab::Headers) {
+            totalH = static_cast<float>(s.headers.size()) * 30.0f + 70.0f;
+        } else if (s.activeReqTab == ApiRequestTab::Body && s.bodyType == ApiBodyType::FormData) {
+            totalH = static_cast<float>(s.formData.size()) * 30.0f + 70.0f;
+        } else if (s.activeReqTab == ApiRequestTab::Body && s.bodyType == ApiBodyType::UrlEncoded) {
+            totalH = static_cast<float>(s.urlEncoded.size()) * 30.0f + 70.0f;
+        }
+
+        float maxScroll = (std::max)(0.0f, totalH - m_subContentH);
+        s.reqScrollY = (std::max)(0.0f, (std::min)(maxScroll, s.reqScrollY + deltaVal));
     }
     return true;
 }
 
 // =============================================================================
-// Active Cell Pointer & Clipboard Helpers
-// =============================================================================
-std::wstring* ApiTesterView::GetActiveCellString(ApiRequestSession& s) {
-    switch (m_focusedField) {
-        case ApiFocusField::ParamKey:   return (m_focusedRowIndex < s.params.size()) ? &s.params[m_focusedRowIndex].key : nullptr;
-        case ApiFocusField::ParamVal:   return (m_focusedRowIndex < s.params.size()) ? &s.params[m_focusedRowIndex].value : nullptr;
-        case ApiFocusField::ParamDesc:  return (m_focusedRowIndex < s.params.size()) ? &s.params[m_focusedRowIndex].description : nullptr;
-        case ApiFocusField::HeaderKey:  return (m_focusedRowIndex < s.headers.size()) ? &s.headers[m_focusedRowIndex].key : nullptr;
-        case ApiFocusField::HeaderVal:  return (m_focusedRowIndex < s.headers.size()) ? &s.headers[m_focusedRowIndex].value : nullptr;
-        case ApiFocusField::HeaderDesc: return (m_focusedRowIndex < s.headers.size()) ? &s.headers[m_focusedRowIndex].description : nullptr;
-        case ApiFocusField::FormKey:    return (m_focusedRowIndex < s.formData.size()) ? &s.formData[m_focusedRowIndex].key : nullptr;
-        case ApiFocusField::FormVal:    return (m_focusedRowIndex < s.formData.size()) ? &s.formData[m_focusedRowIndex].value : nullptr;
-        case ApiFocusField::FormDesc:   return (m_focusedRowIndex < s.formData.size()) ? &s.formData[m_focusedRowIndex].description : nullptr;
-        case ApiFocusField::UrlEncKey:  return (m_focusedRowIndex < s.urlEncoded.size()) ? &s.urlEncoded[m_focusedRowIndex].key : nullptr;
-        case ApiFocusField::UrlEncVal:  return (m_focusedRowIndex < s.urlEncoded.size()) ? &s.urlEncoded[m_focusedRowIndex].value : nullptr;
-        case ApiFocusField::UrlEncDesc: return (m_focusedRowIndex < s.urlEncoded.size()) ? &s.urlEncoded[m_focusedRowIndex].description : nullptr;
-        case ApiFocusField::AuthToken:  return &s.bearerToken;
-        case ApiFocusField::ApiKeyName: return &s.apiKeyName;
-        case ApiFocusField::ApiKeyValue:return &s.apiKeyValue;
-        case ApiFocusField::AuthUser:   return &s.basicUser;
-        case ApiFocusField::AuthPass:   return &s.basicPass;
-        case ApiFocusField::SettingsTimeout: return &s.timeoutMsStr;
-        default: return nullptr;
-    }
-}
-
-void ApiTesterView::PasteFromClipboard() {
-    if (!m_hwnd || !OpenClipboard(m_hwnd)) return;
-    std::wstring clipText;
-    HANDLE hData = GetClipboardData(CF_UNICODETEXT);
-    if (hData) {
-        const wchar_t* pStr = static_cast<const wchar_t*>(GlobalLock(hData));
-        if (pStr) {
-            clipText = pStr;
-            GlobalUnlock(hData);
-        }
-    }
-    CloseClipboard();
-    if (clipText.empty()) return;
-
-    // Remove '\r'
-    clipText.erase(std::remove(clipText.begin(), clipText.end(), L'\r'), clipText.end());
-
-    auto& s = m_sessions[m_activeSessionIdx];
-    if (m_focusedField == ApiFocusField::Url) {
-        std::replace(clipText.begin(), clipText.end(), L'\n', L' ');
-        size_t pos = (std::min)(s.urlCaret, s.url.length());
-        s.url.insert(pos, clipText);
-        s.urlCaret = pos + clipText.length();
-        SyncUrlToParams(s);
-    } else if (m_focusedField == ApiFocusField::Body) {
-        size_t pos = (std::min)(s.bodyCaret, s.bodyText.length());
-        s.bodyText.insert(pos, clipText);
-        s.bodyCaret = pos + clipText.length();
-    } else if (std::wstring* pCell = GetActiveCellString(s)) {
-        std::replace(clipText.begin(), clipText.end(), L'\n', L' ');
-        size_t pos = (std::min)(s.cellCaret, pCell->length());
-        pCell->insert(pos, clipText);
-        s.cellCaret = pos + clipText.length();
-        if (m_focusedField == ApiFocusField::ParamKey || m_focusedField == ApiFocusField::ParamVal) {
-            SyncParamsToUrl(s);
-        }
-    }
-}
-
-void ApiTesterView::CopyResponseToClipboard() {
-    auto& s = m_sessions[m_activeSessionIdx];
-    std::wstring textToCopy;
-    if (s.response.hasResponse) {
-        if (s.activeRespTab == ApiResponseTab::Headers) {
-            for (const auto& h : s.response.headers) {
-                textToCopy += h.first + L": " + h.second + L"\r\n";
-            }
-        } else if (s.activeRespTab == ApiResponseTab::Cookies) {
-            for (const auto& c : s.response.cookies) {
-                textToCopy += c + L"\r\n";
-            }
-        } else {
-            textToCopy = s.response.body;
-        }
-    } else if (s.response.isError) {
-        textToCopy = s.response.errorMessage;
-    }
-
-    if (textToCopy.empty()) {
-        m_toastMessage = L"Nothing to copy yet";
-        m_toastExpiry = GetTickCount() + 1500;
-        return;
-    }
-
-    if (m_hwnd && OpenClipboard(m_hwnd)) {
-        EmptyClipboard();
-        size_t bytes = (textToCopy.length() + 1) * sizeof(wchar_t);
-        HGLOBAL hGlobal = GlobalAlloc(GMEM_MOVEABLE, bytes);
-        if (hGlobal) {
-            void* pMem = GlobalLock(hGlobal);
-            if (pMem) {
-                memcpy(pMem, textToCopy.c_str(), bytes);
-                GlobalUnlock(hGlobal);
-                SetClipboardData(CF_UNICODETEXT, hGlobal);
-            }
-        }
-        CloseClipboard();
-        m_toastMessage = L"✓ Copied to clipboard!";
-        m_toastExpiry = GetTickCount() + 2000;
-    }
-}
-
-// =============================================================================
-// Keyboard Input Handling
+// Keyboard Input Handling (Ctrl+A, Ctrl+C, Ctrl+X, Arrow Navigation, Caret)
 // =============================================================================
 bool ApiTesterView::HandleChar(wchar_t ch) {
     std::lock_guard<std::mutex> lock(m_mutex);
     if (m_sessions.empty()) return false;
     auto& s = m_sessions[m_activeSessionIdx];
 
-    // Ignore control chars handled in HandleKeyDown
     if (ch < 32 && ch != L'\t') return false;
 
     m_showCaret = true;
     m_lastCaretBlink = GetTickCount();
+
+    if (m_hasSelection) {
+        DeleteSelectedRange(s);
+    }
 
     if (m_focusedField == ApiFocusField::Url) {
         if (ch >= 32) {
@@ -2164,6 +2617,8 @@ bool ApiTesterView::HandleChar(wchar_t ch) {
             s.cellCaret = pos + 1;
             if (m_focusedField == ApiFocusField::ParamKey || m_focusedField == ApiFocusField::ParamVal) {
                 SyncParamsToUrl(s);
+            } else if (m_focusedField == ApiFocusField::HeaderKey || m_focusedField == ApiFocusField::HeaderVal) {
+                UpdateHeaderSuggestions(*pCell);
             }
             return true;
         }
@@ -2180,25 +2635,116 @@ bool ApiTesterView::HandleKeyDown(WPARAM key) {
     m_showCaret = true;
     m_lastCaretBlink = GetTickCount();
 
+    // Escape closes header suggestions or method dropdown
+    if (key == VK_ESCAPE) {
+        if (m_isHeaderSuggestOpen) {
+            m_isHeaderSuggestOpen = false;
+            return true;
+        }
+        if (m_isMethodDropdownOpen) {
+            m_isMethodDropdownOpen = false;
+            return true;
+        }
+        if (m_isAuthDropdownOpen) {
+            m_isAuthDropdownOpen = false;
+            return true;
+        }
+        if (m_hasSelection) {
+            ClearSelection();
+            return true;
+        }
+    }
+
+    // Header Autocomplete Up/Down/Enter navigation
+    if (m_isHeaderSuggestOpen && !m_headerSuggestions.empty()) {
+        if (key == VK_DOWN) {
+            m_headerSuggestHoverIdx = (std::min)(static_cast<int>(m_headerSuggestions.size() - 1), m_headerSuggestHoverIdx + 1);
+            return true;
+        }
+        if (key == VK_UP) {
+            m_headerSuggestHoverIdx = (std::max)(0, m_headerSuggestHoverIdx - 1);
+            return true;
+        }
+        if (key == VK_RETURN && m_headerSuggestHoverIdx >= 0) {
+            SelectHeaderSuggestion(static_cast<size_t>(m_headerSuggestHoverIdx));
+            return true;
+        }
+    }
+
     // Ctrl+Enter: Send request from anywhere
     if (key == VK_RETURN && ctrl) {
         SendCurrentRequest();
         return true;
     }
 
-    // Ctrl+V: Paste from clipboard into active field
+    // Ctrl+A: Select All in active field
+    if (ctrl && key == 'A') {
+        m_hasSelection = true;
+        m_selStart = 0;
+        if (m_focusedField == ApiFocusField::Url) {
+            m_selEnd = s.url.length();
+            s.urlCaret = s.url.length();
+        } else if (m_focusedField == ApiFocusField::Body) {
+            m_selEnd = s.bodyText.length();
+            s.bodyCaret = s.bodyText.length();
+        } else if (std::wstring* pStr = GetActiveCellString(s)) {
+            m_selEnd = pStr->length();
+            s.cellCaret = pStr->length();
+        }
+        return true;
+    }
+
+    // Ctrl+C: Copy selected text
+    if (ctrl && key == 'C') {
+        std::wstring text = GetSelectedText(s);
+        if (!text.empty() && m_hwnd && OpenClipboard(m_hwnd)) {
+            EmptyClipboard();
+            size_t bytes = (text.length() + 1) * sizeof(wchar_t);
+            HGLOBAL hGlobal = GlobalAlloc(GMEM_MOVEABLE, bytes);
+            if (hGlobal) {
+                void* pMem = GlobalLock(hGlobal);
+                if (pMem) {
+                    memcpy(pMem, text.c_str(), bytes);
+                    GlobalUnlock(hGlobal);
+                    SetClipboardData(CF_UNICODETEXT, hGlobal);
+                }
+            }
+            CloseClipboard();
+        }
+        return true;
+    }
+
+    // Ctrl+X: Cut selected text
+    if (ctrl && key == 'X') {
+        std::wstring text = GetSelectedText(s);
+        if (!text.empty() && m_hwnd && OpenClipboard(m_hwnd)) {
+            EmptyClipboard();
+            size_t bytes = (text.length() + 1) * sizeof(wchar_t);
+            HGLOBAL hGlobal = GlobalAlloc(GMEM_MOVEABLE, bytes);
+            if (hGlobal) {
+                void* pMem = GlobalLock(hGlobal);
+                if (pMem) {
+                    memcpy(pMem, text.c_str(), bytes);
+                    GlobalUnlock(hGlobal);
+                    SetClipboardData(CF_UNICODETEXT, hGlobal);
+                }
+            }
+            CloseClipboard();
+            DeleteSelectedRange(s);
+        }
+        return true;
+    }
+
+    // Ctrl+V: Paste from clipboard
     if (ctrl && key == 'V') {
         PasteFromClipboard();
         return true;
     }
 
-    // Ctrl+A: Clear or select-all in active field
-    if (ctrl && key == 'A') {
-        if (m_focusedField == ApiFocusField::Url) {
-            s.urlCaret = s.url.length();
-            return true;
-        }
-        return false;
+    // Delete selected text on Backspace or Delete
+    if ((key == VK_BACK || key == VK_DELETE) && m_hasSelection) {
+        DeleteSelectedRange(s);
+        return true;
     }
 
     if (m_focusedField == ApiFocusField::Url) {
@@ -2212,6 +2758,7 @@ bool ApiTesterView::HandleKeyDown(WPARAM key) {
                 s.urlCaret--;
                 SyncUrlToParams(s);
             }
+            ClearSelection();
             return true;
         }
         if (key == VK_DELETE) {
@@ -2219,17 +2766,19 @@ bool ApiTesterView::HandleKeyDown(WPARAM key) {
                 s.url.erase(s.url.begin() + s.urlCaret);
                 SyncUrlToParams(s);
             }
+            ClearSelection();
             return true;
         }
-        if (key == VK_LEFT)  { if (s.urlCaret > 0) s.urlCaret--; return true; }
-        if (key == VK_RIGHT) { if (s.urlCaret < s.url.length()) s.urlCaret++; return true; }
-        if (key == VK_HOME)  { s.urlCaret = 0; return true; }
-        if (key == VK_END)   { s.urlCaret = s.url.length(); return true; }
+        if (key == VK_LEFT)  { ClearSelection(); if (s.urlCaret > 0) s.urlCaret--; return true; }
+        if (key == VK_RIGHT) { ClearSelection(); if (s.urlCaret < s.url.length()) s.urlCaret++; return true; }
+        if (key == VK_HOME)  { ClearSelection(); s.urlCaret = 0; return true; }
+        if (key == VK_END)   { ClearSelection(); s.urlCaret = s.url.length(); return true; }
     } else if (m_focusedField == ApiFocusField::Body) {
         if (key == VK_RETURN) {
             size_t pos = (std::min)(s.bodyCaret, s.bodyText.length());
             s.bodyText.insert(s.bodyText.begin() + pos, L'\n');
             s.bodyCaret = pos + 1;
+            ClearSelection();
             return true;
         }
         if (key == VK_BACK) {
@@ -2237,18 +2786,20 @@ bool ApiTesterView::HandleKeyDown(WPARAM key) {
                 s.bodyText.erase(s.bodyText.begin() + s.bodyCaret - 1);
                 s.bodyCaret--;
             }
+            ClearSelection();
             return true;
         }
         if (key == VK_DELETE) {
             if (s.bodyCaret < s.bodyText.length()) {
                 s.bodyText.erase(s.bodyText.begin() + s.bodyCaret);
             }
+            ClearSelection();
             return true;
         }
-        if (key == VK_LEFT)  { if (s.bodyCaret > 0) s.bodyCaret--; return true; }
-        if (key == VK_RIGHT) { if (s.bodyCaret < s.bodyText.length()) s.bodyCaret++; return true; }
-        if (key == VK_HOME)  { s.bodyCaret = 0; return true; }
-        if (key == VK_END)   { s.bodyCaret = s.bodyText.length(); return true; }
+        if (key == VK_LEFT)  { ClearSelection(); if (s.bodyCaret > 0) s.bodyCaret--; return true; }
+        if (key == VK_RIGHT) { ClearSelection(); if (s.bodyCaret < s.bodyText.length()) s.bodyCaret++; return true; }
+        if (key == VK_HOME)  { ClearSelection(); s.bodyCaret = 0; return true; }
+        if (key == VK_END)   { ClearSelection(); s.bodyCaret = s.bodyText.length(); return true; }
     } else if (std::wstring* pCell = GetActiveCellString(s)) {
         if (key == VK_BACK) {
             if (s.cellCaret > 0 && !pCell->empty()) {
@@ -2256,8 +2807,11 @@ bool ApiTesterView::HandleKeyDown(WPARAM key) {
                 s.cellCaret--;
                 if (m_focusedField == ApiFocusField::ParamKey || m_focusedField == ApiFocusField::ParamVal) {
                     SyncParamsToUrl(s);
+                } else if (m_focusedField == ApiFocusField::HeaderKey || m_focusedField == ApiFocusField::HeaderVal) {
+                    UpdateHeaderSuggestions(*pCell);
                 }
             }
+            ClearSelection();
             return true;
         }
         if (key == VK_DELETE) {
@@ -2265,16 +2819,20 @@ bool ApiTesterView::HandleKeyDown(WPARAM key) {
                 pCell->erase(pCell->begin() + s.cellCaret);
                 if (m_focusedField == ApiFocusField::ParamKey || m_focusedField == ApiFocusField::ParamVal) {
                     SyncParamsToUrl(s);
+                } else if (m_focusedField == ApiFocusField::HeaderKey || m_focusedField == ApiFocusField::HeaderVal) {
+                    UpdateHeaderSuggestions(*pCell);
                 }
             }
+            ClearSelection();
             return true;
         }
-        if (key == VK_LEFT)  { if (s.cellCaret > 0) s.cellCaret--; return true; }
-        if (key == VK_RIGHT) { if (s.cellCaret < pCell->length()) s.cellCaret++; return true; }
-        if (key == VK_HOME)  { s.cellCaret = 0; return true; }
-        if (key == VK_END)   { s.cellCaret = pCell->length(); return true; }
+        if (key == VK_LEFT)  { ClearSelection(); if (s.cellCaret > 0) s.cellCaret--; return true; }
+        if (key == VK_RIGHT) { ClearSelection(); if (s.cellCaret < pCell->length()) s.cellCaret++; return true; }
+        if (key == VK_HOME)  { ClearSelection(); s.cellCaret = 0; return true; }
+        if (key == VK_END)   { ClearSelection(); s.cellCaret = pCell->length(); return true; }
         if (key == VK_TAB) {
-            // Cycle focus Key -> Value -> Description
+            ClearSelection();
+            m_isHeaderSuggestOpen = false;
             if (m_focusedField == ApiFocusField::ParamKey) m_focusedField = ApiFocusField::ParamVal;
             else if (m_focusedField == ApiFocusField::ParamVal) m_focusedField = ApiFocusField::ParamDesc;
             else if (m_focusedField == ApiFocusField::HeaderKey) m_focusedField = ApiFocusField::HeaderVal;
@@ -2297,7 +2855,9 @@ bool ApiTesterView::HandleKeyDown(WPARAM key) {
 // Comprehensive Cursor Hit-Testing (IDC_HAND, IDC_IBEAM, IDC_SIZENS)
 // =============================================================================
 LPCWSTR ApiTesterView::GetCursorForPoint(POINT pt) const noexcept {
-    // 1. Open dropdowns take top priority -> IDC_HAND
+    if (m_isHeaderSuggestOpen && PtInRectF(pt, m_rcHeaderSuggest)) {
+        return IDC_HAND;
+    }
     if (m_isMethodDropdownOpen && PtInRectF(pt, m_rcMethodDropdown)) {
         return IDC_HAND;
     }
@@ -2305,13 +2865,11 @@ LPCWSTR ApiTesterView::GetCursorForPoint(POINT pt) const noexcept {
         return IDC_HAND;
     }
 
-    // 2. Splitter -> IDC_SIZENS
     if (m_isDraggingSplitter || (pt.x >= m_rcSplitter.left && pt.x <= m_rcSplitter.right &&
                                  pt.y >= m_rcSplitter.top - 3.0f && pt.y <= m_rcSplitter.bottom + 3.0f)) {
         return IDC_SIZENS;
     }
 
-    // 3. URL Bar: Method button & Send button -> IDC_HAND, URL input -> IDC_IBEAM
     if (PtInRectF(pt, m_rcMethodBtn) || PtInRectF(pt, m_rcSendBtn)) {
         return IDC_HAND;
     }
@@ -2319,12 +2877,10 @@ LPCWSTR ApiTesterView::GetCursorForPoint(POINT pt) const noexcept {
         return IDC_IBEAM;
     }
 
-    // 4. Request Sub-Nav Tabs -> IDC_HAND
     for (const auto& [tab, rc] : m_subNavTabs) {
         if (PtInRectF(pt, rc)) return IDC_HAND;
     }
 
-    // 5. Response Buttons & Sub-Tabs -> IDC_HAND
     if (PtInRectF(pt, m_rcCopyBtn) || PtInRectF(pt, m_rcClearBtn)) {
         return IDC_HAND;
     }
@@ -2344,7 +2900,6 @@ LPCWSTR ApiTesterView::GetCursorForPoint(POINT pt) const noexcept {
         return nullptr;
     };
 
-    // 6. Active Sub-Tab Specific Cursors
     if (s.activeReqTab == ApiRequestTab::Params) {
         if (LPCWSTR c = checkTableCursor(s.params)) return c;
     } else if (s.activeReqTab == ApiRequestTab::Headers) {

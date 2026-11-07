@@ -10929,7 +10929,7 @@ void Window::HandleLButtonDown(POINT clientPt) {
                 } else if (doc.isSpecialView && doc.viewType == L"api") {
                     m_drawer.SetSearchFocus(0);
                     m_explorerHasFocus = false;
-                    if (m_editor.GetApiTesterView().HandleLButtonDown(clientPt, m_config)) {
+                    if (m_editor.GetApiTesterView().HandleLButtonDown(clientPt, m_config, m_theme)) {
                         InvalidateRect(m_hwnd, nullptr, FALSE);
                         return;
                     }

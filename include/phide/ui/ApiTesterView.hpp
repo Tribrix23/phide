@@ -201,7 +201,7 @@ public:
                 float x, float w, float y, float h);
 
     bool HandleMouseMove(POINT clientPt);
-    bool HandleLButtonDown(POINT clientPt, const app::AppConfig& config);
+    bool HandleLButtonDown(POINT clientPt, const app::AppConfig& config, Theme& theme);
     bool HandleLButtonUp(POINT clientPt);
     bool HandleMouseWheel(short delta, float mouseY);
     bool HandleChar(wchar_t ch);
@@ -223,10 +223,18 @@ private:
     void PasteFromClipboard();
     void CopyResponseToClipboard();
 
+    void ClearSelection() noexcept;
+    void DeleteSelectedRange(ApiRequestSession& s);
+    std::wstring GetSelectedText(const ApiRequestSession& s) const;
+
+    void UpdateHeaderSuggestions(const std::wstring& currentText);
+    void SelectHeaderSuggestion(size_t index);
+
     // Helpers for rendering sub-components
     void RenderUrlBar(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config, float x, float y, float w);
     void RenderMethodDropdown(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config);
     void RenderAuthDropdown(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config);
+    void RenderHeaderSuggestions(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config);
     void RenderSubNavTabs(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config, float x, float y, float w);
     void RenderSubNavContent(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config, float x, float y, float w, float h);
     void RenderKeyValueTable(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
@@ -252,7 +260,9 @@ private:
     float m_viewY = 0.0f;
     float m_viewW = 0.0f;
     float m_viewH = 0.0f;
-    float m_splitRatio = 0.52f; // 52% request, 48% response
+    float m_subContentH = 200.0f;
+    float m_respContentH = 200.0f;
+    float m_splitRatio = 0.52f;
     bool m_isDraggingSplitter = false;
     float m_splitterH = 8.0f;
     D2D1_RECT_F m_rcSplitter{};
@@ -292,6 +302,19 @@ private:
     D2D1_RECT_F m_rcCopyBtn{};
     D2D1_RECT_F m_rcClearBtn{};
     D2D1_RECT_F m_rcAddRowBtn{};
+
+    // Header Autocomplete Dropdown state
+    bool m_isHeaderSuggestOpen = false;
+    bool m_isHeaderKeySuggest = true;
+    size_t m_headerSuggestRow = 0;
+    D2D1_RECT_F m_rcHeaderSuggest{};
+    std::vector<std::wstring> m_headerSuggestions;
+    int m_headerSuggestHoverIdx = -1;
+
+    // Selection state (Ctrl+A / Selection range)
+    bool m_hasSelection = false;
+    size_t m_selStart = 0;
+    size_t m_selEnd = 0;
 
     // Active Focus & Caret state
     ApiFocusField m_focusedField = ApiFocusField::Url;
