@@ -6617,6 +6617,7 @@ bool Window::Create(HINSTANCE hInstance, int nCmdShow) {
 
     // Wire Package Manager HWND for embedded WebView2 and Install Package callback
     m_editor.GetPackageManagerView().SetHwnd(m_hwnd);
+    m_editor.GetApiTesterView().SetHwnd(m_hwnd);
     m_editor.GetPackageManagerView().SetOnInstallCallback([this](const std::wstring& pkgName, const std::wstring& cmd, phide::ui::PkgInstallScope scope) {
         bool isUninstall = (cmd.find(L"uninstall") != std::wstring::npos || cmd.find(L"remove") != std::wstring::npos);
         std::wstring taskTitle = isUninstall ? (L"Uninstalling package " + pkgName) : (L"Installing package " + pkgName);
@@ -9145,6 +9146,10 @@ void Window::HandleMouseMove(POINT clientPt, WPARAM wParam) {
             if (m_editor.GetSettingsView().HandleMouseMove(clientPt)) {
                 needRepaint = true;
             }
+        } else if (pActiveDoc->viewType == L"api") {
+            if (m_editor.GetApiTesterView().HandleMouseMove(clientPt)) {
+                needRepaint = true;
+            }
         }
     } else {
         // No active documents -> check watermark cheat-sheet row hover
@@ -10921,6 +10926,13 @@ void Window::HandleLButtonDown(POINT clientPt) {
                         InvalidateRect(m_hwnd, nullptr, FALSE);
                         return;
                     }
+                } else if (doc.isSpecialView && doc.viewType == L"api") {
+                    m_drawer.SetSearchFocus(0);
+                    m_explorerHasFocus = false;
+                    if (m_editor.GetApiTesterView().HandleLButtonDown(clientPt, m_config)) {
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
+                        return;
+                    }
                 } else if (doc.isSpecialView && doc.viewType == L"extension_detail") {
                     m_drawer.SetSearchFocus(0);
                     if (m_editor.HandleExtensionDetailClick(clientPt, doc)) {
@@ -11584,7 +11596,10 @@ void Window::HandleLButtonDown(POINT clientPt) {
             return;
         }
         if (railHit == ui::RailTabId::Api) {
-            DoNewTextFile();
+            OpenSpecialView(L"api", L"API Tester");
+            UpdateDrawerErrorFiles();
+            SaveSessionState();
+            InvalidateRect(m_hwnd, nullptr, FALSE);
             return;
         }
         if (railHit == ui::RailTabId::Settings) {
@@ -11635,6 +11650,12 @@ void Window::HandleLButtonUp(POINT clientPt) {
     }
     if (pActiveDoc && pActiveDoc->isSpecialView && pActiveDoc->viewType == L"notebook") {
         if (m_editor.GetNotebookView().HandleLButtonUp(clientPt, *pActiveDoc, m_config)) {
+            InvalidateRect(m_hwnd, nullptr, FALSE);
+            return;
+        }
+    }
+    if (pActiveDoc && pActiveDoc->isSpecialView && pActiveDoc->viewType == L"api") {
+        if (m_editor.GetApiTesterView().HandleLButtonUp(clientPt)) {
             InvalidateRect(m_hwnd, nullptr, FALSE);
             return;
         }
@@ -12510,6 +12531,15 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     }
                 }
 
+                // API Tester View cursor handling (method, url, send, tabs, splitter, etc.)
+                if (pCurDoc && pCurDoc->isSpecialView && pCurDoc->viewType == L"api") {
+                    LPCWSTR cur = m_editor.GetApiTesterView().GetCursorForPoint(pt);
+                    if (cur) {
+                        SetCursor(LoadCursor(nullptr, cur));
+                        return TRUE;
+                    }
+                }
+
                 SetCursor(LoadCursor(nullptr, IDC_ARROW));
                 return TRUE;
             }
@@ -12768,6 +12798,11 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                         InvalidateRect(m_hwnd, nullptr, FALSE);
                         return 0;
                     }
+                } else if (pDoc->isSpecialView && pDoc->viewType == L"api") {
+                    if (m_editor.GetApiTesterView().HandleMouseWheel(delta, static_cast<float>(pt.y))) {
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
+                        return 0;
+                    }
                 } else if (pDoc->isSpecialView && pDoc->viewType == L"markdown_preview") {
                     if (m_editor.HandleMarkdownPreviewWheel(delta, *pDoc)) {
                         InvalidateRect(m_hwnd, nullptr, FALSE);
@@ -12909,6 +12944,11 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                             InvalidateRect(m_hwnd, nullptr, FALSE);
                             return 0;
                         }
+                    }
+                } else if (pDoc->isSpecialView && pDoc->viewType == L"api") {
+                    if (m_editor.GetApiTesterView().HandleChar(ch)) {
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
+                        return 0;
                     }
                 } else if (pDoc->isSpecialView && pDoc->viewType == L"notebook") {
                     if (m_editor.GetNotebookView().HandleChar(ch, *pDoc, m_hwnd)) {
@@ -13676,8 +13716,9 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
             // Delete key: deletes selected file/folder in File Explorer (User request: "the del keyboard key doesnt work i click the file and click on the keyboard the del ut the fiule is not deleted")
             auto* pActiveDocCheck = GetActiveDoc();
             bool docHasSelection = (pActiveDocCheck && pActiveDocCheck->HasSelection());
+            bool isSpecialViewActive = (pActiveDocCheck && pActiveDocCheck->isSpecialView);
             if (wParam == VK_DELETE && m_config.activeRailTab == 0 && m_drawerAnimProgress > 0.001f &&
-                (m_explorerHasFocus || (!m_selectedExplorerPath.empty() && !docHasSelection))) {
+                (m_explorerHasFocus || (!m_selectedExplorerPath.empty() && !docHasSelection && !isSpecialViewActive))) {
                 DoDeleteSelectedExplorerItem();
                 return 0;
             }
@@ -13767,6 +13808,14 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                             InvalidateRect(m_hwnd, nullptr, FALSE);
                             return 0;
                         }
+                    }
+                } else if (pDoc->viewType == L"api") {
+                    if (m_editor.GetApiTesterView().HandleKeyDown(wParam)) {
+                        if (wParam == VK_RETURN || wParam == VK_TAB || (GetKeyState(VK_CONTROL) & 0x8000)) {
+                            m_suppressNextChar = true;
+                        }
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
+                        return 0;
                     }
                 } else if (pDoc->viewType == L"notebook") {
                     if (m_editor.GetNotebookView().HandleKeyDown(wParam, *pDoc, m_hwnd)) {

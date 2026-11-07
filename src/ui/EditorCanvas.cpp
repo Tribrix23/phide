@@ -688,6 +688,9 @@ void EditorCanvas::RenderSinglePane(ID2D1RenderTarget* pRT, Theme& theme, const 
     } else if (activeDoc.isSpecialView && activeDoc.viewType == L"settings") {
         m_packageManagerView.HideWebView();
         m_settingsView.Render(pRT, theme, config, canvasLeft, canvasWidth, contentTopY, clientHeight - contentTopY);
+    } else if (activeDoc.isSpecialView && activeDoc.viewType == L"api") {
+        m_packageManagerView.HideWebView();
+        m_apiTesterView.Render(pRT, theme, config, canvasLeft, canvasWidth, contentTopY, clientHeight - contentTopY);
     } else if ((activeDoc.isSpecialView && activeDoc.viewType == L"course") || !activeDoc.courseId.empty()) {
         m_packageManagerView.HideWebView();
         RenderCourseView(pRT, theme, config, activeDoc, canvasLeft, canvasWidth, contentTopY, clientHeight);
@@ -1008,6 +1011,8 @@ void EditorCanvas::RenderTabs(ID2D1RenderTarget* pRT, Theme& theme, const app::A
             m_icons.DrawFileNetwork(pRT, iconBounds, theme.brushBrandAccent ? theme.brushBrandAccent.Get() : theme.brushTextWhite.Get(), 1.2f);
         } else if (doc.isSpecialView && doc.viewType == L"settings") {
             m_icons.DrawSettings(pRT, iconBounds, theme.brushBrandAccent ? theme.brushBrandAccent.Get() : theme.brushTextWhite.Get(), 1.2f);
+        } else if (doc.isSpecialView && doc.viewType == L"api") {
+            m_icons.DrawApi(pRT, iconBounds, theme.brushBrandAccent ? theme.brushBrandAccent.Get() : theme.brushTextWhite.Get(), 1.3f);
         } else if (doc.isSpecialView && doc.viewType == L"packages") {
             m_icons.DrawPackage(pRT, iconBounds, theme.brushBrandAccent ? theme.brushBrandAccent.Get() : theme.brushTextWhite.Get(), 1.1f);
         } else if (doc.isSpecialView && doc.viewType == L"student") {
@@ -1234,6 +1239,9 @@ void EditorCanvas::RenderBreadcrumbs(ID2D1RenderTarget* pRT, Theme& theme, const
     } else if (doc.isSpecialView && doc.viewType == L"settings") {
         segments.push_back(L"Preferences");
         segments.push_back(L"Settings");
+    } else if (doc.isSpecialView && doc.viewType == L"api") {
+        segments.push_back(L"API Client");
+        segments.push_back(m_apiTesterView.GetActiveRequestDisplay());
     } else if (doc.isSpecialView && doc.viewType == L"graph") {
         segments.push_back(L"File Network");
         segments.push_back(L"Graph view");
