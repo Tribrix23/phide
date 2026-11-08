@@ -14,6 +14,7 @@
 #include "phide/ui/Theme.hpp"
 #include "phide/editor/OpenDocument.hpp"
 #include "phide/editor/Buffer.hpp"
+#include "phide/editor/IntelliSenseEngine.hpp"
 
 namespace phide::ui {
 
@@ -30,9 +31,11 @@ struct GuideEditorBlock {
     D2D1_RECT_F gutterBounds{};
     bool isFocused = false;
 
-    // IntelliSense popup state (Editor 1)
+    // Real IntelliSense state (Editor 1)
     bool showIntelliSense = false;
-    int intelliSenseSelectedIdx = 4; // default fillRect
+    std::vector<editor::IntelliSenseItem> intelliSenseItems;
+    size_t intelliSenseSelectedIdx = 0;
+    size_t intelliSenseScrollOffset = 0;
     D2D1_RECT_F intelliSensePopupBounds{};
 
     // Predictive ghost text state (Editor 2)
@@ -114,8 +117,11 @@ private:
     bool m_caretBlink = true;
     mutable float m_cachedCharWidth = 0.0f;
 
+    editor::IntelliSenseEngine m_intelliSense;
+
     void InitializeEditors();
-    void InsertCompletion(GuideEditorBlock& ed, const std::wstring& completionName);
+    void UpdateIntelliSense(GuideEditorBlock& ed);
+    void ApplyCompletion(GuideEditorBlock& ed, size_t idx);
 
     void DrawKeycapBadge(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
                          const std::wstring& text, float& curX, float centerY, float badgeH);

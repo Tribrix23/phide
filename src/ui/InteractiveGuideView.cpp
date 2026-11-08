@@ -1,27 +1,12 @@
 /**
  * @file InteractiveGuideView.cpp
- * @brief Implementation of the interactive feature guide with real live editable mini-editors.
+ * @brief Implementation of the interactive feature guide with real working IntelliSense and live editable mini-editors.
  */
 
 #include "phide/ui/InteractiveGuideView.hpp"
 #include <algorithm>
 
 namespace phide::ui {
-
-struct CanvasApiItem {
-    const wchar_t* icon;
-    const wchar_t* name;
-    const wchar_t* type;
-};
-
-static const CanvasApiItem kCanvasApiCompletions[] = {
-    { L"m", L"arc(x, y, r, sAngle, eAngle)", L"method" },
-    { L"m", L"beginPath()", L"method" },
-    { L"m", L"clearRect(x, y, w, h)", L"method" },
-    { L"p", L"fillStyle", L"property" },
-    { L"m", L"fillRect(x, y, w, h)", L"method" },
-    { L"m", L"stroke()", L"method" }
-};
 
 InteractiveGuideView::InteractiveGuideView() {
     InitializeEditors();
@@ -48,7 +33,7 @@ void InteractiveGuideView::InitializeEditors() {
     m_editors.push_back(std::move(ed0));
 
     // =========================================================================
-    // Editor 1: IntelliSense (JavaScript)
+    // Editor 1: IntelliSense (JavaScript with Real Working IntelliSenseEngine)
     // =========================================================================
     GuideEditorBlock ed1;
     ed1.id = 1;
@@ -64,8 +49,9 @@ void InteractiveGuideView::InitializeEditors() {
         L"context."
     );
     ed1.doc.buffer.SetCursor(5, 8);
+    // Initialize working IntelliSense proposals for "context."
+    UpdateIntelliSense(ed1);
     ed1.showIntelliSense = true;
-    ed1.intelliSenseSelectedIdx = 4; // fillRect
     m_editors.push_back(std::move(ed1));
 
     // =========================================================================
@@ -91,13 +77,13 @@ void InteractiveGuideView::InitializeEditors() {
     m_editors.push_back(std::move(ed2));
 
     // =========================================================================
-    // Editor 3: Interactive Task Checkboxes (Tasks)
+    // Editor 3: Interactive Task Checkboxes (Tasks with // TASK comments)
     // =========================================================================
     GuideEditorBlock ed3;
     ed3.id = 3;
     ed3.languageExt = L".js";
-    ed3.doc.fileName = L"tasks.md";
-    ed3.doc.filePath = L"tasks.md";
+    ed3.doc.fileName = L"tasks.js";
+    ed3.doc.filePath = L"tasks.js";
     ed3.doc.buffer.SetText(
         L"// [x] TASK Set up database credentials and connection pool in db.php\n"
         L"// [x] TASK Configure routing and middlewares for REST API endpoints\n"
@@ -109,14 +95,47 @@ void InteractiveGuideView::InitializeEditors() {
     m_editors.push_back(std::move(ed3));
 }
 
-void InteractiveGuideView::InsertCompletion(GuideEditorBlock& ed, const std::wstring& completionName) {
-    // Extract base method name up to '('
-    size_t paren = completionName.find(L'(');
-    std::wstring ins = (paren != std::wstring::npos) ? completionName.substr(0, paren + 1) : completionName;
-    if (paren != std::wstring::npos) ins += L");";
-    for (wchar_t c : ins) {
+void InteractiveGuideView::UpdateIntelliSense(GuideEditorBlock& ed) {
+    auto cursor = ed.doc.buffer.GetCursor();
+    std::wstring line = ed.doc.buffer.GetLine(cursor.line);
+    const auto& allLines = ed.doc.buffer.GetLines();
+
+    // Query REAL IntelliSense proposals from IntelliSenseEngine
+    ed.intelliSenseItems = m_intelliSense.QueryCompletions(ed.doc.fileName, line, cursor.col, &allLines);
+    if (ed.intelliSenseItems.empty()) {
+        ed.showIntelliSense = false;
+        ed.intelliSenseSelectedIdx = 0;
+    } else {
+        if (ed.intelliSenseSelectedIdx >= ed.intelliSenseItems.size()) {
+            ed.intelliSenseSelectedIdx = 0;
+        }
+    }
+}
+
+void InteractiveGuideView::ApplyCompletion(GuideEditorBlock& ed, size_t idx) {
+    if (idx >= ed.intelliSenseItems.size()) return;
+    const auto& item = ed.intelliSenseItems[idx];
+
+    auto cursor = ed.doc.buffer.GetCursor();
+    std::wstring line = ed.doc.buffer.GetLine(cursor.line);
+    std::wstring prefix = editor::IntelliSenseEngine::ExtractQueryPrefix(line, cursor.col);
+
+    // Erase prefix
+    for (size_t i = 0; i < prefix.length(); ++i) {
+        ed.doc.buffer.Backspace();
+    }
+
+    // Insert completion text
+    std::wstring toInsert = !item.insertText.empty() ? item.insertText : item.label;
+    if (item.kind == editor::CompletionKind::Method && toInsert.find(L'(') == std::wstring::npos) {
+        toInsert += L"()";
+    }
+    for (wchar_t c : toInsert) {
         ed.doc.buffer.InsertChar(c);
     }
+
+    ed.showIntelliSense = false;
+    ed.intelliSenseItems.clear();
 }
 
 void InteractiveGuideView::DrawKeycapBadge(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
@@ -162,17 +181,27 @@ void InteractiveGuideView::DrawKeycapBadge(ID2D1RenderTarget* pRT, Theme& theme,
 void InteractiveGuideView::DrawCalloutBox(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
                                           float x, float y, float width, const std::wstring& title,
                                           const std::wstring& text, float& outHeight) {
-    const float padX = config.ScaleF(14.0f);
-    const float padY = config.ScaleF(10.0f);
+    const float padX = config.ScaleF(16.0f);
+    const float padY = config.ScaleF(12.0f);
     const float textW = width - padX * 2.0f;
 
+    std::wstring fullMsg = title + L" " + text;
     float computedTextH = config.ScaleF(44.0f);
+
+    Microsoft::WRL::ComPtr<IDWriteTextLayout> pLayout;
     IDWriteTextFormat* pBodyFmt = theme.fontBody ? theme.fontBody.Get() : theme.fontHint.Get();
     if (theme.dwriteFactory && pBodyFmt) {
-        Microsoft::WRL::ComPtr<IDWriteTextLayout> pLayout;
-        std::wstring fullMsg = title + L" " + text;
-        if (SUCCEEDED(theme.dwriteFactory->CreateTextLayout(fullMsg.c_str(), static_cast<UINT32>(fullMsg.length()),
-                                                          pBodyFmt, textW, 2000.0f, &pLayout))) {
+        if (SUCCEEDED(theme.dwriteFactory->CreateTextLayout(
+                fullMsg.c_str(), static_cast<UINT32>(fullMsg.length()),
+                pBodyFmt, textW, 2000.0f, &pLayout))) {
+
+            // Crucial: Explicitly enable word wrapping so text NEVER leaks out!
+            pLayout->SetWordWrapping(DWRITE_WORD_WRAPPING_WRAP);
+
+            // Bold the title
+            DWRITE_TEXT_RANGE titleRange = { 0, static_cast<UINT32>(title.length()) };
+            pLayout->SetFontWeight(DWRITE_FONT_WEIGHT_SEMI_BOLD, titleRange);
+
             DWRITE_TEXT_METRICS tm{};
             if (SUCCEEDED(pLayout->GetMetrics(&tm))) {
                 computedTextH = tm.height;
@@ -203,16 +232,15 @@ void InteractiveGuideView::DrawCalloutBox(ID2D1RenderTarget* pRT, Theme& theme, 
         3.0f
     );
 
-    // Render title + text inside box
-    D2D1_RECT_F rcText = D2D1::RectF(x + padX, y + padY, x + width - padX, y + totalH - padY);
-    std::wstring fullMsg = title + L" " + text;
-    pRT->DrawText(fullMsg.c_str(), static_cast<UINT32>(fullMsg.length()),
-                  pBodyFmt, rcText, theme.brushTextSecondary ? theme.brushTextSecondary.Get() : theme.brushTextPrimary.Get());
+    // Render formatted layout with wrapping: GUARANTEES ZERO TEXT LEAKS!
+    if (pLayout) {
+        pRT->DrawTextLayout(D2D1::Point2F(x + padX, y + padY), pLayout.Get(),
+                            theme.brushTextSecondary ? theme.brushTextSecondary.Get() : theme.brushTextPrimary.Get());
+    }
 }
 
 void InteractiveGuideView::RenderEditorBlock(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
                                              GuideEditorBlock& ed, float x, float y, float width, float& outHeight) {
-    // Measure character width for Koda Mono font
     if (m_cachedCharWidth <= 0.0f && theme.dwriteFactory && theme.fontCode) {
         Microsoft::WRL::ComPtr<IDWriteTextLayout> pTestL;
         if (SUCCEEDED(theme.dwriteFactory->CreateTextLayout(L"MMMMMMMMMM", 10, theme.fontCode.Get(), 1000.0f, 100.0f, &pTestL))) {
@@ -228,8 +256,8 @@ void InteractiveGuideView::RenderEditorBlock(ID2D1RenderTarget* pRT, Theme& them
     const float padY = config.ScaleF(8.0f);
     const float baseEditorH = lineCount * lineH + padY * 2.0f;
 
-    // Extra space if IntelliSense popup is open in Editor 1
-    float popupExtraSpace = (ed.id == 1 && ed.showIntelliSense) ? config.ScaleF(130.0f) : 0.0f;
+    // Ample vertical clearance below Editor 1 when IntelliSense is open so it NEVER overlaps the tip box!
+    float popupExtraSpace = (ed.id == 1 && ed.showIntelliSense && !ed.intelliSenseItems.empty()) ? config.ScaleF(185.0f) : 0.0f;
     const float totalEditorH = baseEditorH;
     outHeight = totalEditorH + popupExtraSpace;
 
@@ -253,7 +281,6 @@ void InteractiveGuideView::RenderEditorBlock(ID2D1RenderTarget* pRT, Theme& them
     if (pGutterBg) {
         D2D1_ROUNDED_RECT rrcGutter = D2D1::RoundedRect(ed.gutterBounds, 4.0f, 4.0f);
         pRT->FillRoundedRectangle(rrcGutter, pGutterBg.Get());
-        // Straighten right edge of gutter
         pRT->FillRectangle(D2D1::RectF(x + gutterW - 4.0f, y, x + gutterW, y + totalEditorH), pGutterBg.Get());
     }
     // Gutter separator line
@@ -280,7 +307,6 @@ void InteractiveGuideView::RenderEditorBlock(ID2D1RenderTarget* pRT, Theme& them
         D2D1_RECT_F rcNum = D2D1::RectF(x, ly, x + gutterW - config.ScaleF(10.0f), ly + lineH);
         pRT->DrawText(numStr.c_str(), static_cast<UINT32>(numStr.length()), pGutterFmt, rcNum, theme.brushLineNumber.Get());
 
-        // Code Line Text
         std::wstring lineStr = ed.doc.buffer.GetLine(l);
         float codeX = ed.codeAreaBounds.left;
 
@@ -291,7 +317,6 @@ void InteractiveGuideView::RenderEditorBlock(ID2D1RenderTarget* pRT, Theme& them
                     lineStr.c_str(), static_cast<UINT32>(lineStr.length()),
                     pCodeFmt, maxLineW, lineH, &pLineLayout))) {
 
-                // Apply syntax highlighting tokens
                 auto tokens = ed.doc.buffer.GetTokensForLine(l, ed.languageExt);
                 for (const auto& tok : tokens) {
                     if (tok.startCol + tok.length > lineStr.length()) continue;
@@ -312,19 +337,50 @@ void InteractiveGuideView::RenderEditorBlock(ID2D1RenderTarget* pRT, Theme& them
                     pLineLayout->SetDrawingEffect(brush, range);
                 }
 
-                // Draw formatted text layout (100% exact character widths, ZERO layering!)
                 pRT->DrawTextLayout(D2D1::Point2F(codeX, ly), pLineLayout.Get(), theme.brushTextPrimary.Get());
             }
         }
 
         // =====================================================================
-        // Interactive Task Checkboxes in Editor 3 (Tasks)
+        // Interactive Task Checkboxes in Editor 3 (Supports // TASK, // [ ], // [x], // [])
         // =====================================================================
         if (ed.id == 3) {
+            std::wstring upperLine = lineStr;
+            for (auto& c : upperLine) c = towupper(c);
+
             size_t xPos = lineStr.find(L"[x]");
             if (xPos == std::wstring::npos) xPos = lineStr.find(L"[X]");
             size_t emptyPos = lineStr.find(L"[ ]");
-            size_t cbCol = (xPos != std::wstring::npos) ? xPos : emptyPos;
+            size_t tightPos = lineStr.find(L"[]");
+            size_t taskPos = upperLine.find(L"TASK");
+            size_t todoPos = upperLine.find(L"TODO");
+
+            size_t cbCol = std::wstring::npos;
+            size_t coverChars = 3;
+            bool isChecked = false;
+
+            if (xPos != std::wstring::npos) {
+                cbCol = xPos;
+                isChecked = true;
+                coverChars = 3;
+            } else if (emptyPos != std::wstring::npos) {
+                cbCol = emptyPos;
+                isChecked = false;
+                coverChars = 3;
+            } else if (tightPos != std::wstring::npos) {
+                cbCol = tightPos;
+                isChecked = false;
+                coverChars = 2;
+            } else if (taskPos != std::wstring::npos && taskPos >= 2) {
+                // User typed "// TASK" without brackets! Show live empty checkbox right before TASK!
+                cbCol = taskPos - 1;
+                isChecked = false;
+                coverChars = 1;
+            } else if (todoPos != std::wstring::npos && todoPos >= 2) {
+                cbCol = todoPos - 1;
+                isChecked = false;
+                coverChars = 1;
+            }
 
             if (cbCol != std::wstring::npos) {
                 float cbX = codeX + cbCol * charW;
@@ -333,14 +389,13 @@ void InteractiveGuideView::RenderEditorBlock(ID2D1RenderTarget* pRT, Theme& them
                 D2D1_RECT_F rcCb = D2D1::RectF(cbX, cbY, cbX + boxSz, cbY + boxSz);
                 D2D1_ROUNDED_RECT rrcCb = D2D1::RoundedRect(rcCb, 3.0f, 3.0f);
 
-                // Cover the raw "[x]" or "[ ]" text with a crisp checkbox widget
+                // Cover brackets text with clean widget
                 Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> pCoverBrush;
                 pRT->CreateSolidColorBrush(D2D1::ColorF(0.09f, 0.09f, 0.10f, 1.0f), &pCoverBrush);
-                D2D1_RECT_F rcCover = D2D1::RectF(cbX - 1.0f, ly, cbX + 3.0f * charW + 1.0f, ly + lineH);
+                D2D1_RECT_F rcCover = D2D1::RectF(cbX - 1.0f, ly, cbX + coverChars * charW + 1.0f, ly + lineH);
                 if (pCoverBrush) pRT->FillRectangle(rcCover, pCoverBrush.Get());
 
-                if (xPos != std::wstring::npos) {
-                    // Checked state: brand accent filled square with white checkmark
+                if (isChecked) {
                     pRT->FillRoundedRectangle(rrcCb, theme.brushBrandAccent ? theme.brushBrandAccent.Get() : theme.brushRunGreen.Get());
                     pRT->DrawRoundedRectangle(rrcCb, theme.brushBrandAccent ? theme.brushBrandAccent.Get() : theme.brushRunGreen.Get(), 1.0f);
 
@@ -354,13 +409,13 @@ void InteractiveGuideView::RenderEditorBlock(ID2D1RenderTarget* pRT, Theme& them
                                   theme.brushTextWhite.Get(), 1.6f);
 
                     // Strikethrough line over the completed task title
-                    float strikeStartX = cbX + 3.0f * charW + config.ScaleF(4.0f);
+                    float strikeStartX = cbX + coverChars * charW + config.ScaleF(4.0f);
                     float strikeEndX = codeX + lineStr.length() * charW;
                     float strikeY = ly + lineH * 0.5f;
                     pRT->DrawLine(D2D1::Point2F(strikeStartX, strikeY), D2D1::Point2F(strikeEndX, strikeY),
                                   theme.brushCommentDone ? theme.brushCommentDone.Get() : theme.brushTextMuted.Get(), 1.2f);
                 } else {
-                    // Unchecked state: empty square with border
+                    // Empty square
                     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> pUncheckBorder;
                     pRT->CreateSolidColorBrush(D2D1::ColorF(0.40f, 0.40f, 0.45f, 1.0f), &pUncheckBorder);
                     if (pUncheckBorder) pRT->DrawRoundedRectangle(rrcCb, pUncheckBorder.Get(), 1.5f);
@@ -372,7 +427,6 @@ void InteractiveGuideView::RenderEditorBlock(ID2D1RenderTarget* pRT, Theme& them
         // Color Swatches in Editor 0 (CSS)
         // =====================================================================
         if (ed.id == 0) {
-            // Check for color spans (#ff0000, hsl, rgba, #f59e0b)
             struct SwatchRule {
                 const wchar_t* pattern;
                 D2D1_COLOR_F color;
@@ -410,7 +464,6 @@ void InteractiveGuideView::RenderEditorBlock(ID2D1RenderTarget* pRT, Theme& them
             pRT->DrawText(ed.ghostText.c_str(), static_cast<UINT32>(ed.ghostText.length()),
                           pCodeFmt, rcGhost, theme.brushTextMuted.Get());
 
-            // Tab badge
             float tabBadgeX = ghostX + ed.ghostText.length() * charW + config.ScaleF(10.0f);
             DrawKeycapBadge(pRT, theme, config, L"Tab to accept", tabBadgeX, ly + lineH / 2.0f, config.ScaleF(18.0f));
         }
@@ -419,13 +472,11 @@ void InteractiveGuideView::RenderEditorBlock(ID2D1RenderTarget* pRT, Theme& them
         // Carets (Primary & Multi-Cursors)
         // =====================================================================
         if (ed.isFocused && m_caretBlink) {
-            // Primary caret
             if (l == ed.doc.buffer.GetCursor().line) {
                 float caretX = codeX + ed.doc.buffer.GetCursor().col * charW;
                 pRT->DrawLine(D2D1::Point2F(caretX, ly + 2.0f), D2D1::Point2F(caretX, ly + lineH - 2.0f),
                               theme.brushTextWhite.Get(), 1.5f);
             }
-            // Secondary multi-cursors
             for (const auto& sel : ed.doc.secondarySelections) {
                 if (l == sel.cursor.line) {
                     float sCaretX = codeX + sel.cursor.col * charW;
@@ -436,7 +487,7 @@ void InteractiveGuideView::RenderEditorBlock(ID2D1RenderTarget* pRT, Theme& them
         }
     }
 
-    // 4. Draw Editor Outline (Glows vibrant accent when focused, neutral when unfocused)
+    // 4. Draw Editor Outline
     if (ed.isFocused) {
         pRT->DrawRoundedRectangle(rrcEditor, theme.brushBrandAccent ? theme.brushBrandAccent.Get() : pBorderNorm.Get(), 1.5f);
     } else {
@@ -444,46 +495,100 @@ void InteractiveGuideView::RenderEditorBlock(ID2D1RenderTarget* pRT, Theme& them
     }
 
     // =========================================================================
-    // Floating IntelliSense Popup for Editor 1 (JavaScript)
+    // Floating Real Working IntelliSense Popup for Editor 1 (JavaScript)
     // =========================================================================
-    if (ed.id == 1 && ed.showIntelliSense) {
+    if (ed.id == 1 && ed.showIntelliSense && !ed.intelliSenseItems.empty()) {
         float curLineY = y + padY + ed.doc.buffer.GetCursor().line * lineH;
         float popupX = ed.codeAreaBounds.left + ed.doc.buffer.GetCursor().col * charW;
         float popupY = curLineY + lineH + config.ScaleF(2.0f);
-        float popupW = config.ScaleF(240.0f);
-        float popupH = config.ScaleF(124.0f);
+        float popupW = config.ScaleF(380.0f);
+
+        const size_t maxVisible = 6;
+        const size_t totalItems = ed.intelliSenseItems.size();
+        const size_t visibleCount = (std::min)(totalItems, maxVisible);
+        const float itemH = config.ScaleF(24.0f);
+        const float footerH = config.ScaleF(24.0f);
+        const float popupH = visibleCount * itemH + footerH + config.ScaleF(6.0f);
 
         ed.intelliSensePopupBounds = D2D1::RectF(popupX, popupY, popupX + popupW, popupY + popupH);
-        D2D1_ROUNDED_RECT rrcPopup = D2D1::RoundedRect(ed.intelliSensePopupBounds, 3.5f, 3.5f);
+        D2D1_ROUNDED_RECT rrcPopup = D2D1::RoundedRect(ed.intelliSensePopupBounds, 4.0f, 4.0f);
 
+        // Elevated dark card background (NEVER purple!)
         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> pPopBg;
-        pRT->CreateSolidColorBrush(D2D1::ColorF(0.13f, 0.13f, 0.15f, 1.0f), &pPopBg);
+        pRT->CreateSolidColorBrush(D2D1::ColorF(0.12f, 0.12f, 0.14f, 0.98f), &pPopBg);
         if (pPopBg) pRT->FillRoundedRectangle(rrcPopup, pPopBg.Get());
         pRT->DrawRoundedRectangle(rrcPopup, theme.brushBrandAccent ? theme.brushBrandAccent.Get() : pBorderNorm.Get(), 1.2f);
 
-        float autoRowH = config.ScaleF(19.0f);
-        for (int i = 0; i < 6; ++i) {
-            float ay = popupY + config.ScaleF(4.0f) + i * autoRowH;
-            D2D1_RECT_F rcRow = D2D1::RectF(popupX + 2.0f, ay, popupX + popupW - 2.0f, ay + autoRowH);
-            bool isActive = (i == ed.intelliSenseSelectedIdx);
+        // Adjust scroll offset
+        if (ed.intelliSenseSelectedIdx < ed.intelliSenseScrollOffset) {
+            ed.intelliSenseScrollOffset = ed.intelliSenseSelectedIdx;
+        } else if (ed.intelliSenseSelectedIdx >= ed.intelliSenseScrollOffset + visibleCount) {
+            ed.intelliSenseScrollOffset = ed.intelliSenseSelectedIdx - visibleCount + 1;
+        }
+        if (totalItems > visibleCount) {
+            if (ed.intelliSenseScrollOffset > totalItems - visibleCount) {
+                ed.intelliSenseScrollOffset = totalItems - visibleCount;
+            }
+        } else {
+            ed.intelliSenseScrollOffset = 0;
+        }
 
-            if (isActive) {
+        for (size_t i = 0; i < visibleCount; ++i) {
+            size_t itemIdx = ed.intelliSenseScrollOffset + i;
+            if (itemIdx >= totalItems) break;
+
+            const auto& item = ed.intelliSenseItems[itemIdx];
+            float ay = popupY + config.ScaleF(4.0f) + i * itemH;
+            D2D1_RECT_F rcRow = D2D1::RectF(popupX + 3.0f, ay, popupX + popupW - 3.0f, ay + itemH);
+            bool isSelected = (itemIdx == ed.intelliSenseSelectedIdx);
+
+            if (isSelected) {
                 Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> pSelRow;
-                pRT->CreateSolidColorBrush(D2D1::ColorF(0.24f, 0.24f, 0.32f, 1.0f), &pSelRow);
-                if (pSelRow) pRT->FillRectangle(rcRow, pSelRow.Get());
+                pRT->CreateSolidColorBrush(D2D1::ColorF(0.04f, 0.28f, 0.48f, 0.95f), &pSelRow); // VS Code blue
+                if (pSelRow) pRT->FillRoundedRectangle(D2D1::RoundedRect(rcRow, 3.0f, 3.0f), pSelRow.Get());
             }
 
-            // Glyph icon
-            D2D1_RECT_F rcBadge = D2D1::RectF(popupX + config.ScaleF(8.0f), ay, popupX + config.ScaleF(22.0f), ay + autoRowH);
-            pRT->DrawText(kCanvasApiCompletions[i].icon, 1, theme.fontBadge ? theme.fontBadge.Get() : pCodeFmt,
-                          rcBadge, theme.brushBrandAccent.Get());
+            // Real kind icon badge
+            const wchar_t* kindBadge = L"ⓜ";
+            D2D1_COLOR_F badgeColor = D2D1::ColorF(0.51f, 0.55f, 0.97f);
+            switch (item.kind) {
+                case editor::CompletionKind::Property:  kindBadge = L"ⓟ"; badgeColor = D2D1::ColorF(0.75f, 0.52f, 0.99f); break;
+                case editor::CompletionKind::Method:    kindBadge = L"ⓜ"; badgeColor = D2D1::ColorF(0.51f, 0.55f, 0.97f); break;
+                case editor::CompletionKind::Function:  kindBadge = L"ⓕ"; badgeColor = D2D1::ColorF(0.65f, 0.54f, 0.98f); break;
+                case editor::CompletionKind::Variable:  kindBadge = L"ⓥ"; badgeColor = D2D1::ColorF(0.38f, 0.65f, 0.98f); break;
+                case editor::CompletionKind::Keyword:   kindBadge = L"ⓚ"; badgeColor = D2D1::ColorF(0.96f, 0.45f, 0.71f); break;
+                default: break;
+            }
 
-            // Method/Property name
-            D2D1_RECT_F rcName = D2D1::RectF(popupX + config.ScaleF(26.0f), ay, popupX + popupW - config.ScaleF(6.0f), ay + autoRowH);
-            pRT->DrawText(kCanvasApiCompletions[i].name, static_cast<UINT32>(wcslen(kCanvasApiCompletions[i].name)),
-                          theme.fontMenuItem ? theme.fontMenuItem.Get() : theme.fontBody.Get(),
-                          rcName, isActive ? theme.brushTextWhite.Get() : theme.brushTextPrimary.Get());
+            Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> pBadgeBrush;
+            pRT->CreateSolidColorBrush(badgeColor, &pBadgeBrush);
+            D2D1_RECT_F rcBadge = D2D1::RectF(popupX + config.ScaleF(8.0f), ay, popupX + config.ScaleF(24.0f), ay + itemH);
+            pRT->DrawText(kindBadge, 1, theme.fontBadge ? theme.fontBadge.Get() : pCodeFmt, rcBadge, pBadgeBrush.Get());
+
+            // Label
+            float labelX = popupX + config.ScaleF(26.0f);
+            float labelW = config.ScaleF(170.0f);
+            D2D1_RECT_F rcLabel = D2D1::RectF(labelX, ay, labelX + labelW, ay + itemH);
+            pRT->DrawText(item.label.c_str(), static_cast<UINT32>(item.label.length()),
+                          theme.fontBody ? theme.fontBody.Get() : pCodeFmt,
+                          rcLabel, isSelected ? theme.brushTextWhite.Get() : theme.brushTextPrimary.Get());
+
+            // Detail
+            if (!item.detail.empty()) {
+                float detailX = labelX + labelW;
+                D2D1_RECT_F rcDetail = D2D1::RectF(detailX, ay, popupX + popupW - config.ScaleF(8.0f), ay + itemH);
+                pRT->DrawText(item.detail.c_str(), static_cast<UINT32>(item.detail.length()),
+                              theme.fontHint ? theme.fontHint.Get() : pCodeFmt,
+                              rcDetail, theme.brushTextMuted.Get());
+            }
         }
+
+        // Footer showing count & hint
+        float footerY = popupY + popupH - footerH;
+        D2D1_RECT_F rcFooter = D2D1::RectF(popupX + config.ScaleF(8.0f), footerY, popupX + popupW - config.ScaleF(8.0f), footerY + footerH);
+        std::wstring footerStr = std::to_wstring(ed.intelliSenseSelectedIdx + 1) + L" of " + std::to_wstring(totalItems) + L"  CanvasRenderingContext2D (Enter to insert)";
+        pRT->DrawText(footerStr.c_str(), static_cast<UINT32>(footerStr.length()),
+                      theme.fontHint ? theme.fontHint.Get() : pCodeFmt, rcFooter, theme.brushTextMuted.Get());
     }
 }
 
@@ -520,10 +625,17 @@ void InteractiveGuideView::Render(ID2D1RenderTarget* pRT, Theme& theme, const ap
 
     const wchar_t* subStr = L"Explore and try out the powerful core features of Phide directly inside this interactive walkthrough. "
                             L"Each code block below is an interactive editor — click, type, and test features live!";
-    D2D1_RECT_F rcSub = D2D1::RectF(contentLeft, curY, contentLeft + contentW, curY + config.ScaleF(44.0f));
-    pRT->DrawText(subStr, static_cast<UINT32>(wcslen(subStr)),
-                  pBodyFmt, rcSub, theme.brushTextSecondary.Get());
-    curY += config.ScaleF(48.0f);
+    if (theme.dwriteFactory && pBodyFmt) {
+        Microsoft::WRL::ComPtr<IDWriteTextLayout> pSubLayout;
+        if (SUCCEEDED(theme.dwriteFactory->CreateTextLayout(subStr, static_cast<UINT32>(wcslen(subStr)), pBodyFmt, contentW, 500.0f, &pSubLayout))) {
+            pSubLayout->SetWordWrapping(DWRITE_WORD_WRAPPING_WRAP);
+            DWRITE_TEXT_METRICS tm{};
+            if (SUCCEEDED(pSubLayout->GetMetrics(&tm))) {
+                pRT->DrawTextLayout(D2D1::Point2F(contentLeft, curY), pSubLayout.Get(), theme.brushTextSecondary.Get());
+                curY += tm.height + config.ScaleF(18.0f);
+            }
+        }
+    }
 
     // =========================================================================
     // Feature Highlights Grid (8 core features, neutral dark cards, NEVER purple!)
@@ -610,7 +722,7 @@ void InteractiveGuideView::Render(ID2D1RenderTarget* pRT, Theme& theme, const ap
     RenderEditorBlock(pRT, theme, config, m_editors[0], contentLeft, curY, contentW, ed0H);
     curY += ed0H + config.ScaleF(16.0f);
 
-    // Callout box for CSS Tip
+    // Callout box for CSS Tip (Wrapped, ZERO text leaks!)
     float calloutH1 = 0.0f;
     DrawCalloutBox(pRT, theme, config, contentLeft, curY, contentW,
                    L"CSS Tip:",
@@ -619,7 +731,7 @@ void InteractiveGuideView::Render(ID2D1RenderTarget* pRT, Theme& theme, const ap
     curY += calloutH1 + config.ScaleF(32.0f);
 
     // =========================================================================
-    // SECTION 2: IntelliSense (Live Editor 1)
+    // SECTION 2: IntelliSense (Live Editor 1 with Working IntelliSenseEngine)
     // =========================================================================
     D2D1_RECT_F rcSec2Title = D2D1::RectF(contentLeft, curY, contentLeft + contentW, curY + config.ScaleF(28.0f));
     const wchar_t* sec2Title = L"IntelliSense";
@@ -627,7 +739,7 @@ void InteractiveGuideView::Render(ID2D1RenderTarget* pRT, Theme& theme, const ap
                   pHeadingFmt, rcSec2Title, theme.brushTextWhite.Get());
     curY += config.ScaleF(32.0f);
 
-    const wchar_t* sec2Desc = L"Phide comes with powerful IntelliSense for JavaScript, TypeScript, PHP, Python, and Web APIs pre-installed. In the live editor below, position the text cursor right after the dot and press Ctrl+Space to invoke IntelliSense. Notice how suggestions come from the Canvas API.";
+    const wchar_t* sec2Desc = L"Phide comes with powerful IntelliSense for JavaScript, TypeScript, PHP, Python, and Web APIs pre-installed. In the live editor below, position the text cursor right after the dot and press Ctrl+Space to invoke working IntelliSense. Suggestions filter live as you type!";
     D2D1_RECT_F rcSec2Desc = D2D1::RectF(contentLeft, curY, contentLeft + contentW, curY + config.ScaleF(36.0f));
     pRT->DrawText(sec2Desc, static_cast<UINT32>(wcslen(sec2Desc)),
                   pBodyFmt, rcSec2Desc, theme.brushTextSecondary.Get());
@@ -638,7 +750,7 @@ void InteractiveGuideView::Render(ID2D1RenderTarget* pRT, Theme& theme, const ap
     RenderEditorBlock(pRT, theme, config, m_editors[1], contentLeft, curY, contentW, ed1H);
     curY += ed1H + config.ScaleF(16.0f);
 
-    // Callout box for IntelliSense Tip
+    // Callout box for IntelliSense Tip (Placed below editor + popup with ZERO overlap!)
     float calloutH2 = 0.0f;
     DrawCalloutBox(pRT, theme, config, contentLeft, curY, contentW,
                    L"Tip:",
@@ -683,7 +795,7 @@ void InteractiveGuideView::Render(ID2D1RenderTarget* pRT, Theme& theme, const ap
                   pHeadingFmt, rcSec4Title, theme.brushTextWhite.Get());
     curY += config.ScaleF(32.0f);
 
-    const wchar_t* sec4Desc = L"In Phide, project tasks are written directly in code comments starting with `// [ ] TASK` or `// [x] TASK`. In the live editor below, click on any checkbox to toggle its completed state, or edit the task text directly:";
+    const wchar_t* sec4Desc = L"In Phide, project tasks are written directly in code comments starting with `// [ ] TASK` or `// [x] TASK` or `// TASK`. In the live editor below, click on any checkbox to toggle its completed state, or type `// TASK ...` to create new interactive checkboxes live:";
     D2D1_RECT_F rcSec4Desc = D2D1::RectF(contentLeft, curY, contentLeft + contentW, curY + config.ScaleF(34.0f));
     pRT->DrawText(sec4Desc, static_cast<UINT32>(wcslen(sec4Desc)),
                   pBodyFmt, rcSec4Desc, theme.brushTextSecondary.Get());
@@ -698,7 +810,7 @@ void InteractiveGuideView::Render(ID2D1RenderTarget* pRT, Theme& theme, const ap
     float calloutH4 = 0.0f;
     DrawCalloutBox(pRT, theme, config, contentLeft, curY, contentW,
                    L"Tip:",
-                   L"In any file, write `// [ ] TASK ...` or `// [x] TASK ...` to create interactive task checkboxes directly inside your code. Clicking the checkbox toggles completion, strikes through completed tasks, and tracks progress effortlessly.",
+                   L"In any file, write `// [ ] TASK ...` or `// [x] TASK ...` or `// TASK ...` to create interactive task checkboxes directly inside your code. Clicking the checkbox toggles completion, strikes through completed tasks, and tracks progress effortlessly.",
                    calloutH4);
     curY += calloutH4 + config.ScaleF(32.0f);
 
@@ -783,15 +895,13 @@ void InteractiveGuideView::Render(ID2D1RenderTarget* pRT, Theme& theme, const ap
                   pBodyFmt, rcSec6Desc, theme.brushTextSecondary.Get());
     curY += config.ScaleF(48.0f);
 
-    // Record total content height
     m_contentTotalHeight = (curY + m_scrollY) - top;
     m_maxScrollY = (std::max)(0.0f, m_contentTotalHeight - height + config.ScaleF(30.0f));
 
-    // Pop clipping
     pRT->PopAxisAlignedClip();
 
     // =========================================================================
-    // Vertical Scrollbar (if content overflows)
+    // Vertical Scrollbar
     // =========================================================================
     if (m_maxScrollY > 0.0f) {
         const float sbW = config.ScaleF(10.0f);
@@ -812,7 +922,6 @@ void InteractiveGuideView::Render(ID2D1RenderTarget* pRT, Theme& theme, const ap
 bool InteractiveGuideView::HandleMouseMove(POINT clientPt) {
     bool needRepaint = false;
 
-    // Check if dragging mouse to select text inside an editor block
     if (m_focusedEditorIdx >= 0 && m_focusedEditorIdx < static_cast<int>(m_editors.size())) {
         auto& ed = m_editors[m_focusedEditorIdx];
         if (ed.doc.isSelecting) {
@@ -837,13 +946,14 @@ bool InteractiveGuideView::HandleMouseMove(POINT clientPt) {
         }
 
         // Hover over IntelliSense dropdown
-        if (ed.showIntelliSense &&
+        if (ed.showIntelliSense && !ed.intelliSenseItems.empty() &&
             clientPt.x >= ed.intelliSensePopupBounds.left && clientPt.x <= ed.intelliSensePopupBounds.right &&
             clientPt.y >= ed.intelliSensePopupBounds.top && clientPt.y <= ed.intelliSensePopupBounds.bottom) {
-            float rowH = 19.0f;
-            int hoveredRow = static_cast<int>((clientPt.y - (ed.intelliSensePopupBounds.top + 4.0f)) / rowH);
-            if (hoveredRow >= 0 && hoveredRow < 6 && hoveredRow != ed.intelliSenseSelectedIdx) {
-                ed.intelliSenseSelectedIdx = hoveredRow;
+            float itemH = 24.0f;
+            float relY = clientPt.y - (ed.intelliSensePopupBounds.top + 4.0f);
+            size_t hoveredIdx = (relY > 0) ? (ed.intelliSenseScrollOffset + static_cast<size_t>(relY / itemH)) : 0;
+            if (hoveredIdx < ed.intelliSenseItems.size() && hoveredIdx != ed.intelliSenseSelectedIdx) {
+                ed.intelliSenseSelectedIdx = hoveredIdx;
                 needRepaint = true;
             }
         }
@@ -865,15 +975,15 @@ bool InteractiveGuideView::HandleLButtonDown(POINT clientPt, bool altPressed) {
                 m_editors[j].isFocused = (static_cast<int>(j) == m_focusedEditorIdx);
             }
 
-            // Check if clicking inside IntelliSense popup (if open)
-            if (ed.showIntelliSense &&
+            // Clicked inside working IntelliSense popup?
+            if (ed.showIntelliSense && !ed.intelliSenseItems.empty() &&
                 clientPt.x >= ed.intelliSensePopupBounds.left && clientPt.x <= ed.intelliSensePopupBounds.right &&
                 clientPt.y >= ed.intelliSensePopupBounds.top && clientPt.y <= ed.intelliSensePopupBounds.bottom) {
-                float rowH = 19.0f;
-                int clickedRow = static_cast<int>((clientPt.y - (ed.intelliSensePopupBounds.top + 4.0f)) / rowH);
-                if (clickedRow >= 0 && clickedRow < 6) {
-                    InsertCompletion(ed, kCanvasApiCompletions[clickedRow].name);
-                    ed.showIntelliSense = false;
+                float itemH = 24.0f;
+                float relY = clientPt.y - (ed.intelliSensePopupBounds.top + 4.0f);
+                size_t clickedIdx = (relY > 0) ? (ed.intelliSenseScrollOffset + static_cast<size_t>(relY / itemH)) : 0;
+                if (clickedIdx < ed.intelliSenseItems.size()) {
+                    ApplyCompletion(ed, clickedIdx);
                     return true;
                 }
             }
@@ -893,21 +1003,39 @@ bool InteractiveGuideView::HandleLButtonDown(POINT clientPt, bool altPressed) {
             size_t clickedCol = (relX > 0) ? static_cast<size_t>((relX + charW * 0.5f) / charW) : 0;
             if (clickedCol > lineStr.length()) clickedCol = lineStr.length();
 
-            // Check if clicked an interactive TODO checkbox (especially in Task Editor 3)
+            // Check if clicked a task checkbox on this line (Supports // TASK, // [ ], // [x], // [])
+            std::wstring upperLine = lineStr;
+            for (auto& c : upperLine) c = towupper(c);
+
             size_t xPos = lineStr.find(L"[x]");
             if (xPos == std::wstring::npos) xPos = lineStr.find(L"[X]");
             size_t emptyPos = lineStr.find(L"[ ]");
-            size_t cbCol = (xPos != std::wstring::npos) ? xPos : emptyPos;
+            size_t tightPos = lineStr.find(L"[]");
+            size_t taskPos = upperLine.find(L"TASK");
+            size_t todoPos = upperLine.find(L"TODO");
+
+            size_t cbCol = std::wstring::npos;
+            if (xPos != std::wstring::npos) cbCol = xPos;
+            else if (emptyPos != std::wstring::npos) cbCol = emptyPos;
+            else if (tightPos != std::wstring::npos) cbCol = tightPos;
+            else if (taskPos != std::wstring::npos && taskPos >= 2) cbCol = taskPos - 1;
+            else if (todoPos != std::wstring::npos && todoPos >= 2) cbCol = todoPos - 1;
 
             if (cbCol != std::wstring::npos) {
-                float cbLeft = ed.codeAreaBounds.left + cbCol * charW - 4.0f;
-                float cbRight = cbLeft + 3.0f * charW + 8.0f;
+                float cbLeft = ed.codeAreaBounds.left + cbCol * charW - 6.0f;
+                float cbRight = cbLeft + 3.0f * charW + 10.0f;
                 if (clientPt.x >= cbLeft && clientPt.x <= cbRight) {
                     std::wstring newLine = lineStr;
                     if (xPos != std::wstring::npos) {
                         newLine.replace(xPos, 3, L"[ ]");
                     } else if (emptyPos != std::wstring::npos) {
                         newLine.replace(emptyPos, 3, L"[x]");
+                    } else if (tightPos != std::wstring::npos) {
+                        newLine.replace(tightPos, 2, L"[x]");
+                    } else if (taskPos != std::wstring::npos) {
+                        newLine.insert(taskPos, L"[x] ");
+                    } else if (todoPos != std::wstring::npos) {
+                        newLine.insert(todoPos, L"[x] ");
                     }
                     ed.doc.buffer.SetLine(clickedLine, newLine);
                     return true;
@@ -916,7 +1044,6 @@ bool InteractiveGuideView::HandleLButtonDown(POINT clientPt, bool altPressed) {
 
             // Multi-cursor or standard cursor positioning
             if (altPressed) {
-                // Add secondary cursor!
                 ed.doc.secondarySelections.push_back({ { clickedLine, clickedCol }, { clickedLine, clickedCol } });
             } else {
                 ed.doc.secondarySelections.clear();
@@ -925,6 +1052,12 @@ bool InteractiveGuideView::HandleLButtonDown(POINT clientPt, bool altPressed) {
                 ed.doc.selEnd = { clickedLine, clickedCol };
                 ed.doc.hasSelection = false;
                 ed.doc.isSelecting = true;
+            }
+
+            // Update IntelliSense on cursor click
+            if (ed.id == 1) {
+                UpdateIntelliSense(ed);
+                ed.showIntelliSense = !ed.intelliSenseItems.empty();
             }
 
             return true;
@@ -978,9 +1111,10 @@ bool InteractiveGuideView::HandleChar(wchar_t ch) {
             ed.doc.buffer.InsertChar(ch);
         }
 
-        // In Editor 1 (JS): typing '.' opens IntelliSense
-        if (ed.id == 1 && ch == L'.') {
-            ed.showIntelliSense = true;
+        // Live IntelliSense query on typing in Editor 1
+        if (ed.id == 1) {
+            UpdateIntelliSense(ed);
+            ed.showIntelliSense = !ed.intelliSenseItems.empty();
         }
         return true;
     }
@@ -994,9 +1128,14 @@ bool InteractiveGuideView::HandleKeyDown(WPARAM key) {
     auto& ed = m_editors[m_focusedEditorIdx];
     bool ctrl = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
 
-    // Ctrl+Space -> Toggle IntelliSense in Editor 1
+    // Ctrl+Space -> Toggle real working IntelliSense
     if (ctrl && key == VK_SPACE) {
-        ed.showIntelliSense = !ed.showIntelliSense;
+        if (!ed.showIntelliSense) {
+            UpdateIntelliSense(ed);
+            ed.showIntelliSense = !ed.intelliSenseItems.empty();
+        } else {
+            ed.showIntelliSense = false;
+        }
         return true;
     }
 
@@ -1008,11 +1147,10 @@ bool InteractiveGuideView::HandleKeyDown(WPARAM key) {
         return false;
     }
 
-    // Tab -> accept ghost text (Editor 2) or complete IntelliSense (Editor 1) or indent
+    // Tab -> complete real IntelliSense or accept ghost text or indent
     if (key == VK_TAB) {
-        if (ed.showIntelliSense) {
-            InsertCompletion(ed, kCanvasApiCompletions[ed.intelliSenseSelectedIdx].name);
-            ed.showIntelliSense = false;
+        if (ed.showIntelliSense && !ed.intelliSenseItems.empty()) {
+            ApplyCompletion(ed, ed.intelliSenseSelectedIdx);
             return true;
         }
         if (!ed.ghostText.empty() && ed.doc.buffer.GetCursor().line == ed.ghostLine) {
@@ -1026,19 +1164,26 @@ bool InteractiveGuideView::HandleKeyDown(WPARAM key) {
         return true;
     }
 
-    // Up / Down arrow navigation for IntelliSense
-    if (ed.showIntelliSense) {
+    // Up / Down arrow navigation for real IntelliSense popup
+    if (ed.showIntelliSense && !ed.intelliSenseItems.empty()) {
         if (key == VK_UP) {
-            ed.intelliSenseSelectedIdx = (ed.intelliSenseSelectedIdx > 0) ? (ed.intelliSenseSelectedIdx - 1) : 5;
+            if (ed.intelliSenseSelectedIdx > 0) {
+                ed.intelliSenseSelectedIdx--;
+            } else {
+                ed.intelliSenseSelectedIdx = ed.intelliSenseItems.size() - 1;
+            }
             return true;
         }
         if (key == VK_DOWN) {
-            ed.intelliSenseSelectedIdx = (ed.intelliSenseSelectedIdx + 1) % 6;
+            if (ed.intelliSenseSelectedIdx + 1 < ed.intelliSenseItems.size()) {
+                ed.intelliSenseSelectedIdx++;
+            } else {
+                ed.intelliSenseSelectedIdx = 0;
+            }
             return true;
         }
         if (key == VK_RETURN) {
-            InsertCompletion(ed, kCanvasApiCompletions[ed.intelliSenseSelectedIdx].name);
-            ed.showIntelliSense = false;
+            ApplyCompletion(ed, ed.intelliSenseSelectedIdx);
             return true;
         }
     }
@@ -1102,6 +1247,10 @@ bool InteractiveGuideView::HandleKeyDown(WPARAM key) {
         } else {
             ed.doc.buffer.Backspace();
         }
+        if (ed.id == 1) {
+            UpdateIntelliSense(ed);
+            ed.showIntelliSense = !ed.intelliSenseItems.empty();
+        }
         return true;
     }
 
@@ -1125,21 +1274,25 @@ bool InteractiveGuideView::HandleKeyDown(WPARAM key) {
     if (key == VK_LEFT) {
         ed.doc.buffer.MoveCursorLeft();
         ed.doc.ClearSelection();
+        if (ed.id == 1) { UpdateIntelliSense(ed); ed.showIntelliSense = !ed.intelliSenseItems.empty(); }
         return true;
     }
     if (key == VK_RIGHT) {
         ed.doc.buffer.MoveCursorRight();
         ed.doc.ClearSelection();
+        if (ed.id == 1) { UpdateIntelliSense(ed); ed.showIntelliSense = !ed.intelliSenseItems.empty(); }
         return true;
     }
     if (key == VK_UP) {
         ed.doc.buffer.MoveCursorUp();
         ed.doc.ClearSelection();
+        if (ed.id == 1) { UpdateIntelliSense(ed); ed.showIntelliSense = !ed.intelliSenseItems.empty(); }
         return true;
     }
     if (key == VK_DOWN) {
         ed.doc.buffer.MoveCursorDown();
         ed.doc.ClearSelection();
+        if (ed.id == 1) { UpdateIntelliSense(ed); ed.showIntelliSense = !ed.intelliSenseItems.empty(); }
         return true;
     }
 
@@ -1168,14 +1321,27 @@ LPCWSTR InteractiveGuideView::GetCursorForPoint(POINT pt) const {
                 size_t l = (relY > 0) ? static_cast<size_t>(relY / lineH) : 0;
                 if (l < ed.doc.buffer.GetLineCount()) {
                     std::wstring lineStr = ed.doc.buffer.GetLine(l);
+                    std::wstring upperLine = lineStr;
+                    for (auto& c : upperLine) c = towupper(c);
+
                     size_t xPos = lineStr.find(L"[x]");
                     if (xPos == std::wstring::npos) xPos = lineStr.find(L"[X]");
                     size_t emptyPos = lineStr.find(L"[ ]");
-                    size_t cbCol = (xPos != std::wstring::npos) ? xPos : emptyPos;
+                    size_t tightPos = lineStr.find(L"[]");
+                    size_t taskPos = upperLine.find(L"TASK");
+                    size_t todoPos = upperLine.find(L"TODO");
+
+                    size_t cbCol = std::wstring::npos;
+                    if (xPos != std::wstring::npos) cbCol = xPos;
+                    else if (emptyPos != std::wstring::npos) cbCol = emptyPos;
+                    else if (tightPos != std::wstring::npos) cbCol = tightPos;
+                    else if (taskPos != std::wstring::npos && taskPos >= 2) cbCol = taskPos - 1;
+                    else if (todoPos != std::wstring::npos && todoPos >= 2) cbCol = todoPos - 1;
+
                     if (cbCol != std::wstring::npos) {
                         float charW = (m_cachedCharWidth > 0.0f) ? m_cachedCharWidth : 8.5f;
-                        float cbLeft = ed.codeAreaBounds.left + cbCol * charW - 4.0f;
-                        float cbRight = cbLeft + 3.0f * charW + 8.0f;
+                        float cbLeft = ed.codeAreaBounds.left + cbCol * charW - 6.0f;
+                        float cbRight = cbLeft + 3.0f * charW + 10.0f;
                         if (pt.x >= cbLeft && pt.x <= cbRight) {
                             return IDC_HAND;
                         }
@@ -1186,8 +1352,8 @@ LPCWSTR InteractiveGuideView::GetCursorForPoint(POINT pt) const {
             return IDC_IBEAM;
         }
 
-        // Hover over IntelliSense dropdown
-        if (ed.showIntelliSense &&
+        // Hover over real IntelliSense popup
+        if (ed.showIntelliSense && !ed.intelliSenseItems.empty() &&
             pt.x >= ed.intelliSensePopupBounds.left && pt.x <= ed.intelliSensePopupBounds.right &&
             pt.y >= ed.intelliSensePopupBounds.top && pt.y <= ed.intelliSensePopupBounds.bottom) {
             return IDC_HAND;
