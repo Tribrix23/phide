@@ -63,6 +63,7 @@ public:
     [[nodiscard]] size_t GetTargetCol() const noexcept { return m_targetCol; }
     [[nodiscard]] size_t GetTargetLength() const noexcept { return m_targetLength; }
     [[nodiscard]] const std::wstring& GetCurrentColorString() const noexcept { return m_colorString; }
+    [[nodiscard]] const std::wstring& GetTailwindPrefix() const noexcept { return m_tailwindPrefix; }
 
     /**
      * @brief Renders the color picker UI with Direct2D.
@@ -135,6 +136,7 @@ private:
     ColorFormat m_format = ColorFormat::Hex;
     bool m_hasAlpha = false;
     std::wstring m_colorString = L"#203AAD";
+    std::wstring m_tailwindPrefix;
 
     // Hit-test and layout bounds
     D2D1_RECT_F m_modalBounds{};

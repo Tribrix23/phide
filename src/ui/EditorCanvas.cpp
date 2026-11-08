@@ -172,19 +172,38 @@ std::vector<LineColorSpan> EditorCanvas::ScanLineColors(const std::wstring& line
             while (tokEnd < lineStr.length() && (iswalnum(lineStr[tokEnd]) || lineStr[tokEnd] == L'-' || lineStr[tokEnd] == L':' || lineStr[tokEnd] == L'/')) {
                 tokEnd++;
             }
+            if (tokEnd < lineStr.length() && lineStr[tokEnd] == L'[') {
+                size_t closeB = lineStr.find(L']', tokEnd);
+                if (closeB != std::wstring::npos) {
+                    bool validBracket = true;
+                    for (size_t b = tokEnd + 1; b < closeB; ++b) {
+                        if (lineStr[b] == L' ' || lineStr[b] == L'"' || lineStr[b] == L'\'' || lineStr[b] == L'\t' || lineStr[b] == L'\r' || lineStr[b] == L'\n') {
+                            validBracket = false;
+                            break;
+                        }
+                    }
+                    if (validBracket) {
+                        tokEnd = closeB + 1;
+                        while (tokEnd < lineStr.length() && (iswalnum(lineStr[tokEnd]) || lineStr[tokEnd] == L'-' || lineStr[tokEnd] == L'/')) {
+                            tokEnd++;
+                        }
+                    }
+                }
+            }
             if (tokEnd > scanCIdx) {
                 std::wstring_view word(lineStr.data() + scanCIdx, tokEnd - scanCIdx);
                 size_t colPos = word.rfind(L':');
                 std::wstring_view coreClass = (colPos != std::wstring_view::npos) ? word.substr(colPos + 1) : word;
                 size_t swatchCol = (colPos != std::wstring_view::npos) ? (scanCIdx + colPos + 1) : scanCIdx;
 
-                // 3a. Check Tailwind Color Class (e.g. bg-red-600, text-white, border-blue-400, dark:bg-black)
+                // 3a. Check Tailwind Color Class (e.g. bg-red-600, text-white, border-blue-400, bg-[#1D2E7E], dark:bg-black)
                 editor::TailwindColorInfo twInfo;
                 if (editor::TailwindHelper::TryParseClass(coreClass, twInfo)) {
                     float r = ((twInfo.hex >> 16) & 0xFF) / 255.0f;
                     float g = ((twInfo.hex >> 8) & 0xFF) / 255.0f;
                     float b = (twInfo.hex & 0xFF) / 255.0f;
-                    lineColors.push_back({ swatchCol, coreClass.length(), std::wstring(coreClass), D2D1::ColorF(r, g, b, 1.0f), ColorFormat::Hex, false });
+                    float a = twInfo.hasAlpha ? twInfo.alpha : 1.0f;
+                    lineColors.push_back({ swatchCol, coreClass.length(), std::wstring(coreClass), D2D1::ColorF(r, g, b, a), ColorFormat::Hex, twInfo.hasAlpha });
                     scanCIdx = tokEnd;
                     continue;
                 }

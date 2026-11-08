@@ -15891,6 +15891,87 @@ run_test_102:
             std::cout << "  Passed: CSS Named Colors (red, blue, green) detected and negative contexts filtered correctly" << std::endl;
         }
 
+        // Subtest 8c: Tailwind Color Prefixes, Arbitrary Bracketed Syntax, and ColorPickerModal in-place editing
+        {
+            using phide::editor::TailwindHelper;
+            using phide::editor::TailwindColorInfo;
+
+            // 1. Verify all requested Tailwind utility prefixes
+            struct TwCase { const wchar_t* cls; uint32_t expectedHex; };
+            const TwCase cases[] = {
+                { L"bg-red-500", 0xef4444 },
+                { L"text-blue-500", 0x3b82f6 },
+                { L"border-green-500", 0x22c55e },
+                { L"outline-purple-500", 0xa855f7 },
+                { L"ring-pink-500", 0xec4899 },
+                { L"decoration-yellow-500", 0xeab308 },
+                { L"placeholder-gray-400", 0x9ca3af },
+                { L"caret-red-500", 0xef4444 },
+                { L"accent-blue-500", 0x3b82f6 },
+                { L"fill-orange-500", 0xf97316 },
+                { L"stroke-cyan-500", 0x06b6d4 },
+                { L"shadow-red-500", 0xef4444 },
+                { L"divide-gray-300", 0xd1d5db },
+                { L"from-indigo-500", 0x6366f1 },
+                { L"to-emerald-500", 0x10b981 },
+                { L"via-amber-500", 0xf59e0b },
+                // Arbitrary hex values
+                { L"bg-[#1D2E7E]", 0x1D2E7E },
+                { L"text-[#3b82f6]", 0x3b82f6 },
+                { L"border-[#10b981]", 0x10b981 },
+                { L"shadow-[#ef4444]", 0xef4444 }
+            };
+
+            for (const auto& tc : cases) {
+                TailwindColorInfo info;
+                bool ok = TailwindHelper::TryParseClass(tc.cls, info);
+                assert(ok && "Tailwind class must parse successfully");
+                assert(info.hex == tc.expectedHex && "Parsed hex must match expected color");
+            }
+
+            // 2. Verify ScanLineColors on HTML line with standard Tailwind class (user benchmark)
+            std::wstring htmlLine = L"<main class=\"hello bg-red-600\" id=\"ng\"><div class=\"card\">";
+            auto spans1 = phide::ui::EditorCanvas::ScanLineColors(htmlLine);
+            assert(spans1.size() == 1 && "Must detect 1 color span for bg-red-600");
+            assert(spans1[0].colorStr == L"bg-red-600");
+            assert(spans1[0].col == 19 && "bg-red-600 begins at col 19");
+            assert(spans1[0].len == 10 && "bg-red-600 is 10 chars long");
+            assert(fabs(spans1[0].color.r - (0xdc / 255.0f)) < 0.01f && "bg-red-600 red channel must be #dc");
+
+            // 3. Verify ScanLineColors on HTML line with arbitrary Tailwind class bg-[#1D2E7E]
+            std::wstring arbitraryHtmlLine = L"<main class=\"hello bg-[#1D2E7E]\" id=\"ng\"><div class=\"card\">";
+            auto spans2 = phide::ui::EditorCanvas::ScanLineColors(arbitraryHtmlLine);
+            assert(spans2.size() == 1 && "Must detect 1 color span for bg-[#1D2E7E]");
+            assert(spans2[0].colorStr == L"bg-[#1D2E7E]");
+            assert(spans2[0].col == 19 && "bg-[#1D2E7E] begins at col 19");
+            assert(spans2[0].len == 12 && "bg-[#1D2E7E] is 12 chars long");
+            assert(fabs(spans2[0].color.r - (0x1d / 255.0f)) < 0.01f && "bg-[#1D2E7E] red channel matches");
+
+            // 4. Verify ColorPickerModal initializes with #dc2626 for bg-red-600 and generates prefix syntax
+            phide::ui::ColorPickerModal modal;
+            modal.Open(100.0f, 100.0f, spans1[0].colorStr, 0, spans1[0].col, spans1[0].len);
+            assert(modal.IsOpen());
+            assert(modal.GetTailwindPrefix() == L"bg-" && "Tailwind prefix must be 'bg-'");
+
+            // Check that ColorPickerModal parses the color correctly via TryParseColor
+            D2D1_COLOR_F twCol{};
+            phide::ui::ColorFormat twFmt = phide::ui::ColorFormat::Hex;
+            bool twAlpha = false;
+            assert(phide::ui::ColorPickerModal::TryParseColor(L"bg-red-600", twCol, twFmt, twAlpha));
+            assert(fabs(twCol.r - (0xdc / 255.0f)) < 0.01f && "TryParseColor on bg-red-600 must return red channel ~0.86");
+
+            // Simulate updating the color picker and verify in-place replacement produces bg-[#...]
+            std::wstring updatedLine = htmlLine;
+            auto onUpdate = [&](const std::wstring& newColor, size_t line, size_t col, size_t len) {
+                updatedLine = updatedLine.substr(0, col) + newColor + updatedLine.substr(col + len);
+            };
+            modal.HandleLButtonDown(D2D1::Point2F(150.0f, 125.0f), onUpdate); // Click header inside modal
+            assert(updatedLine.find(L"bg-[") != std::wstring::npos && "In-place replacement must produce Tailwind arbitrary syntax");
+            modal.Close();
+
+            std::cout << "  Passed: Tailwind color prefixes (bg-, text-, border-, shadow-, etc.) & arbitrary syntax verified" << std::endl;
+        }
+
         // Subtest 9: GraphView labels visible at 44% zoom
         {
             phide::ui::GraphView gv;

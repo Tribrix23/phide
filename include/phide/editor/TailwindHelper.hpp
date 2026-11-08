@@ -14,6 +14,8 @@ struct TailwindColorInfo {
     std::wstring cssProp;     // e.g. L"background-color"
     std::wstring cssValue;    // e.g. L"rgb(239 68 68);"
     std::wstring hexStr;      // e.g. L"#ef4444"
+    float alpha = 1.0f;
+    bool hasAlpha = false;
 };
 
 struct TailwindCandidate {
@@ -26,51 +28,187 @@ struct TailwindCandidate {
 
 class TailwindHelper {
 public:
-    static bool TryParseClass(const std::wstring_view& text, TailwindColorInfo& outInfo) {
-        if (text.empty()) return false;
+    static bool TryExtractColorPrefix(const std::wstring_view& text, std::wstring_view& outPrefix, std::wstring_view& outRem, std::wstring& outProp) {
+        struct Pfx {
+            const wchar_t* pfx;
+            const wchar_t* prop;
+        };
+        static const Pfx s_pfxList[] = {
+            { L"ring-offset-", L"--tw-ring-offset-color" },
+            { L"ring-",        L"ring-color" },
+            { L"border-t-",    L"border-top-color" },
+            { L"border-r-",    L"border-right-color" },
+            { L"border-b-",    L"border-bottom-color" },
+            { L"border-l-",    L"border-left-color" },
+            { L"border-x-",    L"border-inline-color" },
+            { L"border-y-",    L"border-block-color" },
+            { L"border-",      L"border-color" },
+            { L"divide-x-",    L"border-inline-color" },
+            { L"divide-y-",    L"border-block-color" },
+            { L"divide-",      L"border-color" },
+            { L"placeholder-", L"placeholder-color" },
+            { L"decoration-",  L"text-decoration-color" },
+            { L"outline-",     L"outline-color" },
+            { L"accent-",      L"accent-color" },
+            { L"caret-",       L"caret-color" },
+            { L"shadow-",      L"--tw-shadow-color" },
+            { L"stroke-",      L"stroke" },
+            { L"fill-",        L"fill" },
+            { L"from-",        L"gradient-from" },
+            { L"via-",         L"gradient-via" },
+            { L"to-",          L"gradient-to" },
+            { L"text-",        L"color" },
+            { L"bg-",          L"background-color" }
+        };
 
-        std::wstring_view prefix;
-        std::wstring prop;
+        for (const auto& item : s_pfxList) {
+            size_t len = wcslen(item.pfx);
+            if (text.starts_with(item.pfx)) {
+                outPrefix = text.substr(0, len);
+                outRem = text.substr(len);
+                outProp = item.prop;
+                return true;
+            }
+        }
+        return false;
+    }
 
-        if (text.starts_with(L"bg-")) {
-            prefix = L"bg-";
-            prop = L"background-color";
-        } else if (text.starts_with(L"text-")) {
-            prefix = L"text-";
-            prop = L"color";
-        } else if (text.starts_with(L"border-")) {
-            prefix = L"border-";
-            prop = L"border-color";
-        } else if (text.starts_with(L"ring-")) {
-            prefix = L"ring-";
-            prop = L"ring-color";
-        } else if (text.starts_with(L"outline-")) {
-            prefix = L"outline-";
-            prop = L"outline-color";
-        } else if (text.starts_with(L"accent-")) {
-            prefix = L"accent-";
-            prop = L"accent-color";
-        } else if (text.starts_with(L"decoration-")) {
-            prefix = L"decoration-";
-            prop = L"text-decoration-color";
-        } else if (text.starts_with(L"from-")) {
-            prefix = L"from-";
-            prop = L"gradient-from";
-        } else if (text.starts_with(L"to-")) {
-            prefix = L"to-";
-            prop = L"gradient-to";
-        } else if (text.starts_with(L"via-")) {
-            prefix = L"via-";
-            prop = L"gradient-via";
-        } else {
+    static bool TryExtractColorPrefix(const std::wstring_view& text, std::wstring_view& outPrefix, std::wstring_view& outRem) {
+        std::wstring dummy;
+        return TryExtractColorPrefix(text, outPrefix, outRem, dummy);
+    }
+
+    static bool TryParseArbitraryColor(const std::wstring_view& inner, uint32_t& outHex, float& outAlpha, bool& outHasAlpha) {
+        if (inner.empty()) return false;
+
+        if (inner.front() == L'#') {
+            std::wstring_view h = inner.substr(1);
+            if (h.length() == 3) {
+                unsigned int r, g, b;
+                if (swscanf_s(std::wstring(h).c_str(), L"%1x%1x%1x", &r, &g, &b) == 3) {
+                    outHex = ((r * 17) << 16) | ((g * 17) << 8) | (b * 17);
+                    return true;
+                }
+            } else if (h.length() == 4) {
+                unsigned int r, g, b, a;
+                if (swscanf_s(std::wstring(h).c_str(), L"%1x%1x%1x%1x", &r, &g, &b, &a) == 4) {
+                    outHex = ((r * 17) << 16) | ((g * 17) << 8) | (b * 17);
+                    outAlpha = (a * 17) / 255.0f;
+                    outHasAlpha = true;
+                    return true;
+                }
+            } else if (h.length() == 6) {
+                unsigned int rgb;
+                if (swscanf_s(std::wstring(h).c_str(), L"%x", &rgb) == 1) {
+                    outHex = rgb & 0xFFFFFF;
+                    return true;
+                }
+            } else if (h.length() == 8) {
+                unsigned int rgba;
+                if (swscanf_s(std::wstring(h).c_str(), L"%x", &rgba) == 1) {
+                    outHex = (rgba >> 8) & 0xFFFFFF;
+                    outAlpha = (rgba & 0xFF) / 255.0f;
+                    outHasAlpha = true;
+                    return true;
+                }
+            }
             return false;
         }
 
-        std::wstring_view rem = text.substr(prefix.length());
+        if (inner.starts_with(L"rgb(") || inner.starts_with(L"rgba(")) {
+            float r = 0, g = 0, b = 0, a = 1.0f;
+            std::wstring s(inner);
+            int parsed = swscanf_s(s.c_str(), L"rgba(%f,%f,%f,%f)", &r, &g, &b, &a);
+            if (parsed < 4) {
+                parsed = swscanf_s(s.c_str(), L"rgb(%f,%f,%f)", &r, &g, &b);
+                a = 1.0f;
+            }
+            if (parsed >= 3) {
+                int ir = (std::clamp)(static_cast<int>(r), 0, 255);
+                int ig = (std::clamp)(static_cast<int>(g), 0, 255);
+                int ib = (std::clamp)(static_cast<int>(b), 0, 255);
+                outHex = (ir << 16) | (ig << 8) | ib;
+                if (parsed == 4) {
+                    outAlpha = a;
+                    outHasAlpha = (a < 0.999f);
+                }
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    static bool TryParseClass(const std::wstring_view& text, TailwindColorInfo& outInfo) {
+        if (text.empty()) return false;
+
+        std::wstring_view prefix, rem;
+        std::wstring prop;
+        if (!TryExtractColorPrefix(text, prefix, rem, prop)) {
+            return false;
+        }
         if (rem.empty()) return false;
+
+        float alpha = 1.0f;
+        bool hasAlpha = false;
+
+        // 1. Arbitrary bracketed value, e.g. "[#1D2E7E]" or "[#1D2E7E]/50" or "[rgb(1,2,3)]"
+        if (rem.front() == L'[') {
+            size_t closeB = rem.find(L']');
+            if (closeB != std::wstring_view::npos) {
+                std::wstring_view inner = rem.substr(1, closeB - 1);
+                std::wstring_view afterBracket = rem.substr(closeB + 1);
+                if (afterBracket.starts_with(L"/")) {
+                    std::wstring_view alphaStr = afterBracket.substr(1);
+                    int opVal = 0;
+                    bool opOk = true;
+                    for (wchar_t ch : alphaStr) {
+                        if (ch < L'0' || ch > L'9') { opOk = false; break; }
+                        opVal = opVal * 10 + (ch - L'0');
+                    }
+                    if (opOk && opVal >= 0 && opVal <= 100) {
+                        alpha = static_cast<float>(opVal) / 100.0f;
+                        hasAlpha = true;
+                    }
+                }
+
+                uint32_t hex = 0;
+                if (TryParseArbitraryColor(inner, hex, alpha, hasAlpha)) {
+                    outInfo.hex = hex;
+                    outInfo.alpha = alpha;
+                    outInfo.hasAlpha = hasAlpha;
+                    outInfo.cssProp = prop;
+                    wchar_t hexBuf[16];
+                    swprintf_s(hexBuf, L"#%02x%02x%02x", (hex >> 16) & 0xFF, (hex >> 8) & 0xFF, hex & 0xFF);
+                    outInfo.hexStr = hexBuf;
+                    outInfo.cssValue = prop + L": " + hexBuf + L";";
+                    return true;
+                }
+                return false;
+            }
+        }
+
+        // 2. Opacity modifier in named class, e.g. "red-600/50"
+        size_t slashPos = rem.find(L'/');
+        if (slashPos != std::wstring_view::npos) {
+            std::wstring_view alphaStr = rem.substr(slashPos + 1);
+            int opVal = 0;
+            bool opOk = true;
+            for (wchar_t ch : alphaStr) {
+                if (ch < L'0' || ch > L'9') { opOk = false; break; }
+                opVal = opVal * 10 + (ch - L'0');
+            }
+            if (opOk && opVal >= 0 && opVal <= 100) {
+                alpha = static_cast<float>(opVal) / 100.0f;
+                hasAlpha = true;
+            }
+            rem = rem.substr(0, slashPos);
+        }
 
         if (rem == L"black") {
             outInfo.hex = 0x000000;
+            outInfo.alpha = alpha;
+            outInfo.hasAlpha = hasAlpha;
             outInfo.cssProp = prop;
             outInfo.cssValue = prop + L": #000;";
             outInfo.hexStr = L"#000000";
@@ -78,6 +216,8 @@ public:
         }
         if (rem == L"white") {
             outInfo.hex = 0xffffff;
+            outInfo.alpha = alpha;
+            outInfo.hasAlpha = hasAlpha;
             outInfo.cssProp = prop;
             outInfo.cssValue = prop + L": #fff;";
             outInfo.hexStr = L"#ffffff";
@@ -85,6 +225,8 @@ public:
         }
         if (rem == L"transparent") {
             outInfo.hex = 0x000000;
+            outInfo.alpha = 0.0f;
+            outInfo.hasAlpha = true;
             outInfo.cssProp = prop;
             outInfo.cssValue = prop + L": transparent;";
             outInfo.hexStr = L"transparent";
@@ -123,6 +265,8 @@ public:
         swprintf_s(hexBuf, L"#%02x%02x%02x", r, g, b);
 
         outInfo.hex = hex;
+        outInfo.alpha = alpha;
+        outInfo.hasAlpha = hasAlpha;
         outInfo.cssProp = prop;
         outInfo.cssValue = prop + L": rgb(" + std::to_wstring(r) + L" " + std::to_wstring(g) + L" " + std::to_wstring(b) + L");";
         outInfo.hexStr = hexBuf;
@@ -172,8 +316,16 @@ private:
     static std::vector<TailwindCandidate> BuildCandidates() {
         std::vector<TailwindCandidate> list;
 
-        static const wchar_t* prefixes[] = { L"bg-", L"text-", L"border-", L"ring-", L"outline-", L"accent-" };
-        static const wchar_t* props[] = { L"background-color", L"color", L"border-color", L"ring-color", L"outline-color", L"accent-color" };
+        static const wchar_t* prefixes[] = {
+            L"bg-", L"text-", L"border-", L"outline-", L"ring-", L"ring-offset-",
+            L"decoration-", L"placeholder-", L"caret-", L"accent-", L"fill-",
+            L"stroke-", L"shadow-", L"divide-", L"from-", L"to-", L"via-"
+        };
+        static const wchar_t* props[] = {
+            L"background-color", L"color", L"border-color", L"outline-color", L"ring-color", L"--tw-ring-offset-color",
+            L"text-decoration-color", L"placeholder-color", L"caret-color", L"accent-color", L"fill",
+            L"stroke", L"--tw-shadow-color", L"border-color", L"gradient-from", L"gradient-to", L"gradient-via"
+        };
         static const wchar_t* famNames[] = {
             L"slate", L"gray", L"zinc", L"neutral", L"stone", L"red", L"orange",
             L"amber", L"yellow", L"lime", L"green", L"emerald", L"teal", L"cyan",
@@ -182,7 +334,7 @@ private:
         static const int s_shades[11] = { 50, 100, 200, 300, 400, 500, 600, 700, 800, 900, 950 };
 
         // 1. Color candidates across all prefixes and all shades
-        for (size_t p = 0; p < 6; ++p) {
+        for (size_t p = 0; p < (sizeof(prefixes) / sizeof(prefixes[0])); ++p) {
             std::wstring pfx = prefixes[p];
             std::wstring prop = props[p];
 

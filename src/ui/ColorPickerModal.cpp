@@ -4,6 +4,7 @@
  */
 
 #include "phide/ui/ColorPickerModal.hpp"
+#include "phide/editor/TailwindHelper.hpp"
 #include <algorithm>
 #include <cmath>
 #include <cwctype>
@@ -29,37 +30,74 @@ void ColorPickerModal::Open(
     m_targetCol = col;
     m_targetLength = length;
     m_colorString = initialColorStr;
+    m_tailwindPrefix.clear();
 
-    D2D1_COLOR_F parsedColor{};
-    ColorFormat fmt = ColorFormat::Hex;
-    bool hasAlpha = false;
-    if (TryParseColor(initialColorStr, parsedColor, fmt, hasAlpha)) {
-        m_r = parsedColor.r;
-        m_g = parsedColor.g;
-        m_b = parsedColor.b;
-        m_a = parsedColor.a;
-        m_format = fmt;
-        m_hasAlpha = hasAlpha;
+    // 1. Check if initialColorStr is a Tailwind color class (e.g. bg-red-600, text-blue-500, bg-[#1D2E7E])
+    std::wstring_view pfxView, remView;
+    editor::TailwindColorInfo twInfo;
+    if (editor::TailwindHelper::TryParseClass(initialColorStr, twInfo) &&
+        editor::TailwindHelper::TryExtractColorPrefix(initialColorStr, pfxView, remView)) {
+        m_tailwindPrefix = std::wstring(pfxView);
+        m_r = ((twInfo.hex >> 16) & 0xFF) / 255.0f;
+        m_g = ((twInfo.hex >> 8) & 0xFF) / 255.0f;
+        m_b = (twInfo.hex & 0xFF) / 255.0f;
+        m_a = twInfo.hasAlpha ? twInfo.alpha : 1.0f;
+        m_hasAlpha = twInfo.hasAlpha;
+        m_format = ColorFormat::Hex;
         RgbToHsv(m_r, m_g, m_b, m_hue, m_sat, m_val);
     } else {
-        m_r = 0.125f;
-        m_g = 0.227f;
-        m_b = 0.678f;
-        m_a = 1.0f;
-        m_hue = 229.0f;
-        m_sat = 0.81f;
-        m_val = 0.68f;
-        m_format = ColorFormat::Hex;
-        m_hasAlpha = false;
+        D2D1_COLOR_F parsedColor{};
+        ColorFormat fmt = ColorFormat::Hex;
+        bool hasAlpha = false;
+        if (TryParseColor(initialColorStr, parsedColor, fmt, hasAlpha)) {
+            m_r = parsedColor.r;
+            m_g = parsedColor.g;
+            m_b = parsedColor.b;
+            m_a = parsedColor.a;
+            m_format = fmt;
+            m_hasAlpha = hasAlpha;
+            RgbToHsv(m_r, m_g, m_b, m_hue, m_sat, m_val);
+        } else {
+            m_r = 0.125f;
+            m_g = 0.227f;
+            m_b = 0.678f;
+            m_a = 1.0f;
+            m_hue = 229.0f;
+            m_sat = 0.81f;
+            m_val = 0.68f;
+            m_format = ColorFormat::Hex;
+            m_hasAlpha = false;
+        }
     }
 
     m_draggingSV = false;
     m_draggingHue = false;
     m_draggingAlpha = false;
+
+    // Initialize layout bounds (refined during Render with DPI and viewport clamping)
+    float modalW = 250.0f;
+    float modalH = 215.0f;
+    float modalX = anchorX;
+    float modalY = anchorY + 18.0f;
+    m_modalBounds = D2D1::RectF(modalX, modalY, modalX + modalW, modalY + modalH);
+    float headerH = 30.0f;
+    m_headerBounds = D2D1::RectF(modalX + 1.0f, modalY + 1.0f, modalX + modalW - 1.0f, modalY + headerH);
+    float pad = 8.0f;
+    float svW = 175.0f;
+    float svH = 120.0f;
+    float svX = modalX + pad;
+    float svY = modalY + headerH + pad;
+    m_svBounds = D2D1::RectF(svX, svY, svX + svW, svY + svH);
+    float hueX = svX + svW + pad;
+    float sliderW = 14.0f;
+    m_hueBounds = D2D1::RectF(hueX, svY, hueX + sliderW, svY + svH);
+    float alphaX = hueX + sliderW + pad;
+    m_alphaBounds = D2D1::RectF(alphaX, svY, alphaX + sliderW, svY + svH);
 }
 
 void ColorPickerModal::Close() noexcept {
     m_isOpen = false;
+    m_tailwindPrefix.clear();
     m_draggingSV = false;
     m_draggingHue = false;
     m_draggingAlpha = false;
@@ -363,7 +401,40 @@ bool ColorPickerModal::HandleLButtonDown(
         else if (m_format == ColorFormat::Rgb) m_format = ColorFormat::Hsl;
         else m_format = ColorFormat::Hex;
 
-        m_colorString = FormatColor(m_r, m_g, m_b, m_a, m_format, m_hasAlpha);
+        if (!m_tailwindPrefix.empty()) {
+            int ir = (std::clamp)(static_cast<int>(std::round(m_r * 255.0f)), 0, 255);
+            int ig = (std::clamp)(static_cast<int>(std::round(m_g * 255.0f)), 0, 255);
+            int ib = (std::clamp)(static_cast<int>(std::round(m_b * 255.0f)), 0, 255);
+            int ia = (std::clamp)(static_cast<int>(std::round(m_a * 255.0f)), 0, 255);
+            wchar_t buf[64]{};
+            if (m_format == ColorFormat::Hex) {
+                if (m_hasAlpha && m_a < 0.999f) {
+                    swprintf_s(buf, L"#%02x%02x%02x%02x", ir, ig, ib, ia);
+                } else {
+                    swprintf_s(buf, L"#%02x%02x%02x", ir, ig, ib);
+                }
+            } else if (m_format == ColorFormat::Rgb) {
+                if (m_hasAlpha && m_a < 0.999f) {
+                    swprintf_s(buf, L"rgba(%d,%d,%d,%.2f)", ir, ig, ib, m_a);
+                } else {
+                    swprintf_s(buf, L"rgb(%d,%d,%d)", ir, ig, ib);
+                }
+            } else if (m_format == ColorFormat::Hsl) {
+                float h, s, l;
+                RgbToHsl(m_r, m_g, m_b, h, s, l);
+                int ih = static_cast<int>(std::round(h));
+                int is = static_cast<int>(std::round(s * 100.0f));
+                int il = static_cast<int>(std::round(l * 100.0f));
+                if (m_hasAlpha && m_a < 0.999f) {
+                    swprintf_s(buf, L"hsla(%d,%d%%,%d%%,%.2f)", ih, is, il, m_a);
+                } else {
+                    swprintf_s(buf, L"hsl(%d,%d%%,%d%%)", ih, is, il);
+                }
+            }
+            m_colorString = m_tailwindPrefix + L"[" + buf + L"]";
+        } else {
+            m_colorString = FormatColor(m_r, m_g, m_b, m_a, m_format, m_hasAlpha);
+        }
         if (onUpdate) {
             onUpdate(m_colorString, m_targetLine, m_targetCol, m_targetLength);
             m_targetLength = m_colorString.length();
@@ -420,7 +491,40 @@ void ColorPickerModal::UpdateColorFromHsvA(
     std::function<void(const std::wstring& newColor, size_t line, size_t col, size_t length)> onUpdate
 ) {
     HsvToRgb(m_hue, m_sat, m_val, m_r, m_g, m_b);
-    m_colorString = FormatColor(m_r, m_g, m_b, m_a, m_format, m_hasAlpha);
+    if (!m_tailwindPrefix.empty()) {
+        int ir = (std::clamp)(static_cast<int>(std::round(m_r * 255.0f)), 0, 255);
+        int ig = (std::clamp)(static_cast<int>(std::round(m_g * 255.0f)), 0, 255);
+        int ib = (std::clamp)(static_cast<int>(std::round(m_b * 255.0f)), 0, 255);
+        int ia = (std::clamp)(static_cast<int>(std::round(m_a * 255.0f)), 0, 255);
+        wchar_t buf[64]{};
+        if (m_format == ColorFormat::Hex) {
+            if (m_hasAlpha && m_a < 0.999f) {
+                swprintf_s(buf, L"#%02x%02x%02x%02x", ir, ig, ib, ia);
+            } else {
+                swprintf_s(buf, L"#%02x%02x%02x", ir, ig, ib);
+            }
+        } else if (m_format == ColorFormat::Rgb) {
+            if (m_hasAlpha && m_a < 0.999f) {
+                swprintf_s(buf, L"rgba(%d,%d,%d,%.2f)", ir, ig, ib, m_a);
+            } else {
+                swprintf_s(buf, L"rgb(%d,%d,%d)", ir, ig, ib);
+            }
+        } else if (m_format == ColorFormat::Hsl) {
+            float h, s, l;
+            RgbToHsl(m_r, m_g, m_b, h, s, l);
+            int ih = static_cast<int>(std::round(h));
+            int is = static_cast<int>(std::round(s * 100.0f));
+            int il = static_cast<int>(std::round(l * 100.0f));
+            if (m_hasAlpha && m_a < 0.999f) {
+                swprintf_s(buf, L"hsla(%d,%d%%,%d%%,%.2f)", ih, is, il, m_a);
+            } else {
+                swprintf_s(buf, L"hsl(%d,%d%%,%d%%)", ih, is, il);
+            }
+        }
+        m_colorString = m_tailwindPrefix + L"[" + buf + L"]";
+    } else {
+        m_colorString = FormatColor(m_r, m_g, m_b, m_a, m_format, m_hasAlpha);
+    }
     if (onUpdate) {
         onUpdate(m_colorString, m_targetLine, m_targetCol, m_targetLength);
         m_targetLength = m_colorString.length();
@@ -606,6 +710,19 @@ bool ColorPickerModal::TryParseColor(
     if (TryParseNamedColor(text, outColor, &namedHex)) {
         outFormat = ColorFormat::Hex;
         outHasAlpha = (_wcsicmp(text.c_str(), L"transparent") == 0);
+        return true;
+    }
+
+    // Tailwind CSS classes (e.g. bg-red-600, text-blue-500, bg-[#1D2E7E], etc.)
+    editor::TailwindColorInfo twInfo;
+    if (editor::TailwindHelper::TryParseClass(text, twInfo)) {
+        float r = ((twInfo.hex >> 16) & 0xFF) / 255.0f;
+        float g = ((twInfo.hex >> 8) & 0xFF) / 255.0f;
+        float b = (twInfo.hex & 0xFF) / 255.0f;
+        float a = twInfo.hasAlpha ? twInfo.alpha : 1.0f;
+        outColor = D2D1::ColorF(r, g, b, a);
+        outFormat = ColorFormat::Hex;
+        outHasAlpha = twInfo.hasAlpha;
         return true;
     }
 
