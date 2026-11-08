@@ -114,6 +114,30 @@ public:
     void SetAutoSave(bool enable) { m_autoSave = enable; }
     bool IsAutoSave() const { return m_autoSave; }
 
+    void OpenSpecialView(const std::wstring& viewType, const std::wstring& title);
+
+    editor::EditorGroup& GetActiveGroup() noexcept {
+        if (m_editorGroups.empty()) {
+            m_editorGroups.push_back(editor::EditorGroup{});
+        }
+        if (m_focusedGroupIdx < 0 || m_focusedGroupIdx >= static_cast<int>(m_editorGroups.size())) {
+            m_focusedGroupIdx = 0;
+        }
+        return m_editorGroups[m_focusedGroupIdx];
+    }
+
+    const editor::EditorGroup& GetActiveGroup() const noexcept {
+        static const editor::EditorGroup s_emptyGroup{};
+        if (m_editorGroups.empty()) {
+            return s_emptyGroup;
+        }
+        int idx = m_focusedGroupIdx;
+        if (idx < 0 || idx >= static_cast<int>(m_editorGroups.size())) {
+            idx = 0;
+        }
+        return m_editorGroups[idx];
+    }
+
 private:
 
     HRESULT CreateDeviceIndependentResources();
@@ -147,25 +171,6 @@ private:
      * @brief Computes canvasLeft and canvasWidth respecting drawer, sidebars, centered layout and zen mode.
      */
     void GetCanvasLayout(float clientW, float& outCanvasLeft, float& outCanvasWidth) const;
-
-    // Multi-Document Life-cycle & Multi-Group Management
-    editor::EditorGroup& GetActiveGroup() noexcept {
-        if (m_editorGroups.empty()) {
-            m_editorGroups.push_back(editor::EditorGroup{});
-        }
-        if (m_focusedGroupIdx < 0 || m_focusedGroupIdx >= static_cast<int>(m_editorGroups.size())) {
-            m_focusedGroupIdx = 0;
-        }
-        return m_editorGroups[m_focusedGroupIdx];
-    }
-
-    const editor::EditorGroup& GetActiveGroup() const noexcept {
-        static const editor::EditorGroup s_empty{};
-        if (m_editorGroups.empty()) return s_empty;
-        int idx = (m_focusedGroupIdx >= 0 && m_focusedGroupIdx < static_cast<int>(m_editorGroups.size()))
-            ? m_focusedGroupIdx : 0;
-        return m_editorGroups[idx];
-    }
 
 public:
     editor::OpenDocument* GetActiveDoc() noexcept {
@@ -245,7 +250,6 @@ private:
      * @param viewType Unique identifier of the view (e.g. L"keybindings").
      * @param title Title displayed on the tab header.
      */
-    void OpenSpecialView(const std::wstring& viewType, const std::wstring& title);
     void OpenCourseTab(const std::wstring& courseTitle, const std::wstring& courseId);
     void ToggleMarkdownPreview();
     void ToggleCodeLens();

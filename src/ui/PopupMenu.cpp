@@ -323,6 +323,7 @@ void PopupMenu::OpenHelpMenu(float x, float y, const app::AppConfig& config) {
 
     // 1. Navigation & Interactive Guide (matching VS Code Help layout)
     m_items.push_back({ MenuActionId::HelpShowAllCommands,    L"Show All Commands",             L"Ctrl+Shift+P",   false, false, false, true, {}, {} });
+    m_items.push_back({ MenuActionId::HelpWelcome,            L"Open Walkthrough...",           L"",               false, false, false, true, {}, {} });
     m_items.push_back({ MenuActionId::HelpInteractiveGuide,   L"Interactive Guide",             L"",               false, false, false, true, {}, {} });
     m_items.push_back({ MenuActionId::HelpDocumentation,      L"Documentation",                 L"F1",             false, false, false, true, {}, {} });
     m_items.push_back({ MenuActionId::HelpKeyboardShortcuts,  L"Keyboard Shortcuts",            L"Ctrl+K Ctrl+S",  false, false, false, true, {}, {} });

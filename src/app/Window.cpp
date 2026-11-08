@@ -590,7 +590,11 @@ void Window::LoadSessionState() {
     if (filePath.empty()) return;
 
     std::error_code ec;
-    if (!std::filesystem::exists(filePath, ec)) return;
+    if (!std::filesystem::exists(filePath, ec)) {
+        // First-time entry into the IDE: open Welcome Walkthrough tab
+        OpenSpecialView(L"welcome", L"Welcome");
+        return;
+    }
 
     std::wifstream in(filePath);
     if (!in.is_open()) return;
@@ -850,6 +854,8 @@ void Window::LoadSessionState() {
                     OpenSpecialView(L"api", L"API Tester");
                 } else if (vType == L"interactive_guide" || vType == L"guide") {
                     OpenSpecialView(L"interactive_guide", L"Interactive Guide");
+                } else if (vType == L"welcome" || vType == L"walkthrough") {
+                    OpenSpecialView(L"welcome", L"Welcome");
                 } else if (vType == L"student") {
                     OpenSpecialView(L"student", L"Learning Hub");
                 } else if (vType == L"terminal") {
@@ -7001,6 +7007,40 @@ bool Window::Create(HINSTANCE hInstance, int nCmdShow) {
         }).detach();
     });
 
+    // Wire Welcome Walkthrough callbacks (Theme selection, Font picking, Catalog modal)
+    m_editor.GetWelcomeView().SetOnThemeSelected([this](ui::ThemeMode mode) {
+        m_theme.SetThemeMode(mode);
+        BOOL dm = m_theme.IsDarkMode() ? TRUE : FALSE;
+        DwmSetWindowAttribute(m_hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &dm, sizeof(dm));
+        SetWindowPos(m_hwnd, nullptr, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED);
+        UpdateDrawerErrorFiles();
+        SaveSessionState();
+        if (m_hwnd) InvalidateRect(m_hwnd, nullptr, FALSE);
+    });
+
+    m_editor.GetWelcomeView().SetOnFontSelected([this](const std::wstring& fontName) {
+        m_config.fontFamily = fontName;
+        m_theme.SetEditorFont(m_config.fontFamily, m_config.fontSize);
+        SaveSessionState();
+        if (m_hwnd) InvalidateRect(m_hwnd, nullptr, FALSE);
+    });
+
+    m_editor.GetWelcomeView().SetOnOpenThemePicker([this]() {
+        m_themePicker.Open(m_theme.GetThemeMode());
+        m_themePicker.SetCatalogView(true); // Image 4: Color Theme Catalog (20 Themes)
+        if (m_hwnd) InvalidateRect(m_hwnd, nullptr, FALSE);
+    });
+
+    m_editor.GetWelcomeView().SetOnOpenInteractiveGuide([this]() {
+        OpenSpecialView(L"interactive_guide", L"Interactive Guide");
+        if (m_hwnd) InvalidateRect(m_hwnd, nullptr, FALSE);
+    });
+
+    m_editor.GetWelcomeView().SetOnClose([this]() {
+        DoCloseEditor();
+        if (m_hwnd) InvalidateRect(m_hwnd, nullptr, FALSE);
+    });
+
     // Restore saved IDE session state (open folder, expanded tree dirs, open file, sidebar open/close state)
     LoadSessionState();
 
@@ -9506,6 +9546,10 @@ void Window::HandleMouseMove(POINT clientPt, WPARAM wParam) {
             if (m_editor.GetInteractiveGuideView().HandleMouseMove(clientPt)) {
                 needRepaint = true;
             }
+        } else if (pActiveDoc->viewType == L"welcome" || pActiveDoc->viewType == L"walkthrough") {
+            if (m_editor.GetWelcomeView().HandleMouseMove(clientPt)) {
+                needRepaint = true;
+            }
         }
     } else {
         // No active documents -> check watermark cheat-sheet row hover
@@ -10389,6 +10433,9 @@ bool Window::HandlePopupMenuClick(POINT clientPt) {
                     // Help Menu Actions (User Request: email, Facebook, WhatsApp, Discord)
                     case ui::MenuActionId::HelpShowAllCommands:
                         DoCommandPalette();
+                        break;
+                    case ui::MenuActionId::HelpWelcome:
+                        OpenSpecialView(L"welcome", L"Welcome");
                         break;
                     case ui::MenuActionId::HelpInteractiveGuide:
                         OpenSpecialView(L"interactive_guide", L"Interactive Guide");
@@ -11373,6 +11420,13 @@ void Window::HandleLButtonDown(POINT clientPt) {
                         InvalidateRect(m_hwnd, nullptr, FALSE);
                         return;
                     }
+                } else if (doc.isSpecialView && (doc.viewType == L"welcome" || doc.viewType == L"walkthrough")) {
+                    m_drawer.SetSearchFocus(0);
+                    m_explorerHasFocus = false;
+                    if (m_editor.GetWelcomeView().HandleLButtonDown(clientPt)) {
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
+                        return;
+                    }
                 } else if (doc.isSpecialView && doc.viewType == L"extension_detail") {
                     m_drawer.SetSearchFocus(0);
                     if (m_editor.HandleExtensionDetailClick(clientPt, doc)) {
@@ -12115,6 +12169,12 @@ void Window::HandleLButtonUp(POINT clientPt) {
     }
     if (pActiveDoc && pActiveDoc->isSpecialView && pActiveDoc->viewType == L"interactive_guide") {
         if (m_editor.GetInteractiveGuideView().HandleLButtonUp(clientPt)) {
+            InvalidateRect(m_hwnd, nullptr, FALSE);
+            return;
+        }
+    }
+    if (pActiveDoc && pActiveDoc->isSpecialView && (pActiveDoc->viewType == L"welcome" || pActiveDoc->viewType == L"walkthrough")) {
+        if (m_editor.GetWelcomeView().HandleLButtonUp(clientPt)) {
             InvalidateRect(m_hwnd, nullptr, FALSE);
             return;
         }
@@ -13021,6 +13081,15 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     }
                 }
 
+                // Welcome Walkthrough View cursor handling
+                if (pCurDoc && pCurDoc->isSpecialView && (pCurDoc->viewType == L"welcome" || pCurDoc->viewType == L"walkthrough")) {
+                    LPCWSTR cur = m_editor.GetWelcomeView().GetCursorForPoint(pt);
+                    if (cur) {
+                        SetCursor(LoadCursor(nullptr, cur));
+                        return TRUE;
+                    }
+                }
+
                 SetCursor(LoadCursor(nullptr, IDC_ARROW));
                 return TRUE;
             }
@@ -13298,6 +13367,13 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     RECT rcClient{};
                     GetClientRect(m_hwnd, &rcClient);
                     if (m_editor.GetInteractiveGuideView().HandleMouseWheel(delta, static_cast<float>(rcClient.bottom - rcClient.top))) {
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
+                        return 0;
+                    }
+                } else if (pDoc->isSpecialView && (pDoc->viewType == L"welcome" || pDoc->viewType == L"walkthrough")) {
+                    RECT rcClient{};
+                    GetClientRect(m_hwnd, &rcClient);
+                    if (m_editor.GetWelcomeView().HandleMouseWheel(delta, static_cast<float>(rcClient.bottom - rcClient.top))) {
                         InvalidateRect(m_hwnd, nullptr, FALSE);
                         return 0;
                     }

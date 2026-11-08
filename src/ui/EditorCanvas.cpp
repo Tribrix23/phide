@@ -775,6 +775,9 @@ void EditorCanvas::RenderSinglePane(ID2D1RenderTarget* pRT, Theme& theme, const 
     } else if (activeDoc.isSpecialView && activeDoc.viewType == L"interactive_guide") {
         m_packageManagerView.HideWebView();
         m_interactiveGuideView.Render(pRT, theme, config, canvasLeft, canvasWidth, contentTopY, clientHeight - contentTopY);
+    } else if (activeDoc.isSpecialView && (activeDoc.viewType == L"welcome" || activeDoc.viewType == L"walkthrough")) {
+        m_packageManagerView.HideWebView();
+        m_welcomeView.Render(pRT, theme, config, canvasLeft, canvasWidth, contentTopY, clientHeight - contentTopY);
     } else {
         m_packageManagerView.HideWebView();
         if (activeDoc.isImageView) {
@@ -1105,7 +1108,7 @@ void EditorCanvas::RenderTabs(ID2D1RenderTarget* pRT, Theme& theme, const app::A
             m_icons.DrawFileIcon(pRT, theme, iconBounds, FileIconType::Markdown);
         } else if (doc.isSpecialView && doc.viewType == L"extension_detail") {
             m_icons.DrawExtensionsGrid(pRT, iconBounds, theme.brushBrandAccent ? theme.brushBrandAccent.Get() : theme.brushTextWhite.Get(), 1.3f);
-        } else if (doc.isSpecialView && doc.viewType == L"interactive_guide") {
+        } else if (doc.isSpecialView && (doc.viewType == L"interactive_guide" || doc.viewType == L"welcome" || doc.viewType == L"walkthrough")) {
             if (!m_pPhideLogoBitmap) {
                 D2D1_SIZE_U size = D2D1::SizeU(kPhideLogoWidth, kPhideLogoHeight);
                 D2D1_BITMAP_PROPERTIES props = D2D1::BitmapProperties(
@@ -1344,6 +1347,9 @@ void EditorCanvas::RenderBreadcrumbs(ID2D1RenderTarget* pRT, Theme& theme, const
     } else if (doc.isSpecialView && doc.viewType == L"interactive_guide") {
         segments.push_back(L"Help");
         segments.push_back(L"Interactive Guide");
+    } else if (doc.isSpecialView && (doc.viewType == L"welcome" || doc.viewType == L"walkthrough")) {
+        segments.push_back(L"Help");
+        segments.push_back(L"Welcome");
     } else {
         std::wstring pathStr = doc.filePath.empty() ? doc.fileName : doc.filePath;
         for (auto& c : pathStr) {

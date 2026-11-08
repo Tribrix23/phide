@@ -527,3 +527,19 @@
 2026/11/08 18:06:06 [error] 14328#31136: CreateFile() "C:\Users\Administrator\Downloads\studio\phide\include\phide\server\nginx/logs/nginx.pid" failed (2: The system cannot find the file specified)
 2026/11/08 18:41:13 [notice] 34244#14016: signal process started
 2026/11/08 18:41:13 [error] 34244#14016: CreateFile() "C:\Users\Administrator\Downloads\studio\phide\include\phide\server\nginx/logs/nginx.pid" failed (2: The system cannot find the file specified)
+2026/11/08 19:20:11 [notice] 33784#6200: signal process started
+2026/11/08 19:20:11 [error] 33784#6200: CreateFile() "C:\Users\Administrator\Downloads\studio\phide\include\phide\server\nginx/logs/nginx.pid" failed (2: The system cannot find the file specified)
+2026/11/08 20:08:44 [notice] 28936#28388: signal process started
+2026/11/08 20:08:44 [error] 28936#28388: CreateFile() "C:\Users\Administrator\Downloads\studio\phide\include\phide\server\nginx/logs/nginx.pid" failed (2: The system cannot find the file specified)
+2026/11/08 20:21:50 [notice] 25508#25300: signal process started
+2026/11/08 20:21:50 [error] 25508#25300: CreateFile() "C:\Users\Administrator\Downloads\studio\phide\include\phide\server\nginx/logs/nginx.pid" failed (2: The system cannot find the file specified)
+2026/11/08 20:29:21 [notice] 23948#23500: signal process started
+2026/11/08 20:29:21 [error] 23948#23500: CreateFile() "C:\Users\Administrator\Downloads\studio\phide\include\phide\server\nginx/logs/nginx.pid" failed (2: The system cannot find the file specified)
+2026/11/08 20:43:04 [notice] 25656#34012: signal process started
+2026/11/08 20:43:04 [error] 25656#34012: CreateFile() "C:\Users\Administrator\Downloads\studio\phide\include\phide\server\nginx/logs/nginx.pid" failed (2: The system cannot find the file specified)
+2026/11/08 20:43:08 [error] 6424#13636: *1 CreateFile() "C:\Users\Administrator\Downloads\studio\phide\include\phide\server\nginx/html/favicon.ico" failed (2: The system cannot find the file specified), client: 127.0.0.1, server: localhost, request: "GET /favicon.ico HTTP/1.1", host: "localhost", referrer: "http://localhost/"
+2026/11/08 20:44:37 [notice] 27900#5684: signal process started
+2026/11/08 20:46:07 [notice] 1656#2320: signal process started
+2026/11/08 20:46:07 [error] 1656#2320: CreateFile() "C:\Users\Administrator\Downloads\studio\phide\include\phide\server\nginx/logs/nginx.pid" failed (2: The system cannot find the file specified)
+2026/11/08 20:46:16 [notice] 19704#32584: signal process started
+2026/11/08 20:46:16 [error] 19704#32584: CreateFile() "C:\Users\Administrator\Downloads\studio\phide\include\phide\server\nginx/logs/nginx.pid" failed (2: The system cannot find the file specified)

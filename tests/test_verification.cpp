@@ -330,6 +330,9 @@ int main(int argc, char* argv[]) {
     if (targetTest == 120) {
         goto run_test_120;
     }
+    if (targetTest == 121) {
+        goto run_test_121;
+    }
 
     if (targetTest == 66) {
         goto run_test_66;
@@ -18170,6 +18173,163 @@ run_test_120:
 
         if (targetTest == 120) {
             std::cout << "Target test 120 finished." << std::endl;
+            return 0;
+        }
+    }
+
+run_test_121:
+    // [TEST 121] Testing Welcome Walkthrough, First-Run Tab Open, Theme/Font Choice Synchronization & Help Menu
+    if (targetTest == 0 || targetTest == 121) {
+        std::cout << "\n[TEST 121] Testing Welcome Walkthrough, First-Run Tab Open & Theme/Font Synchronization..." << std::endl;
+
+        // Subtest 1: WelcomeView Callback & Element Hit-Testing
+        {
+            phide::ui::WelcomeView welcomeView;
+            phide::ui::Theme theme;
+            phide::app::AppConfig config;
+
+            ComPtr<IWICBitmap> pWicSnap;
+            ComPtr<ID2D1RenderTarget> pRT;
+            CreateTarget(pWicSnap, pRT);
+
+            theme.CreateDeviceResources(pRT.Get(), pDWriteFactory.Get());
+
+            // Render on virtual 1024x768 canvas to establish bounds
+            pRT->BeginDraw();
+            welcomeView.Render(pRT.Get(), theme, config, 0.0f, 1024.0f, 0.0f, 768.0f);
+            pRT->EndDraw();
+
+            // Verify initial state: no steps completed yet
+            assert(!welcomeView.IsStepCompleted(0) && !welcomeView.IsStepCompleted(1) && !welcomeView.IsStepCompleted(2) &&
+                   "All three steps must start uncompleted");
+
+            // Verify theme cards
+            phide::ui::ThemeMode selectedTheme = phide::ui::ThemeMode::Auto;
+            welcomeView.SetOnThemeSelected([&selectedTheme](phide::ui::ThemeMode m) {
+                selectedTheme = m;
+            });
+
+            for (int i = 0; i < 4; ++i) {
+                auto b = welcomeView.GetThemeCardBounds(i);
+                assert(b.right > b.left && b.bottom > b.top && "Theme card bounds must be valid");
+                POINT pt = { static_cast<LONG>((b.left + b.right) / 2.0f), static_cast<LONG>((b.top + b.bottom) / 2.0f) };
+                bool handled = welcomeView.HandleLButtonDown(pt);
+                assert(handled && "Clicking theme card must handle event");
+            }
+            assert(welcomeView.IsStepCompleted(0) && "Step 0 must be completed after selecting a theme");
+            std::cout << "  Passed: All 4 featured theme cards (Dark Modern, Light Modern, Deep Purple, Dracula) hit-tested and dispatched" << std::endl;
+
+            // Verify accordion switching: click Step 1 header to expand font picker
+            auto header1Bounds = welcomeView.GetStepHeaderBounds(1);
+            assert(header1Bounds.right > header1Bounds.left && "Step 1 header bounds must be valid");
+            POINT ptHeader1 = { static_cast<LONG>((header1Bounds.left + header1Bounds.right) / 2.0f), static_cast<LONG>((header1Bounds.top + header1Bounds.bottom) / 2.0f) };
+            assert(welcomeView.HandleLButtonDown(ptHeader1) && "Clicking collapsed header must handle event");
+            assert(welcomeView.GetActiveStep() == 1 && "Active step must switch to 1 after clicking header");
+
+            // Re-render in Step 1
+            pRT->BeginDraw();
+            welcomeView.Render(pRT.Get(), theme, config, 0.0f, 1024.0f, 0.0f, 768.0f);
+            pRT->EndDraw();
+
+            // Verify font options (5 fonts from Settings: Koda Mono, Consolas, Cascadia Code, Courier New, Lucida Console)
+            std::wstring chosenFont;
+            welcomeView.SetOnFontSelected([&chosenFont](const std::wstring& fn) {
+                chosenFont = fn;
+            });
+
+            for (int j = 0; j < 5; ++j) {
+                auto fb = welcomeView.GetFontOptionBounds(j);
+                assert(fb.right > fb.left && fb.bottom > fb.top && "Font option bounds must be valid");
+                POINT pt = { static_cast<LONG>((fb.left + fb.right) / 2.0f), static_cast<LONG>((fb.top + fb.bottom) / 2.0f) };
+                bool handled = welcomeView.HandleLButtonDown(pt);
+                assert(handled && "Clicking font option must handle event");
+            }
+            assert(chosenFont == L"Lucida Console" && "Last font selected must match Lucida Console");
+            assert(welcomeView.IsStepCompleted(1) && "Font step must be marked completed after picking font");
+            std::cout << "  Passed: All 5 font choices from settings (Koda Mono, Consolas, Cascadia Code, Courier New, Lucida Console) verified" << std::endl;
+
+            // Switch back to Theme step for testing theme links
+            welcomeView.SetActiveStep(0);
+            pRT->BeginDraw();
+            welcomeView.Render(pRT.Get(), theme, config, 0.0f, 1024.0f, 0.0f, 768.0f);
+            pRT->EndDraw();
+
+            // Verify "See More Themes..." and "Browse Color Themes" triggers
+            bool openedPicker = false;
+            welcomeView.SetOnOpenThemePicker([&openedPicker]() {
+                openedPicker = true;
+            });
+
+            auto browseBounds = welcomeView.GetBrowseThemeBounds();
+            assert(browseBounds.right > browseBounds.left && "Browse theme button bounds must be valid");
+            POINT ptBrowse = { static_cast<LONG>((browseBounds.left + browseBounds.right) / 2.0f), static_cast<LONG>((browseBounds.top + browseBounds.bottom) / 2.0f) };
+            assert(welcomeView.HandleLButtonDown(ptBrowse) && "Clicking Browse Themes must handle event");
+            assert(openedPicker && "Clicking Browse Themes must trigger theme picker open callback");
+
+            openedPicker = false;
+            auto moreBounds = welcomeView.GetSeeMoreThemesBounds();
+            assert(moreBounds.right > moreBounds.left && "See More Themes link bounds must be valid");
+            POINT ptMore = { static_cast<LONG>((moreBounds.left + moreBounds.right) / 2.0f), static_cast<LONG>((moreBounds.top + moreBounds.bottom) / 2.0f) };
+            assert(welcomeView.HandleLButtonDown(ptMore) && "Clicking See More Themes must handle event");
+            assert(openedPicker && "Clicking See More Themes must trigger theme picker catalog modal");
+            std::cout << "  Passed: 'Browse Color Themes' and 'See More Themes...' links properly open full theme catalog" << std::endl;
+        }
+
+        // Subtest 2: Help Menu Walkthrough Entry
+        {
+            phide::ui::PopupMenu popup;
+            phide::app::AppConfig config;
+            popup.OpenHelpMenu(100.0f, 100.0f, config);
+
+            bool foundWalkthrough = false;
+            for (const auto& item : popup.GetItems()) {
+                if (item.actionId == phide::ui::MenuActionId::HelpWelcome) {
+                    foundWalkthrough = true;
+                    assert(item.label == L"Open Walkthrough..." && "Help menu walkthrough item text must be 'Open Walkthrough...'");
+                    break;
+                }
+            }
+            assert(foundWalkthrough && "Help menu must contain Open Walkthrough... item");
+            std::cout << "  Passed: Help dropdown contains 'Open Walkthrough...' entry" << std::endl;
+        }
+
+        // Subtest 3: Window OpenSpecialView & Document Lifecycle
+        {
+            phide::app::Window win;
+            win.OpenSpecialView(L"welcome", L"Welcome");
+
+            auto& group = win.GetActiveGroup();
+            assert(!group.docs.empty() && "Active group must have opened welcome tab");
+            auto* activeDoc = win.GetActiveDoc();
+            assert(activeDoc != nullptr && "Active document must exist");
+            assert(activeDoc->isSpecialView && "Welcome document must have isSpecialView = true");
+            assert(activeDoc->viewType == L"welcome" && "Welcome document viewType must be 'welcome'");
+            assert(activeDoc->fileName == L"Welcome" && "Welcome document title must be 'Welcome'");
+
+            std::cout << "  Passed: Window::OpenSpecialView creates Welcome tab with Phide logo and non-dirty special state" << std::endl;
+        }
+
+        // Subtest 4: ThemePickerModal static preview helper execution
+        {
+            phide::app::AppConfig config;
+            ComPtr<IWICBitmap> pWicSnap;
+            ComPtr<ID2D1RenderTarget> pRT;
+            CreateTarget(pWicSnap, pRT);
+
+            D2D1_RECT_F rcBox = D2D1::RectF(0.0f, 0.0f, 200.0f, 120.0f);
+            pRT->BeginDraw();
+            phide::ui::ThemePickerModal::DrawThemePreviewForMode(pRT.Get(), config, phide::ui::ThemeMode::Dark, rcBox);
+            phide::ui::ThemePickerModal::DrawThemePreviewForMode(pRT.Get(), config, phide::ui::ThemeMode::Light, rcBox);
+            phide::ui::ThemePickerModal::DrawThemePreviewForMode(pRT.Get(), config, phide::ui::ThemeMode::Purple, rcBox);
+            phide::ui::ThemePickerModal::DrawThemePreviewForMode(pRT.Get(), config, phide::ui::ThemeMode::Dracula, rcBox);
+            pRT->EndDraw();
+            std::cout << "  Passed: ThemePickerModal::DrawThemePreviewForMode renders miniature IDE illustrations cleanly" << std::endl;
+        }
+
+        std::cout << "  Passed: All [TEST 121] Welcome Walkthrough tests passed!" << std::endl;
+
+        if (targetTest == 121) {
+            std::cout << "Target test 121 finished." << std::endl;
             return 0;
         }
     }

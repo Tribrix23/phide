@@ -234,6 +234,7 @@ enum class MenuActionId {
 
     // Help Menu Actions
     HelpShowAllCommands,
+    HelpWelcome,
     HelpInteractiveGuide,
     HelpDocumentation,
     HelpKeyboardShortcuts,

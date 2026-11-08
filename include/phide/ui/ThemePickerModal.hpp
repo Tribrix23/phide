@@ -119,13 +119,19 @@ private:
     D2D1_RECT_F m_cardBounds[20]{};
     D2D1_RECT_F m_previewBoxBounds[20]{};
 
+public:
+    /**
+     * @brief Renders the miniature IDE preview illustration for any given ThemeMode.
+     */
+    static void DrawThemePreviewForMode(ID2D1RenderTarget* pRT, const app::AppConfig& config, ThemeMode m, const D2D1_RECT_F& rcBox);
+
     /**
      * @brief Renders an authentic miniature preview illustration of the Dark Mode IDE layout.
      * @param pRT Active Direct2D render target.
      * @param config Application metrics.
      * @param rc Bounding box of the preview box.
      */
-    void DrawDarkPreview(ID2D1RenderTarget* pRT, const app::AppConfig& config, const D2D1_RECT_F& rc);
+    static void DrawDarkPreview(ID2D1RenderTarget* pRT, const app::AppConfig& config, const D2D1_RECT_F& rc);
 
     /**
      * @brief Renders an authentic miniature preview illustration of the Light Mode IDE layout.
@@ -133,7 +139,7 @@ private:
      * @param config Application metrics.
      * @param rc Bounding box of the preview box.
      */
-    void DrawLightPreview(ID2D1RenderTarget* pRT, const app::AppConfig& config, const D2D1_RECT_F& rc);
+    static void DrawLightPreview(ID2D1RenderTarget* pRT, const app::AppConfig& config, const D2D1_RECT_F& rc);
 
     /**
      * @brief Renders an authentic diagonally/vertically sliced connected preview (left half Light, right half Dark).
@@ -141,7 +147,7 @@ private:
      * @param config Application metrics.
      * @param rc Bounding box of the preview box.
      */
-    void DrawAutoSplitPreview(ID2D1RenderTarget* pRT, const app::AppConfig& config, const D2D1_RECT_F& rc);
+    static void DrawAutoSplitPreview(ID2D1RenderTarget* pRT, const app::AppConfig& config, const D2D1_RECT_F& rc);
 
     /**
      * @brief Renders a customized miniature preview illustration for any color theme palette.
@@ -149,7 +155,7 @@ private:
      * @param config Application metrics.
      * @param rc Bounding box of the preview box.
      */
-    void DrawGenericPreview(ID2D1RenderTarget* pRT, const app::AppConfig& config, const D2D1_RECT_F& rc,
+    static void DrawGenericPreview(ID2D1RenderTarget* pRT, const app::AppConfig& config, const D2D1_RECT_F& rc,
                             D2D1_COLOR_F canvasCol, D2D1_COLOR_F headerCol, D2D1_COLOR_F drawerCol,
                             D2D1_COLOR_F tabBarCol, D2D1_COLOR_F tabActiveCol, D2D1_COLOR_F accentCol,
                             D2D1_COLOR_F textCol, D2D1_COLOR_F kwCol, D2D1_COLOR_F typeCol,

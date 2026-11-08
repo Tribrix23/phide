@@ -466,6 +466,337 @@ void ThemePickerModal::DrawGenericPreview(ID2D1RenderTarget* pRT, const app::App
     pRT->FillRectangle(D2D1::RectF(codeX + 27.0f, codeY, codeX + 48.0f, codeY + 2.5f), bText.Get());
 }
 
+void ThemePickerModal::DrawThemePreviewForMode(ID2D1RenderTarget* pRT, const app::AppConfig& config, ThemeMode m, const D2D1_RECT_F& rcBox) {
+    switch (m) {
+        case ThemeMode::Dark:
+            DrawGenericPreview(pRT, config, rcBox,
+                D2D1::ColorF(0.118f, 0.118f, 0.118f, 1.0f), // canvas #1E1E1E
+                D2D1::ColorF(0.24f, 0.08f, 0.38f, 1.0f),   // header #3D1461
+                D2D1::ColorF(0.094f, 0.094f, 0.094f, 1.0f), // drawer #181818
+                D2D1::ColorF(0.094f, 0.094f, 0.094f, 1.0f), // tabBar
+                D2D1::ColorF(0.118f, 0.118f, 0.118f, 1.0f), // tabActive
+                D2D1::ColorF(0.0f, 0.471f, 0.831f, 1.0f),   // accent #0078D4
+                D2D1::ColorF(1.0f, 1.0f, 1.0f, 1.0f),       // text
+                D2D1::ColorF(0.773f, 0.525f, 0.753f, 1.0f), // kw
+                D2D1::ColorF(0.306f, 0.788f, 0.690f, 1.0f), // type
+                D2D1::ColorF(0.808f, 0.569f, 0.471f, 1.0f), // str
+                D2D1::ColorF(0.416f, 0.600f, 0.333f, 1.0f), // comment
+                D2D1::ColorF(0.522f, 0.522f, 0.522f, 1.0f), // lineNum
+                D2D1::ColorF(0.173f, 0.173f, 0.173f, 1.0f)  // border
+            );
+            break;
+        case ThemeMode::Light:
+            DrawGenericPreview(pRT, config, rcBox,
+                D2D1::ColorF(1.0f, 1.0f, 1.0f, 1.0f),       // canvas
+                D2D1::ColorF(0.812f, 0.702f, 0.910f, 1.0f), // header #CFB3E8
+                D2D1::ColorF(0.953f, 0.953f, 0.953f, 1.0f), // drawer #F3F3F3
+                D2D1::ColorF(0.922f, 0.922f, 0.922f, 1.0f), // tabBar #EBEBEB
+                D2D1::ColorF(1.0f, 1.0f, 1.0f, 1.0f),       // tabActive
+                D2D1::ColorF(0.0f, 0.471f, 0.831f, 1.0f),   // accent
+                D2D1::ColorF(0.12f, 0.12f, 0.12f, 1.0f),    // text
+                D2D1::ColorF(0.00f, 0.00f, 0.95f, 1.0f),    // kw
+                D2D1::ColorF(0.15f, 0.50f, 0.60f, 1.0f),    // type
+                D2D1::ColorF(0.65f, 0.08f, 0.08f, 1.0f),    // str
+                D2D1::ColorF(0.00f, 0.50f, 0.00f, 1.0f),    // comment
+                D2D1::ColorF(0.43f, 0.46f, 0.51f, 1.0f),    // lineNum
+                D2D1::ColorF(0.88f, 0.88f, 0.88f, 1.0f)     // border
+            );
+            break;
+        case ThemeMode::Auto:
+            DrawAutoSplitPreview(pRT, config, rcBox);
+            break;
+        case ThemeMode::Purple:
+            DrawGenericPreview(pRT, config, rcBox,
+                D2D1::ColorF(0.082f, 0.051f, 0.141f, 1.0f), // canvas #150D24
+                D2D1::ColorF(0.114f, 0.075f, 0.176f, 1.0f), // header #1D132D
+                D2D1::ColorF(0.071f, 0.039f, 0.122f, 1.0f), // drawer #120A1F
+                D2D1::ColorF(0.071f, 0.039f, 0.122f, 1.0f), // tabBar
+                D2D1::ColorF(0.082f, 0.051f, 0.141f, 1.0f), // tabActive
+                D2D1::ColorF(0.659f, 0.333f, 0.969f, 1.0f), // accent #A855F7
+                D2D1::ColorF(0.961f, 0.933f, 1.000f, 1.0f), // text #F5EEFF
+                D2D1::ColorF(0.753f, 0.518f, 0.988f, 1.0f), // kw #C084FC
+                D2D1::ColorF(0.220f, 0.741f, 0.973f, 1.0f), // type #38BDF8
+                D2D1::ColorF(0.957f, 0.447f, 0.714f, 1.0f), // str #F472B6
+                D2D1::ColorF(0.431f, 0.365f, 0.529f, 1.0f), // comment #6E5D87
+                D2D1::ColorF(0.475f, 0.392f, 0.600f, 1.0f), // lineNum #796499
+                D2D1::ColorF(0.165f, 0.102f, 0.251f, 1.0f)  // border #2A1A40
+            );
+            break;
+        case ThemeMode::Cyan:
+            DrawGenericPreview(pRT, config, rcBox,
+                D2D1::ColorF(0.039f, 0.098f, 0.184f, 1.0f), // canvas #0A192F
+                D2D1::ColorF(0.024f, 0.071f, 0.141f, 1.0f), // header #061224
+                D2D1::ColorF(0.024f, 0.063f, 0.125f, 1.0f), // drawer #061020
+                D2D1::ColorF(0.024f, 0.063f, 0.125f, 1.0f), // tabBar
+                D2D1::ColorF(0.039f, 0.098f, 0.184f, 1.0f), // tabActive
+                D2D1::ColorF(0.0f, 0.898f, 1.0f, 1.0f),     // accent #00E5FF
+                D2D1::ColorF(0.878f, 0.969f, 0.980f, 1.0f), // text #E0F7FA
+                D2D1::ColorF(0.0f, 0.898f, 1.0f, 1.0f),     // kw #00E5FF
+                D2D1::ColorF(0.220f, 0.937f, 0.490f, 1.0f), // type #38EF7D
+                D2D1::ColorF(0.565f, 0.878f, 0.937f, 1.0f), // str #90E0EF
+                D2D1::ColorF(0.361f, 0.463f, 0.553f, 1.0f), // comment #5C768D
+                D2D1::ColorF(0.282f, 0.450f, 0.600f, 1.0f), // lineNum
+                D2D1::ColorF(0.055f, 0.165f, 0.278f, 1.0f)  // border
+            );
+            break;
+        case ThemeMode::Turquoise:
+            DrawGenericPreview(pRT, config, rcBox,
+                D2D1::ColorF(0.024f, 0.157f, 0.149f, 1.0f), // canvas #062826
+                D2D1::ColorF(0.008f, 0.106f, 0.102f, 1.0f), // header #021B1A
+                D2D1::ColorF(0.008f, 0.102f, 0.098f, 1.0f), // drawer #021A19
+                D2D1::ColorF(0.008f, 0.102f, 0.098f, 1.0f), // tabBar
+                D2D1::ColorF(0.024f, 0.157f, 0.149f, 1.0f), // tabActive
+                D2D1::ColorF(0.114f, 0.914f, 0.714f, 1.0f), // accent #1DE9B6
+                D2D1::ColorF(0.878f, 0.949f, 0.945f, 1.0f), // text #E0F2F1
+                D2D1::ColorF(0.114f, 0.914f, 0.714f, 1.0f), // kw #1DE9B6
+                D2D1::ColorF(0.392f, 1.0f, 0.855f, 1.0f),   // type #64FFDA
+                D2D1::ColorF(0.655f, 1.0f, 0.922f, 1.0f),   // str #A7FFEB
+                D2D1::ColorF(0.306f, 0.502f, 0.490f, 1.0f), // comment #4E807D
+                D2D1::ColorF(0.250f, 0.500f, 0.480f, 1.0f), // lineNum
+                D2D1::ColorF(0.043f, 0.235f, 0.224f, 1.0f)  // border
+            );
+            break;
+        case ThemeMode::Monokai:
+            DrawGenericPreview(pRT, config, rcBox,
+                D2D1::ColorF(0.153f, 0.157f, 0.133f, 1.0f), // canvas #272822
+                D2D1::ColorF(0.118f, 0.122f, 0.110f, 1.0f), // header #1E1F1C
+                D2D1::ColorF(0.098f, 0.102f, 0.090f, 1.0f), // drawer #191A17
+                D2D1::ColorF(0.098f, 0.102f, 0.090f, 1.0f), // tabBar
+                D2D1::ColorF(0.153f, 0.157f, 0.133f, 1.0f), // tabActive
+                D2D1::ColorF(0.976f, 0.149f, 0.447f, 1.0f), // accent #F92672
+                D2D1::ColorF(0.973f, 0.973f, 0.949f, 1.0f), // text #F8F8F2
+                D2D1::ColorF(0.976f, 0.149f, 0.447f, 1.0f), // kw #F92672
+                D2D1::ColorF(0.400f, 0.851f, 0.937f, 1.0f), // type #66D9EF
+                D2D1::ColorF(0.902f, 0.859f, 0.455f, 1.0f), // str #E6DB74
+                D2D1::ColorF(0.459f, 0.443f, 0.369f, 1.0f), // comment #75715E
+                D2D1::ColorF(0.550f, 0.530f, 0.440f, 1.0f), // lineNum
+                D2D1::ColorF(0.196f, 0.196f, 0.176f, 1.0f)  // border
+            );
+            break;
+        case ThemeMode::Dracula:
+            DrawGenericPreview(pRT, config, rcBox,
+                D2D1::ColorF(0.157f, 0.165f, 0.212f, 1.0f), // canvas #282A36
+                D2D1::ColorF(0.129f, 0.137f, 0.176f, 1.0f), // header #21222C
+                D2D1::ColorF(0.129f, 0.137f, 0.176f, 1.0f), // drawer #21222C
+                D2D1::ColorF(0.129f, 0.137f, 0.176f, 1.0f), // tabBar
+                D2D1::ColorF(0.157f, 0.165f, 0.212f, 1.0f), // tabActive
+                D2D1::ColorF(0.741f, 0.576f, 0.976f, 1.0f), // accent #BD93F9
+                D2D1::ColorF(0.953f, 0.953f, 0.953f, 1.0f), // text #F8F8F2
+                D2D1::ColorF(1.0f, 0.475f, 0.776f, 1.0f),   // kw #FF79C6
+                D2D1::ColorF(0.545f, 0.914f, 0.992f, 1.0f), // type #8BE9FD
+                D2D1::ColorF(0.945f, 0.980f, 0.549f, 1.0f), // str #F1FA8C
+                D2D1::ColorF(0.384f, 0.447f, 0.643f, 1.0f), // comment #6272A4
+                D2D1::ColorF(0.384f, 0.447f, 0.643f, 1.0f), // lineNum
+                D2D1::ColorF(0.247f, 0.259f, 0.337f, 1.0f)  // border
+            );
+            break;
+        case ThemeMode::Nord:
+            DrawGenericPreview(pRT, config, rcBox,
+                D2D1::ColorF(0.180f, 0.204f, 0.251f, 1.0f), // canvas #2E3440
+                D2D1::ColorF(0.149f, 0.169f, 0.208f, 1.0f), // header #262B35
+                D2D1::ColorF(0.137f, 0.157f, 0.192f, 1.0f), // drawer #232831
+                D2D1::ColorF(0.137f, 0.157f, 0.192f, 1.0f), // tabBar
+                D2D1::ColorF(0.180f, 0.204f, 0.251f, 1.0f), // tabActive
+                D2D1::ColorF(0.533f, 0.753f, 0.816f, 1.0f), // accent #88C0D0
+                D2D1::ColorF(0.925f, 0.937f, 0.957f, 1.0f), // text #ECEFF4
+                D2D1::ColorF(0.506f, 0.631f, 0.757f, 1.0f), // kw #81A1C1
+                D2D1::ColorF(0.561f, 0.737f, 0.733f, 1.0f), // type #8FBCBB
+                D2D1::ColorF(0.647f, 0.745f, 0.549f, 1.0f), // str #A3BE8C
+                D2D1::ColorF(0.380f, 0.443f, 0.541f, 1.0f), // comment #616E80
+                D2D1::ColorF(0.380f, 0.443f, 0.541f, 1.0f), // lineNum
+                D2D1::ColorF(0.235f, 0.267f, 0.329f, 1.0f)  // border
+            );
+            break;
+        case ThemeMode::Solarized:
+            DrawGenericPreview(pRT, config, rcBox,
+                D2D1::ColorF(0.0f, 0.169f, 0.212f, 1.0f),   // canvas #002B36
+                D2D1::ColorF(0.008f, 0.125f, 0.157f, 1.0f), // header #022028
+                D2D1::ColorF(0.004f, 0.114f, 0.145f, 1.0f), // drawer #011D25
+                D2D1::ColorF(0.004f, 0.114f, 0.145f, 1.0f), // tabBar
+                D2D1::ColorF(0.0f, 0.169f, 0.212f, 1.0f),   // tabActive
+                D2D1::ColorF(0.149f, 0.545f, 0.824f, 1.0f), // accent #268BD2
+                D2D1::ColorF(0.514f, 0.580f, 0.588f, 1.0f), // text #839496
+                D2D1::ColorF(0.522f, 0.600f, 0.0f, 1.0f),   // kw #859900
+                D2D1::ColorF(0.165f, 0.631f, 0.596f, 1.0f), // type #2AA198
+                D2D1::ColorF(0.800f, 0.294f, 0.086f, 1.0f), // str #CC4B16
+                D2D1::ColorF(0.345f, 0.431f, 0.459f, 1.0f), // comment #586E75
+                D2D1::ColorF(0.345f, 0.431f, 0.459f, 1.0f), // lineNum
+                D2D1::ColorF(0.027f, 0.212f, 0.259f, 1.0f)  // border
+            );
+            break;
+        case ThemeMode::GitHubDark:
+            DrawGenericPreview(pRT, config, rcBox,
+                D2D1::ColorF(0.051f, 0.071f, 0.098f, 1.0f), // canvas #0D1117
+                D2D1::ColorF(0.008f, 0.027f, 0.047f, 1.0f), // header #02070C
+                D2D1::ColorF(0.008f, 0.027f, 0.047f, 1.0f), // drawer #02070C
+                D2D1::ColorF(0.008f, 0.027f, 0.047f, 1.0f), // tabBar
+                D2D1::ColorF(0.051f, 0.071f, 0.098f, 1.0f), // tabActive
+                D2D1::ColorF(0.345f, 0.647f, 1.0f, 1.0f),   // accent #58A6FF
+                D2D1::ColorF(0.796f, 0.827f, 0.863f, 1.0f), // text #C9D1D9
+                D2D1::ColorF(1.0f, 0.482f, 0.439f, 1.0f),   // kw #FF7B72
+                D2D1::ColorF(0.475f, 0.702f, 1.0f, 1.0f),   // type #79C0FF
+                D2D1::ColorF(0.647f, 0.855f, 0.584f, 1.0f), // str #A5D6A7
+                D2D1::ColorF(0.545f, 0.584f, 0.627f, 1.0f), // comment #8B949E
+                D2D1::ColorF(0.282f, 0.314f, 0.353f, 1.0f), // lineNum
+                D2D1::ColorF(0.129f, 0.161f, 0.200f, 1.0f)  // border
+            );
+            break;
+        case ThemeMode::OneDark:
+            DrawGenericPreview(pRT, config, rcBox,
+                D2D1::ColorF(0.157f, 0.173f, 0.204f, 1.0f), // canvas #282C34
+                D2D1::ColorF(0.129f, 0.141f, 0.169f, 1.0f), // header #21242B
+                D2D1::ColorF(0.129f, 0.141f, 0.169f, 1.0f), // drawer #21242B
+                D2D1::ColorF(0.129f, 0.141f, 0.169f, 1.0f), // tabBar
+                D2D1::ColorF(0.157f, 0.173f, 0.204f, 1.0f), // tabActive
+                D2D1::ColorF(0.380f, 0.686f, 0.929f, 1.0f), // accent #61AFEF
+                D2D1::ColorF(0.671f, 0.698f, 0.749f, 1.0f), // text #ABB2BF
+                D2D1::ColorF(0.776f, 0.467f, 0.875f, 1.0f), // kw #C678DD
+                D2D1::ColorF(0.898f, 0.765f, 0.467f, 1.0f), // type #E5C07B
+                D2D1::ColorF(0.596f, 0.769f, 0.475f, 1.0f), // str #98C379
+                D2D1::ColorF(0.361f, 0.392f, 0.439f, 1.0f), // comment #5C6370
+                D2D1::ColorF(0.298f, 0.329f, 0.380f, 1.0f), // lineNum
+                D2D1::ColorF(0.094f, 0.102f, 0.118f, 1.0f)  // border
+            );
+            break;
+        case ThemeMode::SynthWave:
+            DrawGenericPreview(pRT, config, rcBox,
+                D2D1::ColorF(0.149f, 0.086f, 0.224f, 1.0f), // canvas #261639
+                D2D1::ColorF(0.106f, 0.055f, 0.165f, 1.0f), // header #1B0E2A
+                D2D1::ColorF(0.098f, 0.047f, 0.153f, 1.0f), // drawer #190C27
+                D2D1::ColorF(0.098f, 0.047f, 0.153f, 1.0f), // tabBar
+                D2D1::ColorF(0.149f, 0.086f, 0.224f, 1.0f), // tabActive
+                D2D1::ColorF(1.0f, 0.443f, 0.808f, 1.0f),   // accent #FF71CE
+                D2D1::ColorF(0.973f, 0.973f, 0.949f, 1.0f), // text #F8F8F2
+                D2D1::ColorF(0.996f, 0.941f, 0.408f, 1.0f), // kw #FEF068
+                D2D1::ColorF(0.235f, 0.871f, 0.898f, 1.0f), // type #3CDEE5
+                D2D1::ColorF(1.0f, 0.443f, 0.808f, 1.0f),   // str #FF71CE
+                D2D1::ColorF(0.380f, 0.314f, 0.471f, 1.0f), // comment #615078
+                D2D1::ColorF(0.380f, 0.314f, 0.471f, 1.0f), // lineNum
+                D2D1::ColorF(0.247f, 0.145f, 0.369f, 1.0f)  // border
+            );
+            break;
+        case ThemeMode::RetroGrid80s:
+            DrawGenericPreview(pRT, config, rcBox,
+                D2D1::ColorF(0.078f, 0.047f, 0.157f, 1.0f), // canvas #140C28
+                D2D1::ColorF(0.047f, 0.024f, 0.110f, 1.0f), // header #0C061C
+                D2D1::ColorF(0.047f, 0.024f, 0.110f, 1.0f), // drawer #0C061C
+                D2D1::ColorF(0.047f, 0.024f, 0.110f, 1.0f), // tabBar
+                D2D1::ColorF(0.078f, 0.047f, 0.157f, 1.0f), // tabActive
+                D2D1::ColorF(1.0f, 0.118f, 0.608f, 1.0f),   // accent #FF1E9B
+                D2D1::ColorF(0.95f, 0.95f, 1.0f, 1.0f),     // text
+                D2D1::ColorF(1.0f, 0.118f, 0.608f, 1.0f),   // kw
+                D2D1::ColorF(0.0f, 0.941f, 1.0f, 1.0f),     // type #00F0FF
+                D2D1::ColorF(1.0f, 0.843f, 0.0f, 1.0f),     // str #FFD700
+                D2D1::ColorF(0.373f, 0.282f, 0.502f, 1.0f), // comment
+                D2D1::ColorF(0.373f, 0.282f, 0.502f, 1.0f), // lineNum
+                D2D1::ColorF(0.188f, 0.094f, 0.345f, 1.0f)  // border
+            );
+            break;
+        case ThemeMode::CosmicStarfield:
+            DrawGenericPreview(pRT, config, rcBox,
+                D2D1::ColorF(0.035f, 0.043f, 0.086f, 1.0f), // canvas #090B16
+                D2D1::ColorF(0.016f, 0.020f, 0.047f, 1.0f), // header #04050C
+                D2D1::ColorF(0.016f, 0.020f, 0.047f, 1.0f), // drawer #04050C
+                D2D1::ColorF(0.016f, 0.020f, 0.047f, 1.0f), // tabBar
+                D2D1::ColorF(0.035f, 0.043f, 0.086f, 1.0f), // tabActive
+                D2D1::ColorF(0.482f, 0.408f, 0.933f, 1.0f), // accent #7B68EE
+                D2D1::ColorF(0.902f, 0.922f, 0.961f, 1.0f), // text
+                D2D1::ColorF(0.702f, 0.549f, 0.988f, 1.0f), // kw
+                D2D1::ColorF(0.392f, 0.706f, 0.961f, 1.0f), // type
+                D2D1::ColorF(0.980f, 0.745f, 0.490f, 1.0f), // str
+                D2D1::ColorF(0.353f, 0.380f, 0.490f, 1.0f), // comment
+                D2D1::ColorF(0.275f, 0.298f, 0.392f, 1.0f), // lineNum
+                D2D1::ColorF(0.098f, 0.118f, 0.196f, 1.0f)  // border
+            );
+            break;
+        case ThemeMode::MatrixDigitalRain:
+            DrawGenericPreview(pRT, config, rcBox,
+                D2D1::ColorF(0.012f, 0.039f, 0.016f, 1.0f), // canvas #030A04
+                D2D1::ColorF(0.004f, 0.020f, 0.008f, 1.0f), // header #010502
+                D2D1::ColorF(0.004f, 0.020f, 0.008f, 1.0f), // drawer #010502
+                D2D1::ColorF(0.004f, 0.020f, 0.008f, 1.0f), // tabBar
+                D2D1::ColorF(0.012f, 0.039f, 0.016f, 1.0f), // tabActive
+                D2D1::ColorF(0.0f, 1.0f, 0.255f, 1.0f),     // accent #00FF41
+                D2D1::ColorF(0.784f, 1.0f, 0.824f, 1.0f),   // text
+                D2D1::ColorF(0.0f, 1.0f, 0.255f, 1.0f),     // kw
+                D2D1::ColorF(0.400f, 0.941f, 0.549f, 1.0f), // type
+                D2D1::ColorF(0.200f, 0.800f, 0.350f, 1.0f), // str
+                D2D1::ColorF(0.157f, 0.392f, 0.200f, 1.0f), // comment
+                D2D1::ColorF(0.157f, 0.392f, 0.200f, 1.0f), // lineNum
+                D2D1::ColorF(0.039f, 0.118f, 0.047f, 1.0f)  // border
+            );
+            break;
+        case ThemeMode::AuroraBorealis:
+            DrawGenericPreview(pRT, config, rcBox,
+                D2D1::ColorF(0.016f, 0.055f, 0.071f, 1.0f), // canvas #040E12
+                D2D1::ColorF(0.008f, 0.031f, 0.039f, 1.0f), // header #02080A
+                D2D1::ColorF(0.008f, 0.031f, 0.039f, 1.0f), // drawer #02080A
+                D2D1::ColorF(0.008f, 0.031f, 0.039f, 1.0f), // tabBar
+                D2D1::ColorF(0.016f, 0.055f, 0.071f, 1.0f), // tabActive
+                D2D1::ColorF(0.0f, 0.949f, 0.702f, 1.0f),   // accent #00F2B3
+                D2D1::ColorF(0.878f, 0.969f, 0.961f, 1.0f), // text
+                D2D1::ColorF(0.0f, 0.949f, 0.702f, 1.0f),   // kw
+                D2D1::ColorF(0.235f, 0.824f, 0.980f, 1.0f), // type
+                D2D1::ColorF(0.565f, 0.949f, 0.690f, 1.0f), // str
+                D2D1::ColorF(0.275f, 0.471f, 0.490f, 1.0f), // comment
+                D2D1::ColorF(0.235f, 0.431f, 0.450f, 1.0f), // lineNum
+                D2D1::ColorF(0.039f, 0.118f, 0.141f, 1.0f)  // border
+            );
+            break;
+        case ThemeMode::SunsetGlow:
+            DrawGenericPreview(pRT, config, rcBox,
+                D2D1::ColorF(0.098f, 0.047f, 0.098f, 1.0f), // canvas #190C19
+                D2D1::ColorF(0.059f, 0.024f, 0.059f, 1.0f), // header #0F060F
+                D2D1::ColorF(0.059f, 0.024f, 0.059f, 1.0f), // drawer #0F060F
+                D2D1::ColorF(0.059f, 0.024f, 0.059f, 1.0f), // tabBar
+                D2D1::ColorF(0.098f, 0.047f, 0.098f, 1.0f), // tabActive
+                D2D1::ColorF(1.0f, 0.424f, 0.235f, 1.0f),   // accent #FF6C3C
+                D2D1::ColorF(0.980f, 0.922f, 0.902f, 1.0f), // text
+                D2D1::ColorF(1.0f, 0.424f, 0.235f, 1.0f),   // kw
+                D2D1::ColorF(1.0f, 0.694f, 0.353f, 1.0f),   // type
+                D2D1::ColorF(1.0f, 0.478f, 0.667f, 1.0f),   // str
+                D2D1::ColorF(0.529f, 0.333f, 0.431f, 1.0f), // comment
+                D2D1::ColorF(0.471f, 0.275f, 0.373f, 1.0f), // lineNum
+                D2D1::ColorF(0.216f, 0.118f, 0.196f, 1.0f)  // border
+            );
+            break;
+        case ThemeMode::EmeraldForest:
+            DrawGenericPreview(pRT, config, rcBox,
+                D2D1::ColorF(0.024f, 0.071f, 0.047f, 1.0f), // canvas #06120C
+                D2D1::ColorF(0.012f, 0.039f, 0.024f, 1.0f), // header #030A06
+                D2D1::ColorF(0.012f, 0.039f, 0.024f, 1.0f), // drawer #030A06
+                D2D1::ColorF(0.012f, 0.039f, 0.024f, 1.0f), // tabBar
+                D2D1::ColorF(0.024f, 0.071f, 0.047f, 1.0f), // tabActive
+                D2D1::ColorF(0.184f, 0.859f, 0.506f, 1.0f), // accent #2FDB81
+                D2D1::ColorF(0.882f, 0.961f, 0.902f, 1.0f), // text
+                D2D1::ColorF(0.184f, 0.859f, 0.506f, 1.0f), // kw
+                D2D1::ColorF(0.416f, 0.922f, 0.678f, 1.0f), // type
+                D2D1::ColorF(0.702f, 0.949f, 0.475f, 1.0f), // str
+                D2D1::ColorF(0.314f, 0.502f, 0.373f, 1.0f), // comment
+                D2D1::ColorF(0.275f, 0.451f, 0.333f, 1.0f), // lineNum
+                D2D1::ColorF(0.059f, 0.157f, 0.098f, 1.0f)  // border
+            );
+            break;
+        case ThemeMode::RosePine:
+            DrawGenericPreview(pRT, config, rcBox,
+                D2D1::ColorF(0.098f, 0.090f, 0.141f, 1.0f), // canvas #191724
+                D2D1::ColorF(0.153f, 0.141f, 0.235f, 1.0f), // header #27243C
+                D2D1::ColorF(0.082f, 0.075f, 0.118f, 1.0f), // drawer #15131E
+                D2D1::ColorF(0.082f, 0.075f, 0.118f, 1.0f), // tabBar
+                D2D1::ColorF(0.098f, 0.090f, 0.141f, 1.0f), // tabActive
+                D2D1::ColorF(0.922f, 0.435f, 0.573f, 1.0f), // accent #EB6F92
+                D2D1::ColorF(0.878f, 0.871f, 0.957f, 1.0f), // text #E0DEF4
+                D2D1::ColorF(0.192f, 0.455f, 0.561f, 1.0f), // kw #31748F
+                D2D1::ColorF(0.612f, 0.808f, 0.847f, 1.0f), // type #9CCFD8
+                D2D1::ColorF(0.965f, 0.757f, 0.467f, 1.0f), // str #F6C177
+                D2D1::ColorF(0.431f, 0.416f, 0.525f, 1.0f), // comment #6E6A86
+                D2D1::ColorF(0.431f, 0.416f, 0.525f, 1.0f), // lineNum
+                D2D1::ColorF(0.149f, 0.137f, 0.227f, 1.0f)  // border #26233A
+            );
+            break;
+    }
+}
+
 void ThemePickerModal::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
                               float clientW, float clientH) {
     if (!m_isOpen || !pRT) return;
@@ -540,6 +871,9 @@ void ThemePickerModal::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::A
 
     // Helper lambda to draw any theme's preview slice
     auto DrawModePreview = [&](ThemeMode m, const D2D1_RECT_F& rcBox) {
+        DrawThemePreviewForMode(pRT, config, m, rcBox);
+    };
+    auto Legacy_Unused_DrawModePreview = [&](ThemeMode m, const D2D1_RECT_F& rcBox) {
         switch (m) {
             case ThemeMode::Dark:
                 DrawGenericPreview(pRT, config, rcBox,
