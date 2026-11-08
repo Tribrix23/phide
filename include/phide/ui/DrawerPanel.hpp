@@ -529,6 +529,7 @@ public:
      * @param currentDrawerW Current animated drawer width.
      */
     void Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config, float clientHeight, float currentDrawerW);
+    void RenderCommitCard(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config, float clientHeight, float currentDrawerW);
 
     /**
      * @brief Performs hit-testing on drawer items.
@@ -789,6 +790,14 @@ public:
         for (const auto& item : m_gitChanges) {
             if (inRect(pt, item.discardBtnBounds) || inRect(pt, item.stageBtnBounds)) return true;
         }
+        for (const auto& ci : m_gitCommits) {
+            if (inRect(pt, ci.bounds) || inRect(pt, ci.openChangesBtnBounds)) return true;
+            if (ci.isExpanded) {
+                for (const auto& cf : ci.files) {
+                    if (inRect(pt, cf.bounds)) return true;
+                }
+            }
+        }
         bool loading = IsGitLoading();
         bool hitAction = (!loading && (inRect(pt, m_gitCommitBtnBounds) || inRect(pt, m_gitSyncBtnBounds) ||
                                        inRect(pt, m_gitCommitDropdownBounds) || inRect(pt, m_gitGraphPushBounds)));
@@ -935,7 +944,6 @@ private:
     void RenderExplorerPane(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config, float clientHeight, float currentDrawerW);
     void RenderSearchPane(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config, float clientHeight, float currentDrawerW);
     void RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config, float clientHeight, float currentDrawerW);
-    void RenderCommitCard(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config, float clientHeight, float currentDrawerW);
     void DrawButtonSpinner(ID2D1RenderTarget* pRT, const D2D1_RECT_F& btnBounds, const std::wstring& labelText, Theme& theme, const app::AppConfig& config);
     void RenderExtensionsPane(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config, float clientHeight, float currentDrawerW);
     void InitExtensionEntries();
@@ -1031,8 +1039,11 @@ private:
     D2D1_RECT_F m_commitCardOpenChangesBounds{};
     D2D1_RECT_F m_commitCardGitHubBounds{};
     std::wstring m_commitCardHash;
+    mutable std::wstring m_cachedGitHubRepoUrl;
+    mutable bool m_gitHubRepoUrlCached = false;
     std::unordered_map<std::wstring, Microsoft::WRL::ComPtr<ID2D1Bitmap>> m_avatarBitmaps;
     std::set<std::wstring> m_downloadingAvatars;
+    std::set<std::wstring> m_checkedAvatars;
     ID2D1Bitmap* GetOrFetchAvatar(ID2D1RenderTarget* pRT, Theme& theme, const GitCommitItem& ci);
     std::unordered_map<std::wstring, Microsoft::WRL::ComPtr<ID2D1Bitmap>> m_assetBitmaps;
     ID2D1Bitmap* GetAssetBitmap(ID2D1RenderTarget* pRT, const std::wstring& filename);

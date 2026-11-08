@@ -815,6 +815,8 @@ void Window::LoadSessionState() {
                     OpenSpecialView(L"packages", L"Manage Packages");
                 } else if (vType == L"shortcuts") {
                     OpenSpecialView(L"shortcuts", L"Keyboard Shortcuts");
+                } else if (vType == L"api") {
+                    OpenSpecialView(L"api", L"API Tester");
                 }
             } else if (!p.empty() && std::filesystem::exists(p, ec)) {
                 OpenFileDocument(p, false);
@@ -7502,6 +7504,11 @@ void Window::OnPaint() {
         RenderBranchDropdown(m_pRenderTarget.Get(), clientW, clientH);
     }
 
+    // 13.5. Render Floating Commit Details Card (outside drawer clip, on top of editor canvas)
+    if (hasLeftDrawer && m_config.activeRailTab == 2 && m_drawer.IsCommitCardVisible()) {
+        m_drawer.RenderCommitCard(m_pRenderTarget.Get(), m_theme, m_config, drawerH, currentDrawerW);
+    }
+
     // 14. Render Floating Git Tooltip (on top of all panes so it can never be clipped)
     if (m_drawer.IsGitTooltipVisible()) {
         m_drawer.RenderGitTooltip(m_pRenderTarget.Get(), m_theme, m_config, clientW, clientH);
@@ -12389,6 +12396,10 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 // Source Control: Draggable splitter, buttons and inputs (Images 1, 2, 3, 5)
                 if (m_drawer.HitTestGitButtons(pt)) {
                     SetCursor(LoadCursor(nullptr, IDC_HAND));
+                    return TRUE;
+                }
+                if (m_config.activeRailTab == 2 && m_drawer.IsCommitCardVisible() && m_drawer.HitTestCommitCard(pt)) {
+                    SetCursor(LoadCursor(nullptr, IDC_ARROW));
                     return TRUE;
                 }
                 if (m_drawer.HitTestGitInputs(pt)) {

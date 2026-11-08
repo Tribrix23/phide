@@ -118,6 +118,8 @@ void DrawerPanel::OpenFolder(const std::wstring& folderPath, const std::set<std:
     }
 
     m_hasOpenFolder = true;
+    m_gitHubRepoUrlCached = false;
+    m_cachedGitHubRepoUrl.clear();
     m_expandedDirs.clear();
     if (pInitialExpanded && !pInitialExpanded->empty()) {
         m_expandedDirs = *pInitialExpanded;
@@ -144,6 +146,8 @@ void DrawerPanel::CloseFolder() {
     m_hasOpenFolder = false;
     m_openFolderPath.clear();
     m_rootName.clear();
+    m_gitHubRepoUrlCached = false;
+    m_cachedGitHubRepoUrl.clear();
     m_expandedDirs.clear();
     m_visibleItems.clear();
     m_hoveredIndex = -1;
@@ -605,10 +609,6 @@ void DrawerPanel::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCon
         }
 
         pRT->PopAxisAlignedClip();
-
-        if (config.activeRailTab == 2) {
-            RenderCommitCard(pRT, theme, config, clientHeight, currentDrawerW);
-        }
     }
 }
 
@@ -4075,10 +4075,65 @@ static std::wstring GitUtf8ToWide(const std::string& str) {
     return result;
 }
 
+static bool CheckLocalGitHubAuthFiles() {
+    auto fileHasContent = [](const std::filesystem::path& p, const char* needle) -> bool {
+        std::error_code ec;
+        if (!std::filesystem::exists(p, ec) || std::filesystem::file_size(p, ec) == 0) return false;
+        std::ifstream ifs(p, std::ios::binary);
+        if (!ifs) return false;
+        std::string content((std::istreambuf_iterator<char>(ifs)), std::istreambuf_iterator<char>());
+        if (!needle || !*needle) return !content.empty();
+        return content.find(needle) != std::string::npos;
+    };
+
+    wchar_t buf[MAX_PATH] = {0};
+    if (GetEnvironmentVariableW(L"GH_TOKEN", buf, MAX_PATH) > 0 ||
+        GetEnvironmentVariableW(L"GITHUB_TOKEN", buf, MAX_PATH) > 0) {
+        return true;
+    }
+
+    if (GetEnvironmentVariableW(L"GH_CONFIG_DIR", buf, MAX_PATH) > 0) {
+        std::filesystem::path p = std::filesystem::path(buf) / L"hosts.yml";
+        if (fileHasContent(p, "user:") || fileHasContent(p, "oauth_token:") || fileHasContent(p, "github.com")) return true;
+    }
+
+    if (SUCCEEDED(SHGetFolderPathW(NULL, CSIDL_APPDATA, NULL, 0, buf))) {
+        std::filesystem::path p = std::filesystem::path(buf) / L"GitHub CLI" / L"hosts.yml";
+        if (fileHasContent(p, "user:") || fileHasContent(p, "oauth_token:") || fileHasContent(p, "github.com")) return true;
+    }
+
+    if (SUCCEEDED(SHGetFolderPathW(NULL, CSIDL_LOCAL_APPDATA, NULL, 0, buf))) {
+        std::filesystem::path p = std::filesystem::path(buf) / L"GitHub CLI" / L"hosts.yml";
+        if (fileHasContent(p, "user:") || fileHasContent(p, "oauth_token:") || fileHasContent(p, "github.com")) return true;
+    }
+
+    if (GetEnvironmentVariableW(L"USERPROFILE", buf, MAX_PATH) > 0) {
+        std::filesystem::path home(buf);
+        std::filesystem::path ghHosts = home / L".config" / L"gh" / L"hosts.yml";
+        if (fileHasContent(ghHosts, "user:") || fileHasContent(ghHosts, "oauth_token:") || fileHasContent(ghHosts, "github.com")) return true;
+
+        std::filesystem::path gitCreds = home / L".git-credentials";
+        if (fileHasContent(gitCreds, "github.com")) return true;
+
+        std::filesystem::path gitCfg = home / L".gitconfig";
+        if (fileHasContent(gitCfg, "[user]") && (fileHasContent(gitCfg, "name =") || fileHasContent(gitCfg, "name="))) return true;
+    }
+
+    return false;
+}
+
 static bool CheckGitHubCliAuthStatus() {
     static std::atomic<int> s_cachedStatus{ -1 }; // -1: uninit, 0: false, 1: true
     static std::chrono::steady_clock::time_point s_lastCheck{};
     static std::mutex s_authMutex;
+
+    // Fast path: check local config/credential files on disk (works 100% offline in <0.2ms)
+    if (CheckLocalGitHubAuthFiles()) {
+        std::lock_guard<std::mutex> lock(s_authMutex);
+        s_cachedStatus.store(1);
+        s_lastCheck = std::chrono::steady_clock::now();
+        return true;
+    }
 
     auto now = std::chrono::steady_clock::now();
     {
@@ -4114,18 +4169,35 @@ static bool CheckGitHubCliAuthStatus() {
         return false;
     }
 
-    DWORD waitRes = WaitForSingleObject(pi.hProcess, 3500);
+    DWORD waitRes = WaitForSingleObject(pi.hProcess, 800);
     DWORD exitCode = 1;
     if (waitRes == WAIT_OBJECT_0) {
         GetExitCodeProcess(pi.hProcess, &exitCode);
     } else {
         TerminateProcess(pi.hProcess, 1);
     }
+
+    std::string pipeOut;
+    DWORD avail = 0;
+    while (PeekNamedPipe(hReadPipe, nullptr, 0, nullptr, &avail, nullptr) && avail > 0) {
+        char readBuf[512];
+        DWORD readBytes = 0;
+        if (ReadFile(hReadPipe, readBuf, (std::min)(avail, static_cast<DWORD>(sizeof(readBuf))), &readBytes, nullptr) && readBytes > 0) {
+            pipeOut.append(readBuf, readBytes);
+        } else {
+            break;
+        }
+    }
+
     CloseHandle(pi.hProcess);
     CloseHandle(pi.hThread);
     CloseHandle(hReadPipe);
 
-    bool authed = (exitCode == 0);
+    // Even when offline, `gh auth status` prints "Logged in to github.com" or "error connecting to api.github.com"
+    bool authed = (exitCode == 0) ||
+                  (pipeOut.find("Logged in to") != std::string::npos) ||
+                  (pipeOut.find("error connecting to") != std::string::npos) ||
+                  (pipeOut.find("oauth_token") != std::string::npos);
     {
         std::lock_guard<std::mutex> lock(s_authMutex);
         s_cachedStatus.store(authed ? 1 : 0);
@@ -4139,6 +4211,9 @@ static bool CheckGitHubCliAuthStatus() {
 bool DrawerPanel::IsGitHubLoggedIn() const noexcept {
     if (m_hasExplicitLoginOverride) {
         return m_isGitHubLoggedIn;
+    }
+    if (m_isGitHubLoggedIn) {
+        return true;
     }
     if (CheckGitHubCliAuthStatus()) {
         const_cast<DrawerPanel*>(this)->m_isGitHubLoggedIn = true;
@@ -5471,28 +5546,58 @@ void DrawerPanel::LoadCommitFiles(GitCommitItem& ci) {
 
 std::wstring DrawerPanel::GetGitHubRepoUrl() const {
     if (!m_hasOpenFolder || m_openFolderPath.empty()) return L"";
-    std::wstring dir = m_openFolderPath;
-    auto res = RunGitCmd(L"config --get remote.origin.url", dir);
-    if (res.exitCode == 0 && !res.output.empty()) {
-        std::wstring url = res.output;
-        while (!url.empty() && (url.front() == L' ' || url.front() == L'\t' || url.front() == L'\r' || url.front() == L'\n')) url.erase(0, 1);
-        while (!url.empty() && (url.back() == L' ' || url.back() == L'\t' || url.back() == L'\r' || url.back() == L'\n')) url.pop_back();
+    if (m_gitHubRepoUrlCached) {
+        return m_cachedGitHubRepoUrl;
+    }
 
-        size_t ghPos = url.find(L"github.com/");
+    m_gitHubRepoUrlCached = true;
+    m_cachedGitHubRepoUrl.clear();
+
+    // Parse .git/config directly from disk so we never spawn git.exe on the UI paint thread
+    std::error_code ec;
+    std::filesystem::path gitConfigPath = std::filesystem::path(m_openFolderPath) / L".git" / L"config";
+    std::wstring rawUrl;
+    if (std::filesystem::exists(gitConfigPath, ec) && std::filesystem::is_regular_file(gitConfigPath, ec)) {
+        std::ifstream ifs(gitConfigPath);
+        std::string line;
+        bool inRemoteOrigin = false;
+        while (std::getline(ifs, line)) {
+            while (!line.empty() && (line.front() == ' ' || line.front() == '\t' || line.front() == '\r')) line.erase(0, 1);
+            while (!line.empty() && (line.back() == ' ' || line.back() == '\t' || line.back() == '\r' || line.back() == '\n')) line.pop_back();
+            if (line.empty() || line[0] == '#' || line[0] == ';') continue;
+            if (line.front() == '[' && line.back() == ']') {
+                inRemoteOrigin = (line.find("remote \"origin\"") != std::string::npos);
+                continue;
+            }
+            if (inRemoteOrigin && line.rfind("url", 0) == 0) {
+                size_t eqPos = line.find('=');
+                if (eqPos != std::string::npos) {
+                    std::string val = line.substr(eqPos + 1);
+                    while (!val.empty() && (val.front() == ' ' || val.front() == '\t')) val.erase(0, 1);
+                    while (!val.empty() && (val.back() == ' ' || val.back() == '\t')) val.pop_back();
+                    rawUrl.assign(val.begin(), val.end());
+                    break;
+                }
+            }
+        }
+    }
+
+    if (!rawUrl.empty()) {
+        size_t ghPos = rawUrl.find(L"github.com/");
         size_t len = 11;
         if (ghPos == std::wstring::npos) {
-            ghPos = url.find(L"github.com:");
+            ghPos = rawUrl.find(L"github.com:");
             len = 11;
         }
         if (ghPos != std::wstring::npos) {
-            std::wstring pathPart = url.substr(ghPos + len);
+            std::wstring pathPart = rawUrl.substr(ghPos + len);
             if (pathPart.ends_with(L".git")) {
                 pathPart = pathPart.substr(0, pathPart.length() - 4);
             }
-            return L"https://github.com/" + pathPart;
+            m_cachedGitHubRepoUrl = L"https://github.com/" + pathPart;
         }
     }
-    return L"";
+    return m_cachedGitHubRepoUrl;
 }
 
 std::vector<std::pair<std::wstring, bool>> DrawerPanel::GetGitBranches() {
@@ -5592,6 +5697,12 @@ ID2D1Bitmap* DrawerPanel::GetOrFetchAvatar(ID2D1RenderTarget* pRT, Theme& theme,
         return it->second.Get();
     }
 
+    // Avoid repeated disk I/O on every WM_PAINT frame if already checked and not yet downloaded
+    if (m_checkedAvatars.find(username) != m_checkedAvatars.end()) {
+        return nullptr;
+    }
+    m_checkedAvatars.insert(username);
+
     // 3. Locate disk cache path: %LOCALAPPDATA%\phide\avatars\<username>.png
     wchar_t localApp[MAX_PATH] = {0};
     if (SUCCEEDED(SHGetFolderPathW(NULL, CSIDL_LOCAL_APPDATA, NULL, 0, localApp))) {
@@ -5602,7 +5713,8 @@ ID2D1Bitmap* DrawerPanel::GetOrFetchAvatar(ID2D1RenderTarget* pRT, Theme& theme,
 
         std::wstring avatarPath = avatarDir + L"\\" + username + L".png";
 
-        if (std::filesystem::exists(avatarPath)) {
+        std::error_code ec;
+        if (std::filesystem::exists(avatarPath, ec) && std::filesystem::file_size(avatarPath, ec) > 0) {
             Microsoft::WRL::ComPtr<IWICImagingFactory> pWicFactory;
             if (SUCCEEDED(CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&pWicFactory)))) {
                 Microsoft::WRL::ComPtr<IWICBitmapDecoder> pDecoder;
@@ -5625,8 +5737,14 @@ ID2D1Bitmap* DrawerPanel::GetOrFetchAvatar(ID2D1RenderTarget* pRT, Theme& theme,
         } else if (m_downloadingAvatars.find(username) == m_downloadingAvatars.end()) {
             m_downloadingAvatars.insert(username);
             std::wstring url = L"https://github.com/" + username + L".png";
-            std::thread([url, avatarPath]() {
-                URLDownloadToFileW(NULL, url.c_str(), avatarPath.c_str(), 0, NULL);
+            auto alive = m_isAlive;
+            std::thread([this, alive, username, url, avatarPath]() {
+                if (SUCCEEDED(URLDownloadToFileW(NULL, url.c_str(), avatarPath.c_str(), 0, NULL))) {
+                    if (alive && alive->load()) {
+                        std::lock_guard<std::recursive_mutex> lock(m_gitMutex);
+                        m_checkedAvatars.erase(username);
+                    }
+                }
             }).detach();
         }
     }
@@ -9500,18 +9618,29 @@ void DrawerPanel::RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, 
                             }
                         }
 
-                        // File Name
+                        // Status Badge (M, A, D, B) — leave generous right margin so badge never touches/leaks drawer border
+                        D2D1_RECT_F rcStatus = D2D1::RectF(
+                            railW + currentDrawerW - config.ScaleF(30.0f),
+                            curY,
+                            railW + currentDrawerW - config.ScaleF(12.0f),
+                            curY + fileRowH
+                        );
+
+                        // File Name (clipped strictly before status badge)
                         D2D1_RECT_F rcFileName = D2D1::RectF(
                             fileIndent + config.ScaleF(22.0f),
                             curY,
-                            railW + currentDrawerW - config.ScaleF(26.0f),
+                            rcStatus.left - config.ScaleF(6.0f),
                             curY + fileRowH
                         );
-                        pRT->DrawText(cf.fileName.c_str(), static_cast<UINT32>(cf.fileName.length()),
-                                      theme.fontMenuItem.Get() ? theme.fontMenuItem.Get() : theme.fontButtonCenter.Get(),
-                                      rcFileName, theme.brushTextPrimary.Get());
+                        if (rcFileName.right > rcFileName.left) {
+                            pRT->PushAxisAlignedClip(rcFileName, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+                            pRT->DrawText(cf.fileName.c_str(), static_cast<UINT32>(cf.fileName.length()),
+                                          theme.fontMenuItem.Get() ? theme.fontMenuItem.Get() : theme.fontButtonCenter.Get(),
+                                          rcFileName, theme.brushTextPrimary.Get());
+                            pRT->PopAxisAlignedClip();
+                        }
 
-                        // Status Badge (M, A, D, B)
                         bool isBin = false;
                         auto dot = cf.path.rfind(L'.');
                         if (dot != std::wstring::npos) {
@@ -9542,12 +9671,6 @@ void DrawerPanel::RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, 
                                 pRT->CreateSolidColorBrush(D2D1::ColorF(0.08f, 0.64f, 0.29f, 1.0f), &brushStatus);
                             }
                         }
-                        D2D1_RECT_F rcStatus = D2D1::RectF(
-                            railW + currentDrawerW - config.ScaleF(24.0f),
-                            curY,
-                            railW + currentDrawerW - config.ScaleF(8.0f),
-                            curY + fileRowH
-                        );
                         const wchar_t* sChar = isBin ? L"B" : (cf.status.empty() ? L"M" : cf.status.c_str());
                         pRT->DrawText(sChar, 1,
                                       theme.fontButtonCenter.Get() ? theme.fontButtonCenter.Get() : theme.fontMenuItem.Get(),
@@ -10164,8 +10287,8 @@ void DrawerPanel::RenderGitHubLoginModal(ID2D1RenderTarget* pRT, Theme& theme, c
     }
 
     // 2. Centered Modal Geometry (Flat Design)
-    const float modalW = config.ScaleF(460.0f);
-    const float modalH = config.ScaleF(190.0f);
+    const float modalW = config.ScaleF(520.0f);
+    const float modalH = config.ScaleF(200.0f);
     const float left   = (clientW - modalW) * 0.5f;
     const float top    = (clientH - modalH) * 0.38f;
 
@@ -10244,15 +10367,20 @@ void DrawerPanel::RenderGitHubLoginModal(ID2D1RenderTarget* pRT, Theme& theme, c
 
     curY += config.ScaleF(14.0f);
 
-    // 4. Description Body Text
-    D2D1_RECT_F rcDesc1 = D2D1::RectF(left + padX, curY, left + modalW - padX, curY + config.ScaleF(20.0f));
+    // 4. Description Body Text (clipped strictly inside modal padding so text never leaks out)
+    D2D1_RECT_F rcBodyClip = D2D1::RectF(left + padX, curY, left + modalW - padX, top + modalH - config.ScaleF(52.0f));
+    pRT->PushAxisAlignedClip(rcBodyClip, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+
+    D2D1_RECT_F rcDesc1 = D2D1::RectF(left + padX, curY, left + modalW - padX, curY + config.ScaleF(22.0f));
     const wchar_t* desc1 = L"You need to log in to your GitHub account before committing.";
     pRT->DrawText(desc1, static_cast<UINT32>(wcslen(desc1)), pFmtBody, rcDesc1, theme.brushTextPrimary.Get());
-    curY += config.ScaleF(20.0f);
+    curY += config.ScaleF(22.0f);
 
-    D2D1_RECT_F rcDesc2 = D2D1::RectF(left + padX, curY, left + modalW - padX, curY + config.ScaleF(18.0f));
+    D2D1_RECT_F rcDesc2 = D2D1::RectF(left + padX, curY, left + modalW - padX, curY + config.ScaleF(36.0f));
     const wchar_t* desc2 = L"Uncommitted files remain untracked until authentication completes.";
     pRT->DrawText(desc2, static_cast<UINT32>(wcslen(desc2)), theme.fontHint.Get() ? theme.fontHint.Get() : pFmtBody, rcDesc2, theme.brushTextMuted.Get());
+
+    pRT->PopAxisAlignedClip();
 
     // 5. Action Buttons (Flat Design): Cancel and Continue
     const float btnH = config.ScaleF(32.0f);

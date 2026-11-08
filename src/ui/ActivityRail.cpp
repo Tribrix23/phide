@@ -22,7 +22,7 @@ ActivityRail::ActivityRail() {
     m_items.push_back({ RailTabId::FileNetwork, L"File network",               {} });
 
     // 5. API icon directly above Settings (User requirement: "above the settings button add a api icon that when click create another tab on editor a blank one")
-    m_items.push_back({ RailTabId::Api,         L"API (New Tab)",              {} });
+    m_items.push_back({ RailTabId::Api,         L"API tester",                 {} });
 
     // 6. Settings icon directly under API (matching user's request)
     m_items.push_back({ RailTabId::Settings,    L"Settings (Ctrl+,)",          {} });

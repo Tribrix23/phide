@@ -503,3 +503,9 @@
 2026/11/07 21:43:28 [error] 32244#1624: CreateFile() "C:\Users\Administrator\Downloads\studio\phide\include\phide\server\nginx/logs/nginx.pid" failed (2: The system cannot find the file specified)
 2026/11/07 21:46:42 [notice] 31748#29716: signal process started
 2026/11/07 21:46:42 [error] 31748#29716: CreateFile() "C:\Users\Administrator\Downloads\studio\phide\include\phide\server\nginx/logs/nginx.pid" failed (2: The system cannot find the file specified)
+2026/11/08 05:51:40 [notice] 13072#14812: signal process started
+2026/11/08 05:51:40 [error] 13072#14812: CreateFile() "C:\Users\Administrator\Downloads\studio\phide\include\phide\server\nginx/logs/nginx.pid" failed (2: The system cannot find the file specified)
+2026/11/08 07:22:19 [notice] 29188#9296: signal process started
+2026/11/08 07:22:19 [error] 29188#9296: CreateFile() "C:\Users\Administrator\Downloads\studio\phide\include\phide\server\nginx/logs/nginx.pid" failed (2: The system cannot find the file specified)
+2026/11/08 08:36:10 [notice] 10200#12160: signal process started
+2026/11/08 08:36:10 [error] 10200#12160: CreateFile() "C:\Users\Administrator\Downloads\studio\phide\include\phide\server\nginx/logs/nginx.pid" failed (2: The system cannot find the file specified)

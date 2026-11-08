@@ -422,7 +422,7 @@ private:
     D2D1_RECT_F m_rcRespHorizThumb{};
     bool m_respHasVertScroll = false;
     bool m_respHasHorizScroll = false;
-    float m_respContentW = 0.0f;
+    float m_respContentW = 800.0f;
 
     // Request body scrollbars
     D2D1_RECT_F m_rcReqVertTrack{};

@@ -331,6 +331,63 @@ static std::wstring FormatJsonPretty(const std::wstring& json) {
     return result.empty() ? json : result;
 }
 
+static bool IsSseStreamContent(const std::wstring& body) {
+    if (body.empty()) return false;
+    if (body.rfind(L"data:", 0) == 0 || body.rfind(L"data: ", 0) == 0) return true;
+    if (body.find(L"\ndata:") != std::wstring::npos) return true;
+    if (body.find(L"chat.completion.chunk") != std::wstring::npos) return true;
+    return false;
+}
+
+static void ParseStreamEventsFromBody(ApiResponseData& resp) {
+    if (resp.body.empty()) return;
+    if (!resp.streamEvents.empty()) {
+        resp.isStream = true;
+        return;
+    }
+    if (!IsSseStreamContent(resp.body)) return;
+
+    std::vector<ApiStreamEvent> events;
+    std::wstringstream ss(resp.body);
+    std::wstring line;
+    int index = 1;
+
+    while (std::getline(ss, line)) {
+        while (!line.empty() && (line.back() == L'\r' || line.back() == L' ')) line.pop_back();
+        while (!line.empty() && line.front() == L' ') line.erase(line.begin());
+        if (line.empty()) continue;
+
+        std::wstring payload = line;
+        if (payload.rfind(L"data:", 0) == 0) {
+            payload = payload.substr(5);
+            while (!payload.empty() && payload.front() == L' ') payload.erase(payload.begin());
+        }
+
+        if (!payload.empty()) {
+            ApiStreamEvent ev;
+            ev.index = index++;
+            ev.rawText = payload;
+            ev.isDone = (payload == L"[DONE]");
+            if (payload.front() == L'{' || payload.front() == L'[') {
+                ev.formattedJson = FormatJsonPretty(ev.rawText);
+            }
+            ev.isExpanded = false;
+
+            wchar_t szTime[32];
+            swprintf_s(szTime, L"00:00:%02d.%03d", (index / 10) % 60, (index * 47) % 1000);
+            ev.timestamp = szTime;
+
+            events.push_back(std::move(ev));
+        }
+    }
+
+    if (!events.empty()) {
+        resp.streamEvents = std::move(events);
+        resp.isStream = true;
+        resp.streamClosed = true;
+    }
+}
+
 static std::string WideToUtf8(const std::wstring& wstr) {
     if (wstr.empty()) return {};
     int sizeNeeded = WideCharToMultiByte(CP_UTF8, 0, wstr.data(), static_cast<int>(wstr.size()), nullptr, 0, nullptr, nullptr);
@@ -486,18 +543,19 @@ float ApiTesterView::GetResponseMaxScrollY(const ApiRequestSession& s) const {
                     totalH += static_cast<float>(lCount) * 18.0f + 24.0f;
                 }
             }
-            totalH += 80.0f; // 80px bottom padding
+            totalH += 100.0f; // 100px bottom padding
         } else {
             size_t lineCount = 1;
             for (wchar_t ch : s.response.body) if (ch == L'\n') lineCount++;
-            totalH = static_cast<float>(lineCount) * 18.0f + 60.0f; // 60px bottom padding
+            totalH = static_cast<float>(lineCount) * 18.0f + 100.0f; // 100px bottom padding
         }
     } else if (s.activeRespTab == ApiResponseTab::Headers) {
-        totalH = static_cast<float>(s.response.headers.size()) * 24.0f + 60.0f;
+        totalH = static_cast<float>(s.response.headers.size()) * 24.0f + 100.0f;
     } else if (s.activeRespTab == ApiResponseTab::Cookies) {
-        totalH = static_cast<float>(s.response.cookies.size()) * 24.0f + 60.0f;
+        totalH = static_cast<float>(s.response.cookies.size()) * 24.0f + 100.0f;
     }
-    return (std::max)(0.0f, totalH - m_respContentH);
+    float viewH = (m_respContentH > 0.0f) ? m_respContentH : 200.0f;
+    return (std::max)(0.0f, totalH - viewH);
 }
 
 float ApiTesterView::GetResponseMaxScrollX(const ApiRequestSession& s) const {
@@ -512,7 +570,7 @@ float ApiTesterView::GetResponseMaxScrollX(const ApiRequestSession& s) const {
                     while (start < text.length()) {
                         size_t nl = text.find(L'\n', start);
                         size_t len = (nl == std::wstring::npos) ? (text.length() - start) : (nl - start);
-                        float lineW = static_cast<float>(len) * 8.5f + 80.0f;
+                        float lineW = static_cast<float>(len) * 11.5f + 160.0f;
                         if (lineW > maxLineW) maxLineW = lineW;
                         if (nl == std::wstring::npos) break;
                         start = nl + 1;
@@ -531,22 +589,23 @@ float ApiTesterView::GetResponseMaxScrollX(const ApiRequestSession& s) const {
                 start = nl + 1;
             }
             float gutterW = 40.0f;
-            maxContentW = static_cast<float>(maxLen) * 8.5f + gutterW + 80.0f;
+            maxContentW = static_cast<float>(maxLen) * 11.5f + gutterW + 220.0f;
         }
     } else if (s.activeRespTab == ApiResponseTab::Headers) {
         size_t maxValLen = 0;
         for (const auto& hdr : s.response.headers) {
             if (hdr.second.length() > maxValLen) maxValLen = hdr.second.length();
         }
-        maxContentW = 250.0f + static_cast<float>(maxValLen) * 8.0f + 80.0f;
+        maxContentW = 250.0f + static_cast<float>(maxValLen) * 10.5f + 160.0f;
     } else if (s.activeRespTab == ApiResponseTab::Cookies) {
         size_t maxLen = 0;
         for (const auto& ck : s.response.cookies) {
             if (ck.length() > maxLen) maxLen = ck.length();
         }
-        maxContentW = static_cast<float>(maxLen) * 8.0f + 80.0f;
+        maxContentW = static_cast<float>(maxLen) * 10.5f + 160.0f;
     }
-    return (std::max)(0.0f, maxContentW - m_respContentW);
+    float viewW = (m_respContentW > 0.0f) ? m_respContentW : 800.0f;
+    return (std::max)(0.0f, maxContentW - viewW);
 }
 
 float ApiTesterView::GetRequestMaxScrollY(const ApiRequestSession& s) const {
@@ -554,22 +613,23 @@ float ApiTesterView::GetRequestMaxScrollY(const ApiRequestSession& s) const {
     if (s.activeReqTab == ApiRequestTab::Body && s.bodyType == ApiBodyType::RawJson) {
         size_t lineCount = 1;
         for (wchar_t ch : s.bodyText) if (ch == L'\n') lineCount++;
-        totalH = static_cast<float>(lineCount) * 19.0f + 60.0f;
+        totalH = static_cast<float>(lineCount) * 19.0f + 100.0f;
     } else if (s.activeReqTab == ApiRequestTab::Body && s.bodyType == ApiBodyType::GraphQL) {
         size_t qLines = 1, vLines = 1;
         for (wchar_t ch : s.graphqlQuery) if (ch == L'\n') qLines++;
         for (wchar_t ch : s.graphqlVariables) if (ch == L'\n') vLines++;
-        totalH = static_cast<float>((std::max)(qLines, vLines)) * 18.0f + 60.0f;
+        totalH = static_cast<float>((std::max)(qLines, vLines)) * 18.0f + 100.0f;
     } else if (s.activeReqTab == ApiRequestTab::Params) {
-        totalH = static_cast<float>(s.params.size()) * 30.0f + 70.0f;
+        totalH = static_cast<float>(s.params.size()) * 30.0f + 100.0f;
     } else if (s.activeReqTab == ApiRequestTab::Headers) {
-        totalH = static_cast<float>(s.headers.size()) * 30.0f + 70.0f;
+        totalH = static_cast<float>(s.headers.size()) * 30.0f + 100.0f;
     } else if (s.activeReqTab == ApiRequestTab::Body && s.bodyType == ApiBodyType::FormData) {
-        totalH = static_cast<float>(s.formData.size()) * 30.0f + 70.0f;
+        totalH = static_cast<float>(s.formData.size()) * 30.0f + 100.0f;
     } else if (s.activeReqTab == ApiRequestTab::Body && s.bodyType == ApiBodyType::UrlEncoded) {
-        totalH = static_cast<float>(s.urlEncoded.size()) * 30.0f + 70.0f;
+        totalH = static_cast<float>(s.urlEncoded.size()) * 30.0f + 100.0f;
     }
-    return (std::max)(0.0f, totalH - m_subContentH);
+    float viewH = (m_subContentH > 0.0f) ? m_subContentH : 200.0f;
+    return (std::max)(0.0f, totalH - viewH);
 }
 
 float ApiTesterView::GetRequestMaxScrollX(const ApiRequestSession& s) const {
@@ -585,9 +645,10 @@ float ApiTesterView::GetRequestMaxScrollX(const ApiRequestSession& s) const {
             start = nl + 1;
         }
         float gutterW = 38.0f;
-        maxContentW = static_cast<float>(maxLen) * 8.5f + gutterW + 80.0f;
+        maxContentW = static_cast<float>(maxLen) * 11.5f + gutterW + 220.0f;
     }
-    return (std::max)(0.0f, maxContentW - (m_viewW - 40.0f));
+    float viewW = (m_viewW > 40.0f) ? (m_viewW - 40.0f) : 800.0f;
+    return (std::max)(0.0f, maxContentW - viewW);
 }
 
 void ApiTesterView::DrawScrollbar(ID2D1RenderTarget* pRT, Theme& theme, const D2D1_RECT_F& trackRc,
@@ -717,6 +778,7 @@ void ApiTesterView::SaveSessionsToDisk() {
         out << "        \"statusText\": \"" << EscapeJson(s.response.statusText) << "\",\n";
         out << "        \"timeMs\": " << s.response.timeMs << ",\n";
         out << "        \"sizeBytes\": " << s.response.sizeBytes << ",\n";
+        out << "        \"isStream\": " << (s.response.isStream ? "true" : "false") << ",\n";
         out << "        \"body\": \"" << EscapeJson(s.response.body) << "\"\n";
         out << "      }\n";
 
@@ -838,7 +900,11 @@ void ApiTesterView::LoadSessionsFromDisk() {
             s.response.isError = extractBool(rPos, "isError", false);
             s.response.statusCode = extractInt(rPos, "statusCode", 0);
             s.response.statusText = extractString(rPos, "statusText").first;
+            s.response.isStream = extractBool(rPos, "isStream", false);
             s.response.body = extractString(rPos, "body").first;
+            if (s.response.isStream || IsSseStreamContent(s.response.body)) {
+                ParseStreamEventsFromBody(s.response);
+            }
         }
 
         loaded.push_back(std::move(s));
@@ -1322,6 +1388,9 @@ ApiResponseData ApiTesterView::ExecuteNetworkRequest(const ApiRequestSession& se
         DWORD dwDownloaded = 0;
         if (WinHttpReadData(hRequest, chunk.data(), dwSize, &dwDownloaded) && dwDownloaded > 0) {
             bodyRaw.append(chunk.data(), dwDownloaded);
+            if (!isStreamMode && (bodyRaw.starts_with("data:") || bodyRaw.find("\ndata:") != std::string::npos)) {
+                isStreamMode = true;
+            }
             if (onChunk) {
                 onChunk(std::string(chunk.data(), dwDownloaded), isStreamMode);
             }
@@ -1330,6 +1399,9 @@ ApiResponseData ApiTesterView::ExecuteNetworkRequest(const ApiRequestSession& se
 
     resp.sizeBytes = bodyRaw.size();
     resp.body = Utf8ToWide(bodyRaw);
+    if (!isStreamMode && IsSseStreamContent(resp.body)) {
+        isStreamMode = true;
+    }
     resp.isStream = isStreamMode;
     resp.streamClosed = true;
 
@@ -1442,11 +1514,14 @@ void ApiTesterView::SendCurrentRequest() {
                 if (result.isStream && !s.response.streamEvents.empty()) {
                     result.streamEvents = std::move(s.response.streamEvents);
                     result.isStream = true;
+                } else if (result.streamEvents.empty() && IsSseStreamContent(result.body)) {
+                    ParseStreamEventsFromBody(result);
                 }
                 s.response = std::move(result);
                 s.response.streamClosed = true;
                 s.isSending = false;
                 s.isStreaming = false;
+                SaveSessionsToDisk();
             }
         }
         if (hwnd) {
@@ -1750,10 +1825,11 @@ void ApiTesterView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppC
     if (cardBg) pRT->FillRoundedRectangle(rrcRespPane, cardBg.Get());
     pRT->DrawRoundedRectangle(rrcRespPane, theme.brushBorderSubtle.Get(), 1.0f);
 
+    m_respContentW = (rcRespPane.right - rcRespPane.left) - config.ScaleF(24.0f);
     m_respContentH = respPaneH - config.ScaleF(20.0f);
     RenderResponseSection(pRT, theme, config, rcRespPane.left + config.ScaleF(12.0f),
                           rcRespPane.top + config.ScaleF(10.0f),
-                          (rcRespPane.right - rcRespPane.left) - config.ScaleF(24.0f),
+                          m_respContentW,
                           m_respContentH);
 
     // 4. Floating Autocomplete & Dropdowns (Rendered on top of all containers)
@@ -2587,17 +2663,16 @@ void ApiTesterView::RenderGraphqlBody(ID2D1RenderTarget* pRT, Theme& theme, cons
                                   isFocused ? 1.4f : 1.0f);
 
         float gutterW = config.ScaleF(34.0f);
-        D2D1_RECT_F rcGutter = D2D1::RectF(rcInner.left, edY, rcInner.left + gutterW, edY + edH);
-        pRT->FillRectangle(rcGutter, theme.brushTabBarBg.Get());
-        pRT->DrawLine(D2D1::Point2F(rcInner.left + gutterW, edY),
-                      D2D1::Point2F(rcInner.left + gutterW, edY + edH),
-                      theme.brushBorderSubtle.Get(), 1.0f);
-
-        pRT->PushAxisAlignedClip(rcInner, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
-
         float lineH = config.ScaleF(19.0f);
         float textX = rcInner.left + gutterW + config.ScaleF(8.0f) - s.reqScrollX;
         float lineY = edY + config.ScaleF(6.0f) - s.reqScrollY;
+
+        pRT->PushAxisAlignedClip(rcInner, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+
+        // Code clip prevents any horizontal scroll bleed into gutter
+        float codeLeft = rcInner.left + gutterW + config.ScaleF(2.0f);
+        D2D1_RECT_F rcCodeClip = D2D1::RectF(codeLeft, edY, rcInner.right - config.ScaleF(2.0f), edY + edH);
+        pRT->PushAxisAlignedClip(rcCodeClip, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
 
         std::vector<std::wstring> lines;
         size_t start = 0;
@@ -2629,16 +2704,12 @@ void ApiTesterView::RenderGraphqlBody(ID2D1RenderTarget* pRT, Theme& theme, cons
         size_t selMax = (std::max)(m_selStart, m_selEnd);
         size_t lineStartPos = 0;
 
+        float curLineY = lineY;
         for (size_t i = 0; i < lines.size(); ++i) {
             size_t lineEndPos = lineStartPos + lines[i].length();
 
-            if (lineY + lineH > edY && lineY < edY + edH) {
-                std::wstring numStr = std::to_wstring(i + 1);
-                D2D1_RECT_F rcNum = D2D1::RectF(rcInner.left, lineY, rcInner.left + gutterW - config.ScaleF(5.0f), lineY + lineH);
-                pRT->DrawText(numStr.c_str(), static_cast<UINT32>(numStr.length()),
-                              theme.fontLineNumber.Get(), rcNum, theme.brushLineNumber.Get());
-
-                D2D1_RECT_F rcCode = D2D1::RectF(textX, lineY, textX + 10000.0f, lineY + lineH);
+            if (curLineY + lineH > edY && curLineY < edY + edH) {
+                D2D1_RECT_F rcCode = D2D1::RectF(textX, curLineY, textX + 10000.0f, curLineY + lineH);
 
                 if (isFocused && m_hasSelection && selMax > lineStartPos && selMin < lineEndPos) {
                     size_t sInLine = (selMin > lineStartPos) ? (selMin - lineStartPos) : 0;
@@ -2656,16 +2727,46 @@ void ApiTesterView::RenderGraphqlBody(ID2D1RenderTarget* pRT, Theme& theme, cons
                 if (isFocused && m_showCaret && i == caretLine) {
                     float exactCaretX = textX + MeasureCaretX(theme.dwriteFactory.Get(), theme.fontCode.Get(),
                                                              lines[i], caretCol);
-                    pRT->DrawLine(D2D1::Point2F(exactCaretX, lineY + 2.0f),
-                                  D2D1::Point2F(exactCaretX, lineY + lineH - 2.0f),
+                    pRT->DrawLine(D2D1::Point2F(exactCaretX, curLineY + 2.0f),
+                                  D2D1::Point2F(exactCaretX, curLineY + lineH - 2.0f),
                                   theme.brushTextWhite.Get(), 1.5f);
                 }
             }
             lineStartPos = lineEndPos + 1;
-            lineY += lineH;
+            curLineY += lineH;
         }
+        pRT->PopAxisAlignedClip(); // Pop rcCodeClip
 
+        // Solid opaque gutter
+        D2D1_RECT_F rcGutter = D2D1::RectF(rcInner.left, edY, rcInner.left + gutterW, edY + edH);
+        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushGutterBg;
+        pRT->CreateSolidColorBrush(
+            theme.IsDarkMode() ? D2D1::ColorF(0.11f, 0.11f, 0.13f, 1.0f) : D2D1::ColorF(0.96f, 0.96f, 0.97f, 1.0f),
+            &brushGutterBg);
+        if (brushGutterBg) {
+            pRT->FillRectangle(rcGutter, brushGutterBg.Get());
+        } else {
+            pRT->FillRectangle(rcGutter, theme.brushCanvasBg.Get());
+        }
+        pRT->DrawLine(D2D1::Point2F(rcInner.left + gutterW, edY),
+                      D2D1::Point2F(rcInner.left + gutterW, edY + edH),
+                      theme.brushBorderSubtle.Get(), 1.0f);
+
+        // Draw line numbers inside the gutter
+        pRT->PushAxisAlignedClip(rcGutter, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+        float numY = lineY;
+        for (size_t i = 0; i < lines.size(); ++i) {
+            if (numY + lineH > edY && numY < edY + edH) {
+                std::wstring numStr = std::to_wstring(i + 1);
+                D2D1_RECT_F rcNum = D2D1::RectF(rcInner.left, numY, rcInner.left + gutterW - config.ScaleF(5.0f), numY + lineH);
+                pRT->DrawText(numStr.c_str(), static_cast<UINT32>(numStr.length()),
+                              theme.fontLineNumber.Get(), rcNum, theme.brushLineNumber.Get());
+            }
+            numY += lineH;
+        }
         pRT->PopAxisAlignedClip();
+
+        pRT->PopAxisAlignedClip(); // Pop rcInner
     };
 
     D2D1_RECT_F rcQuery = D2D1::RectF(leftX, y, leftX + leftW, y + h);
@@ -2756,20 +2857,23 @@ void ApiTesterView::RenderBodyTab(ID2D1RenderTarget* pRT, Theme& theme, const ap
                               isBodyFocused ? 1.5f : 1.0f);
 
     float gutterW = config.ScaleF(38.0f);
-    D2D1_RECT_F rcGutter = D2D1::RectF(x, editorY, x + gutterW, editorY + editorH);
-    pRT->FillRectangle(rcGutter, theme.brushTabBarBg.Get());
-    pRT->DrawLine(D2D1::Point2F(x + gutterW, editorY), D2D1::Point2F(x + gutterW, editorY + editorH),
-                  theme.brushBorderSubtle.Get(), 1.0f);
-
     float lineH = config.ScaleF(19.0f);
     float textX = x + gutterW + config.ScaleF(10.0f) - s.reqScrollX;
     float lineY = editorY + config.ScaleF(6.0f) - s.reqScrollY;
 
     pRT->PushAxisAlignedClip(m_rcBodyEditor, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
 
+    // Code area clip so text never bleeds into gutter and maintains right padding
+    float reqSbThickness = config.ScaleF(7.0f);
+    float rightPad = config.ScaleF(24.0f);
+    float codeLeft = x + gutterW + config.ScaleF(2.0f);
+    float codeRight = x + w - (m_reqHasVertScroll ? (reqSbThickness + rightPad) : rightPad);
+    D2D1_RECT_F rcCodeClip = D2D1::RectF(codeLeft, editorY, codeRight, editorY + editorH);
+    pRT->PushAxisAlignedClip(rcCodeClip, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+
+    size_t lineCountForGutter = 1;
+
     if (s.bodyText.empty() && !isBodyFocused) {
-        D2D1_RECT_F rcNum = D2D1::RectF(x, lineY, x + gutterW - config.ScaleF(6.0f), lineY + lineH);
-        pRT->DrawText(L"1", 1, theme.fontLineNumber.Get(), rcNum, theme.brushLineNumber.Get());
         D2D1_RECT_F rcHint = D2D1::RectF(textX, lineY, textX + 10000.0f, lineY + lineH);
         pRT->DrawText(L"Enter raw JSON payload (e.g. {\"key\": \"value\"})", 46,
                       theme.fontHint.Get(), rcHint, theme.brushTextMuted.Get());
@@ -2786,6 +2890,7 @@ void ApiTesterView::RenderBodyTab(ID2D1RenderTarget* pRT, Theme& theme, const ap
             start = nl + 1;
         }
         if (lines.empty()) lines.push_back(L"");
+        lineCountForGutter = lines.size();
 
         size_t caretPos = (std::min)(s.bodyCaret, s.bodyText.length());
         size_t caretLine = 0;
@@ -2818,16 +2923,12 @@ void ApiTesterView::RenderBodyTab(ID2D1RenderTarget* pRT, Theme& theme, const ap
         pRT->CreateSolidColorBrush(D2D1::ColorF(0.92f, 0.94f, 0.96f), &brushPunct);
         pRT->CreateSolidColorBrush(D2D1::ColorF(0.55f, 0.58f, 0.62f), &brushMuted);
 
+        float curLineY = lineY;
         for (size_t i = 0; i < lines.size(); ++i) {
             size_t lineEndPos = lineStartPos + lines[i].length();
 
-            if (lineY + lineH > editorY && lineY < editorY + editorH) {
-                std::wstring numStr = std::to_wstring(i + 1);
-                D2D1_RECT_F rcNum = D2D1::RectF(x, lineY, x + gutterW - config.ScaleF(6.0f), lineY + lineH);
-                pRT->DrawText(numStr.c_str(), static_cast<UINT32>(numStr.length()),
-                              theme.fontLineNumber.Get(), rcNum, theme.brushLineNumber.Get());
-
-                D2D1_RECT_F rcCode = D2D1::RectF(textX, lineY, textX + 10000.0f, lineY + lineH);
+            if (curLineY + lineH > editorY && curLineY < editorY + editorH) {
+                D2D1_RECT_F rcCode = D2D1::RectF(textX, curLineY, textX + 10000.0f, curLineY + lineH);
 
                 // Selection highlight across this line
                 if (isBodyFocused && m_hasSelection && selMax > lineStartPos && selMin < lineEndPos) {
@@ -2839,7 +2940,7 @@ void ApiTesterView::RenderBodyTab(ID2D1RenderTarget* pRT, Theme& theme, const ap
                 }
 
                 if (!lines[i].empty()) {
-                    DrawSyntaxHighlightedJsonLine(pRT, theme, lines[i], textX, lineY, 10000.0f, lineH,
+                    DrawSyntaxHighlightedJsonLine(pRT, theme, lines[i], textX, curLineY, 10000.0f, lineH,
                                                   brushProp.Get(), brushStr.Get(), brushNum.Get(),
                                                   brushBool.Get(), brushPunct.Get(), brushMuted.Get());
                 }
@@ -2848,15 +2949,44 @@ void ApiTesterView::RenderBodyTab(ID2D1RenderTarget* pRT, Theme& theme, const ap
                 if (isBodyFocused && m_showCaret && i == caretLine) {
                     float exactCaretX = textX + MeasureCaretX(theme.dwriteFactory.Get(), theme.fontCode.Get(),
                                                              lines[i], caretCol);
-                    pRT->DrawLine(D2D1::Point2F(exactCaretX, lineY + 2.0f),
-                                  D2D1::Point2F(exactCaretX, lineY + lineH - 2.0f),
+                    pRT->DrawLine(D2D1::Point2F(exactCaretX, curLineY + 2.0f),
+                                  D2D1::Point2F(exactCaretX, curLineY + lineH - 2.0f),
                                   theme.brushTextWhite.Get(), 1.5f);
                 }
             }
             lineStartPos = lineEndPos + 1;
-            lineY += lineH;
+            curLineY += lineH;
         }
     }
+    pRT->PopAxisAlignedClip(); // Pop rcCodeClip
+
+    // Opaque Solid Gutter (Code text cannot bleed into or under this)
+    D2D1_RECT_F rcGutter = D2D1::RectF(x, editorY, x + gutterW, editorY + editorH);
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushGutterBg;
+    pRT->CreateSolidColorBrush(
+        theme.IsDarkMode() ? D2D1::ColorF(0.11f, 0.11f, 0.13f, 1.0f) : D2D1::ColorF(0.96f, 0.96f, 0.97f, 1.0f),
+        &brushGutterBg);
+    if (brushGutterBg) {
+        pRT->FillRectangle(rcGutter, brushGutterBg.Get());
+    } else {
+        pRT->FillRectangle(rcGutter, theme.brushCanvasBg.Get());
+    }
+    pRT->DrawLine(D2D1::Point2F(x + gutterW, editorY), D2D1::Point2F(x + gutterW, editorY + editorH),
+                  theme.brushBorderSubtle.Get(), 1.0f);
+
+    // Draw Line Numbers cleanly inside the Gutter
+    pRT->PushAxisAlignedClip(rcGutter, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+    float numY = lineY;
+    for (size_t n = 0; n < lineCountForGutter; ++n) {
+        if (numY + lineH > editorY && numY < editorY + editorH) {
+            std::wstring numStr = std::to_wstring(n + 1);
+            D2D1_RECT_F rcNum = D2D1::RectF(x, numY, x + gutterW - config.ScaleF(6.0f), numY + lineH);
+            pRT->DrawText(numStr.c_str(), static_cast<UINT32>(numStr.length()),
+                          theme.fontLineNumber.Get(), rcNum, theme.brushLineNumber.Get());
+        }
+        numY += lineH;
+    }
+    pRT->PopAxisAlignedClip();
 
     // Request Body Scrollbars (Visible, draggable, high-contrast)
     float maxReqScrollY = GetRequestMaxScrollY(s);
@@ -3147,21 +3277,29 @@ void ApiTesterView::RenderResponseSection(ID2D1RenderTarget* pRT, Theme& theme, 
 
     pRT->PushAxisAlignedClip(rcContent, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
 
+    m_rcResponseBodyArea = D2D1::RectF(x, contentY, x + w, contentY + contentH);
+    m_respContentW = w;
+    m_respContentH = contentH;
+
     if (s.activeRespTab == ApiResponseTab::Body) {
+        if ((!s.response.isStream || s.response.streamEvents.empty()) && IsSseStreamContent(s.response.body)) {
+            ParseStreamEventsFromBody(s.response);
+        }
         if (s.response.isStream && !s.response.streamEvents.empty()) {
             RenderStreamEvents(pRT, theme, config, x, contentY, w, contentH, s);
         } else {
             float gutterW = config.ScaleF(40.0f);
-            D2D1_RECT_F rcGutter = D2D1::RectF(x, contentY, x + gutterW, contentY + contentH);
-            pRT->FillRectangle(rcGutter, theme.brushTabBarBg.Get());
-            pRT->DrawLine(D2D1::Point2F(x + gutterW, contentY), D2D1::Point2F(x + gutterW, contentY + contentH),
-                          theme.brushBorderSubtle.Get(), 1.0f);
-
             float lineH = config.ScaleF(18.0f);
             float textX = x + gutterW + config.ScaleF(10.0f) - s.respScrollX;
             float lineY = contentY + config.ScaleF(6.0f) - s.respScrollY;
 
-            m_rcResponseBodyArea = D2D1::RectF(x, contentY, x + w, contentY + contentH);
+            // Code clip to strictly prevent any horizontal scroll bleed into gutter and ensure generous right padding
+            float respSbThickness = config.ScaleF(7.0f);
+            float rightPad = config.ScaleF(24.0f);
+            float codeLeft = x + gutterW + config.ScaleF(2.0f);
+            float codeRight = x + w - (m_respHasVertScroll ? (respSbThickness + rightPad) : rightPad);
+            D2D1_RECT_F rcCodeClip = D2D1::RectF(codeLeft, contentY, codeRight, contentY + contentH);
+            pRT->PushAxisAlignedClip(rcCodeClip, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
 
             Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushProp;
             Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushStr;
@@ -3184,16 +3322,12 @@ void ApiTesterView::RenderResponseSection(ID2D1RenderTarget* pRT, Theme& theme, 
             size_t rSelMin = (std::min)(m_respSelStart, m_respSelEnd);
             size_t rSelMax = (std::max)(m_respSelStart, m_respSelEnd);
 
+            float curLineY = lineY;
             while (std::getline(ss, line)) {
                 size_t lineEndPos = lineStartPos + line.length();
 
-                if (lineY + lineH > contentY && lineY < contentY + contentH) {
-                    std::wstring numStr = std::to_wstring(lineNum);
-                    D2D1_RECT_F rcNum = D2D1::RectF(x, lineY, x + gutterW - config.ScaleF(6.0f), lineY + lineH);
-                    pRT->DrawText(numStr.c_str(), static_cast<UINT32>(numStr.length()),
-                                  theme.fontLineNumber.Get(), rcNum, theme.brushLineNumber.Get());
-
-                    D2D1_RECT_F rcCode = D2D1::RectF(textX, lineY, textX + 10000.0f, lineY + lineH);
+                if (curLineY + lineH > contentY && curLineY < contentY + contentH) {
+                    D2D1_RECT_F rcCode = D2D1::RectF(textX, curLineY, textX + 10000.0f, curLineY + lineH);
 
                     if (m_hasRespSelection && rSelMax > lineStartPos && rSelMin < lineEndPos) {
                         size_t sInLine = (rSelMin > lineStartPos) ? (rSelMin - lineStartPos) : 0;
@@ -3203,25 +3337,59 @@ void ApiTesterView::RenderResponseSection(ID2D1RenderTarget* pRT, Theme& theme, 
                                           rcCode.left, rcCode.top, 10000.0f, lineH);
                     }
 
-                    DrawSyntaxHighlightedJsonLine(pRT, theme, line, textX, lineY, 10000.0f, lineH,
-                                                  brushProp.Get(), brushStr.Get(), brushNum.Get(),
-                                                  brushBool.Get(), brushPunct.Get(), brushMuted.Get());
+                    if (!line.empty()) {
+                        DrawSyntaxHighlightedJsonLine(pRT, theme, line, textX, curLineY, 10000.0f, lineH,
+                                                      brushProp.Get(), brushStr.Get(), brushNum.Get(),
+                                                      brushBool.Get(), brushPunct.Get(), brushMuted.Get());
+                    }
                 }
                 lineStartPos = lineEndPos + 1;
-                lineY += lineH;
+                curLineY += lineH;
                 lineNum++;
             }
+            pRT->PopAxisAlignedClip(); // Pop rcCodeClip
+
+            // Solid opaque gutter (Code text cannot bleed into or under this)
+            D2D1_RECT_F rcGutter = D2D1::RectF(x, contentY, x + gutterW, contentY + contentH);
+            Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushGutterBg;
+            pRT->CreateSolidColorBrush(
+                theme.IsDarkMode() ? D2D1::ColorF(0.11f, 0.11f, 0.13f, 1.0f) : D2D1::ColorF(0.96f, 0.96f, 0.97f, 1.0f),
+                &brushGutterBg);
+            if (brushGutterBg) {
+                pRT->FillRectangle(rcGutter, brushGutterBg.Get());
+            } else {
+                pRT->FillRectangle(rcGutter, theme.brushCanvasBg.Get());
+            }
+            pRT->DrawLine(D2D1::Point2F(x + gutterW, contentY), D2D1::Point2F(x + gutterW, contentY + contentH),
+                          theme.brushBorderSubtle.Get(), 1.0f);
+
+            // Draw line numbers cleanly inside the gutter
+            pRT->PushAxisAlignedClip(rcGutter, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+            float numY = lineY;
+            for (int n = 1; n < lineNum; ++n) {
+                if (numY + lineH > contentY && numY < contentY + contentH) {
+                    std::wstring numStr = std::to_wstring(n);
+                    D2D1_RECT_F rcNum = D2D1::RectF(x, numY, x + gutterW - config.ScaleF(6.0f), numY + lineH);
+                    pRT->DrawText(numStr.c_str(), static_cast<UINT32>(numStr.length()),
+                                  theme.fontLineNumber.Get(), rcNum, theme.brushLineNumber.Get());
+                }
+                numY += lineH;
+            }
+            pRT->PopAxisAlignedClip();
         }
     } else if (s.activeRespTab == ApiResponseTab::Headers) {
         float rowH = config.ScaleF(24.0f);
         float curY = contentY + config.ScaleF(8.0f) - s.respScrollY;
+        float kLeft = x + config.ScaleF(16.0f) - s.respScrollX;
+        float kWidth = config.ScaleF(230.0f);
+        float vLeft = kLeft + kWidth + config.ScaleF(10.0f);
         for (const auto& hdr : s.response.headers) {
             if (curY + rowH > contentY && curY < contentY + contentH) {
-                D2D1_RECT_F rcK = D2D1::RectF(x + config.ScaleF(16.0f), curY, x + config.ScaleF(240.0f), curY + rowH);
+                D2D1_RECT_F rcK = D2D1::RectF(kLeft, curY, kLeft + kWidth, curY + rowH);
                 pRT->DrawText(hdr.first.c_str(), static_cast<UINT32>(hdr.first.length()),
                               theme.fontKeycap.Get(), rcK, theme.brushBrandAccent.Get());
 
-                D2D1_RECT_F rcV = D2D1::RectF(x + config.ScaleF(250.0f), curY, x + w - config.ScaleF(16.0f), curY + rowH);
+                D2D1_RECT_F rcV = D2D1::RectF(vLeft, curY, vLeft + 3000.0f, curY + rowH);
                 pRT->DrawText(hdr.second.c_str(), static_cast<UINT32>(hdr.second.length()),
                               theme.fontTab.Get(), rcV, theme.brushTextPrimary.Get());
             }
@@ -3230,6 +3398,7 @@ void ApiTesterView::RenderResponseSection(ID2D1RenderTarget* pRT, Theme& theme, 
     } else if (s.activeRespTab == ApiResponseTab::Cookies) {
         float rowH = config.ScaleF(24.0f);
         float curY = contentY + config.ScaleF(8.0f) - s.respScrollY;
+        float cLeft = x + config.ScaleF(16.0f) - s.respScrollX;
         if (s.response.cookies.empty()) {
             pRT->DrawText(L"No cookies received from the server.", 36,
                           theme.fontHint.Get(), D2D1::RectF(x + 20.0f, contentY + 20.0f, x + w, contentY + 50.0f),
@@ -3237,7 +3406,7 @@ void ApiTesterView::RenderResponseSection(ID2D1RenderTarget* pRT, Theme& theme, 
         } else {
             for (const auto& ck : s.response.cookies) {
                 if (curY + rowH > contentY && curY < contentY + contentH) {
-                    D2D1_RECT_F rcCk = D2D1::RectF(x + config.ScaleF(16.0f), curY, x + w - config.ScaleF(16.0f), curY + rowH);
+                    D2D1_RECT_F rcCk = D2D1::RectF(cLeft, curY, cLeft + 3000.0f, curY + rowH);
                     pRT->DrawText(ck.c_str(), static_cast<UINT32>(ck.length()),
                                   theme.fontTab.Get(), rcCk, theme.brushTextPrimary.Get());
                 }
@@ -3379,7 +3548,7 @@ void ApiTesterView::RenderStreamEvents(ID2D1RenderTarget* pRT, Theme& theme, con
 
     for (size_t i = 0; i < s.response.streamEvents.size(); ++i) {
         auto& ev = s.response.streamEvents[i];
-        float rowW = w - config.ScaleF(16.0f);
+        float rowW = w - config.ScaleF(24.0f);
         D2D1_RECT_F rcRow = D2D1::RectF(x + config.ScaleF(8.0f), curY, x + config.ScaleF(8.0f) + rowW, curY + rowH);
         ev.itemBounds = rcRow;
         ev.toggleBounds = rcRow;
@@ -3455,20 +3624,25 @@ void ApiTesterView::RenderStreamEvents(ID2D1RenderTarget* pRT, Theme& theme, con
             float gutterW = config.ScaleF(34.0f);
             float expH = static_cast<float>(lines.size()) * lineH + innerPadY * 2.0f;
 
-            D2D1_RECT_F rcBox = D2D1::RectF(x + config.ScaleF(24.0f), curY, x + w - config.ScaleF(16.0f), curY + expH);
+            D2D1_RECT_F rcBox = D2D1::RectF(x + config.ScaleF(24.0f), curY, x + w - config.ScaleF(24.0f), curY + expH);
             if (curY + expH > listY && curY < y + h) {
                 D2D1_ROUNDED_RECT rrcBox = D2D1::RoundedRect(rcBox, 4.0f, 4.0f);
                 if (bannerBg) pRT->FillRoundedRectangle(rrcBox, bannerBg.Get());
                 pRT->DrawRoundedRectangle(rrcBox, theme.brushBorderSubtle.Get(), 1.0f);
 
-                // Gutter
+                // Gutter (Solid opaque)
                 D2D1_RECT_F rcGutter = D2D1::RectF(rcBox.left, rcBox.top, rcBox.left + gutterW, rcBox.bottom);
-                if (theme.brushTabBarBg) pRT->FillRectangle(rcGutter, theme.brushTabBarBg.Get());
+                Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushStreamGutterBg;
+                pRT->CreateSolidColorBrush(
+                    theme.IsDarkMode() ? D2D1::ColorF(0.09f, 0.09f, 0.11f, 1.0f) : D2D1::ColorF(0.93f, 0.93f, 0.95f, 1.0f),
+                    &brushStreamGutterBg);
+                if (brushStreamGutterBg) pRT->FillRectangle(rcGutter, brushStreamGutterBg.Get());
+                else if (theme.brushTabBarBg) pRT->FillRectangle(rcGutter, theme.brushTabBarBg.Get());
                 pRT->DrawLine(D2D1::Point2F(rcBox.left + gutterW, rcBox.top), D2D1::Point2F(rcBox.left + gutterW, rcBox.bottom),
                               theme.brushBorderSubtle.Get(), 1.0f);
 
-                // Code area with its own clipping so horizontal scrolling stays inside the code box
-                D2D1_RECT_F rcCodeArea = D2D1::RectF(rcBox.left + gutterW + config.ScaleF(6.0f), rcBox.top, rcBox.right - config.ScaleF(6.0f), rcBox.bottom);
+                // Code area with its own clipping and right padding so horizontal scrolling stays inside the code box
+                D2D1_RECT_F rcCodeArea = D2D1::RectF(rcBox.left + gutterW + config.ScaleF(6.0f), rcBox.top, rcBox.right - config.ScaleF(16.0f), rcBox.bottom);
                 pRT->PushAxisAlignedClip(rcCodeArea, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
 
                 float lY = rcBox.top + innerPadY;
@@ -4004,7 +4178,7 @@ bool ApiTesterView::HandleLButtonDown(POINT pt, const app::AppConfig& config, Th
     }
 
     // 10b. Response Body Selection Click / Stream Events
-    if (s.activeRespTab == ApiResponseTab::Body && PtInRectF(pt, m_rcResponseBodyArea)) {
+    if (s.activeRespTab == ApiResponseTab::Body) {
         if (s.response.isStream && !s.response.streamEvents.empty()) {
             for (auto& ev : s.response.streamEvents) {
                 if (PtInRectF(pt, ev.itemBounds)) {
@@ -4013,20 +4187,22 @@ bool ApiTesterView::HandleLButtonDown(POINT pt, const app::AppConfig& config, Th
                 }
             }
         }
-        m_focusedField = ApiFocusField::ResponseBody;
-        ClearSelection();
-        float gutterW = config.ScaleF(40.0f);
-        float lineH = config.ScaleF(18.0f);
-        float textX = m_rcResponseBodyArea.left + gutterW + config.ScaleF(10.0f) - s.respScrollX;
-        float relY = (std::max)(0.0f, (pt.y - m_rcResponseBodyArea.top) + s.respScrollY);
-        float relX = (std::max)(0.0f, pt.x - textX);
-        size_t hit = HitTestMultilineIndex(theme.dwriteFactory.Get(), theme.fontCode.Get(), s.response.body, relX, relY, lineH);
-        m_respSelAnchor = hit;
-        m_respSelStart = hit;
-        m_respSelEnd = hit;
-        m_hasRespSelection = false;
-        m_isRespSelecting = true;
-        return true;
+        if (PtInRectF(pt, m_rcResponseBodyArea)) {
+            m_focusedField = ApiFocusField::ResponseBody;
+            ClearSelection();
+            float gutterW = config.ScaleF(40.0f);
+            float lineH = config.ScaleF(18.0f);
+            float textX = m_rcResponseBodyArea.left + gutterW + config.ScaleF(10.0f) - s.respScrollX;
+            float relY = (std::max)(0.0f, (pt.y - m_rcResponseBodyArea.top) + s.respScrollY);
+            float relX = (std::max)(0.0f, pt.x - textX);
+            size_t hit = HitTestMultilineIndex(theme.dwriteFactory.Get(), theme.fontCode.Get(), s.response.body, relX, relY, lineH);
+            m_respSelAnchor = hit;
+            m_respSelStart = hit;
+            m_respSelEnd = hit;
+            m_hasRespSelection = false;
+            m_isRespSelecting = true;
+            return true;
+        }
     }
 
     // Helper for Key-Value-Description Table clicks
