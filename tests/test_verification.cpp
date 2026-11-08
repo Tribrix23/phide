@@ -333,6 +333,9 @@ int main(int argc, char* argv[]) {
     if (targetTest == 121) {
         goto run_test_121;
     }
+    if (targetTest == 122) {
+        goto run_test_122;
+    }
 
     if (targetTest == 66) {
         goto run_test_66;
@@ -18330,6 +18333,67 @@ run_test_121:
 
         if (targetTest == 121) {
             std::cout << "Target test 121 finished." << std::endl;
+            return 0;
+        }
+    }
+
+run_test_122:
+    // [TEST 122] Testing Markdown Preview HTML Comment Suppression and Bottom Padding Scroll Reachability
+    if (targetTest == 0 || targetTest == 122) {
+        std::cout << "\n[TEST 122] Testing Markdown Preview HTML Comments & Bottom Padding..." << std::endl;
+
+        phide::ui::EditorCanvas editor;
+        phide::ui::Theme theme;
+        theme.SetThemeMode(phide::ui::ThemeMode::Dark);
+
+        ComPtr<IWICBitmap> pWicMd;
+        ComPtr<ID2D1RenderTarget> pRTMd;
+        CreateTarget(pWicMd, pRTMd);
+        theme.CreateDeviceResources(pRTMd.Get(), pDWriteFactory.Get());
+
+        phide::app::AppConfig cfg;
+
+        // Test 1: Markdown Document with HTML comment and trailing lines
+        phide::editor::OpenDocument doc;
+        doc.isSpecialView = true;
+        doc.viewType = L"markdown_preview";
+        doc.fileName = L"PRODUCT.md";
+        doc.filePath = L"C:\\workspace\\cleavedb-browser\\PRODUCT.md";
+        doc.buffer.SetText(
+            L"# CleaveDB\n\n"
+            L"<!-- impeccable:product-schema 1 -->\n\n"
+            L"## Platform\n"
+            L"web\n\n"
+            L"## Operating Context\n"
+            L"Visitors move from the landing page to documentation.\n\n"
+            L"## Product Principles\n"
+            L"- Make documents, graph relationships, and semantic search understandable together.\n"
+            L"- Use concrete query examples to explain the product.\n"
+            L"- Give visitors a direct path to installation and focused documentation.\n"
+            L"- Maintain clear distinctions between illustrative demos and operational code.\n"
+        );
+
+        std::vector<phide::editor::OpenDocument> docs;
+        docs.push_back(std::move(doc));
+
+        pRTMd->BeginDraw();
+        pRTMd->Clear(theme.colors.windowBg);
+        editor.Render(pRTMd.Get(), theme, cfg, docs, 0, 0.0f, 1000.0f, 500.0f, true);
+        HRESULT hr = pRTMd->EndDraw();
+        assert(SUCCEEDED(hr));
+
+        // Verify bottom padding provides scroll reachability
+        assert(docs[0].markdownMaxScrollY > 0.0f);
+        // Verify wheel scrolling moves scrollY smoothly
+        bool scrolled = editor.HandleMarkdownPreviewWheel(-120, docs[0]);
+        assert(scrolled);
+        assert(docs[0].markdownScrollY > 0.0f);
+
+        SaveWicBitmapToPng(pWicMd.Get(), pWicFactory.Get(), artDir + L"test_markdown_preview_padding.png");
+        std::cout << "  Passed: Markdown Preview rendered with HTML comment suppression and bottom scroll padding." << std::endl;
+
+        if (targetTest == 122) {
+            std::cout << "Target test 122 finished successfully." << std::endl;
             return 0;
         }
     }

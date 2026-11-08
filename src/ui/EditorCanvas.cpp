@@ -5690,7 +5690,10 @@ void EditorCanvas::RenderMarkdownPreview(ID2D1RenderTarget* pRT, Theme& theme, c
                                          float topY, float clientHeight) {
     if (!pRT) return;
 
-    D2D1_RECT_F rcView = D2D1::RectF(canvasLeft, topY, canvasLeft + canvasWidth, topY + clientHeight);
+    const float bottomY = (clientHeight > topY) ? clientHeight : (topY + clientHeight);
+    const float viewH = (std::max)(10.0f, bottomY - topY);
+
+    D2D1_RECT_F rcView = D2D1::RectF(canvasLeft, topY, canvasLeft + canvasWidth, bottomY);
     pRT->PushAxisAlignedClip(rcView, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
 
     D2D1_COLOR_F bgColor = theme.IsDarkMode() ? D2D1::ColorF(0.10f, 0.11f, 0.13f, 1.0f) : D2D1::ColorF(0.985f, 0.988f, 0.992f, 1.0f);
@@ -5757,7 +5760,7 @@ void EditorCanvas::RenderMarkdownPreview(ID2D1RenderTarget* pRT, Theme& theme, c
     }
 
     // 3. Setup Content Viewport
-    D2D1_RECT_F rcContent = D2D1::RectF(canvasLeft, topY + tbH, canvasLeft + canvasWidth, topY + clientHeight);
+    D2D1_RECT_F rcContent = D2D1::RectF(canvasLeft, topY + tbH, canvasLeft + canvasWidth, bottomY);
     pRT->PushAxisAlignedClip(rcContent, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
 
     const float padX = config.ScaleF(32.0f);
@@ -5845,6 +5848,7 @@ void EditorCanvas::RenderMarkdownPreview(ID2D1RenderTarget* pRT, Theme& theme, c
         std::wstringstream wss(markdownText);
         std::wstring line;
         bool inCodeBlock = false;
+        bool inHtmlComment = false;
         std::wstring codeBlockLang;
         std::vector<std::wstring> codeBlockLines;
         std::vector<std::vector<std::wstring>> tableRows;
@@ -6008,6 +6012,48 @@ void EditorCanvas::RenderMarkdownPreview(ID2D1RenderTarget* pRT, Theme& theme, c
             if (inCodeBlock) {
                 codeBlockLines.push_back(line);
                 continue;
+            }
+
+            // HTML Comment Stripper (<!-- ... -->)
+            bool hadHtmlComment = inHtmlComment;
+            if (inHtmlComment) {
+                size_t endComment = line.find(L"-->");
+                if (endComment == std::wstring::npos) {
+                    continue; // Entire line is within multi-line HTML comment
+                }
+                line = line.substr(endComment + 3);
+                inHtmlComment = false;
+            }
+
+            while (true) {
+                size_t startComment = line.find(L"<!--");
+                if (startComment == std::wstring::npos) {
+                    break;
+                }
+                hadHtmlComment = true;
+                size_t endComment = line.find(L"-->", startComment + 4);
+                if (endComment == std::wstring::npos) {
+                    line = line.substr(0, startComment);
+                    inHtmlComment = true;
+                    break;
+                } else {
+                    line = line.substr(0, startComment) + line.substr(endComment + 3);
+                }
+            }
+
+            // If the line was an HTML comment and has no remaining text, skip it completely without phantom gap
+            if (hadHtmlComment) {
+                bool hasContent = false;
+                for (wchar_t ch : line) {
+                    if (ch != L' ' && ch != L'\t' && ch != L'\r' && ch != L'\n') {
+                        hasContent = true;
+                        break;
+                    }
+                }
+                if (!hasContent) {
+                    FlushTable();
+                    continue;
+                }
             }
 
             // 2. Table Rows Handler
@@ -6260,8 +6306,9 @@ void EditorCanvas::RenderMarkdownPreview(ID2D1RenderTarget* pRT, Theme& theme, c
     pRT->PopAxisAlignedClip(); // Pop Content Viewport Clip
 
     // 4. Calculate Scroll Bounds
-    float totalDrawnHeight = curY - startY + config.ScaleF(40.0f);
-    float viewportH = clientHeight - tbH;
+    const float paddingBottom = config.ScaleF(180.0f);
+    float totalDrawnHeight = curY - startY + paddingBottom;
+    float viewportH = (std::max)(10.0f, viewH - tbH);
     doc.markdownMaxScrollY = (std::max)(0.0f, totalDrawnHeight - viewportH);
     doc.markdownScrollY = (std::clamp)(doc.markdownScrollY, 0.0f, doc.markdownMaxScrollY);
 
@@ -6274,7 +6321,7 @@ void EditorCanvas::RenderMarkdownPreview(ID2D1RenderTarget* pRT, Theme& theme, c
 
         float thumbRatio = viewportH / totalDrawnHeight;
         float thumbH = (std::max)(config.ScaleF(24.0f), sbTrackH * thumbRatio);
-        float scrollFrac = doc.markdownScrollY / doc.markdownMaxScrollY;
+        float scrollFrac = (doc.markdownMaxScrollY > 0.0f) ? (doc.markdownScrollY / doc.markdownMaxScrollY) : 0.0f;
         float thumbY = sbTrackY + scrollFrac * (sbTrackH - thumbH);
 
         D2D1_ROUNDED_RECT rrcThumb = D2D1::RoundedRect(
