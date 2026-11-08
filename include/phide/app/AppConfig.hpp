@@ -58,6 +58,18 @@ struct AppConfig {
     bool wordWrap = false;              ///< True if word wrap is enabled in editor.
     bool renderWhitespace = false;      ///< True if whitespace dots are rendered.
     bool zenMode = false;               ///< True if Zen Mode (distraction-free full screen) is active.
+    bool centeredLayout = false;        ///< True if editor canvas is centered horizontally.
+    bool showMenuBar = true;            ///< True if top menu bar items are visible.
+    bool sideBarOnRight = false;        ///< True if primary activity rail & drawer are moved to the right.
+    bool enableStickyScroll = true;     ///< True if sticky scroll header is enabled.
+    bool renderControlChars = false;    ///< True if control characters are rendered.
+
+    struct ZenPreState {
+        bool isDrawerOpen = false;
+        bool showStatusBar = true;
+        bool centeredLayout = false;
+        bool isZoomed = false;
+    } zenPreState;
     bool isGraphColored = false;        ///< True if file network graph nodes are colored by file type (Default false per user prompt).
     float fontSize = 15.0f;             ///< Editor font size in points (Default: 15px).
     float lineHeightMultiplier = 1.45f; ///< Line height relative to font size.

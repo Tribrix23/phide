@@ -3926,11 +3926,14 @@ int EditorCanvas::HitTestFoldChevron(POINT pt) const {
 
 bool EditorCanvas::HitTestGutter(POINT pt, const app::AppConfig& config, const editor::OpenDocument& doc,
                                  float canvasLeft, float clientHeight, size_t& outLine) const {
+    if (!config.showLineNumbers) {
+        return false;
+    }
     const float headerH = config.ScaleF(static_cast<float>(config.headerHeight));
     const float tabH    = config.ScaleF(34.0f);
     const float breadcrumbH = config.ScaleF(24.0f);
     const float topY    = headerH + tabH + breadcrumbH;
-    const float gutterW = config.ScaleF(50.0f);
+    const float gutterW = config.showLineNumbers ? config.ScaleF(50.0f) : config.ScaleF(12.0f);
     const float lineH   = config.ScaleF(std::round(config.fontSize * config.lineHeightMultiplier));
 
     if (pt.x < canvasLeft || pt.x >= canvasLeft + gutterW || pt.y < topY || pt.y > clientHeight) {
@@ -4018,7 +4021,7 @@ bool EditorCanvas::HitTestCodeArea(POINT pt, const app::AppConfig& config, const
     const float tabH    = config.ScaleF(34.0f);
     const float breadcrumbH = config.ScaleF(24.0f);
     const float topY    = headerH + tabH + breadcrumbH;
-    const float gutterW = config.ScaleF(50.0f);
+    const float gutterW = config.showLineNumbers ? config.ScaleF(50.0f) : config.ScaleF(12.0f);
     const float lineH   = config.ScaleF(std::round(config.fontSize * config.lineHeightMultiplier));
     const float charW   = (m_charWidth > 0.0f) ? m_charWidth : config.ScaleF(7.8f);
 

@@ -915,6 +915,72 @@ void Window::ToggleSidebar() {
     SaveSessionState();
 }
 
+void Window::ToggleZenMode() {
+    if (!m_config.zenMode) {
+        // Save current workbench state
+        m_config.zenPreState.isDrawerOpen = m_config.isDrawerOpen;
+        m_config.zenPreState.showStatusBar = m_config.showStatusBar;
+        m_config.zenPreState.centeredLayout = m_config.centeredLayout;
+        m_config.zenPreState.isZoomed = (IsZoomed(m_hwnd) != FALSE);
+
+        m_config.zenMode = true;
+        // Close left drawer immediately
+        m_config.isDrawerOpen = false;
+        m_drawerAnimProgress = 0.0f;
+        // Close secondary right sidebar if open
+        if (m_extensionsPanel.IsOpen()) {
+            m_extensionsPanel.Close();
+            m_rightSidebarAnimProgress = 0.0f;
+        }
+        // Maximize window for distraction-free coding
+        if (!IsZoomed(m_hwnd)) {
+            ShowWindow(m_hwnd, SW_MAXIMIZE);
+        }
+    } else {
+        // Exit Zen Mode: restore original states
+        m_config.zenMode = false;
+        m_config.isDrawerOpen = m_config.zenPreState.isDrawerOpen;
+        m_drawerAnimProgress = m_config.isDrawerOpen ? 1.0f : 0.0f;
+        m_config.showStatusBar = m_config.zenPreState.showStatusBar;
+        m_config.centeredLayout = m_config.zenPreState.centeredLayout;
+
+        if (!m_config.zenPreState.isZoomed && IsZoomed(m_hwnd)) {
+            ShowWindow(m_hwnd, SW_RESTORE);
+        }
+    }
+    InvalidateRect(m_hwnd, nullptr, FALSE);
+}
+
+void Window::GetCanvasLayout(float clientW, float& outCanvasLeft, float& outCanvasWidth) const {
+    const float railW = m_config.zenMode ? 0.0f : m_config.ScaleF(static_cast<float>(m_config.railWidth));
+    const float currentDrawerW = m_config.zenMode ? 0.0f : (m_config.ScaleF(static_cast<float>(m_config.drawerWidth)) * m_drawerAnimProgress);
+
+    float rightDeduction = 0.0f;
+    if (!m_config.zenMode) {
+        const float fullRightSidebarW = m_config.ScaleF(static_cast<float>(m_config.rightSidebarWidth));
+        const float currentRightSidebarW = fullRightSidebarW * m_rightSidebarAnimProgress;
+        rightDeduction = currentRightSidebarW;
+        if (m_terminal.IsOpen() && m_terminal.GetDockPosition() == 2) {
+            rightDeduction = (std::max)(rightDeduction, m_terminal.GetRightWidth());
+        }
+    }
+
+    const float rawCanvasLeft = railW + currentDrawerW;
+    const float availableW = (std::max)(100.0f, clientW - rawCanvasLeft - rightDeduction);
+
+    outCanvasLeft = rawCanvasLeft;
+    outCanvasWidth = availableW;
+
+    if (m_config.centeredLayout || m_config.zenMode) {
+        const float maxCenteredW = (std::min)(availableW, m_config.ScaleF(1080.0f));
+        if (maxCenteredW < availableW) {
+            const float margin = (availableW - maxCenteredW) * 0.5f;
+            outCanvasLeft = rawCanvasLeft + margin;
+            outCanvasWidth = maxCenteredW;
+        }
+    }
+}
+
 void Window::EnsureCursorVisible() {
     auto* pDoc = GetActiveDoc();
     if (!pDoc || pDoc->isSpecialView) return;
@@ -922,17 +988,15 @@ void Window::EnsureCursorVisible() {
     RECT rc;
     GetClientRect(m_hwnd, &rc);
     float clientW = static_cast<float>(rc.right - rc.left);
-    float railW = m_config.ScaleF(static_cast<float>(m_config.railWidth));
-    float drawerW = m_drawerAnimProgress * m_config.ScaleF(static_cast<float>(m_config.drawerWidth));
-    float canvasLeft = railW + drawerW;
-    float canvasWidth = clientW - canvasLeft;
+    float canvasLeft = 0.0f, canvasWidth = 0.0f;
+    GetCanvasLayout(clientW, canvasLeft, canvasWidth);
     float paneW = canvasWidth;
     float paneCanvasLeft = canvasLeft;
     if (!m_editorGroups.empty() && m_editorGroups.size() > 1) {
         paneW = canvasWidth / static_cast<float>(m_editorGroups.size());
         paneCanvasLeft = canvasLeft + static_cast<float>(m_focusedGroupIdx) * paneW;
     }
-    float gutterW = m_config.ScaleF(50.0f);
+    float gutterW = m_config.showLineNumbers ? m_config.ScaleF(50.0f) : m_config.ScaleF(12.0f);
     float codeLeft = paneCanvasLeft + gutterW + m_config.ScaleF(12.0f);
     float minimapW = m_config.ScaleF(88.0f);
     float scrollbarW = m_config.ScaleF(14.0f);
@@ -7201,8 +7265,8 @@ void Window::OnPaint() {
         rightDeduction = (std::max)(rightDeduction, m_terminal.GetRightWidth());
     }
 
-    const float canvasLeft  = railW + currentDrawerW;
-    const float canvasWidth = (std::max)(100.0f, clientW - canvasLeft - rightDeduction);
+    float canvasLeft = 0.0f, canvasWidth = 0.0f;
+    GetCanvasLayout(clientW, canvasLeft, canvasWidth);
 
     // 1. Render Workspace Canvas (shows placeholder watermark when no file is open, multi-tabs and active doc when open)
     // Only highlight search occurrences when user is actively inside Code Search drawer tab!
@@ -7228,17 +7292,6 @@ void Window::OnPaint() {
 
     const float headerH = m_config.ScaleF(static_cast<float>(m_config.headerHeight));
 
-    // Fill workspace canvas background behind all panels
-    // so when terminal is open with a gap, the gap matches the dark canvas background seamlessly
-    D2D1_RECT_F rcWorkspace = D2D1::RectF(railW, headerH, clientW, clientH);
-    m_pRenderTarget->FillRectangle(rcWorkspace, m_theme.brushCanvasBg ? m_theme.brushCanvasBg.Get() : m_theme.brushDrawerBg.Get());
-
-    // Pre-fill the corner patch at (railW, headerH) with headerBg
-    // so the 14px inward rounded arc of DrawerPanel (or EditorCanvas when drawer is closed)
-    // curves smoothly against the title header and activity rail across all 20 themes.
-    D2D1_RECT_F rcCornerPatch = D2D1::RectF(railW, headerH, railW + m_config.ScaleF(18.0f), headerH + m_config.ScaleF(18.0f));
-    m_pRenderTarget->FillRectangle(rcCornerPatch, m_theme.brushHeaderBg.Get());
-
     if (!m_terminal.IsOpen() && !m_isTerminalAnimating) {
         m_terminalAnimProgress = 0.0f;
     }
@@ -7248,9 +7301,28 @@ void Window::OnPaint() {
 
     // Apply margin gap when terminal is open (user requirement: "make the height of the sidebar and editory misus it a bit when the terminal is open")
     const float termGap = (m_terminalAnimProgress > 0.001f && m_terminal.IsOpen()) ? (m_config.ScaleF(8.0f) * (1.0f - m_termFullScreenProgress)) : 0.0f;
-    float editorH = clientH - statusBarH - currentTermH - termGap;
-    float drawerH = clientH - statusBarH - currentTermH - termGap;
-    float terminalLeft = static_cast<float>(railW);
+
+    const float effectiveRailW = m_config.zenMode ? 0.0f : railW;
+    const float effectiveStatusBarH = (m_config.showStatusBar && !m_config.zenMode) ? m_config.ScaleF(22.0f) : 0.0f;
+    const float effectiveTermH = m_config.zenMode ? 0.0f : currentTermH;
+    const float effectiveTermGap = m_config.zenMode ? 0.0f : termGap;
+
+    // Fill workspace canvas background behind all panels
+    // so when terminal is open with a gap, the gap matches the dark canvas background seamlessly
+    D2D1_RECT_F rcWorkspace = D2D1::RectF(effectiveRailW, headerH, clientW, clientH);
+    m_pRenderTarget->FillRectangle(rcWorkspace, m_theme.brushCanvasBg ? m_theme.brushCanvasBg.Get() : m_theme.brushDrawerBg.Get());
+
+    if (!m_config.zenMode) {
+        // Pre-fill the corner patch at (railW, headerH) with headerBg
+        // so the 14px inward rounded arc of DrawerPanel (or EditorCanvas when drawer is closed)
+        // curves smoothly against the title header and activity rail across all 20 themes.
+        D2D1_RECT_F rcCornerPatch = D2D1::RectF(railW, headerH, railW + m_config.ScaleF(18.0f), headerH + m_config.ScaleF(18.0f));
+        m_pRenderTarget->FillRectangle(rcCornerPatch, m_theme.brushHeaderBg.Get());
+    }
+
+    float editorH = clientH - effectiveStatusBarH - effectiveTermH - effectiveTermGap;
+    float drawerH = clientH - effectiveStatusBarH - effectiveTermH - effectiveTermGap;
+    float terminalLeft = static_cast<float>(effectiveRailW);
 
     if (editorH > headerH + 2.0f) {
         D2D1_RECT_F editorClip = D2D1::RectF(canvasLeft, headerH, canvasLeft + canvasWidth, editorH);
@@ -7271,7 +7343,7 @@ void Window::OnPaint() {
             if (!doc.isSpecialView && !doc.isImageView && !doc.isDiffView) {
                 float paneW = canvasWidth / m_editorGroups.size();
                 float pLeft = canvasLeft + m_dragDropTargetGroup * paneW;
-                float gutterW = m_config.ScaleF(50.0f);
+                float gutterW = m_config.showLineNumbers ? m_config.ScaleF(50.0f) : m_config.ScaleF(12.0f);
                 float tabH = m_config.ScaleF(34.0f);
                 float breadcrumbH = m_config.ScaleF(24.0f);
                 float topY = headerH + tabH + breadcrumbH;
@@ -9013,14 +9085,9 @@ void Window::HandleMouseMove(POINT clientPt, WPARAM wParam) {
 
             RECT clientRc;
             GetClientRect(m_hwnd, &clientRc);
-            const int railW = m_config.Scale(m_config.railWidth);
-            const int drawerW = static_cast<int>(m_config.Scale(m_config.drawerWidth) * m_drawerAnimProgress);
-            const float canvasLeft = static_cast<float>(railW + drawerW);
             const float clientW = static_cast<float>(clientRc.right - clientRc.left);
-            const float rightSidebarW = (m_extensionsPanel.IsOpen() || m_isRightSidebarAnimating)
-                ? (m_config.ScaleF(320.0f) * m_rightSidebarAnimProgress) : 0.0f;
-            const float canvasRight = clientW - rightSidebarW;
-            const float canvasWidth = (std::max)(0.0f, canvasRight - canvasLeft);
+            float canvasLeft = 0.0f, canvasWidth = 0.0f;
+            GetCanvasLayout(clientW, canvasLeft, canvasWidth);
 
             // Determine which editor group pane the mouse is hovering over (supports cross-split tab dragging!)
             size_t numGroups = m_editorGroups.size();
@@ -9090,10 +9157,11 @@ void Window::HandleMouseMove(POINT clientPt, WPARAM wParam) {
 
             RECT clientRc;
             GetClientRect(m_hwnd, &clientRc);
+            const float clientW = static_cast<float>(clientRc.right - clientRc.left);
+            float canvasLeft = 0.0f, canvasWidth = 0.0f;
+            GetCanvasLayout(clientW, canvasLeft, canvasWidth);
             const int railW = m_config.Scale(m_config.railWidth);
             const int drawerW = static_cast<int>(m_config.Scale(m_config.drawerWidth) * m_drawerAnimProgress);
-            const float canvasLeft = static_cast<float>(railW + drawerW);
-            const float canvasWidth = static_cast<float>(clientRc.right) - canvasLeft;
             const float clientH = static_cast<float>(clientRc.bottom - clientRc.top);
             const float headerH = m_config.ScaleF(static_cast<float>(m_config.headerHeight));
             const float tabH = m_config.ScaleF(34.0f);
@@ -9213,15 +9281,14 @@ void Window::HandleMouseMove(POINT clientPt, WPARAM wParam) {
     if (pActiveDoc && pActiveDoc->isSelecting && (GetKeyState(VK_LBUTTON) & 0x8000)) {
         RECT clientRc;
         GetClientRect(m_hwnd, &clientRc);
-        const int railW = m_config.Scale(m_config.railWidth);
-        const int drawerW = static_cast<int>(m_config.Scale(m_config.drawerWidth) * m_drawerAnimProgress);
-        const float canvasLeft = static_cast<float>(railW + drawerW);
-        const float canvasWidth = static_cast<float>(clientRc.right) - canvasLeft;
+        const float clientW = static_cast<float>(clientRc.right - clientRc.left);
+        float canvasLeft = 0.0f, canvasWidth = 0.0f;
+        GetCanvasLayout(clientW, canvasLeft, canvasWidth);
         const float clientH = static_cast<float>(clientRc.bottom - clientRc.top);
         if (canvasWidth > 10.0f && !m_editorGroups.empty()) {
             float paneW = canvasWidth / m_editorGroups.size();
             float paneCanvasLeft = canvasLeft + m_focusedGroupIdx * paneW;
-            const float gutterW = m_config.ScaleF(50.0f);
+            const float gutterW = m_config.showLineNumbers ? m_config.ScaleF(50.0f) : m_config.ScaleF(12.0f);
             const float codeLeft = paneCanvasLeft + gutterW + m_config.ScaleF(12.0f);
             const float minimapW = m_config.ScaleF(88.0f);
             const float scrollbarW = m_config.ScaleF(14.0f);
@@ -9269,10 +9336,9 @@ void Window::HandleMouseMove(POINT clientPt, WPARAM wParam) {
         pActiveDoc->hoveredDiagnosticLine = static_cast<size_t>(-1);
         RECT clientRc;
         GetClientRect(m_hwnd, &clientRc);
-        const int railW = m_config.Scale(m_config.railWidth);
-        const int drawerW = static_cast<int>(m_config.Scale(m_config.drawerWidth) * m_drawerAnimProgress);
-        const float canvasLeft = static_cast<float>(railW + drawerW);
-        const float canvasWidth = static_cast<float>(clientRc.right) - canvasLeft;
+        const float clientW = static_cast<float>(clientRc.right - clientRc.left);
+        float canvasLeft = 0.0f, canvasWidth = 0.0f;
+        GetCanvasLayout(clientW, canvasLeft, canvasWidth);
         const float clientH = static_cast<float>(clientRc.bottom - clientRc.top);
         if (canvasWidth > 10.0f && !m_editorGroups.empty()) {
             float paneW = canvasWidth / m_editorGroups.size();
@@ -9420,12 +9486,12 @@ void Window::HandleMouseMove(POINT clientPt, WPARAM wParam) {
         }
     } else {
         // No active documents -> check watermark cheat-sheet row hover
-        float canvasLeft = (m_config.isDrawerOpen ? m_config.ScaleF(static_cast<float>(m_config.railWidth + m_config.drawerWidth)) : m_config.ScaleF(static_cast<float>(m_config.railWidth)));
         RECT rcClient{};
         GetClientRect(m_hwnd, &rcClient);
         float clientH = static_cast<float>(rcClient.bottom - rcClient.top);
         float clientW = static_cast<float>(rcClient.right - rcClient.left);
-        float canvasW = clientW - canvasLeft;
+        float canvasLeft = 0.0f, canvasW = 0.0f;
+        GetCanvasLayout(clientW, canvasLeft, canvasW);
         int wmRow = m_editor.HitTestWatermarkCard(clientPt, m_config, canvasLeft, canvasW, m_config.ScaleF(static_cast<float>(m_config.headerHeight)), clientH);
         if (m_editor.SetHoveredWatermarkRow(wmRow)) {
             needRepaint = true;
@@ -9508,7 +9574,8 @@ void Window::HandleMouseMove(POINT clientPt, WPARAM wParam) {
             D2D1_RECT_F rcView = m_header.GetMenuItemBounds(ui::HeaderMenuId::View);
             m_popupMenu.OpenViewMenu(rcView.left, rcView.bottom + 2.0f, m_config,
                                      m_config.isDrawerOpen, IsZoomed(m_hwnd), m_wordWrap,
-                                     m_editorGroups.size());
+                                     m_editorGroups.size(), m_terminal.IsOpen(),
+                                     m_extensionsPanel.IsOpen());
             m_header.SetActiveMenu(ui::HeaderMenuId::View);
             needRepaint = true;
         } else if (hoveredMenu == ui::HeaderMenuId::Code && m_header.GetActiveMenu() != ui::HeaderMenuId::Code) {
@@ -9782,16 +9849,55 @@ bool Window::HandlePopupMenuClick(POINT clientPt) {
                         else ShowWindow(m_hwnd, SW_MAXIMIZE);
                         break;
                     case ui::MenuActionId::ZenMode:
-                        m_config.zenMode = !m_config.zenMode;
+                        ToggleZenMode();
+                        break;
+                    case ui::MenuActionId::CenteredLayout:
+                        m_config.centeredLayout = !m_config.centeredLayout;
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
+                        break;
+                    case ui::MenuActionId::ToggleMenuBar:
+                        m_config.showMenuBar = !m_config.showMenuBar;
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
+                        break;
+                    case ui::MenuActionId::ToggleSecondarySideBar:
+                        if (m_extensionsPanel.IsOpen()) AnimateRightSidebarClose();
+                        else AnimateRightSidebarOpen();
+                        break;
+                    case ui::MenuActionId::ToggleStatusBar:
+                        m_config.showStatusBar = !m_config.showStatusBar;
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
+                        break;
+                    case ui::MenuActionId::TogglePanel:
+                        if (m_terminal.IsOpen()) {
+                            m_terminal.SetIsOpen(false);
+                            InvalidateRect(m_hwnd, nullptr, FALSE);
+                        } else {
+                            DoCreateTerminal();
+                        }
+                        break;
+                    case ui::MenuActionId::MoveSideBarRight:
+                        m_config.sideBarOnRight = !m_config.sideBarOnRight;
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
                         break;
                     case ui::MenuActionId::ToggleMinimap:
                         m_config.showMinimap = !m_config.showMinimap;
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
                         break;
                     case ui::MenuActionId::ToggleBreadcrumbs:
                         m_config.showBreadcrumbs = !m_config.showBreadcrumbs;
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
+                        break;
+                    case ui::MenuActionId::ToggleStickyScroll:
+                        m_config.enableStickyScroll = !m_config.enableStickyScroll;
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
                         break;
                     case ui::MenuActionId::ToggleRenderWhitespace:
                         m_config.renderWhitespace = !m_config.renderWhitespace;
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
+                        break;
+                    case ui::MenuActionId::ToggleRenderControlChars:
+                        m_config.renderControlChars = !m_config.renderControlChars;
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
                         break;
                     case ui::MenuActionId::Explorer:
                         DoShowExplorer();
@@ -10929,7 +11035,8 @@ void Window::HandleLButtonDown(POINT clientPt) {
             D2D1_RECT_F rcView = m_header.GetMenuItemBounds(ui::HeaderMenuId::View);
             m_popupMenu.OpenViewMenu(rcView.left, rcView.bottom + 2.0f, m_config,
                                      m_config.isDrawerOpen, IsZoomed(m_hwnd), m_wordWrap,
-                                     m_editorGroups.size());
+                                     m_editorGroups.size(), m_terminal.IsOpen(),
+                                     m_extensionsPanel.IsOpen());
             m_header.SetActiveMenu(ui::HeaderMenuId::View);
             InvalidateRect(m_hwnd, nullptr, FALSE);
         } else if (menuHit == ui::HeaderMenuId::Debug) {
@@ -11040,9 +11147,11 @@ void Window::HandleLButtonDown(POINT clientPt) {
         }
     }
 
-    const int railW = m_config.Scale(m_config.railWidth);
-    const int drawerW = static_cast<int>(m_config.Scale(m_config.drawerWidth) * m_drawerAnimProgress);
-    const float canvasLeft = static_cast<float>(railW + drawerW);
+    RECT clientRc;
+    GetClientRect(m_hwnd, &clientRc);
+    const float clientW = static_cast<float>(clientRc.right - clientRc.left);
+    float canvasLeft = 0.0f, canvasWidth = 0.0f;
+    GetCanvasLayout(clientW, canvasLeft, canvasWidth);
 
     // If clicking inside the editor canvas area, unfocus drawer search and git commit inputs immediately
     if (clientPt.x >= static_cast<LONG>(canvasLeft)) {
@@ -11050,19 +11159,12 @@ void Window::HandleLButtonDown(POINT clientPt) {
         m_drawer.SetGitCommitBoxFocus(0);
     }
     const float headerH = m_config.ScaleF(static_cast<float>(m_config.headerHeight));
-    RECT clientRc;
-    GetClientRect(m_hwnd, &clientRc);
-    float rightSidebarW = m_config.ScaleF(static_cast<float>(m_config.rightSidebarWidth)) * m_rightSidebarAnimProgress;
-    if (m_terminal.IsOpen() && m_terminal.GetDockPosition() == 2) {
-        rightSidebarW = (std::max)(rightSidebarW, m_terminal.GetRightWidth());
-    }
-    const float canvasWidth = static_cast<float>(clientRc.right) - canvasLeft - rightSidebarW;
     const float clientH = static_cast<float>(clientRc.bottom - clientRc.top);
-    const float statusBarH = m_config.ScaleF(22.0f);
+    const float statusBarH = (m_config.showStatusBar && !m_config.zenMode) ? m_config.ScaleF(22.0f) : 0.0f;
     const float barY = clientH - statusBarH;
 
     // 4. Editor Canvas Clicks (Multi-Editor Groups aware)
-    if (clientPt.x >= canvasLeft && clientPt.y >= headerH && (clientPt.y < barY || !m_config.showStatusBar) && !m_editorGroups.empty() && canvasWidth > 10.0f) {
+    if (clientPt.x >= canvasLeft && clientPt.x < canvasLeft + canvasWidth && clientPt.y >= headerH && (clientPt.y < barY || !m_config.showStatusBar) && !m_editorGroups.empty() && canvasWidth > 10.0f) {
         m_explorerHasFocus = false;
         // Clear drawer search focus whenever user clicks anywhere inside the editor canvas
         m_drawer.SetSearchFocus(0);
@@ -12051,9 +12153,11 @@ void Window::HandleLButtonUp(POINT clientPt) {
         if (m_isDraggingExplorerFile) {
             RECT clientRc;
             GetClientRect(m_hwnd, &clientRc);
+            const float clientW = static_cast<float>(clientRc.right - clientRc.left);
+            float canvasLeft = 0.0f, canvasWidth = 0.0f;
+            GetCanvasLayout(clientW, canvasLeft, canvasWidth);
             const int railW = m_config.Scale(m_config.railWidth);
             const int drawerW = static_cast<int>(m_config.Scale(m_config.drawerWidth) * m_drawerAnimProgress);
-            const float canvasLeft = static_cast<float>(railW + drawerW);
             const float headerH = m_config.ScaleF(static_cast<float>(m_config.headerHeight));
             const float tabH = m_config.ScaleF(34.0f);
             const float clientH = static_cast<float>(clientRc.bottom - clientRc.top);
@@ -12283,12 +12387,18 @@ void Window::HandleRButtonDown(POINT clientPt) {
         InvalidateRect(m_hwnd, nullptr, FALSE);
     }
 
+    RECT clientRc;
+    GetClientRect(m_hwnd, &clientRc);
+    float clientW = static_cast<float>(clientRc.right - clientRc.left);
+    float clientH = static_cast<float>(clientRc.bottom - clientRc.top);
+    float canvasLeft = 0.0f, canvasWidth = 0.0f;
+    GetCanvasLayout(clientW, canvasLeft, canvasWidth);
     float railW = m_config.ScaleF(static_cast<float>(m_config.railWidth));
     float drawerW = m_config.ScaleF(static_cast<float>(m_config.drawerWidth)) * m_drawerAnimProgress;
     float headerH = m_config.ScaleF(static_cast<float>(m_config.headerHeight));
 
     // 1. Right-click inside Drawer Explorer
-    if (m_drawerAnimProgress > 0.001f && clientPt.x >= railW && clientPt.x < railW + drawerW && clientPt.y >= headerH) {
+    if (!m_config.zenMode && m_drawerAnimProgress > 0.001f && clientPt.x >= railW && clientPt.x < railW + drawerW && clientPt.y >= headerH) {
         int hitIdx = m_drawer.HitTest(clientPt, m_config);
         const ui::DrawerTreeItem* pItem = (hitIdx >= 0) ? m_drawer.GetItem(hitIdx) : nullptr;
         bool isFolder = false;
@@ -12306,10 +12416,6 @@ void Window::HandleRButtonDown(POINT clientPt) {
             m_contextTargetIsFolder = isFolder;
             m_selectedExplorerPath = targetPath;
             m_explorerHasFocus = true;
-            RECT clientRc;
-            GetClientRect(m_hwnd, &clientRc);
-            float clientW = static_cast<float>(clientRc.right - clientRc.left);
-            float clientH = static_cast<float>(clientRc.bottom - clientRc.top);
             bool canPaste = !m_clipboardPath.empty() && std::filesystem::exists(m_clipboardPath);
             m_popupMenu.OpenContextMenu(
                 static_cast<float>(clientPt.x),
@@ -12332,7 +12438,7 @@ void Window::HandleRButtonDown(POINT clientPt) {
     const float tabH = m_config.ScaleF(34.0f);
 
     // 2. Right-click inside Editor Tab Bar
-    if (clientPt.x >= railW + drawerW && clientPt.y >= headerH && clientPt.y < headerH + tabH) {
+    if (clientPt.x >= canvasLeft && clientPt.x < canvasLeft + canvasWidth && clientPt.y >= headerH && clientPt.y < headerH + tabH) {
         std::wstring targetPath;
         for (const auto& grp : m_editorGroups) {
             int tabHit = m_editor.HitTestTab(clientPt, grp.docs);
@@ -12350,10 +12456,6 @@ void Window::HandleRButtonDown(POINT clientPt) {
             m_contextTargetPath = targetPath;
             m_contextTargetIsFolder = std::filesystem::is_directory(targetPath);
             bool canPaste = !m_clipboardPath.empty() && std::filesystem::exists(m_clipboardPath);
-            RECT clientRc;
-            GetClientRect(m_hwnd, &clientRc);
-            float clientW = static_cast<float>(clientRc.right - clientRc.left);
-            float clientH = static_cast<float>(clientRc.bottom - clientRc.top);
             m_popupMenu.OpenContextMenu(
                 static_cast<float>(clientPt.x),
                 static_cast<float>(clientPt.y),
@@ -12373,7 +12475,7 @@ void Window::HandleRButtonDown(POINT clientPt) {
     }
 
     // 3. Right-click inside Editor Canvas / Code Area (Image 4: Editor Context Menu)
-    if (clientPt.x >= railW + drawerW && clientPt.y >= headerH + tabH) {
+    if (clientPt.x >= canvasLeft && clientPt.x < canvasLeft + canvasWidth && clientPt.y >= headerH + tabH) {
         // Focus the editor group containing click & position cursor
         for (size_t g = 0; g < m_editorGroups.size(); ++g) {
             const auto& b = m_editorGroups[g].bounds;
@@ -12750,21 +12852,20 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
 
                 // Editor code text area: show I-beam cursor (matching Image 1)
                 if (pCurDoc && !pCurDoc->isSpecialView && !pCurDoc->isImageView && !pCurDoc->isUnsupportedBinary) {
-                    float railW = m_config.ScaleF(static_cast<float>(m_config.railWidth));
-                    float drawerW = m_config.ScaleF(static_cast<float>(m_config.drawerWidth)) * m_drawerAnimProgress;
-                    float canvasLeft = railW + drawerW;
-                    float gutterW = m_config.ScaleF(50.0f);
+                    RECT rcClient;
+                    GetClientRect(m_hwnd, &rcClient);
+                    float clientW = static_cast<float>(rcClient.right - rcClient.left);
+                    float canvasLeft = 0.0f, canvasWidth = 0.0f;
+                    GetCanvasLayout(clientW, canvasLeft, canvasWidth);
+                    float gutterW = m_config.showLineNumbers ? m_config.ScaleF(50.0f) : m_config.ScaleF(12.0f);
                     float headerH = m_config.ScaleF(static_cast<float>(m_config.headerHeight));
                     float tabH    = m_config.ScaleF(34.0f);
                     float breadcrumbH = m_config.ScaleF(24.0f);
                     float topY    = headerH + tabH + breadcrumbH;
                     float scrollbarW = m_config.ScaleF(14.0f);
-                    RECT rcClient;
-                    GetClientRect(m_hwnd, &rcClient);
-                    float clientW = static_cast<float>(rcClient.right - rcClient.left);
                     float clientH = static_cast<float>(rcClient.bottom - rcClient.top);
-                    const float statusBarH = m_config.showStatusBar ? m_config.ScaleF(22.0f) : 0.0f;
-                    float termH = GetCurrentTerminalHeight(clientH);
+                    const float statusBarH = (m_config.showStatusBar && !m_config.zenMode) ? m_config.ScaleF(22.0f) : 0.0f;
+                    float termH = m_config.zenMode ? 0.0f : GetCurrentTerminalHeight(clientH);
                     float bottomEditorY = clientH - statusBarH - termH;
 
                     if (m_editor.HasHoveredCodeLens()) {
@@ -12778,7 +12879,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                         return TRUE;
                     }
 
-                    if (pt.x >= canvasLeft + gutterW && pt.x < clientW - scrollbarW &&
+                    if (pt.x >= canvasLeft + gutterW && pt.x < canvasLeft + canvasWidth - scrollbarW &&
                         pt.y >= topY && pt.y < bottomEditorY) {
                         SetCursor(LoadCursor(nullptr, IDC_IBEAM));
                         return TRUE;
@@ -12888,15 +12989,16 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
             POINT clientPt = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
             const int railW = m_config.Scale(m_config.railWidth);
             const int drawerW = static_cast<int>(m_config.Scale(m_config.drawerWidth) * m_drawerAnimProgress);
-            const float canvasLeft = static_cast<float>(railW + drawerW);
             RECT clientRc;
             GetClientRect(m_hwnd, &clientRc);
-            const float canvasWidth = static_cast<float>(clientRc.right) - canvasLeft;
+            const float clientW = static_cast<float>(clientRc.right - clientRc.left);
+            float canvasLeft = 0.0f, canvasWidth = 0.0f;
+            GetCanvasLayout(clientW, canvasLeft, canvasWidth);
             const float clientH = static_cast<float>(clientRc.bottom - clientRc.top);
             const float headerH = m_config.ScaleF(static_cast<float>(m_config.headerHeight));
 
             // Double click in Explorer tree: open file permanently (not preview)!
-            if (m_drawerAnimProgress > 0.001f && clientPt.x >= railW && clientPt.x < railW + drawerW && clientPt.y >= headerH) {
+            if (!m_config.zenMode && m_drawerAnimProgress > 0.001f && clientPt.x >= railW && clientPt.x < railW + drawerW && clientPt.y >= headerH) {
                 int clickedTree = m_drawer.HitTest(clientPt, m_config);
                 if (clickedTree >= 0) {
                     const auto* pItem = m_drawer.GetItem(clickedTree);
@@ -12908,7 +13010,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 }
             }
 
-            if (clientPt.x >= canvasLeft && clientPt.y >= headerH && !m_editorGroups.empty() && canvasWidth > 10.0f) {
+            if (clientPt.x >= canvasLeft && clientPt.x < canvasLeft + canvasWidth && clientPt.y >= headerH && !m_editorGroups.empty() && canvasWidth > 10.0f) {
                 float paneW = canvasWidth / m_editorGroups.size();
                 int targetGroup = -1;
                 for (size_t g = 0; g < m_editorGroups.size(); ++g) {
@@ -13025,10 +13127,11 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 }
             }
 
-            float canvasLeft = railW + drawerW;
             RECT rcClient;
             GetClientRect(m_hwnd, &rcClient);
-            float canvasW = static_cast<float>(rcClient.right - rcClient.left) - canvasLeft;
+            const float clientW = static_cast<float>(rcClient.right - rcClient.left);
+            float canvasLeft = 0.0f, canvasW = 0.0f;
+            GetCanvasLayout(clientW, canvasLeft, canvasW);
 
             // 1b. Scroll Tab Strip horizontally if mouse is over Tab Bar (User request: "since i do many tag it many now there should be a scrol bar so i could scroll throught them")
             const float tabH = m_config.ScaleF(34.0f);
@@ -14064,6 +14167,10 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     InvalidateRect(m_hwnd, nullptr, FALSE);
                     return 0;
                 }
+                if (m_config.zenMode) {
+                    ToggleZenMode();
+                    return 0;
+                }
             }
             if (m_colorPicker.IsOpen()) {
                 if (m_colorPicker.HandleKeyDown(wParam)) {
@@ -14342,9 +14449,8 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 }
                 if (wParam == 'Z') {
                     if (m_chordCtrlK) {
-                        m_config.zenMode = !m_config.zenMode;
+                        ToggleZenMode();
                         m_chordCtrlK = false;
-                        InvalidateRect(m_hwnd, nullptr, FALSE);
                         return 0;
                     }
                     if (m_drawer.IsRenaming() || (m_explorerHasFocus && (!pDoc || pDoc->isSpecialView))) {
@@ -15531,10 +15637,9 @@ void Window::UpdateCssPeekHover(POINT clientPt) {
 
     RECT clientRc;
     GetClientRect(m_hwnd, &clientRc);
-    const int railW = m_config.Scale(m_config.railWidth);
-    const int drawerW = static_cast<int>(m_config.Scale(m_config.drawerWidth) * m_drawerAnimProgress);
-    const float canvasLeft = static_cast<float>(railW + drawerW);
-    const float canvasWidth = static_cast<float>(clientRc.right) - canvasLeft;
+    const float clientW = static_cast<float>(clientRc.right - clientRc.left);
+    float canvasLeft = 0.0f, canvasWidth = 0.0f;
+    GetCanvasLayout(clientW, canvasLeft, canvasWidth);
     const float clientH = static_cast<float>(clientRc.bottom - clientRc.top);
 
     if (clientPt.x >= 0 && clientPt.y >= 0 && canvasWidth > 10.0f && !m_editorGroups.empty()) {

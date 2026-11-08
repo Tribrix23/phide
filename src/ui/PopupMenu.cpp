@@ -33,13 +33,14 @@ float PopupMenu::CalculateOptimalMenuWidth(const std::vector<PopupMenuItem>& ite
 }
 
 void PopupMenu::OpenViewMenu(float x, float y, const app::AppConfig& config,
-                             bool isSidebarOpen, bool isZoomed, bool wordWrap, size_t groupCount) {
+                             bool isSidebarOpen, bool isZoomed, bool wordWrap, size_t groupCount,
+                             bool isTerminalOpen, bool isRightSidebarOpen) {
     m_isOpen = true;
     m_hoveredMainIdx = -1;
     m_activeSubmenuIdx = -1;
     m_hoveredSubmenuIdx = -1;
 
-    BuildViewMenuItems(config, isSidebarOpen, isZoomed, wordWrap, groupCount);
+    BuildViewMenuItems(config, isSidebarOpen, isZoomed, wordWrap, groupCount, isTerminalOpen, isRightSidebarOpen);
 
     const float menuW = CalculateOptimalMenuWidth(m_items, config, config.ScaleF(230.0f));
     LayoutMenu(m_items, x, y, menuW, config, m_mainMenuBounds);
@@ -422,7 +423,8 @@ void PopupMenu::Close() {
     m_submenuBounds = {};
 }
 
-void PopupMenu::BuildViewMenuItems(const app::AppConfig& config, bool isSidebarOpen, bool isZoomed, bool wordWrap, size_t groupCount) {
+void PopupMenu::BuildViewMenuItems(const app::AppConfig& config, bool isSidebarOpen, bool isZoomed, bool wordWrap,
+                                    size_t groupCount, bool isTerminalOpen, bool isRightSidebarOpen) {
     (void)wordWrap;
     m_items.clear();
 
@@ -441,30 +443,30 @@ void PopupMenu::BuildViewMenuItems(const app::AppConfig& config, bool isSidebarO
     appearanceItem.hasSubmenu = true;
 
     // Appearance Submenu Items
-    appearanceItem.submenuItems.push_back({ MenuActionId::FullScreen,                L"Full Screen",                  L"F11",          false, isZoomed,                 false, true, {}, {} });
-    appearanceItem.submenuItems.push_back({ MenuActionId::ZenMode,                   L"Zen Mode",                     L"Ctrl+K Z",     false, config.zenMode,           false, true, {}, {} });
-    appearanceItem.submenuItems.push_back({ MenuActionId::CenteredLayout,            L"Centered Layout",              L"",             false, false,                    false, true, {}, {} });
+    appearanceItem.submenuItems.push_back({ MenuActionId::FullScreen,                L"Full Screen",                  L"F11",          false, isZoomed,                     false, true, {}, {} });
+    appearanceItem.submenuItems.push_back({ MenuActionId::ZenMode,                   L"Zen Mode",                     L"Ctrl+K Z",     false, config.zenMode,               false, true, {}, {} });
+    appearanceItem.submenuItems.push_back({ MenuActionId::CenteredLayout,            L"Centered Layout",              L"",             false, config.centeredLayout,        false, true, {}, {} });
     // --- Submenu Separator ---
-    appearanceItem.submenuItems.push_back({ MenuActionId::None,                      L"",                             L"",             true,  false,                    false, false, {}, {} });
-    appearanceItem.submenuItems.push_back({ MenuActionId::ToggleMenuBar,             L"Menu Bar",                     L"",             false, true,                     false, true, {}, {} });
-    appearanceItem.submenuItems.push_back({ MenuActionId::TogglePrimarySideBar,      L"Primary Side Bar",             L"Ctrl+B",       false, isSidebarOpen,            false, true, {}, {} });
-    appearanceItem.submenuItems.push_back({ MenuActionId::ToggleSecondarySideBar,    L"Secondary Side Bar",           L"",             false, false,                    false, true, {}, {} });
-    appearanceItem.submenuItems.push_back({ MenuActionId::ToggleStatusBar,          L"Status Bar",                   L"",             false, config.showStatusBar,     false, true, {}, {} });
-    appearanceItem.submenuItems.push_back({ MenuActionId::TogglePanel,              L"Panel",                        L"Ctrl+J",       false, true,                     false, true, {}, {} });
+    appearanceItem.submenuItems.push_back({ MenuActionId::None,                      L"",                             L"",             true,  false,                        false, false, {}, {} });
+    appearanceItem.submenuItems.push_back({ MenuActionId::ToggleMenuBar,             L"Menu Bar",                     L"",             false, config.showMenuBar,           false, true, {}, {} });
+    appearanceItem.submenuItems.push_back({ MenuActionId::TogglePrimarySideBar,      L"Primary Side Bar",             L"Ctrl+B",       false, isSidebarOpen,                false, true, {}, {} });
+    appearanceItem.submenuItems.push_back({ MenuActionId::ToggleSecondarySideBar,    L"Secondary Side Bar",           L"",             false, isRightSidebarOpen,           false, true, {}, {} });
+    appearanceItem.submenuItems.push_back({ MenuActionId::ToggleStatusBar,          L"Status Bar",                   L"",             false, config.showStatusBar,         false, true, {}, {} });
+    appearanceItem.submenuItems.push_back({ MenuActionId::TogglePanel,              L"Panel",                        L"Ctrl+J",       false, isTerminalOpen,               false, true, {}, {} });
     // --- Submenu Separator ---
-    appearanceItem.submenuItems.push_back({ MenuActionId::MoveSideBarRight,          L"Move Primary Side Bar Right",  L"",             false, false,                    false, true, {}, {} });
-    appearanceItem.submenuItems.push_back({ MenuActionId::ActivityBarPosition,       L"Activity Bar Position",        L"",             false, false,                    true,  true, {}, {} });
-    appearanceItem.submenuItems.push_back({ MenuActionId::SecondaryActivityBarPosition, L"Secondary Activity Bar Position", L"",      false, false,                    true,  true, {}, {} });
-    appearanceItem.submenuItems.push_back({ MenuActionId::PanelPosition,             L"Panel Position",               L"",             false, false,                    true,  true, {}, {} });
-    appearanceItem.submenuItems.push_back({ MenuActionId::AlignPanel,                L"Align Panel",                  L"",             false, false,                    true,  true, {}, {} });
+    appearanceItem.submenuItems.push_back({ MenuActionId::MoveSideBarRight,          L"Move Primary Side Bar Right",  L"",             false, config.sideBarOnRight,        false, true, {}, {} });
+    appearanceItem.submenuItems.push_back({ MenuActionId::ActivityBarPosition,       L"Activity Bar Position",        L"",             false, false,                        true,  true, {}, {} });
+    appearanceItem.submenuItems.push_back({ MenuActionId::SecondaryActivityBarPosition, L"Secondary Activity Bar Position", L"",      false, false,                        true,  true, {}, {} });
+    appearanceItem.submenuItems.push_back({ MenuActionId::PanelPosition,             L"Panel Position",               L"",             false, false,                        true,  true, {}, {} });
+    appearanceItem.submenuItems.push_back({ MenuActionId::AlignPanel,                L"Align Panel",                  L"",             false, false,                        true,  true, {}, {} });
     // --- Submenu Separator ---
-    appearanceItem.submenuItems.push_back({ MenuActionId::ToggleMinimap,             L"Minimap",                      L"",             false, config.showMinimap,       false, true, {}, {} });
-    appearanceItem.submenuItems.push_back({ MenuActionId::ToggleBreadcrumbs,         L"Breadcrumbs",                  L"",             false, config.showBreadcrumbs,   false, true, {}, {} });
-    appearanceItem.submenuItems.push_back({ MenuActionId::ToggleStickyScroll,        L"Sticky Scroll",                L"",             false, true,                     false, true, {}, {} });
+    appearanceItem.submenuItems.push_back({ MenuActionId::ToggleMinimap,             L"Minimap",                      L"",             false, config.showMinimap,           false, true, {}, {} });
+    appearanceItem.submenuItems.push_back({ MenuActionId::ToggleBreadcrumbs,         L"Breadcrumbs",                  L"",             false, config.showBreadcrumbs,       false, true, {}, {} });
+    appearanceItem.submenuItems.push_back({ MenuActionId::ToggleStickyScroll,        L"Sticky Scroll",                L"",             false, config.enableStickyScroll,    false, true, {}, {} });
     appearanceItem.submenuItems.push_back({ MenuActionId::ToggleMarkdownPreview,     L"Markdown Preview",             L"Ctrl+Shift+V", false, config.enableMarkdownPreview, false, true, {}, {} });
     appearanceItem.submenuItems.push_back({ MenuActionId::ToggleCodeLens,            L"CodeLens",                     L"",             false, config.enableCodeLens,         false, true, {}, {} });
-    appearanceItem.submenuItems.push_back({ MenuActionId::ToggleRenderWhitespace,    L"Render Whitespace",            L"",             false, config.renderWhitespace,  false, true, {}, {} });
-    appearanceItem.submenuItems.push_back({ MenuActionId::ToggleRenderControlChars, L"Render Control Characters",     L"",             false, false,                    false, true, {}, {} });
+    appearanceItem.submenuItems.push_back({ MenuActionId::ToggleRenderWhitespace,    L"Render Whitespace",            L"",             false, config.renderWhitespace,      false, true, {}, {} });
+    appearanceItem.submenuItems.push_back({ MenuActionId::ToggleRenderControlChars, L"Render Control Characters",     L"",             false, config.renderControlChars,    false, true, {}, {} });
     // --- Submenu Separator ---
     appearanceItem.submenuItems.push_back({ MenuActionId::ZoomIn,                    L"Zoom In",                      L"Ctrl+=",       false, false,                    false, true, {}, {} });
     appearanceItem.submenuItems.push_back({ MenuActionId::ZoomOut,                   L"Zoom Out",                     L"Ctrl+-",       false, false,                    false, true, {}, {} });

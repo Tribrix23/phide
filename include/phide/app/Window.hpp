@@ -136,6 +136,16 @@ private:
      */
     void ToggleSidebar();
 
+    /**
+     * @brief Toggles Zen Mode (distraction-free full-screen editor layout).
+     */
+    void ToggleZenMode();
+
+    /**
+     * @brief Computes canvasLeft and canvasWidth respecting drawer, sidebars, centered layout and zen mode.
+     */
+    void GetCanvasLayout(float clientW, float& outCanvasLeft, float& outCanvasWidth) const;
+
     // Multi-Document Life-cycle & Multi-Group Management
     editor::EditorGroup& GetActiveGroup() noexcept {
         if (m_editorGroups.empty()) {

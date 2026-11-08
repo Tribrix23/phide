@@ -101,6 +101,10 @@ void TitleHeader::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCon
     const MenuItem* hoveredItemPtr = nullptr;
 
     for (auto& item : m_menus) {
+        if (!config.showMenuBar && item.id != HeaderMenuId::Sidebar) {
+            item.bounds = D2D1::RectF(-999.0f, -999.0f, -999.0f, -999.0f);
+            continue;
+        }
         item.bounds = D2D1::RectF(curX, btnY, curX + btnSize, btnY + btnSize);
 
         bool isHovered = (m_hoveredMenu == item.id);
