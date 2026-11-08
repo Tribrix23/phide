@@ -195,7 +195,9 @@ void InteractiveGuideView::DrawCalloutBox(ID2D1RenderTarget* pRT, Theme& theme, 
                 fullMsg.c_str(), static_cast<UINT32>(fullMsg.length()),
                 pBodyFmt, textW, 2000.0f, &pLayout))) {
 
-            // Crucial: Explicitly enable word wrapping so text NEVER leaks out!
+            // Crucial: Set near paragraph and leading text alignment so text starts at (0,0) and NEVER shifts down!
+            pLayout->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR);
+            pLayout->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
             pLayout->SetWordWrapping(DWRITE_WORD_WRAPPING_WRAP);
 
             // Bold the title
@@ -356,8 +358,9 @@ void InteractiveGuideView::RenderEditorBlock(ID2D1RenderTarget* pRT, Theme& them
             size_t todoPos = upperLine.find(L"TODO");
 
             size_t cbCol = std::wstring::npos;
-            size_t coverChars = 3;
+            size_t coverChars = 0;
             bool isChecked = false;
+            bool isMarginCheckbox = false;
 
             if (xPos != std::wstring::npos) {
                 cbCol = xPos;
@@ -371,29 +374,28 @@ void InteractiveGuideView::RenderEditorBlock(ID2D1RenderTarget* pRT, Theme& them
                 cbCol = tightPos;
                 isChecked = false;
                 coverChars = 2;
-            } else if (taskPos != std::wstring::npos && taskPos >= 2) {
-                // User typed "// TASK" without brackets! Show live empty checkbox right before TASK!
-                cbCol = taskPos - 1;
+            } else if (taskPos != std::wstring::npos || todoPos != std::wstring::npos) {
+                // User typed "// TASK" or "// TODO" without brackets!
+                // Place the interactive checkbox in the gutter margin before code area
+                // NEVER overlay or cover the characters of "TASK"!
+                isMarginCheckbox = true;
                 isChecked = false;
-                coverChars = 1;
-            } else if (todoPos != std::wstring::npos && todoPos >= 2) {
-                cbCol = todoPos - 1;
-                isChecked = false;
-                coverChars = 1;
             }
 
-            if (cbCol != std::wstring::npos) {
-                float cbX = codeX + cbCol * charW;
+            if (cbCol != std::wstring::npos || isMarginCheckbox) {
                 float boxSz = config.ScaleF(14.0f);
+                float cbX = isMarginCheckbox ? (ed.codeAreaBounds.left - config.ScaleF(24.0f)) : (codeX + cbCol * charW);
                 float cbY = ly + (lineH - boxSz) / 2.0f;
                 D2D1_RECT_F rcCb = D2D1::RectF(cbX, cbY, cbX + boxSz, cbY + boxSz);
                 D2D1_ROUNDED_RECT rrcCb = D2D1::RoundedRect(rcCb, 3.0f, 3.0f);
 
-                // Cover brackets text with clean widget
-                Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> pCoverBrush;
-                pRT->CreateSolidColorBrush(D2D1::ColorF(0.09f, 0.09f, 0.10f, 1.0f), &pCoverBrush);
-                D2D1_RECT_F rcCover = D2D1::RectF(cbX - 1.0f, ly, cbX + coverChars * charW + 1.0f, ly + lineH);
-                if (pCoverBrush) pRT->FillRectangle(rcCover, pCoverBrush.Get());
+                // Cover brackets text with clean widget only if inline
+                if (!isMarginCheckbox && coverChars > 0) {
+                    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> pCoverBrush;
+                    pRT->CreateSolidColorBrush(D2D1::ColorF(0.09f, 0.09f, 0.10f, 1.0f), &pCoverBrush);
+                    D2D1_RECT_F rcCover = D2D1::RectF(cbX - 1.0f, ly, cbX + coverChars * charW + 1.0f, ly + lineH);
+                    if (pCoverBrush) pRT->FillRectangle(rcCover, pCoverBrush.Get());
+                }
 
                 if (isChecked) {
                     pRT->FillRoundedRectangle(rrcCb, theme.brushBrandAccent ? theme.brushBrandAccent.Get() : theme.brushRunGreen.Get());
@@ -409,7 +411,7 @@ void InteractiveGuideView::RenderEditorBlock(ID2D1RenderTarget* pRT, Theme& them
                                   theme.brushTextWhite.Get(), 1.6f);
 
                     // Strikethrough line over the completed task title
-                    float strikeStartX = cbX + coverChars * charW + config.ScaleF(4.0f);
+                    float strikeStartX = cbX + (isMarginCheckbox ? 0.0f : (coverChars * charW)) + config.ScaleF(4.0f);
                     float strikeEndX = codeX + lineStr.length() * charW;
                     float strikeY = ly + lineH * 0.5f;
                     pRT->DrawLine(D2D1::Point2F(strikeStartX, strikeY), D2D1::Point2F(strikeEndX, strikeY),
@@ -427,26 +429,42 @@ void InteractiveGuideView::RenderEditorBlock(ID2D1RenderTarget* pRT, Theme& them
         // Color Swatches in Editor 0 (CSS)
         // =====================================================================
         if (ed.id == 0) {
-            struct SwatchRule {
-                const wchar_t* pattern;
-                D2D1_COLOR_F color;
-            };
-            static const SwatchRule swatches[] = {
-                { L"#ff0000", D2D1::ColorF(1.0f, 0.0f, 0.0f, 1.0f) },
-                { L"hsl(120, 100%, 50%)", D2D1::ColorF(0.0f, 1.0f, 0.0f, 1.0f) },
-                { L"rgba(0, 4, 255, 0.733)", D2D1::ColorF(0.0f, 0.015f, 1.0f, 0.733f) },
-                { L"#f59e0b", D2D1::ColorF(0.96f, 0.62f, 0.04f, 1.0f) }
-            };
-            for (const auto& sw : swatches) {
-                size_t pos = lineStr.find(sw.pattern);
-                if (pos != std::wstring::npos) {
-                    float swColX = codeX + pos * charW - config.ScaleF(16.0f);
+            size_t hashPos = lineStr.find(L'#');
+            size_t rgbPos = lineStr.find(L"rgb(");
+            if (rgbPos == std::wstring::npos) rgbPos = lineStr.find(L"rgba(");
+            size_t hslPos = lineStr.find(L"hsl(");
+            if (hslPos == std::wstring::npos) hslPos = lineStr.find(L"hsla(");
+
+            size_t cPos = std::wstring::npos;
+            size_t cLen = 0;
+            if (hashPos != std::wstring::npos) {
+                cPos = hashPos;
+                size_t endP = cPos + 1;
+                while (endP < lineStr.length() && iswxdigit(lineStr[endP])) endP++;
+                cLen = endP - cPos;
+            } else if (rgbPos != std::wstring::npos) {
+                cPos = rgbPos;
+                size_t closeP = lineStr.find(L')', cPos);
+                if (closeP != std::wstring::npos) cLen = closeP - cPos + 1;
+            } else if (hslPos != std::wstring::npos) {
+                cPos = hslPos;
+                size_t closeP = lineStr.find(L')', cPos);
+                if (closeP != std::wstring::npos) cLen = closeP - cPos + 1;
+            }
+
+            if (cPos != std::wstring::npos && cLen > 0) {
+                std::wstring colorStr = lineStr.substr(cPos, cLen);
+                D2D1_COLOR_F cVal{};
+                ColorFormat fmt{};
+                bool hasA = false;
+                if (ColorPickerModal::TryParseColor(colorStr, cVal, fmt, hasA)) {
+                    float swColX = codeX + cPos * charW - config.ScaleF(16.0f);
                     float swSz = config.ScaleF(11.0f);
                     float swY = ly + (lineH - swSz) / 2.0f;
                     D2D1_RECT_F rcSw = D2D1::RectF(swColX, swY, swColX + swSz, swY + swSz);
 
                     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> pSwBrush;
-                    pRT->CreateSolidColorBrush(sw.color, &pSwBrush);
+                    pRT->CreateSolidColorBrush(cVal, &pSwBrush);
                     if (pSwBrush) {
                         pRT->FillRectangle(rcSw, pSwBrush.Get());
                         pRT->DrawRectangle(rcSw, theme.brushTextWhite.Get(), 0.8f);
@@ -501,7 +519,7 @@ void InteractiveGuideView::RenderEditorBlock(ID2D1RenderTarget* pRT, Theme& them
         float curLineY = y + padY + ed.doc.buffer.GetCursor().line * lineH;
         float popupX = ed.codeAreaBounds.left + ed.doc.buffer.GetCursor().col * charW;
         float popupY = curLineY + lineH + config.ScaleF(2.0f);
-        float popupW = config.ScaleF(380.0f);
+        float popupW = config.ScaleF(460.0f);
 
         const size_t maxVisible = 6;
         const size_t totalItems = ed.intelliSenseItems.size();
@@ -563,23 +581,28 @@ void InteractiveGuideView::RenderEditorBlock(ID2D1RenderTarget* pRT, Theme& them
             Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> pBadgeBrush;
             pRT->CreateSolidColorBrush(badgeColor, &pBadgeBrush);
             D2D1_RECT_F rcBadge = D2D1::RectF(popupX + config.ScaleF(8.0f), ay, popupX + config.ScaleF(24.0f), ay + itemH);
-            pRT->DrawText(kindBadge, 1, theme.fontBadge ? theme.fontBadge.Get() : pCodeFmt, rcBadge, pBadgeBrush.Get());
+            pRT->DrawText(kindBadge, 1, theme.fontBadge ? theme.fontBadge.Get() : pCodeFmt, rcBadge, pBadgeBrush.Get(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
 
-            // Label
+            // Label (monospaced code font, leading-aligned, NEVER centered!)
             float labelX = popupX + config.ScaleF(26.0f);
-            float labelW = config.ScaleF(170.0f);
+            float labelW = (std::min)(config.ScaleF(130.0f), static_cast<float>(item.label.length()) * charW + config.ScaleF(8.0f));
             D2D1_RECT_F rcLabel = D2D1::RectF(labelX, ay, labelX + labelW, ay + itemH);
             pRT->DrawText(item.label.c_str(), static_cast<UINT32>(item.label.length()),
-                          theme.fontBody ? theme.fontBody.Get() : pCodeFmt,
-                          rcLabel, isSelected ? theme.brushTextWhite.Get() : theme.brushTextPrimary.Get());
+                          pCodeFmt,
+                          rcLabel, isSelected ? theme.brushTextWhite.Get() : theme.brushTextPrimary.Get(),
+                          D2D1_DRAW_TEXT_OPTIONS_CLIP);
 
-            // Detail
+            // Detail (monospaced code font, leading-aligned, NEVER centered or overlapping label!)
             if (!item.detail.empty()) {
-                float detailX = labelX + labelW;
-                D2D1_RECT_F rcDetail = D2D1::RectF(detailX, ay, popupX + popupW - config.ScaleF(8.0f), ay + itemH);
-                pRT->DrawText(item.detail.c_str(), static_cast<UINT32>(item.detail.length()),
-                              theme.fontHint ? theme.fontHint.Get() : pCodeFmt,
-                              rcDetail, theme.brushTextMuted.Get());
+                float detailX = labelX + labelW + config.ScaleF(8.0f);
+                float maxDetailW = popupX + popupW - detailX - config.ScaleF(8.0f);
+                if (maxDetailW > config.ScaleF(20.0f)) {
+                    D2D1_RECT_F rcDetail = D2D1::RectF(detailX, ay, popupX + popupW - config.ScaleF(8.0f), ay + itemH);
+                    pRT->DrawText(item.detail.c_str(), static_cast<UINT32>(item.detail.length()),
+                                  pCodeFmt,
+                                  rcDetail, isSelected ? theme.brushTextWhite.Get() : theme.brushTextMuted.Get(),
+                                  D2D1_DRAW_TEXT_OPTIONS_CLIP);
+                }
             }
         }
 
@@ -588,7 +611,7 @@ void InteractiveGuideView::RenderEditorBlock(ID2D1RenderTarget* pRT, Theme& them
         D2D1_RECT_F rcFooter = D2D1::RectF(popupX + config.ScaleF(8.0f), footerY, popupX + popupW - config.ScaleF(8.0f), footerY + footerH);
         std::wstring footerStr = std::to_wstring(ed.intelliSenseSelectedIdx + 1) + L" of " + std::to_wstring(totalItems) + L"  CanvasRenderingContext2D (Enter to insert)";
         pRT->DrawText(footerStr.c_str(), static_cast<UINT32>(footerStr.length()),
-                      theme.fontHint ? theme.fontHint.Get() : pCodeFmt, rcFooter, theme.brushTextMuted.Get());
+                      pCodeFmt, rcFooter, theme.brushTextMuted.Get(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
     }
 }
 
@@ -628,6 +651,8 @@ void InteractiveGuideView::Render(ID2D1RenderTarget* pRT, Theme& theme, const ap
     if (theme.dwriteFactory && pBodyFmt) {
         Microsoft::WRL::ComPtr<IDWriteTextLayout> pSubLayout;
         if (SUCCEEDED(theme.dwriteFactory->CreateTextLayout(subStr, static_cast<UINT32>(wcslen(subStr)), pBodyFmt, contentW, 500.0f, &pSubLayout))) {
+            pSubLayout->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR);
+            pSubLayout->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
             pSubLayout->SetWordWrapping(DWRITE_WORD_WRAPPING_WRAP);
             DWRITE_TEXT_METRICS tm{};
             if (SUCCEEDED(pSubLayout->GetMetrics(&tm))) {
@@ -917,9 +942,31 @@ void InteractiveGuideView::Render(ID2D1RenderTarget* pRT, Theme& theme, const ap
         D2D1_ROUNDED_RECT rrcThumb = D2D1::RoundedRect(m_scrollThumbBounds, 3.0f, 3.0f);
         pRT->FillRoundedRectangle(rrcThumb, theme.brushBorderHover ? theme.brushBorderHover.Get() : theme.brushBorderSubtle.Get());
     }
+
+    // =========================================================================
+    // Active Color Picker Modal (Rendered on top of everything if open)
+    // =========================================================================
+    if (m_colorPicker.IsOpen()) {
+        m_colorPicker.Render(pRT, theme, config, width, height);
+    }
 }
 
 bool InteractiveGuideView::HandleMouseMove(POINT clientPt) {
+    if (m_colorPicker.IsOpen()) {
+        auto onColorChange = [this](const std::wstring& newColor, size_t line, size_t col, size_t len) {
+            if (line < m_editors[0].doc.buffer.GetLineCount()) {
+                std::wstring lineStr = m_editors[0].doc.buffer.GetLine(line);
+                if (col + len <= lineStr.length()) {
+                    lineStr.replace(col, len, newColor);
+                    m_editors[0].doc.buffer.SetLine(line, lineStr);
+                }
+            }
+        };
+        if (m_colorPicker.HandleMouseMove(D2D1::Point2F(static_cast<float>(clientPt.x), static_cast<float>(clientPt.y)), onColorChange)) {
+            return true;
+        }
+    }
+
     bool needRepaint = false;
 
     if (m_focusedEditorIdx >= 0 && m_focusedEditorIdx < static_cast<int>(m_editors.size())) {
@@ -963,6 +1010,22 @@ bool InteractiveGuideView::HandleMouseMove(POINT clientPt) {
 }
 
 bool InteractiveGuideView::HandleLButtonDown(POINT clientPt, bool altPressed) {
+    if (m_colorPicker.IsOpen()) {
+        auto onColorChange = [this](const std::wstring& newColor, size_t line, size_t col, size_t len) {
+            if (line < m_editors[0].doc.buffer.GetLineCount()) {
+                std::wstring lineStr = m_editors[0].doc.buffer.GetLine(line);
+                if (col + len <= lineStr.length()) {
+                    lineStr.replace(col, len, newColor);
+                    m_editors[0].doc.buffer.SetLine(line, lineStr);
+                }
+            }
+        };
+        if (m_colorPicker.HandleLButtonDown(D2D1::Point2F(static_cast<float>(clientPt.x), static_cast<float>(clientPt.y)), onColorChange)) {
+            return true;
+        }
+        m_colorPicker.Close();
+    }
+
     int oldFocused = m_focusedEditorIdx;
 
     for (size_t eIdx = 0; eIdx < m_editors.size(); ++eIdx) {
@@ -1003,6 +1066,47 @@ bool InteractiveGuideView::HandleLButtonDown(POINT clientPt, bool altPressed) {
             size_t clickedCol = (relX > 0) ? static_cast<size_t>((relX + charW * 0.5f) / charW) : 0;
             if (clickedCol > lineStr.length()) clickedCol = lineStr.length();
 
+            // Check if clicked inside a color swatch in Editor 0
+            if (ed.id == 0) {
+                size_t hashPos = lineStr.find(L'#');
+                size_t rgbPos = lineStr.find(L"rgb(");
+                if (rgbPos == std::wstring::npos) rgbPos = lineStr.find(L"rgba(");
+                size_t hslPos = lineStr.find(L"hsl(");
+                if (hslPos == std::wstring::npos) hslPos = lineStr.find(L"hsla(");
+
+                size_t cPos = std::wstring::npos;
+                size_t cLen = 0;
+                if (hashPos != std::wstring::npos) {
+                    cPos = hashPos;
+                    size_t endP = cPos + 1;
+                    while (endP < lineStr.length() && iswxdigit(lineStr[endP])) endP++;
+                    cLen = endP - cPos;
+                } else if (rgbPos != std::wstring::npos) {
+                    cPos = rgbPos;
+                    size_t closeP = lineStr.find(L')', cPos);
+                    if (closeP != std::wstring::npos) cLen = closeP - cPos + 1;
+                } else if (hslPos != std::wstring::npos) {
+                    cPos = hslPos;
+                    size_t closeP = lineStr.find(L')', cPos);
+                    if (closeP != std::wstring::npos) cLen = closeP - cPos + 1;
+                }
+
+                if (cPos != std::wstring::npos && cLen > 0) {
+                    float swColX = ed.codeAreaBounds.left + cPos * charW - 16.0f;
+                    float swSz = 11.0f;
+                    float ly = ed.codeAreaBounds.top + clickedLine * lineH;
+                    float swY = ly + (lineH - swSz) / 2.0f;
+                    D2D1_RECT_F rcSw = D2D1::RectF(swColX - 3.0f, swY - 3.0f, swColX + swSz + 3.0f, swY + swSz + 3.0f);
+
+                    if (clientPt.x >= rcSw.left && clientPt.x <= rcSw.right &&
+                        clientPt.y >= rcSw.top && clientPt.y <= rcSw.bottom) {
+                        std::wstring colorStr = lineStr.substr(cPos, cLen);
+                        m_colorPicker.Open(rcSw.left, rcSw.bottom + 6.0f, colorStr, clickedLine, cPos, cLen);
+                        return true;
+                    }
+                }
+            }
+
             // Check if clicked a task checkbox on this line (Supports // TASK, // [ ], // [x], // [])
             std::wstring upperLine = lineStr;
             for (auto& c : upperLine) c = towupper(c);
@@ -1018,28 +1122,34 @@ bool InteractiveGuideView::HandleLButtonDown(POINT clientPt, bool altPressed) {
             if (xPos != std::wstring::npos) cbCol = xPos;
             else if (emptyPos != std::wstring::npos) cbCol = emptyPos;
             else if (tightPos != std::wstring::npos) cbCol = tightPos;
-            else if (taskPos != std::wstring::npos && taskPos >= 2) cbCol = taskPos - 1;
-            else if (todoPos != std::wstring::npos && todoPos >= 2) cbCol = todoPos - 1;
 
+            bool clickedCheckbox = false;
             if (cbCol != std::wstring::npos) {
                 float cbLeft = ed.codeAreaBounds.left + cbCol * charW - 6.0f;
                 float cbRight = cbLeft + 3.0f * charW + 10.0f;
-                if (clientPt.x >= cbLeft && clientPt.x <= cbRight) {
-                    std::wstring newLine = lineStr;
-                    if (xPos != std::wstring::npos) {
-                        newLine.replace(xPos, 3, L"[ ]");
-                    } else if (emptyPos != std::wstring::npos) {
-                        newLine.replace(emptyPos, 3, L"[x]");
-                    } else if (tightPos != std::wstring::npos) {
-                        newLine.replace(tightPos, 2, L"[x]");
-                    } else if (taskPos != std::wstring::npos) {
-                        newLine.insert(taskPos, L"[x] ");
-                    } else if (todoPos != std::wstring::npos) {
-                        newLine.insert(todoPos, L"[x] ");
-                    }
-                    ed.doc.buffer.SetLine(clickedLine, newLine);
-                    return true;
+                if (clientPt.x >= cbLeft && clientPt.x <= cbRight) clickedCheckbox = true;
+            }
+            float marginCbLeft = ed.codeAreaBounds.left - 30.0f;
+            float marginCbRight = ed.codeAreaBounds.left - 2.0f;
+            if (clientPt.x >= marginCbLeft && clientPt.x <= marginCbRight && (taskPos != std::wstring::npos || todoPos != std::wstring::npos || xPos != std::wstring::npos || emptyPos != std::wstring::npos)) {
+                clickedCheckbox = true;
+            }
+
+            if (clickedCheckbox) {
+                std::wstring newLine = lineStr;
+                if (xPos != std::wstring::npos) {
+                    newLine.replace(xPos, 3, L"[ ]");
+                } else if (emptyPos != std::wstring::npos) {
+                    newLine.replace(emptyPos, 3, L"[x]");
+                } else if (tightPos != std::wstring::npos) {
+                    newLine.replace(tightPos, 2, L"[x]");
+                } else if (taskPos != std::wstring::npos) {
+                    newLine.insert(taskPos, L"[x] ");
+                } else if (todoPos != std::wstring::npos) {
+                    newLine.insert(todoPos, L"[x] ");
                 }
+                ed.doc.buffer.SetLine(clickedLine, newLine);
+                return true;
             }
 
             // Multi-cursor or standard cursor positioning
@@ -1072,7 +1182,12 @@ bool InteractiveGuideView::HandleLButtonDown(POINT clientPt, bool altPressed) {
     return false;
 }
 
-bool InteractiveGuideView::HandleLButtonUp(POINT /*clientPt*/) {
+bool InteractiveGuideView::HandleLButtonUp(POINT clientPt) {
+    if (m_colorPicker.IsOpen()) {
+        if (m_colorPicker.HandleLButtonUp(D2D1::Point2F(static_cast<float>(clientPt.x), static_cast<float>(clientPt.y)))) {
+            return true;
+        }
+    }
     if (m_focusedEditorIdx >= 0 && m_focusedEditorIdx < static_cast<int>(m_editors.size())) {
         m_editors[m_focusedEditorIdx].doc.isSelecting = false;
         return true;
@@ -1122,6 +1237,11 @@ bool InteractiveGuideView::HandleChar(wchar_t ch) {
 }
 
 bool InteractiveGuideView::HandleKeyDown(WPARAM key) {
+    if (m_colorPicker.IsOpen()) {
+        if (m_colorPicker.HandleKeyDown(key)) {
+            return true;
+        }
+    }
     if (m_focusedEditorIdx < 0 || m_focusedEditorIdx >= static_cast<int>(m_editors.size())) {
         return false;
     }
@@ -1310,53 +1430,92 @@ bool InteractiveGuideView::HandleMouseWheel(short delta, float /*viewHeight*/) {
 }
 
 LPCWSTR InteractiveGuideView::GetCursorForPoint(POINT pt) const {
-    for (const auto& ed : m_editors) {
-        if (pt.x >= ed.codeAreaBounds.left && pt.x <= ed.codeAreaBounds.right &&
-            pt.y >= ed.codeAreaBounds.top && pt.y <= ed.codeAreaBounds.bottom) {
-
-            // Check if hovering over a checkbox in Editor 3
-            if (ed.id == 3) {
-                float lineH = 24.0f;
-                float relY = pt.y - ed.codeAreaBounds.top;
-                size_t l = (relY > 0) ? static_cast<size_t>(relY / lineH) : 0;
-                if (l < ed.doc.buffer.GetLineCount()) {
-                    std::wstring lineStr = ed.doc.buffer.GetLine(l);
-                    std::wstring upperLine = lineStr;
-                    for (auto& c : upperLine) c = towupper(c);
-
-                    size_t xPos = lineStr.find(L"[x]");
-                    if (xPos == std::wstring::npos) xPos = lineStr.find(L"[X]");
-                    size_t emptyPos = lineStr.find(L"[ ]");
-                    size_t tightPos = lineStr.find(L"[]");
-                    size_t taskPos = upperLine.find(L"TASK");
-                    size_t todoPos = upperLine.find(L"TODO");
-
-                    size_t cbCol = std::wstring::npos;
-                    if (xPos != std::wstring::npos) cbCol = xPos;
-                    else if (emptyPos != std::wstring::npos) cbCol = emptyPos;
-                    else if (tightPos != std::wstring::npos) cbCol = tightPos;
-                    else if (taskPos != std::wstring::npos && taskPos >= 2) cbCol = taskPos - 1;
-                    else if (todoPos != std::wstring::npos && todoPos >= 2) cbCol = todoPos - 1;
-
-                    if (cbCol != std::wstring::npos) {
-                        float charW = (m_cachedCharWidth > 0.0f) ? m_cachedCharWidth : 8.5f;
-                        float cbLeft = ed.codeAreaBounds.left + cbCol * charW - 6.0f;
-                        float cbRight = cbLeft + 3.0f * charW + 10.0f;
-                        if (pt.x >= cbLeft && pt.x <= cbRight) {
-                            return IDC_HAND;
-                        }
-                    }
-                }
-            }
-
-            return IDC_IBEAM;
+    if (m_colorPicker.IsOpen()) {
+        auto bounds = m_colorPicker.GetBounds();
+        if (pt.x >= bounds.left && pt.x <= bounds.right && pt.y >= bounds.top && pt.y <= bounds.bottom) {
+            return IDC_ARROW;
         }
+    }
 
+    for (const auto& ed : m_editors) {
         // Hover over real IntelliSense popup
         if (ed.showIntelliSense && !ed.intelliSenseItems.empty() &&
             pt.x >= ed.intelliSensePopupBounds.left && pt.x <= ed.intelliSensePopupBounds.right &&
             pt.y >= ed.intelliSensePopupBounds.top && pt.y <= ed.intelliSensePopupBounds.bottom) {
             return IDC_HAND;
+        }
+
+        // Check if hovering over Editor 0 color swatches
+        if (ed.id == 0) {
+            float lineH = 24.0f;
+            float charW = (m_cachedCharWidth > 0.0f) ? m_cachedCharWidth : 8.5f;
+            float relY = pt.y - ed.codeAreaBounds.top;
+            size_t l = (relY > 0) ? static_cast<size_t>(relY / lineH) : 0;
+            if (l < ed.doc.buffer.GetLineCount()) {
+                std::wstring lineStr = ed.doc.buffer.GetLine(l);
+                size_t hashPos = lineStr.find(L'#');
+                size_t rgbPos = lineStr.find(L"rgb(");
+                if (rgbPos == std::wstring::npos) rgbPos = lineStr.find(L"rgba(");
+                size_t hslPos = lineStr.find(L"hsl(");
+                if (hslPos == std::wstring::npos) hslPos = lineStr.find(L"hsla(");
+
+                size_t cPos = std::wstring::npos;
+                if (hashPos != std::wstring::npos) cPos = hashPos;
+                else if (rgbPos != std::wstring::npos) cPos = rgbPos;
+                else if (hslPos != std::wstring::npos) cPos = hslPos;
+
+                if (cPos != std::wstring::npos) {
+                    float swColX = ed.codeAreaBounds.left + cPos * charW - 16.0f;
+                    float swSz = 11.0f;
+                    float ly = ed.codeAreaBounds.top + l * lineH;
+                    float swY = ly + (lineH - swSz) / 2.0f;
+                    D2D1_RECT_F rcSw = D2D1::RectF(swColX - 3.0f, swY - 3.0f, swColX + swSz + 3.0f, swY + swSz + 3.0f);
+                    if (pt.x >= rcSw.left && pt.x <= rcSw.right && pt.y >= rcSw.top && pt.y <= rcSw.bottom) {
+                        return IDC_HAND;
+                    }
+                }
+            }
+        }
+
+        // Check if hovering over Editor 3 task checkbox
+        if (ed.id == 3) {
+            float lineH = 24.0f;
+            float charW = (m_cachedCharWidth > 0.0f) ? m_cachedCharWidth : 8.5f;
+            float relY = pt.y - ed.codeAreaBounds.top;
+            size_t l = (relY > 0) ? static_cast<size_t>(relY / lineH) : 0;
+            if (l < ed.doc.buffer.GetLineCount()) {
+                std::wstring lineStr = ed.doc.buffer.GetLine(l);
+                std::wstring upperLine = lineStr;
+                for (auto& c : upperLine) c = towupper(c);
+
+                size_t xPos = lineStr.find(L"[x]");
+                if (xPos == std::wstring::npos) xPos = lineStr.find(L"[X]");
+                size_t emptyPos = lineStr.find(L"[ ]");
+                size_t tightPos = lineStr.find(L"[]");
+                size_t taskPos = upperLine.find(L"TASK");
+                size_t todoPos = upperLine.find(L"TODO");
+
+                size_t cbCol = std::wstring::npos;
+                if (xPos != std::wstring::npos) cbCol = xPos;
+                else if (emptyPos != std::wstring::npos) cbCol = emptyPos;
+                else if (tightPos != std::wstring::npos) cbCol = tightPos;
+
+                if (cbCol != std::wstring::npos) {
+                    float cbLeft = ed.codeAreaBounds.left + cbCol * charW - 6.0f;
+                    float cbRight = cbLeft + 3.0f * charW + 10.0f;
+                    if (pt.x >= cbLeft && pt.x <= cbRight) return IDC_HAND;
+                }
+                float marginCbLeft = ed.codeAreaBounds.left - 30.0f;
+                float marginCbRight = ed.codeAreaBounds.left - 2.0f;
+                if (pt.x >= marginCbLeft && pt.x <= marginCbRight && (taskPos != std::wstring::npos || todoPos != std::wstring::npos || xPos != std::wstring::npos || emptyPos != std::wstring::npos)) {
+                    return IDC_HAND;
+                }
+            }
+        }
+
+        if (pt.x >= ed.codeAreaBounds.left && pt.x <= ed.codeAreaBounds.right &&
+            pt.y >= ed.codeAreaBounds.top && pt.y <= ed.codeAreaBounds.bottom) {
+            return IDC_IBEAM;
         }
     }
 

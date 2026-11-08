@@ -3438,11 +3438,29 @@ std::vector<IntelliSenseItem> IntelliSenseEngine::QueryCompletions(
                     }
                 }
 
-                for (const auto& p : m_jsPrototypes) rawCandidates.push_back(p);
-                for (const auto& d : m_jsDomApis) rawCandidates.push_back(d);
-                for (const auto& r : m_reactAndNodeVocabulary) {
-                    if (r.kind == CompletionKind::Property || r.kind == CompletionKind::Function || r.kind == CompletionKind::Variable) {
-                        rawCandidates.push_back(r);
+                bool isCanvasContext = (receiver == L"context" || receiver == L"ctx" || receiver == L"c2d");
+                if (!isCanvasContext && pDocLines) {
+                    for (const auto& dLine : *pDocLines) {
+                        if (dLine.find(receiver) != std::wstring::npos && dLine.find(L"getContext") != std::wstring::npos) {
+                            isCanvasContext = true;
+                            break;
+                        }
+                    }
+                }
+
+                if (isCanvasContext) {
+                    const auto& canvasMethods = WebIntelliSenseData::GetCanvasRenderingContext2DMethods();
+                    for (auto item : canvasMethods) {
+                        item.score = 5000;
+                        rawCandidates.push_back(std::move(item));
+                    }
+                } else {
+                    for (const auto& p : m_jsPrototypes) rawCandidates.push_back(p);
+                    for (const auto& d : m_jsDomApis) rawCandidates.push_back(d);
+                    for (const auto& r : m_reactAndNodeVocabulary) {
+                        if (r.kind == CompletionKind::Property || r.kind == CompletionKind::Function || r.kind == CompletionKind::Variable) {
+                            rawCandidates.push_back(r);
+                        }
                     }
                 }
             } else {

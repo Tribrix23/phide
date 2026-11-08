@@ -2683,4 +2683,40 @@ const std::vector<IntelliSenseItem>& WebIntelliSenseData::GetJavaScriptPrototype
     return s_proto;
 }
 
+const std::vector<IntelliSenseItem>& WebIntelliSenseData::GetCanvasRenderingContext2DMethods() {
+    static const std::vector<IntelliSenseItem> s_canvas = {
+        { L"fillRect", L"fillRect(x: number, y: number, w: number, h: number): void", L"fillRect()", CompletionKind::Method, 200, 0, 0, L"canvas", L"Paints the specified rectangle with the current fillStyle." },
+        { L"strokeRect", L"strokeRect(x: number, y: number, w: number, h: number): void", L"strokeRect()", CompletionKind::Method, 190, 0, 0, L"canvas", L"Paints the outline of the specified rectangle with the current strokeStyle." },
+        { L"clearRect", L"clearRect(x: number, y: number, w: number, h: number): void", L"clearRect()", CompletionKind::Method, 190, 0, 0, L"canvas", L"Sets the pixels in the specified rectangle to transparent black." },
+        { L"beginPath", L"beginPath(): void", L"beginPath()", CompletionKind::Method, 195, 0, 0, L"canvas", L"Starts a new path by emptying the list of sub-paths." },
+        { L"closePath", L"closePath(): void", L"closePath()", CompletionKind::Method, 180, 0, 0, L"canvas", L"Causes the point of the pen to move back to the start of the current sub-path." },
+        { L"moveTo", L"moveTo(x: number, y: number): void", L"moveTo()", CompletionKind::Method, 185, 0, 0, L"canvas", L"Begins a new sub-path at the point specified by the given (x, y) coordinates." },
+        { L"lineTo", L"lineTo(x: number, y: number): void", L"lineTo()", CompletionKind::Method, 185, 0, 0, L"canvas", L"Adds a straight line to the current sub-path by connecting the sub-path's last point to the specified (x, y) coordinates." },
+        { L"arc", L"arc(x: number, y: number, radius: number, startAngle: number, endAngle: number, counterclockwise?: boolean): void", L"arc()", CompletionKind::Method, 185, 0, 0, L"canvas", L"Adds a circular arc to the current sub-path." },
+        { L"arcTo", L"arcTo(x1: number, y1: number, x2: number, y2: number, radius: number): void", L"arcTo()", CompletionKind::Method, 170, 0, 0, L"canvas", L"Adds a circular arc to the path with the given control points and radius." },
+        { L"stroke", L"stroke(): void", L"stroke()", CompletionKind::Method, 190, 0, 0, L"canvas", L"Strokes the current or given path with the current strokeStyle." },
+        { L"fill", L"fill(fillRule?: CanvasFillRule): void", L"fill()", CompletionKind::Method, 190, 0, 0, L"canvas", L"Fills the current or given path with the current fillStyle." },
+        { L"strokeStyle", L"strokeStyle: string | CanvasGradient | CanvasPattern", L"strokeStyle", CompletionKind::Property, 195, 0, 0, L"canvas", L"Specifies the color, gradient, or pattern to use for the strokes around shapes." },
+        { L"fillStyle", L"fillStyle: string | CanvasGradient | CanvasPattern", L"fillStyle", CompletionKind::Property, 195, 0, 0, L"canvas", L"Specifies the color, gradient, or pattern to use inside shapes." },
+        { L"lineWidth", L"lineWidth: number", L"lineWidth", CompletionKind::Property, 180, 0, 0, L"canvas", L"Sets the thickness of lines in space units." },
+        { L"lineCap", L"lineCap: CanvasLineCap", L"lineCap", CompletionKind::Property, 175, 0, 0, L"canvas", L"Determines the shape used to draw the end points of lines ('butt' | 'round' | 'square')." },
+        { L"lineJoin", L"lineJoin: CanvasLineJoin", L"lineJoin", CompletionKind::Property, 175, 0, 0, L"canvas", L"Determines the shape used to join two line segments where they meet ('bevel' | 'round' | 'miter')." },
+        { L"font", L"font: string", L"font", CompletionKind::Property, 180, 0, 0, L"canvas", L"Specifies the current text style to use when drawing text." },
+        { L"fillText", L"fillText(text: string, x: number, y: number, maxWidth?: number): void", L"fillText()", CompletionKind::Method, 185, 0, 0, L"canvas", L"Draws a text string at the specified coordinates, filling the string's characters with the current fillStyle." },
+        { L"strokeText", L"strokeText(text: string, x: number, y: number, maxWidth?: number): void", L"strokeText()", CompletionKind::Method, 180, 0, 0, L"canvas", L"Draws the outlines of the characters of a specified text string at the specified coordinates." },
+        { L"measureText", L"measureText(text: string): TextMetrics", L"measureText()", CompletionKind::Method, 175, 0, 0, L"canvas", L"Returns a TextMetrics object that contains information about the measured text." },
+        { L"save", L"save(): void", L"save()", CompletionKind::Method, 185, 0, 0, L"canvas", L"Saves the entire state of the canvas by pushing the current state onto a stack." },
+        { L"restore", L"restore(): void", L"restore()", CompletionKind::Method, 185, 0, 0, L"canvas", L"Restores the most recently saved canvas state by popping the top entry in the drawing state stack." },
+        { L"scale", L"scale(x: number, y: number): void", L"scale()", CompletionKind::Method, 175, 0, 0, L"canvas", L"Adds a scaling transformation to the canvas units horizontally and/or vertically." },
+        { L"rotate", L"rotate(angle: number): void", L"rotate()", CompletionKind::Method, 175, 0, 0, L"canvas", L"Adds a rotation to the transformation matrix." },
+        { L"translate", L"translate(x: number, y: number): void", L"translate()", CompletionKind::Method, 175, 0, 0, L"canvas", L"Adds a translation transformation to the current matrix." },
+        { L"drawImage", L"drawImage(image: CanvasImageSource, dx: number, dy: number): void", L"drawImage()", CompletionKind::Method, 180, 0, 0, L"canvas", L"Draws the specified image onto the canvas." },
+        { L"createLinearGradient", L"createLinearGradient(x0: number, y0: number, x1: number, y1: number): CanvasGradient", L"createLinearGradient()", CompletionKind::Method, 175, 0, 0, L"canvas", L"Creates a gradient along the line connecting the two given coordinates." },
+        { L"createRadialGradient", L"createRadialGradient(x0: number, y0: number, r0: number, x1: number, y1: number, r1: number): CanvasGradient", L"createRadialGradient()", CompletionKind::Method, 170, 0, 0, L"canvas", L"Creates a radial gradient using the size and coordinates of two circles." },
+        { L"getImageData", L"getImageData(sx: number, sy: number, sw: number, sh: number): ImageData", L"getImageData()", CompletionKind::Method, 170, 0, 0, L"canvas", L"Returns an ImageData object representing the underlying pixel data for a specified portion of the canvas." },
+        { L"putImageData", L"putImageData(imagedata: ImageData, dx: number, dy: number): void", L"putImageData()", CompletionKind::Method, 170, 0, 0, L"canvas", L"Paints data from the given ImageData object onto the canvas." }
+    };
+    return s_canvas;
+}
+
 } // namespace phide::editor

@@ -7457,6 +7457,9 @@ bool DrawerPanel::HandleGitMouseMove(POINT pt, bool isLButtonDown, Theme* pTheme
 
         if (hitCommitIdx >= 0) {
             m_hoveredCommitIdx = hitCommitIdx;
+            if (m_selectedCommitIdx >= 0 && m_selectedCommitIdx != hitCommitIdx) {
+                m_selectedCommitIdx = hitCommitIdx;
+            }
             m_commitCardHash = m_gitCommits[hitCommitIdx].hash;
             if (m_gitCommits[hitCommitIdx].statSummary.empty()) {
                 m_gitCommits[hitCommitIdx].statSummary = L"Loading...";
@@ -7484,6 +7487,7 @@ bool DrawerPanel::HandleGitMouseMove(POINT pt, bool isLButtonDown, Theme* pTheme
         } else {
             // Mouse is outside both commit rows and card: dismiss card
             m_hoveredCommitIdx = -1;
+            m_selectedCommitIdx = -1;
             m_commitCardBounds = D2D1::RectF(0, 0, 0, 0);
         }
 

@@ -15,6 +15,7 @@
 #include "phide/editor/OpenDocument.hpp"
 #include "phide/editor/Buffer.hpp"
 #include "phide/editor/IntelliSenseEngine.hpp"
+#include "phide/ui/ColorPickerModal.hpp"
 
 namespace phide::ui {
 
@@ -118,6 +119,7 @@ private:
     mutable float m_cachedCharWidth = 0.0f;
 
     editor::IntelliSenseEngine m_intelliSense;
+    ui::ColorPickerModal m_colorPicker;
 
     void InitializeEditors();
     void UpdateIntelliSense(GuideEditorBlock& ed);

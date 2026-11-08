@@ -21,6 +21,7 @@ public:
     static const std::vector<IntelliSenseItem>& GetJavaScriptGlobals();
     static const std::vector<IntelliSenseItem>& GetJavaScriptDomMethods();
     static const std::vector<IntelliSenseItem>& GetJavaScriptPrototypeMethods();
+    static const std::vector<IntelliSenseItem>& GetCanvasRenderingContext2DMethods();
 };
 
 } // namespace phide::editor

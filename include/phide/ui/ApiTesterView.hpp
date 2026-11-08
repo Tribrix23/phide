@@ -115,6 +115,7 @@ struct ApiStreamEvent {
     bool isExpanded = false;     // Collapsible state
     D2D1_RECT_F itemBounds{};
     D2D1_RECT_F toggleBounds{};
+    D2D1_RECT_F collapseBounds{};
 };
 
 struct ApiResponseTiming {

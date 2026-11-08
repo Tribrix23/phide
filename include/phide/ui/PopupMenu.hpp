@@ -100,6 +100,8 @@ enum class MenuActionId {
     ActivityBarPosition,
     SecondaryActivityBarPosition,
     PanelPosition,
+    PanelPositionBottom,
+    PanelPositionRight,
     AlignPanel,
     ToggleMinimap,
     ToggleBreadcrumbs,

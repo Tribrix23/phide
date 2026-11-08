@@ -333,8 +333,12 @@ static std::wstring FormatJsonPretty(const std::wstring& json) {
 
 static bool IsSseStreamContent(const std::wstring& body) {
     if (body.empty()) return false;
-    if (body.rfind(L"data:", 0) == 0 || body.rfind(L"data: ", 0) == 0) return true;
-    if (body.find(L"\ndata:") != std::wstring::npos) return true;
+    size_t firstNonWs = body.find_first_not_of(L" \t\r\n\xFEFF");
+    if (firstNonWs != std::wstring::npos) {
+        if (body.compare(firstNonWs, 5, L"data:") == 0) return true;
+        if (body.compare(firstNonWs, 6, L"event:") == 0) return true;
+    }
+    if (body.find(L"\ndata:") != std::wstring::npos || body.find(L"\rdata:") != std::wstring::npos) return true;
     if (body.find(L"chat.completion.chunk") != std::wstring::npos) return true;
     return false;
 }
@@ -543,16 +547,16 @@ float ApiTesterView::GetResponseMaxScrollY(const ApiRequestSession& s) const {
                     totalH += static_cast<float>(lCount) * 18.0f + 24.0f;
                 }
             }
-            totalH += 100.0f; // 100px bottom padding
+            totalH += 160.0f; // 160px bottom padding so bottom text is never cut off
         } else {
             size_t lineCount = 1;
             for (wchar_t ch : s.response.body) if (ch == L'\n') lineCount++;
-            totalH = static_cast<float>(lineCount) * 18.0f + 100.0f; // 100px bottom padding
+            totalH = static_cast<float>(lineCount) * 18.0f + 160.0f; // 160px bottom padding
         }
     } else if (s.activeRespTab == ApiResponseTab::Headers) {
-        totalH = static_cast<float>(s.response.headers.size()) * 24.0f + 100.0f;
+        totalH = static_cast<float>(s.response.headers.size()) * 24.0f + 160.0f;
     } else if (s.activeRespTab == ApiResponseTab::Cookies) {
-        totalH = static_cast<float>(s.response.cookies.size()) * 24.0f + 100.0f;
+        totalH = static_cast<float>(s.response.cookies.size()) * 24.0f + 160.0f;
     }
     float viewH = (m_respContentH > 0.0f) ? m_respContentH : 200.0f;
     return (std::max)(0.0f, totalH - viewH);
@@ -3282,7 +3286,7 @@ void ApiTesterView::RenderResponseSection(ID2D1RenderTarget* pRT, Theme& theme, 
     m_respContentH = contentH;
 
     if (s.activeRespTab == ApiResponseTab::Body) {
-        if ((!s.response.isStream || s.response.streamEvents.empty()) && IsSseStreamContent(s.response.body)) {
+        if (s.response.streamEvents.empty() && (s.response.isStream || IsSseStreamContent(s.response.body))) {
             ParseStreamEventsFromBody(s.response);
         }
         if (s.response.isStream && !s.response.streamEvents.empty()) {
@@ -3293,12 +3297,14 @@ void ApiTesterView::RenderResponseSection(ID2D1RenderTarget* pRT, Theme& theme, 
             float textX = x + gutterW + config.ScaleF(10.0f) - s.respScrollX;
             float lineY = contentY + config.ScaleF(6.0f) - s.respScrollY;
 
-            // Code clip to strictly prevent any horizontal scroll bleed into gutter and ensure generous right padding
+            // Code clip to strictly prevent any horizontal scroll bleed into gutter and ensure generous right & bottom padding
             float respSbThickness = config.ScaleF(7.0f);
             float rightPad = config.ScaleF(24.0f);
+            float bottomPad = m_respHasHorizScroll ? (respSbThickness + config.ScaleF(14.0f)) : config.ScaleF(12.0f);
             float codeLeft = x + gutterW + config.ScaleF(2.0f);
             float codeRight = x + w - (m_respHasVertScroll ? (respSbThickness + rightPad) : rightPad);
-            D2D1_RECT_F rcCodeClip = D2D1::RectF(codeLeft, contentY, codeRight, contentY + contentH);
+            float codeBottom = contentY + contentH - bottomPad;
+            D2D1_RECT_F rcCodeClip = D2D1::RectF(codeLeft, contentY, codeRight, codeBottom);
             pRT->PushAxisAlignedClip(rcCodeClip, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
 
             Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushProp;
@@ -3350,7 +3356,7 @@ void ApiTesterView::RenderResponseSection(ID2D1RenderTarget* pRT, Theme& theme, 
             pRT->PopAxisAlignedClip(); // Pop rcCodeClip
 
             // Solid opaque gutter (Code text cannot bleed into or under this)
-            D2D1_RECT_F rcGutter = D2D1::RectF(x, contentY, x + gutterW, contentY + contentH);
+            D2D1_RECT_F rcGutter = D2D1::RectF(x, contentY, x + gutterW, codeBottom);
             Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushGutterBg;
             pRT->CreateSolidColorBrush(
                 theme.IsDarkMode() ? D2D1::ColorF(0.11f, 0.11f, 0.13f, 1.0f) : D2D1::ColorF(0.96f, 0.96f, 0.97f, 1.0f),
@@ -3360,14 +3366,14 @@ void ApiTesterView::RenderResponseSection(ID2D1RenderTarget* pRT, Theme& theme, 
             } else {
                 pRT->FillRectangle(rcGutter, theme.brushCanvasBg.Get());
             }
-            pRT->DrawLine(D2D1::Point2F(x + gutterW, contentY), D2D1::Point2F(x + gutterW, contentY + contentH),
+            pRT->DrawLine(D2D1::Point2F(x + gutterW, contentY), D2D1::Point2F(x + gutterW, codeBottom),
                           theme.brushBorderSubtle.Get(), 1.0f);
 
             // Draw line numbers cleanly inside the gutter
             pRT->PushAxisAlignedClip(rcGutter, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
             float numY = lineY;
             for (int n = 1; n < lineNum; ++n) {
-                if (numY + lineH > contentY && numY < contentY + contentH) {
+                if (numY + lineH > contentY && numY < codeBottom) {
                     std::wstring numStr = std::to_wstring(n);
                     D2D1_RECT_F rcNum = D2D1::RectF(x, numY, x + gutterW - config.ScaleF(6.0f), numY + lineH);
                     pRT->DrawText(numStr.c_str(), static_cast<UINT32>(numStr.length()),
@@ -3383,8 +3389,15 @@ void ApiTesterView::RenderResponseSection(ID2D1RenderTarget* pRT, Theme& theme, 
         float kLeft = x + config.ScaleF(16.0f) - s.respScrollX;
         float kWidth = config.ScaleF(230.0f);
         float vLeft = kLeft + kWidth + config.ScaleF(10.0f);
+
+        float respSbThickness = config.ScaleF(7.0f);
+        float bottomPad = m_respHasHorizScroll ? (respSbThickness + config.ScaleF(14.0f)) : config.ScaleF(12.0f);
+        float headerClipBottom = contentY + contentH - bottomPad;
+        D2D1_RECT_F rcHeadersClip = D2D1::RectF(x, contentY, x + w - (m_respHasVertScroll ? (respSbThickness + config.ScaleF(16.0f)) : config.ScaleF(16.0f)), headerClipBottom);
+        pRT->PushAxisAlignedClip(rcHeadersClip, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+
         for (const auto& hdr : s.response.headers) {
-            if (curY + rowH > contentY && curY < contentY + contentH) {
+            if (curY + rowH > contentY && curY < headerClipBottom) {
                 D2D1_RECT_F rcK = D2D1::RectF(kLeft, curY, kLeft + kWidth, curY + rowH);
                 pRT->DrawText(hdr.first.c_str(), static_cast<UINT32>(hdr.first.length()),
                               theme.fontKeycap.Get(), rcK, theme.brushBrandAccent.Get());
@@ -3395,6 +3408,7 @@ void ApiTesterView::RenderResponseSection(ID2D1RenderTarget* pRT, Theme& theme, 
             }
             curY += rowH;
         }
+        pRT->PopAxisAlignedClip();
     } else if (s.activeRespTab == ApiResponseTab::Cookies) {
         float rowH = config.ScaleF(24.0f);
         float curY = contentY + config.ScaleF(8.0f) - s.respScrollY;
@@ -3669,8 +3683,24 @@ void ApiTesterView::RenderStreamEvents(ID2D1RenderTarget* pRT, Theme& theme, con
                     }
                     lY += lineH;
                 }
+
+                // Collapse footer pill
+                float colBtnH = config.ScaleF(20.0f);
+                float colBtnW = config.ScaleF(140.0f);
+                float colBtnY = rcBox.bottom - colBtnH - config.ScaleF(4.0f);
+                D2D1_RECT_F rcColBtn = D2D1::RectF(rcBox.left + gutterW + config.ScaleF(8.0f), colBtnY,
+                                                   rcBox.left + gutterW + config.ScaleF(8.0f) + colBtnW, colBtnY + colBtnH);
+                ev.collapseBounds = rcColBtn;
+                D2D1_ROUNDED_RECT rrcColBtn = D2D1::RoundedRect(rcColBtn, 3.0f, 3.0f);
+                if (theme.brushTabBarBg) pRT->FillRoundedRectangle(rrcColBtn, theme.brushTabBarBg.Get());
+                pRT->DrawRoundedRectangle(rrcColBtn, theme.brushBorderSubtle.Get(), 1.0f);
+                pRT->DrawText(L"▲ Collapse event", 16, theme.fontKeycap.Get(), rcColBtn, theme.brushBrandAccent.Get());
+            } else {
+                ev.collapseBounds = {};
             }
             curY += expH + config.ScaleF(6.0f);
+        } else {
+            ev.collapseBounds = {};
         }
     }
 
@@ -4181,7 +4211,7 @@ bool ApiTesterView::HandleLButtonDown(POINT pt, const app::AppConfig& config, Th
     if (s.activeRespTab == ApiResponseTab::Body) {
         if (s.response.isStream && !s.response.streamEvents.empty()) {
             for (auto& ev : s.response.streamEvents) {
-                if (PtInRectF(pt, ev.itemBounds)) {
+                if (PtInRectF(pt, ev.itemBounds) || (ev.isExpanded && PtInRectF(pt, ev.collapseBounds))) {
                     ev.isExpanded = !ev.isExpanded;
                     return true;
                 }

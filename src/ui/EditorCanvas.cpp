@@ -3948,7 +3948,7 @@ bool EditorCanvas::HitTestGutter(POINT pt, const app::AppConfig& config, const e
     }
     const float headerH = config.ScaleF(static_cast<float>(config.headerHeight));
     const float tabH    = config.ScaleF(34.0f);
-    const float breadcrumbH = config.ScaleF(24.0f);
+    const float breadcrumbH = config.showBreadcrumbs ? config.ScaleF(24.0f) : 0.0f;
     const float topY    = headerH + tabH + breadcrumbH;
     const float gutterW = config.showLineNumbers ? config.ScaleF(50.0f) : config.ScaleF(12.0f);
     const float lineH   = config.ScaleF(std::round(config.fontSize * config.lineHeightMultiplier));
@@ -4036,7 +4036,7 @@ bool EditorCanvas::HitTestCodeArea(POINT pt, const app::AppConfig& config, const
                                    float canvasLeft, float clientHeight, size_t& outLine, size_t& outCol) const {
     const float headerH = config.ScaleF(static_cast<float>(config.headerHeight));
     const float tabH    = config.ScaleF(34.0f);
-    const float breadcrumbH = config.ScaleF(24.0f);
+    const float breadcrumbH = config.showBreadcrumbs ? config.ScaleF(24.0f) : 0.0f;
     const float topY    = headerH + tabH + breadcrumbH;
     const float gutterW = config.showLineNumbers ? config.ScaleF(50.0f) : config.ScaleF(12.0f);
     const float lineH   = config.ScaleF(std::round(config.fontSize * config.lineHeightMultiplier));
@@ -4119,7 +4119,7 @@ bool EditorCanvas::HitTestCodeArea(POINT pt, const app::AppConfig& config, const
     size_t col = 0;
     float bestDiff = 999999.0f;
     for (size_t c = 0; c <= lineStr.length(); ++c) {
-        float vx = GetColumnVisualOffset(lineColors, c, charW, swatchSpan);
+        float vx = GetColumnVisualOffset(lineStr, lineColors, c, charW, swatchSpan, config.tabSize);
         float diff = std::abs(relX - vx);
         if (diff < bestDiff) {
             bestDiff = diff;

@@ -58,6 +58,7 @@ public:
     void Close() noexcept;
 
     [[nodiscard]] bool IsOpen() const noexcept { return m_isOpen; }
+    [[nodiscard]] D2D1_RECT_F GetBounds() const noexcept { return m_modalBounds; }
     [[nodiscard]] size_t GetTargetLine() const noexcept { return m_targetLine; }
     [[nodiscard]] size_t GetTargetCol() const noexcept { return m_targetCol; }
     [[nodiscard]] size_t GetTargetLength() const noexcept { return m_targetLength; }

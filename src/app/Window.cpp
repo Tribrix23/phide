@@ -553,16 +553,19 @@ void Window::SaveSessionState() {
         out << L"  \"lastOpenFolderPath\": \"\",\n";
     }
     out << L"  \"openDocs\": [\n";
-    size_t docCount = 0;
+    std::vector<std::wstring> allOpenDocs;
     for (const auto& grp : m_editorGroups) {
         for (const auto& doc : grp.docs) {
             if (doc.isSpecialView && !doc.viewType.empty()) {
                 if (doc.viewType == L"markdown_preview") continue;
-                out << L"    \"special:" << EscapeJson(doc.viewType) << L"\"" << (++docCount < 100 ? L"," : L"") << L"\n";
+                allOpenDocs.push_back(L"special:" + doc.viewType);
             } else if (!doc.filePath.empty()) {
-                out << L"    \"" << EscapeJson(doc.filePath) << L"\"" << (++docCount < 100 ? L"," : L"") << L"\n";
+                allOpenDocs.push_back(doc.filePath);
             }
         }
+    }
+    for (size_t i = 0; i < allOpenDocs.size(); ++i) {
+        out << L"    \"" << EscapeJson(allOpenDocs[i]) << L"\"" << (i + 1 < allOpenDocs.size() ? L"," : L"") << L"\n";
     }
     out << L"  ],\n";
     out << L"  \"expandedDirs\": [\n";
@@ -839,10 +842,14 @@ void Window::LoadSessionState() {
                     }
                 } else if (vType == L"packages") {
                     OpenSpecialView(L"packages", L"Manage Packages");
-                } else if (vType == L"shortcuts") {
+                } else if (vType == L"shortcuts" || vType == L"keybindings") {
                     OpenSpecialView(L"shortcuts", L"Keyboard Shortcuts");
                 } else if (vType == L"api") {
                     OpenSpecialView(L"api", L"API Tester");
+                } else if (vType == L"interactive_guide" || vType == L"guide") {
+                    OpenSpecialView(L"interactive_guide", L"Interactive Guide");
+                } else if (vType == L"student") {
+                    OpenSpecialView(L"student", L"Learning Hub");
                 } else if (vType == L"terminal") {
                     m_terminal.SetDockPosition(1);
                     std::wstring wsFolder = !lastOpenFolder.empty() ? lastOpenFolder : m_drawer.GetOpenFolderPath();
@@ -972,11 +979,11 @@ void Window::GetCanvasLayout(float clientW, float& outCanvasLeft, float& outCanv
     outCanvasWidth = availableW;
 
     if (m_config.centeredLayout || m_config.zenMode) {
-        const float maxCenteredW = (std::min)(availableW, m_config.ScaleF(1080.0f));
-        if (maxCenteredW < availableW) {
-            const float margin = (availableW - maxCenteredW) * 0.5f;
+        float targetW = (std::min)(availableW * 0.75f, m_config.ScaleF(840.0f));
+        if (availableW > m_config.ScaleF(400.0f) && targetW < availableW) {
+            const float margin = (availableW - targetW) * 0.5f;
             outCanvasLeft = rawCanvasLeft + margin;
-            outCanvasWidth = maxCenteredW;
+            outCanvasWidth = targetW;
         }
     }
 }
@@ -1009,7 +1016,7 @@ void Window::EnsureCursorVisible() {
     if (cursor.line < pDoc->buffer.GetLineCount()) {
         const auto& curLineStr = pDoc->buffer.GetLine(cursor.line);
         auto lineColors = ui::EditorCanvas::ScanLineColors(curLineStr);
-        caretVisualColX = ui::EditorCanvas::GetColumnVisualOffset(lineColors, cursor.col, charW, swatchSpan);
+        caretVisualColX = ui::EditorCanvas::GetColumnVisualOffset(curLineStr, lineColors, cursor.col, charW, swatchSpan, m_config.tabSize);
     }
     float caretScreenX = codeLeft - pDoc->scrollOffsetX + caretVisualColX;
 
@@ -7650,12 +7657,14 @@ void Window::OnPaint() {
     }
 
     // 4. Render Collapsed Activity Rail (Home -> Search -> Git with customized tooltips)
-    m_rail.SetGitLoading(m_drawer.HasOpenFolder() ? m_drawer.IsGitLoading() : false);
-    m_rail.SetGitBadgeCount(m_drawer.HasOpenFolder() ? m_drawer.GetGitChanges().size() : 0);
-    m_rail.Render(m_pRenderTarget.Get(), m_theme, m_config, clientH - statusBarH);
+    if (!m_config.zenMode) {
+        m_rail.SetGitLoading(m_drawer.HasOpenFolder() ? m_drawer.IsGitLoading() : false);
+        m_rail.SetGitBadgeCount(m_drawer.HasOpenFolder() ? m_drawer.GetGitChanges().size() : 0);
+        m_rail.Render(m_pRenderTarget.Get(), m_theme, m_config, clientH - statusBarH);
+    }
 
     // 4.5. Render Status Bar at Bottom
-    if (m_config.showStatusBar) {
+    if (m_config.showStatusBar && !m_config.zenMode) {
         RenderStatusBar(clientW, clientH);
     }
 
@@ -8481,8 +8490,8 @@ void Window::RenderStatusBar(float clientW, float clientH) {
     // Right items:
     // User requirement Image 2: "REMOVE THIS BELL ICON" -> Bell icon completely removed!
     float curRightX = clientW - m_config.ScaleF(10.0f);
-    const float rightPillPadX = m_config.ScaleF(8.0f);
-    const float rightPillGap = m_config.ScaleF(8.0f);
+    const float rightPillPadX = m_config.ScaleF(10.0f);
+    const float rightPillGap = m_config.ScaleF(14.0f);
 
     auto measureStatusPillWidth = [&](const std::wstring& str, float minWidth) -> float {
         float measured = minWidth;
@@ -8493,13 +8502,14 @@ void Window::RenderStatusBar(float clientW, float clientH) {
                 static_cast<UINT32>(str.length()),
                 pFmt,
                 1000.0f,
-                itemH,
+                200.0f,
                 &pLayout
             );
             if (pLayout) {
+                pLayout->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
                 DWRITE_TEXT_METRICS tm{};
                 if (SUCCEEDED(pLayout->GetMetrics(&tm))) {
-                    measured = (std::max)(minWidth, tm.widthIncludingTrailingWhitespace + rightPillPadX * 2.0f);
+                    measured = (std::max)(minWidth, std::ceil(tm.widthIncludingTrailingWhitespace + rightPillPadX * 2.0f + m_config.ScaleF(8.0f)));
                 }
             }
         }
@@ -8508,7 +8518,7 @@ void Window::RenderStatusBar(float clientW, float clientH) {
 
     // UTF-8 & CRLF
     std::wstring encStr = L"UTF-8   CRLF";
-    float encW = measureStatusPillWidth(encStr, m_config.ScaleF(88.0f));
+    float encW = measureStatusPillWidth(encStr, m_config.ScaleF(95.0f));
     curRightX -= encW;
     m_rcStatusBarEncoding = D2D1::RectF(curRightX, itemY, curRightX + encW, itemY + itemH);
     if (m_isHoveredStatusBarEncoding) {
@@ -8528,7 +8538,7 @@ void Window::RenderStatusBar(float clientW, float clientH) {
     // Indentation
     int indentSize = (m_config.tabSize > 0) ? m_config.tabSize : 4;
     std::wstring indStr = (m_config.insertSpaces ? L"Spaces: " : L"Tab Size: ") + std::to_wstring(indentSize);
-    float indW = measureStatusPillWidth(indStr, m_config.ScaleF(68.0f));
+    float indW = measureStatusPillWidth(indStr, m_config.ScaleF(85.0f));
     curRightX -= indW;
     m_rcStatusBarSpaces = D2D1::RectF(curRightX, itemY, curRightX + indW, itemY + itemH);
     if (m_isHoveredStatusBarSpaces) {
@@ -8550,7 +8560,7 @@ void Window::RenderStatusBar(float clientW, float clientH) {
     size_t curLine = curDoc ? (curDoc->buffer.GetCursor().line + 1) : 1;
     size_t curCol = curDoc ? (curDoc->buffer.GetCursor().col + 1) : 1;
     std::wstring lnColStr = L"Ln " + std::to_wstring(curLine) + L", Col " + std::to_wstring(curCol);
-    float lnColW = measureStatusPillWidth(lnColStr, m_config.ScaleF(86.0f));
+    float lnColW = measureStatusPillWidth(lnColStr, m_config.ScaleF(110.0f));
     curRightX -= lnColW;
     m_rcStatusBarLnCol = D2D1::RectF(curRightX, itemY, curRightX + lnColW, itemY + itemH);
     if (m_isHoveredStatusBarLnCol) {
@@ -9881,6 +9891,18 @@ bool Window::HandlePopupMenuClick(POINT clientPt) {
                         break;
                     case ui::MenuActionId::MoveSideBarRight:
                         m_config.sideBarOnRight = !m_config.sideBarOnRight;
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
+                        break;
+                    case ui::MenuActionId::PanelPositionBottom:
+                        m_terminal.SetDockPosition(0);
+                        m_config.terminalDockPosition = 0;
+                        SaveSessionState();
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
+                        break;
+                    case ui::MenuActionId::PanelPositionRight:
+                        m_terminal.SetDockPosition(2);
+                        m_config.terminalDockPosition = 2;
+                        SaveSessionState();
                         InvalidateRect(m_hwnd, nullptr, FALSE);
                         break;
                     case ui::MenuActionId::ToggleMinimap:

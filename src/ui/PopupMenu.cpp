@@ -457,10 +457,26 @@ void PopupMenu::BuildViewMenuItems(const app::AppConfig& config, bool isSidebarO
     appearanceItem.submenuItems.push_back({ MenuActionId::TogglePanel,              L"Panel",                        L"Ctrl+J",       false, isTerminalOpen,               false, true, {}, {} });
     // --- Submenu Separator ---
     appearanceItem.submenuItems.push_back({ MenuActionId::MoveSideBarRight,          L"Move Primary Side Bar Right",  L"",             false, config.sideBarOnRight,        false, true, {}, {} });
-    appearanceItem.submenuItems.push_back({ MenuActionId::ActivityBarPosition,       L"Activity Bar Position",        L"",             false, false,                        true,  true, {}, {} });
-    appearanceItem.submenuItems.push_back({ MenuActionId::SecondaryActivityBarPosition, L"Secondary Activity Bar Position", L"",      false, false,                        true,  true, {}, {} });
-    appearanceItem.submenuItems.push_back({ MenuActionId::PanelPosition,             L"Panel Position",               L"",             false, false,                        true,  true, {}, {} });
-    appearanceItem.submenuItems.push_back({ MenuActionId::AlignPanel,                L"Align Panel",                  L"",             false, false,                        true,  true, {}, {} });
+
+    std::vector<PopupMenuItem> activityBarSubmenu = {
+        { MenuActionId::None, L"Side", L"", false, true, false, true, {} },
+        { MenuActionId::None, L"Hidden", L"", false, false, false, true, {} }
+    };
+    appearanceItem.submenuItems.push_back({ MenuActionId::ActivityBarPosition,       L"Activity Bar Position",        L"",             false, false,                        true,  true, std::move(activityBarSubmenu) });
+
+    bool isPanelBottom = (config.terminalDockPosition == 0);
+    bool isPanelRight = (config.terminalDockPosition == 2);
+    std::vector<PopupMenuItem> panelPositionSubmenu = {
+        { MenuActionId::PanelPositionBottom, L"Bottom", L"", false, isPanelBottom, false, true, {} },
+        { MenuActionId::PanelPositionRight,  L"Right",  L"", false, isPanelRight,  false, true, {} }
+    };
+    appearanceItem.submenuItems.push_back({ MenuActionId::PanelPosition,             L"Panel Position",               L"",             false, false,                        true,  true, std::move(panelPositionSubmenu) });
+
+    std::vector<PopupMenuItem> alignPanelSubmenu = {
+        { MenuActionId::None, L"Center",  L"", false, true,  false, true, {} },
+        { MenuActionId::None, L"Justify", L"", false, false, false, true, {} }
+    };
+    appearanceItem.submenuItems.push_back({ MenuActionId::AlignPanel,                L"Align Panel",                  L"",             false, false,                        true,  true, std::move(alignPanelSubmenu) });
     // --- Submenu Separator ---
     appearanceItem.submenuItems.push_back({ MenuActionId::ToggleMinimap,             L"Minimap",                      L"",             false, config.showMinimap,           false, true, {}, {} });
     appearanceItem.submenuItems.push_back({ MenuActionId::ToggleBreadcrumbs,         L"Breadcrumbs",                  L"",             false, config.showBreadcrumbs,       false, true, {}, {} });
