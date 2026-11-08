@@ -700,6 +700,9 @@ void EditorCanvas::RenderSinglePane(ID2D1RenderTarget* pRT, Theme& theme, const 
     } else if (activeDoc.isSpecialView && activeDoc.viewType == L"extension_detail") {
         m_packageManagerView.HideWebView();
         RenderExtensionDetail(pRT, theme, config, activeDoc, canvasLeft, canvasWidth, contentTopY, clientHeight);
+    } else if (activeDoc.isSpecialView && activeDoc.viewType == L"interactive_guide") {
+        m_packageManagerView.HideWebView();
+        m_interactiveGuideView.Render(pRT, theme, config, canvasLeft, canvasWidth, contentTopY, clientHeight - contentTopY);
     } else {
         m_packageManagerView.HideWebView();
         if (activeDoc.isImageView) {
@@ -1030,6 +1033,17 @@ void EditorCanvas::RenderTabs(ID2D1RenderTarget* pRT, Theme& theme, const app::A
             m_icons.DrawFileIcon(pRT, theme, iconBounds, FileIconType::Markdown);
         } else if (doc.isSpecialView && doc.viewType == L"extension_detail") {
             m_icons.DrawExtensionsGrid(pRT, iconBounds, theme.brushBrandAccent ? theme.brushBrandAccent.Get() : theme.brushTextWhite.Get(), 1.3f);
+        } else if (doc.isSpecialView && doc.viewType == L"interactive_guide") {
+            if (!m_pPhideLogoBitmap) {
+                D2D1_SIZE_U size = D2D1::SizeU(kPhideLogoWidth, kPhideLogoHeight);
+                D2D1_BITMAP_PROPERTIES props = D2D1::BitmapProperties(
+                    D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED)
+                );
+                pRT->CreateBitmap(size, g_phideLogoBgra, kPhideLogoWidth * 4, props, &m_pPhideLogoBitmap);
+            }
+            if (m_pPhideLogoBitmap) {
+                pRT->DrawBitmap(m_pPhideLogoBitmap.Get(), iconBounds);
+            }
         } else if (doc.filePath.ends_with(L".py") || doc.filePath.ends_with(L".pyw") || title.ends_with(L".py")) {
             ID2D1Bitmap* pPyIcon = GetLearningHubBitmap(pRT, L"python.png");
             if (pPyIcon) {
@@ -1255,6 +1269,9 @@ void EditorCanvas::RenderBreadcrumbs(ID2D1RenderTarget* pRT, Theme& theme, const
     } else if (doc.isSpecialView && doc.viewType == L"extension_detail") {
         segments.push_back(L"Extensions");
         segments.push_back(doc.fileName.empty() ? L"Extension" : doc.fileName);
+    } else if (doc.isSpecialView && doc.viewType == L"interactive_guide") {
+        segments.push_back(L"Help");
+        segments.push_back(L"Interactive Guide");
     } else {
         std::wstring pathStr = doc.filePath.empty() ? doc.fileName : doc.filePath;
         for (auto& c : pathStr) {

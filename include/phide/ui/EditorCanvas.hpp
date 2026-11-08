@@ -25,6 +25,8 @@
 #include "phide/ui/GraphView.hpp"
 #include "phide/ui/SettingsView.hpp"
 #include "phide/ui/ApiTesterView.hpp"
+#include "phide/ui/InteractiveGuideView.hpp"
+#include "phide/ui/PhideLogo.hpp"
 #include "phide/ui/ColorPickerModal.hpp"
 #include <unordered_map>
 
@@ -271,6 +273,7 @@ public:
     GraphView& GetGraphView() noexcept { return m_graphView; }
     SettingsView& GetSettingsView() noexcept { return m_settingsView; }
     ApiTesterView& GetApiTesterView() noexcept { return m_apiTesterView; }
+    InteractiveGuideView& GetInteractiveGuideView() noexcept { return m_interactiveGuideView; }
 
     [[nodiscard]] int HitTestWatermarkCard(POINT pt, const app::AppConfig& config, float canvasLeft, float canvasWidth, float headerH, float clientHeight) const;
     bool SetHoveredWatermarkRow(int row) noexcept {
@@ -355,6 +358,8 @@ private:
     GraphView m_graphView;
     SettingsView m_settingsView;
     ApiTesterView m_apiTesterView;
+    InteractiveGuideView m_interactiveGuideView;
+    Microsoft::WRL::ComPtr<ID2D1Bitmap> m_pPhideLogoBitmap;
     int m_hoveredWatermarkRow = -1;
 
     // Cached path geometry for workspace container (curved ONLY at upper-left corner when drawer is closed)

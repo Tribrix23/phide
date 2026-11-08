@@ -9483,6 +9483,10 @@ void Window::HandleMouseMove(POINT clientPt, WPARAM wParam) {
             if (m_editor.GetApiTesterView().HandleMouseMove(clientPt, m_config, m_theme)) {
                 needRepaint = true;
             }
+        } else if (pActiveDoc->viewType == L"interactive_guide") {
+            if (m_editor.GetInteractiveGuideView().HandleMouseMove(clientPt)) {
+                needRepaint = true;
+            }
         }
     } else {
         // No active documents -> check watermark cheat-sheet row hover
@@ -10352,6 +10356,12 @@ bool Window::HandlePopupMenuClick(POINT clientPt) {
                         break;
 
                     // Help Menu Actions (User Request: email, Facebook, WhatsApp, Discord)
+                    case ui::MenuActionId::HelpShowAllCommands:
+                        DoCommandPalette();
+                        break;
+                    case ui::MenuActionId::HelpInteractiveGuide:
+                        OpenSpecialView(L"interactive_guide", L"Interactive Guide");
+                        break;
                     case ui::MenuActionId::HelpDocumentation:
                         ShellExecuteW(nullptr, L"open", L"https://github.com", nullptr, nullptr, SW_SHOWNORMAL);
                         break;
@@ -11313,6 +11323,13 @@ void Window::HandleLButtonDown(POINT clientPt) {
                     m_drawer.SetSearchFocus(0);
                     m_explorerHasFocus = false;
                     if (m_editor.GetApiTesterView().HandleLButtonDown(clientPt, m_config, m_theme)) {
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
+                        return;
+                    }
+                } else if (doc.isSpecialView && doc.viewType == L"interactive_guide") {
+                    m_drawer.SetSearchFocus(0);
+                    m_explorerHasFocus = false;
+                    if (m_editor.GetInteractiveGuideView().HandleLButtonDown(clientPt)) {
                         InvalidateRect(m_hwnd, nullptr, FALSE);
                         return;
                     }
@@ -12940,6 +12957,15 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     }
                 }
 
+                // Interactive Guide View cursor handling (interactive checkboxes, links)
+                if (pCurDoc && pCurDoc->isSpecialView && pCurDoc->viewType == L"interactive_guide") {
+                    LPCWSTR cur = m_editor.GetInteractiveGuideView().GetCursorForPoint(pt);
+                    if (cur) {
+                        SetCursor(LoadCursor(nullptr, cur));
+                        return TRUE;
+                    }
+                }
+
                 SetCursor(LoadCursor(nullptr, IDC_ARROW));
                 return TRUE;
             }
@@ -13210,6 +13236,13 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     }
                 } else if (pDoc->isSpecialView && pDoc->viewType == L"api") {
                     if (m_editor.GetApiTesterView().HandleMouseWheel(delta, static_cast<float>(pt.y))) {
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
+                        return 0;
+                    }
+                } else if (pDoc->isSpecialView && pDoc->viewType == L"interactive_guide") {
+                    RECT rcClient{};
+                    GetClientRect(m_hwnd, &rcClient);
+                    if (m_editor.GetInteractiveGuideView().HandleMouseWheel(delta, static_cast<float>(rcClient.bottom - rcClient.top))) {
                         InvalidateRect(m_hwnd, nullptr, FALSE);
                         return 0;
                     }

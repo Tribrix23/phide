@@ -231,6 +231,8 @@ enum class MenuActionId {
     WindowCloseEditor,
 
     // Help Menu Actions
+    HelpShowAllCommands,
+    HelpInteractiveGuide,
     HelpDocumentation,
     HelpKeyboardShortcuts,
     HelpContactEmail,
