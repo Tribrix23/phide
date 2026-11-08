@@ -5,6 +5,7 @@
 
 #include "phide/editor/SyntaxValidator.hpp"
 #include "phide/editor/WebIntelliSenseData.hpp"
+#include "phide/plugin/PluginManager.hpp"
 #include <algorithm>
 #include <cctype>
 #include <cwctype>
@@ -29,42 +30,37 @@ std::vector<lsp::Diagnostic> SyntaxValidator::Validate(
         for (auto& c : ext) c = static_cast<wchar_t>(towlower(c));
     } catch (...) {}
 
+    std::vector<lsp::Diagnostic> diags;
     if (ext == L".json" || ext == L".jsonc" || ext == L".eslintrc" || ext == L".prettierrc") {
-        return ValidateJson(buffer);
-    }
-    if (ext == L".css" || ext == L".scss" || ext == L".less") {
-        return ValidateCss(buffer);
-    }
-    if (ext == L".js" || ext == L".jsx" || ext == L".ts" || ext == L".tsx" || ext == L".mjs" || ext == L".cjs") {
+        diags = ValidateJson(buffer);
+    } else if (ext == L".css" || ext == L".scss" || ext == L".less") {
+        diags = ValidateCss(buffer);
+    } else if (ext == L".js" || ext == L".jsx" || ext == L".ts" || ext == L".tsx" || ext == L".mjs" || ext == L".cjs") {
         bool isJsx = (ext == L".jsx" || ext == L".tsx");
-        auto diags = ValidateJavaScript(buffer, 0, static_cast<size_t>(-1), isJsx);
+        diags = ValidateJavaScript(buffer, 0, static_cast<size_t>(-1), isJsx);
         auto reactDiags = ValidateReactAndESLint(buffer, isJsx);
         diags.insert(diags.end(), reactDiags.begin(), reactDiags.end());
-        return diags;
-    }
-    if (ext == L".html" || ext == L".htm" || ext == L".xml" || ext == L".svg") {
-        return ValidateHtml(buffer, validateScripts, validateStyles);
-    }
-    if (ext == L".php") {
-        auto phpDiags = ValidatePhp(buffer);
+    } else if (ext == L".html" || ext == L".htm" || ext == L".xml" || ext == L".svg") {
+        diags = ValidateHtml(buffer, validateScripts, validateStyles);
+    } else if (ext == L".php") {
+        diags = ValidatePhp(buffer);
         auto htmlDiags = ValidateHtml(buffer, validateScripts, validateStyles);
-        phpDiags.insert(phpDiags.end(), htmlDiags.begin(), htmlDiags.end());
-        return phpDiags;
+        diags.insert(diags.end(), htmlDiags.begin(), htmlDiags.end());
+    } else if (ext == L".py") {
+        diags = ValidatePython(buffer);
+    } else if (ext == L".yml" || ext == L".yaml") {
+        diags = ValidateYaml(buffer);
+    } else if (ext == L".cpp" || ext == L".c" || ext == L".cc" || ext == L".cxx" ||
+               ext == L".h" || ext == L".hpp" || ext == L".hxx" || ext == L".cs" ||
+               ext == L".java" || ext == L".rs" || ext == L".go") {
+        diags = ValidateBracketsAndQuotes(buffer, false);
     }
-    if (ext == L".py") {
-        return ValidatePython(buffer);
+
+    auto pluginDiags = phide::plugin::PluginManager::Instance().RunDiagnostics(filePath, ext, buffer);
+    if (!pluginDiags.empty()) {
+        diags.insert(diags.end(), pluginDiags.begin(), pluginDiags.end());
     }
-    if (ext == L".yml" || ext == L".yaml") {
-        return ValidateYaml(buffer);
-    }
-    // Only perform bracket & quote validation on recognized code file extensions.
-    // Plain text, markdown, METADATA, documentation, licenses, and config files must never report false syntax errors!
-    if (ext == L".cpp" || ext == L".c" || ext == L".cc" || ext == L".cxx" ||
-        ext == L".h" || ext == L".hpp" || ext == L".hxx" || ext == L".cs" ||
-        ext == L".java" || ext == L".rs" || ext == L".go") {
-        return ValidateBracketsAndQuotes(buffer, false);
-    }
-    return {};
+    return diags;
 }
 
 std::vector<lsp::Diagnostic> SyntaxValidator::ValidateJson(const Buffer& buffer) {

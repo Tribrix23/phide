@@ -4,6 +4,7 @@
  */
 
 #include "phide/ui/QuickOpenModal.hpp"
+#include "phide/plugin/PluginManager.hpp"
 #include <filesystem>
 #include <algorithm>
 #include <cwctype>
@@ -318,6 +319,22 @@ void QuickOpenModal::FilterItems() {
                 it.title = cmd.title;
                 it.shortcut = cmd.shortcut;
                 it.actionCommand = cmd.actionId;
+                it.iconType = FileIconType::Terminal;
+                m_filteredItems.push_back(std::move(it));
+            }
+        }
+
+        // Append commands contributed by plugins, extensions, and mods
+        auto pluginCmds = phide::plugin::PluginManager::Instance().GetCommands();
+        for (const auto& pCmd : pluginCmds) {
+            std::wstring tLower = pCmd.title;
+            for (auto& c : tLower) c = towlower(c);
+            if (termLower.empty() || tLower.find(termLower) != std::wstring::npos) {
+                QuickOpenItem it;
+                it.type = QuickOpenItem::Type::Action;
+                it.title = pCmd.title;
+                it.shortcut = pCmd.shortcut;
+                it.actionCommand = pCmd.id;
                 it.iconType = FileIconType::Terminal;
                 m_filteredItems.push_back(std::move(it));
             }

@@ -4,6 +4,7 @@
  */
 
 #include "phide/ui/Theme.hpp"
+#include "phide/plugin/PluginManager.hpp"
 #include <filesystem>
 #include <windows.h>
 
@@ -77,6 +78,9 @@ Theme::Theme() = default;
 HRESULT Theme::CreateDeviceResources(ID2D1RenderTarget* pRT, IDWriteFactory* pDWriteFactory) {
     if (!pRT || !pDWriteFactory) return E_POINTER;
     dwriteFactory = pDWriteFactory;
+
+    // Apply any active plugin/mod color overrides before allocating brushes
+    phide::plugin::PluginManager::Instance().ApplyThemeOverrides(colors, static_cast<int>(m_mode));
 
     // Allocate Solid Brushes
     HRESULT hr = pRT->CreateSolidColorBrush(colors.windowBg, &brushWindowBg);
@@ -1592,6 +1596,9 @@ void Theme::SetThemeMode(ThemeMode mode) {
         colors.bracket2        = D2D1::ColorF(1.000f, 0.843f, 0.000f, 1.0f);  // #FFD700 Yellow
         colors.bracket3        = D2D1::ColorF(0.000f, 0.898f, 1.000f, 1.0f);  // #00E5FF Cyan
     }
+
+    // Apply any active plugin/mod theme color overrides
+    phide::plugin::PluginManager::Instance().ApplyThemeOverrides(colors, static_cast<int>(m_mode));
 
     // Refresh dynamic brush colors
     if (brushWindowBg) brushWindowBg->SetColor(colors.windowBg);

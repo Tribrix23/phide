@@ -8,6 +8,7 @@
 #include "phide/editor/SnippetManager.hpp"
 #include "phide/editor/TailwindHelper.hpp"
 #include "phide/editor/AdaptiveCodeEngine.hpp"
+#include "phide/plugin/PluginManager.hpp"
 #include <algorithm>
 #include <cwctype>
 #include <filesystem>
@@ -3985,6 +3986,32 @@ std::vector<IntelliSenseItem> IntelliSenseEngine::QueryCompletions(
 
     if (pyExclusive) {
         rawCandidates = std::move(pyExclusiveItems);
+    }
+
+    // 7. Merge plugin/extension/mod contributed completions & snippets
+    {
+        auto pluginItems = phide::plugin::PluginManager::Instance().QueryCompletions(ext, fileName, currentLine, cursorCol, prefix);
+        for (auto& pi : pluginItems) {
+            rawCandidates.push_back(std::move(pi));
+        }
+        auto pluginSnippets = phide::plugin::PluginManager::Instance().GetContributedSnippets();
+        for (const auto& sn : pluginSnippets) {
+            if (SnippetManager::MatchesScope(sn.scope, ext)) {
+                IntelliSenseItem sItem;
+                sItem.label = sn.prefix;
+                sItem.detail = sn.description.empty() ? sn.name : sn.description;
+                std::wstring joined;
+                for (size_t i = 0; i < sn.body.size(); ++i) {
+                    if (i > 0) joined += L"\n";
+                    joined += sn.body[i];
+                }
+                sItem.insertText = joined;
+                sItem.kind = CompletionKind::Snippet;
+                sItem.origin = L"plugin-snippet";
+                sItem.score = 120;
+                rawCandidates.push_back(std::move(sItem));
+            }
+        }
     }
 
     // Matching & Scoring Engine: Exact prefix (1000), Boundary match (750), Substring match (100)

@@ -13,6 +13,7 @@
 #include "phide/editor/FormatEngine.hpp"
 #include "phide/ui/PhideLogo.hpp"
 #include "phide/ui/SplashScreen.hpp"
+#include "phide/plugin/PluginManager.hpp"
 #include <windowsx.h>
 #include <commdlg.h>
 #include <shobjidl.h>
@@ -1273,6 +1274,8 @@ void Window::OpenFileDocument(const std::wstring& path, bool isPreview) {
     UpdateDrawerErrorFiles();
     SaveSessionState();
 
+    phide::plugin::PluginManager::Instance().DispatchEvent(L"onDocumentOpen", resolvedPath);
+
     if (m_config.enableMarkdownPreview && IsMarkdownFile(resolvedPath)) {
         OpenMarkdownPreviewSplit(resolvedPath);
     }
@@ -2110,6 +2113,9 @@ void Window::CloseDocument(int groupIdx, int docIdx) {
 
     // Hook for temporary COMMIT_EDITMSG tab (Images 4 & 5)
     std::wstring closingPath = group.docs[docIdx].filePath;
+    if (!closingPath.empty()) {
+        phide::plugin::PluginManager::Instance().DispatchEvent(L"onDocumentClose", closingPath);
+    }
     bool wasMarkdownSource = (!closingPath.empty() && IsMarkdownFile(closingPath) && !group.docs[docIdx].isSpecialView);
     if (closingPath.ends_with(L"COMMIT_EDITMSG")) {
         std::wstring commitMsg;
@@ -2230,6 +2236,10 @@ void Window::DoOpenFolderFromPath(const std::wstring& path) {
     m_editor.GetPackageManagerView().ScanInstalledPackages(path);
     m_editor.GetGraphView().RefreshFromWorkspace(path);
     StartWorkspaceWatcher(path);
+    phide::plugin::PluginManager::Instance().LoadWorkspacePlugins(path);
+    phide::plugin::PluginManager::Instance().ApplyAppConfigMods(m_config);
+    m_theme.SetThemeMode(m_theme.GetThemeMode());
+    phide::plugin::PluginManager::Instance().DispatchEvent(L"onWorkspaceOpen", path);
 
     // Close clean tabs that belong to a previous/different project
     for (auto& grp : m_editorGroups) {
@@ -2466,6 +2476,10 @@ void Window::ExecuteQuickOpenAction(const std::wstring& actionCmd) {
     }
     if (actionCmd == L"cmd_git_refresh") {
         m_drawer.RefreshGitStatusOnly(true);
+        InvalidateRect(m_hwnd, nullptr, FALSE);
+        return;
+    }
+    if (phide::plugin::PluginManager::Instance().ExecuteCommand(actionCmd)) {
         InvalidateRect(m_hwnd, nullptr, FALSE);
         return;
     }
@@ -4471,6 +4485,20 @@ Window::ProjectDecision Window::DetectFramework(const std::wstring& rootDir, con
     decision.rootDir = rootDir;
     decision.framework = ProjectFramework::None;
 
+    {
+        phide::plugin::PluginFrameworkDetector customFw;
+        std::wstring customMarkerPath;
+        if (phide::plugin::PluginManager::Instance().TryDetectFramework(rootDir, activeFilePath, customFw, customMarkerPath)) {
+            decision.framework = (customFw.port > 0) ? ProjectFramework::Vite : ProjectFramework::PythonScript;
+            decision.title = customFw.title.empty() ? customFw.id : customFw.title;
+            decision.command = customFw.command;
+            decision.port = customFw.port;
+            decision.customUrl = customFw.customUrl;
+            decision.markerPath = customMarkerPath;
+            return decision;
+        }
+    }
+
     std::error_code ec;
     std::filesystem::path root(rootDir);
 
@@ -5977,6 +6005,7 @@ void Window::LoadFileFromPath(const std::wstring& path) {
 void Window::SaveFileToPath(const std::wstring& path) {
     auto* pDoc = GetActiveDoc();
     if (pDoc) {
+        phide::plugin::PluginManager::Instance().DispatchEvent(L"onDocumentWillSave", path);
         if (pDoc->isSpecialView && pDoc->viewType == L"notebook" && pDoc->notebookDoc) {
             if (pDoc->notebookDoc->SaveToFile(path)) {
                 pDoc->filePath = path;
@@ -6028,6 +6057,7 @@ void Window::SaveFileToPath(const std::wstring& path) {
             pDoc->isDirty = false;
             pDoc->originalDiskText = pDoc->buffer.GetText();
             pDoc->isPreview = false;
+            phide::plugin::PluginManager::Instance().DispatchEvent(L"onDocumentSave", path);
             if (m_drawer.IsGitRepo()) {
                 std::wstring relPath = path;
                 if (m_drawer.HasOpenFolder()) {
@@ -6892,6 +6922,100 @@ bool Window::Create(HINSTANCE hInstance, int nCmdShow) {
 
     // Restore saved IDE session state (open folder, expanded tree dirs, open file, sidebar open/close state)
     LoadSessionState();
+
+    // Initialize full Extensibility, Plugin & Modding Engine (Native C-ABI DLLs + JSON Manifests + Script Runners)
+    {
+        phide::plugin::HostCallbacks hostCb;
+        hostCb.getActiveDocumentText = [this]() -> std::wstring {
+            auto* pDoc = GetActiveDoc();
+            return (pDoc && !pDoc->isSpecialView) ? pDoc->buffer.GetText() : L"";
+        };
+        hostCb.setActiveDocumentText = [this](const std::wstring& newText) -> bool {
+            auto* pDoc = GetActiveDoc();
+            if (pDoc && !pDoc->isSpecialView) {
+                pDoc->buffer.PushUndo();
+                pDoc->buffer.SetText(newText);
+                MarkDocumentModified(pDoc);
+                if (m_hwnd) InvalidateRect(m_hwnd, nullptr, FALSE);
+                return true;
+            }
+            return false;
+        };
+        hostCb.insertTextAtCursor = [this](const std::wstring& text) -> bool {
+            auto* pDoc = GetActiveDoc();
+            if (pDoc && !pDoc->isSpecialView) {
+                pDoc->buffer.PushUndo();
+                pDoc->buffer.InsertText(text);
+                MarkDocumentModified(pDoc);
+                if (m_hwnd) InvalidateRect(m_hwnd, nullptr, FALSE);
+                return true;
+            }
+            return false;
+        };
+        hostCb.getCursorPosition = [this](size_t& outLine, size_t& outCol) -> bool {
+            auto* pDoc = GetActiveDoc();
+            if (pDoc && !pDoc->isSpecialView) {
+                auto pos = pDoc->buffer.GetCursor();
+                outLine = pos.line;
+                outCol = pos.col;
+                return true;
+            }
+            return false;
+        };
+        hostCb.setCursorPosition = [this](size_t line, size_t col) -> bool {
+            auto* pDoc = GetActiveDoc();
+            if (pDoc && !pDoc->isSpecialView) {
+                pDoc->buffer.SetCursor(line, col);
+                EnsureCursorVisible();
+                if (m_hwnd) InvalidateRect(m_hwnd, nullptr, FALSE);
+                return true;
+            }
+            return false;
+        };
+        hostCb.getActiveFilePath = [this]() -> std::wstring {
+            auto* pDoc = GetActiveDoc();
+            return pDoc ? pDoc->filePath : L"";
+        };
+        hostCb.getWorkspaceRoot = [this]() -> std::wstring {
+            return m_drawer.HasOpenFolder() ? m_drawer.GetOpenFolderPath() : L"";
+        };
+        hostCb.openFile = [this](const std::wstring& filePath) -> bool {
+            if (!filePath.empty()) {
+                OpenFileDocument(filePath, false);
+                return true;
+            }
+            return false;
+        };
+        hostCb.runTerminalCommand = [this](const std::wstring& command) -> bool {
+            if (!m_terminal.IsOpen()) {
+                DoCreateTerminal();
+            }
+            m_terminal.ExecuteCommandLine(command);
+            if (m_hwnd) InvalidateRect(m_hwnd, nullptr, FALSE);
+            return true;
+        };
+        hostCb.showNotification = [this](const std::wstring& message) {
+            MessageBoxW(m_hwnd, message.c_str(), L"Phide Extension", MB_OK | MB_ICONINFORMATION);
+        };
+        hostCb.executeBuiltinCommand = [this](const std::wstring& cmdId) {
+            if (cmdId == L"cmd_reload_plugins") {
+                m_theme.SetThemeMode(m_theme.GetThemeMode());
+                if (m_hwnd) InvalidateRect(m_hwnd, nullptr, FALSE);
+            } else {
+                ExecuteQuickOpenAction(cmdId);
+            }
+        };
+
+        auto& pm = phide::plugin::PluginManager::Instance();
+        pm.SetHostCallbacks(hostCb);
+        pm.Initialize();
+        if (m_drawer.HasOpenFolder()) {
+            pm.LoadWorkspacePlugins(m_drawer.GetOpenFolderPath());
+        }
+        pm.ApplyAppConfigMods(m_config);
+        m_theme.SetThemeMode(m_theme.GetThemeMode());
+        pm.DispatchEvent(L"onStartup", m_drawer.HasOpenFolder() ? m_drawer.GetOpenFolderPath() : L"");
+    }
 
     // Trigger Source Control to load immediately in background on app startup (User requirement: no stuck spinning animation)
     m_rail.SetGitLoading(false);
@@ -8131,8 +8255,8 @@ void Window::RenderStatusBar(float clientW, float clientH) {
     UpdateCachedGitInfo();
     m_rcStatusBarGitBranch = {};
     m_rcStatusBarGitUser = {};
+    float curLeftX = m_config.ScaleF(32.0f);
     if (!m_cachedGitBranch.empty()) {
-        float curLeftX = m_config.ScaleF(32.0f);
         const float branchIconSize = m_config.ScaleF(16.0f);
         const float userIconSize = m_config.ScaleF(15.0f);
         const float branchIconYPos = barY + (statusBarH - branchIconSize) * 0.5f;
@@ -8285,10 +8409,34 @@ void Window::RenderStatusBar(float clientW, float clientH) {
     // Right items:
     // User requirement Image 2: "REMOVE THIS BELL ICON" -> Bell icon completely removed!
     float curRightX = clientW - m_config.ScaleF(10.0f);
+    const float rightPillPadX = m_config.ScaleF(8.0f);
+    const float rightPillGap = m_config.ScaleF(8.0f);
+
+    auto measureStatusPillWidth = [&](const std::wstring& str, float minWidth) -> float {
+        float measured = minWidth;
+        if (pFmt && m_theme.dwriteFactory && !str.empty()) {
+            Microsoft::WRL::ComPtr<IDWriteTextLayout> pLayout;
+            m_theme.dwriteFactory->CreateTextLayout(
+                str.c_str(),
+                static_cast<UINT32>(str.length()),
+                pFmt,
+                1000.0f,
+                itemH,
+                &pLayout
+            );
+            if (pLayout) {
+                DWRITE_TEXT_METRICS tm{};
+                if (SUCCEEDED(pLayout->GetMetrics(&tm))) {
+                    measured = (std::max)(minWidth, tm.widthIncludingTrailingWhitespace + rightPillPadX * 2.0f);
+                }
+            }
+        }
+        return measured;
+    };
 
     // UTF-8 & CRLF
     std::wstring encStr = L"UTF-8   CRLF";
-    float encW = m_config.ScaleF(80.0f);
+    float encW = measureStatusPillWidth(encStr, m_config.ScaleF(88.0f));
     curRightX -= encW;
     m_rcStatusBarEncoding = D2D1::RectF(curRightX, itemY, curRightX + encW, itemY + itemH);
     if (m_isHoveredStatusBarEncoding) {
@@ -8303,11 +8451,12 @@ void Window::RenderStatusBar(float clientW, float clientH) {
     if (pFmt && textBrush) {
         m_pRenderTarget->DrawText(encStr.c_str(), static_cast<UINT32>(encStr.length()), pFmt, m_rcStatusBarEncoding, textBrush);
     }
-    curRightX -= m_config.ScaleF(12.0f);
+    curRightX -= rightPillGap;
 
     // Indentation
-    std::wstring indStr = L"Spaces: 4";
-    float indW = m_config.ScaleF(56.0f);
+    int indentSize = (m_config.tabSize > 0) ? m_config.tabSize : 4;
+    std::wstring indStr = (m_config.insertSpaces ? L"Spaces: " : L"Tab Size: ") + std::to_wstring(indentSize);
+    float indW = measureStatusPillWidth(indStr, m_config.ScaleF(68.0f));
     curRightX -= indW;
     m_rcStatusBarSpaces = D2D1::RectF(curRightX, itemY, curRightX + indW, itemY + itemH);
     if (m_isHoveredStatusBarSpaces) {
@@ -8322,14 +8471,14 @@ void Window::RenderStatusBar(float clientW, float clientH) {
     if (pFmt && textBrush) {
         m_pRenderTarget->DrawText(indStr.c_str(), static_cast<UINT32>(indStr.length()), pFmt, m_rcStatusBarSpaces, textBrush);
     }
-    curRightX -= m_config.ScaleF(12.0f);
+    curRightX -= rightPillGap;
 
     // Ln, Col
     auto* curDoc = GetActiveDoc();
     size_t curLine = curDoc ? (curDoc->buffer.GetCursor().line + 1) : 1;
     size_t curCol = curDoc ? (curDoc->buffer.GetCursor().col + 1) : 1;
     std::wstring lnColStr = L"Ln " + std::to_wstring(curLine) + L", Col " + std::to_wstring(curCol);
-    float lnColW = m_config.ScaleF(74.0f);
+    float lnColW = measureStatusPillWidth(lnColStr, m_config.ScaleF(86.0f));
     curRightX -= lnColW;
     m_rcStatusBarLnCol = D2D1::RectF(curRightX, itemY, curRightX + lnColW, itemY + itemH);
     if (m_isHoveredStatusBarLnCol) {
@@ -8344,7 +8493,7 @@ void Window::RenderStatusBar(float clientW, float clientH) {
     if (pFmt && textBrush) {
         m_pRenderTarget->DrawText(lnColStr.c_str(), static_cast<UINT32>(lnColStr.length()), pFmt, m_rcStatusBarLnCol, textBrush);
     }
-    curRightX -= m_config.ScaleF(14.0f);
+    curRightX -= rightPillGap;
 
     // Dynamic Language Runtime Tag (PHP, Python, Node.js)
     std::wstring runtimeId = L"php";
@@ -8482,8 +8631,41 @@ void Window::RenderStatusBar(float clientW, float clientH) {
         }
     }
 
+    // Plugin & Extension Status Bar Items (left-aligned and right-aligned contributions)
+    auto& pluginStatusItems = phide::plugin::PluginManager::Instance().GetStatusBarItemsMutable();
+    const phide::plugin::PluginStatusBarItem* hoveredPluginItem = nullptr;
+    for (auto& pItem : pluginStatusItems) {
+        if (pItem.text.empty()) {
+            pItem.bounds = {};
+            continue;
+        }
+        float pItemW = measureStatusPillWidth(pItem.text, m_config.ScaleF(42.0f));
+        if (pItem.alignRight) {
+            curRightX -= (pItemW + rightPillGap);
+            pItem.bounds = D2D1::RectF(curRightX, itemY, curRightX + pItemW, itemY + itemH);
+        } else {
+            pItem.bounds = D2D1::RectF(curLeftX, itemY, curLeftX + pItemW, itemY + itemH);
+            curLeftX += pItemW + rightPillGap;
+        }
+        if (pItem.isHovered) {
+            hoveredPluginItem = &pItem;
+            D2D1_ROUNDED_RECT rrc = D2D1::RoundedRect(pItem.bounds, m_config.ScaleF(3.5f), m_config.ScaleF(3.5f));
+            Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> hoverBg;
+            m_pRenderTarget->CreateSolidColorBrush(
+                m_theme.IsDarkMode() ? D2D1::ColorF(0.20f, 0.22f, 0.26f, 0.90f) : D2D1::ColorF(0.88f, 0.90f, 0.94f, 0.90f),
+                &hoverBg
+            );
+            if (hoverBg) m_pRenderTarget->FillRoundedRectangle(rrc, hoverBg.Get());
+        }
+        if (pFmt && textBrush) {
+            m_pRenderTarget->DrawText(pItem.text.c_str(), static_cast<UINT32>(pItem.text.length()), pFmt, pItem.bounds, textBrush);
+        }
+    }
+
     // 4. Floating Tooltips on Hover (User requirement Image 1: "THERE SHOULD BE TOOLN TIP HWEN HOVERED")
-    if (m_isHoveredStatusBarGraphView) {
+    if (hoveredPluginItem && !hoveredPluginItem->tooltip.empty()) {
+        RenderFloatingTooltip(m_pRenderTarget.Get(), hoveredPluginItem->tooltip, hoveredPluginItem->bounds, clientW);
+    } else if (m_isHoveredStatusBarGraphView) {
         std::wstring tip = L"File Network: " + std::to_wstring(m_editor.GetGraphView().GetNodeCount()) + L" files, " +
                            std::to_wstring(m_editor.GetGraphView().GetEdgeCount()) + L" connections (" +
                            (m_config.isGraphColored ? L"Colored - Click to switch to Monochrome" : L"Monochrome - Click to switch to Colored") + L")";
@@ -8505,7 +8687,8 @@ void Window::RenderStatusBar(float clientW, float clientH) {
         std::wstring tip = L"Line " + std::to_wstring(curLine) + L", Column " + std::to_wstring(curCol);
         RenderFloatingTooltip(m_pRenderTarget.Get(), tip, m_rcStatusBarLnCol, clientW);
     } else if (m_isHoveredStatusBarSpaces) {
-        RenderFloatingTooltip(m_pRenderTarget.Get(), L"Indentation: 4 Spaces", m_rcStatusBarSpaces, clientW);
+        std::wstring indentTip = L"Indentation: " + std::to_wstring(indentSize) + (m_config.insertSpaces ? L" Spaces" : L" Tab Size");
+        RenderFloatingTooltip(m_pRenderTarget.Get(), indentTip, m_rcStatusBarSpaces, clientW);
     } else if (m_isHoveredStatusBarEncoding) {
         RenderFloatingTooltip(m_pRenderTarget.Get(), L"Encoding: UTF-8, End of Line: CRLF", m_rcStatusBarEncoding, clientW);
     }
@@ -9447,6 +9630,16 @@ void Window::HandleMouseMove(POINT clientPt, WPARAM wParam) {
         if (inEnc != m_isHoveredStatusBarEncoding) {
             m_isHoveredStatusBarEncoding = inEnc;
             needRepaint = true;
+        }
+
+        auto& pluginStatusItems = phide::plugin::PluginManager::Instance().GetStatusBarItemsMutable();
+        for (auto& pItem : pluginStatusItems) {
+            bool inPluginItem = (clientPt.x >= pItem.bounds.left && clientPt.x <= pItem.bounds.right &&
+                                 clientPt.y >= pItem.bounds.top && clientPt.y <= pItem.bounds.bottom);
+            if (inPluginItem != pItem.isHovered) {
+                pItem.isHovered = inPluginItem;
+                needRepaint = true;
+            }
         }
     }
 
@@ -11650,6 +11843,19 @@ void Window::HandleLButtonDown(POINT clientPt) {
         m_drawer.RefreshGitStatusOnly(true);
         InvalidateRect(m_hwnd, nullptr, FALSE);
         return;
+    }
+
+    if (m_config.showStatusBar) {
+        const auto& pluginStatusItems = phide::plugin::PluginManager::Instance().GetStatusBarItemsMutable();
+        for (const auto& pItem : pluginStatusItems) {
+            if (!pItem.commandId.empty() &&
+                clientPt.x >= pItem.bounds.left && clientPt.x <= pItem.bounds.right &&
+                clientPt.y >= pItem.bounds.top && clientPt.y <= pItem.bounds.bottom) {
+                ExecuteQuickOpenAction(pItem.commandId);
+                InvalidateRect(m_hwnd, nullptr, FALSE);
+                return;
+            }
+        }
     }
 
     // 7. Activity Rail Clicks (Files, Search, Git, Debug, Packages)
@@ -14218,6 +14424,19 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 return 0;
             }
 
+            // Custom Plugin / Extension / Mod Keyboard Shortcuts
+            if (wParam != VK_CONTROL && wParam != VK_SHIFT && wParam != VK_MENU) {
+                bool ctrlDown = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
+                bool shiftDown = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
+                bool altDown = (GetKeyState(VK_MENU) & 0x8000) != 0;
+                if ((ctrlDown || altDown || (wParam >= VK_F1 && wParam <= VK_F12)) &&
+                    phide::plugin::PluginManager::Instance().TryHandleKeyBinding(static_cast<UINT>(wParam), ctrlDown, shiftDown, altDown)) {
+                    m_suppressNextChar = true;
+                    InvalidateRect(m_hwnd, nullptr, FALSE);
+                    return 0;
+                }
+            }
+
             if (pDoc && !pDoc->isSpecialView) {
                 if (pDoc->isDiffView && (pDoc->diffActivePane == 0 || pDoc->isDiffRightReadOnly)) {
                     // Left side is READ-ONLY: allow arrow navigation only!
@@ -14994,6 +15213,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
         }
 
         case WM_DESTROY: {
+            phide::plugin::PluginManager::Instance().DispatchEvent(L"onShutdown");
             StopWorkspaceWatcher();
             m_explorerUndo.CleanupTrash();
             UpdateDrawerErrorFiles();

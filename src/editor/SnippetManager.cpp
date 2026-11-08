@@ -1,4 +1,5 @@
 #include "phide/editor/SnippetManager.hpp"
+#include "phide/plugin/PluginManager.hpp"
 #include <fstream>
 #include <sstream>
 #include <algorithm>
@@ -2240,6 +2241,14 @@ bool SnippetManager::MatchesScope(const std::wstring& scope, const std::wstring&
 }
 
 const Snippet* SnippetManager::FindSnippetByPrefix(const std::wstring& prefix, const std::wstring& fileExt) const {
+    static thread_local Snippet s_pluginMatchedSnippet;
+    auto pluginSnips = phide::plugin::PluginManager::Instance().GetContributedSnippets();
+    for (const auto& sn : pluginSnips) {
+        if (sn.prefix == prefix && MatchesScope(sn.scope, fileExt)) {
+            s_pluginMatchedSnippet = sn;
+            return &s_pluginMatchedSnippet;
+        }
+    }
     for (const auto& sn : m_snippets) {
         if (sn.prefix == prefix && MatchesScope(sn.scope, fileExt)) {
             return &sn;

@@ -5,6 +5,7 @@
  */
 
 #include "phide/editor/FormatEngine.hpp"
+#include "phide/plugin/PluginManager.hpp"
 #include <windows.h>
 #include <filesystem>
 #include <sstream>
@@ -467,7 +468,8 @@ bool FormatEngine::CanFormat(const std::wstring& ext) {
             lower == L".json" || lower == L".jsonc"|| lower == L".json5"||
             lower == L".yaml" || lower == L".yml"  || lower == L".md"   || lower == L".markdown" ||
             lower == L".graphql" || lower == L".gql" ||
-            lower == L".php"  || lower == L".phtml" || lower == L".php8");
+            lower == L".php"  || lower == L".phtml" || lower == L".php8" ||
+            phide::plugin::PluginManager::Instance().CanFormat(lower));
 }
 
 std::wstring FormatEngine::FormatDocument(const std::wstring& src, const std::wstring& ext, int tabSize) {
@@ -475,6 +477,12 @@ std::wstring FormatEngine::FormatDocument(const std::wstring& src, const std::ws
 
     std::wstring lower = ext;
     for (auto& c : lower) c = static_cast<wchar_t>(towlower(c));
+
+    // 0. Try any registered plugin/extension/mod formatter first
+    std::wstring pluginFormatted;
+    if (phide::plugin::PluginManager::Instance().TryFormat(src, lower, tabSize, pluginFormatted) && !pluginFormatted.empty()) {
+        return pluginFormatted;
+    }
 
     // 1. Try Prettier via bundled phide.prettier extension or system Prettier
     std::wstring formatted;

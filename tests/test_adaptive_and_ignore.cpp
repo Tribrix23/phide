@@ -8,6 +8,9 @@
 #include "phide/editor/AdaptiveCodeEngine.hpp"
 #include "phide/editor/PredictionEngine.hpp"
 #include "phide/editor/Buffer.hpp"
+#include "phide/plugin/PluginManager.hpp"
+#include "phide/editor/SyntaxValidator.hpp"
+#include "phide/ui/Theme.hpp"
 
 using namespace phide::workspace;
 using namespace phide::editor;
@@ -420,6 +423,154 @@ void TestTodoCheckboxToggle() {
     std::cout << "  -> ALL Interactive TODO Checkbox Toggle Tests Passed Successfully!\n";
 }
 
+void TestPluginExtensionModEngine() {
+    std::cout << "[TEST] Running Plugin, Extension & Modding Engine Tests...\n";
+    auto& pm = phide::plugin::PluginManager::Instance();
+    pm.Initialize();
+
+    std::wstring sampleManifest = LR"JSON({
+        "id": "com.example.supermod",
+        "name": "Super Mod & Extension",
+        "version": "2.1.0",
+        "author": "Phide Modder",
+        "description": "Full IDE mod testing themes, config, syntax, completions, snippets, linters, commands, and status bar",
+        "theme": {
+            "mode": -1,
+            "colors": {
+                "accentPrimary": "#FF5500",
+                "syntaxKeyword": "#00FFAA"
+            }
+        },
+        "config": {
+            "tabSize": 2,
+            "railWidth": 52
+        },
+        "languages": [
+            {
+                "extension": "rust",
+                "baseLanguage": ".cpp",
+                "keywords": "fn,let,mut,impl,trait,pub,match",
+                "types": "u8,u16,u32,u64,usize,String,Vec,Option,Result"
+            }
+        ],
+        "completions": [
+            {
+                "language": "py",
+                "label": "super_mod_helper",
+                "insertText": "super_mod_helper($1)",
+                "detail": "SuperMod Python Helper",
+                "documentation": "Injected by SuperMod plugin",
+                "kind": 2,
+                "priorityBonus": 150
+            }
+        ],
+        "snippets": [
+            {
+                "scope": "py",
+                "prefix": "smod",
+                "name": "SuperMod Snippet",
+                "description": "Expands SuperMod boilerplate",
+                "body": "def super_mod():\n    return True"
+            }
+        ],
+        "linters": [
+            {
+                "language": "py",
+                "pattern": "FIXME_NOW",
+                "message": "SuperMod Linter: Urgent FIXME_NOW detected",
+                "severity": 1
+            }
+        ],
+        "commands": [
+            {
+                "id": "supermod.sayHello",
+                "title": "SuperMod: Insert Greeting",
+                "category": "SuperMod",
+                "keybinding": "Ctrl+Shift+H"
+            }
+        ],
+        "statusBar": [
+            {
+                "id": "supermod.status",
+                "text": "SuperMod Active",
+                "tooltip": "SuperMod v2.1.0 is running",
+                "command": "supermod.sayHello",
+                "alignment": "right"
+            }
+        ]
+    })JSON";
+
+    bool loaded = pm.LoadPluginFromJsonString(sampleManifest, L"C:\\mods\\supermod");
+    assert(loaded);
+
+    // 1. Verify Theme Color Modding
+    phide::ui::ThemeColors colors{};
+    pm.ApplyThemeOverrides(colors, 0);
+    assert(colors.brandAccent.r > 0.9f && colors.brandAccent.b < 0.1f);
+    assert(colors.syntaxKeyword.g > 0.9f);
+    std::cout << "  -> PASS: Theme color overrides applied.\n";
+
+    // 2. Verify AppConfig Modding
+    phide::app::AppConfig cfg{};
+    pm.ApplyAppConfigMods(cfg);
+    assert(cfg.tabSize == 2);
+    assert(cfg.railWidth == 52);
+    std::cout << "  -> PASS: AppConfig layout & editor geometry mods applied.\n";
+
+    // 3. Verify Custom Language Alias & Keywords/Types in SyntaxLexer
+    assert(pm.ResolveLanguageAlias(L".rust") == L".cpp");
+    assert(pm.IsCustomKeyword(L".rust", L"impl"));
+    assert(pm.IsCustomType(L".rust", L"usize"));
+    SyntaxLexer lexer;
+    std::wstring rustLine = L"pub fn main() -> usize";
+    auto tokens = lexer.TokenizeLine(rustLine, L".rust");
+    bool foundKeyword = false, foundType = false;
+    for (const auto& t : tokens) {
+        std::wstring tokText = rustLine.substr(t.startCol, t.length);
+        if (t.type == TokenType::Keyword && (tokText == L"pub" || tokText == L"fn")) foundKeyword = true;
+        if (t.type == TokenType::Type && tokText == L"usize") foundType = true;
+    }
+    assert(foundKeyword && foundType);
+    std::cout << "  -> PASS: Custom language alias, keywords, and types tokenized in SyntaxLexer.\n";
+
+    // 4. Verify IntelliSense Completions & Snippets
+    auto comps = pm.QueryCompletions(L"py", L"test.py", L"super_", 6, L"super_");
+    assert(!comps.empty() && comps[0].label == L"super_mod_helper");
+    const auto& snips = pm.GetContributedSnippets();
+    bool foundSnip = false;
+    for (const auto& s : snips) {
+        if (s.prefix == L"smod") foundSnip = true;
+    }
+    assert(foundSnip);
+    std::cout << "  -> PASS: Plugin IntelliSense completions and snippets verified.\n";
+
+    // 5. Verify Regex Linter Diagnostics via SyntaxValidator
+    Buffer pyBuf(L"x = 10\n# FIXME_NOW: critical section\n");
+    auto diags = SyntaxValidator::Validate(L"test.py", pyBuf);
+    bool foundCustomDiag = false;
+    for (const auto& d : diags) {
+        if (d.message.find(L"Urgent FIXME_NOW") != std::wstring::npos) {
+            foundCustomDiag = true;
+            break;
+        }
+    }
+    assert(foundCustomDiag);
+    std::cout << "  -> PASS: Custom regex linter diagnostic surfaced through SyntaxValidator.\n";
+
+    // 6. Verify Commands & Status Bar Items
+    bool cmdExecuted = false;
+    phide::plugin::PluginCommand customCmd;
+    customCmd.id = L"supermod.customCb";
+    customCmd.title = L"SuperMod Callback";
+    customCmd.shortcut = L"Ctrl+Alt+M";
+    customCmd.cppCallback = [&]() { cmdExecuted = true; };
+    pm.RegisterCommand(customCmd);
+    assert(pm.ExecuteCommand(L"supermod.customCb"));
+    assert(cmdExecuted);
+    assert(!pm.GetStatusBarItemsMutable().empty());
+    std::cout << "  -> PASS: Custom commands, keybindings, and status bar items verified!\n";
+}
+
 int main() {
     std::cout << "========================================================\n";
     std::cout << "  Running Phide Multi-Ignore & Adaptive Engine Tests   \n";
@@ -434,6 +585,8 @@ int main() {
     TestSeriesProgressionPrediction();
     std::cout << "--------------------------------------------------------\n";
     TestTodoCheckboxToggle();
+    std::cout << "--------------------------------------------------------\n";
+    TestPluginExtensionModEngine();
     std::cout << "========================================================\n";
     std::cout << "  ALL VERIFICATION TESTS COMPLETED SUCCESSFULLY!        \n";
     std::cout << "========================================================\n";

@@ -4,6 +4,7 @@
  */
 
 #include "phide/ui/KeyboardShortcutsView.hpp"
+#include "phide/plugin/PluginManager.hpp"
 #include <algorithm>
 
 namespace phide::ui {
@@ -114,6 +115,13 @@ void KeyboardShortcutsView::InitializeShortcuts() {
         { L"Terminal: Split Active Terminal (Alternative)", { L"Ctrl", L"Shift", L"\\" }, L"terminalFocus", L"Default" },
         { L"Window: Close Window", { L"Alt", L"F4" }, L"global", L"Default" },
     };
+
+    // Append plugin/extension/mod keybindings
+    for (const auto& pCmd : phide::plugin::PluginManager::Instance().GetCommands()) {
+        if (!pCmd.keyTokens.empty()) {
+            m_shortcuts.push_back({ pCmd.title, pCmd.keyTokens, pCmd.when.empty() ? L"global" : pCmd.when, L"Extension" });
+        }
+    }
 }
 
 std::vector<size_t> KeyboardShortcutsView::GetFilteredIndices() const {

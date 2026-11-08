@@ -5,6 +5,7 @@
 
 #include "phide/editor/Buffer.hpp"
 #include "phide/editor/EmmetEngine.hpp"
+#include "phide/plugin/PluginManager.hpp"
 #include <windows.h>
 #include <cwctype>
 #include <algorithm>
@@ -350,7 +351,7 @@ static std::vector<SyntaxToken> TokenizeSqlLine(const std::wstring& line) {
 }
 
 std::vector<SyntaxToken> SyntaxLexer::TokenizeLine(const std::wstring& line, const std::wstring& ext) const {
-    std::wstring lowerExt = ext;
+    std::wstring lowerExt = phide::plugin::PluginManager::Instance().ResolveLanguageAlias(ext);
     for (auto& c : lowerExt) c = towlower(c);
 
     if (lowerExt == L".css" || lowerExt == L".scss" || lowerExt == L".less" ||
@@ -556,9 +557,9 @@ std::vector<SyntaxToken> SyntaxLexer::TokenizeLine(const std::wstring& line, con
             }
             if (!hasAlpha) isAllCaps = false;
 
-            if (m_keywords.find(word) != m_keywords.end()) {
+            if (m_keywords.find(word) != m_keywords.end() || phide::plugin::PluginManager::Instance().IsCustomKeyword(ext, word) || phide::plugin::PluginManager::Instance().IsCustomKeyword(lowerExt, word)) {
                 tokens.push_back({ TokenType::Keyword, start, i - start });
-            } else if (m_types.find(word) != m_types.end() || isScopeClass) {
+            } else if (m_types.find(word) != m_types.end() || isScopeClass || phide::plugin::PluginManager::Instance().IsCustomType(ext, word) || phide::plugin::PluginManager::Instance().IsCustomType(lowerExt, word)) {
                 tokens.push_back({ TokenType::Type, start, i - start });
             } else if (isAllCaps) {
                 tokens.push_back({ TokenType::Tag, start, i - start });
