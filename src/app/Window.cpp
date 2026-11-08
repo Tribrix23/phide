@@ -11329,7 +11329,8 @@ void Window::HandleLButtonDown(POINT clientPt) {
                 } else if (doc.isSpecialView && doc.viewType == L"interactive_guide") {
                     m_drawer.SetSearchFocus(0);
                     m_explorerHasFocus = false;
-                    if (m_editor.GetInteractiveGuideView().HandleLButtonDown(clientPt)) {
+                    bool altPressed = (GetKeyState(VK_MENU) & 0x8000) != 0;
+                    if (m_editor.GetInteractiveGuideView().HandleLButtonDown(clientPt, altPressed)) {
                         InvalidateRect(m_hwnd, nullptr, FALSE);
                         return;
                     }
@@ -12069,6 +12070,12 @@ void Window::HandleLButtonUp(POINT clientPt) {
     }
     if (pActiveDoc && pActiveDoc->isSpecialView && pActiveDoc->viewType == L"api") {
         if (m_editor.GetApiTesterView().HandleLButtonUp(clientPt)) {
+            InvalidateRect(m_hwnd, nullptr, FALSE);
+            return;
+        }
+    }
+    if (pActiveDoc && pActiveDoc->isSpecialView && pActiveDoc->viewType == L"interactive_guide") {
+        if (m_editor.GetInteractiveGuideView().HandleLButtonUp(clientPt)) {
             InvalidateRect(m_hwnd, nullptr, FALSE);
             return;
         }
@@ -13401,6 +13408,11 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                         InvalidateRect(m_hwnd, nullptr, FALSE);
                         return 0;
                     }
+                } else if (pDoc->isSpecialView && pDoc->viewType == L"interactive_guide") {
+                    if (m_editor.GetInteractiveGuideView().HandleChar(ch)) {
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
+                        return 0;
+                    }
                 } else if (pDoc->isSpecialView && pDoc->viewType == L"notebook") {
                     if (m_editor.GetNotebookView().HandleChar(ch, *pDoc, m_hwnd)) {
                         InvalidateRect(m_hwnd, nullptr, FALSE);
@@ -14272,6 +14284,14 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                         InvalidateRect(m_hwnd, nullptr, FALSE);
                         return 0;
                     }
+                } else if (pDoc->viewType == L"interactive_guide") {
+                    if (m_editor.GetInteractiveGuideView().HandleKeyDown(wParam)) {
+                        if (wParam == VK_RETURN || wParam == VK_TAB || (GetKeyState(VK_CONTROL) & 0x8000)) {
+                            m_suppressNextChar = true;
+                        }
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
+                        return 0;
+                    }
                 } else if (pDoc->viewType == L"notebook") {
                     if (m_editor.GetNotebookView().HandleKeyDown(wParam, *pDoc, m_hwnd)) {
                         InvalidateRect(m_hwnd, nullptr, FALSE);
@@ -15059,6 +15079,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
         case WM_TIMER: {
             if (wParam == m_caretTimerId) {
                 m_editor.ToggleCaretBlink();
+                m_editor.GetInteractiveGuideView().ToggleCaretBlink();
                 if (m_editor.GetNotebookView().IsExecuting()) {
                     SetTimer(m_hwnd, m_animTimerId, 16, nullptr);
                 }
