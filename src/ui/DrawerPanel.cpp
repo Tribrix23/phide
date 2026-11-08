@@ -6873,7 +6873,7 @@ bool DrawerPanel::HitTestGit(POINT pt, const app::AppConfig& config,
     outOpenUrl.clear();
 
     // 0. Check Commit Hover Card buttons first (Image 5)
-    if (m_hoveredCommitIdx >= 0 || m_selectedCommitIdx >= 0) {
+    if (m_hoveredCommitIdx >= 0) {
         if (pt.x >= m_commitCardCloseBounds.left && pt.x <= m_commitCardCloseBounds.right &&
             pt.y >= m_commitCardCloseBounds.top && pt.y <= m_commitCardCloseBounds.bottom) {
             DismissCommitCard();
@@ -7481,9 +7481,6 @@ bool DrawerPanel::HandleGitMouseMove(POINT pt, bool isLButtonDown, Theme* pTheme
             }
         } else if (inCard || inBridge) {
             // Keep card alive while hovering inside the card bounds or transitioning from drawer
-        } else if (m_selectedCommitIdx >= 0) {
-            // Keep card alive when a commit row was explicitly clicked/selected
-            m_hoveredCommitIdx = -1;
         } else {
             // Mouse is outside both commit rows and card: dismiss card
             m_hoveredCommitIdx = -1;
@@ -11165,7 +11162,7 @@ void DrawerPanel::RenderCommitCard(ID2D1RenderTarget* pRT, Theme& theme, const a
     // =========================================================================
     // 4.5 Floating Commit Details Card (Image 5)
     // =========================================================================
-    int cardCommitIdx = (m_selectedCommitIdx >= 0) ? m_selectedCommitIdx : m_hoveredCommitIdx;
+    int cardCommitIdx = m_hoveredCommitIdx;
     if (m_showGraphSection && cardCommitIdx >= 0 && cardCommitIdx < static_cast<int>(m_gitCommits.size())) {
         auto& ci = m_gitCommits[cardCommitIdx];
         m_commitCardHash = ci.hash;

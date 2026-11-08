@@ -427,14 +427,13 @@ public:
     [[nodiscard]] GitMenuType GetActiveGitMenu() const noexcept { return m_activeGitMenu; }
     void DismissCommitCard() noexcept {
         m_hoveredCommitIdx = -1;
-        m_selectedCommitIdx = -1;
         m_commitCardBounds = D2D1::RectF(0, 0, 0, 0);
         m_commitCardCloseBounds = D2D1::RectF(0, 0, 0, 0);
         m_commitCardOpenChangesBounds = D2D1::RectF(0, 0, 0, 0);
         m_commitCardGitHubBounds = D2D1::RectF(0, 0, 0, 0);
     }
     [[nodiscard]] bool IsCommitCardVisible() const noexcept {
-        return (m_hoveredCommitIdx >= 0 || m_selectedCommitIdx >= 0);
+        return (m_hoveredCommitIdx >= 0);
     }
     [[nodiscard]] const D2D1_RECT_F& GetCommitCardBounds() const noexcept { return m_commitCardBounds; }
     [[nodiscard]] bool HitTestCommitCard(POINT pt) const noexcept {

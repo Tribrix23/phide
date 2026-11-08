@@ -41,6 +41,12 @@ struct AppConfig {
     int activeRailTab = 0;      ///< Current active rail tab (Default: 0 = Files / Explorer matching Image 2).
     float gitSplitY   = 320.0f; ///< Vertical splitter position between Changes and Graph.
 
+    // --- Terminal Layout & State ---
+    int terminalDockPosition = 0;       ///< 0 = Bottom (Panel), 1 = Editor Area, 2 = Right Side
+    bool isTerminalOpen = false;        ///< True if terminal is open
+    float terminalHeight = 360.0f;      ///< Terminal height when docked at bottom
+    float terminalRightWidth = 480.0f;  ///< Terminal width when docked at right side
+
     // --- View and Appearance Settings ---
     bool showMinimap = true;            ///< True if code minimap is rendered on right of editor canvas.
     bool showBreadcrumbs = true;        ///< True if file breadcrumbs hierarchy is visible above editor.

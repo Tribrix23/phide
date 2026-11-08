@@ -519,6 +519,10 @@ void Window::SaveSessionState() {
     out << L"{\n";
     out << L"  \"isSidebarOpen\": " << (m_config.isDrawerOpen ? L"true" : L"false") << L",\n";
     out << L"  \"activeRailTab\": " << m_config.activeRailTab << L",\n";
+    out << L"  \"terminalDockPosition\": " << m_terminal.GetDockPosition() << L",\n";
+    out << L"  \"isTerminalOpen\": " << (m_terminal.IsOpen() ? L"true" : L"false") << L",\n";
+    out << L"  \"terminalHeight\": " << m_terminal.GetHeight() << L",\n";
+    out << L"  \"terminalRightWidth\": " << m_terminal.GetRightWidth() << L",\n";
     out << L"  \"gitSplitY\": " << m_drawer.GetGitSplitY() << L",\n";
     out << L"  \"gitSplitRatio\": " << m_drawer.GetGitSplitRatio() << L",\n";
     out << L"  \"themeMode\": " << static_cast<int>(m_theme.GetThemeMode()) << L",\n";
@@ -588,6 +592,10 @@ void Window::LoadSessionState() {
 
     bool isSidebarOpen = true;
     int activeRailTab = 0;
+    int savedTerminalDockPosition = 0;
+    bool savedIsTerminalOpen = false;
+    float savedTerminalHeight = 360.0f;
+    float savedTerminalRightWidth = 480.0f;
     float savedGitSplitY = 380.0f;
     float savedGitSplitRatio = 0.50f;
     int themeMode = 0;
@@ -610,6 +618,23 @@ void Window::LoadSessionState() {
             auto colon = line.find(L':');
             if (colon != std::wstring::npos) {
                 activeRailTab = _wtoi(line.substr(colon + 1).c_str());
+            }
+        } else if (line.find(L"\"terminalDockPosition\"") != std::wstring::npos) {
+            auto colon = line.find(L':');
+            if (colon != std::wstring::npos) {
+                savedTerminalDockPosition = _wtoi(line.substr(colon + 1).c_str());
+            }
+        } else if (line.find(L"\"isTerminalOpen\"") != std::wstring::npos) {
+            savedIsTerminalOpen = (line.find(L"true") != std::wstring::npos);
+        } else if (line.find(L"\"terminalHeight\"") != std::wstring::npos) {
+            auto colon = line.find(L':');
+            if (colon != std::wstring::npos) {
+                savedTerminalHeight = static_cast<float>(_wtof(line.substr(colon + 1).c_str()));
+            }
+        } else if (line.find(L"\"terminalRightWidth\"") != std::wstring::npos) {
+            auto colon = line.find(L':');
+            if (colon != std::wstring::npos) {
+                savedTerminalRightWidth = static_cast<float>(_wtof(line.substr(colon + 1).c_str()));
             }
         } else if (line.find(L"\"gitSplitY\"") != std::wstring::npos) {
             auto colon = line.find(L':');
@@ -817,6 +842,12 @@ void Window::LoadSessionState() {
                     OpenSpecialView(L"shortcuts", L"Keyboard Shortcuts");
                 } else if (vType == L"api") {
                     OpenSpecialView(L"api", L"API Tester");
+                } else if (vType == L"terminal") {
+                    m_terminal.SetDockPosition(1);
+                    std::wstring wsFolder = !lastOpenFolder.empty() ? lastOpenFolder : m_drawer.GetOpenFolderPath();
+                    m_terminal.Open(wsFolder);
+                    m_terminal.SetIsOpen(true);
+                    OpenSpecialView(L"terminal", L"Terminal");
                 }
             } else if (!p.empty() && std::filesystem::exists(p, ec)) {
                 OpenFileDocument(p, false);
@@ -838,6 +869,40 @@ void Window::LoadSessionState() {
     m_drawerAnimProgress   = isSidebarOpen ? 1.0f : 0.0f;
     m_targetDrawerProgress = m_drawerAnimProgress;
     m_isDrawerAnimating    = false;
+
+    // Restore terminal dock position, size, and open state
+    if (savedTerminalDockPosition >= 0 && savedTerminalDockPosition <= 2) {
+        m_terminal.SetDockPosition(savedTerminalDockPosition);
+        m_config.terminalDockPosition = savedTerminalDockPosition;
+    }
+    if (savedTerminalHeight >= 50.0f) {
+        m_terminal.SetHeight(savedTerminalHeight);
+        m_config.terminalHeight = savedTerminalHeight;
+    }
+    if (savedTerminalRightWidth >= 100.0f) {
+        m_terminal.SetRightWidth(savedTerminalRightWidth);
+        m_config.terminalRightWidth = savedTerminalRightWidth;
+    }
+    m_config.isTerminalOpen = savedIsTerminalOpen;
+
+    if (!isNewWindowClean && savedIsTerminalOpen) {
+        std::wstring wsFolder = !lastOpenFolder.empty() ? lastOpenFolder : m_drawer.GetOpenFolderPath();
+        if (savedTerminalDockPosition == 2) {
+            // Right Side
+            m_terminal.Open(wsFolder);
+            m_terminal.SetIsOpen(true);
+            m_targetTerminalProgress = 0.0f;
+            m_terminalAnimProgress = 0.0f;
+            m_isTerminalAnimating = false;
+        } else if (savedTerminalDockPosition == 0) {
+            // Bottom Panel
+            m_terminal.Open(wsFolder);
+            m_terminal.SetIsOpen(true);
+            m_targetTerminalProgress = 1.0f;
+            m_terminalAnimProgress = 1.0f;
+            m_isTerminalAnimating = false;
+        }
+    }
 }
 
 void Window::ToggleSidebar() {
@@ -3617,6 +3682,7 @@ void Window::DoCreateTerminal() {
         OpenSpecialView(L"terminal", L"Terminal");
         m_terminal.Open(dir);
         m_isTerminalFocused = true;
+        SaveSessionState();
         InvalidateRect(m_hwnd, nullptr, FALSE);
         return;
     }
@@ -3629,6 +3695,7 @@ void Window::DoCreateTerminal() {
             m_terminal.SetIsOpen(false);
             m_isTerminalFocused = false;
         }
+        SaveSessionState();
         InvalidateRect(m_hwnd, nullptr, FALSE);
         return;
     }
@@ -3640,6 +3707,7 @@ void Window::DoCreateTerminal() {
         m_isTerminalFocused = false;
         AnimateTerminalClose();
     }
+    SaveSessionState();
     InvalidateRect(m_hwnd, nullptr, FALSE);
 }
 
@@ -6446,7 +6514,14 @@ bool Window::Create(HINSTANCE hInstance, int nCmdShow) {
     // Animate terminal close when '-' minimize button is clicked in integrated terminal
     m_terminal.SetOnMinimize([this]() {
         m_isTerminalFocused = false;
-        AnimateTerminalClose();
+        if (m_terminal.GetDockPosition() == 2) {
+            m_terminal.SetIsOpen(false);
+            SaveSessionState();
+            InvalidateRect(m_hwnd, nullptr, FALSE);
+        } else {
+            AnimateTerminalClose();
+            SaveSessionState();
+        }
     });
 
     m_terminal.SetOnOpenSettings([this]() {
@@ -6504,6 +6579,8 @@ bool Window::Create(HINSTANCE hInstance, int nCmdShow) {
             m_terminal.SetIsOpen(true);
             m_isTerminalFocused = true;
         }
+        m_config.terminalDockPosition = pos;
+        SaveSessionState();
         InvalidateRect(m_hwnd, nullptr, FALSE);
     });
 
@@ -9315,6 +9392,10 @@ void Window::HandleMouseMove(POINT clientPt, WPARAM wParam) {
         }
     } else if (m_drawerAnimProgress > 0.001f) {
         if (m_drawer.SetHoveredIndex(-1)) needRepaint = true;
+        if (m_config.activeRailTab == 2 && m_drawer.IsCommitCardVisible()) {
+            m_drawer.DismissCommitCard();
+            needRepaint = true;
+        }
     }
 
     // Check Status Bar hover
@@ -11944,6 +12025,7 @@ void Window::HandleLButtonUp(POINT clientPt) {
         bool wasResizing = m_terminal.IsResizing();
         m_terminal.OnMouseUp(clientPt);
         if (wasResizing) {
+            SaveSessionState();
             ReleaseCapture();
         }
     }
@@ -12576,6 +12658,9 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
             m_header.UpdateHoverState(ui::HeaderMenuId::None, ui::CaptionButtonType::None, ui::HeaderExecId::None);
             m_rail.SetHoveredTab(ui::RailTabId::None);
             m_drawer.SetHoveredIndex(-1);
+            if (m_config.activeRailTab == 2 && m_drawer.IsCommitCardVisible()) {
+                m_drawer.DismissCommitCard();
+            }
             m_isHoveredStatusBarVenvTag = false;
             m_isHoveredStatusBarGraphView = false;
             m_isHoveredStatusBarGitBranch = false;
