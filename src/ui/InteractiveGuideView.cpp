@@ -4,6 +4,7 @@
  */
 
 #include "phide/ui/InteractiveGuideView.hpp"
+#include "phide/ui/EditorCanvas.hpp"
 #include <algorithm>
 
 namespace phide::ui {
@@ -429,46 +430,18 @@ void InteractiveGuideView::RenderEditorBlock(ID2D1RenderTarget* pRT, Theme& them
         // Color Swatches in Editor 0 (CSS)
         // =====================================================================
         if (ed.id == 0) {
-            size_t hashPos = lineStr.find(L'#');
-            size_t rgbPos = lineStr.find(L"rgb(");
-            if (rgbPos == std::wstring::npos) rgbPos = lineStr.find(L"rgba(");
-            size_t hslPos = lineStr.find(L"hsl(");
-            if (hslPos == std::wstring::npos) hslPos = lineStr.find(L"hsla(");
+            auto swatches = EditorCanvas::ScanLineColors(lineStr);
+            for (const auto& sw : swatches) {
+                float swColX = codeX + sw.col * charW - config.ScaleF(16.0f);
+                float swSz = config.ScaleF(11.0f);
+                float swY = ly + (lineH - swSz) / 2.0f;
+                D2D1_RECT_F rcSw = D2D1::RectF(swColX, swY, swColX + swSz, swY + swSz);
 
-            size_t cPos = std::wstring::npos;
-            size_t cLen = 0;
-            if (hashPos != std::wstring::npos) {
-                cPos = hashPos;
-                size_t endP = cPos + 1;
-                while (endP < lineStr.length() && iswxdigit(lineStr[endP])) endP++;
-                cLen = endP - cPos;
-            } else if (rgbPos != std::wstring::npos) {
-                cPos = rgbPos;
-                size_t closeP = lineStr.find(L')', cPos);
-                if (closeP != std::wstring::npos) cLen = closeP - cPos + 1;
-            } else if (hslPos != std::wstring::npos) {
-                cPos = hslPos;
-                size_t closeP = lineStr.find(L')', cPos);
-                if (closeP != std::wstring::npos) cLen = closeP - cPos + 1;
-            }
-
-            if (cPos != std::wstring::npos && cLen > 0) {
-                std::wstring colorStr = lineStr.substr(cPos, cLen);
-                D2D1_COLOR_F cVal{};
-                ColorFormat fmt{};
-                bool hasA = false;
-                if (ColorPickerModal::TryParseColor(colorStr, cVal, fmt, hasA)) {
-                    float swColX = codeX + cPos * charW - config.ScaleF(16.0f);
-                    float swSz = config.ScaleF(11.0f);
-                    float swY = ly + (lineH - swSz) / 2.0f;
-                    D2D1_RECT_F rcSw = D2D1::RectF(swColX, swY, swColX + swSz, swY + swSz);
-
-                    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> pSwBrush;
-                    pRT->CreateSolidColorBrush(cVal, &pSwBrush);
-                    if (pSwBrush) {
-                        pRT->FillRectangle(rcSw, pSwBrush.Get());
-                        pRT->DrawRectangle(rcSw, theme.brushTextWhite.Get(), 0.8f);
-                    }
+                Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> pSwBrush;
+                pRT->CreateSolidColorBrush(sw.color, &pSwBrush);
+                if (pSwBrush) {
+                    pRT->FillRectangle(rcSw, pSwBrush.Get());
+                    pRT->DrawRectangle(rcSw, theme.brushTextWhite.Get(), 0.8f);
                 }
             }
         }
@@ -1068,31 +1041,9 @@ bool InteractiveGuideView::HandleLButtonDown(POINT clientPt, bool altPressed) {
 
             // Check if clicked inside a color swatch in Editor 0
             if (ed.id == 0) {
-                size_t hashPos = lineStr.find(L'#');
-                size_t rgbPos = lineStr.find(L"rgb(");
-                if (rgbPos == std::wstring::npos) rgbPos = lineStr.find(L"rgba(");
-                size_t hslPos = lineStr.find(L"hsl(");
-                if (hslPos == std::wstring::npos) hslPos = lineStr.find(L"hsla(");
-
-                size_t cPos = std::wstring::npos;
-                size_t cLen = 0;
-                if (hashPos != std::wstring::npos) {
-                    cPos = hashPos;
-                    size_t endP = cPos + 1;
-                    while (endP < lineStr.length() && iswxdigit(lineStr[endP])) endP++;
-                    cLen = endP - cPos;
-                } else if (rgbPos != std::wstring::npos) {
-                    cPos = rgbPos;
-                    size_t closeP = lineStr.find(L')', cPos);
-                    if (closeP != std::wstring::npos) cLen = closeP - cPos + 1;
-                } else if (hslPos != std::wstring::npos) {
-                    cPos = hslPos;
-                    size_t closeP = lineStr.find(L')', cPos);
-                    if (closeP != std::wstring::npos) cLen = closeP - cPos + 1;
-                }
-
-                if (cPos != std::wstring::npos && cLen > 0) {
-                    float swColX = ed.codeAreaBounds.left + cPos * charW - 16.0f;
+                auto swatches = EditorCanvas::ScanLineColors(lineStr);
+                for (const auto& sw : swatches) {
+                    float swColX = ed.codeAreaBounds.left + sw.col * charW - 16.0f;
                     float swSz = 11.0f;
                     float ly = ed.codeAreaBounds.top + clickedLine * lineH;
                     float swY = ly + (lineH - swSz) / 2.0f;
@@ -1100,8 +1051,7 @@ bool InteractiveGuideView::HandleLButtonDown(POINT clientPt, bool altPressed) {
 
                     if (clientPt.x >= rcSw.left && clientPt.x <= rcSw.right &&
                         clientPt.y >= rcSw.top && clientPt.y <= rcSw.bottom) {
-                        std::wstring colorStr = lineStr.substr(cPos, cLen);
-                        m_colorPicker.Open(rcSw.left, rcSw.bottom + 6.0f, colorStr, clickedLine, cPos, cLen);
+                        m_colorPicker.Open(rcSw.left, rcSw.bottom + 6.0f, sw.colorStr, clickedLine, sw.col, sw.len);
                         return true;
                     }
                 }
@@ -1453,19 +1403,9 @@ LPCWSTR InteractiveGuideView::GetCursorForPoint(POINT pt) const {
             size_t l = (relY > 0) ? static_cast<size_t>(relY / lineH) : 0;
             if (l < ed.doc.buffer.GetLineCount()) {
                 std::wstring lineStr = ed.doc.buffer.GetLine(l);
-                size_t hashPos = lineStr.find(L'#');
-                size_t rgbPos = lineStr.find(L"rgb(");
-                if (rgbPos == std::wstring::npos) rgbPos = lineStr.find(L"rgba(");
-                size_t hslPos = lineStr.find(L"hsl(");
-                if (hslPos == std::wstring::npos) hslPos = lineStr.find(L"hsla(");
-
-                size_t cPos = std::wstring::npos;
-                if (hashPos != std::wstring::npos) cPos = hashPos;
-                else if (rgbPos != std::wstring::npos) cPos = rgbPos;
-                else if (hslPos != std::wstring::npos) cPos = hslPos;
-
-                if (cPos != std::wstring::npos) {
-                    float swColX = ed.codeAreaBounds.left + cPos * charW - 16.0f;
+                auto swatches = EditorCanvas::ScanLineColors(lineStr);
+                for (const auto& sw : swatches) {
+                    float swColX = ed.codeAreaBounds.left + sw.col * charW - 16.0f;
                     float swSz = 11.0f;
                     float ly = ed.codeAreaBounds.top + l * lineH;
                     float swY = ly + (lineH - swSz) / 2.0f;

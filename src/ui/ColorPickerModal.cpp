@@ -428,6 +428,98 @@ void ColorPickerModal::UpdateColorFromHsvA(
 }
 
 // Color Math & Conversions
+bool ColorPickerModal::TryParseNamedColor(
+    std::wstring_view name,
+    D2D1_COLOR_F& outColor,
+    uint32_t* outHex
+) noexcept {
+    if (name.empty()) return false;
+
+    struct CssNamedColor {
+        const wchar_t* name;
+        uint32_t hex;
+    };
+
+    // All 149 standard W3C CSS named colors in strict alphabetical order for O(log N) lookup
+    static const CssNamedColor s_cssNamedColors[] = {
+        { L"aliceblue", 0xF0F8FF }, { L"antiquewhite", 0xFAEBD7 }, { L"aqua", 0x00FFFF },
+        { L"aquamarine", 0x7FFFD4 }, { L"azure", 0xF0FFFF }, { L"beige", 0xF5F5DC },
+        { L"bisque", 0xFFE4C4 }, { L"black", 0x000000 }, { L"blanchedalmond", 0xFFEBCD },
+        { L"blue", 0x0000FF }, { L"blueviolet", 0x8A2BE2 }, { L"brown", 0xA52A2A },
+        { L"burlywood", 0xDEB887 }, { L"cadetblue", 0x5F9EA0 }, { L"chartreuse", 0x7FFF00 },
+        { L"chocolate", 0xD2691E }, { L"coral", 0xFF7F50 }, { L"cornflowerblue", 0x6495ED },
+        { L"cornsilk", 0xFFF8DC }, { L"crimson", 0xDC143C }, { L"cyan", 0x00FFFF },
+        { L"darkblue", 0x00008B }, { L"darkcyan", 0x008B8B }, { L"darkgoldenrod", 0xB8860B },
+        { L"darkgray", 0xA9A9A9 }, { L"darkgreen", 0x006400 }, { L"darkgrey", 0xA9A9A9 },
+        { L"darkkhaki", 0xBDB76B }, { L"darkmagenta", 0x8B008B }, { L"darkolivegreen", 0x556B2F },
+        { L"darkorange", 0xFF8C00 }, { L"darkorchid", 0x9932CC }, { L"darkred", 0x8B0000 },
+        { L"darksalmon", 0xE9967A }, { L"darkseagreen", 0x8FBC8F }, { L"darkslateblue", 0x483D8B },
+        { L"darkslategray", 0x2F4F4F }, { L"darkslategrey", 0x2F4F4F }, { L"darkturquoise", 0x00CED1 },
+        { L"darkviolet", 0x9400D3 }, { L"deeppink", 0xFF1493 }, { L"deepskyblue", 0x00BFFF },
+        { L"dimgray", 0x696969 }, { L"dimgrey", 0x696969 }, { L"dodgerblue", 0x1E90FF },
+        { L"firebrick", 0xB22222 }, { L"floralwhite", 0xFFFAF0 }, { L"forestgreen", 0x228B22 },
+        { L"fuchsia", 0xFF00FF }, { L"gainsboro", 0xDCDCDC }, { L"ghostwhite", 0xF8F8FF },
+        { L"gold", 0xFFD700 }, { L"goldenrod", 0xDAA520 }, { L"gray", 0x808080 },
+        { L"green", 0x008000 }, { L"greenyellow", 0xADFF2F }, { L"grey", 0x808080 },
+        { L"honeydew", 0xF0FFF0 }, { L"hotpink", 0xFF69B4 }, { L"indianred", 0xCD5C5C },
+        { L"indigo", 0x4B0082 }, { L"ivory", 0xFFFFF0 }, { L"khaki", 0xF0E68C },
+        { L"lavender", 0xE6E6FA }, { L"lavenderblush", 0xFFF0F5 }, { L"lawngreen", 0x7CFC00 },
+        { L"lemonchiffon", 0xFFFACD }, { L"lightblue", 0xADD8E6 }, { L"lightcoral", 0xF08080 },
+        { L"lightcyan", 0xE0FFFF }, { L"lightgoldenrodyellow", 0xFAFAD2 }, { L"lightgray", 0xD3D3D3 },
+        { L"lightgreen", 0x90EE90 }, { L"lightgrey", 0xD3D3D3 }, { L"lightpink", 0xFFB6C1 },
+        { L"lightsalmon", 0xFFA07A }, { L"lightseagreen", 0x20B2AA }, { L"lightskyblue", 0x87CEFA },
+        { L"lightslategray", 0x778899 }, { L"lightslategrey", 0x778899 }, { L"lightsteelblue", 0xB0C4DE },
+        { L"lightyellow", 0xFFFFE0 }, { L"lime", 0x00FF00 }, { L"limegreen", 0x32CD32 },
+        { L"linen", 0xFAF0E6 }, { L"magenta", 0xFF00FF }, { L"maroon", 0x800000 },
+        { L"mediumaquamarine", 0x66CDAA }, { L"mediumblue", 0x0000CD }, { L"mediumorchid", 0xBA55D3 },
+        { L"mediumpurple", 0x9370DB }, { L"mediumseagreen", 0x3CB371 }, { L"mediumslateblue", 0x7B68EE },
+        { L"mediumspringgreen", 0x00FA9A }, { L"mediumturquoise", 0x48D1CC }, { L"mediumvioletred", 0xC71585 },
+        { L"midnightblue", 0x191970 }, { L"mintcream", 0xF5FFFA }, { L"mistyrose", 0xFFE4E1 },
+        { L"moccasin", 0xFFE4B5 }, { L"navajowhite", 0xFFDEAD }, { L"navy", 0x000080 },
+        { L"oldlace", 0xFDF5E6 }, { L"olive", 0x808000 }, { L"olivedrab", 0x6B8E23 },
+        { L"orange", 0xFFA500 }, { L"orangered", 0xFF4500 }, { L"orchid", 0xDA70D6 },
+        { L"palegoldenrod", 0xEEE8AA }, { L"palegreen", 0x98FB98 }, { L"paleturquoise", 0xAFEEEE },
+        { L"palevioletred", 0xDB7093 }, { L"papayawhip", 0xFFEFD5 }, { L"peachpuff", 0xFFDAB9 },
+        { L"peru", 0xCD853F }, { L"pink", 0xFFC0CB }, { L"plum", 0xDDA0DD },
+        { L"powderblue", 0xB0E0E6 }, { L"purple", 0x800080 }, { L"rebeccapurple", 0x663399 },
+        { L"red", 0xFF0000 }, { L"rosybrown", 0xBC8F8F }, { L"royalblue", 0x4169E1 },
+        { L"saddlebrown", 0x8B4513 }, { L"salmon", 0xFA8072 }, { L"sandybrown", 0xF4A460 },
+        { L"seagreen", 0x2E8B57 }, { L"seashell", 0xFFF5EE }, { L"sienna", 0xA0522D },
+        { L"silver", 0xC0C0C0 }, { L"skyblue", 0x87CEEB }, { L"slateblue", 0x6A5ACD },
+        { L"slategray", 0x708090 }, { L"slategrey", 0x708090 }, { L"snow", 0xFFFAFA },
+        { L"springgreen", 0x00FF7F }, { L"steelblue", 0x4682B4 }, { L"tan", 0xD2B48C },
+        { L"teal", 0x008080 }, { L"thistle", 0xD8BFD8 }, { L"tomato", 0xFF6347 },
+        { L"transparent", 0x000000 }, { L"turquoise", 0x40E0D0 }, { L"violet", 0xEE82EE },
+        { L"wheat", 0xF5DEB3 }, { L"white", 0xFFFFFF }, { L"whitesmoke", 0xF5F5F5 },
+        { L"yellow", 0xFFFF00 }, { L"yellowgreen", 0x9ACD32 }
+    };
+
+    std::wstring lower;
+    lower.reserve(name.length());
+    for (wchar_t ch : name) lower.push_back(static_cast<wchar_t>(towlower(ch)));
+
+    auto it = std::lower_bound(
+        std::begin(s_cssNamedColors), std::end(s_cssNamedColors), lower,
+        [](const CssNamedColor& item, const std::wstring& val) {
+            return wcscmp(item.name, val.c_str()) < 0;
+        }
+    );
+
+    if (it != std::end(s_cssNamedColors) && wcscmp(it->name, lower.c_str()) == 0) {
+        if (outHex) *outHex = it->hex;
+        if (wcscmp(it->name, L"transparent") == 0) {
+            outColor = D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.0f);
+        } else {
+            float r = ((it->hex >> 16) & 0xFF) / 255.0f;
+            float g = ((it->hex >> 8) & 0xFF) / 255.0f;
+            float b = (it->hex & 0xFF) / 255.0f;
+            outColor = D2D1::ColorF(r, g, b, 1.0f);
+        }
+        return true;
+    }
+    return false;
+}
+
 bool ColorPickerModal::TryParseColor(
     const std::wstring& text,
     D2D1_COLOR_F& outColor,
@@ -509,22 +601,12 @@ bool ColorPickerModal::TryParseColor(
         }
     }
 
-    // Common named colors
-    struct NamedColor { const wchar_t* name; unsigned int hex; };
-    static const NamedColor namedColors[] = {
-        { L"black", 0x000000 }, { L"white", 0xffffff }, { L"red", 0xff0000 },
-        { L"green", 0x008000 }, { L"blue", 0x0000ff }, { L"yellow", 0xffff00 },
-        { L"azure", 0xf0ffff }, { L"coral", 0xff7f50 }, { L"crimson", 0xdc143c },
-        { L"darkgray", 0xa9a9a9 }, { L"gray", 0x808080 }, { L"indigo", 0x4b0082 },
-        { L"orange", 0xffa500 }, { L"pink", 0xffc0cb }, { L"purple", 0x800080 },
-        { L"teal", 0x008080 }, { L"violet", 0xee82ee }, { L"gold", 0xffd700 }
-    };
-    for (const auto& nc : namedColors) {
-        if (_wcsicmp(text.c_str(), nc.name) == 0) {
-            outColor = D2D1::ColorF(((nc.hex >> 16) & 0xff) / 255.0f, ((nc.hex >> 8) & 0xff) / 255.0f, (nc.hex & 0xff) / 255.0f, 1.0f);
-            outFormat = ColorFormat::Hex;
-            return true;
-        }
+    // Standard CSS Named Colors (149 colors)
+    uint32_t namedHex = 0;
+    if (TryParseNamedColor(text, outColor, &namedHex)) {
+        outFormat = ColorFormat::Hex;
+        outHasAlpha = (_wcsicmp(text.c_str(), L"transparent") == 0);
+        return true;
     }
 
     return false;

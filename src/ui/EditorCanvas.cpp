@@ -165,8 +165,9 @@ std::vector<LineColorSpan> EditorCanvas::ScanLineColors(const std::wstring& line
             }
         }
 
-        // Tailwind CSS Color Class Scanning (e.g. bg-black, bg-green-600, text-white, border-blue-400, dark:bg-black)
-        if (scanCIdx == 0 || (!iswalnum(lineStr[scanCIdx - 1]) && lineStr[scanCIdx - 1] != L'-' && lineStr[scanCIdx - 1] != L':')) {
+        // 3. Word Token Scanning: Tailwind classes & CSS Named Colors
+        bool prevCharValid = (scanCIdx == 0 || (!iswalnum(lineStr[scanCIdx - 1]) && lineStr[scanCIdx - 1] != L'-' && lineStr[scanCIdx - 1] != L':' && lineStr[scanCIdx - 1] != L'.' && lineStr[scanCIdx - 1] != L'$' && lineStr[scanCIdx - 1] != L'@' && lineStr[scanCIdx - 1] != L'#'));
+        if (prevCharValid) {
             size_t tokEnd = scanCIdx;
             while (tokEnd < lineStr.length() && (iswalnum(lineStr[tokEnd]) || lineStr[tokEnd] == L'-' || lineStr[tokEnd] == L':' || lineStr[tokEnd] == L'/')) {
                 tokEnd++;
@@ -177,6 +178,7 @@ std::vector<LineColorSpan> EditorCanvas::ScanLineColors(const std::wstring& line
                 std::wstring_view coreClass = (colPos != std::wstring_view::npos) ? word.substr(colPos + 1) : word;
                 size_t swatchCol = (colPos != std::wstring_view::npos) ? (scanCIdx + colPos + 1) : scanCIdx;
 
+                // 3a. Check Tailwind Color Class (e.g. bg-red-600, text-white, border-blue-400, dark:bg-black)
                 editor::TailwindColorInfo twInfo;
                 if (editor::TailwindHelper::TryParseClass(coreClass, twInfo)) {
                     float r = ((twInfo.hex >> 16) & 0xFF) / 255.0f;
@@ -185,6 +187,55 @@ std::vector<LineColorSpan> EditorCanvas::ScanLineColors(const std::wstring& line
                     lineColors.push_back({ swatchCol, coreClass.length(), std::wstring(coreClass), D2D1::ColorF(r, g, b, 1.0f), ColorFormat::Hex, false });
                     scanCIdx = tokEnd;
                     continue;
+                }
+
+                // 3b. Check CSS Named Colors (e.g. "red", "blue", "green", "coral", "yellow", etc.)
+                bool isPureAlphaWord = true;
+                for (wchar_t ch : word) {
+                    if (!iswalpha(ch)) { isPureAlphaWord = false; break; }
+                }
+
+                if (isPureAlphaWord) {
+                    D2D1_COLOR_F namedColor{};
+                    uint32_t namedHex = 0;
+                    if (ColorPickerModal::TryParseNamedColor(word, namedColor, &namedHex)) {
+                        bool insideQuotes = false;
+                        if (scanCIdx > 0 && tokEnd < lineStr.length()) {
+                            wchar_t qBefore = lineStr[scanCIdx - 1];
+                            wchar_t qAfter = lineStr[tokEnd];
+                            if ((qBefore == L'\'' && qAfter == L'\'') ||
+                                (qBefore == L'"' && qAfter == L'"') ||
+                                (qBefore == L'`' && qAfter == L'`')) {
+                                insideQuotes = true;
+                            }
+                        }
+
+                        bool afterColonValue = false;
+                        size_t colonPos = lineStr.rfind(L':', scanCIdx > 0 ? scanCIdx - 1 : 0);
+                        if (colonPos != std::wstring::npos) {
+                            bool isDoubleColon = (colonPos > 0 && lineStr[colonPos - 1] == L':') ||
+                                                 (colonPos + 1 < lineStr.length() && lineStr[colonPos + 1] == L':');
+                            if (!isDoubleColon) {
+                                bool hasTerminator = false;
+                                for (size_t k = colonPos + 1; k < scanCIdx; ++k) {
+                                    if (lineStr[k] == L';' || lineStr[k] == L'{' || lineStr[k] == L'}') {
+                                        hasTerminator = true;
+                                        break;
+                                    }
+                                }
+                                if (!hasTerminator) {
+                                    afterColonValue = true;
+                                }
+                            }
+                        }
+
+                        if (insideQuotes || afterColonValue) {
+                            bool isTransparent = (_wcsicmp(std::wstring(word).c_str(), L"transparent") == 0);
+                            lineColors.push_back({ scanCIdx, word.length(), std::wstring(word), namedColor, ColorFormat::Hex, isTransparent });
+                            scanCIdx = tokEnd;
+                            continue;
+                        }
+                    }
                 }
             }
         }
@@ -2056,7 +2107,7 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
         const float swatchSize = config.ScaleF(10.5f);
 
         auto getColVisualX = [&](size_t col) -> float {
-            return codeLeft - scrollX + GetColumnVisualOffset(lineColors, col, charW, swatchSpan);
+            return codeLeft - scrollX + GetColumnVisualOffset(lineStr, lineColors, col, charW, swatchSpan, config.tabSize);
         };
 
         // Active Text Selection Background on Code Line (Images 3 & 4)
@@ -2498,7 +2549,8 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
         // Render in-context Color Preview Swatches inside dedicated gap (before color code, never replacing characters)
         for (size_t sIdx = 0; sIdx < lineColors.size(); ++sIdx) {
             const auto& cs = lineColors[sIdx];
-            float swatchX = codeLeft - scrollX + static_cast<float>(cs.col) * charW + static_cast<float>(sIdx) * swatchSpan + (swatchSpan - swatchSize) / 2.0f;
+            float swatchBaseX = codeLeft - scrollX + GetColumnVisualOffset(lineStr, lineColors, cs.col, charW, swatchSpan, config.tabSize) - swatchSpan;
+            float swatchX = swatchBaseX + (swatchSpan - swatchSize) / 2.0f;
             float swatchY = lineY + (lineH - swatchSize) / 2.0f;
             if (swatchX >= codeLeft - swatchSize && swatchX + swatchSize < codeRight) {
                 D2D1_RECT_F rcSwatch = D2D1::RectF(swatchX, swatchY, swatchX + swatchSize, swatchY + swatchSize);

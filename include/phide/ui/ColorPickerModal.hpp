@@ -102,6 +102,7 @@ public:
     bool HandleKeyDown(WPARAM wParam);
 
     // Color conversion utilities
+    static bool TryParseNamedColor(std::wstring_view name, D2D1_COLOR_F& outColor, uint32_t* outHex = nullptr) noexcept;
     static bool TryParseColor(const std::wstring& text, D2D1_COLOR_F& outColor, ColorFormat& outFormat, bool& outHasAlpha);
     static std::wstring FormatColor(float r, float g, float b, float a, ColorFormat fmt, bool hasAlpha);
     static void RgbToHsv(float r, float g, float b, float& h, float& s, float& v);

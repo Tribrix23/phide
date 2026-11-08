@@ -15861,6 +15861,36 @@ run_test_102:
             std::cout << "  Passed: Caret visual position and Hit-Testing are 100% synchronized with Tailwind swatches (no offset)" << std::endl;
         }
 
+        // Subtest 8b: CSS Named Colors (e.g. background-color: red;) and ColorPickerModal integration
+        {
+            std::wstring cssLine = L"    background-color: red;";
+            auto colors = phide::ui::EditorCanvas::ScanLineColors(cssLine);
+            assert(colors.size() == 1 && "Must detect named color 'red'");
+            assert(colors[0].col == 22 && "'red' begins at column 22");
+            assert(colors[0].len == 3 && "'red' is 3 characters long");
+            assert(colors[0].colorStr == L"red");
+            assert(colors[0].color.r == 1.0f && colors[0].color.g == 0.0f && colors[0].color.b == 0.0f);
+
+            // Negative tests:
+            // 1) Property name 'color:' must NOT produce a swatch
+            // 2) Class selector '.red {' must NOT produce a swatch
+            // 3) Identifier in code 'int red = 5;' must NOT produce a swatch
+            auto noColor1 = phide::ui::EditorCanvas::ScanLineColors(L"    color: red;");
+            assert(noColor1.size() == 1 && noColor1[0].col == 11 && "Only 'red' after colon gets a swatch, not 'color'");
+
+            auto noColor2 = phide::ui::EditorCanvas::ScanLineColors(L".red { color: blue; }");
+            assert(noColor2.size() == 1 && noColor2[0].col == 14 && "'.red' selector ignored, 'blue' detected");
+
+            auto noColor3 = phide::ui::EditorCanvas::ScanLineColors(L"int red = 5;");
+            assert(noColor3.empty() && "Variable 'red' outside colon/quotes has no swatch");
+
+            // Multi-color line: border: 1px solid green;
+            auto multiColor = phide::ui::EditorCanvas::ScanLineColors(L"    border: 1px solid green;");
+            assert(multiColor.size() == 1 && multiColor[0].colorStr == L"green");
+
+            std::cout << "  Passed: CSS Named Colors (red, blue, green) detected and negative contexts filtered correctly" << std::endl;
+        }
+
         // Subtest 9: GraphView labels visible at 44% zoom
         {
             phide::ui::GraphView gv;

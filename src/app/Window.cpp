@@ -12919,6 +12919,11 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                         return TRUE;
                     }
 
+                    if (m_editor.HitTestColorSwatch(pt)) {
+                        SetCursor(LoadCursor(nullptr, IDC_HAND));
+                        return TRUE;
+                    }
+
                     ui::EditorCanvas::TodoCheckboxHit todoCursorHit;
                     if (m_editor.HitTestTodoCheckbox(pt, todoCursorHit)) {
                         SetCursor(LoadCursor(nullptr, IDC_HAND));
