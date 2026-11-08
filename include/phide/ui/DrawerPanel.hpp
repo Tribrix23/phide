@@ -442,6 +442,7 @@ public:
                pt.x >= m_commitCardBounds.left && pt.x <= m_commitCardBounds.right &&
                pt.y >= m_commitCardBounds.top && pt.y <= m_commitCardBounds.bottom;
     }
+    void SetOnPreCommit(std::function<void()> cb) { m_onPreCommit = std::move(cb); }
     void SetOnGitStateChanged(std::function<void()> cb) { m_onGitStateChanged = std::move(cb); }
     void SetOnGitError(std::function<void(const std::wstring& cmd, const std::wstring& output, const std::wstring& repoDir)> cb) { m_onGitError = std::move(cb); }
 
@@ -1047,6 +1048,7 @@ private:
     ID2D1Bitmap* GetOrFetchAvatar(ID2D1RenderTarget* pRT, Theme& theme, const GitCommitItem& ci);
     std::unordered_map<std::wstring, Microsoft::WRL::ComPtr<ID2D1Bitmap>> m_assetBitmaps;
     ID2D1Bitmap* GetAssetBitmap(ID2D1RenderTarget* pRT, const std::wstring& filename);
+    std::function<void()> m_onPreCommit;
     std::function<void()> m_onGitStateChanged;
     std::function<void(const std::wstring& cmd, const std::wstring& output, const std::wstring& repoDir)> m_onGitError;
 

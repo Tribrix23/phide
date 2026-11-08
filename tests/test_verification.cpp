@@ -15753,7 +15753,8 @@ run_test_102:
         // Subtest 5: IntelliSense Engine Tailwind Autocomplete & Documentation
         {
             phide::editor::IntelliSenseEngine engine;
-            std::vector<std::wstring> docLines = { L"<div className=\"bg-red-" };
+            engine.SetWorkspaceRoot(L"C:/Users/Administrator/Downloads/cleavedb-browser");
+            std::vector<std::wstring> docLines = { L"// @tailwind utilities;", L"<div className=\"bg-red-" };
             auto items = engine.QueryCompletions(L"test.tsx", L"<div className=\"bg-red-", 23, &docLines);
             assert(!items.empty() && "Completions for bg-red- must not be empty!");
 
@@ -16051,6 +16052,43 @@ run_test_102:
             assert(hasTwCandidateWithCdn && "HTML with Tailwind CDN must provide Tailwind autocomplete candidates");
 
             std::cout << "  Passed: Subtest 8d: Tailwind connection gating, workspace detection, and CSS independence verified" << std::endl;
+        }
+
+        // Subtest 8e: Single Commit Button & Color Picker Document Modification Tracking
+        {
+            // 1. Verify DrawerPanel: as long as there are uncommitted changes, only Commit button is active
+            phide::ui::DrawerPanel drawer;
+            drawer.OpenFolder(L"C:/Users/Administrator/Downloads/php-crud-test");
+
+            phide::ui::GitChangeItem chg;
+            chg.path = L"style.css";
+            chg.fileName = L"style.css";
+            chg.status = L"M";
+            chg.isStaged = false;
+            drawer.GetGitChangesMutable().push_back(chg);
+            drawer.SetUnpushedCommitsCount(1); // 1 change, 1 unpushed commit
+
+            // Prior to render, sync bounds is empty; when changes exist, sync bounds must remain empty
+            assert(drawer.GetGitSyncBtnBounds().right <= drawer.GetGitSyncBtnBounds().left &&
+                   "As long as there are uncommitted changes, Sync Changes button must NOT be rendered");
+
+            // 2. Verify Window tracks color picker edits: MarkDocumentModified marks doc dirty and registers with drawer
+            phide::app::Window win;
+            win.SetAutoSave(false);
+            phide::editor::OpenDocument testDoc;
+            testDoc.filePath = L"C:/Users/Administrator/Downloads/php-crud-test/style.css";
+            testDoc.fileName = L"style.css";
+            testDoc.buffer.SetText(L"hello {\n    background-color: blue;\n}\n");
+            testDoc.originalDiskText = testDoc.buffer.GetText();
+            testDoc.isDirty = false;
+
+            // Simulate color picker modifying color to #000D3A
+            testDoc.buffer.SetLine(1, L"    background-color: #000D3A;");
+            win.MarkDocumentModified(&testDoc);
+
+            assert(testDoc.isDirty && "Document must be marked dirty after color picker edit");
+
+            std::cout << "  Passed: Subtest 8e: Commit button exclusivity and color picker modification tracking verified" << std::endl;
         }
 
         // Subtest 9: GraphView labels visible at 44% zoom

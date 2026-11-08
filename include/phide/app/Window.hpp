@@ -111,6 +111,8 @@ public:
 
     LRESULT HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam);
     void OpenVirtualDocument(const std::wstring& name, const std::wstring& content, bool isPreview = false);
+    void SetAutoSave(bool enable) { m_autoSave = enable; }
+    bool IsAutoSave() const { return m_autoSave; }
 
 private:
 
@@ -187,6 +189,7 @@ public:
      */
     void ComputeDiffHunks(editor::OpenDocument& doc);
     void CalculateImportCosts(editor::OpenDocument& doc);
+    void MarkDocumentModified(editor::OpenDocument* pDoc);
 
     // Git Branch Switcher Dropdown (Status bar popup)
     ui::DrawerPanel& GetDrawer() noexcept { return m_drawer; }
@@ -453,12 +456,7 @@ private:
     /** @brief Redoes the most recently undone Explorer operation (Ctrl+Y when explorer active). */
     void DoExplorerRedo();
 
-    /**
-     * @brief Marks a document as edited, honoring Auto Save to write changes immediately to disk.
-     * If Auto Save is active and the file is backed by disk, persists changes without setting dirty flag.
-     * @param pDoc Pointer to open document buffer being modified.
-     */
-    void MarkDocumentModified(editor::OpenDocument* pDoc);
+
 
     /** @brief Selects all text in current document (Ctrl+A). */
     void DoSelectAll();

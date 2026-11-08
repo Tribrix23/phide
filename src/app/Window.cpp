@@ -6711,6 +6711,11 @@ bool Window::Create(HINSTANCE hInstance, int nCmdShow) {
         }
     });
 
+    // Save all dirty documents before committing so git captures latest buffer state on disk
+    m_drawer.SetOnPreCommit([this]() {
+        DoSaveAll();
+    });
+
     // Register callback for reactive git state updates
     m_drawer.SetOnGitStateChanged([this]() {
         // Auto-close any working tree diff view whose file no longer has git changes
@@ -9040,8 +9045,7 @@ void Window::HandleMouseMove(POINT clientPt, WPARAM wParam) {
                         if (col <= curLine.length()) {
                             std::wstring newLine = curLine.substr(0, col) + newColor + curLine.substr((std::min)(curLine.length(), col + len));
                             doc.buffer.SetLine(line, newLine);
-                            doc.isDirty = true;
-                            doc.diagnostics = editor::SyntaxValidator::Validate(doc.filePath, doc.buffer);
+                            MarkDocumentModified(&doc);
                         }
                     }
                 }
@@ -10883,6 +10887,9 @@ void Window::HandleLButtonDown(POINT clientPt) {
     }
 
     if (m_colorPicker.IsOpen()) {
+        if (auto* pDoc = GetActiveDoc()) {
+            pDoc->buffer.PushUndo();
+        }
         auto onColorChange = [this](const std::wstring& newColor, size_t line, size_t col, size_t len) {
             if (m_focusedGroupIdx >= 0 && m_focusedGroupIdx < m_editorGroups.size()) {
                 auto& group = m_editorGroups[m_focusedGroupIdx];
@@ -10893,14 +10900,19 @@ void Window::HandleLButtonDown(POINT clientPt) {
                         if (col <= curLine.length()) {
                             std::wstring newLine = curLine.substr(0, col) + newColor + curLine.substr((std::min)(curLine.length(), col + len));
                             doc.buffer.SetLine(line, newLine);
-                            doc.isDirty = true;
-                            doc.diagnostics = editor::SyntaxValidator::Validate(doc.filePath, doc.buffer);
+                            MarkDocumentModified(&doc);
                         }
                     }
                 }
             }
         };
-        m_colorPicker.HandleLButtonDown(D2D1::Point2F(static_cast<float>(clientPt.x), static_cast<float>(clientPt.y)), onColorChange);
+        bool handled = m_colorPicker.HandleLButtonDown(D2D1::Point2F(static_cast<float>(clientPt.x), static_cast<float>(clientPt.y)), onColorChange);
+        if (!handled && !m_colorPicker.IsOpen()) {
+            if (auto* pDoc = GetActiveDoc()) {
+                MarkDocumentModified(pDoc);
+                TriggerDebouncedGitRefresh(100);
+            }
+        }
         InvalidateRect(m_hwnd, nullptr, FALSE);
         return;
     }
@@ -12110,6 +12122,10 @@ void Window::HandleLButtonUp(POINT clientPt) {
 
     if (m_colorPicker.IsOpen()) {
         if (m_colorPicker.HandleLButtonUp(D2D1::Point2F(static_cast<float>(clientPt.x), static_cast<float>(clientPt.y)))) {
+            if (auto* pDoc = GetActiveDoc()) {
+                MarkDocumentModified(pDoc);
+                TriggerDebouncedGitRefresh(100);
+            }
             InvalidateRect(m_hwnd, nullptr, FALSE);
         }
     }
@@ -14253,6 +14269,10 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
             }
             if (m_colorPicker.IsOpen()) {
                 if (m_colorPicker.HandleKeyDown(wParam)) {
+                    if (auto* pDoc = GetActiveDoc()) {
+                        MarkDocumentModified(pDoc);
+                        TriggerDebouncedGitRefresh(100);
+                    }
                     InvalidateRect(m_hwnd, nullptr, FALSE);
                     return 0;
                 }

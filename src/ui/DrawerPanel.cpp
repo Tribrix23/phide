@@ -6361,6 +6361,10 @@ void DrawerPanel::CommitChangesAsync(const std::wstring& message) {
     size_t last = msg.find_last_not_of(L" \t\r\n");
     if (last != std::wstring::npos) msg = msg.substr(0, last + 1);
 
+    if (m_onPreCommit) {
+        m_onPreCommit();
+    }
+
     auto alive = m_isAlive;
     auto workers = m_activeWorkers;
     if (workers) workers->fetch_add(1);
@@ -8524,28 +8528,8 @@ void DrawerPanel::RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, 
             pRT->DrawLine(D2D1::Point2F(dchX - 3.0f, dchY - 1.5f), D2D1::Point2F(dchX, dchY + 2.0f), theme.brushTextWhite.Get(), 1.4f);
             pRT->DrawLine(D2D1::Point2F(dchX, dchY + 2.0f), D2D1::Point2F(dchX + 3.0f, dchY - 1.5f), theme.brushTextWhite.Get(), 1.4f);
 
-            if (hasUnpushed) {
-                // Secondary Sync Changes Button below Commit button
-                curY += commitH + config.ScaleF(6.0f);
-                m_gitSyncBtnBounds = D2D1::RectF(
-                    railW + paddingX,
-                    curY,
-                    railW + currentDrawerW - paddingX,
-                    curY + commitH
-                );
-                if (isSyncing) {
-                    DrawButtonSpinner(pRT, m_gitSyncBtnBounds, L"Syncing Changes...", theme, config);
-                } else {
-                    D2D1_ROUNDED_RECT rrcSync = D2D1::RoundedRect(m_gitSyncBtnBounds, 4.0f, 4.0f);
-                    pRT->FillRoundedRectangle(rrcSync, theme.brushBrandAccent.Get());
-                    std::wstring syncText = L"🔄 Sync Changes " + std::to_wstring(m_unpushedCommitsCount);
-                    pRT->DrawText(syncText.c_str(), static_cast<UINT32>(syncText.length()),
-                                  theme.fontButtonCenter.Get() ? theme.fontButtonCenter.Get() : theme.fontMenuItem.Get(),
-                                  m_gitSyncBtnBounds, theme.brushTextWhite.Get());
-                }
-            } else {
-                m_gitSyncBtnBounds = {};
-            }
+            // As long as there are changes to commit, only show the Commit button (never show stacked Sync Changes)
+            m_gitSyncBtnBounds = {};
         } else if (hasUnpushed) {
             // Primary Sync Changes Button (when 0 changes and > 0 unpushed commits)
             m_gitSyncBtnBounds = m_gitCommitBtnBounds;
