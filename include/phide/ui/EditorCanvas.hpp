@@ -347,7 +347,11 @@ public:
     }
     [[nodiscard]] bool IsDraggingTab() const noexcept { return m_isDraggingTab; }
 
+    void SetWorkspaceRoot(const std::wstring& root) { m_workspaceRoot = root; }
+    [[nodiscard]] const std::wstring& GetWorkspaceRoot() const noexcept { return m_workspaceRoot; }
+
 private:
+    std::wstring m_workspaceRoot;
     bool m_caretVisible = true;
     mutable float m_charWidth = 0.0f;
     mutable float m_cachedRenderFontSize = 0.0f;
@@ -680,7 +684,7 @@ public:
     [[nodiscard]] const std::vector<TodoCheckboxHit>& GetVisibleTodoCheckboxes() const noexcept { return m_visibleTodoCheckboxes; }
     [[nodiscard]] const std::vector<ColorSwatchHit>& GetVisibleColorSwatches() const noexcept { return m_visibleColorSwatches; }
 
-    static std::vector<LineColorSpan> ScanLineColors(const std::wstring& lineStr);
+    static std::vector<LineColorSpan> ScanLineColors(const std::wstring& lineStr, bool enableTailwind = true);
     static size_t CountSwatchesBefore(const std::vector<LineColorSpan>& spans, size_t col);
     static float GetColumnVisualOffset(const std::vector<LineColorSpan>& spans, size_t col, float charW, float swatchSpan);
     static float GetColumnVisualOffset(const std::wstring& lineText, const std::vector<LineColorSpan>& spans, size_t col, float charW, float swatchSpan, int tabSize = 4);

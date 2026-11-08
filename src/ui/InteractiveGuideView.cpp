@@ -436,12 +436,13 @@ void InteractiveGuideView::RenderEditorBlock(ID2D1RenderTarget* pRT, Theme& them
                 float swSz = config.ScaleF(11.0f);
                 float swY = ly + (lineH - swSz) / 2.0f;
                 D2D1_RECT_F rcSw = D2D1::RectF(swColX, swY, swColX + swSz, swY + swSz);
+                D2D1_ROUNDED_RECT rrcSw = D2D1::RoundedRect(rcSw, config.ScaleF(3.5f), config.ScaleF(3.5f));
 
                 Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> pSwBrush;
                 pRT->CreateSolidColorBrush(sw.color, &pSwBrush);
                 if (pSwBrush) {
-                    pRT->FillRectangle(rcSw, pSwBrush.Get());
-                    pRT->DrawRectangle(rcSw, theme.brushTextWhite.Get(), 0.8f);
+                    pRT->FillRoundedRectangle(rrcSw, pSwBrush.Get());
+                    pRT->DrawRoundedRectangle(rrcSw, theme.brushTextWhite.Get(), 0.8f);
                 }
             }
         }

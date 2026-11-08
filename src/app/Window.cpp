@@ -11,6 +11,7 @@
 #include "phide/editor/SyntaxValidator.hpp"
 #include "phide/editor/PythonEnvironment.hpp"
 #include "phide/editor/FormatEngine.hpp"
+#include "phide/editor/TailwindHelper.hpp"
 #include "phide/ui/PhideLogo.hpp"
 #include "phide/ui/SplashScreen.hpp"
 #include "phide/plugin/PluginManager.hpp"
@@ -821,6 +822,7 @@ void Window::LoadSessionState() {
             m_drawer.OpenFolder(lastOpenFolder, &expandedDirs);
             m_workspace.OpenWorkspace(lastOpenFolder);
             m_intelliSense.SetWorkspaceRoot(lastOpenFolder);
+            m_editor.SetWorkspaceRoot(lastOpenFolder);
             m_adaptiveEngine.LoadProfile(lastOpenFolder + L"\\.phide\\user_adaptive_profile.json");
             m_drawer.ClearGitLoading();
             m_rail.SetGitLoading(false);
@@ -1015,7 +1017,8 @@ void Window::EnsureCursorVisible() {
     float caretVisualColX = static_cast<float>(cursor.col) * charW;
     if (cursor.line < pDoc->buffer.GetLineCount()) {
         const auto& curLineStr = pDoc->buffer.GetLine(cursor.line);
-        auto lineColors = ui::EditorCanvas::ScanLineColors(curLineStr);
+        bool isTailwind = editor::TailwindHelper::IsTailwindConnected(m_drawer.GetOpenFolderPath(), pDoc->filePath);
+        auto lineColors = ui::EditorCanvas::ScanLineColors(curLineStr, isTailwind);
         caretVisualColX = ui::EditorCanvas::GetColumnVisualOffset(curLineStr, lineColors, cursor.col, charW, swatchSpan, m_config.tabSize);
     }
     float caretScreenX = codeLeft - pDoc->scrollOffsetX + caretVisualColX;
@@ -2300,6 +2303,7 @@ void Window::DoOpenFolderFromPath(const std::wstring& path) {
     m_drawer.OpenFolder(path);
     m_workspace.OpenWorkspace(path);
     m_intelliSense.SetWorkspaceRoot(path);
+    m_editor.SetWorkspaceRoot(path);
     m_adaptiveEngine.LoadProfile(path + L"\\.phide\\user_adaptive_profile.json");
     m_drawer.ClearGitLoading();
     m_rail.SetGitLoading(false);
@@ -2949,6 +2953,7 @@ void Window::CommitAutocompleteSelection() {
             std::wstring docTarget = pDoc->filePath.empty() ? pDoc->fileName : pDoc->filePath;
             if (m_drawer.HasOpenFolder()) {
                 m_intelliSense.SetWorkspaceRoot(m_drawer.GetOpenFolderPath());
+                m_editor.SetWorkspaceRoot(m_drawer.GetOpenFolderPath());
             }
             auto subItems = m_intelliSense.QueryCompletions(docTarget, newLine, newPos.col, pDoc ? &pDoc->buffer.GetLines() : nullptr);
             if (!subItems.empty()) {
@@ -13726,6 +13731,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                             std::wstring docTarget = pDoc->filePath.empty() ? pDoc->fileName : pDoc->filePath;
                             if (m_drawer.HasOpenFolder()) {
                                 m_intelliSense.SetWorkspaceRoot(m_drawer.GetOpenFolderPath());
+                                m_editor.SetWorkspaceRoot(m_drawer.GetOpenFolderPath());
                             }
                             auto items = m_intelliSense.QueryCompletions(docTarget, lineText, pos.col, pDoc ? &pDoc->buffer.GetLines() : nullptr);
                             if (!items.empty()) {
@@ -13924,6 +13930,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     std::wstring docTarget = pDoc->filePath.empty() ? pDoc->fileName : pDoc->filePath;
                     if (m_drawer.HasOpenFolder()) {
                         m_intelliSense.SetWorkspaceRoot(m_drawer.GetOpenFolderPath());
+                        m_editor.SetWorkspaceRoot(m_drawer.GetOpenFolderPath());
                     }
                     auto items = m_intelliSense.QueryCompletions(docTarget, lineText, pos.col, pDoc ? &pDoc->buffer.GetLines() : nullptr);
                     if (!items.empty()) {

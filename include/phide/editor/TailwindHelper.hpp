@@ -6,6 +6,10 @@
 #include <cstdint>
 #include <algorithm>
 #include <cwctype>
+#include <filesystem>
+#include <fstream>
+#include <chrono>
+#include <mutex>
 
 namespace phide::editor {
 
@@ -278,7 +282,138 @@ public:
         return s_candidates;
     }
 
+    static void InvalidateCache() {
+        std::lock_guard<std::mutex> lock(s_cacheMutex);
+        s_cachedRoot.clear();
+        s_lastCheck = {};
+        s_cachedResult = false;
+    }
+
+    /**
+     * @brief Checks if Tailwind CSS is connected to the workspace, file, or buffer snippet.
+     * Tailwind is considered connected if:
+     * 1. The buffer snippet contains cdn.tailwindcss.com, @tailwind, or @import "tailwindcss"
+     * 2. The file path contains "tailwind"
+     * 3. The workspace contains tailwind.config.*, postcss.config.*, package.json with "tailwindcss", or root tailwind files.
+     */
+    static bool IsTailwindConnected(
+        const std::wstring& workspaceRoot,
+        const std::wstring& filePath = L"",
+        const std::wstring_view& bufferSnippet = {}
+    ) {
+        // 1. Direct buffer snippet check (fast in-memory)
+        if (!bufferSnippet.empty()) {
+            if (bufferSnippet.find(L"cdn.tailwindcss.com") != std::wstring_view::npos ||
+                bufferSnippet.find(L"tailwindcss.com") != std::wstring_view::npos ||
+                bufferSnippet.find(L"@tailwind") != std::wstring_view::npos ||
+                bufferSnippet.find(L"@import \"tailwindcss\"") != std::wstring_view::npos ||
+                bufferSnippet.find(L"@import 'tailwindcss'") != std::wstring_view::npos) {
+                return true;
+            }
+        }
+
+        // 2. Direct file path check
+        if (!filePath.empty()) {
+            std::wstring fpLower = filePath;
+            for (auto& ch : fpLower) ch = static_cast<wchar_t>(towlower(ch));
+            if (fpLower.find(L"tailwind") != std::wstring::npos) {
+                return true;
+            }
+        }
+
+        // 3. Workspace root check with caching (valid for 2 seconds)
+        if (!workspaceRoot.empty()) {
+            auto now = std::chrono::steady_clock::now();
+            {
+                std::lock_guard<std::mutex> lock(s_cacheMutex);
+                if (s_cachedRoot == workspaceRoot && (now - s_lastCheck) < std::chrono::seconds(2)) {
+                    return s_cachedResult;
+                }
+            }
+
+            bool detected = CheckWorkspaceForTailwind(workspaceRoot);
+
+            {
+                std::lock_guard<std::mutex> lock(s_cacheMutex);
+                s_cachedRoot = workspaceRoot;
+                s_lastCheck = now;
+                s_cachedResult = detected;
+            }
+            return detected;
+        }
+
+        return false;
+    }
+
 private:
+    inline static std::mutex s_cacheMutex;
+    inline static std::wstring s_cachedRoot;
+    inline static std::chrono::steady_clock::time_point s_lastCheck{};
+    inline static bool s_cachedResult = false;
+
+    static bool CheckWorkspaceForTailwind(const std::wstring& workspaceRoot) {
+        std::error_code ec;
+        std::filesystem::path root(workspaceRoot);
+        if (!std::filesystem::exists(root, ec) || !std::filesystem::is_directory(root, ec)) {
+            return false;
+        }
+
+        // A) Standard Tailwind configuration files in workspace root
+        static const wchar_t* s_configFiles[] = {
+            L"tailwind.config.js",
+            L"tailwind.config.cjs",
+            L"tailwind.config.mjs",
+            L"tailwind.config.ts",
+            L"tailwind.config.json",
+            L"postcss.config.js",
+            L"postcss.config.cjs",
+            L"postcss.config.mjs"
+        };
+        for (const auto* cfg : s_configFiles) {
+            if (std::filesystem::exists(root / cfg, ec)) {
+                return true;
+            }
+        }
+
+        // B) package.json with "tailwindcss" dependency
+        std::filesystem::path pkgPath = root / L"package.json";
+        if (std::filesystem::exists(pkgPath, ec)) {
+            std::ifstream f(pkgPath, std::ios::binary);
+            if (f.is_open()) {
+                std::string s;
+                s.resize(8192);
+                f.read(&s[0], s.size());
+                s.resize(static_cast<size_t>(f.gcount()));
+                if (s.find("tailwindcss") != std::string::npos) {
+                    return true;
+                }
+            }
+        }
+
+        // C) Check root CSS/HTML/PHP files for @tailwind or cdn.tailwindcss.com
+        for (const auto& entry : std::filesystem::directory_iterator(root, ec)) {
+            if (entry.is_regular_file(ec)) {
+                auto ext = entry.path().extension().wstring();
+                for (auto& c : ext) c = static_cast<wchar_t>(towlower(c));
+                if (ext == L".css" || ext == L".html" || ext == L".php") {
+                    std::ifstream f(entry.path(), std::ios::binary);
+                    if (f.is_open()) {
+                        std::string s;
+                        s.resize(4096);
+                        f.read(&s[0], s.size());
+                        s.resize(static_cast<size_t>(f.gcount()));
+                        if (s.find("cdn.tailwindcss.com") != std::string::npos ||
+                            s.find("@tailwind") != std::string::npos ||
+                            s.find("tailwindcss") != std::string::npos) {
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
+
+        return false;
+    }
     static uint32_t GetColorFamilyHex(const std::wstring_view& name, int shadeIdx) {
         struct Fam { const wchar_t* name; uint32_t hex[11]; };
         static const Fam fams[] = {

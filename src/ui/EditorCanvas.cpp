@@ -128,7 +128,7 @@ static BetterCommentInfo ClassifyBetterComment(const std::wstring& lineStr, size
 }
 
 
-std::vector<LineColorSpan> EditorCanvas::ScanLineColors(const std::wstring& lineStr) {
+std::vector<LineColorSpan> EditorCanvas::ScanLineColors(const std::wstring& lineStr, bool enableTailwind) {
     std::vector<LineColorSpan> lineColors;
     size_t scanCIdx = 0;
     while (scanCIdx < lineStr.length()) {
@@ -197,15 +197,17 @@ std::vector<LineColorSpan> EditorCanvas::ScanLineColors(const std::wstring& line
                 size_t swatchCol = (colPos != std::wstring_view::npos) ? (scanCIdx + colPos + 1) : scanCIdx;
 
                 // 3a. Check Tailwind Color Class (e.g. bg-red-600, text-white, border-blue-400, bg-[#1D2E7E], dark:bg-black)
-                editor::TailwindColorInfo twInfo;
-                if (editor::TailwindHelper::TryParseClass(coreClass, twInfo)) {
-                    float r = ((twInfo.hex >> 16) & 0xFF) / 255.0f;
-                    float g = ((twInfo.hex >> 8) & 0xFF) / 255.0f;
-                    float b = (twInfo.hex & 0xFF) / 255.0f;
-                    float a = twInfo.hasAlpha ? twInfo.alpha : 1.0f;
-                    lineColors.push_back({ swatchCol, coreClass.length(), std::wstring(coreClass), D2D1::ColorF(r, g, b, a), ColorFormat::Hex, twInfo.hasAlpha });
-                    scanCIdx = tokEnd;
-                    continue;
+                if (enableTailwind) {
+                    editor::TailwindColorInfo twInfo;
+                    if (editor::TailwindHelper::TryParseClass(coreClass, twInfo)) {
+                        float r = ((twInfo.hex >> 16) & 0xFF) / 255.0f;
+                        float g = ((twInfo.hex >> 8) & 0xFF) / 255.0f;
+                        float b = (twInfo.hex & 0xFF) / 255.0f;
+                        float a = twInfo.hasAlpha ? twInfo.alpha : 1.0f;
+                        lineColors.push_back({ swatchCol, coreClass.length(), std::wstring(coreClass), D2D1::ColorF(r, g, b, a), ColorFormat::Hex, twInfo.hasAlpha });
+                        scanCIdx = tokEnd;
+                        continue;
+                    }
                 }
 
                 // 3b. Check CSS Named Colors (e.g. "red", "blue", "green", "coral", "yellow", etc.)
@@ -1609,6 +1611,21 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
     m_visibleColorSwatches.clear();
     m_visibleTodoCheckboxes.clear();
 
+    // Determine if Tailwind is connected to this document or workspace
+    bool isTailwind = false;
+    if (editor::TailwindHelper::IsTailwindConnected(m_workspaceRoot, doc.filePath)) {
+        isTailwind = true;
+    } else if (buffer.GetLineCount() > 0) {
+        size_t checkLines = (std::min)(buffer.GetLineCount(), static_cast<size_t>(50));
+        for (size_t li = 0; li < checkLines; ++li) {
+            const auto& lStr = buffer.GetLine(li);
+            if (lStr.find(L"tailwindcss") != std::wstring::npos || lStr.find(L"@tailwind") != std::wstring::npos) {
+                isTailwind = true;
+                break;
+            }
+        }
+    }
+
     // 1. Gutter Background & Divider
     if (config.showLineNumbers) {
         D2D1_RECT_F rcGutter = D2D1::RectF(canvasLeft, topY, canvasLeft + gutterW, clientHeight);
@@ -2120,7 +2137,7 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
         }
 
         // Discover in-context color tokens on line to compute visual column layout
-        auto lineColors = ScanLineColors(lineStr);
+        auto lineColors = ScanLineColors(lineStr, isTailwind);
 
         const float swatchSpan = config.ScaleF(14.0f);
         const float swatchSize = config.ScaleF(10.5f);
@@ -2573,7 +2590,8 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
             float swatchY = lineY + (lineH - swatchSize) / 2.0f;
             if (swatchX >= codeLeft - swatchSize && swatchX + swatchSize < codeRight) {
                 D2D1_RECT_F rcSwatch = D2D1::RectF(swatchX, swatchY, swatchX + swatchSize, swatchY + swatchSize);
-                D2D1_ROUNDED_RECT rrcSwatch = D2D1::RoundedRect(rcSwatch, 1.5f, 1.5f);
+                const float swatchRadius = (std::max)(3.0f, config.ScaleF(3.5f));
+                D2D1_ROUNDED_RECT rrcSwatch = D2D1::RoundedRect(rcSwatch, swatchRadius, swatchRadius);
 
                 if (cs.hasAlpha && cs.color.a < 0.999f) {
                     float half = swatchSize / 2.0f;
@@ -2582,8 +2600,7 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
                     pRT->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 1.0f), &bWhite);
                     pRT->CreateSolidColorBrush(D2D1::ColorF(0.82f, 0.82f, 0.82f, 1.0f), &bLightGray);
                     if (bWhite && bLightGray) {
-                        pRT->FillRectangle(D2D1::RectF(swatchX, swatchY, swatchX + half, swatchY + half), bWhite.Get());
-                        pRT->FillRectangle(D2D1::RectF(swatchX + half, swatchY + half, swatchX + swatchSize, swatchY + swatchSize), bWhite.Get());
+                        pRT->FillRoundedRectangle(rrcSwatch, bWhite.Get());
                         pRT->FillRectangle(D2D1::RectF(swatchX + half, swatchY, swatchX + swatchSize, swatchY + half), bLightGray.Get());
                         pRT->FillRectangle(D2D1::RectF(swatchX, swatchY + half, swatchX + half, swatchY + swatchSize), bLightGray.Get());
                     }
@@ -2739,7 +2756,7 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
         float caretX = codeLeft - scrollX + cursor.col * charW;
         if (cursor.line < buffer.GetLineCount()) {
             const auto& curLineStr = buffer.GetLine(cursor.line);
-            auto curLineColors = ScanLineColors(curLineStr);
+            auto curLineColors = ScanLineColors(curLineStr, isTailwind);
             caretX = codeLeft - scrollX + GetColumnVisualOffset(curLineStr, curLineColors, cursor.col, charW, swatchSpan, config.tabSize);
         }
         float caretY = topY + config.ScaleF(6.0f) + (visualCursorIdx - doc.scrollLine) * lineH;
@@ -2806,7 +2823,7 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
                     float secCaretX = codeLeft - scrollX + sec.cursor.col * charW;
                     if (sec.cursor.line < buffer.GetLineCount()) {
                         const auto& sLineStr = buffer.GetLine(sec.cursor.line);
-                        auto sColors = ScanLineColors(sLineStr);
+                        auto sColors = ScanLineColors(sLineStr, isTailwind);
                         secCaretX = codeLeft - scrollX + GetColumnVisualOffset(sLineStr, sColors, sec.cursor.col, charW, swatchSpan, config.tabSize);
                     }
                     float secCaretY = topY + config.ScaleF(6.0f) + (secVisualIdx - doc.scrollLine) * lineH;
@@ -3024,7 +3041,7 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
                 float textVisualW = 0.0f;
                 if (cursor.line < buffer.GetLineCount()) {
                     const auto& clText = buffer.GetLine(cursor.line);
-                    auto clColors = ScanLineColors(clText);
+                    auto clColors = ScanLineColors(clText, isTailwind);
                     const float swatchSpan = config.ScaleF(14.0f);
                     textVisualW = GetColumnVisualOffset(clText, clColors, clText.length(), charW, swatchSpan, config.tabSize);
                     if (theme.dwriteFactory && theme.fontCode) {
@@ -4186,7 +4203,21 @@ bool EditorCanvas::HitTestCodeArea(POINT pt, const app::AppConfig& config, const
     float relX = pt.x - (canvasLeft + gutterW + config.ScaleF(12.0f)) + doc.scrollOffsetX;
     if (relX < 0.0f) relX = 0.0f;
 
-    auto lineColors = ScanLineColors(lineStr);
+    bool isTailwind = false;
+    if (editor::TailwindHelper::IsTailwindConnected(m_workspaceRoot, doc.filePath)) {
+        isTailwind = true;
+    } else if (buffer.GetLineCount() > 0) {
+        size_t checkLines = (std::min)(buffer.GetLineCount(), static_cast<size_t>(50));
+        for (size_t li = 0; li < checkLines; ++li) {
+            const auto& lStr = buffer.GetLine(li);
+            if (lStr.find(L"tailwindcss") != std::wstring::npos || lStr.find(L"@tailwind") != std::wstring::npos) {
+                isTailwind = true;
+                break;
+            }
+        }
+    }
+
+    auto lineColors = ScanLineColors(lineStr, isTailwind);
     size_t col = 0;
     float bestDiff = 999999.0f;
     for (size_t c = 0; c <= lineStr.length(); ++c) {
@@ -7709,7 +7740,7 @@ void EditorCanvas::RenderAutocompletePopup(ID2D1RenderTarget* pRT, Theme& theme,
                 float sH = config.ScaleF(13.0f);
                 float sY = curDocY + config.ScaleF(2.0f);
                 D2D1_RECT_F rcDocSwatch = D2D1::RectF(docX + padX, sY, docX + padX + sW, sY + sH);
-                D2D1_ROUNDED_RECT rrcDocSwatch = D2D1::RoundedRect(rcDocSwatch, 2.0f, 2.0f);
+                D2D1_ROUNDED_RECT rrcDocSwatch = D2D1::RoundedRect(rcDocSwatch, config.ScaleF(3.5f), config.ScaleF(3.5f));
 
                 uint32_t c = selItem.colorHex;
                 float r = ((c >> 16) & 0xFF) / 255.0f;

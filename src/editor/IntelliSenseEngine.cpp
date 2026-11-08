@@ -3985,20 +3985,34 @@ std::vector<IntelliSenseItem> IntelliSenseEngine::QueryCompletions(
     }
 
     // Tailwind CSS IntelliSense completions: ONLY inside class="..." / className="..." attributes or CSS @apply
+    // AND only when Tailwind is connected to the workspace/project or current document
     bool isCssApplyContext = (insideStyle && currentLine.find(L"@apply") != std::wstring::npos);
     if ((isClassAttrContext || isCssApplyContext) && !insidePhp && !insideJsImportClause) {
-        static const auto allTailwindCandidates = TailwindHelper::GetAllCandidates();
-        for (const auto& tw : allTailwindCandidates) {
-            IntelliSenseItem item;
-            item.label = tw.name;
-            item.detail = tw.detail;
-            item.documentation = tw.doc;
-            item.isColor = tw.isColor;
-            item.colorHex = tw.hex;
-            item.kind = tw.isColor ? CompletionKind::Color : CompletionKind::Snippet;
-            item.origin = L"tailwind";
-            item.score = 2500;
-            rawCandidates.push_back(std::move(item));
+        bool isTailwind = TailwindHelper::IsTailwindConnected(m_workspaceRoot, fileName);
+        if (!isTailwind && pDocLines && !pDocLines->empty()) {
+            size_t checkLines = (std::min)(pDocLines->size(), static_cast<size_t>(50));
+            for (size_t li = 0; li < checkLines; ++li) {
+                const auto& dL = (*pDocLines)[li];
+                if (dL.find(L"tailwindcss") != std::wstring::npos || dL.find(L"@tailwind") != std::wstring::npos) {
+                    isTailwind = true;
+                    break;
+                }
+            }
+        }
+        if (isTailwind) {
+            static const auto allTailwindCandidates = TailwindHelper::GetAllCandidates();
+            for (const auto& tw : allTailwindCandidates) {
+                IntelliSenseItem item;
+                item.label = tw.name;
+                item.detail = tw.detail;
+                item.documentation = tw.doc;
+                item.isColor = tw.isColor;
+                item.colorHex = tw.hex;
+                item.kind = tw.isColor ? CompletionKind::Color : CompletionKind::Snippet;
+                item.origin = L"tailwind";
+                item.score = 2500;
+                rawCandidates.push_back(std::move(item));
+            }
         }
     }
 

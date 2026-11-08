@@ -15972,6 +15972,87 @@ run_test_102:
             std::cout << "  Passed: Tailwind color prefixes (bg-, text-, border-, shadow-, etc.) & arbitrary syntax verified" << std::endl;
         }
 
+        // Subtest 8d: Tailwind Project Connection Gating & Standard CSS Independence
+        {
+            phide::editor::TailwindHelper::InvalidateCache();
+
+            // 1. In php-crud-test (no tailwind config, no cdn), Tailwind is NOT connected
+            std::wstring phpCrudDir = L"C:/Users/Administrator/Downloads/php-crud-test";
+            std::wstring testHtmlPath = phpCrudDir + L"/test.html";
+            bool twConnectedPhpCrud = phide::editor::TailwindHelper::IsTailwindConnected(phpCrudDir, testHtmlPath);
+            assert(!twConnectedPhpCrud && "php-crud-test must NOT detect Tailwind connection");
+
+            // 2. In disconnected workspace: ScanLineColors with enableTailwind=false suppresses Tailwind class swatches
+            std::wstring htmlLine = L"<main class=\"hello text-red-600\" id=\"ng\"><div class=\"card\">";
+            auto spansNoTw = phide::ui::EditorCanvas::ScanLineColors(htmlLine, false);
+            assert(spansNoTw.empty() && "text-red-600 must NOT show a color swatch when Tailwind is not connected");
+
+            // 3. When Tailwind IS connected (via CDN or config), text-red-600 DOES show a color swatch
+            auto spansWithTw = phide::ui::EditorCanvas::ScanLineColors(htmlLine, true);
+            assert(spansWithTw.size() == 1 && spansWithTw[0].colorStr == L"text-red-600");
+
+            // 4. Standard CSS named colors (like blue in style.css) ALWAYS show a swatch regardless of Tailwind
+            std::wstring cssBlueLine = L"    background-color: blue;";
+            auto cssSpansNoTw = phide::ui::EditorCanvas::ScanLineColors(cssBlueLine, false);
+            assert(cssSpansNoTw.size() == 1 && cssSpansNoTw[0].colorStr == L"blue");
+            auto cssSpansWithTw = phide::ui::EditorCanvas::ScanLineColors(cssBlueLine, true);
+            assert(cssSpansWithTw.size() == 1 && cssSpansWithTw[0].colorStr == L"blue");
+
+            // 5. Standard hex colors ALWAYS show a swatch regardless of Tailwind
+            std::wstring cssHexLine = L"    color: #ff0000;";
+            auto hexSpans = phide::ui::EditorCanvas::ScanLineColors(cssHexLine, false);
+            assert(hexSpans.size() == 1 && hexSpans[0].colorStr == L"#ff0000");
+
+            // 6. Buffer snippet with CDN activates Tailwind connection
+            bool twSnippetCdn = phide::editor::TailwindHelper::IsTailwindConnected(L"", L"test.html", L"<script src=\"https://cdn.tailwindcss.com\"></script>");
+            assert(twSnippetCdn && "CDN script must activate Tailwind connection");
+
+            // 7. Buffer snippet with @tailwind activates Tailwind connection
+            bool twSnippetDirective = phide::editor::TailwindHelper::IsTailwindConnected(L"", L"style.css", L"@tailwind base;\n@tailwind components;\n@tailwind utilities;");
+            assert(twSnippetDirective && "@tailwind directive must activate Tailwind connection");
+
+            // 8. In cleavedb-browser (which has package.json with tailwindcss or tailwind.config.ts), Tailwind IS connected
+            phide::editor::TailwindHelper::InvalidateCache();
+            bool twCleave = phide::editor::TailwindHelper::IsTailwindConnected(L"C:/Users/Administrator/Downloads/cleavedb-browser");
+            assert(twCleave && "cleavedb-browser must detect Tailwind connection");
+
+            // 9. IntelliSense does NOT produce Tailwind candidates in non-Tailwind projects
+            phide::editor::IntelliSenseEngine engine;
+            engine.SetWorkspaceRoot(phpCrudDir);
+            std::vector<std::wstring> docLines = {
+                L"<!doctype html>",
+                L"<html><head><link rel=\"stylesheet\" href=\"style.css\" /></head>",
+                L"<body class=\"bg-\"></body></html>"
+            };
+            auto itemsNoTw = engine.QueryCompletions(testHtmlPath, L"<body class=\"bg-\">", 16, &docLines);
+            bool hasTwCandidate = false;
+            for (const auto& it : itemsNoTw) {
+                if (it.origin == L"tailwind") {
+                    hasTwCandidate = true;
+                    break;
+                }
+            }
+            assert(!hasTwCandidate && "Non-Tailwind project must NOT offer Tailwind autocomplete candidates");
+
+            // 10. When CDN is present in HTML, IntelliSense DOES offer Tailwind candidates
+            std::vector<std::wstring> docLinesCdn = {
+                L"<!doctype html>",
+                L"<html><head><script src=\"https://cdn.tailwindcss.com\"></script></head>",
+                L"<body class=\"bg-\"></body></html>"
+            };
+            auto itemsWithTw = engine.QueryCompletions(testHtmlPath, L"<body class=\"bg-\">", 16, &docLinesCdn);
+            bool hasTwCandidateWithCdn = false;
+            for (const auto& it : itemsWithTw) {
+                if (it.origin == L"tailwind") {
+                    hasTwCandidateWithCdn = true;
+                    break;
+                }
+            }
+            assert(hasTwCandidateWithCdn && "HTML with Tailwind CDN must provide Tailwind autocomplete candidates");
+
+            std::cout << "  Passed: Subtest 8d: Tailwind connection gating, workspace detection, and CSS independence verified" << std::endl;
+        }
+
         // Subtest 9: GraphView labels visible at 44% zoom
         {
             phide::ui::GraphView gv;
