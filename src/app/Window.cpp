@@ -12423,6 +12423,7 @@ void Window::HandleLButtonDown(POINT clientPt) {
                         if (m_editor.HitTestCodeArea(clientPt, m_config, doc, paneCanvasLeft, paneBottom, line, col)) {
                             doc.buffer.SetCursor(line, col);
                             UpdatePrediction();
+                            UpdateCssPeekHover(clientPt);
                             doc.targetHighlightLine = static_cast<size_t>(-1);
                             doc.targetHighlightLen = 0;
                             // Start drag text selection (Images 2, 3, 4)
@@ -14557,10 +14558,27 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                             pDoc->buffer.MoveCursorLeft();
                             MarkDocumentModified(pDoc);
                             if (pDoc->isDiffView) ComputeDiffHunks(*pDoc);
-                            m_editor.DismissAutocomplete();
                             m_editor.ClearGhostText();
                             EnsureCursorVisible();
-                            UpdatePrediction();
+                            if (ch == L'"' || ch == L'\'' || ch == L'`') {
+                                auto pos = pDoc->buffer.GetCursor();
+                                const auto& lineText = pDoc->buffer.GetLine(pos.line);
+                                std::wstring docTarget = pDoc->filePath.empty() ? pDoc->fileName : pDoc->filePath;
+                                if (m_drawer.HasOpenFolder()) {
+                                    m_intelliSense.SetWorkspaceRoot(m_drawer.GetOpenFolderPath());
+                                    m_editor.SetWorkspaceRoot(m_drawer.GetOpenFolderPath());
+                                }
+                                auto items = m_intelliSense.QueryCompletions(docTarget, lineText, pos.col, &pDoc->buffer.GetLines());
+                                if (!items.empty()) {
+                                    m_editor.ShowAutocomplete(items);
+                                } else {
+                                    m_editor.DismissAutocomplete();
+                                    UpdatePrediction();
+                                }
+                            } else {
+                                m_editor.DismissAutocomplete();
+                                UpdatePrediction();
+                            }
                             InvalidateRect(m_hwnd, nullptr, FALSE);
                             return 0;
                         }
@@ -16752,6 +16770,22 @@ std::vector<std::wstring> Window::SearchCssInText(const std::wstring& selector, 
             }
         }
 
+        // Ensure searchPos is not inside a comment /* ... */
+        size_t prevCommentOpen = cssText.rfind(L"/*", searchPos);
+        size_t prevCommentClose = cssText.rfind(L"*/", searchPos);
+        if (prevCommentOpen != std::wstring::npos && (prevCommentClose == std::wstring::npos || prevCommentOpen > prevCommentClose)) {
+            searchPos = afterPos;
+            continue;
+        }
+
+        // Ensure searchPos is not inside rule declarations { ... }
+        size_t prevOpen = cssText.rfind(L'{', searchPos);
+        size_t prevClose = cssText.rfind(L'}', searchPos);
+        if (prevOpen != std::wstring::npos && (prevClose == std::wstring::npos || prevOpen > prevClose)) {
+            searchPos = afterPos;
+            continue;
+        }
+
         // Find the opening brace '{'
         size_t braceOpen = cssText.find(L'{', searchPos);
         if (braceOpen == std::wstring::npos) break;
@@ -16796,86 +16830,150 @@ std::vector<std::wstring> Window::SearchCssInText(const std::wstring& selector, 
     return result;
 }
 
+static const std::wstring& GetCachedCssFileText(const std::filesystem::path& p) {
+    struct CachedText {
+        std::filesystem::file_time_type mtime{};
+        std::wstring text;
+    };
+    static std::unordered_map<std::wstring, CachedText> s_cache;
+    static const std::wstring s_empty;
+
+    std::error_code ec;
+    if (!std::filesystem::exists(p, ec) || !std::filesystem::is_regular_file(p, ec)) return s_empty;
+    auto mtime = std::filesystem::last_write_time(p, ec);
+    std::wstring key = p.wstring();
+    auto it = s_cache.find(key);
+    if (it != s_cache.end() && it->second.mtime == mtime) {
+        return it->second.text;
+    }
+
+    std::ifstream f(p, std::ios::binary);
+    if (!f.is_open()) return s_empty;
+    std::string s((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+    std::wstring ws;
+    if (!s.empty()) {
+        int wlen = MultiByteToWideChar(CP_UTF8, 0, s.data(), static_cast<int>(s.size()), nullptr, 0);
+        if (wlen > 0) {
+            ws.resize(wlen);
+            MultiByteToWideChar(CP_UTF8, 0, s.data(), static_cast<int>(s.size()), ws.data(), wlen);
+        } else {
+            ws.assign(s.begin(), s.end());
+        }
+    }
+    auto& entry = s_cache[key];
+    entry.mtime = mtime;
+    entry.text = std::move(ws);
+    return entry.text;
+}
+
 std::vector<std::wstring> Window::FindCssDefinition(const std::wstring& selector, const std::wstring& currentFilePath) {
     if (selector.empty()) return {};
 
-    // 1. Check open documents across all editor groups
-    for (const auto& group : m_editorGroups) {
-        for (const auto& doc : group.docs) {
-            std::wstring ext;
-            auto dot = doc.filePath.find_last_of(L'.');
-            if (dot != std::wstring::npos) ext = doc.filePath.substr(dot);
-            for (auto& c : ext) c = towlower(c);
-            if (ext == L".css" || ext == L".scss" || ext == L".less") {
-                auto res = SearchCssInText(selector, doc.buffer.GetText());
-                if (!res.empty()) return res;
-            }
-        }
-    }
-
-    // 2. Check linked stylesheet in current file directory or workspace
-    std::wstring folder = m_drawer.HasOpenFolder() ? m_drawer.GetOpenFolderPath() : L"";
-    if (folder.empty() && !currentFilePath.empty()) {
-        auto p = currentFilePath.find_last_of(L"\\/");
-        if (p != std::wstring::npos) folder = currentFilePath.substr(0, p);
-    }
-
-    if (!folder.empty()) {
-        // Common CSS file candidates
-        std::vector<std::wstring> candidateFiles = {
-            L"style.css", L"styles.css", L"main.css", L"app.css", L"index.css", L"global.css"
-        };
-        for (const auto& cName : candidateFiles) {
-            std::filesystem::path p = std::filesystem::path(folder) / cName;
-            std::error_code ec;
-            if (std::filesystem::exists(p, ec)) {
-                std::ifstream f(p, std::ios::binary);
-                if (f.is_open()) {
-                    std::string s((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
-                    std::wstring ws(s.begin(), s.end());
-                    auto res = SearchCssInText(selector, ws);
+    auto doSearch = [&](const std::wstring& query) -> std::vector<std::wstring> {
+        // 1. Check open documents across all editor groups
+        for (const auto& group : m_editorGroups) {
+            for (const auto& doc : group.docs) {
+                std::wstring ext;
+                auto dot = doc.filePath.find_last_of(L'.');
+                if (dot != std::wstring::npos) ext = doc.filePath.substr(dot);
+                for (auto& c : ext) c = towlower(c);
+                if (ext == L".css" || ext == L".scss" || ext == L".less") {
+                    auto res = SearchCssInText(query, doc.buffer.GetText());
                     if (!res.empty()) return res;
                 }
             }
         }
 
-        // Recursive scan of .css files in workspace (skipping heavy build/dependency folders)
-        try {
-            std::error_code ecIter;
-            std::filesystem::recursive_directory_iterator it(
-                folder, std::filesystem::directory_options::skip_permission_denied, ecIter);
-            std::filesystem::recursive_directory_iterator endIt;
-            int scannedCssFiles = 0;
-            for (; it != endIt && !ecIter && scannedCssFiles < 30; it.increment(ecIter)) {
-                if (it.depth() > 3) {
-                    it.disable_recursion_pending();
-                    continue;
+        // 2. Collect folders to search: document directory and workspace directory
+        std::vector<std::filesystem::path> searchDirs;
+        std::error_code ec;
+        if (!currentFilePath.empty()) {
+            std::filesystem::path cp(currentFilePath);
+            if (cp.has_parent_path() && std::filesystem::exists(cp.parent_path(), ec)) {
+                searchDirs.push_back(cp.parent_path());
+            }
+        }
+        if (m_drawer.HasOpenFolder()) {
+            std::filesystem::path wp(m_drawer.GetOpenFolderPath());
+            if (std::filesystem::exists(wp, ec)) {
+                bool alreadyIn = false;
+                for (const auto& d : searchDirs) {
+                    if (std::filesystem::equivalent(d, wp, ec)) { alreadyIn = true; break; }
                 }
-                if (it->is_directory(ecIter)) {
-                    std::wstring dName = it->path().filename().wstring();
-                    for (auto& c : dName) c = towlower(c);
-                    if (dName == L"node_modules" || dName == L".git" || dName == L".next" ||
-                        dName == L"dist" || dName == L"build" || dName == L"out" ||
-                        dName == L"vendor" || dName == L".phide" || dName == L".venv" || dName == L"venv") {
+                if (!alreadyIn) searchDirs.push_back(wp);
+            }
+        }
+
+        static const wchar_t* candidateFiles[] = {
+            L"style.css", L"styles.css", L"main.css", L"app.css", L"index.css", L"global.css", L"globals.css",
+            L"app/globals.css", L"src/app/globals.css", L"src/index.css", L"src/style.css", L"styles/globals.css"
+        };
+
+        for (const auto& dir : searchDirs) {
+            for (const auto* cName : candidateFiles) {
+                std::filesystem::path p = dir / cName;
+                const auto& ws = GetCachedCssFileText(p);
+                if (!ws.empty()) {
+                    auto res = SearchCssInText(query, ws);
+                    if (!res.empty()) return res;
+                }
+            }
+        }
+
+        // 3. Recursive scan of .css files in workspace (up to depth 4, skipping node_modules/.git/.next/build/dist)
+        if (m_drawer.HasOpenFolder()) {
+            std::wstring folder = m_drawer.GetOpenFolderPath();
+            try {
+                std::error_code ecIter;
+                std::filesystem::recursive_directory_iterator it(
+                    folder, std::filesystem::directory_options::skip_permission_denied, ecIter);
+                std::filesystem::recursive_directory_iterator endIt;
+                int scannedCssFiles = 0;
+                for (; it != endIt && !ecIter && scannedCssFiles < 35; it.increment(ecIter)) {
+                    if (it.depth() > 4) {
                         it.disable_recursion_pending();
+                        continue;
                     }
-                    continue;
-                }
-                if (it->is_regular_file(ecIter)) {
-                    auto pathStr = it->path().wstring();
-                    if (pathStr.ends_with(L".css")) {
-                        ++scannedCssFiles;
-                        std::ifstream f(it->path(), std::ios::binary);
-                        if (f.is_open()) {
-                            std::string s((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
-                            std::wstring ws(s.begin(), s.end());
-                            auto res = SearchCssInText(selector, ws);
-                            if (!res.empty()) return res;
+                    if (it->is_directory(ecIter)) {
+                        std::wstring dName = it->path().filename().wstring();
+                        for (auto& c : dName) c = towlower(c);
+                        if (dName == L"node_modules" || dName == L".git" || dName == L".next" ||
+                            dName == L"dist" || dName == L"build" || dName == L"out" ||
+                            dName == L"vendor" || dName == L".phide" || dName == L".venv" || dName == L"venv") {
+                            it.disable_recursion_pending();
+                        }
+                        continue;
+                    }
+                    if (it->is_regular_file(ecIter)) {
+                        auto pathStr = it->path().wstring();
+                        if (pathStr.ends_with(L".css")) {
+                            ++scannedCssFiles;
+                            const auto& ws = GetCachedCssFileText(it->path());
+                            if (!ws.empty()) {
+                                auto res = SearchCssInText(query, ws);
+                                if (!res.empty()) return res;
+                            }
                         }
                     }
                 }
-            }
-        } catch (...) {}
+            } catch (...) {}
+        }
+
+        return {};
+    };
+
+    // Primary search (e.g. ".hello" or "#my-id")
+    auto res = doSearch(selector);
+    if (!res.empty()) return res;
+
+    // Fallback: If selector starts with '.' (e.g. ".hello"), also search for bare selector "hello"
+    // in case it was declared as `hello { ... }` in style.css
+    if (selector.length() > 1 && selector[0] == L'.') {
+        std::wstring bare = selector.substr(1);
+        if (!bare.empty()) {
+            res = doSearch(bare);
+            if (!res.empty()) return res;
+        }
     }
 
     return {};
@@ -16906,6 +17004,15 @@ void Window::UpdateCssPeekHover(POINT clientPt) {
         }
     }
 
+    // Fallback: If mouse is not hovering directly over text, check active cursor position
+    if (targetLine == static_cast<size_t>(-1) && curDoc->buffer.GetLineCount() > 0) {
+        auto cur = curDoc->buffer.GetCursor();
+        if (cur.line < curDoc->buffer.GetLineCount()) {
+            targetLine = cur.line;
+            targetCol = cur.col;
+        }
+    }
+
     if (targetLine == static_cast<size_t>(-1) || targetLine >= curDoc->buffer.GetLineCount()) {
         if (curDoc->cssPeek.active) {
             curDoc->cssPeek.active = false;
@@ -16918,20 +17025,34 @@ void Window::UpdateCssPeekHover(POINT clientPt) {
     std::wstring selector;
     size_t wordStartCol = 0;
 
-    // Check class="..." or className="..."
-    std::vector<std::wstring> classKeys = { L"class=\"", L"class='", L"className=\"", L"className='" };
-    for (const auto& key : classKeys) {
+    // Check class="..." or className="..." or className={`...`} or className={"..."}
+    static const struct ClassKeyDef { const wchar_t* key; wchar_t closeQuote; } s_classKeys[] = {
+        { L"class=\"", L'"' }, { L"class='", L'\'' },
+        { L"className=\"", L'"' }, { L"className='", L'\'' },
+        { L"className={\"", L'"' }, { L"className={'", L'\'' },
+        { L"className={`", L'`' }, { L"className=`", L'`' }
+    };
+
+    for (const auto& ck : s_classKeys) {
+        size_t kLen = std::wcslen(ck.key);
         size_t kp = 0;
-        while ((kp = lineText.find(key, kp)) != std::wstring::npos) {
-            size_t valStart = kp + key.length();
-            wchar_t quoteCh = key.back();
-            size_t valEnd = lineText.find(quoteCh, valStart);
+        while ((kp = lineText.find(ck.key, kp)) != std::wstring::npos) {
+            size_t valStart = kp + kLen;
+            size_t valEnd = lineText.find(ck.closeQuote, valStart);
             if (valEnd != std::wstring::npos && targetCol >= valStart && targetCol <= valEnd) {
                 // Find token at targetCol
                 size_t p1 = targetCol;
-                while (p1 > valStart && lineText[p1 - 1] != L' ' && lineText[p1 - 1] != L'	') p1--;
+                while (p1 > valStart && lineText[p1 - 1] != L' ' && lineText[p1 - 1] != L'\t' && lineText[p1 - 1] != L'$' && lineText[p1 - 1] != L'{') p1--;
                 size_t p2 = targetCol;
-                while (p2 < valEnd && lineText[p2] != L' ' && lineText[p2] != L'	') p2++;
+                while (p2 < valEnd && lineText[p2] != L' ' && lineText[p2] != L'\t' && lineText[p2] != L'$' && lineText[p2] != L'}') p2++;
+
+                // If caret is immediately after a word (on space or closing quote), adjust p1/p2
+                if (p1 == p2 && targetCol > valStart && lineText[targetCol - 1] != L' ' && lineText[targetCol - 1] != L'\t') {
+                    p1 = targetCol - 1;
+                    while (p1 > valStart && lineText[p1 - 1] != L' ' && lineText[p1 - 1] != L'\t') p1--;
+                    p2 = targetCol;
+                }
+
                 if (p2 > p1) {
                     selector = L"." + lineText.substr(p1, p2 - p1);
                     wordStartCol = p1;
@@ -16954,9 +17075,14 @@ void Window::UpdateCssPeekHover(POINT clientPt) {
                 size_t valEnd = lineText.find(quoteCh, valStart);
                 if (valEnd != std::wstring::npos && targetCol >= valStart && targetCol <= valEnd) {
                     size_t p1 = targetCol;
-                    while (p1 > valStart && lineText[p1 - 1] != L' ' && lineText[p1 - 1] != L'	') p1--;
+                    while (p1 > valStart && lineText[p1 - 1] != L' ' && lineText[p1 - 1] != L'\t') p1--;
                     size_t p2 = targetCol;
-                    while (p2 < valEnd && lineText[p2] != L' ' && lineText[p2] != L'	') p2++;
+                    while (p2 < valEnd && lineText[p2] != L' ' && lineText[p2] != L'\t') p2++;
+                    if (p1 == p2 && targetCol > valStart && lineText[targetCol - 1] != L' ' && lineText[targetCol - 1] != L'\t') {
+                        p1 = targetCol - 1;
+                        while (p1 > valStart && lineText[p1 - 1] != L' ' && lineText[p1 - 1] != L'\t') p1--;
+                        p2 = targetCol;
+                    }
                     if (p2 > p1) {
                         selector = L"#" + lineText.substr(p1, p2 - p1);
                         wordStartCol = p1;

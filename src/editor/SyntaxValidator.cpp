@@ -2918,9 +2918,11 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidateReactAndESLint(const Buffe
 
                             // A generic type parameter in a call cannot have JSX attributes (e.g. key=, className=, onClick=)
                             bool hasJsxAttrs = (tagStr.find(L'=') != std::wstring::npos);
+                            // Inside JSX children prose (!jsxStack.empty() && jsxCurlyDepth == 0), <tag> is always JSX markup (e.g. <code>.exe</code>), never a TS generic type parameter
+                            bool canBeTsGeneric = (jsxStack.empty() || jsxCurlyDepth > 0);
 
                             // If tagStr contains type operators or generic syntax (; | & , { [ typeof keyof extends as) and has NO attributes, this is a TS generic type parameter
-                            if (!isClose && !hasJsxAttrs && (tagStr.find(L';') != std::wstring::npos ||
+                            if (canBeTsGeneric && !isClose && !hasJsxAttrs && (tagStr.find(L';') != std::wstring::npos ||
                                                              tagStr.find(L'|') != std::wstring::npos ||
                                                              tagStr.find(L'&') != std::wstring::npos ||
                                                              tagStr.find(L',') != std::wstring::npos ||
@@ -2948,7 +2950,7 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidateReactAndESLint(const Buffe
                             }
 
                             // Skip TypeScript primitive types (e.g. useRef<any>(null), useState<number>)
-                            if (!isClose && !hasJsxAttrs && tsTypeKeywords.count(tagName) > 0) {
+                            if (canBeTsGeneric && !isClose && !hasJsxAttrs && tsTypeKeywords.count(tagName) > 0) {
                                 if (tagEndLine > l) {
                                     l = tagEndLine;
                                     code = buffer.GetLine(l);
@@ -2957,8 +2959,8 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidateReactAndESLint(const Buffe
                                 continue;
                             }
 
-                            // Check what follows '>'. If followed by '(', ')', ';', ',', '=', '.', or ':' it's a generic call or type annotation
-                            if (!isClose && !hasJsxAttrs) {
+                            // Check what follows '>'. If followed by '(', ')', ';', ',', '=', '.', or ':' outside JSX prose, it's a generic call or type annotation
+                            if (canBeTsGeneric && !isClose && !hasJsxAttrs) {
                                 size_t nextCharIdx = tagEnd + 1;
                                 const std::wstring& targetLine = (tagEndLine > l) ? buffer.GetLine(tagEndLine) : code;
                                 while (nextCharIdx < targetLine.length() && iswspace(targetLine[nextCharIdx])) nextCharIdx++;

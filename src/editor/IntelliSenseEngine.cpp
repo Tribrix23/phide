@@ -2174,16 +2174,252 @@ static void ProvideIdCompletions(
     }
 }
 
+static bool IsStandardCssExcludedTagOrKeyword(const std::wstring& ident) {
+    if (ident.empty()) return true;
+    std::wstring low = ident;
+    for (auto& c : low) c = static_cast<wchar_t>(towlower(c));
+    static const std::unordered_set<std::wstring> s_excluded = {
+        // Universal / Root / Keyframes / Pseudo keywords
+        L"root", L"host", L"scope", L"from", L"to", L"after", L"before",
+        L"placeholder", L"selection", L"backdrop", L"marker", L"first-line", L"first-letter",
+        L"hover", L"focus", L"focus-visible", L"focus-within", L"active", L"visited",
+        L"disabled", L"checked", L"first-child", L"last-child", L"nth-child", L"not", L"is", L"where", L"has",
+        L"keyframes", L"media", L"supports", L"layer", L"import", L"font-face", L"charset", L"namespace", L"page", L"property",
+        // Standard HTML / SVG Element Tags (excluded when written without a leading dot, e.g. body, main, html, *)
+        L"html", L"head", L"title", L"base", L"link", L"meta", L"style", L"script", L"noscript", L"template", L"slot",
+        L"body", L"main", L"header", L"footer", L"nav", L"section", L"article", L"aside", L"address", L"hgroup", L"search",
+        L"h1", L"h2", L"h3", L"h4", L"h5", L"h6", L"p", L"hr", L"pre", L"blockquote",
+        L"ol", L"ul", L"menu", L"li", L"dl", L"dt", L"dd", L"figure", L"figcaption", L"div",
+        L"a", L"em", L"strong", L"small", L"s", L"cite", L"q", L"dfn", L"abbr", L"ruby", L"rt", L"rp",
+        L"data", L"time", L"code", L"var", L"samp", L"kbd", L"sub", L"sup", L"i", L"b", L"u", L"mark",
+        L"bdi", L"bdo", L"span", L"br", L"wbr", L"ins", L"del",
+        L"picture", L"source", L"img", L"iframe", L"embed", L"object", L"video", L"audio", L"track", L"map", L"area",
+        L"table", L"caption", L"colgroup", L"col", L"tbody", L"thead", L"tfoot", L"tr", L"td", L"th",
+        L"form", L"label", L"input", L"button", L"select", L"datalist", L"optgroup", L"option", L"textarea",
+        L"output", L"progress", L"meter", L"fieldset", L"legend", L"details", L"summary", L"dialog",
+        L"canvas", L"svg", L"path", L"g", L"rect", L"circle", L"ellipse", L"line", L"polyline", L"polygon",
+        L"text", L"tspan", L"defs", L"use", L"symbol", L"lineargradient", L"radialgradient", L"stop", L"clippath", L"mask", L"pattern"
+    };
+    return s_excluded.count(low) > 0;
+}
+
+struct CachedCssClassEntry {
+    std::wstring className;
+    std::wstring rulePreview;
+};
+
+struct CachedCssFileClasses {
+    std::filesystem::file_time_type mtime{};
+    std::vector<CachedCssClassEntry> classes;
+};
+
+static std::vector<CachedCssClassEntry> ParseCssClassesFromText(const std::wstring& cssText) {
+    std::vector<CachedCssClassEntry> out;
+    std::unordered_set<std::wstring> seen;
+
+    // 1. Strip /* ... */ comments while preserving structure
+    std::wstring clean;
+    clean.reserve(cssText.size());
+    for (size_t i = 0; i < cssText.size(); ) {
+        if (i + 1 < cssText.size() && cssText[i] == L'/' && cssText[i + 1] == L'*') {
+            size_t endC = cssText.find(L"*/", i + 2);
+            if (endC == std::wstring::npos) break;
+            i = endC + 2;
+            clean.push_back(L' ');
+            continue;
+        }
+        clean.push_back(cssText[i++]);
+    }
+
+    // 2. Walk CSS blocks to extract selectors at rule level (skipping @keyframes bodies and declaration blocks)
+    size_t n = clean.size();
+    size_t pos = 0;
+    while (pos < n) {
+        while (pos < n && iswspace(clean[pos])) pos++;
+        if (pos >= n) break;
+
+        if (clean[pos] == L'}' || clean[pos] == L';') {
+            pos++;
+            continue;
+        }
+
+        size_t nextBrace = clean.find(L'{', pos);
+        size_t nextSemi = clean.find(L';', pos);
+        size_t nextClose = clean.find(L'}', pos);
+
+        // If a closing brace comes before '{', step past it (e.g. closing an @media or @layer block)
+        if (nextClose != std::wstring::npos && (nextBrace == std::wstring::npos || nextClose < nextBrace)) {
+            pos = nextClose + 1;
+            continue;
+        }
+        // If a semicolon comes before '{', it's a top-level @import / @charset / CSS variable / declaration
+        if (nextSemi != std::wstring::npos && (nextBrace == std::wstring::npos || nextSemi < nextBrace)) {
+            pos = nextSemi + 1;
+            continue;
+        }
+        if (nextBrace == std::wstring::npos) break;
+
+        std::wstring header = clean.substr(pos, nextBrace - pos);
+        while (!header.empty() && iswspace(header.front())) header.erase(header.begin());
+        while (!header.empty() && iswspace(header.back())) header.pop_back();
+
+        // Find matching '}' for this '{'
+        int depth = 1;
+        size_t bodyEnd = nextBrace + 1;
+        bool hasNestedBraces = false;
+        while (bodyEnd < n && depth > 0) {
+            if (clean[bodyEnd] == L'{') {
+                depth++;
+                hasNestedBraces = true;
+            } else if (clean[bodyEnd] == L'}') {
+                depth--;
+            }
+            bodyEnd++;
+        }
+        size_t closeBracePos = (bodyEnd > 0) ? (bodyEnd - 1) : n;
+
+        if (!header.empty() && header[0] == L'@') {
+            std::wstring headerLow = header;
+            for (auto& c : headerLow) c = static_cast<wchar_t>(towlower(c));
+            if (headerLow.rfind(L"@keyframes", 0) == 0 ||
+                headerLow.rfind(L"@-webkit-keyframes", 0) == 0 ||
+                headerLow.rfind(L"@font-face", 0) == 0 ||
+                headerLow.rfind(L"@property", 0) == 0) {
+                // Skip entire @keyframes / @font-face block
+                pos = bodyEnd;
+                continue;
+            }
+            // For @media, @supports, @layer, @container: step inside the opening brace to parse inner rules
+            pos = nextBrace + 1;
+            continue;
+        }
+
+        // If this block contains nested rules (e.g. CSS nesting), still extract selectors from `header`,
+        // and extract preview from non-nested declarations.
+        std::wstring bodyStr = (closeBracePos > nextBrace + 1) ? clean.substr(nextBrace + 1, closeBracePos - nextBrace - 1) : L"";
+        std::wstring preview;
+        for (size_t bi = 0; bi < bodyStr.size() && preview.size() < 64; ++bi) {
+            wchar_t bc = bodyStr[bi];
+            if (bc == L'{') break;
+            if (bc == L'\r' || bc == L'\n' || bc == L'\t') bc = L' ';
+            if (bc == L' ' && (preview.empty() || preview.back() == L' ')) continue;
+            preview.push_back(bc);
+        }
+        while (!preview.empty() && iswspace(preview.back())) preview.pop_back();
+        if (preview.size() > 60) preview = preview.substr(0, 57) + L"...";
+
+        // Parse selectors in `header` (comma-separated)
+        // A) Extract all explicit `.className` selectors anywhere in `header`
+        for (size_t i = 0; i < header.size(); ) {
+            if (header[i] == L'.') {
+                // Ensure '.' is not inside a number like 0.5s
+                bool afterDigit = (i > 0 && iswdigit(header[i - 1]));
+                if (!afterDigit && i + 1 < header.size() && (iswalpha(header[i + 1]) || header[i + 1] == L'_' || header[i + 1] == L'-')) {
+                    size_t cStart = i + 1;
+                    size_t cEnd = cStart;
+                    while (cEnd < header.size() && (iswalnum(header[cEnd]) || header[cEnd] == L'-' || header[cEnd] == L'_')) {
+                        cEnd++;
+                    }
+                    std::wstring clsName = header.substr(cStart, cEnd - cStart);
+                    // Exclude standard root/universal keywords if someone wrote .root by mistake? Wait: `.root` is a valid class if prefixed with `.`, only exclude empty!
+                    if (!clsName.empty() && seen.insert(clsName).second) {
+                        out.push_back({ clsName, preview });
+                    }
+                    i = cEnd;
+                    continue;
+                }
+            }
+            i++;
+        }
+
+        // B) Also check each comma-separated selector part for a bare custom identifier (e.g. `hello { ... }` in style.css)
+        // Exclude standard HTML tags (body, main, html, div, etc.), universal `*`, `:root`, `#id`, `[attr]`, etc.
+        size_t sPos = 0;
+        while (sPos < header.size()) {
+            size_t comma = header.find(L',', sPos);
+            if (comma == std::wstring::npos) comma = header.size();
+            std::wstring part = header.substr(sPos, comma - sPos);
+            sPos = comma + 1;
+            while (!part.empty() && iswspace(part.front())) part.erase(part.begin());
+            while (!part.empty() && iswspace(part.back())) part.pop_back();
+            if (part.empty()) continue;
+
+            // Check if `part` starts with an identifier (no leading '.', '#', ':', '[', '*', '@')
+            if (iswalpha(part[0]) || part[0] == L'_') {
+                size_t idEnd = 0;
+                while (idEnd < part.size() && (iswalnum(part[idEnd]) || part[idEnd] == L'-' || part[idEnd] == L'_')) {
+                    idEnd++;
+                }
+                // Only treat bare identifier as a custom selector if the rest of `part` is empty or pseudo-class (e.g. `hello` or `hello:hover`)
+                std::wstring rest = part.substr(idEnd);
+                while (!rest.empty() && iswspace(rest.front())) rest.erase(rest.begin());
+                if (rest.empty() || rest[0] == L':') {
+                    std::wstring bareIdent = part.substr(0, idEnd);
+                    if (!IsStandardCssExcludedTagOrKeyword(bareIdent) && seen.insert(bareIdent).second) {
+                        out.push_back({ bareIdent, preview });
+                    }
+                }
+            }
+        }
+
+        pos = hasNestedBraces ? (nextBrace + 1) : bodyEnd;
+    }
+
+    return out;
+}
+
+static const std::vector<CachedCssClassEntry>& GetCachedCssClassesForFile(const std::filesystem::path& cssPath) {
+    static std::unordered_map<std::wstring, CachedCssFileClasses> s_cssClassCache;
+    static const std::vector<CachedCssClassEntry> s_empty;
+
+    std::error_code ec;
+    if (!std::filesystem::exists(cssPath, ec) || !std::filesystem::is_regular_file(cssPath, ec)) {
+        return s_empty;
+    }
+
+    auto mtime = std::filesystem::last_write_time(cssPath, ec);
+    std::wstring key = cssPath.wstring();
+    auto it = s_cssClassCache.find(key);
+    if (it != s_cssClassCache.end() && it->second.mtime == mtime) {
+        return it->second.classes;
+    }
+
+    std::ifstream ifs(cssPath, std::ios::binary);
+    if (!ifs) return s_empty;
+    std::string raw((std::istreambuf_iterator<char>(ifs)), std::istreambuf_iterator<char>());
+    std::wstring wText;
+    if (!raw.empty()) {
+        int wlen = MultiByteToWideChar(CP_UTF8, 0, raw.data(), static_cast<int>(raw.size()), nullptr, 0);
+        if (wlen > 0) {
+            wText.resize(wlen);
+            MultiByteToWideChar(CP_UTF8, 0, raw.data(), static_cast<int>(raw.size()), wText.data(), wlen);
+        } else {
+            wText.assign(raw.begin(), raw.end());
+        }
+    }
+
+    CachedCssFileClasses entry;
+    entry.mtime = mtime;
+    entry.classes = ParseCssClassesFromText(wText);
+    auto& stored = s_cssClassCache[key];
+    stored = std::move(entry);
+    return stored.classes;
+}
+
 static void ProvideClassCompletions(
     std::vector<IntelliSenseItem>& outCandidates,
     const std::vector<std::wstring>* pDocLines,
     const std::filesystem::path& baseDir,
-    const std::filesystem::path& projectRoot
+    const std::filesystem::path& projectRoot,
+    const std::wstring& currentLineText = L""
 ) {
     std::unordered_set<std::wstring> seenClasses;
 
     auto addClass = [&](const std::wstring& clsStr, const std::wstring& detail, int score = 2600) {
         if (clsStr.empty()) return;
+        // Never suggest universal/root/element tag names like body, main, html, *, root
+        if (clsStr == L"*" || clsStr[0] == L':' || clsStr[0] == L'@') return;
+        if (IsStandardCssExcludedTagOrKeyword(clsStr)) return;
         if (seenClasses.insert(clsStr).second) {
             IntelliSenseItem it;
             it.label = clsStr;
@@ -2196,81 +2432,196 @@ static void ProvideClassCompletions(
         }
     };
 
-    // 1. Scan current document lines for class="..." and CSS .class selectors
+    std::error_code ec;
+    std::vector<std::pair<std::filesystem::path, int>> cssFilesToScan; // (path, priorityScore)
+    std::unordered_set<std::wstring> queuedPaths;
+
+    auto queueCssFile = [&](const std::filesystem::path& p, int priorityScore) {
+        if (p.empty()) return;
+        std::error_code localEc;
+        if (!std::filesystem::exists(p, localEc) || !std::filesystem::is_regular_file(p, localEc)) return;
+        auto canon = std::filesystem::weakly_canonical(p, localEc);
+        std::wstring key = localEc ? p.wstring() : canon.wstring();
+        for (auto& c : key) c = static_cast<wchar_t>(towlower(c));
+        if (queuedPaths.insert(key).second) {
+            cssFilesToScan.push_back({ p, priorityScore });
+        }
+    };
+
+    // 1. Scan current document for:
+    //    - Linked CSS files (<link ... href="style.css"> or import "./globals.css")
+    //    - Inline <style> CSS rules
     if (pDocLines) {
+        std::wstring inlineCss;
+        bool inStyleBlock = false;
         for (const auto& line : *pDocLines) {
-            size_t cPos = 0;
-            while ((cPos = line.find(L"class=", cPos)) != std::wstring::npos) {
-                size_t qPos = cPos + 6;
-                while (qPos < line.length() && iswspace(line[qPos])) qPos++;
-                if (qPos < line.length() && (line[qPos] == L'"' || line[qPos] == L'\'')) {
-                    wchar_t qChar = line[qPos];
-                    size_t qEnd = line.find(qChar, qPos + 1);
-                    if (qEnd != std::wstring::npos && qEnd > qPos + 1) {
-                        std::wstring classesStr = line.substr(qPos + 1, qEnd - qPos - 1);
-                        size_t ws = 0;
-                        while (ws < classesStr.length()) {
-                            while (ws < classesStr.length() && iswspace(classesStr[ws])) ws++;
-                            size_t we = ws;
-                            while (we < classesStr.length() && !iswspace(classesStr[we])) we++;
-                            if (we > ws) {
-                                addClass(classesStr.substr(ws, we - ws), L"CSS Class (from document)", 2400);
+            // Check <link ... href="...css">
+            if (line.find(L"<link") != std::wstring::npos || line.find(L"href=") != std::wstring::npos) {
+                size_t hp = line.find(L"href=");
+                if (hp != std::wstring::npos) {
+                    size_t qStart = hp + 5;
+                    while (qStart < line.size() && iswspace(line[qStart])) qStart++;
+                    if (qStart < line.size() && (line[qStart] == L'"' || line[qStart] == L'\'')) {
+                        wchar_t qCh = line[qStart];
+                        size_t qEnd = line.find(qCh, qStart + 1);
+                        if (qEnd != std::wstring::npos && qEnd > qStart + 1) {
+                            std::wstring hrefVal = line.substr(qStart + 1, qEnd - qStart - 1);
+                            if (hrefVal.find(L".css") != std::wstring::npos) {
+                                // Strip query string if any
+                                size_t qm = hrefVal.find(L'?');
+                                if (qm != std::wstring::npos) hrefVal = hrefVal.substr(0, qm);
+                                if (!hrefVal.empty() && hrefVal[0] == L'/' && !projectRoot.empty()) {
+                                    queueCssFile(projectRoot / hrefVal.substr(1), 3500);
+                                    queueCssFile(projectRoot / L"public" / hrefVal.substr(1), 3500);
+                                }
+                                if (!baseDir.empty()) queueCssFile(baseDir / hrefVal, 3500);
+                                if (!projectRoot.empty()) queueCssFile(projectRoot / hrefVal, 3450);
                             }
-                            ws = we;
                         }
                     }
                 }
-                cPos += 6;
             }
 
-            // Find .class selectors
-            size_t dotPos = 0;
-            while ((dotPos = line.find(L'.', dotPos)) != std::wstring::npos) {
-                bool isSelectorStart = (dotPos == 0 || iswspace(line[dotPos - 1]) || line[dotPos - 1] == L',' || line[dotPos - 1] == L'>' || line[dotPos - 1] == L'+' || line[dotPos - 1] == L'~');
-                if (isSelectorStart && dotPos + 1 < line.length() && (iswalpha(line[dotPos + 1]) || line[dotPos + 1] == L'_')) {
-                    size_t cEnd = dotPos + 1;
-                    while (cEnd < line.length() && (iswalnum(line[cEnd]) || line[cEnd] == L'-' || line[cEnd] == L'_')) cEnd++;
-                    std::wstring clsVal = line.substr(dotPos + 1, cEnd - dotPos - 1);
-                    addClass(clsVal, L"CSS Class (." + clsVal + L")", 2700);
-                    dotPos = cEnd;
-                    continue;
+            // Check JS/TS CSS imports: import "./globals.css", import '@/app/globals.css', import styles from './landing.module.css'
+            if (line.find(L".css") != std::wstring::npos && (line.find(L"import") != std::wstring::npos || line.find(L"require") != std::wstring::npos)) {
+                size_t q1 = line.find_first_of(L"\"'");
+                if (q1 != std::wstring::npos) {
+                    wchar_t qCh = line[q1];
+                    size_t q2 = line.find(qCh, q1 + 1);
+                    if (q2 != std::wstring::npos && q2 > q1 + 1) {
+                        std::wstring impSpec = line.substr(q1 + 1, q2 - q1 - 1);
+                        if (impSpec.rfind(L"@/", 0) == 0 && !projectRoot.empty()) {
+                            queueCssFile(projectRoot / impSpec.substr(2), 3500);
+                            queueCssFile(projectRoot / L"src" / impSpec.substr(2), 3500);
+                        } else {
+                            if (!baseDir.empty()) queueCssFile(baseDir / impSpec, 3500);
+                            if (!projectRoot.empty()) queueCssFile(projectRoot / impSpec, 3450);
+                        }
+                    }
                 }
-                dotPos++;
+            }
+
+            // Collect inline <style>...</style> blocks
+            if (line.find(L"<style") != std::wstring::npos) inStyleBlock = true;
+            if (inStyleBlock) {
+                inlineCss += line + L"\n";
+            }
+            if (line.find(L"</style>") != std::wstring::npos) inStyleBlock = false;
+        }
+
+        if (!inlineCss.empty()) {
+            auto inlineClasses = ParseCssClassesFromText(inlineCss);
+            for (const auto& entry : inlineClasses) {
+                std::wstring det = entry.rulePreview.empty()
+                    ? L"CSS Class (inline <style>)"
+                    : (L"." + entry.className + L" { " + entry.rulePreview + L" } — inline <style>");
+                addClass(entry.className, det, 3500);
             }
         }
     }
 
-    // 2. Scan peer .css files in baseDir or projectRoot (e.g. style.css)
-    std::error_code ec;
-    std::vector<std::filesystem::path> searchDirs;
-    if (!baseDir.empty() && std::filesystem::exists(baseDir, ec)) searchDirs.push_back(baseDir);
-    if (!projectRoot.empty() && projectRoot != baseDir && std::filesystem::exists(projectRoot, ec)) searchDirs.push_back(projectRoot);
+    // 2. Priority CSS files in baseDir and projectRoot (style.css, globals.css, global.css, app/globals.css, src/app/globals.css, etc.)
+    static const wchar_t* s_priorityCssNames[] = {
+        L"style.css", L"styles.css", L"globals.css", L"global.css", L"index.css", L"app.css", L"main.css",
+        L"app/globals.css", L"app/global.css", L"src/app/globals.css", L"src/app/global.css",
+        L"src/index.css", L"src/App.css", L"src/styles.css", L"src/style.css", L"styles/globals.css", L"styles/global.css"
+    };
+    for (const wchar_t* relName : s_priorityCssNames) {
+        if (!baseDir.empty()) queueCssFile(baseDir / relName, 3400);
+        if (!projectRoot.empty()) queueCssFile(projectRoot / relName, 3350);
+    }
 
-    for (const auto& sDir : searchDirs) {
-        int scanned = 0;
-        for (std::filesystem::directory_iterator it(sDir, ec); !ec && it != std::filesystem::directory_iterator() && scanned < 10; it.increment(ec)) {
+    // 3. All .css files in baseDir (same directory as the HTML/React file)
+    if (!baseDir.empty() && std::filesystem::exists(baseDir, ec)) {
+        int localCount = 0;
+        for (std::filesystem::directory_iterator it(baseDir, ec); !ec && it != std::filesystem::directory_iterator() && localCount < 25; it.increment(ec)) {
             if (!it->is_regular_file(ec)) continue;
             auto p = it->path();
-            if (p.extension() != L".css") continue;
-            scanned++;
-            std::ifstream ifs(p, std::ios::binary);
-            if (!ifs) continue;
-            std::string u8Line;
-            size_t lineCount = 0;
-            while (std::getline(ifs, u8Line) && lineCount++ < 300) {
-                std::wstring wLine(u8Line.begin(), u8Line.end());
-                size_t dotPos = 0;
-                while ((dotPos = wLine.find(L'.', dotPos)) != std::wstring::npos) {
-                    bool isSelectorStart = (dotPos == 0 || iswspace(wLine[dotPos - 1]) || wLine[dotPos - 1] == L',' || wLine[dotPos - 1] == L'>' || wLine[dotPos - 1] == L'+' || wLine[dotPos - 1] == L'~');
-                    if (isSelectorStart && dotPos + 1 < wLine.length() && (iswalpha(wLine[dotPos + 1]) || wLine[dotPos + 1] == L'_')) {
-                        size_t cEnd = dotPos + 1;
-                        while (cEnd < wLine.length() && (iswalnum(wLine[cEnd]) || wLine[cEnd] == L'-' || wLine[cEnd] == L'_')) cEnd++;
-                        std::wstring clsVal = wLine.substr(dotPos + 1, cEnd - dotPos - 1);
-                        addClass(clsVal, L"CSS Class (." + clsVal + L") from " + p.filename().wstring(), 2800);
-                        dotPos = cEnd;
-                        continue;
+            std::wstring ext = p.extension().wstring();
+            for (auto& c : ext) c = static_cast<wchar_t>(towlower(c));
+            if (ext == L".css") {
+                localCount++;
+                queueCssFile(p, 3380);
+            }
+        }
+    }
+
+    // 4. All .css files across the workspace (up to depth 4, skipping node_modules/.next/dist/build/etc.)
+    if (!projectRoot.empty() && std::filesystem::exists(projectRoot, ec)) {
+        try {
+            std::error_code ecIter;
+            std::filesystem::recursive_directory_iterator it(
+                projectRoot, std::filesystem::directory_options::skip_permission_denied, ecIter);
+            std::filesystem::recursive_directory_iterator endIt;
+            int wsCssCount = 0;
+            for (; it != endIt && !ecIter && wsCssCount < 40; it.increment(ecIter)) {
+                if (it.depth() > 4) {
+                    it.disable_recursion_pending();
+                    continue;
+                }
+                if (it->is_directory(ecIter)) {
+                    std::wstring dName = it->path().filename().wstring();
+                    for (auto& c : dName) c = static_cast<wchar_t>(towlower(c));
+                    if (dName == L"node_modules" || dName == L".git" || dName == L".next" ||
+                        dName == L"dist" || dName == L"build" || dName == L"out" ||
+                        dName == L"vendor" || dName == L".phide" || dName == L".venv" || dName == L"venv") {
+                        it.disable_recursion_pending();
                     }
-                    dotPos++;
+                    continue;
+                }
+                if (it->is_regular_file(ecIter)) {
+                    auto p = it->path();
+                    std::wstring ext = p.extension().wstring();
+                    for (auto& c : ext) c = static_cast<wchar_t>(towlower(c));
+                    if (ext == L".css") {
+                        wsCssCount++;
+                        queueCssFile(p, 3250);
+                    }
+                }
+            }
+        } catch (...) {}
+    }
+
+    // 5. Populate classes from all queued CSS files using mtime cache
+    for (const auto& [cssPath, prioScore] : cssFilesToScan) {
+        const auto& cssEntries = GetCachedCssClassesForFile(cssPath);
+        std::wstring fileNameStr = cssPath.filename().wstring();
+        for (const auto& entry : cssEntries) {
+            std::wstring det = entry.rulePreview.empty()
+                ? (L"CSS Class from " + fileNameStr)
+                : (L"." + entry.className + L" { " + entry.rulePreview + L" } — " + fileNameStr);
+            addClass(entry.className, det, prioScore);
+        }
+    }
+
+    // 6. Also scan existing class="..." and className="..." in the current document (skipping the line currently being edited)
+    if (pDocLines) {
+        for (const auto& line : *pDocLines) {
+            if (!currentLineText.empty() && line == currentLineText) continue;
+            for (const wchar_t* attrKey : { L"class=", L"className=" }) {
+                size_t keyLen = std::wcslen(attrKey);
+                size_t cPos = 0;
+                while ((cPos = line.find(attrKey, cPos)) != std::wstring::npos) {
+                    size_t qPos = cPos + keyLen;
+                    while (qPos < line.length() && iswspace(line[qPos])) qPos++;
+                    if (qPos < line.length() && (line[qPos] == L'"' || line[qPos] == L'\'')) {
+                        wchar_t qChar = line[qPos];
+                        size_t qEnd = line.find(qChar, qPos + 1);
+                        if (qEnd != std::wstring::npos && qEnd > qPos + 1) {
+                            std::wstring classesStr = line.substr(qPos + 1, qEnd - qPos - 1);
+                            size_t ws = 0;
+                            while (ws < classesStr.length()) {
+                                while (ws < classesStr.length() && iswspace(classesStr[ws])) ws++;
+                                size_t we = ws;
+                                while (we < classesStr.length() && !iswspace(classesStr[we])) we++;
+                                if (we > ws) {
+                                    addClass(classesStr.substr(ws, we - ws), L"CSS Class (from document)", 2400);
+                                }
+                                ws = we;
+                            }
+                        }
+                    }
+                    cPos += keyLen;
                 }
             }
         }
@@ -2730,9 +3081,14 @@ std::vector<IntelliSenseItem> IntelliSenseEngine::QueryCompletions(
             insideHtmlTag = true;
         }
     }
-    if (insideHtmlTag && isInsideQuotes && openQuotePos != std::wstring::npos) {
+    if ((isHtml || isJs || isPhp) && isInsideQuotes && openQuotePos != std::wstring::npos) {
         size_t eqPos = openQuotePos;
         while (eqPos > 0 && iswspace(currentLine[eqPos - 1])) eqPos--;
+        // Also support JSX className={"..."} or className={`...`}
+        if (eqPos > 0 && currentLine[eqPos - 1] == L'{') {
+            eqPos--;
+            while (eqPos > 0 && iswspace(currentLine[eqPos - 1])) eqPos--;
+        }
         if (eqPos > 0 && currentLine[eqPos - 1] == L'=') {
             eqPos--; // skip '='
             while (eqPos > 0 && iswspace(currentLine[eqPos - 1])) eqPos--;
@@ -2742,8 +3098,14 @@ std::vector<IntelliSenseItem> IntelliSenseEngine::QueryCompletions(
                 nameStart--;
             }
             if (nameEnd > nameStart) {
-                enclosingAttrName = currentLine.substr(nameStart, nameEnd - nameStart);
-                for (auto& chA : enclosingAttrName) chA = static_cast<wchar_t>(towlower(chA));
+                std::wstring candAttr = currentLine.substr(nameStart, nameEnd - nameStart);
+                for (auto& chA : candAttr) chA = static_cast<wchar_t>(towlower(chA));
+                if (insideHtmlTag || candAttr == L"class" || candAttr == L"classname" || candAttr == L"id" ||
+                    candAttr == L"style" || candAttr == L"href" || candAttr == L"src" || candAttr == L"type" ||
+                    candAttr == L"rel" || candAttr == L"target" || candAttr == L"method" || candAttr == L"htmlfor") {
+                    enclosingAttrName = candAttr;
+                    insideHtmlTag = true;
+                }
             }
         }
     }
@@ -2771,9 +3133,9 @@ std::vector<IntelliSenseItem> IntelliSenseEngine::QueryCompletions(
 
     std::vector<IntelliSenseItem> rawCandidates;
 
-    // 0. Include matching user & built-in snippets (exclude HTML markup snippets when inside <?php ... ?> code or right after '<')
+    // 0. Include matching user & built-in snippets (exclude HTML markup snippets when inside <?php ... ?> code, inside quotes, or right after '<')
     std::wstring extNoDot = ext.empty() ? L"" : (ext[0] == L'.' ? ext.substr(1) : ext);
-    if (m_pSnippetManager && !afterDoubleColon && !afterArrow && !afterDot && !insideServerKey && !afterOpenAngle) {
+    if (m_pSnippetManager && !isInsideQuotes && !afterDoubleColon && !afterArrow && !afterDot && !insideServerKey && !afterOpenAngle) {
         for (const auto& snip : m_pSnippetManager->GetSnippets()) {
             if (insidePhp && snip.scope != L"php") continue;
             if (SnippetManager::MatchesScope(snip.scope, extNoDot)) {
@@ -3464,14 +3826,14 @@ std::vector<IntelliSenseItem> IntelliSenseEngine::QueryCompletions(
                     }
                 }
             } else {
-                bool isJsx = (ext == L".jsx" || ext == L".tsx" || (isJs && (currentLine.find(L"<") != std::wstring::npos)));
+                bool isJsx = (ext == L".jsx" || ext == L".tsx" || (isJs && (currentLine.find(L"<") != std::wstring::npos || insideHtmlTag)));
                 size_t lastOpenTag = currentLine.rfind(L'<', cursorCol > 0 ? cursorCol - 1 : 0);
                 size_t lastCloseTag = currentLine.rfind(L'>', cursorCol > 0 ? cursorCol - 1 : 0);
-                bool insideTag = isJsx && (lastOpenTag != std::wstring::npos && (lastCloseTag == std::wstring::npos || lastOpenTag > lastCloseTag));
+                bool insideTag = isJsx && ((lastOpenTag != std::wstring::npos && (lastCloseTag == std::wstring::npos || lastOpenTag > lastCloseTag)) || insideHtmlTag);
 
                 if (insideTag) {
-                    size_t spaceAfterOpen = currentLine.find_first_of(L" \t", lastOpenTag);
-                    if (spaceAfterOpen == std::wstring::npos || cursorCol <= spaceAfterOpen) {
+                    size_t spaceAfterOpen = (lastOpenTag != std::wstring::npos) ? currentLine.find_first_of(L" \t", lastOpenTag) : 0;
+                    if (lastOpenTag != std::wstring::npos && (spaceAfterOpen == std::wstring::npos || cursorCol <= spaceAfterOpen)) {
                         // Tag name inside JSX: <div, <Camera, <Button, etc.
                         for (const auto& imp : importedDocSymbols) {
                             if (imp.kind == CompletionKind::Class || imp.kind == CompletionKind::Function) {
@@ -3504,7 +3866,7 @@ std::vector<IntelliSenseItem> IntelliSenseEngine::QueryCompletions(
                         if (isIdAttrContext) {
                             ProvideIdCompletions(rawCandidates, pDocLines, baseDir, projectRoot);
                         } else if (isClassAttrContext) {
-                            ProvideClassCompletions(rawCandidates, pDocLines, baseDir, projectRoot);
+                            ProvideClassCompletions(rawCandidates, pDocLines, baseDir, projectRoot, currentLine);
                         }
                     }
                 } else {
@@ -3526,13 +3888,13 @@ std::vector<IntelliSenseItem> IntelliSenseEngine::QueryCompletions(
         // Check context on line: if typing after '<' or in tag
         size_t lastOpenTag = currentLine.rfind(L'<', cursorCol > 0 ? cursorCol - 1 : 0);
         size_t lastCloseTag = currentLine.rfind(L'>', cursorCol > 0 ? cursorCol - 1 : 0);
-        bool insideTag = (lastOpenTag != std::wstring::npos && (lastCloseTag == std::wstring::npos || lastOpenTag > lastCloseTag));
+        bool insideTag = (lastOpenTag != std::wstring::npos && (lastCloseTag == std::wstring::npos || lastOpenTag > lastCloseTag)) || insideHtmlTag;
 
         if (insideTag) {
             insideTagAttr = true;
             // Tag name or attributes
-            size_t spaceAfterOpen = currentLine.find_first_of(L" \t", lastOpenTag);
-            if (spaceAfterOpen == std::wstring::npos || cursorCol <= spaceAfterOpen) {
+            size_t spaceAfterOpen = (lastOpenTag != std::wstring::npos) ? currentLine.find_first_of(L" \t", lastOpenTag) : 0;
+            if (lastOpenTag != std::wstring::npos && (spaceAfterOpen == std::wstring::npos || cursorCol <= spaceAfterOpen)) {
                 for (const auto& tag : m_htmlTags) {
                     IntelliSenseItem it = tag;
                     it.score += 1200;
@@ -3548,7 +3910,7 @@ std::vector<IntelliSenseItem> IntelliSenseEngine::QueryCompletions(
                 if (isIdAttrContext) {
                     ProvideIdCompletions(rawCandidates, pDocLines, baseDir, projectRoot);
                 } else if (isClassAttrContext) {
-                    ProvideClassCompletions(rawCandidates, pDocLines, baseDir, projectRoot);
+                    ProvideClassCompletions(rawCandidates, pDocLines, baseDir, projectRoot, currentLine);
                 } else if (enclosingAttrName == L"type") {
                     ProvideHtmlTypeCompletions(rawCandidates);
                 } else if (enclosingAttrName == L"rel") {
@@ -4026,22 +4388,24 @@ std::vector<IntelliSenseItem> IntelliSenseEngine::QueryCompletions(
         for (auto& pi : pluginItems) {
             rawCandidates.push_back(std::move(pi));
         }
-        auto pluginSnippets = phide::plugin::PluginManager::Instance().GetContributedSnippets();
-        for (const auto& sn : pluginSnippets) {
-            if (SnippetManager::MatchesScope(sn.scope, ext)) {
-                IntelliSenseItem sItem;
-                sItem.label = sn.prefix;
-                sItem.detail = sn.description.empty() ? sn.name : sn.description;
-                std::wstring joined;
-                for (size_t i = 0; i < sn.body.size(); ++i) {
-                    if (i > 0) joined += L"\n";
-                    joined += sn.body[i];
+        if (!isInsideQuotes) {
+            auto pluginSnippets = phide::plugin::PluginManager::Instance().GetContributedSnippets();
+            for (const auto& sn : pluginSnippets) {
+                if (SnippetManager::MatchesScope(sn.scope, ext)) {
+                    IntelliSenseItem sItem;
+                    sItem.label = sn.prefix;
+                    sItem.detail = sn.description.empty() ? sn.name : sn.description;
+                    std::wstring joined;
+                    for (size_t i = 0; i < sn.body.size(); ++i) {
+                        if (i > 0) joined += L"\n";
+                        joined += sn.body[i];
+                    }
+                    sItem.insertText = joined;
+                    sItem.kind = CompletionKind::Snippet;
+                    sItem.origin = L"plugin-snippet";
+                    sItem.score = 120;
+                    rawCandidates.push_back(std::move(sItem));
                 }
-                sItem.insertText = joined;
-                sItem.kind = CompletionKind::Snippet;
-                sItem.origin = L"plugin-snippet";
-                sItem.score = 120;
-                rawCandidates.push_back(std::move(sItem));
             }
         }
     }
