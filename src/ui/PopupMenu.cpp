@@ -517,6 +517,7 @@ void PopupMenu::BuildViewMenuItems(const app::AppConfig& config, bool isSidebarO
     layoutItem.submenuItems.push_back({ MenuActionId::LayoutTwoRows,           L"Two Rows",                   L"",               false, false,                  false, true, {}, {} });
     layoutItem.submenuItems.push_back({ MenuActionId::LayoutThreeRows,         L"Three Rows",                 L"",               false, false,                  false, true, {}, {} });
     layoutItem.submenuItems.push_back({ MenuActionId::LayoutGrid2x2,           L"Grid (2x2)",                 L"",               false, false,                  false, true, {}, {} });
+    layoutItem.submenuItems.push_back({ MenuActionId::LayoutTwoRowsLeft,       L"Two Rows Left",              L"",               false, false,                  false, true, {}, {} });
     layoutItem.submenuItems.push_back({ MenuActionId::LayoutTwoRowsRight,      L"Two Rows Right",             L"",               false, false,                  false, true, {}, {} });
     layoutItem.submenuItems.push_back({ MenuActionId::LayoutTwoColumnsBottom,   L"Two Columns Bottom",         L"",               false, false,                  false, true, {}, {} });
     // --- Submenu Separator ---

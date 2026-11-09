@@ -388,4 +388,385 @@ struct EditorGroup {
     int lastScrolledActiveDocIdx = -1;   ///< Tracks last active doc idx to only auto-scroll into view when active tab changes
 };
 
+/**
+ * @enum EditorSplitLayout
+ * @brief Windows-style 2D multi-pane arrangements for editor groups.
+ */
+enum class EditorSplitLayout : int {
+    Single = 0,             ///< 1 Pane: [0] full canvas
+    TwoColumns = 1,         ///< 2 Panes: [0] Left, [1] Right
+    ThreeColumns = 2,       ///< 3 Panes: [0] Left, [1] Center, [2] Right
+    TwoRows = 3,            ///< 2 Panes: [0] Top, [1] Bottom
+    ThreeRows = 4,          ///< 3 Panes: [0] Top, [1] Middle, [2] Bottom
+    LeftSplitRightFull = 5, ///< 3 Panes: [0] Top-Left, [1] Bottom-Left, [2] Right-Full (Windows Snap / User screenshot)
+    LeftFullRightSplit = 6, ///< 3 Panes: [0] Left-Full, [1] Top-Right, [2] Bottom-Right
+    TopFullBottomSplit = 7, ///< 3 Panes: [0] Top-Full, [1] Bottom-Left, [2] Bottom-Right
+    TopSplitBottomFull = 8, ///< 3 Panes: [0] Top-Left, [1] Top-Right, [2] Bottom-Full
+    Grid2x2 = 9             ///< 4 Panes: [0] Top-Left, [1] Bottom-Left, [2] Top-Right, [3] Bottom-Right
+};
+
+/**
+ * @enum TabSnapZone
+ * @brief Target drop zone when dragging an editor tab across the workspace.
+ */
+enum class TabSnapZone : int {
+    None = 0,
+    TabBar = 1,             ///< Reorder/insert into target pane's tab strip
+    Center = 2,             ///< Drop into existing target pane
+    Left = 3,               ///< Snap to Left half
+    Right = 4,              ///< Snap to Right half
+    Top = 5,                ///< Snap to Top half
+    Bottom = 6,             ///< Snap to Bottom half
+    TopLeft = 7,            ///< Snap to Top-Left quadrant (LeftSplitRightFull / Grid2x2)
+    BottomLeft = 8,         ///< Snap to Bottom-Left quadrant (LeftSplitRightFull / Grid2x2)
+    TopRight = 9,           ///< Snap to Top-Right quadrant (LeftFullRightSplit / Grid2x2)
+    BottomRight = 10,       ///< Snap to Bottom-Right quadrant (LeftFullRightSplit / Grid2x2)
+    SnapBarSlot = 11        ///< Dropped directly onto a slot in the top-center Windows Snap Layout Bar
+};
+
+/**
+ * @struct EditorSplitterSegment
+ * @brief Lightweight stack-allocated descriptor for a draggable divider between panes.
+ */
+struct EditorSplitterSegment {
+    int id = 0;             ///< 1 = X1, 2 = X2, 3 = Y1, 4 = Y2
+    bool isVertical = true; ///< true = vertical divider (IDC_SIZEWE), false = horizontal divider (IDC_SIZENS)
+    float x1 = 0.0f;
+    float y1 = 0.0f;
+    float x2 = 0.0f;
+    float y2 = 0.0f;
+};
+
+/**
+ * @struct SnapBarSlot
+ * @brief Stack-allocated descriptor for a single target box inside the Windows 11 Snap Layout Bar.
+ */
+struct SnapBarSlot {
+    EditorSplitLayout layout = EditorSplitLayout::TwoColumns;
+    int zoneIdx = 0;
+    D2D1_RECT_F miniRect{};
+    D2D1_RECT_F previewRect{};
+};
+
+/**
+ * @struct EditorSplitState
+ * @brief Zero-allocation 2D split layout engine storing normalized splitter ratios.
+ */
+struct EditorSplitState {
+    EditorSplitLayout layout = EditorSplitLayout::Single;
+    float splitX1 = 0.50f;   ///< Primary vertical split ratio [0.15 .. 0.85]
+    float splitX2 = 0.6667f; ///< Secondary vertical split ratio (for ThreeColumns)
+    float splitY1 = 0.50f;   ///< Primary horizontal split ratio (Left column Y or Top/Bottom Y)
+    float splitY2 = 0.50f;   ///< Secondary horizontal split ratio (Right column Y or ThreeRows Y2)
+
+    static constexpr int GetLayoutGroupCount(EditorSplitLayout mode) noexcept {
+        switch (mode) {
+            case EditorSplitLayout::Single: return 1;
+            case EditorSplitLayout::TwoColumns:
+            case EditorSplitLayout::TwoRows: return 2;
+            case EditorSplitLayout::ThreeColumns:
+            case EditorSplitLayout::ThreeRows:
+            case EditorSplitLayout::LeftSplitRightFull:
+            case EditorSplitLayout::LeftFullRightSplit:
+            case EditorSplitLayout::TopFullBottomSplit:
+            case EditorSplitLayout::TopSplitBottomFull: return 3;
+            case EditorSplitLayout::Grid2x2: return 4;
+        }
+        return 1;
+    }
+
+    void NormalizeLayoutForCount(size_t count) noexcept {
+        if (count <= 1) {
+            layout = EditorSplitLayout::Single;
+        } else if (count == 2) {
+            if (layout != EditorSplitLayout::TwoColumns && layout != EditorSplitLayout::TwoRows) {
+                layout = EditorSplitLayout::TwoColumns;
+            }
+        } else if (count == 3) {
+            if (layout != EditorSplitLayout::LeftSplitRightFull &&
+                layout != EditorSplitLayout::LeftFullRightSplit &&
+                layout != EditorSplitLayout::ThreeColumns &&
+                layout != EditorSplitLayout::ThreeRows &&
+                layout != EditorSplitLayout::TopFullBottomSplit &&
+                layout != EditorSplitLayout::TopSplitBottomFull) {
+                layout = EditorSplitLayout::LeftSplitRightFull;
+            }
+        } else {
+            layout = EditorSplitLayout::Grid2x2;
+        }
+    }
+
+    void ComputeGroupBounds(std::vector<EditorGroup>& groups,
+                            float canvasLeft, float topY, float canvasWidth, float bottomY,
+                            EditorSplitterSegment* outSegments = nullptr,
+                            size_t* outSegmentCount = nullptr) noexcept {
+        size_t count = groups.size();
+        if (outSegmentCount) *outSegmentCount = 0;
+        if (count == 0) return;
+
+        NormalizeLayoutForCount(count);
+        const float rightX = canvasLeft + (std::max)(20.0f, canvasWidth);
+        const float totalH = (std::max)(20.0f, bottomY - topY);
+
+        auto addSeg = [&](int id, bool isVert, float x1, float y1, float x2, float y2) {
+            if (outSegments && outSegmentCount && *outSegmentCount < 4) {
+                outSegments[*outSegmentCount] = { id, isVert, x1, y1, x2, y2 };
+                (*outSegmentCount)++;
+            }
+        };
+
+        if (count == 1) {
+            groups[0].bounds = D2D1::RectF(canvasLeft, topY, rightX, bottomY);
+            return;
+        }
+
+        if (count == 2) {
+            if (layout == EditorSplitLayout::TwoRows) {
+                splitY1 = (std::clamp)(splitY1, 0.15f, 0.85f);
+                float y1 = topY + std::round(totalH * splitY1);
+                groups[0].bounds = D2D1::RectF(canvasLeft, topY, rightX, y1);
+                groups[1].bounds = D2D1::RectF(canvasLeft, y1 + 1.0f, rightX, bottomY);
+                addSeg(3, false, canvasLeft, y1 + 0.5f, rightX, y1 + 0.5f);
+            } else {
+                splitX1 = (std::clamp)(splitX1, 0.15f, 0.85f);
+                float x1 = canvasLeft + std::round(canvasWidth * splitX1);
+                groups[0].bounds = D2D1::RectF(canvasLeft, topY, x1, bottomY);
+                groups[1].bounds = D2D1::RectF(x1 + 1.0f, topY, rightX, bottomY);
+                addSeg(1, true, x1 + 0.5f, topY, x1 + 0.5f, bottomY);
+            }
+            return;
+        }
+
+        if (count == 3) {
+            switch (layout) {
+                case EditorSplitLayout::LeftSplitRightFull: {
+                    splitX1 = (std::clamp)(splitX1, 0.15f, 0.85f);
+                    splitY1 = (std::clamp)(splitY1, 0.15f, 0.85f);
+                    float x1 = canvasLeft + std::round(canvasWidth * splitX1);
+                    float y1 = topY + std::round(totalH * splitY1);
+                    groups[0].bounds = D2D1::RectF(canvasLeft, topY, x1, y1);
+                    groups[1].bounds = D2D1::RectF(canvasLeft, y1 + 1.0f, x1, bottomY);
+                    groups[2].bounds = D2D1::RectF(x1 + 1.0f, topY, rightX, bottomY);
+                    addSeg(1, true, x1 + 0.5f, topY, x1 + 0.5f, bottomY);
+                    addSeg(3, false, canvasLeft, y1 + 0.5f, x1, y1 + 0.5f);
+                    break;
+                }
+                case EditorSplitLayout::LeftFullRightSplit: {
+                    splitX1 = (std::clamp)(splitX1, 0.15f, 0.85f);
+                    splitY2 = (std::clamp)(splitY2, 0.15f, 0.85f);
+                    float x1 = canvasLeft + std::round(canvasWidth * splitX1);
+                    float y2 = topY + std::round(totalH * splitY2);
+                    groups[0].bounds = D2D1::RectF(canvasLeft, topY, x1, bottomY);
+                    groups[1].bounds = D2D1::RectF(x1 + 1.0f, topY, rightX, y2);
+                    groups[2].bounds = D2D1::RectF(x1 + 1.0f, y2 + 1.0f, rightX, bottomY);
+                    addSeg(1, true, x1 + 0.5f, topY, x1 + 0.5f, bottomY);
+                    addSeg(4, false, x1 + 1.0f, y2 + 0.5f, rightX, y2 + 0.5f);
+                    break;
+                }
+                case EditorSplitLayout::TopFullBottomSplit: {
+                    splitY1 = (std::clamp)(splitY1, 0.15f, 0.85f);
+                    splitX1 = (std::clamp)(splitX1, 0.15f, 0.85f);
+                    float y1 = topY + std::round(totalH * splitY1);
+                    float x1 = canvasLeft + std::round(canvasWidth * splitX1);
+                    groups[0].bounds = D2D1::RectF(canvasLeft, topY, rightX, y1);
+                    groups[1].bounds = D2D1::RectF(canvasLeft, y1 + 1.0f, x1, bottomY);
+                    groups[2].bounds = D2D1::RectF(x1 + 1.0f, y1 + 1.0f, rightX, bottomY);
+                    addSeg(3, false, canvasLeft, y1 + 0.5f, rightX, y1 + 0.5f);
+                    addSeg(1, true, x1 + 0.5f, y1 + 1.0f, x1 + 0.5f, bottomY);
+                    break;
+                }
+                case EditorSplitLayout::TopSplitBottomFull: {
+                    splitY1 = (std::clamp)(splitY1, 0.15f, 0.85f);
+                    splitX1 = (std::clamp)(splitX1, 0.15f, 0.85f);
+                    float y1 = topY + std::round(totalH * splitY1);
+                    float x1 = canvasLeft + std::round(canvasWidth * splitX1);
+                    groups[0].bounds = D2D1::RectF(canvasLeft, topY, x1, y1);
+                    groups[1].bounds = D2D1::RectF(x1 + 1.0f, topY, rightX, y1);
+                    groups[2].bounds = D2D1::RectF(canvasLeft, y1 + 1.0f, rightX, bottomY);
+                    addSeg(3, false, canvasLeft, y1 + 0.5f, rightX, y1 + 0.5f);
+                    addSeg(1, true, x1 + 0.5f, topY, x1 + 0.5f, y1);
+                    break;
+                }
+                case EditorSplitLayout::ThreeRows: {
+                    splitY1 = (std::clamp)(splitY1, 0.14f, 0.70f);
+                    splitY2 = (std::clamp)(splitY2, splitY1 + 0.14f, 0.86f);
+                    float y1 = topY + std::round(totalH * splitY1);
+                    float y2 = topY + std::round(totalH * splitY2);
+                    groups[0].bounds = D2D1::RectF(canvasLeft, topY, rightX, y1);
+                    groups[1].bounds = D2D1::RectF(canvasLeft, y1 + 1.0f, rightX, y2);
+                    groups[2].bounds = D2D1::RectF(canvasLeft, y2 + 1.0f, rightX, bottomY);
+                    addSeg(3, false, canvasLeft, y1 + 0.5f, rightX, y1 + 0.5f);
+                    addSeg(4, false, canvasLeft, y2 + 0.5f, rightX, y2 + 0.5f);
+                    break;
+                }
+                case EditorSplitLayout::ThreeColumns:
+                default: {
+                    splitX1 = (std::clamp)(splitX1, 0.14f, 0.70f);
+                    splitX2 = (std::clamp)(splitX2, splitX1 + 0.14f, 0.86f);
+                    float x1 = canvasLeft + std::round(canvasWidth * splitX1);
+                    float x2 = canvasLeft + std::round(canvasWidth * splitX2);
+                    groups[0].bounds = D2D1::RectF(canvasLeft, topY, x1, bottomY);
+                    groups[1].bounds = D2D1::RectF(x1 + 1.0f, topY, x2, bottomY);
+                    groups[2].bounds = D2D1::RectF(x2 + 1.0f, topY, rightX, bottomY);
+                    addSeg(1, true, x1 + 0.5f, topY, x1 + 0.5f, bottomY);
+                    addSeg(2, true, x2 + 0.5f, topY, x2 + 0.5f, bottomY);
+                    break;
+                }
+            }
+            return;
+        }
+
+        // count >= 4: Grid2x2
+        splitX1 = (std::clamp)(splitX1, 0.15f, 0.85f);
+        splitY1 = (std::clamp)(splitY1, 0.15f, 0.85f);
+        splitY2 = (std::clamp)(splitY2, 0.15f, 0.85f);
+        float x1 = canvasLeft + std::round(canvasWidth * splitX1);
+        float y1 = topY + std::round(totalH * splitY1);
+        float y2 = topY + std::round(totalH * splitY2);
+        groups[0].bounds = D2D1::RectF(canvasLeft, topY, x1, y1);
+        groups[1].bounds = D2D1::RectF(canvasLeft, y1 + 1.0f, x1, bottomY);
+        groups[2].bounds = D2D1::RectF(x1 + 1.0f, topY, rightX, y2);
+        groups[3].bounds = D2D1::RectF(x1 + 1.0f, y2 + 1.0f, rightX, bottomY);
+        addSeg(1, true, x1 + 0.5f, topY, x1 + 0.5f, bottomY);
+        addSeg(3, false, canvasLeft, y1 + 0.5f, x1, y1 + 0.5f);
+        addSeg(4, false, x1 + 1.0f, y2 + 0.5f, rightX, y2 + 0.5f);
+    }
+
+    [[nodiscard]] int HitTestSplitter(POINT pt, const std::vector<EditorGroup>& groups,
+                                      float canvasLeft, float topY, float canvasWidth, float bottomY,
+                                      float tolerance = 5.0f) const noexcept {
+        if (groups.size() <= 1) return 0;
+        EditorSplitState temp = *this;
+        std::vector<EditorGroup> dummy(groups.size());
+        EditorSplitterSegment segs[4]{};
+        size_t segCount = 0;
+        temp.ComputeGroupBounds(dummy, canvasLeft, topY, canvasWidth, bottomY, segs, &segCount);
+
+        int hitVert = 0;
+        int hitHorz = 0;
+        float px = static_cast<float>(pt.x);
+        float py = static_cast<float>(pt.y);
+
+        for (size_t i = 0; i < segCount; ++i) {
+            const auto& s = segs[i];
+            if (s.isVertical) {
+                if (std::abs(px - s.x1) <= tolerance && py >= s.y1 - tolerance && py <= s.y2 + tolerance) {
+                    hitVert = s.id;
+                }
+            } else {
+                if (std::abs(py - s.y1) <= tolerance && px >= s.x1 - tolerance && px <= s.x2 + tolerance) {
+                    hitHorz = s.id;
+                }
+            }
+        }
+        if (hitVert > 0 && hitHorz > 0) return 5; // 2D Intersection (both X and Y)
+        if (hitVert > 0) return hitVert;
+        if (hitHorz > 0) return hitHorz;
+        return 0;
+    }
+
+    static void BuildSnapBarLayout(float canvasLeft, float topY, float canvasWidth, float bottomY, float scale,
+                                   SnapBarSlot* outSlots, size_t& outSlotCount, D2D1_RECT_F& outBarBounds) noexcept {
+        outSlotCount = 0;
+        const float itemW = 48.0f * scale;
+        const float itemH = 32.0f * scale;
+        const float gap = 8.0f * scale;
+        const float padX = 10.0f * scale;
+        const float padY = 7.0f * scale;
+        const int numLayouts = 5;
+        const float barW = padX * 2.0f + numLayouts * itemW + (numLayouts - 1) * gap;
+        const float barH = padY * 2.0f + itemH;
+        const float barX = canvasLeft + (canvasWidth - barW) * 0.5f;
+        const float barY = topY + 6.0f * scale;
+        outBarBounds = D2D1::RectF(barX, barY, barX + barW, barY + barH);
+
+        const float rightX = canvasLeft + canvasWidth;
+        const float midX = canvasLeft + canvasWidth * 0.5f;
+        const float midY = topY + (bottomY - topY) * 0.5f;
+        const float innerGap = 2.0f * scale;
+
+        auto addSlot = [&](EditorSplitLayout lay, int zIdx, D2D1_RECT_F mini, D2D1_RECT_F prev) {
+            if (outSlots && outSlotCount < 16) {
+                outSlots[outSlotCount++] = { lay, zIdx, mini, prev };
+            }
+        };
+
+        // 0: TwoColumns [ Left | Right ]
+        {
+            float lx = barX + padX + 0 * (itemW + gap);
+            float ly = barY + padY;
+            float hw = (itemW - innerGap) * 0.5f;
+            addSlot(EditorSplitLayout::TwoColumns, 0,
+                    D2D1::RectF(lx, ly, lx + hw, ly + itemH),
+                    D2D1::RectF(canvasLeft, topY, midX, bottomY));
+            addSlot(EditorSplitLayout::TwoColumns, 1,
+                    D2D1::RectF(lx + hw + innerGap, ly, lx + itemW, ly + itemH),
+                    D2D1::RectF(midX, topY, rightX, bottomY));
+        }
+        // 1: LeftSplitRightFull [ Top-Left / Bottom-Left | Right ] (User's screenshot!)
+        {
+            float lx = barX + padX + 1 * (itemW + gap);
+            float ly = barY + padY;
+            float hw = (itemW - innerGap) * 0.5f;
+            float hh = (itemH - innerGap) * 0.5f;
+            addSlot(EditorSplitLayout::LeftSplitRightFull, 0,
+                    D2D1::RectF(lx, ly, lx + hw, ly + hh),
+                    D2D1::RectF(canvasLeft, topY, midX, midY));
+            addSlot(EditorSplitLayout::LeftSplitRightFull, 1,
+                    D2D1::RectF(lx, ly + hh + innerGap, lx + hw, ly + itemH),
+                    D2D1::RectF(canvasLeft, midY, midX, bottomY));
+            addSlot(EditorSplitLayout::LeftSplitRightFull, 2,
+                    D2D1::RectF(lx + hw + innerGap, ly, lx + itemW, ly + itemH),
+                    D2D1::RectF(midX, topY, rightX, bottomY));
+        }
+        // 2: LeftFullRightSplit [ Left | Top-Right / Bottom-Right ]
+        {
+            float lx = barX + padX + 2 * (itemW + gap);
+            float ly = barY + padY;
+            float hw = (itemW - innerGap) * 0.5f;
+            float hh = (itemH - innerGap) * 0.5f;
+            addSlot(EditorSplitLayout::LeftFullRightSplit, 0,
+                    D2D1::RectF(lx, ly, lx + hw, ly + itemH),
+                    D2D1::RectF(canvasLeft, topY, midX, bottomY));
+            addSlot(EditorSplitLayout::LeftFullRightSplit, 1,
+                    D2D1::RectF(lx + hw + innerGap, ly, lx + itemW, ly + hh),
+                    D2D1::RectF(midX, topY, rightX, midY));
+            addSlot(EditorSplitLayout::LeftFullRightSplit, 2,
+                    D2D1::RectF(lx + hw + innerGap, ly + hh + innerGap, lx + itemW, ly + itemH),
+                    D2D1::RectF(midX, midY, rightX, bottomY));
+        }
+        // 3: TwoRows [ Top / Bottom ]
+        {
+            float lx = barX + padX + 3 * (itemW + gap);
+            float ly = barY + padY;
+            float hh = (itemH - innerGap) * 0.5f;
+            addSlot(EditorSplitLayout::TwoRows, 0,
+                    D2D1::RectF(lx, ly, lx + itemW, ly + hh),
+                    D2D1::RectF(canvasLeft, topY, rightX, midY));
+            addSlot(EditorSplitLayout::TwoRows, 1,
+                    D2D1::RectF(lx, ly + hh + innerGap, lx + itemW, ly + itemH),
+                    D2D1::RectF(canvasLeft, midY, rightX, bottomY));
+        }
+        // 4: Grid2x2 [ Top-Left / Bottom-Left | Top-Right / Bottom-Right ]
+        {
+            float lx = barX + padX + 4 * (itemW + gap);
+            float ly = barY + padY;
+            float hw = (itemW - innerGap) * 0.5f;
+            float hh = (itemH - innerGap) * 0.5f;
+            addSlot(EditorSplitLayout::Grid2x2, 0,
+                    D2D1::RectF(lx, ly, lx + hw, ly + hh),
+                    D2D1::RectF(canvasLeft, topY, midX, midY));
+            addSlot(EditorSplitLayout::Grid2x2, 1,
+                    D2D1::RectF(lx, ly + hh + innerGap, lx + hw, ly + itemH),
+                    D2D1::RectF(canvasLeft, midY, midX, bottomY));
+            addSlot(EditorSplitLayout::Grid2x2, 2,
+                    D2D1::RectF(lx + hw + innerGap, ly, lx + itemW, ly + hh),
+                    D2D1::RectF(midX, topY, rightX, midY));
+            addSlot(EditorSplitLayout::Grid2x2, 3,
+                    D2D1::RectF(lx + hw + innerGap, ly + hh + innerGap, lx + itemW, ly + itemH),
+                    D2D1::RectF(midX, midY, rightX, bottomY));
+        }
+    }
+};
+
 } // namespace phide::editor

@@ -20,7 +20,7 @@ namespace phide::ui {
 
 /**
  * @class WelcomeView
- * @brief Interactive full-canvas walkthrough tab ("Get started with Antigravity IDE").
+ * @brief Interactive full-canvas walkthrough tab ("Get started with Phide").
  * Allows new and returning users to pick their theme, choose editor fonts, and explore core features.
  */
 class WelcomeView {

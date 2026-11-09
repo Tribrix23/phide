@@ -491,6 +491,13 @@ void EditorCanvas::DiscardDeviceResources() {
     m_pWatermarkBitmap.Reset();
     m_pWatermarkBitmapLight.Reset();
     m_pCanvasGeometry.Reset();
+    m_pDropZoneFillBrush.Reset();
+    m_pDragShadowBrush.Reset();
+    m_pDragPillBgDarkBrush.Reset();
+    m_pDragPillBgLightBrush.Reset();
+    m_pSnapBarBgDarkBrush.Reset();
+    m_pSnapBarBgLightBrush.Reset();
+    m_pSnapSlotIdleBrush.Reset();
     m_learningHubBitmaps.clear();
     m_charWidth = 0.0f;
     m_cachedLeft = -1.0f;
@@ -580,53 +587,128 @@ void EditorCanvas::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
     // 1b. Render ambient theme visual effects (3D neon perspective grid, stars, matrix rain) across canvas
     RenderCanvasThemeEffects(pRT, theme, config, canvasLeft, canvasWidth, headerH + config.ScaleF(34.0f), clientHeight);
 
-    size_t numGroups = groups.size();
-    const float paneGap = 1.0f;
-    const float totalGaps = (numGroups > 1) ? static_cast<float>(numGroups - 1) * paneGap : 0.0f;
-    const float paneWidth = (canvasWidth - totalGaps) / static_cast<float>(numGroups);
+    // Lazily initialize cached drag & snap D2D brushes (zero per-frame heap/COM allocations)
+    if (!m_pDropZoneFillBrush) {
+        pRT->CreateSolidColorBrush(D2D1::ColorF(0.0f, 0.47f, 0.83f, 0.14f), &m_pDropZoneFillBrush);
+    }
+    if (!m_pDragShadowBrush) {
+        pRT->CreateSolidColorBrush(D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.40f), &m_pDragShadowBrush);
+    }
+    if (!m_pDragPillBgDarkBrush) {
+        pRT->CreateSolidColorBrush(D2D1::ColorF(0.18f, 0.18f, 0.20f, 0.98f), &m_pDragPillBgDarkBrush);
+    }
+    if (!m_pDragPillBgLightBrush) {
+        pRT->CreateSolidColorBrush(D2D1::ColorF(0.92f, 0.92f, 0.94f, 0.98f), &m_pDragPillBgLightBrush);
+    }
+    if (!m_pSnapBarBgDarkBrush) {
+        pRT->CreateSolidColorBrush(D2D1::ColorF(0.14f, 0.14f, 0.16f, 0.96f), &m_pSnapBarBgDarkBrush);
+    }
+    if (!m_pSnapBarBgLightBrush) {
+        pRT->CreateSolidColorBrush(D2D1::ColorF(0.95f, 0.95f, 0.97f, 0.96f), &m_pSnapBarBgLightBrush);
+    }
+    if (!m_pSnapSlotIdleBrush) {
+        pRT->CreateSolidColorBrush(D2D1::ColorF(0.45f, 0.48f, 0.54f, 0.28f), &m_pSnapSlotIdleBrush);
+    }
 
+    m_foldChevrons.clear();
+    m_visibleColorSwatches.clear();
+    m_visibleTodoCheckboxes.clear();
+
+    editor::EditorSplitterSegment splitterSegs[4]{};
+    size_t splitterSegCount = 0;
+    m_splitState.ComputeGroupBounds(groups, canvasLeft, headerH, canvasWidth, clientHeight, splitterSegs, &splitterSegCount);
+
+    size_t numGroups = groups.size();
     for (size_t g = 0; g < numGroups; ++g) {
-        float pLeft = canvasLeft + g * (paneWidth + paneGap);
-        float pWidth = (g == numGroups - 1) ? (canvasRight - pLeft) : paneWidth;
-        groups[g].bounds = D2D1::RectF(pLeft, headerH, pLeft + pWidth, clientHeight);
+        const D2D1_RECT_F& b = groups[g].bounds;
+        float pLeft = b.left;
+        float pWidth = (std::max)(10.0f, b.right - b.left);
+        float pTop = b.top;
+        float pBottom = b.bottom;
 
         bool isGroupFocused = (static_cast<int>(g) == focusedGroupIdx);
-        bool isFirstPane = (g == 0);
+        bool isTopLeftPane = (std::abs(pLeft - canvasLeft) < 2.0f && std::abs(pTop - headerH) < 2.0f);
 
         // Push clip rect for this editor group
-        pRT->PushAxisAlignedClip(groups[g].bounds, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+        pRT->PushAxisAlignedClip(b, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
 
         RenderSinglePane(pRT, theme, config, groups[g].docs, groups[g].activeDocIdx,
-                         pLeft, pWidth, headerH, clientHeight,
-                         (isFirstPane ? hasLeftDrawer : true), isGroupFocused,
+                         pLeft, pWidth, pTop, pBottom,
+                         (isTopLeftPane ? hasLeftDrawer : true), isGroupFocused,
                          highlightQuery, highlightMatchCase, highlightWholeWord, highlightUseRegex,
                          isRenaming, groups[g].tabScrollOffset, groups[g].totalTabsWidth, static_cast<int>(g),
                          &groups[g].tabScrollTrack, &groups[g].tabScrollThumb,
                          &groups[g].lastScrolledActiveDocIdx, groups[g].isDraggingTabScroll);
 
-        // Visual drop zone feedback when dragging a tab across split groups (Image 4 / User request)
-        if (m_isDraggingTab && m_tabDropTargetGroup == static_cast<int>(g) && m_dragTabGroup != static_cast<int>(g)) {
-            Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> dropZoneBrush;
-            pRT->CreateSolidColorBrush(D2D1::ColorF(0.0f, 0.47f, 0.83f, 0.08f), &dropZoneBrush);
-            if (dropZoneBrush) {
-                pRT->FillRectangle(groups[g].bounds, dropZoneBrush.Get());
+        pRT->PopAxisAlignedClip();
+    }
+
+    // Draw 1px vertical & horizontal splitter dividers between panes (plus hover/drag highlight)
+    for (size_t s = 0; s < splitterSegCount; ++s) {
+        const auto& seg = splitterSegs[s];
+        bool isHighlighted = (m_hoveredSplitterId == seg.id) ||
+                             (m_hoveredSplitterId == 5 && (seg.id == 1 || seg.id == 3 || seg.id == 4));
+        ID2D1Brush* pDivBrush = (isHighlighted && theme.brushBrandAccent)
+            ? theme.brushBrandAccent.Get()
+            : theme.brushBorderSubtle.Get();
+        float strokeW = isHighlighted ? config.ScaleF(2.5f) : 1.0f;
+        if (pDivBrush) {
+            pRT->DrawLine(D2D1::Point2F(seg.x1, seg.y1), D2D1::Point2F(seg.x2, seg.y2), pDivBrush, strokeW);
+        }
+    }
+
+    // Visual Windows-style snap zone preview overlay when dragging a tab
+    if (m_isDraggingTab) {
+        D2D1_RECT_F rcPreview = m_tabSnapPreviewRect;
+        if (m_tabSnapZone == editor::TabSnapZone::None || rcPreview.right <= rcPreview.left) {
+            if (m_tabDropTargetGroup >= 0 && m_tabDropTargetGroup < static_cast<int>(numGroups) &&
+                m_dragTabGroup != m_tabDropTargetGroup) {
+                rcPreview = groups[m_tabDropTargetGroup].bounds;
+            }
+        }
+        if (rcPreview.right > rcPreview.left + 4.0f && rcPreview.bottom > rcPreview.top + 4.0f) {
+            float pad = config.ScaleF(4.0f);
+            D2D1_RECT_F rcInset = D2D1::RectF(rcPreview.left + pad, rcPreview.top + pad,
+                                              rcPreview.right - pad, rcPreview.bottom - pad);
+            D2D1_ROUNDED_RECT rrcSnap = D2D1::RoundedRect(rcInset, config.ScaleF(6.0f), config.ScaleF(6.0f));
+            if (m_pDropZoneFillBrush) {
+                pRT->FillRoundedRectangle(rrcSnap, m_pDropZoneFillBrush.Get());
             }
             if (theme.brushBrandAccent) {
-                pRT->DrawRectangle(groups[g].bounds, theme.brushBrandAccent.Get(), 1.5f);
+                pRT->DrawRoundedRectangle(rrcSnap, theme.brushBrandAccent.Get(), config.ScaleF(1.8f));
             }
         }
 
-        pRT->PopAxisAlignedClip();
+        // Render Windows 11-style Snap Layout Bar at top-center of editor canvas
+        editor::SnapBarSlot snapSlots[16]{};
+        size_t snapSlotCount = 0;
+        D2D1_RECT_F rcSnapBar{};
+        editor::EditorSplitState::BuildSnapBarLayout(canvasLeft, headerH, canvasWidth, clientHeight,
+                                                     (config.dpiScale > 0.001f ? config.dpiScale : 1.0f),
+                                                     snapSlots, snapSlotCount, rcSnapBar);
+        if (snapSlotCount > 0 && canvasWidth > config.ScaleF(360.0f)) {
+            D2D1_ROUNDED_RECT rrcBarShadow = D2D1::RoundedRect(
+                D2D1::RectF(rcSnapBar.left + 2.0f, rcSnapBar.top + 3.0f, rcSnapBar.right + 2.0f, rcSnapBar.bottom + 3.0f),
+                config.ScaleF(7.0f), config.ScaleF(7.0f));
+            if (m_pDragShadowBrush) pRT->FillRoundedRectangle(rrcBarShadow, m_pDragShadowBrush.Get());
 
-        // 1px Vertical divider line between panes (Image 4)
-        if (g < numGroups - 1) {
-            float dividerX = pLeft + pWidth + 0.5f;
-            pRT->DrawLine(
-                D2D1::Point2F(dividerX, headerH),
-                D2D1::Point2F(dividerX, clientHeight),
-                theme.brushBorderSubtle.Get(),
-                1.0f
-            );
+            D2D1_ROUNDED_RECT rrcBar = D2D1::RoundedRect(rcSnapBar, config.ScaleF(7.0f), config.ScaleF(7.0f));
+            ID2D1Brush* pBarBg = theme.IsDarkMode() ? m_pSnapBarBgDarkBrush.Get() : m_pSnapBarBgLightBrush.Get();
+            if (pBarBg) pRT->FillRoundedRectangle(rrcBar, pBarBg);
+            if (theme.brushBorderSubtle) pRT->DrawRoundedRectangle(rrcBar, theme.brushBorderSubtle.Get(), 1.0f);
+
+            for (size_t i = 0; i < snapSlotCount; ++i) {
+                bool isSlotHov = (static_cast<int>(i) == m_hoveredSnapBarSlot);
+                D2D1_ROUNDED_RECT rrcSlot = D2D1::RoundedRect(snapSlots[i].miniRect, config.ScaleF(2.5f), config.ScaleF(2.5f));
+                ID2D1Brush* pSlotFill = isSlotHov
+                    ? (theme.brushBrandAccent ? theme.brushBrandAccent.Get() : m_pSnapSlotIdleBrush.Get())
+                    : m_pSnapSlotIdleBrush.Get();
+                if (pSlotFill) pRT->FillRoundedRectangle(rrcSlot, pSlotFill);
+                ID2D1Brush* pSlotBorder = isSlotHov
+                    ? (theme.brushTextWhite ? theme.brushTextWhite.Get() : theme.brushBrandAccent.Get())
+                    : (theme.brushTextMuted ? theme.brushTextMuted.Get() : theme.brushBorderSubtle.Get());
+                if (pSlotBorder) pRT->DrawRoundedRectangle(rrcSlot, pSlotBorder, isSlotHov ? 1.4f : 0.9f);
+            }
         }
     }
 
@@ -649,24 +731,18 @@ void EditorCanvas::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
         D2D1_RECT_F rcPill = D2D1::RectF(pillX, pillY, pillX + pillW, pillY + pillH);
         D2D1_ROUNDED_RECT rrcPill = D2D1::RoundedRect(rcPill, 4.0f, 4.0f);
 
-        // Elevated card drop shadow
-        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> shadowBrush;
-        pRT->CreateSolidColorBrush(D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.40f), &shadowBrush);
-        if (shadowBrush) {
+        // Elevated card drop shadow (cached brush)
+        if (m_pDragShadowBrush) {
             D2D1_ROUNDED_RECT rrcShadow = D2D1::RoundedRect(
                 D2D1::RectF(pillX + 2.0f, pillY + 3.0f, pillX + pillW + 2.0f, pillY + pillH + 3.0f),
                 4.0f, 4.0f
             );
-            pRT->FillRoundedRectangle(rrcShadow, shadowBrush.Get());
+            pRT->FillRoundedRectangle(rrcShadow, m_pDragShadowBrush.Get());
         }
 
-        // Pill background
-        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> pillBg;
-        pRT->CreateSolidColorBrush(
-            theme.IsDarkMode() ? D2D1::ColorF(0.18f, 0.18f, 0.20f, 0.98f) : D2D1::ColorF(0.92f, 0.92f, 0.94f, 0.98f),
-            &pillBg
-        );
-        if (pillBg) pRT->FillRoundedRectangle(rrcPill, pillBg.Get());
+        // Pill background (cached brush)
+        ID2D1Brush* pPillBg = theme.IsDarkMode() ? m_pDragPillBgDarkBrush.Get() : m_pDragPillBgLightBrush.Get();
+        if (pPillBg) pRT->FillRoundedRectangle(rrcPill, pPillBg);
 
         // Brand accent border
         if (theme.brushBrandAccent) {
@@ -952,8 +1028,9 @@ void EditorCanvas::RenderTabs(ID2D1RenderTarget* pRT, Theme& theme, const app::A
         );
     }
 
-    // First pass: Precalculate tab widths and total strip width for horizontal scrolling
-    std::vector<float> tabWidths(docs.size());
+    // First pass: Precalculate tab widths and total strip width for horizontal scrolling (reuse scratch buffer)
+    m_scratchTabWidths.resize(docs.size());
+    auto& tabWidths = m_scratchTabWidths;
     float sumW = 0.0f;
     for (size_t i = 0; i < docs.size(); ++i) {
         auto& doc = docs[i];
@@ -1612,10 +1689,6 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
         docExt = pathToExtract.substr(dotPos);
         for (auto& c : docExt) c = towlower(c);
     }
-
-    m_foldChevrons.clear();
-    m_visibleColorSwatches.clear();
-    m_visibleTodoCheckboxes.clear();
 
     // Determine if Tailwind is connected to this document or workspace
     bool isTailwind = false;
@@ -3802,7 +3875,7 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
         pRT->PopAxisAlignedClip();
     }
 
-    // 7. Diagnostic Error Hover Popover (VS Code / Antigravity style)
+    // 7. Diagnostic Error Hover Popover (Phide style)
     if (doc.hoveredDiagnosticLine != static_cast<size_t>(-1)) {
         const lsp::Diagnostic* pDiag = nullptr;
         for (const auto& d : doc.diagnostics) {
@@ -4040,14 +4113,26 @@ bool EditorCanvas::HitTestGutter(POINT pt, const app::AppConfig& config, const e
     if (!config.showLineNumbers) {
         return false;
     }
-    const float headerH = config.ScaleF(static_cast<float>(config.headerHeight));
+    float paneTop = config.ScaleF(static_cast<float>(config.headerHeight));
+    float paneBottom = clientHeight;
+    if (m_pCurrentGroups) {
+        for (const auto& grp : *m_pCurrentGroups) {
+            if (grp.activeDocIdx >= 0 && grp.activeDocIdx < static_cast<int>(grp.docs.size()) &&
+                &grp.docs[grp.activeDocIdx] == &doc && grp.bounds.right > grp.bounds.left) {
+                canvasLeft = grp.bounds.left;
+                paneTop = grp.bounds.top;
+                paneBottom = grp.bounds.bottom;
+                break;
+            }
+        }
+    }
     const float tabH    = config.ScaleF(34.0f);
     const float breadcrumbH = config.showBreadcrumbs ? config.ScaleF(24.0f) : 0.0f;
-    const float topY    = headerH + tabH + breadcrumbH;
+    const float topY    = paneTop + tabH + breadcrumbH;
     const float gutterW = config.showLineNumbers ? config.ScaleF(50.0f) : config.ScaleF(12.0f);
     const float lineH   = config.ScaleF(std::round(config.fontSize * config.lineHeightMultiplier));
 
-    if (pt.x < canvasLeft || pt.x >= canvasLeft + gutterW || pt.y < topY || pt.y > clientHeight) {
+    if (pt.x < canvasLeft || pt.x >= canvasLeft + gutterW || pt.y < topY || pt.y > paneBottom) {
         return false;
     }
 
@@ -4128,15 +4213,29 @@ bool EditorCanvas::HitTestGutter(POINT pt, const app::AppConfig& config, const e
 
 bool EditorCanvas::HitTestCodeArea(POINT pt, const app::AppConfig& config, const editor::OpenDocument& doc,
                                    float canvasLeft, float clientHeight, size_t& outLine, size_t& outCol) const {
-    const float headerH = config.ScaleF(static_cast<float>(config.headerHeight));
+    float paneTop = config.ScaleF(static_cast<float>(config.headerHeight));
+    float paneRight = canvasLeft + 99999.0f;
+    float paneBottom = clientHeight;
+    if (m_pCurrentGroups) {
+        for (const auto& grp : *m_pCurrentGroups) {
+            if (grp.activeDocIdx >= 0 && grp.activeDocIdx < static_cast<int>(grp.docs.size()) &&
+                &grp.docs[grp.activeDocIdx] == &doc && grp.bounds.right > grp.bounds.left) {
+                canvasLeft = grp.bounds.left;
+                paneTop = grp.bounds.top;
+                paneRight = grp.bounds.right;
+                paneBottom = grp.bounds.bottom;
+                break;
+            }
+        }
+    }
     const float tabH    = config.ScaleF(34.0f);
     const float breadcrumbH = config.showBreadcrumbs ? config.ScaleF(24.0f) : 0.0f;
-    const float topY    = headerH + tabH + breadcrumbH;
+    const float topY    = paneTop + tabH + breadcrumbH;
     const float gutterW = config.showLineNumbers ? config.ScaleF(50.0f) : config.ScaleF(12.0f);
     const float lineH   = config.ScaleF(std::round(config.fontSize * config.lineHeightMultiplier));
     const float charW   = (m_charWidth > 0.0f) ? m_charWidth : config.ScaleF(7.8f);
 
-    if (pt.x < canvasLeft + gutterW || pt.y < topY || pt.y > clientHeight) {
+    if (pt.x < canvasLeft + gutterW || pt.x > paneRight || pt.y < topY || pt.y > paneBottom) {
         return false;
     }
 

@@ -673,10 +673,17 @@ private:
     HANDLE m_hWatcherThread = nullptr;
     HANDLE m_hWatcherStopEvent = nullptr;
 
-    // Multi-Editor Groups Architecture (Up to 3 columns)
+    // Multi-Editor Groups Architecture (2D Resizable Split Layouts, up to 4 panes)
     std::vector<editor::EditorGroup> m_editorGroups;
     int m_focusedGroupIdx = 0;
     int m_untitledCounter = 0;
+    editor::EditorSplitState m_splitState{};
+    int m_activeEditorSplitter = 0;
+    void SetEditorSplitLayout(editor::EditorSplitLayout mode);
+    void UpdateEditorGroupBounds() noexcept;
+    [[nodiscard]] int FindEditorGroupAtPoint(POINT pt) const noexcept;
+    [[nodiscard]] int HitTestEditorSplitter(POINT pt) const noexcept;
+    void TransitionLayoutOnGroupRemoved(int removedGroupIdx) noexcept;
 
     bool m_trackingMouse = false;
     bool m_wordWrap = false;
@@ -750,12 +757,15 @@ private:
     int m_explorerDropTargetIndex = -1;
     bool m_explorerDropTargetIsRoot = false;
 
-    // Tab Drag & Drop Reordering State (Image 2)
+    // Tab Drag & Drop Reordering & Windows Snap State
     bool m_isDraggingTab = false;
     int m_dragTabGroup = -1;
     int m_dragTabIdx = -1;
     int m_tabDropTargetGroup = -1;
     int m_tabDropTargetIdx = -1;
+    editor::TabSnapZone m_tabSnapZone = editor::TabSnapZone::None;
+    int m_hoveredSnapBarSlot = -1;
+    D2D1_RECT_F m_tabSnapPreviewRect{};
     POINT m_dragTabStartPt{ 0, 0 };
     POINT m_dragTabCurrentPt{ 0, 0 };
 

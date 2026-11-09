@@ -349,6 +349,19 @@ public:
     }
     [[nodiscard]] bool IsDraggingTab() const noexcept { return m_isDraggingTab; }
 
+    void SetSplitState(const editor::EditorSplitState& state) noexcept { m_splitState = state; }
+    [[nodiscard]] const editor::EditorSplitState& GetSplitState() const noexcept { return m_splitState; }
+    [[nodiscard]] editor::EditorSplitState& GetSplitState() noexcept { return m_splitState; }
+
+    void SetHoveredSplitterId(int id) noexcept { m_hoveredSplitterId = id; }
+    [[nodiscard]] int GetHoveredSplitterId() const noexcept { return m_hoveredSplitterId; }
+
+    void SetTabSnapPreview(editor::TabSnapZone zone, const D2D1_RECT_F& previewRect, int hoveredSnapBarSlot = -1) noexcept {
+        m_tabSnapZone = zone;
+        m_tabSnapPreviewRect = previewRect;
+        m_hoveredSnapBarSlot = hoveredSnapBarSlot;
+    }
+
     void SetWorkspaceRoot(const std::wstring& root) { m_workspaceRoot = root; }
     [[nodiscard]] const std::wstring& GetWorkspaceRoot() const noexcept { return m_workspaceRoot; }
 
@@ -529,6 +542,19 @@ private:
     editor::CodePrediction m_prediction{};
     D2D1_RECT_F m_crossFilePillBounds{ 0, 0, 0, 0 };
     bool m_crossFilePillHovered = false;
+    editor::EditorSplitState m_splitState{};
+    int m_hoveredSplitterId = 0;
+    editor::TabSnapZone m_tabSnapZone = editor::TabSnapZone::None;
+    D2D1_RECT_F m_tabSnapPreviewRect{};
+    int m_hoveredSnapBarSlot = -1;
+    std::vector<float> m_scratchTabWidths;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_pDropZoneFillBrush;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_pDragShadowBrush;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_pDragPillBgDarkBrush;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_pDragPillBgLightBrush;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_pSnapBarBgDarkBrush;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_pSnapBarBgLightBrush;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_pSnapSlotIdleBrush;
     std::vector<TodoCheckboxHit> m_visibleTodoCheckboxes;
 
     // Tab Drag & Drop State
@@ -667,6 +693,7 @@ public:
     void RunGarbageCollection() {
         m_foldChevrons.shrink_to_fit();
         m_visibleColorSwatches.shrink_to_fit();
+        m_scratchTabWidths.shrink_to_fit();
         m_visibleTodoCheckboxes.shrink_to_fit();
         m_autocompleteItems.shrink_to_fit();
         m_cachedBracketAnalysis.brackets.shrink_to_fit();

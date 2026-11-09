@@ -129,6 +129,7 @@ enum class MenuActionId {
     LayoutTwoRows,
     LayoutThreeRows,
     LayoutGrid2x2,
+    LayoutTwoRowsLeft,
     LayoutTwoRowsRight,
     LayoutTwoColumnsBottom,
     LayoutFlip,

@@ -290,8 +290,8 @@ void WelcomeView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCon
     float curY = top + config.ScaleF(32.0f) - m_scrollY;
 
     // 2. Header Section
-    // Title: "Get started with Antigravity IDE"
-    const wchar_t* titleStr = L"Get started with Antigravity IDE";
+    // Title: "Get started with Phide"
+    const wchar_t* titleStr = L"Get started with Phide";
     D2D1_RECT_F rcTitle = D2D1::RectF(startX, curY, startX + contentW, curY + config.ScaleF(32.0f));
     pRT->DrawText(titleStr, static_cast<UINT32>(wcslen(titleStr)), fmtHeader.Get(), rcTitle, theme.brushTextWhite.Get());
     curY += config.ScaleF(34.0f);
@@ -791,7 +791,7 @@ void WelcomeView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCon
         };
 
         const CodePreviewLine codeLines[] = {
-            { L"1", L"// Antigravity Typography Engine", false },
+            { L"1", L"// Phide Typography Engine", false },
             { L"2", L"import { IDETheme } from '@phide';", false },
             { L"3", L"", false },
             { L"4", L"function startEngine(): boolean {", false },

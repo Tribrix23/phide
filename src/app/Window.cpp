@@ -1023,10 +1023,173 @@ void Window::GetCanvasLayout(float clientW, float& outCanvasLeft, float& outCanv
     }
 }
 
+void Window::UpdateEditorGroupBounds() noexcept {
+    if (!m_hwnd || m_editorGroups.empty()) return;
+    RECT rc{};
+    GetClientRect(m_hwnd, &rc);
+    const float clientW = static_cast<float>(rc.right - rc.left);
+    const float clientH = static_cast<float>(rc.bottom - rc.top);
+    float canvasLeft = 0.0f, canvasWidth = 0.0f;
+    GetCanvasLayout(clientW, canvasLeft, canvasWidth);
+    const float headerH = m_config.zenMode ? 0.0f : m_config.ScaleF(static_cast<float>(m_config.headerHeight));
+    const float statusBarH = (m_config.showStatusBar && !m_config.zenMode) ? m_config.ScaleF(22.0f) : 0.0f;
+    const float termH = m_config.zenMode ? 0.0f : GetCurrentTerminalHeight(clientH);
+    const float termGap = (!m_config.zenMode && m_terminalAnimProgress > 0.001f && m_terminal.IsOpen() && m_terminal.GetDockPosition() == 0)
+        ? m_config.ScaleF(6.0f) : 0.0f;
+    const float editorH = (std::max)(headerH + 20.0f, clientH - statusBarH - termH - termGap);
+
+    m_splitState.ComputeGroupBounds(m_editorGroups, canvasLeft, headerH, canvasWidth, editorH);
+    m_editor.SetSplitState(m_splitState);
+}
+
+int Window::FindEditorGroupAtPoint(POINT pt) const noexcept {
+    if (m_editorGroups.empty()) return -1;
+    const float px = static_cast<float>(pt.x);
+    const float py = static_cast<float>(pt.y);
+    for (size_t g = 0; g < m_editorGroups.size(); ++g) {
+        const auto& b = m_editorGroups[g].bounds;
+        if (px >= b.left && px <= b.right && py >= b.top && py <= b.bottom) {
+            return static_cast<int>(g);
+        }
+    }
+    int bestGroup = 0;
+    float bestDist = 1e9f;
+    for (size_t g = 0; g < m_editorGroups.size(); ++g) {
+        const auto& b = m_editorGroups[g].bounds;
+        float cx = (b.left + b.right) * 0.5f;
+        float cy = (b.top + b.bottom) * 0.5f;
+        float d = std::hypot(px - cx, py - cy);
+        if (d < bestDist) {
+            bestDist = d;
+            bestGroup = static_cast<int>(g);
+        }
+    }
+    return bestGroup;
+}
+
+int Window::HitTestEditorSplitter(POINT pt) const noexcept {
+    if (m_editorGroups.size() <= 1 || !m_hwnd) return 0;
+    RECT rc{};
+    GetClientRect(m_hwnd, &rc);
+    const float clientW = static_cast<float>(rc.right - rc.left);
+    const float clientH = static_cast<float>(rc.bottom - rc.top);
+    float canvasLeft = 0.0f, canvasWidth = 0.0f;
+    GetCanvasLayout(clientW, canvasLeft, canvasWidth);
+    const float headerH = m_config.zenMode ? 0.0f : m_config.ScaleF(static_cast<float>(m_config.headerHeight));
+    const float statusBarH = (m_config.showStatusBar && !m_config.zenMode) ? m_config.ScaleF(22.0f) : 0.0f;
+    const float termH = m_config.zenMode ? 0.0f : GetCurrentTerminalHeight(clientH);
+    const float termGap = (!m_config.zenMode && m_terminalAnimProgress > 0.001f && m_terminal.IsOpen() && m_terminal.GetDockPosition() == 0)
+        ? m_config.ScaleF(6.0f) : 0.0f;
+    const float editorH = (std::max)(headerH + 20.0f, clientH - statusBarH - termH - termGap);
+    if (pt.x < canvasLeft || pt.x > canvasLeft + canvasWidth || pt.y < headerH || pt.y > editorH) {
+        return 0;
+    }
+    return m_splitState.HitTestSplitter(pt, m_editorGroups, canvasLeft, headerH, canvasWidth, editorH, m_config.ScaleF(5.0f));
+}
+
+void Window::TransitionLayoutOnGroupRemoved(int removedGroupIdx) noexcept {
+    size_t count = m_editorGroups.size();
+    if (count <= 1) {
+        m_splitState.layout = editor::EditorSplitLayout::Single;
+    } else if (count == 2) {
+        if (m_splitState.layout == editor::EditorSplitLayout::ThreeRows ||
+            (m_splitState.layout == editor::EditorSplitLayout::LeftSplitRightFull && removedGroupIdx == 2) ||
+            (m_splitState.layout == editor::EditorSplitLayout::LeftFullRightSplit && removedGroupIdx == 0)) {
+            m_splitState.layout = editor::EditorSplitLayout::TwoRows;
+        } else {
+            m_splitState.layout = editor::EditorSplitLayout::TwoColumns;
+        }
+    } else if (count == 3) {
+        if (removedGroupIdx <= 1) {
+            m_splitState.layout = editor::EditorSplitLayout::LeftFullRightSplit;
+        } else {
+            m_splitState.layout = editor::EditorSplitLayout::LeftSplitRightFull;
+        }
+    }
+    m_editorGroups.shrink_to_fit();
+    UpdateEditorGroupBounds();
+}
+
+void Window::SetEditorSplitLayout(editor::EditorSplitLayout mode) {
+    int targetCount = editor::EditorSplitState::GetLayoutGroupCount(mode);
+    if (m_editorGroups.empty()) {
+        m_editorGroups.push_back(editor::EditorGroup{});
+    }
+
+    while (static_cast<int>(m_editorGroups.size()) < targetCount) {
+        editor::EditorGroup newGroup;
+        bool movedExistingTab = false;
+        for (auto& grp : m_editorGroups) {
+            if (grp.docs.size() > 1) {
+                int moveIdx = static_cast<int>(grp.docs.size()) - 1;
+                newGroup.docs.push_back(std::move(grp.docs[moveIdx]));
+                grp.docs.erase(grp.docs.begin() + moveIdx);
+                if (grp.activeDocIdx >= static_cast<int>(grp.docs.size())) {
+                    grp.activeDocIdx = static_cast<int>(grp.docs.size()) - 1;
+                }
+                newGroup.activeDocIdx = 0;
+                movedExistingTab = true;
+                break;
+            }
+        }
+        if (!movedExistingTab) {
+            auto* curDoc = GetActiveDoc();
+            if (curDoc && !curDoc->isSpecialView) {
+                newGroup.docs.push_back(*curDoc);
+                newGroup.activeDocIdx = 0;
+            }
+        }
+        m_editorGroups.push_back(std::move(newGroup));
+    }
+
+    if (static_cast<int>(m_editorGroups.size()) > targetCount) {
+        auto& dstGrp = m_editorGroups[targetCount - 1];
+        for (size_t g = static_cast<size_t>(targetCount); g < m_editorGroups.size(); ++g) {
+            for (auto& d : m_editorGroups[g].docs) {
+                bool duplicate = false;
+                if (!d.filePath.empty()) {
+                    for (const auto& existing : dstGrp.docs) {
+                        if (_wcsicmp(existing.filePath.c_str(), d.filePath.c_str()) == 0 && existing.viewType == d.viewType) {
+                            duplicate = true;
+                            break;
+                        }
+                    }
+                }
+                if (!duplicate) {
+                    dstGrp.docs.push_back(std::move(d));
+                }
+            }
+        }
+        if (dstGrp.activeDocIdx < 0 && !dstGrp.docs.empty()) {
+            dstGrp.activeDocIdx = static_cast<int>(dstGrp.docs.size()) - 1;
+        }
+        m_editorGroups.resize(static_cast<size_t>(targetCount));
+        m_editorGroups.shrink_to_fit();
+    }
+
+    m_splitState.layout = mode;
+    if (mode == editor::EditorSplitLayout::ThreeColumns) {
+        m_splitState.splitX1 = 0.3333f;
+        m_splitState.splitX2 = 0.6667f;
+    } else if (mode == editor::EditorSplitLayout::ThreeRows) {
+        m_splitState.splitY1 = 0.3333f;
+        m_splitState.splitY2 = 0.6667f;
+    }
+    if (m_focusedGroupIdx < 0 || m_focusedGroupIdx >= static_cast<int>(m_editorGroups.size())) {
+        m_focusedGroupIdx = static_cast<int>(m_editorGroups.size()) - 1;
+    }
+
+    UpdateEditorGroupBounds();
+    UpdateExecutionButtonStates();
+    RunManualGarbageCollection();
+    InvalidateRect(m_hwnd, nullptr, FALSE);
+}
+
 void Window::EnsureCursorVisible() {
     auto* pDoc = GetActiveDoc();
     if (!pDoc || pDoc->isSpecialView) return;
 
+    UpdateEditorGroupBounds();
     RECT rc;
     GetClientRect(m_hwnd, &rc);
     float clientW = static_cast<float>(rc.right - rc.left);
@@ -1034,9 +1197,12 @@ void Window::EnsureCursorVisible() {
     GetCanvasLayout(clientW, canvasLeft, canvasWidth);
     float paneW = canvasWidth;
     float paneCanvasLeft = canvasLeft;
-    if (!m_editorGroups.empty() && m_editorGroups.size() > 1) {
-        paneW = canvasWidth / static_cast<float>(m_editorGroups.size());
-        paneCanvasLeft = canvasLeft + static_cast<float>(m_focusedGroupIdx) * paneW;
+    if (m_focusedGroupIdx >= 0 && m_focusedGroupIdx < static_cast<int>(m_editorGroups.size())) {
+        const auto& b = m_editorGroups[m_focusedGroupIdx].bounds;
+        if (b.right > b.left + 10.0f) {
+            paneCanvasLeft = b.left;
+            paneW = b.right - b.left;
+        }
     }
     float gutterW = m_config.showLineNumbers ? m_config.ScaleF(50.0f) : m_config.ScaleF(12.0f);
     float codeLeft = paneCanvasLeft + gutterW + m_config.ScaleF(12.0f);
@@ -1065,23 +1231,13 @@ void Window::EnsureCursorVisible() {
 }
 
 void Window::SplitEditor() {
-    if (m_editorGroups.size() >= 3) return; // Up to 3 columns
-
-    auto* curDoc = GetActiveDoc();
-    if (!curDoc || curDoc->isSpecialView) return; // Disabled on empty editor and special views (Settings, Packages, etc.)
-
-    editor::EditorGroup newGroup;
-    // Only clone the active file into the new group
-    newGroup.docs.push_back(*curDoc);
-    newGroup.activeDocIdx = 0;
-
-    size_t insertIdx = static_cast<size_t>(m_focusedGroupIdx + 1);
-    if (insertIdx > m_editorGroups.size()) insertIdx = m_editorGroups.size();
-    m_editorGroups.insert(m_editorGroups.begin() + insertIdx, std::move(newGroup));
-    m_focusedGroupIdx = static_cast<int>(insertIdx);
-
-    UpdateExecutionButtonStates();
-    InvalidateRect(m_hwnd, nullptr, FALSE);
+    if (m_editorGroups.size() == 1) {
+        SetEditorSplitLayout(editor::EditorSplitLayout::TwoColumns);
+    } else if (m_editorGroups.size() == 2) {
+        SetEditorSplitLayout(editor::EditorSplitLayout::LeftSplitRightFull);
+    } else if (m_editorGroups.size() == 3) {
+        SetEditorSplitLayout(editor::EditorSplitLayout::Grid2x2);
+    }
 }
 
 void Window::ToggleSplitEditor() {
@@ -2273,8 +2429,11 @@ void Window::CloseDocument(int groupIdx, int docIdx) {
             } else if (groupIdx < m_focusedGroupIdx) {
                 m_focusedGroupIdx--;
             }
+            TransitionLayoutOnGroupRemoved(groupIdx);
         } else {
             group.activeDocIdx = -1;
+            m_splitState.layout = editor::EditorSplitLayout::Single;
+            UpdateEditorGroupBounds();
         }
     } else {
         if (group.activeDocIdx >= static_cast<int>(group.docs.size())) {
@@ -3675,7 +3834,9 @@ void Window::RunManualGarbageCollection() {
             }
             doc.multiFileDiffs.shrink_to_fit();
         }
+        group.docs.shrink_to_fit();
     }
+    m_editorGroups.shrink_to_fit();
     m_editor.RunGarbageCollection();
     m_drawer.ClearSearchResults();
     m_drawer.RunGarbageCollection();
@@ -3844,8 +4005,7 @@ void Window::UpdateExecutionButtonStates() {
     m_header.SetZoomEnabled(hasProject);
 
     auto* pDoc = GetActiveDoc();
-    bool hasActiveEditor = (pDoc != nullptr && !pDoc->isSpecialView && !GetActiveGroup().docs.empty());
-    bool canSplit = hasActiveEditor && (m_editorGroups.size() < 3);
+    bool canSplit = (m_editorGroups.size() < 4);
     m_header.SetSplitEditorEnabled(canSplit);
 
     if (!pDoc || pDoc->isSpecialView) {
@@ -7416,6 +7576,7 @@ void Window::OnPaint() {
     float terminalLeft = static_cast<float>(effectiveRailW);
 
     if (editorH > headerH + 2.0f) {
+        m_editor.SetSplitState(m_splitState);
         D2D1_RECT_F editorClip = D2D1::RectF(canvasLeft, headerH, canvasLeft + canvasWidth, editorH);
         m_pRenderTarget->PushAxisAlignedClip(editorClip, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
         m_editor.Render(m_pRenderTarget.Get(), m_theme, m_config, m_editorGroups, m_focusedGroupIdx,
@@ -7432,19 +7593,19 @@ void Window::OnPaint() {
         if (group.activeDocIdx >= 0 && group.activeDocIdx < static_cast<int>(group.docs.size())) {
             const auto& doc = group.docs[group.activeDocIdx];
             if (!doc.isSpecialView && !doc.isImageView && !doc.isDiffView) {
-                float paneW = canvasWidth / m_editorGroups.size();
-                float pLeft = canvasLeft + m_dragDropTargetGroup * paneW;
+                float pLeft = group.bounds.left;
+                float paneW = (std::max)(20.0f, group.bounds.right - group.bounds.left);
                 float gutterW = m_config.showLineNumbers ? m_config.ScaleF(50.0f) : m_config.ScaleF(12.0f);
                 float tabH = m_config.ScaleF(34.0f);
-                float breadcrumbH = m_config.ScaleF(24.0f);
-                float topY = headerH + tabH + breadcrumbH;
+                float breadcrumbH = m_config.showBreadcrumbs ? m_config.ScaleF(24.0f) : 0.0f;
+                float topY = group.bounds.top + tabH + breadcrumbH;
                 float lineH = m_config.ScaleF(std::round(m_config.fontSize * m_config.lineHeightMultiplier));
                 float charW = m_config.ScaleF(7.8f);
 
                 if (m_dragDropTargetLine >= doc.scrollLine) {
                     size_t visualLine = m_dragDropTargetLine - doc.scrollLine;
                     float lineY = topY + m_config.ScaleF(6.0f) + visualLine * lineH;
-                    if (lineY + lineH <= editorH) {
+                    if (lineY + lineH <= group.bounds.bottom) {
                         float caretX = pLeft + gutterW + m_config.ScaleF(12.0f) + m_dragDropTargetCol * charW;
                         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> dropTargetBrush;
                         m_pRenderTarget->CreateSolidColorBrush(D2D1::ColorF(0.0f, 0.48f, 0.85f, 0.9f), &dropTargetBrush);
@@ -9048,6 +9209,75 @@ void Window::HandleMouseMove(POINT clientPt, WPARAM wParam) {
         return;
     }
 
+    // Check 2D Editor Split Divider Drag Resizing (Vertical, Horizontal, and 2D Intersection)
+    if (m_activeEditorSplitter > 0) {
+        bool lbuttonDown = (wParam & MK_LBUTTON) != 0 ||
+                           ((GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0) ||
+                           ((GetKeyState(VK_LBUTTON) & 0x8000) != 0);
+        if (!lbuttonDown) {
+            m_activeEditorSplitter = 0;
+            m_editor.SetHoveredSplitterId(0);
+            ReleaseCapture();
+            InvalidateRect(m_hwnd, nullptr, FALSE);
+            return;
+        }
+        RECT rc{};
+        GetClientRect(m_hwnd, &rc);
+        const float clientW = static_cast<float>(rc.right - rc.left);
+        const float clientH = static_cast<float>(rc.bottom - rc.top);
+        float canvasLeft = 0.0f, canvasWidth = 0.0f;
+        GetCanvasLayout(clientW, canvasLeft, canvasWidth);
+        const float headerH = m_config.zenMode ? 0.0f : m_config.ScaleF(static_cast<float>(m_config.headerHeight));
+        const float statusBarH = (m_config.showStatusBar && !m_config.zenMode) ? m_config.ScaleF(22.0f) : 0.0f;
+        const float termH = m_config.zenMode ? 0.0f : GetCurrentTerminalHeight(clientH);
+        const float termGap = (!m_config.zenMode && m_terminalAnimProgress > 0.001f && m_terminal.IsOpen() && m_terminal.GetDockPosition() == 0)
+            ? m_config.ScaleF(6.0f) : 0.0f;
+        const float editorH = (std::max)(headerH + 40.0f, clientH - statusBarH - termH - termGap);
+        const float totalH = (std::max)(20.0f, editorH - headerH);
+
+        float ratioX = (canvasWidth > 20.0f) ? ((static_cast<float>(clientPt.x) - canvasLeft) / canvasWidth) : 0.5f;
+        float ratioY = (totalH > 20.0f) ? ((static_cast<float>(clientPt.y) - headerH) / totalH) : 0.5f;
+
+        if (m_activeEditorSplitter == 1 || m_activeEditorSplitter == 5) {
+            if (m_splitState.layout == editor::EditorSplitLayout::ThreeColumns) {
+                m_splitState.splitX1 = (std::clamp)(ratioX, 0.14f, m_splitState.splitX2 - 0.14f);
+            } else {
+                m_splitState.splitX1 = (std::clamp)(ratioX, 0.15f, 0.85f);
+            }
+        }
+        if (m_activeEditorSplitter == 2) {
+            m_splitState.splitX2 = (std::clamp)(ratioX, m_splitState.splitX1 + 0.14f, 0.86f);
+        }
+        if (m_activeEditorSplitter == 3 || m_activeEditorSplitter == 5) {
+            if (m_splitState.layout == editor::EditorSplitLayout::ThreeRows) {
+                m_splitState.splitY1 = (std::clamp)(ratioY, 0.14f, m_splitState.splitY2 - 0.14f);
+            } else {
+                m_splitState.splitY1 = (std::clamp)(ratioY, 0.15f, 0.85f);
+                if (m_activeEditorSplitter == 5 && m_splitState.layout == editor::EditorSplitLayout::Grid2x2) {
+                    m_splitState.splitY2 = m_splitState.splitY1;
+                }
+            }
+        }
+        if (m_activeEditorSplitter == 4) {
+            if (m_splitState.layout == editor::EditorSplitLayout::ThreeRows) {
+                m_splitState.splitY2 = (std::clamp)(ratioY, m_splitState.splitY1 + 0.14f, 0.86f);
+            } else {
+                m_splitState.splitY2 = (std::clamp)(ratioY, 0.15f, 0.85f);
+            }
+        }
+        UpdateEditorGroupBounds();
+        InvalidateRect(m_hwnd, nullptr, FALSE);
+        return;
+    }
+
+    {
+        int hovSplit = HitTestEditorSplitter(clientPt);
+        if (hovSplit != m_editor.GetHoveredSplitterId()) {
+            m_editor.SetHoveredSplitterId(hovSplit);
+            InvalidateRect(m_hwnd, nullptr, FALSE);
+        }
+    }
+
     bool oldHoverPill = m_hoverLiveServerPill;
     bool oldHoverClose = m_hoverLiveServerClose;
     bool hasActiveServer = (GetActiveDocLiveServer() != nullptr) || !m_activeLiveServers.empty() || m_liveServer.IsRunning();
@@ -9175,40 +9405,119 @@ void Window::HandleMouseMove(POINT clientPt, WPARAM wParam) {
 
         if (m_isDraggingTab) {
             m_dragTabCurrentPt = clientPt;
+            UpdateEditorGroupBounds();
 
             RECT clientRc;
             GetClientRect(m_hwnd, &clientRc);
             const float clientW = static_cast<float>(clientRc.right - clientRc.left);
+            const float clientH = static_cast<float>(clientRc.bottom - clientRc.top);
             float canvasLeft = 0.0f, canvasWidth = 0.0f;
             GetCanvasLayout(clientW, canvasLeft, canvasWidth);
+            const float headerH = m_config.zenMode ? 0.0f : m_config.ScaleF(static_cast<float>(m_config.headerHeight));
+            const float statusBarH = (m_config.showStatusBar && !m_config.zenMode) ? m_config.ScaleF(22.0f) : 0.0f;
+            const float termH = m_config.zenMode ? 0.0f : GetCurrentTerminalHeight(clientH);
+            const float termGap = (!m_config.zenMode && m_terminalAnimProgress > 0.001f && m_terminal.IsOpen() && m_terminal.GetDockPosition() == 0)
+                ? m_config.ScaleF(6.0f) : 0.0f;
+            const float editorH = (std::max)(headerH + 40.0f, clientH - statusBarH - termH - termGap);
+            const float tabH = m_config.ScaleF(34.0f);
 
-            // Determine which editor group pane the mouse is hovering over (supports cross-split tab dragging!)
-            size_t numGroups = m_editorGroups.size();
-            float paneW = (numGroups > 0) ? (canvasWidth / static_cast<float>(numGroups)) : canvasWidth;
-            int hoverGroup = m_dragTabGroup;
-            for (size_t g = 0; g < numGroups; ++g) {
-                float pLeft = canvasLeft + static_cast<float>(g) * paneW;
-                float pRight = pLeft + paneW;
-                if (clientPt.x >= pLeft && (clientPt.x < pRight || g == numGroups - 1)) {
-                    hoverGroup = static_cast<int>(g);
-                    break;
+            m_hoveredSnapBarSlot = -1;
+            m_tabSnapZone = editor::TabSnapZone::None;
+            m_tabSnapPreviewRect = {};
+
+            // 1. Check if cursor is over the top-center Windows 11 Snap Layout Bar
+            editor::SnapBarSlot snapSlots[16]{};
+            size_t snapSlotCount = 0;
+            D2D1_RECT_F rcSnapBar{};
+            editor::EditorSplitState::BuildSnapBarLayout(canvasLeft, headerH, canvasWidth, editorH,
+                                                         (m_config.dpiScale > 0.001f ? m_config.dpiScale : 1.0f),
+                                                         snapSlots, snapSlotCount, rcSnapBar);
+            bool inSnapBar = (canvasWidth > m_config.ScaleF(360.0f) &&
+                              clientPt.x >= rcSnapBar.left && clientPt.x <= rcSnapBar.right &&
+                              clientPt.y >= rcSnapBar.top && clientPt.y <= rcSnapBar.bottom);
+            if (inSnapBar) {
+                for (size_t i = 0; i < snapSlotCount; ++i) {
+                    const auto& mr = snapSlots[i].miniRect;
+                    if (clientPt.x >= mr.left && clientPt.x <= mr.right &&
+                        clientPt.y >= mr.top && clientPt.y <= mr.bottom) {
+                        m_hoveredSnapBarSlot = static_cast<int>(i);
+                        m_tabSnapZone = editor::TabSnapZone::SnapBarSlot;
+                        m_tabSnapPreviewRect = snapSlots[i].previewRect;
+                        break;
+                    }
                 }
-            }
+            } else {
+                // 2. Determine which 2D editor group pane the mouse is hovering over
+                int hoverGroup = FindEditorGroupAtPoint(clientPt);
+                if (hoverGroup < 0) hoverGroup = m_dragTabGroup;
+                m_tabDropTargetGroup = hoverGroup;
+                auto& targetGroup = m_editorGroups[hoverGroup];
+                const auto& paneBounds = targetGroup.bounds;
+                int targetIdx = static_cast<int>(targetGroup.docs.size());
 
-            m_tabDropTargetGroup = hoverGroup;
-            auto& targetGroup = m_editorGroups[hoverGroup];
-            int targetIdx = static_cast<int>(targetGroup.docs.size());
+                if (clientPt.y < paneBounds.top + tabH + m_config.ScaleF(6.0f)) {
+                    // Hovering inside target pane's tab bar -> reorder or insert into tab strip
+                    m_tabSnapZone = editor::TabSnapZone::TabBar;
+                    if (hoverGroup != m_dragTabGroup) {
+                        m_tabSnapPreviewRect = paneBounds;
+                    }
+                    for (size_t i = 0; i < targetGroup.docs.size(); ++i) {
+                        const auto& b = targetGroup.docs[i].tabBounds;
+                        float midX = (b.left + b.right) / 2.0f;
+                        if (clientPt.x < midX) {
+                            targetIdx = static_cast<int>(i);
+                            break;
+                        }
+                    }
+                } else {
+                    // Hovering inside editor body -> detect Windows-style Edge/Corner/Center snap zones
+                    float bodyTop = headerH + tabH;
+                    float bodyH = (std::max)(40.0f, editorH - bodyTop);
+                    float canvasRelX = (static_cast<float>(clientPt.x) - canvasLeft) / (std::max)(40.0f, canvasWidth);
+                    float canvasRelY = (static_cast<float>(clientPt.y) - bodyTop) / bodyH;
 
-            // If mouse is within the tab bar area or over the tabs, find the exact insertion index
-            for (size_t i = 0; i < targetGroup.docs.size(); ++i) {
-                const auto& b = targetGroup.docs[i].tabBounds;
-                float midX = (b.left + b.right) / 2.0f;
-                if (clientPt.x < midX) {
-                    targetIdx = static_cast<int>(i);
-                    break;
+                    float pW = (std::max)(40.0f, paneBounds.right - paneBounds.left);
+                    float pH = (std::max)(40.0f, paneBounds.bottom - (paneBounds.top + tabH));
+                    float paneRelX = (static_cast<float>(clientPt.x) - paneBounds.left) / pW;
+                    float paneRelY = (static_cast<float>(clientPt.y) - (paneBounds.top + tabH)) / pH;
+
+                    float midCanvasX = canvasLeft + canvasWidth * m_splitState.splitX1;
+                    float midCanvasY = headerH + (editorH - headerH) * m_splitState.splitY1;
+                    float rightCanvasX = canvasLeft + canvasWidth;
+
+                    if (canvasRelX < 0.22f && canvasRelY < 0.28f) {
+                        m_tabSnapZone = editor::TabSnapZone::TopLeft;
+                        m_tabSnapPreviewRect = D2D1::RectF(canvasLeft, headerH, midCanvasX, midCanvasY);
+                    } else if (canvasRelX < 0.22f && canvasRelY > 0.72f) {
+                        m_tabSnapZone = editor::TabSnapZone::BottomLeft;
+                        m_tabSnapPreviewRect = D2D1::RectF(canvasLeft, midCanvasY, midCanvasX, editorH);
+                    } else if (canvasRelX > 0.78f && canvasRelY < 0.28f) {
+                        m_tabSnapZone = editor::TabSnapZone::TopRight;
+                        m_tabSnapPreviewRect = D2D1::RectF(midCanvasX, headerH, rightCanvasX, midCanvasY);
+                    } else if (canvasRelX > 0.78f && canvasRelY > 0.72f) {
+                        m_tabSnapZone = editor::TabSnapZone::BottomRight;
+                        m_tabSnapPreviewRect = D2D1::RectF(midCanvasX, midCanvasY, rightCanvasX, editorH);
+                    } else if (paneRelX < 0.22f) {
+                        m_tabSnapZone = editor::TabSnapZone::Left;
+                        m_tabSnapPreviewRect = D2D1::RectF(paneBounds.left, paneBounds.top, paneBounds.left + pW * 0.5f, paneBounds.bottom);
+                    } else if (paneRelX > 0.78f) {
+                        m_tabSnapZone = editor::TabSnapZone::Right;
+                        m_tabSnapPreviewRect = D2D1::RectF(paneBounds.left + pW * 0.5f, paneBounds.top, paneBounds.right, paneBounds.bottom);
+                    } else if (paneRelY < 0.24f) {
+                        m_tabSnapZone = editor::TabSnapZone::Top;
+                        m_tabSnapPreviewRect = D2D1::RectF(paneBounds.left, paneBounds.top, paneBounds.right, paneBounds.top + (paneBounds.bottom - paneBounds.top) * 0.5f);
+                    } else if (paneRelY > 0.76f) {
+                        m_tabSnapZone = editor::TabSnapZone::Bottom;
+                        m_tabSnapPreviewRect = D2D1::RectF(paneBounds.left, paneBounds.top + (paneBounds.bottom - paneBounds.top) * 0.5f, paneBounds.right, paneBounds.bottom);
+                    } else {
+                        m_tabSnapZone = editor::TabSnapZone::Center;
+                        if (hoverGroup != m_dragTabGroup) {
+                            m_tabSnapPreviewRect = paneBounds;
+                        }
+                    }
                 }
+                m_tabDropTargetIdx = targetIdx;
             }
-            m_tabDropTargetIdx = targetIdx;
 
             auto& srcGroup = m_editorGroups[m_dragTabGroup];
             std::wstring dragTitle = (m_dragTabIdx >= 0 && m_dragTabIdx < static_cast<int>(srcGroup.docs.size()))
@@ -9217,6 +9526,7 @@ void Window::HandleMouseMove(POINT clientPt, WPARAM wParam) {
             m_editor.SetTabDragState(true, m_dragTabGroup, m_dragTabIdx, m_tabDropTargetGroup, m_tabDropTargetIdx,
                                      D2D1::Point2F(static_cast<float>(clientPt.x), static_cast<float>(clientPt.y)),
                                      dragTitle);
+            m_editor.SetTabSnapPreview(m_tabSnapZone, m_tabSnapPreviewRect, m_hoveredSnapBarSlot);
             InvalidateRect(m_hwnd, nullptr, FALSE);
             return;
         }
@@ -9322,25 +9632,22 @@ void Window::HandleMouseMove(POINT clientPt, WPARAM wParam) {
                 if (clientPt.x >= canvasLeft && clientPt.x < clientRc.right &&
                     clientPt.y >= headerH + tabH && clientPt.y < editorH &&
                     canvasWidth > 10.0f && !m_editorGroups.empty()) {
-
-                float paneW = canvasWidth / m_editorGroups.size();
-                for (size_t g = 0; g < m_editorGroups.size(); ++g) {
-                    float pLeft = canvasLeft + g * paneW;
-                    float pRight = pLeft + paneW;
-                    if (clientPt.x >= pLeft && (clientPt.x < pRight || g == m_editorGroups.size() - 1)) {
-                        m_dragDropTargetGroup = static_cast<int>(g);
-                        auto& group = m_editorGroups[g];
+                    UpdateEditorGroupBounds();
+                    int gIdx = FindEditorGroupAtPoint(clientPt);
+                    if (gIdx >= 0 && gIdx < static_cast<int>(m_editorGroups.size())) {
+                        m_dragDropTargetGroup = gIdx;
+                        auto& group = m_editorGroups[gIdx];
                         if (group.activeDocIdx >= 0 && group.activeDocIdx < static_cast<int>(group.docs.size())) {
                             auto& doc = group.docs[group.activeDocIdx];
                             if (!doc.isSpecialView && !doc.isImageView && !doc.isDiffView) {
                                 size_t line = 0, col = 0;
-                                if (m_editor.HitTestCodeArea(clientPt, m_config, doc, pLeft, editorH, line, col)) {
+                                if (m_editor.HitTestCodeArea(clientPt, m_config, doc, group.bounds.left, group.bounds.bottom, line, col)) {
                                     m_dragDropTargetLine = line;
                                     m_dragDropTargetCol = col;
                                     m_hasDragDropTarget = true;
                                 } else {
-                                    const float breadcrumbH = m_config.ScaleF(24.0f);
-                                    const float topY = headerH + tabH + breadcrumbH;
+                                    const float breadcrumbH = m_config.showBreadcrumbs ? m_config.ScaleF(24.0f) : 0.0f;
+                                    const float topY = group.bounds.top + tabH + breadcrumbH;
                                     const float lineH = m_config.ScaleF(std::round(m_config.fontSize * m_config.lineHeightMultiplier));
                                     float relY = static_cast<float>(clientPt.y) - (topY + m_config.ScaleF(6.0f));
                                     if (relY < 0.0f) relY = 0.0f;
@@ -9356,10 +9663,8 @@ void Window::HandleMouseMove(POINT clientPt, WPARAM wParam) {
                                 }
                             }
                         }
-                        break;
                     }
                 }
-            }
             }
 
             InvalidateRect(m_hwnd, nullptr, FALSE);
@@ -9379,8 +9684,11 @@ void Window::HandleMouseMove(POINT clientPt, WPARAM wParam) {
         GetCanvasLayout(clientW, canvasLeft, canvasWidth);
         const float clientH = static_cast<float>(clientRc.bottom - clientRc.top);
         if (canvasWidth > 10.0f && !m_editorGroups.empty()) {
-            float paneW = canvasWidth / m_editorGroups.size();
-            float paneCanvasLeft = canvasLeft + m_focusedGroupIdx * paneW;
+            UpdateEditorGroupBounds();
+            int fIdx = (m_focusedGroupIdx >= 0 && m_focusedGroupIdx < static_cast<int>(m_editorGroups.size())) ? m_focusedGroupIdx : 0;
+            const auto& grpBounds = m_editorGroups[fIdx].bounds;
+            float paneCanvasLeft = grpBounds.left;
+            float paneW = (std::max)(20.0f, grpBounds.right - grpBounds.left);
             const float gutterW = m_config.showLineNumbers ? m_config.ScaleF(50.0f) : m_config.ScaleF(12.0f);
             const float codeLeft = paneCanvasLeft + gutterW + m_config.ScaleF(12.0f);
             const float minimapW = m_config.ScaleF(88.0f);
@@ -9394,11 +9702,10 @@ void Window::HandleMouseMove(POINT clientPt, WPARAM wParam) {
                 pActiveDoc->scrollOffsetX = (std::max)(0.0f, pActiveDoc->scrollOffsetX - m_config.ScaleF(28.0f));
             }
 
-            // Vertical edge scrolling when dragging near top/bottom
-            float headerH = m_config.ScaleF(static_cast<float>(m_config.headerHeight));
-            if (clientPt.y < headerH + 25 && pActiveDoc->scrollLine > 0) {
+            // Vertical edge scrolling when dragging near top/bottom of pane
+            if (clientPt.y < grpBounds.top + 45 && pActiveDoc->scrollLine > 0) {
                 pActiveDoc->scrollLine--;
-            } else if (clientPt.y > clientH - 25 && pActiveDoc->scrollLine + 1 < pActiveDoc->buffer.GetLineCount()) {
+            } else if (clientPt.y > grpBounds.bottom - 25 && pActiveDoc->scrollLine + 1 < pActiveDoc->buffer.GetLineCount()) {
                 pActiveDoc->scrollLine++;
             }
 
@@ -9407,7 +9714,7 @@ void Window::HandleMouseMove(POINT clientPt, WPARAM wParam) {
             if (static_cast<float>(testPt.x) > codeRight - 2.0f) testPt.x = static_cast<LONG>(codeRight - 2.0f);
 
             size_t line = 0, col = 0;
-            if (m_editor.HitTestCodeArea(testPt, m_config, *pActiveDoc, paneCanvasLeft, clientH, line, col)) {
+            if (m_editor.HitTestCodeArea(testPt, m_config, *pActiveDoc, paneCanvasLeft, grpBounds.bottom, line, col)) {
                 pActiveDoc->selEnd = { line, col };
                 pActiveDoc->buffer.SetCursor(line, col);
                 if (pActiveDoc->selAnchor.line != pActiveDoc->selEnd.line || pActiveDoc->selAnchor.col != pActiveDoc->selEnd.col) {
@@ -9432,12 +9739,13 @@ void Window::HandleMouseMove(POINT clientPt, WPARAM wParam) {
         const float clientW = static_cast<float>(clientRc.right - clientRc.left);
         float canvasLeft = 0.0f, canvasWidth = 0.0f;
         GetCanvasLayout(clientW, canvasLeft, canvasWidth);
-        const float clientH = static_cast<float>(clientRc.bottom - clientRc.top);
         if (canvasWidth > 10.0f && !m_editorGroups.empty()) {
-            float paneW = canvasWidth / m_editorGroups.size();
-            float paneCanvasLeft = canvasLeft + m_focusedGroupIdx * paneW;
+            UpdateEditorGroupBounds();
+            int fIdx = (m_focusedGroupIdx >= 0 && m_focusedGroupIdx < static_cast<int>(m_editorGroups.size())) ? m_focusedGroupIdx : 0;
+            const auto& grpBounds = m_editorGroups[fIdx].bounds;
+            float paneCanvasLeft = grpBounds.left;
             size_t hoverLine = 0, hoverCol = 0;
-            if (m_editor.HitTestCodeArea(clientPt, m_config, *pActiveDoc, paneCanvasLeft, clientH, hoverLine, hoverCol)) {
+            if (m_editor.HitTestCodeArea(clientPt, m_config, *pActiveDoc, paneCanvasLeft, grpBounds.bottom, hoverLine, hoverCol)) {
                 for (const auto& d : pActiveDoc->diagnostics) {
                     if (d.line == hoverLine && d.severity == 1) {
                         const auto& lineStr = pActiveDoc->buffer.GetLine(hoverLine);
@@ -9449,7 +9757,7 @@ void Window::HandleMouseMove(POINT clientPt, WPARAM wParam) {
                 }
             } else {
                 size_t gutterLine = 0;
-                if (m_editor.HitTestGutter(clientPt, m_config, *pActiveDoc, paneCanvasLeft, clientH, gutterLine)) {
+                if (m_editor.HitTestGutter(clientPt, m_config, *pActiveDoc, paneCanvasLeft, grpBounds.bottom, gutterLine)) {
                     for (const auto& d : pActiveDoc->diagnostics) {
                         if (d.line == gutterLine && d.severity == 1) {
                             pActiveDoc->hoveredDiagnosticLine = gutterLine;
@@ -10053,46 +10361,70 @@ bool Window::HandlePopupMenuClick(POINT clientPt) {
                         ToggleCodeLens();
                         break;
                     case ui::MenuActionId::LayoutSingle:
-                        if (m_editorGroups.size() > 1) {
-                            if (m_focusedGroupIdx >= 0 && static_cast<size_t>(m_focusedGroupIdx) < m_editorGroups.size()) {
-                                auto keepGroup = std::move(m_editorGroups[m_focusedGroupIdx]);
-                                m_editorGroups.clear();
-                                m_editorGroups.push_back(std::move(keepGroup));
-                            } else {
-                                m_editorGroups.resize(1);
-                            }
-                            m_focusedGroupIdx = 0;
-                        }
+                        SetEditorSplitLayout(editor::EditorSplitLayout::Single);
                         break;
                     case ui::MenuActionId::LayoutTwoColumns:
-                        if (m_editorGroups.size() < 2) {
+                    case ui::MenuActionId::LayoutSplitRight:
+                    case ui::MenuActionId::LayoutSplitLeft:
+                        if (m_editorGroups.size() <= 1) {
+                            SetEditorSplitLayout(editor::EditorSplitLayout::TwoColumns);
+                        } else if (action == ui::MenuActionId::LayoutTwoColumns) {
+                            SetEditorSplitLayout(editor::EditorSplitLayout::TwoColumns);
+                        } else {
                             SplitEditor();
-                        } else if (m_editorGroups.size() > 2) {
-                            m_editorGroups.resize(2);
-                            if (m_focusedGroupIdx >= 2) m_focusedGroupIdx = 1;
                         }
                         break;
                     case ui::MenuActionId::LayoutThreeColumns:
-                        while (m_editorGroups.size() < 3) {
-                            SplitEditor();
+                        SetEditorSplitLayout(editor::EditorSplitLayout::ThreeColumns);
+                        break;
+                    case ui::MenuActionId::LayoutTwoRows:
+                    case ui::MenuActionId::LayoutSplitDown:
+                    case ui::MenuActionId::LayoutSplitUp:
+                        if (m_editorGroups.size() <= 1 || action == ui::MenuActionId::LayoutTwoRows) {
+                            SetEditorSplitLayout(editor::EditorSplitLayout::TwoRows);
+                        } else if (m_editorGroups.size() == 2 && m_splitState.layout == editor::EditorSplitLayout::TwoColumns) {
+                            SetEditorSplitLayout(m_focusedGroupIdx == 0
+                                ? editor::EditorSplitLayout::LeftSplitRightFull
+                                : editor::EditorSplitLayout::LeftFullRightSplit);
+                        } else {
+                            SetEditorSplitLayout(editor::EditorSplitLayout::Grid2x2);
                         }
                         break;
-                    case ui::MenuActionId::LayoutSplitRight:
-                    case ui::MenuActionId::LayoutSplitDown:
-                    case ui::MenuActionId::LayoutSplitLeft:
-                    case ui::MenuActionId::LayoutSplitUp:
-                    case ui::MenuActionId::LayoutSplitInGroup:
-                    case ui::MenuActionId::LayoutTwoRows:
                     case ui::MenuActionId::LayoutThreeRows:
+                        SetEditorSplitLayout(editor::EditorSplitLayout::ThreeRows);
+                        break;
                     case ui::MenuActionId::LayoutGrid2x2:
+                        SetEditorSplitLayout(editor::EditorSplitLayout::Grid2x2);
+                        break;
+                    case ui::MenuActionId::LayoutTwoRowsLeft:
+                    case ui::MenuActionId::LayoutSplitInGroup:
+                        SetEditorSplitLayout(editor::EditorSplitLayout::LeftSplitRightFull);
+                        break;
                     case ui::MenuActionId::LayoutTwoRowsRight:
+                        SetEditorSplitLayout(editor::EditorSplitLayout::LeftFullRightSplit);
+                        break;
                     case ui::MenuActionId::LayoutTwoColumnsBottom:
-                        SplitEditor();
+                        SetEditorSplitLayout(editor::EditorSplitLayout::TopFullBottomSplit);
                         break;
                     case ui::MenuActionId::LayoutFlip:
-                        if (m_editorGroups.size() > 1) {
+                        if (m_editorGroups.size() == 2) {
+                            SetEditorSplitLayout(m_splitState.layout == editor::EditorSplitLayout::TwoColumns
+                                ? editor::EditorSplitLayout::TwoRows
+                                : editor::EditorSplitLayout::TwoColumns);
+                        } else if (m_editorGroups.size() == 3) {
+                            if (m_splitState.layout == editor::EditorSplitLayout::LeftSplitRightFull) {
+                                SetEditorSplitLayout(editor::EditorSplitLayout::LeftFullRightSplit);
+                            } else if (m_splitState.layout == editor::EditorSplitLayout::LeftFullRightSplit) {
+                                SetEditorSplitLayout(editor::EditorSplitLayout::LeftSplitRightFull);
+                            } else {
+                                std::reverse(m_editorGroups.begin(), m_editorGroups.end());
+                                m_focusedGroupIdx = static_cast<int>(m_editorGroups.size() - 1 - m_focusedGroupIdx);
+                                UpdateEditorGroupBounds();
+                            }
+                        } else if (m_editorGroups.size() > 1) {
                             std::reverse(m_editorGroups.begin(), m_editorGroups.end());
                             m_focusedGroupIdx = static_cast<int>(m_editorGroups.size() - 1 - m_focusedGroupIdx);
+                            UpdateEditorGroupBounds();
                         }
                         break;
                     case ui::MenuActionId::LayoutMoveNewWindow:
@@ -11268,6 +11600,18 @@ void Window::HandleLButtonDown(POINT clientPt) {
         return;
     }
 
+    // 2D Editor Split Divider Drag Initiation (Vertical, Horizontal, or 2D Intersection)
+    {
+        int splitHit = HitTestEditorSplitter(clientPt);
+        if (splitHit > 0) {
+            m_activeEditorSplitter = splitHit;
+            m_editor.SetHoveredSplitterId(splitHit);
+            SetCapture(m_hwnd);
+            InvalidateRect(m_hwnd, nullptr, FALSE);
+            return;
+        }
+    }
+
     // 3f. Extensions Right Sidebar Panel Clicks
     if (m_rightSidebarAnimProgress > 0.001f && m_extensionsPanel.IsOpen() && m_extensionsPanel.HitTest(clientPt)) {
         bool handled = m_extensionsPanel.HandleLButtonDown(clientPt);
@@ -11293,22 +11637,13 @@ void Window::HandleLButtonDown(POINT clientPt) {
     const float statusBarH = (m_config.showStatusBar && !m_config.zenMode) ? m_config.ScaleF(22.0f) : 0.0f;
     const float barY = clientH - statusBarH;
 
-    // 4. Editor Canvas Clicks (Multi-Editor Groups aware)
+    // 4. Editor Canvas Clicks (Multi-Editor Groups 2D aware)
     if (clientPt.x >= canvasLeft && clientPt.x < canvasLeft + canvasWidth && clientPt.y >= headerH && (clientPt.y < barY || !m_config.showStatusBar) && !m_editorGroups.empty() && canvasWidth > 10.0f) {
         m_explorerHasFocus = false;
         // Clear drawer search focus whenever user clicks anywhere inside the editor canvas
         m_drawer.SetSearchFocus(0);
-        size_t numGroups = m_editorGroups.size();
-        float paneW = canvasWidth / numGroups;
-        int targetGroup = -1;
-        for (size_t g = 0; g < numGroups; ++g) {
-            float pLeft = canvasLeft + g * paneW;
-            float pRight = pLeft + paneW;
-            if (clientPt.x >= pLeft && (clientPt.x < pRight || g == numGroups - 1)) {
-                targetGroup = static_cast<int>(g);
-                break;
-            }
-        }
+        UpdateEditorGroupBounds();
+        int targetGroup = FindEditorGroupAtPoint(clientPt);
 
         if (targetGroup >= 0) {
             m_focusedGroupIdx = targetGroup;
@@ -11570,7 +11905,9 @@ void Window::HandleLButtonDown(POINT clientPt) {
                     InvalidateRect(m_hwnd, nullptr, FALSE);
                     return;
                 } else {
-                    float paneCanvasLeft = canvasLeft + targetGroup * paneW;
+                    float paneCanvasLeft = group.bounds.left;
+                    float paneW = (std::max)(20.0f, group.bounds.right - group.bounds.left);
+                    float paneBottom = group.bounds.bottom;
 
                     // Fold chevron click in gutter
                     int foldLine = m_editor.HitTestFoldChevron(clientPt);
@@ -11667,7 +12004,7 @@ void Window::HandleLButtonDown(POINT clientPt) {
                         float leftX = paneCanvasLeft;
                         float dividerX = leftX + halfW;
                         float rightX = dividerX + dividerW;
-                        float codeTopY = m_config.ScaleF(38.0f) + m_config.ScaleF(34.0f) + m_config.ScaleF(24.0f) + subHeaderH;
+                        float codeTopY = group.bounds.top + m_config.ScaleF(34.0f) + m_config.ScaleF(24.0f) + subHeaderH;
 
                         if (clientPt.y >= codeTopY && lineH > 0.0f) {
                             size_t clickedLine = doc.scrollLine + static_cast<size_t>((clientPt.y - codeTopY) / lineH);
@@ -11692,7 +12029,7 @@ void Window::HandleLButtonDown(POINT clientPt) {
                     } else {
                         // Check gutter click for breakpoint toggle (Image 4)
                         size_t clickedLine = 0;
-                        if (m_editor.HitTestGutter(clientPt, m_config, doc, paneCanvasLeft, clientH, clickedLine)) {
+                        if (m_editor.HitTestGutter(clientPt, m_config, doc, paneCanvasLeft, paneBottom, clickedLine)) {
                             auto it = std::find(doc.breakpoints.begin(), doc.breakpoints.end(), clickedLine);
                             bool added = false;
                             if (it != doc.breakpoints.end()) {
@@ -11762,7 +12099,7 @@ void Window::HandleLButtonDown(POINT clientPt) {
                         }
 
                         size_t line = 0, col = 0;
-                        if (m_editor.HitTestCodeArea(clientPt, m_config, doc, paneCanvasLeft, clientH, line, col)) {
+                        if (m_editor.HitTestCodeArea(clientPt, m_config, doc, paneCanvasLeft, paneBottom, line, col)) {
                             doc.buffer.SetCursor(line, col);
                             UpdatePrediction();
                             doc.targetHighlightLine = static_cast<size_t>(-1);
@@ -11780,13 +12117,10 @@ void Window::HandleLButtonDown(POINT clientPt) {
                     }
                 }
             } else {
-                // Watermark cheat-sheet card click when no documents are open
-                float headerH = m_config.ScaleF(static_cast<float>(m_config.headerHeight));
-                RECT rcClient{};
-                GetClientRect(m_hwnd, &rcClient);
-                float clientH = static_cast<float>(rcClient.bottom - rcClient.top);
-                float pLeft = canvasLeft + targetGroup * paneW;
-                int wmHit = m_editor.HitTestWatermarkCard(clientPt, m_config, pLeft, paneW, headerH, clientH);
+                // Watermark cheat-sheet card click when no documents are open in this pane
+                float pLeft = group.bounds.left;
+                float pW = (std::max)(20.0f, group.bounds.right - group.bounds.left);
+                int wmHit = m_editor.HitTestWatermarkCard(clientPt, m_config, pLeft, pW, group.bounds.top, group.bounds.bottom);
                 if (wmHit == 0) {
                     ToggleSidebar();
                     return;
@@ -12224,6 +12558,15 @@ void Window::HandleLButtonUp(POINT clientPt) {
         }
     }
 
+    // 0a-0. Editor Split Pane Divider Dragging release
+    if (m_activeEditorSplitter > 0) {
+        m_activeEditorSplitter = 0;
+        ReleaseCapture();
+        SaveSessionState();
+        InvalidateRect(m_hwnd, nullptr, FALSE);
+        return;
+    }
+
     // 0a. Tab Scrollbar Dragging release (User requirement)
     for (auto& group : m_editorGroups) {
         if (group.isDraggingTabScroll) {
@@ -12234,69 +12577,257 @@ void Window::HandleLButtonUp(POINT clientPt) {
         }
     }
 
-    // 0b. Tab Drag & Drop Reordering commit (User request: "fix i cant drag the tab of split 1 to the other split", Image 4)
+    // 0b. Tab Drag & Drop Reordering + Windows 2D Snap Layout commit
     if (m_dragTabIdx >= 0 && m_dragTabGroup >= 0 && m_dragTabGroup < static_cast<int>(m_editorGroups.size())) {
-        if (m_isDraggingTab && m_tabDropTargetGroup >= 0 && m_tabDropTargetGroup < static_cast<int>(m_editorGroups.size()) && m_tabDropTargetIdx >= 0) {
+        if (m_isDraggingTab) {
             int srcGroup = m_dragTabGroup;
-            int dstGroup = m_tabDropTargetGroup;
             int from = m_dragTabIdx;
-            int to = m_tabDropTargetIdx;
 
-            if (srcGroup == dstGroup) {
-                // Same group reordering
-                auto& group = m_editorGroups[srcGroup];
-                if (from >= 0 && from < static_cast<int>(group.docs.size()) &&
-                    to >= 0 && to <= static_cast<int>(group.docs.size())) {
-                    auto doc = std::move(group.docs[from]);
-                    group.docs.erase(group.docs.begin() + from);
-                    int insertPos = (to > from) ? (to - 1) : to;
-                    if (insertPos < 0) insertPos = 0;
-                    if (insertPos > static_cast<int>(group.docs.size())) {
-                        insertPos = static_cast<int>(group.docs.size());
-                    }
-                    group.docs.insert(group.docs.begin() + insertPos, std::move(doc));
-                    group.activeDocIdx = insertPos;
-                    SaveSessionState();
-                }
-            } else {
-                // Cross-group move: drag tab from split A to split B!
+            auto moveDocToTargetGroup = [&](int targetGrpIdx, int targetInsertPos = -1, bool allowCollapseSrc = true) {
+                if (srcGroup < 0 || srcGroup >= static_cast<int>(m_editorGroups.size())) return;
+                if (targetGrpIdx < 0 || targetGrpIdx >= static_cast<int>(m_editorGroups.size())) return;
                 auto& fromGrp = m_editorGroups[srcGroup];
-                auto& toGrp = m_editorGroups[dstGroup];
-                if (from >= 0 && from < static_cast<int>(fromGrp.docs.size()) &&
-                    to >= 0 && to <= static_cast<int>(toGrp.docs.size())) {
-                    auto doc = std::move(fromGrp.docs[from]);
-                    fromGrp.docs.erase(fromGrp.docs.begin() + from);
+                if (from < 0 || from >= static_cast<int>(fromGrp.docs.size())) return;
 
-                    int insertPos = to;
-                    if (insertPos < 0) insertPos = 0;
-                    if (insertPos > static_cast<int>(toGrp.docs.size())) {
-                        insertPos = static_cast<int>(toGrp.docs.size());
+                if (srcGroup == targetGrpIdx) {
+                    if (targetInsertPos >= 0 && targetInsertPos <= static_cast<int>(fromGrp.docs.size())) {
+                        auto doc = std::move(fromGrp.docs[from]);
+                        fromGrp.docs.erase(fromGrp.docs.begin() + from);
+                        int insertPos = (targetInsertPos > from) ? (targetInsertPos - 1) : targetInsertPos;
+                        insertPos = (std::clamp)(insertPos, 0, static_cast<int>(fromGrp.docs.size()));
+                        fromGrp.docs.insert(fromGrp.docs.begin() + insertPos, std::move(doc));
+                        fromGrp.activeDocIdx = insertPos;
+                        m_focusedGroupIdx = srcGroup;
+                        SaveSessionState();
                     }
-                    toGrp.docs.insert(toGrp.docs.begin() + insertPos, std::move(doc));
-                    toGrp.activeDocIdx = insertPos;
-
-                    // If source group has no remaining documents, auto-collapse split if multiple splits exist
-                    if (fromGrp.docs.empty()) {
-                        if (m_editorGroups.size() > 1) {
-                            m_editorGroups.erase(m_editorGroups.begin() + srcGroup);
-                            int finalDst = (srcGroup < dstGroup) ? (dstGroup - 1) : dstGroup;
-                            if (finalDst < 0) finalDst = 0;
-                            if (finalDst >= static_cast<int>(m_editorGroups.size())) {
-                                finalDst = static_cast<int>(m_editorGroups.size()) - 1;
-                            }
-                            m_focusedGroupIdx = finalDst;
-                        } else {
-                            fromGrp.activeDocIdx = -1;
-                            m_focusedGroupIdx = 0;
-                        }
-                    } else {
-                        if (fromGrp.activeDocIdx >= static_cast<int>(fromGrp.docs.size())) {
-                            fromGrp.activeDocIdx = static_cast<int>(fromGrp.docs.size()) - 1;
-                        }
-                        m_focusedGroupIdx = dstGroup;
-                    }
-                    SaveSessionState();
+                    return;
                 }
+
+                auto& toGrp = m_editorGroups[targetGrpIdx];
+                const bool toGrpWasEmpty = toGrp.docs.empty();
+                auto doc = std::move(fromGrp.docs[from]);
+                fromGrp.docs.erase(fromGrp.docs.begin() + from);
+                fromGrp.docs.shrink_to_fit();
+
+                int insertPos = (targetInsertPos >= 0) ? targetInsertPos : static_cast<int>(toGrp.docs.size());
+                insertPos = (std::clamp)(insertPos, 0, static_cast<int>(toGrp.docs.size()));
+                toGrp.docs.insert(toGrp.docs.begin() + insertPos, std::move(doc));
+                toGrp.activeDocIdx = insertPos;
+
+                if (fromGrp.docs.empty()) {
+                    fromGrp.activeDocIdx = -1;
+                    if (allowCollapseSrc && !toGrpWasEmpty && m_editorGroups.size() > 1) {
+                        int finalDst = (srcGroup < targetGrpIdx) ? (targetGrpIdx - 1) : targetGrpIdx;
+                        TransitionLayoutOnGroupRemoved(srcGroup);
+                        m_focusedGroupIdx = (std::clamp)(finalDst, 0, static_cast<int>(m_editorGroups.size()) - 1);
+                    } else {
+                        m_focusedGroupIdx = targetGrpIdx;
+                    }
+                } else {
+                    if (fromGrp.activeDocIdx >= static_cast<int>(fromGrp.docs.size())) {
+                        fromGrp.activeDocIdx = static_cast<int>(fromGrp.docs.size()) - 1;
+                    }
+                    m_focusedGroupIdx = targetGrpIdx;
+                }
+                UpdateEditorGroupBounds();
+                SaveSessionState();
+            };
+
+            if (m_tabSnapZone == editor::TabSnapZone::SnapBarSlot && m_hoveredSnapBarSlot >= 0) {
+                RECT clientRc{};
+                GetClientRect(m_hwnd, &clientRc);
+                const float clientW = static_cast<float>(clientRc.right - clientRc.left);
+                const float clientH = static_cast<float>(clientRc.bottom - clientRc.top);
+                float canvasLeft = 0.0f, canvasWidth = 0.0f;
+                GetCanvasLayout(clientW, canvasLeft, canvasWidth);
+                const float headerH = m_config.zenMode ? 0.0f : m_config.ScaleF(static_cast<float>(m_config.headerHeight));
+                const float statusBarH = (m_config.showStatusBar && !m_config.zenMode) ? m_config.ScaleF(22.0f) : 0.0f;
+                const float termH = m_config.zenMode ? 0.0f : GetCurrentTerminalHeight(clientH);
+                const float bottomEditorY = (std::max)(headerH + 20.0f, clientH - statusBarH - termH);
+                editor::SnapBarSlot snapSlots[16];
+                size_t snapSlotCount = 0;
+                D2D1_RECT_F snapBarBg{};
+                editor::EditorSplitState::BuildSnapBarLayout(
+                    canvasLeft, headerH, canvasWidth, bottomEditorY, m_config.ScaleF(1.0f),
+                    snapSlots, snapSlotCount, snapBarBg);
+                if (m_hoveredSnapBarSlot < static_cast<int>(snapSlotCount)) {
+                    const auto& slot = snapSlots[m_hoveredSnapBarSlot];
+                    SetEditorSplitLayout(slot.layout);
+                    int maxGrp = (std::max)(0, static_cast<int>(m_editorGroups.size()) - 1);
+                    int targetGrp = (std::clamp)(slot.zoneIdx, 0, maxGrp);
+                    moveDocToTargetGroup(targetGrp, -1, false);
+                }
+            } else if (m_tabSnapZone == editor::TabSnapZone::TopLeft ||
+                       m_tabSnapZone == editor::TabSnapZone::BottomLeft ||
+                       m_tabSnapZone == editor::TabSnapZone::TopRight ||
+                       m_tabSnapZone == editor::TabSnapZone::BottomRight ||
+                       m_tabSnapZone == editor::TabSnapZone::Left ||
+                       m_tabSnapZone == editor::TabSnapZone::Right ||
+                       m_tabSnapZone == editor::TabSnapZone::Top ||
+                       m_tabSnapZone == editor::TabSnapZone::Bottom) {
+                int targetGrp = m_tabDropTargetGroup;
+                const auto curLayout = m_splitState.layout;
+                bool layoutChanged = false;
+
+                if (m_tabSnapZone == editor::TabSnapZone::TopLeft) {
+                    if (curLayout == editor::EditorSplitLayout::LeftSplitRightFull ||
+                        curLayout == editor::EditorSplitLayout::TopSplitBottomFull ||
+                        curLayout == editor::EditorSplitLayout::Grid2x2) {
+                        targetGrp = 0;
+                    } else if (curLayout == editor::EditorSplitLayout::LeftFullRightSplit) {
+                        SetEditorSplitLayout(editor::EditorSplitLayout::Grid2x2);
+                        targetGrp = 0;
+                        layoutChanged = true;
+                    } else {
+                        // Matches user screenshot: Top-Left (green), Bottom-Left (purple), Right Full (red)
+                        SetEditorSplitLayout(editor::EditorSplitLayout::LeftSplitRightFull);
+                        // If source was group 0 and we snapped to TopLeft, move remaining or keep in 0 while ensuring right/bottom panes exist
+                        targetGrp = 0;
+                        layoutChanged = true;
+                    }
+                } else if (m_tabSnapZone == editor::TabSnapZone::BottomLeft) {
+                    if (curLayout == editor::EditorSplitLayout::LeftSplitRightFull) {
+                        targetGrp = 1;
+                    } else if (curLayout == editor::EditorSplitLayout::Grid2x2) {
+                        targetGrp = 2;
+                    } else if (curLayout == editor::EditorSplitLayout::TopFullBottomSplit) {
+                        targetGrp = 1;
+                    } else if (curLayout == editor::EditorSplitLayout::LeftFullRightSplit) {
+                        SetEditorSplitLayout(editor::EditorSplitLayout::Grid2x2);
+                        targetGrp = 2;
+                        layoutChanged = true;
+                    } else {
+                        SetEditorSplitLayout(editor::EditorSplitLayout::LeftSplitRightFull);
+                        targetGrp = 1;
+                        layoutChanged = true;
+                    }
+                } else if (m_tabSnapZone == editor::TabSnapZone::TopRight) {
+                    if (curLayout == editor::EditorSplitLayout::LeftFullRightSplit ||
+                        curLayout == editor::EditorSplitLayout::TopSplitBottomFull ||
+                        curLayout == editor::EditorSplitLayout::Grid2x2) {
+                        targetGrp = 1;
+                    } else if (curLayout == editor::EditorSplitLayout::LeftSplitRightFull) {
+                        SetEditorSplitLayout(editor::EditorSplitLayout::Grid2x2);
+                        targetGrp = 1;
+                        layoutChanged = true;
+                    } else {
+                        SetEditorSplitLayout(editor::EditorSplitLayout::LeftFullRightSplit);
+                        targetGrp = 1;
+                        layoutChanged = true;
+                    }
+                } else if (m_tabSnapZone == editor::TabSnapZone::BottomRight) {
+                    if (curLayout == editor::EditorSplitLayout::LeftFullRightSplit ||
+                        curLayout == editor::EditorSplitLayout::TopFullBottomSplit) {
+                        targetGrp = 2;
+                    } else if (curLayout == editor::EditorSplitLayout::Grid2x2) {
+                        targetGrp = 3;
+                    } else if (curLayout == editor::EditorSplitLayout::LeftSplitRightFull) {
+                        SetEditorSplitLayout(editor::EditorSplitLayout::Grid2x2);
+                        targetGrp = 3;
+                        layoutChanged = true;
+                    } else {
+                        SetEditorSplitLayout(editor::EditorSplitLayout::LeftFullRightSplit);
+                        targetGrp = 2;
+                        layoutChanged = true;
+                    }
+                } else if (m_tabSnapZone == editor::TabSnapZone::Left) {
+                    if (curLayout == editor::EditorSplitLayout::Single || m_editorGroups.size() < 2) {
+                        SetEditorSplitLayout(editor::EditorSplitLayout::TwoColumns);
+                        // Move existing other tabs to right pane if user dragged a tab to Left
+                        targetGrp = 0;
+                        layoutChanged = true;
+                    } else if (curLayout == editor::EditorSplitLayout::TwoRows) {
+                        SetEditorSplitLayout(editor::EditorSplitLayout::LeftFullRightSplit);
+                        targetGrp = 0;
+                        layoutChanged = true;
+                    } else if (targetGrp < 0) {
+                        targetGrp = 0;
+                    }
+                } else if (m_tabSnapZone == editor::TabSnapZone::Right) {
+                    if (curLayout == editor::EditorSplitLayout::Single || m_editorGroups.size() < 2) {
+                        SetEditorSplitLayout(editor::EditorSplitLayout::TwoColumns);
+                        targetGrp = 1;
+                        layoutChanged = true;
+                    } else if (curLayout == editor::EditorSplitLayout::TwoRows) {
+                        // TwoRows + Right -> LeftSplitRightFull (Top-Left, Bottom-Left, Right Full!)
+                        SetEditorSplitLayout(editor::EditorSplitLayout::LeftSplitRightFull);
+                        targetGrp = 2;
+                        layoutChanged = true;
+                    } else if (curLayout == editor::EditorSplitLayout::LeftSplitRightFull) {
+                        targetGrp = 2;
+                    } else if (targetGrp < 0) {
+                        targetGrp = static_cast<int>(m_editorGroups.size()) - 1;
+                    }
+                } else if (m_tabSnapZone == editor::TabSnapZone::Top) {
+                    if (curLayout == editor::EditorSplitLayout::Single || m_editorGroups.size() < 2) {
+                        SetEditorSplitLayout(editor::EditorSplitLayout::TwoRows);
+                        targetGrp = 0;
+                        layoutChanged = true;
+                    } else if (curLayout == editor::EditorSplitLayout::TwoColumns && targetGrp == 0) {
+                        SetEditorSplitLayout(editor::EditorSplitLayout::LeftSplitRightFull);
+                        targetGrp = 0;
+                        layoutChanged = true;
+                    } else if (curLayout == editor::EditorSplitLayout::TwoColumns && targetGrp == 1) {
+                        SetEditorSplitLayout(editor::EditorSplitLayout::LeftFullRightSplit);
+                        targetGrp = 1;
+                        layoutChanged = true;
+                    } else if (targetGrp < 0) {
+                        targetGrp = 0;
+                    }
+                } else if (m_tabSnapZone == editor::TabSnapZone::Bottom) {
+                    if (curLayout == editor::EditorSplitLayout::Single || m_editorGroups.size() < 2) {
+                        SetEditorSplitLayout(editor::EditorSplitLayout::TwoRows);
+                        targetGrp = 1;
+                        layoutChanged = true;
+                    } else if (curLayout == editor::EditorSplitLayout::TwoColumns && targetGrp == 0) {
+                        // Dragging to bottom of left column in TwoColumns creates LeftSplitRightFull!
+                        if (srcGroup == 1 && m_editorGroups.size() >= 2) {
+                            // Keep right column at index 2 after inserting bottom-left at index 1
+                            m_editorGroups.insert(m_editorGroups.begin() + 1, editor::EditorGroup{});
+                            m_splitState.layout = editor::EditorSplitLayout::LeftSplitRightFull;
+                            srcGroup = 2;
+                            targetGrp = 1;
+                            layoutChanged = true;
+                            UpdateEditorGroupBounds();
+                        } else {
+                            m_editorGroups.insert(m_editorGroups.begin() + 1, editor::EditorGroup{});
+                            m_splitState.layout = editor::EditorSplitLayout::LeftSplitRightFull;
+                            targetGrp = 1;
+                            layoutChanged = true;
+                            UpdateEditorGroupBounds();
+                        }
+                    } else if (curLayout == editor::EditorSplitLayout::TwoColumns && targetGrp == 1) {
+                        SetEditorSplitLayout(editor::EditorSplitLayout::LeftFullRightSplit);
+                        targetGrp = 2;
+                        layoutChanged = true;
+                    } else if (targetGrp < 0) {
+                        targetGrp = static_cast<int>(m_editorGroups.size()) - 1;
+                    }
+                }
+
+                targetGrp = (std::clamp)(targetGrp, 0, static_cast<int>(m_editorGroups.size()) - 1);
+                if (srcGroup == targetGrp && layoutChanged && m_editorGroups[srcGroup].docs.size() > 1) {
+                    // When snapping a tab from group 0 to TopLeft/Left while creating a new split, move the other tabs to the newly created group if group 1 is empty
+                    int fallbackOtherGrp = (targetGrp == 0 && m_editorGroups.size() > 1) ? 1 : 0;
+                    if (fallbackOtherGrp != targetGrp && m_editorGroups[fallbackOtherGrp].docs.empty()) {
+                        auto draggedDoc = std::move(m_editorGroups[srcGroup].docs[from]);
+                        m_editorGroups[srcGroup].docs.erase(m_editorGroups[srcGroup].docs.begin() + from);
+                        m_editorGroups[fallbackOtherGrp].docs = std::move(m_editorGroups[srcGroup].docs);
+                        m_editorGroups[fallbackOtherGrp].activeDocIdx = static_cast<int>(m_editorGroups[fallbackOtherGrp].docs.size()) - 1;
+                        m_editorGroups[srcGroup].docs.clear();
+                        m_editorGroups[srcGroup].docs.push_back(std::move(draggedDoc));
+                        m_editorGroups[srcGroup].activeDocIdx = 0;
+                        m_focusedGroupIdx = srcGroup;
+                        UpdateEditorGroupBounds();
+                        SaveSessionState();
+                    } else {
+                        moveDocToTargetGroup(targetGrp, -1, !layoutChanged);
+                    }
+                } else {
+                    moveDocToTargetGroup(targetGrp, -1, !layoutChanged);
+                }
+            } else if (m_tabDropTargetGroup >= 0 && m_tabDropTargetGroup < static_cast<int>(m_editorGroups.size()) && m_tabDropTargetIdx >= 0) {
+                moveDocToTargetGroup(m_tabDropTargetGroup, m_tabDropTargetIdx, true);
             }
         }
         m_isDraggingTab = false;
@@ -12304,7 +12835,11 @@ void Window::HandleLButtonUp(POINT clientPt) {
         m_dragTabIdx = -1;
         m_tabDropTargetGroup = -1;
         m_tabDropTargetIdx = -1;
+        m_tabSnapZone = editor::TabSnapZone::None;
+        m_hoveredSnapBarSlot = -1;
+        m_tabSnapPreviewRect = D2D1::RectF(0, 0, 0, 0);
         m_editor.SetTabDragState(false, -1, -1, -1, -1);
+        m_editor.SetTabSnapPreview(editor::TabSnapZone::None, D2D1::RectF(0, 0, 0, 0), -1);
         ReleaseCapture();
         InvalidateRect(m_hwnd, nullptr, FALSE);
         return;
@@ -12795,6 +13330,19 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     return TRUE;
                 }
 
+                // Editor Split Screen Dividers (Vertical, Horizontal, and 2D Intersection)
+                int splitHitCursor = (m_activeEditorSplitter > 0) ? m_activeEditorSplitter : HitTestEditorSplitter(pt);
+                if (splitHitCursor == 5) {
+                    SetCursor(LoadCursor(nullptr, IDC_SIZEALL));
+                    return TRUE;
+                } else if (splitHitCursor == 1 || splitHitCursor == 2) {
+                    SetCursor(LoadCursor(nullptr, IDC_SIZEWE));
+                    return TRUE;
+                } else if (splitHitCursor == 3 || splitHitCursor == 4) {
+                    SetCursor(LoadCursor(nullptr, IDC_SIZENS));
+                    return TRUE;
+                }
+
                 // Status Bar cursor handling (User requirement: "MAKE SURE THE CURSOR IS DEFAUILT WHEN IN THERE")
                 if (m_config.showStatusBar) {
                     RECT rcClient;
@@ -13195,16 +13743,8 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
             }
 
             if (clientPt.x >= canvasLeft && clientPt.x < canvasLeft + canvasWidth && clientPt.y >= headerH && !m_editorGroups.empty() && canvasWidth > 10.0f) {
-                float paneW = canvasWidth / m_editorGroups.size();
-                int targetGroup = -1;
-                for (size_t g = 0; g < m_editorGroups.size(); ++g) {
-                    float pLeft = canvasLeft + g * paneW;
-                    float pRight = pLeft + paneW;
-                    if (clientPt.x >= pLeft && (clientPt.x < pRight || g == m_editorGroups.size() - 1)) {
-                        targetGroup = static_cast<int>(g);
-                        break;
-                    }
-                }
+                UpdateEditorGroupBounds();
+                int targetGroup = FindEditorGroupAtPoint(clientPt);
                 if (targetGroup >= 0) {
                     m_focusedGroupIdx = targetGroup;
                     auto& group = m_editorGroups[targetGroup];
@@ -13225,7 +13765,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                                 return 0;
                             }
                         } else if (!doc.isSpecialView && !doc.isImageView && !doc.isUnsupportedBinary) {
-                            float paneCanvasLeft = canvasLeft + targetGroup * paneW;
+                            float paneCanvasLeft = group.bounds.left;
                             size_t line = 0, col = 0;
                             if (m_editor.HitTestCodeArea(clientPt, m_config, doc, paneCanvasLeft, clientH, line, col)) {
                                 doc.SelectWordAt(line, col);
@@ -13319,20 +13859,13 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
 
             // 1b. Scroll Tab Strip horizontally if mouse is over Tab Bar (User request: "since i do many tag it many now there should be a scrol bar so i could scroll throught them")
             const float tabH = m_config.ScaleF(34.0f);
-            if (pt.y >= headerH && pt.y < headerH + tabH && pt.x >= canvasLeft) {
-                if (canvasW > 10.0f && !m_editorGroups.empty()) {
-                    float paneW = canvasW / m_editorGroups.size();
-                    size_t targetG = 0;
-                    for (size_t g = 0; g < m_editorGroups.size(); ++g) {
-                        float pLeft = canvasLeft + g * paneW;
-                        float pRight = pLeft + paneW;
-                        if (pt.x >= pLeft && pt.x < pRight) {
-                            targetG = g;
-                            break;
-                        }
-                    }
+            if (pt.y >= headerH && pt.x >= canvasLeft && canvasW > 10.0f && !m_editorGroups.empty()) {
+                UpdateEditorGroupBounds();
+                int targetG = FindEditorGroupAtPoint(pt);
+                if (targetG >= 0 && targetG < static_cast<int>(m_editorGroups.size())) {
                     auto& grp = m_editorGroups[targetG];
-                    if (grp.totalTabsWidth > paneW) {
+                    float paneW = grp.bounds.right - grp.bounds.left;
+                    if (pt.y >= grp.bounds.top && pt.y < grp.bounds.top + tabH && grp.totalTabsWidth > paneW) {
                         float maxScroll = grp.totalTabsWidth - paneW;
                         float scrollAmount = (delta > 0) ? -50.0f : 50.0f;
                         grp.tabScrollOffset = (std::clamp)(grp.tabScrollOffset + scrollAmount, 0.0f, maxScroll);
@@ -13345,16 +13878,12 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
             // 2. Scroll Editor Canvas
             editor::OpenDocument* pDoc = nullptr;
             if (canvasW > 10.0f && !m_editorGroups.empty()) {
-                float paneW = canvasW / m_editorGroups.size();
-                for (size_t g = 0; g < m_editorGroups.size(); ++g) {
-                    float pLeft = canvasLeft + g * paneW;
-                    float pRight = pLeft + paneW;
-                    if (pt.x >= pLeft && pt.x < pRight) {
-                        auto& grp = m_editorGroups[g];
-                        if (grp.activeDocIdx >= 0 && grp.activeDocIdx < static_cast<int>(grp.docs.size())) {
-                            pDoc = &grp.docs[grp.activeDocIdx];
-                        }
-                        break;
+                UpdateEditorGroupBounds();
+                int targetG = FindEditorGroupAtPoint(pt);
+                if (targetG >= 0 && targetG < static_cast<int>(m_editorGroups.size())) {
+                    auto& grp = m_editorGroups[targetG];
+                    if (grp.activeDocIdx >= 0 && grp.activeDocIdx < static_cast<int>(grp.docs.size())) {
+                        pDoc = &grp.docs[grp.activeDocIdx];
                     }
                 }
             }
@@ -15918,8 +16447,9 @@ void Window::UpdateCssPeekHover(POINT clientPt) {
     const float clientH = static_cast<float>(clientRc.bottom - clientRc.top);
 
     if (clientPt.x >= 0 && clientPt.y >= 0 && canvasWidth > 10.0f && !m_editorGroups.empty()) {
-        float paneW = canvasWidth / m_editorGroups.size();
-        float paneCanvasLeft = canvasLeft + m_focusedGroupIdx * paneW;
+        UpdateEditorGroupBounds();
+        int grpIdx = (m_focusedGroupIdx >= 0 && m_focusedGroupIdx < static_cast<int>(m_editorGroups.size())) ? m_focusedGroupIdx : 0;
+        float paneCanvasLeft = m_editorGroups[grpIdx].bounds.left;
         size_t hLine = 0, hCol = 0;
         if (m_editor.HitTestCodeArea(clientPt, m_config, *curDoc, paneCanvasLeft, clientH, hLine, hCol)) {
             targetLine = hLine;
