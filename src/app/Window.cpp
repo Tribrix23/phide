@@ -7092,36 +7092,10 @@ bool Window::Create(HINSTANCE hInstance, int nCmdShow) {
         DoSaveAll();
     });
 
-    // Register callback for reactive git state updates
+    // Register callback for reactive git state updates (dispatched safely to UI thread via WM_USER + 206)
     m_drawer.SetOnGitStateChanged([this]() {
-        // Auto-close any working tree diff view whose file no longer has git changes
-        const auto& gitChanges = m_drawer.GetGitChanges();
-        for (int g = static_cast<int>(m_editorGroups.size()) - 1; g >= 0; --g) {
-            if (g >= static_cast<int>(m_editorGroups.size())) continue;
-            for (int d = static_cast<int>(m_editorGroups[g].docs.size()) - 1; d >= 0; --d) {
-                if (g >= static_cast<int>(m_editorGroups.size())) break;
-                if (d >= static_cast<int>(m_editorGroups[g].docs.size())) continue;
-                auto& doc = m_editorGroups[g].docs[d];
-                if (doc.isDiffView && !doc.isDiffRightReadOnly) {
-                    bool stillHasChanges = false;
-                    for (const auto& item : gitChanges) {
-                        std::wstring cleanDoc = doc.filePath;
-                        for (auto& c : cleanDoc) if (c == L'/') c = L'\\';
-                        std::wstring cleanItem = item.path;
-                        for (auto& c : cleanItem) if (c == L'/') c = L'\\';
-                        if (cleanDoc == cleanItem || cleanDoc.ends_with(cleanItem) || cleanItem.ends_with(cleanDoc)) {
-                            stillHasChanges = true;
-                            break;
-                        }
-                    }
-                    if (!stillHasChanges) {
-                        CloseDocument(g, d);
-                    }
-                }
-            }
-        }
         if (m_hwnd) {
-            InvalidateRect(m_hwnd, nullptr, FALSE);
+            PostMessageW(m_hwnd, WM_USER + 206, 0, 0);
         }
     });
 
@@ -8118,9 +8092,32 @@ void Window::OnPaint() {
     if (m_isDraggingExplorerFile && !m_dragCandidateName.empty()) {
         float ghostX = static_cast<float>(m_dragCurrentPt.x) + 14.0f;
         float ghostY = static_cast<float>(m_dragCurrentPt.y) + 14.0f;
-        float badgeW = m_config.ScaleF(static_cast<float>(m_dragCandidateName.length() * 8.0f + 64.0f));
-        if (badgeW < m_config.ScaleF(140.0f)) badgeW = m_config.ScaleF(140.0f);
-        if (badgeW > m_config.ScaleF(260.0f)) badgeW = m_config.ScaleF(260.0f);
+
+        std::wstring dragLabel = m_dragCandidateName;
+        if (m_isDragOverExplorer && m_hasDragDropTarget) {
+            dragLabel += L" (move)";
+        } else if (m_hasDragDropTarget) {
+            dragLabel += L" (import)";
+        }
+
+        IDWriteTextFormat* pTextFmt = m_theme.fontHint ? m_theme.fontHint.Get() : m_theme.fontCode.Get();
+        float measuredTextW = 0.0f;
+        if (m_pDWriteFactory && pTextFmt) {
+            Microsoft::WRL::ComPtr<IDWriteTextLayout> pLayout;
+            if (SUCCEEDED(m_pDWriteFactory->CreateTextLayout(
+                    dragLabel.c_str(), static_cast<UINT32>(dragLabel.length()),
+                    pTextFmt, 2000.0f, 100.0f, &pLayout)) && pLayout) {
+                DWRITE_TEXT_METRICS tm{};
+                pLayout->GetMetrics(&tm);
+                measuredTextW = tm.widthIncludingTrailingWhitespace;
+            }
+        }
+        if (measuredTextW <= 0.0f) {
+            measuredTextW = static_cast<float>(dragLabel.length()) * 8.5f;
+        }
+
+        float badgeW = measuredTextW + m_config.ScaleF(44.0f);
+        if (badgeW < m_config.ScaleF(120.0f)) badgeW = m_config.ScaleF(120.0f);
         const float badgeH = m_config.ScaleF(28.0f);
 
         if (ghostX + badgeW > clientW - 8.0f) ghostX = clientW - badgeW - 8.0f;
@@ -8143,6 +8140,8 @@ void Window::OnPaint() {
         if (badgeBg) m_pRenderTarget->FillRoundedRectangle(rrcBadge, badgeBg.Get());
         if (badgeBorder) m_pRenderTarget->DrawRoundedRectangle(rrcBadge, badgeBorder.Get(), 1.5f);
 
+        m_pRenderTarget->PushAxisAlignedClip(rcBadge, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+
         float iconCx = ghostX + m_config.ScaleF(14.0f);
         float iconCy = ghostY + badgeH / 2.0f;
         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> plusBrush;
@@ -8155,21 +8154,17 @@ void Window::OnPaint() {
             m_pRenderTarget->DrawLine(D2D1::Point2F(iconCx, iconCy - 4.0f), D2D1::Point2F(iconCx, iconCy + 4.0f), plusBrush.Get(), 1.8f);
         }
 
-        std::wstring dragLabel = m_dragCandidateName;
-        if (m_isDragOverExplorer && m_hasDragDropTarget) {
-            dragLabel += L" (move)";
-        } else if (m_hasDragDropTarget) {
-            dragLabel += L" (import)";
-        }
         D2D1_RECT_F rcText = D2D1::RectF(ghostX + m_config.ScaleF(26.0f), ghostY + m_config.ScaleF(4.0f), ghostX + badgeW - m_config.ScaleF(6.0f), ghostY + badgeH);
         ID2D1Brush* textBrush = m_theme.IsDarkMode() ? (m_theme.brushTextWhite ? m_theme.brushTextWhite.Get() : m_theme.brushTextPrimary.Get()) : m_theme.brushTextPrimary.Get();
         m_pRenderTarget->DrawText(
             dragLabel.c_str(),
             static_cast<UINT32>(dragLabel.length()),
-            m_theme.fontHint ? m_theme.fontHint.Get() : m_theme.fontCode.Get(),
+            pTextFmt,
             rcText,
             textBrush
         );
+
+        m_pRenderTarget->PopAxisAlignedClip();
     }
 
     // 8.5. Render Too Many Changes Notification Toast (Image 3)
@@ -9857,14 +9852,17 @@ void Window::HandleMouseMove(POINT clientPt, WPARAM wParam) {
             } else {
                 m_drawer.ClearExplorerDropTarget();
                 if (clientPt.x >= canvasLeft && clientPt.x < clientRc.right &&
-                    clientPt.y >= headerH + tabH && clientPt.y < editorH &&
+                    clientPt.y >= headerH && clientPt.y < editorH &&
                     canvasWidth > 10.0f && !m_editorGroups.empty()) {
                     UpdateEditorGroupBounds();
                     int gIdx = FindEditorGroupAtPoint(clientPt);
                     if (gIdx >= 0 && gIdx < static_cast<int>(m_editorGroups.size())) {
                         m_dragDropTargetGroup = gIdx;
                         auto& group = m_editorGroups[gIdx];
-                        if (group.activeDocIdx >= 0 && group.activeDocIdx < static_cast<int>(group.docs.size())) {
+                        bool isOnTabBar = (clientPt.y < group.bounds.top + tabH);
+                        if (isOnTabBar) {
+                            m_hasDragDropTarget = true;
+                        } else if (group.activeDocIdx >= 0 && group.activeDocIdx < static_cast<int>(group.docs.size())) {
                             auto& doc = group.docs[group.activeDocIdx];
                             if (!doc.isSpecialView && !doc.isImageView && !doc.isDiffView) {
                                 size_t line = 0, col = 0;
@@ -9888,7 +9886,11 @@ void Window::HandleMouseMove(POINT clientPt, WPARAM wParam) {
                                     }
                                     m_hasDragDropTarget = true;
                                 }
+                            } else {
+                                m_hasDragDropTarget = true;
                             }
+                        } else {
+                            m_hasDragDropTarget = true;
                         }
                     }
                 }
@@ -13561,9 +13563,9 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 GetCursorPos(&pt);
                 ScreenToClient(m_hwnd, &pt);
 
-                // Explorer Drag & Drop Cursor
-                if (m_isDraggingExplorerFile) {
-                    SetCursor(LoadCursor(nullptr, m_hasDragDropTarget ? IDC_ARROW : IDC_NO));
+                // Explorer / Tab Drag & Drop Cursor (Grabbing Hand Cursor)
+                if (m_isDraggingExplorerFile || m_isDraggingTab) {
+                    SetCursor(LoadCursor(nullptr, IDC_HAND));
                     return TRUE;
                 }
 

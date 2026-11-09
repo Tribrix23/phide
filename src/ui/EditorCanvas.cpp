@@ -3536,6 +3536,15 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
         const bool hasSel = doc.HasSelection();
         if (hasSel) doc.GetSelectionRange(sLine, sCol, eLine, eCol);
 
+        // Word whose occurrences are marked on the minimap: selected word, or a single-line selection
+        std::wstring occWord = doc.selectedWord;
+        if (occWord.empty() && hasSel && sLine == eLine && eCol > sCol && sLine < totalLines) {
+            const auto& selLineStr = buffer.GetLine(sLine);
+            if (eCol <= selLineStr.length()) occWord = selLineStr.substr(sCol, eCol - sCol);
+        }
+        if (occWord.length() < 2 || occWord.find_first_not_of(L" \t") == std::wstring::npos) occWord.clear();
+        std::vector<float> occurrenceYs;
+
         std::wstring qLower = highlightQuery;
         if (!qLower.empty() && !highlightMatchCase) {
             for (auto& ch : qLower) ch = towlower(ch);
@@ -3622,17 +3631,9 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
             }
             if (lineStr.empty()) continue;
 
-            // Highlight matching word occurrences on minimap (Image 4)
-            if (!doc.selectedWord.empty() && doc.selectedWord.length() > 1 && wordTickBrush) {
-                if (lineStr.find(doc.selectedWord) != std::wstring::npos) {
-                    D2D1_RECT_F rcWordTick = D2D1::RectF(
-                        doc.minimapTrack.right - config.ScaleF(12.0f),
-                        my,
-                        doc.minimapTrack.right - config.ScaleF(2.0f),
-                        my + (std::max)(2.0f, microH)
-                    );
-                    pRT->FillRectangle(rcWordTick, wordTickBrush.Get());
-                }
+            // Collect matching word occurrences on minimap; drawn after tokens so they stay visible
+            if (!occWord.empty() && lineStr.find(occWord) != std::wstring::npos) {
+                occurrenceYs.push_back(my);
             }
 
             // Search highlight tick on right side of minimap line
@@ -3702,6 +3703,21 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
                     D2D1_RECT_F rcLine = D2D1::RectF(mx, my, mx + tw, my + microH);
                     pRT->FillRectangle(rcLine, theme.brushTextMuted.Get());
                 }
+            }
+        }
+
+        // Selected-word occurrences on minimap: full-width translucent band + bright right tick (drawn on top of tokens)
+        if (!occurrenceYs.empty() && wordTickBrush) {
+            Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> occBandBrush;
+            pRT->CreateSolidColorBrush(D2D1::ColorF(0.35f, 0.70f, 1.0f, 0.38f), &occBandBrush);
+            const float bandH = (std::max)(2.5f, microH + 1.0f);
+            for (float oy : occurrenceYs) {
+                if (occBandBrush) {
+                    pRT->FillRectangle(D2D1::RectF(doc.minimapTrack.left + 2.0f, oy - 0.5f,
+                                                   doc.minimapTrack.right - 2.0f, oy + bandH), occBandBrush.Get());
+                }
+                pRT->FillRectangle(D2D1::RectF(doc.minimapTrack.right - config.ScaleF(4.0f), oy - 0.5f,
+                                               doc.minimapTrack.right - 1.0f, oy + bandH), wordTickBrush.Get());
             }
         }
 
@@ -8025,6 +8041,15 @@ void EditorCanvas::RenderAutocompletePopup(ID2D1RenderTarget* pRT, Theme& theme,
             } else {
                 auto fType = LucideIcons::GetIconTypeForPath(item.label, false, false);
                 m_icons.DrawFileIcon(pRT, theme, rcIcon, fType);
+            }
+        } else if (item.origin == L"css-class" || item.origin == L"css" || item.origin == L"tailwind" ||
+                   (item.kind == editor::CompletionKind::Class && item.detail.find(L"CSS") != std::wstring::npos)) {
+            // CSS-sourced class: draw the official Seti CSS file icon instead of a letter badge
+            auto setiInfo = theme.GetSetiIcon(L"style.css", false, false);
+            if (theme.fontSeti && setiInfo.pBrush) {
+                pRT->DrawText(&setiInfo.glyph, 1, theme.fontSeti.Get(), rcIcon, setiInfo.pBrush);
+            } else {
+                m_icons.DrawFileIcon(pRT, theme, rcIcon, FileIconType::Css);
             }
         } else {
             // Pill container for symbol badge (ⓟ, ⓜ, ⓕ, ⓥ, ⓚ, ⓣ, ⓐ, ⓢ)

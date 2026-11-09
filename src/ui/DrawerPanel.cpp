@@ -1160,9 +1160,9 @@ void DrawerPanel::RenderExplorerPane(ID2D1RenderTarget* pRT, Theme& theme, const
                     }
                 }
 
-                // 3. Official VS Code Seti File/Folder Icon (18px)
+                // 3. Official VS Code Seti File/Folder Icon (20px prominent)
                 float iconX = chevronX + config.ScaleF(10.0f);
-                float iconSz = config.ScaleF(18.0f);
+                float iconSz = config.ScaleF(20.0f);
                 float iconHalf = iconSz * 0.5f;
                 D2D1_RECT_F iconBounds = D2D1::RectF(
                     iconX,
@@ -1203,7 +1203,7 @@ void DrawerPanel::RenderExplorerPane(ID2D1RenderTarget* pRT, Theme& theme, const
                 }
 
                 // 4. Draw Item Text Label OR Inline Rename Input Box (VS Code style inline rename)
-                float labelX = iconX + config.ScaleF(24.0f);
+                float labelX = iconX + config.ScaleF(26.0f);
                 if (m_isRenaming && static_cast<int>(i) == m_renamingItemIdx) {
                     m_rcRenameBox = D2D1::RectF(
                         labelX - config.ScaleF(4.0f),
@@ -6390,9 +6390,8 @@ void DrawerPanel::CommitChangesAsync(const std::wstring& message) {
 
         std::wstring dir = m_openFolderPath.empty() ? L"." : m_openFolderPath;
 
-        // Ensure context-aware .gitignore exists
+        // Ensure context-aware .gitignore exists (do not call RefreshTree on worker thread to avoid UI crash)
         EnsureContextAwareGitignore(dir);
-        RefreshTree();
 
         auto resAdd = RunGitCmd(L"add -A", dir);
         if (!alive || !alive->load()) { finish(); return; }
@@ -6405,18 +6404,46 @@ void DrawerPanel::CommitChangesAsync(const std::wstring& message) {
             return;
         }
 
-        std::wstring escapedMsg;
-        for (wchar_t c : msg) {
-            if (c == L'"') escapedMsg += L"\\\"";
-            else escapedMsg += c;
+        // Write commit message to temporary file in repo to safely support multiline and special characters without cmd escaping issues
+        std::wstring tmpMsgPath = dir + L"\\.git\\phide_commit_msg.tmp";
+        bool wroteTmp = false;
+        {
+            HANDLE hFile = CreateFileW(tmpMsgPath.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+            if (hFile != INVALID_HANDLE_VALUE) {
+                int utf8Len = WideCharToMultiByte(CP_UTF8, 0, msg.c_str(), static_cast<int>(msg.length()), nullptr, 0, nullptr, nullptr);
+                if (utf8Len > 0) {
+                    std::string utf8Str(utf8Len, '\0');
+                    WideCharToMultiByte(CP_UTF8, 0, msg.c_str(), static_cast<int>(msg.length()), &utf8Str[0], utf8Len, nullptr, nullptr);
+                    DWORD bytesWritten = 0;
+                    WriteFile(hFile, utf8Str.data(), static_cast<DWORD>(utf8Str.size()), &bytesWritten, nullptr);
+                    wroteTmp = true;
+                }
+                CloseHandle(hFile);
+            }
         }
-        std::wstring commitCmd = L"commit -m \"" + escapedMsg + L"\"";
+
+        std::wstring commitCmd;
+        if (wroteTmp) {
+            commitCmd = L"commit -F \"" + tmpMsgPath + L"\"";
+        } else {
+            std::wstring escapedMsg;
+            for (wchar_t c : msg) {
+                if (c == L'"') escapedMsg += L"\\\"";
+                else if (c == L'\r' || c == L'\n') escapedMsg += L" ";
+                else escapedMsg += c;
+            }
+            commitCmd = L"commit -m \"" + escapedMsg + L"\"";
+        }
+
         auto resCommit = RunGitCmd(commitCmd, dir);
+        if (wroteTmp) {
+            DeleteFileW(tmpMsgPath.c_str());
+        }
         if (!alive || !alive->load()) { finish(); return; }
 
         if (resCommit.exitCode != 0 || resCommit.output.find(L"fatal:") != std::wstring::npos || resCommit.output.find(L"error:") != std::wstring::npos) {
             if (m_onGitError) {
-                m_onGitError(L"git " + commitCmd, resCommit.output, dir);
+                m_onGitError(L"git commit", resCommit.output, dir);
             }
             RefreshGitState(false);
             finish();

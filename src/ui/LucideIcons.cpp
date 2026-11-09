@@ -728,7 +728,10 @@ FileIconType LucideIcons::GetIconTypeForPath(const std::wstring& filename, bool 
     std::transform(lower.begin(), lower.end(), lower.begin(), ::towlower);
 
     // Exact filename matches
-    if (lower == L"package.json" || lower == L"package-lock.json" || lower == L"composer.json" || lower == L"tsconfig.json") {
+    if (lower.rfind(L"tsconfig", 0) == 0) {
+        return FileIconType::Ts;
+    }
+    if (lower == L"package.json" || lower == L"package-lock.json" || lower == L"composer.json") {
         return FileIconType::Json;
     }
     if (lower == L"cmakelists.txt" || lower == L"makefile") {

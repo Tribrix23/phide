@@ -232,7 +232,7 @@ HRESULT Theme::CreateDeviceResources(ID2D1RenderTarget* pRT, IDWriteFactory* pDW
             DWRITE_FONT_WEIGHT_NORMAL,
             DWRITE_FONT_STYLE_NORMAL,
             DWRITE_FONT_STRETCH_NORMAL,
-            14.5f,
+            17.5f,
             L"en-US",
             &fontSeti
         );
@@ -1675,8 +1675,16 @@ Theme::SetiIconInfo Theme::GetSetiIcon(const std::wstring& filename, bool isFold
         return { 0xE023, brushSetiDefault ? brushSetiDefault.Get() : brushIconGray.Get() };
     }
 
+    // TypeScript & JavaScript project configs (tsconfig.json, tsconfig.tsbuildinfo, etc.)
+    if (lower.rfind(L"tsconfig", 0) == 0) {
+        return { 0xE099, brushSetiTs ? brushSetiTs.Get() : brushIconBlue.Get() };
+    }
+    if (lower.rfind(L"jsconfig", 0) == 0) {
+        return { 0xE051, brushSetiJs ? brushSetiJs.Get() : brushIconYellow.Get() };
+    }
+
     // Exact filename matches
-    if (lower == L"composer.json" || lower == L"package.json" || lower == L"tsconfig.json" || lower == L"jsconfig.json") {
+    if (lower == L"composer.json" || lower == L"package.json" || lower == L"package-lock.json") {
         return { 0xE055, brushSetiJson ? brushSetiJson.Get() : brushIconYellow.Get() };
     }
     if (lower == L"cmakelists.txt" || lower == L"makefile") {
