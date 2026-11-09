@@ -125,7 +125,7 @@ void SettingsView::InitializeSettings() {
         it.isCommonlyUsed = true;
         it.isAppearance = true;
         it.control = SettingControl::Dropdown;
-        it.options = { L"Koda Mono", L"Consolas", L"Cascadia Code", L"Courier New", L"Lucida Console" };
+        it.options = { L"Koda Mono", L"Koda Mono Semibold Italic", L"Consolas", L"Cascadia Code", L"Courier New", L"Lucida Console" };
         m_items.push_back(std::move(it));
     }
 
@@ -538,13 +538,25 @@ void SettingsView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
         m_icons.Initialize(pFactory.Get());
     }
 
+    bool allKodaItalic = theme.IsAllKodaSemiBoldItalic();
+    static bool s_lastAllKodaItalic = false;
+    if (s_lastAllKodaItalic != allKodaItalic) {
+        m_pFontDesc.Reset();
+        m_pFontTitle.Reset();
+        s_lastAllKodaItalic = allKodaItalic;
+    }
+
     // Ensure leading-aligned typography formats
     if (!m_pFontDesc && theme.dwriteFactory) {
+        const wchar_t* family = allKodaItalic ? L"Koda Mono" : L"Segoe UI";
+        IDWriteFontCollection* pCollection = allKodaItalic ? theme.customFontCollection.Get() : nullptr;
+        DWRITE_FONT_WEIGHT weight = allKodaItalic ? DWRITE_FONT_WEIGHT_SEMI_BOLD : DWRITE_FONT_WEIGHT_REGULAR;
+        DWRITE_FONT_STYLE style = allKodaItalic ? DWRITE_FONT_STYLE_ITALIC : DWRITE_FONT_STYLE_NORMAL;
         theme.dwriteFactory->CreateTextFormat(
-            L"Segoe UI",
-            nullptr,
-            DWRITE_FONT_WEIGHT_REGULAR,
-            DWRITE_FONT_STYLE_NORMAL,
+            family,
+            pCollection,
+            weight,
+            style,
             DWRITE_FONT_STRETCH_NORMAL,
             config.ScaleF(12.5f),
             L"en-US",
@@ -557,11 +569,15 @@ void SettingsView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
         }
     }
     if (!m_pFontTitle && theme.dwriteFactory) {
+        const wchar_t* family = allKodaItalic ? L"Koda Mono" : L"Segoe UI";
+        IDWriteFontCollection* pCollection = allKodaItalic ? theme.customFontCollection.Get() : nullptr;
+        DWRITE_FONT_WEIGHT weight = DWRITE_FONT_WEIGHT_SEMI_BOLD;
+        DWRITE_FONT_STYLE style = allKodaItalic ? DWRITE_FONT_STYLE_ITALIC : DWRITE_FONT_STYLE_NORMAL;
         theme.dwriteFactory->CreateTextFormat(
-            L"Segoe UI",
-            nullptr,
-            DWRITE_FONT_WEIGHT_SEMI_BOLD,
-            DWRITE_FONT_STYLE_NORMAL,
+            family,
+            pCollection,
+            weight,
+            style,
             DWRITE_FONT_STRETCH_NORMAL,
             config.ScaleF(14.0f),
             L"en-US",
@@ -852,7 +868,7 @@ void SettingsView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
         float ctrlReserveW = config.ScaleF(180.0f);
         if (it.control == SettingControl::Dropdown) {
             if (it.id == L"python.linting.linter" || it.id == L"workbench.colorTheme" || it.id == L"editor.fontFamily") {
-                ctrlReserveW = config.ScaleF(250.0f);
+                ctrlReserveW = config.ScaleF(280.0f);
             }
         }
 
@@ -915,7 +931,7 @@ void SettingsView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
         } else if (it.control == SettingControl::Dropdown) {
             float dropW = config.ScaleF(170.0f);
             if (it.id == L"python.linting.linter" || it.id == L"workbench.colorTheme" || it.id == L"editor.fontFamily") {
-                dropW = config.ScaleF(230.0f);
+                dropW = config.ScaleF(260.0f);
             }
             const float dropH = config.ScaleF(32.0f);
             it.controlBounds = D2D1::RectF(ctrlRight - dropW, ctrlCenterY - dropH / 2.0f, ctrlRight, ctrlCenterY + dropH / 2.0f);
@@ -1112,7 +1128,7 @@ void SettingsView::DrawDropdownPopup(ID2D1RenderTarget* pRT, Theme& theme, const
     const float padY = config.ScaleF(6.0f);
     const float menuH = item.options.size() * rowH + padY * 2.0f;
     const float minW = (item.id == L"python.linting.linter" || item.id == L"workbench.colorTheme" || item.id == L"editor.fontFamily")
-                       ? config.ScaleF(230.0f) : config.ScaleF(180.0f);
+                       ? config.ScaleF(260.0f) : config.ScaleF(180.0f);
     const float menuW = (std::max)(item.controlBounds.right - item.controlBounds.left, minW);
 
     // Place menu directly below control button
@@ -1144,7 +1160,7 @@ void SettingsView::DrawDropdownPopup(ID2D1RenderTarget* pRT, Theme& theme, const
     for (size_t i = 0; i < item.options.size(); ++i) {
         D2D1_RECT_F rcRow = D2D1::RectF(menuLeft + config.ScaleF(6.0f), curRowY, menuLeft + menuW - config.ScaleF(6.0f), curRowY + rowH);
         bool isHovered = (m_hoveredDropdownOption == static_cast<int>(i));
-        bool isSelected = (item.options[i] == curVal);
+        bool isSelected = (item.options[i] == curVal || _wcsicmp(item.options[i].c_str(), curVal.c_str()) == 0);
 
         if (isHovered) {
             D2D1_ROUNDED_RECT rrcRow = D2D1::RoundedRect(rcRow, 5.0f, 5.0f);

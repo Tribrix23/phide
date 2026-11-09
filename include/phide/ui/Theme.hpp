@@ -159,6 +159,14 @@ public:
      */
     void SetEditorFont(const std::wstring& family, float size);
 
+    [[nodiscard]] bool IsAllKodaSemiBoldItalic() const noexcept {
+        return (_wcsicmp(m_editorFontFamily.c_str(), L"Koda Mono Semibold Italic") == 0 ||
+                _wcsicmp(m_editorFontFamily.c_str(), L"Koda Mono SemiBold Italic") == 0 ||
+                _wcsicmp(m_editorFontFamily.c_str(), L"Koda Semi Bold Italic") == 0);
+    }
+
+    void RebuildTextFormats(IDWriteFactory* pDWriteFactory);
+
     [[nodiscard]] const std::wstring& GetEditorFontFamily() const noexcept { return m_editorFontFamily; }
     [[nodiscard]] float GetEditorFontSize() const noexcept { return m_editorFontSize; }
 

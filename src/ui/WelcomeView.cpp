@@ -13,8 +13,9 @@ static bool PtInRectF(POINT pt, const D2D1_RECT_F& rc) noexcept {
     return pt.x >= rc.left && pt.x <= rc.right && pt.y >= rc.top && pt.y <= rc.bottom;
 }
 
-static constexpr const wchar_t* s_fontDisplayNames[5] = {
+static constexpr const wchar_t* s_fontDisplayNames[6] = {
     L"Koda Mono  (Recommended)",
+    L"Koda Mono Semibold Italic",
     L"Consolas",
     L"Cascadia Code",
     L"Courier New",
@@ -61,7 +62,7 @@ bool WelcomeView::HandleMouseMove(POINT clientPt) {
         m_hoveredSeeMoreThemes = PtInRectF(clientPt, m_seeMoreThemesBounds);
         m_hoveredNextSection = PtInRectF(clientPt, m_nextSectionBtnBounds[0]);
     } else if (m_activeStep == 1) {
-        for (int i = 0; i < 5; ++i) {
+        for (int i = 0; i < 6; ++i) {
             if (PtInRectF(clientPt, m_fontOptionBounds[i])) {
                 m_hoveredFontOption = i;
                 break;
@@ -124,7 +125,7 @@ bool WelcomeView::HandleLButtonDown(POINT clientPt) {
 
     // 3. Active Step 1: Font Picker & Controls
     if (m_activeStep == 1) {
-        for (int i = 0; i < 5; ++i) {
+        for (int i = 0; i < 6; ++i) {
             if (PtInRectF(clientPt, m_fontOptionBounds[i])) {
                 m_stepCompleted[1] = true;
                 if (m_onFontSelected) {
@@ -275,12 +276,81 @@ void WelcomeView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCon
     }
 
     Microsoft::WRL::ComPtr<IDWriteTextFormat> fmtCode;
-    pDWriteFactory->CreateTextFormat(config.fontFamily.c_str(), nullptr, DWRITE_FONT_WEIGHT_REGULAR, DWRITE_FONT_STYLE_NORMAL,
-                                    DWRITE_FONT_STRETCH_NORMAL, config.ScaleF(12.0f), L"en-us", &fmtCode);
+    Microsoft::WRL::ComPtr<IDWriteTextFormat> fmtGutterNum;
+
+    bool isAllKodaSemiBoldItalic = theme.IsAllKodaSemiBoldItalic() ||
+                                   (_wcsicmp(config.fontFamily.c_str(), L"Koda Mono Semibold Italic") == 0) ||
+                                   (_wcsicmp(config.fontFamily.c_str(), L"Koda Mono SemiBold Italic") == 0) ||
+                                   (_wcsicmp(config.fontFamily.c_str(), L"Koda Semi Bold Italic") == 0);
+
+    const wchar_t* previewCodeFamily = L"Koda Mono";
+    IDWriteFontCollection* previewColl = theme.customFontCollection ? theme.customFontCollection.Get() : nullptr;
+    DWRITE_FONT_WEIGHT previewWeight = isAllKodaSemiBoldItalic ? DWRITE_FONT_WEIGHT_SEMI_BOLD : DWRITE_FONT_WEIGHT_MEDIUM;
+    DWRITE_FONT_STYLE previewStyle = isAllKodaSemiBoldItalic ? DWRITE_FONT_STYLE_ITALIC :
+        ((config.fontFamily == L"Koda Mono" || config.fontFamily == L"Phide Mono") ? DWRITE_FONT_STYLE_ITALIC : DWRITE_FONT_STYLE_NORMAL);
+
+    if (config.fontFamily == L"Consolas" || config.fontFamily == L"Cascadia Code" ||
+        config.fontFamily == L"Courier New" || config.fontFamily == L"Lucida Console") {
+        previewCodeFamily = config.fontFamily.c_str();
+        previewColl = nullptr;
+        previewWeight = DWRITE_FONT_WEIGHT_REGULAR;
+        previewStyle = DWRITE_FONT_STYLE_NORMAL;
+    }
+
+    pDWriteFactory->CreateTextFormat(
+        previewCodeFamily,
+        previewColl,
+        previewWeight,
+        previewStyle,
+        DWRITE_FONT_STRETCH_NORMAL,
+        config.ScaleF(12.0f),
+        L"en-us",
+        &fmtCode
+    );
+    if (!fmtCode) {
+        pDWriteFactory->CreateTextFormat(
+            L"Consolas",
+            nullptr,
+            previewWeight,
+            previewStyle,
+            DWRITE_FONT_STRETCH_NORMAL,
+            config.ScaleF(12.0f),
+            L"en-us",
+            &fmtCode
+        );
+    }
     if (fmtCode) {
         fmtCode->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
         fmtCode->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
         fmtCode->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+    }
+
+    pDWriteFactory->CreateTextFormat(
+        previewCodeFamily,
+        previewColl,
+        previewWeight,
+        previewStyle,
+        DWRITE_FONT_STRETCH_NORMAL,
+        config.ScaleF(11.5f),
+        L"en-us",
+        &fmtGutterNum
+    );
+    if (!fmtGutterNum) {
+        pDWriteFactory->CreateTextFormat(
+            L"Consolas",
+            nullptr,
+            previewWeight,
+            previewStyle,
+            DWRITE_FONT_STRETCH_NORMAL,
+            config.ScaleF(11.5f),
+            L"en-us",
+            &fmtGutterNum
+        );
+    }
+    if (fmtGutterNum) {
+        fmtGutterNum->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+        fmtGutterNum->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+        fmtGutterNum->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
     }
 
     // Responsive container calculation (max width 940px, centered)
@@ -346,7 +416,7 @@ void WelcomeView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCon
             if (stepIdx == 0) {
                 boxContentH = config.ScaleF(180.0f);
             } else if (stepIdx == 1) {
-                boxContentH = config.ScaleF(265.0f);
+                boxContentH = config.ScaleF(305.0f);
             } else {
                 boxContentH = config.ScaleF(135.0f);
             }
@@ -467,12 +537,12 @@ void WelcomeView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCon
                 );
                 pRT->DrawText(descFont, static_cast<UINT32>(wcslen(descFont)), fmtDesc.Get(), rcDesc, brushTextMuted.Get());
 
-                // 5 Clean Font Choice Rows (User specifically removed the cluttered sample code from inside these rows)
+                // 6 Clean Font Choice Rows (User specifically removed the cluttered sample code from inside these rows)
                 const float rowH = config.ScaleF(30.0f);
                 const float rowSpacing = config.ScaleF(4.0f);
                 float rowY = rcBox.top + config.ScaleF(72.0f);
 
-                for (int f = 0; f < 5; ++f) {
+                for (int f = 0; f < 6; ++f) {
                     bool isCurrent = (config.fontFamily == s_fontNames[f]);
                     bool isRowHovered = (m_hoveredFontOption == f);
 
@@ -813,9 +883,10 @@ void WelcomeView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCon
                 pRT->FillRectangle(rcLineBg, theme.brushCurrentLineBg.Get());
             }
 
-            // Gutter Line Number
-            D2D1_RECT_F rcNum = D2D1::RectF(rcWindow.left, lineY, rcWindow.left + gutterW - config.ScaleF(6.0f), lineY + lineH);
-            pRT->DrawText(cl.num, static_cast<UINT32>(wcslen(cl.num)), fmtCode.Get(), rcNum,
+            // Gutter Line Number (Centered inside gutter)
+            D2D1_RECT_F rcNum = D2D1::RectF(rcWindow.left, lineY, rcWindow.left + gutterW, lineY + lineH);
+            pRT->DrawText(cl.num, static_cast<UINT32>(wcslen(cl.num)),
+                          fmtGutterNum ? fmtGutterNum.Get() : fmtCode.Get(), rcNum,
                           cl.isCurrent ? theme.brushTextWhite.Get() : theme.brushLineNumber.Get());
 
             // Code Line

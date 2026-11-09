@@ -91,7 +91,7 @@ public:
         return (idx >= 0 && idx < 4) ? m_themeCardBounds[idx] : D2D1_RECT_F{};
     }
     [[nodiscard]] D2D1_RECT_F GetFontOptionBounds(int idx) const noexcept {
-        return (idx >= 0 && idx < 5) ? m_fontOptionBounds[idx] : D2D1_RECT_F{};
+        return (idx >= 0 && idx < 6) ? m_fontOptionBounds[idx] : D2D1_RECT_F{};
     }
 
 private:
@@ -110,7 +110,7 @@ private:
     D2D1_RECT_F m_interactiveGuideBtnBounds{};
     D2D1_RECT_F m_markDoneBtnBounds{};
     D2D1_RECT_F m_themeCardBounds[4]{};
-    D2D1_RECT_F m_fontOptionBounds[5]{};
+    D2D1_RECT_F m_fontOptionBounds[6]{};
 
     // Featured theme choices (Image 2)
     static constexpr ThemeMode s_themeCardModes[4] = {
@@ -128,8 +128,9 @@ private:
     };
 
     // Supported fonts matching Settings (Image 1)
-    static constexpr const wchar_t* s_fontNames[5] = {
+    static constexpr const wchar_t* s_fontNames[6] = {
         L"Koda Mono",
+        L"Koda Mono Semibold Italic",
         L"Consolas",
         L"Cascadia Code",
         L"Courier New",

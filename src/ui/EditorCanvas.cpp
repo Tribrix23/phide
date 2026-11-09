@@ -6339,15 +6339,23 @@ void EditorCanvas::RenderMarkdownPreview(ID2D1RenderTarget* pRT, Theme& theme, c
     Microsoft::WRL::ComPtr<IDWriteTextFormat> fontCodeBlock;
 
     if (theme.dwriteFactory) {
-        theme.dwriteFactory->CreateTextFormat(L"Segoe UI", nullptr, DWRITE_FONT_WEIGHT_BOLD, DWRITE_FONT_STYLE_NORMAL,
+        bool isAllKodaItalic = theme.IsAllKodaSemiBoldItalic();
+        const wchar_t* family = isAllKodaItalic ? L"Koda Mono" : L"Segoe UI";
+        IDWriteFontCollection* pColl = isAllKodaItalic ? theme.customFontCollection.Get() : nullptr;
+        DWRITE_FONT_WEIGHT wBold = isAllKodaItalic ? DWRITE_FONT_WEIGHT_SEMI_BOLD : DWRITE_FONT_WEIGHT_BOLD;
+        DWRITE_FONT_WEIGHT wSemi = DWRITE_FONT_WEIGHT_SEMI_BOLD;
+        DWRITE_FONT_STYLE sAll = isAllKodaItalic ? DWRITE_FONT_STYLE_ITALIC : DWRITE_FONT_STYLE_NORMAL;
+
+        theme.dwriteFactory->CreateTextFormat(family, pColl, wBold, sAll,
             DWRITE_FONT_STRETCH_NORMAL, config.ScaleF(24.0f), L"en-US", &fontH1);
-        theme.dwriteFactory->CreateTextFormat(L"Segoe UI", nullptr, DWRITE_FONT_WEIGHT_BOLD, DWRITE_FONT_STYLE_NORMAL,
+        theme.dwriteFactory->CreateTextFormat(family, pColl, wBold, sAll,
             DWRITE_FONT_STRETCH_NORMAL, config.ScaleF(19.0f), L"en-US", &fontH2);
-        theme.dwriteFactory->CreateTextFormat(L"Segoe UI", nullptr, DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_FONT_STYLE_NORMAL,
+        theme.dwriteFactory->CreateTextFormat(family, pColl, wSemi, sAll,
             DWRITE_FONT_STRETCH_NORMAL, config.ScaleF(15.5f), L"en-US", &fontH3);
-        theme.dwriteFactory->CreateTextFormat(L"Segoe UI", nullptr, DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_FONT_STYLE_NORMAL,
+        theme.dwriteFactory->CreateTextFormat(family, pColl, wSemi, sAll,
             DWRITE_FONT_STRETCH_NORMAL, config.ScaleF(13.5f), L"en-US", &fontH4);
-        theme.dwriteFactory->CreateTextFormat(L"Consolas", nullptr, DWRITE_FONT_WEIGHT_REGULAR, DWRITE_FONT_STYLE_NORMAL,
+        theme.dwriteFactory->CreateTextFormat(isAllKodaItalic ? L"Koda Mono" : L"Consolas", pColl,
+            isAllKodaItalic ? DWRITE_FONT_WEIGHT_SEMI_BOLD : DWRITE_FONT_WEIGHT_REGULAR, sAll,
             DWRITE_FONT_STRETCH_NORMAL, config.ScaleF(12.5f), L"en-US", &fontCodeBlock);
     }
 
@@ -7061,13 +7069,21 @@ void EditorCanvas::RenderExtensionDetail(ID2D1RenderTarget* pRT, Theme& theme, c
     Microsoft::WRL::ComPtr<IDWriteTextFormat> fontCodeBlock;
 
     if (theme.dwriteFactory) {
-        theme.dwriteFactory->CreateTextFormat(L"Segoe UI", nullptr, DWRITE_FONT_WEIGHT_BOLD, DWRITE_FONT_STYLE_NORMAL,
+        bool isAllKodaItalic = theme.IsAllKodaSemiBoldItalic();
+        const wchar_t* family = isAllKodaItalic ? L"Koda Mono" : L"Segoe UI";
+        IDWriteFontCollection* pColl = isAllKodaItalic ? theme.customFontCollection.Get() : nullptr;
+        DWRITE_FONT_WEIGHT wBold = isAllKodaItalic ? DWRITE_FONT_WEIGHT_SEMI_BOLD : DWRITE_FONT_WEIGHT_BOLD;
+        DWRITE_FONT_WEIGHT wSemi = DWRITE_FONT_WEIGHT_SEMI_BOLD;
+        DWRITE_FONT_STYLE sAll = isAllKodaItalic ? DWRITE_FONT_STYLE_ITALIC : DWRITE_FONT_STYLE_NORMAL;
+
+        theme.dwriteFactory->CreateTextFormat(family, pColl, wBold, sAll,
             DWRITE_FONT_STRETCH_NORMAL, config.ScaleF(22.0f), L"en-US", &fontH1);
-        theme.dwriteFactory->CreateTextFormat(L"Segoe UI", nullptr, DWRITE_FONT_WEIGHT_BOLD, DWRITE_FONT_STYLE_NORMAL,
+        theme.dwriteFactory->CreateTextFormat(family, pColl, wBold, sAll,
             DWRITE_FONT_STRETCH_NORMAL, config.ScaleF(17.0f), L"en-US", &fontH2);
-        theme.dwriteFactory->CreateTextFormat(L"Segoe UI", nullptr, DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_FONT_STYLE_NORMAL,
+        theme.dwriteFactory->CreateTextFormat(family, pColl, wSemi, sAll,
             DWRITE_FONT_STRETCH_NORMAL, config.ScaleF(14.5f), L"en-US", &fontH3);
-        theme.dwriteFactory->CreateTextFormat(L"Consolas", nullptr, DWRITE_FONT_WEIGHT_REGULAR, DWRITE_FONT_STYLE_NORMAL,
+        theme.dwriteFactory->CreateTextFormat(isAllKodaItalic ? L"Koda Mono" : L"Consolas", pColl,
+            isAllKodaItalic ? DWRITE_FONT_WEIGHT_SEMI_BOLD : DWRITE_FONT_WEIGHT_REGULAR, sAll,
             DWRITE_FONT_STRETCH_NORMAL, config.ScaleF(12.5f), L"en-US", &fontCodeBlock);
     }
 

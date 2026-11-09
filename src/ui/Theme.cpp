@@ -31,7 +31,10 @@ static std::wstring FindFontPath(const std::wstring& filename) {
 }
 
 static std::wstring ResolveMonospaceFont(IDWriteFactory* pFactory, const std::wstring& requestedFamily, IDWriteFontCollection* pCustomCollection = nullptr) {
-    if (requestedFamily.empty() || requestedFamily == L"Koda Mono" || requestedFamily == L"Phide Mono") {
+    if (requestedFamily.empty() || requestedFamily == L"Koda Mono" || requestedFamily == L"Phide Mono" ||
+        _wcsicmp(requestedFamily.c_str(), L"Koda Mono Semibold Italic") == 0 ||
+        _wcsicmp(requestedFamily.c_str(), L"Koda Mono SemiBold Italic") == 0 ||
+        _wcsicmp(requestedFamily.c_str(), L"Koda Semi Bold Italic") == 0) {
         if (pCustomCollection) {
             UINT32 index = 0;
             BOOL exists = FALSE;
@@ -225,7 +228,17 @@ HRESULT Theme::CreateDeviceResources(ID2D1RenderTarget* pRT, IDWriteFactory* pDW
         }
     }
 
+    RebuildTextFormats(pDWriteFactory);
+    return S_OK;
+}
+
+void Theme::RebuildTextFormats(IDWriteFactory* pDWriteFactory) {
+    if (!pDWriteFactory) return;
+
+    bool isAllKodaSemiBoldItalic = IsAllKodaSemiBoldItalic();
+
     if (customFontCollection) {
+        fontSeti.Reset();
         pDWriteFactory->CreateTextFormat(
             L"seti",
             customFontCollection.Get(),
@@ -266,17 +279,32 @@ HRESULT Theme::CreateDeviceResources(ID2D1RenderTarget* pRT, IDWriteFactory* pDW
         }
     }
 
+    if (isAllKodaSemiBoldItalic) {
+        uiFontFamily = L"Koda Mono";
+        uiCollection = customFontCollection ? customFontCollection.Get() : nullptr;
+        collectionToUse = customFontCollection ? customFontCollection.Get() : nullptr;
+        chosenFont = L"Koda Mono";
+    }
+
     auto createFormat = [&](const wchar_t* primaryFamily, IDWriteFontCollection* primaryCollection,
                             DWRITE_FONT_WEIGHT weight, DWRITE_FONT_STYLE style, float size,
                             IDWriteTextFormat** ppFormat,
                             const wchar_t* fallbackFamily = L"Segoe UI") -> HRESULT {
+        if (!ppFormat) return E_POINTER;
+        *ppFormat = nullptr;
+
+        DWRITE_FONT_WEIGHT weightToUse = isAllKodaSemiBoldItalic ? DWRITE_FONT_WEIGHT_SEMI_BOLD : weight;
+        DWRITE_FONT_STYLE styleToUse = isAllKodaSemiBoldItalic ? DWRITE_FONT_STYLE_ITALIC : style;
+        const wchar_t* familyToUse = isAllKodaSemiBoldItalic ? L"Koda Mono" : primaryFamily;
+        IDWriteFontCollection* collToUse = isAllKodaSemiBoldItalic ? (customFontCollection ? customFontCollection.Get() : nullptr) : primaryCollection;
+
         HRESULT hrLocal = E_FAIL;
-        if (primaryFamily && primaryCollection) {
+        if (familyToUse && collToUse) {
             hrLocal = pDWriteFactory->CreateTextFormat(
-                primaryFamily,
-                primaryCollection,
-                weight,
-                style,
+                familyToUse,
+                collToUse,
+                weightToUse,
+                styleToUse,
                 DWRITE_FONT_STRETCH_NORMAL,
                 size,
                 L"en-US",
@@ -287,8 +315,8 @@ HRESULT Theme::CreateDeviceResources(ID2D1RenderTarget* pRT, IDWriteFactory* pDW
             hrLocal = pDWriteFactory->CreateTextFormat(
                 fallbackFamily,
                 nullptr,
-                weight,
-                style,
+                weightToUse,
+                styleToUse,
                 DWRITE_FONT_STRETCH_NORMAL,
                 size,
                 L"en-US",
@@ -298,15 +326,15 @@ HRESULT Theme::CreateDeviceResources(ID2D1RenderTarget* pRT, IDWriteFactory* pDW
         return hrLocal;
     };
 
-    // Create DirectWrite Text Formats
-    // 1. Title Font
-    hr = createFormat(uiFontFamily, uiCollection, DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_FONT_STYLE_NORMAL, 12.0f, &fontTitle);
-    if (FAILED(hr)) return hr;
-    fontTitle->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
-    fontTitle->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
-    fontTitle->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+    fontTitle.Reset();
+    createFormat(uiFontFamily, uiCollection, DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_FONT_STYLE_NORMAL, 12.0f, &fontTitle);
+    if (fontTitle) {
+        fontTitle->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+        fontTitle->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+        fontTitle->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+    }
 
-    // 2. Menu Font
+    fontMenu.Reset();
     createFormat(uiFontFamily, uiCollection, DWRITE_FONT_WEIGHT_MEDIUM, DWRITE_FONT_STYLE_NORMAL, 12.0f, &fontMenu);
     if (fontMenu) {
         fontMenu->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
@@ -314,7 +342,7 @@ HRESULT Theme::CreateDeviceResources(ID2D1RenderTarget* pRT, IDWriteFactory* pDW
         fontMenu->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
     }
 
-    // 2b. Dropdown Menu Item Font (12px, Left-aligned, Vertically centered)
+    fontMenuItem.Reset();
     createFormat(uiFontFamily, uiCollection, DWRITE_FONT_WEIGHT_MEDIUM, DWRITE_FONT_STYLE_NORMAL, 12.0f, &fontMenuItem);
     if (fontMenuItem) {
         fontMenuItem->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
@@ -322,7 +350,7 @@ HRESULT Theme::CreateDeviceResources(ID2D1RenderTarget* pRT, IDWriteFactory* pDW
         fontMenuItem->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
     }
 
-    // 2c. Dropdown Menu Shortcut Font (11.5px, Right-aligned, Vertically centered)
+    fontMenuShortcut.Reset();
     createFormat(uiFontFamily, uiCollection, DWRITE_FONT_WEIGHT_REGULAR, DWRITE_FONT_STYLE_NORMAL, 11.0f, &fontMenuShortcut);
     if (fontMenuShortcut) {
         fontMenuShortcut->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_TRAILING);
@@ -330,7 +358,7 @@ HRESULT Theme::CreateDeviceResources(ID2D1RenderTarget* pRT, IDWriteFactory* pDW
         fontMenuShortcut->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
     }
 
-    // 3. Body Font
+    fontBody.Reset();
     createFormat(uiFontFamily, uiCollection, DWRITE_FONT_WEIGHT_REGULAR, DWRITE_FONT_STYLE_NORMAL, 12.5f, &fontBody);
     if (fontBody) {
         fontBody->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
@@ -338,31 +366,35 @@ HRESULT Theme::CreateDeviceResources(ID2D1RenderTarget* pRT, IDWriteFactory* pDW
         fontBody->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
     }
 
-    // 3a. Monospace Code Font (Editor uses Medium Italic for Koda Mono per user preference)
-    DWRITE_FONT_STYLE fontStyle = (chosenFont == L"Koda Mono" || chosenFont == L"Phide Mono") ? DWRITE_FONT_STYLE_ITALIC : DWRITE_FONT_STYLE_NORMAL;
+    fontCode.Reset();
+    DWRITE_FONT_WEIGHT codeWeight = isAllKodaSemiBoldItalic ? DWRITE_FONT_WEIGHT_SEMI_BOLD : DWRITE_FONT_WEIGHT_MEDIUM;
+    DWRITE_FONT_STYLE codeStyle = isAllKodaSemiBoldItalic ? DWRITE_FONT_STYLE_ITALIC :
+        ((chosenFont == L"Koda Mono" || chosenFont == L"Phide Mono") ? DWRITE_FONT_STYLE_ITALIC : DWRITE_FONT_STYLE_NORMAL);
     const wchar_t* editorFamily = chosenFont.c_str();
-    if (customFontCollection) {
+    if (!isAllKodaSemiBoldItalic && customFontCollection) {
         UINT32 medIdx = 0; BOOL medExists = FALSE;
         if (SUCCEEDED(customFontCollection->FindFamilyName(L"Koda Mono Medium", &medIdx, &medExists)) && medExists) {
             editorFamily = L"Koda Mono Medium";
         }
     }
-    createFormat(editorFamily, collectionToUse, DWRITE_FONT_WEIGHT_MEDIUM, fontStyle, (std::max)(6.0f, m_editorFontSize), &fontCode, L"Consolas");
+    createFormat(editorFamily, collectionToUse, codeWeight, codeStyle, (std::max)(6.0f, m_editorFontSize), &fontCode, L"Consolas");
     if (fontCode) {
         fontCode->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
         fontCode->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
         fontCode->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
     }
 
-    // 3a-2. Monospace Terminal Font (Terminal uses Medium Normal non-italic for Koda Mono)
-    createFormat(editorFamily, collectionToUse, DWRITE_FONT_WEIGHT_MEDIUM, DWRITE_FONT_STYLE_NORMAL, (std::max)(6.0f, m_editorFontSize), &fontTerminal, L"Consolas");
+    fontTerminal.Reset();
+    DWRITE_FONT_WEIGHT termWeight = isAllKodaSemiBoldItalic ? DWRITE_FONT_WEIGHT_SEMI_BOLD : DWRITE_FONT_WEIGHT_MEDIUM;
+    DWRITE_FONT_STYLE termStyle = isAllKodaSemiBoldItalic ? DWRITE_FONT_STYLE_ITALIC : DWRITE_FONT_STYLE_NORMAL;
+    createFormat(editorFamily, collectionToUse, termWeight, termStyle, (std::max)(6.0f, m_editorFontSize), &fontTerminal, L"Consolas");
     if (fontTerminal) {
         fontTerminal->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
         fontTerminal->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
         fontTerminal->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
     }
 
-    // 3b. Centered Button Font (13px, Centered horizontally and vertically)
+    fontButtonCenter.Reset();
     createFormat(uiFontFamily, uiCollection, DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_FONT_STYLE_NORMAL, 13.0f, &fontButtonCenter);
     if (fontButtonCenter) {
         fontButtonCenter->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
@@ -370,7 +402,7 @@ HRESULT Theme::CreateDeviceResources(ID2D1RenderTarget* pRT, IDWriteFactory* pDW
         fontButtonCenter->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
     }
 
-    // 3c. File Type Badge Font (8.5px, Bold, Centered horizontally and vertically)
+    fontBadge.Reset();
     createFormat(uiFontFamily, uiCollection, DWRITE_FONT_WEIGHT_BOLD, DWRITE_FONT_STYLE_NORMAL, 8.5f, &fontBadge);
     if (fontBadge) {
         fontBadge->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
@@ -378,29 +410,18 @@ HRESULT Theme::CreateDeviceResources(ID2D1RenderTarget* pRT, IDWriteFactory* pDW
         fontBadge->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
     }
 
-    // 3d. Section Header Font (EXPLORER)
+    fontSectionHeader.Reset();
     createFormat(uiFontFamily, uiCollection, DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_FONT_STYLE_NORMAL, 11.0f, &fontSectionHeader);
     if (fontSectionHeader) {
         fontSectionHeader->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
         fontSectionHeader->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
         fontSectionHeader->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
     }
-    if (fontSectionHeader) {
-        fontSectionHeader->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
-        fontSectionHeader->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
-        fontSectionHeader->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
-    }
 
-    // 4. Icon Glyph Font (Segoe UI Symbol)
+    fontIcon.Reset();
     pDWriteFactory->CreateTextFormat(
-        L"Segoe UI Symbol",
-        nullptr,
-        DWRITE_FONT_WEIGHT_REGULAR,
-        DWRITE_FONT_STYLE_NORMAL,
-        DWRITE_FONT_STRETCH_NORMAL,
-        15.0f,
-        L"en-US",
-        &fontIcon
+        L"Segoe UI Symbol", nullptr, DWRITE_FONT_WEIGHT_REGULAR, DWRITE_FONT_STYLE_NORMAL,
+        DWRITE_FONT_STRETCH_NORMAL, 15.0f, L"en-US", &fontIcon
     );
     if (fontIcon) {
         fontIcon->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
@@ -408,16 +429,10 @@ HRESULT Theme::CreateDeviceResources(ID2D1RenderTarget* pRT, IDWriteFactory* pDW
         fontIcon->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
     }
 
-    // 5. Caption Button Font (Segoe MDL2 Assets / Segoe UI Symbol)
+    fontCaption.Reset();
     pDWriteFactory->CreateTextFormat(
-        L"Segoe UI Symbol",
-        nullptr,
-        DWRITE_FONT_WEIGHT_REGULAR,
-        DWRITE_FONT_STYLE_NORMAL,
-        DWRITE_FONT_STRETCH_NORMAL,
-        10.5f,
-        L"en-US",
-        &fontCaption
+        L"Segoe UI Symbol", nullptr, DWRITE_FONT_WEIGHT_REGULAR, DWRITE_FONT_STYLE_NORMAL,
+        DWRITE_FONT_STRETCH_NORMAL, 10.5f, L"en-US", &fontCaption
     );
     if (fontCaption) {
         fontCaption->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
@@ -425,7 +440,7 @@ HRESULT Theme::CreateDeviceResources(ID2D1RenderTarget* pRT, IDWriteFactory* pDW
         fontCaption->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
     }
 
-    // 6. Workspace Hint Font
+    fontHint.Reset();
     createFormat(uiFontFamily, uiCollection, DWRITE_FONT_WEIGHT_MEDIUM, DWRITE_FONT_STYLE_ITALIC, 12.5f, &fontHint);
     if (fontHint) {
         fontHint->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
@@ -433,7 +448,7 @@ HRESULT Theme::CreateDeviceResources(ID2D1RenderTarget* pRT, IDWriteFactory* pDW
         fontHint->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
     }
 
-    // 7. Customized Tooltip Font
+    fontTooltip.Reset();
     createFormat(uiFontFamily, uiCollection, DWRITE_FONT_WEIGHT_MEDIUM, DWRITE_FONT_STYLE_NORMAL, 11.5f, &fontTooltip);
     if (fontTooltip) {
         fontTooltip->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
@@ -441,7 +456,7 @@ HRESULT Theme::CreateDeviceResources(ID2D1RenderTarget* pRT, IDWriteFactory* pDW
         fontTooltip->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
     }
 
-    // 8. Editor Tab Font (12px Medium, Leading-aligned, Centered vertically)
+    fontTab.Reset();
     createFormat(uiFontFamily, uiCollection, DWRITE_FONT_WEIGHT_MEDIUM, DWRITE_FONT_STYLE_NORMAL, 12.0f, &fontTab);
     if (fontTab) {
         fontTab->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
@@ -449,7 +464,7 @@ HRESULT Theme::CreateDeviceResources(ID2D1RenderTarget* pRT, IDWriteFactory* pDW
         fontTab->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
     }
 
-    // 9. Editor Tab Preview Font (12px Medium Italic, Leading-aligned, Centered vertically)
+    fontTabPreview.Reset();
     createFormat(uiFontFamily, uiCollection, DWRITE_FONT_WEIGHT_MEDIUM, DWRITE_FONT_STYLE_ITALIC, 12.0f, &fontTabPreview);
     if (fontTabPreview) {
         fontTabPreview->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
@@ -457,7 +472,7 @@ HRESULT Theme::CreateDeviceResources(ID2D1RenderTarget* pRT, IDWriteFactory* pDW
         fontTabPreview->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
     }
 
-    // 10. Keycap Badge Font (11.5px Semi-Bold, Centered Horizontally & Vertically)
+    fontKeycap.Reset();
     createFormat(uiFontFamily, uiCollection, DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_FONT_STYLE_NORMAL, 11.5f, &fontKeycap);
     if (fontKeycap) {
         fontKeycap->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
@@ -465,7 +480,7 @@ HRESULT Theme::CreateDeviceResources(ID2D1RenderTarget* pRT, IDWriteFactory* pDW
         fontKeycap->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
     }
 
-    // 11. Counter Badge Font (11.0px Semi-Bold, Centered Horizontally & Vertically)
+    fontCounterBadge.Reset();
     createFormat(uiFontFamily, uiCollection, DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_FONT_STYLE_NORMAL, 11.0f, &fontCounterBadge);
     if (fontCounterBadge) {
         fontCounterBadge->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
@@ -473,7 +488,7 @@ HRESULT Theme::CreateDeviceResources(ID2D1RenderTarget* pRT, IDWriteFactory* pDW
         fontCounterBadge->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
     }
 
-    // 12. Gutter Line Numbers Font (12.5px Monospace Regular, Right-aligned)
+    fontLineNumber.Reset();
     createFormat(uiFontFamily, uiCollection, DWRITE_FONT_WEIGHT_REGULAR, DWRITE_FONT_STYLE_NORMAL, 12.5f, &fontLineNumber, L"Consolas");
     if (fontLineNumber) {
         fontLineNumber->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_TRAILING);
@@ -481,7 +496,7 @@ HRESULT Theme::CreateDeviceResources(ID2D1RenderTarget* pRT, IDWriteFactory* pDW
         fontLineNumber->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
     }
 
-    // 13. Active Line Number Glow Font (12.5px Monospace Semi-Bold, Right-aligned)
+    fontLineNumberActive.Reset();
     createFormat(uiFontFamily, uiCollection, DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_FONT_STYLE_NORMAL, 12.5f, &fontLineNumberActive, L"Consolas");
     if (fontLineNumberActive) {
         fontLineNumberActive->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_TRAILING);
@@ -489,58 +504,29 @@ HRESULT Theme::CreateDeviceResources(ID2D1RenderTarget* pRT, IDWriteFactory* pDW
         fontLineNumberActive->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
     }
 
-    // 14. Course Title Font (28.0px Segoe UI Bold, Leading-aligned)
-    pDWriteFactory->CreateTextFormat(
-        L"Segoe UI",
-        nullptr,
-        DWRITE_FONT_WEIGHT_BOLD,
-        DWRITE_FONT_STYLE_NORMAL,
-        DWRITE_FONT_STRETCH_NORMAL,
-        28.0f,
-        L"en-US",
-        &fontCourseTitle
-    );
+    fontCourseTitle.Reset();
+    createFormat(uiFontFamily, uiCollection, DWRITE_FONT_WEIGHT_BOLD, DWRITE_FONT_STYLE_NORMAL, 28.0f, &fontCourseTitle);
     if (fontCourseTitle) {
         fontCourseTitle->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
         fontCourseTitle->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR);
         fontCourseTitle->SetWordWrapping(DWRITE_WORD_WRAPPING_WRAP);
     }
 
-    // 15. Course Section Heading Font (17.0px Segoe UI Semi-Bold, Leading-aligned)
-    pDWriteFactory->CreateTextFormat(
-        L"Segoe UI",
-        nullptr,
-        DWRITE_FONT_WEIGHT_SEMI_BOLD,
-        DWRITE_FONT_STYLE_NORMAL,
-        DWRITE_FONT_STRETCH_NORMAL,
-        17.0f,
-        L"en-US",
-        &fontCourseHeading
-    );
+    fontCourseHeading.Reset();
+    createFormat(uiFontFamily, uiCollection, DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_FONT_STYLE_NORMAL, 17.0f, &fontCourseHeading);
     if (fontCourseHeading) {
         fontCourseHeading->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
         fontCourseHeading->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR);
         fontCourseHeading->SetWordWrapping(DWRITE_WORD_WRAPPING_WRAP);
     }
 
-    // 16. Course Body Prose Font (14.5px Segoe UI Regular, Leading-aligned)
-    pDWriteFactory->CreateTextFormat(
-        L"Segoe UI",
-        nullptr,
-        DWRITE_FONT_WEIGHT_NORMAL,
-        DWRITE_FONT_STYLE_NORMAL,
-        DWRITE_FONT_STRETCH_NORMAL,
-        14.5f,
-        L"en-US",
-        &fontCourseBody
-    );
+    fontCourseBody.Reset();
+    createFormat(uiFontFamily, uiCollection, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STYLE_NORMAL, 14.5f, &fontCourseBody);
     if (fontCourseBody) {
         fontCourseBody->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
         fontCourseBody->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR);
         fontCourseBody->SetWordWrapping(DWRITE_WORD_WRAPPING_WRAP);
     }
-
-    return S_OK;
 }
 
 void Theme::DiscardDeviceResources() {
@@ -650,49 +636,7 @@ void Theme::SetEditorFont(const std::wstring& family, float size) {
     if (!family.empty()) m_editorFontFamily = family;
     if (size > 0.0f) m_editorFontSize = size;
     if (dwriteFactory) {
-        fontCode.Reset();
-        fontTerminal.Reset();
-        std::wstring chosenFont = ResolveMonospaceFont(dwriteFactory.Get(), m_editorFontFamily, customFontCollection.Get());
-        IDWriteFontCollection* collectionToUse = nullptr;
-        if (customFontCollection) {
-            UINT32 index = 0;
-            BOOL exists = FALSE;
-            if (SUCCEEDED(customFontCollection->FindFamilyName(chosenFont.c_str(), &index, &exists)) && exists) {
-                collectionToUse = customFontCollection.Get();
-            }
-        }
-        DWRITE_FONT_STYLE fontStyle = (chosenFont == L"Koda Mono" || chosenFont == L"Phide Mono") ? DWRITE_FONT_STYLE_ITALIC : DWRITE_FONT_STYLE_NORMAL;
-        dwriteFactory->CreateTextFormat(
-            chosenFont.c_str(),
-            collectionToUse,
-            DWRITE_FONT_WEIGHT_MEDIUM,
-            fontStyle,
-            DWRITE_FONT_STRETCH_NORMAL,
-            (std::max)(6.0f, m_editorFontSize),
-            L"en-US",
-            &fontCode
-        );
-        if (fontCode) {
-            fontCode->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
-            fontCode->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
-            fontCode->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
-        }
-
-        dwriteFactory->CreateTextFormat(
-            chosenFont.c_str(),
-            collectionToUse,
-            DWRITE_FONT_WEIGHT_MEDIUM,
-            DWRITE_FONT_STYLE_NORMAL,
-            DWRITE_FONT_STRETCH_NORMAL,
-            (std::max)(6.0f, m_editorFontSize),
-            L"en-US",
-            &fontTerminal
-        );
-        if (fontTerminal) {
-            fontTerminal->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
-            fontTerminal->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
-            fontTerminal->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
-        }
+        RebuildTextFormats(dwriteFactory.Get());
     }
 }
 

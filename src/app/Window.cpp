@@ -7365,6 +7365,7 @@ bool Window::Create(HINSTANCE hInstance, int nCmdShow) {
     m_editor.GetWelcomeView().SetOnFontSelected([this](const std::wstring& fontName) {
         m_config.fontFamily = fontName;
         m_theme.SetEditorFont(m_config.fontFamily, m_config.fontSize);
+        m_editor.ResetCharWidth();
         SaveSessionState();
         if (m_hwnd) InvalidateRect(m_hwnd, nullptr, FALSE);
     });
@@ -9615,6 +9616,7 @@ void Window::HandleMouseMove(POINT clientPt, WPARAM wParam) {
             m_isDraggingTab = false;
             m_editor.SetTabDragState(false, -1, -1, -1, -1);
             ReleaseCapture();
+            SetCursor(LoadCursor(nullptr, IDC_ARROW));
             InvalidateRect(m_hwnd, nullptr, FALSE);
             return;
         }
@@ -9626,6 +9628,7 @@ void Window::HandleMouseMove(POINT clientPt, WPARAM wParam) {
         }
 
         if (m_isDraggingTab) {
+            SetCursor(LoadCursor(nullptr, IDC_HAND));
             m_dragTabCurrentPt = clientPt;
             UpdateEditorGroupBounds();
 
@@ -9767,6 +9770,7 @@ void Window::HandleMouseMove(POINT clientPt, WPARAM wParam) {
             m_isDragOverExplorer = false;
             m_drawer.ClearExplorerDropTarget();
             ReleaseCapture();
+            SetCursor(LoadCursor(nullptr, IDC_ARROW));
             InvalidateRect(m_hwnd, nullptr, FALSE);
             return;
         }
@@ -9778,6 +9782,7 @@ void Window::HandleMouseMove(POINT clientPt, WPARAM wParam) {
         }
 
         if (m_isDraggingExplorerFile) {
+            SetCursor(LoadCursor(nullptr, IDC_HAND));
             m_dragCurrentPt = clientPt;
 
             RECT clientRc;
@@ -11967,6 +11972,7 @@ void Window::HandleLButtonDown(POINT clientPt) {
                 m_dragTabCurrentPt = clientPt;
                 m_isDraggingTab = false;
                 SetCapture(m_hwnd);
+                SetCursor(LoadCursor(nullptr, IDC_HAND));
 
                 // If user selected a markdown tab in group 0, update or open the preview in group 1 if enabled
                 if (m_config.enableMarkdownPreview && targetGroup == 0) {
@@ -12669,6 +12675,7 @@ void Window::HandleLButtonDown(POINT clientPt) {
                         m_explorerDropTargetIndex = -1;
                         m_explorerDropTargetIsRoot = false;
                         SetCapture(m_hwnd);
+                        SetCursor(LoadCursor(nullptr, IDC_HAND));
                         return;
                     }
                 }
@@ -13166,6 +13173,7 @@ void Window::HandleLButtonUp(POINT clientPt) {
         m_editor.SetTabSnapPreview(editor::TabSnapZone::None, D2D1::RectF(0, 0, 0, 0), -1);
         SaveSessionState();
         ReleaseCapture();
+        SetCursor(LoadCursor(nullptr, IDC_ARROW));
         InvalidateRect(m_hwnd, nullptr, FALSE);
         return;
     }
@@ -13346,6 +13354,7 @@ void Window::HandleLButtonUp(POINT clientPt) {
         m_explorerDropTargetIsRoot = false;
         m_drawer.ClearExplorerDropTarget();
         ReleaseCapture();
+        SetCursor(LoadCursor(nullptr, IDC_ARROW));
         InvalidateRect(m_hwnd, nullptr, FALSE);
         return;
     }
@@ -13363,12 +13372,14 @@ void Window::HandleLButtonUp(POINT clientPt) {
         m_isDraggingLeftSidebar = false;
         SaveSessionState();
         ReleaseCapture();
+        SetCursor(LoadCursor(nullptr, IDC_ARROW));
         InvalidateRect(m_hwnd, nullptr, FALSE);
     }
     if (m_isDraggingRightSidebar) {
         m_isDraggingRightSidebar = false;
         SaveSessionState();
         ReleaseCapture();
+        SetCursor(LoadCursor(nullptr, IDC_ARROW));
         InvalidateRect(m_hwnd, nullptr, FALSE);
     }
     if (m_isDraggingGitSplitter) {
@@ -13564,7 +13575,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 ScreenToClient(m_hwnd, &pt);
 
                 // Explorer / Tab Drag & Drop Cursor (Grabbing Hand Cursor)
-                if (m_isDraggingExplorerFile || m_isDraggingTab) {
+                if (m_isDraggingExplorerFile || m_isDraggingTab || !m_dragCandidatePath.empty() || m_dragTabIdx >= 0) {
                     SetCursor(LoadCursor(nullptr, IDC_HAND));
                     return TRUE;
                 }
@@ -13814,6 +13825,14 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 if (!m_drawer.HasOpenFolder() && m_drawer.HitTestOpenFolderButton(pt, m_config)) {
                     SetCursor(LoadCursor(nullptr, IDC_HAND));
                     return TRUE;
+                }
+
+                // Explorer Drawer: file tree item hover cursor (grabbing/hand cursor)
+                if (m_config.activeRailTab == 0 && m_drawerAnimProgress > 0.001f) {
+                    if (m_drawer.HitTest(pt, m_config) >= 0) {
+                        SetCursor(LoadCursor(nullptr, IDC_HAND));
+                        return TRUE;
+                    }
                 }
 
                 // Inline rename / create input box in drawer: show I-beam cursor
@@ -14808,6 +14827,31 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 ReleaseCapture();
             }
             return DefWindowProc(m_hwnd, uMsg, wParam, lParam);
+        }
+
+        case WM_CAPTURECHANGED: {
+            if (m_isDraggingTab || m_dragTabIdx >= 0) {
+                m_isDraggingTab = false;
+                m_dragTabGroup = -1;
+                m_dragTabIdx = -1;
+                m_tabDropTargetGroup = -1;
+                m_tabDropTargetIdx = -1;
+                m_editor.SetTabDragState(false, -1, -1, -1, -1);
+            }
+            if (m_isDraggingExplorerFile || !m_dragCandidatePath.empty()) {
+                m_dragCandidatePath.clear();
+                m_dragCandidateName.clear();
+                m_dragCandidateIsFolder = false;
+                m_dragCandidateTreeIdx = -1;
+                m_isDraggingExplorerFile = false;
+                m_hasDragDropTarget = false;
+                m_dragDropTargetGroup = -1;
+                m_isDragOverExplorer = false;
+                m_drawer.ClearExplorerDropTarget();
+            }
+            SetCursor(LoadCursor(nullptr, IDC_ARROW));
+            InvalidateRect(m_hwnd, nullptr, FALSE);
+            return 0;
         }
 
         case WM_CANCELMODE: {
