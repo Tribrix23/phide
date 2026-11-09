@@ -1548,13 +1548,13 @@ void DrawerPanel::RenderExplorerPane(ID2D1RenderTarget* pRT, Theme& theme, const
         const float treeH = clientHeight - treeStartY;
         const size_t visibleSlots = (itemH > 0.0f) ? static_cast<size_t>(treeH / itemH) : 10;
         if (m_visibleItems.size() > visibleSlots && treeH > 30.0f) {
-            float scrollTrackX = railW + fullDrawerW - config.ScaleF(8.0f);
-            float scrollTrackW = config.ScaleF(6.0f);
+            float scrollTrackW = config.ScaleF(10.0f);
+            float scrollTrackX = railW + fullDrawerW - scrollTrackW - config.ScaleF(3.0f);
             m_rcExplorerScrollTrack = D2D1::RectF(scrollTrackX, treeStartY, scrollTrackX + scrollTrackW, clientHeight - config.ScaleF(4.0f));
 
             float totalItems = static_cast<float>(m_visibleItems.size());
             float visRatio = static_cast<float>(visibleSlots) / totalItems;
-            float thumbH = (std::max)(config.ScaleF(24.0f), (m_rcExplorerScrollTrack.bottom - m_rcExplorerScrollTrack.top) * visRatio);
+            float thumbH = (std::max)(config.ScaleF(28.0f), (m_rcExplorerScrollTrack.bottom - m_rcExplorerScrollTrack.top) * visRatio);
             float availH = (m_rcExplorerScrollTrack.bottom - m_rcExplorerScrollTrack.top) - thumbH;
             float scrollRatio = (m_visibleItems.size() > visibleSlots)
                 ? static_cast<float>(m_scrollIndex) / static_cast<float>(m_visibleItems.size() - visibleSlots)
@@ -1563,9 +1563,9 @@ void DrawerPanel::RenderExplorerPane(ID2D1RenderTarget* pRT, Theme& theme, const
 
             m_rcExplorerScrollThumb = D2D1::RectF(scrollTrackX, thumbY, scrollTrackX + scrollTrackW, thumbY + thumbH);
 
-            D2D1_ROUNDED_RECT rrcThumb = D2D1::RoundedRect(m_rcExplorerScrollThumb, 3.0f, 3.0f);
+            D2D1_ROUNDED_RECT rrcThumb = D2D1::RoundedRect(m_rcExplorerScrollThumb, 4.0f, 4.0f);
             Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushThumb;
-            float opacity = (m_isDraggingExplorerScrollbar || m_isExplorerScrollHovered) ? 0.65f : 0.35f;
+            float opacity = (m_isDraggingExplorerScrollbar || m_isExplorerScrollHovered) ? 0.75f : 0.42f;
             pRT->CreateSolidColorBrush(
                 theme.IsDarkMode() ? D2D1::ColorF(1.0f, 1.0f, 1.0f, opacity) : D2D1::ColorF(0.0f, 0.0f, 0.0f, opacity),
                 &brushThumb
@@ -2500,13 +2500,17 @@ bool DrawerPanel::HitTestOpenFolderButton(POINT pt, const app::AppConfig& config
 
 bool DrawerPanel::HitTestExplorerScrollbar(POINT pt) {
     if (m_rcExplorerScrollTrack.right <= m_rcExplorerScrollTrack.left) return false;
-    if (pt.x >= m_rcExplorerScrollTrack.left && pt.x <= m_rcExplorerScrollTrack.right &&
-        pt.y >= m_rcExplorerScrollTrack.top && pt.y <= m_rcExplorerScrollTrack.bottom) {
-        if (pt.y >= m_rcExplorerScrollThumb.top && pt.y <= m_rcExplorerScrollThumb.bottom) {
+    float trackLeft = m_rcExplorerScrollTrack.left - 6.0f;
+    float trackRight = m_rcExplorerScrollTrack.right + 4.0f;
+    if (static_cast<float>(pt.x) >= trackLeft && static_cast<float>(pt.x) <= trackRight &&
+        static_cast<float>(pt.y) >= m_rcExplorerScrollTrack.top && static_cast<float>(pt.y) <= m_rcExplorerScrollTrack.bottom) {
+        float thumbTop = m_rcExplorerScrollThumb.top - 3.0f;
+        float thumbBottom = m_rcExplorerScrollThumb.bottom + 3.0f;
+        if (static_cast<float>(pt.y) >= thumbTop && static_cast<float>(pt.y) <= thumbBottom) {
             m_isDraggingExplorerScrollbar = true;
             m_dragScrollStartY = static_cast<float>(pt.y);
             m_dragScrollStartIndex = m_scrollIndex;
-        } else if (pt.y < m_rcExplorerScrollThumb.top) {
+        } else if (static_cast<float>(pt.y) < m_rcExplorerScrollThumb.top) {
             if (m_scrollIndex > 5) m_scrollIndex -= 5;
             else m_scrollIndex = 0;
         } else {

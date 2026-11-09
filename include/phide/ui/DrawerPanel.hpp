@@ -548,6 +548,13 @@ public:
     bool HandleExplorerScrollbarMouseMove(POINT pt);
     void ReleaseExplorerScrollbarDrag() noexcept { m_isDraggingExplorerScrollbar = false; }
     [[nodiscard]] bool IsDraggingExplorerScrollbar() const noexcept { return m_isDraggingExplorerScrollbar; }
+    [[nodiscard]] bool IsPointInExplorerScrollbar(POINT pt) const noexcept {
+        if (m_rcExplorerScrollTrack.right <= m_rcExplorerScrollTrack.left) return false;
+        return (static_cast<float>(pt.x) >= m_rcExplorerScrollTrack.left - 6.0f &&
+                static_cast<float>(pt.x) <= m_rcExplorerScrollTrack.right + 2.0f &&
+                static_cast<float>(pt.y) >= m_rcExplorerScrollTrack.top &&
+                static_cast<float>(pt.y) <= m_rcExplorerScrollTrack.bottom);
+    }
 
     /**
      * @brief Sets the hovered tree item.

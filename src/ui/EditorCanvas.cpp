@@ -4103,10 +4103,13 @@ int EditorCanvas::HitTestTabClose(POINT pt, const std::vector<editor::OpenDocume
 bool EditorCanvas::HitTestScrollbar(POINT pt, const editor::OpenDocument& doc, bool& outHitThumb) const {
     outHitThumb = false;
     if (doc.scrollbarTrack.right > doc.scrollbarTrack.left) {
-        if (pt.x >= doc.scrollbarTrack.left && pt.x <= doc.scrollbarTrack.right &&
-            pt.y >= doc.scrollbarTrack.top && pt.y <= doc.scrollbarTrack.bottom) {
-            if (pt.x >= doc.scrollbarThumb.left && pt.x <= doc.scrollbarThumb.right &&
-                pt.y >= doc.scrollbarThumb.top && pt.y <= doc.scrollbarThumb.bottom) {
+        float trackLeft = doc.scrollbarTrack.left - 6.0f;
+        float trackRight = doc.scrollbarTrack.right + 6.0f;
+        if (static_cast<float>(pt.x) >= trackLeft && static_cast<float>(pt.x) <= trackRight &&
+            static_cast<float>(pt.y) >= doc.scrollbarTrack.top && static_cast<float>(pt.y) <= doc.scrollbarTrack.bottom) {
+            float thumbTop = doc.scrollbarThumb.top - 3.0f;
+            float thumbBottom = doc.scrollbarThumb.bottom + 3.0f;
+            if (static_cast<float>(pt.y) >= thumbTop && static_cast<float>(pt.y) <= thumbBottom) {
                 outHitThumb = true;
             }
             return true;
@@ -8963,7 +8966,13 @@ void EditorCanvas::RenderDiffView(ID2D1RenderTarget* pRT, Theme& theme, const ap
         float thumbY = codeTopY + (codeAreaH - thumbH) * scrollPct;
         doc.scrollbarThumb = D2D1::RectF(sbLeft + 2.0f, thumbY, sbLeft + scrollbarW - 2.0f, thumbY + thumbH);
         D2D1_ROUNDED_RECT rrcThumb = D2D1::RoundedRect(doc.scrollbarThumb, 3.0f, 3.0f);
-        pRT->FillRoundedRectangle(rrcThumb, theme.brushBorderSubtle.Get());
+        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushThumb;
+        float opacity = (doc.isDraggingScrollbar) ? 0.75f : 0.45f;
+        pRT->CreateSolidColorBrush(
+            theme.IsDarkMode() ? D2D1::ColorF(1.0f, 1.0f, 1.0f, opacity) : D2D1::ColorF(0.0f, 0.0f, 0.0f, opacity),
+            &brushThumb
+        );
+        pRT->FillRoundedRectangle(rrcThumb, brushThumb ? brushThumb.Get() : theme.brushBorderSubtle.Get());
     }
 }
 
@@ -9290,7 +9299,13 @@ void EditorCanvas::RenderMultiFileDiffView(ID2D1RenderTarget* pRT, Theme& theme,
 
         doc.scrollbarThumb = D2D1::RectF(trackLeft + 2.0f, thumbY, trackLeft + scrollbarW - 2.0f, thumbY + thumbH);
         D2D1_ROUNDED_RECT rrcThumb = D2D1::RoundedRect(doc.scrollbarThumb, 3.0f, 3.0f);
-        pRT->FillRoundedRectangle(rrcThumb, theme.brushBorderSubtle.Get());
+        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushThumb;
+        float opacity = (doc.isDraggingScrollbar) ? 0.75f : 0.45f;
+        pRT->CreateSolidColorBrush(
+            theme.IsDarkMode() ? D2D1::ColorF(1.0f, 1.0f, 1.0f, opacity) : D2D1::ColorF(0.0f, 0.0f, 0.0f, opacity),
+            &brushThumb
+        );
+        pRT->FillRoundedRectangle(rrcThumb, brushThumb ? brushThumb.Get() : theme.brushBorderSubtle.Get());
     }
 
     pRT->PopAxisAlignedClip();

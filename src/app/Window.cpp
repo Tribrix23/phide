@@ -9249,12 +9249,18 @@ bool Window::HitTestLeftSidebarSplitter(POINT pt) const {
     float railW = m_config.ScaleF(static_cast<float>(m_config.railWidth));
     float currentDrawerW = m_config.ScaleF(static_cast<float>(m_config.drawerWidth)) * m_drawerAnimProgress;
     float leftEdgeX = railW + currentDrawerW;
-    float hitTolerance = m_config.ScaleF(5.0f);
+    float hitTolerance = m_config.ScaleF(4.0f);
     float headerH = m_config.ScaleF(static_cast<float>(m_config.headerHeight));
     const float statusBarH = m_config.showStatusBar ? m_config.ScaleF(22.0f) : 0.0f;
     RECT rcClient;
     GetClientRect(m_hwnd, &rcClient);
     float clientH = static_cast<float>(rcClient.bottom - rcClient.top);
+
+    // If point is over the explorer scrollbar, do NOT treat as sidebar splitter resize
+    if (m_config.isDrawerOpen && m_config.activeRailTab == 0 && m_drawer.IsPointInExplorerScrollbar(pt)) {
+        return false;
+    }
+
     return (std::abs(static_cast<float>(pt.x) - leftEdgeX) <= hitTolerance &&
             static_cast<float>(pt.y) >= headerH && static_cast<float>(pt.y) <= (clientH - statusBarH));
 }
@@ -9389,12 +9395,11 @@ void Window::HandleMouseMove(POINT clientPt, WPARAM wParam) {
 
     // Check Sidebar Resizing Drag (Left Drawer & Right Runtimes)
     if (m_isDraggingLeftSidebar) {
-        bool lbuttonDown = (wParam & MK_LBUTTON) != 0 ||
-                           ((GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0) ||
-                           ((GetKeyState(VK_LBUTTON) & 0x8000) != 0);
-        if (!lbuttonDown) {
+        if ((wParam & MK_LBUTTON) == 0) {
             m_isDraggingLeftSidebar = false;
+            SaveSessionState();
             ReleaseCapture();
+            SetCursor(LoadCursor(nullptr, IDC_ARROW));
             InvalidateRect(m_hwnd, nullptr, FALSE);
             return;
         }
@@ -9411,12 +9416,11 @@ void Window::HandleMouseMove(POINT clientPt, WPARAM wParam) {
     }
 
     if (m_isDraggingRightSidebar) {
-        bool lbuttonDown = (wParam & MK_LBUTTON) != 0 ||
-                           ((GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0) ||
-                           ((GetKeyState(VK_LBUTTON) & 0x8000) != 0);
-        if (!lbuttonDown) {
+        if ((wParam & MK_LBUTTON) == 0) {
             m_isDraggingRightSidebar = false;
+            SaveSessionState();
             ReleaseCapture();
+            SetCursor(LoadCursor(nullptr, IDC_ARROW));
             InvalidateRect(m_hwnd, nullptr, FALSE);
             return;
         }
@@ -9434,13 +9438,12 @@ void Window::HandleMouseMove(POINT clientPt, WPARAM wParam) {
 
     // Check 2D Editor Split Divider Drag Resizing (Vertical, Horizontal, and 2D Intersection)
     if (m_activeEditorSplitter > 0) {
-        bool lbuttonDown = (wParam & MK_LBUTTON) != 0 ||
-                           ((GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0) ||
-                           ((GetKeyState(VK_LBUTTON) & 0x8000) != 0);
-        if (!lbuttonDown) {
+        if ((wParam & MK_LBUTTON) == 0) {
             m_activeEditorSplitter = 0;
             m_editor.SetHoveredSplitterId(0);
             ReleaseCapture();
+            SaveSessionState();
+            SetCursor(LoadCursor(nullptr, IDC_ARROW));
             InvalidateRect(m_hwnd, nullptr, FALSE);
             return;
         }
@@ -10064,13 +10067,21 @@ void Window::HandleMouseMove(POINT clientPt, WPARAM wParam) {
 
     // Check vertical scrollbar dragging
     if (pActiveDoc && pActiveDoc->isDraggingScrollbar) {
+        if ((wParam & MK_LBUTTON) == 0) {
+            pActiveDoc->isDraggingScrollbar = false;
+            ReleaseCapture();
+            InvalidateRect(m_hwnd, nullptr, FALSE);
+            return;
+        }
         float deltaY = static_cast<float>(clientPt.y) - pActiveDoc->dragStartY;
         float trackH = pActiveDoc->scrollbarTrack.bottom - pActiveDoc->scrollbarTrack.top;
         float thumbH = pActiveDoc->scrollbarThumb.bottom - pActiveDoc->scrollbarThumb.top;
         float scrollRange = trackH - thumbH;
         if (scrollRange > 0.0f) {
             size_t totalLines = pActiveDoc->buffer.GetLineCount();
-            if (pActiveDoc->isMultiFileDiff) {
+            if (pActiveDoc->isDiffView) {
+                totalLines = (std::max)(pActiveDoc->diffOriginalBuffer.GetLineCount(), pActiveDoc->buffer.GetLineCount());
+            } else if (pActiveDoc->isMultiFileDiff) {
                 totalLines = 0;
                 for (const auto& entry : pActiveDoc->multiFileDiffs) {
                     totalLines += 2;
@@ -10093,6 +10104,12 @@ void Window::HandleMouseMove(POINT clientPt, WPARAM wParam) {
 
     // Check Minimap viewport slider dragging (Image 5) - direct 1:1 proportional tracking
     if (pActiveDoc && pActiveDoc->isDraggingMinimap) {
+        if ((wParam & MK_LBUTTON) == 0) {
+            pActiveDoc->isDraggingMinimap = false;
+            ReleaseCapture();
+            InvalidateRect(m_hwnd, nullptr, FALSE);
+            return;
+        }
         float trackH = pActiveDoc->minimapTrack.bottom - pActiveDoc->minimapTrack.top;
         float sliderH = pActiveDoc->minimapSlider.bottom - pActiveDoc->minimapSlider.top;
         float scrollRange = trackH - sliderH;
@@ -10109,6 +10126,12 @@ void Window::HandleMouseMove(POINT clientPt, WPARAM wParam) {
 
     // Check horizontal scrollbar dragging
     if (pActiveDoc && pActiveDoc->isDraggingHScrollbar) {
+        if ((wParam & MK_LBUTTON) == 0) {
+            pActiveDoc->isDraggingHScrollbar = false;
+            ReleaseCapture();
+            InvalidateRect(m_hwnd, nullptr, FALSE);
+            return;
+        }
         float deltaX = static_cast<float>(clientPt.x) - pActiveDoc->dragStartHX;
         float trackW = pActiveDoc->hScrollbarTrack.right - pActiveDoc->hScrollbarTrack.left;
         float thumbW = pActiveDoc->hScrollbarThumb.right - pActiveDoc->hScrollbarThumb.left;
@@ -10294,6 +10317,12 @@ void Window::HandleMouseMove(POINT clientPt, WPARAM wParam) {
     if (m_drawerAnimProgress > 0.001f && clientPt.y < effectiveDrawerH) {
         if (m_config.activeRailTab == 0) {
             if (m_drawer.IsDraggingExplorerScrollbar()) {
+                if ((wParam & MK_LBUTTON) == 0) {
+                    m_drawer.ReleaseExplorerScrollbarDrag();
+                    ReleaseCapture();
+                    InvalidateRect(m_hwnd, nullptr, FALSE);
+                    return;
+                }
                 if (m_drawer.HandleExplorerScrollbarMouseMove(clientPt)) needRepaint = true;
             } else {
                 if (m_drawer.HandleExplorerScrollbarMouseMove(clientPt)) needRepaint = true;
@@ -10311,6 +10340,16 @@ void Window::HandleMouseMove(POINT clientPt, WPARAM wParam) {
             }
         } else if (m_config.activeRailTab == 2) {
             if (m_isDraggingGitSplitter) {
+                if ((wParam & MK_LBUTTON) == 0) {
+                    m_isDraggingGitSplitter = false;
+                    m_config.gitSplitY = m_drawer.GetGitSplitY();
+                    UpdateDrawerErrorFiles();
+                    SaveSessionState();
+                    ReleaseCapture();
+                    SetCursor(LoadCursor(nullptr, IDC_ARROW));
+                    InvalidateRect(m_hwnd, nullptr, FALSE);
+                    return;
+                }
                 const float headerH = m_config.ScaleF(static_cast<float>(m_config.headerHeight));
                 m_drawer.SetGitSplitY(static_cast<float>(clientPt.y), headerH + 110.0f, effectiveDrawerH - 70.0f);
                 needRepaint = true;
@@ -12219,6 +12258,7 @@ void Window::HandleLButtonDown(POINT clientPt) {
                             doc.isDraggingScrollbar = true;
                             doc.dragStartY = static_cast<float>(clientPt.y);
                             doc.dragStartScrollLine = doc.scrollLine;
+                            SetCapture(m_hwnd);
                         } else {
                             if (clientPt.y < doc.scrollbarThumb.top) {
                                 if (doc.scrollLine >= 10) doc.scrollLine -= 10;
@@ -12282,13 +12322,14 @@ void Window::HandleLButtonDown(POINT clientPt) {
                         return;
                     }
 
-                    // Vertical scrollbar click & drag (when minimap is disabled)
+                    // Vertical scrollbar click & drag (when minimap is disabled or in diff view)
                     bool hitThumb = false;
-                    if (!m_config.showMinimap && m_editor.HitTestScrollbar(clientPt, doc, hitThumb)) {
+                    if ((doc.isDiffView || !m_config.showMinimap) && m_editor.HitTestScrollbar(clientPt, doc, hitThumb)) {
                         if (hitThumb) {
                             doc.isDraggingScrollbar = true;
                             doc.dragStartY = static_cast<float>(clientPt.y);
                             doc.dragStartScrollLine = doc.scrollLine;
+                            SetCapture(m_hwnd);
                         } else {
                             if (clientPt.y < doc.scrollbarThumb.top) {
                                 if (doc.scrollLine >= 10) doc.scrollLine -= 10;
@@ -12327,28 +12368,48 @@ void Window::HandleLButtonDown(POINT clientPt) {
                         float scrollbarW = m_config.ScaleF(12.0f);
                         float halfW = (paneW - dividerW - scrollbarW) / 2.0f;
                         float gutterW = m_config.ScaleF(46.0f);
-                        float lineH = m_config.ScaleF(20.0f);
-                        float charW = m_config.ScaleF(7.8f);
+                        const float lineH = m_config.ScaleF(std::round(m_config.fontSize * m_config.lineHeightMultiplier));
+                        const float charW = (m_editor.GetCharWidth() > 0.0f) ? m_editor.GetCharWidth() : m_config.ScaleF(7.8f);
 
                         float leftX = paneCanvasLeft;
                         float dividerX = leftX + halfW;
                         float rightX = dividerX + dividerW;
-                        float codeTopY = group.bounds.top + m_config.ScaleF(34.0f) + m_config.ScaleF(24.0f) + subHeaderH;
+                        const float tabH = m_config.ScaleF(34.0f);
+                        const float breadcrumbH = m_config.showBreadcrumbs ? m_config.ScaleF(24.0f) : 0.0f;
+                        float codeTopY = group.bounds.top + tabH + breadcrumbH + subHeaderH;
 
                         if (clientPt.y >= codeTopY && lineH > 0.0f) {
                             size_t clickedLine = doc.scrollLine + static_cast<size_t>((clientPt.y - codeTopY) / lineH);
                             if (clientPt.x >= rightX) {
                                 doc.diffActivePane = 1;
                                 size_t clickedCol = 0;
-                                if (clientPt.x >= rightX + gutterW + m_config.ScaleF(12.0f) && charW > 0.0f) {
-                                    clickedCol = static_cast<size_t>((clientPt.x - (rightX + gutterW + m_config.ScaleF(12.0f))) / charW);
+                                float textLeft = rightX + gutterW + m_config.ScaleF(12.0f);
+                                if (clientPt.x >= textLeft && charW > 0.0f) {
+                                    clickedCol = static_cast<size_t>(std::round((clientPt.x - textLeft) / charW));
+                                }
+                                size_t totalLines = doc.buffer.GetLineCount();
+                                if (clickedLine >= totalLines) {
+                                    clickedLine = totalLines > 0 ? totalLines - 1 : 0;
+                                }
+                                const auto& lineStr = doc.buffer.GetLine(clickedLine);
+                                if (clickedCol > lineStr.length()) {
+                                    clickedCol = lineStr.length();
                                 }
                                 doc.buffer.SetCursor(clickedLine, clickedCol);
                             } else if (clientPt.x < dividerX) {
                                 doc.diffActivePane = 0; // Read-only side
                                 size_t clickedCol = 0;
-                                if (clientPt.x >= leftX + gutterW + m_config.ScaleF(12.0f) && charW > 0.0f) {
-                                    clickedCol = static_cast<size_t>((clientPt.x - (leftX + gutterW + m_config.ScaleF(12.0f))) / charW);
+                                float textLeft = leftX + gutterW + m_config.ScaleF(12.0f);
+                                if (clientPt.x >= textLeft && charW > 0.0f) {
+                                    clickedCol = static_cast<size_t>(std::round((clientPt.x - textLeft) / charW));
+                                }
+                                size_t totalLines = doc.diffOriginalBuffer.GetLineCount();
+                                if (clickedLine >= totalLines) {
+                                    clickedLine = totalLines > 0 ? totalLines - 1 : 0;
+                                }
+                                const auto& lineStr = doc.diffOriginalBuffer.GetLine(clickedLine);
+                                if (clickedCol > lineStr.length()) {
+                                    clickedCol = lineStr.length();
                                 }
                                 doc.diffOriginalBuffer.SetCursor(clickedLine, clickedCol);
                             }
@@ -12836,6 +12897,70 @@ void Window::HandleLButtonDown(POINT clientPt) {
 }
 
 void Window::HandleLButtonUp(POINT clientPt) {
+    if (m_isDraggingLeftSidebar) {
+        m_isDraggingLeftSidebar = false;
+        SaveSessionState();
+        ReleaseCapture();
+        SetCursor(LoadCursor(nullptr, IDC_ARROW));
+        InvalidateRect(m_hwnd, nullptr, FALSE);
+        return;
+    }
+    if (m_isDraggingRightSidebar) {
+        m_isDraggingRightSidebar = false;
+        SaveSessionState();
+        ReleaseCapture();
+        SetCursor(LoadCursor(nullptr, IDC_ARROW));
+        InvalidateRect(m_hwnd, nullptr, FALSE);
+        return;
+    }
+    if (m_activeEditorSplitter > 0) {
+        m_activeEditorSplitter = 0;
+        m_editor.SetHoveredSplitterId(0);
+        ReleaseCapture();
+        SaveSessionState();
+        SetCursor(LoadCursor(nullptr, IDC_ARROW));
+        InvalidateRect(m_hwnd, nullptr, FALSE);
+        return;
+    }
+    if (m_isDraggingGitSplitter) {
+        m_isDraggingGitSplitter = false;
+        m_config.gitSplitY = m_drawer.GetGitSplitY();
+        UpdateDrawerErrorFiles();
+        SaveSessionState();
+        ReleaseCapture();
+        SetCursor(LoadCursor(nullptr, IDC_ARROW));
+        InvalidateRect(m_hwnd, nullptr, FALSE);
+        return;
+    }
+    if (m_drawer.IsDraggingExplorerScrollbar()) {
+        m_drawer.ReleaseExplorerScrollbarDrag();
+        ReleaseCapture();
+        InvalidateRect(m_hwnd, nullptr, FALSE);
+        return;
+    }
+    for (auto& group : m_editorGroups) {
+        for (auto& doc : group.docs) {
+            if (doc.isDraggingScrollbar) {
+                doc.isDraggingScrollbar = false;
+                ReleaseCapture();
+                InvalidateRect(m_hwnd, nullptr, FALSE);
+                return;
+            }
+            if (doc.isDraggingMinimap) {
+                doc.isDraggingMinimap = false;
+                ReleaseCapture();
+                InvalidateRect(m_hwnd, nullptr, FALSE);
+                return;
+            }
+            if (doc.isDraggingHScrollbar) {
+                doc.isDraggingHScrollbar = false;
+                ReleaseCapture();
+                InvalidateRect(m_hwnd, nullptr, FALSE);
+                return;
+            }
+        }
+    }
+
     auto* pActiveDoc = GetActiveDoc();
     if (pActiveDoc && pActiveDoc->isSpecialView && pActiveDoc->viewType == L"graph") {
         if (m_editor.GetGraphView().HandleLButtonUp(clientPt)) {
@@ -14830,6 +14955,20 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
         }
 
         case WM_CAPTURECHANGED: {
+            m_isDraggingLeftSidebar = false;
+            m_isDraggingRightSidebar = false;
+            m_activeEditorSplitter = 0;
+            m_editor.SetHoveredSplitterId(0);
+            m_isDraggingGitSplitter = false;
+            m_drawer.ReleaseExplorerScrollbarDrag();
+            for (auto& group : m_editorGroups) {
+                for (auto& doc : group.docs) {
+                    doc.isDraggingScrollbar = false;
+                    doc.isDraggingMinimap = false;
+                    doc.isDraggingHScrollbar = false;
+                    doc.isSelecting = false;
+                }
+            }
             if (m_isDraggingTab || m_dragTabIdx >= 0) {
                 m_isDraggingTab = false;
                 m_dragTabGroup = -1;
