@@ -599,13 +599,24 @@ Buffer::Buffer(const std::wstring& initialContent) {
     }
 }
 
+namespace {
+struct UndoCoalesceState {
+    int lastOp = 0; // 0 = none, 1 = insert, 2 = backspace, 3 = deleteForward
+    size_t line = 0;
+    size_t col = 0;
+    ULONGLONG tick = 0;
+};
+static std::unordered_map<const Buffer*, UndoCoalesceState> s_undoCoalesceMap;
+} // namespace
+
 void Buffer::PushUndo() {
+    s_undoCoalesceMap.erase(this);
     if (!m_undoStack.empty() && m_undoStack.back().lines == m_lines) {
         m_undoStack.back().cursor = m_cursor;
         return;
     }
     m_undoStack.push_back({ m_lines, m_cursor });
-    if (m_undoStack.size() > 2500) {
+    if (m_undoStack.size() > 200) {
         m_undoStack.erase(m_undoStack.begin());
     }
     m_redoStack.clear();
@@ -613,6 +624,7 @@ void Buffer::PushUndo() {
 }
 
 bool Buffer::Undo() {
+    s_undoCoalesceMap.erase(this);
     if (m_undoStack.empty()) return false;
     m_redoStack.push_back({ m_lines, m_cursor });
     auto last = m_undoStack.back();
@@ -620,11 +632,13 @@ bool Buffer::Undo() {
     m_lines = last.lines;
     m_cursor = last.cursor;
     m_isModified = true;
+    m_tokenCache.clear();
     ++m_version;
     return true;
 }
 
 bool Buffer::Redo() {
+    s_undoCoalesceMap.erase(this);
     if (m_redoStack.empty()) return false;
     m_undoStack.push_back({ m_lines, m_cursor });
     auto next = m_redoStack.back();
@@ -632,6 +646,7 @@ bool Buffer::Redo() {
     m_lines = next.lines;
     m_cursor = next.cursor;
     m_isModified = true;
+    m_tokenCache.clear();
     ++m_version;
     return true;
 }
@@ -658,6 +673,7 @@ void Buffer::InsertText(const std::wstring& text) {
             m_cursor.col++;
         }
     }
+    m_tokenCache.clear();
     m_isModified = true;
 }
 
@@ -704,15 +720,22 @@ std::vector<SyntaxToken> Buffer::GetTokensForLine(size_t lineIdx, const std::wst
 
     // Recompute per-line entry states in a single O(N) pass ONLY when buffer version or extension changes
     if (m_cachedTokenVersion != m_version || m_cachedTokenExt != ext || m_lineEntryStates.size() != m_lines.size()) {
+        const bool fullClear = (m_cachedTokenExt != ext || m_lineEntryStates.size() != m_lines.size());
         m_cachedTokenVersion = m_version;
         m_cachedTokenExt = ext;
-        m_tokenCache.clear();
-        m_lineEntryStates.assign(m_lines.size(), 0);
+        if (fullClear) {
+            m_tokenCache.clear();
+            m_lineEntryStates.assign(m_lines.size(), 0);
+        }
 
         bool inBlock = false;
         wchar_t inQuote = 0;
         for (size_t l = 0; l < m_lines.size(); ++l) {
-            m_lineEntryStates[l] = inBlock ? 1 : (inQuote == L'"' ? 2 : (inQuote == L'\'' ? 3 : 0));
+            uint8_t newState = inBlock ? 1 : (inQuote == L'"' ? 2 : (inQuote == L'\'' ? 3 : 0));
+            if (!fullClear && m_lineEntryStates[l] != newState) {
+                m_tokenCache.erase(l);
+            }
+            m_lineEntryStates[l] = newState;
             const auto& prevLine = m_lines[l];
             size_t len = prevLine.length();
             for (size_t i = 0; i < len; ++i) {
@@ -836,23 +859,44 @@ void Buffer::SetCursor(size_t line, size_t col) {
 }
 
 void Buffer::InsertChar(wchar_t ch) {
-    PushUndo();
     if (m_lines.empty()) m_lines.push_back(L"");
     if (m_cursor.line >= m_lines.size()) m_cursor.line = m_lines.size() - 1;
+
+    ULONGLONG now = GetTickCount64();
+    bool isNewline = (ch == L'\r' || ch == L'\n');
+    bool isWordBoundary = isNewline || ch == L' ' || ch == L'\t';
+    auto itCoal = s_undoCoalesceMap.find(this);
+    bool canCoalesce = (!isWordBoundary &&
+                        !m_undoStack.empty() &&
+                        itCoal != s_undoCoalesceMap.end() &&
+                        itCoal->second.lastOp == 1 &&
+                        itCoal->second.line == m_cursor.line &&
+                        itCoal->second.col == m_cursor.col &&
+                        (now - itCoal->second.tick) <= 750);
+    if (!canCoalesce) {
+        PushUndo();
+    } else {
+        m_redoStack.clear();
+        ++m_version;
+    }
 
     auto& line = m_lines[m_cursor.line];
     if (m_cursor.col > line.length()) m_cursor.col = line.length();
 
-    if (ch == L'\r' || ch == L'\n') {
+    if (isNewline) {
         // Split current line at cursor
         std::wstring remainder = line.substr(m_cursor.col);
         line = line.substr(0, m_cursor.col);
         m_lines.insert(m_lines.begin() + m_cursor.line + 1, remainder);
         m_cursor.line++;
         m_cursor.col = 0;
+        m_tokenCache.clear();
+        s_undoCoalesceMap.erase(this);
     } else {
         line.insert(line.begin() + m_cursor.col, ch);
+        m_tokenCache.erase(m_cursor.line);
         m_cursor.col++;
+        s_undoCoalesceMap[this] = { 1, m_cursor.line, m_cursor.col, now };
     }
     m_isModified = true;
 }
@@ -862,13 +906,29 @@ void Buffer::Backspace() {
     if (m_cursor.line >= m_lines.size()) m_cursor.line = m_lines.size() - 1;
     if (m_cursor.col == 0 && m_cursor.line == 0) return;
 
-    PushUndo();
+    ULONGLONG now = GetTickCount64();
+    auto itCoal = s_undoCoalesceMap.find(this);
+    bool canCoalesce = (m_cursor.col > 0 &&
+                        !m_undoStack.empty() &&
+                        itCoal != s_undoCoalesceMap.end() &&
+                        itCoal->second.lastOp == 2 &&
+                        itCoal->second.line == m_cursor.line &&
+                        itCoal->second.col == m_cursor.col &&
+                        (now - itCoal->second.tick) <= 750);
+    if (!canCoalesce) {
+        PushUndo();
+    } else {
+        m_redoStack.clear();
+    }
+
     auto& line = m_lines[m_cursor.line];
     if (m_cursor.col > 0) {
         if (m_cursor.col > line.length()) m_cursor.col = line.length();
         line.erase(m_cursor.col - 1, 1);
+        m_tokenCache.erase(m_cursor.line);
         m_cursor.col--;
         m_isModified = true;
+        s_undoCoalesceMap[this] = { 2, m_cursor.line, m_cursor.col, now };
     } else if (m_cursor.line > 0) {
         // Join with previous line
         size_t prevLen = m_lines[m_cursor.line - 1].length();
@@ -876,7 +936,9 @@ void Buffer::Backspace() {
         m_lines.erase(m_lines.begin() + m_cursor.line);
         m_cursor.line--;
         m_cursor.col = prevLen;
+        m_tokenCache.clear();
         m_isModified = true;
+        s_undoCoalesceMap.erase(this);
     }
     ++m_version;
 }
@@ -889,14 +951,32 @@ void Buffer::DeleteForward() {
     if (m_cursor.col > line.length()) m_cursor.col = line.length();
     if (m_cursor.col == line.length() && m_cursor.line + 1 >= m_lines.size()) return;
 
-    PushUndo();
+    ULONGLONG now = GetTickCount64();
+    auto itCoal = s_undoCoalesceMap.find(this);
+    bool canCoalesce = (m_cursor.col < line.length() &&
+                        !m_undoStack.empty() &&
+                        itCoal != s_undoCoalesceMap.end() &&
+                        itCoal->second.lastOp == 3 &&
+                        itCoal->second.line == m_cursor.line &&
+                        itCoal->second.col == m_cursor.col &&
+                        (now - itCoal->second.tick) <= 750);
+    if (!canCoalesce) {
+        PushUndo();
+    } else {
+        m_redoStack.clear();
+    }
+
     if (m_cursor.col < line.length()) {
         line.erase(m_cursor.col, 1);
+        m_tokenCache.erase(m_cursor.line);
         m_isModified = true;
+        s_undoCoalesceMap[this] = { 3, m_cursor.line, m_cursor.col, now };
     } else if (m_cursor.line + 1 < m_lines.size()) {
         line += m_lines[m_cursor.line + 1];
         m_lines.erase(m_lines.begin() + m_cursor.line + 1);
+        m_tokenCache.clear();
         m_isModified = true;
+        s_undoCoalesceMap.erase(this);
     }
     ++m_version;
 }
@@ -932,6 +1012,7 @@ void Buffer::DeleteRange(size_t sLine, size_t sCol, size_t eLine, size_t eCol) {
         if (sCol > line.length()) sCol = line.length();
         if (eCol > line.length()) eCol = line.length();
         line.erase(sCol, eCol - sCol);
+        m_tokenCache.erase(sLine);
     } else {
         const auto& startLineText = m_lines[sLine];
         const auto& endLineText = m_lines[eLine];
@@ -941,6 +1022,7 @@ void Buffer::DeleteRange(size_t sLine, size_t sCol, size_t eLine, size_t eCol) {
         m_lines[sLine] = std::move(merged);
         m_lines.erase(m_lines.begin() + sLine + 1, m_lines.begin() + eLine + 1);
         if (m_lines.empty()) m_lines.push_back(L"");
+        m_tokenCache.clear();
     }
     m_cursor = { sLine, (std::min)(sCol, m_lines[sLine].length()) };
     m_isModified = true;
@@ -1004,6 +1086,7 @@ void Buffer::SetLines(const std::vector<std::wstring>& lines) {
 void Buffer::SetLine(size_t lineIdx, const std::wstring& text) {
     if (lineIdx < m_lines.size()) {
         m_lines[lineIdx] = text;
+        m_tokenCache.erase(lineIdx);
         m_isModified = true;
         ++m_version;
     }

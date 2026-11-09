@@ -362,6 +362,10 @@ public:
         m_hoveredSnapBarSlot = hoveredSnapBarSlot;
     }
 
+    void RenderFolderView(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
+                          editor::OpenDocument& doc, float canvasLeft, float canvasWidth,
+                          float topY, float clientHeight);
+
     void SetWorkspaceRoot(const std::wstring& root) { m_workspaceRoot = root; }
     [[nodiscard]] const std::wstring& GetWorkspaceRoot() const noexcept { return m_workspaceRoot; }
 

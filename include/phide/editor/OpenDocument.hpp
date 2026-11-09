@@ -9,6 +9,8 @@
 #include <set>
 #include <unordered_map>
 #include <vector>
+#include <filesystem>
+#include <algorithm>
 #include <d2d1.h>
 #include <wrl/client.h>
 #include "phide/editor/Buffer.hpp"
@@ -305,6 +307,168 @@ struct OpenDocument {
     uint64_t binaryFileSize = 0;         ///< File size on disk in bytes
     std::wstring binaryFileType;         ///< Human-readable binary type descriptor
     D2D1_RECT_F unsupportedActionBtn{};  ///< Bounding box of "Reveal in File Explorer" button
+
+    // Folder Explorer View State (when a folder is dragged/opened in an editor tab)
+    struct FolderEntryItem {
+        std::wstring name;           ///< Entry filename or folder name
+        std::wstring fullPath;       ///< Full filesystem path
+        std::wstring typeLabel;      ///< Human-readable file/folder type
+        std::wstring sizeLabel;      ///< Formatted size or child item count
+        std::wstring modifiedLabel;  ///< Formatted last-modified timestamp
+        uint64_t fileSize = 0;       ///< Raw size in bytes (for files)
+        bool isFolder = false;       ///< True if entry is a directory
+        bool isParentLink = false;   ///< True if entry is the ".." parent folder row
+        D2D1_RECT_F rowBounds{};     ///< Cached hit-test bounds from last render
+    };
+    bool isFolderView = false;                       ///< True if this document displays a Folder Explorer view
+    std::vector<FolderEntryItem> folderEntries;      ///< Cached directory entries (folders first, then files)
+    int folderHoveredIdx = -1;                       ///< Hovered entry index in Folder Explorer view
+    int folderSelectedIdx = -1;                      ///< Selected entry index in Folder Explorer view
+    float folderScrollY = 0.0f;                      ///< Vertical scroll offset in pixels
+    float folderMaxScrollY = 0.0f;                   ///< Maximum scroll offset in pixels
+    bool folderGridView = false;                     ///< False = Details list view, True = Grid/Tiles view
+    int folderHoveredBtn = 0;                        ///< 1 = Up, 2 = Refresh, 3 = View toggle, 4 = Reveal in Explorer
+    D2D1_RECT_F folderUpBtnBounds{};                 ///< Hitbox for "Up" parent button
+    D2D1_RECT_F folderRefreshBtnBounds{};            ///< Hitbox for "Refresh" button
+    D2D1_RECT_F folderViewToggleBtnBounds{};         ///< Hitbox for List/Grid view toggle button
+    D2D1_RECT_F folderRevealBtnBounds{};             ///< Hitbox for "Reveal in File Explorer" button
+
+    static std::wstring FormatFileTypeLabel(const std::wstring& filename, bool isDir) {
+        if (isDir) return L"File folder";
+        std::wstring lower = filename;
+        for (auto& c : lower) c = towlower(c);
+        if (lower == L"package.json" || lower == L"composer.json" || lower == L"tsconfig.json") return L"Configuration JSON";
+        if (lower == L".gitignore" || lower == L".gitattributes") return L"Git Configuration";
+        if (lower == L"dockerfile") return L"Docker Configuration";
+        auto dot = lower.find_last_of(L'.');
+        if (dot == std::wstring::npos) return L"File";
+        std::wstring ext = lower.substr(dot);
+        if (ext == L".tsx") return L"TypeScript React";
+        if (ext == L".jsx") return L"JavaScript React";
+        if (ext == L".ts" || ext == L".mts" || ext == L".cts") return L"TypeScript Source";
+        if (ext == L".js" || ext == L".mjs" || ext == L".cjs") return L"JavaScript Source";
+        if (ext == L".css" || ext == L".scss" || ext == L".sass" || ext == L".less") return L"Stylesheet";
+        if (ext == L".html" || ext == L".htm") return L"HTML Document";
+        if (ext == L".json" || ext == L".jsonc") return L"JSON Document";
+        if (ext == L".md" || ext == L".markdown" || ext == L".mdx") return L"Markdown Document";
+        if (ext == L".php" || ext == L".phtml") return L"PHP Script";
+        if (ext == L".py" || ext == L".pyw") return L"Python Script";
+        if (ext == L".ipynb") return L"Jupyter Notebook";
+        if (ext == L".cpp" || ext == L".cc" || ext == L".cxx" || ext == L".c") return L"C/C++ Source";
+        if (ext == L".hpp" || ext == L".hxx" || ext == L".h") return L"C/C++ Header";
+        if (ext == L".sql") return L"SQL Script";
+        if (ext == L".xml" || ext == L".svg") return L"XML / Vector Graphic";
+        if (ext == L".yml" || ext == L".yaml") return L"YAML Document";
+        if (ext == L".toml" || ext == L".ini" || ext == L".env") return L"Configuration File";
+        if (ext == L".png" || ext == L".jpg" || ext == L".jpeg" || ext == L".gif" || ext == L".webp" || ext == L".ico" || ext == L".bmp") return L"Image File";
+        if (ext == L".sh" || ext == L".bat" || ext == L".cmd" || ext == L".ps1") return L"Shell Script";
+        if (ext.length() > 1) {
+            std::wstring upperExt = ext.substr(1);
+            for (auto& c : upperExt) c = towupper(c);
+            return upperExt + L" File";
+        }
+        return L"File";
+    }
+
+    static std::wstring FormatByteSize(uint64_t bytes) {
+        if (bytes < 1024) return std::to_wstring(bytes) + L" B";
+        if (bytes < 1024 * 1024) {
+            uint64_t kb10 = (bytes * 10) / 1024;
+            return std::to_wstring(kb10 / 10) + L"." + std::to_wstring(kb10 % 10) + L" KB";
+        }
+        uint64_t mb10 = (bytes * 10) / (1024 * 1024);
+        return std::to_wstring(mb10 / 10) + L"." + std::to_wstring(mb10 % 10) + L" MB";
+    }
+
+    void RefreshFolderEntries() {
+        folderEntries.clear();
+        folderHoveredIdx = -1;
+        folderSelectedIdx = -1;
+        if (filePath.empty()) return;
+
+        std::error_code ec;
+        std::filesystem::path dirPath(filePath);
+        if (!std::filesystem::exists(dirPath, ec) || !std::filesystem::is_directory(dirPath, ec)) {
+            return;
+        }
+
+        // Add ".." parent folder entry if parent exists and is different from current path
+        std::filesystem::path parentP = dirPath.parent_path();
+        if (!parentP.empty() && parentP != dirPath && std::filesystem::exists(parentP, ec)) {
+            FolderEntryItem upItem;
+            upItem.name = L"..";
+            upItem.fullPath = parentP.wstring();
+            upItem.typeLabel = L"Parent folder";
+            upItem.isFolder = true;
+            upItem.isParentLink = true;
+            folderEntries.push_back(std::move(upItem));
+        }
+
+        std::vector<FolderEntryItem> subDirs;
+        std::vector<FolderEntryItem> files;
+        for (std::filesystem::directory_iterator it(dirPath, std::filesystem::directory_options::skip_permission_denied, ec), end;
+             it != end && !ec; it.increment(ec)) {
+            const auto& entry = *it;
+            FolderEntryItem item;
+            item.name = entry.path().filename().wstring();
+            if (item.name.empty()) continue;
+            item.fullPath = entry.path().wstring();
+            item.isFolder = entry.is_directory(ec);
+            item.typeLabel = FormatFileTypeLabel(item.name, item.isFolder);
+
+            // Format last write time using Win32 GetFileAttributesExW for accurate local time
+            WIN32_FILE_ATTRIBUTE_DATA fad{};
+            if (GetFileAttributesExW(item.fullPath.c_str(), GetFileExInfoStandard, &fad)) {
+                FILETIME localFt{};
+                SYSTEMTIME st{};
+                if (FileTimeToLocalFileTime(&fad.ftLastWriteTime, &localFt) &&
+                    FileTimeToSystemTime(&localFt, &st)) {
+                    wchar_t timeBuf[64]{};
+                    swprintf_s(timeBuf, L"%04d-%02d-%02d %02d:%02d",
+                               st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute);
+                    item.modifiedLabel = timeBuf;
+                }
+                if (!item.isFolder) {
+                    ULARGE_INTEGER uli{};
+                    uli.LowPart = fad.nFileSizeLow;
+                    uli.HighPart = fad.nFileSizeHigh;
+                    item.fileSize = uli.QuadPart;
+                    item.sizeLabel = FormatByteSize(item.fileSize);
+                }
+            }
+
+            if (item.isFolder) {
+                size_t childCount = 0;
+                std::error_code childEc;
+                for (std::filesystem::directory_iterator cit(entry.path(), std::filesystem::directory_options::skip_permission_denied, childEc), cend;
+                     cit != cend && !childEc; cit.increment(childEc)) {
+                    ++childCount;
+                    if (childCount >= 500) break;
+                }
+                if (childCount >= 500) {
+                    item.sizeLabel = L"500+ items";
+                } else if (childCount == 1) {
+                    item.sizeLabel = L"1 item";
+                } else {
+                    item.sizeLabel = std::to_wstring(childCount) + L" items";
+                }
+                subDirs.push_back(std::move(item));
+            } else {
+                files.push_back(std::move(item));
+            }
+        }
+
+        auto cmpName = [](const FolderEntryItem& a, const FolderEntryItem& b) {
+            return _wcsicmp(a.name.c_str(), b.name.c_str()) < 0;
+        };
+        std::sort(subDirs.begin(), subDirs.end(), cmpName);
+        std::sort(files.begin(), files.end(), cmpName);
+
+        folderEntries.reserve(folderEntries.size() + subDirs.size() + files.size());
+        for (auto& d : subDirs) folderEntries.push_back(std::move(d));
+        for (auto& f : files) folderEntries.push_back(std::move(f));
+        folderEntries.shrink_to_fit();
+    }
 
     // Git Diff & Deleted File State (Images 2, 3, 4, 5)
     bool isDiffView = false;             ///< True if this document is displaying side-by-side diff

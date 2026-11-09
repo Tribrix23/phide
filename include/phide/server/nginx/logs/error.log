@@ -557,3 +557,15 @@
 2026/11/09 09:22:57 [error] 24428#22200: CreateFile() "C:\Users\Administrator\Downloads\studio\phide\include\phide\server\nginx/logs/nginx.pid" failed (2: The system cannot find the file specified)
 2026/11/09 09:23:09 [notice] 12104#16896: signal process started
 2026/11/09 09:23:09 [error] 12104#16896: CreateFile() "C:\Users\Administrator\Downloads\studio\phide\include\phide\server\nginx/logs/nginx.pid" failed (2: The system cannot find the file specified)
+2026/11/09 09:39:25 [notice] 6080#1068: signal process started
+2026/11/09 09:39:25 [error] 6080#1068: CreateFile() "C:\Users\Administrator\Downloads\studio\phide\include\phide\server\nginx/logs/nginx.pid" failed (2: The system cannot find the file specified)
+2026/11/09 11:13:27 [notice] 19660#32876: signal process started
+2026/11/09 11:13:27 [error] 19660#32876: CreateFile() "C:\Users\Administrator\Downloads\studio\phide\include\phide\server\nginx/logs/nginx.pid" failed (2: The system cannot find the file specified)
+2026/11/09 11:13:38 [notice] 28448#6516: signal process started
+2026/11/09 11:13:38 [error] 28448#6516: CreateFile() "C:\Users\Administrator\Downloads\studio\phide\include\phide\server\nginx/logs/nginx.pid" failed (2: The system cannot find the file specified)
+2026/11/09 11:20:17 [notice] 21692#16084: signal process started
+2026/11/09 11:20:17 [error] 21692#16084: CreateFile() "C:\Users\Administrator\Downloads\studio\phide\include\phide\server\nginx/logs/nginx.pid" failed (2: The system cannot find the file specified)
+2026/11/09 11:46:41 [notice] 31428#30964: signal process started
+2026/11/09 11:46:41 [error] 31428#30964: CreateFile() "C:\Users\Administrator\Downloads\studio\phide\include\phide\server\nginx/logs/nginx.pid" failed (2: The system cannot find the file specified)
+2026/11/09 12:58:58 [notice] 5328#11560: signal process started
+2026/11/09 12:58:58 [error] 5328#11560: CreateFile() "C:\Users\Administrator\Downloads\studio\phide\include\phide\server\nginx/logs/nginx.pid" failed (2: The system cannot find the file specified)

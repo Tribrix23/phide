@@ -967,43 +967,55 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidateJavaScript(
                             c++;
                             continue;
                         } else if (c + 1 < line.length() && (iswalpha(line[c + 1]) || line[c + 1] == L'_')) {
-                            // Find the matching '>' of the JSX opening tag, properly ignoring quotes, expression braces, and '=>'
-                            size_t gt = std::wstring::npos;
+                            // Find the matching '>' of the JSX opening tag across single or multiple lines
+                            size_t gtLine = l;
+                            size_t gtCol = std::wstring::npos;
                             bool inQ = false;
                             wchar_t qC = L'\0';
                             int bDepth = 0;
-                            for (size_t k = c + 1; k < line.length(); ++k) {
-                                wchar_t kc = line[k];
-                                if (inQ) {
-                                    if (kc == L'\\' && k + 1 < line.length()) { k++; continue; }
-                                    if (kc == qC) inQ = false;
-                                } else {
-                                    if (kc == L'"' || kc == L'\'' || kc == L'`') {
-                                        inQ = true;
-                                        qC = kc;
-                                    } else if (kc == L'{') {
-                                        bDepth++;
-                                    } else if (kc == L'}') {
-                                        if (bDepth > 0) bDepth--;
-                                    } else if (kc == L'>' && bDepth == 0) {
-                                        if (k > 0 && line[k - 1] == L'=') continue; // Ignore arrow function '=>'
-                                        gt = k;
-                                        break;
+                            for (size_t sl = l; sl < lineCount && sl - l <= 25; ++sl) {
+                                const std::wstring& sLine = buffer.GetLine(sl);
+                                size_t startK = (sl == l) ? (c + 1) : 0;
+                                for (size_t k = startK; k < sLine.length(); ++k) {
+                                    wchar_t kc = sLine[k];
+                                    if (inQ) {
+                                        if (kc == L'\\' && k + 1 < sLine.length()) { k++; continue; }
+                                        if (kc == qC) inQ = false;
+                                    } else {
+                                        if (kc == L'"' || kc == L'\'' || kc == L'`') {
+                                            inQ = true;
+                                            qC = kc;
+                                        } else if (kc == L'{') {
+                                            bDepth++;
+                                        } else if (kc == L'}') {
+                                            if (bDepth > 0) bDepth--;
+                                        } else if (kc == L'>' && bDepth == 0) {
+                                            if (k > 0 && sLine[k - 1] == L'=') continue; // Ignore arrow function '=>'
+                                            gtLine = sl;
+                                            gtCol = k;
+                                            break;
+                                        }
                                     }
                                 }
+                                if (gtCol != std::wstring::npos) break;
                             }
-                            if (gt != std::wstring::npos) {
+                            if (gtCol != std::wstring::npos) {
                                 size_t tagEnd = c + 1;
                                 while (tagEnd < line.length() && (iswalnum(line[tagEnd]) || line[tagEnd] == L'_' || line[tagEnd] == L'-' || line[tagEnd] == L'.')) {
                                     tagEnd++;
                                 }
                                 std::wstring tag;
                                 for (size_t k = c + 1; k < tagEnd; ++k) tag.push_back(towlower(line[k]));
-                                bool isSelfClosing = (gt > 0 && line[gt - 1] == L'/') || (voidTags.count(tag) > 0);
+                                const std::wstring& endLineRef = buffer.GetLine(gtLine);
+                                bool isSelfClosing = (gtCol > 0 && endLineRef[gtCol - 1] == L'/') || (voidTags.count(tag) > 0);
                                 if (!isSelfClosing) {
                                     jsxTagStack.push_back(tag);
                                 }
-                                c = gt;
+                                if (gtLine > l) {
+                                    l = gtLine;
+                                    break;
+                                }
+                                c = gtCol;
                                 continue;
                             }
                         }
@@ -1049,43 +1061,55 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidateJavaScript(
                             c++;
                             continue;
                         } else if (c + 1 < line.length() && (iswalpha(line[c + 1]) || line[c + 1] == L'_')) {
-                            // Find the matching '>' of the JSX opening tag, properly ignoring quotes, expression braces, and '=>'
-                            size_t gt = std::wstring::npos;
+                            // Find the matching '>' of the JSX opening tag across single or multiple lines
+                            size_t gtLine = l;
+                            size_t gtCol = std::wstring::npos;
                             bool inQ = false;
                             wchar_t qC = L'\0';
                             int bDepth = 0;
-                            for (size_t k = c + 1; k < line.length(); ++k) {
-                                wchar_t kc = line[k];
-                                if (inQ) {
-                                    if (kc == L'\\' && k + 1 < line.length()) { k++; continue; }
-                                    if (kc == qC) inQ = false;
-                                } else {
-                                    if (kc == L'"' || kc == L'\'' || kc == L'`') {
-                                        inQ = true;
-                                        qC = kc;
-                                    } else if (kc == L'{') {
-                                        bDepth++;
-                                    } else if (kc == L'}') {
-                                        if (bDepth > 0) bDepth--;
-                                    } else if (kc == L'>' && bDepth == 0) {
-                                        if (k > 0 && line[k - 1] == L'=') continue; // Ignore arrow function '=>'
-                                        gt = k;
-                                        break;
+                            for (size_t sl = l; sl < lineCount && sl - l <= 25; ++sl) {
+                                const std::wstring& sLine = buffer.GetLine(sl);
+                                size_t startK = (sl == l) ? (c + 1) : 0;
+                                for (size_t k = startK; k < sLine.length(); ++k) {
+                                    wchar_t kc = sLine[k];
+                                    if (inQ) {
+                                        if (kc == L'\\' && k + 1 < sLine.length()) { k++; continue; }
+                                        if (kc == qC) inQ = false;
+                                    } else {
+                                        if (kc == L'"' || kc == L'\'' || kc == L'`') {
+                                            inQ = true;
+                                            qC = kc;
+                                        } else if (kc == L'{') {
+                                            bDepth++;
+                                        } else if (kc == L'}') {
+                                            if (bDepth > 0) bDepth--;
+                                        } else if (kc == L'>' && bDepth == 0) {
+                                            if (k > 0 && sLine[k - 1] == L'=') continue; // Ignore arrow function '=>'
+                                            gtLine = sl;
+                                            gtCol = k;
+                                            break;
+                                        }
                                     }
                                 }
+                                if (gtCol != std::wstring::npos) break;
                             }
-                            if (gt != std::wstring::npos) {
+                            if (gtCol != std::wstring::npos) {
                                 size_t tagEnd = c + 1;
                                 while (tagEnd < line.length() && (iswalnum(line[tagEnd]) || line[tagEnd] == L'_' || line[tagEnd] == L'-' || line[tagEnd] == L'.')) {
                                     tagEnd++;
                                 }
                                 std::wstring tag;
                                 for (size_t k = c + 1; k < tagEnd; ++k) tag.push_back(towlower(line[k]));
-                                bool isSelfClosing = (gt > 0 && line[gt - 1] == L'/') || (voidTags.count(tag) > 0);
+                                const std::wstring& endLineRef = buffer.GetLine(gtLine);
+                                bool isSelfClosing = (gtCol > 0 && endLineRef[gtCol - 1] == L'/') || (voidTags.count(tag) > 0);
                                 if (!isSelfClosing) {
                                     jsxTagStack.push_back(tag);
                                 }
-                                c = gt;
+                                if (gtLine > l) {
+                                    l = gtLine;
+                                    break;
+                                }
+                                c = gtCol;
                                 continue;
                             }
                         }
@@ -2380,6 +2404,9 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidateReactAndESLint(const Buffe
                 continue;
             }
             if (ch == L'\'' && !inDouble && !inBacktick) {
+                if (!inSingle && i > 0 && (iswalnum(line[i - 1]) || line[i - 1] == L'_')) {
+                    continue; // Contraction / apostrophe in JSX prose (e.g. isn't, don't, Windows'), NOT a string literal
+                }
                 inSingle = !inSingle;
             } else if (ch == L'"' && !inSingle && !inBacktick) {
                 inDouble = !inDouble;
@@ -2425,7 +2452,14 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidateReactAndESLint(const Buffe
                     continue;
                 }
             }
-            if (ch == L'\'' && !inD && !inB) { inS = !inS; cleanCode[i] = L' '; continue; }
+            if (ch == L'\'' && !inD && !inB) {
+                if (!inS && i > 0 && (iswalnum(code[i - 1]) || code[i - 1] == L'_')) {
+                    continue; // Contraction / apostrophe in JSX prose (e.g. isn't, don't, Windows'), NOT a string literal
+                }
+                inS = !inS;
+                cleanCode[i] = L' ';
+                continue;
+            }
             if (ch == L'"' && !inS && !inB) { inD = !inD; cleanCode[i] = L' '; continue; }
             if (ch == L'`' && !inS && !inD) { inB = !inB; cleanCode[i] = L' '; continue; }
             if (inS || inD || inB) {
@@ -2779,8 +2813,8 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidateReactAndESLint(const Buffe
                 }
 
                 if (code[p] == L'<') {
-                    // Double check: if cleanCode masked this position (i.e. inside quote or comment), skip it!
-                    if (p < cleanCode.length() && cleanCode[p] == L' ' && code[p] != L' ') {
+                    // Double check: if outside JSX prose (or inside JSX expression) and cleanCode masked this position (i.e. inside quote or comment), skip it!
+                    if ((jsxStack.empty() || jsxCurlyDepth > 0) && p < cleanCode.length() && cleanCode[p] == L' ' && code[p] != L' ') {
                         p++;
                         continue;
                     }

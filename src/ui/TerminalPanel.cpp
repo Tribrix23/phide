@@ -6,6 +6,7 @@
 #include <filesystem>
 #include <sstream>
 #include <algorithm>
+#include <unordered_set>
 
 namespace phide::ui {
 
@@ -39,25 +40,49 @@ static D2D1_COLOR_F AdaptTerminalColorForLight(D2D1_COLOR_F c) {
 
 
 // Native Win32 Process Tree Termination: pure API, ZERO taskkill.exe / powershell.exe, ZERO popping console windows!
-static void KillProcessTree(DWORD rootPid) {
+// Uses single-snapshot BFS with visited cycle prevention to eliminate UI freezing and infinite recursion.
+static void SafeKillProcessTree(DWORD rootPid) {
     if (rootPid == 0) return;
+
+    std::vector<DWORD> toKill;
+    std::unordered_set<DWORD> visited;
+    toKill.push_back(rootPid);
+    visited.insert(rootPid);
+
     HANDLE hSnap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
     if (hSnap != INVALID_HANDLE_VALUE) {
         PROCESSENTRY32W pe{};
         pe.dwSize = sizeof(pe);
+        std::vector<std::pair<DWORD, DWORD>> allProcs;
         if (Process32FirstW(hSnap, &pe)) {
             do {
-                if (pe.th32ParentProcessID == rootPid) {
-                    KillProcessTree(pe.th32ProcessID);
+                if (pe.th32ProcessID != 0) {
+                    allProcs.emplace_back(pe.th32ProcessID, pe.th32ParentProcessID);
                 }
             } while (Process32NextW(hSnap, &pe));
         }
         CloseHandle(hSnap);
+
+        size_t head = 0;
+        while (head < toKill.size()) {
+            DWORD currentParent = toKill[head++];
+            for (const auto& proc : allProcs) {
+                if (proc.second == currentParent && proc.first != currentParent) {
+                    if (visited.insert(proc.first).second) {
+                        toKill.push_back(proc.first);
+                    }
+                }
+            }
+        }
     }
-    HANDLE hProc = OpenProcess(PROCESS_TERMINATE, FALSE, rootPid);
-    if (hProc) {
-        TerminateProcess(hProc, 0);
-        CloseHandle(hProc);
+
+    // Terminate in reverse order (deepest descendants first, parent last)
+    for (auto it = toKill.rbegin(); it != toKill.rend(); ++it) {
+        HANDLE hProc = OpenProcess(PROCESS_TERMINATE, FALSE, *it);
+        if (hProc) {
+            TerminateProcess(hProc, 0);
+            CloseHandle(hProc);
+        }
     }
 }
 
@@ -122,6 +147,25 @@ void TerminalTab::Terminate() {
         splitTab->Terminate();
         splitTab.reset();
     }
+
+    // 1. Terminate processes first so pipe writes cease and ReadFile unblocks
+    if (hProcess) {
+        TerminateProcess(hProcess, 0);
+    }
+    if (processId != 0) {
+        SafeKillProcessTree(processId);
+        processId = 0;
+    }
+
+    // 2. Unblock any synchronous ReadFile calls immediately
+    if (readerThread.joinable()) {
+        CancelSynchronousIo(readerThread.native_handle());
+    }
+    if (stderrReaderThread.joinable()) {
+        CancelSynchronousIo(stderrReaderThread.native_handle());
+    }
+
+    // 3. Close pipe and process handles
     if (hStdinWrite) {
         CloseHandle(hStdinWrite);
         hStdinWrite = NULL;
@@ -134,13 +178,7 @@ void TerminalTab::Terminate() {
         CloseHandle(hStderrRead);
         hStderrRead = NULL;
     }
-    if (processId != 0) {
-        // Kill the full process tree (shell -> cmd -> node.exe) silently via pure Win32 API
-        KillProcessTree(processId);
-        processId = 0;
-    }
     if (hProcess) {
-        TerminateProcess(hProcess, 0);
         CloseHandle(hProcess);
         hProcess = NULL;
     }
@@ -148,13 +186,13 @@ void TerminalTab::Terminate() {
         CloseHandle(hThread);
         hThread = NULL;
     }
+
+    // 4. Safely join reader threads (guaranteed to exit in <= 1ms now that processes and pipes are terminated)
     if (readerThread.joinable()) {
-        CancelSynchronousIo(readerThread.native_handle());
-        readerThread.detach(); // Asynchronously detach so UI thread NEVER freezes on join
+        readerThread.join();
     }
     if (stderrReaderThread.joinable()) {
-        CancelSynchronousIo(stderrReaderThread.native_handle());
-        stderrReaderThread.detach(); // Asynchronously detach so UI thread NEVER freezes on join
+        stderrReaderThread.join();
     }
 }
 
@@ -735,19 +773,33 @@ void TerminalPanel::NewTab(TerminalShellType shell, const std::wstring& workingD
 }
 
 void TerminalPanel::CloseTab(size_t index) {
-    if (index >= m_tabs.size()) return;
-    if (!m_tabs[index]->canClose) return; // Un-Xable tabs cannot be closed
-    std::wstring associatedPath = m_tabs[index]->associatedFilePath;
-    bool isServer = (m_tabs[index]->shellType == TerminalShellType::LiveServer || m_tabs[index]->isServerTab);
-    m_tabs[index]->Terminate();
-    m_tabs.erase(m_tabs.begin() + index);
-    m_tabs.shrink_to_fit();
+    std::wstring associatedPath;
+    bool isServer = false;
+    std::unique_ptr<TerminalTab> tabToClose;
+    {
+        std::lock_guard<std::recursive_mutex> tabsLock(m_tabsMutex);
+        if (index >= m_tabs.size()) return;
+        if (!m_tabs[index]->canClose) return; // Un-Xable tabs cannot be closed
+        associatedPath = m_tabs[index]->associatedFilePath;
+        isServer = (m_tabs[index]->shellType == TerminalShellType::LiveServer || m_tabs[index]->isServerTab);
 
-    if (m_tabs.empty()) {
-        m_isOpen = false;
-        m_activeTabIdx = 0;
-    } else if (m_activeTabIdx >= static_cast<int>(m_tabs.size())) {
-        m_activeTabIdx = static_cast<int>(m_tabs.size() - 1);
+        tabToClose = std::move(m_tabs[index]);
+        m_tabs.erase(m_tabs.begin() + index);
+        m_tabs.shrink_to_fit();
+
+        if (m_tabs.empty()) {
+            m_isOpen = false;
+            m_activeTabIdx = 0;
+        } else if (m_activeTabIdx >= static_cast<int>(m_tabs.size())) {
+            m_activeTabIdx = static_cast<int>(m_tabs.size() - 1);
+        }
+    }
+
+    // Terminate processes, pipes, and threads in background worker so UI thread NEVER freezes
+    if (tabToClose) {
+        std::thread([t = std::move(tabToClose)]() mutable {
+            if (t) t->Terminate();
+        }).detach();
     }
 
     if (isServer && !associatedPath.empty() && m_onLiveServerTabClosed) {
@@ -757,33 +809,52 @@ void TerminalPanel::CloseTab(size_t index) {
 
 bool TerminalPanel::CloseTabByAssociatedFile(const std::wstring& filePath) {
     if (filePath.empty()) return false;
-    for (size_t i = 0; i < m_tabs.size(); ++i) {
-        if (m_tabs[i]->shellType == TerminalShellType::LiveServer &&
-            _wcsicmp(m_tabs[i]->associatedFilePath.c_str(), filePath.c_str()) == 0) {
-            m_tabs[i]->Terminate();
-            m_tabs.erase(m_tabs.begin() + i);
-            m_tabs.shrink_to_fit();
-            if (m_tabs.empty()) {
-                m_isOpen = false;
-                m_activeTabIdx = 0;
-            } else if (m_activeTabIdx >= static_cast<int>(m_tabs.size())) {
-                m_activeTabIdx = static_cast<int>(m_tabs.size() - 1);
+    std::unique_ptr<TerminalTab> tabToClose;
+    {
+        std::lock_guard<std::recursive_mutex> tabsLock(m_tabsMutex);
+        for (size_t i = 0; i < m_tabs.size(); ++i) {
+            if ((m_tabs[i]->shellType == TerminalShellType::LiveServer || m_tabs[i]->isServerTab) &&
+                _wcsicmp(m_tabs[i]->associatedFilePath.c_str(), filePath.c_str()) == 0) {
+                tabToClose = std::move(m_tabs[i]);
+                m_tabs.erase(m_tabs.begin() + i);
+                m_tabs.shrink_to_fit();
+                if (m_tabs.empty()) {
+                    m_isOpen = false;
+                    m_activeTabIdx = 0;
+                } else if (m_activeTabIdx >= static_cast<int>(m_tabs.size())) {
+                    m_activeTabIdx = static_cast<int>(m_tabs.size() - 1);
+                }
+                break;
             }
-            return true;
         }
+    }
+    if (tabToClose) {
+        std::thread([t = std::move(tabToClose)]() mutable {
+            if (t) t->Terminate();
+        }).detach();
+        return true;
     }
     return false;
 }
 
 void TerminalPanel::CloseAllTabs() {
-    for (auto& tab : m_tabs) {
-        if (tab) tab->Terminate();
+    std::vector<std::unique_ptr<TerminalTab>> tabsToClose;
+    {
+        std::lock_guard<std::recursive_mutex> tabsLock(m_tabsMutex);
+        tabsToClose = std::move(m_tabs);
+        m_tabs.clear();
+        m_tabs.shrink_to_fit();
+        m_isOpen = false;
+        m_activeTabIdx = 0;
+        CloseMenus();
     }
-    m_tabs.clear();
-    m_tabs.shrink_to_fit();
-    m_isOpen = false;
-    m_activeTabIdx = 0;
-    CloseMenus();
+    if (!tabsToClose.empty()) {
+        std::thread([list = std::move(tabsToClose)]() mutable {
+            for (auto& tab : list) {
+                if (tab) tab->Terminate();
+            }
+        }).detach();
+    }
 }
 
 void TerminalPanel::RunGarbageCollection() {

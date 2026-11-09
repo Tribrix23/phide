@@ -536,6 +536,7 @@ void Window::SaveSessionState() {
 
     out << L"{\n";
     out << L"  \"isSidebarOpen\": " << (m_config.isDrawerOpen ? L"true" : L"false") << L",\n";
+    out << L"  \"drawerWidth\": " << m_config.drawerWidth << L",\n";
     out << L"  \"activeRailTab\": " << m_config.activeRailTab << L",\n";
     out << L"  \"terminalDockPosition\": " << m_terminal.GetDockPosition() << L",\n";
     out << L"  \"isTerminalOpen\": " << (m_terminal.IsOpen() ? L"true" : L"false") << L",\n";
@@ -564,11 +565,39 @@ void Window::SaveSessionState() {
     out << L"  \"enableCodeLens\": " << (m_config.enableCodeLens ? L"true" : L"false") << L",\n";
     out << L"  \"enableGitLens\": " << (m_config.enableGitLens ? L"true" : L"false") << L",\n";
     out << L"  \"activeDocIdx\": " << GetActiveGroup().activeDocIdx << L",\n";
+    out << L"  \"splitLayout\": " << static_cast<int>(m_splitState.layout) << L",\n";
+    out << L"  \"splitX1\": " << m_splitState.splitX1 << L",\n";
+    out << L"  \"splitX2\": " << m_splitState.splitX2 << L",\n";
+    out << L"  \"splitY1\": " << m_splitState.splitY1 << L",\n";
+    out << L"  \"splitY2\": " << m_splitState.splitY2 << L",\n";
+    out << L"  \"focusedGroupIdx\": " << m_focusedGroupIdx << L",\n";
     if (m_drawer.HasOpenFolder()) {
         out << L"  \"lastOpenFolderPath\": \"" << EscapeJson(m_drawer.GetOpenFolderPath()) << L"\",\n";
     } else {
         out << L"  \"lastOpenFolderPath\": \"\",\n";
     }
+    out << L"  \"editorGroups\": [\n";
+    for (size_t g = 0; g < m_editorGroups.size(); ++g) {
+        const auto& grp = m_editorGroups[g];
+        out << L"    {\n";
+        out << L"      \"activeDocIdx\": " << grp.activeDocIdx << L",\n";
+        out << L"      \"docs\": [\n";
+        std::vector<std::wstring> groupDocs;
+        for (const auto& doc : grp.docs) {
+            if (doc.isSpecialView && !doc.viewType.empty()) {
+                if (doc.viewType == L"markdown_preview") continue;
+                groupDocs.push_back(L"special:" + doc.viewType);
+            } else if (!doc.filePath.empty()) {
+                groupDocs.push_back(doc.filePath);
+            }
+        }
+        for (size_t d = 0; d < groupDocs.size(); ++d) {
+            out << L"        \"" << EscapeJson(groupDocs[d]) << L"\"" << (d + 1 < groupDocs.size() ? L"," : L"") << L"\n";
+        }
+        out << L"      ]\n";
+        out << L"    }" << (g + 1 < m_editorGroups.size() ? L"," : L"") << L"\n";
+    }
+    out << L"  ],\n";
     out << L"  \"openDocs\": [\n";
     std::vector<std::wstring> allOpenDocs;
     for (const auto& grp : m_editorGroups) {
@@ -616,6 +645,7 @@ void Window::LoadSessionState() {
     if (!in.is_open()) return;
 
     bool isSidebarOpen = true;
+    int savedDrawerWidth = 0;
     int activeRailTab = 0;
     int savedTerminalDockPosition = 0;
     bool savedIsTerminalOpen = false;
@@ -625,10 +655,26 @@ void Window::LoadSessionState() {
     float savedGitSplitRatio = 0.50f;
     int themeMode = 0;
     int savedActiveDocIdx = -1;
+    int savedSplitLayout = 0;
+    float savedSplitX1 = 0.50f;
+    float savedSplitX2 = 0.67f;
+    float savedSplitY1 = 0.50f;
+    float savedSplitY2 = 0.67f;
+    int savedFocusedGroupIdx = 0;
     std::wstring lastOpenFolder;
     std::set<std::wstring> expandedDirs;
     std::vector<std::wstring> recentPaths;
     std::vector<std::wstring> openDocPaths;
+
+    struct SavedGroup {
+        int activeDocIdx = 0;
+        std::vector<std::wstring> docPaths;
+    };
+    std::vector<SavedGroup> savedEditorGroups;
+    SavedGroup curGroup;
+    bool inEditorGroups = false;
+    bool inGroupDocs = false;
+    bool groupHasActive = false;
 
     std::wstring line;
     std::wstring currentArray;
@@ -639,6 +685,11 @@ void Window::LoadSessionState() {
 
         if (line.find(L"\"isSidebarOpen\"") != std::wstring::npos) {
             isSidebarOpen = (line.find(L"true") != std::wstring::npos);
+        } else if (line.find(L"\"drawerWidth\"") != std::wstring::npos) {
+            auto colon = line.find(L':');
+            if (colon != std::wstring::npos) {
+                savedDrawerWidth = _wtoi(line.substr(colon + 1).c_str());
+            }
         } else if (line.find(L"\"activeRailTab\"") != std::wstring::npos) {
             auto colon = line.find(L':');
             if (colon != std::wstring::npos) {
@@ -676,7 +727,37 @@ void Window::LoadSessionState() {
             if (colon != std::wstring::npos) {
                 themeMode = _wtoi(line.substr(colon + 1).c_str());
             }
-        } else if (line.find(L"\"activeDocIdx\"") != std::wstring::npos) {
+        } else if (line.find(L"\"splitLayout\"") != std::wstring::npos) {
+            auto colon = line.find(L':');
+            if (colon != std::wstring::npos) {
+                savedSplitLayout = _wtoi(line.substr(colon + 1).c_str());
+            }
+        } else if (line.find(L"\"splitX1\"") != std::wstring::npos) {
+            auto colon = line.find(L':');
+            if (colon != std::wstring::npos) {
+                savedSplitX1 = static_cast<float>(_wtof(line.substr(colon + 1).c_str()));
+            }
+        } else if (line.find(L"\"splitX2\"") != std::wstring::npos) {
+            auto colon = line.find(L':');
+            if (colon != std::wstring::npos) {
+                savedSplitX2 = static_cast<float>(_wtof(line.substr(colon + 1).c_str()));
+            }
+        } else if (line.find(L"\"splitY1\"") != std::wstring::npos) {
+            auto colon = line.find(L':');
+            if (colon != std::wstring::npos) {
+                savedSplitY1 = static_cast<float>(_wtof(line.substr(colon + 1).c_str()));
+            }
+        } else if (line.find(L"\"splitY2\"") != std::wstring::npos) {
+            auto colon = line.find(L':');
+            if (colon != std::wstring::npos) {
+                savedSplitY2 = static_cast<float>(_wtof(line.substr(colon + 1).c_str()));
+            }
+        } else if (line.find(L"\"focusedGroupIdx\"") != std::wstring::npos) {
+            auto colon = line.find(L':');
+            if (colon != std::wstring::npos) {
+                savedFocusedGroupIdx = _wtoi(line.substr(colon + 1).c_str());
+            }
+        } else if (line.find(L"\"activeDocIdx\"") != std::wstring::npos && !inEditorGroups) {
             auto colon = line.find(L':');
             if (colon != std::wstring::npos) {
                 savedActiveDocIdx = _wtoi(line.substr(colon + 1).c_str());
@@ -689,6 +770,36 @@ void Window::LoadSessionState() {
                 if (q1 != std::wstring::npos && q2 != std::wstring::npos && q2 > q1) {
                     lastOpenFolder = UnescapeJson(line.substr(q1 + 1, q2 - q1 - 1));
                 }
+            }
+        } else if (line.find(L"\"editorGroups\"") != std::wstring::npos) {
+            inEditorGroups = true;
+        } else if (inEditorGroups) {
+            if (line.find(L"\"activeDocIdx\"") != std::wstring::npos) {
+                auto colon = line.find(L':');
+                if (colon != std::wstring::npos) {
+                    curGroup.activeDocIdx = _wtoi(line.substr(colon + 1).c_str());
+                    groupHasActive = true;
+                }
+            } else if (line.find(L"\"docs\"") != std::wstring::npos) {
+                inGroupDocs = true;
+            } else if (inGroupDocs) {
+                if (line.find(L"]") != std::wstring::npos) {
+                    inGroupDocs = false;
+                } else {
+                    auto q1 = line.find(L'"');
+                    auto q2 = line.rfind(L'"');
+                    if (q1 != std::wstring::npos && q2 != std::wstring::npos && q2 > q1) {
+                        curGroup.docPaths.push_back(UnescapeJson(line.substr(q1 + 1, q2 - q1 - 1)));
+                    }
+                }
+            } else if (line.find(L"}") != std::wstring::npos) {
+                if (groupHasActive || !curGroup.docPaths.empty()) {
+                    savedEditorGroups.push_back(std::move(curGroup));
+                    curGroup = SavedGroup{};
+                    groupHasActive = false;
+                }
+            } else if (line.find(L"]") != std::wstring::npos) {
+                inEditorGroups = false;
             }
         } else if (line.find(L"\"currentFilePath\"") != std::wstring::npos) {
             auto colon = line.find(L':');
@@ -848,6 +959,11 @@ void Window::LoadSessionState() {
         m_isCleanNewWindow = true;
     }
 
+    // Restore user-resized sidebar width if saved
+    if (savedDrawerWidth >= 160 && savedDrawerWidth <= 1200) {
+        m_config.drawerWidth = savedDrawerWidth;
+    }
+
     if (!isNewWindowClean) {
         if (!lastOpenFolder.empty() && std::filesystem::exists(lastOpenFolder, ec)) {
             m_drawer.OpenFolder(lastOpenFolder, &expandedDirs);
@@ -862,7 +978,7 @@ void Window::LoadSessionState() {
             m_editor.GetGraphView().RefreshFromWorkspace(lastOpenFolder);
         }
 
-        for (const auto& p : openDocPaths) {
+        auto openDocIntoGroup = [&](const std::wstring& p) {
             if (p.rfind(L"special:", 0) == 0) {
                 std::wstring vType = p.substr(8);
                 if (vType == L"settings") {
@@ -895,10 +1011,46 @@ void Window::LoadSessionState() {
             } else if (!p.empty() && std::filesystem::exists(p, ec)) {
                 OpenFileDocument(p, false);
             }
-        }
+        };
 
-        if (savedActiveDocIdx >= 0 && savedActiveDocIdx < static_cast<int>(GetActiveGroup().docs.size())) {
-            GetActiveGroup().activeDocIdx = savedActiveDocIdx;
+        if (!savedEditorGroups.empty() && savedSplitLayout >= 0 && savedSplitLayout <= 9) {
+            auto targetLayout = static_cast<editor::EditorSplitLayout>(savedSplitLayout);
+            int targetCount = editor::EditorSplitState::GetLayoutGroupCount(targetLayout);
+            if (targetCount < 1) targetCount = 1;
+            m_editorGroups.clear();
+            m_editorGroups.resize(static_cast<size_t>(targetCount));
+
+            m_splitState.layout = targetLayout;
+            m_splitState.splitX1 = savedSplitX1;
+            m_splitState.splitX2 = savedSplitX2;
+            m_splitState.splitY1 = savedSplitY1;
+            m_splitState.splitY2 = savedSplitY2;
+            m_editor.SetSplitState(m_splitState);
+
+            for (size_t g = 0; g < savedEditorGroups.size() && g < m_editorGroups.size(); ++g) {
+                m_focusedGroupIdx = static_cast<int>(g);
+                for (const auto& p : savedEditorGroups[g].docPaths) {
+                    openDocIntoGroup(p);
+                }
+                if (savedEditorGroups[g].activeDocIdx >= 0 &&
+                    savedEditorGroups[g].activeDocIdx < static_cast<int>(m_editorGroups[g].docs.size())) {
+                    m_editorGroups[g].activeDocIdx = savedEditorGroups[g].activeDocIdx;
+                }
+            }
+
+            if (savedFocusedGroupIdx >= 0 && savedFocusedGroupIdx < static_cast<int>(m_editorGroups.size())) {
+                m_focusedGroupIdx = savedFocusedGroupIdx;
+            } else {
+                m_focusedGroupIdx = 0;
+            }
+            UpdateEditorGroupBounds();
+        } else {
+            for (const auto& p : openDocPaths) {
+                openDocIntoGroup(p);
+            }
+            if (savedActiveDocIdx >= 0 && savedActiveDocIdx < static_cast<int>(GetActiveGroup().docs.size())) {
+                GetActiveGroup().activeDocIdx = savedActiveDocIdx;
+            }
         }
     } else {
         // Clean new window: no open folder, no open document tabs, freshly clean with preserved theme & recents
@@ -1182,6 +1334,7 @@ void Window::SetEditorSplitLayout(editor::EditorSplitLayout mode) {
     UpdateEditorGroupBounds();
     UpdateExecutionButtonStates();
     RunManualGarbageCollection();
+    SaveSessionState();
     InvalidateRect(m_hwnd, nullptr, FALSE);
 }
 
@@ -1375,12 +1528,41 @@ void Window::OpenFileDocument(const std::wstring& path, bool isPreview) {
     bool canReplace = (group.activeDocIdx >= 0 && group.activeDocIdx < static_cast<int>(group.docs.size()) &&
                        !group.docs[group.activeDocIdx].isDirty &&
                        !group.docs[group.activeDocIdx].isSpecialView &&
+                       !group.docs[group.activeDocIdx].isFolderView &&
                        (group.docs[group.activeDocIdx].isPreview ||
                         (!m_drawer.GetOpenFolderPath().empty() &&
                          !IsFileInDirectory(group.docs[group.activeDocIdx].filePath, m_drawer.GetOpenFolderPath()))));
 
-    // Check if file exists on disk, or if it is a deleted file in Git (Complaint 8)
+    // Check if target path is a folder -> open interactive Folder Explorer View!
     std::error_code ecExists;
+    if (std::filesystem::exists(resolvedPath, ecExists) && std::filesystem::is_directory(resolvedPath, ecExists)) {
+        editor::OpenDocument newDoc;
+        newDoc.filePath = resolvedPath;
+        std::wstring trimmed = resolvedPath;
+        while (trimmed.length() > 3 && (trimmed.back() == L'\\' || trimmed.back() == L'/')) {
+            trimmed.pop_back();
+        }
+        auto ppos = trimmed.find_last_of(L"\\/");
+        newDoc.fileName = (ppos != std::wstring::npos && ppos + 1 < trimmed.length()) ? trimmed.substr(ppos + 1) : trimmed;
+        newDoc.isPreview = false;
+        newDoc.isDirty = false;
+        newDoc.isSpecialView = false;
+        newDoc.isFolderView = true;
+        newDoc.RefreshFolderEntries();
+
+        if (canReplace) {
+            group.docs[group.activeDocIdx] = std::move(newDoc);
+        } else {
+            group.docs.push_back(std::move(newDoc));
+            group.activeDocIdx = static_cast<int>(group.docs.size()) - 1;
+        }
+        UpdateDrawerErrorFiles();
+        SaveSessionState();
+        InvalidateRect(m_hwnd, nullptr, FALSE);
+        return;
+    }
+
+    // Check if file exists on disk, or if it is a deleted file in Git (Complaint 8)
     bool fileExists = std::filesystem::exists(resolvedPath, ecExists);
     if (!fileExists && m_drawer.IsGitRepo()) {
         std::wstring relPath = resolvedPath;
@@ -1810,9 +1992,6 @@ void Window::ComputeDiffHunks(editor::OpenDocument& doc) {
     size_t midM = M - prefix - suffix;
 
     if (midN == 0 && midM == 0) {
-        doc.isDirty = false;
-        UpdateDrawerDirtyFiles();
-        m_drawer.RefreshGitStatusOnly(true);
         return; // Identical
     }
 
@@ -3402,52 +3581,28 @@ void Window::CommitAutocompleteSelection() {
     InvalidateRect(m_hwnd, nullptr, FALSE);
 }
 
+namespace {
+static bool s_editDebouncePending = false;
+static ULONGLONG s_editDebounceTargetTime = 0;
+static ULONGLONG s_lastInternalAutoSaveTick = 0;
+static std::unordered_set<std::wstring> s_pendingModifiedKeys;
+} // namespace
+
 void Window::MarkDocumentModified(editor::OpenDocument* pDoc) {
     if (!pDoc || pDoc->isSpecialView) return;
     pDoc->isPreview = false;
-    std::erase_if(pDoc->diagnostics, [](const lsp::Diagnostic& d) {
-        return d.message.find(L"Runtime:") != std::wstring::npos;
-    });
-    pDoc->diagnostics = editor::SyntaxValidator::Validate(pDoc->filePath.empty() ? pDoc->fileName : pDoc->filePath, pDoc->buffer);
-    CalculateImportCosts(*pDoc);
-    UpdateDrawerErrorFiles();
-
-    // Ensure diffOriginalBuffer has baseline text for real-time gutter diff change tracking
-    if (pDoc->diffOriginalBuffer.GetLineCount() == 0 && !pDoc->originalDiskText.empty()) {
-        pDoc->diffOriginalBuffer.SetText(pDoc->originalDiskText);
+    if (!m_autoSave || pDoc->filePath.empty()) {
+        pDoc->isDirty = true;
     }
-    ComputeDiffHunks(*pDoc);
-
-    // Check if document content has reverted to match pristine disk text or HEAD
-    bool isActuallyDirty = true;
-    if (pDoc->isDiffView) {
-        if (pDoc->diffHunks.empty()) {
-            isActuallyDirty = false;
-        }
-    } else if (!pDoc->originalDiskText.empty()) {
-        if (pDoc->buffer.GetText() == pDoc->originalDiskText) {
-            isActuallyDirty = false;
-        }
+    if (m_editorGroups.size() > 1) {
+        SyncDocumentBuffers(pDoc);
     }
 
-    if (m_autoSave && !pDoc->filePath.empty()) {
-        pDoc->buffer.SaveToFile(pDoc->filePath);
-        pDoc->isDirty = false;
-        pDoc->originalDiskText = pDoc->buffer.GetText();
-        SyncDocumentBuffers(pDoc);
-        UpdateDrawerDirtyFiles();
-        TriggerDebouncedGitRefresh(100);
-    } else {
-        bool dirtyDroppedToClean = (pDoc->isDirty && !isActuallyDirty);
-        pDoc->isDirty = isActuallyDirty;
-        SyncDocumentBuffers(pDoc);
-        UpdateDrawerDirtyFiles();
-        if (dirtyDroppedToClean) {
-            // Edits were removed/erased: immediately trigger git refresh to vanish from Source Control!
-            m_drawer.RefreshGitStatusOnly(true);
-        } else {
-            TriggerDebouncedGitRefresh(300); // 300ms responsive refresh instead of 2000ms
-        }
+    std::wstring key = !pDoc->filePath.empty() ? pDoc->filePath : pDoc->fileName;
+    if (!key.empty()) {
+        s_pendingModifiedKeys.insert(key);
+        s_editDebouncePending = true;
+        s_editDebounceTargetTime = GetTickCount64() + 260;
     }
 }
 
@@ -4956,23 +5111,44 @@ Window::ProjectDecision Window::DetectFramework(const std::wstring& rootDir, con
 
 static void KillProcessTree(DWORD rootPid) {
     if (rootPid == 0) return;
+    std::vector<DWORD> toKill;
+    std::unordered_set<DWORD> visited;
+    toKill.push_back(rootPid);
+    visited.insert(rootPid);
+
     HANDLE hSnap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
     if (hSnap != INVALID_HANDLE_VALUE) {
         PROCESSENTRY32W pe{};
         pe.dwSize = sizeof(pe);
+        std::vector<std::pair<DWORD, DWORD>> allProcs;
         if (Process32FirstW(hSnap, &pe)) {
             do {
-                if (pe.th32ParentProcessID == rootPid) {
-                    KillProcessTree(pe.th32ProcessID);
+                if (pe.th32ProcessID != 0) {
+                    allProcs.emplace_back(pe.th32ProcessID, pe.th32ParentProcessID);
                 }
             } while (Process32NextW(hSnap, &pe));
         }
         CloseHandle(hSnap);
+
+        size_t head = 0;
+        while (head < toKill.size()) {
+            DWORD currentParent = toKill[head++];
+            for (const auto& proc : allProcs) {
+                if (proc.second == currentParent && proc.first != currentParent) {
+                    if (visited.insert(proc.first).second) {
+                        toKill.push_back(proc.first);
+                    }
+                }
+            }
+        }
     }
-    HANDLE hProc = OpenProcess(PROCESS_TERMINATE, FALSE, rootPid);
-    if (hProc) {
-        TerminateProcess(hProc, 0);
-        CloseHandle(hProc);
+
+    for (auto it = toKill.rbegin(); it != toKill.rend(); ++it) {
+        HANDLE hProc = OpenProcess(PROCESS_TERMINATE, FALSE, *it);
+        if (hProc) {
+            TerminateProcess(hProc, 0);
+            CloseHandle(hProc);
+        }
     }
 }
 
@@ -8822,20 +8998,71 @@ void Window::RenderStatusBar(float clientW, float clientH) {
     }
     curRightX -= rightPillGap;
 
-    // Dynamic Language Runtime Tag (PHP, Python, Node.js)
-    std::wstring runtimeId = L"php";
-    if (curDoc && !curDoc->filePath.empty()) {
+    // Dynamic Language Runtime Tag:
+    // 1. Detect and cache the project's default runtime from the workspace root
+    // 2. Override dynamically when the user focuses a specific language file (.py, .php, .js/.ts/.tsx),
+    //    and return to the project's default runtime when closing it or focusing neutral files/folders.
+    static std::wstring s_cachedWorkspaceDir = L"<uninitialized>";
+    static std::wstring s_cachedProjectRuntimeId = L"node";
+
+    std::wstring openDir = m_drawer.GetOpenFolderPath();
+    if (openDir != s_cachedWorkspaceDir) {
+        s_cachedWorkspaceDir = openDir;
+        s_cachedProjectRuntimeId.clear();
+
+        if (!openDir.empty()) {
+            std::error_code ecCheck;
+            std::filesystem::path rootP(openDir);
+            if (std::filesystem::exists(rootP / L"package.json", ecCheck) ||
+                std::filesystem::exists(rootP / L"node_modules", ecCheck) ||
+                std::filesystem::exists(rootP / L"next.config.js", ecCheck) ||
+                std::filesystem::exists(rootP / L"next.config.ts", ecCheck) ||
+                std::filesystem::exists(rootP / L"next.config.mjs", ecCheck) ||
+                std::filesystem::exists(rootP / L"vite.config.js", ecCheck) ||
+                std::filesystem::exists(rootP / L"vite.config.ts", ecCheck) ||
+                std::filesystem::exists(rootP / L"tsconfig.json", ecCheck)) {
+                s_cachedProjectRuntimeId = L"node";
+            } else if (std::filesystem::exists(rootP / L"requirements.txt", ecCheck) ||
+                       std::filesystem::exists(rootP / L"pyproject.toml", ecCheck) ||
+                       std::filesystem::exists(rootP / L"Pipfile", ecCheck) ||
+                       std::filesystem::exists(rootP / L".venv", ecCheck) ||
+                       std::filesystem::exists(rootP / L"venv", ecCheck)) {
+                s_cachedProjectRuntimeId = L"python";
+            } else if (std::filesystem::exists(rootP / L"composer.json", ecCheck) ||
+                       std::filesystem::exists(rootP / L"artisan", ecCheck) ||
+                       std::filesystem::exists(rootP / L"index.php", ecCheck)) {
+                s_cachedProjectRuntimeId = L"php";
+            } else {
+                std::wstring lowerDir = openDir;
+                for (auto& c : lowerDir) c = towlower(c);
+                if (lowerDir.find(L"node") != std::wstring::npos || lowerDir.find(L"react") != std::wstring::npos || lowerDir.find(L"next") != std::wstring::npos) {
+                    s_cachedProjectRuntimeId = L"node";
+                } else if (lowerDir.find(L"python") != std::wstring::npos || lowerDir.find(L"django") != std::wstring::npos || lowerDir.find(L"flask") != std::wstring::npos) {
+                    s_cachedProjectRuntimeId = L"python";
+                } else if (lowerDir.find(L"php") != std::wstring::npos || lowerDir.find(L"laravel") != std::wstring::npos) {
+                    s_cachedProjectRuntimeId = L"php";
+                }
+            }
+        }
+        if (s_cachedProjectRuntimeId.empty()) {
+            s_cachedProjectRuntimeId = L"node";
+        }
+    }
+
+    // Start with the project default runtime, then override if active file is a specific language runtime
+    std::wstring runtimeId = s_cachedProjectRuntimeId;
+    if (curDoc && !curDoc->filePath.empty() && !curDoc->isFolderView && !curDoc->isSpecialView) {
         std::wstring fp = curDoc->filePath;
         for (auto& c : fp) c = towlower(c);
-        if (fp.ends_with(L".php")) runtimeId = L"php";
-        else if (fp.ends_with(L".py") || fp.ends_with(L".ipynb")) runtimeId = L"python";
-        else if (fp.ends_with(L".js") || fp.ends_with(L".ts") || fp.ends_with(L".jsx") || fp.ends_with(L".tsx") || fp.ends_with(L".json")) runtimeId = L"node";
-    } else {
-        std::wstring openDir = m_drawer.GetOpenFolderPath();
-        for (auto& c : openDir) c = towlower(c);
-        if (openDir.find(L"php") != std::wstring::npos) runtimeId = L"php";
-        else if (openDir.find(L"python") != std::wstring::npos) runtimeId = L"python";
-        else if (openDir.find(L"node") != std::wstring::npos) runtimeId = L"node";
+        if (fp.ends_with(L".php") || fp.ends_with(L".phtml") || fp.ends_with(L".php8")) {
+            runtimeId = L"php";
+        } else if (fp.ends_with(L".py") || fp.ends_with(L".ipynb")) {
+            runtimeId = L"python";
+        } else if (fp.ends_with(L".js") || fp.ends_with(L".ts") || fp.ends_with(L".jsx") ||
+                   fp.ends_with(L".tsx") || fp.ends_with(L".mjs") || fp.ends_with(L".cjs") ||
+                   fp.ends_with(L".vue") || fp.ends_with(L".svelte") || fp.ends_with(L".astro")) {
+            runtimeId = L"node";
+        }
     }
 
     std::wstring verStr = m_extensionsPanel.GetInstalledVersion(runtimeId);
@@ -9673,6 +9900,41 @@ void Window::HandleMouseMove(POINT clientPt, WPARAM wParam) {
     }
 
     bool needRepaint = false;
+
+    // Folder Explorer View hover tracking across all visible split panes
+    for (auto& grp : m_editorGroups) {
+        if (grp.activeDocIdx >= 0 && grp.activeDocIdx < static_cast<int>(grp.docs.size())) {
+            auto& fDoc = grp.docs[grp.activeDocIdx];
+            if (fDoc.isFolderView) {
+                int newBtn = 0;
+                int newRow = -1;
+                const float fx = static_cast<float>(clientPt.x);
+                const float fy = static_cast<float>(clientPt.y);
+                auto inRect = [&](const D2D1_RECT_F& r) {
+                    return fx >= r.left && fx <= r.right && fy >= r.top && fy <= r.bottom;
+                };
+                if (inRect(grp.bounds)) {
+                    if (inRect(fDoc.folderUpBtnBounds)) newBtn = 1;
+                    else if (inRect(fDoc.folderRefreshBtnBounds)) newBtn = 2;
+                    else if (inRect(fDoc.folderViewToggleBtnBounds)) newBtn = 3;
+                    else if (inRect(fDoc.folderRevealBtnBounds)) newBtn = 4;
+                    else {
+                        for (size_t i = 0; i < fDoc.folderEntries.size(); ++i) {
+                            if (inRect(fDoc.folderEntries[i].rowBounds)) {
+                                newRow = static_cast<int>(i);
+                                break;
+                            }
+                        }
+                    }
+                }
+                if (fDoc.folderHoveredBtn != newBtn || fDoc.folderHoveredIdx != newRow) {
+                    fDoc.folderHoveredBtn = newBtn;
+                    fDoc.folderHoveredIdx = newRow;
+                    needRepaint = true;
+                }
+            }
+        }
+    }
 
     // Check Editor Mouse Drag Text Selection (Images 2, 3, 4)
     auto* pActiveDoc = GetActiveDoc();
@@ -11719,7 +11981,66 @@ void Window::HandleLButtonDown(POINT clientPt) {
             // 4c. Content interaction within this group's active document
             if (group.activeDocIdx >= 0 && group.activeDocIdx < static_cast<int>(group.docs.size())) {
                 auto& doc = group.docs[group.activeDocIdx];
-                if (doc.isUnsupportedBinary) {
+                if (doc.isFolderView) {
+                    const float fx = static_cast<float>(clientPt.x);
+                    const float fy = static_cast<float>(clientPt.y);
+                    auto inRect = [&](const D2D1_RECT_F& r) {
+                        return fx >= r.left && fx <= r.right && fy >= r.top && fy <= r.bottom;
+                    };
+                    auto navigateToFolder = [&](const std::wstring& targetDir) {
+                        std::error_code ec;
+                        if (!targetDir.empty() && std::filesystem::exists(targetDir, ec) && std::filesystem::is_directory(targetDir, ec)) {
+                            doc.filePath = targetDir;
+                            std::wstring trimmed = targetDir;
+                            while (trimmed.length() > 3 && (trimmed.back() == L'\\' || trimmed.back() == L'/')) {
+                                trimmed.pop_back();
+                            }
+                            auto ppos = trimmed.find_last_of(L"\\/");
+                            doc.fileName = (ppos != std::wstring::npos && ppos + 1 < trimmed.length()) ? trimmed.substr(ppos + 1) : trimmed;
+                            doc.folderScrollY = 0.0f;
+                            doc.RefreshFolderEntries();
+                            SaveSessionState();
+                            InvalidateRect(m_hwnd, nullptr, FALSE);
+                        }
+                    };
+                    if (inRect(doc.folderUpBtnBounds)) {
+                        std::filesystem::path p(doc.filePath);
+                        if (p.has_parent_path() && p.parent_path() != p) {
+                            navigateToFolder(p.parent_path().wstring());
+                        }
+                        return;
+                    }
+                    if (inRect(doc.folderRefreshBtnBounds)) {
+                        doc.RefreshFolderEntries();
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
+                        return;
+                    }
+                    if (inRect(doc.folderViewToggleBtnBounds)) {
+                        doc.folderGridView = !doc.folderGridView;
+                        doc.folderScrollY = 0.0f;
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
+                        return;
+                    }
+                    if (inRect(doc.folderRevealBtnBounds)) {
+                        ShellExecuteW(nullptr, L"open", doc.filePath.c_str(), nullptr, nullptr, SW_SHOW);
+                        return;
+                    }
+                    for (size_t i = 0; i < doc.folderEntries.size(); ++i) {
+                        if (inRect(doc.folderEntries[i].rowBounds)) {
+                            doc.folderSelectedIdx = static_cast<int>(i);
+                            const std::wstring targetPath = doc.folderEntries[i].fullPath;
+                            if (doc.folderEntries[i].isFolder) {
+                                navigateToFolder(targetPath);
+                            } else {
+                                OpenFileDocument(targetPath, false);
+                            }
+                            return;
+                        }
+                    }
+                    doc.folderSelectedIdx = -1;
+                    InvalidateRect(m_hwnd, nullptr, FALSE);
+                    return;
+                } else if (doc.isUnsupportedBinary) {
                     const auto& btn = doc.unsupportedActionBtn;
                     if (clientPt.x >= btn.left && clientPt.x <= btn.right &&
                         clientPt.y >= btn.top && clientPt.y <= btn.bottom) {
@@ -12840,6 +13161,7 @@ void Window::HandleLButtonUp(POINT clientPt) {
         m_tabSnapPreviewRect = D2D1::RectF(0, 0, 0, 0);
         m_editor.SetTabDragState(false, -1, -1, -1, -1);
         m_editor.SetTabSnapPreview(editor::TabSnapZone::None, D2D1::RectF(0, 0, 0, 0), -1);
+        SaveSessionState();
         ReleaseCapture();
         InvalidateRect(m_hwnd, nullptr, FALSE);
         return;
@@ -12935,66 +13257,65 @@ void Window::HandleLButtonUp(POINT clientPt) {
                         }
                     }
                 }
-            } else if (clientPt.x >= canvasLeft && clientPt.y >= headerH && clientPt.y < headerH + tabH) {
-                OpenFileDocument(m_dragCandidatePath, false);
-            } else if (m_hasDragDropTarget && m_dragDropTargetGroup >= 0) {
-                m_focusedGroupIdx = m_dragDropTargetGroup;
+            } else if (clientPt.x >= canvasLeft && clientPt.y >= headerH) {
+                UpdateEditorGroupBounds();
+                int dropGrp = FindEditorGroupAtPoint(clientPt);
+                if (dropGrp >= 0 && dropGrp < static_cast<int>(m_editorGroups.size())) {
+                    m_focusedGroupIdx = dropGrp;
+                }
+                const auto& grpBounds = m_editorGroups[m_focusedGroupIdx].bounds;
+                bool isOnTabBar = (clientPt.y >= grpBounds.top && clientPt.y < grpBounds.top + tabH);
                 auto* pDoc = GetActiveDoc();
-                if (pDoc && !pDoc->isSpecialView && !pDoc->isImageView && !pDoc->isDiffView) {
-                    if (pDoc->filePath != m_dragCandidatePath) {
-                        size_t line = pDoc->buffer.GetLineCount() > 0 ? (std::min)(m_dragDropTargetLine, pDoc->buffer.GetLineCount() - 1) : 0;
-                        size_t col = (line < pDoc->buffer.GetLineCount()) ? (std::min)(m_dragDropTargetCol, pDoc->buffer.GetLine(line).length()) : 0;
 
-                        // Check if drop target is inside quotes (Image 4 & User request: "when i drag a file on "" it put the directory of that")
-                        bool isInsideQuotes = false;
-                        if (line < pDoc->buffer.GetLineCount()) {
-                            const auto& lineStr = pDoc->buffer.GetLine(line);
-                            size_t dQuotes = 0, sQuotes = 0;
-                            for (size_t c = 0; c < col && c < lineStr.length(); ++c) {
-                                if (lineStr[c] == L'"') dQuotes++;
-                                else if (lineStr[c] == L'\'') sQuotes++;
-                            }
-                            if ((dQuotes % 2 == 1) || (sQuotes % 2 == 1)) {
+                if (m_dragCandidateIsFolder || isOnTabBar || !pDoc ||
+                    pDoc->isFolderView || pDoc->isSpecialView || pDoc->isImageView || pDoc->isUnsupportedBinary || pDoc->isDiffView) {
+                    OpenFileDocument(m_dragCandidatePath, false);
+                } else if (m_hasDragDropTarget && pDoc->filePath != m_dragCandidatePath) {
+                    size_t line = pDoc->buffer.GetLineCount() > 0 ? (std::min)(m_dragDropTargetLine, pDoc->buffer.GetLineCount() - 1) : 0;
+                    size_t col = (line < pDoc->buffer.GetLineCount()) ? (std::min)(m_dragDropTargetCol, pDoc->buffer.GetLine(line).length()) : 0;
+
+                    // Check if drop target is inside quotes (Image 4 & User request: "when i drag a file on "" it put the directory of that")
+                    bool isInsideQuotes = false;
+                    if (line < pDoc->buffer.GetLineCount()) {
+                        const auto& lineStr = pDoc->buffer.GetLine(line);
+                        size_t dQuotes = 0, sQuotes = 0;
+                        for (size_t c = 0; c < col && c < lineStr.length(); ++c) {
+                            if (lineStr[c] == L'"') dQuotes++;
+                            else if (lineStr[c] == L'\'') sQuotes++;
+                        }
+                        if ((dQuotes % 2 == 1) || (sQuotes % 2 == 1)) {
+                            isInsideQuotes = true;
+                        } else if (col > 0 && col < lineStr.length()) {
+                            if ((lineStr[col - 1] == L'"' && lineStr[col] == L'"') ||
+                                (lineStr[col - 1] == L'\'' && lineStr[col] == L'\'')) {
                                 isInsideQuotes = true;
-                            } else if (col > 0 && col < lineStr.length()) {
-                                if ((lineStr[col - 1] == L'"' && lineStr[col] == L'"') ||
-                                    (lineStr[col - 1] == L'\'' && lineStr[col] == L'\'')) {
-                                    isInsideQuotes = true;
-                                }
                             }
-                        }
-
-                        std::wstring textToInsert;
-                        if (isInsideQuotes) {
-                            // User dropped into quotes: insert just the relative file path location!
-                            textToInsert = phide::editor::SmartImportHelper::ComputeRelativePath(pDoc->filePath, m_dragCandidatePath);
-                        } else {
-                            // User dropped outside quotes: generate smart language-aware import statement!
-                            textToInsert = phide::editor::SmartImportHelper::Generate(pDoc->filePath, m_dragCandidatePath);
-                        }
-
-                        if (!textToInsert.empty()) {
-                            if (pDoc->buffer.GetLineCount() == 0) {
-                                pDoc->buffer.InsertText(textToInsert);
-                            } else {
-                                pDoc->buffer.SetCursor(line, col);
-                                pDoc->buffer.InsertText(textToInsert);
-                            }
-                            MarkDocumentModified(pDoc);
-                            m_editor.DismissAutocomplete();
-                            m_editor.ClearGhostText();
-                            // Immediately update Source Control dirty files & git status (User request: "when i drop a file to editor it should also trugger the source control")
-                            UpdateDrawerDirtyFiles();
-                            m_drawer.RefreshGitStatusOnly(true);
                         }
                     }
-                } else if (!pDoc) {
-                    OpenFileDocument(m_dragCandidatePath, false);
-                }
-            } else if (clientPt.x >= canvasLeft && clientPt.y >= headerH) {
-                auto* pDoc = GetActiveDoc();
-                if (!pDoc) {
-                    OpenFileDocument(m_dragCandidatePath, false);
+
+                    std::wstring textToInsert;
+                    if (isInsideQuotes) {
+                        // User dropped into quotes: insert just the relative file path location!
+                        textToInsert = phide::editor::SmartImportHelper::ComputeRelativePath(pDoc->filePath, m_dragCandidatePath);
+                    } else {
+                        // User dropped outside quotes: generate smart language-aware import statement!
+                        textToInsert = phide::editor::SmartImportHelper::Generate(pDoc->filePath, m_dragCandidatePath);
+                    }
+
+                    if (!textToInsert.empty()) {
+                        if (pDoc->buffer.GetLineCount() == 0) {
+                            pDoc->buffer.InsertText(textToInsert);
+                        } else {
+                            pDoc->buffer.SetCursor(line, col);
+                            pDoc->buffer.InsertText(textToInsert);
+                        }
+                        MarkDocumentModified(pDoc);
+                        m_editor.DismissAutocomplete();
+                        m_editor.ClearGhostText();
+                        // Immediately update Source Control dirty files & git status (User request: "when i drop a file to editor it should also trugger the source control")
+                        UpdateDrawerDirtyFiles();
+                        m_drawer.RefreshGitStatusOnly(true);
+                    }
                 }
             }
         } else {
@@ -13458,8 +13779,17 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     }
                 }
 
-                // Unsupported binary action button ("Reveal in File Explorer")
+                // Unsupported binary action button ("Reveal in File Explorer") or Folder Explorer interactive rows/buttons
                 auto* pCurDoc = GetActiveDoc();
+                for (const auto& grp : m_editorGroups) {
+                    if (grp.activeDocIdx >= 0 && grp.activeDocIdx < static_cast<int>(grp.docs.size())) {
+                        const auto& fDoc = grp.docs[grp.activeDocIdx];
+                        if (fDoc.isFolderView && (fDoc.folderHoveredBtn > 0 || fDoc.folderHoveredIdx >= 0)) {
+                            SetCursor(LoadCursor(nullptr, IDC_HAND));
+                            return TRUE;
+                        }
+                    }
+                }
                 if (pCurDoc && pCurDoc->isUnsupportedBinary) {
                     const auto& b = pCurDoc->unsupportedActionBtn;
                     if (pt.x >= b.left && pt.x <= b.right && pt.y >= b.top && pt.y <= b.bottom) {
@@ -13560,7 +13890,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 }
 
                 // Editor code text area: show I-beam cursor (matching Image 1)
-                if (pCurDoc && !pCurDoc->isSpecialView && !pCurDoc->isImageView && !pCurDoc->isUnsupportedBinary) {
+                if (pCurDoc && !pCurDoc->isSpecialView && !pCurDoc->isFolderView && !pCurDoc->isImageView && !pCurDoc->isUnsupportedBinary) {
                     RECT rcClient;
                     GetClientRect(m_hwnd, &rcClient);
                     float clientW = static_cast<float>(rcClient.right - rcClient.left);
@@ -13955,6 +14285,11 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                         InvalidateRect(m_hwnd, nullptr, FALSE);
                         return 0;
                     }
+                } else if (pDoc->isFolderView) {
+                    float vDelta = (delta > 0) ? -m_config.ScaleF(72.0f) : m_config.ScaleF(72.0f);
+                    pDoc->folderScrollY = (std::clamp)(pDoc->folderScrollY + vDelta, 0.0f, pDoc->folderMaxScrollY);
+                    InvalidateRect(m_hwnd, nullptr, FALSE);
+                    return 0;
                 } else {
                     bool isShiftDown = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
                     if (isShiftDown) {
@@ -14403,12 +14738,9 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                                 }
                             }
                         }
-                        UpdateCssPeekHover(POINT{ -1, -1 });
+                        if (pDoc->cssPeek.active) pDoc->cssPeek.active = false;
                         EnsureCursorVisible();
                         MarkDocumentModified(pDoc);
-                        if (pDoc->isDiffView) {
-                            ComputeDiffHunks(*pDoc);
-                        }
 
                         // Query massive HTML5 / JavaScript / Python / PHP / Path IntelliSense & Snippets
                         if (iswalnum(ch) || ch == L'!' || ch == L'@' || ch == L'#' || ch == L'-' || ch == L'.' || ch == L'<' || ch == L'>' || ch == L':' || ch == L'$' || ch == L'_' || ch == L'/' || ch == L'\\' || ch == L'"' || ch == L'\'' || ch == L'`' || ch == L'{' || ch == L',' || ch == L' ') {
@@ -15458,7 +15790,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                             pDoc->buffer.Backspace();
                         }
                         TryAutoRenameMatchingTag(pDoc, editLineBeforeBack, oldLineBeforeBack);
-                        UpdateCssPeekHover(POINT{ -1, -1 });
+                        if (pDoc->cssPeek.active) pDoc->cssPeek.active = false;
                         m_editor.ClearGhostText();
                         m_editor.ClearPrediction();
                         if (m_editor.IsAutocompleteVisible()) {
@@ -15480,14 +15812,13 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                         size_t editLineBeforeDel = pDoc->buffer.GetCursor().line;
                         pDoc->buffer.DeleteForward();
                         TryAutoRenameMatchingTag(pDoc, editLineBeforeDel, oldLineBeforeDel);
-                        UpdateCssPeekHover(POINT{ -1, -1 });
+                        if (pDoc->cssPeek.active) pDoc->cssPeek.active = false;
                         m_editor.ClearGhostText();
                         m_editor.ClearPrediction();
                         m_editor.DismissAutocomplete();
                         UpdatePrediction();
                     }
                     MarkDocumentModified(pDoc);
-                    if (pDoc->isDiffView) ComputeDiffHunks(*pDoc);
                     EnsureCursorVisible();
                     InvalidateRect(m_hwnd, nullptr, FALSE);
                     return 0;
@@ -15844,6 +16175,77 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     InvalidateRect(m_hwnd, nullptr, FALSE);
                 }
 
+                // Debounced post-edit validation, diff hunks, import cost, and auto-save on typing pause
+                if (s_editDebouncePending && now >= s_editDebounceTargetTime) {
+                    s_editDebouncePending = false;
+                    std::unordered_set<std::wstring> keysToFlush;
+                    keysToFlush.swap(s_pendingModifiedKeys);
+
+                    bool anyProcessed = false;
+                    for (const auto& targetKey : keysToFlush) {
+                        editor::OpenDocument* pDoc = nullptr;
+                        for (auto& grp : m_editorGroups) {
+                            for (auto& d : grp.docs) {
+                                if (!d.isSpecialView && (!d.filePath.empty() ? d.filePath : d.fileName) == targetKey) {
+                                    pDoc = &d;
+                                    break;
+                                }
+                            }
+                            if (pDoc) break;
+                        }
+                        if (!pDoc) continue;
+                        anyProcessed = true;
+
+                        std::erase_if(pDoc->diagnostics, [](const lsp::Diagnostic& d) {
+                            return d.message.find(L"Runtime:") != std::wstring::npos;
+                        });
+                        pDoc->diagnostics = editor::SyntaxValidator::Validate(
+                            pDoc->filePath.empty() ? pDoc->fileName : pDoc->filePath, pDoc->buffer);
+                        CalculateImportCosts(*pDoc);
+
+                        if (pDoc->diffOriginalBuffer.GetLineCount() == 0 && !pDoc->originalDiskText.empty()) {
+                            pDoc->diffOriginalBuffer.SetText(pDoc->originalDiskText);
+                        }
+                        ComputeDiffHunks(*pDoc);
+
+                        bool isActuallyDirty = true;
+                        if (pDoc->isDiffView) {
+                            if (pDoc->diffHunks.empty()) {
+                                isActuallyDirty = false;
+                            }
+                        } else if (!pDoc->originalDiskText.empty()) {
+                            if (pDoc->buffer.GetText() == pDoc->originalDiskText) {
+                                isActuallyDirty = false;
+                            }
+                        }
+
+                        if (m_autoSave && !pDoc->filePath.empty()) {
+                            s_lastInternalAutoSaveTick = GetTickCount64();
+                            pDoc->buffer.SaveToFile(pDoc->filePath);
+                            s_lastInternalAutoSaveTick = GetTickCount64();
+                            pDoc->isDirty = false;
+                            pDoc->originalDiskText = pDoc->buffer.GetText();
+                            SyncDocumentBuffers(pDoc);
+                            TriggerDebouncedGitRefresh(300);
+                        } else {
+                            bool dirtyDroppedToClean = (pDoc->isDirty && !isActuallyDirty);
+                            pDoc->isDirty = isActuallyDirty;
+                            SyncDocumentBuffers(pDoc);
+                            if (dirtyDroppedToClean) {
+                                m_drawer.RefreshGitStatusOnly(true);
+                            } else {
+                                TriggerDebouncedGitRefresh(350);
+                            }
+                        }
+                    }
+
+                    if (anyProcessed) {
+                        UpdateDrawerErrorFiles();
+                        UpdateDrawerDirtyFiles();
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
+                    }
+                }
+
                 // Debounced Git auto-refresh on idle after typing/saving
                 if (m_gitRefreshPending && now >= m_gitRefreshTargetTime) {
                     m_gitRefreshPending = false;
@@ -16040,6 +16442,9 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
         }
 
         case WM_USER + 202: {
+            if (GetTickCount64() - s_lastInternalAutoSaveTick < 900) {
+                return 0; // Ignore self-triggered filesystem change from internal auto-save
+            }
             m_drawer.RefreshTree();
             NotifyGraphViewFilesystemChanged();
             InvalidateRect(m_hwnd, nullptr, FALSE);
@@ -16116,8 +16521,22 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
         }
 
         case WM_CLOSE: {
+            if (m_autoSave && !s_pendingModifiedKeys.empty()) {
+                for (const auto& targetKey : s_pendingModifiedKeys) {
+                    for (auto& grp : m_editorGroups) {
+                        for (auto& d : grp.docs) {
+                            if (!d.isSpecialView && !d.filePath.empty() && d.filePath == targetKey) {
+                                d.buffer.SaveToFile(d.filePath);
+                                d.isDirty = false;
+                            }
+                        }
+                    }
+                }
+                s_pendingModifiedKeys.clear();
+                s_editDebouncePending = false;
+            }
             UpdateDrawerErrorFiles();
-    SaveSessionState();
+            SaveSessionState();
             DestroyWindow(m_hwnd);
             return 0;
         }
@@ -16178,7 +16597,11 @@ bool Window::TryAutoRenameMatchingTag(editor::OpenDocument* pDoc, size_t editLin
         curLine[lastOpen + 1] != L'/' && curLine[lastOpen + 1] != L'!' && curLine[lastOpen + 1] != L'?') {
 
         auto [newTagName, tagEnd] = extractTagName(curLine, lastOpen + 1);
-        if (curPos.col >= lastOpen && curPos.col <= tagEnd + 1 && !newTagName.empty()) {
+        std::wstring oldTagName;
+        if (lastOpen + 1 < oldLineText.length()) {
+            oldTagName = extractTagName(oldLineText, lastOpen + 1).first;
+        }
+        if (curPos.col >= lastOpen && curPos.col <= tagEnd + 1 && !newTagName.empty() && newTagName != oldTagName) {
             std::wstring lowerNew = newTagName;
             for (auto& c : lowerNew) c = towlower(c);
             if (voidTags.count(lowerNew) > 0) return false;
@@ -16212,8 +16635,10 @@ bool Window::TryAutoRenameMatchingTag(editor::OpenDocument* pDoc, size_t editLin
                     if (scanLine[tagPos + 1] == L'/') {
                         auto [cName, cEnd] = extractTagName(scanLine, tagPos + 2);
                         if (depth == 0) {
-                            std::wstring updated = scanLine.substr(0, tagPos + 2) + newTagName + scanLine.substr(cEnd);
-                            pDoc->buffer.SetLine(l, updated);
+                            if (cName != newTagName) {
+                                std::wstring updated = scanLine.substr(0, tagPos + 2) + newTagName + scanLine.substr(cEnd);
+                                pDoc->buffer.SetLine(l, updated);
+                            }
                             return true;
                         } else {
                             depth--;
@@ -16243,7 +16668,11 @@ bool Window::TryAutoRenameMatchingTag(editor::OpenDocument* pDoc, size_t editLin
     size_t lastClose = curLine.rfind(L"</", curPos.col > 0 ? curPos.col : 0);
     if (lastClose != std::wstring::npos) {
         auto [newTagName, tagEnd] = extractTagName(curLine, lastClose + 2);
-        if (curPos.col >= lastClose && curPos.col <= tagEnd + 1 && !newTagName.empty()) {
+        std::wstring oldTagName;
+        if (lastClose + 2 < oldLineText.length()) {
+            oldTagName = extractTagName(oldLineText, lastClose + 2).first;
+        }
+        if (curPos.col >= lastClose && curPos.col <= tagEnd + 1 && !newTagName.empty() && newTagName != oldTagName) {
             int depth = 0;
             for (int l = static_cast<int>(editLine); l >= 0; --l) {
                 const auto& scanLine = pDoc->buffer.GetLine(static_cast<size_t>(l));
@@ -16410,13 +16839,33 @@ std::vector<std::wstring> Window::FindCssDefinition(const std::wstring& selector
             }
         }
 
-        // Recursive scan of .css files in workspace (up to 3 levels)
+        // Recursive scan of .css files in workspace (skipping heavy build/dependency folders)
         try {
-            for (const auto& entry : std::filesystem::recursive_directory_iterator(folder)) {
-                if (entry.is_regular_file()) {
-                    auto pathStr = entry.path().wstring();
+            std::error_code ecIter;
+            std::filesystem::recursive_directory_iterator it(
+                folder, std::filesystem::directory_options::skip_permission_denied, ecIter);
+            std::filesystem::recursive_directory_iterator endIt;
+            int scannedCssFiles = 0;
+            for (; it != endIt && !ecIter && scannedCssFiles < 30; it.increment(ecIter)) {
+                if (it.depth() > 3) {
+                    it.disable_recursion_pending();
+                    continue;
+                }
+                if (it->is_directory(ecIter)) {
+                    std::wstring dName = it->path().filename().wstring();
+                    for (auto& c : dName) c = towlower(c);
+                    if (dName == L"node_modules" || dName == L".git" || dName == L".next" ||
+                        dName == L"dist" || dName == L"build" || dName == L"out" ||
+                        dName == L"vendor" || dName == L".phide" || dName == L".venv" || dName == L"venv") {
+                        it.disable_recursion_pending();
+                    }
+                    continue;
+                }
+                if (it->is_regular_file(ecIter)) {
+                    auto pathStr = it->path().wstring();
                     if (pathStr.ends_with(L".css")) {
-                        std::ifstream f(entry.path(), std::ios::binary);
+                        ++scannedCssFiles;
+                        std::ifstream f(it->path(), std::ios::binary);
                         if (f.is_open()) {
                             std::string s((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
                             std::wstring ws(s.begin(), s.end());
@@ -16457,14 +16906,7 @@ void Window::UpdateCssPeekHover(POINT clientPt) {
         }
     }
 
-    // If mouse is not hovering a word, check caret position
-    if (targetLine == static_cast<size_t>(-1)) {
-        auto cur = curDoc->buffer.GetCursor();
-        targetLine = cur.line;
-        targetCol = cur.col;
-    }
-
-    if (targetLine >= curDoc->buffer.GetLineCount()) {
+    if (targetLine == static_cast<size_t>(-1) || targetLine >= curDoc->buffer.GetLineCount()) {
         if (curDoc->cssPeek.active) {
             curDoc->cssPeek.active = false;
             InvalidateRect(m_hwnd, nullptr, FALSE);
@@ -16640,30 +17082,44 @@ void Window::CalculateImportCosts(editor::OpenDocument& doc) {
                 displaySize = it->second.first;
                 displayGzip = it->second.second;
             } else if (!wsFolder.empty()) {
-                // Check local node_modules
-                std::filesystem::path nmPath = std::filesystem::path(wsFolder) / "node_modules" / pkgName;
-                std::error_code ec;
-                if (std::filesystem::exists(nmPath, ec)) {
-                    uintmax_t totalBytes = 0;
-                    try {
-                        for (const auto& entry : std::filesystem::recursive_directory_iterator(nmPath)) {
-                            if (entry.is_regular_file()) totalBytes += entry.file_size();
+                static std::unordered_map<std::wstring, std::pair<std::wstring, std::wstring>> s_cachedNodeModuleSizes;
+                std::wstring cacheKey = wsFolder + L"|" + pkgName;
+                auto itCached = s_cachedNodeModuleSizes.find(cacheKey);
+                if (itCached != s_cachedNodeModuleSizes.end()) {
+                    displaySize = itCached->second.first;
+                    displayGzip = itCached->second.second;
+                } else {
+                    // Check local node_modules once and cache the result
+                    std::filesystem::path nmPath = std::filesystem::path(wsFolder) / "node_modules" / pkgName;
+                    std::error_code ec;
+                    if (std::filesystem::exists(nmPath, ec)) {
+                        uintmax_t totalBytes = 0;
+                        int fileCount = 0;
+                        try {
+                            std::filesystem::recursive_directory_iterator itNm(
+                                nmPath, std::filesystem::directory_options::skip_permission_denied, ec);
+                            std::filesystem::recursive_directory_iterator endNm;
+                            for (; itNm != endNm && !ec && fileCount < 400; itNm.increment(ec)) {
+                                if (itNm->is_regular_file(ec)) {
+                                    totalBytes += itNm->file_size(ec);
+                                    ++fileCount;
+                                }
+                            }
+                        } catch (...) {}
+                        if (totalBytes > 0) {
+                            float kb = static_cast<float>(totalBytes) / 1024.0f;
+                            if (kb > 500.0f) {
+                                kb = 18.5f + fmodf(kb, 32.0f);
+                            }
+                            float gzkb = kb * 0.36f;
+                            wchar_t buf1[32], buf2[32];
+                            swprintf_s(buf1, L"%.1f KB", kb);
+                            swprintf_s(buf2, L"%.1f KB", gzkb);
+                            displaySize = buf1;
+                            displayGzip = buf2;
                         }
-                    } catch (...) {}
-                    if (totalBytes > 0) {
-                        float kb = static_cast<float>(totalBytes) / 1024.0f;
-                        if (kb > 500.0f) {
-                            // Raw node_modules package on disk includes test fixtures, build tools, and full trees;
-                            // bundled client imports are tree-shaken by webpack/turbopack.
-                            kb = 18.5f + fmodf(kb, 32.0f);
-                        }
-                        float gzkb = kb * 0.36f;
-                        wchar_t buf1[32], buf2[32];
-                        swprintf_s(buf1, L"%.1f KB", kb);
-                        swprintf_s(buf2, L"%.1f KB", gzkb);
-                        displaySize = buf1;
-                        displayGzip = buf2;
                     }
+                    s_cachedNodeModuleSizes[cacheKey] = { displaySize, displayGzip };
                 }
             }
 

@@ -749,15 +749,18 @@ void EditorCanvas::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
             pRT->DrawRoundedRectangle(rrcPill, theme.brushBrandAccent.Get(), 1.5f);
         }
 
-        // File Icon (Seti or Lucide)
+        // File or Folder Icon (Seti or Lucide)
         float iconX = pillX + config.ScaleF(8.0f);
         float iconY = pillY + (pillH - config.ScaleF(16.0f)) / 2.0f;
         D2D1_RECT_F iconBounds = D2D1::RectF(iconX, iconY, iconX + config.ScaleF(16.0f), iconY + config.ScaleF(16.0f));
-        auto setiInfo = theme.GetSetiIcon(m_dragTabTitle, false, false);
+        bool isDraggedFolder = (m_dragTabGroup >= 0 && m_dragTabGroup < static_cast<int>(groups.size()) &&
+                                m_dragTabIdx >= 0 && m_dragTabIdx < static_cast<int>(groups[m_dragTabGroup].docs.size()) &&
+                                groups[m_dragTabGroup].docs[m_dragTabIdx].isFolderView);
+        auto setiInfo = theme.GetSetiIcon(m_dragTabTitle, isDraggedFolder, isDraggedFolder);
         if (theme.fontSeti && setiInfo.pBrush) {
             pRT->DrawText(&setiInfo.glyph, 1, theme.fontSeti.Get(), iconBounds, setiInfo.pBrush);
         } else {
-            auto iconType = LucideIcons::GetIconTypeForPath(m_dragTabTitle, false, false);
+            auto iconType = LucideIcons::GetIconTypeForPath(m_dragTabTitle, isDraggedFolder, isDraggedFolder);
             m_icons.DrawFileIcon(pRT, theme, iconBounds, iconType);
         }
 
@@ -856,7 +859,9 @@ void EditorCanvas::RenderSinglePane(ID2D1RenderTarget* pRT, Theme& theme, const 
         m_welcomeView.Render(pRT, theme, config, canvasLeft, canvasWidth, contentTopY, clientHeight - contentTopY);
     } else {
         m_packageManagerView.HideWebView();
-        if (activeDoc.isImageView) {
+        if (activeDoc.isFolderView) {
+            RenderFolderView(pRT, theme, config, activeDoc, canvasLeft, canvasWidth, contentTopY, clientHeight);
+        } else if (activeDoc.isImageView) {
             RenderImageView(pRT, theme, config, activeDoc, canvasLeft, canvasWidth, contentTopY, clientHeight);
         } else if (activeDoc.isUnsupportedBinary) {
             RenderUnsupportedBinaryView(pRT, theme, config, activeDoc, canvasLeft, canvasWidth, contentTopY, clientHeight);
@@ -1195,6 +1200,13 @@ void EditorCanvas::RenderTabs(ID2D1RenderTarget* pRT, Theme& theme, const app::A
             }
             if (m_pPhideLogoBitmap) {
                 pRT->DrawBitmap(m_pPhideLogoBitmap.Get(), iconBounds);
+            }
+        } else if (doc.isFolderView) {
+            auto setiInfo = theme.GetSetiIcon(title, true, isActive);
+            if (theme.fontSeti && setiInfo.pBrush) {
+                pRT->DrawText(&setiInfo.glyph, 1, theme.fontSeti.Get(), iconBounds, setiInfo.pBrush);
+            } else {
+                m_icons.DrawFileIcon(pRT, theme, iconBounds, isActive ? FileIconType::FolderOpen : FileIconType::Folder);
             }
         } else if (doc.filePath.ends_with(L".py") || doc.filePath.ends_with(L".pyw") || title.ends_with(L".py")) {
             ID2D1Bitmap* pPyIcon = GetLearningHubBitmap(pRT, L"python.png");
@@ -1843,17 +1855,30 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
     D2D1_RECT_F clipCode = D2D1::RectF(canvasLeft + gutterW, topY, codeRight, clientHeight);
     pRT->PushAxisAlignedClip(clipCode, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
 
-    // Analyze rainbow bracket pairs, nesting depths, and active cursor pair with caching
-    if (m_cachedBufferVersion != buffer.GetVersion() || m_cachedCursorLine != cursor.line || m_cachedCursorCol != cursor.col) {
-        m_cachedBracketAnalysis = editor::BracketPairAnalyzer::Analyze(buffer, cursor.line, cursor.col);
-        m_cachedBufferVersion = buffer.GetVersion();
-        m_cachedCursorLine = cursor.line;
-        m_cachedCursorCol = cursor.col;
+    // Analyze rainbow bracket pairs, nesting depths, and active cursor pair with per-buffer caching
+    struct PerBufBracketCache {
+        uint64_t version = UINT64_MAX;
+        size_t curLine = SIZE_MAX;
+        size_t curCol = SIZE_MAX;
+        editor::BracketAnalysisResult analysis;
+    };
+    static std::unordered_map<const editor::Buffer*, PerBufBracketCache> s_bufBracketCache;
+    if (s_bufBracketCache.size() > 16) s_bufBracketCache.clear();
+    auto& bufCache = s_bufBracketCache[&buffer];
+    if (bufCache.version != buffer.GetVersion() || bufCache.curLine != cursor.line || bufCache.curCol != cursor.col) {
+        bufCache.analysis = editor::BracketPairAnalyzer::Analyze(buffer, cursor.line, cursor.col);
+        bufCache.version = buffer.GetVersion();
+        bufCache.curLine = cursor.line;
+        bufCache.curCol = cursor.col;
     }
-    const auto& bracketAnalysis = m_cachedBracketAnalysis;
+    const auto& bracketAnalysis = bufCache.analysis;
+    size_t minVisBufLine = (doc.scrollLine < visualLines.size()) ? visualLines[doc.scrollLine].bufferLine : 0;
+    size_t maxVisRows = static_cast<size_t>((clientHeight - topY) / (std::max)(1.0f, lineH)) + 6;
+    size_t maxVisIdx = (std::min)(visualLines.size(), doc.scrollLine + maxVisRows);
+    size_t maxVisBufLine = (maxVisIdx > 0 && maxVisIdx - 1 < visualLines.size()) ? visualLines[maxVisIdx - 1].bufferLine : totalBufLines;
     std::unordered_map<size_t, std::vector<const editor::BracketItem*>> bracketsByLine;
     for (const auto& b : bracketAnalysis.brackets) {
-        if (b.line < totalBufLines) {
+        if (b.line >= minVisBufLine && b.line <= maxVisBufLine && b.line < totalBufLines) {
             bracketsByLine[b.line].push_back(&b);
         }
     }
@@ -3519,6 +3544,14 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
         float lastDrawnTokenY = -100.0f;
         const float minTokenStepPx = (totalLines > 600) ? 1.5f : 0.0f;
 
+        std::unordered_map<size_t, int> diagSeverityByLine;
+        for (const auto& diag : doc.diagnostics) {
+            auto it = diagSeverityByLine.find(diag.line);
+            if (it == diagSeverityByLine.end() || diag.severity == 1) {
+                diagSeverityByLine[diag.line] = diag.severity;
+            }
+        }
+
         // Render micro-lines with syntax colors, selection reflection, and word occurrences
         for (size_t b = 0; b < totalLines; ++b) {
             float my = topY + static_cast<float>(b) * stepY;
@@ -3560,20 +3593,18 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
             }
 
             // Diagnostic syntax error markers on minimap (Image 4)
-            for (const auto& diag : doc.diagnostics) {
-                if (diag.line == b) {
-                    D2D1_RECT_F rcErrMini = D2D1::RectF(
-                        doc.minimapTrack.left + 1.0f,
-                        my - 0.5f,
-                        doc.minimapTrack.right - 1.0f,
-                        my + (std::max)(microH + 1.5f, stepY)
-                    );
-                    ID2D1Brush* pErrBrush = (diag.severity == 1) ?
-                        (theme.brushIconRed ? theme.brushIconRed.Get() : theme.brushCloseHoverBg.Get()) :
-                        (theme.brushIconOrange ? theme.brushIconOrange.Get() : theme.brushSyntaxNumber.Get());
-                    pRT->FillRectangle(rcErrMini, pErrBrush);
-                    break;
-                }
+            auto diagIt = diagSeverityByLine.find(b);
+            if (diagIt != diagSeverityByLine.end()) {
+                D2D1_RECT_F rcErrMini = D2D1::RectF(
+                    doc.minimapTrack.left + 1.0f,
+                    my - 0.5f,
+                    doc.minimapTrack.right - 1.0f,
+                    my + (std::max)(microH + 1.5f, stepY)
+                );
+                ID2D1Brush* pErrBrush = (diagIt->second == 1) ?
+                    (theme.brushIconRed ? theme.brushIconRed.Get() : theme.brushCloseHoverBg.Get()) :
+                    (theme.brushIconOrange ? theme.brushIconOrange.Get() : theme.brushSyntaxNumber.Get());
+                pRT->FillRectangle(rcErrMini, pErrBrush);
             }
 
             // Minimap Diff Gutter Indicators
@@ -4616,6 +4647,416 @@ void EditorCanvas::RenderUnsupportedBinaryView(ID2D1RenderTarget* pRT, Theme& th
     pRT->DrawText(btnLabel, static_cast<UINT32>(wcslen(btnLabel)),
                   theme.fontButtonCenter ? theme.fontButtonCenter.Get() : theme.fontBody.Get(),
                   doc.unsupportedActionBtn, theme.brushTextWhite.Get());
+}
+
+/**
+ * @brief Renders an interactive File Explorer view inside the editor pane when a folder is opened or dragged in.
+ */
+void EditorCanvas::RenderFolderView(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
+                                    editor::OpenDocument& doc, float canvasLeft, float canvasWidth,
+                                    float topY, float clientHeight) {
+    if (!pRT || canvasWidth <= 20.0f || clientHeight <= topY + 20.0f) return;
+
+    // Lazy-initialize folder entries if not yet populated
+    if (doc.folderEntries.empty() && !doc.filePath.empty()) {
+        doc.RefreshFolderEntries();
+    }
+
+    const float padX = config.ScaleF(20.0f);
+    const float toolbarH = config.ScaleF(42.0f);
+    const float canvasRight = canvasLeft + canvasWidth;
+
+    // 1. Top Folder Action & Summary Bar
+    D2D1_RECT_F rcToolbar = D2D1::RectF(canvasLeft, topY, canvasRight, topY + toolbarH);
+    if (theme.brushDrawerBg) {
+        pRT->FillRectangle(rcToolbar, theme.brushDrawerBg.Get());
+    }
+    if (theme.brushBorderSubtle) {
+        pRT->DrawLine(D2D1::Point2F(canvasLeft, topY + toolbarH - 0.5f),
+                      D2D1::Point2F(canvasRight, topY + toolbarH - 0.5f),
+                      theme.brushBorderSubtle.Get(), 1.0f);
+    }
+
+    // Left controls: [Up] [Refresh] | Folder Icon + Name + Count Badge
+    const float btnSize = config.ScaleF(26.0f);
+    const float btnY = topY + (toolbarH - btnSize) * 0.5f;
+    float curX = canvasLeft + padX;
+
+    // Up button (↑)
+    doc.folderUpBtnBounds = D2D1::RectF(curX, btnY, curX + btnSize, btnY + btnSize);
+    {
+        bool hov = (doc.folderHoveredBtn == 1);
+        D2D1_ROUNDED_RECT rrc = D2D1::RoundedRect(doc.folderUpBtnBounds, config.ScaleF(4.0f), config.ScaleF(4.0f));
+        if (hov && theme.brushItemHover) pRT->FillRoundedRectangle(rrc, theme.brushItemHover.Get());
+        if (theme.brushBorderSubtle) pRT->DrawRoundedRectangle(rrc, theme.brushBorderSubtle.Get(), 0.8f);
+        float cx = (doc.folderUpBtnBounds.left + doc.folderUpBtnBounds.right) * 0.5f;
+        float cy = (doc.folderUpBtnBounds.top + doc.folderUpBtnBounds.bottom) * 0.5f;
+        float aw = config.ScaleF(4.5f);
+        float ah = config.ScaleF(5.5f);
+        ID2D1Brush* pBr = hov ? theme.brushTextPrimary.Get() : theme.brushTextSecondary.Get();
+        if (pBr) {
+            pRT->DrawLine(D2D1::Point2F(cx, cy - ah), D2D1::Point2F(cx, cy + ah), pBr, 1.4f);
+            pRT->DrawLine(D2D1::Point2F(cx - aw, cy - ah + aw), D2D1::Point2F(cx, cy - ah), pBr, 1.4f);
+            pRT->DrawLine(D2D1::Point2F(cx + aw, cy - ah + aw), D2D1::Point2F(cx, cy - ah), pBr, 1.4f);
+        }
+    }
+    curX += btnSize + config.ScaleF(6.0f);
+
+    // Refresh button (↻)
+    doc.folderRefreshBtnBounds = D2D1::RectF(curX, btnY, curX + btnSize, btnY + btnSize);
+    {
+        bool hov = (doc.folderHoveredBtn == 2);
+        D2D1_ROUNDED_RECT rrc = D2D1::RoundedRect(doc.folderRefreshBtnBounds, config.ScaleF(4.0f), config.ScaleF(4.0f));
+        if (hov && theme.brushItemHover) pRT->FillRoundedRectangle(rrc, theme.brushItemHover.Get());
+        if (theme.brushBorderSubtle) pRT->DrawRoundedRectangle(rrc, theme.brushBorderSubtle.Get(), 0.8f);
+        ID2D1Brush* pBr = hov ? theme.brushTextPrimary.Get() : theme.brushTextSecondary.Get();
+        if (pBr && theme.fontButtonCenter) {
+            const wchar_t* refGlyph = L"\u21BB";
+            pRT->DrawText(refGlyph, 1, theme.fontButtonCenter.Get(), doc.folderRefreshBtnBounds, pBr);
+        }
+    }
+    curX += btnSize + config.ScaleF(14.0f);
+
+    // Folder icon + Folder name
+    const float hdrIconSz = config.ScaleF(20.0f);
+    const float hdrIconY = topY + (toolbarH - hdrIconSz) * 0.5f;
+    D2D1_RECT_F rcHdrIcon = D2D1::RectF(curX, hdrIconY, curX + hdrIconSz, hdrIconY + hdrIconSz);
+    {
+        auto setiInfo = theme.GetSetiIcon(doc.fileName, true, true);
+        if (theme.fontSeti && setiInfo.pBrush) {
+            pRT->DrawText(&setiInfo.glyph, 1, theme.fontSeti.Get(), rcHdrIcon, setiInfo.pBrush);
+        } else {
+            m_icons.DrawFileIcon(pRT, theme, rcHdrIcon, FileIconType::FolderOpen);
+        }
+    }
+    curX += hdrIconSz + config.ScaleF(8.0f);
+
+    // Count folders & files (excluding "..")
+    size_t numFolders = 0;
+    size_t numFiles = 0;
+    for (const auto& e : doc.folderEntries) {
+        if (e.isParentLink) continue;
+        if (e.isFolder) ++numFolders;
+        else ++numFiles;
+    }
+
+    std::wstring folderTitle = doc.fileName.empty() ? L"Folder" : doc.fileName;
+    float titleW = static_cast<float>(folderTitle.length()) * config.ScaleF(8.5f) + config.ScaleF(10.0f);
+    D2D1_RECT_F rcTitle = D2D1::RectF(curX, topY, curX + titleW, topY + toolbarH);
+    IDWriteTextFormat* pTitleFmt = theme.fontSectionHeader ? theme.fontSectionHeader.Get() : theme.fontBody.Get();
+    if (pTitleFmt && theme.brushTextPrimary) {
+        pRT->DrawText(folderTitle.c_str(), static_cast<UINT32>(folderTitle.length()), pTitleFmt, rcTitle, theme.brushTextPrimary.Get());
+    }
+    curX += titleW + config.ScaleF(6.0f);
+
+    // Item summary pill ("2 folders, 11 files")
+    std::wstring countSummary = std::to_wstring(numFolders) + (numFolders == 1 ? L" folder, " : L" folders, ") +
+                                std::to_wstring(numFiles) + (numFiles == 1 ? L" file" : L" files");
+    float badgeW = static_cast<float>(countSummary.length()) * config.ScaleF(6.5f) + config.ScaleF(18.0f);
+    float badgeH = config.ScaleF(20.0f);
+    float badgeY = topY + (toolbarH - badgeH) * 0.5f;
+    if (curX + badgeW < canvasRight - config.ScaleF(220.0f)) {
+        D2D1_RECT_F rcBadge = D2D1::RectF(curX, badgeY, curX + badgeW, badgeY + badgeH);
+        D2D1_ROUNDED_RECT rrcBadge = D2D1::RoundedRect(rcBadge, config.ScaleF(10.0f), config.ScaleF(10.0f));
+        if (theme.brushItemHover) pRT->FillRoundedRectangle(rrcBadge, theme.brushItemHover.Get());
+        if (theme.brushBorderSubtle) pRT->DrawRoundedRectangle(rrcBadge, theme.brushBorderSubtle.Get(), 0.8f);
+        IDWriteTextFormat* pBadgeFmt = theme.fontButtonCenter ? theme.fontButtonCenter.Get() : theme.fontBody.Get();
+        if (pBadgeFmt && theme.brushTextSecondary) {
+            pRT->DrawText(countSummary.c_str(), static_cast<UINT32>(countSummary.length()), pBadgeFmt, rcBadge, theme.brushTextSecondary.Get());
+        }
+    }
+
+    // Right-side Toolbar Buttons: [Grid / List] and [Reveal in Explorer]
+    const float revealW = config.ScaleF(136.0f);
+    const float toggleW = config.ScaleF(74.0f);
+    float rightX = canvasRight - padX;
+
+    doc.folderRevealBtnBounds = D2D1::RectF(rightX - revealW, btnY, rightX, btnY + btnSize);
+    {
+        bool hov = (doc.folderHoveredBtn == 4);
+        D2D1_ROUNDED_RECT rrc = D2D1::RoundedRect(doc.folderRevealBtnBounds, config.ScaleF(4.0f), config.ScaleF(4.0f));
+        if (hov && theme.brushBrandAccent) {
+            pRT->FillRoundedRectangle(rrc, theme.brushBrandAccent.Get());
+        } else if (theme.brushItemHover) {
+            pRT->FillRoundedRectangle(rrc, theme.brushItemHover.Get());
+        }
+        if (theme.brushBorderSubtle) pRT->DrawRoundedRectangle(rrc, theme.brushBorderSubtle.Get(), 0.8f);
+        const wchar_t* revTxt = L"Reveal in Explorer";
+        IDWriteTextFormat* pBtnFmt = theme.fontButtonCenter ? theme.fontButtonCenter.Get() : theme.fontBody.Get();
+        ID2D1Brush* pBr = hov ? theme.brushTextWhite.Get() : theme.brushTextPrimary.Get();
+        if (pBtnFmt && pBr) {
+            pRT->DrawText(revTxt, static_cast<UINT32>(wcslen(revTxt)), pBtnFmt, doc.folderRevealBtnBounds, pBr);
+        }
+    }
+    rightX -= revealW + config.ScaleF(8.0f);
+
+    doc.folderViewToggleBtnBounds = D2D1::RectF(rightX - toggleW, btnY, rightX, btnY + btnSize);
+    {
+        bool hov = (doc.folderHoveredBtn == 3);
+        D2D1_ROUNDED_RECT rrc = D2D1::RoundedRect(doc.folderViewToggleBtnBounds, config.ScaleF(4.0f), config.ScaleF(4.0f));
+        if (hov && theme.brushItemHover) pRT->FillRoundedRectangle(rrc, theme.brushItemHover.Get());
+        if (theme.brushBorderSubtle) pRT->DrawRoundedRectangle(rrc, theme.brushBorderSubtle.Get(), 0.8f);
+        const wchar_t* viewTxt = doc.folderGridView ? L"\u2630 List" : L"\u25A6 Tiles";
+        IDWriteTextFormat* pBtnFmt = theme.fontButtonCenter ? theme.fontButtonCenter.Get() : theme.fontBody.Get();
+        ID2D1Brush* pBr = hov ? theme.brushTextPrimary.Get() : theme.brushTextSecondary.Get();
+        if (pBtnFmt && pBr) {
+            pRT->DrawText(viewTxt, static_cast<UINT32>(wcslen(viewTxt)), pBtnFmt, doc.folderViewToggleBtnBounds, pBr);
+        }
+    }
+
+    // Helper lambda to draw the exact respective icon for a folder or file entry
+    auto drawEntryIcon = [&](const editor::OpenDocument::FolderEntryItem& item, const D2D1_RECT_F& rcIcon) {
+        if (item.isFolder) {
+            auto setiInfo = theme.GetSetiIcon(item.isParentLink ? L"folder" : item.name, true, false);
+            if (theme.fontSeti && setiInfo.pBrush) {
+                pRT->DrawText(&setiInfo.glyph, 1, theme.fontSeti.Get(), rcIcon, setiInfo.pBrush);
+            } else {
+                m_icons.DrawFileIcon(pRT, theme, rcIcon, FileIconType::Folder);
+            }
+            return;
+        }
+        bool isIpynb = item.name.ends_with(L".ipynb");
+        bool isPy = (item.name.ends_with(L".py") || item.name.ends_with(L".pyw"));
+        if (isIpynb) {
+            m_icons.DrawTerminalNotebook(pRT, rcIcon,
+                theme.brushBrandAccent ? theme.brushBrandAccent.Get() : theme.brushTextWhite.Get(), 1.25f);
+        } else if (isPy) {
+            ID2D1Bitmap* pPyIcon = GetLearningHubBitmap(pRT, L"python.png");
+            if (pPyIcon) {
+                pRT->DrawBitmap(pPyIcon, rcIcon, 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
+            } else {
+                auto setiInfo = theme.GetSetiIcon(item.name, false, false);
+                if (theme.fontSeti && setiInfo.pBrush) {
+                    pRT->DrawText(&setiInfo.glyph, 1, theme.fontSeti.Get(), rcIcon, setiInfo.pBrush);
+                } else {
+                    auto iconType = LucideIcons::GetIconTypeForPath(item.name, false, false);
+                    m_icons.DrawFileIcon(pRT, theme, rcIcon, iconType);
+                }
+            }
+        } else {
+            auto setiInfo = theme.GetSetiIcon(item.name, false, false);
+            if (theme.fontSeti && setiInfo.pBrush) {
+                pRT->DrawText(&setiInfo.glyph, 1, theme.fontSeti.Get(), rcIcon, setiInfo.pBrush);
+            } else {
+                auto iconType = LucideIcons::GetIconTypeForPath(item.name, false, false);
+                m_icons.DrawFileIcon(pRT, theme, rcIcon, iconType);
+            }
+        }
+    };
+
+    float listTopY = topY + toolbarH;
+    IDWriteTextFormat* pRowFmt = theme.fontTab ? theme.fontTab.Get() : theme.fontBody.Get();
+    IDWriteTextFormat* pMetaFmt = theme.fontMenuShortcut ? theme.fontMenuShortcut.Get() : theme.fontBody.Get();
+
+    if (!doc.folderGridView) {
+        // 2A. Column Header Bar (Name | Date Modified | Type | Size)
+        const float colHeaderH = config.ScaleF(28.0f);
+        D2D1_RECT_F rcColHdr = D2D1::RectF(canvasLeft, listTopY, canvasRight, listTopY + colHeaderH);
+        if (theme.brushBorderSubtle) {
+            pRT->DrawLine(D2D1::Point2F(canvasLeft, listTopY + colHeaderH - 0.5f),
+                          D2D1::Point2F(canvasRight, listTopY + colHeaderH - 0.5f),
+                          theme.brushBorderSubtle.Get(), 0.8f);
+        }
+
+        const float usableW = (std::max)(200.0f, canvasWidth - padX * 2.0f - config.ScaleF(12.0f));
+        const float colNameX = canvasLeft + padX;
+        const float colNameW = usableW * 0.46f;
+        const float colDateX = colNameX + colNameW;
+        const float colDateW = usableW * 0.22f;
+        const float colTypeX = colDateX + colDateW;
+        const float colTypeW = usableW * 0.20f;
+        const float colSizeX = colTypeX + colTypeW;
+        const float colSizeW = usableW * 0.12f;
+
+        if (pMetaFmt && theme.brushTextMuted) {
+            D2D1_RECT_F r1 = D2D1::RectF(colNameX + config.ScaleF(8.0f), listTopY, colDateX, listTopY + colHeaderH);
+            pRT->DrawText(L"Name", 4, pMetaFmt, r1, theme.brushTextMuted.Get());
+            if (canvasWidth > config.ScaleF(460.0f)) {
+                D2D1_RECT_F r2 = D2D1::RectF(colDateX, listTopY, colTypeX, listTopY + colHeaderH);
+                pRT->DrawText(L"Date Modified", 13, pMetaFmt, r2, theme.brushTextMuted.Get());
+                D2D1_RECT_F r3 = D2D1::RectF(colTypeX, listTopY, colSizeX, listTopY + colHeaderH);
+                pRT->DrawText(L"Type", 4, pMetaFmt, r3, theme.brushTextMuted.Get());
+                D2D1_RECT_F r4 = D2D1::RectF(colSizeX, listTopY, colSizeX + colSizeW, listTopY + colHeaderH);
+                pRT->DrawText(L"Size", 4, pMetaFmt, r4, theme.brushTextMuted.Get());
+            }
+        }
+        listTopY += colHeaderH;
+
+        const float viewportH = (std::max)(10.0f, clientHeight - listTopY);
+        const float rowH = config.ScaleF(30.0f);
+        const float totalContentH = static_cast<float>(doc.folderEntries.size()) * rowH + config.ScaleF(16.0f);
+        doc.folderMaxScrollY = (std::max)(0.0f, totalContentH - viewportH);
+        doc.folderScrollY = (std::clamp)(doc.folderScrollY, 0.0f, doc.folderMaxScrollY);
+
+        D2D1_RECT_F rcListClip = D2D1::RectF(canvasLeft, listTopY, canvasRight, clientHeight);
+        pRT->PushAxisAlignedClip(rcListClip, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+
+        float rowY = listTopY + config.ScaleF(4.0f) - doc.folderScrollY;
+        const float iconSz = config.ScaleF(18.0f);
+
+        for (size_t i = 0; i < doc.folderEntries.size(); ++i) {
+            auto& entry = doc.folderEntries[i];
+            D2D1_RECT_F rcRow = D2D1::RectF(canvasLeft + padX - config.ScaleF(6.0f), rowY,
+                                            canvasRight - padX, rowY + rowH);
+            entry.rowBounds = rcRow;
+
+            if (rowY + rowH >= listTopY && rowY <= clientHeight) {
+                bool isSelected = (static_cast<int>(i) == doc.folderSelectedIdx);
+                bool isHovered = (static_cast<int>(i) == doc.folderHoveredIdx);
+
+                if (isSelected || isHovered) {
+                    D2D1_ROUNDED_RECT rrcRow = D2D1::RoundedRect(rcRow, config.ScaleF(4.0f), config.ScaleF(4.0f));
+                    ID2D1Brush* pBg = isSelected
+                        ? (theme.brushTreeSelected ? theme.brushTreeSelected.Get() : theme.brushItemHover.Get())
+                        : theme.brushItemHover.Get();
+                    if (pBg) pRT->FillRoundedRectangle(rrcRow, pBg);
+                    if (isSelected && theme.brushBrandAccent) {
+                        pRT->DrawRoundedRectangle(rrcRow, theme.brushBrandAccent.Get(), 1.0f);
+                    }
+                }
+
+                // Entry Icon
+                float iy = rowY + (rowH - iconSz) * 0.5f;
+                float ix = colNameX + config.ScaleF(6.0f);
+                D2D1_RECT_F rcIcon = D2D1::RectF(ix, iy, ix + iconSz, iy + iconSz);
+                drawEntryIcon(entry, rcIcon);
+
+                // Entry Name
+                float nameLeft = ix + iconSz + config.ScaleF(10.0f);
+                float nameRight = (canvasWidth > config.ScaleF(460.0f)) ? (colDateX - config.ScaleF(8.0f)) : (rcRow.right - config.ScaleF(8.0f));
+                if (nameRight > nameLeft + 10.0f && pRowFmt) {
+                    D2D1_RECT_F rcName = D2D1::RectF(nameLeft, rowY, nameRight, rowY + rowH);
+                    pRT->PushAxisAlignedClip(rcName, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+                    ID2D1Brush* pNameBrush = entry.isFolder
+                        ? (theme.brushTextWhite ? theme.brushTextWhite.Get() : theme.brushTextPrimary.Get())
+                        : theme.brushTextPrimary.Get();
+                    std::wstring dispName = entry.isParentLink ? L".. (Parent Folder)" : entry.name;
+                    pRT->DrawText(dispName.c_str(), static_cast<UINT32>(dispName.length()), pRowFmt, rcName, pNameBrush);
+                    pRT->PopAxisAlignedClip();
+                }
+
+                // Metadata columns (Date Modified, Type, Size)
+                if (canvasWidth > config.ScaleF(460.0f) && pMetaFmt) {
+                    if (!entry.modifiedLabel.empty() && theme.brushTextSecondary) {
+                        D2D1_RECT_F rcDate = D2D1::RectF(colDateX, rowY, colTypeX - config.ScaleF(6.0f), rowY + rowH);
+                        pRT->DrawText(entry.modifiedLabel.c_str(), static_cast<UINT32>(entry.modifiedLabel.length()),
+                                      pMetaFmt, rcDate, theme.brushTextSecondary.Get());
+                    }
+                    if (!entry.typeLabel.empty() && theme.brushTextSecondary) {
+                        D2D1_RECT_F rcType = D2D1::RectF(colTypeX, rowY, colSizeX - config.ScaleF(6.0f), rowY + rowH);
+                        pRT->PushAxisAlignedClip(rcType, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+                        pRT->DrawText(entry.typeLabel.c_str(), static_cast<UINT32>(entry.typeLabel.length()),
+                                      pMetaFmt, rcType, theme.brushTextSecondary.Get());
+                        pRT->PopAxisAlignedClip();
+                    }
+                    if (!entry.sizeLabel.empty() && theme.brushTextMuted) {
+                        D2D1_RECT_F rcSize = D2D1::RectF(colSizeX, rowY, colSizeX + colSizeW, rowY + rowH);
+                        pRT->DrawText(entry.sizeLabel.c_str(), static_cast<UINT32>(entry.sizeLabel.length()),
+                                      pMetaFmt, rcSize, theme.brushTextMuted.Get());
+                    }
+                }
+            }
+            rowY += rowH;
+        }
+
+        pRT->PopAxisAlignedClip();
+
+        // Vertical Scrollbar if needed
+        if (doc.folderMaxScrollY > 1.0f && theme.brushTextMuted) {
+            float sbW = config.ScaleF(8.0f);
+            float sbX = canvasRight - sbW - config.ScaleF(3.0f);
+            float thumbRatio = (std::clamp)(viewportH / totalContentH, 0.08f, 1.0f);
+            float thumbH = (std::max)(config.ScaleF(24.0f), viewportH * thumbRatio);
+            float scrollTrackH = (std::max)(1.0f, viewportH - thumbH);
+            float thumbY = listTopY + (doc.folderScrollY / doc.folderMaxScrollY) * scrollTrackH;
+            D2D1_ROUNDED_RECT rrcThumb = D2D1::RoundedRect(
+                D2D1::RectF(sbX, thumbY, sbX + sbW, thumbY + thumbH),
+                config.ScaleF(4.0f), config.ScaleF(4.0f));
+            pRT->FillRoundedRectangle(rrcThumb, theme.brushTextMuted.Get());
+        }
+    } else {
+        // 2B. Grid / Tiles Explorer View
+        const float viewportH = (std::max)(10.0f, clientHeight - listTopY);
+        const float tileW = config.ScaleF(210.0f);
+        const float tileH = config.ScaleF(54.0f);
+        const float gapX = config.ScaleF(12.0f);
+        const float gapY = config.ScaleF(10.0f);
+        const float availW = (std::max)(tileW, canvasWidth - padX * 2.0f);
+        const int cols = (std::max)(1, static_cast<int>((availW + gapX) / (tileW + gapX)));
+        const int totalRows = (static_cast<int>(doc.folderEntries.size()) + cols - 1) / cols;
+        const float totalContentH = totalRows * (tileH + gapY) + config.ScaleF(24.0f);
+
+        doc.folderMaxScrollY = (std::max)(0.0f, totalContentH - viewportH);
+        doc.folderScrollY = (std::clamp)(doc.folderScrollY, 0.0f, doc.folderMaxScrollY);
+
+        D2D1_RECT_F rcGridClip = D2D1::RectF(canvasLeft, listTopY, canvasRight, clientHeight);
+        pRT->PushAxisAlignedClip(rcGridClip, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+
+        const float iconSz = config.ScaleF(24.0f);
+        for (size_t i = 0; i < doc.folderEntries.size(); ++i) {
+            auto& entry = doc.folderEntries[i];
+            int r = static_cast<int>(i) / cols;
+            int c = static_cast<int>(i) % cols;
+            float tx = canvasLeft + padX + c * (tileW + gapX);
+            float ty = listTopY + config.ScaleF(12.0f) + r * (tileH + gapY) - doc.folderScrollY;
+            D2D1_RECT_F rcTile = D2D1::RectF(tx, ty, tx + tileW, ty + tileH);
+            entry.rowBounds = rcTile;
+
+            if (ty + tileH >= listTopY && ty <= clientHeight) {
+                bool isSelected = (static_cast<int>(i) == doc.folderSelectedIdx);
+                bool isHovered = (static_cast<int>(i) == doc.folderHoveredIdx);
+                D2D1_ROUNDED_RECT rrcTile = D2D1::RoundedRect(rcTile, config.ScaleF(6.0f), config.ScaleF(6.0f));
+
+                if (isSelected) {
+                    if (theme.brushTreeSelected) pRT->FillRoundedRectangle(rrcTile, theme.brushTreeSelected.Get());
+                    if (theme.brushBrandAccent) pRT->DrawRoundedRectangle(rrcTile, theme.brushBrandAccent.Get(), 1.2f);
+                } else if (isHovered) {
+                    if (theme.brushItemHover) pRT->FillRoundedRectangle(rrcTile, theme.brushItemHover.Get());
+                    if (theme.brushBorderSubtle) pRT->DrawRoundedRectangle(rrcTile, theme.brushBorderSubtle.Get(), 1.0f);
+                } else {
+                    if (theme.brushDrawerBg) pRT->FillRoundedRectangle(rrcTile, theme.brushDrawerBg.Get());
+                    if (theme.brushBorderSubtle) pRT->DrawRoundedRectangle(rrcTile, theme.brushBorderSubtle.Get(), 0.8f);
+                }
+
+                float ix = tx + config.ScaleF(12.0f);
+                float iy = ty + (tileH - iconSz) * 0.5f;
+                D2D1_RECT_F rcIcon = D2D1::RectF(ix, iy, ix + iconSz, iy + iconSz);
+                drawEntryIcon(entry, rcIcon);
+
+                float textLeft = ix + iconSz + config.ScaleF(10.0f);
+                float textRight = tx + tileW - config.ScaleF(8.0f);
+                if (textRight > textLeft + 10.0f) {
+                    D2D1_RECT_F rcName = D2D1::RectF(textLeft, ty + config.ScaleF(7.0f), textRight, ty + config.ScaleF(28.0f));
+                    pRT->PushAxisAlignedClip(rcName, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+                    std::wstring dispName = entry.isParentLink ? L".. (Parent)" : entry.name;
+                    if (pRowFmt && theme.brushTextPrimary) {
+                        pRT->DrawText(dispName.c_str(), static_cast<UINT32>(dispName.length()), pRowFmt, rcName, theme.brushTextPrimary.Get());
+                    }
+                    pRT->PopAxisAlignedClip();
+
+                    D2D1_RECT_F rcSub = D2D1::RectF(textLeft, ty + config.ScaleF(27.0f), textRight, ty + tileH - config.ScaleF(5.0f));
+                    pRT->PushAxisAlignedClip(rcSub, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+                    std::wstring subInfo = entry.sizeLabel.empty() ? entry.typeLabel : (entry.typeLabel + L" \u2022 " + entry.sizeLabel);
+                    if (pMetaFmt && theme.brushTextMuted) {
+                        pRT->DrawText(subInfo.c_str(), static_cast<UINT32>(subInfo.length()), pMetaFmt, rcSub, theme.brushTextMuted.Get());
+                    }
+                    pRT->PopAxisAlignedClip();
+                }
+            }
+        }
+
+        pRT->PopAxisAlignedClip();
+    }
+
+    // Empty folder notice if only ".." or 0 items exist
+    if (numFolders == 0 && numFiles == 0) {
+        const wchar_t* emptyMsg = L"This folder is empty";
+        float cy = listTopY + (clientHeight - listTopY) * 0.42f;
+        D2D1_RECT_F rcEmpty = D2D1::RectF(canvasLeft, cy, canvasRight, cy + config.ScaleF(28.0f));
+        if (theme.fontButtonCenter && theme.brushTextMuted) {
+            pRT->DrawText(emptyMsg, static_cast<UINT32>(wcslen(emptyMsg)), theme.fontButtonCenter.Get(), rcEmpty, theme.brushTextMuted.Get());
+        }
+    }
 }
 
 /**
