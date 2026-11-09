@@ -137,6 +137,14 @@ public:
      */
     [[nodiscard]] LPCWSTR GetCursorForPoint(POINT clientPt) const;
 
+    /**
+     * @brief Handles mouse button release.
+     */
+    bool HandleLButtonUp(POINT clientPt);
+
+    [[nodiscard]] bool IsDraggingScrollbar() const noexcept { return m_isDraggingScrollbar; }
+    void ReleaseScrollbarDrag() noexcept { m_isDraggingScrollbar = false; }
+
     [[nodiscard]] bool IsDropdownOpen() const noexcept { return m_openDropdownItemIdx >= 0; }
     void CloseDropdown() noexcept { m_openDropdownItemIdx = -1; m_hoveredDropdownOption = -1; }
 
@@ -168,6 +176,13 @@ private:
     D2D1_RECT_F m_searchClearBounds{};
     std::vector<D2D1_RECT_F> m_categoryBounds;
     std::vector<D2D1_RECT_F> m_scopeBounds;
+    D2D1_RECT_F m_rcScrollTrack{};
+    D2D1_RECT_F m_rcScrollThumb{};
+    bool m_isDraggingScrollbar = false;
+    float m_dragScrollStartY = 0.0f;
+    float m_dragScrollStartOffset = 0.0f;
+    bool m_isScrollbarHovered = false;
+    bool m_isMouseOver = false;
 
     Microsoft::WRL::ComPtr<IDWriteTextFormat> m_pFontDesc;
     Microsoft::WRL::ComPtr<IDWriteTextFormat> m_pFontTitle;

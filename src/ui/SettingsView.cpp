@@ -969,12 +969,27 @@ void SettingsView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
     if (m_maxScrollOffsetY > 0.0f) {
         float scrollTrackW = config.ScaleF(6.0f);
         float scrollTrackX = left + width - scrollTrackW - config.ScaleF(4.0f);
-        D2D1_RECT_F rcTrack = D2D1::RectF(scrollTrackX, bodyTop + config.ScaleF(8.0f), scrollTrackX + scrollTrackW, top + height - config.ScaleF(8.0f));
-        float trackH = rcTrack.bottom - rcTrack.top;
+        m_rcScrollTrack = D2D1::RectF(scrollTrackX, bodyTop + config.ScaleF(8.0f), scrollTrackX + scrollTrackW, top + height - config.ScaleF(8.0f));
+        float trackH = m_rcScrollTrack.bottom - m_rcScrollTrack.top;
         float thumbH = (std::max)(config.ScaleF(30.0f), trackH * (contentH / totalContentH));
-        float thumbY = rcTrack.top + (m_scrollOffsetY / m_maxScrollOffsetY) * (trackH - thumbH);
-        D2D1_RECT_F rcThumb = D2D1::RectF(scrollTrackX, thumbY, scrollTrackX + scrollTrackW, thumbY + thumbH);
-        pRT->FillRoundedRectangle(D2D1::RoundedRect(rcThumb, 3.0f, 3.0f), theme.brushTextSecondary.Get());
+        float thumbY = m_rcScrollTrack.top + (m_scrollOffsetY / m_maxScrollOffsetY) * (trackH - thumbH);
+        m_rcScrollThumb = D2D1::RectF(scrollTrackX, thumbY, scrollTrackX + scrollTrackW, thumbY + thumbH);
+
+        // Show scrollbar when hovering settings, dragging, or hovering scrollbar
+        if (m_isMouseOver || m_isDraggingScrollbar || m_isScrollbarHovered) {
+            float opacity = (m_isDraggingScrollbar) ? 0.85f : (m_isScrollbarHovered ? 0.70f : 0.38f);
+            Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushThumb;
+            pRT->CreateSolidColorBrush(
+                theme.IsDarkMode() ? D2D1::ColorF(1.0f, 1.0f, 1.0f, opacity) : D2D1::ColorF(0.0f, 0.0f, 0.0f, opacity),
+                &brushThumb
+            );
+            if (brushThumb) {
+                pRT->FillRoundedRectangle(D2D1::RoundedRect(m_rcScrollThumb, 3.0f, 3.0f), brushThumb.Get());
+            }
+        }
+    } else {
+        m_rcScrollTrack = D2D1::RectF(0.0f, 0.0f, 0.0f, 0.0f);
+        m_rcScrollThumb = D2D1::RectF(0.0f, 0.0f, 0.0f, 0.0f);
     }
 
     // 6. Draw Open Floating Dropdown Menu (Rendered on top of cards outside clipping)
@@ -1206,6 +1221,30 @@ bool SettingsView::HandleMouseMove(POINT clientPt) {
     m_hoveredControlSubId.clear();
     m_hoveredDropdownOption = -1;
 
+    // Track whether mouse is over settings view
+    m_isMouseOver = (clientPt.x >= m_viewBounds.left && clientPt.x <= m_viewBounds.right &&
+                     clientPt.y >= m_viewBounds.top && clientPt.y <= m_viewBounds.bottom);
+
+    // Check scrollbar drag first
+    if (m_isDraggingScrollbar) {
+        float trackH = m_rcScrollTrack.bottom - m_rcScrollTrack.top;
+        float thumbH = m_rcScrollThumb.bottom - m_rcScrollThumb.top;
+        float scrollRange = trackH - thumbH;
+        if (scrollRange > 0.0f && m_maxScrollOffsetY > 0.0f) {
+            float deltaY = static_cast<float>(clientPt.y) - m_dragScrollStartY;
+            float newOffset = m_dragScrollStartOffset + (deltaY / scrollRange) * m_maxScrollOffsetY;
+            m_scrollOffsetY = (std::clamp)(newOffset, 0.0f, m_maxScrollOffsetY);
+            return true;
+        }
+        return false;
+    }
+
+    // Check scrollbar hover (with generous +/- 6px horizontal tolerance)
+    bool wasScrollHovered = m_isScrollbarHovered;
+    m_isScrollbarHovered = (m_maxScrollOffsetY > 0.0f &&
+                            clientPt.x >= m_rcScrollTrack.left - 6.0f && clientPt.x <= m_rcScrollTrack.right + 6.0f &&
+                            clientPt.y >= m_rcScrollTrack.top && clientPt.y <= m_rcScrollTrack.bottom);
+
     // Check open dropdown popup options hover first
     if (m_openDropdownItemIdx >= 0 && m_openDropdownItemIdx < static_cast<int>(m_items.size())) {
         if (clientPt.x >= m_openDropdownBounds.left && clientPt.x <= m_openDropdownBounds.right &&
@@ -1230,10 +1269,10 @@ bool SettingsView::HandleMouseMove(POINT clientPt) {
         m_hoveredSearchClear = true;
     }
 
-    // Check Category sidebar
+    // Check Category sidebar (full row width clickable/hoverable)
     for (size_t i = 0; i < m_categoryBounds.size(); ++i) {
         const auto& rc = m_categoryBounds[i];
-        if (clientPt.x >= rc.left && clientPt.x <= rc.right &&
+        if (clientPt.x >= m_viewBounds.left && clientPt.x <= rc.right + 20.0f &&
             clientPt.y >= rc.top && clientPt.y <= rc.bottom) {
             m_hoveredCategoryIdx = static_cast<int>(i);
             break;
@@ -1268,7 +1307,26 @@ bool SettingsView::HandleMouseMove(POINT clientPt) {
 }
 
 bool SettingsView::HandleLButtonDown(POINT clientPt, app::AppConfig& config, Theme& theme, std::wstring& outModifiedSettingId) {
-    // 0. Handle Click inside Open Dropdown Popup
+    // 0. Handle Click / Drag on Scrollbar
+    if (m_maxScrollOffsetY > 0.0f &&
+        clientPt.x >= m_rcScrollTrack.left - 6.0f && clientPt.x <= m_rcScrollTrack.right + 6.0f &&
+        clientPt.y >= m_rcScrollTrack.top && clientPt.y <= m_rcScrollTrack.bottom) {
+        
+        float thumbTop = m_rcScrollThumb.top - 4.0f;
+        float thumbBottom = m_rcScrollThumb.bottom + 4.0f;
+        if (clientPt.y >= thumbTop && clientPt.y <= thumbBottom) {
+            m_isDraggingScrollbar = true;
+            m_dragScrollStartY = static_cast<float>(clientPt.y);
+            m_dragScrollStartOffset = m_scrollOffsetY;
+        } else if (clientPt.y < m_rcScrollThumb.top) {
+            m_scrollOffsetY = (std::max)(0.0f, m_scrollOffsetY - 250.0f);
+        } else {
+            m_scrollOffsetY = (std::min)(m_maxScrollOffsetY, m_scrollOffsetY + 250.0f);
+        }
+        return true;
+    }
+
+    // 0b. Handle Click inside Open Dropdown Popup
     if (m_openDropdownItemIdx >= 0 && m_openDropdownItemIdx < static_cast<int>(m_items.size())) {
         auto& dropItem = m_items[m_openDropdownItemIdx];
         if (clientPt.x >= m_openDropdownBounds.left && clientPt.x <= m_openDropdownBounds.right &&
@@ -1326,7 +1384,7 @@ bool SettingsView::HandleLButtonDown(POINT clientPt, app::AppConfig& config, The
     // 2. Category Sidebar Click
     for (size_t i = 0; i < m_categoryBounds.size(); ++i) {
         const auto& rc = m_categoryBounds[i];
-        if (clientPt.x >= rc.left && clientPt.x <= rc.right &&
+        if (clientPt.x >= m_viewBounds.left && clientPt.x <= rc.right + 20.0f &&
             clientPt.y >= rc.top && clientPt.y <= rc.bottom) {
             m_activeCategory = static_cast<SettingCategory>(i);
             m_searchQuery.clear();
@@ -1486,7 +1544,23 @@ bool SettingsView::HandleKeyDown(WPARAM key) {
     return false;
 }
 
+bool SettingsView::HandleLButtonUp(POINT clientPt) {
+    (void)clientPt;
+    if (m_isDraggingScrollbar) {
+        m_isDraggingScrollbar = false;
+        return true;
+    }
+    return false;
+}
+
 LPCWSTR SettingsView::GetCursorForPoint(POINT clientPt) const {
+    // 0. Scrollbar cursor
+    if (m_maxScrollOffsetY > 0.0f &&
+        clientPt.x >= m_rcScrollTrack.left - 6.0f && clientPt.x <= m_rcScrollTrack.right + 6.0f &&
+        clientPt.y >= m_rcScrollTrack.top && clientPt.y <= m_rcScrollTrack.bottom) {
+        return IDC_ARROW;
+    }
+
     // 1. If dropdown is open, check dropdown popup menu
     if (m_openDropdownItemIdx >= 0) {
         if (clientPt.x >= m_openDropdownBounds.left && clientPt.x <= m_openDropdownBounds.right &&
@@ -1508,9 +1582,9 @@ LPCWSTR SettingsView::GetCursorForPoint(POINT clientPt) const {
         return IDC_IBEAM;
     }
 
-    // 4. Sidebar categories
+    // 4. Sidebar categories (full row width)
     for (const auto& rc : m_categoryBounds) {
-        if (clientPt.x >= rc.left && clientPt.x <= rc.right &&
+        if (clientPt.x >= m_viewBounds.left && clientPt.x <= rc.right + 20.0f &&
             clientPt.y >= rc.top && clientPt.y <= rc.bottom) {
             return IDC_HAND;
         }

@@ -548,6 +548,8 @@ public:
     bool HandleExplorerScrollbarMouseMove(POINT pt);
     void ReleaseExplorerScrollbarDrag() noexcept { m_isDraggingExplorerScrollbar = false; }
     [[nodiscard]] bool IsDraggingExplorerScrollbar() const noexcept { return m_isDraggingExplorerScrollbar; }
+    void SetMouseOverDrawer(bool over) noexcept { m_isMouseOverDrawer = over; }
+    [[nodiscard]] bool IsMouseOverDrawer() const noexcept { return m_isMouseOverDrawer; }
     [[nodiscard]] bool IsPointInExplorerScrollbar(POINT pt) const noexcept {
         if (m_rcExplorerScrollTrack.right <= m_rcExplorerScrollTrack.left) return false;
         return (static_cast<float>(pt.x) >= m_rcExplorerScrollTrack.left - 6.0f &&
@@ -1157,6 +1159,7 @@ private:
     D2D1_RECT_F m_rcExplorerScrollTrack = { 0.0f, 0.0f, 0.0f, 0.0f };
     D2D1_RECT_F m_rcExplorerScrollThumb = { 0.0f, 0.0f, 0.0f, 0.0f };
     bool m_isExplorerScrollHovered = false;
+    bool m_isMouseOverDrawer = false;
 
     int m_hoveredIndex = -1;
     bool m_hoveredOpenFolderBtn = false;

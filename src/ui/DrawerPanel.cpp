@@ -1548,7 +1548,7 @@ void DrawerPanel::RenderExplorerPane(ID2D1RenderTarget* pRT, Theme& theme, const
         const float treeH = clientHeight - treeStartY;
         const size_t visibleSlots = (itemH > 0.0f) ? static_cast<size_t>(treeH / itemH) : 10;
         if (m_visibleItems.size() > visibleSlots && treeH > 30.0f) {
-            float scrollTrackW = config.ScaleF(10.0f);
+            float scrollTrackW = config.ScaleF(6.0f);
             float scrollTrackX = railW + fullDrawerW - scrollTrackW - config.ScaleF(3.0f);
             m_rcExplorerScrollTrack = D2D1::RectF(scrollTrackX, treeStartY, scrollTrackX + scrollTrackW, clientHeight - config.ScaleF(4.0f));
 
@@ -1563,14 +1563,16 @@ void DrawerPanel::RenderExplorerPane(ID2D1RenderTarget* pRT, Theme& theme, const
 
             m_rcExplorerScrollThumb = D2D1::RectF(scrollTrackX, thumbY, scrollTrackX + scrollTrackW, thumbY + thumbH);
 
-            D2D1_ROUNDED_RECT rrcThumb = D2D1::RoundedRect(m_rcExplorerScrollThumb, 4.0f, 4.0f);
-            Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushThumb;
-            float opacity = (m_isDraggingExplorerScrollbar || m_isExplorerScrollHovered) ? 0.75f : 0.42f;
-            pRT->CreateSolidColorBrush(
-                theme.IsDarkMode() ? D2D1::ColorF(1.0f, 1.0f, 1.0f, opacity) : D2D1::ColorF(0.0f, 0.0f, 0.0f, opacity),
-                &brushThumb
-            );
-            if (brushThumb) pRT->FillRoundedRectangle(rrcThumb, brushThumb.Get());
+            if (m_isMouseOverDrawer || m_isDraggingExplorerScrollbar || m_isExplorerScrollHovered) {
+                D2D1_ROUNDED_RECT rrcThumb = D2D1::RoundedRect(m_rcExplorerScrollThumb, 3.0f, 3.0f);
+                Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushThumb;
+                float opacity = (m_isDraggingExplorerScrollbar) ? 0.85f : (m_isExplorerScrollHovered ? 0.70f : 0.38f);
+                pRT->CreateSolidColorBrush(
+                    theme.IsDarkMode() ? D2D1::ColorF(1.0f, 1.0f, 1.0f, opacity) : D2D1::ColorF(0.0f, 0.0f, 0.0f, opacity),
+                    &brushThumb
+                );
+                if (brushThumb) pRT->FillRoundedRectangle(rrcThumb, brushThumb.Get());
+            }
         } else {
             m_rcExplorerScrollTrack = D2D1::RectF(0.0f, 0.0f, 0.0f, 0.0f);
             m_rcExplorerScrollThumb = D2D1::RectF(0.0f, 0.0f, 0.0f, 0.0f);
@@ -2501,11 +2503,11 @@ bool DrawerPanel::HitTestOpenFolderButton(POINT pt, const app::AppConfig& config
 bool DrawerPanel::HitTestExplorerScrollbar(POINT pt) {
     if (m_rcExplorerScrollTrack.right <= m_rcExplorerScrollTrack.left) return false;
     float trackLeft = m_rcExplorerScrollTrack.left - 6.0f;
-    float trackRight = m_rcExplorerScrollTrack.right + 4.0f;
+    float trackRight = m_rcExplorerScrollTrack.right + 6.0f;
     if (static_cast<float>(pt.x) >= trackLeft && static_cast<float>(pt.x) <= trackRight &&
         static_cast<float>(pt.y) >= m_rcExplorerScrollTrack.top && static_cast<float>(pt.y) <= m_rcExplorerScrollTrack.bottom) {
-        float thumbTop = m_rcExplorerScrollThumb.top - 3.0f;
-        float thumbBottom = m_rcExplorerScrollThumb.bottom + 3.0f;
+        float thumbTop = m_rcExplorerScrollThumb.top - 4.0f;
+        float thumbBottom = m_rcExplorerScrollThumb.bottom + 4.0f;
         if (static_cast<float>(pt.y) >= thumbTop && static_cast<float>(pt.y) <= thumbBottom) {
             m_isDraggingExplorerScrollbar = true;
             m_dragScrollStartY = static_cast<float>(pt.y);
@@ -2543,7 +2545,7 @@ bool DrawerPanel::HandleExplorerScrollbarMouseMove(POINT pt) {
         return true;
     }
     bool wasHovered = m_isExplorerScrollHovered;
-    m_isExplorerScrollHovered = (pt.x >= m_rcExplorerScrollTrack.left - 2.0f && pt.x <= m_rcExplorerScrollTrack.right + 2.0f &&
+    m_isExplorerScrollHovered = (pt.x >= m_rcExplorerScrollTrack.left - 6.0f && pt.x <= m_rcExplorerScrollTrack.right + 6.0f &&
                                  pt.y >= m_rcExplorerScrollTrack.top && pt.y <= m_rcExplorerScrollTrack.bottom);
     return wasHovered != m_isExplorerScrollHovered;
 }

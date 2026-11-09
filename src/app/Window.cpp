@@ -10169,6 +10169,14 @@ void Window::HandleMouseMove(POINT clientPt, WPARAM wParam) {
                 needRepaint = true;
             }
         } else if (pActiveDoc->viewType == L"settings") {
+            if (m_editor.GetSettingsView().IsDraggingScrollbar()) {
+                if ((wParam & MK_LBUTTON) == 0) {
+                    m_editor.GetSettingsView().ReleaseScrollbarDrag();
+                    ReleaseCapture();
+                    InvalidateRect(m_hwnd, nullptr, FALSE);
+                    return;
+                }
+            }
             if (m_editor.GetSettingsView().HandleMouseMove(clientPt)) {
                 needRepaint = true;
             }
@@ -10313,6 +10321,18 @@ void Window::HandleMouseMove(POINT clientPt, WPARAM wParam) {
     float termH = GetCurrentTerminalHeight(clientH);
     const float termGap = (m_terminalAnimProgress > 0.001f && m_terminal.IsOpen()) ? m_config.ScaleF(6.0f) : 0.0f;
     float effectiveDrawerH = m_terminal.IsOpen() ? (clientH - termH - termGap) : clientH;
+
+    float railW = m_config.ScaleF(static_cast<float>(m_config.railWidth));
+    float currentDrawerW = m_config.ScaleF(static_cast<float>(m_config.drawerWidth)) * m_drawerAnimProgress;
+    bool isOverDrawer = (m_config.isDrawerOpen && m_drawerAnimProgress > 0.5f &&
+                         static_cast<float>(clientPt.x) >= railW &&
+                         static_cast<float>(clientPt.x) <= (railW + currentDrawerW) &&
+                         static_cast<float>(clientPt.y) >= m_config.ScaleF(static_cast<float>(m_config.headerHeight)) &&
+                         static_cast<float>(clientPt.y) < effectiveDrawerH);
+    if (m_drawer.IsMouseOverDrawer() != isOverDrawer) {
+        m_drawer.SetMouseOverDrawer(isOverDrawer);
+        needRepaint = true;
+    }
 
     if (m_drawerAnimProgress > 0.001f && clientPt.y < effectiveDrawerH) {
         if (m_config.activeRailTab == 0) {
@@ -12126,6 +12146,9 @@ void Window::HandleLButtonDown(POINT clientPt) {
                     m_drawer.SetSearchFocus(0);
                     std::wstring modifiedId;
                     if (m_editor.GetSettingsView().HandleLButtonDown(clientPt, m_config, m_theme, modifiedId)) {
+                        if (m_editor.GetSettingsView().IsDraggingScrollbar()) {
+                            SetCapture(m_hwnd);
+                        }
                         if (!modifiedId.empty()) {
                             if (modifiedId == L"editor.fontSize" || modifiedId == L"editor.fontFamily") {
                                 m_config.zoomLevel = m_config.fontSize / 15.0f;
@@ -12934,6 +12957,12 @@ void Window::HandleLButtonUp(POINT clientPt) {
     }
     if (m_drawer.IsDraggingExplorerScrollbar()) {
         m_drawer.ReleaseExplorerScrollbarDrag();
+        ReleaseCapture();
+        InvalidateRect(m_hwnd, nullptr, FALSE);
+        return;
+    }
+    if (m_editor.GetSettingsView().IsDraggingScrollbar()) {
+        m_editor.GetSettingsView().ReleaseScrollbarDrag();
         ReleaseCapture();
         InvalidateRect(m_hwnd, nullptr, FALSE);
         return;
@@ -14171,6 +14200,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
 
         case WM_MOUSELEAVE: {
             m_trackingMouse = false;
+            m_drawer.SetMouseOverDrawer(false);
             m_header.UpdateHoverState(ui::HeaderMenuId::None, ui::CaptionButtonType::None, ui::HeaderExecId::None);
             m_rail.SetHoveredTab(ui::RailTabId::None);
             m_drawer.SetHoveredIndex(-1);
@@ -14961,6 +14991,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
             m_editor.SetHoveredSplitterId(0);
             m_isDraggingGitSplitter = false;
             m_drawer.ReleaseExplorerScrollbarDrag();
+            m_editor.GetSettingsView().ReleaseScrollbarDrag();
             for (auto& group : m_editorGroups) {
                 for (auto& doc : group.docs) {
                     doc.isDraggingScrollbar = false;
