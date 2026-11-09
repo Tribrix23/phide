@@ -1043,6 +1043,19 @@ bool Buffer::LoadFromFile(const std::wstring& path) {
         bytes.erase(0, 3);
     }
 
+    // Detect original line endings and trailing newline
+    if (!bytes.empty()) {
+        m_hasTrailingNewline = (bytes.back() == '\n' || bytes.back() == '\r');
+        if (bytes.find("\r\n") != std::string::npos) {
+            m_lineEnding = L"\r\n";
+        } else {
+            m_lineEnding = L"\n";
+        }
+    } else {
+        m_hasTrailingNewline = false;
+        m_lineEnding = L"\n";
+    }
+
     // Convert UTF-8 to wstring
     std::wstring wide;
     if (!bytes.empty()) {
@@ -1072,11 +1085,14 @@ bool Buffer::SaveToFile(const std::wstring& path) {
     std::ofstream file(std::filesystem::path(path), std::ios::binary | std::ios::trunc);
     if (!file.is_open()) return false;
 
-    // Concatenate lines with \r\n
+    // Concatenate lines with detected line endings
     std::wstring combined;
     for (size_t i = 0; i < m_lines.size(); ++i) {
         combined += m_lines[i];
-        if (i + 1 < m_lines.size()) combined += L"\r\n";
+        if (i + 1 < m_lines.size()) combined += m_lineEnding;
+    }
+    if (m_hasTrailingNewline && !m_lines.empty()) {
+        combined += m_lineEnding;
     }
 
     // Convert wstring to UTF-8

@@ -126,6 +126,11 @@ public:
      */
     bool SaveToFile(const std::wstring& path);
 
+    [[nodiscard]] bool HasTrailingNewline() const noexcept { return m_hasTrailingNewline; }
+    void SetHasTrailingNewline(bool v) noexcept { m_hasTrailingNewline = v; }
+    [[nodiscard]] const std::wstring& GetLineEnding() const noexcept { return m_lineEnding; }
+    void SetLineEnding(const std::wstring& le) { m_lineEnding = le; }
+
     /**
      * @brief Performs undo and redo operations.
      */
@@ -203,6 +208,8 @@ private:
     std::wstring m_fileName;
     bool m_isModified = false;
     uint64_t m_version = 0;
+    bool m_hasTrailingNewline = true;
+    std::wstring m_lineEnding = L"\n";
 
     // O(1) version-tracked per-line state and syntax token cache for large files
     mutable uint64_t m_cachedTokenVersion = UINT64_MAX;

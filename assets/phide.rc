@@ -1,6 +1,7 @@
 #include <windows.h>
 
 101 ICON "assets\\phide.ico"
+1 24 "assets\\phide.exe.manifest"
 
 VS_VERSION_INFO VERSIONINFO
  FILEVERSION 1,0,0,0
@@ -17,11 +18,11 @@ BEGIN
         BEGIN
             VALUE "CompanyName", "Phide Studio"
             VALUE "FileDescription", "phide - Web Development IDE"
-            VALUE "FileVersion", "1.0.0.0"
+            VALUE "FileVersion", "2026.b"
             VALUE "InternalName", "phide.exe"
             VALUE "OriginalFilename", "phide.exe"
             VALUE "ProductName", "phide - Web Development IDE"
-            VALUE "ProductVersion", "1.0.0.0"
+            VALUE "ProductVersion", "2026.b"
         END
     END
     BLOCK "VarFileInfo"

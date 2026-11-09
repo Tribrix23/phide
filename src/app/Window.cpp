@@ -41,6 +41,22 @@
 
 namespace phide::app {
 
+static std::wstring NormalizeRecentPath(std::wstring p) {
+    while (!p.empty() && (p.back() == L'\\' || p.back() == L'/')) {
+        p.pop_back();
+    }
+    for (auto& c : p) {
+        if (c == L'/') c = L'\\';
+    }
+    return p;
+}
+
+static bool AreRecentPathsEqual(const std::wstring& a, const std::wstring& b) {
+    std::wstring na = NormalizeRecentPath(a);
+    std::wstring nb = NormalizeRecentPath(b);
+    return _wcsicmp(na.c_str(), nb.c_str()) == 0;
+}
+
 static bool IsPortListening(int port);
 
 static std::wstring RunCmdCapture(const std::wstring& cmd) {
@@ -786,9 +802,20 @@ void Window::LoadSessionState() {
     if (!recentPaths.empty()) {
         m_recentPaths.clear();
         for (const auto& rp : recentPaths) {
+            std::wstring norm = NormalizeRecentPath(rp);
+            if (norm.empty()) continue;
             std::error_code ec;
-            if (std::filesystem::is_directory(rp, ec)) {
-                m_recentPaths.push_back(rp);
+            if (std::filesystem::is_directory(norm, ec)) {
+                bool alreadyExists = false;
+                for (const auto& existing : m_recentPaths) {
+                    if (AreRecentPathsEqual(existing, norm)) {
+                        alreadyExists = true;
+                        break;
+                    }
+                }
+                if (!alreadyExists) {
+                    m_recentPaths.push_back(norm);
+                }
             }
         }
         if (m_recentPaths.size() > 6) m_recentPaths.resize(6);
@@ -2362,11 +2389,15 @@ void Window::DoOpenFolderFromPath(const std::wstring& path) {
         m_focusedGroupIdx = (std::max)(0, static_cast<int>(m_editorGroups.size()) - 1);
     }
 
-    // Track in recent paths LRU list (max 6 entries)
-    auto it = std::find(m_recentPaths.begin(), m_recentPaths.end(), path);
-    if (it != m_recentPaths.end()) m_recentPaths.erase(it);
-    m_recentPaths.insert(m_recentPaths.begin(), path);
-    if (m_recentPaths.size() > 6) m_recentPaths.resize(6);
+    // Track in recent paths LRU list (max 6 entries, strictly deduplicated & rearranged)
+    std::wstring normPath = NormalizeRecentPath(path);
+    if (!normPath.empty()) {
+        std::erase_if(m_recentPaths, [&](const std::wstring& existing) {
+            return AreRecentPathsEqual(existing, normPath);
+        });
+        m_recentPaths.insert(m_recentPaths.begin(), normPath);
+        if (m_recentPaths.size() > 6) m_recentPaths.resize(6);
+    }
 
     if (!m_config.isDrawerOpen) {
         ToggleSidebar();
@@ -6402,6 +6433,9 @@ bool Window::Create(HINSTANCE hInstance, int nCmdShow) {
     // Force frame refresh
     SetWindowPos(m_hwnd, nullptr, 0, 0, 0, 0,
                  SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED);
+
+    // Ensure Snipping Tool, screen clippers, and screenshot captures are fully enabled
+    SetWindowDisplayAffinity(m_hwnd, WDA_NONE);
 
     // Start 500ms Caret blink timer
     SetTimer(m_hwnd, m_caretTimerId, 500, nullptr);
@@ -13710,6 +13744,24 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                                         m_editor.ClearGhostText();
                                         InvalidateRect(m_hwnd, nullptr, FALSE);
                                         return 0;
+                                    } else if (tagName.empty() && openBracket + 1 == prefixText.length()) {
+                                        // Auto-closing React / JSX fragment '<>' -> '<></>'
+                                        std::wstring ext;
+                                        auto dot = pDoc->filePath.find_last_of(L'.');
+                                        if (dot != std::wstring::npos) ext = pDoc->filePath.substr(dot);
+                                        for (auto& c : ext) c = towlower(c);
+                                        if (ext == L".jsx" || ext == L".tsx" || ext == L".js" || ext == L".ts") {
+                                            std::wstring closeTag = L"</>";
+                                            pDoc->buffer.InsertText(L">" + closeTag);
+                                            auto cur = pDoc->buffer.GetCursor();
+                                            pDoc->buffer.SetCursor(cur.line, cur.col - closeTag.length());
+                                            MarkDocumentModified(pDoc);
+                                            if (pDoc->isDiffView) ComputeDiffHunks(*pDoc);
+                                            m_editor.DismissAutocomplete();
+                                            m_editor.ClearGhostText();
+                                            InvalidateRect(m_hwnd, nullptr, FALSE);
+                                            return 0;
+                                        }
                                     }
                                 }
                             }
@@ -13741,6 +13793,8 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                                                     std::wstring t = lStr.substr(s, e - s);
                                                     for (auto& chT : t) chT = towlower(chT);
                                                     closedStack.push_back(t);
+                                                } else if (s < lStr.length() && lStr[s] == L'>') {
+                                                    closedStack.push_back(L"<>");
                                                 }
                                             } else if (c + 1 < static_cast<int>(lStr.length()) && lStr[c + 1] != L'!' && lStr[c + 1] != L'?') {
                                                 size_t s = c + 1;
@@ -13759,6 +13813,13 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                                                             break;
                                                         }
                                                     }
+                                                } else if (s < lStr.length() && lStr[s] == L'>') {
+                                                    if (!closedStack.empty() && closedStack.back() == L"<>") {
+                                                        closedStack.pop_back();
+                                                    } else {
+                                                        targetTag = L"<>";
+                                                        break;
+                                                    }
                                                 }
                                             }
                                         }
@@ -13766,7 +13827,11 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                                 }
 
                                 if (!targetTag.empty()) {
-                                    pDoc->buffer.InsertText(L"/" + targetTag + L">");
+                                    if (targetTag == L"<>") {
+                                        pDoc->buffer.InsertText(L"/>");
+                                    } else {
+                                        pDoc->buffer.InsertText(L"/" + targetTag + L">");
+                                    }
                                     MarkDocumentModified(pDoc);
                                     if (pDoc->isDiffView) ComputeDiffHunks(*pDoc);
                                     m_editor.DismissAutocomplete();
@@ -13857,7 +13922,25 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
             return 0;
         }
 
+        case WM_ACTIVATE: {
+            if (LOWORD(wParam) == WA_INACTIVE) {
+                ReleaseCapture();
+            }
+            return DefWindowProc(m_hwnd, uMsg, wParam, lParam);
+        }
+
+        case WM_CANCELMODE: {
+            ReleaseCapture();
+            if (m_popupMenu.IsOpen()) {
+                m_popupMenu.Close();
+                m_header.SetActiveMenu(ui::HeaderMenuId::None);
+                InvalidateRect(m_hwnd, nullptr, FALSE);
+            }
+            return DefWindowProc(m_hwnd, uMsg, wParam, lParam);
+        }
+
         case WM_KILLFOCUS: {
+            ReleaseCapture();
             if (m_popupMenu.IsOpen()) {
                 m_popupMenu.Close();
                 m_header.SetActiveMenu(ui::HeaderMenuId::None);
@@ -13868,6 +13951,10 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
         }
 
         case WM_SYSKEYDOWN: {
+            bool winDown = (GetKeyState(VK_LWIN) & 0x8000) != 0 || (GetKeyState(VK_RWIN) & 0x8000) != 0;
+            if (wParam == VK_SNAPSHOT || winDown) {
+                return DefWindowProc(m_hwnd, uMsg, wParam, lParam);
+            }
             if (wParam == VK_F10 && m_terminal.IsDebugActive()) {
                 m_terminal.TriggerDebugAction(ui::DebugAction::StepOver);
                 InvalidateRect(m_hwnd, nullptr, FALSE);
@@ -13904,6 +13991,10 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
         }
 
         case WM_KEYDOWN: {
+            bool winDown = (GetKeyState(VK_LWIN) & 0x8000) != 0 || (GetKeyState(VK_RWIN) & 0x8000) != 0;
+            if (wParam == VK_SNAPSHOT || winDown) {
+                return DefWindowProc(m_hwnd, uMsg, wParam, lParam);
+            }
             auto* pActDoc = GetActiveDoc();
             if (pActDoc && pActDoc->hoveredDiagnosticLine != static_cast<size_t>(-1)) {
                 pActDoc->hoveredDiagnosticLine = static_cast<size_t>(-1);

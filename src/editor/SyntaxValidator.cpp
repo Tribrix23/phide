@@ -15,6 +15,80 @@
 
 namespace phide::editor {
 
+namespace {
+
+bool IsJsRegexStart(const std::wstring& str, size_t pos) {
+    if (pos >= str.length() || str[pos] != L'/') return false;
+    // JSX closing tag '</' or self-closing '/>' or comment '//' or '/*' is NEVER a regex
+    if (pos > 0 && str[pos - 1] == L'<') return false;
+    if (pos + 1 < str.length() && (str[pos + 1] == L'>' || str[pos + 1] == L'/' || str[pos + 1] == L'*')) return false;
+
+    // Find preceding non-whitespace character and preceding token
+    int p = static_cast<int>(pos) - 1;
+    while (p >= 0 && iswspace(str[p])) p--;
+    if (p < 0) return true; // Start of line
+
+    wchar_t prevChar = str[p];
+    if (prevChar == L'(' || prevChar == L'[' || prevChar == L'{' ||
+        prevChar == L',' || prevChar == L';' || prevChar == L':' ||
+        prevChar == L'=' || prevChar == L'!' || prevChar == L'?' ||
+        prevChar == L'&' || prevChar == L'|' || prevChar == L'+' ||
+        prevChar == L'-' || prevChar == L'*' || prevChar == L'%' ||
+        prevChar == L'^' || prevChar == L'~') {
+        return true;
+    }
+    // Check for arrow function '=>'
+    if (prevChar == L'>' && p > 0 && str[p - 1] == L'=') {
+        return true;
+    }
+    // Check if preceding token is a keyword: return, case, default, yield, await, typeof, void, delete, in, instanceof, do, else
+    if (iswalnum(prevChar) || prevChar == L'_' || prevChar == L'$') {
+        int wordEnd = p;
+        int wordStart = p;
+        while (wordStart >= 0 && (iswalnum(str[wordStart]) || str[wordStart] == L'_' || str[wordStart] == L'$')) {
+            wordStart--;
+        }
+        wordStart++;
+        std::wstring word = str.substr(wordStart, wordEnd - wordStart + 1);
+        if (word == L"return" || word == L"case" || word == L"default" ||
+            word == L"yield" || word == L"await" || word == L"typeof" ||
+            word == L"void" || word == L"delete" || word == L"in" ||
+            word == L"instanceof" || word == L"do" || word == L"else") {
+            return true;
+        }
+    }
+    return false;
+}
+
+size_t ScanJsRegexEnd(const std::wstring& str, size_t pos) {
+    if (pos >= str.length() || str[pos] != L'/') return std::wstring::npos;
+    bool inCharClass = false;
+    size_t r = pos + 1;
+    for (; r < str.length(); ++r) {
+        if (str[r] == L'\\') {
+            r++; // skip escaped char
+            continue;
+        }
+        if (str[r] == L'[' && !inCharClass) {
+            inCharClass = true;
+        } else if (str[r] == L']' && inCharClass) {
+            inCharClass = false;
+        } else if (str[r] == L'/' && !inCharClass) {
+            break;
+        }
+    }
+    if (r < str.length() && str[r] == L'/') {
+        // Regex successfully matched: consume regex and its flags (g, i, m, s, u, y, d, v)
+        while (r + 1 < str.length() && iswalpha(str[r + 1])) {
+            r++;
+        }
+        return r;
+    }
+    return std::wstring::npos;
+}
+
+} // anonymous namespace
+
 std::vector<lsp::Diagnostic> SyntaxValidator::Validate(
     const std::wstring& filePath,
     const Buffer& buffer,
@@ -1037,51 +1111,10 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidateJavaScript(
 
             // 6. Regular expression literal detection (e.g. line.replace(/"([^"]+)":/g, ...))
             if (line[c] == L'/') {
-                // JSX closing tag '</' or self-closing '/>' is NEVER a regex
-                if (c > 0 && line[c - 1] == L'<') {
-                    continue;
-                }
-                if (c + 1 < line.length() && line[c + 1] == L'>') {
-                    continue;
-                }
-
-                // Determine whether '/' starts a regex literal:
-                wchar_t prevChar = L'\0';
-                for (int p = static_cast<int>(c) - 1; p >= 0; --p) {
-                    if (!iswspace(line[p])) {
-                        prevChar = line[p];
-                        break;
-                    }
-                }
-                bool isRegex = (prevChar == L'\0' ||
-                                prevChar == L'(' || prevChar == L'[' || prevChar == L'{' ||
-                                prevChar == L',' || prevChar == L';' || prevChar == L':' ||
-                                prevChar == L'=' || prevChar == L'!' || prevChar == L'?' ||
-                                prevChar == L'&' || prevChar == L'|' || prevChar == L'+' ||
-                                prevChar == L'-' || prevChar == L'*' || prevChar == L'%' ||
-                                prevChar == L'^' || prevChar == L'~');
-                if (isRegex) {
-                    bool inCharClass = false;
-                    size_t r = c + 1;
-                    for (; r < line.length(); ++r) {
-                        if (line[r] == L'\\') {
-                            r++; // skip escaped char
-                            continue;
-                        }
-                        if (line[r] == L'[' && !inCharClass) {
-                            inCharClass = true;
-                        } else if (line[r] == L']' && inCharClass) {
-                            inCharClass = false;
-                        } else if (line[r] == L'/' && !inCharClass) {
-                            break;
-                        }
-                    }
-                    if (r < line.length() && line[r] == L'/') {
-                        // Regex successfully matched: consume regex and its flags (g, i, m, s, u, y, d, v)
+                if (IsJsRegexStart(line, c)) {
+                    size_t r = ScanJsRegexEnd(line, c);
+                    if (r != std::wstring::npos) {
                         c = r;
-                        while (c + 1 < line.length() && iswalpha(line[c + 1])) {
-                            c++;
-                        }
                         continue;
                     }
                 }
@@ -2329,6 +2362,8 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidateReactAndESLint(const Buffe
         L"meta", L"param", L"source", L"track", L"wbr"
     };
 
+    bool inBacktickAcrossLines = false;
+
     for (size_t l = 0; l < lineCount; ++l) {
         const std::wstring& line = buffer.GetLine(l);
         if (line.empty()) continue;
@@ -2336,7 +2371,7 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidateReactAndESLint(const Buffe
         // Skip line comments, being careful to ignore // inside strings (e.g. "https://...", 'http://...', `http://...`)
         bool inSingle = false;
         bool inDouble = false;
-        bool inBacktick = false;
+        bool inBacktick = inBacktickAcrossLines;
         size_t lineComment = std::wstring::npos;
         for (size_t i = 0; i < line.length(); ++i) {
             wchar_t ch = line[i];
@@ -2351,6 +2386,13 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidateReactAndESLint(const Buffe
             } else if (ch == L'`' && !inSingle && !inDouble) {
                 inBacktick = !inBacktick;
             } else if (!inSingle && !inDouble && !inBacktick) {
+                if (ch == L'/' && IsJsRegexStart(line, i)) {
+                    size_t r = ScanJsRegexEnd(line, i);
+                    if (r != std::wstring::npos) {
+                        i = r;
+                        continue;
+                    }
+                }
                 if (ch == L'/' && i + 1 < line.length() && line[i + 1] == L'/') {
                     if (i > 0 && line[i - 1] == L':') {
                         continue; // Part of a URL like https:// or http://, NOT a line comment
@@ -2365,15 +2407,23 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidateReactAndESLint(const Buffe
         }
         std::wstring code = (lineComment != std::wstring::npos) ? line.substr(0, lineComment) : line;
 
-        // Mask string literals and comments so strings containing '{', '}', 'if', etc. do not trigger false positives
+        // Mask string literals, regex literals, and comments so strings containing '{', '}', 'if', etc. do not trigger false positives
         std::wstring cleanCode = code;
-        bool inS = false, inD = false, inB = false;
+        bool inS = false, inD = false, inB = inBacktickAcrossLines;
         for (size_t i = 0; i < cleanCode.length(); ++i) {
             wchar_t ch = cleanCode[i];
             if (ch == L'\\' && (inS || inD || inB)) {
                 cleanCode[i] = L' ';
                 if (i + 1 < cleanCode.length()) { cleanCode[i + 1] = L' '; i++; }
                 continue;
+            }
+            if (!inS && !inD && !inB && ch == L'/' && IsJsRegexStart(cleanCode, i)) {
+                size_t r = ScanJsRegexEnd(cleanCode, i);
+                if (r != std::wstring::npos) {
+                    for (size_t k = i; k <= r; ++k) cleanCode[k] = L' ';
+                    i = r;
+                    continue;
+                }
             }
             if (ch == L'\'' && !inD && !inB) { inS = !inS; cleanCode[i] = L' '; continue; }
             if (ch == L'"' && !inS && !inB) { inD = !inD; cleanCode[i] = L' '; continue; }
@@ -2382,6 +2432,7 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidateReactAndESLint(const Buffe
                 cleanCode[i] = L' ';
             }
         }
+        inBacktickAcrossLines = inB;
 
         auto findControlKeyword = [](const std::wstring& str) -> int {
             auto isWord = [&](size_t idx, const std::wstring& kw) -> bool {
@@ -2680,8 +2731,59 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidateReactAndESLint(const Buffe
             };
 
             size_t p = 0;
+            int jsxCurlyDepth = 0;
             while (p < code.length()) {
+                // If we are outside JSX tags (jsxStack is empty) or inside a JSX expression `{ ... }`,
+                // quotes ("...", '...', `...`) delimit string literals and /.../ delimits regex literals. Skip them completely so that
+                // characters like <, >, <=, >=, </, and <> inside strings or regexes are NEVER treated as JSX tags.
+                if (jsxStack.empty() || jsxCurlyDepth > 0) {
+                    if (code[p] == L'{') {
+                        jsxCurlyDepth++;
+                        p++;
+                        continue;
+                    }
+                    if (code[p] == L'}') {
+                        if (jsxCurlyDepth > 0) jsxCurlyDepth--;
+                        p++;
+                        continue;
+                    }
+                    if (code[p] == L'/') {
+                        if (IsJsRegexStart(code, p)) {
+                            size_t r = ScanJsRegexEnd(code, p);
+                            if (r != std::wstring::npos) {
+                                p = r + 1;
+                                continue;
+                            }
+                        }
+                    }
+                    if (code[p] == L'"' || code[p] == L'\'' || code[p] == L'`') {
+                        wchar_t q = code[p++];
+                        while (p < code.length()) {
+                            if (code[p] == L'\\' && p + 1 < code.length()) {
+                                p += 2;
+                            } else if (code[p] == q) {
+                                p++;
+                                break;
+                            } else {
+                                p++;
+                            }
+                        }
+                        continue;
+                    }
+                } else {
+                    if (code[p] == L'{') {
+                        jsxCurlyDepth++;
+                        p++;
+                        continue;
+                    }
+                }
+
                 if (code[p] == L'<') {
+                    // Double check: if cleanCode masked this position (i.e. inside quote or comment), skip it!
+                    if (p < cleanCode.length() && cleanCode[p] == L' ' && code[p] != L' ') {
+                        p++;
+                        continue;
+                    }
                     // In JS/TSX, an opening JSX tag outside JSX children cannot immediately follow an identifier or dollar sign without whitespace.
                     // e.g. `useRef<...>`, `ReturnType<...>`, `LayoutProps<...>`, `KeyboardEvent<...>` are generics!
                     // But inside JSX children, text can precede a tag (e.g. `<span>Cleave<span className=...>DB</span></span>`).
@@ -2720,6 +2822,14 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidateReactAndESLint(const Buffe
                                         accumulatedTag += sc;
                                     }
                                 } else {
+                                    if (sc == L'/' && braceDepth > 0 && IsJsRegexStart(*currLineStr, scan)) {
+                                        size_t r = ScanJsRegexEnd(*currLineStr, scan);
+                                        if (r != std::wstring::npos) {
+                                            for (size_t k = scan; k <= r; ++k) accumulatedTag += (*currLineStr)[k];
+                                            scan = r;
+                                            continue;
+                                        }
+                                    }
                                     if (sc == L'"' || sc == L'\'' || sc == L'`') {
                                         inQuote = true;
                                         qChar = sc;
@@ -2941,7 +3051,8 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidateReactAndESLint(const Buffe
                                                 diag.line = it->line;
                                                 diag.col = it->col;
                                                 diag.length = it->name.length() + 1;
-                                                diag.message = L"JSX: Unclosed JSX element '<" + it->name + L">'";
+                                                std::wstring disp = (it->name == L"<>" ? L"<>" : (L"<" + it->name + L">"));
+                                                diag.message = L"JSX: Unclosed JSX element '" + disp + L"'";
                                                 diag.severity = 1; // Error
                                                 diagnostics.push_back(std::move(diag));
                                             }
@@ -2953,7 +3064,8 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidateReactAndESLint(const Buffe
                                             diag.line = l;
                                             diag.col = p;
                                             diag.length = tagEnd - p + 1;
-                                            diag.message = L"JSX: Unexpected closing tag '</" + tagName + L">', no matching opening tag found";
+                                            std::wstring disp = (tagName == L"<>" ? L"</>" : (L"</" + tagName + L">"));
+                                            diag.message = L"JSX: Unexpected closing tag '" + disp + L"', no matching opening tag found";
                                             diag.severity = 1; // Error
                                             diagnostics.push_back(std::move(diag));
                                         }
@@ -2963,7 +3075,8 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidateReactAndESLint(const Buffe
                                     diag.line = l;
                                     diag.col = p;
                                     diag.length = tagEnd - p + 1;
-                                    diag.message = L"JSX: Unexpected closing tag '</" + tagName + L">', no matching opening tag found";
+                                    std::wstring disp = (tagName == L"<>" ? L"</>" : (L"</" + tagName + L">"));
+                                    diag.message = L"JSX: Unexpected closing tag '" + disp + L"', no matching opening tag found";
                                     diag.severity = 1; // Error
                                     diagnostics.push_back(std::move(diag));
                                 }
@@ -2990,7 +3103,8 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidateReactAndESLint(const Buffe
         diag.line = tag.line;
         diag.col = tag.col;
         diag.length = tag.name.length() + 1;
-        diag.message = L"JSX: Unclosed JSX element '<" + tag.name + L">'";
+        std::wstring disp = (tag.name == L"<>" ? L"<>" : (L"<" + tag.name + L">"));
+        diag.message = L"JSX: Unclosed JSX element '" + disp + L"'";
         diag.severity = 1; // Error
         diagnostics.push_back(std::move(diag));
     }

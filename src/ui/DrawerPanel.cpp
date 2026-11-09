@@ -4712,8 +4712,11 @@ void DrawerPanel::RefreshGitState(bool async, bool showLoading) {
                                                 }
                                             }
                                         }
+                                        while (!diskNorm.empty() && (diskNorm.back() == '\n' || diskNorm.back() == '\r' || diskNorm.back() == ' ' || diskNorm.back() == '\t')) diskNorm.pop_back();
+                                        while (!headNorm.empty() && (headNorm.back() == '\n' || headNorm.back() == '\r' || headNorm.back() == ' ' || headNorm.back() == '\t')) headNorm.pop_back();
                                         if (diskNorm == headNorm) {
-                                            continue; // Identical normalized content! Prune false positive!
+                                            RunGitCmd(L"checkout -- \"" + gitRel + L"\"", dir);
+                                            continue; // Content is identical to HEAD! Restored and pruned false positive!
                                         }
                                     }
                                 }
@@ -5362,8 +5365,11 @@ void DrawerPanel::RefreshGitStatusOnly(bool async) {
                                                 }
                                             }
                                         }
+                                        while (!diskNorm.empty() && (diskNorm.back() == '\n' || diskNorm.back() == '\r' || diskNorm.back() == ' ' || diskNorm.back() == '\t')) diskNorm.pop_back();
+                                        while (!headNorm.empty() && (headNorm.back() == '\n' || headNorm.back() == '\r' || headNorm.back() == ' ' || headNorm.back() == '\t')) headNorm.pop_back();
                                         if (diskNorm == headNorm) {
-                                            continue; // Identical normalized content! Prune false positive!
+                                            RunGitCmd(L"checkout -- \"" + gitRel + L"\"", dir);
+                                            continue; // Content is identical to HEAD! Restored and pruned false positive!
                                         }
                                     }
                                 }

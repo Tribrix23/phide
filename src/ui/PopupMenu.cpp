@@ -617,9 +617,21 @@ void PopupMenu::BuildFileMenuItems(bool autoSave, bool hasOpenFile, bool isDirty
             MenuActionId::RecentItem4,
             MenuActionId::RecentItem5
         };
-        for (size_t r = 0; r < recentItems.size() && r < 6; ++r) {
-            auto pos = recentItems[r].find_last_of(L"\\/");
-            std::wstring disp = (pos != std::wstring::npos) ? recentItems[r].substr(pos + 1) : recentItems[r];
+        std::vector<std::wstring> uniqueRecents;
+        for (const auto& r : recentItems) {
+            std::wstring norm = r;
+            while (!norm.empty() && (norm.back() == L'\\' || norm.back() == L'/')) norm.pop_back();
+            for (auto& ch : norm) if (ch == L'/') ch = L'\\';
+            if (norm.empty()) continue;
+            bool dup = false;
+            for (const auto& u : uniqueRecents) {
+                if (_wcsicmp(u.c_str(), norm.c_str()) == 0) { dup = true; break; }
+            }
+            if (!dup) uniqueRecents.push_back(norm);
+        }
+        for (size_t r = 0; r < uniqueRecents.size() && r < 6; ++r) {
+            auto pos = uniqueRecents[r].find_last_of(L"\\/");
+            std::wstring disp = (pos != std::wstring::npos) ? uniqueRecents[r].substr(pos + 1) : uniqueRecents[r];
             openRecent.submenuItems.push_back({ recentIds[r], disp, L"", false, false, false, true, {}, {} });
         }
     }

@@ -12,10 +12,14 @@
 !include "WinMessages.nsh"
 
 ; ------------------------------------------------------------------------------
+; ------------------------------------------------------------------------------
 ; General Configuration
 ; ------------------------------------------------------------------------------
-Name "Phide 2026.a"
-BrandingText "Phide 2026.a"
+!define APP_NAME "Phide"
+!define APP_VERSION "2026.b"
+
+Name "${APP_NAME} ${APP_VERSION}"
+BrandingText "${APP_NAME} ${APP_VERSION}"
 OutFile "output\phide-Setup-x64.exe"
 InstallDir "$PROGRAMFILES64\phide"
 InstallDirRegKey HKLM "Software\phide" "InstallDir"
@@ -39,23 +43,45 @@ SetCompressor /SOLID lzma
 !define MUI_ABORTWARNING
 
 ; Welcome Page Texts
-!define MUI_WELCOMEPAGE_TITLE "Welcome to Phide 2026.a Setup"
-!define MUI_WELCOMEPAGE_TEXT "Setup will guide you through the installation of Phide 2026.a (Direct2D Native Desktop IDE).$\r$\n$\r$\nAll development runtimes and dependencies (PHP 8.5, Composer, MariaDB/MySQL, and Nginx) are completely bundled offline - no secondary downloads or internet connections are required.$\r$\n$\r$\nClick Next to continue."
+!define MUI_WELCOMEPAGE_TITLE "Welcome to ${APP_NAME} ${APP_VERSION} Setup"
+!define MUI_WELCOMEPAGE_TEXT "Setup will guide you through the installation of ${APP_NAME} ${APP_VERSION} (Direct2D Native Desktop IDE).$\r$\n$\r$\nAll development runtimes and dependencies (PHP 8.5, Composer, MariaDB/MySQL, and Nginx) are completely bundled offline - no secondary downloads or internet connections are required.$\r$\n$\r$\nClick Next to continue."
 
 ; Directory Page Texts
-!define MUI_DIRECTORYPAGE_TEXT_TOP "Setup will install Phide 2026.a in the following folder. To install in a different folder, click Browse and select another folder. Click Next to continue."
+!define MUI_DIRECTORYPAGE_TEXT_TOP "Setup will install ${APP_NAME} ${APP_VERSION} in the following folder. To install in a different folder, click Browse and select another folder. Click Next to continue."
 
 ; Installation Options Header
 !define PAGE_OPTIONS_TITLE "Installation Options"
-!define PAGE_OPTIONS_SUBTITLE "Configure your Phide 2026.a installation"
+!define PAGE_OPTIONS_SUBTITLE "Configure your ${APP_NAME} ${APP_VERSION} installation"
 
 ; Installing Page Settings (Show Details button like PyCharm)
 !define MUI_INSTFILESPAGE_FINISHHEADER_TEXT "Installation Complete"
-!define MUI_INSTFILESPAGE_FINISHHEADER_SUBTEXT "Phide 2026.a and all offline runtimes have been successfully installed."
+!define MUI_INSTFILESPAGE_FINISHHEADER_SUBTEXT "${APP_NAME} ${APP_VERSION} and all offline runtimes have been successfully installed."
 
 ; Finish Page Settings
-!define MUI_FINISHPAGE_RUN "$INSTDIR\phide.exe"
-!define MUI_FINISHPAGE_RUN_TEXT "Run Phide 2026.a"
+!define MUI_FINISHPAGE_RUN
+!define MUI_FINISHPAGE_RUN_FUNCTION LaunchApp
+!define MUI_FINISHPAGE_RUN_TEXT "Run ${APP_NAME} ${APP_VERSION}"
+
+Function LaunchApp
+    ExecShell "" "$INSTDIR\phide.exe"
+FunctionEnd
+
+; ------------------------------------------------------------------------------
+; Variables for Detection & Maintenance Flow
+; ------------------------------------------------------------------------------
+Var IsInstalled
+Var InstalledDir
+Var InstalledVersion
+Var InstallMode        ; "SAME", "UPDATE", "DOWNGRADE"
+
+Var DialogExisting
+Var HwndExistingDesc
+Var HwndExistingGroup
+Var HwndRadioAction1
+Var HwndRadioAction2
+Var HwndExistingDetail
+Var StateAction1
+Var StateAction2
 
 ; ------------------------------------------------------------------------------
 ; Variables for Custom "Installation Options" Page
@@ -85,6 +111,8 @@ Var StateAssocJs
 ; Pages Flow
 ; ------------------------------------------------------------------------------
 !insertmacro MUI_PAGE_WELCOME
+Page custom PageExistingInstall PageExistingInstallLeave
+!define MUI_PAGE_CUSTOMFUNCTION_PRE DirectoryPre
 !insertmacro MUI_PAGE_DIRECTORY
 Page custom PageInstallationOptions PageInstallationOptionsLeave
 !insertmacro MUI_PAGE_INSTFILES
@@ -94,6 +122,151 @@ Page custom PageInstallationOptions PageInstallationOptionsLeave
 !insertmacro MUI_UNPAGE_INSTFILES
 
 !insertmacro MUI_LANGUAGE "English"
+
+; ------------------------------------------------------------------------------
+; Initialization and Existing Installation Detection
+; ------------------------------------------------------------------------------
+Function .onInit
+    ${If} ${RunningX64}
+        SetRegView 64
+    ${EndIf}
+
+    StrCpy $IsInstalled 0
+    StrCpy $InstalledDir ""
+    StrCpy $InstalledVersion ""
+    StrCpy $InstallMode ""
+
+    ; Check registry for existing installation
+    ReadRegStr $InstalledDir HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\phide" "InstallLocation"
+    ${If} $InstalledDir == ""
+        ReadRegStr $InstalledDir HKLM "Software\phide" "InstallDir"
+    ${EndIf}
+    ${If} $InstalledDir == ""
+        ReadRegStr $InstalledDir HKCU "Software\phide" "InstallDir"
+    ${EndIf}
+    ${If} $InstalledDir == ""
+        ${If} ${FileExists} "$PROGRAMFILES64\phide\phide.exe"
+            StrCpy $InstalledDir "$PROGRAMFILES64\phide"
+        ${EndIf}
+    ${EndIf}
+
+    ${If} $InstalledDir != ""
+    ${AndIf} ${FileExists} "$InstalledDir\phide.exe"
+        StrCpy $IsInstalled 1
+
+        ; Read installed version
+        ReadRegStr $InstalledVersion HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\phide" "DisplayVersion"
+        ${If} $InstalledVersion == ""
+            ReadRegStr $InstalledVersion HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\phide" "DisplayVersion"
+        ${EndIf}
+        ${If} $InstalledVersion == ""
+            StrCpy $InstalledVersion "2026.a"
+        ${EndIf}
+
+        ; Compare installed version with current installer version (2026.b)
+        System::Call "shlwapi::StrCmpLogicalW(w '$InstalledVersion', w '${APP_VERSION}') i .r0"
+        ${If} $0 == 0
+            StrCpy $InstallMode "SAME"
+        ${ElseIf} $0 < 0
+            StrCpy $InstallMode "UPDATE"
+        ${Else}
+            StrCpy $InstallMode "DOWNGRADE"
+        ${EndIf}
+
+        StrCpy $INSTDIR $InstalledDir
+    ${EndIf}
+FunctionEnd
+
+Function DirectoryPre
+    ${If} $IsInstalled == 1
+        ; Use existing installation directory, skip directory selection dialog
+        Abort
+    ${EndIf}
+FunctionEnd
+
+; ------------------------------------------------------------------------------
+; Custom "Existing Installation / Maintenance" Page Callback
+; ------------------------------------------------------------------------------
+Function PageExistingInstall
+    ${If} $IsInstalled == 0
+        Abort ; Fresh install - skip this page completely
+    ${EndIf}
+
+    ${If} $InstallMode == "SAME"
+        !insertmacro MUI_HEADER_TEXT "Phide is Already Installed" "Choose to reinstall or uninstall Phide ${APP_VERSION}"
+    ${ElseIf} $InstallMode == "UPDATE"
+        !insertmacro MUI_HEADER_TEXT "Update Phide Installation" "An earlier version of Phide was detected on this computer"
+    ${Else}
+        !insertmacro MUI_HEADER_TEXT "Downgrade Phide Installation" "A newer version of Phide was detected on this computer"
+    ${EndIf}
+
+    nsDialogs::Create 1018
+    Pop $DialogExisting
+    ${If} $DialogExisting == error
+        Abort
+    ${EndIf}
+
+    ${If} $InstallMode == "SAME"
+        ${NSD_CreateLabel} 0u 0u 300u 28u "Phide ${APP_VERSION} is currently installed at:$\r$\n$InstalledDir$\r$\n$\r$\nPlease select the action you want to perform:"
+    ${ElseIf} $InstallMode == "UPDATE"
+        ${NSD_CreateLabel} 0u 0u 300u 28u "An earlier version (Phide $InstalledVersion) is installed at:$\r$\n$InstalledDir$\r$\nSetup can update this installation to Phide ${APP_VERSION}."
+    ${Else}
+        ${NSD_CreateLabel} 0u 0u 300u 28u "A newer version (Phide $InstalledVersion) is installed at:$\r$\n$InstalledDir$\r$\nWarning: Running this installer will downgrade Phide to ${APP_VERSION}."
+    ${EndIf}
+    Pop $HwndExistingDesc
+
+    ${NSD_CreateGroupBox} 0u 34u 300u 58u "Available Actions"
+    Pop $HwndExistingGroup
+
+    ${If} $InstallMode == "SAME"
+        ${NSD_CreateRadioButton} 12u 48u 280u 12u "&Reinstall Phide ${APP_VERSION} (repair / refresh all components)"
+    ${ElseIf} $InstallMode == "UPDATE"
+        ${NSD_CreateRadioButton} 12u 48u 280u 12u "&Update to Phide ${APP_VERSION} (recommended - preserves databases & settings)"
+    ${Else}
+        ${NSD_CreateRadioButton} 12u 48u 280u 12u "&Downgrade to Phide ${APP_VERSION} (replace newer version with ${APP_VERSION})"
+    ${EndIf}
+    Pop $HwndRadioAction1
+    ${NSD_SetState} $HwndRadioAction1 ${BST_CHECKED}
+
+    ${If} $InstallMode == "SAME"
+        ${NSD_CreateRadioButton} 12u 66u 280u 12u "&Uninstall Phide ${APP_VERSION} from this computer"
+    ${Else}
+        ${NSD_CreateRadioButton} 12u 66u 280u 12u "&Uninstall existing Phide $InstalledVersion from this computer"
+    ${EndIf}
+    Pop $HwndRadioAction2
+
+    ${If} $InstallMode == "SAME"
+        ${NSD_CreateLabel} 0u 98u 300u 32u "Reinstalling will refresh all files and runtimes while leaving your workspaces, databases, and configuration intact. Click Next to proceed."
+    ${ElseIf} $InstallMode == "UPDATE"
+        ${NSD_CreateLabel} 0u 98u 300u 32u "Updating will seamlessly replace the core IDE and offline runtimes with Phide ${APP_VERSION}. All user projects, workspaces, and databases are preserved."
+    ${Else}
+        ${NSD_CreateLabel} 0u 98u 300u 32u "Downgrading will install Phide ${APP_VERSION} over $InstalledVersion. Your workspaces and databases will remain preserved."
+    ${EndIf}
+    Pop $HwndExistingDetail
+
+    nsDialogs::Show
+FunctionEnd
+
+Function PageExistingInstallLeave
+    ${NSD_GetState} $HwndRadioAction1 $StateAction1
+    ${NSD_GetState} $HwndRadioAction2 $StateAction2
+
+    ${If} $StateAction2 == ${BST_CHECKED}
+        MessageBox MB_YESNO|MB_ICONQUESTION "Are you sure you want to uninstall Phide $InstalledVersion?" IDYES do_uninstall
+        Abort
+
+    do_uninstall:
+        ${If} ${FileExists} "$InstalledDir\Uninstall.exe"
+            ExecShell "" "$InstalledDir\Uninstall.exe"
+            Quit
+        ${Else}
+            MessageBox MB_ICONSTOP "Uninstaller could not be found at:$\r$\n$InstalledDir\Uninstall.exe"
+            Abort
+        ${EndIf}
+    ${Else}
+        StrCpy $INSTDIR $InstalledDir
+    ${EndIf}
+FunctionEnd
 
 ; ------------------------------------------------------------------------------
 ; Custom "Installation Options" Page Callback (PyCharm Style)
@@ -170,8 +343,18 @@ Section "MainSection" SEC01
     SectionIn RO
     SetOutPath "$INSTDIR"
 
+    ; Ensure phide is not running
+check_phide_loop:
+    nsExec::ExecToStack 'cmd.exe /c "tasklist /FI \"IMAGENAME eq phide.exe\" 2>NUL | find /I \"phide.exe\""'
+    Pop $0
+    Pop $1
+    ${If} $0 == 0
+        MessageBox MB_RETRYCANCEL|MB_ICONEXCLAMATION "Phide is currently running. Please close Phide and click Retry to continue, or Cancel to abort." IDRETRY check_phide_loop
+        Abort
+    ${EndIf}
+
     ; 1. Install all staged offline files (IDE, Runtimes, Servers, Assets)
-    DetailPrint "Extracting Phide 2026.a and bundled offline runtimes..."
+    DetailPrint "Extracting ${APP_NAME} ${APP_VERSION} and bundled offline runtimes..."
     ; Preserve existing user databases across installer updates
     ${If} ${FileExists} "$INSTDIR\runtimes\mysql\data\ibdata1"
         DetailPrint "Existing user databases detected, preserving user databases across update..."
@@ -276,9 +459,9 @@ Section "MainSection" SEC01
     ${EndIf}
 
     ; 11. Register in Windows Add/Remove Programs
-    WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\phide" "DisplayName" "Phide 2026.a"
+    WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\phide" "DisplayName" "${APP_NAME} ${APP_VERSION}"
     WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\phide" "DisplayIcon" '"$INSTDIR\assets\phide.ico"'
-    WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\phide" "DisplayVersion" "2026.a"
+    WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\phide" "DisplayVersion" "${APP_VERSION}"
     WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\phide" "Publisher" "Phide Studio"
     WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\phide" "UninstallString" '"$INSTDIR\Uninstall.exe"'
     WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\phide" "InstallLocation" "$INSTDIR"
