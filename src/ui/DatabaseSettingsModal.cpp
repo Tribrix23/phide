@@ -405,7 +405,7 @@ void DatabaseSettingsModal::Render(ID2D1RenderTarget* pRT, Theme& theme, const a
         pRT->DrawText(L"PHPMYADMIN ACTIONS", 18, pFmtHint, rcHeadC, pAccentBrush);
 
         // Status indicator badge in top right of section C
-        std::wstring pmaStatusStr = m_isPmaRunning ? (L"● Running (" + m_pmaUrl + L")") : (L"● Standby / Ready (Port " + m_pmaWebPort + L")");
+        std::wstring pmaStatusStr = m_isPmaRunning ? (L"● Running on Port " + m_pmaWebPort) : L"● Standby / Ready";
         D2D1_RECT_F rcPmaStatus = D2D1::RectF(rcSecC.left + config.ScaleF(230.0f), rcSecC.top + config.ScaleF(6.0f), rcSecC.right - config.ScaleF(12.0f), rcSecC.top + config.ScaleF(24.0f));
         pRT->PushAxisAlignedClip(rcPmaStatus, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> bStatusColor;

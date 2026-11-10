@@ -11,6 +11,17 @@ declare(strict_types=1);
 $cfg['blowfish_secret'] = 'phide_pma_aes256_blowfish_secret_key_32b!';
 
 /**
+ * Writable temp directory for Twig templates and sessions.
+ * Using sys_get_temp_dir() guarantees full write access across all user accounts
+ * even when Phide is installed in read-only system locations (C:\Program Files\).
+ */
+$pmaTemp = sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'phide_pma_tmp';
+if (!is_dir($pmaTemp)) {
+    @mkdir($pmaTemp, 0777, true);
+}
+$cfg['TempDir'] = $pmaTemp;
+
+/**
  * Servers configuration
  */
 $i = 0;
@@ -20,7 +31,7 @@ $i = 0;
  */
 $i++;
 $cfg['Servers'][$i]['auth_type'] = 'config'; // 'config' for seamless direct login, or 'cookie'
-$cfg['Servers'][$i]['host'] = 'localhost';
+$cfg['Servers'][$i]['host'] = '127.0.0.1';
 $cfg['Servers'][$i]['port'] = '3306';
 $cfg['Servers'][$i]['connect_type'] = 'tcp';
 $cfg['Servers'][$i]['extension'] = 'mysqli';

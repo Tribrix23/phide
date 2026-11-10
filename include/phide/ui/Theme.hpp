@@ -159,6 +159,11 @@ public:
      */
     void SetEditorFont(const std::wstring& family, float size);
 
+    void SetDpiScale(float scale) noexcept {
+        m_dpiScale = (scale > 0.1f) ? scale : 1.0f;
+    }
+    [[nodiscard]] float GetDpiScale() const noexcept { return m_dpiScale; }
+
     [[nodiscard]] bool IsAllKodaSemiBoldItalic() const noexcept {
         return (_wcsicmp(m_editorFontFamily.c_str(), L"Koda Mono Semibold Italic") == 0 ||
                 _wcsicmp(m_editorFontFamily.c_str(), L"Koda Mono SemiBold Italic") == 0 ||
@@ -334,6 +339,7 @@ public:
 private:
     ThemeMode m_mode = ThemeMode::Dark;
     bool m_isDarkActive = true;
+    float m_dpiScale = 1.0f;
     std::wstring m_editorFontFamily = L"Koda Mono";
     float m_editorFontSize = 15.0f;
 };

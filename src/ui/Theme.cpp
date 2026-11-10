@@ -178,7 +178,7 @@ HRESULT Theme::CreateDeviceResources(ID2D1RenderTarget* pRT, IDWriteFactory* pDW
     pRT->CreateSolidColorBrush(D2D1::ColorF(0.550f, 0.680f, 0.810f, 1.0f), &brushSetiFolderOpen);
     pRT->CreateSolidColorBrush(D2D1::ColorF(0.620f, 0.620f, 0.620f, 1.0f), &brushSetiDefault);
 
-    // Load Official VS Code Seti Font and Phide Mono Fonts into DirectWrite Custom Font Collection
+    // Load Official VS Code Seti Font and Koda Mono Fonts into DirectWrite Custom Font Collection
     static const std::vector<std::wstring> fontFiles = {
         L"seti.ttf",
         L"KodaMono-Regular.ttf",
@@ -188,15 +188,7 @@ HRESULT Theme::CreateDeviceResources(ID2D1RenderTarget* pRT, IDWriteFactory* pDW
         L"KodaMono-Medium.ttf",
         L"KodaMono-MediumItalic.ttf",
         L"KodaMono-SemiBold.ttf",
-        L"KodaMono-SemiBoldItalic.ttf",
-        L"PhideMono-Regular.ttf",
-        L"PhideMono-Italic.ttf",
-        L"PhideMono-Bold.ttf",
-        L"PhideMono-BoldItalic.ttf",
-        L"PhideMono-Medium.ttf",
-        L"PhideMono-MediumItalic.ttf",
-        L"PhideMono-SemiBold.ttf",
-        L"PhideMono-SemiBoldItalic.ttf"
+        L"KodaMono-SemiBoldItalic.ttf"
     };
 
     ComPtr<IDWriteFactory3> dwriteFactory3;
@@ -245,7 +237,7 @@ void Theme::RebuildTextFormats(IDWriteFactory* pDWriteFactory) {
             DWRITE_FONT_WEIGHT_NORMAL,
             DWRITE_FONT_STYLE_NORMAL,
             DWRITE_FONT_STRETCH_NORMAL,
-            17.5f,
+            17.5f * m_dpiScale,
             L"en-US",
             &fontSeti
         );
@@ -293,6 +285,7 @@ void Theme::RebuildTextFormats(IDWriteFactory* pDWriteFactory) {
         if (!ppFormat) return E_POINTER;
         *ppFormat = nullptr;
 
+        const float scaledSize = size * m_dpiScale;
         DWRITE_FONT_WEIGHT weightToUse = isAllKodaSemiBoldItalic ? DWRITE_FONT_WEIGHT_SEMI_BOLD : weight;
         DWRITE_FONT_STYLE styleToUse = isAllKodaSemiBoldItalic ? DWRITE_FONT_STYLE_ITALIC : style;
         const wchar_t* familyToUse = isAllKodaSemiBoldItalic ? L"Koda Mono" : primaryFamily;
@@ -306,7 +299,7 @@ void Theme::RebuildTextFormats(IDWriteFactory* pDWriteFactory) {
                 weightToUse,
                 styleToUse,
                 DWRITE_FONT_STRETCH_NORMAL,
-                size,
+                scaledSize,
                 L"en-US",
                 ppFormat
             );
@@ -318,7 +311,7 @@ void Theme::RebuildTextFormats(IDWriteFactory* pDWriteFactory) {
                 weightToUse,
                 styleToUse,
                 DWRITE_FONT_STRETCH_NORMAL,
-                size,
+                scaledSize,
                 L"en-US",
                 ppFormat
             );
@@ -421,7 +414,7 @@ void Theme::RebuildTextFormats(IDWriteFactory* pDWriteFactory) {
     fontIcon.Reset();
     pDWriteFactory->CreateTextFormat(
         L"Segoe UI Symbol", nullptr, DWRITE_FONT_WEIGHT_REGULAR, DWRITE_FONT_STYLE_NORMAL,
-        DWRITE_FONT_STRETCH_NORMAL, 15.0f, L"en-US", &fontIcon
+        DWRITE_FONT_STRETCH_NORMAL, 15.0f * m_dpiScale, L"en-US", &fontIcon
     );
     if (fontIcon) {
         fontIcon->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
@@ -432,7 +425,7 @@ void Theme::RebuildTextFormats(IDWriteFactory* pDWriteFactory) {
     fontCaption.Reset();
     pDWriteFactory->CreateTextFormat(
         L"Segoe UI Symbol", nullptr, DWRITE_FONT_WEIGHT_REGULAR, DWRITE_FONT_STYLE_NORMAL,
-        DWRITE_FONT_STRETCH_NORMAL, 10.5f, L"en-US", &fontCaption
+        DWRITE_FONT_STRETCH_NORMAL, 10.5f * m_dpiScale, L"en-US", &fontCaption
     );
     if (fontCaption) {
         fontCaption->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);

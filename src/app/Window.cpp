@@ -322,6 +322,7 @@ static bool PromptInputDialog(HWND hParent, const std::wstring& title, const std
 
 Window::Window() {
     m_editorGroups.push_back(editor::EditorGroup{});
+    UpdateExecutionButtonStates();
 }
 
 Window::~Window() {
@@ -2687,6 +2688,9 @@ void Window::DoOpenFolderFromPath(const std::wstring& path) {
     m_theme.SetThemeMode(m_theme.GetThemeMode());
     phide::plugin::PluginManager::Instance().DispatchEvent(L"onWorkspaceOpen", path);
 
+    m_cachedWorkspaceDir = path;
+    m_cachedProjectRuntimeId = DetectWorkspaceProjectRuntime(path);
+
     // Close clean tabs that belong to a previous/different project
     for (auto& grp : m_editorGroups) {
         auto it = grp.docs.begin();
@@ -3154,9 +3158,13 @@ void Window::DoCloseEditor() {
 
 void Window::DoCloseFolder() {
     m_drawer.CloseFolder();
+    m_cachedWorkspaceDir = L"";
+    m_cachedProjectRuntimeId = L"";
+    m_currentStatusBarRuntimeId = L"";
     m_drawer.RefreshGitState(true);
     m_editor.GetPackageManagerView().ScanInstalledPackages(L"");
     UpdateDrawerErrorFiles();
+    UpdateExecutionButtonStates();
     SaveSessionState();
     RunManualGarbageCollection();
     InvalidateRect(m_hwnd, nullptr, FALSE);
@@ -3927,7 +3935,15 @@ void Window::DoQuickOpenFileSearch() {
 }
 
 void Window::UpdateDatabaseModalRuntimeStatus() {
-    bool pmaRunning = (m_hPmaProcess != nullptr || m_isPmaRunning);
+    if (m_hPmaProcess) {
+        DWORD exitCode = 0;
+        if (GetExitCodeProcess(m_hPmaProcess, &exitCode) && exitCode != STILL_ACTIVE) {
+            CloseHandle(m_hPmaProcess);
+            m_hPmaProcess = nullptr;
+            m_isPmaRunning = false;
+        }
+    }
+    bool pmaRunning = (m_hPmaProcess != nullptr && m_isPmaRunning);
     bool nginxRunning = (m_hNginxProcess != nullptr || m_header.GetServerState() == ui::ServerState::Running);
     m_dbSettingsModal.SetRuntimeStatus(pmaRunning, nginxRunning);
 }
@@ -4160,7 +4176,7 @@ void Window::UpdateExecutionButtonStates() {
     m_header.SetZoomEnabled(hasProject);
 
     auto* pDoc = GetActiveDoc();
-    bool canSplit = (m_editorGroups.size() < 4);
+    bool canSplit = (pDoc != nullptr && !pDoc->isSpecialView && m_editorGroups.size() < 4);
     m_header.SetSplitEditorEnabled(canSplit);
 
     if (!pDoc || pDoc->isSpecialView) {
@@ -6223,32 +6239,64 @@ void Window::StartPmaServer() {
         m_header.SetDatabaseState(ui::DatabaseState::Failed);
         return;
     }
-    std::wstring phpExe = L"php.exe";
+    std::wstring phpExe;
     std::wstring phpIni;
-    wchar_t szLocalAppPma[MAX_PATH] = { 0 };
-    if (GetEnvironmentVariableW(L"LOCALAPPDATA", szLocalAppPma, MAX_PATH) > 0) {
-        std::filesystem::path phpRoot = std::filesystem::path(szLocalAppPma) / L"Programs" / L"PHP";
-        std::error_code ec;
-        if (std::filesystem::exists(phpRoot, ec)) {
-            for (const auto& entry : std::filesystem::directory_iterator(phpRoot, ec)) {
-                if (entry.is_directory() && std::filesystem::exists(entry.path() / L"php.exe", ec)) {
-                    phpExe = (entry.path() / L"php.exe").wstring();
-                    if (std::filesystem::exists(entry.path() / L"php.ini", ec)) {
-                        phpIni = (entry.path() / L"php.ini").wstring();
+
+    // 1. Check bundled runtime in runtimes\php (highest priority for offline standalone portability)
+    wchar_t exePath[MAX_PATH] = { 0 };
+    GetModuleFileNameW(nullptr, exePath, MAX_PATH);
+    std::filesystem::path exeDir = std::filesystem::path(exePath).parent_path();
+    std::filesystem::path bundled = exeDir / L"runtimes" / L"php" / L"php.exe";
+    if (!std::filesystem::exists(bundled)) {
+        bundled = exeDir.parent_path() / L"runtimes" / L"php" / L"php.exe";
+    }
+    if (!std::filesystem::exists(bundled)) {
+        bundled = GetPhideRoot() / L"runtimes" / L"php" / L"php.exe";
+    }
+    if (std::filesystem::exists(bundled)) {
+        phpExe = bundled.wstring();
+        if (std::filesystem::exists(bundled.parent_path() / L"php.ini")) {
+            phpIni = (bundled.parent_path() / L"php.ini").wstring();
+        }
+    }
+
+    // 2. Check LOCALAPPDATA\Programs\PHP
+    if (phpExe.empty()) {
+        wchar_t szLocalAppPma[MAX_PATH] = { 0 };
+        if (GetEnvironmentVariableW(L"LOCALAPPDATA", szLocalAppPma, MAX_PATH) > 0) {
+            std::filesystem::path phpRoot = std::filesystem::path(szLocalAppPma) / L"Programs" / L"PHP";
+            std::error_code ec;
+            if (std::filesystem::exists(phpRoot, ec)) {
+                for (const auto& entry : std::filesystem::directory_iterator(phpRoot, ec)) {
+                    if (entry.is_directory() && std::filesystem::exists(entry.path() / L"php.exe", ec)) {
+                        phpExe = (entry.path() / L"php.exe").wstring();
+                        if (std::filesystem::exists(entry.path() / L"php.ini", ec)) {
+                            phpIni = (entry.path() / L"php.ini").wstring();
+                        }
+                        break;
                     }
-                    break;
                 }
             }
         }
     }
-    // Also check bundled runtime in runtimes\php
-    std::filesystem::path bundledPhp = GetPhideRoot() / L"runtimes" / L"php" / L"php.exe";
-    if (std::filesystem::exists(bundledPhp)) {
-        phpExe = bundledPhp.wstring();
-        if (std::filesystem::exists(GetPhideRoot() / L"runtimes" / L"php" / L"php.ini")) {
-            phpIni = (GetPhideRoot() / L"runtimes" / L"php" / L"php.ini").wstring();
+
+    // 3. Search PATH for php.exe
+    if (phpExe.empty()) {
+        wchar_t phpFound[MAX_PATH] = { 0 };
+        if (SearchPathW(nullptr, L"php.exe", nullptr, MAX_PATH, phpFound, nullptr) > 0) {
+            phpExe = phpFound;
+            std::filesystem::path pFoundDir = std::filesystem::path(phpFound).parent_path();
+            if (std::filesystem::exists(pFoundDir / L"php.ini")) {
+                phpIni = (pFoundDir / L"php.ini").wstring();
+            }
         }
     }
+
+    // 4. Fallback to L"php.exe"
+    if (phpExe.empty()) {
+        phpExe = L"php.exe";
+    }
+
     std::wstring iniArg = (!phpIni.empty() && std::filesystem::exists(phpIni)) ? (L" -c \"" + phpIni + L"\"") : L"";
 
     int pmaPort = 8081;
@@ -6257,8 +6305,18 @@ void Window::StartPmaServer() {
         if (parsed > 0 && parsed < 65536) pmaPort = parsed;
     } catch (...) {}
 
-    // Bind to 0.0.0.0:<pmaPort> so localhost:<pmaPort> and custom hosts work seamlessly
-    std::wstring cmd = L"\"" + phpExe + L"\"" + iniArg + L" -S 0.0.0.0:" + std::to_wstring(pmaPort) + L" -t \"" + pmaDir.wstring() + L"\"";
+    // Dynamic port discovery: if target port is already taken by another application,
+    // automatically find the next available open port (8081 -> 8082 -> 8083 ...)
+    while (IsPortListening(pmaPort) && pmaPort < 65535) {
+        pmaPort++;
+    }
+
+    // Update modal with dynamically assigned port and URL
+    m_dbSettingsModal.SetPmaWebPort(std::to_wstring(pmaPort));
+
+    // Bind to 0.0.0.0:<pmaPort> so localhost:<pmaPort> and custom hosts work seamlessly.
+    // Explicitly pass -d opcache.enable=0 -d opcache.enable_cli=0 to prevent Windows ASLR fatal crash!
+    std::wstring cmd = L"\"" + phpExe + L"\"" + iniArg + L" -d opcache.enable=0 -d opcache.enable_cli=0 -d upload_max_filesize=128M -d post_max_size=128M -d memory_limit=512M -S 0.0.0.0:" + std::to_wstring(pmaPort) + L" -t \"" + pmaDir.wstring() + L"\"";
     std::vector<wchar_t> cmdBuf(cmd.begin(), cmd.end());
     cmdBuf.push_back(L'\0');
 
@@ -6269,16 +6327,35 @@ void Window::StartPmaServer() {
     PROCESS_INFORMATION pi{};
     if (CreateProcessW(NULL, cmdBuf.data(), NULL, NULL, FALSE, CREATE_NO_WINDOW, NULL, pmaDir.wstring().c_str(), &si, &pi)) {
         m_hPmaProcess = pi.hProcess;
-        m_isPmaRunning = true;
         CloseHandle(pi.hThread);
 
         // Wait up to 1500ms for php.exe to start listening on pmaPort
+        bool listening = false;
         for (int attempt = 0; attempt < 30; ++attempt) {
             Sleep(50);
-            if (IsPortListening(pmaPort)) break;
+            DWORD exitCode = 0;
+            if (GetExitCodeProcess(m_hPmaProcess, &exitCode) && exitCode != STILL_ACTIVE) {
+                break; // Process terminated early
+            }
+            if (IsPortListening(pmaPort)) {
+                listening = true;
+                break;
+            }
         }
 
-        m_header.SetDatabaseState(ui::DatabaseState::Running);
+        if (listening) {
+            m_isPmaRunning = true;
+            m_header.SetDatabaseState(ui::DatabaseState::Running);
+        } else {
+            // Port never became active or PHP crashed
+            if (m_hPmaProcess) {
+                TerminateProcess(m_hPmaProcess, 0);
+                CloseHandle(m_hPmaProcess);
+                m_hPmaProcess = nullptr;
+            }
+            m_isPmaRunning = false;
+            m_header.SetDatabaseState(ui::DatabaseState::Failed);
+        }
     } else {
         m_isPmaRunning = false;
         m_header.SetDatabaseState(ui::DatabaseState::Failed);
@@ -6732,15 +6809,34 @@ bool Window::Create(HINSTANCE hInstance, int nCmdShow) {
     int dpi = GetDeviceCaps(hdc, LOGPIXELSY);
     ReleaseDC(nullptr, hdc);
     m_config.dpiScale = static_cast<float>(dpi) / 96.0f;
+    m_theme.SetDpiScale(m_config.dpiScale);
 
-    const int width  = m_config.Scale(m_config.initialWidth);
-    const int height = m_config.Scale(m_config.initialHeight);
+    int width  = m_config.Scale(m_config.initialWidth);
+    int height = m_config.Scale(m_config.initialHeight);
 
-    // Center window on primary monitor
-    const int screenW = GetSystemMetrics(SM_CXSCREEN);
-    const int screenH = GetSystemMetrics(SM_CYSCREEN);
-    const int x = (screenW - width) / 2;
-    const int y = (screenH - height) / 2;
+    // Dynamic sizing to fit any screen / laptop display work area
+    RECT workArea{};
+    int x = 0;
+    int y = 0;
+    if (SystemParametersInfoW(SPI_GETWORKAREA, 0, &workArea, 0)) {
+        const int workW = workArea.right - workArea.left;
+        const int workH = workArea.bottom - workArea.top;
+        if (width > workW) width = workW;
+        if (height > workH) height = workH;
+        x = workArea.left + (workW - width) / 2;
+        y = workArea.top + (workH - height) / 2;
+        if (x < workArea.left) x = workArea.left;
+        if (y < workArea.top) y = workArea.top;
+    } else {
+        const int screenW = GetSystemMetrics(SM_CXSCREEN);
+        const int screenH = GetSystemMetrics(SM_CYSCREEN);
+        if (width > screenW) width = screenW;
+        if (height > screenH) height = screenH;
+        x = (screenW - width) / 2;
+        y = (screenH - height) / 2;
+        if (x < 0) x = 0;
+        if (y < 0) y = 0;
+    }
 
     m_hwnd = CreateWindowEx(
         WS_EX_APPWINDOW,
@@ -7592,7 +7688,9 @@ HRESULT Window::CreateDeviceResources() {
 
     D2D1_RENDER_TARGET_PROPERTIES rtProps = D2D1::RenderTargetProperties(
         D2D1_RENDER_TARGET_TYPE_DEFAULT,
-        D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED)
+        D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED),
+        96.0f,
+        96.0f
     );
 
     D2D1_HWND_RENDER_TARGET_PROPERTIES hwndProps = D2D1::HwndRenderTargetProperties(
@@ -7601,6 +7699,9 @@ HRESULT Window::CreateDeviceResources() {
 
     HRESULT hr = m_pD2DFactory->CreateHwndRenderTarget(rtProps, hwndProps, &m_pRenderTarget);
     if (FAILED(hr)) return hr;
+
+    m_pRenderTarget->SetDpi(96.0f, 96.0f);
+    m_theme.SetDpiScale(m_config.dpiScale);
 
     // Allocate theme GPU brushes and typography formats
     HRESULT hrTheme = m_theme.CreateDeviceResources(m_pRenderTarget.Get(), m_pDWriteFactory.Get());
@@ -8718,6 +8819,167 @@ void Window::RenderFloatingTooltip(ID2D1RenderTarget* pRT, const std::wstring& t
     }
 }
 
+std::wstring Window::DetectWorkspaceProjectRuntime(const std::wstring& openDir) {
+    if (openDir.empty()) return L"";
+
+    std::error_code ecCheck;
+    std::filesystem::path rootP(openDir);
+
+    // 1. Detect configuration files
+    // React / Node configs:
+    bool hasReactConfig = false;
+    bool hasPackageJson = std::filesystem::exists(rootP / L"package.json", ecCheck);
+    if (std::filesystem::exists(rootP / L"next.config.js", ecCheck) ||
+        std::filesystem::exists(rootP / L"next.config.ts", ecCheck) ||
+        std::filesystem::exists(rootP / L"next.config.mjs", ecCheck) ||
+        std::filesystem::exists(rootP / L"next.config.cjs", ecCheck) ||
+        std::filesystem::exists(rootP / L"vite.config.js", ecCheck) ||
+        std::filesystem::exists(rootP / L"vite.config.ts", ecCheck) ||
+        std::filesystem::exists(rootP / L"vite.config.mjs", ecCheck) ||
+        std::filesystem::exists(rootP / L"nuxt.config.js", ecCheck) ||
+        std::filesystem::exists(rootP / L"nuxt.config.ts", ecCheck) ||
+        std::filesystem::exists(rootP / L"remix.config.js", ecCheck) ||
+        std::filesystem::exists(rootP / L"astro.config.mjs", ecCheck) ||
+        std::filesystem::exists(rootP / L"svelte.config.js", ecCheck) ||
+        std::filesystem::exists(rootP / L"tsconfig.json", ecCheck) ||
+        std::filesystem::exists(rootP / L"tailwind.config.js", ecCheck) ||
+        std::filesystem::exists(rootP / L"tailwind.config.ts", ecCheck) ||
+        std::filesystem::exists(rootP / L"postcss.config.js", ecCheck) ||
+        std::filesystem::exists(rootP / L"postcss.config.mjs", ecCheck)) {
+        hasReactConfig = true;
+    } else if (hasPackageJson) {
+        std::ifstream ifs(rootP / L"package.json");
+        if (ifs.is_open()) {
+            std::string content((std::istreambuf_iterator<char>(ifs)), std::istreambuf_iterator<char>());
+            std::string lower = content;
+            for (auto& c : lower) c = tolower(c);
+            if (lower.find("react") != std::string::npos ||
+                lower.find("next") != std::string::npos ||
+                lower.find("vue") != std::string::npos ||
+                lower.find("svelte") != std::string::npos ||
+                lower.find("vite") != std::string::npos) {
+                hasReactConfig = true;
+            }
+        }
+    }
+
+    // PHP configs:
+    bool hasPhpConfig = false;
+    if (std::filesystem::exists(rootP / L"composer.json", ecCheck) ||
+        std::filesystem::exists(rootP / L"composer.lock", ecCheck) ||
+        std::filesystem::exists(rootP / L"artisan", ecCheck) ||
+        std::filesystem::exists(rootP / L"phpunit.xml", ecCheck)) {
+        hasPhpConfig = true;
+    }
+
+    // Python configs:
+    bool hasPythonConfig = false;
+    if (std::filesystem::exists(rootP / L"requirements.txt", ecCheck) ||
+        std::filesystem::exists(rootP / L"pyproject.toml", ecCheck) ||
+        std::filesystem::exists(rootP / L"Pipfile", ecCheck) ||
+        std::filesystem::exists(rootP / L"setup.py", ecCheck) ||
+        std::filesystem::exists(rootP / L"manage.py", ecCheck) ||
+        std::filesystem::exists(rootP / L"environment.yml", ecCheck)) {
+        hasPythonConfig = true;
+    }
+
+    // 2. Count workspace files by extension, explicitly excluding .venv and external libraries
+    size_t pythonFileCount = 0;
+    size_t nodeFileCount = 0;
+    size_t phpFileCount = 0;
+
+    std::error_code ecIter;
+    for (std::filesystem::recursive_directory_iterator it(rootP, std::filesystem::directory_options::skip_permission_denied, ecIter), end;
+         it != end && !ecIter; it.increment(ecIter)) {
+        if (it->is_directory(ecIter)) {
+            std::wstring dirName = it->path().filename().wstring();
+            for (auto& c : dirName) c = towlower(c);
+
+            // Exclude .venv, venv, env, external libraries, node_modules, vendor, dist, build, etc.
+            if (dirName.rfind(L".", 0) == 0 ||
+                dirName == L"venv" || dirName == L"env" || dirName == L"virtualenv" ||
+                dirName == L"external libraries" || dirName == L"externallibraries" || dirName == L"external_libraries" ||
+                dirName == L"node_modules" || dirName == L"vendor" ||
+                dirName == L"dist" || dirName == L"build" || dirName == L"out" || dirName == L"target" ||
+                dirName == L"bin" || dirName == L"obj" || dirName == L"__pycache__" ||
+                it.depth() >= 6) {
+                it.disable_recursion_pending();
+            }
+            continue;
+        }
+
+        if (it->is_regular_file(ecIter)) {
+            std::wstring ext = it->path().extension().wstring();
+            for (auto& c : ext) c = towlower(c);
+
+            if (ext == L".py" || ext == L".ipynb" || ext == L".pyw" || ext == L".pyx") {
+                pythonFileCount++;
+            } else if (ext == L".js" || ext == L".ts" || ext == L".jsx" || ext == L".tsx" ||
+                       ext == L".mjs" || ext == L".cjs" || ext == L".vue" || ext == L".svelte" || ext == L".astro") {
+                nodeFileCount++;
+            } else if (ext == L".php" || ext == L".phtml" || ext == L".php8" || ext == L".php7") {
+                phpFileCount++;
+            }
+        }
+    }
+
+    // 3. Apply User Rule:
+    // "even if theres many python file if that project have those react config then its node right same with php"
+    if (hasReactConfig && !hasPhpConfig) {
+        return L"node";
+    }
+    if (hasPhpConfig && !hasReactConfig) {
+        return L"php";
+    }
+    if (hasReactConfig && hasPhpConfig) {
+        return (phpFileCount > nodeFileCount) ? L"php" : L"node";
+    }
+
+    // If package.json is present without python/php configs, it's Node
+    if (hasPackageJson && !hasPythonConfig && !hasPhpConfig) {
+        return L"node";
+    }
+
+    // If Python config is present without node/php configs, it's Python
+    if (hasPythonConfig && !hasPackageJson && !hasPhpConfig) {
+        return L"python";
+    }
+
+    // 4. File count comparison rule:
+    // "if theres many python file than other then the default is python"
+    if (pythonFileCount > nodeFileCount && pythonFileCount > phpFileCount) {
+        return L"python";
+    }
+    if (phpFileCount > pythonFileCount && phpFileCount > nodeFileCount) {
+        return L"php";
+    }
+    if (nodeFileCount > pythonFileCount && nodeFileCount > phpFileCount) {
+        return L"node";
+    }
+
+    // 5. Fallback heuristics if tied or no code files
+    if (hasPackageJson) return L"node";
+    if (hasPythonConfig) return L"python";
+    if (hasPhpConfig) return L"php";
+
+    std::wstring lowerDir = openDir;
+    for (auto& c : lowerDir) c = towlower(c);
+    if (lowerDir.find(L"python") != std::wstring::npos || lowerDir.find(L"django") != std::wstring::npos || lowerDir.find(L"flask") != std::wstring::npos) {
+        return L"python";
+    }
+    if (lowerDir.find(L"php") != std::wstring::npos || lowerDir.find(L"laravel") != std::wstring::npos) {
+        return L"php";
+    }
+    if (lowerDir.find(L"node") != std::wstring::npos || lowerDir.find(L"react") != std::wstring::npos || lowerDir.find(L"next") != std::wstring::npos) {
+        return L"node";
+    }
+
+    if (pythonFileCount > 0) return L"python";
+    if (phpFileCount > 0) return L"php";
+    if (nodeFileCount > 0) return L"node";
+    return L"php";
+}
+
 void Window::RenderStatusBar(float clientW, float clientH) {
     if (!m_pRenderTarget) return;
 
@@ -8905,10 +9167,22 @@ void Window::RenderStatusBar(float clientW, float clientH) {
     }
 
     // Right items:
-    // User requirement Image 2: "REMOVE THIS BELL ICON" -> Bell icon completely removed!
+    // Reset right status bar hit rects initially
+    m_rcStatusBarEncoding = {};
+    m_rcStatusBarSpaces = {};
+    m_rcStatusBarLnCol = {};
+    m_rcStatusBarVenvTag = {};
+    m_rcStatusBarGraphView = {};
+    m_currentStatusBarRuntimeId.clear();
+
+    auto* curDoc = GetActiveDoc();
+    bool hasActiveDoc = (curDoc != nullptr && !curDoc->isSpecialView);
+
     float curRightX = clientW - m_config.ScaleF(10.0f);
     const float rightPillPadX = m_config.ScaleF(10.0f);
     const float rightPillGap = m_config.ScaleF(14.0f);
+    const float padX = m_config.ScaleF(6.0f);
+    const float gap = m_config.ScaleF(5.0f);
 
     auto measureStatusPillWidth = [&](const std::wstring& str, float minWidth) -> float {
         float measured = minWidth;
@@ -8933,203 +9207,167 @@ void Window::RenderStatusBar(float clientW, float clientH) {
         return measured;
     };
 
-    // UTF-8 & CRLF
-    std::wstring encStr = L"UTF-8   CRLF";
-    float encW = measureStatusPillWidth(encStr, m_config.ScaleF(95.0f));
-    curRightX -= encW;
-    m_rcStatusBarEncoding = D2D1::RectF(curRightX, itemY, curRightX + encW, itemY + itemH);
-    if (m_isHoveredStatusBarEncoding) {
-        D2D1_ROUNDED_RECT rrc = D2D1::RoundedRect(m_rcStatusBarEncoding, m_config.ScaleF(3.5f), m_config.ScaleF(3.5f));
-        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> hoverBg;
-        m_pRenderTarget->CreateSolidColorBrush(
-            m_theme.IsDarkMode() ? D2D1::ColorF(0.20f, 0.22f, 0.26f, 0.90f) : D2D1::ColorF(0.88f, 0.90f, 0.94f, 0.90f),
-            &hoverBg
-        );
-        if (hoverBg) m_pRenderTarget->FillRoundedRectangle(rrc, hoverBg.Get());
-    }
-    if (pFmt && textBrush) {
-        m_pRenderTarget->DrawText(encStr.c_str(), static_cast<UINT32>(encStr.length()), pFmt, m_rcStatusBarEncoding, textBrush);
-    }
-    curRightX -= rightPillGap;
+    // 1. Only show document metrics (Encoding, Indentation, Ln/Col) when an active document is open
+    if (hasActiveDoc) {
+        // UTF-8 & CRLF
+        std::wstring encStr = L"UTF-8   CRLF";
+        float encW = measureStatusPillWidth(encStr, m_config.ScaleF(95.0f));
+        curRightX -= encW;
+        m_rcStatusBarEncoding = D2D1::RectF(curRightX, itemY, curRightX + encW, itemY + itemH);
+        if (m_isHoveredStatusBarEncoding) {
+            D2D1_ROUNDED_RECT rrc = D2D1::RoundedRect(m_rcStatusBarEncoding, m_config.ScaleF(3.5f), m_config.ScaleF(3.5f));
+            Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> hoverBg;
+            m_pRenderTarget->CreateSolidColorBrush(
+                m_theme.IsDarkMode() ? D2D1::ColorF(0.20f, 0.22f, 0.26f, 0.90f) : D2D1::ColorF(0.88f, 0.90f, 0.94f, 0.90f),
+                &hoverBg
+            );
+            if (hoverBg) m_pRenderTarget->FillRoundedRectangle(rrc, hoverBg.Get());
+        }
+        if (pFmt && textBrush) {
+            m_pRenderTarget->DrawText(encStr.c_str(), static_cast<UINT32>(encStr.length()), pFmt, m_rcStatusBarEncoding, textBrush);
+        }
+        curRightX -= rightPillGap;
 
-    // Indentation
-    int indentSize = (m_config.tabSize > 0) ? m_config.tabSize : 4;
-    std::wstring indStr = (m_config.insertSpaces ? L"Spaces: " : L"Tab Size: ") + std::to_wstring(indentSize);
-    float indW = measureStatusPillWidth(indStr, m_config.ScaleF(85.0f));
-    curRightX -= indW;
-    m_rcStatusBarSpaces = D2D1::RectF(curRightX, itemY, curRightX + indW, itemY + itemH);
-    if (m_isHoveredStatusBarSpaces) {
-        D2D1_ROUNDED_RECT rrc = D2D1::RoundedRect(m_rcStatusBarSpaces, m_config.ScaleF(3.5f), m_config.ScaleF(3.5f));
-        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> hoverBg;
-        m_pRenderTarget->CreateSolidColorBrush(
-            m_theme.IsDarkMode() ? D2D1::ColorF(0.20f, 0.22f, 0.26f, 0.90f) : D2D1::ColorF(0.88f, 0.90f, 0.94f, 0.90f),
-            &hoverBg
-        );
-        if (hoverBg) m_pRenderTarget->FillRoundedRectangle(rrc, hoverBg.Get());
-    }
-    if (pFmt && textBrush) {
-        m_pRenderTarget->DrawText(indStr.c_str(), static_cast<UINT32>(indStr.length()), pFmt, m_rcStatusBarSpaces, textBrush);
-    }
-    curRightX -= rightPillGap;
+        // Indentation
+        int indentSize = (m_config.tabSize > 0) ? m_config.tabSize : 4;
+        std::wstring indStr = (m_config.insertSpaces ? L"Spaces: " : L"Tab Size: ") + std::to_wstring(indentSize);
+        float indW = measureStatusPillWidth(indStr, m_config.ScaleF(85.0f));
+        curRightX -= indW;
+        m_rcStatusBarSpaces = D2D1::RectF(curRightX, itemY, curRightX + indW, itemY + itemH);
+        if (m_isHoveredStatusBarSpaces) {
+            D2D1_ROUNDED_RECT rrc = D2D1::RoundedRect(m_rcStatusBarSpaces, m_config.ScaleF(3.5f), m_config.ScaleF(3.5f));
+            Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> hoverBg;
+            m_pRenderTarget->CreateSolidColorBrush(
+                m_theme.IsDarkMode() ? D2D1::ColorF(0.20f, 0.22f, 0.26f, 0.90f) : D2D1::ColorF(0.88f, 0.90f, 0.94f, 0.90f),
+                &hoverBg
+            );
+            if (hoverBg) m_pRenderTarget->FillRoundedRectangle(rrc, hoverBg.Get());
+        }
+        if (pFmt && textBrush) {
+            m_pRenderTarget->DrawText(indStr.c_str(), static_cast<UINT32>(indStr.length()), pFmt, m_rcStatusBarSpaces, textBrush);
+        }
+        curRightX -= rightPillGap;
 
-    // Ln, Col
-    auto* curDoc = GetActiveDoc();
-    size_t curLine = curDoc ? (curDoc->buffer.GetCursor().line + 1) : 1;
-    size_t curCol = curDoc ? (curDoc->buffer.GetCursor().col + 1) : 1;
-    std::wstring lnColStr = L"Ln " + std::to_wstring(curLine) + L", Col " + std::to_wstring(curCol);
-    float lnColW = measureStatusPillWidth(lnColStr, m_config.ScaleF(110.0f));
-    curRightX -= lnColW;
-    m_rcStatusBarLnCol = D2D1::RectF(curRightX, itemY, curRightX + lnColW, itemY + itemH);
-    if (m_isHoveredStatusBarLnCol) {
-        D2D1_ROUNDED_RECT rrc = D2D1::RoundedRect(m_rcStatusBarLnCol, m_config.ScaleF(3.5f), m_config.ScaleF(3.5f));
-        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> hoverBg;
-        m_pRenderTarget->CreateSolidColorBrush(
-            m_theme.IsDarkMode() ? D2D1::ColorF(0.20f, 0.22f, 0.26f, 0.90f) : D2D1::ColorF(0.88f, 0.90f, 0.94f, 0.90f),
-            &hoverBg
-        );
-        if (hoverBg) m_pRenderTarget->FillRoundedRectangle(rrc, hoverBg.Get());
+        // Ln, Col
+        size_t curLine = curDoc->buffer.GetCursor().line + 1;
+        size_t curCol = curDoc->buffer.GetCursor().col + 1;
+        std::wstring lnColStr = L"Ln " + std::to_wstring(curLine) + L", Col " + std::to_wstring(curCol);
+        float lnColW = measureStatusPillWidth(lnColStr, m_config.ScaleF(110.0f));
+        curRightX -= lnColW;
+        m_rcStatusBarLnCol = D2D1::RectF(curRightX, itemY, curRightX + lnColW, itemY + itemH);
+        if (m_isHoveredStatusBarLnCol) {
+            D2D1_ROUNDED_RECT rrc = D2D1::RoundedRect(m_rcStatusBarLnCol, m_config.ScaleF(3.5f), m_config.ScaleF(3.5f));
+            Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> hoverBg;
+            m_pRenderTarget->CreateSolidColorBrush(
+                m_theme.IsDarkMode() ? D2D1::ColorF(0.20f, 0.22f, 0.26f, 0.90f) : D2D1::ColorF(0.88f, 0.90f, 0.94f, 0.90f),
+                &hoverBg
+            );
+            if (hoverBg) m_pRenderTarget->FillRoundedRectangle(rrc, hoverBg.Get());
+        }
+        if (pFmt && textBrush) {
+            m_pRenderTarget->DrawText(lnColStr.c_str(), static_cast<UINT32>(lnColStr.length()), pFmt, m_rcStatusBarLnCol, textBrush);
+        }
+        curRightX -= rightPillGap;
     }
-    if (pFmt && textBrush) {
-        m_pRenderTarget->DrawText(lnColStr.c_str(), static_cast<UINT32>(lnColStr.length()), pFmt, m_rcStatusBarLnCol, textBrush);
-    }
-    curRightX -= rightPillGap;
 
     // Dynamic Language Runtime Tag:
-    // 1. Detect and cache the project's default runtime from the workspace root
-    // 2. Override dynamically when the user focuses a specific language file (.py, .php, .js/.ts/.tsx),
-    //    and return to the project's default runtime when closing it or focusing neutral files/folders.
-    static std::wstring s_cachedWorkspaceDir = L"<uninitialized>";
-    static std::wstring s_cachedProjectRuntimeId = L"node";
-
-    std::wstring openDir = m_drawer.GetOpenFolderPath();
-    if (openDir != s_cachedWorkspaceDir) {
-        s_cachedWorkspaceDir = openDir;
-        s_cachedProjectRuntimeId.clear();
-
-        if (!openDir.empty()) {
-            std::error_code ecCheck;
-            std::filesystem::path rootP(openDir);
-            if (std::filesystem::exists(rootP / L"package.json", ecCheck) ||
-                std::filesystem::exists(rootP / L"node_modules", ecCheck) ||
-                std::filesystem::exists(rootP / L"next.config.js", ecCheck) ||
-                std::filesystem::exists(rootP / L"next.config.ts", ecCheck) ||
-                std::filesystem::exists(rootP / L"next.config.mjs", ecCheck) ||
-                std::filesystem::exists(rootP / L"vite.config.js", ecCheck) ||
-                std::filesystem::exists(rootP / L"vite.config.ts", ecCheck) ||
-                std::filesystem::exists(rootP / L"tsconfig.json", ecCheck)) {
-                s_cachedProjectRuntimeId = L"node";
-            } else if (std::filesystem::exists(rootP / L"requirements.txt", ecCheck) ||
-                       std::filesystem::exists(rootP / L"pyproject.toml", ecCheck) ||
-                       std::filesystem::exists(rootP / L"Pipfile", ecCheck) ||
-                       std::filesystem::exists(rootP / L".venv", ecCheck) ||
-                       std::filesystem::exists(rootP / L"venv", ecCheck)) {
-                s_cachedProjectRuntimeId = L"python";
-            } else if (std::filesystem::exists(rootP / L"composer.json", ecCheck) ||
-                       std::filesystem::exists(rootP / L"artisan", ecCheck) ||
-                       std::filesystem::exists(rootP / L"index.php", ecCheck)) {
-                s_cachedProjectRuntimeId = L"php";
-            } else {
-                std::wstring lowerDir = openDir;
-                for (auto& c : lowerDir) c = towlower(c);
-                if (lowerDir.find(L"node") != std::wstring::npos || lowerDir.find(L"react") != std::wstring::npos || lowerDir.find(L"next") != std::wstring::npos) {
-                    s_cachedProjectRuntimeId = L"node";
-                } else if (lowerDir.find(L"python") != std::wstring::npos || lowerDir.find(L"django") != std::wstring::npos || lowerDir.find(L"flask") != std::wstring::npos) {
-                    s_cachedProjectRuntimeId = L"python";
-                } else if (lowerDir.find(L"php") != std::wstring::npos || lowerDir.find(L"laravel") != std::wstring::npos) {
-                    s_cachedProjectRuntimeId = L"php";
-                }
-            }
-        }
-        if (s_cachedProjectRuntimeId.empty()) {
-            s_cachedProjectRuntimeId = L"node";
-        }
-    }
-
-    // Start with the project default runtime, then override if active file is a specific language runtime
-    std::wstring runtimeId = s_cachedProjectRuntimeId;
-    if (curDoc && !curDoc->filePath.empty() && !curDoc->isFolderView && !curDoc->isSpecialView) {
+    // Only display runtime tag if either:
+    // 1. A document is open (detected from file extension), OR
+    // 2. A workspace folder is open (detected from workspace root)
+    std::wstring runtimeId;
+    if (hasActiveDoc && !curDoc->filePath.empty() && !curDoc->isFolderView) {
         std::wstring fp = curDoc->filePath;
         for (auto& c : fp) c = towlower(c);
-        if (fp.ends_with(L".php") || fp.ends_with(L".phtml") || fp.ends_with(L".php8")) {
+        if (fp.ends_with(L".php") || fp.ends_with(L".phtml") || fp.ends_with(L".php8") || fp.ends_with(L".php7")) {
             runtimeId = L"php";
-        } else if (fp.ends_with(L".py") || fp.ends_with(L".ipynb")) {
+        } else if (fp.ends_with(L".py") || fp.ends_with(L".ipynb") || fp.ends_with(L".pyw")) {
             runtimeId = L"python";
         } else if (fp.ends_with(L".js") || fp.ends_with(L".ts") || fp.ends_with(L".jsx") ||
                    fp.ends_with(L".tsx") || fp.ends_with(L".mjs") || fp.ends_with(L".cjs") ||
-                   fp.ends_with(L".vue") || fp.ends_with(L".svelte") || fp.ends_with(L".astro")) {
+                   fp.ends_with(L".vue") || fp.ends_with(L".svelte") || fp.ends_with(L".astro") || fp.ends_with(L".json")) {
             runtimeId = L"node";
         }
     }
 
-    std::wstring verStr = m_extensionsPanel.GetInstalledVersion(runtimeId);
-    std::wstring displayText;
-    std::wstring iconFileName;
-    if (runtimeId == L"php") {
-        iconFileName = L"php.png";
-        if (verStr.empty()) verStr = L"8.5.12";
-        displayText = L"PHP " + verStr;
-    } else if (runtimeId == L"node") {
-        iconFileName = L"node.png";
-        if (verStr.empty()) verStr = L"v22.20.0";
-        if (verStr.rfind(L"v", 0) != 0 && verStr.rfind(L"V", 0) != 0) verStr = L"v" + verStr;
-        displayText = L"Node " + verStr;
-    } else {
-        iconFileName = L"python.png";
-        if (verStr.empty()) verStr = L"3.15.1";
-        displayText = L"Python " + verStr;
-    }
-
-    float textW = m_config.ScaleF(58.0f);
-    if (pFmt && m_theme.dwriteFactory) {
-        Microsoft::WRL::ComPtr<IDWriteTextLayout> pLayout;
-        m_theme.dwriteFactory->CreateTextLayout(
-            displayText.c_str(),
-            static_cast<UINT32>(displayText.length()),
-            pFmt,
-            1000.0f,
-            itemH,
-            &pLayout
-        );
-        if (pLayout) {
-            DWRITE_TEXT_METRICS tm;
-            pLayout->GetMetrics(&tm);
-            textW = tm.widthIncludingTrailingWhitespace;
+    if (runtimeId.empty() && m_drawer.HasOpenFolder()) {
+        std::wstring openDir = m_drawer.GetOpenFolderPath();
+        if (openDir != m_cachedWorkspaceDir) {
+            m_cachedWorkspaceDir = openDir;
+            m_cachedProjectRuntimeId = DetectWorkspaceProjectRuntime(openDir);
         }
+        runtimeId = m_cachedProjectRuntimeId;
     }
 
-    const float runtimeIconSize = m_config.ScaleF(14.0f);
-    const float padX = m_config.ScaleF(6.0f);
-    const float gap = m_config.ScaleF(5.0f); // tight spacing: beside it, not away from it!
-    const float tagW = padX + runtimeIconSize + gap + textW + padX;
+    std::wstring displayText;
+    if (!runtimeId.empty()) {
+        m_currentStatusBarRuntimeId = runtimeId;
+        std::wstring verStr = m_extensionsPanel.GetInstalledVersion(runtimeId);
+        std::wstring iconFileName;
+        if (runtimeId == L"php") {
+            iconFileName = L"php.png";
+            if (verStr.empty()) verStr = L"8.5.12";
+            displayText = L"PHP " + verStr;
+        } else if (runtimeId == L"node") {
+            iconFileName = L"node.png";
+            if (verStr.empty()) verStr = L"v22.20.0";
+            if (verStr.rfind(L"v", 0) != 0 && verStr.rfind(L"V", 0) != 0) verStr = L"v" + verStr;
+            displayText = L"Node " + verStr;
+        } else {
+            iconFileName = L"python.png";
+            if (verStr.empty()) verStr = L"3.15.1";
+            displayText = L"Python " + verStr;
+        }
 
-    curRightX -= tagW;
-    m_rcStatusBarVenvTag = D2D1::RectF(curRightX, itemY, curRightX + tagW, itemY + itemH);
+        float textW = m_config.ScaleF(58.0f);
+        if (pFmt && m_theme.dwriteFactory) {
+            Microsoft::WRL::ComPtr<IDWriteTextLayout> pLayout;
+            m_theme.dwriteFactory->CreateTextLayout(
+                displayText.c_str(),
+                static_cast<UINT32>(displayText.length()),
+                pFmt,
+                1000.0f,
+                itemH,
+                &pLayout
+            );
+            if (pLayout) {
+                DWRITE_TEXT_METRICS tm;
+                pLayout->GetMetrics(&tm);
+                textW = tm.widthIncludingTrailingWhitespace;
+            }
+        }
 
-    if (m_isHoveredStatusBarVenvTag) {
-        D2D1_ROUNDED_RECT rrc = D2D1::RoundedRect(m_rcStatusBarVenvTag, m_config.ScaleF(3.5f), m_config.ScaleF(3.5f));
-        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> hoverBg;
-        m_pRenderTarget->CreateSolidColorBrush(
-            m_theme.IsDarkMode() ? D2D1::ColorF(0.20f, 0.22f, 0.26f, 0.90f) : D2D1::ColorF(0.88f, 0.90f, 0.94f, 0.90f),
-            &hoverBg
-        );
-        if (hoverBg) m_pRenderTarget->FillRoundedRectangle(rrc, hoverBg.Get());
-    }
+        const float runtimeIconSize = m_config.ScaleF(14.0f);
+        const float tagW = padX + runtimeIconSize + gap + textW + padX;
 
-    float iconX = m_rcStatusBarVenvTag.left + padX;
-    float iconYPos = m_rcStatusBarVenvTag.top + (itemH - runtimeIconSize) * 0.5f;
-    D2D1_RECT_F rcIcon = D2D1::RectF(iconX, iconYPos, iconX + runtimeIconSize, iconYPos + runtimeIconSize);
+        curRightX -= tagW;
+        m_rcStatusBarVenvTag = D2D1::RectF(curRightX, itemY, curRightX + tagW, itemY + itemH);
 
-    ID2D1Bitmap* pIconBmp = m_editor.GetLearningHubBitmap(m_pRenderTarget.Get(), iconFileName);
-    if (pIconBmp) {
-        m_pRenderTarget->DrawBitmap(pIconBmp, rcIcon, 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
-    } else {
-        m_rail.GetLucide().DrawCode(m_pRenderTarget.Get(), rcIcon, textBrush, 1.2f);
-    }
+        if (m_isHoveredStatusBarVenvTag) {
+            D2D1_ROUNDED_RECT rrc = D2D1::RoundedRect(m_rcStatusBarVenvTag, m_config.ScaleF(3.5f), m_config.ScaleF(3.5f));
+            Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> hoverBg;
+            m_pRenderTarget->CreateSolidColorBrush(
+                m_theme.IsDarkMode() ? D2D1::ColorF(0.20f, 0.22f, 0.26f, 0.90f) : D2D1::ColorF(0.88f, 0.90f, 0.94f, 0.90f),
+                &hoverBg
+            );
+            if (hoverBg) m_pRenderTarget->FillRoundedRectangle(rrc, hoverBg.Get());
+        }
 
-    float textX = iconX + runtimeIconSize + gap;
-    D2D1_RECT_F rcText = D2D1::RectF(textX, itemY, m_rcStatusBarVenvTag.right - padX, itemY + itemH);
-    if (pFmt && textBrush) {
-        m_pRenderTarget->DrawText(displayText.c_str(), static_cast<UINT32>(displayText.length()), pFmt, rcText, textBrush);
+        float iconX = m_rcStatusBarVenvTag.left + padX;
+        float iconYPos = m_rcStatusBarVenvTag.top + (itemH - runtimeIconSize) * 0.5f;
+        D2D1_RECT_F rcIcon = D2D1::RectF(iconX, iconYPos, iconX + runtimeIconSize, iconYPos + runtimeIconSize);
+
+        ID2D1Bitmap* pIconBmp = m_editor.GetLearningHubBitmap(m_pRenderTarget.Get(), iconFileName);
+        if (pIconBmp) {
+            m_pRenderTarget->DrawBitmap(pIconBmp, rcIcon, 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
+        } else {
+            m_rail.GetLucide().DrawCode(m_pRenderTarget.Get(), rcIcon, textBrush, 1.2f);
+        }
+
+        float textX = iconX + runtimeIconSize + gap;
+        D2D1_RECT_F rcText = D2D1::RectF(textX, itemY, m_rcStatusBarVenvTag.right - padX, itemY + itemH);
+        if (pFmt && textBrush) {
+            m_pRenderTarget->DrawText(displayText.c_str(), static_cast<UINT32>(displayText.length()), pFmt, rcText, textBrush);
+        }
     }
 
     // Graph View Status Pill (Moved from floating canvas HUD to status bar per user requirement: "also can you move this infor inside here")
@@ -9220,7 +9458,7 @@ void Window::RenderStatusBar(float clientW, float clientH) {
                            std::to_wstring(m_editor.GetGraphView().GetEdgeCount()) + L" connections (" +
                            (m_config.isGraphColored ? L"Colored - Click to switch to Monochrome" : L"Monochrome - Click to switch to Colored") + L")";
         RenderFloatingTooltip(m_pRenderTarget.Get(), tip, m_rcStatusBarGraphView, clientW);
-    } else if (m_isHoveredStatusBarVenvTag) {
+    } else if (m_isHoveredStatusBarVenvTag && !displayText.empty()) {
         std::wstring tip = displayText + L" (Click to manage runtime environment)";
         RenderFloatingTooltip(m_pRenderTarget.Get(), tip, m_rcStatusBarVenvTag, clientW);
     } else if (m_isHoveredStatusBarGitBranch) {
@@ -9233,13 +9471,16 @@ void Window::RenderStatusBar(float clientW, float clientH) {
             tip += L" (" + m_cachedGitHubRepo + L")";
         }
         RenderFloatingTooltip(m_pRenderTarget.Get(), tip, m_rcStatusBarGitUser, clientW);
-    } else if (m_isHoveredStatusBarLnCol) {
+    } else if (m_isHoveredStatusBarLnCol && hasActiveDoc) {
+        size_t curLine = curDoc->buffer.GetCursor().line + 1;
+        size_t curCol = curDoc->buffer.GetCursor().col + 1;
         std::wstring tip = L"Line " + std::to_wstring(curLine) + L", Column " + std::to_wstring(curCol);
         RenderFloatingTooltip(m_pRenderTarget.Get(), tip, m_rcStatusBarLnCol, clientW);
-    } else if (m_isHoveredStatusBarSpaces) {
+    } else if (m_isHoveredStatusBarSpaces && hasActiveDoc) {
+        int indentSize = (m_config.tabSize > 0) ? m_config.tabSize : 4;
         std::wstring indentTip = L"Indentation: " + std::to_wstring(indentSize) + (m_config.insertSpaces ? L" Spaces" : L" Tab Size");
         RenderFloatingTooltip(m_pRenderTarget.Get(), indentTip, m_rcStatusBarSpaces, clientW);
-    } else if (m_isHoveredStatusBarEncoding) {
+    } else if (m_isHoveredStatusBarEncoding && hasActiveDoc) {
         RenderFloatingTooltip(m_pRenderTarget.Get(), L"Encoding: UTF-8, End of Line: CRLF", m_rcStatusBarEncoding, clientW);
     }
 }
@@ -10387,49 +10628,56 @@ void Window::HandleMouseMove(POINT clientPt, WPARAM wParam) {
 
     // Check Status Bar hover
     if (m_config.showStatusBar) {
-        bool inTag = (clientPt.x >= m_rcStatusBarVenvTag.left && clientPt.x <= m_rcStatusBarVenvTag.right &&
+        bool inTag = (m_rcStatusBarVenvTag.right > m_rcStatusBarVenvTag.left &&
+                      clientPt.x >= m_rcStatusBarVenvTag.left && clientPt.x <= m_rcStatusBarVenvTag.right &&
                       clientPt.y >= m_rcStatusBarVenvTag.top && clientPt.y <= m_rcStatusBarVenvTag.bottom);
         if (inTag != m_isHoveredStatusBarVenvTag) {
             m_isHoveredStatusBarVenvTag = inTag;
             needRepaint = true;
         }
 
-        bool inGraph = (clientPt.x >= m_rcStatusBarGraphView.left && clientPt.x <= m_rcStatusBarGraphView.right &&
+        bool inGraph = (m_rcStatusBarGraphView.right > m_rcStatusBarGraphView.left &&
+                        clientPt.x >= m_rcStatusBarGraphView.left && clientPt.x <= m_rcStatusBarGraphView.right &&
                         clientPt.y >= m_rcStatusBarGraphView.top && clientPt.y <= m_rcStatusBarGraphView.bottom);
         if (inGraph != m_isHoveredStatusBarGraphView) {
             m_isHoveredStatusBarGraphView = inGraph;
             needRepaint = true;
         }
 
-        bool inGitBranch = (clientPt.x >= m_rcStatusBarGitBranch.left && clientPt.x <= m_rcStatusBarGitBranch.right &&
+        bool inGitBranch = (m_rcStatusBarGitBranch.right > m_rcStatusBarGitBranch.left &&
+                            clientPt.x >= m_rcStatusBarGitBranch.left && clientPt.x <= m_rcStatusBarGitBranch.right &&
                             clientPt.y >= m_rcStatusBarGitBranch.top && clientPt.y <= m_rcStatusBarGitBranch.bottom);
         if (inGitBranch != m_isHoveredStatusBarGitBranch) {
             m_isHoveredStatusBarGitBranch = inGitBranch;
             needRepaint = true;
         }
 
-        bool inGitUser = (clientPt.x >= m_rcStatusBarGitUser.left && clientPt.x <= m_rcStatusBarGitUser.right &&
+        bool inGitUser = (m_rcStatusBarGitUser.right > m_rcStatusBarGitUser.left &&
+                          clientPt.x >= m_rcStatusBarGitUser.left && clientPt.x <= m_rcStatusBarGitUser.right &&
                           clientPt.y >= m_rcStatusBarGitUser.top && clientPt.y <= m_rcStatusBarGitUser.bottom);
         if (inGitUser != m_isHoveredStatusBarGitUser) {
             m_isHoveredStatusBarGitUser = inGitUser;
             needRepaint = true;
         }
 
-        bool inLnCol = (clientPt.x >= m_rcStatusBarLnCol.left && clientPt.x <= m_rcStatusBarLnCol.right &&
+        bool inLnCol = (m_rcStatusBarLnCol.right > m_rcStatusBarLnCol.left &&
+                        clientPt.x >= m_rcStatusBarLnCol.left && clientPt.x <= m_rcStatusBarLnCol.right &&
                         clientPt.y >= m_rcStatusBarLnCol.top && clientPt.y <= m_rcStatusBarLnCol.bottom);
         if (inLnCol != m_isHoveredStatusBarLnCol) {
             m_isHoveredStatusBarLnCol = inLnCol;
             needRepaint = true;
         }
 
-        bool inSpaces = (clientPt.x >= m_rcStatusBarSpaces.left && clientPt.x <= m_rcStatusBarSpaces.right &&
+        bool inSpaces = (m_rcStatusBarSpaces.right > m_rcStatusBarSpaces.left &&
+                         clientPt.x >= m_rcStatusBarSpaces.left && clientPt.x <= m_rcStatusBarSpaces.right &&
                          clientPt.y >= m_rcStatusBarSpaces.top && clientPt.y <= m_rcStatusBarSpaces.bottom);
         if (inSpaces != m_isHoveredStatusBarSpaces) {
             m_isHoveredStatusBarSpaces = inSpaces;
             needRepaint = true;
         }
 
-        bool inEnc = (clientPt.x >= m_rcStatusBarEncoding.left && clientPt.x <= m_rcStatusBarEncoding.right &&
+        bool inEnc = (m_rcStatusBarEncoding.right > m_rcStatusBarEncoding.left &&
+                      clientPt.x >= m_rcStatusBarEncoding.left && clientPt.x <= m_rcStatusBarEncoding.right &&
                       clientPt.y >= m_rcStatusBarEncoding.top && clientPt.y <= m_rcStatusBarEncoding.bottom);
         if (inEnc != m_isHoveredStatusBarEncoding) {
             m_isHoveredStatusBarEncoding = inEnc;
@@ -11353,7 +11601,9 @@ void Window::HandleLButtonDown(POINT clientPt) {
                     StartPmaServer();
                     UpdateDatabaseModalRuntimeStatus();
                 }
-                ShellExecuteW(nullptr, L"open", m_dbSettingsModal.GetPmaUrl().c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+                if (m_isPmaRunning) {
+                    ShellExecuteW(nullptr, L"open", m_dbSettingsModal.GetPmaUrl().c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+                }
                 break;
             case ui::DatabaseModalAction::OpenBrowserNginx:
                 if (m_hNginxProcess == nullptr && m_header.GetServerState() != ui::ServerState::Running) {
@@ -12773,23 +13023,25 @@ void Window::HandleLButtonDown(POINT clientPt) {
 
     // Status Bar clicks (Runtime tag opens Runtimes drawer directly to that language)
     if (m_config.showStatusBar &&
+        m_rcStatusBarVenvTag.right > m_rcStatusBarVenvTag.left &&
         clientPt.x >= m_rcStatusBarVenvTag.left && clientPt.x <= m_rcStatusBarVenvTag.right &&
         clientPt.y >= m_rcStatusBarVenvTag.top && clientPt.y <= m_rcStatusBarVenvTag.bottom) {
 
-        std::wstring runtimeId = L"php";
-        auto* curDoc = GetActiveDoc();
-        if (curDoc && !curDoc->filePath.empty()) {
-            std::wstring fp = curDoc->filePath;
-            for (auto& c : fp) c = towlower(c);
-            if (fp.ends_with(L".php")) runtimeId = L"php";
-            else if (fp.ends_with(L".py") || fp.ends_with(L".ipynb")) runtimeId = L"python";
-            else if (fp.ends_with(L".js") || fp.ends_with(L".ts") || fp.ends_with(L".jsx") || fp.ends_with(L".tsx") || fp.ends_with(L".json")) runtimeId = L"node";
-        } else {
-            std::wstring openDir = m_drawer.GetOpenFolderPath();
-            for (auto& c : openDir) c = towlower(c);
-            if (openDir.find(L"php") != std::wstring::npos) runtimeId = L"php";
-            else if (openDir.find(L"python") != std::wstring::npos) runtimeId = L"python";
-            else if (openDir.find(L"node") != std::wstring::npos) runtimeId = L"node";
+        std::wstring runtimeId = m_currentStatusBarRuntimeId;
+        if (runtimeId.empty()) {
+            auto* curDoc = GetActiveDoc();
+            if (curDoc && !curDoc->filePath.empty() && !curDoc->isSpecialView) {
+                std::wstring fp = curDoc->filePath;
+                for (auto& c : fp) c = towlower(c);
+                if (fp.ends_with(L".php") || fp.ends_with(L".phtml") || fp.ends_with(L".php8") || fp.ends_with(L".php7")) runtimeId = L"php";
+                else if (fp.ends_with(L".py") || fp.ends_with(L".ipynb") || fp.ends_with(L".pyw")) runtimeId = L"python";
+                else if (fp.ends_with(L".js") || fp.ends_with(L".ts") || fp.ends_with(L".jsx") || fp.ends_with(L".tsx") || fp.ends_with(L".json")) runtimeId = L"node";
+            } else if (m_drawer.HasOpenFolder()) {
+                runtimeId = DetectWorkspaceProjectRuntime(m_drawer.GetOpenFolderPath());
+            }
+        }
+        if (runtimeId.empty()) {
+            runtimeId = L"php";
         }
 
         bool isAlreadyOpenOnThis = m_extensionsPanel.IsOpen() &&
@@ -13839,13 +14091,17 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     float clientH = static_cast<float>(rcClient.bottom - rcClient.top);
                     const float statusBarH = m_config.ScaleF(22.0f);
                     if (static_cast<float>(pt.y) >= (clientH - statusBarH) && static_cast<float>(pt.y) <= clientH) {
-                        if ((pt.x >= m_rcStatusBarVenvTag.left && pt.x <= m_rcStatusBarVenvTag.right &&
+                        if ((m_rcStatusBarVenvTag.right > m_rcStatusBarVenvTag.left &&
+                             pt.x >= m_rcStatusBarVenvTag.left && pt.x <= m_rcStatusBarVenvTag.right &&
                              pt.y >= m_rcStatusBarVenvTag.top && pt.y <= m_rcStatusBarVenvTag.bottom) ||
-                            (pt.x >= m_rcStatusBarGraphView.left && pt.x <= m_rcStatusBarGraphView.right &&
+                            (m_rcStatusBarGraphView.right > m_rcStatusBarGraphView.left &&
+                             pt.x >= m_rcStatusBarGraphView.left && pt.x <= m_rcStatusBarGraphView.right &&
                              pt.y >= m_rcStatusBarGraphView.top && pt.y <= m_rcStatusBarGraphView.bottom) ||
-                            (pt.x >= m_rcStatusBarGitBranch.left && pt.x <= m_rcStatusBarGitBranch.right &&
+                            (m_rcStatusBarGitBranch.right > m_rcStatusBarGitBranch.left &&
+                             pt.x >= m_rcStatusBarGitBranch.left && pt.x <= m_rcStatusBarGitBranch.right &&
                              pt.y >= m_rcStatusBarGitBranch.top && pt.y <= m_rcStatusBarGitBranch.bottom) ||
-                            (pt.x >= m_rcStatusBarGitUser.left && pt.x <= m_rcStatusBarGitUser.right &&
+                            (m_rcStatusBarGitUser.right > m_rcStatusBarGitUser.left &&
+                             pt.x >= m_rcStatusBarGitUser.left && pt.x <= m_rcStatusBarGitUser.right &&
                              pt.y >= m_rcStatusBarGitUser.top && pt.y <= m_rcStatusBarGitUser.bottom)) {
                             SetCursor(LoadCursor(nullptr, IDC_HAND));
                             return TRUE;
@@ -16663,6 +16919,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
             int newDpi = HIWORD(wParam);
             auto* pNewRect = reinterpret_cast<RECT*>(lParam);
             m_config.dpiScale = static_cast<float>(newDpi) / 96.0f;
+            m_theme.SetDpiScale(m_config.dpiScale);
             DiscardDeviceResources();
             SetWindowPos(m_hwnd, nullptr, pNewRect->left, pNewRect->top,
                          pNewRect->right - pNewRect->left, pNewRect->bottom - pNewRect->top,

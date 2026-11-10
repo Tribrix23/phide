@@ -817,6 +817,11 @@ private:
     bool HitTestLeftSidebarSplitter(POINT pt) const;
     bool HitTestRightSidebarSplitter(POINT pt) const;
 
+    std::wstring m_cachedWorkspaceDir = L"<uninitialized>";
+    std::wstring m_cachedProjectRuntimeId;
+    std::wstring m_currentStatusBarRuntimeId;
+    std::wstring DetectWorkspaceProjectRuntime(const std::wstring& openDir);
+
     void AnimateTerminalOpen();
     void AnimateTerminalClose();
     void AnimateRightSidebarOpen();

@@ -117,6 +117,11 @@ public:
     [[nodiscard]] const std::wstring& GetMysqliSnippet() const noexcept { return m_mysqliSnippet; }
     [[nodiscard]] const std::wstring& GetPmaUrl() const noexcept { return m_pmaUrl; }
     [[nodiscard]] const std::wstring& GetPmaWebPort() const noexcept { return m_pmaWebPort; }
+    void SetPmaWebPort(const std::wstring& port) {
+        m_pmaWebPort = port;
+        m_pmaUrl = L"http://localhost:" + port;
+    }
+    void SetPmaUrl(const std::wstring& url) { m_pmaUrl = url; }
     [[nodiscard]] const std::wstring& GetNginxUrl() const noexcept { return m_nginxUrl; }
     [[nodiscard]] const std::wstring& GetNginxPort() const noexcept { return m_nginxPort; }
     [[nodiscard]] const std::wstring& GetNginxHost() const noexcept { return m_nginxHost; }

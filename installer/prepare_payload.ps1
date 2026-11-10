@@ -47,6 +47,9 @@ if (Test-Path $phpSource) {
     if (Test-Path $phpIniPath) {
         $content = [System.IO.File]::ReadAllText($phpIniPath)
         $content = $content -replace 'extension_dir\s*=\s*".*?\\ext"', 'extension_dir = "ext"'
+        # Explicitly disable opcache to prevent Windows ASLR fatal crashes
+        $content = $content -replace ';?opcache\.enable\s*=.*', 'opcache.enable=0'
+        $content = $content -replace ';?opcache\.enable_cli\s*=.*', 'opcache.enable_cli=0'
         $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
         [System.IO.File]::WriteAllText($phpIniPath, $content, $utf8NoBom)
     }

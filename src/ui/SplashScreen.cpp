@@ -105,7 +105,12 @@ void SplashScreen::Show(HINSTANCE hInstance, int durationMs) {
 
     Microsoft::WRL::ComPtr<ID2D1HwndRenderTarget> pRT;
     if (pD2DFactory) {
-        D2D1_RENDER_TARGET_PROPERTIES rtProps = D2D1::RenderTargetProperties();
+        D2D1_RENDER_TARGET_PROPERTIES rtProps = D2D1::RenderTargetProperties(
+            D2D1_RENDER_TARGET_TYPE_DEFAULT,
+            D2D1::PixelFormat(),
+            96.0f,
+            96.0f
+        );
         D2D1_HWND_RENDER_TARGET_PROPERTIES hwndProps = D2D1::HwndRenderTargetProperties(
             hwnd, D2D1::SizeU(splashW, splashH), D2D1_PRESENT_OPTIONS_IMMEDIATELY
         );

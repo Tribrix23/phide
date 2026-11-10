@@ -376,6 +376,7 @@ check_phide_loop:
     ExecWait 'icacls "$INSTDIR\runtimes\mysql\data" /grant *S-1-1-0:(OI)(CI)F /T /Q'
     ExecWait 'icacls "$INSTDIR\include\phide\server\nginx\logs" /grant *S-1-1-0:(OI)(CI)F /T /Q'
     ExecWait 'icacls "$INSTDIR\include\phide\server\nginx\temp" /grant *S-1-1-0:(OI)(CI)F /T /Q'
+    ExecWait 'icacls "$INSTDIR\include\phide\db\phpMyAdmin\tmp" /grant *S-1-1-0:(OI)(CI)F /T /Q'
 
     ; 2. Generate Uninstaller
     WriteUninstaller "$INSTDIR\Uninstall.exe"
