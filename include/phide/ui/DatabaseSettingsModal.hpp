@@ -109,6 +109,10 @@ public:
 
     [[nodiscard]] const std::wstring& GetHost() const noexcept { return m_host; }
     [[nodiscard]] const std::wstring& GetPort() const noexcept { return m_port; }
+    void SetPort(const std::wstring& port) {
+        m_port = port;
+        UpdateSnippets();
+    }
     [[nodiscard]] const std::wstring& GetUser() const noexcept { return m_user; }
     [[nodiscard]] const std::wstring& GetPass() const noexcept { return m_pass; }
     [[nodiscard]] const std::wstring& GetDefaultDb() const noexcept { return m_defaultDb; }

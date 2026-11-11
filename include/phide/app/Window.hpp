@@ -645,6 +645,7 @@ private:
     HANDLE m_hNginxProcess = nullptr;
     HANDLE m_hPmaProcess = nullptr;
     HANDLE m_hMysqlProcess = nullptr;
+    int m_mysqlPort = 3306;
     bool m_isPmaRunning = false;
     void UpdateDatabaseModalRuntimeStatus();
     void RunManualGarbageCollection();

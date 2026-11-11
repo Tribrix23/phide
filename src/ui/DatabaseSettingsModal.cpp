@@ -73,6 +73,14 @@ void DatabaseSettingsModal::Open(DatabaseModalTab initialTab) {
                     }
                 }
             }
+            std::filesystem::path portFile = pmaCfgPath.parent_path() / L"mysql_port.txt";
+            if (std::filesystem::exists(portFile)) {
+                std::wifstream pIn(portFile);
+                std::wstring pVal;
+                if (pIn >> pVal && !pVal.empty()) {
+                    m_port = pVal;
+                }
+            }
         }
     }
     UpdateSnippets();

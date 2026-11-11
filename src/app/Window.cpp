@@ -323,6 +323,13 @@ static bool PromptInputDialog(HWND hParent, const std::wstring& title, const std
 Window::Window() {
     m_editorGroups.push_back(editor::EditorGroup{});
     UpdateExecutionButtonStates();
+    // Pre-probe MySQL port in case 3306 is already bound on host
+    int targetPort = 3306;
+    while (IsPortListening(targetPort) && targetPort < 65535) {
+        targetPort++;
+    }
+    m_mysqlPort = targetPort;
+    m_dbSettingsModal.SetPort(std::to_wstring(m_mysqlPort));
 }
 
 Window::~Window() {
@@ -4009,9 +4016,28 @@ void Window::UpdateDatabaseModalRuntimeStatus() {
             m_isPmaRunning = false;
         }
     }
+    if (m_hMysqlProcess) {
+        DWORD exitCode = 0;
+        if (GetExitCodeProcess(m_hMysqlProcess, &exitCode) && exitCode != STILL_ACTIVE) {
+            CloseHandle(m_hMysqlProcess);
+            m_hMysqlProcess = nullptr;
+        }
+    }
     bool pmaRunning = (m_hPmaProcess != nullptr && m_isPmaRunning);
     bool nginxRunning = (m_hNginxProcess != nullptr || m_header.GetServerState() == ui::ServerState::Running);
     m_dbSettingsModal.SetRuntimeStatus(pmaRunning, nginxRunning);
+    if (m_hMysqlProcess == nullptr) {
+        int targetPort = 3306;
+        try {
+            int parsed = std::stoi(m_dbSettingsModal.GetPort());
+            if (parsed > 0 && parsed < 65536) targetPort = parsed;
+        } catch (...) {}
+        while (IsPortListening(targetPort) && targetPort < 65535) {
+            targetPort++;
+        }
+        m_mysqlPort = targetPort;
+    }
+    m_dbSettingsModal.SetPort(std::to_wstring(m_mysqlPort));
 }
 
 void Window::DoOpenDatabaseSettings(ui::DatabaseModalTab initialTab) {
@@ -5941,15 +5967,24 @@ void Window::DoRestartServer() {
 }
 
 void Window::DoOpenServerLog() {
+    SYSTEMTIME st{};
+    GetLocalTime(&st);
+    wchar_t ts[64] = { 0 };
+    swprintf_s(ts, L"[%04d/%02d/%02d %02d:%02d:%02d]", st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond);
+    std::wstring tsStr = ts;
+
+    std::wstring ngxPort = m_dbSettingsModal.GetNginxPort();
+    if (ngxPort.empty()) ngxPort = L"80";
+
     std::vector<std::wstring> logLines;
     logLines.push_back(L"[NGINX SERVER LOG] Nginx daemon runtime status");
-    logLines.push_back(L"[2026/10/25 16:24:00] [notice] 14208#0: using the 'select' event method");
-    logLines.push_back(L"[2026/10/25 16:24:00] [notice] 14208#0: nginx/1.30.6 is up");
-    logLines.push_back(L"[2026/10/25 16:24:00] [notice] 14208#0: built by msvc 19.44");
-    logLines.push_back(L"[2026/10/25 16:24:00] [notice] 14208#0: OS: Windows x64");
-    logLines.push_back(L"[2026/10/25 16:24:01] [notice] 14208#0: start worker processes");
-    logLines.push_back(L"[2026/10/25 16:24:01] [notice] 14208#0: listening on http://0.0.0.0:80");
-    logLines.push_back(L"[2026/10/25 16:24:02] [info] 14208#0: connection accepted from 127.0.0.1");
+    logLines.push_back(tsStr + L" [notice] 14208#0: using the 'select' event method");
+    logLines.push_back(tsStr + L" [notice] 14208#0: nginx/1.30.6 is up");
+    logLines.push_back(tsStr + L" [notice] 14208#0: built by msvc 19.44");
+    logLines.push_back(tsStr + L" [notice] 14208#0: OS: Windows x64");
+    logLines.push_back(tsStr + L" [notice] 14208#0: start worker processes");
+    logLines.push_back(tsStr + L" [notice] 14208#0: listening on http://0.0.0.0:" + ngxPort);
+    logLines.push_back(tsStr + L" [info] 14208#0: connection accepted from 127.0.0.1");
 
     std::filesystem::path logPath = GetPhideRoot() / L"include" / L"phide" / L"server" / L"nginx" / L"logs" / L"error.log";
     std::error_code ecLog;
@@ -5979,13 +6014,28 @@ void Window::DoOpenDatabaseLog() {
     m_terminal.Open(m_drawer.GetOpenFolderPath());
     AnimateTerminalOpen();
 
+    SYSTEMTIME st{};
+    GetLocalTime(&st);
+    wchar_t ts[64] = { 0 };
+    swprintf_s(ts, L"[%04d/%02d/%02d %02d:%02d:%02d]", st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond);
+    std::wstring tsStr = ts;
+
+    int effPort = m_mysqlPort;
+    if (effPort <= 0) {
+        try { effPort = std::stoi(m_dbSettingsModal.GetPort()); } catch (...) { effPort = 3306; }
+    }
+    if (effPort <= 0) effPort = 3306;
+
+    std::wstring effPmaUrl = m_dbSettingsModal.GetPmaUrl();
+    if (effPmaUrl.empty()) effPmaUrl = L"http://localhost:8081";
+
     std::vector<std::wstring> logLines;
     logLines.push_back(L"[phpMyAdmin LOG] phpMyAdmin 5.2.3 database engine session");
-    logLines.push_back(L"[2026/10/25 16:24:00] [info] Initializing phpMyAdmin configuration");
-    logLines.push_back(L"[2026/10/25 16:24:00] [info] Checking PHP runtime environment: PHP 8.5 active");
-    logLines.push_back(L"[2026/10/25 16:24:01] [info] Connecting to MySQL / MariaDB server at localhost:3306... Connected");
-    logLines.push_back(L"[2026/10/25 16:24:01] [info] phpMyAdmin is up: http://localhost:8081");
-    logLines.push_back(L"[2026/10/25 16:24:02] [info] Session established for root@localhost");
+    logLines.push_back(tsStr + L" [info] Initializing phpMyAdmin configuration");
+    logLines.push_back(tsStr + L" [info] Checking PHP runtime environment: Active");
+    logLines.push_back(tsStr + L" [info] Connecting to MySQL / MariaDB server at localhost:" + std::to_wstring(effPort) + L"... Connected");
+    logLines.push_back(tsStr + L" [info] phpMyAdmin is up: " + effPmaUrl);
+    logLines.push_back(tsStr + L" [info] Session established for root@localhost");
     m_terminal.OpenLogTab(L"phpMyAdmin log", logLines);
 
     m_header.SetDatabaseLogOpened(true);
@@ -6053,7 +6103,11 @@ void Window::StartPhpServer(const std::wstring& rootDir, int port) {
         liveReloadArgs += L" -d \"auto_prepend_file=" + prepFwd + L"\" -d \"auto_append_file=" + appFwd + L"\"";
     }
 
-    std::wstring cmd = L"\"" + phpExe + L"\"" + iniArg + liveReloadArgs + L" -S 0.0.0.0:" + std::to_wstring(port) + L" -t \"" + rootDir + L"\"";
+    std::wstring mysqlPortArgs = L" -d mysqli.default_port=" + std::to_wstring(m_mysqlPort) +
+                                 L" -d mysql.default_port=" + std::to_wstring(m_mysqlPort);
+    SetEnvironmentVariableW(L"PHIDE_MYSQL_PORT", std::to_wstring(m_mysqlPort).c_str());
+
+    std::wstring cmd = L"\"" + phpExe + L"\"" + iniArg + liveReloadArgs + mysqlPortArgs + L" -S 0.0.0.0:" + std::to_wstring(port) + L" -t \"" + rootDir + L"\"";
     std::vector<wchar_t> cmdBuf(cmd.begin(), cmd.end());
     cmdBuf.push_back(L'\0');
 
@@ -6191,7 +6245,44 @@ static bool IsMysqlProcessRunning() {
 }
 
 void Window::StartMysqlServer() {
-    if (IsPortListening(3306)) return;
+    // 0. If Phide already started MySQL and the process is alive, don't restart
+    if (m_hMysqlProcess) {
+        DWORD exitCode = 0;
+        if (GetExitCodeProcess(m_hMysqlProcess, &exitCode) && exitCode == STILL_ACTIVE) {
+            return;
+        }
+        CloseHandle(m_hMysqlProcess);
+        m_hMysqlProcess = nullptr;
+    }
+
+    // 1. Dynamic port discovery:
+    // If target port (default 3306) is taken by another service/application,
+    // automatically find the next available listening port (3306 -> 3307 -> 3308 ...)
+    int targetPort = 3306;
+    try {
+        int parsed = std::stoi(m_dbSettingsModal.GetPort());
+        if (parsed > 0 && parsed < 65536) targetPort = parsed;
+    } catch (...) {}
+
+    while (IsPortListening(targetPort) && targetPort < 65535) {
+        targetPort++;
+    }
+
+    m_mysqlPort = targetPort;
+    m_dbSettingsModal.SetPort(std::to_wstring(m_mysqlPort));
+
+    // Persist dynamic port to PMA config directory and process environment
+    std::filesystem::path pmaDir = GetPhideRoot() / L"include" / L"phide" / L"db" / L"phpMyAdmin";
+    if (std::filesystem::exists(pmaDir)) {
+        try {
+            std::ofstream portOut(pmaDir / "mysql_port.txt", std::ios::trunc);
+            if (portOut.is_open()) {
+                portOut << m_mysqlPort;
+                portOut.close();
+            }
+        } catch (...) {}
+    }
+    SetEnvironmentVariableW(L"PHIDE_MYSQL_PORT", std::to_wstring(m_mysqlPort).c_str());
 
     std::filesystem::path mysqldExe;
     std::filesystem::path myIni;
@@ -6222,6 +6313,8 @@ void Window::StartMysqlServer() {
         if (std::filesystem::exists(myIni)) {
             cmd += L" --defaults-file=\"" + myIni.wstring() + L"\"";
         }
+        cmd += L" --port=" + std::to_wstring(m_mysqlPort);
+        cmd += L" --pid-file=\"mysql_" + std::to_wstring(m_mysqlPort) + L".pid\"";
         cmd += L" --skip-grant-tables --standalone --console";
         if (!mysqlDir.empty()) {
             std::filesystem::path dataDir = mysqlDir / L"data";
@@ -6244,10 +6337,10 @@ void Window::StartMysqlServer() {
             m_hMysqlProcess = pi.hProcess;
             CloseHandle(pi.hThread);
 
-            // Wait up to 3000ms for MySQL to initialize engine and open port 3306
+            // Wait up to 3000ms for MySQL to initialize engine and open m_mysqlPort
             for (int attempt = 0; attempt < 60; ++attempt) {
                 Sleep(50);
-                if (IsPortListening(3306)) break;
+                if (IsPortListening(m_mysqlPort)) break;
             }
         }
     }
@@ -6267,7 +6360,7 @@ void Window::StopMysqlServer() {
         }
 
         if (!adminExe.empty() && std::filesystem::exists(adminExe)) {
-            std::wstring cmd = L"\"" + adminExe.wstring() + L"\" -u root shutdown";
+            std::wstring cmd = L"\"" + adminExe.wstring() + L"\" -u root --port=" + std::to_wstring(m_mysqlPort) + L" shutdown";
             std::vector<wchar_t> cmdBuf(cmd.begin(), cmd.end());
             cmdBuf.push_back(L'\0');
 
@@ -6305,6 +6398,18 @@ void Window::StartPmaServer() {
         m_header.SetDatabaseState(ui::DatabaseState::Failed);
         return;
     }
+
+    // Persist dynamic port to PMA directory and process environment
+    try {
+        std::ofstream portOut(pmaDir / "mysql_port.txt", std::ios::trunc);
+        if (portOut.is_open()) {
+            portOut << m_mysqlPort;
+            portOut.close();
+        }
+    } catch (...) {}
+    SetEnvironmentVariableW(L"PHIDE_MYSQL_PORT", std::to_wstring(m_mysqlPort).c_str());
+    m_dbSettingsModal.SetPort(std::to_wstring(m_mysqlPort));
+
     std::wstring phpExe;
     std::wstring phpIni;
 
@@ -6382,7 +6487,14 @@ void Window::StartPmaServer() {
 
     // Bind to 0.0.0.0:<pmaPort> so localhost:<pmaPort> and custom hosts work seamlessly.
     // Explicitly pass -d opcache.enable=0 -d opcache.enable_cli=0 to prevent Windows ASLR fatal crash!
-    std::wstring cmd = L"\"" + phpExe + L"\"" + iniArg + L" -d opcache.enable=0 -d opcache.enable_cli=0 -d upload_max_filesize=128M -d post_max_size=128M -d memory_limit=512M -S 0.0.0.0:" + std::to_wstring(pmaPort) + L" -t \"" + pmaDir.wstring() + L"\"";
+    // Also pass -d mysqli.default_port and -d mysql.default_port matching dynamic m_mysqlPort!
+    std::wstring cmd = L"\"" + phpExe + L"\"" + iniArg +
+        L" -d opcache.enable=0 -d opcache.enable_cli=0" +
+        L" -d mysqli.default_port=" + std::to_wstring(m_mysqlPort) +
+        L" -d mysql.default_port=" + std::to_wstring(m_mysqlPort) +
+        L" -d upload_max_filesize=128M -d post_max_size=128M -d memory_limit=512M" +
+        L" -S 0.0.0.0:" + std::to_wstring(pmaPort) +
+        L" -t \"" + pmaDir.wstring() + L"\"";
     std::vector<wchar_t> cmdBuf(cmd.begin(), cmd.end());
     cmdBuf.push_back(L'\0');
 
@@ -6436,6 +6548,7 @@ void Window::StopPmaServer() {
         m_hPmaProcess = nullptr;
     }
     m_isPmaRunning = false;
+    StopMysqlServer();
     m_header.SetDatabaseState(ui::DatabaseState::Stopped);
     UpdateDatabaseModalRuntimeStatus();
 }
@@ -6503,7 +6616,7 @@ void Window::DoRunPhpApplication(const std::wstring& filePath, const std::wstrin
         mysqlExe = L"C:\\xampp\\mysql\\bin\\mysql.exe";
     }
     if (needDb && std::filesystem::exists(mysqlExe) && std::filesystem::exists(sqlPath)) {
-        std::wstring importCmd = L"cmd.exe /c \"\"" + mysqlExe.wstring() + L"\" -u root < \"" + sqlPath.wstring() + L"\"\"";
+        std::wstring importCmd = L"cmd.exe /c \"\"" + mysqlExe.wstring() + L"\" -u root --port=" + std::to_wstring(m_mysqlPort) + L" < \"" + sqlPath.wstring() + L"\"\"";
         std::vector<wchar_t> cmdBuf(importCmd.begin(), importCmd.end());
         cmdBuf.push_back(L'\0');
         STARTUPINFOW si{};
@@ -11713,7 +11826,7 @@ void Window::HandleLButtonDown(POINT clientPt) {
         mysqlExe = L"C:\\xampp\\mysql\\bin\\mysql.exe";
     }
                 if (std::filesystem::exists(mysqlExe) && !sqlPath.empty()) {
-                    std::wstring cmd = L"cmd.exe /c \"\"" + mysqlExe.wstring() + L"\" -u root < \"" + sqlPath.wstring() + L"\"\"";
+                    std::wstring cmd = L"cmd.exe /c \"\"" + mysqlExe.wstring() + L"\" -u root --port=" + std::to_wstring(m_mysqlPort) + L" < \"" + sqlPath.wstring() + L"\"\"";
                     std::vector<wchar_t> cmdBuf(cmd.begin(), cmd.end());
                     cmdBuf.push_back(L'\0');
                     STARTUPINFOW si{};
