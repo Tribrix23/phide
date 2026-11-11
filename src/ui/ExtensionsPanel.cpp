@@ -25,6 +25,11 @@ namespace phide::ui {
  * Key: sb_publishable_nXkt2Y-i1brrrVYmF_mxzw_RMiAd6Ry
  * Columns: version, download
  */
+static std::wstring normalizeVer(const std::wstring& v) {
+    if (v.rfind(L"v", 0) == 0 || v.rfind(L"V", 0) == 0) return v.substr(1);
+    return v;
+}
+
 static bool FetchVersionsFromSupabase(const std::wstring& endpointName,
                                       std::vector<std::wstring>& outVersions,
                                       std::vector<std::wstring>& outDownloads) {
@@ -153,6 +158,7 @@ ExtensionsPanel::ExtensionsPanel() {
     };
     py.assetFile = L"python.png";
     py.versions.clear(); // NO mock/placeholder versions! Populated by real detected PC runtime & Supabase
+    py.versionDownloads.clear();
     py.selectedVersionIdx = 0;
     py.isSpecialAllVersionsUninstall = false;
     m_items.push_back(py);
@@ -171,6 +177,7 @@ ExtensionsPanel::ExtensionsPanel() {
     };
     php.assetFile = L"php.png";
     php.versions.clear(); // NO mock/placeholder versions! Populated by real detected PC runtime & Supabase
+    php.versionDownloads.clear();
     php.selectedVersionIdx = 0;
     php.isSpecialAllVersionsUninstall = false;
     m_items.push_back(php);
@@ -188,12 +195,8 @@ ExtensionsPanel::ExtensionsPanel() {
         { L"Node Debug Protocol", L"Interactive step-through debugging with breakpoints." }
     };
     node.assetFile = L"node.png";
-    node.versions = { L"v26.3.0", L"v22.20.0", L"v20.18.0" };
-    node.versionDownloads = {
-        L"https://nodejs.org/dist/v26.3.0/node-v26.3.0-x64.msi",
-        L"https://nodejs.org/dist/v22.20.0/node-v22.20.0-x64.msi",
-        L"https://nodejs.org/dist/v20.18.0/node-v20.18.0-x64.msi"
-    };
+    node.versions.clear(); // NO mock/placeholder versions! Populated by real detected PC runtime & Supabase
+    node.versionDownloads.clear();
     node.selectedVersionIdx = 0;
     node.isSpecialAllVersionsUninstall = true; // User requirement: for node, if installed all versions show uninstall
     m_items.push_back(node);
@@ -250,12 +253,14 @@ bool ExtensionsPanel::FetchSupabaseVersions(bool async) {
                     allFetched.push_back(std::move(fd));
                 }
             }
-            if (!allFetched.empty()) {
+            {
                 std::lock_guard<std::mutex> lk(*aliveMtx);
                 if (!*aliveFlag) return;
-                std::function<void()> cb;
-                {
-                    std::lock_guard<std::mutex> lock(m_itemsMutex);
+            }
+            std::function<void()> cb;
+            {
+                std::lock_guard<std::mutex> lock(m_itemsMutex);
+                if (!allFetched.empty()) {
                     for (const auto& fd : allFetched) {
                         for (auto& item : m_items) {
                             if (item.id == fd.id) {
@@ -272,11 +277,12 @@ bool ExtensionsPanel::FetchSupabaseVersions(bool async) {
                             }
                         }
                     }
-                    m_attemptedSupabaseFetch = true;
-                    cb = m_onDataChanged;
                 }
-                if (cb) cb();
+                m_isLoading = false;
+                m_attemptedSupabaseFetch = true;
+                cb = m_onDataChanged;
             }
+            if (cb) cb();
         }).detach();
         return true;
     }
@@ -302,24 +308,27 @@ bool ExtensionsPanel::FetchSupabaseVersions(bool async) {
         }
     }
 
-    if (!allFetched.empty()) {
+    {
         std::lock_guard<std::mutex> lock(m_itemsMutex);
-        for (const auto& fd : allFetched) {
-            for (auto& item : m_items) {
-                if (item.id == fd.id) {
-                    item.versions = fd.versions;
-                    item.versionDownloads = fd.downloads;
-                    item.selectedVersionIdx = 0;
-                    for (size_t i = 0; i < item.versions.size(); ++i) {
-                        if (normalizeVer(item.versions[i]) == normalizeVer(item.installedVersion)) {
-                            item.selectedVersionIdx = static_cast<int>(i);
-                            break;
+        if (!allFetched.empty()) {
+            for (const auto& fd : allFetched) {
+                for (auto& item : m_items) {
+                    if (item.id == fd.id) {
+                        item.versions = fd.versions;
+                        item.versionDownloads = fd.downloads;
+                        item.selectedVersionIdx = 0;
+                        for (size_t i = 0; i < item.versions.size(); ++i) {
+                            if (normalizeVer(item.versions[i]) == normalizeVer(item.installedVersion)) {
+                                item.selectedVersionIdx = static_cast<int>(i);
+                                break;
+                            }
                         }
+                        break;
                     }
-                    break;
                 }
             }
         }
+        m_isLoading = false;
         m_attemptedSupabaseFetch = true;
         if (m_onDataChanged) {
             m_onDataChanged();
@@ -537,6 +546,10 @@ void ExtensionsPanel::RefreshPcStatus() {
                         break;
                     }
                 }
+                if (item.versions.empty() && !detectedPythons[0].ver.empty()) {
+                    item.selectedVersionIdx = 0;
+                    item.versions = { L"v" + normalizeVer(detectedPythons[0].ver) };
+                }
 
                 // Primary default Global System environment
                 EnvironmentOption envGlobal;
@@ -628,6 +641,10 @@ void ExtensionsPanel::RefreshPcStatus() {
                 item.isInstalled = true;
                 item.installedVersion = detectedVer;
                 item.installPath = foundPath;
+                if (item.versions.empty() && !detectedVer.empty()) {
+                    item.selectedVersionIdx = 0;
+                    item.versions = { L"v" + normalizeVer(detectedVer) };
+                }
 
                 EnvironmentOption envGlobal;
                 envGlobal.name = !detectedVer.empty() ? (L"Node.js " + detectedVer + L" (Global System)") : L"Node.js (Global System)";
@@ -716,7 +733,7 @@ void ExtensionsPanel::RefreshPcStatus() {
                 item.installPath = foundPath;
                 if (item.versions.empty() && !detectedVer.empty()) {
                     item.selectedVersionIdx = 0;
-                    item.versions = { L"v" + detectedVer };
+                    item.versions = { L"v" + normalizeVer(detectedVer) };
                 }
 
                 EnvironmentOption envPath;
@@ -2367,7 +2384,7 @@ void ExtensionsPanel::RenderDetailView(ID2D1RenderTarget* pRT, Theme& theme, con
     m_actionBtnBounds = D2D1::RectF(x + padX, curY, x + padX + actionBtnW, curY + btnH);
     m_dropdownBtnBounds = D2D1::RectF(x + padX + actionBtnW + gapBtn, curY, x + w - padX, curY + btnH);
 
-    if (m_isLoading || item.versions.empty()) {
+    if (m_isLoading && item.versions.empty()) {
         RenderSkeletonLoader(pRT, theme, m_actionBtnBounds);
         RenderSkeletonLoader(pRT, theme, m_dropdownBtnBounds);
     } else {
@@ -2489,6 +2506,22 @@ void ExtensionsPanel::RenderDetailView(ID2D1RenderTarget* pRT, Theme& theme, con
                     m_pPathFormat->SetTrimming(&trim, pEllipsis.Get());
                 }
             }
+            if (!m_pEnvNameFormat) {
+                pDWrite->CreateTextFormat(
+                    L"Segoe UI", nullptr,
+                    DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
+                    config.ScaleF(11.5f), L"en-us", &m_pEnvNameFormat
+                );
+                if (m_pEnvNameFormat) {
+                    m_pEnvNameFormat->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+                    m_pEnvNameFormat->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
+                    m_pEnvNameFormat->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+                    DWRITE_TRIMMING trim{ DWRITE_TRIMMING_GRANULARITY_CHARACTER, 0, 0 };
+                    Microsoft::WRL::ComPtr<IDWriteInlineObject> pEllipsis;
+                    pDWrite->CreateEllipsisTrimmingSign(m_pEnvNameFormat.Get(), &pEllipsis);
+                    m_pEnvNameFormat->SetTrimming(&trim, pEllipsis.Get());
+                }
+            }
         }
     }
 
@@ -2522,7 +2555,9 @@ void ExtensionsPanel::RenderDetailView(ID2D1RenderTarget* pRT, Theme& theme, con
     D2D1_RECT_F rcEnvSubtitle = D2D1::RectF(x + padX, curY, x + w - padX, curY + config.ScaleF(16.0f));
     if (pFmtHint && pMutedBrush) {
         pFmtHint->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
-        pRT->DrawText(L"Select default environment for this workspace:", 46, pFmtHint, rcEnvSubtitle, pMutedBrush);
+        pRT->PushAxisAlignedClip(rcEnvSubtitle, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+        pRT->DrawText(L"Select default environment:", 27, pFmtHint, rcEnvSubtitle, pMutedBrush);
+        pRT->PopAxisAlignedClip();
     }
     curY += config.ScaleF(22.0f);
 
@@ -2580,21 +2615,26 @@ void ExtensionsPanel::RenderDetailView(ID2D1RenderTarget* pRT, Theme& theme, con
             if (radioBrush) pRT->FillEllipse(ellInner, radioBrush.Get());
         }
 
-        // Environment Name (Title) - NO "DEFAULT" BADGE! Full width to right margin!
+        // Environment Name (Title) - Clean ellipsis trimming with axis-aligned clipping to prevent leakage
         float textLeft = radioCX + radioR + config.ScaleF(10.0f);
-        float textRight = rcEnv.right - config.ScaleF(12.0f);
+        float textRight = rcEnv.right - config.ScaleF(10.0f);
 
-        D2D1_RECT_F rcEnvName = D2D1::RectF(textLeft, rcEnv.top + config.ScaleF(7.0f), textRight, rcEnv.top + config.ScaleF(24.0f));
-        if (pFmtHint && pTxtBrush) {
-            pRT->DrawText(env.name.c_str(), static_cast<UINT32>(env.name.size()), pFmtHint, rcEnvName, pTxtBrush);
+        D2D1_RECT_F rcEnvName = D2D1::RectF(textLeft, rcEnv.top + config.ScaleF(6.0f), textRight, rcEnv.top + config.ScaleF(24.0f));
+        IDWriteTextFormat* pFmtName = m_pEnvNameFormat ? m_pEnvNameFormat.Get() : pFmtHint;
+        if (pFmtName && pTxtBrush) {
+            pRT->PushAxisAlignedClip(rcEnvName, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+            pRT->DrawText(env.name.c_str(), static_cast<UINT32>(env.name.size()), pFmtName, rcEnvName, pTxtBrush);
+            pRT->PopAxisAlignedClip();
         }
 
-        // Environment Path (Full width single-line with ellipsis trimming)
+        // Environment Path (Full width single-line with ellipsis trimming & clip)
         std::wstring dispPath = DisplayPath(env.path);
-        D2D1_RECT_F rcEnvPath = D2D1::RectF(textLeft, rcEnv.top + config.ScaleF(26.0f), textRight, rcEnv.bottom - config.ScaleF(7.0f));
+        D2D1_RECT_F rcEnvPath = D2D1::RectF(textLeft, rcEnv.top + config.ScaleF(26.0f), textRight, rcEnv.bottom - config.ScaleF(6.0f));
         IDWriteTextFormat* pFmtPath = m_pPathFormat ? m_pPathFormat.Get() : pFmtHint;
         if (pFmtPath && pMutedBrush) {
+            pRT->PushAxisAlignedClip(rcEnvPath, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
             pRT->DrawText(dispPath.c_str(), static_cast<UINT32>(dispPath.size()), pFmtPath, rcEnvPath, pMutedBrush);
+            pRT->PopAxisAlignedClip();
         }
 
         curY += envCardH + config.ScaleF(8.0f);
@@ -2630,7 +2670,7 @@ void ExtensionsPanel::RenderDetailView(ID2D1RenderTarget* pRT, Theme& theme, con
     }
 
     // 6. Version Dropdown Popup (if open)
-    if (m_showVersionDropdown && !m_isLoading && !item.versions.empty()) {
+    if (m_showVersionDropdown && !item.versions.empty()) {
         const float itemH = config.ScaleF(28.0f);
         const float totalContentH = itemH * item.versions.size() + config.ScaleF(6.0f);
         const float maxDropH = config.ScaleF(220.0f);
@@ -2873,7 +2913,7 @@ bool ExtensionsPanel::HandleLButtonDown(POINT pt, std::function<void(const std::
             if (pt.x >= b.left && pt.x <= b.right && pt.y >= b.top && pt.y <= b.bottom) {
                 m_selectedExtensionIdx = static_cast<int>(i);
                 m_viewMode = ViewMode::Detail;
-                m_isLoading = true;
+                m_isLoading = m_items[i].versions.empty();
                 m_loadingTime = 0.0f;
                 m_shimmerOffset = 0.0f;
                 m_showVersionDropdown = false;

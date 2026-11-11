@@ -313,6 +313,7 @@ bool NotebookView::HitTestOutputArea(const editor::NotebookCell& cell, POINT cli
 
 void NotebookView::SubmitCellInput(editor::NotebookCell& cell, HWND hwnd) {
     if (!cell.isWaitingForInput) return;
+    std::lock_guard<std::recursive_mutex> viewLock(m_outputsMutex);
     std::wstring val = cell.inputFieldValue;
     m_kernel.SendStdin(val + L"\n");
     std::wstring echo = cell.inputPrompt + val + L"\n";
@@ -508,6 +509,8 @@ void NotebookView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
     m_scrollY = doc.notebookDoc->scrollY;
 
     auto nb = doc.notebookDoc;
+    std::lock_guard<std::recursive_mutex> viewLock(m_outputsMutex);
+    std::unique_lock<std::recursive_mutex> docLock(nb->outputsMutex ? *nb->outputsMutex : m_outputsMutex);
     m_viewHeight = height;
 
     // Blink timer update
@@ -2582,6 +2585,19 @@ LPCWSTR NotebookView::GetCursorForPoint(POINT pt, const editor::OpenDocument& do
     return IDC_ARROW;
 }
 
+static bool IsValidPythonExe(const std::wstring& path) {
+    if (path.empty()) return false;
+    if (path.find(L"WindowsApps") != std::wstring::npos) return false;
+    if (path.find(L"_uninstalling_") != std::wstring::npos) return false;
+    if (path.find(L"Quantix") != std::wstring::npos) return false;
+    std::error_code ec;
+    if (!std::filesystem::exists(path, ec) || ec) return false;
+    if (!std::filesystem::is_regular_file(path, ec) || ec) return false;
+    auto sz = std::filesystem::file_size(path, ec);
+    if (ec || sz < 10240) return false; // Exclude 0-byte reparse points / stubs
+    return true;
+}
+
 std::wstring NotebookView::FindPythonExecutable(const std::wstring& targetFilePath) const {
     // 1. Check local virtual environments in the notebook's directory or parent directories
     std::vector<std::wstring> candidateDirs;
@@ -2608,33 +2624,39 @@ std::wstring NotebookView::FindPythonExecutable(const std::wstring& targetFilePa
     for (const auto& dir : candidateDirs) {
         for (const auto* vname : venvNames) {
             std::wstring vpy = dir + L"\\" + vname + L"\\Scripts\\python.exe";
-            if (std::filesystem::exists(vpy)) {
+            if (IsValidPythonExe(vpy)) {
                 return vpy;
             }
         }
     }
 
-    // 2. Check for Global Python installations (where user pip install packages live)
-    // 2a. Check python.exe on PATH (skipping emsdk if present)
-    wchar_t buf[MAX_PATH]{};
-    if (SearchPathW(nullptr, L"python.exe", nullptr, MAX_PATH, buf, nullptr) > 0) {
-        std::wstring pathPy = buf;
-        if (pathPy.find(L"emsdk") == std::wstring::npos && std::filesystem::exists(pathPy)) {
-            return pathPy;
+    // 2. Check phide's own downloaded runtimes
+    wchar_t exePath[MAX_PATH] = { 0 };
+    GetModuleFileNameW(nullptr, exePath, MAX_PATH);
+    std::filesystem::path exeDir = std::filesystem::path(exePath).parent_path();
+    std::vector<std::filesystem::path> runtimeCandidates = {
+        exeDir / L"runtimes" / L"python" / L"python.exe",
+        exeDir.parent_path() / L"runtimes" / L"python" / L"python.exe",
+        L"C:\\Program Files\\phide\\runtimes\\python\\python.exe"
+    };
+    for (const auto& rc : runtimeCandidates) {
+        if (IsValidPythonExe(rc.wstring())) {
+            return rc.wstring();
         }
     }
 
-    // 2b. Check User Local AppData Python installations (default python.org installer location)
+    // 3. Check User Local AppData Python installations (e.g. %LOCALAPPDATA%\Programs\Python\Python313\python.exe, Python315, etc.)
     wchar_t localApp[MAX_PATH]{};
     if (GetEnvironmentVariableW(L"LOCALAPPDATA", localApp, MAX_PATH) > 0) {
-        std::wstring pyBase = std::wstring(localApp) + L"\\Programs\\Python";
-        if (std::filesystem::exists(pyBase)) {
+        std::filesystem::path pyBase = std::filesystem::path(localApp) / L"Programs" / L"Python";
+        std::error_code ec;
+        if (std::filesystem::exists(pyBase, ec)) {
             try {
                 std::wstring highestPy;
-                for (const auto& entry : std::filesystem::directory_iterator(pyBase)) {
+                for (const auto& entry : std::filesystem::directory_iterator(pyBase, ec)) {
                     if (entry.is_directory()) {
-                        std::wstring cand = entry.path().wstring() + L"\\python.exe";
-                        if (std::filesystem::exists(cand)) {
+                        std::wstring cand = (entry.path() / L"python.exe").wstring();
+                        if (IsValidPythonExe(cand)) {
                             if (highestPy.empty() || cand > highestPy) {
                                 highestPy = cand;
                             }
@@ -2646,7 +2668,18 @@ std::wstring NotebookView::FindPythonExecutable(const std::wstring& targetFilePa
         }
     }
 
-    // 2c. Check C:\Program Files\Python3*\python.exe and C:\Python3*\python.exe
+    // 4. Check python.exe on PATH (skipping WindowsApps execution alias and emsdk)
+    wchar_t buf[MAX_PATH]{};
+    if (SearchPathW(nullptr, L"python.exe", nullptr, MAX_PATH, buf, nullptr) > 0) {
+        std::wstring pathPy = buf;
+        if (pathPy.find(L"WindowsApps") == std::wstring::npos &&
+            pathPy.find(L"emsdk") == std::wstring::npos &&
+            IsValidPythonExe(pathPy)) {
+            return pathPy;
+        }
+    }
+
+    // 5. Check standard system installations
     const wchar_t* rootCandidates[] = {
         L"C:\\Program Files\\Python315\\python.exe",
         L"C:\\Program Files\\Python314\\python.exe",
@@ -2660,22 +2693,69 @@ std::wstring NotebookView::FindPythonExecutable(const std::wstring& targetFilePa
         L"C:\\Python311\\python.exe"
     };
     for (const auto* rc : rootCandidates) {
-        if (std::filesystem::exists(rc)) return rc;
+        if (IsValidPythonExe(rc)) return rc;
     }
 
-    // 2d. Check py.exe on PATH
+    // 6. Check py.exe on PATH by querying py.exe -0p for a valid python.exe
     if (SearchPathW(nullptr, L"py.exe", nullptr, MAX_PATH, buf, nullptr) > 0) {
-        return buf;
+        HANDLE hRead = nullptr, hWrite = nullptr;
+        SECURITY_ATTRIBUTES sa{ sizeof(sa), nullptr, TRUE };
+        if (CreatePipe(&hRead, &hWrite, &sa, 0)) {
+            SetHandleInformation(hRead, HANDLE_FLAG_INHERIT, 0);
+            STARTUPINFOW si{};
+            si.cb = sizeof(si);
+            si.dwFlags = STARTF_USESHOWWINDOW | STARTF_USESTDHANDLES;
+            si.wShowWindow = SW_HIDE;
+            si.hStdOutput = hWrite;
+            si.hStdError = hWrite;
+            PROCESS_INFORMATION pi{};
+            std::wstring pyCmd = L"\"" + std::wstring(buf) + L"\" -0p";
+            std::vector<wchar_t> cmdBuf(pyCmd.begin(), pyCmd.end());
+            cmdBuf.push_back(0);
+            if (CreateProcessW(nullptr, cmdBuf.data(), nullptr, nullptr, TRUE, CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {
+                CloseHandle(hWrite);
+                hWrite = nullptr;
+                char pipeBuf[512];
+                DWORD bytesRead = 0;
+                std::string raw;
+                while (ReadFile(hRead, pipeBuf, sizeof(pipeBuf) - 1, &bytesRead, nullptr) && bytesRead > 0) {
+                    raw.append(pipeBuf, bytesRead);
+                }
+                WaitForSingleObject(pi.hProcess, 1500);
+                CloseHandle(pi.hProcess);
+                CloseHandle(pi.hThread);
+
+                if (!raw.empty()) {
+                    int len = MultiByteToWideChar(CP_UTF8, 0, raw.c_str(), -1, nullptr, 0);
+                    if (len > 0) {
+                        std::wstring outStr(len - 1, 0);
+                        MultiByteToWideChar(CP_UTF8, 0, raw.c_str(), -1, &outStr[0], len);
+                        std::wstringstream ss(outStr);
+                        std::wstring line;
+                        while (std::getline(ss, line)) {
+                            auto colIdx = line.find(L":\\");
+                            if (colIdx != std::wstring::npos && colIdx > 0) {
+                                std::wstring candExe = line.substr(colIdx - 1);
+                                while (!candExe.empty() && (candExe.back() == L' ' || candExe.back() == L'\t' || candExe.back() == L'\r' || candExe.back() == L'\n')) {
+                                    candExe.pop_back();
+                                }
+                                if (IsValidPythonExe(candExe)) {
+                                    CloseHandle(hRead);
+                                    return candExe;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            if (hWrite) CloseHandle(hWrite);
+            if (hRead) CloseHandle(hRead);
+        }
     }
 
-    // 2e. Check PATH python even if it was emsdk
-    if (SearchPathW(nullptr, L"python.exe", nullptr, MAX_PATH, buf, nullptr) > 0) {
-        return buf;
-    }
-
-    // 3. Fallback: dedicated EMSDK Python if present
+    // 7. Fallback: dedicated EMSDK Python if present
     std::wstring emsdkPy = L"C:\\Users\\Administrator\\Downloads\\emsdk\\python\\3.13.3_64bit\\python.exe";
-    if (std::filesystem::exists(emsdkPy)) return emsdkPy;
+    if (IsValidPythonExe(emsdkPy)) return emsdkPy;
 
     return L"python";
 }
@@ -2732,7 +2812,11 @@ void NotebookView::RunCell(int cellIdx, editor::OpenDocument& doc, HWND hwnd) {
     if (isWhitespaceOnly) {
         cell.isExecuting = false;
         cell.isQueued = false;
-        cell.outputs.clear();
+        {
+            std::lock_guard<std::recursive_mutex> viewLock(m_outputsMutex);
+            std::unique_lock<std::recursive_mutex> docLock(nb->outputsMutex ? *nb->outputsMutex : m_outputsMutex);
+            cell.outputs.clear();
+        }
         cell.hasError = false;
         cell.errorLine = -1;
         cell.lastElapsedMs = 0;
@@ -2767,7 +2851,11 @@ void NotebookView::RunCell(int cellIdx, editor::OpenDocument& doc, HWND hwnd) {
 
     cell.isExecuting = true;
     cell.isQueued = false;
-    cell.outputs.clear();
+    {
+        std::lock_guard<std::recursive_mutex> viewLock(m_outputsMutex);
+        std::unique_lock<std::recursive_mutex> docLock(nb->outputsMutex ? *nb->outputsMutex : m_outputsMutex);
+        cell.outputs.clear();
+    }
     cell.hasError = false;
     cell.errorLine = -1;
     m_isExecuting.store(true);
@@ -2775,7 +2863,7 @@ void NotebookView::RunCell(int cellIdx, editor::OpenDocument& doc, HWND hwnd) {
     m_shouldStop.store(false);
 
     if (hwnd) {
-        SetTimer(hwnd, 2, 16, nullptr); // Start 60 FPS animation timer immediately
+        SetTimer(hwnd, 1002, 16, nullptr); // Start 60 FPS animation timer immediately
     }
 
     if (m_execThread.joinable()) {
@@ -2859,8 +2947,10 @@ void NotebookView::ExecuteScriptAsync(int cellIdx, const std::wstring& script, c
         workingDir = m_workspacePath;
     }
 
-    auto onChunk = [nbDoc, cellIdx, hwnd](const std::wstring& chunk, bool isPrompt, const std::wstring& promptText) {
+    auto onChunk = [this, nbDoc, cellIdx, hwnd](const std::wstring& chunk, bool isPrompt, const std::wstring& promptText) {
         if (!nbDoc || cellIdx < 0 || cellIdx >= static_cast<int>(nbDoc->cells.size())) return;
+        std::lock_guard<std::recursive_mutex> viewLock(m_outputsMutex);
+        std::unique_lock<std::recursive_mutex> docLock((nbDoc && nbDoc->outputsMutex) ? *nbDoc->outputsMutex : m_outputsMutex);
         auto& cell = nbDoc->cells[cellIdx];
         if (!chunk.empty()) {
             if (cell.outputs.empty()) {
@@ -2892,6 +2982,8 @@ void NotebookView::ExecuteScriptAsync(int cellIdx, const std::wstring& script, c
 
     // 3. Update notebook document cell outputs & error state
     if (nbDoc && cellIdx >= 0 && cellIdx < static_cast<int>(nbDoc->cells.size())) {
+        std::lock_guard<std::recursive_mutex> viewLock(m_outputsMutex);
+        std::unique_lock<std::recursive_mutex> docLock((nbDoc && nbDoc->outputsMutex) ? *nbDoc->outputsMutex : m_outputsMutex);
         auto& cell = nbDoc->cells[cellIdx];
         cell.isExecuting = false;
         cell.isQueued = false;
@@ -2976,17 +3068,23 @@ void NotebookView::ExecuteScriptAsync(int cellIdx, const std::wstring& script, c
     }
 
     if (queuedCellIdx >= 0 && !m_shouldStop.load() && nbDoc) {
-        auto& nextCell = nbDoc->cells[queuedCellIdx];
-        nextCell.isQueued = false;
-        nextCell.isExecuting = true;
-        nextCell.outputs.clear();
-        nextCell.hasError = false;
-        nextCell.errorLine = -1;
+        std::wstring nextCode;
+        std::wstring nextLang;
+        {
+            std::lock_guard<std::recursive_mutex> viewLock(m_outputsMutex);
+            std::unique_lock<std::recursive_mutex> docLock((nbDoc && nbDoc->outputsMutex) ? *nbDoc->outputsMutex : m_outputsMutex);
+            auto& nextCell = nbDoc->cells[queuedCellIdx];
+            nextCell.isQueued = false;
+            nextCell.isExecuting = true;
+            nextCell.outputs.clear();
+            nextCell.hasError = false;
+            nextCell.errorLine = -1;
+            nextCode = nextCell.inputBuffer.GetText();
+            nextLang = nextCell.language;
+        }
         m_isExecuting.store(true);
         m_executingCellIdx.store(queuedCellIdx);
 
-        std::wstring nextCode = nextCell.inputBuffer.GetText();
-        std::wstring nextLang = nextCell.language;
         std::thread([this, queuedCellIdx, nextCode, nextLang, nbDoc, hwnd]() {
             ExecuteScriptAsync(queuedCellIdx, nextCode, nextLang, nbDoc, hwnd);
         }).detach();
@@ -3005,15 +3103,21 @@ void NotebookView::ExecuteScriptAsync(int cellIdx, const std::wstring& script, c
             nextIdx++;
         }
         if (nextIdx < static_cast<int>(nbDoc->cells.size())) {
-            auto& nextCell = nbDoc->cells[nextIdx];
-            nextCell.isExecuting = true;
-            nextCell.outputs.clear();
-            nextCell.hasError = false;
+            std::wstring nextCode;
+            std::wstring nextLang;
+            {
+                std::lock_guard<std::recursive_mutex> viewLock(m_outputsMutex);
+                std::unique_lock<std::recursive_mutex> docLock((nbDoc && nbDoc->outputsMutex) ? *nbDoc->outputsMutex : m_outputsMutex);
+                auto& nextCell = nbDoc->cells[nextIdx];
+                nextCell.isExecuting = true;
+                nextCell.outputs.clear();
+                nextCell.hasError = false;
+                nextCode = nextCell.inputBuffer.GetText();
+                nextLang = nextCell.language;
+            }
             m_isExecuting.store(true);
             m_executingCellIdx.store(nextIdx);
 
-            std::wstring nextCode = nextCell.inputBuffer.GetText();
-            std::wstring nextLang = nextCell.language;
             std::thread([this, nextIdx, nextCode, nextLang, nbDoc, hwnd]() {
                 ExecuteScriptAsync(nextIdx, nextCode, nextLang, nbDoc, hwnd);
             }).detach();

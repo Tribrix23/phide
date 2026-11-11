@@ -572,6 +572,7 @@ private:
     /** @brief Synchronizes documents with syntax/diagnostic errors into the Explorer drawer (Image 3). */
     void UpdateDrawerErrorFiles();
     void UpdatePrediction();
+    [[nodiscard]] bool IsCursorInComment(const editor::OpenDocument* pDoc) const;
 
     /** @brief Commits selected autocomplete item or HTML tag block (Images 1 & 5). */
     void CommitAutocompleteSelection();

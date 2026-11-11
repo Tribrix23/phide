@@ -189,12 +189,34 @@ public:
         const std::string promptPrefix = "__PHIDE_INPUT_PROMPT__";
 
         HANDLE hRead = m_hStdoutRead.load();
+        HANDLE hProc = m_hProcess.load();
         while (!m_shouldInterrupt.load() && hRead && hRead != INVALID_HANDLE_VALUE) {
             DWORD avail = 0;
             if (!PeekNamedPipe(hRead, NULL, 0, NULL, &avail, NULL)) {
+                DWORD code = 1;
+                if (hProc) GetExitCodeProcess(hProc, &code);
+                res.exitCode = (code != 0) ? code : 1;
+                res.hasError = true;
+                CleanupProcess();
                 break;
             }
             if (avail == 0) {
+                if (hProc && WaitForSingleObject(hProc, 0) == WAIT_OBJECT_0) {
+                    DWORD code = 1;
+                    GetExitCodeProcess(hProc, &code);
+                    res.exitCode = (code != 0) ? code : 1;
+                    res.hasError = true;
+                    DWORD rem = 0;
+                    if (PeekNamedPipe(hRead, NULL, 0, NULL, &rem, NULL) && rem > 0) {
+                        BOOL rOk = ReadFile(hRead, buffer, (std::min)(rem, static_cast<DWORD>(sizeof(buffer) - 1)), &bytesRead, NULL);
+                        if (rOk && bytesRead > 0) {
+                            buffer[bytesRead] = '\0';
+                            rawOutput.append(buffer, bytesRead);
+                        }
+                    }
+                    CleanupProcess();
+                    break;
+                }
                 Sleep(20);
                 continue;
             }

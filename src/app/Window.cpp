@@ -2550,6 +2550,13 @@ void Window::CloseDocument(int groupIdx, int docIdx) {
     auto& group = m_editorGroups[groupIdx];
     if (docIdx < 0 || docIdx >= static_cast<int>(group.docs.size())) return;
 
+    auto& closingDoc = group.docs[docIdx];
+    if (!closingDoc.isSpecialView && !closingDoc.filePath.empty() && closingDoc.isDirty) {
+        closingDoc.buffer.SaveToFile(closingDoc.filePath);
+        closingDoc.isDirty = false;
+        closingDoc.originalDiskText = closingDoc.buffer.GetText();
+    }
+
     if (!group.docs[docIdx].filePath.empty()) {
         m_lastClosedFilePath = group.docs[docIdx].filePath;
     }
@@ -3253,9 +3260,68 @@ void Window::UpdateDrawerErrorFiles() {
     m_drawer.SetErrorFiles(errorFiles);
 }
 
+bool Window::IsCursorInComment(const editor::OpenDocument* pDoc) const {
+    if (!pDoc || pDoc->isSpecialView || pDoc->isImageView || pDoc->isUnsupportedBinary) return false;
+    auto curPos = pDoc->buffer.GetCursor();
+    if (curPos.line >= pDoc->buffer.GetLineCount()) return false;
+
+    std::wstring docExt;
+    std::wstring fn = pDoc->filePath.empty() ? pDoc->fileName : pDoc->filePath;
+    auto dotPos = fn.rfind(L'.');
+    if (dotPos != std::wstring::npos) docExt = fn.substr(dotPos);
+    for (auto& c : docExt) c = static_cast<wchar_t>(towlower(c));
+
+    // 1. Check syntax tokens from buffer lexer
+    auto tokens = pDoc->buffer.GetTokensForLine(curPos.line, docExt);
+    for (const auto& tok : tokens) {
+        if (tok.type == editor::TokenType::Comment) {
+            if (curPos.col >= tok.startCol && curPos.col <= tok.startCol + tok.length) {
+                return true;
+            }
+        }
+    }
+
+    // 2. Fallback lexical scan for comments currently being typed
+    const auto& lineText = pDoc->buffer.GetLine(curPos.line);
+    bool isPython = (docExt == L".py" || docExt == L".pyw" || docExt == L"py");
+    bool isPhp = (docExt == L".php" || docExt == L"php");
+    bool isShellOrYaml = (docExt == L".sh" || docExt == L".bash" || docExt == L".zsh" || docExt == L".yaml" || docExt == L".yml" || docExt == L".toml" || docExt == L".ini" || docExt == L".env");
+
+    bool inDblQuote = false;
+    bool inSglQuote = false;
+    for (size_t i = 0; i < lineText.length() && i < curPos.col; ++i) {
+        wchar_t c = lineText[i];
+        if (c == L'\\' && (inDblQuote || inSglQuote) && i + 1 < lineText.length()) { ++i; continue; }
+        if (c == L'"' && !inSglQuote) inDblQuote = !inDblQuote;
+        else if (c == L'\'' && !inDblQuote) inSglQuote = !inSglQuote;
+        else if (!inDblQuote && !inSglQuote) {
+            if (isPython || isShellOrYaml) {
+                if (c == L'#') return true;
+            } else if (isPhp) {
+                if (c == L'#' || (c == L'/' && i + 1 < lineText.length() && lineText[i + 1] == L'/')) return true;
+            } else {
+                if (c == L'/' && i + 1 < lineText.length() && lineText[i + 1] == L'/') return true;
+            }
+        }
+    }
+
+    size_t firstNonWs = lineText.find_first_not_of(L" \t");
+    if (firstNonWs != std::wstring::npos && firstNonWs < curPos.col) {
+        if (isPython || isShellOrYaml) {
+            if (lineText[firstNonWs] == L'#') return true;
+        } else if (isPhp) {
+            if (lineText[firstNonWs] == L'#' || lineText.substr(firstNonWs, 2) == L"//" || lineText.substr(firstNonWs, 2) == L"/*" || lineText[firstNonWs] == L'*') return true;
+        } else {
+            if (lineText.substr(firstNonWs, 2) == L"//" || lineText.substr(firstNonWs, 2) == L"/*" || lineText[firstNonWs] == L'*') return true;
+        }
+    }
+
+    return false;
+}
+
 void Window::UpdatePrediction() {
     auto* pDoc = GetActiveDoc();
-    if (!pDoc || pDoc->isSpecialView || pDoc->isImageView || pDoc->isUnsupportedBinary) {
+    if (!pDoc || pDoc->isSpecialView || pDoc->isImageView || pDoc->isUnsupportedBinary || IsCursorInComment(pDoc)) {
         m_editor.ClearPrediction();
         return;
     }
@@ -12742,7 +12808,18 @@ void Window::HandleLButtonDown(POINT clientPt) {
                                 if (newLineStr != lineStr) {
                                     doc.buffer.PushUndo();
                                     doc.buffer.SetLine(todoHit.line, newLineStr);
-                                    doc.isDirty = true;
+                                    if (!doc.filePath.empty()) {
+                                        doc.buffer.SaveToFile(doc.filePath);
+                                        doc.isDirty = false;
+                                        doc.originalDiskText = doc.buffer.GetText();
+                                        SyncDocumentBuffers(&doc);
+                                        UpdateDrawerDirtyFiles();
+                                        m_drawer.RefreshGitStatusOnly(true);
+                                        TriggerDebouncedGitRefresh(150);
+                                    } else {
+                                        doc.isDirty = true;
+                                        MarkDocumentModified(&doc);
+                                    }
                                     UpdatePrediction();
                                     InvalidateRect(m_hwnd, nullptr, FALSE);
                                     return;
@@ -15193,7 +15270,11 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                         MarkDocumentModified(pDoc);
 
                         // Query massive HTML5 / JavaScript / Python / PHP / Path IntelliSense & Snippets
-                        if (iswalnum(ch) || ch == L'!' || ch == L'@' || ch == L'#' || ch == L'-' || ch == L'.' || ch == L'<' || ch == L'>' || ch == L':' || ch == L'$' || ch == L'_' || ch == L'/' || ch == L'\\' || ch == L'"' || ch == L'\'' || ch == L'`' || ch == L'{' || ch == L',' || ch == L' ') {
+                        if (IsCursorInComment(pDoc)) {
+                            m_editor.DismissAutocomplete();
+                            m_editor.ClearGhostText();
+                            m_editor.ClearPrediction();
+                        } else if (iswalnum(ch) || ch == L'!' || ch == L'@' || ch == L'#' || ch == L'-' || ch == L'.' || ch == L'<' || ch == L'>' || ch == L':' || ch == L'$' || ch == L'_' || ch == L'/' || ch == L'\\' || ch == L'"' || ch == L'\'' || ch == L'`' || ch == L'{' || ch == L',' || ch == L' ') {
                             auto pos = pDoc->buffer.GetCursor();
                             const auto& lineText = pDoc->buffer.GetLine(pos.line);
                             std::wstring docTarget = pDoc->filePath.empty() ? pDoc->fileName : pDoc->filePath;
@@ -15384,7 +15465,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
             // NEXT: Code Prediction Tab-to-complete (Images 3, 4, 5)
             if (wParam == VK_TAB && m_editor.HasPrediction() && !m_editor.IsAutocompleteVisible()) {
                 auto* pDoc = GetActiveDoc();
-                if (pDoc) {
+                if (pDoc && !IsCursorInComment(pDoc)) {
                     m_suppressNextChar = true;
                     const auto& pred = m_editor.GetPrediction();
                     pDoc->buffer.PushUndo();
@@ -15407,7 +15488,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
             // Inline Ghost Text Tab-to-complete (Image 3)
             if (wParam == VK_TAB && !m_editor.GetGhostText().empty() && !m_editor.IsAutocompleteVisible()) {
                 auto* pDoc = GetActiveDoc();
-                if (pDoc) {
+                if (pDoc && !IsCursorInComment(pDoc)) {
                     m_suppressNextChar = true;
                     std::wstring ghost = m_editor.GetGhostText();
                     pDoc->buffer.InsertText(ghost);
@@ -15441,11 +15522,21 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     return 0;
                 }
                 if (wParam == VK_TAB) {
-                    CommitAutocompleteSelection();
-                    return 0;
+                    auto* pDoc = GetActiveDoc();
+                    if (IsCursorInComment(pDoc)) {
+                        m_editor.DismissAutocomplete();
+                        m_editor.ClearGhostText();
+                    } else {
+                        CommitAutocompleteSelection();
+                        return 0;
+                    }
                 }
                 if (wParam == VK_RETURN) {
-                    if (m_editor.IsAutocompleteNavigated()) {
+                    auto* pDoc = GetActiveDoc();
+                    if (IsCursorInComment(pDoc)) {
+                        m_editor.DismissAutocomplete();
+                        m_editor.ClearGhostText();
+                    } else if (m_editor.IsAutocompleteNavigated()) {
                         CommitAutocompleteSelection();
                         return 0;
                     } else {
@@ -15458,7 +15549,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
             // Ctrl+Space IntelliSense Trigger
             if ((GetKeyState(VK_CONTROL) & 0x8000) && wParam == VK_SPACE) {
                 auto* pDoc = GetActiveDoc();
-                if (pDoc) {
+                if (pDoc && !IsCursorInComment(pDoc)) {
                     auto pos = pDoc->buffer.GetCursor();
                     const auto& lineText = pDoc->buffer.GetLine(pos.line);
                     std::wstring docTarget = pDoc->filePath.empty() ? pDoc->fileName : pDoc->filePath;
@@ -16529,19 +16620,23 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                             pDoc->buffer.SetCursor(cur.line, cur.col);
                             pDoc->buffer.IncrementVersion();
                         } else {
-                            std::wstring ext = L"";
-                            if (!pDoc->filePath.empty()) {
-                                std::filesystem::path p(pDoc->filePath);
-                                ext = p.extension().wstring();
-                            } else if (!pDoc->fileName.empty()) {
-                                std::filesystem::path p(pDoc->fileName);
-                                ext = p.extension().wstring();
-                            }
-                            if (!ext.empty() && ext[0] == L'.') ext = ext.substr(1);
-                            if (!m_snippetManager.TryExpand(pDoc->buffer, ext, pDoc->fileName.empty() ? pDoc->filePath : pDoc->fileName)) {
-                                // Try expanding Emmet abbreviation next (e.g., div -> <div></div>)
-                                if (!pDoc->buffer.ExpandEmmet(ext)) {
-                                    pDoc->buffer.InsertText(indentStr);
+                            if (IsCursorInComment(pDoc)) {
+                                pDoc->buffer.InsertText(indentStr);
+                            } else {
+                                std::wstring ext = L"";
+                                if (!pDoc->filePath.empty()) {
+                                    std::filesystem::path p(pDoc->filePath);
+                                    ext = p.extension().wstring();
+                                } else if (!pDoc->fileName.empty()) {
+                                    std::filesystem::path p(pDoc->fileName);
+                                    ext = p.extension().wstring();
+                                }
+                                if (!ext.empty() && ext[0] == L'.') ext = ext.substr(1);
+                                if (!m_snippetManager.TryExpand(pDoc->buffer, ext, pDoc->fileName.empty() ? pDoc->filePath : pDoc->fileName)) {
+                                    // Try expanding Emmet abbreviation next (e.g., div -> <div></div>)
+                                    if (!pDoc->buffer.ExpandEmmet(ext)) {
+                                        pDoc->buffer.InsertText(indentStr);
+                                    }
                                 }
                             }
                         }
@@ -16562,7 +16657,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     if (!ext.empty() && ext[0] == L'.') ext = ext.substr(1);
 
                     // Check if current prefix can expand as a snippet on Enter (e.g. typing "log" or "!" and hitting Enter)
-                    if (m_snippetManager.TryExpand(pDoc->buffer, ext, pDoc->fileName.empty() ? pDoc->filePath : pDoc->fileName)) {
+                    if (!IsCursorInComment(pDoc) && m_snippetManager.TryExpand(pDoc->buffer, ext, pDoc->fileName.empty() ? pDoc->filePath : pDoc->fileName)) {
                         MarkDocumentModified(pDoc);
                         if (pDoc->isDiffView) ComputeDiffHunks(*pDoc);
                         m_editor.DismissAutocomplete();
@@ -16631,7 +16726,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     std::wstring textBeforeCursor = (pos.col <= lineText.length()) ? lineText.substr(0, pos.col) : lineText;
                     size_t endPos = textBeforeCursor.find_last_not_of(L" \t");
                     bool shouldIndent = false;
-                    if (endPos != std::wstring::npos && (textBeforeCursor[endPos] == L':' || textBeforeCursor[endPos] == L'{')) {
+                    if (!IsCursorInComment(pDoc) && endPos != std::wstring::npos && (textBeforeCursor[endPos] == L':' || textBeforeCursor[endPos] == L'{')) {
                         shouldIndent = true;
                     }
 
@@ -16816,8 +16911,13 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 }
 
                 if (m_isRightSidebarAnimating) {
-                    m_extensionsPanel.UpdateAnim(16.0f);
                     keepAnimating = true;
+                }
+                if (m_extensionsPanel.IsOpen() || m_extensionsPanel.HasActiveTasks()) {
+                    m_extensionsPanel.UpdateAnim(16.0f);
+                    if (m_extensionsPanel.HasActiveTasks() || m_extensionsPanel.IsLoading()) {
+                        keepAnimating = true;
+                    }
                 }
 
                 // Smoothly update Live Server progression and auto-open user browser upon completion
@@ -17012,20 +17112,17 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
         }
 
         case WM_CLOSE: {
-            if (m_autoSave && !s_pendingModifiedKeys.empty()) {
-                for (const auto& targetKey : s_pendingModifiedKeys) {
-                    for (auto& grp : m_editorGroups) {
-                        for (auto& d : grp.docs) {
-                            if (!d.isSpecialView && !d.filePath.empty() && d.filePath == targetKey) {
-                                d.buffer.SaveToFile(d.filePath);
-                                d.isDirty = false;
-                            }
-                        }
+            for (auto& grp : m_editorGroups) {
+                for (auto& d : grp.docs) {
+                    if (!d.isSpecialView && !d.filePath.empty() && d.isDirty) {
+                        d.buffer.SaveToFile(d.filePath);
+                        d.isDirty = false;
+                        d.originalDiskText = d.buffer.GetText();
                     }
                 }
-                s_pendingModifiedKeys.clear();
-                s_editDebouncePending = false;
             }
+            s_pendingModifiedKeys.clear();
+            s_editDebouncePending = false;
             UpdateDrawerErrorFiles();
             SaveSessionState();
             DestroyWindow(m_hwnd);
@@ -17033,6 +17130,15 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
         }
 
         case WM_DESTROY: {
+            for (auto& grp : m_editorGroups) {
+                for (auto& d : grp.docs) {
+                    if (!d.isSpecialView && !d.filePath.empty() && d.isDirty) {
+                        d.buffer.SaveToFile(d.filePath);
+                        d.isDirty = false;
+                        d.originalDiskText = d.buffer.GetText();
+                    }
+                }
+            }
             phide::plugin::PluginManager::Instance().DispatchEvent(L"onShutdown");
             StopWorkspaceWatcher();
             m_explorerUndo.CleanupTrash();

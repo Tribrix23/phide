@@ -8,6 +8,7 @@
 #include <string>
 #include <vector>
 #include <memory>
+#include <mutex>
 #include <chrono>
 #include <fstream>
 #include <sstream>
@@ -251,6 +252,7 @@ public:
     bool isDirty = false;
     int nextExecutionCount = 1;
     float scrollY = 0.0f;
+    std::shared_ptr<std::recursive_mutex> outputsMutex = std::make_shared<std::recursive_mutex>();
 
     void InitDefaultScratchpad() {
         cells.clear();
@@ -318,11 +320,14 @@ public:
     }
 
     void ClearAllOutputs() {
-        for (auto& c : cells) {
-            c.outputs.clear();
-            c.outputs.shrink_to_fit();
-            c.executionCount = -1;
-            c.isExecuting = false;
+        if (outputsMutex) {
+            std::lock_guard<std::recursive_mutex> lock(*outputsMutex);
+            for (auto& c : cells) {
+                c.outputs.clear();
+                c.outputs.shrink_to_fit();
+                c.executionCount = -1;
+                c.isExecuting = false;
+            }
         }
         nextExecutionCount = 1;
         isDirty = true;

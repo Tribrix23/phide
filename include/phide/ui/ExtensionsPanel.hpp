@@ -174,6 +174,8 @@ public:
     void DismissProcessTask(size_t index);
     [[nodiscard]] const std::vector<ProcessTask>& GetProcessTasks() const noexcept { return m_processTasks; }
     [[nodiscard]] bool HasActiveProcesses() const noexcept { return !m_processTasks.empty(); }
+    [[nodiscard]] bool HasActiveTasks() const noexcept { return !m_processTasks.empty(); }
+    [[nodiscard]] bool IsLoading() const noexcept { return m_isLoading; }
     [[nodiscard]] bool HitTestProcesses(POINT pt) const noexcept;
     void ClearProcessesCardBounds() noexcept { m_processesCardBounds = D2D1::RectF(0, 0, 0, 0); m_processesMinBtnBounds = D2D1::RectF(0, 0, 0, 0); }
     void RenderProcessesCard(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config, float x, float y, float w, float h);
@@ -237,6 +239,7 @@ private:
     Microsoft::WRL::ComPtr<IDWriteTextFormat> m_pDescFormat;
     Microsoft::WRL::ComPtr<IDWriteTextFormat> m_pTagFormat;
     Microsoft::WRL::ComPtr<IDWriteTextFormat> m_pPathFormat;
+    Microsoft::WRL::ComPtr<IDWriteTextFormat> m_pEnvNameFormat;
 };
 
 } // namespace phide::ui

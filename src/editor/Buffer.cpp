@@ -477,16 +477,34 @@ std::vector<SyntaxToken> SyntaxLexer::TokenizeLine(const std::wstring& line, con
             continue;
         }
 
-        // 6. Single-line Comments (// or #)
-        if ((i + 1 < len && line[i] == L'/' && line[i + 1] == L'/') || (line[i] == L'#' && (ext == L".py" || ext == L".sh" || ext == L".bash" || ext == L".php" || ext.empty()))) {
-            tokens.push_back({ TokenType::Comment, i, len - i });
-            break;
-        }
+        bool isPython = (lowerExt == L".py" || lowerExt == L"py");
 
-        // 7. Block Comment opening or inside (/* ...)
-        if (i + 1 < len && line[i] == L'/' && line[i + 1] == L'*') {
-            tokens.push_back({ TokenType::Comment, i, len - i });
-            break;
+        // 6. Single-line & Block Comments
+        if (isPython) {
+            if (line[i] == L'#') {
+                tokens.push_back({ TokenType::Comment, i, len - i });
+                break;
+            }
+            if (i + 1 < len && line[i] == L'/' && line[i + 1] == L'/') {
+                // In Python, // is the floor-division operator, NOT a comment!
+                tokens.push_back({ TokenType::Operator, i, 2 });
+                i += 2;
+                continue;
+            }
+        } else {
+            if (i + 1 < len && line[i] == L'/' && line[i + 1] == L'/') {
+                tokens.push_back({ TokenType::Comment, i, len - i });
+                break;
+            }
+            if (line[i] == L'#' && (lowerExt == L".sh" || lowerExt == L".bash" || lowerExt == L".php" || lowerExt == L"php" || lowerExt.empty())) {
+                tokens.push_back({ TokenType::Comment, i, len - i });
+                break;
+            }
+            // Block Comment opening or inside (/* ...)
+            if (i + 1 < len && line[i] == L'/' && line[i + 1] == L'*') {
+                tokens.push_back({ TokenType::Comment, i, len - i });
+                break;
+            }
         }
 
         // 8. String literals ("..." or '...' or `...`) with PHP "$var" interpolation highlighting
@@ -716,7 +734,8 @@ std::vector<SyntaxToken> Buffer::GetTokensForLine(size_t lineIdx, const std::wst
         return {};
     }
 
-    const bool isPhp = (ext == L".php");
+    const bool isPhp = (ext == L".php" || ext == L"php");
+    const bool isPython = (ext == L".py" || ext == L"py");
 
     // Recompute per-line entry states in a single O(N) pass ONLY when buffer version or extension changes
     if (m_cachedTokenVersion != m_version || m_cachedTokenExt != ext || m_lineEntryStates.size() != m_lines.size()) {
@@ -752,17 +771,23 @@ std::vector<SyntaxToken> Buffer::GetTokensForLine(size_t lineIdx, const std::wst
                         inQuote = 0;
                     }
                 } else {
-                    if (c == L'/' && i + 1 < len && prevLine[i + 1] == L'/') {
-                        break; // Single-line comment
-                    }
-                    if (isPhp && c == L'#' && (i + 1 >= len || prevLine[i + 1] != L'[')) {
-                        break; // PHP # comment
-                    }
-                    if (c == L'/' && i + 1 < len && prevLine[i + 1] == L'*') {
-                        inBlock = true;
-                        ++i;
-                    } else if (isPhp && (c == L'"' || c == L'\'')) {
-                        inQuote = c;
+                    if (isPython) {
+                        if (c == L'#') {
+                            break; // Python # comment
+                        }
+                    } else {
+                        if (c == L'/' && i + 1 < len && prevLine[i + 1] == L'/') {
+                            break; // Single-line comment
+                        }
+                        if (isPhp && c == L'#' && (i + 1 >= len || prevLine[i + 1] != L'[')) {
+                            break; // PHP # comment
+                        }
+                        if (c == L'/' && i + 1 < len && prevLine[i + 1] == L'*') {
+                            inBlock = true;
+                            ++i;
+                        } else if (isPhp && (c == L'"' || c == L'\'')) {
+                            inQuote = c;
+                        }
                     }
                 }
             }
@@ -1211,16 +1236,35 @@ void Buffer::ToggleLineComment() {
         ++firstNonWs;
     }
 
-    if (firstNonWs + 1 < line.length() && line[firstNonWs] == L'/' && line[firstNonWs + 1] == L'/') {
-        size_t removeLen = (firstNonWs + 2 < line.length() && line[firstNonWs + 2] == L' ') ? 3 : 2;
-        line.erase(firstNonWs, removeLen);
-        if (m_cursor.col > firstNonWs) {
-            m_cursor.col = (m_cursor.col >= firstNonWs + removeLen) ? (m_cursor.col - removeLen) : firstNonWs;
+    bool isPython = (m_filePath.ends_with(L".py") || m_fileName.ends_with(L".py"));
+    bool isShell = (m_filePath.ends_with(L".sh") || m_fileName.ends_with(L".sh") || m_filePath.ends_with(L".bash"));
+    bool useHash = isPython || isShell;
+
+    if (useHash) {
+        if (firstNonWs < line.length() && line[firstNonWs] == L'#') {
+            size_t removeLen = (firstNonWs + 1 < line.length() && line[firstNonWs + 1] == L' ') ? 2 : 1;
+            line.erase(firstNonWs, removeLen);
+            if (m_cursor.col > firstNonWs) {
+                m_cursor.col = (m_cursor.col >= firstNonWs + removeLen) ? (m_cursor.col - removeLen) : firstNonWs;
+            }
+        } else {
+            line.insert(firstNonWs, L"# ");
+            if (m_cursor.col >= firstNonWs) {
+                m_cursor.col += 2;
+            }
         }
     } else {
-        line.insert(firstNonWs, L"// ");
-        if (m_cursor.col >= firstNonWs) {
-            m_cursor.col += 3;
+        if (firstNonWs + 1 < line.length() && line[firstNonWs] == L'/' && line[firstNonWs + 1] == L'/') {
+            size_t removeLen = (firstNonWs + 2 < line.length() && line[firstNonWs + 2] == L' ') ? 3 : 2;
+            line.erase(firstNonWs, removeLen);
+            if (m_cursor.col > firstNonWs) {
+                m_cursor.col = (m_cursor.col >= firstNonWs + removeLen) ? (m_cursor.col - removeLen) : firstNonWs;
+            }
+        } else {
+            line.insert(firstNonWs, L"// ");
+            if (m_cursor.col >= firstNonWs) {
+                m_cursor.col += 3;
+            }
         }
     }
     m_isModified = true;

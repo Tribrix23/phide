@@ -87,6 +87,43 @@ CodePrediction PredictionEngine::PredictNextEdit(
 ) {
     if (cursorLine < buffer.GetLineCount()) {
         const std::wstring& curL = buffer.GetLine(cursorLine);
+
+        // Do not predict edits inside comments or on comment lines
+        std::wstring lowerPath = filePath;
+        for (auto& c : lowerPath) c = static_cast<wchar_t>(towlower(c));
+        bool isPy = (lowerPath.ends_with(L".py") || lowerPath.ends_with(L".pyw"));
+        bool isPhp = lowerPath.ends_with(L".php");
+        bool isShellOrYaml = (lowerPath.ends_with(L".sh") || lowerPath.ends_with(L".bash") || lowerPath.ends_with(L".zsh") || lowerPath.ends_with(L".yaml") || lowerPath.ends_with(L".yml") || lowerPath.ends_with(L".toml") || lowerPath.ends_with(L".ini") || lowerPath.ends_with(L".env"));
+
+        bool inDblQuote = false;
+        bool inSglQuote = false;
+        for (size_t i = 0; i < curL.length() && i < cursorCol; ++i) {
+            wchar_t c = curL[i];
+            if (c == L'\\' && (inDblQuote || inSglQuote) && i + 1 < curL.length()) { ++i; continue; }
+            if (c == L'"' && !inSglQuote) inDblQuote = !inDblQuote;
+            else if (c == L'\'' && !inDblQuote) inSglQuote = !inSglQuote;
+            else if (!inDblQuote && !inSglQuote) {
+                if (isPy || isShellOrYaml) {
+                    if (c == L'#') return {};
+                } else if (isPhp) {
+                    if (c == L'#' || (c == L'/' && i + 1 < curL.length() && curL[i + 1] == L'/')) return {};
+                } else {
+                    if (c == L'/' && i + 1 < curL.length() && curL[i + 1] == L'/') return {};
+                }
+            }
+        }
+
+        size_t firstNonWsIdx = curL.find_first_not_of(L" \t");
+        if (firstNonWsIdx != std::wstring::npos && firstNonWsIdx < cursorCol) {
+            if (isPy || isShellOrYaml) {
+                if (curL[firstNonWsIdx] == L'#') return {};
+            } else if (isPhp) {
+                if (curL[firstNonWsIdx] == L'#' || curL.substr(firstNonWsIdx, 2) == L"//" || curL.substr(firstNonWsIdx, 2) == L"/*" || curL[firstNonWsIdx] == L'*') return {};
+            } else {
+                if (curL.substr(firstNonWsIdx, 2) == L"//" || curL.substr(firstNonWsIdx, 2) == L"/*" || curL[firstNonWsIdx] == L'*') return {};
+            }
+        }
+
         // Do not generate ghost text predictions if there is non-whitespace code after caret on same line,
         // UNLESS caret is positioned immediately before an enclosing closing delimiter (e.g. "" or '')
         if (cursorCol < curL.length()) {

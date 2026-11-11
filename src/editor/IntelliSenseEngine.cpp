@@ -2745,6 +2745,42 @@ std::vector<IntelliSenseItem> IntelliSenseEngine::QueryCompletions(
     size_t cursorCol,
     const std::vector<std::wstring>* pDocLines
 ) const {
+    // Suppress all completions when cursor is inside a line comment or comment block
+    std::wstring lowerFile = fileName;
+    for (auto& c : lowerFile) c = static_cast<wchar_t>(towlower(c));
+    bool isPyFile = (lowerFile.ends_with(L".py") || lowerFile.ends_with(L".pyw"));
+    bool isPhpFile = lowerFile.ends_with(L".php");
+    bool isShellOrYaml = (lowerFile.ends_with(L".sh") || lowerFile.ends_with(L".bash") || lowerFile.ends_with(L".zsh") || lowerFile.ends_with(L".yaml") || lowerFile.ends_with(L".yml") || lowerFile.ends_with(L".toml") || lowerFile.ends_with(L".ini") || lowerFile.ends_with(L".env"));
+
+    bool inDblQuote = false;
+    bool inSglQuote = false;
+    for (size_t i = 0; i < currentLine.length() && i < cursorCol; ++i) {
+        wchar_t c = currentLine[i];
+        if (c == L'\\' && (inDblQuote || inSglQuote) && i + 1 < currentLine.length()) { ++i; continue; }
+        if (c == L'"' && !inSglQuote) inDblQuote = !inDblQuote;
+        else if (c == L'\'' && !inDblQuote) inSglQuote = !inSglQuote;
+        else if (!inDblQuote && !inSglQuote) {
+            if (isPyFile || isShellOrYaml) {
+                if (c == L'#') return {};
+            } else if (isPhpFile) {
+                if (c == L'#' || (c == L'/' && i + 1 < currentLine.length() && currentLine[i + 1] == L'/')) return {};
+            } else {
+                if (c == L'/' && i + 1 < currentLine.length() && currentLine[i + 1] == L'/') return {};
+            }
+        }
+    }
+
+    size_t firstNonWs = currentLine.find_first_not_of(L" \t");
+    if (firstNonWs != std::wstring::npos && firstNonWs < cursorCol) {
+        if (isPyFile || isShellOrYaml) {
+            if (currentLine[firstNonWs] == L'#') return {};
+        } else if (isPhpFile) {
+            if (currentLine[firstNonWs] == L'#' || currentLine.substr(firstNonWs, 2) == L"//" || currentLine.substr(firstNonWs, 2) == L"/*" || currentLine[firstNonWs] == L'*') return {};
+        } else {
+            if (currentLine.substr(firstNonWs, 2) == L"//" || currentLine.substr(firstNonWs, 2) == L"/*" || currentLine[firstNonWs] == L'*') return {};
+        }
+    }
+
     std::filesystem::path baseDir = ResolveBaseDir(fileName, m_workspaceRoot);
     std::filesystem::path projectRoot = FindProjectRoot(baseDir, m_workspaceRoot);
 

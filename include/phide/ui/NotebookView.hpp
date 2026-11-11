@@ -161,6 +161,7 @@ private:
     std::mutex m_execMutex;
     std::vector<int> m_cellQueue;
     std::mutex m_queueMutex;
+    mutable std::recursive_mutex m_outputsMutex;
     float m_spinAngle = 0.0f;
     ULONGLONG m_lastAnimTick = 0;
 
