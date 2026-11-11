@@ -5,6 +5,7 @@
 
 #include "phide/ui/ActivityRail.hpp"
 #include "phide/ui/PhideLogo.hpp"
+#include <cmath>
 
 namespace phide::ui {
 
@@ -135,7 +136,28 @@ void ActivityRail::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
             // Anchor Notebook directly above Packages (matching user's red circle)
             float botY = clientHeight - (btnSize * 2.0f) - config.ScaleF(22.0f);
             item.bounds = D2D1::RectF(startX, botY, startX + btnSize, botY + btnSize);
+        } else if (item.id == RailTabId::FileNetwork) {
+            // Horizontal separation line under Git (matching user's circled area on rail)
+            curY += config.ScaleF(3.0f);
+            float sepY = std::floor(curY);
+            ID2D1Brush* pSepBrush = theme.IsDarkMode() ? (theme.brushTextWhite ? theme.brushTextWhite.Get() : theme.brushBorderSubtle.Get()) : theme.brushBorderSubtle.Get();
+            pRT->FillRectangle(
+                D2D1::RectF(startX + config.ScaleF(2.0f), sepY, startX + btnSize - config.ScaleF(2.0f), sepY + 1.2f),
+                pSepBrush
+            );
+            curY += config.ScaleF(8.0f);
+            item.bounds = D2D1::RectF(startX, curY, startX + btnSize, curY + btnSize);
+            curY += btnSize + spacing;
         } else if (item.id == RailTabId::MoreActions) {
+            // Horizontal separation line under Settings (matching user's circled area on rail)
+            curY += config.ScaleF(3.0f);
+            float sepY = std::floor(curY);
+            ID2D1Brush* pSepBrush = theme.IsDarkMode() ? (theme.brushTextWhite ? theme.brushTextWhite.Get() : theme.brushBorderSubtle.Get()) : theme.brushBorderSubtle.Get();
+            pRT->FillRectangle(
+                D2D1::RectF(startX + config.ScaleF(2.0f), sepY, startX + btnSize - config.ScaleF(2.0f), sepY + 1.2f),
+                pSepBrush
+            );
+            curY += config.ScaleF(8.0f);
             item.bounds = D2D1::RectF(startX, curY, startX + btnSize, curY + btnSize);
             curY += btnSize + spacing;
         } else if (item.id == RailTabId::Student) {

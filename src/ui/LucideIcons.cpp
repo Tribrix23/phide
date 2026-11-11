@@ -1627,7 +1627,7 @@ void LucideIcons::DrawMonitorAppIcon(ID2D1RenderTarget* pRT, const D2D1_RECT_F& 
     const float bh = bounds.bottom - bounds.top;
     if (bw <= 0.0f || bh <= 0.0f) return;
 
-    const float pad = (std::min)(bw, bh) * 0.06f;
+    const float pad = (std::min)(bw, bh) * 0.05f;
     D2D1_RECT_F rc = D2D1::RectF(bounds.left + pad, bounds.top + pad, bounds.right - pad, bounds.bottom - pad);
     const float w = rc.right - rc.left;
     const float h = rc.bottom - rc.top;
@@ -1637,94 +1637,102 @@ void LucideIcons::DrawMonitorAppIcon(ID2D1RenderTarget* pRT, const D2D1_RECT_F& 
     pRT->GetFactory(&pFactory);
     if (!pFactory) return;
 
-    // Base layer: Deep rich navy blue background
-    ComPtr<ID2D1SolidColorBrush> brushDarkBlue;
-    pRT->CreateSolidColorBrush(D2D1::ColorF(0.047f, 0.368f, 0.749f, 1.0f), &brushDarkBlue); // #0C5EBF
+    // 1. Dark obsidian badge background (#10141E) with subtle border (#253347)
+    ComPtr<ID2D1SolidColorBrush> brushBg;
+    pRT->CreateSolidColorBrush(D2D1::ColorF(0.063f, 0.078f, 0.118f, 1.0f), &brushBg);
+    ComPtr<ID2D1SolidColorBrush> brushBorder;
+    pRT->CreateSolidColorBrush(D2D1::ColorF(0.145f, 0.200f, 0.278f, 1.0f), &brushBorder);
 
     D2D1_ROUNDED_RECT rrc = D2D1::RoundedRect(rc, cornerRadius, cornerRadius);
-    pRT->FillRoundedRectangle(rrc, brushDarkBlue.Get());
+    if (brushBg) pRT->FillRoundedRectangle(rrc, brushBg.Get());
+    if (brushBorder) pRT->DrawRoundedRectangle(rrc, brushBorder.Get(), 1.0f);
 
-    // Layer 2: Middle electric blue waveform (#008CEE)
-    ComPtr<ID2D1SolidColorBrush> brushMidBlue;
-    pRT->CreateSolidColorBrush(D2D1::ColorF(0.0f, 0.549f, 0.933f, 1.0f), &brushMidBlue);
+    // 2. High-Tech Monitor Screen Chassis
+    const float sW = w * 0.72f;
+    const float sH = h * 0.52f;
+    const float sX = rc.left + (w - sW) * 0.5f;
+    const float sY = rc.top + h * 0.16f;
+    D2D1_RECT_F rcScreenBezel = D2D1::RectF(sX, sY, sX + sW, sY + sH);
 
-    // Layer 3: Lower cyan/sky blue waveform (#89CEFA)
-    ComPtr<ID2D1SolidColorBrush> brushLightBlue;
-    pRT->CreateSolidColorBrush(D2D1::ColorF(0.537f, 0.808f, 0.980f, 1.0f), &brushLightBlue);
+    ComPtr<ID2D1SolidColorBrush> brushBezel;
+    pRT->CreateSolidColorBrush(D2D1::ColorF(0.125f, 0.157f, 0.220f, 1.0f), &brushBezel);
+    if (brushBezel) pRT->FillRoundedRectangle(D2D1::RoundedRect(rcScreenBezel, 3.5f, 3.5f), brushBezel.Get());
 
-    ComPtr<ID2D1PathGeometry> pMidWaveGeo;
-    if (SUCCEEDED(pFactory->CreatePathGeometry(&pMidWaveGeo))) {
+    // Screen display interior (deep black glass #07090E)
+    D2D1_RECT_F rcScreenInside = D2D1::RectF(sX + 2.0f, sY + 2.0f, sX + sW - 2.0f, sY + sH - 2.0f);
+    ComPtr<ID2D1SolidColorBrush> brushScreen;
+    pRT->CreateSolidColorBrush(D2D1::ColorF(0.031f, 0.039f, 0.059f, 1.0f), &brushScreen);
+    if (brushScreen) pRT->FillRectangle(rcScreenInside, brushScreen.Get());
+
+    // Monitor stand and base
+    const float standW = w * 0.16f;
+    const float standH = h * 0.12f;
+    const float standX = rc.left + (w - standW) * 0.5f;
+    const float standY = sY + sH;
+    D2D1_RECT_F rcStand = D2D1::RectF(standX, standY, standX + standW, standY + standH);
+    if (brushBezel) pRT->FillRectangle(rcStand, brushBezel.Get());
+
+    const float baseW = w * 0.40f;
+    const float baseH = h * 0.045f;
+    const float baseX = rc.left + (w - baseW) * 0.5f;
+    const float baseY = standY + standH;
+    D2D1_RECT_F rcBase = D2D1::RectF(baseX, baseY, baseX + baseW, baseY + baseH);
+    if (brushBezel) pRT->FillRoundedRectangle(D2D1::RoundedRect(rcBase, 1.5f, 1.5f), brushBezel.Get());
+
+    // 3. Grid lines inside screen (subtle telemetry grid)
+    ComPtr<ID2D1SolidColorBrush> brushGrid;
+    pRT->CreateSolidColorBrush(D2D1::ColorF(0.10f, 0.14f, 0.20f, 0.6f), &brushGrid);
+    if (brushGrid) {
+        float midY = (rcScreenInside.top + rcScreenInside.bottom) * 0.5f;
+        pRT->DrawLine(D2D1::Point2F(rcScreenInside.left, midY), D2D1::Point2F(rcScreenInside.right, midY), brushGrid.Get(), 0.8f);
+    }
+
+    // 4. Razor-sharp Activity Pulse Line inside screen (Cyber Cyan #00E5FF)
+    ComPtr<ID2D1SolidColorBrush> brushPulse;
+    pRT->CreateSolidColorBrush(D2D1::ColorF(0.0f, 0.898f, 1.0f, 1.0f), &brushPulse); // #00E5FF
+
+    ComPtr<ID2D1PathGeometry> pPulseGeo;
+    if (SUCCEEDED(pFactory->CreatePathGeometry(&pPulseGeo))) {
         ComPtr<ID2D1GeometrySink> sink;
-        if (SUCCEEDED(pMidWaveGeo->Open(&sink))) {
-            sink->BeginFigure(D2D1::Point2F(rc.left, rc.top + h * 0.52f), D2D1_FIGURE_BEGIN_FILLED);
-            sink->AddBezier(D2D1::BezierSegment(
-                D2D1::Point2F(rc.left + w * 0.12f, rc.top + h * 0.52f),
-                D2D1::Point2F(rc.left + w * 0.18f, rc.top + h * 0.25f),
-                D2D1::Point2F(rc.left + w * 0.30f, rc.top + h * 0.25f)
-            ));
-            sink->AddBezier(D2D1::BezierSegment(
-                D2D1::Point2F(rc.left + w * 0.38f, rc.top + h * 0.25f),
-                D2D1::Point2F(rc.left + w * 0.42f, rc.top + h * 0.50f),
-                D2D1::Point2F(rc.left + w * 0.50f, rc.top + h * 0.50f)
-            ));
-            sink->AddBezier(D2D1::BezierSegment(
-                D2D1::Point2F(rc.left + w * 0.58f, rc.top + h * 0.50f),
-                D2D1::Point2F(rc.left + w * 0.62f, rc.top + h * 0.25f),
-                D2D1::Point2F(rc.left + w * 0.74f, rc.top + h * 0.25f)
-            ));
-            sink->AddBezier(D2D1::BezierSegment(
-                D2D1::Point2F(rc.left + w * 0.82f, rc.top + h * 0.25f),
-                D2D1::Point2F(rc.left + w * 0.88f, rc.top + h * 0.46f),
-                D2D1::Point2F(rc.right, rc.top + h * 0.46f)
-            ));
-            sink->AddLine(D2D1::Point2F(rc.right, rc.bottom));
-            sink->AddLine(D2D1::Point2F(rc.left, rc.bottom));
-            sink->EndFigure(D2D1_FIGURE_END_CLOSED);
+        if (SUCCEEDED(pPulseGeo->Open(&sink))) {
+            const float inW = rcScreenInside.right - rcScreenInside.left;
+            const float inH = rcScreenInside.bottom - rcScreenInside.top;
+            const float baseLineY = rcScreenInside.top + inH * 0.54f;
+
+            sink->BeginFigure(D2D1::Point2F(rcScreenInside.left + inW * 0.08f, baseLineY), D2D1_FIGURE_BEGIN_HOLLOW);
+            sink->AddLine(D2D1::Point2F(rcScreenInside.left + inW * 0.28f, baseLineY));
+            sink->AddLine(D2D1::Point2F(rcScreenInside.left + inW * 0.38f, rcScreenInside.top + inH * 0.32f));
+            sink->AddLine(D2D1::Point2F(rcScreenInside.left + inW * 0.48f, rcScreenInside.top + inH * 0.78f));
+            sink->AddLine(D2D1::Point2F(rcScreenInside.left + inW * 0.60f, rcScreenInside.top + inH * 0.18f));
+            sink->AddLine(D2D1::Point2F(rcScreenInside.left + inW * 0.72f, rcScreenInside.top + inH * 0.62f));
+            sink->AddLine(D2D1::Point2F(rcScreenInside.left + inW * 0.80f, baseLineY));
+            sink->AddLine(D2D1::Point2F(rcScreenInside.right - inW * 0.08f, baseLineY));
+            sink->EndFigure(D2D1_FIGURE_END_OPEN);
             sink->Close();
+            if (brushPulse) pRT->DrawGeometry(pPulseGeo.Get(), brushPulse.Get(), 1.7f);
         }
     }
 
-    ComPtr<ID2D1PathGeometry> pLowWaveGeo;
-    if (SUCCEEDED(pFactory->CreatePathGeometry(&pLowWaveGeo))) {
-        ComPtr<ID2D1GeometrySink> sink;
-        if (SUCCEEDED(pLowWaveGeo->Open(&sink))) {
-            sink->BeginFigure(D2D1::Point2F(rc.left, rc.top + h * 0.68f), D2D1_FIGURE_BEGIN_FILLED);
-            sink->AddBezier(D2D1::BezierSegment(
-                D2D1::Point2F(rc.left + w * 0.16f, rc.top + h * 0.68f),
-                D2D1::Point2F(rc.left + w * 0.22f, rc.top + h * 0.42f),
-                D2D1::Point2F(rc.left + w * 0.32f, rc.top + h * 0.42f)
-            ));
-            sink->AddBezier(D2D1::BezierSegment(
-                D2D1::Point2F(rc.left + w * 0.40f, rc.top + h * 0.42f),
-                D2D1::Point2F(rc.left + w * 0.44f, rc.top + h * 0.68f),
-                D2D1::Point2F(rc.left + w * 0.52f, rc.top + h * 0.68f)
-            ));
-            sink->AddBezier(D2D1::BezierSegment(
-                D2D1::Point2F(rc.left + w * 0.60f, rc.top + h * 0.68f),
-                D2D1::Point2F(rc.left + w * 0.64f, rc.top + h * 0.42f),
-                D2D1::Point2F(rc.left + w * 0.74f, rc.top + h * 0.42f)
-            ));
-            sink->AddBezier(D2D1::BezierSegment(
-                D2D1::Point2F(rc.left + w * 0.82f, rc.top + h * 0.42f),
-                D2D1::Point2F(rc.left + w * 0.88f, rc.top + h * 0.64f),
-                D2D1::Point2F(rc.right, rc.top + h * 0.64f)
-            ));
-            sink->AddLine(D2D1::Point2F(rc.right, rc.bottom));
-            sink->AddLine(D2D1::Point2F(rc.left, rc.bottom));
-            sink->EndFigure(D2D1_FIGURE_END_CLOSED);
-            sink->Close();
-        }
+    // 5. Active Telemetry Node (glowing dot at highest peak)
+    const float inW = rcScreenInside.right - rcScreenInside.left;
+    const float inH = rcScreenInside.bottom - rcScreenInside.top;
+    const float nodeX = rcScreenInside.left + inW * 0.60f;
+    const float nodeY = rcScreenInside.top + inH * 0.18f;
+
+    ComPtr<ID2D1SolidColorBrush> brushNodeGlow;
+    pRT->CreateSolidColorBrush(D2D1::ColorF(0.0f, 0.898f, 1.0f, 0.35f), &brushNodeGlow);
+    if (brushNodeGlow) {
+        pRT->FillEllipse(D2D1::Ellipse(D2D1::Point2F(nodeX, nodeY), 3.5f, 3.5f), brushNodeGlow.Get());
+    }
+    if (brushPulse) {
+        pRT->FillEllipse(D2D1::Ellipse(D2D1::Point2F(nodeX, nodeY), 1.8f, 1.8f), brushPulse.Get());
     }
 
-    ComPtr<ID2D1RoundedRectangleGeometry> pClipGeo;
-    if (SUCCEEDED(pFactory->CreateRoundedRectangleGeometry(rrc, &pClipGeo))) {
-        ComPtr<ID2D1Layer> pLayer;
-        if (SUCCEEDED(pRT->CreateLayer(&pLayer))) {
-            pRT->PushLayer(D2D1::LayerParameters(rc, pClipGeo.Get()), pLayer.Get());
-            if (pMidWaveGeo) pRT->FillGeometry(pMidWaveGeo.Get(), brushMidBlue.Get());
-            if (pLowWaveGeo) pRT->FillGeometry(pLowWaveGeo.Get(), brushLightBlue.Get());
-            pRT->PopLayer();
-        }
+    // 6. Mini Status Green LED on top right of screen bezel
+    ComPtr<ID2D1SolidColorBrush> brushLed;
+    pRT->CreateSolidColorBrush(D2D1::ColorF(0.133f, 0.773f, 0.369f, 1.0f), &brushLed); // #22C55E
+    if (brushLed) {
+        pRT->FillEllipse(D2D1::Ellipse(D2D1::Point2F(sX + sW - 4.5f, sY + 4.0f), 1.3f, 1.3f), brushLed.Get());
     }
 }
 
@@ -1738,24 +1746,31 @@ void LucideIcons::DrawMonitor(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds,
     const float cx = (bounds.left + bounds.right) * 0.5f;
     const float cy = (bounds.top + bounds.bottom) * 0.5f;
 
-    D2D1_RECT_F rc = D2D1::RectF(cx - 10.0f * s, cy - 8.0f * s, cx + 10.0f * s, cy + 8.0f * s);
-    pRT->DrawRoundedRectangle(D2D1::RoundedRect(rc, 2.5f * s, 2.5f * s), pBrush, strokeWidth);
+    // Monitor display chassis
+    D2D1_RECT_F rc = D2D1::RectF(cx - 10.0f * s, cy - 8.5f * s, cx + 10.0f * s, cy + 5.5f * s);
+    pRT->DrawRoundedRectangle(D2D1::RoundedRect(rc, 2.0f * s, 2.0f * s), pBrush, strokeWidth);
+
+    // Stand & Base
+    pRT->DrawLine(D2D1::Point2F(cx, cy + 5.5f * s), D2D1::Point2F(cx, cy + 8.5f * s), pBrush, strokeWidth);
+    pRT->DrawLine(D2D1::Point2F(cx - 4.5f * s, cy + 8.5f * s), D2D1::Point2F(cx + 4.5f * s, cy + 8.5f * s), pBrush, strokeWidth);
 
     ComPtr<ID2D1Factory> pFactory;
     pRT->GetFactory(&pFactory);
     if (!pFactory) return;
 
+    // Telemetry heartbeat pulse line inside display
     ComPtr<ID2D1PathGeometry> pWave;
     if (SUCCEEDED(pFactory->CreatePathGeometry(&pWave))) {
         ComPtr<ID2D1GeometrySink> sink;
         if (SUCCEEDED(pWave->Open(&sink))) {
-            sink->BeginFigure(D2D1::Point2F(rc.left + 2.0f * s, cy + 1.0f * s), D2D1_FIGURE_BEGIN_HOLLOW);
-            sink->AddLine(D2D1::Point2F(cx - 4.5f * s, cy + 1.0f * s));
-            sink->AddLine(D2D1::Point2F(cx - 2.5f * s, cy - 3.5f * s));
-            sink->AddLine(D2D1::Point2F(cx - 0.5f * s, cy + 3.0f * s));
-            sink->AddLine(D2D1::Point2F(cx + 2.5f * s, cy - 3.5f * s));
-            sink->AddLine(D2D1::Point2F(cx + 4.5f * s, cy + 1.0f * s));
-            sink->AddLine(D2D1::Point2F(rc.right - 2.0f * s, cy + 1.0f * s));
+            const float midY = cy - 1.5f * s;
+            sink->BeginFigure(D2D1::Point2F(cx - 7.5f * s, midY), D2D1_FIGURE_BEGIN_HOLLOW);
+            sink->AddLine(D2D1::Point2F(cx - 3.5f * s, midY));
+            sink->AddLine(D2D1::Point2F(cx - 1.5f * s, midY - 4.0f * s));
+            sink->AddLine(D2D1::Point2F(cx + 0.5f * s, midY + 4.0f * s));
+            sink->AddLine(D2D1::Point2F(cx + 2.5f * s, midY - 3.0f * s));
+            sink->AddLine(D2D1::Point2F(cx + 4.5f * s, midY));
+            sink->AddLine(D2D1::Point2F(cx + 7.5f * s, midY));
             sink->EndFigure(D2D1_FIGURE_END_OPEN);
             sink->Close();
             pRT->DrawGeometry(pWave.Get(), pBrush, strokeWidth);

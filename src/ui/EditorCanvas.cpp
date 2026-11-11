@@ -9379,36 +9379,121 @@ static std::wstring GetProcessNameByPid(DWORD pid) {
     return L"pid:" + std::to_wstring(pid);
 }
 
-static std::wstring DeducePortPurpose(int port, const std::wstring& procName) {
+static std::wstring DeducePortPurpose(int port, const std::wstring& procName, bool& outIsDev, bool& outIsSystem) {
     std::wstring lowerProc = procName;
     std::transform(lowerProc.begin(), lowerProc.end(), lowerProc.begin(), ::towlower);
+    outIsDev = false;
+    outIsSystem = false;
 
+    // Phide IDE Internal Live Server / Host Service
     if (lowerProc.find(L"phide") != std::wstring::npos) {
-        if (port >= 5499 && port <= 5510) return L"Phide Live Server (HTTP)";
+        outIsDev = true;
+        if (port >= 5499 && port <= 5510) return L"Phide Live Server (HTTP Web Server)";
         return L"Phide IDE Host Service";
     }
 
-    if (port == 5173 || port == 5174 || port == 5175) return L"Vite Dev Server (HMR / Frontend)";
-    if (port == 3000 || port == 3001) return L"Node.js App / Next.js / React";
-    if (port == 8080 || port == 8081) return L"Local Web Server / Vue CLI";
-    if (port == 8000) return L"Python Backend (Django / FastAPI)";
-    if (port == 5000) return L"Flask / ASP.NET Core Web Server";
-    if (port == 4200) return L"Angular CLI Dev Server";
-    if (port == 5500) return L"Live Server (HTTP Web Server)";
-    if (port == 80 || port == 443) return L"HTTP/S Production Web Server";
-    if (port == 3306) return L"MySQL / MariaDB Database";
-    if (port == 5432) return L"PostgreSQL Database";
-    if (port == 6379) return L"Redis Key-Value Store";
-    if (port == 27017) return L"MongoDB Server";
-    if (port == 9229) return L"Node.js V8 Debugger Inspector";
+    // Windows OS System Services & Subsystem
+    if (lowerProc == L"system" || lowerProc.find(L"svchost") != std::wstring::npos ||
+        port == 135 || port == 139 || port == 445 || port == 5040 || port == 5357) {
+        outIsSystem = true;
+        if (port == 135) return L"Windows RPC Endpoint Mapper";
+        if (port == 139) return L"NetBIOS Session Service";
+        if (port == 445) return L"Microsoft-DS SMB File Sharing";
+        if (port == 5357) return L"Web Services for Devices (WSD)";
+        return L"Windows Subsystem Service";
+    }
 
-    if (lowerProc.find(L"node") != std::wstring::npos) return L"Node.js Development Service";
-    if (lowerProc.find(L"php") != std::wstring::npos) return L"PHP Built-in Web Server";
-    if (lowerProc.find(L"python") != std::wstring::npos) return L"Python Development Server";
-    if (lowerProc.find(L"nginx") != std::wstring::npos) return L"Nginx Reverse Proxy";
-    if (lowerProc.find(L"httpd") != std::wstring::npos || lowerProc.find(L"apache") != std::wstring::npos) return L"Apache Web Server";
+    // Known Developer Frameworks & Development Servers
+    if (port == 5173 || port == 5174 || port == 5175) {
+        outIsDev = true;
+        return L"Vite Dev Server (HMR / Frontend)";
+    }
+    if (port == 3000 || port == 3001 || port == 3002) {
+        outIsDev = true;
+        return L"Node.js App / Next.js / React Dev Server";
+    }
+    if (port == 8080 || port == 8081) {
+        outIsDev = true;
+        return L"Local Web Server / Vue CLI / TomCat";
+    }
+    if (port == 8000) {
+        outIsDev = true;
+        return L"Python App Server (Django / FastAPI)";
+    }
+    if (port == 5000) {
+        outIsDev = true;
+        return L"Flask / ASP.NET Core Dev Server";
+    }
+    if (port == 4200) {
+        outIsDev = true;
+        return L"Angular CLI Development Server";
+    }
+    if (port == 5500) {
+        outIsDev = true;
+        return L"Live Server (HTTP Web Server)";
+    }
+    if (port == 9229) {
+        outIsDev = true;
+        return L"Node.js V8 Debugger Inspector";
+    }
 
-    return L"Local Development TCP Listener";
+    // Database Servers
+    if (port == 5432) {
+        outIsDev = true;
+        return L"PostgreSQL Database Server";
+    }
+    if (port == 3306) {
+        outIsDev = true;
+        return L"MySQL / MariaDB Database Server";
+    }
+    if (port == 6379) {
+        outIsDev = true;
+        return L"Redis In-Memory Key-Value Store";
+    }
+    if (port == 27017) {
+        outIsDev = true;
+        return L"MongoDB Database Server";
+    }
+    if (port == 80 || port == 443) {
+        outIsDev = true;
+        return L"HTTP / HTTPS Local Web Server";
+    }
+
+    // Process Name Matching
+    if (lowerProc.find(L"node") != std::wstring::npos) {
+        outIsDev = true;
+        return L"Node.js Development Service";
+    }
+    if (lowerProc.find(L"php") != std::wstring::npos) {
+        outIsDev = true;
+        return L"PHP Built-in Web Server";
+    }
+    if (lowerProc.find(L"python") != std::wstring::npos) {
+        outIsDev = true;
+        return L"Python Application Service";
+    }
+    if (lowerProc.find(L"nginx") != std::wstring::npos) {
+        outIsDev = true;
+        return L"Nginx Web Reverse Proxy";
+    }
+    if (lowerProc.find(L"httpd") != std::wstring::npos || lowerProc.find(L"apache") != std::wstring::npos) {
+        outIsDev = true;
+        return L"Apache Web Server";
+    }
+    if (lowerProc.find(L"postgres") != std::wstring::npos) {
+        outIsDev = true;
+        return L"PostgreSQL Server Process";
+    }
+    if (lowerProc.find(L"mysqld") != std::wstring::npos) {
+        outIsDev = true;
+        return L"MySQL Server Daemon";
+    }
+
+    if (lowerProc.find(L"wps") != std::wstring::npos || lowerProc.find(L"agy") != std::wstring::npos) {
+        return L"Background Application Service";
+    }
+
+    return L"Local TCP Listener";
 }
 
 std::vector<EditorCanvas::DevPortInfo> EditorCanvas::QueryActiveDevPorts() {
@@ -9426,21 +9511,9 @@ std::vector<EditorCanvas::DevPortInfo> EditorCanvas::QueryActiveDevPorts() {
                     DWORD pid = row.dwOwningPid;
 
                     std::wstring procName = GetProcessNameByPid(pid);
-                    std::wstring purpose = DeducePortPurpose(port, procName);
-
                     bool isDev = false;
-                    std::wstring lowerProc = procName;
-                    std::transform(lowerProc.begin(), lowerProc.end(), lowerProc.begin(), ::towlower);
-                    if (lowerProc.find(L"node") != std::wstring::npos ||
-                        lowerProc.find(L"php") != std::wstring::npos ||
-                        lowerProc.find(L"python") != std::wstring::npos ||
-                        lowerProc.find(L"phide") != std::wstring::npos ||
-                        lowerProc.find(L"nginx") != std::wstring::npos ||
-                        port == 3000 || port == 5173 || port == 8000 || port == 8080 ||
-                        port == 5000 || port == 4200 || port == 5500 || port == 3306 ||
-                        port == 5432 || port == 6379 || port == 80 || port == 443) {
-                        isDev = true;
-                    }
+                    bool isSystem = false;
+                    std::wstring purpose = DeducePortPurpose(port, procName, isDev, isSystem);
 
                     DevPortInfo info;
                     info.port = port;
@@ -9448,7 +9521,7 @@ std::vector<EditorCanvas::DevPortInfo> EditorCanvas::QueryActiveDevPorts() {
                     info.processName = procName;
                     info.purpose = purpose;
                     info.protocol = L"TCP (IPv4)";
-                    info.status = L"LISTENING";
+                    info.status = isSystem ? L"● SYSTEM" : L"● LISTENING";
                     info.isDevelopment = isDev;
                     list.push_back(info);
                 }
@@ -9456,6 +9529,7 @@ std::vector<EditorCanvas::DevPortInfo> EditorCanvas::QueryActiveDevPorts() {
         }
     }
 
+    // Sort: Dev servers first, then databases/apps, then port ascending
     std::sort(list.begin(), list.end(), [](const DevPortInfo& a, const DevPortInfo& b) {
         if (a.isDevelopment != b.isDevelopment) return a.isDevelopment > b.isDevelopment;
         return a.port < b.port;
@@ -9585,7 +9659,7 @@ void EditorCanvas::RenderMonitorView(ID2D1RenderTarget* pRT, Theme& theme, const
     m_icons.DrawMonitorAppIcon(pRT, rcAppIcon);
 
     const float titleX = contentX + iconSize + config.ScaleF(16.0f);
-    const float rightBtnAreaW = config.ScaleF(310.0f);
+    const float rightBtnAreaW = config.ScaleF(320.0f);
     const float titleW = (std::max)(120.0f, contentW - iconSize - config.ScaleF(16.0f) - rightBtnAreaW);
 
     D2D1_RECT_F rcTitle = D2D1::RectF(titleX, curY - config.ScaleF(2.0f), titleX + titleW, curY + config.ScaleF(24.0f));
@@ -9595,39 +9669,49 @@ void EditorCanvas::RenderMonitorView(ID2D1RenderTarget* pRT, Theme& theme, const
                   rcTitle, theme.brushTextWhite.Get());
 
     D2D1_RECT_F rcSub = D2D1::RectF(titleX, curY + config.ScaleF(24.0f), titleX + titleW, curY + config.ScaleF(44.0f));
-    const wchar_t* subStr = L"Direct2D GPU telemetry, process memory diagnostics, project storage, and active ports";
+    const wchar_t* subStr = L"Direct2D GPU acceleration, process memory diagnostics, workspace storage footprint, and live dev ports";
     pRT->DrawText(subStr, static_cast<UINT32>(wcslen(subStr)),
                   theme.fontHint ? theme.fontHint.Get() : theme.fontBody.Get(),
                   rcSub, theme.brushTextSecondary.Get());
 
     // Action Buttons on Top Right
     const float btnH = config.ScaleF(32.0f);
-    const float gcBtnW = config.ScaleF(180.0f);
-    const float refBtnW = config.ScaleF(96.0f);
+    const float gcBtnW = config.ScaleF(186.0f);
+    const float refBtnW = config.ScaleF(108.0f);
 
     m_rcMonitorRefreshBtn = D2D1::RectF(contentX + contentW - refBtnW, curY + config.ScaleF(5.0f), contentX + contentW, curY + config.ScaleF(5.0f) + btnH);
     m_rcMonitorGcBtn = D2D1::RectF(m_rcMonitorRefreshBtn.left - gcBtnW - config.ScaleF(10.0f), curY + config.ScaleF(5.0f), m_rcMonitorRefreshBtn.left - config.ScaleF(10.0f), curY + config.ScaleF(5.0f) + btnH);
 
-    // Render GC Button
-    ComPtr<ID2D1SolidColorBrush> brushGcBtn;
-    pRT->CreateSolidColorBrush(D2D1::ColorF(0.055f, 0.447f, 0.741f, 1.0f), &brushGcBtn); // #0E72BD
-    if (brushGcBtn) {
-        pRT->FillRoundedRectangle(D2D1::RoundedRect(m_rcMonitorGcBtn, 5.0f, 5.0f), brushGcBtn.Get());
-    }
+    // Render GC Button (Modern dark cyan pill)
+    ComPtr<ID2D1SolidColorBrush> brushGcBg;
+    pRT->CreateSolidColorBrush(D2D1::ColorF(0.051f, 0.169f, 0.267f, 1.0f), &brushGcBg); // #0D2B44
+    ComPtr<ID2D1SolidColorBrush> brushGcBorder;
+    pRT->CreateSolidColorBrush(D2D1::ColorF(0.106f, 0.314f, 0.478f, 1.0f), &brushGcBorder); // #1B507A
+    ComPtr<ID2D1SolidColorBrush> brushGcCyanText;
+    pRT->CreateSolidColorBrush(D2D1::ColorF(0.220f, 0.741f, 0.973f, 1.0f), &brushGcCyanText); // #38BDF8
+
+    D2D1_ROUNDED_RECT rrcGc = D2D1::RoundedRect(m_rcMonitorGcBtn, 6.0f, 6.0f);
+    if (brushGcBg) pRT->FillRoundedRectangle(rrcGc, brushGcBg.Get());
+    if (brushGcBorder) pRT->DrawRoundedRectangle(rrcGc, brushGcBorder.Get(), 1.0f);
+
     const wchar_t* gcLabel = (m_monitorLastGcTime > 0 && (now - m_monitorLastGcTime < 3000))
-        ? L"✓ Trimmed & Flushed"
-        : L"Run Garbage Collection";
+        ? L"✓ Memory Compacted"
+        : L"⚡ Run Garbage Collection";
     pRT->DrawText(gcLabel, static_cast<UINT32>(wcslen(gcLabel)),
                   theme.fontButtonCenter ? theme.fontButtonCenter.Get() : theme.fontBody.Get(),
-                  m_rcMonitorGcBtn, theme.brushTextWhite.Get());
+                  m_rcMonitorGcBtn, brushGcCyanText ? brushGcCyanText.Get() : theme.brushTextWhite.Get());
 
-    // Render Refresh Button
-    ComPtr<ID2D1SolidColorBrush> brushRefBtn;
-    pRT->CreateSolidColorBrush(theme.IsDarkMode() ? D2D1::ColorF(0.18f, 0.19f, 0.25f, 1.0f) : D2D1::ColorF(0.88f, 0.89f, 0.92f, 1.0f), &brushRefBtn);
-    if (brushRefBtn) {
-        pRT->FillRoundedRectangle(D2D1::RoundedRect(m_rcMonitorRefreshBtn, 5.0f, 5.0f), brushRefBtn.Get());
-    }
-    const wchar_t* refLabel = L"↻ Refresh";
+    // Render Refresh Button (Modern dark slate pill)
+    ComPtr<ID2D1SolidColorBrush> brushRefBg;
+    pRT->CreateSolidColorBrush(theme.IsDarkMode() ? D2D1::ColorF(0.094f, 0.114f, 0.161f, 1.0f) : D2D1::ColorF(0.90f, 0.91f, 0.94f, 1.0f), &brushRefBg);
+    ComPtr<ID2D1SolidColorBrush> brushRefBorder;
+    pRT->CreateSolidColorBrush(theme.IsDarkMode() ? D2D1::ColorF(0.165f, 0.212f, 0.310f, 1.0f) : D2D1::ColorF(0.80f, 0.81f, 0.85f, 1.0f), &brushRefBorder);
+
+    D2D1_ROUNDED_RECT rrcRef = D2D1::RoundedRect(m_rcMonitorRefreshBtn, 6.0f, 6.0f);
+    if (brushRefBg) pRT->FillRoundedRectangle(rrcRef, brushRefBg.Get());
+    if (brushRefBorder) pRT->DrawRoundedRectangle(rrcRef, brushRefBorder.Get(), 1.0f);
+
+    const wchar_t* refLabel = L"⟳ Refresh";
     pRT->DrawText(refLabel, static_cast<UINT32>(wcslen(refLabel)),
                   theme.fontButtonCenter ? theme.fontButtonCenter.Get() : theme.fontBody.Get(),
                   m_rcMonitorRefreshBtn, theme.brushTextWhite.Get());
@@ -9647,93 +9731,138 @@ void EditorCanvas::RenderMonitorView(ID2D1RenderTarget* pRT, Theme& theme, const
         commitMB = pmc.PrivateUsage / (1024 * 1024);
     }
 
-    // Count open dev ports
     int openDevPortsCount = 0;
     for (const auto& p : m_cachedDevPorts) {
         if (p.isDevelopment) openDevPortsCount++;
     }
 
     // =========================================================================
-    // 3. Four Modern Metric Summary Cards (Clean, Measured, No Text Tampering)
+    // 3. Four Modern Metric Summary Cards (Clean Left Alignment & Status Badges)
     // =========================================================================
     const float cardSpacing = config.ScaleF(14.0f);
     const float cardW = (contentW - cardSpacing * 3.0f) / 4.0f;
-    const float cardH = config.ScaleF(82.0f);
+    const float cardH = config.ScaleF(88.0f);
 
     struct MetricCardInfo {
         const wchar_t* title;
+        const wchar_t* badge;
         std::wstring value;
         std::wstring detail;
         D2D1_COLOR_F valColor;
+        D2D1_COLOR_F badgeBgColor;
+        D2D1_COLOR_F badgeTextColor;
+        float meterRatio;
     };
+
+    float memRatio = (peakMB > 0) ? (static_cast<float>(wsMB) / static_cast<float>(peakMB)) : 0.5f;
+    memRatio = (std::max)(0.15f, (std::min)(1.0f, memRatio));
 
     MetricCardInfo cards[4] = {
         {
-            L"PHIDE MEMORY (RAM)",
+            L"PHIDE WORKING SET",
+            L"● Native C++",
             std::to_wstring(wsMB) + L" MB",
             L"Peak: " + std::to_wstring(peakMB) + L" MB | Commit: " + std::to_wstring(commitMB) + L" MB",
-            D2D1::ColorF(0.22f, 0.74f, 0.97f) // Cyan
+            D2D1::ColorF(0.220f, 0.741f, 0.973f), // Cyan
+            D2D1::ColorF(0.047f, 0.157f, 0.224f, 1.0f),
+            D2D1::ColorF(0.220f, 0.741f, 0.973f, 1.0f),
+            memRatio
         },
         {
-            L"CURRENT PROJECT STORAGE",
+            L"PROJECT STORAGE",
+            L"● Workspace",
             m_projectStorage.formattedSize,
             std::to_wstring(m_projectStorage.fileCount) + L" files | " + std::to_wstring(m_projectStorage.folderCount) + L" folders",
-            D2D1::ColorF(0.98f, 0.98f, 1.0f) // Bright White
+            D2D1::ColorF(0.98f, 0.98f, 1.0f), // Bright White
+            D2D1::ColorF(0.10f, 0.13f, 0.20f, 1.0f),
+            D2D1::ColorF(0.79f, 0.83f, 0.92f, 1.0f),
+            0.65f
         },
         {
-            L"ACTIVE DEV PORTS",
+            L"DEV SERVERS & PORTS",
+            openDevPortsCount > 0 ? L"● Active" : L"● Standby",
             std::to_wstring(openDevPortsCount) + L" Listening",
             std::to_wstring(m_cachedDevPorts.size()) + L" total TCP sockets open",
-            openDevPortsCount > 0 ? D2D1::ColorF(0.29f, 0.87f, 0.50f) : D2D1::ColorF(0.6f, 0.6f, 0.7f) // Green or Slate
+            openDevPortsCount > 0 ? D2D1::ColorF(0.29f, 0.87f, 0.50f) : D2D1::ColorF(0.6f, 0.6f, 0.7f),
+            openDevPortsCount > 0 ? D2D1::ColorF(0.055f, 0.180f, 0.118f, 1.0f) : D2D1::ColorF(0.12f, 0.14f, 0.18f, 1.0f),
+            openDevPortsCount > 0 ? D2D1::ColorF(0.29f, 0.87f, 0.50f, 1.0f) : D2D1::ColorF(0.6f, 0.6f, 0.7f, 1.0f),
+            openDevPortsCount > 0 ? 0.85f : 0.25f
         },
         {
             L"GPU ACCELERATION",
+            L"● V-Sync 60",
             L"60 FPS (VSync)",
             L"Direct2D 1.1 Direct3D FL 11_1",
-            D2D1::ColorF(0.29f, 0.87f, 0.50f) // Mint Green
+            D2D1::ColorF(0.753f, 0.518f, 0.988f), // Purple
+            D2D1::ColorF(0.133f, 0.094f, 0.220f, 1.0f),
+            D2D1::ColorF(0.753f, 0.518f, 0.988f, 1.0f),
+            1.0f
         }
     };
 
     ComPtr<ID2D1SolidColorBrush> cardBg;
-    pRT->CreateSolidColorBrush(theme.IsDarkMode() ? D2D1::ColorF(0.118f, 0.122f, 0.153f, 1.0f) : D2D1::ColorF(0.95f, 0.95f, 0.97f, 1.0f), &cardBg);
+    pRT->CreateSolidColorBrush(theme.IsDarkMode() ? D2D1::ColorF(0.067f, 0.075f, 0.110f, 1.0f) : D2D1::ColorF(0.95f, 0.95f, 0.97f, 1.0f), &cardBg);
 
     ComPtr<ID2D1SolidColorBrush> cardBorder;
-    pRT->CreateSolidColorBrush(theme.IsDarkMode() ? D2D1::ColorF(0.188f, 0.196f, 0.247f, 1.0f) : D2D1::ColorF(0.85f, 0.85f, 0.88f, 1.0f), &cardBorder);
+    pRT->CreateSolidColorBrush(theme.IsDarkMode() ? D2D1::ColorF(0.122f, 0.137f, 0.200f, 1.0f) : D2D1::ColorF(0.85f, 0.85f, 0.88f, 1.0f), &cardBorder);
 
     for (int i = 0; i < 4; ++i) {
         float cx = contentX + i * (cardW + cardSpacing);
         D2D1_RECT_F rcCard = D2D1::RectF(cx, curY, cx + cardW, curY + cardH);
-        D2D1_ROUNDED_RECT rrcCard = D2D1::RoundedRect(rcCard, 6.0f, 6.0f);
+        D2D1_ROUNDED_RECT rrcCard = D2D1::RoundedRect(rcCard, 7.0f, 7.0f);
         if (cardBg) pRT->FillRoundedRectangle(rrcCard, cardBg.Get());
         if (cardBorder) pRT->DrawRoundedRectangle(rrcCard, cardBorder.Get(), 1.0f);
 
-        // Header Label (Top: y+8 to y+24)
-        D2D1_RECT_F rcCardTitle = D2D1::RectF(cx + config.ScaleF(14.0f), curY + config.ScaleF(8.0f), cx + cardW - config.ScaleF(14.0f), curY + config.ScaleF(24.0f));
+        // 1. Left-aligned Label (Top Left)
+        D2D1_RECT_F rcCardTitle = D2D1::RectF(cx + config.ScaleF(14.0f), curY + config.ScaleF(10.0f), cx + cardW - config.ScaleF(90.0f), curY + config.ScaleF(24.0f));
         pRT->DrawText(cards[i].title, static_cast<UINT32>(wcslen(cards[i].title)),
-                      theme.fontBadge ? theme.fontBadge.Get() : theme.fontCode.Get(),
+                      theme.fontHint ? theme.fontHint.Get() : theme.fontCode.Get(),
                       rcCardTitle, theme.brushTextSecondary.Get());
 
-        // Big Primary Value (Middle: y+25 to y+54)
+        // Right-aligned status pill badge
+        const float badgeW = config.ScaleF(78.0f);
+        const float badgeH = config.ScaleF(17.0f);
+        D2D1_RECT_F rcBadge = D2D1::RectF(cx + cardW - badgeW - config.ScaleF(12.0f), curY + config.ScaleF(9.0f), cx + cardW - config.ScaleF(12.0f), curY + config.ScaleF(9.0f) + badgeH);
+
+        ComPtr<ID2D1SolidColorBrush> bBadgeBg, bBadgeText;
+        pRT->CreateSolidColorBrush(cards[i].badgeBgColor, &bBadgeBg);
+        pRT->CreateSolidColorBrush(cards[i].badgeTextColor, &bBadgeText);
+        if (bBadgeBg) pRT->FillRoundedRectangle(D2D1::RoundedRect(rcBadge, 3.5f, 3.5f), bBadgeBg.Get());
+        pRT->DrawText(cards[i].badge, static_cast<UINT32>(wcslen(cards[i].badge)),
+                      theme.fontBadge ? theme.fontBadge.Get() : theme.fontCode.Get(),
+                      rcBadge, bBadgeText ? bBadgeText.Get() : theme.brushTextWhite.Get());
+
+        // 2. Big Primary Value (Middle: Left-aligned)
         ComPtr<ID2D1SolidColorBrush> valBrush;
         pRT->CreateSolidColorBrush(cards[i].valColor, &valBrush);
-        D2D1_RECT_F rcCardVal = D2D1::RectF(cx + config.ScaleF(14.0f), curY + config.ScaleF(25.0f), cx + cardW - config.ScaleF(14.0f), curY + config.ScaleF(54.0f));
+        D2D1_RECT_F rcCardVal = D2D1::RectF(cx + config.ScaleF(14.0f), curY + config.ScaleF(28.0f), cx + cardW - config.ScaleF(14.0f), curY + config.ScaleF(56.0f));
         pRT->DrawText(cards[i].value.c_str(), static_cast<UINT32>(cards[i].value.length()),
                       theme.fontCourseHeading ? theme.fontCourseHeading.Get() : theme.fontTitle.Get(),
                       rcCardVal, valBrush ? valBrush.Get() : theme.brushTextWhite.Get());
 
-        // Subtitle Details (Bottom: y+56 to y+74)
-        D2D1_RECT_F rcCardDet = D2D1::RectF(cx + config.ScaleF(14.0f), curY + config.ScaleF(56.0f), cx + cardW - config.ScaleF(14.0f), curY + config.ScaleF(74.0f));
+        // 3. Subtitle Details (Bottom: Left-aligned)
+        D2D1_RECT_F rcCardDet = D2D1::RectF(cx + config.ScaleF(14.0f), curY + config.ScaleF(58.0f), cx + cardW - config.ScaleF(14.0f), curY + config.ScaleF(74.0f));
         pRT->DrawText(cards[i].detail.c_str(), static_cast<UINT32>(cards[i].detail.length()),
                       theme.fontHint ? theme.fontHint.Get() : theme.fontBody.Get(),
                       rcCardDet, theme.brushTextSecondary.Get());
+
+        // 4. Subtle bottom meter bar (3px)
+        const float meterY = curY + cardH - config.ScaleF(4.0f);
+        const float meterTotalW = cardW - config.ScaleF(28.0f);
+        D2D1_RECT_F rcMeterBg = D2D1::RectF(cx + config.ScaleF(14.0f), meterY, cx + config.ScaleF(14.0f) + meterTotalW, meterY + 2.0f);
+        ComPtr<ID2D1SolidColorBrush> brushMeterBg;
+        pRT->CreateSolidColorBrush(D2D1::ColorF(0.12f, 0.14f, 0.18f, 0.7f), &brushMeterBg);
+        if (brushMeterBg) pRT->FillRectangle(rcMeterBg, brushMeterBg.Get());
+
+        D2D1_RECT_F rcMeterActive = D2D1::RectF(cx + config.ScaleF(14.0f), meterY, cx + config.ScaleF(14.0f) + meterTotalW * cards[i].meterRatio, meterY + 2.0f);
+        if (valBrush) pRT->FillRectangle(rcMeterActive, valBrush.Get());
     }
 
     curY += cardH + config.ScaleF(18.0f);
 
     // =========================================================================
-    // 4. Open Network Ports & Process Table (The Core Dev Requirement!)
+    // 4. Open Network Ports & Process Table (Perfect Left Alignment of Headers & Cells!)
     // =========================================================================
-    // Calculate table dimensions
     const float tblHeaderH = config.ScaleF(38.0f);
     const float tblColBarH = config.ScaleF(26.0f);
     const float tblRowH = config.ScaleF(32.0f);
@@ -9744,67 +9873,68 @@ void EditorCanvas::RenderMonitorView(ID2D1RenderTarget* pRT, Theme& theme, const
     const float tblTotalH = tblHeaderH + tblColBarH + (rowsDisplayCount * tblRowH) + config.ScaleF(10.0f);
 
     D2D1_RECT_F rcTableCard = D2D1::RectF(contentX, curY, contentX + contentW, curY + tblTotalH);
-    D2D1_ROUNDED_RECT rrcTable = D2D1::RoundedRect(rcTableCard, 6.0f, 6.0f);
+    D2D1_ROUNDED_RECT rrcTable = D2D1::RoundedRect(rcTableCard, 7.0f, 7.0f);
 
     ComPtr<ID2D1SolidColorBrush> tableBg;
-    pRT->CreateSolidColorBrush(theme.IsDarkMode() ? D2D1::ColorF(0.098f, 0.102f, 0.129f, 1.0f) : D2D1::ColorF(0.97f, 0.97f, 0.98f, 1.0f), &tableBg);
+    pRT->CreateSolidColorBrush(theme.IsDarkMode() ? D2D1::ColorF(0.067f, 0.075f, 0.110f, 1.0f) : D2D1::ColorF(0.97f, 0.97f, 0.98f, 1.0f), &tableBg);
     if (tableBg) pRT->FillRoundedRectangle(rrcTable, tableBg.Get());
     if (cardBorder) pRT->DrawRoundedRectangle(rrcTable, cardBorder.Get(), 1.0f);
 
     // Table Header Bar
     D2D1_RECT_F rcTblHead = D2D1::RectF(contentX, curY, contentX + contentW, curY + tblHeaderH);
     ComPtr<ID2D1SolidColorBrush> tblHeadBg;
-    pRT->CreateSolidColorBrush(theme.IsDarkMode() ? D2D1::ColorF(0.125f, 0.129f, 0.160f, 1.0f) : D2D1::ColorF(0.93f, 0.93f, 0.95f, 1.0f), &tblHeadBg);
+    pRT->CreateSolidColorBrush(theme.IsDarkMode() ? D2D1::ColorF(0.090f, 0.102f, 0.145f, 1.0f) : D2D1::ColorF(0.93f, 0.93f, 0.95f, 1.0f), &tblHeadBg);
     if (tblHeadBg) {
         pRT->FillRectangle(rcTblHead, tblHeadBg.Get());
     }
 
-    D2D1_RECT_F rcTblTitle = D2D1::RectF(contentX + config.ScaleF(16.0f), curY + config.ScaleF(9.0f), contentX + config.ScaleF(400.0f), curY + config.ScaleF(28.0f));
+    D2D1_RECT_F rcTblTitle = D2D1::RectF(contentX + config.ScaleF(16.0f), curY + config.ScaleF(9.0f), contentX + config.ScaleF(440.0f), curY + config.ScaleF(28.0f));
     const wchar_t* tblTitleStr = L"ACTIVE NETWORK PORTS & LOCAL SERVICES";
     pRT->DrawText(tblTitleStr, static_cast<UINT32>(wcslen(tblTitleStr)),
                   theme.fontTitle ? theme.fontTitle.Get() : theme.fontBody.Get(),
                   rcTblTitle, theme.brushTextWhite.Get());
 
-    D2D1_RECT_F rcTblBadge = D2D1::RectF(contentX + contentW - config.ScaleF(260.0f), curY + config.ScaleF(11.0f), contentX + contentW - config.ScaleF(16.0f), curY + config.ScaleF(27.0f));
-    std::wstring tblBadgeStr = L"Real-time TCP Listeners (" + std::to_wstring(m_cachedDevPorts.size()) + L" sockets)";
+    D2D1_RECT_F rcTblBadge = D2D1::RectF(contentX + contentW - config.ScaleF(320.0f), curY + config.ScaleF(11.0f), contentX + contentW - config.ScaleF(16.0f), curY + config.ScaleF(27.0f));
+    std::wstring tblBadgeStr = L"Real-time TCP Listeners (Dev Servers Prioritized)";
     pRT->DrawText(tblBadgeStr.c_str(), static_cast<UINT32>(tblBadgeStr.length()),
-                  theme.fontBadge ? theme.fontBadge.Get() : theme.fontCode.Get(),
+                  theme.fontHint ? theme.fontHint.Get() : theme.fontCode.Get(),
                   rcTblBadge, theme.brushTextSecondary.Get());
 
     // Column Headers Bar
     float colBarY = curY + tblHeaderH;
     D2D1_RECT_F rcColBar = D2D1::RectF(contentX, colBarY, contentX + contentW, colBarY + tblColBarH);
     ComPtr<ID2D1SolidColorBrush> colBarBg;
-    pRT->CreateSolidColorBrush(theme.IsDarkMode() ? D2D1::ColorF(0.110f, 0.114f, 0.141f, 1.0f) : D2D1::ColorF(0.90f, 0.90f, 0.92f, 1.0f), &colBarBg);
+    pRT->CreateSolidColorBrush(theme.IsDarkMode() ? D2D1::ColorF(0.078f, 0.086f, 0.125f, 1.0f) : D2D1::ColorF(0.90f, 0.90f, 0.92f, 1.0f), &colBarBg);
     if (colBarBg) pRT->FillRectangle(rcColBar, colBarBg.Get());
 
-    // Compute column coordinates carefully to guarantee NO letter collision
+    // EXACT Shared Column Coordinates (Guarantees zero misalignment between header and rows!)
     const float colPortX   = contentX + config.ScaleF(16.0f);
-    const float colPortW   = config.ScaleF(85.0f);
+    const float colPortW   = config.ScaleF(75.0f);
     const float colPidX    = colPortX + colPortW;
-    const float colPidW    = config.ScaleF(85.0f);
+    const float colPidW    = config.ScaleF(70.0f);
     const float colProcX   = colPidX + colPidW;
-    const float colProcW   = config.ScaleF(150.0f);
-    const float colProtoX  = contentX + contentW - config.ScaleF(220.0f);
-    const float colProtoW  = config.ScaleF(95.0f);
-    const float colStatX   = colProtoX + colProtoW;
-    const float colStatW   = config.ScaleF(105.0f);
+    const float colProcW   = config.ScaleF(140.0f);
     const float colPurpX   = colProcX + colProcW;
-    const float colPurpW   = (std::max)(50.0f, colProtoX - colPurpX - config.ScaleF(10.0f));
+    const float colStatW   = config.ScaleF(105.0f);
+    const float colProtoW  = config.ScaleF(95.0f);
+    const float colStatX   = contentX + contentW - colStatW - config.ScaleF(16.0f);
+    const float colProtoX  = colStatX - colProtoW - config.ScaleF(12.0f);
+    const float colPurpW   = colProtoX - colPurpX - config.ScaleF(12.0f);
 
-    auto drawColText = [&](const wchar_t* txt, float x, float w, float y, float h) {
-        D2D1_RECT_F rc = D2D1::RectF(x, y, x + w, y + h);
+    // Left-aligned Column Header Text using fontHint / fontCode
+    auto drawColHeader = [&](const wchar_t* txt, float x, float w) {
+        D2D1_RECT_F rc = D2D1::RectF(x, colBarY + config.ScaleF(6.0f), x + w, colBarY + tblColBarH);
         pRT->DrawText(txt, static_cast<UINT32>(wcslen(txt)),
-                      theme.fontBadge ? theme.fontBadge.Get() : theme.fontCode.Get(),
+                      theme.fontHint ? theme.fontHint.Get() : theme.fontCode.Get(),
                       rc, theme.brushTextSecondary.Get());
     };
 
-    drawColText(L"PORT", colPortX, colPortW, colBarY + config.ScaleF(6.0f), tblColBarH);
-    drawColText(L"PID", colPidX, colPidW, colBarY + config.ScaleF(6.0f), tblColBarH);
-    drawColText(L"PROCESS", colProcX, colProcW, colBarY + config.ScaleF(6.0f), tblColBarH);
-    drawColText(L"SERVICE / PURPOSE", colPurpX, colPurpW, colBarY + config.ScaleF(6.0f), tblColBarH);
-    drawColText(L"PROTOCOL", colProtoX, colProtoW, colBarY + config.ScaleF(6.0f), tblColBarH);
-    drawColText(L"STATUS", colStatX, colStatW, colBarY + config.ScaleF(6.0f), tblColBarH);
+    drawColHeader(L"PORT", colPortX, colPortW);
+    drawColHeader(L"PID", colPidX, colPidW);
+    drawColHeader(L"PROCESS", colProcX, colProcW);
+    drawColHeader(L"SERVICE / PURPOSE", colPurpX, colPurpW);
+    drawColHeader(L"PROTOCOL", colProtoX, colProtoW);
+    drawColHeader(L"STATUS", colStatX, colStatW);
 
     // Render Table Rows
     float rowY = colBarY + tblColBarH;
@@ -9817,16 +9947,19 @@ void EditorCanvas::RenderMonitorView(ID2D1RenderTarget* pRT, Theme& theme, const
         rowY += tblRowH * 1.5f;
     } else {
         ComPtr<ID2D1SolidColorBrush> rowAltBg;
-        pRT->CreateSolidColorBrush(theme.IsDarkMode() ? D2D1::ColorF(0.114f, 0.118f, 0.145f, 0.5f) : D2D1::ColorF(0.95f, 0.95f, 0.97f, 0.5f), &rowAltBg);
+        pRT->CreateSolidColorBrush(theme.IsDarkMode() ? D2D1::ColorF(0.082f, 0.090f, 0.133f, 0.5f) : D2D1::ColorF(0.95f, 0.95f, 0.97f, 0.5f), &rowAltBg);
 
         ComPtr<ID2D1SolidColorBrush> brushCyan;
-        pRT->CreateSolidColorBrush(D2D1::ColorF(0.22f, 0.74f, 0.97f, 1.0f), &brushCyan);
+        pRT->CreateSolidColorBrush(D2D1::ColorF(0.220f, 0.741f, 0.973f, 1.0f), &brushCyan);
 
-        ComPtr<ID2D1SolidColorBrush> brushGreen;
-        pRT->CreateSolidColorBrush(D2D1::ColorF(0.29f, 0.87f, 0.50f, 1.0f), &brushGreen);
+        ComPtr<ID2D1SolidColorBrush> brushGreenText;
+        pRT->CreateSolidColorBrush(D2D1::ColorF(0.290f, 0.871f, 0.502f, 1.0f), &brushGreenText);
 
-        ComPtr<ID2D1SolidColorBrush> brushGreenPill;
-        pRT->CreateSolidColorBrush(D2D1::ColorF(0.12f, 0.28f, 0.18f, 0.8f), &brushGreenPill);
+        ComPtr<ID2D1SolidColorBrush> brushGreenPillBg;
+        pRT->CreateSolidColorBrush(D2D1::ColorF(0.055f, 0.180f, 0.118f, 0.85f), &brushGreenPillBg);
+
+        ComPtr<ID2D1SolidColorBrush> brushSlatePillBg;
+        pRT->CreateSolidColorBrush(D2D1::ColorF(0.118f, 0.133f, 0.180f, 0.85f), &brushSlatePillBg);
 
         for (size_t r = 0; r < rowCount; ++r) {
             const auto& entry = m_cachedDevPorts[r];
@@ -9835,12 +9968,12 @@ void EditorCanvas::RenderMonitorView(ID2D1RenderTarget* pRT, Theme& theme, const
                 pRT->FillRectangle(rcRow, rowAltBg.Get());
             }
 
-            // Port (e.g. ":3000" in cyan monospace)
+            // Port (e.g. ":3001" in cyan monospace)
             std::wstring portStr = L":" + std::to_wstring(entry.port);
             D2D1_RECT_F rcPort = D2D1::RectF(colPortX, rowY + config.ScaleF(7.0f), colPortX + colPortW, rowY + tblRowH);
             pRT->DrawText(portStr.c_str(), static_cast<UINT32>(portStr.length()),
                           theme.fontCode ? theme.fontCode.Get() : theme.fontBody.Get(),
-                          rcPort, brushCyan ? brushCyan.Get() : theme.brushTextWhite.Get());
+                          rcPort, entry.isDevelopment ? (brushCyan ? brushCyan.Get() : theme.brushTextWhite.Get()) : theme.brushTextSecondary.Get());
 
             // PID
             std::wstring pidStr = std::to_wstring(entry.pid);
@@ -9853,13 +9986,13 @@ void EditorCanvas::RenderMonitorView(ID2D1RenderTarget* pRT, Theme& theme, const
             D2D1_RECT_F rcProc = D2D1::RectF(colProcX, rowY + config.ScaleF(7.0f), colProcX + colProcW, rowY + tblRowH);
             pRT->DrawText(entry.processName.c_str(), static_cast<UINT32>(entry.processName.length()),
                           theme.fontBody ? theme.fontBody.Get() : theme.fontTitle.Get(),
-                          rcProc, theme.brushTextWhite.Get());
+                          rcProc, entry.isDevelopment ? theme.brushTextWhite.Get() : theme.brushTextSecondary.Get());
 
-            // Service / Purpose
+            // Service / Purpose (Now strictly aligned with header!)
             D2D1_RECT_F rcPurp = D2D1::RectF(colPurpX, rowY + config.ScaleF(7.0f), colPurpX + colPurpW, rowY + tblRowH);
             pRT->DrawText(entry.purpose.c_str(), static_cast<UINT32>(entry.purpose.length()),
                           theme.fontBody ? theme.fontBody.Get() : theme.fontTitle.Get(),
-                          rcPurp, entry.isDevelopment ? (theme.brushTextWhite.Get()) : theme.brushTextSecondary.Get());
+                          rcPurp, entry.isDevelopment ? theme.brushTextWhite.Get() : theme.brushTextSecondary.Get());
 
             // Protocol
             D2D1_RECT_F rcProto = D2D1::RectF(colProtoX, rowY + config.ScaleF(7.0f), colProtoX + colProtoW, rowY + tblRowH);
@@ -9867,16 +10000,19 @@ void EditorCanvas::RenderMonitorView(ID2D1RenderTarget* pRT, Theme& theme, const
                           theme.fontHint ? theme.fontHint.Get() : theme.fontBody.Get(),
                           rcProto, theme.brushTextSecondary.Get());
 
-            // Status Pill (● LISTENING)
+            // Status Pill (● LISTENING or ● SYSTEM)
             D2D1_RECT_F rcStatPill = D2D1::RectF(colStatX, rowY + config.ScaleF(6.0f), colStatX + config.ScaleF(92.0f), rowY + tblRowH - config.ScaleF(6.0f));
-            if (brushGreenPill) {
-                pRT->FillRoundedRectangle(D2D1::RoundedRect(rcStatPill, 4.0f, 4.0f), brushGreenPill.Get());
+            if (entry.isDevelopment) {
+                if (brushGreenPillBg) pRT->FillRoundedRectangle(D2D1::RoundedRect(rcStatPill, 4.0f, 4.0f), brushGreenPillBg.Get());
+                pRT->DrawText(entry.status.c_str(), static_cast<UINT32>(entry.status.length()),
+                              theme.fontBadge ? theme.fontBadge.Get() : theme.fontCode.Get(),
+                              rcStatPill, brushGreenText ? brushGreenText.Get() : theme.brushTextWhite.Get());
+            } else {
+                if (brushSlatePillBg) pRT->FillRoundedRectangle(D2D1::RoundedRect(rcStatPill, 4.0f, 4.0f), brushSlatePillBg.Get());
+                pRT->DrawText(entry.status.c_str(), static_cast<UINT32>(entry.status.length()),
+                              theme.fontBadge ? theme.fontBadge.Get() : theme.fontCode.Get(),
+                              rcStatPill, theme.brushTextSecondary.Get());
             }
-            D2D1_RECT_F rcStatText = D2D1::RectF(colStatX + config.ScaleF(6.0f), rowY + config.ScaleF(7.0f), colStatX + config.ScaleF(90.0f), rowY + tblRowH);
-            const wchar_t* statStr = L"● LISTENING";
-            pRT->DrawText(statStr, static_cast<UINT32>(wcslen(statStr)),
-                          theme.fontBadge ? theme.fontBadge.Get() : theme.fontCode.Get(),
-                          rcStatText, brushGreen ? brushGreen.Get() : theme.brushTextWhite.Get());
 
             rowY += tblRowH;
         }
@@ -9888,60 +10024,60 @@ void EditorCanvas::RenderMonitorView(ID2D1RenderTarget* pRT, Theme& theme, const
     // 5. Dual Diagnostics Panels: Storage Breakdown & Memory Allocation
     // =========================================================================
     const float dualPanelW = (contentW - config.ScaleF(16.0f)) / 2.0f;
-    const float dualPanelH = config.ScaleF(118.0f);
+    const float dualPanelH = config.ScaleF(122.0f);
 
     // Panel A: Project Storage Analytics (Left)
     D2D1_RECT_F rcPanelA = D2D1::RectF(contentX, curY, contentX + dualPanelW, curY + dualPanelH);
-    D2D1_ROUNDED_RECT rrcPanelA = D2D1::RoundedRect(rcPanelA, 6.0f, 6.0f);
+    D2D1_ROUNDED_RECT rrcPanelA = D2D1::RoundedRect(rcPanelA, 7.0f, 7.0f);
     if (cardBg) pRT->FillRoundedRectangle(rrcPanelA, cardBg.Get());
     if (cardBorder) pRT->DrawRoundedRectangle(rrcPanelA, cardBorder.Get(), 1.0f);
 
-    D2D1_RECT_F rcHeadA = D2D1::RectF(contentX + config.ScaleF(14.0f), curY + config.ScaleF(10.0f), contentX + dualPanelW - config.ScaleF(14.0f), curY + config.ScaleF(28.0f));
-    const wchar_t* headAStr = L"WORKSPACE DISK FOOTPRINT";
+    D2D1_RECT_F rcHeadA = D2D1::RectF(contentX + config.ScaleF(16.0f), curY + config.ScaleF(12.0f), contentX + dualPanelW - config.ScaleF(16.0f), curY + config.ScaleF(28.0f));
+    const wchar_t* headAStr = L"WORKSPACE STORAGE COMPOSITION";
     pRT->DrawText(headAStr, static_cast<UINT32>(wcslen(headAStr)),
-                  theme.fontBadge ? theme.fontBadge.Get() : theme.fontCode.Get(),
+                  theme.fontHint ? theme.fontHint.Get() : theme.fontCode.Get(),
                   rcHeadA, theme.brushTextSecondary.Get());
 
     // Storage path label
     std::wstring pathLabel = m_workspaceRoot.empty() ? L"No workspace folder opened" : m_workspaceRoot;
-    D2D1_RECT_F rcPathA = D2D1::RectF(contentX + config.ScaleF(14.0f), curY + config.ScaleF(30.0f), contentX + dualPanelW - config.ScaleF(14.0f), curY + config.ScaleF(48.0f));
+    D2D1_RECT_F rcPathA = D2D1::RectF(contentX + config.ScaleF(16.0f), curY + config.ScaleF(32.0f), contentX + dualPanelW - config.ScaleF(16.0f), curY + config.ScaleF(50.0f));
     pRT->DrawText(pathLabel.c_str(), static_cast<UINT32>(pathLabel.length()),
-                  theme.fontHint ? theme.fontHint.Get() : theme.fontBody.Get(),
+                  theme.fontBody ? theme.fontBody.Get() : theme.fontTitle.Get(),
                   rcPathA, theme.brushTextWhite.Get());
 
-    // Storage segmented bar (Code vs Assets vs Other)
-    const float barX = contentX + config.ScaleF(14.0f);
-    const float barW = dualPanelW - config.ScaleF(28.0f);
-    const float barY = curY + config.ScaleF(56.0f);
+    // Multi-color Segmented Storage Bar
+    const float barX = contentX + config.ScaleF(16.0f);
+    const float barW = dualPanelW - config.ScaleF(32.0f);
+    const float barY = curY + config.ScaleF(58.0f);
     const float barH = config.ScaleF(12.0f);
 
     D2D1_RECT_F rcBarBg = D2D1::RectF(barX, barY, barX + barW, barY + barH);
     ComPtr<ID2D1SolidColorBrush> barBgBrush;
-    pRT->CreateSolidColorBrush(theme.IsDarkMode() ? D2D1::ColorF(0.20f, 0.21f, 0.28f, 1.0f) : D2D1::ColorF(0.85f, 0.85f, 0.88f, 1.0f), &barBgBrush);
-    if (barBgBrush) pRT->FillRoundedRectangle(D2D1::RoundedRect(rcBarBg, 3.0f, 3.0f), barBgBrush.Get());
+    pRT->CreateSolidColorBrush(D2D1::ColorF(0.12f, 0.14f, 0.19f, 1.0f), &barBgBrush);
+    if (barBgBrush) pRT->FillRoundedRectangle(D2D1::RoundedRect(rcBarBg, 3.5f, 3.5f), barBgBrush.Get());
 
     if (m_projectStorage.totalBytes > 0) {
         float codeFrac = static_cast<float>(m_projectStorage.codeBytes) / static_cast<float>(m_projectStorage.totalBytes);
         float assetFrac = static_cast<float>(m_projectStorage.assetBytes) / static_cast<float>(m_projectStorage.totalBytes);
-        codeFrac = (std::max)(0.05f, (std::min)(0.95f, codeFrac));
+        codeFrac = (std::max)(0.08f, (std::min)(0.90f, codeFrac));
 
         float codeW = barW * codeFrac;
-        float assetW = barW * assetFrac;
+        float assetW = (std::max)(0.04f, (std::min)(barW - codeW, barW * assetFrac));
 
         ComPtr<ID2D1SolidColorBrush> bCode;
-        pRT->CreateSolidColorBrush(D2D1::ColorF(0.22f, 0.74f, 0.97f, 1.0f), &bCode);
+        pRT->CreateSolidColorBrush(D2D1::ColorF(0.220f, 0.741f, 0.973f, 1.0f), &bCode);
         if (bCode) pRT->FillRectangle(D2D1::RectF(barX, barY, barX + codeW, barY + barH), bCode.Get());
 
         ComPtr<ID2D1SolidColorBrush> bAsset;
-        pRT->CreateSolidColorBrush(D2D1::ColorF(0.96f, 0.65f, 0.14f, 1.0f), &bAsset);
+        pRT->CreateSolidColorBrush(D2D1::ColorF(0.961f, 0.620f, 0.043f, 1.0f), &bAsset);
         if (bAsset && barX + codeW + assetW <= barX + barW) {
             pRT->FillRectangle(D2D1::RectF(barX + codeW, barY, barX + codeW + assetW, barY + barH), bAsset.Get());
         }
     }
 
-    // Legend underneath bar
-    D2D1_RECT_F rcLegA = D2D1::RectF(contentX + config.ScaleF(14.0f), curY + config.ScaleF(78.0f), contentX + dualPanelW - config.ScaleF(14.0f), curY + config.ScaleF(108.0f));
-    std::wstring legAStr = L"■ Source Code (" + std::to_wstring(m_projectStorage.codeBytes / 1024) + L" KB)   ■ Assets & Media (" + std::to_wstring(m_projectStorage.assetBytes / 1024) + L" KB)";
+    // Legend underneath bar (Clean pill stats)
+    D2D1_RECT_F rcLegA = D2D1::RectF(contentX + config.ScaleF(16.0f), curY + config.ScaleF(82.0f), contentX + dualPanelW - config.ScaleF(16.0f), curY + config.ScaleF(114.0f));
+    std::wstring legAStr = L"■ Source Code (" + std::to_wstring(m_projectStorage.codeBytes / 1024) + L" KB)   ■ Assets & Images (" + std::to_wstring(m_projectStorage.assetBytes / 1024) + L" KB)";
     pRT->DrawText(legAStr.c_str(), static_cast<UINT32>(legAStr.length()),
                   theme.fontHint ? theme.fontHint.Get() : theme.fontBody.Get(),
                   rcLegA, theme.brushTextSecondary.Get());
@@ -9949,29 +10085,29 @@ void EditorCanvas::RenderMonitorView(ID2D1RenderTarget* pRT, Theme& theme, const
     // Panel B: Phide Internal Memory Diagnostics (Right)
     const float panelBX = contentX + dualPanelW + config.ScaleF(16.0f);
     D2D1_RECT_F rcPanelB = D2D1::RectF(panelBX, curY, panelBX + dualPanelW, curY + dualPanelH);
-    D2D1_ROUNDED_RECT rrcPanelB = D2D1::RoundedRect(rcPanelB, 6.0f, 6.0f);
+    D2D1_ROUNDED_RECT rrcPanelB = D2D1::RoundedRect(rcPanelB, 7.0f, 7.0f);
     if (cardBg) pRT->FillRoundedRectangle(rrcPanelB, cardBg.Get());
     if (cardBorder) pRT->DrawRoundedRectangle(rrcPanelB, cardBorder.Get(), 1.0f);
 
-    D2D1_RECT_F rcHeadB = D2D1::RectF(panelBX + config.ScaleF(14.0f), curY + config.ScaleF(10.0f), panelBX + dualPanelW - config.ScaleF(14.0f), curY + config.ScaleF(28.0f));
-    const wchar_t* headBStr = L"PHIDE PROCESS HEALTH & GARBAGE COLLECTION";
+    D2D1_RECT_F rcHeadB = D2D1::RectF(panelBX + config.ScaleF(16.0f), curY + config.ScaleF(12.0f), panelBX + dualPanelW - config.ScaleF(16.0f), curY + config.ScaleF(28.0f));
+    const wchar_t* headBStr = L"PHIDE PROCESS HEALTH & MEMORY OPTIMIZATION";
     pRT->DrawText(headBStr, static_cast<UINT32>(wcslen(headBStr)),
-                  theme.fontBadge ? theme.fontBadge.Get() : theme.fontCode.Get(),
+                  theme.fontHint ? theme.fontHint.Get() : theme.fontCode.Get(),
                   rcHeadB, theme.brushTextSecondary.Get());
 
-    D2D1_RECT_F rcTxtB1 = D2D1::RectF(panelBX + config.ScaleF(14.0f), curY + config.ScaleF(32.0f), panelBX + dualPanelW - config.ScaleF(14.0f), curY + config.ScaleF(50.0f));
+    D2D1_RECT_F rcTxtB1 = D2D1::RectF(panelBX + config.ScaleF(16.0f), curY + config.ScaleF(34.0f), panelBX + dualPanelW - config.ScaleF(16.0f), curY + config.ScaleF(52.0f));
     std::wstring txtB1 = L"Active Working Set: " + std::to_wstring(wsMB) + L" MB  (Peak: " + std::to_wstring(peakMB) + L" MB)";
     pRT->DrawText(txtB1.c_str(), static_cast<UINT32>(txtB1.length()),
                   theme.fontBody ? theme.fontBody.Get() : theme.fontTitle.Get(),
                   rcTxtB1, theme.brushTextWhite.Get());
 
-    D2D1_RECT_F rcTxtB2 = D2D1::RectF(panelBX + config.ScaleF(14.0f), curY + config.ScaleF(54.0f), panelBX + dualPanelW - config.ScaleF(14.0f), curY + config.ScaleF(72.0f));
+    D2D1_RECT_F rcTxtB2 = D2D1::RectF(panelBX + config.ScaleF(16.0f), curY + config.ScaleF(56.0f), panelBX + dualPanelW - config.ScaleF(16.0f), curY + config.ScaleF(74.0f));
     std::wstring txtB2 = L"Virtual Commit: " + std::to_wstring(commitMB) + L" MB  |  Native C++20 Zero-Leak Architecture";
     pRT->DrawText(txtB2.c_str(), static_cast<UINT32>(txtB2.length()),
                   theme.fontHint ? theme.fontHint.Get() : theme.fontBody.Get(),
                   rcTxtB2, theme.brushTextSecondary.Get());
 
-    D2D1_RECT_F rcTxtB3 = D2D1::RectF(panelBX + config.ScaleF(14.0f), curY + config.ScaleF(78.0f), panelBX + dualPanelW - config.ScaleF(14.0f), curY + config.ScaleF(104.0f));
+    D2D1_RECT_F rcTxtB3 = D2D1::RectF(panelBX + config.ScaleF(16.0f), curY + config.ScaleF(80.0f), panelBX + dualPanelW - config.ScaleF(16.0f), curY + config.ScaleF(110.0f));
     std::wstring txtB3 = m_monitorGcFeedback.empty()
         ? L"Status: Standby (Direct2D GPU accelerated rendering pipeline)"
         : m_monitorGcFeedback;
