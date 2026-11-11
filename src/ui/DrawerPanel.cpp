@@ -3785,6 +3785,13 @@ bool DrawerPanel::CommitInlineRename(std::wstring& outOldPath, std::wstring& out
 
     std::filesystem::path newP = oldP.parent_path() / m_renameText;
     std::error_code ec;
+
+    // Prevent collision/overwrite if a file or folder with the destination name already exists
+    if (std::filesystem::exists(newP, ec) && _wcsicmp(oldP.c_str(), newP.c_str()) != 0) {
+        CancelInlineRename();
+        return false;
+    }
+
     std::filesystem::rename(oldP, newP, ec);
     if (!ec) {
         outOldPath = oldP.wstring();

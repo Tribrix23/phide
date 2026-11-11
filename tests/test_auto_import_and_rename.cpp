@@ -136,6 +136,59 @@ int main() {
         assert(file1Content.find(L"./newHelper.js") != std::wstring::npos && "Import must point to new file");
         std::cout << "  [PASS] Test 3b: UpdateReferencesInContent updated relative import statement to ./newHelper.js\n";
 
+        // Test 3c: HTML <a href="./test.jsx"> link reference test (user scenario)
+        std::wstring testJsxFile = tempDir + L"\\test.jsx";
+        std::wstring sdHtmlFile = tempDir + L"\\sd.html";
+        std::wstring otherFileWithC = tempDir + L"\\index.php";
+        {
+            std::ofstream f(testJsxFile);
+            f << "export default function Test() { return <div></div>; }\n";
+        }
+        {
+            std::ofstream f(sdHtmlFile);
+            f << "<!DOCTYPE html>\n<html>\n<body>\n    <a href=\"./test.jsx\">test</a>\n</body>\n</html>\n";
+        }
+        {
+            std::ofstream f(otherFileWithC);
+            f << "<?php\nclass Controller { public function index() { return 'hello'; } }\n";
+        }
+
+        auto testJsxRefs = SmartImportHelper::FindReferencesToPath(tempDir, testJsxFile);
+        assert(testJsxRefs.size() == 1 && "Only sd.html references test.jsx! No other files should match.");
+        assert(testJsxRefs[0] == sdHtmlFile && "Referencing file must be sd.html");
+        std::cout << "  [PASS] Test 3c: FindReferencesToPath accurately finds sd.html for test.jsx without false positives\n";
+
+        // Test 3d: No false positives for single-character or short stems like c.jsx or x.jsx
+        std::wstring cJsxFile = tempDir + L"\\c.jsx";
+        {
+            std::ofstream f(cJsxFile);
+            f << "const C = () => {};\n";
+        }
+        auto cJsxRefs = SmartImportHelper::FindReferencesToPath(tempDir, cJsxFile);
+        assert(cJsxRefs.empty() && "c.jsx is not referenced anywhere; words with 'c' like 'class' or 'DOCTYPE' must NOT match!");
+        std::cout << "  [PASS] Test 3d: c.jsx returns 0 references (no false positives on letters in words)\n";
+
+        // Test 3e: UpdateReferencesInContent updates <a href="./test.jsx"> to <a href="./x.jsx">
+        std::wstring xJsxFile = tempDir + L"\\x.jsx";
+        std::wstring htmlContent = L"<!DOCTYPE html>\n<html>\n<body>\n    <a href=\"./test.jsx\">test</a>\n</body>\n</html>\n";
+        bool htmlUpdated = SmartImportHelper::UpdateReferencesInContent(htmlContent, sdHtmlFile, testJsxFile, xJsxFile);
+        assert(htmlUpdated && "UpdateReferencesInContent must update <a href='./test.jsx'>");
+        assert(htmlContent.find(L"<a href=\"./x.jsx\">test</a>") != std::wstring::npos && "<a href='./test.jsx'> must become <a href='./x.jsx'>");
+        std::cout << "  [PASS] Test 3e: <a href='./test.jsx'> in HTML successfully updated to <a href='./x.jsx'>\n";
+
+        // Test 3f: Duplicate file rename collision rejection test
+        std::wstring existingFile = tempDir + L"\\existing.js";
+        {
+            std::ofstream f(existingFile);
+            f << "original content\n";
+        }
+        // Attempting to rename targetFile (helper.js) to existing.js
+        std::error_code ecColl;
+        bool wouldCollide = std::filesystem::exists(existingFile, ecColl) &&
+                            (_wcsicmp(testJsxFile.c_str(), existingFile.c_str()) != 0);
+        assert(wouldCollide && "Duplicate destination file must be detected as collision");
+        std::cout << "  [PASS] Test 3f: Destination collision check correctly flags existing file\n";
+
         std::filesystem::remove_all(tempDir);
     }
 

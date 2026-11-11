@@ -264,12 +264,12 @@ public:
         if (workspaceRoot.empty() || targetFilePath.empty()) return referencingFiles;
 
         std::error_code ec;
-        std::filesystem::path rootP(workspaceRoot);
-        std::filesystem::path targetP(targetFilePath);
-        if (!std::filesystem::exists(targetP, ec)) return referencingFiles;
+        std::filesystem::path rootP = std::filesystem::path(workspaceRoot).lexically_normal();
+        std::filesystem::path targetP = std::filesystem::path(targetFilePath).lexically_normal();
 
         std::wstring targetStem = targetP.stem().wstring();
         std::wstring targetFilename = targetP.filename().wstring();
+        if (targetFilename.empty()) return referencingFiles;
 
         static const std::unordered_set<std::wstring> ignoreDirs = {
             L".git", L".phide", L"node_modules", L"vendor", L".venv", L"venv",
@@ -279,7 +279,7 @@ public:
         static const std::unordered_set<std::wstring> validExts = {
             L".js", L".jsx", L".ts", L".tsx", L".mjs", L".cjs",
             L".html", L".htm", L".php", L".css", L".scss", L".sass", L".less",
-            L".py", L".json", L".vue", L".svelte"
+            L".py", L".json", L".vue", L".svelte", L".md"
         };
 
         for (auto it = std::filesystem::recursive_directory_iterator(rootP, std::filesystem::directory_options::skip_permission_denied, ec);
@@ -300,18 +300,16 @@ public:
             for (auto& c : fileExt) c = static_cast<wchar_t>(towlower(c));
             if (validExts.count(fileExt) == 0) continue;
 
-            std::wstring candidatePath = it->path().wstring();
-            if (_wcsicmp(candidatePath.c_str(), targetFilePath.c_str()) == 0) continue;
+            std::filesystem::path candNorm = it->path().lexically_normal();
+            if (_wcsicmp(candNorm.c_str(), targetP.c_str()) == 0) continue;
 
-            std::wstring relWithExt = ComputeRelativePath(candidatePath, targetFilePath);
+            std::wstring candidatePath = candNorm.wstring();
+            std::wstring relWithExt = ComputeRelativePath(candidatePath, targetP.wstring());
             std::wstring relNoExt = relWithExt;
             size_t dotPos = relNoExt.rfind(L'.');
             if (dotPos != std::wstring::npos && dotPos > relNoExt.rfind(L'/')) {
                 relNoExt = relNoExt.substr(0, dotPos);
             }
-
-            std::wstring bareWithExt = relWithExt.starts_with(L"./") ? relWithExt.substr(2) : relWithExt;
-            std::wstring bareNoExt = relNoExt.starts_with(L"./") ? relNoExt.substr(2) : relNoExt;
 
             auto fSize = it->file_size(ec);
             if (ec || fSize > 2 * 1024 * 1024) { ec.clear(); continue; }
@@ -324,27 +322,92 @@ public:
             if (utf8Content.empty()) continue;
 
             std::string narrowStem = ToUtf8(targetStem);
-            if (utf8Content.find(narrowStem) == std::string::npos) continue;
-
+            std::string narrowFn = ToUtf8(targetFilename);
             std::string narrowRelWithExt = ToUtf8(relWithExt);
             std::string narrowRelNoExt = ToUtf8(relNoExt);
-            std::string narrowBareWithExt = ToUtf8(bareWithExt);
-            std::string narrowBareNoExt = ToUtf8(bareNoExt);
+
+            // Quick check: does the file mention the filename or stem?
+            if (utf8Content.find(narrowFn) == std::string::npos &&
+                utf8Content.find(narrowStem) == std::string::npos) {
+                continue;
+            }
 
             bool hasRef = false;
-            if (utf8Content.find(narrowRelWithExt) != std::string::npos ||
-                utf8Content.find(narrowRelNoExt) != std::string::npos ||
-                utf8Content.find(narrowBareWithExt) != std::string::npos ||
-                utf8Content.find(narrowBareNoExt) != std::string::npos) {
-                hasRef = true;
-            } else if (fileExt == L".py") {
-                if (utf8Content.find("import " + narrowStem) != std::string::npos ||
-                    utf8Content.find("from " + narrowStem) != std::string::npos) {
-                    hasRef = true;
+
+            // 1. Check relative path with extension (e.g. "./test.jsx" or "../utils/test.jsx")
+            if (!narrowRelWithExt.empty()) {
+                size_t pos = 0;
+                while ((pos = utf8Content.find(narrowRelWithExt, pos)) != std::string::npos) {
+                    size_t after = pos + narrowRelWithExt.length();
+                    if (after >= utf8Content.length() ||
+                        (!isalnum(static_cast<unsigned char>(utf8Content[after])) &&
+                         utf8Content[after] != '_' && utf8Content[after] != '-' && utf8Content[after] != '.')) {
+                        hasRef = true;
+                        break;
+                    }
+                    pos += narrowRelWithExt.length();
                 }
-            } else if (fileExt == L".php") {
-                std::string narrowFn = ToUtf8(targetFilename);
-                if (utf8Content.find(narrowFn) != std::string::npos) {
+            }
+
+            // 2. Check relative path without extension (e.g. "./test" or "../utils/test")
+            if (!hasRef && !narrowRelNoExt.empty()) {
+                size_t pos = 0;
+                while ((pos = utf8Content.find(narrowRelNoExt, pos)) != std::string::npos) {
+                    size_t after = pos + narrowRelNoExt.length();
+                    if (after >= utf8Content.length() ||
+                        (!isalnum(static_cast<unsigned char>(utf8Content[after])) &&
+                         utf8Content[after] != '_' && utf8Content[after] != '-' && utf8Content[after] != '.')) {
+                        hasRef = true;
+                        break;
+                    }
+                    pos += narrowRelNoExt.length();
+                }
+            }
+
+            // 3. Check filename inside quotes or after / (e.g. "test.jsx", 'test.jsx', `test.jsx`, href="test.jsx", include 'test.php')
+            if (!hasRef && !narrowFn.empty()) {
+                std::string q1 = "\"" + narrowFn + "\"";
+                std::string q2 = "'" + narrowFn + "'";
+                std::string q3 = "`" + narrowFn + "`";
+                std::string sl = "/" + narrowFn;
+                if (utf8Content.find(q1) != std::string::npos ||
+                    utf8Content.find(q2) != std::string::npos ||
+                    utf8Content.find(q3) != std::string::npos) {
+                    hasRef = true;
+                } else {
+                    size_t pos = 0;
+                    while ((pos = utf8Content.find(sl, pos)) != std::string::npos) {
+                        size_t after = pos + sl.length();
+                        if (after >= utf8Content.length() ||
+                            (!isalnum(static_cast<unsigned char>(utf8Content[after])) &&
+                             utf8Content[after] != '_' && utf8Content[after] != '-' && utf8Content[after] != '.')) {
+                            hasRef = true;
+                            break;
+                        }
+                        pos += sl.length();
+                    }
+                }
+            }
+
+            // 4. Python module imports (e.g. import test, from test import, from .test import)
+            if (!hasRef && fileExt == L".py" && !narrowStem.empty()) {
+                auto checkPy = [&](const std::string& prefix) -> bool {
+                    size_t pos = 0;
+                    while ((pos = utf8Content.find(prefix + narrowStem, pos)) != std::string::npos) {
+                        size_t after = pos + prefix.length() + narrowStem.length();
+                        if (after >= utf8Content.length() ||
+                            utf8Content[after] == ' ' || utf8Content[after] == '\t' ||
+                            utf8Content[after] == '\r' || utf8Content[after] == '\n' ||
+                            utf8Content[after] == ',' || utf8Content[after] == '#' ||
+                            utf8Content[after] == ':' || utf8Content[after] == ';') {
+                            return true;
+                        }
+                        pos += prefix.length() + narrowStem.length();
+                    }
+                    return false;
+                };
+
+                if (checkPy("import ") || checkPy("from ") || checkPy("from .") || checkPy("from ..") || checkPy("from . import ")) {
                     hasRef = true;
                 }
             }
@@ -364,15 +427,17 @@ public:
     static bool UpdateReferencesInContent(std::wstring& content, const std::wstring& filePath, const std::wstring& oldTargetPath, const std::wstring& newTargetPath) {
         if (content.empty() || oldTargetPath.empty() || newTargetPath.empty()) return false;
 
-        std::filesystem::path oldP(oldTargetPath);
-        std::filesystem::path newP(newTargetPath);
+        std::filesystem::path oldP = std::filesystem::path(oldTargetPath).lexically_normal();
+        std::filesystem::path newP = std::filesystem::path(newTargetPath).lexically_normal();
+        std::filesystem::path candP = std::filesystem::path(filePath).lexically_normal();
+
         std::wstring oldStem = oldP.stem().wstring();
         std::wstring newStem = newP.stem().wstring();
         std::wstring oldFn = oldP.filename().wstring();
         std::wstring newFn = newP.filename().wstring();
 
-        std::wstring oldRelWithExt = ComputeRelativePath(filePath, oldTargetPath);
-        std::wstring newRelWithExt = ComputeRelativePath(filePath, newTargetPath);
+        std::wstring oldRelWithExt = ComputeRelativePath(candP.wstring(), oldP.wstring());
+        std::wstring newRelWithExt = ComputeRelativePath(candP.wstring(), newP.wstring());
 
         std::wstring oldRelNoExt = oldRelWithExt;
         size_t d1 = oldRelNoExt.rfind(L'.');
@@ -382,49 +447,86 @@ public:
         size_t d2 = newRelNoExt.rfind(L'.');
         if (d2 != std::wstring::npos && d2 > newRelNoExt.rfind(L'/')) newRelNoExt = newRelNoExt.substr(0, d2);
 
-        std::wstring oldBareWithExt = oldRelWithExt.starts_with(L"./") ? oldRelWithExt.substr(2) : oldRelWithExt;
-        std::wstring newBareWithExt = newRelWithExt.starts_with(L"./") ? newRelWithExt.substr(2) : newRelWithExt;
-
-        std::wstring oldBareNoExt = oldRelNoExt.starts_with(L"./") ? oldRelNoExt.substr(2) : oldRelNoExt;
-        std::wstring newBareNoExt = newRelNoExt.starts_with(L"./") ? newRelNoExt.substr(2) : newRelNoExt;
-
         bool modified = false;
 
-        auto replaceAll = [&](const std::wstring& from, const std::wstring& to) {
+        auto replaceWithBoundary = [&](const std::wstring& from, const std::wstring& to, bool isNoExt) {
             if (from.empty() || from == to) return;
             size_t pos = 0;
             while ((pos = content.find(from, pos)) != std::wstring::npos) {
+                size_t after = pos + from.length();
+                if (after < content.length()) {
+                    wchar_t ch = content[after];
+                    if (isNoExt) {
+                        if (iswalnum(ch) || ch == L'_' || ch == L'-' || ch == L'.') {
+                            pos += from.length();
+                            continue;
+                        }
+                    } else {
+                        if (iswalnum(ch) || ch == L'_' || ch == L'-' || ch == L'.') {
+                            pos += from.length();
+                            continue;
+                        }
+                    }
+                }
                 content.replace(pos, from.length(), to);
                 pos += to.length();
                 modified = true;
             }
         };
 
-        // 1. Full relative with extension (e.g. "./components/Button.jsx")
-        replaceAll(oldRelWithExt, newRelWithExt);
+        // 1. Full relative path with extension (e.g. "./test.jsx" -> "./x.jsx", "../folder/test.jsx" -> "../folder/x.jsx")
+        replaceWithBoundary(oldRelWithExt, newRelWithExt, false);
 
-        // 2. Relative without extension (e.g. "./components/Button")
-        replaceAll(oldRelNoExt, newRelNoExt);
+        // 2. Relative path without extension (e.g. "./test" -> "./x")
+        replaceWithBoundary(oldRelNoExt, newRelNoExt, true);
 
-        // 3. Bare paths (e.g. "components/Button.jsx", "components/Button")
-        if (oldBareWithExt != oldRelWithExt) {
-            replaceAll(oldBareWithExt, newBareWithExt);
-        }
-        if (oldBareNoExt != oldRelNoExt) {
-            replaceAll(oldBareNoExt, newBareNoExt);
-        }
-
-        // 4. Filename replacement inside quotes for PHP / HTML (e.g. include 'old.php', <script src="old.js">)
+        // 3. Quoted filename replacement (e.g. href="test.jsx" -> href="x.jsx", include 'test.php' -> include 'x.php')
         if (oldFn != newFn) {
-            replaceAll(L"'" + oldFn + L"'", L"'" + newFn + L"'");
-            replaceAll(L"\"" + oldFn + L"\"", L"\"" + newFn + L"\"");
+            auto replaceQuoted = [&](const std::wstring& qOpen, const std::wstring& qClose) {
+                std::wstring from = qOpen + oldFn + qClose;
+                std::wstring to = qOpen + newFn + qClose;
+                size_t pos = 0;
+                while ((pos = content.find(from, pos)) != std::wstring::npos) {
+                    content.replace(pos, from.length(), to);
+                    pos += to.length();
+                    modified = true;
+                }
+            };
+            replaceQuoted(L"\"", L"\"");
+            replaceQuoted(L"'", L"'");
+            replaceQuoted(L"`", L"`");
+
+            // Also check for slash-prefixed filename e.g. /test.jsx
+            replaceWithBoundary(L"/" + oldFn, L"/" + newFn, false);
         }
 
-        // 5. Python stem replacement (e.g. import oldStem -> import newStem, from oldStem -> from newStem)
+        // 4. Python imports (import test -> import x, from test import -> from x import, from .test import -> from .x import)
         if (oldStem != newStem) {
-            replaceAll(L"import " + oldStem, L"import " + newStem);
-            replaceAll(L"from " + oldStem, L"from " + newStem);
-            replaceAll(L"from ." + oldStem, L"from ." + newStem);
+            auto replacePy = [&](const std::wstring& prefix) {
+                std::wstring from = prefix + oldStem;
+                std::wstring to = prefix + newStem;
+                size_t pos = 0;
+                while ((pos = content.find(from, pos)) != std::wstring::npos) {
+                    size_t after = pos + from.length();
+                    if (after >= content.length() ||
+                        content[after] == L' ' || content[after] == L'\t' ||
+                        content[after] == L'\r' || content[after] == L'\n' ||
+                        content[after] == L',' || content[after] == L'#' ||
+                        content[after] == L':' || content[after] == L';') {
+                        content.replace(pos, from.length(), to);
+                        pos += to.length();
+                        modified = true;
+                    } else {
+                        pos += from.length();
+                    }
+                }
+            };
+
+            replacePy(L"import ");
+            replacePy(L"from ");
+            replacePy(L"from .");
+            replacePy(L"from ..");
+            replacePy(L"from . import ");
         }
 
         return modified;

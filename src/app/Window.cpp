@@ -1443,7 +1443,26 @@ void Window::ExecuteRenameAndUpdateImports(const std::wstring& oldPath, const st
     std::filesystem::path oldP(oldPath);
     std::filesystem::path newP(newPath);
 
-    // 1. Rename / move on disk
+    // Collision check: prevent replacing/overwriting existing files
+    if (std::filesystem::exists(newP, ec) && _wcsicmp(oldPath.c_str(), newPath.c_str()) != 0) {
+        m_confirmDiscardModal.Close();
+        m_confirmDiscardModal.OpenNotice(
+            L"File Already Exists",
+            L"A file or folder with the name '" + newP.filename().wstring() + L"' already exists.",
+            L"Cannot overwrite an existing file or folder."
+        );
+        InvalidateRect(m_hwnd, nullptr, FALSE);
+        return;
+    }
+
+    // 1. Scan referencing files FIRST while oldPath is in its original state!
+    std::wstring root = m_drawer.GetOpenFolderPath();
+    std::vector<std::wstring> refFiles;
+    if (!root.empty()) {
+        refFiles = editor::SmartImportHelper::FindReferencesToPath(root, oldPath);
+    }
+
+    // 2. Perform filesystem rename / move on disk
     if (isMove) {
         if (std::filesystem::is_directory(oldP)) {
             std::filesystem::copy(oldP, newP, std::filesystem::copy_options::recursive | std::filesystem::copy_options::overwrite_existing, ec);
@@ -1462,55 +1481,61 @@ void Window::ExecuteRenameAndUpdateImports(const std::wstring& oldPath, const st
         return;
     }
 
-    // 2. Scan and update all referencing files
-    std::wstring root = m_drawer.GetOpenFolderPath();
-    if (!root.empty()) {
-        auto refFiles = editor::SmartImportHelper::FindReferencesToPath(root, oldPath);
-        for (const auto& refPath : refFiles) {
-            editor::OpenDocument* pOpenDoc = nullptr;
-            for (auto& grp : m_editorGroups) {
-                for (auto& doc : grp.docs) {
-                    if (doc.filePath == refPath) {
-                        pOpenDoc = &doc;
-                        break;
-                    }
-                }
-                if (pOpenDoc) break;
-            }
+    // Helper to match file paths case-insensitively and regardless of forward/backward slashes
+    auto isSamePath = [](const std::wstring& a, const std::wstring& b) {
+        if (a.empty() || b.empty()) return false;
+        std::error_code ecEquiv;
+        if (std::filesystem::equivalent(a, b, ecEquiv)) return true;
+        std::wstring na = std::filesystem::path(a).lexically_normal().wstring();
+        std::wstring nb = std::filesystem::path(b).lexically_normal().wstring();
+        return (_wcsicmp(na.c_str(), nb.c_str()) == 0);
+    };
 
-            if (pOpenDoc) {
-                std::wstring fullText = pOpenDoc->buffer.GetText();
-                if (editor::SmartImportHelper::UpdateReferencesInContent(fullText, refPath, oldPath, newPath)) {
-                    pOpenDoc->buffer.PushUndo();
-                    pOpenDoc->buffer.SetText(fullText);
-                    pOpenDoc->buffer.SaveToFile(pOpenDoc->filePath);
-                    pOpenDoc->isDirty = false;
-                    pOpenDoc->originalDiskText = fullText;
-                    SyncDocumentBuffers(pOpenDoc);
+    // 3. Update all referencing files using pre-scanned refFiles
+    for (const auto& refPath : refFiles) {
+        editor::OpenDocument* pOpenDoc = nullptr;
+        for (auto& grp : m_editorGroups) {
+            for (auto& doc : grp.docs) {
+                if (isSamePath(doc.filePath, refPath)) {
+                    pOpenDoc = &doc;
+                    break;
                 }
-            } else {
-                std::ifstream fin(refPath, std::ios::binary);
-                if (fin.is_open()) {
-                    std::string utf8((std::istreambuf_iterator<char>(fin)), std::istreambuf_iterator<char>());
-                    fin.close();
-                    std::wstring wideContent = editor::SmartImportHelper::ToWide(utf8);
-                    if (editor::SmartImportHelper::UpdateReferencesInContent(wideContent, refPath, oldPath, newPath)) {
-                        std::string updatedUtf8 = editor::SmartImportHelper::ToUtf8(wideContent);
-                        std::ofstream fout(refPath, std::ios::binary | std::ios::trunc);
-                        if (fout.is_open()) {
-                            fout.write(updatedUtf8.data(), updatedUtf8.size());
-                            fout.close();
-                        }
+            }
+            if (pOpenDoc) break;
+        }
+
+        if (pOpenDoc) {
+            std::wstring fullText = pOpenDoc->buffer.GetText();
+            if (editor::SmartImportHelper::UpdateReferencesInContent(fullText, refPath, oldPath, newPath)) {
+                pOpenDoc->buffer.PushUndo();
+                pOpenDoc->buffer.SetText(fullText);
+                pOpenDoc->buffer.SaveToFile(pOpenDoc->filePath);
+                pOpenDoc->isDirty = false;
+                pOpenDoc->originalDiskText = fullText;
+                SyncDocumentBuffers(pOpenDoc);
+            }
+        } else {
+            std::ifstream fin(refPath, std::ios::binary);
+            if (fin.is_open()) {
+                std::string utf8((std::istreambuf_iterator<char>(fin)), std::istreambuf_iterator<char>());
+                fin.close();
+                std::wstring wideContent = editor::SmartImportHelper::ToWide(utf8);
+                if (editor::SmartImportHelper::UpdateReferencesInContent(wideContent, refPath, oldPath, newPath)) {
+                    std::string updatedUtf8 = editor::SmartImportHelper::ToUtf8(wideContent);
+                    std::ofstream fout(refPath, std::ios::binary | std::ios::trunc);
+                    if (fout.is_open()) {
+                        fout.write(updatedUtf8.data(), updatedUtf8.size());
+                        fout.close();
                     }
                 }
             }
         }
     }
 
-    // 3. Update any open editor tab paths pointing to oldPath
+    // 4. Update any open editor tab paths pointing to oldPath
     for (auto& grp : m_editorGroups) {
         for (auto& doc : grp.docs) {
-            if (doc.filePath == oldPath) {
+            if (isSamePath(doc.filePath, oldPath)) {
                 doc.filePath = newPath;
                 doc.fileName = newP.filename().wstring();
             }
@@ -11508,6 +11533,15 @@ bool Window::HandlePopupMenuClick(POINT clientPt) {
                                 }
                             }
                             std::error_code ec;
+                            if (m_clipboardIsCut && std::filesystem::exists(dest, ec) && _wcsicmp(src.c_str(), dest.c_str()) != 0) {
+                                m_confirmDiscardModal.OpenNotice(
+                                    L"File Already Exists",
+                                    L"A file or folder with the name '" + dest.filename().wstring() + L"' already exists in destination.",
+                                    L"Cannot move to an existing destination."
+                                );
+                                InvalidateRect(m_hwnd, nullptr, FALSE);
+                                break;
+                            }
                             if (std::filesystem::is_directory(src)) {
                                 std::filesystem::copy(src, dest, std::filesystem::copy_options::recursive | std::filesystem::copy_options::overwrite_existing, ec);
                             } else {
@@ -13257,6 +13291,21 @@ void Window::HandleLButtonDown(POINT clientPt) {
         }
         std::wstring proposedOld, proposedNew;
         if (m_drawer.GetProposedInlineRename(proposedOld, proposedNew)) {
+            std::error_code ec;
+            std::filesystem::path pOld(proposedOld);
+            std::filesystem::path pNew(proposedNew);
+            if (std::filesystem::exists(pNew, ec) && _wcsicmp(pOld.c_str(), pNew.c_str()) != 0) {
+                std::wstring dupName = pNew.filename().wstring();
+                m_drawer.CancelInlineRename();
+                m_confirmDiscardModal.OpenNotice(
+                    L"File Already Exists",
+                    L"A file or folder with the name '" + dupName + L"' already exists.",
+                    L"Please choose a different name for the file or folder."
+                );
+                InvalidateRect(m_hwnd, nullptr, FALSE);
+                return;
+            }
+
             std::wstring wsRoot = m_drawer.GetOpenFolderPath();
             if (m_config.updateImportsOnRename && !wsRoot.empty()) {
                 auto refs = editor::SmartImportHelper::FindReferencesToPath(wsRoot, proposedOld);
@@ -16213,6 +16262,21 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     m_suppressNextChar = true;
                     std::wstring proposedOld, proposedNew;
                     if (m_drawer.GetProposedInlineRename(proposedOld, proposedNew)) {
+                        std::error_code ec;
+                        std::filesystem::path pOld(proposedOld);
+                        std::filesystem::path pNew(proposedNew);
+                        if (std::filesystem::exists(pNew, ec) && _wcsicmp(pOld.c_str(), pNew.c_str()) != 0) {
+                            std::wstring dupName = pNew.filename().wstring();
+                            m_drawer.CancelInlineRename();
+                            m_confirmDiscardModal.OpenNotice(
+                                L"File Already Exists",
+                                L"A file or folder with the name '" + dupName + L"' already exists.",
+                                L"Please choose a different name for the file or folder."
+                            );
+                            InvalidateRect(m_hwnd, nullptr, FALSE);
+                            return 0;
+                        }
+
                         std::wstring wsRoot = m_drawer.GetOpenFolderPath();
                         if (m_config.updateImportsOnRename && !wsRoot.empty()) {
                             auto refs = editor::SmartImportHelper::FindReferencesToPath(wsRoot, proposedOld);
