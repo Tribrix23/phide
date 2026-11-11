@@ -2570,6 +2570,8 @@ void Window::OpenSpecialView(const std::wstring& viewType, const std::wstring& t
                     m_editor.GetGraphView().StartIntroAnimation();
                 }
                 SetTimer(m_hwnd, m_animTimerId, 16, nullptr);
+            } else if (viewType == L"monitor") {
+                SetTimer(m_hwnd, m_animTimerId, 16, nullptr);
             }
             InvalidateRect(m_hwnd, nullptr, FALSE);
             return;
@@ -2601,6 +2603,8 @@ void Window::OpenSpecialView(const std::wstring& viewType, const std::wstring& t
             m_editor.GetGraphView().RefreshFromWorkspace(wsFolder);
         }
         m_editor.GetGraphView().StartIntroAnimation();
+        SetTimer(m_hwnd, m_animTimerId, 16, nullptr);
+    } else if (viewType == L"monitor") {
         SetTimer(m_hwnd, m_animTimerId, 16, nullptr);
     }
     SyncActiveTabWithDrawer();
@@ -7601,6 +7605,10 @@ bool Window::Create(HINSTANCE hInstance, int nCmdShow) {
         m_terminal.RenderBounds(pRT, m_theme, m_config, D2D1::RectF(x, y, x + w, y + h), clientH, false);
     });
 
+    m_editor.SetOnTriggerGarbageCollection([this]() {
+        RunManualGarbageCollection();
+    });
+
     // Initialize user snippets engine and adaptive learning engine
     m_snippetManager.Initialize(GetSnippetsConfigPath());
     m_intelliSense.SetSnippetManager(&m_snippetManager);
@@ -11870,6 +11878,12 @@ bool Window::HandlePopupMenuClick(POINT clientPt) {
                             L"About Phide - Web Development IDE",
                             MB_OK | MB_ICONINFORMATION);
                         break;
+                    case ui::MenuActionId::ViewMonitor:
+                        OpenSpecialView(L"monitor", L"Performance Monitor");
+                        UpdateDrawerErrorFiles();
+                        SaveSessionState();
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
+                        break;
                     case ui::MenuActionId::MoreRunDebug:
                         DoDebugActiveDocument();
                         break;
@@ -12861,6 +12875,12 @@ void Window::HandleLButtonDown(POINT clientPt) {
                         InvalidateRect(m_hwnd, nullptr, FALSE);
                         return;
                     }
+                } else if (doc.isSpecialView && doc.viewType == L"monitor") {
+                    m_drawer.SetSearchFocus(0);
+                    if (m_editor.HandleMonitorClick(clientPt, m_config)) {
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
+                        return;
+                    }
                 } else if (doc.isSpecialView && doc.viewType == L"settings") {
                     m_drawer.SetSearchFocus(0);
                     std::wstring modifiedId;
@@ -13655,6 +13675,19 @@ void Window::HandleLButtonDown(POINT clientPt) {
             DoOpenSettings();
             return;
         }
+        if (railHit == ui::RailTabId::MoreActions) {
+            D2D1_RECT_F bounds = m_rail.GetItemBounds(ui::RailTabId::MoreActions);
+            float railW = m_config.ScaleF(static_cast<float>(m_config.railWidth));
+            m_popupMenu.OpenMoreActionsMenu(
+                railW + m_config.ScaleF(4.0f),
+                bounds.top,
+                m_config,
+                clientW,
+                clientH
+            );
+            InvalidateRect(m_hwnd, nullptr, FALSE);
+            return;
+        }
 
         int clickedTab = static_cast<int>(railHit);
         if (m_config.activeRailTab == clickedTab && m_config.isDrawerOpen) {
@@ -14405,10 +14438,10 @@ void Window::HandleRButtonDown(POINT clientPt) {
             targetPath = pItem->fullPath;
         } else if (m_drawer.HasOpenFolder()) {
             isFolder = true;
-            targetPath = m_drawer.GetOpenFolderPath();
+            targetPath = L"";
         }
 
-        if (!targetPath.empty()) {
+        if (pItem != nullptr || m_drawer.HasOpenFolder()) {
             m_contextTargetPath = targetPath;
             m_contextTargetIsFolder = isFolder;
             m_selectedExplorerPath = targetPath;
@@ -17508,6 +17541,13 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     }
                 }
 
+                // Smoothly animate Monitor view waveforms (60 FPS buttery smooth)
+                auto* pMonitorDoc = GetActiveDoc();
+                if (pMonitorDoc && pMonitorDoc->isSpecialView && pMonitorDoc->viewType == L"monitor") {
+                    m_editor.IncrementMonitorPhase(0.045f);
+                    keepAnimating = true;
+                }
+
                 if (!keepAnimating && !m_isDrawerAnimating && !m_isTerminalAnimating && !m_isTermFullScreenAnimating && !m_isRightSidebarAnimating) {
                     KillTimer(m_hwnd, m_animTimerId);
                 }
@@ -18276,7 +18316,8 @@ void Window::CalculateImportCosts(editor::OpenDocument& doc) {
         // 1. import ... from "pkg" or 'pkg'
         size_t fromPos = line.find(L" from ");
         if (fromPos != std::wstring::npos) {
-            static const std::wstring quoteChars = { L'"', L'\'' }; size_t q1 = line.find_first_of(quoteChars, fromPos + 6);
+            static const std::wstring quoteChars = { L'"', L'\'' };
+            size_t q1 = line.find_first_of(quoteChars, fromPos + 6);
             if (q1 != std::wstring::npos) {
                 wchar_t qCh = line[q1];
                 size_t q2 = line.find(qCh, q1 + 1);
@@ -18287,7 +18328,20 @@ void Window::CalculateImportCosts(editor::OpenDocument& doc) {
         } else if (line.find(L"require(") != std::wstring::npos) {
             // 2. require("pkg") or require('pkg')
             size_t reqPos = line.find(L"require(");
-            static const std::wstring quoteChars = { L'"', L'\'' }; size_t q1 = line.find_first_of(quoteChars, reqPos + 8);
+            static const std::wstring quoteChars = { L'"', L'\'' };
+            size_t q1 = line.find_first_of(quoteChars, reqPos + 8);
+            if (q1 != std::wstring::npos) {
+                wchar_t qCh = line[q1];
+                size_t q2 = line.find(qCh, q1 + 1);
+                if (q2 != std::wstring::npos) {
+                    pkgName = line.substr(q1 + 1, q2 - q1 - 1);
+                }
+            }
+        } else if (line.find(L"import ") != std::wstring::npos) {
+            // 3. Side-effect import "pkg" or './style.css'
+            size_t impPos = line.find(L"import ");
+            static const std::wstring quoteChars = { L'"', L'\'' };
+            size_t q1 = line.find_first_of(quoteChars, impPos + 7);
             if (q1 != std::wstring::npos) {
                 wchar_t qCh = line[q1];
                 size_t q2 = line.find(qCh, q1 + 1);
@@ -18297,7 +18351,88 @@ void Window::CalculateImportCosts(editor::OpenDocument& doc) {
             }
         }
 
-        if (!pkgName.empty() && !pkgName.starts_with(L".") && !pkgName.starts_with(L"/")) {
+        if (pkgName.empty()) continue;
+
+        if (pkgName.starts_with(L".") || pkgName.starts_with(L"/")) {
+            // Local file import: compute size from local project file
+            std::filesystem::path baseDir;
+            if (!doc.filePath.empty()) {
+                baseDir = std::filesystem::path(doc.filePath).parent_path();
+            } else if (!wsFolder.empty()) {
+                baseDir = std::filesystem::path(wsFolder);
+            }
+
+            std::wstring displaySize = L"0.5 KB";
+            std::wstring displayGzip = L"0.2 KB";
+
+            if (!baseDir.empty()) {
+                std::error_code ec;
+                std::filesystem::path resolved;
+
+                std::vector<std::filesystem::path> candidates = {
+                    baseDir / pkgName,
+                    baseDir / (pkgName + L".jsx"),
+                    baseDir / (pkgName + L".js"),
+                    baseDir / (pkgName + L".tsx"),
+                    baseDir / (pkgName + L".ts"),
+                    baseDir / (pkgName + L".mjs"),
+                    baseDir / (pkgName + L".cjs"),
+                    baseDir / (pkgName + L".css"),
+                    baseDir / (pkgName + L".scss"),
+                    baseDir / (pkgName + L".json"),
+                    baseDir / (pkgName + L".vue"),
+                    baseDir / (pkgName + L".svelte"),
+                    baseDir / pkgName / L"index.jsx",
+                    baseDir / pkgName / L"index.js",
+                    baseDir / pkgName / L"index.tsx",
+                    baseDir / pkgName / L"index.ts"
+                };
+
+                for (const auto& cand : candidates) {
+                    if (std::filesystem::exists(cand, ec) && std::filesystem::is_regular_file(cand, ec)) {
+                        resolved = cand;
+                        break;
+                    }
+                }
+
+                uintmax_t fileBytes = 0;
+                if (!resolved.empty()) {
+                    // Check if file is currently open in memory to get live unsaved byte count
+                    bool foundInMemory = false;
+                    for (const auto& grp : m_editorGroups) {
+                        for (const auto& d : grp.docs) {
+                            std::error_code ecEq;
+                            if (std::filesystem::equivalent(d.filePath, resolved, ecEq) ||
+                                _wcsicmp(std::filesystem::path(d.filePath).lexically_normal().c_str(),
+                                         resolved.lexically_normal().c_str()) == 0) {
+                                std::string utf8 = editor::SmartImportHelper::ToUtf8(d.buffer.GetText());
+                                fileBytes = utf8.size();
+                                foundInMemory = true;
+                                break;
+                            }
+                        }
+                        if (foundInMemory) break;
+                    }
+                    if (!foundInMemory) {
+                        fileBytes = std::filesystem::file_size(resolved, ec);
+                    }
+                }
+
+                if (fileBytes > 0) {
+                    float kb = static_cast<float>(fileBytes) / 1024.0f;
+                    float gzkb = (std::max)(0.1f, kb * 0.38f);
+                    if (kb < 0.1f) kb = 0.1f;
+                    wchar_t buf1[32], buf2[32];
+                    swprintf_s(buf1, L"%.1f KB", kb);
+                    swprintf_s(buf2, L"%.1f KB", gzkb);
+                    displaySize = buf1;
+                    displayGzip = buf2;
+                }
+            }
+
+            doc.importCostMap[i] = L"   " + displaySize + L" (gzipped: " + displayGzip + L")";
+        } else {
+            // npm / external library package
             std::wstring displaySize = L"12.4 KB";
             std::wstring displayGzip = L"4.8 KB";
 

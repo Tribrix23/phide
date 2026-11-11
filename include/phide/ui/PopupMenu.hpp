@@ -246,6 +246,7 @@ enum class MenuActionId {
     HelpAbout,
 
     // More Actions Menu Actions (Activity Rail 3-Dot Dropdown)
+    ViewMonitor,
     MoreTraceCode,
     MoreDependencyGraph,
     MoreCallHierarchy,
@@ -375,7 +376,7 @@ public:
      * @param y Top coordinate of the anchor (top of the 3-dot button).
      * @param config Application metrics.
      */
-    void OpenMoreActionsMenu(float x, float y, const app::AppConfig& config);
+    void OpenMoreActionsMenu(float x, float y, const app::AppConfig& config, float clientW = 0.0f, float clientH = 0.0f);
 
     /**
      * @brief Opens the custom explorer context menu for a file or folder (matching Images 4 & 5).

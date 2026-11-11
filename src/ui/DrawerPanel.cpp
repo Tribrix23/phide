@@ -254,19 +254,8 @@ void DrawerPanel::RebuildVisibleItems() {
     m_visibleItems.clear();
     if (!m_hasOpenFolder || m_openFolderPath.empty()) return;
 
-    // Root folder item
-    DrawerTreeItem rootItem;
-    rootItem.label = m_rootName;
-    rootItem.fullPath = m_openFolderPath;
-    rootItem.depth = 0;
-    rootItem.isFolder = true;
-    rootItem.isExpanded = (m_expandedDirs.count(m_openFolderPath) > 0);
-    rootItem.iconGlyph = GetIconForFile(m_rootName, true, rootItem.isExpanded);
-    m_visibleItems.push_back(rootItem);
-
-    if (rootItem.isExpanded) {
-        AddDirectoryChildren(m_openFolderPath, 1);
-    }
+    // Directly populate root directory contents at depth 0 (standard modern IDE / VS Code behavior)
+    AddDirectoryChildren(m_openFolderPath, 0);
 
     // PyCharm-style External Libraries section at the bottom of the project tree
     std::wstring extLibPath = L"__EXTERNAL_LIBRARIES__";
@@ -1363,7 +1352,7 @@ void DrawerPanel::RenderExplorerPane(ID2D1RenderTarget* pRT, Theme& theme, const
                                         break;
                                     }
                                 }
-                            } else if (item.depth > 0) {
+                            } else if (item.isFolder && item.fullPath.rfind(L"__EXT", 0) == std::wstring::npos) {
                                 // Folder: aggregate status of all modified files within it
                                 std::wstring folderPrefix = relItem.empty() ? L"" : (relItem + L"\\");
                                 bool hasM = false, hasU = false, hasA = false, hasD = false;

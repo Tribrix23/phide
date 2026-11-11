@@ -694,6 +694,21 @@ public:
         m_onRenderTerminalInEditor = std::move(cb);
     }
 
+    std::function<void()> m_onTriggerGarbageCollection;
+    void SetOnTriggerGarbageCollection(std::function<void()> cb) {
+        m_onTriggerGarbageCollection = std::move(cb);
+    }
+
+    void RenderMonitorView(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
+                          float canvasLeft, float canvasWidth, float topY, float clientHeight);
+    bool HandleMonitorClick(POINT pt, const app::AppConfig& config);
+    void IncrementMonitorPhase(float delta) noexcept { m_monitorAnimPhase += delta; }
+
+    D2D1_RECT_F m_rcMonitorGcBtn{};
+    float m_monitorAnimPhase = 0.0f;
+    std::wstring m_monitorGcFeedback;
+    ULONGLONG m_monitorLastGcTime = 0;
+
     void RunGarbageCollection() {
         m_foldChevrons.shrink_to_fit();
         m_visibleColorSwatches.shrink_to_fit();

@@ -10,6 +10,8 @@
 #include "phide/editor/SnippetManager.hpp"
 #include "phide/editor/SmartImportHelper.hpp"
 #include "phide/editor/OpenDocument.hpp"
+#include "phide/ui/PopupMenu.hpp"
+#include "phide/ui/ActivityRail.hpp"
 
 using namespace phide::editor;
 
@@ -220,6 +222,77 @@ int main() {
         assert(groups[0].bounds.top == 0.0f);
         assert(groups[0].bounds.bottom == 800.0f);
         std::cout << "  [PASS] Test 4: Left pane expands to full height when bottom-left collapses (LeftFullRightSplit)\n";
+    }
+
+    // TEST 5: Context menu disabled targets on empty space & More Actions 3-dots with Monitor
+    {
+        // 5a. Empty space context menu
+        phide::app::AppConfig cfg;
+        phide::ui::PopupMenu popup;
+        popup.OpenContextMenu(0.0f, 0.0f, true, L"", L"C:\\myproject", cfg, false);
+        const auto& items = popup.GetItems();
+        for (const auto& item : items) {
+            if (item.actionId == phide::ui::MenuActionId::CtxRename ||
+                item.actionId == phide::ui::MenuActionId::CtxDelete ||
+                item.actionId == phide::ui::MenuActionId::CtxCut ||
+                item.actionId == phide::ui::MenuActionId::CtxCopy ||
+                item.actionId == phide::ui::MenuActionId::CtxCopyPath ||
+                item.actionId == phide::ui::MenuActionId::CtxCopyRelativePath) {
+                assert(!item.isEnabled && "Rename, Delete, Cut, Copy must be disabled when no file/folder is targeted!");
+            }
+            if (item.actionId == phide::ui::MenuActionId::CtxNewFile ||
+                item.actionId == phide::ui::MenuActionId::CtxNewFolder ||
+                item.actionId == phide::ui::MenuActionId::CtxRevealInExplorer) {
+                assert(item.isEnabled && "New File and New Folder must remain enabled for empty space / root folder!");
+            }
+        }
+        std::cout << "  [PASS] Test 5a: Context menu disables Rename, Delete, Cut, Copy on empty space\n";
+
+        // 5b. Targeted item context menu
+        popup.OpenContextMenu(0.0f, 0.0f, false, L"C:\\myproject\\file.jsx", L"C:\\myproject", cfg, false);
+        const auto& fileItems = popup.GetItems();
+        bool foundRename = false, foundDelete = false;
+        for (const auto& item : fileItems) {
+            if (item.actionId == phide::ui::MenuActionId::CtxRename) {
+                foundRename = true;
+                assert(item.isEnabled && "Rename must be enabled when targeting a file!");
+            }
+            if (item.actionId == phide::ui::MenuActionId::CtxDelete) {
+                foundDelete = true;
+                assert(item.isEnabled && "Delete must be enabled when targeting a file!");
+            }
+        }
+        assert(foundRename && foundDelete);
+        std::cout << "  [PASS] Test 5b: Context menu enables Rename & Delete when targeting a file\n";
+
+        // 5c. ActivityRail contains MoreActions directly after Settings
+        phide::ui::ActivityRail rail;
+        const auto& railItems = rail.GetItems();
+        bool foundMoreActions = false;
+        int settingsIdx = -1, moreActionsIdx = -1;
+        for (size_t i = 0; i < railItems.size(); ++i) {
+            if (railItems[i].id == phide::ui::RailTabId::Settings) settingsIdx = static_cast<int>(i);
+            if (railItems[i].id == phide::ui::RailTabId::MoreActions) {
+                moreActionsIdx = static_cast<int>(i);
+                foundMoreActions = true;
+            }
+        }
+        assert(foundMoreActions && "ActivityRail must contain RailTabId::MoreActions!");
+        assert(moreActionsIdx == settingsIdx + 1 && "MoreActions must be placed directly under Settings!");
+        std::cout << "  [PASS] Test 5c: ActivityRail contains 3-dots MoreActions directly under Settings\n";
+
+        // 5d. PopupMenu::OpenMoreActionsMenu contains Monitor
+        popup.OpenMoreActionsMenu(48.0f, 200.0f, cfg);
+        assert(popup.IsOpen());
+        bool foundMonitor = false;
+        for (const auto& mi : popup.GetItems()) {
+            if (mi.actionId == phide::ui::MenuActionId::ViewMonitor && mi.label == L"Monitor") {
+                foundMonitor = true;
+                break;
+            }
+        }
+        assert(foundMonitor && "OpenMoreActionsMenu must contain 'Monitor'!");
+        std::cout << "  [PASS] Test 5d: More Actions side dropdown menu contains 'Monitor'\n";
     }
 
     std::cout << "\n======================================================\n";

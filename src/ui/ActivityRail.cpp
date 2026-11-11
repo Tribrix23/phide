@@ -27,10 +27,13 @@ ActivityRail::ActivityRail() {
     // 6. Settings icon directly under API (matching user's request)
     m_items.push_back({ RailTabId::Settings,    L"Settings (Ctrl+,)",          {} });
 
-    // 6. Notebook icon (directly above Packages)
+    // 7. More Actions (3 dots) directly under Settings with divider line
+    m_items.push_back({ RailTabId::MoreActions, L"More Actions",               {} });
+
+    // 8. Notebook icon (directly above Packages)
     m_items.push_back({ RailTabId::Notebook, L"Interactive Notebook (Ctrl+Shift+J)", {} });
 
-    // 7. Packages icon (bottom of Activity Rail, matching user's request)
+    // 9. Packages icon (bottom of Activity Rail, matching user's request)
     m_items.push_back({ RailTabId::Packages, L"Packages",                      {} });
 }
 
@@ -294,6 +297,9 @@ void ActivityRail::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
                 break;
             case RailTabId::Settings:
                 m_lucide.DrawSettings(pRT, item.bounds, iconBrush, 1.6f);
+                break;
+            case RailTabId::MoreActions:
+                m_lucide.DrawMoreHorizontal(pRT, item.bounds, iconBrush);
                 break;
             default:
                 break;

@@ -288,6 +288,16 @@ public:
     void DrawMoreHorizontal(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, ID2D1Brush* pBrush) const;
 
     /**
+     * @brief Draws the 3-layer blue waveform Monitor app icon matching user image reference.
+     */
+    void DrawMonitorAppIcon(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds) const;
+
+    /**
+     * @brief Draws the vector Monitor glyph with internal waveform.
+     */
+    void DrawMonitor(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, ID2D1Brush* pBrush, float strokeWidth = 1.3f) const;
+
+    /**
      * @brief Draws the vector File Network icon matching user reference (central hub node with 5 radiating satellite nodes).
      */
     void DrawFileNetwork(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, ID2D1Brush* pBrush, float strokeWidth = 1.7f) const;

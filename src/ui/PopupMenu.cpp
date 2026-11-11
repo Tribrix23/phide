@@ -5,6 +5,7 @@
 
 #include "phide/ui/PopupMenu.hpp"
 #include <algorithm>
+#include <filesystem>
 
 namespace phide::ui {
 
@@ -347,20 +348,25 @@ void PopupMenu::OpenHelpMenu(float x, float y, const app::AppConfig& config) {
     LayoutMenu(m_items, x, y, helpMenuW, config, m_mainMenuBounds);
 }
 
-void PopupMenu::OpenMoreActionsMenu(float x, float y, const app::AppConfig& config) {
+void PopupMenu::OpenMoreActionsMenu(float x, float y, const app::AppConfig& config, float clientW, float clientH) {
     m_isOpen = true;
     m_hoveredMainIdx = -1;
     m_activeSubmenuIdx = -1;
     m_hoveredSubmenuIdx = -1;
 
     m_items.clear();
-    // More Actions Menu: Dependency Graph, Code Hierarchy, Code Metrics (Trace Code, Run & Debug and separation lines removed per user request)
+    // 1. Monitor (User explicit requirement: "one of the entry there is monitor")
+    m_items.push_back({ MenuActionId::ViewMonitor,         L"Monitor",          L"",            false, false, false, true, {}, {} });
+
+    // --- Separator ---
+    m_items.push_back({ MenuActionId::None,                L"",                 L"",            true,  false, false, false, {}, {} });
+
     m_items.push_back({ MenuActionId::MoreDependencyGraph, L"Dependency Graph", L"",            false, false, false, true, {}, {} });
     m_items.push_back({ MenuActionId::MoreCodeHierarchy,   L"Code Hierarchy",   L"Shift+Alt+H", false, false, false, true, {}, {} });
     m_items.push_back({ MenuActionId::MoreCodeMetrics,     L"Code Metrics",     L"",            false, false, false, true, {}, {} });
 
-    const float moreMenuW = CalculateOptimalMenuWidth(m_items, config, config.ScaleF(190.0f));
-    LayoutMenu(m_items, x, y, moreMenuW, config, m_mainMenuBounds);
+    const float moreMenuW = CalculateOptimalMenuWidth(m_items, config, config.ScaleF(200.0f));
+    LayoutMenu(m_items, x, y, moreMenuW, config, m_mainMenuBounds, clientW, clientH);
 }
 
 void PopupMenu::BuildEditMenuItems(bool canUndo, bool canRedo, bool hasSelection) {
@@ -718,6 +724,14 @@ void PopupMenu::BuildContextMenuItems(bool isFolder, const std::wstring& targetP
                                       bool canUndo, bool canRedo) {
     m_items.clear();
 
+    bool hasTarget = !targetPath.empty();
+    if (hasTarget && !rootFolder.empty()) {
+        std::error_code ec;
+        if (std::filesystem::equivalent(targetPath, rootFolder, ec) || _wcsicmp(targetPath.c_str(), rootFolder.c_str()) == 0) {
+            hasTarget = false;
+        }
+    }
+
     // 0. Undo and Redo actions (Image 1: Explorer Undo/Redo)
     m_items.push_back({ MenuActionId::CtxUndo, L"Undo", L"Ctrl+Z", false, false, false, canUndo, {}, {} });
     m_items.push_back({ MenuActionId::CtxRedo, L"Redo", L"Ctrl+Y", false, false, false, canRedo, {}, {} });
@@ -746,9 +760,9 @@ void PopupMenu::BuildContextMenuItems(bool isFolder, const std::wstring& targetP
         m_items.push_back({ MenuActionId::None,                 L"",                             L"",                       true,  false, false, false, {}, {} });
 
         // 6. Cut (Ctrl+X)
-        m_items.push_back({ MenuActionId::CtxCut,               L"Cut",                          L"Ctrl+X",                 false, false, false, true, {}, {} });
+        m_items.push_back({ MenuActionId::CtxCut,               L"Cut",                          L"Ctrl+X",                 false, false, false, hasTarget, {}, {} });
         // 7. Copy (Ctrl+C)
-        m_items.push_back({ MenuActionId::CtxCopy,              L"Copy",                         L"Ctrl+C",                 false, false, false, true, {}, {} });
+        m_items.push_back({ MenuActionId::CtxCopy,              L"Copy",                         L"Ctrl+C",                 false, false, false, hasTarget, {}, {} });
         // 8. Paste (Ctrl+V)
         m_items.push_back({ MenuActionId::CtxPaste,             L"Paste",                        L"Ctrl+V",                 false, false, false, canPaste, {}, {} });
 
@@ -756,17 +770,17 @@ void PopupMenu::BuildContextMenuItems(bool isFolder, const std::wstring& targetP
         m_items.push_back({ MenuActionId::None,                 L"",                             L"",                       true,  false, false, false, {}, {} });
 
         // 9. Copy Path (Shift+Alt+C)
-        m_items.push_back({ MenuActionId::CtxCopyPath,          L"Copy Path",                    L"Shift+Alt+C",            false, false, false, true, {}, {} });
+        m_items.push_back({ MenuActionId::CtxCopyPath,          L"Copy Path",                    L"Shift+Alt+C",            false, false, false, hasTarget, {}, {} });
         // 10. Copy Relative Path (Ctrl+K Ctrl+Shift+C)
-        m_items.push_back({ MenuActionId::CtxCopyRelativePath,  L"Copy Relative Path",           L"Ctrl+K Ctrl+Shift+C",    false, false, false, true, {}, {} });
+        m_items.push_back({ MenuActionId::CtxCopyRelativePath,  L"Copy Relative Path",           L"Ctrl+K Ctrl+Shift+C",    false, false, false, hasTarget, {}, {} });
 
         // --- Separator ---
         m_items.push_back({ MenuActionId::None,                 L"",                             L"",                       true,  false, false, false, {}, {} });
 
         // 11. Rename... (F2)
-        m_items.push_back({ MenuActionId::CtxRename,            L"Rename...",                    L"F2",                     false, false, false, true, {}, {} });
+        m_items.push_back({ MenuActionId::CtxRename,            L"Rename...",                    L"F2",                     false, false, false, hasTarget, {}, {} });
         // 12. Delete (Delete)
-        m_items.push_back({ MenuActionId::CtxDelete,            L"Delete",                       L"Delete",                 false, false, false, true, {}, {} });
+        m_items.push_back({ MenuActionId::CtxDelete,            L"Delete",                       L"Delete",                 false, false, false, hasTarget, {}, {} });
     } else {
         // --- File Context Menu (Matching Image 4) ---
         // 1. Open to the Side
@@ -792,25 +806,25 @@ void PopupMenu::BuildContextMenuItems(bool isFolder, const std::wstring& targetP
         m_items.push_back({ MenuActionId::None,                 L"",                             L"",                       true,  false, false, false, {}, {} });
 
         // 8. Cut (Ctrl+X)
-        m_items.push_back({ MenuActionId::CtxCut,               L"Cut",                          L"Ctrl+X",                 false, false, false, true, {}, {} });
+        m_items.push_back({ MenuActionId::CtxCut,               L"Cut",                          L"Ctrl+X",                 false, false, false, hasTarget, {}, {} });
         // 9. Copy (Ctrl+C)
-        m_items.push_back({ MenuActionId::CtxCopy,              L"Copy",                         L"Ctrl+C",                 false, false, false, true, {}, {} });
+        m_items.push_back({ MenuActionId::CtxCopy,              L"Copy",                         L"Ctrl+C",                 false, false, false, hasTarget, {}, {} });
 
         // --- Separator ---
         m_items.push_back({ MenuActionId::None,                 L"",                             L"",                       true,  false, false, false, {}, {} });
 
         // 10. Copy Path (Shift+Alt+C)
-        m_items.push_back({ MenuActionId::CtxCopyPath,          L"Copy Path",                    L"Shift+Alt+C",            false, false, false, true, {}, {} });
+        m_items.push_back({ MenuActionId::CtxCopyPath,          L"Copy Path",                    L"Shift+Alt+C",            false, false, false, hasTarget, {}, {} });
         // 11. Copy Relative Path (Ctrl+K Ctrl+Shift+C)
-        m_items.push_back({ MenuActionId::CtxCopyRelativePath,  L"Copy Relative Path",           L"Ctrl+K Ctrl+Shift+C",    false, false, false, true, {}, {} });
+        m_items.push_back({ MenuActionId::CtxCopyRelativePath,  L"Copy Relative Path",           L"Ctrl+K Ctrl+Shift+C",    false, false, false, hasTarget, {}, {} });
 
         // --- Separator ---
         m_items.push_back({ MenuActionId::None,                 L"",                             L"",                       true,  false, false, false, {}, {} });
 
         // 12. Rename... (F2)
-        m_items.push_back({ MenuActionId::CtxRename,            L"Rename...",                    L"F2",                     false, false, false, true, {}, {} });
+        m_items.push_back({ MenuActionId::CtxRename,            L"Rename...",                    L"F2",                     false, false, false, hasTarget, {}, {} });
         // 13. Delete (Delete)
-        m_items.push_back({ MenuActionId::CtxDelete,            L"Delete",                       L"Delete",                 false, false, false, true, {}, {} });
+        m_items.push_back({ MenuActionId::CtxDelete,            L"Delete",                       L"Delete",                 false, false, false, hasTarget, {}, {} });
     }
 }
 

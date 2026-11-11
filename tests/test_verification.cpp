@@ -12659,9 +12659,15 @@ run_test_85:
             assert(popup85.IsOpen());
             const auto& menuItems = popup85.GetItems();
             assert(!menuItems.empty());
-            assert(menuItems[0].label == L"Trace Code");
-            assert(menuItems[1].label == L"Dependency Graph");
-            std::cout << "  Passed: PopupMenu OpenMoreActionsMenu contains 'Trace Code' and 'Dependency Graph'" << std::endl;
+            bool hasMonitor = false;
+            bool hasDependencyGraph = false;
+            for (const auto& mi : menuItems) {
+                if (mi.label == L"Monitor") hasMonitor = true;
+                if (mi.label == L"Dependency Graph") hasDependencyGraph = true;
+            }
+            assert(hasMonitor);
+            assert(hasDependencyGraph);
+            std::cout << "  Passed: PopupMenu OpenMoreActionsMenu contains 'Monitor' and 'Dependency Graph'" << std::endl;
 
             pRTRail->BeginDraw();
             pRTRail->Clear(theme85.colors.windowBg);

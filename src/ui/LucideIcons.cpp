@@ -1620,6 +1620,149 @@ void LucideIcons::DrawMoreHorizontal(ID2D1RenderTarget* pRT, const D2D1_RECT_F& 
     pRT->FillEllipse(D2D1::Ellipse(D2D1::Point2F(cx + spacing, cy), r, r), pBrush);
 }
 
+void LucideIcons::DrawMonitorAppIcon(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds) const {
+    if (!pRT) return;
+
+    const float bw = bounds.right - bounds.left;
+    const float bh = bounds.bottom - bounds.top;
+    if (bw <= 0.0f || bh <= 0.0f) return;
+
+    const float pad = (std::min)(bw, bh) * 0.06f;
+    D2D1_RECT_F rc = D2D1::RectF(bounds.left + pad, bounds.top + pad, bounds.right - pad, bounds.bottom - pad);
+    const float w = rc.right - rc.left;
+    const float h = rc.bottom - rc.top;
+    const float cornerRadius = h * 0.22f;
+
+    ComPtr<ID2D1Factory> pFactory;
+    pRT->GetFactory(&pFactory);
+    if (!pFactory) return;
+
+    // Base layer: Deep rich navy blue background
+    ComPtr<ID2D1SolidColorBrush> brushDarkBlue;
+    pRT->CreateSolidColorBrush(D2D1::ColorF(0.047f, 0.368f, 0.749f, 1.0f), &brushDarkBlue); // #0C5EBF
+
+    D2D1_ROUNDED_RECT rrc = D2D1::RoundedRect(rc, cornerRadius, cornerRadius);
+    pRT->FillRoundedRectangle(rrc, brushDarkBlue.Get());
+
+    // Layer 2: Middle electric blue waveform (#008CEE)
+    ComPtr<ID2D1SolidColorBrush> brushMidBlue;
+    pRT->CreateSolidColorBrush(D2D1::ColorF(0.0f, 0.549f, 0.933f, 1.0f), &brushMidBlue);
+
+    // Layer 3: Lower cyan/sky blue waveform (#89CEFA)
+    ComPtr<ID2D1SolidColorBrush> brushLightBlue;
+    pRT->CreateSolidColorBrush(D2D1::ColorF(0.537f, 0.808f, 0.980f, 1.0f), &brushLightBlue);
+
+    ComPtr<ID2D1PathGeometry> pMidWaveGeo;
+    if (SUCCEEDED(pFactory->CreatePathGeometry(&pMidWaveGeo))) {
+        ComPtr<ID2D1GeometrySink> sink;
+        if (SUCCEEDED(pMidWaveGeo->Open(&sink))) {
+            sink->BeginFigure(D2D1::Point2F(rc.left, rc.top + h * 0.52f), D2D1_FIGURE_BEGIN_FILLED);
+            sink->AddBezier(D2D1::BezierSegment(
+                D2D1::Point2F(rc.left + w * 0.12f, rc.top + h * 0.52f),
+                D2D1::Point2F(rc.left + w * 0.18f, rc.top + h * 0.25f),
+                D2D1::Point2F(rc.left + w * 0.30f, rc.top + h * 0.25f)
+            ));
+            sink->AddBezier(D2D1::BezierSegment(
+                D2D1::Point2F(rc.left + w * 0.38f, rc.top + h * 0.25f),
+                D2D1::Point2F(rc.left + w * 0.42f, rc.top + h * 0.50f),
+                D2D1::Point2F(rc.left + w * 0.50f, rc.top + h * 0.50f)
+            ));
+            sink->AddBezier(D2D1::BezierSegment(
+                D2D1::Point2F(rc.left + w * 0.58f, rc.top + h * 0.50f),
+                D2D1::Point2F(rc.left + w * 0.62f, rc.top + h * 0.25f),
+                D2D1::Point2F(rc.left + w * 0.74f, rc.top + h * 0.25f)
+            ));
+            sink->AddBezier(D2D1::BezierSegment(
+                D2D1::Point2F(rc.left + w * 0.82f, rc.top + h * 0.25f),
+                D2D1::Point2F(rc.left + w * 0.88f, rc.top + h * 0.46f),
+                D2D1::Point2F(rc.right, rc.top + h * 0.46f)
+            ));
+            sink->AddLine(D2D1::Point2F(rc.right, rc.bottom));
+            sink->AddLine(D2D1::Point2F(rc.left, rc.bottom));
+            sink->EndFigure(D2D1_FIGURE_END_CLOSED);
+            sink->Close();
+        }
+    }
+
+    ComPtr<ID2D1PathGeometry> pLowWaveGeo;
+    if (SUCCEEDED(pFactory->CreatePathGeometry(&pLowWaveGeo))) {
+        ComPtr<ID2D1GeometrySink> sink;
+        if (SUCCEEDED(pLowWaveGeo->Open(&sink))) {
+            sink->BeginFigure(D2D1::Point2F(rc.left, rc.top + h * 0.68f), D2D1_FIGURE_BEGIN_FILLED);
+            sink->AddBezier(D2D1::BezierSegment(
+                D2D1::Point2F(rc.left + w * 0.16f, rc.top + h * 0.68f),
+                D2D1::Point2F(rc.left + w * 0.22f, rc.top + h * 0.42f),
+                D2D1::Point2F(rc.left + w * 0.32f, rc.top + h * 0.42f)
+            ));
+            sink->AddBezier(D2D1::BezierSegment(
+                D2D1::Point2F(rc.left + w * 0.40f, rc.top + h * 0.42f),
+                D2D1::Point2F(rc.left + w * 0.44f, rc.top + h * 0.68f),
+                D2D1::Point2F(rc.left + w * 0.52f, rc.top + h * 0.68f)
+            ));
+            sink->AddBezier(D2D1::BezierSegment(
+                D2D1::Point2F(rc.left + w * 0.60f, rc.top + h * 0.68f),
+                D2D1::Point2F(rc.left + w * 0.64f, rc.top + h * 0.42f),
+                D2D1::Point2F(rc.left + w * 0.74f, rc.top + h * 0.42f)
+            ));
+            sink->AddBezier(D2D1::BezierSegment(
+                D2D1::Point2F(rc.left + w * 0.82f, rc.top + h * 0.42f),
+                D2D1::Point2F(rc.left + w * 0.88f, rc.top + h * 0.64f),
+                D2D1::Point2F(rc.right, rc.top + h * 0.64f)
+            ));
+            sink->AddLine(D2D1::Point2F(rc.right, rc.bottom));
+            sink->AddLine(D2D1::Point2F(rc.left, rc.bottom));
+            sink->EndFigure(D2D1_FIGURE_END_CLOSED);
+            sink->Close();
+        }
+    }
+
+    ComPtr<ID2D1RoundedRectangleGeometry> pClipGeo;
+    if (SUCCEEDED(pFactory->CreateRoundedRectangleGeometry(rrc, &pClipGeo))) {
+        ComPtr<ID2D1Layer> pLayer;
+        if (SUCCEEDED(pRT->CreateLayer(&pLayer))) {
+            pRT->PushLayer(D2D1::LayerParameters(rc, pClipGeo.Get()), pLayer.Get());
+            if (pMidWaveGeo) pRT->FillGeometry(pMidWaveGeo.Get(), brushMidBlue.Get());
+            if (pLowWaveGeo) pRT->FillGeometry(pLowWaveGeo.Get(), brushLightBlue.Get());
+            pRT->PopLayer();
+        }
+    }
+}
+
+void LucideIcons::DrawMonitor(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, ID2D1Brush* pBrush, float strokeWidth) const {
+    if (!pRT || !pBrush) return;
+    const float bw = bounds.right - bounds.left;
+    const float bh = bounds.bottom - bounds.top;
+    const float minDim = (std::min)(bw, bh);
+    const float iconSize = (minDim > 28.0f) ? (minDim * 0.50f) : (minDim * 0.88f);
+    const float s = iconSize / 24.0f;
+    const float cx = (bounds.left + bounds.right) * 0.5f;
+    const float cy = (bounds.top + bounds.bottom) * 0.5f;
+
+    D2D1_RECT_F rc = D2D1::RectF(cx - 10.0f * s, cy - 8.0f * s, cx + 10.0f * s, cy + 8.0f * s);
+    pRT->DrawRoundedRectangle(D2D1::RoundedRect(rc, 2.5f * s, 2.5f * s), pBrush, strokeWidth);
+
+    ComPtr<ID2D1Factory> pFactory;
+    pRT->GetFactory(&pFactory);
+    if (!pFactory) return;
+
+    ComPtr<ID2D1PathGeometry> pWave;
+    if (SUCCEEDED(pFactory->CreatePathGeometry(&pWave))) {
+        ComPtr<ID2D1GeometrySink> sink;
+        if (SUCCEEDED(pWave->Open(&sink))) {
+            sink->BeginFigure(D2D1::Point2F(rc.left + 2.0f * s, cy + 1.0f * s), D2D1_FIGURE_BEGIN_HOLLOW);
+            sink->AddLine(D2D1::Point2F(cx - 4.5f * s, cy + 1.0f * s));
+            sink->AddLine(D2D1::Point2F(cx - 2.5f * s, cy - 3.5f * s));
+            sink->AddLine(D2D1::Point2F(cx - 0.5f * s, cy + 3.0f * s));
+            sink->AddLine(D2D1::Point2F(cx + 2.5f * s, cy - 3.5f * s));
+            sink->AddLine(D2D1::Point2F(cx + 4.5f * s, cy + 1.0f * s));
+            sink->AddLine(D2D1::Point2F(rc.right - 2.0f * s, cy + 1.0f * s));
+            sink->EndFigure(D2D1_FIGURE_END_OPEN);
+            sink->Close();
+            pRT->DrawGeometry(pWave.Get(), pBrush, strokeWidth);
+        }
+    }
+}
+
 void LucideIcons::DrawFileNetwork(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, ID2D1Brush* pBrush, float strokeWidth) const {
     if (!pRT || !pBrush) return;
     const float bw = bounds.right - bounds.left;
