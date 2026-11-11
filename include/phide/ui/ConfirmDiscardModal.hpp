@@ -25,7 +25,9 @@ enum class ConfirmModalType {
     RestoreFile,
     Notice,
     DeleteFile,
-    DeleteFolder
+    DeleteFolder,
+    UpdateImportsOnRename,
+    UpdateImportsOnMove
 };
 
 /**
@@ -89,6 +91,7 @@ public:
         m_type = isFolder ? ConfirmModalType::DeleteFolder : ConfirmModalType::DeleteFile;
         m_filePath = targetPath;
         m_fileName = std::filesystem::path(targetPath).filename().wstring();
+        m_newPath.clear();
         m_status.clear();
         m_changeCount = 0;
         m_title.clear();
@@ -101,6 +104,29 @@ public:
         m_isCancelHovered = false;
         m_isCloseHovered = false;
     }
+
+    /**
+     * @brief Opens the reference update confirmation dialog when renaming or moving a referenced file.
+     */
+    void OpenUpdateImports(const std::wstring& oldPath, const std::wstring& newPath, size_t refCount, bool isMove) {
+        m_type = isMove ? ConfirmModalType::UpdateImportsOnMove : ConfirmModalType::UpdateImportsOnRename;
+        m_filePath = oldPath;
+        m_newPath = newPath;
+        m_fileName = std::filesystem::path(oldPath).filename().wstring();
+        m_status.clear();
+        m_changeCount = refCount;
+        m_title.clear();
+        m_message.clear();
+        m_subtext.clear();
+        m_isOpen = true;
+        m_isLoading = false;
+        m_spinnerAngle = 0.0f;
+        m_isConfirmHovered = false;
+        m_isCancelHovered = false;
+        m_isCloseHovered = false;
+    }
+
+    [[nodiscard]] const std::wstring& GetNewFilePath() const noexcept { return m_newPath; }
 
     /**
      * @brief Closes the confirmation dialog.
@@ -172,6 +198,7 @@ private:
     float m_spinnerAngle = 0.0f;
     ConfirmModalType m_type = ConfirmModalType::DiscardFile;
     std::wstring m_filePath;
+    std::wstring m_newPath;
     std::wstring m_fileName;
     std::wstring m_status; // "D", "M", "U", "A", or "ALL"
     size_t m_changeCount = 1;

@@ -2359,6 +2359,113 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidateReactAndESLint(const Buffe
         L"useTransition", L"useSyncExternalStore", L"useInsertionEffect"
     };
 
+    std::unordered_set<std::wstring> importedSymbols;
+    std::unordered_set<std::wstring> definedSymbols;
+
+    for (size_t l = 0; l < lineCount; ++l) {
+        const std::wstring& rawLine = buffer.GetLine(l);
+        size_t s = 0;
+        while (s < rawLine.length() && iswspace(rawLine[s])) s++;
+        if (s >= rawLine.length()) continue;
+        std::wstring line = rawLine.substr(s);
+
+        if (line.starts_with(L"import ") || line.starts_with(L"import{")) {
+            size_t bOpen = line.find(L'{');
+            size_t bClose = (bOpen != std::wstring::npos) ? line.find(L'}', bOpen) : std::wstring::npos;
+            if (bOpen != std::wstring::npos && bClose != std::wstring::npos) {
+                std::wstring inside = line.substr(bOpen + 1, bClose - bOpen - 1);
+                size_t p = 0;
+                while (p < inside.length()) {
+                    while (p < inside.length() && (inside[p] == L' ' || inside[p] == L'\t' || inside[p] == L',')) p++;
+                    if (p >= inside.length()) break;
+                    size_t tokenStart = p;
+                    while (p < inside.length() && (iswalnum(inside[p]) || inside[p] == L'_' || inside[p] == L'$')) p++;
+                    std::wstring sym = inside.substr(tokenStart, p - tokenStart);
+                    while (p < inside.length() && (inside[p] == L' ' || inside[p] == L'\t')) p++;
+                    if (p + 3 <= inside.length() && inside.substr(p, 3) == L"as ") {
+                        p += 3;
+                        while (p < inside.length() && (inside[p] == L' ' || inside[p] == L'\t')) p++;
+                        size_t aliasStart = p;
+                        while (p < inside.length() && (iswalnum(inside[p]) || inside[p] == L'_' || inside[p] == L'$')) p++;
+                        sym = inside.substr(aliasStart, p - aliasStart);
+                    }
+                    if (!sym.empty()) {
+                        importedSymbols.insert(sym);
+                    }
+                }
+
+                size_t impEnd = 7;
+                if (bOpen > impEnd) {
+                    std::wstring prefixPart = line.substr(impEnd, bOpen - impEnd);
+                    size_t comma = prefixPart.find(L',');
+                    if (comma != std::wstring::npos) {
+                        std::wstring defSym = prefixPart.substr(0, comma);
+                        while (!defSym.empty() && iswspace(defSym.front())) defSym.erase(defSym.begin());
+                        while (!defSym.empty() && iswspace(defSym.back())) defSym.pop_back();
+                        if (!defSym.empty()) importedSymbols.insert(defSym);
+                    }
+                }
+            } else {
+                size_t fromPos = line.find(L"from");
+                if (fromPos != std::wstring::npos && fromPos > 7) {
+                    std::wstring middle = line.substr(7, fromPos - 7);
+                    size_t asPos = middle.find(L"* as ");
+                    if (asPos != std::wstring::npos) {
+                        std::wstring starSym = middle.substr(asPos + 5);
+                        while (!starSym.empty() && iswspace(starSym.front())) starSym.erase(starSym.begin());
+                        while (!starSym.empty() && iswspace(starSym.back())) starSym.pop_back();
+                        if (!starSym.empty()) importedSymbols.insert(starSym);
+                    } else {
+                        while (!middle.empty() && iswspace(middle.front())) middle.erase(middle.begin());
+                        while (!middle.empty() && iswspace(middle.back())) middle.pop_back();
+                        if (!middle.empty()) importedSymbols.insert(middle);
+                    }
+                }
+            }
+        } else if (line.find(L"require(") != std::wstring::npos) {
+            size_t bOpen = line.find(L'{');
+            size_t bClose = (bOpen != std::wstring::npos) ? line.find(L'}', bOpen) : std::wstring::npos;
+            if (bOpen != std::wstring::npos && bClose != std::wstring::npos && bClose < line.find(L"require(")) {
+                std::wstring inside = line.substr(bOpen + 1, bClose - bOpen - 1);
+                size_t p = 0;
+                while (p < inside.length()) {
+                    while (p < inside.length() && (inside[p] == L' ' || inside[p] == L'\t' || inside[p] == L',')) p++;
+                    if (p >= inside.length()) break;
+                    size_t tokenStart = p;
+                    while (p < inside.length() && (iswalnum(inside[p]) || inside[p] == L'_' || inside[p] == L'$')) p++;
+                    std::wstring sym = inside.substr(tokenStart, p - tokenStart);
+                    if (!sym.empty()) importedSymbols.insert(sym);
+                }
+            } else if (line.starts_with(L"const ") || line.starts_with(L"let ") || line.starts_with(L"var ")) {
+                size_t eqPos = line.find(L'=');
+                if (eqPos != std::wstring::npos && eqPos < line.find(L"require(")) {
+                    size_t vStart = (line.starts_with(L"const ") ? 6 : 4);
+                    std::wstring vName = line.substr(vStart, eqPos - vStart);
+                    while (!vName.empty() && iswspace(vName.front())) vName.erase(vName.begin());
+                    while (!vName.empty() && iswspace(vName.back())) vName.pop_back();
+                    if (!vName.empty()) importedSymbols.insert(vName);
+                }
+            }
+        }
+
+        auto extractDecl = [&](const std::wstring& kw) {
+            size_t kp = line.find(kw);
+            if (kp != std::wstring::npos) {
+                size_t p = kp + kw.length();
+                while (p < line.length() && iswspace(line[p])) p++;
+                size_t nameStart = p;
+                while (p < line.length() && (iswalnum(line[p]) || line[p] == L'_' || line[p] == L'$')) p++;
+                if (p > nameStart) {
+                    definedSymbols.insert(line.substr(nameStart, p - nameStart));
+                }
+            }
+        };
+        extractDecl(L"const ");
+        extractDecl(L"let ");
+        extractDecl(L"var ");
+        extractDecl(L"function ");
+    }
+
     int conditionDepth = 0;
     int loopDepth = 0;
     std::vector<int> controlStack; // 1 = condition (if/else/switch), 2 = loop (for/while)
@@ -2666,6 +2773,32 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidateReactAndESLint(const Buffe
                 bool validAfter = (afterIdx >= code.length() || (!iswalnum(code[afterIdx]) && code[afterIdx] != L'_' && code[afterIdx] != L'$'));
 
                 if (validBefore && validAfter) {
+                    bool precededByDot = (pos > 0 && code[pos - 1] == L'.');
+                    if (!precededByDot) {
+                        // Bare hook call e.g. useEffect(...) -> verify it is imported!
+                        if (importedSymbols.find(hook) == importedSymbols.end() &&
+                            definedSymbols.find(hook) == definedSymbols.end()) {
+                            lsp::Diagnostic diag;
+                            diag.line = l;
+                            diag.col = pos;
+                            diag.length = hook.length();
+                            diag.message = L"Cannot find name '" + hook + L"'. Did you mean to import it from 'react'?";
+                            diag.severity = 1; // 1 = Error
+                            diagnostics.push_back(std::move(diag));
+                        }
+                    } else if (pos >= 6 && code.substr(pos - 6, 6) == L"React.") {
+                        if (importedSymbols.find(L"React") == importedSymbols.end() &&
+                            definedSymbols.find(L"React") == definedSymbols.end()) {
+                            lsp::Diagnostic diag;
+                            diag.line = l;
+                            diag.col = pos - 6;
+                            diag.length = 5;
+                            diag.message = L"Cannot find name 'React'. Did you mean to import it from 'react'?";
+                            diag.severity = 1; // Error
+                            diagnostics.push_back(std::move(diag));
+                        }
+                    }
+
                     if (conditionDepth > 0 || loopDepth > 0) {
                         lsp::Diagnostic diag;
                         diag.line = l;

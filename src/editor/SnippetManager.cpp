@@ -1549,7 +1549,7 @@ void SnippetManager::LoadDefaults() {
             L"    return () => {",
             L"        $1",
             L"    };",
-            L"}, [${2}]);"
+            L"}, []);"
         },
         L"React useEffect hook",
         L"tsx,jsx,ts,js"
@@ -2329,6 +2329,20 @@ bool SnippetManager::ExpandSnippet(const Snippet& snippet, Buffer& buffer, size_
                             foundPlaceholder1 = true;
                         }
                         clean += defVal;
+                        c = close;
+                        continue;
+                    } else if (close != std::wstring::npos) {
+                        // ${1}, ${2}, etc. without default value
+                        std::wstring innerNum = raw.substr(c + 2, close - (c + 2));
+                        if (innerNum == L"1" && !foundPlaceholder1 && !foundPlaceholder0) {
+                            targetCursorLineOffset = static_cast<int>(lIdx);
+                            targetCursorCol = static_cast<int>(clean.length());
+                            foundPlaceholder1 = true;
+                        } else if (innerNum == L"0") {
+                            targetCursorLineOffset = static_cast<int>(lIdx);
+                            targetCursorCol = static_cast<int>(clean.length());
+                            foundPlaceholder0 = true;
+                        }
                         c = close;
                         continue;
                     }

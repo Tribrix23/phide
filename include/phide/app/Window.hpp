@@ -687,6 +687,8 @@ private:
     [[nodiscard]] int HitTestEditorSplitter(POINT pt) const noexcept;
     void TransitionLayoutOnGroupRemoved(int removedGroupIdx) noexcept;
     void CollapseEmptyEditorGroups() noexcept;
+    void EnsureAutoImportAndUseClient(editor::OpenDocument* pDoc, const std::wstring& symbolOrHook, const std::wstring& moduleSpec = L"react");
+    void ExecuteRenameAndUpdateImports(const std::wstring& oldPath, const std::wstring& newPath, bool isMove);
 
     bool m_trackingMouse = false;
     bool m_wordWrap = false;

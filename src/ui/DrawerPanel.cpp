@@ -3798,6 +3798,22 @@ bool DrawerPanel::CommitInlineRename(std::wstring& outOldPath, std::wstring& out
     return false;
 }
 
+bool DrawerPanel::GetProposedInlineRename(std::wstring& outOldPath, std::wstring& outNewPath) const {
+    outOldPath.clear();
+    outNewPath.clear();
+    if (!m_isRenaming || m_renameOriginalPath.empty() || m_renameText.empty()) {
+        return false;
+    }
+    std::filesystem::path oldP(m_renameOriginalPath);
+    if (m_renameText == oldP.filename().wstring()) {
+        return false;
+    }
+    std::filesystem::path newP = oldP.parent_path() / m_renameText;
+    outOldPath = oldP.wstring();
+    outNewPath = newP.wstring();
+    return true;
+}
+
 /**
  * @brief Handles character typed during inline rename, filtering illegal filename characters.
  * @param ch Wide character code.

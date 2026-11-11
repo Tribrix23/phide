@@ -856,6 +856,11 @@ public:
     bool CommitInlineRename(std::wstring& outOldPath, std::wstring& outNewPath);
 
     /**
+     * @brief Inspects proposed inline rename paths without touching the filesystem.
+     */
+    bool GetProposedInlineRename(std::wstring& outOldPath, std::wstring& outNewPath) const;
+
+    /**
      * @brief Handles character typed during inline rename.
      */
     void HandleRenameChar(wchar_t ch);

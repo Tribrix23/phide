@@ -568,6 +568,7 @@ void Window::SaveSessionState() {
     out << L"  \"showStatusBar\": " << (m_config.showStatusBar ? L"true" : L"false") << L",\n";
     out << L"  \"insertSpaces\": " << (m_config.insertSpaces ? L"true" : L"false") << L",\n";
     out << L"  \"formatOnSave\": " << (m_config.formatOnSave ? L"true" : L"false") << L",\n";
+    out << L"  \"updateImportsOnRename\": " << (m_config.updateImportsOnRename ? L"true" : L"false") << L",\n";
     out << L"  \"isGraphColored\": " << (m_config.isGraphColored ? L"true" : L"false") << L",\n";
     out << L"  \"enableMarkdownPreview\": " << (m_config.enableMarkdownPreview ? L"true" : L"false") << L",\n";
     out << L"  \"enableCodeLens\": " << (m_config.enableCodeLens ? L"true" : L"false") << L",\n";
@@ -886,6 +887,8 @@ void Window::LoadSessionState() {
             m_config.insertSpaces = (line.find(L"true") != std::wstring::npos);
         } else if (line.find(L"\"formatOnSave\"") != std::wstring::npos) {
             m_config.formatOnSave = (line.find(L"true") != std::wstring::npos);
+        } else if (line.find(L"\"updateImportsOnRename\"") != std::wstring::npos) {
+            m_config.updateImportsOnRename = (line.find(L"true") != std::wstring::npos);
         } else if (line.find(L"\"isGraphColored\"") != std::wstring::npos) {
             m_config.isGraphColored = (line.find(L"true") != std::wstring::npos);
         } else if (line.find(L"\"enableMarkdownPreview\"") != std::wstring::npos) {
@@ -1296,10 +1299,275 @@ void Window::CollapseEmptyEditorGroups() noexcept {
     }
 }
 
+void Window::EnsureAutoImportAndUseClient(editor::OpenDocument* pDoc, const std::wstring& symbolOrHook, const std::wstring& moduleSpec) {
+    if (!pDoc || pDoc->isSpecialView) return;
+
+    std::wstring ext;
+    std::wstring fn = pDoc->fileName.empty() ? pDoc->filePath : pDoc->fileName;
+    size_t dotPos = fn.rfind(L'.');
+    if (dotPos != std::wstring::npos) ext = fn.substr(dotPos);
+    for (auto& c : ext) c = static_cast<wchar_t>(towlower(c));
+
+    if (ext != L".jsx" && ext != L".tsx" && ext != L".js" && ext != L".ts" && ext != L".mjs") {
+        return;
+    }
+
+    static const std::unordered_set<std::wstring> reactHooks = {
+        L"useState", L"useEffect", L"useContext", L"useReducer",
+        L"useCallback", L"useMemo", L"useRef", L"useImperativeHandle",
+        L"useLayoutEffect", L"useId", L"useDeferredValue",
+        L"useTransition", L"useSyncExternalStore", L"useInsertionEffect",
+        L"useOptimistic", L"useActionState", L"useFormState", L"useFormStatus"
+    };
+
+    if (symbolOrHook.empty()) {
+        std::wstring fullText = pDoc->buffer.GetText();
+        for (const auto& h : reactHooks) {
+            size_t p = fullText.find(h);
+            while (p != std::wstring::npos) {
+                bool leftOk = (p == 0 || (!iswalnum(fullText[p - 1]) && fullText[p - 1] != L'_' && fullText[p - 1] != L'$'));
+                size_t ep = p + h.length();
+                bool rightOk = (ep >= fullText.length() || (!iswalnum(fullText[ep]) && fullText[ep] != L'_' && fullText[ep] != L'$'));
+                if (leftOk && rightOk && (p == 0 || fullText[p - 1] != L'.')) {
+                    EnsureAutoImportAndUseClient(pDoc, h, L"react");
+                    break;
+                }
+                p = fullText.find(h, ep);
+            }
+        }
+        return;
+    }
+
+    bool isReactClientHook = (reactHooks.count(symbolOrHook) > 0) || (moduleSpec == L"react");
+    auto curCursor = pDoc->buffer.GetCursor();
+
+    // 1. Ensure "use client" directive is present at the very top of file for React client components
+    if (isReactClientHook) {
+        bool hasUseClient = false;
+        const auto& lines = pDoc->buffer.GetLines();
+        for (size_t l = 0; l < lines.size() && l < 10; ++l) {
+            const auto& ln = lines[l];
+            if (ln.find(L"\"use client\"") != std::wstring::npos || ln.find(L"'use client'") != std::wstring::npos) {
+                hasUseClient = true;
+                break;
+            }
+        }
+
+        if (!hasUseClient) {
+            pDoc->buffer.SetCursor(0, 0);
+            pDoc->buffer.InsertText(L"\"use client\";\n\n");
+            curCursor.line += 2;
+            pDoc->buffer.SetCursor(curCursor.line, curCursor.col);
+        }
+    }
+
+    // 2. Ensure symbolOrHook is imported
+    std::wstring actualMod = moduleSpec.empty() ? L"react" : moduleSpec;
+    bool alreadyImported = false;
+    size_t existingModImportLine = static_cast<size_t>(-1);
+    size_t lastImportLine = static_cast<size_t>(-1);
+
+    const auto& allLines = pDoc->buffer.GetLines();
+    for (size_t l = 0; l < allLines.size() && l < 60; ++l) {
+        const auto& ln = allLines[l];
+        if (ln.find(L"import ") != std::wstring::npos) {
+            lastImportLine = l;
+            if (ln.find(L"'" + actualMod + L"'") != std::wstring::npos ||
+                ln.find(L"\"" + actualMod + L"\"") != std::wstring::npos) {
+                existingModImportLine = l;
+                size_t sp = ln.find(symbolOrHook);
+                while (sp != std::wstring::npos) {
+                    bool leftOk = (sp == 0 || (!iswalnum(ln[sp - 1]) && ln[sp - 1] != L'_' && ln[sp - 1] != L'$'));
+                    size_t ep = sp + symbolOrHook.length();
+                    bool rightOk = (ep >= ln.length() || (!iswalnum(ln[ep]) && ln[ep] != L'_' && ln[ep] != L'$'));
+                    if (leftOk && rightOk) {
+                        alreadyImported = true;
+                        break;
+                    }
+                    sp = ln.find(symbolOrHook, ep);
+                }
+            }
+        }
+    }
+
+    if (!alreadyImported) {
+        if (existingModImportLine != static_cast<size_t>(-1)) {
+            std::wstring impLn = pDoc->buffer.GetLine(existingModImportLine);
+            size_t closeB = impLn.find(L'}');
+            if (closeB != std::wstring::npos) {
+                size_t insertAt = closeB;
+                while (insertAt > 0 && iswspace(impLn[insertAt - 1])) insertAt--;
+                std::wstring updatedLn = impLn.substr(0, insertAt) + L", " + symbolOrHook + L" " + impLn.substr(closeB);
+                pDoc->buffer.SetLine(existingModImportLine, updatedLn);
+            } else {
+                size_t fromPos = impLn.find(L"from");
+                if (fromPos != std::wstring::npos) {
+                    size_t beforeFrom = fromPos;
+                    while (beforeFrom > 0 && iswspace(impLn[beforeFrom - 1])) beforeFrom--;
+                    std::wstring updatedLn = impLn.substr(0, beforeFrom) + L", { " + symbolOrHook + L" } " + impLn.substr(fromPos);
+                    pDoc->buffer.SetLine(existingModImportLine, updatedLn);
+                }
+            }
+        } else {
+            size_t targetLine = (lastImportLine != static_cast<size_t>(-1)) ? (lastImportLine + 1) : 0;
+            const auto& curLinesNow = pDoc->buffer.GetLines();
+            if (targetLine == 0 && curLinesNow.size() > 0) {
+                for (size_t l = 0; l < curLinesNow.size() && l < 5; ++l) {
+                    if (curLinesNow[l].find(L"\"use client\"") != std::wstring::npos ||
+                        curLinesNow[l].find(L"'use client'") != std::wstring::npos) {
+                        targetLine = l + 1;
+                        if (targetLine < curLinesNow.size() && curLinesNow[targetLine].empty()) {
+                            targetLine++;
+                        }
+                        break;
+                    }
+                }
+            }
+            std::wstring newImportStmt = L"import { " + symbolOrHook + L" } from '" + actualMod + L"';\n";
+            pDoc->buffer.SetCursor(targetLine, 0);
+            pDoc->buffer.InsertText(newImportStmt);
+            curCursor.line += 1;
+            pDoc->buffer.SetCursor(curCursor.line, curCursor.col);
+        }
+        MarkDocumentModified(pDoc);
+    }
+}
+
+void Window::ExecuteRenameAndUpdateImports(const std::wstring& oldPath, const std::wstring& newPath, bool isMove) {
+    if (oldPath.empty() || newPath.empty()) {
+        m_confirmDiscardModal.Close();
+        return;
+    }
+
+    std::error_code ec;
+    std::filesystem::path oldP(oldPath);
+    std::filesystem::path newP(newPath);
+
+    // 1. Rename / move on disk
+    if (isMove) {
+        if (std::filesystem::is_directory(oldP)) {
+            std::filesystem::copy(oldP, newP, std::filesystem::copy_options::recursive | std::filesystem::copy_options::overwrite_existing, ec);
+            if (!ec) std::filesystem::remove_all(oldP, ec);
+        } else {
+            std::filesystem::rename(oldP, newP, ec);
+        }
+        if (!ec) m_explorerUndo.PushMove(oldPath, newPath);
+    } else {
+        std::filesystem::rename(oldP, newP, ec);
+        if (!ec) m_explorerUndo.PushRename(oldPath, newPath);
+    }
+
+    if (ec) {
+        m_confirmDiscardModal.Close();
+        return;
+    }
+
+    // 2. Scan and update all referencing files
+    std::wstring root = m_drawer.GetOpenFolderPath();
+    if (!root.empty()) {
+        auto refFiles = editor::SmartImportHelper::FindReferencesToPath(root, oldPath);
+        for (const auto& refPath : refFiles) {
+            editor::OpenDocument* pOpenDoc = nullptr;
+            for (auto& grp : m_editorGroups) {
+                for (auto& doc : grp.docs) {
+                    if (doc.filePath == refPath) {
+                        pOpenDoc = &doc;
+                        break;
+                    }
+                }
+                if (pOpenDoc) break;
+            }
+
+            if (pOpenDoc) {
+                std::wstring fullText = pOpenDoc->buffer.GetText();
+                if (editor::SmartImportHelper::UpdateReferencesInContent(fullText, refPath, oldPath, newPath)) {
+                    pOpenDoc->buffer.PushUndo();
+                    pOpenDoc->buffer.SetText(fullText);
+                    pOpenDoc->buffer.SaveToFile(pOpenDoc->filePath);
+                    pOpenDoc->isDirty = false;
+                    pOpenDoc->originalDiskText = fullText;
+                    SyncDocumentBuffers(pOpenDoc);
+                }
+            } else {
+                std::ifstream fin(refPath, std::ios::binary);
+                if (fin.is_open()) {
+                    std::string utf8((std::istreambuf_iterator<char>(fin)), std::istreambuf_iterator<char>());
+                    fin.close();
+                    std::wstring wideContent = editor::SmartImportHelper::ToWide(utf8);
+                    if (editor::SmartImportHelper::UpdateReferencesInContent(wideContent, refPath, oldPath, newPath)) {
+                        std::string updatedUtf8 = editor::SmartImportHelper::ToUtf8(wideContent);
+                        std::ofstream fout(refPath, std::ios::binary | std::ios::trunc);
+                        if (fout.is_open()) {
+                            fout.write(updatedUtf8.data(), updatedUtf8.size());
+                            fout.close();
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // 3. Update any open editor tab paths pointing to oldPath
+    for (auto& grp : m_editorGroups) {
+        for (auto& doc : grp.docs) {
+            if (doc.filePath == oldPath) {
+                doc.filePath = newPath;
+                doc.fileName = newP.filename().wstring();
+            }
+        }
+    }
+
+    m_confirmDiscardModal.Close();
+    m_drawer.CancelInlineRename();
+    m_drawer.RefreshTree();
+    NotifyGraphViewFilesystemChanged();
+    RunManualGarbageCollection();
+    InvalidateRect(m_hwnd, nullptr, FALSE);
+}
+
 void Window::SetEditorSplitLayout(editor::EditorSplitLayout mode) {
     int targetCount = editor::EditorSplitState::GetLayoutGroupCount(mode);
     if (m_editorGroups.empty()) {
         m_editorGroups.push_back(editor::EditorGroup{});
+    }
+
+    if (m_editorGroups.size() == 2 && mode == editor::EditorSplitLayout::LeftSplitRightFull) {
+        editor::EditorGroup newGroup;
+        if (m_editorGroups[0].docs.size() > 1) {
+            int moveIdx = static_cast<int>(m_editorGroups[0].docs.size()) - 1;
+            newGroup.docs.push_back(std::move(m_editorGroups[0].docs[moveIdx]));
+            m_editorGroups[0].docs.erase(m_editorGroups[0].docs.begin() + moveIdx);
+            if (m_editorGroups[0].activeDocIdx >= static_cast<int>(m_editorGroups[0].docs.size())) {
+                m_editorGroups[0].activeDocIdx = static_cast<int>(m_editorGroups[0].docs.size()) - 1;
+            }
+            newGroup.activeDocIdx = 0;
+        } else {
+            auto* curDoc = GetActiveDoc();
+            if (curDoc && !curDoc->isSpecialView) {
+                newGroup.docs.push_back(*curDoc);
+                newGroup.activeDocIdx = 0;
+            }
+        }
+        m_editorGroups.insert(m_editorGroups.begin() + 1, std::move(newGroup));
+    } else if (m_editorGroups.size() == 3 && mode == editor::EditorSplitLayout::Grid2x2 &&
+               m_splitState.layout == editor::EditorSplitLayout::LeftFullRightSplit) {
+        editor::EditorGroup newGroup;
+        if (m_editorGroups[0].docs.size() > 1) {
+            int moveIdx = static_cast<int>(m_editorGroups[0].docs.size()) - 1;
+            newGroup.docs.push_back(std::move(m_editorGroups[0].docs[moveIdx]));
+            m_editorGroups[0].docs.erase(m_editorGroups[0].docs.begin() + moveIdx);
+            if (m_editorGroups[0].activeDocIdx >= static_cast<int>(m_editorGroups[0].docs.size())) {
+                m_editorGroups[0].activeDocIdx = static_cast<int>(m_editorGroups[0].docs.size()) - 1;
+            }
+            newGroup.activeDocIdx = 0;
+        } else {
+            auto* curDoc = GetActiveDoc();
+            if (curDoc && !curDoc->isSpecialView) {
+                newGroup.docs.push_back(*curDoc);
+                newGroup.activeDocIdx = 0;
+            }
+        }
+        m_editorGroups.insert(m_editorGroups.begin() + 1, std::move(newGroup));
     }
 
     while (static_cast<int>(m_editorGroups.size()) < targetCount) {
@@ -2663,6 +2931,7 @@ void Window::CloseDocument(int groupIdx, int docIdx) {
         }
     }
 
+    CollapseEmptyEditorGroups();
     SyncActiveTabWithDrawer();
     UpdateDrawerDirtyFiles();
     UpdateDrawerErrorFiles();
@@ -3454,6 +3723,7 @@ void Window::CommitAutocompleteSelection() {
         const auto* pSnip = m_snippetManager.FindSnippetByPrefix(item->label, ext);
         if (pSnip) {
             m_snippetManager.ExpandSnippet(*pSnip, pDoc->buffer, prefix.length(), fn);
+            EnsureAutoImportAndUseClient(pDoc, item->label);
             MarkDocumentModified(pDoc);
             m_editor.DismissAutocomplete();
             m_editor.ClearGhostText();
@@ -3607,60 +3877,11 @@ void Window::CommitAutocompleteSelection() {
         }
     }
 
-    // Auto-import support: if the completed symbol came from an installed NPM library or workspace file
-    // (`documentation == L"auto-import:<moduleSpec>"`), ensure it is imported at the top of the file!
-    if (item->documentation.rfind(L"auto-import:", 0) == 0) {
-        std::wstring modSpec = item->documentation.substr(12);
-        std::wstring symName = item->label;
-        const auto& curLineNow = pDoc->buffer.GetLine(pDoc->buffer.GetCursor().line);
-        bool onImportLine = (curLineNow.find(L"import ") != std::wstring::npos && curLineNow.find(L"from") != std::wstring::npos);
-        if (!modSpec.empty() && !symName.empty() && !onImportLine) {
-            bool alreadyImported = false;
-            size_t existingModImportLine = std::wstring::npos;
-            size_t lastImportLine = std::wstring::npos;
-            const auto& allLines = pDoc->buffer.GetLines();
-            for (size_t l = 0; l < allLines.size() && l < 60; ++l) {
-                const auto& ln = allLines[l];
-                if (ln.find(L"import ") != std::wstring::npos) {
-                    lastImportLine = l;
-                    if (ln.find(L"'" + modSpec + L"'") != std::wstring::npos ||
-                        ln.find(L"\"" + modSpec + L"\"") != std::wstring::npos) {
-                        existingModImportLine = l;
-                        size_t sp = ln.find(symName);
-                        while (sp != std::wstring::npos) {
-                            bool leftOk = (sp == 0 || (!iswalnum(ln[sp - 1]) && ln[sp - 1] != L'_'));
-                            size_t ep = sp + symName.length();
-                            bool rightOk = (ep >= ln.length() || (!iswalnum(ln[ep]) && ln[ep] != L'_'));
-                            if (leftOk && rightOk) {
-                                alreadyImported = true;
-                                break;
-                            }
-                            sp = ln.find(symName, ep);
-                        }
-                    }
-                }
-            }
-
-            if (!alreadyImported) {
-                if (existingModImportLine != std::wstring::npos) {
-                    std::wstring impLn = pDoc->buffer.GetLine(existingModImportLine);
-                    size_t closeB = impLn.find(L'}');
-                    if (closeB != std::wstring::npos) {
-                        size_t insertAt = closeB;
-                        while (insertAt > 0 && iswspace(impLn[insertAt - 1])) insertAt--;
-                        std::wstring updatedLn = impLn.substr(0, insertAt) + L", " + symName + impLn.substr(insertAt);
-                        pDoc->buffer.SetLine(existingModImportLine, updatedLn);
-                    }
-                } else {
-                    auto curNow = pDoc->buffer.GetCursor();
-                    size_t targetLine = (lastImportLine != std::wstring::npos) ? (lastImportLine + 1) : 0;
-                    std::wstring newImportStmt = L"import { " + symName + L" } from '" + modSpec + L"';\n";
-                    pDoc->buffer.SetCursor(targetLine, 0);
-                    pDoc->buffer.InsertText(newImportStmt);
-                    pDoc->buffer.SetCursor(curNow.line + 1, curNow.col);
-                }
-            }
-        }
+    // Auto-import and "use client" support: if the completed symbol came from an installed NPM library,
+    // React hooks, or workspace file (`documentation == L"auto-import:<moduleSpec>"`), ensure it is imported!
+    if (item->documentation.rfind(L"auto-import:", 0) == 0 || item->origin == L"react" || item->label.starts_with(L"use")) {
+        std::wstring modSpec = (item->documentation.rfind(L"auto-import:", 0) == 0) ? item->documentation.substr(12) : L"react";
+        EnsureAutoImportAndUseClient(pDoc, item->label, modSpec);
     }
 
     MarkDocumentModified(pDoc);
@@ -11273,6 +11494,19 @@ bool Window::HandlePopupMenuClick(POINT clientPt) {
                             std::filesystem::path destDir = m_contextTargetIsFolder ? m_contextTargetPath
                                 : std::filesystem::path(m_contextTargetPath).parent_path().wstring();
                             std::filesystem::path dest = destDir / src.filename();
+                            if (m_clipboardIsCut) {
+                                std::wstring wsRoot = m_drawer.GetOpenFolderPath();
+                                if (m_config.updateImportsOnRename && !wsRoot.empty()) {
+                                    auto refs = editor::SmartImportHelper::FindReferencesToPath(wsRoot, src.wstring());
+                                    if (!refs.empty()) {
+                                        m_confirmDiscardModal.OpenUpdateImports(src.wstring(), dest.wstring(), refs.size(), true);
+                                        m_clipboardPath.clear();
+                                        m_clipboardIsCut = false;
+                                        InvalidateRect(m_hwnd, nullptr, FALSE);
+                                        break;
+                                    }
+                                }
+                            }
                             std::error_code ec;
                             if (std::filesystem::is_directory(src)) {
                                 std::filesystem::copy(src, dest, std::filesystem::copy_options::recursive | std::filesystem::copy_options::overwrite_existing, ec);
@@ -11892,13 +12126,19 @@ void Window::HandleLButtonDown(POINT clientPt) {
                 if (wasNotice) {
                     m_confirmDiscardModal.Close();
                     m_drawer.SetGitCommitBoxFocus(1);
+                } else if (modalType == ui::ConfirmModalType::UpdateImportsOnRename || modalType == ui::ConfirmModalType::UpdateImportsOnMove) {
+                    ExecuteRenameAndUpdateImports(targetPath, m_confirmDiscardModal.GetNewFilePath(), modalType == ui::ConfirmModalType::UpdateImportsOnMove);
                 } else if (modalType == ui::ConfirmModalType::DeleteFile || modalType == ui::ConfirmModalType::DeleteFolder) {
                     ExecuteDeleteAsync(targetPath, modalType == ui::ConfirmModalType::DeleteFolder);
                 } else {
                     ExecuteDiscardOrRestoreAsync(targetPath, targetFileName, targetStatus);
                 }
-            } else if (wasNotice) {
-                m_drawer.SetGitCommitBoxFocus(1);
+            } else {
+                if (modalType == ui::ConfirmModalType::UpdateImportsOnRename) {
+                    m_drawer.CancelInlineRename();
+                } else if (wasNotice) {
+                    m_drawer.SetGitCommitBoxFocus(1);
+                }
             }
             InvalidateRect(m_hwnd, nullptr, FALSE);
             return;
@@ -13014,6 +13254,18 @@ void Window::HandleLButtonDown(POINT clientPt) {
         if (clientPt.x >= rcBox.left && clientPt.x <= rcBox.right &&
             clientPt.y >= rcBox.top && clientPt.y <= rcBox.bottom) {
             return;
+        }
+        std::wstring proposedOld, proposedNew;
+        if (m_drawer.GetProposedInlineRename(proposedOld, proposedNew)) {
+            std::wstring wsRoot = m_drawer.GetOpenFolderPath();
+            if (m_config.updateImportsOnRename && !wsRoot.empty()) {
+                auto refs = editor::SmartImportHelper::FindReferencesToPath(wsRoot, proposedOld);
+                if (!refs.empty()) {
+                    m_confirmDiscardModal.OpenUpdateImports(proposedOld, proposedNew, refs.size(), false);
+                    InvalidateRect(m_hwnd, nullptr, FALSE);
+                    return;
+                }
+            }
         }
         std::wstring oldPath, newPath;
         if (m_drawer.CommitInlineRename(oldPath, newPath)) {
@@ -15895,13 +16147,19 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                         if (wasNotice) {
                             m_confirmDiscardModal.Close();
                             m_drawer.SetGitCommitBoxFocus(1);
+                        } else if (modalType == ui::ConfirmModalType::UpdateImportsOnRename || modalType == ui::ConfirmModalType::UpdateImportsOnMove) {
+                            ExecuteRenameAndUpdateImports(targetPath, m_confirmDiscardModal.GetNewFilePath(), modalType == ui::ConfirmModalType::UpdateImportsOnMove);
                         } else if (modalType == ui::ConfirmModalType::DeleteFile || modalType == ui::ConfirmModalType::DeleteFolder) {
                             ExecuteDeleteAsync(targetPath, modalType == ui::ConfirmModalType::DeleteFolder);
                         } else {
                             ExecuteDiscardOrRestoreAsync(targetPath, targetFileName, targetStatus);
                         }
-                    } else if (wasNotice) {
-                        m_drawer.SetGitCommitBoxFocus(1);
+                    } else {
+                        if (modalType == ui::ConfirmModalType::UpdateImportsOnRename) {
+                            m_drawer.CancelInlineRename();
+                        } else if (wasNotice) {
+                            m_drawer.SetGitCommitBoxFocus(1);
+                        }
                     }
                     InvalidateRect(m_hwnd, nullptr, FALSE);
                     return 0;
@@ -15953,6 +16211,18 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
             if (m_drawer.IsRenaming()) {
                 if (wParam == VK_RETURN) {
                     m_suppressNextChar = true;
+                    std::wstring proposedOld, proposedNew;
+                    if (m_drawer.GetProposedInlineRename(proposedOld, proposedNew)) {
+                        std::wstring wsRoot = m_drawer.GetOpenFolderPath();
+                        if (m_config.updateImportsOnRename && !wsRoot.empty()) {
+                            auto refs = editor::SmartImportHelper::FindReferencesToPath(wsRoot, proposedOld);
+                            if (!refs.empty()) {
+                                m_confirmDiscardModal.OpenUpdateImports(proposedOld, proposedNew, refs.size(), false);
+                                InvalidateRect(m_hwnd, nullptr, FALSE);
+                                return 0;
+                            }
+                        }
+                    }
                     std::wstring oldPath, newPath;
                     if (m_drawer.CommitInlineRename(oldPath, newPath)) {
                         m_explorerUndo.PushRename(oldPath, newPath);
@@ -16819,6 +17089,8 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                                     if (!pDoc->buffer.ExpandEmmet(ext)) {
                                         pDoc->buffer.InsertText(indentStr);
                                     }
+                                } else {
+                                    EnsureAutoImportAndUseClient(pDoc, L"");
                                 }
                             }
                         }
@@ -16840,6 +17112,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
 
                     // Check if current prefix can expand as a snippet on Enter (e.g. typing "log" or "!" and hitting Enter)
                     if (!IsCursorInComment(pDoc) && m_snippetManager.TryExpand(pDoc->buffer, ext, pDoc->fileName.empty() ? pDoc->filePath : pDoc->fileName)) {
+                        EnsureAutoImportAndUseClient(pDoc, L"");
                         MarkDocumentModified(pDoc);
                         if (pDoc->isDiffView) ComputeDiffHunks(*pDoc);
                         m_editor.DismissAutocomplete();

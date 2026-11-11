@@ -200,6 +200,19 @@ void SettingsView::InitializeSettings() {
         m_items.push_back(std::move(it));
     }
 
+    // 8c. Explorer: Update Imports On Rename (Toggle)
+    {
+        SettingItem it;
+        it.id = L"explorer.updateImportsOnRename";
+        it.scope = L"EXPLORER";
+        it.title = L"Update Imports On Rename / Move";
+        it.description = L"Prompt to update imports across all referencing files when renaming or moving a file.";
+        it.category = SettingCategory::TextEditor;
+        it.isCommonlyUsed = true;
+        it.control = SettingControl::Toggle;
+        m_items.push_back(std::move(it));
+    }
+
     // 8b. Editor: CodeLens (Toggle)
     {
         SettingItem it;
@@ -897,6 +910,7 @@ void SettingsView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
             else if (it.id == L"editor.lineNumbers") isChecked = config.showLineNumbers;
             else if (it.id == L"editor.insertSpaces") isChecked = config.insertSpaces;
             else if (it.id == L"editor.formatOnSave") isChecked = config.formatOnSave;
+            else if (it.id == L"explorer.updateImportsOnRename") isChecked = config.updateImportsOnRename;
             else if (it.id == L"workbench.breadcrumbs") isChecked = config.showBreadcrumbs;
             else if (it.id == L"workbench.statusBar") isChecked = config.showStatusBar;
             else if (it.id == L"workbench.graphColored") isChecked = config.isGraphColored;
@@ -1416,6 +1430,8 @@ bool SettingsView::HandleLButtonDown(POINT clientPt, app::AppConfig& config, The
                         config.insertSpaces = !config.insertSpaces;
                     } else if (it.id == L"editor.formatOnSave") {
                         config.formatOnSave = !config.formatOnSave;
+                    } else if (it.id == L"explorer.updateImportsOnRename") {
+                        config.updateImportsOnRename = !config.updateImportsOnRename;
                     } else if (it.id == L"workbench.breadcrumbs") {
                         config.showBreadcrumbs = !config.showBreadcrumbs;
                     } else if (it.id == L"workbench.statusBar") {

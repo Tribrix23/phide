@@ -24,6 +24,7 @@ void ConfirmDiscardModal::Render(ID2D1RenderTarget* pRT, Theme& theme, const app
     const bool isDelete = (m_type == ConfirmModalType::DeleteFile || m_type == ConfirmModalType::DeleteFolder);
     const bool isRestore = (m_type == ConfirmModalType::RestoreFile || m_status == L"D");
     const bool isDiscardAll = (m_type == ConfirmModalType::DiscardAll || m_status == L"ALL");
+    const bool isUpdateImports = (m_type == ConfirmModalType::UpdateImportsOnRename || m_type == ConfirmModalType::UpdateImportsOnMove);
 
     const float cardW = config.ScaleF(540.0f);
     const float cardH = config.ScaleF(190.0f);
@@ -105,8 +106,8 @@ void ConfirmDiscardModal::Render(ID2D1RenderTarget* pRT, Theme& theme, const app
         // Red Theme for Deleting files or folders
         pRT->CreateSolidColorBrush(D2D1::ColorF(0.92f, 0.20f, 0.20f, 0.18f), &iconBgBrush);
         pRT->CreateSolidColorBrush(D2D1::ColorF(0.96f, 0.32f, 0.32f, 1.0f), &iconFgBrush);
-    } else if (isRestore) {
-        // Cyan / Blue Theme for Restore
+    } else if (isRestore || isUpdateImports) {
+        // Cyan / Blue Theme for Restore or Update Imports
         pRT->CreateSolidColorBrush(D2D1::ColorF(0.20f, 0.55f, 0.95f, 0.18f), &iconBgBrush);
         pRT->CreateSolidColorBrush(D2D1::ColorF(0.35f, 0.70f, 1.0f, 1.0f), &iconFgBrush);
     } else {
@@ -123,7 +124,7 @@ void ConfirmDiscardModal::Render(ID2D1RenderTarget* pRT, Theme& theme, const app
         DWRITE_PARAGRAPH_ALIGNMENT prevPAlign = pFmtHint->GetParagraphAlignment();
         pFmtHint->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
         pFmtHint->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
-        const wchar_t* glyph = isNotice ? L"ℹ" : (isDelete ? L"⚠" : (isRestore ? L"↺" : L"⚠"));
+        const wchar_t* glyph = isNotice ? L"ℹ" : (isDelete ? L"⚠" : (isRestore ? L"↺" : (isUpdateImports ? L"⇄" : L"⚠")));
         pRT->DrawText(glyph, 1, pFmtHint, rcIcon, iconFgBrush.Get());
         pFmtHint->SetTextAlignment(prevAlign);
         pFmtHint->SetParagraphAlignment(prevPAlign);
@@ -133,6 +134,8 @@ void ConfirmDiscardModal::Render(ID2D1RenderTarget* pRT, Theme& theme, const app
     std::wstring titleText;
     if (isNotice) {
         titleText = m_title.empty() ? L"Commit Message Required" : m_title;
+    } else if (isUpdateImports) {
+        titleText = (m_type == ConfirmModalType::UpdateImportsOnMove) ? L"Update Imports on Move?" : L"Update Imports on Rename?";
     } else if (isDelete) {
         titleText = (m_type == ConfirmModalType::DeleteFolder) ? L"Delete Folder?" : L"Delete File?";
     } else if (isRestore) {
@@ -162,6 +165,11 @@ void ConfirmDiscardModal::Render(ID2D1RenderTarget* pRT, Theme& theme, const app
     if (isNotice) {
         mainMsg = m_message.empty() ? L"Please enter a commit message before committing your changes." : m_message;
         subMsg = m_subtext.empty() ? L"Git requires a descriptive message to record changes in the repository history." : m_subtext;
+    } else if (isUpdateImports) {
+        mainMsg = L"This file is being referenced in " + std::to_wstring(m_changeCount) + (m_changeCount == 1 ? L" file." : L" files.");
+        subMsg = (m_type == ConfirmModalType::UpdateImportsOnMove)
+            ? L"Moving this file will update those imports across your project."
+            : L"Renaming this file will update those imports across your project.";
     } else if (isDelete) {
         mainMsg = L"Are you sure you want to delete '" + m_fileName + L"'?";
         if (m_type == ConfirmModalType::DeleteFolder) {
@@ -286,7 +294,7 @@ void ConfirmDiscardModal::Render(ID2D1RenderTarget* pRT, Theme& theme, const app
         // Render Primary Action Button (Restore, Delete, or Discard)
         D2D1_ROUNDED_RECT rrcConfirm = D2D1::RoundedRect(m_confirmBtnBounds, config.ScaleF(4.0f), config.ScaleF(4.0f));
         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> confirmBgBrush;
-        if (isRestore) {
+        if (isRestore || isUpdateImports) {
             pRT->CreateSolidColorBrush(
                 m_isLoading ? D2D1::ColorF(0.09f, 0.34f, 0.65f, 1.0f) :
                 (m_isConfirmHovered ? D2D1::ColorF(0.20f, 0.56f, 0.98f, 1.0f) : D2D1::ColorF(0.12f, 0.46f, 0.88f, 1.0f)),
@@ -310,7 +318,9 @@ void ConfirmDiscardModal::Render(ID2D1RenderTarget* pRT, Theme& theme, const app
 
         std::wstring confirmBtnText;
         if (m_isLoading) {
-            if (isRestore) {
+            if (isUpdateImports) {
+                confirmBtnText = L"Updating...";
+            } else if (isRestore) {
                 confirmBtnText = L"Restoring...";
             } else if (isDelete) {
                 confirmBtnText = L"Deleting...";
@@ -318,7 +328,9 @@ void ConfirmDiscardModal::Render(ID2D1RenderTarget* pRT, Theme& theme, const app
                 confirmBtnText = L"Discarding...";
             }
         } else {
-            if (isRestore) {
+            if (isUpdateImports) {
+                confirmBtnText = L"Proceed";
+            } else if (isRestore) {
                 confirmBtnText = L"Restore File";
             } else if (isDelete) {
                 confirmBtnText = L"Delete";

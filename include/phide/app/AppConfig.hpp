@@ -84,6 +84,7 @@ struct AppConfig {
     std::wstring cursorStyle = L"line";                 ///< "line", "block", "underline"
     std::wstring renderWhitespaceMode = L"selection";   ///< "none", "boundary", "selection", "trailing", "all"
     bool formatOnSave = true;                           ///< Automatically format document on save (Shift+Alt+F). Default enabled.
+    bool updateImportsOnRename = true;                  ///< Automatically update imports across workspace files when renaming or moving. Default enabled.
 
     // --- Code Runner Extension Settings ---
     std::wstring codeRunnerExecutorPython = L"python -u"; ///< Executor for Python files
