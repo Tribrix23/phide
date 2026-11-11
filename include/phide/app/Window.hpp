@@ -686,6 +686,7 @@ private:
     [[nodiscard]] int FindEditorGroupAtPoint(POINT pt) const noexcept;
     [[nodiscard]] int HitTestEditorSplitter(POINT pt) const noexcept;
     void TransitionLayoutOnGroupRemoved(int removedGroupIdx) noexcept;
+    void CollapseEmptyEditorGroups() noexcept;
 
     bool m_trackingMouse = false;
     bool m_wordWrap = false;

@@ -1051,6 +1051,7 @@ void Window::LoadSessionState() {
             } else {
                 m_focusedGroupIdx = 0;
             }
+            CollapseEmptyEditorGroups();
             UpdateEditorGroupBounds();
         } else {
             for (const auto& p : openDocPaths) {
@@ -1254,7 +1255,9 @@ void Window::TransitionLayoutOnGroupRemoved(int removedGroupIdx) noexcept {
     } else if (count == 2) {
         if (m_splitState.layout == editor::EditorSplitLayout::ThreeRows ||
             (m_splitState.layout == editor::EditorSplitLayout::LeftSplitRightFull && removedGroupIdx == 2) ||
-            (m_splitState.layout == editor::EditorSplitLayout::LeftFullRightSplit && removedGroupIdx == 0)) {
+            (m_splitState.layout == editor::EditorSplitLayout::LeftFullRightSplit && removedGroupIdx == 0) ||
+            (m_splitState.layout == editor::EditorSplitLayout::TopFullBottomSplit && removedGroupIdx > 0) ||
+            (m_splitState.layout == editor::EditorSplitLayout::TopSplitBottomFull && removedGroupIdx < 2)) {
             m_splitState.layout = editor::EditorSplitLayout::TwoRows;
         } else {
             m_splitState.layout = editor::EditorSplitLayout::TwoColumns;
@@ -1268,6 +1271,29 @@ void Window::TransitionLayoutOnGroupRemoved(int removedGroupIdx) noexcept {
     }
     m_editorGroups.shrink_to_fit();
     UpdateEditorGroupBounds();
+}
+
+void Window::CollapseEmptyEditorGroups() noexcept {
+    if (m_editorGroups.size() <= 1) return;
+    bool changed = false;
+    for (int g = static_cast<int>(m_editorGroups.size()) - 1; g >= 0; --g) {
+        if (m_editorGroups.size() <= 1) break;
+        if (m_editorGroups[g].docs.empty()) {
+            m_editorGroups.erase(m_editorGroups.begin() + g);
+            if (m_focusedGroupIdx >= static_cast<int>(m_editorGroups.size())) {
+                m_focusedGroupIdx = static_cast<int>(m_editorGroups.size()) - 1;
+            } else if (g < m_focusedGroupIdx) {
+                m_focusedGroupIdx--;
+            }
+            TransitionLayoutOnGroupRemoved(g);
+            changed = true;
+        }
+    }
+    if (changed) {
+        UpdateEditorGroupBounds();
+        SaveSessionState();
+        InvalidateRect(m_hwnd, nullptr, FALSE);
+    }
 }
 
 void Window::SetEditorSplitLayout(editor::EditorSplitLayout mode) {
@@ -2721,26 +2747,7 @@ void Window::DoOpenFolderFromPath(const std::wstring& path) {
     }
 
     // Collapse any empty secondary editor groups so split screen doesn't show duplicate empty welcome screens
-    for (int g = static_cast<int>(m_editorGroups.size()) - 1; g > 0; --g) {
-        if (m_editorGroups[g].docs.empty()) {
-            m_editorGroups.erase(m_editorGroups.begin() + g);
-        }
-    }
-    // If all editor groups became empty, enforce a single clean primary editor pane
-    if (m_editorGroups.size() > 1) {
-        bool allEmpty = true;
-        for (const auto& grp : m_editorGroups) {
-            if (!grp.docs.empty()) {
-                allEmpty = false;
-                break;
-            }
-        }
-        if (allEmpty) {
-            m_editorGroups.resize(1);
-            m_editorGroups[0].docs.clear();
-            m_editorGroups[0].activeDocIdx = -1;
-        }
-    }
+    CollapseEmptyEditorGroups();
     if (m_focusedGroupIdx >= static_cast<int>(m_editorGroups.size())) {
         m_focusedGroupIdx = (std::max)(0, static_cast<int>(m_editorGroups.size()) - 1);
     }
@@ -10103,7 +10110,7 @@ void Window::HandleMouseMove(POINT clientPt, WPARAM wParam) {
                 const auto& paneBounds = targetGroup.bounds;
                 int targetIdx = static_cast<int>(targetGroup.docs.size());
 
-                if (clientPt.y < paneBounds.top + tabH + m_config.ScaleF(6.0f)) {
+                if (clientPt.y < paneBounds.top + tabH + m_config.ScaleF(6.0f) && !targetGroup.docs.empty()) {
                     // Hovering inside target pane's tab bar -> reorder or insert into tab strip
                     m_tabSnapZone = editor::TabSnapZone::TabBar;
                     if (hoverGroup != m_dragTabGroup) {
@@ -10117,6 +10124,15 @@ void Window::HandleMouseMove(POINT clientPt, WPARAM wParam) {
                             break;
                         }
                     }
+                } else if (targetGroup.docs.empty() || m_editorGroups.size() >= 4 ||
+                           m_splitState.layout == editor::EditorSplitLayout::Grid2x2) {
+                    // Hovering inside an empty pane or a 4-pane grid drops directly into that pane without unwanted re-splitting
+                    m_tabSnapZone = editor::TabSnapZone::Center;
+                    if (hoverGroup != m_dragTabGroup) {
+                        m_tabSnapPreviewRect = paneBounds;
+                    }
+                    m_tabDropTargetGroup = hoverGroup;
+                    targetIdx = static_cast<int>(targetGroup.docs.size());
                 } else {
                     // Hovering inside editor body -> detect Windows-style Edge/Corner/Center snap zones
                     float bodyTop = headerH + tabH;
@@ -13531,7 +13547,6 @@ void Window::HandleLButtonUp(POINT clientPt) {
                 }
 
                 auto& toGrp = m_editorGroups[targetGrpIdx];
-                const bool toGrpWasEmpty = toGrp.docs.empty();
                 auto doc = std::move(fromGrp.docs[from]);
                 fromGrp.docs.erase(fromGrp.docs.begin() + from);
                 fromGrp.docs.shrink_to_fit();
@@ -13542,13 +13557,17 @@ void Window::HandleLButtonUp(POINT clientPt) {
                 toGrp.activeDocIdx = insertPos;
 
                 if (fromGrp.docs.empty()) {
-                    fromGrp.activeDocIdx = -1;
-                    if (allowCollapseSrc && !toGrpWasEmpty && m_editorGroups.size() > 1) {
+                    if (allowCollapseSrc && m_editorGroups.size() > 1) {
                         int finalDst = (srcGroup < targetGrpIdx) ? (targetGrpIdx - 1) : targetGrpIdx;
+                        m_editorGroups.erase(m_editorGroups.begin() + srcGroup);
                         TransitionLayoutOnGroupRemoved(srcGroup);
                         m_focusedGroupIdx = (std::clamp)(finalDst, 0, static_cast<int>(m_editorGroups.size()) - 1);
                     } else {
+                        fromGrp.activeDocIdx = -1;
                         m_focusedGroupIdx = targetGrpIdx;
+                        if (m_editorGroups.size() <= 1) {
+                            m_splitState.layout = editor::EditorSplitLayout::Single;
+                        }
                     }
                 } else {
                     if (fromGrp.activeDocIdx >= static_cast<int>(fromGrp.docs.size())) {
@@ -13602,9 +13621,19 @@ void Window::HandleLButtonUp(POINT clientPt) {
                         curLayout == editor::EditorSplitLayout::Grid2x2) {
                         targetGrp = 0;
                     } else if (curLayout == editor::EditorSplitLayout::LeftFullRightSplit) {
-                        SetEditorSplitLayout(editor::EditorSplitLayout::Grid2x2);
+                        m_editorGroups.insert(m_editorGroups.begin() + 1, editor::EditorGroup{});
+                        m_splitState.layout = editor::EditorSplitLayout::Grid2x2;
+                        if (srcGroup >= 1) srcGroup++;
                         targetGrp = 0;
                         layoutChanged = true;
+                        UpdateEditorGroupBounds();
+                    } else if (curLayout == editor::EditorSplitLayout::TwoColumns) {
+                        m_editorGroups.insert(m_editorGroups.begin() + 1, editor::EditorGroup{});
+                        m_splitState.layout = editor::EditorSplitLayout::LeftSplitRightFull;
+                        if (srcGroup >= 1) srcGroup++;
+                        targetGrp = 0;
+                        layoutChanged = true;
+                        UpdateEditorGroupBounds();
                     } else {
                         // Matches user screenshot: Top-Left (green), Bottom-Left (purple), Right Full (red)
                         SetEditorSplitLayout(editor::EditorSplitLayout::LeftSplitRightFull);
@@ -13616,13 +13645,23 @@ void Window::HandleLButtonUp(POINT clientPt) {
                     if (curLayout == editor::EditorSplitLayout::LeftSplitRightFull) {
                         targetGrp = 1;
                     } else if (curLayout == editor::EditorSplitLayout::Grid2x2) {
-                        targetGrp = 2;
+                        targetGrp = 1;
                     } else if (curLayout == editor::EditorSplitLayout::TopFullBottomSplit) {
                         targetGrp = 1;
                     } else if (curLayout == editor::EditorSplitLayout::LeftFullRightSplit) {
-                        SetEditorSplitLayout(editor::EditorSplitLayout::Grid2x2);
-                        targetGrp = 2;
+                        m_editorGroups.insert(m_editorGroups.begin() + 1, editor::EditorGroup{});
+                        m_splitState.layout = editor::EditorSplitLayout::Grid2x2;
+                        if (srcGroup >= 1) srcGroup++;
+                        targetGrp = 1;
                         layoutChanged = true;
+                        UpdateEditorGroupBounds();
+                    } else if (curLayout == editor::EditorSplitLayout::TwoColumns) {
+                        m_editorGroups.insert(m_editorGroups.begin() + 1, editor::EditorGroup{});
+                        m_splitState.layout = editor::EditorSplitLayout::LeftSplitRightFull;
+                        if (srcGroup >= 1) srcGroup++;
+                        targetGrp = 1;
+                        layoutChanged = true;
+                        UpdateEditorGroupBounds();
                     } else {
                         SetEditorSplitLayout(editor::EditorSplitLayout::LeftSplitRightFull);
                         targetGrp = 1;
@@ -13630,13 +13669,16 @@ void Window::HandleLButtonUp(POINT clientPt) {
                     }
                 } else if (m_tabSnapZone == editor::TabSnapZone::TopRight) {
                     if (curLayout == editor::EditorSplitLayout::LeftFullRightSplit ||
-                        curLayout == editor::EditorSplitLayout::TopSplitBottomFull ||
-                        curLayout == editor::EditorSplitLayout::Grid2x2) {
+                        curLayout == editor::EditorSplitLayout::TopSplitBottomFull) {
                         targetGrp = 1;
+                    } else if (curLayout == editor::EditorSplitLayout::Grid2x2) {
+                        targetGrp = 2;
                     } else if (curLayout == editor::EditorSplitLayout::LeftSplitRightFull) {
-                        SetEditorSplitLayout(editor::EditorSplitLayout::Grid2x2);
-                        targetGrp = 1;
+                        m_editorGroups.push_back(editor::EditorGroup{});
+                        m_splitState.layout = editor::EditorSplitLayout::Grid2x2;
+                        targetGrp = 2;
                         layoutChanged = true;
+                        UpdateEditorGroupBounds();
                     } else {
                         SetEditorSplitLayout(editor::EditorSplitLayout::LeftFullRightSplit);
                         targetGrp = 1;
@@ -13649,9 +13691,11 @@ void Window::HandleLButtonUp(POINT clientPt) {
                     } else if (curLayout == editor::EditorSplitLayout::Grid2x2) {
                         targetGrp = 3;
                     } else if (curLayout == editor::EditorSplitLayout::LeftSplitRightFull) {
-                        SetEditorSplitLayout(editor::EditorSplitLayout::Grid2x2);
+                        m_editorGroups.push_back(editor::EditorGroup{});
+                        m_splitState.layout = editor::EditorSplitLayout::Grid2x2;
                         targetGrp = 3;
                         layoutChanged = true;
+                        UpdateEditorGroupBounds();
                     } else {
                         SetEditorSplitLayout(editor::EditorSplitLayout::LeftFullRightSplit);
                         targetGrp = 2;
@@ -13691,13 +13735,29 @@ void Window::HandleLButtonUp(POINT clientPt) {
                         targetGrp = 0;
                         layoutChanged = true;
                     } else if (curLayout == editor::EditorSplitLayout::TwoColumns && targetGrp == 0) {
-                        SetEditorSplitLayout(editor::EditorSplitLayout::LeftSplitRightFull);
+                        m_editorGroups.insert(m_editorGroups.begin() + 1, editor::EditorGroup{});
+                        m_splitState.layout = editor::EditorSplitLayout::LeftSplitRightFull;
+                        if (srcGroup >= 1) srcGroup++;
                         targetGrp = 0;
                         layoutChanged = true;
+                        UpdateEditorGroupBounds();
                     } else if (curLayout == editor::EditorSplitLayout::TwoColumns && targetGrp == 1) {
                         SetEditorSplitLayout(editor::EditorSplitLayout::LeftFullRightSplit);
                         targetGrp = 1;
                         layoutChanged = true;
+                    } else if (curLayout == editor::EditorSplitLayout::LeftFullRightSplit && targetGrp == 0) {
+                        m_editorGroups.insert(m_editorGroups.begin() + 1, editor::EditorGroup{});
+                        m_splitState.layout = editor::EditorSplitLayout::Grid2x2;
+                        if (srcGroup >= 1) srcGroup++;
+                        targetGrp = 0;
+                        layoutChanged = true;
+                        UpdateEditorGroupBounds();
+                    } else if (curLayout == editor::EditorSplitLayout::LeftSplitRightFull && targetGrp == 2) {
+                        m_editorGroups.push_back(editor::EditorGroup{});
+                        m_splitState.layout = editor::EditorSplitLayout::Grid2x2;
+                        targetGrp = 2;
+                        layoutChanged = true;
+                        UpdateEditorGroupBounds();
                     } else if (targetGrp < 0) {
                         targetGrp = 0;
                     }
@@ -13708,25 +13768,29 @@ void Window::HandleLButtonUp(POINT clientPt) {
                         layoutChanged = true;
                     } else if (curLayout == editor::EditorSplitLayout::TwoColumns && targetGrp == 0) {
                         // Dragging to bottom of left column in TwoColumns creates LeftSplitRightFull!
-                        if (srcGroup == 1 && m_editorGroups.size() >= 2) {
-                            // Keep right column at index 2 after inserting bottom-left at index 1
-                            m_editorGroups.insert(m_editorGroups.begin() + 1, editor::EditorGroup{});
-                            m_splitState.layout = editor::EditorSplitLayout::LeftSplitRightFull;
-                            srcGroup = 2;
-                            targetGrp = 1;
-                            layoutChanged = true;
-                            UpdateEditorGroupBounds();
-                        } else {
-                            m_editorGroups.insert(m_editorGroups.begin() + 1, editor::EditorGroup{});
-                            m_splitState.layout = editor::EditorSplitLayout::LeftSplitRightFull;
-                            targetGrp = 1;
-                            layoutChanged = true;
-                            UpdateEditorGroupBounds();
-                        }
+                        m_editorGroups.insert(m_editorGroups.begin() + 1, editor::EditorGroup{});
+                        m_splitState.layout = editor::EditorSplitLayout::LeftSplitRightFull;
+                        if (srcGroup >= 1) srcGroup++;
+                        targetGrp = 1;
+                        layoutChanged = true;
+                        UpdateEditorGroupBounds();
                     } else if (curLayout == editor::EditorSplitLayout::TwoColumns && targetGrp == 1) {
                         SetEditorSplitLayout(editor::EditorSplitLayout::LeftFullRightSplit);
                         targetGrp = 2;
                         layoutChanged = true;
+                    } else if (curLayout == editor::EditorSplitLayout::LeftFullRightSplit && targetGrp == 0) {
+                        m_editorGroups.insert(m_editorGroups.begin() + 1, editor::EditorGroup{});
+                        m_splitState.layout = editor::EditorSplitLayout::Grid2x2;
+                        if (srcGroup >= 1) srcGroup++;
+                        targetGrp = 1;
+                        layoutChanged = true;
+                        UpdateEditorGroupBounds();
+                    } else if (curLayout == editor::EditorSplitLayout::LeftSplitRightFull && targetGrp == 2) {
+                        m_editorGroups.push_back(editor::EditorGroup{});
+                        m_splitState.layout = editor::EditorSplitLayout::Grid2x2;
+                        targetGrp = 3;
+                        layoutChanged = true;
+                        UpdateEditorGroupBounds();
                     } else if (targetGrp < 0) {
                         targetGrp = static_cast<int>(m_editorGroups.size()) - 1;
                     }
@@ -13753,10 +13817,15 @@ void Window::HandleLButtonUp(POINT clientPt) {
                 } else {
                     moveDocToTargetGroup(targetGrp, -1, !layoutChanged);
                 }
-            } else if (m_tabDropTargetGroup >= 0 && m_tabDropTargetGroup < static_cast<int>(m_editorGroups.size()) && m_tabDropTargetIdx >= 0) {
-                moveDocToTargetGroup(m_tabDropTargetGroup, m_tabDropTargetIdx, true);
+            } else if (m_tabSnapZone == editor::TabSnapZone::Center ||
+                       (m_tabDropTargetGroup >= 0 && m_tabDropTargetGroup < static_cast<int>(m_editorGroups.size()))) {
+                int targetG = (m_tabDropTargetGroup >= 0 && m_tabDropTargetGroup < static_cast<int>(m_editorGroups.size()))
+                    ? m_tabDropTargetGroup : m_dragTabGroup;
+                int targetI = (m_tabDropTargetIdx >= 0) ? m_tabDropTargetIdx : static_cast<int>(m_editorGroups[targetG].docs.size());
+                moveDocToTargetGroup(targetG, targetI, true);
             }
         }
+        CollapseEmptyEditorGroups();
         m_isDraggingTab = false;
         m_dragTabGroup = -1;
         m_dragTabIdx = -1;
