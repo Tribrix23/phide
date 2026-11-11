@@ -136,17 +136,6 @@ void ActivityRail::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
             float botY = clientHeight - (btnSize * 2.0f) - config.ScaleF(22.0f);
             item.bounds = D2D1::RectF(startX, botY, startX + btnSize, botY + btnSize);
         } else if (item.id == RailTabId::MoreActions) {
-            // Separation line on top of the 3 dot icon (white in dark mode, subtle border in light mode)
-            curY += config.ScaleF(2.0f);
-            float sepY = curY;
-            ID2D1Brush* pSepBrush = theme.IsDarkMode() ? (theme.brushTextWhite ? theme.brushTextWhite.Get() : theme.brushBorderSubtle.Get()) : theme.brushBorderSubtle.Get();
-            pRT->DrawLine(
-                D2D1::Point2F(startX + config.ScaleF(4.0f), sepY),
-                D2D1::Point2F(startX + btnSize - config.ScaleF(4.0f), sepY),
-                pSepBrush,
-                1.0f
-            );
-            curY += config.ScaleF(7.0f);
             item.bounds = D2D1::RectF(startX, curY, startX + btnSize, curY + btnSize);
             curY += btnSize + spacing;
         } else if (item.id == RailTabId::Student) {

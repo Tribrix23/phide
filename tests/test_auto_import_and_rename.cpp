@@ -281,18 +281,24 @@ int main() {
         assert(moreActionsIdx == settingsIdx + 1 && "MoreActions must be placed directly under Settings!");
         std::cout << "  [PASS] Test 5c: ActivityRail contains 3-dots MoreActions directly under Settings\n";
 
-        // 5d. PopupMenu::OpenMoreActionsMenu contains Monitor
+        // 5d. PopupMenu::OpenMoreActionsMenu contains ONLY Monitor (other entries removed per user request)
         popup.OpenMoreActionsMenu(48.0f, 200.0f, cfg);
         assert(popup.IsOpen());
         bool foundMonitor = false;
+        bool foundDisallowedEntries = false;
         for (const auto& mi : popup.GetItems()) {
             if (mi.actionId == phide::ui::MenuActionId::ViewMonitor && mi.label == L"Monitor") {
                 foundMonitor = true;
-                break;
+            }
+            if (mi.actionId == phide::ui::MenuActionId::MoreDependencyGraph ||
+                mi.actionId == phide::ui::MenuActionId::MoreCodeHierarchy ||
+                mi.actionId == phide::ui::MenuActionId::MoreCodeMetrics) {
+                foundDisallowedEntries = true;
             }
         }
         assert(foundMonitor && "OpenMoreActionsMenu must contain 'Monitor'!");
-        std::cout << "  [PASS] Test 5d: More Actions side dropdown menu contains 'Monitor'\n";
+        assert(!foundDisallowedEntries && "OpenMoreActionsMenu must NOT contain crossed-out entries!");
+        std::cout << "  [PASS] Test 5d: More Actions side dropdown menu contains clean 'Monitor' entry\n";
     }
 
     std::cout << "\n======================================================\n";

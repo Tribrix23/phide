@@ -699,15 +699,42 @@ public:
         m_onTriggerGarbageCollection = std::move(cb);
     }
 
+    struct DevPortInfo {
+        int port = 0;
+        DWORD pid = 0;
+        std::wstring processName;
+        std::wstring purpose;
+        std::wstring protocol;
+        std::wstring status;
+        bool isDevelopment = false;
+    };
+
+    struct ProjectStorageTelemetry {
+        uint64_t totalBytes = 0;
+        int fileCount = 0;
+        int folderCount = 0;
+        uint64_t codeBytes = 0;
+        uint64_t assetBytes = 0;
+        std::wstring formattedSize = L"0 B";
+        ULONGLONG lastScanTick = 0;
+    };
+
+    std::vector<DevPortInfo> QueryActiveDevPorts();
+    void UpdateProjectStorageTelemetry(const std::wstring& rootPath);
+
     void RenderMonitorView(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
                           float canvasLeft, float canvasWidth, float topY, float clientHeight);
     bool HandleMonitorClick(POINT pt, const app::AppConfig& config);
     void IncrementMonitorPhase(float delta) noexcept { m_monitorAnimPhase += delta; }
 
     D2D1_RECT_F m_rcMonitorGcBtn{};
+    D2D1_RECT_F m_rcMonitorRefreshBtn{};
     float m_monitorAnimPhase = 0.0f;
     std::wstring m_monitorGcFeedback;
     ULONGLONG m_monitorLastGcTime = 0;
+    std::vector<DevPortInfo> m_cachedDevPorts;
+    ULONGLONG m_lastDevPortsQueryTick = 0;
+    ProjectStorageTelemetry m_projectStorage;
 
     void RunGarbageCollection() {
         m_foldChevrons.shrink_to_fit();

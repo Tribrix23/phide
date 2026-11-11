@@ -355,17 +355,10 @@ void PopupMenu::OpenMoreActionsMenu(float x, float y, const app::AppConfig& conf
     m_hoveredSubmenuIdx = -1;
 
     m_items.clear();
-    // 1. Monitor (User explicit requirement: "one of the entry there is monitor")
-    m_items.push_back({ MenuActionId::ViewMonitor,         L"Monitor",          L"",            false, false, false, true, {}, {} });
+    // 1. Monitor
+    m_items.push_back({ MenuActionId::ViewMonitor, L"Monitor", L"", false, false, false, true, {}, {} });
 
-    // --- Separator ---
-    m_items.push_back({ MenuActionId::None,                L"",                 L"",            true,  false, false, false, {}, {} });
-
-    m_items.push_back({ MenuActionId::MoreDependencyGraph, L"Dependency Graph", L"",            false, false, false, true, {}, {} });
-    m_items.push_back({ MenuActionId::MoreCodeHierarchy,   L"Code Hierarchy",   L"Shift+Alt+H", false, false, false, true, {}, {} });
-    m_items.push_back({ MenuActionId::MoreCodeMetrics,     L"Code Metrics",     L"",            false, false, false, true, {}, {} });
-
-    const float moreMenuW = CalculateOptimalMenuWidth(m_items, config, config.ScaleF(200.0f));
+    const float moreMenuW = CalculateOptimalMenuWidth(m_items, config, config.ScaleF(140.0f));
     LayoutMenu(m_items, x, y, moreMenuW, config, m_mainMenuBounds, clientW, clientH);
 }
 
