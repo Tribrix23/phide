@@ -709,10 +709,6 @@ public:
         bool isDevelopment = false;
         std::wstring cpuPercentStr = L"0.0%";
         std::wstring memoryStr = L"0.0 MB";
-        std::wstring diskStr = L"0 MB/s";
-        std::wstring networkStr = L"0 Mbps";
-        std::wstring gpuStr = L"0%";
-        std::wstring powerStr = L"Low";
         std::wstring commandLine;
     };
 
@@ -738,6 +734,9 @@ public:
                           float canvasLeft, float canvasWidth, float topY, float clientHeight);
     bool HandleMonitorClick(POINT pt, const app::AppConfig& config);
     void IncrementMonitorPhase(float delta) noexcept { m_monitorAnimPhase += delta; }
+    void RefreshMonitorTelemetry();
+    [[nodiscard]] bool HitTestMonitorInteractive(POINT pt) const;
+    double MeasureCurrentProcessCpu();
 
     D2D1_RECT_F m_rcMonitorRefreshBtn{};
     D2D1_RECT_F m_rcMonitorPrevPage{};
@@ -750,6 +749,14 @@ public:
     std::vector<DevPortInfo> m_cachedDevPorts;
     ULONGLONG m_lastDevPortsQueryTick = 0;
     ProjectStorageTelemetry m_projectStorage;
+    std::vector<float> m_cpuSparklineHistory;
+    std::vector<float> m_memSparklineHistory;
+    float m_currentCpuPercent = 0.0f;
+    std::wstring m_currentCpuStr = L"0.0%";
+    ULONGLONG m_lastCpuSampleTime = 0;
+    ULONGLONG m_lastCpuKernelTime = 0;
+    ULONGLONG m_lastCpuUserTime = 0;
+    int m_numProcessors = 0;
 
     void RunGarbageCollection() {
         m_foldChevrons.shrink_to_fit();

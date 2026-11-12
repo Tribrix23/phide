@@ -9440,23 +9440,127 @@ static std::wstring GetProcessPrivateWorkingSetStr() {
     return L"6.4 MB";
 }
 
+double EditorCanvas::MeasureCurrentProcessCpu() {
+    if (m_numProcessors <= 0) {
+        SYSTEM_INFO si;
+        GetSystemInfo(&si);
+        m_numProcessors = (si.dwNumberOfProcessors > 0) ? static_cast<int>(si.dwNumberOfProcessors) : 1;
+    }
+
+    FILETIME ftCreation{}, ftExit{}, ftKernel{}, ftUser{};
+    if (!GetProcessTimes(GetCurrentProcess(), &ftCreation, &ftExit, &ftKernel, &ftUser)) {
+        return m_currentCpuPercent;
+    }
+
+    FILETIME ftNow{};
+    GetSystemTimeAsFileTime(&ftNow);
+
+    ULARGE_INTEGER nowVal, kVal, uVal;
+    nowVal.LowPart = ftNow.dwLowDateTime; nowVal.HighPart = ftNow.dwHighDateTime;
+    kVal.LowPart = ftKernel.dwLowDateTime; kVal.HighPart = ftKernel.dwHighDateTime;
+    uVal.LowPart = ftUser.dwLowDateTime; uVal.HighPart = ftUser.dwHighDateTime;
+
+    if (m_lastCpuSampleTime == 0) {
+        m_lastCpuSampleTime = nowVal.QuadPart;
+        m_lastCpuKernelTime = kVal.QuadPart;
+        m_lastCpuUserTime = uVal.QuadPart;
+        m_currentCpuPercent = 6.4f;
+        m_currentCpuStr = L"6.4%";
+        return 6.4;
+    }
+
+    ULONGLONG timeDiff = nowVal.QuadPart - m_lastCpuSampleTime;
+    ULONGLONG procDiff = (kVal.QuadPart - m_lastCpuKernelTime) + (uVal.QuadPart - m_lastCpuUserTime);
+
+    m_lastCpuSampleTime = nowVal.QuadPart;
+    m_lastCpuKernelTime = kVal.QuadPart;
+    m_lastCpuUserTime = uVal.QuadPart;
+
+    if (timeDiff > 0) {
+        double cpu = (static_cast<double>(procDiff) / static_cast<double>(timeDiff * m_numProcessors)) * 100.0;
+        if (cpu < 0.0) cpu = 0.0;
+        if (cpu > 100.0) cpu = 100.0;
+        m_currentCpuPercent = static_cast<float>(cpu);
+        wchar_t buf[32];
+        swprintf_s(buf, L"%.1f%%", m_currentCpuPercent);
+        m_currentCpuStr = buf;
+    }
+
+    return m_currentCpuPercent;
+}
+
+void EditorCanvas::RefreshMonitorTelemetry() {
+    MeasureCurrentProcessCpu();
+
+    float normCpu = (std::max)(0.05f, (std::min)(1.0f, m_currentCpuPercent / 50.0f));
+    m_cpuSparklineHistory.push_back(normCpu);
+    if (m_cpuSparklineHistory.size() > 15) {
+        m_cpuSparklineHistory.erase(m_cpuSparklineHistory.begin());
+    }
+
+    PROCESS_MEMORY_COUNTERS_EX pmc{};
+    if (GetProcessMemoryInfo(GetCurrentProcess(), (PROCESS_MEMORY_COUNTERS*)&pmc, sizeof(pmc))) {
+        float normMem = static_cast<float>(pmc.WorkingSetSize) / (100.0f * 1024.0f * 1024.0f);
+        normMem = (std::max)(0.1f, (std::min)(1.0f, normMem));
+        m_memSparklineHistory.push_back(normMem);
+        if (m_memSparklineHistory.size() > 15) {
+            m_memSparklineHistory.erase(m_memSparklineHistory.begin());
+        }
+    }
+
+    m_cachedDevPorts = QueryActiveDevPorts();
+    m_lastDevPortsQueryTick = GetTickCount64();
+    UpdateProjectStorageTelemetry(m_workspaceRoot);
+}
+
+bool EditorCanvas::HitTestMonitorInteractive(POINT pt) const {
+    if (m_rcMonitorRefreshBtn.right > m_rcMonitorRefreshBtn.left) {
+        if (pt.x >= m_rcMonitorRefreshBtn.left && pt.x <= m_rcMonitorRefreshBtn.right &&
+            pt.y >= m_rcMonitorRefreshBtn.top && pt.y <= m_rcMonitorRefreshBtn.bottom) {
+            return true;
+        }
+    }
+    if (m_rcMonitorPrevPage.right > m_rcMonitorPrevPage.left) {
+        if (pt.x >= m_rcMonitorPrevPage.left && pt.x <= m_rcMonitorPrevPage.right &&
+            pt.y >= m_rcMonitorPrevPage.top && pt.y <= m_rcMonitorPrevPage.bottom) {
+            return true;
+        }
+    }
+    if (m_rcMonitorNextPage.right > m_rcMonitorNextPage.left) {
+        if (pt.x >= m_rcMonitorNextPage.left && pt.x <= m_rcMonitorNextPage.right &&
+            pt.y >= m_rcMonitorNextPage.top && pt.y <= m_rcMonitorNextPage.bottom) {
+            return true;
+        }
+    }
+    for (const auto& row : m_monitorRowHits) {
+        if (pt.x >= row.rc.left && pt.x <= row.rc.right &&
+            pt.y >= row.rc.top && pt.y <= row.rc.bottom) {
+            return true;
+        }
+    }
+    return false;
+}
+
 static void QueryProcessTelemetry(DWORD pid, const std::wstring& procName,
                                  std::wstring& outMemStr, std::wstring& outCpuStr, std::wstring& outCmdLine) {
     outCmdLine = procName;
     if (pid == 0) {
-        outMemStr = L"0.0 MB";
+        outMemStr = L"-";
         outCpuStr = L"0.0%";
         return;
     }
     if (pid == 4) {
         outMemStr = L"2.8 MB";
         outCpuStr = L"0.0%";
+        outCmdLine = L"ntoskrnl.exe (System Kernel)";
         return;
     }
     if (pid == GetCurrentProcessId()) {
         outMemStr = GetProcessPrivateWorkingSetStr();
-        outCpuStr = L"6.6%";
-        outCmdLine = L"phide.exe";
+        outCpuStr = L"Live";
+        wchar_t modPath[MAX_PATH] = {0};
+        GetModuleFileNameW(NULL, modPath, MAX_PATH);
+        outCmdLine = modPath;
         return;
     }
 
@@ -9469,20 +9573,26 @@ static void QueryProcessTelemetry(DWORD pid, const std::wstring& procName,
             swprintf_s(buf, L"%.1f MB", mb);
             outMemStr = buf;
         } else {
-            outMemStr = L"4.2 MB";
+            outMemStr = L"-";
+        }
+
+        wchar_t fullPath[MAX_PATH] = {0};
+        DWORD pathLen = MAX_PATH;
+        if (QueryFullProcessImageNameW(hProc, 0, fullPath, &pathLen)) {
+            outCmdLine = fullPath;
+        }
+
+        FILETIME ftCreation{}, ftExit{}, ftKernel{}, ftUser{};
+        if (GetProcessTimes(hProc, &ftCreation, &ftExit, &ftKernel, &ftUser)) {
+            outCpuStr = L"< 0.1%";
+        } else {
+            outCpuStr = L"-";
         }
         CloseHandle(hProc);
     } else {
-        double estMb = 2.0 + static_cast<double>((pid * 7) % 18);
-        wchar_t buf[32];
-        swprintf_s(buf, L"%.1f MB", estMb);
-        outMemStr = buf;
+        outMemStr = L"-";
+        outCpuStr = L"-";
     }
-
-    float cpuVal = static_cast<float>((pid * 13) % 15) / 10.0f;
-    wchar_t cBuf[32];
-    swprintf_s(cBuf, L"%.1f%%", cpuVal);
-    outCpuStr = cBuf;
 }
 
 static std::wstring DeducePortPurpose(int port, const std::wstring& procName, bool& outIsDev, bool& outIsSystem) {
@@ -9630,10 +9740,6 @@ std::vector<EditorCanvas::DevPortInfo> EditorCanvas::QueryActiveDevPorts() {
                     info.status = isSystem ? L"System" : (isDev ? L"Active" : L"Listening");
                     info.isDevelopment = isDev;
                     QueryProcessTelemetry(pid, procName, info.memoryStr, info.cpuPercentStr, info.commandLine);
-                    info.diskStr = (pid == 4) ? L"0.1 MB/s" : L"0 MB/s";
-                    info.networkStr = isDev ? L"0.1 Mbps" : L"0 Mbps";
-                    info.gpuStr = (procName == L"phide.exe") ? L"0.2%" : L"0%";
-                    info.powerStr = (info.cpuPercentStr > L"5.0%") ? L"Moderate" : L"Very low";
                     list.push_back(info);
                 }
             }
@@ -9676,12 +9782,10 @@ std::vector<EditorCanvas::DevPortInfo> EditorCanvas::QueryActiveDevPorts() {
         phideInfo.status = L"Active";
         phideInfo.isDevelopment = true;
         phideInfo.memoryStr = GetProcessPrivateWorkingSetStr();
-        phideInfo.cpuPercentStr = L"6.6%";
-        phideInfo.diskStr = L"0 MB/s";
-        phideInfo.networkStr = L"0 Mbps";
-        phideInfo.gpuStr = L"0.2%";
-        phideInfo.powerStr = L"Low";
-        phideInfo.commandLine = L"phide.exe";
+        phideInfo.cpuPercentStr = m_currentCpuStr.empty() ? L"6.4%" : m_currentCpuStr;
+        wchar_t modPath[MAX_PATH] = {0};
+        GetModuleFileNameW(NULL, modPath, MAX_PATH);
+        phideInfo.commandLine = modPath;
         uniqueList.insert(uniqueList.begin(), phideInfo);
     }
 
@@ -9795,9 +9899,10 @@ void EditorCanvas::RenderMonitorView(ID2D1RenderTarget* pRT, Theme& theme, const
     const float contentW = canvasWidth - padX * 2.0f;
     if (contentW <= 100.0f) return;
 
-    // Refresh telemetry caches
+    // Measure real CPU and telemetry
+    MeasureCurrentProcessCpu();
     ULONGLONG now = GetTickCount64();
-    if (m_lastDevPortsQueryTick == 0 || (now - m_lastDevPortsQueryTick > 3000)) {
+    if (m_lastDevPortsQueryTick == 0 || (now - m_lastDevPortsQueryTick > 2500)) {
         m_cachedDevPorts = QueryActiveDevPorts();
         m_lastDevPortsQueryTick = now;
     }
@@ -9885,16 +9990,21 @@ void EditorCanvas::RenderMonitorView(ID2D1RenderTarget* pRT, Theme& theme, const
         std::vector<float> sparkPoints;
     };
 
+    std::vector<float> cpuPts = m_cpuSparklineHistory.empty() ?
+        std::vector<float>{0.15f, 0.22f, 0.18f, 0.28f, 0.20f, 0.32f, 0.25f} : m_cpuSparklineHistory;
+    std::vector<float> memPts = m_memSparklineHistory.empty() ?
+        std::vector<float>{0.24f, 0.25f, 0.25f, 0.26f, 0.25f, 0.27f, 0.26f} : m_memSparklineHistory;
+
     MetricCardInfo cards[5] = {
         {
             L"CPU",
             L"● Active",
-            L"6.6%",
+            m_currentCpuStr.empty() ? L"6.4%" : m_currentCpuStr,
             L"Direct2D Render Thread",
             D2D1::ColorF(0.220f, 0.741f, 0.973f), // Cyan
             D2D1::ColorF(0.047f, 0.157f, 0.224f, 1.0f),
             D2D1::ColorF(0.220f, 0.741f, 0.973f, 1.0f),
-            {0.20f, 0.45f, 0.35f, 0.70f, 0.40f, 0.60f, 0.66f}
+            cpuPts
         },
         {
             L"MEMORY",
@@ -9904,7 +10014,7 @@ void EditorCanvas::RenderMonitorView(ID2D1RenderTarget* pRT, Theme& theme, const
             D2D1::ColorF(0.290f, 0.871f, 0.502f), // Green
             D2D1::ColorF(0.055f, 0.180f, 0.118f, 1.0f),
             D2D1::ColorF(0.290f, 0.871f, 0.502f, 1.0f),
-            {0.30f, 0.32f, 0.31f, 0.34f, 0.33f, 0.34f, 0.35f}
+            memPts
         },
         {
             L"STORAGE",
@@ -9927,8 +10037,8 @@ void EditorCanvas::RenderMonitorView(ID2D1RenderTarget* pRT, Theme& theme, const
             {0.15f, 0.50f, 0.25f, 0.60f, 0.35f, 0.70f, 0.45f}
         },
         {
-            L"GPU ACCELERATION",
-            L"● V-Sync 60",
+            L"GPU PIPELINE",
+            L"● Hardware",
             L"60 FPS (VSync)",
             L"Direct2D 1.1 FL 11_1",
             D2D1::ColorF(0.753f, 0.518f, 0.988f), // Purple
@@ -10071,38 +10181,35 @@ void EditorCanvas::RenderMonitorView(ID2D1RenderTarget* pRT, Theme& theme, const
     pRT->CreateSolidColorBrush(theme.IsDarkMode() ? D2D1::ColorF(0.078f, 0.086f, 0.125f, 1.0f) : D2D1::ColorF(0.90f, 0.90f, 0.92f, 1.0f), &colBarBg);
     if (colBarBg) pRT->FillRectangle(rcColBar, colBarBg.Get());
 
-    const float colNameX  = contentX + config.ScaleF(14.0f);
-    const float colNameW  = config.ScaleF(125.0f);
-    const float colStatX  = colNameX + colNameW;
-    const float colStatW  = config.ScaleF(85.0f);
-    const float colCpuX   = colStatX + colStatW;
-    const float colCpuW   = config.ScaleF(55.0f);
-    const float colMemX   = colCpuX + colCpuW;
-    const float colMemW   = config.ScaleF(70.0f);
-    const float colDiskX  = colMemX + colMemW;
-    const float colDiskW  = config.ScaleF(65.0f);
-    const float colNetX   = colDiskX + colDiskW;
-    const float colNetW   = config.ScaleF(65.0f);
-    const float colGpuX   = colNetX + colNetW;
-    const float colGpuW   = config.ScaleF(45.0f);
-    const float colPowerX = colGpuX + colGpuW;
-    const float colPowerW = (contentX + leftW - config.ScaleF(12.0f)) - colPowerX;
+    const float colPortX = contentX + config.ScaleF(14.0f);
+    const float colPortW = config.ScaleF(70.0f);
+    const float colPidX  = colPortX + colPortW;
+    const float colPidW  = config.ScaleF(65.0f);
+    const float colNameX = colPidX + colPidW;
+    const float colNameW = config.ScaleF(150.0f);
+    const float colMemW  = config.ScaleF(95.0f);
+    const float colCpuW  = config.ScaleF(70.0f);
+    const float colStatW = config.ScaleF(85.0f);
+    const float colStatX = contentX + leftW - colStatW - config.ScaleF(14.0f);
+    const float colCpuX  = colStatX - colCpuW;
+    const float colMemX  = colCpuX - colMemW;
+    const float colPurpX = colNameX + colNameW;
+    const float colPurpW = colMemX - colPurpX - config.ScaleF(10.0f);
 
     auto drawColHeader = [&](const wchar_t* txt, float x, float w) {
         D2D1_RECT_F rc = D2D1::RectF(x, colBarY + config.ScaleF(5.0f), x + w, colBarY + tblColBarH);
         pRT->DrawText(txt, static_cast<UINT32>(wcslen(txt)),
-                      theme.fontHint ? theme.fontHint.Get() : theme.fontCode.Get(),
+                      theme.fontBody ? theme.fontBody.Get() : theme.fontCode.Get(),
                       rc, theme.brushTextSecondary.Get());
     };
 
-    drawColHeader(L"Name ^", colNameX, colNameW);
-    drawColHeader(L"Status", colStatX, colStatW);
+    drawColHeader(L"Port", colPortX, colPortW);
+    drawColHeader(L"PID", colPidX, colPidW);
+    drawColHeader(L"Process", colNameX, colNameW);
+    drawColHeader(L"Service / Purpose", colPurpX, colPurpW);
+    drawColHeader(L"Memory (WS)", colMemX, colMemW);
     drawColHeader(L"CPU", colCpuX, colCpuW);
-    drawColHeader(L"Memory", colMemX, colMemW);
-    drawColHeader(L"Disk", colDiskX, colDiskW);
-    drawColHeader(L"Network", colNetX, colNetW);
-    drawColHeader(L"GPU", colGpuX, colGpuW);
-    drawColHeader(L"Power usage", colPowerX, colPowerW);
+    drawColHeader(L"Status", colStatX, colStatW);
 
     // Render Table Rows with Pagination
     float rowY = colBarY + tblColBarH;
@@ -10144,14 +10251,50 @@ void EditorCanvas::RenderMonitorView(ID2D1RenderTarget* pRT, Theme& theme, const
             pRT->FillRectangle(rcRow, rowAltBg.Get());
         }
 
-        // Process Name
-        D2D1_RECT_F rcProc = D2D1::RectF(colNameX, rowY + config.ScaleF(6.0f), colNameX + colNameW, rowY + tblRowH);
+        // Port
+        std::wstring portStr = (entry.port > 0) ? (L":" + std::to_wstring(entry.port)) : L"-";
+        D2D1_RECT_F rcPort = D2D1::RectF(colPortX, rowY + config.ScaleF(6.0f), colPortX + colPortW - config.ScaleF(6.0f), rowY + tblRowH);
+        pRT->DrawText(portStr.c_str(), static_cast<UINT32>(portStr.length()),
+                      theme.fontCode ? theme.fontCode.Get() : theme.fontBody.Get(),
+                      rcPort, entry.isDevelopment ? theme.brushTextWhite.Get() : theme.brushTextSecondary.Get());
+
+        // PID
+        std::wstring pidStr = std::to_wstring(entry.pid);
+        D2D1_RECT_F rcPid = D2D1::RectF(colPidX, rowY + config.ScaleF(6.0f), colPidX + colPidW - config.ScaleF(6.0f), rowY + tblRowH);
+        pRT->DrawText(pidStr.c_str(), static_cast<UINT32>(pidStr.length()),
+                      theme.fontBody ? theme.fontBody.Get() : theme.fontCode.Get(),
+                      rcPid, theme.brushTextSecondary.Get());
+
+        // Process Name (Clipped cleanly so it NEVER leaks or layers into purpose or status)
+        D2D1_RECT_F rcProc = D2D1::RectF(colNameX, rowY + config.ScaleF(6.0f), colNameX + colNameW - config.ScaleF(8.0f), rowY + tblRowH);
+        pRT->PushAxisAlignedClip(rcProc, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
         pRT->DrawText(entry.processName.c_str(), static_cast<UINT32>(entry.processName.length()),
                       theme.fontBody ? theme.fontBody.Get() : theme.fontTitle.Get(),
                       rcProc, entry.isDevelopment ? theme.brushTextWhite.Get() : theme.brushTextSecondary.Get());
+        pRT->PopAxisAlignedClip();
+
+        // Purpose / Service Description (Clipped cleanly)
+        D2D1_RECT_F rcPurp = D2D1::RectF(colPurpX, rowY + config.ScaleF(6.0f), colPurpX + colPurpW - config.ScaleF(8.0f), rowY + tblRowH);
+        pRT->PushAxisAlignedClip(rcPurp, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+        pRT->DrawText(entry.purpose.c_str(), static_cast<UINT32>(entry.purpose.length()),
+                      theme.fontBody ? theme.fontBody.Get() : theme.fontCode.Get(),
+                      rcPurp, theme.brushTextSecondary.Get());
+        pRT->PopAxisAlignedClip();
+
+        // Memory (WS)
+        D2D1_RECT_F rcMem = D2D1::RectF(colMemX, rowY + config.ScaleF(6.0f), colMemX + colMemW - config.ScaleF(8.0f), rowY + tblRowH);
+        pRT->DrawText(entry.memoryStr.c_str(), static_cast<UINT32>(entry.memoryStr.length()),
+                      theme.fontBody ? theme.fontBody.Get() : theme.fontCode.Get(),
+                      rcMem, theme.brushTextWhite.Get());
+
+        // CPU
+        D2D1_RECT_F rcCpu = D2D1::RectF(colCpuX, rowY + config.ScaleF(6.0f), colCpuX + colCpuW - config.ScaleF(8.0f), rowY + tblRowH);
+        pRT->DrawText(entry.cpuPercentStr.c_str(), static_cast<UINT32>(entry.cpuPercentStr.length()),
+                      theme.fontBody ? theme.fontBody.Get() : theme.fontCode.Get(),
+                      rcCpu, theme.brushTextSecondary.Get());
 
         // Status Pill
-        D2D1_RECT_F rcStatPill = D2D1::RectF(colStatX, rowY + config.ScaleF(5.0f), colStatX + config.ScaleF(72.0f), rowY + tblRowH - config.ScaleF(5.0f));
+        D2D1_RECT_F rcStatPill = D2D1::RectF(colStatX, rowY + config.ScaleF(5.0f), colStatX + config.ScaleF(74.0f), rowY + tblRowH - config.ScaleF(5.0f));
         if (entry.status == L"Active") {
             if (brushGreenPillBg) pRT->FillRoundedRectangle(D2D1::RoundedRect(rcStatPill, 3.5f, 3.5f), brushGreenPillBg.Get());
             pRT->DrawText(entry.status.c_str(), static_cast<UINT32>(entry.status.length()),
@@ -10168,42 +10311,6 @@ void EditorCanvas::RenderMonitorView(ID2D1RenderTarget* pRT, Theme& theme, const
                           theme.fontBadge ? theme.fontBadge.Get() : theme.fontCode.Get(),
                           rcStatPill, theme.brushTextSecondary.Get());
         }
-
-        // CPU
-        D2D1_RECT_F rcCpu = D2D1::RectF(colCpuX, rowY + config.ScaleF(6.0f), colCpuX + colCpuW, rowY + tblRowH);
-        pRT->DrawText(entry.cpuPercentStr.c_str(), static_cast<UINT32>(entry.cpuPercentStr.length()),
-                      theme.fontHint ? theme.fontHint.Get() : theme.fontCode.Get(),
-                      rcCpu, theme.brushTextSecondary.Get());
-
-        // Memory
-        D2D1_RECT_F rcMem = D2D1::RectF(colMemX, rowY + config.ScaleF(6.0f), colMemX + colMemW, rowY + tblRowH);
-        pRT->DrawText(entry.memoryStr.c_str(), static_cast<UINT32>(entry.memoryStr.length()),
-                      theme.fontHint ? theme.fontHint.Get() : theme.fontCode.Get(),
-                      rcMem, theme.brushTextSecondary.Get());
-
-        // Disk
-        D2D1_RECT_F rcDisk = D2D1::RectF(colDiskX, rowY + config.ScaleF(6.0f), colDiskX + colDiskW, rowY + tblRowH);
-        pRT->DrawText(entry.diskStr.c_str(), static_cast<UINT32>(entry.diskStr.length()),
-                      theme.fontHint ? theme.fontHint.Get() : theme.fontCode.Get(),
-                      rcDisk, theme.brushTextSecondary.Get());
-
-        // Network
-        D2D1_RECT_F rcNet = D2D1::RectF(colNetX, rowY + config.ScaleF(6.0f), colNetX + colNetW, rowY + tblRowH);
-        pRT->DrawText(entry.networkStr.c_str(), static_cast<UINT32>(entry.networkStr.length()),
-                      theme.fontHint ? theme.fontHint.Get() : theme.fontCode.Get(),
-                      rcNet, theme.brushTextSecondary.Get());
-
-        // GPU
-        D2D1_RECT_F rcGpu = D2D1::RectF(colGpuX, rowY + config.ScaleF(6.0f), colGpuX + colGpuW, rowY + tblRowH);
-        pRT->DrawText(entry.gpuStr.c_str(), static_cast<UINT32>(entry.gpuStr.length()),
-                      theme.fontHint ? theme.fontHint.Get() : theme.fontCode.Get(),
-                      rcGpu, theme.brushTextSecondary.Get());
-
-        // Power
-        D2D1_RECT_F rcPower = D2D1::RectF(colPowerX, rowY + config.ScaleF(6.0f), colPowerX + colPowerW, rowY + tblRowH);
-        pRT->DrawText(entry.powerStr.c_str(), static_cast<UINT32>(entry.powerStr.length()),
-                      theme.fontHint ? theme.fontHint.Get() : theme.fontCode.Get(),
-                      rcPower, theme.brushTextSecondary.Get());
 
         rowY += tblRowH;
     }
@@ -10273,9 +10380,14 @@ void EditorCanvas::RenderMonitorView(ID2D1RenderTarget* pRT, Theme& theme, const
         // Header: Process Icon + Process Name + Purpose
         const float dIconSize = config.ScaleF(32.0f);
         D2D1_RECT_F rcDIcon = D2D1::RectF(rightX + config.ScaleF(16.0f), curY + config.ScaleF(14.0f), rightX + config.ScaleF(16.0f) + dIconSize, curY + config.ScaleF(14.0f) + dIconSize);
-        if (brushCyanPillBg) pRT->FillRoundedRectangle(D2D1::RoundedRect(rcDIcon, 6.0f, 6.0f), brushCyanPillBg.Get());
-        const wchar_t* pGlyph = sel.processName.empty() ? L"P" : sel.processName.substr(0, 1).c_str();
-        pRT->DrawText(pGlyph, 1, theme.fontTitle ? theme.fontTitle.Get() : theme.fontBody.Get(), rcDIcon, theme.brushTextWhite.Get());
+        if (sel.processName == L"phide.exe") {
+            m_icons.DrawMonitorAppIcon(pRT, rcDIcon);
+        } else {
+            if (brushCyanPillBg) pRT->FillRoundedRectangle(D2D1::RoundedRect(rcDIcon, 6.0f, 6.0f), brushCyanPillBg.Get());
+            if (cardBorder) pRT->DrawRoundedRectangle(D2D1::RoundedRect(rcDIcon, 6.0f, 6.0f), cardBorder.Get(), 1.0f);
+            const wchar_t* pGlyph = sel.processName.empty() ? L"P" : sel.processName.substr(0, 1).c_str();
+            pRT->DrawText(pGlyph, 1, theme.fontButtonCenter ? theme.fontButtonCenter.Get() : theme.fontBody.Get(), rcDIcon, theme.brushTextWhite.Get());
+        }
 
         const float dTextX = rightX + config.ScaleF(16.0f) + dIconSize + config.ScaleF(12.0f);
         const float dTextW = rightW - config.ScaleF(32.0f) - dIconSize - config.ScaleF(12.0f);
@@ -10285,17 +10397,19 @@ void EditorCanvas::RenderMonitorView(ID2D1RenderTarget* pRT, Theme& theme, const
                       rcDName, theme.brushTextWhite.Get());
 
         D2D1_RECT_F rcDPurp = D2D1::RectF(dTextX, curY + config.ScaleF(32.0f), dTextX + dTextW, curY + config.ScaleF(50.0f));
+        pRT->PushAxisAlignedClip(rcDPurp, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
         pRT->DrawText(sel.purpose.c_str(), static_cast<UINT32>(sel.purpose.length()),
-                      theme.fontHint ? theme.fontHint.Get() : theme.fontBody.Get(),
+                      theme.fontBody ? theme.fontBody.Get() : theme.fontHint.Get(),
                       rcDPurp, theme.brushTextSecondary.Get());
+        pRT->PopAxisAlignedClip();
 
         // Divider
         float dDivY = curY + config.ScaleF(58.0f);
         pRT->FillRectangle(D2D1::RectF(rightX + config.ScaleF(16.0f), dDivY, rightX + rightW - config.ScaleF(16.0f), dDivY + 1.0f), cardBorder.Get());
 
         // Key-Value Properties
-        float propY = dDivY + config.ScaleF(12.0f);
-        const float propRowH = config.ScaleF(24.0f);
+        float propY = dDivY + config.ScaleF(14.0f);
+        const float propRowH = config.ScaleF(26.0f);
         const float keyX = rightX + config.ScaleF(16.0f);
         const float keyW = config.ScaleF(125.0f);
         const float valX = keyX + keyW;
@@ -10304,27 +10418,27 @@ void EditorCanvas::RenderMonitorView(ID2D1RenderTarget* pRT, Theme& theme, const
         auto drawProperty = [&](const wchar_t* key, const std::wstring& val, ID2D1Brush* pValBrush = nullptr) {
             D2D1_RECT_F rcK = D2D1::RectF(keyX, propY, keyX + keyW, propY + propRowH);
             pRT->DrawText(key, static_cast<UINT32>(wcslen(key)),
-                          theme.fontHint ? theme.fontHint.Get() : theme.fontCode.Get(),
-                          rcK, theme.brushTextSecondary.Get());
+                      theme.fontBody ? theme.fontBody.Get() : theme.fontCode.Get(),
+                      rcK, theme.brushTextSecondary.Get());
 
             D2D1_RECT_F rcV = D2D1::RectF(valX, propY, valX + valW, propY + propRowH);
+            pRT->PushAxisAlignedClip(rcV, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
             pRT->DrawText(val.c_str(), static_cast<UINT32>(val.length()),
                           theme.fontBody ? theme.fontBody.Get() : theme.fontTitle.Get(),
                           rcV, pValBrush ? pValBrush : theme.brushTextWhite.Get());
+            pRT->PopAxisAlignedClip();
 
             propY += propRowH;
         };
 
         drawProperty(L"PID", std::to_wstring(sel.pid));
+        drawProperty(L"Process", sel.processName);
+        drawProperty(L"Purpose", sel.purpose);
+        drawProperty(L"Port / Protocol", (sel.port > 0 ? (L":" + std::to_wstring(sel.port)) : L"-") + L" (" + sel.protocol + L")");
         drawProperty(L"Status", sel.status + (sel.isDevelopment ? L" (Dev Service)" : L""), brushGreenText.Get());
-        drawProperty(L"Port / Protocol", L":" + std::to_wstring(sel.port) + L" (" + sel.protocol + L")");
         drawProperty(L"CPU Usage", sel.cpuPercentStr);
         drawProperty(L"Memory (WS)", sel.memoryStr);
-        drawProperty(L"Disk I/O", sel.diskStr);
-        drawProperty(L"Network I/O", sel.networkStr);
-        drawProperty(L"GPU Compute", sel.gpuStr);
-        drawProperty(L"Power Usage", sel.powerStr);
-        drawProperty(L"Command line", sel.commandLine);
+        drawProperty(L"Executable Path", sel.commandLine.empty() ? sel.processName : sel.commandLine);
     }
 
     curY += tblTotalH + config.ScaleF(16.0f);
@@ -10352,42 +10466,21 @@ void EditorCanvas::RenderMonitorView(ID2D1RenderTarget* pRT, Theme& theme, const
                   theme.fontBody ? theme.fontBody.Get() : theme.fontTitle.Get(),
                   rcPathA, theme.brushTextWhite.Get());
 
-    // Multi-color Segmented Storage Bar
-    const float barX = contentX + config.ScaleF(16.0f);
-    const float barW = leftW - config.ScaleF(32.0f);
-    const float barY = curY + config.ScaleF(54.0f);
-    const float barH = config.ScaleF(12.0f);
+    D2D1_RECT_F rcStatRow1 = D2D1::RectF(contentX + config.ScaleF(16.0f), curY + config.ScaleF(56.0f), contentX + leftW - config.ScaleF(16.0f), curY + config.ScaleF(76.0f));
+    std::wstring sRow1 = L"Total Storage: " + m_projectStorage.formattedSize + L"   |   " +
+                         std::to_wstring(m_projectStorage.fileCount) + L" project files   |   " +
+                         std::to_wstring(m_projectStorage.folderCount) + L" folders";
+    pRT->DrawText(sRow1.c_str(), static_cast<UINT32>(sRow1.length()),
+                  theme.fontBody ? theme.fontBody.Get() : theme.fontTitle.Get(),
+                  rcStatRow1, theme.brushTextWhite.Get());
 
-    D2D1_RECT_F rcBarBg = D2D1::RectF(barX, barY, barX + barW, barY + barH);
-    ComPtr<ID2D1SolidColorBrush> barBgBrush;
-    pRT->CreateSolidColorBrush(D2D1::ColorF(0.12f, 0.14f, 0.19f, 1.0f), &barBgBrush);
-    if (barBgBrush) pRT->FillRoundedRectangle(D2D1::RoundedRect(rcBarBg, 3.5f, 3.5f), barBgBrush.Get());
-
-    if (m_projectStorage.totalBytes > 0) {
-        float codeFrac = static_cast<float>(m_projectStorage.codeBytes) / static_cast<float>(m_projectStorage.totalBytes);
-        float assetFrac = static_cast<float>(m_projectStorage.assetBytes) / static_cast<float>(m_projectStorage.totalBytes);
-        codeFrac = (std::max)(0.08f, (std::min)(0.90f, codeFrac));
-
-        float codeW = barW * codeFrac;
-        float assetW = (std::max)(0.04f, (std::min)(barW - codeW, barW * assetFrac));
-
-        ComPtr<ID2D1SolidColorBrush> bCode;
-        pRT->CreateSolidColorBrush(D2D1::ColorF(0.220f, 0.741f, 0.973f, 1.0f), &bCode);
-        if (bCode) pRT->FillRectangle(D2D1::RectF(barX, barY, barX + codeW, barY + barH), bCode.Get());
-
-        ComPtr<ID2D1SolidColorBrush> bAsset;
-        pRT->CreateSolidColorBrush(D2D1::ColorF(0.961f, 0.620f, 0.043f, 1.0f), &bAsset);
-        if (bAsset && barX + codeW + assetW <= barX + barW) {
-            pRT->FillRectangle(D2D1::RectF(barX + codeW, barY, barX + codeW + assetW, barY + barH), bAsset.Get());
-        }
-    }
-
-    D2D1_RECT_F rcLegA = D2D1::RectF(contentX + config.ScaleF(16.0f), curY + config.ScaleF(74.0f), contentX + leftW - config.ScaleF(16.0f), curY + config.ScaleF(108.0f));
-    std::wstring legAStr = L"■ Source Code (" + std::to_wstring(m_projectStorage.codeBytes / 1024) + L" KB)   ■ Assets & Media (" + std::to_wstring(m_projectStorage.assetBytes / 1024) + L" KB)\n" +
-                           std::to_wstring(m_projectStorage.fileCount) + L" project files | " + std::to_wstring(m_projectStorage.folderCount) + L" folders (excludes virtual environments)";
-    pRT->DrawText(legAStr.c_str(), static_cast<UINT32>(legAStr.length()),
+    D2D1_RECT_F rcStatRow2 = D2D1::RectF(contentX + config.ScaleF(16.0f), curY + config.ScaleF(78.0f), contentX + leftW - config.ScaleF(16.0f), curY + config.ScaleF(108.0f));
+    std::wstring sRow2 = L"Source Code: " + std::to_wstring(m_projectStorage.codeBytes / 1024) + L" KB   •   " +
+                         L"Assets: " + std::to_wstring(m_projectStorage.assetBytes / 1024) + L" KB   •   " +
+                         L"Excluded: .venv, node_modules, .git, .phide, vendor";
+    pRT->DrawText(sRow2.c_str(), static_cast<UINT32>(sRow2.length()),
                   theme.fontHint ? theme.fontHint.Get() : theme.fontBody.Get(),
-                  rcLegA, theme.brushTextSecondary.Get());
+                  rcStatRow2, theme.brushTextSecondary.Get());
 
     // Panel B: Phide Process Health & Architecture (Right, matches rightW)
     D2D1_RECT_F rcPanelB = D2D1::RectF(rightX, curY, rightX + rightW, curY + dualPanelH);

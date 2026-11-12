@@ -14721,6 +14721,15 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     return TRUE;
                 }
 
+                // Performance Monitor interactive elements (Refresh button, pagination, process rows)
+                auto* pMonitorActiveDoc = GetActiveDoc();
+                if (pMonitorActiveDoc && pMonitorActiveDoc->isSpecialView && pMonitorActiveDoc->viewType == L"monitor") {
+                    if (m_editor.HitTestMonitorInteractive(pt)) {
+                        SetCursor(LoadCursor(nullptr, IDC_HAND));
+                        return TRUE;
+                    }
+                }
+
                 // Watermark cheat-sheet card row hover cursor
                 if (m_editor.GetHoveredWatermarkRow() >= 0) {
                     SetCursor(LoadCursor(nullptr, IDC_HAND));
@@ -17296,6 +17305,18 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
 
         case WM_TIMER: {
             if (wParam == m_caretTimerId) {
+                // Real-time telemetry auto-refresh for Performance Monitor (every 1 second)
+                auto* pMonitorDoc = GetActiveDoc();
+                if (pMonitorDoc && pMonitorDoc->isSpecialView && pMonitorDoc->viewType == L"monitor") {
+                    static ULONGLONG s_lastMonitorTick = 0;
+                    ULONGLONG nowTick = GetTickCount64();
+                    if (nowTick - s_lastMonitorTick >= 1000) {
+                        s_lastMonitorTick = nowTick;
+                        m_editor.RefreshMonitorTelemetry();
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
+                    }
+                }
+
                 m_editor.ToggleCaretBlink();
                 m_editor.GetInteractiveGuideView().ToggleCaretBlink();
                 if (m_editor.GetNotebookView().IsExecuting()) {
