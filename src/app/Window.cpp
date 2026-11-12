@@ -10755,6 +10755,20 @@ void Window::HandleMouseMove(POINT clientPt, WPARAM wParam) {
         }
     }
 
+    // Check Performance Monitor scrollbar dragging
+    if (m_editor.IsDraggingMonitorScrollbar()) {
+        if ((wParam & MK_LBUTTON) == 0) {
+            m_editor.ReleaseMonitorScrollbarDrag();
+            ReleaseCapture();
+            InvalidateRect(m_hwnd, nullptr, FALSE);
+            return;
+        }
+        if (m_editor.HandleMonitorMouseMove(clientPt)) {
+            InvalidateRect(m_hwnd, nullptr, FALSE);
+            return;
+        }
+    }
+
     // Check vertical scrollbar dragging
     if (pActiveDoc && pActiveDoc->isDraggingScrollbar) {
         if ((wParam & MK_LBUTTON) == 0) {
@@ -12877,7 +12891,10 @@ void Window::HandleLButtonDown(POINT clientPt) {
                     }
                 } else if (doc.isSpecialView && doc.viewType == L"monitor") {
                     m_drawer.SetSearchFocus(0);
-                    if (m_editor.HandleMonitorClick(clientPt, m_config)) {
+                    if (m_editor.HandleMonitorLButtonDown(clientPt, m_config)) {
+                        if (m_editor.IsDraggingMonitorScrollbar()) {
+                            SetCapture(m_hwnd);
+                        }
                         InvalidateRect(m_hwnd, nullptr, FALSE);
                         return;
                     }
@@ -13744,6 +13761,12 @@ void Window::HandleLButtonUp(POINT clientPt) {
         SaveSessionState();
         ReleaseCapture();
         SetCursor(LoadCursor(nullptr, IDC_ARROW));
+        InvalidateRect(m_hwnd, nullptr, FALSE);
+        return;
+    }
+    if (m_editor.IsDraggingMonitorScrollbar()) {
+        m_editor.ReleaseMonitorScrollbarDrag();
+        ReleaseCapture();
         InvalidateRect(m_hwnd, nullptr, FALSE);
         return;
     }
@@ -15283,6 +15306,11 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     }
                 } else if (pDoc->isSpecialView && pDoc->viewType == L"settings") {
                     if (m_editor.GetSettingsView().HandleMouseWheel(delta)) {
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
+                        return 0;
+                    }
+                } else if (pDoc->isSpecialView && pDoc->viewType == L"monitor") {
+                    if (m_editor.HandleMonitorMouseWheel(delta)) {
                         InvalidateRect(m_hwnd, nullptr, FALSE);
                         return 0;
                     }

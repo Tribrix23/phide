@@ -733,7 +733,11 @@ public:
     void RenderMonitorView(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
                           float canvasLeft, float canvasWidth, float topY, float clientHeight);
     bool HandleMonitorClick(POINT pt, const app::AppConfig& config);
-    void IncrementMonitorPhase(float delta) noexcept { m_monitorAnimPhase += delta; }
+    bool HandleMonitorMouseWheel(short delta);
+    bool HandleMonitorLButtonDown(POINT pt, const app::AppConfig& config);
+    bool HandleMonitorMouseMove(POINT pt);
+    void ReleaseMonitorScrollbarDrag();
+    [[nodiscard]] bool IsDraggingMonitorScrollbar() const noexcept { return m_isDraggingMonitorScrollbar; }
     void RefreshMonitorTelemetry();
     [[nodiscard]] bool HitTestMonitorInteractive(POINT pt) const;
     double MeasureCurrentProcessCpu();
@@ -741,6 +745,13 @@ public:
     D2D1_RECT_F m_rcMonitorRefreshBtn{};
     D2D1_RECT_F m_rcMonitorPrevPage{};
     D2D1_RECT_F m_rcMonitorNextPage{};
+    float m_monitorScrollY = 0.0f;
+    float m_monitorMaxScrollY = 0.0f;
+    bool m_isDraggingMonitorScrollbar = false;
+    float m_monitorDragStartMouseY = 0.0f;
+    float m_monitorDragStartScrollY = 0.0f;
+    D2D1_RECT_F m_rcMonitorScrollTrack{};
+    D2D1_RECT_F m_rcMonitorScrollThumb{};
     size_t m_monitorCurrentPage = 0;
     size_t m_monitorPageSize = 8;
     int m_monitorSelectedProcessIndex = 0;

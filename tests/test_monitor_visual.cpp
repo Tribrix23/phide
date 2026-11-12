@@ -137,6 +137,55 @@ int main() {
     std::wstring outPath = L"C:\\Users\\Administrator\\.gemini\\antigravity\\brain\\2e65eefb-cd8f-409b-add6-886e19899c16\\test_monitor_visual_verification.png";
     SaveWicBitmapToPng(pWicBitmap.Get(), pWicFactory.Get(), outPath);
 
+    // Now render a narrow split screen test (width = 520, height = 500)
+    {
+        const UINT sw = 520;
+        const UINT sh = 500;
+        ComPtr<IWICBitmap> pSplitBitmap;
+        hr = pWicFactory->CreateBitmap(sw, sh, GUID_WICPixelFormat32bppPBGRA, WICBitmapCacheOnDemand, &pSplitBitmap);
+        if (SUCCEEDED(hr)) {
+            ComPtr<ID2D1RenderTarget> pSplitRT;
+            hr = pD2DFactory->CreateWicBitmapRenderTarget(pSplitBitmap.Get(), props, &pSplitRT);
+            if (SUCCEEDED(hr)) {
+                phide::ui::Theme splitTheme;
+                splitTheme.SetThemeMode(phide::ui::ThemeMode::Dark);
+                splitTheme.CreateDeviceResources(pSplitRT.Get(), pDWriteFactory.Get());
+
+                pSplitRT->BeginDraw();
+                pSplitRT->Clear(splitTheme.colors.windowBg);
+
+                // Render in split mode (canvasLeft = 0, canvasWidth = 520)
+                editor.Render(pSplitRT.Get(), splitTheme, cfg, docs, 0, 0.0f, static_cast<float>(sw), static_cast<float>(sh), true);
+
+                pSplitRT->EndDraw();
+                std::wstring splitPath = L"C:\\Users\\Administrator\\.gemini\\antigravity\\brain\\2e65eefb-cd8f-409b-add6-886e19899c16\\test_monitor_split_screen.png";
+                SaveWicBitmapToPng(pSplitBitmap.Get(), pWicFactory.Get(), splitPath);
+
+                // Now test scrolling down in split screen
+                for (int i = 0; i < 6; ++i) {
+                    editor.HandleMonitorMouseWheel(-120);
+                }
+                pSplitRT->BeginDraw();
+                pSplitRT->Clear(splitTheme.colors.windowBg);
+                editor.Render(pSplitRT.Get(), splitTheme, cfg, docs, 0, 0.0f, static_cast<float>(sw), static_cast<float>(sh), true);
+                pSplitRT->EndDraw();
+                std::wstring scrolledPath = L"C:\\Users\\Administrator\\.gemini\\antigravity\\brain\\2e65eefb-cd8f-409b-add6-886e19899c16\\test_monitor_split_screen_scrolled.png";
+                SaveWicBitmapToPng(pSplitBitmap.Get(), pWicFactory.Get(), scrolledPath);
+
+                // Now test scrolling to the very bottom to verify bottom diagnostic panels
+                for (int i = 0; i < 15; ++i) {
+                    editor.HandleMonitorMouseWheel(-120);
+                }
+                pSplitRT->BeginDraw();
+                pSplitRT->Clear(splitTheme.colors.windowBg);
+                editor.Render(pSplitRT.Get(), splitTheme, cfg, docs, 0, 0.0f, static_cast<float>(sw), static_cast<float>(sh), true);
+                pSplitRT->EndDraw();
+                std::wstring bottomPath = L"C:\\Users\\Administrator\\.gemini\\antigravity\\brain\\2e65eefb-cd8f-409b-add6-886e19899c16\\test_monitor_split_screen_bottom.png";
+                SaveWicBitmapToPng(pSplitBitmap.Get(), pWicFactory.Get(), bottomPath);
+            }
+        }
+    }
+
     std::cout << "Visual verification snapshot generated successfully." << std::endl;
     CoUninitialize();
     return 0;
