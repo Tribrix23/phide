@@ -17562,12 +17562,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     }
                 }
 
-                // Smoothly animate Monitor view waveforms (60 FPS buttery smooth)
-                auto* pMonitorDoc = GetActiveDoc();
-                if (pMonitorDoc && pMonitorDoc->isSpecialView && pMonitorDoc->viewType == L"monitor") {
-                    m_editor.IncrementMonitorPhase(0.045f);
-                    keepAnimating = true;
-                }
+
 
                 if (!keepAnimating && !m_isDrawerAnimating && !m_isTerminalAnimating && !m_isTermFullScreenAnimating && !m_isRightSidebarAnimating) {
                     KillTimer(m_hwnd, m_animTimerId);

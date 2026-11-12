@@ -9470,6 +9470,11 @@ double EditorCanvas::MeasureCurrentProcessCpu() {
     }
 
     ULONGLONG timeDiff = nowVal.QuadPart - m_lastCpuSampleTime;
+    // Enforce minimum 900ms sampling window (matching Windows Task Manager 1.0s update cadence)
+    if (timeDiff < 9000000ULL) {
+        return m_currentCpuPercent;
+    }
+
     ULONGLONG procDiff = (kVal.QuadPart - m_lastCpuKernelTime) + (uVal.QuadPart - m_lastCpuUserTime);
 
     m_lastCpuSampleTime = nowVal.QuadPart;
@@ -9477,10 +9482,14 @@ double EditorCanvas::MeasureCurrentProcessCpu() {
     m_lastCpuUserTime = uVal.QuadPart;
 
     if (timeDiff > 0) {
-        double cpu = (static_cast<double>(procDiff) / static_cast<double>(timeDiff * m_numProcessors)) * 100.0;
-        if (cpu < 0.0) cpu = 0.0;
-        if (cpu > 100.0) cpu = 100.0;
-        m_currentCpuPercent = static_cast<float>(cpu);
+        double rawCpu = (static_cast<double>(procDiff) / static_cast<double>(timeDiff * m_numProcessors)) * 100.0;
+        if (rawCpu < 0.0) rawCpu = 0.0;
+        if (rawCpu > 100.0) rawCpu = 100.0;
+
+        // Apply exponential moving average smoothing like Task Manager to eliminate high-frequency jitter
+        double smoothed = (m_currentCpuPercent * 0.35) + (rawCpu * 0.65);
+        m_currentCpuPercent = static_cast<float>(smoothed);
+
         wchar_t buf[32];
         swprintf_s(buf, L"%.1f%%", m_currentCpuPercent);
         m_currentCpuStr = buf;
@@ -9899,8 +9908,10 @@ void EditorCanvas::RenderMonitorView(ID2D1RenderTarget* pRT, Theme& theme, const
     const float contentW = canvasWidth - padX * 2.0f;
     if (contentW <= 100.0f) return;
 
-    // Measure real CPU and telemetry
-    MeasureCurrentProcessCpu();
+    // Initialize CPU telemetry if not yet initialized
+    if (m_lastCpuSampleTime == 0) {
+        MeasureCurrentProcessCpu();
+    }
     ULONGLONG now = GetTickCount64();
     if (m_lastDevPortsQueryTick == 0 || (now - m_lastDevPortsQueryTick > 2500)) {
         m_cachedDevPorts = QueryActiveDevPorts();
