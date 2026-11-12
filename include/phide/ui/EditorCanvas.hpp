@@ -707,6 +707,13 @@ public:
         std::wstring protocol;
         std::wstring status;
         bool isDevelopment = false;
+        std::wstring cpuPercentStr = L"0.0%";
+        std::wstring memoryStr = L"0.0 MB";
+        std::wstring diskStr = L"0 MB/s";
+        std::wstring networkStr = L"0 Mbps";
+        std::wstring gpuStr = L"0%";
+        std::wstring powerStr = L"Low";
+        std::wstring commandLine;
     };
 
     struct ProjectStorageTelemetry {
@@ -719,6 +726,11 @@ public:
         ULONGLONG lastScanTick = 0;
     };
 
+    struct ProcessRowHit {
+        D2D1_RECT_F rc;
+        int index;
+    };
+
     std::vector<DevPortInfo> QueryActiveDevPorts();
     void UpdateProjectStorageTelemetry(const std::wstring& rootPath);
 
@@ -727,11 +739,14 @@ public:
     bool HandleMonitorClick(POINT pt, const app::AppConfig& config);
     void IncrementMonitorPhase(float delta) noexcept { m_monitorAnimPhase += delta; }
 
-    D2D1_RECT_F m_rcMonitorGcBtn{};
     D2D1_RECT_F m_rcMonitorRefreshBtn{};
+    D2D1_RECT_F m_rcMonitorPrevPage{};
+    D2D1_RECT_F m_rcMonitorNextPage{};
+    size_t m_monitorCurrentPage = 0;
+    size_t m_monitorPageSize = 8;
+    int m_monitorSelectedProcessIndex = 0;
+    std::vector<ProcessRowHit> m_monitorRowHits;
     float m_monitorAnimPhase = 0.0f;
-    std::wstring m_monitorGcFeedback;
-    ULONGLONG m_monitorLastGcTime = 0;
     std::vector<DevPortInfo> m_cachedDevPorts;
     ULONGLONG m_lastDevPortsQueryTick = 0;
     ProjectStorageTelemetry m_projectStorage;
