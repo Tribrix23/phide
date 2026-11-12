@@ -321,6 +321,7 @@ static bool PromptInputDialog(HWND hParent, const std::wstring& title, const std
 }
 
 Window::Window() {
+    m_autoSave = (m_config.autoSave != L"off");
     m_editorGroups.push_back(editor::EditorGroup{});
     UpdateExecutionButtonStates();
     // Pre-probe MySQL port in case 3306 is already bound on host
@@ -851,6 +852,7 @@ void Window::LoadSessionState() {
                 auto q2 = line.rfind(L'"');
                 if (q1 != std::wstring::npos && q2 != std::wstring::npos && q2 > q1) {
                     m_config.autoSave = UnescapeJson(line.substr(q1 + 1, q2 - q1 - 1));
+                    m_autoSave = (m_config.autoSave != L"off");
                 }
             }
         } else if (line.find(L"\"cursorStyle\"") != std::wstring::npos) {
@@ -1788,6 +1790,9 @@ void Window::DoOpenFile() {
 
 void Window::OpenFileDocument(const std::wstring& path, bool isPreview) {
     if (path.empty()) return;
+    if (m_autoSave) {
+        FlushPendingAutoSaves();
+    }
 
     std::wstring resolvedPath = path;
     if (!std::filesystem::exists(resolvedPath) && m_drawer.HasOpenFolder()) {
@@ -2879,6 +2884,9 @@ void Window::CloseDocument(int groupIdx, int docIdx) {
     if (groupIdx < 0 || groupIdx >= static_cast<int>(m_editorGroups.size())) return;
     auto& group = m_editorGroups[groupIdx];
     if (docIdx < 0 || docIdx >= static_cast<int>(group.docs.size())) return;
+    if (m_autoSave) {
+        FlushPendingAutoSaves();
+    }
 
     auto& closingDoc = group.docs[docIdx];
     if (!closingDoc.isSpecialView && !closingDoc.filePath.empty() && closingDoc.isDirty) {
@@ -3469,6 +3477,9 @@ void Window::DoRevertFile() {
 }
 
 void Window::DoCloseEditor() {
+    if (m_autoSave) {
+        FlushPendingAutoSaves();
+    }
     auto& group = GetActiveGroup();
     if (group.activeDocIdx >= 0) {
         CloseDocument(m_focusedGroupIdx, group.activeDocIdx);
@@ -3929,9 +3940,7 @@ static std::unordered_set<std::wstring> s_pendingModifiedKeys;
 void Window::MarkDocumentModified(editor::OpenDocument* pDoc) {
     if (!pDoc || pDoc->isSpecialView) return;
     pDoc->isPreview = false;
-    if (!m_autoSave || pDoc->filePath.empty()) {
-        pDoc->isDirty = true;
-    }
+    pDoc->isDirty = true; // Always mark dirty so changes are never lost
     if (m_editorGroups.size() > 1) {
         SyncDocumentBuffers(pDoc);
     }
@@ -3940,7 +3949,42 @@ void Window::MarkDocumentModified(editor::OpenDocument* pDoc) {
     if (!key.empty()) {
         s_pendingModifiedKeys.insert(key);
         s_editDebouncePending = true;
-        s_editDebounceTargetTime = GetTickCount64() + 260;
+        int delay = m_autoSave ? ((m_config.autoSaveDelay > 0) ? m_config.autoSaveDelay : 1000) : 300;
+        s_editDebounceTargetTime = GetTickCount64() + delay;
+    }
+}
+
+void Window::FlushPendingAutoSaves() {
+    if (!m_autoSave) return;
+    bool anySaved = false;
+    for (auto& group : m_editorGroups) {
+        for (auto& doc : group.docs) {
+            if (doc.isDirty && !doc.filePath.empty()) {
+                if (doc.isSpecialView && doc.viewType == L"notebook" && doc.notebookDoc) {
+                    doc.notebookDoc->SaveToFile(doc.filePath);
+                    doc.isDirty = false;
+                    anySaved = true;
+                } else if (!doc.isSpecialView) {
+                    s_lastInternalAutoSaveTick = GetTickCount64();
+                    doc.buffer.SaveToFile(doc.filePath);
+                    s_lastInternalAutoSaveTick = GetTickCount64();
+                    doc.isDirty = false;
+                    doc.originalDiskText = doc.buffer.GetText();
+                    anySaved = true;
+                }
+                SyncDocumentBuffers(&doc);
+                if (doc.filePath == m_snippetManager.GetSnippetsFilePath()) {
+                    m_snippetManager.LoadSnippets();
+                }
+            }
+        }
+    }
+    if (anySaved) {
+        s_pendingModifiedKeys.clear();
+        s_editDebouncePending = false;
+        UpdateDrawerDirtyFiles();
+        m_drawer.RefreshGitStatusOnly(true);
+        InvalidateRect(m_hwnd, nullptr, FALSE);
     }
 }
 
@@ -11258,9 +11302,12 @@ bool Window::HandlePopupMenuClick(POINT clientPt) {
                         break;
                     case ui::MenuActionId::ToggleAutoSave:
                         m_autoSave = !m_autoSave;
+                        m_config.autoSave = m_autoSave ? L"afterDelay" : L"off";
+                        SaveSessionState();
                         if (m_autoSave) {
-                            DoSaveAll();
+                            FlushPendingAutoSaves();
                         }
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
                         break;
                     case ui::MenuActionId::Settings:
                         DoOpenSettings();
@@ -12768,6 +12815,9 @@ void Window::HandleLButtonDown(POINT clientPt) {
             // 4b. Tab Header Click in this group (initiates potential tab drag-and-drop reorder)
             int tabHitIdx = m_editor.HitTestTab(clientPt, group.docs);
             if (tabHitIdx >= 0) {
+                if (m_autoSave && group.activeDocIdx != tabHitIdx) {
+                    FlushPendingAutoSaves();
+                }
                 group.activeDocIdx = tabHitIdx;
                 SyncActiveTabWithDrawer();
                 m_dragTabGroup = targetGroup;
@@ -12906,7 +12956,12 @@ void Window::HandleLButtonDown(POINT clientPt) {
                             SetCapture(m_hwnd);
                         }
                         if (!modifiedId.empty()) {
-                            if (modifiedId == L"editor.fontSize" || modifiedId == L"editor.fontFamily") {
+                            if (modifiedId == L"files.autoSave") {
+                                m_autoSave = (m_config.autoSave != L"off");
+                                if (m_autoSave) {
+                                    FlushPendingAutoSaves();
+                                }
+                            } else if (modifiedId == L"editor.fontSize" || modifiedId == L"editor.fontFamily") {
                                 m_config.zoomLevel = m_config.fontSize / 15.0f;
                                 m_theme.SetEditorFont(m_config.fontFamily, m_config.fontSize);
                                 m_editor.ResetCharWidth();
@@ -15870,6 +15925,9 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
         case WM_ACTIVATE: {
             if (LOWORD(wParam) == WA_INACTIVE) {
                 ReleaseCapture();
+                if (m_autoSave) {
+                    FlushPendingAutoSaves();
+                }
             }
             return DefWindowProc(m_hwnd, uMsg, wParam, lParam);
         }
@@ -15930,6 +15988,9 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 m_popupMenu.Close();
                 m_header.SetActiveMenu(ui::HeaderMenuId::None);
                 InvalidateRect(m_hwnd, nullptr, FALSE);
+            }
+            if (m_autoSave) {
+                FlushPendingAutoSaves();
             }
             RunManualGarbageCollection();
             return 0;

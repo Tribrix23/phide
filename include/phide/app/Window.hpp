@@ -113,6 +113,7 @@ public:
     void OpenVirtualDocument(const std::wstring& name, const std::wstring& content, bool isPreview = false);
     void SetAutoSave(bool enable) { m_autoSave = enable; }
     bool IsAutoSave() const { return m_autoSave; }
+    void FlushPendingAutoSaves();
 
     void OpenSpecialView(const std::wstring& viewType, const std::wstring& title);
 

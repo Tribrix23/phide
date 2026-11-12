@@ -140,15 +140,22 @@ void ActivityRail::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
             item.bounds = D2D1::RectF(startX, curY, startX + btnSize, curY + btnSize);
             curY += btnSize + spacing;
         } else if (item.id == RailTabId::MoreActions) {
-            // Horizontal separation line under Settings (matching user's circled area on rail)
-            curY += config.ScaleF(3.0f);
+            // Horizontal separation line under Settings (matching user's request: subtle opacity, increased height)
+            curY += config.ScaleF(5.0f);
             float sepY = std::floor(curY);
-            ID2D1Brush* pSepBrush = theme.IsDarkMode() ? (theme.brushTextWhite ? theme.brushTextWhite.Get() : theme.brushBorderSubtle.Get()) : theme.brushBorderSubtle.Get();
-            pRT->FillRectangle(
-                D2D1::RectF(startX + config.ScaleF(2.0f), sepY, startX + btnSize - config.ScaleF(2.0f), sepY + 1.2f),
-                pSepBrush
+            float lineH = config.ScaleF(2.5f);
+            float lineW = btnSize - config.ScaleF(8.0f);
+            float lineX = startX + config.ScaleF(4.0f);
+            D2D1_ROUNDED_RECT rrcSep = D2D1::RoundedRect(D2D1::RectF(lineX, sepY, lineX + lineW, sepY + lineH), lineH * 0.5f, lineH * 0.5f);
+            Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushSep;
+            pRT->CreateSolidColorBrush(
+                theme.IsDarkMode() ? D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.35f) : D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.28f),
+                &brushSep
             );
-            curY += config.ScaleF(8.0f);
+            if (brushSep) {
+                pRT->FillRoundedRectangle(rrcSep, brushSep.Get());
+            }
+            curY += lineH + config.ScaleF(7.0f);
             item.bounds = D2D1::RectF(startX, curY, startX + btnSize, curY + btnSize);
             curY += btnSize + spacing;
         } else if (item.id == RailTabId::Student) {

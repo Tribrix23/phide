@@ -10559,20 +10559,9 @@ void EditorCanvas::RenderMonitorView(ID2D1RenderTarget* pRT, Theme& theme, const
     if (!m_cachedDevPorts.empty()) {
         const auto& sel = m_cachedDevPorts[m_monitorSelectedProcessIndex];
 
-        // Process Icon + Process Name + Purpose
-        const float dIconSize = config.ScaleF(30.0f);
-        D2D1_RECT_F rcDIcon = D2D1::RectF(rightX + config.ScaleF(12.0f), detailY + config.ScaleF(10.0f), rightX + config.ScaleF(12.0f) + dIconSize, detailY + config.ScaleF(10.0f) + dIconSize);
-        if (sel.processName == L"phide.exe") {
-            m_icons.DrawMonitorAppIcon(pRT, rcDIcon);
-        } else {
-            if (brushCyanPillBg) pRT->FillRoundedRectangle(D2D1::RoundedRect(rcDIcon, 5.0f, 5.0f), brushCyanPillBg.Get());
-            if (cardBorder) pRT->DrawRoundedRectangle(D2D1::RoundedRect(rcDIcon, 5.0f, 5.0f), cardBorder.Get(), 1.0f);
-            const wchar_t* pGlyph = sel.processName.empty() ? L"P" : sel.processName.substr(0, 1).c_str();
-            pRT->DrawText(pGlyph, 1, theme.fontButtonCenter ? theme.fontButtonCenter.Get() : theme.fontBody.Get(), rcDIcon, theme.brushTextWhite.Get());
-        }
-
-        const float dTextX = rightX + config.ScaleF(12.0f) + dIconSize + config.ScaleF(10.0f);
-        const float dTextW = (std::max)(60.0f, rightW - config.ScaleF(24.0f) - dIconSize - config.ScaleF(10.0f));
+        // Process Name + Purpose (Box icon removed as requested)
+        const float dTextX = rightX + config.ScaleF(14.0f);
+        const float dTextW = (std::max)(60.0f, rightW - config.ScaleF(28.0f));
 
         D2D1_RECT_F rcDName = D2D1::RectF(dTextX, detailY + config.ScaleF(8.0f), dTextX + dTextW, detailY + config.ScaleF(26.0f));
         pRT->PushAxisAlignedClip(rcDName, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
