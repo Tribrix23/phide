@@ -29,26 +29,59 @@ std::wstring LeadingIndent(const std::wstring& s) {
     return s.substr(0, i);
 }
 
-std::wstring DetectLangTag(const std::wstring& filePath, const Buffer& buffer) {
+std::wstring DetectLangTag(const std::wstring& filePath, const Buffer& buffer, size_t cursorLine = static_cast<size_t>(-1)) {
     std::wstring lower = filePath;
-    for (auto& c : lower) c = towlower(c);
+    for (auto& c : lower) c = static_cast<wchar_t>(towlower(c));
     if (lower.ends_with(L".php") || lower.ends_with(L".phtml")) return L"php";
-    if (lower.ends_with(L".py")) return L"py";
+    if (lower.ends_with(L".py") || lower.ends_with(L".pyw")) return L"py";
     if (lower.ends_with(L".rs")) return L"rs";
-    if (lower.ends_with(L".cpp") || lower.ends_with(L".hpp") || lower.ends_with(L".cc") || lower.ends_with(L".h")) return L"cpp";
+    if (lower.ends_with(L".cpp") || lower.ends_with(L".hpp") || lower.ends_with(L".cc") || lower.ends_with(L".cxx") || lower.ends_with(L".h") || lower.ends_with(L".c")) return L"cpp";
     if (lower.ends_with(L".tsx") || lower.ends_with(L".jsx")) return L"react";
     if (lower.ends_with(L".ts")) return L"ts";
-    if (lower.ends_with(L".js")) return L"js";
+    if (lower.ends_with(L".js") || lower.ends_with(L".mjs") || lower.ends_with(L".cjs")) return L"js";
     if (lower.ends_with(L".sql")) return L"sql";
+    if (lower.ends_with(L".css") || lower.ends_with(L".scss") || lower.ends_with(L".less")) return L"css";
+    if (lower.ends_with(L".json") || lower.ends_with(L".jsonc")) return L"json";
+    if (lower.ends_with(L".md") || lower.ends_with(L".txt") || lower.ends_with(L".yaml") ||
+        lower.ends_with(L".yml") || lower.ends_with(L".xml") || lower.ends_with(L".svg") ||
+        lower.ends_with(L".toml") || lower.ends_with(L".ini") || lower.ends_with(L".env")) {
+        return L"text";
+    }
+    if (lower.ends_with(L".html") || lower.ends_with(L".htm")) {
+        // Inside HTML files, only switch to PHP templates when the cursor is inside an open <?php ... ?> block
+        bool inPhp = false;
+        size_t limit = (cursorLine == static_cast<size_t>(-1) || cursorLine >= buffer.GetLineCount())
+            ? buffer.GetLineCount()
+            : (cursorLine + 1);
+        for (size_t i = 0; i < limit; ++i) {
+            const auto& ln = buffer.GetLine(i);
+            size_t pos = 0;
+            while (pos < ln.length()) {
+                if (!inPhp) {
+                    size_t openPos = ln.find(L"<?php", pos);
+                    if (openPos == std::wstring::npos) break;
+                    inPhp = true;
+                    pos = openPos + 5;
+                } else {
+                    size_t closePos = ln.find(L"?>", pos);
+                    if (closePos == std::wstring::npos) break;
+                    inPhp = false;
+                    pos = closePos + 2;
+                }
+            }
+        }
+        return inPhp ? L"php" : L"html";
+    }
     if (buffer.GetLineCount() > 0) {
         const auto& l0 = buffer.GetLine(0);
         if (l0.find(L"<?php") != std::wstring::npos) return L"php";
         if (l0.find(L"import React") != std::wstring::npos || l0.find(L"from 'react'") != std::wstring::npos) return L"react";
     }
-    return L"php";
+    return L"";
 }
 
 bool IsLangCompatible(const std::wstring& docLang, const wchar_t* tplLang) {
+    if (docLang.empty() || !tplLang) return false;
     std::wstring t(tplLang);
     if (docLang == t) return true;
     if ((docLang == L"react" || docLang == L"js" || docLang == L"ts") &&
@@ -201,7 +234,7 @@ CodePrediction PredictionEngine::PredictNextEdit(
                 }
                 if (tokenStart < tokenEnd) {
                     std::wstring token = curL.substr(tokenStart, tokenEnd - tokenStart);
-                    std::wstring lang = DetectLangTag(filePath, buffer);
+                    std::wstring lang = DetectLangTag(filePath, buffer, cursorLine);
                     float conf = 0.0f;
                     std::wstring nextTok = m_pAdaptive->PredictNextToken(token, lang, conf);
                     if (!nextTok.empty() && nextTok != token && conf >= 0.70f) {
@@ -401,7 +434,7 @@ CodePrediction PredictionEngine::PredictFromBufferPatterns(
     if (buffer.GetLineCount() == 0 || cursorLine >= buffer.GetLineCount()) return {};
 
     const std::wstring& curL = buffer.GetLine(cursorLine);
-    std::wstring lang = DetectLangTag(filePath, buffer);
+    std::wstring lang = DetectLangTag(filePath, buffer, cursorLine);
 
     // Helper: Parse an assignment from a line string: e.g. "cs = \"hello world\"" or "let x = 'abc'"
     auto parseAssignmentLine = [](const std::wstring& line, std::wstring& outVar, std::wstring& outVal, wchar_t& outQuote, bool& outHasQuotes) -> bool {
@@ -1167,7 +1200,7 @@ CodePrediction PredictionEngine::PredictComponentOrMethod(
     const auto& curLine = buffer.GetLine(line);
     std::wstring trimmedCur = TrimStr(curLine);
     std::wstring indent = LeadingIndent(curLine);
-    std::wstring lang = DetectLangTag(filePath, buffer);
+    std::wstring lang = DetectLangTag(filePath, buffer, line);
 
     // ------------------------------------------------------------------------
     // 1. ZED-STYLE STRUCT / CLASS -> CONSTRUCTOR SYNTHESIS (Screenshot 2)
@@ -1736,7 +1769,7 @@ CodePrediction PredictionEngine::PredictComponentOrMethod(
     // 5. DOWNLOADED MULTI-LANGUAGE EDIT PREDICTION CORPUS (386 Templates)
     // Matches triggers across PHP, Python, React, JS, TS, Rust, C++, SQL
     // ------------------------------------------------------------------------
-    if (!trimmedCur.empty() && col == curLine.length()) {
+    if (!trimmedCur.empty() && col == curLine.length() && !lang.empty()) {
         for (size_t i = 0; i < kZedPredictionTemplateCount; ++i) {
             const auto& tpl = kZedPredictionTemplates[i];
             if (!IsLangCompatible(lang, tpl.lang)) continue;
@@ -1744,8 +1777,10 @@ CodePrediction PredictionEngine::PredictComponentOrMethod(
             std::wstring exp(tpl.expansion);
             std::wstring indentedExp = ApplyIndentToMultiline(exp, indent, true);
 
+            // Require either >= 3 typed characters for expansion prefix match, or exact match against a >= 2-char trigger
+            bool prefixAllowed = (trimmedCur.length() >= 3) || (trimmedCur.length() >= 2 && trig == trimmedCur);
             // Exact match with curLine or prefix match
-            if (indentedExp.starts_with(curLine) && indentedExp.length() > curLine.length()) {
+            if (prefixAllowed && indentedExp.starts_with(curLine) && indentedExp.length() > curLine.length()) {
                 std::wstring ghost = indentedExp.substr(curLine.length());
                 if (line + 1 < buffer.GetLineCount()) {
                     size_t nl = ghost.find(L'\n');

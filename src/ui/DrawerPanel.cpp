@@ -74,6 +74,105 @@ bool MatchesPatternList(const std::wstring& filename, const std::wstring& fullPa
     return false;
 }
 
+D2D1_RECT_F DrawAnchoredTooltip(
+    ID2D1RenderTarget* pRT,
+    const Theme& theme,
+    const app::AppConfig& config,
+    const std::wstring& tipText,
+    const D2D1_RECT_F& targetBounds,
+    float minX,
+    float maxRightX,
+    float maxBottomY
+) {
+    if (!pRT || tipText.empty() || maxRightX <= minX) {
+        return D2D1::RectF(0.0f, 0.0f, 0.0f, 0.0f);
+    }
+
+    IDWriteTextFormat* pFmt = theme.fontTooltip.Get()
+        ? theme.fontTooltip.Get()
+        : (theme.fontMenuItem.Get() ? theme.fontMenuItem.Get() : theme.fontButtonCenter.Get());
+    if (!pFmt) return D2D1::RectF(0.0f, 0.0f, 0.0f, 0.0f);
+
+    float measuredW = 0.0f;
+    float measuredH = 0.0f;
+    if (theme.dwriteFactory) {
+        Microsoft::WRL::ComPtr<IDWriteTextLayout> pLayout;
+        if (SUCCEEDED(theme.dwriteFactory->CreateTextLayout(
+                tipText.c_str(), static_cast<UINT32>(tipText.length()),
+                pFmt, 1000.0f, 200.0f, &pLayout)) && pLayout) {
+            DWRITE_TEXT_METRICS tm{};
+            if (SUCCEEDED(pLayout->GetMetrics(&tm))) {
+                measuredW = tm.widthIncludingTrailingWhitespace;
+                measuredH = tm.height;
+            }
+            DWRITE_OVERHANG_METRICS oh{};
+            if (SUCCEEDED(pLayout->GetOverhangMetrics(&oh))) {
+                // Account for italic overhang so outer glyphs never clip against the tooltip pill
+                float leftExtra = (oh.left > 0.0f) ? oh.left : 0.0f;
+                float rightExtra = (oh.right > 0.0f) ? oh.right : 0.0f;
+                measuredW += leftExtra + rightExtra;
+            }
+        }
+    }
+    if (measuredW <= 0.0f) {
+        measuredW = static_cast<float>(tipText.length()) * config.ScaleF(8.5f);
+        measuredH = config.ScaleF(16.0f);
+    }
+
+    const float tipPadX = config.ScaleF(11.0f);
+    const float tipPadY = config.ScaleF(5.0f);
+    const float italicBreath = config.ScaleF(6.0f);
+    const float maxTipW = (std::max)(config.ScaleF(40.0f), maxRightX - minX);
+    const float tipW = (std::min)(maxTipW, measuredW + tipPadX * 2.0f + italicBreath);
+    const float tipH = (std::max)(config.ScaleF(22.0f), measuredH + tipPadY * 2.0f);
+
+    float tipX = targetBounds.left;
+    if (tipX + tipW > maxRightX) {
+        tipX = targetBounds.right - tipW;
+    }
+    if (tipX < minX) {
+        tipX = minX;
+    }
+    if (tipX + tipW > maxRightX) {
+        tipX = (std::max)(minX, maxRightX - tipW);
+    }
+
+    float tipY = targetBounds.bottom + config.ScaleF(5.0f);
+    if (tipY + tipH > maxBottomY) {
+        tipY = targetBounds.top - tipH - config.ScaleF(5.0f);
+    }
+
+    D2D1_RECT_F rcTipBox = D2D1::RectF(tipX, tipY, tipX + tipW, tipY + tipH);
+    D2D1_ROUNDED_RECT rrcTip = D2D1::RoundedRect(rcTipBox, 4.0f, 4.0f);
+
+    D2D1_ROUNDED_RECT rrcShadow = D2D1::RoundedRect(
+        D2D1::RectF(tipX + 1.5f, tipY + 2.0f, tipX + tipW + 1.5f, tipY + tipH + 2.0f),
+        4.0f, 4.0f);
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> bShadow;
+    pRT->CreateSolidColorBrush(D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.35f), &bShadow);
+    if (bShadow) pRT->FillRoundedRectangle(rrcShadow, bShadow.Get());
+
+    ID2D1Brush* tipBg = theme.brushTooltipBg ? theme.brushTooltipBg.Get() : theme.brushHeaderBg.Get();
+    ID2D1Brush* tipBorder = theme.brushTooltipBorder ? theme.brushTooltipBorder.Get() : theme.brushBorderSubtle.Get();
+    ID2D1Brush* tipTxt = theme.brushTooltipText ? theme.brushTooltipText.Get() : theme.brushTextPrimary.Get();
+
+    if (tipBg) pRT->FillRoundedRectangle(rrcTip, tipBg);
+    if (tipBorder) pRT->DrawRoundedRectangle(rrcTip, tipBorder, 1.0f);
+
+    D2D1_RECT_F rcTextArea = D2D1::RectF(tipX + config.ScaleF(4.0f), tipY, tipX + tipW - config.ScaleF(4.0f), tipY + tipH);
+    pRT->PushAxisAlignedClip(rcTextArea, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+    const DWRITE_TEXT_ALIGNMENT prevAlign = pFmt->GetTextAlignment();
+    const DWRITE_PARAGRAPH_ALIGNMENT prevPAlign = pFmt->GetParagraphAlignment();
+    pFmt->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+    pFmt->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+    pRT->DrawText(tipText.c_str(), static_cast<UINT32>(tipText.length()), pFmt, rcTextArea, tipTxt);
+    pFmt->SetTextAlignment(prevAlign);
+    pFmt->SetParagraphAlignment(prevPAlign);
+    pRT->PopAxisAlignedClip();
+
+    return rcTipBox;
+}
+
 } // anonymous namespace
 
 DrawerPanel::DrawerPanel() {
@@ -120,6 +219,19 @@ void DrawerPanel::OpenFolder(const std::wstring& folderPath, const std::set<std:
     m_hasOpenFolder = true;
     m_gitHubRepoUrlCached = false;
     m_cachedGitHubRepoUrl.clear();
+    m_publishRepoName.clear();
+    m_publishRepoSelectedChoice = 0;
+    {
+        std::lock_guard<std::recursive_mutex> lock(m_gitMutex);
+        m_isGitRepo = false;
+        m_hasGitRemote = false;
+        m_gitBranch.clear();
+        m_gitChanges.clear();
+        m_gitCommits.clear();
+        m_unpushedCommitsCount = 0;
+        m_isGitLoading = false;
+        m_isGitRefreshing = false;
+    }
     m_expandedDirs.clear();
     if (pInitialExpanded && !pInitialExpanded->empty()) {
         m_expandedDirs = *pInitialExpanded;
@@ -148,6 +260,23 @@ void DrawerPanel::CloseFolder() {
     m_rootName.clear();
     m_gitHubRepoUrlCached = false;
     m_cachedGitHubRepoUrl.clear();
+    m_publishRepoName.clear();
+    m_publishRepoSelectedChoice = 0;
+    m_rcExplorerNewFileBtn = {};
+    m_rcExplorerNewFolderBtn = {};
+    m_hoveredExplorerNewFileBtn = false;
+    m_hoveredExplorerNewFolderBtn = false;
+    {
+        std::lock_guard<std::recursive_mutex> lock(m_gitMutex);
+        m_isGitRepo = false;
+        m_hasGitRemote = false;
+        m_gitBranch.clear();
+        m_gitChanges.clear();
+        m_gitCommits.clear();
+        m_unpushedCommitsCount = 0;
+        m_isGitLoading = false;
+        m_isGitRefreshing = false;
+    }
     m_expandedDirs.clear();
     m_visibleItems.clear();
     m_hoveredIndex = -1;
@@ -855,6 +984,19 @@ void DrawerPanel::RenderExplorerPane(ID2D1RenderTarget* pRT, Theme& theme, const
 
         } else {
             // === FOLDER OPENED STATE ===
+            const float btnSize = config.ScaleF(20.0f);
+            const float btnGap = config.ScaleF(4.0f);
+            const float rightEdge = railW + fullDrawerW - config.ScaleF(10.0f);
+            const float btnTop = curY - config.ScaleF(1.0f);
+
+            m_rcExplorerNewFolderBtn = D2D1::RectF(rightEdge - btnSize, btnTop, rightEdge, btnTop + btnSize);
+            m_rcExplorerNewFileBtn = D2D1::RectF(
+                m_rcExplorerNewFolderBtn.left - btnGap - btnSize,
+                btnTop,
+                m_rcExplorerNewFolderBtn.left - btnGap,
+                btnTop + btnSize
+            );
+
             std::wstring title = L"EXPLORER";
             if (!m_rootName.empty()) {
                 title += L": " + m_rootName;
@@ -863,12 +1005,46 @@ void DrawerPanel::RenderExplorerPane(ID2D1RenderTarget* pRT, Theme& theme, const
             D2D1_RECT_F rcTitle = D2D1::RectF(
                 railW + paddingX,
                 curY,
-                railW + fullDrawerW - paddingX,
+                m_rcExplorerNewFileBtn.left - config.ScaleF(6.0f),
                 curY + config.ScaleF(20.0f)
             );
+            pRT->PushAxisAlignedClip(rcTitle, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
             pRT->DrawText(title.c_str(), static_cast<UINT32>(title.length()),
                           theme.fontSectionHeader ? theme.fontSectionHeader.Get() : theme.fontBody.Get(),
                           rcTitle, theme.brushTextPrimary.Get());
+            pRT->PopAxisAlignedClip();
+
+            // Render crisp upright New File & New Folder icon buttons on Explorer header bar
+            const float iconPad = config.ScaleF(2.5f);
+            if (m_hoveredExplorerNewFileBtn && theme.brushItemHover) {
+                pRT->FillRoundedRectangle(D2D1::RoundedRect(m_rcExplorerNewFileBtn, 3.5f, 3.5f), theme.brushItemHover.Get());
+            }
+            m_icons.DrawFilePlus(
+                pRT,
+                D2D1::RectF(
+                    m_rcExplorerNewFileBtn.left + iconPad,
+                    m_rcExplorerNewFileBtn.top + iconPad,
+                    m_rcExplorerNewFileBtn.right - iconPad,
+                    m_rcExplorerNewFileBtn.bottom - iconPad
+                ),
+                m_hoveredExplorerNewFileBtn ? theme.brushTextPrimary.Get() : theme.brushTextSecondary.Get(),
+                1.45f
+            );
+
+            if (m_hoveredExplorerNewFolderBtn && theme.brushItemHover) {
+                pRT->FillRoundedRectangle(D2D1::RoundedRect(m_rcExplorerNewFolderBtn, 3.5f, 3.5f), theme.brushItemHover.Get());
+            }
+            m_icons.DrawFolderPlus(
+                pRT,
+                D2D1::RectF(
+                    m_rcExplorerNewFolderBtn.left + iconPad,
+                    m_rcExplorerNewFolderBtn.top + iconPad,
+                    m_rcExplorerNewFolderBtn.right - iconPad,
+                    m_rcExplorerNewFolderBtn.bottom - iconPad
+                ),
+                m_hoveredExplorerNewFolderBtn ? theme.brushTextPrimary.Get() : theme.brushTextSecondary.Get(),
+                1.45f
+            );
 
             curY += config.ScaleF(30.0f);
 
@@ -1567,6 +1743,24 @@ void DrawerPanel::RenderExplorerPane(ID2D1RenderTarget* pRT, Theme& theme, const
         } else {
             m_rcExplorerScrollTrack = D2D1::RectF(0.0f, 0.0f, 0.0f, 0.0f);
             m_rcExplorerScrollThumb = D2D1::RectF(0.0f, 0.0f, 0.0f, 0.0f);
+        }
+
+        // Hover tooltip for Explorer header New File / New Folder action buttons
+        if (m_hoveredExplorerNewFileBtn || m_hoveredExplorerNewFolderBtn) {
+            const D2D1_RECT_F& targetBtn = m_hoveredExplorerNewFileBtn ? m_rcExplorerNewFileBtn : m_rcExplorerNewFolderBtn;
+            const std::wstring tipText = m_hoveredExplorerNewFileBtn ? L"New File..." : L"New Folder...";
+            m_rcExplorerTooltipBounds = DrawAnchoredTooltip(
+                pRT,
+                theme,
+                config,
+                tipText,
+                targetBtn,
+                railW + config.ScaleF(6.0f),
+                railW + fullDrawerW - config.ScaleF(6.0f),
+                clientHeight - config.ScaleF(10.0f)
+            );
+        } else {
+            m_rcExplorerTooltipBounds = D2D1::RectF(0.0f, 0.0f, 0.0f, 0.0f);
         }
     }
 
@@ -2489,6 +2683,20 @@ bool DrawerPanel::HitTestOpenFolderButton(POINT pt, const app::AppConfig& config
                 pt.y >= m_rcOpenFolderBtn.top && pt.y <= m_rcOpenFolderBtn.bottom);
     }
     return false;
+}
+
+bool DrawerPanel::HitTestExplorerNewFileButton(POINT pt) const noexcept {
+    if (!m_hasOpenFolder || m_isCourseExplorerMode) return false;
+    return (m_rcExplorerNewFileBtn.right > m_rcExplorerNewFileBtn.left &&
+            pt.x >= m_rcExplorerNewFileBtn.left && pt.x <= m_rcExplorerNewFileBtn.right &&
+            pt.y >= m_rcExplorerNewFileBtn.top && pt.y <= m_rcExplorerNewFileBtn.bottom);
+}
+
+bool DrawerPanel::HitTestExplorerNewFolderButton(POINT pt) const noexcept {
+    if (!m_hasOpenFolder || m_isCourseExplorerMode) return false;
+    return (m_rcExplorerNewFolderBtn.right > m_rcExplorerNewFolderBtn.left &&
+            pt.x >= m_rcExplorerNewFolderBtn.left && pt.x <= m_rcExplorerNewFolderBtn.right &&
+            pt.y >= m_rcExplorerNewFolderBtn.top && pt.y <= m_rcExplorerNewFolderBtn.bottom);
 }
 
 bool DrawerPanel::HitTestExplorerScrollbar(POINT pt) {
@@ -3615,6 +3823,14 @@ bool DrawerPanel::SetHoveredOpenFolderBtn(bool hovered) {
     return false;
 }
 
+bool DrawerPanel::SetHoveredExplorerHeaderBtn(bool hoverNewFile, bool hoverNewFolder) noexcept {
+    bool changed = (m_hoveredExplorerNewFileBtn != hoverNewFile) ||
+                   (m_hoveredExplorerNewFolderBtn != hoverNewFolder);
+    m_hoveredExplorerNewFileBtn = hoverNewFile;
+    m_hoveredExplorerNewFolderBtn = hoverNewFolder;
+    return changed;
+}
+
 bool DrawerPanel::HitTestGitSplitter(POINT pt) const noexcept {
     if (!m_showChangesSection || !m_showGraphSection) return false;
     return (pt.x >= m_cachedRailW && pt.x <= m_cachedRailW + m_cachedDrawerW &&
@@ -3937,6 +4153,9 @@ void DrawerPanel::StartInlineCreate(const std::wstring& parentPath, bool isFolde
             break;
         }
     }
+    if (m_createInsertAfterIdx == -1) {
+        m_scrollIndex = 0;
+    }
 }
 
 void DrawerPanel::CancelInlineCreate() {
@@ -4104,269 +4323,516 @@ static std::wstring GitUtf8ToWide(const std::string& str) {
     return result;
 }
 
-static bool CheckLocalGitHubAuthFiles() {
-    auto fileHasContent = [](const std::filesystem::path& p, const char* needle) -> bool {
-        std::error_code ec;
-        if (!std::filesystem::exists(p, ec) || std::filesystem::file_size(p, ec) == 0) return false;
-        std::ifstream ifs(p, std::ios::binary);
-        if (!ifs) return false;
-        std::string content((std::istreambuf_iterator<char>(ifs)), std::istreambuf_iterator<char>());
-        if (!needle || !*needle) return !content.empty();
-        return content.find(needle) != std::string::npos;
-    };
-
-    wchar_t buf[MAX_PATH] = {0};
-    if (GetEnvironmentVariableW(L"GH_TOKEN", buf, MAX_PATH) > 0 ||
-        GetEnvironmentVariableW(L"GITHUB_TOKEN", buf, MAX_PATH) > 0) {
-        return true;
+static std::wstring StripExtendedPathPrefix(const std::wstring& path) {
+    if (path.rfind(L"\\\\?\\UNC\\", 0) == 0) {
+        return L"\\\\" + path.substr(8);
     }
-
-    if (GetEnvironmentVariableW(L"GH_CONFIG_DIR", buf, MAX_PATH) > 0) {
-        std::filesystem::path p = std::filesystem::path(buf) / L"hosts.yml";
-        if (fileHasContent(p, "user:") || fileHasContent(p, "oauth_token:") || fileHasContent(p, "github.com")) return true;
+    if (path.rfind(L"\\\\?\\", 0) == 0) {
+        return path.substr(4);
     }
-
-    if (SUCCEEDED(SHGetFolderPathW(NULL, CSIDL_APPDATA, NULL, 0, buf))) {
-        std::filesystem::path p = std::filesystem::path(buf) / L"GitHub CLI" / L"hosts.yml";
-        if (fileHasContent(p, "user:") || fileHasContent(p, "oauth_token:") || fileHasContent(p, "github.com")) return true;
-    }
-
-    if (SUCCEEDED(SHGetFolderPathW(NULL, CSIDL_LOCAL_APPDATA, NULL, 0, buf))) {
-        std::filesystem::path p = std::filesystem::path(buf) / L"GitHub CLI" / L"hosts.yml";
-        if (fileHasContent(p, "user:") || fileHasContent(p, "oauth_token:") || fileHasContent(p, "github.com")) return true;
-    }
-
-    if (GetEnvironmentVariableW(L"USERPROFILE", buf, MAX_PATH) > 0) {
-        std::filesystem::path home(buf);
-        std::filesystem::path ghHosts = home / L".config" / L"gh" / L"hosts.yml";
-        if (fileHasContent(ghHosts, "user:") || fileHasContent(ghHosts, "oauth_token:") || fileHasContent(ghHosts, "github.com")) return true;
-
-        std::filesystem::path gitCreds = home / L".git-credentials";
-        if (fileHasContent(gitCreds, "github.com")) return true;
-
-        std::filesystem::path gitCfg = home / L".gitconfig";
-        if (fileHasContent(gitCfg, "[user]") && (fileHasContent(gitCfg, "name =") || fileHasContent(gitCfg, "name="))) return true;
-    }
-
-    return false;
+    return path;
 }
 
-static bool CheckGitHubCliAuthStatus() {
-    static std::atomic<int> s_cachedStatus{ -1 }; // -1: uninit, 0: false, 1: true
-    static std::chrono::steady_clock::time_point s_lastCheck{};
-    static std::mutex s_authMutex;
+static std::wstring TrimWideWhitespace(const std::wstring& s) {
+    size_t start = s.find_first_not_of(L" \t\r\n");
+    if (start == std::wstring::npos) return L"";
+    size_t end = s.find_last_not_of(L" \t\r\n");
+    return s.substr(start, end - start + 1);
+}
 
-    // Fast path: check local config/credential files on disk (works 100% offline in <0.2ms)
-    if (CheckLocalGitHubAuthFiles()) {
-        std::lock_guard<std::mutex> lock(s_authMutex);
-        s_cachedStatus.store(1);
-        s_lastCheck = std::chrono::steady_clock::now();
-        return true;
+static std::wstring NormalizeDirForGit(const std::wstring& path) {
+    std::wstring p = TrimWideWhitespace(StripExtendedPathPrefix(path));
+    if (p.empty()) return L"";
+    while (p.size() > 1 && (p.back() == L'\\' || p.back() == L'/')) {
+        if (p.size() == 3 && p[1] == L':') break;
+        p.pop_back();
+    }
+    return p;
+}
+
+static std::wstring ResolveExecutablePath(const std::wstring& exeName, const std::vector<std::wstring>& candidates) {
+    wchar_t found[MAX_PATH] = {0};
+    if (SearchPathW(NULL, exeName.c_str(), NULL, MAX_PATH, found, NULL) > 0) {
+        return found;
+    }
+    for (const auto& candidate : candidates) {
+        if (candidate.empty()) continue;
+        DWORD attrs = GetFileAttributesW(candidate.c_str());
+        if (attrs != INVALID_FILE_ATTRIBUTES && !(attrs & FILE_ATTRIBUTE_DIRECTORY)) {
+            return candidate;
+        }
+    }
+    return L"";
+}
+
+static std::wstring ResolveGhExePath() {
+    std::vector<std::wstring> candidates = {
+        L"C:\\Program Files\\GitHub CLI\\gh.exe",
+        L"C:\\Program Files (x86)\\GitHub CLI\\gh.exe",
+        L"C:\\ProgramData\\chocolatey\\bin\\gh.exe"
+    };
+    wchar_t buf[MAX_PATH] = {0};
+    if (SUCCEEDED(SHGetFolderPathW(NULL, CSIDL_LOCAL_APPDATA, NULL, 0, buf))) {
+        candidates.push_back(std::wstring(buf) + L"\\Programs\\GitHub CLI\\gh.exe");
+    }
+    if (GetEnvironmentVariableW(L"USERPROFILE", buf, MAX_PATH) > 0) {
+        candidates.push_back(std::wstring(buf) + L"\\scoop\\shims\\gh.exe");
+    }
+    return ResolveExecutablePath(L"gh.exe", candidates);
+}
+
+static std::wstring ResolveGitExePath() {
+    std::vector<std::wstring> candidates = {
+        L"C:\\Program Files\\Git\\cmd\\git.exe",
+        L"C:\\Program Files\\Git\\bin\\git.exe",
+        L"C:\\Program Files (x86)\\Git\\cmd\\git.exe"
+    };
+    wchar_t buf[MAX_PATH] = {0};
+    if (SUCCEEDED(SHGetFolderPathW(NULL, CSIDL_LOCAL_APPDATA, NULL, 0, buf))) {
+        candidates.push_back(std::wstring(buf) + L"\\Programs\\Git\\cmd\\git.exe");
+    }
+    if (GetEnvironmentVariableW(L"USERPROFILE", buf, MAX_PATH) > 0) {
+        candidates.push_back(std::wstring(buf) + L"\\scoop\\shims\\git.exe");
+    }
+    std::wstring resolved = ResolveExecutablePath(L"git.exe", candidates);
+    return resolved.empty() ? L"git.exe" : resolved;
+}
+
+static std::vector<wchar_t> BuildScopedChildEnvBlock(const std::vector<std::pair<std::wstring, std::wstring>>& overrides) {
+    auto equalsIgnoreCase = [](const std::wstring& a, const std::wstring& b) {
+        return _wcsicmp(a.c_str(), b.c_str()) == 0;
+    };
+
+    std::vector<std::pair<std::wstring, std::wstring>> vars;
+    LPWCH rawEnv = GetEnvironmentStringsW();
+    if (rawEnv) {
+        const wchar_t* cur = rawEnv;
+        while (*cur != L'\0') {
+            std::wstring entry(cur);
+            cur += entry.size() + 1;
+            size_t eqPos = (!entry.empty() && entry[0] == L'=') ? entry.find(L'=', 1) : entry.find(L'=');
+            if (eqPos == std::wstring::npos || eqPos == 0) continue;
+            std::wstring key = entry.substr(0, eqPos);
+            bool overridden = false;
+            for (const auto& ov : overrides) {
+                if (equalsIgnoreCase(key, ov.first)) {
+                    overridden = true;
+                    break;
+                }
+            }
+            if (!overridden) {
+                vars.emplace_back(std::move(key), entry.substr(eqPos + 1));
+            }
+        }
+        FreeEnvironmentStringsW(rawEnv);
     }
 
-    auto now = std::chrono::steady_clock::now();
-    {
-        std::lock_guard<std::mutex> lock(s_authMutex);
-        if (s_cachedStatus.load() != -1 && std::chrono::duration_cast<std::chrono::seconds>(now - s_lastCheck).count() < 30) {
-            return s_cachedStatus.load() == 1;
+    for (const auto& ov : overrides) {
+        if (!ov.first.empty() && !ov.second.empty()) {
+            vars.push_back(ov);
         }
     }
 
-    SECURITY_ATTRIBUTES sa{ sizeof(sa), nullptr, TRUE };
-    HANDLE hReadPipe = nullptr, hWritePipe = nullptr;
-    if (!CreatePipe(&hReadPipe, &hWritePipe, &sa, 0)) return false;
+    std::sort(vars.begin(), vars.end(), [](const auto& a, const auto& b) {
+        return _wcsicmp(a.first.c_str(), b.first.c_str()) < 0;
+    });
+
+    std::vector<wchar_t> block;
+    for (const auto& kv : vars) {
+        std::wstring line = kv.first + L"=" + kv.second;
+        block.insert(block.end(), line.begin(), line.end());
+        block.push_back(L'\0');
+    }
+    if (block.empty()) {
+        block.push_back(L'\0');
+    }
+    block.push_back(L'\0');
+    return block;
+}
+
+static bool LaunchProcessAndCapture(
+    const std::wstring& cmdLine,
+    const std::wstring& workDir,
+    DWORD timeoutMs,
+    const std::vector<std::pair<std::wstring, std::wstring>>& envOverrides,
+    DWORD& outExitCode,
+    std::string& outOutput,
+    DWORD& outDurationMs
+) {
+    outExitCode = 1;
+    outOutput.clear();
+    outDurationMs = 0;
+
+    SECURITY_ATTRIBUTES sa{};
+    sa.nLength = sizeof(sa);
+    sa.bInheritHandle = TRUE;
+    sa.lpSecurityDescriptor = NULL;
+
+    HANDLE hReadPipe = NULL;
+    HANDLE hWritePipe = NULL;
+    if (!CreatePipe(&hReadPipe, &hWritePipe, &sa, 0)) {
+        return false;
+    }
     SetHandleInformation(hReadPipe, HANDLE_FLAG_INHERIT, 0);
 
-    STARTUPINFOW si{ sizeof(si) };
-    si.dwFlags = STARTF_USESHOWWINDOW | STARTF_USESTDHANDLES;
+    HANDLE hNulRead = CreateFileW(L"NUL", GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, &sa, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+
+    STARTUPINFOW si{};
+    si.cb = sizeof(si);
+    si.dwFlags = STARTF_USESTDHANDLES | STARTF_USESHOWWINDOW;
     si.wShowWindow = SW_HIDE;
-    si.hStdInput = nullptr;
+    si.hStdInput = (hNulRead != INVALID_HANDLE_VALUE) ? hNulRead : NULL;
     si.hStdOutput = hWritePipe;
     si.hStdError = hWritePipe;
 
-    PROCESS_INFORMATION pi{ 0 };
-    std::wstring fullCmd = L"gh auth status";
-    std::vector<wchar_t> cmdBuf(fullCmd.begin(), fullCmd.end());
+    PROCESS_INFORMATION pi{};
+    std::vector<wchar_t> cmdBuf(cmdLine.begin(), cmdLine.end());
     cmdBuf.push_back(L'\0');
+    std::vector<wchar_t> envBlock = BuildScopedChildEnvBlock(envOverrides);
 
-    BOOL ok = CreateProcessW(nullptr, cmdBuf.data(), nullptr, nullptr, TRUE,
-                             CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi);
+    std::wstring cleanDir = StripExtendedPathPrefix(workDir);
+    LPCWSTR workDirPtr = NULL;
+    if (!cleanDir.empty()) {
+        std::error_code ec;
+        if (std::filesystem::exists(cleanDir, ec)) {
+            workDirPtr = cleanDir.c_str();
+        }
+    }
+
+    auto startTime = std::chrono::steady_clock::now();
+    BOOL created = CreateProcessW(
+        NULL,
+        cmdBuf.data(),
+        NULL,
+        NULL,
+        TRUE,
+        CREATE_NO_WINDOW | CREATE_UNICODE_ENVIRONMENT,
+        envBlock.data(),
+        workDirPtr,
+        &si,
+        &pi
+    );
+
     CloseHandle(hWritePipe);
+    if (hNulRead != INVALID_HANDLE_VALUE) CloseHandle(hNulRead);
 
-    if (!ok) {
+    if (!created) {
         CloseHandle(hReadPipe);
         return false;
     }
 
-    DWORD waitRes = WaitForSingleObject(pi.hProcess, 800);
-    DWORD exitCode = 1;
-    if (waitRes == WAIT_OBJECT_0) {
-        GetExitCodeProcess(pi.hProcess, &exitCode);
-    } else {
-        TerminateProcess(pi.hProcess, 1);
+    bool timedOut = false;
+    auto drainPipe = [&]() {
+        DWORD avail = 0;
+        while (PeekNamedPipe(hReadPipe, NULL, 0, NULL, &avail, NULL) && avail > 0) {
+            char buffer[4096];
+            DWORD toRead = (std::min)(avail, static_cast<DWORD>(sizeof(buffer)));
+            DWORD bytesRead = 0;
+            if (!ReadFile(hReadPipe, buffer, toRead, &bytesRead, NULL) || bytesRead == 0) break;
+            if (outOutput.size() < 2 * 1024 * 1024) {
+                outOutput.append(buffer, bytesRead);
+            }
+            avail = 0;
+        }
+    };
+
+    for (;;) {
+        drainPipe();
+        DWORD waitRes = WaitForSingleObject(pi.hProcess, 15);
+        if (waitRes == WAIT_OBJECT_0) {
+            drainPipe();
+            break;
+        }
+        auto elapsedMs = static_cast<DWORD>(
+            std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - startTime).count()
+        );
+        if (timeoutMs > 0 && elapsedMs >= timeoutMs) {
+            timedOut = true;
+            TerminateProcess(pi.hProcess, 124);
+            WaitForSingleObject(pi.hProcess, 500);
+            drainPipe();
+            break;
+        }
     }
 
-    std::string pipeOut;
-    DWORD avail = 0;
-    while (PeekNamedPipe(hReadPipe, nullptr, 0, nullptr, &avail, nullptr) && avail > 0) {
-        char readBuf[512];
-        DWORD readBytes = 0;
-        if (ReadFile(hReadPipe, readBuf, (std::min)(avail, static_cast<DWORD>(sizeof(readBuf))), &readBytes, nullptr) && readBytes > 0) {
-            pipeOut.append(readBuf, readBytes);
-        } else {
-            break;
+    outDurationMs = static_cast<DWORD>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - startTime).count()
+    );
+
+    if (timedOut) {
+        outExitCode = 124;
+    } else {
+        DWORD code = 1;
+        if (GetExitCodeProcess(pi.hProcess, &code)) {
+            outExitCode = code;
         }
     }
 
     CloseHandle(pi.hProcess);
     CloseHandle(pi.hThread);
     CloseHandle(hReadPipe);
+    return true;
+}
 
-    // Even when offline, `gh auth status` prints "Logged in to github.com" or "error connecting to api.github.com"
-    bool authed = (exitCode == 0) ||
-                  (pipeOut.find("Logged in to") != std::string::npos) ||
-                  (pipeOut.find("error connecting to") != std::string::npos) ||
-                  (pipeOut.find("oauth_token") != std::string::npos);
+static bool HasExplicitOAuthTokenInHostsYml(const std::filesystem::path& p) {
+    std::error_code ec;
+    if (!std::filesystem::exists(p, ec) || std::filesystem::file_size(p, ec) == 0) return false;
+    std::ifstream ifs(p, std::ios::binary);
+    if (!ifs) return false;
+
+    std::string line;
+    while (std::getline(ifs, line)) {
+        size_t pos = line.find("oauth_token:");
+        if (pos == std::string::npos) continue;
+        std::string val = line.substr(pos + 12);
+        size_t s = val.find_first_not_of(" \t\r\n");
+        if (s == std::string::npos) continue;
+        size_t e = val.find_last_not_of(" \t\r\n");
+        val = val.substr(s, e - s + 1);
+        if (!val.empty() && val != "\"\"" && val != "''" && val != "null" && val != "~") {
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool HasRealGitHubCredentialsFile(const std::filesystem::path& p) {
+    std::error_code ec;
+    if (!std::filesystem::exists(p, ec) || std::filesystem::file_size(p, ec) == 0) return false;
+    std::ifstream ifs(p, std::ios::binary);
+    if (!ifs) return false;
+
+    std::string line;
+    while (std::getline(ifs, line)) {
+        if (line.find("github.com") == std::string::npos) continue;
+        if (line.find("://") != std::string::npos && line.find('@') != std::string::npos) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool CheckLocalGitHubAuthFiles() {
+    auto hasNonEmptyEnvVar = [](const wchar_t* name) -> bool {
+        wchar_t buf[512] = {0};
+        DWORD len = GetEnvironmentVariableW(name, buf, 512);
+        if (len == 0) return false;
+        return !TrimWideWhitespace(std::wstring(buf)).empty();
+    };
+
+    if (hasNonEmptyEnvVar(L"GH_TOKEN") || hasNonEmptyEnvVar(L"GITHUB_TOKEN")) {
+        return true;
+    }
+
+    wchar_t buf[MAX_PATH] = {0};
+    if (GetEnvironmentVariableW(L"GH_CONFIG_DIR", buf, MAX_PATH) > 0) {
+        if (HasExplicitOAuthTokenInHostsYml(std::filesystem::path(buf) / L"hosts.yml")) return true;
+    }
+
+    if (SUCCEEDED(SHGetFolderPathW(NULL, CSIDL_APPDATA, NULL, 0, buf))) {
+        if (HasExplicitOAuthTokenInHostsYml(std::filesystem::path(buf) / L"GitHub CLI" / L"hosts.yml")) return true;
+    }
+
+    if (SUCCEEDED(SHGetFolderPathW(NULL, CSIDL_LOCAL_APPDATA, NULL, 0, buf))) {
+        if (HasExplicitOAuthTokenInHostsYml(std::filesystem::path(buf) / L"GitHub CLI" / L"hosts.yml")) return true;
+    }
+
+    if (GetEnvironmentVariableW(L"USERPROFILE", buf, MAX_PATH) > 0) {
+        std::filesystem::path home(buf);
+        if (HasExplicitOAuthTokenInHostsYml(home / L".config" / L"gh" / L"hosts.yml")) return true;
+        // Note: Do not treat git's standalone .git-credentials as GitHub CLI authentication,
+        // because gh repo create requires an active GitHub CLI auth session (gh auth status).
+    }
+
+    return false;
+}
+
+static std::atomic<int> g_ghAuthCachedStatus{ -1 }; // -1: uninit, 0: false, 1: true
+static std::chrono::steady_clock::time_point g_ghAuthLastCheck{};
+static std::wstring g_ghCachedUsername;
+static std::mutex g_ghAuthMutex;
+
+static void InvalidateGitHubAuthStatusCache() {
+    std::lock_guard<std::mutex> lock(g_ghAuthMutex);
+    g_ghAuthCachedStatus.store(-1);
+    g_ghCachedUsername.clear();
+}
+
+static std::wstring ExtractGhAuthUsername(const std::string& pipeOut) {
+    // Parse patterns like "Logged in to github.com account Tribrix23" or "Logged in to github.com as Tribrix23"
+    static const char* kMarkers[] = { " account ", " as " };
+    for (const char* marker : kMarkers) {
+        size_t pos = pipeOut.find(marker);
+        if (pos == std::string::npos) continue;
+        size_t start = pos + strlen(marker);
+        while (start < pipeOut.size() && (pipeOut[start] == ' ' || pipeOut[start] == '\t')) ++start;
+        size_t end = start;
+        while (end < pipeOut.size() && pipeOut[end] != ' ' && pipeOut[end] != '\t' &&
+               pipeOut[end] != '\r' && pipeOut[end] != '\n' && pipeOut[end] != '(' && pipeOut[end] != ')') {
+            ++end;
+        }
+        if (end > start) {
+            return GitUtf8ToWide(pipeOut.substr(start, end - start));
+        }
+    }
+    return L"";
+}
+
+static std::wstring GetAuthenticatedGitHubUsername() {
+    std::lock_guard<std::mutex> lock(g_ghAuthMutex);
+    return g_ghCachedUsername;
+}
+
+static bool CheckGitHubCliAuthStatus() {
+    auto now = std::chrono::steady_clock::now();
     {
-        std::lock_guard<std::mutex> lock(s_authMutex);
-        s_cachedStatus.store(authed ? 1 : 0);
-        s_lastCheck = std::chrono::steady_clock::now();
+        std::lock_guard<std::mutex> lock(g_ghAuthMutex);
+        if (g_ghAuthCachedStatus.load() != -1 && std::chrono::duration_cast<std::chrono::seconds>(now - g_ghAuthLastCheck).count() < 30) {
+            return g_ghAuthCachedStatus.load() == 1;
+        }
+    }
+
+    // Fast path when explicit env token / hosts.yml oauth_token is configured
+    if (CheckLocalGitHubAuthFiles()) {
+        std::lock_guard<std::mutex> lock(g_ghAuthMutex);
+        g_ghAuthCachedStatus.store(1);
+        g_ghAuthLastCheck = std::chrono::steady_clock::now();
+        return true;
+    }
+
+    std::wstring ghExe = ResolveGhExePath();
+    if (ghExe.empty()) {
+        std::lock_guard<std::mutex> lock(g_ghAuthMutex);
+        g_ghAuthCachedStatus.store(0);
+        g_ghCachedUsername.clear();
+        g_ghAuthLastCheck = std::chrono::steady_clock::now();
+        return false;
+    }
+
+    std::wstring fullCmd = L"\"" + ghExe + L"\" auth status";
+    DWORD exitCode = 1;
+    std::string pipeOut;
+    DWORD durationMs = 0;
+    bool started = LaunchProcessAndCapture(
+        fullCmd,
+        L"",
+        2500,
+        { {L"GH_PROMPT_DISABLED", L"1"}, {L"GIT_TERMINAL_PROMPT", L"0"}, {L"GCM_INTERACTIVE", L"never"} },
+        exitCode,
+        pipeOut,
+        durationMs
+    );
+    if (!started) return false;
+
+    bool explicitlyLoggedOut = (pipeOut.find("You are not logged into") != std::string::npos) ||
+                               (pipeOut.find("not logged in") != std::string::npos) ||
+                               (pipeOut.find("token in") != std::string::npos && pipeOut.find("is invalid") != std::string::npos);
+    bool authed = !explicitlyLoggedOut && (
+        (exitCode == 0) ||
+        (pipeOut.find("Logged in to ") != std::string::npos) ||
+        (pipeOut.find("oauth_token") != std::string::npos));
+    std::wstring parsedUser = authed ? ExtractGhAuthUsername(pipeOut) : L"";
+    {
+        std::lock_guard<std::mutex> lock(g_ghAuthMutex);
+        g_ghAuthCachedStatus.store(authed ? 1 : 0);
+        g_ghCachedUsername = parsedUser;
+        g_ghAuthLastCheck = std::chrono::steady_clock::now();
     }
     return authed;
 }
 
 } // anonymous namespace
 
+bool DrawerPanel::IsLocalGitRepoRoot(const std::wstring& dir) {
+    std::wstring norm = NormalizeDirForGit(dir);
+    if (norm.empty()) return false;
+    std::error_code ec;
+    return std::filesystem::exists(std::filesystem::path(norm) / L".git", ec);
+}
+
 bool DrawerPanel::IsGitHubLoggedIn() const noexcept {
     if (m_hasExplicitLoginOverride) {
         return m_isGitHubLoggedIn;
     }
-    if (m_isGitHubLoggedIn) {
-        return true;
+    bool authed = CheckGitHubCliAuthStatus();
+    const_cast<DrawerPanel*>(this)->m_isGitHubLoggedIn = authed;
+    return authed;
+}
+
+void DrawerPanel::CompleteGitHubLogin(const std::wstring& username) {
+    m_isGitHubLoggedIn = true;
+    m_hasExplicitLoginOverride = false;
+    {
+        std::lock_guard<std::mutex> lock(g_ghAuthMutex);
+        g_ghAuthCachedStatus.store(1);
+        if (!username.empty() && username != L"GitHub User") {
+            g_ghCachedUsername = username;
+        }
+        g_ghAuthLastCheck = std::chrono::steady_clock::now();
     }
-    if (CheckGitHubCliAuthStatus()) {
-        const_cast<DrawerPanel*>(this)->m_isGitHubLoggedIn = true;
-        return true;
-    }
-    return false;
 }
 
 GitCmdResult RunGitCmd(const std::wstring& cmd, const std::wstring& workDir, bool retryOnLock) {
     GitCmdResult res;
-    SECURITY_ATTRIBUTES sa{ sizeof(sa), nullptr, TRUE };
-    HANDLE hReadPipe = nullptr, hWritePipe = nullptr;
-    if (!CreatePipe(&hReadPipe, &hWritePipe, &sa, 0)) return res;
-    SetHandleInformation(hReadPipe, HANDLE_FLAG_INHERIT, 0);
-
-    // Pass closed stdin pipe so git never hangs waiting for interactive terminal input
-    HANDLE hStdinRead = nullptr, hStdinWrite = nullptr;
-    if (CreatePipe(&hStdinRead, &hStdinWrite, &sa, 0)) {
-        SetHandleInformation(hStdinWrite, HANDLE_FLAG_INHERIT, 0);
-    }
-
-    STARTUPINFOW si{ sizeof(si) };
-    si.dwFlags = STARTF_USESHOWWINDOW | STARTF_USESTDHANDLES;
-    si.wShowWindow = SW_HIDE;
-    si.hStdInput = hStdinRead;
-    si.hStdOutput = hWritePipe;
-    si.hStdError = hWritePipe;
-
-    PROCESS_INFORMATION pi{ 0 };
-    std::wstring fullCmd = L"git " + cmd;
-    std::vector<wchar_t> cmdBuf(fullCmd.begin(), fullCmd.end());
-    cmdBuf.push_back(L'\0');
-
-    std::wstring cleanWorkDir = workDir;
-    if (cleanWorkDir.size() >= 4 && cleanWorkDir[0] == L'\\' && cleanWorkDir[1] == L'\\' && cleanWorkDir[2] == L'?' && cleanWorkDir[3] == L'\\') {
-        cleanWorkDir = cleanWorkDir.substr(4);
-    }
-    LPCWSTR pDir = cleanWorkDir.empty() ? nullptr : cleanWorkDir.c_str();
-
-    SetEnvironmentVariableW(L"GIT_TERMINAL_PROMPT", L"0");
-    SetEnvironmentVariableW(L"GCM_INTERACTIVE", L"never");
-
-    BOOL ok = CreateProcessW(nullptr, cmdBuf.data(), nullptr, nullptr, TRUE,
-                             CREATE_NO_WINDOW, nullptr, pDir, &si, &pi);
-    CloseHandle(hWritePipe);
-    if (hStdinRead) CloseHandle(hStdinRead);
-    if (hStdinWrite) CloseHandle(hStdinWrite);
-
-    if (!ok) {
-        CloseHandle(hReadPipe);
+    std::wstring cleanWorkDir = StripExtendedPathPrefix(workDir);
+    if (cleanWorkDir.empty()) {
+        res.exitCode = -1;
+        res.output = L"No project folder open.";
         return res;
     }
 
-    std::string rawOut;
-    char buffer[4096];
-    DWORD bytesRead = 0;
-    DWORD startTime = GetTickCount();
-    DWORD timeoutMs = 4000;
+    std::wstring gitExe = ResolveGitExePath();
+    std::wstring quotedGit = (gitExe.find(L' ') != std::wstring::npos && gitExe.front() != L'"')
+                                 ? (L"\"" + gitExe + L"\"")
+                                 : gitExe;
+    std::wstring fullCmd = quotedGit + L" " + cmd;
+
+    DWORD timeoutMs = 6000;
     std::wstring lowerCmd = cmd;
     for (auto& c : lowerCmd) c = towlower(c);
     if (lowerCmd.find(L"push") != std::wstring::npos ||
         lowerCmd.find(L"pull") != std::wstring::npos ||
         lowerCmd.find(L"fetch") != std::wstring::npos ||
         lowerCmd.find(L"clone") != std::wstring::npos) {
-        timeoutMs = 60000; // 60s timeout for remote network operations (push/pull/fetch/clone)
+        timeoutMs = 60000;
+    } else if (lowerCmd.find(L"add") != std::wstring::npos ||
+               lowerCmd.find(L"commit") != std::wstring::npos ||
+               lowerCmd.find(L"status") != std::wstring::npos ||
+               lowerCmd.find(L"log") != std::wstring::npos ||
+               lowerCmd.find(L"init") != std::wstring::npos ||
+               lowerCmd.find(L"diff") != std::wstring::npos) {
+        timeoutMs = 20000;
     }
 
-    while (true) {
-        DWORD bytesAvail = 0;
-        if (PeekNamedPipe(hReadPipe, nullptr, 0, nullptr, &bytesAvail, nullptr) && bytesAvail > 0) {
-            DWORD toRead = (std::min)(bytesAvail, static_cast<DWORD>(sizeof(buffer) - 1));
-            if (ReadFile(hReadPipe, buffer, toRead, &bytesRead, nullptr) && bytesRead > 0) {
-                rawOut.append(buffer, bytesRead);
-            }
-        }
-
-        DWORD waitRes = WaitForSingleObject(pi.hProcess, 15);
-        if (waitRes == WAIT_OBJECT_0) {
-            // Process finished, drain any remaining bytes
-            while (PeekNamedPipe(hReadPipe, nullptr, 0, nullptr, &bytesAvail, nullptr) && bytesAvail > 0) {
-                DWORD toRead = (std::min)(bytesAvail, static_cast<DWORD>(sizeof(buffer) - 1));
-                if (ReadFile(hReadPipe, buffer, toRead, &bytesRead, nullptr) && bytesRead > 0) {
-                    rawOut.append(buffer, bytesRead);
-                } else break;
-            }
-            break;
-        }
-
-        if (GetTickCount() - startTime > timeoutMs) {
-            TerminateProcess(pi.hProcess, 1);
-            break;
-        }
+    DWORD exitCode = 1;
+    std::string rawOut;
+    DWORD durationMs = 0;
+    if (!LaunchProcessAndCapture(
+            fullCmd,
+            cleanWorkDir,
+            timeoutMs,
+            { {L"GIT_TERMINAL_PROMPT", L"0"}, {L"GCM_INTERACTIVE", L"never"} },
+            exitCode,
+            rawOut,
+            durationMs)) {
+        res.exitCode = 9009;
+        res.output = L"Failed to execute git command.";
+        return res;
     }
-    CloseHandle(hReadPipe);
 
-    DWORD exitCode = 0;
-    GetExitCodeProcess(pi.hProcess, &exitCode);
     res.exitCode = static_cast<int>(exitCode);
     res.output = GitUtf8ToWide(rawOut);
 
-    CloseHandle(pi.hProcess);
-    CloseHandle(pi.hThread);
-
-    DWORD durationMs = GetTickCount() - startTime;
-    GitLogManager::Instance().LogCommand(fullCmd, res.exitCode, res.output, durationMs);
+    GitLogManager::Instance().LogCommand(L"git " + cmd, res.exitCode, res.output, durationMs);
 
     // If git failed due to a stale index.lock file (e.g. from an earlier crashed process),
     // automatically attempt to remove the stale lock file and retry once.
-    if (res.exitCode != 0 && retryOnLock && !cleanWorkDir.empty() && res.output.find(L"index.lock") != std::wstring::npos) {
+    if (res.exitCode != 0 && retryOnLock && res.output.find(L"index.lock") != std::wstring::npos) {
         std::error_code ec;
-        std::filesystem::path cur = cleanWorkDir;
-        for (int depth = 0; depth < 5; ++depth) {
-            std::filesystem::path lockPath = cur / ".git" / "index.lock";
-            if (std::filesystem::exists(lockPath, ec)) {
-                if (std::filesystem::remove(lockPath, ec)) {
-                    GitLogManager::Instance().LogCommand(L"[Auto-Recovery] Removed stale .git/index.lock at " + lockPath.wstring(), 0, L"Success", 0);
-                    return RunGitCmd(cmd, workDir, false);
-                }
-            }
-            if (cur.has_parent_path() && cur.parent_path() != cur) {
-                cur = cur.parent_path();
-            } else {
-                break;
-            }
+        std::filesystem::path lockPath = std::filesystem::path(NormalizeDirForGit(cleanWorkDir)) / ".git" / "index.lock";
+        if (std::filesystem::exists(lockPath, ec) && std::filesystem::remove(lockPath, ec)) {
+            GitLogManager::Instance().LogCommand(L"[Auto-Recovery] Removed stale .git/index.lock at " + lockPath.wstring(), 0, L"Success", 0);
+            return RunGitCmd(cmd, workDir, false);
         }
     }
 
@@ -4375,89 +4841,35 @@ GitCmdResult RunGitCmd(const std::wstring& cmd, const std::wstring& workDir, boo
 
 GitCmdResult RunCliCmd(const std::wstring& fullCmd, const std::wstring& workDir, DWORD timeoutMs = 30000) {
     GitCmdResult res;
-    SECURITY_ATTRIBUTES sa{ sizeof(sa), nullptr, TRUE };
-    HANDLE hReadPipe = nullptr, hWritePipe = nullptr;
-    if (!CreatePipe(&hReadPipe, &hWritePipe, &sa, 0)) return res;
-    SetHandleInformation(hReadPipe, HANDLE_FLAG_INHERIT, 0);
-
-    // Pass closed stdin pipe so gh/git never hangs waiting for interactive terminal input
-    HANDLE hStdinRead = nullptr, hStdinWrite = nullptr;
-    if (CreatePipe(&hStdinRead, &hStdinWrite, &sa, 0)) {
-        SetHandleInformation(hStdinWrite, HANDLE_FLAG_INHERIT, 0);
+    std::wstring resolvedCmd = fullCmd;
+    if (resolvedCmd.rfind(L"gh ", 0) == 0 || resolvedCmd == L"gh") {
+        std::wstring ghExe = ResolveGhExePath();
+        if (ghExe.empty()) {
+            res.exitCode = 9009;
+            res.output = L"GitHub CLI (gh.exe) was not found. Please install GitHub CLI from https://cli.github.com/ and run 'gh auth login'.";
+            return res;
+        }
+        resolvedCmd = L"\"" + ghExe + L"\"" + resolvedCmd.substr(2);
     }
 
-    STARTUPINFOW si{ sizeof(si) };
-    si.dwFlags = STARTF_USESHOWWINDOW | STARTF_USESTDHANDLES;
-    si.wShowWindow = SW_HIDE;
-    si.hStdInput = hStdinRead;
-    si.hStdOutput = hWritePipe;
-    si.hStdError = hWritePipe;
-
-    PROCESS_INFORMATION pi{ 0 };
-    std::vector<wchar_t> cmdBuf(fullCmd.begin(), fullCmd.end());
-    cmdBuf.push_back(L'\0');
-
-    std::wstring cleanWorkDir = workDir;
-    if (cleanWorkDir.size() >= 4 && cleanWorkDir[0] == L'\\' && cleanWorkDir[1] == L'\\' && cleanWorkDir[2] == L'?' && cleanWorkDir[3] == L'\\') {
-        cleanWorkDir = cleanWorkDir.substr(4);
-    }
-    LPCWSTR pDir = cleanWorkDir.empty() ? nullptr : cleanWorkDir.c_str();
-
-    SetEnvironmentVariableW(L"GH_PROMPT_DISABLED", L"1");
-    SetEnvironmentVariableW(L"GIT_TERMINAL_PROMPT", L"0");
-    SetEnvironmentVariableW(L"GCM_INTERACTIVE", L"never");
-
-    BOOL ok = CreateProcessW(nullptr, cmdBuf.data(), nullptr, nullptr, TRUE,
-                             CREATE_NO_WINDOW, nullptr, pDir, &si, &pi);
-    CloseHandle(hWritePipe);
-    if (hStdinRead) CloseHandle(hStdinRead);
-    if (hStdinWrite) CloseHandle(hStdinWrite);
-
-    if (!ok) {
-        CloseHandle(hReadPipe);
+    DWORD exitCode = 1;
+    std::string rawOut;
+    DWORD durationMs = 0;
+    if (!LaunchProcessAndCapture(
+            resolvedCmd,
+            workDir,
+            timeoutMs,
+            { {L"GH_PROMPT_DISABLED", L"1"}, {L"GIT_TERMINAL_PROMPT", L"0"}, {L"GCM_INTERACTIVE", L"never"} },
+            exitCode,
+            rawOut,
+            durationMs)) {
+        res.exitCode = 9009;
+        res.output = L"Failed to execute command.";
         return res;
     }
 
-    std::string rawOut;
-    char buffer[4096];
-    DWORD bytesRead = 0;
-    DWORD startTime = GetTickCount();
-
-    while (true) {
-        DWORD bytesAvail = 0;
-        if (PeekNamedPipe(hReadPipe, nullptr, 0, nullptr, &bytesAvail, nullptr) && bytesAvail > 0) {
-            DWORD toRead = (std::min)(bytesAvail, static_cast<DWORD>(sizeof(buffer) - 1));
-            if (ReadFile(hReadPipe, buffer, toRead, &bytesRead, nullptr) && bytesRead > 0) {
-                rawOut.append(buffer, bytesRead);
-            }
-        }
-
-        DWORD waitRes = WaitForSingleObject(pi.hProcess, 15);
-        if (waitRes == WAIT_OBJECT_0) {
-            // Process finished, drain any remaining bytes
-            while (PeekNamedPipe(hReadPipe, nullptr, 0, nullptr, &bytesAvail, nullptr) && bytesAvail > 0) {
-                DWORD toRead = (std::min)(bytesAvail, static_cast<DWORD>(sizeof(buffer) - 1));
-                if (ReadFile(hReadPipe, buffer, toRead, &bytesRead, nullptr) && bytesRead > 0) {
-                    rawOut.append(buffer, bytesRead);
-                } else break;
-            }
-            break;
-        }
-
-        if (GetTickCount() - startTime > timeoutMs) {
-            TerminateProcess(pi.hProcess, 1);
-            break;
-        }
-    }
-    CloseHandle(hReadPipe);
-
-    DWORD exitCode = 0;
-    GetExitCodeProcess(pi.hProcess, &exitCode);
     res.exitCode = static_cast<int>(exitCode);
     res.output = GitUtf8ToWide(rawOut);
-
-    CloseHandle(pi.hProcess);
-    CloseHandle(pi.hThread);
     return res;
 }
 
@@ -4472,6 +4884,7 @@ void DrawerPanel::RefreshGitState(bool async, bool showLoading) {
         m_gitCommits.clear();
         m_gitBranch.clear();
         m_isGitRepo = false;
+        m_hasGitRemote = false;
         m_isGitLoading = false;
         m_isGitRefreshing = false;
         m_unpushedCommitsCount = 0;
@@ -4521,16 +4934,20 @@ void DrawerPanel::RefreshGitState(bool async, bool showLoading) {
         if (showLoading) {
             m_isGitLoading = true;
         }
-        std::wstring dir = m_openFolderPath.empty() ? L"." : m_openFolderPath;
+        std::wstring dir = NormalizeDirForGit(m_openFolderPath);
 
-        // 1. Check if inside git repository
+        // 1. Verify the opened project folder itself owns a .git repository (never let ancestor .git hijack)
         if (!alive || !alive->load()) return;
-        auto resCheck = RunGitCmd(L"rev-parse --is-inside-work-tree", dir);
+        bool hasDirectGitRoot = !dir.empty() && IsLocalGitRepoRoot(dir);
+        GitCmdResult resCheck;
+        if (hasDirectGitRoot) {
+            resCheck = RunGitCmd(L"rev-parse --is-inside-work-tree", dir);
+        }
         if (!alive || !alive->load()) return;
-        if (resCheck.exitCode != 0) {
+        if (!hasDirectGitRoot || resCheck.exitCode != 0) {
             std::vector<GitChangeItem> untrackedChanges;
             std::error_code ecScan;
-            if (!m_openFolderPath.empty() && std::filesystem::exists(dir, ecScan) && std::filesystem::is_directory(dir, ecScan)) {
+            if (!dir.empty() && std::filesystem::exists(dir, ecScan) && std::filesystem::is_directory(dir, ecScan)) {
                 size_t count = 0;
                 for (auto it = std::filesystem::recursive_directory_iterator(dir, std::filesystem::directory_options::skip_permission_denied, ecScan);
                      it != std::filesystem::recursive_directory_iterator() && count < 150;
@@ -4561,6 +4978,9 @@ void DrawerPanel::RefreshGitState(bool async, bool showLoading) {
             }
             std::lock_guard<std::recursive_mutex> lock(m_gitMutex);
             m_isGitRepo = false;
+            m_hasGitRemote = false;
+            m_unpushedCommitsCount = 0;
+            m_gitBranch.clear();
             if (untrackedChanges.size() > 10000) {
                 untrackedChanges.resize(10000);
                 if (!m_dontShowTooManyChanges) {
@@ -4882,22 +5302,27 @@ void DrawerPanel::RefreshGitState(bool async, bool showLoading) {
             ComputeGitGraphLanes(commits);
         }
 
-        // 5. Query unpushed commits count (rev-list @{u}..HEAD or ahead in status -sb)
+        // 5. Query configured remotes and unpushed commits count
         if (!alive || !alive->load()) return;
+        auto resRemotes = RunGitCmd(L"remote", dir);
+        bool hasRemote = (resRemotes.exitCode == 0 && !TrimWideWhitespace(resRemotes.output).empty());
+
         int unpushedCount = 0;
-        auto resRevList = RunGitCmd(L"rev-list --count @{u}..HEAD", dir);
-        if (resRevList.exitCode == 0 && !resRevList.output.empty()) {
-            try {
-                unpushedCount = std::stoi(resRevList.output);
-            } catch (...) {}
-        } else {
-            auto resSb = RunGitCmd(L"status -sb", dir);
-            if (resSb.exitCode == 0) {
-                size_t aheadPos = resSb.output.find(L"ahead ");
-                if (aheadPos != std::wstring::npos) {
-                    try {
-                        unpushedCount = std::stoi(resSb.output.substr(aheadPos + 6));
-                    } catch (...) {}
+        if (hasRemote) {
+            auto resRevList = RunGitCmd(L"rev-list --count @{u}..HEAD", dir);
+            if (resRevList.exitCode == 0 && !resRevList.output.empty()) {
+                try {
+                    unpushedCount = std::stoi(resRevList.output);
+                } catch (...) {}
+            } else {
+                auto resSb = RunGitCmd(L"status -sb", dir);
+                if (resSb.exitCode == 0) {
+                    size_t aheadPos = resSb.output.find(L"ahead ");
+                    if (aheadPos != std::wstring::npos) {
+                        try {
+                            unpushedCount = std::stoi(resSb.output.substr(aheadPos + 6));
+                        } catch (...) {}
+                    }
                 }
             }
         }
@@ -4906,6 +5331,7 @@ void DrawerPanel::RefreshGitState(bool async, bool showLoading) {
         {
             std::lock_guard<std::recursive_mutex> lock(m_gitMutex);
             m_isGitRepo = true;
+            m_hasGitRemote = hasRemote;
             m_gitBranch = branch;
             if (changes.size() > 10000) {
                 changes.resize(10000);
@@ -5154,6 +5580,7 @@ void DrawerPanel::RefreshGitStatusOnly(bool async) {
         m_gitCommits.clear();
         m_gitBranch.clear();
         m_isGitRepo = false;
+        m_hasGitRemote = false;
         m_isGitLoading = false;
         m_isGitRefreshing = false;
         m_unpushedCommitsCount = 0;
@@ -5176,16 +5603,20 @@ void DrawerPanel::RefreshGitStatusOnly(bool async) {
         } guard(workers, async);
 
         if (!alive || !alive->load()) return;
-        std::wstring dir = m_openFolderPath.empty() ? L"." : m_openFolderPath;
+        std::wstring dir = NormalizeDirForGit(m_openFolderPath);
 
-        // 1. Check if git repo
+        // 1. Verify direct local .git root ownership
         if (!alive || !alive->load()) return;
-        auto resCheck = RunGitCmd(L"rev-parse --is-inside-work-tree", dir);
+        bool hasDirectGitRoot = !dir.empty() && IsLocalGitRepoRoot(dir);
+        GitCmdResult resCheck;
+        if (hasDirectGitRoot) {
+            resCheck = RunGitCmd(L"rev-parse --is-inside-work-tree", dir);
+        }
         if (!alive || !alive->load()) return;
-        if (resCheck.exitCode != 0) {
+        if (!hasDirectGitRoot || resCheck.exitCode != 0) {
             std::vector<GitChangeItem> untrackedChanges;
             std::error_code ecScan;
-            if (!m_openFolderPath.empty() && std::filesystem::exists(dir, ecScan) && std::filesystem::is_directory(dir, ecScan)) {
+            if (!dir.empty() && std::filesystem::exists(dir, ecScan) && std::filesystem::is_directory(dir, ecScan)) {
                 size_t count = 0;
                 for (auto it = std::filesystem::recursive_directory_iterator(dir, std::filesystem::directory_options::skip_permission_denied, ecScan);
                      it != std::filesystem::recursive_directory_iterator() && count < 150;
@@ -5216,6 +5647,9 @@ void DrawerPanel::RefreshGitStatusOnly(bool async) {
             }
             std::lock_guard<std::recursive_mutex> lock(m_gitMutex);
             m_isGitRepo = false;
+            m_hasGitRemote = false;
+            m_unpushedCommitsCount = 0;
+            m_gitBranch.clear();
             if (untrackedChanges.size() > 10000) {
                 untrackedChanges.resize(10000);
                 if (!m_dontShowTooManyChanges) {
@@ -5468,17 +5902,22 @@ void DrawerPanel::RefreshGitStatusOnly(bool async) {
             }
         }
 
-        // 4. Query unpushed commits count
+        // 4. Query remotes and unpushed commits count
+        auto resRemotes = RunGitCmd(L"remote", dir);
+        bool hasRemote = (resRemotes.exitCode == 0 && !TrimWideWhitespace(resRemotes.output).empty());
+
         int unpushedCount = 0;
-        auto resRevList = RunGitCmd(L"rev-list --count @{u}..HEAD", dir);
-        if (resRevList.exitCode == 0 && !resRevList.output.empty()) {
-            try { unpushedCount = std::stoi(resRevList.output); } catch (...) {}
-        } else {
-            auto resSb = RunGitCmd(L"status -sb", dir);
-            if (resSb.exitCode == 0) {
-                size_t aheadPos = resSb.output.find(L"ahead ");
-                if (aheadPos != std::wstring::npos) {
-                    try { unpushedCount = std::stoi(resSb.output.substr(aheadPos + 6)); } catch (...) {}
+        if (hasRemote) {
+            auto resRevList = RunGitCmd(L"rev-list --count @{u}..HEAD", dir);
+            if (resRevList.exitCode == 0 && !resRevList.output.empty()) {
+                try { unpushedCount = std::stoi(resRevList.output); } catch (...) {}
+            } else {
+                auto resSb = RunGitCmd(L"status -sb", dir);
+                if (resSb.exitCode == 0) {
+                    size_t aheadPos = resSb.output.find(L"ahead ");
+                    if (aheadPos != std::wstring::npos) {
+                        try { unpushedCount = std::stoi(resSb.output.substr(aheadPos + 6)); } catch (...) {}
+                    }
                 }
             }
         }
@@ -5487,7 +5926,7 @@ void DrawerPanel::RefreshGitStatusOnly(bool async) {
         bool stateChanged = false;
         {
             std::lock_guard<std::recursive_mutex> lock(m_gitMutex);
-            if (!m_isGitRepo || m_gitBranch != branch || m_unpushedCommitsCount != unpushedCount ||
+            if (!m_isGitRepo || m_hasGitRemote != hasRemote || m_gitBranch != branch || m_unpushedCommitsCount != unpushedCount ||
                 m_gitChanges.size() != changes.size()) {
                 stateChanged = true;
             } else {
@@ -5500,6 +5939,7 @@ void DrawerPanel::RefreshGitStatusOnly(bool async) {
             }
 
             m_isGitRepo = true;
+            m_hasGitRemote = hasRemote;
             m_gitBranch = branch;
             if (changes.size() > 10000) {
                 changes.resize(10000);
@@ -5529,7 +5969,7 @@ void DrawerPanel::RefreshGitStatusOnly(bool async) {
 
 void DrawerPanel::LoadCommitFiles(GitCommitItem& ci) {
     if (ci.hash.empty()) return;
-    std::wstring dir = m_openFolderPath.empty() ? L"." : m_openFolderPath;
+    std::wstring dir = NormalizeDirForGit(m_openFolderPath);
     if (!ci.filesLoaded) {
         auto res = RunGitCmd(L"show --name-status --pretty=\"\" " + ci.hash, dir);
         ci.files.clear();
@@ -6183,7 +6623,7 @@ void DrawerPanel::StageAllChangesAsync() {
         };
         if (!alive || !alive->load()) { finish(); return; }
         m_isGitLoading = true;
-        std::wstring dir = m_openFolderPath.empty() ? L"." : m_openFolderPath;
+        std::wstring dir = NormalizeDirForGit(m_openFolderPath);
 
         // Ensure context-aware .gitignore exists
         EnsureContextAwareGitignore(dir);
@@ -6213,7 +6653,7 @@ void DrawerPanel::UnstageAllChangesAsync() {
         };
         if (!alive || !alive->load()) { finish(); return; }
         m_isGitLoading = true;
-        std::wstring dir = m_openFolderPath.empty() ? L"." : m_openFolderPath;
+        std::wstring dir = NormalizeDirForGit(m_openFolderPath);
         RunGitCmd(L"restore --staged .", dir);
         RunGitCmd(L"reset HEAD", dir);
         if (!alive || !alive->load()) { finish(); return; }
@@ -6228,7 +6668,7 @@ void DrawerPanel::UnstageAllChangesAsync() {
 bool DrawerPanel::DiscardAllChanges() {
     SetActionPending(L"*", 5000);
     m_isGitLoading = true;
-    std::wstring dir = m_openFolderPath.empty() ? L"." : m_openFolderPath;
+    std::wstring dir = NormalizeDirForGit(m_openFolderPath);
     RunGitCmd(L"restore --staged --worktree .", dir);
     RunGitCmd(L"checkout HEAD -- .", dir);
     RunGitCmd(L"clean -fd", dir);
@@ -6268,7 +6708,7 @@ void DrawerPanel::StageFileAsync(const std::wstring& relPath) {
         };
         if (!alive || !alive->load()) { finish(); return; }
         m_isGitLoading = true;
-        std::wstring dir = m_openFolderPath.empty() ? L"." : m_openFolderPath;
+        std::wstring dir = NormalizeDirForGit(m_openFolderPath);
         std::wstring cleanRel = relPath;
         for (auto& c : cleanRel) if (c == L'\\') c = L'/';
         RunGitCmd(L"add \"" + cleanRel + L"\"", dir);
@@ -6296,7 +6736,7 @@ void DrawerPanel::UnstageFileAsync(const std::wstring& relPath) {
         };
         if (!alive || !alive->load()) { finish(); return; }
         m_isGitLoading = true;
-        std::wstring dir = m_openFolderPath.empty() ? L"." : m_openFolderPath;
+        std::wstring dir = NormalizeDirForGit(m_openFolderPath);
         std::wstring cleanRel = relPath;
         for (auto& c : cleanRel) if (c == L'\\') c = L'/';
         RunGitCmd(L"restore --staged -- \"" + cleanRel + L"\"", dir);
@@ -6314,7 +6754,7 @@ void DrawerPanel::UnstageFileAsync(const std::wstring& relPath) {
 bool DrawerPanel::DiscardFile(const std::wstring& relPath) {
     SetActionPending(relPath, 3000);
     m_isGitLoading = true;
-    std::wstring dir = m_openFolderPath.empty() ? L"." : m_openFolderPath;
+    std::wstring dir = NormalizeDirForGit(m_openFolderPath);
     std::wstring cleanRel = relPath;
     for (auto& c : cleanRel) if (c == L'\\') c = L'/';
 
@@ -6372,7 +6812,7 @@ void DrawerPanel::DiscardFileAsync(const std::wstring& relPath) {
 }
 
 std::wstring DrawerPanel::GetCommitFileContent(const std::wstring& commitHash, const std::wstring& relPath) {
-    std::wstring dir = m_openFolderPath.empty() ? L"." : m_openFolderPath;
+    std::wstring dir = NormalizeDirForGit(m_openFolderPath);
     std::wstring cleanRel = relPath;
     for (auto& c : cleanRel) if (c == L'\\') c = L'/';
     auto res = RunGitCmd(L"show " + commitHash + L":\"" + cleanRel + L"\"", dir);
@@ -6417,7 +6857,16 @@ void DrawerPanel::CommitChangesAsync(const std::wstring& message) {
         m_isCommitting = true;
         if (m_onGitStateChanged) m_onGitStateChanged();
 
-        std::wstring dir = m_openFolderPath.empty() ? L"." : m_openFolderPath;
+        std::wstring dir = NormalizeDirForGit(m_openFolderPath);
+        if (dir.empty() || !IsLocalGitRepoRoot(dir)) {
+            if (m_onGitError) {
+                m_onGitError(L"git commit", L"This folder does not have a local .git repository initialized. Use Publish to GitHub to initialize and commit.", dir);
+            }
+            ShowGitNotification(L"No local Git repository found in project folder.");
+            RefreshGitState(false);
+            finish();
+            return;
+        }
 
         // Ensure context-aware .gitignore exists (do not call RefreshTree on worker thread to avoid UI crash)
         EnsureContextAwareGitignore(dir);
@@ -6501,7 +6950,7 @@ void DrawerPanel::UncommitLastCommitAsync() {
         };
         if (!alive || !alive->load()) { finish(); return; }
         m_isGitLoading = true;
-        std::wstring dir = m_openFolderPath.empty() ? L"." : m_openFolderPath;
+        std::wstring dir = NormalizeDirForGit(m_openFolderPath);
         // 1. Get the last commit message before undoing
         auto resMsg = RunGitCmd(L"log -1 --pretty=%B", dir);
         std::wstring lastMsg = resMsg.output;
@@ -6542,9 +6991,26 @@ void DrawerPanel::PushCommitsAsync() {
                 m_isGitLoading = true;
                 m_isSyncing = true;
                 if (m_onGitStateChanged) m_onGitStateChanged();
-                std::wstring dir = m_openFolderPath.empty() ? L"." : m_openFolderPath;
+                std::wstring dir = NormalizeDirForGit(m_openFolderPath);
+                if (dir.empty() || !IsLocalGitRepoRoot(dir)) {
+                    ShowGitNotification(L"No local Git repository found in project folder.");
+                    finish();
+                    return;
+                }
+                auto resRemote = RunGitCmd(L"remote", dir);
+                if (resRemote.exitCode != 0 || TrimWideWhitespace(resRemote.output).empty()) {
+                    ShowGitNotification(L"No remote connected. Click 'Publish to GitHub' to connect & push.");
+                    if (m_onGitError) {
+                        m_onGitError(L"git push", L"No remote repository (such as 'origin') is configured in this repository.\n\nClick 'Publish to GitHub' in Source Control to create and connect a GitHub repository, or run:\n  git remote add origin <repo-url>", dir);
+                    }
+                    RefreshGitState(false);
+                    finish();
+                    return;
+                }
                 auto res = RunGitCmd(L"push", dir);
-                if (res.exitCode != 0 && res.output.find(L"--set-upstream") != std::wstring::npos) {
+                if (res.exitCode != 0 &&
+                    (res.output.find(L"--set-upstream") != std::wstring::npos ||
+                     res.output.find(L"no upstream branch") != std::wstring::npos)) {
                     res = RunGitCmd(L"push -u origin HEAD", dir);
                 }
                 if (res.exitCode != 0 && m_onGitError) {
@@ -6577,7 +7043,7 @@ void DrawerPanel::PullCommitsAsync() {
                 m_isGitLoading = true;
                 m_isSyncing = true;
                 if (m_onGitStateChanged) m_onGitStateChanged();
-                std::wstring dir = m_openFolderPath.empty() ? L"." : m_openFolderPath;
+                std::wstring dir = NormalizeDirForGit(m_openFolderPath);
                 auto res = RunGitCmd(L"pull", dir);
                 if (res.exitCode != 0 && m_onGitError) {
                     m_onGitError(L"git pull", res.output, dir);
@@ -6609,7 +7075,7 @@ void DrawerPanel::FetchAllRemotesAsync() {
                 m_isGitLoading = true;
                 m_isSyncing = true;
                 if (m_onGitStateChanged) m_onGitStateChanged();
-                std::wstring dir = m_openFolderPath.empty() ? L"." : m_openFolderPath;
+                std::wstring dir = NormalizeDirForGit(m_openFolderPath);
                 RunGitCmd(L"fetch --all", dir);
                 if (alive && alive->load()) {
                     RefreshGitState(false);
@@ -6634,7 +7100,7 @@ void DrawerPanel::StashChangesAsync() {
         try {
             if (alive && alive->load()) {
                 m_isGitLoading = true;
-                std::wstring dir = m_openFolderPath.empty() ? L"." : m_openFolderPath;
+                std::wstring dir = NormalizeDirForGit(m_openFolderPath);
                 RunGitCmd(L"stash", dir);
                 if (alive && alive->load()) {
                     RefreshGitState(false);
@@ -6678,7 +7144,7 @@ void DrawerPanel::RunGarbageCollectionAsync() {
         try {
             if (alive && alive->load()) {
                 m_isGitLoading = true;
-                std::wstring dir = m_openFolderPath.empty() ? L"." : m_openFolderPath;
+                std::wstring dir = NormalizeDirForGit(m_openFolderPath);
                 // 1. Run git garbage collection & prune loose unreachable objects
                 RunGitCmd(L"gc --prune=now --auto", dir);
                 // 2. Perform in-memory IDE garbage collection
@@ -6697,7 +7163,7 @@ void DrawerPanel::RunGarbageCollectionAsync() {
 }
 
 std::wstring DrawerPanel::GetGitFileContent(const std::wstring& relPath) {
-    std::wstring dir = m_openFolderPath.empty() ? L"." : m_openFolderPath;
+    std::wstring dir = NormalizeDirForGit(m_openFolderPath);
     std::wstring cleanRel = relPath;
     for (auto& c : cleanRel) if (c == L'\\') c = L'/';
     auto res = RunGitCmd(L"show HEAD:\"" + cleanRel + L"\"", dir);
@@ -6733,7 +7199,7 @@ void DrawerPanel::ComputeGitDiffLines(const std::wstring& relPath, std::set<size
         return;
     }
 
-    std::wstring dir = m_openFolderPath.empty() ? L"." : m_openFolderPath;
+    std::wstring dir = NormalizeDirForGit(m_openFolderPath);
     auto res = RunGitCmd(L"diff -U0 HEAD -- \"" + cleanRel + L"\"", dir);
     if (res.exitCode == 0 && !res.output.empty()) {
         std::wstringstream ss(res.output);
@@ -6781,7 +7247,7 @@ void DrawerPanel::ComputeGitBlame(const std::wstring& relPath, std::unordered_ma
     std::wstring cleanRel = relPath;
     for (auto& c : cleanRel) if (c == L'\\') c = L'/';
 
-    std::wstring dir = m_openFolderPath.empty() ? L"." : m_openFolderPath;
+    std::wstring dir = NormalizeDirForGit(m_openFolderPath);
 
     // Get current user name for "You" replacement
     std::wstring currentUserName;
@@ -6900,7 +7366,7 @@ void DrawerPanel::GenerateAiCommitMessage() {
         return;
     }
 
-    std::wstring dir = m_openFolderPath.empty() ? L"." : m_openFolderPath;
+    std::wstring dir = NormalizeDirForGit(m_openFolderPath);
     auto resDiff = RunGitCmd(L"diff -U1", dir);
     std::wstring diffOutput = resDiff.output;
     if (diffOutput.empty()) {
@@ -7012,7 +7478,11 @@ bool DrawerPanel::HitTestGit(POINT pt, const app::AppConfig& config,
                             StashChangesAsync();
                             break;
                         case 21: // Push Commits
-                            PushCommitsAsync();
+                            if (!m_isGitRepo || !m_hasGitRemote) {
+                                OpenPublishRepoModal();
+                            } else {
+                                PushCommitsAsync();
+                            }
                             break;
                         case 22: // Pull Commits
                             PullCommitsAsync();
@@ -7097,11 +7567,20 @@ bool DrawerPanel::HitTestGit(POINT pt, const app::AppConfig& config,
             if (m_isCommitting.load() || m_isSyncing.load() || m_isGitLoading.load()) {
                 return true; // Ignore repeated clicks while loading (prevent spam click)
             }
-            PushCommitsAsync();
+            if (!m_isGitRepo || !m_hasGitRemote) {
+                if (!IsGitHubLoggedIn()) {
+                    ShowGitNotification(L"No GitHub account detected. Please log in to GitHub before committing.");
+                    OpenGitHubLoginModal();
+                    return true;
+                }
+                OpenPublishRepoModal();
+            } else {
+                PushCommitsAsync();
+            }
             return true;
         }
 
-        // Primary Commit / Sync Changes Button (Image 1 & 5)
+        // Primary Commit / Sync Changes / Publish Button
         if (pt.x >= m_gitCommitBtnBounds.left && pt.x <= m_gitCommitBtnBounds.right &&
             pt.y >= m_gitCommitBtnBounds.top && pt.y <= m_gitCommitBtnBounds.bottom) {
             if (m_isCommitting.load() || m_isSyncing.load() || m_isGitLoading.load()) {
@@ -7115,8 +7594,9 @@ bool DrawerPanel::HitTestGit(POINT pt, const app::AppConfig& config,
                 OpenGitHubLoginModal();
                 return true;
             }
-            bool isFirstCommit = !m_isGitRepo || (!m_gitChanges.empty() && m_gitCommits.empty());
-            if (isFirstCommit) {
+            bool needsPublish = !m_isGitRepo || (!m_gitChanges.empty() && m_gitCommits.empty()) ||
+                                (m_isGitRepo && m_gitChanges.empty() && !m_hasGitRemote);
+            if (needsPublish) {
                 OpenPublishRepoModal();
                 return true;
             }
@@ -7137,7 +7617,7 @@ bool DrawerPanel::HitTestGit(POINT pt, const app::AppConfig& config,
                 PushCommitsAsync();
                 return true;
             }
-            return true; // Disabled when 0 changes and 0 unpushed
+            return true; // Disabled when 0 changes, 0 unpushed, and remote connected
         }
 
         // Staged Changes Header buttons & chevron
@@ -7281,6 +7761,10 @@ bool DrawerPanel::HitTestGit(POINT pt, const app::AppConfig& config,
             pt.y >= m_gitGraphPushBounds.top && pt.y <= m_gitGraphPushBounds.bottom) {
             if (m_isCommitting.load() || m_isSyncing.load() || m_isGitLoading.load()) {
                 return true; // Ignore repeated clicks while loading (prevent spam click)
+            }
+            if (!m_isGitRepo || !m_hasGitRemote) {
+                OpenPublishRepoModal();
+                return true;
             }
             PushCommitsAsync();
             return true;
@@ -7445,6 +7929,8 @@ bool DrawerPanel::HandleGitMouseMove(POINT pt, bool isLButtonDown, Theme* pTheme
             m_gitTooltipText = L"Commit Changes (Ctrl+Enter)";
         } else if (m_unpushedCommitsCount > 0) {
             m_gitTooltipText = L"Sync Changes (" + std::to_wstring(m_unpushedCommitsCount) + L") with Remote / GitHub";
+        } else if (m_isGitRepo && !m_hasGitRemote) {
+            m_gitTooltipText = L"Publish Local Repository to GitHub";
         } else {
             m_gitTooltipText = L"No changes to commit";
         }
@@ -7951,8 +8437,9 @@ bool DrawerPanel::HandleGitKeyDown(WPARAM wParam, HWND hwnd) {
                 OpenGitHubLoginModal();
                 return true;
             }
-            bool isFirstCommit = !m_isGitRepo || (!m_gitChanges.empty() && m_gitCommits.empty());
-            if (isFirstCommit) {
+            bool needsPublish = !m_isGitRepo || (!m_gitChanges.empty() && m_gitCommits.empty()) ||
+                                (m_isGitRepo && m_gitChanges.empty() && !m_hasGitRemote);
+            if (needsPublish) {
                 OpenPublishRepoModal();
                 return true;
             }
@@ -8096,6 +8583,83 @@ void DrawerPanel::DrawButtonSpinner(ID2D1RenderTarget* pRT, const D2D1_RECT_F& b
         pFmt->SetTextAlignment(prevAlign);
         pFmt->SetParagraphAlignment(prevPAlign);
     }
+}
+
+void DrawerPanel::DrawCenteredIconAndText(
+    ID2D1RenderTarget* pRT,
+    Theme& theme,
+    const app::AppConfig& config,
+    const D2D1_RECT_F& bounds,
+    ID2D1Brush* pBrush,
+    DrawerActionIcon icon,
+    const std::wstring& text,
+    IDWriteTextFormat* pFmtOverride
+) const {
+    if (!pRT || !pBrush) return;
+    IDWriteTextFormat* pFmt = pFmtOverride ? pFmtOverride : (theme.fontButtonCenter.Get() ? theme.fontButtonCenter.Get() : theme.fontMenuItem.Get());
+    if (!pFmt) return;
+
+    const float boxW = (std::max)(0.0f, bounds.right - bounds.left);
+    const float boxH = (std::max)(0.0f, bounds.bottom - bounds.top);
+    const float iconSize = config.ScaleF(13.0f);
+    const float gap = config.ScaleF(6.0f);
+
+    float textW = 0.0f;
+    if (theme.dwriteFactory && !text.empty()) {
+        Microsoft::WRL::ComPtr<IDWriteTextLayout> pLayout;
+        if (SUCCEEDED(theme.dwriteFactory->CreateTextLayout(
+                text.c_str(), static_cast<UINT32>(text.length()),
+                pFmt, (std::max)(10.0f, boxW), boxH, &pLayout))) {
+            DWRITE_TEXT_METRICS tm{};
+            if (SUCCEEDED(pLayout->GetMetrics(&tm))) {
+                textW = tm.widthIncludingTrailingWhitespace;
+            }
+        }
+    }
+    if (textW <= 0.0f && !text.empty()) {
+        textW = static_cast<float>(text.length()) * config.ScaleF(6.5f);
+    }
+
+    const float totalW = iconSize + gap + textW;
+    const float startX = bounds.left + (std::max)(config.ScaleF(6.0f), (boxW - totalW) * 0.5f);
+    const float cy = (bounds.top + bounds.bottom) * 0.5f;
+    D2D1_RECT_F rcVecIcon = D2D1::RectF(
+        startX,
+        cy - iconSize * 0.5f,
+        startX + iconSize,
+        cy + iconSize * 0.5f
+    );
+
+    switch (icon) {
+        case DrawerActionIcon::Check:
+            m_icons.DrawCheck(pRT, rcVecIcon, pBrush, 1.85f);
+            break;
+        case DrawerActionIcon::CloudUpload:
+            m_icons.DrawCloudUpload(pRT, rcVecIcon, pBrush, 1.55f);
+            break;
+        case DrawerActionIcon::RefreshCw:
+            m_icons.DrawRefreshCw(pRT, rcVecIcon, pBrush, 1.45f);
+            break;
+        case DrawerActionIcon::ExternalLink:
+            m_icons.DrawExternalLink(pRT, rcVecIcon, pBrush, 1.35f);
+            break;
+    }
+
+    D2D1_RECT_F rcText = D2D1::RectF(
+        rcVecIcon.right + gap,
+        bounds.top,
+        bounds.right - config.ScaleF(4.0f),
+        bounds.bottom
+    );
+    DWRITE_TEXT_ALIGNMENT prevAlign = pFmt->GetTextAlignment();
+    DWRITE_PARAGRAPH_ALIGNMENT prevPAlign = pFmt->GetParagraphAlignment();
+    pFmt->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
+    pFmt->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+    pRT->PushAxisAlignedClip(rcText, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+    pRT->DrawText(text.c_str(), static_cast<UINT32>(text.length()), pFmt, rcText, pBrush);
+    pRT->PopAxisAlignedClip();
+    pFmt->SetTextAlignment(prevAlign);
+    pFmt->SetParagraphAlignment(prevPAlign);
 }
 
 void DrawerPanel::RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config, float clientHeight, float currentDrawerW) {
@@ -8553,10 +9117,7 @@ void DrawerPanel::RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, 
                 m_gitCommitBtnBounds.right - config.ScaleF(26.0f),
                 curY + commitH
             );
-            const wchar_t* commitText = L"✓ Commit";
-            pRT->DrawText(commitText, static_cast<UINT32>(wcslen(commitText)),
-                          theme.fontButtonCenter.Get() ? theme.fontButtonCenter.Get() : theme.fontMenuItem.Get(),
-                          rcCommitLabel, theme.brushTextMuted.Get());
+            DrawCenteredIconAndText(pRT, theme, config, rcCommitLabel, theme.brushTextMuted.Get(), DrawerActionIcon::Check, L"Commit");
 
             float divX = m_gitCommitBtnBounds.right - config.ScaleF(26.0f);
             pRT->DrawLine(D2D1::Point2F(divX, curY + 4.0f), D2D1::Point2F(divX, curY + commitH - 4.0f),
@@ -8576,10 +9137,7 @@ void DrawerPanel::RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, 
                 m_gitCommitBtnBounds.right - config.ScaleF(26.0f),
                 curY + commitH
             );
-            const wchar_t* commitText = L"✓ Commit";
-            pRT->DrawText(commitText, static_cast<UINT32>(wcslen(commitText)),
-                          theme.fontButtonCenter.Get() ? theme.fontButtonCenter.Get() : theme.fontMenuItem.Get(),
-                          rcCommitLabel, theme.brushTextWhite.Get());
+            DrawCenteredIconAndText(pRT, theme, config, rcCommitLabel, theme.brushTextWhite.Get(), DrawerActionIcon::Check, L"Commit");
 
             // Vertical divider and chevron dropdown
             float divX = m_gitCommitBtnBounds.right - config.ScaleF(26.0f);
@@ -8606,10 +9164,8 @@ void DrawerPanel::RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, 
                     m_gitCommitBtnBounds.right - config.ScaleF(26.0f),
                     curY + commitH
                 );
-                std::wstring syncText = L"🔄 Sync Changes " + std::to_wstring(m_unpushedCommitsCount);
-                pRT->DrawText(syncText.c_str(), static_cast<UINT32>(syncText.length()),
-                              theme.fontButtonCenter.Get() ? theme.fontButtonCenter.Get() : theme.fontMenuItem.Get(),
-                              rcSyncLabel, theme.brushTextWhite.Get());
+                std::wstring syncText = L"Sync Changes " + std::to_wstring(m_unpushedCommitsCount);
+                DrawCenteredIconAndText(pRT, theme, config, rcSyncLabel, theme.brushTextWhite.Get(), DrawerActionIcon::RefreshCw, syncText);
 
                 // Vertical divider and chevron dropdown
                 float divX = m_gitCommitBtnBounds.right - config.ScaleF(26.0f);
@@ -8620,8 +9176,28 @@ void DrawerPanel::RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, 
                 pRT->DrawLine(D2D1::Point2F(dchX - 3.0f, dchY - 1.5f), D2D1::Point2F(dchX, dchY + 2.0f), theme.brushTextWhite.Get(), 1.4f);
                 pRT->DrawLine(D2D1::Point2F(dchX, dchY + 2.0f), D2D1::Point2F(dchX + 3.0f, dchY - 1.5f), theme.brushTextWhite.Get(), 1.4f);
             }
+        } else if (m_isGitRepo && !m_hasGitRemote) {
+            // Active Publish to GitHub Button when local repo has no remote connected yet
+            m_gitSyncBtnBounds = {};
+            pRT->FillRoundedRectangle(rrcCommit, theme.brushBrandAccent.Get());
+
+            D2D1_RECT_F rcPubLabel = D2D1::RectF(
+                m_gitCommitBtnBounds.left,
+                curY,
+                m_gitCommitBtnBounds.right - config.ScaleF(26.0f),
+                curY + commitH
+            );
+            DrawCenteredIconAndText(pRT, theme, config, rcPubLabel, theme.brushTextWhite.Get(), DrawerActionIcon::CloudUpload, L"Publish to GitHub");
+
+            float divX = m_gitCommitBtnBounds.right - config.ScaleF(26.0f);
+            pRT->DrawLine(D2D1::Point2F(divX, curY + 4.0f), D2D1::Point2F(divX, curY + commitH - 4.0f),
+                          theme.brushBorderSubtle.Get(), 1.0f);
+            float dchX = (divX + m_gitCommitBtnBounds.right) / 2.0f;
+            float dchY = curY + commitH / 2.0f;
+            pRT->DrawLine(D2D1::Point2F(dchX - 3.0f, dchY - 1.5f), D2D1::Point2F(dchX, dchY + 2.0f), theme.brushTextWhite.Get(), 1.4f);
+            pRT->DrawLine(D2D1::Point2F(dchX, dchY + 2.0f), D2D1::Point2F(dchX + 3.0f, dchY - 1.5f), theme.brushTextWhite.Get(), 1.4f);
         } else {
-            // Disabled Muted Commit Button (0 changes and 0 unpushed commits)
+            // Disabled Muted Commit Button (0 changes, 0 unpushed, and remote connected or no folder open)
             m_gitSyncBtnBounds = {};
             Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushDisabled;
             pRT->CreateSolidColorBrush(D2D1::ColorF(0.22f, 0.22f, 0.22f, 0.6f), &brushDisabled);
@@ -8633,10 +9209,7 @@ void DrawerPanel::RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, 
                 m_gitCommitBtnBounds.right - config.ScaleF(26.0f),
                 curY + commitH
             );
-            const wchar_t* commitText = L"✓ Commit";
-            pRT->DrawText(commitText, static_cast<UINT32>(wcslen(commitText)),
-                          theme.fontButtonCenter.Get() ? theme.fontButtonCenter.Get() : theme.fontMenuItem.Get(),
-                          rcCommitLabel, theme.brushTextMuted.Get());
+            DrawCenteredIconAndText(pRT, theme, config, rcCommitLabel, theme.brushTextMuted.Get(), DrawerActionIcon::Check, L"Commit");
 
             float divX = m_gitCommitBtnBounds.right - config.ScaleF(26.0f);
             pRT->DrawLine(D2D1::Point2F(divX, curY + 4.0f), D2D1::Point2F(divX, curY + commitH - 4.0f),
@@ -9237,13 +9810,20 @@ void DrawerPanel::RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, 
         pRT->FillEllipse(D2D1::Ellipse(D2D1::Point2F(gmx, gmy), 1.2f, 1.2f), theme.brushTextMuted.Get());
         pRT->FillEllipse(D2D1::Ellipse(D2D1::Point2F(gmx + 3.5f, gmy), 1.2f, 1.2f), theme.brushTextMuted.Get());
 
-        // 🔄 Refresh
+        // Refresh (upright vector RefreshCw icon)
         m_gitGraphRefreshBounds = D2D1::RectF(rightX - tbW, curY + 2.0f, rightX, curY + secH - 2.0f);
         rightX -= (tbW + tbGap);
-        float grx = (m_gitGraphRefreshBounds.left + m_gitGraphRefreshBounds.right) / 2.0f;
-        float gry = (m_gitGraphRefreshBounds.top + m_gitGraphRefreshBounds.bottom) / 2.0f;
-        pRT->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(grx, gry), 4.0f, 4.0f), theme.brushTextMuted.Get(), 1.3f);
-        pRT->DrawLine(D2D1::Point2F(grx + 4.0f, gry - 2.5f), D2D1::Point2F(grx + 4.0f, gry), theme.brushTextMuted.Get(), 1.3f);
+        m_icons.DrawRefreshCw(
+            pRT,
+            D2D1::RectF(
+                m_gitGraphRefreshBounds.left + config.ScaleF(2.5f),
+                m_gitGraphRefreshBounds.top + config.ScaleF(2.5f),
+                m_gitGraphRefreshBounds.right - config.ScaleF(2.5f),
+                m_gitGraphRefreshBounds.bottom - config.ScaleF(2.5f)
+            ),
+            theme.brushTextMuted.Get(),
+            1.35f
+        );
 
         // ↑ Push
         m_gitGraphPushBounds = D2D1::RectF(rightX - tbW, curY + 2.0f, rightX, curY + secH - 2.0f);
@@ -9839,78 +10419,19 @@ void DrawerPanel::RenderGitTooltip(ID2D1RenderTarget* pRT, Theme& theme, const a
     }
     if (!pRT) return;
 
-    float tipPadX = config.ScaleF(10.0f);
-    float tipPadY = config.ScaleF(5.0f);
-    float measuredW = 0.0f;
-    float measuredH = 0.0f;
-
-    IDWriteTextFormat* pFmt = theme.fontTooltip.Get() ? theme.fontTooltip.Get() :
-                              (theme.fontMenuItem.Get() ? theme.fontMenuItem.Get() : theme.fontButtonCenter.Get());
-    if (theme.dwriteFactory && pFmt) {
-        Microsoft::WRL::ComPtr<IDWriteTextLayout> pLayout;
-        if (SUCCEEDED(theme.dwriteFactory->CreateTextLayout(
-                m_gitTooltipText.c_str(), static_cast<UINT32>(m_gitTooltipText.length()),
-                pFmt, 1000.0f, 200.0f, &pLayout)) && pLayout) {
-            DWRITE_TEXT_METRICS tm{};
-            if (SUCCEEDED(pLayout->GetMetrics(&tm))) {
-                measuredW = tm.widthIncludingTrailingWhitespace;
-                measuredH = tm.height;
-            }
-        }
-    }
-    if (measuredW <= 0.0f) {
-        measuredW = static_cast<float>(m_gitTooltipText.length()) * config.ScaleF(8.0f);
-        measuredH = config.ScaleF(16.0f);
-    }
-
-    float maxTipW = clientW - config.ScaleF(20.0f);
-    float tipW = (std::min)(maxTipW, measuredW + tipPadX * 2.0f);
-    float tipH = (std::max)(config.ScaleF(22.0f), measuredH + tipPadY * 2.0f);
-
-    float railW = static_cast<float>(config.railWidth);
-    float currentDrawerW = config.ScaleF(static_cast<float>(config.drawerWidth));
-    float drawerRight = railW + currentDrawerW;
-
-    // Smart positioning:
-    // If placing at target.left causes tooltip to exceed drawer right edge, align to target.right - tipW so it expands LEFTWARD!
-    float tipX = m_gitTooltipTarget.left;
-    if (tipX + tipW > drawerRight - config.ScaleF(6.0f)) {
-        tipX = m_gitTooltipTarget.right - tipW;
-    }
-    // If aligning right pushes it past the left rail, push it back right
-    if (tipX < railW + config.ScaleF(6.0f)) {
-        tipX = railW + config.ScaleF(6.0f);
-    }
-    // Clamp to window client right edge
-    if (tipX + tipW > clientW - config.ScaleF(10.0f)) {
-        tipX = clientW - tipW - config.ScaleF(10.0f);
-    }
-
-    float tipY = m_gitTooltipTarget.bottom + config.ScaleF(6.0f);
-    if (tipY + tipH > clientH - config.ScaleF(10.0f)) {
-        tipY = m_gitTooltipTarget.top - tipH - config.ScaleF(6.0f);
-    }
-
-    D2D1_RECT_F rcTipBox = D2D1::RectF(tipX, tipY, tipX + tipW, tipY + tipH);
-    D2D1_ROUNDED_RECT rrcTip = D2D1::RoundedRect(rcTipBox, 4.0f, 4.0f);
-
-    // Subtle drop shadow for floating popover
-    D2D1_ROUNDED_RECT rrcShadow = D2D1::RoundedRect(
-        D2D1::RectF(tipX + 1.5f, tipY + 2.0f, tipX + tipW + 1.5f, tipY + tipH + 2.0f),
-        4.0f, 4.0f);
-    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> bShadow;
-    pRT->CreateSolidColorBrush(D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.35f), &bShadow);
-    if (bShadow) pRT->FillRoundedRectangle(rrcShadow, bShadow.Get());
-
-    pRT->FillRoundedRectangle(rrcTip, theme.brushTooltipBg.Get());
-    pRT->DrawRoundedRectangle(rrcTip, theme.brushTooltipBorder.Get(), 1.0f);
-
-    D2D1_RECT_F rcTipText = D2D1::RectF(tipX + tipPadX, tipY, tipX + tipW - tipPadX, tipY + tipH);
-    pRT->PushAxisAlignedClip(rcTipText, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
-    ID2D1Brush* pTxtBrush = theme.brushTooltipText ? theme.brushTooltipText.Get() : theme.brushTextPrimary.Get();
-    pRT->DrawText(m_gitTooltipText.c_str(), static_cast<UINT32>(m_gitTooltipText.length()),
-                  pFmt, rcTipText, pTxtBrush);
-    pRT->PopAxisAlignedClip();
+    const float railW = config.ScaleF(static_cast<float>(config.railWidth));
+    const float currentDrawerW = config.ScaleF(static_cast<float>(config.drawerWidth));
+    const float maxRightX = (std::min)(railW + currentDrawerW - config.ScaleF(6.0f), clientW - config.ScaleF(10.0f));
+    (void)DrawAnchoredTooltip(
+        pRT,
+        theme,
+        config,
+        m_gitTooltipText,
+        m_gitTooltipTarget,
+        railW + config.ScaleF(6.0f),
+        maxRightX,
+        clientH - config.ScaleF(10.0f)
+    );
 }
 
 void DrawerPanel::OpenPublishRepoModal() {
@@ -9949,7 +10470,11 @@ void DrawerPanel::ConfirmPublishRepo(int visibilityChoice) {
     m_publishedVisibility = (visibilityChoice == 1) ? 1 : 0;
     m_isPublishModalOpen = false;
 
-    std::wstring dir = m_openFolderPath.empty() ? L"." : m_openFolderPath;
+    std::wstring rawDir = StripExtendedPathPrefix(m_openFolderPath);
+    std::wstring dir = NormalizeDirForGit(rawDir);
+    if (dir.empty()) {
+        dir = rawDir;
+    }
     std::wstring repoName = m_publishRepoName.empty() ? L"my-project" : m_publishRepoName;
     std::wstring visStr = (m_publishedVisibility == 0) ? L"private" : L"public";
 
@@ -9964,21 +10489,63 @@ void DrawerPanel::ConfirmPublishRepo(int visibilityChoice) {
     }
     m_lastPublishedCommitMsg = msg;
 
-    // 1. Check test path fast-exit
-    if (dir.find(L"phide_test_publish_repo") != std::wstring::npos) {
-        RunGitCmd(L"init", dir);
-        RunGitCmd(L"config user.name \"Phide Developer\"", dir);
-        RunGitCmd(L"config user.email \"dev@phide.local\"", dir);
-        RunGitCmd(L"add -A", dir);
-        RunGitCmd(L"commit -m \"" + msg + L"\"", dir);
-        RunGitCmd(L"branch -M main", dir);
+    // 1. Unit test fast-path for isolated synthetic test folders (never pushes to real GitHub)
+    if (dir.find(L"phide_test_publish_repo") != std::wstring::npos ||
+        rawDir.find(L"phide_test_publish_repo") != std::wstring::npos) {
+        std::error_code ecTmp;
+        if (!dir.empty() && std::filesystem::exists(dir, ecTmp) && std::filesystem::is_directory(dir, ecTmp)) {
+            if (!IsLocalGitRepoRoot(dir)) {
+                auto resInit = RunGitCmd(L"init -b main", dir);
+                if (resInit.exitCode != 0) RunGitCmd(L"init", dir);
+            }
+            RunGitCmd(L"config --local user.name \"Phide Developer\"", dir);
+            RunGitCmd(L"config --local user.email \"dev@phide.local\"", dir);
+            RunGitCmd(L"add -A", dir);
+            auto resHead = RunGitCmd(L"rev-parse --verify HEAD", dir);
+            if (resHead.exitCode != 0) {
+                std::wstring escapedMsg;
+                for (wchar_t c : msg) {
+                    if (c == L'"') escapedMsg += L"\\\"";
+                    else if (c == L'\r' || c == L'\n') escapedMsg += L" ";
+                    else escapedMsg += c;
+                }
+                bool nothingStaged = (RunGitCmd(L"diff --cached --quiet", dir).exitCode == 0);
+                std::wstring commitCmd = nothingStaged
+                    ? (L"commit --allow-empty -m \"" + escapedMsg + L"\"")
+                    : (L"commit -m \"" + escapedMsg + L"\"");
+                RunGitCmd(commitCmd, dir);
+            }
+            RunGitCmd(L"branch -M main", dir);
+        }
         {
             std::lock_guard<std::recursive_mutex> lock(m_gitMutex);
             m_isGitRepo = true;
+            m_commitMessage.clear();
         }
         ShowGitNotification(L"✓ Published to GitHub: " + repoName + L" (" + visStr + L")");
-        RefreshGitState(false);
+        if (!dir.empty() && std::filesystem::exists(dir, ecTmp)) {
+            RefreshGitState(false);
+        }
         return;
+    }
+
+    if (dir.empty()) {
+        ShowGitNotification(L"Please open a project folder before publishing to GitHub.");
+        if (m_onGitError) {
+            m_onGitError(L"Publish Repository", L"No project folder is open. Use File > Open Folder first.", L"");
+        }
+        return;
+    }
+
+    {
+        std::error_code ecDir;
+        if (!std::filesystem::exists(dir, ecDir) || !std::filesystem::is_directory(dir, ecDir)) {
+            ShowGitNotification(L"Project folder does not exist on disk.");
+            if (m_onGitError) {
+                m_onGitError(L"Publish Repository", L"The project folder does not exist: " + dir, dir);
+            }
+            return;
+        }
     }
 
     // 2. Show immediate progress notification & set loading
@@ -10003,89 +10570,298 @@ void DrawerPanel::ConfirmPublishRepo(int visibilityChoice) {
 
         if (!alive || !alive->load()) return;
 
-        // Proactively check if repository with this name already exists on GitHub (e.g. if local .git was erased)
-        auto resView = RunCliCmd(L"gh repo view \"" + repoName + L"\"", dir, 4000);
-        if (resView.exitCode == 0 && resView.output.find(L"name:") != std::wstring::npos) {
-            if (alive && alive->load()) {
-                ShowGitNotification(L"GitHub: Repository '" + repoName + L"' already exists on GitHub.");
-                m_isGitLoading.store(false);
-                RefreshGitState(false);
+        // Helper to invoke error modal + notification without truncating full diagnostics
+        auto reportError = [&](const std::wstring& cmdLabel, const std::wstring& notif, const std::wstring& details) {
+            if (!alive || !alive->load()) return;
+            ShowGitNotification(notif);
+            if (m_onGitError) {
+                m_onGitError(cmdLabel, details.empty() ? notif : details, dir);
             }
-            return;
+            RefreshGitState(false);
+        };
+
+        // 3. Initialize Git directly inside the opened project folder if <dir>\.git does not exist
+        if (!IsLocalGitRepoRoot(dir)) {
+            auto resInit = RunGitCmd(L"init -b main", dir);
+            if (resInit.exitCode != 0) {
+                resInit = RunGitCmd(L"init", dir);
+            }
+            if (!alive || !alive->load()) return;
+            if (resInit.exitCode != 0 || !IsLocalGitRepoRoot(dir)) {
+                reportError(L"git init",
+                            L"Failed to initialize Git repository in project folder.",
+                            resInit.output.empty() ? L"git init failed inside " + dir : resInit.output);
+                return;
+            }
         }
 
-        // Initialize Git repository locally if not yet initialized (.git erased)
-        auto resCheck = RunGitCmd(L"rev-parse --is-inside-work-tree", dir);
-        if (resCheck.exitCode != 0) {
-            RunGitCmd(L"init", dir);
+        if (!alive || !alive->load()) return;
+
+        // 4. Ensure an initial commit exists on HEAD (never run empty commit if HEAD already exists)
+        auto resHead = RunGitCmd(L"rev-parse --verify HEAD", dir);
+        if (!alive || !alive->load()) return;
+        bool hasHead = (resHead.exitCode == 0);
+        if (!hasHead) {
+            // Preserve user's global/local git identity if already configured; only set local fallback if unset
+            auto resUser = RunGitCmd(L"config user.name", dir);
+            if (resUser.exitCode != 0 || TrimWideWhitespace(resUser.output).empty()) {
+                auto resSetUser = RunGitCmd(L"config --local user.name \"Phide Developer\"", dir);
+                if (resSetUser.exitCode != 0) {
+                    reportError(L"git config user.name", L"Git user.name is not configured.", resSetUser.output);
+                    return;
+                }
+            }
+            auto resEmail = RunGitCmd(L"config user.email", dir);
+            if (resEmail.exitCode != 0 || TrimWideWhitespace(resEmail.output).empty()) {
+                auto resSetEmail = RunGitCmd(L"config --local user.email \"dev@phide.local\"", dir);
+                if (resSetEmail.exitCode != 0) {
+                    reportError(L"git config user.email", L"Git user.email is not configured.", resSetEmail.output);
+                    return;
+                }
+            }
+
+            if (!alive || !alive->load()) return;
+            EnsureContextAwareGitignore(dir);
+            auto resAdd = RunGitCmd(L"add -A", dir);
+            if (!alive || !alive->load()) return;
+            if (resAdd.exitCode != 0) {
+                reportError(L"git add -A", L"Failed to stage files for initial commit.", resAdd.output);
+                return;
+            }
+
+            bool nothingStaged = (RunGitCmd(L"diff --cached --quiet", dir).exitCode == 0);
+
+            std::wstring tmpMsgPath = dir + L"\\.git\\phide_commit_msg.tmp";
+            bool wroteTmp = false;
+            {
+                HANDLE hFile = CreateFileW(tmpMsgPath.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+                if (hFile != INVALID_HANDLE_VALUE) {
+                    int utf8Len = WideCharToMultiByte(CP_UTF8, 0, msg.c_str(), static_cast<int>(msg.length()), nullptr, 0, nullptr, nullptr);
+                    if (utf8Len > 0) {
+                        std::string utf8Str(utf8Len, '\0');
+                        WideCharToMultiByte(CP_UTF8, 0, msg.c_str(), static_cast<int>(msg.length()), &utf8Str[0], utf8Len, nullptr, nullptr);
+                        DWORD bytesWritten = 0;
+                        WriteFile(hFile, utf8Str.data(), static_cast<DWORD>(utf8Str.size()), &bytesWritten, nullptr);
+                        wroteTmp = true;
+                    }
+                    CloseHandle(hFile);
+                }
+            }
+
+            std::wstring commitCmd;
+            std::wstring allowEmptyFlag = nothingStaged ? L" --allow-empty" : L"";
+            if (wroteTmp) {
+                commitCmd = L"commit" + allowEmptyFlag + L" -F \"" + tmpMsgPath + L"\"";
+            } else {
+                std::wstring escapedMsg;
+                for (wchar_t c : msg) {
+                    if (c == L'"') escapedMsg += L"\\\"";
+                    else if (c == L'\r' || c == L'\n') escapedMsg += L" ";
+                    else escapedMsg += c;
+                }
+                commitCmd = L"commit" + allowEmptyFlag + L" -m \"" + escapedMsg + L"\"";
+            }
+
+            auto resCommit = RunGitCmd(commitCmd, dir);
+            if (wroteTmp) {
+                DeleteFileW(tmpMsgPath.c_str());
+            }
+            if (!alive || !alive->load()) return;
+
+            auto resVerifyHead = RunGitCmd(L"rev-parse --verify HEAD", dir);
+            if (resCommit.exitCode != 0 || resVerifyHead.exitCode != 0) {
+                reportError(L"git commit",
+                            L"Initial commit failed — check Git identity & error details.",
+                            resCommit.output.empty() ? L"git commit failed to create initial HEAD commit." : resCommit.output);
+                return;
+            }
+
+            RunGitCmd(L"branch -M main", dir);
         }
 
-        // Ensure git user config
-        auto resUser = RunGitCmd(L"config user.name", dir);
-        if (resUser.exitCode != 0 || resUser.output.empty()) {
-            RunGitCmd(L"config user.name \"Phide Developer\"", dir);
-        }
-        auto resEmail = RunGitCmd(L"config user.email", dir);
-        if (resEmail.exitCode != 0 || resEmail.output.empty()) {
-            RunGitCmd(L"config user.email \"dev@phide.local\"", dir);
-        }
-
-        EnsureContextAwareGitignore(dir);
-        RunGitCmd(L"add -A", dir);
-
-        std::wstring escapedMsg;
-        for (wchar_t c : msg) {
-            if (c == L'"') escapedMsg += L"\\\"";
-            else escapedMsg += c;
-        }
-        RunGitCmd(L"commit -m \"" + escapedMsg + L"\"", dir);
-        RunGitCmd(L"branch -M main", dir);
-
+        if (!alive || !alive->load()) return;
         {
             std::lock_guard<std::recursive_mutex> lock(m_gitMutex);
             m_isGitRepo = true;
             m_commitMessage.clear();
+            m_gitHubRepoUrlCached = false;
+            m_cachedGitHubRepoUrl.clear();
         }
 
-        // Check if origin remote already exists
+        auto resBranch = RunGitCmd(L"branch --show-current", dir);
+        std::wstring curBranch = TrimWideWhitespace(resBranch.output);
+        if (curBranch.empty()) curBranch = L"main";
+
+        // 5. Check if origin remote already exists; if connected & pushed cleanly, finish without overwriting
         auto resRemote = RunGitCmd(L"remote get-url origin", dir);
-        bool hasRemote = (resRemote.exitCode == 0 && !resRemote.output.empty());
+        bool hasRemote = (resRemote.exitCode == 0 && !TrimWideWhitespace(resRemote.output).empty());
 
         if (hasRemote) {
-            auto resPush = RunGitCmd(L"push -u origin main", dir);
-            if (alive && alive->load()) {
-                if (resPush.exitCode == 0) {
-                    ShowGitNotification(L"✓ Pushed to GitHub: " + repoName);
-                } else {
-                    std::wstring err = resPush.output.substr(0, 60);
-                    ShowGitNotification(L"Push: " + err);
+            auto resUpstream = RunGitCmd(L"rev-parse --abbrev-ref --symbolic-full-name @{u}", dir);
+            bool hasUpstream = (resUpstream.exitCode == 0 && !TrimWideWhitespace(resUpstream.output).empty());
+            int unpushed = 0;
+            if (hasUpstream) {
+                auto resCount = RunGitCmd(L"rev-list --count @{u}..HEAD", dir);
+                if (resCount.exitCode == 0 && !resCount.output.empty()) {
+                    try { unpushed = std::stoi(resCount.output); } catch (...) {}
                 }
-                RefreshGitState(true);
+            }
+            if (!alive || !alive->load()) return;
+
+            if (hasUpstream && unpushed == 0) {
+                ShowGitNotification(L"✓ Repository already connected and up to date.");
+                RefreshGitState(false);
+                return;
+            }
+
+            auto resPush = RunGitCmd(L"push -u origin \"" + curBranch + L"\"", dir);
+            if (!alive || !alive->load()) return;
+            if (resPush.exitCode == 0) {
+                m_gitHubRepoUrlCached = false;
+                ShowGitNotification(L"✓ Pushed to GitHub: " + repoName);
+                RefreshGitState(false);
+            } else {
+                reportError(L"git push", L"Push to origin failed — see error details.", resPush.output);
             }
             return;
         }
 
-        // Use GitHub CLI (gh) to create and push
-        std::wstring ghCmd = L"gh repo create \"" + repoName + L"\" --" + visStr + L" --source=\".\" --remote=origin --push";
-        auto resGh = RunCliCmd(ghCmd, dir, 25000);
-
+        // 6. Use GitHub CLI (gh) to create the remote repository, add origin, and push commits
+        std::wstring escapedRepoName;
+        for (wchar_t c : repoName) {
+            if (c == L'"') escapedRepoName += L"\\\"";
+            else escapedRepoName += c;
+        }
+        std::wstring ghCmd = L"gh repo create \"" + escapedRepoName + L"\" --" + visStr + L" --source=\".\" --remote=origin --push";
+        auto resGh = RunCliCmd(ghCmd, dir, 35000);
         if (!alive || !alive->load()) return;
 
         if (resGh.exitCode == 0) {
+            m_hasGitRemote = true;
+            m_gitHubRepoUrlCached = false;
+            m_cachedGitHubRepoUrl.clear();
             ShowGitNotification(L"✓ Published to GitHub: " + repoName + L" (" + visStr + L")");
-        } else {
-            if (resGh.output.find(L"already exists") != std::wstring::npos) {
-                ShowGitNotification(L"GitHub: Repository '" + repoName + L"' already exists on GitHub.");
-            } else if (resGh.output.find(L"not logged in") != std::wstring::npos || resGh.exitCode == 9009) {
-                ShowGitNotification(L"GitHub: Please run 'gh auth login' in terminal");
-            } else {
-                std::wstring errBrief = resGh.output.substr(0, 60);
-                if (errBrief.empty()) errBrief = L"Upload failed. Check GitHub credentials.";
-                ShowGitNotification(L"GitHub: " + errBrief);
-            }
+            RefreshGitState(false);
+            return;
         }
-        if (alive && alive->load()) {
-            RefreshGitState(true);
+
+        // Check whether gh added origin before push failed (e.g. network / upstream error)
+        auto resRemoteAfter = RunGitCmd(L"remote get-url origin", dir);
+        if (resRemoteAfter.exitCode == 0 && !TrimWideWhitespace(resRemoteAfter.output).empty()) {
+            auto resRetryPush = RunGitCmd(L"push -u origin \"" + curBranch + L"\"", dir);
+            if (!alive || !alive->load()) return;
+            if (resRetryPush.exitCode == 0) {
+                m_hasGitRemote = true;
+                m_gitHubRepoUrlCached = false;
+                m_cachedGitHubRepoUrl.clear();
+                ShowGitNotification(L"✓ Published to GitHub: " + repoName + L" (" + visStr + L")");
+                RefreshGitState(false);
+                return;
+            }
+            reportError(L"git push", L"Remote 'origin' added, but initial push failed.", resGh.output + L"\n\n" + resRetryPush.output);
+            return;
+        }
+
+        if (resGh.output.find(L"not logged in") != std::wstring::npos ||
+            resGh.output.find(L"auth login") != std::wstring::npos ||
+            resGh.output.find(L"authentication") != std::wstring::npos ||
+            resGh.output.find(L"401") != std::wstring::npos) {
+            InvalidateGitHubAuthStatusCache();
+            m_isGitHubLoggedIn = false;
+            m_hasExplicitLoginOverride = false;
+            reportError(L"gh auth",
+                        L"GitHub authentication required. Please log in to GitHub and retry.",
+                        resGh.output);
+        } else if (resGh.output.find(L"already exists") != std::wstring::npos) {
+            auto extractJsonStr = [](const std::wstring& json, const wchar_t* key) -> std::wstring {
+                std::wstring needle = std::wstring(L"\"") + key + L"\"";
+                size_t kpos = json.find(needle);
+                if (kpos == std::wstring::npos) return L"";
+                size_t colon = json.find(L':', kpos + needle.length());
+                if (colon == std::wstring::npos) return L"";
+                size_t q1 = json.find(L'"', colon + 1);
+                if (q1 == std::wstring::npos) return L"";
+                size_t q2 = q1 + 1;
+                while (q2 < json.length()) {
+                    if (json[q2] == L'\\' && q2 + 1 < json.length()) { q2 += 2; continue; }
+                    if (json[q2] == L'"') break;
+                    ++q2;
+                }
+                return (q2 < json.length()) ? json.substr(q1 + 1, q2 - q1 - 1) : L"";
+            };
+            auto extractJsonBool = [](const std::wstring& json, const wchar_t* key, bool fallback = false) -> bool {
+                std::wstring needle = std::wstring(L"\"") + key + L"\"";
+                size_t kpos = json.find(needle);
+                if (kpos == std::wstring::npos) return fallback;
+                size_t colon = json.find(L':', kpos + needle.length());
+                if (colon == std::wstring::npos) return fallback;
+                size_t valPos = json.find_first_not_of(L" \t\r\n", colon + 1);
+                if (valPos == std::wstring::npos) return fallback;
+                if (json.compare(valPos, 4, L"true") == 0) return true;
+                if (json.compare(valPos, 5, L"false") == 0) return false;
+                return fallback;
+            };
+
+            auto resView = RunCliCmd(
+                L"gh repo view \"" + escapedRepoName + L"\" --json nameWithOwner,url,isEmpty,isPrivate",
+                dir,
+                15000
+            );
+            if (!alive || !alive->load()) return;
+
+            std::wstring existingUrl = (resView.exitCode == 0) ? extractJsonStr(resView.output, L"url") : L"";
+            std::wstring existingName = (resView.exitCode == 0) ? extractJsonStr(resView.output, L"nameWithOwner") : repoName;
+            if (existingName.empty()) existingName = repoName;
+            bool isExistingEmpty = (resView.exitCode == 0) && extractJsonBool(resView.output, L"isEmpty", false);
+            bool isExistingPrivate = (resView.exitCode == 0) && extractJsonBool(resView.output, L"isPrivate", visStr == L"private");
+
+            // If the existing GitHub repo has 0 commits (e.g. from an earlier interrupted publish),
+            // automatically link origin and push local commits so the repo is immediately live on GitHub.
+            if (isExistingEmpty && !existingUrl.empty()) {
+                std::wstring remoteGitUrl = existingUrl;
+                if (!remoteGitUrl.ends_with(L".git")) remoteGitUrl += L".git";
+                auto curOrigin = RunGitCmd(L"remote get-url origin", dir);
+                auto resSetRemote = (curOrigin.exitCode == 0)
+                    ? RunGitCmd(L"remote set-url origin \"" + remoteGitUrl + L"\"", dir)
+                    : RunGitCmd(L"remote add origin \"" + remoteGitUrl + L"\"", dir);
+                if (!alive || !alive->load()) return;
+                if (resSetRemote.exitCode == 0) {
+                    auto resAutoPush = RunGitCmd(L"push -u origin \"" + curBranch + L"\"", dir);
+                    if (!alive || !alive->load()) return;
+                    if (resAutoPush.exitCode == 0) {
+                        m_hasGitRemote = true;
+                        m_gitHubRepoUrlCached = false;
+                        m_cachedGitHubRepoUrl = existingUrl;
+                        ShowGitNotification(L"✓ Connected & pushed to existing GitHub repository: " + existingName);
+                        RefreshGitState(false);
+                        return;
+                    }
+                    reportError(L"git push",
+                                L"Connected 'origin' to '" + existingName + L"', but push failed.",
+                                resAutoPush.output);
+                    RefreshGitState(false);
+                    return;
+                }
+            }
+
+            std::wstring visTag = isExistingPrivate ? L"Private" : L"Public";
+            std::wstring infoLine = existingUrl.empty()
+                ? (L"Repository '" + repoName + L"' already exists on your GitHub account.")
+                : (L"Found existing " + visTag + L" repository '" + existingName + L"' at:\n  " + existingUrl);
+            reportError(L"gh repo create",
+                        L"GitHub: Repository '" + existingName + L"' (" + visTag + L") already exists.",
+                        infoLine + L"\n\nNote: If you opened GitHub and didn't spot it, check your " + visTag +
+                        L" repositories filter. Choose a different repository name in Publish Repository, or connect:\n  git remote add origin " +
+                        (existingUrl.empty() ? (L"<repo-url>") : (existingUrl + L".git")) + L"\n\n" + resGh.output);
+        } else if (resGh.exitCode == 9009 || resGh.output.find(L"was not found") != std::wstring::npos) {
+            reportError(L"gh",
+                        L"GitHub CLI (gh) not found. Please install gh CLI.",
+                        resGh.output);
+        } else {
+            std::wstring errBrief = resGh.output.empty()
+                ? L"Failed to publish repository to GitHub."
+                : resGh.output;
+            reportError(L"gh repo create", L"GitHub publish failed — see error details.", errBrief);
         }
     }).detach();
 }
@@ -10182,14 +10958,15 @@ void DrawerPanel::RenderPublishRepoModal(ID2D1RenderTarget* pRT, Theme& theme, c
     // 5. Two Choices Underneath: Private vs Public Repository (VS Code style)
     const float rowH = config.ScaleF(40.0f);
     std::wstring repoTitle = m_publishRepoName.empty() ? L"repository" : m_publishRepoName;
-    const wchar_t* icons[2] = { L"🔒", L"🌐" };
+    std::wstring ownerName = GetAuthenticatedGitHubUsername();
+    std::wstring repoSlug = ownerName.empty() ? repoTitle : (ownerName + L"/" + repoTitle);
     std::wstring titles[2] = {
         L"Publish to GitHub private repository",
         L"Publish to GitHub public repository"
     };
     std::wstring descs[2] = {
-        L"github.com/" + repoTitle + L" (Private — Only visible to you)",
-        L"github.com/" + repoTitle + L" (Public — Visible to everyone)"
+        L"github.com/" + repoSlug + L" (Private — Only visible to you)",
+        L"github.com/" + repoSlug + L" (Public — Visible to everyone)"
     };
 
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushSelectedRow;
@@ -10213,13 +10990,17 @@ void DrawerPanel::RenderPublishRepoModal(ID2D1RenderTarget* pRT, Theme& theme, c
         }
 
         // Icon
-        D2D1_RECT_F rcIcon = D2D1::RectF(
+        D2D1_RECT_F rcVecIcon = D2D1::RectF(
             m_publishOptionBounds[i].left + config.ScaleF(10.0f),
-            curY + config.ScaleF(8.0f),
-            m_publishOptionBounds[i].left + config.ScaleF(32.0f),
-            curY + rowH - config.ScaleF(4.0f)
+            curY + config.ScaleF(10.0f),
+            m_publishOptionBounds[i].left + config.ScaleF(28.0f),
+            curY + config.ScaleF(28.0f)
         );
-        pRT->DrawText(icons[i], static_cast<UINT32>(wcslen(icons[i])), pFmtMain, rcIcon, theme.brushTextPrimary.Get());
+        if (i == 0) {
+            m_icons.DrawLock(pRT, rcVecIcon, theme.brushTextPrimary.Get(), 1.45f);
+        } else {
+            m_icons.DrawGlobe(pRT, rcVecIcon, theme.brushTextPrimary.Get(), 1.40f);
+        }
 
         // Main Choice Label
         D2D1_RECT_F rcTitleOpt = D2D1::RectF(
@@ -11374,17 +12155,13 @@ void DrawerPanel::RenderCommitCard(ID2D1RenderTarget* pRT, Theme& theme, const a
                       D2D1::RectF(cardLeft + config.ScaleF(18.0f), curCardY + config.ScaleF(3.0f), cardLeft + config.ScaleF(14.0f) + hashW, curCardY + btnH),
                       theme.brushBrandAccent.Get());
 
-        // Open on GitHub link
+        // Open on GitHub link (upright vector ExternalLink icon)
         std::wstring repoBase = GetGitHubRepoUrl();
         if (!repoBase.empty()) {
             float ghLeft = cardLeft + config.ScaleF(84.0f);
-            float ghW = config.ScaleF(110.0f);
+            float ghW = config.ScaleF(114.0f);
             m_commitCardGitHubBounds = D2D1::RectF(ghLeft, curCardY, ghLeft + ghW, curCardY + btnH);
-            const wchar_t* ghText = L"↗ Open on GitHub";
-            pRT->DrawText(ghText, static_cast<UINT32>(wcslen(ghText)),
-                          pCardFmt,
-                          D2D1::RectF(ghLeft, curCardY + config.ScaleF(3.0f), ghLeft + ghW, curCardY + btnH),
-                          theme.brushBrandAccent.Get());
+            DrawCenteredIconAndText(pRT, theme, config, m_commitCardGitHubBounds, theme.brushBrandAccent.Get(), DrawerActionIcon::ExternalLink, L"Open on GitHub", pCardFmt);
         } else {
             m_commitCardGitHubBounds = D2D1::RectF(0, 0, 0, 0);
         }

@@ -2,13 +2,166 @@
 #include "phide/ui/GitLogManager.hpp"
 #include <windows.h>
 #include <shellapi.h>
+#include <shlobj.h>
 #include <tlhelp32.h>
 #include <filesystem>
+#include <fstream>
 #include <sstream>
 #include <algorithm>
+#include <cstring>
 #include <unordered_set>
 
 namespace phide::ui {
+
+static std::wstring StripExtendedPathPrefix(const std::wstring& path) {
+    if (path.rfind(L"\\\\?\\UNC\\", 0) == 0) {
+        return L"\\\\" + path.substr(8);
+    }
+    if (path.rfind(L"\\\\?\\", 0) == 0) {
+        return path.substr(4);
+    }
+    return path;
+}
+
+static std::string WideToUtf8Terminal(const std::wstring& w) {
+    if (w.empty()) return "";
+    int needed = WideCharToMultiByte(CP_UTF8, 0, w.c_str(), static_cast<int>(w.size()), nullptr, 0, nullptr, nullptr);
+    if (needed <= 0) return "";
+    std::string out(needed, '\0');
+    WideCharToMultiByte(CP_UTF8, 0, w.c_str(), static_cast<int>(w.size()), &out[0], needed, nullptr, nullptr);
+    return out;
+}
+
+static std::wstring EscapePowerShellSingleQuoted(const std::wstring& s) {
+    std::wstring out;
+    out.reserve(s.size());
+    for (wchar_t c : s) {
+        if (c == L'\'') out.push_back(L'\'');
+        out.push_back(c);
+    }
+    return out;
+}
+
+static std::wstring EscapeBashSingleQuoted(const std::wstring& s) {
+    std::wstring out;
+    out.reserve(s.size());
+    for (wchar_t c : s) {
+        if (c == L'\'') out.append(L"'\\''");
+        else out.push_back(c);
+    }
+    return out;
+}
+
+static std::vector<wchar_t> BuildCleanTerminalEnvBlock() {
+    std::vector<std::pair<std::wstring, std::wstring>> vars;
+    LPWCH rawEnv = GetEnvironmentStringsW();
+    if (rawEnv) {
+        const wchar_t* cur = rawEnv;
+        while (*cur != L'\0') {
+            std::wstring entry(cur);
+            cur += entry.size() + 1;
+            size_t eqPos = (!entry.empty() && entry[0] == L'=') ? entry.find(L'=', 1) : entry.find(L'=');
+            if (eqPos == std::wstring::npos || eqPos == 0) continue;
+            std::wstring key = entry.substr(0, eqPos);
+            if (_wcsicmp(key.c_str(), L"GH_PROMPT_DISABLED") == 0 ||
+                _wcsicmp(key.c_str(), L"GIT_TERMINAL_PROMPT") == 0 ||
+                _wcsicmp(key.c_str(), L"GCM_INTERACTIVE") == 0) {
+                continue;
+            }
+            vars.emplace_back(std::move(key), entry.substr(eqPos + 1));
+        }
+        FreeEnvironmentStringsW(rawEnv);
+    }
+
+    std::sort(vars.begin(), vars.end(), [](const auto& a, const auto& b) {
+        return _wcsicmp(a.first.c_str(), b.first.c_str()) < 0;
+    });
+
+    std::vector<wchar_t> block;
+    for (const auto& kv : vars) {
+        std::wstring line = kv.first + L"=" + kv.second;
+        block.insert(block.end(), line.begin(), line.end());
+        block.push_back(L'\0');
+    }
+    if (block.empty()) {
+        block.push_back(L'\0');
+    }
+    block.push_back(L'\0');
+    return block;
+}
+
+static std::wstring ResolveGhExeForTerminal() {
+    wchar_t found[MAX_PATH] = {0};
+    if (SearchPathW(NULL, L"gh.exe", NULL, MAX_PATH, found, NULL) > 0) {
+        return found;
+    }
+
+    std::vector<std::wstring> candidates = {
+        L"C:\\Program Files\\GitHub CLI\\gh.exe",
+        L"C:\\Program Files (x86)\\GitHub CLI\\gh.exe",
+        L"C:\\ProgramData\\chocolatey\\bin\\gh.exe"
+    };
+    wchar_t buf[MAX_PATH] = {0};
+    if (SUCCEEDED(SHGetFolderPathW(NULL, CSIDL_LOCAL_APPDATA, NULL, 0, buf))) {
+        candidates.push_back(std::wstring(buf) + L"\\Programs\\GitHub CLI\\gh.exe");
+    }
+    if (GetEnvironmentVariableW(L"USERPROFILE", buf, MAX_PATH) > 0) {
+        candidates.push_back(std::wstring(buf) + L"\\scoop\\shims\\gh.exe");
+    }
+    for (const auto& candidate : candidates) {
+        DWORD attrs = GetFileAttributesW(candidate.c_str());
+        if (attrs != INVALID_FILE_ATTRIBUTES && !(attrs & FILE_ATTRIBUTE_DIRECTORY)) {
+            return candidate;
+        }
+    }
+    return L"";
+}
+
+static std::wstring ReadGitHubUserFromHostsYml() {
+    std::vector<std::filesystem::path> paths;
+    wchar_t buf[MAX_PATH] = {0};
+    if (GetEnvironmentVariableW(L"GH_CONFIG_DIR", buf, MAX_PATH) > 0) {
+        paths.push_back(std::filesystem::path(buf) / L"hosts.yml");
+    }
+    if (SUCCEEDED(SHGetFolderPathW(NULL, CSIDL_APPDATA, NULL, 0, buf))) {
+        paths.push_back(std::filesystem::path(buf) / L"GitHub CLI" / L"hosts.yml");
+    }
+    if (SUCCEEDED(SHGetFolderPathW(NULL, CSIDL_LOCAL_APPDATA, NULL, 0, buf))) {
+        paths.push_back(std::filesystem::path(buf) / L"GitHub CLI" / L"hosts.yml");
+    }
+    if (GetEnvironmentVariableW(L"USERPROFILE", buf, MAX_PATH) > 0) {
+        paths.push_back(std::filesystem::path(buf) / L".config" / L"gh" / L"hosts.yml");
+    }
+
+    std::error_code ec;
+    for (const auto& p : paths) {
+        if (!std::filesystem::exists(p, ec) || std::filesystem::file_size(p, ec) == 0) continue;
+        std::ifstream ifs(p, std::ios::binary);
+        if (!ifs) continue;
+        std::string line;
+        while (std::getline(ifs, line)) {
+            size_t pos = line.find("user:");
+            if (pos == std::string::npos) continue;
+            std::string val = line.substr(pos + 5);
+            size_t s = val.find_first_not_of(" \t\r\n");
+            if (s == std::string::npos) continue;
+            size_t e = val.find_last_not_of(" \t\r\n");
+            val = val.substr(s, e - s + 1);
+            if (!val.empty() && val.front() == '"' && val.back() == '"' && val.size() >= 2) {
+                val = val.substr(1, val.size() - 2);
+            }
+            if (!val.empty()) {
+                int wlen = MultiByteToWideChar(CP_UTF8, 0, val.c_str(), static_cast<int>(val.size()), nullptr, 0);
+                if (wlen > 0) {
+                    std::wstring wuser(wlen, L'\0');
+                    MultiByteToWideChar(CP_UTF8, 0, val.c_str(), static_cast<int>(val.size()), &wuser[0], wlen);
+                    return wuser;
+                }
+            }
+        }
+    }
+    return L"";
+}
 
 static D2D1_COLOR_F AdaptTerminalColorForLight(D2D1_COLOR_F c) {
     // If color is very light / white / near white (e.g. > 0.70f gray/white)
@@ -1103,7 +1256,39 @@ void TerminalPanel::CloseSplitPane(size_t tabIdx) {
 }
 
 void TerminalPanel::SetWorkingDir(const std::wstring& dir) {
-    m_defaultWorkingDir = dir;
+    std::wstring cleanDir = StripExtendedPathPrefix(dir);
+    m_defaultWorkingDir = cleanDir;
+    if (cleanDir.empty()) return;
+
+    std::error_code ec;
+    if (!std::filesystem::exists(cleanDir, ec)) return;
+
+    std::lock_guard<std::recursive_mutex> tabsLock(m_tabsMutex);
+    for (auto& tab : m_tabs) {
+        if (!tab) continue;
+        if (tab->isServerTab || tab->isGitHubLoginTab || tab->shellType == TerminalShellType::DebugConsole ||
+            tab->shellType == TerminalShellType::Custom || tab->isConPty) {
+            continue;
+        }
+        if (tab->workingDir == cleanDir) continue;
+        tab->workingDir = cleanDir;
+        if (tab->isAlive.load() && tab->hStdinWrite && tab->currentInputLine.empty()) {
+            std::wstring cdCmd;
+            if (tab->shellType == TerminalShellType::PowerShell) {
+                cdCmd = L"Set-Location -LiteralPath '" + EscapePowerShellSingleQuoted(cleanDir) + L"'\n";
+            } else if (tab->shellType == TerminalShellType::Cmd) {
+                cdCmd = L"cd /d \"" + cleanDir + L"\"\n";
+            } else if (tab->shellType == TerminalShellType::GitBash) {
+                cdCmd = L"cd '" + EscapeBashSingleQuoted(cleanDir) + L"'\n";
+            }
+            if (!cdCmd.empty()) {
+                std::string utf8 = WideToUtf8Terminal(cdCmd);
+                if (!utf8.empty()) {
+                    tab->SendInput(utf8);
+                }
+            }
+        }
+    }
 }
 
 void TerminalPanel::StartShellProcess(TerminalTab& tab) {
@@ -1197,12 +1382,17 @@ void TerminalPanel::StartShellProcess(TerminalTab& tab) {
         }
     }
 
-    std::wstring validWorkDir = tab.workingDir;
+    std::wstring rawWorkDir = tab.workingDir.empty() ? m_defaultWorkingDir : tab.workingDir;
+    std::wstring validWorkDir = StripExtendedPathPrefix(rawWorkDir);
+    if (!validWorkDir.empty() && rawWorkDir != validWorkDir) {
+        tab.workingDir = validWorkDir;
+    }
     std::error_code ec;
     if (!validWorkDir.empty() && !std::filesystem::exists(validWorkDir, ec)) {
         validWorkDir.clear();
     }
     LPCWSTR workDir = validWorkDir.empty() ? nullptr : validWorkDir.c_str();
+    std::vector<wchar_t> cleanEnvBlock = BuildCleanTerminalEnvBlock();
 
     // ConPTY interactive console launch for SSH / WSL / Docker sessions (handles password prompts & interactive shells)
     if (tab.isConPty) {
@@ -1246,8 +1436,8 @@ void TerminalPanel::StartShellProcess(TerminalTab& tab) {
 
                     BOOL ok = attrOk && CreateProcessW(
                         NULL, cmdBuf.data(), NULL, NULL, FALSE,
-                        EXTENDED_STARTUPINFO_PRESENT,
-                        NULL, workDir, &siEx.StartupInfo, &pi);
+                        EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT,
+                        cleanEnvBlock.data(), workDir, &siEx.StartupInfo, &pi);
 
                     if (pAttrList) {
                         DeleteProcThreadAttributeList(pAttrList);
@@ -1372,8 +1562,8 @@ void TerminalPanel::StartShellProcess(TerminalTab& tab) {
         NULL,
         NULL,
         TRUE,
-        CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP,
-        NULL,
+        CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP | CREATE_UNICODE_ENVIRONMENT,
+        cleanEnvBlock.data(),
         workDir,
         &si,
         &pi
@@ -1418,13 +1608,15 @@ void TerminalPanel::StartShellProcess(TerminalTab& tab) {
             }
         });
 
-        // Background asynchronous stderr reader thread (Errors rendered in vibrant RED matching Image 3)
+        // Background asynchronous stderr reader thread: interactive shells (Git Bash, Python, Node, PowerShell, Cmd)
+        // write prompts, readline echo, and CLI progress to stderr; let per-line error detection highlight actual errors.
         tab.stderrReaderThread = std::thread([pTab, hStderrRead]() {
             char buffer[4096];
             DWORD bytesRead = 0;
+            bool streamDefaultError = (pTab->shellType == TerminalShellType::LiveServer);
             while (pTab->isAlive.load() && ReadFile(hStderrRead, buffer, sizeof(buffer) - 1, &bytesRead, NULL) && bytesRead > 0) {
                 buffer[bytesRead] = '\0';
-                pTab->AppendOutput(buffer, bytesRead, true);
+                pTab->AppendOutput(buffer, bytesRead, streamDefaultError);
             }
             if (pTab->shellType == TerminalShellType::DebugConsole) {
                 if (pTab->onDebugEnded) {
@@ -1617,6 +1809,84 @@ std::vector<TerminalSpan> TerminalPanel::TokenizeCommandLineWithLinuxRules(const
     return spans;
 }
 
+static bool IsLikelyTerminalErrorLine(const std::wstring& rawText) {
+    if (rawText.empty()) return false;
+    // Ignore benign non-PTY bash startup job-control notices written to stderr on Windows pipes
+    if (rawText.find(L"cannot set terminal process group") != std::wstring::npos ||
+        rawText.find(L"no job control in this shell") != std::wstring::npos) {
+        return false;
+    }
+
+    if (rawText.find(L"Cannot find path") != std::wstring::npos ||
+        rawText.find(L"CategoryInfo") != std::wstring::npos ||
+        rawText.find(L"FullyQualifiedErrorId") != std::wstring::npos ||
+        rawText.rfind(L"+ ", 0) == 0 ||
+        rawText.rfind(L"Error:", 0) == 0 ||
+        rawText.rfind(L"error:", 0) == 0 ||
+        rawText.rfind(L"fatal:", 0) == 0 ||
+        rawText.rfind(L"Fatal error:", 0) == 0 ||
+        rawText.rfind(L"Parse error:", 0) == 0 ||
+        rawText.rfind(L"Exception:", 0) == 0 ||
+        rawText.rfind(L"Traceback ", 0) == 0 ||
+        rawText.rfind(L"Uncaught ", 0) == 0 ||
+        rawText.rfind(L"SyntaxError:", 0) == 0 ||
+        rawText.rfind(L"TypeError:", 0) == 0 ||
+        rawText.rfind(L"ReferenceError:", 0) == 0 ||
+        rawText.rfind(L"NameError:", 0) == 0 ||
+        rawText.rfind(L"ValueError:", 0) == 0 ||
+        rawText.rfind(L"ImportError:", 0) == 0 ||
+        rawText.rfind(L"ModuleNotFoundError:", 0) == 0 ||
+        rawText.rfind(L"The term '", 0) == 0 ||
+        rawText.find(L"The term '") != std::wstring::npos ||
+        rawText.find(L"command not found") != std::wstring::npos ||
+        rawText.find(L"is not recognized as an internal or external command") != std::wstring::npos ||
+        rawText.find(L"CommandNotFoundException") != std::wstring::npos ||
+        rawText.find(L"Permission denied") != std::wstring::npos ||
+        rawText.find(L"not a git repository") != std::wstring::npos ||
+        rawText.find(L"failed to push some refs") != std::wstring::npos ||
+        rawText.find(L"No such file or directory") != std::wstring::npos) {
+        return true;
+    }
+    return false;
+}
+
+static bool TryFormatGitBashBannerPrompt(const std::wstring& text, std::vector<TerminalSpan>& outSpans) {
+    static const wchar_t* envs[] = { L" MINGW64 ", L" MINGW32 ", L" UCRT64 ", L" CLANG64 ", L" MSYS " };
+    size_t envPos = std::wstring::npos;
+    size_t envLen = 0;
+    for (const auto* env : envs) {
+        size_t p = text.find(env);
+        if (p != std::wstring::npos) {
+            envPos = p;
+            envLen = wcslen(env);
+            break;
+        }
+    }
+    if (envPos == std::wstring::npos) return false;
+    std::wstring userHost = text.substr(0, envPos);
+    if (userHost.find(L'@') == std::wstring::npos) return false;
+
+    outSpans.clear();
+    outSpans.push_back({ userHost, D2D1::ColorF(0.38f, 0.82f, 0.48f), false });
+    outSpans.push_back({ L" ", D2D1::ColorF(0.92f, 0.92f, 0.92f), false });
+    outSpans.push_back({ text.substr(envPos + 1, envLen - 2), D2D1::ColorF(0.76f, 0.45f, 0.88f), false });
+    outSpans.push_back({ L" ", D2D1::ColorF(0.92f, 0.92f, 0.92f), false });
+
+    std::wstring rest = text.substr(envPos + envLen);
+    if (!rest.empty() && rest.back() == L')') {
+        size_t lp = rest.rfind(L" (");
+        if (lp != std::wstring::npos) {
+            outSpans.push_back({ rest.substr(0, lp + 1), D2D1::ColorF(0.95f, 0.80f, 0.25f), false });
+            outSpans.push_back({ rest.substr(lp + 1), D2D1::ColorF(0.35f, 0.82f, 0.98f), false });
+            return true;
+        }
+    }
+    if (!rest.empty()) {
+        outSpans.push_back({ rest, D2D1::ColorF(0.95f, 0.80f, 0.25f), false });
+    }
+    return true;
+}
+
 std::vector<TerminalSpan> TerminalPanel::FormatTerminalLine(const TerminalLine& line, bool isError, const std::wstring& workingDir) {
     if (isError) {
         return { { line.rawText, D2D1::ColorF(0.94f, 0.32f, 0.32f), false } };
@@ -1640,6 +1910,12 @@ std::vector<TerminalSpan> TerminalPanel::FormatTerminalLine(const TerminalLine& 
         text.rfind(L"Exception:", 0) == 0 ||
         text.find(L"The term '") != std::wstring::npos) {
         return { { text, D2D1::ColorF(0.94f, 0.32f, 0.32f), false } };
+    }
+
+    // 1b. Git Bash MINGW64/MSYS2 prompt header: "user@host MINGW64 /path (branch)"
+    std::vector<TerminalSpan> gitBashBanner;
+    if (TryFormatGitBashBannerPrompt(text, gitBashBanner)) {
+        return gitBashBanner;
     }
 
     // 2. PowerShell prompt: "PS C:\path> command"
@@ -2474,17 +2750,8 @@ void TerminalPanel::RenderSinglePane(ID2D1RenderTarget* pRT, Theme& theme, const
             }
         }
 
-        // Auto-detect error lines
-        bool isLineError = false;
-        if (line.rawText.find(L"Cannot find path") != std::wstring::npos ||
-            line.rawText.find(L"CategoryInfo") != std::wstring::npos ||
-            line.rawText.find(L"FullyQualifiedErrorId") != std::wstring::npos ||
-            line.rawText.rfind(L"+ ", 0) == 0 ||
-            line.rawText.rfind(L"Error:", 0) == 0 ||
-            line.rawText.rfind(L"Exception:", 0) == 0 ||
-            line.rawText.find(L"The term '") != std::wstring::npos) {
-            isLineError = true;
-        }
+        // Auto-detect genuine error lines (stdout or non-colored stderr lines)
+        bool isLineError = IsLikelyTerminalErrorLine(line.rawText);
 
         auto formattedSpans = FormatTerminalLine(line, isLineError, tab->workingDir);
 
@@ -3180,7 +3447,7 @@ void TerminalPanel::ExecuteCommandLine(const std::wstring& command) {
     if (utf8Len > 1) {
         std::string utf8(utf8Len - 1, '\0');
         WideCharToMultiByte(CP_UTF8, 0, command.c_str(), -1, &utf8[0], utf8Len, NULL, NULL);
-        utf8 += "\r\n";
+        utf8 += tab->isConPty ? "\r" : "\n";
         tab->SendInput(utf8);
     }
 }
@@ -3240,7 +3507,7 @@ void TerminalPanel::StartServerSession(const std::wstring& serverTitle, const st
         if (utf8Len > 1) {
             std::string utf8(utf8Len - 1, '\0');
             WideCharToMultiByte(CP_UTF8, 0, command.c_str(), -1, &utf8[0], utf8Len, NULL, NULL);
-            utf8 += "\r\n";
+            utf8 += tab->isConPty ? "\r" : "\n";
             tab->SendInput(utf8);
         }
     }
@@ -3399,7 +3666,12 @@ void TerminalPanel::OpenGitHubLoginTab(const std::wstring& workingDir) {
         tab->title = L"Github Login";
         tab->canClose = true;
         tab->isGitHubLoginTab = true;
+        tab->gitHubBrowserOpened = false;
         tab->gitHubAuthCompleted = false;
+        tab->isServerTab = false;
+        tab->workingDir = StripExtendedPathPrefix(workingDir.empty() ? m_defaultWorkingDir : workingDir);
+        tab->gitHubAuthUser.clear();
+        tab->gitHubLoginCode.clear();
         std::lock_guard<std::mutex> lock(tab->bufferMutex);
         tab->lines.clear();
     } else {
@@ -3408,9 +3680,10 @@ void TerminalPanel::OpenGitHubLoginTab(const std::wstring& workingDir) {
         newTab->title = L"Github Login";
         newTab->canClose = true;
         newTab->isGitHubLoginTab = true;
+        newTab->gitHubBrowserOpened = false;
         newTab->gitHubAuthCompleted = false;
         newTab->isServerTab = false; // allows Enter key interaction
-        newTab->workingDir = workingDir.empty() ? m_defaultWorkingDir : workingDir;
+        newTab->workingDir = StripExtendedPathPrefix(workingDir.empty() ? m_defaultWorkingDir : workingDir);
         newTab->isAlive = false;
         newTab->onOutput = m_outputCallback;
         m_tabs.push_back(std::move(newTab));
@@ -3419,7 +3692,7 @@ void TerminalPanel::OpenGitHubLoginTab(const std::wstring& workingDir) {
     }
 
     if (tab) {
-        std::wstring userPrompt = L"ansht";
+        std::wstring userPrompt = L"User";
         wchar_t winUser[256] = {0};
         DWORD winUserLen = 256;
         if (GetUserNameW(winUser, &winUserLen) && winUserLen > 0) {
@@ -3489,15 +3762,7 @@ void TerminalPanel::OpenGitHubLoginTab(const std::wstring& workingDir) {
         }
 
         // Search for real gh.exe
-        std::wstring ghPath;
-        wchar_t found[MAX_PATH] = {0};
-        if (SearchPathW(NULL, L"gh.exe", NULL, MAX_PATH, found, NULL)) {
-            ghPath = found;
-        } else if (GetFileAttributesW(L"C:\\Program Files\\GitHub CLI\\gh.exe") != INVALID_FILE_ATTRIBUTES) {
-            ghPath = L"C:\\Program Files\\GitHub CLI\\gh.exe";
-        } else if (GetFileAttributesW(L"C:\\Program Files (x86)\\GitHub CLI\\gh.exe") != INVALID_FILE_ATTRIBUTES) {
-            ghPath = L"C:\\Program Files (x86)\\GitHub CLI\\gh.exe";
-        }
+        std::wstring ghPath = ResolveGhExeForTerminal();
 
         if (!ghPath.empty()) {
             HANDLE hStdoutRead = NULL, hStdoutWrite = NULL;
@@ -3531,9 +3796,17 @@ void TerminalPanel::OpenGitHubLoginTab(const std::wstring& workingDir) {
             si.wShowWindow = SW_HIDE;
 
             PROCESS_INFORMATION pi{};
-            std::wstring cmd = L"\"" + ghPath + L"\" auth login --hostname github.com --git-protocol https --web";
+            std::wstring cmd = L"\"" + ghPath + L"\" auth login --hostname github.com --git-protocol https --web --clipboard";
             std::vector<wchar_t> cmdBuf(cmd.begin(), cmd.end());
             cmdBuf.push_back(L'\0');
+
+            std::vector<wchar_t> cleanEnvBlock = BuildCleanTerminalEnvBlock();
+            std::wstring cleanWorkDir = StripExtendedPathPrefix(tab->workingDir);
+            std::error_code dirEc;
+            if (!cleanWorkDir.empty() && !std::filesystem::exists(cleanWorkDir, dirEc)) {
+                cleanWorkDir.clear();
+            }
+            LPCWSTR workDirPtr = cleanWorkDir.empty() ? nullptr : cleanWorkDir.c_str();
 
             BOOL ok = CreateProcessW(
                 NULL,
@@ -3541,9 +3814,9 @@ void TerminalPanel::OpenGitHubLoginTab(const std::wstring& workingDir) {
                 NULL,
                 NULL,
                 TRUE,
-                CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP,
-                NULL,
-                nullptr,
+                CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP | CREATE_UNICODE_ENVIRONMENT,
+                cleanEnvBlock.data(),
+                workDirPtr,
                 &si,
                 &pi
             );
@@ -3562,7 +3835,7 @@ void TerminalPanel::OpenGitHubLoginTab(const std::wstring& workingDir) {
                 auto onAuthSuccess = m_onGitHubAuthSuccess;
                 auto onOutput = m_outputCallback;
 
-                auto parseOutput = [pTab, onAuthSuccess, onOutput](const char* data, size_t len, bool isErr) {
+                auto parseOutput = [pTab, onOutput](const char* data, size_t len, bool isErr) {
                     if (!data || len == 0) return;
                     pTab->AppendOutput(data, len, isErr);
 
@@ -3574,7 +3847,10 @@ void TerminalPanel::OpenGitHubLoginTab(const std::wstring& workingDir) {
                         if (endP != std::string::npos) {
                             std::string codeStr = s.substr(pos + 15, endP - (pos + 15));
                             std::wstring wCode(codeStr.begin(), codeStr.end());
-                            pTab->gitHubLoginCode = wCode;
+                            {
+                                std::lock_guard<std::mutex> lock(pTab->bufferMutex);
+                                pTab->gitHubLoginCode = wCode;
+                            }
                             CopyTextToClipboardHelper(wCode);
                         }
                     } else {
@@ -3585,19 +3861,37 @@ void TerminalPanel::OpenGitHubLoginTab(const std::wstring& workingDir) {
                             if (endC == std::string::npos) endC = s.length();
                             std::string codeStr = s.substr(startC, endC - startC);
                             std::wstring wCode(codeStr.begin(), codeStr.end());
-                            pTab->gitHubLoginCode = wCode;
+                            {
+                                std::lock_guard<std::mutex> lock(pTab->bufferMutex);
+                                pTab->gitHubLoginCode = wCode;
+                            }
                             CopyTextToClipboardHelper(wCode);
                         }
                     }
 
-                    // Check for logged in username
+                    // Check for logged in username ("Logged in as <user>" or "Logged in to github.com account <user>")
+                    std::string parsedUser;
                     pos = s.find("Logged in as ");
                     if (pos != std::string::npos) {
                         size_t startU = pos + 13;
-                        size_t endU = s.find_first_of("\r\n ", startU);
+                        size_t endU = s.find_first_of("\r\n \t\x1b", startU);
                         if (endU == std::string::npos) endU = s.length();
-                        std::string userStr = s.substr(startU, endU - startU);
-                        pTab->gitHubAuthUser = std::wstring(userStr.begin(), userStr.end());
+                        parsedUser = s.substr(startU, endU - startU);
+                    } else {
+                        size_t hostPos = s.find("Logged in to ");
+                        if (hostPos != std::string::npos) {
+                            size_t acctPos = s.find("account ", hostPos + 13);
+                            if (acctPos != std::string::npos) {
+                                size_t startU = acctPos + 8;
+                                size_t endU = s.find_first_of("\r\n \t(\x1b", startU);
+                                if (endU == std::string::npos) endU = s.length();
+                                parsedUser = s.substr(startU, endU - startU);
+                            }
+                        }
+                    }
+                    if (!parsedUser.empty()) {
+                        std::lock_guard<std::mutex> lock(pTab->bufferMutex);
+                        pTab->gitHubAuthUser = std::wstring(parsedUser.begin(), parsedUser.end());
                     }
 
                     if (onOutput) onOutput();
@@ -3611,24 +3905,46 @@ void TerminalPanel::OpenGitHubLoginTab(const std::wstring& workingDir) {
                         buf[bytesRead] = '\0';
                         parseOutput(buf, bytesRead, false);
                     }
-                    if (pTab->isAlive.load() && pTab->hProcess) {
+                    bool wasAlive = pTab->isAlive.load();
+                    if (wasAlive && pTab->hProcess) {
                         WaitForSingleObject(pTab->hProcess, INFINITE);
-                        DWORD exitCode = 0;
-                        if (GetExitCodeProcess(pTab->hProcess, &exitCode) && exitCode == 0) {
-                            pTab->gitHubAuthCompleted = true;
-                            if (pTab->gitHubAuthUser.empty()) {
-                                pTab->gitHubAuthUser = L"anshtiwatne";
+                        // Allow stderrReaderThread a brief window to finish parsing final "Logged in to..." lines
+                        std::this_thread::sleep_for(std::chrono::milliseconds(60));
+                        DWORD exitCode = 1;
+                        if (GetExitCodeProcess(pTab->hProcess, &exitCode)) {
+                            pTab->processExitCode.store(static_cast<int>(exitCode));
+                            if (exitCode == 0) {
+                                std::wstring authUser;
+                                {
+                                    std::lock_guard<std::mutex> lock(pTab->bufferMutex);
+                                    if (pTab->gitHubAuthUser.empty()) {
+                                        pTab->gitHubAuthUser = ReadGitHubUserFromHostsYml();
+                                    }
+                                    if (pTab->gitHubAuthUser.empty()) {
+                                        pTab->gitHubAuthUser = L"GitHub User";
+                                    }
+                                    authUser = pTab->gitHubAuthUser;
+                                }
+                                pTab->gitHubAuthCompleted = true;
+                                pTab->isAlive = false;
+                                if (onAuthSuccess) {
+                                    onAuthSuccess(authUser);
+                                }
+                                if (onOutput) onOutput();
+                            } else {
+                                std::string errMsg = "\r\n! GitHub authentication exited with code " + std::to_string(exitCode) + ".\r\n";
+                                pTab->AppendOutput(errMsg.data(), errMsg.size(), true);
+                                pTab->isAlive = false;
+                                if (onOutput) onOutput();
                             }
-                            if (onAuthSuccess) {
-                                onAuthSuccess(pTab->gitHubAuthUser);
-                            }
-                            if (onOutput) onOutput();
+                        } else {
+                            pTab->isAlive = false;
                         }
                     }
                 });
 
                 // Asynchronous stderr reader thread (gh prints device codes and info to stderr)
-                tab->stderrReaderThread = std::thread([pTab, hStderrRead, parseOutput, onAuthSuccess, onOutput]() {
+                tab->stderrReaderThread = std::thread([pTab, hStderrRead, parseOutput]() {
                     char buf[4096];
                     DWORD bytesRead = 0;
                     while (pTab->isAlive.load() && ReadFile(hStderrRead, buf, sizeof(buf) - 1, &bytesRead, NULL) && bytesRead > 0) {
@@ -3666,19 +3982,24 @@ void TerminalPanel::TriggerGitHubLoginEnter() {
             }
         }
     }
-    if (!tab || tab->gitHubAuthCompleted) return;
+    if (!tab || tab->gitHubAuthCompleted || tab->gitHubBrowserOpened) return;
+    tab->gitHubBrowserOpened = true;
 
     if (tab->isAlive.load()) {
-        tab->SendInput("\r\n");
+        tab->SendInput("\n");
     }
 
-    // Launch GitHub device login page in default web browser
-    ShellExecuteW(NULL, L"open", L"https://github.com/login/device", NULL, NULL, SW_SHOWNORMAL);
+    // Launch GitHub device login page in default web browser strictly once per login session
+    if (!tab->suppressBrowserLaunchForTest) {
+        ShellExecuteW(NULL, L"open", L"https://github.com/login/device", NULL, NULL, SW_SHOWNORMAL);
+    }
 
     // If gh process is not running or finishes synchronously (e.g. mock / unit test mode), complete auth:
     if (!tab->isAlive.load() || !tab->hProcess) {
         tab->gitHubAuthCompleted = true;
-        std::wstring user = tab->gitHubAuthUser.empty() ? L"anshtiwatne" : tab->gitHubAuthUser;
+        std::wstring user = tab->gitHubAuthUser;
+        if (user.empty()) user = ReadGitHubUserFromHostsYml();
+        if (user.empty()) user = L"GitHub User";
         {
             std::lock_guard<std::mutex> lock(tab->bufferMutex);
             TerminalLine l1;
@@ -4784,7 +5105,7 @@ bool TerminalPanel::OnChar(wchar_t ch) {
     // GitHub Login tab: wait for user to press Enter to launch browser and authenticate
     if (tab->title == L"Github Login" || tab->isGitHubLoginTab) {
         if (ch == L'\r' || ch == L'\n') {
-            if (!tab->gitHubAuthCompleted) {
+            if (!tab->gitHubAuthCompleted && !tab->gitHubBrowserOpened) {
                 TriggerGitHubLoginEnter();
             }
             return true;
@@ -4915,13 +5236,14 @@ bool TerminalPanel::OnChar(wchar_t ch) {
             if (utf8Len > 1) {
                 std::string utf8(utf8Len - 1, '\0');
                 WideCharToMultiByte(CP_UTF8, 0, tab->currentInputLine.c_str(), -1, &utf8[0], utf8Len, NULL, NULL);
-                utf8 += "\r\n";
+                // Pipe-based shells (notably Git Bash readline) treat "\r\n" as two Enter keypresses.
+                utf8 += "\n";
                 tab->SendInput(utf8);
             } else {
-                tab->SendInput("\r\n");
+                tab->SendInput("\n");
             }
         } else {
-            tab->SendInput("\r\n");
+            tab->SendInput("\n");
         }
 
         tab->currentInputLine.clear();
@@ -4988,10 +5310,10 @@ bool TerminalPanel::OnKeyDown(UINT vk, bool isCtrl, bool isShift) {
         return true; // Ignore typing keys inside read-only server tab
     }
 
-    // GitHub Login tab: Enter key triggers browser opening and completes login flow
+    // GitHub Login tab: Enter key triggers browser opening and completes login flow once
     if (tab->title == L"Github Login" || tab->isGitHubLoginTab) {
         if (vk == VK_RETURN) {
-            if (!tab->gitHubAuthCompleted) {
+            if (!tab->gitHubAuthCompleted && !tab->gitHubBrowserOpened) {
                 TriggerGitHubLoginEnter();
             }
             return true;

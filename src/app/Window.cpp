@@ -470,22 +470,33 @@ void Window::StartWorkspaceWatcher(const std::wstring& folderPath) {
                 }
 
                 bool hasUserFileChange = false;
+                bool hasGitMetaChange = false;
                 if (bytesReturned > 0) {
                     BYTE* p = buffer.data();
                     while (p) {
                         auto* info = reinterpret_cast<FILE_NOTIFY_INFORMATION*>(p);
                         std::wstring relName(info->FileName, info->FileNameLength / sizeof(wchar_t));
 
-                        // Ignore internal directories, git commits, index updates, cache, etc.
+                        // Ignore internal directories, temp git locks, cache, etc.
                         bool isIgnored = false;
-                        if (relName.starts_with(L".git") ||
-                            relName.starts_with(L"node_modules") ||
-                            relName.starts_with(L"vendor") ||
-                            relName.starts_with(L".venv") ||
-                            relName.starts_with(L"venv") ||
-                            relName.starts_with(L"__pycache__") ||
-                            relName.starts_with(L".cache") ||
-                            relName.find(L"session_state.json") != std::wstring::npos) {
+                        if (relName.starts_with(L".git")) {
+                            isIgnored = true;
+                            bool isLock = (relName.size() >= 5 && relName.compare(relName.size() - 5, 5, L".lock") == 0);
+                            if (!isLock &&
+                                (relName == L".git" ||
+                                 relName == L".git\\HEAD" ||
+                                 relName == L".git\\config" ||
+                                 relName == L".git\\index" ||
+                                 relName.starts_with(L".git\\refs"))) {
+                                hasGitMetaChange = true;
+                            }
+                        } else if (relName.starts_with(L"node_modules") ||
+                                   relName.starts_with(L"vendor") ||
+                                   relName.starts_with(L".venv") ||
+                                   relName.starts_with(L"venv") ||
+                                   relName.starts_with(L"__pycache__") ||
+                                   relName.starts_with(L".cache") ||
+                                   relName.find(L"session_state.json") != std::wstring::npos) {
                             isIgnored = true;
                         }
 
@@ -498,11 +509,11 @@ void Window::StartWorkspaceWatcher(const std::wstring& folderPath) {
                     }
                 }
 
-                if (hasUserFileChange) {
+                if (hasUserFileChange || hasGitMetaChange) {
                     // Coalesce rapid disk events (debounced quiet period: 200ms)
                     Sleep(200);
                     if (self->m_hwnd) {
-                        PostMessageW(self->m_hwnd, WM_USER + 202, 0, 0);
+                        PostMessageW(self->m_hwnd, WM_USER + 202, hasUserFileChange ? 0 : 1, 0);
                     }
                 }
             } else {
@@ -981,6 +992,7 @@ void Window::LoadSessionState() {
         if (!lastOpenFolder.empty() && std::filesystem::exists(lastOpenFolder, ec)) {
             m_drawer.OpenFolder(lastOpenFolder, &expandedDirs);
             m_workspace.OpenWorkspace(lastOpenFolder);
+            m_terminal.SetWorkingDir(lastOpenFolder);
             m_intelliSense.SetWorkspaceRoot(lastOpenFolder);
             m_editor.SetWorkspaceRoot(lastOpenFolder);
             m_adaptiveEngine.LoadProfile(lastOpenFolder + L"\\.phide\\user_adaptive_profile.json");
@@ -2928,7 +2940,14 @@ void Window::CloseDocument(int groupIdx, int docIdx) {
         m_drawer.SetCommitEditMsgOpen(false);
 
         if (!commitMsg.empty()) {
-            m_drawer.CommitChangesAsync(commitMsg);
+            if (!m_drawer.IsGitHubLoggedIn()) {
+                // Keep changes staged and require GitHub authentication before committing
+                m_drawer.RefreshGitStatusOnly(false);
+                m_drawer.ShowGitNotification(L"No GitHub account detected. Please log in to GitHub before committing.");
+                m_drawer.OpenGitHubLoginModal();
+            } else {
+                m_drawer.CommitChangesAsync(commitMsg);
+            }
         } else {
             // Empty message aborts the commit, but changes REMAIN staged!
             m_drawer.RefreshGitStatusOnly(false);
@@ -3020,6 +3039,7 @@ void Window::DoOpenFolderFromPath(const std::wstring& path) {
     if (path.empty()) return;
     m_drawer.OpenFolder(path);
     m_workspace.OpenWorkspace(path);
+    m_terminal.SetWorkingDir(path);
     m_intelliSense.SetWorkspaceRoot(path);
     m_editor.SetWorkspaceRoot(path);
     m_adaptiveEngine.LoadProfile(path + L"\\.phide\\user_adaptive_profile.json");
@@ -7708,7 +7728,7 @@ bool Window::Create(HINSTANCE hInstance, int nCmdShow) {
     });
 
     m_terminal.SetOnGitHubAuthSuccess([this](const std::wstring& username) {
-        m_drawer.SetGitHubLoggedIn(true);
+        m_drawer.CompleteGitHubLogin(username);
         m_drawer.RefreshGitState(false);
         m_drawer.ShowGitNotification(L"✓ Logged in to GitHub as " + username);
         if (m_hwnd) {
@@ -9088,18 +9108,14 @@ void Window::UpdateCachedGitInfo() {
 
     std::wstring openDir = m_drawer.GetOpenFolderPath();
 
-    std::filesystem::path cur = openDir;
-    std::filesystem::path gitPath;
     std::error_code ec;
-    while (!cur.empty()) {
-        std::filesystem::path cand = cur / L".git";
-        if (std::filesystem::exists(cand, ec)) {
-            gitPath = cand;
-            break;
+    std::filesystem::path gitPath;
+    if (ui::DrawerPanel::IsLocalGitRepoRoot(openDir)) {
+        std::wstring cleanOpenDir = openDir;
+        if (cleanOpenDir.size() >= 4 && cleanOpenDir[0] == L'\\' && cleanOpenDir[1] == L'\\' && cleanOpenDir[2] == L'?' && cleanOpenDir[3] == L'\\') {
+            cleanOpenDir = cleanOpenDir.substr(4);
         }
-        auto parent = cur.parent_path();
-        if (parent == cur) break;
-        cur = parent;
+        gitPath = std::filesystem::path(cleanOpenDir) / L".git";
     }
 
     if (gitPath.empty() || !std::filesystem::exists(gitPath, ec)) {
@@ -11207,10 +11223,14 @@ void Window::HandleMouseMove(POINT clientPt, WPARAM wParam) {
             } else {
                 if (m_drawer.HandleExplorerScrollbarMouseMove(clientPt)) needRepaint = true;
                 if (!m_drawer.HasOpenFolder()) {
+                    if (m_drawer.SetHoveredExplorerHeaderBtn(false, false)) needRepaint = true;
                     bool btnHover = m_drawer.HitTestOpenFolderButton(clientPt, m_config);
                     if (m_drawer.SetHoveredOpenFolderBtn(btnHover)) needRepaint = true;
                 } else {
-                    int hoveredTree = m_drawer.HitTest(clientPt, m_config);
+                    bool hoverNewFile = m_drawer.HitTestExplorerNewFileButton(clientPt);
+                    bool hoverNewFolder = !hoverNewFile && m_drawer.HitTestExplorerNewFolderButton(clientPt);
+                    if (m_drawer.SetHoveredExplorerHeaderBtn(hoverNewFile, hoverNewFolder)) needRepaint = true;
+                    int hoveredTree = (hoverNewFile || hoverNewFolder) ? -1 : m_drawer.HitTest(clientPt, m_config);
                     if (m_drawer.SetHoveredIndex(hoveredTree)) needRepaint = true;
                 }
             }
@@ -12456,6 +12476,7 @@ void Window::HandleLButtonDown(POINT clientPt) {
             if (hitIdx >= 0) {
                 m_editor.SetAutocompleteSelectedIndex(static_cast<size_t>(hitIdx));
                 CommitAutocompleteSelection();
+                m_editor.ClearPrediction();
             } else {
                 m_editor.DismissAutocomplete();
                 m_editor.ClearGhostText();
@@ -13717,6 +13738,18 @@ void Window::HandleLButtonDown(POINT clientPt) {
                     return;
                 }
             } else {
+                if (m_drawer.HitTestExplorerNewFileButton(clientPt)) {
+                    m_explorerHasFocus = true;
+                    m_drawer.StartInlineCreate(m_drawer.GetOpenFolderPath(), false);
+                    InvalidateRect(m_hwnd, nullptr, FALSE);
+                    return;
+                }
+                if (m_drawer.HitTestExplorerNewFolderButton(clientPt)) {
+                    m_explorerHasFocus = true;
+                    m_drawer.StartInlineCreate(m_drawer.GetOpenFolderPath(), true);
+                    InvalidateRect(m_hwnd, nullptr, FALSE);
+                    return;
+                }
                 if (m_drawer.HitTestExplorerScrollbar(clientPt)) {
                     SetCapture(m_hwnd);
                     InvalidateRect(m_hwnd, nullptr, FALSE);
@@ -15087,9 +15120,11 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     return TRUE;
                 }
 
-                // Explorer Drawer: file tree item hover cursor (grabbing/hand cursor)
+                // Explorer Drawer: file tree item & header action button hover cursor
                 if (m_config.activeRailTab == 0 && m_drawerAnimProgress > 0.001f) {
-                    if (m_drawer.HitTest(pt, m_config) >= 0) {
+                    if (m_drawer.HitTestExplorerNewFileButton(pt) ||
+                        m_drawer.HitTestExplorerNewFolderButton(pt) ||
+                        m_drawer.HitTest(pt, m_config) >= 0) {
                         SetCursor(LoadCursor(nullptr, IDC_HAND));
                         return TRUE;
                     }
@@ -16328,6 +16363,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                         m_editor.ClearGhostText();
                     } else {
                         CommitAutocompleteSelection();
+                        m_editor.ClearPrediction();
                         return 0;
                     }
                 }
@@ -16338,6 +16374,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                         m_editor.ClearGhostText();
                     } else if (m_editor.IsAutocompleteNavigated()) {
                         CommitAutocompleteSelection();
+                        m_editor.ClearPrediction();
                         return 0;
                     } else {
                         m_editor.DismissAutocomplete();
@@ -17896,8 +17933,14 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
             if (GetTickCount64() - s_lastInternalAutoSaveTick < 900) {
                 return 0; // Ignore self-triggered filesystem change from internal auto-save
             }
+            if (wParam == 1) {
+                TriggerDebouncedGitRefresh(300);
+                InvalidateRect(m_hwnd, nullptr, FALSE);
+                return 0;
+            }
             m_drawer.RefreshTree();
             NotifyGraphViewFilesystemChanged();
+            TriggerDebouncedGitRefresh(350);
             InvalidateRect(m_hwnd, nullptr, FALSE);
             return 0;
         }

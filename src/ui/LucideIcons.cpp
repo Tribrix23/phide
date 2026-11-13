@@ -2025,4 +2025,199 @@ void LucideIcons::DrawRemoteArrows(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bo
     pRT->DrawLine(MapPoint(11.8f, 13.8f, ox, oy, s), MapPoint(19.5f, 20.0f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
 }
 
+void LucideIcons::DrawFilePlus(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, ID2D1Brush* pBrush, float strokeWidth) const {
+    if (!pRT || !pBrush) return;
+    EnsureStrokeStyle(pRT, const_cast<Microsoft::WRL::ComPtr<ID2D1StrokeStyle>&>(m_pStrokeStyle));
+
+    const float bw = bounds.right - bounds.left;
+    const float bh = bounds.bottom - bounds.top;
+    const float minDim = (std::min)(bw, bh);
+    const float iconSize = (minDim > 26.0f) ? (minDim * 0.62f) : (minDim * 0.88f);
+    const float s = iconSize / 24.0f;
+    const float ox = bounds.left + (bw - 24.0f * s) * 0.5f;
+    const float oy = bounds.top + (bh - 24.0f * s) * 0.5f;
+
+    // File sheet perimeter stopping cleanly before bottom-right '+' badge (matching VS Code Explorer icon)
+    pRT->DrawLine(MapPoint(4.5f, 3.0f, ox, oy, s), MapPoint(13.5f, 3.0f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+    pRT->DrawLine(MapPoint(13.5f, 3.0f, ox, oy, s), MapPoint(18.5f, 8.0f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+    pRT->DrawLine(MapPoint(18.5f, 8.0f, ox, oy, s), MapPoint(18.5f, 11.5f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+    pRT->DrawLine(MapPoint(4.5f, 3.0f, ox, oy, s), MapPoint(4.5f, 20.5f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+    pRT->DrawLine(MapPoint(4.5f, 20.5f, ox, oy, s), MapPoint(11.0f, 20.5f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+    // Dog-ear fold lines
+    pRT->DrawLine(MapPoint(13.5f, 3.0f, ox, oy, s), MapPoint(13.5f, 8.0f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+    pRT->DrawLine(MapPoint(13.5f, 8.0f, ox, oy, s), MapPoint(18.5f, 8.0f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+    // Upright '+' in bottom-right corner
+    pRT->DrawLine(MapPoint(16.5f, 14.0f, ox, oy, s), MapPoint(16.5f, 21.5f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+    pRT->DrawLine(MapPoint(12.75f, 17.75f, ox, oy, s), MapPoint(20.25f, 17.75f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+}
+
+void LucideIcons::DrawFolderPlus(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, ID2D1Brush* pBrush, float strokeWidth) const {
+    if (!pRT || !pBrush) return;
+    EnsureStrokeStyle(pRT, const_cast<Microsoft::WRL::ComPtr<ID2D1StrokeStyle>&>(m_pStrokeStyle));
+
+    const float bw = bounds.right - bounds.left;
+    const float bh = bounds.bottom - bounds.top;
+    const float minDim = (std::min)(bw, bh);
+    const float iconSize = (minDim > 26.0f) ? (minDim * 0.62f) : (minDim * 0.88f);
+    const float s = iconSize / 24.0f;
+    const float ox = bounds.left + (bw - 24.0f * s) * 0.5f;
+    const float oy = bounds.top + (bh - 24.0f * s) * 0.5f;
+
+    // Folder top tab & spine stopping cleanly before bottom-right '+' badge (matching VS Code Explorer icon)
+    pRT->DrawLine(MapPoint(2.5f, 4.5f, ox, oy, s), MapPoint(9.2f, 4.5f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+    pRT->DrawLine(MapPoint(9.2f, 4.5f, ox, oy, s), MapPoint(11.4f, 6.8f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+    pRT->DrawLine(MapPoint(11.4f, 6.8f, ox, oy, s), MapPoint(20.5f, 6.8f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+    pRT->DrawLine(MapPoint(20.5f, 6.8f, ox, oy, s), MapPoint(20.5f, 11.5f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+    // Horizontal inner tab divider line
+    pRT->DrawLine(MapPoint(2.5f, 9.2f, ox, oy, s), MapPoint(20.5f, 9.2f, ox, oy, s), pBrush, strokeWidth * 0.9f, m_pStrokeStyle.Get());
+    // Left wall & partial bottom wall
+    pRT->DrawLine(MapPoint(2.5f, 4.5f, ox, oy, s), MapPoint(2.5f, 19.5f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+    pRT->DrawLine(MapPoint(2.5f, 19.5f, ox, oy, s), MapPoint(11.0f, 19.5f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+    // Upright '+' in bottom-right corner
+    pRT->DrawLine(MapPoint(16.8f, 14.0f, ox, oy, s), MapPoint(16.8f, 21.5f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+    pRT->DrawLine(MapPoint(13.05f, 17.75f, ox, oy, s), MapPoint(20.55f, 17.75f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+}
+
+void LucideIcons::DrawCloudUpload(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, ID2D1Brush* pBrush, float strokeWidth) const {
+    if (!pRT || !pBrush) return;
+    EnsureStrokeStyle(pRT, const_cast<Microsoft::WRL::ComPtr<ID2D1StrokeStyle>&>(m_pStrokeStyle));
+
+    const float bw = bounds.right - bounds.left;
+    const float bh = bounds.bottom - bounds.top;
+    const float minDim = (std::min)(bw, bh);
+    const float iconSize = (minDim > 26.0f) ? (minDim * 0.62f) : (minDim * 0.88f);
+    const float s = iconSize / 24.0f;
+    const float ox = bounds.left + (bw - 24.0f * s) * 0.5f;
+    const float oy = bounds.top + (bh - 24.0f * s) * 0.5f;
+
+    ComPtr<ID2D1Factory> pFactory;
+    pRT->GetFactory(&pFactory);
+    if (pFactory) {
+        ComPtr<ID2D1PathGeometry> pCloudGeo;
+        if (SUCCEEDED(pFactory->CreatePathGeometry(&pCloudGeo))) {
+            ComPtr<ID2D1GeometrySink> sink;
+            if (SUCCEEDED(pCloudGeo->Open(&sink))) {
+                // Cloud silhouette open at bottom center for the upload arrow stem
+                sink->BeginFigure(MapPoint(7.5f, 18.0f, ox, oy, s), D2D1_FIGURE_BEGIN_HOLLOW);
+                sink->AddLine(MapPoint(6.2f, 18.0f, ox, oy, s));
+                sink->AddArc(D2D1::ArcSegment(MapPoint(6.4f, 9.6f, ox, oy, s), D2D1::SizeF(4.2f * s, 4.2f * s), 0.0f, D2D1_SWEEP_DIRECTION_CLOCKWISE, D2D1_ARC_SIZE_SMALL));
+                sink->AddArc(D2D1::ArcSegment(MapPoint(16.6f, 8.8f, ox, oy, s), D2D1::SizeF(5.4f * s, 5.4f * s), 0.0f, D2D1_SWEEP_DIRECTION_CLOCKWISE, D2D1_ARC_SIZE_LARGE));
+                sink->AddArc(D2D1::ArcSegment(MapPoint(17.8f, 18.0f, ox, oy, s), D2D1::SizeF(4.4f * s, 4.4f * s), 0.0f, D2D1_SWEEP_DIRECTION_CLOCKWISE, D2D1_ARC_SIZE_SMALL));
+                sink->AddLine(MapPoint(16.5f, 18.0f, ox, oy, s));
+                sink->EndFigure(D2D1_FIGURE_END_OPEN);
+                sink->Close();
+                pRT->DrawGeometry(pCloudGeo.Get(), pBrush, strokeWidth, m_pStrokeStyle.Get());
+            }
+        }
+    }
+    // Centered upright upload arrow
+    pRT->DrawLine(MapPoint(12.0f, 12.2f, ox, oy, s), MapPoint(12.0f, 20.5f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+    pRT->DrawLine(MapPoint(8.8f, 15.2f, ox, oy, s), MapPoint(12.0f, 12.0f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+    pRT->DrawLine(MapPoint(12.0f, 12.0f, ox, oy, s), MapPoint(15.2f, 15.2f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+}
+
+void LucideIcons::DrawLock(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, ID2D1Brush* pBrush, float strokeWidth) const {
+    if (!pRT || !pBrush) return;
+    EnsureStrokeStyle(pRT, const_cast<Microsoft::WRL::ComPtr<ID2D1StrokeStyle>&>(m_pStrokeStyle));
+
+    const float bw = bounds.right - bounds.left;
+    const float bh = bounds.bottom - bounds.top;
+    const float minDim = (std::min)(bw, bh);
+    const float iconSize = (minDim > 26.0f) ? (minDim * 0.60f) : (minDim * 0.86f);
+    const float s = iconSize / 24.0f;
+    const float ox = bounds.left + (bw - 24.0f * s) * 0.5f;
+    const float oy = bounds.top + (bh - 24.0f * s) * 0.5f;
+
+    // Rounded padlock body
+    D2D1_RECT_F rcBody = D2D1::RectF(ox + 4.5f * s, oy + 11.0f * s, ox + 19.5f * s, oy + 20.5f * s);
+    pRT->DrawRoundedRectangle(D2D1::RoundedRect(rcBody, 2.2f * s, 2.2f * s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+
+    // Upright U-shackle on top
+    ComPtr<ID2D1Factory> pFactory;
+    pRT->GetFactory(&pFactory);
+    if (pFactory) {
+        ComPtr<ID2D1PathGeometry> pShackle;
+        if (SUCCEEDED(pFactory->CreatePathGeometry(&pShackle))) {
+            ComPtr<ID2D1GeometrySink> sink;
+            if (SUCCEEDED(pShackle->Open(&sink))) {
+                sink->BeginFigure(MapPoint(7.5f, 11.0f, ox, oy, s), D2D1_FIGURE_BEGIN_HOLLOW);
+                sink->AddLine(MapPoint(7.5f, 7.6f, ox, oy, s));
+                sink->AddArc(D2D1::ArcSegment(MapPoint(16.5f, 7.6f, ox, oy, s), D2D1::SizeF(4.5f * s, 4.5f * s), 0.0f, D2D1_SWEEP_DIRECTION_CLOCKWISE, D2D1_ARC_SIZE_SMALL));
+                sink->AddLine(MapPoint(16.5f, 11.0f, ox, oy, s));
+                sink->EndFigure(D2D1_FIGURE_END_OPEN);
+                sink->Close();
+                pRT->DrawGeometry(pShackle.Get(), pBrush, strokeWidth, m_pStrokeStyle.Get());
+            }
+        }
+    }
+    // Small keyhole dot
+    pRT->FillEllipse(D2D1::Ellipse(MapPoint(12.0f, 15.6f, ox, oy, s), 1.3f * s, 1.3f * s), pBrush);
+}
+
+void LucideIcons::DrawGlobe(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, ID2D1Brush* pBrush, float strokeWidth) const {
+    if (!pRT || !pBrush) return;
+    EnsureStrokeStyle(pRT, const_cast<Microsoft::WRL::ComPtr<ID2D1StrokeStyle>&>(m_pStrokeStyle));
+
+    const float bw = bounds.right - bounds.left;
+    const float bh = bounds.bottom - bounds.top;
+    const float minDim = (std::min)(bw, bh);
+    const float iconSize = (minDim > 26.0f) ? (minDim * 0.60f) : (minDim * 0.86f);
+    const float s = iconSize / 24.0f;
+    const float ox = bounds.left + (bw - 24.0f * s) * 0.5f;
+    const float oy = bounds.top + (bh - 24.0f * s) * 0.5f;
+
+    const D2D1_POINT_2F center = MapPoint(12.0f, 12.0f, ox, oy, s);
+    const float r = 9.0f * s;
+    pRT->DrawEllipse(D2D1::Ellipse(center, r, r), pBrush, strokeWidth, m_pStrokeStyle.Get());
+    pRT->DrawEllipse(D2D1::Ellipse(center, 4.2f * s, r), pBrush, strokeWidth * 0.9f, m_pStrokeStyle.Get());
+    pRT->DrawLine(MapPoint(3.0f, 12.0f, ox, oy, s), MapPoint(21.0f, 12.0f, ox, oy, s), pBrush, strokeWidth * 0.9f, m_pStrokeStyle.Get());
+}
+
+void LucideIcons::DrawCheck(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, ID2D1Brush* pBrush, float strokeWidth) const {
+    if (!pRT || !pBrush) return;
+    EnsureStrokeStyle(pRT, const_cast<Microsoft::WRL::ComPtr<ID2D1StrokeStyle>&>(m_pStrokeStyle));
+
+    const float bw = bounds.right - bounds.left;
+    const float bh = bounds.bottom - bounds.top;
+    const float minDim = (std::min)(bw, bh);
+    const float iconSize = (minDim > 26.0f) ? (minDim * 0.60f) : (minDim * 0.86f);
+    const float s = iconSize / 24.0f;
+    const float ox = bounds.left + (bw - 24.0f * s) * 0.5f;
+    const float oy = bounds.top + (bh - 24.0f * s) * 0.5f;
+
+    pRT->DrawLine(MapPoint(4.5f, 12.5f, ox, oy, s), MapPoint(9.5f, 17.5f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+    pRT->DrawLine(MapPoint(9.5f, 17.5f, ox, oy, s), MapPoint(19.5f, 7.0f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+}
+
+void LucideIcons::DrawRefreshCw(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, ID2D1Brush* pBrush, float strokeWidth) const {
+    if (!pRT || !pBrush) return;
+    EnsureStrokeStyle(pRT, const_cast<Microsoft::WRL::ComPtr<ID2D1StrokeStyle>&>(m_pStrokeStyle));
+
+    const float bw = bounds.right - bounds.left;
+    const float bh = bounds.bottom - bounds.top;
+    const float minDim = (std::min)(bw, bh);
+    const float iconSize = (minDim > 26.0f) ? (minDim * 0.60f) : (minDim * 0.86f);
+    const float s = iconSize / 24.0f;
+    const float ox = bounds.left + (bw - 24.0f * s) * 0.5f;
+    const float oy = bounds.top + (bh - 24.0f * s) * 0.5f;
+
+    ComPtr<ID2D1Factory> pFactory;
+    pRT->GetFactory(&pFactory);
+    if (pFactory) {
+        ComPtr<ID2D1PathGeometry> pGeo;
+        if (SUCCEEDED(pFactory->CreatePathGeometry(&pGeo))) {
+            ComPtr<ID2D1GeometrySink> sink;
+            if (SUCCEEDED(pGeo->Open(&sink))) {
+                sink->BeginFigure(MapPoint(20.0f, 12.5f, ox, oy, s), D2D1_FIGURE_BEGIN_HOLLOW);
+                sink->AddArc(D2D1::ArcSegment(MapPoint(18.5f, 7.2f, ox, oy, s), D2D1::SizeF(8.0f * s, 8.0f * s), 0.0f, D2D1_SWEEP_DIRECTION_CLOCKWISE, D2D1_ARC_SIZE_LARGE));
+                sink->EndFigure(D2D1_FIGURE_END_OPEN);
+                sink->Close();
+                pRT->DrawGeometry(pGeo.Get(), pBrush, strokeWidth, m_pStrokeStyle.Get());
+            }
+        }
+    }
+    pRT->DrawLine(MapPoint(19.5f, 3.8f, ox, oy, s), MapPoint(19.5f, 8.0f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+    pRT->DrawLine(MapPoint(19.5f, 8.0f, ox, oy, s), MapPoint(15.2f, 8.0f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+}
+
 } // namespace phide::ui

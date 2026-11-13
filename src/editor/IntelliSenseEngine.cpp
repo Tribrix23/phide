@@ -4375,8 +4375,8 @@ std::vector<IntelliSenseItem> IntelliSenseEngine::QueryCompletions(
     }
 
     // Common web and programming vocabulary (properties, tags, methods, identifiers)
-    // Keep CSS, Python, C++, and PHP code completions strictly scoped and clean
-    if (!isCss && !insideStyle && !insidePhp && !insideTagAttr && !insideJsImportClause && !isPy && !isInsideQuotes && ext != L".cpp" && ext != L".h" && ext != L".hpp" && ext != L".c") {
+    // Keep HTML markup, CSS, Python, C++, and PHP code completions strictly scoped and clean
+    if (!isCss && !insideStyle && (!isHtml || insideScript) && !insidePhp && !insideTagAttr && !insideJsImportClause && !isPy && !isInsideQuotes && ext != L".cpp" && ext != L".h" && ext != L".hpp" && ext != L".c") {
         for (const auto& v : m_commonVocabulary) {
             rawCandidates.push_back(v);
         }

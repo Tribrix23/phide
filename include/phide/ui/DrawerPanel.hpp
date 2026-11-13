@@ -330,6 +330,9 @@ public:
 
     [[nodiscard]] bool IsGitRepo() const noexcept { return m_isGitRepo; }
     void SetGitRepo(bool isRepo) noexcept { m_isGitRepo = isRepo; }
+    [[nodiscard]] bool HasGitRemote() const noexcept { return m_hasGitRemote; }
+    void SetHasGitRemote(bool hasRemote) noexcept { m_hasGitRemote = hasRemote; }
+    static bool IsLocalGitRepoRoot(const std::wstring& dir);
     [[nodiscard]] bool IsGitLoading() const noexcept { return m_isGitLoading.load() || m_isCommitting.load() || m_isSyncing.load(); }
     void ClearGitLoading() noexcept { m_isGitLoading.store(false); m_isCommitting.store(false); m_isSyncing.store(false); }
     static std::string GenerateContextAwareGitignore(const std::wstring& rootDir);
@@ -492,6 +495,7 @@ public:
     [[nodiscard]] std::wstring GetGitHubRepoUrl() const;
     [[nodiscard]] bool IsGitHubLoggedIn() const noexcept;
     void SetGitHubLoggedIn(bool loggedIn) noexcept { m_isGitHubLoggedIn = loggedIn; m_hasExplicitLoginOverride = true; }
+    void CompleteGitHubLogin(const std::wstring& username);
     [[nodiscard]] bool IsGitHubLoginModalOpen() const noexcept { return m_isGitHubLoginModalOpen; }
     void OpenGitHubLoginModal() noexcept { m_isGitHubLoginModalOpen = true; m_gitHubLoginHoveredBtn = -1; }
     void CloseGitHubLoginModal() noexcept { m_isGitHubLoginModalOpen = false; m_gitHubLoginHoveredBtn = -1; }
@@ -545,6 +549,12 @@ public:
      * @brief Performs hit-testing on the "Open Folder" button shown when no folder is open.
      */
     bool HitTestOpenFolderButton(POINT pt, const app::AppConfig& config) const;
+    [[nodiscard]] bool HitTestExplorerNewFileButton(POINT pt) const noexcept;
+    [[nodiscard]] bool HitTestExplorerNewFolderButton(POINT pt) const noexcept;
+    bool SetHoveredExplorerHeaderBtn(bool hoverNewFile, bool hoverNewFolder) noexcept;
+    [[nodiscard]] const D2D1_RECT_F& GetExplorerNewFileBtnBounds() const noexcept { return m_rcExplorerNewFileBtn; }
+    [[nodiscard]] const D2D1_RECT_F& GetExplorerNewFolderBtnBounds() const noexcept { return m_rcExplorerNewFolderBtn; }
+    [[nodiscard]] const D2D1_RECT_F& GetLastExplorerTooltipBounds() const noexcept { return m_rcExplorerTooltipBounds; }
     bool HitTestExplorerScrollbar(POINT pt);
     bool HandleExplorerScrollbarMouseMove(POINT pt);
     void ReleaseExplorerScrollbarDrag() noexcept { m_isDraggingExplorerScrollbar = false; }
@@ -1041,6 +1051,7 @@ private:
     // --- Git / Source Control State (Images 2, 3, 4, 5) ---
     workspace::IgnoreEngine m_ignoreEngine;
     bool m_isGitRepo = false;
+    bool m_hasGitRemote = false;
     std::wstring m_gitBranch;
     std::vector<GitChangeItem> m_gitChanges;
     std::unordered_set<std::wstring> m_gitIgnoredSet;
@@ -1237,6 +1248,11 @@ private:
     int m_hoveredIndex = -1;
     bool m_hoveredOpenFolderBtn = false;
     D2D1_RECT_F m_rcOpenFolderBtn{};
+    bool m_hoveredExplorerNewFileBtn = false;
+    bool m_hoveredExplorerNewFolderBtn = false;
+    D2D1_RECT_F m_rcExplorerNewFileBtn{};
+    D2D1_RECT_F m_rcExplorerNewFolderBtn{};
+    D2D1_RECT_F m_rcExplorerTooltipBounds{};
 
     // Explorer Drag & Drop Destination Target
     int m_explorerDropTargetIndex = -1;
@@ -1388,6 +1404,24 @@ private:
     D2D1_RECT_F m_rcRemoteFilterBtn{};
     D2D1_RECT_F m_rcRemoteFilterMenu{};
     RemoteCallbacks m_remoteCallbacks;
+
+    enum class DrawerActionIcon {
+        Check,
+        CloudUpload,
+        RefreshCw,
+        ExternalLink
+    };
+
+    void DrawCenteredIconAndText(
+        ID2D1RenderTarget* pRT,
+        Theme& theme,
+        const app::AppConfig& config,
+        const D2D1_RECT_F& bounds,
+        ID2D1Brush* pBrush,
+        DrawerActionIcon icon,
+        const std::wstring& text,
+        IDWriteTextFormat* pFmtOverride = nullptr
+    ) const;
 
     float m_remoteFmtScale = 0.0f;
     Microsoft::WRL::ComPtr<IDWriteTextFormat> m_fmtRemoteHeader;

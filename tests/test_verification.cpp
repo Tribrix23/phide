@@ -48,6 +48,8 @@
 #include "phide/editor/OpenDocument.hpp"
 #include "phide/editor/SmartImportHelper.hpp"
 #include "phide/editor/FormatEngine.hpp"
+#include "phide/editor/PredictionEngine.hpp"
+#include "phide/editor/ZedPredictionData.hpp"
 #include "phide/workspace/WorkspaceManager.hpp"
 #include "phide/workspace/ExplorerUndoManager.hpp"
 #include "phide/server/LiveServer.hpp"
@@ -335,6 +337,12 @@ int main(int argc, char* argv[]) {
     }
     if (targetTest == 122) {
         goto run_test_122;
+    }
+    if (targetTest == 123) {
+        goto run_test_123;
+    }
+    if (targetTest == 124) {
+        goto run_test_124;
     }
 
     if (targetTest == 66) {
@@ -18400,6 +18408,549 @@ run_test_122:
 
         if (targetTest == 122) {
             std::cout << "Target test 122 finished successfully." << std::endl;
+            return 0;
+        }
+    }
+
+run_test_123:
+    // [TEST 123] Regression test for Source Control Git isolation, Publish/Remote detection, Terminal cwd, and Env scoping
+    if (targetTest == 0 || targetTest == 123) {
+        std::cout << "\n[TEST 123] Testing Source Control repo isolation, remote/publish state, terminal working dir, and scoped child env..." << std::endl;
+
+        std::filesystem::path tempRoot = std::filesystem::temp_directory_path() / (L"phide_test_123_" + std::to_wstring(GetCurrentProcessId()));
+        std::error_code ec;
+        std::filesystem::remove_all(tempRoot, ec);
+        std::filesystem::create_directories(tempRoot, ec);
+
+        auto runGitSync123 = [](const std::wstring& dir, const std::wstring& args, std::string* pOut = nullptr) -> DWORD {
+            std::wstring cmd = L"git.exe " + args;
+            std::vector<wchar_t> cmdBuf(cmd.begin(), cmd.end());
+            cmdBuf.push_back(L'\0');
+
+            SECURITY_ATTRIBUTES sa{};
+            sa.nLength = sizeof(sa);
+            sa.bInheritHandle = TRUE;
+            HANDLE hRead = NULL, hWrite = NULL;
+            CreatePipe(&hRead, &hWrite, &sa, 0);
+            SetHandleInformation(hRead, HANDLE_FLAG_INHERIT, 0);
+
+            STARTUPINFOW si{};
+            si.cb = sizeof(si);
+            si.dwFlags = STARTF_USESTDHANDLES | STARTF_USESHOWWINDOW;
+            si.wShowWindow = SW_HIDE;
+            si.hStdOutput = hWrite;
+            si.hStdError = hWrite;
+            PROCESS_INFORMATION pi{};
+            BOOL ok = CreateProcessW(NULL, cmdBuf.data(), NULL, NULL, TRUE, CREATE_NO_WINDOW, NULL, dir.c_str(), &si, &pi);
+            CloseHandle(hWrite);
+            assert(ok);
+
+            std::string captured;
+            char buf[1024];
+            DWORD br = 0;
+            while (ReadFile(hRead, buf, sizeof(buf), &br, NULL) && br > 0) {
+                captured.append(buf, br);
+            }
+            WaitForSingleObject(pi.hProcess, 15000);
+            DWORD code = 1;
+            GetExitCodeProcess(pi.hProcess, &code);
+            CloseHandle(pi.hProcess);
+            CloseHandle(pi.hThread);
+            CloseHandle(hRead);
+            if (pOut) *pOut = captured;
+            return code;
+        };
+
+        auto trimAscii123 = [](std::string s) {
+            while (!s.empty() && (s.back() == '\n' || s.back() == '\r' || s.back() == ' ' || s.back() == '\t')) s.pop_back();
+            return s;
+        };
+
+        struct ScopedEnvClear {
+            std::vector<std::pair<std::wstring, std::pair<bool, std::wstring>>> saved;
+            explicit ScopedEnvClear(std::initializer_list<const wchar_t*> names) {
+                for (const wchar_t* n : names) {
+                    wchar_t buf[512] = {0};
+                    DWORD len = GetEnvironmentVariableW(n, buf, 512);
+                    if (len > 0) {
+                        saved.push_back({ n, { true, std::wstring(buf) } });
+                    } else {
+                        saved.push_back({ n, { false, L"" } });
+                    }
+                    SetEnvironmentVariableW(n, nullptr);
+                }
+            }
+            ~ScopedEnvClear() {
+                for (const auto& entry : saved) {
+                    SetEnvironmentVariableW(entry.first.c_str(), entry.second.first ? entry.second.second.c_str() : nullptr);
+                }
+            }
+        } envGuard({ L"GH_PROMPT_DISABLED", L"GIT_TERMINAL_PROMPT", L"GCM_INTERACTIVE" });
+
+        {
+            std::filesystem::path parentRepo = tempRoot / L"parent_repo";
+            std::filesystem::path childProj = parentRepo / L"child_project";
+            std::filesystem::path bareRemote = tempRoot / L"bare_remote.git";
+            std::filesystem::create_directories(childProj, ec);
+
+            {
+                std::ofstream pf(parentRepo / L"root.txt");
+                pf << "parent file\n";
+            }
+            {
+                std::ofstream cf(childProj / L"main.cpp");
+                cf << "int main() { return 0; }\n";
+            }
+
+            // Initialize parent repo ONLY (child_project has no .git yet)
+            assert(runGitSync123(parentRepo.wstring(), L"init") == 0);
+            assert(runGitSync123(parentRepo.wstring(), L"config user.name \"Parent Dev\"") == 0);
+            assert(runGitSync123(parentRepo.wstring(), L"config user.email \"parent@example.com\"") == 0);
+            assert(runGitSync123(parentRepo.wstring(), L"add root.txt") == 0);
+            assert(runGitSync123(parentRepo.wstring(), L"commit -m \"Parent commit\"") == 0);
+
+            // 1. Strict local .git root detection (must not be shadowed by parentRepo/.git)
+            assert(phide::ui::DrawerPanel::IsLocalGitRepoRoot(parentRepo.wstring()));
+            assert(!phide::ui::DrawerPanel::IsLocalGitRepoRoot(childProj.wstring()));
+            assert(!phide::ui::DrawerPanel::IsLocalGitRepoRoot(L"\\\\?\\" + childProj.wstring() + L"\\"));
+
+            phide::ui::DrawerPanel drawer;
+            phide::app::AppConfig cfg;
+            drawer.OpenFolder(childProj.wstring());
+            drawer.RefreshGitState(false, false);
+
+            assert(!drawer.IsGitRepo());
+            assert(!drawer.HasGitRemote());
+            assert(drawer.GetGitCommits().empty());
+
+            // Verify child process env vars did NOT leak into parent process env
+            assert(GetEnvironmentVariableW(L"GH_PROMPT_DISABLED", nullptr, 0) == 0);
+            assert(GetEnvironmentVariableW(L"GIT_TERMINAL_PROMPT", nullptr, 0) == 0);
+            assert(GetEnvironmentVariableW(L"GCM_INTERACTIVE", nullptr, 0) == 0);
+            std::cout << "  Passed: Nested uninitialized project is not shadowed by ancestor .git and keeps process env clean" << std::endl;
+
+            // 2. Initialize local git repo directly inside child_project (no remote yet)
+            assert(runGitSync123(childProj.wstring(), L"init") == 0);
+            assert(runGitSync123(childProj.wstring(), L"config user.name \"Child Dev\"") == 0);
+            assert(runGitSync123(childProj.wstring(), L"config user.email \"child@example.com\"") == 0);
+            assert(runGitSync123(childProj.wstring(), L"add -A") == 0);
+            assert(runGitSync123(childProj.wstring(), L"commit -m \"Initial child commit\"") == 0);
+
+            assert(phide::ui::DrawerPanel::IsLocalGitRepoRoot(childProj.wstring()));
+            assert(phide::ui::DrawerPanel::IsLocalGitRepoRoot(L"\\\\?\\" + childProj.wstring() + L"\\"));
+
+            // Parent repo must remain untouched with exactly 1 commit
+            std::string parentCountOut;
+            assert(runGitSync123(parentRepo.wstring(), L"rev-list --count HEAD", &parentCountOut) == 0);
+            assert(trimAscii123(parentCountOut) == "1");
+
+            drawer.RefreshGitState(false, false);
+            assert(drawer.IsGitRepo());
+            assert(!drawer.HasGitRemote());
+            assert(!drawer.GetGitCommits().empty());
+            assert(drawer.GetGitCommits()[0].message == L"Initial child commit");
+            std::cout << "  Passed: Initializing inside child_project tracks child_project/.git with m_hasGitRemote == false" << std::endl;
+
+            // 3. Local repo with commits and no remote opens Publish modal on Commit or Sync button clicks
+            drawer.SetGitHubLoggedIn(true);
+            drawer.SetGitSyncBtnBounds(D2D1::RectF(0.0f, 0.0f, 0.0f, 0.0f));
+            drawer.SetGitCommitBtnBounds(D2D1::RectF(40.0f, 40.0f, 160.0f, 70.0f));
+            POINT ptPublishBtn = { 100, 55 };
+            std::wstring outOpen, outDiscard, outCommit, outUrl;
+            bool isDiff = false;
+            bool handledBtn = drawer.HitTestGit(ptPublishBtn, cfg, outOpen, outDiscard, isDiff, outCommit, outUrl);
+            assert(handledBtn);
+            assert(drawer.IsPublishRepoModalOpen());
+            drawer.ClosePublishRepoModal();
+            assert(!drawer.IsPublishRepoModalOpen());
+
+            drawer.SetGitSyncBtnBounds(D2D1::RectF(40.0f, 80.0f, 160.0f, 110.0f));
+            POINT ptSyncBtn = { 100, 95 };
+            bool handledSyncBtn = drawer.HitTestGit(ptSyncBtn, cfg, outOpen, outDiscard, isDiff, outCommit, outUrl);
+            assert(handledSyncBtn);
+            assert(drawer.IsPublishRepoModalOpen());
+            drawer.ClosePublishRepoModal();
+            drawer.SetGitSyncBtnBounds(D2D1::RectF(0.0f, 0.0f, 0.0f, 0.0f));
+            std::cout << "  Passed: Clean local repo without remote routes Commit/Sync buttons to Publish Repository modal" << std::endl;
+
+            // 4. PushCommitsAsync without remote triggers OnGitError instead of fake success
+            std::atomic<bool> pushErrorCalled{ false };
+            std::wstring pushErrorOutput;
+            std::mutex errMtx;
+            drawer.SetOnGitError([&](const std::wstring&, const std::wstring& output, const std::wstring&) {
+                std::lock_guard<std::mutex> lk(errMtx);
+                pushErrorOutput = output;
+                pushErrorCalled.store(true);
+            });
+            drawer.PushCommitsAsync();
+            for (int w = 0; w < 150 && !pushErrorCalled.load(); ++w) {
+                Sleep(20);
+            }
+            for (int w = 0; w < 50 && drawer.IsGitLoading(); ++w) {
+                Sleep(20);
+            }
+            assert(pushErrorCalled.load());
+            {
+                std::lock_guard<std::mutex> lk(errMtx);
+                assert(pushErrorOutput.find(L"remote") != std::wstring::npos);
+            }
+            std::cout << "  Passed: PushCommitsAsync fails loudly with clear error when no remote exists" << std::endl;
+
+            // 5. Connect local bare remote & verify HasGitRemote() transitions to true while parentRepo stays untouched
+            assert(runGitSync123(tempRoot.wstring(), L"init --bare bare_remote.git") == 0);
+            assert(runGitSync123(childProj.wstring(), L"remote add origin \"" + bareRemote.wstring() + L"\"") == 0);
+            assert(runGitSync123(childProj.wstring(), L"push -u origin HEAD") == 0);
+
+            drawer.RefreshGitState(false, false);
+            assert(drawer.IsGitRepo());
+            assert(drawer.HasGitRemote());
+
+            std::string remoteCountOut;
+            assert(runGitSync123(bareRemote.wstring(), L"rev-list --count --all", &remoteCountOut) == 0);
+            assert(trimAscii123(remoteCountOut) == "1");
+            parentCountOut.clear();
+            assert(runGitSync123(parentRepo.wstring(), L"rev-list --count HEAD", &parentCountOut) == 0);
+            assert(trimAscii123(parentCountOut) == "1");
+            std::cout << "  Passed: Remote-connected child repo reports HasGitRemote() == true and pushes cleanly without touching parent repo" << std::endl;
+
+            // 6. TerminalPanel::SetWorkingDir normalizes prefix & updates default + tab workingDir
+            phide::ui::TerminalPanel term123;
+            term123.SetWorkingDir(L"\\\\?\\" + childProj.wstring());
+            assert(term123.GetDefaultWorkingDir() == childProj.wstring());
+            term123.Open(parentRepo.wstring());
+            assert(term123.GetActiveTab() != nullptr);
+            term123.SetWorkingDir(childProj.wstring());
+            assert(term123.GetDefaultWorkingDir() == childProj.wstring());
+            assert(term123.GetActiveTab()->workingDir == childProj.wstring());
+            std::cout << "  Passed: TerminalPanel::SetWorkingDir updates default and interactive tab working directories" << std::endl;
+
+            // 7. ConfirmPublishRepo rejects non-existent non-test directories via OnGitError
+            phide::ui::DrawerPanel missingDrawer;
+            std::atomic<bool> missingErr{ false };
+            missingDrawer.SetOnGitError([&](const std::wstring&, const std::wstring&, const std::wstring&) {
+                missingErr.store(true);
+            });
+            missingDrawer.SetOpenFolderPath((tempRoot / L"missing_folder_123").wstring());
+            missingDrawer.SetGitHubLoggedIn(true);
+            missingDrawer.ConfirmPublishRepo(0);
+            assert(missingErr.load());
+            assert(!missingDrawer.IsGitRepo());
+            std::cout << "  Passed: ConfirmPublishRepo reports missing directory errors and refuses fake success" << std::endl;
+        }
+
+        // Wait briefly for OS handles from exited shells before removing temp dirs
+        Sleep(100);
+        std::filesystem::remove_all(tempRoot, ec);
+        std::cout << "  Passed: All [TEST 123] Source Control & Terminal regression tests passed!" << std::endl;
+
+        if (targetTest == 123) {
+            std::cout << "Target test 123 finished successfully." << std::endl;
+            return 0;
+        }
+    }
+
+run_test_124:
+    // [TEST 124] Regression test for PHP-in-HTML isolation, sanitized ZedPredictionData templates,
+    // IntelliSense HTML filtering, Explorer New File/Folder buttons, upright Publish vector icons,
+    // and non-error Terminal/GitBash ANSI formatting.
+    if (targetTest == 0 || targetTest == 124) {
+        std::cout << "\n[TEST 124] Testing HTML/PHP prediction isolation, Explorer header buttons, Publish modal icons, and Terminal formatting..." << std::endl;
+
+        // 1. Validate sanitized ZedPredictionData templates
+        bool foundCleanConstruct = false;
+        for (size_t i = 0; i < phide::editor::kZedPredictionTemplateCount; ++i) {
+            const auto& tpl = phide::editor::kZedPredictionTemplates[i];
+            std::wstring expStr = tpl.expansion ? tpl.expansion : L"";
+            assert(expStr.find(L":Type") == std::wstring::npos);
+            assert(expStr.find(L":null}}") == std::wstring::npos);
+            assert(expStr.find(L"\\->") == std::wstring::npos);
+            assert(expStr.find(L"${") == std::wstring::npos);
+            if (std::wstring(tpl.lang) == L"php" && std::wstring(tpl.trigger) == L"construct") {
+                assert(expStr.find(L"public function __construct(Type $var = null)") != std::wstring::npos);
+                assert(expStr.find(L"$this->var = $var;") != std::wstring::npos);
+                foundCleanConstruct = true;
+            }
+        }
+        assert(foundCleanConstruct);
+        std::cout << "  Passed: All 421 ZedPredictionData templates are free of TextMate/backslash corruption" << std::endl;
+
+        // 2. PredictionEngine on pure HTML (index.html) does NOT inject PHP snippets/templates
+        phide::editor::PredictionEngine predEngine124;
+        for (const std::wstring& typed : { std::wstring(L"p"), std::wstring(L"ph"), std::wstring(L"php"), std::wstring(L"construct") }) {
+            phide::editor::Buffer htmlBuf(typed);
+            auto predHtml = predEngine124.PredictNextEdit(L"C:\\proj\\index.html", htmlBuf, 0, typed.length());
+            if (predHtml.isValid) {
+                assert(predHtml.ghostText.find(L"__construct") == std::wstring::npos);
+                assert(predHtml.ghostText.find(L":Type") == std::wstring::npos);
+                assert(predHtml.ghostText.find(L"\\->") == std::wstring::npos);
+                assert(predHtml.ghostText.find(L":null}}") == std::wstring::npos);
+            }
+        }
+
+        // Inside embedded <?php ... ?> in index.html, PHP template expansion works cleanly
+        const std::wstring phpCtorPrefix = L"public function __construct";
+        phide::editor::Buffer embeddedPhpBuf(L"<div>\n<?php\n" + phpCtorPrefix);
+        auto predEmbedded = predEngine124.PredictNextEdit(L"C:\\proj\\index.html", embeddedPhpBuf, 2, phpCtorPrefix.length());
+        assert(predEmbedded.isValid);
+        std::wstring completedEmbedded = phpCtorPrefix + predEmbedded.ghostText;
+        assert(completedEmbedded.find(L"public function __construct(Type $var = null)") != std::wstring::npos);
+        assert(completedEmbedded.find(L"$this->var = $var;") != std::wstring::npos);
+        assert(predEmbedded.ghostText.find(L":Type") == std::wstring::npos);
+        assert(predEmbedded.ghostText.find(L"\\->") == std::wstring::npos);
+        assert(predEmbedded.ghostText.find(L":null}}") == std::wstring::npos);
+
+        phide::editor::Buffer phpTriggerBuf(L"<?php\n" + phpCtorPrefix);
+        auto predPhpTrig = predEngine124.PredictNextEdit(L"C:\\proj\\index.php", phpTriggerBuf, 1, phpCtorPrefix.length());
+        assert(predPhpTrig.isValid);
+        std::wstring completedPhp = phpCtorPrefix + predPhpTrig.ghostText;
+        assert(completedPhp.find(L"public function __construct(Type $var = null)") != std::wstring::npos);
+        assert(completedPhp.find(L"$this->var = $var;") != std::wstring::npos);
+        std::cout << "  Passed: PredictionEngine blocks PHP predictions in HTML markup and expands clean PHP syntax inside PHP context" << std::endl;
+
+        // 3. IntelliSenseEngine on index.html does NOT propose 'phpmyadmin'
+        phide::editor::IntelliSenseEngine isEngine124;
+        auto htmlPhpItems = isEngine124.QueryCompletions(L"index.html", L"php", 3);
+        for (const auto& item : htmlPhpItems) {
+            assert(item.label != L"phpmyadmin");
+        }
+        auto htmlTagItems = isEngine124.QueryCompletions(L"index.html", L"<di", 3);
+        bool hasDiv124 = false;
+        for (const auto& item : htmlTagItems) {
+            if (item.label == L"div" || item.label == L"<div>") hasDiv124 = true;
+        }
+        assert(hasDiv124);
+        std::cout << "  Passed: IntelliSenseEngine excludes common vocabulary 'phpmyadmin' in pure HTML while keeping HTML tags" << std::endl;
+
+        // 4. DrawerPanel Explorer Header New File / New Folder buttons & Publish modal vector icons
+        std::filesystem::path tempRoot124 = std::filesystem::temp_directory_path() / (L"phide_test_124_" + std::to_wstring(GetCurrentProcessId()));
+        std::error_code ec124;
+        std::filesystem::remove_all(tempRoot124, ec124);
+        std::filesystem::path projA124 = tempRoot124 / L"alpha_site";
+        std::filesystem::path projB124 = tempRoot124 / L"beta_site";
+        std::filesystem::create_directories(projA124, ec124);
+        std::filesystem::create_directories(projB124, ec124);
+        {
+            std::ofstream ofs(projA124 / "index.html");
+            ofs << "<!doctype html><html></html>\n";
+        }
+        {
+            std::ofstream ofs(projB124 / "main.txt");
+            ofs << "hello\n";
+        }
+
+        ComPtr<IWICBitmap> pWicBmp124;
+        ComPtr<ID2D1RenderTarget> pRT124;
+        CreateTarget(pWicBmp124, pRT124);
+        phide::ui::Theme theme124;
+        theme124.SetThemeMode(phide::ui::ThemeMode::Dark);
+        hr = theme124.CreateDeviceResources(pRT124.Get(), pDWriteFactory.Get());
+        assert(SUCCEEDED(hr));
+
+        phide::app::AppConfig cfg124 = config;
+        cfg124.activeRailTab = 0; // Explorer
+        cfg124.isDrawerOpen = true;
+
+        phide::ui::DrawerPanel drawer124;
+        drawer124.OpenFolder(projA124.wstring());
+        assert(drawer124.HasOpenFolder());
+
+        pRT124->BeginDraw();
+        pRT124->Clear(theme124.colors.windowBg);
+        drawer124.Render(pRT124.Get(), theme124, cfg124, static_cast<float>(height), 260.0f);
+        hr = pRT124->EndDraw();
+        assert(SUCCEEDED(hr));
+
+        const D2D1_RECT_F rcNewFile = drawer124.GetExplorerNewFileBtnBounds();
+        const D2D1_RECT_F rcNewFolder = drawer124.GetExplorerNewFolderBtnBounds();
+        assert(rcNewFile.right > rcNewFile.left && rcNewFile.bottom > rcNewFile.top);
+        assert(rcNewFolder.right > rcNewFolder.left && rcNewFolder.bottom > rcNewFolder.top);
+        assert(rcNewFile.right <= rcNewFolder.left);
+
+        POINT ptNewFile = {
+            static_cast<LONG>((rcNewFile.left + rcNewFile.right) * 0.5f),
+            static_cast<LONG>((rcNewFile.top + rcNewFile.bottom) * 0.5f)
+        };
+        POINT ptNewFolder = {
+            static_cast<LONG>((rcNewFolder.left + rcNewFolder.right) * 0.5f),
+            static_cast<LONG>((rcNewFolder.top + rcNewFolder.bottom) * 0.5f)
+        };
+        assert(drawer124.HitTestExplorerNewFileButton(ptNewFile));
+        assert(!drawer124.HitTestExplorerNewFolderButton(ptNewFile));
+        assert(drawer124.HitTestExplorerNewFolderButton(ptNewFolder));
+        assert(!drawer124.HitTestExplorerNewFileButton(ptNewFolder));
+
+        assert(drawer124.SetHoveredExplorerHeaderBtn(true, false));
+        assert(!drawer124.SetHoveredExplorerHeaderBtn(true, false));
+
+        // Verify hovered Explorer "New File..." and "New Folder..." tooltips measure text width cleanly and never clip letters
+        auto measureTooltipTextW = [&](const std::wstring& txt) -> float {
+            IDWriteTextFormat* pFmt = theme124.fontTooltip.Get() ? theme124.fontTooltip.Get() : theme124.fontMenuItem.Get();
+            assert(pFmt != nullptr);
+            ComPtr<IDWriteTextLayout> pLay;
+            assert(SUCCEEDED(pDWriteFactory->CreateTextLayout(txt.c_str(), static_cast<UINT32>(txt.length()), pFmt, 1000.0f, 200.0f, &pLay)));
+            DWRITE_TEXT_METRICS tm{};
+            assert(SUCCEEDED(pLay->GetMetrics(&tm)));
+            return tm.widthIncludingTrailingWhitespace;
+        };
+
+        pRT124->BeginDraw();
+        pRT124->Clear(theme124.colors.windowBg);
+        drawer124.Render(pRT124.Get(), theme124, cfg124, static_cast<float>(height), 260.0f);
+        assert(SUCCEEDED(pRT124->EndDraw()));
+        const D2D1_RECT_F rcTipNewFile = drawer124.GetLastExplorerTooltipBounds();
+        const float wNewFileText = measureTooltipTextW(L"New File...");
+        assert((rcTipNewFile.right - rcTipNewFile.left) >= wNewFileText + cfg124.ScaleF(16.0f));
+        assert(rcTipNewFile.left >= cfg124.ScaleF(static_cast<float>(cfg124.railWidth)));
+        assert(rcTipNewFile.right <= cfg124.ScaleF(static_cast<float>(cfg124.railWidth + cfg124.drawerWidth)));
+
+        assert(drawer124.SetHoveredExplorerHeaderBtn(false, true));
+        drawer124.StartInlineCreate(drawer124.GetOpenFolderPath(), true);
+        assert(drawer124.IsCreating());
+        pRT124->BeginDraw();
+        pRT124->Clear(theme124.colors.windowBg);
+        drawer124.Render(pRT124.Get(), theme124, cfg124, static_cast<float>(height), 260.0f);
+        assert(SUCCEEDED(pRT124->EndDraw()));
+        const D2D1_RECT_F rcTipNewFolder = drawer124.GetLastExplorerTooltipBounds();
+        const float wNewFolderText = measureTooltipTextW(L"New Folder...");
+        assert((rcTipNewFolder.right - rcTipNewFolder.left) >= wNewFolderText + cfg124.ScaleF(16.0f));
+        assert(rcTipNewFolder.left >= cfg124.ScaleF(static_cast<float>(cfg124.railWidth)));
+        assert(rcTipNewFolder.right <= cfg124.ScaleF(static_cast<float>(cfg124.railWidth + cfg124.drawerWidth)));
+        {
+            std::filesystem::path scratchDir124 = L"C:\\Users\\Administrator\\.gemini\\antigravity\\brain\\f199b6cb-df9b-4339-8250-01ca03a2eeae\\scratch";
+            std::filesystem::create_directories(scratchDir124, ec124);
+            SaveWicBitmapToPng(pWicBmp124.Get(), pWicFactory.Get(), (scratchDir124 / L"test124_tooltip.png").wstring());
+        }
+        drawer124.SetHoveredExplorerHeaderBtn(false, false);
+
+        drawer124.StartInlineCreate(drawer124.GetOpenFolderPath(), false);
+        assert(drawer124.IsCreating());
+        drawer124.StartInlineCreate(drawer124.GetOpenFolderPath(), true);
+        assert(drawer124.IsCreating());
+        std::cout << "  Passed: Explorer New File & New Folder header buttons & tooltips render with full text margins and inline creation" << std::endl;
+
+        // Render Source Control + Publish Repository modal cleanly (verifies upright Lucide vector icons)
+        cfg124.activeRailTab = 2; // Source Control
+        drawer124.OpenFolder(projB124.wstring());
+        drawer124.SetGitRepo(true);
+        drawer124.CompleteGitHubLogin(L"TestOcto124");
+        assert(drawer124.IsGitHubLoggedIn());
+        drawer124.OpenPublishRepoModal();
+        assert(drawer124.IsPublishRepoModalOpen());
+
+        pRT124->BeginDraw();
+        pRT124->Clear(theme124.colors.windowBg);
+        drawer124.Render(pRT124.Get(), theme124, cfg124, static_cast<float>(height), 300.0f);
+        hr = pRT124->EndDraw();
+        assert(SUCCEEDED(hr));
+        drawer124.ClosePublishRepoModal();
+        assert(!drawer124.IsPublishRepoModalOpen());
+        std::cout << "  Passed: Source Control, CompleteGitHubLogin, & Publish Repository modal render upright vector icons cleanly" << std::endl;
+
+        // 5. TerminalPanel non-error Git Bash banner and benign stderr must not render solid error-red
+        auto isErrorRed124 = [](const D2D1_COLOR_F& c) {
+            return c.r > 0.85f && c.g < 0.45f && c.b < 0.45f;
+        };
+
+        phide::ui::TerminalLine gitBashBanner;
+        gitBashBanner.rawText = L"user@host MINGW64 /c/Users/Test (main)";
+        auto bashSpans = phide::ui::TerminalPanel::FormatTerminalLine(gitBashBanner, false, L".");
+        assert(!bashSpans.empty());
+        for (const auto& sp : bashSpans) {
+            assert(!isErrorRed124(sp.color));
+        }
+
+        phide::ui::TerminalLine benignStderrLine;
+        benignStderrLine.rawText = L"bash: cannot set terminal process group (-1): Inappropriate ioctl for device";
+        auto benignSpans = phide::ui::TerminalPanel::FormatTerminalLine(benignStderrLine, false, L".");
+        assert(!benignSpans.empty());
+        for (const auto& sp : benignSpans) {
+            assert(!isErrorRed124(sp.color));
+        }
+
+        phide::ui::TerminalLine genuineErrLine;
+        genuineErrLine.rawText = L"fatal: not a git repository (or any of the parent directories): .git";
+        auto errSpans = phide::ui::TerminalPanel::FormatTerminalLine(genuineErrLine, true, L".");
+        assert(!errSpans.empty());
+        assert(isErrorRed124(errSpans[0].color));
+
+        phide::ui::TerminalLine errorPrefixLine;
+        errorPrefixLine.rawText = L"Error: ENOENT: no such file or directory";
+        auto errTextSpans = phide::ui::TerminalPanel::FormatTerminalLine(errorPrefixLine, false, L".");
+        assert(!errTextSpans.empty());
+        assert(isErrorRed124(errTextSpans[0].color));
+        std::cout << "  Passed: TerminalPanel formats Git Bash & non-error stderr cleanly while preserving red errors" << std::endl;
+
+        // 6. TerminalPanel Enter in piped shells (Git Bash) sends strictly "\n" (never "\r\n"),
+        //    and Enter in Github Login tab fires TriggerGitHubLoginEnter strictly once per session.
+        {
+            HANDLE hPipeRead = NULL, hPipeWrite = NULL;
+            SECURITY_ATTRIBUTES saPipe{};
+            saPipe.nLength = sizeof(saPipe);
+            saPipe.bInheritHandle = FALSE;
+            assert(CreatePipe(&hPipeRead, &hPipeWrite, &saPipe, 4096));
+
+            auto drainPipeBytes = [&](std::string& out) {
+                out.clear();
+                DWORD avail = 0;
+                while (PeekNamedPipe(hPipeRead, NULL, 0, NULL, &avail, NULL) && avail > 0) {
+                    char buf[256];
+                    DWORD toRead = (avail < sizeof(buf)) ? avail : static_cast<DWORD>(sizeof(buf));
+                    DWORD nRead = 0;
+                    if (!ReadFile(hPipeRead, buf, toRead, &nRead, NULL) || nRead == 0) break;
+                    out.append(buf, nRead);
+                    avail = 0;
+                }
+            };
+
+            phide::ui::TerminalPanel termPipe124;
+            termPipe124.SetIsOpen(true);
+            termPipe124.OpenLogTab(L"bash124", {});
+            auto* bashTab = termPipe124.GetActiveTab();
+            assert(bashTab != nullptr);
+            bashTab->isServerTab = false;
+            bashTab->isConPty = false;
+            bashTab->shellType = phide::ui::TerminalShellType::GitBash;
+            bashTab->hStdinWrite = hPipeWrite;
+            bashTab->isAlive.store(true);
+
+            for (wchar_t c : std::wstring(L"npm")) {
+                assert(termPipe124.OnChar(c));
+            }
+            assert(termPipe124.OnKeyDown(VK_RETURN, false, false));
+            assert(termPipe124.OnChar(L'\r'));
+            std::string sentCmd;
+            drainPipeBytes(sentCmd);
+            assert(sentCmd == "npm\n"); // Must NOT be "npm\r\n" (which causes Git Bash to run 2 prompts!)
+
+            assert(termPipe124.OnChar(L'\r'));
+            drainPipeBytes(sentCmd);
+            assert(sentCmd == "\n");
+
+            // GitHub Login tab: WM_KEYDOWN(VK_RETURN) + WM_CHAR('\r') for one keystroke must trigger ONCE
+            bashTab->title = L"Github Login";
+            bashTab->isGitHubLoginTab = true;
+            bashTab->gitHubBrowserOpened = false;
+            bashTab->gitHubAuthCompleted = false;
+            bashTab->suppressBrowserLaunchForTest = true;
+
+            assert(termPipe124.OnKeyDown(VK_RETURN, false, false));
+            assert(bashTab->gitHubBrowserOpened);
+            assert(termPipe124.OnChar(L'\r'));
+            drainPipeBytes(sentCmd);
+            assert(sentCmd == "\n"); // Strictly one trigger (not "\n\n" or two browser tabs)
+
+            bashTab->hStdinWrite = NULL;
+            bashTab->isAlive.store(false);
+            CloseHandle(hPipeWrite);
+            CloseHandle(hPipeRead);
+        }
+        std::cout << "  Passed: TerminalPanel Git Bash sends single '\\n' on Enter and Github Login triggers strictly once per Enter" << std::endl;
+
+        std::filesystem::remove_all(tempRoot124, ec124);
+        std::cout << "  Passed: All [TEST 124] regression tests passed!" << std::endl;
+
+        if (targetTest == 124) {
+            std::cout << "Target test 124 finished successfully." << std::endl;
             return 0;
         }
     }

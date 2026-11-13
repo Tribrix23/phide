@@ -7812,6 +7812,10 @@ void EditorCanvas::ShowAutocomplete(const std::vector<editor::IntelliSenseItem>&
     m_autocompleteSelectedIdx = (selectedIndex < items.size()) ? selectedIndex : 0;
     m_showAutocomplete = !items.empty();
     m_autocompleteNavigated = false;
+    if (m_showAutocomplete) {
+        // Clear any stale multi-line code prediction so accepting autocomplete never splices old ghost text.
+        ClearPrediction();
+    }
 }
 
 bool EditorCanvas::HandleAutocompleteMouseWheel(short delta) noexcept {

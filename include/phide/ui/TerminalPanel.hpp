@@ -262,6 +262,8 @@ struct TerminalTab {
 
     // GitHub CLI Auth Login session state
     bool isGitHubLoginTab = false;
+    bool gitHubBrowserOpened = false;
+    bool suppressBrowserLaunchForTest = false;
     bool gitHubAuthCompleted = false;
     std::wstring gitHubAuthUser;
     std::wstring gitHubLoginCode;
@@ -435,6 +437,7 @@ public:
     void RunGarbageCollection();
 
     void SetWorkingDir(const std::wstring& dir);
+    [[nodiscard]] const std::wstring& GetDefaultWorkingDir() const noexcept { return m_defaultWorkingDir; }
     void SetOutputCallback(std::function<void()> cb) {
         m_outputCallback = std::move(cb);
         for (auto& tab : m_tabs) {

@@ -313,6 +313,41 @@ public:
      */
     void DrawRemoteArrows(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, ID2D1Brush* pBrush, float strokeWidth = 1.6f) const;
 
+    /**
+     * @brief Draws the upright Lucide File Plus icon (document outline with dog-ear + bottom-right '+' badge).
+     */
+    void DrawFilePlus(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, ID2D1Brush* pBrush, float strokeWidth = 1.45f) const;
+
+    /**
+     * @brief Draws the upright Lucide Folder Plus icon (folder outline with tab + bottom-right '+' badge).
+     */
+    void DrawFolderPlus(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, ID2D1Brush* pBrush, float strokeWidth = 1.45f) const;
+
+    /**
+     * @brief Draws the upright Lucide Cloud Upload icon (cloud outline with center upward arrow).
+     */
+    void DrawCloudUpload(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, ID2D1Brush* pBrush, float strokeWidth = 1.55f) const;
+
+    /**
+     * @brief Draws the upright Lucide Lock icon (padlock body and upright U-shackle).
+     */
+    void DrawLock(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, ID2D1Brush* pBrush, float strokeWidth = 1.45f) const;
+
+    /**
+     * @brief Draws the upright Lucide Globe icon (circle, equator, and meridian).
+     */
+    void DrawGlobe(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, ID2D1Brush* pBrush, float strokeWidth = 1.40f) const;
+
+    /**
+     * @brief Draws the upright Lucide Checkmark icon.
+     */
+    void DrawCheck(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, ID2D1Brush* pBrush, float strokeWidth = 1.85f) const;
+
+    /**
+     * @brief Draws the upright Lucide Refresh-CW circular arrow icon.
+     */
+    void DrawRefreshCw(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, ID2D1Brush* pBrush, float strokeWidth = 1.45f) const;
+
     [[nodiscard]] ID2D1StrokeStyle* GetStrokeStyle() const noexcept { return m_pStrokeStyle.Get(); }
 
 private:
