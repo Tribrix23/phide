@@ -13676,7 +13676,6 @@ void Window::HandleLButtonDown(POINT clientPt) {
                 InvalidateRect(m_hwnd, nullptr, FALSE);
                 return;
             }
-            return;
         } else {
             if (m_drawer.IsCourseExplorerMode()) {
                 if (m_drawer.HandleCourseExplorerClick(clientPt, m_config)) {
