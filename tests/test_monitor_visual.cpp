@@ -14,6 +14,8 @@
 #include "phide/app/AppConfig.hpp"
 #include "phide/ui/Theme.hpp"
 #include "phide/ui/ActivityRail.hpp"
+#include "phide/ui/DrawerPanel.hpp"
+#include "phide/ui/RemoteWindowModal.hpp"
 #include "phide/ui/EditorCanvas.hpp"
 #include "phide/editor/OpenDocument.hpp"
 
@@ -70,6 +72,7 @@ int main() {
     HRESULT hr = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
     if (FAILED(hr)) return 1;
 
+    {
     ComPtr<ID2D1Factory> pD2DFactory;
     hr = D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, pD2DFactory.GetAddressOf());
     assert(SUCCEEDED(hr));
@@ -187,6 +190,100 @@ int main() {
     }
 
     std::cout << "Visual verification snapshot generated successfully." << std::endl;
+
+    // Visual verification for Remote Explorer Activity Rail icon, Sidebar, StatusBar `><` pill, and RemoteWindowModal
+    {
+        ComPtr<IWICBitmap> pRemBitmap;
+        hr = pWicFactory->CreateBitmap(w, h, GUID_WICPixelFormat32bppPBGRA, WICBitmapCacheOnDemand, &pRemBitmap);
+        assert(SUCCEEDED(hr));
+        ComPtr<ID2D1RenderTarget> pRemRT;
+        hr = pD2DFactory->CreateWicBitmapRenderTarget(pRemBitmap.Get(), props, &pRemRT);
+        assert(SUCCEEDED(hr));
+
+        phide::ui::Theme remTheme;
+        remTheme.SetThemeMode(phide::ui::ThemeMode::Dark);
+        remTheme.CreateDeviceResources(pRemRT.Get(), pDWriteFactory.Get());
+
+        phide::app::AppConfig remCfg;
+        remCfg.railWidth = 48;
+        remCfg.headerHeight = 40;
+        remCfg.drawerWidth = 310;
+        remCfg.isDrawerOpen = true;
+        remCfg.activeRailTab = static_cast<int>(phide::ui::RailTabId::RemoteExplorer);
+
+        phide::ui::ActivityRail remRail;
+        phide::ui::DrawerPanel remDrawer;
+        remDrawer.OpenRemoteExplorer();
+        // Give async real-environment probe a brief window so honest status text settles without blocking indefinitely
+        Sleep(250);
+
+        phide::ui::LucideIcons statusIcons;
+
+        auto renderFrame = [&](phide::ui::RemoteWindowModal* pModal) {
+            const float headerH = remCfg.ScaleF(static_cast<float>(remCfg.headerHeight));
+            const float railW = remCfg.ScaleF(static_cast<float>(remCfg.railWidth));
+            const float drawerW = remCfg.ScaleF(static_cast<float>(remCfg.drawerWidth));
+            const float statusH = remCfg.ScaleF(22.0f);
+            const float clientH = static_cast<float>(h);
+            const float clientW = static_cast<float>(w);
+
+            pRemRT->BeginDraw();
+            pRemRT->Clear(remTheme.colors.windowBg);
+
+            // Top title strip
+            D2D1_RECT_F rcHdr = D2D1::RectF(0.0f, 0.0f, clientW, headerH);
+            if (remTheme.brushHeaderBg) pRemRT->FillRectangle(rcHdr, remTheme.brushHeaderBg.Get());
+
+            // Activity Rail + Remote Explorer Drawer
+            remRail.Render(pRemRT.Get(), remTheme, remCfg, clientH - statusH);
+            remDrawer.Render(pRemRT.Get(), remTheme, remCfg, clientH - statusH, drawerW);
+
+            // Right canvas subtle placeholder
+            D2D1_RECT_F rcCanvas = D2D1::RectF(railW + drawerW, headerH, clientW, clientH - statusH);
+            if (remTheme.brushCanvasBg) pRemRT->FillRectangle(rcCanvas, remTheme.brushCanvasBg.Get());
+
+            // Status bar + far-left Remote `><` accent pill + `main`
+            D2D1_RECT_F rcBar = D2D1::RectF(0.0f, clientH - statusH, clientW, clientH);
+            if (remTheme.brushHeaderBg) pRemRT->FillRectangle(rcBar, remTheme.brushHeaderBg.Get());
+
+            const float pillW = remCfg.ScaleF(34.0f);
+            D2D1_RECT_F rcRemPill = D2D1::RectF(0.0f, clientH - statusH, pillW, clientH);
+            if (remTheme.brushBrandAccent) pRemRT->FillRectangle(rcRemPill, remTheme.brushBrandAccent.Get());
+            const float icSz = remCfg.ScaleF(13.0f);
+            const float icX = (pillW - icSz) * 0.5f;
+            const float icY = (clientH - statusH) + (statusH - icSz) * 0.5f;
+            statusIcons.DrawRemoteArrows(pRemRT.Get(), D2D1::RectF(icX, icY, icX + icSz, icY + icSz),
+                remTheme.brushTextWhite ? remTheme.brushTextWhite.Get() : remTheme.brushTextPrimary.Get(), 1.7f);
+
+            if (pModal && pModal->IsOpen()) {
+                pModal->Render(pRemRT.Get(), remTheme, remCfg, clientW, clientH);
+            }
+
+            HRESULT hrEnd = pRemRT->EndDraw();
+            assert(SUCCEEDED(hrEnd));
+        };
+
+        // 1. Sidebar + ActivityRail + StatusBar snapshot
+        renderFrame(nullptr);
+        const auto& btnPopup = remDrawer.GetRemoteOpenPopupBtnBounds();
+        const auto& btnFilter = remDrawer.GetRemoteFilterBtnBounds();
+        assert(btnPopup.right > btnPopup.left && btnPopup.bottom > btnPopup.top);
+        assert(btnFilter.right > btnFilter.left && btnFilter.bottom > btnFilter.top);
+        assert(btnFilter.bottom < btnPopup.top && "Filter dropdown must sit cleanly above Open Remote Window button without overlap!");
+        SaveWicBitmapToPng(pRemBitmap.Get(), pWicFactory.Get(),
+            L"C:\\Users\\Administrator\\.gemini\\antigravity\\brain\\2e65eefb-cd8f-409b-add6-886e19899c16\\test_remote_explorer_sidebar.png");
+
+        // 2. Floating RemoteWindowModal snapshot
+        phide::ui::RemoteWindowModal modal;
+        modal.Open(phide::ui::RemoteModalMode::MainMenu, true);
+        renderFrame(&modal);
+        const auto& rcModal = modal.GetModalBounds();
+        assert(rcModal.right > rcModal.left && rcModal.bottom > rcModal.top);
+        SaveWicBitmapToPng(pRemBitmap.Get(), pWicFactory.Get(),
+            L"C:\\Users\\Administrator\\.gemini\\antigravity\\brain\\2e65eefb-cd8f-409b-add6-886e19899c16\\test_remote_window_modal.png");
+    }
+
+    }
     CoUninitialize();
     return 0;
 }

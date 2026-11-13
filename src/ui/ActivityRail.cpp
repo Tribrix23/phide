@@ -22,11 +22,14 @@ ActivityRail::ActivityRail() {
     // 4. File network icon directly under horizontal separation line (User prompt: tooltip "File network")
     m_items.push_back({ RailTabId::FileNetwork, L"File network",               {} });
 
-    // 5. API icon directly above Settings (User requirement: "above the settings button add a api icon that when click create another tab on editor a blank one")
-    m_items.push_back({ RailTabId::Api,         L"API Tester",                 {} });
+    // 5. API icon directly above Remote Explorer / Settings
+    m_items.push_back({ RailTabId::Api,            L"API Tester",                 {} });
 
-    // 6. Settings icon directly under API (matching user's request)
-    m_items.push_back({ RailTabId::Settings,    L"Settings (Ctrl+,)",          {} });
+    // 6. Remote Explorer directly under API (SSH, WSL, Dev Containers)
+    m_items.push_back({ RailTabId::RemoteExplorer, L"Remote Explorer",            {} });
+
+    // 7. Settings icon directly under Remote Explorer
+    m_items.push_back({ RailTabId::Settings,       L"Settings (Ctrl+,)",          {} });
 
     // 7. More Actions (3 dots) directly under Settings with divider line
     m_items.push_back({ RailTabId::MoreActions, L"More Actions",               {} });
@@ -303,6 +306,9 @@ void ActivityRail::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
                 break;
             case RailTabId::Api:
                 m_lucide.DrawApi(pRT, item.bounds, iconBrush, 1.4f);
+                break;
+            case RailTabId::RemoteExplorer:
+                m_lucide.DrawRemoteExplorer(pRT, item.bounds, iconBrush, nullptr, 1.45f);
                 break;
             case RailTabId::Settings:
                 m_lucide.DrawSettings(pRT, item.bounds, iconBrush, 1.6f);

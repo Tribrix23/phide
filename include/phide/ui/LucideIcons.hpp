@@ -303,6 +303,16 @@ public:
     void DrawFileNetwork(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, ID2D1Brush* pBrush, float strokeWidth = 1.7f) const;
     void DrawBell(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, ID2D1Brush* pBrush, float strokeWidth = 1.3f) const;
 
+    /**
+     * @brief Draws the Remote Explorer icon (monitor display with circular remote >< badge).
+     */
+    void DrawRemoteExplorer(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, ID2D1Brush* pBrush, ID2D1Brush* pBgBrush = nullptr, float strokeWidth = 1.45f) const;
+
+    /**
+     * @brief Draws the staggered opposing remote chevrons (><) used on remote triggers and status bar badge.
+     */
+    void DrawRemoteArrows(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, ID2D1Brush* pBrush, float strokeWidth = 1.6f) const;
+
     [[nodiscard]] ID2D1StrokeStyle* GetStrokeStyle() const noexcept { return m_pStrokeStyle.Get(); }
 
 private:

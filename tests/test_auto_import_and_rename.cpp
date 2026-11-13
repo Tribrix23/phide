@@ -4,6 +4,7 @@
 #include <string>
 #include <filesystem>
 #include <fstream>
+#include <windows.h>
 
 #include "phide/editor/Buffer.hpp"
 #include "phide/editor/SyntaxValidator.hpp"
@@ -12,6 +13,7 @@
 #include "phide/editor/OpenDocument.hpp"
 #include "phide/ui/PopupMenu.hpp"
 #include "phide/ui/ActivityRail.hpp"
+#include "phide/ui/RemoteWindowModal.hpp"
 
 using namespace phide::editor;
 
@@ -265,21 +267,30 @@ int main() {
         assert(foundRename && foundDelete);
         std::cout << "  [PASS] Test 5b: Context menu enables Rename & Delete when targeting a file\n";
 
-        // 5c. ActivityRail contains MoreActions directly after Settings
+        // 5c. ActivityRail contains RemoteExplorer directly after Api (above Settings) and MoreActions directly after Settings
         phide::ui::ActivityRail rail;
         const auto& railItems = rail.GetItems();
         bool foundMoreActions = false;
-        int settingsIdx = -1, moreActionsIdx = -1;
+        bool foundRemoteExplorer = false;
+        int apiIdx = -1, remoteIdx = -1, settingsIdx = -1, moreActionsIdx = -1;
         for (size_t i = 0; i < railItems.size(); ++i) {
+            if (railItems[i].id == phide::ui::RailTabId::Api) apiIdx = static_cast<int>(i);
+            if (railItems[i].id == phide::ui::RailTabId::RemoteExplorer) {
+                remoteIdx = static_cast<int>(i);
+                foundRemoteExplorer = true;
+            }
             if (railItems[i].id == phide::ui::RailTabId::Settings) settingsIdx = static_cast<int>(i);
             if (railItems[i].id == phide::ui::RailTabId::MoreActions) {
                 moreActionsIdx = static_cast<int>(i);
                 foundMoreActions = true;
             }
         }
+        assert(foundRemoteExplorer && "ActivityRail must contain RailTabId::RemoteExplorer!");
+        assert(apiIdx >= 0 && remoteIdx == apiIdx + 1 && "RemoteExplorer must be placed directly under Api!");
+        assert(settingsIdx == remoteIdx + 1 && "Settings must follow directly after RemoteExplorer!");
         assert(foundMoreActions && "ActivityRail must contain RailTabId::MoreActions!");
         assert(moreActionsIdx == settingsIdx + 1 && "MoreActions must be placed directly under Settings!");
-        std::cout << "  [PASS] Test 5c: ActivityRail contains 3-dots MoreActions directly under Settings\n";
+        std::cout << "  [PASS] Test 5c: ActivityRail places RemoteExplorer directly under Api and MoreActions under Settings\n";
 
         // 5d. PopupMenu::OpenMoreActionsMenu contains ONLY Monitor (other entries removed per user request)
         popup.OpenMoreActionsMenu(48.0f, 200.0f, cfg);
@@ -299,6 +310,79 @@ int main() {
         assert(foundMonitor && "OpenMoreActionsMenu must contain 'Monitor'!");
         assert(!foundDisallowedEntries && "OpenMoreActionsMenu must NOT contain crossed-out entries!");
         std::cout << "  [PASS] Test 5d: More Actions side dropdown menu contains clean 'Monitor' entry\n";
+    }
+
+    // TEST 6: Remote Explorer SSH Parsing, Real ~/.ssh/config Persistence (Isolated Profile), Command Builders, & Modal State
+    {
+        using namespace phide::ui;
+
+        // 6a. Adhoc SSH input parser
+        remote::SshHostEntry parsed{};
+        assert(remote::ParseAdhocSshInput(L"deploy@prod.example.com", parsed));
+        assert(parsed.user == L"deploy" && parsed.hostName == L"prod.example.com" && parsed.port.empty());
+
+        assert(remote::ParseAdhocSshInput(L"ssh -p 2222 -i ~/.ssh/id_work admin@10.20.30.40", parsed));
+        assert(parsed.user == L"admin" && parsed.hostName == L"10.20.30.40" && parsed.port == L"2222" && parsed.identityFile == L"~/.ssh/id_work");
+
+        assert(remote::ParseAdhocSshInput(L"staging.internal:2022", parsed));
+        assert(parsed.hostName == L"staging.internal" && parsed.port == L"2022");
+
+        assert(!remote::ParseAdhocSshInput(L"   ", parsed));
+        assert(!remote::ParseAdhocSshInput(L"-p 22", parsed));
+        std::cout << "  [PASS] Test 6a: SSH input parser handles user@host, flags, and port syntax\n";
+
+        // 6b. Isolated USERPROFILE SaveSshConfigHost / LoadSshConfigHosts roundtrip
+        wchar_t origProfile[MAX_PATH]{};
+        DWORD origLen = GetEnvironmentVariableW(L"USERPROFILE", origProfile, MAX_PATH);
+        std::wstring tempProfile = (std::filesystem::temp_directory_path() / L"phide_test_ssh_profile").wstring();
+        std::error_code ec;
+        std::filesystem::remove_all(tempProfile, ec);
+        std::filesystem::create_directories(tempProfile, ec);
+        SetEnvironmentVariableW(L"USERPROFILE", tempProfile.c_str());
+
+        remote::SshHostEntry savedHost{};
+        std::wstring saveErr;
+        bool savedOk = remote::SaveSshConfigHost(L"ssh -p 2201 ubuntu@192.168.50.10", savedHost, saveErr);
+        assert(savedOk && "SaveSshConfigHost must write isolated ~/.ssh/config entry");
+        auto loadedHosts = remote::LoadSshConfigHosts();
+        assert(loadedHosts.size() == 1);
+        assert(loadedHosts[0].hostName == L"192.168.50.10" && loadedHosts[0].user == L"ubuntu" && loadedHosts[0].port == L"2201");
+
+        // Restore real USERPROFILE immediately and clean temp folder
+        if (origLen > 0 && origLen < MAX_PATH) {
+            SetEnvironmentVariableW(L"USERPROFILE", origProfile);
+        }
+        std::filesystem::remove_all(tempProfile, ec);
+        std::cout << "  [PASS] Test 6b: Real ~/.ssh/config read/write roundtrip verified cleanly\n";
+
+        // 6c. Interactive ConPTY command builders
+        std::wstring sshCmd = remote::BuildInteractiveSshCommand(savedHost, L"/var/www");
+        assert(sshCmd.find(L"ssh.exe") != std::wstring::npos &&
+               (sshCmd.find(L"-p 2201") != std::wstring::npos || sshCmd.find(L"-p \"2201\"") != std::wstring::npos) &&
+               sshCmd.find(L"/var/www") != std::wstring::npos);
+        std::wstring wslCmd = remote::BuildInteractiveWslCommand(L"Ubuntu-24.04");
+        assert(wslCmd.find(L"wsl.exe") != std::wstring::npos && wslCmd.find(L"Ubuntu-24.04") != std::wstring::npos);
+        std::wstring dockerCmd = remote::BuildInteractiveDockerCommand(L"abc123def", true);
+        assert(dockerCmd.find(L"start") != std::wstring::npos && dockerCmd.find(L"exec -it") != std::wstring::npos && dockerCmd.find(L"\\\"") == std::wstring::npos);
+        std::cout << "  [PASS] Test 6c: SSH / WSL / Docker ConPTY command builders produce valid invocations\n";
+
+        // 6d. RemoteWindowModal modes & filtering
+        RemoteWindowModal modal;
+        modal.Open(RemoteModalMode::MainMenu, false);
+        assert(modal.IsOpen());
+        const auto& allRows = modal.GetVisibleRows();
+        assert(allRows.size() == 7 && "MainMenu must display all 7 Remote Window commands");
+        assert(allRows[0].categoryTag == L"Remote-SSH" && allRows[2].categoryTag == L"Dev Containers" && allRows[5].categoryTag == L"Remote-WSL");
+
+        modal.SetInputTextForTest(L"WSL");
+        const auto& wslFiltered = modal.GetVisibleRows();
+        assert(wslFiltered.size() == 2 && wslFiltered[0].id == L"wsl_connect" && wslFiltered[1].id == L"wsl_distro");
+
+        modal.Open(RemoteModalMode::AddSshHost, true);
+        assert(modal.GetMode() == RemoteModalMode::AddSshHost);
+        modal.Close();
+        assert(!modal.IsOpen());
+        std::cout << "  [PASS] Test 6d: RemoteWindowModal options, tags, search filtering, and modes verified\n";
     }
 
     std::cout << "\n======================================================\n";

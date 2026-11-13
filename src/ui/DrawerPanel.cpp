@@ -593,6 +593,8 @@ void DrawerPanel::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCon
             RenderSearchPane(pRT, theme, config, clientHeight, currentDrawerW);
         } else if (config.activeRailTab == 2) {
             RenderSourceControlPane(pRT, theme, config, clientHeight, currentDrawerW);
+        } else if (config.activeRailTab == 11) {
+            RenderRemotePane(pRT, theme, config, clientHeight, currentDrawerW);
         } else {
             RenderExplorerPane(pRT, theme, config, clientHeight, currentDrawerW);
         }
@@ -3669,6 +3671,15 @@ bool DrawerPanel::HandleMouseWheel(short delta, int activeRailTab, float mouseY)
             }
         }
         return m_searchScrollIdx != oldScroll;
+    }
+
+    if (activeRailTab == 11) {
+        if (m_remoteMaxScrollY <= 0.0f) return false;
+        float oldScroll = m_remoteScrollY;
+        float step = 36.0f;
+        m_remoteScrollY -= (delta > 0 ? step : -step);
+        m_remoteScrollY = (std::max)(0.0f, (std::min)(m_remoteScrollY, m_remoteMaxScrollY));
+        return std::abs(m_remoteScrollY - oldScroll) > 0.1f;
     }
 
     if (m_visibleItems.empty()) return false;
@@ -11396,5 +11407,939 @@ void DrawerPanel::RenderCommitCard(ID2D1RenderTarget* pRT, Theme& theme, const a
     }
 }
 
+// =============================================================================
+// Remote Explorer Pane (activeRailTab == 11)
+// =============================================================================
+
+static std::wstring MakeSafeCacheSubdir(const std::wstring& s) {
+    std::wstring out;
+    for (wchar_t c : s) {
+        if (iswalnum(c) || c == L'.' || c == L'-' || c == L'_') out += c;
+        else out += L'_';
+    }
+    if (out.empty()) out = L"host";
+    return out;
+}
+
+static bool PtInRectF(POINT pt, const D2D1_RECT_F& rc) noexcept {
+    return rc.right > rc.left && rc.bottom > rc.top &&
+           static_cast<float>(pt.x) >= rc.left && static_cast<float>(pt.x) <= rc.right &&
+           static_cast<float>(pt.y) >= rc.top && static_cast<float>(pt.y) <= rc.bottom;
+}
+
+void DrawerPanel::OpenRemoteExplorer() {
+    m_remoteFilterDropdownOpen = false;
+    RefreshRemoteTargetsAsync();
+}
+
+void DrawerPanel::RefreshRemoteTargetsAsync() {
+    // Load SSH config synchronously (instant local file read)
+    {
+        std::lock_guard<std::recursive_mutex> lock(m_remoteMutex);
+        m_remoteHosts = remote::LoadSshConfigHosts();
+        m_remoteInitialized = true;
+    }
+    if (m_remoteCallbacks.onRemoteTargetsChanged) {
+        m_remoteCallbacks.onRemoteTargetsChanged();
+    }
+
+    if (m_remoteIsRefreshing.exchange(true)) return;
+    auto alive = m_isAlive;
+    auto workers = m_activeWorkers;
+    if (workers) (*workers)++;
+
+    std::thread([this, alive, workers]() {
+        struct WorkerGuard {
+            std::shared_ptr<std::atomic<int>> w;
+            ~WorkerGuard() { if (w) (*w)--; }
+        } guard{ workers };
+
+        if (!alive || !alive->load()) return;
+
+        std::wstring wslStatus;
+        auto wsl = remote::ProbeWslDistros(&wslStatus);
+        if (!alive || !alive->load()) return;
+
+        std::wstring containerStatus;
+        auto containers = remote::ProbeDockerContainers(&containerStatus);
+        if (!alive || !alive->load()) return;
+
+        {
+            std::lock_guard<std::recursive_mutex> lock(m_remoteMutex);
+            m_remoteHosts = remote::LoadSshConfigHosts();
+            m_remoteWslDistros = std::move(wsl);
+            m_remoteWslStatus = std::move(wslStatus);
+            m_remoteContainers = std::move(containers);
+            m_remoteContainerStatus = std::move(containerStatus);
+        }
+        m_remoteIsRefreshing.store(false);
+
+        if (alive && alive->load()) {
+            if (m_remoteCallbacks.onRemoteTargetsChanged) m_remoteCallbacks.onRemoteTargetsChanged();
+            if (m_remoteCallbacks.onRequestRepaint) m_remoteCallbacks.onRequestRepaint();
+        }
+    }).detach();
+}
+
+void DrawerPanel::BrowseRemoteSshPathAsync(const remote::SshHostEntry& host, const std::wstring& remotePath) {
+    {
+        std::lock_guard<std::recursive_mutex> lock(m_remoteMutex);
+        m_remoteSessionActive = true;
+        m_remoteActiveHost = host;
+        m_remoteCurrentPath = remotePath.empty() ? L"~" : remotePath;
+        m_remoteBrowseError.clear();
+        m_remoteFiles.clear();
+        m_remoteSshExpanded = true;
+        m_remoteBrowseLoading.store(true);
+    }
+    if (m_remoteCallbacks.onRequestRepaint) m_remoteCallbacks.onRequestRepaint();
+
+    auto alive = m_isAlive;
+    auto workers = m_activeWorkers;
+    if (workers) (*workers)++;
+
+    std::thread([this, alive, workers, host, remotePath]() {
+        struct WorkerGuard {
+            std::shared_ptr<std::atomic<int>> w;
+            ~WorkerGuard() { if (w) (*w)--; }
+        } guard{ workers };
+
+        if (!alive || !alive->load()) return;
+
+        std::wstring resolvedPath;
+        std::wstring err;
+        auto entries = remote::FetchRemoteSshDirectory(host, remotePath, resolvedPath, err, 0);
+        if (!alive || !alive->load()) return;
+
+        {
+            std::lock_guard<std::recursive_mutex> lock(m_remoteMutex);
+            if (resolvedPath.empty()) resolvedPath = L"~";
+            m_remoteCurrentPath = resolvedPath;
+            m_remoteBrowseError = std::move(err);
+            m_remoteFiles = std::move(entries);
+        }
+        m_remoteBrowseLoading.store(false);
+
+        if (alive && alive->load() && m_remoteCallbacks.onRequestRepaint) {
+            m_remoteCallbacks.onRequestRepaint();
+        }
+    }).detach();
+}
+
+void DrawerPanel::ToggleRemoteSubdir(size_t idx) {
+    remote::SshHostEntry host{};
+    remote::RemoteFileEntry clicked{};
+    bool wasExpanded = false;
+    {
+        std::lock_guard<std::recursive_mutex> lock(m_remoteMutex);
+        if (idx >= m_remoteFiles.size() || !m_remoteFiles[idx].isDir) return;
+        host = m_remoteActiveHost;
+        clicked = m_remoteFiles[idx];
+        wasExpanded = clicked.isExpanded;
+
+        if (wasExpanded) {
+            m_remoteFiles[idx].isExpanded = false;
+            size_t eraseEnd = idx + 1;
+            while (eraseEnd < m_remoteFiles.size() && m_remoteFiles[eraseEnd].depth > clicked.depth) {
+                eraseEnd++;
+            }
+            if (eraseEnd > idx + 1) {
+                m_remoteFiles.erase(m_remoteFiles.begin() + idx + 1, m_remoteFiles.begin() + eraseEnd);
+            }
+            return;
+        }
+        m_remoteFiles[idx].isExpanded = true;
+    }
+
+    auto alive = m_isAlive;
+    auto workers = m_activeWorkers;
+    if (workers) (*workers)++;
+
+    std::thread([this, alive, workers, host, clicked]() {
+        struct WorkerGuard {
+            std::shared_ptr<std::atomic<int>> w;
+            ~WorkerGuard() { if (w) (*w)--; }
+        } guard{ workers };
+
+        if (!alive || !alive->load()) return;
+        std::wstring dummyResolved;
+        std::wstring err;
+        auto children = remote::FetchRemoteSshDirectory(host, clicked.fullPath, dummyResolved, err, clicked.depth + 1);
+        if (!alive || !alive->load()) return;
+
+        {
+            std::lock_guard<std::recursive_mutex> lock(m_remoteMutex);
+            if (!err.empty()) {
+                m_remoteBrowseError = err;
+            } else {
+                for (size_t i = 0; i < m_remoteFiles.size(); ++i) {
+                    if (m_remoteFiles[i].fullPath == clicked.fullPath && m_remoteFiles[i].isDir && m_remoteFiles[i].isExpanded) {
+                        size_t checkEnd = i + 1;
+                        while (checkEnd < m_remoteFiles.size() && m_remoteFiles[checkEnd].depth > clicked.depth) {
+                            checkEnd++;
+                        }
+                        if (checkEnd > i + 1) {
+                            m_remoteFiles.erase(m_remoteFiles.begin() + i + 1, m_remoteFiles.begin() + checkEnd);
+                        }
+                        m_remoteFiles.insert(m_remoteFiles.begin() + i + 1, children.begin(), children.end());
+                        break;
+                    }
+                }
+            }
+        }
+        if (alive && alive->load() && m_remoteCallbacks.onRequestRepaint) {
+            m_remoteCallbacks.onRequestRepaint();
+        }
+    }).detach();
+}
+
+void DrawerPanel::DisconnectRemoteSession() {
+    std::lock_guard<std::recursive_mutex> lock(m_remoteMutex);
+    m_remoteSessionActive = false;
+    m_remoteActiveHost = {};
+    m_remoteCurrentPath.clear();
+    m_remoteBrowseError.clear();
+    m_remoteFiles.clear();
+    m_remoteBrowseLoading.store(false);
+}
+
+std::wstring DrawerPanel::GetActiveRemoteBadgeLabel() const {
+    std::lock_guard<std::recursive_mutex> lock(m_remoteMutex);
+    if (!m_remoteSessionActive) return L"";
+    return L"SSH: " + m_remoteActiveHost.TargetSpec();
+}
+
+void DrawerPanel::CopyRemoteTargetCache(
+    std::vector<remote::SshHostEntry>& outSsh,
+    std::vector<remote::WslDistroEntry>& outWsl,
+    std::wstring& outWslStatus,
+    std::vector<remote::DevContainerEntry>& outContainers,
+    std::wstring& outContainerStatus
+) const {
+    std::lock_guard<std::recursive_mutex> lock(m_remoteMutex);
+    outSsh = m_remoteHosts;
+    outWsl = m_remoteWslDistros;
+    outWslStatus = m_remoteWslStatus;
+    outContainers = m_remoteContainers;
+    outContainerStatus = m_remoteContainerStatus;
+}
+
+void DrawerPanel::EnsureRemoteTextFormats(Theme& theme, const app::AppConfig& config) {
+    if (!theme.dwriteFactory) return;
+    float s = config.dpiScale;
+    if (m_fmtRemoteBody && std::abs(m_remoteFmtScale - s) < 0.01f) return;
+    m_remoteFmtScale = s;
+
+    auto mk = [&](float sz, DWRITE_FONT_WEIGHT weight, DWRITE_TEXT_ALIGNMENT align, bool noWrap, Microsoft::WRL::ComPtr<IDWriteTextFormat>& out) {
+        out.Reset();
+        theme.dwriteFactory->CreateTextFormat(
+            L"Segoe UI", nullptr, weight, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
+            sz * s, L"en-US", &out);
+        if (out) {
+            out->SetParagraphAlignment(noWrap ? DWRITE_PARAGRAPH_ALIGNMENT_CENTER : DWRITE_PARAGRAPH_ALIGNMENT_NEAR);
+            out->SetTextAlignment(align);
+            out->SetWordWrapping(noWrap ? DWRITE_WORD_WRAPPING_NO_WRAP : DWRITE_WORD_WRAPPING_WRAP);
+            if (noWrap) {
+                Microsoft::WRL::ComPtr<IDWriteInlineObject> trim;
+                theme.dwriteFactory->CreateEllipsisTrimmingSign(out.Get(), &trim);
+                DWRITE_TRIMMING tr{ DWRITE_TRIMMING_GRANULARITY_CHARACTER, 0, 0 };
+                out->SetTrimming(&tr, trim.Get());
+            }
+        }
+    };
+
+    mk(11.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_TEXT_ALIGNMENT_LEADING, true, m_fmtRemoteHeader);
+    mk(11.0f, DWRITE_FONT_WEIGHT_BOLD, DWRITE_TEXT_ALIGNMENT_LEADING, true, m_fmtRemoteSection);
+    mk(12.5f, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_TEXT_ALIGNMENT_LEADING, true, m_fmtRemoteBody);
+    mk(11.0f, DWRITE_FONT_WEIGHT_MEDIUM, DWRITE_TEXT_ALIGNMENT_LEADING, false, m_fmtRemoteSmall);
+}
+
+void DrawerPanel::RenderRemotePane(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config, float clientHeight, float currentDrawerW) {
+    if (!m_remoteInitialized) {
+        OpenRemoteExplorer();
+    }
+    EnsureRemoteTextFormats(theme, config);
+
+    const float headerH = config.ScaleF(static_cast<float>(config.headerHeight));
+    const float railW = config.ScaleF(static_cast<float>(config.railWidth));
+    const float padX = config.ScaleF(12.0f);
+    const float leftX = railW;
+    const float rightX = railW + currentDrawerW;
+    const float innerW = (std::max)(config.ScaleF(80.0f), currentDrawerW - padX * 2.0f);
+
+    RemoteHitAction prevHoveredAct = RemoteHitAction::None;
+    int prevHoveredIdx = -1;
+    if (m_hoveredRemoteZoneIdx >= 0 && m_hoveredRemoteZoneIdx < static_cast<int>(m_remoteHitZones.size())) {
+        prevHoveredAct = m_remoteHitZones[m_hoveredRemoteZoneIdx].action;
+        prevHoveredIdx = m_remoteHitZones[m_hoveredRemoteZoneIdx].index;
+    }
+    m_remoteHitZones.clear();
+
+    IDWriteTextFormat* fmtHdr = m_fmtRemoteHeader ? m_fmtRemoteHeader.Get() : (theme.fontSectionHeader ? theme.fontSectionHeader.Get() : theme.fontBody.Get());
+    IDWriteTextFormat* fmtSec = m_fmtRemoteSection ? m_fmtRemoteSection.Get() : fmtHdr;
+    IDWriteTextFormat* fmtBody = m_fmtRemoteBody ? m_fmtRemoteBody.Get() : theme.fontBody.Get();
+    IDWriteTextFormat* fmtSmall = m_fmtRemoteSmall ? m_fmtRemoteSmall.Get() : fmtBody;
+
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> cardBgBrush;
+    pRT->CreateSolidColorBrush(
+        theme.IsDarkMode() ? D2D1::ColorF(0.135f, 0.145f, 0.165f, 1.0f) : D2D1::ColorF(0.93f, 0.94f, 0.96f, 1.0f),
+        &cardBgBrush);
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> chipBgBrush;
+    pRT->CreateSolidColorBrush(
+        theme.IsDarkMode() ? D2D1::ColorF(0.18f, 0.19f, 0.21f, 1.0f) : D2D1::ColorF(0.88f, 0.90f, 0.93f, 1.0f),
+        &chipBgBrush);
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> chipHoverBrush;
+    pRT->CreateSolidColorBrush(
+        theme.IsDarkMode() ? D2D1::ColorF(0.24f, 0.26f, 0.30f, 1.0f) : D2D1::ColorF(0.80f, 0.84f, 0.90f, 1.0f),
+        &chipHoverBrush);
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> accentHoverBrush;
+    pRT->CreateSolidColorBrush(D2D1::ColorF(0.11f, 0.56f, 0.92f, 1.0f), &accentHoverBrush);
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> accentSubtleBrush;
+    pRT->CreateSolidColorBrush(D2D1::ColorF(0.0f, 0.471f, 0.831f, 0.16f), &accentSubtleBrush);
+
+    auto isZoneHovered = [&](RemoteHitAction act, int idx = -1) -> bool {
+        return prevHoveredAct == act && prevHoveredIdx == idx;
+    };
+    // We check hover against last rendered zones by coordinate fallback or zone index after building; helper using current index:
+    auto addZone = [&](RemoteHitAction act, int idx, const D2D1_RECT_F& rc) {
+        m_remoteHitZones.push_back({ act, idx, rc });
+    };
+
+    // 1. Header bar: REMOTE EXPLORER + Filter Dropdown + Refresh
+    float topY = headerH + config.ScaleF(8.0f);
+    float hdrRowH = config.ScaleF(24.0f);
+    float refreshSz = config.ScaleF(22.0f);
+    D2D1_RECT_F rcRefresh = D2D1::RectF(rightX - padX - refreshSz, topY + 1.0f, rightX - padX, topY + 1.0f + refreshSz);
+    float filterW = (std::min)(config.ScaleF(108.0f), (std::max)(config.ScaleF(74.0f), innerW * 0.44f));
+    m_rcRemoteFilterBtn = D2D1::RectF(rcRefresh.left - config.ScaleF(4.0f) - filterW, topY + 1.0f, rcRefresh.left - config.ScaleF(4.0f), topY + 1.0f + refreshSz);
+
+    D2D1_RECT_F rcPaneTitle = D2D1::RectF(leftX + padX, topY, m_rcRemoteFilterBtn.left - config.ScaleF(6.0f), topY + hdrRowH);
+    pRT->PushAxisAlignedClip(rcPaneTitle, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+    pRT->DrawText(L"REMOTE EXPLORER", 15, fmtHdr, rcPaneTitle, theme.brushTextSecondary.Get());
+    pRT->PopAxisAlignedClip();
+
+    // Filter pill
+    bool filterHov = isZoneHovered(RemoteHitAction::ToggleFilterMenu, -1) || m_remoteFilterDropdownOpen;
+    pRT->FillRoundedRectangle(D2D1::RoundedRect(m_rcRemoteFilterBtn, config.ScaleF(3.5f), config.ScaleF(3.5f)),
+                              filterHov ? (chipHoverBrush ? static_cast<ID2D1Brush*>(chipHoverBrush.Get()) : theme.brushItemHover.Get())
+                                        : (chipBgBrush ? static_cast<ID2D1Brush*>(chipBgBrush.Get()) : theme.brushItemHover.Get()));
+    pRT->DrawRoundedRectangle(D2D1::RoundedRect(m_rcRemoteFilterBtn, config.ScaleF(3.5f), config.ScaleF(3.5f)),
+                              theme.brushBorderSubtle.Get(), 1.0f);
+    const wchar_t* filterLabel = L"All Targets";
+    if (m_remoteFilter == remote::RemoteTargetFilter::Ssh) filterLabel = L"SSH Targets";
+    else if (m_remoteFilter == remote::RemoteTargetFilter::Wsl) filterLabel = L"WSL Targets";
+    else if (m_remoteFilter == remote::RemoteTargetFilter::DevContainers) filterLabel = L"Dev Containers";
+
+    D2D1_RECT_F rcFilterTxt = D2D1::RectF(m_rcRemoteFilterBtn.left + config.ScaleF(6.0f), m_rcRemoteFilterBtn.top,
+                                          m_rcRemoteFilterBtn.right - config.ScaleF(16.0f), m_rcRemoteFilterBtn.bottom);
+    pRT->PushAxisAlignedClip(rcFilterTxt, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+    pRT->DrawText(filterLabel, static_cast<UINT32>(wcslen(filterLabel)), fmtBody, rcFilterTxt, theme.brushTextPrimary.Get());
+    pRT->PopAxisAlignedClip();
+    // Filter chevron
+    {
+        float cx = m_rcRemoteFilterBtn.right - config.ScaleF(9.0f);
+        float cy = (m_rcRemoteFilterBtn.top + m_rcRemoteFilterBtn.bottom) * 0.5f;
+        float d = config.ScaleF(3.0f);
+        pRT->DrawLine(D2D1::Point2F(cx - d, cy - d * 0.4f), D2D1::Point2F(cx, cy + d * 0.6f), theme.brushTextSecondary.Get(), 1.2f);
+        pRT->DrawLine(D2D1::Point2F(cx, cy + d * 0.6f), D2D1::Point2F(cx + d, cy - d * 0.4f), theme.brushTextSecondary.Get(), 1.2f);
+    }
+    addZone(RemoteHitAction::ToggleFilterMenu, -1, m_rcRemoteFilterBtn);
+
+    // Refresh button
+    pRT->FillRoundedRectangle(D2D1::RoundedRect(rcRefresh, config.ScaleF(3.5f), config.ScaleF(3.5f)),
+                              isZoneHovered(RemoteHitAction::RefreshTargets, -1) && chipHoverBrush ? static_cast<ID2D1Brush*>(chipHoverBrush.Get()) : theme.brushItemHover.Get());
+    {
+        const float rPad = config.ScaleF(4.0f);
+        D2D1_RECT_F rcRefreshIcon = D2D1::RectF(rcRefresh.left + rPad, rcRefresh.top + rPad, rcRefresh.right - rPad, rcRefresh.bottom - rPad);
+        m_icons.DrawRestart(pRT, rcRefreshIcon, theme.brushTextPrimary.Get(), 1.35f);
+    }
+    addZone(RemoteHitAction::RefreshTargets, -1, rcRefresh);
+
+    // 2. Primary CTA Button: "Open Remote Window..." (shows the Remote Window Quick Pick popup)
+    float curY = topY + hdrRowH + config.ScaleF(8.0f);
+    float ctaH = config.ScaleF(28.0f);
+    m_rcRemoteOpenPopupBtn = D2D1::RectF(leftX + padX, curY, rightX - padX, curY + ctaH);
+    D2D1_ROUNDED_RECT rrcCta = D2D1::RoundedRect(m_rcRemoteOpenPopupBtn, config.ScaleF(4.0f), config.ScaleF(4.0f));
+    bool ctaHov = isZoneHovered(RemoteHitAction::OpenRemotePopup, -1);
+    pRT->FillRoundedRectangle(rrcCta, (ctaHov && accentHoverBrush) ? static_cast<ID2D1Brush*>(accentHoverBrush.Get()) : theme.brushBrandAccent.Get());
+    D2D1_RECT_F rcCtaIcon = D2D1::RectF(
+        m_rcRemoteOpenPopupBtn.left + config.ScaleF(8.0f),
+        m_rcRemoteOpenPopupBtn.top + config.ScaleF(5.0f),
+        m_rcRemoteOpenPopupBtn.left + config.ScaleF(26.0f),
+        m_rcRemoteOpenPopupBtn.bottom - config.ScaleF(5.0f));
+    m_icons.DrawRemoteArrows(pRT, rcCtaIcon, theme.brushTextWhite.Get(), 1.45f);
+    D2D1_RECT_F rcCtaText = D2D1::RectF(rcCtaIcon.right + config.ScaleF(6.0f), m_rcRemoteOpenPopupBtn.top,
+                                        m_rcRemoteOpenPopupBtn.right - config.ScaleF(8.0f), m_rcRemoteOpenPopupBtn.bottom);
+    pRT->PushAxisAlignedClip(rcCtaText, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+    pRT->DrawText(L"Open Remote Window...", 21, fmtBody, rcCtaText, theme.brushTextWhite.Get());
+    pRT->PopAxisAlignedClip();
+    addZone(RemoteHitAction::OpenRemotePopup, -1, m_rcRemoteOpenPopupBtn);
+
+    curY += ctaH + config.ScaleF(10.0f);
+
+    // 3. Scrollable target sections region
+    const float bodyTop = curY;
+    const float bodyBottom = clientHeight - config.ScaleF(6.0f);
+    if (bodyBottom <= bodyTop) return;
+
+    pRT->PushAxisAlignedClip(D2D1::RectF(leftX, bodyTop, rightX, bodyBottom), D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+
+    std::lock_guard<std::recursive_mutex> lock(m_remoteMutex);
+    float y = bodyTop - m_remoteScrollY;
+    const float rowH = config.ScaleF(24.0f);
+
+    // Helper for clipped interactive button chip
+    auto drawChip = [&](const D2D1_RECT_F& rc, const wchar_t* text, ID2D1Brush* fillB, ID2D1Brush* textB, RemoteHitAction act, int idx) {
+        D2D1_ROUNDED_RECT rrc = D2D1::RoundedRect(rc, config.ScaleF(3.0f), config.ScaleF(3.0f));
+        bool hov = isZoneHovered(act, idx);
+        pRT->FillRoundedRectangle(rrc, (hov && chipHoverBrush) ? static_cast<ID2D1Brush*>(chipHoverBrush.Get()) : fillB);
+        pRT->DrawRoundedRectangle(rrc, theme.brushBorderSubtle.Get(), 0.8f);
+        pRT->PushAxisAlignedClip(rc, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+        D2D1_RECT_F centered = D2D1::RectF(rc.left + 3.0f, rc.top, rc.right - 3.0f, rc.bottom);
+        if (fmtSmall) {
+            DWRITE_TEXT_ALIGNMENT oldAlign = fmtSmall->GetTextAlignment();
+            fmtSmall->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+            fmtSmall->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+            pRT->DrawText(text, static_cast<UINT32>(wcslen(text)), fmtSmall, centered, textB);
+            fmtSmall->SetTextAlignment(oldAlign);
+            fmtSmall->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR);
+        }
+        pRT->PopAxisAlignedClip();
+        addZone(act, idx, rc);
+    };
+
+    // Active Remote Session status card (if connected)
+    if (m_remoteSessionActive) {
+        float cardH = config.ScaleF(62.0f);
+        D2D1_RECT_F rcCard = D2D1::RectF(leftX + padX, y, rightX - padX, y + cardH);
+        pRT->FillRoundedRectangle(D2D1::RoundedRect(rcCard, config.ScaleF(5.0f), config.ScaleF(5.0f)),
+                                  cardBgBrush ? static_cast<ID2D1Brush*>(cardBgBrush.Get()) : theme.brushItemHover.Get());
+        pRT->DrawRoundedRectangle(D2D1::RoundedRect(rcCard, config.ScaleF(5.0f), config.ScaleF(5.0f)),
+                                  theme.brushRunGreen.Get(), 1.0f);
+
+        float dotX = rcCard.left + config.ScaleF(10.0f);
+        float dotY = rcCard.top + config.ScaleF(12.0f);
+        pRT->FillEllipse(D2D1::Ellipse(D2D1::Point2F(dotX, dotY), config.ScaleF(3.5f), config.ScaleF(3.5f)), theme.brushRunGreen.Get());
+
+        std::wstring titleLine = L"SSH: " + m_remoteActiveHost.TargetSpec();
+        D2D1_RECT_F rcConnTitle = D2D1::RectF(dotX + config.ScaleF(8.0f), rcCard.top + config.ScaleF(4.0f),
+                                              rcCard.right - config.ScaleF(8.0f), rcCard.top + config.ScaleF(20.0f));
+        pRT->PushAxisAlignedClip(rcConnTitle, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+        pRT->DrawText(titleLine.c_str(), static_cast<UINT32>(titleLine.size()), fmtBody, rcConnTitle, theme.brushTextPrimary.Get());
+        pRT->PopAxisAlignedClip();
+
+        std::wstring subPath = m_remoteCurrentPath.empty() ? L"~" : m_remoteCurrentPath;
+        D2D1_RECT_F rcSubPath = D2D1::RectF(rcCard.left + config.ScaleF(10.0f), rcCard.top + config.ScaleF(20.0f),
+                                            rcCard.right - config.ScaleF(8.0f), rcCard.top + config.ScaleF(36.0f));
+        pRT->PushAxisAlignedClip(rcSubPath, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+        pRT->DrawText(subPath.c_str(), static_cast<UINT32>(subPath.size()), fmtBody, rcSubPath, theme.brushTextSecondary.Get());
+        pRT->PopAxisAlignedClip();
+
+        float halfW = (rcCard.right - rcCard.left - config.ScaleF(22.0f)) * 0.5f;
+        D2D1_RECT_F rcTermBtn = D2D1::RectF(rcCard.left + config.ScaleF(8.0f), rcCard.bottom - config.ScaleF(22.0f),
+                                            rcCard.left + config.ScaleF(8.0f) + halfW, rcCard.bottom - config.ScaleF(5.0f));
+        D2D1_RECT_F rcDiscBtn = D2D1::RectF(rcTermBtn.right + config.ScaleF(6.0f), rcTermBtn.top,
+                                            rcCard.right - config.ScaleF(8.0f), rcTermBtn.bottom);
+        ID2D1Brush* chipB = chipBgBrush ? static_cast<ID2D1Brush*>(chipBgBrush.Get()) : theme.brushItemHover.Get();
+        drawChip(rcTermBtn, L"SSH Terminal", chipB, theme.brushTextPrimary.Get(), RemoteHitAction::RemoteActiveTerminal, -1);
+        drawChip(rcDiscBtn, L"Disconnect", chipB, theme.brushCommentAlert.Get(), RemoteHitAction::RemoteDisconnect, -1);
+        y += cardH + config.ScaleF(10.0f);
+    }
+
+    auto drawSectionHeader = [&](const wchar_t* title, bool expanded, RemoteHitAction toggleAct, float rightReservedW) -> D2D1_RECT_F {
+        D2D1_RECT_F rcRow = D2D1::RectF(leftX, y, rightX, y + rowH);
+        pRT->DrawLine(D2D1::Point2F(leftX, y), D2D1::Point2F(rightX, y), theme.brushBorderSubtle.Get(), 1.0f);
+        addZone(toggleAct, -1, rcRow);
+
+        float chevX = leftX + padX + config.ScaleF(2.0f);
+        float chevY = y + rowH * 0.5f;
+        float d = config.ScaleF(3.5f);
+        if (expanded) {
+            pRT->DrawLine(D2D1::Point2F(chevX, chevY - d * 0.4f), D2D1::Point2F(chevX + d, chevY + d * 0.6f), theme.brushTextSecondary.Get(), 1.3f);
+            pRT->DrawLine(D2D1::Point2F(chevX + d, chevY + d * 0.6f), D2D1::Point2F(chevX + d * 2.0f, chevY - d * 0.4f), theme.brushTextSecondary.Get(), 1.3f);
+        } else {
+            pRT->DrawLine(D2D1::Point2F(chevX + d * 0.4f, chevY - d), D2D1::Point2F(chevX + d * 1.4f, chevY), theme.brushTextSecondary.Get(), 1.3f);
+            pRT->DrawLine(D2D1::Point2F(chevX + d * 1.4f, chevY), D2D1::Point2F(chevX + d * 0.4f, chevY + d), theme.brushTextSecondary.Get(), 1.3f);
+        }
+
+        D2D1_RECT_F rcTitle = D2D1::RectF(chevX + config.ScaleF(12.0f), y, rightX - padX - rightReservedW, y + rowH);
+        pRT->PushAxisAlignedClip(rcTitle, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+        pRT->DrawText(title, static_cast<UINT32>(wcslen(title)), fmtSec, rcTitle, theme.brushTextPrimary.Get());
+        pRT->PopAxisAlignedClip();
+        y += rowH;
+        return rcRow;
+    };
+
+    auto drawWrappedMessage = [&](const std::wstring& msg, ID2D1Brush* textBrush) {
+        D2D1_RECT_F rcMsg = D2D1::RectF(leftX + padX + config.ScaleF(4.0f), y + config.ScaleF(2.0f), rightX - padX, y + config.ScaleF(44.0f));
+        pRT->PushAxisAlignedClip(rcMsg, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+        pRT->DrawText(msg.c_str(), static_cast<UINT32>(msg.size()), fmtSmall, rcMsg, textBrush);
+        pRT->PopAxisAlignedClip();
+        y += config.ScaleF(42.0f);
+    };
+
+    ID2D1Brush* chipB = chipBgBrush ? static_cast<ID2D1Brush*>(chipBgBrush.Get()) : theme.brushItemHover.Get();
+
+    // --- Section 1: SSH ---
+    if (m_remoteFilter == remote::RemoteTargetFilter::All || m_remoteFilter == remote::RemoteTargetFilter::Ssh) {
+        D2D1_RECT_F hdr = drawSectionHeader(L"SSH", m_remoteSshExpanded, RemoteHitAction::ToggleSectionSsh, config.ScaleF(52.0f));
+        float iconSz = config.ScaleF(18.0f);
+        D2D1_RECT_F rcEditCfg = D2D1::RectF(rightX - padX - iconSz, hdr.top + 3.0f, rightX - padX, hdr.top + 3.0f + iconSz);
+        D2D1_RECT_F rcAddSsh = D2D1::RectF(rcEditCfg.left - config.ScaleF(4.0f) - iconSz, hdr.top + 3.0f, rcEditCfg.left - config.ScaleF(4.0f), hdr.top + 3.0f + iconSz);
+        drawChip(rcAddSsh, L"+", chipB, theme.brushTextPrimary.Get(), RemoteHitAction::AddSshHost, -1);
+        {
+            bool hovCfg = isZoneHovered(RemoteHitAction::OpenSshConfig, -1);
+            pRT->FillRoundedRectangle(
+                D2D1::RoundedRect(rcEditCfg, config.ScaleF(3.0f), config.ScaleF(3.0f)),
+                (hovCfg && chipHoverBrush) ? static_cast<ID2D1Brush*>(chipHoverBrush.Get()) : chipB);
+            float cfgPad = config.ScaleF(3.0f);
+            D2D1_RECT_F rcCfgIcon = D2D1::RectF(rcEditCfg.left + cfgPad, rcEditCfg.top + cfgPad, rcEditCfg.right - cfgPad, rcEditCfg.bottom - cfgPad);
+            m_icons.DrawSettings(pRT, rcCfgIcon, theme.brushTextSecondary.Get(), 1.3f);
+            addZone(RemoteHitAction::OpenSshConfig, -1, rcEditCfg);
+        }
+
+        if (m_remoteSshExpanded) {
+            y += config.ScaleF(2.0f);
+            if (!m_remoteHosts.empty()) {
+                for (size_t i = 0; i < m_remoteHosts.size(); ++i) {
+                    const auto& h = m_remoteHosts[i];
+                    float hRowH = config.ScaleF(26.0f);
+                    D2D1_RECT_F rcRow = D2D1::RectF(leftX + config.ScaleF(6.0f), y, rightX - config.ScaleF(6.0f), y + hRowH);
+                    bool isCurrent = (m_remoteSessionActive && m_remoteActiveHost.TargetSpec() == h.TargetSpec());
+                    if (isCurrent && accentSubtleBrush) {
+                        pRT->FillRoundedRectangle(D2D1::RoundedRect(rcRow, config.ScaleF(4.0f), config.ScaleF(4.0f)), accentSubtleBrush.Get());
+                    }
+
+                    // Right action pills: [Files] [SSH]
+                    float btnSshW = config.ScaleF(36.0f);
+                    float btnFilesW = config.ScaleF(42.0f);
+                    D2D1_RECT_F rcSshBtn = D2D1::RectF(rcRow.right - config.ScaleF(4.0f) - btnSshW, y + config.ScaleF(3.0f),
+                                                       rcRow.right - config.ScaleF(4.0f), y + hRowH - config.ScaleF(3.0f));
+                    D2D1_RECT_F rcFilesBtn = D2D1::RectF(rcSshBtn.left - config.ScaleF(4.0f) - btnFilesW, rcSshBtn.top,
+                                                         rcSshBtn.left - config.ScaleF(4.0f), rcSshBtn.bottom);
+
+                    float dotX = leftX + padX + config.ScaleF(4.0f);
+                    float dotY = y + hRowH * 0.5f;
+                    pRT->FillEllipse(D2D1::Ellipse(D2D1::Point2F(dotX, dotY), config.ScaleF(3.0f), config.ScaleF(3.0f)),
+                                     isCurrent ? theme.brushRunGreen.Get() : theme.brushBrandAccent.Get());
+
+                    std::wstring hostText = h.alias;
+                    std::wstring detail = h.DisplayDetail();
+                    if (detail != h.alias) hostText += L" (" + detail + L")";
+
+                    D2D1_RECT_F rcHostTxt = D2D1::RectF(dotX + config.ScaleF(8.0f), y, rcFilesBtn.left - config.ScaleF(6.0f), y + hRowH);
+                    pRT->PushAxisAlignedClip(rcHostTxt, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+                    pRT->DrawText(hostText.c_str(), static_cast<UINT32>(hostText.size()), fmtBody, rcHostTxt, theme.brushTextPrimary.Get());
+                    pRT->PopAxisAlignedClip();
+
+                    addZone(RemoteHitAction::SshHostConnectTerminal, static_cast<int>(i), rcRow);
+                    drawChip(rcFilesBtn, L"Files", chipB, theme.brushTextPrimary.Get(), RemoteHitAction::SshHostBrowseFiles, static_cast<int>(i));
+                    drawChip(rcSshBtn, L"SSH", chipB, theme.brushBrandAccent.Get(), RemoteHitAction::SshHostConnectTerminal, static_cast<int>(i));
+                    y += hRowH;
+                }
+            } else {
+                drawWrappedMessage(L"No SSH hosts configured in ~/.ssh/config.", theme.brushTextSecondary.Get());
+                D2D1_RECT_F rcAddBtn = D2D1::RectF(leftX + padX, y, rightX - padX, y + config.ScaleF(24.0f));
+                drawChip(rcAddBtn, L"+ Add New SSH Host", chipB, theme.brushTextPrimary.Get(), RemoteHitAction::AddSshHost, -1);
+                y += config.ScaleF(28.0f);
+            }
+
+            if (!remote::HasSshKeyPair()) {
+                D2D1_RECT_F rcKeyBtn = D2D1::RectF(leftX + padX, y + config.ScaleF(2.0f), rightX - padX, y + config.ScaleF(24.0f));
+                drawChip(rcKeyBtn, L"Setup / Generate SSH Key (Ed25519)", chipB, theme.brushTextPrimary.Get(), RemoteHitAction::SetupSshKey, -1);
+                y += config.ScaleF(28.0f);
+            }
+
+            // Live Remote File Browser when actively browsing an SSH host
+            if (m_remoteSessionActive) {
+                y += config.ScaleF(4.0f);
+                D2D1_RECT_F rcSubHdr = D2D1::RectF(leftX + padX, y, rightX - padX, y + config.ScaleF(20.0f));
+                std::wstring rfHdr = L"REMOTE FILES  •  " + m_remoteCurrentPath;
+                pRT->PushAxisAlignedClip(rcSubHdr, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+                pRT->DrawText(rfHdr.c_str(), static_cast<UINT32>(rfHdr.size()), fmtHdr, rcSubHdr, theme.brushBrandAccent.Get());
+                pRT->PopAxisAlignedClip();
+                y += config.ScaleF(22.0f);
+
+                if (m_remoteBrowseLoading.load()) {
+                    drawWrappedMessage(L"Loading remote directory via SSH...", theme.brushTextSecondary.Get());
+                } else if (!m_remoteBrowseError.empty()) {
+                    drawWrappedMessage(m_remoteBrowseError, theme.brushCommentAlert.Get());
+                    D2D1_RECT_F rcFallback = D2D1::RectF(leftX + padX, y, rightX - padX, y + config.ScaleF(24.0f));
+                    drawChip(rcFallback, L"Open SSH Terminal (Password / Key)", chipB, theme.brushBrandAccent.Get(), RemoteHitAction::RemoteActiveTerminal, -1);
+                    y += config.ScaleF(28.0f);
+                } else {
+                    if (m_remoteCurrentPath != L"/") {
+                        D2D1_RECT_F rcUp = D2D1::RectF(leftX + config.ScaleF(8.0f), y, rightX - config.ScaleF(8.0f), y + config.ScaleF(22.0f));
+                        pRT->PushAxisAlignedClip(rcUp, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+                        pRT->DrawText(L"..  (Parent Folder)", 19, fmtBody, rcUp, theme.brushTextSecondary.Get());
+                        pRT->PopAxisAlignedClip();
+                        addZone(RemoteHitAction::RemoteUpDirectory, -1, rcUp);
+                        y += config.ScaleF(22.0f);
+                    }
+
+                    for (size_t fi = 0; fi < m_remoteFiles.size(); ++fi) {
+                        const auto& rf = m_remoteFiles[fi];
+                        float fRowH = config.ScaleF(22.0f);
+                        float indent = config.ScaleF(10.0f + static_cast<float>(rf.depth) * 12.0f);
+                        D2D1_RECT_F rcFileRow = D2D1::RectF(leftX + indent, y, rightX - config.ScaleF(8.0f), y + fRowH);
+
+                        auto seti = theme.GetSetiIcon(rf.name, rf.isDir, rf.isExpanded);
+                        D2D1_RECT_F rcIcon = D2D1::RectF(rcFileRow.left, y + config.ScaleF(2.0f), rcFileRow.left + config.ScaleF(18.0f), y + fRowH - config.ScaleF(2.0f));
+                        if (theme.fontSeti) {
+                            wchar_t g[2] = { seti.glyph, L'\0' };
+                            pRT->DrawText(g, 1, theme.fontSeti.Get(), rcIcon, seti.pBrush ? seti.pBrush : theme.brushTextSecondary.Get());
+                        }
+
+                        D2D1_RECT_F rcName = D2D1::RectF(rcIcon.right + config.ScaleF(4.0f), y, rcFileRow.right, y + fRowH);
+                        pRT->PushAxisAlignedClip(rcName, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+                        pRT->DrawText(rf.name.c_str(), static_cast<UINT32>(rf.name.size()), fmtBody, rcName, theme.brushTextPrimary.Get());
+                        pRT->PopAxisAlignedClip();
+
+                        addZone(RemoteHitAction::RemoteFileClick, static_cast<int>(fi), D2D1::RectF(leftX + 4.0f, y, rightX - 4.0f, y + fRowH));
+                        y += fRowH;
+                    }
+                }
+            }
+            y += config.ScaleF(6.0f);
+        }
+    }
+
+    // --- Section 2: DEV CONTAINERS ---
+    if (m_remoteFilter == remote::RemoteTargetFilter::All || m_remoteFilter == remote::RemoteTargetFilter::DevContainers) {
+        D2D1_RECT_F hdr = drawSectionHeader(L"DEV CONTAINERS", m_remoteContainersExpanded, RemoteHitAction::ToggleSectionContainers, config.ScaleF(28.0f));
+        float iconSz = config.ScaleF(18.0f);
+        D2D1_RECT_F rcAddDc = D2D1::RectF(rightX - padX - iconSz, hdr.top + 3.0f, rightX - padX, hdr.top + 3.0f + iconSz);
+        drawChip(rcAddDc, L"+", chipB, theme.brushTextPrimary.Get(), RemoteHitAction::CreateDevContainer, -1);
+
+        if (m_remoteContainersExpanded) {
+            y += config.ScaleF(2.0f);
+            if (!m_remoteContainers.empty()) {
+                for (size_t i = 0; i < m_remoteContainers.size(); ++i) {
+                    const auto& c = m_remoteContainers[i];
+                    float cRowH = config.ScaleF(26.0f);
+                    D2D1_RECT_F rcRow = D2D1::RectF(leftX + config.ScaleF(6.0f), y, rightX - config.ScaleF(6.0f), y + cRowH);
+                    float attachW = config.ScaleF(52.0f);
+                    D2D1_RECT_F rcAttach = D2D1::RectF(rcRow.right - config.ScaleF(4.0f) - attachW, y + config.ScaleF(3.0f),
+                                                       rcRow.right - config.ScaleF(4.0f), y + cRowH - config.ScaleF(3.0f));
+
+                    float dotX = leftX + padX + config.ScaleF(4.0f);
+                    float dotY = y + cRowH * 0.5f;
+                    pRT->FillEllipse(D2D1::Ellipse(D2D1::Point2F(dotX, dotY), config.ScaleF(3.0f), config.ScaleF(3.0f)),
+                                     c.isRunning ? theme.brushRunGreen.Get() : theme.brushTextMuted.Get());
+
+                    std::wstring cText = c.name + L" (" + c.image + L")";
+                    D2D1_RECT_F rcCTxt = D2D1::RectF(dotX + config.ScaleF(8.0f), y, rcAttach.left - config.ScaleF(6.0f), y + cRowH);
+                    pRT->PushAxisAlignedClip(rcCTxt, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+                    pRT->DrawText(cText.c_str(), static_cast<UINT32>(cText.size()), fmtBody, rcCTxt, theme.brushTextPrimary.Get());
+                    pRT->PopAxisAlignedClip();
+
+                    addZone(RemoteHitAction::AttachContainer, static_cast<int>(i), rcRow);
+                    drawChip(rcAttach, L"Attach", chipB, theme.brushBrandAccent.Get(), RemoteHitAction::AttachContainer, static_cast<int>(i));
+                    y += cRowH;
+                }
+            } else {
+                drawWrappedMessage(m_remoteContainerStatus.empty()
+                    ? L"No Docker containers found on this machine."
+                    : m_remoteContainerStatus, theme.brushTextSecondary.Get());
+                D2D1_RECT_F rcDcBtn = D2D1::RectF(leftX + padX, y, rightX - padX, y + config.ScaleF(24.0f));
+                drawChip(rcDcBtn, L"Open / Create .devcontainer", chipB, theme.brushTextPrimary.Get(), RemoteHitAction::CreateDevContainer, -1);
+                y += config.ScaleF(28.0f);
+            }
+            y += config.ScaleF(6.0f);
+        }
+    }
+
+    // --- Section 3: WSL TARGETS ---
+    if (m_remoteFilter == remote::RemoteTargetFilter::All || m_remoteFilter == remote::RemoteTargetFilter::Wsl) {
+        drawSectionHeader(L"WSL TARGETS", m_remoteWslExpanded, RemoteHitAction::ToggleSectionWsl, config.ScaleF(8.0f));
+        if (m_remoteWslExpanded) {
+            y += config.ScaleF(2.0f);
+            if (!m_remoteWslDistros.empty()) {
+                for (size_t i = 0; i < m_remoteWslDistros.size(); ++i) {
+                    const auto& d = m_remoteWslDistros[i];
+                    float wRowH = config.ScaleF(26.0f);
+                    D2D1_RECT_F rcRow = D2D1::RectF(leftX + config.ScaleF(6.0f), y, rightX - config.ScaleF(6.0f), y + wRowH);
+
+                    float btnShellW = config.ScaleF(44.0f);
+                    float btnFilesW = config.ScaleF(42.0f);
+                    D2D1_RECT_F rcShell = D2D1::RectF(rcRow.right - config.ScaleF(4.0f) - btnShellW, y + config.ScaleF(3.0f),
+                                                      rcRow.right - config.ScaleF(4.0f), y + wRowH - config.ScaleF(3.0f));
+                    D2D1_RECT_F rcFiles = D2D1::RectF(rcShell.left - config.ScaleF(4.0f) - btnFilesW, rcShell.top,
+                                                      rcShell.left - config.ScaleF(4.0f), rcShell.bottom);
+
+                    bool running = (_wcsicmp(d.state.c_str(), L"Running") == 0);
+                    float dotX = leftX + padX + config.ScaleF(4.0f);
+                    float dotY = y + wRowH * 0.5f;
+                    pRT->FillEllipse(D2D1::Ellipse(D2D1::Point2F(dotX, dotY), config.ScaleF(3.0f), config.ScaleF(3.0f)),
+                                     running ? theme.brushRunGreen.Get() : theme.brushTextMuted.Get());
+
+                    std::wstring dText = d.name + (d.isDefault ? L" *" : L"");
+                    D2D1_RECT_F rcDTxt = D2D1::RectF(dotX + config.ScaleF(8.0f), y, rcFiles.left - config.ScaleF(6.0f), y + wRowH);
+                    pRT->PushAxisAlignedClip(rcDTxt, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+                    pRT->DrawText(dText.c_str(), static_cast<UINT32>(dText.size()), fmtBody, rcDTxt, theme.brushTextPrimary.Get());
+                    pRT->PopAxisAlignedClip();
+
+                    addZone(RemoteHitAction::ConnectWslShell, static_cast<int>(i), rcRow);
+                    drawChip(rcFiles, L"Files", chipB, theme.brushTextPrimary.Get(), RemoteHitAction::OpenWslFolder, static_cast<int>(i));
+                    drawChip(rcShell, L"Shell", chipB, theme.brushBrandAccent.Get(), RemoteHitAction::ConnectWslShell, static_cast<int>(i));
+                    y += wRowH;
+                }
+            } else {
+                drawWrappedMessage(m_remoteWslStatus.empty()
+                    ? L"No WSL distributions installed on this machine."
+                    : m_remoteWslStatus, theme.brushTextSecondary.Get());
+                D2D1_RECT_F rcInstWsl = D2D1::RectF(leftX + padX, y, rightX - padX, y + config.ScaleF(24.0f));
+                drawChip(rcInstWsl, L"Install WSL (wsl --install)", chipB, theme.brushTextPrimary.Get(), RemoteHitAction::InstallWsl, -1);
+                y += config.ScaleF(28.0f);
+            }
+            y += config.ScaleF(6.0f);
+        }
+    }
+
+    const float totalContentH = (y + m_remoteScrollY) - bodyTop;
+    const float viewH = bodyBottom - bodyTop;
+    m_remoteMaxScrollY = (std::max)(0.0f, totalContentH - viewH);
+    if (m_remoteScrollY > m_remoteMaxScrollY) m_remoteScrollY = m_remoteMaxScrollY;
+
+    // Optional thin scrollbar if overflowing vertically
+    if (m_remoteMaxScrollY > 1.0f && totalContentH > 1.0f) {
+        float sbW = config.ScaleF(3.5f);
+        float thumbH = (std::max)(config.ScaleF(20.0f), viewH * (viewH / totalContentH));
+        float thumbY = bodyTop + (m_remoteScrollY / m_remoteMaxScrollY) * (viewH - thumbH);
+        D2D1_RECT_F rcThumb = D2D1::RectF(rightX - sbW - 2.0f, thumbY, rightX - 2.0f, thumbY + thumbH);
+        pRT->FillRoundedRectangle(D2D1::RoundedRect(rcThumb, sbW * 0.5f, sbW * 0.5f), theme.brushBorderHover.Get());
+    }
+
+    pRT->PopAxisAlignedClip();
+
+    // 4. Target Filter Dropdown Popup (drawn last cleanly on top inside sidebar)
+    if (m_remoteFilterDropdownOpen) {
+        const float itemH = config.ScaleF(26.0f);
+        const float menuW = config.ScaleF(146.0f);
+        const float menuX = (std::max)(leftX + config.ScaleF(6.0f), m_rcRemoteFilterBtn.right - menuW);
+        const float menuY = m_rcRemoteFilterBtn.bottom + config.ScaleF(4.0f);
+        const float menuH = itemH * 4.0f + config.ScaleF(8.0f);
+        m_rcRemoteFilterMenu = D2D1::RectF(menuX, menuY, menuX + menuW, menuY + menuH);
+
+        pRT->PushAxisAlignedClip(m_rcRemoteFilterMenu, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+        D2D1_ROUNDED_RECT rrcMenu = D2D1::RoundedRect(m_rcRemoteFilterMenu, config.ScaleF(5.0f), config.ScaleF(5.0f));
+        pRT->FillRoundedRectangle(rrcMenu, theme.brushMenuBg ? theme.brushMenuBg.Get() : theme.brushDrawerBg.Get());
+        pRT->DrawRoundedRectangle(rrcMenu, theme.brushMenuBorder ? theme.brushMenuBorder.Get() : theme.brushBorderSubtle.Get(), 1.0f);
+
+        struct FilterOpt { remote::RemoteTargetFilter val; const wchar_t* label; };
+        const FilterOpt opts[] = {
+            { remote::RemoteTargetFilter::All,           L"All Targets" },
+            { remote::RemoteTargetFilter::Ssh,           L"SSH Targets" },
+            { remote::RemoteTargetFilter::DevContainers, L"Dev Containers" },
+            { remote::RemoteTargetFilter::Wsl,           L"WSL Targets" }
+        };
+        for (int i = 0; i < 4; ++i) {
+            D2D1_RECT_F rcOpt = D2D1::RectF(menuX + config.ScaleF(4.0f), menuY + config.ScaleF(4.0f) + i * itemH,
+                                            menuX + menuW - config.ScaleF(4.0f), menuY + config.ScaleF(4.0f) + (i + 1) * itemH);
+            bool active = (m_remoteFilter == opts[i].val);
+            bool hov = isZoneHovered(RemoteHitAction::FilterChoice, static_cast<int>(opts[i].val));
+            if (active) {
+                pRT->FillRoundedRectangle(D2D1::RoundedRect(rcOpt, config.ScaleF(3.5f), config.ScaleF(3.5f)), theme.brushBrandAccent.Get());
+            } else if (hov) {
+                pRT->FillRoundedRectangle(D2D1::RoundedRect(rcOpt, config.ScaleF(3.5f), config.ScaleF(3.5f)), theme.brushItemHover.Get());
+            }
+            std::wstring txt = (active ? L"✓ " : L"   ") + std::wstring(opts[i].label);
+            D2D1_RECT_F rcTxt = D2D1::RectF(rcOpt.left + config.ScaleF(6.0f), rcOpt.top, rcOpt.right - config.ScaleF(6.0f), rcOpt.bottom);
+            pRT->DrawText(txt.c_str(), static_cast<UINT32>(txt.size()), fmtBody, rcTxt,
+                          active ? theme.brushTextWhite.Get() : theme.brushTextPrimary.Get());
+            addZone(RemoteHitAction::FilterChoice, static_cast<int>(opts[i].val), rcOpt);
+        }
+        pRT->PopAxisAlignedClip();
+    } else {
+        m_rcRemoteFilterMenu = {};
+    }
+}
+
+bool DrawerPanel::HandleRemoteMouseMove(POINT pt) {
+    int prev = m_hoveredRemoteZoneIdx;
+    m_hoveredRemoteZoneIdx = -1;
+    // Iterate backwards so top-layered menus and small chip buttons take precedence over parent rows
+    for (int i = static_cast<int>(m_remoteHitZones.size()) - 1; i >= 0; --i) {
+        if (PtInRectF(pt, m_remoteHitZones[i].bounds)) {
+            m_hoveredRemoteZoneIdx = i;
+            break;
+        }
+    }
+    return prev != m_hoveredRemoteZoneIdx;
+}
+
+bool DrawerPanel::HitTestRemoteInteractive(POINT pt) const noexcept {
+    for (int i = static_cast<int>(m_remoteHitZones.size()) - 1; i >= 0; --i) {
+        if (PtInRectF(pt, m_remoteHitZones[i].bounds)) return true;
+    }
+    return false;
+}
+
+bool DrawerPanel::HandleRemoteLButtonDown(POINT pt, const app::AppConfig& /*config*/) {
+    // Search zones in reverse order (overlay menus and inner chips beat section headers)
+    RemoteHitZone hit{};
+    bool found = false;
+    for (int i = static_cast<int>(m_remoteHitZones.size()) - 1; i >= 0; --i) {
+        if (PtInRectF(pt, m_remoteHitZones[i].bounds)) {
+            hit = m_remoteHitZones[i];
+            found = true;
+            break;
+        }
+    }
+
+    if (m_remoteFilterDropdownOpen && (!found || hit.action != RemoteHitAction::FilterChoice)) {
+        m_remoteFilterDropdownOpen = false;
+        if (found && hit.action == RemoteHitAction::ToggleFilterMenu) {
+            return true;
+        }
+        if (!found) return true;
+    }
+
+    if (!found) return false;
+
+    switch (hit.action) {
+        case RemoteHitAction::ToggleFilterMenu:
+            m_remoteFilterDropdownOpen = !m_remoteFilterDropdownOpen;
+            return true;
+        case RemoteHitAction::FilterChoice:
+            m_remoteFilter = static_cast<remote::RemoteTargetFilter>(hit.index);
+            m_remoteFilterDropdownOpen = false;
+            m_remoteScrollY = 0.0f;
+            return true;
+        case RemoteHitAction::RefreshTargets:
+            RefreshRemoteTargetsAsync();
+            return true;
+        case RemoteHitAction::OpenRemotePopup:
+            if (m_remoteCallbacks.onOpenRemoteWindowPopup) m_remoteCallbacks.onOpenRemoteWindowPopup();
+            return true;
+        case RemoteHitAction::ToggleSectionSsh:
+            m_remoteSshExpanded = !m_remoteSshExpanded;
+            return true;
+        case RemoteHitAction::ToggleSectionContainers:
+            m_remoteContainersExpanded = !m_remoteContainersExpanded;
+            return true;
+        case RemoteHitAction::ToggleSectionWsl:
+            m_remoteWslExpanded = !m_remoteWslExpanded;
+            return true;
+        case RemoteHitAction::AddSshHost:
+            if (m_remoteCallbacks.onOpenAddSshHost) m_remoteCallbacks.onOpenAddSshHost();
+            return true;
+        case RemoteHitAction::OpenSshConfig:
+            if (m_remoteCallbacks.onOpenSshConfig) m_remoteCallbacks.onOpenSshConfig();
+            return true;
+        case RemoteHitAction::SetupSshKey:
+            if (m_remoteCallbacks.onSetupSshKey) m_remoteCallbacks.onSetupSshKey();
+            return true;
+        case RemoteHitAction::SshHostConnectTerminal: {
+            remote::SshHostEntry host{};
+            {
+                std::lock_guard<std::recursive_mutex> lock(m_remoteMutex);
+                if (hit.index < 0 || hit.index >= static_cast<int>(m_remoteHosts.size())) return true;
+                host = m_remoteHosts[hit.index];
+                m_remoteSessionActive = true;
+                m_remoteActiveHost = host;
+            }
+            if (m_remoteCallbacks.onConnectSshTerminal) m_remoteCallbacks.onConnectSshTerminal(host, L"");
+            return true;
+        }
+        case RemoteHitAction::SshHostBrowseFiles: {
+            remote::SshHostEntry host{};
+            {
+                std::lock_guard<std::recursive_mutex> lock(m_remoteMutex);
+                if (hit.index < 0 || hit.index >= static_cast<int>(m_remoteHosts.size())) return true;
+                host = m_remoteHosts[hit.index];
+            }
+            BrowseRemoteSshPathAsync(host, L"~");
+            return true;
+        }
+        case RemoteHitAction::RemoteUpDirectory: {
+            remote::SshHostEntry host{};
+            std::wstring parent = L"/";
+            {
+                std::lock_guard<std::recursive_mutex> lock(m_remoteMutex);
+                host = m_remoteActiveHost;
+                std::wstring cur = m_remoteCurrentPath;
+                while (cur.size() > 1 && cur.back() == L'/') cur.pop_back();
+                size_t slash = cur.rfind(L'/');
+                if (slash != std::wstring::npos && slash > 0) parent = cur.substr(0, slash);
+                else parent = L"/";
+            }
+            BrowseRemoteSshPathAsync(host, parent);
+            return true;
+        }
+        case RemoteHitAction::RemoteFileClick: {
+            remote::SshHostEntry host{};
+            remote::RemoteFileEntry rf{};
+            {
+                std::lock_guard<std::recursive_mutex> lock(m_remoteMutex);
+                if (hit.index < 0 || hit.index >= static_cast<int>(m_remoteFiles.size())) return true;
+                host = m_remoteActiveHost;
+                rf = m_remoteFiles[hit.index];
+            }
+            if (rf.isDir) {
+                ToggleRemoteSubdir(static_cast<size_t>(hit.index));
+            } else if (m_remoteCallbacks.onOpenRemoteFile) {
+                wchar_t tmpDir[MAX_PATH]{};
+                GetTempPathW(MAX_PATH, tmpDir);
+                std::wstring cachePath = std::wstring(tmpDir) + L"phide_remote\\" +
+                                         MakeSafeCacheSubdir(host.TargetSpec()) + L"\\" + rf.name;
+                m_remoteCallbacks.onOpenRemoteFile(host, rf.fullPath, cachePath);
+            }
+            return true;
+        }
+        case RemoteHitAction::RemoteDisconnect:
+            DisconnectRemoteSession();
+            return true;
+        case RemoteHitAction::RemoteActiveTerminal: {
+            remote::SshHostEntry host{};
+            std::wstring dir;
+            {
+                std::lock_guard<std::recursive_mutex> lock(m_remoteMutex);
+                host = m_remoteActiveHost;
+                dir = m_remoteCurrentPath;
+            }
+            if (m_remoteCallbacks.onConnectSshTerminal) m_remoteCallbacks.onConnectSshTerminal(host, dir);
+            return true;
+        }
+        case RemoteHitAction::AttachContainer: {
+            remote::DevContainerEntry c{};
+            {
+                std::lock_guard<std::recursive_mutex> lock(m_remoteMutex);
+                if (hit.index < 0 || hit.index >= static_cast<int>(m_remoteContainers.size())) return true;
+                c = m_remoteContainers[hit.index];
+            }
+            if (m_remoteCallbacks.onAttachContainer) m_remoteCallbacks.onAttachContainer(c);
+            return true;
+        }
+        case RemoteHitAction::CreateDevContainer:
+            if (m_remoteCallbacks.onOpenOrCreateDevContainer) m_remoteCallbacks.onOpenOrCreateDevContainer();
+            return true;
+        case RemoteHitAction::ConnectWslShell: {
+            std::wstring name;
+            {
+                std::lock_guard<std::recursive_mutex> lock(m_remoteMutex);
+                if (hit.index < 0 || hit.index >= static_cast<int>(m_remoteWslDistros.size())) return true;
+                name = m_remoteWslDistros[hit.index].name;
+            }
+            if (m_remoteCallbacks.onConnectWsl) m_remoteCallbacks.onConnectWsl(name, false);
+            return true;
+        }
+        case RemoteHitAction::OpenWslFolder: {
+            std::wstring name;
+            {
+                std::lock_guard<std::recursive_mutex> lock(m_remoteMutex);
+                if (hit.index < 0 || hit.index >= static_cast<int>(m_remoteWslDistros.size())) return true;
+                name = m_remoteWslDistros[hit.index].name;
+            }
+            if (m_remoteCallbacks.onConnectWsl) m_remoteCallbacks.onConnectWsl(name, true);
+            return true;
+        }
+        case RemoteHitAction::InstallWsl:
+            if (m_remoteCallbacks.onInstallWsl) m_remoteCallbacks.onInstallWsl();
+            return true;
+        default:
+            return false;
+    }
+}
 
 } // namespace phide::ui

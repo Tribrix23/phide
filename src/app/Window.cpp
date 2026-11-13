@@ -3971,6 +3971,7 @@ void Window::FlushPendingAutoSaves() {
                     doc.isDirty = false;
                     doc.originalDiskText = doc.buffer.GetText();
                     anySaved = true;
+                    SyncRemoteDocumentIfNeeded(doc);
                 }
                 SyncDocumentBuffers(&doc);
                 if (doc.filePath == m_snippetManager.GetSnippetsFilePath()) {
@@ -5645,6 +5646,14 @@ struct DiscardRestoreTaskResult {
     std::wstring targetStatus;
 };
 
+struct RemoteFileOpenResult {
+    ui::remote::SshHostEntry host;
+    std::wstring remotePath;
+    std::wstring localCachePath;
+    bool success = false;
+    std::wstring errorMsg;
+};
+
 struct DeleteTaskResult {
     std::wstring targetPath;
     bool isFolder = false;
@@ -7064,6 +7073,7 @@ void Window::SaveFileToPath(const std::wstring& path) {
             pDoc->originalDiskText = pDoc->buffer.GetText();
             pDoc->isPreview = false;
             phide::plugin::PluginManager::Instance().DispatchEvent(L"onDocumentSave", path);
+            SyncRemoteDocumentIfNeeded(*pDoc);
             if (m_drawer.IsGitRepo()) {
                 std::wstring relPath = path;
                 if (m_drawer.HasOpenFolder()) {
@@ -7735,6 +7745,8 @@ bool Window::Create(HINSTANCE hInstance, int nCmdShow) {
         }
     });
 
+    SetupRemoteCallbacks();
+
     // Wire Package Manager HWND for embedded WebView2 and Install Package callback
     m_editor.GetPackageManagerView().SetHwnd(m_hwnd);
     m_editor.GetApiTesterView().SetHwnd(m_hwnd);
@@ -8272,7 +8284,7 @@ void Window::OnPaint() {
     auto* curDoc = GetActiveDoc();
     m_drawer.SetActiveFilePath(curDoc ? curDoc->filePath : L"");
 
-    bool suppressEditorCaret = m_quickOpen.IsOpen() || m_themePicker.IsOpen() || m_colorPicker.IsOpen() || m_popupMenu.IsOpen() ||
+    bool suppressEditorCaret = m_remoteModal.IsOpen() || m_quickOpen.IsOpen() || m_themePicker.IsOpen() || m_colorPicker.IsOpen() || m_popupMenu.IsOpen() ||
         (m_terminal.IsOpen() && m_isTerminalFocused) ||
         m_drawer.IsRenaming() || m_drawer.IsCreating() ||
         (m_drawerAnimProgress > 0.001f && (m_drawer.IsGitCommitBoxFocused() || m_drawer.IsSearchFocused()));
@@ -8667,6 +8679,11 @@ void Window::OnPaint() {
     // 6b. Render Interactive Direct2D Color Picker Modal (Images 2, 5)
     if (m_colorPicker.IsOpen()) {
         m_colorPicker.Render(m_pRenderTarget.Get(), m_theme, m_config, clientW, clientH);
+    }
+
+    // 6.9. Render Remote Window Quick Pick Modal
+    if (m_remoteModal.IsOpen()) {
+        m_remoteModal.Render(m_pRenderTarget.Get(), m_theme, m_config, clientW, clientH);
     }
 
     // 7. Render Quick Open File Search Palette Modal (Ctrl+K, Ctrl+P, Magnifying button)
@@ -9495,11 +9512,94 @@ void Window::RenderStatusBar(float clientW, float clientH) {
     const float itemH = m_config.ScaleF(18.0f);
     const float itemY = barY + (statusBarH - itemH) * 0.5f;
 
+    // 1.5. Far-Left Remote Window Indicator Pill (`><` or `>< SSH: host`)
+    m_rcStatusBarRemote = {};
+    float remoteEndX = 0.0f;
+    {
+        std::wstring remoteBadge = m_drawer.GetActiveRemoteBadgeLabel();
+        if (remoteBadge.empty()) {
+            const auto* pActiveDoc = GetActiveDoc();
+            if (pActiveDoc && pActiveDoc->isRemoteFile && !pActiveDoc->remoteSshTarget.empty()) {
+                remoteBadge = L"SSH: " + pActiveDoc->remoteSshTarget;
+            }
+        }
+
+        const float minW = m_config.ScaleF(34.0f);
+        const float maxW = m_config.ScaleF(210.0f);
+        const float iconSz = m_config.ScaleF(13.0f);
+        const float padXRemote = m_config.ScaleF(9.0f);
+        const float gapRemote = m_config.ScaleF(5.0f);
+        float labelW = 0.0f;
+        IDWriteTextFormat* pRemoteFmt = m_theme.fontMenu ? m_theme.fontMenu.Get() : m_theme.fontCaption.Get();
+        Microsoft::WRL::ComPtr<IDWriteTextLayout> pRemoteLayout;
+        if (!remoteBadge.empty() && pRemoteFmt && m_theme.dwriteFactory) {
+            const float maxTextW = (std::max)(m_config.ScaleF(40.0f), maxW - (padXRemote + iconSz + gapRemote + padXRemote));
+            m_theme.dwriteFactory->CreateTextLayout(
+                remoteBadge.c_str(),
+                static_cast<UINT32>(remoteBadge.length()),
+                pRemoteFmt,
+                maxTextW,
+                statusBarH,
+                &pRemoteLayout
+            );
+            if (pRemoteLayout) {
+                pRemoteLayout->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
+                pRemoteLayout->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+                pRemoteLayout->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+                DWRITE_TRIMMING trim{ DWRITE_TRIMMING_GRANULARITY_CHARACTER, 0, 0 };
+                ComPtr<IDWriteInlineObject> ellipsis;
+                m_theme.dwriteFactory->CreateEllipsisTrimmingSign(pRemoteFmt, &ellipsis);
+                pRemoteLayout->SetTrimming(&trim, ellipsis.Get());
+                DWRITE_TEXT_METRICS tm{};
+                pRemoteLayout->GetMetrics(&tm);
+                labelW = (std::min)(maxTextW, tm.widthIncludingTrailingWhitespace);
+            }
+        }
+
+        const float pillW = remoteBadge.empty()
+            ? minW
+            : (std::min)(maxW, (std::max)(minW, padXRemote + iconSz + gapRemote + labelW + padXRemote));
+        m_rcStatusBarRemote = D2D1::RectF(0.0f, barY, pillW, clientH);
+
+        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> remoteBgBrush;
+        D2D1_COLOR_F accentCol = m_theme.brushBrandAccent ? m_theme.brushBrandAccent->GetColor() : D2D1::ColorF(0.42f, 0.28f, 0.78f, 1.0f);
+        if (!remoteBadge.empty()) {
+            accentCol = m_isHoveredStatusBarRemote
+                ? D2D1::ColorF(0.14f, 0.56f, 0.42f, 1.0f)
+                : D2D1::ColorF(0.11f, 0.46f, 0.34f, 1.0f);
+        } else if (m_isHoveredStatusBarRemote) {
+            accentCol.r = (std::min)(1.0f, accentCol.r + 0.08f);
+            accentCol.g = (std::min)(1.0f, accentCol.g + 0.08f);
+            accentCol.b = (std::min)(1.0f, accentCol.b + 0.08f);
+        }
+        m_pRenderTarget->CreateSolidColorBrush(accentCol, &remoteBgBrush);
+        if (remoteBgBrush) {
+            m_pRenderTarget->FillRectangle(m_rcStatusBarRemote, remoteBgBrush.Get());
+        }
+
+        ID2D1Brush* remoteFg = m_theme.brushTextWhite ? m_theme.brushTextWhite.Get() : m_theme.brushTextPrimary.Get();
+        m_pRenderTarget->PushAxisAlignedClip(m_rcStatusBarRemote, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+        if (remoteBadge.empty()) {
+            const float icX = (pillW - iconSz) * 0.5f;
+            const float icY = barY + (statusBarH - iconSz) * 0.5f;
+            m_remoteStatusLucide.DrawRemoteArrows(m_pRenderTarget.Get(), D2D1::RectF(icX, icY, icX + iconSz, icY + iconSz), remoteFg, 1.7f);
+        } else {
+            const float icX = padXRemote;
+            const float icY = barY + (statusBarH - iconSz) * 0.5f;
+            m_remoteStatusLucide.DrawRemoteArrows(m_pRenderTarget.Get(), D2D1::RectF(icX, icY, icX + iconSz, icY + iconSz), remoteFg, 1.7f);
+            if (pRemoteLayout && remoteFg) {
+                m_pRenderTarget->DrawTextLayout(D2D1::Point2F(icX + iconSz + gapRemote, barY), pRemoteLayout.Get(), remoteFg);
+            }
+        }
+        m_pRenderTarget->PopAxisAlignedClip();
+        remoteEndX = pillW;
+    }
+
     // Left items: Git Branch + User Name (Separate containers with independent hover and tooltips per user requirement)
     UpdateCachedGitInfo();
     m_rcStatusBarGitBranch = {};
     m_rcStatusBarGitUser = {};
-    float curLeftX = m_config.ScaleF(32.0f);
+    float curLeftX = (std::max)(m_config.ScaleF(32.0f), remoteEndX + m_config.ScaleF(6.0f));
     if (!m_cachedGitBranch.empty()) {
         const float branchIconSize = m_config.ScaleF(16.0f);
         const float userIconSize = m_config.ScaleF(15.0f);
@@ -9937,6 +10037,12 @@ void Window::RenderStatusBar(float clientW, float clientH) {
     // 4. Floating Tooltips on Hover (User requirement Image 1: "THERE SHOULD BE TOOLN TIP HWEN HOVERED")
     if (hoveredPluginItem && !hoveredPluginItem->tooltip.empty()) {
         RenderFloatingTooltip(m_pRenderTarget.Get(), hoveredPluginItem->tooltip, hoveredPluginItem->bounds, clientW);
+    } else if (m_isHoveredStatusBarRemote && m_rcStatusBarRemote.right > m_rcStatusBarRemote.left) {
+        std::wstring remoteBadge = m_drawer.GetActiveRemoteBadgeLabel();
+        std::wstring tip = remoteBadge.empty()
+            ? L"Open a Remote Window (SSH, Dev Containers, WSL)"
+            : (L"Connected: " + remoteBadge + L" (Click for Remote options)");
+        RenderFloatingTooltip(m_pRenderTarget.Get(), tip, m_rcStatusBarRemote, clientW);
     } else if (m_isHoveredStatusBarGraphView) {
         std::wstring tip = L"File Network: " + std::to_wstring(m_editor.GetGraphView().GetNodeCount()) + L" files, " +
                            std::to_wstring(m_editor.GetGraphView().GetEdgeCount()) + L" connections (" +
@@ -10309,6 +10415,12 @@ void Window::HandleMouseMove(POINT clientPt, WPARAM wParam) {
         if (m_colorPicker.HandleMouseMove(D2D1::Point2F(static_cast<float>(clientPt.x), static_cast<float>(clientPt.y)), onColorChange)) {
             InvalidateRect(m_hwnd, nullptr, FALSE);
         }
+        return;
+    }
+
+    if (m_remoteModal.IsOpen()) {
+        m_remoteModal.HandleMouseMove(clientPt);
+        InvalidateRect(m_hwnd, nullptr, FALSE);
         return;
     }
 
@@ -11124,6 +11236,10 @@ void Window::HandleMouseMove(POINT clientPt, WPARAM wParam) {
             } else if (m_drawer.HandleGitMouseMove(clientPt, (wParam & MK_LBUTTON) != 0, &m_theme, &m_config)) {
                 needRepaint = true;
             }
+        } else if (m_config.activeRailTab == static_cast<int>(ui::RailTabId::RemoteExplorer)) {
+            if (m_drawer.HandleRemoteMouseMove(clientPt)) {
+                needRepaint = true;
+            }
         }
     } else if (m_drawerAnimProgress > 0.001f) {
         if (m_drawer.SetHoveredIndex(-1)) needRepaint = true;
@@ -11140,6 +11256,14 @@ void Window::HandleMouseMove(POINT clientPt, WPARAM wParam) {
                       clientPt.y >= m_rcStatusBarVenvTag.top && clientPt.y <= m_rcStatusBarVenvTag.bottom);
         if (inTag != m_isHoveredStatusBarVenvTag) {
             m_isHoveredStatusBarVenvTag = inTag;
+            needRepaint = true;
+        }
+
+        bool inRemoteStatus = (m_rcStatusBarRemote.right > m_rcStatusBarRemote.left &&
+                               clientPt.x >= m_rcStatusBarRemote.left && clientPt.x <= m_rcStatusBarRemote.right &&
+                               clientPt.y >= m_rcStatusBarRemote.top && clientPt.y <= m_rcStatusBarRemote.bottom);
+        if (inRemoteStatus != m_isHoveredStatusBarRemote) {
+            m_isHoveredStatusBarRemote = inRemoteStatus;
             needRepaint = true;
         }
 
@@ -12468,6 +12592,12 @@ void Window::HandleLButtonDown(POINT clientPt) {
     }
 
     // 0b. Quick Open Modal Clicks (Image 5)
+    if (m_remoteModal.IsOpen()) {
+        m_remoteModal.HandleLButtonDown(clientPt);
+        InvalidateRect(m_hwnd, nullptr, FALSE);
+        return;
+    }
+
     if (m_quickOpen.IsOpen()) {
         std::wstring chosenFile;
         int targetLine = -1;
@@ -13541,6 +13671,12 @@ void Window::HandleLButtonDown(POINT clientPt) {
                 InvalidateRect(m_hwnd, nullptr, FALSE);
                 return;
             }
+        } else if (m_config.activeRailTab == static_cast<int>(ui::RailTabId::RemoteExplorer)) {
+            if (m_drawer.HandleRemoteLButtonDown(clientPt, m_config)) {
+                InvalidateRect(m_hwnd, nullptr, FALSE);
+                return;
+            }
+            return;
         } else {
             if (m_drawer.IsCourseExplorerMode()) {
                 if (m_drawer.HandleCourseExplorerClick(clientPt, m_config)) {
@@ -13661,6 +13797,15 @@ void Window::HandleLButtonDown(POINT clientPt) {
         return;
     }
 
+    // Status Bar clicks: Remote Window indicator pill
+    if (m_config.showStatusBar &&
+        m_rcStatusBarRemote.right > m_rcStatusBarRemote.left &&
+        clientPt.x >= m_rcStatusBarRemote.left && clientPt.x <= m_rcStatusBarRemote.right &&
+        clientPt.y >= m_rcStatusBarRemote.top && clientPt.y <= m_rcStatusBarRemote.bottom) {
+        OpenRemoteWindowPopup(ui::RemoteModalMode::MainMenu, true);
+        return;
+    }
+
     // Status Bar clicks: Graph View status pill toggles colored mode
     if (m_config.showStatusBar &&
         clientPt.x >= m_rcStatusBarGraphView.left && clientPt.x <= m_rcStatusBarGraphView.right &&
@@ -13774,6 +13919,9 @@ void Window::HandleLButtonDown(POINT clientPt) {
                 m_drawer.SetSearchFocus(1);
             } else if (clickedTab == 2) {
                 m_drawer.OpenSourceControl();
+            } else if (clickedTab == static_cast<int>(ui::RailTabId::RemoteExplorer)) {
+                m_drawer.OpenRemoteExplorer();
+                SyncRemoteModalTargetCache();
             }
         }
         UpdateDrawerErrorFiles();
@@ -14711,7 +14859,21 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     return TRUE;
                 }
 
-                // 0a. Quick Open File Search Modal (Image 5)
+                // 0a. Remote Window Quick Pick Modal
+                if (m_remoteModal.IsOpen()) {
+                    if (m_remoteModal.HitTestInput(pt)) {
+                        SetCursor(LoadCursor(nullptr, IDC_IBEAM));
+                        return TRUE;
+                    }
+                    if (m_remoteModal.HitTestInteractive(pt)) {
+                        SetCursor(LoadCursor(nullptr, IDC_HAND));
+                        return TRUE;
+                    }
+                    SetCursor(LoadCursor(nullptr, IDC_ARROW));
+                    return TRUE;
+                }
+
+                // 0a2. Quick Open File Search Modal (Image 5)
                 if (m_quickOpen.IsOpen()) {
                     if (m_quickOpen.HitTestInput(pt)) {
                         SetCursor(LoadCursor(nullptr, IDC_IBEAM));
@@ -14765,6 +14927,9 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                         if ((m_rcStatusBarVenvTag.right > m_rcStatusBarVenvTag.left &&
                              pt.x >= m_rcStatusBarVenvTag.left && pt.x <= m_rcStatusBarVenvTag.right &&
                              pt.y >= m_rcStatusBarVenvTag.top && pt.y <= m_rcStatusBarVenvTag.bottom) ||
+                            (m_rcStatusBarRemote.right > m_rcStatusBarRemote.left &&
+                             pt.x >= m_rcStatusBarRemote.left && pt.x <= m_rcStatusBarRemote.right &&
+                             pt.y >= m_rcStatusBarRemote.top && pt.y <= m_rcStatusBarRemote.bottom) ||
                             (m_rcStatusBarGraphView.right > m_rcStatusBarGraphView.left &&
                              pt.x >= m_rcStatusBarGraphView.left && pt.x <= m_rcStatusBarGraphView.right &&
                              pt.y >= m_rcStatusBarGraphView.top && pt.y <= m_rcStatusBarGraphView.bottom) ||
@@ -14879,6 +15044,12 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     }
                     if (m_drawer.HitTestSearchInputs(pt)) {
                         SetCursor(LoadCursor(nullptr, IDC_IBEAM));
+                        return TRUE;
+                    }
+                }
+                if (m_config.activeRailTab == static_cast<int>(ui::RailTabId::RemoteExplorer) && m_drawerAnimProgress > 0.001f) {
+                    if (m_drawer.HitTestRemoteInteractive(pt)) {
+                        SetCursor(LoadCursor(nullptr, IDC_HAND));
                         return TRUE;
                     }
                 }
@@ -15266,7 +15437,15 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 }
             }
 
-            // 0a. Scroll Quick Open search results if modal is open (Image 5)
+            // 0a. Scroll Remote Window Modal if open
+            if (m_remoteModal.IsOpen()) {
+                if (m_remoteModal.HandleMouseWheel(delta)) {
+                    InvalidateRect(m_hwnd, nullptr, FALSE);
+                    return 0;
+                }
+            }
+
+            // 0a2. Scroll Quick Open search results if modal is open (Image 5)
             if (m_quickOpen.IsOpen()) {
                 if (m_quickOpen.HandleMouseWheel(delta)) {
                     InvalidateRect(m_hwnd, nullptr, FALSE);
@@ -15484,7 +15663,15 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 return 0;
             }
 
-            // 0. Quick Open file search input (Image 5)
+            // 0. Remote Window Quick Pick input
+            if (m_remoteModal.IsOpen()) {
+                if (m_remoteModal.HandleChar(static_cast<wchar_t>(wParam))) {
+                    InvalidateRect(m_hwnd, nullptr, FALSE);
+                    return 0;
+                }
+            }
+
+            // 0b. Quick Open file search input (Image 5)
             if (m_quickOpen.IsOpen()) {
                 if (m_quickOpen.HandleChar(static_cast<wchar_t>(wParam))) {
                     InvalidateRect(m_hwnd, nullptr, FALSE);
@@ -16363,6 +16550,15 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
             }
 
             // 0. Quick Open file search palette (Image 5)
+            if (m_remoteModal.IsOpen()) {
+                bool isCtrlDown = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
+                bool isShiftDown = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
+                if (m_remoteModal.HandleKeyDown(static_cast<UINT>(wParam), isCtrlDown, isShiftDown)) {
+                    InvalidateRect(m_hwnd, nullptr, FALSE);
+                    return 0;
+                }
+            }
+
             if (m_quickOpen.IsOpen()) {
                 if (wParam == VK_ESCAPE) {
                     m_quickOpen.Close();
@@ -17473,6 +17669,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                             pDoc->isDirty = false;
                             pDoc->originalDiskText = pDoc->buffer.GetText();
                             SyncDocumentBuffers(pDoc);
+                            SyncRemoteDocumentIfNeeded(*pDoc);
                             TriggerDebouncedGitRefresh(300);
                         } else {
                             bool dirtyDroppedToClean = (pDoc->isDirty && !isActuallyDirty);
@@ -17772,6 +17969,56 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 }
             }
             InvalidateRect(m_hwnd, nullptr, FALSE);
+            return 0;
+        }
+
+        case WM_USER + 207: {
+            std::unique_ptr<RemoteFileOpenResult> res(reinterpret_cast<RemoteFileOpenResult*>(lParam));
+            if (res) {
+                if (res->success) {
+                    OpenFileDocument(res->localCachePath, false);
+                    for (auto& grp : m_editorGroups) {
+                        for (auto& doc : grp.docs) {
+                            if (doc.filePath == res->localCachePath) {
+                                doc.isRemoteFile = true;
+                                doc.remoteSshTarget = res->host.TargetSpec();
+                                doc.remoteSshPort = res->host.port;
+                                doc.remoteSshIdentity = res->host.identityFile;
+                                doc.remoteFilePath = res->remotePath;
+                                auto slashPos = res->remotePath.find_last_of(L'/');
+                                if (slashPos != std::wstring::npos && slashPos + 1 < res->remotePath.length()) {
+                                    doc.fileName = res->remotePath.substr(slashPos + 1);
+                                }
+                            }
+                        }
+                    }
+                    InvalidateRect(m_hwnd, nullptr, FALSE);
+                } else {
+                    std::wstring msg = L"Could not download remote file '" + res->remotePath + L"' from " + res->host.TargetSpec() + L".";
+                    if (!res->errorMsg.empty()) {
+                        msg += L"\n\n" + res->errorMsg;
+                    }
+                    MessageBoxW(m_hwnd, msg.c_str(), L"Remote SSH", MB_OK | MB_ICONERROR);
+                }
+            }
+            return 0;
+        }
+
+        case WM_USER + 208: {
+            if (wParam == 1) {
+                m_drawer.RefreshRemoteTargetsAsync();
+            } else {
+                SyncRemoteModalTargetCache();
+            }
+            InvalidateRect(m_hwnd, nullptr, FALSE);
+            return 0;
+        }
+
+        case WM_USER + 209: {
+            std::unique_ptr<std::wstring> errMsg(reinterpret_cast<std::wstring*>(lParam));
+            if (errMsg && !errMsg->empty()) {
+                MessageBoxW(m_hwnd, errMsg->c_str(), L"Remote SSH Sync Error", MB_OK | MB_ICONWARNING);
+            }
             return 0;
         }
 
@@ -18592,6 +18839,377 @@ void Window::CalculateImportCosts(editor::OpenDocument& doc) {
     }
 
     doc.importCostCalculated = true;
+}
+
+// =============================================================================
+// Remote Explorer, Remote Window Quick Pick, SSH / WSL / Dev Containers
+// =============================================================================
+
+void Window::SetupRemoteCallbacks() {
+    ui::DrawerPanel::RemoteCallbacks drawerCbs;
+    drawerCbs.onOpenRemoteWindowPopup = [this]() {
+        OpenRemoteWindowPopup(ui::RemoteModalMode::MainMenu, true);
+    };
+    drawerCbs.onOpenAddSshHost = [this]() {
+        OpenRemoteWindowPopup(ui::RemoteModalMode::AddSshHost, true);
+    };
+    drawerCbs.onOpenSshConfig = [this]() {
+        OpenSshConfigFile();
+    };
+    drawerCbs.onSetupSshKey = [this]() {
+        SetupOrCopySshKey();
+    };
+    drawerCbs.onConnectSshTerminal = [this](const ui::remote::SshHostEntry& host, const std::wstring& initialDir) {
+        ConnectRemoteSshTerminal(host, initialDir);
+    };
+    drawerCbs.onOpenRemoteFile = [this](const ui::remote::SshHostEntry& host, const std::wstring& remoteFilePath, const std::wstring& localCachePath) {
+        OpenRemoteSshFile(host, remoteFilePath, localCachePath);
+    };
+    drawerCbs.onConnectWsl = [this](const std::wstring& distroName, bool openFolder) {
+        ConnectWslDistro(distroName, openFolder);
+    };
+    drawerCbs.onInstallWsl = [this]() {
+        InstallWslInTerminal();
+    };
+    drawerCbs.onAttachContainer = [this](const ui::remote::DevContainerEntry& container) {
+        AttachDevContainer(container);
+    };
+    drawerCbs.onOpenOrCreateDevContainer = [this]() {
+        OpenOrCreateDevContainerConfig();
+    };
+    drawerCbs.onRemoteTargetsChanged = [this]() {
+        if (m_hwnd) {
+            PostMessageW(m_hwnd, WM_USER + 208, 0, 0);
+        }
+    };
+    drawerCbs.onRequestRepaint = [this]() {
+        if (m_hwnd) {
+            PostMessageW(m_hwnd, WM_USER + 201, 0, 0);
+        }
+    };
+    m_drawer.SetRemoteCallbacks(std::move(drawerCbs));
+
+    ui::RemoteWindowCallbacks modalCbs;
+    modalCbs.onConnectSshTerminal = [this](const ui::remote::SshHostEntry& host, const std::wstring& initialDir) {
+        ConnectRemoteSshTerminal(host, initialDir);
+        m_drawer.BrowseRemoteSshPathAsync(host, initialDir);
+    };
+    modalCbs.onBrowseSshFolder = [this](const ui::remote::SshHostEntry& host, const std::wstring& remotePath) {
+        m_config.activeRailTab = static_cast<int>(ui::RailTabId::RemoteExplorer);
+        if (!m_config.isDrawerOpen) {
+            ToggleSidebar();
+        }
+        m_drawer.OpenRemoteExplorer();
+        m_drawer.BrowseRemoteSshPathAsync(host, remotePath);
+        SyncRemoteModalTargetCache();
+        if (m_hwnd) {
+            InvalidateRect(m_hwnd, nullptr, FALSE);
+        }
+    };
+    modalCbs.onOpenSshConfig = [this]() {
+        OpenSshConfigFile();
+    };
+    modalCbs.onSetupSshKey = [this]() {
+        SetupOrCopySshKey();
+    };
+    modalCbs.onConnectWsl = [this](const std::wstring& distroName, bool openFolderInExplorer) {
+        ConnectWslDistro(distroName, openFolderInExplorer);
+    };
+    modalCbs.onInstallWsl = [this]() {
+        InstallWslInTerminal();
+    };
+    modalCbs.onAttachContainer = [this](const ui::remote::DevContainerEntry& container) {
+        AttachDevContainer(container);
+    };
+    modalCbs.onOpenOrCreateDevContainer = [this]() {
+        OpenOrCreateDevContainerConfig();
+    };
+    modalCbs.onTargetsUpdated = [this]() {
+        if (m_hwnd) {
+            PostMessageW(m_hwnd, WM_USER + 208, 1, 0);
+        }
+    };
+    modalCbs.onRequestRepaint = [this]() {
+        if (m_hwnd) {
+            PostMessageW(m_hwnd, WM_USER + 201, 0, 0);
+        }
+    };
+    m_remoteModal.SetCallbacks(std::move(modalCbs));
+}
+
+void Window::SyncRemoteModalTargetCache() {
+    std::vector<ui::remote::SshHostEntry> sshHosts;
+    std::vector<ui::remote::WslDistroEntry> wslDistros;
+    std::wstring wslStatus;
+    std::vector<ui::remote::DevContainerEntry> containers;
+    std::wstring containerStatus;
+    m_drawer.CopyRemoteTargetCache(sshHosts, wslDistros, wslStatus, containers, containerStatus);
+    m_remoteModal.SetCachedTargets(
+        std::move(sshHosts),
+        std::move(wslDistros),
+        std::move(wslStatus),
+        std::move(containers),
+        std::move(containerStatus)
+    );
+}
+
+void Window::OpenRemoteWindowPopup(ui::RemoteModalMode mode, bool sshCurrentWindow) {
+    // Close competing lightweight overlays
+    if (m_quickOpen.IsOpen()) m_quickOpen.Close();
+    if (m_popupMenu.IsOpen()) m_popupMenu.Close();
+    if (m_themePicker.IsOpen()) m_themePicker.Close();
+
+    m_drawer.RefreshRemoteTargetsAsync();
+    SyncRemoteModalTargetCache();
+    m_remoteModal.Open(mode, sshCurrentWindow);
+    if (m_hwnd) {
+        InvalidateRect(m_hwnd, nullptr, FALSE);
+    }
+}
+
+void Window::ConnectRemoteSshTerminal(const ui::remote::SshHostEntry& host, const std::wstring& initialDir) {
+    std::wstring dir = m_drawer.HasOpenFolder() ? m_drawer.GetOpenFolderPath() : L"";
+    std::wstring cmdLine = ui::remote::BuildInteractiveSshCommand(host, initialDir);
+    std::wstring title = L"SSH: " + host.TargetSpec();
+
+    if (m_terminal.GetDockPosition() == 1) {
+        OpenSpecialView(L"terminal", L"Terminal");
+    }
+    m_terminal.NewRemoteCommandTab(title, cmdLine, dir, true);
+    m_isTerminalFocused = true;
+    if (m_terminal.GetDockPosition() == 0) {
+        AnimateTerminalOpen();
+    }
+    SaveSessionState();
+    if (m_hwnd) {
+        InvalidateRect(m_hwnd, nullptr, FALSE);
+    }
+}
+
+void Window::OpenRemoteSshFile(const ui::remote::SshHostEntry& host, const std::wstring& remotePath, const std::wstring& localCachePath) {
+    if (!m_hwnd) return;
+    HWND hwnd = m_hwnd;
+    std::thread([host, remotePath, localCachePath, hwnd]() {
+        auto* pRes = new RemoteFileOpenResult();
+        pRes->host = host;
+        pRes->remotePath = remotePath;
+        pRes->localCachePath = localCachePath;
+        std::wstring err;
+        pRes->success = ui::remote::DownloadRemoteSshFile(host, remotePath, localCachePath, err);
+        pRes->errorMsg = std::move(err);
+        PostMessageW(hwnd, WM_USER + 207, 0, reinterpret_cast<LPARAM>(pRes));
+    }).detach();
+}
+
+void Window::SyncRemoteDocumentIfNeeded(const editor::OpenDocument& doc) {
+    if (!doc.isRemoteFile || doc.remoteSshTarget.empty() || doc.remoteFilePath.empty() || doc.filePath.empty()) {
+        return;
+    }
+    ui::remote::SshHostEntry host;
+    host.alias = doc.remoteSshTarget;
+    host.hostName = doc.remoteSshTarget;
+    host.port = doc.remoteSshPort;
+    host.identityFile = doc.remoteSshIdentity;
+    const auto cfgHosts = ui::remote::LoadSshConfigHosts();
+    for (const auto& h : cfgHosts) {
+        if (h.TargetSpec() == doc.remoteSshTarget || h.alias == doc.remoteSshTarget) {
+            host = h;
+            break;
+        }
+    }
+    std::wstring localPath = doc.filePath;
+    std::wstring remotePath = doc.remoteFilePath;
+    HWND hwnd = m_hwnd;
+    std::thread([host, localPath, remotePath, hwnd]() {
+        static std::mutex s_remoteUploadMutex;
+        std::lock_guard<std::mutex> lock(s_remoteUploadMutex);
+        std::wstring err;
+        if (!ui::remote::UploadRemoteSshFile(host, localPath, remotePath, err)) {
+            if (hwnd) {
+                auto* pErr = new std::wstring(
+                    L"Failed to upload remote file '" + remotePath + L"' to " + host.TargetSpec() + L".\n\n" + err
+                );
+                PostMessageW(hwnd, WM_USER + 209, 0, reinterpret_cast<LPARAM>(pErr));
+            }
+        }
+    }).detach();
+}
+
+void Window::OpenSshConfigFile() {
+    ui::remote::EnsureSshConfigExists();
+    wchar_t profile[MAX_PATH]{};
+    DWORD n = GetEnvironmentVariableW(L"USERPROFILE", profile, MAX_PATH);
+    if (n == 0 || n >= MAX_PATH) {
+        MessageBoxW(m_hwnd, L"Could not resolve %USERPROFILE%\\.ssh\\config.", L"Remote SSH", MB_OK | MB_ICONWARNING);
+        return;
+    }
+    std::wstring cfgPath = std::wstring(profile) + L"\\.ssh\\config";
+    OpenFileDocument(cfgPath, false);
+}
+
+void Window::SetupOrCopySshKey() {
+    wchar_t profile[MAX_PATH]{};
+    DWORD n = GetEnvironmentVariableW(L"USERPROFILE", profile, MAX_PATH);
+    if (n == 0 || n >= MAX_PATH) return;
+
+    std::wstring sshDir = std::wstring(profile) + L"\\.ssh";
+    std::wstring edPub = sshDir + L"\\id_ed25519.pub";
+    std::wstring rsaPub = sshDir + L"\\id_rsa.pub";
+    std::error_code ec;
+    std::wstring foundPub;
+    if (std::filesystem::exists(edPub, ec)) {
+        foundPub = edPub;
+    } else if (std::filesystem::exists(rsaPub, ec)) {
+        foundPub = rsaPub;
+    }
+
+    std::wstring dir = m_drawer.HasOpenFolder() ? m_drawer.GetOpenFolderPath() : L"";
+    if (m_terminal.GetDockPosition() == 1) {
+        OpenSpecialView(L"terminal", L"Terminal");
+    }
+
+    if (foundPub.empty()) {
+        std::wstring cmd = L"powershell.exe -NoExit -Command \"New-Item -ItemType Directory -Force -Path '$env:USERPROFILE\\.ssh' | Out-Null; ssh-keygen -t ed25519\"";
+        m_terminal.NewRemoteCommandTab(L"SSH Keygen", cmd, dir, true);
+    } else {
+        // Copy public key to clipboard and display instructions in terminal
+        std::ifstream f(std::filesystem::path(foundPub), std::ios::binary);
+        std::string pubUtf8((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+        while (!pubUtf8.empty() && (pubUtf8.back() == '\r' || pubUtf8.back() == '\n')) pubUtf8.pop_back();
+        if (!pubUtf8.empty() && OpenClipboard(m_hwnd)) {
+            EmptyClipboard();
+            int wlen = MultiByteToWideChar(CP_UTF8, 0, pubUtf8.c_str(), -1, nullptr, 0);
+            if (wlen > 0) {
+                HGLOBAL hMem = GlobalAlloc(GMEM_MOVEABLE, static_cast<size_t>(wlen) * sizeof(wchar_t));
+                if (hMem) {
+                    wchar_t* pBuf = static_cast<wchar_t*>(GlobalLock(hMem));
+                    if (pBuf) {
+                        MultiByteToWideChar(CP_UTF8, 0, pubUtf8.c_str(), -1, pBuf, wlen);
+                        GlobalUnlock(hMem);
+                        SetClipboardData(CF_UNICODETEXT, hMem);
+                    }
+                }
+            }
+            CloseClipboard();
+        }
+        std::wstring cmd = L"powershell.exe -NoExit -Command \"Write-Host 'Public key copied to clipboard:' -ForegroundColor Green; Get-Content '" +
+            foundPub + L"'; Write-Host ''; Write-Host 'Install on remote host via:' -ForegroundColor Cyan; Write-Host 'Get-Content ''" +
+            foundPub + L"'' | ssh user@host \"mkdir -p ~/.ssh && chmod 700 ~/.ssh && cat >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys\"'\"";
+        m_terminal.NewRemoteCommandTab(L"SSH Key", cmd, dir, true);
+    }
+
+    m_isTerminalFocused = true;
+    if (m_terminal.GetDockPosition() == 0) {
+        AnimateTerminalOpen();
+    }
+    if (m_hwnd) {
+        InvalidateRect(m_hwnd, nullptr, FALSE);
+    }
+}
+
+void Window::ConnectWslDistro(const std::wstring& distroName, bool openFolderInExplorer) {
+    if (openFolderInExplorer && !distroName.empty()) {
+        std::error_code ec;
+        std::wstring uncHome = L"\\\\wsl.localhost\\" + distroName + L"\\home";
+        std::wstring uncRoot = L"\\\\wsl.localhost\\" + distroName;
+        std::wstring targetUnc;
+        if (std::filesystem::exists(uncHome, ec)) {
+            targetUnc = uncHome;
+        } else if (std::filesystem::exists(uncRoot, ec)) {
+            targetUnc = uncRoot;
+        } else {
+            std::wstring legacyRoot = L"\\\\wsl$\\" + distroName;
+            if (std::filesystem::exists(legacyRoot, ec)) {
+                targetUnc = legacyRoot;
+            }
+        }
+        if (!targetUnc.empty()) {
+            DoOpenFolderFromPath(targetUnc);
+        }
+    }
+
+    std::wstring dir = m_drawer.HasOpenFolder() ? m_drawer.GetOpenFolderPath() : L"";
+    std::wstring cmdLine = ui::remote::BuildInteractiveWslCommand(distroName);
+    std::wstring title = distroName.empty() ? L"WSL" : (L"WSL: " + distroName);
+
+    if (m_terminal.GetDockPosition() == 1) {
+        OpenSpecialView(L"terminal", L"Terminal");
+    }
+    m_terminal.NewRemoteCommandTab(title, cmdLine, dir, true);
+    m_isTerminalFocused = true;
+    if (m_terminal.GetDockPosition() == 0) {
+        AnimateTerminalOpen();
+    }
+    SaveSessionState();
+    if (m_hwnd) {
+        InvalidateRect(m_hwnd, nullptr, FALSE);
+    }
+}
+
+void Window::InstallWslInTerminal() {
+    std::wstring dir = m_drawer.HasOpenFolder() ? m_drawer.GetOpenFolderPath() : L"";
+    std::wstring cmd = L"powershell.exe -NoExit -Command \"Write-Host 'Available WSL distributions:' -ForegroundColor Cyan; wsl --list --online; Write-Host ''; Write-Host 'Installing default WSL distribution (run elevated if prompted)...' -ForegroundColor Yellow; wsl --install\"";
+    if (m_terminal.GetDockPosition() == 1) {
+        OpenSpecialView(L"terminal", L"Terminal");
+    }
+    m_terminal.NewRemoteCommandTab(L"Install WSL", cmd, dir, true);
+    m_isTerminalFocused = true;
+    if (m_terminal.GetDockPosition() == 0) {
+        AnimateTerminalOpen();
+    }
+    if (m_hwnd) {
+        InvalidateRect(m_hwnd, nullptr, FALSE);
+    }
+}
+
+void Window::AttachDevContainer(const ui::remote::DevContainerEntry& container) {
+    if (container.id.empty()) return;
+    std::wstring dir = m_drawer.HasOpenFolder() ? m_drawer.GetOpenFolderPath() : L"";
+    std::wstring cmdLine = ui::remote::BuildInteractiveDockerCommand(container.id, !container.isRunning);
+    std::wstring label = !container.name.empty() ? container.name : container.id;
+    std::wstring title = L"Container: " + label;
+
+    if (m_terminal.GetDockPosition() == 1) {
+        OpenSpecialView(L"terminal", L"Terminal");
+    }
+    m_terminal.NewRemoteCommandTab(title, cmdLine, dir, true);
+    m_isTerminalFocused = true;
+    if (m_terminal.GetDockPosition() == 0) {
+        AnimateTerminalOpen();
+    }
+    SaveSessionState();
+    if (m_hwnd) {
+        InvalidateRect(m_hwnd, nullptr, FALSE);
+    }
+}
+
+void Window::OpenOrCreateDevContainerConfig() {
+    if (!m_drawer.HasOpenFolder()) {
+        DoOpenFolder();
+        if (!m_drawer.HasOpenFolder()) {
+            return;
+        }
+    }
+    std::wstring root = m_drawer.GetOpenFolderPath();
+    std::wstring devDir = root + L"\\.devcontainer";
+    std::wstring cfgPath = devDir + L"\\devcontainer.json";
+    std::error_code ec;
+    if (!std::filesystem::exists(cfgPath, ec)) {
+        std::filesystem::create_directories(devDir, ec);
+        std::ofstream out(std::filesystem::path(cfgPath), std::ios::binary);
+        if (out.is_open()) {
+            out << "{\n"
+                << "  \"name\": \"Phide Dev Container\",\n"
+                << "  \"image\": \"mcr.microsoft.com/devcontainers/base:ubuntu\",\n"
+                << "  \"features\": {},\n"
+                << "  \"forwardPorts\": []\n"
+                << "}\n";
+            out.close();
+        }
+        m_drawer.RefreshTree();
+    }
+    OpenFileDocument(cfgPath, false);
+    m_drawer.RefreshRemoteTargetsAsync();
 }
 
 } // namespace phide::app

@@ -28,7 +28,8 @@ enum class TerminalShellType {
     Node,
     Python,
     LiveServer,
-    DebugConsole
+    DebugConsole,
+    Custom
 };
 
 /**
@@ -233,8 +234,12 @@ struct TerminalTab {
     HANDLE hStdinWrite = NULL;
     HANDLE hStdoutRead = NULL;
     HANDLE hStderrRead = NULL;
+    void* hPC = nullptr;
     DWORD processId = 0;
     std::atomic<bool> isAlive{false};
+    bool isConPty = false;
+    std::wstring customCommand;
+    size_t conPtyCursorCol = 0;
     std::thread readerThread;
     std::thread stderrReaderThread;
 
@@ -309,6 +314,7 @@ public:
 
     // Tab & Split Management (Images 4 & 5)
     void NewTab(TerminalShellType shell, const std::wstring& workingDir);
+    void NewRemoteCommandTab(const std::wstring& title, const std::wstring& commandLine, const std::wstring& workingDir, bool useConPty = true);
     void SplitActiveTab(std::optional<TerminalShellType> shell = std::nullopt);
     void CloseSplitPane(size_t tabIdx);
     void CloseTab(size_t index);

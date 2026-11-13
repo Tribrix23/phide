@@ -38,7 +38,8 @@ enum class RailTabId {
     FileNetwork = 7,    ///< File Network icon with hub and 5 satellite nodes
     Settings = 8,       ///< Settings tab
     Api = 9,            ///< API action button (creates a new blank editor tab)
-    MoreActions = 10    ///< 3 dots menu button directly under Settings
+    MoreActions = 10,   ///< 3 dots menu button directly under Settings
+    RemoteExplorer = 11 ///< Remote Explorer (SSH, WSL, Dev Containers) directly under API
 };
 
 /**

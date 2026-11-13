@@ -27,6 +27,7 @@
 #include "phide/ui/LucideIcons.hpp"
 #include "phide/editor/OpenDocument.hpp"
 #include "phide/workspace/IgnoreEngine.hpp"
+#include "phide/ui/RemoteWindowModal.hpp"
 
 namespace phide::ui {
 
@@ -669,6 +670,73 @@ public:
     void SetCourseLessonFinished(size_t moduleIdx, size_t lessonIdx, bool finished);
     bool HandleCourseExplorerClick(POINT pt, const app::AppConfig& config);
 
+    // --- Remote Explorer Pane (activeRailTab == 11) ---
+    struct RemoteCallbacks {
+        std::function<void()> onOpenRemoteWindowPopup;
+        std::function<void()> onOpenAddSshHost;
+        std::function<void()> onOpenSshConfig;
+        std::function<void()> onSetupSshKey;
+        std::function<void(const remote::SshHostEntry& host, const std::wstring& initialDir)> onConnectSshTerminal;
+        std::function<void(const remote::SshHostEntry& host, const std::wstring& remoteFilePath, const std::wstring& localCachePath)> onOpenRemoteFile;
+        std::function<void(const std::wstring& distroName, bool openFolder)> onConnectWsl;
+        std::function<void()> onInstallWsl;
+        std::function<void(const remote::DevContainerEntry& container)> onAttachContainer;
+        std::function<void()> onOpenOrCreateDevContainer;
+        std::function<void()> onRemoteTargetsChanged;
+        std::function<void()> onRequestRepaint;
+    };
+
+    enum class RemoteHitAction {
+        None = 0,
+        ToggleFilterMenu,
+        FilterChoice,
+        RefreshTargets,
+        OpenRemotePopup,
+        ToggleSectionSsh,
+        ToggleSectionContainers,
+        ToggleSectionWsl,
+        AddSshHost,
+        OpenSshConfig,
+        SetupSshKey,
+        SshHostConnectTerminal,
+        SshHostBrowseFiles,
+        RemoteFileClick,
+        RemoteUpDirectory,
+        RemoteDisconnect,
+        RemoteActiveTerminal,
+        AttachContainer,
+        CreateDevContainer,
+        ConnectWslShell,
+        OpenWslFolder,
+        InstallWsl
+    };
+
+    struct RemoteHitZone {
+        RemoteHitAction action = RemoteHitAction::None;
+        int index = -1;
+        D2D1_RECT_F bounds{};
+    };
+
+    void OpenRemoteExplorer();
+    void RefreshRemoteTargetsAsync();
+    void BrowseRemoteSshPathAsync(const remote::SshHostEntry& host, const std::wstring& remotePath);
+    void DisconnectRemoteSession();
+    void SetRemoteCallbacks(RemoteCallbacks cb) { m_remoteCallbacks = std::move(cb); }
+    bool HandleRemoteMouseMove(POINT pt);
+    bool HandleRemoteLButtonDown(POINT pt, const app::AppConfig& config);
+    [[nodiscard]] bool HitTestRemoteInteractive(POINT pt) const noexcept;
+    [[nodiscard]] const D2D1_RECT_F& GetRemoteOpenPopupBtnBounds() const noexcept { return m_rcRemoteOpenPopupBtn; }
+    [[nodiscard]] const D2D1_RECT_F& GetRemoteFilterBtnBounds() const noexcept { return m_rcRemoteFilterBtn; }
+    [[nodiscard]] bool IsRemoteConnected() const noexcept { return m_remoteSessionActive; }
+    [[nodiscard]] std::wstring GetActiveRemoteBadgeLabel() const;
+    void CopyRemoteTargetCache(
+        std::vector<remote::SshHostEntry>& outSsh,
+        std::vector<remote::WslDistroEntry>& outWsl,
+        std::wstring& outWslStatus,
+        std::vector<remote::DevContainerEntry>& outContainers,
+        std::wstring& outContainerStatus
+    ) const;
+
     // --- Search Pane Interactions (Image 2) ---
     /**
      * @brief Dispatches mouse click inside the Code Search sidebar pane.
@@ -1274,6 +1342,48 @@ private:
     float m_cachedHeaderH = -1.0f;
     float m_cachedDrawerW = -1.0f;
     float m_cachedClientH = -1.0f;
+
+    // --- Remote Explorer Pane State ---
+    void RenderRemotePane(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config, float clientHeight, float currentDrawerW);
+    void EnsureRemoteTextFormats(Theme& theme, const app::AppConfig& config);
+    void ToggleRemoteSubdir(size_t idx);
+
+    mutable std::recursive_mutex m_remoteMutex;
+    std::vector<remote::SshHostEntry> m_remoteHosts;
+    std::vector<remote::WslDistroEntry> m_remoteWslDistros;
+    std::wstring m_remoteWslStatus;
+    std::vector<remote::DevContainerEntry> m_remoteContainers;
+    std::wstring m_remoteContainerStatus;
+    std::atomic<bool> m_remoteIsRefreshing{false};
+    bool m_remoteInitialized = false;
+
+    remote::RemoteTargetFilter m_remoteFilter = remote::RemoteTargetFilter::All;
+    bool m_remoteFilterDropdownOpen = false;
+    bool m_remoteSshExpanded = true;
+    bool m_remoteContainersExpanded = true;
+    bool m_remoteWslExpanded = true;
+
+    bool m_remoteSessionActive = false;
+    remote::SshHostEntry m_remoteActiveHost{};
+    std::wstring m_remoteCurrentPath;
+    std::atomic<bool> m_remoteBrowseLoading{false};
+    std::wstring m_remoteBrowseError;
+    std::vector<remote::RemoteFileEntry> m_remoteFiles;
+
+    float m_remoteScrollY = 0.0f;
+    float m_remoteMaxScrollY = 0.0f;
+    int m_hoveredRemoteZoneIdx = -1;
+    std::vector<RemoteHitZone> m_remoteHitZones;
+    D2D1_RECT_F m_rcRemoteOpenPopupBtn{};
+    D2D1_RECT_F m_rcRemoteFilterBtn{};
+    D2D1_RECT_F m_rcRemoteFilterMenu{};
+    RemoteCallbacks m_remoteCallbacks;
+
+    float m_remoteFmtScale = 0.0f;
+    Microsoft::WRL::ComPtr<IDWriteTextFormat> m_fmtRemoteHeader;
+    Microsoft::WRL::ComPtr<IDWriteTextFormat> m_fmtRemoteSection;
+    Microsoft::WRL::ComPtr<IDWriteTextFormat> m_fmtRemoteBody;
+    Microsoft::WRL::ComPtr<IDWriteTextFormat> m_fmtRemoteSmall;
 };
 
 } // namespace phide::ui

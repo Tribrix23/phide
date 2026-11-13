@@ -31,6 +31,7 @@
 #include "phide/ui/ThemePickerModal.hpp"
 #include "phide/ui/ColorPickerModal.hpp"
 #include "phide/ui/QuickOpenModal.hpp"
+#include "phide/ui/RemoteWindowModal.hpp"
 #include "phide/ui/ConfirmDiscardModal.hpp"
 #include "phide/ui/GitErrorModal.hpp"
 #include "phide/ui/GitLogManager.hpp"
@@ -616,6 +617,22 @@ private:
     void ExecuteDeleteAsync(const std::wstring& targetPath, bool isFolder);
     void FinishDelete(const std::wstring& targetPath, bool isFolder, bool success);
 
+    // Remote Explorer & Remote Window Modal helpers
+    ui::RemoteWindowModal m_remoteModal;
+    ui::LucideIcons m_remoteStatusLucide;
+    void SetupRemoteCallbacks();
+    void SyncRemoteModalTargetCache();
+    void OpenRemoteWindowPopup(ui::RemoteModalMode mode = ui::RemoteModalMode::MainMenu, bool sshCurrentWindow = false);
+    void ConnectRemoteSshTerminal(const ui::remote::SshHostEntry& host, const std::wstring& initialDir);
+    void OpenRemoteSshFile(const ui::remote::SshHostEntry& host, const std::wstring& remotePath, const std::wstring& localCachePath);
+    void SyncRemoteDocumentIfNeeded(const editor::OpenDocument& doc);
+    void OpenSshConfigFile();
+    void SetupOrCopySshKey();
+    void ConnectWslDistro(const std::wstring& distroName, bool openFolderInExplorer);
+    void InstallWslInTerminal();
+    void AttachDevContainer(const ui::remote::DevContainerEntry& container);
+    void OpenOrCreateDevContainerConfig();
+
     // Multi-LiveServer Architecture
     struct ActiveLiveServer {
         std::wstring filePath;
@@ -794,6 +811,8 @@ private:
 
     D2D1_RECT_F m_rcStatusBarGitBranch{};
     bool m_isHoveredStatusBarGitBranch = false;
+    D2D1_RECT_F m_rcStatusBarRemote{};
+    bool m_isHoveredStatusBarRemote = false;
     D2D1_RECT_F m_rcStatusBarGitUser{};
     bool m_isHoveredStatusBarGitUser = false;
     D2D1_RECT_F m_rcStatusBarLnCol{};

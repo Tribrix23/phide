@@ -1946,4 +1946,83 @@ void LucideIcons::DrawApi(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, ID2
     pRT->DrawLine(MapPoint(16.8f, 15.5f, ox, oy, s), MapPoint(19.4f, 15.5f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
 }
 
+void LucideIcons::DrawRemoteExplorer(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, ID2D1Brush* pBrush, ID2D1Brush* /*pBgBrush*/, float strokeWidth) const {
+    if (!pRT || !pBrush) return;
+    EnsureStrokeStyle(pRT, const_cast<Microsoft::WRL::ComPtr<ID2D1StrokeStyle>&>(m_pStrokeStyle));
+
+    const float bw = bounds.right - bounds.left;
+    const float bh = bounds.bottom - bounds.top;
+    const float minDim = (std::min)(bw, bh);
+    const float iconSize = (minDim > 28.0f) ? (minDim * 0.56f) : (minDim * 0.88f);
+    const float s = iconSize / 24.0f;
+    const float ox = bounds.left + (bw - 24.0f * s) * 0.5f;
+    const float oy = bounds.top + (bh - 24.0f * s) * 0.5f;
+
+    ComPtr<ID2D1Factory> pFactory;
+    pRT->GetFactory(&pFactory);
+    if (!pFactory) return;
+
+    // 1. Monitor bezel (open figure notched cleanly around the bottom-right circular badge)
+    ComPtr<ID2D1PathGeometry> pBezel;
+    if (SUCCEEDED(pFactory->CreatePathGeometry(&pBezel))) {
+        ComPtr<ID2D1GeometrySink> sink;
+        if (SUCCEEDED(pBezel->Open(&sink))) {
+            const float r = 1.6f * s;
+            sink->BeginFigure(MapPoint(10.6f, 15.0f, ox, oy, s), D2D1_FIGURE_BEGIN_HOLLOW);
+            // Bottom-left rounded corner
+            sink->AddLine(MapPoint(2.5f + 1.6f, 15.0f, ox, oy, s));
+            sink->AddArc(D2D1::ArcSegment(MapPoint(2.5f, 15.0f - 1.6f, ox, oy, s), D2D1::SizeF(r, r), 0.0f, D2D1_SWEEP_DIRECTION_CLOCKWISE, D2D1_ARC_SIZE_SMALL));
+            // Top-left rounded corner
+            sink->AddLine(MapPoint(2.5f, 3.0f + 1.6f, ox, oy, s));
+            sink->AddArc(D2D1::ArcSegment(MapPoint(2.5f + 1.6f, 3.0f, ox, oy, s), D2D1::SizeF(r, r), 0.0f, D2D1_SWEEP_DIRECTION_CLOCKWISE, D2D1_ARC_SIZE_SMALL));
+            // Top-right rounded corner
+            sink->AddLine(MapPoint(19.5f - 1.6f, 3.0f, ox, oy, s));
+            sink->AddArc(D2D1::ArcSegment(MapPoint(19.5f, 3.0f + 1.6f, ox, oy, s), D2D1::SizeF(r, r), 0.0f, D2D1_SWEEP_DIRECTION_CLOCKWISE, D2D1_ARC_SIZE_SMALL));
+            // Right side stopping cleanly above badge circle
+            sink->AddLine(MapPoint(19.5f, 10.2f, ox, oy, s));
+            sink->EndFigure(D2D1_FIGURE_END_OPEN);
+            sink->Close();
+            pRT->DrawGeometry(pBezel.Get(), pBrush, strokeWidth, m_pStrokeStyle.Get());
+        }
+    }
+
+    // 2. Monitor neck & left-trimmed stand base
+    pRT->DrawLine(MapPoint(9.2f, 15.0f, ox, oy, s), MapPoint(9.2f, 18.2f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+    pRT->DrawLine(MapPoint(5.6f, 18.2f, ox, oy, s), MapPoint(11.0f, 18.2f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+
+    // 3. Bottom-right circular badge containing opposing remote chevrons (><)
+    const D2D1_POINT_2F badgeCenter = MapPoint(17.0f, 16.0f, ox, oy, s);
+    const float badgeR = 5.0f * s;
+    pRT->DrawEllipse(D2D1::Ellipse(badgeCenter, badgeR, badgeR), pBrush, strokeWidth, m_pStrokeStyle.Get());
+
+    const float arrowStroke = (std::max)(1.05f, strokeWidth * 0.80f);
+    // Upper-left chevron '>' inside badge
+    pRT->DrawLine(MapPoint(14.7f, 13.7f, ox, oy, s), MapPoint(17.1f, 15.5f, ox, oy, s), pBrush, arrowStroke, m_pStrokeStyle.Get());
+    pRT->DrawLine(MapPoint(17.1f, 15.5f, ox, oy, s), MapPoint(14.7f, 17.3f, ox, oy, s), pBrush, arrowStroke, m_pStrokeStyle.Get());
+    // Lower-right chevron '<' inside badge
+    pRT->DrawLine(MapPoint(19.3f, 14.7f, ox, oy, s), MapPoint(16.9f, 16.5f, ox, oy, s), pBrush, arrowStroke, m_pStrokeStyle.Get());
+    pRT->DrawLine(MapPoint(16.9f, 16.5f, ox, oy, s), MapPoint(19.3f, 18.3f, ox, oy, s), pBrush, arrowStroke, m_pStrokeStyle.Get());
+}
+
+void LucideIcons::DrawRemoteArrows(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, ID2D1Brush* pBrush, float strokeWidth) const {
+    if (!pRT || !pBrush) return;
+    EnsureStrokeStyle(pRT, const_cast<Microsoft::WRL::ComPtr<ID2D1StrokeStyle>&>(m_pStrokeStyle));
+
+    const float bw = bounds.right - bounds.left;
+    const float bh = bounds.bottom - bounds.top;
+    const float minDim = (std::min)(bw, bh);
+    const float iconSize = (minDim > 26.0f) ? (minDim * 0.56f) : (minDim * 0.82f);
+    const float s = iconSize / 24.0f;
+    const float ox = bounds.left + (bw - 24.0f * s) * 0.5f;
+    const float oy = bounds.top + (bh - 24.0f * s) * 0.5f;
+
+    // Upper-left chevron '>'
+    pRT->DrawLine(MapPoint(4.5f, 4.0f, ox, oy, s), MapPoint(12.2f, 10.2f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+    pRT->DrawLine(MapPoint(12.2f, 10.2f, ox, oy, s), MapPoint(4.5f, 16.4f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+
+    // Lower-right chevron '<'
+    pRT->DrawLine(MapPoint(19.5f, 7.6f, ox, oy, s), MapPoint(11.8f, 13.8f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+    pRT->DrawLine(MapPoint(11.8f, 13.8f, ox, oy, s), MapPoint(19.5f, 20.0f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+}
+
 } // namespace phide::ui

@@ -31,6 +31,11 @@ struct OpenDocument {
     bool isDirty = false;        ///< True if document has unsaved edits
     bool isPreview = false;      ///< True if single-clicked and not yet edited/pinned (VS Code preview tab)
     bool isSpecialView = false;  ///< True for Keyboard Shortcuts, settings, etc.
+    bool isRemoteFile = false;   ///< True if opened via Remote Explorer (SSH/SCP) and synced on save
+    std::wstring remoteSshTarget;
+    std::wstring remoteSshPort;
+    std::wstring remoteSshIdentity;
+    std::wstring remoteFilePath;
     std::wstring viewType;       ///< Special view identifier (e.g. L"keybindings", L"course")
     std::wstring courseId;       ///< Course identifier for course special views (e.g. L"python-1")
     D2D1_RECT_F tabBounds{};     ///< Screen bounding box of the tab
