@@ -16,11 +16,11 @@
 ; General Configuration
 ; ------------------------------------------------------------------------------
 !define APP_NAME "Phide"
-!define APP_VERSION "2026.b"
+!define APP_VERSION "2026.c"
 
 Name "${APP_NAME} ${APP_VERSION}"
 BrandingText "${APP_NAME} ${APP_VERSION}"
-OutFile "output\phide-Setup-x64.exe"
+OutFile "output\phide-Setup-x64c.exe"
 InstallDir "$PROGRAMFILES64\phide"
 InstallDirRegKey HKLM "Software\phide" "InstallDir"
 RequestExecutionLevel admin
@@ -163,7 +163,7 @@ Function .onInit
             StrCpy $InstalledVersion "2026.a"
         ${EndIf}
 
-        ; Compare installed version with current installer version (2026.b)
+        ; Compare installed version with current installer version (2026.c)
         System::Call "shlwapi::StrCmpLogicalW(w '$InstalledVersion', w '${APP_VERSION}') i .r0"
         ${If} $0 == 0
             StrCpy $InstallMode "SAME"
