@@ -7368,10 +7368,10 @@ bool Window::Create(HINSTANCE hInstance, int nCmdShow) {
     // Start 60-second periodic idle garbage collection timer
     SetTimer(m_hwnd, m_gcTimerId, 60000, nullptr);
 
-    // Register callback for immediate terminal output repainting
+    // Register callback for immediate terminal output repainting (marshal safely from reader thread to UI thread)
     m_terminal.SetOutputCallback([this]() {
         if (m_hwnd) {
-            InvalidateRect(m_hwnd, nullptr, FALSE);
+            PostMessageW(m_hwnd, WM_USER + 201, 0, 0);
         }
     });
 

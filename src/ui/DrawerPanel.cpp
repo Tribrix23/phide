@@ -11482,9 +11482,11 @@ void DrawerPanel::RefreshRemoteTargetsAsync() {
 }
 
 void DrawerPanel::BrowseRemoteSshPathAsync(const remote::SshHostEntry& host, const std::wstring& remotePath) {
+    const uint64_t seq = ++m_remoteSessionSeq;
     {
         std::lock_guard<std::recursive_mutex> lock(m_remoteMutex);
         m_remoteSessionActive = true;
+        m_remoteSessionState = RemoteSessionState::Connecting;
         m_remoteActiveHost = host;
         m_remoteCurrentPath = remotePath.empty() ? L"~" : remotePath;
         m_remoteBrowseError.clear();
@@ -11498,7 +11500,7 @@ void DrawerPanel::BrowseRemoteSshPathAsync(const remote::SshHostEntry& host, con
     auto workers = m_activeWorkers;
     if (workers) (*workers)++;
 
-    std::thread([this, alive, workers, host, remotePath]() {
+    std::thread([this, alive, workers, seq, host, remotePath]() {
         struct WorkerGuard {
             std::shared_ptr<std::atomic<int>> w;
             ~WorkerGuard() { if (w) (*w)--; }
@@ -11510,13 +11512,22 @@ void DrawerPanel::BrowseRemoteSshPathAsync(const remote::SshHostEntry& host, con
         std::wstring err;
         auto entries = remote::FetchRemoteSshDirectory(host, remotePath, resolvedPath, err, 0);
         if (!alive || !alive->load()) return;
+        if (seq != m_remoteSessionSeq.load()) return;
 
         {
             std::lock_guard<std::recursive_mutex> lock(m_remoteMutex);
+            if (seq != m_remoteSessionSeq.load()) return;
             if (resolvedPath.empty()) resolvedPath = L"~";
             m_remoteCurrentPath = resolvedPath;
             m_remoteBrowseError = std::move(err);
             m_remoteFiles = std::move(entries);
+            if (m_remoteBrowseError.empty()) {
+                m_remoteSessionState = RemoteSessionState::Connected;
+            } else if (m_remoteBrowseError.find(L"authentication required") != std::wstring::npos) {
+                m_remoteSessionState = RemoteSessionState::AuthRequired;
+            } else {
+                m_remoteSessionState = RemoteSessionState::Error;
+            }
         }
         m_remoteBrowseLoading.store(false);
 
@@ -11571,6 +11582,9 @@ void DrawerPanel::ToggleRemoteSubdir(size_t idx) {
             std::lock_guard<std::recursive_mutex> lock(m_remoteMutex);
             if (!err.empty()) {
                 m_remoteBrowseError = err;
+                m_remoteSessionState = (err.find(L"authentication required") != std::wstring::npos)
+                    ? RemoteSessionState::AuthRequired
+                    : RemoteSessionState::Error;
             } else {
                 for (size_t i = 0; i < m_remoteFiles.size(); ++i) {
                     if (m_remoteFiles[i].fullPath == clicked.fullPath && m_remoteFiles[i].isDir && m_remoteFiles[i].isExpanded) {
@@ -11594,8 +11608,10 @@ void DrawerPanel::ToggleRemoteSubdir(size_t idx) {
 }
 
 void DrawerPanel::DisconnectRemoteSession() {
+    ++m_remoteSessionSeq;
     std::lock_guard<std::recursive_mutex> lock(m_remoteMutex);
     m_remoteSessionActive = false;
+    m_remoteSessionState = RemoteSessionState::Disconnected;
     m_remoteActiveHost = {};
     m_remoteCurrentPath.clear();
     m_remoteBrowseError.clear();
@@ -11605,7 +11621,7 @@ void DrawerPanel::DisconnectRemoteSession() {
 
 std::wstring DrawerPanel::GetActiveRemoteBadgeLabel() const {
     std::lock_guard<std::recursive_mutex> lock(m_remoteMutex);
-    if (!m_remoteSessionActive) return L"";
+    if (!m_remoteSessionActive || m_remoteSessionState != RemoteSessionState::Connected) return L"";
     return L"SSH: " + m_remoteActiveHost.TargetSpec();
 }
 
@@ -11696,6 +11712,14 @@ void DrawerPanel::RenderRemotePane(ID2D1RenderTarget* pRT, Theme& theme, const a
     pRT->CreateSolidColorBrush(D2D1::ColorF(0.11f, 0.56f, 0.92f, 1.0f), &accentHoverBrush);
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> accentSubtleBrush;
     pRT->CreateSolidColorBrush(D2D1::ColorF(0.0f, 0.471f, 0.831f, 0.16f), &accentSubtleBrush);
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> amberBrush;
+    pRT->CreateSolidColorBrush(D2D1::ColorF(0.92f, 0.68f, 0.22f, 1.0f), &amberBrush);
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> chipAccentTextBrush;
+    pRT->CreateSolidColorBrush(
+        theme.IsDarkMode() ? D2D1::ColorF(0.45f, 0.78f, 1.0f, 1.0f) : D2D1::ColorF(0.0f, 0.40f, 0.76f, 1.0f),
+        &chipAccentTextBrush);
+    ID2D1Brush* statusAmberB = amberBrush ? static_cast<ID2D1Brush*>(amberBrush.Get()) : theme.brushTextSecondary.Get();
+    ID2D1Brush* chipAccentB = chipAccentTextBrush ? static_cast<ID2D1Brush*>(chipAccentTextBrush.Get()) : theme.brushTextPrimary.Get();
 
     auto isZoneHovered = [&](RemoteHitAction act, int idx = -1) -> bool {
         return prevHoveredAct == act && prevHoveredIdx == idx;
@@ -11808,27 +11832,42 @@ void DrawerPanel::RenderRemotePane(ID2D1RenderTarget* pRT, Theme& theme, const a
         addZone(act, idx, rc);
     };
 
-    // Active Remote Session status card (if connected)
+    // Active Remote Session status card (honest connecting / connected / auth / error state)
     if (m_remoteSessionActive) {
+        ID2D1Brush* stateBrush = theme.brushRunGreen.Get();
+        std::wstring titlePrefix = L"Connected: ";
+        if (m_remoteSessionState == RemoteSessionState::Connecting) {
+            stateBrush = statusAmberB;
+            titlePrefix = L"Connecting: ";
+        } else if (m_remoteSessionState == RemoteSessionState::AuthRequired) {
+            stateBrush = statusAmberB;
+            titlePrefix = L"Auth Needed: ";
+        } else if (m_remoteSessionState == RemoteSessionState::Error) {
+            stateBrush = theme.brushCommentAlert.Get();
+            titlePrefix = L"Unreachable: ";
+        }
+
         float cardH = config.ScaleF(62.0f);
         D2D1_RECT_F rcCard = D2D1::RectF(leftX + padX, y, rightX - padX, y + cardH);
         pRT->FillRoundedRectangle(D2D1::RoundedRect(rcCard, config.ScaleF(5.0f), config.ScaleF(5.0f)),
                                   cardBgBrush ? static_cast<ID2D1Brush*>(cardBgBrush.Get()) : theme.brushItemHover.Get());
         pRT->DrawRoundedRectangle(D2D1::RoundedRect(rcCard, config.ScaleF(5.0f), config.ScaleF(5.0f)),
-                                  theme.brushRunGreen.Get(), 1.0f);
+                                  stateBrush, 1.0f);
 
         float dotX = rcCard.left + config.ScaleF(10.0f);
         float dotY = rcCard.top + config.ScaleF(12.0f);
-        pRT->FillEllipse(D2D1::Ellipse(D2D1::Point2F(dotX, dotY), config.ScaleF(3.5f), config.ScaleF(3.5f)), theme.brushRunGreen.Get());
+        pRT->FillEllipse(D2D1::Ellipse(D2D1::Point2F(dotX, dotY), config.ScaleF(3.5f), config.ScaleF(3.5f)), stateBrush);
 
-        std::wstring titleLine = L"SSH: " + m_remoteActiveHost.TargetSpec();
+        std::wstring titleLine = titlePrefix + m_remoteActiveHost.TargetSpec();
         D2D1_RECT_F rcConnTitle = D2D1::RectF(dotX + config.ScaleF(8.0f), rcCard.top + config.ScaleF(4.0f),
                                               rcCard.right - config.ScaleF(8.0f), rcCard.top + config.ScaleF(20.0f));
         pRT->PushAxisAlignedClip(rcConnTitle, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
         pRT->DrawText(titleLine.c_str(), static_cast<UINT32>(titleLine.size()), fmtBody, rcConnTitle, theme.brushTextPrimary.Get());
         pRT->PopAxisAlignedClip();
 
-        std::wstring subPath = m_remoteCurrentPath.empty() ? L"~" : m_remoteCurrentPath;
+        std::wstring subPath = (m_remoteSessionState == RemoteSessionState::Connecting)
+            ? L"Checking SSH host reachability..."
+            : (m_remoteCurrentPath.empty() ? L"~" : m_remoteCurrentPath);
         D2D1_RECT_F rcSubPath = D2D1::RectF(rcCard.left + config.ScaleF(10.0f), rcCard.top + config.ScaleF(20.0f),
                                             rcCard.right - config.ScaleF(8.0f), rcCard.top + config.ScaleF(36.0f));
         pRT->PushAxisAlignedClip(rcSubPath, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
@@ -11842,7 +11881,8 @@ void DrawerPanel::RenderRemotePane(ID2D1RenderTarget* pRT, Theme& theme, const a
                                             rcCard.right - config.ScaleF(8.0f), rcTermBtn.bottom);
         ID2D1Brush* chipB = chipBgBrush ? static_cast<ID2D1Brush*>(chipBgBrush.Get()) : theme.brushItemHover.Get();
         drawChip(rcTermBtn, L"SSH Terminal", chipB, theme.brushTextPrimary.Get(), RemoteHitAction::RemoteActiveTerminal, -1);
-        drawChip(rcDiscBtn, L"Disconnect", chipB, theme.brushCommentAlert.Get(), RemoteHitAction::RemoteDisconnect, -1);
+        drawChip(rcDiscBtn, m_remoteSessionState == RemoteSessionState::Error ? L"Dismiss" : L"Disconnect",
+                 chipB, theme.brushCommentAlert.Get(), RemoteHitAction::RemoteDisconnect, -1);
         y += cardH + config.ScaleF(10.0f);
     }
 
@@ -11905,8 +11945,9 @@ void DrawerPanel::RenderRemotePane(ID2D1RenderTarget* pRT, Theme& theme, const a
                     const auto& h = m_remoteHosts[i];
                     float hRowH = config.ScaleF(26.0f);
                     D2D1_RECT_F rcRow = D2D1::RectF(leftX + config.ScaleF(6.0f), y, rightX - config.ScaleF(6.0f), y + hRowH);
-                    bool isCurrent = (m_remoteSessionActive && m_remoteActiveHost.TargetSpec() == h.TargetSpec());
-                    if (isCurrent && accentSubtleBrush) {
+                    bool isTarget = (m_remoteSessionActive && m_remoteActiveHost.TargetSpec() == h.TargetSpec());
+                    bool isCurrent = isTarget && (m_remoteSessionState == RemoteSessionState::Connected);
+                    if (isTarget && accentSubtleBrush) {
                         pRT->FillRoundedRectangle(D2D1::RoundedRect(rcRow, config.ScaleF(4.0f), config.ScaleF(4.0f)), accentSubtleBrush.Get());
                     }
 
@@ -11920,8 +11961,11 @@ void DrawerPanel::RenderRemotePane(ID2D1RenderTarget* pRT, Theme& theme, const a
 
                     float dotX = leftX + padX + config.ScaleF(4.0f);
                     float dotY = y + hRowH * 0.5f;
-                    pRT->FillEllipse(D2D1::Ellipse(D2D1::Point2F(dotX, dotY), config.ScaleF(3.0f), config.ScaleF(3.0f)),
-                                     isCurrent ? theme.brushRunGreen.Get() : theme.brushBrandAccent.Get());
+                    ID2D1Brush* rowDotB = chipAccentB;
+                    if (isCurrent) rowDotB = theme.brushRunGreen.Get();
+                    else if (isTarget && (m_remoteSessionState == RemoteSessionState::Connecting || m_remoteSessionState == RemoteSessionState::AuthRequired)) rowDotB = statusAmberB;
+                    else if (isTarget && m_remoteSessionState == RemoteSessionState::Error) rowDotB = theme.brushCommentAlert.Get();
+                    pRT->FillEllipse(D2D1::Ellipse(D2D1::Point2F(dotX, dotY), config.ScaleF(3.0f), config.ScaleF(3.0f)), rowDotB);
 
                     std::wstring hostText = h.alias;
                     std::wstring detail = h.DisplayDetail();
@@ -11934,7 +11978,7 @@ void DrawerPanel::RenderRemotePane(ID2D1RenderTarget* pRT, Theme& theme, const a
 
                     addZone(RemoteHitAction::SshHostConnectTerminal, static_cast<int>(i), rcRow);
                     drawChip(rcFilesBtn, L"Files", chipB, theme.brushTextPrimary.Get(), RemoteHitAction::SshHostBrowseFiles, static_cast<int>(i));
-                    drawChip(rcSshBtn, L"SSH", chipB, theme.brushBrandAccent.Get(), RemoteHitAction::SshHostConnectTerminal, static_cast<int>(i));
+                    drawChip(rcSshBtn, L"SSH", chipB, chipAccentB, RemoteHitAction::SshHostConnectTerminal, static_cast<int>(i));
                     y += hRowH;
                 }
             } else {
@@ -11965,7 +12009,7 @@ void DrawerPanel::RenderRemotePane(ID2D1RenderTarget* pRT, Theme& theme, const a
                 } else if (!m_remoteBrowseError.empty()) {
                     drawWrappedMessage(m_remoteBrowseError, theme.brushCommentAlert.Get());
                     D2D1_RECT_F rcFallback = D2D1::RectF(leftX + padX, y, rightX - padX, y + config.ScaleF(24.0f));
-                    drawChip(rcFallback, L"Open SSH Terminal (Password / Key)", chipB, theme.brushBrandAccent.Get(), RemoteHitAction::RemoteActiveTerminal, -1);
+                    drawChip(rcFallback, L"Open SSH Terminal (Password / Key)", chipB, theme.brushTextPrimary.Get(), RemoteHitAction::RemoteActiveTerminal, -1);
                     y += config.ScaleF(28.0f);
                 } else {
                     if (m_remoteCurrentPath != L"/") {
@@ -12034,7 +12078,7 @@ void DrawerPanel::RenderRemotePane(ID2D1RenderTarget* pRT, Theme& theme, const a
                     pRT->PopAxisAlignedClip();
 
                     addZone(RemoteHitAction::AttachContainer, static_cast<int>(i), rcRow);
-                    drawChip(rcAttach, L"Attach", chipB, theme.brushBrandAccent.Get(), RemoteHitAction::AttachContainer, static_cast<int>(i));
+                    drawChip(rcAttach, L"Attach", chipB, chipAccentB, RemoteHitAction::AttachContainer, static_cast<int>(i));
                     y += cRowH;
                 }
             } else {
@@ -12081,7 +12125,7 @@ void DrawerPanel::RenderRemotePane(ID2D1RenderTarget* pRT, Theme& theme, const a
 
                     addZone(RemoteHitAction::ConnectWslShell, static_cast<int>(i), rcRow);
                     drawChip(rcFiles, L"Files", chipB, theme.brushTextPrimary.Get(), RemoteHitAction::OpenWslFolder, static_cast<int>(i));
-                    drawChip(rcShell, L"Shell", chipB, theme.brushBrandAccent.Get(), RemoteHitAction::ConnectWslShell, static_cast<int>(i));
+                    drawChip(rcShell, L"Shell", chipB, chipAccentB, RemoteHitAction::ConnectWslShell, static_cast<int>(i));
                     y += wRowH;
                 }
             } else {
@@ -12236,10 +12280,9 @@ bool DrawerPanel::HandleRemoteLButtonDown(POINT pt, const app::AppConfig& /*conf
                 std::lock_guard<std::recursive_mutex> lock(m_remoteMutex);
                 if (hit.index < 0 || hit.index >= static_cast<int>(m_remoteHosts.size())) return true;
                 host = m_remoteHosts[hit.index];
-                m_remoteSessionActive = true;
-                m_remoteActiveHost = host;
             }
             if (m_remoteCallbacks.onConnectSshTerminal) m_remoteCallbacks.onConnectSshTerminal(host, L"");
+            BrowseRemoteSshPathAsync(host, L"~");
             return true;
         }
         case RemoteHitAction::SshHostBrowseFiles: {

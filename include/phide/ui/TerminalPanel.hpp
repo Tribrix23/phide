@@ -235,13 +235,16 @@ struct TerminalTab {
     HANDLE hStdoutRead = NULL;
     HANDLE hStderrRead = NULL;
     void* hPC = nullptr;
+    std::mutex ptyMutex;
     DWORD processId = 0;
+    std::atomic<int> processExitCode{-1};
     std::atomic<bool> isAlive{false};
     bool isConPty = false;
     std::wstring customCommand;
     size_t conPtyCursorCol = 0;
     std::thread readerThread;
     std::thread stderrReaderThread;
+    std::thread exitWatcherThread;
 
     std::vector<TerminalLine> lines;
     std::wstring currentInputLine;
@@ -278,7 +281,7 @@ struct TerminalTab {
     ~TerminalTab();
     void Terminate();
     void SendInput(const std::string& input);
-    void AppendOutput(const char* data, size_t length, bool isError = false);
+    void AppendOutput(const char* data, size_t length, bool isError = false, bool forceAppend = false);
     void RunGarbageCollection();
 };
 

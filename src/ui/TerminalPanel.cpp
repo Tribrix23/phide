@@ -235,11 +235,18 @@ void TerminalTab::Terminate() {
     }
 
     // 2. Unblock any synchronous ReadFile calls immediately
-    if (hPC) {
-        if (auto closePty = GetClosePseudoConsoleFn()) {
-            closePty(hPC);
+    {
+        void* pcToClose = nullptr;
+        {
+            std::lock_guard<std::mutex> ptyLk(ptyMutex);
+            pcToClose = hPC;
+            hPC = nullptr;
         }
-        hPC = nullptr;
+        if (pcToClose) {
+            if (auto closePty = GetClosePseudoConsoleFn()) {
+                closePty(pcToClose);
+            }
+        }
     }
     if (readerThread.joinable()) {
         CancelSynchronousIo(readerThread.native_handle());
@@ -270,7 +277,10 @@ void TerminalTab::Terminate() {
         hThread = NULL;
     }
 
-    // 4. Safely join reader threads (guaranteed to exit in <= 1ms now that processes and pipes are terminated)
+    // 4. Safely join worker threads (guaranteed to exit promptly now that processes and pipes are terminated)
+    if (exitWatcherThread.joinable()) {
+        exitWatcherThread.join();
+    }
     if (readerThread.joinable()) {
         readerThread.join();
     }
@@ -324,8 +334,8 @@ std::wstring TerminalTab::GetSelectedText() const {
     return result;
 }
 
-void TerminalTab::AppendOutput(const char* data, size_t length, bool isError) {
-    if (!data || length == 0 || !isAlive.load()) return;
+void TerminalTab::AppendOutput(const char* data, size_t length, bool isError, bool forceAppend) {
+    if (!data || length == 0 || (!isAlive.load() && !forceAppend)) return;
 
     // Convert UTF-8 / ANSI to wide string
     int wlen = MultiByteToWideChar(CP_UTF8, 0, data, static_cast<int>(length), NULL, 0);
@@ -915,6 +925,16 @@ void TerminalPanel::NewRemoteCommandTab(const std::wstring& title, const std::ws
     tab->onExecutionError = m_onExecutionError;
     tab->onClearRuntimeErrors = m_onClearRuntimeErrors;
 
+    if (!commandLine.empty()) {
+        int u8Len = WideCharToMultiByte(CP_UTF8, 0, commandLine.c_str(), -1, nullptr, 0, nullptr, nullptr);
+        std::string cmdUtf8 = (u8Len > 1) ? std::string(u8Len - 1, '\0') : std::string();
+        if (u8Len > 1) {
+            WideCharToMultiByte(CP_UTF8, 0, commandLine.c_str(), -1, cmdUtf8.data(), u8Len, nullptr, nullptr);
+        }
+        std::string banner = "> " + cmdUtf8 + "\r\nConnecting...\r\n";
+        tab->AppendOutput(banner.data(), banner.size(), false, true);
+    }
+
     StartShellProcess(*tab);
     std::lock_guard<std::recursive_mutex> lock(m_tabsMutex);
     m_tabs.push_back(std::move(tab));
@@ -1213,8 +1233,11 @@ void TerminalPanel::StartShellProcess(TerminalTab& tab) {
 
                     STARTUPINFOEXW siEx{};
                     siEx.StartupInfo.cb = sizeof(STARTUPINFOEXW);
-                    siEx.StartupInfo.dwFlags = STARTF_USESHOWWINDOW;
-                    siEx.StartupInfo.wShowWindow = SW_HIDE;
+                    // Prevent inheriting parent's redirected console pipes so child binds strictly to ConPTY
+                    siEx.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
+                    siEx.StartupInfo.hStdInput = NULL;
+                    siEx.StartupInfo.hStdOutput = NULL;
+                    siEx.StartupInfo.hStdError = NULL;
                     siEx.lpAttributeList = attrOk ? pAttrList : NULL;
 
                     PROCESS_INFORMATION pi{};
@@ -1223,12 +1246,15 @@ void TerminalPanel::StartShellProcess(TerminalTab& tab) {
 
                     BOOL ok = attrOk && CreateProcessW(
                         NULL, cmdBuf.data(), NULL, NULL, FALSE,
-                        EXTENDED_STARTUPINFO_PRESENT | CREATE_NO_WINDOW,
+                        EXTENDED_STARTUPINFO_PRESENT,
                         NULL, workDir, &siEx.StartupInfo, &pi);
 
                     if (pAttrList) {
                         DeleteProcThreadAttributeList(pAttrList);
                     }
+                    // Release parent-side copies of child ConPTY pipe ends so ClosePseudoConsole delivers true EOF.
+                    if (hPtyInR) { CloseHandle(hPtyInR); hPtyInR = NULL; }
+                    if (hPtyOutW) { CloseHandle(hPtyOutW); hPtyOutW = NULL; }
 
                     if (ok) {
                         CloseHandle(hStdoutRead);
@@ -1238,16 +1264,52 @@ void TerminalPanel::StartShellProcess(TerminalTab& tab) {
                         CloseHandle(hStdinRead);
                         CloseHandle(hStdinWrite);
 
-                        tab.hPC = hPC;
+                        {
+                            std::lock_guard<std::mutex> ptyLk(tab.ptyMutex);
+                            tab.hPC = hPC;
+                        }
                         tab.hStdinWrite = hPtyInW;
                         tab.hStdoutRead = hPtyOutR;
                         tab.hStderrRead = NULL;
                         tab.hProcess = pi.hProcess;
                         tab.hThread = pi.hThread;
                         tab.processId = pi.dwProcessId;
+                        tab.processExitCode = -1;
                         tab.isAlive = true;
 
+                        HANDLE hWatchProc = NULL;
+                        BOOL dupOk = DuplicateHandle(GetCurrentProcess(), pi.hProcess, GetCurrentProcess(), &hWatchProc,
+                                                     SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION, FALSE, 0);
+                        DWORD dupErr = dupOk ? 0 : GetLastError();
+
                         TerminalTab* pTab = &tab;
+                        tab.exitWatcherThread = std::thread([pTab, hWatchProc, dupErr]() {
+                            if (hWatchProc) {
+                                WaitForSingleObject(hWatchProc, INFINITE);
+                                DWORD code = 0;
+                                if (GetExitCodeProcess(hWatchProc, &code)) {
+                                    pTab->processExitCode.store(static_cast<int>(code));
+                                }
+                                CloseHandle(hWatchProc);
+                            } else {
+                                std::string dbg = "[ConPTY watch err=" + std::to_string(dupErr) + "]\r\n";
+                                pTab->AppendOutput(dbg.data(), dbg.size(), true, true);
+                            }
+                            if (pTab->isAlive.load()) {
+                                void* pcToClose = nullptr;
+                                {
+                                    std::lock_guard<std::mutex> ptyLk(pTab->ptyMutex);
+                                    pcToClose = pTab->hPC;
+                                    pTab->hPC = nullptr;
+                                }
+                                if (pcToClose) {
+                                    if (auto closePty = GetClosePseudoConsoleFn()) {
+                                        closePty(pcToClose);
+                                    }
+                                }
+                            }
+                        });
+
                         tab.readerThread = std::thread([pTab, hPtyOutR]() {
                             char buffer[4096];
                             DWORD bytesRead = 0;
@@ -1258,9 +1320,15 @@ void TerminalPanel::StartShellProcess(TerminalTab& tab) {
                                     pTab->onOutput();
                                 }
                             }
-                            if (pTab->isAlive.exchange(false)) {
-                                const char* exitMsg = "\r\n[Remote session closed]\r\n";
-                                pTab->AppendOutput(exitMsg, strlen(exitMsg), false);
+                            DWORD readErr = GetLastError();
+                            if (pTab->isAlive.load()) {
+                                int code = pTab->processExitCode.load();
+                                std::string exitMsg = (code >= 0)
+                                    ? ("\r\n[Remote session closed (exit code " + std::to_string(code) + ")]\r\n")
+                                    : ("\r\n[Remote session closed (readErr=" + std::to_string(readErr) + ")]\r\n");
+                                // Append status BEFORE flipping isAlive=false so observers see complete final lines.
+                                pTab->AppendOutput(exitMsg.data(), exitMsg.size(), code > 0, true);
+                                pTab->isAlive.store(false);
                                 if (pTab->onOutput) pTab->onOutput();
                             }
                         });
@@ -2344,6 +2412,25 @@ void TerminalPanel::RenderSinglePane(ID2D1RenderTarget* pRT, Theme& theme, const
     }
 
     m_uiScale = config.dpiScale;
+
+    if (tab->isConPty && tab->isAlive.load()) {
+        bool allBlank = true;
+        for (const auto& ln : tab->lines) {
+            for (wchar_t ch : ln.rawText) {
+                if (ch != L' ' && ch != L'\t' && ch != L'\r' && ch != L'\n') {
+                    allBlank = false;
+                    break;
+                }
+            }
+            if (!allBlank) break;
+        }
+        if (allBlank && termFmt && theme.brushTextSecondary) {
+            std::wstring waitMsg = L"Connecting remote session (" + tab->title + L")...";
+            D2D1_RECT_F rcWait = D2D1::RectF(bounds.left + padX, curY, bounds.right - padX, curY + lineH);
+            pRT->DrawText(waitMsg.c_str(), static_cast<UINT32>(waitMsg.size()), termFmt, rcWait, theme.brushTextSecondary.Get());
+            return;
+        }
+    }
 
     for (size_t l = startLine; l < totalLines && (curY + lineH) <= (bounds.bottom - padBottom + 2.0f); ++l) {
         const auto& line = tab->lines[l];

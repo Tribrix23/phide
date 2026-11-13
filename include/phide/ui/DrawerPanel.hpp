@@ -727,7 +727,7 @@ public:
     [[nodiscard]] bool HitTestRemoteInteractive(POINT pt) const noexcept;
     [[nodiscard]] const D2D1_RECT_F& GetRemoteOpenPopupBtnBounds() const noexcept { return m_rcRemoteOpenPopupBtn; }
     [[nodiscard]] const D2D1_RECT_F& GetRemoteFilterBtnBounds() const noexcept { return m_rcRemoteFilterBtn; }
-    [[nodiscard]] bool IsRemoteConnected() const noexcept { return m_remoteSessionActive; }
+    [[nodiscard]] bool IsRemoteConnected() const noexcept { return m_remoteSessionActive && m_remoteSessionState == RemoteSessionState::Connected; }
     [[nodiscard]] std::wstring GetActiveRemoteBadgeLabel() const;
     void CopyRemoteTargetCache(
         std::vector<remote::SshHostEntry>& outSsh,
@@ -1363,7 +1363,17 @@ private:
     bool m_remoteContainersExpanded = true;
     bool m_remoteWslExpanded = true;
 
+    enum class RemoteSessionState {
+        Disconnected = 0,
+        Connecting = 1,
+        AuthRequired = 2,
+        Connected = 3,
+        Error = 4
+    };
+
     bool m_remoteSessionActive = false;
+    RemoteSessionState m_remoteSessionState = RemoteSessionState::Disconnected;
+    std::atomic<uint64_t> m_remoteSessionSeq{0};
     remote::SshHostEntry m_remoteActiveHost{};
     std::wstring m_remoteCurrentPath;
     std::atomic<bool> m_remoteBrowseLoading{false};

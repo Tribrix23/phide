@@ -17,7 +17,10 @@
 #include "phide/ui/DrawerPanel.hpp"
 #include "phide/ui/RemoteWindowModal.hpp"
 #include "phide/ui/EditorCanvas.hpp"
+#include "phide/ui/TerminalPanel.hpp"
 #include "phide/editor/OpenDocument.hpp"
+#include <thread>
+#include <chrono>
 
 using Microsoft::WRL::ComPtr;
 
@@ -283,6 +286,99 @@ int main() {
             L"C:\\Users\\Administrator\\.gemini\\antigravity\\brain\\2e65eefb-cd8f-409b-add6-886e19899c16\\test_remote_window_modal.png");
     }
 
+        // 3. ConPTY real process output capture + clean EOF + DrawerPanel honest state verification
+        {
+            std::cout << "[TEST] Verifying live ConPTY output capture & SSH error visibility...\n";
+            phide::ui::TerminalPanel term;
+            std::atomic<int> outCallbacks{0};
+            term.SetOutputCallback([&]() { outCallbacks++; });
+
+            // 3a. Real cmd.exe under ConPTY must capture stdout and hit clean EOF without hanging
+            term.NewRemoteCommandTab(L"ConPTY Echo", L"cmd.exe /c echo CONPTY_LIVE_OK", L"", true);
+            auto* echoTab = term.GetActiveTab();
+            assert(echoTab != nullptr && echoTab->isConPty);
+            auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+            while (echoTab->isAlive.load() && std::chrono::steady_clock::now() < deadline) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(40));
+            }
+            assert(!echoTab->isAlive.load() && "ConPTY echo process must exit cleanly via EOF");
+            for (int w = 0; w < 20 && echoTab->processExitCode.load() < 0; ++w) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(15));
+            }
+            std::wstring capturedEcho;
+            {
+                std::lock_guard<std::mutex> lk(echoTab->bufferMutex);
+                for (const auto& ln : echoTab->lines) {
+                    capturedEcho += ln.rawText + L"\n";
+                }
+            }
+            assert(capturedEcho.find(L"CONPTY_LIVE_OK") != std::wstring::npos &&
+                   "ConPTY must capture child stdout text");
+            assert(capturedEcho.find(L"exit code 0") != std::wstring::npos &&
+                   "ConPTY must report exit code when child finishes");
+            assert(outCallbacks.load() > 0);
+            std::cout << "  [PASS] Live ConPTY cmd.exe output & clean EOF verified\n";
+
+            // 3b. Real ssh.exe against unreachable local port (fast connection refused) must display real error text
+            if (phide::ui::remote::HasSshClientTool()) {
+                phide::ui::remote::SshHostEntry deadHost{};
+                deadHost.alias = L"127.0.0.1";
+                deadHost.hostName = L"127.0.0.1";
+                deadHost.user = L"nobody";
+                deadHost.port = L"1";
+                std::wstring sshCmd = phide::ui::remote::BuildInteractiveSshCommand(deadHost, L"");
+                term.NewRemoteCommandTab(L"SSH: 127.0.0.1", sshCmd, L"", true);
+                auto* sshTab = term.GetActiveTab();
+                assert(sshTab != nullptr && sshTab->isConPty);
+                auto sshDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(8);
+                while (sshTab->isAlive.load() && std::chrono::steady_clock::now() < sshDeadline) {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+                }
+                assert(!sshTab->isAlive.load() && "Unreachable SSH ConPTY session must terminate cleanly");
+                std::wstring capturedSsh;
+                {
+                    std::lock_guard<std::mutex> lk(sshTab->bufferMutex);
+                    for (const auto& ln : sshTab->lines) {
+                        if (!ln.rawText.empty()) {
+                            capturedSsh += ln.rawText + L"\n";
+                        }
+                    }
+                }
+                if ((capturedSsh.find(L"Connection refused") == std::wstring::npos &&
+                     capturedSsh.find(L"127.0.0.1") == std::wstring::npos &&
+                     capturedSsh.find(L"ssh:") == std::wstring::npos) ||
+                    capturedSsh.find(L"exit code") == std::wstring::npos) {
+                    std::wcerr << L"[FAIL] Unexpected ConPTY SSH output:\n" << capturedSsh << L"\n";
+                }
+                assert((capturedSsh.find(L"Connection refused") != std::wstring::npos ||
+                        capturedSsh.find(L"127.0.0.1") != std::wstring::npos ||
+                        capturedSsh.find(L"ssh:") != std::wstring::npos) &&
+                       "ConPTY SSH tab must show real SSH diagnostic instead of blank black terminal");
+                assert(capturedSsh.find(L"exit code") != std::wstring::npos &&
+                       "ConPTY SSH tab must report remote exit code on close");
+                std::cout << "  [PASS] Live ConPTY ssh.exe error output & status captured (never blank black)\n";
+
+                // 3c. DrawerPanel must NOT report Connected green state when SSH fails
+                phide::ui::DrawerPanel sshDrawer;
+                std::atomic<int> repaints{0};
+                phide::ui::DrawerPanel::RemoteCallbacks cbs;
+                cbs.onRequestRepaint = [&]() {
+                    repaints++;
+                };
+                sshDrawer.SetRemoteCallbacks(std::move(cbs));
+                sshDrawer.BrowseRemoteSshPathAsync(deadHost, L"~");
+                auto probeDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(8);
+                while (repaints.load() < 2 && std::chrono::steady_clock::now() < probeDeadline) {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(40));
+                }
+                assert(repaints.load() >= 2 && "BrowseRemoteSshPathAsync probe must complete");
+                assert(!sshDrawer.IsRemoteConnected() && "Failed SSH host must never report IsRemoteConnected=true");
+                assert(sshDrawer.GetActiveRemoteBadgeLabel().empty() && "Failed SSH host must not show green status bar badge");
+                std::cout << "  [PASS] DrawerPanel honest SSH failure state verified (no false green Connected badge)\n";
+            }
+
+            term.CloseAllTabs();
+        }
     }
     CoUninitialize();
     return 0;

@@ -131,15 +131,15 @@ static std::wstring ResolveExePath(const wchar_t* exeName, const wchar_t* knownF
 }
 
 std::wstring GetUserHomeDir() {
+    wchar_t buf[MAX_PATH]{};
+    DWORD n = GetEnvironmentVariableW(L"USERPROFILE", buf, MAX_PATH);
+    if (n > 0 && n < MAX_PATH) return buf;
     PWSTR profile = nullptr;
     if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_Profile, 0, nullptr, &profile)) && profile) {
         std::wstring res = profile;
         CoTaskMemFree(profile);
         return res;
     }
-    wchar_t buf[MAX_PATH]{};
-    DWORD n = GetEnvironmentVariableW(L"USERPROFILE", buf, MAX_PATH);
-    if (n > 0 && n < MAX_PATH) return buf;
     return L"C:\\Users";
 }
 
@@ -652,7 +652,7 @@ static std::wstring BuildSshBaseArgs(const SshHostEntry& host, bool batchMode, b
 
 std::wstring BuildInteractiveSshCommand(const SshHostEntry& host, const std::wstring& initialRemoteDir) {
     std::wstring sshExe = ResolveExePath(L"ssh.exe", L"C:\\Windows\\System32\\OpenSSH\\ssh.exe");
-    std::wstring cmd = QuoteWinArg(sshExe) + L" ";
+    std::wstring cmd = QuoteWinArg(sshExe) + L" -o ConnectTimeout=10 ";
     if (!initialRemoteDir.empty()) cmd += L"-t ";
     cmd += BuildSshBaseArgs(host, false, false);
     cmd += QuoteWinArg(host.TargetSpec());

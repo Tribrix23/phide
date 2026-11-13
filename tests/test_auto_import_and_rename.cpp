@@ -339,6 +339,7 @@ int main() {
         std::filesystem::remove_all(tempProfile, ec);
         std::filesystem::create_directories(tempProfile, ec);
         SetEnvironmentVariableW(L"USERPROFILE", tempProfile.c_str());
+        assert(remote::GetSshConfigPath().rfind(tempProfile, 0) == 0 && "GetSshConfigPath must resolve inside isolated tempProfile");
 
         remote::SshHostEntry savedHost{};
         std::wstring saveErr;
