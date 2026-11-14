@@ -2346,13 +2346,26 @@ void Window::OpenFileDocument(const std::wstring& path, bool isPreview) {
     for (size_t g = 0; g < m_editorGroups.size(); ++g) {
         for (size_t i = 0; i < m_editorGroups[g].docs.size(); ++i) {
             if (m_editorGroups[g].docs[i].viewType != L"markdown_preview" && PathsMatch(m_editorGroups[g].docs[i].filePath, path)) {
+                RecordNavCheckpoint();
                 m_focusedGroupIdx = static_cast<int>(g);
                 m_editorGroups[g].activeDocIdx = static_cast<int>(i);
                 if (!isPreview) {
                     m_editorGroups[g].docs[i].isPreview = false;
                 }
+                if (m_editorGroups[g].docs[i].bookmarks.empty() && !m_persistedBookmarks.empty()) {
+                    std::wstring normKey = m_editorGroups[g].docs[i].filePath;
+                    for (auto& c : normKey) { if (c == L'/') c = L'\\'; c = static_cast<wchar_t>(towlower(c)); }
+                    auto bmIt = m_persistedBookmarks.find(normKey);
+                    if (bmIt != m_persistedBookmarks.end()) {
+                        size_t lineCnt = m_editorGroups[g].docs[i].buffer.GetLineCount();
+                        for (size_t bl : bmIt->second) {
+                            if (bl < lineCnt) m_editorGroups[g].docs[i].bookmarks.push_back(bl);
+                        }
+                    }
+                }
                 ClearExplorerSelectionOverride();
                 UpdateDrawerErrorFiles();
+                RefreshActiveDocOutlineAndBreadcrumbs();
                 SaveSessionState();
                 if (m_config.enableMarkdownPreview && IsMarkdownFile(resolvedPath)) {
                     OpenMarkdownPreviewSplit(resolvedPath);
@@ -2560,6 +2573,22 @@ void Window::OpenFileDocument(const std::wstring& path, bool isPreview) {
         }
     }
 
+    RecordNavCheckpoint();
+    if (!newDoc.isSpecialView && !newDoc.isImageView && !newDoc.isUnsupportedBinary && !m_persistedBookmarks.empty()) {
+        std::wstring normKey = newDoc.filePath;
+        for (auto& c : normKey) { if (c == L'/') c = L'\\'; c = static_cast<wchar_t>(towlower(c)); }
+        auto bmIt = m_persistedBookmarks.find(normKey);
+        if (bmIt != m_persistedBookmarks.end()) {
+            size_t lineCnt = newDoc.buffer.GetLineCount();
+            for (size_t bl : bmIt->second) {
+                if (bl < lineCnt) newDoc.bookmarks.push_back(bl);
+            }
+        }
+    }
+    if (!newDoc.isSpecialView && !newDoc.isImageView && !newDoc.isUnsupportedBinary) {
+        m_symbolIndex.UpdateFileSymbols(resolvedPath, newDoc.buffer.GetText());
+    }
+
     if (canReplace) {
         group.docs[group.activeDocIdx] = std::move(newDoc);
     } else {
@@ -2569,6 +2598,7 @@ void Window::OpenFileDocument(const std::wstring& path, bool isPreview) {
 
     ClearExplorerSelectionOverride();
     UpdateDrawerErrorFiles();
+    RefreshActiveDocOutlineAndBreadcrumbs();
     SaveSessionState();
 
     phide::plugin::PluginManager::Instance().DispatchEvent(L"onDocumentOpen", resolvedPath);
@@ -2675,6 +2705,7 @@ void Window::OpenDiffDocument(const std::wstring& relPath, bool isPreview) {
 
     ClearExplorerSelectionOverride();
     UpdateDrawerErrorFiles();
+    RefreshActiveDocOutlineAndBreadcrumbs();
     SaveSessionState();
     InvalidateRect(m_hwnd, nullptr, FALSE);
 }
@@ -3645,10 +3676,19 @@ void Window::DoOpenFolderFromPath(const std::wstring& path) {
         if (m_recentPaths.size() > 6) m_recentPaths.resize(6);
     }
 
+    m_navBackStack.clear();
+    m_navForwardStack.clear();
+    LoadBookmarksForWorkspace();
+    m_quickOpen.SetSymbolIndex(&m_symbolIndex);
+    m_symbolIndex.RebuildAsync(path, &m_drawer.GetIgnoreEngine(), [this]() {
+        if (m_hwnd) PostMessageW(m_hwnd, WM_NULL, 0, 0);
+    });
+
     if (!m_config.isDrawerOpen) {
         ToggleSidebar();
     }
     UpdateDrawerErrorFiles();
+    RefreshActiveDocOutlineAndBreadcrumbs();
     SaveSessionState();
     RunManualGarbageCollection();
     InvalidateRect(m_hwnd, nullptr, FALSE);
@@ -3744,11 +3784,33 @@ void Window::ExecuteQuickOpenAction(const std::wstring& actionCmd) {
     }
 
     if (actionCmd.rfind(L"goto_line:", 0) == 0) {
-        try {
-            int line = std::stoi(actionCmd.substr(10));
-            JumpToEditorLine(static_cast<size_t>(line));
-        } catch (...) {}
+        int line1 = 0, col1 = 0;
+        if (editor::ParseLineColSpec(L":" + actionCmd.substr(10), line1, col1) && line1 > 0) {
+            RecordNavCheckpoint();
+            JumpToEditorLocation(static_cast<size_t>(line1 - 1),
+                                 col1 > 0 ? static_cast<size_t>(col1 - 1) : 0);
+        }
         InvalidateRect(m_hwnd, nullptr, FALSE);
+        return;
+    }
+
+    if (actionCmd.rfind(L"run_task:", 0) == 0) {
+        std::wstring cmd = actionCmd.substr(9);
+        if (!cmd.empty()) {
+            if (!m_terminal.IsOpen()) {
+                DoCreateTerminal();
+            }
+            if (auto* tab = m_terminal.GetActiveTab()) {
+                int len = WideCharToMultiByte(CP_UTF8, 0, cmd.c_str(), -1, nullptr, 0, nullptr, nullptr);
+                if (len > 1) {
+                    std::string utf8(len - 1, '\0');
+                    WideCharToMultiByte(CP_UTF8, 0, cmd.c_str(), -1, utf8.data(), len - 1, nullptr, nullptr);
+                    tab->SendInput(utf8 + "\r\n");
+                }
+            }
+            m_isTerminalFocused = true;
+            InvalidateRect(m_hwnd, nullptr, FALSE);
+        }
         return;
     }
 
@@ -3904,6 +3966,26 @@ void Window::ExecuteQuickOpenAction(const std::wstring& actionCmd) {
         InvalidateRect(m_hwnd, nullptr, FALSE);
         return;
     }
+    if (actionCmd == L"cmd_find_inline") { DoFind(); return; }
+    if (actionCmd == L"cmd_replace_inline") { DoReplace(); return; }
+    if (actionCmd == L"cmd_peek_definition") { DoPeekDefinition(); return; }
+    if (actionCmd == L"cmd_type_definition") { DoTypeDefinition(); return; }
+    if (actionCmd == L"cmd_implementation") { DoImplementation(); return; }
+    if (actionCmd == L"cmd_find_references") { DoFindReferences(); return; }
+    if (actionCmd == L"cmd_call_hierarchy") { DoCallHierarchy(); return; }
+    if (actionCmd == L"cmd_code_metrics") { DoCodeMetrics(); return; }
+    if (actionCmd == L"cmd_toggle_outline") { DoToggleOutline(); return; }
+    if (actionCmd == L"cmd_rename_symbol") { DoRenameSymbol(); return; }
+    if (actionCmd == L"cmd_goto_symbol") { DoGoToSymbolInEditor(); return; }
+    if (actionCmd == L"cmd_goto_workspace_symbol") { DoGoToWorkspaceSymbol(); return; }
+    if (actionCmd == L"cmd_nav_back") { NavigateBack(); return; }
+    if (actionCmd == L"cmd_nav_forward") { NavigateForward(); return; }
+    if (actionCmd == L"cmd_toggle_bookmark") { DoToggleBookmark(); return; }
+    if (actionCmd == L"cmd_next_bookmark") { DoNextBookmark(); return; }
+    if (actionCmd == L"cmd_prev_bookmark") { DoPrevBookmark(); return; }
+    if (actionCmd == L"cmd_clear_bookmarks") { DoClearBookmarks(); return; }
+    if (actionCmd == L"cmd_focus_group_next") { FocusAdjacentEditorGroup(true); return; }
+    if (actionCmd == L"cmd_focus_group_prev") { FocusAdjacentEditorGroup(false); return; }
     if (phide::plugin::PluginManager::Instance().ExecuteCommand(actionCmd)) {
         InvalidateRect(m_hwnd, nullptr, FALSE);
         return;
@@ -4147,6 +4229,10 @@ void Window::DoCloseEditor() {
 
 void Window::DoCloseFolder() {
     m_drawer.CloseFolder();
+    m_symbolIndex.Clear();
+    m_navBackStack.clear();
+    m_navForwardStack.clear();
+    m_persistedBookmarks.clear();
     m_cachedWorkspaceDir = L"";
     m_cachedProjectRuntimeId = L"";
     m_currentStatusBarRuntimeId = L"";
@@ -4870,6 +4956,13 @@ void Window::DoRefactor() {
 }
 
 void Window::DoCommandPalette() {
+    RefreshActiveDocOutlineAndBreadcrumbs();
+    m_quickOpen.SetSymbolIndex(&m_symbolIndex);
+    if (auto* pDoc = GetActiveDoc(); pDoc && !pDoc->isSpecialView && !pDoc->isUnsupportedBinary) {
+        m_quickOpen.SetActiveDocumentContent(pDoc->filePath.empty() ? pDoc->fileName : pDoc->filePath, pDoc->buffer.GetText());
+    } else {
+        m_quickOpen.SetActiveDocumentContent(L"", L"");
+    }
     std::vector<std::wstring> openPaths;
     for (const auto& grp : m_editorGroups) {
         for (const auto& doc : grp.docs) {
@@ -4963,14 +5056,24 @@ void Window::DoShowExplorer() {
 
 void Window::RefreshOpenDocPathsForSearch() {
     std::vector<std::wstring> openPaths;
+    std::vector<editor::OpenDocContentSnapshot> snapshots;
     for (const auto& grp : m_editorGroups) {
         for (const auto& doc : grp.docs) {
             if (!doc.filePath.empty() && !doc.isSpecialView && !doc.isUnsupportedBinary) {
                 openPaths.push_back(doc.filePath);
+                editor::OpenDocContentSnapshot snap;
+                snap.filePath = doc.filePath;
+                snap.content = doc.buffer.GetText();
+                snap.isDirty = doc.isDirty;
+                snap.title = doc.fileName;
+                snap.isUntitled = doc.filePath.empty();
+                snapshots.push_back(std::move(snap));
             }
         }
     }
     m_drawer.SetOpenDocPaths(openPaths);
+    m_drawer.SetOpenDocSnapshots(std::move(snapshots));
+    RefreshActiveDocOutlineAndBreadcrumbs();
 }
 
 void Window::NotifyGraphViewFilesystemChanged() {
@@ -4981,6 +5084,13 @@ void Window::NotifyGraphViewFilesystemChanged() {
 
 void Window::DoQuickOpenFileSearch() {
     if (!m_drawer.HasOpenFolder()) return; // Disabled when no project is open
+    RefreshActiveDocOutlineAndBreadcrumbs();
+    m_quickOpen.SetSymbolIndex(&m_symbolIndex);
+    if (auto* pDoc = GetActiveDoc(); pDoc && !pDoc->isSpecialView && !pDoc->isUnsupportedBinary) {
+        m_quickOpen.SetActiveDocumentContent(pDoc->filePath.empty() ? pDoc->fileName : pDoc->filePath, pDoc->buffer.GetText());
+    } else {
+        m_quickOpen.SetActiveDocumentContent(L"", L"");
+    }
     std::vector<std::wstring> openPaths;
     for (const auto& grp : m_editorGroups) {
         for (const auto& doc : grp.docs) {
@@ -5129,12 +5239,63 @@ void Window::DoShowReplace() {
     InvalidateRect(m_hwnd, nullptr, FALSE);
 }
 
+static void OpenInlineFindOrReplace(editor::OpenDocument* pDoc, ui::EditorCanvas& editor, HWND hwnd,
+                                    bool withReplace, const std::function<void()>& fallbackGlobal) {
+    if (!pDoc || pDoc->isSpecialView || pDoc->isImageView || pDoc->isUnsupportedBinary) {
+        fallbackGlobal();
+        return;
+    }
+    std::wstring seedQuery;
+    editor::SearchRangeFilter selRange{};
+    bool hasMultiLineSel = false;
+    if (pDoc->HasSelection()) {
+        auto s = pDoc->selAnchor;
+        auto e = pDoc->selEnd;
+        if (s.line > e.line || (s.line == e.line && s.col > e.col)) {
+            std::swap(s, e);
+        }
+        if (s.line == e.line) {
+            const auto& lineStr = pDoc->buffer.GetLine(s.line);
+            if (s.col < lineStr.length()) {
+                seedQuery = lineStr.substr(s.col, (std::min)(e.col, lineStr.length()) - s.col);
+            }
+        } else {
+            hasMultiLineSel = true;
+            selRange.restrictToRange = true;
+            selRange.startLine = s.line;
+            selRange.startCol = s.col;
+            selRange.endLine = e.line;
+            selRange.endCol = e.col;
+        }
+    } else {
+        auto cur = pDoc->buffer.GetCursor();
+        if (cur.line < pDoc->buffer.GetLineCount()) {
+            const auto& ln = pDoc->buffer.GetLine(cur.line);
+            auto isWord = [](wchar_t c) { return iswalnum(c) || c == L'_'; };
+            if (!ln.empty()) {
+                size_t probe = (cur.col < ln.length()) ? cur.col : (ln.length() - 1);
+                if (!isWord(ln[probe]) && probe > 0 && isWord(ln[probe - 1])) probe--;
+                if (isWord(ln[probe])) {
+                    size_t st = probe;
+                    while (st > 0 && isWord(ln[st - 1])) st--;
+                    size_t en = probe + 1;
+                    while (en < ln.length() && isWord(ln[en])) en++;
+                    seedQuery = ln.substr(st, en - st);
+                }
+            }
+        }
+    }
+    editor.OpenInlineFindBar(withReplace, seedQuery, hasMultiLineSel ? &selRange : nullptr);
+    editor.RecomputeInlineFindMatches(*pDoc);
+    InvalidateRect(hwnd, nullptr, FALSE);
+}
+
 void Window::DoFind() {
-    DoShowSearch();
+    OpenInlineFindOrReplace(GetActiveDoc(), m_editor, m_hwnd, false, [this]() { DoShowSearch(); });
 }
 
 void Window::DoReplace() {
-    DoShowReplace();
+    OpenInlineFindOrReplace(GetActiveDoc(), m_editor, m_hwnd, true, [this]() { DoShowReplace(); });
 }
 
 static std::wstring GetDocumentLowerExtension(const editor::OpenDocument* pDoc) {
@@ -6281,59 +6442,493 @@ void Window::DoOrganizeImports() {
     }
 }
 
-void Window::DoGoToDefinition() {
-    auto* pDoc = GetActiveDoc();
-    if (!pDoc || pDoc->isSpecialView) return;
-
-    auto pos = pDoc->buffer.GetCursor();
-    if (pos.line >= pDoc->buffer.GetLineCount()) return;
-    const auto& curLine = pDoc->buffer.GetLine(pos.line);
-    if (curLine.empty()) return;
-
-    auto isSymChar = [](wchar_t ch) {
-        return iswalnum(ch) || ch == L'_';
-    };
+static std::wstring ExtractWordUnderCursor(const editor::OpenDocument& doc) {
+    auto pos = doc.buffer.GetCursor();
+    if (pos.line >= doc.buffer.GetLineCount()) return L"";
+    const auto& curLine = doc.buffer.GetLine(pos.line);
+    if (curLine.empty()) return L"";
+    auto isSymChar = [](wchar_t ch) { return iswalnum(ch) || ch == L'_'; };
     size_t probe = (pos.col < curLine.length()) ? pos.col : (curLine.length() - 1);
     if (!isSymChar(curLine[probe]) && probe > 0 && isSymChar(curLine[probe - 1])) {
         probe--;
     }
-    if (!isSymChar(curLine[probe])) return;
-
+    if (!isSymChar(curLine[probe])) return L"";
     size_t sStart = probe;
     while (sStart > 0 && isSymChar(curLine[sStart - 1])) sStart--;
     size_t sEnd = probe + 1;
     while (sEnd < curLine.length() && isSymChar(curLine[sEnd])) sEnd++;
-    std::wstring sym = curLine.substr(sStart, sEnd - sStart);
-    if (sym.empty()) return;
+    return curLine.substr(sStart, sEnd - sStart);
+}
 
-    auto jumpToLocation = [&](const std::wstring& targetFile, size_t targetLine, size_t targetCol) {
-        if (!targetFile.empty() && _wcsicmp(targetFile.c_str(), pDoc->filePath.c_str()) != 0) {
-            OpenFileDocument(targetFile, false);
+static std::vector<editor::OpenDocContentSnapshot> CollectOpenDocSnapshots(const std::vector<editor::EditorGroup>& groups) {
+    std::vector<editor::OpenDocContentSnapshot> snaps;
+    for (const auto& grp : groups) {
+        for (const auto& d : grp.docs) {
+            if (d.isSpecialView || d.isUnsupportedBinary) continue;
+            editor::OpenDocContentSnapshot snap;
+            snap.filePath = d.filePath.empty() ? d.fileName : d.filePath;
+            snap.content = d.buffer.GetText();
+            snap.isDirty = d.isDirty;
+            snap.title = d.fileName;
+            snap.isUntitled = d.filePath.empty();
+            snaps.push_back(std::move(snap));
         }
-        auto* pDest = GetActiveDoc();
-        if (pDest && !pDest->isSpecialView && pDest->buffer.GetLineCount() > 0) {
-            size_t clampedLine = (std::min)(targetLine, pDest->buffer.GetLineCount() - 1);
-            size_t lineLen = pDest->buffer.GetLine(clampedLine).length();
-            size_t clampedCol = (std::min)(targetCol, lineLen);
-            pDest->buffer.SetCursor(clampedLine, clampedCol);
-            pDest->selAnchor = { clampedLine, clampedCol };
-            pDest->selEnd = { clampedLine, clampedCol };
-            pDest->hasSelection = false;
-            EnsureCursorVisible();
-            InvalidateRect(m_hwnd, nullptr, FALSE);
+    }
+    return snaps;
+}
+
+static std::wstring NormalizeBookmarkKey(std::wstring p) {
+    for (auto& c : p) {
+        if (c == L'/') c = L'\\';
+        c = static_cast<wchar_t>(towlower(c));
+    }
+    return p;
+}
+
+void Window::JumpToEditorLocation(size_t line0Based, size_t col0Based) {
+    auto* pDest = GetActiveDoc();
+    if (!pDest || pDest->isSpecialView || pDest->buffer.GetLineCount() == 0) return;
+    size_t clampedLine = (std::min)(line0Based, pDest->buffer.GetLineCount() - 1);
+    size_t lineLen = pDest->buffer.GetLine(clampedLine).length();
+    size_t clampedCol = (std::min)(col0Based, lineLen);
+    pDest->buffer.SetCursor(clampedLine, clampedCol);
+    pDest->selAnchor = { clampedLine, clampedCol };
+    pDest->selEnd = { clampedLine, clampedCol };
+    pDest->hasSelection = false;
+    EnsureCursorVisible();
+    RefreshActiveDocOutlineAndBreadcrumbs();
+    InvalidateRect(m_hwnd, nullptr, FALSE);
+}
+
+void Window::JumpToFileAndLocation(const std::wstring& filePath, size_t line0Based, size_t col0Based) {
+    auto* pActive = GetActiveDoc();
+    bool sameFile = filePath.empty() || (pActive && _wcsicmp(pActive->filePath.c_str(), filePath.c_str()) == 0);
+    if (!sameFile) {
+        OpenFileDocument(filePath, false);
+    }
+    JumpToEditorLocation(line0Based, col0Based);
+}
+
+void Window::RecordNavCheckpoint() {
+    if (m_isNavigatingHistory) return;
+    auto* pDoc = GetActiveDoc();
+    if (!pDoc || pDoc->isSpecialView) return;
+    std::wstring path = pDoc->filePath.empty() ? pDoc->fileName : pDoc->filePath;
+    if (path.empty()) return;
+    auto cur = pDoc->buffer.GetCursor();
+    if (!m_navBackStack.empty()) {
+        const auto& top = m_navBackStack.back();
+        if (_wcsicmp(top.filePath.c_str(), path.c_str()) == 0 &&
+            (top.line > cur.line ? top.line - cur.line : cur.line - top.line) <= 3) {
+            return;
         }
-    };
+    }
+    m_navBackStack.push_back(NavCheckpoint{ path, cur.line, cur.col });
+    if (m_navBackStack.size() > 100) {
+        m_navBackStack.erase(m_navBackStack.begin());
+    }
+    m_navForwardStack.clear();
+}
+
+void Window::NavigateBack() {
+    while (!m_navBackStack.empty()) {
+        NavCheckpoint cp = std::move(m_navBackStack.back());
+        m_navBackStack.pop_back();
+        if (auto* pCur = GetActiveDoc(); pCur && !pCur->isSpecialView) {
+            std::wstring curPath = pCur->filePath.empty() ? pCur->fileName : pCur->filePath;
+            auto curPos = pCur->buffer.GetCursor();
+            if (_wcsicmp(curPath.c_str(), cp.filePath.c_str()) == 0 && curPos.line == cp.line && curPos.col == cp.col) {
+                continue;
+            }
+            if (!curPath.empty()) {
+                m_navForwardStack.push_back(NavCheckpoint{ curPath, curPos.line, curPos.col });
+                if (m_navForwardStack.size() > 100) m_navForwardStack.erase(m_navForwardStack.begin());
+            }
+        }
+        m_isNavigatingHistory = true;
+        JumpToFileAndLocation(cp.filePath, cp.line, cp.col);
+        m_isNavigatingHistory = false;
+        return;
+    }
+}
+
+void Window::NavigateForward() {
+    while (!m_navForwardStack.empty()) {
+        NavCheckpoint cp = std::move(m_navForwardStack.back());
+        m_navForwardStack.pop_back();
+        if (auto* pCur = GetActiveDoc(); pCur && !pCur->isSpecialView) {
+            std::wstring curPath = pCur->filePath.empty() ? pCur->fileName : pCur->filePath;
+            auto curPos = pCur->buffer.GetCursor();
+            if (_wcsicmp(curPath.c_str(), cp.filePath.c_str()) == 0 && curPos.line == cp.line && curPos.col == cp.col) {
+                continue;
+            }
+            if (!curPath.empty()) {
+                m_navBackStack.push_back(NavCheckpoint{ curPath, curPos.line, curPos.col });
+                if (m_navBackStack.size() > 100) m_navBackStack.erase(m_navBackStack.begin());
+            }
+        }
+        m_isNavigatingHistory = true;
+        JumpToFileAndLocation(cp.filePath, cp.line, cp.col);
+        m_isNavigatingHistory = false;
+        return;
+    }
+}
+
+void Window::FocusEditorGroup(int groupIdx) {
+    if (m_editorGroups.empty()) return;
+    int clamped = (std::clamp)(groupIdx, 0, static_cast<int>(m_editorGroups.size()) - 1);
+    if (clamped == m_focusedGroupIdx) return;
+    m_focusedGroupIdx = clamped;
+    m_editor.DismissAutocomplete();
+    m_editor.CloseInlineFindBar();
+    ClearExplorerSelectionOverride();
+    SyncActiveTabWithDrawer();
+    RefreshActiveDocOutlineAndBreadcrumbs();
+    InvalidateRect(m_hwnd, nullptr, FALSE);
+}
+
+void Window::FocusAdjacentEditorGroup(bool next) {
+    if (m_editorGroups.size() <= 1) return;
+    int count = static_cast<int>(m_editorGroups.size());
+    int nextIdx = (m_focusedGroupIdx + (next ? 1 : (count - 1))) % count;
+    FocusEditorGroup(nextIdx);
+}
+
+void Window::RefreshActiveDocOutlineAndBreadcrumbs() {
+    auto* pDoc = GetActiveDoc();
+    if (!pDoc || pDoc->isSpecialView || pDoc->isImageView || pDoc->isUnsupportedBinary) {
+        if (!m_lastOutlineFileKey.empty()) {
+            m_lastOutlineFileKey.clear();
+            m_lastOutlineDocVersion = static_cast<size_t>(-1);
+            m_drawer.SetOutlineSymbols(L"", {});
+            m_editor.SetActiveDocSymbols({});
+            m_quickOpen.SetActiveDocumentContent(L"", L"");
+            m_quickOpen.SetLspSymbols({});
+        }
+        return;
+    }
+    std::wstring docKey = pDoc->filePath.empty() ? pDoc->fileName : pDoc->filePath;
+    const uint64_t docVer = pDoc->buffer.GetVersion();
+    if (docKey == m_lastOutlineFileKey && docVer == m_lastOutlineDocVersion) {
+        return;
+    }
+    m_lastOutlineFileKey = docKey;
+    m_lastOutlineDocVersion = static_cast<size_t>(docVer);
+    std::wstring ext = std::filesystem::path(docKey).extension().wstring();
+    for (auto& c : ext) c = static_cast<wchar_t>(towlower(c));
+    std::wstring fullText = pDoc->buffer.GetText();
+    auto syms = editor::ExtractDocumentSymbols(fullText, ext);
+    m_symbolIndex.UpdateFileSymbols(docKey, fullText);
+    m_drawer.SetOutlineSymbols(docKey, syms);
+    m_editor.SetActiveDocSymbols(syms);
+    m_quickOpen.SetActiveDocumentContent(docKey, fullText);
+    m_quickOpen.SetLspSymbols(std::move(syms));
+}
+
+void Window::DoToggleOutline() {
+    m_config.activeRailTab = 0;
+    if (!m_config.isDrawerOpen || m_drawerAnimProgress < 0.5f) {
+        ToggleSidebar();
+    }
+    m_drawer.SetOutlineExpanded(!m_drawer.IsOutlineExpanded());
+    RefreshActiveDocOutlineAndBreadcrumbs();
+    InvalidateRect(m_hwnd, nullptr, FALSE);
+}
+
+void Window::DoGoToSymbolInEditor() {
+    RefreshActiveDocOutlineAndBreadcrumbs();
+    DoCommandPalette();
+    m_quickOpen.SetQuery(L"@");
+    InvalidateRect(m_hwnd, nullptr, FALSE);
+}
+
+void Window::DoGoToWorkspaceSymbol() {
+    RefreshActiveDocOutlineAndBreadcrumbs();
+    if (m_drawer.HasOpenFolder() && m_symbolIndex.GetSymbolCount() == 0 && !m_symbolIndex.IsIndexing()) {
+        m_symbolIndex.RebuildAsync(m_drawer.GetOpenFolderPath(), &m_drawer.GetIgnoreEngine());
+    }
+    DoCommandPalette();
+    m_quickOpen.SetQuery(L"#");
+    InvalidateRect(m_hwnd, nullptr, FALSE);
+}
+
+void Window::DoToggleBookmark() {
+    auto* pDoc = GetActiveDoc();
+    if (!pDoc || pDoc->isSpecialView || pDoc->isImageView || pDoc->isUnsupportedBinary) return;
+    size_t line = pDoc->buffer.GetCursor().line;
+    pDoc->ToggleBookmark(line);
+    SaveBookmarksForWorkspace();
+    InvalidateRect(m_hwnd, nullptr, FALSE);
+}
+
+void Window::DoNextBookmark() {
+    auto* pDoc = GetActiveDoc();
+    if (!pDoc || pDoc->isSpecialView) return;
+    size_t target = 0;
+    if (pDoc->NextBookmark(pDoc->buffer.GetCursor().line, true, target)) {
+        RecordNavCheckpoint();
+        JumpToEditorLocation(target, 0);
+    } else {
+        m_editor.ShowRefactorPopup(L"No bookmarks in active file");
+        InvalidateRect(m_hwnd, nullptr, FALSE);
+    }
+}
+
+void Window::DoPrevBookmark() {
+    auto* pDoc = GetActiveDoc();
+    if (!pDoc || pDoc->isSpecialView) return;
+    size_t target = 0;
+    if (pDoc->NextBookmark(pDoc->buffer.GetCursor().line, false, target)) {
+        RecordNavCheckpoint();
+        JumpToEditorLocation(target, 0);
+    } else {
+        m_editor.ShowRefactorPopup(L"No bookmarks in active file");
+        InvalidateRect(m_hwnd, nullptr, FALSE);
+    }
+}
+
+void Window::DoClearBookmarks() {
+    auto* pDoc = GetActiveDoc();
+    if (!pDoc || pDoc->isSpecialView) return;
+    pDoc->ClearBookmarks();
+    SaveBookmarksForWorkspace();
+    InvalidateRect(m_hwnd, nullptr, FALSE);
+}
+
+static std::string WideToUtf8Simple(const std::wstring& w) {
+    if (w.empty()) return "";
+    int len = WideCharToMultiByte(CP_UTF8, 0, w.c_str(), static_cast<int>(w.length()), nullptr, 0, nullptr, nullptr);
+    if (len <= 0) return "";
+    std::string out(len, '\0');
+    WideCharToMultiByte(CP_UTF8, 0, w.c_str(), static_cast<int>(w.length()), out.data(), len, nullptr, nullptr);
+    return out;
+}
+
+static std::wstring Utf8ToWideSimple(const std::string& u) {
+    if (u.empty()) return L"";
+    int len = MultiByteToWideChar(CP_UTF8, 0, u.c_str(), static_cast<int>(u.length()), nullptr, 0);
+    if (len <= 0) return L"";
+    std::wstring out(len, L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, u.c_str(), static_cast<int>(u.length()), out.data(), len);
+    return out;
+}
+
+static std::string EscapeJsonStringUtf8(const std::string& s) {
+    std::string out;
+    out.reserve(s.size() + 8);
+    for (char ch : s) {
+        if (ch == '\\') out += "\\\\";
+        else if (ch == '"') out += "\\\"";
+        else if (ch == '\n') out += "\\n";
+        else if (ch == '\r') out += "\\r";
+        else if (ch == '\t') out += "\\t";
+        else out += ch;
+    }
+    return out;
+}
+
+void Window::SaveBookmarksForWorkspace() {
+    for (const auto& grp : m_editorGroups) {
+        for (const auto& doc : grp.docs) {
+            if (doc.filePath.empty() || doc.isSpecialView) continue;
+            std::wstring key = NormalizeBookmarkKey(doc.filePath);
+            if (doc.bookmarks.empty()) {
+                m_persistedBookmarks.erase(key);
+            } else {
+                m_persistedBookmarks[key] = doc.bookmarks;
+            }
+        }
+    }
+    if (!m_drawer.HasOpenFolder() || m_drawer.GetOpenFolderPath().empty()) return;
+    std::filesystem::path bmPath = std::filesystem::path(m_drawer.GetOpenFolderPath()) / L".phide" / L"bookmarks.json";
+    std::error_code ec;
+    if (m_persistedBookmarks.empty()) {
+        if (std::filesystem::exists(bmPath, ec)) {
+            std::filesystem::remove(bmPath, ec);
+        }
+        return;
+    }
+    workspace::IgnoreEngine::EnsurePhideIgnoredForPath(bmPath);
+    std::filesystem::create_directories(bmPath.parent_path(), ec);
+    std::ofstream out(bmPath, std::ios::binary | std::ios::trunc);
+    if (!out.is_open()) return;
+    out << "{\n";
+    size_t idx = 0;
+    for (const auto& [k, lines] : m_persistedBookmarks) {
+        out << "  \"" << EscapeJsonStringUtf8(WideToUtf8Simple(k)) << "\": [";
+        for (size_t j = 0; j < lines.size(); ++j) {
+            out << lines[j];
+            if (j + 1 < lines.size()) out << ", ";
+        }
+        out << "]";
+        if (++idx < m_persistedBookmarks.size()) out << ",";
+        out << "\n";
+    }
+    out << "}\n";
+}
+
+void Window::LoadBookmarksForWorkspace() {
+    m_persistedBookmarks.clear();
+    if (!m_drawer.HasOpenFolder() || m_drawer.GetOpenFolderPath().empty()) return;
+    std::filesystem::path bmPath = std::filesystem::path(m_drawer.GetOpenFolderPath()) / L".phide" / L"bookmarks.json";
+    std::error_code ec;
+    if (!std::filesystem::exists(bmPath, ec)) return;
+    std::ifstream in(bmPath, std::ios::binary);
+    if (!in.is_open()) return;
+    std::string line;
+    while (std::getline(in, line)) {
+        size_t q1 = line.find('"');
+        if (q1 == std::string::npos) continue;
+        std::string rawKey;
+        size_t p = q1 + 1;
+        while (p < line.size()) {
+            if (line[p] == '\\' && p + 1 < line.size()) {
+                rawKey += line[p + 1];
+                p += 2;
+            } else if (line[p] == '"') {
+                break;
+            } else {
+                rawKey += line[p];
+                p++;
+            }
+        }
+        size_t lb = line.find('[', p);
+        size_t rb = line.find(']', p);
+        if (lb == std::string::npos || rb == std::string::npos || rb <= lb) continue;
+        std::vector<size_t> lines;
+        std::string nums = line.substr(lb + 1, rb - lb - 1);
+        std::stringstream ss(nums);
+        std::string tok;
+        while (std::getline(ss, tok, ',')) {
+            try {
+                size_t val = static_cast<size_t>(std::stoull(tok));
+                lines.push_back(val);
+            } catch (...) {}
+        }
+        if (!rawKey.empty() && !lines.empty()) {
+            m_persistedBookmarks[NormalizeBookmarkKey(Utf8ToWideSimple(rawKey))] = std::move(lines);
+        }
+    }
+    for (auto& grp : m_editorGroups) {
+        for (auto& doc : grp.docs) {
+            if (doc.filePath.empty() || doc.isSpecialView) continue;
+            auto it = m_persistedBookmarks.find(NormalizeBookmarkKey(doc.filePath));
+            if (it != m_persistedBookmarks.end()) {
+                doc.bookmarks.clear();
+                size_t lineCnt = doc.buffer.GetLineCount();
+                for (size_t bl : it->second) {
+                    if (bl < lineCnt) doc.bookmarks.push_back(bl);
+                }
+            }
+        }
+    }
+}
+
+void Window::ApplyInlineFindReplaceCurrent() {
+    auto* pDoc = GetActiveDoc();
+    auto& fb = m_editor.GetFindBar();
+    if (!pDoc || pDoc->isSpecialView || !fb.isOpen || fb.query.empty()) return;
+    if (fb.matches.empty()) m_editor.RecomputeInlineFindMatches(*pDoc);
+    if (fb.matches.empty()) return;
+    if (fb.currentMatchIdx < 0 || fb.currentMatchIdx >= static_cast<int>(fb.matches.size())) {
+        fb.currentMatchIdx = 0;
+    }
+    const auto m = fb.matches[fb.currentMatchIdx];
+    if (m.line >= pDoc->buffer.GetLineCount()) return;
+    std::wstring lineStr = pDoc->buffer.GetLine(m.line);
+    if (m.col + m.length > lineStr.length()) return;
+    std::wstring matchedText = lineStr.substr(m.col, m.length);
+    std::wstring rep = fb.preserveCase
+        ? editor::ApplyPreserveCase(matchedText, fb.replaceQuery)
+        : fb.replaceQuery;
+    if (fb.useRegex) {
+        std::wstring copy = matchedText;
+        if (editor::ReplaceInLine(copy, fb.query, fb.replaceQuery, fb.matchCase, fb.wholeWord, true, fb.preserveCase)) {
+            rep = std::move(copy);
+        }
+    }
+    pDoc->buffer.PushUndo();
+    pDoc->buffer.SetLine(m.line, lineStr.substr(0, m.col) + rep + lineStr.substr(m.col + m.length));
+    MarkDocumentModified(pDoc);
+    m_editor.RecomputeInlineFindMatches(*pDoc);
+    if (!fb.matches.empty()) {
+        if (fb.currentMatchIdx >= static_cast<int>(fb.matches.size())) fb.currentMatchIdx = 0;
+        const auto& nextM = fb.matches[fb.currentMatchIdx];
+        pDoc->buffer.SetCursor(nextM.line, nextM.col + nextM.length);
+        pDoc->selAnchor = { nextM.line, nextM.col };
+        pDoc->selEnd = { nextM.line, nextM.col + nextM.length };
+        pDoc->hasSelection = true;
+        EnsureCursorVisible();
+    }
+    InvalidateRect(m_hwnd, nullptr, FALSE);
+}
+
+void Window::ApplyInlineFindReplaceAll() {
+    auto* pDoc = GetActiveDoc();
+    auto& fb = m_editor.GetFindBar();
+    if (!pDoc || pDoc->isSpecialView || !fb.isOpen || fb.query.empty()) return;
+    m_editor.RecomputeInlineFindMatches(*pDoc);
+    if (fb.matches.empty()) return;
+
+    pDoc->buffer.PushUndo();
+    for (int i = static_cast<int>(fb.matches.size()) - 1; i >= 0; --i) {
+        const auto& m = fb.matches[i];
+        if (m.line >= pDoc->buffer.GetLineCount()) continue;
+        std::wstring lineStr = pDoc->buffer.GetLine(m.line);
+        if (m.col + m.length > lineStr.length()) continue;
+        std::wstring matchedText = lineStr.substr(m.col, m.length);
+        std::wstring rep = fb.preserveCase
+            ? editor::ApplyPreserveCase(matchedText, fb.replaceQuery)
+            : fb.replaceQuery;
+        if (fb.useRegex) {
+            std::wstring copy = matchedText;
+            if (editor::ReplaceInLine(copy, fb.query, fb.replaceQuery, fb.matchCase, fb.wholeWord, true, fb.preserveCase)) {
+                rep = std::move(copy);
+            }
+        }
+        pDoc->buffer.SetLine(m.line, lineStr.substr(0, m.col) + rep + lineStr.substr(m.col + m.length));
+    }
+    MarkDocumentModified(pDoc);
+    m_editor.RecomputeInlineFindMatches(*pDoc);
+    InvalidateRect(m_hwnd, nullptr, FALSE);
+}
+
+void Window::DoGoToDefinition() {
+    auto* pDoc = GetActiveDoc();
+    if (!pDoc || pDoc->isSpecialView) return;
+
+    std::wstring sym = ExtractWordUnderCursor(*pDoc);
+    if (sym.empty()) return;
+    auto pos = pDoc->buffer.GetCursor();
 
     if (m_lsp.IsRunning() && !pDoc->filePath.empty()) {
-        lsp::Location loc;
-        if (m_lsp.RequestDefinition(pDoc->filePath, pos.line, pos.col, loc) && !loc.filePath.empty()) {
-            jumpToLocation(loc.filePath, loc.line, loc.col);
+        std::vector<lsp::Location> locs;
+        if (m_lsp.RequestDefinitionLocations(pDoc->filePath, pos.line, pos.col, locs) && !locs.empty()) {
+            RecordNavCheckpoint();
+            if (locs.size() == 1) {
+                JumpToFileAndLocation(locs[0].filePath, locs[0].line, locs[0].col);
+            } else {
+                std::vector<ui::EditorCanvas::PeekItemEntry> entries;
+                for (const auto& l : locs) {
+                    ui::EditorCanvas::PeekItemEntry e;
+                    e.filePath = l.filePath;
+                    e.line = l.line;
+                    e.col = l.col;
+                    e.label = std::filesystem::path(l.filePath).filename().wstring() + L":" + std::to_wstring(l.line + 1);
+                    e.detail = sym;
+                    entries.push_back(std::move(e));
+                }
+                m_editor.OpenPeekPanel(ui::EditorCanvas::PeekMode::PeekDefinition,
+                                       L"Definitions: " + sym, L"", pos.line, std::move(entries));
+                InvalidateRect(m_hwnd, nullptr, FALSE);
+            }
             return;
         }
     }
 
     auto findDefInLines = [&](const std::vector<std::wstring>& lines, const std::wstring& filePath,
                               size_t& outLine, size_t& outCol) -> bool {
+        auto isSymChar = [](wchar_t ch) { return iswalnum(ch) || ch == L'_'; };
         static const wchar_t* const prefixes[] = {
             L"function ", L"class ", L"interface ", L"trait ", L"struct ",
             L"enum ", L"def ", L"async def ", L"async function ", L"fn ",
@@ -6368,73 +6963,459 @@ void Window::DoGoToDefinition() {
 
     size_t foundL = 0, foundC = 0;
     if (findDefInLines(pDoc->buffer.GetLines(), pDoc->filePath, foundL, foundC)) {
-        jumpToLocation(pDoc->filePath, foundL, foundC);
+        RecordNavCheckpoint();
+        JumpToFileAndLocation(pDoc->filePath, foundL, foundC);
         return;
     }
 
-    std::vector<std::wstring> checkedFiles;
-    if (!pDoc->filePath.empty()) checkedFiles.push_back(pDoc->filePath);
     for (const auto& grp : m_editorGroups) {
         for (const auto& d : grp.docs) {
             if (d.isSpecialView || d.filePath.empty()) continue;
-            checkedFiles.push_back(d.filePath);
             if (findDefInLines(d.buffer.GetLines(), d.filePath, foundL, foundC)) {
-                jumpToLocation(d.filePath, foundL, foundC);
+                RecordNavCheckpoint();
+                JumpToFileAndLocation(d.filePath, foundL, foundC);
                 return;
             }
         }
     }
 
-    if (m_drawer.HasOpenFolder()) {
-        std::error_code ec;
-        int scanned = 0;
-        std::filesystem::path wsRoot(m_drawer.GetOpenFolderPath());
-        for (auto it = std::filesystem::recursive_directory_iterator(
-                 wsRoot, std::filesystem::directory_options::skip_permission_denied, ec);
-             it != std::filesystem::recursive_directory_iterator() && !ec && scanned < 150;
-             it.increment(ec)) {
-            if (it->is_directory(ec)) {
-                std::wstring dn = it->path().filename().wstring();
-                for (auto& ch : dn) ch = static_cast<wchar_t>(towlower(ch));
-                if (dn == L".git" || dn == L"node_modules" || dn == L"vendor" || dn == L".phide" || dn == L".venv" || dn == L"venv") {
-                    it.disable_recursion_pending();
-                }
-                continue;
-            }
-            if (!it->is_regular_file(ec)) continue;
-            std::wstring ext = it->path().extension().wstring();
-            for (auto& ch : ext) ch = static_cast<wchar_t>(towlower(ch));
-            if (ext != L".php" && ext != L".py" && ext != L".js" && ext != L".jsx" &&
-                ext != L".ts" && ext != L".tsx" && ext != L".cpp" && ext != L".hpp" &&
-                ext != L".c" && ext != L".h" && ext != L".go" && ext != L".rs") {
-                continue;
-            }
-            std::wstring cand = it->path().wstring();
-            bool alreadyChecked = false;
-            for (const auto& cf : checkedFiles) {
-                if (_wcsicmp(cf.c_str(), cand.c_str()) == 0) { alreadyChecked = true; break; }
-            }
-            if (alreadyChecked) continue;
-            if (it->file_size(ec) > 512 * 1024) continue;
+    auto indexed = m_symbolIndex.FindDefinitions(sym, pDoc->filePath);
+    for (const auto& cand : indexed) {
+        if (_wcsicmp(cand.filePath.c_str(), pDoc->filePath.c_str()) != 0 || cand.line != pos.line) {
+            RecordNavCheckpoint();
+            JumpToFileAndLocation(cand.filePath, cand.line, cand.col);
+            return;
+        }
+    }
 
-            scanned++;
-            editor::Buffer tmpBuf;
-            if (tmpBuf.LoadFromFile(cand)) {
-                if (findDefInLines(tmpBuf.GetLines(), cand, foundL, foundC)) {
-                    jumpToLocation(cand, foundL, foundC);
-                    return;
+    m_editor.ShowRefactorPopup(L"No definition found for \"" + sym + L"\"");
+    InvalidateRect(m_hwnd, nullptr, FALSE);
+}
+
+void Window::DoPeekDefinition() {
+    auto* pDoc = GetActiveDoc();
+    if (!pDoc || pDoc->isSpecialView) return;
+    std::wstring sym = ExtractWordUnderCursor(*pDoc);
+    if (sym.empty()) return;
+    auto pos = pDoc->buffer.GetCursor();
+
+    std::vector<ui::EditorCanvas::PeekItemEntry> items;
+    if (m_lsp.IsRunning() && !pDoc->filePath.empty()) {
+        std::vector<lsp::Location> locs;
+        if (m_lsp.RequestDefinitionLocations(pDoc->filePath, pos.line, pos.col, locs)) {
+            for (const auto& l : locs) {
+                ui::EditorCanvas::PeekItemEntry e;
+                e.filePath = l.filePath;
+                e.line = l.line;
+                e.col = l.col;
+                e.label = std::filesystem::path(l.filePath).filename().wstring() + L":" + std::to_wstring(l.line + 1);
+                e.detail = L"LSP Definition";
+                items.push_back(std::move(e));
+            }
+        }
+    }
+    if (items.empty()) {
+        auto indexed = m_symbolIndex.FindDefinitions(sym, pDoc->filePath);
+        for (const auto& cand : indexed) {
+            ui::EditorCanvas::PeekItemEntry e;
+            e.filePath = cand.filePath;
+            e.line = cand.line;
+            e.col = cand.col;
+            e.label = std::filesystem::path(cand.filePath).filename().wstring() + L":" + std::to_wstring(cand.line + 1);
+            e.detail = cand.detail.empty() ? sym : cand.detail;
+            items.push_back(std::move(e));
+        }
+    }
+    if (items.empty()) {
+        std::wstring wsRoot = m_drawer.HasOpenFolder() ? m_drawer.GetOpenFolderPath() : L"";
+        auto snaps = CollectOpenDocSnapshots(m_editorGroups);
+        auto refs = editor::FindWorkspaceReferences(sym, wsRoot, m_drawer.GetIgnoreEngine(), snaps, 500, 80);
+        for (const auto& r : refs) {
+            ui::EditorCanvas::PeekItemEntry e;
+            e.filePath = r.filePath;
+            e.line = r.line;
+            e.col = r.col;
+            e.label = std::filesystem::path(r.filePath).filename().wstring() + L":" + std::to_wstring(r.line + 1);
+            e.detail = r.previewLine;
+            e.snippet = r.previewLine;
+            items.push_back(std::move(e));
+        }
+    }
+    if (items.empty()) {
+        m_editor.ShowRefactorPopup(L"No definition found to peek for \"" + sym + L"\"");
+        InvalidateRect(m_hwnd, nullptr, FALSE);
+        return;
+    }
+    m_editor.OpenPeekPanel(ui::EditorCanvas::PeekMode::PeekDefinition,
+                           L"Peek Definition: " + sym,
+                           std::to_wstring(items.size()) + L" match(es)",
+                           pos.line, std::move(items));
+    InvalidateRect(m_hwnd, nullptr, FALSE);
+}
+
+void Window::DoTypeDefinition() {
+    auto* pDoc = GetActiveDoc();
+    if (!pDoc || pDoc->isSpecialView) return;
+    std::wstring sym = ExtractWordUnderCursor(*pDoc);
+    if (sym.empty()) return;
+    auto pos = pDoc->buffer.GetCursor();
+    if (m_lsp.IsRunning() && !pDoc->filePath.empty()) {
+        std::vector<lsp::Location> locs;
+        if (m_lsp.RequestTypeDefinition(pDoc->filePath, pos.line, pos.col, locs) && !locs.empty()) {
+            RecordNavCheckpoint();
+            JumpToFileAndLocation(locs[0].filePath, locs[0].line, locs[0].col);
+            return;
+        }
+    }
+    DoGoToDefinition();
+}
+
+void Window::DoImplementation() {
+    auto* pDoc = GetActiveDoc();
+    if (!pDoc || pDoc->isSpecialView) return;
+    std::wstring sym = ExtractWordUnderCursor(*pDoc);
+    if (sym.empty()) return;
+    auto pos = pDoc->buffer.GetCursor();
+    std::vector<ui::EditorCanvas::PeekItemEntry> items;
+    if (m_lsp.IsRunning() && !pDoc->filePath.empty()) {
+        std::vector<lsp::Location> locs;
+        if (m_lsp.RequestImplementation(pDoc->filePath, pos.line, pos.col, locs)) {
+            for (const auto& l : locs) {
+                ui::EditorCanvas::PeekItemEntry e;
+                e.filePath = l.filePath;
+                e.line = l.line;
+                e.col = l.col;
+                e.label = std::filesystem::path(l.filePath).filename().wstring() + L":" + std::to_wstring(l.line + 1);
+                e.detail = L"Implementation";
+                items.push_back(std::move(e));
+            }
+        }
+    }
+    if (items.size() == 1) {
+        RecordNavCheckpoint();
+        JumpToFileAndLocation(items[0].filePath, items[0].line, items[0].col);
+        return;
+    }
+    if (items.empty()) {
+        auto indexed = m_symbolIndex.FindDefinitions(sym, pDoc->filePath);
+        for (const auto& cand : indexed) {
+            ui::EditorCanvas::PeekItemEntry e;
+            e.filePath = cand.filePath;
+            e.line = cand.line;
+            e.col = cand.col;
+            e.label = std::filesystem::path(cand.filePath).filename().wstring() + L":" + std::to_wstring(cand.line + 1);
+            e.detail = cand.detail;
+            items.push_back(std::move(e));
+        }
+    }
+    if (items.empty()) {
+        m_editor.ShowRefactorPopup(L"No implementation found for \"" + sym + L"\"");
+    } else if (items.size() == 1) {
+        RecordNavCheckpoint();
+        JumpToFileAndLocation(items[0].filePath, items[0].line, items[0].col);
+    } else {
+        m_editor.OpenPeekPanel(ui::EditorCanvas::PeekMode::PeekDefinition,
+                               L"Implementations: " + sym,
+                               std::to_wstring(items.size()) + L" implementation(s)",
+                               pos.line, std::move(items));
+    }
+    InvalidateRect(m_hwnd, nullptr, FALSE);
+}
+
+void Window::DoFindReferences() {
+    auto* pDoc = GetActiveDoc();
+    if (!pDoc || pDoc->isSpecialView) return;
+    std::wstring sym = ExtractWordUnderCursor(*pDoc);
+    if (sym.empty()) return;
+    auto pos = pDoc->buffer.GetCursor();
+
+    std::vector<ui::EditorCanvas::PeekItemEntry> items;
+    if (m_lsp.IsRunning() && !pDoc->filePath.empty()) {
+        std::vector<lsp::Location> locs;
+        if (m_lsp.RequestReferences(pDoc->filePath, pos.line, pos.col, true, locs)) {
+            for (const auto& l : locs) {
+                ui::EditorCanvas::PeekItemEntry e;
+                e.filePath = l.filePath;
+                e.line = l.line;
+                e.col = l.col;
+                e.label = std::filesystem::path(l.filePath).filename().wstring() + L":" + std::to_wstring(l.line + 1);
+                e.detail = L"LSP Reference";
+                items.push_back(std::move(e));
+            }
+        }
+    }
+    if (items.empty()) {
+        std::wstring wsRoot = m_drawer.HasOpenFolder() ? m_drawer.GetOpenFolderPath() : L"";
+        auto snaps = CollectOpenDocSnapshots(m_editorGroups);
+        auto refs = editor::FindWorkspaceReferences(sym, wsRoot, m_drawer.GetIgnoreEngine(), snaps);
+        for (const auto& r : refs) {
+            ui::EditorCanvas::PeekItemEntry e;
+            e.filePath = r.filePath;
+            e.line = r.line;
+            e.col = r.col;
+            e.label = std::filesystem::path(r.filePath).filename().wstring() + L":" + std::to_wstring(r.line + 1);
+            e.detail = r.previewLine;
+            e.snippet = r.previewLine;
+            items.push_back(std::move(e));
+        }
+    }
+    if (items.empty()) {
+        m_editor.ShowRefactorPopup(L"No references found for \"" + sym + L"\"");
+        InvalidateRect(m_hwnd, nullptr, FALSE);
+        return;
+    }
+    m_editor.OpenPeekPanel(ui::EditorCanvas::PeekMode::References,
+                           L"References: " + sym,
+                           std::to_wstring(items.size()) + L" reference(s)",
+                           pos.line, std::move(items));
+    InvalidateRect(m_hwnd, nullptr, FALSE);
+}
+
+void Window::DoCallHierarchy() {
+    auto* pDoc = GetActiveDoc();
+    if (!pDoc || pDoc->isSpecialView) return;
+    std::wstring sym = ExtractWordUnderCursor(*pDoc);
+    if (sym.empty()) return;
+    auto pos = pDoc->buffer.GetCursor();
+
+    std::vector<ui::EditorCanvas::PeekItemEntry> items;
+    if (m_lsp.IsRunning() && !pDoc->filePath.empty()) {
+        std::vector<lsp::CallHierarchyItem> roots;
+        if (m_lsp.PrepareCallHierarchy(pDoc->filePath, pos.line, pos.col, roots) && !roots.empty()) {
+            std::vector<lsp::CallHierarchyItem> incoming, outgoing;
+            m_lsp.RequestIncomingCalls(roots[0], incoming);
+            m_lsp.RequestOutgoingCalls(roots[0], outgoing);
+            for (const auto& c : incoming) {
+                ui::EditorCanvas::PeekItemEntry e;
+                e.filePath = c.filePath;
+                e.line = c.line;
+                e.col = c.col;
+                e.label = L"[Caller] " + c.name;
+                e.detail = std::filesystem::path(c.filePath).filename().wstring() + L":" + std::to_wstring(c.line + 1);
+                items.push_back(std::move(e));
+            }
+            for (const auto& c : outgoing) {
+                ui::EditorCanvas::PeekItemEntry e;
+                e.filePath = c.filePath;
+                e.line = c.line;
+                e.col = c.col;
+                e.label = L"[Callee] " + c.name;
+                e.detail = std::filesystem::path(c.filePath).filename().wstring() + L":" + std::to_wstring(c.line + 1);
+                items.push_back(std::move(e));
+            }
+        }
+    }
+    if (items.empty()) {
+        std::wstring wsRoot = m_drawer.HasOpenFolder() ? m_drawer.GetOpenFolderPath() : L"";
+        auto snaps = CollectOpenDocSnapshots(m_editorGroups);
+        std::wstring activePath = pDoc->filePath.empty() ? pDoc->fileName : pDoc->filePath;
+        auto nodes = editor::BuildStaticCallHierarchy(sym, activePath, wsRoot, m_drawer.GetIgnoreEngine(), snaps);
+        for (const auto& n : nodes) {
+            ui::EditorCanvas::PeekItemEntry e;
+            e.filePath = n.filePath;
+            e.line = n.line;
+            e.col = n.col;
+            e.label = (n.isIncoming ? L"[Caller] " : L"[Callee] ") + n.name;
+            e.detail = n.detail;
+            items.push_back(std::move(e));
+        }
+    }
+    m_editor.OpenPeekPanel(ui::EditorCanvas::PeekMode::CallHierarchy,
+                           L"Call Hierarchy: " + sym,
+                           std::to_wstring(items.size()) + L" call edge(s)",
+                           pos.line, std::move(items));
+    InvalidateRect(m_hwnd, nullptr, FALSE);
+}
+
+void Window::DoCodeMetrics() {
+    std::wstring wsRoot = m_drawer.HasOpenFolder() ? m_drawer.GetOpenFolderPath() : L"";
+    auto snaps = CollectOpenDocSnapshots(m_editorGroups);
+    auto metrics = editor::ComputeWorkspaceMetrics(wsRoot, m_drawer.GetIgnoreEngine(), snaps);
+    std::wstring activeSummary = L"No active file";
+    size_t anchorLine = 0;
+    if (auto* pDoc = GetActiveDoc(); pDoc && !pDoc->isSpecialView && !pDoc->isUnsupportedBinary) {
+        std::wstring p = pDoc->filePath.empty() ? pDoc->fileName : pDoc->filePath;
+        std::wstring ext = std::filesystem::path(p).extension().wstring();
+        for (auto& c : ext) c = static_cast<wchar_t>(towlower(c));
+        auto fm = editor::ComputeFileMetrics(p, pDoc->buffer.GetText(), ext);
+        activeSummary = std::filesystem::path(p).filename().wstring() +
+                        L" — " + std::to_wstring(fm.codeLines) + L" LOC, " +
+                        std::to_wstring(fm.functionCount) + L" funcs, " +
+                        L"complexity " + std::to_wstring(fm.cyclomaticComplexity);
+        anchorLine = pDoc->buffer.GetCursor().line;
+    }
+    m_editor.OpenCodeMetricsPanel(metrics, activeSummary);
+    m_editor.GetPeekPanel().anchorLine = anchorLine;
+    InvalidateRect(m_hwnd, nullptr, FALSE);
+}
+
+void Window::DoRenameSymbol() {
+    auto* pDoc = GetActiveDoc();
+    if (!pDoc || pDoc->isSpecialView || pDoc->isUnsupportedBinary) return;
+    if (pDoc->isDiffView && (pDoc->diffActivePane == 0 || pDoc->isDiffRightReadOnly)) return;
+
+    std::wstring sym = ExtractWordUnderCursor(*pDoc);
+    if (sym.empty()) {
+        m_editor.ShowRefactorPopup(L"Place cursor on an identifier to rename");
+        InvalidateRect(m_hwnd, nullptr, FALSE);
+        return;
+    }
+    auto pos = pDoc->buffer.GetCursor();
+    std::wstring statusNote = L"Workspace rename";
+    if (m_lsp.IsRunning() && !pDoc->filePath.empty()) {
+        size_t sCol = 0, eCol = 0;
+        std::wstring placeholder;
+        if (m_lsp.PrepareRename(pDoc->filePath, pos.line, pos.col, sCol, eCol, placeholder)) {
+            if (!placeholder.empty()) sym = placeholder;
+            statusNote = L"LSP rename";
+        }
+    }
+    std::wstring wsRoot = m_drawer.HasOpenFolder() ? m_drawer.GetOpenFolderPath() : L"";
+    auto snaps = CollectOpenDocSnapshots(m_editorGroups);
+    auto plan = editor::BuildStaticRenamePlan(sym, sym, wsRoot, m_drawer.GetIgnoreEngine(), snaps);
+    m_editor.OpenRenameWidget(sym, std::move(plan), statusNote);
+    InvalidateRect(m_hwnd, nullptr, FALSE);
+}
+
+void Window::ApplyCrossFileRename(const std::wstring& newName) {
+    auto* pDoc = GetActiveDoc();
+    const auto& rw = m_editor.GetRenameWidget();
+    std::wstring oldName = rw.oldName;
+    if (oldName.empty() || newName.empty() || oldName == newName) {
+        m_editor.CloseRenameWidget();
+        InvalidateRect(m_hwnd, nullptr, FALSE);
+        return;
+    }
+
+    auto normKey = [](std::wstring s) {
+        for (auto& c : s) { if (c == L'/') c = L'\\'; c = static_cast<wchar_t>(towlower(c)); }
+        return s;
+    };
+
+    size_t filesTouched = 0;
+    size_t editsApplied = 0;
+
+    if (m_lsp.IsRunning() && pDoc && !pDoc->filePath.empty()) {
+        lsp::WorkspaceEditResult wsEdit;
+        auto pos = pDoc->buffer.GetCursor();
+        if (m_lsp.RequestRename(pDoc->filePath, pos.line, pos.col, newName, wsEdit) && !wsEdit.fileChanges.empty()) {
+            for (const auto& [filePath, edits] : wsEdit.fileChanges) {
+                std::wstring key = normKey(filePath);
+                std::vector<lsp::LspTextEdit> sortedEdits = edits;
+                std::sort(sortedEdits.begin(), sortedEdits.end(), [](const lsp::LspTextEdit& a, const lsp::LspTextEdit& b) {
+                    if (a.startLine != b.startLine) return a.startLine > b.startLine;
+                    return a.startCol > b.startCol;
+                });
+
+                bool matchedOpen = false;
+                for (auto& grp : m_editorGroups) {
+                    for (auto& d : grp.docs) {
+                        if (d.isSpecialView || d.filePath.empty()) continue;
+                        if (normKey(d.filePath) != key) continue;
+                        d.buffer.PushUndo();
+                        for (const auto& ed : sortedEdits) {
+                            if (ed.startLine < d.buffer.GetLineCount() && ed.startLine == ed.endLine) {
+                                std::wstring ln = d.buffer.GetLine(ed.startLine);
+                                size_t sc = (std::min)(ed.startCol, ln.length());
+                                size_t ec = (std::min)(ed.endCol, ln.length());
+                                d.buffer.SetLine(ed.startLine, ln.substr(0, sc) + ed.newText + ln.substr(ec));
+                                editsApplied++;
+                            }
+                        }
+                        MarkDocumentModified(&d);
+                        matchedOpen = true;
+                        filesTouched++;
+                    }
+                }
+                if (!matchedOpen) {
+                    editor::Buffer diskBuf;
+                    if (diskBuf.LoadFromFile(filePath)) {
+                        for (const auto& ed : sortedEdits) {
+                            if (ed.startLine < diskBuf.GetLineCount() && ed.startLine == ed.endLine) {
+                                std::wstring ln = diskBuf.GetLine(ed.startLine);
+                                size_t sc = (std::min)(ed.startCol, ln.length());
+                                size_t ec = (std::min)(ed.endCol, ln.length());
+                                diskBuf.SetLine(ed.startLine, ln.substr(0, sc) + ed.newText + ln.substr(ec));
+                                editsApplied++;
+                            }
+                        }
+                        if (diskBuf.SaveToFile(filePath)) filesTouched++;
+                    }
+                }
+            }
+            m_editor.CloseRenameWidget();
+            RefreshActiveDocOutlineAndBreadcrumbs();
+            m_editor.ShowRefactorPopup(L"Renamed \"" + oldName + L"\" -> \"" + newName + L"\" (" +
+                                       std::to_wstring(editsApplied) + L" edits in " + std::to_wstring(filesTouched) + L" file(s))");
+            InvalidateRect(m_hwnd, nullptr, FALSE);
+            return;
+        }
+    }
+
+    std::wstring wsRoot = m_drawer.HasOpenFolder() ? m_drawer.GetOpenFolderPath() : L"";
+    auto snaps = CollectOpenDocSnapshots(m_editorGroups);
+    auto plan = editor::BuildStaticRenamePlan(oldName, newName, wsRoot, m_drawer.GetIgnoreEngine(), snaps);
+    if (!plan.valid) {
+        m_editor.ShowRefactorPopup(plan.errorMessage.empty() ? L"Invalid identifier name" : plan.errorMessage);
+        InvalidateRect(m_hwnd, nullptr, FALSE);
+        return;
+    }
+
+    for (const auto& fg : plan.fileGroups) {
+        std::wstring key = normKey(fg.filePath);
+        bool matchedOpen = false;
+        for (auto& grp : m_editorGroups) {
+            for (auto& d : grp.docs) {
+                if (d.isSpecialView || d.isUnsupportedBinary) continue;
+                std::wstring dk = d.filePath.empty() ? d.fileName : d.filePath;
+                if (normKey(dk) != key) continue;
+                bool pushed = false;
+                for (size_t li = 0; li < d.buffer.GetLineCount(); ++li) {
+                    std::wstring ln = d.buffer.GetLine(li);
+                    if (editor::ReplaceInLine(ln, oldName, newName, true, true, false, false)) {
+                        if (!pushed) {
+                            d.buffer.PushUndo();
+                            pushed = true;
+                        }
+                        d.buffer.SetLine(li, ln);
+                    }
+                }
+                if (pushed) {
+                    MarkDocumentModified(&d);
+                    matchedOpen = true;
+                }
+            }
+        }
+        if (matchedOpen) {
+            filesTouched++;
+            editsApplied += fg.edits.size();
+        } else if (!fg.filePath.empty()) {
+            editor::Buffer diskBuf;
+            if (diskBuf.LoadFromFile(fg.filePath)) {
+                bool changed = false;
+                for (size_t li = 0; li < diskBuf.GetLineCount(); ++li) {
+                    std::wstring ln = diskBuf.GetLine(li);
+                    if (editor::ReplaceInLine(ln, oldName, newName, true, true, false, false)) {
+                        diskBuf.SetLine(li, ln);
+                        changed = true;
+                    }
+                }
+                if (changed && diskBuf.SaveToFile(fg.filePath)) {
+                    filesTouched++;
+                    editsApplied += fg.edits.size();
                 }
             }
         }
     }
 
-    m_editor.ShowRefactorPopup(L"No definition found for \"" + sym + L"\"");
-}
-
-void Window::DoRenameSymbol() {
-    auto* pDoc = GetActiveDoc();
-    if (!pDoc || pDoc->isSpecialView) return;
-    m_editor.ShowRefactorPopup(L"Rename Symbol (F2)");
+    m_editor.CloseRenameWidget();
+    if (m_drawer.HasOpenFolder()) {
+        m_symbolIndex.RebuildAsync(m_drawer.GetOpenFolderPath(), &m_drawer.GetIgnoreEngine());
+    }
+    RefreshActiveDocOutlineAndBreadcrumbs();
+    m_editor.ShowRefactorPopup(L"Renamed \"" + oldName + L"\" -> \"" + newName + L"\" (" +
+                               std::to_wstring(editsApplied) + L" edits in " + std::to_wstring(filesTouched) + L" file(s))");
+    InvalidateRect(m_hwnd, nullptr, FALSE);
 }
 
 bool Window::IsFileInDirectory(const std::wstring& filePath, const std::wstring& dirPath) {
@@ -8403,6 +9384,8 @@ void Window::SaveFileToPath(const std::wstring& path) {
             if (m_drawer.HasOpenFolder()) {
                 m_adaptiveEngine.SaveProfileAsync(m_drawer.GetOpenFolderPath() + L"\\.phide\\user_adaptive_profile.json");
             }
+            m_symbolIndex.UpdateFileSymbols(path, pDoc->buffer.GetText());
+            RefreshActiveDocOutlineAndBreadcrumbs();
             SyncDocumentBuffers(pDoc);
             UpdateDrawerDirtyFiles();
             m_drawer.RefreshGitStatusOnly(true); // Immediate 0ms refresh on Save!
@@ -9046,6 +10029,58 @@ bool Window::Create(HINSTANCE hInstance, int nCmdShow) {
         }
     });
 
+    m_quickOpen.SetSymbolIndex(&m_symbolIndex);
+    m_drawer.SetOnOutlineJump([this](size_t line0Based, size_t col0Based) {
+        RecordNavCheckpoint();
+        JumpToEditorLocation(line0Based, col0Based);
+    });
+    m_drawer.SetOnApplyOpenDocReplace([this](const std::wstring& filePath,
+                                             const std::wstring& searchQ,
+                                             const std::wstring& replaceQ,
+                                             bool matchCase, bool matchWord,
+                                             bool useRegex, bool preserveCase,
+                                             int targetLine) -> bool {
+        auto normKey = [](std::wstring s) {
+            for (auto& ch : s) {
+                if (ch == L'/') ch = L'\\';
+                ch = static_cast<wchar_t>(towlower(ch));
+            }
+            return s;
+        };
+        std::wstring needle = normKey(filePath);
+        bool anyModified = false;
+        for (auto& grp : m_editorGroups) {
+            for (auto& doc : grp.docs) {
+                if (doc.isSpecialView || doc.isUnsupportedBinary || doc.filePath.empty()) continue;
+                if (normKey(doc.filePath) != needle) continue;
+                size_t lineCnt = doc.buffer.GetLineCount();
+                if (lineCnt == 0) continue;
+                size_t startL = (targetLine >= 0 && static_cast<size_t>(targetLine) < lineCnt) ? static_cast<size_t>(targetLine) : 0;
+                size_t endL = (targetLine >= 0) ? (std::min)(startL + 1, lineCnt) : lineCnt;
+                bool docChanged = false;
+                for (size_t li = startL; li < endL; ++li) {
+                    std::wstring ln = doc.buffer.GetLine(li);
+                    if (editor::ReplaceInLine(ln, searchQ, replaceQ, matchCase, matchWord, useRegex, preserveCase)) {
+                        if (!docChanged) {
+                            doc.buffer.PushUndo();
+                            docChanged = true;
+                        }
+                        doc.buffer.SetLine(li, ln);
+                    }
+                }
+                if (docChanged) {
+                    MarkDocumentModified(&doc);
+                    anyModified = true;
+                }
+            }
+        }
+        if (anyModified && m_hwnd) {
+            RefreshActiveDocOutlineAndBreadcrumbs();
+            InvalidateRect(m_hwnd, nullptr, FALSE);
+        }
+        return anyModified;
+    });
+
     SetupRemoteCallbacks();
 
     // Wire Package Manager HWND for embedded WebView2 and Install Package callback
@@ -9588,14 +10623,21 @@ void Window::OnPaint() {
     float canvasLeft = 0.0f, canvasWidth = 0.0f;
     GetCanvasLayout(clientW, canvasLeft, canvasWidth);
 
+    RefreshActiveDocOutlineAndBreadcrumbs();
+
     // 1. Render Workspace Canvas (shows placeholder watermark when no file is open, multi-tabs and active doc when open)
-    // Only highlight search occurrences when user is actively inside Code Search drawer tab!
-    // As requested: highlight removes automatically when search query becomes different or user navigates to other drawers (e.g. File Explorer)
+    // Highlight inline Find bar matches first, or Search drawer query when inside Code Search drawer tab.
     std::wstring searchHL;
     bool hlMatchCase = false;
     bool hlWholeWord = false;
     bool hlUseRegex = false;
-    if (m_config.activeRailTab == 1 && hasLeftDrawer) {
+    const auto& inlineFind = m_editor.GetFindBar();
+    if (inlineFind.isOpen && !inlineFind.query.empty()) {
+        searchHL = inlineFind.query;
+        hlMatchCase = inlineFind.matchCase;
+        hlWholeWord = inlineFind.wholeWord;
+        hlUseRegex = inlineFind.useRegex;
+    } else if (m_config.activeRailTab == 1 && hasLeftDrawer) {
         searchHL = m_drawer.GetSearchQuery();
         hlMatchCase = m_drawer.GetMatchCase();
         hlWholeWord = m_drawer.GetMatchWholeWord();
@@ -9612,6 +10654,7 @@ void Window::OnPaint() {
     m_drawer.SetActiveFilePath(explorerActivePath);
 
     bool suppressEditorCaret = m_remoteModal.IsOpen() || m_quickOpen.IsOpen() || m_themePicker.IsOpen() || m_colorPicker.IsOpen() || m_popupMenu.IsOpen() ||
+        inlineFind.isOpen || m_editor.GetRenameWidget().isOpen || m_editor.GetPeekPanel().isOpen ||
         (m_terminal.IsOpen() && m_isTerminalFocused) ||
         m_drawer.IsRenaming() || m_drawer.IsCreating() ||
         (m_drawerAnimProgress > 0.001f && (m_drawer.IsGitCommitBoxFocused() || m_drawer.IsSearchFocused()));
@@ -9707,7 +10750,7 @@ void Window::OnPaint() {
     if (hasLeftDrawer && drawerH > headerH + 2.0f) {
         D2D1_RECT_F drawerClip = D2D1::RectF(static_cast<float>(railW), headerH, static_cast<float>(railW) + currentDrawerW, drawerH);
         m_pRenderTarget->PushAxisAlignedClip(drawerClip, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
-        m_drawer.Render(m_pRenderTarget.Get(), m_theme, m_config, drawerH, currentDrawerW);
+        m_drawer.Render(m_pRenderTarget.Get(), m_theme, m_config, drawerH, currentDrawerW, true);
         m_pRenderTarget->PopAxisAlignedClip();
     }
 
@@ -13322,8 +14365,46 @@ bool Window::HandlePopupMenuClick(POINT clientPt) {
                         DoOrganizeImports();
                         break;
                     case ui::MenuActionId::CodeGoToDefinition:
-                    case ui::MenuActionId::CodePeekDefinition:
                         DoGoToDefinition();
+                        break;
+                    case ui::MenuActionId::CodePeekDefinition:
+                        DoPeekDefinition();
+                        break;
+                    case ui::MenuActionId::CodeTypeDefinition:
+                        DoTypeDefinition();
+                        break;
+                    case ui::MenuActionId::CodeImplementation:
+                        DoImplementation();
+                        break;
+                    case ui::MenuActionId::CodeFindReferences:
+                        DoFindReferences();
+                        break;
+                    case ui::MenuActionId::CodeGoToSymbol:
+                        DoGoToSymbolInEditor();
+                        break;
+                    case ui::MenuActionId::NavBack:
+                        NavigateBack();
+                        break;
+                    case ui::MenuActionId::NavForward:
+                        NavigateForward();
+                        break;
+                    case ui::MenuActionId::ToggleBookmark:
+                        DoToggleBookmark();
+                        break;
+                    case ui::MenuActionId::NextBookmark:
+                        DoNextBookmark();
+                        break;
+                    case ui::MenuActionId::PrevBookmark:
+                        DoPrevBookmark();
+                        break;
+                    case ui::MenuActionId::ClearBookmarks:
+                        DoClearBookmarks();
+                        break;
+                    case ui::MenuActionId::WindowNextGroup:
+                        FocusAdjacentEditorGroup(true);
+                        break;
+                    case ui::MenuActionId::WindowPrevGroup:
+                        FocusAdjacentEditorGroup(false);
                         break;
                     case ui::MenuActionId::CodeRenameSymbol:
                         DoRenameSymbol();
@@ -13582,11 +14663,19 @@ bool Window::HandlePopupMenuClick(POINT clientPt) {
                         SaveSessionState();
                         break;
                     case ui::MenuActionId::MoreTraceCode:
+                        DoFindReferences();
+                        break;
                     case ui::MenuActionId::MoreDependencyGraph:
+                        OpenSpecialView(L"graph", L"Graph view");
+                        break;
                     case ui::MenuActionId::MoreCallHierarchy:
+                        DoCallHierarchy();
+                        break;
                     case ui::MenuActionId::MoreCodeHierarchy:
+                        DoGoToSymbolInEditor();
+                        break;
                     case ui::MenuActionId::MoreCodeMetrics:
-                        InvalidateRect(m_hwnd, nullptr, FALSE);
+                        DoCodeMetrics();
                         break;
                     default:
                         break;
@@ -14224,9 +15313,12 @@ void Window::HandleLButtonDown(POINT clientPt) {
             if (!actionCmd.empty()) {
                 ExecuteQuickOpenAction(actionCmd);
             } else if (!chosenFile.empty()) {
+                RecordNavCheckpoint();
                 OpenFileDocument(chosenFile, false);
                 if (targetLine > 0) {
-                    JumpToEditorLine(static_cast<size_t>(targetLine));
+                    int targetCol = m_quickOpen.GetLastSelectedCol();
+                    JumpToEditorLocation(static_cast<size_t>(targetLine - 1),
+                                         targetCol > 0 ? static_cast<size_t>(targetCol - 1) : 0);
                 }
             }
         }
@@ -14235,6 +15327,86 @@ void Window::HandleLButtonDown(POINT clientPt) {
     }
 
     // Popup menu click is handled at the start of HandleLButtonDown
+
+    // 0c. Floating Editor Overlays (Breadcrumb dropdown, Inline Rename, Inline Find, Inline Peek)
+    if (m_editor.IsBreadcrumbDropdownOpen()) {
+        auto* pBC = GetActiveDoc();
+        std::wstring activePath = pBC ? (pBC->filePath.empty() ? pBC->fileName : pBC->filePath) : L"";
+        std::wstring wsRoot = m_drawer.HasOpenFolder() ? m_drawer.GetOpenFolderPath() : L"";
+        std::wstring outFile;
+        size_t outL = 0, outC = 0;
+        bool jumpCurrent = false;
+        if (m_editor.HandleBreadcrumbClick(clientPt, m_config, activePath, wsRoot, outFile, outL, outC, jumpCurrent)) {
+            if (jumpCurrent) {
+                RecordNavCheckpoint();
+                JumpToEditorLocation(outL, outC);
+            } else if (!outFile.empty()) {
+                RecordNavCheckpoint();
+                OpenFileDocument(outFile, false);
+            }
+            InvalidateRect(m_hwnd, nullptr, FALSE);
+            return;
+        }
+        m_editor.DismissBreadcrumbDropdown();
+        InvalidateRect(m_hwnd, nullptr, FALSE);
+    }
+
+    if (m_editor.GetRenameWidget().isOpen) {
+        auto ra = m_editor.HandleRenameClick(clientPt);
+        if (ra != ui::EditorCanvas::RenameAction::None) {
+            if (ra == ui::EditorCanvas::RenameAction::ApplyRequested) {
+                ApplyCrossFileRename(m_editor.GetRenameWidget().newName);
+            } else {
+                InvalidateRect(m_hwnd, nullptr, FALSE);
+            }
+            return;
+        }
+    }
+
+    if (m_editor.GetFindBar().isOpen) {
+        auto fa = m_editor.HandleInlineFindClick(clientPt);
+        if (fa != ui::EditorCanvas::InlineFindAction::None) {
+            if (fa == ui::EditorCanvas::InlineFindAction::OptionsChanged) {
+                if (auto* pFD = GetActiveDoc(); pFD && !pFD->isSpecialView) {
+                    m_editor.RecomputeInlineFindMatches(*pFD);
+                }
+            } else if (fa == ui::EditorCanvas::InlineFindAction::FindNext ||
+                       fa == ui::EditorCanvas::InlineFindAction::FindPrev) {
+                if (auto* pFD = GetActiveDoc(); pFD && !pFD->isSpecialView) {
+                    m_editor.StepInlineFindMatch(*pFD, fa == ui::EditorCanvas::InlineFindAction::FindNext);
+                    EnsureCursorVisible();
+                }
+            } else if (fa == ui::EditorCanvas::InlineFindAction::ReplaceCurrent) {
+                ApplyInlineFindReplaceCurrent();
+                return;
+            } else if (fa == ui::EditorCanvas::InlineFindAction::ReplaceAll) {
+                ApplyInlineFindReplaceAll();
+                return;
+            }
+            InvalidateRect(m_hwnd, nullptr, FALSE);
+            return;
+        }
+    }
+
+    if (m_editor.GetPeekPanel().isOpen) {
+        auto pa = m_editor.HandlePeekClick(clientPt);
+        if (pa != ui::EditorCanvas::PeekAction::None) {
+            if (pa == ui::EditorCanvas::PeekAction::NavigateToSelected) {
+                const auto& pp = m_editor.GetPeekPanel();
+                if (pp.selectedIndex >= 0 && pp.selectedIndex < static_cast<int>(pp.items.size())) {
+                    const auto& item = pp.items[pp.selectedIndex];
+                    RecordNavCheckpoint();
+                    std::wstring fp = item.filePath;
+                    size_t ln = item.line, cl = item.col;
+                    m_editor.ClosePeekPanel();
+                    JumpToFileAndLocation(fp, ln, cl);
+                    return;
+                }
+            }
+            InvalidateRect(m_hwnd, nullptr, FALSE);
+            return;
+        }
+    }
 
     // 1. Caption Button Clicks (Minimize, Maximize, Close)
     auto captionHit = m_header.HitTestCaptionButton(clientPt);
@@ -14512,6 +15684,9 @@ void Window::HandleLButtonDown(POINT clientPt) {
         m_explorerHasFocus = false;
         // Clear drawer search focus whenever user clicks anywhere inside the editor canvas
         m_drawer.SetSearchFocus(0);
+        if (m_editor.GetFindBar().isOpen) {
+            m_editor.GetFindBar().focusedInput = 0;
+        }
         UpdateEditorGroupBounds();
         int targetGroup = FindEditorGroupAtPoint(clientPt);
 
@@ -14563,12 +15738,16 @@ void Window::HandleLButtonDown(POINT clientPt) {
             // 4b. Tab Header Click in this group (initiates potential tab drag-and-drop reorder)
             int tabHitIdx = m_editor.HitTestTab(clientPt, group.docs);
             if (tabHitIdx >= 0) {
+                if (group.activeDocIdx != tabHitIdx) {
+                    RecordNavCheckpoint();
+                }
                 if (m_autoSave && group.activeDocIdx != tabHitIdx) {
                     FlushPendingAutoSaves();
                 }
                 group.activeDocIdx = tabHitIdx;
                 ClearExplorerSelectionOverride();
                 SyncActiveTabWithDrawer();
+                RefreshActiveDocOutlineAndBreadcrumbs();
                 m_dragTabGroup = targetGroup;
                 m_dragTabIdx = tabHitIdx;
                 m_tabDropTargetGroup = targetGroup;
@@ -14861,6 +16040,26 @@ void Window::HandleLButtonDown(POINT clientPt) {
                     float paneW = (std::max)(20.0f, group.bounds.right - group.bounds.left);
                     float paneBottom = group.bounds.bottom;
 
+                    // Breadcrumbs header bar click (sibling files / outline symbols dropdown)
+                    if (m_config.showBreadcrumbs && !doc.isSpecialView) {
+                        std::wstring activePath = doc.filePath.empty() ? doc.fileName : doc.filePath;
+                        std::wstring wsRoot = m_drawer.HasOpenFolder() ? m_drawer.GetOpenFolderPath() : L"";
+                        std::wstring outFile;
+                        size_t outL = 0, outC = 0;
+                        bool jumpCurrent = false;
+                        if (m_editor.HandleBreadcrumbClick(clientPt, m_config, activePath, wsRoot, outFile, outL, outC, jumpCurrent)) {
+                            if (jumpCurrent) {
+                                RecordNavCheckpoint();
+                                JumpToEditorLocation(outL, outC);
+                            } else if (!outFile.empty()) {
+                                RecordNavCheckpoint();
+                                OpenFileDocument(outFile, false);
+                            }
+                            InvalidateRect(m_hwnd, nullptr, FALSE);
+                            return;
+                        }
+                    }
+
                     // Fold chevron click in gutter
                     int foldLine = m_editor.HitTestFoldChevron(clientPt);
                     if (foldLine >= 0) {
@@ -15082,9 +16281,15 @@ void Window::HandleLButtonDown(POINT clientPt) {
                             }
                         }
 
-                        // Check gutter click for breakpoint toggle (Image 4)
+                        // Check gutter click for breakpoint toggle (or Alt+Click to toggle Bookmark)
                         size_t clickedLine = 0;
                         if (m_editor.HitTestGutter(clientPt, m_config, doc, paneCanvasLeft, paneBottom, clickedLine)) {
+                            if ((GetKeyState(VK_MENU) & 0x8000) != 0) {
+                                doc.ToggleBookmark(clickedLine);
+                                SaveBookmarksForWorkspace();
+                                InvalidateRect(m_hwnd, nullptr, FALSE);
+                                return;
+                            }
                             auto it = std::find(doc.breakpoints.begin(), doc.breakpoints.end(), clickedLine);
                             bool added = false;
                             if (it != doc.breakpoints.end()) {
@@ -15339,6 +16544,7 @@ void Window::HandleLButtonDown(POINT clientPt) {
             m_editor.GetKeyboardShortcutsView().SetSearchFocused(false);
             if (m_drawer.HitTestSearch(clientPt, m_config, jumpFile, jumpLine, matchCol, matchLen)) {
                 if (!jumpFile.empty()) {
+                    RecordNavCheckpoint();
                     OpenFileDocument(jumpFile, false);
                     auto* pDoc = GetActiveDoc();
                     if (pDoc) {
@@ -15427,6 +16633,10 @@ void Window::HandleLButtonDown(POINT clientPt) {
                 return;
             }
         } else {
+            if (m_drawer.HitTestOutline(clientPt, m_config)) {
+                InvalidateRect(m_hwnd, nullptr, FALSE);
+                return;
+            }
             if (m_drawer.IsCourseExplorerMode()) {
                 if (m_drawer.HandleCourseExplorerClick(clientPt, m_config)) {
                     const auto* pTree = m_drawer.GetActiveCourseTree();
@@ -17298,6 +18508,11 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 }
             }
 
+            if (m_editor.GetPeekPanel().isOpen && m_editor.HandlePeekWheel(pt, delta)) {
+                InvalidateRect(m_hwnd, nullptr, FALSE);
+                return 0;
+            }
+
             // Check Autocomplete popup mouse wheel (Images 2 & 5)
             if (m_editor.IsAutocompleteVisible()) {
                 int hitDummy = -1;
@@ -17339,6 +18554,10 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
 
             // 1. Scroll Drawer Panel tree if mouse is over sidebar
             if (m_drawerAnimProgress > 0.001f && pt.x >= railW && pt.x < railW + drawerW && pt.y >= headerH) {
+                if (m_config.activeRailTab == 0 && m_drawer.ScrollOutline(delta)) {
+                    InvalidateRect(m_hwnd, nullptr, FALSE);
+                    return 0;
+                }
                 if (m_drawer.HandleMouseWheel(delta, m_config.activeRailTab, static_cast<float>(pt.y))) {
                     InvalidateRect(m_hwnd, nullptr, FALSE);
                     return 0;
@@ -17561,6 +18780,23 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 m_drawer.HandleCreateChar(static_cast<wchar_t>(wParam));
                 InvalidateRect(m_hwnd, nullptr, FALSE);
                 return 0;
+            }
+
+            if (m_editor.GetRenameWidget().isOpen) {
+                if (m_editor.HandleRenameChar(static_cast<wchar_t>(wParam))) {
+                    InvalidateRect(m_hwnd, nullptr, FALSE);
+                    return 0;
+                }
+            }
+
+            if (m_editor.GetFindBar().isOpen && m_editor.GetFindBar().focusedInput > 0) {
+                if (m_editor.HandleInlineFindChar(static_cast<wchar_t>(wParam))) {
+                    if (auto* pFD = GetActiveDoc(); pFD && !pFD->isSpecialView) {
+                        m_editor.RecomputeInlineFindMatches(*pFD);
+                    }
+                    InvalidateRect(m_hwnd, nullptr, FALSE);
+                    return 0;
+                }
             }
 
             // 1. If Code Search in drawer has focus, typed characters MUST route to Code Search
@@ -18057,7 +19293,8 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
             if ((GetKeyState(VK_MENU) & 0x8000) != 0 &&
                 wParam != VK_F4 && wParam != VK_SPACE && wParam != VK_TAB && wParam != VK_MENU) {
                 if (wParam == VK_UP || wParam == VK_DOWN || wParam == VK_LEFT || wParam == VK_RIGHT ||
-                    wParam == VK_HOME || wParam == VK_END || wParam == 'A' || wParam == 'F') {
+                    wParam == VK_HOME || wParam == VK_END || wParam == 'A' || wParam == 'F' ||
+                    wParam == VK_F12) {
                     HandleMessage(WM_KEYDOWN, wParam, lParam);
                     return 0;
                 }
@@ -18413,9 +19650,12 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     if (!actionCmd.empty()) {
                         ExecuteQuickOpenAction(actionCmd);
                     } else if (!chosenFile.empty()) {
+                        RecordNavCheckpoint();
                         OpenFileDocument(chosenFile, false);
                         if (targetLine > 0) {
-                            JumpToEditorLine(static_cast<size_t>(targetLine));
+                            int targetCol = m_quickOpen.GetLastSelectedCol();
+                            JumpToEditorLocation(static_cast<size_t>(targetLine - 1),
+                                                 targetCol > 0 ? static_cast<size_t>(targetCol - 1) : 0);
                         }
                     }
                     InvalidateRect(m_hwnd, nullptr, FALSE);
@@ -18588,6 +19828,88 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 return 0;
             }
 
+            if (wParam == VK_ESCAPE && m_editor.IsBreadcrumbDropdownOpen()) {
+                m_suppressNextChar = true;
+                m_editor.DismissBreadcrumbDropdown();
+                InvalidateRect(m_hwnd, nullptr, FALSE);
+                return 0;
+            }
+
+            if (m_editor.GetRenameWidget().isOpen) {
+                auto ra = m_editor.HandleRenameKeyDown(wParam);
+                if (ra == ui::EditorCanvas::RenameAction::ApplyRequested) {
+                    m_suppressNextChar = true;
+                    ApplyCrossFileRename(m_editor.GetRenameWidget().newName);
+                    return 0;
+                }
+                if (ra == ui::EditorCanvas::RenameAction::Cancelled) {
+                    m_suppressNextChar = true;
+                    InvalidateRect(m_hwnd, nullptr, FALSE);
+                    return 0;
+                }
+                if (ra == ui::EditorCanvas::RenameAction::Consumed ||
+                    ra == ui::EditorCanvas::RenameAction::PreviewToggled) {
+                    InvalidateRect(m_hwnd, nullptr, FALSE);
+                    return 0;
+                }
+            }
+
+            if (m_editor.GetPeekPanel().isOpen) {
+                auto pa = m_editor.HandlePeekKeyDown(wParam);
+                if (pa == ui::EditorCanvas::PeekAction::NavigateToSelected) {
+                    const auto& pp = m_editor.GetPeekPanel();
+                    if (pp.selectedIndex >= 0 && pp.selectedIndex < static_cast<int>(pp.items.size())) {
+                        const auto& item = pp.items[pp.selectedIndex];
+                        RecordNavCheckpoint();
+                        std::wstring fp = item.filePath;
+                        size_t ln = item.line, cl = item.col;
+                        m_editor.ClosePeekPanel();
+                        JumpToFileAndLocation(fp, ln, cl);
+                    }
+                    return 0;
+                }
+                if (pa == ui::EditorCanvas::PeekAction::Closed ||
+                    pa == ui::EditorCanvas::PeekAction::SelectionChanged ||
+                    pa == ui::EditorCanvas::PeekAction::Consumed) {
+                    if (wParam == VK_ESCAPE || wParam == VK_RETURN) m_suppressNextChar = true;
+                    InvalidateRect(m_hwnd, nullptr, FALSE);
+                    return 0;
+                }
+            }
+
+            if (m_editor.GetFindBar().isOpen) {
+                bool ctrlNow = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
+                bool shiftNow = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
+                bool isEditOrBarKey =
+                    (wParam == VK_ESCAPE || wParam == VK_F3) ||
+                    (m_editor.GetFindBar().focusedInput > 0 &&
+                     (!ctrlNow || wParam == VK_RETURN || wParam == 'A' || wParam == 'C' || wParam == 'V' || wParam == 'X'));
+                if (isEditOrBarKey) {
+                    auto fa = m_editor.HandleInlineFindKeyDown(wParam, ctrlNow, shiftNow);
+                    if (fa != ui::EditorCanvas::InlineFindAction::None) {
+                        if (wParam == VK_ESCAPE || wParam == VK_RETURN) m_suppressNextChar = true;
+                        if (auto* pFD = GetActiveDoc(); pFD && !pFD->isSpecialView) {
+                            m_editor.RecomputeInlineFindMatches(*pFD);
+                            if (fa == ui::EditorCanvas::InlineFindAction::FindNext ||
+                                fa == ui::EditorCanvas::InlineFindAction::FindPrev) {
+                                m_editor.StepInlineFindMatch(*pFD, fa == ui::EditorCanvas::InlineFindAction::FindNext);
+                                EnsureCursorVisible();
+                            }
+                        }
+                        if (fa == ui::EditorCanvas::InlineFindAction::ReplaceCurrent) {
+                            ApplyInlineFindReplaceCurrent();
+                            return 0;
+                        }
+                        if (fa == ui::EditorCanvas::InlineFindAction::ReplaceAll) {
+                            ApplyInlineFindReplaceAll();
+                            return 0;
+                        }
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
+                        return 0;
+                    }
+                }
+            }
+
             // 1. If Code Search in drawer is focused, navigation keys route to Code Search
             if (m_config.activeRailTab == 1 && m_drawerAnimProgress > 0.001f && m_drawer.IsSearchFocused()) {
                 if (wParam == VK_BACK || wParam == VK_TAB || wParam == VK_ESCAPE || wParam == VK_RETURN) {
@@ -18703,12 +20025,42 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                         DoMoveLines(wParam == VK_UP);
                         return 0;
                     }
+                    if (!ctrlAlt && !shiftAlt && (wParam == VK_LEFT || wParam == VK_RIGHT)) {
+                        if (wParam == VK_LEFT) NavigateBack();
+                        else NavigateForward();
+                        return 0;
+                    }
                 }
             }
 
-            // F12: Go to Definition
+            // F3 / Shift+F3: Find Next / Previous Match
+            if (wParam == VK_F3) {
+                bool shiftF3 = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
+                if (!m_editor.GetFindBar().isOpen) {
+                    DoFind();
+                }
+                if (auto* pFD = GetActiveDoc(); pFD && !pFD->isSpecialView && m_editor.GetFindBar().isOpen) {
+                    m_editor.StepInlineFindMatch(*pFD, !shiftF3);
+                    EnsureCursorVisible();
+                    InvalidateRect(m_hwnd, nullptr, FALSE);
+                }
+                return 0;
+            }
+
+            // F12 variants: F12 Go to Definition, Alt+F12 Peek Definition, Shift+F12 References, Ctrl+F12 Implementation
             if (wParam == VK_F12) {
-                DoGoToDefinition();
+                bool ctrlF12 = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
+                bool shiftF12 = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
+                bool altF12 = (GetKeyState(VK_MENU) & 0x8000) != 0;
+                if (altF12 && !ctrlF12 && !shiftF12) {
+                    DoPeekDefinition();
+                } else if (shiftF12 && !ctrlF12 && !altF12) {
+                    DoFindReferences();
+                } else if (ctrlF12 && !shiftF12 && !altF12) {
+                    DoImplementation();
+                } else {
+                    DoGoToDefinition();
+                }
                 return 0;
             }
 
@@ -18774,6 +20126,18 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     DoFoldLevel(lvl);
                     return 0;
                 }
+                if (!m_chordCtrlK && !shiftDown && !altDown &&
+                    (wParam == '1' || wParam == '2' || wParam == '3' || wParam == '4')) {
+                    if (m_editorGroups.size() > 1) {
+                        FocusEditorGroup(static_cast<int>(wParam - '1'));
+                        return 0;
+                    }
+                }
+                if (m_chordCtrlK && (wParam == VK_LEFT || wParam == VK_RIGHT)) {
+                    m_chordCtrlK = false;
+                    FocusAdjacentEditorGroup(wParam == VK_RIGHT);
+                    return 0;
+                }
 
                 // Ctrl+/ (VK_OEM_2): Toggle Line Comment
                 if (wParam == VK_OEM_2) {
@@ -18802,7 +20166,9 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     return 0;
                 }
                 if (wParam == 'P') {
-                    if (shiftDown) {
+                    if (altDown && !shiftDown) {
+                        DoPrevBookmark();
+                    } else if (shiftDown) {
                         DoCommandPalette();
                     } else {
                         DoQuickOpenFileSearch();
@@ -18817,13 +20183,17 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     if (shiftDown) {
                         DoNewWindow();
                     } else if (altDown) {
-                        DoNewFile();
+                        DoNextBookmark();
                     } else {
                         DoNewTextFile();
                     }
                     return 0;
                 }
                 if (wParam == 'O') {
+                    if (shiftDown && !altDown && !m_chordCtrlK) {
+                        DoGoToSymbolInEditor();
+                        return 0;
+                    }
                     if (m_chordCtrlK) {
                         DoOpenFolder();
                     } else {
@@ -18909,6 +20279,9 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                         DoToggleThemeModal();
                         m_chordCtrlK = false;
                         return 0;
+                    } else if (!altDown) {
+                        DoGoToWorkspaceSymbol();
+                        return 0;
                     }
                 }
                 if (wParam == VK_OEM_COMMA) {
@@ -18969,6 +20342,10 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     return 0;
                 }
                 if (wParam == 'K') {
+                    if (altDown && !shiftDown) {
+                        DoToggleBookmark();
+                        return 0;
+                    }
                     if (shiftDown && pDoc && !pDoc->isSpecialView) {
                         // Ctrl+Shift+K: Delete entire line (undoable)
                         pDoc->buffer.DeleteLine(pDoc->buffer.GetCursor().line);

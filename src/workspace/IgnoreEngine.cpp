@@ -343,6 +343,15 @@ std::vector<std::wstring> IgnoreEngine::GetLoadedSourceFiles() const {
     return m_loadedSourceFiles;
 }
 
+void IgnoreEngine::CopyFrom(const IgnoreEngine& other) {
+    if (this == &other) return;
+    std::scoped_lock lock(m_mutex, other.m_mutex);
+    m_workspaceRoot = other.m_workspaceRoot;
+    m_rules = other.m_rules;
+    m_gitIgnoredSet = other.m_gitIgnoredSet;
+    m_loadedSourceFiles = other.m_loadedSourceFiles;
+}
+
 bool IgnoreEngine::IsIgnored(
     const std::wstring& fullPath,
     const std::wstring& fileName,
@@ -454,6 +463,154 @@ bool IgnoreEngine::IsIgnored(
     }
 
     return ignored;
+}
+
+namespace {
+
+bool ContainsPhideIgnoreRule(const std::string& content) {
+    bool ignored = false;
+    size_t pos = 0;
+    bool firstLine = true;
+    while (pos <= content.size()) {
+        size_t nl = content.find('\n', pos);
+        std::string line = (nl == std::string::npos) ? content.substr(pos) : content.substr(pos, nl - pos);
+        if (firstLine) {
+            firstLine = false;
+            if (line.size() >= 3 &&
+                static_cast<unsigned char>(line[0]) == 0xEF &&
+                static_cast<unsigned char>(line[1]) == 0xBB &&
+                static_cast<unsigned char>(line[2]) == 0xBF) {
+                line.erase(0, 3);
+            }
+        }
+        if (!line.empty() && line.back() == '\r') {
+            line.pop_back();
+        }
+        size_t first = line.find_first_not_of(" \t");
+        if (first != std::string::npos) {
+            size_t last = line.find_last_not_of(" \t");
+            std::string trimmed = line.substr(first, last - first + 1);
+            if (!trimmed.empty() && trimmed[0] != '#') {
+                bool isNeg = false;
+                if (trimmed[0] == '!') {
+                    isNeg = true;
+                    trimmed.erase(0, 1);
+                }
+                for (char& ch : trimmed) {
+                    if (ch == '\\') ch = '/';
+                    else ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+                }
+                if (trimmed == ".phide" || trimmed == ".phide/" ||
+                    trimmed == "/.phide" || trimmed == "/.phide/" ||
+                    trimmed == "**/.phide" || trimmed == "**/.phide/" ||
+                    trimmed == ".phide/*" || trimmed == ".phide/**" ||
+                    trimmed == "/.phide/*" || trimmed == "/.phide/**" ||
+                    trimmed == "**/.phide/*" || trimmed == "**/.phide/**") {
+                    ignored = !isNeg;
+                }
+            }
+        }
+        if (nl == std::string::npos) break;
+        pos = nl + 1;
+    }
+    return ignored;
+}
+
+bool EnsurePhideEntryInIgnoreFile(const std::filesystem::path& filePath, bool createIfMissing) {
+    std::error_code ec;
+    const bool exists = std::filesystem::exists(filePath, ec);
+    if (!exists) {
+        if (!createIfMissing) return false;
+        std::ofstream out(filePath, std::ios::binary | std::ios::trunc);
+        if (!out.is_open()) return false;
+        static constexpr char kInitial[] = ".phide/\n";
+        out.write(kInitial, sizeof(kInitial) - 1);
+        return out.good();
+    }
+
+    if (!std::filesystem::is_regular_file(filePath, ec)) {
+        return false;
+    }
+
+    std::ifstream in(filePath, std::ios::binary);
+    if (!in.is_open()) return false;
+    std::string raw((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    in.close();
+
+    if (ContainsPhideIgnoreRule(raw)) {
+        return true;
+    }
+
+    const std::string eol = (raw.find("\r\n") != std::string::npos) ? "\r\n" : "\n";
+    std::string updated = raw;
+    if (!updated.empty() && updated.back() != '\n' && updated.back() != '\r') {
+        updated += eol;
+    }
+    updated += ".phide/";
+    updated += eol;
+
+    std::ofstream out(filePath, std::ios::binary | std::ios::trunc);
+    if (!out.is_open()) return false;
+    out.write(updated.data(), static_cast<std::streamsize>(updated.size()));
+    return out.good();
+}
+
+bool IsAnyRootIgnoreFilename(const std::wstring& fileName) {
+    if (IgnoreEngine::IsSupportedIgnoreFileName(fileName)) return true;
+    if (fileName.size() <= 7 || fileName[0] != L'.') return false;
+    std::wstring lower = fileName;
+    for (auto& ch : lower) {
+        ch = static_cast<wchar_t>(std::towlower(ch));
+    }
+    return lower.ends_with(L"ignore");
+}
+
+} // namespace
+
+bool IgnoreEngine::EnsurePhideIgnored(const std::wstring& workspaceRoot) {
+    if (workspaceRoot.empty()) return false;
+
+    static std::mutex s_ensureMutex;
+    std::lock_guard<std::mutex> lock(s_ensureMutex);
+
+    std::error_code ec;
+    std::filesystem::path root(workspaceRoot);
+    if (!std::filesystem::exists(root, ec) || !std::filesystem::is_directory(root, ec)) {
+        return false;
+    }
+
+    // 1. Always ensure root .gitignore exists and contains .phide/
+    bool ok = EnsurePhideEntryInIgnoreFile(root / L".gitignore", true);
+
+    // 2. Update any other existing root ignore files (.dockerignore, .npmignore, .eslintignore, etc.)
+    std::filesystem::directory_iterator it(root, std::filesystem::directory_options::skip_permission_denied, ec);
+    std::filesystem::directory_iterator end;
+    for (; !ec && it != end; it.increment(ec)) {
+        std::error_code entryEc;
+        if (!it->is_regular_file(entryEc)) continue;
+        std::wstring fname = it->path().filename().wstring();
+        if (_wcsicmp(fname.c_str(), L".gitignore") == 0) continue;
+        if (IsAnyRootIgnoreFilename(fname)) {
+            EnsurePhideEntryInIgnoreFile(it->path(), false);
+        }
+    }
+
+    return ok;
+}
+
+bool IgnoreEngine::EnsurePhideIgnoredForPath(const std::filesystem::path& pathInPhide) {
+    if (pathInPhide.empty()) return false;
+    std::filesystem::path cur = pathInPhide;
+    while (!cur.empty()) {
+        std::wstring name = cur.filename().wstring();
+        if (_wcsicmp(name.c_str(), L".phide") == 0 && cur.has_parent_path()) {
+            return EnsurePhideIgnored(cur.parent_path().wstring());
+        }
+        std::filesystem::path parent = cur.parent_path();
+        if (parent == cur) break;
+        cur = std::move(parent);
+    }
+    return false;
 }
 
 } // namespace phide::workspace

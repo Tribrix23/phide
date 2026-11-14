@@ -640,7 +640,7 @@ void DrawerPanel::AddDirectoryChildren(const std::wstring& dirPath, int depth) {
     }
 }
 
-void DrawerPanel::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config, float clientHeight, float currentDrawerW) {
+void DrawerPanel::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config, float clientHeight, float currentDrawerW, bool deferCommitCard) {
     if (!pRT || currentDrawerW <= 0.0f) return;
 
     const float headerH = config.ScaleF(static_cast<float>(config.headerHeight));
@@ -729,7 +729,148 @@ void DrawerPanel::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCon
         }
 
         pRT->PopAxisAlignedClip();
+
+        if (!deferCommitCard && config.activeRailTab == 2) {
+            RenderCommitCard(pRT, theme, config, clientHeight, currentDrawerW);
+        }
     }
+}
+
+static float CalcExplorerTreeBottomY(const app::AppConfig& config, float clientHeight, bool outlineExpanded) {
+    const float headerH = config.ScaleF(static_cast<float>(config.headerHeight));
+    const float outlineHeaderH = config.ScaleF(24.0f);
+    const float outlineH = outlineExpanded
+        ? (std::min)(config.ScaleF(210.0f), (std::max)(config.ScaleF(100.0f), (clientHeight - headerH) * 0.35f))
+        : outlineHeaderH;
+    return (std::max)(headerH + config.ScaleF(60.0f), clientHeight - outlineH);
+}
+
+void DrawerPanel::RenderExplorerOutline(
+    ID2D1RenderTarget* pRT,
+    Theme& theme,
+    const app::AppConfig& config,
+    float topY,
+    float clientHeight,
+    float currentDrawerW) {
+    (void)currentDrawerW;
+    const float railW = config.ScaleF(static_cast<float>(config.railWidth));
+    const float fullDrawerW = config.ScaleF(static_cast<float>(config.drawerWidth));
+    const float outlineHeaderH = config.ScaleF(24.0f);
+
+    if (topY + outlineHeaderH > clientHeight + 2.0f) {
+        m_rcOutlineHeader = D2D1::RectF(0, 0, 0, 0);
+        m_rcOutlineViewport = D2D1::RectF(0, 0, 0, 0);
+        m_outlineItemRects.clear();
+        return;
+    }
+
+    pRT->DrawLine(
+        D2D1::Point2F(railW, topY),
+        D2D1::Point2F(railW + fullDrawerW, topY),
+        theme.brushBorderSubtle.Get(),
+        1.0f
+    );
+
+    m_rcOutlineHeader = D2D1::RectF(railW, topY, railW + fullDrawerW, topY + outlineHeaderH);
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> hdrBg;
+    pRT->CreateSolidColorBrush(
+        theme.IsDarkMode() ? D2D1::ColorF(0.11f, 0.12f, 0.15f, 1.0f) : D2D1::ColorF(0.94f, 0.95f, 0.97f, 1.0f),
+        &hdrBg
+    );
+    if (hdrBg) pRT->FillRectangle(m_rcOutlineHeader, hdrBg.Get());
+
+    float chevX = railW + config.ScaleF(12.0f);
+    float chevY = topY + outlineHeaderH * 0.5f;
+    if (m_outlineExpanded) {
+        pRT->DrawLine(D2D1::Point2F(chevX - 3.5f, chevY - 1.5f), D2D1::Point2F(chevX, chevY + 2.0f), theme.brushTextSecondary.Get(), 1.25f);
+        pRT->DrawLine(D2D1::Point2F(chevX, chevY + 2.0f), D2D1::Point2F(chevX + 3.5f, chevY - 1.5f), theme.brushTextSecondary.Get(), 1.25f);
+    } else {
+        pRT->DrawLine(D2D1::Point2F(chevX - 1.5f, chevY - 3.5f), D2D1::Point2F(chevX + 2.0f, chevY), theme.brushTextSecondary.Get(), 1.25f);
+        pRT->DrawLine(D2D1::Point2F(chevX + 2.0f, chevY), D2D1::Point2F(chevX - 1.5f, chevY + 3.5f), theme.brushTextSecondary.Get(), 1.25f);
+    }
+
+    std::wstring hdrText = L"OUTLINE";
+    if (!m_outlineSymbols.empty()) {
+        hdrText += L" (" + std::to_wstring(m_outlineSymbols.size()) + L")";
+    }
+    D2D1_RECT_F rcHdrLabel = D2D1::RectF(railW + config.ScaleF(24.0f), topY, railW + fullDrawerW - config.ScaleF(8.0f), topY + outlineHeaderH);
+    pRT->DrawText(
+        hdrText.c_str(),
+        static_cast<UINT32>(hdrText.length()),
+        theme.fontSectionHeader ? theme.fontSectionHeader.Get() : theme.fontBody.Get(),
+        rcHdrLabel,
+        theme.brushTextPrimary.Get()
+    );
+
+    m_outlineItemRects.assign(m_outlineSymbols.size(), D2D1::RectF(0, 0, 0, 0));
+    if (!m_outlineExpanded) {
+        m_rcOutlineViewport = D2D1::RectF(0, 0, 0, 0);
+        return;
+    }
+
+    const float listTopY = topY + outlineHeaderH;
+    m_rcOutlineViewport = D2D1::RectF(railW, listTopY, railW + fullDrawerW, clientHeight);
+    if (m_outlineSymbols.empty()) {
+        D2D1_RECT_F rcEmpty = D2D1::RectF(railW + config.ScaleF(16.0f), listTopY + config.ScaleF(6.0f), railW + fullDrawerW - config.ScaleF(12.0f), listTopY + config.ScaleF(28.0f));
+        const wchar_t* emptyMsg = m_outlineFilePath.empty() ? L"No active file" : L"No symbols found";
+        pRT->DrawText(emptyMsg, static_cast<UINT32>(wcslen(emptyMsg)), theme.fontBody.Get(), rcEmpty, theme.brushTextMuted.Get());
+        return;
+    }
+
+    const float rowH = config.ScaleF(20.0f);
+    float curY = listTopY + config.ScaleF(2.0f);
+    pRT->PushAxisAlignedClip(m_rcOutlineViewport, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+    for (size_t i = m_outlineScrollIdx; i < m_outlineSymbols.size(); ++i) {
+        if (curY + rowH > clientHeight) break;
+        const auto& sym = m_outlineSymbols[i];
+        D2D1_RECT_F rcRow = D2D1::RectF(railW + config.ScaleF(4.0f), curY, railW + fullDrawerW - config.ScaleF(6.0f), curY + rowH);
+        m_outlineItemRects[i] = rcRow;
+
+        float indent = config.ScaleF(static_cast<float>((std::min)(sym.depth, 4) * 12 + 12));
+        std::wstring kindTag = phide::editor::GetSymbolKindTag(sym.kind);
+        D2D1_RECT_F rcTag = D2D1::RectF(railW + indent, curY, railW + indent + config.ScaleF(24.0f), curY + rowH);
+        pRT->DrawText(kindTag.c_str(), static_cast<UINT32>(kindTag.length()), theme.fontCode ? theme.fontCode.Get() : theme.fontBody.Get(), rcTag, theme.brushBrandAccent.Get());
+
+        std::wstring label = sym.name + L" :" + std::to_wstring(sym.line + 1);
+        D2D1_RECT_F rcSym = D2D1::RectF(railW + indent + config.ScaleF(24.0f), curY, railW + fullDrawerW - config.ScaleF(8.0f), curY + rowH);
+        pRT->DrawText(label.c_str(), static_cast<UINT32>(label.length()), theme.fontBody.Get(), rcSym, theme.brushTextPrimary.Get());
+        curY += rowH;
+    }
+    pRT->PopAxisAlignedClip();
+}
+
+bool DrawerPanel::HitTestOutline(POINT pt, const app::AppConfig& config, bool toggleOnly) {
+    (void)config;
+    if (pt.x >= m_rcOutlineHeader.left && pt.x <= m_rcOutlineHeader.right &&
+        pt.y >= m_rcOutlineHeader.top && pt.y <= m_rcOutlineHeader.bottom) {
+        m_outlineExpanded = !m_outlineExpanded;
+        return true;
+    }
+    if (toggleOnly || !m_outlineExpanded) return false;
+    for (size_t i = 0; i < m_outlineItemRects.size() && i < m_outlineSymbols.size(); ++i) {
+        const auto& rc = m_outlineItemRects[i];
+        if (rc.right > rc.left && pt.x >= rc.left && pt.x <= rc.right &&
+            pt.y >= rc.top && pt.y <= rc.bottom) {
+            if (m_onOutlineJump) {
+                m_onOutlineJump(m_outlineSymbols[i].line, m_outlineSymbols[i].col);
+            }
+            return true;
+        }
+    }
+    return false;
+}
+
+bool DrawerPanel::ScrollOutline(int delta) {
+    if (!m_outlineExpanded || m_outlineSymbols.size() <= 1) return false;
+    size_t oldIdx = m_outlineScrollIdx;
+    if (delta > 0) {
+        m_outlineScrollIdx = (m_outlineScrollIdx > 2) ? (m_outlineScrollIdx - 2) : 0;
+    } else {
+        if (m_outlineScrollIdx + 2 < m_outlineSymbols.size()) {
+            m_outlineScrollIdx += 2;
+        }
+    }
+    return m_outlineScrollIdx != oldIdx;
 }
 
 void DrawerPanel::RenderExplorerPane(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config, float clientHeight, float currentDrawerW) {
@@ -739,6 +880,7 @@ void DrawerPanel::RenderExplorerPane(ID2D1RenderTarget* pRT, Theme& theme, const
     const float fullDrawerW = config.ScaleF(static_cast<float>(config.drawerWidth));
     float curY = headerH + config.ScaleF(14.0f);
     const float paddingX = config.ScaleF(16.0f);
+    const float treeBottomY = CalcExplorerTreeBottomY(config, clientHeight, m_outlineExpanded);
 
         if (m_isCourseExplorerMode && !m_activeCourseTitle.empty()) {
             // === COURSE EXPLORER STATE (Python for Beginners, etc.) ===
@@ -1050,7 +1192,7 @@ void DrawerPanel::RenderExplorerPane(ID2D1RenderTarget* pRT, Theme& theme, const
 
             // Clamp vertical scroll index to visible items bounds
             const float itemH = config.ScaleF(24.0f);
-            const float availableTreeH = clientHeight - curY;
+            const float availableTreeH = treeBottomY - curY;
             const size_t visibleSlots = (itemH > 0.0f) ? static_cast<size_t>(availableTreeH / itemH) : 10;
             if (m_visibleItems.size() <= visibleSlots) {
                 m_scrollIndex = 0;
@@ -1065,7 +1207,7 @@ void DrawerPanel::RenderExplorerPane(ID2D1RenderTarget* pRT, Theme& theme, const
 
             bool createRowDrawn = false;
             auto drawCreateRow = [&]() {
-                if (!m_isCreating || createRowDrawn || curY + itemH > clientHeight) return;
+                if (!m_isCreating || createRowDrawn || curY + itemH > treeBottomY) return;
                 createRowDrawn = true;
 
                 float indent = config.ScaleF(static_cast<float>(m_createDepth * 14));
@@ -1229,7 +1371,7 @@ void DrawerPanel::RenderExplorerPane(ID2D1RenderTarget* pRT, Theme& theme, const
             // Tree Items with Seti/Material Icons & Indentation Guidelines
             for (size_t i = m_scrollIndex; i < m_visibleItems.size(); ++i) {
                 auto& item = m_visibleItems[i];
-                if (curY + itemH > clientHeight) {
+                if (curY + itemH > treeBottomY) {
                     item.bounds = D2D1::RectF(0.0f, 0.0f, 0.0f, 0.0f);
                     continue;
                 }
@@ -1712,12 +1854,12 @@ void DrawerPanel::RenderExplorerPane(ID2D1RenderTarget* pRT, Theme& theme, const
         // Render modern draggable vertical scrollbar for Explorer tree (VS Code style)
         const float itemH = config.ScaleF(24.0f);
         const float treeStartY = headerH + config.ScaleF(44.0f);
-        const float treeH = clientHeight - treeStartY;
+        const float treeH = treeBottomY - treeStartY;
         const size_t visibleSlots = (itemH > 0.0f) ? static_cast<size_t>(treeH / itemH) : 10;
         if (m_visibleItems.size() > visibleSlots && treeH > 30.0f) {
             float scrollTrackW = config.ScaleF(6.0f);
             float scrollTrackX = railW + fullDrawerW - scrollTrackW - config.ScaleF(3.0f);
-            m_rcExplorerScrollTrack = D2D1::RectF(scrollTrackX, treeStartY, scrollTrackX + scrollTrackW, clientHeight - config.ScaleF(4.0f));
+            m_rcExplorerScrollTrack = D2D1::RectF(scrollTrackX, treeStartY, scrollTrackX + scrollTrackW, treeBottomY - config.ScaleF(4.0f));
 
             float totalItems = static_cast<float>(m_visibleItems.size());
             float visRatio = static_cast<float>(visibleSlots) / totalItems;
@@ -1757,12 +1899,16 @@ void DrawerPanel::RenderExplorerPane(ID2D1RenderTarget* pRT, Theme& theme, const
                 targetBtn,
                 railW + config.ScaleF(6.0f),
                 railW + fullDrawerW - config.ScaleF(6.0f),
-                clientHeight - config.ScaleF(10.0f)
+                treeBottomY - config.ScaleF(10.0f)
             );
         } else {
             m_rcExplorerTooltipBounds = D2D1::RectF(0.0f, 0.0f, 0.0f, 0.0f);
         }
+
+    if (!(m_isCourseExplorerMode && !m_activeCourseTitle.empty())) {
+        RenderExplorerOutline(pRT, theme, config, treeBottomY, clientHeight, currentDrawerW);
     }
+}
 
 void DrawerPanel::RenderSearchPane(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config, float clientHeight, float currentDrawerW) {
     (void)currentDrawerW;
@@ -2288,6 +2434,71 @@ void DrawerPanel::RenderSearchPane(ID2D1RenderTarget* pRT, Theme& theme, const a
 
     curY += config.ScaleF(24.0f);
 
+    if (m_replaceAllConfirmPending && !m_searchGroups.empty()) {
+        const float cardH = config.ScaleF(62.0f);
+        D2D1_RECT_F rcConfirmCard = D2D1::RectF(
+            railW + paddingX,
+            curY,
+            railW + fullDrawerW - paddingX,
+            curY + cardH
+        );
+        D2D1_ROUNDED_RECT rrcConfirm = D2D1::RoundedRect(rcConfirmCard, 4.0f, 4.0f);
+        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> confirmBg, confirmBorder;
+        pRT->CreateSolidColorBrush(
+            theme.IsDarkMode() ? D2D1::ColorF(0.14f, 0.16f, 0.21f, 0.98f) : D2D1::ColorF(0.93f, 0.95f, 0.99f, 0.98f),
+            &confirmBg
+        );
+        pRT->CreateSolidColorBrush(theme.colors.brandAccent, &confirmBorder);
+        if (confirmBg) pRT->FillRoundedRectangle(rrcConfirm, confirmBg.Get());
+        if (confirmBorder) pRT->DrawRoundedRectangle(rrcConfirm, confirmBorder.Get(), 1.0f);
+
+        std::wstring promptTxt = L"Replace " + std::to_wstring(m_replaceAllPreviewMatches) +
+                                 L" matches in " + std::to_wstring(m_replaceAllPreviewFiles) + L" files?";
+        D2D1_RECT_F rcPrompt = D2D1::RectF(
+            rcConfirmCard.left + config.ScaleF(8.0f),
+            rcConfirmCard.top + config.ScaleF(4.0f),
+            rcConfirmCard.right - config.ScaleF(8.0f),
+            rcConfirmCard.top + config.ScaleF(20.0f)
+        );
+        pRT->DrawText(promptTxt.c_str(), static_cast<UINT32>(promptTxt.length()),
+                      theme.fontBody.Get(), rcPrompt, theme.brushTextPrimary.Get());
+
+        if (!m_replaceAllPreviewSample.empty()) {
+            D2D1_RECT_F rcSample = D2D1::RectF(
+                rcConfirmCard.left + config.ScaleF(8.0f),
+                rcConfirmCard.top + config.ScaleF(20.0f),
+                rcConfirmCard.right - config.ScaleF(8.0f),
+                rcConfirmCard.top + config.ScaleF(36.0f)
+            );
+            pRT->PushAxisAlignedClip(rcSample, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+            pRT->DrawText(m_replaceAllPreviewSample.c_str(), static_cast<UINT32>(m_replaceAllPreviewSample.length()),
+                          theme.fontCode ? theme.fontCode.Get() : theme.fontBody.Get(),
+                          rcSample, theme.brushTextSecondary.Get());
+            pRT->PopAxisAlignedClip();
+        }
+
+        const float btnH = config.ScaleF(20.0f);
+        const float btnY = rcConfirmCard.bottom - btnH - config.ScaleF(4.0f);
+        const float confirmW = config.ScaleF(74.0f);
+        const float cancelW = config.ScaleF(58.0f);
+        m_rcReplaceConfirmBtn = D2D1::RectF(rcConfirmCard.left + config.ScaleF(8.0f), btnY, rcConfirmCard.left + config.ScaleF(8.0f) + confirmW, btnY + btnH);
+        m_rcReplaceCancelBtn = D2D1::RectF(m_rcReplaceConfirmBtn.right + config.ScaleF(8.0f), btnY, m_rcReplaceConfirmBtn.right + config.ScaleF(8.0f) + cancelW, btnY + btnH);
+
+        pRT->FillRoundedRectangle(D2D1::RoundedRect(m_rcReplaceConfirmBtn, 3.0f, 3.0f), theme.brushBrandAccent.Get());
+        pRT->DrawText(L"Confirm", 7, theme.fontButtonCenter ? theme.fontButtonCenter.Get() : theme.fontBody.Get(),
+                      m_rcReplaceConfirmBtn, theme.brushTextWhite ? theme.brushTextWhite.Get() : theme.brushTextPrimary.Get());
+
+        pRT->FillRoundedRectangle(D2D1::RoundedRect(m_rcReplaceCancelBtn, 3.0f, 3.0f), theme.brushItemHover.Get());
+        pRT->DrawRoundedRectangle(D2D1::RoundedRect(m_rcReplaceCancelBtn, 3.0f, 3.0f), theme.brushBorderSubtle.Get(), 1.0f);
+        pRT->DrawText(L"Cancel", 6, theme.fontButtonCenter ? theme.fontButtonCenter.Get() : theme.fontBody.Get(),
+                      m_rcReplaceCancelBtn, theme.brushTextPrimary.Get());
+
+        curY += cardH + config.ScaleF(6.0f);
+    } else {
+        m_rcReplaceConfirmBtn = D2D1::RectF(0, 0, 0, 0);
+        m_rcReplaceCancelBtn = D2D1::RectF(0, 0, 0, 0);
+    }
+
     // Render Search File Groups and Matches
     const float rowH = config.ScaleF(22.0f);
     size_t curRowIdx = 0;
@@ -2802,11 +3013,25 @@ bool DrawerPanel::HitTestSearch(POINT pt, const app::AppConfig& config, std::wst
         return true;
     }
 
+    // 7b. Replace All diff-preview Confirm / Cancel buttons
+    if (m_replaceAllConfirmPending) {
+        if (pt.x >= m_rcReplaceConfirmBtn.left && pt.x <= m_rcReplaceConfirmBtn.right &&
+            pt.y >= m_rcReplaceConfirmBtn.top && pt.y <= m_rcReplaceConfirmBtn.bottom) {
+            ExecuteReplaceAll(true);
+            return true;
+        }
+        if (pt.x >= m_rcReplaceCancelBtn.left && pt.x <= m_rcReplaceCancelBtn.right &&
+            pt.y >= m_rcReplaceCancelBtn.top && pt.y <= m_rcReplaceCancelBtn.bottom) {
+            CancelReplaceAllConfirm();
+            return true;
+        }
+    }
+
     // 8. Replace All button
     if (m_isReplaceOpen &&
         pt.x >= m_rcReplaceAllBtn.left && pt.x <= m_rcReplaceAllBtn.right &&
         pt.y >= m_rcReplaceAllBtn.top && pt.y <= m_rcReplaceAllBtn.bottom) {
-        ExecuteReplaceAll();
+        ExecuteReplaceAll(false);
         return true;
     }
 
@@ -2932,6 +3157,7 @@ bool DrawerPanel::HitTestSearch(POINT pt, const app::AppConfig& config, std::wst
 }
 
 void DrawerPanel::ClearSearchResults() {
+    CancelReplaceAllConfirm();
     for (auto& g : m_searchGroups) {
         g.matches.clear();
         g.matches.shrink_to_fit();
@@ -3073,6 +3299,15 @@ void DrawerPanel::HandleSearchKeyDown(WPARAM wParam) {
 /**
  * @brief Searches an individual file for occurrences of query or regex.
  */
+static std::wstring NormalizeSearchPathKey(const std::wstring& path) {
+    std::wstring key = path;
+    for (wchar_t& ch : key) {
+        if (ch == L'/') ch = L'\\';
+        else ch = towlower(ch);
+    }
+    return key;
+}
+
 static bool SearchSingleFile(
     const std::filesystem::path& filePath,
     const std::filesystem::path& root,
@@ -3086,62 +3321,75 @@ static bool SearchSingleFile(
     SearchFileGroup& outGroup,
     size_t& inOutTotalMatches,
     size_t maxMatchesPerFile,
-    size_t maxTotalMatches
+    size_t maxTotalMatches,
+    const std::unordered_map<std::wstring, std::wstring>* liveContentMap = nullptr
 ) {
     std::error_code ec;
     auto filename = filePath.filename().wstring();
 
-    // Skip binary extensions (video, images, executables, libraries, archives, audio, fonts)
-    auto ext = filePath.extension().wstring();
-    for (auto& ch : ext) ch = towlower(ch);
-    if (ext == L".png" || ext == L".jpg" || ext == L".jpeg" || ext == L".gif" ||
-        ext == L".bmp" || ext == L".ico" || ext == L".webp" || ext == L".tiff" ||
-        ext == L".tif" || ext == L".psd" || ext == L".raw"  ||
-        ext == L".mp4" || ext == L".mkv" || ext == L".avi"  || ext == L".mov" ||
-        ext == L".wmv" || ext == L".flv" || ext == L".webm" || ext == L".mpg" ||
-        ext == L".mpeg"|| ext == L".m4v" || ext == L".3gp"  ||
-        ext == L".mp3" || ext == L".wav" || ext == L".ogg"  || ext == L".flac" ||
-        ext == L".aac" || ext == L".m4a" || ext == L".wma"  ||
-        ext == L".exe" || ext == L".dll" || ext == L".obj"  || ext == L".bin" ||
-        ext == L".lib" || ext == L".pdb" || ext == L".so"   || ext == L".dylib" ||
-        ext == L".sys" || ext == L".o"   || ext == L".a"    || ext == L".class" ||
-        ext == L".pyc" || ext == L".wasm"|| ext == L".zip"  || ext == L".rar" ||
-        ext == L".7z"  || ext == L".tar" || ext == L".gz"   || ext == L".iso" ||
-        ext == L".ttf" || ext == L".otf" || ext == L".woff" || ext == L".woff2") {
-        return false;
-    }
-
-    // Skip files > 2MB
-    auto fileSize = std::filesystem::file_size(filePath, ec);
-    if (ec || fileSize > 2 * 1024 * 1024) {
-        return false;
-    }
-
-    // Inspect initial bytes for null characters (binary file check)
-    std::ifstream file(filePath, std::ios::binary);
-    if (!file.is_open()) return false;
-
-    char headerBuf[512];
-    file.read(headerBuf, sizeof(headerBuf));
-    std::streamsize bytesRead = file.gcount();
-    for (std::streamsize b = 0; b < bytesRead; ++b) {
-        if (headerBuf[b] == '\0') {
-            file.close();
-            return false;
+    std::wstring wcontent;
+    bool loadedFromLiveBuffer = false;
+    if (liveContentMap && !liveContentMap->empty()) {
+        auto liveIt = liveContentMap->find(NormalizeSearchPathKey(filePath.wstring()));
+        if (liveIt != liveContentMap->end()) {
+            wcontent = liveIt->second;
+            loadedFromLiveBuffer = true;
         }
     }
 
-    file.clear();
-    file.seekg(0, std::ios::beg);
-    std::string content((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
-    file.close();
+    if (!loadedFromLiveBuffer) {
+        // Skip binary extensions (video, images, executables, libraries, archives, audio, fonts)
+        auto ext = filePath.extension().wstring();
+        for (auto& ch : ext) ch = towlower(ch);
+        if (ext == L".png" || ext == L".jpg" || ext == L".jpeg" || ext == L".gif" ||
+            ext == L".bmp" || ext == L".ico" || ext == L".webp" || ext == L".tiff" ||
+            ext == L".tif" || ext == L".psd" || ext == L".raw"  ||
+            ext == L".mp4" || ext == L".mkv" || ext == L".avi"  || ext == L".mov" ||
+            ext == L".wmv" || ext == L".flv" || ext == L".webm" || ext == L".mpg" ||
+            ext == L".mpeg"|| ext == L".m4v" || ext == L".3gp"  ||
+            ext == L".mp3" || ext == L".wav" || ext == L".ogg"  || ext == L".flac" ||
+            ext == L".aac" || ext == L".m4a" || ext == L".wma"  ||
+            ext == L".exe" || ext == L".dll" || ext == L".obj"  || ext == L".bin" ||
+            ext == L".lib" || ext == L".pdb" || ext == L".so"   || ext == L".dylib" ||
+            ext == L".sys" || ext == L".o"   || ext == L".a"    || ext == L".class" ||
+            ext == L".pyc" || ext == L".wasm"|| ext == L".zip"  || ext == L".rar" ||
+            ext == L".7z"  || ext == L".tar" || ext == L".gz"   || ext == L".iso" ||
+            ext == L".ttf" || ext == L".otf" || ext == L".woff" || ext == L".woff2") {
+            return false;
+        }
 
-    if (content.find('\0') != std::string::npos) return false;
+        // Skip files > 2MB
+        auto fileSize = std::filesystem::file_size(filePath, ec);
+        if (ec || fileSize > 2 * 1024 * 1024) {
+            return false;
+        }
 
-    int wlen = MultiByteToWideChar(CP_UTF8, 0, content.c_str(), static_cast<int>(content.size()), nullptr, 0);
-    if (wlen <= 0) return false;
-    std::wstring wcontent(wlen, L'\0');
-    MultiByteToWideChar(CP_UTF8, 0, content.c_str(), static_cast<int>(content.size()), &wcontent[0], wlen);
+        // Inspect initial bytes for null characters (binary file check)
+        std::ifstream file(filePath, std::ios::binary);
+        if (!file.is_open()) return false;
+
+        char headerBuf[512];
+        file.read(headerBuf, sizeof(headerBuf));
+        std::streamsize bytesRead = file.gcount();
+        for (std::streamsize b = 0; b < bytesRead; ++b) {
+            if (headerBuf[b] == '\0') {
+                file.close();
+                return false;
+            }
+        }
+
+        file.clear();
+        file.seekg(0, std::ios::beg);
+        std::string content((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+        file.close();
+
+        if (content.find('\0') != std::string::npos) return false;
+
+        int wlen = MultiByteToWideChar(CP_UTF8, 0, content.c_str(), static_cast<int>(content.size()), nullptr, 0);
+        if (wlen <= 0) return false;
+        wcontent.resize(wlen);
+        MultiByteToWideChar(CP_UTF8, 0, content.c_str(), static_cast<int>(content.size()), &wcontent[0], wlen);
+    }
 
     outGroup.filePath = filePath.wstring();
     outGroup.fileName = filename;
@@ -3230,6 +3478,7 @@ static bool SearchSingleFile(
 
 void DrawerPanel::LaunchAsyncSearch() {
     uint32_t thisGen = ++m_searchGeneration;
+    CancelReplaceAllConfirm();
 
     if (m_onRefreshOpenDocs) {
         m_onRefreshOpenDocs();
@@ -3242,6 +3491,7 @@ void DrawerPanel::LaunchAsyncSearch() {
     bool useRegex = m_useRegex;
     bool searchOnlyOpenEditors = m_searchOnlyOpenEditors;
     std::vector<std::wstring> openDocPaths = m_openDocPaths;
+    std::vector<phide::editor::OpenDocContentSnapshot> openSnapshots = m_openDocSnapshots;
     std::wstring filesToInclude = m_filesToInclude;
     std::wstring filesToExclude = m_filesToExclude;
     bool useExcludeSettings = m_useExcludeSettings;
@@ -3271,12 +3521,21 @@ void DrawerPanel::LaunchAsyncSearch() {
     auto workers = m_activeWorkers;
     if (workers) workers->fetch_add(1);
     std::thread([this, alive, workers, thisGen, query, rootFolder, matchCase, matchWord, useRegex,
-                 searchOnlyOpenEditors, openDocPaths, filesToInclude, filesToExclude, useExcludeSettings]() {
+                 searchOnlyOpenEditors, openDocPaths, openSnapshots, filesToInclude, filesToExclude, useExcludeSettings]() {
         auto finish = [&]() { if (workers) workers->fetch_sub(1); };
         if (!alive || !alive->load()) { finish(); return; }
         try {
             std::error_code ec;
             std::filesystem::path root(rootFolder);
+
+            std::unordered_map<std::wstring, std::wstring> liveMap;
+            liveMap.reserve(openSnapshots.size());
+            for (const auto& snap : openSnapshots) {
+                std::wstring keyPath = !snap.filePath.empty() ? snap.filePath : snap.title;
+                if (!keyPath.empty()) {
+                    liveMap[NormalizeSearchPathKey(keyPath)] = snap.content;
+                }
+            }
 
             std::wregex regexPattern;
             bool regexValid = false;
@@ -3298,7 +3557,20 @@ void DrawerPanel::LaunchAsyncSearch() {
 
             // Collect files to search based on "Search Open Tabs Only" toggle and include/exclude patterns
             std::vector<std::filesystem::path> filesToProcess;
+            std::unordered_set<std::wstring> seenKeys;
             if (searchOnlyOpenEditors) {
+                for (const auto& snap : openSnapshots) {
+                    std::wstring keyPath = !snap.filePath.empty() ? snap.filePath : snap.title;
+                    if (keyPath.empty()) continue;
+                    std::filesystem::path fp(keyPath);
+                    auto key = NormalizeSearchPathKey(fp.wstring());
+                    if (!seenKeys.insert(key).second) continue;
+                    auto fname = fp.filename().wstring();
+                    auto fstr = fp.wstring();
+                    if (!filesToInclude.empty() && !MatchesPatternList(fname, fstr, filesToInclude)) continue;
+                    if (!filesToExclude.empty() && MatchesPatternList(fname, fstr, filesToExclude)) continue;
+                    filesToProcess.push_back(fp);
+                }
                 for (const auto& op : openDocPaths) {
                     std::filesystem::path fp(op);
                     std::error_code fec;
@@ -3306,11 +3578,15 @@ void DrawerPanel::LaunchAsyncSearch() {
                         std::filesystem::path cand = std::filesystem::path(rootFolder) / fp;
                         if (std::filesystem::exists(cand, fec)) fp = cand;
                     }
-                    if (std::filesystem::exists(fp, fec) && std::filesystem::is_regular_file(fp, fec)) {
+                    auto key = NormalizeSearchPathKey(fp.wstring());
+                    if (seenKeys.count(key)) continue;
+                    bool inLive = (liveMap.count(key) > 0);
+                    if (inLive || (std::filesystem::exists(fp, fec) && std::filesystem::is_regular_file(fp, fec))) {
                         auto fname = fp.filename().wstring();
                         auto fstr = fp.wstring();
                         if (!filesToInclude.empty() && !MatchesPatternList(fname, fstr, filesToInclude)) continue;
                         if (!filesToExclude.empty() && MatchesPatternList(fname, fstr, filesToExclude)) continue;
+                        seenKeys.insert(key);
                         filesToProcess.push_back(fp);
                     }
                 }
@@ -3369,7 +3645,21 @@ void DrawerPanel::LaunchAsyncSearch() {
                     if (!filesToInclude.empty() && !MatchesPatternList(filename, fstr, filesToInclude)) continue;
                     if (!filesToExclude.empty() && MatchesPatternList(filename, fstr, filesToExclude)) continue;
 
+                    seenKeys.insert(NormalizeSearchPathKey(fstr));
                     filesToProcess.push_back(entry.path());
+                }
+                for (const auto& snap : openSnapshots) {
+                    if (!snap.isDirty && !snap.isUntitled) continue;
+                    std::wstring keyPath = !snap.filePath.empty() ? snap.filePath : snap.title;
+                    if (keyPath.empty()) continue;
+                    std::filesystem::path fp(keyPath);
+                    auto key = NormalizeSearchPathKey(fp.wstring());
+                    if (!seenKeys.insert(key).second) continue;
+                    auto fname = fp.filename().wstring();
+                    auto fstr = fp.wstring();
+                    if (!filesToInclude.empty() && !MatchesPatternList(fname, fstr, filesToInclude)) continue;
+                    if (!filesToExclude.empty() && MatchesPatternList(fname, fstr, filesToExclude)) continue;
+                    filesToProcess.push_back(fp);
                 }
             }
 
@@ -3394,7 +3684,7 @@ void DrawerPanel::LaunchAsyncSearch() {
                 SearchFileGroup group;
                 if (SearchSingleFile(filesToProcess[i], root, query, lowerQuery,
                                      matchCase, matchWord, useRegex, regexValid, regexPattern,
-                                     group, batchMatches, 50, MAX_TOTAL_MATCHES)) {
+                                     group, batchMatches, 50, MAX_TOTAL_MATCHES, &liveMap)) {
                     totalFound += group.matches.size();
                     currentBatch.push_back(std::move(group));
                 }
@@ -3545,6 +3835,8 @@ void DrawerPanel::ExecuteSearch(bool async) {
         return;
     }
 
+    ++m_searchGeneration;
+    m_isSearching = false;
     if (m_onRefreshOpenDocs) {
         m_onRefreshOpenDocs();
     }
@@ -3577,11 +3869,33 @@ void DrawerPanel::ExecuteSearch(bool async) {
         std::transform(lowerQuery.begin(), lowerQuery.end(), lowerQuery.begin(), ::towlower);
     }
 
+    std::unordered_map<std::wstring, std::wstring> liveMap;
+    liveMap.reserve(m_openDocSnapshots.size());
+    for (const auto& snap : m_openDocSnapshots) {
+        std::wstring keyPath = !snap.filePath.empty() ? snap.filePath : snap.title;
+        if (!keyPath.empty()) {
+            liveMap[NormalizeSearchPathKey(keyPath)] = snap.content;
+        }
+    }
+
     const size_t MAX_MATCHES_PER_FILE = 50;
     const size_t MAX_TOTAL_MATCHES = 1000;
 
     std::vector<std::filesystem::path> filesToProcess;
+    std::unordered_set<std::wstring> seenKeys;
     if (m_searchOnlyOpenEditors) {
+        for (const auto& snap : m_openDocSnapshots) {
+            std::wstring keyPath = !snap.filePath.empty() ? snap.filePath : snap.title;
+            if (keyPath.empty()) continue;
+            std::filesystem::path fp(keyPath);
+            auto key = NormalizeSearchPathKey(fp.wstring());
+            if (!seenKeys.insert(key).second) continue;
+            auto fname = fp.filename().wstring();
+            auto fstr = fp.wstring();
+            if (!m_filesToInclude.empty() && !MatchesPatternList(fname, fstr, m_filesToInclude)) continue;
+            if (!m_filesToExclude.empty() && MatchesPatternList(fname, fstr, m_filesToExclude)) continue;
+            filesToProcess.push_back(fp);
+        }
         for (const auto& op : m_openDocPaths) {
             std::filesystem::path fp(op);
             std::error_code fec;
@@ -3589,11 +3903,15 @@ void DrawerPanel::ExecuteSearch(bool async) {
                 std::filesystem::path cand = std::filesystem::path(m_openFolderPath) / fp;
                 if (std::filesystem::exists(cand, fec)) fp = cand;
             }
-            if (std::filesystem::exists(fp, fec) && std::filesystem::is_regular_file(fp, fec)) {
+            auto key = NormalizeSearchPathKey(fp.wstring());
+            if (seenKeys.count(key)) continue;
+            bool inLive = (liveMap.count(key) > 0);
+            if (inLive || (std::filesystem::exists(fp, fec) && std::filesystem::is_regular_file(fp, fec))) {
                 auto fname = fp.filename().wstring();
                 auto fstr = fp.wstring();
                 if (!m_filesToInclude.empty() && !MatchesPatternList(fname, fstr, m_filesToInclude)) continue;
                 if (!m_filesToExclude.empty() && MatchesPatternList(fname, fstr, m_filesToExclude)) continue;
+                seenKeys.insert(key);
                 filesToProcess.push_back(fp);
             }
         }
@@ -3652,156 +3970,32 @@ void DrawerPanel::ExecuteSearch(bool async) {
             if (!m_filesToInclude.empty() && !MatchesPatternList(filename, fstr, m_filesToInclude)) continue;
             if (!m_filesToExclude.empty() && MatchesPatternList(filename, fstr, m_filesToExclude)) continue;
 
+            seenKeys.insert(NormalizeSearchPathKey(fstr));
             filesToProcess.push_back(entry.path());
+        }
+        for (const auto& snap : m_openDocSnapshots) {
+            if (!snap.isDirty && !snap.isUntitled) continue;
+            std::wstring keyPath = !snap.filePath.empty() ? snap.filePath : snap.title;
+            if (keyPath.empty()) continue;
+            std::filesystem::path fp(keyPath);
+            auto key = NormalizeSearchPathKey(fp.wstring());
+            if (!seenKeys.insert(key).second) continue;
+            auto fname = fp.filename().wstring();
+            auto fstr = fp.wstring();
+            if (!m_filesToInclude.empty() && !MatchesPatternList(fname, fstr, m_filesToInclude)) continue;
+            if (!m_filesToExclude.empty() && MatchesPatternList(fname, fstr, m_filesToExclude)) continue;
+            filesToProcess.push_back(fp);
         }
     }
 
     for (const auto& filePath : filesToProcess) {
-        auto filename = filePath.filename().wstring();
-
-        // Skip binary file extensions
-        auto ext = filePath.extension().wstring();
-        for (auto& ch : ext) ch = towlower(ch);
-        if (ext == L".png" || ext == L".jpg" || ext == L".jpeg" || ext == L".gif" ||
-            ext == L".bmp" || ext == L".ico" || ext == L".webp" || ext == L".tiff" ||
-            ext == L".tif" || ext == L".psd" || ext == L".raw"  ||
-            ext == L".mp4" || ext == L".mkv" || ext == L".avi"  || ext == L".mov" ||
-            ext == L".wmv" || ext == L".flv" || ext == L".webm" || ext == L".mpg" ||
-            ext == L".mpeg"|| ext == L".m4v" || ext == L".3gp"  ||
-            ext == L".mp3" || ext == L".wav" || ext == L".ogg"  || ext == L".flac" ||
-            ext == L".aac" || ext == L".m4a" || ext == L".wma"  ||
-            ext == L".exe" || ext == L".dll" || ext == L".obj"  || ext == L".bin" ||
-            ext == L".lib" || ext == L".pdb" || ext == L".so"   || ext == L".dylib" ||
-            ext == L".sys" || ext == L".o"   || ext == L".a"    || ext == L".class" ||
-            ext == L".pyc" || ext == L".wasm"|| ext == L".zip"  || ext == L".rar" ||
-            ext == L".7z"  || ext == L".tar" || ext == L".gz"   || ext == L".iso" ||
-            ext == L".ttf" || ext == L".otf" || ext == L".woff" || ext == L".woff2") {
-            continue;
-        }
-
-        auto fileSize = std::filesystem::file_size(filePath, ec);
-        if (ec || fileSize > 2 * 1024 * 1024) {
-            ec.clear();
-            continue;
-        }
-
-        std::ifstream file(filePath, std::ios::binary);
-        if (!file.is_open()) continue;
-
-        char headerBuf[512];
-        file.read(headerBuf, sizeof(headerBuf));
-        std::streamsize bytesRead = file.gcount();
-        bool isBinary = false;
-        for (std::streamsize b = 0; b < bytesRead; ++b) {
-            if (headerBuf[b] == '\0') {
-                isBinary = true;
-                break;
-            }
-        }
-        if (isBinary) {
-            file.close();
-            continue;
-        }
-
-        file.clear();
-        file.seekg(0, std::ios::beg);
-        std::string content((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
-        file.close();
-
-        if (content.find('\0') != std::string::npos) continue;
-
-        int wlen = MultiByteToWideChar(CP_UTF8, 0, content.c_str(), static_cast<int>(content.size()), nullptr, 0);
-        if (wlen <= 0) continue;
-        std::wstring wcontent(wlen, L'\0');
-        MultiByteToWideChar(CP_UTF8, 0, content.c_str(), static_cast<int>(content.size()), &wcontent[0], wlen);
-
+        if (m_totalMatches >= MAX_TOTAL_MATCHES) break;
         SearchFileGroup group;
-        group.filePath = filePath.wstring();
-        group.fileName = filename;
-        std::filesystem::path rel = std::filesystem::relative(filePath.parent_path(), root, ec);
-        group.relDir = ec ? L"" : rel.wstring();
-        if (group.relDir == L".") group.relDir.clear();
-        group.isExpanded = true;
-
-        size_t lineIdx = 0;
-        size_t pos = 0;
-        while (pos < wcontent.size() && group.matches.size() < MAX_MATCHES_PER_FILE && m_totalMatches < MAX_TOTAL_MATCHES) {
-            size_t nextNL = wcontent.find(L'\n', pos);
-            if (nextNL == std::wstring::npos) nextNL = wcontent.size();
-
-            std::wstring lineStr = wcontent.substr(pos, nextNL - pos);
-            if (!lineStr.empty() && lineStr.back() == L'\r') lineStr.pop_back();
-
-            if (lineStr.size() > 30000) {
-                pos = nextNL + 1;
-                lineIdx++;
-                continue;
-            }
-
-            if (m_useRegex && regexValid) {
-                std::wsregex_iterator regIt(lineStr.begin(), lineStr.end(), regexPattern);
-                std::wsregex_iterator regEnd;
-                for (; regIt != regEnd && group.matches.size() < MAX_MATCHES_PER_FILE && m_totalMatches < MAX_TOTAL_MATCHES; ++regIt) {
-                    size_t matchCol = static_cast<size_t>(regIt->position());
-                    size_t matchLen = static_cast<size_t>(regIt->length());
-
-                    size_t snipStart = (matchCol > 40) ? (matchCol - 40) : 0;
-                    size_t snipEnd = (std::min)(lineStr.size(), matchCol + matchLen + 80);
-
-                    SearchMatch match;
-                    match.lineIndex = lineIdx;
-                    match.lineText = lineStr.substr(snipStart, snipEnd - snipStart);
-                    match.matchCol = matchCol - snipStart;
-                    match.matchLen = matchLen;
-                    group.matches.push_back(std::move(match));
-                    m_totalMatches++;
-                }
-            } else {
-                std::wstring searchLine = lineStr;
-                if (!m_matchCase) {
-                    std::transform(searchLine.begin(), searchLine.end(), searchLine.begin(), ::towlower);
-                }
-
-                size_t findPos = 0;
-                while ((findPos = searchLine.find(lowerQuery, findPos)) != std::wstring::npos &&
-                       group.matches.size() < MAX_MATCHES_PER_FILE && m_totalMatches < MAX_TOTAL_MATCHES) {
-                    bool valid = true;
-                    if (m_matchWholeWord) {
-                        if (findPos > 0) {
-                            wchar_t prev = searchLine[findPos - 1];
-                            if (iswalnum(prev) || prev == L'_') valid = false;
-                        }
-                        if (valid && (findPos + lowerQuery.size() < searchLine.size())) {
-                            wchar_t next = searchLine[findPos + lowerQuery.size()];
-                            if (iswalnum(next) || next == L'_') valid = false;
-                        }
-                    }
-
-                    if (valid) {
-                        size_t snipStart = (findPos > 40) ? (findPos - 40) : 0;
-                        size_t snipEnd = (std::min)(lineStr.size(), findPos + lowerQuery.size() + 80);
-
-                        SearchMatch match;
-                        match.lineIndex = lineIdx;
-                        match.lineText = lineStr.substr(snipStart, snipEnd - snipStart);
-                        match.matchCol = findPos - snipStart;
-                        match.matchLen = m_searchQuery.size();
-                        group.matches.push_back(std::move(match));
-                        m_totalMatches++;
-                    }
-                    findPos += (std::max)(size_t(1), lowerQuery.size());
-                }
-            }
-
-            pos = nextNL + 1;
-            lineIdx++;
-        }
-
-        if (!group.matches.empty()) {
+        if (SearchSingleFile(filePath, root, m_searchQuery, lowerQuery,
+                             m_matchCase, m_matchWholeWord, m_useRegex, regexValid, regexPattern,
+                             group, m_totalMatches, MAX_MATCHES_PER_FILE, MAX_TOTAL_MATCHES, &liveMap)) {
             m_searchGroups.push_back(std::move(group));
         }
-
-        if (m_totalMatches >= MAX_TOTAL_MATCHES) break;
     }
 }
 
@@ -5469,71 +5663,56 @@ bool DrawerPanel::IsPathGitIgnored(const std::wstring& fullPath, const std::wstr
 }
 
 
-static bool PerformLineReplacement(std::wstring& text, const std::wstring& searchQ, const std::wstring& replaceQ, bool matchCase, bool matchWord) {
-    if (searchQ.empty()) return false;
-    bool anyReplaced = false;
-
-    std::wstring lowerText = text;
-    std::wstring lowerQ = searchQ;
-    if (!matchCase) {
-        for (auto& c : lowerText) c = towlower(c);
-        for (auto& c : lowerQ) c = towlower(c);
-    }
-
-    std::wstring result;
-    size_t lastPos = 0;
-    size_t pos = 0;
-
-    auto isWordBoundary = [](wchar_t c) {
-        return !iswalnum(c) && c != L'_';
-    };
-
-    while ((pos = lowerText.find(lowerQ, lastPos)) != std::wstring::npos) {
-        if (matchWord) {
-            bool leftOk = (pos == 0) || isWordBoundary(text[pos - 1]);
-            bool rightOk = (pos + searchQ.length() >= text.length()) || isWordBoundary(text[pos + searchQ.length()]);
-            if (!leftOk || !rightOk) {
-                result.append(text, lastPos, pos - lastPos + searchQ.length());
-                lastPos = pos + searchQ.length();
-                continue;
-            }
-        }
-        result.append(text, lastPos, pos - lastPos);
-        result.append(replaceQ);
-        lastPos = pos + searchQ.length();
-        anyReplaced = true;
-    }
-    result.append(text, lastPos, text.length() - lastPos);
-    if (anyReplaced) {
-        text = result;
-    }
-    return anyReplaced;
+static bool PerformLineReplacement(
+    std::wstring& text,
+    const std::wstring& searchQ,
+    const std::wstring& replaceQ,
+    bool matchCase,
+    bool matchWord,
+    bool useRegex,
+    bool preserveCase) {
+    return phide::editor::ReplaceInLine(text, searchQ, replaceQ, matchCase, matchWord, useRegex, preserveCase);
 }
 
 void DrawerPanel::ExecuteReplaceSingleMatch(const std::wstring& filePath, const SearchMatch& match) {
     if (m_searchQuery.empty()) return;
-    phide::editor::Buffer buf;
-    if (!buf.LoadFromFile(filePath)) return;
 
-    if (match.lineIndex < buf.GetLineCount()) {
-        std::wstring line = buf.GetLine(match.lineIndex);
-        bool modified = false;
-        if (match.matchCol + match.matchLen <= line.length()) {
-            std::wstring sub = line.substr(match.matchCol, match.matchLen);
-            bool matchesSub = m_matchCase ? (sub == m_searchQuery) : (_wcsicmp(sub.c_str(), m_searchQuery.c_str()) == 0);
-            if (matchesSub) {
-                line.replace(match.matchCol, match.matchLen, m_replaceQuery);
-                modified = true;
+    bool handledByOpenDoc = false;
+    if (m_onApplyOpenDocReplace) {
+        handledByOpenDoc = m_onApplyOpenDocReplace(
+            filePath, m_searchQuery, m_replaceQuery,
+            m_matchCase, m_matchWholeWord, m_useRegex, m_preserveCase,
+            static_cast<int>(match.lineIndex)
+        );
+    }
+
+    if (!handledByOpenDoc) {
+        phide::editor::Buffer buf;
+        if (!buf.LoadFromFile(filePath)) return;
+
+        if (match.lineIndex < buf.GetLineCount()) {
+            std::wstring line = buf.GetLine(match.lineIndex);
+            bool modified = false;
+            if (!m_useRegex && match.matchCol + match.matchLen <= line.length()) {
+                std::wstring sub = line.substr(match.matchCol, match.matchLen);
+                bool matchesSub = m_matchCase ? (sub == m_searchQuery) : (_wcsicmp(sub.c_str(), m_searchQuery.c_str()) == 0);
+                if (matchesSub) {
+                    std::wstring finalRepl = m_preserveCase
+                        ? phide::editor::ApplyPreserveCase(sub, m_replaceQuery)
+                        : m_replaceQuery;
+                    line.replace(match.matchCol, match.matchLen, finalRepl);
+                    modified = true;
+                }
             }
-        }
-        if (!modified) {
-            modified = PerformLineReplacement(line, m_searchQuery, m_replaceQuery, m_matchCase, m_matchWholeWord);
-        }
-        if (modified) {
-            buf.SetLine(match.lineIndex, line);
-            buf.SaveToFile(filePath);
-            if (m_onFilesReplaced) {
-                m_onFilesReplaced({ filePath });
+            if (!modified) {
+                modified = PerformLineReplacement(line, m_searchQuery, m_replaceQuery, m_matchCase, m_matchWholeWord, m_useRegex, m_preserveCase);
+            }
+            if (modified) {
+                buf.SetLine(match.lineIndex, line);
+                buf.SaveToFile(filePath);
+                if (m_onFilesReplaced) {
+                    m_onFilesReplaced({ filePath });
+                }
             }
         }
     }
@@ -5561,13 +5740,26 @@ void DrawerPanel::ExecuteReplaceSingleMatch(const std::wstring& filePath, const 
 
 void DrawerPanel::ExecuteReplaceInFile(const std::wstring& filePath) {
     if (m_searchQuery.empty()) return;
+
+    if (m_onApplyOpenDocReplace &&
+        m_onApplyOpenDocReplace(filePath, m_searchQuery, m_replaceQuery,
+                                m_matchCase, m_matchWholeWord, m_useRegex, m_preserveCase, -1)) {
+        for (size_t g = 0; g < m_searchGroups.size(); ++g) {
+            if (m_searchGroups[g].filePath == filePath) {
+                DismissSearchGroup(g);
+                return;
+            }
+        }
+        return;
+    }
+
     phide::editor::Buffer buf;
     if (!buf.LoadFromFile(filePath)) return;
 
     bool anyModified = false;
     for (size_t l = 0; l < buf.GetLineCount(); ++l) {
         std::wstring line = buf.GetLine(l);
-        if (PerformLineReplacement(line, m_searchQuery, m_replaceQuery, m_matchCase, m_matchWholeWord)) {
+        if (PerformLineReplacement(line, m_searchQuery, m_replaceQuery, m_matchCase, m_matchWholeWord, m_useRegex, m_preserveCase)) {
             buf.SetLine(l, line);
             anyModified = true;
         }
@@ -5588,18 +5780,50 @@ void DrawerPanel::ExecuteReplaceInFile(const std::wstring& filePath) {
     }
 }
 
-void DrawerPanel::ExecuteReplaceAll() {
+void DrawerPanel::ExecuteReplaceAll(bool skipConfirm) {
     if (m_searchQuery.empty() || m_searchGroups.empty()) return;
+
+    if (!skipConfirm && !m_replaceAllConfirmPending) {
+        m_replaceAllPreviewFiles = m_searchGroups.size();
+        m_replaceAllPreviewMatches = m_totalMatches;
+        m_replaceAllPreviewSample.clear();
+        for (const auto& g : m_searchGroups) {
+            if (!g.matches.empty()) {
+                std::wstring before = g.matches[0].lineText;
+                std::wstring after = before;
+                PerformLineReplacement(after, m_searchQuery, m_replaceQuery, m_matchCase, m_matchWholeWord, m_useRegex, m_preserveCase);
+                auto trimWs = [](std::wstring s) {
+                    size_t f = s.find_first_not_of(L" \t");
+                    if (f != std::wstring::npos) s = s.substr(f);
+                    if (s.size() > 28) s = s.substr(0, 28) + L"...";
+                    return s;
+                };
+                m_replaceAllPreviewSample = trimWs(before) + L" -> " + trimWs(after);
+                break;
+            }
+        }
+        m_replaceAllConfirmPending = true;
+        return;
+    }
+
+    CancelReplaceAllConfirm();
 
     std::vector<std::wstring> replacedFiles;
     for (const auto& group : m_searchGroups) {
+        if (m_onApplyOpenDocReplace &&
+            m_onApplyOpenDocReplace(group.filePath, m_searchQuery, m_replaceQuery,
+                                    m_matchCase, m_matchWholeWord, m_useRegex, m_preserveCase, -1)) {
+            replacedFiles.push_back(group.filePath);
+            continue;
+        }
+
         phide::editor::Buffer buf;
         if (!buf.LoadFromFile(group.filePath)) continue;
 
         bool anyModified = false;
         for (size_t l = 0; l < buf.GetLineCount(); ++l) {
             std::wstring line = buf.GetLine(l);
-            if (PerformLineReplacement(line, m_searchQuery, m_replaceQuery, m_matchCase, m_matchWholeWord)) {
+            if (PerformLineReplacement(line, m_searchQuery, m_replaceQuery, m_matchCase, m_matchWholeWord, m_useRegex, m_preserveCase)) {
                 buf.SetLine(l, line);
                 anyModified = true;
             }

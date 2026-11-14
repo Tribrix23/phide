@@ -1054,6 +1054,51 @@ struct OpenDocument {
     // Code Folding State (Images 2 & 3)
     std::set<size_t> foldedLines;       ///< Set of starting line indices (0-based buffer line) that are folded
 
+    // Line Bookmarks (Section 2 #18)
+    std::vector<size_t> bookmarks;      ///< Sorted 0-based line indices with persistent bookmarks
+
+    [[nodiscard]] bool HasBookmark(size_t line) const noexcept {
+        return std::find(bookmarks.begin(), bookmarks.end(), line) != bookmarks.end();
+    }
+
+    bool ToggleBookmark(size_t line) {
+        auto it = std::find(bookmarks.begin(), bookmarks.end(), line);
+        if (it != bookmarks.end()) {
+            bookmarks.erase(it);
+            return false;
+        }
+        bookmarks.push_back(line);
+        std::sort(bookmarks.begin(), bookmarks.end());
+        bookmarks.erase(std::unique(bookmarks.begin(), bookmarks.end()), bookmarks.end());
+        return true;
+    }
+
+    bool NextBookmark(size_t fromLine, bool forward, size_t& outLine) const noexcept {
+        if (bookmarks.empty()) return false;
+        if (forward) {
+            for (size_t b : bookmarks) {
+                if (b > fromLine) {
+                    outLine = b;
+                    return true;
+                }
+            }
+            outLine = bookmarks.front();
+            return true;
+        }
+        for (auto it = bookmarks.rbegin(); it != bookmarks.rend(); ++it) {
+            if (*it < fromLine) {
+                outLine = *it;
+                return true;
+            }
+        }
+        outLine = bookmarks.back();
+        return true;
+    }
+
+    void ClearBookmarks() noexcept {
+        bookmarks.clear();
+    }
+
     // Inlay Hints & Ghost Completion State (Images 1, 2, 3, 5)
     struct InlayHint {
         size_t line = 0;              ///< 0-based buffer line index

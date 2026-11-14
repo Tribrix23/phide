@@ -228,6 +228,20 @@ void PopupMenu::OpenCodeMenu(float x, float y, const app::AppConfig& config,
     m_items.push_back({ MenuActionId::CodeFoldAll,          L"Fold All",                     L"Ctrl+K Ctrl+0", false, false, false, hasDoc, {}, {} });
     m_items.push_back({ MenuActionId::CodeUnfoldAll,        L"Unfold All",                   L"Ctrl+K Ctrl+J", false, false, false, hasDoc, {}, {} });
 
+    // --- Separator ---
+    m_items.push_back({ MenuActionId::None,                 L"",                             L"",            true,  false, false, false, {}, {} });
+
+    // 6. Symbol Search, References, History & Bookmarks
+    m_items.push_back({ MenuActionId::CodeFindReferences,   L"Find All References",          L"Shift+F12",   false, false, false, hasDoc, {}, {} });
+    m_items.push_back({ MenuActionId::CodeTypeDefinition,   L"Go to Type Definition",        L"",            false, false, false, hasDoc, {}, {} });
+    m_items.push_back({ MenuActionId::CodeImplementation,   L"Go to Implementation",         L"Ctrl+F12",    false, false, false, hasDoc, {}, {} });
+    m_items.push_back({ MenuActionId::CodeGoToSymbol,       L"Go to Symbol in Editor...",    L"Ctrl+Shift+O",false, false, false, hasDoc, {}, {} });
+    m_items.push_back({ MenuActionId::NavBack,              L"Navigate Back",                L"Alt+Left",    false, false, false, true,   {}, {} });
+    m_items.push_back({ MenuActionId::NavForward,           L"Navigate Forward",             L"Alt+Right",   false, false, false, true,   {}, {} });
+    m_items.push_back({ MenuActionId::ToggleBookmark,       L"Toggle Line Bookmark",         L"Ctrl+Alt+K",  false, false, false, hasDoc, {}, {} });
+    m_items.push_back({ MenuActionId::NextBookmark,         L"Next Bookmark",                L"Ctrl+Alt+N",  false, false, false, hasDoc, {}, {} });
+    m_items.push_back({ MenuActionId::PrevBookmark,         L"Previous Bookmark",            L"Ctrl+Alt+P",  false, false, false, hasDoc, {}, {} });
+
     const float codeMenuW = CalculateOptimalMenuWidth(m_items, config, config.ScaleF(295.0f));
     LayoutMenu(m_items, x, y, codeMenuW, config, m_mainMenuBounds);
 }
@@ -317,6 +331,9 @@ void PopupMenu::OpenWindowMenu(float x, float y, const app::AppConfig& config,
     m_items.push_back({ MenuActionId::WindowPrevTab,            L"Previous Tab",               L"Ctrl+Shift+Tab", false, false, false, hasDoc, {}, {} });
     m_items.push_back({ MenuActionId::WindowSplitEditor,        L"Split Editor Right",         L"Ctrl+\\",        false, false, false, hasDoc, {}, {} });
     m_items.push_back({ MenuActionId::WindowCloseEditor,        L"Close Active Editor",        L"Ctrl+W",         false, false, false, hasDoc, {}, {} });
+    m_items.push_back({ MenuActionId::None,                     L"",                           L"",               true,  false, false, false, {}, {} });
+    m_items.push_back({ MenuActionId::WindowNextGroup,          L"Focus Next Editor Group",    L"Ctrl+K Ctrl+Right", false, false, false, true, {}, {} });
+    m_items.push_back({ MenuActionId::WindowPrevGroup,          L"Focus Previous Editor Group", L"Ctrl+K Ctrl+Left", false, false, false, true, {}, {} });
 
     const float windowMenuW = CalculateOptimalMenuWidth(m_items, config, config.ScaleF(270.0f));
     LayoutMenu(m_items, x, y, windowMenuW, config, m_mainMenuBounds);
@@ -365,8 +382,15 @@ void PopupMenu::OpenMoreActionsMenu(float x, float y, const app::AppConfig& conf
     m_items.clear();
     // 1. Monitor
     m_items.push_back({ MenuActionId::ViewMonitor, L"Monitor", L"", false, false, false, true, {}, {} });
+    m_items.push_back({ MenuActionId::None, L"", L"", true, false, false, false, {}, {} });
+    m_items.push_back({ MenuActionId::CodeFindReferences, L"Find All References", L"Shift+F12", false, false, false, true, {}, {} });
+    m_items.push_back({ MenuActionId::MoreCallHierarchy, L"Call Hierarchy", L"", false, false, false, true, {}, {} });
+    m_items.push_back({ MenuActionId::MoreCodeHierarchy, L"Document Outline", L"Ctrl+Shift+O", false, false, false, true, {}, {} });
+    m_items.push_back({ MenuActionId::MoreTraceCode, L"Trace Call Path", L"", false, false, false, true, {}, {} });
+    m_items.push_back({ MenuActionId::MoreCodeMetrics, L"Code Metrics", L"", false, false, false, true, {}, {} });
+    m_items.push_back({ MenuActionId::MoreDependencyGraph, L"Dependency Graph", L"", false, false, false, true, {}, {} });
 
-    const float moreMenuW = CalculateOptimalMenuWidth(m_items, config, config.ScaleF(140.0f));
+    const float moreMenuW = CalculateOptimalMenuWidth(m_items, config, config.ScaleF(220.0f));
     LayoutMenu(m_items, x, y, moreMenuW, config, m_mainMenuBounds, clientW, clientH);
 }
 

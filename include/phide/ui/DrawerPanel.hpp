@@ -26,6 +26,7 @@
 #include "phide/ui/Theme.hpp"
 #include "phide/ui/LucideIcons.hpp"
 #include "phide/editor/OpenDocument.hpp"
+#include "phide/editor/WorkspaceNavigation.hpp"
 #include "phide/workspace/IgnoreEngine.hpp"
 #include "phide/ui/RemoteWindowModal.hpp"
 
@@ -535,8 +536,9 @@ public:
      * @param config Application configuration.
      * @param clientHeight Height of the client window.
      * @param currentDrawerW Current animated drawer width.
+     * @param deferCommitCard True when caller draws RenderCommitCard later unclipped.
      */
-    void Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config, float clientHeight, float currentDrawerW);
+    void Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config, float clientHeight, float currentDrawerW, bool deferCommitCard = false);
     void RenderCommitCard(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config, float clientHeight, float currentDrawerW);
 
     /**
@@ -794,9 +796,9 @@ public:
     /**
      * @brief Sets search query programmatically and runs search.
      */
-    void SetSearchQuery(const std::wstring& q) {
+    void SetSearchQuery(const std::wstring& q, bool async = true) {
         m_searchQuery = q;
-        ExecuteSearch(true);
+        ExecuteSearch(async);
     }
     [[nodiscard]] const std::wstring& GetSearchQuery() const noexcept { return m_searchQuery; }
     [[nodiscard]] const std::vector<SearchFileGroup>& GetSearchGroups() const noexcept { return m_searchGroups; }
@@ -809,6 +811,20 @@ public:
     void DismissSearchGroup(size_t groupIdx);
     void SetOnRefreshOpenDocs(std::function<void()> cb) { m_onRefreshOpenDocs = cb; }
     void SetOnFilesReplaced(std::function<void(const std::vector<std::wstring>&)> cb) { m_onFilesReplaced = cb; }
+    void SetOpenDocSnapshots(std::vector<phide::editor::OpenDocContentSnapshot> snapshots) {
+        m_openDocSnapshots = std::move(snapshots);
+    }
+    void SetOnApplyOpenDocReplace(std::function<bool(
+        const std::wstring& filePath,
+        const std::wstring& searchQ,
+        const std::wstring& replaceQ,
+        bool matchCase,
+        bool matchWord,
+        bool useRegex,
+        bool preserveCase,
+        int targetLine)> cb) {
+        m_onApplyOpenDocReplace = std::move(cb);
+    }
     [[nodiscard]] int GetHoveredIndex() const noexcept { return m_hoveredIndex; }
     [[nodiscard]] bool GetMatchCase() const noexcept { return m_matchCase; }
     void SetMatchCase(bool val) noexcept { m_matchCase = val; }
@@ -816,8 +832,33 @@ public:
     void SetMatchWholeWord(bool val) noexcept { m_matchWholeWord = val; }
     [[nodiscard]] bool GetUseRegex() const noexcept { return m_useRegex; }
     void SetUseRegex(bool val) noexcept { m_useRegex = val; }
+    [[nodiscard]] bool GetPreserveCase() const noexcept { return m_preserveCase; }
+    void SetPreserveCase(bool val) noexcept { m_preserveCase = val; }
     [[nodiscard]] bool IsReplaceOpen() const noexcept { return m_isReplaceOpen; }
     void SetReplaceOpen(bool open) noexcept { m_isReplaceOpen = open; }
+    [[nodiscard]] bool IsReplaceAllConfirmPending() const noexcept { return m_replaceAllConfirmPending; }
+    [[nodiscard]] const std::wstring& GetReplaceAllPreviewSample() const noexcept { return m_replaceAllPreviewSample; }
+    void ConfirmReplaceAll() { ExecuteReplaceAll(true); }
+    void CancelReplaceAllConfirm() noexcept {
+        m_replaceAllConfirmPending = false;
+        m_replaceAllPreviewFiles = 0;
+        m_replaceAllPreviewMatches = 0;
+        m_replaceAllPreviewSample.clear();
+    }
+
+    // --- Explorer Document Symbol Outline (#15) ---
+    void SetOutlineSymbols(const std::wstring& filePath, std::vector<phide::editor::DocumentSymbol> symbols) {
+        m_outlineFilePath = filePath;
+        m_outlineSymbols = std::move(symbols);
+        m_outlineScrollIdx = 0;
+        m_outlineItemRects.clear();
+    }
+    void SetOutlineExpanded(bool expanded) noexcept { m_outlineExpanded = expanded; }
+    [[nodiscard]] bool IsOutlineExpanded() const noexcept { return m_outlineExpanded; }
+    [[nodiscard]] const std::vector<phide::editor::DocumentSymbol>& GetOutlineSymbols() const noexcept { return m_outlineSymbols; }
+    void SetOnOutlineJump(std::function<void(size_t line0Based, size_t col0Based)> cb) { m_onOutlineJump = std::move(cb); }
+    bool HitTestOutline(POINT pt, const app::AppConfig& config, bool toggleOnly = false);
+    bool ScrollOutline(int delta);
 
     [[nodiscard]] bool IsSearchDetailsOpen() const noexcept { return m_isSearchDetailsOpen; }
     void SetSearchDetailsOpen(bool open) noexcept { m_isSearchDetailsOpen = open; }
@@ -842,7 +883,8 @@ public:
             inRect(pt, m_rcMatchWholeWordBtn) || inRect(pt, m_rcUseRegexBtn) ||
             inRect(pt, m_rcPreserveCaseBtn) || inRect(pt, m_rcReplaceAllBtn) ||
             inRect(pt, m_rcRefreshSearchBtn) || inRect(pt, m_rcToggleSearchDetailsBtn) ||
-            inRect(pt, m_rcOpenEditorsOnlyBtn) || inRect(pt, m_rcUseExcludeSettingsBtn)) {
+            inRect(pt, m_rcOpenEditorsOnlyBtn) || inRect(pt, m_rcUseExcludeSettingsBtn) ||
+            (m_replaceAllConfirmPending && (inRect(pt, m_rcReplaceConfirmBtn) || inRect(pt, m_rcReplaceCancelBtn)))) {
             return true;
         }
         for (const auto& grp : m_searchGroups) {
@@ -1007,8 +1049,9 @@ public:
 
     /**
      * @brief Replaces all matched occurrences across the workspace with the replace query.
+     * @param skipConfirm When false, opens inline diff-preview confirmation bar before modifying files.
      */
-    void ExecuteReplaceAll();
+    void ExecuteReplaceAll(bool skipConfirm = true);
 
     // --- Extensions Perspective (Activity Rail Item 3) ---
     struct ExtensionEntry {
@@ -1037,6 +1080,7 @@ public:
 
 private:
     void RenderExplorerPane(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config, float clientHeight, float currentDrawerW);
+    void RenderExplorerOutline(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config, float topY, float clientHeight, float currentDrawerW);
     void RenderSearchPane(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config, float clientHeight, float currentDrawerW);
     void RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config, float clientHeight, float currentDrawerW);
     void DrawButtonSpinner(ID2D1RenderTarget* pRT, const D2D1_RECT_F& btnBounds, const std::wstring& labelText, Theme& theme, const app::AppConfig& config);
@@ -1345,6 +1389,34 @@ private:
     std::wstring m_filesToInclude;
     std::wstring m_filesToExclude;
     std::vector<std::wstring> m_openDocPaths;
+    std::vector<phide::editor::OpenDocContentSnapshot> m_openDocSnapshots;
+    std::function<bool(
+        const std::wstring& filePath,
+        const std::wstring& searchQ,
+        const std::wstring& replaceQ,
+        bool matchCase,
+        bool matchWord,
+        bool useRegex,
+        bool preserveCase,
+        int targetLine)> m_onApplyOpenDocReplace;
+
+    // Replace All Diff Preview Confirmation State (#12)
+    bool m_replaceAllConfirmPending = false;
+    size_t m_replaceAllPreviewFiles = 0;
+    size_t m_replaceAllPreviewMatches = 0;
+    std::wstring m_replaceAllPreviewSample;
+    D2D1_RECT_F m_rcReplaceConfirmBtn{};
+    D2D1_RECT_F m_rcReplaceCancelBtn{};
+
+    // Explorer Document Symbol Outline State (#15)
+    bool m_outlineExpanded = false;
+    std::wstring m_outlineFilePath;
+    std::vector<phide::editor::DocumentSymbol> m_outlineSymbols;
+    size_t m_outlineScrollIdx = 0;
+    std::function<void(size_t line0Based, size_t col0Based)> m_onOutlineJump;
+    D2D1_RECT_F m_rcOutlineHeader{};
+    D2D1_RECT_F m_rcOutlineViewport{};
+    std::vector<D2D1_RECT_F> m_outlineItemRects;
 
     D2D1_RECT_F m_rcToggleSearchDetailsBtn{};
     D2D1_RECT_F m_rcFilesToIncludeBox{};

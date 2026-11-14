@@ -94,9 +94,25 @@ public:
     [[nodiscard]] std::vector<std::wstring> GetLoadedSourceFiles() const;
 
     /**
+     * @brief Copies loaded rules and git ignore set thread-safely into this instance.
+     */
+    void CopyFrom(const IgnoreEngine& other);
+
+    /**
      * @brief Check if a filename is one of the supported ignore file names.
      */
     static bool IsSupportedIgnoreFileName(const std::wstring& fileName);
+
+    /**
+     * @brief Ensures `.phide/` is ignored in `<workspaceRoot>\.gitignore` (creating `.gitignore` if absent)
+     * and appended to any other existing root ignore files if not already present.
+     */
+    static bool EnsurePhideIgnored(const std::wstring& workspaceRoot);
+
+    /**
+     * @brief Resolves the workspace root from a path inside `.phide` and calls EnsurePhideIgnored.
+     */
+    static bool EnsurePhideIgnoredForPath(const std::filesystem::path& pathInPhide);
 
     /**
      * @brief Wildcard glob match between candidate text and glob pattern (supporting * and ?).

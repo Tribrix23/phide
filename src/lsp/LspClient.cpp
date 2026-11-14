@@ -1073,20 +1073,30 @@ std::vector<CompletionItem> LspClient::RequestCompletions(const std::wstring& fi
     return items;
 }
 
-bool LspClient::RequestDefinition(const std::wstring& fileUri, size_t line, size_t col, Location& outLocation) {
-    outLocation = {};
-    if (!m_isRunning.load()) return false;
-
-    std::string uri = EnsureFileUriUtf8(fileUri);
-    std::ostringstream params;
-    params << "{\"textDocument\":{\"uri\":" << EscapeJsonString(uri)
-           << "},\"position\":{\"line\":" << line << ",\"character\":" << col << "}}";
-
-    std::string respJson;
-    if (!SendRequestAndWait("textDocument/definition", params.str(), respJson, 700)) {
-        return false;
+static bool ParseLocationEntry(const JsonValue& locObj, Location& outLoc) {
+    if (locObj.type != JsonValue::Type::Object) return false;
+    std::string targetUri = locObj.GetString("uri");
+    const JsonValue* range = locObj.Get("range");
+    if (targetUri.empty()) {
+        targetUri = locObj.GetString("targetUri");
+        range = locObj.Get("targetSelectionRange");
+        if (!range) range = locObj.Get("targetRange");
     }
+    if (targetUri.empty()) return false;
 
+    outLoc.filePath = LspClient::FileUriToPath(Utf8ToWide(targetUri));
+    if (range) {
+        const JsonValue* start = range->Get("start");
+        if (start) {
+            outLoc.line = static_cast<size_t>((std::max)(0LL, start->GetInt("line", 0)));
+            outLoc.col = static_cast<size_t>((std::max)(0LL, start->GetInt("character", 0)));
+        }
+    }
+    return !outLoc.filePath.empty();
+}
+
+static bool ParseLocationsResponse(const std::string& respJson, std::vector<Location>& outLocations) {
+    outLocations.clear();
     JsonValue root;
     JsonParser parser(respJson);
     if (!parser.Parse(root)) return false;
@@ -1094,47 +1104,76 @@ bool LspClient::RequestDefinition(const std::wstring& fileUri, size_t line, size
     const JsonValue* result = root.Get("result");
     if (!result || result->type == JsonValue::Type::Null) return false;
 
-    const JsonValue* locObj = nullptr;
     if (result->type == JsonValue::Type::Object) {
-        locObj = result;
-    } else if (result->type == JsonValue::Type::Array && !result->arrVal.empty()) {
-        locObj = &result->arrVal[0];
-    }
-    if (!locObj || locObj->type != JsonValue::Type::Object) return false;
-
-    std::string targetUri = locObj->GetString("uri");
-    const JsonValue* range = locObj->Get("range");
-    if (targetUri.empty()) {
-        // Handle LocationLink format
-        targetUri = locObj->GetString("targetUri");
-        range = locObj->Get("targetSelectionRange");
-        if (!range) range = locObj->Get("targetRange");
-    }
-    if (targetUri.empty()) return false;
-
-    outLocation.filePath = FileUriToPath(Utf8ToWide(targetUri));
-    if (range) {
-        const JsonValue* start = range->Get("start");
-        if (start) {
-            outLocation.line = static_cast<size_t>((std::max)(0LL, start->GetInt("line", 0)));
-            outLocation.col = static_cast<size_t>((std::max)(0LL, start->GetInt("character", 0)));
+        Location loc;
+        if (ParseLocationEntry(*result, loc)) {
+            outLocations.push_back(std::move(loc));
+        }
+    } else if (result->type == JsonValue::Type::Array) {
+        for (const auto& item : result->arrVal) {
+            Location loc;
+            if (ParseLocationEntry(item, loc)) {
+                outLocations.push_back(std::move(loc));
+            }
         }
     }
+    return !outLocations.empty();
+}
+
+static std::string BuildTextDocPosParams(const std::wstring& fileUri, size_t line, size_t col) {
+    std::string uri = EnsureFileUriUtf8(fileUri);
+    std::ostringstream params;
+    params << "{\"textDocument\":{\"uri\":" << EscapeJsonString(uri)
+           << "},\"position\":{\"line\":" << line << ",\"character\":" << col << "}}";
+    return params.str();
+}
+
+bool LspClient::RequestDefinitionLocations(const std::wstring& fileUri, size_t line, size_t col,
+                                           std::vector<Location>& outLocations) {
+    outLocations.clear();
+    if (!m_isRunning.load()) return false;
+    std::string respJson;
+    if (!SendRequestAndWait("textDocument/definition", BuildTextDocPosParams(fileUri, line, col), respJson, 700)) {
+        return false;
+    }
+    return ParseLocationsResponse(respJson, outLocations);
+}
+
+bool LspClient::RequestTypeDefinition(const std::wstring& fileUri, size_t line, size_t col,
+                                      std::vector<Location>& outLocations) {
+    outLocations.clear();
+    if (!m_isRunning.load()) return false;
+    std::string respJson;
+    if (!SendRequestAndWait("textDocument/typeDefinition", BuildTextDocPosParams(fileUri, line, col), respJson, 700)) {
+        return false;
+    }
+    return ParseLocationsResponse(respJson, outLocations);
+}
+
+bool LspClient::RequestImplementation(const std::wstring& fileUri, size_t line, size_t col,
+                                      std::vector<Location>& outLocations) {
+    outLocations.clear();
+    if (!m_isRunning.load()) return false;
+    std::string respJson;
+    if (!SendRequestAndWait("textDocument/implementation", BuildTextDocPosParams(fileUri, line, col), respJson, 700)) {
+        return false;
+    }
+    return ParseLocationsResponse(respJson, outLocations);
+}
+
+bool LspClient::RequestDefinition(const std::wstring& fileUri, size_t line, size_t col, Location& outLocation) {
+    outLocation = {};
+    std::vector<Location> locs;
+    if (!RequestDefinitionLocations(fileUri, line, col, locs) || locs.empty()) {
+        return false;
+    }
+    outLocation = std::move(locs.front());
     return !outLocation.filePath.empty();
 }
 
-static bool ParseFormattingEditsResponse(const std::string& respJson, std::vector<LspTextEdit>& outEdits) {
-    outEdits.clear();
-    JsonValue root;
-    JsonParser parser(respJson);
-    if (!parser.Parse(root)) return false;
-
-    const JsonValue* result = root.Get("result");
-    if (!result || result->type != JsonValue::Type::Array || result->arrVal.empty()) {
-        return false;
-    }
-
-    for (const auto& el : result->arrVal) {
+static bool ParseTextEditArray(const JsonValue* arr, std::vector<LspTextEdit>& outEdits) {
+    if (!arr || arr->type != JsonValue::Type::Array || arr->arrVal.empty()) return false;
+    for (const auto& el : arr->arrVal) {
         if (el.type != JsonValue::Type::Object) continue;
         const JsonValue* range = el.Get("range");
         if (!range) continue;
@@ -1151,6 +1190,269 @@ static bool ParseFormattingEditsResponse(const std::string& respJson, std::vecto
         outEdits.push_back(std::move(te));
     }
     return !outEdits.empty();
+}
+
+static bool ParseFormattingEditsResponse(const std::string& respJson, std::vector<LspTextEdit>& outEdits) {
+    outEdits.clear();
+    JsonValue root;
+    JsonParser parser(respJson);
+    if (!parser.Parse(root)) return false;
+
+    return ParseTextEditArray(root.Get("result"), outEdits);
+}
+
+static void CollectDocumentSymbolsRecursive(const JsonValue& arr, int depth, std::vector<DocumentSymbolItem>& out) {
+    if (arr.type != JsonValue::Type::Array) return;
+    for (const auto& el : arr.arrVal) {
+        if (el.type != JsonValue::Type::Object) continue;
+        DocumentSymbolItem item;
+        item.name = Utf8ToWide(el.GetString("name"));
+        item.detail = Utf8ToWide(el.GetString("detail"));
+        item.kind = static_cast<int>(el.GetInt("kind", 12));
+        item.depth = depth;
+
+        const JsonValue* range = el.Get("selectionRange");
+        if (!range) range = el.Get("range");
+        if (!range) {
+            const JsonValue* loc = el.Get("location");
+            if (loc) range = loc->Get("range");
+        }
+        if (range) {
+            const JsonValue* start = range->Get("start");
+            const JsonValue* end = range->Get("end");
+            if (start) {
+                item.line = static_cast<size_t>((std::max)(0LL, start->GetInt("line", 0)));
+                item.col = static_cast<size_t>((std::max)(0LL, start->GetInt("character", 0)));
+            }
+            if (end) {
+                item.endLine = static_cast<size_t>((std::max)(0LL, end->GetInt("line", 0)));
+            }
+        }
+        if (!item.name.empty()) {
+            out.push_back(std::move(item));
+        }
+        if (const JsonValue* children = el.Get("children")) {
+            CollectDocumentSymbolsRecursive(*children, depth + 1, out);
+        }
+    }
+}
+
+bool LspClient::RequestDocumentSymbols(const std::wstring& fileUri, std::vector<DocumentSymbolItem>& outSymbols) {
+    outSymbols.clear();
+    if (!m_isRunning.load()) return false;
+    std::string uri = EnsureFileUriUtf8(fileUri);
+    std::ostringstream params;
+    params << "{\"textDocument\":{\"uri\":" << EscapeJsonString(uri) << "}}";
+
+    std::string respJson;
+    if (!SendRequestAndWait("textDocument/documentSymbol", params.str(), respJson, 700)) {
+        return false;
+    }
+
+    JsonValue root;
+    JsonParser parser(respJson);
+    if (!parser.Parse(root)) return false;
+    const JsonValue* result = root.Get("result");
+    if (!result || result->type != JsonValue::Type::Array) return false;
+
+    CollectDocumentSymbolsRecursive(*result, 0, outSymbols);
+    return !outSymbols.empty();
+}
+
+bool LspClient::RequestReferences(const std::wstring& fileUri, size_t line, size_t col,
+                                  bool includeDeclaration, std::vector<Location>& outLocations) {
+    outLocations.clear();
+    if (!m_isRunning.load()) return false;
+
+    std::string uri = EnsureFileUriUtf8(fileUri);
+    std::ostringstream params;
+    params << "{\"textDocument\":{\"uri\":" << EscapeJsonString(uri)
+           << "},\"position\":{\"line\":" << line << ",\"character\":" << col
+           << "},\"context\":{\"includeDeclaration\":" << (includeDeclaration ? "true" : "false") << "}}";
+
+    std::string respJson;
+    if (!SendRequestAndWait("textDocument/references", params.str(), respJson, 900)) {
+        return false;
+    }
+    return ParseLocationsResponse(respJson, outLocations);
+}
+
+bool LspClient::PrepareRename(const std::wstring& fileUri, size_t line, size_t col,
+                              size_t& outStartCol, size_t& outEndCol, std::wstring& outPlaceholder) {
+    outStartCol = col;
+    outEndCol = col;
+    outPlaceholder.clear();
+    if (!m_isRunning.load()) return false;
+
+    std::string respJson;
+    if (!SendRequestAndWait("textDocument/prepareRename", BuildTextDocPosParams(fileUri, line, col), respJson, 600)) {
+        return false;
+    }
+    JsonValue root;
+    JsonParser parser(respJson);
+    if (!parser.Parse(root)) return false;
+    const JsonValue* result = root.Get("result");
+    if (!result || result->type != JsonValue::Type::Object) return false;
+
+    outPlaceholder = Utf8ToWide(result->GetString("placeholder"));
+    const JsonValue* range = result->Get("range");
+    if (!range) range = result;
+    const JsonValue* start = range->Get("start");
+    const JsonValue* end = range->Get("end");
+    if (start && end) {
+        outStartCol = static_cast<size_t>((std::max)(0LL, start->GetInt("character", 0)));
+        outEndCol = static_cast<size_t>((std::max)(0LL, end->GetInt("character", 0)));
+        return true;
+    }
+    return !outPlaceholder.empty();
+}
+
+bool LspClient::RequestRename(const std::wstring& fileUri, size_t line, size_t col,
+                              const std::wstring& newName, WorkspaceEditResult& outEdit) {
+    outEdit.fileChanges.clear();
+    if (!m_isRunning.load() || newName.empty()) return false;
+
+    std::string uri = EnsureFileUriUtf8(fileUri);
+    std::ostringstream params;
+    params << "{\"textDocument\":{\"uri\":" << EscapeJsonString(uri)
+           << "},\"position\":{\"line\":" << line << ",\"character\":" << col
+           << "},\"newName\":" << EscapeJsonString(WideToUtf8(newName)) << "}";
+
+    std::string respJson;
+    if (!SendRequestAndWait("textDocument/rename", params.str(), respJson, 1200)) {
+        return false;
+    }
+    JsonValue root;
+    JsonParser parser(respJson);
+    if (!parser.Parse(root)) return false;
+    const JsonValue* result = root.Get("result");
+    if (!result || result->type != JsonValue::Type::Object) return false;
+
+    if (const JsonValue* changes = result->Get("changes"); changes && changes->type == JsonValue::Type::Object) {
+        for (const auto& kv : changes->objVal) {
+            std::wstring fpath = FileUriToPath(Utf8ToWide(kv.first));
+            std::vector<LspTextEdit> edits;
+            if (!fpath.empty() && ParseTextEditArray(&kv.second, edits)) {
+                outEdit.fileChanges.emplace_back(std::move(fpath), std::move(edits));
+            }
+        }
+    }
+    if (outEdit.fileChanges.empty()) {
+        if (const JsonValue* docChanges = result->Get("documentChanges");
+            docChanges && docChanges->type == JsonValue::Type::Array) {
+            for (const auto& dc : docChanges->arrVal) {
+                if (dc.type != JsonValue::Type::Object) continue;
+                const JsonValue* td = dc.Get("textDocument");
+                if (!td) continue;
+                std::wstring fpath = FileUriToPath(Utf8ToWide(td->GetString("uri")));
+                std::vector<LspTextEdit> edits;
+                if (!fpath.empty() && ParseTextEditArray(dc.Get("edits"), edits)) {
+                    outEdit.fileChanges.emplace_back(std::move(fpath), std::move(edits));
+                }
+            }
+        }
+    }
+    return !outEdit.fileChanges.empty();
+}
+
+static std::string SerializeCallHierarchyItemJson(const CallHierarchyItem& item) {
+    std::string uri = EnsureFileUriUtf8(item.filePath);
+    std::ostringstream os;
+    os << "{\"name\":" << EscapeJsonString(WideToUtf8(item.name))
+       << ",\"kind\":" << item.kind
+       << ",\"uri\":" << EscapeJsonString(uri)
+       << ",\"range\":{\"start\":{\"line\":" << item.line << ",\"character\":" << item.col
+       << "},\"end\":{\"line\":" << item.line << ",\"character\":" << (item.col + 1) << "}}"
+       << ",\"selectionRange\":{\"start\":{\"line\":" << item.line << ",\"character\":" << item.col
+       << "},\"end\":{\"line\":" << item.line << ",\"character\":" << (item.col + 1) << "}}}";
+    return os.str();
+}
+
+static CallHierarchyItem ParseCallHierarchyObject(const JsonValue& obj) {
+    CallHierarchyItem ch;
+    ch.name = Utf8ToWide(obj.GetString("name"));
+    ch.detail = Utf8ToWide(obj.GetString("detail"));
+    ch.kind = static_cast<int>(obj.GetInt("kind", 12));
+    ch.filePath = LspClient::FileUriToPath(Utf8ToWide(obj.GetString("uri")));
+    const JsonValue* range = obj.Get("selectionRange");
+    if (!range) range = obj.Get("range");
+    if (range) {
+        if (const JsonValue* start = range->Get("start")) {
+            ch.line = static_cast<size_t>((std::max)(0LL, start->GetInt("line", 0)));
+            ch.col = static_cast<size_t>((std::max)(0LL, start->GetInt("character", 0)));
+        }
+    }
+    return ch;
+}
+
+bool LspClient::PrepareCallHierarchy(const std::wstring& fileUri, size_t line, size_t col,
+                                     std::vector<CallHierarchyItem>& outItems) {
+    outItems.clear();
+    if (!m_isRunning.load()) return false;
+    std::string respJson;
+    if (!SendRequestAndWait("textDocument/prepareCallHierarchy", BuildTextDocPosParams(fileUri, line, col), respJson, 700)) {
+        return false;
+    }
+    JsonValue root;
+    JsonParser parser(respJson);
+    if (!parser.Parse(root)) return false;
+    const JsonValue* result = root.Get("result");
+    if (!result || result->type != JsonValue::Type::Array) return false;
+    for (const auto& el : result->arrVal) {
+        if (el.type != JsonValue::Type::Object) continue;
+        CallHierarchyItem ch = ParseCallHierarchyObject(el);
+        if (!ch.name.empty()) {
+            ch.rawItemJson = SerializeCallHierarchyItemJson(ch);
+            outItems.push_back(std::move(ch));
+        }
+    }
+    return !outItems.empty();
+}
+
+bool LspClient::RequestIncomingCalls(const CallHierarchyItem& item, std::vector<CallHierarchyItem>& outCallers) {
+    outCallers.clear();
+    if (!m_isRunning.load() || item.name.empty()) return false;
+    std::string itemJson = item.rawItemJson.empty() ? SerializeCallHierarchyItemJson(item) : item.rawItemJson;
+    std::string params = "{\"item\":" + itemJson + "}";
+    std::string respJson;
+    if (!SendRequestAndWait("callHierarchy/incomingCalls", params, respJson, 700)) {
+        return false;
+    }
+    JsonValue root;
+    JsonParser parser(respJson);
+    if (!parser.Parse(root)) return false;
+    const JsonValue* result = root.Get("result");
+    if (!result || result->type != JsonValue::Type::Array) return false;
+    for (const auto& el : result->arrVal) {
+        if (const JsonValue* fromObj = el.Get("from"); fromObj && fromObj->type == JsonValue::Type::Object) {
+            CallHierarchyItem caller = ParseCallHierarchyObject(*fromObj);
+            if (!caller.name.empty()) outCallers.push_back(std::move(caller));
+        }
+    }
+    return !outCallers.empty();
+}
+
+bool LspClient::RequestOutgoingCalls(const CallHierarchyItem& item, std::vector<CallHierarchyItem>& outCallees) {
+    outCallees.clear();
+    if (!m_isRunning.load() || item.name.empty()) return false;
+    std::string itemJson = item.rawItemJson.empty() ? SerializeCallHierarchyItemJson(item) : item.rawItemJson;
+    std::string params = "{\"item\":" + itemJson + "}";
+    std::string respJson;
+    if (!SendRequestAndWait("callHierarchy/outgoingCalls", params, respJson, 700)) {
+        return false;
+    }
+    JsonValue root;
+    JsonParser parser(respJson);
+    if (!parser.Parse(root)) return false;
+    const JsonValue* result = root.Get("result");
+    if (!result || result->type != JsonValue::Type::Array) return false;
+    for (const auto& el : result->arrVal) {
+        if (const JsonValue* toObj = el.Get("to"); toObj && toObj->type == JsonValue::Type::Object) {
+            CallHierarchyItem callee = ParseCallHierarchyObject(*toObj);
+            if (!callee.name.empty()) outCallees.push_back(std::move(callee));
+        }
+    }
+    return !outCallees.empty();
 }
 
 bool LspClient::RequestFormatting(const std::wstring& fileUri, int tabSize, bool insertSpaces, std::vector<LspTextEdit>& outEdits) {

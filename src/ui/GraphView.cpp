@@ -4,6 +4,7 @@
  */
 
 #include "phide/ui/GraphView.hpp"
+#include "phide/workspace/IgnoreEngine.hpp"
 #include <cmath>
 #include <algorithm>
 #include <filesystem>
@@ -1191,6 +1192,7 @@ bool GraphView::SaveLayout() {
     std::filesystem::path p(path);
     std::error_code ec;
     std::filesystem::create_directories(p.parent_path(), ec);
+    phide::workspace::IgnoreEngine::EnsurePhideIgnoredForPath(p);
 
     std::wofstream out(path, std::ios::trunc);
     if (!out.is_open()) return false;

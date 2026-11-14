@@ -50,8 +50,11 @@
 #include "phide/editor/FormatEngine.hpp"
 #include "phide/editor/PredictionEngine.hpp"
 #include "phide/editor/ZedPredictionData.hpp"
+#include "phide/editor/WorkspaceNavigation.hpp"
+#include "phide/editor/AdaptiveCodeEngine.hpp"
 #include "phide/workspace/WorkspaceManager.hpp"
 #include "phide/workspace/ExplorerUndoManager.hpp"
+#include "phide/workspace/IgnoreEngine.hpp"
 #include "phide/server/LiveServer.hpp"
 
 using Microsoft::WRL::ComPtr;
@@ -346,6 +349,9 @@ int main(int argc, char* argv[]) {
     }
     if (targetTest == 125) {
         goto run_test_125;
+    }
+    if (targetTest == 126) {
+        goto run_test_126;
     }
 
     if (targetTest == 66) {
@@ -19256,6 +19262,274 @@ run_test_125:
 
         if (targetTest == 125) {
             std::cout << "Target test 125 finished successfully." << std::endl;
+            return 0;
+        }
+    }
+
+run_test_126:
+    // [TEST 126] Navigation, Search & Refactoring Suite (Features 10-18) & Auto-.phide Ignore
+    if (targetTest == 0 || targetTest == 126) {
+        std::cout << "\n[TEST 126] Verifying Navigation, Search & Refactoring (Features 10-18) & Auto-.phide Ignore..." << std::endl;
+        namespace fs = std::filesystem;
+        std::error_code ec126;
+        fs::path tmpRoot = fs::temp_directory_path() / L"phide_test126_ws";
+        fs::remove_all(tmpRoot, ec126);
+        fs::create_directories(tmpRoot, ec126);
+
+        // 126.1 Auto-.phide Ignore Management (.gitignore creation + existing ignore files + idempotency)
+        {
+            fs::path wsA = tmpRoot / L"ws_no_gitignore";
+            fs::create_directories(wsA, ec126);
+            assert(phide::workspace::IgnoreEngine::EnsurePhideIgnored(wsA.wstring()));
+            assert(fs::exists(wsA / L".gitignore", ec126));
+            std::string gitA;
+            {
+                std::ifstream ifs(wsA / L".gitignore", std::ios::binary);
+                gitA.assign(std::istreambuf_iterator<char>(ifs), std::istreambuf_iterator<char>());
+            }
+            assert(gitA.find(".phide") != std::string::npos);
+            // Calling twice must be idempotent
+            assert(phide::workspace::IgnoreEngine::EnsurePhideIgnored(wsA.wstring()));
+            std::string gitA2;
+            {
+                std::ifstream ifs(wsA / L".gitignore", std::ios::binary);
+                gitA2.assign(std::istreambuf_iterator<char>(ifs), std::istreambuf_iterator<char>());
+            }
+            assert(gitA == gitA2);
+
+            fs::path wsB = tmpRoot / L"ws_existing_ignores";
+            fs::create_directories(wsB, ec126);
+            {
+                std::ofstream g(wsB / L".gitignore", std::ios::binary);
+                g << "dist/\n";
+                std::ofstream d(wsB / L".dockerignore", std::ios::binary);
+                d << "node_modules/\n";
+            }
+            assert(phide::workspace::IgnoreEngine::EnsurePhideIgnoredForPath(wsB / L".phide" / L"bookmarks.json"));
+            assert(!fs::exists(wsB / L".npmignore", ec126));
+            std::string gitB, docB;
+            {
+                std::ifstream ig(wsB / L".gitignore", std::ios::binary);
+                gitB.assign(std::istreambuf_iterator<char>(ig), std::istreambuf_iterator<char>());
+                std::ifstream id(wsB / L".dockerignore", std::ios::binary);
+                docB.assign(std::istreambuf_iterator<char>(id), std::istreambuf_iterator<char>());
+            }
+            assert(gitB.find("dist/") != std::string::npos && gitB.find(".phide") != std::string::npos);
+            assert(docB.find("node_modules/") != std::string::npos && docB.find(".phide") != std::string::npos);
+
+            // GraphView::SaveLayout & AdaptiveCodeEngine::SaveProfileAsync trigger auto-ignore
+            fs::path wsC = tmpRoot / L"ws_graph_adaptive";
+            fs::create_directories(wsC, ec126);
+            phide::ui::GraphView gv;
+            gv.RefreshFromWorkspace(wsC.wstring());
+            assert(gv.SaveLayout());
+            assert(fs::exists(wsC / L".gitignore", ec126));
+            phide::editor::AdaptiveCodeEngine adaptive;
+            adaptive.SaveProfileAsync((wsC / L".phide" / L"user_adaptive_profile.json").wstring());
+            std::string gitC;
+            {
+                std::ifstream ic(wsC / L".gitignore", std::ios::binary);
+                gitC.assign(std::istreambuf_iterator<char>(ic), std::istreambuf_iterator<char>());
+            }
+            assert(gitC.find(".phide") != std::string::npos);
+        }
+        std::cout << "  Passed: Auto-.phide ignore (.gitignore creation, existing ignore files, GraphView & AdaptiveCodeEngine)" << std::endl;
+
+        // 126.2 Inline Find & Replace (#11), Preserve Case & SearchRangeFilter
+        {
+            assert(phide::editor::ApplyPreserveCase(L"FOOBAR", L"alphaBeta") == L"ALPHABETA");
+            assert(phide::editor::ApplyPreserveCase(L"foobar", L"AlphaBeta") == L"alphabeta");
+            assert(phide::editor::ApplyPreserveCase(L"FooBar", L"target") == L"Target");
+
+            phide::editor::OpenDocument doc;
+            doc.buffer.SetText(L"alpha beta alpha\ngamma alpha\nalpha delta");
+            phide::editor::SearchRangeFilter rf;
+            rf.restrictToRange = true;
+            rf.startLine = 1; rf.startCol = 0;
+            rf.endLine = 2; rf.endCol = 5;
+            auto rangeHits = phide::editor::FindMatchesInLines(doc.buffer.GetLines(), L"alpha", true, true, false, rf);
+            assert(rangeHits.size() == 2);
+            assert(rangeHits[0].line == 1 && rangeHits[1].line == 2);
+
+            phide::ui::EditorCanvas canvas;
+            canvas.OpenInlineFindBar(true, L"alpha", nullptr);
+            canvas.RecomputeInlineFindMatches(doc);
+            assert(canvas.GetFindBar().matches.size() == 4);
+            auto act = canvas.StepInlineFindMatch(doc, true);
+            assert(act == phide::ui::EditorCanvas::InlineFindAction::FindNext);
+            assert(doc.HasSelection());
+        }
+        std::cout << "  Passed: Inline Find/Replace bar, Preserve Case, and Find-in-Selection range filter" << std::endl;
+
+        // 126.3 Workspace Search on Dirty Open Buffers + Replace All Confirmation + Preserve Case (#12)
+        {
+            fs::path wsSearch = tmpRoot / L"ws_search";
+            fs::create_directories(wsSearch, ec126);
+            fs::path diskFile = wsSearch / L"app.php";
+            fs::path dirtyFile = wsSearch / L"unsaved.php";
+            {
+                std::ofstream f1(diskFile, std::ios::binary);
+                f1 << "<?php\n$OldValue = 1;\n";
+                std::ofstream f2(dirtyFile, std::ios::binary);
+                f2 << "<?php\n// clean disk\n";
+            }
+
+            phide::ui::DrawerPanel drawer;
+            drawer.OpenFolder(wsSearch.wstring());
+            std::vector<phide::editor::OpenDocContentSnapshot> snaps;
+            snaps.push_back({ dirtyFile.wstring(), L"<?php\n$oldValue = 99;\n", true });
+            drawer.SetOpenDocSnapshots(std::move(snaps));
+            drawer.SetSearchQuery(L"oldValue", false);
+            assert(drawer.GetTotalMatches() == 2);
+
+            bool dirtyReplaced = false;
+            drawer.SetOnApplyOpenDocReplace([&](const std::wstring& fp, const std::wstring&, const std::wstring&,
+                                                bool, bool, bool, bool, int) {
+                if (fp.find(L"unsaved.php") != std::wstring::npos) {
+                    dirtyReplaced = true;
+                    return true;
+                }
+                return false;
+            });
+            drawer.SetReplaceQuery(L"newValue");
+            drawer.SetPreserveCase(true);
+            drawer.ExecuteReplaceAll(false);
+            assert(drawer.IsReplaceAllConfirmPending() == true);
+            drawer.ExecuteReplaceAll(true);
+            assert(drawer.IsReplaceAllConfirmPending() == false);
+            assert(dirtyReplaced == true);
+
+            std::string diskAfter;
+            {
+                std::ifstream ifs(diskFile, std::ios::binary);
+                diskAfter.assign(std::istreambuf_iterator<char>(ifs), std::istreambuf_iterator<char>());
+            }
+            assert(diskAfter.find("$NewValue = 1;") != std::string::npos);
+        }
+        std::cout << "  Passed: Workspace search across dirty buffers & Replace All confirmation + Preserve Case" << std::endl;
+
+        // 126.4 Quick Open :line:col, Fuzzy Ranking, Task/Debug Discovery, # and @ (#13, #15)
+        {
+            int l1 = 0, c1 = 0;
+            assert(phide::editor::ParseLineColSpec(L":42:17", l1, c1) && l1 == 42 && c1 == 17);
+            assert(phide::editor::ScoreFuzzyMatch(L"wincpp", L"Window.cpp", L"src\\app\\Window.cpp", true, true) >
+                   phide::editor::ScoreFuzzyMatch(L"wincpp", L"OtherWindowHelper.cpp", L"src\\ui\\OtherWindowHelper.cpp", false, false));
+            assert(phide::editor::ScoreFuzzyMatch(L"zzzz", L"Window.cpp") < 0);
+
+            fs::path wsTasks = tmpRoot / L"ws_tasks";
+            fs::create_directories(wsTasks / L".vscode", ec126);
+            {
+                std::ofstream pkg(wsTasks / L"package.json", std::ios::binary);
+                pkg << "{ \"scripts\": { \"dev\": \"vite\", \"test\": \"vitest\" } }\n";
+                std::ofstream comp(wsTasks / L"composer.json", std::ios::binary);
+                comp << "{ \"scripts\": { \"lint\": \"phpstan analyse\" } }\n";
+                std::ofstream launch(wsTasks / L".vscode" / L"launch.json", std::ios::binary);
+                launch << "{ \"configurations\": [ { \"name\": \"Launch API\", \"type\": \"node\", \"program\": \"server.js\" } ] }\n";
+            }
+            auto tasks = phide::editor::DiscoverWorkspaceTasks(wsTasks.wstring());
+            auto debugs = phide::editor::DiscoverLaunchConfigurations(wsTasks.wstring());
+            assert(tasks.size() >= 3);
+            assert(debugs.size() >= 1);
+
+            std::wstring longPhp = L"<?php\n";
+            for (int i = 0; i < 650; ++i) longPhp += L"// padding line\n";
+            longPhp += L"class DeepClass {\n    public function tailMethod() {}\n}\n";
+            auto docSyms = phide::editor::ExtractDocumentSymbols(longPhp, L".php");
+            bool foundDeep = false, foundTail = false;
+            for (const auto& s : docSyms) {
+                if (s.name == L"DeepClass") foundDeep = true;
+                if (s.name == L"tailMethod" && s.line > 600) foundTail = true;
+            }
+            assert(foundDeep && foundTail);
+
+            phide::ui::QuickOpenModal qo;
+            qo.SetActiveDocumentContent((wsTasks / L"long.php").wstring(), longPhp);
+            qo.Open({}, {}, wsTasks.wstring());
+            qo.SetQuery(L"task ");
+            assert(!qo.GetItems().empty());
+            qo.SetQuery(L"debug ");
+            assert(!qo.GetItems().empty());
+            qo.SetQuery(L":15:8");
+            std::wstring chosen, actCmd;
+            int tLine = -1;
+            assert(qo.HandleKeyDown(VK_RETURN, chosen, tLine, actCmd));
+            assert(actCmd == L"goto_line:15:8");
+        }
+        std::cout << "  Passed: Quick Open :line:col, fuzzy ranking, task/debug discovery, and >600-line symbol outline" << std::endl;
+
+        // 126.5 Scalable Workspace Symbol Index (>150 files), References, Call Hierarchy, Code Metrics & Rename (#14, #16, #17)
+        {
+            fs::path wsIdx = tmpRoot / L"ws_index";
+            fs::create_directories(wsIdx / L"src", ec126);
+            for (int i = 0; i < 168; ++i) {
+                std::ofstream f(wsIdx / L"src" / (L"mod_" + std::to_wstring(i) + L".ts"), std::ios::binary);
+                f << "export function helper" << i << "() { return " << i << "; }\n";
+            }
+            {
+                std::ofstream fLate(wsIdx / L"src" / L"zzz_late_target.ts", std::ios::binary);
+                fLate << "export function lateTargetSymbol() {\n    return computeInnerValue();\n}\nexport function computeInnerValue() { return 7; }\n";
+                std::ofstream fCaller(wsIdx / L"src" / L"entry.ts", std::ios::binary);
+                fCaller << "function bootApp() {\n    return lateTargetSymbol();\n}\n";
+            }
+            phide::workspace::IgnoreEngine ig;
+            phide::editor::WorkspaceSymbolIndex symIdx;
+            symIdx.RebuildSync(wsIdx.wstring(), &ig, 500);
+            assert(symIdx.GetIndexedFileCount() >= 170);
+            auto defs = symIdx.FindDefinitions(L"lateTargetSymbol");
+            assert(!defs.empty());
+            assert(defs[0].filePath.find(L"zzz_late_target.ts") != std::wstring::npos);
+
+            auto refs = phide::editor::FindWorkspaceReferences(L"lateTargetSymbol", wsIdx.wstring(), ig);
+            assert(refs.size() >= 2);
+            auto calls = phide::editor::BuildStaticCallHierarchy(
+                L"lateTargetSymbol", (wsIdx / L"src" / L"zzz_late_target.ts").wstring(), wsIdx.wstring(), ig);
+            bool hasCaller = false, hasCallee = false;
+            for (const auto& c : calls) {
+                if (c.isIncoming && c.name == L"bootApp") hasCaller = true;
+                if (!c.isIncoming && c.name == L"computeInnerValue") hasCallee = true;
+            }
+            assert(hasCaller && hasCallee);
+
+            auto metrics = phide::editor::ComputeWorkspaceMetrics(wsIdx.wstring(), ig);
+            assert(metrics.totalFiles >= 170 && metrics.totalFunctions >= 170);
+
+            auto badPlan = phide::editor::BuildStaticRenamePlan(L"lateTargetSymbol", L"123bad", wsIdx.wstring(), ig);
+            assert(!badPlan.valid);
+            auto renamePlan = phide::editor::BuildStaticRenamePlan(L"lateTargetSymbol", L"renamedTargetSymbol", wsIdx.wstring(), ig);
+            assert(renamePlan.valid && renamePlan.fileGroups.size() >= 2 && renamePlan.totalEdits >= 2);
+
+            phide::ui::EditorCanvas overlayCanvas;
+            overlayCanvas.OpenRenameWidget(L"lateTargetSymbol", renamePlan);
+            assert(overlayCanvas.GetRenameWidget().isOpen);
+            overlayCanvas.HandleRenameChar(L'X');
+            assert(overlayCanvas.HandleRenameKeyDown(VK_RETURN) == phide::ui::EditorCanvas::RenameAction::ApplyRequested);
+        }
+        std::cout << "  Passed: >150-file symbol index, references, call hierarchy, code metrics & cross-file rename plan" << std::endl;
+
+        // 126.6 Line Bookmarks (#18) & Split Group Cycling (#10)
+        {
+            phide::editor::OpenDocument bmDoc;
+            bmDoc.buffer.SetText(L"l0\nl1\nl2\nl3\nl4\nl5\n");
+            assert(bmDoc.ToggleBookmark(1) == true);
+            assert(bmDoc.ToggleBookmark(4) == true);
+            assert(bmDoc.HasBookmark(1) && bmDoc.HasBookmark(4));
+            size_t nxt = 99;
+            assert(bmDoc.NextBookmark(1, true, nxt) && nxt == 4);
+            assert(bmDoc.NextBookmark(4, true, nxt) && nxt == 1); // wrap forward
+            assert(bmDoc.NextBookmark(1, false, nxt) && nxt == 4); // wrap backward
+            assert(bmDoc.ToggleBookmark(1) == false);
+            assert(!bmDoc.HasBookmark(1));
+            bmDoc.ClearBookmarks();
+            assert(bmDoc.bookmarks.empty());
+        }
+        std::cout << "  Passed: Line bookmarks toggle, next/prev wrap-around, and clear" << std::endl;
+
+        fs::remove_all(tmpRoot, ec126);
+        assert(!fs::exists(tmpRoot, ec126));
+        std::cout << "  Passed: All [TEST 126] verification checks passed!" << std::endl;
+
+        if (targetTest == 126) {
+            std::cout << "Target test 126 finished successfully." << std::endl;
             return 0;
         }
     }

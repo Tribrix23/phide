@@ -19,6 +19,7 @@
 #include "phide/editor/BracketPairAnalyzer.hpp"
 #include "phide/editor/IntelliSenseEngine.hpp"
 #include "phide/editor/PredictionEngine.hpp"
+#include "phide/editor/WorkspaceNavigation.hpp"
 #include "phide/ui/KeyboardShortcutsView.hpp"
 #include "phide/ui/PackageManagerView.hpp"
 #include "phide/ui/NotebookView.hpp"
@@ -332,7 +333,7 @@ public:
      */
     void RenderBreadcrumbs(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
                            const editor::OpenDocument& doc, float canvasLeft, float canvasWidth,
-                           float barY, float barHeight);
+                           float barY, float barHeight, bool isFocusedPane = true);
 
 
 
@@ -860,6 +861,196 @@ public:
     static size_t CountSwatchesBefore(const std::vector<LineColorSpan>& spans, size_t col);
     static float GetColumnVisualOffset(const std::vector<LineColorSpan>& spans, size_t col, float charW, float swatchSpan);
     static float GetColumnVisualOffset(const std::wstring& lineText, const std::vector<LineColorSpan>& spans, size_t col, float charW, float swatchSpan, int tabSize = 4);
+
+    // --- Section 2 Overlay Widgets (#11, #14, #15, #16, #17) ---
+    struct BreadcrumbHit {
+        D2D1_RECT_F bounds{};
+        int segmentIndex = 0;
+        bool isSymbolTail = false;
+        bool isFolder = false;
+        std::wstring label;
+        std::wstring resolvedPath;
+    };
+
+    struct BreadcrumbDropdownItem {
+        D2D1_RECT_F bounds{};
+        std::wstring label;
+        std::wstring fullPath;
+        size_t line = 0;
+        size_t col = 0;
+        bool isFolder = false;
+        bool isSymbol = false;
+    };
+
+    struct InlineFindBarState {
+        bool isOpen = false;
+        bool isReplaceOpen = false;
+        int focusedInput = 1; // 1 = find, 2 = replace
+        std::wstring query;
+        std::wstring replaceQuery;
+        bool matchCase = false;
+        bool wholeWord = false;
+        bool useRegex = false;
+        bool inSelection = false;
+        bool preserveCase = false;
+        bool hasSelectionFilter = false;
+        editor::SearchRangeFilter selFilter{};
+        std::vector<editor::SearchLineMatch> matches;
+        int currentMatchIdx = -1;
+
+        D2D1_RECT_F rcBar{};
+        D2D1_RECT_F rcChevron{};
+        D2D1_RECT_F rcFindInput{};
+        D2D1_RECT_F rcReplaceInput{};
+        D2D1_RECT_F rcMatchCaseBtn{};
+        D2D1_RECT_F rcWholeWordBtn{};
+        D2D1_RECT_F rcRegexBtn{};
+        D2D1_RECT_F rcInSelectionBtn{};
+        D2D1_RECT_F rcPrevBtn{};
+        D2D1_RECT_F rcNextBtn{};
+        D2D1_RECT_F rcCloseBtn{};
+        D2D1_RECT_F rcPreserveCaseBtn{};
+        D2D1_RECT_F rcReplaceOneBtn{};
+        D2D1_RECT_F rcReplaceAllBtn{};
+    };
+
+    enum class InlineFindAction {
+        None,
+        Consumed,
+        Closed,
+        FindNext,
+        FindPrev,
+        ReplaceCurrent,
+        ReplaceAll,
+        OptionsChanged
+    };
+
+    enum class PeekMode {
+        PeekDefinition = 0,
+        References = 1,
+        CallHierarchy = 2,
+        CodeMetrics = 3
+    };
+
+    struct PeekItemEntry {
+        std::wstring label;
+        std::wstring detail;
+        std::wstring filePath;
+        size_t line = 0;
+        size_t col = 0;
+        std::wstring snippet;
+        D2D1_RECT_F bounds{};
+    };
+
+    struct InlinePeekPanelState {
+        bool isOpen = false;
+        PeekMode mode = PeekMode::PeekDefinition;
+        std::wstring title;
+        std::wstring subtitle;
+        size_t anchorLine = 0;
+        int selectedIndex = 0;
+        int listScrollIdx = 0;
+        float codeScrollY = 0.0f;
+        std::vector<PeekItemEntry> items;
+        std::vector<std::wstring> previewLines;
+        size_t previewStartLine = 0;
+        editor::WorkspaceCodeMetrics metrics{};
+
+        D2D1_RECT_F rcPanel{};
+        D2D1_RECT_F rcCloseBtn{};
+        D2D1_RECT_F rcOpenFileBtn{};
+    };
+
+    enum class PeekAction {
+        None,
+        Consumed,
+        Closed,
+        NavigateToSelected,
+        SelectionChanged
+    };
+
+    struct InlineRenameState {
+        bool isOpen = false;
+        bool showPreview = false;
+        std::wstring oldName;
+        std::wstring newName;
+        std::wstring statusNote;
+        editor::RenamePlan plan;
+        D2D1_RECT_F rcBox{};
+        D2D1_RECT_F rcInput{};
+        D2D1_RECT_F rcApplyBtn{};
+        D2D1_RECT_F rcPreviewBtn{};
+        D2D1_RECT_F rcCancelBtn{};
+    };
+
+    enum class RenameAction {
+        None,
+        Consumed,
+        Cancelled,
+        ApplyRequested,
+        PreviewToggled
+    };
+
+    void SetActiveDocSymbols(std::vector<editor::DocumentSymbol> syms) { m_activeDocSymbols = std::move(syms); }
+    [[nodiscard]] const std::vector<BreadcrumbHit>& GetBreadcrumbHits() const noexcept { return m_breadcrumbHits; }
+    [[nodiscard]] bool IsBreadcrumbDropdownOpen() const noexcept { return m_breadcrumbDropdownOpen; }
+    void DismissBreadcrumbDropdown() noexcept {
+        m_breadcrumbDropdownOpen = false;
+        m_breadcrumbDropdownItems.clear();
+    }
+    bool HandleBreadcrumbClick(POINT pt, const app::AppConfig& config,
+                               const std::wstring& activeFilePath, const std::wstring& workspaceRoot,
+                               std::wstring& outOpenFile, size_t& outJumpLine, size_t& outJumpCol,
+                               bool& outJumpInCurrentFile);
+
+    InlineFindBarState& GetFindBar() noexcept { return m_findBar; }
+    const InlineFindBarState& GetFindBar() const noexcept { return m_findBar; }
+    void OpenInlineFindBar(bool withReplace, const std::wstring& seedQuery,
+                           const editor::SearchRangeFilter* selRange = nullptr);
+    void CloseInlineFindBar() noexcept { m_findBar.isOpen = false; }
+    void RecomputeInlineFindMatches(const editor::OpenDocument& doc);
+    InlineFindAction StepInlineFindMatch(editor::OpenDocument& doc, bool forward);
+    InlineFindAction HandleInlineFindClick(POINT pt);
+    InlineFindAction HandleInlineFindKeyDown(WPARAM vk, bool ctrl, bool shift);
+    bool HandleInlineFindChar(wchar_t ch);
+
+    InlinePeekPanelState& GetPeekPanel() noexcept { return m_peekPanel; }
+    const InlinePeekPanelState& GetPeekPanel() const noexcept { return m_peekPanel; }
+    void OpenPeekPanel(PeekMode mode, const std::wstring& title, const std::wstring& subtitle,
+                       size_t anchorLine, std::vector<PeekItemEntry> items);
+    void OpenCodeMetricsPanel(const editor::WorkspaceCodeMetrics& metrics, const std::wstring& activeFileLabel);
+    void ClosePeekPanel() noexcept { m_peekPanel.isOpen = false; }
+    void LoadSelectedPeekPreview();
+    PeekAction HandlePeekClick(POINT pt);
+    PeekAction HandlePeekKeyDown(WPARAM vk);
+    bool HandlePeekWheel(POINT pt, short delta);
+
+    InlineRenameState& GetRenameWidget() noexcept { return m_renameWidget; }
+    const InlineRenameState& GetRenameWidget() const noexcept { return m_renameWidget; }
+    void OpenRenameWidget(const std::wstring& oldName, editor::RenamePlan plan, const std::wstring& statusNote = L"");
+    void CloseRenameWidget() noexcept { m_renameWidget.isOpen = false; m_renameWidget.showPreview = false; }
+    RenameAction HandleRenameClick(POINT pt);
+    RenameAction HandleRenameKeyDown(WPARAM vk);
+    bool HandleRenameChar(wchar_t ch);
+
+private:
+    void RenderBreadcrumbDropdown(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config, float clientHeight);
+    void RenderInlineFindBar(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config);
+    void RenderInlinePeekPanel(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config, float clientHeight);
+    void RenderInlineRenameWidget(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config, float clientHeight);
+
+    D2D1_RECT_F m_lastActivePaneBounds{250.0f, 90.0f, 1100.0f, 700.0f};
+    std::vector<editor::DocumentSymbol> m_activeDocSymbols;
+    std::vector<BreadcrumbHit> m_breadcrumbHits;
+    bool m_breadcrumbDropdownOpen = false;
+    int m_breadcrumbDropdownSegIdx = -1;
+    bool m_breadcrumbDropdownForSymbols = false;
+    D2D1_RECT_F m_rcBreadcrumbDropdown{};
+    std::vector<BreadcrumbDropdownItem> m_breadcrumbDropdownItems;
+
+    InlineFindBarState m_findBar;
+    InlinePeekPanelState m_peekPanel;
+    InlineRenameState m_renameWidget;
 };
 
 } // namespace phide::ui

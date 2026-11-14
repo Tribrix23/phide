@@ -283,7 +283,21 @@ enum class MenuActionId {
     StatusIndentTabs,
     StatusTabSize2,
     StatusTabSize4,
-    StatusTabSize8
+    StatusTabSize8,
+
+    // Section 2: Navigation, Symbol Lookup, Editor Groups & Bookmarks (#10, #14-#18)
+    CodeTypeDefinition,
+    CodeImplementation,
+    CodeFindReferences,
+    CodeGoToSymbol,
+    NavBack,
+    NavForward,
+    ToggleBookmark,
+    NextBookmark,
+    PrevBookmark,
+    ClearBookmarks,
+    WindowNextGroup,
+    WindowPrevGroup
 };
 
 /**

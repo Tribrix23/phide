@@ -22,6 +22,7 @@ void QuickOpenModal::Open(const std::vector<std::wstring>& recentPaths,
     m_selectedIndex = 0;
     m_hoveredIndex = -1;
     m_scrollOffset = 0.0f;
+    m_lastSelectedCol = -1;
     m_allItems.clear();
     m_recentPaths = recentPaths;
     m_openPaths = openPaths;
@@ -118,21 +119,24 @@ void QuickOpenModal::Open(const std::vector<std::wstring>& recentPaths,
         m_allItems.push_back(std::move(item));
     }
 
-    // 3. Scan Workspace Files (up to 150 files, skipping noise directories)
+    // 3. Scan Workspace Files (up to 1000 files, skipping noise directories)
     if (!workspaceFolder.empty() && std::filesystem::exists(workspaceFolder)) {
         size_t count = 0;
         try {
             for (const auto& entry : std::filesystem::recursive_directory_iterator(
                      workspaceFolder, std::filesystem::directory_options::skip_permission_denied)) {
-                if (count >= 150) break;
+                if (count >= 1000) break;
                 if (!entry.is_regular_file()) continue;
 
                 auto pathStr = entry.path().wstring();
-                // Skip git, build outputs, node_modules
+                // Skip git, .phide, build outputs, node_modules
                 if (pathStr.find(L"\\.git\\") != std::wstring::npos ||
+                    pathStr.find(L"\\.phide\\") != std::wstring::npos ||
                     pathStr.find(L"\\node_modules\\") != std::wstring::npos ||
                     pathStr.find(L"\\bin\\") != std::wstring::npos ||
                     pathStr.find(L"\\obj\\") != std::wstring::npos ||
+                    pathStr.find(L"\\build\\") != std::wstring::npos ||
+                    pathStr.find(L"\\dist\\") != std::wstring::npos ||
                     pathStr.find(L"\\.vs\\") != std::wstring::npos) {
                     continue;
                 }
@@ -296,6 +300,8 @@ void QuickOpenModal::FilterItems() {
             { L"Edit: Cut", L"Ctrl + X", L"cmd_cut" },
             { L"Edit: Copy", L"Ctrl + C", L"cmd_copy" },
             { L"Edit: Paste", L"Ctrl + V", L"cmd_paste" },
+            { L"Edit: Find", L"Ctrl + F", L"cmd_find_inline" },
+            { L"Edit: Replace", L"Ctrl + H", L"cmd_replace_inline" },
             { L"Edit: Find in Files", L"Ctrl + Shift + F", L"cmd_find_in_files" },
             { L"Edit: Replace in Files", L"Ctrl + Shift + H", L"cmd_replace_in_files" },
             { L"Edit: Toggle Line Comment", L"Ctrl + /", L"cmd_toggle_line_comment" },
@@ -315,6 +321,25 @@ void QuickOpenModal::FilterItems() {
             { L"Editor: Format Document", L"Shift + Alt + F", L"cmd_format_document" },
             { L"Editor: Format Selection", L"Ctrl + K Ctrl + F", L"cmd_format_selection" },
             { L"Editor: Jump to Matching Bracket", L"Ctrl + Shift + \\", L"cmd_jump_to_bracket" },
+            { L"Go: Go to Definition", L"F12", L"cmd_goto_definition" },
+            { L"Go: Peek Definition", L"Alt + F12", L"cmd_peek_definition" },
+            { L"Go: Go to Type Definition", L"", L"cmd_type_definition" },
+            { L"Go: Go to Implementation", L"Ctrl + F12", L"cmd_implementation" },
+            { L"Go: Find All References", L"Shift + F12", L"cmd_find_references" },
+            { L"Go: Go to Symbol in Editor...", L"Ctrl + Shift + O", L"cmd_goto_symbol" },
+            { L"Go: Go to Symbol in Workspace...", L"Ctrl + T", L"cmd_goto_workspace_symbol" },
+            { L"Go: Back", L"Alt + Left", L"cmd_nav_back" },
+            { L"Go: Forward", L"Alt + Right", L"cmd_nav_forward" },
+            { L"Refactor: Rename Symbol", L"F2", L"cmd_rename_symbol" },
+            { L"View: Call Hierarchy", L"", L"cmd_call_hierarchy" },
+            { L"View: Code Metrics", L"", L"cmd_code_metrics" },
+            { L"View: Toggle Explorer Outline", L"", L"cmd_toggle_outline" },
+            { L"View: Focus Next Editor Group", L"Ctrl + K Ctrl + Right", L"cmd_focus_group_next" },
+            { L"View: Focus Previous Editor Group", L"Ctrl + K Ctrl + Left", L"cmd_focus_group_prev" },
+            { L"Bookmarks: Toggle Bookmark", L"Ctrl + Alt + K", L"cmd_toggle_bookmark" },
+            { L"Bookmarks: Next Bookmark", L"Ctrl + Alt + N", L"cmd_next_bookmark" },
+            { L"Bookmarks: Previous Bookmark", L"Ctrl + Alt + P", L"cmd_prev_bookmark" },
+            { L"Bookmarks: Clear All Bookmarks", L"", L"cmd_clear_bookmarks" },
             { L"Fold: Fold All", L"Ctrl + K Ctrl + 0", L"cmd_fold_all" },
             { L"Fold: Unfold All", L"Ctrl + K Ctrl + J", L"cmd_unfold_all" },
             { L"Fold: Fold Level 1", L"Ctrl + K Ctrl + 1", L"cmd_fold_level_1" },
@@ -337,97 +362,167 @@ void QuickOpenModal::FilterItems() {
             { L"Git: Refresh", L"Ctrl + Shift + R", L"cmd_git_refresh" }
         };
 
-        for (const auto& cmd : kPaletteCommands) {
-            std::wstring tLower = cmd.title;
-            for (auto& c : tLower) c = towlower(c);
-            if (termLower.empty() || tLower.find(termLower) != std::wstring::npos) {
+        auto pushScoredCmd = [&](const std::wstring& title, const std::wstring& shortcut, const std::wstring& actionId) {
+            int score = term.empty() ? 1 : phide::editor::ScoreFuzzyMatch(term, title);
+            if (score > 0) {
                 QuickOpenItem it;
                 it.type = QuickOpenItem::Type::Action;
-                it.title = cmd.title;
-                it.shortcut = cmd.shortcut;
-                it.actionCommand = cmd.actionId;
+                it.title = title;
+                it.shortcut = shortcut;
+                it.actionCommand = actionId;
                 it.iconType = FileIconType::Terminal;
+                it.score = score;
                 m_filteredItems.push_back(std::move(it));
             }
+        };
+
+        for (const auto& cmd : kPaletteCommands) {
+            pushScoredCmd(cmd.title, cmd.shortcut, cmd.actionId);
         }
 
         // Append commands contributed by plugins, extensions, and mods
         auto pluginCmds = phide::plugin::PluginManager::Instance().GetCommands();
         for (const auto& pCmd : pluginCmds) {
-            std::wstring tLower = pCmd.title;
-            for (auto& c : tLower) c = towlower(c);
-            if (termLower.empty() || tLower.find(termLower) != std::wstring::npos) {
-                QuickOpenItem it;
-                it.type = QuickOpenItem::Type::Action;
-                it.title = pCmd.title;
-                it.shortcut = pCmd.shortcut;
-                it.actionCommand = pCmd.id;
-                it.iconType = FileIconType::Terminal;
-                m_filteredItems.push_back(std::move(it));
-            }
+            pushScoredCmd(pCmd.title, pCmd.shortcut, pCmd.id);
+        }
+
+        if (!term.empty() && m_filteredItems.size() > 1) {
+            std::stable_sort(m_filteredItems.begin(), m_filteredItems.end(),
+                             [](const QuickOpenItem& a, const QuickOpenItem& b) {
+                                 return a.score > b.score;
+                             });
         }
     } else if (m_query.rfind(L":", 0) == 0) {
-        // Mode: Go to Line (:)
+        // Mode: Go to Line & Column (:line or :line:col)
         std::wstring lineStr = m_query.substr(1);
         while (!lineStr.empty() && lineStr.front() == L' ') lineStr.erase(0, 1);
         int lineNum = 0;
-        try { lineNum = std::stoi(lineStr); } catch (...) {}
+        int colNum = 0;
+        bool validSpec = phide::editor::ParseLineColSpec(lineStr, lineNum, colNum);
 
         QuickOpenItem it;
         it.type = QuickOpenItem::Type::Action;
-        if (lineNum > 0) {
-            it.title = L"Go to Line " + std::to_wstring(lineNum);
-            it.description = L"Jump to line " + std::to_wstring(lineNum) + L" in active editor";
-            it.actionCommand = L"goto_line:" + std::to_wstring(lineNum);
+        if (validSpec && lineNum > 0) {
+            if (colNum > 0) {
+                it.title = L"Go to Line " + std::to_wstring(lineNum) + L", Column " + std::to_wstring(colNum);
+                it.description = L":<line>:<column>";
+                it.actionCommand = L"goto_line:" + std::to_wstring(lineNum) + L":" + std::to_wstring(colNum);
+            } else {
+                it.title = L"Go to Line " + std::to_wstring(lineNum);
+                it.description = L"Jump to line " + std::to_wstring(lineNum) + L" in active editor";
+                it.actionCommand = L"goto_line:" + std::to_wstring(lineNum);
+            }
         } else {
-            it.title = L"Type line number to go to...";
-            it.description = L":<line>";
+            it.title = L"Type line[:column] number to go to...";
+            it.description = L":<line>[:col]";
         }
         it.iconType = FileIconType::DefaultFile;
         m_filteredItems.push_back(std::move(it));
     } else if (m_query.rfind(L"@", 0) == 0) {
-        // Mode: Go to Symbol (@)
+        // Mode: Go to Document Symbol (@)
         std::wstring symTerm = m_query.substr(1);
         while (!symTerm.empty() && symTerm.front() == L' ') symTerm.erase(0, 1);
-        std::wstring symLower = symTerm;
-        for (auto& c : symLower) c = towlower(c);
 
-        QuickOpenItem itHeader;
-        itHeader.type = QuickOpenItem::Type::Action;
-        itHeader.title = symTerm.empty() ? L"Type symbol name to go to in editor..." : L"Go to symbol \"" + symTerm + L"\"";
-        itHeader.description = L"@<symbol>";
-        itHeader.iconType = FileIconType::DefaultFile;
-        m_filteredItems.push_back(std::move(itHeader));
+        std::vector<QuickOpenItem> symResults;
+        auto pushDocSym = [&](const phide::editor::DocumentSymbol& sym, const std::wstring& path) {
+            int score = symTerm.empty() ? 1 : phide::editor::ScoreFuzzyMatch(symTerm, sym.name, sym.containerName);
+            if (score <= 0) return;
+            QuickOpenItem symItem;
+            symItem.type = QuickOpenItem::Type::File;
+            std::wstring prefix = std::wstring(L"[") + phide::editor::GetSymbolKindTag(sym.kind) + L"] ";
+            std::wstring container = sym.containerName.empty() ? L"" : (sym.containerName + L".");
+            symItem.title = prefix + container + sym.name;
+            std::wstring fname = path.empty() ? L"Active Document" : std::filesystem::path(path).filename().wstring();
+            symItem.description = fname + L":" + std::to_wstring(sym.line + 1);
+            symItem.fullPath = path;
+            symItem.targetLine = static_cast<int>(sym.line + 1);
+            symItem.targetCol = static_cast<int>(sym.col + 1);
+            symItem.score = score + ((!m_activeFilePath.empty() && _wcsicmp(path.c_str(), m_activeFilePath.c_str()) == 0) ? 40 : 0);
+            symItem.iconType = path.empty() ? FileIconType::DefaultFile : LucideIcons::GetIconTypeForPath(path, false, false);
+            symResults.push_back(std::move(symItem));
+        };
+
+        if (!m_lspActiveSymbols.empty()) {
+            for (const auto& s : m_lspActiveSymbols) {
+                pushDocSym(s, m_activeFilePath);
+            }
+        } else if (!m_activeFileContent.empty()) {
+            std::wstring ext = m_activeFilePath.empty() ? L".cpp" : std::filesystem::path(m_activeFilePath).extension().wstring();
+            auto syms = phide::editor::ExtractDocumentSymbols(m_activeFileContent, ext);
+            for (const auto& s : syms) {
+                pushDocSym(s, m_activeFilePath);
+            }
+        }
 
         for (const auto& path : m_openPaths) {
-            std::ifstream ifs(path);
+            if (!m_activeFilePath.empty() && _wcsicmp(path.c_str(), m_activeFilePath.c_str()) == 0 &&
+                (!m_lspActiveSymbols.empty() || !m_activeFileContent.empty())) {
+                continue;
+            }
+            std::ifstream ifs(path, std::ios::binary);
             if (!ifs.is_open()) continue;
-            std::string line;
-            int lineNum = 1;
-            while (std::getline(ifs, line) && lineNum <= 600) {
-                std::wstring lineW(line.begin(), line.end());
-                std::wstring lineL = lineW;
-                for (auto& c : lineL) c = towlower(c);
-                if (lineL.find(L"function ") != std::wstring::npos ||
-                    lineL.find(L"def ") != std::wstring::npos ||
-                    lineL.find(L"class ") != std::wstring::npos ||
-                    lineL.find(L"struct ") != std::wstring::npos ||
-                    lineL.find(L"void ") != std::wstring::npos) {
-                    if (symLower.empty() || lineL.find(symLower) != std::wstring::npos) {
-                        size_t p0 = lineW.find_first_not_of(L" \t");
-                        std::wstring trimmed = (p0 != std::wstring::npos) ? lineW.substr(p0) : lineW;
-                        QuickOpenItem symItem;
-                        symItem.type = QuickOpenItem::Type::File;
-                        symItem.title = trimmed;
-                        symItem.description = std::filesystem::path(path).filename().wstring() + L":" + std::to_wstring(lineNum);
-                        symItem.fullPath = path;
-                        symItem.targetLine = lineNum;
-                        symItem.iconType = FileIconType::DefaultFile;
-                        m_filteredItems.push_back(std::move(symItem));
-                        if (m_filteredItems.size() >= 40) break;
-                    }
-                }
-                lineNum++;
+            std::string raw((std::istreambuf_iterator<char>(ifs)), std::istreambuf_iterator<char>());
+            if (raw.empty() || raw.size() > 1024 * 1024) continue;
+            int wlen = MultiByteToWideChar(CP_UTF8, 0, raw.c_str(), static_cast<int>(raw.size()), nullptr, 0);
+            if (wlen <= 0) continue;
+            std::wstring text(wlen, L'\0');
+            MultiByteToWideChar(CP_UTF8, 0, raw.c_str(), static_cast<int>(raw.size()), &text[0], wlen);
+            auto syms = phide::editor::ExtractDocumentSymbols(text, std::filesystem::path(path).extension().wstring());
+            for (const auto& s : syms) {
+                pushDocSym(s, path);
+                if (symResults.size() >= 120) break;
+            }
+            if (symResults.size() >= 120) break;
+        }
+
+        if (!symTerm.empty() && symResults.size() > 1) {
+            std::stable_sort(symResults.begin(), symResults.end(),
+                             [](const QuickOpenItem& a, const QuickOpenItem& b) { return a.score > b.score; });
+        }
+        if (symResults.size() > 60) symResults.resize(60);
+
+        if (symResults.empty()) {
+            QuickOpenItem itHeader;
+            itHeader.type = QuickOpenItem::Type::Action;
+            itHeader.title = symTerm.empty() ? L"No symbols found in active editor" : L"No matching symbol \"" + symTerm + L"\"";
+            itHeader.description = L"@<symbol>";
+            itHeader.iconType = FileIconType::DefaultFile;
+            m_filteredItems.push_back(std::move(itHeader));
+        } else {
+            m_filteredItems = std::move(symResults);
+        }
+    } else if (m_query.rfind(L"#", 0) == 0) {
+        // Mode: Go to Workspace Symbol (#)
+        std::wstring symTerm = m_query.substr(1);
+        while (!symTerm.empty() && symTerm.front() == L' ') symTerm.erase(0, 1);
+
+        if (!m_symbolIndex || m_symbolIndex->GetIndexedFileCount() == 0) {
+            QuickOpenItem hint;
+            hint.type = QuickOpenItem::Type::Action;
+            hint.title = L"Workspace symbol index is empty or indexing...";
+            hint.description = L"#<symbol> across workspace files";
+            hint.iconType = FileIconType::DefaultFile;
+            m_filteredItems.push_back(std::move(hint));
+        } else {
+            auto hits = m_symbolIndex->SearchSymbols(symTerm, 60);
+            for (const auto& s : hits) {
+                QuickOpenItem item;
+                item.type = QuickOpenItem::Type::File;
+                item.title = std::wstring(L"[") + phide::editor::GetSymbolKindTag(s.kind) + L"] " +
+                             (s.detail.empty() ? s.name : (s.name + L" — " + s.detail));
+                item.description = std::filesystem::path(s.filePath).filename().wstring() + L":" + std::to_wstring(s.line + 1);
+                item.fullPath = s.filePath;
+                item.targetLine = static_cast<int>(s.line + 1);
+                item.targetCol = static_cast<int>(s.col + 1);
+                item.iconType = LucideIcons::GetIconTypeForPath(s.filePath, false, false);
+                m_filteredItems.push_back(std::move(item));
+            }
+            if (m_filteredItems.empty()) {
+                QuickOpenItem emptyIt;
+                emptyIt.type = QuickOpenItem::Type::Action;
+                emptyIt.title = L"No workspace symbols matching \"" + symTerm + L"\"";
+                emptyIt.description = std::to_wstring(m_symbolIndex->GetTotalSymbolCount()) + L" indexed symbols";
+                m_filteredItems.push_back(std::move(emptyIt));
             }
         }
     } else if (m_query == L"?") {
@@ -441,9 +536,10 @@ void QuickOpenModal::FilterItems() {
             { L">", L"Show and Run Commands", L"Execute IDE actions and commands" },
             { L"%", L"Search for Text", L"Search text across workspace files" },
             { L"@", L"Go to Symbol in Editor", L"Jump to function, method, or class" },
-            { L":", L"Go to Line in Editor", L"Jump to specified line number" },
-            { L"debug", L"Start Debugging", L"Launch debugger session" },
-            { L"task", L"Run Task", L"Run npm / python / build task" }
+            { L"#", L"Go to Symbol in Workspace", L"Search indexed symbols across workspace" },
+            { L":", L"Go to Line and Column", L"Jump to :line or :line:col in active editor" },
+            { L"debug", L"Start Debugging", L"Launch debugger configuration" },
+            { L"task", L"Run Task", L"Run workspace script / build task" }
         };
         for (const auto& pfx : kPrefixes) {
             QuickOpenItem it;
@@ -455,13 +551,22 @@ void QuickOpenModal::FilterItems() {
             m_filteredItems.push_back(std::move(it));
         }
     } else if (m_query.rfind(L"debug", 0) == 0) {
-        QuickOpenItem it;
-        it.type = QuickOpenItem::Type::Action;
-        it.title = L"Start Debugging (F5)";
-        it.description = L"Launch active file with debugger";
-        it.actionCommand = L"cmd_start_debugging";
-        it.shortcut = L"F5";
-        m_filteredItems.push_back(std::move(it));
+        std::wstring term = m_query.substr(5);
+        while (!term.empty() && term.front() == L' ') term.erase(0, 1);
+
+        auto configs = phide::editor::DiscoverLaunchConfigurations(m_workspaceFolder);
+        for (const auto& cfg : configs) {
+            int score = term.empty() ? 1 : phide::editor::ScoreFuzzyMatch(term, cfg.label, cfg.command);
+            if (score <= 0) continue;
+            QuickOpenItem it;
+            it.type = QuickOpenItem::Type::Action;
+            it.title = cfg.label;
+            it.description = cfg.detail.empty() ? cfg.command : (cfg.detail + L" - " + cfg.command);
+            it.actionCommand = L"cmd_start_debugging";
+            it.shortcut = L"F5";
+            it.iconType = FileIconType::Terminal;
+            m_filteredItems.push_back(std::move(it));
+        }
 
         QuickOpenItem it2;
         it2.type = QuickOpenItem::Type::Action;
@@ -469,28 +574,80 @@ void QuickOpenModal::FilterItems() {
         it2.description = L"Execute active project or file";
         it2.actionCommand = L"cmd_run_without_debugging";
         it2.shortcut = L"Ctrl + F5";
+        it2.iconType = FileIconType::Terminal;
         m_filteredItems.push_back(std::move(it2));
     } else if (m_query.rfind(L"task", 0) == 0) {
-        QuickOpenItem it;
-        it.type = QuickOpenItem::Type::Action;
-        it.title = L"Run Dev Server Task";
-        it.description = L"npm run dev / electron-vite dev / python runserver";
-        it.actionCommand = L"cmd_start_debugging";
-        m_filteredItems.push_back(std::move(it));
+        std::wstring term = m_query.substr(4);
+        while (!term.empty() && term.front() == L' ') term.erase(0, 1);
+
+        auto tasks = phide::editor::DiscoverWorkspaceTasks(m_workspaceFolder);
+        for (const auto& t : tasks) {
+            int score = term.empty() ? 1 : phide::editor::ScoreFuzzyMatch(term, t.label, t.command);
+            if (score <= 0) continue;
+            QuickOpenItem it;
+            it.type = QuickOpenItem::Type::Action;
+            it.title = t.label;
+            it.description = t.detail + L" - " + t.command;
+            it.actionCommand = L"run_task:" + t.command;
+            it.iconType = FileIconType::Terminal;
+            it.score = score;
+            m_filteredItems.push_back(std::move(it));
+        }
+        if (m_filteredItems.empty()) {
+            QuickOpenItem it;
+            it.type = QuickOpenItem::Type::Action;
+            it.title = L"Open Integrated Terminal to Run Task";
+            it.description = L"No package.json / tasks.json / Makefile tasks discovered";
+            it.actionCommand = L"cmd_new_terminal";
+            it.iconType = FileIconType::Terminal;
+            m_filteredItems.push_back(std::move(it));
+        }
     } else {
-        std::wstring qLower = m_query;
-        for (auto& ch : qLower) ch = towlower(ch);
-
-        for (const auto& item : m_allItems) {
-            std::wstring tLower = item.title;
-            std::wstring dLower = item.description;
-            for (auto& ch : tLower) ch = towlower(ch);
-            for (auto& ch : dLower) ch = towlower(ch);
-
-            if (tLower.find(qLower) != std::wstring::npos || dLower.find(qLower) != std::wstring::npos) {
-                m_filteredItems.push_back(item);
+        // File search with optional :line[:col] suffix and fuzzy ranking
+        std::wstring fileQuery = m_query;
+        int suffixLine = -1;
+        int suffixCol = -1;
+        size_t firstColon = std::wstring::npos;
+        // Skip drive letter colon like "C:\" when scanning for :line[:col]
+        for (size_t pos = 0; pos < m_query.size(); ++pos) {
+            if (m_query[pos] == L':') {
+                if (pos == 1 && iswalpha(m_query[0])) continue;
+                int ln = 0, cl = 0;
+                if (phide::editor::ParseLineColSpec(m_query.substr(pos + 1), ln, cl) && ln > 0) {
+                    firstColon = pos;
+                    suffixLine = ln;
+                    suffixCol = cl;
+                    break;
+                }
             }
         }
+        if (firstColon != std::wstring::npos) {
+            fileQuery = m_query.substr(0, firstColon);
+        }
+
+        for (const auto& item : m_allItems) {
+            if (item.type != QuickOpenItem::Type::File && fileQuery.empty()) {
+                m_filteredItems.push_back(item);
+                continue;
+            }
+            if (item.type != QuickOpenItem::Type::File) continue;
+            int score = fileQuery.empty()
+                ? (item.isRecent ? 100 : 10)
+                : phide::editor::ScoreFuzzyMatch(fileQuery, item.title, item.description, false, item.isRecent);
+            if (score > 0) {
+                QuickOpenItem ranked = item;
+                ranked.score = score;
+                if (suffixLine > 0) {
+                    ranked.targetLine = suffixLine;
+                    ranked.targetCol = suffixCol;
+                }
+                m_filteredItems.push_back(std::move(ranked));
+            }
+        }
+        std::stable_sort(m_filteredItems.begin(), m_filteredItems.end(),
+                         [](const QuickOpenItem& a, const QuickOpenItem& b) {
+                             return a.score > b.score;
+                         });
     }
 
     if (m_selectedIndex >= static_cast<int>(m_filteredItems.size())) {
@@ -700,6 +857,7 @@ bool QuickOpenModal::HandleMouseDown(POINT pt, std::wstring& outSelectedFile, in
             if (item.type == QuickOpenItem::Type::File) {
                 outSelectedFile = item.fullPath;
                 outTargetLine = item.targetLine;
+                m_lastSelectedCol = item.targetCol;
                 Close();
                 return true;
             } else {
@@ -776,6 +934,7 @@ bool QuickOpenModal::HandleKeyDown(WPARAM wParam, std::wstring& outSelectedFile,
             if (item.type == QuickOpenItem::Type::File) {
                 outSelectedFile = item.fullPath;
                 outTargetLine = item.targetLine;
+                m_lastSelectedCol = item.targetCol;
                 Close();
                 return true;
             } else {

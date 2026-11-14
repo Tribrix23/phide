@@ -740,6 +740,20 @@ void EditorCanvas::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
         RenderAutocompletePopup(pRT, theme, config, canvasLeft + canvasWidth, clientHeight);
     }
 
+    // Section 2 interactive overlays (Peek / References / Call Hierarchy / Metrics, Inline Find Bar, Rename Widget, Breadcrumb Dropdown)
+    if (m_peekPanel.isOpen) {
+        RenderInlinePeekPanel(pRT, theme, config, clientHeight);
+    }
+    if (m_findBar.isOpen) {
+        RenderInlineFindBar(pRT, theme, config);
+    }
+    if (m_renameWidget.isOpen) {
+        RenderInlineRenameWidget(pRT, theme, config, clientHeight);
+    }
+    if (m_breadcrumbDropdownOpen) {
+        RenderBreadcrumbDropdown(pRT, theme, config, clientHeight);
+    }
+
     // Render floating dragged tab pill on TOP of EVERYTHING (above tabs, breadcrumbs, and editor canvas)
     if (m_isDraggingTab && !m_dragTabTitle.empty() && (m_dragTabPos.x > 0.0f || m_dragTabPos.y > 0.0f)) {
         float pillW = (std::min)(220.0f, (std::max)(130.0f, config.ScaleF(145.0f)));
@@ -832,10 +846,13 @@ void EditorCanvas::RenderSinglePane(ID2D1RenderTarget* pRT, Theme& theme, const 
     auto& activeDoc = docs[docIdx];
     const float breadcrumbH = config.showBreadcrumbs ? config.ScaleF(24.0f) : 0.0f;
     if (config.showBreadcrumbs) {
-        RenderBreadcrumbs(pRT, theme, config, activeDoc, canvasLeft, canvasWidth, headerH + tabH, breadcrumbH);
+        RenderBreadcrumbs(pRT, theme, config, activeDoc, canvasLeft, canvasWidth, headerH + tabH, breadcrumbH, isPaneFocused);
     }
 
     float contentTopY = headerH + tabH + breadcrumbH;
+    if (isPaneFocused) {
+        m_lastActivePaneBounds = D2D1::RectF(canvasLeft, contentTopY, canvasLeft + canvasWidth, clientHeight);
+    }
     if (activeDoc.isSpecialView && activeDoc.viewType == L"keybindings") {
         m_keybindingsView.Render(pRT, theme, config, canvasLeft, canvasWidth, contentTopY, clientHeight - contentTopY);
     } else if (activeDoc.isSpecialView && activeDoc.viewType == L"packages") {
@@ -1358,7 +1375,7 @@ void EditorCanvas::RenderTabs(ID2D1RenderTarget* pRT, Theme& theme, const app::A
 
 void EditorCanvas::RenderBreadcrumbs(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
                                      const editor::OpenDocument& doc, float canvasLeft, float canvasWidth,
-                                     float barY, float barHeight) {
+                                     float barY, float barHeight, bool isFocusedPane) {
     if (!pRT || barHeight <= 0.0f) return;
     const float canvasRight = canvasLeft + canvasWidth;
     D2D1_RECT_F rcBar = D2D1::RectF(canvasLeft, barY, canvasRight, barY + barHeight);
@@ -1422,6 +1439,8 @@ void EditorCanvas::RenderBreadcrumbs(ID2D1RenderTarget* pRT, Theme& theme, const
 
     // Parse segments from doc.filePath (Image 4) or course hierarchy
     std::vector<std::wstring> segments;
+    std::vector<std::wstring> segPaths;
+    bool hasSymbolTail = false;
     if (doc.isSpecialView && doc.viewType == L"terminal") {
         segments.push_back(L"Integrated Terminal");
         segments.push_back(doc.fileName.empty() ? L"Terminal" : doc.fileName);
@@ -1460,14 +1479,18 @@ void EditorCanvas::RenderBreadcrumbs(ID2D1RenderTarget* pRT, Theme& theme, const
         }
 
         size_t start = 0;
+        std::wstring runningPath;
         while (start < pathStr.length()) {
             size_t end = pathStr.find(L'\\', start);
             if (end == std::wstring::npos) end = pathStr.length();
             if (end > start) {
                 std::wstring seg = pathStr.substr(start, end - start);
+                if (!runningPath.empty() && runningPath.back() != L'\\') runningPath += L'\\';
+                runningPath += seg;
                 // Skip Windows drive letter root if present (e.g. C:)
                 if (!(seg.length() == 2 && seg[1] == L':')) {
                     segments.push_back(seg);
+                    segPaths.push_back(runningPath);
                 }
             }
             start = end + 1;
@@ -1475,11 +1498,40 @@ void EditorCanvas::RenderBreadcrumbs(ID2D1RenderTarget* pRT, Theme& theme, const
 
         // Keep up to 4 segments for a clean breadcrumb hierarchy
         if (segments.size() > 4) {
-            segments.erase(segments.begin(), segments.end() - 4);
+            size_t drop = segments.size() - 4;
+            segments.erase(segments.begin(), segments.begin() + drop);
+            if (segPaths.size() >= drop) {
+                segPaths.erase(segPaths.begin(), segPaths.begin() + drop);
+            }
         }
         if (segments.empty()) {
             segments.push_back(doc.fileName.empty() ? L"Untitled" : doc.fileName);
+            segPaths.push_back(doc.filePath);
         }
+    }
+
+    while (segPaths.size() < segments.size()) {
+        segPaths.push_back(doc.filePath);
+    }
+
+    if (isFocusedPane && !doc.isSpecialView && !m_activeDocSymbols.empty()) {
+        const editor::DocumentSymbol* enclosingSym = nullptr;
+        for (const auto& sym : m_activeDocSymbols) {
+            if (sym.line <= doc.buffer.GetCursor().line) {
+                enclosingSym = &sym;
+            } else {
+                break;
+            }
+        }
+        if (enclosingSym) {
+            segments.push_back(std::wstring(L"[") + editor::GetSymbolKindTag(enclosingSym->kind) + L"] " + enclosingSym->name);
+            segPaths.push_back(doc.filePath);
+            hasSymbolTail = true;
+        }
+    }
+
+    if (isFocusedPane) {
+        m_breadcrumbHits.clear();
     }
 
     float curX = canvasLeft + config.ScaleF(14.0f);
@@ -1488,15 +1540,26 @@ void EditorCanvas::RenderBreadcrumbs(ID2D1RenderTarget* pRT, Theme& theme, const
     for (size_t s = 0; s < segments.size(); ++s) {
         const auto& seg = segments[s];
         bool isLast = (s == segments.size() - 1);
+        bool isSymTail = (hasSymbolTail && isLast);
 
         float textW = static_cast<float>(seg.length()) * config.ScaleF(7.0f) + config.ScaleF(6.0f);
         D2D1_RECT_F rcSeg = D2D1::RectF(curX, barY + config.ScaleF(2.0f), curX + textW, barY + barHeight - config.ScaleF(2.0f));
 
-        ID2D1Brush* segBrush = isLast
-            ? theme.brushTextPrimary.Get()
-            : theme.brushTextSecondary.Get();
+        ID2D1Brush* segBrush = isSymTail
+            ? (theme.brushBrandAccent ? theme.brushBrandAccent.Get() : theme.brushTextPrimary.Get())
+            : (isLast ? theme.brushTextPrimary.Get() : theme.brushTextSecondary.Get());
 
         pRT->DrawText(seg.c_str(), static_cast<UINT32>(seg.length()), pFmt, rcSeg, segBrush);
+        if (isFocusedPane) {
+            BreadcrumbHit hit;
+            hit.bounds = rcSeg;
+            hit.segmentIndex = static_cast<int>(s);
+            hit.isSymbolTail = isSymTail;
+            hit.label = seg;
+            hit.resolvedPath = (s < segPaths.size()) ? segPaths[s] : doc.filePath;
+            hit.isFolder = !isSymTail && !(hasSymbolTail ? (s + 2 == segments.size()) : isLast);
+            m_breadcrumbHits.push_back(std::move(hit));
+        }
         curX += textW;
 
         if (!isLast) {
@@ -3076,16 +3139,34 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
             if (!matches.empty()) {
                 Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> fillBrush;
                 Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> borderBrush;
-                pRT->CreateSolidColorBrush(D2D1::ColorF(0.95f, 0.58f, 0.12f, 0.38f), &fillBrush);
-                pRT->CreateSolidColorBrush(D2D1::ColorF(0.95f, 0.58f, 0.12f, 0.85f), &borderBrush);
+                Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> activeFillBrush;
+                Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> activeBorderBrush;
+                pRT->CreateSolidColorBrush(D2D1::ColorF(0.95f, 0.58f, 0.12f, 0.34f), &fillBrush);
+                pRT->CreateSolidColorBrush(D2D1::ColorF(0.95f, 0.58f, 0.12f, 0.80f), &borderBrush);
+                pRT->CreateSolidColorBrush(D2D1::ColorF(1.00f, 0.45f, 0.05f, 0.58f), &activeFillBrush);
+                pRT->CreateSolidColorBrush(D2D1::ColorF(1.00f, 0.82f, 0.28f, 0.98f), &activeBorderBrush);
 
                 for (const auto& m : matches) {
-                    float hx = codeLeft + m.first * charW;
+                    if (m_findBar.isOpen && m_findBar.inSelection && m_findBar.hasSelectionFilter && m_findBar.selFilter.restrictToRange) {
+                        size_t mEnd = m.first + m.second;
+                        if (vl.bufferLine < m_findBar.selFilter.startLine || vl.bufferLine > m_findBar.selFilter.endLine) continue;
+                        if (vl.bufferLine == m_findBar.selFilter.startLine && m.first < m_findBar.selFilter.startCol) continue;
+                        if (vl.bufferLine == m_findBar.selFilter.endLine && mEnd > m_findBar.selFilter.endCol) continue;
+                    }
+                    bool isActiveFindMatch = false;
+                    if (m_findBar.isOpen && m_findBar.currentMatchIdx >= 0 &&
+                        m_findBar.currentMatchIdx < static_cast<int>(m_findBar.matches.size())) {
+                        const auto& curM = m_findBar.matches[static_cast<size_t>(m_findBar.currentMatchIdx)];
+                        isActiveFindMatch = (curM.line == vl.bufferLine && curM.col == m.first);
+                    }
+                    float hx = codeLeft - scrollX + m.first * charW;
                     float hw = m.second * charW;
                     D2D1_RECT_F rcMatch = D2D1::RectF(hx - 1.0f, lineY + 1.0f, hx + hw + 1.0f, lineY + lineH - 1.0f);
                     D2D1_ROUNDED_RECT rrc = D2D1::RoundedRect(rcMatch, 2.0f, 2.0f);
-                    if (fillBrush) pRT->FillRoundedRectangle(&rrc, fillBrush.Get());
-                    if (borderBrush) pRT->DrawRoundedRectangle(&rrc, borderBrush.Get(), 1.0f);
+                    ID2D1SolidColorBrush* fb = (isActiveFindMatch && activeFillBrush) ? activeFillBrush.Get() : fillBrush.Get();
+                    ID2D1SolidColorBrush* bb = (isActiveFindMatch && activeBorderBrush) ? activeBorderBrush.Get() : borderBrush.Get();
+                    if (fb) pRT->FillRoundedRectangle(&rrc, fb);
+                    if (bb) pRT->DrawRoundedRectangle(&rrc, bb, isActiveFindMatch ? 1.6f : 1.0f);
                 }
             }
         }
@@ -4217,6 +4298,20 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
                 pRT->CreateSolidColorBrush(D2D1::ColorF(0.92f, 0.25f, 0.25f), &bpBrush);
                 if (bpBrush) {
                     pRT->FillEllipse(D2D1::Ellipse(D2D1::Point2F(bpX, bpY), bpR, bpR), bpBrush.Get());
+                }
+            }
+
+            // Line Bookmark Ribbon Marker in Gutter (#18)
+            if (doc.HasBookmark(vl.bufferLine)) {
+                float bmX = canvasLeft + config.ScaleF(3.0f);
+                float bmW = config.ScaleF(5.5f);
+                float bmH = (std::max)(config.ScaleF(9.0f), lineH * 0.58f);
+                float bmTop = lineY + (lineH - bmH) * 0.5f;
+                D2D1_RECT_F rcBm = D2D1::RectF(bmX, bmTop, bmX + bmW, bmTop + bmH);
+                Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> bmBrush;
+                pRT->CreateSolidColorBrush(D2D1::ColorF(0.22f, 0.74f, 0.97f, 0.95f), &bmBrush);
+                if (bmBrush) {
+                    pRT->FillRoundedRectangle(D2D1::RoundedRect(rcBm, 1.5f, 1.5f), bmBrush.Get());
                 }
             }
 

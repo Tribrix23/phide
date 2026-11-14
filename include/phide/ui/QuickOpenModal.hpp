@@ -13,6 +13,7 @@
 #include "phide/app/AppConfig.hpp"
 #include "phide/ui/Theme.hpp"
 #include "phide/ui/LucideIcons.hpp"
+#include "phide/editor/WorkspaceNavigation.hpp"
 
 namespace phide::ui {
 
@@ -34,6 +35,8 @@ struct QuickOpenItem {
     bool isRecent = false;
     D2D1_RECT_F bounds{};
     int targetLine = -1;
+    int targetCol = -1;
+    int score = 0;
     std::wstring actionCommand;
 };
 
@@ -107,7 +110,16 @@ public:
     [[nodiscard]] const std::wstring& GetQuery() const noexcept { return m_query; }
     [[nodiscard]] const std::wstring& GetFilterQuery() const noexcept { return m_query; }
     [[nodiscard]] int GetSelectedIndex() const noexcept { return m_selectedIndex; }
+    [[nodiscard]] int GetLastSelectedCol() const noexcept { return m_lastSelectedCol; }
     void SetQuery(const std::wstring& q) { m_query = q; FilterItems(); }
+    void SetSymbolIndex(const phide::editor::WorkspaceSymbolIndex* idx) noexcept { m_symbolIndex = idx; }
+    void SetActiveDocumentContent(const std::wstring& filePath, const std::wstring& content) {
+        m_activeFilePath = filePath;
+        m_activeFileContent = content;
+    }
+    void SetLspSymbols(std::vector<phide::editor::DocumentSymbol> syms) {
+        m_lspActiveSymbols = std::move(syms);
+    }
 
     [[nodiscard]] bool HitTest(POINT pt) const noexcept {
         return m_isOpen && (pt.x >= m_modalBounds.left && pt.x <= m_modalBounds.right &&
@@ -136,6 +148,12 @@ private:
 
     D2D1_RECT_F m_modalBounds{};
     D2D1_RECT_F m_inputBounds{};
+
+    const phide::editor::WorkspaceSymbolIndex* m_symbolIndex = nullptr;
+    std::wstring m_activeFilePath;
+    std::wstring m_activeFileContent;
+    std::vector<phide::editor::DocumentSymbol> m_lspActiveSymbols;
+    int m_lastSelectedCol = -1;
 
     LucideIcons m_icons;
 };

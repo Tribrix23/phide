@@ -1,4 +1,5 @@
 #include "phide/editor/AdaptiveCodeEngine.hpp"
+#include "phide/workspace/IgnoreEngine.hpp"
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
@@ -468,6 +469,7 @@ void AdaptiveCodeEngine::SaveProfileAsync(const std::wstring& filePath) {
         std::filesystem::path p(filePath);
         if (p.has_parent_path()) {
             std::filesystem::create_directories(p.parent_path(), ec);
+            phide::workspace::IgnoreEngine::EnsurePhideIgnoredForPath(p);
         }
 
         std::ofstream ofs(p);

@@ -66,6 +66,30 @@ struct LspTextEdit {
     std::wstring newText;
 };
 
+struct DocumentSymbolItem {
+    std::wstring name;
+    std::wstring detail;
+    int kind = 12;
+    size_t line = 0;
+    size_t col = 0;
+    size_t endLine = 0;
+    int depth = 0;
+};
+
+struct WorkspaceEditResult {
+    std::vector<std::pair<std::wstring, std::vector<LspTextEdit>>> fileChanges;
+};
+
+struct CallHierarchyItem {
+    std::wstring name;
+    std::wstring detail;
+    int kind = 12;
+    std::wstring filePath;
+    size_t line = 0;
+    size_t col = 0;
+    std::string rawItemJson;
+};
+
 /**
  * @class LspClient
  * @brief Orchestrates language server process lifecycle and JSON-RPC 2.0 request/response dispatch.
@@ -142,6 +166,24 @@ public:
     bool RequestRangeFormatting(const std::wstring& fileUri, size_t startLine, size_t startCol,
                                 size_t endLine, size_t endCol, int tabSize, bool insertSpaces,
                                 std::vector<LspTextEdit>& outEdits);
+
+    bool RequestDefinitionLocations(const std::wstring& fileUri, size_t line, size_t col,
+                                    std::vector<Location>& outLocations);
+    bool RequestTypeDefinition(const std::wstring& fileUri, size_t line, size_t col,
+                               std::vector<Location>& outLocations);
+    bool RequestImplementation(const std::wstring& fileUri, size_t line, size_t col,
+                               std::vector<Location>& outLocations);
+    bool RequestDocumentSymbols(const std::wstring& fileUri, std::vector<DocumentSymbolItem>& outSymbols);
+    bool RequestReferences(const std::wstring& fileUri, size_t line, size_t col,
+                           bool includeDeclaration, std::vector<Location>& outLocations);
+    bool PrepareRename(const std::wstring& fileUri, size_t line, size_t col,
+                       size_t& outStartCol, size_t& outEndCol, std::wstring& outPlaceholder);
+    bool RequestRename(const std::wstring& fileUri, size_t line, size_t col,
+                       const std::wstring& newName, WorkspaceEditResult& outEdit);
+    bool PrepareCallHierarchy(const std::wstring& fileUri, size_t line, size_t col,
+                              std::vector<CallHierarchyItem>& outItems);
+    bool RequestIncomingCalls(const CallHierarchyItem& item, std::vector<CallHierarchyItem>& outCallers);
+    bool RequestOutgoingCalls(const CallHierarchyItem& item, std::vector<CallHierarchyItem>& outCallees);
 
     /**
      * @brief Registers a callback invoked on background reader thread when textDocument/publishDiagnostics arrives.

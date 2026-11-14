@@ -33,6 +33,7 @@
 #include "phide/ui/DrawerPanel.hpp"
 #include "phide/ui/EditorCanvas.hpp"
 #include "phide/ui/ThemePickerModal.hpp"
+#include "phide/editor/WorkspaceNavigation.hpp"
 #include "phide/ui/ColorPickerModal.hpp"
 #include "phide/ui/QuickOpenModal.hpp"
 #include "phide/ui/RemoteWindowModal.hpp"
@@ -431,6 +432,84 @@ private:
     /** @brief Focuses Replace perspective in Search drawer (Ctrl+Shift+H). */
     void DoShowReplace();
 
+    /** @brief Focuses a specific editor split group (0-based). */
+    void FocusEditorGroup(int groupIdx);
+
+    /** @brief Cycles keyboard focus to next or previous editor split group. */
+    void FocusAdjacentEditorGroup(bool next);
+
+    /** @brief Opens inline Peek Definition / References widget under cursor (Alt+F12). */
+    void DoPeekDefinition();
+
+    /** @brief Jumps to type definition of symbol under cursor. */
+    void DoTypeDefinition();
+
+    /** @brief Jumps to implementation of symbol under cursor. */
+    void DoImplementation();
+
+    /** @brief Finds all references of symbol under cursor (Shift+F12). */
+    void DoFindReferences();
+
+    /** @brief Opens Call Hierarchy view for symbol under cursor. */
+    void DoCallHierarchy();
+
+    /** @brief Computes and opens Code Metrics report for current file & workspace. */
+    void DoCodeMetrics();
+
+    /** @brief Opens Document Symbol quick outline (@) or focuses Outline pane (Ctrl+Shift+O). */
+    void DoGoToSymbolInEditor();
+
+    /** @brief Opens Workspace Symbol search (#) in Quick Open (Ctrl+T). */
+    void DoGoToWorkspaceSymbol();
+
+    /** @brief Toggles Explorer Outline tree section. */
+    void DoToggleOutline();
+
+    /** @brief Navigates backward in cursor history stack (Alt+Left). */
+    void NavigateBack();
+
+    /** @brief Navigates forward in cursor history stack (Alt+Right). */
+    void NavigateForward();
+
+    /** @brief Records current file/line/col checkpoint in navigation history. */
+    void RecordNavCheckpoint();
+
+    /** @brief Toggles a bookmark on the active document's cursor line. */
+    void DoToggleBookmark();
+
+    /** @brief Jumps to the next bookmark in the active document. */
+    void DoNextBookmark();
+
+    /** @brief Jumps to the previous bookmark in the active document. */
+    void DoPrevBookmark();
+
+    /** @brief Clears all bookmarks in the active document. */
+    void DoClearBookmarks();
+
+    /** @brief Persists all open-document bookmarks to .phide/bookmarks.json (ignoring .phide). */
+    void SaveBookmarksForWorkspace();
+
+    /** @brief Restores persisted bookmarks for currently open documents. */
+    void LoadBookmarksForWorkspace();
+
+    /** @brief Jumps to 0-based line/col in the currently active document. */
+    void JumpToEditorLocation(size_t line0Based, size_t col0Based);
+
+    /** @brief Opens (or focuses) filePath and jumps to 0-based line/col. */
+    void JumpToFileAndLocation(const std::wstring& filePath, size_t line0Based, size_t col0Based);
+
+    /** @brief Refreshes Outline panel, Breadcrumbs symbols, and QuickOpen symbols for active doc. */
+    void RefreshActiveDocOutlineAndBreadcrumbs();
+
+    /** @brief Applies replacement for the active inline find match. */
+    void ApplyInlineFindReplaceCurrent();
+
+    /** @brief Applies replacement for all inline find matches (or in-selection). */
+    void ApplyInlineFindReplaceAll();
+
+    /** @brief Applies multi-file symbol rename from the inline rename widget. */
+    void ApplyCrossFileRename(const std::wstring& newName);
+
     /** @brief Toggles line comment on active line or selection (Ctrl+/). */
     void DoToggleLineComment();
 
@@ -730,7 +809,20 @@ private:
     editor::IntelliSenseEngine m_intelliSense;
     editor::PredictionEngine m_predictionEngine;
     editor::AdaptiveCodeEngine m_adaptiveEngine;
+    editor::WorkspaceSymbolIndex m_symbolIndex;
     lsp::LspClient m_lsp;
+
+    struct NavCheckpoint {
+        std::wstring filePath;
+        size_t line = 0;
+        size_t col = 0;
+    };
+    std::vector<NavCheckpoint> m_navBackStack;
+    std::vector<NavCheckpoint> m_navForwardStack;
+    bool m_isNavigatingHistory = false;
+    std::wstring m_lastOutlineFileKey;
+    size_t m_lastOutlineDocVersion = static_cast<size_t>(-1);
+    std::unordered_map<std::wstring, std::vector<size_t>> m_persistedBookmarks;
 
     // Filesystem Watcher Handles
     HANDLE m_hWatcherThread = nullptr;
