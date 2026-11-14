@@ -338,6 +338,7 @@ public:
     static std::string GenerateContextAwareGitignore(const std::wstring& rootDir);
     static void EnsureContextAwareGitignore(const std::wstring& rootDir);
     [[nodiscard]] bool IsGitRefreshing() const noexcept { return m_isGitRefreshing.load(); }
+    [[nodiscard]] static ULONGLONG GetLastGitCmdTick() noexcept;
     [[nodiscard]] std::recursive_mutex& GetGitMutex() const noexcept { return m_gitMutex; }
     void UpdateGitLoadingAnim(float deltaAngle) noexcept { m_gitAnimAngle += deltaAngle; }
     [[nodiscard]] bool IsGitCommitBoxFocused() const noexcept { return m_focusedGitInput == 1; }
@@ -1061,6 +1062,7 @@ private:
     std::map<std::wstring, size_t> m_errorFiles;
     std::atomic<bool> m_isGitLoading{false};
     std::atomic<bool> m_isGitRefreshing{false};
+    std::atomic<bool> m_gitRefreshQueued{false};
     std::atomic<bool> m_isCommitting{false};
     std::atomic<bool> m_isSyncing{false};
     bool m_isCommitEditMsgOpen = false;

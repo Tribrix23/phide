@@ -626,6 +626,7 @@ void EditorCanvas::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
     size_t splitterSegCount = 0;
     m_splitState.ComputeGroupBounds(groups, canvasLeft, headerH, canvasWidth, clientHeight, splitterSegs, &splitterSegCount);
 
+    bool anyPaneRenderedPackages = false;
     size_t numGroups = groups.size();
     for (size_t g = 0; g < numGroups; ++g) {
         const D2D1_RECT_F& b = groups[g].bounds;
@@ -640,15 +641,24 @@ void EditorCanvas::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
         // Push clip rect for this editor group
         pRT->PushAxisAlignedClip(b, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
 
+        bool paneRenderedPackages = false;
         RenderSinglePane(pRT, theme, config, groups[g].docs, groups[g].activeDocIdx,
                          pLeft, pWidth, pTop, pBottom,
                          (isTopLeftPane ? hasLeftDrawer : true), isGroupFocused,
                          highlightQuery, highlightMatchCase, highlightWholeWord, highlightUseRegex,
                          isRenaming, groups[g].tabScrollOffset, groups[g].totalTabsWidth, static_cast<int>(g),
                          &groups[g].tabScrollTrack, &groups[g].tabScrollThumb,
-                         &groups[g].lastScrolledActiveDocIdx, groups[g].isDraggingTabScroll);
+                         &groups[g].lastScrolledActiveDocIdx, groups[g].isDraggingTabScroll,
+                         &paneRenderedPackages);
+        if (paneRenderedPackages) {
+            anyPaneRenderedPackages = true;
+        }
 
         pRT->PopAxisAlignedClip();
+    }
+
+    if (!anyPaneRenderedPackages) {
+        m_packageManagerView.HideWebView();
     }
 
     // Draw 1px vertical & horizontal splitter dividers between panes (plus hover/drag highlight)
@@ -807,9 +817,10 @@ void EditorCanvas::RenderSinglePane(ID2D1RenderTarget* pRT, Theme& theme, const 
                                     bool isRenaming,
                                     float& tabScrollOffset, float& totalTabsWidth, int groupIdx,
                                     D2D1_RECT_F* outTrack, D2D1_RECT_F* outThumb,
-                                    int* pLastScrolledActiveDocIdx, bool isDraggingTabScroll) {
+                                    int* pLastScrolledActiveDocIdx, bool isDraggingTabScroll,
+                                    bool* outRenderedPackages) {
+    if (outRenderedPackages) *outRenderedPackages = false;
     if (docs.empty() || docIdx < 0 || docIdx >= static_cast<int>(docs.size())) {
-        m_packageManagerView.HideWebView();
         RenderPlaceholder(pRT, theme, config, canvasLeft, canvasWidth, headerH, clientHeight);
         return;
     }
@@ -826,50 +837,37 @@ void EditorCanvas::RenderSinglePane(ID2D1RenderTarget* pRT, Theme& theme, const 
 
     float contentTopY = headerH + tabH + breadcrumbH;
     if (activeDoc.isSpecialView && activeDoc.viewType == L"keybindings") {
-        m_packageManagerView.HideWebView();
         m_keybindingsView.Render(pRT, theme, config, canvasLeft, canvasWidth, contentTopY, clientHeight - contentTopY);
     } else if (activeDoc.isSpecialView && activeDoc.viewType == L"packages") {
+        if (outRenderedPackages) *outRenderedPackages = true;
         m_packageManagerView.Render(pRT, theme, config, canvasLeft, canvasWidth, contentTopY, clientHeight - contentTopY);
     } else if (activeDoc.isSpecialView && activeDoc.viewType == L"terminal") {
-        m_packageManagerView.HideWebView();
         if (m_onRenderTerminalInEditor) {
             m_onRenderTerminalInEditor(pRT, canvasLeft, contentTopY, canvasWidth, clientHeight - contentTopY);
         }
     } else if (activeDoc.isSpecialView && activeDoc.viewType == L"notebook") {
-        m_packageManagerView.HideWebView();
         m_notebookView.Render(pRT, theme, config, activeDoc, canvasLeft, canvasWidth, contentTopY, clientHeight - contentTopY);
     } else if (activeDoc.isSpecialView && activeDoc.viewType == L"student") {
-        m_packageManagerView.HideWebView();
         RenderStudentView(pRT, theme, config, activeDoc, canvasLeft, canvasWidth, contentTopY, clientHeight);
     } else if (activeDoc.isSpecialView && activeDoc.viewType == L"graph") {
-        m_packageManagerView.HideWebView();
         m_graphView.Render(pRT, theme, config, canvasLeft, canvasWidth, contentTopY, clientHeight - contentTopY);
     } else if (activeDoc.isSpecialView && activeDoc.viewType == L"monitor") {
-        m_packageManagerView.HideWebView();
         RenderMonitorView(pRT, theme, config, canvasLeft, canvasWidth, contentTopY, clientHeight);
     } else if (activeDoc.isSpecialView && activeDoc.viewType == L"settings") {
-        m_packageManagerView.HideWebView();
         m_settingsView.Render(pRT, theme, config, canvasLeft, canvasWidth, contentTopY, clientHeight - contentTopY);
     } else if (activeDoc.isSpecialView && activeDoc.viewType == L"api") {
-        m_packageManagerView.HideWebView();
         m_apiTesterView.Render(pRT, theme, config, canvasLeft, canvasWidth, contentTopY, clientHeight - contentTopY);
     } else if ((activeDoc.isSpecialView && activeDoc.viewType == L"course") || !activeDoc.courseId.empty()) {
-        m_packageManagerView.HideWebView();
         RenderCourseView(pRT, theme, config, activeDoc, canvasLeft, canvasWidth, contentTopY, clientHeight);
     } else if (activeDoc.isSpecialView && activeDoc.viewType == L"markdown_preview") {
-        m_packageManagerView.HideWebView();
         RenderMarkdownPreview(pRT, theme, config, activeDoc, canvasLeft, canvasWidth, contentTopY, clientHeight);
     } else if (activeDoc.isSpecialView && activeDoc.viewType == L"extension_detail") {
-        m_packageManagerView.HideWebView();
         RenderExtensionDetail(pRT, theme, config, activeDoc, canvasLeft, canvasWidth, contentTopY, clientHeight);
     } else if (activeDoc.isSpecialView && activeDoc.viewType == L"interactive_guide") {
-        m_packageManagerView.HideWebView();
         m_interactiveGuideView.Render(pRT, theme, config, canvasLeft, canvasWidth, contentTopY, clientHeight - contentTopY);
     } else if (activeDoc.isSpecialView && (activeDoc.viewType == L"welcome" || activeDoc.viewType == L"walkthrough")) {
-        m_packageManagerView.HideWebView();
         m_welcomeView.Render(pRT, theme, config, canvasLeft, canvasWidth, contentTopY, clientHeight - contentTopY);
     } else {
-        m_packageManagerView.HideWebView();
         if (activeDoc.isFolderView) {
             RenderFolderView(pRT, theme, config, activeDoc, canvasLeft, canvasWidth, contentTopY, clientHeight);
         } else if (activeDoc.isImageView) {
@@ -8853,7 +8851,15 @@ void EditorCanvas::RenderAutocompletePopup(ID2D1RenderTarget* pRT, Theme& theme,
     // 10. Documentation Sidecar Flyout Card (Dynamic width, height, word-wrap, and strict clipping)
     if (m_autocompleteSelectedIdx < m_autocompleteItems.size()) {
         const auto& selItem = m_autocompleteItems[m_autocompleteSelectedIdx];
-        bool hasRichDoc = !selItem.documentation.empty() || selItem.isColor || (selItem.detail.length() > 38 || selItem.detail.find(L'\n') != std::wstring::npos);
+        auto hasVisibleChars = [](const std::wstring& s) -> bool {
+            for (wchar_t ch : s) {
+                if (!iswspace(ch)) return true;
+            }
+            return false;
+        };
+        bool hasVisibleDoc = hasVisibleChars(selItem.documentation);
+        bool hasVisibleDetail = hasVisibleChars(selItem.detail);
+        bool hasRichDoc = hasVisibleDoc || selItem.isColor || (hasVisibleDetail && (selItem.detail.length() > 38 || selItem.detail.find(L'\n') != std::wstring::npos));
         if (hasRichDoc) {
             float padX = config.ScaleF(12.0f);
             float padY = config.ScaleF(10.0f);
@@ -8865,19 +8871,22 @@ void EditorCanvas::RenderAutocompletePopup(ID2D1RenderTarget* pRT, Theme& theme,
             float maxAvailW = placeOnRight ? spaceRight : spaceLeft;
             maxAvailW = (std::max)(config.ScaleF(260.0f), (std::min)(maxAvailW, config.ScaleF(560.0f)));
 
-            float textWrapW = maxAvailW - padX * 2.0f;
+            float textWrapW = (std::max)(config.ScaleF(40.0f), maxAvailW - padX * 2.0f);
 
-            // Pre-measure detail layout (signature or CSS property) with word-wrapping
+            // Pre-measure detail layout (signature or CSS property) with word-wrapping and top alignment
+            // (theme.fontCode uses PARAGRAPH_ALIGNMENT_CENTER, so NEAR alignment is required for multi-line layouts!)
             Microsoft::WRL::ComPtr<IDWriteTextLayout> pDetailLayout;
             float detailH = 0.0f;
             float maxMeasuredW = config.ScaleF(260.0f);
-            if (!selItem.detail.empty() && theme.dwriteFactory && (theme.fontCode || theme.fontBody)) {
+            if (hasVisibleDetail && theme.dwriteFactory && (theme.fontCode || theme.fontBody)) {
                 IDWriteTextFormat* pFmt = theme.fontCode ? theme.fontCode.Get() : theme.fontBody.Get();
                 if (SUCCEEDED(theme.dwriteFactory->CreateTextLayout(
                         selItem.detail.c_str(), static_cast<UINT32>(selItem.detail.length()),
-                        pFmt, textWrapW, 2000.0f, &pDetailLayout))) {
+                        pFmt, textWrapW, 2000.0f, &pDetailLayout)) && pDetailLayout) {
                     pDetailLayout->SetWordWrapping(DWRITE_WORD_WRAPPING_WRAP);
-                    DWRITE_TEXT_METRICS tm;
+                    pDetailLayout->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
+                    pDetailLayout->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR);
+                    DWRITE_TEXT_METRICS tm{};
                     if (SUCCEEDED(pDetailLayout->GetMetrics(&tm))) {
                         detailH = tm.height;
                         maxMeasuredW = (std::max)(maxMeasuredW, tm.width + padX * 2.0f);
@@ -8885,16 +8894,18 @@ void EditorCanvas::RenderAutocompletePopup(ID2D1RenderTarget* pRT, Theme& theme,
                 }
             }
 
-            // Pre-measure documentation layout with word-wrapping
+            // Pre-measure documentation layout with word-wrapping and top alignment
             Microsoft::WRL::ComPtr<IDWriteTextLayout> pDocLayout;
             float docTextH = 0.0f;
-            if (!selItem.documentation.empty() && theme.dwriteFactory && (theme.fontMenuItem || theme.fontBody)) {
+            if (hasVisibleDoc && theme.dwriteFactory && (theme.fontMenuItem || theme.fontBody)) {
                 IDWriteTextFormat* pFmt = theme.fontMenuItem ? theme.fontMenuItem.Get() : theme.fontBody.Get();
                 if (SUCCEEDED(theme.dwriteFactory->CreateTextLayout(
                         selItem.documentation.c_str(), static_cast<UINT32>(selItem.documentation.length()),
-                        pFmt, textWrapW, 2000.0f, &pDocLayout))) {
+                        pFmt, textWrapW, 2000.0f, &pDocLayout)) && pDocLayout) {
                     pDocLayout->SetWordWrapping(DWRITE_WORD_WRAPPING_WRAP);
-                    DWRITE_TEXT_METRICS tm;
+                    pDocLayout->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
+                    pDocLayout->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR);
+                    DWRITE_TEXT_METRICS tm{};
                     if (SUCCEEDED(pDocLayout->GetMetrics(&tm))) {
                         docTextH = tm.height;
                         maxMeasuredW = (std::max)(maxMeasuredW, tm.width + padX * 2.0f);
@@ -8902,21 +8913,36 @@ void EditorCanvas::RenderAutocompletePopup(ID2D1RenderTarget* pRT, Theme& theme,
                 }
             }
 
-            float docW = (std::min)(maxAvailW, (std::max)(config.ScaleF(280.0f), maxMeasuredW));
-            float docH = padY * 2.0f;
-            if (pDetailLayout) docH += detailH + config.ScaleF(6.0f);
-            if (selItem.isColor) docH += config.ScaleF(22.0f);
-            if (pDocLayout) docH += docTextH + config.ScaleF(6.0f);
-            docH = (std::min)(docH, clientHeight - config.ScaleF(30.0f));
+            if (pDetailLayout || selItem.isColor || pDocLayout) {
+                float docW = (std::min)(maxAvailW, (std::max)(config.ScaleF(280.0f), maxMeasuredW));
+                float docX = placeOnRight ? (popupX + popupW + config.ScaleF(4.0f)) : (popupX - docW - config.ScaleF(4.0f));
+                if (docX < config.ScaleF(6.0f)) docX = config.ScaleF(6.0f);
+                if (docX + docW > clientWidth - config.ScaleF(6.0f)) docW = clientWidth - docX - config.ScaleF(6.0f);
 
-            float docX = placeOnRight ? (popupX + popupW + config.ScaleF(4.0f)) : (popupX - docW - config.ScaleF(4.0f));
-            if (docX < config.ScaleF(6.0f)) docX = config.ScaleF(6.0f);
-            if (docX + docW > clientWidth - config.ScaleF(6.0f)) docW = clientWidth - docX - config.ScaleF(6.0f);
+                float finalTextWrapW = (std::max)(config.ScaleF(40.0f), docW - padX * 2.0f);
+                if (finalTextWrapW < textWrapW - 1.0f) {
+                    if (pDetailLayout) {
+                        pDetailLayout->SetMaxWidth(finalTextWrapW);
+                        DWRITE_TEXT_METRICS tm{};
+                        if (SUCCEEDED(pDetailLayout->GetMetrics(&tm))) detailH = tm.height;
+                    }
+                    if (pDocLayout) {
+                        pDocLayout->SetMaxWidth(finalTextWrapW);
+                        DWRITE_TEXT_METRICS tm{};
+                        if (SUCCEEDED(pDocLayout->GetMetrics(&tm))) docTextH = tm.height;
+                    }
+                }
 
-            float docY = popupY;
-            if (docY + docH > clientHeight - config.ScaleF(10.0f)) {
-                docY = (std::max)(config.ScaleF(35.0f), clientHeight - docH - config.ScaleF(10.0f));
-            }
+                float docH = padY * 2.0f;
+                if (pDetailLayout) docH += detailH + ((selItem.isColor || pDocLayout) ? config.ScaleF(6.0f) : 0.0f);
+                if (selItem.isColor) docH += config.ScaleF(22.0f);
+                if (pDocLayout) docH += docTextH + config.ScaleF(2.0f);
+                docH = (std::min)(docH, clientHeight - config.ScaleF(30.0f));
+
+                float docY = popupY;
+                if (docY + docH > clientHeight - config.ScaleF(10.0f)) {
+                    docY = (std::max)(config.ScaleF(35.0f), clientHeight - docH - config.ScaleF(10.0f));
+                }
 
             D2D1_RECT_F rcDoc = D2D1::RectF(docX, docY, docX + docW, docY + docH);
             D2D1_ROUNDED_RECT rrcDoc = D2D1::RoundedRect(rcDoc, 6.0f, 6.0f);
@@ -9001,6 +9027,7 @@ void EditorCanvas::RenderAutocompletePopup(ID2D1RenderTarget* pRT, Theme& theme,
             }
 
             pRT->PopAxisAlignedClip();
+            }
         }
     }
 }

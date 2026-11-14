@@ -1235,7 +1235,7 @@ void DrawerPanel::RenderExplorerPane(ID2D1RenderTarget* pRT, Theme& theme, const
                 }
                 item.bounds = D2D1::RectF(railW + config.ScaleF(4.0f), curY, railW + fullDrawerW - config.ScaleF(4.0f), curY + itemH);
 
-                bool isActive = (!m_activeFilePath.empty() && item.fullPath == m_activeFilePath);
+                bool isActive = (!m_activeFilePath.empty() && _wcsicmp(item.fullPath.c_str(), m_activeFilePath.c_str()) == 0);
                 bool isHovered = (m_hoveredIndex == static_cast<int>(i));
 
                 D2D1_ROUNDED_RECT rrc = D2D1::RoundedRect(item.bounds, 3.5f, 3.5f);
@@ -4123,10 +4123,44 @@ void DrawerPanel::StartInlineCreate(const std::wstring& parentPath, bool isFolde
     }
     m_createParentDir = dir;
 
-    // Ensure parent folder is expanded
-    if (dir != m_openFolderPath && !dir.empty()) {
-        m_expandedDirs.insert(dir);
-        RefreshTree();
+    // Ensure parent folder and any collapsed ancestors up to the workspace root are expanded
+    if (!dir.empty()) {
+        auto normalizeDir = [](std::wstring p) {
+            for (auto& ch : p) {
+                if (ch == L'/') ch = L'\\';
+            }
+            while (p.size() > 3 && p.back() == L'\\') {
+                p.pop_back();
+            }
+            return p;
+        };
+
+        std::wstring rootNorm = normalizeDir(m_openFolderPath);
+        std::wstring curNorm = normalizeDir(dir);
+        if (!curNorm.empty() && (rootNorm.empty() || _wcsicmp(curNorm.c_str(), rootNorm.c_str()) != 0)) {
+            std::filesystem::path walkP(curNorm);
+            while (!walkP.empty()) {
+                std::wstring walkStr = normalizeDir(walkP.wstring());
+                if (walkStr.empty() || (!rootNorm.empty() && _wcsicmp(walkStr.c_str(), rootNorm.c_str()) == 0)) {
+                    break;
+                }
+                // Match canonical/exact casing from m_expandedDirs if not present, otherwise insert path
+                bool alreadyPresent = false;
+                for (const auto& existing : m_expandedDirs) {
+                    if (_wcsicmp(existing.c_str(), walkStr.c_str()) == 0) {
+                        alreadyPresent = true;
+                        break;
+                    }
+                }
+                if (!alreadyPresent) {
+                    m_expandedDirs.insert(walkStr);
+                }
+                std::filesystem::path parentP = walkP.parent_path();
+                if (parentP == walkP) break;
+                walkP = parentP;
+            }
+            RefreshTree();
+        }
     }
 
     // Determine depth and position in m_visibleItems
@@ -4772,6 +4806,12 @@ void DrawerPanel::CompleteGitHubLogin(const std::wstring& username) {
     }
 }
 
+static std::atomic<ULONGLONG> s_lastGitCmdTick{0};
+
+ULONGLONG DrawerPanel::GetLastGitCmdTick() noexcept {
+    return s_lastGitCmdTick.load();
+}
+
 GitCmdResult RunGitCmd(const std::wstring& cmd, const std::wstring& workDir, bool retryOnLock) {
     GitCmdResult res;
     std::wstring cleanWorkDir = StripExtendedPathPrefix(workDir);
@@ -4804,17 +4844,39 @@ GitCmdResult RunGitCmd(const std::wstring& cmd, const std::wstring& workDir, boo
         timeoutMs = 20000;
     }
 
+    std::vector<std::pair<std::wstring, std::wstring>> envVars = {
+        {L"GIT_TERMINAL_PROMPT", L"0"},
+        {L"GCM_INTERACTIVE", L"never"}
+    };
+    bool isReadOnlyQuery =
+        lowerCmd.rfind(L"status", 0) == 0 ||
+        lowerCmd.rfind(L"diff", 0) == 0 ||
+        lowerCmd.rfind(L"rev-parse", 0) == 0 ||
+        lowerCmd.rfind(L"rev-list", 0) == 0 ||
+        lowerCmd.rfind(L"branch", 0) == 0 ||
+        lowerCmd.rfind(L"remote", 0) == 0 ||
+        lowerCmd.rfind(L"log", 0) == 0 ||
+        lowerCmd.rfind(L"show", 0) == 0 ||
+        lowerCmd.rfind(L"blame", 0) == 0 ||
+        lowerCmd.rfind(L"ls-files", 0) == 0;
+    if (isReadOnlyQuery) {
+        envVars.push_back({L"GIT_OPTIONAL_LOCKS", L"0"});
+    }
+
+    s_lastGitCmdTick.store(GetTickCount64());
     DWORD exitCode = 1;
     std::string rawOut;
     DWORD durationMs = 0;
-    if (!LaunchProcessAndCapture(
-            fullCmd,
-            cleanWorkDir,
-            timeoutMs,
-            { {L"GIT_TERMINAL_PROMPT", L"0"}, {L"GCM_INTERACTIVE", L"never"} },
-            exitCode,
-            rawOut,
-            durationMs)) {
+    bool launched = LaunchProcessAndCapture(
+        fullCmd,
+        cleanWorkDir,
+        timeoutMs,
+        envVars,
+        exitCode,
+        rawOut,
+        durationMs);
+    s_lastGitCmdTick.store(GetTickCount64());
+    if (!launched) {
         res.exitCode = 9009;
         res.output = L"Failed to execute git command.";
         return res;
@@ -4934,6 +4996,7 @@ void DrawerPanel::RefreshGitState(bool async, bool showLoading) {
         if (showLoading) {
             m_isGitLoading = true;
         }
+        m_gitRefreshQueued.store(false);
         std::wstring dir = NormalizeDirForGit(m_openFolderPath);
 
         // 1. Verify the opened project folder itself owns a .git repository (never let ancestor .git hijack)
@@ -5008,7 +5071,6 @@ void DrawerPanel::RefreshGitState(bool async, bool showLoading) {
 
         // 3. Query working tree changes and git-ignored files
         if (!alive || !alive->load()) return;
-        RunGitCmd(L"update-index -q --refresh", dir);
         auto resStatus = RunGitCmd(L"status --porcelain=v1 -uall --ignored=matching", dir);
         auto resDiff = RunGitCmd(L"diff --name-only", dir);
         auto resCached = RunGitCmd(L"diff --cached --name-only", dir);
@@ -5588,22 +5650,51 @@ void DrawerPanel::RefreshGitStatusOnly(bool async) {
     }
 
     if (async) {
+        bool expected = false;
+        if (!m_isGitRefreshing.compare_exchange_strong(expected, true)) {
+            m_gitRefreshQueued.store(true);
+            return;
+        }
         if (m_activeWorkers) {
             m_activeWorkers->fetch_add(1);
         }
+    } else {
+        m_isGitRefreshing.store(true);
     }
     auto alive = m_isAlive;
     auto workers = m_activeWorkers;
     auto task = [this, alive, workers, async]() {
         struct WorkerGuard {
             std::shared_ptr<std::atomic<int>> w;
+            std::atomic<bool>& refreshing;
             bool isAsync;
-            WorkerGuard(std::shared_ptr<std::atomic<int>> ptr, bool a) : w(ptr), isAsync(a) {}
-            ~WorkerGuard() { if (isAsync && w) w->fetch_sub(1); }
-        } guard(workers, async);
+            bool ownsFlag = true;
+            WorkerGuard(std::shared_ptr<std::atomic<int>> ptr, std::atomic<bool>& refFlag, bool a)
+                : w(ptr), refreshing(refFlag), isAsync(a) {}
+            void ReleaseFlag() {
+                if (ownsFlag) {
+                    ownsFlag = false;
+                    refreshing.store(false);
+                }
+            }
+            bool TryReacquireFlag() {
+                if (ownsFlag) return true;
+                bool exp = false;
+                if (refreshing.compare_exchange_strong(exp, true)) {
+                    ownsFlag = true;
+                    return true;
+                }
+                return false;
+            }
+            ~WorkerGuard() {
+                ReleaseFlag();
+                if (isAsync && w) w->fetch_sub(1);
+            }
+        } guard(workers, m_isGitRefreshing, async);
 
-        if (!alive || !alive->load()) return;
-        std::wstring dir = NormalizeDirForGit(m_openFolderPath);
+        auto runOnce = [this, &alive]() {
+            if (!alive || !alive->load()) return;
+            std::wstring dir = NormalizeDirForGit(m_openFolderPath);
 
         // 1. Verify direct local .git root ownership
         if (!alive || !alive->load()) return;
@@ -5675,7 +5766,6 @@ void DrawerPanel::RefreshGitStatusOnly(bool async) {
 
         // 3. Query working tree changes and git-ignored files
         if (!alive || !alive->load()) return;
-        RunGitCmd(L"update-index -q --refresh", dir);
         auto resStatus = RunGitCmd(L"status --porcelain=v1 -uall --ignored=matching", dir);
         auto resDiff = RunGitCmd(L"diff --name-only", dir);
         auto resCached = RunGitCmd(L"diff --cached --name-only", dir);
@@ -5957,6 +6047,19 @@ void DrawerPanel::RefreshGitStatusOnly(bool async) {
         if (!alive || !alive->load()) return;
         if (stateChanged && m_onGitStateChanged) {
             m_onGitStateChanged();
+        }
+        };
+
+        while (alive && alive->load()) {
+            m_gitRefreshQueued.store(false);
+            runOnce();
+            if (!async || !alive || !alive->load()) break;
+            if (!m_gitRefreshQueued.load()) {
+                guard.ReleaseFlag();
+                if (!m_gitRefreshQueued.load() || !guard.TryReacquireFlag()) {
+                    break;
+                }
+            }
         }
     };
 

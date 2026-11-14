@@ -476,7 +476,8 @@ private:
                           bool isRenaming,
                           float& tabScrollOffset, float& totalTabsWidth, int groupIdx = 0,
                           D2D1_RECT_F* outTrack = nullptr, D2D1_RECT_F* outThumb = nullptr,
-                          int* pLastScrolledActiveDocIdx = nullptr, bool isDraggingTabScroll = false);
+                          int* pLastScrolledActiveDocIdx = nullptr, bool isDraggingTabScroll = false,
+                          bool* outRenderedPackages = nullptr);
 
     void RenderSinglePane(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
                           std::vector<editor::OpenDocument>& docs, int activeDocIdx,

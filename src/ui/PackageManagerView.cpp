@@ -7,6 +7,7 @@
 
 #include "phide/ui/PackageManagerView.hpp"
 #include <algorithm>
+#include <cmath>
 #include <fstream>
 #include <sstream>
 #include <cwctype>
@@ -80,9 +81,36 @@ void PackageManagerView::InitWebView2(HWND hwnd) {
                                 settings->put_AreDefaultContextMenusEnabled(TRUE);
                             }
 
+                            if (m_webView) {
+                                EventRegistrationToken navStartTok{};
+                                m_webView->add_NavigationStarting(
+                                    Microsoft::WRL::Callback<ICoreWebView2NavigationStartingEventHandler>(
+                                        [this](ICoreWebView2*, ICoreWebView2NavigationStartingEventArgs*) -> HRESULT {
+                                            m_webViewNavCompleted = false;
+                                            m_webViewNavFailed = false;
+                                            return S_OK;
+                                        }).Get(),
+                                    &navStartTok);
+
+                                EventRegistrationToken navDoneTok{};
+                                m_webView->add_NavigationCompleted(
+                                    Microsoft::WRL::Callback<ICoreWebView2NavigationCompletedEventHandler>(
+                                        [this](ICoreWebView2*, ICoreWebView2NavigationCompletedEventArgs* args) -> HRESULT {
+                                            BOOL isSuccess = FALSE;
+                                            if (args) args->get_IsSuccess(&isSuccess);
+                                            m_webViewNavCompleted = true;
+                                            m_webViewNavFailed = (isSuccess == FALSE);
+                                            if (m_hwnd) InvalidateRect(m_hwnd, nullptr, FALSE);
+                                            return S_OK;
+                                        }).Get(),
+                                    &navDoneTok);
+                            }
+
                             UpdateWebViewBounds();
 
                             if (!m_pendingUrl.empty() && m_webView) {
+                                m_webViewNavCompleted = false;
+                                m_webViewNavFailed = false;
                                 m_currentLoadedUrl = m_pendingUrl;
                                 m_webView->Navigate(m_pendingUrl.c_str());
                                 m_pendingUrl.clear();
@@ -98,30 +126,49 @@ void PackageManagerView::UpdateWebViewBounds() {
 
     bool shouldBeVisible = (m_viewState == PkgViewState::PackageSearch) &&
                            (m_selectedIndex >= 0) &&
-                           (m_rcRightPreview.right > m_rcRightPreview.left + 50.0f);
+                           !m_webViewNavFailed &&
+                           (m_rcRightPreview.right > m_rcRightPreview.left + 80.0f) &&
+                           (m_rcRightPreview.bottom > m_rcRightPreview.top + 80.0f);
 
-    m_webViewController->put_IsVisible(shouldBeVisible ? TRUE : FALSE);
+    if (shouldBeVisible != m_lastWebViewVisible) {
+        m_webViewController->put_IsVisible(shouldBeVisible ? TRUE : FALSE);
+        m_lastWebViewVisible = shouldBeVisible;
+    }
 
     if (shouldBeVisible) {
         RECT bounds;
-        bounds.left = static_cast<LONG>(m_rcRightPreview.left);
-        bounds.top = static_cast<LONG>(m_rcRightPreview.top);
-        bounds.right = static_cast<LONG>(m_rcRightPreview.right);
-        bounds.bottom = static_cast<LONG>(m_rcRightPreview.bottom);
-        m_webViewController->put_Bounds(bounds);
+        bounds.left   = static_cast<LONG>(std::lround(m_rcRightPreview.left));
+        bounds.top    = static_cast<LONG>(std::lround(m_rcRightPreview.top));
+        bounds.right  = static_cast<LONG>(std::lround(m_rcRightPreview.right));
+        bounds.bottom = static_cast<LONG>(std::lround(m_rcRightPreview.bottom));
+        if (!m_hasWebViewBounds ||
+            bounds.left != m_lastWebViewBounds.left ||
+            bounds.top != m_lastWebViewBounds.top ||
+            bounds.right != m_lastWebViewBounds.right ||
+            bounds.bottom != m_lastWebViewBounds.bottom) {
+            m_webViewController->put_Bounds(bounds);
+            m_lastWebViewBounds = bounds;
+            m_hasWebViewBounds = true;
+        }
     }
 }
 
 void PackageManagerView::HideWebView() {
-    if (m_webViewController) {
+    if (m_webViewController && m_lastWebViewVisible) {
         m_webViewController->put_IsVisible(FALSE);
+        m_lastWebViewVisible = false;
     }
 }
 
 void PackageManagerView::NavigateToPackage(const std::wstring& url) {
     if (url.empty()) return;
-    if (url == m_currentLoadedUrl && m_webView) return;
+    if (url == m_currentLoadedUrl && m_webView && !m_webViewNavFailed) {
+        UpdateWebViewBounds();
+        return;
+    }
 
+    m_webViewNavCompleted = false;
+    m_webViewNavFailed = false;
     if (m_webView && m_webViewReady) {
         m_currentLoadedUrl = url;
         m_webView->Navigate(url.c_str());
@@ -1541,9 +1588,12 @@ void PackageManagerView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app:
 
     curY += config.ScaleF(32.0f);
 
-    // USER REQUIREMENT: "reduce the witdht compeltely" -> compact sidebar width for output list
-    const float leftColW = config.ScaleF(280.0f);
-    const float contentH = top + height - curY - padY;
+    // USER REQUIREMENT: responsive compact sidebar width for output list
+    const float availColsW = (std::max)(config.ScaleF(200.0f), width - padX * 2.0f);
+    const float leftColW = (availColsW < config.ScaleF(640.0f))
+        ? (std::max)(config.ScaleF(190.0f), (std::min)(config.ScaleF(260.0f), availColsW * 0.38f))
+        : config.ScaleF(280.0f);
+    const float contentH = (std::max)(80.0f, top + height - curY - padY);
 
     // 2. Search Bar
     const float searchH = config.ScaleF(32.0f);
@@ -1876,26 +1926,44 @@ void PackageManagerView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app:
     }
 
     // =========================================================================
-    // 4. RIGHT COLUMN: Complete Authentic GitHub Web Render (User requirement)
+    // 4. RIGHT COLUMN: Live Embedded GitHub WebView2 (or responsive fallback)
     // =========================================================================
     float rightLeft = left + padX + leftColW + config.ScaleF(16.0f);
-    float rightW = width - padX * 2.0f - leftColW - config.ScaleF(16.0f);
+    float rightW = (std::max)(0.0f, width - padX * 2.0f - leftColW - config.ScaleF(16.0f));
     m_rcRightPreview = D2D1::RectF(rightLeft, curY, rightLeft + rightW, curY + contentH);
 
     D2D1_ROUNDED_RECT rrcPreview = D2D1::RoundedRect(m_rcRightPreview, 8.0f, 8.0f);
     pRT->FillRoundedRectangle(rrcPreview, theme.brushDrawerBg ? theme.brushDrawerBg.Get() : theme.brushCanvasBg.Get());
     pRT->DrawRoundedRectangle(rrcPreview, theme.brushBorderSubtle.Get(), 1.0f);
 
-    if (m_selectedIndex >= 0 && m_selectedIndex < static_cast<int>(m_filteredIndices.size())) {
+    if (rightW > config.ScaleF(80.0f) && m_selectedIndex >= 0 && m_selectedIndex < static_cast<int>(m_filteredIndices.size())) {
         size_t selIdx = m_filteredIndices[m_selectedIndex];
         const auto& curPkg = activeList[selIdx];
-        RenderGitHubWebPage(pRT, theme, config, curPkg, m_rcRightPreview);
+        const bool webViewActive = (m_webViewController != nullptr && m_webViewReady && !m_webViewNavFailed && !curPkg.github.empty());
+        if (webViewActive) {
+            // Paint clean GitHub backdrop while WebView2 renders/resizes so there is zero blinking against the offline fallback UI
+            Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> bWebBg;
+            pRT->CreateSolidColorBrush(theme.IsDarkMode() ? D2D1::ColorF(0x0d1117) : D2D1::ColorF(0xffffff), &bWebBg);
+            if (bWebBg) pRT->FillRoundedRectangle(rrcPreview, bWebBg.Get());
+            if (!m_webViewNavCompleted) {
+                D2D1_RECT_F rcLoad = D2D1::RectF(m_rcRightPreview.left + config.ScaleF(20.0f),
+                                                 m_rcRightPreview.top + contentH * 0.45f,
+                                                 m_rcRightPreview.right - config.ScaleF(20.0f),
+                                                 m_rcRightPreview.top + contentH * 0.55f);
+                const wchar_t* loadHint = L"Loading GitHub repository...";
+                pRT->DrawText(loadHint, static_cast<UINT32>(wcslen(loadHint)), theme.fontHint.Get(), rcLoad, theme.brushTextSecondary.Get());
+            }
+        } else {
+            RenderGitHubWebPage(pRT, theme, config, curPkg, m_rcRightPreview);
+        }
     } else {
         HideWebView();
-        D2D1_RECT_F rcNoPkg = D2D1::RectF(m_rcRightPreview.left + config.ScaleF(30.0f), m_rcRightPreview.top + config.ScaleF(100.0f),
-                                         m_rcRightPreview.right - config.ScaleF(30.0f), m_rcRightPreview.top + config.ScaleF(180.0f));
-        const wchar_t* noPkgHint = L"Select or search a package to view its authentic GitHub web repository.";
-        pRT->DrawText(noPkgHint, static_cast<UINT32>(wcslen(noPkgHint)), theme.fontHint.Get(), rcNoPkg, theme.brushTextSecondary.Get());
+        if (rightW > config.ScaleF(80.0f)) {
+            D2D1_RECT_F rcNoPkg = D2D1::RectF(m_rcRightPreview.left + config.ScaleF(20.0f), m_rcRightPreview.top + config.ScaleF(80.0f),
+                                             m_rcRightPreview.right - config.ScaleF(20.0f), m_rcRightPreview.top + config.ScaleF(160.0f));
+            const wchar_t* noPkgHint = L"Select or search a package to view its GitHub repository.";
+            pRT->DrawText(noPkgHint, static_cast<UINT32>(wcslen(noPkgHint)), theme.fontHint.Get(), rcNoPkg, theme.brushTextSecondary.Get());
+        }
     }
 
     UpdateWebViewBounds();
@@ -2008,54 +2076,65 @@ void PackageManagerView::RenderGitHubWebPage(ID2D1RenderTarget* pRT, Theme& them
     pRT->DrawText(repo.c_str(), static_cast<UINT32>(repo.length()), pFmtTitle, rcRepo, bGhText.Get());
     textX += repoW + config.ScaleF(10.0f);
 
-    // Public badge
-    D2D1_RECT_F rcPub = D2D1::RectF(textX, startY + config.ScaleF(15.0f), textX + config.ScaleF(46.0f), startY + config.ScaleF(31.0f));
-    D2D1_ROUNDED_RECT rrcPub = D2D1::RoundedRect(rcPub, 8.0f, 8.0f);
-    pRT->FillRoundedRectangle(rrcPub, bGhBorderSubtle.Get());
-    pRT->DrawRoundedRectangle(rrcPub, bGhBorder.Get(), 1.0f);
-    const wchar_t* pubText = L"Public";
-    pRT->DrawText(pubText, 6, theme.fontBadge.Get(), rcPub, bGhMuted.Get());
+    // Public badge (only if it fits before right edge)
+    float breadcrumbEndX = textX;
+    float pubW = config.ScaleF(46.0f);
+    if (textX + pubW < bounds.right - config.ScaleF(14.0f)) {
+        D2D1_RECT_F rcPub = D2D1::RectF(textX, startY + config.ScaleF(15.0f), textX + pubW, startY + config.ScaleF(31.0f));
+        D2D1_ROUNDED_RECT rrcPub = D2D1::RoundedRect(rcPub, 8.0f, 8.0f);
+        pRT->FillRoundedRectangle(rrcPub, bGhBorderSubtle.Get());
+        pRT->DrawRoundedRectangle(rrcPub, bGhBorder.Get(), 1.0f);
+        const wchar_t* pubText = L"Public";
+        pRT->DrawText(pubText, 6, theme.fontBadge.Get(), rcPub, bGhMuted.Get());
+        breadcrumbEndX = rcPub.right + config.ScaleF(12.0f);
+    }
 
-    // Top controls: Address / URL Pill, Star, Fork (No external open button)
+    // Top controls: Address / URL Pill, Star, Fork (drawn right-to-left only while enough horizontal space remains)
     float btnRightX = bounds.right - config.ScaleF(14.0f);
 
     // Browser Address Pill (🔒 https://github.com/...)
     float addrW = config.ScaleF(210.0f);
-    D2D1_RECT_F rcAddrPill = D2D1::RectF(btnRightX - addrW, startY + config.ScaleF(11.0f), btnRightX, startY + config.ScaleF(35.0f));
-    D2D1_ROUNDED_RECT rrcAddr = D2D1::RoundedRect(rcAddrPill, 12.0f, 12.0f);
-    pRT->FillRoundedRectangle(rrcAddr, bGhBorderSubtle.Get());
-    pRT->DrawRoundedRectangle(rrcAddr, bGhBorder.Get(), 1.0f);
+    if (btnRightX - addrW >= breadcrumbEndX) {
+        D2D1_RECT_F rcAddrPill = D2D1::RectF(btnRightX - addrW, startY + config.ScaleF(11.0f), btnRightX, startY + config.ScaleF(35.0f));
+        D2D1_ROUNDED_RECT rrcAddr = D2D1::RoundedRect(rcAddrPill, 12.0f, 12.0f);
+        pRT->FillRoundedRectangle(rrcAddr, bGhBorderSubtle.Get());
+        pRT->DrawRoundedRectangle(rrcAddr, bGhBorder.Get(), 1.0f);
 
-    std::wstring addrText = L"🔒 " + pkg.github;
-    D2D1_RECT_F rcAddrText = D2D1::RectF(rcAddrPill.left + config.ScaleF(10.0f), rcAddrPill.top,
-                                         rcAddrPill.right - config.ScaleF(10.0f), rcAddrPill.bottom);
-    pRT->PushAxisAlignedClip(rcAddrText, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
-    pRT->DrawText(addrText.c_str(), static_cast<UINT32>(addrText.length()), pFmtBody, rcAddrText, bGhMuted.Get());
-    pRT->PopAxisAlignedClip();
-    btnRightX -= (addrW + config.ScaleF(10.0f));
+        std::wstring addrText = L"🔒 " + pkg.github;
+        D2D1_RECT_F rcAddrText = D2D1::RectF(rcAddrPill.left + config.ScaleF(10.0f), rcAddrPill.top,
+                                             rcAddrPill.right - config.ScaleF(10.0f), rcAddrPill.bottom);
+        pRT->PushAxisAlignedClip(rcAddrText, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+        pRT->DrawText(addrText.c_str(), static_cast<UINT32>(addrText.length()), pFmtBody, rcAddrText, bGhMuted.Get());
+        pRT->PopAxisAlignedClip();
+        btnRightX -= (addrW + config.ScaleF(10.0f));
+    }
 
     // Star button
     float starW = config.ScaleF(105.0f);
-    D2D1_RECT_F rcStarBtn = D2D1::RectF(btnRightX - starW, startY + config.ScaleF(11.0f), btnRightX, startY + config.ScaleF(35.0f));
-    D2D1_ROUNDED_RECT rrcStar = D2D1::RoundedRect(rcStarBtn, 5.0f, 5.0f);
-    pRT->FillRoundedRectangle(rrcStar, bGhCard.Get());
-    pRT->DrawRoundedRectangle(rrcStar, bGhBorder.Get(), 1.0f);
-    std::wstring starLabel = L"★ Star " + pkg.stars + L" ▾";
-    pRT->DrawText(starLabel.c_str(), static_cast<UINT32>(starLabel.length()),
-                  theme.fontButtonCenter ? theme.fontButtonCenter.Get() : theme.fontHint.Get(),
-                  rcStarBtn, bGhText.Get());
-    btnRightX -= (starW + config.ScaleF(8.0f));
+    if (btnRightX - starW >= breadcrumbEndX) {
+        D2D1_RECT_F rcStarBtn = D2D1::RectF(btnRightX - starW, startY + config.ScaleF(11.0f), btnRightX, startY + config.ScaleF(35.0f));
+        D2D1_ROUNDED_RECT rrcStar = D2D1::RoundedRect(rcStarBtn, 5.0f, 5.0f);
+        pRT->FillRoundedRectangle(rrcStar, bGhCard.Get());
+        pRT->DrawRoundedRectangle(rrcStar, bGhBorder.Get(), 1.0f);
+        std::wstring starLabel = L"★ Star " + pkg.stars + L" ▾";
+        pRT->DrawText(starLabel.c_str(), static_cast<UINT32>(starLabel.length()),
+                      theme.fontButtonCenter ? theme.fontButtonCenter.Get() : theme.fontHint.Get(),
+                      rcStarBtn, bGhText.Get());
+        btnRightX -= (starW + config.ScaleF(8.0f));
+    }
 
     // Fork button
     float forkW = config.ScaleF(78.0f);
-    D2D1_RECT_F rcForkBtn = D2D1::RectF(btnRightX - forkW, startY + config.ScaleF(11.0f), btnRightX, startY + config.ScaleF(35.0f));
-    D2D1_ROUNDED_RECT rrcFork = D2D1::RoundedRect(rcForkBtn, 5.0f, 5.0f);
-    pRT->FillRoundedRectangle(rrcFork, bGhCard.Get());
-    pRT->DrawRoundedRectangle(rrcFork, bGhBorder.Get(), 1.0f);
-    const wchar_t* forkLabel = L"⑂ Fork 7.8k";
-    pRT->DrawText(forkLabel, static_cast<UINT32>(wcslen(forkLabel)),
-                  theme.fontButtonCenter ? theme.fontButtonCenter.Get() : theme.fontHint.Get(),
-                  rcForkBtn, bGhText.Get());
+    if (btnRightX - forkW >= breadcrumbEndX) {
+        D2D1_RECT_F rcForkBtn = D2D1::RectF(btnRightX - forkW, startY + config.ScaleF(11.0f), btnRightX, startY + config.ScaleF(35.0f));
+        D2D1_ROUNDED_RECT rrcFork = D2D1::RoundedRect(rcForkBtn, 5.0f, 5.0f);
+        pRT->FillRoundedRectangle(rrcFork, bGhCard.Get());
+        pRT->DrawRoundedRectangle(rrcFork, bGhBorder.Get(), 1.0f);
+        const wchar_t* forkLabel = L"⑂ Fork 7.8k";
+        pRT->DrawText(forkLabel, static_cast<UINT32>(wcslen(forkLabel)),
+                      theme.fontButtonCenter ? theme.fontButtonCenter.Get() : theme.fontHint.Get(),
+                      rcForkBtn, bGhText.Get());
+    }
 
     // B. Subnav Tabs Bar
     float tabY = startY + config.ScaleF(48.0f);
@@ -2077,9 +2156,11 @@ void PackageManagerView::RenderGitHubWebPage(ID2D1RenderTarget* pRT, Theme& them
         { L"Insights", false }
     };
 
+    pRT->PushAxisAlignedClip(rcTabsBar, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
     float tabX = startX + config.ScaleF(16.0f);
     for (const auto& tb : ghTabs) {
         float tw = config.ScaleF(static_cast<float>(wcslen(tb.label) * 7.5f + 16.0f));
+        if (tabX >= bounds.right - config.ScaleF(8.0f)) break;
         D2D1_RECT_F rcTab = D2D1::RectF(tabX, tabY, tabX + tw, rcTabsBar.bottom);
         pRT->DrawText(tb.label, static_cast<UINT32>(wcslen(tb.label)),
                       theme.fontButtonCenter ? theme.fontButtonCenter.Get() : theme.fontHint.Get(),
@@ -2090,6 +2171,7 @@ void PackageManagerView::RenderGitHubWebPage(ID2D1RenderTarget* pRT, Theme& them
         }
         tabX += tw + config.ScaleF(6.0f);
     }
+    pRT->PopAxisAlignedClip();
 
     // C. Branch Bar & Action Buttons
     float barY = tabY + config.ScaleF(44.0f);
@@ -2105,26 +2187,37 @@ void PackageManagerView::RenderGitHubWebPage(ID2D1RenderTarget* pRT, Theme& them
                   theme.fontButtonCenter ? theme.fontButtonCenter.Get() : theme.fontHint.Get(),
                   rcBranch, bGhText.Get());
 
-    // 18 branches · 94 tags
-    D2D1_RECT_F rcBranchCounts = D2D1::RectF(rcBranch.right + config.ScaleF(10.0f), barY + config.ScaleF(3.0f),
-                                            rcBranch.right + config.ScaleF(200.0f), barY + config.ScaleF(25.0f));
-    const wchar_t* bCounts = L"18 branches   •   94 tags";
-    pRT->DrawText(bCounts, static_cast<UINT32>(wcslen(bCounts)), pFmtBody, rcBranchCounts, bGhMuted.Get());
-
     // Right Action: <> Code ▾
     float codeBtnW = config.ScaleF(88.0f);
     D2D1_RECT_F rcCodeBtn = D2D1::RectF(bounds.right - padX - codeBtnW, barY, bounds.right - padX, barY + config.ScaleF(26.0f));
-    D2D1_ROUNDED_RECT rrcCode = D2D1::RoundedRect(rcCodeBtn, 5.0f, 5.0f);
-    pRT->FillRoundedRectangle(rrcCode, bGhGreen.Get());
-    const wchar_t* codeLabel = L"<> Code ▾";
-    pRT->DrawText(codeLabel, static_cast<UINT32>(wcslen(codeLabel)),
-                  theme.fontButtonCenter ? theme.fontButtonCenter.Get() : theme.fontHint.Get(),
-                  rcCodeBtn, theme.brushTextWhite.Get());
+    if (rcCodeBtn.left >= rcBranch.right + config.ScaleF(8.0f)) {
+        D2D1_ROUNDED_RECT rrcCode = D2D1::RoundedRect(rcCodeBtn, 5.0f, 5.0f);
+        pRT->FillRoundedRectangle(rrcCode, bGhGreen.Get());
+        const wchar_t* codeLabel = L"<> Code ▾";
+        pRT->DrawText(codeLabel, static_cast<UINT32>(wcslen(codeLabel)),
+                      theme.fontButtonCenter ? theme.fontButtonCenter.Get() : theme.fontHint.Get(),
+                      rcCodeBtn, theme.brushTextWhite.Get());
+    }
 
-    // D. Latest Commit Bar & Layout Setup
+    // 18 branches · 94 tags (only if it comfortably fits between branch pill and Code button)
+    float countsLeft = rcBranch.right + config.ScaleF(10.0f);
+    float countsRight = rcCodeBtn.left - config.ScaleF(10.0f);
+    if (countsRight - countsLeft >= config.ScaleF(140.0f)) {
+        D2D1_RECT_F rcBranchCounts = D2D1::RectF(countsLeft, barY + config.ScaleF(3.0f),
+                                                countsRight, barY + config.ScaleF(25.0f));
+        pRT->PushAxisAlignedClip(rcBranchCounts, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+        const wchar_t* bCounts = L"18 branches   •   94 tags";
+        pRT->DrawText(bCounts, static_cast<UINT32>(wcslen(bCounts)), pFmtBody, rcBranchCounts, bGhMuted.Get());
+        pRT->PopAxisAlignedClip();
+    }
+
+    // D. Latest Commit Bar & Responsive Layout Setup
     float commitY = barY + config.ScaleF(34.0f);
-    float sidebarW = config.ScaleF(230.0f);
-    float mainW = totalW - padX * 2.0f - sidebarW - config.ScaleF(20.0f);
+    const bool showSidebar = (totalW >= config.ScaleF(560.0f));
+    float sidebarW = showSidebar ? config.ScaleF(220.0f) : 0.0f;
+    float mainW = showSidebar
+        ? (std::max)(config.ScaleF(180.0f), totalW - padX * 2.0f - sidebarW - config.ScaleF(20.0f))
+        : (std::max)(config.ScaleF(120.0f), totalW - padX * 2.0f);
 
     D2D1_RECT_F rcCommit = D2D1::RectF(startX + padX, commitY, startX + padX + mainW, commitY + config.ScaleF(32.0f));
     D2D1_ROUNDED_RECT rrcCommit = D2D1::RoundedRect(rcCommit, 6.0f, 6.0f);
@@ -2138,17 +2231,25 @@ void PackageManagerView::RenderGitHubWebPage(ID2D1RenderTarget* pRT, Theme& them
     pRT->DrawEllipse(elAvatar, bGhBorder.Get(), 1.0f);
 
     // Commit author + message
+    bool showCommitMeta = (mainW >= config.ScaleF(290.0f));
+    float commitMsgRight = showCommitMeta ? (rcCommit.right - config.ScaleF(140.0f)) : (rcCommit.right - config.ScaleF(10.0f));
     std::wstring commitMsg = L"maintainer   Merge pull request #2841 - Release v" + pkg.version;
-    D2D1_RECT_F rcCommitText = D2D1::RectF(rcCommit.left + config.ScaleF(32.0f), rcCommit.top + config.ScaleF(4.0f),
-                                          rcCommit.right - config.ScaleF(140.0f), rcCommit.bottom - config.ScaleF(4.0f));
-    pRT->PushAxisAlignedClip(rcCommitText, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
-    pRT->DrawText(commitMsg.c_str(), static_cast<UINT32>(commitMsg.length()), pFmtBody, rcCommitText, bGhText.Get());
-    pRT->PopAxisAlignedClip();
+    if (commitMsgRight > rcCommit.left + config.ScaleF(40.0f)) {
+        D2D1_RECT_F rcCommitText = D2D1::RectF(rcCommit.left + config.ScaleF(32.0f), rcCommit.top + config.ScaleF(4.0f),
+                                              commitMsgRight, rcCommit.bottom - config.ScaleF(4.0f));
+        pRT->PushAxisAlignedClip(rcCommitText, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+        pRT->DrawText(commitMsg.c_str(), static_cast<UINT32>(commitMsg.length()), pFmtBody, rcCommitText, bGhText.Get());
+        pRT->PopAxisAlignedClip();
+    }
 
-    const wchar_t* commitMeta = L"3a8f19c  yesterday";
-    D2D1_RECT_F rcCommitMeta = D2D1::RectF(rcCommit.right - config.ScaleF(135.0f), rcCommit.top + config.ScaleF(4.0f),
-                                          rcCommit.right - config.ScaleF(10.0f), rcCommit.bottom - config.ScaleF(4.0f));
-    pRT->DrawText(commitMeta, static_cast<UINT32>(wcslen(commitMeta)), pFmtBody, rcCommitMeta, bGhMuted.Get());
+    if (showCommitMeta) {
+        const wchar_t* commitMeta = L"3a8f19c  yesterday";
+        D2D1_RECT_F rcCommitMeta = D2D1::RectF(rcCommit.right - config.ScaleF(135.0f), rcCommit.top + config.ScaleF(4.0f),
+                                              rcCommit.right - config.ScaleF(10.0f), rcCommit.bottom - config.ScaleF(4.0f));
+        pRT->PushAxisAlignedClip(rcCommitMeta, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+        pRT->DrawText(commitMeta, static_cast<UINT32>(wcslen(commitMeta)), pFmtBody, rcCommitMeta, bGhMuted.Get());
+        pRT->PopAxisAlignedClip();
+    }
 
     // E. Files Table Container
     float tableY = commitY + config.ScaleF(40.0f);
@@ -2173,6 +2274,15 @@ void PackageManagerView::RenderGitHubWebPage(ID2D1RenderTarget* pRT, Theme& them
         { L"README.md", L"Update installation badges and quickstart guide", L"yesterday", false }
     };
 
+    const bool showMsgCol = (mainW >= config.ScaleF(230.0f));
+    const bool showTimeCol = (mainW >= config.ScaleF(330.0f));
+    const float nameColMaxX = showMsgCol
+        ? (rcTable.left + (std::min)(config.ScaleF(140.0f), mainW * 0.42f))
+        : (rcTable.right - config.ScaleF(10.0f));
+    const float msgColRight = showTimeCol
+        ? (rcTable.right - config.ScaleF(100.0f))
+        : (rcTable.right - config.ScaleF(10.0f));
+
     float rowY = tableY;
     float rowH = config.ScaleF(21.4f);
     for (size_t ri = 0; ri < 7; ++ri) {
@@ -2186,16 +2296,26 @@ void PackageManagerView::RenderGitHubWebPage(ID2D1RenderTarget* pRT, Theme& them
         std::wstring fIcon = f.isDir ? L"📁  " : L"📄  ";
         std::wstring fName = fIcon + f.name;
         D2D1_RECT_F rcFName = D2D1::RectF(rcTable.left + config.ScaleF(12.0f), rowY + config.ScaleF(2.0f),
-                                         rcTable.left + config.ScaleF(140.0f), rowY + rowH - config.ScaleF(2.0f));
+                                         nameColMaxX, rowY + rowH - config.ScaleF(2.0f));
+        pRT->PushAxisAlignedClip(rcFName, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
         pRT->DrawText(fName.c_str(), static_cast<UINT32>(fName.length()), pFmtBody, rcFName, bGhLink.Get());
+        pRT->PopAxisAlignedClip();
 
-        D2D1_RECT_F rcFMsg = D2D1::RectF(rcTable.left + config.ScaleF(150.0f), rowY + config.ScaleF(2.0f),
-                                        rcTable.right - config.ScaleF(100.0f), rowY + rowH - config.ScaleF(2.0f));
-        pRT->DrawText(f.msg, static_cast<UINT32>(wcslen(f.msg)), pFmtBody, rcFMsg, bGhMuted.Get());
+        if (showMsgCol && msgColRight > nameColMaxX + config.ScaleF(16.0f)) {
+            D2D1_RECT_F rcFMsg = D2D1::RectF(nameColMaxX + config.ScaleF(8.0f), rowY + config.ScaleF(2.0f),
+                                            msgColRight, rowY + rowH - config.ScaleF(2.0f));
+            pRT->PushAxisAlignedClip(rcFMsg, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+            pRT->DrawText(f.msg, static_cast<UINT32>(wcslen(f.msg)), pFmtBody, rcFMsg, bGhMuted.Get());
+            pRT->PopAxisAlignedClip();
+        }
 
-        D2D1_RECT_F rcFTime = D2D1::RectF(rcTable.right - config.ScaleF(95.0f), rowY + config.ScaleF(2.0f),
-                                         rcTable.right - config.ScaleF(8.0f), rowY + rowH - config.ScaleF(2.0f));
-        pRT->DrawText(f.time, static_cast<UINT32>(wcslen(f.time)), pFmtBody, rcFTime, bGhMuted.Get());
+        if (showTimeCol) {
+            D2D1_RECT_F rcFTime = D2D1::RectF(rcTable.right - config.ScaleF(95.0f), rowY + config.ScaleF(2.0f),
+                                             rcTable.right - config.ScaleF(8.0f), rowY + rowH - config.ScaleF(2.0f));
+            pRT->PushAxisAlignedClip(rcFTime, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+            pRT->DrawText(f.time, static_cast<UINT32>(wcslen(f.time)), pFmtBody, rcFTime, bGhMuted.Get());
+            pRT->PopAxisAlignedClip();
+        }
 
         pRT->PopAxisAlignedClip();
         rowY += rowH;
@@ -2203,10 +2323,12 @@ void PackageManagerView::RenderGitHubWebPage(ID2D1RenderTarget* pRT, Theme& them
 
     // F. Authentic README.md Web Render Container
     float readmeY = tableY + config.ScaleF(160.0f);
-    D2D1_RECT_F rcReadmeCard = D2D1::RectF(startX + padX, readmeY, startX + padX + mainW, readmeY + config.ScaleF(270.0f));
+    D2D1_RECT_F rcReadmeCard = D2D1::RectF(startX + padX, readmeY, startX + padX + mainW, readmeY + config.ScaleF(285.0f));
     D2D1_ROUNDED_RECT rrcReadme = D2D1::RoundedRect(rcReadmeCard, 6.0f, 6.0f);
     pRT->FillRoundedRectangle(rrcReadme, bGhBg.Get());
     pRT->DrawRoundedRectangle(rrcReadme, bGhBorder.Get(), 1.0f);
+
+    pRT->PushAxisAlignedClip(rcReadmeCard, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
 
     // README Header Bar
     D2D1_RECT_F rcRmHead = D2D1::RectF(rcReadmeCard.left, readmeY, rcReadmeCard.right, readmeY + config.ScaleF(32.0f));
@@ -2216,7 +2338,9 @@ void PackageManagerView::RenderGitHubWebPage(ID2D1RenderTarget* pRT, Theme& them
     const wchar_t* rmTitle = L"📖  README.md   •   482 lines (364 sloc) · 16.8 KB";
     D2D1_RECT_F rcRmTitle = D2D1::RectF(rcRmHead.left + config.ScaleF(12.0f), rcRmHead.top + config.ScaleF(5.0f),
                                        rcRmHead.right - config.ScaleF(16.0f), rcRmHead.bottom - config.ScaleF(4.0f));
+    pRT->PushAxisAlignedClip(rcRmTitle, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
     pRT->DrawText(rmTitle, static_cast<UINT32>(wcslen(rmTitle)), pFmtBody, rcRmTitle, bGhText.Get());
+    pRT->PopAxisAlignedClip();
 
     // Inside README: H1 Title
     float docY = rcRmHead.bottom + config.ScaleF(12.0f);
@@ -2229,7 +2353,7 @@ void PackageManagerView::RenderGitHubWebPage(ID2D1RenderTarget* pRT, Theme& them
                   D2D1::Point2F(rcReadmeCard.right - config.ScaleF(20.0f), docY), bGhBorderSubtle.Get(), 1.0f);
     docY += config.ScaleF(8.0f);
 
-    // Badges Row
+    // Badges Row (wraps automatically on narrow panes)
     struct Badge {
         const wchar_t* l;
         std::wstring r;
@@ -2242,9 +2366,14 @@ void PackageManagerView::RenderGitHubWebPage(ID2D1RenderTarget* pRT, Theme& them
         { isNode ? L"node" : (isPhp ? L"php" : L"python"), isNode ? L">=18.0.0" : (isPhp ? L"^8.0" : L"3.9+") }
     };
     float badgeX = rcReadmeCard.left + config.ScaleF(20.0f);
+    float badgeMaxRight = rcReadmeCard.right - config.ScaleF(16.0f);
     for (const auto& bg : badges) {
         float bw = config.ScaleF(static_cast<float>((wcslen(bg.l) + bg.r.length()) * 6.5f + 16.0f));
-        D2D1_RECT_F rcBgBox = D2D1::RectF(badgeX, docY, badgeX + bw, docY + config.ScaleF(18.0f));
+        if (badgeX > rcReadmeCard.left + config.ScaleF(20.0f) && badgeX + bw > badgeMaxRight) {
+            badgeX = rcReadmeCard.left + config.ScaleF(20.0f);
+            docY += config.ScaleF(22.0f);
+        }
+        D2D1_RECT_F rcBgBox = D2D1::RectF(badgeX, docY, (std::min)(badgeX + bw, badgeMaxRight), docY + config.ScaleF(18.0f));
         D2D1_ROUNDED_RECT rrcBgBox = D2D1::RoundedRect(rcBgBox, 3.0f, 3.0f);
         pRT->FillRoundedRectangle(rrcBgBox, bGhCard.Get());
         pRT->DrawRoundedRectangle(rrcBgBox, bGhBorder.Get(), 0.8f);
@@ -2258,7 +2387,8 @@ void PackageManagerView::RenderGitHubWebPage(ID2D1RenderTarget* pRT, Theme& them
     // Summary description
     D2D1_RECT_F rcSummary = D2D1::RectF(rcReadmeCard.left + config.ScaleF(20.0f), docY,
                                        rcReadmeCard.right - config.ScaleF(20.0f), docY + config.ScaleF(32.0f));
-    pRT->DrawText(pkg.summary.c_str(), static_cast<UINT32>(pkg.summary.length()), pFmtBody, rcSummary, bGhText.Get());
+    pRT->DrawText(pkg.summary.c_str(), static_cast<UINT32>(pkg.summary.length()),
+                  ghAboutFmt ? ghAboutFmt.Get() : pFmtBody, rcSummary, bGhText.Get());
     docY += config.ScaleF(36.0f);
 
     // Section ## Installation
@@ -2278,99 +2408,109 @@ void PackageManagerView::RenderGitHubWebPage(ID2D1RenderTarget* pRT, Theme& them
     std::wstring codeLine = L"$ " + pkg.download;
     D2D1_RECT_F rcCodeText = D2D1::RectF(rcCodeBlock.left + config.ScaleF(12.0f), rcCodeBlock.top + config.ScaleF(5.0f),
                                         rcCodeBlock.right - config.ScaleF(12.0f), rcCodeBlock.bottom - config.ScaleF(4.0f));
+    pRT->PushAxisAlignedClip(rcCodeText, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
     pRT->DrawText(codeLine.c_str(), static_cast<UINT32>(codeLine.length()), theme.fontCode.Get(), rcCodeText, bGhGreen.Get());
-
-    // G. Right Column: Authentic GitHub "About" Sidebar
-    float sideX = rcCommit.right + config.ScaleF(20.0f);
-    float sideY = commitY;
-
-    // About Header
-    D2D1_RECT_F rcAboutHead = D2D1::RectF(sideX, sideY, sideX + sidebarW, sideY + config.ScaleF(20.0f));
-    pRT->DrawText(L"About", 5, pFmtTitle, rcAboutHead, bGhText.Get());
-    sideY += config.ScaleF(24.0f);
-
-    // About text with word wrapping (clean, left-aligned)
-    D2D1_RECT_F rcAboutDesc = D2D1::RectF(sideX, sideY, sideX + sidebarW, sideY + config.ScaleF(52.0f));
-    pRT->PushAxisAlignedClip(rcAboutDesc, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
-    pRT->DrawText(pkg.summary.c_str(), static_cast<UINT32>(pkg.summary.length()),
-                  ghAboutFmt ? ghAboutFmt.Get() : pFmtBody, rcAboutDesc, bGhMuted.Get());
     pRT->PopAxisAlignedClip();
-    sideY += config.ScaleF(56.0f);
 
-    // Website Link
-    std::wstring siteUrl = pkg.github.empty() ? L"🌐  https://github.com" : (L"🌐  " + pkg.github);
-    D2D1_RECT_F rcSite = D2D1::RectF(sideX, sideY, sideX + sidebarW, sideY + config.ScaleF(18.0f));
-    pRT->DrawText(siteUrl.c_str(), static_cast<UINT32>(siteUrl.length()), pFmtBody, rcSite, bGhLink.Get());
-    sideY += config.ScaleF(22.0f);
+    pRT->PopAxisAlignedClip(); // End rcReadmeCard clip
 
-    // Topics Pills
-    std::wstringstream tss(pkg.topics);
-    std::wstring topic;
-    float tagX = sideX;
-    float tagY = sideY;
-    while (tss >> topic) {
-        float tw = config.ScaleF(static_cast<float>(topic.length() * 6.8f + 14.0f));
-        if (tagX + tw > sideX + sidebarW) {
-            tagX = sideX;
-            tagY += config.ScaleF(22.0f);
+    // G. Right Column: Authentic GitHub "About" Sidebar (shown only when container has room)
+    if (showSidebar) {
+        float sideX = rcCommit.right + config.ScaleF(20.0f);
+        float sideY = commitY;
+
+        // About Header
+        D2D1_RECT_F rcAboutHead = D2D1::RectF(sideX, sideY, sideX + sidebarW, sideY + config.ScaleF(20.0f));
+        pRT->DrawText(L"About", 5, pFmtTitle, rcAboutHead, bGhText.Get());
+        sideY += config.ScaleF(24.0f);
+
+        // About text with word wrapping (clean, left-aligned)
+        D2D1_RECT_F rcAboutDesc = D2D1::RectF(sideX, sideY, sideX + sidebarW, sideY + config.ScaleF(52.0f));
+        pRT->PushAxisAlignedClip(rcAboutDesc, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+        pRT->DrawText(pkg.summary.c_str(), static_cast<UINT32>(pkg.summary.length()),
+                      ghAboutFmt ? ghAboutFmt.Get() : pFmtBody, rcAboutDesc, bGhMuted.Get());
+        pRT->PopAxisAlignedClip();
+        sideY += config.ScaleF(56.0f);
+
+        // Website Link
+        std::wstring siteUrl = pkg.github.empty() ? L"🌐  https://github.com" : (L"🌐  " + pkg.github);
+        D2D1_RECT_F rcSite = D2D1::RectF(sideX, sideY, sideX + sidebarW, sideY + config.ScaleF(18.0f));
+        pRT->PushAxisAlignedClip(rcSite, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+        pRT->DrawText(siteUrl.c_str(), static_cast<UINT32>(siteUrl.length()), pFmtBody, rcSite, bGhLink.Get());
+        pRT->PopAxisAlignedClip();
+        sideY += config.ScaleF(22.0f);
+
+        // Topics Pills
+        std::wstringstream tss(pkg.topics);
+        std::wstring topic;
+        float tagX = sideX;
+        float tagY = sideY;
+        while (tss >> topic) {
+            float tw = config.ScaleF(static_cast<float>(topic.length() * 6.8f + 14.0f));
+            if (tagX > sideX && tagX + tw > sideX + sidebarW) {
+                tagX = sideX;
+                tagY += config.ScaleF(22.0f);
+            }
+            D2D1_RECT_F rcTag = D2D1::RectF(tagX, tagY, (std::min)(tagX + tw, sideX + sidebarW), tagY + config.ScaleF(18.0f));
+            D2D1_ROUNDED_RECT rrcTag = D2D1::RoundedRect(rcTag, 9.0f, 9.0f);
+            pRT->FillRoundedRectangle(rrcTag, bGhBorderSubtle.Get());
+            pRT->DrawRoundedRectangle(rrcTag, bGhBorder.Get(), 0.8f);
+            pRT->DrawText(topic.c_str(), static_cast<UINT32>(topic.length()), theme.fontBadge.Get(), rcTag, bGhLink.Get());
+            tagX += tw + config.ScaleF(5.0f);
         }
-        D2D1_RECT_F rcTag = D2D1::RectF(tagX, tagY, tagX + tw, tagY + config.ScaleF(18.0f));
-        D2D1_ROUNDED_RECT rrcTag = D2D1::RoundedRect(rcTag, 9.0f, 9.0f);
-        pRT->FillRoundedRectangle(rrcTag, bGhBorderSubtle.Get());
-        pRT->DrawRoundedRectangle(rrcTag, bGhBorder.Get(), 0.8f);
-        pRT->DrawText(topic.c_str(), static_cast<UINT32>(topic.length()), theme.fontBadge.Get(), rcTag, bGhLink.Get());
-        tagX += tw + config.ScaleF(5.0f);
+        sideY = tagY + config.ScaleF(26.0f);
+
+        // Readme & License links
+        const wchar_t* resReadme = L"📖  Readme";
+        D2D1_RECT_F rcResRm = D2D1::RectF(sideX, sideY, sideX + sidebarW, sideY + config.ScaleF(18.0f));
+        pRT->DrawText(resReadme, static_cast<UINT32>(wcslen(resReadme)), pFmtBody, rcResRm, bGhMuted.Get());
+        sideY += config.ScaleF(20.0f);
+
+        std::wstring resLic = L"⚖️  " + pkg.license + L" license";
+        D2D1_RECT_F rcResLic = D2D1::RectF(sideX, sideY, sideX + sidebarW, sideY + config.ScaleF(18.0f));
+        pRT->DrawText(resLic.c_str(), static_cast<UINT32>(resLic.length()), pFmtBody, rcResLic, bGhMuted.Get());
+        sideY += config.ScaleF(26.0f);
+
+        // Releases section
+        D2D1_RECT_F rcRelHead = D2D1::RectF(sideX, sideY, sideX + sidebarW, sideY + config.ScaleF(18.0f));
+        pRT->DrawText(L"Releases", 8, pFmtTitle, rcRelHead, bGhText.Get());
+        sideY += config.ScaleF(20.0f);
+
+        std::wstring relText = L"🏷️  v" + pkg.version + L" Latest";
+        D2D1_RECT_F rcRel = D2D1::RectF(sideX, sideY, sideX + sidebarW, sideY + config.ScaleF(18.0f));
+        pRT->DrawText(relText.c_str(), static_cast<UINT32>(relText.length()), pFmtBody, rcRel, bGhGreen.Get());
+        sideY += config.ScaleF(26.0f);
+
+        // Languages section
+        D2D1_RECT_F rcLangHead = D2D1::RectF(sideX, sideY, sideX + sidebarW, sideY + config.ScaleF(18.0f));
+        pRT->DrawText(L"Languages", 9, pFmtTitle, rcLangHead, bGhText.Get());
+        sideY += config.ScaleF(20.0f);
+
+        // Language progress bar
+        D2D1_RECT_F rcLangBar = D2D1::RectF(sideX, sideY, sideX + sidebarW, sideY + config.ScaleF(7.0f));
+        D2D1_ROUNDED_RECT rrcLangBar = D2D1::RoundedRect(rcLangBar, 3.5f, 3.5f);
+        pRT->FillRoundedRectangle(rrcLangBar, bGhBorderSubtle.Get());
+
+        // Segments: Python 74%, C++ 22%, Other 4%
+        float wPy = sidebarW * 0.74f;
+        float wCpp = sidebarW * 0.22f;
+        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> bPyLang, bCppLang;
+        pRT->CreateSolidColorBrush(D2D1::ColorF(0x3572A5), &bPyLang);
+        pRT->CreateSolidColorBrush(D2D1::ColorF(0xf34b7d), &bCppLang);
+        pRT->FillRectangle(D2D1::RectF(sideX, sideY, sideX + wPy, sideY + config.ScaleF(7.0f)), bPyLang.Get());
+        pRT->FillRectangle(D2D1::RectF(sideX + wPy, sideY, sideX + wPy + wCpp, sideY + config.ScaleF(7.0f)), bCppLang.Get());
+        sideY += config.ScaleF(12.0f);
+
+        const wchar_t* langLegend = (m_activeLanguage == RuntimeLanguage::Php)
+            ? L"● PHP 88.4%   ● HTML 9.2%   ● Other 2.4%"
+            : (m_activeLanguage == RuntimeLanguage::Node
+                ? L"● JavaScript 72.8%   ● TypeScript 23.1%   ● Other 4.1%"
+                : L"● Python 74.2%   ● C++ 21.6%   ● Other 4.2%");
+        D2D1_RECT_F rcLegend = D2D1::RectF(sideX, sideY, sideX + sidebarW, sideY + config.ScaleF(16.0f));
+        pRT->PushAxisAlignedClip(rcLegend, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+        pRT->DrawText(langLegend, static_cast<UINT32>(wcslen(langLegend)), theme.fontBadge.Get(), rcLegend, bGhMuted.Get());
+        pRT->PopAxisAlignedClip();
     }
-    sideY = tagY + config.ScaleF(26.0f);
-
-    // Readme & License links
-    const wchar_t* resReadme = L"📖  Readme";
-    D2D1_RECT_F rcResRm = D2D1::RectF(sideX, sideY, sideX + sidebarW, sideY + config.ScaleF(18.0f));
-    pRT->DrawText(resReadme, static_cast<UINT32>(wcslen(resReadme)), pFmtBody, rcResRm, bGhMuted.Get());
-    sideY += config.ScaleF(20.0f);
-
-    std::wstring resLic = L"⚖️  " + pkg.license + L" license";
-    D2D1_RECT_F rcResLic = D2D1::RectF(sideX, sideY, sideX + sidebarW, sideY + config.ScaleF(18.0f));
-    pRT->DrawText(resLic.c_str(), static_cast<UINT32>(resLic.length()), pFmtBody, rcResLic, bGhMuted.Get());
-    sideY += config.ScaleF(26.0f);
-
-    // Releases section
-    D2D1_RECT_F rcRelHead = D2D1::RectF(sideX, sideY, sideX + sidebarW, sideY + config.ScaleF(18.0f));
-    pRT->DrawText(L"Releases", 8, pFmtTitle, rcRelHead, bGhText.Get());
-    sideY += config.ScaleF(20.0f);
-
-    std::wstring relText = L"🏷️  v" + pkg.version + L" Latest";
-    D2D1_RECT_F rcRel = D2D1::RectF(sideX, sideY, sideX + sidebarW, sideY + config.ScaleF(18.0f));
-    pRT->DrawText(relText.c_str(), static_cast<UINT32>(relText.length()), pFmtBody, rcRel, bGhGreen.Get());
-    sideY += config.ScaleF(26.0f);
-
-    // Languages section
-    D2D1_RECT_F rcLangHead = D2D1::RectF(sideX, sideY, sideX + sidebarW, sideY + config.ScaleF(18.0f));
-    pRT->DrawText(L"Languages", 9, pFmtTitle, rcLangHead, bGhText.Get());
-    sideY += config.ScaleF(20.0f);
-
-    // Language progress bar
-    D2D1_RECT_F rcLangBar = D2D1::RectF(sideX, sideY, sideX + sidebarW, sideY + config.ScaleF(7.0f));
-    D2D1_ROUNDED_RECT rrcLangBar = D2D1::RoundedRect(rcLangBar, 3.5f, 3.5f);
-    pRT->FillRoundedRectangle(rrcLangBar, bGhBorderSubtle.Get());
-
-    // Segments: Python 74%, C++ 22%, Other 4%
-    float wPy = sidebarW * 0.74f;
-    float wCpp = sidebarW * 0.22f;
-    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> bPyLang, bCppLang;
-    pRT->CreateSolidColorBrush(D2D1::ColorF(0x3572A5), &bPyLang);
-    pRT->CreateSolidColorBrush(D2D1::ColorF(0xf34b7d), &bCppLang);
-    pRT->FillRectangle(D2D1::RectF(sideX, sideY, sideX + wPy, sideY + config.ScaleF(7.0f)), bPyLang.Get());
-    pRT->FillRectangle(D2D1::RectF(sideX + wPy, sideY, sideX + wPy + wCpp, sideY + config.ScaleF(7.0f)), bCppLang.Get());
-    sideY += config.ScaleF(12.0f);
-
-    const wchar_t* langLegend = (m_activeLanguage == RuntimeLanguage::Php)
-        ? L"● PHP 88.4%   ● HTML 9.2%   ● Other 2.4%"
-        : (m_activeLanguage == RuntimeLanguage::Node
-            ? L"● JavaScript 72.8%   ● TypeScript 23.1%   ● Other 4.1%"
-            : L"● Python 74.2%   ● C++ 21.6%   ● Other 4.2%");
-    D2D1_RECT_F rcLegend = D2D1::RectF(sideX, sideY, sideX + sidebarW, sideY + config.ScaleF(16.0f));
-    pRT->DrawText(langLegend, static_cast<UINT32>(wcslen(langLegend)), theme.fontBadge.Get(), rcLegend, bGhMuted.Get());
 
     pRT->PopAxisAlignedClip();
 }

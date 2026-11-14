@@ -239,6 +239,11 @@ private:
     Microsoft::WRL::ComPtr<ICoreWebView2> m_webView;
     bool m_webViewInitializing = false;
     bool m_webViewReady = false;
+    bool m_webViewNavCompleted = false;
+    bool m_webViewNavFailed = false;
+    bool m_lastWebViewVisible = false;
+    RECT m_lastWebViewBounds{};
+    bool m_hasWebViewBounds = false;
     std::wstring m_pendingUrl;
     std::wstring m_currentLoadedUrl;
 

@@ -265,6 +265,7 @@ private:
     void RunCodeLens(size_t bufferLine, bool isDebug);
     static bool IsMarkdownFile(const std::wstring& path);
     void SyncActiveTabWithDrawer();
+    void ClearExplorerSelectionOverride() noexcept;
 
     /**
      * @brief Opens an interactive Jupyter / Colab-style notebook tab (.ipynb).
@@ -747,8 +748,25 @@ private:
         std::wstring filePath;
         std::vector<lsp::Diagnostic> diags;
     };
+    struct PendingLspCompletionResult {
+        uint64_t gen = 0;
+        std::wstring filePath;
+        size_t line = 0;
+        size_t col = 0;
+        std::vector<lsp::CompletionItem> lspItems;
+    };
+    struct CachedLspCompletions {
+        std::wstring filePath;
+        size_t line = 0;
+        size_t col = 0;
+        std::vector<lsp::CompletionItem> items;
+    } m_cachedLspCompletions;
     std::vector<PendingLspDiagUpdate> m_pendingLspDiags;
+    std::atomic<uint64_t> m_lspCompletionGen{0};
     void StartLspForDocumentAsync(const std::wstring& filePath, const std::wstring& text);
+    void NotifyLspDidChangeAsync(const std::wstring& filePath, const std::wstring& text);
+    void RequestLspCompletionsAsync(const editor::OpenDocument* pDoc, const std::wstring& lineText, size_t col);
+    void CancelPendingLspCompletions() noexcept { m_lspCompletionGen.fetch_add(1); }
     [[nodiscard]] std::vector<editor::IntelliSenseItem> QueryCombinedCompletions(
         const editor::OpenDocument* pDoc, const std::wstring& lineText, size_t col);
 
@@ -778,12 +796,22 @@ private:
     struct PreCommitGuardModalState {
         bool isOpen = false;
         bool isPublishFlow = false;
+        int publishVisibilityChoice = 0;
         std::wstring commitMessage;
         std::vector<PreCommitFinding> findings;
         D2D1_RECT_F rcIgnoreUnstageBtn{};
         D2D1_RECT_F rcCommitAnywayBtn{};
         D2D1_RECT_F rcCancelBtn{};
     } m_preCommitModal;
+    struct PendingPreCommitScanResult {
+        bool isPublish = false;
+        int publishChoice = 0;
+        std::wstring commitMsg;
+        std::vector<PreCommitFinding> findings;
+    };
+    std::atomic<bool> m_preCommitScanInFlight{false};
+    bool StartPreCommitCheckAsync(const std::wstring& commitMsg);
+    std::vector<PreCommitFinding> CollectPreCommitFindings(const std::wstring& wsRoot, const std::wstring& commitMsg, bool isPublish) const;
     bool RunPreCommitSecretAndBloatCheck(const std::wstring& commitMsg);
     void RenderPreCommitGuardModal(float clientW, float clientH);
     std::vector<std::wstring> m_recentPaths;
@@ -805,6 +833,8 @@ private:
     std::wstring m_compareSourcePath;
     std::wstring m_selectedExplorerPath;
     bool m_explorerHasFocus = false;
+    bool m_explorerClearedSelection = false;
+    [[nodiscard]] std::wstring ResolveExplorerCreateTargetDir(bool fallbackToActiveDoc = false) const;
     void DoDeleteSelectedExplorerItem();
 
     UINT_PTR m_caretTimerId    = 1001;

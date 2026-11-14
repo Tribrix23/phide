@@ -60,7 +60,7 @@ static bool AreRecentPathsEqual(const std::wstring& a, const std::wstring& b) {
 }
 
 static bool IsPortListening(int port);
-static ULONGLONG s_lastInternalAutoSaveTick = 0;
+static std::atomic<ULONGLONG> s_lastInternalAutoSaveTick{0};
 
 static std::wstring RunCmdCapture(const std::wstring& cmd) {
     std::wstring result;
@@ -510,40 +510,91 @@ void Window::StartWorkspaceWatcher(const std::wstring& folderPath) {
                     break;
                 }
 
-                bool hasUserFileChange = false;
+                bool hasTreeStructChange = false;
+                bool hasContentModify = false;
+                bool hasEnvChange = false;
                 bool hasGitMetaChange = false;
                 if (bytesReturned > 0) {
                     BYTE* p = buffer.data();
+                    auto hasIgnoredSegment = [](const std::wstring& relLower) -> bool {
+                        static const wchar_t* const kIgnoredDirs[] = {
+                            L".git", L"node_modules", L"vendor", L".venv", L"venv",
+                            L"__pycache__", L".cache", L".phide", L".next", L".turbo",
+                            L".nuxt", L".svelte-kit", L".parcel-cache", L"dist", L"out",
+                            L"coverage", L".pytest_cache"
+                        };
+                        size_t start = 0;
+                        while (start < relLower.size()) {
+                            size_t sep = relLower.find(L'\\', start);
+                            size_t len = (sep == std::wstring::npos) ? (relLower.size() - start) : (sep - start);
+                            for (const auto* d : kIgnoredDirs) {
+                                size_t dlen = wcslen(d);
+                                if (len == dlen && relLower.compare(start, len, d) == 0) {
+                                    return true;
+                                }
+                            }
+                            if (sep == std::wstring::npos) break;
+                            start = sep + 1;
+                        }
+                        size_t lastSlash = relLower.find_last_of(L'\\');
+                        std::wstring fname = (lastSlash == std::wstring::npos) ? relLower : relLower.substr(lastSlash + 1);
+                        if (fname == L"session_state.json" ||
+                            fname == L"tsconfig.tsbuildinfo" ||
+                            fname == L"next-env.d.ts" ||
+                            fname == L".eslintcache") {
+                            return true;
+                        }
+                        return false;
+                    };
                     while (p) {
                         auto* info = reinterpret_cast<FILE_NOTIFY_INFORMATION*>(p);
                         std::wstring relName(info->FileName, info->FileNameLength / sizeof(wchar_t));
+                        for (auto& ch : relName) if (ch == L'/') ch = L'\\';
+                        while (!relName.empty() && relName.front() == L'\\') relName.erase(0, 1);
+                        std::wstring relLower = relName;
+                        for (auto& ch : relLower) ch = static_cast<wchar_t>(towlower(ch));
 
-                        // Ignore internal directories, temp git locks, cache, etc.
                         bool isIgnored = false;
-                        if (relName.starts_with(L".git")) {
+                        if (relLower == L".git" || relLower.rfind(L".git\\", 0) == 0) {
                             isIgnored = true;
-                            bool isLock = (relName.size() >= 5 && relName.compare(relName.size() - 5, 5, L".lock") == 0);
-                            if (!isLock &&
-                                (relName == L".git" ||
-                                 relName == L".git\\HEAD" ||
-                                 relName == L".git\\config" ||
-                                 relName == L".git\\index" ||
-                                 relName.starts_with(L".git\\refs"))) {
-                                hasGitMetaChange = true;
+                            bool isLock = (relLower.size() >= 5 && relLower.compare(relLower.size() - 5, 5, L".lock") == 0);
+                            if (!isLock) {
+                                bool isRootCreateOrRemove = (relLower == L".git" &&
+                                    (info->Action == FILE_ACTION_ADDED || info->Action == FILE_ACTION_REMOVED));
+                                if (isRootCreateOrRemove ||
+                                    relLower == L".git\\head" ||
+                                    relLower == L".git\\fetch_head" ||
+                                    relLower == L".git\\orig_head" ||
+                                    relLower == L".git\\merge_head" ||
+                                    relLower == L".git\\config" ||
+                                    relLower == L".git\\refs" ||
+                                    relLower.rfind(L".git\\refs\\", 0) == 0) {
+                                    hasGitMetaChange = true;
+                                } else if (relLower == L".git\\index") {
+                                    ULONGLONG sincePhideGit = GetTickCount64() - ui::DrawerPanel::GetLastGitCmdTick();
+                                    if (!self->m_drawer.IsGitRefreshing() && sincePhideGit > 3500) {
+                                        hasGitMetaChange = true;
+                                    }
+                                }
                             }
-                        } else if (relName.starts_with(L"node_modules") ||
-                                   relName.starts_with(L"vendor") ||
-                                   relName.starts_with(L".venv") ||
-                                   relName.starts_with(L"venv") ||
-                                   relName.starts_with(L"__pycache__") ||
-                                   relName.starts_with(L".cache") ||
-                                   relName.starts_with(L".phide") ||
-                                   relName.find(L"session_state.json") != std::wstring::npos) {
+                        } else if (hasIgnoredSegment(relLower)) {
                             isIgnored = true;
                         }
 
                         if (!isIgnored) {
-                            hasUserFileChange = true;
+                            size_t lastSlash = relLower.find_last_of(L'\\');
+                            std::wstring fname = (lastSlash == std::wstring::npos) ? relLower : relLower.substr(lastSlash + 1);
+                            if (fname == L".env" || fname.rfind(L".env.", 0) == 0) {
+                                hasEnvChange = true;
+                            }
+                            if (info->Action == FILE_ACTION_ADDED ||
+                                info->Action == FILE_ACTION_REMOVED ||
+                                info->Action == FILE_ACTION_RENAMED_OLD_NAME ||
+                                info->Action == FILE_ACTION_RENAMED_NEW_NAME) {
+                                hasTreeStructChange = true;
+                            } else {
+                                hasContentModify = true;
+                            }
                         }
 
                         if (info->NextEntryOffset == 0) break;
@@ -551,11 +602,13 @@ void Window::StartWorkspaceWatcher(const std::wstring& folderPath) {
                     }
                 }
 
-                if (hasUserFileChange || hasGitMetaChange) {
+                if (hasTreeStructChange || hasContentModify || hasGitMetaChange) {
                     // Coalesce rapid disk events (debounced quiet period: 200ms)
                     Sleep(200);
                     if (self->m_hwnd) {
-                        PostMessageW(self->m_hwnd, WM_USER + 202, hasUserFileChange ? 0 : 1, 0);
+                        WPARAM kind = hasTreeStructChange ? 0 : (hasContentModify ? 2 : 1);
+                        LPARAM envFlag = hasEnvChange ? 1 : 0;
+                        PostMessageW(self->m_hwnd, WM_USER + 202, kind, envFlag);
                     }
                 }
             } else {
@@ -757,10 +810,15 @@ void Window::SaveDirtyBuffersRecovery() {
         }
     }
 
+    static bool s_hasRecoveryFilesOnDisk = true;
     if (items.empty()) {
-        ClearDirtyBuffersRecovery();
+        if (s_hasRecoveryFilesOnDisk) {
+            ClearDirtyBuffersRecovery();
+            s_hasRecoveryFilesOnDisk = false;
+        }
         return;
     }
+    s_hasRecoveryFilesOnDisk = true;
 
     std::error_code ec;
     std::unordered_set<std::wstring> keepNames;
@@ -2013,22 +2071,57 @@ void Window::DoNewTextFile() {
     InvalidateRect(m_hwnd, nullptr, FALSE);
 }
 
-void Window::DoNewFile() {
-    if (m_drawer.HasOpenFolder()) {
-        m_config.activeRailTab = 0; // Explorer tab
-        m_config.isDrawerOpen = true;
-        std::wstring parentDir = m_drawer.GetOpenFolderPath();
+std::wstring Window::ResolveExplorerCreateTargetDir(bool fallbackToActiveDoc) const {
+    std::wstring rootDir = m_drawer.HasOpenFolder() ? m_drawer.GetOpenFolderPath() : L".";
+    auto normalizeDir = [](std::wstring p) {
+        for (auto& ch : p) {
+            if (ch == L'/') ch = L'\\';
+        }
+        while (p.size() > 3 && p.back() == L'\\') p.pop_back();
+        return p;
+    };
+    std::wstring rootNorm = normalizeDir(rootDir);
+
+    auto isInsideRoot = [&](const std::wstring& dir) -> bool {
+        if (!m_drawer.HasOpenFolder() || rootNorm.empty()) return true;
+        std::wstring dNorm = normalizeDir(dir);
+        if (_wcsnicmp(dNorm.c_str(), rootNorm.c_str(), rootNorm.size()) != 0) return false;
+        return dNorm.size() == rootNorm.size() || dNorm[rootNorm.size()] == L'\\' || rootNorm[rootNorm.size()] == L'/';
+    };
+
+    if (!m_explorerClearedSelection && !m_selectedExplorerPath.empty()) {
+        std::error_code ec;
+        std::filesystem::path selP(m_selectedExplorerPath);
+        if (std::filesystem::exists(selP, ec)) {
+            std::wstring dir = std::filesystem::is_directory(selP, ec) ? selP.wstring() : selP.parent_path().wstring();
+            if (isInsideRoot(dir)) {
+                return dir;
+            }
+        }
+    }
+
+    if (fallbackToActiveDoc && !m_explorerClearedSelection) {
         auto* pDoc = GetActiveDoc();
         if (pDoc && !pDoc->filePath.empty()) {
             std::error_code ec;
             std::filesystem::path fp(pDoc->filePath);
             if (std::filesystem::exists(fp, ec)) {
                 std::wstring dir = fp.parent_path().wstring();
-                if (dir.rfind(m_drawer.GetOpenFolderPath(), 0) == 0) {
-                    parentDir = dir;
+                if (isInsideRoot(dir)) {
+                    return dir;
                 }
             }
         }
+    }
+
+    return rootDir;
+}
+
+void Window::DoNewFile() {
+    if (m_drawer.HasOpenFolder()) {
+        m_config.activeRailTab = 0; // Explorer tab
+        m_config.isDrawerOpen = true;
+        std::wstring parentDir = ResolveExplorerCreateTargetDir(true);
         m_drawer.StartInlineCreate(parentDir, false);
         if (m_hwnd) InvalidateRect(m_hwnd, nullptr, FALSE);
         return;
@@ -2109,6 +2202,7 @@ void Window::OpenFileDocument(const std::wstring& path, bool isPreview) {
                 if (!isPreview) {
                     m_editorGroups[g].docs[i].isPreview = false;
                 }
+                ClearExplorerSelectionOverride();
                 UpdateDrawerErrorFiles();
                 SaveSessionState();
                 if (m_config.enableMarkdownPreview && IsMarkdownFile(resolvedPath)) {
@@ -2156,6 +2250,7 @@ void Window::OpenFileDocument(const std::wstring& path, bool isPreview) {
             group.docs.push_back(std::move(newDoc));
             group.activeDocIdx = static_cast<int>(group.docs.size()) - 1;
         }
+        ClearExplorerSelectionOverride();
         UpdateDrawerErrorFiles();
         SaveSessionState();
         InvalidateRect(m_hwnd, nullptr, FALSE);
@@ -2190,6 +2285,7 @@ void Window::OpenFileDocument(const std::wstring& path, bool isPreview) {
                 group.docs.push_back(std::move(newDoc));
                 group.activeDocIdx = static_cast<int>(group.docs.size() - 1);
             }
+            ClearExplorerSelectionOverride();
             UpdateDrawerErrorFiles();
     SaveSessionState();
             InvalidateRect(m_hwnd, nullptr, FALSE);
@@ -2322,6 +2418,7 @@ void Window::OpenFileDocument(const std::wstring& path, bool isPreview) {
         group.activeDocIdx = static_cast<int>(group.docs.size() - 1);
     }
 
+    ClearExplorerSelectionOverride();
     UpdateDrawerErrorFiles();
     SaveSessionState();
 
@@ -2361,6 +2458,7 @@ void Window::OpenDiffDocument(const std::wstring& relPath, bool isPreview) {
         if (group.docs[i].filePath == fullPath && group.docs[i].isDiffView) {
             group.activeDocIdx = static_cast<int>(i);
             if (!isPreview) group.docs[i].isPreview = false;
+            ClearExplorerSelectionOverride();
             InvalidateRect(m_hwnd, nullptr, FALSE);
             return;
         }
@@ -2426,6 +2524,7 @@ void Window::OpenDiffDocument(const std::wstring& relPath, bool isPreview) {
         group.activeDocIdx = static_cast<int>(group.docs.size() - 1);
     }
 
+    ClearExplorerSelectionOverride();
     UpdateDrawerErrorFiles();
     SaveSessionState();
     InvalidateRect(m_hwnd, nullptr, FALSE);
@@ -2761,6 +2860,8 @@ void Window::OpenVirtualDocument(const std::wstring& name, const std::wstring& c
     for (size_t i = 0; i < group.docs.size(); ++i) {
         if (group.docs[i].fileName == name && group.docs[i].filePath.empty()) {
             group.activeDocIdx = static_cast<int>(i);
+            ClearExplorerSelectionOverride();
+            SyncActiveTabWithDrawer();
             InvalidateRect(m_hwnd, nullptr, FALSE);
             return;
         }
@@ -2786,6 +2887,7 @@ void Window::OpenVirtualDocument(const std::wstring& name, const std::wstring& c
         group.docs.push_back(std::move(newDoc));
         group.activeDocIdx = static_cast<int>(group.docs.size() - 1);
     }
+    ClearExplorerSelectionOverride();
     SyncActiveTabWithDrawer();
     InvalidateRect(m_hwnd, nullptr, FALSE);
 }
@@ -2795,6 +2897,7 @@ void Window::OpenCourseTab(const std::wstring& courseTitle, const std::wstring& 
     for (size_t i = 0; i < group.docs.size(); ++i) {
         if (group.docs[i].courseId == courseId || (!group.docs[i].courseId.empty() && group.docs[i].fileName == courseTitle)) {
             group.activeDocIdx = static_cast<int>(i);
+            ClearExplorerSelectionOverride();
             SyncActiveTabWithDrawer();
             m_config.activeRailTab = 0;
             m_config.isDrawerOpen = true;
@@ -2819,8 +2922,14 @@ void Window::OpenCourseTab(const std::wstring& courseTitle, const std::wstring& 
     m_config.activeRailTab = 0;
     m_config.isDrawerOpen = true;
 
+    ClearExplorerSelectionOverride();
     SyncActiveTabWithDrawer();
     InvalidateRect(m_hwnd, nullptr, FALSE);
+}
+
+void Window::ClearExplorerSelectionOverride() noexcept {
+    m_selectedExplorerPath.clear();
+    m_explorerClearedSelection = false;
 }
 
 void Window::SyncActiveTabWithDrawer() {
@@ -2855,6 +2964,8 @@ void Window::OpenSpecialView(const std::wstring& viewType, const std::wstring& t
             } else if (viewType == L"monitor") {
                 SetTimer(m_hwnd, m_animTimerId, 16, nullptr);
             }
+            ClearExplorerSelectionOverride();
+            SyncActiveTabWithDrawer();
             InvalidateRect(m_hwnd, nullptr, FALSE);
             return;
         }
@@ -2889,6 +3000,7 @@ void Window::OpenSpecialView(const std::wstring& viewType, const std::wstring& t
     } else if (viewType == L"monitor") {
         SetTimer(m_hwnd, m_animTimerId, 16, nullptr);
     }
+    ClearExplorerSelectionOverride();
     SyncActiveTabWithDrawer();
     InvalidateRect(m_hwnd, nullptr, FALSE);
 }
@@ -2940,6 +3052,8 @@ void Window::OpenNotebookView(const std::wstring& filePath) {
                     if (m_editorGroups[g].docs[i].isSpecialView && m_editorGroups[g].docs[i].viewType == L"notebook") {
                         m_focusedGroupIdx = static_cast<int>(g);
                         m_editorGroups[g].activeDocIdx = static_cast<int>(i);
+                        ClearExplorerSelectionOverride();
+                        SyncActiveTabWithDrawer();
                         InvalidateRect(m_hwnd, nullptr, FALSE);
                         return;
                     } else {
@@ -2999,6 +3113,8 @@ void Window::OpenNotebookView(const std::wstring& filePath) {
         group.activeDocIdx = static_cast<int>(group.docs.size() - 1);
     }
 
+    ClearExplorerSelectionOverride();
+    SyncActiveTabWithDrawer();
     SaveSessionState();
     InvalidateRect(m_hwnd, nullptr, FALSE);
 }
@@ -3273,6 +3389,7 @@ void Window::CloseDocument(int groupIdx, int docIdx) {
     }
 
     CollapseEmptyEditorGroups();
+    ClearExplorerSelectionOverride();
     SyncActiveTabWithDrawer();
     UpdateDrawerDirtyFiles();
     UpdateDrawerErrorFiles();
@@ -3322,6 +3439,8 @@ void Window::DoOpenFolder() {
 
 void Window::DoOpenFolderFromPath(const std::wstring& path) {
     if (path.empty()) return;
+    ClearExplorerSelectionOverride();
+    m_explorerHasFocus = false;
     m_drawer.OpenFolder(path);
     m_workspace.OpenWorkspace(path);
     m_terminal.SetWorkingDir(path);
@@ -3649,7 +3768,9 @@ void Window::DoSaveAll() {
                             }
                         }
                     }
+                    s_lastInternalAutoSaveTick = GetTickCount64();
                     if (doc.buffer.SaveToFile(doc.filePath)) {
+                        s_lastInternalAutoSaveTick = GetTickCount64();
                         doc.isDirty = false;
                         OnDocumentDiskSaved(doc, true);
                         anySaved = true;
@@ -3854,8 +3975,16 @@ void Window::SyncDocumentBuffers(editor::OpenDocument* sourceDoc) {
     for (auto& group : m_editorGroups) {
         for (auto& doc : group.docs) {
             if (&doc != sourceDoc && !doc.filePath.empty() && doc.filePath == sourceDoc->filePath) {
-                doc.buffer.SetText(text);
+                if (doc.buffer.GetText() != text) {
+                    doc.buffer.SetText(text);
+                }
                 doc.isDirty = sourceDoc->isDirty;
+                if (!sourceDoc->isDirty) {
+                    doc.originalDiskText = sourceDoc->originalDiskText;
+                    doc.lastDiskWriteTime = sourceDoc->lastDiskWriteTime;
+                    doc.hasLastDiskWriteTime = sourceDoc->hasLastDiskWriteTime;
+                    doc.hasExternalDiskConflict = false;
+                }
                 if (doc.isDiffView) {
                     ComputeDiffHunks(doc);
                 }
@@ -4266,6 +4395,7 @@ void Window::CommitAutocompleteSelection() {
         EnsureAutoImportAndUseClient(pDoc, item->label, modSpec);
     }
 
+    CancelPendingLspCompletions();
     MarkDocumentModified(pDoc);
     m_editor.DismissAutocomplete();
     m_editor.ClearGhostText();
@@ -4282,9 +4412,7 @@ void Window::MarkDocumentModified(editor::OpenDocument* pDoc) {
     if (!pDoc || pDoc->isSpecialView) return;
     pDoc->isPreview = false;
     pDoc->isDirty = true; // Always mark dirty so changes are never lost
-    if (m_editorGroups.size() > 1) {
-        SyncDocumentBuffers(pDoc);
-    }
+    SyncDocumentBuffers(pDoc);
 
     std::wstring key = !pDoc->filePath.empty() ? pDoc->filePath : pDoc->fileName;
     if (!key.empty()) {
@@ -4581,6 +4709,8 @@ void Window::DoNextTab() {
     auto& group = m_editorGroups[m_focusedGroupIdx];
     if (group.docs.size() > 1) {
         group.activeDocIdx = (group.activeDocIdx + 1) % static_cast<int>(group.docs.size());
+        ClearExplorerSelectionOverride();
+        SyncActiveTabWithDrawer();
         m_editor.DismissAutocomplete();
         m_editor.ClearGhostText();
         UpdateExecutionButtonStates();
@@ -4595,6 +4725,8 @@ void Window::DoPrevTab() {
     auto& group = m_editorGroups[m_focusedGroupIdx];
     if (group.docs.size() > 1) {
         group.activeDocIdx = (group.activeDocIdx - 1 + static_cast<int>(group.docs.size())) % static_cast<int>(group.docs.size());
+        ClearExplorerSelectionOverride();
+        SyncActiveTabWithDrawer();
         m_editor.DismissAutocomplete();
         m_editor.ClearGhostText();
         UpdateExecutionButtonStates();
@@ -7640,7 +7772,9 @@ void Window::SaveFileToPath(const std::wstring& path) {
                 }
             }
         }
+        s_lastInternalAutoSaveTick = GetTickCount64();
         if (pDoc->buffer.SaveToFile(path)) {
+            s_lastInternalAutoSaveTick = GetTickCount64();
             pDoc->filePath = path;
             auto pos = path.find_last_of(L"\\/");
             std::wstring baseName = (pos != std::wstring::npos) ? path.substr(pos + 1) : path;
@@ -8263,7 +8397,7 @@ bool Window::Create(HINSTANCE hInstance, int nCmdShow) {
 
     // Scan staged/changed files for leaked secrets, unignored .env, node_modules, or >10MB bloat before commit/publish
     m_drawer.SetOnPreCommitValidator([this](const std::wstring& commitMsg) -> bool {
-        return RunPreCommitSecretAndBloatCheck(commitMsg);
+        return StartPreCommitCheckAsync(commitMsg);
     });
 
     // Register callback for reactive git state updates (dispatched safely to UI thread via WM_USER + 206)
@@ -8832,7 +8966,6 @@ void Window::OnResize(UINT width, UINT height) {
     if (m_pRenderTarget) {
         m_pRenderTarget->Resize(D2D1::SizeU(width, height));
     }
-    m_editor.GetPackageManagerView().UpdateWebViewBounds();
 }
 
 void Window::OnPaint() {
@@ -8887,7 +9020,13 @@ void Window::OnPaint() {
     }
 
     auto* curDoc = GetActiveDoc();
-    m_drawer.SetActiveFilePath(curDoc ? curDoc->filePath : L"");
+    std::wstring explorerActivePath = curDoc ? curDoc->filePath : L"";
+    if (m_explorerClearedSelection) {
+        explorerActivePath.clear();
+    } else if (!m_selectedExplorerPath.empty()) {
+        explorerActivePath = m_selectedExplorerPath;
+    }
+    m_drawer.SetActiveFilePath(explorerActivePath);
 
     bool suppressEditorCaret = m_remoteModal.IsOpen() || m_quickOpen.IsOpen() || m_themePicker.IsOpen() || m_colorPicker.IsOpen() || m_popupMenu.IsOpen() ||
         (m_terminal.IsOpen() && m_isTerminalFocused) ||
@@ -9426,6 +9565,16 @@ void Window::OnPaint() {
     // 14. Render Floating Git Tooltip (on top of all panes so it can never be clipped)
     if (m_drawer.IsGitTooltipVisible()) {
         m_drawer.RenderGitTooltip(m_pRenderTarget.Get(), m_theme, m_config, clientW, clientH);
+    }
+
+    // Hide native child WebView2 HWND while modal overlays / menus / fullscreen terminal cover the canvas
+    if (m_popupMenu.IsOpen() || m_themePicker.IsOpen() || m_colorPicker.IsOpen() ||
+        m_remoteModal.IsOpen() || m_quickOpen.IsOpen() || m_confirmDiscardModal.IsOpen() ||
+        m_gitErrorModal.IsOpen() || m_dbSettingsModal.IsOpen() ||
+        m_drawer.IsPublishRepoModalOpen() || m_drawer.IsGitHubLoginModalOpen() ||
+        m_portConflictModal.isOpen || m_preCommitModal.isOpen ||
+        (m_terminal.IsOpen() && m_termFullScreenProgress > 0.05f)) {
+        m_editor.GetPackageManagerView().HideWebView();
     }
 
     HRESULT hr = m_pRenderTarget->EndDraw();
@@ -12935,7 +13084,7 @@ void Window::HandleLButtonDown(POINT clientPt) {
         } else if (inModalRect(clientPt, m_preCommitModal.rcCommitAnywayBtn)) {
             std::wstring commitMsg = m_preCommitModal.commitMessage;
             bool pubFlow = m_preCommitModal.isPublishFlow;
-            int pubChoice = m_drawer.GetPublishRepoSelectedChoice();
+            int pubChoice = m_preCommitModal.publishVisibilityChoice;
             m_preCommitModal.isOpen = false;
             m_preCommitModal.findings.clear();
             if (pubFlow) {
@@ -13721,6 +13870,7 @@ void Window::HandleLButtonDown(POINT clientPt) {
                     FlushPendingAutoSaves();
                 }
                 group.activeDocIdx = tabHitIdx;
+                ClearExplorerSelectionOverride();
                 SyncActiveTabWithDrawer();
                 m_dragTabGroup = targetGroup;
                 m_dragTabIdx = tabHitIdx;
@@ -14288,13 +14438,15 @@ void Window::HandleLButtonDown(POINT clientPt) {
                                     doc.buffer.PushUndo();
                                     doc.buffer.SetLine(todoHit.line, newLineStr);
                                     if (!doc.filePath.empty()) {
-                                        doc.buffer.SaveToFile(doc.filePath);
-                                        doc.isDirty = false;
-                                        doc.originalDiskText = doc.buffer.GetText();
+                                        s_lastInternalAutoSaveTick = GetTickCount64();
+                                        if (doc.buffer.SaveToFile(doc.filePath)) {
+                                            s_lastInternalAutoSaveTick = GetTickCount64();
+                                            doc.isDirty = false;
+                                            OnDocumentDiskSaved(doc, true);
+                                        }
                                         SyncDocumentBuffers(&doc);
                                         UpdateDrawerDirtyFiles();
                                         m_drawer.RefreshGitStatusOnly(true);
-                                        TriggerDebouncedGitRefresh(150);
                                     } else {
                                         doc.isDirty = true;
                                         MarkDocumentModified(&doc);
@@ -14422,6 +14574,8 @@ void Window::HandleLButtonDown(POINT clientPt) {
         bool isFolder = m_drawer.IsCreatingFolder();
         if (m_drawer.CommitInlineCreate(createdPath)) {
             m_explorerUndo.PushCreate(createdPath, isFolder);
+            m_explorerClearedSelection = false;
+            m_selectedExplorerPath = createdPath;
             if (!isFolder) {
                 OpenFileDocument(createdPath, false);
             }
@@ -14573,13 +14727,13 @@ void Window::HandleLButtonDown(POINT clientPt) {
             } else {
                 if (m_drawer.HitTestExplorerNewFileButton(clientPt)) {
                     m_explorerHasFocus = true;
-                    m_drawer.StartInlineCreate(m_drawer.GetOpenFolderPath(), false);
+                    m_drawer.StartInlineCreate(ResolveExplorerCreateTargetDir(false), false);
                     InvalidateRect(m_hwnd, nullptr, FALSE);
                     return;
                 }
                 if (m_drawer.HitTestExplorerNewFolderButton(clientPt)) {
                     m_explorerHasFocus = true;
-                    m_drawer.StartInlineCreate(m_drawer.GetOpenFolderPath(), true);
+                    m_drawer.StartInlineCreate(ResolveExplorerCreateTargetDir(false), true);
                     InvalidateRect(m_hwnd, nullptr, FALSE);
                     return;
                 }
@@ -14593,6 +14747,7 @@ void Window::HandleLButtonDown(POINT clientPt) {
                     m_explorerHasFocus = true;
                     const auto* pItem = m_drawer.GetItem(clickedTree);
                     if (pItem) {
+                        m_explorerClearedSelection = false;
                         m_selectedExplorerPath = pItem->fullPath;
                         m_drawer.SetActiveFilePath(pItem->fullPath);
                         // File or Folder item clicked: initiate potential drag candidate to move or open/toggle
@@ -14610,6 +14765,24 @@ void Window::HandleLButtonDown(POINT clientPt) {
                         m_explorerDropTargetIsRoot = false;
                         SetCapture(m_hwnd);
                         SetCursor(LoadCursor(nullptr, IDC_HAND));
+                        return;
+                    }
+                } else if (m_config.activeRailTab == 0) {
+                    RECT expClientRc{};
+                    GetClientRect(m_hwnd, &expClientRc);
+                    const float expRailW = m_config.ScaleF(static_cast<float>(m_config.railWidth));
+                    const float expDrawerW = m_config.ScaleF(static_cast<float>(m_config.drawerWidth)) * m_drawerAnimProgress;
+                    const float expHeaderH = m_config.ScaleF(static_cast<float>(m_config.headerHeight));
+                    const float expStatusBarH = m_config.showStatusBar ? m_config.ScaleF(22.0f) : 0.0f;
+                    const float expDrawerBottom = static_cast<float>(expClientRc.bottom - expClientRc.top) - expStatusBarH;
+                    if (clientPt.x >= expRailW && clientPt.x < expRailW + expDrawerW &&
+                        clientPt.y >= expHeaderH && clientPt.y < expDrawerBottom) {
+                        // Clicking empty Explorer space deselects the active folder/file so subsequent creates target root
+                        m_explorerHasFocus = true;
+                        m_selectedExplorerPath.clear();
+                        m_explorerClearedSelection = true;
+                        m_drawer.SetActiveFilePath(L"");
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
                         return;
                     }
                 }
@@ -15432,6 +15605,7 @@ void Window::HandleLButtonUp(POINT clientPt) {
             }
         } else {
             // Normal click without drag: preview/open file or toggle folder!
+            m_explorerClearedSelection = false;
             m_selectedExplorerPath = m_dragCandidatePath;
             m_explorerHasFocus = true;
             if (m_dragCandidateIsFolder) {
@@ -15547,6 +15721,7 @@ void Window::HandleRButtonDown(POINT clientPt) {
             m_contextTargetPath = targetPath;
             m_contextTargetIsFolder = isFolder;
             m_selectedExplorerPath = targetPath;
+            m_explorerClearedSelection = targetPath.empty();
             m_explorerHasFocus = true;
             bool canPaste = !m_clipboardPath.empty() && std::filesystem::exists(m_clipboardPath);
             m_popupMenu.OpenContextMenu(
@@ -16791,12 +16966,8 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                             if (ch == L'"' || ch == L'\'' || ch == L'`') {
                                 auto pos = pDoc->buffer.GetCursor();
                                 const auto& lineText = pDoc->buffer.GetLine(pos.line);
-                                std::wstring docTarget = pDoc->filePath.empty() ? pDoc->fileName : pDoc->filePath;
-                                if (m_drawer.HasOpenFolder()) {
-                                    m_intelliSense.SetWorkspaceRoot(m_drawer.GetOpenFolderPath());
-                                    m_editor.SetWorkspaceRoot(m_drawer.GetOpenFolderPath());
-                                }
-                                auto items = QueryCombinedCompletions(pDoc, lineText, pos.col); (void)docTarget;
+                                auto items = QueryCombinedCompletions(pDoc, lineText, pos.col);
+                                RequestLspCompletionsAsync(pDoc, lineText, pos.col);
                                 if (!items.empty()) {
                                     m_editor.ShowAutocomplete(items);
                                 } else {
@@ -16804,6 +16975,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                                     UpdatePrediction();
                                 }
                             } else {
+                                CancelPendingLspCompletions();
                                 m_editor.DismissAutocomplete();
                                 UpdatePrediction();
                             }
@@ -16987,21 +17159,19 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                         if (pDoc->cssPeek.active) pDoc->cssPeek.active = false;
                         EnsureCursorVisible();
                         MarkDocumentModified(pDoc);
+                        if (pDoc->isDiffView && pDoc->buffer.GetLineCount() <= 8000) ComputeDiffHunks(*pDoc);
 
                         // Query massive HTML5 / JavaScript / Python / PHP / Path IntelliSense & Snippets
                         if (IsCursorInComment(pDoc)) {
+                            CancelPendingLspCompletions();
                             m_editor.DismissAutocomplete();
                             m_editor.ClearGhostText();
                             m_editor.ClearPrediction();
                         } else if (iswalnum(ch) || ch == L'!' || ch == L'@' || ch == L'#' || ch == L'-' || ch == L'.' || ch == L'<' || ch == L'>' || ch == L':' || ch == L'$' || ch == L'_' || ch == L'/' || ch == L'\\' || ch == L'"' || ch == L'\'' || ch == L'`' || ch == L'{' || ch == L',' || ch == L' ') {
                             auto pos = pDoc->buffer.GetCursor();
                             const auto& lineText = pDoc->buffer.GetLine(pos.line);
-                            std::wstring docTarget = pDoc->filePath.empty() ? pDoc->fileName : pDoc->filePath;
-                            if (m_drawer.HasOpenFolder()) {
-                                m_intelliSense.SetWorkspaceRoot(m_drawer.GetOpenFolderPath());
-                                m_editor.SetWorkspaceRoot(m_drawer.GetOpenFolderPath());
-                            }
-                            auto items = QueryCombinedCompletions(pDoc, lineText, pos.col); (void)docTarget;
+                            auto items = QueryCombinedCompletions(pDoc, lineText, pos.col);
+                            RequestLspCompletionsAsync(pDoc, lineText, pos.col);
                             if (!items.empty()) {
                                 m_editor.ShowAutocomplete(items);
                                 std::wstring prefix = editor::IntelliSenseEngine::ExtractQueryPrefix(lineText, pos.col);
@@ -17022,6 +17192,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                                 UpdatePrediction();
                             }
                         } else {
+                            CancelPendingLspCompletions();
                             m_editor.DismissAutocomplete();
                             m_editor.ClearGhostText();
                             UpdatePrediction();
@@ -17231,6 +17402,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
             // Autocomplete Popup Navigation & Completion Insertion (Image 5)
             if (m_editor.IsAutocompleteVisible()) {
                 if (wParam == VK_ESCAPE) {
+                    CancelPendingLspCompletions();
                     if (m_editor.HasPrediction()) {
                         m_editor.ClearPrediction();
                     }
@@ -17281,12 +17453,8 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 if (pDoc && !IsCursorInComment(pDoc)) {
                     auto pos = pDoc->buffer.GetCursor();
                     const auto& lineText = pDoc->buffer.GetLine(pos.line);
-                    std::wstring docTarget = pDoc->filePath.empty() ? pDoc->fileName : pDoc->filePath;
-                    if (m_drawer.HasOpenFolder()) {
-                        m_intelliSense.SetWorkspaceRoot(m_drawer.GetOpenFolderPath());
-                        m_editor.SetWorkspaceRoot(m_drawer.GetOpenFolderPath());
-                    }
-                    auto items = QueryCombinedCompletions(pDoc, lineText, pos.col); (void)docTarget;
+                    auto items = QueryCombinedCompletions(pDoc, lineText, pos.col);
+                    RequestLspCompletionsAsync(pDoc, lineText, pos.col);
                     if (!items.empty()) {
                         m_editor.ShowAutocomplete(items);
                     }
@@ -17577,6 +17745,8 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     bool isFolder = m_drawer.IsCreatingFolder();
                     if (m_drawer.CommitInlineCreate(createdPath)) {
                         m_explorerUndo.PushCreate(createdPath, isFolder);
+                        m_explorerClearedSelection = false;
+                        m_selectedExplorerPath = createdPath;
                         if (!isFolder) {
                             OpenFileDocument(createdPath, false);
                         }
@@ -18148,8 +18318,8 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                         if (m_editor.IsAutocompleteVisible()) {
                             auto pos = pDoc->buffer.GetCursor();
                             const auto& lineText = pDoc->buffer.GetLine(pos.line);
-                            std::wstring docTarget = pDoc->filePath.empty() ? pDoc->fileName : pDoc->filePath;
-                            auto items = QueryCombinedCompletions(pDoc, lineText, pos.col); (void)docTarget;
+                            auto items = QueryCombinedCompletions(pDoc, lineText, pos.col);
+                            RequestLspCompletionsAsync(pDoc, lineText, pos.col);
                             if (!items.empty()) {
                                 m_editor.ShowAutocomplete(items);
                             } else {
@@ -18157,6 +18327,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                                 UpdatePrediction();
                             }
                         } else {
+                            CancelPendingLspCompletions();
                             UpdatePrediction();
                         }
                     } else if (wParam == VK_DELETE) {
@@ -18167,10 +18338,12 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                         if (pDoc->cssPeek.active) pDoc->cssPeek.active = false;
                         m_editor.ClearGhostText();
                         m_editor.ClearPrediction();
+                        CancelPendingLspCompletions();
                         m_editor.DismissAutocomplete();
                         UpdatePrediction();
                     }
                     MarkDocumentModified(pDoc);
+                    if (pDoc->isDiffView && pDoc->buffer.GetLineCount() <= 8000) ComputeDiffHunks(*pDoc);
                     EnsureCursorVisible();
                     InvalidateRect(m_hwnd, nullptr, FALSE);
                     return 0;
@@ -18553,16 +18726,28 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     keysToFlush.swap(s_pendingModifiedKeys);
 
                     bool anyProcessed = false;
+                    editor::OpenDocument* activeDoc = GetActiveDoc();
                     for (const auto& targetKey : keysToFlush) {
                         editor::OpenDocument* pDoc = nullptr;
-                        for (auto& grp : m_editorGroups) {
-                            for (auto& d : grp.docs) {
-                                if (!d.isSpecialView && (!d.filePath.empty() ? d.filePath : d.fileName) == targetKey) {
-                                    pDoc = &d;
-                                    break;
+                        if (activeDoc && !activeDoc->isSpecialView &&
+                            (!activeDoc->filePath.empty() ? activeDoc->filePath : activeDoc->fileName) == targetKey) {
+                            pDoc = activeDoc;
+                        }
+                        if (!pDoc) {
+                            editor::OpenDocument* firstMatch = nullptr;
+                            for (auto& grp : m_editorGroups) {
+                                for (auto& d : grp.docs) {
+                                    if (!d.isSpecialView && (!d.filePath.empty() ? d.filePath : d.fileName) == targetKey) {
+                                        if (!firstMatch) firstMatch = &d;
+                                        if (d.isDirty) {
+                                            pDoc = &d;
+                                            break;
+                                        }
+                                    }
                                 }
+                                if (pDoc) break;
                             }
-                            if (pDoc) break;
+                            if (!pDoc) pDoc = firstMatch;
                         }
                         if (!pDoc) continue;
                         anyProcessed = true;
@@ -18574,7 +18759,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                             pDoc->filePath.empty() ? pDoc->fileName : pDoc->filePath, pDoc->buffer);
                         CalculateImportCosts(*pDoc);
                         if (!pDoc->filePath.empty() && m_lsp.IsRunning()) {
-                            m_lsp.NotifyDidChange(pDoc->filePath, pDoc->buffer.GetText());
+                            NotifyLspDidChangeAsync(pDoc->filePath, pDoc->buffer.GetText());
                         }
 
                         if (pDoc->diffOriginalBuffer.GetLineCount() == 0 && !pDoc->originalDiskText.empty()) {
@@ -18609,8 +18794,6 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                             SyncDocumentBuffers(pDoc);
                             if (dirtyDroppedToClean) {
                                 m_drawer.RefreshGitStatusOnly(true);
-                            } else {
-                                TriggerDebouncedGitRefresh(350);
                             }
                         }
                     }
@@ -18827,16 +19010,28 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
         }
 
         case WM_USER + 202: {
-            if (GetTickCount64() - s_lastInternalAutoSaveTick < 900) {
-                return 0; // Ignore self-triggered filesystem change from internal auto-save
-            }
             if (wParam == 1) {
                 TriggerDebouncedGitRefresh(300);
                 InvalidateRect(m_hwnd, nullptr, FALSE);
                 return 0;
             }
+            if (wParam == 2) {
+                if (GetTickCount64() - s_lastInternalAutoSaveTick.load() < 1500) {
+                    return 0; // Ignore self-triggered filesystem modification from internal save
+                }
+                CheckOpenDocumentsDiskChanges();
+                if (lParam != 0) {
+                    RefreshWorkspaceEnvVars();
+                }
+                TriggerDebouncedGitRefresh(450);
+                InvalidateRect(m_hwnd, nullptr, FALSE);
+                return 0;
+            }
+            // wParam == 0: tree structure change (added / deleted / renamed user files)
             CheckOpenDocumentsDiskChanges();
-            RefreshWorkspaceEnvVars();
+            if (lParam != 0) {
+                RefreshWorkspaceEnvVars();
+            }
             m_drawer.RefreshTree();
             NotifyGraphViewFilesystemChanged();
             TriggerDebouncedGitRefresh(350);
@@ -18997,6 +19192,67 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     InvalidateRect(m_hwnd, nullptr, FALSE);
                 }
             }
+            return 0;
+        }
+
+        case WM_USER + 211: {
+            std::unique_ptr<PendingLspCompletionResult> res(reinterpret_cast<PendingLspCompletionResult*>(lParam));
+            if (res && !m_isDestroying.load()) {
+                m_cachedLspCompletions.filePath = res->filePath;
+                m_cachedLspCompletions.line = res->line;
+                m_cachedLspCompletions.col = res->col;
+                m_cachedLspCompletions.items = std::move(res->lspItems);
+
+                auto* pDoc = GetActiveDoc();
+                if (res->gen == m_lspCompletionGen.load() &&
+                    pDoc && !pDoc->isSpecialView && !pDoc->filePath.empty() &&
+                    _wcsicmp(pDoc->filePath.c_str(), res->filePath.c_str()) == 0 &&
+                    !IsCursorInComment(pDoc)) {
+                    auto curPos = pDoc->buffer.GetCursor();
+                    if (curPos.line == res->line && curPos.col == res->col &&
+                        curPos.line < pDoc->buffer.GetLineCount()) {
+                        const auto& lineText = pDoc->buffer.GetLine(curPos.line);
+                        auto items = QueryCombinedCompletions(pDoc, lineText, curPos.col);
+                        if (!items.empty()) {
+                            m_editor.ShowAutocomplete(items);
+                            std::wstring prefix = editor::IntelliSenseEngine::ExtractQueryPrefix(lineText, curPos.col);
+                            const std::wstring& topLabel = items[0].label;
+                            if (items[0].kind != editor::CompletionKind::Folder &&
+                                items[0].kind != editor::CompletionKind::File &&
+                                items[0].origin != L"npm-module" &&
+                                !prefix.empty() &&
+                                topLabel.length() > prefix.length() &&
+                                _wcsnicmp(topLabel.c_str(), prefix.c_str(), prefix.length()) == 0) {
+                                m_editor.SetGhostText(topLabel.substr(prefix.length()));
+                            } else {
+                                m_editor.ClearGhostText();
+                            }
+                            InvalidateRect(m_hwnd, nullptr, FALSE);
+                        }
+                    }
+                }
+            }
+            return 0;
+        }
+
+        case WM_USER + 212: {
+            m_preCommitScanInFlight.store(false);
+            std::unique_ptr<PendingPreCommitScanResult> res(reinterpret_cast<PendingPreCommitScanResult*>(lParam));
+            if (!res || m_isDestroying.load()) return 0;
+            if (res->findings.empty()) {
+                if (res->isPublish) {
+                    m_drawer.ConfirmPublishRepo(res->publishChoice, true);
+                } else {
+                    m_drawer.CommitChangesAsync(res->commitMsg, true);
+                }
+                return 0;
+            }
+            m_preCommitModal.isOpen = true;
+            m_preCommitModal.isPublishFlow = res->isPublish;
+            m_preCommitModal.publishVisibilityChoice = res->publishChoice;
+            m_preCommitModal.commitMessage = std::move(res->commitMsg);
+            m_preCommitModal.findings = std::move(res->findings);
+            InvalidateRect(m_hwnd, nullptr, FALSE);
             return 0;
         }
 
@@ -20373,7 +20629,7 @@ void Window::CheckOpenDocumentsDiskChanges() {
                 doc.hasExternalDiskConflict = false;
                 doc.diagnostics = editor::SyntaxValidator::Validate(doc.filePath, doc.buffer);
                 if (m_lsp.IsRunning()) {
-                    m_lsp.NotifyDidChange(doc.filePath, diskText);
+                    NotifyLspDidChangeAsync(doc.filePath, diskText);
                 }
                 anyUpdated = true;
             } else {
@@ -20921,56 +21177,134 @@ void Window::StartLspForDocumentAsync(const std::wstring& filePath, const std::w
     }).detach();
 }
 
+void Window::NotifyLspDidChangeAsync(const std::wstring& filePath, const std::wstring& text) {
+    if (m_isDestroying.load() || filePath.empty() || !m_lsp.IsRunning()) return;
+    {
+        std::lock_guard<std::mutex> lk(m_bgWorkersMutex);
+        if (m_isDestroying.load()) return;
+        ++m_activeBgWorkers;
+    }
+    std::thread([this, filePath, text]() {
+        BgWorkerGuard workerGuard{ m_bgWorkersMutex, m_bgWorkersCv, m_activeBgWorkers };
+        if (m_isDestroying.load() || !m_lsp.IsRunning()) return;
+        m_lsp.NotifyDidChange(filePath, text);
+    }).detach();
+}
+
+void Window::RequestLspCompletionsAsync(const editor::OpenDocument* pDoc, const std::wstring& lineText, size_t col) {
+    (void)lineText;
+    uint64_t gen = m_lspCompletionGen.fetch_add(1) + 1;
+    if (!pDoc || pDoc->isSpecialView || pDoc->filePath.empty() || m_isDestroying.load() || !m_lsp.IsRunning()) {
+        return;
+    }
+    std::wstring lspLang = DetectLspLanguageId(pDoc->filePath);
+    if (lspLang.empty() || lspLang != m_lsp.GetCurrentLanguageId()) {
+        return;
+    }
+    if (pDoc->buffer.GetText().size() > 2 * 1024 * 1024) {
+        return;
+    }
+    {
+        std::lock_guard<std::mutex> lk(m_bgWorkersMutex);
+        if (m_isDestroying.load()) return;
+        ++m_activeBgWorkers;
+    }
+    auto pos = pDoc->buffer.GetCursor();
+    std::wstring filePath = pDoc->filePath;
+    std::wstring docText = pDoc->buffer.GetText();
+
+    std::thread([this, gen, filePath, line = pos.line, col, docText]() {
+        BgWorkerGuard workerGuard{ m_bgWorkersMutex, m_bgWorkersCv, m_activeBgWorkers };
+        // Brief coalesce delay so fast typing bursts skip superseded keystrokes
+        Sleep(20);
+        if (m_isDestroying.load() || m_lspCompletionGen.load() != gen || !m_lsp.IsRunning()) return;
+
+        m_lsp.NotifyDidChange(filePath, docText);
+        if (m_isDestroying.load() || m_lspCompletionGen.load() != gen) return;
+
+        auto lspItems = m_lsp.RequestCompletions(filePath, line, col);
+        if (lspItems.empty() || m_isDestroying.load() || m_lspCompletionGen.load() != gen || !m_hwnd) return;
+
+        auto* payload = new PendingLspCompletionResult();
+        payload->gen = gen;
+        payload->filePath = filePath;
+        payload->line = line;
+        payload->col = col;
+        payload->lspItems = std::move(lspItems);
+        if (!PostMessageW(m_hwnd, WM_USER + 211, 0, reinterpret_cast<LPARAM>(payload))) {
+            delete payload;
+        }
+    }).detach();
+}
+
 std::vector<editor::IntelliSenseItem> Window::QueryCombinedCompletions(
     const editor::OpenDocument* pDoc, const std::wstring& lineText, size_t col) {
     if (!pDoc) return {};
     std::wstring docTarget = pDoc->filePath.empty() ? pDoc->fileName : pDoc->filePath;
     if (m_drawer.HasOpenFolder()) {
-        m_intelliSense.SetWorkspaceRoot(m_drawer.GetOpenFolderPath());
-        m_editor.SetWorkspaceRoot(m_drawer.GetOpenFolderPath());
+        const auto& wsRoot = m_drawer.GetOpenFolderPath();
+        if (m_intelliSense.GetWorkspaceRoot() != wsRoot) {
+            m_intelliSense.SetWorkspaceRoot(wsRoot);
+        }
+        m_editor.SetWorkspaceRoot(wsRoot);
     }
     auto items = m_intelliSense.QueryCompletions(docTarget, lineText, col, &pDoc->buffer.GetLines());
-    if (m_lsp.IsRunning() && !pDoc->filePath.empty()) {
+    if (!pDoc->filePath.empty() && !m_cachedLspCompletions.items.empty() &&
+        _wcsicmp(m_cachedLspCompletions.filePath.c_str(), pDoc->filePath.c_str()) == 0) {
         auto pos = pDoc->buffer.GetCursor();
-        std::wstring lspLang = DetectLspLanguageId(pDoc->filePath);
-        if (!lspLang.empty() && lspLang == m_lsp.GetCurrentLanguageId()) {
-            auto lspItems = m_lsp.RequestCompletions(pDoc->filePath, pos.line, col);
-            if (!lspItems.empty()) {
-                std::wstring prefix = editor::IntelliSenseEngine::ExtractQueryPrefix(lineText, col);
-                std::unordered_set<std::wstring> existingLabels;
-                for (const auto& ex : items) {
-                    existingLabels.insert(ex.label);
+        std::wstring prefix = editor::IntelliSenseEngine::ExtractQueryPrefix(lineText, col);
+        if (pos.line == m_cachedLspCompletions.line && (!prefix.empty() || col == m_cachedLspCompletions.col)) {
+            std::wstring prefixLower = prefix;
+            for (auto& c : prefixLower) c = static_cast<wchar_t>(towlower(c));
+
+            std::unordered_set<std::wstring> existingLabels;
+            for (const auto& ex : items) {
+                existingLabels.insert(ex.label);
+            }
+            auto mapLspKind = [](int k) -> editor::CompletionKind {
+                switch (k) {
+                    case 2: case 4: return editor::CompletionKind::Method;
+                    case 3: return editor::CompletionKind::Function;
+                    case 5: case 10: return editor::CompletionKind::Property;
+                    case 6: return editor::CompletionKind::Variable;
+                    case 7: case 8: case 22: return editor::CompletionKind::Class;
+                    case 9: return editor::CompletionKind::Module;
+                    case 14: return editor::CompletionKind::Keyword;
+                    case 15: return editor::CompletionKind::Snippet;
+                    case 17: return editor::CompletionKind::File;
+                    case 19: return editor::CompletionKind::Folder;
+                    case 21: return editor::CompletionKind::Constant;
+                    default: return editor::CompletionKind::Function;
                 }
-                auto mapLspKind = [](int k) -> editor::CompletionKind {
-                    switch (k) {
-                        case 2: case 4: return editor::CompletionKind::Method;
-                        case 3: return editor::CompletionKind::Function;
-                        case 5: case 10: return editor::CompletionKind::Property;
-                        case 6: return editor::CompletionKind::Variable;
-                        case 7: case 8: case 22: return editor::CompletionKind::Class;
-                        case 9: return editor::CompletionKind::Module;
-                        case 14: return editor::CompletionKind::Keyword;
-                        case 15: return editor::CompletionKind::Snippet;
-                        case 17: return editor::CompletionKind::File;
-                        case 19: return editor::CompletionKind::Folder;
-                        case 21: return editor::CompletionKind::Constant;
-                        default: return editor::CompletionKind::Function;
+            };
+            std::vector<editor::IntelliSenseItem> merged;
+            merged.reserve(m_cachedLspCompletions.items.size() + items.size());
+            for (const auto& li : m_cachedLspCompletions.items) {
+                if (li.label.empty()) continue;
+                int scoreBoost = 1200;
+                if (!prefixLower.empty()) {
+                    std::wstring lblLower = li.label;
+                    for (auto& c : lblLower) c = static_cast<wchar_t>(towlower(c));
+                    if (lblLower.rfind(prefixLower, 0) == 0) {
+                        scoreBoost = 1300;
+                    } else if (lblLower.find(prefixLower) != std::wstring::npos) {
+                        scoreBoost = 1150;
+                    } else {
+                        continue;
                     }
-                };
-                std::vector<editor::IntelliSenseItem> merged;
-                merged.reserve(lspItems.size() + items.size());
-                for (const auto& li : lspItems) {
-                    if (li.label.empty() || !existingLabels.insert(li.label).second) continue;
-                    editor::IntelliSenseItem ci;
-                    ci.label = li.label;
-                    ci.detail = li.detail.empty() ? L"LSP" : li.detail;
-                    ci.insertText = li.insertText.empty() ? li.label : li.insertText;
-                    ci.kind = mapLspKind(li.kind);
-                    ci.score = 1200;
-                    ci.matchLen = prefix.length();
-                    ci.origin = L"lsp";
-                    merged.push_back(std::move(ci));
                 }
+                if (!existingLabels.insert(li.label).second) continue;
+                editor::IntelliSenseItem ci;
+                ci.label = li.label;
+                ci.detail = li.detail.empty() ? L"LSP" : li.detail;
+                ci.insertText = li.insertText.empty() ? li.label : li.insertText;
+                ci.kind = mapLspKind(li.kind);
+                ci.score = scoreBoost;
+                ci.matchLen = prefix.length();
+                ci.origin = L"lsp";
+                merged.push_back(std::move(ci));
+            }
+            if (!merged.empty()) {
                 for (auto& base : items) {
                     merged.push_back(std::move(base));
                 }
@@ -21138,14 +21472,14 @@ void Window::RenderPortConflictModal(float clientW, float clientH) {
                           m_theme.IsDarkMode() ? D2D1::ColorF(0.90f, 0.92f, 0.95f, 1.0f) : D2D1::ColorF(0.15f, 0.16f, 0.20f, 1.0f));
 }
 
-bool Window::RunPreCommitSecretAndBloatCheck(const std::wstring& commitMsg) {
-    if (!m_drawer.HasOpenFolder()) return true;
-    std::wstring wsRoot = m_drawer.GetOpenFolderPath();
-    std::wstring statusOut = RunCmdCapture(L"git -C \"" + wsRoot + L"\" status --porcelain -uall");
-    if (statusOut.empty()) return true;
+std::vector<Window::PreCommitFinding> Window::CollectPreCommitFindings(
+    const std::wstring& wsRoot, const std::wstring& commitMsg, bool isPublish) const {
+    (void)commitMsg;
+    if (wsRoot.empty()) return {};
+    std::wstring statusOut = RunCmdCapture(L"git --no-optional-locks -C \"" + wsRoot + L"\" status --porcelain -uall");
+    if (statusOut.empty()) return {};
 
     std::vector<std::wstring> candidateRelPaths;
-    bool isPublish = m_drawer.IsPublishRepoModalOpen();
     std::wstringstream wss(statusOut);
     std::wstring line;
     while (std::getline(wss, line)) {
@@ -21154,7 +21488,6 @@ bool Window::RunPreCommitSecretAndBloatCheck(const std::wstring& commitMsg) {
         wchar_t x = line[0];
         wchar_t y = line[1];
         if (x == L'D' || (x == L' ' && y == L'D')) continue;
-        // Normal commits guard staged files, OR working-tree modified/untracked files during Publish/auto-stage
         bool isRelevant = (x != L' ' && x != L'?') || isPublish || x == L'?' || y != L' ';
         if (!isRelevant) continue;
         std::wstring rel = line.substr(3);
@@ -21165,7 +21498,7 @@ bool Window::RunPreCommitSecretAndBloatCheck(const std::wstring& commitMsg) {
         }
         if (!rel.empty()) candidateRelPaths.push_back(rel);
     }
-    if (candidateRelPaths.empty()) return true;
+    if (candidateRelPaths.empty()) return {};
 
     static const std::regex secretPatterns[] = {
         std::regex(R"(ghp_[A-Za-z0-9_]{16,})"),
@@ -21231,13 +21564,63 @@ bool Window::RunPreCommitSecretAndBloatCheck(const std::wstring& commitMsg) {
             }
         }
     }
+    return findings;
+}
 
+bool Window::StartPreCommitCheckAsync(const std::wstring& commitMsg) {
+    if (!m_drawer.HasOpenFolder()) return true;
+    bool isPublish = m_drawer.IsPublishRepoModalOpen();
+    if (!isPublish && !m_drawer.IsGitRepo()) return true;
+    if (m_preCommitScanInFlight.exchange(true)) return false;
+
+    std::wstring wsRoot = m_drawer.GetOpenFolderPath();
+    int publishChoice = m_drawer.GetPublishRepoSelectedChoice();
+    {
+        std::lock_guard<std::mutex> lk(m_bgWorkersMutex);
+        if (m_isDestroying.load()) {
+            m_preCommitScanInFlight.store(false);
+            return false;
+        }
+        ++m_activeBgWorkers;
+    }
+
+    m_drawer.ShowGitNotification(L"Scanning changes before commit...");
+    std::thread([this, wsRoot, commitMsg, isPublish, publishChoice]() {
+        BgWorkerGuard workerGuard{ m_bgWorkersMutex, m_bgWorkersCv, m_activeBgWorkers };
+        if (m_isDestroying.load()) {
+            m_preCommitScanInFlight.store(false);
+            return;
+        }
+        auto findings = CollectPreCommitFindings(wsRoot, commitMsg, isPublish);
+        if (m_isDestroying.load() || !m_hwnd) {
+            m_preCommitScanInFlight.store(false);
+            return;
+        }
+        auto* payload = new PendingPreCommitScanResult();
+        payload->isPublish = isPublish;
+        payload->publishChoice = publishChoice;
+        payload->commitMsg = commitMsg;
+        payload->findings = std::move(findings);
+        if (!PostMessageW(m_hwnd, WM_USER + 212, 0, reinterpret_cast<LPARAM>(payload))) {
+            delete payload;
+            m_preCommitScanInFlight.store(false);
+        }
+    }).detach();
+    return false;
+}
+
+bool Window::RunPreCommitSecretAndBloatCheck(const std::wstring& commitMsg) {
+    if (!m_drawer.HasOpenFolder()) return true;
+    std::wstring wsRoot = m_drawer.GetOpenFolderPath();
+    bool isPublish = m_drawer.IsPublishRepoModalOpen();
+    auto findings = CollectPreCommitFindings(wsRoot, commitMsg, isPublish);
     if (findings.empty()) {
         return true;
     }
 
     m_preCommitModal.isOpen = true;
     m_preCommitModal.isPublishFlow = isPublish;
+    m_preCommitModal.publishVisibilityChoice = m_drawer.GetPublishRepoSelectedChoice();
     m_preCommitModal.commitMessage = commitMsg;
     m_preCommitModal.findings = std::move(findings);
     if (m_hwnd) InvalidateRect(m_hwnd, nullptr, FALSE);
