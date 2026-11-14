@@ -729,11 +729,9 @@ private:
     bool m_gitRefreshPending = false;
     ULONGLONG m_gitRefreshTargetTime = 0;
 
-    // External Disk-Change Detector & Local File Timeline
+    // External Disk-Change Detector
     void CheckOpenDocumentsDiskChanges();
-    void OnDocumentDiskSaved(editor::OpenDocument& doc, bool writeHistory);
-    void WriteLocalHistorySnapshot(const std::wstring& filePath, const std::wstring& content);
-    void OpenLocalTimelineForFile(const std::wstring& filePath);
+    void OnDocumentDiskSaved(editor::OpenDocument& doc);
 
     // Workspace .env + Live MySQL Schema IntelliSense
     void RefreshWorkspaceEnvVars();

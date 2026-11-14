@@ -792,8 +792,6 @@ void PopupMenu::BuildContextMenuItems(bool isFolder, const std::wstring& targetP
         m_items.push_back({ MenuActionId::CtxCompareWithSelected, L"Compare with Selected",      L"",                       false, false, false, true, {}, {} });
         // 6. Select for Compare
         m_items.push_back({ MenuActionId::CtxSelectForCompare,    L"Select for Compare",         L"",                       false, false, false, true, {}, {} });
-        // 7. Open Timeline
-        m_items.push_back({ MenuActionId::CtxOpenTimeline,      L"Open Timeline",                L"",                       false, false, false, true, {}, {} });
 
         // --- Separator ---
         m_items.push_back({ MenuActionId::None,                 L"",                             L"",                       true,  false, false, false, {}, {} });

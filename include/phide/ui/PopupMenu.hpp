@@ -146,7 +146,6 @@ enum class MenuActionId {
     CtxOpenInTerminal,
     CtxCompareWithSelected,
     CtxSelectForCompare,
-    CtxOpenTimeline,
     CtxCut,
     CtxCopy,
     CtxPaste,

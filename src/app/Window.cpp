@@ -420,6 +420,96 @@ static std::filesystem::path GetRecoveryDirPath() {
     return {};
 }
 
+static bool IsSensitiveSecretPath(const std::wstring& filePath) {
+    if (filePath.empty()) return false;
+    std::filesystem::path p(filePath);
+    std::wstring fn = p.filename().wstring();
+    std::wstring ext = p.extension().wstring();
+    for (auto& c : fn) c = static_cast<wchar_t>(towlower(c));
+    for (auto& c : ext) c = static_cast<wchar_t>(towlower(c));
+
+    if (fn == L".env" || fn.rfind(L".env.", 0) == 0) {
+        if (fn != L".env.example" && fn != L".env.sample" && fn != L".env.template") {
+            return true;
+        }
+    }
+    if (ext == L".pem" || ext == L".key" || ext == L".p12" || ext == L".pfx" || ext == L".jks" || ext == L".kdbx") {
+        return true;
+    }
+    if (fn == L".npmrc" || fn == L".pypirc" || fn == L".netrc" ||
+        fn.find(L"id_rsa") != std::wstring::npos ||
+        fn.find(L"id_ed25519") != std::wstring::npos ||
+        fn.find(L"id_ecdsa") != std::wstring::npos) {
+        return true;
+    }
+    return false;
+}
+
+static void CleanupLegacyHistoryRoot(const std::filesystem::path& histBase) {
+    if (histBase.empty()) return;
+    std::error_code ec;
+    if (!std::filesystem::exists(histBase, ec) || !std::filesystem::is_directory(histBase, ec)) {
+        return;
+    }
+    std::vector<std::filesystem::path> emptySubDirs;
+    for (const auto& entry : std::filesystem::directory_iterator(
+             histBase, std::filesystem::directory_options::skip_permission_denied, ec)) {
+        if (entry.is_regular_file(ec)) {
+            std::wstring name = entry.path().filename().wstring();
+            std::wstring ext = entry.path().extension().wstring();
+            for (auto& c : name) c = static_cast<wchar_t>(towlower(c));
+            for (auto& c : ext) c = static_cast<wchar_t>(towlower(c));
+            if (ext == L".snap" || name == L"meta.txt") {
+                std::filesystem::remove(entry.path(), ec);
+            }
+        } else if (entry.is_directory(ec)) {
+            std::filesystem::path sub = entry.path();
+            std::error_code subEc;
+            for (const auto& subEntry : std::filesystem::directory_iterator(
+                     sub, std::filesystem::directory_options::skip_permission_denied, subEc)) {
+                if (subEntry.is_regular_file(subEc)) {
+                    std::wstring name = subEntry.path().filename().wstring();
+                    std::wstring ext = subEntry.path().extension().wstring();
+                    for (auto& c : name) c = static_cast<wchar_t>(towlower(c));
+                    for (auto& c : ext) c = static_cast<wchar_t>(towlower(c));
+                    if (ext == L".snap" || name == L"meta.txt") {
+                        std::filesystem::remove(subEntry.path(), subEc);
+                    }
+                }
+            }
+            if (std::filesystem::is_empty(sub, subEc)) {
+                emptySubDirs.push_back(sub);
+            }
+        }
+    }
+    for (const auto& sub : emptySubDirs) {
+        std::filesystem::remove(sub, ec);
+    }
+    if (std::filesystem::is_empty(histBase, ec)) {
+        std::filesystem::remove(histBase, ec);
+    }
+}
+
+static void CleanupLegacyLocalHistory(const std::wstring& wsRoot) {
+    if (!wsRoot.empty()) {
+        std::filesystem::path phideDir = std::filesystem::path(wsRoot) / L".phide";
+        CleanupLegacyHistoryRoot(phideDir / L"history");
+        std::error_code ec;
+        if (std::filesystem::exists(phideDir, ec) &&
+            std::filesystem::is_directory(phideDir, ec) &&
+            std::filesystem::is_empty(phideDir, ec)) {
+            std::filesystem::remove(phideDir, ec);
+        }
+    }
+    wchar_t* pAppData = nullptr;
+    size_t len = 0;
+    if (_wdupenv_s(&pAppData, &len, L"APPDATA") == 0 && pAppData) {
+        std::filesystem::path appHist = std::filesystem::path(pAppData) / L"phide" / L"history";
+        free(pAppData);
+        CleanupLegacyHistoryRoot(appHist);
+    }
+}
+
 std::wstring Window::GetSessionFilePath() const {
     wchar_t* pAppData = nullptr;
     size_t len = 0;
@@ -789,10 +879,20 @@ void Window::SaveDirtyBuffersRecovery() {
             if (doc.isSpecialView || doc.isFolderView || doc.isImageView || doc.isUnsupportedBinary || doc.isDiffView) {
                 continue;
             }
+            if (IsSensitiveSecretPath(doc.filePath)) {
+                continue;
+            }
             bool isUntitled = doc.filePath.empty();
             if (!doc.isDirty && !isUntitled) continue;
             // Skip completely empty newly created untitled buffers with no edits
             if (isUntitled && !doc.isDirty && doc.buffer.GetLineCount() <= 1 && doc.buffer.GetLine(0).empty()) {
+                continue;
+            }
+            size_t approxChars = 0;
+            for (size_t li = 0; li < doc.buffer.GetLineCount() && approxChars <= 1048576; ++li) {
+                approxChars += doc.buffer.GetLine(li).length() + 1;
+            }
+            if (approxChars > 1048576) {
                 continue;
             }
             RecoveryItem item;
@@ -1296,6 +1396,7 @@ void Window::LoadSessionState() {
     }
 
     if (!isNewWindowClean) {
+        CleanupLegacyLocalHistory(lastOpenFolder);
         if (!lastOpenFolder.empty() && std::filesystem::exists(lastOpenFolder, ec)) {
             m_drawer.OpenFolder(lastOpenFolder, &expandedDirs);
             m_workspace.OpenWorkspace(lastOpenFolder);
@@ -3287,7 +3388,7 @@ void Window::CloseDocument(int groupIdx, int docIdx) {
         if (closingDoc.buffer.SaveToFile(closingDoc.filePath)) {
             s_lastInternalAutoSaveTick = GetTickCount64();
             closingDoc.isDirty = false;
-            OnDocumentDiskSaved(closingDoc, true);
+            OnDocumentDiskSaved(closingDoc);
         }
     }
 
@@ -3439,6 +3540,7 @@ void Window::DoOpenFolder() {
 
 void Window::DoOpenFolderFromPath(const std::wstring& path) {
     if (path.empty()) return;
+    CleanupLegacyLocalHistory(path);
     ClearExplorerSelectionOverride();
     m_explorerHasFocus = false;
     m_drawer.OpenFolder(path);
@@ -3772,7 +3874,7 @@ void Window::DoSaveAll() {
                     if (doc.buffer.SaveToFile(doc.filePath)) {
                         s_lastInternalAutoSaveTick = GetTickCount64();
                         doc.isDirty = false;
-                        OnDocumentDiskSaved(doc, true);
+                        OnDocumentDiskSaved(doc);
                         anySaved = true;
                     }
                 }
@@ -4438,7 +4540,7 @@ void Window::FlushPendingAutoSaves() {
                     if (doc.buffer.SaveToFile(doc.filePath)) {
                         s_lastInternalAutoSaveTick = GetTickCount64();
                         doc.isDirty = false;
-                        OnDocumentDiskSaved(doc, true);
+                        OnDocumentDiskSaved(doc);
                         anySaved = true;
                         SyncRemoteDocumentIfNeeded(doc);
                     }
@@ -7785,7 +7887,7 @@ void Window::SaveFileToPath(const std::wstring& path) {
             }
             pDoc->isDirty = false;
             pDoc->isPreview = false;
-            OnDocumentDiskSaved(*pDoc, true);
+            OnDocumentDiskSaved(*pDoc);
             SyncRemoteDocumentIfNeeded(*pDoc);
             if (m_drawer.IsGitRepo()) {
                 std::wstring relPath = path;
@@ -12490,11 +12592,6 @@ bool Window::HandlePopupMenuClick(POINT clientPt) {
                     case ui::MenuActionId::CtxSelectForCompare:
                         m_compareSourcePath = m_contextTargetPath;
                         break;
-                    case ui::MenuActionId::CtxOpenTimeline:
-                        if (!m_contextTargetPath.empty()) {
-                            OpenLocalTimelineForFile(m_contextTargetPath);
-                        }
-                        break;
                     case ui::MenuActionId::CtxUndo:
                         DoExplorerUndo();
                         break;
@@ -14356,7 +14453,7 @@ void Window::HandleLButtonDown(POINT clientPt) {
                                 if (doc.buffer.SaveToFile(doc.filePath)) {
                                     s_lastInternalAutoSaveTick = GetTickCount64();
                                     doc.isDirty = false;
-                                    OnDocumentDiskSaved(doc, true);
+                                    OnDocumentDiskSaved(doc);
                                     UpdateDrawerDirtyFiles();
                                     UpdateDrawerErrorFiles();
                                     m_drawer.RefreshGitStatusOnly(true);
@@ -14442,7 +14539,7 @@ void Window::HandleLButtonDown(POINT clientPt) {
                                         if (doc.buffer.SaveToFile(doc.filePath)) {
                                             s_lastInternalAutoSaveTick = GetTickCount64();
                                             doc.isDirty = false;
-                                            OnDocumentDiskSaved(doc, true);
+                                            OnDocumentDiskSaved(doc);
                                         }
                                         SyncDocumentBuffers(&doc);
                                         UpdateDrawerDirtyFiles();
@@ -18783,7 +18880,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                             if (pDoc->buffer.SaveToFile(pDoc->filePath)) {
                                 s_lastInternalAutoSaveTick = GetTickCount64();
                                 pDoc->isDirty = false;
-                                OnDocumentDiskSaved(*pDoc, true);
+                                OnDocumentDiskSaved(*pDoc);
                                 SyncDocumentBuffers(pDoc);
                                 SyncRemoteDocumentIfNeeded(*pDoc);
                                 TriggerDebouncedGitRefresh(300);
@@ -19265,7 +19362,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                             if (d.buffer.SaveToFile(d.filePath)) {
                                 s_lastInternalAutoSaveTick = GetTickCount64();
                                 d.isDirty = false;
-                                OnDocumentDiskSaved(d, false);
+                                OnDocumentDiskSaved(d);
                             }
                         }
                     }
@@ -19288,7 +19385,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                             if (d.buffer.SaveToFile(d.filePath)) {
                                 s_lastInternalAutoSaveTick = GetTickCount64();
                                 d.isDirty = false;
-                                OnDocumentDiskSaved(d, false);
+                                OnDocumentDiskSaved(d);
                             }
                         }
                     }
@@ -20460,40 +20557,9 @@ void Window::OpenOrCreateDevContainerConfig() {
 }
 
 // =============================================================================
-// Disk-Change Detector, Local Timeline, .env/DB Schema IntelliSense,
+// Disk-Change Detector, .env/DB Schema IntelliSense,
 // Real LSP Bridge, Port Conflict Detector & Pre-Commit Secret/Bloat Guard
 // =============================================================================
-
-static std::filesystem::path ComputeLocalHistoryDir(const std::wstring& wsRoot, const std::wstring& filePath) {
-    std::wstring norm = filePath;
-    for (auto& c : norm) {
-        if (c == L'/') c = L'\\';
-        c = static_cast<wchar_t>(towlower(c));
-    }
-    uint64_t hash = 14695981039346656037ULL;
-    for (wchar_t ch : norm) {
-        hash ^= static_cast<uint64_t>(ch);
-        hash *= 1099511628211ULL;
-    }
-    wchar_t hexBuf[32] = { 0 };
-    swprintf_s(hexBuf, L"%016llx", static_cast<unsigned long long>(hash));
-
-    std::wstring safeBase = std::filesystem::path(filePath).filename().wstring();
-    for (auto& c : safeBase) {
-        if (!iswalnum(c) && c != L'.' && c != L'_' && c != L'-') c = L'_';
-    }
-    if (safeBase.empty()) safeBase = L"file";
-
-    std::filesystem::path baseDir;
-    if (!wsRoot.empty()) {
-        baseDir = std::filesystem::path(wsRoot) / L".phide" / L"history";
-    } else {
-        auto rec = GetRecoveryDirPath();
-        baseDir = rec.empty() ? std::filesystem::path() : (rec.parent_path() / L"history");
-    }
-    if (baseDir.empty()) return {};
-    return baseDir / (std::wstring(hexBuf) + L"_" + safeBase);
-}
 
 static void DrawOverlayModalCardShell(ID2D1RenderTarget* pRT, ui::Theme& theme, const app::AppConfig& config,
                                       float clientW, float clientH, float cardW, float cardH,
@@ -20548,7 +20614,7 @@ static void DrawModalActionButton(ID2D1RenderTarget* pRT, ui::Theme& theme, cons
     }
 }
 
-void Window::OnDocumentDiskSaved(editor::OpenDocument& doc, bool writeHistory) {
+void Window::OnDocumentDiskSaved(editor::OpenDocument& doc) {
     doc.originalDiskText = doc.buffer.GetText();
     doc.hasExternalDiskConflict = false;
     if (!doc.filePath.empty()) {
@@ -20557,9 +20623,6 @@ void Window::OnDocumentDiskSaved(editor::OpenDocument& doc, bool writeHistory) {
         doc.hasLastDiskWriteTime = !ec;
 
         phide::plugin::PluginManager::Instance().DispatchEvent(L"onDocumentSave", doc.filePath);
-        if (writeHistory && !doc.isSpecialView && !doc.isDiffView) {
-            WriteLocalHistorySnapshot(doc.filePath, doc.originalDiskText);
-        }
         if (m_lsp.IsRunning() && !doc.isSpecialView) {
             m_lsp.NotifyDidSave(doc.filePath, doc.originalDiskText);
         }
@@ -20642,216 +20705,6 @@ void Window::CheckOpenDocumentsDiskChanges() {
         UpdateDrawerErrorFiles();
         InvalidateRect(m_hwnd, nullptr, FALSE);
     }
-}
-
-void Window::WriteLocalHistorySnapshot(const std::wstring& filePath, const std::wstring& content) {
-    if (filePath.empty()) return;
-    std::wstring lower = filePath;
-    for (auto& c : lower) c = static_cast<wchar_t>(towlower(c));
-    if (lower.find(L"\\.phide\\") != std::wstring::npos || lower.find(L"/.phide/") != std::wstring::npos) {
-        return;
-    }
-
-    std::string utf8 = WideToUtf8Str(content);
-    if (utf8.size() > 4 * 1024 * 1024) {
-        return; // Keep snapshots lightweight
-    }
-
-    std::wstring wsRoot = m_drawer.HasOpenFolder() ? m_drawer.GetOpenFolderPath() : L"";
-    std::filesystem::path histDir = ComputeLocalHistoryDir(wsRoot, filePath);
-    if (histDir.empty()) return;
-
-    std::error_code ec;
-    std::filesystem::create_directories(histDir, ec);
-    if (ec) return;
-
-    std::vector<std::filesystem::path> existingSnaps;
-    for (const auto& entry : std::filesystem::directory_iterator(histDir, ec)) {
-        if (entry.is_regular_file(ec) && entry.path().extension() == L".snap") {
-            existingSnaps.push_back(entry.path());
-        }
-    }
-    std::sort(existingSnaps.begin(), existingSnaps.end(), [](const auto& a, const auto& b) {
-        return a.filename().wstring() > b.filename().wstring();
-    });
-
-    if (!existingSnaps.empty()) {
-        std::ifstream latestIn(existingSnaps.front(), std::ios::binary);
-        if (latestIn.is_open()) {
-            std::string latestBytes((std::istreambuf_iterator<char>(latestIn)), std::istreambuf_iterator<char>());
-            if (latestBytes == utf8) {
-                return; // Identical to most recent snapshot
-            }
-        }
-    }
-
-    SYSTEMTIME st{};
-    GetLocalTime(&st);
-    wchar_t nameBuf[64] = { 0 };
-    swprintf_s(nameBuf, L"%04u%02u%02u_%02u%02u%02u_%03u.snap",
-               st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond, st.wMilliseconds);
-
-    std::ofstream snapOut(histDir / nameBuf, std::ios::binary | std::ios::trunc);
-    if (snapOut.is_open()) {
-        snapOut.write(utf8.data(), static_cast<std::streamsize>(utf8.size()));
-        snapOut.flush();
-    }
-
-    if (!std::filesystem::exists(histDir / L"meta.txt", ec)) {
-        std::string pathUtf8 = WideToUtf8Str(filePath);
-        std::ofstream metaOut(histDir / L"meta.txt", std::ios::binary | std::ios::trunc);
-        if (metaOut.is_open()) {
-            metaOut.write(pathUtf8.data(), static_cast<std::streamsize>(pathUtf8.size()));
-        }
-    }
-
-    // Keep at most 25 snapshots per file
-    for (size_t i = 24; i < existingSnaps.size(); ++i) {
-        std::filesystem::remove(existingSnaps[i], ec);
-    }
-}
-
-void Window::OpenLocalTimelineForFile(const std::wstring& filePath) {
-    if (filePath.empty()) return;
-    std::error_code ec;
-    if (std::filesystem::is_directory(filePath, ec)) {
-        MessageBoxW(m_hwnd, L"Select a file (not a folder) to inspect Local Timeline snapshots.", L"Local Timeline", MB_OK | MB_ICONINFORMATION);
-        return;
-    }
-
-    std::wstring currentText;
-    for (const auto& grp : m_editorGroups) {
-        for (const auto& d : grp.docs) {
-            if (!d.isSpecialView && !d.isDiffView && _wcsicmp(d.filePath.c_str(), filePath.c_str()) == 0) {
-                currentText = d.buffer.GetText();
-                break;
-            }
-        }
-        if (!currentText.empty()) break;
-    }
-    if (currentText.empty() && std::filesystem::exists(filePath, ec)) {
-        editor::Buffer diskBuf;
-        if (diskBuf.LoadFromFile(filePath)) {
-            currentText = diskBuf.GetText();
-        }
-    }
-
-    std::wstring wsRoot = m_drawer.HasOpenFolder() ? m_drawer.GetOpenFolderPath() : L"";
-    std::filesystem::path histDir = ComputeLocalHistoryDir(wsRoot, filePath);
-    if (histDir.empty()) return;
-
-    auto collectSnaps = [&]() {
-        std::vector<std::filesystem::path> snaps;
-        std::error_code dec;
-        if (std::filesystem::exists(histDir, dec)) {
-            for (const auto& entry : std::filesystem::directory_iterator(histDir, dec)) {
-                if (entry.is_regular_file(dec) && entry.path().extension() == L".snap") {
-                    snaps.push_back(entry.path());
-                }
-            }
-        }
-        std::sort(snaps.begin(), snaps.end(), [](const auto& a, const auto& b) {
-            return a.filename().wstring() > b.filename().wstring();
-        });
-        return snaps;
-    };
-
-    auto snaps = collectSnaps();
-    if (snaps.empty()) {
-        WriteLocalHistorySnapshot(filePath, currentText);
-        snaps = collectSnaps();
-    }
-    if (snaps.empty()) {
-        MessageBoxW(m_hwnd, L"No local history snapshots could be created for this file.", L"Local Timeline", MB_OK | MB_ICONINFORMATION);
-        return;
-    }
-
-    auto formatSnapTime = [](const std::wstring& stem) -> std::wstring {
-        // YYYYMMDD_HHMMSS_mmm
-        if (stem.length() >= 15 && stem[8] == L'_') {
-            return stem.substr(0, 4) + L"-" + stem.substr(4, 2) + L"-" + stem.substr(6, 2) + L" " +
-                   stem.substr(9, 2) + L":" + stem.substr(11, 2) + L":" + stem.substr(13, 2);
-        }
-        return stem;
-    };
-
-    std::vector<std::pair<std::wstring, std::wstring>> snapContents;
-    for (const auto& sp : snaps) {
-        std::ifstream in(sp, std::ios::binary);
-        if (!in.is_open()) continue;
-        std::string raw((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
-        snapContents.emplace_back(formatSnapTime(sp.stem().wstring()), Utf8ToWideStr(raw));
-    }
-    if (snapContents.empty()) return;
-
-    std::wstring baseFileName = std::filesystem::path(filePath).filename().wstring();
-    std::wstring timelineKey = L"TIMELINE:" + filePath;
-
-    auto& group = GetActiveGroup();
-    for (size_t i = 0; i < group.docs.size(); ++i) {
-        if (group.docs[i].isMultiFileDiff && _wcsicmp(group.docs[i].commitHash.c_str(), timelineKey.c_str()) == 0) {
-            group.activeDocIdx = static_cast<int>(i);
-            InvalidateRect(m_hwnd, nullptr, FALSE);
-            return;
-        }
-    }
-
-    editor::OpenDocument newDoc;
-    newDoc.filePath = L"";
-    newDoc.fileName = L"Timeline: " + baseFileName + L" (" + std::to_wstring(snapContents.size()) + L" snapshots)";
-    newDoc.diffOriginalTitle = L"Snapshot (" + snapContents.front().first + L")";
-    newDoc.diffWorkingTitle = baseFileName + L" (Current)";
-    newDoc.isPreview = false;
-    newDoc.isDirty = false;
-    newDoc.isSpecialView = false;
-    newDoc.isDiffView = true;
-    newDoc.isMultiFileDiff = true;
-    newDoc.isDiffLeftReadOnly = true;
-    newDoc.isDiffRightReadOnly = true;
-    newDoc.commitHash = timelineKey;
-    newDoc.commitAuthor = L"Local Timeline";
-    newDoc.commitDate = snapContents.front().first;
-    newDoc.commitMessage = L"Local Shadow History for " + filePath;
-
-    auto makeEntry = [&](const std::wstring& title, const std::wstring& subtitle,
-                         const std::wstring& status, const std::wstring& leftText,
-                         const std::wstring& rightText, bool collapsed) {
-        editor::OpenDocument::MultiFileDiffEntry entry;
-        entry.filePath = filePath;
-        entry.fileName = title;
-        entry.relDir = subtitle;
-        entry.status = status;
-        entry.isBinary = false;
-        entry.isCollapsed = collapsed;
-        entry.originalBuffer.SetText(leftText);
-        entry.workingBuffer.SetText(rightText);
-
-        editor::OpenDocument tempDoc;
-        tempDoc.diffOriginalBuffer.SetText(leftText);
-        tempDoc.buffer.SetText(rightText);
-        ComputeDiffHunks(tempDoc);
-        entry.addedLines = std::move(tempDoc.diffAddedLines);
-        entry.modifiedLines = std::move(tempDoc.diffModifiedLines);
-        entry.deletedLines = std::move(tempDoc.diffDeletedLines);
-        entry.hunks = std::move(tempDoc.diffHunks);
-        return entry;
-    };
-
-    newDoc.multiFileDiffs.push_back(makeEntry(
-        baseFileName + L"  [" + snapContents[0].first + L" -> Current]",
-        filePath, L"H", snapContents[0].second, currentText, false));
-
-    for (size_t i = 0; i + 1 < snapContents.size(); ++i) {
-        newDoc.multiFileDiffs.push_back(makeEntry(
-            baseFileName + L"  [" + snapContents[i + 1].first + L" -> " + snapContents[i].first + L"]",
-            filePath, L"M", snapContents[i + 1].second, snapContents[i].second, true));
-    }
-
-    group.docs.push_back(std::move(newDoc));
-    group.activeDocIdx = static_cast<int>(group.docs.size() - 1);
-    UpdateDrawerErrorFiles();
-    SaveSessionState();
-    InvalidateRect(m_hwnd, nullptr, FALSE);
 }
 
 void Window::RefreshWorkspaceEnvVars() {
