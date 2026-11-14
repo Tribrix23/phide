@@ -2719,4 +2719,64 @@ const std::vector<IntelliSenseItem>& WebIntelliSenseData::GetCanvasRenderingCont
     return s_canvas;
 }
 
+const std::vector<IntelliSenseItem>& WebIntelliSenseData::GetTypeScriptGlobalsAndUtilityTypes() {
+    static const std::vector<IntelliSenseItem> s_ts = {
+        // TypeScript Keywords & Modifiers
+        { L"interface", L"interface Name { ... }", L"interface ", CompletionKind::Keyword, 120, 0, 0, L"ts", L"Declares a TypeScript object shape / contract." },
+        { L"type", L"type Alias = ...", L"type ", CompletionKind::Keyword, 120, 0, 0, L"ts", L"Declares a TypeScript type alias." },
+        { L"enum", L"enum Name { ... }", L"enum ", CompletionKind::Keyword, 110, 0, 0, L"ts", L"Declares a TypeScript numeric or string enumeration." },
+        { L"implements", L"implements Interface", L"implements ", CompletionKind::Keyword, 105, 0, 0, L"ts", L"Enforces that a class satisfies one or more interfaces." },
+        { L"readonly", L"readonly modifier", L"readonly ", CompletionKind::Keyword, 110, 0, 0, L"ts", L"Marks a property, array, or tuple as immutable." },
+        { L"keyof", L"keyof Type", L"keyof ", CompletionKind::Keyword, 110, 0, 0, L"ts", L"Produces a union of literal property keys of a Type." },
+        { L"infer", L"infer U", L"infer ", CompletionKind::Keyword, 95, 0, 0, L"ts", L"Infers a type variable inside a conditional extends clause." },
+        { L"satisfies", L"expr satisfies Type", L"satisfies ", CompletionKind::Keyword, 115, 0, 0, L"ts", L"Validates expression compatibility with Type without widening." },
+        { L"declare", L"declare ambient", L"declare ", CompletionKind::Keyword, 95, 0, 0, L"ts", L"Declares ambient types or module signatures." },
+        { L"namespace", L"namespace Name { ... }", L"namespace ", CompletionKind::Keyword, 90, 0, 0, L"ts", L"Groups logically related TypeScript declarations." },
+        { L"abstract", L"abstract class / method", L"abstract ", CompletionKind::Keyword, 95, 0, 0, L"ts", L"Marks a class or member that subclasses must implement." },
+        { L"override", L"override method()", L"override ", CompletionKind::Keyword, 95, 0, 0, L"ts", L"Ensures a method overrides a base class member." },
+        { L"unknown", L"type unknown", L"unknown", CompletionKind::Keyword, 115, 0, 0, L"ts", L"Type-safe counterpart of any requiring narrowing before use." },
+        { L"never", L"type never", L"never", CompletionKind::Keyword, 110, 0, 0, L"ts", L"Represents values that never occur (exhaustive checks / throws)." },
+        { L"any", L"type any", L"any", CompletionKind::Keyword, 100, 0, 0, L"ts", L"Opts out of static type checking for dynamic values." },
+        { L"void", L"type void", L"void", CompletionKind::Keyword, 110, 0, 0, L"ts", L"Indicates a function does not return a usable value." },
+
+        // TypeScript Built-in Utility Types
+        { L"Partial", L"type Partial<T> = { [P in keyof T]?: T[P]; }", L"Partial<>", CompletionKind::Class, 130, 0, 0, L"ts-utility", L"Constructs a type with all properties of T set to optional." },
+        { L"Required", L"type Required<T> = { [P in keyof T]-?: T[P]; }", L"Required<>", CompletionKind::Class, 125, 0, 0, L"ts-utility", L"Constructs a type consisting of all properties of T set to required." },
+        { L"Readonly", L"type Readonly<T> = { readonly [P in keyof T]: T[P]; }", L"Readonly<>", CompletionKind::Class, 125, 0, 0, L"ts-utility", L"Constructs a type with all properties of T set to readonly." },
+        { L"Record", L"type Record<K extends keyof any, T>", L"Record<, >", CompletionKind::Class, 135, 0, 0, L"ts-utility", L"Constructs an object type whose property keys are K and values are T." },
+        { L"Pick", L"type Pick<T, K extends keyof T>", L"Pick<, >", CompletionKind::Class, 130, 0, 0, L"ts-utility", L"Constructs a type by picking the set of properties K from T." },
+        { L"Omit", L"type Omit<T, K extends keyof any>", L"Omit<, >", CompletionKind::Class, 130, 0, 0, L"ts-utility", L"Constructs a type by picking all properties from T and removing K." },
+        { L"Exclude", L"type Exclude<T, U>", L"Exclude<, >", CompletionKind::Class, 120, 0, 0, L"ts-utility", L"Excludes from T those union members assignable to U." },
+        { L"Extract", L"type Extract<T, U>", L"Extract<, >", CompletionKind::Class, 120, 0, 0, L"ts-utility", L"Extracts from T those union members assignable to U." },
+        { L"NonNullable", L"type NonNullable<T> = T & {}", L"NonNullable<>", CompletionKind::Class, 120, 0, 0, L"ts-utility", L"Excludes null and undefined from type T." },
+        { L"ReturnType", L"type ReturnType<T extends (...args: any) => any>", L"ReturnType<>", CompletionKind::Class, 125, 0, 0, L"ts-utility", L"Obtains the return type of a function type T." },
+        { L"Parameters", L"type Parameters<T extends (...args: any) => any>", L"Parameters<>", CompletionKind::Class, 120, 0, 0, L"ts-utility", L"Obtains the parameters tuple type of a function type T." },
+        { L"ConstructorParameters", L"type ConstructorParameters<T extends abstract new (...args: any) => any>", L"ConstructorParameters<>", CompletionKind::Class, 105, 0, 0, L"ts-utility", L"Obtains the constructor parameter tuple type of a class." },
+        { L"InstanceType", L"type InstanceType<T extends abstract new (...args: any) => any>", L"InstanceType<>", CompletionKind::Class, 110, 0, 0, L"ts-utility", L"Obtains the return instance type of a constructor function type." },
+        { L"Awaited", L"type Awaited<T>", L"Awaited<>", CompletionKind::Class, 125, 0, 0, L"ts-utility", L"Recursively unwraps the resolved value type of a Promise." },
+        { L"NoInfer", L"type NoInfer<T>", L"NoInfer<>", CompletionKind::Class, 100, 0, 0, L"ts-utility", L"Blocks type inference for a generic parameter position." },
+        { L"Promise", L"interface Promise<T>", L"Promise<>", CompletionKind::Class, 130, 0, 0, L"ts-utility", L"Represents the completion of an asynchronous operation returning T." },
+
+        // Node.js / Express / Next.js Definitions
+        { L"process", L"NodeJS.Process", L"process", CompletionKind::Variable, 115, 0, 0, L"node", L"Global Node.js process control, env, argv, cwd(), and exit()." },
+        { L"Buffer", L"class Buffer extends Uint8Array", L"Buffer", CompletionKind::Class, 110, 0, 0, L"node", L"Node.js fixed-length sequence of raw binary bytes." },
+        { L"EventEmitter", L"class EventEmitter (node:events)", L"EventEmitter", CompletionKind::Class, 100, 0, 0, L"node", L"Node.js event subscription and emission base class." },
+        { L"NextRequest", L"class NextRequest extends Request (next/server)", L"NextRequest", CompletionKind::Class, 115, 0, 0, L"nextjs", L"Extended Web Request with Next.js cookies and nextUrl helpers." },
+        { L"NextResponse", L"class NextResponse extends Response (next/server)", L"NextResponse", CompletionKind::Class, 120, 0, 0, L"nextjs", L"Next.js HTTP response helper with .json(), .redirect(), .next()." },
+        { L"Metadata", L"interface Metadata (next)", L"Metadata", CompletionKind::Class, 115, 0, 0, L"nextjs", L"Next.js App Router page/layout static metadata contract." },
+        { L"useRouter", L"useRouter(): AppRouterInstance (next/navigation)", L"useRouter()", CompletionKind::Function, 115, 0, 0, L"nextjs", L"Client hook to programmatically navigate routes in Next.js." },
+        { L"usePathname", L"usePathname(): string (next/navigation)", L"usePathname()", CompletionKind::Function, 110, 0, 0, L"nextjs", L"Client hook reading the current URL pathname." },
+        { L"useSearchParams", L"useSearchParams(): ReadonlyURLSearchParams (next/navigation)", L"useSearchParams()", CompletionKind::Function, 110, 0, 0, L"nextjs", L"Client hook reading URL query parameters." },
+        { L"redirect", L"redirect(url: string, type?: RedirectType): never (next/navigation)", L"redirect()", CompletionKind::Function, 110, 0, 0, L"nextjs", L"Server/Action helper redirecting the request to another URL." },
+        { L"notFound", L"notFound(): never (next/navigation)", L"notFound()", CompletionKind::Function, 105, 0, 0, L"nextjs", L"Renders the nearest not-found boundary and returns 404." },
+        { L"cookies", L"cookies(): Promise<ReadonlyRequestCookies> (next/headers)", L"cookies()", CompletionKind::Function, 105, 0, 0, L"nextjs", L"Reads or mutates HTTP cookies in Next.js Server Components/Actions." },
+        { L"headers", L"headers(): Promise<ReadonlyHeaders> (next/headers)", L"headers()", CompletionKind::Function, 105, 0, 0, L"nextjs", L"Reads incoming HTTP request headers in Next.js Server Components." },
+        { L"Router", L"express.Router(options?: RouterOptions): Router", L"Router()", CompletionKind::Function, 105, 0, 0, L"express", L"Creates a modular, mountable Express route handler." },
+        { L"Request", L"interface Request<P, ResBody, ReqBody, ReqQuery> (express)", L"Request", CompletionKind::Class, 105, 0, 0, L"express", L"Express / Fetch HTTP request object." },
+        { L"Response", L"interface Response<ResBody, Locals> (express)", L"Response", CompletionKind::Class, 105, 0, 0, L"express", L"Express / Fetch HTTP response object." },
+        { L"NextFunction", L"type NextFunction = (err?: any) => void (express)", L"NextFunction", CompletionKind::Class, 100, 0, 0, L"express", L"Callback passing control to the next Express middleware." }
+    };
+    return s_ts;
+}
+
 } // namespace phide::editor

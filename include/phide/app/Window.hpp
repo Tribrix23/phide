@@ -218,6 +218,11 @@ public:
     /** @brief Executes a quick open palette action or command. */
     void ExecuteQuickOpenAction(const std::wstring& actionCmd);
 
+    const AppConfig& GetConfig() const noexcept { return m_config; }
+    void SetPrivacyMaskEnabled(bool enabled) noexcept { m_config.enablePrivacyMask = enabled; }
+    void SaveSessionStatePublic() { SaveSessionState(); }
+    void LoadSessionStatePublic() { LoadSessionState(); }
+
 private:
     /**
      * @brief Checks if there is at least one active document opened in the editor.
@@ -267,6 +272,7 @@ private:
     void CloseMarkdownPreviewSplit();
     void OpenExtensionDetail(const std::wstring& extId);
     void RunCodeLens(size_t bufferLine, bool isDebug);
+    void HandleCodeLensClick(const ui::EditorCanvas::CodeLensAction& act);
     static bool IsMarkdownFile(const std::wstring& path);
     void SyncActiveTabWithDrawer();
     void ClearExplorerSelectionOverride() noexcept;
@@ -810,7 +816,7 @@ private:
     editor::PredictionEngine m_predictionEngine;
     editor::AdaptiveCodeEngine m_adaptiveEngine;
     editor::WorkspaceSymbolIndex m_symbolIndex;
-    lsp::LspClient m_lsp;
+    lsp::LspManager m_lsp;
 
     struct NavCheckpoint {
         std::wstring filePath;
@@ -892,6 +898,96 @@ private:
     void CancelPendingLspCompletions() noexcept { m_lspCompletionGen.fetch_add(1); }
     [[nodiscard]] std::vector<editor::IntelliSenseItem> QueryCombinedCompletions(
         const editor::OpenDocument* pDoc, const std::wstring& lineText, size_t col);
+
+    // --- #19-#25 Multi-LSP & Language Intelligence Async Coordinators ---
+    struct PendingLspHoverResult {
+        uint64_t gen = 0;
+        std::wstring filePath;
+        size_t line = 0;
+        size_t col = 0;
+        POINT clientPt{};
+        lsp::HoverResult hover;
+    };
+    struct PendingLspSigHelpResult {
+        uint64_t gen = 0;
+        std::wstring filePath;
+        lsp::SignatureHelpResult sigHelp;
+    };
+    struct PendingLspCodeActionResult {
+        uint64_t gen = 0;
+        std::wstring filePath;
+        size_t line = 0;
+        bool openMenu = false;
+        bool isRefactorMode = false;
+        std::vector<lsp::CodeActionItem> actions;
+    };
+    struct PendingLangIntelUpdate {
+        uint64_t gen = 0;
+        std::wstring filePath;
+        std::vector<editor::OpenDocument::InlayHint> inlayHints;
+        std::unordered_map<size_t, editor::OpenDocument::CodeLensMeta> codeLensMap;
+        bool hasLinterResults = false;
+        std::vector<editor::ProblemEntry> linterProblems;
+    };
+    std::atomic<uint64_t> m_lspHoverGen{0};
+    std::atomic<uint64_t> m_lspSigHelpGen{0};
+    std::atomic<uint64_t> m_lspCodeActionGen{0};
+    std::atomic<uint64_t> m_langIntelGen{0};
+    bool m_hoverDwellPending = false;
+    ULONGLONG m_hoverDwellTargetTime = 0;
+    POINT m_hoverDwellPt{};
+
+    void PushCustomLspServerPaths();
+    void ScheduleHoverLookup(POINT clientPt);
+    void RequestHoverAsync(editor::OpenDocument* pDoc, size_t line, size_t col, POINT clientPt);
+    void TriggerSignatureHelpAsync(editor::OpenDocument* pDoc, bool forceShow = false);
+    void RequestCodeActionsAsync(editor::OpenDocument* pDoc, bool openMenu, bool isRefactorMode);
+    void DoCodeActions();
+    void ApplyCodeActionItem(editor::OpenDocument* pDoc, lsp::CodeActionItem action);
+    void ScheduleLangIntelAndLintersAsync(editor::OpenDocument* pDoc, bool runExternalLinters);
+
+    // --- #23 Bottom Filterable Problems Panel ---
+    bool m_problemsPanelOpen = false;
+    bool m_bottomProblemsActive = false;
+    float m_problemsPanelHeight = 220.0f;
+    bool m_isResizingProblemsPanel = false;
+    float m_problemsScrollY = 0.0f;
+    float m_problemsMaxScrollY = 0.0f;
+    int m_problemsSelectedIdx = -1;
+    bool m_problemsSearchFocused = false;
+    editor::ProblemsFilterState m_problemsFilter;
+    std::unordered_map<std::wstring, std::vector<editor::ProblemEntry>> m_externalLinterProblems;
+    std::vector<editor::ProblemEntry> m_cachedFilteredProblems;
+    int m_totalProblemErrors = 0;
+    int m_totalProblemWarnings = 0;
+    int m_totalProblemInfos = 0;
+    D2D1_RECT_F m_rcProblemsPanel{};
+    D2D1_RECT_F m_rcProblemsResizeBorder{};
+    D2D1_RECT_F m_rcProblemsTabBtn{};
+    D2D1_RECT_F m_rcProblemsTermTabBtn{};
+    D2D1_RECT_F m_rcProblemsFilterAll{};
+    D2D1_RECT_F m_rcProblemsFilterErr{};
+    D2D1_RECT_F m_rcProblemsFilterWarn{};
+    D2D1_RECT_F m_rcProblemsFilterInfo{};
+    D2D1_RECT_F m_rcProblemsCurFileBtn{};
+    D2D1_RECT_F m_rcProblemsRefreshBtn{};
+    D2D1_RECT_F m_rcProblemsSearchBox{};
+    D2D1_RECT_F m_rcProblemsCloseBtn{};
+    std::vector<D2D1_RECT_F> m_problemsRowBounds;
+
+    [[nodiscard]] bool IsBottomProblemsVisible() const noexcept {
+        return !m_config.zenMode && m_problemsPanelOpen && m_bottomProblemsActive;
+    }
+    void ToggleProblemsPanel(bool forceOpen = false);
+    void CloseProblemsPanel();
+    void SwitchBottomDockToTerminal();
+    void RebuildProblemsCache();
+    void NavigateNextProblem(bool backward = false);
+    void RenderBottomProblemsPanel(ID2D1RenderTarget* pRT, float clientW, float clientH, float statusBarH, float railLeft);
+    bool HandleProblemsPanelMouseDown(POINT pt);
+    bool HandleProblemsPanelMouseWheel(POINT pt, short delta);
+    bool HandleProblemsPanelChar(wchar_t ch);
+    bool HandleProblemsPanelKeyDown(WPARAM vk);
 
     // Port Conflict Detector & Process Killer Modal
     struct PortConflictModalState {
@@ -994,6 +1090,13 @@ private:
         return effectiveMax * m_terminalAnimProgress;
     }
 
+    [[nodiscard]] float GetCurrentBottomDockHeight(float clientH) const noexcept {
+        if (IsBottomProblemsVisible()) {
+            return (std::clamp)(m_problemsPanelHeight, m_config.ScaleF(130.0f), (std::max)(m_config.ScaleF(150.0f), clientH * 0.55f));
+        }
+        return GetCurrentTerminalHeight(clientH);
+    }
+
     // Explorer Drag & Drop State (Moving files/folders & Editor import)
     bool m_isDraggingExplorerFile = false;
     bool m_dragCandidateIsFolder = false;
@@ -1053,6 +1156,8 @@ private:
     bool m_isHoveredStatusBarEncoding = false;
     D2D1_RECT_F m_rcStatusBarPrivacyMask{};
     bool m_isHoveredStatusBarPrivacyMask = false;
+    D2D1_RECT_F m_rcStatusBarProblems{};
+    bool m_isHoveredStatusBarProblems = false;
     bool m_isColumnSelecting = false;
 
     // Git Branch Switcher Dropdown (Status bar popup)

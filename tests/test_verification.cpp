@@ -52,6 +52,9 @@
 #include "phide/editor/ZedPredictionData.hpp"
 #include "phide/editor/WorkspaceNavigation.hpp"
 #include "phide/editor/AdaptiveCodeEngine.hpp"
+#include "phide/editor/LanguageIntelligence.hpp"
+#include "phide/editor/IntelliSenseEngine.hpp"
+#include "phide/editor/WebIntelliSenseData.hpp"
 #include "phide/workspace/WorkspaceManager.hpp"
 #include "phide/workspace/ExplorerUndoManager.hpp"
 #include "phide/workspace/IgnoreEngine.hpp"
@@ -352,6 +355,12 @@ int main(int argc, char* argv[]) {
     }
     if (targetTest == 126) {
         goto run_test_126;
+    }
+    if (targetTest == 127) {
+        goto run_test_127;
+    }
+    if (targetTest == 128) {
+        goto run_test_128;
     }
 
     if (targetTest == 66) {
@@ -19530,6 +19539,482 @@ run_test_126:
 
         if (targetTest == 126) {
             std::cout << "Target test 126 finished successfully." << std::endl;
+            return 0;
+        }
+    }
+
+    // =========================================================================
+    // [TEST 127] Language Intelligence & Code Quality Suite (Features 19-25)
+    // =========================================================================
+    run_test_127:
+    {
+        std::cout << "\n[TEST 127] Verifying Language Intelligence & Code Quality (Features 19-25)..." << std::endl;
+        namespace fs = std::filesystem;
+        std::error_code ec127;
+        fs::path tmpRoot = fs::temp_directory_path(ec127) / L"phide_test127_langintel";
+        fs::remove_all(tmpRoot, ec127);
+        fs::create_directories(tmpRoot / L"src" / L"utils", ec127);
+
+        // #19: Concurrent multi-server LspManager, custom server paths, incremental delta sync
+        {
+            phide::lsp::LspManager mgr;
+            assert(phide::lsp::LspManager::NormalizeLanguageFamily(L"typescriptreact") == L"typescript");
+            assert(phide::lsp::LspManager::NormalizeLanguageFamily(L"main.mts") == L"typescript");
+            assert(phide::lsp::LspManager::NormalizeLanguageFamily(L"app.py") == L"python");
+            assert(phide::lsp::LspManager::NormalizeLanguageFamily(L"index.php") == L"php");
+            assert(phide::lsp::LspManager::NormalizeLanguageFamily(L"engine.cpp") == L"cpp");
+
+            auto tsSlot = mgr.GetOrCreateSlotForTesting(L"typescript", tmpRoot.wstring());
+            auto tsxSlot = mgr.GetOrCreateSlotForTesting(L"typescriptreact", tmpRoot.wstring());
+            auto pySlot = mgr.GetOrCreateSlotForTesting(L"python", tmpRoot.wstring());
+            auto phpSlot = mgr.GetOrCreateSlotForTesting(L"php", tmpRoot.wstring());
+            assert(tsSlot != nullptr && tsSlot == tsxSlot); // same workspace+family shares server
+            assert(pySlot != nullptr && pySlot != tsSlot);  // concurrent python server doesn't kill TS
+            assert(phpSlot != nullptr && phpSlot != pySlot); // concurrent php server
+
+            std::unordered_map<std::wstring, std::wstring> customPaths;
+            customPaths[L"typescript"] = L"C:\\tools\\vtsls.cmd";
+            mgr.SetCustomServerPaths(customPaths);
+
+            // Bound concurrency check (max 6 servers evicted cleanly)
+            mgr.GetOrCreateSlotForTesting(L"cpp", tmpRoot.wstring());
+            mgr.GetOrCreateSlotForTesting(L"rust", tmpRoot.wstring());
+            mgr.GetOrCreateSlotForTesting(L"go", tmpRoot.wstring());
+            mgr.GetOrCreateSlotForTesting(L"html", tmpRoot.wstring());
+
+            // Incremental delta computation check
+            size_t sl = 0, sc = 0, el = 0, ecCol = 0;
+            std::wstring rep;
+            std::wstring oldDoc = L"const a = 1;\nconst x = 9;\nconst c = 3;";
+            std::wstring newDoc = L"const a = 1;\nconst beta = 42;\nconst c = 3;";
+            bool okDelta = phide::lsp::LspClient::ComputeIncrementalDelta(
+                oldDoc, newDoc, sl, sc, el, ecCol, rep);
+            assert(okDelta && sl == 1 && el == 1 && sc == 6 && ecCol == 11 && rep == L"beta = 42");
+            phide::lsp::LspTextEdit deltaEdit{ sl, sc, el, ecCol, rep };
+            assert(phide::editor::CodeActionEngine::ApplyTextEditsToString(oldDoc, { deltaEdit }) == newDoc);
+            mgr.Shutdown();
+        }
+        std::cout << "  Passed: #19 Multi-LSP concurrent lifecycle & incremental delta sync" << std::endl;
+
+        // #20: Expanded TypeScript keywords, utility types, Node/Next/Express definitions & .mts/.cts routing
+        {
+            const auto& tsItems = phide::editor::WebIntelliSenseData::GetTypeScriptGlobalsAndUtilityTypes();
+            assert(tsItems.size() >= 40);
+            auto hasTs = [&](const std::wstring& lbl) {
+                for (const auto& it : tsItems) {
+                    if (it.label == lbl) return true;
+                }
+                return false;
+            };
+            assert(hasTs(L"Partial") && hasTs(L"Record") && hasTs(L"Awaited") && hasTs(L"NextRequest"));
+
+            phide::editor::IntelliSenseEngine eng;
+            std::vector<std::wstring> mtsLines = { L"const x: Part" };
+            auto completions = eng.QueryCompletions((tmpRoot / L"mod.mts").wstring(), mtsLines[0], mtsLines[0].size(), &mtsLines);
+            bool foundPartial = false;
+            for (const auto& c : completions) {
+                if (c.label == L"Partial") { foundPartial = true; break; }
+            }
+            assert(foundPartial);
+        }
+        std::cout << "  Passed: #20 Expanded TypeScript / Node / Next.js IntelliSense vocabulary" << std::endl;
+
+        // #21: ImportOrganizer unused removal, side-effect preservation, grouped sorting & auto-import candidates
+        {
+            // JS/TS grouped sorting & unused pruning while keeping side-effect imports
+            std::wstring tsSrc =
+                L"import { UnusedHelper, usedFn } from './utils/helpers';\n"
+                L"import React, { useEffect } from 'react';\n"
+                L"import fs from 'node:fs';\n"
+                L"import './styles.css';\n"
+                L"\n"
+                L"export function run() {\n"
+                L"    useEffect(() => {});\n"
+                L"    return usedFn(fs);\n"
+                L"}\n";
+            auto tsOrg = phide::editor::ImportOrganizer::OrganizeImports((tmpRoot / L"src" / L"app.ts").wstring(), tsSrc);
+            assert(tsOrg.changed && tsOrg.removedUnusedCount >= 1);
+            assert(tsOrg.updatedText.find(L"UnusedHelper") == std::wstring::npos);
+            assert(tsOrg.updatedText.find(L"usedFn") != std::wstring::npos);
+            assert(tsOrg.updatedText.find(L"./styles.css") != std::wstring::npos);
+            // Node built-in group appears before third-party 'react' which appears before relative './'
+            size_t posFs = tsOrg.updatedText.find(L"'node:fs'");
+            size_t posReact = tsOrg.updatedText.find(L"'react'");
+            size_t posRel = tsOrg.updatedText.find(L"'./utils/helpers'");
+            assert(posFs != std::wstring::npos && posReact != std::wstring::npos && posRel != std::wstring::npos);
+            assert(posFs < posReact && posReact < posRel);
+
+            // Python PEP8 grouping (stdlib < third-party < local) & unused removal
+            std::wstring pySrc =
+                L"from .local_mod import helper, dead_sym\n"
+                L"import requests\n"
+                L"import os\n"
+                L"\n"
+                L"def go():\n"
+                L"    return helper(os.getcwd(), requests.get('http://example.com'))\n";
+            auto pyOrg = phide::editor::ImportOrganizer::OrganizeImports((tmpRoot / L"main.py").wstring(), pySrc);
+            assert(pyOrg.changed && pyOrg.updatedText.find(L"dead_sym") == std::wstring::npos);
+            assert(pyOrg.updatedText.find(L"import os") < pyOrg.updatedText.find(L"import requests"));
+            assert(pyOrg.updatedText.find(L"import requests") < pyOrg.updatedText.find(L"from .local_mod"));
+
+            // Workspace export file for auto-import discovery
+            {
+                std::ofstream out((tmpRoot / L"src" / L"utils" / L"formatDate.ts").string());
+                out << "export function formatDateValue(d: Date): string { return d.toISOString(); }\n";
+            }
+            std::wstring appSnippet = L"const x = formatDate";
+            auto cands = phide::editor::ImportOrganizer::FindAutoImportCandidates(
+                (tmpRoot / L"src" / L"index.ts").wstring(), tmpRoot.wstring(), L"formatDate", appSnippet);
+            bool foundWorkspaceCand = false;
+            std::wstring insertedText;
+            for (const auto& c : cands) {
+                if (c.symbol == L"formatDateValue") {
+                    foundWorkspaceCand = true;
+                    insertedText = phide::editor::ImportOrganizer::InsertImportStatement(
+                        (tmpRoot / L"src" / L"index.ts").wstring(), appSnippet, c);
+                    break;
+                }
+            }
+            assert(foundWorkspaceCand && insertedText.find(L"formatDateValue") != std::wstring::npos &&
+                   insertedText.find(L"import ") != std::wstring::npos);
+        }
+        std::cout << "  Passed: #21 ImportOrganizer (JS/TS/Python) & workspace Auto-Import discovery" << std::endl;
+
+        // #22: Rich Hover Markdown parsing, static symbol lookup & active parameter Signature Help
+        {
+            auto blocks = phide::editor::HoverAndSignatureHelper::ParseMarkdownBlocks(
+                L"```ts\nfunction greet(name: string): void\n```\n---\nGreets a user cleanly.");
+            assert(blocks.size() >= 3);
+            assert(blocks[0].kind == phide::editor::MarkdownBlock::Kind::CodeBlock);
+            assert(blocks[1].kind == phide::editor::MarkdownBlock::Kind::Separator);
+            assert(blocks[2].kind == phide::editor::MarkdownBlock::Kind::Paragraph);
+
+            std::vector<std::wstring> hoverLines = {
+                L"/// Computes area in square units",
+                L"function computeArea(width: number, height: number): number {",
+                L"    return width * height;",
+                L"}",
+                L"const a = computeArea(10, 20);"
+            };
+            auto hv = phide::editor::HoverAndSignatureHelper::LookupStaticHover(
+                (tmpRoot / L"geom.ts").wstring(), hoverLines, 4, 15);
+            assert(hv.isValid && hv.markdown.find(L"computeArea") != std::wstring::npos);
+
+            auto ctx = phide::editor::HoverAndSignatureHelper::ExtractCallContext(hoverLines, 4, 27);
+            assert(ctx.inCall && ctx.calleeName == L"computeArea" && ctx.activeParameter == 1);
+
+            auto sigHelp = phide::editor::HoverAndSignatureHelper::LookupStaticSignatureHelp(
+                (tmpRoot / L"geom.ts").wstring(), hoverLines, 4, 27);
+            assert(sigHelp.isValid && !sigHelp.signatures.empty() && sigHelp.activeParameter == 1);
+            assert(sigHelp.signatures[0].parameters.size() == 2);
+
+            auto splitNested = phide::editor::HoverAndSignatureHelper::SplitSignatureParameters(
+                L"cb: (a: number, b: string) => void, opts: Record<string, any>");
+            assert(splitNested.size() == 2);
+        }
+        std::cout << "  Passed: #22 Markdown Hover & Signature Parameter Help" << std::endl;
+
+        // #23: External Linter Parsers (tsc, eslint, phpstan, ruff) & Filter/Count aggregation
+        {
+            std::wstring tscOut = L"src/app.ts(12,5): error TS2304: Cannot find name 'foo'.\n";
+            auto tscProbs = phide::editor::ExternalLinterEngine::ParseTscOutput(tscOut, tmpRoot.wstring());
+            assert(tscProbs.size() == 1 && tscProbs[0].line == 11 && tscProbs[0].col == 4 && tscProbs[0].code == L"TS2304");
+
+            std::wstring eslOut = L"src/app.ts: line 4, col 2, Warning - Unused var (no-unused-vars)\n";
+            auto eslProbs = phide::editor::ExternalLinterEngine::ParseEslintCompactOutput(eslOut, tmpRoot.wstring());
+            assert(eslProbs.size() == 1 && eslProbs[0].severity == 2 && eslProbs[0].source == L"eslint");
+
+            std::wstring phpOut = L" ------ ----------------\n  Line   src/Controller.php\n ------ ----------------\n  18     Undefined variable $user\n ------ ----------------\n";
+            auto phpProbs = phide::editor::ExternalLinterEngine::ParsePhpStanOutput(phpOut, tmpRoot.wstring());
+            assert(phpProbs.size() == 1 && phpProbs[0].line == 17 && phpProbs[0].source == L"phpstan");
+
+            std::wstring ruffOut = L"main.py:5:1: F401 'os' imported but unused\n";
+            auto ruffProbs = phide::editor::ExternalLinterEngine::ParseRuffOrFlake8Output(ruffOut, tmpRoot.wstring());
+            assert(ruffProbs.size() == 1 && ruffProbs[0].code == L"F401" && ruffProbs[0].source == L"ruff");
+
+            std::vector<phide::editor::ProblemEntry> combined;
+            combined.insert(combined.end(), tscProbs.begin(), tscProbs.end());
+            combined.insert(combined.end(), eslProbs.begin(), eslProbs.end());
+            int errs = 0, warns = 0, infos = 0;
+            phide::editor::ExternalLinterEngine::CountSeverities(combined, errs, warns, infos);
+            assert(errs == 1 && warns == 1 && infos == 0);
+
+            phide::editor::ProblemsFilterState flt;
+            flt.severityFilter = 2; // Warnings only
+            auto filtered = phide::editor::ExternalLinterEngine::FilterProblems(combined, flt, L"");
+            assert(filtered.size() == 1 && filtered[0].source == L"eslint");
+        }
+        std::cout << "  Passed: #23 External linter parsers (tsc/eslint/phpstan/ruff) & Problems filter" << std::endl;
+
+        // #24: Local Code Actions & Structural Refactorings + multi-line TextEdit application
+        {
+            std::wstring code =
+                L"function calc() {\n"
+                L"    const total = (10 + 20) * 3;\n"
+                L"    const msg = \"hi \" + name;\n"
+                L"    return total;\n"
+                L"}\n";
+            // Selection over `(10 + 20) * 3` on line 1 (0-based cols 18..31)
+            auto refActs = phide::editor::CodeActionEngine::GenerateLocalCodeActions(
+                (tmpRoot / L"refactor.ts").wstring(), tmpRoot.wstring(), code, {}, 1, 18, 1, 31);
+            bool hasExtractVar = false, hasExtractFn = false, hasWrapTry = false;
+            phide::lsp::CodeActionItem extractVarItem;
+            for (const auto& act : refActs) {
+                if (act.title.find(L"Extract") != std::wstring::npos && act.title.find(L"variable") != std::wstring::npos) {
+                    hasExtractVar = true;
+                    extractVarItem = act;
+                }
+                if (act.title.find(L"Extract") != std::wstring::npos && act.title.find(L"function") != std::wstring::npos) {
+                    hasExtractFn = true;
+                }
+                if (act.title.find(L"try / catch") != std::wstring::npos || act.title.find(L"try/catch") != std::wstring::npos) {
+                    hasWrapTry = true;
+                }
+            }
+            assert(hasExtractVar && hasExtractFn && hasWrapTry && !extractVarItem.edit.fileChanges.empty());
+            std::wstring afterExtract = phide::editor::CodeActionEngine::ApplyTextEditsToString(
+                code, extractVarItem.edit.fileChanges[0].second);
+            assert(afterExtract.find(L"extracted") != std::wstring::npos);
+
+            // Missing symbol diagnostic -> auto-import quick fix
+            phide::lsp::Diagnostic useStateDiag;
+            useStateDiag.line = 0;
+            useStateDiag.col = 18;
+            useStateDiag.message = L"Cannot find name 'useState'";
+            std::wstring jsxCode = L"export function App() { return useState(0); }\n";
+            auto fixActs = phide::editor::CodeActionEngine::GenerateLocalCodeActions(
+                (tmpRoot / L"App.tsx").wstring(), tmpRoot.wstring(), jsxCode, { useStateDiag }, 0, 31, 0, 39);
+            bool hasUseStateImportFix = false, hasUseClientFix = false;
+            for (const auto& fa : fixActs) {
+                if ((fa.title.find(L"Add import:") != std::wstring::npos && fa.title.find(L"useState") != std::wstring::npos) ||
+                    fa.title.find(L"Import 'useState'") != std::wstring::npos) {
+                    hasUseStateImportFix = true;
+                }
+                if (fa.title.find(L"use client") != std::wstring::npos) hasUseClientFix = true;
+            }
+            assert(hasUseStateImportFix && hasUseClientFix);
+        }
+        std::cout << "  Passed: #24 Code Actions & Structural Refactorings + TextEdit apply" << std::endl;
+
+        // #25: Static Inlay Hints & Cross-File Reference / Test CodeLens Scanner
+        {
+            std::vector<std::wstring> tsLines = {
+                L"function computeTotal(price: number, taxRate: number): number {",
+                L"    return price * (1 + taxRate);",
+                L"}",
+                L"const result = computeTotal(100, 0.08);",
+                L"const msg = \"ok\";",
+                L"test('computes tax', () => {});"
+            };
+            auto hints = phide::editor::InlayAndCodeLensEngine::ComputeStaticInlayHints(
+                (tmpRoot / L"calc.ts").wstring(), tsLines, 0, 10, 50);
+            bool hasParamOrTypeHint = false;
+            for (const auto& h : hints) {
+                if (!h.label.empty()) { hasParamOrTypeHint = true; break; }
+            }
+            assert(hasParamOrTypeHint);
+
+            std::vector<std::wstring> peers = { L"import { computeTotal } from './calc';\ncomputeTotal(5, 0.1);\n" };
+            auto lenses = phide::editor::InlayAndCodeLensEngine::ScanCodeLensEntries(
+                (tmpRoot / L"calc.ts").wstring(), tsLines, peers, 20);
+            bool foundComputeLens = false, foundTestLens = false;
+            for (const auto& l : lenses) {
+                if (l.symbolName == L"computeTotal" && l.referenceCount >= 2) foundComputeLens = true;
+                if (l.isTestEntry) foundTestLens = true;
+            }
+            assert(foundComputeLens && foundTestLens);
+        }
+        std::cout << "  Passed: #25 Static Inlay Hints & CodeLens references/test badges" << std::endl;
+
+        // AppConfig defaults check for #19-#25 settings
+        {
+            phide::app::AppConfig cfg;
+            assert(cfg.enableInlayHints == true);
+            assert(cfg.enableLspHover == true);
+            assert(cfg.enableSignatureHelp == true);
+            assert(cfg.enableExternalLinters == true);
+        }
+
+        fs::remove_all(tmpRoot, ec127);
+        assert(!fs::exists(tmpRoot, ec127));
+        std::cout << "  Passed: All [TEST 127] verification checks passed!" << std::endl;
+
+        if (targetTest == 127) {
+            std::cout << "Target test 127 finished successfully." << std::endl;
+            return 0;
+        }
+    }
+
+run_test_128:
+    {
+        std::cout << "\n[TEST 128] Running Privacy Mask Persistence & Class Attribute Fast Completion Regression Tests..." << std::endl;
+        namespace fs = std::filesystem;
+        std::error_code ec128;
+        fs::path tmpRoot = fs::temp_directory_path() / L"phide_test_128_mask_and_class_freeze";
+        fs::remove_all(tmpRoot, ec128);
+        fs::create_directories(tmpRoot, ec128);
+
+        // 128.1 Privacy Mask (Mask: ON / OFF) persists across SaveSessionState / LoadSessionState
+        {
+            struct AppDataEnvGuard {
+                std::wstring original;
+                bool hadOriginal = false;
+                AppDataEnvGuard() {
+                    wchar_t* pBuf = nullptr;
+                    size_t len = 0;
+                    if (_wdupenv_s(&pBuf, &len, L"APPDATA") == 0 && pBuf) {
+                        original = pBuf;
+                        hadOriginal = true;
+                        free(pBuf);
+                    }
+                }
+                ~AppDataEnvGuard() {
+                    if (hadOriginal) {
+                        _wputenv_s(L"APPDATA", original.c_str());
+                    } else {
+                        _wputenv_s(L"APPDATA", L"");
+                    }
+                }
+            } envGuard;
+
+            fs::path tmpAppData = tmpRoot / L"appdata";
+            fs::create_directories(tmpAppData, ec128);
+            _wputenv_s(L"APPDATA", tmpAppData.wstring().c_str());
+
+            {
+                phide::app::Window w1;
+                assert(w1.GetConfig().enablePrivacyMask == false);
+                w1.SetPrivacyMaskEnabled(true);
+                w1.SaveSessionStatePublic();
+            }
+
+            fs::path sessionFile = tmpAppData / L"phide" / L"session_state.json";
+            assert(fs::exists(sessionFile, ec128));
+            {
+                std::ifstream ifs(sessionFile);
+                std::string jsonStr((std::istreambuf_iterator<char>(ifs)), std::istreambuf_iterator<char>());
+                assert(jsonStr.find("\"enablePrivacyMask\": true") != std::string::npos);
+            }
+
+            {
+                phide::app::Window w2;
+                assert(w2.GetConfig().enablePrivacyMask == false);
+                w2.LoadSessionStatePublic();
+                assert(w2.GetConfig().enablePrivacyMask == true);
+
+                w2.SetPrivacyMaskEnabled(false);
+                w2.SaveSessionStatePublic();
+            }
+
+            {
+                phide::app::Window w3;
+                w3.LoadSessionStatePublic();
+                assert(w3.GetConfig().enablePrivacyMask == false);
+            }
+            std::cout << "  Passed: Privacy Mask (Mask: ON / Mask: OFF) persists across SaveSessionState/LoadSessionState." << std::endl;
+        }
+
+        // 128.2 FindProjectRoot does not escape workspaceRoot into ancestor package.json/node_modules,
+        //       and class="..." completion / auto-import stay bounded & fast
+        {
+            fs::path fakeHome = tmpRoot / L"fake_user_home";
+            fs::path vbDir = fakeHome / L"Downloads" / L"vb";
+            fs::create_directories(vbDir, ec128);
+            fs::create_directories(fakeHome / L"node_modules" / L"hugepkg", ec128);
+            fs::create_directories(fakeHome / L"AppData" / L"Local", ec128);
+            fs::create_directories(vbDir / L".hidden" / L"styles", ec128);
+            fs::create_directories(vbDir / L"node_modules" / L"pkg", ec128);
+
+            {
+                std::ofstream f(fakeHome / L"package.json");
+                f << "{\"name\":\"user-root-noise\"}";
+            }
+            {
+                std::ofstream f(fakeHome / L"parent.css");
+                f << ".parent-leak-class { color: blue; }\n";
+            }
+            {
+                std::ofstream f(fakeHome / L"AppData" / L"Local" / L"big.css");
+                f << ".should-never-appear-root-escape { color: red; }\n";
+            }
+            {
+                std::ofstream f(fakeHome / L"node_modules" / L"hugepkg" / L"pkg.css");
+                f << ".nm-leak-class { color: yellow; }\n";
+            }
+            {
+                std::ofstream f(vbDir / L"node_modules" / L"pkg" / L"ignored.css");
+                f << ".should-never-appear-ignored { display: none; }\n";
+            }
+            {
+                std::ofstream f(vbDir / L".hidden" / L"styles" / L"secret.css");
+                f << ".hidden-dot-dir-class { display: none; }\n";
+            }
+            {
+                std::ofstream f(vbDir / L"style.css");
+                f << ".js-active { color: green; }\n.btn-primary { padding: 8px; }\n";
+            }
+            std::wstring indexPath = (vbDir / L"index.html").wstring();
+            {
+                std::ofstream f(vbDir / L"index.html");
+                f << "<!doctype html>\n<html lang=\"en\">\n<head>\n  <link rel=\"stylesheet\" href=\"style.css\" />\n</head>\n<body>\n  <div class=\"js   \"></div>\n</body>\n</html>\n";
+            }
+
+            std::vector<std::wstring> docLines = {
+                L"<!doctype html>",
+                L"<html lang=\"en\">",
+                L"<head>",
+                L"  <link rel=\"stylesheet\" href=\"style.css\" />",
+                L"</head>",
+                L"<body>",
+                L"  <div class=\"js   \"></div>",
+                L"</body>",
+                L"</html>"
+            };
+
+            phide::editor::IntelliSenseEngine engine;
+            engine.SetWorkspaceRoot(vbDir.wstring());
+
+            auto t0 = std::chrono::steady_clock::now();
+            auto itemsPrefix = engine.QueryCompletions(indexPath, docLines[6], 16, &docLines); // after "js"
+            auto itemsSpace = engine.QueryCompletions(indexPath, docLines[6], 19, &docLines);  // after "js   "
+            auto elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - t0).count();
+
+            assert(elapsedMs < 1000 && "QueryCompletions inside class=\"...\" must stay fast without climbing into parent package.json");
+
+            bool foundJsActive = false;
+            for (const auto& it : itemsPrefix) {
+                if (it.label == L"js-active") foundJsActive = true;
+                assert(it.label != L"parent-leak-class");
+                assert(it.label != L"should-never-appear-root-escape");
+                assert(it.label != L"nm-leak-class");
+                assert(it.label != L"should-never-appear-ignored");
+                assert(it.label != L"hidden-dot-dir-class");
+            }
+            assert(foundJsActive && "Workspace local style.css classes must still be suggested inside class=\"js...\"");
+
+            bool foundBtnPrimaryOnSpace = false;
+            for (const auto& it : itemsSpace) {
+                if (it.label == L"btn-primary") foundBtnPrimaryOnSpace = true;
+                assert(it.label != L"parent-leak-class");
+                assert(it.label != L"should-never-appear-root-escape");
+                assert(it.label != L"should-never-appear-ignored");
+            }
+            assert(foundBtnPrimaryOnSpace && "Workspace local style.css classes must still be suggested after spaces in class=\"js   \"");
+
+            auto htmlAutoImports = phide::editor::ImportOrganizer::FindAutoImportCandidates(
+                indexPath, vbDir.wstring(), L"js", L"<div class=\"js   \"></div>", 8);
+            assert(htmlAutoImports.empty() && "FindAutoImportCandidates must return empty immediately for .html");
+
+            std::cout << "  Passed: Bounded class=\"...\" completion & workspace root isolation verified in " << elapsedMs << "ms." << std::endl;
+        }
+
+        fs::remove_all(tmpRoot, ec128);
+        assert(!fs::exists(tmpRoot, ec128));
+        std::cout << "  Passed: All [TEST 128] verification checks passed!" << std::endl;
+
+        if (targetTest == 128) {
+            std::cout << "Target test 128 finished successfully." << std::endl;
             return 0;
         }
     }

@@ -10,10 +10,12 @@
 #include "phide/editor/AdaptiveCodeEngine.hpp"
 #include "phide/plugin/PluginManager.hpp"
 #include <algorithm>
+#include <chrono>
 #include <cwctype>
 #include <filesystem>
 #include <fstream>
 #include <functional>
+#include <mutex>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -1493,23 +1495,63 @@ static std::filesystem::path ResolveBaseDir(const std::wstring& fileName, const 
     return std::filesystem::current_path(ec);
 }
 
+static bool IsPathInsideRoot(const std::filesystem::path& path, const std::filesystem::path& root) {
+    if (root.empty() || path.empty()) return false;
+    std::error_code ec;
+    auto normRoot = std::filesystem::weakly_canonical(root, ec);
+    auto normPath = std::filesystem::weakly_canonical(path, ec);
+    if (normRoot.empty() || normPath.empty()) {
+        normRoot = root.lexically_normal();
+        normPath = path.lexically_normal();
+    }
+    auto itRoot = normRoot.begin();
+    auto itPath = normPath.begin();
+    for (; itRoot != normRoot.end(); ++itRoot, ++itPath) {
+        if (itRoot->empty() || *itRoot == L".") continue;
+        if (itPath == normPath.end()) return false;
+        std::wstring a = itRoot->wstring();
+        std::wstring b = itPath->wstring();
+        for (auto& c : a) c = static_cast<wchar_t>(towlower(c));
+        for (auto& c : b) c = static_cast<wchar_t>(towlower(c));
+        if (a != b) return false;
+    }
+    return true;
+}
+
+static bool HasProjectMarker(const std::filesystem::path& dir, std::error_code& ec) {
+    return std::filesystem::exists(dir / L"package.json", ec) ||
+           std::filesystem::exists(dir / L"node_modules", ec) ||
+           std::filesystem::exists(dir / L"composer.json", ec) ||
+           std::filesystem::exists(dir / L"pyproject.toml", ec) ||
+           std::filesystem::exists(dir / L".venv", ec);
+}
+
 static std::filesystem::path FindProjectRoot(const std::filesystem::path& baseDir, const std::wstring& workspaceRoot) {
     std::error_code ec;
-    std::filesystem::path cur = baseDir;
-    for (int depth = 0; depth < 7 && !cur.empty(); ++depth) {
-        if (std::filesystem::exists(cur / L"package.json", ec) ||
-            std::filesystem::exists(cur / L"node_modules", ec) ||
-            std::filesystem::exists(cur / L"composer.json", ec) ||
-            std::filesystem::exists(cur / L"pyproject.toml", ec) ||
-            std::filesystem::exists(cur / L".venv", ec)) {
-            return cur;
+    std::filesystem::path wsPath = workspaceRoot;
+    bool hasWs = !wsPath.empty() && std::filesystem::exists(wsPath, ec);
+    if (hasWs && !baseDir.empty() && IsPathInsideRoot(baseDir, wsPath)) {
+        std::filesystem::path cur = baseDir;
+        for (int depth = 0; depth < 7 && !cur.empty(); ++depth) {
+            if (HasProjectMarker(cur, ec)) {
+                return cur;
+            }
+            if (std::filesystem::equivalent(cur, wsPath, ec)) {
+                break;
+            }
+            auto parent = cur.parent_path();
+            if (parent == cur || !IsPathInsideRoot(parent, wsPath)) break;
+            cur = parent;
         }
-        auto parent = cur.parent_path();
-        if (parent == cur) break;
-        cur = parent;
+        return wsPath;
     }
-    if (!workspaceRoot.empty() && std::filesystem::exists(workspaceRoot, ec)) {
-        return std::filesystem::path(workspaceRoot);
+    // For loose files or empty workspaceRoot, check only baseDir directly without
+    // climbing up into ancestor directories (e.g. %USERPROFILE%\package.json).
+    if (!baseDir.empty() && HasProjectMarker(baseDir, ec)) {
+        return baseDir;
+    }
+    if (hasWs) {
+        return wsPath;
     }
     return baseDir;
 }
@@ -2113,7 +2155,11 @@ static void ProvideIdCompletions(
 
     for (const auto& sDir : searchDirs) {
         int scanned = 0;
-        for (std::filesystem::directory_iterator it(sDir, ec); !ec && it != std::filesystem::directory_iterator() && scanned < 10; it.increment(ec)) {
+        int visited = 0;
+        for (std::filesystem::directory_iterator it(sDir, std::filesystem::directory_options::skip_permission_denied, ec);
+             !ec && it != std::filesystem::directory_iterator() && scanned < 10 && visited < 60;
+             it.increment(ec)) {
+            ++visited;
             if (!it->is_regular_file(ec)) continue;
             auto p = it->path();
             if (p.extension() != L".css") continue;
@@ -2545,7 +2591,11 @@ static void ProvideClassCompletions(
     // 3. All .css files in baseDir (same directory as the HTML/React file)
     if (!baseDir.empty() && std::filesystem::exists(baseDir, ec)) {
         int localCount = 0;
-        for (std::filesystem::directory_iterator it(baseDir, ec); !ec && it != std::filesystem::directory_iterator() && localCount < 25; it.increment(ec)) {
+        int localVisited = 0;
+        for (std::filesystem::directory_iterator it(baseDir, std::filesystem::directory_options::skip_permission_denied, ec);
+             !ec && it != std::filesystem::directory_iterator() && localCount < 25 && localVisited < 120;
+             it.increment(ec)) {
+            ++localVisited;
             if (!it->is_regular_file(ec)) continue;
             auto p = it->path();
             std::wstring ext = p.extension().wstring();
@@ -2557,40 +2607,77 @@ static void ProvideClassCompletions(
         }
     }
 
-    // 4. All .css files across the workspace (up to depth 4, skipping node_modules/.next/dist/build/etc.)
+    // 4. All .css files across the workspace (cached 5s per root, bounded entries & depth)
     if (!projectRoot.empty() && std::filesystem::exists(projectRoot, ec)) {
-        try {
-            std::error_code ecIter;
-            std::filesystem::recursive_directory_iterator it(
-                projectRoot, std::filesystem::directory_options::skip_permission_denied, ecIter);
-            std::filesystem::recursive_directory_iterator endIt;
-            int wsCssCount = 0;
-            for (; it != endIt && !ecIter && wsCssCount < 40; it.increment(ecIter)) {
-                if (it.depth() > 4) {
-                    it.disable_recursion_pending();
-                    continue;
-                }
-                if (it->is_directory(ecIter)) {
-                    std::wstring dName = it->path().filename().wstring();
-                    for (auto& c : dName) c = static_cast<wchar_t>(towlower(c));
-                    if (dName == L"node_modules" || dName == L".git" || dName == L".next" ||
-                        dName == L"dist" || dName == L"build" || dName == L"out" ||
-                        dName == L"vendor" || dName == L".phide" || dName == L".venv" || dName == L"venv") {
-                        it.disable_recursion_pending();
-                    }
-                    continue;
-                }
-                if (it->is_regular_file(ecIter)) {
-                    auto p = it->path();
-                    std::wstring ext = p.extension().wstring();
-                    for (auto& c : ext) c = static_cast<wchar_t>(towlower(c));
-                    if (ext == L".css") {
-                        wsCssCount++;
-                        queueCssFile(p, 3250);
-                    }
-                }
+        struct WsCssScanCacheEntry {
+            std::chrono::steady_clock::time_point scannedAt;
+            std::vector<std::filesystem::path> cssFiles;
+        };
+        static std::mutex s_wsCssCacheMutex;
+        static std::unordered_map<std::wstring, WsCssScanCacheEntry> s_wsCssCache;
+
+        std::wstring rootKey = projectRoot.lexically_normal().wstring();
+        for (auto& c : rootKey) c = static_cast<wchar_t>(towlower(c));
+
+        auto now = std::chrono::steady_clock::now();
+        std::vector<std::filesystem::path> discoveredCss;
+        bool cacheHit = false;
+        {
+            std::lock_guard<std::mutex> lock(s_wsCssCacheMutex);
+            auto itCache = s_wsCssCache.find(rootKey);
+            if (itCache != s_wsCssCache.end() && (now - itCache->second.scannedAt) < std::chrono::seconds(5)) {
+                discoveredCss = itCache->second.cssFiles;
+                cacheHit = true;
             }
-        } catch (...) {}
+        }
+
+        if (!cacheHit) {
+            try {
+                std::error_code ecIter;
+                std::filesystem::recursive_directory_iterator it(
+                    projectRoot, std::filesystem::directory_options::skip_permission_denied, ecIter);
+                std::filesystem::recursive_directory_iterator endIt;
+                int wsCssCount = 0;
+                int visitedEntries = 0;
+                for (; it != endIt && !ecIter && wsCssCount < 40 && visitedEntries < 500; it.increment(ecIter)) {
+                    ++visitedEntries;
+                    if (it.depth() > 4) {
+                        it.disable_recursion_pending();
+                        continue;
+                    }
+                    if (it->is_directory(ecIter)) {
+                        std::wstring dName = it->path().filename().wstring();
+                        for (auto& c : dName) c = static_cast<wchar_t>(towlower(c));
+                        if ((!dName.empty() && dName[0] == L'.') ||
+                            dName == L"node_modules" || dName == L"dist" || dName == L"build" ||
+                            dName == L"out" || dName == L"vendor" || dName == L"venv" ||
+                            dName == L"__pycache__" || dName == L"appdata" || dName == L"coverage" ||
+                            dName == L"tmp" || dName == L"temp" || dName == L"target" ||
+                            dName == L"bin" || dName == L"obj") {
+                            it.disable_recursion_pending();
+                        }
+                        continue;
+                    }
+                    if (it->is_regular_file(ecIter)) {
+                        auto p = it->path();
+                        std::wstring ext = p.extension().wstring();
+                        for (auto& c : ext) c = static_cast<wchar_t>(towlower(c));
+                        if (ext == L".css") {
+                            wsCssCount++;
+                            discoveredCss.push_back(std::move(p));
+                        }
+                    }
+                }
+            } catch (...) {}
+
+            std::lock_guard<std::mutex> lock(s_wsCssCacheMutex);
+            if (s_wsCssCache.size() > 32) s_wsCssCache.clear();
+            s_wsCssCache[rootKey] = { std::chrono::steady_clock::now(), discoveredCss };
+        }
+
+        for (const auto& p : discoveredCss) {
+            queueCssFile(p, 3250);
+        }
     }
 
     // 5. Populate classes from all queued CSS files using mtime cache
@@ -3049,7 +3136,8 @@ std::vector<IntelliSenseItem> IntelliSenseEngine::QueryCompletions(
     bool isHtml = (ext == L".html" || ext == L".htm" || (isPhp && !insidePhp));
     bool isCss = (ext == L".css" || ext == L".scss" || ext == L".less");
     bool insideTagAttr = false;
-    bool isJs = (ext == L".js" || ext == L".jsx" || ext == L".ts" || ext == L".tsx" || ext == L".mjs" || ext == L".cjs");
+    bool isJs = (ext == L".js" || ext == L".jsx" || ext == L".ts" || ext == L".tsx" || ext == L".mjs" || ext == L".cjs" || ext == L".mts" || ext == L".cts");
+    bool isTs = (ext == L".ts" || ext == L".tsx" || ext == L".mts" || ext == L".cts");
     bool isPy = (ext == L".py");
     bool pyExclusive = false;                        // Python import/member context: show ONLY these items
     std::vector<IntelliSenseItem> pyExclusiveItems;
@@ -4083,6 +4171,11 @@ std::vector<IntelliSenseItem> IntelliSenseEngine::QueryCompletions(
                     for (const auto& kw : m_jsKeywords) rawCandidates.push_back(kw);
                     for (const auto& d : m_jsDomApis) rawCandidates.push_back(d);
                     for (const auto& r : m_reactAndNodeVocabulary) rawCandidates.push_back(r);
+                    if (isTs) {
+                        for (const auto& tsItem : WebIntelliSenseData::GetTypeScriptGlobalsAndUtilityTypes()) {
+                            rawCandidates.push_back(tsItem);
+                        }
+                    }
 
                     // In React JSX/TSX files, also provide HTML element tags
                     if (ext == L".jsx" || ext == L".tsx") {

@@ -753,6 +753,15 @@ void EditorCanvas::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
     if (m_breadcrumbDropdownOpen) {
         RenderBreadcrumbDropdown(pRT, theme, config, clientHeight);
     }
+    if (m_codeActionMenu.visible) {
+        RenderCodeActionMenu(pRT, theme, config, clientHeight);
+    }
+    if (m_sigHelpPopup.visible) {
+        RenderSignatureHelpPopup(pRT, theme, config, clientHeight);
+    }
+    if (m_hoverCard.visible) {
+        RenderRichHoverCard(pRT, theme, config, clientHeight);
+    }
 
     // Render floating dragged tab pill on TOP of EVERYTHING (above tabs, breadcrumbs, and editor canvas)
     if (m_isDraggingTab && !m_dragTabTitle.empty() && (m_dragTabPos.x > 0.0f || m_dragTabPos.y > 0.0f)) {
@@ -1376,6 +1385,7 @@ void EditorCanvas::RenderTabs(ID2D1RenderTarget* pRT, Theme& theme, const app::A
 void EditorCanvas::RenderBreadcrumbs(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
                                      const editor::OpenDocument& doc, float canvasLeft, float canvasWidth,
                                      float barY, float barHeight, bool isFocusedPane) {
+    m_breadcrumbErrBadgeBounds = D2D1::RectF(0, 0, 0, 0);
     if (!pRT || barHeight <= 0.0f) return;
     const float canvasRight = canvasLeft + canvasWidth;
     D2D1_RECT_F rcBar = D2D1::RectF(canvasLeft, barY, canvasRight, barY + barHeight);
@@ -1435,6 +1445,7 @@ void EditorCanvas::RenderBreadcrumbs(ID2D1RenderTarget* pRT, Theme& theme, const
         D2D1_RECT_F rcErrText = D2D1::RectF(iconCx + config.ScaleF(6.0f), badgeY, badgeX + badgeW - config.ScaleF(2.0f), badgeY + badgeH);
         pRT->DrawText(errBadgeStr.c_str(), static_cast<UINT32>(errBadgeStr.length()),
                       theme.fontButtonCenter ? theme.fontButtonCenter.Get() : theme.fontBody.Get(), rcErrText, redBrush);
+        m_breadcrumbErrBadgeBounds = rcErrBadge;
     }
 
     // Parse segments from doc.filePath (Image 4) or course hierarchy
@@ -2946,53 +2957,67 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
 
             // 1. "Run" button
             const wchar_t* runText = L"Run";
-            float runW = config.ScaleF(26.0f);
-            D2D1_RECT_F rcRun = D2D1::RectF(clX, lineY, clX + runW, lineY + lineH);
-            int runIdx = static_cast<int>(m_activeCodeLensActions.size());
-            bool isRunHovered = (runIdx == m_hoveredCodeLensIdx);
+            (void)runText;
+            auto measureClW = [&](const std::wstring& txt, float fallback) -> float {
+                if (!theme.dwriteFactory || !clFormat) return fallback;
+                Microsoft::WRL::ComPtr<IDWriteTextLayout> tl;
+                if (SUCCEEDED(theme.dwriteFactory->CreateTextLayout(
+                        txt.c_str(), static_cast<UINT32>(txt.size()), clFormat, 400.0f, lineH, &tl))) {
+                    DWRITE_TEXT_METRICS tm{};
+                    if (SUCCEEDED(tl->GetMetrics(&tm))) {
+                        return tm.widthIncludingTrailingWhitespace + config.ScaleF(4.0f);
+                    }
+                }
+                return fallback;
+            };
+            auto emitClItem = [&](const std::wstring& label, CodeLensAction::ActionKind kind, bool isDbg,
+                                  const std::wstring& symName, float fallbackW) {
+                float w = measureClW(label, fallbackW);
+                D2D1_RECT_F rc = D2D1::RectF(clX, lineY, clX + w, lineY + lineH);
+                int idx = static_cast<int>(m_activeCodeLensActions.size());
+                bool hov = (idx == m_hoveredCodeLensIdx);
+                CodeLensAction act;
+                act.bufferLine = vl.bufferLine;
+                act.isDebug = isDbg;
+                act.kind = kind;
+                act.symbolName = symName;
+                act.bounds = rc;
+                m_activeCodeLensActions.push_back(std::move(act));
+                pRT->DrawText(label.c_str(), static_cast<UINT32>(label.size()), clFormat, rc,
+                              hov ? brushClHover.Get() : brushClNormal.Get());
+                if (hov && brushClHover) {
+                    pRT->DrawLine(D2D1::Point2F(rc.left, lineY + lineH - config.ScaleF(3.0f)),
+                                  D2D1::Point2F(rc.right - config.ScaleF(3.0f), lineY + lineH - config.ScaleF(3.0f)),
+                                  brushClHover.Get(), 1.0f);
+                }
+                clX += w;
+            };
+            auto emitClSep = [&]() {
+                const wchar_t* sepText = L" | ";
+                float sepW = config.ScaleF(14.0f);
+                D2D1_RECT_F rcSep = D2D1::RectF(clX, lineY, clX + sepW, lineY + lineH);
+                pRT->DrawText(sepText, 3, clFormat, rcSep, brushClNormal.Get());
+                clX += sepW;
+            };
 
-            CodeLensAction runAct;
-            runAct.bufferLine = vl.bufferLine;
-            runAct.isDebug = false;
-            runAct.bounds = rcRun;
-            m_activeCodeLensActions.push_back(runAct);
-
-            pRT->DrawText(runText, static_cast<UINT32>(wcslen(runText)), clFormat, rcRun,
-                          isRunHovered ? brushClHover.Get() : brushClNormal.Get());
-            if (isRunHovered && brushClHover) {
-                pRT->DrawLine(D2D1::Point2F(rcRun.left, lineY + lineH - config.ScaleF(3.0f)),
-                              D2D1::Point2F(rcRun.right - config.ScaleF(4.0f), lineY + lineH - config.ScaleF(3.0f)),
-                              brushClHover.Get(), 1.0f);
+            bool isTestLens = false;
+            auto clIt = doc.codeLensMap.find(vl.bufferLine);
+            if (clIt != doc.codeLensMap.end()) {
+                isTestLens = clIt->second.isTestEntry;
+                if (!clIt->second.symbolName.empty()) {
+                    std::wstring refTxt = std::to_wstring(clIt->second.referenceCount) +
+                                          (clIt->second.referenceCount == 1 ? L" reference" : L" references");
+                    emitClItem(refTxt, CodeLensAction::ActionKind::References, false, clIt->second.symbolName, config.ScaleF(68.0f));
+                    emitClSep();
+                }
             }
-
-            // Separator " | "
-            clX += runW;
-            const wchar_t* sepText = L" | ";
-            float sepW = config.ScaleF(14.0f);
-            D2D1_RECT_F rcSep = D2D1::RectF(clX, lineY, clX + sepW, lineY + lineH);
-            pRT->DrawText(sepText, static_cast<UINT32>(wcslen(sepText)), clFormat, rcSep, brushClNormal.Get());
-            clX += sepW;
-
-            // 2. "Debug" button
-            const wchar_t* debugText = L"Debug";
-            float debugW = config.ScaleF(38.0f);
-            D2D1_RECT_F rcDebug = D2D1::RectF(clX, lineY, clX + debugW, lineY + lineH);
-            int debugIdx = static_cast<int>(m_activeCodeLensActions.size());
-            bool isDebugHovered = (debugIdx == m_hoveredCodeLensIdx);
-
-            CodeLensAction debugAct;
-            debugAct.bufferLine = vl.bufferLine;
-            debugAct.isDebug = true;
-            debugAct.bounds = rcDebug;
-            m_activeCodeLensActions.push_back(debugAct);
-
-            pRT->DrawText(debugText, static_cast<UINT32>(wcslen(debugText)), clFormat, rcDebug,
-                          isDebugHovered ? brushClHover.Get() : brushClNormal.Get());
-            if (isDebugHovered && brushClHover) {
-                pRT->DrawLine(D2D1::Point2F(rcDebug.left, lineY + lineH - config.ScaleF(3.0f)),
-                              D2D1::Point2F(rcDebug.right - config.ScaleF(4.0f), lineY + lineH - config.ScaleF(3.0f)),
-                              brushClHover.Get(), 1.0f);
-            }
+            emitClItem(isTestLens ? L"Run Test" : L"Run",
+                       isTestLens ? CodeLensAction::ActionKind::RunTest : CodeLensAction::ActionKind::Run,
+                       false, L"", config.ScaleF(isTestLens ? 52.0f : 26.0f));
+            emitClSep();
+            emitClItem(isTestLens ? L"Debug Test" : L"Debug",
+                       isTestLens ? CodeLensAction::ActionKind::DebugTest : CodeLensAction::ActionKind::Debug,
+                       true, L"", config.ScaleF(isTestLens ? 62.0f : 38.0f));
 
             continue; // Virtual CodeLens line has no code tokens
         }
@@ -4220,6 +4245,7 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
 
     // 4b. Gutter Elements (Line Numbers, Glowing Active Line, Breakpoints, Error Dots, Chevrons)
     if (config.showLineNumbers) {
+        m_codeActionMenu.lightbulbBounds = D2D1::RectF(0, 0, 0, 0);
         D2D1_RECT_F clipGutter = D2D1::RectF(canvasLeft, topY, canvasLeft + gutterW, clientHeight);
         pRT->PushAxisAlignedClip(clipGutter, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
 
@@ -4384,6 +4410,23 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
                         pRT->FillEllipse(D2D1::Ellipse(D2D1::Point2F(bulbX, bulbY - config.ScaleF(1.0f)), config.ScaleF(3.0f), config.ScaleF(3.0f)), bulbBrush.Get());
                     }
                 }
+            }
+
+            // Code Action Lightbulb (#24) in Gutter on active line when quick fixes / refactorings exist
+            if (!vl.isCodeLens && !vl.isPredictionVirtual &&
+                m_codeActionMenu.hasLightbulb && vl.bufferLine == m_codeActionMenu.lightbulbLine) {
+                float bulbX = canvasLeft + config.ScaleF(10.0f);
+                float bulbY = lineY + lineH * 0.5f;
+                float r = config.ScaleF(4.0f);
+                Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> actBulbBrush;
+                pRT->CreateSolidColorBrush(D2D1::ColorF(0.98f, 0.82f, 0.22f, 1.0f), &actBulbBrush);
+                if (actBulbBrush) {
+                    pRT->FillEllipse(D2D1::Ellipse(D2D1::Point2F(bulbX, bulbY - config.ScaleF(1.2f)), r, r), actBulbBrush.Get());
+                    pRT->DrawLine(D2D1::Point2F(bulbX - r * 0.45f, bulbY + r * 0.9f),
+                                  D2D1::Point2F(bulbX + r * 0.45f, bulbY + r * 0.9f), actBulbBrush.Get(), 1.4f);
+                }
+                m_codeActionMenu.lightbulbBounds = D2D1::RectF(bulbX - config.ScaleF(7.0f), lineY,
+                                                                 bulbX + config.ScaleF(7.0f), lineY + lineH);
             }
 
             // Code Folding Chevron in Gutter (Images 2 & 3) - O(1) check without scanning to end of buffer

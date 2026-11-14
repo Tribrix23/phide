@@ -12,6 +12,7 @@
 #include "phide/editor/PythonEnvironment.hpp"
 #include "phide/editor/FormatEngine.hpp"
 #include "phide/editor/TailwindHelper.hpp"
+#include "phide/editor/LanguageIntelligence.hpp"
 #include "phide/ui/PhideLogo.hpp"
 #include "phide/ui/SplashScreen.hpp"
 #include "phide/plugin/PluginManager.hpp"
@@ -57,6 +58,38 @@ static bool AreRecentPathsEqual(const std::wstring& a, const std::wstring& b) {
     std::wstring na = NormalizeRecentPath(a);
     std::wstring nb = NormalizeRecentPath(b);
     return _wcsicmp(na.c_str(), nb.c_str()) == 0;
+}
+
+[[nodiscard]] static bool PtInRectF(POINT pt, const D2D1_RECT_F& r) noexcept {
+    return r.right > r.left && r.bottom > r.top &&
+           static_cast<float>(pt.x) >= r.left && static_cast<float>(pt.x) <= r.right &&
+           static_cast<float>(pt.y) >= r.top && static_cast<float>(pt.y) <= r.bottom;
+}
+
+static void ApplyUpdatedBufferText(editor::OpenDocument* pDoc, const std::wstring& newText, size_t targetLine, size_t targetCol) {
+    if (!pDoc) return;
+    pDoc->buffer.PushUndo();
+    std::vector<std::wstring> newLines;
+    size_t pos = 0;
+    while (pos <= newText.size()) {
+        size_t nl = newText.find(L'\n', pos);
+        if (nl == std::wstring::npos) {
+            std::wstring seg = newText.substr(pos);
+            if (!seg.empty() && seg.back() == L'\r') seg.pop_back();
+            newLines.push_back(std::move(seg));
+            break;
+        }
+        std::wstring seg = newText.substr(pos, nl - pos);
+        if (!seg.empty() && seg.back() == L'\r') seg.pop_back();
+        newLines.push_back(std::move(seg));
+        pos = nl + 1;
+    }
+    if (newLines.empty()) newLines.push_back(L"");
+    pDoc->buffer.ReplaceLineSlice(0, pDoc->buffer.GetLineCount(), newLines);
+    size_t lc = pDoc->buffer.GetLineCount();
+    size_t cl = (lc > 0) ? (std::min)(targetLine, lc - 1) : 0;
+    size_t cc = (std::min)(targetCol, pDoc->buffer.GetLine(cl).length());
+    pDoc->buffer.SetCursor(cl, cc);
 }
 
 static bool IsPortListening(int port);
@@ -770,6 +803,15 @@ void Window::SaveSessionState() {
     out << L"  \"enableMarkdownPreview\": " << (m_config.enableMarkdownPreview ? L"true" : L"false") << L",\n";
     out << L"  \"enableCodeLens\": " << (m_config.enableCodeLens ? L"true" : L"false") << L",\n";
     out << L"  \"enableGitLens\": " << (m_config.enableGitLens ? L"true" : L"false") << L",\n";
+    out << L"  \"enableInlayHints\": " << (m_config.enableInlayHints ? L"true" : L"false") << L",\n";
+    out << L"  \"enablePrivacyMask\": " << (m_config.enablePrivacyMask ? L"true" : L"false") << L",\n";
+    out << L"  \"enableLspHover\": " << (m_config.enableLspHover ? L"true" : L"false") << L",\n";
+    out << L"  \"enableSignatureHelp\": " << (m_config.enableSignatureHelp ? L"true" : L"false") << L",\n";
+    out << L"  \"enableExternalLinters\": " << (m_config.enableExternalLinters ? L"true" : L"false") << L",\n";
+    out << L"  \"lspPathTypeScript\": \"" << EscapeJson(m_config.lspPathTypeScript) << L"\",\n";
+    out << L"  \"lspPathPython\": \"" << EscapeJson(m_config.lspPathPython) << L"\",\n";
+    out << L"  \"lspPathPhp\": \"" << EscapeJson(m_config.lspPathPhp) << L"\",\n";
+    out << L"  \"lspPathCpp\": \"" << EscapeJson(m_config.lspPathCpp) << L"\",\n";
     out << L"  \"activeDocIdx\": " << GetActiveGroup().activeDocIdx << L",\n";
     out << L"  \"splitLayout\": " << static_cast<int>(m_splitState.layout) << L",\n";
     out << L"  \"splitX1\": " << m_splitState.splitX1 << L",\n";
@@ -1338,6 +1380,36 @@ void Window::LoadSessionState() {
             m_config.enableCodeLens = (line.find(L"true") != std::wstring::npos);
         } else if (line.find(L"\"enableGitLens\"") != std::wstring::npos) {
             m_config.enableGitLens = (line.find(L"true") != std::wstring::npos);
+        } else if (line.find(L"\"enableInlayHints\"") != std::wstring::npos) {
+            m_config.enableInlayHints = (line.find(L"true") != std::wstring::npos);
+        } else if (line.find(L"\"enablePrivacyMask\"") != std::wstring::npos) {
+            m_config.enablePrivacyMask = (line.find(L"true") != std::wstring::npos);
+        } else if (line.find(L"\"enableLspHover\"") != std::wstring::npos) {
+            m_config.enableLspHover = (line.find(L"true") != std::wstring::npos);
+        } else if (line.find(L"\"enableSignatureHelp\"") != std::wstring::npos) {
+            m_config.enableSignatureHelp = (line.find(L"true") != std::wstring::npos);
+        } else if (line.find(L"\"enableExternalLinters\"") != std::wstring::npos) {
+            m_config.enableExternalLinters = (line.find(L"true") != std::wstring::npos);
+        } else if (line.find(L"\"lspPathTypeScript\"") != std::wstring::npos) {
+            auto q1 = line.find(L':'); q1 = (q1 != std::wstring::npos) ? line.find(L'"', q1) : std::wstring::npos;
+            auto q2 = (q1 != std::wstring::npos) ? line.rfind(L'"') : std::wstring::npos;
+            if (q1 != std::wstring::npos && q2 != std::wstring::npos && q2 > q1)
+                m_config.lspPathTypeScript = UnescapeJson(line.substr(q1 + 1, q2 - q1 - 1));
+        } else if (line.find(L"\"lspPathPython\"") != std::wstring::npos) {
+            auto q1 = line.find(L':'); q1 = (q1 != std::wstring::npos) ? line.find(L'"', q1) : std::wstring::npos;
+            auto q2 = (q1 != std::wstring::npos) ? line.rfind(L'"') : std::wstring::npos;
+            if (q1 != std::wstring::npos && q2 != std::wstring::npos && q2 > q1)
+                m_config.lspPathPython = UnescapeJson(line.substr(q1 + 1, q2 - q1 - 1));
+        } else if (line.find(L"\"lspPathPhp\"") != std::wstring::npos) {
+            auto q1 = line.find(L':'); q1 = (q1 != std::wstring::npos) ? line.find(L'"', q1) : std::wstring::npos;
+            auto q2 = (q1 != std::wstring::npos) ? line.rfind(L'"') : std::wstring::npos;
+            if (q1 != std::wstring::npos && q2 != std::wstring::npos && q2 > q1)
+                m_config.lspPathPhp = UnescapeJson(line.substr(q1 + 1, q2 - q1 - 1));
+        } else if (line.find(L"\"lspPathCpp\"") != std::wstring::npos) {
+            auto q1 = line.find(L':'); q1 = (q1 != std::wstring::npos) ? line.find(L'"', q1) : std::wstring::npos;
+            auto q2 = (q1 != std::wstring::npos) ? line.rfind(L'"') : std::wstring::npos;
+            if (q1 != std::wstring::npos && q2 != std::wstring::npos && q2 > q1)
+                m_config.lspPathCpp = UnescapeJson(line.substr(q1 + 1, q2 - q1 - 1));
         } else if (line.find(L"\"openDocs\"") != std::wstring::npos) {
             currentArray = L"openDocs";
         } else if (line.find(L"\"expandedDirs\"") != std::wstring::npos) {
@@ -1420,6 +1492,7 @@ void Window::LoadSessionState() {
     // Synchronize editor typography with restored font preferences
     m_theme.SetEditorFont(m_config.fontFamily, m_config.fontSize);
     m_editor.ResetCharWidth();
+    PushCustomLspServerPaths();
 
     // Check if launched as a freshly clean new window (Ctrl+Shift+N / File > New Window)
     LPCWSTR cmdLine = GetCommandLineW();
@@ -1674,8 +1747,8 @@ void Window::UpdateEditorGroupBounds() noexcept {
     GetCanvasLayout(clientW, canvasLeft, canvasWidth);
     const float headerH = m_config.zenMode ? 0.0f : m_config.ScaleF(static_cast<float>(m_config.headerHeight));
     const float statusBarH = (m_config.showStatusBar && !m_config.zenMode) ? m_config.ScaleF(22.0f) : 0.0f;
-    const float termH = m_config.zenMode ? 0.0f : GetCurrentTerminalHeight(clientH);
-    const float termGap = (!m_config.zenMode && m_terminalAnimProgress > 0.001f && m_terminal.IsOpen() && m_terminal.GetDockPosition() == 0)
+    const float termH = m_config.zenMode ? 0.0f : GetCurrentBottomDockHeight(clientH);
+    const float termGap = (!m_config.zenMode && ((m_terminalAnimProgress > 0.001f && m_terminal.IsOpen() && m_terminal.GetDockPosition() == 0) || IsBottomProblemsVisible()))
         ? m_config.ScaleF(6.0f) : 0.0f;
     const float editorH = (std::max)(headerH + 20.0f, clientH - statusBarH - termH - termGap);
 
@@ -1718,8 +1791,8 @@ int Window::HitTestEditorSplitter(POINT pt) const noexcept {
     GetCanvasLayout(clientW, canvasLeft, canvasWidth);
     const float headerH = m_config.zenMode ? 0.0f : m_config.ScaleF(static_cast<float>(m_config.headerHeight));
     const float statusBarH = (m_config.showStatusBar && !m_config.zenMode) ? m_config.ScaleF(22.0f) : 0.0f;
-    const float termH = m_config.zenMode ? 0.0f : GetCurrentTerminalHeight(clientH);
-    const float termGap = (!m_config.zenMode && m_terminalAnimProgress > 0.001f && m_terminal.IsOpen() && m_terminal.GetDockPosition() == 0)
+    const float termH = m_config.zenMode ? 0.0f : GetCurrentBottomDockHeight(clientH);
+    const float termGap = (!m_config.zenMode && ((m_terminalAnimProgress > 0.001f && m_terminal.IsOpen() && m_terminal.GetDockPosition() == 0) || IsBottomProblemsVisible()))
         ? m_config.ScaleF(6.0f) : 0.0f;
     const float editorH = (std::max)(headerH + 20.0f, clientH - statusBarH - termH - termGap);
     if (pt.x < canvasLeft || pt.x > canvasLeft + canvasWidth || pt.y < headerH || pt.y > editorH) {
@@ -2602,8 +2675,12 @@ void Window::OpenFileDocument(const std::wstring& path, bool isPreview) {
     SaveSessionState();
 
     phide::plugin::PluginManager::Instance().DispatchEvent(L"onDocumentOpen", resolvedPath);
-    if (!newDoc.isSpecialView && !newDoc.isImageView && !newDoc.isUnsupportedBinary) {
-        StartLspForDocumentAsync(resolvedPath, newDoc.buffer.GetText());
+    if (group.activeDocIdx >= 0 && group.activeDocIdx < static_cast<int>(group.docs.size())) {
+        auto& openedDoc = group.docs[group.activeDocIdx];
+        if (!openedDoc.isSpecialView && !openedDoc.isImageView && !openedDoc.isUnsupportedBinary) {
+            StartLspForDocumentAsync(resolvedPath, openedDoc.buffer.GetText());
+            ScheduleLangIntelAndLintersAsync(&openedDoc, m_config.enableExternalLinters);
+        }
     }
 
     if (m_config.enableMarkdownPreview && IsMarkdownFile(resolvedPath)) {
@@ -3399,6 +3476,22 @@ void Window::RunCodeLens(size_t bufferLine, bool isDebug) {
     } else {
         DoRunActiveDocument();
     }
+}
+
+void Window::HandleCodeLensClick(const ui::EditorCanvas::CodeLensAction& act) {
+    auto* pDoc = GetActiveDoc();
+    if (!pDoc || pDoc->isSpecialView) return;
+    size_t col = 0;
+    if (!act.symbolName.empty() && act.bufferLine < pDoc->buffer.GetLineCount()) {
+        size_t pos = pDoc->buffer.GetLine(act.bufferLine).find(act.symbolName);
+        if (pos != std::wstring::npos) col = pos;
+    }
+    pDoc->buffer.SetCursor(act.bufferLine, col);
+    if (act.kind == ui::EditorCanvas::CodeLensAction::ActionKind::References) {
+        DoFindReferences();
+        return;
+    }
+    RunCodeLens(act.bufferLine, act.isDebug);
 }
 
 void Window::OpenExtensionDetail(const std::wstring& extId) {
@@ -4355,6 +4448,7 @@ void Window::UpdateDrawerErrorFiles() {
         }
     }
     m_drawer.SetErrorFiles(errorFiles);
+    RebuildProblemsCache();
 }
 
 bool Window::IsCursorInComment(const editor::OpenDocument* pDoc) const {
@@ -4691,9 +4785,30 @@ void Window::CommitAutocompleteSelection() {
         }
     }
 
-    // Auto-import and "use client" support: if the completed symbol came from an installed NPM library,
-    // React hooks, or workspace file (`documentation == L"auto-import:<moduleSpec>"`), ensure it is imported!
-    if (item->documentation.rfind(L"auto-import:", 0) == 0 || item->origin == L"react" || item->label.starts_with(L"use")) {
+    // Auto-import and "use client" support:
+    if (item->documentation.rfind(L"auto-import-stmt:", 0) == 0) {
+        editor::ImportCandidate ic;
+        ic.symbol = item->label;
+        ic.importStatement = item->documentation.substr(17);
+        if (!ic.importStatement.empty()) {
+            std::wstring targetPath = pDoc->filePath.empty() ? pDoc->fileName : pDoc->filePath;
+            std::wstring curText = pDoc->buffer.GetText();
+            size_t insLine = 0;
+            size_t oldLineCount = pDoc->buffer.GetLineCount();
+            auto curPosBefore = pDoc->buffer.GetCursor();
+            std::wstring nextText = editor::ImportOrganizer::InsertImportStatement(targetPath, curText, ic, &insLine);
+            if (nextText != curText) {
+                pDoc->buffer.PushUndo();
+                pDoc->buffer.SetText(nextText);
+                size_t newLineCount = pDoc->buffer.GetLineCount();
+                size_t deltaLines = (newLineCount > oldLineCount) ? (newLineCount - oldLineCount) : 0;
+                size_t targetL = curPosBefore.line + ((deltaLines > 0 && insLine <= curPosBefore.line) ? deltaLines : 0);
+                targetL = (std::min)(targetL, (newLineCount > 0 ? newLineCount - 1 : 0));
+                size_t targetC = (std::min)(curPosBefore.col, pDoc->buffer.GetLine(targetL).size());
+                pDoc->buffer.SetCursor(targetL, targetC);
+            }
+        }
+    } else if (item->documentation.rfind(L"auto-import:", 0) == 0 || item->origin == L"react" || item->label.starts_with(L"use")) {
         std::wstring modSpec = (item->documentation.rfind(L"auto-import:", 0) == 0) ? item->documentation.substr(12) : L"react";
         EnsureAutoImportAndUseClient(pDoc, item->label, modSpec);
     }
@@ -4950,9 +5065,22 @@ void Window::DoChangeAllOccurrences() {
     }
 }
 
+void Window::DoCodeActions() {
+    auto* pDoc = GetActiveDoc();
+    if (!pDoc || pDoc->isSpecialView || pDoc->isUnsupportedBinary) return;
+    m_editor.DismissHoverCard();
+    RequestCodeActionsAsync(pDoc, true, false);
+}
+
 void Window::DoRefactor() {
-    m_editor.ShowRefactorPopup(L"No refactorings available");
-    InvalidateRect(m_hwnd, nullptr, FALSE);
+    auto* pDoc = GetActiveDoc();
+    if (!pDoc || pDoc->isSpecialView || pDoc->isUnsupportedBinary) {
+        m_editor.ShowRefactorPopup(L"No refactorings available");
+        InvalidateRect(m_hwnd, nullptr, FALSE);
+        return;
+    }
+    m_editor.DismissHoverCard();
+    RequestCodeActionsAsync(pDoc, true, true);
 }
 
 void Window::DoCommandPalette() {
@@ -5458,6 +5586,7 @@ void Window::DoShowSourceControl() {
 }
 
 void Window::AnimateTerminalOpen() {
+    m_bottomProblemsActive = false;
     m_targetTerminalProgress = 1.0f;
     m_isTerminalAnimating = true;
     SetTimer(m_hwnd, m_animTimerId, 16, nullptr);
@@ -5510,6 +5639,10 @@ void Window::DoCreateTerminal() {
     }
     if (!m_terminal.IsOpen()) {
         m_terminal.Open(dir);
+        m_isTerminalFocused = true;
+        AnimateTerminalOpen();
+    } else if (IsBottomProblemsVisible()) {
+        m_bottomProblemsActive = false;
         m_isTerminalFocused = true;
         AnimateTerminalOpen();
     } else {
@@ -6414,30 +6547,14 @@ void Window::OpenStatusBarIndentationPopup() {
 void Window::DoOrganizeImports() {
     auto* pDoc = GetActiveDoc();
     if (!pDoc || pDoc->isSpecialView) return;
-    std::vector<std::wstring> imports;
-    size_t importStart = (std::numeric_limits<size_t>::max)();
-    size_t importEnd = 0;
-    size_t lineCount = pDoc->buffer.GetLineCount();
-    for (size_t i = 0; i < lineCount; ++i) {
-        std::wstring line = pDoc->buffer.GetLine(i);
-        auto trimmed = line;
-        size_t first = trimmed.find_first_not_of(L" \t");
-        if (first != std::wstring::npos) trimmed = trimmed.substr(first);
-        if (trimmed.rfind(L"import ", 0) == 0 || trimmed.rfind(L"#include", 0) == 0 ||
-            (trimmed.rfind(L"const ", 0) == 0 && trimmed.find(L"require(") != std::wstring::npos)) {
-            if (importStart == (std::numeric_limits<size_t>::max)()) importStart = i;
-            importEnd = i;
-            imports.push_back(line);
-        } else if (importStart != (std::numeric_limits<size_t>::max)()) {
-            if (!trimmed.empty()) break;
-        }
-    }
-    if (imports.size() > 1 && importStart != (std::numeric_limits<size_t>::max)()) {
-        std::sort(imports.begin(), imports.end());
-        for (size_t k = 0; k < imports.size(); ++k) {
-            pDoc->buffer.SetLine(importStart + k, imports[k]);
-        }
+    std::wstring filePath = pDoc->filePath.empty() ? pDoc->fileName : pDoc->filePath;
+    auto orgRes = editor::ImportOrganizer::OrganizeImports(filePath, pDoc->buffer.GetText());
+    if (orgRes.changed) {
+        auto cur = pDoc->buffer.GetCursor();
+        ApplyUpdatedBufferText(pDoc, orgRes.updatedText, cur.line, cur.col);
+        pDoc->hasSelection = false;
         MarkDocumentModified(pDoc);
+        ScheduleLangIntelAndLintersAsync(pDoc, false);
         InvalidateRect(m_hwnd, nullptr, FALSE);
     }
 }
@@ -10665,11 +10782,15 @@ void Window::OnPaint() {
         m_terminalAnimProgress = 0.0f;
     }
 
-    float currentTermH = GetCurrentTerminalHeight(clientH);
+    float currentTermH = GetCurrentBottomDockHeight(clientH);
     m_terminal.SetFullScreenProgress(m_termFullScreenProgress);
 
-    // Apply margin gap when terminal is open (user requirement: "make the height of the sidebar and editory misus it a bit when the terminal is open")
-    const float termGap = (m_terminalAnimProgress > 0.001f && m_terminal.IsOpen()) ? (m_config.ScaleF(8.0f) * (1.0f - m_termFullScreenProgress)) : 0.0f;
+    // Apply margin gap when bottom dock (Terminal or Problems panel) is open
+    const bool hasBottomDock = IsBottomProblemsVisible() ||
+        (m_terminalAnimProgress > 0.001f && m_terminal.IsOpen() && m_terminal.GetDockPosition() == 0);
+    const float termGap = hasBottomDock
+        ? (m_config.ScaleF(8.0f) * (1.0f - (IsBottomProblemsVisible() ? 0.0f : m_termFullScreenProgress)))
+        : 0.0f;
 
     const float effectiveRailW = m_config.zenMode ? 0.0f : railW;
     const float effectiveStatusBarH = (m_config.showStatusBar && !m_config.zenMode) ? m_config.ScaleF(22.0f) : 0.0f;
@@ -10796,8 +10917,10 @@ void Window::OnPaint() {
         m_extensionsPanel.ClearProcessesCardBounds();
     }
 
-    // 3. Integrated Terminal Panel (Bottom or Right Docked)
-    if (m_terminal.IsOpen()) {
+    // 3. Integrated Bottom Dock (Problems Panel OR Integrated Terminal Panel)
+    if (IsBottomProblemsVisible()) {
+        RenderBottomProblemsPanel(m_pRenderTarget.Get(), clientW, clientH, statusBarH, terminalLeft);
+    } else if (m_terminal.IsOpen()) {
         if (m_terminal.GetDockPosition() == 2) {
             float termW = m_terminal.GetRightWidth();
             float termX = clientW - termW;
@@ -10828,8 +10951,8 @@ void Window::OnPaint() {
             m_config.ScaleF(16.0f);
         const float cardX = clientW - cardW - rightOffset;
         float cardY = clientH - statusBarH - cardH - m_config.ScaleF(10.0f);
-        if (m_terminal.IsOpen()) {
-            float th = GetCurrentTerminalHeight(clientH);
+        if (IsBottomProblemsVisible() || (m_terminal.IsOpen() && m_terminal.GetDockPosition() == 0)) {
+            float th = GetCurrentBottomDockHeight(clientH);
             cardY = clientH - statusBarH - th - cardH - m_config.ScaleF(10.0f);
         }
         cardY = (std::max)(cardY, headerH + m_config.ScaleF(10.0f));
@@ -11983,6 +12106,7 @@ void Window::RenderStatusBar(float clientW, float clientH) {
     UpdateCachedGitInfo();
     m_rcStatusBarGitBranch = {};
     m_rcStatusBarGitUser = {};
+    m_rcStatusBarProblems = {};
     float curLeftX = (std::max)(m_config.ScaleF(32.0f), remoteEndX + m_config.ScaleF(6.0f));
     if (!m_cachedGitBranch.empty()) {
         const float branchIconSize = m_config.ScaleF(16.0f);
@@ -12132,6 +12256,65 @@ void Window::RenderStatusBar(float clientW, float clientH) {
                 curLeftX += blamePillW + containerGap;
             }
         }
+    }
+
+    // 4. Problems Summary Pill (Errors & Warnings - clickable, Ctrl+Shift+M)
+    {
+        std::wstring errNumStr = std::to_wstring(m_totalProblemErrors);
+        std::wstring warnNumStr = std::to_wstring(m_totalProblemWarnings);
+        auto measureSmallStr = [&](const std::wstring& s) -> float {
+            float w = m_config.ScaleF(10.0f) * static_cast<float>(s.length());
+            if (pFmt && m_theme.dwriteFactory && !s.empty()) {
+                Microsoft::WRL::ComPtr<IDWriteTextLayout> lay;
+                if (SUCCEEDED(m_theme.dwriteFactory->CreateTextLayout(s.c_str(), static_cast<UINT32>(s.length()), pFmt, 120.0f, itemH, &lay)) && lay) {
+                    DWRITE_TEXT_METRICS tm{};
+                    if (SUCCEEDED(lay->GetMetrics(&tm))) w = tm.widthIncludingTrailingWhitespace;
+                }
+            }
+            return w;
+        };
+        float pPadX = m_config.ScaleF(6.0f);
+        float pDotR = m_config.ScaleF(3.6f);
+        float pDotD = pDotR * 2.0f;
+        float pGap = m_config.ScaleF(4.0f);
+        float pMidGap = m_config.ScaleF(8.0f);
+        float errW = measureSmallStr(errNumStr);
+        float warnW = measureSmallStr(warnNumStr);
+        float pillW = pPadX + pDotD + pGap + errW + pMidGap + pDotD + pGap + warnW + pPadX;
+        m_rcStatusBarProblems = D2D1::RectF(curLeftX, itemY, curLeftX + pillW, itemY + itemH);
+        if (m_isHoveredStatusBarProblems || IsBottomProblemsVisible()) {
+            D2D1_ROUNDED_RECT rrc = D2D1::RoundedRect(m_rcStatusBarProblems, m_config.ScaleF(3.5f), m_config.ScaleF(3.5f));
+            Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> hoverBg;
+            m_pRenderTarget->CreateSolidColorBrush(
+                m_theme.IsDarkMode() ? D2D1::ColorF(0.20f, 0.22f, 0.26f, 0.90f) : D2D1::ColorF(0.88f, 0.90f, 0.94f, 0.90f),
+                &hoverBg);
+            if (hoverBg) m_pRenderTarget->FillRoundedRectangle(rrc, hoverBg.Get());
+        }
+        float cx = curLeftX + pPadX;
+        float cy = itemY + itemH * 0.5f;
+        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> errBrush, warnBrush;
+        m_pRenderTarget->CreateSolidColorBrush(
+            m_totalProblemErrors > 0 ? D2D1::ColorF(0.95f, 0.34f, 0.34f, 1.0f) : D2D1::ColorF(0.55f, 0.58f, 0.64f, 0.85f),
+            &errBrush);
+        m_pRenderTarget->CreateSolidColorBrush(
+            m_totalProblemWarnings > 0 ? D2D1::ColorF(0.95f, 0.72f, 0.20f, 1.0f) : D2D1::ColorF(0.55f, 0.58f, 0.64f, 0.85f),
+            &warnBrush);
+        if (errBrush) m_pRenderTarget->FillEllipse(D2D1::Ellipse(D2D1::Point2F(cx + pDotR, cy), pDotR, pDotR), errBrush.Get());
+        cx += pDotD + pGap;
+        if (pFmt && textBrush) {
+            D2D1_RECT_F rcE = D2D1::RectF(cx, itemY, cx + errW + m_config.ScaleF(2.0f), itemY + itemH);
+            m_pRenderTarget->DrawText(errNumStr.c_str(), static_cast<UINT32>(errNumStr.length()), pFmt, rcE,
+                                      m_totalProblemErrors > 0 && errBrush ? static_cast<ID2D1Brush*>(errBrush.Get()) : textBrush);
+        }
+        cx += errW + pMidGap;
+        if (warnBrush) m_pRenderTarget->FillEllipse(D2D1::Ellipse(D2D1::Point2F(cx + pDotR, cy), pDotR, pDotR), warnBrush.Get());
+        cx += pDotD + pGap;
+        if (pFmt && textBrush) {
+            D2D1_RECT_F rcW = D2D1::RectF(cx, itemY, cx + warnW + m_config.ScaleF(2.0f), itemY + itemH);
+            m_pRenderTarget->DrawText(warnNumStr.c_str(), static_cast<UINT32>(warnNumStr.length()), pFmt, rcW,
+                                      m_totalProblemWarnings > 0 && warnBrush ? static_cast<ID2D1Brush*>(warnBrush.Get()) : textBrush);
+        }
+        curLeftX += pillW + m_config.ScaleF(6.0f);
     }
 
     // Right items:
@@ -12468,6 +12651,10 @@ void Window::RenderStatusBar(float clientW, float clientH) {
     } else if (m_isHoveredStatusBarGitBranch) {
         std::wstring tip = L"Git Branch: " + (m_cachedGitBranch.empty() ? L"main" : m_cachedGitBranch) + L" (Click to open Source Control)";
         RenderFloatingTooltip(m_pRenderTarget.Get(), tip, m_rcStatusBarGitBranch, clientW);
+    } else if (m_isHoveredStatusBarProblems && m_rcStatusBarProblems.right > m_rcStatusBarProblems.left) {
+        std::wstring tip = L"Problems: " + std::to_wstring(m_totalProblemErrors) + L" Errors, " +
+                           std::to_wstring(m_totalProblemWarnings) + L" Warnings (Ctrl+Shift+M to toggle)";
+        RenderFloatingTooltip(m_pRenderTarget.Get(), tip, m_rcStatusBarProblems, clientW);
     } else if (m_isHoveredStatusBarGitUser) {
         std::wstring nameDisplay = !m_cachedGitUserName.empty() ? m_cachedGitUserName : m_cachedGitHubName;
         std::wstring tip = L"Git Author: " + nameDisplay;
@@ -12620,6 +12807,24 @@ void Window::HandleMouseMove(POINT clientPt, WPARAM wParam) {
         m_trackingMouse = true;
     }
 
+    if (m_isResizingProblemsPanel) {
+        if ((wParam & MK_LBUTTON) == 0) {
+            m_isResizingProblemsPanel = false;
+            ReleaseCapture();
+            SetCursor(LoadCursor(nullptr, IDC_ARROW));
+            InvalidateRect(m_hwnd, nullptr, FALSE);
+            return;
+        }
+        RECT rc{};
+        GetClientRect(m_hwnd, &rc);
+        float clientH = static_cast<float>(rc.bottom - rc.top);
+        float statusBarH = (m_config.showStatusBar && !m_config.zenMode) ? m_config.ScaleF(22.0f) : 0.0f;
+        float desiredH = (clientH - statusBarH) - static_cast<float>(clientPt.y);
+        m_problemsPanelHeight = (std::clamp)(desiredH, m_config.ScaleF(130.0f), (std::max)(m_config.ScaleF(150.0f), clientH * 0.55f));
+        InvalidateRect(m_hwnd, nullptr, FALSE);
+        return;
+    }
+
     // Check Tab Scrollbar dragging across editor groups (User requirement)
     for (auto& group : m_editorGroups) {
         if (group.isDraggingTabScroll) {
@@ -12708,8 +12913,8 @@ void Window::HandleMouseMove(POINT clientPt, WPARAM wParam) {
         GetCanvasLayout(clientW, canvasLeft, canvasWidth);
         const float headerH = m_config.zenMode ? 0.0f : m_config.ScaleF(static_cast<float>(m_config.headerHeight));
         const float statusBarH = (m_config.showStatusBar && !m_config.zenMode) ? m_config.ScaleF(22.0f) : 0.0f;
-        const float termH = m_config.zenMode ? 0.0f : GetCurrentTerminalHeight(clientH);
-        const float termGap = (!m_config.zenMode && m_terminalAnimProgress > 0.001f && m_terminal.IsOpen() && m_terminal.GetDockPosition() == 0)
+        const float termH = m_config.zenMode ? 0.0f : GetCurrentBottomDockHeight(clientH);
+        const float termGap = (!m_config.zenMode && (IsBottomProblemsVisible() || (m_terminalAnimProgress > 0.001f && m_terminal.IsOpen() && m_terminal.GetDockPosition() == 0)))
             ? m_config.ScaleF(6.0f) : 0.0f;
         const float editorH = (std::max)(headerH + 40.0f, clientH - statusBarH - termH - termGap);
         const float totalH = (std::max)(20.0f, editorH - headerH);
@@ -13328,6 +13533,7 @@ void Window::HandleMouseMove(POINT clientPt, WPARAM wParam) {
     }
 
     UpdateCssPeekHover(clientPt);
+    ScheduleHoverLookup(clientPt);
 
     // Check Popup Menu hover first if open
     if (m_popupMenu.IsOpen()) {
@@ -13615,9 +13821,9 @@ void Window::HandleMouseMove(POINT clientPt, WPARAM wParam) {
     RECT wndRc;
     GetClientRect(m_hwnd, &wndRc);
     const float clientH = static_cast<float>(wndRc.bottom - wndRc.top);
-    float termH = GetCurrentTerminalHeight(clientH);
-    const float termGap = (m_terminalAnimProgress > 0.001f && m_terminal.IsOpen()) ? m_config.ScaleF(6.0f) : 0.0f;
-    float effectiveDrawerH = m_terminal.IsOpen() ? (clientH - termH - termGap) : clientH;
+    float termH = GetCurrentBottomDockHeight(clientH);
+    const float termGap = (IsBottomProblemsVisible() || (m_terminalAnimProgress > 0.001f && m_terminal.IsOpen())) ? m_config.ScaleF(6.0f) : 0.0f;
+    float effectiveDrawerH = (IsBottomProblemsVisible() || m_terminal.IsOpen()) ? (clientH - termH - termGap) : clientH;
 
     float railW = m_config.ScaleF(static_cast<float>(m_config.railWidth));
     float currentDrawerW = m_config.ScaleF(static_cast<float>(m_config.drawerWidth)) * m_drawerAnimProgress;
@@ -13761,6 +13967,12 @@ void Window::HandleMouseMove(POINT clientPt, WPARAM wParam) {
                               clientPt.y >= m_rcStatusBarPrivacyMask.top && clientPt.y <= m_rcStatusBarPrivacyMask.bottom);
         if (inPrivacyMask != m_isHoveredStatusBarPrivacyMask) {
             m_isHoveredStatusBarPrivacyMask = inPrivacyMask;
+            needRepaint = true;
+        }
+
+        bool inProblems = PtInRectF(clientPt, m_rcStatusBarProblems);
+        if (inProblems != m_isHoveredStatusBarProblems) {
+            m_isHoveredStatusBarProblems = inProblems;
             needRepaint = true;
         }
 
@@ -13936,6 +14148,10 @@ bool Window::HandlePopupMenuClick(POINT clientPt) {
                         InvalidateRect(m_hwnd, nullptr, FALSE);
                         break;
                     case ui::MenuActionId::TogglePanel:
+                        if (IsBottomProblemsVisible()) {
+                            CloseProblemsPanel();
+                            break;
+                        }
                         if (m_terminal.IsOpen()) {
                             m_terminal.SetIsOpen(false);
                             InvalidateRect(m_hwnd, nullptr, FALSE);
@@ -14551,6 +14767,9 @@ bool Window::HandlePopupMenuClick(POINT clientPt) {
                         break;
                     case ui::MenuActionId::MoreRunDebug:
                         DoDebugActiveDocument();
+                        break;
+                    case ui::MenuActionId::Problems:
+                        ToggleProblemsPanel();
                         break;
                     case ui::MenuActionId::EditorSelectAllOccurrences:
                         DoChangeAllOccurrences();
@@ -15175,11 +15394,47 @@ void Window::HandleLButtonDown(POINT clientPt) {
         }
     }
 
+    m_editor.DismissHoverCard();
+    m_hoverDwellPending = false;
+
+    if (m_editor.IsCodeActionMenuVisible()) {
+        auto menuItems = m_editor.GetCodeActionMenuItems();
+        int acceptedIdx = -1;
+        bool handledMenu = m_editor.HandleCodeActionMenuMouseDown(clientPt, acceptedIdx);
+        if (acceptedIdx >= 0 && acceptedIdx < static_cast<int>(menuItems.size())) {
+            ApplyCodeActionItem(GetActiveDoc(), menuItems[static_cast<size_t>(acceptedIdx)]);
+            InvalidateRect(m_hwnd, nullptr, FALSE);
+            return;
+        }
+        if (handledMenu) {
+            InvalidateRect(m_hwnd, nullptr, FALSE);
+            return;
+        }
+    }
+
+    if (m_editor.IsSignatureHelpVisible()) {
+        if (m_editor.HandleSignatureHelpMouseDown(clientPt)) {
+            InvalidateRect(m_hwnd, nullptr, FALSE);
+            return;
+        }
+        m_editor.DismissSignatureHelp();
+    }
+
+    if (IsBottomProblemsVisible()) {
+        if (HandleProblemsPanelMouseDown(clientPt)) {
+            InvalidateRect(m_hwnd, nullptr, FALSE);
+            return;
+        }
+        m_problemsSearchFocused = false;
+    }
+
     // Check Terminal Panel Clicks (Image 1, 2, 3, 4)
     bool isTermClosingDown = (m_isTerminalAnimating && m_targetTerminalProgress <= 0.001f);
     auto* curDocDown = GetActiveDoc();
     bool isTermTabInactive = (m_terminal.GetDockPosition() == 1 && (!curDocDown || !curDocDown->isSpecialView || curDocDown->viewType != L"terminal"));
-    if (m_terminal.IsOpen() && !isTermClosingDown && !isTermTabInactive && m_terminal.HitTest(clientPt)) {
+    if (m_terminal.IsOpen() && !isTermClosingDown && !isTermTabInactive &&
+        !(IsBottomProblemsVisible() && m_terminal.GetDockPosition() == 0) &&
+        m_terminal.HitTest(clientPt)) {
         m_isTerminalFocused = true;
         std::wstring dir;
         if (m_drawer.HasOpenFolder()) dir = m_drawer.GetOpenFolderPath();
@@ -16042,6 +16297,11 @@ void Window::HandleLButtonDown(POINT clientPt) {
 
                     // Breadcrumbs header bar click (sibling files / outline symbols dropdown)
                     if (m_config.showBreadcrumbs && !doc.isSpecialView) {
+                        if (m_editor.HitTestBreadcrumbErrorBadge(clientPt)) {
+                            ToggleProblemsPanel(true);
+                            InvalidateRect(m_hwnd, nullptr, FALSE);
+                            return;
+                        }
                         std::wstring activePath = doc.filePath.empty() ? doc.fileName : doc.filePath;
                         std::wstring wsRoot = m_drawer.HasOpenFolder() ? m_drawer.GetOpenFolderPath() : L"";
                         std::wstring outFile;
@@ -16058,6 +16318,11 @@ void Window::HandleLButtonDown(POINT clientPt) {
                             InvalidateRect(m_hwnd, nullptr, FALSE);
                             return;
                         }
+                    }
+
+                    if (m_editor.HitTestLightbulb(clientPt)) {
+                        DoCodeActions();
+                        return;
                     }
 
                     // Fold chevron click in gutter
@@ -16360,12 +16625,12 @@ void Window::HandleLButtonDown(POINT clientPt) {
                             }
                         }
 
-                        // Check if clicked CodeLens action button (Image 1: Run | Debug)
+                        // Check if clicked CodeLens action button (Run | Debug | References | Test)
                         int lensIdx = m_editor.HitTestCodeLens(clientPt);
                         if (lensIdx >= 0) {
                             const auto& actions = m_editor.GetActiveCodeLensActions();
                             if (lensIdx < static_cast<int>(actions.size())) {
-                                RunCodeLens(actions[lensIdx].bufferLine, actions[lensIdx].isDebug);
+                                HandleCodeLensClick(actions[lensIdx]);
                                 InvalidateRect(m_hwnd, nullptr, FALSE);
                                 return;
                             }
@@ -16838,6 +17103,11 @@ void Window::HandleLButtonDown(POINT clientPt) {
         m_config.enablePrivacyMask = !m_config.enablePrivacyMask;
         SaveSessionState();
         InvalidateRect(m_hwnd, nullptr, FALSE);
+        return;
+    }
+
+    if (m_config.showStatusBar && PtInRectF(clientPt, m_rcStatusBarProblems)) {
+        ToggleProblemsPanel();
         return;
     }
 
@@ -17612,6 +17882,13 @@ void Window::HandleLButtonUp(POINT clientPt) {
     }
 
     (void)clientPt;
+    if (m_isResizingProblemsPanel) {
+        m_isResizingProblemsPanel = false;
+        SaveSessionState();
+        ReleaseCapture();
+        SetCursor(LoadCursor(nullptr, IDC_ARROW));
+        InvalidateRect(m_hwnd, nullptr, FALSE);
+    }
     if (m_terminal.IsOpen()) {
         bool wasResizing = m_terminal.IsResizing();
         m_terminal.OnMouseUp(clientPt);
@@ -17970,7 +18247,8 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                              pt.y >= m_rcStatusBarGitBranch.top && pt.y <= m_rcStatusBarGitBranch.bottom) ||
                             (m_rcStatusBarGitUser.right > m_rcStatusBarGitUser.left &&
                              pt.x >= m_rcStatusBarGitUser.left && pt.x <= m_rcStatusBarGitUser.right &&
-                             pt.y >= m_rcStatusBarGitUser.top && pt.y <= m_rcStatusBarGitUser.bottom)) {
+                             pt.y >= m_rcStatusBarGitUser.top && pt.y <= m_rcStatusBarGitUser.bottom) ||
+                            PtInRectF(pt, m_rcStatusBarProblems)) {
                             SetCursor(LoadCursor(nullptr, IDC_HAND));
                             return TRUE;
                         }
@@ -18201,9 +18479,39 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     }
                 }
 
+                if (m_editor.HitTestLightbulb(pt) || m_editor.HitTestBreadcrumbErrorBadge(pt)) {
+                    SetCursor(LoadCursor(nullptr, IDC_HAND));
+                    return TRUE;
+                }
+
+                if (IsBottomProblemsVisible() && PtInRectF(pt, m_rcProblemsPanel)) {
+                    if (PtInRectF(pt, m_rcProblemsResizeBorder)) {
+                        SetCursor(LoadCursor(nullptr, IDC_SIZENS));
+                        return TRUE;
+                    }
+                    if (PtInRectF(pt, m_rcProblemsSearchBox)) {
+                        SetCursor(LoadCursor(nullptr, IDC_IBEAM));
+                        return TRUE;
+                    }
+                    bool overClickable = PtInRectF(pt, m_rcProblemsTabBtn) || PtInRectF(pt, m_rcProblemsTermTabBtn) ||
+                        PtInRectF(pt, m_rcProblemsFilterAll) || PtInRectF(pt, m_rcProblemsFilterErr) ||
+                        PtInRectF(pt, m_rcProblemsFilterWarn) || PtInRectF(pt, m_rcProblemsFilterInfo) ||
+                        PtInRectF(pt, m_rcProblemsCurFileBtn) || PtInRectF(pt, m_rcProblemsRefreshBtn) ||
+                        PtInRectF(pt, m_rcProblemsCloseBtn);
+                    if (!overClickable) {
+                        for (const auto& rb : m_problemsRowBounds) {
+                            if (PtInRectF(pt, rb)) { overClickable = true; break; }
+                        }
+                    }
+                    SetCursor(LoadCursor(nullptr, overClickable ? IDC_HAND : IDC_ARROW));
+                    return TRUE;
+                }
+
                 // Terminal Panel cursor handling (Images 1, 2, 3, 4, 5)
                 bool isTermClosingCursor = (m_isTerminalAnimating && m_targetTerminalProgress <= 0.001f);
-                if (m_terminal.IsOpen() && !isTermClosingCursor && m_terminal.HitTest(pt)) {
+                if (m_terminal.IsOpen() && !isTermClosingCursor &&
+                    !(IsBottomProblemsVisible() && m_terminal.GetDockPosition() == 0) &&
+                    m_terminal.HitTest(pt)) {
                     if (m_terminal.HitTestMenuArea(pt)) {
                         SetCursor(LoadCursor(nullptr, IDC_HAND));
                         return TRUE;
@@ -18247,7 +18555,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     float scrollbarW = m_config.ScaleF(14.0f);
                     float clientH = static_cast<float>(rcClient.bottom - rcClient.top);
                     const float statusBarH = (m_config.showStatusBar && !m_config.zenMode) ? m_config.ScaleF(22.0f) : 0.0f;
-                    float termH = m_config.zenMode ? 0.0f : GetCurrentTerminalHeight(clientH);
+                    float termH = m_config.zenMode ? 0.0f : GetCurrentBottomDockHeight(clientH);
                     float bottomEditorY = clientH - statusBarH - termH;
 
                     if (m_editor.HasHoveredCodeLens()) {
@@ -18492,9 +18800,21 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
             POINT pt = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
             ScreenToClient(m_hwnd, &pt);
 
+            if (m_editor.IsHoverCardVisible()) {
+                m_editor.DismissHoverCard();
+            }
+            m_hoverDwellPending = false;
+
+            if (IsBottomProblemsVisible() && HandleProblemsPanelMouseWheel(pt, delta)) {
+                InvalidateRect(m_hwnd, nullptr, FALSE);
+                return 0;
+            }
+
             auto* curDocWheel = GetActiveDoc();
             bool isTermWheelInactive = (m_terminal.GetDockPosition() == 1 && (!curDocWheel || !curDocWheel->isSpecialView || curDocWheel->viewType != L"terminal"));
-            if (m_terminal.IsOpen() && !isTermWheelInactive && m_terminal.HitTest(pt)) {
+            if (m_terminal.IsOpen() && !isTermWheelInactive &&
+                !(IsBottomProblemsVisible() && m_terminal.GetDockPosition() == 0) &&
+                m_terminal.HitTest(pt)) {
                 if (m_terminal.OnMouseWheel(pt, delta)) {
                     InvalidateRect(m_hwnd, nullptr, FALSE);
                     return 0;
@@ -18745,10 +19065,18 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 return 0;
             }
 
+            if (IsBottomProblemsVisible() && m_problemsSearchFocused) {
+                if (HandleProblemsPanelChar(static_cast<wchar_t>(wParam))) {
+                    InvalidateRect(m_hwnd, nullptr, FALSE);
+                }
+                return 0;
+            }
+
             // Integrated Terminal keystroke input (Image 1) - completely swallowed when terminal is focused!
             auto* curDocChar = GetActiveDoc();
             bool isTermCharInactive = (m_terminal.GetDockPosition() == 1 && (!curDocChar || !curDocChar->isSpecialView || curDocChar->viewType != L"terminal"));
-            if (m_terminal.IsOpen() && m_isTerminalFocused && !isTermCharInactive) {
+            if (m_terminal.IsOpen() && m_isTerminalFocused && !isTermCharInactive &&
+                !(IsBottomProblemsVisible() && m_terminal.GetDockPosition() == 0)) {
                 m_terminal.OnChar(static_cast<wchar_t>(wParam));
                 InvalidateRect(m_hwnd, nullptr, FALSE);
                 return 0;
@@ -19170,6 +19498,11 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                             m_editor.ClearGhostText();
                             UpdatePrediction();
                         }
+                        if (ch == L'(' || ch == L',') {
+                            TriggerSignatureHelpAsync(pDoc, false);
+                        } else if (ch == L')' && m_editor.IsSignatureHelpVisible()) {
+                            m_editor.DismissSignatureHelp();
+                        }
                         InvalidateRect(m_hwnd, nullptr, FALSE);
                     }
                 }
@@ -19381,6 +19714,35 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 }
             }
 
+            if (m_editor.IsCodeActionMenuVisible()) {
+                auto menuItems = m_editor.GetCodeActionMenuItems();
+                int acceptedIdx = -1;
+                if (m_editor.HandleCodeActionMenuKeyDown(wParam, acceptedIdx)) {
+                    if (acceptedIdx >= 0 && acceptedIdx < static_cast<int>(menuItems.size())) {
+                        ApplyCodeActionItem(GetActiveDoc(), menuItems[static_cast<size_t>(acceptedIdx)]);
+                    }
+                    InvalidateRect(m_hwnd, nullptr, FALSE);
+                    return 0;
+                }
+            }
+
+            if (IsBottomProblemsVisible() && m_problemsSearchFocused) {
+                if (HandleProblemsPanelKeyDown(wParam)) {
+                    InvalidateRect(m_hwnd, nullptr, FALSE);
+                    return 0;
+                }
+            }
+
+            if (wParam == VK_ESCAPE) {
+                if (m_editor.IsHoverCardVisible() || m_editor.IsSignatureHelpVisible()) {
+                    m_editor.DismissHoverCard();
+                    m_editor.DismissSignatureHelp();
+                    m_hoverDwellPending = false;
+                    InvalidateRect(m_hwnd, nullptr, FALSE);
+                    return 0;
+                }
+            }
+
             // Autocomplete Popup Navigation & Completion Insertion (Image 5)
             if (m_editor.IsAutocompleteVisible()) {
                 if (wParam == VK_ESCAPE) {
@@ -19429,8 +19791,14 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 }
             }
 
+            // Ctrl+Shift+Space Signature Parameter Help (must run before Ctrl+Space)
+            if ((GetKeyState(VK_CONTROL) & 0x8000) && (GetKeyState(VK_SHIFT) & 0x8000) && !(GetKeyState(VK_MENU) & 0x8000) && wParam == VK_SPACE) {
+                TriggerSignatureHelpAsync(GetActiveDoc(), true);
+                return 0;
+            }
+
             // Ctrl+Space IntelliSense Trigger
-            if ((GetKeyState(VK_CONTROL) & 0x8000) && wParam == VK_SPACE) {
+            if ((GetKeyState(VK_CONTROL) & 0x8000) && !(GetKeyState(VK_SHIFT) & 0x8000) && wParam == VK_SPACE) {
                 auto* pDoc = GetActiveDoc();
                 if (pDoc && !IsCursorInComment(pDoc)) {
                     auto pos = pDoc->buffer.GetCursor();
@@ -19467,6 +19835,12 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     InvalidateRect(m_hwnd, nullptr, FALSE);
                     return 0;
                 }
+            }
+
+            // F8 / Shift+F8: Navigate Next / Previous Diagnostic Problem
+            if (wParam == VK_F8 && !(GetKeyState(VK_CONTROL) & 0x8000) && !(GetKeyState(VK_MENU) & 0x8000)) {
+                NavigateNextProblem((GetKeyState(VK_SHIFT) & 0x8000) != 0);
+                return 0;
             }
 
             // F9 Toggle Breakpoint
@@ -19551,7 +19925,8 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
 
             // Integrated Terminal key handling - completely isolated so backspace/typing NEVER leaks into editor!
             auto* curDocKey = GetActiveDoc();
-            bool isTermKeyInactive = (m_terminal.GetDockPosition() == 1 && (!curDocKey || !curDocKey->isSpecialView || curDocKey->viewType != L"terminal"));
+            bool isTermKeyInactive = (m_terminal.GetDockPosition() == 1 && (!curDocKey || !curDocKey->isSpecialView || curDocKey->viewType != L"terminal")) ||
+                                     (IsBottomProblemsVisible() && m_terminal.GetDockPosition() == 0);
             if (m_terminal.IsOpen() && m_isTerminalFocused && !isTermKeyInactive) {
                 if (wParam == VK_ESCAPE) {
                     if (m_terminal.GetDockPosition() == 1) {
@@ -20159,6 +20534,14 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 }
                 if (wParam == 'R' && shiftDown) {
                     DoRefactor();
+                    return 0;
+                }
+                if (wParam == 'M' && shiftDown && !altDown) {
+                    ToggleProblemsPanel();
+                    return 0;
+                }
+                if (wParam == VK_OEM_PERIOD && !shiftDown && !altDown) {
+                    DoCodeActions();
                     return 0;
                 }
                 if (wParam == VK_OEM_COMMA && !shiftDown && !altDown) {
@@ -20938,6 +21321,22 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 InvalidateRect(m_hwnd, nullptr, FALSE);
             } else if (wParam == m_throttleTimerId) {
                 ULONGLONG now = GetTickCount64();
+                if (m_hoverDwellPending && now >= m_hoverDwellTargetTime) {
+                    m_hoverDwellPending = false;
+                    auto* pHoverDoc = GetActiveDoc();
+                    if (m_config.enableLspHover && pHoverDoc && !pHoverDoc->isSpecialView && !pHoverDoc->isDiffView &&
+                        !m_popupMenu.IsOpen() && !m_quickOpen.IsOpen() && !m_editor.IsAutocompleteVisible() &&
+                        !m_editor.IsCodeActionMenuVisible() && !m_editorGroups.empty()) {
+                        UpdateEditorGroupBounds();
+                        int gIdx = (m_focusedGroupIdx >= 0 && m_focusedGroupIdx < static_cast<int>(m_editorGroups.size())) ? m_focusedGroupIdx : 0;
+                        float paneLeft = m_editorGroups[gIdx].bounds.left;
+                        float paneBottom = m_editorGroups[gIdx].bounds.bottom;
+                        size_t hLine = 0, hCol = 0;
+                        if (m_editor.HitTestCodeArea(m_hoverDwellPt, m_config, *pHoverDoc, paneLeft, paneBottom, hLine, hCol)) {
+                            RequestHoverAsync(pHoverDoc, hLine, hCol, m_hoverDwellPt);
+                        }
+                    }
+                }
                 if (m_drawer.PollSearchThrottle(now)) {
                     InvalidateRect(m_hwnd, nullptr, FALSE);
                 }
@@ -20981,8 +21380,12 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                         pDoc->diagnostics = editor::SyntaxValidator::Validate(
                             pDoc->filePath.empty() ? pDoc->fileName : pDoc->filePath, pDoc->buffer);
                         CalculateImportCosts(*pDoc);
-                        if (!pDoc->filePath.empty() && m_lsp.IsRunning()) {
+                        if (!pDoc->filePath.empty() && m_lsp.IsRunningForFile(pDoc->filePath)) {
                             NotifyLspDidChangeAsync(pDoc->filePath, pDoc->buffer.GetText());
+                        }
+                        ScheduleLangIntelAndLintersAsync(pDoc, m_config.enableExternalLinters);
+                        if (pDoc == activeDoc) {
+                            RequestCodeActionsAsync(pDoc, false, false);
                         }
 
                         if (pDoc->diffOriginalBuffer.GetLineCount() == 0 && !pDoc->originalDiskText.empty()) {
@@ -21475,6 +21878,88 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
             m_preCommitModal.publishVisibilityChoice = res->publishChoice;
             m_preCommitModal.commitMessage = std::move(res->commitMsg);
             m_preCommitModal.findings = std::move(res->findings);
+            InvalidateRect(m_hwnd, nullptr, FALSE);
+            return 0;
+        }
+
+        case WM_USER + 213: {
+            std::unique_ptr<PendingLspHoverResult> res(reinterpret_cast<PendingLspHoverResult*>(lParam));
+            if (!res || m_isDestroying.load() || res->gen != m_lspHoverGen.load()) return 0;
+            auto* pDoc = GetActiveDoc();
+            if (!pDoc || pDoc->isSpecialView) return 0;
+            std::wstring docPath = pDoc->filePath.empty() ? pDoc->fileName : pDoc->filePath;
+            if (!AreRecentPathsEqual(docPath, res->filePath)) return 0;
+            if (m_config.enableLspHover && !res->hover.markdown.empty()) {
+                m_editor.ShowHoverCard(res->line, res->col, res->clientPt, res->hover.markdown);
+            } else {
+                m_editor.DismissHoverCard();
+            }
+            InvalidateRect(m_hwnd, nullptr, FALSE);
+            return 0;
+        }
+
+        case WM_USER + 214: {
+            std::unique_ptr<PendingLspSigHelpResult> res(reinterpret_cast<PendingLspSigHelpResult*>(lParam));
+            if (!res || m_isDestroying.load() || res->gen != m_lspSigHelpGen.load()) return 0;
+            auto* pDoc = GetActiveDoc();
+            if (!pDoc || pDoc->isSpecialView) return 0;
+            std::wstring docPath = pDoc->filePath.empty() ? pDoc->fileName : pDoc->filePath;
+            if (!AreRecentPathsEqual(docPath, res->filePath)) return 0;
+            if (m_config.enableSignatureHelp && !res->sigHelp.signatures.empty()) {
+                m_editor.ShowSignatureHelp(res->sigHelp);
+            } else {
+                m_editor.DismissSignatureHelp();
+            }
+            InvalidateRect(m_hwnd, nullptr, FALSE);
+            return 0;
+        }
+
+        case WM_USER + 215: {
+            std::unique_ptr<PendingLspCodeActionResult> res(reinterpret_cast<PendingLspCodeActionResult*>(lParam));
+            if (!res || m_isDestroying.load() || res->gen != m_lspCodeActionGen.load()) return 0;
+            auto* pDoc = GetActiveDoc();
+            if (!pDoc || pDoc->isSpecialView) return 0;
+            std::wstring docPath = pDoc->filePath.empty() ? pDoc->fileName : pDoc->filePath;
+            if (!AreRecentPathsEqual(docPath, res->filePath)) return 0;
+            m_editor.SetLightbulbState(!res->actions.empty(), res->line);
+            if (res->openMenu) {
+                if (!res->actions.empty()) {
+                    m_editor.ShowCodeActionMenu(res->line, res->actions, res->isRefactorMode);
+                } else {
+                    m_editor.ShowRefactorPopup(res->isRefactorMode ? L"No refactorings available at cursor" : L"No code actions available");
+                }
+            }
+            InvalidateRect(m_hwnd, nullptr, FALSE);
+            return 0;
+        }
+
+        case WM_USER + 216: {
+            std::unique_ptr<PendingLangIntelUpdate> res(reinterpret_cast<PendingLangIntelUpdate*>(lParam));
+            if (!res || m_isDestroying.load()) return 0;
+            for (auto& grp : m_editorGroups) {
+                for (auto& d : grp.docs) {
+                    if (d.isSpecialView || d.isDiffView) continue;
+                    std::wstring dPath = d.filePath.empty() ? d.fileName : d.filePath;
+                    if (!AreRecentPathsEqual(dPath, res->filePath)) continue;
+                    if (m_config.enableInlayHints) {
+                        d.inlayHints = res->inlayHints;
+                    } else {
+                        d.inlayHints.clear();
+                    }
+                    d.codeLensMap = res->codeLensMap;
+                }
+            }
+            if (res->hasLinterResults) {
+                std::wstring key = NormalizeRecentPath(res->filePath);
+                for (auto& ch : key) ch = static_cast<wchar_t>(towlower(ch));
+                if (res->linterProblems.empty()) {
+                    m_externalLinterProblems.erase(key);
+                } else {
+                    m_externalLinterProblems[key] = std::move(res->linterProblems);
+                }
+                RebuildProblemsCache();
+                UpdateDrawerErrorFiles();
+            }
             InvalidateRect(m_hwnd, nullptr, FALSE);
             return 0;
         }
@@ -22762,6 +23247,9 @@ void Window::OnDocumentDiskSaved(editor::OpenDocument& doc) {
         } else if (ext == L".sql") {
             RefreshDatabaseSchemaAsync();
         }
+        if (!doc.isSpecialView && !doc.isImageView && !doc.isUnsupportedBinary) {
+            ScheduleLangIntelAndLintersAsync(&doc, m_config.enableExternalLinters);
+        }
     }
 }
 
@@ -23134,6 +23622,7 @@ static std::wstring DetectLspLanguageId(const std::wstring& filePath) {
 
 void Window::StartLspForDocumentAsync(const std::wstring& filePath, const std::wstring& text) {
     if (m_isDestroying.load() || filePath.empty() || text.size() > 2 * 1024 * 1024) return;
+    PushCustomLspServerPaths();
     std::wstring langId = DetectLspLanguageId(filePath);
     if (langId.empty()) return;
 
@@ -23173,11 +23662,10 @@ void Window::NotifyLspDidChangeAsync(const std::wstring& filePath, const std::ws
 void Window::RequestLspCompletionsAsync(const editor::OpenDocument* pDoc, const std::wstring& lineText, size_t col) {
     (void)lineText;
     uint64_t gen = m_lspCompletionGen.fetch_add(1) + 1;
-    if (!pDoc || pDoc->isSpecialView || pDoc->filePath.empty() || m_isDestroying.load() || !m_lsp.IsRunning()) {
+    if (!pDoc || pDoc->isSpecialView || pDoc->filePath.empty() || m_isDestroying.load()) {
         return;
     }
-    std::wstring lspLang = DetectLspLanguageId(pDoc->filePath);
-    if (lspLang.empty() || lspLang != m_lsp.GetCurrentLanguageId()) {
+    if (!m_lsp.IsRunningForFile(pDoc->filePath)) {
         return;
     }
     if (pDoc->buffer.GetText().size() > 2 * 1024 * 1024) {
@@ -23196,7 +23684,7 @@ void Window::RequestLspCompletionsAsync(const editor::OpenDocument* pDoc, const 
         BgWorkerGuard workerGuard{ m_bgWorkersMutex, m_bgWorkersCv, m_activeBgWorkers };
         // Brief coalesce delay so fast typing bursts skip superseded keystrokes
         Sleep(20);
-        if (m_isDestroying.load() || m_lspCompletionGen.load() != gen || !m_lsp.IsRunning()) return;
+        if (m_isDestroying.load() || m_lspCompletionGen.load() != gen || !m_lsp.IsRunningForFile(filePath)) return;
 
         m_lsp.NotifyDidChange(filePath, docText);
         if (m_isDestroying.load() || m_lspCompletionGen.load() != gen) return;
@@ -23289,6 +23777,50 @@ std::vector<editor::IntelliSenseItem> Window::QueryCombinedCompletions(
                 }
                 items.swap(merged);
                 if (items.size() > 64) items.resize(64);
+            }
+        }
+    }
+
+    // #21 Auto-import completions for unresolved workspace/library symbols
+    if (!pDoc->isSpecialView && items.size() < 64) {
+        size_t dotPos = docTarget.find_last_of(L'.');
+        std::wstring docExt = (dotPos != std::wstring::npos) ? docTarget.substr(dotPos) : L"";
+        for (auto& c : docExt) c = static_cast<wchar_t>(towlower(c));
+        const bool supportsAutoImport =
+            (docExt == L".js" || docExt == L".jsx" || docExt == L".ts" || docExt == L".tsx" ||
+             docExt == L".mjs" || docExt == L".cjs" || docExt == L".mts" || docExt == L".cts" ||
+             docExt == L".py" || docExt == L".pyw" || docExt == L".php");
+        bool onlyAttrValueItems = !items.empty();
+        for (const auto& ex : items) {
+            if (ex.origin != L"css-class" && ex.origin != L"tailwind" && ex.origin != L"html-id") {
+                onlyAttrValueItems = false;
+                break;
+            }
+        }
+        std::wstring prefix = (supportsAutoImport && !onlyAttrValueItems)
+            ? editor::IntelliSenseEngine::ExtractQueryPrefix(lineText, col)
+            : L"";
+        if (prefix.length() >= 2) {
+            std::wstring wsRoot = m_drawer.HasOpenFolder() ? m_drawer.GetOpenFolderPath() : L"";
+            auto autoImports = editor::ImportOrganizer::FindAutoImportCandidates(
+                docTarget, wsRoot, prefix, pDoc->buffer.GetText(), 8);
+            if (!autoImports.empty()) {
+                std::unordered_set<std::wstring> seenLabels;
+                for (const auto& ex : items) seenLabels.insert(ex.label);
+                for (const auto& cand : autoImports) {
+                    if (cand.symbol.empty() || !seenLabels.insert(cand.symbol).second) continue;
+                    editor::IntelliSenseItem ci;
+                    ci.label = cand.symbol;
+                    ci.detail = L"Auto-import: " + cand.moduleSpecifier;
+                    ci.insertText = cand.symbol;
+                    ci.documentation = L"auto-import-stmt:" + cand.importStatement;
+                    ci.kind = editor::CompletionKind::Module;
+                    ci.score = 980;
+                    ci.matchLen = prefix.length();
+                    ci.origin = L"auto-import";
+                    items.push_back(std::move(ci));
+                    if (items.size() >= 64) break;
+                }
             }
         }
     }
@@ -23660,6 +24192,867 @@ void Window::RenderPreCommitGuardModal(float clientW, float clientH) {
                           m_theme.IsDarkMode() ? D2D1::ColorF(0.18f, 0.19f, 0.22f, 1.0f) : D2D1::ColorF(0.90f, 0.91f, 0.93f, 1.0f),
                           D2D1::ColorF(0.38f, 0.40f, 0.44f, 1.0f),
                           m_theme.IsDarkMode() ? D2D1::ColorF(0.90f, 0.92f, 0.95f, 1.0f) : D2D1::ColorF(0.15f, 0.16f, 0.20f, 1.0f));
+}
+
+// ============================================================================
+// #19-#25 Multi-LSP & Language Intelligence Implementations
+// ============================================================================
+
+void Window::PushCustomLspServerPaths() {
+    std::unordered_map<std::wstring, std::wstring> paths;
+    if (!m_config.lspPathTypeScript.empty()) {
+        paths[L"typescript"] = m_config.lspPathTypeScript;
+        paths[L"javascript"] = m_config.lspPathTypeScript;
+    }
+    if (!m_config.lspPathPython.empty()) {
+        paths[L"python"] = m_config.lspPathPython;
+    }
+    if (!m_config.lspPathPhp.empty()) {
+        paths[L"php"] = m_config.lspPathPhp;
+    }
+    if (!m_config.lspPathCpp.empty()) {
+        paths[L"cpp"] = m_config.lspPathCpp;
+        paths[L"c"] = m_config.lspPathCpp;
+    }
+    m_lsp.SetCustomServerPaths(paths);
+}
+
+void Window::ScheduleHoverLookup(POINT clientPt) {
+    if (!m_config.enableLspHover || m_isDestroying.load()) {
+        m_hoverDwellPending = false;
+        return;
+    }
+    if (m_popupMenu.IsOpen() || m_quickOpen.IsOpen() || m_themePicker.IsOpen() ||
+        m_colorPicker.IsOpen() || m_remoteModal.IsOpen() || m_editor.IsAutocompleteVisible() ||
+        m_editor.IsCodeActionMenuVisible()) {
+        m_hoverDwellPending = false;
+        return;
+    }
+    if (IsBottomProblemsVisible() && PtInRectF(clientPt, m_rcProblemsPanel)) {
+        m_hoverDwellPending = false;
+        if (m_editor.IsHoverCardVisible()) {
+            m_editor.DismissHoverCard();
+        }
+        return;
+    }
+
+    auto* pDoc = GetActiveDoc();
+    if (!pDoc || pDoc->isSpecialView || pDoc->isDiffView || pDoc->isFolderView ||
+        pDoc->isImageView || pDoc->isUnsupportedBinary || m_editorGroups.empty()) {
+        m_hoverDwellPending = false;
+        if (m_editor.IsHoverCardVisible()) {
+            m_editor.DismissHoverCard();
+        }
+        return;
+    }
+
+    UpdateEditorGroupBounds();
+    int grpIdx = (m_focusedGroupIdx >= 0 && m_focusedGroupIdx < static_cast<int>(m_editorGroups.size())) ? m_focusedGroupIdx : 0;
+    float paneLeft = m_editorGroups[grpIdx].bounds.left;
+    float paneBottom = m_editorGroups[grpIdx].bounds.bottom;
+    size_t hLine = 0, hCol = 0;
+    if (!m_editor.HitTestCodeArea(clientPt, m_config, *pDoc, paneLeft, paneBottom, hLine, hCol)) {
+        m_hoverDwellPending = false;
+        if (m_editor.IsHoverCardVisible()) {
+            m_editor.DismissHoverCard();
+            InvalidateRect(m_hwnd, nullptr, FALSE);
+        }
+        return;
+    }
+
+    if (m_editor.IsHoverCardVisible()) {
+        // Keep visible while moving roughly over the same symbol; otherwise re-arm dwell
+        if (m_hoverDwellPt.x >= 0 &&
+            (std::abs)(clientPt.x - m_hoverDwellPt.x) < 6 &&
+            (std::abs)(clientPt.y - m_hoverDwellPt.y) < 6) {
+            return;
+        }
+        m_editor.DismissHoverCard();
+    }
+
+    m_hoverDwellPt = clientPt;
+    m_hoverDwellTargetTime = GetTickCount64() + 340;
+    m_hoverDwellPending = true;
+}
+
+void Window::RequestHoverAsync(editor::OpenDocument* pDoc, size_t line, size_t col, POINT clientPt) {
+    uint64_t gen = m_lspHoverGen.fetch_add(1) + 1;
+    if (!pDoc || pDoc->isSpecialView || m_isDestroying.load() || !m_config.enableLspHover) return;
+    if (pDoc->buffer.GetLineCount() == 0 || line >= pDoc->buffer.GetLineCount()) return;
+    if (pDoc->buffer.GetText().size() > 2 * 1024 * 1024) return;
+
+    std::wstring filePath = pDoc->filePath.empty() ? pDoc->fileName : pDoc->filePath;
+    auto lines = pDoc->buffer.GetLines();
+    bool hasLsp = (!pDoc->filePath.empty() && m_lsp.IsRunningForFile(pDoc->filePath));
+
+    {
+        std::lock_guard<std::mutex> lk(m_bgWorkersMutex);
+        if (m_isDestroying.load()) return;
+        ++m_activeBgWorkers;
+    }
+
+    std::thread([this, gen, filePath, line, col, clientPt, lines = std::move(lines), hasLsp]() {
+        BgWorkerGuard workerGuard{ m_bgWorkersMutex, m_bgWorkersCv, m_activeBgWorkers };
+        if (m_isDestroying.load() || m_lspHoverGen.load() != gen || !m_hwnd) return;
+
+        lsp::HoverResult hoverRes;
+        if (hasLsp) {
+            m_lsp.RequestHover(filePath, line, col, hoverRes);
+        }
+        if (m_isDestroying.load() || m_lspHoverGen.load() != gen) return;
+
+        if (!hoverRes.isValid || hoverRes.markdown.empty()) {
+            hoverRes = editor::HoverAndSignatureHelper::LookupStaticHover(filePath, lines, line, col);
+        }
+        if (m_isDestroying.load() || m_lspHoverGen.load() != gen || !m_hwnd) return;
+
+        auto* payload = new PendingLspHoverResult();
+        payload->gen = gen;
+        payload->filePath = filePath;
+        payload->line = line;
+        payload->col = col;
+        payload->clientPt = clientPt;
+        payload->hover = std::move(hoverRes);
+        if (!PostMessageW(m_hwnd, WM_USER + 213, 0, reinterpret_cast<LPARAM>(payload))) {
+            delete payload;
+        }
+    }).detach();
+}
+
+void Window::TriggerSignatureHelpAsync(editor::OpenDocument* pDoc, bool forceShow) {
+    uint64_t gen = m_lspSigHelpGen.fetch_add(1) + 1;
+    if (!pDoc || pDoc->isSpecialView || m_isDestroying.load()) return;
+    if (!forceShow && !m_config.enableSignatureHelp) return;
+    if (pDoc->buffer.GetLineCount() == 0 || pDoc->buffer.GetText().size() > 2 * 1024 * 1024) return;
+
+    auto pos = pDoc->buffer.GetCursor();
+    std::wstring filePath = pDoc->filePath.empty() ? pDoc->fileName : pDoc->filePath;
+    auto lines = pDoc->buffer.GetLines();
+    bool hasLsp = (!pDoc->filePath.empty() && m_lsp.IsRunningForFile(pDoc->filePath));
+
+    {
+        std::lock_guard<std::mutex> lk(m_bgWorkersMutex);
+        if (m_isDestroying.load()) return;
+        ++m_activeBgWorkers;
+    }
+
+    std::thread([this, gen, filePath, line = pos.line, col = pos.col, lines = std::move(lines), hasLsp]() {
+        BgWorkerGuard workerGuard{ m_bgWorkersMutex, m_bgWorkersCv, m_activeBgWorkers };
+        if (m_isDestroying.load() || m_lspSigHelpGen.load() != gen) return;
+
+        lsp::SignatureHelpResult sigRes;
+        if (hasLsp) {
+            m_lsp.RequestSignatureHelp(filePath, line, col, sigRes);
+        }
+        if (m_isDestroying.load() || m_lspSigHelpGen.load() != gen) return;
+
+        if (!sigRes.isValid || sigRes.signatures.empty()) {
+            sigRes = editor::HoverAndSignatureHelper::LookupStaticSignatureHelp(filePath, lines, line, col);
+        }
+        if (m_isDestroying.load() || m_lspSigHelpGen.load() != gen || !m_hwnd) return;
+
+        auto* payload = new PendingLspSigHelpResult();
+        payload->gen = gen;
+        payload->filePath = filePath;
+        payload->sigHelp = std::move(sigRes);
+        if (!PostMessageW(m_hwnd, WM_USER + 214, 0, reinterpret_cast<LPARAM>(payload))) {
+            delete payload;
+        }
+    }).detach();
+}
+
+void Window::RequestCodeActionsAsync(editor::OpenDocument* pDoc, bool openMenu, bool isRefactorMode) {
+    uint64_t gen = m_lspCodeActionGen.fetch_add(1) + 1;
+    if (!pDoc || pDoc->isSpecialView || m_isDestroying.load()) return;
+    if (pDoc->buffer.GetLineCount() == 0 || pDoc->buffer.GetText().size() > 2 * 1024 * 1024) return;
+
+    auto cur = pDoc->buffer.GetCursor();
+    size_t sLine = cur.line, sCol = cur.col, eLine = cur.line, eCol = cur.col;
+    if (pDoc->HasSelection()) {
+        pDoc->GetSelectionRange(sLine, sCol, eLine, eCol);
+    }
+
+    std::wstring filePath = pDoc->filePath.empty() ? pDoc->fileName : pDoc->filePath;
+    std::wstring wsRoot = m_drawer.HasOpenFolder() ? m_drawer.GetOpenFolderPath() : L"";
+    std::wstring content = pDoc->buffer.GetText();
+    auto diagnostics = pDoc->diagnostics;
+    bool hasLsp = (!pDoc->filePath.empty() && m_lsp.IsRunningForFile(pDoc->filePath));
+
+    {
+        std::lock_guard<std::mutex> lk(m_bgWorkersMutex);
+        if (m_isDestroying.load()) return;
+        ++m_activeBgWorkers;
+    }
+
+    std::thread([this, gen, filePath, wsRoot, content = std::move(content), diagnostics = std::move(diagnostics),
+                 sLine, sCol, eLine, eCol, openMenu, isRefactorMode, hasLsp]() {
+        BgWorkerGuard workerGuard{ m_bgWorkersMutex, m_bgWorkersCv, m_activeBgWorkers };
+        if (m_isDestroying.load() || m_lspCodeActionGen.load() != gen) return;
+
+        std::vector<lsp::CodeActionItem> merged;
+        if (hasLsp) {
+            std::vector<lsp::Diagnostic> rangeDiags;
+            for (const auto& d : diagnostics) {
+                if (d.line >= sLine && d.line <= eLine) {
+                    rangeDiags.push_back(d);
+                }
+            }
+            m_lsp.RequestCodeActions(filePath, sLine, sCol, eLine, eCol, rangeDiags, merged);
+        }
+        if (m_isDestroying.load() || m_lspCodeActionGen.load() != gen) return;
+
+        auto localActions = editor::CodeActionEngine::GenerateLocalCodeActions(
+            filePath, wsRoot, content, diagnostics, sLine, sCol, eLine, eCol);
+        for (auto& la : localActions) {
+            if (isRefactorMode && la.kind.find(L"refactor") == std::wstring::npos &&
+                la.kind.find(L"organize") == std::wstring::npos) {
+                continue;
+            }
+            bool dup = false;
+            for (const auto& existing : merged) {
+                if (existing.title == la.title) { dup = true; break; }
+            }
+            if (!dup) merged.push_back(std::move(la));
+        }
+
+        if (isRefactorMode && merged.size() > 1) {
+            std::stable_sort(merged.begin(), merged.end(), [](const lsp::CodeActionItem& a, const lsp::CodeActionItem& b) {
+                bool aRef = (a.kind.find(L"refactor") != std::wstring::npos);
+                bool bRef = (b.kind.find(L"refactor") != std::wstring::npos);
+                return aRef && !bRef;
+            });
+        }
+
+        if (m_isDestroying.load() || m_lspCodeActionGen.load() != gen || !m_hwnd) return;
+        auto* payload = new PendingLspCodeActionResult();
+        payload->gen = gen;
+        payload->filePath = filePath;
+        payload->line = sLine;
+        payload->openMenu = openMenu;
+        payload->isRefactorMode = isRefactorMode;
+        payload->actions = std::move(merged);
+        if (!PostMessageW(m_hwnd, WM_USER + 215, 0, reinterpret_cast<LPARAM>(payload))) {
+            delete payload;
+        }
+    }).detach();
+}
+
+void Window::ApplyCodeActionItem(editor::OpenDocument* pDoc, lsp::CodeActionItem action) {
+    if (!pDoc || pDoc->isSpecialView) return;
+    std::wstring docPath = pDoc->filePath.empty() ? pDoc->fileName : pDoc->filePath;
+
+    if (action.edit.fileChanges.empty() && !action.rawJson.empty() &&
+        !pDoc->filePath.empty() && m_lsp.IsRunningForFile(pDoc->filePath)) {
+        m_lsp.ResolveCodeAction(pDoc->filePath, action);
+    }
+
+    if (action.kind == L"source.organizeImports" && action.edit.fileChanges.empty()) {
+        DoOrganizeImports();
+        return;
+    }
+    if (action.edit.fileChanges.empty()) return;
+
+    auto normKey = [](std::wstring p) {
+        for (auto& c : p) {
+            if (c == L'/') c = L'\\';
+            c = static_cast<wchar_t>(towlower(c));
+        }
+        return p;
+    };
+
+    for (const auto& [targetFile, edits] : action.edit.fileChanges) {
+        if (edits.empty()) continue;
+        std::wstring targetKey = normKey(targetFile.empty() ? docPath : targetFile);
+        bool matchedOpen = false;
+        for (auto& grp : m_editorGroups) {
+            for (auto& d : grp.docs) {
+                if (d.isSpecialView || d.isDiffView) continue;
+                std::wstring dKey = normKey(d.filePath.empty() ? d.fileName : d.filePath);
+                if (dKey != targetKey) continue;
+                auto cur = d.buffer.GetCursor();
+                std::wstring updated = editor::CodeActionEngine::ApplyTextEditsToString(d.buffer.GetText(), edits);
+                ApplyUpdatedBufferText(&d, updated, cur.line, cur.col);
+                d.hasSelection = false;
+                MarkDocumentModified(&d);
+                matchedOpen = true;
+            }
+        }
+        if (!matchedOpen && !targetFile.empty()) {
+            editor::Buffer diskBuf;
+            if (diskBuf.LoadFromFile(targetFile)) {
+                std::wstring updated = editor::CodeActionEngine::ApplyTextEditsToString(diskBuf.GetText(), edits);
+                diskBuf.SetText(updated);
+                diskBuf.SaveToFile(targetFile);
+            }
+        }
+    }
+
+    RefreshActiveDocOutlineAndBreadcrumbs();
+    UpdateDrawerErrorFiles();
+    ScheduleLangIntelAndLintersAsync(pDoc, false);
+    RequestCodeActionsAsync(pDoc, false, false);
+    InvalidateRect(m_hwnd, nullptr, FALSE);
+}
+
+void Window::ScheduleLangIntelAndLintersAsync(editor::OpenDocument* pDoc, bool runExternalLinters) {
+    if (!pDoc || pDoc->isSpecialView || pDoc->isDiffView || m_isDestroying.load()) return;
+    if (pDoc->buffer.GetLineCount() == 0 || pDoc->buffer.GetText().size() > 1536 * 1024) return;
+
+    uint64_t gen = m_langIntelGen.fetch_add(1) + 1;
+    std::wstring filePath = pDoc->filePath.empty() ? pDoc->fileName : pDoc->filePath;
+    std::wstring wsRoot = m_drawer.HasOpenFolder() ? m_drawer.GetOpenFolderPath() : L"";
+    auto lines = pDoc->buffer.GetLines();
+    bool enableHints = m_config.enableInlayHints;
+    bool hasLsp = (!pDoc->filePath.empty() && m_lsp.IsRunningForFile(pDoc->filePath));
+
+    std::vector<std::wstring> peerTexts;
+    for (const auto& grp : m_editorGroups) {
+        for (const auto& d : grp.docs) {
+            if (&d == pDoc || d.isSpecialView || d.isDiffView) continue;
+            if (d.buffer.GetText().size() <= 512 * 1024) {
+                peerTexts.push_back(d.buffer.GetText());
+                if (peerTexts.size() >= 24) break;
+            }
+        }
+        if (peerTexts.size() >= 24) break;
+    }
+
+    {
+        std::lock_guard<std::mutex> lk(m_bgWorkersMutex);
+        if (m_isDestroying.load()) return;
+        ++m_activeBgWorkers;
+    }
+
+    std::thread([this, gen, filePath, wsRoot, lines = std::move(lines), peerTexts = std::move(peerTexts),
+                 enableHints, runExternalLinters, hasLsp]() {
+        BgWorkerGuard workerGuard{ m_bgWorkersMutex, m_bgWorkersCv, m_activeBgWorkers };
+        if (m_isDestroying.load() || m_langIntelGen.load() != gen) return;
+
+        auto* payload = new PendingLangIntelUpdate();
+        payload->gen = gen;
+        payload->filePath = filePath;
+
+        if (enableHints) {
+            bool gotLspHints = false;
+            if (hasLsp) {
+                std::vector<lsp::InlayHintItem> lspHints;
+                size_t endLine = (lines.size() > 0) ? (std::min<size_t>)(lines.size() - 1, 300) : 0;
+                if (m_lsp.RequestInlayHints(filePath, 0, endLine, lspHints) && !lspHints.empty()) {
+                    gotLspHints = true;
+                    payload->inlayHints.reserve(lspHints.size());
+                    for (const auto& lh : lspHints) {
+                        editor::OpenDocument::InlayHint ih;
+                        ih.line = lh.line;
+                        ih.col = lh.col;
+                        ih.label = lh.label;
+                        ih.isGhostText = false;
+                        payload->inlayHints.push_back(std::move(ih));
+                    }
+                }
+            }
+            if (!gotLspHints && !m_isDestroying.load()) {
+                size_t endLine = (lines.size() > 0) ? (std::min<size_t>)(lines.size() - 1, 300) : 0;
+                auto staticHints = editor::InlayAndCodeLensEngine::ComputeStaticInlayHints(filePath, lines, 0, endLine, 140);
+                payload->inlayHints.reserve(staticHints.size());
+                for (const auto& sh : staticHints) {
+                    editor::OpenDocument::InlayHint ih;
+                    ih.line = sh.line;
+                    ih.col = sh.col;
+                    ih.label = sh.label;
+                    ih.isGhostText = false;
+                    payload->inlayHints.push_back(std::move(ih));
+                }
+            }
+        }
+
+        if (!m_isDestroying.load()) {
+            auto lenses = editor::InlayAndCodeLensEngine::ScanCodeLensEntries(filePath, lines, peerTexts, 80);
+            for (const auto& l : lenses) {
+                editor::OpenDocument::CodeLensMeta meta;
+                meta.symbolName = l.symbolName;
+                meta.referenceCount = l.referenceCount;
+                meta.isMainEntry = l.isMainEntry;
+                meta.isTestEntry = l.isTestEntry;
+                payload->codeLensMap[l.line] = std::move(meta);
+            }
+        }
+
+        if (runExternalLinters && !m_isDestroying.load() && !filePath.empty()) {
+            payload->hasLinterResults = true;
+            payload->linterProblems = editor::ExternalLinterEngine::RunLintersForFile(filePath, wsRoot);
+        }
+
+        if (m_isDestroying.load() || !m_hwnd) {
+            delete payload;
+            return;
+        }
+        if (!PostMessageW(m_hwnd, WM_USER + 216, 0, reinterpret_cast<LPARAM>(payload))) {
+            delete payload;
+        }
+    }).detach();
+}
+
+void Window::ToggleProblemsPanel(bool forceOpen) {
+    if (forceOpen || !IsBottomProblemsVisible()) {
+        m_problemsPanelOpen = true;
+        m_bottomProblemsActive = true;
+        m_isTerminalFocused = false;
+        RebuildProblemsCache();
+    } else {
+        CloseProblemsPanel();
+    }
+    InvalidateRect(m_hwnd, nullptr, FALSE);
+}
+
+void Window::CloseProblemsPanel() {
+    m_problemsPanelOpen = false;
+    m_bottomProblemsActive = false;
+    m_problemsSearchFocused = false;
+    m_isResizingProblemsPanel = false;
+    InvalidateRect(m_hwnd, nullptr, FALSE);
+}
+
+void Window::SwitchBottomDockToTerminal() {
+    m_bottomProblemsActive = false;
+    m_problemsSearchFocused = false;
+    if (!m_terminal.IsOpen()) {
+        DoCreateTerminal();
+    } else if (m_terminal.GetDockPosition() == 0) {
+        m_isTerminalFocused = true;
+        AnimateTerminalOpen();
+    }
+    InvalidateRect(m_hwnd, nullptr, FALSE);
+}
+
+void Window::RebuildProblemsCache() {
+    std::vector<editor::ProblemEntry> all;
+    std::unordered_set<std::wstring> seenFiles;
+    auto normKey = [](std::wstring p) {
+        for (auto& c : p) {
+            if (c == L'/') c = L'\\';
+            c = static_cast<wchar_t>(towlower(c));
+        }
+        return p;
+    };
+
+    for (const auto& grp : m_editorGroups) {
+        for (const auto& d : grp.docs) {
+            if (d.isSpecialView || d.isDiffView) continue;
+            std::wstring fp = d.filePath.empty() ? d.fileName : d.filePath;
+            std::wstring key = normKey(fp);
+            if (!seenFiles.insert(key).second) continue;
+
+            std::wstring disp = m_drawer.HasOpenFolder()
+                ? GetRelativePath(fp, m_drawer.GetOpenFolderPath())
+                : std::filesystem::path(fp).filename().wstring();
+            if (disp.empty()) disp = fp;
+
+            for (const auto& diag : d.diagnostics) {
+                editor::ProblemEntry pe;
+                pe.filePath = fp;
+                pe.displayPath = disp;
+                pe.line = diag.line;
+                pe.col = diag.col;
+                pe.length = (std::max<size_t>)(1, diag.length);
+                pe.severity = (diag.severity >= 1 && diag.severity <= 3) ? diag.severity : 3;
+                pe.message = diag.message;
+                pe.source = !diag.source.empty()
+                    ? diag.source
+                    : ((diag.message.find(L"Runtime:") != std::wstring::npos) ? L"Runtime"
+                       : (!diag.code.empty() ? L"LSP" : L"Syntax"));
+                pe.code = diag.code;
+                all.push_back(std::move(pe));
+            }
+        }
+    }
+
+    for (const auto& [fk, list] : m_externalLinterProblems) {
+        (void)fk;
+        for (const auto& pe : list) {
+            bool dup = false;
+            for (const auto& ex : all) {
+                if (normKey(ex.filePath) == normKey(pe.filePath) &&
+                    ex.line == pe.line && ex.message == pe.message) {
+                    dup = true;
+                    break;
+                }
+            }
+            if (!dup) all.push_back(pe);
+        }
+    }
+
+    editor::ExternalLinterEngine::CountSeverities(
+        all, m_totalProblemErrors, m_totalProblemWarnings, m_totalProblemInfos);
+
+    std::wstring activePath;
+    if (auto* pAct = GetActiveDoc(); pAct && !pAct->isSpecialView) {
+        activePath = pAct->filePath.empty() ? pAct->fileName : pAct->filePath;
+    }
+    m_cachedFilteredProblems = editor::ExternalLinterEngine::FilterProblems(
+        all, m_problemsFilter, activePath);
+    if (m_problemsSelectedIdx >= static_cast<int>(m_cachedFilteredProblems.size())) {
+        m_problemsSelectedIdx = m_cachedFilteredProblems.empty() ? -1 : 0;
+    }
+}
+
+void Window::NavigateNextProblem(bool backward) {
+    if (m_cachedFilteredProblems.empty()) {
+        RebuildProblemsCache();
+    }
+    if (m_cachedFilteredProblems.empty()) return;
+
+    int count = static_cast<int>(m_cachedFilteredProblems.size());
+    if (m_problemsSelectedIdx < 0 || m_problemsSelectedIdx >= count) {
+        m_problemsSelectedIdx = backward ? (count - 1) : 0;
+    } else {
+        m_problemsSelectedIdx = backward
+            ? ((m_problemsSelectedIdx - 1 + count) % count)
+            : ((m_problemsSelectedIdx + 1) % count);
+    }
+
+    const auto& entry = m_cachedFilteredProblems[static_cast<size_t>(m_problemsSelectedIdx)];
+    RecordNavCheckpoint();
+    JumpToFileAndLocation(entry.filePath, entry.line, entry.col);
+    InvalidateRect(m_hwnd, nullptr, FALSE);
+}
+
+void Window::RenderBottomProblemsPanel(ID2D1RenderTarget* pRT, float clientW, float clientH, float statusBarH, float railLeft) {
+    if (!pRT || !IsBottomProblemsVisible()) return;
+
+    float dockH = GetCurrentBottomDockHeight(clientH);
+    float panelBottom = clientH - statusBarH;
+    float panelTop = panelBottom - dockH;
+    float panelLeft = railLeft;
+    float panelRight = clientW;
+    if (panelRight - panelLeft < 100.0f || dockH < 60.0f) return;
+
+    m_rcProblemsPanel = D2D1::RectF(panelLeft, panelTop, panelRight, panelBottom);
+    m_rcProblemsResizeBorder = D2D1::RectF(panelLeft, panelTop - m_config.ScaleF(3.0f), panelRight, panelTop + m_config.ScaleF(4.0f));
+    m_problemsRowBounds.clear();
+
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> bgBrush, headerBgBrush, borderBrush, activePillBrush, pillBgBrush, selRowBrush, accentBrush, errBrush, warnBrush, infoBrush;
+    if (m_theme.IsDarkMode()) {
+        pRT->CreateSolidColorBrush(D2D1::ColorF(0.095f, 0.100f, 0.115f, 1.0f), &bgBrush);
+        pRT->CreateSolidColorBrush(D2D1::ColorF(0.125f, 0.130f, 0.148f, 1.0f), &headerBgBrush);
+        pRT->CreateSolidColorBrush(D2D1::ColorF(0.21f, 0.22f, 0.26f, 1.0f), &borderBrush);
+        pRT->CreateSolidColorBrush(D2D1::ColorF(0.0f, 0.44f, 0.78f, 0.90f), &activePillBrush);
+        pRT->CreateSolidColorBrush(D2D1::ColorF(0.17f, 0.18f, 0.21f, 1.0f), &pillBgBrush);
+        pRT->CreateSolidColorBrush(D2D1::ColorF(0.15f, 0.23f, 0.34f, 0.75f), &selRowBrush);
+        pRT->CreateSolidColorBrush(D2D1::ColorF(0.31f, 0.72f, 1.0f, 1.0f), &accentBrush);
+        pRT->CreateSolidColorBrush(D2D1::ColorF(0.95f, 0.36f, 0.36f, 1.0f), &errBrush);
+        pRT->CreateSolidColorBrush(D2D1::ColorF(0.95f, 0.72f, 0.22f, 1.0f), &warnBrush);
+        pRT->CreateSolidColorBrush(D2D1::ColorF(0.35f, 0.75f, 0.96f, 1.0f), &infoBrush);
+    } else {
+        pRT->CreateSolidColorBrush(D2D1::ColorF(0.97f, 0.975f, 0.985f, 1.0f), &bgBrush);
+        pRT->CreateSolidColorBrush(D2D1::ColorF(0.93f, 0.94f, 0.96f, 1.0f), &headerBgBrush);
+        pRT->CreateSolidColorBrush(D2D1::ColorF(0.80f, 0.82f, 0.86f, 1.0f), &borderBrush);
+        pRT->CreateSolidColorBrush(D2D1::ColorF(0.0f, 0.45f, 0.80f, 0.90f), &activePillBrush);
+        pRT->CreateSolidColorBrush(D2D1::ColorF(0.88f, 0.89f, 0.92f, 1.0f), &pillBgBrush);
+        pRT->CreateSolidColorBrush(D2D1::ColorF(0.84f, 0.91f, 0.98f, 0.90f), &selRowBrush);
+        pRT->CreateSolidColorBrush(D2D1::ColorF(0.0f, 0.42f, 0.78f, 1.0f), &accentBrush);
+        pRT->CreateSolidColorBrush(D2D1::ColorF(0.80f, 0.16f, 0.16f, 1.0f), &errBrush);
+        pRT->CreateSolidColorBrush(D2D1::ColorF(0.76f, 0.48f, 0.0f, 1.0f), &warnBrush);
+        pRT->CreateSolidColorBrush(D2D1::ColorF(0.0f, 0.45f, 0.76f, 1.0f), &infoBrush);
+    }
+    if (!bgBrush || !borderBrush) return;
+
+    pRT->PushAxisAlignedClip(m_rcProblemsPanel, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+    pRT->FillRectangle(m_rcProblemsPanel, bgBrush.Get());
+
+    const float headerH = m_config.ScaleF(32.0f);
+    D2D1_RECT_F rcHdr = D2D1::RectF(panelLeft, panelTop, panelRight, panelTop + headerH);
+    if (headerBgBrush) pRT->FillRectangle(rcHdr, headerBgBrush.Get());
+    pRT->DrawLine(D2D1::Point2F(panelLeft, panelTop), D2D1::Point2F(panelRight, panelTop), borderBrush.Get(), 1.0f);
+    pRT->DrawLine(D2D1::Point2F(panelLeft, panelTop + headerH), D2D1::Point2F(panelRight, panelTop + headerH), borderBrush.Get(), 1.0f);
+
+    IDWriteTextFormat* uiFmt = m_theme.fontMenuItem ? m_theme.fontMenuItem.Get() : m_theme.fontBody.Get();
+    IDWriteTextFormat* bodyFmt = m_theme.fontBody ? m_theme.fontBody.Get() : uiFmt;
+    ID2D1Brush* textPrim = m_theme.brushTextPrimary.Get();
+    ID2D1Brush* textSec = m_theme.brushTextSecondary ? m_theme.brushTextSecondary.Get() : textPrim;
+    ID2D1Brush* textWht = m_theme.brushTextWhite ? m_theme.brushTextWhite.Get() : textPrim;
+
+    auto measureTextW = [&](const std::wstring& s) -> float {
+        float w = static_cast<float>(s.length()) * m_config.ScaleF(7.0f);
+        if (uiFmt && m_theme.dwriteFactory && !s.empty()) {
+            Microsoft::WRL::ComPtr<IDWriteTextLayout> lay;
+            if (SUCCEEDED(m_theme.dwriteFactory->CreateTextLayout(s.c_str(), static_cast<UINT32>(s.length()), uiFmt, 400.0f, headerH, &lay)) && lay) {
+                DWRITE_TEXT_METRICS tm{};
+                if (SUCCEEDED(lay->GetMetrics(&tm))) w = tm.widthIncludingTrailingWhitespace;
+            }
+        }
+        return w;
+    };
+
+    float curX = panelLeft + m_config.ScaleF(12.0f);
+    float pillY = panelTop + m_config.ScaleF(5.0f);
+    float pillH = headerH - m_config.ScaleF(10.0f);
+
+    // Tab 1: PROBLEMS (N)
+    std::wstring probTabLabel = L"PROBLEMS (" + std::to_wstring(m_totalProblemErrors + m_totalProblemWarnings + m_totalProblemInfos) + L")";
+    float probTabW = measureTextW(probTabLabel) + m_config.ScaleF(12.0f);
+    m_rcProblemsTabBtn = D2D1::RectF(curX, panelTop + m_config.ScaleF(2.0f), curX + probTabW, panelTop + headerH);
+    if (uiFmt && textPrim) pRT->DrawText(probTabLabel.c_str(), static_cast<UINT32>(probTabLabel.size()), uiFmt, m_rcProblemsTabBtn, textPrim);
+    if (accentBrush) pRT->DrawLine(D2D1::Point2F(m_rcProblemsTabBtn.left, panelTop + headerH - 1.5f), D2D1::Point2F(m_rcProblemsTabBtn.right, panelTop + headerH - 1.5f), accentBrush.Get(), 2.0f);
+    curX += probTabW + m_config.ScaleF(8.0f);
+
+    // Tab 2: TERMINAL
+    std::wstring termTabLabel = L"TERMINAL";
+    float termTabW = measureTextW(termTabLabel) + m_config.ScaleF(12.0f);
+    m_rcProblemsTermTabBtn = D2D1::RectF(curX, panelTop + m_config.ScaleF(2.0f), curX + termTabW, panelTop + headerH);
+    if (uiFmt && textSec) pRT->DrawText(termTabLabel.c_str(), static_cast<UINT32>(termTabLabel.size()), uiFmt, m_rcProblemsTermTabBtn, textSec);
+    curX += termTabW + m_config.ScaleF(16.0f);
+
+    auto drawFilterPill = [&](const std::wstring& lbl, bool active, D2D1_RECT_F& outRc) {
+        float w = measureTextW(lbl) + m_config.ScaleF(16.0f);
+        outRc = D2D1::RectF(curX, pillY, curX + w, pillY + pillH);
+        if (curX + w < panelRight - m_config.ScaleF(260.0f)) {
+            ID2D1Brush* bg = active ? activePillBrush.Get() : pillBgBrush.Get();
+            if (bg) pRT->FillRoundedRectangle(D2D1::RoundedRect(outRc, 4.0f, 4.0f), bg);
+            if (uiFmt) {
+                D2D1_RECT_F rcTxt = D2D1::RectF(outRc.left + m_config.ScaleF(8.0f), outRc.top, outRc.right - m_config.ScaleF(4.0f), outRc.bottom);
+                pRT->DrawText(lbl.c_str(), static_cast<UINT32>(lbl.size()), uiFmt, rcTxt, active ? textWht : textSec);
+            }
+        } else {
+            outRc = {};
+        }
+        curX += w + m_config.ScaleF(6.0f);
+    };
+
+    drawFilterPill(L"All", m_problemsFilter.severityFilter == 0, m_rcProblemsFilterAll);
+    drawFilterPill(L"Errors (" + std::to_wstring(m_totalProblemErrors) + L")", m_problemsFilter.severityFilter == 1, m_rcProblemsFilterErr);
+    drawFilterPill(L"Warnings (" + std::to_wstring(m_totalProblemWarnings) + L")", m_problemsFilter.severityFilter == 2, m_rcProblemsFilterWarn);
+    drawFilterPill(L"Info (" + std::to_wstring(m_totalProblemInfos) + L")", m_problemsFilter.severityFilter == 3, m_rcProblemsFilterInfo);
+    drawFilterPill(L"Current File", m_problemsFilter.currentFileOnly, m_rcProblemsCurFileBtn);
+
+    // Right controls: Close X, Search box, Run Linters button
+    float rightX = panelRight - m_config.ScaleF(10.0f);
+    float closeW = m_config.ScaleF(24.0f);
+    m_rcProblemsCloseBtn = D2D1::RectF(rightX - closeW, pillY, rightX, pillY + pillH);
+    if (uiFmt && textSec) {
+        pRT->DrawText(L" \x00D7", 2, uiFmt, m_rcProblemsCloseBtn, textSec);
+    }
+    rightX -= (closeW + m_config.ScaleF(8.0f));
+
+    float searchW = (std::min)(m_config.ScaleF(200.0f), (std::max)(m_config.ScaleF(110.0f), (panelRight - panelLeft) * 0.18f));
+    m_rcProblemsSearchBox = D2D1::RectF(rightX - searchW, pillY, rightX, pillY + pillH);
+    if (pillBgBrush) pRT->FillRoundedRectangle(D2D1::RoundedRect(m_rcProblemsSearchBox, 4.0f, 4.0f), pillBgBrush.Get());
+    pRT->DrawRoundedRectangle(D2D1::RoundedRect(m_rcProblemsSearchBox, 4.0f, 4.0f),
+                              (m_problemsSearchFocused && accentBrush) ? accentBrush.Get() : borderBrush.Get(), 1.0f);
+    {
+        std::wstring sTxt = m_problemsFilter.searchText.empty() ? L"Filter problems..." : m_problemsFilter.searchText;
+        D2D1_RECT_F rcSTxt = D2D1::RectF(m_rcProblemsSearchBox.left + m_config.ScaleF(6.0f), pillY, m_rcProblemsSearchBox.right - m_config.ScaleF(6.0f), pillY + pillH);
+        if (uiFmt) pRT->DrawText(sTxt.c_str(), static_cast<UINT32>(sTxt.size()), uiFmt, rcSTxt,
+                                 m_problemsFilter.searchText.empty() ? textSec : textPrim);
+    }
+    rightX -= (searchW + m_config.ScaleF(8.0f));
+
+    std::wstring lintLbl = L"Run Linters";
+    float lintW = measureTextW(lintLbl) + m_config.ScaleF(16.0f);
+    m_rcProblemsRefreshBtn = D2D1::RectF(rightX - lintW, pillY, rightX, pillY + pillH);
+    if (m_rcProblemsRefreshBtn.left > curX + m_config.ScaleF(8.0f)) {
+        if (pillBgBrush) pRT->FillRoundedRectangle(D2D1::RoundedRect(m_rcProblemsRefreshBtn, 4.0f, 4.0f), pillBgBrush.Get());
+        if (uiFmt && textPrim) {
+            D2D1_RECT_F rcL = D2D1::RectF(m_rcProblemsRefreshBtn.left + m_config.ScaleF(8.0f), pillY, m_rcProblemsRefreshBtn.right - m_config.ScaleF(4.0f), pillY + pillH);
+            pRT->DrawText(lintLbl.c_str(), static_cast<UINT32>(lintLbl.size()), uiFmt, rcL, textPrim);
+        }
+    } else {
+        m_rcProblemsRefreshBtn = {};
+    }
+
+    // List Body
+    const float listTop = panelTop + headerH + m_config.ScaleF(4.0f);
+    const float listBottom = panelBottom - m_config.ScaleF(4.0f);
+    const float listH = (std::max)(10.0f, listBottom - listTop);
+    const float rowH = m_config.ScaleF(24.0f);
+
+    if (m_cachedFilteredProblems.empty()) {
+        m_problemsMaxScrollY = 0.0f;
+        m_problemsScrollY = 0.0f;
+        D2D1_RECT_F rcEmpty = D2D1::RectF(panelLeft + m_config.ScaleF(18.0f), listTop + m_config.ScaleF(10.0f), panelRight - m_config.ScaleF(18.0f), listTop + m_config.ScaleF(34.0f));
+        std::wstring emptyMsg = L"No problems detected in workspace matching current filter.";
+        if (bodyFmt && textSec) pRT->DrawText(emptyMsg.c_str(), static_cast<UINT32>(emptyMsg.size()), bodyFmt, rcEmpty, textSec);
+    } else {
+        float totalContentH = static_cast<float>(m_cachedFilteredProblems.size()) * rowH;
+        m_problemsMaxScrollY = (std::max)(0.0f, totalContentH - listH);
+        m_problemsScrollY = (std::clamp)(m_problemsScrollY, 0.0f, m_problemsMaxScrollY);
+
+        D2D1_RECT_F rcListClip = D2D1::RectF(panelLeft, listTop, panelRight, listBottom);
+        pRT->PushAxisAlignedClip(rcListClip, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+
+        size_t firstIdx = static_cast<size_t>((std::max)(0.0f, std::floor(m_problemsScrollY / rowH)));
+        for (size_t i = firstIdx; i < m_cachedFilteredProblems.size(); ++i) {
+            float ry = listTop + static_cast<float>(i) * rowH - m_problemsScrollY;
+            if (ry >= listBottom) break;
+            if (ry + rowH <= listTop) continue;
+
+            const auto& prob = m_cachedFilteredProblems[i];
+            D2D1_RECT_F rcRow = D2D1::RectF(panelLeft + m_config.ScaleF(6.0f), ry, panelRight - m_config.ScaleF(10.0f), ry + rowH);
+            while (m_problemsRowBounds.size() <= i) m_problemsRowBounds.push_back({});
+            m_problemsRowBounds[i] = rcRow;
+
+            if (static_cast<int>(i) == m_problemsSelectedIdx && selRowBrush) {
+                pRT->FillRoundedRectangle(D2D1::RoundedRect(rcRow, 3.0f, 3.0f), selRowBrush.Get());
+            }
+
+            ID2D1SolidColorBrush* sevBrush = (prob.severity == 1) ? errBrush.Get() : (prob.severity == 2 ? warnBrush.Get() : infoBrush.Get());
+            float dotR = m_config.ScaleF(4.0f);
+            float dotX = rcRow.left + m_config.ScaleF(10.0f);
+            float dotY = ry + rowH * 0.5f;
+            if (sevBrush) pRT->FillEllipse(D2D1::Ellipse(D2D1::Point2F(dotX, dotY), dotR, dotR), sevBrush);
+
+            std::wstring locStr = (prob.displayPath.empty() ? prob.filePath : prob.displayPath) +
+                                  L":" + std::to_wstring(prob.line + 1) + L":" + std::to_wstring(prob.col + 1);
+            float locW = (std::min)(m_config.ScaleF(280.0f), measureTextW(locStr) + m_config.ScaleF(16.0f));
+            D2D1_RECT_F rcLoc = D2D1::RectF(rcRow.right - locW, ry + m_config.ScaleF(2.0f), rcRow.right - m_config.ScaleF(6.0f), ry + rowH - m_config.ScaleF(2.0f));
+            if (uiFmt && textSec) pRT->DrawText(locStr.c_str(), static_cast<UINT32>(locStr.size()), uiFmt, rcLoc, textSec);
+
+            std::wstring msgLine = L"[" + prob.source + L"] " + prob.message;
+            D2D1_RECT_F rcMsg = D2D1::RectF(dotX + m_config.ScaleF(10.0f), ry + m_config.ScaleF(2.0f), rcLoc.left - m_config.ScaleF(10.0f), ry + rowH - m_config.ScaleF(2.0f));
+            if (bodyFmt && textPrim && rcMsg.right > rcMsg.left + 20.0f) {
+                pRT->DrawText(msgLine.c_str(), static_cast<UINT32>(msgLine.size()), bodyFmt, rcMsg, textPrim);
+            }
+        }
+        pRT->PopAxisAlignedClip();
+    }
+
+    pRT->PopAxisAlignedClip();
+}
+
+bool Window::HandleProblemsPanelMouseDown(POINT pt) {
+    if (!IsBottomProblemsVisible()) return false;
+    if (PtInRectF(pt, m_rcProblemsResizeBorder)) {
+        m_isResizingProblemsPanel = true;
+        SetCapture(m_hwnd);
+        return true;
+    }
+    if (!PtInRectF(pt, m_rcProblemsPanel)) return false;
+
+    if (PtInRectF(pt, m_rcProblemsCloseBtn)) {
+        CloseProblemsPanel();
+        return true;
+    }
+    if (PtInRectF(pt, m_rcProblemsTermTabBtn)) {
+        SwitchBottomDockToTerminal();
+        return true;
+    }
+    if (PtInRectF(pt, m_rcProblemsFilterAll)) {
+        m_problemsFilter.severityFilter = 0;
+        m_problemsScrollY = 0.0f;
+        RebuildProblemsCache();
+        return true;
+    }
+    if (PtInRectF(pt, m_rcProblemsFilterErr)) {
+        m_problemsFilter.severityFilter = 1;
+        m_problemsScrollY = 0.0f;
+        RebuildProblemsCache();
+        return true;
+    }
+    if (PtInRectF(pt, m_rcProblemsFilterWarn)) {
+        m_problemsFilter.severityFilter = 2;
+        m_problemsScrollY = 0.0f;
+        RebuildProblemsCache();
+        return true;
+    }
+    if (PtInRectF(pt, m_rcProblemsFilterInfo)) {
+        m_problemsFilter.severityFilter = 3;
+        m_problemsScrollY = 0.0f;
+        RebuildProblemsCache();
+        return true;
+    }
+    if (PtInRectF(pt, m_rcProblemsCurFileBtn)) {
+        m_problemsFilter.currentFileOnly = !m_problemsFilter.currentFileOnly;
+        m_problemsScrollY = 0.0f;
+        RebuildProblemsCache();
+        return true;
+    }
+    if (PtInRectF(pt, m_rcProblemsRefreshBtn)) {
+        if (auto* pDoc = GetActiveDoc(); pDoc && !pDoc->isSpecialView) {
+            ScheduleLangIntelAndLintersAsync(pDoc, true);
+        }
+        return true;
+    }
+    if (PtInRectF(pt, m_rcProblemsSearchBox)) {
+        m_problemsSearchFocused = true;
+        return true;
+    }
+    m_problemsSearchFocused = false;
+
+    for (size_t i = 0; i < m_problemsRowBounds.size() && i < m_cachedFilteredProblems.size(); ++i) {
+        if (PtInRectF(pt, m_problemsRowBounds[i])) {
+            m_problemsSelectedIdx = static_cast<int>(i);
+            const auto& entry = m_cachedFilteredProblems[i];
+            RecordNavCheckpoint();
+            JumpToFileAndLocation(entry.filePath, entry.line, entry.col);
+            return true;
+        }
+    }
+    return true;
+}
+
+bool Window::HandleProblemsPanelMouseWheel(POINT pt, short delta) {
+    if (!IsBottomProblemsVisible() || !PtInRectF(pt, m_rcProblemsPanel)) return false;
+    float step = (delta > 0 ? -48.0f : 48.0f);
+    m_problemsScrollY = (std::clamp)(m_problemsScrollY + step, 0.0f, m_problemsMaxScrollY);
+    return true;
+}
+
+bool Window::HandleProblemsPanelChar(wchar_t ch) {
+    if (!IsBottomProblemsVisible() || !m_problemsSearchFocused) return false;
+    if (ch == L'\r' || ch == L'\n') {
+        if (m_problemsSelectedIdx < 0 && !m_cachedFilteredProblems.empty()) m_problemsSelectedIdx = 0;
+        if (m_problemsSelectedIdx >= 0 && m_problemsSelectedIdx < static_cast<int>(m_cachedFilteredProblems.size())) {
+            const auto& entry = m_cachedFilteredProblems[static_cast<size_t>(m_problemsSelectedIdx)];
+            RecordNavCheckpoint();
+            JumpToFileAndLocation(entry.filePath, entry.line, entry.col);
+        }
+        return true;
+    }
+    if (ch == L'\b') {
+        if (!m_problemsFilter.searchText.empty()) {
+            m_problemsFilter.searchText.pop_back();
+            m_problemsScrollY = 0.0f;
+            RebuildProblemsCache();
+        }
+        return true;
+    }
+    if (ch == 27) { // ESC
+        m_problemsSearchFocused = false;
+        return true;
+    }
+    if (ch >= 32) {
+        m_problemsFilter.searchText.push_back(ch);
+        m_problemsScrollY = 0.0f;
+        RebuildProblemsCache();
+        return true;
+    }
+    return true;
+}
+
+bool Window::HandleProblemsPanelKeyDown(WPARAM vk) {
+    if (!IsBottomProblemsVisible() || !m_problemsSearchFocused) return false;
+    if (vk == VK_ESCAPE) {
+        m_problemsSearchFocused = false;
+        return true;
+    }
+    if (vk == VK_DOWN && !m_cachedFilteredProblems.empty()) {
+        int count = static_cast<int>(m_cachedFilteredProblems.size());
+        m_problemsSelectedIdx = (m_problemsSelectedIdx + 1) % count;
+        return true;
+    }
+    if (vk == VK_UP && !m_cachedFilteredProblems.empty()) {
+        int count = static_cast<int>(m_cachedFilteredProblems.size());
+        m_problemsSelectedIdx = (m_problemsSelectedIdx <= 0) ? (count - 1) : (m_problemsSelectedIdx - 1);
+        return true;
+    }
+    if (vk == VK_RETURN && !m_cachedFilteredProblems.empty()) {
+        int idx = (m_problemsSelectedIdx >= 0 && m_problemsSelectedIdx < static_cast<int>(m_cachedFilteredProblems.size()))
+            ? m_problemsSelectedIdx : 0;
+        const auto& entry = m_cachedFilteredProblems[static_cast<size_t>(idx)];
+        RecordNavCheckpoint();
+        JumpToFileAndLocation(entry.filePath, entry.line, entry.col);
+        return true;
+    }
+    return false;
 }
 
 } // namespace phide::app

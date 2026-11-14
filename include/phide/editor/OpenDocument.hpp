@@ -1108,6 +1108,14 @@ struct OpenDocument {
     };
     std::vector<InlayHint> inlayHints;
 
+    struct CodeLensMeta {
+        std::wstring symbolName;
+        int referenceCount = 0;
+        bool isMainEntry = false;
+        bool isTestEntry = false;
+    };
+    std::unordered_map<size_t, CodeLensMeta> codeLensMap; ///< 0-based buffer line -> references/test metadata
+
     // Syntax Error Diagnostics & Hover Popover State
     std::vector<phide::lsp::Diagnostic> diagnostics;   ///< Diagnostic errors and warnings for this document
     size_t hoveredDiagnosticLine = static_cast<size_t>(-1); ///< Line of currently hovered diagnostic error

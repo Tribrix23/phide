@@ -320,6 +320,57 @@ void SettingsView::InitializeSettings() {
         m_items.push_back(std::move(it));
     }
 
+    // 12c. Editor: Inlay Hints (#25)
+    {
+        SettingItem it;
+        it.id = L"editor.inlayHints";
+        it.scope = L"EDITOR";
+        it.title = L"Inlay Hints";
+        it.description = L"Controls whether inferred parameter names and type annotations are displayed inline via LSP and static analysis.";
+        it.category = SettingCategory::TextEditor;
+        it.isCommonlyUsed = true;
+        it.control = SettingControl::Toggle;
+        m_items.push_back(std::move(it));
+    }
+
+    // 12d. Editor: Rich Hover Cards (#22)
+    {
+        SettingItem it;
+        it.id = L"editor.lspHover";
+        it.scope = L"EDITOR";
+        it.title = L"Rich Hover Documentation";
+        it.description = L"Shows formatted type signatures and Markdown documentation tooltips when hovering symbols.";
+        it.category = SettingCategory::TextEditor;
+        it.isCommonlyUsed = true;
+        it.control = SettingControl::Toggle;
+        m_items.push_back(std::move(it));
+    }
+
+    // 12e. Editor: Signature Parameter Help (#22)
+    {
+        SettingItem it;
+        it.id = L"editor.signatureHelp";
+        it.scope = L"EDITOR";
+        it.title = L"Signature Parameter Help";
+        it.description = L"Automatically displays active parameter hints when typing function call arguments.";
+        it.category = SettingCategory::TextEditor;
+        it.isCommonlyUsed = true;
+        it.control = SettingControl::Toggle;
+        m_items.push_back(std::move(it));
+    }
+
+    // 12f. Diagnostics: External CLI Linters (#23)
+    {
+        SettingItem it;
+        it.id = L"linter.externalEnabled";
+        it.scope = L"EDITOR";
+        it.title = L"External CLI Linters (TSC / ESLint / PHPStan / Ruff)";
+        it.description = L"Aggregates diagnostics from locally installed CLI linters into the Problems panel and editor squiggles.";
+        it.category = SettingCategory::TextEditor;
+        it.control = SettingControl::Toggle;
+        m_items.push_back(std::move(it));
+    }
+
     // 13. Appearance: Breadcrumbs (Toggle)
     {
         SettingItem it;
@@ -916,6 +967,10 @@ void SettingsView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
             else if (it.id == L"workbench.graphColored") isChecked = config.isGraphColored;
             else if (it.id == L"workbench.markdownPreview") isChecked = config.enableMarkdownPreview;
             else if (it.id == L"editor.gitLens") isChecked = config.enableGitLens;
+            else if (it.id == L"editor.inlayHints") isChecked = config.enableInlayHints;
+            else if (it.id == L"editor.lspHover") isChecked = config.enableLspHover;
+            else if (it.id == L"editor.signatureHelp") isChecked = config.enableSignatureHelp;
+            else if (it.id == L"linter.externalEnabled") isChecked = config.enableExternalLinters;
             else if (it.id == L"workbench.zenMode") isChecked = config.zenMode;
             else if (it.id == L"code-runner.runInTerminal") isChecked = config.codeRunnerRunInTerminal;
             else if (it.id == L"code-runner.saveFileBeforeRun") isChecked = config.codeRunnerSaveFileBeforeRun;
@@ -1454,6 +1509,14 @@ bool SettingsView::HandleLButtonDown(POINT clientPt, app::AppConfig& config, The
                         config.pythonHighlightTerminalErrors = !config.pythonHighlightTerminalErrors;
                     } else if (it.id == L"editor.gitLens") {
                         config.enableGitLens = !config.enableGitLens;
+                    } else if (it.id == L"editor.inlayHints") {
+                        config.enableInlayHints = !config.enableInlayHints;
+                    } else if (it.id == L"editor.lspHover") {
+                        config.enableLspHover = !config.enableLspHover;
+                    } else if (it.id == L"editor.signatureHelp") {
+                        config.enableSignatureHelp = !config.enableSignatureHelp;
+                    } else if (it.id == L"linter.externalEnabled") {
+                        config.enableExternalLinters = !config.enableExternalLinters;
                     } else if (it.id == L"workbench.zenMode") {
                         config.zenMode = !config.zenMode;
                     }

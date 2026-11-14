@@ -1012,4 +1012,440 @@ void EditorCanvas::RenderInlineRenameWidget(
     }
 }
 
+// ============================================================================
+// #22 & #23 & #24: Breadcrumb Badge HitTest, Rich Hover, Signature Help, Code Actions
+// ============================================================================
+
+bool EditorCanvas::HitTestBreadcrumbErrorBadge(POINT pt) const noexcept {
+    return PtInRectF(pt, m_breadcrumbErrBadgeBounds);
+}
+
+void EditorCanvas::ShowHoverCard(size_t line, size_t col, POINT screenPt, const std::wstring& markdown) {
+    m_hoverCard.line = line;
+    m_hoverCard.col = col;
+    m_hoverCard.anchorPt = screenPt;
+    m_hoverCard.rawMarkdown = markdown;
+    m_hoverCard.blocks = editor::HoverAndSignatureHelper::ParseMarkdownBlocks(markdown);
+    m_hoverCard.visible = !m_hoverCard.blocks.empty();
+    if (!m_hoverCard.visible) m_hoverCard.bounds = {};
+}
+
+void EditorCanvas::RenderRichHoverCard(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config, float clientHeight) {
+    if (!pRT || !m_hoverCard.visible || m_hoverCard.blocks.empty() || !theme.dwriteFactory) return;
+
+    const float maxCardW = config.ScaleF(460.0f);
+    const float padX = config.ScaleF(10.0f);
+    const float padY = config.ScaleF(8.0f);
+    const float innerW = maxCardW - padX * 2.0f;
+    IDWriteTextFormat* bodyFmt = theme.fontBody.Get();
+    IDWriteTextFormat* codeFmt = theme.fontCode ? theme.fontCode.Get() : bodyFmt;
+    if (!bodyFmt || !codeFmt) return;
+
+    struct MeasuredBlock {
+        editor::MarkdownBlock::Kind kind;
+        Microsoft::WRL::ComPtr<IDWriteTextLayout> layout;
+        float height = 0.0f;
+        float maxW = 0.0f;
+    };
+    std::vector<MeasuredBlock> measured;
+    float totalH = padY * 2.0f;
+    float maxContentW = config.ScaleF(180.0f);
+    const float maxTotalH = config.ScaleF(260.0f);
+
+    for (const auto& blk : m_hoverCard.blocks) {
+        if (blk.kind == editor::MarkdownBlock::Kind::Separator) {
+            measured.push_back({ blk.kind, nullptr, config.ScaleF(7.0f), 0.0f });
+            totalH += config.ScaleF(7.0f);
+            continue;
+        }
+        IDWriteTextFormat* fmt = (blk.kind == editor::MarkdownBlock::Kind::CodeBlock) ? codeFmt : bodyFmt;
+        float availW = (blk.kind == editor::MarkdownBlock::Kind::CodeBlock) ? (innerW - config.ScaleF(12.0f)) : innerW;
+        Microsoft::WRL::ComPtr<IDWriteTextLayout> tl;
+        if (SUCCEEDED(theme.dwriteFactory->CreateTextLayout(
+                blk.text.c_str(), static_cast<UINT32>(blk.text.size()), fmt, availW, 400.0f, &tl))) {
+            DWRITE_TEXT_METRICS tm{};
+            if (SUCCEEDED(tl->GetMetrics(&tm))) {
+                float extra = (blk.kind == editor::MarkdownBlock::Kind::CodeBlock) ? config.ScaleF(10.0f) : config.ScaleF(4.0f);
+                float bh = tm.height + extra;
+                if (totalH + bh > maxTotalH && !measured.empty()) break;
+                totalH += bh;
+                maxContentW = (std::max)(maxContentW, tm.widthIncludingTrailingWhitespace +
+                    (blk.kind == editor::MarkdownBlock::Kind::CodeBlock ? config.ScaleF(14.0f) : 0.0f));
+                measured.push_back({ blk.kind, std::move(tl), bh, tm.widthIncludingTrailingWhitespace });
+            }
+        }
+    }
+    if (measured.empty()) return;
+
+    float boxW = (std::min)(maxCardW, maxContentW + padX * 2.0f);
+    float boxH = (std::min)(maxTotalH, totalH);
+    float paneLeft = (m_lastActivePaneBounds.right > m_lastActivePaneBounds.left) ? m_lastActivePaneBounds.left : config.ScaleF(20.0f);
+    float paneRight = (m_lastActivePaneBounds.right > m_lastActivePaneBounds.left) ? m_lastActivePaneBounds.right : config.ScaleF(1100.0f);
+
+    float x = static_cast<float>(m_hoverCard.anchorPt.x) - config.ScaleF(12.0f);
+    x = (std::max)(paneLeft + config.ScaleF(8.0f), (std::min)(x, paneRight - boxW - config.ScaleF(10.0f)));
+    float y = static_cast<float>(m_hoverCard.anchorPt.y) + config.ScaleF(18.0f);
+    if (y + boxH > clientHeight - config.ScaleF(28.0f)) {
+        y = (std::max)(config.ScaleF(40.0f), static_cast<float>(m_hoverCard.anchorPt.y) - boxH - config.ScaleF(10.0f));
+    }
+
+    D2D1_RECT_F rcCard = D2D1::RectF(x, y, x + boxW, y + boxH);
+    m_hoverCard.bounds = rcCard;
+
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> bgBrush, codeBgBrush, borderBrush, sepBrush, accentBrush;
+    if (theme.IsDarkMode()) {
+        pRT->CreateSolidColorBrush(D2D1::ColorF(0.125f, 0.129f, 0.145f, 0.98f), &bgBrush);
+        pRT->CreateSolidColorBrush(D2D1::ColorF(0.086f, 0.090f, 0.105f, 1.0f), &codeBgBrush);
+        pRT->CreateSolidColorBrush(D2D1::ColorF(0.24f, 0.25f, 0.28f, 1.0f), &borderBrush);
+        pRT->CreateSolidColorBrush(D2D1::ColorF(0.22f, 0.23f, 0.26f, 1.0f), &sepBrush);
+        pRT->CreateSolidColorBrush(D2D1::ColorF(0.45f, 0.78f, 1.0f, 1.0f), &accentBrush);
+    } else {
+        pRT->CreateSolidColorBrush(D2D1::ColorF(0.98f, 0.98f, 0.99f, 0.98f), &bgBrush);
+        pRT->CreateSolidColorBrush(D2D1::ColorF(0.93f, 0.94f, 0.96f, 1.0f), &codeBgBrush);
+        pRT->CreateSolidColorBrush(D2D1::ColorF(0.76f, 0.78f, 0.82f, 1.0f), &borderBrush);
+        pRT->CreateSolidColorBrush(D2D1::ColorF(0.84f, 0.85f, 0.88f, 1.0f), &sepBrush);
+        pRT->CreateSolidColorBrush(D2D1::ColorF(0.0f, 0.37f, 0.72f, 1.0f), &accentBrush);
+    }
+    if (!bgBrush || !borderBrush) return;
+
+    pRT->FillRoundedRectangle(D2D1::RoundedRect(rcCard, config.ScaleF(6.0f), config.ScaleF(6.0f)), bgBrush.Get());
+    pRT->DrawRoundedRectangle(D2D1::RoundedRect(rcCard, config.ScaleF(6.0f), config.ScaleF(6.0f)), borderBrush.Get(), 1.0f);
+
+    pRT->PushAxisAlignedClip(rcCard, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+    float curY = y + padY;
+    for (const auto& mb : measured) {
+        if (mb.kind == editor::MarkdownBlock::Kind::Separator) {
+            if (sepBrush) {
+                pRT->DrawLine(D2D1::Point2F(x + padX, curY + config.ScaleF(3.0f)),
+                              D2D1::Point2F(x + boxW - padX, curY + config.ScaleF(3.0f)), sepBrush.Get(), 1.0f);
+            }
+            curY += mb.height;
+            continue;
+        }
+        if (mb.kind == editor::MarkdownBlock::Kind::CodeBlock && mb.layout) {
+            D2D1_RECT_F rcCode = D2D1::RectF(x + padX, curY, x + boxW - padX, curY + mb.height - config.ScaleF(4.0f));
+            if (codeBgBrush) pRT->FillRoundedRectangle(D2D1::RoundedRect(rcCode, 4.0f, 4.0f), codeBgBrush.Get());
+            pRT->DrawTextLayout(D2D1::Point2F(rcCode.left + config.ScaleF(6.0f), curY + config.ScaleF(3.0f)),
+                                mb.layout.Get(), accentBrush ? accentBrush.Get() : theme.brushTextPrimary.Get());
+        } else if (mb.layout) {
+            ID2D1Brush* textBr = (mb.kind == editor::MarkdownBlock::Kind::Heading)
+                ? theme.brushTextPrimary.Get()
+                : (theme.brushTextSecondary ? theme.brushTextSecondary.Get() : theme.brushTextPrimary.Get());
+            pRT->DrawTextLayout(D2D1::Point2F(x + padX, curY), mb.layout.Get(), textBr);
+        }
+        curY += mb.height;
+    }
+    pRT->PopAxisAlignedClip();
+}
+
+void EditorCanvas::ShowSignatureHelp(const lsp::SignatureHelpResult& sigHelp) {
+    if (!sigHelp.isValid || sigHelp.signatures.empty()) {
+        DismissSignatureHelp();
+        return;
+    }
+    m_sigHelpPopup.result = sigHelp;
+    int ov = sigHelp.activeSignature;
+    if (ov < 0 || ov >= static_cast<int>(sigHelp.signatures.size())) ov = 0;
+    m_sigHelpPopup.selectedOverload = ov;
+    m_sigHelpPopup.visible = true;
+}
+
+void EditorCanvas::CycleSignatureOverload(int delta) noexcept {
+    if (!m_sigHelpPopup.visible || m_sigHelpPopup.result.signatures.empty()) return;
+    int n = static_cast<int>(m_sigHelpPopup.result.signatures.size());
+    m_sigHelpPopup.selectedOverload = ((m_sigHelpPopup.selectedOverload + delta) % n + n) % n;
+}
+
+bool EditorCanvas::HandleSignatureHelpMouseDown(POINT pt) {
+    if (!m_sigHelpPopup.visible) return false;
+    if (PtInRectF(pt, m_sigHelpPopup.prevBtnBounds)) {
+        CycleSignatureOverload(-1);
+        return true;
+    }
+    if (PtInRectF(pt, m_sigHelpPopup.nextBtnBounds)) {
+        CycleSignatureOverload(+1);
+        return true;
+    }
+    return PtInRectF(pt, m_sigHelpPopup.bounds);
+}
+
+void EditorCanvas::RenderSignatureHelpPopup(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config, float clientHeight) {
+    m_sigHelpPopup.prevBtnBounds = {};
+    m_sigHelpPopup.nextBtnBounds = {};
+    if (!pRT || !m_sigHelpPopup.visible || m_sigHelpPopup.result.signatures.empty() || !theme.dwriteFactory) return;
+
+    int sigIdx = m_sigHelpPopup.selectedOverload;
+    if (sigIdx < 0 || sigIdx >= static_cast<int>(m_sigHelpPopup.result.signatures.size())) sigIdx = 0;
+    const auto& sig = m_sigHelpPopup.result.signatures[static_cast<size_t>(sigIdx)];
+    int activeParam = (sig.activeParameter >= 0) ? sig.activeParameter : m_sigHelpPopup.result.activeParameter;
+
+    IDWriteTextFormat* codeFmt = theme.fontCode ? theme.fontCode.Get() : theme.fontBody.Get();
+    IDWriteTextFormat* docFmt = theme.fontBody.Get();
+    if (!codeFmt || !docFmt) return;
+
+    const float maxW = config.ScaleF(480.0f);
+    const float padX = config.ScaleF(10.0f);
+    const float padY = config.ScaleF(7.0f);
+    float sigAvailW = maxW - padX * 2.0f - (m_sigHelpPopup.result.signatures.size() > 1 ? config.ScaleF(64.0f) : 0.0f);
+
+    Microsoft::WRL::ComPtr<IDWriteTextLayout> sigLayout;
+    float sigW = config.ScaleF(200.0f), sigH = config.ScaleF(18.0f);
+    if (SUCCEEDED(theme.dwriteFactory->CreateTextLayout(
+            sig.label.c_str(), static_cast<UINT32>(sig.label.size()), codeFmt, sigAvailW, 120.0f, &sigLayout))) {
+        // Highlight active parameter substring inside signature label
+        if (activeParam >= 0 && activeParam < static_cast<int>(sig.parameters.size())) {
+            const std::wstring& pLbl = sig.parameters[static_cast<size_t>(activeParam)].label;
+            size_t lp = sig.label.find(L'(');
+            size_t matchPos = (!pLbl.empty() && lp != std::wstring::npos) ? sig.label.find(pLbl, lp) : std::wstring::npos;
+            if (matchPos != std::wstring::npos) {
+                DWRITE_TEXT_RANGE rng{ static_cast<UINT32>(matchPos), static_cast<UINT32>(pLbl.size()) };
+                sigLayout->SetFontWeight(DWRITE_FONT_WEIGHT_BOLD, rng);
+                Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> paramBrush;
+                pRT->CreateSolidColorBrush(theme.IsDarkMode()
+                    ? D2D1::ColorF(0.31f, 0.76f, 1.0f, 1.0f)
+                    : D2D1::ColorF(0.0f, 0.37f, 0.72f, 1.0f), &paramBrush);
+                if (paramBrush) sigLayout->SetDrawingEffect(paramBrush.Get(), rng);
+            }
+        }
+        DWRITE_TEXT_METRICS tm{};
+        if (SUCCEEDED(sigLayout->GetMetrics(&tm))) {
+            sigW = tm.widthIncludingTrailingWhitespace;
+            sigH = tm.height;
+        }
+    }
+
+    std::wstring docText;
+    if (activeParam >= 0 && activeParam < static_cast<int>(sig.parameters.size()) &&
+        !sig.parameters[static_cast<size_t>(activeParam)].documentation.empty()) {
+        docText = sig.parameters[static_cast<size_t>(activeParam)].documentation;
+    } else if (!sig.documentation.empty()) {
+        docText = sig.documentation;
+    }
+
+    Microsoft::WRL::ComPtr<IDWriteTextLayout> docLayout;
+    float docH = 0.0f, docW = 0.0f;
+    if (!docText.empty()) {
+        if (SUCCEEDED(theme.dwriteFactory->CreateTextLayout(
+                docText.c_str(), static_cast<UINT32>(docText.size()), docFmt, maxW - padX * 2.0f, 120.0f, &docLayout))) {
+            DWRITE_TEXT_METRICS tm{};
+            if (SUCCEEDED(docLayout->GetMetrics(&tm))) {
+                docW = tm.widthIncludingTrailingWhitespace;
+                docH = tm.height + config.ScaleF(5.0f);
+            }
+        }
+    }
+
+    float overloadExtra = (m_sigHelpPopup.result.signatures.size() > 1) ? config.ScaleF(64.0f) : 0.0f;
+    float boxW = (std::min)(maxW, (std::max)(config.ScaleF(200.0f), (std::max)(sigW + overloadExtra, docW) + padX * 2.0f));
+    float boxH = padY * 2.0f + sigH + docH;
+
+    float paneLeft = (m_lastActivePaneBounds.right > m_lastActivePaneBounds.left) ? m_lastActivePaneBounds.left : config.ScaleF(20.0f);
+    float paneRight = (m_lastActivePaneBounds.right > m_lastActivePaneBounds.left) ? m_lastActivePaneBounds.right : config.ScaleF(1100.0f);
+    float anchorX = (m_lastCaretX > 10.0f) ? m_lastCaretX : paneLeft + config.ScaleF(80.0f);
+    float anchorY = (m_lastCaretY > 20.0f) ? m_lastCaretY : config.ScaleF(140.0f);
+
+    float x = (std::max)(paneLeft + config.ScaleF(8.0f), (std::min)(anchorX - config.ScaleF(20.0f), paneRight - boxW - config.ScaleF(10.0f)));
+    float y = anchorY - boxH - config.ScaleF(6.0f);
+    if (y < config.ScaleF(45.0f)) {
+        y = (std::min)(clientHeight - boxH - config.ScaleF(28.0f), anchorY + config.ScaleF(22.0f));
+    }
+
+    D2D1_RECT_F rc = D2D1::RectF(x, y, x + boxW, y + boxH);
+    m_sigHelpPopup.bounds = rc;
+
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> bgBrush, borderBrush;
+    pRT->CreateSolidColorBrush(theme.IsDarkMode() ? D2D1::ColorF(0.13f, 0.135f, 0.15f, 0.98f) : D2D1::ColorF(0.98f, 0.98f, 0.99f, 0.98f), &bgBrush);
+    pRT->CreateSolidColorBrush(theme.IsDarkMode() ? D2D1::ColorF(0.0f, 0.48f, 0.80f, 1.0f) : D2D1::ColorF(0.0f, 0.45f, 0.78f, 1.0f), &borderBrush);
+    if (!bgBrush || !borderBrush) return;
+
+    pRT->FillRoundedRectangle(D2D1::RoundedRect(rc, 5.0f, 5.0f), bgBrush.Get());
+    pRT->DrawRoundedRectangle(D2D1::RoundedRect(rc, 5.0f, 5.0f), borderBrush.Get(), 1.1f);
+
+    if (sigLayout) {
+        pRT->DrawTextLayout(D2D1::Point2F(x + padX, y + padY), sigLayout.Get(), theme.brushTextPrimary.Get());
+    }
+    if (docLayout) {
+        pRT->DrawTextLayout(D2D1::Point2F(x + padX, y + padY + sigH + config.ScaleF(4.0f)),
+                            docLayout.Get(), theme.brushTextSecondary ? theme.brushTextSecondary.Get() : theme.brushTextPrimary.Get());
+    }
+
+    if (m_sigHelpPopup.result.signatures.size() > 1) {
+        float px = x + boxW - config.ScaleF(58.0f);
+        m_sigHelpPopup.prevBtnBounds = D2D1::RectF(px, y + padY, px + config.ScaleF(16.0f), y + padY + config.ScaleF(18.0f));
+        m_sigHelpPopup.nextBtnBounds = D2D1::RectF(x + boxW - config.ScaleF(20.0f), y + padY, x + boxW - config.ScaleF(4.0f), y + padY + config.ScaleF(18.0f));
+        std::wstring ovTxt = L"< " + std::to_wstring(sigIdx + 1) + L"/" +
+                             std::to_wstring(m_sigHelpPopup.result.signatures.size()) + L" >";
+        D2D1_RECT_F rcOv = D2D1::RectF(px, y + padY, x + boxW - config.ScaleF(4.0f), y + padY + config.ScaleF(18.0f));
+        pRT->DrawText(ovTxt.c_str(), static_cast<UINT32>(ovTxt.size()),
+                      theme.fontMenuShortcut ? theme.fontMenuShortcut.Get() : docFmt,
+                      rcOv, theme.brushTextSecondary ? theme.brushTextSecondary.Get() : theme.brushTextPrimary.Get());
+    }
+}
+
+void EditorCanvas::ShowCodeActionMenu(size_t line, const std::vector<lsp::CodeActionItem>& items, bool isRefactorMode) {
+    m_codeActionMenu.line = line;
+    m_codeActionMenu.items = items;
+    m_codeActionMenu.isRefactorMode = isRefactorMode;
+    m_codeActionMenu.selectedIdx = 0;
+    m_codeActionMenu.scrollOffset = 0;
+    m_codeActionMenu.visible = !items.empty();
+    if (!m_codeActionMenu.visible) m_codeActionMenu.bounds = {};
+}
+
+bool EditorCanvas::HitTestLightbulb(POINT pt) const noexcept {
+    return m_codeActionMenu.hasLightbulb && PtInRectF(pt, m_codeActionMenu.lightbulbBounds);
+}
+
+bool EditorCanvas::HandleCodeActionMenuKeyDown(WPARAM vk, int& outAcceptedIndex) {
+    outAcceptedIndex = -1;
+    if (!m_codeActionMenu.visible || m_codeActionMenu.items.empty()) return false;
+    int count = static_cast<int>(m_codeActionMenu.items.size());
+    constexpr int kMaxVis = 9;
+    if (vk == VK_ESCAPE) {
+        DismissCodeActionMenu();
+        return true;
+    }
+    if (vk == VK_DOWN) {
+        m_codeActionMenu.selectedIdx = (m_codeActionMenu.selectedIdx + 1) % count;
+        if (m_codeActionMenu.selectedIdx >= m_codeActionMenu.scrollOffset + kMaxVis) {
+            m_codeActionMenu.scrollOffset = m_codeActionMenu.selectedIdx - kMaxVis + 1;
+        } else if (m_codeActionMenu.selectedIdx == 0) {
+            m_codeActionMenu.scrollOffset = 0;
+        }
+        return true;
+    }
+    if (vk == VK_UP) {
+        m_codeActionMenu.selectedIdx = (m_codeActionMenu.selectedIdx - 1 + count) % count;
+        if (m_codeActionMenu.selectedIdx < m_codeActionMenu.scrollOffset) {
+            m_codeActionMenu.scrollOffset = m_codeActionMenu.selectedIdx;
+        } else if (m_codeActionMenu.selectedIdx == count - 1 && count > kMaxVis) {
+            m_codeActionMenu.scrollOffset = count - kMaxVis;
+        }
+        return true;
+    }
+    if (vk == VK_RETURN || vk == VK_TAB) {
+        outAcceptedIndex = m_codeActionMenu.selectedIdx;
+        DismissCodeActionMenu();
+        return true;
+    }
+    return false;
+}
+
+bool EditorCanvas::HandleCodeActionMenuMouseDown(POINT pt, int& outAcceptedIndex) {
+    outAcceptedIndex = -1;
+    if (!m_codeActionMenu.visible) return false;
+    if (!PtInRectF(pt, m_codeActionMenu.bounds)) {
+        DismissCodeActionMenu();
+        return false;
+    }
+    // Check item rows cleanly using rendered row height inside m_codeActionMenu.bounds
+    constexpr int kMaxVis = 9;
+    float headerH = 26.0f;
+    float rowH = 26.0f;
+    if (m_codeActionMenu.bounds.bottom > m_codeActionMenu.bounds.top) {
+        float innerH = (m_codeActionMenu.bounds.bottom - m_codeActionMenu.bounds.top);
+        int visRows = (std::min)(kMaxVis, static_cast<int>(m_codeActionMenu.items.size()));
+        if (visRows > 0) {
+            headerH = (innerH > 26.0f * (visRows + 0.5f)) ? innerH / (visRows + 1) : 26.0f;
+            rowH = (innerH - headerH) / static_cast<float>(visRows);
+        }
+    }
+    float relY = static_cast<float>(pt.y) - (m_codeActionMenu.bounds.top + headerH);
+    if (relY >= 0.0f && rowH > 1.0f) {
+        int visIdx = static_cast<int>(relY / rowH);
+        int itemIdx = m_codeActionMenu.scrollOffset + visIdx;
+        if (itemIdx >= 0 && itemIdx < static_cast<int>(m_codeActionMenu.items.size())) {
+            m_codeActionMenu.selectedIdx = itemIdx;
+            outAcceptedIndex = itemIdx;
+            DismissCodeActionMenu();
+            return true;
+        }
+    }
+    return true;
+}
+
+void EditorCanvas::RenderCodeActionMenu(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config, float clientHeight) {
+    if (!pRT || !m_codeActionMenu.visible || m_codeActionMenu.items.empty()) return;
+
+    constexpr int kMaxVis = 9;
+    int total = static_cast<int>(m_codeActionMenu.items.size());
+    int visCount = (std::min)(total, kMaxVis);
+    float headerH = config.ScaleF(24.0f);
+    float rowH = config.ScaleF(26.0f);
+    float boxW = config.ScaleF(360.0f);
+    float boxH = headerH + rowH * static_cast<float>(visCount) + config.ScaleF(4.0f);
+
+    float paneLeft = (m_lastActivePaneBounds.right > m_lastActivePaneBounds.left) ? m_lastActivePaneBounds.left : config.ScaleF(20.0f);
+    float paneRight = (m_lastActivePaneBounds.right > m_lastActivePaneBounds.left) ? m_lastActivePaneBounds.right : config.ScaleF(1100.0f);
+    float anchorX = (m_lastCaretX > 10.0f) ? m_lastCaretX : paneLeft + config.ScaleF(50.0f);
+    float anchorY = (m_lastCaretY > 20.0f) ? m_lastCaretY : config.ScaleF(140.0f);
+
+    float x = (std::max)(paneLeft + config.ScaleF(8.0f), (std::min)(anchorX, paneRight - boxW - config.ScaleF(12.0f)));
+    float y = anchorY + config.ScaleF(20.0f);
+    if (y + boxH > clientHeight - config.ScaleF(28.0f)) {
+        y = (std::max)(config.ScaleF(42.0f), anchorY - boxH - config.ScaleF(6.0f));
+    }
+
+    D2D1_RECT_F rcMenu = D2D1::RectF(x, y, x + boxW, y + boxH);
+    m_codeActionMenu.bounds = rcMenu;
+
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> bgBrush, borderBrush, selBrush, hdrBrush, badgeBrush;
+    if (theme.IsDarkMode()) {
+        pRT->CreateSolidColorBrush(D2D1::ColorF(0.137f, 0.141f, 0.157f, 0.98f), &bgBrush);
+        pRT->CreateSolidColorBrush(D2D1::ColorF(0.25f, 0.27f, 0.31f, 1.0f), &borderBrush);
+        pRT->CreateSolidColorBrush(D2D1::ColorF(0.016f, 0.224f, 0.369f, 1.0f), &selBrush);
+        pRT->CreateSolidColorBrush(D2D1::ColorF(0.11f, 0.114f, 0.125f, 1.0f), &hdrBrush);
+        pRT->CreateSolidColorBrush(D2D1::ColorF(0.98f, 0.80f, 0.20f, 1.0f), &badgeBrush);
+    } else {
+        pRT->CreateSolidColorBrush(D2D1::ColorF(0.98f, 0.98f, 0.99f, 0.98f), &bgBrush);
+        pRT->CreateSolidColorBrush(D2D1::ColorF(0.75f, 0.77f, 0.82f, 1.0f), &borderBrush);
+        pRT->CreateSolidColorBrush(D2D1::ColorF(0.84f, 0.91f, 0.98f, 1.0f), &selBrush);
+        pRT->CreateSolidColorBrush(D2D1::ColorF(0.94f, 0.95f, 0.96f, 1.0f), &hdrBrush);
+        pRT->CreateSolidColorBrush(D2D1::ColorF(0.75f, 0.45f, 0.0f, 1.0f), &badgeBrush);
+    }
+    if (!bgBrush || !borderBrush) return;
+
+    pRT->FillRoundedRectangle(D2D1::RoundedRect(rcMenu, 5.0f, 5.0f), bgBrush.Get());
+    pRT->DrawRoundedRectangle(D2D1::RoundedRect(rcMenu, 5.0f, 5.0f), borderBrush.Get(), 1.0f);
+
+    if (hdrBrush) {
+        D2D1_RECT_F rcHdr = D2D1::RectF(x + 1.0f, y + 1.0f, x + boxW - 1.0f, y + headerH);
+        pRT->FillRectangle(rcHdr, hdrBrush.Get());
+    }
+    std::wstring hdrText = m_codeActionMenu.isRefactorMode
+        ? (L"Refactor  (" + std::to_wstring(total) + L")")
+        : (L"Code Actions  (" + std::to_wstring(total) + L")");
+    D2D1_RECT_F rcHdrText = D2D1::RectF(x + config.ScaleF(10.0f), y + config.ScaleF(3.0f), x + boxW - config.ScaleF(10.0f), y + headerH);
+    pRT->DrawText(hdrText.c_str(), static_cast<UINT32>(hdrText.size()),
+                  theme.fontMenuItem ? theme.fontMenuItem.Get() : theme.fontBody.Get(),
+                  rcHdrText, theme.brushTextSecondary ? theme.brushTextSecondary.Get() : theme.brushTextPrimary.Get());
+
+    IDWriteTextFormat* rowFmt = theme.fontMenu ? theme.fontMenu.Get() : theme.fontBody.Get();
+    float curY = y + headerH + config.ScaleF(2.0f);
+    for (int r = 0; r < visCount; ++r) {
+        int idx = m_codeActionMenu.scrollOffset + r;
+        if (idx < 0 || idx >= total) break;
+        const auto& act = m_codeActionMenu.items[static_cast<size_t>(idx)];
+        D2D1_RECT_F rcRow = D2D1::RectF(x + config.ScaleF(4.0f), curY, x + boxW - config.ScaleF(4.0f), curY + rowH);
+        if (idx == m_codeActionMenu.selectedIdx && selBrush) {
+            pRT->FillRoundedRectangle(D2D1::RoundedRect(rcRow, 3.0f, 3.0f), selBrush.Get());
+        }
+        std::wstring tag = L"Fix";
+        if (act.kind.find(L"refactor") != std::wstring::npos) tag = L"Refactor";
+        else if (act.kind.find(L"organize") != std::wstring::npos) tag = L"Imports";
+
+        D2D1_RECT_F rcTag = D2D1::RectF(rcRow.left + config.ScaleF(8.0f), curY + config.ScaleF(4.0f),
+                                        rcRow.left + config.ScaleF(62.0f), curY + rowH - config.ScaleF(4.0f));
+        pRT->DrawText(tag.c_str(), static_cast<UINT32>(tag.size()),
+                      theme.fontMenuItem ? theme.fontMenuItem.Get() : rowFmt,
+                      rcTag, badgeBrush ? badgeBrush.Get() : theme.brushTextSecondary.Get());
+
+        D2D1_RECT_F rcTitle = D2D1::RectF(rcRow.left + config.ScaleF(64.0f), curY + config.ScaleF(3.0f),
+                                          rcRow.right - config.ScaleF(8.0f), curY + rowH - config.ScaleF(3.0f));
+        pRT->DrawText(act.title.c_str(), static_cast<UINT32>(act.title.size()), rowFmt,
+                      rcTitle, theme.brushTextPrimary.Get());
+        curY += rowH;
+    }
+}
+
 } // namespace phide::ui

@@ -107,7 +107,47 @@ struct JsonValue {
         const auto* v = Get(key);
         return (v && v->type == Type::Number) ? static_cast<long long>(v->numVal) : def;
     }
+
+    bool GetBool(const char* key, bool def = false) const {
+        const auto* v = Get(key);
+        return (v && v->type == Type::Bool) ? v->boolVal : def;
+    }
 };
+
+std::string SerializeJsonValue(const JsonValue& v, int depth = 0) {
+    if (depth > 32) return "null";
+    switch (v.type) {
+        case JsonValue::Type::Null:   return "null";
+        case JsonValue::Type::Bool:   return v.boolVal ? "true" : "false";
+        case JsonValue::Type::Number: {
+            std::ostringstream oss;
+            oss << v.numVal;
+            return oss.str();
+        }
+        case JsonValue::Type::String: return EscapeJsonString(v.strVal);
+        case JsonValue::Type::Array: {
+            std::string out = "[";
+            for (size_t i = 0; i < v.arrVal.size(); ++i) {
+                if (i > 0) out.push_back(',');
+                out += SerializeJsonValue(v.arrVal[i], depth + 1);
+            }
+            out.push_back(']');
+            return out;
+        }
+        case JsonValue::Type::Object: {
+            std::string out = "{";
+            for (size_t i = 0; i < v.objVal.size(); ++i) {
+                if (i > 0) out.push_back(',');
+                out += EscapeJsonString(v.objVal[i].first);
+                out.push_back(':');
+                out += SerializeJsonValue(v.objVal[i].second, depth + 1);
+            }
+            out.push_back('}');
+            return out;
+        }
+    }
+    return "null";
+}
 
 class JsonParser {
 public:
@@ -325,10 +365,53 @@ std::wstring InferServerArgs(const std::wstring& exePath) {
     }
     if (lower.find(L"intelephense") != std::wstring::npos ||
         lower.find(L"pyright") != std::wstring::npos ||
-        lower.find(L"typescript-language-server") != std::wstring::npos) {
+        lower.find(L"typescript-language-server") != std::wstring::npos ||
+        lower.find(L"vscode-html-language-server") != std::wstring::npos ||
+        lower.find(L"vscode-css-language-server") != std::wstring::npos ||
+        lower.find(L"vscode-json-language-server") != std::wstring::npos) {
         return L"--stdio";
     }
+    if (lower.find(L"ruff") != std::wstring::npos) {
+        return L"server";
+    }
+    if (lower.find(L"clangd") != std::wstring::npos) {
+        return L"--background-index";
+    }
     return L"";
+}
+
+bool SplitCustomCommand(const std::wstring& raw, std::wstring& outExe, std::wstring& outArgs) {
+    outExe.clear();
+    outArgs.clear();
+    size_t first = raw.find_first_not_of(L" \t");
+    if (first == std::wstring::npos) return false;
+    std::wstring trimmed = raw.substr(first);
+    if (trimmed.front() == L'"') {
+        size_t closeQ = trimmed.find(L'"', 1);
+        if (closeQ == std::wstring::npos) return false;
+        outExe = trimmed.substr(1, closeQ - 1);
+        size_t argStart = trimmed.find_first_not_of(L" \t", closeQ + 1);
+        if (argStart != std::wstring::npos) outArgs = trimmed.substr(argStart);
+        return !outExe.empty();
+    }
+    // Check if full string is an existing file path with spaces
+    std::error_code ec;
+    if (std::filesystem::exists(trimmed, ec) && std::filesystem::is_regular_file(trimmed, ec)) {
+        outExe = trimmed;
+        outArgs = InferServerArgs(outExe);
+        return true;
+    }
+    size_t sp = trimmed.find(L' ');
+    if (sp == std::wstring::npos) {
+        outExe = trimmed;
+        outArgs = InferServerArgs(outExe);
+    } else {
+        outExe = trimmed.substr(0, sp);
+        size_t argStart = trimmed.find_first_not_of(L" \t", sp + 1);
+        if (argStart != std::wstring::npos) outArgs = trimmed.substr(argStart);
+        else outArgs = InferServerArgs(outExe);
+    }
+    return !outExe.empty();
 }
 
 } // namespace
@@ -422,6 +505,35 @@ void LspClient::ResetDiscoveryCache() {
     m_failedDiscoveryKeys.clear();
 }
 
+void LspClient::SetCustomServerPaths(const std::unordered_map<std::wstring, std::wstring>& customPaths) {
+    std::lock_guard<std::mutex> lock(m_stateMutex);
+    m_customServerPaths.clear();
+    for (const auto& kv : customPaths) {
+        std::wstring fam = LspManager::NormalizeLanguageFamily(kv.first);
+        if (!fam.empty() && !kv.second.empty()) {
+            m_customServerPaths[fam] = kv.second;
+        }
+        if (!kv.first.empty() && !kv.second.empty()) {
+            m_customServerPaths[ToLowerW(kv.first)] = kv.second;
+        }
+    }
+    m_failedDiscoveryKeys.clear();
+}
+
+void LspClient::SetCustomServerPath(const std::wstring& languageIdOrFamily, const std::wstring& executablePath) {
+    std::lock_guard<std::mutex> lock(m_stateMutex);
+    std::wstring fam = LspManager::NormalizeLanguageFamily(languageIdOrFamily);
+    std::wstring raw = ToLowerW(languageIdOrFamily);
+    if (executablePath.empty()) {
+        if (!fam.empty()) m_customServerPaths.erase(fam);
+        if (!raw.empty()) m_customServerPaths.erase(raw);
+    } else {
+        if (!fam.empty()) m_customServerPaths[fam] = executablePath;
+        if (!raw.empty()) m_customServerPaths[raw] = executablePath;
+    }
+    m_failedDiscoveryKeys.clear();
+}
+
 bool LspClient::StartServer(const std::wstring& serverExecutable, const std::wstring& workspaceUri) {
     std::lock_guard<std::recursive_mutex> lifecycleLock(m_lifecycleMutex);
     Shutdown();
@@ -456,6 +568,7 @@ bool LspClient::EnsureServerForLanguage(const std::wstring& languageId, const st
     else if (lang == L"typescriptreact") lang = L"typescript";
     else if (lang == L"c") lang = L"cpp";
 
+    std::wstring customCmd;
     {
         std::lock_guard<std::mutex> lock(m_stateMutex);
         if (m_isRunning.load() && m_currentLanguageId == lang &&
@@ -465,6 +578,14 @@ bool LspClient::EnsureServerForLanguage(const std::wstring& languageId, const st
         std::wstring cacheKey = lang + L"|" + ToLowerW(workspaceRoot);
         if (m_failedDiscoveryKeys.count(cacheKey) > 0) {
             return false;
+        }
+        std::wstring fam = LspManager::NormalizeLanguageFamily(lang);
+        auto itC = m_customServerPaths.find(lang);
+        if (itC == m_customServerPaths.end() && !fam.empty()) {
+            itC = m_customServerPaths.find(fam);
+        }
+        if (itC != m_customServerPaths.end()) {
+            customCmd = itC->second;
         }
     }
 
@@ -487,48 +608,83 @@ bool LspClient::EnsureServerForLanguage(const std::wstring& languageId, const st
     }
     extraDirs.push_back(L"C:\\Program Files\\LLVM\\bin");
 
+    std::wstring foundExe;
+    std::wstring foundArgs;
+    if (!customCmd.empty()) {
+        std::wstring cExe;
+        std::wstring cArgs;
+        if (SplitCustomCommand(customCmd, cExe, cArgs)) {
+            std::error_code ec;
+            if (std::filesystem::exists(cExe, ec) && std::filesystem::is_regular_file(cExe, ec)) {
+                foundExe = cExe;
+                foundArgs = cArgs;
+            } else {
+                std::wstring resolved = ResolveExecutableOnSystem(cExe, extraDirs);
+                if (!resolved.empty()) {
+                    foundExe = resolved;
+                    foundArgs = cArgs;
+                }
+            }
+        }
+    }
+
     struct Candidate {
         const wchar_t* exeName;
         const wchar_t* args;
     };
     std::vector<Candidate> candidates;
-    if (lang == L"php") {
-        candidates = {
-            { L"intelephense.cmd", L"--stdio" },
-            { L"intelephense.exe", L"--stdio" },
-            { L"phpactor.bat", L"language-server" },
-            { L"phpactor.exe", L"language-server" },
-            { L"phpactor", L"language-server" }
-        };
-    } else if (lang == L"python") {
-        candidates = {
-            { L"pyright-langserver.cmd", L"--stdio" },
-            { L"pyright-langserver.exe", L"--stdio" },
-            { L"pylsp.exe", L"" },
-            { L"pylsp", L"" }
-        };
-    } else if (lang == L"cpp") {
-        candidates = {
-            { L"clangd.exe", L"--background-index" },
-            { L"clangd", L"--background-index" }
-        };
-    } else if (lang == L"typescript" || lang == L"javascript") {
-        candidates = {
-            { L"typescript-language-server.cmd", L"--stdio" },
-            { L"typescript-language-server.exe", L"--stdio" }
-        };
-    } else {
-        return false;
-    }
+    if (foundExe.empty()) {
+        if (lang == L"php") {
+            candidates = {
+                { L"intelephense.cmd", L"--stdio" },
+                { L"intelephense.exe", L"--stdio" },
+                { L"phpactor.bat", L"language-server" },
+                { L"phpactor.exe", L"language-server" },
+                { L"phpactor", L"language-server" }
+            };
+        } else if (lang == L"python") {
+            candidates = {
+                { L"pyright-langserver.cmd", L"--stdio" },
+                { L"pyright-langserver.exe", L"--stdio" },
+                { L"pylsp.exe", L"" },
+                { L"pylsp", L"" }
+            };
+        } else if (lang == L"cpp") {
+            candidates = {
+                { L"clangd.exe", L"--background-index" },
+                { L"clangd", L"--background-index" }
+            };
+        } else if (lang == L"typescript" || lang == L"javascript") {
+            candidates = {
+                { L"typescript-language-server.cmd", L"--stdio" },
+                { L"typescript-language-server.exe", L"--stdio" }
+            };
+        } else if (lang == L"html") {
+            candidates = {
+                { L"vscode-html-language-server.cmd", L"--stdio" },
+                { L"vscode-html-language-server.exe", L"--stdio" }
+            };
+        } else if (lang == L"css" || lang == L"scss" || lang == L"less") {
+            candidates = {
+                { L"vscode-css-language-server.cmd", L"--stdio" },
+                { L"vscode-css-language-server.exe", L"--stdio" }
+            };
+        } else if (lang == L"json") {
+            candidates = {
+                { L"vscode-json-language-server.cmd", L"--stdio" },
+                { L"vscode-json-language-server.exe", L"--stdio" }
+            };
+        } else {
+            return false;
+        }
 
-    std::wstring foundExe;
-    std::wstring foundArgs;
-    for (const auto& c : candidates) {
-        std::wstring p = ResolveExecutableOnSystem(c.exeName, extraDirs);
-        if (!p.empty()) {
-            foundExe = p;
-            foundArgs = c.args;
-            break;
+        for (const auto& c : candidates) {
+            std::wstring p = ResolveExecutableOnSystem(c.exeName, extraDirs);
+            if (!p.empty()) {
+                foundExe = p;
+                foundArgs = c.args;
+                break;
+            }
         }
     }
 
@@ -655,7 +811,7 @@ bool LspClient::LaunchProcessAndInitialize(const std::wstring& commandLine, cons
         ReaderThreadLoop(hChildStdoutRead);
     });
 
-    // Perform LSP initialize -> initialized handshake
+    // Perform LSP initialize -> initialized handshake with full capabilities
     DWORD pid = GetCurrentProcessId();
     std::ostringstream initParams;
     initParams << "{"
@@ -663,19 +819,55 @@ bool LspClient::LaunchProcessAndInitialize(const std::wstring& commandLine, cons
                << "\"clientInfo\":{\"name\":\"phide\",\"version\":\"1.0\"},"
                << "\"rootUri\":" << (rootUri.empty() ? "null" : EscapeJsonString(WideToUtf8(rootUri))) << ","
                << "\"capabilities\":{"
+               << "\"workspace\":{\"applyEdit\":true,\"workspaceEdit\":{\"documentChanges\":true}},"
                << "\"textDocument\":{"
-               << "\"synchronization\":{\"dynamicRegistration\":false,\"willSave\":false,\"didSave\":true},"
-               << "\"completion\":{\"completionItem\":{\"snippetSupport\":true,\"documentationFormat\":[\"plaintext\"]}},"
-               << "\"definition\":{\"linkSupport\":false},"
-               << "\"publishDiagnostics\":{\"relatedInformation\":false}"
+               << "\"synchronization\":{\"dynamicRegistration\":false,\"willSave\":false,\"didSave\":true,\"incrementalSync\":true},"
+               << "\"completion\":{\"completionItem\":{\"snippetSupport\":true,\"documentationFormat\":[\"markdown\",\"plaintext\"]}},"
+               << "\"hover\":{\"contentFormat\":[\"markdown\",\"plaintext\"]},"
+               << "\"signatureHelp\":{\"signatureInformation\":{\"documentationFormat\":[\"markdown\",\"plaintext\"],\"parameterInformation\":{\"labelOffsetSupport\":false},\"activeParameterSupport\":true}},"
+               << "\"definition\":{\"linkSupport\":true},"
+               << "\"typeDefinition\":{\"linkSupport\":true},"
+               << "\"implementation\":{\"linkSupport\":true},"
+               << "\"references\":{},"
+               << "\"documentSymbol\":{\"hierarchicalDocumentSymbolSupport\":true},"
+               << "\"codeAction\":{\"codeActionLiteralSupport\":{\"codeActionKind\":{\"valueSet\":[\"quickfix\",\"refactor\",\"refactor.extract\",\"refactor.inline\",\"refactor.rewrite\",\"source\",\"source.organizeImports\"]}},\"isPreferredSupport\":true,\"resolveSupport\":{\"properties\":[\"edit\"]}},"
+               << "\"formatting\":{},"
+               << "\"rangeFormatting\":{},"
+               << "\"rename\":{\"prepareSupport\":true},"
+               << "\"inlayHint\":{},"
+               << "\"publishDiagnostics\":{\"relatedInformation\":false,\"codeDescriptionSupport\":true}"
                << "}"
                << "}"
                << "}";
 
+    m_syncKind.store(TextDocumentSyncKind::Full);
     std::string initResp;
     if (!SendRequestAndWait("initialize", initParams.str(), initResp, 1800)) {
         Shutdown();
         return false;
+    }
+
+    // Negotiate TextDocumentSyncKind (None=0, Full=1, Incremental=2)
+    {
+        JsonValue initRoot;
+        JsonParser parser(initResp);
+        if (parser.Parse(initRoot)) {
+            if (const JsonValue* res = initRoot.Get("result")) {
+                if (const JsonValue* caps = res->Get("capabilities")) {
+                    if (const JsonValue* sync = caps->Get("textDocumentSync")) {
+                        long long kindNum = -1;
+                        if (sync->type == JsonValue::Type::Number) {
+                            kindNum = static_cast<long long>(sync->numVal);
+                        } else if (sync->type == JsonValue::Type::Object) {
+                            kindNum = sync->GetInt("change", 1);
+                        }
+                        if (kindNum == 0) m_syncKind.store(TextDocumentSyncKind::None);
+                        else if (kindNum == 2) m_syncKind.store(TextDocumentSyncKind::Incremental);
+                        else m_syncKind.store(TextDocumentSyncKind::Full);
+                    }
+                }
+            }
+        }
     }
 
     SendNotification("initialized", "{}");
@@ -740,8 +932,10 @@ void LspClient::Shutdown() {
         m_hChildStdoutRead = nullptr;
     }
 
+    m_syncKind.store(TextDocumentSyncKind::Full);
     std::lock_guard<std::mutex> lock(m_stateMutex);
     m_docVersions.clear();
+    m_docSyncedTexts.clear();
 }
 
 bool LspClient::SendJsonRpcFrame(const std::string& jsonBody) {
@@ -924,6 +1118,14 @@ void LspClient::HandleIncomingJsonMessage(const std::string& jsonText) {
                 Diagnostic item;
                 item.message = Utf8ToWide(d.GetString("message"));
                 item.severity = static_cast<int>(d.GetInt("severity", 1));
+                item.source = Utf8ToWide(d.GetString("source"));
+                if (const JsonValue* cv = d.Get("code")) {
+                    if (cv->type == JsonValue::Type::String) {
+                        item.code = Utf8ToWide(cv->strVal);
+                    } else if (cv->type == JsonValue::Type::Number) {
+                        item.code = std::to_wstring(static_cast<long long>(cv->numVal));
+                    }
+                }
                 const JsonValue* range = d.Get("range");
                 if (range) {
                     const JsonValue* start = range->Get("start");
@@ -957,6 +1159,72 @@ void LspClient::HandleIncomingJsonMessage(const std::string& jsonText) {
     }
 }
 
+bool LspClient::ComputeIncrementalDelta(
+    const std::wstring& oldText, const std::wstring& newText,
+    size_t& outStartLine, size_t& outStartChar,
+    size_t& outEndLine, size_t& outEndChar,
+    std::wstring& outReplacement)
+{
+    const size_t oldLen = oldText.size();
+    const size_t newLen = newText.size();
+    const size_t minLen = (std::min)(oldLen, newLen);
+
+    size_t prefix = 0;
+    while (prefix < minLen && oldText[prefix] == newText[prefix]) {
+        ++prefix;
+    }
+    // Avoid splitting UTF-16 surrogate pairs or CRLF
+    if (prefix > 0 && prefix < minLen) {
+        wchar_t prev = oldText[prefix - 1];
+        if ((prev >= 0xD800 && prev <= 0xDBFF) || (prev == L'\r' && (oldText[prefix] == L'\n' || newText[prefix] == L'\n'))) {
+            --prefix;
+        }
+    }
+
+    size_t oldEnd = oldLen;
+    size_t newEnd = newLen;
+    while (oldEnd > prefix && newEnd > prefix && oldText[oldEnd - 1] == newText[newEnd - 1]) {
+        --oldEnd;
+        --newEnd;
+    }
+    if (oldEnd < oldLen && oldEnd > prefix) {
+        wchar_t cur = oldText[oldEnd];
+        if ((cur >= 0xDC00 && cur <= 0xDFFF) || (cur == L'\n' && oldEnd > 0 && oldText[oldEnd - 1] == L'\r')) {
+            ++oldEnd;
+            ++newEnd;
+        }
+    }
+
+    size_t sLine = 0;
+    size_t sChar = 0;
+    for (size_t i = 0; i < prefix; ++i) {
+        if (oldText[i] == L'\n') {
+            ++sLine;
+            sChar = 0;
+        } else if (oldText[i] != L'\r' || (i + 1 < oldLen && oldText[i + 1] != L'\n')) {
+            ++sChar;
+        }
+    }
+
+    size_t eLine = sLine;
+    size_t eChar = sChar;
+    for (size_t i = prefix; i < oldEnd; ++i) {
+        if (oldText[i] == L'\n') {
+            ++eLine;
+            eChar = 0;
+        } else if (oldText[i] != L'\r' || (i + 1 < oldLen && oldText[i + 1] != L'\n')) {
+            ++eChar;
+        }
+    }
+
+    outStartLine = sLine;
+    outStartChar = sChar;
+    outEndLine = eLine;
+    outEndChar = eChar;
+    outReplacement = newText.substr(prefix, newEnd - prefix);
+    return true;
+}
+
 void LspClient::NotifyDidOpen(const std::wstring& fileUri, const std::wstring& languageId, const std::wstring& text) {
     if (!m_isRunning.load()) return;
     std::string uri = EnsureFileUriUtf8(fileUri);
@@ -967,6 +1235,12 @@ void LspClient::NotifyDidOpen(const std::wstring& fileUri, const std::wstring& l
             // Already open on server; emit incremental didChange instead
         } else {
             m_docVersions[uriW] = 1;
+            if (text.size() <= 1048576) {
+                if (m_docSyncedTexts.size() >= 48) {
+                    m_docSyncedTexts.erase(m_docSyncedTexts.begin());
+                }
+                m_docSyncedTexts[uriW] = text;
+            }
             std::ostringstream params;
             params << "{\"textDocument\":{\"uri\":" << EscapeJsonString(uri)
                    << ",\"languageId\":" << EscapeJsonString(WideToUtf8(languageId))
@@ -981,9 +1255,14 @@ void LspClient::NotifyDidOpen(const std::wstring& fileUri, const std::wstring& l
 
 void LspClient::NotifyDidChange(const std::wstring& fileUri, const std::wstring& text) {
     if (!m_isRunning.load()) return;
+    if (m_syncKind.load() == TextDocumentSyncKind::None) return;
+
     std::string uri = EnsureFileUriUtf8(fileUri);
     std::wstring uriW = Utf8ToWide(uri);
     int nextVer = 1;
+    bool useIncremental = false;
+    size_t sLine = 0, sChar = 0, eLine = 0, eChar = 0;
+    std::wstring replacement;
     {
         std::lock_guard<std::mutex> lock(m_stateMutex);
         auto it = m_docVersions.find(uriW);
@@ -991,11 +1270,36 @@ void LspClient::NotifyDidChange(const std::wstring& fileUri, const std::wstring&
             return;
         }
         nextVer = ++(it->second);
+
+        auto itPrev = m_docSyncedTexts.find(uriW);
+        if (m_syncKind.load() == TextDocumentSyncKind::Incremental &&
+            itPrev != m_docSyncedTexts.end() &&
+            itPrev->second.size() <= 1048576 && text.size() <= 1048576) {
+            if (itPrev->second == text) {
+                return;
+            }
+            useIncremental = ComputeIncrementalDelta(itPrev->second, text, sLine, sChar, eLine, eChar, replacement);
+        }
+        if (text.size() <= 1048576) {
+            if (m_docSyncedTexts.size() >= 48 && itPrev == m_docSyncedTexts.end()) {
+                m_docSyncedTexts.erase(m_docSyncedTexts.begin());
+            }
+            m_docSyncedTexts[uriW] = text;
+        } else {
+            m_docSyncedTexts.erase(uriW);
+        }
     }
 
     std::ostringstream params;
-    params << "{\"textDocument\":{\"uri\":" << EscapeJsonString(uri) << ",\"version\":" << nextVer
-           << "},\"contentChanges\":[{\"text\":" << EscapeJsonString(WideToUtf8(text)) << "}]}";
+    params << "{\"textDocument\":{\"uri\":" << EscapeJsonString(uri) << ",\"version\":" << nextVer << "},\"contentChanges\":[";
+    if (useIncremental) {
+        params << "{\"range\":{\"start\":{\"line\":" << sLine << ",\"character\":" << sChar
+               << "},\"end\":{\"line\":" << eLine << ",\"character\":" << eChar
+               << "}},\"text\":" << EscapeJsonString(WideToUtf8(replacement)) << "}";
+    } else {
+        params << "{\"text\":" << EscapeJsonString(WideToUtf8(text)) << "}";
+    }
+    params << "]}";
     SendNotification("textDocument/didChange", params.str());
 }
 
@@ -1015,6 +1319,7 @@ void LspClient::NotifyDidClose(const std::wstring& fileUri) {
     {
         std::lock_guard<std::mutex> lock(m_stateMutex);
         m_docVersions.erase(uriW);
+        m_docSyncedTexts.erase(uriW);
     }
     std::ostringstream params;
     params << "{\"textDocument\":{\"uri\":" << EscapeJsonString(uri) << "}}";
@@ -1307,6 +1612,37 @@ bool LspClient::PrepareRename(const std::wstring& fileUri, size_t line, size_t c
     return !outPlaceholder.empty();
 }
 
+static bool ParseWorkspaceEditObject(const JsonValue* result, WorkspaceEditResult& outEdit) {
+    outEdit.fileChanges.clear();
+    if (!result || result->type != JsonValue::Type::Object) return false;
+
+    if (const JsonValue* changes = result->Get("changes"); changes && changes->type == JsonValue::Type::Object) {
+        for (const auto& kv : changes->objVal) {
+            std::wstring fpath = LspClient::FileUriToPath(Utf8ToWide(kv.first));
+            std::vector<LspTextEdit> edits;
+            if (!fpath.empty() && ParseTextEditArray(&kv.second, edits)) {
+                outEdit.fileChanges.emplace_back(std::move(fpath), std::move(edits));
+            }
+        }
+    }
+    if (outEdit.fileChanges.empty()) {
+        if (const JsonValue* docChanges = result->Get("documentChanges");
+            docChanges && docChanges->type == JsonValue::Type::Array) {
+            for (const auto& dc : docChanges->arrVal) {
+                if (dc.type != JsonValue::Type::Object) continue;
+                const JsonValue* td = dc.Get("textDocument");
+                if (!td) continue;
+                std::wstring fpath = LspClient::FileUriToPath(Utf8ToWide(td->GetString("uri")));
+                std::vector<LspTextEdit> edits;
+                if (!fpath.empty() && ParseTextEditArray(dc.Get("edits"), edits)) {
+                    outEdit.fileChanges.emplace_back(std::move(fpath), std::move(edits));
+                }
+            }
+        }
+    }
+    return !outEdit.fileChanges.empty();
+}
+
 bool LspClient::RequestRename(const std::wstring& fileUri, size_t line, size_t col,
                               const std::wstring& newName, WorkspaceEditResult& outEdit) {
     outEdit.fileChanges.clear();
@@ -1325,34 +1661,7 @@ bool LspClient::RequestRename(const std::wstring& fileUri, size_t line, size_t c
     JsonValue root;
     JsonParser parser(respJson);
     if (!parser.Parse(root)) return false;
-    const JsonValue* result = root.Get("result");
-    if (!result || result->type != JsonValue::Type::Object) return false;
-
-    if (const JsonValue* changes = result->Get("changes"); changes && changes->type == JsonValue::Type::Object) {
-        for (const auto& kv : changes->objVal) {
-            std::wstring fpath = FileUriToPath(Utf8ToWide(kv.first));
-            std::vector<LspTextEdit> edits;
-            if (!fpath.empty() && ParseTextEditArray(&kv.second, edits)) {
-                outEdit.fileChanges.emplace_back(std::move(fpath), std::move(edits));
-            }
-        }
-    }
-    if (outEdit.fileChanges.empty()) {
-        if (const JsonValue* docChanges = result->Get("documentChanges");
-            docChanges && docChanges->type == JsonValue::Type::Array) {
-            for (const auto& dc : docChanges->arrVal) {
-                if (dc.type != JsonValue::Type::Object) continue;
-                const JsonValue* td = dc.Get("textDocument");
-                if (!td) continue;
-                std::wstring fpath = FileUriToPath(Utf8ToWide(td->GetString("uri")));
-                std::vector<LspTextEdit> edits;
-                if (!fpath.empty() && ParseTextEditArray(dc.Get("edits"), edits)) {
-                    outEdit.fileChanges.emplace_back(std::move(fpath), std::move(edits));
-                }
-            }
-        }
-    }
-    return !outEdit.fileChanges.empty();
+    return ParseWorkspaceEditObject(root.Get("result"), outEdit);
 }
 
 static std::string SerializeCallHierarchyItemJson(const CallHierarchyItem& item) {
@@ -1492,6 +1801,676 @@ bool LspClient::RequestRangeFormatting(
         return false;
     }
     return ParseFormattingEditsResponse(respJson, outEdits);
+}
+
+static std::wstring ExtractMarkupText(const JsonValue* v) {
+    if (!v) return {};
+    if (v->type == JsonValue::Type::String) {
+        return Utf8ToWide(v->strVal);
+    }
+    if (v->type == JsonValue::Type::Object) {
+        std::string val = v->GetString("value");
+        std::string lang = v->GetString("language");
+        if (!val.empty()) {
+            if (!lang.empty()) {
+                return Utf8ToWide("```" + lang + "\n" + val + "\n```");
+            }
+            return Utf8ToWide(val);
+        }
+    }
+    if (v->type == JsonValue::Type::Array) {
+        std::wstring joined;
+        for (const auto& el : v->arrVal) {
+            std::wstring part = ExtractMarkupText(&el);
+            if (!part.empty()) {
+                if (!joined.empty()) joined += L"\n\n";
+                joined += part;
+            }
+        }
+        return joined;
+    }
+    return {};
+}
+
+bool LspClient::RequestHover(const std::wstring& fileUri, size_t line, size_t col, HoverResult& outHover) {
+    outHover = {};
+    if (!m_isRunning.load()) return false;
+
+    std::string respJson;
+    if (!SendRequestAndWait("textDocument/hover", BuildTextDocPosParams(fileUri, line, col), respJson, 500)) {
+        return false;
+    }
+
+    JsonValue root;
+    JsonParser parser(respJson);
+    if (!parser.Parse(root)) return false;
+    const JsonValue* result = root.Get("result");
+    if (!result || result->type != JsonValue::Type::Object) return false;
+
+    outHover.markdown = ExtractMarkupText(result->Get("contents"));
+    if (const JsonValue* range = result->Get("range")) {
+        const JsonValue* start = range->Get("start");
+        const JsonValue* end = range->Get("end");
+        if (start) {
+            outHover.rangeLine = static_cast<size_t>((std::max)(0LL, start->GetInt("line", 0)));
+            outHover.rangeStartCol = static_cast<size_t>((std::max)(0LL, start->GetInt("character", 0)));
+        }
+        if (end && end->GetInt("line", 0) == static_cast<long long>(outHover.rangeLine)) {
+            outHover.rangeEndCol = static_cast<size_t>((std::max)(0LL, end->GetInt("character", 0)));
+        }
+    }
+    outHover.isValid = !outHover.markdown.empty();
+    return outHover.isValid;
+}
+
+bool LspClient::RequestSignatureHelp(const std::wstring& fileUri, size_t line, size_t col, SignatureHelpResult& outSigHelp) {
+    outSigHelp = {};
+    if (!m_isRunning.load()) return false;
+
+    std::string respJson;
+    if (!SendRequestAndWait("textDocument/signatureHelp", BuildTextDocPosParams(fileUri, line, col), respJson, 450)) {
+        return false;
+    }
+
+    JsonValue root;
+    JsonParser parser(respJson);
+    if (!parser.Parse(root)) return false;
+    const JsonValue* result = root.Get("result");
+    if (!result || result->type != JsonValue::Type::Object) return false;
+
+    const JsonValue* sigs = result->Get("signatures");
+    if (!sigs || sigs->type != JsonValue::Type::Array || sigs->arrVal.empty()) return false;
+
+    outSigHelp.activeSignature = static_cast<int>((std::max)(0LL, result->GetInt("activeSignature", 0)));
+    outSigHelp.activeParameter = static_cast<int>((std::max)(0LL, result->GetInt("activeParameter", 0)));
+
+    for (const auto& s : sigs->arrVal) {
+        if (s.type != JsonValue::Type::Object) continue;
+        SignatureInfo si;
+        si.label = Utf8ToWide(s.GetString("label"));
+        si.documentation = ExtractMarkupText(s.Get("documentation"));
+        si.activeParameter = static_cast<int>(s.GetInt("activeParameter", -1));
+        if (const JsonValue* params = s.Get("parameters"); params && params->type == JsonValue::Type::Array) {
+            for (const auto& p : params->arrVal) {
+                if (p.type != JsonValue::Type::Object) continue;
+                SignatureParamInfo pi;
+                if (const JsonValue* lbl = p.Get("label")) {
+                    if (lbl->type == JsonValue::Type::String) {
+                        pi.label = Utf8ToWide(lbl->strVal);
+                    } else if (lbl->type == JsonValue::Type::Array && lbl->arrVal.size() == 2) {
+                        size_t sIdx = static_cast<size_t>((std::max)(0.0, lbl->arrVal[0].numVal));
+                        size_t eIdx = static_cast<size_t>((std::max)(0.0, lbl->arrVal[1].numVal));
+                        if (sIdx < eIdx && eIdx <= si.label.size()) {
+                            pi.label = si.label.substr(sIdx, eIdx - sIdx);
+                        }
+                    }
+                }
+                pi.documentation = ExtractMarkupText(p.Get("documentation"));
+                if (!pi.label.empty()) si.parameters.push_back(std::move(pi));
+            }
+        }
+        if (!si.label.empty()) {
+            outSigHelp.signatures.push_back(std::move(si));
+        }
+    }
+    outSigHelp.isValid = !outSigHelp.signatures.empty();
+    if (outSigHelp.activeSignature >= static_cast<int>(outSigHelp.signatures.size())) {
+        outSigHelp.activeSignature = 0;
+    }
+    return outSigHelp.isValid;
+}
+
+bool LspClient::RequestCodeActions(
+    const std::wstring& fileUri, size_t startLine, size_t startCol,
+    size_t endLine, size_t endCol,
+    const std::vector<Diagnostic>& diagnostics,
+    std::vector<CodeActionItem>& outActions)
+{
+    outActions.clear();
+    if (!m_isRunning.load()) return false;
+
+    std::string uri = EnsureFileUriUtf8(fileUri);
+    std::ostringstream params;
+    params << "{\"textDocument\":{\"uri\":" << EscapeJsonString(uri)
+           << "},\"range\":{\"start\":{\"line\":" << startLine << ",\"character\":" << startCol
+           << "},\"end\":{\"line\":" << endLine << ",\"character\":" << endCol
+           << "}},\"context\":{\"diagnostics\":[";
+    bool firstDiag = true;
+    for (const auto& d : diagnostics) {
+        if (d.line < startLine || d.line > endLine) continue;
+        if (!firstDiag) params << ",";
+        firstDiag = false;
+        size_t len = (d.length > 0) ? d.length : 1;
+        params << "{\"range\":{\"start\":{\"line\":" << d.line << ",\"character\":" << d.col
+               << "},\"end\":{\"line\":" << d.line << ",\"character\":" << (d.col + len)
+               << "}},\"severity\":" << d.severity
+               << ",\"message\":" << EscapeJsonString(WideToUtf8(d.message));
+        if (!d.source.empty()) {
+            params << ",\"source\":" << EscapeJsonString(WideToUtf8(d.source));
+        }
+        if (!d.code.empty()) {
+            params << ",\"code\":" << EscapeJsonString(WideToUtf8(d.code));
+        }
+        params << "}";
+    }
+    params << "]}}";
+
+    std::string respJson;
+    if (!SendRequestAndWait("textDocument/codeAction", params.str(), respJson, 700)) {
+        return false;
+    }
+
+    JsonValue root;
+    JsonParser parser(respJson);
+    if (!parser.Parse(root)) return false;
+    const JsonValue* result = root.Get("result");
+    if (!result || result->type != JsonValue::Type::Array) return false;
+
+    for (const auto& el : result->arrVal) {
+        if (el.type != JsonValue::Type::Object) continue;
+        std::string title = el.GetString("title");
+        if (title.empty()) continue;
+        CodeActionItem item;
+        item.title = Utf8ToWide(title);
+        item.kind = Utf8ToWide(el.GetString("kind"));
+        item.isPreferred = el.GetBool("isPreferred", false);
+        ParseWorkspaceEditObject(el.Get("edit"), item.edit);
+        if (item.edit.fileChanges.empty()) {
+            item.rawJson = SerializeJsonValue(el);
+        }
+        outActions.push_back(std::move(item));
+        if (outActions.size() >= 25) break;
+    }
+    return !outActions.empty();
+}
+
+bool LspClient::ResolveCodeAction(CodeActionItem& action) {
+    if (!action.edit.fileChanges.empty()) return true;
+    if (!m_isRunning.load() || action.rawJson.empty()) return false;
+
+    std::string respJson;
+    if (!SendRequestAndWait("codeAction/resolve", action.rawJson, respJson, 700)) {
+        return false;
+    }
+    JsonValue root;
+    JsonParser parser(respJson);
+    if (!parser.Parse(root)) return false;
+    const JsonValue* result = root.Get("result");
+    if (!result || result->type != JsonValue::Type::Object) return false;
+    return ParseWorkspaceEditObject(result->Get("edit"), action.edit);
+}
+
+bool LspClient::RequestInlayHints(const std::wstring& fileUri, size_t startLine, size_t endLine,
+                                  std::vector<InlayHintItem>& outHints) {
+    outHints.clear();
+    if (!m_isRunning.load()) return false;
+
+    std::string uri = EnsureFileUriUtf8(fileUri);
+    std::ostringstream params;
+    params << "{\"textDocument\":{\"uri\":" << EscapeJsonString(uri)
+           << "},\"range\":{\"start\":{\"line\":" << startLine << ",\"character\":0"
+           << "},\"end\":{\"line\":" << endLine << ",\"character\":0}}}";
+
+    std::string respJson;
+    if (!SendRequestAndWait("textDocument/inlayHint", params.str(), respJson, 550)) {
+        return false;
+    }
+
+    JsonValue root;
+    JsonParser parser(respJson);
+    if (!parser.Parse(root)) return false;
+    const JsonValue* result = root.Get("result");
+    if (!result || result->type != JsonValue::Type::Array) return false;
+
+    for (const auto& el : result->arrVal) {
+        if (el.type != JsonValue::Type::Object) continue;
+        const JsonValue* pos = el.Get("position");
+        if (!pos) continue;
+        InlayHintItem h;
+        h.line = static_cast<size_t>((std::max)(0LL, pos->GetInt("line", 0)));
+        h.col  = static_cast<size_t>((std::max)(0LL, pos->GetInt("character", 0)));
+        h.kind = static_cast<int>(el.GetInt("kind", 1));
+        h.paddingLeft = el.GetBool("paddingLeft", false);
+        h.paddingRight = el.GetBool("paddingRight", false);
+        h.tooltip = ExtractMarkupText(el.Get("tooltip"));
+
+        if (const JsonValue* lbl = el.Get("label")) {
+            if (lbl->type == JsonValue::Type::String) {
+                h.label = Utf8ToWide(lbl->strVal);
+            } else if (lbl->type == JsonValue::Type::Array) {
+                for (const auto& part : lbl->arrVal) {
+                    if (part.type == JsonValue::Type::Object) {
+                        h.label += Utf8ToWide(part.GetString("value"));
+                    } else if (part.type == JsonValue::Type::String) {
+                        h.label += Utf8ToWide(part.strVal);
+                    }
+                }
+            }
+        }
+        if (!h.label.empty()) {
+            outHints.push_back(std::move(h));
+        }
+        if (outHints.size() >= 250) break;
+    }
+    return !outHints.empty();
+}
+
+// =============================================================================
+// LspManager — Multi-Server Concurrent LSP Coordinator (#19)
+// =============================================================================
+
+LspManager::~LspManager() {
+    Shutdown();
+}
+
+std::wstring LspManager::NormalizeLanguageFamily(const std::wstring& langOrExtOrPath) {
+    std::wstring s = ToLowerW(langOrExtOrPath);
+    if (s.empty()) return {};
+
+    // Extract extension if passed a filename/path/URI
+    auto slash = s.find_last_of(L"\\/");
+    auto dot = s.find_last_of(L'.');
+    if (dot != std::wstring::npos && (slash == std::wstring::npos || dot > slash)) {
+        s = s.substr(dot);
+    }
+
+    if (s == L"ts" || s == L".ts" || s == L"tsx" || s == L".tsx" ||
+        s == L"js" || s == L".js" || s == L"jsx" || s == L".jsx" ||
+        s == L"mjs" || s == L".mjs" || s == L"cjs" || s == L".cjs" ||
+        s == L"mts" || s == L".mts" || s == L"cts" || s == L".cts" ||
+        s == L"typescript" || s == L"javascript" ||
+        s == L"typescriptreact" || s == L"javascriptreact") {
+        return L"typescript";
+    }
+    if (s == L"php" || s == L".php" || s == L".phtml" || s == L".php7" || s == L".php8") {
+        return L"php";
+    }
+    if (s == L"py" || s == L".py" || s == L".pyw" || s == L"python") {
+        return L"python";
+    }
+    if (s == L"c" || s == L".c" || s == L"cpp" || s == L".cpp" || s == L".cc" ||
+        s == L".cxx" || s == L".h" || s == L".hpp" || s == L".hxx" || s == L"c++") {
+        return L"cpp";
+    }
+    if (s == L"html" || s == L".html" || s == L".htm") {
+        return L"html";
+    }
+    if (s == L"css" || s == L".css" || s == L"scss" || s == L".scss" || s == L"less" || s == L".less") {
+        return L"css";
+    }
+    if (s == L"json" || s == L".json" || s == L".jsonc") {
+        return L"json";
+    }
+    return s;
+}
+
+std::wstring LspManager::MakeKey(const std::wstring& family, const std::wstring& workspaceRoot) {
+    std::wstring normWs = ToLowerW(workspaceRoot);
+    for (wchar_t& c : normWs) if (c == L'/') c = L'\\';
+    while (!normWs.empty() && normWs.back() == L'\\') normWs.pop_back();
+    return family + L"|" + normWs;
+}
+
+void LspManager::SetCustomServerPaths(const std::unordered_map<std::wstring, std::wstring>& customPaths) {
+    std::vector<std::shared_ptr<LspClient>> clients;
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        m_customServerPaths.clear();
+        for (const auto& kv : customPaths) {
+            std::wstring fam = NormalizeLanguageFamily(kv.first);
+            if (!fam.empty() && !kv.second.empty()) {
+                m_customServerPaths[fam] = kv.second;
+            }
+        }
+        for (const auto& kv : m_clients) {
+            clients.push_back(kv.second);
+        }
+    }
+    for (const auto& c : clients) {
+        if (c) c->SetCustomServerPaths(customPaths);
+    }
+}
+
+void LspManager::SetCustomServerPath(const std::wstring& languageIdOrFamily, const std::wstring& executablePath) {
+    std::vector<std::shared_ptr<LspClient>> clients;
+    std::wstring fam = NormalizeLanguageFamily(languageIdOrFamily);
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        if (executablePath.empty()) {
+            m_customServerPaths.erase(fam);
+        } else if (!fam.empty()) {
+            m_customServerPaths[fam] = executablePath;
+        }
+        for (const auto& kv : m_clients) {
+            clients.push_back(kv.second);
+        }
+    }
+    for (const auto& c : clients) {
+        if (c) c->SetCustomServerPath(languageIdOrFamily, executablePath);
+    }
+}
+
+void LspManager::SetDiagnosticsCallback(DiagnosticsCallback cb) {
+    std::vector<std::shared_ptr<LspClient>> clients;
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        m_diagnosticsCallback = std::move(cb);
+        for (const auto& kv : m_clients) {
+            clients.push_back(kv.second);
+        }
+    }
+    for (const auto& c : clients) {
+        if (c) c->SetDiagnosticsCallback(m_diagnosticsCallback);
+    }
+}
+
+void LspManager::ResetDiscoveryCache() {
+    std::vector<std::shared_ptr<LspClient>> clients;
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        for (const auto& kv : m_clients) clients.push_back(kv.second);
+    }
+    for (const auto& c : clients) {
+        if (c) c->ResetDiscoveryCache();
+    }
+}
+
+std::shared_ptr<LspClient> LspManager::GetOrCreateSlotForTesting(const std::wstring& languageId, const std::wstring& workspaceRoot) {
+    std::wstring fam = NormalizeLanguageFamily(languageId);
+    if (fam.empty()) fam = ToLowerW(languageId);
+    std::wstring key = MakeKey(fam, workspaceRoot);
+
+    std::lock_guard<std::mutex> lock(m_mutex);
+    auto it = m_clients.find(key);
+    if (it != m_clients.end()) {
+        m_lastLanguageId = ToLowerW(languageId);
+        m_lastWorkspaceRoot = workspaceRoot;
+        return it->second;
+    }
+
+    // Bound concurrent server count cleanly (max 6 concurrent servers)
+    if (m_clients.size() >= 6) {
+        std::wstring victimKey;
+        for (const auto& kv : m_clients) {
+            if (!kv.second || !kv.second->IsRunning()) {
+                victimKey = kv.first;
+                break;
+            }
+        }
+        if (victimKey.empty()) {
+            victimKey = m_clients.begin()->first;
+        }
+        if (!victimKey.empty()) {
+            auto victim = m_clients[victimKey];
+            m_clients.erase(victimKey);
+            if (victim) victim->Shutdown();
+        }
+    }
+
+    auto client = std::make_shared<LspClient>();
+    if (m_diagnosticsCallback) client->SetDiagnosticsCallback(m_diagnosticsCallback);
+    if (!m_customServerPaths.empty()) client->SetCustomServerPaths(m_customServerPaths);
+    m_clients[key] = client;
+    m_lastLanguageId = ToLowerW(languageId);
+    m_lastWorkspaceRoot = workspaceRoot;
+    return client;
+}
+
+bool LspManager::EnsureServerForLanguage(const std::wstring& languageId, const std::wstring& workspaceRoot) {
+    auto client = GetOrCreateSlotForTesting(languageId, workspaceRoot);
+    if (!client) return false;
+    return client->EnsureServerForLanguage(languageId, workspaceRoot);
+}
+
+void LspManager::Shutdown() {
+    std::vector<std::shared_ptr<LspClient>> clients;
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        for (const auto& kv : m_clients) {
+            if (kv.second) clients.push_back(kv.second);
+        }
+        m_clients.clear();
+        m_uriToClientKey.clear();
+    }
+    for (const auto& c : clients) {
+        c->Shutdown();
+    }
+}
+
+std::shared_ptr<LspClient> LspManager::ResolveClientForDocument(const std::wstring& fileUri) const {
+    std::wstring normUri = ToLowerW(LspClient::FileUriToPath(fileUri));
+    std::wstring fam = NormalizeLanguageFamily(normUri);
+
+    std::lock_guard<std::mutex> lock(m_mutex);
+    auto itU = m_uriToClientKey.find(normUri);
+    if (itU != m_uriToClientKey.end()) {
+        auto itC = m_clients.find(itU->second);
+        if (itC != m_clients.end() && itC->second) {
+            return itC->second;
+        }
+    }
+    if (!fam.empty()) {
+        // Match same language family + current workspace root first
+        std::wstring prefKey = MakeKey(fam, m_lastWorkspaceRoot);
+        auto itPref = m_clients.find(prefKey);
+        if (itPref != m_clients.end() && itPref->second && itPref->second->IsRunning()) {
+            return itPref->second;
+        }
+        std::wstring prefix = fam + L"|";
+        for (const auto& kv : m_clients) {
+            if (kv.first.rfind(prefix, 0) == 0 && kv.second && kv.second->IsRunning()) {
+                return kv.second;
+            }
+        }
+    }
+    return nullptr;
+}
+
+std::shared_ptr<LspClient> LspManager::GetClientForFile(const std::wstring& fileUri) const {
+    return ResolveClientForDocument(fileUri);
+}
+
+void LspManager::NotifyDidOpen(const std::wstring& fileUri, const std::wstring& languageId, const std::wstring& text) {
+    std::wstring fam = NormalizeLanguageFamily(languageId.empty() ? fileUri : languageId);
+    std::wstring normUri = ToLowerW(LspClient::FileUriToPath(fileUri));
+    std::shared_ptr<LspClient> client;
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        std::wstring key = MakeKey(fam, m_lastWorkspaceRoot);
+        auto it = m_clients.find(key);
+        if (it == m_clients.end()) {
+            std::wstring prefix = fam + L"|";
+            for (const auto& kv : m_clients) {
+                if (kv.first.rfind(prefix, 0) == 0 && kv.second && kv.second->IsRunning()) {
+                    key = kv.first;
+                    it = m_clients.find(key);
+                    break;
+                }
+            }
+        }
+        if (it != m_clients.end() && it->second) {
+            client = it->second;
+            if (m_uriToClientKey.size() >= 256) {
+                m_uriToClientKey.erase(m_uriToClientKey.begin());
+            }
+            m_uriToClientKey[normUri] = key;
+        }
+    }
+    if (client) {
+        client->NotifyDidOpen(fileUri, languageId, text);
+    }
+}
+
+void LspManager::NotifyDidChange(const std::wstring& fileUri, const std::wstring& text) {
+    if (auto c = ResolveClientForDocument(fileUri)) c->NotifyDidChange(fileUri, text);
+}
+
+void LspManager::NotifyDidSave(const std::wstring& fileUri, const std::wstring& text) {
+    if (auto c = ResolveClientForDocument(fileUri)) c->NotifyDidSave(fileUri, text);
+}
+
+void LspManager::NotifyDidClose(const std::wstring& fileUri) {
+    auto c = ResolveClientForDocument(fileUri);
+    std::wstring normUri = ToLowerW(LspClient::FileUriToPath(fileUri));
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        m_uriToClientKey.erase(normUri);
+    }
+    if (c) c->NotifyDidClose(fileUri);
+}
+
+std::vector<CompletionItem> LspManager::RequestCompletions(const std::wstring& fileUri, size_t line, size_t col) {
+    if (auto c = ResolveClientForDocument(fileUri)) return c->RequestCompletions(fileUri, line, col);
+    return {};
+}
+
+bool LspManager::RequestDefinition(const std::wstring& fileUri, size_t line, size_t col, Location& outLocation) {
+    auto c = ResolveClientForDocument(fileUri);
+    return c ? c->RequestDefinition(fileUri, line, col, outLocation) : false;
+}
+
+bool LspManager::RequestDefinitionLocations(const std::wstring& fileUri, size_t line, size_t col, std::vector<Location>& outLocations) {
+    auto c = ResolveClientForDocument(fileUri);
+    return c ? c->RequestDefinitionLocations(fileUri, line, col, outLocations) : false;
+}
+
+bool LspManager::RequestTypeDefinition(const std::wstring& fileUri, size_t line, size_t col, std::vector<Location>& outLocations) {
+    auto c = ResolveClientForDocument(fileUri);
+    return c ? c->RequestTypeDefinition(fileUri, line, col, outLocations) : false;
+}
+
+bool LspManager::RequestImplementation(const std::wstring& fileUri, size_t line, size_t col, std::vector<Location>& outLocations) {
+    auto c = ResolveClientForDocument(fileUri);
+    return c ? c->RequestImplementation(fileUri, line, col, outLocations) : false;
+}
+
+bool LspManager::RequestDocumentSymbols(const std::wstring& fileUri, std::vector<DocumentSymbolItem>& outSymbols) {
+    auto c = ResolveClientForDocument(fileUri);
+    return c ? c->RequestDocumentSymbols(fileUri, outSymbols) : false;
+}
+
+bool LspManager::RequestReferences(const std::wstring& fileUri, size_t line, size_t col, bool includeDeclaration, std::vector<Location>& outLocations) {
+    auto c = ResolveClientForDocument(fileUri);
+    return c ? c->RequestReferences(fileUri, line, col, includeDeclaration, outLocations) : false;
+}
+
+bool LspManager::PrepareRename(const std::wstring& fileUri, size_t line, size_t col, size_t& outStartCol, size_t& outEndCol, std::wstring& outPlaceholder) {
+    auto c = ResolveClientForDocument(fileUri);
+    return c ? c->PrepareRename(fileUri, line, col, outStartCol, outEndCol, outPlaceholder) : false;
+}
+
+bool LspManager::RequestRename(const std::wstring& fileUri, size_t line, size_t col, const std::wstring& newName, WorkspaceEditResult& outEdit) {
+    auto c = ResolveClientForDocument(fileUri);
+    return c ? c->RequestRename(fileUri, line, col, newName, outEdit) : false;
+}
+
+bool LspManager::PrepareCallHierarchy(const std::wstring& fileUri, size_t line, size_t col, std::vector<CallHierarchyItem>& outItems) {
+    auto c = ResolveClientForDocument(fileUri);
+    return c ? c->PrepareCallHierarchy(fileUri, line, col, outItems) : false;
+}
+
+bool LspManager::RequestIncomingCalls(const CallHierarchyItem& item, std::vector<CallHierarchyItem>& outCallers) {
+    auto c = ResolveClientForDocument(item.filePath);
+    return c ? c->RequestIncomingCalls(item, outCallers) : false;
+}
+
+bool LspManager::RequestOutgoingCalls(const CallHierarchyItem& item, std::vector<CallHierarchyItem>& outCallees) {
+    auto c = ResolveClientForDocument(item.filePath);
+    return c ? c->RequestOutgoingCalls(item, outCallees) : false;
+}
+
+bool LspManager::RequestFormatting(const std::wstring& fileUri, int tabSize, bool insertSpaces, std::vector<LspTextEdit>& outEdits) {
+    auto c = ResolveClientForDocument(fileUri);
+    return c ? c->RequestFormatting(fileUri, tabSize, insertSpaces, outEdits) : false;
+}
+
+bool LspManager::RequestRangeFormatting(const std::wstring& fileUri, size_t startLine, size_t startCol,
+                                        size_t endLine, size_t endCol, int tabSize, bool insertSpaces,
+                                        std::vector<LspTextEdit>& outEdits) {
+    auto c = ResolveClientForDocument(fileUri);
+    return c ? c->RequestRangeFormatting(fileUri, startLine, startCol, endLine, endCol, tabSize, insertSpaces, outEdits) : false;
+}
+
+bool LspManager::RequestHover(const std::wstring& fileUri, size_t line, size_t col, HoverResult& outHover) {
+    auto c = ResolveClientForDocument(fileUri);
+    return c ? c->RequestHover(fileUri, line, col, outHover) : false;
+}
+
+bool LspManager::RequestSignatureHelp(const std::wstring& fileUri, size_t line, size_t col, SignatureHelpResult& outSigHelp) {
+    auto c = ResolveClientForDocument(fileUri);
+    return c ? c->RequestSignatureHelp(fileUri, line, col, outSigHelp) : false;
+}
+
+bool LspManager::RequestCodeActions(const std::wstring& fileUri, size_t startLine, size_t startCol,
+                                    size_t endLine, size_t endCol,
+                                    const std::vector<Diagnostic>& diagnostics,
+                                    std::vector<CodeActionItem>& outActions) {
+    auto c = ResolveClientForDocument(fileUri);
+    return c ? c->RequestCodeActions(fileUri, startLine, startCol, endLine, endCol, diagnostics, outActions) : false;
+}
+
+bool LspManager::ResolveCodeAction(const std::wstring& fileUri, CodeActionItem& action) {
+    auto c = ResolveClientForDocument(fileUri);
+    return c ? c->ResolveCodeAction(action) : false;
+}
+
+bool LspManager::RequestInlayHints(const std::wstring& fileUri, size_t startLine, size_t endLine,
+                                   std::vector<InlayHintItem>& outHints) {
+    auto c = ResolveClientForDocument(fileUri);
+    return c ? c->RequestInlayHints(fileUri, startLine, endLine, outHints) : false;
+}
+
+bool LspManager::IsRunning() const {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    for (const auto& kv : m_clients) {
+        if (kv.second && kv.second->IsRunning()) return true;
+    }
+    return false;
+}
+
+bool LspManager::IsRunningForFile(const std::wstring& fileUriOrPath) const {
+    auto c = ResolveClientForDocument(fileUriOrPath);
+    return c && c->IsRunning();
+}
+
+bool LspManager::IsRunningForLanguage(const std::wstring& languageId) const {
+    std::wstring fam = NormalizeLanguageFamily(languageId);
+    if (fam.empty()) return false;
+    std::string prefix;
+    std::wstring wPrefix = fam + L"|";
+    std::lock_guard<std::mutex> lock(m_mutex);
+    for (const auto& kv : m_clients) {
+        if (kv.first.rfind(wPrefix, 0) == 0 && kv.second && kv.second->IsRunning()) {
+            return true;
+        }
+    }
+    return false;
+}
+
+std::wstring LspManager::GetCurrentLanguageId() const {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    return m_lastLanguageId;
+}
+
+size_t LspManager::GetActiveServerCount() const {
+    size_t count = 0;
+    std::lock_guard<std::mutex> lock(m_mutex);
+    for (const auto& kv : m_clients) {
+        if (kv.second && kv.second->IsRunning()) ++count;
+    }
+    return count;
+}
+
+std::vector<std::wstring> LspManager::GetRunningLanguages() const {
+    std::vector<std::wstring> langs;
+    std::lock_guard<std::mutex> lock(m_mutex);
+    for (const auto& kv : m_clients) {
+        if (kv.second && kv.second->IsRunning()) {
+            auto pipe = kv.first.find(L'|');
+            langs.push_back(pipe == std::wstring::npos ? kv.first : kv.first.substr(0, pipe));
+        }
+    }
+    return langs;
 }
 
 } // namespace phide::lsp

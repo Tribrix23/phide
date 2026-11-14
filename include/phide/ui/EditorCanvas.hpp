@@ -20,6 +20,7 @@
 #include "phide/editor/IntelliSenseEngine.hpp"
 #include "phide/editor/PredictionEngine.hpp"
 #include "phide/editor/WorkspaceNavigation.hpp"
+#include "phide/editor/LanguageIntelligence.hpp"
 #include "phide/ui/KeyboardShortcutsView.hpp"
 #include "phide/ui/PackageManagerView.hpp"
 #include "phide/ui/NotebookView.hpp"
@@ -698,6 +699,9 @@ public:
     D2D1_RECT_F m_lastExtUninstallBtn{};
 
     struct CodeLensAction {
+        enum class ActionKind { Run, Debug, References, RunTest, DebugTest };
+        ActionKind kind = ActionKind::Run;
+        std::wstring symbolName;
         size_t bufferLine = 0;
         bool isDebug = false;
         D2D1_RECT_F bounds{};
@@ -1038,10 +1042,72 @@ private:
     void RenderInlineFindBar(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config);
     void RenderInlinePeekPanel(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config, float clientHeight);
     void RenderInlineRenameWidget(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config, float clientHeight);
+    void RenderRichHoverCard(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config, float clientHeight);
+    void RenderSignatureHelpPopup(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config, float clientHeight);
+    void RenderCodeActionMenu(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config, float clientHeight);
 
+public:
+    // --- #22 & #23 & #24 Language Intelligence Overlay APIs ---
+    [[nodiscard]] bool HitTestBreadcrumbErrorBadge(POINT pt) const noexcept;
+
+    struct HoverCardState {
+        bool visible = false;
+        size_t line = 0;
+        size_t col = 0;
+        POINT anchorPt{};
+        std::wstring rawMarkdown;
+        std::vector<editor::MarkdownBlock> blocks;
+        D2D1_RECT_F bounds{};
+    };
+    void ShowHoverCard(size_t line, size_t col, POINT screenPt, const std::wstring& markdown);
+    void DismissHoverCard() noexcept { m_hoverCard.visible = false; m_hoverCard.bounds = {}; }
+    [[nodiscard]] bool IsHoverCardVisible() const noexcept { return m_hoverCard.visible; }
+    [[nodiscard]] const HoverCardState& GetHoverCardState() const noexcept { return m_hoverCard; }
+
+    struct SignatureHelpPopupState {
+        bool visible = false;
+        lsp::SignatureHelpResult result{};
+        int selectedOverload = 0;
+        D2D1_RECT_F bounds{};
+        D2D1_RECT_F prevBtnBounds{};
+        D2D1_RECT_F nextBtnBounds{};
+    };
+    void ShowSignatureHelp(const lsp::SignatureHelpResult& sigHelp);
+    void DismissSignatureHelp() noexcept { m_sigHelpPopup.visible = false; m_sigHelpPopup.bounds = {}; }
+    [[nodiscard]] bool IsSignatureHelpVisible() const noexcept { return m_sigHelpPopup.visible; }
+    [[nodiscard]] bool HandleSignatureHelpMouseDown(POINT pt);
+    void CycleSignatureOverload(int delta) noexcept;
+
+    struct CodeActionMenuState {
+        bool visible = false;
+        bool isRefactorMode = false;
+        size_t line = 0;
+        int selectedIdx = 0;
+        int scrollOffset = 0;
+        std::vector<lsp::CodeActionItem> items;
+        D2D1_RECT_F bounds{};
+        D2D1_RECT_F lightbulbBounds{};
+        bool hasLightbulb = false;
+        size_t lightbulbLine = 0;
+    };
+    void SetLightbulbState(bool available, size_t line) noexcept {
+        m_codeActionMenu.hasLightbulb = available;
+        m_codeActionMenu.lightbulbLine = line;
+        if (!available) m_codeActionMenu.lightbulbBounds = {};
+    }
+    void ShowCodeActionMenu(size_t line, const std::vector<lsp::CodeActionItem>& items, bool isRefactorMode = false);
+    void DismissCodeActionMenu() noexcept { m_codeActionMenu.visible = false; m_codeActionMenu.bounds = {}; }
+    [[nodiscard]] bool IsCodeActionMenuVisible() const noexcept { return m_codeActionMenu.visible; }
+    [[nodiscard]] bool HitTestLightbulb(POINT pt) const noexcept;
+    bool HandleCodeActionMenuKeyDown(WPARAM vk, int& outAcceptedIndex);
+    bool HandleCodeActionMenuMouseDown(POINT pt, int& outAcceptedIndex);
+    [[nodiscard]] const std::vector<lsp::CodeActionItem>& GetCodeActionMenuItems() const noexcept { return m_codeActionMenu.items; }
+
+private:
     D2D1_RECT_F m_lastActivePaneBounds{250.0f, 90.0f, 1100.0f, 700.0f};
     std::vector<editor::DocumentSymbol> m_activeDocSymbols;
     std::vector<BreadcrumbHit> m_breadcrumbHits;
+    D2D1_RECT_F m_breadcrumbErrBadgeBounds{};
     bool m_breadcrumbDropdownOpen = false;
     int m_breadcrumbDropdownSegIdx = -1;
     bool m_breadcrumbDropdownForSymbols = false;
@@ -1051,6 +1117,9 @@ private:
     InlineFindBarState m_findBar;
     InlinePeekPanelState m_peekPanel;
     InlineRenameState m_renameWidget;
+    HoverCardState m_hoverCard;
+    SignatureHelpPopupState m_sigHelpPopup;
+    CodeActionMenuState m_codeActionMenu;
 };
 
 } // namespace phide::ui

@@ -99,6 +99,16 @@ struct AppConfig {
     bool pythonHighlightTerminalErrors = true;            ///< Auto-highlight execution errors & tracebacks from terminal on the editor line
     std::wstring pythonLinter = L"builtin (ast/flake8)";  ///< Active linter engine (builtin, flake8, ruff)
 
+    // --- Language Intelligence & LSP Server Paths ---
+    bool enableInlayHints = true;                         ///< Show parameter name and inferred type inlay hints
+    bool enableLspHover = true;                           ///< Show rich Markdown hover cards on symbol dwell
+    bool enableSignatureHelp = true;                      ///< Show active parameter signature hints on '(' and ','
+    bool enableExternalLinters = true;                    ///< Aggregate eslint / tsc / phpstan / ruff diagnostics into Problems panel
+    std::wstring lspPathTypeScript;                       ///< Optional custom executable path for TypeScript/JS LSP server
+    std::wstring lspPathPython;                           ///< Optional custom executable path for Python LSP server
+    std::wstring lspPathPhp;                              ///< Optional custom executable path for PHP LSP server
+    std::wstring lspPathCpp;                              ///< Optional custom executable path for C/C++ LSP server
+
     // --- Floating Prompt Bar Metrics ---
     int promptBarWidth  = 540;  ///< Width of the bottom floating AI prompt pill.
     int promptBarHeight = 44;   ///< Height of the floating prompt pill.
